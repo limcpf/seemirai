@@ -1,0 +1,85 @@
+name: Feature work unit
+description: PRD 기반 기능 구현 또는 운영 자동화 작업
+title: "[Feature] "
+labels: ["feature"]
+body:
+  - type: textarea
+    id: goal
+    attributes:
+      label: 목적
+      description: 이 issue가 달성해야 하는 사용자/운영 결과를 적습니다.
+      placeholder: "예: PRD를 기준으로 issue planner skill을 완성한다."
+    validations:
+      required: true
+  - type: textarea
+    id: background
+    attributes:
+      label: 배경
+      description: 관련 PRD, FEATURE_REQUIREMENTS, 설계 문서, 이전 PR을 적습니다.
+    validations:
+      required: true
+  - type: textarea
+    id: scope
+    attributes:
+      label: 구현 범위
+      description: 포함할 변경을 bullet로 적습니다.
+    validations:
+      required: true
+  - type: textarea
+    id: out_of_scope
+    attributes:
+      label: 제외 범위
+      description: 이번 issue에서 의도적으로 하지 않을 일을 적습니다.
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance Criteria
+      description: 완료 판정 가능한 조건을 체크박스로 적습니다.
+      value: |
+        - [ ] 
+    validations:
+      required: true
+  - type: textarea
+    id: done
+    attributes:
+      label: Definition of Done
+      value: |
+        - [ ] 관련 검증 명령이 통과한다.
+        - [ ] 문서 변경이 필요한 경우 인덱스와 context map이 갱신된다.
+        - [ ] PR 본문에 검증 결과와 남은 리스크가 기록된다.
+    validations:
+      required: true
+  - type: textarea
+    id: tests
+    attributes:
+      label: 테스트 요구사항
+      placeholder: "예: npm run verify, npm test, 수동 확인 절차"
+    validations:
+      required: true
+  - type: textarea
+    id: docs
+    attributes:
+      label: 문서 갱신 요구사항
+      placeholder: "예: docs/FEATURE_REQUIREMENTS.md, docs/design-docs/index.md"
+    validations:
+      required: false
+  - type: textarea
+    id: subprs
+    attributes:
+      label: 예상 sub PR 분할
+      description: foundation, persistence, runtime, integration, verification 등 리뷰 가능한 의미 단위로 적습니다.
+      placeholder: |
+        1. foundation: ...
+        2. runtime: ...
+        3. verification: ...
+    validations:
+      required: false
+  - type: textarea
+    id: parallel
+    attributes:
+      label: 병렬 가능성
+      description: 병렬 가능한 작업과 순차 의존성을 구분합니다.
+    validations:
+      required: false

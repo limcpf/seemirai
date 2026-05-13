@@ -1,0 +1,253 @@
+# Seemirai MVP 개발 실행 계획
+
+- 상태: active
+- 작성일: 2026-05-13
+- 목표: Upbit KRW 현물 paper trading 기반의 자동 주문 엔진 검증 MVP를 구현한다.
+
+## 기준 문서
+
+- [`../../../ARCHITECTURE.md`](../../../ARCHITECTURE.md)
+- [`../../design-docs/2026-05-13-mvp-runtime-architecture.md`](../../design-docs/2026-05-13-mvp-runtime-architecture.md)
+- [`../../product-specs/upbit-krw-paper-trading-mvp.md`](../../product-specs/upbit-krw-paper-trading-mvp.md)
+- [`../../PRD.md`](../../PRD.md)
+- [`../../FEATURE_REQUIREMENTS.md`](../../FEATURE_REQUIREMENTS.md)
+
+## 목표
+
+MVP는 수익률 최적화 봇이 아니라 실거래 전환 가능한 주문·체결·비용·리스크 검증 런타임이다.
+
+완료 시점에는 다음을 만족해야 한다.
+
+- Upbit `KRW-BTC`, `KRW-ETH` 실시간 market data 수집
+- 비용 기반 동적 안전마진 적용
+- 리스크 게이트 기반 신규 주문 차단
+- PaperBroker 기반 가상 주문, 부분체결, 취소, 재호가
+- 주문 판단 근거와 상태 전이 audit log
+- Telegram outbound P0 알림
+- live order API 호출 0회 보장
+- 24시간 paper trading soak test 통과
+
+## 확장성 원칙
+
+MVP부터 다음 경계를 고정한다.
+
+- 거래소는 `MarketDataPort`, `ExchangePolicyPort`, `BrokerPort`로 나눈다.
+- 전략은 주문을 직접 제출하지 않고 `StrategyDecision` 또는 `OrderIntent` 후보만 만든다.
+- 매수/매도 기준은 `Rule` 조합으로 구성한다.
+- 모든 주문 후보는 `CostModel -> RiskGate -> ExecutionEngine -> BrokerPort` 순서를 통과한다.
+- `PaperBroker`와 future live broker는 같은 `BrokerPort`를 구현한다.
+- 동적 plugin loading은 MVP에서 제외하고, 정적 registry와 config 기반 활성화를 사용한다.
+
+초기 registry:
+
+```text
+exchangeRegistry
+  - upbit_krw_spot
+
+strategyRegistry
+  - trend_following
+  - mean_reversion
+
+ruleRegistry
+  - universe_allowed
+  - market_warning_absent
+  - spread_ok
+  - depth_sufficient
+  - cost_margin_ok
+  - risk_ok
+  - stop_loss
+  - take_profit
+```
+
+## 범위
+
+포함:
+
+- Node.js 24 LTS, pnpm, TypeScript strict 기반 단일 package
+- Fastify 최소 HTTP API
+- PostgreSQL + TimescaleDB Docker Compose
+- Kysely + raw SQL migration
+- DB-backed `jobs` queue
+- Upbit public market data adapter
+- policy snapshot
+- universe manager
+- feature/orderbook metric 저장
+- cost model
+- rule engine
+- strategy registry
+- risk gate
+- state machine
+- PaperBroker
+- backtest bridge
+- Pino JSON log
+- PostgreSQL audit log
+- Telegram outbound alert
+- Vitest unit/integration/fixture/soak 테스트
+
+제외:
+
+- 실거래 주문 API 호출
+- 출금/송금/거래소 간 차익거래
+- Redis/BullMQ
+- 웹 대시보드
+- Telegram command 수신
+- 동적 plugin loading
+- 선물/레버리지
+- 외부 뉴스/SNS 기반 자동 주문
+
+## 작업 단계
+
+### M0. 프로젝트 스캐폴딩
+
+- [ ] `package.json`, `.nvmrc`, `pnpm-lock.yaml`, `tsconfig.json`, `vitest.config.ts` 생성
+- [ ] TypeScript strict, `allowJs=false` 설정
+- [ ] 기본 폴더 구조 생성: `domain`, `application`, `infrastructure`, `interfaces`, `runtime`, `shared`
+- [ ] config validation, Decimal, Pino logger 기반 생성
+- [ ] live trading 기본 비활성 guard 추가
+
+검증:
+
+- [ ] `pnpm typecheck`
+- [ ] `pnpm test`
+- [ ] 기본 config 로딩 실패/성공 테스트
+
+### M1. DB와 migration 기반
+
+- [ ] Docker Compose로 PostgreSQL + TimescaleDB 구성
+- [ ] raw SQL migration runner 생성
+- [ ] Kysely + node-postgres 연결
+- [ ] `orders`, `paper_orders`, `fills`, `positions`, `audit_events`, `risk_events`, `jobs`, `policy_snapshots` schema 작성
+- [ ] `trades`, `orderbook_metrics`, `orderbook_snapshots`, `candles`, `pnl_snapshots`, `strategy_signals` hypertable 작성
+
+검증:
+
+- [ ] migration integration test
+- [ ] backup/restore smoke test 초안
+- [ ] `jobs` idempotency key 중복 차단 테스트
+
+### M2. Port와 registry 기반 확장성 골격
+
+- [ ] `MarketDataPort`, `ExchangePolicyPort`, `BrokerPort`, `NotifierPort`, `AuditLogPort` 정의
+- [ ] `Strategy` interface 정의
+- [ ] `Rule` interface 정의
+- [ ] `exchangeRegistry`, `strategyRegistry`, `ruleRegistry` 구현
+- [ ] registry 활성화 config schema 작성
+- [ ] 의존성 방향 테스트 또는 lint 규칙 후보 작성
+
+검증:
+
+- [ ] strategy가 broker 구현체를 직접 import하지 않는지 확인
+- [ ] rule 조합 config가 잘못된 rule id를 거부하는지 테스트
+- [ ] registry에서 비활성 전략이 실행되지 않는지 테스트
+
+### M3. Upbit market data와 policy snapshot
+
+- [ ] Upbit public REST market list client
+- [ ] Upbit WebSocket trades/orderbook client
+- [ ] Upbit payload Zod schema
+- [ ] `market_event.warning`, `market_event.caution` 저장과 universe 차단
+- [ ] rate limit 상태 모델
+- [ ] raw payload sampling, trades 저장, orderbook metric 1초 집계, snapshot 5초 저장
+
+검증:
+
+- [ ] Upbit REST fixture contract test
+- [ ] Upbit WebSocket fixture replay test
+- [ ] stale data와 reconnect event 기록 테스트
+
+### M4. Cost, rule, strategy core
+
+- [ ] Decimal 기반 비용 계산
+- [ ] `cost_bps + safety_buffer_bps` 판정
+- [ ] 기본 buy/sell rule 구현
+- [ ] `trend_following` strategy skeleton
+- [ ] `mean_reversion` strategy skeleton
+- [ ] `StrategyDecision -> OrderIntent` 변환
+- [ ] 폐기 사유 audit log 연결
+
+검증:
+
+- [ ] 비용 항목 증가 시 거래 가능성이 높아지지 않는 속성 테스트
+- [ ] 저유동성/주의/유의 종목 rule 차단 테스트
+- [ ] 전략이 직접 주문을 제출하지 않는 테스트
+
+### M5. RiskGate와 상태 전이
+
+- [ ] 주문 state machine 구현
+- [ ] kill switch state machine 구현
+- [ ] 일간/주간/MDD/1회 주문/1회 손실/연속 손실 한도 구현
+- [ ] stale market data, DB write failure, duplicate idempotency key 장애 정책 구현
+- [ ] append-only `order_events`와 `audit_events` 저장
+
+검증:
+
+- [ ] 각 risk limit 차단 테스트
+- [ ] hard stop 시 pending paper order 취소 테스트
+- [ ] open position 자동 청산 금지 테스트
+
+### M6. ExecutionEngine과 PaperBroker
+
+- [ ] `ExecutionEngine -> BrokerPort -> PaperBroker` 구현
+- [ ] idempotency key 필수화
+- [ ] depth 기반 paper fill
+- [ ] latency, partial fill, post-only simulation
+- [ ] aggressive limit simulation
+- [ ] market order simulation 기본 비활성
+- [ ] live broker disabled/stub 구현
+
+검증:
+
+- [ ] PaperBroker 부분체결 테스트
+- [ ] 중복 주문 차단 테스트
+- [ ] live order API 호출 0회 테스트
+- [ ] market order 생성 불가 테스트
+
+### M7. Backtest bridge
+
+- [ ] `MarketEvent` 공통 포맷 정의
+- [ ] `HistoricalEventSource`
+- [ ] runtime core 재사용 backtest orchestrator
+- [ ] paper trading 결과와 backtest 결과 비교 리포트
+
+검증:
+
+- [ ] 동일 fixture에서 runtime core와 backtest core 판정 일치 테스트
+- [ ] 비용 0/비용 반영 결과 차이 리포트 테스트
+
+### M8. 운영 가드레일과 soak test
+
+- [ ] Fastify `/healthz`, `/readyz`, `/status`, optional `/metrics`
+- [ ] local token 기반 kill switch endpoint
+- [ ] Telegram outbound notifier
+- [ ] alert fingerprint + cooldown
+- [ ] 일간 리포트
+- [ ] 24시간 paper trading soak test script
+
+검증:
+
+- [ ] P0 알림 시 신규 주문 차단 테스트
+- [ ] Telegram command 수신 경로 없음 확인
+- [ ] 24시간 paper soak test: crash 없음, live order API 0회, audit 누락 0건
+
+## 결정 로그
+
+- 2026-05-13: 확장성은 동적 plugin loading이 아니라 정적 registry + config 기반 활성화로 처리한다.
+- 2026-05-13: 거래소 확장은 `MarketDataPort`, `ExchangePolicyPort`, `BrokerPort`로 책임을 나눈다.
+- 2026-05-13: 전략은 주문을 직접 내지 않고 `StrategyDecision` 또는 `OrderIntent` 후보만 만든다.
+- 2026-05-13: 매수/매도 기준은 `Rule` 조합으로 구성한다.
+- 2026-05-13: `CostModel`과 `RiskGate`는 모든 전략 공통 gate로 고정한다.
+
+## 남은 이슈
+
+- Node.js 24와 pnpm 실제 설치/CI 환경 구성은 구현 단계에서 확인한다.
+- Upbit policy sync에 필요한 최소 API 권한은 pilot 전 별도 검토한다.
+- `trend_following`, `mean_reversion`의 초기 feature threshold는 paper data 축적 후 조정한다.
+- Phase 1.5 알트 편입은 MVP core 완료 후 별도 작업으로 유지한다.
+
+## 완료 기준
+
+- [ ] M0~M8 acceptance criteria가 모두 통과한다.
+- [ ] `./scripts/verify docs`가 통과한다.
+- [ ] 프로젝트 test/lint/typecheck/build가 정의되고 통과한다.
+- [ ] 24시간 paper soak test 결과가 문서화된다.
+- [ ] 실거래 주문 API 호출 0회가 테스트와 로그로 확인된다.

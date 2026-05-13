@@ -1,0 +1,257 @@
+{
+  "version": 1,
+  "documents": [
+    {
+      "path": "AGENTS.md",
+      "kind": "router",
+      "role": "저장소 작업 진입 라우터",
+      "read_when": ["항상", "저장소 작업 시작"],
+      "owner_scope": "root"
+    },
+    {
+      "path": "README.md",
+      "kind": "reference",
+      "role": "Seemirai 제품 개요와 현재 상태",
+      "read_when": ["프로젝트 개요 확인", "현재 상태 확인", "문서 진입점 확인"],
+      "owner_scope": "root"
+    },
+    {
+      "path": "ARCHITECTURE.md",
+      "kind": "reference",
+      "role": "Seemirai 비용 우선 자동매매 시스템 아키텍처",
+      "read_when": ["항상", "저장소 구조 확인", "시스템 경계 확인"],
+      "owner_scope": "root"
+    },
+    {
+      "path": ".github/pull_request_template.md",
+      "kind": "reference",
+      "role": "GitHub PR 본문 템플릿",
+      "read_when": ["PR 생성", "PR 본문 작성", "review drain 준비"],
+      "owner_scope": ".github"
+    },
+    {
+      "path": ".github/ISSUE_TEMPLATE/feature.yml",
+      "kind": "reference",
+      "role": "GitHub feature issue form 템플릿",
+      "read_when": ["GitHub issue 생성", "issue template 수정", "issue-planner 실행"],
+      "owner_scope": ".github/ISSUE_TEMPLATE"
+    },
+    {
+      "path": ".github/workflows/verify.yml",
+      "kind": "reference",
+      "role": "GitHub Actions verify workflow",
+      "read_when": ["CI 검증 변경", "GitHub workflow 수정", "PR checks 확인"],
+      "owner_scope": ".github/workflows"
+    },
+    {
+      "path": ".codex/config.toml",
+      "kind": "reference",
+      "role": "Codex 프로젝트 실행 설정",
+      "read_when": ["Codex 설정 변경", "모델 또는 hook 기능 설정 확인"],
+      "owner_scope": ".codex"
+    },
+    {
+      "path": ".codex/hooks.json",
+      "kind": "reference",
+      "role": "Codex hook event wiring 설정",
+      "read_when": ["hook 연결 변경", "hook event 확인"],
+      "owner_scope": ".codex"
+    },
+    {
+      "path": "docs/README.md",
+      "kind": "index",
+      "role": "docs 디렉터리 라우팅과 책임 인덱스",
+      "read_when": ["문서 구조 탐색", "문서 추가", "문서 이동", "인덱스 갱신"],
+      "owner_scope": "docs"
+    },
+    {
+      "path": "docs/PRD.md",
+      "kind": "reference",
+      "role": "제품 목표와 MVP 범위 기준",
+      "read_when": ["제품 판단", "MVP 범위 확인", "사용자 시나리오 확인"],
+      "owner_scope": "docs"
+    },
+    {
+      "path": "docs/FEATURE_REQUIREMENTS.md",
+      "kind": "reference",
+      "role": "기능 요구사항과 수용 기준",
+      "read_when": ["기능 구현", "acceptance criteria 확인", "테스트 요구사항 확인"],
+      "owner_scope": "docs"
+    },
+    {
+      "path": "docs/DEVELOPMENT.md",
+      "kind": "reference",
+      "role": "로컬 개발 환경과 검증 절차 기준",
+      "read_when": ["개발 환경 구성", "검증 명령 확인", "로컬 산출물 확인"],
+      "owner_scope": "docs"
+    },
+    {
+      "path": "docs/DESIGN.md",
+      "kind": "policy",
+      "role": "구조 변경과 설계 기록 작성 기준",
+      "read_when": ["구조 변경", "경계 변경", "새 규칙 도입"],
+      "owner_scope": "docs"
+    },
+    {
+      "path": "docs/PLANS.md",
+      "kind": "policy",
+      "role": "실행 계획 문서 운영 기준",
+      "read_when": ["장시간 작업", "중단 후 재개 필요", "검증 절차 추적"],
+      "owner_scope": "docs"
+    },
+    {
+      "path": "docs/RELIABILITY.md",
+      "kind": "policy",
+      "role": "재개, idempotency, review drain 안정성 기준",
+      "read_when": ["상태 전이 변경", "재시도 변경", "복구 경로 변경", "운영 안정성 변경"],
+      "owner_scope": "docs"
+    },
+    {
+      "path": "docs/SECURITY.md",
+      "kind": "policy",
+      "role": "보안과 외부 입력 처리 기준",
+      "read_when": ["토큰 변경", "권한 변경", "webhook 변경", "shell command 정책 변경", "dependency 추가"],
+      "owner_scope": "docs"
+    },
+    {
+      "path": "docs/QUALITY_SCORE.md",
+      "kind": "reference",
+      "role": "현재 품질 수준 평가 기준",
+      "read_when": ["품질 수준 판단", "후속 작업 우선순위 검토"],
+      "owner_scope": "docs"
+    },
+    {
+      "path": "docs/design-docs/core-beliefs.md",
+      "kind": "design-doc",
+      "role": "Codex-native 운영 핵심 원칙",
+      "read_when": ["설계 원칙 확인", "문서 정책 판단"],
+      "owner_scope": "docs/design-docs"
+    },
+    {
+      "path": "docs/design-docs/2026-05-12-codex-native-orchestration.md",
+      "kind": "design-doc",
+      "role": "별도 서버보다 문서/skill/hook 운영을 우선하기로 한 결정",
+      "read_when": ["오케스트레이션 방식 확인", "서버 필요성 판단", "운영 구조 결정 확인"],
+      "owner_scope": "docs/design-docs"
+    },
+    {
+      "path": "docs/design-docs/2026-05-13-mvp-runtime-architecture.md",
+      "kind": "design-doc",
+      "role": "Seemirai MVP 런타임과 운영 아키텍처 결정",
+      "read_when": ["MVP 구현", "런타임 구조 확인", "저장소 구조 확인", "배포 구조 확인", "테스트 전략 확인"],
+      "owner_scope": "docs/design-docs"
+    },
+    {
+      "path": "docs/design-docs/index.md",
+      "kind": "index",
+      "role": "설계 문서 인덱스",
+      "read_when": ["설계 문서 탐색", "구조 변경 근거 확인"],
+      "owner_scope": "docs/design-docs"
+    },
+    {
+      "path": "docs/product-specs/index.md",
+      "kind": "index",
+      "role": "제품 명세 인덱스",
+      "read_when": ["제품 명세 탐색", "사용자 동작 기준 확인"],
+      "owner_scope": "docs/product-specs"
+    },
+    {
+      "path": "docs/product-specs/upbit-krw-paper-trading-mvp.md",
+      "kind": "product-spec",
+      "role": "Upbit KRW paper trading MVP 업무 명세",
+      "read_when": ["MVP 구현", "Upbit KRW paper trading 기준 확인", "비즈니스 결정 확인", "acceptance criteria 확인"],
+      "owner_scope": "docs/product-specs"
+    },
+    {
+      "path": "docs/exec-plans/active/README.md",
+      "kind": "index",
+      "role": "진행 중 실행 계획 인덱스",
+      "read_when": ["진행 중 계획 확인", "장시간 작업 상태 파악"],
+      "owner_scope": "docs/exec-plans/active"
+    },
+    {
+      "path": "docs/exec-plans/active/2026-05-13-mvp-development-plan.md",
+      "kind": "exec-plan",
+      "role": "Seemirai MVP 개발 실행 계획",
+      "read_when": ["MVP 구현", "개발 이정표 확인", "확장성 경계 확인", "검증 계획 확인"],
+      "owner_scope": "docs/exec-plans/active"
+    },
+    {
+      "path": "docs/exec-plans/completed/README.md",
+      "kind": "index",
+      "role": "완료된 실행 계획 인덱스",
+      "read_when": ["완료된 계획 탐색", "유사 작업 참고"],
+      "owner_scope": "docs/exec-plans/completed"
+    },
+    {
+      "path": "docs/exec-plans/tech-debt-tracker.md",
+      "kind": "reference",
+      "role": "기술 부채와 후속 작업 추적기",
+      "read_when": ["후속 작업 정리", "기술 부채 확인"],
+      "owner_scope": "docs/exec-plans"
+    },
+    {
+      "path": "docs/generated/README.md",
+      "kind": "index",
+      "role": "기계용 문서 저장소 인덱스",
+      "read_when": ["generated 구조 확인", "기계용 문서 위치 확인"],
+      "owner_scope": "docs/generated"
+    },
+    {
+      "path": "docs/generated/context-map.json",
+      "kind": "generated",
+      "role": "Codex 문서 라우팅 색인",
+      "read_when": ["문서 라우팅", "작업 전 문맥 선택", "문서 구조 검증"],
+      "owner_scope": "docs/generated"
+    },
+    {
+      "path": "docs/references/README.md",
+      "kind": "index",
+      "role": "외부 참고자료 요약 인덱스",
+      "read_when": ["외부 자료 요약 확인", "참고 링크 확인"],
+      "owner_scope": "docs/references"
+    },
+    {
+      "path": "docs/tech-debt/README.md",
+      "kind": "reference",
+      "role": "사용자 지시 기술 부채 목록과 기록 규칙",
+      "read_when": ["사용자가 기술 부채 기록을 지시", "사용자 지시 기술 부채 확인"],
+      "owner_scope": "docs/tech-debt"
+    },
+    {
+      "path": ".agents/skills/project-bootstrap/SKILL.md",
+      "kind": "skill",
+      "role": "새 프로젝트 운영 보일러플레이트 적용 workflow",
+      "read_when": ["새 프로젝트 부트스트랩", "문서/hook/GitHub 구조 생성"],
+      "owner_scope": ".agents/skills/project-bootstrap"
+    },
+    {
+      "path": ".agents/skills/prd-writer/SKILL.md",
+      "kind": "skill",
+      "role": "아이디어를 PRD와 기능 요구사항으로 정리하는 workflow",
+      "read_when": ["PRD 작성", "기능 요구사항 작성", "MVP 범위 정리"],
+      "owner_scope": ".agents/skills/prd-writer"
+    },
+    {
+      "path": ".agents/skills/issue-planner/SKILL.md",
+      "kind": "skill",
+      "role": "PRD 기반 GitHub issue 작성 workflow",
+      "read_when": ["GitHub issue 생성", "issue 본문 작성", "sub PR 초안 작성"],
+      "owner_scope": ".agents/skills/issue-planner"
+    },
+    {
+      "path": ".agents/skills/subpr-orchestrator/SKILL.md",
+      "kind": "skill",
+      "role": "issue를 mother branch에서 운영하고 필요 시 sub PR/worktree 흐름으로 분할하는 workflow",
+      "read_when": ["sub PR 필요성 판단", "mother branch 생성", "worktree 병렬 작업"],
+      "owner_scope": ".agents/skills/subpr-orchestrator"
+    },
+    {
+      "path": ".agents/skills/pr-review-drain/SKILL.md",
+      "kind": "skill",
+      "role": "PR 리뷰 finding을 clean 상태까지 처리하는 workflow",
+      "read_when": ["PR 리뷰 처리", "unresolved thread 해결", "Codex reaction clean signal 확인"],
+      "owner_scope": ".agents/skills/pr-review-drain"
+    }
+  ]
+}

@@ -1,0 +1,37 @@
+#!/usr/bin/env sh
+set -eu
+
+ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
+
+run_docs() {
+  node "$ROOT/scripts/verify-doc-structure.mjs"
+}
+
+run_hooks() {
+  node "$ROOT/scripts/verify-hooks.mjs"
+}
+
+run_github() {
+  node "$ROOT/scripts/verify-github.mjs"
+}
+
+case "${1:-all}" in
+  all)
+    run_docs
+    run_hooks
+    run_github
+    ;;
+  docs)
+    run_docs
+    ;;
+  hooks)
+    run_hooks
+    ;;
+  github)
+    run_github
+    ;;
+  *)
+    printf 'Usage: %s [all|docs|hooks|github]\n' "$0" >&2
+    exit 2
+    ;;
+esac
