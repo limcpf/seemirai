@@ -13,6 +13,33 @@
 - Corepack이 있는 환경에서는 `corepack pnpm ...` 형태로 pnpm을 실행할 수 있다.
 - 실제 프로젝트 의존성을 추가할 때는 `docs/SECURITY.md`의 dependency 승인 기준을 따른다.
 
+## M0 dependency 승인 기록
+
+M0 runtime foundation에서는 사용자 승인 하에 다음 package를 추가한다.
+
+| package | version range | 구분 | 목적 | 대안 검토 | 보안/라이선스 리스크 |
+| --- | --- | --- | --- | --- | --- |
+| `decimal.js` | `^10.4.3` | runtime | 금액, 수량, 가격, 수수료 계산의 Decimal 경계 | JavaScript `number`, `BigInt` scale integer | 널리 쓰이는 MIT package이며 금융 경계에서 `number` 입력과 non-finite 값을 테스트로 차단한다. |
+| `pino` | `^9.6.0` | runtime | JSON structured logging과 secret redaction | `console`, Winston | MIT package이며 secret path redaction 테스트를 둔다. |
+| `zod` | `^3.25.76` | runtime | config와 외부 입력 런타임 validation | 수동 validation, Valibot | MIT package이며 schema boundary에만 사용한다. |
+| `typescript` | `^5.9.0` | dev | strict typecheck | JavaScript only | Apache-2.0 package이며 build-time dependency다. |
+| `vitest` | `^3.2.0` | dev | unit test runner | Node built-in test runner | MIT package이며 test-only dependency다. |
+| `@types/node` | `^24.0.0` | dev | Node.js 24 type definition | 직접 ambient type 작성 | MIT package이며 type-only dependency다. |
+| `pnpm` | `10.0.0` | package manager | lockfile 재현성과 workspace 확장성 | npm, yarn | Corepack으로 고정하고 `pnpm-lock.yaml`을 커밋한다. |
+
+Lockfile 변경은 `pnpm-lock.yaml`에 기록한다. M0 범위에서는 위 dependency 외 추가 runtime dependency를 도입하지 않는다.
+
+## Codex 프로젝트 권한 설정
+
+`.codex/config.toml`은 이 저장소의 owner-operated local workflow를 기준으로 `approval_policy = "never"`와 `sandbox_mode = "danger-full-access"`를 사용한다. 이 설정은 사용자가 명시적으로 요청한 프로젝트 로컬 기본값이며, 무인 webhook runner나 외부 PR comment를 직접 shell command로 실행하는 환경에 복사하지 않는다.
+
+권한 완화에도 다음 가드레일은 유지한다.
+
+- PR comment, issue body, webhook payload는 계속 신뢰할 수 없는 외부 입력으로 취급한다.
+- destructive git 명령, PR merge, branch 삭제, force push는 hook과 운영 규칙에서 계속 차단한다.
+- secret 원문은 로그, 문서, prompt, PR body에 남기지 않는다.
+- 이 설정을 변경하면 `./scripts/verify hooks` 또는 `./scripts/verify`를 실행한다.
+
 ## Seemirai MVP 런타임
 
 - 제품 runtime은 Node.js 24 LTS와 TypeScript strict를 기준으로 한다.

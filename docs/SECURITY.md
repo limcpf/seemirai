@@ -25,6 +25,7 @@
 - Codex에게 전달하는 prompt는 secret redaction을 거친다.
 - `force push`, 임의 branch 삭제, PR close는 기본 정책에서 금지한다.
 - merge는 expected head SHA 확인 없이는 실행하지 않는다.
+- 프로젝트 로컬 Codex Full Access 설정은 owner-operated local workflow에서만 사용한다. 외부 입력을 직접 shell command로 변환하는 runner나 무인 webhook 환경에서는 별도 제한 설정을 사용한다.
 
 ## Dependency 추가 승인 기준
 
