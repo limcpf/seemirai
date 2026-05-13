@@ -1,0 +1,24 @@
+{
+  "exchange": "UPBIT",
+  "market": "KRW_SPOT",
+  "mode": "PAPER_TRADING",
+  "live_trading_enabled": false,
+  "withdrawal_enabled": false,
+  "cross_exchange_arbitrage_enabled": false,
+  "futures_enabled": false,
+  "leverage_enabled": false,
+  "market_order_enabled": false,
+  "entry_market_order_enabled": false,
+  "paper_no_key": true,
+  "universe": {
+    "phase_1": ["KRW-BTC", "KRW-ETH"],
+    "auto_include_new_listing": false,
+    "exclude_warning": true,
+    "exclude_caution": true
+  },
+  "llm": {
+    "enabled": true,
+    "can_generate_trade_signal": false
+  },
+  "secrets": {}
+}

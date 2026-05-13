@@ -7,20 +7,46 @@
 
 ## 보일러플레이트 런타임
 
-- 이 보일러플레이트는 프로젝트 언어를 강제하지 않는다.
-- Codex hook과 검증 스크립트 실행에는 Node.js 20 이상이 필요하다.
-- `package.json`, `pyproject.toml`, `Cargo.toml`, `go.mod` 같은 언어별 manifest는 실제 프로젝트가 필요할 때만 둔다.
-- 현재 검증 스크립트는 외부 npm 의존성 없이 Node.js 표준 라이브러리만 사용한다.
+- 제품 runtime과 검증 harness는 Node.js 24 LTS를 기준으로 한다.
+- `.nvmrc`는 `24`, `package.json`의 `engines.node`는 `>=24 <25`로 고정한다.
+- 패키지 매니저는 pnpm 10 계열을 사용하고 `pnpm-lock.yaml`을 커밋한다.
+- Corepack이 있는 환경에서는 `corepack pnpm ...` 형태로 pnpm을 실행할 수 있다.
 - 실제 프로젝트 의존성을 추가할 때는 `docs/SECURITY.md`의 dependency 승인 기준을 따른다.
 
 ## Seemirai MVP 런타임
 
 - 제품 runtime은 Node.js 24 LTS와 TypeScript strict를 기준으로 한다.
 - 패키지 매니저는 pnpm을 사용하고 lockfile을 커밋한다.
+- TypeScript는 `strict`, `allowJs=false`, `noImplicitAny`, `exactOptionalPropertyTypes`를 켠다.
+- 테스트 runner는 Vitest를 사용한다.
+- 기본 설정은 `config/paper.json`에서 시작하고 Zod schema로 검증한다.
+- 기본 paper profile은 API key 없이 로딩되어야 하며 실거래, 출금, 거래소 간 차익거래, 선물, 시장가 주문은 모두 비활성이다.
+- 금액, 수량, 가격, 수수료 계산 경계는 Decimal 기반 유틸을 통해 문자열 또는 Decimal 입력만 허용한다.
+- logger는 Pino JSON log를 사용하고 Upbit key, Telegram token, local control token 후보를 redaction한다.
 - DB는 PostgreSQL + TimescaleDB를 기준으로 한다.
 - Redis와 BullMQ는 MVP 필수 구성에서 제외하고, 비동기 작업은 PostgreSQL `jobs` table 기반 queue로 시작한다.
 - 배포 기준은 Ubuntu 24.04 LTS + Docker Compose다.
 - 상세 결정은 [`design-docs/2026-05-13-mvp-runtime-architecture.md`](./design-docs/2026-05-13-mvp-runtime-architecture.md)를 따른다.
+
+## 로컬 시작
+
+의존성 설치:
+
+```sh
+corepack pnpm install --frozen-lockfile
+```
+
+타입 검사:
+
+```sh
+corepack pnpm typecheck
+```
+
+테스트:
+
+```sh
+corepack pnpm test
+```
 
 ## 환경 변수
 
@@ -57,13 +83,19 @@ GitHub 템플릿과 workflow 검증:
 ./scripts/verify github
 ```
 
+프로젝트 코드 검증:
+
+```sh
+./scripts/verify project
+```
+
 전체 검증:
 
 ```sh
 ./scripts/verify
 ```
 
-프로젝트별 test/lint/build가 생기면 `scripts/verify`에서 언어별 명령을 호출하거나, 각 언어의 native task runner가 `scripts/verify`를 호출하도록 연결한다.
+전체 검증은 문서, hook, GitHub 운영 파일, 프로젝트 `typecheck`, 프로젝트 `test`를 함께 실행한다.
 
 ## 작업 브랜치와 worktree
 
