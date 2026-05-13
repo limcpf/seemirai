@@ -25,6 +25,12 @@ describe("app logger", () => {
         control: {
           localToken: "control-token",
         },
+        secrets: {
+          upbit_access_key: "config-upbit-access-key",
+          upbit_secret_key: "config-upbit-secret-key",
+          telegram_bot_token: "config-telegram-token",
+          local_control_token: "config-control-token",
+        },
       },
       "redaction check",
     );
@@ -34,5 +40,9 @@ describe("app logger", () => {
     expect(output).not.toContain("upbit-secret-key");
     expect(output).not.toContain("telegram-token");
     expect(output).not.toContain("control-token");
+    expect(output).not.toContain("config-upbit-access-key");
+    expect(output).not.toContain("config-upbit-secret-key");
+    expect(output).not.toContain("config-telegram-token");
+    expect(output).not.toContain("config-control-token");
   });
 });

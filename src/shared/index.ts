@@ -1,5 +1,6 @@
 export {
   InvalidFinancialDecimalInputError,
+  NonFiniteFinancialDecimalError,
   parseFinancialDecimal,
   toStorageDecimalString,
 } from "./decimal.js";

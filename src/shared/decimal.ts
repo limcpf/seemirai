@@ -9,20 +9,31 @@ export class InvalidFinancialDecimalInputError extends Error {
   }
 }
 
+export class NonFiniteFinancialDecimalError extends Error {
+  public constructor() {
+    super("Financial decimal input must be finite");
+    this.name = "NonFiniteFinancialDecimalError";
+  }
+}
+
 export function parseFinancialDecimal(input: unknown): Decimal {
+  let value: Decimal;
+
   if (input instanceof Decimal) {
-    return input;
-  }
-
-  if (typeof input === "number") {
+    value = input;
+  } else if (typeof input === "number") {
     throw new InvalidFinancialDecimalInputError("number");
-  }
-
-  if (typeof input !== "string") {
+  } else if (typeof input !== "string") {
     throw new InvalidFinancialDecimalInputError(typeof input);
+  } else {
+    value = new Decimal(input);
   }
 
-  return new Decimal(input);
+  if (!value.isFinite()) {
+    throw new NonFiniteFinancialDecimalError();
+  }
+
+  return value;
 }
 
 export function toStorageDecimalString(input: FinancialDecimalInput): string {

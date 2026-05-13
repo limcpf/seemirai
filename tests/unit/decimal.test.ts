@@ -2,6 +2,7 @@ import { Decimal } from "decimal.js";
 import { describe, expect, it } from "vitest";
 import {
   InvalidFinancialDecimalInputError,
+  NonFiniteFinancialDecimalError,
   parseFinancialDecimal,
   toStorageDecimalString,
 } from "../../src/shared/decimal.js";
@@ -23,5 +24,13 @@ describe("financial decimal boundary", () => {
 
   it("rejects JavaScript number input at the finance boundary", () => {
     expect(() => parseFinancialDecimal(0.1)).toThrow(InvalidFinancialDecimalInputError);
+  });
+
+  it.each(["NaN", "Infinity", "-Infinity"])("rejects non-finite string input: %s", (input) => {
+    expect(() => parseFinancialDecimal(input)).toThrow(NonFiniteFinancialDecimalError);
+  });
+
+  it("rejects non-finite Decimal instances", () => {
+    expect(() => parseFinancialDecimal(new Decimal("NaN"))).toThrow(NonFiniteFinancialDecimalError);
   });
 });
