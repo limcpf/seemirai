@@ -3,6 +3,8 @@ import { fileURLToPath } from "node:url";
 import { z } from "zod";
 
 const localDatabaseConfigUrl = new URL("../../../config/local-db.json", import.meta.url);
+const defaultLocalDatabaseUrl =
+  "postgres://seemirai:seemirai_local_password@127.0.0.1:55432/seemirai_local";
 
 const PoolConfigSchema = z
   .object({
@@ -17,17 +19,21 @@ const PoolConfigSchema = z
     connectionTimeoutMillis: 5_000,
   });
 
-export const DatabaseConfigSchema = z
+const RawDatabaseConfigSchema = z
   .object({
-    connectionString: z
-      .string()
-      .min(1)
-      .refine(isPostgresConnectionString, "PostgreSQL connection string is required"),
+    connectionString: z.string().min(1).optional(),
     applicationName: z.string().min(1).default("seemirai-local"),
     ssl: z.boolean().default(false),
     pool: PoolConfigSchema,
   })
   .strict();
+
+export const DatabaseConfigSchema = RawDatabaseConfigSchema.extend({
+  connectionString: z
+    .string()
+    .min(1)
+    .refine(isPostgresConnectionString, "PostgreSQL connection string is required"),
+});
 
 export type DatabaseConfig = z.infer<typeof DatabaseConfigSchema>;
 
@@ -45,13 +51,62 @@ export function loadDatabaseConfig(
   input: unknown,
   env: NodeJS.ProcessEnv = process.env,
 ): DatabaseConfig {
-  const parsed = DatabaseConfigSchema.parse(input);
-  const connectionString = env.SEEMIRAI_DATABASE_URL ?? env.DATABASE_URL ?? parsed.connectionString;
+  const parsed = RawDatabaseConfigSchema.parse(input);
+  const connectionString =
+    env.SEEMIRAI_DATABASE_URL ??
+    env.DATABASE_URL ??
+    buildConnectionStringFromPostgresEnv(parsed.connectionString, env);
 
   return DatabaseConfigSchema.parse({
     ...parsed,
     connectionString,
   });
+}
+
+function buildConnectionStringFromPostgresEnv(
+  baseConnectionString: string | undefined,
+  env: NodeJS.ProcessEnv,
+): string {
+  const componentOverrides = {
+    host: env.SEEMIRAI_POSTGRES_HOST,
+    port: env.SEEMIRAI_POSTGRES_PORT,
+    user: env.SEEMIRAI_POSTGRES_USER,
+    password: env.SEEMIRAI_POSTGRES_PASSWORD,
+    database: env.SEEMIRAI_POSTGRES_DB,
+  };
+
+  const hasComponentOverride = Object.values(componentOverrides).some(
+    (value) => value !== undefined && value.length > 0,
+  );
+
+  if (!hasComponentOverride) {
+    return baseConnectionString ?? "";
+  }
+
+  const url = parsePostgresUrl(baseConnectionString) ?? new URL(defaultLocalDatabaseUrl);
+  url.hostname = componentOverrides.host ?? url.hostname;
+  url.port = componentOverrides.port ?? url.port;
+  url.username = componentOverrides.user ?? url.username;
+  url.password = componentOverrides.password ?? url.password;
+
+  if (componentOverrides.database !== undefined) {
+    url.pathname = `/${componentOverrides.database}`;
+  }
+
+  return url.toString();
+}
+
+function parsePostgresUrl(value: string | undefined): URL | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+
+  try {
+    const url = new URL(value);
+    return url.protocol === "postgres:" || url.protocol === "postgresql:" ? url : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 function isPostgresConnectionString(value: string): boolean {

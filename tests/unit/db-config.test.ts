@@ -32,6 +32,36 @@ describe("database config", () => {
     expect(config.connectionString).toBe("postgresql://override:local@127.0.0.1:55432/override");
   });
 
+  it("allows env-only database URL loading without a config file secret", () => {
+    const config = loadDatabaseConfig(
+      {},
+      {
+        SEEMIRAI_DATABASE_URL: "postgres://env:local@127.0.0.1:55432/env_only",
+      } as NodeJS.ProcessEnv,
+    );
+
+    expect(config.connectionString).toBe("postgres://env:local@127.0.0.1:55432/env_only");
+  });
+
+  it("applies SEEMIRAI_POSTGRES component overrides consistently with Docker Compose", () => {
+    const config = loadDatabaseConfig(
+      {
+        connectionString: "postgres://seemirai:local@127.0.0.1:55432/seemirai_local",
+      },
+      {
+        SEEMIRAI_POSTGRES_HOST: "127.0.0.1",
+        SEEMIRAI_POSTGRES_PORT: "55433",
+        SEEMIRAI_POSTGRES_USER: "custom_user",
+        SEEMIRAI_POSTGRES_PASSWORD: "custom_password",
+        SEEMIRAI_POSTGRES_DB: "custom_db",
+      } as NodeJS.ProcessEnv,
+    );
+
+    expect(config.connectionString).toBe(
+      "postgres://custom_user:custom_password@127.0.0.1:55433/custom_db",
+    );
+  });
+
   it("rejects non-postgres connection strings", () => {
     expect(() =>
       loadDatabaseConfig({
