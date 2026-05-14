@@ -15,11 +15,24 @@ run_github() {
   node "$ROOT/scripts/verify-github.mjs"
 }
 
+run_project() {
+  if command -v pnpm >/dev/null 2>&1; then
+    PNPM="pnpm"
+  else
+    PNPM="corepack pnpm"
+  fi
+
+  cd "$ROOT"
+  $PNPM typecheck
+  $PNPM test
+}
+
 case "${1:-all}" in
   all)
     run_docs
     run_hooks
     run_github
+    run_project
     ;;
   docs)
     run_docs
@@ -30,8 +43,11 @@ case "${1:-all}" in
   github)
     run_github
     ;;
+  project)
+    run_project
+    ;;
   *)
-    printf 'Usage: %s [all|docs|hooks|github]\n' "$0" >&2
+    printf 'Usage: %s [all|docs|hooks|github|project]\n' "$0" >&2
     exit 2
     ;;
 esac

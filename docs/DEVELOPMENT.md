@@ -7,20 +7,73 @@
 
 ## 보일러플레이트 런타임
 
-- 이 보일러플레이트는 프로젝트 언어를 강제하지 않는다.
-- Codex hook과 검증 스크립트 실행에는 Node.js 20 이상이 필요하다.
-- `package.json`, `pyproject.toml`, `Cargo.toml`, `go.mod` 같은 언어별 manifest는 실제 프로젝트가 필요할 때만 둔다.
-- 현재 검증 스크립트는 외부 npm 의존성 없이 Node.js 표준 라이브러리만 사용한다.
+- 제품 runtime과 검증 harness는 Node.js 24 LTS를 기준으로 한다.
+- `.nvmrc`는 `24`, `package.json`의 `engines.node`는 `>=24 <25`로 고정한다.
+- 패키지 매니저는 pnpm 10 계열을 사용하고 `pnpm-lock.yaml`을 커밋한다.
+- Corepack이 있는 환경에서는 `corepack pnpm ...` 형태로 pnpm을 실행할 수 있다.
 - 실제 프로젝트 의존성을 추가할 때는 `docs/SECURITY.md`의 dependency 승인 기준을 따른다.
+
+## M0 dependency 승인 기록
+
+M0 runtime foundation에서는 사용자 승인 하에 다음 package를 추가한다.
+
+| package | version range | 구분 | 목적 | 대안 검토 | 보안/라이선스 리스크 |
+| --- | --- | --- | --- | --- | --- |
+| `decimal.js` | `^10.4.3` | runtime | 금액, 수량, 가격, 수수료 계산의 Decimal 경계 | JavaScript `number`, `BigInt` scale integer | 널리 쓰이는 MIT package이며 금융 경계에서 `number` 입력과 non-finite 값을 테스트로 차단한다. |
+| `pino` | `^9.6.0` | runtime | JSON structured logging과 secret redaction | `console`, Winston | MIT package이며 secret path redaction 테스트를 둔다. |
+| `zod` | `^3.25.76` | runtime | config와 외부 입력 런타임 validation | 수동 validation, Valibot | MIT package이며 schema boundary에만 사용한다. |
+| `typescript` | `^5.9.0` | dev | strict typecheck | JavaScript only | Apache-2.0 package이며 build-time dependency다. |
+| `vitest` | `^3.2.0` | dev | unit test runner | Node built-in test runner | MIT package이며 test-only dependency다. |
+| `@types/node` | `^24.0.0` | dev | Node.js 24 type definition | 직접 ambient type 작성 | MIT package이며 type-only dependency다. |
+| `pnpm` | `10.0.0` | package manager | lockfile 재현성과 workspace 확장성 | npm, yarn | Corepack으로 고정하고 `pnpm-lock.yaml`을 커밋한다. |
+
+Lockfile 변경은 `pnpm-lock.yaml`에 기록한다. M0 범위에서는 위 dependency 외 추가 runtime dependency를 도입하지 않는다.
+
+## Codex 프로젝트 권한 설정
+
+`.codex/config.toml`은 이 저장소의 owner-operated local workflow를 기준으로 `approval_policy = "never"`와 `sandbox_mode = "danger-full-access"`를 사용한다. 이 설정은 사용자가 명시적으로 요청한 프로젝트 로컬 기본값이며, 무인 webhook runner나 외부 PR comment를 직접 shell command로 실행하는 환경에 복사하지 않는다.
+
+권한 완화에도 다음 가드레일은 유지한다.
+
+- PR comment, issue body, webhook payload는 계속 신뢰할 수 없는 외부 입력으로 취급한다.
+- destructive git 명령, PR merge, branch 삭제, force push는 hook과 운영 규칙에서 계속 차단한다.
+- secret 원문은 로그, 문서, prompt, PR body에 남기지 않는다.
+- 이 설정을 변경하면 `./scripts/verify hooks` 또는 `./scripts/verify`를 실행한다.
 
 ## Seemirai MVP 런타임
 
 - 제품 runtime은 Node.js 24 LTS와 TypeScript strict를 기준으로 한다.
 - 패키지 매니저는 pnpm을 사용하고 lockfile을 커밋한다.
+- TypeScript는 `strict`, `allowJs=false`, `noImplicitAny`, `exactOptionalPropertyTypes`를 켠다.
+- 테스트 runner는 Vitest를 사용한다.
+- 기본 설정은 `config/paper.json`에서 시작하고 Zod schema로 검증한다.
+- 기본 paper profile은 API key 없이 로딩되어야 하며 실거래, 출금, 거래소 간 차익거래, 선물, 시장가 주문은 모두 비활성이다.
+- 금액, 수량, 가격, 수수료 계산 경계는 Decimal 기반 유틸을 통해 문자열 또는 Decimal 입력만 허용한다.
+- logger는 Pino JSON log를 사용하고 Upbit key, Telegram token, local control token 후보를 redaction한다.
 - DB는 PostgreSQL + TimescaleDB를 기준으로 한다.
 - Redis와 BullMQ는 MVP 필수 구성에서 제외하고, 비동기 작업은 PostgreSQL `jobs` table 기반 queue로 시작한다.
 - 배포 기준은 Ubuntu 24.04 LTS + Docker Compose다.
 - 상세 결정은 [`design-docs/2026-05-13-mvp-runtime-architecture.md`](./design-docs/2026-05-13-mvp-runtime-architecture.md)를 따른다.
+
+## 로컬 시작
+
+의존성 설치:
+
+```sh
+corepack pnpm install --frozen-lockfile
+```
+
+타입 검사:
+
+```sh
+corepack pnpm typecheck
+```
+
+테스트:
+
+```sh
+corepack pnpm test
+```
 
 ## 환경 변수
 
@@ -57,13 +110,19 @@ GitHub 템플릿과 workflow 검증:
 ./scripts/verify github
 ```
 
+프로젝트 코드 검증:
+
+```sh
+./scripts/verify project
+```
+
 전체 검증:
 
 ```sh
 ./scripts/verify
 ```
 
-프로젝트별 test/lint/build가 생기면 `scripts/verify`에서 언어별 명령을 호출하거나, 각 언어의 native task runner가 `scripts/verify`를 호출하도록 연결한다.
+전체 검증은 문서, hook, GitHub 운영 파일, 프로젝트 `typecheck`, 프로젝트 `test`를 함께 실행한다.
 
 ## 작업 브랜치와 worktree
 

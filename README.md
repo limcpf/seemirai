@@ -2,7 +2,7 @@
 
 Seemirai는 암호화폐 자동매매에서 AI가 매수와 매도를 직접 지시하는 방식을 피하고, 수수료, 스프레드, 슬리피지, 펀딩비, 전송 비용을 먼저 차감한 뒤에도 기대값이 남는 거래만 통과시키는 비용 우선 거래 시스템이다.
 
-현재 저장소는 MVP 업무 명세와 요구사항 정리 단계다. 실행 가능한 거래 봇, 백테스트 엔진, 거래소 연동 코드는 아직 없다.
+현재 저장소는 MVP 업무 명세와 요구사항을 바탕으로 Node.js 24, pnpm, TypeScript strict 기반 런타임 skeleton을 시작한 단계다. 실행 가능한 거래 봇, 백테스트 엔진, 거래소 연동 코드는 아직 없다.
 
 ## 핵심 원칙
 
@@ -50,6 +50,17 @@ MVP에서 반드시 검증해야 하는 조건은 다음과 같다.
 - [기능 요구사항](./docs/FEATURE_REQUIREMENTS.md)
 - [Upbit KRW Paper Trading MVP 업무 명세](./docs/product-specs/upbit-krw-paper-trading-mvp.md)
 - [문서 시스템](./docs/README.md)
+
+## 로컬 개발
+
+```sh
+corepack pnpm install --frozen-lockfile
+corepack pnpm typecheck
+corepack pnpm test
+./scripts/verify
+```
+
+기본 paper profile은 `config/paper.json`에 있으며 API key 없이 로딩되어야 한다.
 
 ## 참고 출처
 

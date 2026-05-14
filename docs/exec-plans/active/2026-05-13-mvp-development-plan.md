@@ -99,17 +99,17 @@ ruleRegistry
 
 ### M0. 프로젝트 스캐폴딩
 
-- [ ] `package.json`, `.nvmrc`, `pnpm-lock.yaml`, `tsconfig.json`, `vitest.config.ts` 생성
-- [ ] TypeScript strict, `allowJs=false` 설정
-- [ ] 기본 폴더 구조 생성: `domain`, `application`, `infrastructure`, `interfaces`, `runtime`, `shared`
-- [ ] config validation, Decimal, Pino logger 기반 생성
-- [ ] live trading 기본 비활성 guard 추가
+- [x] `package.json`, `.nvmrc`, `pnpm-lock.yaml`, `tsconfig.json`, `vitest.config.ts` 생성
+- [x] TypeScript strict, `allowJs=false` 설정
+- [x] 기본 폴더 구조 생성: `domain`, `application`, `infrastructure`, `interfaces`, `runtime`, `shared`
+- [x] config validation, Decimal, Pino logger 기반 생성
+- [x] live trading 기본 비활성 guard 추가
 
 검증:
 
-- [ ] `pnpm typecheck`
-- [ ] `pnpm test`
-- [ ] 기본 config 로딩 실패/성공 테스트
+- [x] `pnpm typecheck`
+- [x] `pnpm test`
+- [x] 기본 config 로딩 실패/성공 테스트
 
 ### M1. DB와 migration 기반
 
@@ -236,6 +236,7 @@ ruleRegistry
 - 2026-05-13: 전략은 주문을 직접 내지 않고 `StrategyDecision` 또는 `OrderIntent` 후보만 만든다.
 - 2026-05-13: 매수/매도 기준은 `Rule` 조합으로 구성한다.
 - 2026-05-13: `CostModel`과 `RiskGate`는 모든 전략 공통 gate로 고정한다.
+- 2026-05-13: issue #1은 M0 foundation 범위로 `single PR mode`에서 진행한다. `package.json`, lockfile, TypeScript/Vitest 설정, config guard, verification harness가 서로 얽혀 있어 sub PR 분할보다 단일 PR 리뷰가 충돌 위험이 낮다.
 
 ## 남은 이슈
 
