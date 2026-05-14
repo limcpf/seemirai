@@ -62,6 +62,23 @@ describe("database config", () => {
     );
   });
 
+  it("treats blank component env values like missing Docker Compose defaults", () => {
+    const config = loadDatabaseConfig(
+      {
+        connectionString: "postgres://seemirai:local@127.0.0.1:55432/seemirai_local",
+      },
+      {
+        SEEMIRAI_DATABASE_URL: "",
+        SEEMIRAI_POSTGRES_PORT: "",
+        SEEMIRAI_POSTGRES_PASSWORD: "custom_password",
+      } as NodeJS.ProcessEnv,
+    );
+
+    expect(config.connectionString).toBe(
+      "postgres://seemirai:custom_password@127.0.0.1:55432/seemirai_local",
+    );
+  });
+
   it("rejects non-postgres connection strings", () => {
     expect(() =>
       loadDatabaseConfig({

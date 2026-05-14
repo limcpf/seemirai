@@ -53,8 +53,8 @@ export function loadDatabaseConfig(
 ): DatabaseConfig {
   const parsed = RawDatabaseConfigSchema.parse(input);
   const connectionString =
-    env.SEEMIRAI_DATABASE_URL ??
-    env.DATABASE_URL ??
+    nonEmptyEnvValue(env.SEEMIRAI_DATABASE_URL) ??
+    nonEmptyEnvValue(env.DATABASE_URL) ??
     buildConnectionStringFromPostgresEnv(parsed.connectionString, env);
 
   return DatabaseConfigSchema.parse({
@@ -68,15 +68,15 @@ function buildConnectionStringFromPostgresEnv(
   env: NodeJS.ProcessEnv,
 ): string {
   const componentOverrides = {
-    host: env.SEEMIRAI_POSTGRES_HOST,
-    port: env.SEEMIRAI_POSTGRES_PORT,
-    user: env.SEEMIRAI_POSTGRES_USER,
-    password: env.SEEMIRAI_POSTGRES_PASSWORD,
-    database: env.SEEMIRAI_POSTGRES_DB,
+    host: nonEmptyEnvValue(env.SEEMIRAI_POSTGRES_HOST),
+    port: nonEmptyEnvValue(env.SEEMIRAI_POSTGRES_PORT),
+    user: nonEmptyEnvValue(env.SEEMIRAI_POSTGRES_USER),
+    password: nonEmptyEnvValue(env.SEEMIRAI_POSTGRES_PASSWORD),
+    database: nonEmptyEnvValue(env.SEEMIRAI_POSTGRES_DB),
   };
 
   const hasComponentOverride = Object.values(componentOverrides).some(
-    (value) => value !== undefined && value.length > 0,
+    (value) => value !== undefined,
   );
 
   if (!hasComponentOverride) {
@@ -94,6 +94,10 @@ function buildConnectionStringFromPostgresEnv(
   }
 
   return url.toString();
+}
+
+function nonEmptyEnvValue(value: string | undefined): string | undefined {
+  return value !== undefined && value.length > 0 ? value : undefined;
 }
 
 function parsePostgresUrl(value: string | undefined): URL | undefined {
