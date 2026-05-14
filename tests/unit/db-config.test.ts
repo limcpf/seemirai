@@ -79,6 +79,60 @@ describe("database config", () => {
     );
   });
 
+  it("rejects invalid component port overrides", () => {
+    expect(() =>
+      loadDatabaseConfig(
+        {
+          connectionString: "postgres://seemirai:local@127.0.0.1:55432/seemirai_local",
+        },
+        {
+          SEEMIRAI_POSTGRES_PORT: "5543x",
+        } as NodeJS.ProcessEnv,
+      ),
+    ).toThrow("SEEMIRAI_POSTGRES_PORT");
+
+    expect(() =>
+      loadDatabaseConfig(
+        {
+          connectionString: "postgres://seemirai:local@127.0.0.1:55432/seemirai_local",
+        },
+        {
+          SEEMIRAI_POSTGRES_PORT: "99999",
+        } as NodeJS.ProcessEnv,
+      ),
+    ).toThrow("SEEMIRAI_POSTGRES_PORT");
+  });
+
+  it("rejects host component overrides that include a port", () => {
+    expect(() =>
+      loadDatabaseConfig(
+        {
+          connectionString: "postgres://seemirai:local@127.0.0.1:55432/seemirai_local",
+        },
+        {
+          SEEMIRAI_POSTGRES_HOST: "localhost:55433",
+        } as NodeJS.ProcessEnv,
+      ),
+    ).toThrow("SEEMIRAI_POSTGRES_HOST");
+  });
+
+  it("rejects incomplete postgres URLs", () => {
+    expect(() =>
+      loadDatabaseConfig({
+        connectionString: "postgres://localhost",
+      }),
+    ).toThrow();
+
+    expect(() =>
+      loadDatabaseConfig(
+        {},
+        {
+          SEEMIRAI_DATABASE_URL: "postgres://seemirai@localhost",
+        } as NodeJS.ProcessEnv,
+      ),
+    ).toThrow();
+  });
+
   it("rejects non-postgres connection strings", () => {
     expect(() =>
       loadDatabaseConfig({

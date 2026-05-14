@@ -32,7 +32,10 @@ export const DatabaseConfigSchema = RawDatabaseConfigSchema.extend({
   connectionString: z
     .string()
     .min(1)
-    .refine(isPostgresConnectionString, "PostgreSQL connection string is required"),
+    .refine(
+      isCompletePostgresConnectionString,
+      "Complete PostgreSQL connection string with host, user, and database is required",
+    ),
 });
 
 export type DatabaseConfig = z.infer<typeof DatabaseConfigSchema>;
@@ -68,8 +71,8 @@ function buildConnectionStringFromPostgresEnv(
   env: NodeJS.ProcessEnv,
 ): string {
   const componentOverrides = {
-    host: nonEmptyEnvValue(env.SEEMIRAI_POSTGRES_HOST),
-    port: nonEmptyEnvValue(env.SEEMIRAI_POSTGRES_PORT),
+    host: parsePostgresHostComponent(nonEmptyEnvValue(env.SEEMIRAI_POSTGRES_HOST)),
+    port: parsePostgresPortComponent(nonEmptyEnvValue(env.SEEMIRAI_POSTGRES_PORT)),
     user: nonEmptyEnvValue(env.SEEMIRAI_POSTGRES_USER),
     password: nonEmptyEnvValue(env.SEEMIRAI_POSTGRES_PASSWORD),
     database: nonEmptyEnvValue(env.SEEMIRAI_POSTGRES_DB),
@@ -100,6 +103,40 @@ function nonEmptyEnvValue(value: string | undefined): string | undefined {
   return value !== undefined && value.length > 0 ? value : undefined;
 }
 
+function parsePostgresHostComponent(value: string | undefined): string | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+
+  try {
+    const url = new URL(`postgres://${value}:5432/seemirai`);
+    if (url.port !== "5432") {
+      throw new Error("host must not include a port");
+    }
+
+    return url.hostname;
+  } catch {
+    throw new Error("SEEMIRAI_POSTGRES_HOST must be a host name without a port");
+  }
+}
+
+function parsePostgresPortComponent(value: string | undefined): string | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+
+  if (!/^\d+$/u.test(value)) {
+    throw new Error("SEEMIRAI_POSTGRES_PORT must be an integer between 1 and 65535");
+  }
+
+  const port = Number(value);
+  if (!Number.isSafeInteger(port) || port < 1 || port > 65_535) {
+    throw new Error("SEEMIRAI_POSTGRES_PORT must be an integer between 1 and 65535");
+  }
+
+  return String(port);
+}
+
 function parsePostgresUrl(value: string | undefined): URL | undefined {
   if (value === undefined) {
     return undefined;
@@ -113,11 +150,12 @@ function parsePostgresUrl(value: string | undefined): URL | undefined {
   }
 }
 
-function isPostgresConnectionString(value: string): boolean {
-  try {
-    const url = new URL(value);
-    return url.protocol === "postgres:" || url.protocol === "postgresql:";
-  } catch {
+function isCompletePostgresConnectionString(value: string): boolean {
+  const url = parsePostgresUrl(value);
+  if (url === undefined) {
     return false;
   }
+
+  const database = decodeURIComponent(url.pathname).replace(/^\/+/u, "");
+  return url.hostname.length > 0 && url.username.length > 0 && database.length > 0;
 }
