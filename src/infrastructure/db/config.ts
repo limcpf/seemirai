@@ -40,14 +40,19 @@ export const DatabaseConfigSchema = RawDatabaseConfigSchema.extend({
 
 export type DatabaseConfig = z.infer<typeof DatabaseConfigSchema>;
 
-export async function loadLocalDatabaseConfig(): Promise<DatabaseConfig> {
-  return loadDatabaseConfigFile(fileURLToPath(localDatabaseConfigUrl));
+export async function loadLocalDatabaseConfig(
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<DatabaseConfig> {
+  return loadDatabaseConfigFile(fileURLToPath(localDatabaseConfigUrl), env);
 }
 
-export async function loadDatabaseConfigFile(filePath: string): Promise<DatabaseConfig> {
+export async function loadDatabaseConfigFile(
+  filePath: string,
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<DatabaseConfig> {
   const raw = await readFile(filePath, "utf8");
   const parsed: unknown = JSON.parse(raw);
-  return loadDatabaseConfig(parsed);
+  return loadDatabaseConfig(parsed, env);
 }
 
 export function loadDatabaseConfig(
@@ -86,7 +91,10 @@ function buildConnectionStringFromPostgresEnv(
     return baseConnectionString ?? "";
   }
 
-  const url = parsePostgresUrl(baseConnectionString) ?? new URL(defaultLocalDatabaseUrl);
+  const url =
+    baseConnectionString === undefined
+      ? new URL(defaultLocalDatabaseUrl)
+      : parseRequiredPostgresUrl(baseConnectionString);
   url.hostname = componentOverrides.host ?? url.hostname;
   url.port = componentOverrides.port ?? url.port;
   url.username = componentOverrides.user ?? url.username;
@@ -106,6 +114,10 @@ function nonEmptyEnvValue(value: string | undefined): string | undefined {
 function parsePostgresHostComponent(value: string | undefined): string | undefined {
   if (value === undefined) {
     return undefined;
+  }
+
+  if (/[@/?#\\]/u.test(value)) {
+    throw new Error("SEEMIRAI_POSTGRES_HOST must be a host name without URL syntax");
   }
 
   try {
@@ -135,6 +147,15 @@ function parsePostgresPortComponent(value: string | undefined): string | undefin
   }
 
   return String(port);
+}
+
+function parseRequiredPostgresUrl(value: string): URL {
+  const url = parsePostgresUrl(value);
+  if (url === undefined) {
+    throw new Error("connectionString must be a valid PostgreSQL URL");
+  }
+
+  return url;
 }
 
 function parsePostgresUrl(value: string | undefined): URL | undefined {

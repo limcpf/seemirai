@@ -93,7 +93,7 @@ corepack pnpm test
 docker compose up -d postgres
 ```
 
-로컬 DB 접속 설정은 paper trading runtime profile과 분리해 `config/local-db.json`에 둔다. 기본 host port는 `127.0.0.1:55432`이며, 필요한 경우 `SEEMIRAI_DATABASE_URL` 전체 URL 또는 `.env`의 `SEEMIRAI_POSTGRES_HOST`, `SEEMIRAI_POSTGRES_PORT`, `SEEMIRAI_POSTGRES_USER`, `SEEMIRAI_POSTGRES_PASSWORD`, `SEEMIRAI_POSTGRES_DB` 값으로 덮어쓴다. 전체 URL이 설정되어 있으면 컴포넌트 env보다 우선한다.
+로컬 DB 접속 설정은 paper trading runtime profile과 분리해 `config/local-db.json`에 둔다. 기본 host port는 `127.0.0.1:55432`이며, 필요한 경우 프로세스 환경 변수의 `SEEMIRAI_DATABASE_URL` 전체 URL 또는 `SEEMIRAI_POSTGRES_HOST`, `SEEMIRAI_POSTGRES_PORT`, `SEEMIRAI_POSTGRES_USER`, `SEEMIRAI_POSTGRES_PASSWORD`, `SEEMIRAI_POSTGRES_DB` 값으로 덮어쓴다. 전체 URL이 설정되어 있으면 컴포넌트 env보다 우선한다. Docker Compose는 `.env` 파일을 읽지만 Node 앱은 `.env` 파일을 자동 로드하지 않으므로 앱 실행 시에는 필요한 값을 shell, process manager, CI env로 주입한다.
 
 ## 환경 변수
 

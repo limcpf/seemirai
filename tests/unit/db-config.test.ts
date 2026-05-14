@@ -7,9 +7,11 @@ import {
   loadLocalDatabaseConfig,
 } from "../../src/infrastructure/db/index.js";
 
+const emptyEnv = {} as NodeJS.ProcessEnv;
+
 describe("database config", () => {
   it("loads the local development database config separately from the paper profile", async () => {
-    const config = await loadLocalDatabaseConfig();
+    const config = await loadLocalDatabaseConfig(emptyEnv);
 
     expect(config.connectionString).toBe(
       "postgres://seemirai:seemirai_local_password@127.0.0.1:55432/seemirai_local",
@@ -116,11 +118,40 @@ describe("database config", () => {
     ).toThrow("SEEMIRAI_POSTGRES_HOST");
   });
 
+  it("rejects host component overrides that include URL userinfo", () => {
+    expect(() =>
+      loadDatabaseConfig(
+        {
+          connectionString: "postgres://seemirai:local@127.0.0.1:55432/seemirai_local",
+        },
+        {
+          SEEMIRAI_POSTGRES_HOST: "user:pass@db.example.com",
+        } as NodeJS.ProcessEnv,
+      ),
+    ).toThrow("SEEMIRAI_POSTGRES_HOST");
+  });
+
+  it("rejects invalid base URLs even when component overrides are present", () => {
+    expect(() =>
+      loadDatabaseConfig(
+        {
+          connectionString: "mysql://seemirai:local@127.0.0.1:3306/seemirai_local",
+        },
+        {
+          SEEMIRAI_POSTGRES_PASSWORD: "custom_password",
+        } as NodeJS.ProcessEnv,
+      ),
+    ).toThrow("connectionString");
+  });
+
   it("rejects incomplete postgres URLs", () => {
     expect(() =>
-      loadDatabaseConfig({
-        connectionString: "postgres://localhost",
-      }),
+      loadDatabaseConfig(
+        {
+          connectionString: "postgres://localhost",
+        },
+        emptyEnv,
+      ),
     ).toThrow();
 
     expect(() =>
@@ -135,16 +166,22 @@ describe("database config", () => {
 
   it("rejects non-postgres connection strings", () => {
     expect(() =>
-      loadDatabaseConfig({
-        connectionString: "mysql://seemirai:local@127.0.0.1:3306/seemirai_local",
-      }),
+      loadDatabaseConfig(
+        {
+          connectionString: "mysql://seemirai:local@127.0.0.1:3306/seemirai_local",
+        },
+        emptyEnv,
+      ),
     ).toThrow();
   });
 
   it("creates a Kysely database boundary without connecting eagerly", async () => {
-    const config = loadDatabaseConfig({
-      connectionString: "postgres://seemirai:local@127.0.0.1:55432/seemirai_local",
-    });
+    const config = loadDatabaseConfig(
+      {
+        connectionString: "postgres://seemirai:local@127.0.0.1:55432/seemirai_local",
+      },
+      emptyEnv,
+    );
 
     const pool = createPostgresPool(config);
     const database = createDatabase(pool);
