@@ -14,6 +14,7 @@ CREATE TABLE IF NOT EXISTS orders (
   created_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now(),
   CHECK (btrim(market) <> ''),
+  CHECK (requested_price IS NULL OR requested_price > 0),
   CHECK (requested_quantity > 0),
   CHECK (requested_notional > 0)
 );

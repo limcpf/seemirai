@@ -52,6 +52,19 @@ describe("migration runner", () => {
     expect(migrationSql).toContain("CHECK (market IS NULL OR btrim(market) <> '')");
   });
 
+  it("keeps database sanity checks for canonical trading metrics", async () => {
+    const migrations = await loadMigrationFiles(defaultMigrationsDirectory);
+    const migrationSql = migrations.map((migration) => migration.sql).join("\n");
+
+    expect(migrationSql).toContain("CHECK (requested_price IS NULL OR requested_price > 0)");
+    expect(migrationSql).toContain("CHECK (websocket_lag_ms IS NULL OR websocket_lag_ms >= 0)");
+    expect(migrationSql).toContain("CHECK (high_price >= open_price)");
+    expect(migrationSql).toContain("CHECK (high_price >= close_price)");
+    expect(migrationSql).toContain("CHECK (low_price <= open_price)");
+    expect(migrationSql).toContain("CHECK (low_price <= close_price)");
+    expect(migrationSql).toContain("CHECK (drawdown_bps >= 0)");
+  });
+
   it("fails when an applied migration checksum changed on disk", async () => {
     const directory = await createTempMigrationDirectory({
       "000001_first.sql": "SELECT 1;\n",
