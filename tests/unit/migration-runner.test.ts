@@ -58,10 +58,21 @@ describe("migration runner", () => {
 
     expect(migrationSql).toContain("CHECK (requested_price IS NULL OR requested_price > 0)");
     expect(migrationSql).toContain("CHECK (websocket_lag_ms IS NULL OR websocket_lag_ms >= 0)");
+    expect(migrationSql).toContain("CHECK (quantity >= 0)");
+    expect(migrationSql).toContain("CHECK (average_entry_price >= 0)");
+    expect(migrationSql).toContain("CHECK (bid_depth_1 >= 0)");
+    expect(migrationSql).toContain("CHECK (ask_depth_1 >= 0)");
+    expect(migrationSql).toContain("CHECK (bid_depth_5 >= 0)");
+    expect(migrationSql).toContain("CHECK (ask_depth_5 >= 0)");
+    expect(migrationSql).toContain("CHECK (bid_depth_15 >= 0)");
+    expect(migrationSql).toContain("CHECK (ask_depth_15 >= 0)");
+    expect(migrationSql).toContain("CHECK (reconnect_count >= 0)");
     expect(migrationSql).toContain("CHECK (high_price >= open_price)");
     expect(migrationSql).toContain("CHECK (high_price >= close_price)");
     expect(migrationSql).toContain("CHECK (low_price <= open_price)");
     expect(migrationSql).toContain("CHECK (low_price <= close_price)");
+    expect(migrationSql).toContain("CHECK (trade_count >= 0)");
+    expect(migrationSql).toContain("CHECK (equity >= 0)");
     expect(migrationSql).toContain("CHECK (drawdown_bps >= 0)");
   });
 

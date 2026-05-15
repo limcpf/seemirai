@@ -66,6 +66,8 @@ CREATE TABLE IF NOT EXISTS positions (
   unrealized_pnl numeric(36, 8) NOT NULL DEFAULT 0,
   updated_at timestamptz NOT NULL DEFAULT now(),
   CHECK (btrim(market) <> ''),
+  CHECK (quantity >= 0),
+  CHECK (average_entry_price >= 0),
   UNIQUE (exchange, market, strategy_id)
 );
 

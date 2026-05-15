@@ -39,7 +39,14 @@ CREATE TABLE IF NOT EXISTS orderbook_metrics (
   CHECK (best_ask_price > 0),
   CHECK (best_ask_price >= best_bid_price),
   CHECK (spread_bps >= 0),
+  CHECK (bid_depth_1 >= 0),
+  CHECK (ask_depth_1 >= 0),
+  CHECK (bid_depth_5 >= 0),
+  CHECK (ask_depth_5 >= 0),
+  CHECK (bid_depth_15 >= 0),
+  CHECK (ask_depth_15 >= 0),
   CHECK (websocket_lag_ms IS NULL OR websocket_lag_ms >= 0),
+  CHECK (reconnect_count >= 0),
   PRIMARY KEY (exchange, market, bucket_at)
 );
 
@@ -80,6 +87,7 @@ CREATE TABLE IF NOT EXISTS candles (
   CHECK (low_price <= open_price),
   CHECK (low_price <= close_price),
   CHECK (volume >= 0),
+  CHECK (trade_count >= 0),
   PRIMARY KEY (exchange, market, timeframe, bucket_at)
 );
 
@@ -94,6 +102,7 @@ CREATE TABLE IF NOT EXISTS pnl_snapshots (
   unrealized_pnl numeric(36, 8) NOT NULL,
   drawdown_bps numeric(18, 6) NOT NULL,
   payload_json jsonb NOT NULL DEFAULT '{}'::jsonb,
+  CHECK (equity >= 0),
   CHECK (drawdown_bps >= 0),
   CHECK (market IS NULL OR btrim(market) <> '')
 );
