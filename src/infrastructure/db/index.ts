@@ -21,6 +21,7 @@ export type {
   AppliedMigrationRecord,
   MigrationFile,
   MigrationRunResult,
+  SqlConnectionProvider,
   SqlExecutor,
 } from "./migrations.js";
 export type { DatabaseSchema } from "./schema.js";

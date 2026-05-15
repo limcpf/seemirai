@@ -80,6 +80,21 @@ describe("migration runner", () => {
     expect(secondRun.skipped.map((migration) => migration.version)).toEqual([1, 2]);
     expect(executor.executedMigrationSql).toEqual(["SELECT 1;\n", "SELECT 2;\n"]);
   });
+
+  it("uses one checked-out client when a connection provider is passed", async () => {
+    const directory = await createTempMigrationDirectory({
+      "000001_first.sql": "SELECT 1;\n",
+    });
+    const client = new FakeMigrationExecutor();
+    const provider = new FakeMigrationConnectionProvider(client);
+
+    const result = await applyMigrations(provider, { migrationsDirectory: directory });
+
+    expect(result.applied.map((migration) => migration.version)).toEqual([1]);
+    expect(provider.connectCount).toBe(1);
+    expect(provider.releaseCount).toBe(1);
+    expect(client.executedMigrationSql).toEqual(["SELECT 1;\n"]);
+  });
 });
 
 async function createTempMigrationDirectory(files: Record<string, string>): Promise<string> {
@@ -136,6 +151,27 @@ class FakeMigrationExecutor implements SqlExecutor {
 
     this.executedMigrationSql.push(text);
     return rows([]);
+  }
+}
+
+class FakeMigrationConnectionProvider implements SqlExecutor {
+  public connectCount = 0;
+  public releaseCount = 0;
+
+  public constructor(private readonly client: FakeMigrationExecutor) {}
+
+  public async connect(): Promise<SqlExecutor & { release(): void }> {
+    this.connectCount += 1;
+    return {
+      query: this.client.query.bind(this.client),
+      release: () => {
+        this.releaseCount += 1;
+      },
+    };
+  }
+
+  public async query<T = unknown>(): Promise<{ rows: T[] }> {
+    throw new Error("pool-level query must not be used for migrations");
   }
 }
 

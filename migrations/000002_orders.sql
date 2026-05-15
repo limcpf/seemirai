@@ -77,9 +77,16 @@ CREATE TABLE IF NOT EXISTS policy_snapshots (
   payload_json jsonb NOT NULL,
   effective_at timestamptz NOT NULL,
   captured_at timestamptz NOT NULL DEFAULT now(),
-  CHECK (market IS NULL OR market ~ '^KRW-[A-Z0-9]+$'),
-  UNIQUE (exchange, market, source_profile, checksum)
+  CHECK (market IS NULL OR market ~ '^KRW-[A-Z0-9]+$')
 );
+
+CREATE UNIQUE INDEX IF NOT EXISTS policy_snapshots_market_checksum_uidx
+  ON policy_snapshots (exchange, market, source_profile, checksum)
+  WHERE market IS NOT NULL;
+
+CREATE UNIQUE INDEX IF NOT EXISTS policy_snapshots_global_checksum_uidx
+  ON policy_snapshots (exchange, source_profile, checksum)
+  WHERE market IS NULL;
 
 CREATE INDEX IF NOT EXISTS policy_snapshots_market_effective_at_idx
   ON policy_snapshots (exchange, market, effective_at DESC);

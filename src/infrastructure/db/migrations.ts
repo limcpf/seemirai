@@ -16,6 +16,10 @@ export interface SqlExecutor {
   ): Promise<{ rows: T[] }>;
 }
 
+export interface SqlConnectionProvider extends SqlExecutor {
+  connect(): Promise<SqlExecutor & { release(): void }>;
+}
+
 export interface MigrationFile {
   version: number;
   filename: string;
@@ -121,8 +125,21 @@ export function createMigrationPlan(
 }
 
 export async function applyMigrations(
-  executor: SqlExecutor,
+  executor: SqlExecutor | SqlConnectionProvider,
   options: { migrationsDirectory?: string } = {},
+): Promise<MigrationRunResult> {
+  const connection = await acquireMigrationConnection(executor);
+
+  try {
+    return await applyMigrationsWithExecutor(connection.executor, options);
+  } finally {
+    connection.release();
+  }
+}
+
+async function applyMigrationsWithExecutor(
+  executor: SqlExecutor,
+  options: { migrationsDirectory?: string },
 ): Promise<MigrationRunResult> {
   const migrations = await loadMigrationFiles(options.migrationsDirectory);
   await ensureSchemaMigrationsTable(executor);
@@ -142,6 +159,31 @@ export async function applyMigrations(
     applied,
     skipped: migrations.filter((migration) => !applied.includes(migration)),
   };
+}
+
+async function acquireMigrationConnection(
+  executor: SqlExecutor | SqlConnectionProvider,
+): Promise<{ executor: SqlExecutor; release(): void }> {
+  if (!isSqlConnectionProvider(executor)) {
+    return {
+      executor,
+      release() {},
+    };
+  }
+
+  const client = await executor.connect();
+  return {
+    executor: client,
+    release() {
+      client.release();
+    },
+  };
+}
+
+function isSqlConnectionProvider(
+  executor: SqlExecutor | SqlConnectionProvider,
+): executor is SqlConnectionProvider {
+  return "connect" in executor && typeof executor.connect === "function";
 }
 
 async function applyMigration(executor: SqlExecutor, migration: MigrationFile): Promise<boolean> {
