@@ -98,7 +98,7 @@ docker compose up -d postgres
 DB migration integration test는 기본 test run에서 skip된다. 로컬 PostgreSQL + TimescaleDB가 준비된 환경에서 실제 migration 적용을 확인할 때만 다음 명령을 사용한다.
 
 ```sh
-SEEMIRAI_RUN_DB_INTEGRATION=1 corepack pnpm test -- --run tests/integration
+SEEMIRAI_RUN_DB_INTEGRATION=1 corepack pnpm exec vitest run tests/integration
 ```
 
 ## 환경 변수
