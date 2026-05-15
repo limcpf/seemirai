@@ -13,7 +13,7 @@ CREATE TABLE IF NOT EXISTS orders (
   reason_json jsonb NOT NULL DEFAULT '{}'::jsonb,
   created_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now(),
-  CHECK (market ~ '^KRW-[A-Z0-9]+$'),
+  CHECK (btrim(market) <> ''),
   CHECK (requested_quantity > 0),
   CHECK (requested_notional > 0)
 );
@@ -45,7 +45,7 @@ CREATE TABLE IF NOT EXISTS fills (
   liquidity text NOT NULL CHECK (liquidity IN ('MAKER', 'TAKER', 'SIMULATED')),
   filled_at timestamptz NOT NULL,
   created_at timestamptz NOT NULL DEFAULT now(),
-  CHECK (market ~ '^KRW-[A-Z0-9]+$'),
+  CHECK (btrim(market) <> ''),
   CHECK (price > 0),
   CHECK (quantity > 0),
   CHECK (fee >= 0)
@@ -64,7 +64,7 @@ CREATE TABLE IF NOT EXISTS positions (
   realized_pnl numeric(36, 8) NOT NULL DEFAULT 0,
   unrealized_pnl numeric(36, 8) NOT NULL DEFAULT 0,
   updated_at timestamptz NOT NULL DEFAULT now(),
-  CHECK (market ~ '^KRW-[A-Z0-9]+$'),
+  CHECK (btrim(market) <> ''),
   UNIQUE (exchange, market, strategy_id)
 );
 
@@ -77,7 +77,7 @@ CREATE TABLE IF NOT EXISTS policy_snapshots (
   payload_json jsonb NOT NULL,
   effective_at timestamptz NOT NULL,
   captured_at timestamptz NOT NULL DEFAULT now(),
-  CHECK (market IS NULL OR market ~ '^KRW-[A-Z0-9]+$')
+  CHECK (market IS NULL OR btrim(market) <> '')
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS policy_snapshots_market_checksum_uidx

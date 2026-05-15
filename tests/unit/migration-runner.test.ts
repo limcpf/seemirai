@@ -7,6 +7,7 @@ import {
   MigrationChecksumMismatchError,
   applyMigrations,
   createMigrationPlan,
+  defaultMigrationsDirectory,
   loadMigrationFiles,
 } from "../../src/infrastructure/db/index.js";
 import type { AppliedMigrationRecord, SqlExecutor } from "../../src/infrastructure/db/index.js";
@@ -40,6 +41,15 @@ describe("migration runner", () => {
     });
 
     await expect(loadMigrationFiles(directory)).rejects.toThrow(DuplicateMigrationVersionError);
+  });
+
+  it("keeps database market checks exchange-agnostic", async () => {
+    const migrations = await loadMigrationFiles(defaultMigrationsDirectory);
+    const migrationSql = migrations.map((migration) => migration.sql).join("\n");
+
+    expect(migrationSql).not.toContain("market ~ '^KRW-");
+    expect(migrationSql).toContain("CHECK (btrim(market) <> '')");
+    expect(migrationSql).toContain("CHECK (market IS NULL OR btrim(market) <> '')");
   });
 
   it("fails when an applied migration checksum changed on disk", async () => {

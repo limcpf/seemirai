@@ -25,7 +25,7 @@ CREATE TABLE IF NOT EXISTS risk_events (
   action text NOT NULL,
   payload_json jsonb NOT NULL DEFAULT '{}'::jsonb,
   occurred_at timestamptz NOT NULL DEFAULT now(),
-  CHECK (market IS NULL OR market ~ '^KRW-[A-Z0-9]+$')
+  CHECK (market IS NULL OR btrim(market) <> '')
 );
 
 CREATE INDEX IF NOT EXISTS risk_events_type_occurred_at_idx

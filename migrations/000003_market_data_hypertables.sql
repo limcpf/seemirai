@@ -8,7 +8,7 @@ CREATE TABLE IF NOT EXISTS trades (
   exchange_timestamp timestamptz NOT NULL,
   received_at timestamptz NOT NULL,
   raw_payload_json jsonb NOT NULL DEFAULT '{}'::jsonb,
-  CHECK (market ~ '^KRW-[A-Z0-9]+$'),
+  CHECK (btrim(market) <> ''),
   CHECK (price > 0),
   CHECK (volume > 0),
   PRIMARY KEY (exchange, market, trade_id, exchange_timestamp)
@@ -34,7 +34,7 @@ CREATE TABLE IF NOT EXISTS orderbook_metrics (
   websocket_lag_ms integer,
   reconnect_count integer NOT NULL DEFAULT 0,
   created_at timestamptz NOT NULL DEFAULT now(),
-  CHECK (market ~ '^KRW-[A-Z0-9]+$'),
+  CHECK (btrim(market) <> ''),
   CHECK (best_bid_price > 0),
   CHECK (best_ask_price > 0),
   CHECK (best_ask_price >= best_bid_price),
@@ -51,7 +51,7 @@ CREATE TABLE IF NOT EXISTS orderbook_snapshots (
   bids_json jsonb NOT NULL,
   asks_json jsonb NOT NULL,
   raw_payload_json jsonb NOT NULL DEFAULT '{}'::jsonb,
-  CHECK (market ~ '^KRW-[A-Z0-9]+$'),
+  CHECK (btrim(market) <> ''),
   PRIMARY KEY (exchange, market, captured_at)
 );
 
@@ -68,7 +68,7 @@ CREATE TABLE IF NOT EXISTS candles (
   close_price numeric(36, 18) NOT NULL,
   volume numeric(36, 18) NOT NULL,
   trade_count integer NOT NULL DEFAULT 0,
-  CHECK (market ~ '^KRW-[A-Z0-9]+$'),
+  CHECK (btrim(market) <> ''),
   CHECK (open_price > 0),
   CHECK (high_price > 0),
   CHECK (low_price > 0),
@@ -89,7 +89,7 @@ CREATE TABLE IF NOT EXISTS pnl_snapshots (
   unrealized_pnl numeric(36, 8) NOT NULL,
   drawdown_bps numeric(18, 6) NOT NULL,
   payload_json jsonb NOT NULL DEFAULT '{}'::jsonb,
-  CHECK (market IS NULL OR market ~ '^KRW-[A-Z0-9]+$')
+  CHECK (market IS NULL OR btrim(market) <> '')
 );
 
 CREATE INDEX IF NOT EXISTS pnl_snapshots_strategy_captured_at_idx
@@ -105,7 +105,7 @@ CREATE TABLE IF NOT EXISTS strategy_signals (
   expected_return_bps numeric(18, 6),
   payload_json jsonb NOT NULL DEFAULT '{}'::jsonb,
   generated_at timestamptz NOT NULL,
-  CHECK (market ~ '^KRW-[A-Z0-9]+$'),
+  CHECK (btrim(market) <> ''),
   PRIMARY KEY (strategy_id, signal_id, generated_at)
 );
 
