@@ -29,6 +29,18 @@ M0 runtime foundation에서는 사용자 승인 하에 다음 package를 추가�
 
 Lockfile 변경은 `pnpm-lock.yaml`에 기록한다. M0 범위에서는 위 dependency 외 추가 runtime dependency를 도입하지 않는다.
 
+## M1 dependency 승인 기록
+
+issue #3의 DB foundation 범위에서는 사용자 issue 본문에 명시된 다음 package를 추가한다.
+
+| package | version range | 구분 | 목적 | 대안 검토 | 보안/라이선스 리스크 |
+| --- | --- | --- | --- | --- | --- |
+| `kysely` | `^0.29.0` | runtime | PostgreSQL query builder와 type-safe DB boundary | raw `pg` query만 사용, Prisma/TypeORM | MIT package이며 ORM schema ownership을 만들지 않고 query builder로만 사용한다. |
+| `pg` | `^8.20.0` | runtime | node-postgres Pool과 PostgreSQL wire protocol 연결 | Kysely 내장 dialect 없음, postgres.js | MIT package이며 connection string은 local config 또는 env로 주입하고 secret 원문 로그를 남기지 않는다. |
+| `@types/pg` | `^8.20.0` | dev | `pg` TypeScript type definition | 직접 ambient type 작성 | MIT package이며 type-only dependency다. |
+
+Lockfile 변경은 `pnpm-lock.yaml`에 기록한다. M1 DB foundation 범위에서는 위 dependency 외 추가 package를 도입하지 않는다.
+
 ## Codex 프로젝트 권한 설정
 
 `.codex/config.toml`은 이 저장소의 owner-operated local workflow를 기준으로 `approval_policy = "never"`와 `sandbox_mode = "danger-full-access"`를 사용한다. 이 설정은 사용자가 명시적으로 요청한 프로젝트 로컬 기본값이며, 무인 webhook runner나 외부 PR comment를 직접 shell command로 실행하는 환경에 복사하지 않는다.
@@ -74,6 +86,14 @@ corepack pnpm typecheck
 ```sh
 corepack pnpm test
 ```
+
+로컬 PostgreSQL + TimescaleDB 기동:
+
+```sh
+docker compose up -d postgres
+```
+
+로컬 DB 접속 설정은 paper trading runtime profile과 분리해 `config/local-db.json`에 둔다. 기본 host port는 `127.0.0.1:55432`이며, 필요한 경우 프로세스 환경 변수의 `SEEMIRAI_DATABASE_URL` 전체 URL 또는 `SEEMIRAI_POSTGRES_HOST`, `SEEMIRAI_POSTGRES_PORT`, `SEEMIRAI_POSTGRES_USER`, `SEEMIRAI_POSTGRES_PASSWORD`, `SEEMIRAI_POSTGRES_DB` 값으로 덮어쓴다. 전체 URL이 설정되어 있으면 컴포넌트 env보다 우선한다. Docker Compose는 `.env` 파일을 읽지만 Node 앱은 `.env` 파일을 자동 로드하지 않으므로 앱 실행 시에는 필요한 값을 shell, process manager, CI env로 주입한다.
 
 ## 환경 변수
 
