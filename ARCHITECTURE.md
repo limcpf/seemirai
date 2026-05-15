@@ -2,7 +2,7 @@
 
 Seemirai는 24/7 암호화폐 시장에서 비용 차감 후 기대값이 남는 거래만 실행 후보로 통과시키는 자동매매 시스템이다. 시스템의 중심은 예측 모델이 아니라 비용, 유동성, 리스크, 실행 품질을 일관되게 차감하고 차단하는 거래 게이트다.
 
-상세 런타임 결정은 [`docs/design-docs/2026-05-13-mvp-runtime-architecture.md`](./docs/design-docs/2026-05-13-mvp-runtime-architecture.md)를 따른다.
+상세 런타임 결정은 [`docs/design-docs/2026-05-13-mvp-runtime-architecture.md`](./docs/design-docs/2026-05-13-mvp-runtime-architecture.md)를 따른다. M1 DB table 역할과 관계는 [`docs/design-docs/2026-05-15-m1-database-schema.md`](./docs/design-docs/2026-05-15-m1-database-schema.md)를 따른다.
 
 ## MVP 확정 기준
 

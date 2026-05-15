@@ -11,6 +11,7 @@
 - Upbit KRW paper trading MVP 업무 명세: [`product-specs/upbit-krw-paper-trading-mvp.md`](./product-specs/upbit-krw-paper-trading-mvp.md)
 - 로컬 개발 환경과 검증 절차: [`DEVELOPMENT.md`](./DEVELOPMENT.md)
 - 구조 변경, 경계 변경, 새 규칙 도입: [`DESIGN.md`](./DESIGN.md), [`design-docs/index.md`](./design-docs/index.md)
+- DB 테이블 역할과 관계: [`design-docs/2026-05-15-m1-database-schema.md`](./design-docs/2026-05-15-m1-database-schema.md)
 - 장시간 작업, 중단 후 재개 필요: [`PLANS.md`](./PLANS.md), [`exec-plans/active/README.md`](./exec-plans/active/README.md)
 - 상태 전이, 재시도, 복구, 운영 안정성 변경: [`RELIABILITY.md`](./RELIABILITY.md)
 - 토큰, 권한, webhook, 외부 입력, shell command 정책 변경: [`SECURITY.md`](./SECURITY.md)
