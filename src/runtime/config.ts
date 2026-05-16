@@ -1,6 +1,10 @@
 import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { z } from "zod";
+import {
+  RegistryActivationConfigSchema,
+  defaultRegistryActivationConfig,
+} from "./registry-config.js";
 
 const defaultConfigUrl = new URL("../../config/paper.json", import.meta.url);
 
@@ -40,6 +44,7 @@ export const RuntimeConfigSchema = z.object({
       enabled: true,
       can_generate_trade_signal: false,
     }),
+  registry: RegistryActivationConfigSchema.default(defaultRegistryActivationConfig),
   secrets: z
     .object({
       upbit_access_key: z.string().min(1).optional(),

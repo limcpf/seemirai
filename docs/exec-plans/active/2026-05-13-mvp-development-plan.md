@@ -127,18 +127,18 @@ ruleRegistry
 
 ### M2. Port와 registry 기반 확장성 골격
 
-- [ ] `MarketDataPort`, `ExchangePolicyPort`, `BrokerPort`, `NotifierPort`, `AuditLogPort` 정의
-- [ ] `Strategy` interface 정의
-- [ ] `Rule` interface 정의
-- [ ] `exchangeRegistry`, `strategyRegistry`, `ruleRegistry` 구현
-- [ ] registry 활성화 config schema 작성
-- [ ] 의존성 방향 테스트 또는 lint 규칙 후보 작성
+- [x] `MarketDataPort`, `ExchangePolicyPort`, `BrokerPort`, `NotifierPort`, `AuditLogPort` 정의
+- [x] `Strategy` interface 정의
+- [x] `Rule` interface 정의
+- [x] `exchangeRegistry`, `strategyRegistry`, `ruleRegistry` 구현
+- [x] registry 활성화 config schema 작성
+- [x] 의존성 방향 테스트 또는 lint 규칙 후보 작성
 
 검증:
 
-- [ ] strategy가 broker 구현체를 직접 import하지 않는지 확인
-- [ ] rule 조합 config가 잘못된 rule id를 거부하는지 테스트
-- [ ] registry에서 비활성 전략이 실행되지 않는지 테스트
+- [x] strategy가 broker 구현체를 직접 import하지 않는지 확인
+- [x] rule 조합 config가 잘못된 rule id를 거부하는지 테스트
+- [x] registry에서 비활성 전략이 실행되지 않는지 테스트
 
 ### M3. Upbit market data와 policy snapshot
 
@@ -240,6 +240,7 @@ ruleRegistry
 - 2026-05-15: issue #3은 M1 DB foundation 범위가 dependency/lockfile, Docker Compose, Kysely connection, migration/schema, integration 검증을 함께 포함하므로 `sub PR mode`에서 순차 진행한다. 공통 lockfile과 migration 순서 충돌을 피하기 위해 병렬 sub PR은 만들지 않는다.
 - 2026-05-15: issue #3 Sub PR 2는 raw SQL migration runner, `schema_migrations`, 초기 일반 테이블, TimescaleDB hypertable migration, DB integration test harness 범위로 진행한다. Docker가 없는 환경에서는 DB integration test를 기본 skip하고 `SEEMIRAI_RUN_DB_INTEGRATION=1`일 때 실제 DB에 적용한다.
 - 2026-05-16: issue #3 Sub PR 3은 `jobs` queue repository, idempotency duplicate guard 검증, `FOR UPDATE SKIP LOCKED` claim integration test, backup/restore smoke script 초안으로 M1 DB foundation 잔여 검증을 닫는다.
+- 2026-05-16: issue #8은 M2 port/interface와 registry activation config가 서로 강하게 연결된 type boundary 작업이므로 `single PR mode`에서 진행한다. sub PR로 나누면 registry id, contract type, config schema가 순차 충돌할 가능성이 커 리뷰 이점보다 재작업 비용이 크다.
 
 issue #3 sub PR 계획:
 

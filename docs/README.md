@@ -10,6 +10,7 @@
 - 기능 요구사항, acceptance criteria, 테스트 요구사항: [`FEATURE_REQUIREMENTS.md`](./FEATURE_REQUIREMENTS.md)
 - Upbit KRW paper trading MVP 업무 명세: [`product-specs/upbit-krw-paper-trading-mvp.md`](./product-specs/upbit-krw-paper-trading-mvp.md)
 - 로컬 개발 환경과 검증 절차: [`DEVELOPMENT.md`](./DEVELOPMENT.md)
+- 런타임 설정 구조, 허용값, 안전 invariant: [`RUNTIME_CONFIG.md`](./RUNTIME_CONFIG.md)
 - 구조 변경, 경계 변경, 새 규칙 도입: [`DESIGN.md`](./DESIGN.md), [`design-docs/index.md`](./design-docs/index.md)
 - DB 테이블 역할과 관계: [`design-docs/2026-05-15-m1-database-schema.md`](./design-docs/2026-05-15-m1-database-schema.md)
 - 장시간 작업, 중단 후 재개 필요: [`PLANS.md`](./PLANS.md), [`exec-plans/active/README.md`](./exec-plans/active/README.md)

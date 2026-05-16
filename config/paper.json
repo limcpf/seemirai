@@ -20,5 +20,38 @@
     "enabled": true,
     "can_generate_trade_signal": false
   },
+  "registry": {
+    "exchangeId": "upbit_krw_spot",
+    "strategies": [
+      {
+        "id": "trend_following",
+        "enabled": true,
+        "ruleIds": [
+          "universe_allowed",
+          "market_warning_absent",
+          "spread_ok",
+          "depth_sufficient",
+          "cost_margin_ok",
+          "risk_ok",
+          "stop_loss",
+          "take_profit"
+        ]
+      },
+      {
+        "id": "mean_reversion",
+        "enabled": true,
+        "ruleIds": [
+          "universe_allowed",
+          "market_warning_absent",
+          "spread_ok",
+          "depth_sufficient",
+          "cost_margin_ok",
+          "risk_ok",
+          "stop_loss",
+          "take_profit"
+        ]
+      }
+    ]
+  },
   "secrets": {}
 }
