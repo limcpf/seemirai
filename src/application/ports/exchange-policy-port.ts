@@ -3,6 +3,7 @@ import type {
   FeePolicy,
   MarketPolicy,
   MarketStatus,
+  OrderChancePolicy,
   OrderRulePolicy,
 } from "../../domain/index.js";
 import type { MarketCode } from "../../domain/index.js";
@@ -20,6 +21,8 @@ export interface ExchangePolicyPort {
   getMarketStatus(market: MarketCode): Promise<MarketStatus>;
   /** 주문 전 검증에 필요한 호가 단위와 최소 주문금액 규칙을 조회한다. */
   getOrderRules(market: MarketCode): Promise<OrderRulePolicy>;
+  /** 계정/market 결합 기준의 수수료, 가용 잔고, 주문 가능 범위를 조회한다. */
+  getOrderChance(market: MarketCode): Promise<OrderChancePolicy>;
   /** 비용 계산에 사용할 현재 수수료 정책을 조회한다. */
   getFees(market: MarketCode): Promise<FeePolicy>;
   /** 주문 전 검증과 audit에 남길 정책 snapshot 전체를 조회한다. */

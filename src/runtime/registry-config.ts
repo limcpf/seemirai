@@ -18,17 +18,20 @@ const RegisteredExchangeIdSchema = z.enum(registeredExchangeIds);
 const RegisteredStrategyIdSchema = z.enum(registeredStrategyIds);
 const RegisteredRuleIdSchema = z.enum(registeredRuleIds);
 
-const StrategyActivationSchema = z.object({
-  id: RegisteredStrategyIdSchema,
-  enabled: z.boolean().default(true),
-  ruleIds: z.array(RegisteredRuleIdSchema).min(1, "strategy rule composition must not be empty"),
-});
+const StrategyActivationSchema = z
+  .object({
+    id: RegisteredStrategyIdSchema,
+    enabled: z.boolean().default(true),
+    ruleIds: z.array(RegisteredRuleIdSchema).min(1, "strategy rule composition must not be empty"),
+  })
+  .strict();
 
 export const RegistryActivationConfigSchema = z
   .object({
     exchangeId: RegisteredExchangeIdSchema,
     strategies: z.array(StrategyActivationSchema).min(1, "at least one strategy config is required"),
   })
+  .strict()
   .superRefine((config, context) => {
     const seenStrategyIds = new Set<string>();
 

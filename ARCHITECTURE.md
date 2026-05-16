@@ -141,19 +141,23 @@ MVP는 기능을 많이 넣는 방식이 아니라, 거래소, 전략, 매수/�
 MarketDataPort
   - streamTrades()
   - streamOrderbook()
+  - streamTicker()
+  - getOrderbook()
   - getTicker()
 
 ExchangePolicyPort
   - getMarkets()
-  - getOrderRules()
-  - getFees()
   - getMarketStatus()
+  - getOrderRules()
+  - getOrderChance()
+  - getFees()
 
 BrokerPort
   - submitOrder()
   - cancelOrder()
   - getOrder()
   - listOpenOrders()
+  - getBalances()
 
 Strategy
   - id

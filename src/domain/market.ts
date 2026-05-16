@@ -1,6 +1,6 @@
 import type { ExchangeId, JsonRecord, MarketCode, NumericString, TimestampInput } from "./types.js";
 
-export type MarketDataEventType = "TRADE" | "ORDERBOOK" | "STATUS";
+export type MarketDataEventType = "TRADE" | "ORDERBOOK" | "TICKER" | "STATUS";
 export type MarketDataConnectionStatus = "CONNECTED" | "STALE" | "RECONNECTING" | "DISCONNECTED";
 
 /**
@@ -82,6 +82,7 @@ export interface MarketDataStatusEvent {
  * REST 보조 조회나 stream snapshot의 결과를 같은 형태로 넘기기 위한 경계 타입이다.
  */
 export interface TickerSnapshot {
+  type: "TICKER";
   exchangeId: ExchangeId;
   market: MarketCode;
   tradePrice: NumericString;
@@ -89,9 +90,10 @@ export interface TickerSnapshot {
   accTradePrice24h?: NumericString;
   exchangeTimestamp: TimestampInput;
   receivedAt: TimestampInput;
+  raw?: JsonRecord;
 }
 
-export type MarketDataEvent = TradeEvent | OrderbookEvent | MarketDataStatusEvent;
+export type MarketDataEvent = TradeEvent | OrderbookEvent | TickerSnapshot | MarketDataStatusEvent;
 
 /**
  * 단일 market의 거래 가능성과 market warning/caution 상태다.
@@ -122,6 +124,34 @@ export interface MarketPolicy {
 }
 
 /**
+ * 가격 구간 하나에 적용되는 호가 단위다.
+ *
+ * minPrice는 포함, maxPrice는 미포함 경계로 해석한다. 비어 있는 하한이나 상한은 거래소 정책상 열린
+ * 구간을 표현할 때 사용한다.
+ */
+export interface PriceTickBand {
+  minPrice?: NumericString;
+  maxPrice?: NumericString;
+  tickSize: NumericString;
+}
+
+/**
+ * 주문 가격 검증에 사용할 호가 단위 정책이다.
+ *
+ * Upbit KRW처럼 가격 구간별 tick이 달라지는 거래소는 PRICE_BANDS를 사용하고, 단일 tick만 있는 시장은
+ * FIXED를 사용한다.
+ */
+export type PriceTickPolicy =
+  | {
+      kind: "FIXED";
+      tickSize: NumericString;
+    }
+  | {
+      kind: "PRICE_BANDS";
+      bands: readonly PriceTickBand[];
+    };
+
+/**
  * 주문 전 검증에 필요한 주문 규칙이다.
  *
  * 최소 주문금액, 호가 단위, 허용 주문 유형을 거래소 정책 snapshot 또는 API 응답에서 주입한다.
@@ -130,10 +160,34 @@ export interface OrderRulePolicy {
   exchangeId: ExchangeId;
   market: MarketCode;
   minimumOrderNotional: NumericString;
-  priceTickSize: NumericString;
+  priceTickPolicy: PriceTickPolicy;
   quantityStepSize?: NumericString;
   allowedOrderTypes: readonly ("LIMIT" | "MARKET")[];
   updatedAt: TimestampInput;
+}
+
+/**
+ * 계정과 market을 결합한 주문 가능 정보다.
+ *
+ * policy-sync profile은 거래소의 orders/chance 계열 응답을 이 구조로 정규화해 수수료, 주문 가능 유형,
+ * 가용 잔고, 주문 가능 범위를 주문 전 검증과 audit에 제공한다.
+ */
+export interface OrderChancePolicy {
+  exchangeId: ExchangeId;
+  market: MarketCode;
+  allowedOrderTypes: readonly ("LIMIT" | "MARKET")[];
+  bidFeeBps: NumericString;
+  askFeeBps: NumericString;
+  makerBidFeeBps?: NumericString;
+  makerAskFeeBps?: NumericString;
+  bidAvailableBalance?: NumericString;
+  askAvailableBalance?: NumericString;
+  minimumBidNotional?: NumericString;
+  maximumBidNotional?: NumericString;
+  minimumAskQuantity?: NumericString;
+  maximumAskQuantity?: NumericString;
+  capturedAt: TimestampInput;
+  raw?: JsonRecord;
 }
 
 /**
@@ -174,6 +228,7 @@ export interface ExchangePolicySnapshot {
   market: MarketCode;
   marketPolicy: MarketPolicy;
   orderRules: OrderRulePolicy;
+  orderChance: OrderChancePolicy;
   fees: FeePolicy;
   rateLimits: readonly RateLimitPolicy[];
   capturedAt: TimestampInput;

@@ -8,7 +8,7 @@ import {
   ruleRegistry,
   strategyRegistry,
 } from "../../src/application/index.js";
-import type { BrokerPort, MarketDataPort } from "../../src/application/index.js";
+import type { BrokerPort, ExchangePolicyPort, MarketDataPort } from "../../src/application/index.js";
 import type { OrderIntent, OrderSubmission, Rule, Strategy } from "../../src/domain/index.js";
 import {
   RegistryActivationConfigSchema,
@@ -81,6 +81,35 @@ describe("registry foundation", () => {
             ruleIds: ["risk_ok", "unknown_rule"],
           },
         ],
+      }),
+    ).toThrow();
+  });
+
+  it("rejects unknown registry activation keys", () => {
+    expect(() =>
+      RegistryActivationConfigSchema.parse({
+        exchangeId: "upbit_krw_spot",
+        strategies: [
+          {
+            id: "trend_following",
+            enable: false,
+            ruleIds: ["risk_ok"],
+          },
+        ],
+      }),
+    ).toThrow();
+
+    expect(() =>
+      RegistryActivationConfigSchema.parse({
+        exchangeId: "upbit_krw_spot",
+        strategies: [
+          {
+            id: "trend_following",
+            enabled: true,
+            ruleIds: ["risk_ok"],
+          },
+        ],
+        unexpected: true,
       }),
     ).toThrow();
   });
@@ -294,6 +323,9 @@ describe("strategy and rule contracts", () => {
       streamOrderbook: async function* streamOrderbook() {
         return;
       },
+      streamTicker: async function* streamTicker() {
+        return;
+      },
       getOrderbook: async (market) => ({
         type: "ORDERBOOK",
         exchangeId: "upbit_krw_spot",
@@ -304,12 +336,111 @@ describe("strategy and rule contracts", () => {
         receivedAt: observedAt,
       }),
       getTicker: async (market) => ({
+        type: "TICKER",
         exchangeId: "upbit_krw_spot",
         market,
         tradePrice: "10000000",
         exchangeTimestamp: observedAt,
         receivedAt: observedAt,
+        raw: {
+          source: "fixture",
+        },
       }),
+    };
+    const exchangePolicy: ExchangePolicyPort = {
+      getMarkets: async () => [
+        {
+          exchangeId: "upbit_krw_spot",
+          market: "KRW-BTC",
+          baseCurrency: "BTC",
+          quoteCurrency: "KRW",
+          status: {
+            exchangeId: "upbit_krw_spot",
+            market: "KRW-BTC",
+            tradable: true,
+            warning: false,
+            caution: false,
+            reasonCodes: [],
+            updatedAt: observedAt,
+          },
+        },
+      ],
+      getMarketStatus: async (market) => ({
+        exchangeId: "upbit_krw_spot",
+        market,
+        tradable: true,
+        warning: false,
+        caution: false,
+        reasonCodes: [],
+        updatedAt: observedAt,
+      }),
+      getOrderRules: async (market) => ({
+        exchangeId: "upbit_krw_spot",
+        market,
+        minimumOrderNotional: "5000",
+        priceTickPolicy: {
+          kind: "PRICE_BANDS",
+          bands: [
+            {
+              minPrice: "0",
+              maxPrice: "1000000",
+              tickSize: "1",
+            },
+            {
+              minPrice: "1000000",
+              tickSize: "1000",
+            },
+          ],
+        },
+        allowedOrderTypes: ["LIMIT", "MARKET"],
+        updatedAt: observedAt,
+      }),
+      getOrderChance: async (market) => ({
+        exchangeId: "upbit_krw_spot",
+        market,
+        allowedOrderTypes: ["LIMIT", "MARKET"],
+        bidFeeBps: "5",
+        askFeeBps: "5",
+        bidAvailableBalance: "1000000",
+        askAvailableBalance: "0.1",
+        minimumBidNotional: "5000",
+        capturedAt: observedAt,
+        raw: {
+          source: "orders/chance fixture",
+        },
+      }),
+      getFees: async (market) => ({
+        exchangeId: "upbit_krw_spot",
+        market,
+        bidFeeBps: "5",
+        askFeeBps: "5",
+        updatedAt: observedAt,
+      }),
+      getPolicySnapshot: async (market) => {
+        const [marketStatus, orderRules, orderChance, fees] = await Promise.all([
+          exchangePolicy.getMarketStatus(market),
+          exchangePolicy.getOrderRules(market),
+          exchangePolicy.getOrderChance(market),
+          exchangePolicy.getFees(market),
+        ]);
+
+        return {
+          exchangeId: "upbit_krw_spot",
+          market,
+          marketPolicy: {
+            exchangeId: "upbit_krw_spot",
+            market,
+            baseCurrency: "BTC",
+            quoteCurrency: "KRW",
+            status: marketStatus,
+          },
+          orderRules,
+          orderChance,
+          fees,
+          rateLimits: [],
+          capturedAt: observedAt,
+        };
+      },
     };
 
     await expect(broker.submitOrder(submission)).resolves.toMatchObject({
@@ -322,6 +453,27 @@ describe("strategy and rule contracts", () => {
     await expect(marketData.getOrderbook("KRW-BTC")).resolves.toMatchObject({
       type: "ORDERBOOK",
       market: "KRW-BTC",
+    });
+    await expect(marketData.getTicker("KRW-BTC")).resolves.toMatchObject({
+      type: "TICKER",
+      market: "KRW-BTC",
+      raw: {
+        source: "fixture",
+      },
+    });
+    await expect(exchangePolicy.getOrderRules("KRW-BTC")).resolves.toMatchObject({
+      priceTickPolicy: {
+        kind: "PRICE_BANDS",
+      },
+    });
+    await expect(exchangePolicy.getOrderChance("KRW-BTC")).resolves.toMatchObject({
+      allowedOrderTypes: ["LIMIT", "MARKET"],
+      minimumBidNotional: "5000",
+    });
+    await expect(exchangePolicy.getPolicySnapshot("KRW-BTC")).resolves.toMatchObject({
+      orderChance: {
+        bidAvailableBalance: "1000000",
+      },
     });
   });
 });

@@ -110,6 +110,7 @@ MVP 기본 profile에서는 다음 값이 켜져 있으면 안 된다.
 규칙:
 
 - 존재하지 않는 exchange, strategy, rule id는 fail-fast한다.
+- `registry`와 `strategies[]`의 알 수 없는 키는 오타로 간주해 fail-fast한다.
 - `strategies[].enabled=false`인 strategy는 활성 resolution 결과에서 제외된다.
 - `strategies[].ruleIds`는 비어 있으면 안 된다.
 - 같은 strategy id를 중복 선언하면 안 된다.
@@ -131,4 +132,3 @@ corepack pnpm typecheck
 corepack pnpm test
 ./scripts/verify
 ```
-
