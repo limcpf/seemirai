@@ -100,7 +100,7 @@ export function toOrderRulePolicy(
     minimumOrderNotional: options.minimumOrderNotional,
     priceTickPolicy: options.priceTickPolicy,
     supportedOrderbookLevels: instrument.supported_levels,
-    allowedOrderTypes: ["LIMIT", "MARKET"],
+    allowedOrderTypes: ["LIMIT"],
     updatedAt: options.observedAt,
   };
 }

@@ -173,9 +173,23 @@ describe("Upbit public policy schemas and mappers", () => {
       minimumOrderNotional: "5000",
       priceTickPolicy: krwPriceTickPolicy,
       supportedOrderbookLevels: ["0", "10000", "100000", "1000000", "10000000", "100000000"],
-      allowedOrderTypes: ["LIMIT", "MARKET"],
+      allowedOrderTypes: ["LIMIT"],
       updatedAt: observedAt,
     });
+  });
+
+  it("keeps market orders disabled in the public policy contract", async () => {
+    const instruments = UpbitOrderbookInstrumentsResponseSchema.parse(
+      await readJsonFixture("orderbook-instruments.json"),
+    );
+
+    expect(
+      toOrderRulePolicy(instruments[0]!, {
+        observedAt,
+        minimumOrderNotional: "5000",
+        priceTickPolicy: krwPriceTickPolicy,
+      }).allowedOrderTypes,
+    ).toEqual(["LIMIT"]);
   });
 
   it("creates a public policy snapshot payload that preserves raw Upbit policy inputs", async () => {
