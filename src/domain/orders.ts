@@ -21,35 +21,57 @@ export type OrderLifecycleStatus =
   | "MANUAL_REVIEW_REQUIRED";
 
 /**
- * 전략이 직접 주문을 제출하지 않고 생성하는 주문 후보 intent다.
+ * 전략이 직접 주문을 제출하지 않고 생성하는 주문 후보 intent의 공통 필드다.
  *
  * 이후 CostModel, RiskGate, ExecutionEngine을 통과해야 broker 제출 요청으로 승격된다.
  */
-export interface OrderIntent {
+export interface BaseOrderIntent {
   exchangeId: ExchangeId;
   market: MarketCode;
   strategyId: string;
   side: OrderSide;
-  orderType: OrderType;
   requestedQuantity: NumericString;
   requestedNotional: NumericString;
   idempotencyKey: string;
-  requestedPrice?: NumericString;
-  postOnly?: boolean;
-  timeInForce?: TimeInForce;
   reason: string;
   metadata?: JsonRecord;
 }
 
 /**
+ * 지정가 주문 후보 intent다.
+ *
+ * MVP 실행은 지정가 중심이므로 LIMIT 후보는 가격을 필수로 둔다.
+ */
+export interface LimitOrderIntent extends BaseOrderIntent {
+  orderType: "LIMIT";
+  requestedPrice: NumericString;
+  postOnly?: boolean;
+  timeInForce?: TimeInForce;
+}
+
+/**
+ * 시장가 주문 후보 intent다.
+ *
+ * MVP 기본 설정에서는 시장가 주문이 차단되지만, 차단/검증 기록을 표현하기 위해 타입은 남긴다.
+ */
+export interface MarketOrderIntent extends BaseOrderIntent {
+  orderType: "MARKET";
+  requestedPrice?: never;
+  postOnly?: never;
+  timeInForce?: never;
+}
+
+export type OrderIntent = LimitOrderIntent | MarketOrderIntent;
+
+/**
  * broker port로 넘기는 주문 제출 요청이다.
  *
- * OrderIntent에 비용 snapshot과 risk 승인 근거를 붙여 PaperBroker와 future live broker가 같은 입력을 받게 한다.
+ * OrderIntent에 비용 snapshot과 risk 승인 근거를 필수로 붙여 PaperBroker와 future live broker가 같은 입력을 받게 한다.
  */
 export interface OrderSubmission {
   intent: OrderIntent;
-  costSnapshot?: JsonRecord;
-  riskApproval?: JsonRecord;
+  costSnapshot: JsonRecord;
+  riskApproval: JsonRecord;
   submittedAt: TimestampInput;
 }
 
@@ -71,5 +93,31 @@ export interface BrokerOrder {
   requestedPrice?: NumericString;
   acceptedAt?: TimestampInput;
   updatedAt: TimestampInput;
+  metadata?: JsonRecord;
+}
+
+/**
+ * broker가 보고하는 단일 통화 잔고다.
+ *
+ * RiskGate의 주문 한도, 포지션 한도, balance/position mismatch 검증 입력으로 사용한다.
+ */
+export interface BrokerBalance {
+  currency: string;
+  available: NumericString;
+  locked: NumericString;
+  total: NumericString;
+  updatedAt: TimestampInput;
+  metadata?: JsonRecord;
+}
+
+/**
+ * broker 잔고 조회 결과 snapshot이다.
+ *
+ * PaperBroker와 future live broker가 같은 형태로 계정 상태를 제공해 RiskGate가 구현체를 몰라도 되게 한다.
+ */
+export interface BrokerBalanceSnapshot {
+  exchangeId: ExchangeId;
+  balances: readonly BrokerBalance[];
+  capturedAt: TimestampInput;
   metadata?: JsonRecord;
 }

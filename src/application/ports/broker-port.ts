@@ -1,4 +1,9 @@
-import type { BrokerOrder, MarketCode, OrderSubmission } from "../../domain/index.js";
+import type {
+  BrokerBalanceSnapshot,
+  BrokerOrder,
+  MarketCode,
+  OrderSubmission,
+} from "../../domain/index.js";
 
 /**
  * 주문 실행 adapter가 구현해야 하는 application port다.
@@ -15,4 +20,6 @@ export interface BrokerPort {
   getOrder(orderId: string): Promise<BrokerOrder | undefined>;
   /** 전체 또는 특정 market의 open order 목록을 조회한다. */
   listOpenOrders(market?: MarketCode): Promise<readonly BrokerOrder[]>;
+  /** 주문 한도와 잔고 불일치 검증에 사용할 broker 잔고 snapshot을 조회한다. */
+  getBalances(): Promise<BrokerBalanceSnapshot>;
 }

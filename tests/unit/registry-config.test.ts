@@ -8,7 +8,8 @@ import {
   ruleRegistry,
   strategyRegistry,
 } from "../../src/application/index.js";
-import type { Rule, Strategy } from "../../src/domain/index.js";
+import type { BrokerPort, MarketDataPort } from "../../src/application/index.js";
+import type { OrderIntent, OrderSubmission, Rule, Strategy } from "../../src/domain/index.js";
 import {
   RegistryActivationConfigSchema,
   defaultRegistryActivationConfig,
@@ -207,4 +208,154 @@ describe("strategy and rule contracts", () => {
     expect(strategyContract).not.toMatch(/from\s+["'][^"']*(broker|upbit)/iu);
     expect(strategyContract).not.toMatch(/\b(BrokerPort|submitOrder|cancelOrder|Upbit)\b/u);
   });
+
+  it("requires validated broker submission evidence and exposes snapshot ports", async () => {
+    const observedAt = new Date("2026-05-16T00:00:00.000Z");
+    const intent: OrderIntent = {
+      exchangeId: "upbit_krw_spot",
+      market: "KRW-BTC",
+      strategyId: "trend_following",
+      side: "BUY",
+      orderType: "LIMIT",
+      requestedQuantity: "0.001",
+      requestedNotional: "10000",
+      requestedPrice: "10000000",
+      idempotencyKey: "validated-submission-fixture-1",
+      reason: "fixture intent",
+    };
+    const submission: OrderSubmission = {
+      intent,
+      costSnapshot: {
+        cost_bps: "5",
+      },
+      riskApproval: {
+        approved: true,
+      },
+      submittedAt: observedAt,
+    };
+
+    const broker: BrokerPort = {
+      submitOrder: async (order) => {
+        const brokerOrder = {
+          brokerOrderId: "paper-order-1",
+          idempotencyKey: order.intent.idempotencyKey,
+          exchangeId: order.intent.exchangeId,
+          market: order.intent.market,
+          side: order.intent.side,
+          orderType: order.intent.orderType,
+          status: "SUBMITTED" as const,
+          requestedQuantity: order.intent.requestedQuantity,
+          remainingQuantity: order.intent.requestedQuantity,
+          updatedAt: observedAt,
+        };
+
+        if (order.intent.orderType === "LIMIT") {
+          return {
+            ...brokerOrder,
+            requestedPrice: order.intent.requestedPrice,
+          };
+        }
+
+        return brokerOrder;
+      },
+      cancelOrder: async (orderId) => ({
+        brokerOrderId: orderId,
+        idempotencyKey: "validated-submission-fixture-1",
+        exchangeId: "upbit_krw_spot",
+        market: "KRW-BTC",
+        side: "BUY",
+        orderType: "LIMIT",
+        status: "CANCELED",
+        requestedQuantity: "0.001",
+        remainingQuantity: "0",
+        requestedPrice: "10000000",
+        updatedAt: observedAt,
+      }),
+      getOrder: async () => undefined,
+      listOpenOrders: async () => [],
+      getBalances: async () => ({
+        exchangeId: "upbit_krw_spot",
+        balances: [
+          {
+            currency: "KRW",
+            available: "1000000",
+            locked: "0",
+            total: "1000000",
+            updatedAt: observedAt,
+          },
+        ],
+        capturedAt: observedAt,
+      }),
+    };
+    const marketData: MarketDataPort = {
+      streamTrades: async function* streamTrades() {
+        return;
+      },
+      streamOrderbook: async function* streamOrderbook() {
+        return;
+      },
+      getOrderbook: async (market) => ({
+        type: "ORDERBOOK",
+        exchangeId: "upbit_krw_spot",
+        market,
+        asks: [],
+        bids: [],
+        exchangeTimestamp: observedAt,
+        receivedAt: observedAt,
+      }),
+      getTicker: async (market) => ({
+        exchangeId: "upbit_krw_spot",
+        market,
+        tradePrice: "10000000",
+        exchangeTimestamp: observedAt,
+        receivedAt: observedAt,
+      }),
+    };
+
+    await expect(broker.submitOrder(submission)).resolves.toMatchObject({
+      idempotencyKey: "validated-submission-fixture-1",
+      requestedPrice: "10000000",
+    });
+    await expect(broker.getBalances()).resolves.toMatchObject({
+      exchangeId: "upbit_krw_spot",
+    });
+    await expect(marketData.getOrderbook("KRW-BTC")).resolves.toMatchObject({
+      type: "ORDERBOOK",
+      market: "KRW-BTC",
+    });
+  });
 });
+
+// @ts-expect-error LIMIT intent는 requestedPrice가 필수다.
+const invalidLimitIntent: OrderIntent = {
+  exchangeId: "upbit_krw_spot",
+  market: "KRW-BTC",
+  strategyId: "trend_following",
+  side: "BUY",
+  orderType: "LIMIT",
+  requestedQuantity: "0.001",
+  requestedNotional: "10000",
+  idempotencyKey: "invalid-limit-intent",
+  reason: "invalid fixture",
+};
+
+void invalidLimitIntent;
+
+// @ts-expect-error broker 제출 요청은 비용 snapshot과 risk 승인 근거가 필수다.
+const invalidSubmission: OrderSubmission = {
+  intent: {
+    exchangeId: "upbit_krw_spot",
+    market: "KRW-BTC",
+    strategyId: "trend_following",
+    side: "BUY",
+    orderType: "LIMIT",
+    requestedQuantity: "0.001",
+    requestedNotional: "10000",
+    requestedPrice: "10000000",
+    idempotencyKey: "invalid-submission",
+    reason: "invalid fixture",
+  },
+  submittedAt: new Date("2026-05-16T00:00:00.000Z"),
+};
+
+void invalidSubmission;

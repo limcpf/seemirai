@@ -18,6 +18,8 @@ export interface MarketDataPort {
   streamTrades(request: MarketDataStreamRequest): AsyncIterable<TradeEvent | MarketDataStatusEvent>;
   /** 호가 stream과 stale/reconnect 같은 상태 이벤트를 동일한 async stream으로 전달한다. */
   streamOrderbook(request: MarketDataStreamRequest): AsyncIterable<OrderbookEvent | MarketDataStatusEvent>;
+  /** 초기화, 재연결 복구, fixture 검증에 사용할 단건 호가 snapshot을 조회한다. */
+  getOrderbook(market: MarketCode): Promise<OrderbookEvent>;
   /** 특정 market의 현재 ticker snapshot을 조회한다. */
   getTicker(market: MarketCode): Promise<TickerSnapshot>;
 }
