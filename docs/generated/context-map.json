@@ -142,6 +142,13 @@
       "owner_scope": "docs/design-docs"
     },
     {
+      "path": "docs/design-docs/2026-05-15-m1-database-schema.md",
+      "kind": "design-doc",
+      "role": "M1 PostgreSQL/TimescaleDB 테이블 역할과 관계",
+      "read_when": ["DB schema 확인", "테이블 역할 확인", "jobs queue 역할 확인", "migration schema 검토"],
+      "owner_scope": "docs/design-docs"
+    },
+    {
       "path": "docs/design-docs/index.md",
       "kind": "index",
       "role": "설계 문서 인덱스",

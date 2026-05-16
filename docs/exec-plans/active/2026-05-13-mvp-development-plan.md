@@ -114,14 +114,14 @@ ruleRegistry
 ### M1. DB와 migration 기반
 
 - [x] Docker Compose로 PostgreSQL + TimescaleDB 구성
-- [ ] raw SQL migration runner 생성
+- [x] raw SQL migration runner 생성
 - [x] Kysely + node-postgres 연결
-- [ ] `orders`, `paper_orders`, `fills`, `positions`, `audit_events`, `risk_events`, `jobs`, `policy_snapshots` schema 작성
-- [ ] `trades`, `orderbook_metrics`, `orderbook_snapshots`, `candles`, `pnl_snapshots`, `strategy_signals` hypertable 작성
+- [x] `orders`, `paper_orders`, `fills`, `positions`, `audit_events`, `risk_events`, `jobs`, `policy_snapshots` schema 작성
+- [x] `trades`, `orderbook_metrics`, `orderbook_snapshots`, `candles`, `pnl_snapshots`, `strategy_signals` hypertable 작성
 
 검증:
 
-- [ ] migration integration test
+- [x] migration integration test
 - [ ] backup/restore smoke test 초안
 - [ ] `jobs` idempotency key 중복 차단 테스트
 
@@ -238,14 +238,15 @@ ruleRegistry
 - 2026-05-13: `CostModel`과 `RiskGate`는 모든 전략 공통 gate로 고정한다.
 - 2026-05-13: issue #1은 M0 foundation 범위로 `single PR mode`에서 진행한다. `package.json`, lockfile, TypeScript/Vitest 설정, config guard, verification harness가 서로 얽혀 있어 sub PR 분할보다 단일 PR 리뷰가 충돌 위험이 낮다.
 - 2026-05-15: issue #3은 M1 DB foundation 범위가 dependency/lockfile, Docker Compose, Kysely connection, migration/schema, integration 검증을 함께 포함하므로 `sub PR mode`에서 순차 진행한다. 공통 lockfile과 migration 순서 충돌을 피하기 위해 병렬 sub PR은 만들지 않는다.
+- 2026-05-15: issue #3 Sub PR 2는 raw SQL migration runner, `schema_migrations`, 초기 일반 테이블, TimescaleDB hypertable migration, DB integration test harness 범위로 진행한다. Docker가 없는 환경에서는 DB integration test를 기본 skip하고 `SEEMIRAI_RUN_DB_INTEGRATION=1`일 때 실제 DB에 적용한다.
 
 issue #3 sub PR 계획:
 
 | 순서 | branch | 목표 | 제외 범위 | 파일 소유권 | 검증 |
 | --- | --- | --- | --- | --- | --- |
 | 1 | `issue-3/01-db-foundation` | `kysely`, `pg`, `@types/pg` dependency, Docker Compose, local DB config, Kysely + node-postgres connection boundary, dependency 승인 근거 | migration runner, schema migration, jobs repository, integration DB 검증 | `package.json`, `pnpm-lock.yaml`, `docker-compose.yml`, `.env.example`, `config/local-db.json`, `src/infrastructure/db/**`, DB foundation 관련 unit test, M1 관련 문서 | `corepack pnpm typecheck`, `corepack pnpm test`, `./scripts/verify` |
-| 2 | `issue-3/02-migration-schema` | raw SQL migration runner, `schema_migrations`, 일반 테이블, TimescaleDB hypertable migration | job queue repository, backup/restore smoke script 최종화 | `migrations/**`, migration runner, schema 관련 integration test | `corepack pnpm test -- --run tests/integration`, `./scripts/verify` |
-| 3 | `issue-3/03-jobs-integration` | `jobs.idempotency_key` 중복 차단 검증, migration checksum mismatch test, backup/restore smoke test 초안, M1 문서 최종 상태 | M2 port/registry, Upbit adapter, risk/cost/strategy | jobs repository/test, backup/restore smoke script 또는 문서, M1 최종 문서 | `corepack pnpm test -- --run tests/integration`, `./scripts/verify` |
+| 2 | `issue-3/02-migration-schema` | raw SQL migration runner, `schema_migrations`, 일반 테이블, TimescaleDB hypertable migration | job queue repository, backup/restore smoke script 최종화 | `migrations/**`, migration runner, schema 관련 integration test | `corepack pnpm exec vitest run tests/integration`, `./scripts/verify` |
+| 3 | `issue-3/03-jobs-integration` | `jobs.idempotency_key` 중복 차단 검증, migration checksum mismatch test, backup/restore smoke test 초안, M1 문서 최종 상태 | M2 port/registry, Upbit adapter, risk/cost/strategy | jobs repository/test, backup/restore smoke script 또는 문서, M1 최종 문서 | `corepack pnpm exec vitest run tests/integration`, `./scripts/verify` |
 
 ## 남은 이슈
 
