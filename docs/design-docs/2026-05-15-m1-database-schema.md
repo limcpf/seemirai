@@ -33,7 +33,7 @@
 - `locked_at`, `locked_by`: worker claim 상태
 - `attempt_count`, `max_attempts`, `last_error`: 재시도와 실패 진단
 
-다음 sub PR의 queue repository는 `FOR UPDATE SKIP LOCKED` 패턴으로 `PENDING` job을 claim하고, 실행 성공/실패에 따라 상태와 retry metadata를 갱신한다.
+queue repository는 `jobs.idempotency_key` unique constraint로 중복 생성을 차단하고, `FOR UPDATE SKIP LOCKED` 패턴으로 `PENDING` job을 worker에 claim한다. worker가 실행을 마치면 완료 상태와 lock metadata를 갱신하고, 실패 retry 정책은 risk/state machine 단계에서 확장한다.
 
 ## 테이블 관계도
 

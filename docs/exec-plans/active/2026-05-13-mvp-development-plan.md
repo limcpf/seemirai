@@ -122,8 +122,8 @@ ruleRegistry
 검증:
 
 - [x] migration integration test
-- [ ] backup/restore smoke test 초안
-- [ ] `jobs` idempotency key 중복 차단 테스트
+- [x] backup/restore smoke test 초안
+- [x] `jobs` idempotency key 중복 차단 테스트
 
 ### M2. Port와 registry 기반 확장성 골격
 
@@ -239,6 +239,7 @@ ruleRegistry
 - 2026-05-13: issue #1은 M0 foundation 범위로 `single PR mode`에서 진행한다. `package.json`, lockfile, TypeScript/Vitest 설정, config guard, verification harness가 서로 얽혀 있어 sub PR 분할보다 단일 PR 리뷰가 충돌 위험이 낮다.
 - 2026-05-15: issue #3은 M1 DB foundation 범위가 dependency/lockfile, Docker Compose, Kysely connection, migration/schema, integration 검증을 함께 포함하므로 `sub PR mode`에서 순차 진행한다. 공통 lockfile과 migration 순서 충돌을 피하기 위해 병렬 sub PR은 만들지 않는다.
 - 2026-05-15: issue #3 Sub PR 2는 raw SQL migration runner, `schema_migrations`, 초기 일반 테이블, TimescaleDB hypertable migration, DB integration test harness 범위로 진행한다. Docker가 없는 환경에서는 DB integration test를 기본 skip하고 `SEEMIRAI_RUN_DB_INTEGRATION=1`일 때 실제 DB에 적용한다.
+- 2026-05-16: issue #3 Sub PR 3은 `jobs` queue repository, idempotency duplicate guard 검증, `FOR UPDATE SKIP LOCKED` claim integration test, backup/restore smoke script 초안으로 M1 DB foundation 잔여 검증을 닫는다.
 
 issue #3 sub PR 계획:
 

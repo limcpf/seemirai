@@ -101,6 +101,16 @@ DB migration integration test는 기본 test run에서 skip된다. 로컬 Postgr
 SEEMIRAI_RUN_DB_INTEGRATION=1 corepack pnpm exec vitest run tests/integration
 ```
 
+DB backup/restore smoke test는 운영 백업 절차를 고정하기 위한 초안이다. 원본 DB와 별도의 복구 검증 DB를 준비한 뒤 다음 명령으로 custom-format dump를 만들고 복구 DB에 restore한 다음 `schema_migrations` 조회까지 확인한다.
+
+```sh
+SEEMIRAI_DATABASE_URL=postgres://user:pass@127.0.0.1:55432/seemirai_local \
+SEEMIRAI_RESTORE_DATABASE_URL=postgres://user:pass@127.0.0.1:55432/seemirai_restore \
+./scripts/db-backup-restore-smoke.sh
+```
+
+`SEEMIRAI_BACKUP_FILE`을 지정하지 않으면 `.local/backups/` 아래에 UTC timestamp가 포함된 dump 파일을 생성한다. 이 smoke test는 `pg_dump`, `pg_restore`, `psql` CLI가 설치된 환경에서 실행한다.
+
 ## 환경 변수
 
 - 실제 `.env` 파일과 secret 값은 커밋하지 않는다.
