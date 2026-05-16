@@ -162,6 +162,7 @@ export interface OrderRulePolicy {
   minimumOrderNotional: NumericString;
   priceTickPolicy: PriceTickPolicy;
   quantityStepSize?: NumericString;
+  supportedOrderbookLevels?: readonly NumericString[];
   allowedOrderTypes: readonly ("LIMIT" | "MARKET")[];
   updatedAt: TimestampInput;
 }

@@ -241,6 +241,7 @@ ruleRegistry
 - 2026-05-15: issue #3 Sub PR 2는 raw SQL migration runner, `schema_migrations`, 초기 일반 테이블, TimescaleDB hypertable migration, DB integration test harness 범위로 진행한다. Docker가 없는 환경에서는 DB integration test를 기본 skip하고 `SEEMIRAI_RUN_DB_INTEGRATION=1`일 때 실제 DB에 적용한다.
 - 2026-05-16: issue #3 Sub PR 3은 `jobs` queue repository, idempotency duplicate guard 검증, `FOR UPDATE SKIP LOCKED` claim integration test, backup/restore smoke script 초안으로 M1 DB foundation 잔여 검증을 닫는다.
 - 2026-05-16: issue #8은 M2 port/interface와 registry activation config가 서로 강하게 연결된 type boundary 작업이므로 `single PR mode`에서 진행한다. sub PR로 나누면 registry id, contract type, config schema가 순차 충돌할 가능성이 커 리뷰 이점보다 재작업 비용이 크다.
+- 2026-05-17: issue #10은 M3 Upbit market data와 policy snapshot 범위가 REST policy, WebSocket 수집, fixture replay, DB persistence, runtime 검증을 함께 포함하므로 `sub PR mode`에서 진행한다. `issue-10/01-upbit-contracts`가 Upbit public REST schema, fixture, policy mapper, `Remaining-Req` parser를 먼저 고정한 뒤, WebSocket과 persistence PR을 후속으로 진행한다.
 
 issue #3 sub PR 계획:
 
