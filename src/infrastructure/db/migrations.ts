@@ -4,6 +4,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const migrationFilePattern = /^(\d{6})_[a-z0-9_]+\.sql$/u;
+const migrationAdvisoryLockKey = "seemirai:migrations";
 
 export const defaultMigrationsDirectory = fileURLToPath(
   new URL("../../../migrations", import.meta.url),
@@ -182,11 +183,12 @@ export async function applyMigrations(
  * 실제 migration 실행 순서를 조립한다.
  *
  * 흐름:
- * 1. 디스크 migration 파일을 읽는다.
- * 2. `schema_migrations` 테이블이 없으면 만든다.
- * 3. DB 적용 이력을 읽어 실행 계획을 만든다.
- * 4. pending migration을 version 순서대로 하나씩 transaction 안에서 적용한다.
- * 5. 동시 실행으로 이미 적용된 migration은 재확인 후 skip한다.
+ * 1. DB session 단위 advisory lock을 잡아 runner끼리 초기 table 생성과 적용 순서가 겹치지 않게 한다.
+ * 2. 디스크 migration 파일을 읽는다.
+ * 3. `schema_migrations` 테이블이 없으면 만든다.
+ * 4. DB 적용 이력을 읽어 실행 계획을 만든다.
+ * 5. pending migration을 version 순서대로 하나씩 transaction 안에서 적용한다.
+ * 6. 동시 실행으로 이미 적용된 migration은 재확인 후 skip한다.
  *
  * @param executor 단일 PostgreSQL session에 묶인 SQL executor
  * @param options migration 디렉터리 override 옵션
@@ -196,24 +198,52 @@ async function applyMigrationsWithExecutor(
   executor: SqlExecutor,
   options: { migrationsDirectory?: string },
 ): Promise<MigrationRunResult> {
-  const migrations = await loadMigrationFiles(options.migrationsDirectory);
-  await ensureSchemaMigrationsTable(executor);
+  await acquireMigrationAdvisoryLock(executor);
 
-  const appliedRecords = await listAppliedMigrations(executor);
-  const plan = createMigrationPlan(migrations, appliedRecords);
-  const applied: MigrationFile[] = [];
+  try {
+    const migrations = await loadMigrationFiles(options.migrationsDirectory);
+    await ensureSchemaMigrationsTable(executor);
 
-  for (const migration of plan.applied) {
-    const didApply = await applyMigration(executor, migration);
-    if (didApply) {
-      applied.push(migration);
+    const appliedRecords = await listAppliedMigrations(executor);
+    const plan = createMigrationPlan(migrations, appliedRecords);
+    const applied: MigrationFile[] = [];
+
+    for (const migration of plan.applied) {
+      const didApply = await applyMigration(executor, migration);
+      if (didApply) {
+        applied.push(migration);
+      }
     }
-  }
 
-  return {
-    applied,
-    skipped: migrations.filter((migration) => !applied.includes(migration)),
-  };
+    return {
+      applied,
+      skipped: migrations.filter((migration) => !applied.includes(migration)),
+    };
+  } finally {
+    await releaseMigrationAdvisoryLock(executor);
+  }
+}
+
+/**
+ * migration runner 간 DB-wide session lock을 획득한다.
+ *
+ * 여러 test worker나 runtime instance가 빈 DB에 동시에 붙으면 `CREATE TABLE IF NOT EXISTS` 같은 DDL도
+ * PostgreSQL 내부 catalog 생성 단계에서 경합할 수 있다. 이 lock은 `schema_migrations` table이 아직 없어도
+ * 같은 DB 안의 runner를 하나씩 통과시켜 초기화와 적용 순서를 고정한다.
+ *
+ * @param executor 단일 PostgreSQL session에 묶인 SQL executor
+ */
+async function acquireMigrationAdvisoryLock(executor: SqlExecutor): Promise<void> {
+  await executor.query("SELECT pg_advisory_lock(hashtext($1))", [migrationAdvisoryLockKey]);
+}
+
+/**
+ * migration runner session lock을 해제한다.
+ *
+ * @param executor 단일 PostgreSQL session에 묶인 SQL executor
+ */
+async function releaseMigrationAdvisoryLock(executor: SqlExecutor): Promise<void> {
+  await executor.query("SELECT pg_advisory_unlock(hashtext($1))", [migrationAdvisoryLockKey]);
 }
 
 /**

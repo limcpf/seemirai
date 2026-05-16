@@ -101,7 +101,7 @@ DB migration integration test는 기본 test run에서 skip된다. 로컬 Postgr
 SEEMIRAI_RUN_DB_INTEGRATION=1 corepack pnpm exec vitest run tests/integration
 ```
 
-DB backup/restore smoke test는 운영 백업 절차를 고정하기 위한 초안이다. 원본 DB와 별도의 복구 검증 DB를 준비한 뒤 다음 명령으로 custom-format dump를 만들고 복구 DB에 restore한 다음 `schema_migrations` 조회까지 확인한다.
+DB backup/restore smoke test는 운영 백업 절차를 고정하기 위한 초안이다. 원본 DB와 별도의 disposable 복구 검증 DB를 준비한 뒤 다음 명령으로 custom-format dump를 만들고 복구 DB에 restore한 다음 `schema_migrations` 조회까지 확인한다. 스크립트는 원본 DB와 복구 DB가 같은 대상을 가리키면 중단하고, 복구 DB의 `public` schema를 초기화한 뒤 TimescaleDB의 `timescaledb_pre_restore()`/`timescaledb_post_restore()` 흐름으로 복구한다.
 
 ```sh
 SEEMIRAI_DATABASE_URL=postgres://user:pass@127.0.0.1:55432/seemirai_local \

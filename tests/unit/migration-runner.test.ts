@@ -167,6 +167,14 @@ class FakeMigrationExecutor implements SqlExecutor {
       return rows([]);
     }
 
+    if (normalized.startsWith("SELECT pg_advisory_lock")) {
+      return rows([]);
+    }
+
+    if (normalized.startsWith("SELECT pg_advisory_unlock")) {
+      return rows([]);
+    }
+
     if (normalized === "BEGIN" || normalized === "COMMIT" || normalized === "ROLLBACK") {
       return rows([]);
     }

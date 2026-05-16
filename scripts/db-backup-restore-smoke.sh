@@ -29,6 +29,18 @@ if [ "$source_identity" = "$restore_identity" ]; then
   exit 2
 fi
 
+restore_prepared=0
+
+finish_timescaledb_restore() {
+  if [ "$restore_prepared" = "1" ]; then
+    psql "$SEEMIRAI_RESTORE_DATABASE_URL" \
+      -v ON_ERROR_STOP=1 \
+      -c "SELECT timescaledb_post_restore();" >/dev/null || true
+  fi
+}
+
+trap finish_timescaledb_restore EXIT
+
 pg_dump \
   --format=custom \
   --no-owner \
@@ -36,13 +48,34 @@ pg_dump \
   --file "$backup_file" \
   "$SEEMIRAI_DATABASE_URL"
 
+psql "$SEEMIRAI_RESTORE_DATABASE_URL" \
+  -v ON_ERROR_STOP=1 <<'SQL'
+DROP SCHEMA IF EXISTS public CASCADE;
+CREATE SCHEMA public;
+GRANT ALL ON SCHEMA public TO public;
+SQL
+
+psql "$SEEMIRAI_RESTORE_DATABASE_URL" \
+  -v ON_ERROR_STOP=1 \
+  -c "CREATE EXTENSION IF NOT EXISTS timescaledb;"
+
+psql "$SEEMIRAI_RESTORE_DATABASE_URL" \
+  -v ON_ERROR_STOP=1 \
+  -c "SELECT timescaledb_pre_restore();"
+restore_prepared=1
+
 pg_restore \
-  --clean \
-  --if-exists \
+  --exit-on-error \
   --no-owner \
   --no-acl \
   --dbname "$SEEMIRAI_RESTORE_DATABASE_URL" \
   "$backup_file"
+
+psql "$SEEMIRAI_RESTORE_DATABASE_URL" \
+  -v ON_ERROR_STOP=1 \
+  -c "SELECT timescaledb_post_restore();"
+restore_prepared=0
+trap - EXIT
 
 psql "$SEEMIRAI_RESTORE_DATABASE_URL" \
   -v ON_ERROR_STOP=1 \
