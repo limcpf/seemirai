@@ -47,11 +47,22 @@ export const RegistryActivationConfigSchema = z
 
 export type RegistryActivationConfig = z.infer<typeof RegistryActivationConfigSchema>;
 
+/**
+ * config validation 후 활성화된 단일 strategy 조합이다.
+ *
+ * disabled strategy를 제외한 뒤, strategy registry entry와 rule registry entry 목록을 runtime이 바로 사용할 수
+ * 있게 묶는다.
+ */
 export interface ResolvedStrategyActivation {
   strategy: StrategyRegistryEntry;
   rules: readonly RuleRegistryEntry[];
 }
 
+/**
+ * registry activation config를 해석한 결과다.
+ *
+ * runtime 조립 단계는 이 결과를 기준으로 exchange adapter, strategy worker, rule engine을 연결한다.
+ */
 export interface RegistryActivationResolution {
   exchange: ExchangeRegistryEntry;
   activeStrategies: readonly ResolvedStrategyActivation[];

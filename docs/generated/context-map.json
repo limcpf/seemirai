@@ -86,6 +86,13 @@
       "owner_scope": "docs"
     },
     {
+      "path": "docs/RUNTIME_CONFIG.md",
+      "kind": "reference",
+      "role": "runtime config 구조, 허용값, 안전 invariant 기준",
+      "read_when": ["runtime config 변경", "config/paper.json 변경", "registry 활성화 설정 변경", "안전 toggle 확인"],
+      "owner_scope": "docs"
+    },
+    {
       "path": "docs/DESIGN.md",
       "kind": "policy",
       "role": "구조 변경과 설계 기록 작성 기준",

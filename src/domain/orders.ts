@@ -20,6 +20,11 @@ export type OrderLifecycleStatus =
   | "FAILED"
   | "MANUAL_REVIEW_REQUIRED";
 
+/**
+ * 전략이 직접 주문을 제출하지 않고 생성하는 주문 후보 intent다.
+ *
+ * 이후 CostModel, RiskGate, ExecutionEngine을 통과해야 broker 제출 요청으로 승격된다.
+ */
 export interface OrderIntent {
   exchangeId: ExchangeId;
   market: MarketCode;
@@ -36,6 +41,11 @@ export interface OrderIntent {
   metadata?: JsonRecord;
 }
 
+/**
+ * broker port로 넘기는 주문 제출 요청이다.
+ *
+ * OrderIntent에 비용 snapshot과 risk 승인 근거를 붙여 PaperBroker와 future live broker가 같은 입력을 받게 한다.
+ */
 export interface OrderSubmission {
   intent: OrderIntent;
   costSnapshot?: JsonRecord;
@@ -43,6 +53,11 @@ export interface OrderSubmission {
   submittedAt: TimestampInput;
 }
 
+/**
+ * broker가 관리하는 주문 상태의 공통 표현이다.
+ *
+ * MVP PaperBroker와 future live broker의 조회 결과를 같은 형태로 맞춰 execution layer가 구현체를 몰라도 되게 한다.
+ */
 export interface BrokerOrder {
   brokerOrderId: string;
   idempotencyKey: string;
@@ -58,4 +73,3 @@ export interface BrokerOrder {
   updatedAt: TimestampInput;
   metadata?: JsonRecord;
 }
-

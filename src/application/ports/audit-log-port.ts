@@ -6,6 +6,12 @@ export type AuditEventType =
   | "STATE_TRANSITION"
   | "REGISTRY_CONFIG_VALIDATION";
 
+/**
+ * 운영 판단 근거를 append-only로 남기기 위한 audit event payload다.
+ *
+ * 주문 판단, risk rejection, state transition, registry/config validation 같은 사람이 나중에 추적해야 하는
+ * 사건을 같은 형태로 기록한다.
+ */
 export interface AuditEvent {
   eventType: AuditEventType;
   occurredAt: TimestampInput;
@@ -16,12 +22,23 @@ export interface AuditEvent {
   metadata?: JsonRecord;
 }
 
+/**
+ * audit event 저장 결과다.
+ *
+ * 호출자는 receipt를 이용해 동일한 판단이 audit log에 실제로 남았는지 검증하거나 후속 로그와 연결한다.
+ */
 export interface AuditEventReceipt {
   auditEventId: string;
   appendedAt: TimestampInput;
 }
 
+/**
+ * 감사 로그 저장소가 구현해야 하는 application port다.
+ *
+ * application layer는 이 port에 append만 요청하고, PostgreSQL 저장 방식이나 retention 정책은
+ * infrastructure가 담당한다.
+ */
 export interface AuditLogPort {
+  /** audit event를 append-only log로 저장한다. */
   appendEvent(event: AuditEvent): Promise<AuditEventReceipt>;
 }
-
