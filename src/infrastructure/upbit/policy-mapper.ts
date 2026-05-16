@@ -6,6 +6,7 @@ import type {
   MarketStatus,
   NumericString,
   OrderRulePolicy,
+  PriceTickPolicy,
   RateLimitPolicy,
   TimestampInput,
 } from "../../domain/index.js";
@@ -41,6 +42,7 @@ export interface MapUpbitPolicyOptions {
 
 export interface MapUpbitOrderRuleOptions extends MapUpbitPolicyOptions {
   minimumOrderNotional: NumericString;
+  priceTickPolicy: PriceTickPolicy;
 }
 
 export interface CreateUpbitPublicPolicySnapshotOptions extends MapUpbitOrderRuleOptions {
@@ -62,12 +64,17 @@ export function toMarketPolicy(market: UpbitMarket, options: MapUpbitPolicyOptio
 }
 
 export function toMarketStatus(market: UpbitMarket, options: MapUpbitPolicyOptions): MarketStatus {
+  const [quoteCurrency] = splitUpbitMarketCode(market.market);
+  const marketEventMissing = market.market_event === undefined;
+  const unsupportedQuoteCurrency = quoteCurrency !== "KRW";
   const warning = market.market_event?.warning ?? false;
   const cautionReasonCodes = market.market_event?.caution
     ? normalizeCautionReasonCodes(market.market_event.caution)
     : [];
   const caution = cautionReasonCodes.length > 0;
   const reasonCodes = [
+    ...(marketEventMissing ? ["market_event_missing"] : []),
+    ...(unsupportedQuoteCurrency ? [`unsupported_quote_currency:${quoteCurrency}`] : []),
     ...(warning ? ["market_warning"] : []),
     ...cautionReasonCodes.map((reasonCode) => `market_caution:${reasonCode}`),
   ];
@@ -91,10 +98,7 @@ export function toOrderRulePolicy(
     exchangeId: options.exchangeId ?? UPBIT_KRW_SPOT_EXCHANGE_ID,
     market: instrument.market,
     minimumOrderNotional: options.minimumOrderNotional,
-    priceTickPolicy: {
-      kind: "FIXED",
-      tickSize: instrument.tick_size,
-    },
+    priceTickPolicy: options.priceTickPolicy,
     supportedOrderbookLevels: instrument.supported_levels,
     allowedOrderTypes: ["LIMIT", "MARKET"],
     updatedAt: options.observedAt,

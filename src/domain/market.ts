@@ -214,6 +214,7 @@ export interface FeePolicy {
 export interface RateLimitPolicy {
   exchangeId: ExchangeId;
   group: "REST" | "WEBSOCKET";
+  exchangeGroup?: string;
   remaining?: number;
   resetAt?: TimestampInput;
   policyText?: string;

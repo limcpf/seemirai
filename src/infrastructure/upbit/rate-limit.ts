@@ -96,6 +96,7 @@ export function toRestRateLimitPolicy(
   return {
     exchangeId,
     group: "REST",
+    ...(remainingReq === undefined ? {} : { exchangeGroup: remainingReq.group }),
     ...(remainingReq === undefined ? {} : { remaining: remainingReq.sec }),
     policyText:
       "Upbit REST quotation APIs expose Remaining-Req as group/min/sec; min is deprecated and sec is the current remaining request count.",
@@ -106,6 +107,7 @@ export function toWebSocketRateLimitPolicy(exchangeId: string): RateLimitPolicy 
   return {
     exchangeId,
     group: "WEBSOCKET",
+    exchangeGroup: "websocket-connect/websocket-message",
     policyText:
       "Upbit WebSocket quotation connections are IP-scoped without authentication; connection and request-message limits are tracked separately from REST Remaining-Req headers.",
   };

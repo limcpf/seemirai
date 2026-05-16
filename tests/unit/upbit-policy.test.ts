@@ -17,6 +17,20 @@ import {
 } from "../../src/infrastructure/upbit/index.js";
 
 const observedAt = new Date("2026-05-16T16:09:12.000Z");
+const krwPriceTickPolicy = {
+  kind: "PRICE_BANDS",
+  bands: [
+    {
+      minPrice: "0",
+      maxPrice: "1000",
+      tickSize: "1",
+    },
+    {
+      minPrice: "1000",
+      tickSize: "5",
+    },
+  ],
+} as const;
 
 describe("Upbit public policy schemas and mappers", () => {
   it("parses the market list fixture and normalizes KRW-BTC/KRW-ETH market policies", async () => {
@@ -104,6 +118,45 @@ describe("Upbit public policy schemas and mappers", () => {
     });
   });
 
+  it("blocks markets when market_event is missing because warning/caution status is unknown", () => {
+    const status = toMarketStatus(
+      {
+        market: "KRW-TEST",
+        korean_name: "테스트",
+        english_name: "Test",
+      },
+      { observedAt },
+    );
+
+    expect(status).toMatchObject({
+      tradable: false,
+      warning: false,
+      caution: false,
+      reasonCodes: ["market_event_missing"],
+    });
+  });
+
+  it("keeps non-KRW pairs out of the MVP tradable universe", () => {
+    const policy = toMarketPolicy(
+      {
+        market: "BTC-ETH",
+        korean_name: "이더리움",
+        english_name: "Ethereum",
+        market_event: {
+          warning: false,
+          caution: false,
+        },
+      },
+      { observedAt },
+    );
+
+    expect(policy.quoteCurrency).toBe("BTC");
+    expect(policy.status).toMatchObject({
+      tradable: false,
+      reasonCodes: ["unsupported_quote_currency:BTC"],
+    });
+  });
+
   it("parses orderbook instruments and exposes tick size plus supported levels in order rules", async () => {
     const instruments = UpbitOrderbookInstrumentsResponseSchema.parse(
       await readJsonFixture("orderbook-instruments.json"),
@@ -111,16 +164,14 @@ describe("Upbit public policy schemas and mappers", () => {
     const btcRules = toOrderRulePolicy(instruments[0]!, {
       observedAt,
       minimumOrderNotional: "5000",
+      priceTickPolicy: krwPriceTickPolicy,
     });
 
     expect(btcRules).toEqual({
       exchangeId: "upbit_krw_spot",
       market: "KRW-BTC",
       minimumOrderNotional: "5000",
-      priceTickPolicy: {
-        kind: "FIXED",
-        tickSize: "1000",
-      },
+      priceTickPolicy: krwPriceTickPolicy,
       supportedOrderbookLevels: ["0", "10000", "100000", "1000000", "10000000", "100000000"],
       allowedOrderTypes: ["LIMIT", "MARKET"],
       updatedAt: observedAt,
@@ -135,6 +186,7 @@ describe("Upbit public policy schemas and mappers", () => {
     const snapshot = createUpbitPublicPolicySnapshot(markets[1]!, instruments[0]!, {
       observedAt,
       minimumOrderNotional: "5000",
+      priceTickPolicy: krwPriceTickPolicy,
       rateLimits: [
         toRestRateLimitPolicy("upbit_krw_spot", parseRemainingReqHeader("group=market; min=600; sec=9")),
       ],
@@ -149,6 +201,7 @@ describe("Upbit public policy schemas and mappers", () => {
       },
       orderRules: {
         minimumOrderNotional: "5000",
+        priceTickPolicy: krwPriceTickPolicy,
         supportedOrderbookLevels: ["0", "10000", "100000", "1000000", "10000000", "100000000"],
       },
       orderbookInstrument: {
@@ -158,6 +211,7 @@ describe("Upbit public policy schemas and mappers", () => {
         {
           exchangeId: "upbit_krw_spot",
           group: "REST",
+          exchangeGroup: "market",
           remaining: 9,
         },
       ],
@@ -226,11 +280,13 @@ describe("Upbit REST rate limit parsing", () => {
     expect(toRestRateLimitPolicy("upbit_krw_spot", parseRemainingReqHeader("group=market; min=600; sec=9"))).toMatchObject({
       exchangeId: "upbit_krw_spot",
       group: "REST",
+      exchangeGroup: "market",
       remaining: 9,
     });
     expect(toWebSocketRateLimitPolicy("upbit_krw_spot")).toMatchObject({
       exchangeId: "upbit_krw_spot",
       group: "WEBSOCKET",
+      exchangeGroup: "websocket-connect/websocket-message",
     });
   });
 });
