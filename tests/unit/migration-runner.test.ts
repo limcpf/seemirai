@@ -76,6 +76,16 @@ describe("migration runner", () => {
     expect(migrationSql).toContain("CHECK (drawdown_bps >= 0)");
   });
 
+  it("keeps jobs queue idempotency and claim guards", async () => {
+    const migrations = await loadMigrationFiles(defaultMigrationsDirectory);
+    const migrationSql = migrations.map((migration) => migration.sql).join("\n");
+
+    expect(migrationSql).toContain("idempotency_key text NOT NULL UNIQUE");
+    expect(migrationSql).toContain("CREATE INDEX IF NOT EXISTS jobs_claim_idx");
+    expect(migrationSql).toContain("WHERE status = 'PENDING'");
+    expect(migrationSql).toContain("CHECK (attempt_count <= max_attempts)");
+  });
+
   it("fails when an applied migration checksum changed on disk", async () => {
     const directory = await createTempMigrationDirectory({
       "000001_first.sql": "SELECT 1;\n",
@@ -154,6 +164,14 @@ class FakeMigrationExecutor implements SqlExecutor {
     const normalized = text.trim().replace(/\s+/gu, " ");
 
     if (normalized.startsWith("CREATE TABLE IF NOT EXISTS schema_migrations")) {
+      return rows([]);
+    }
+
+    if (normalized.startsWith("SELECT pg_advisory_lock")) {
+      return rows([]);
+    }
+
+    if (normalized.startsWith("SELECT pg_advisory_unlock")) {
       return rows([]);
     }
 
