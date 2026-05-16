@@ -8,6 +8,22 @@ backup_file="${SEEMIRAI_BACKUP_FILE:-.local/backups/seemirai-$(date -u +%Y%m%dT%
 
 mkdir -p "$(dirname "$backup_file")"
 
+database_identity() {
+  psql "$1" \
+    -v ON_ERROR_STOP=1 \
+    --no-align \
+    --tuples-only \
+    -c "SELECT concat(coalesce(inet_server_addr()::text, 'local'), ':', inet_server_port(), '/', current_database());"
+}
+
+source_identity="$(database_identity "$SEEMIRAI_DATABASE_URL")"
+restore_identity="$(database_identity "$SEEMIRAI_RESTORE_DATABASE_URL")"
+
+if [ "$source_identity" = "$restore_identity" ]; then
+  printf 'Refusing to restore into the source database: %s\n' "$source_identity" >&2
+  exit 2
+fi
+
 pg_dump \
   --format=custom \
   --no-owner \

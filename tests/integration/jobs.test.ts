@@ -100,6 +100,7 @@ describeDb("jobs queue integration", () => {
     const enqueued = await enqueueJob(db, {
       jobType: "report.daily",
       idempotencyKey: "report.daily:2026-05-16",
+      runAfter: new Date("2026-05-15T23:59:00.000Z"),
     });
     const [claimed] = await claimPendingJobs(db, {
       workerId: "worker-a",
@@ -109,11 +110,19 @@ describeDb("jobs queue integration", () => {
 
     expect(claimed?.id).toBe(enqueued.job.id);
 
-    const completed = await completeJob(
-      db,
-      enqueued.job.id,
-      new Date("2026-05-16T00:01:00.000Z"),
-    );
+    await expect(
+      completeJob(db, {
+        jobId: enqueued.job.id,
+        workerId: "worker-b",
+        completedAt: new Date("2026-05-16T00:01:00.000Z"),
+      }),
+    ).rejects.toThrow("running job lock was not found for the worker");
+
+    const completed = await completeJob(db, {
+      jobId: enqueued.job.id,
+      workerId: "worker-a",
+      completedAt: new Date("2026-05-16T00:01:00.000Z"),
+    });
 
     expect(completed.status).toBe("COMPLETED");
     expect(completed.locked_at).toBeNull();

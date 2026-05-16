@@ -25,6 +25,12 @@ export interface ClaimPendingJobsOptions {
   now?: Date | string;
 }
 
+export interface CompleteJobOptions {
+  jobId: string;
+  workerId: string;
+  completedAt?: Date | string;
+}
+
 /**
  * 작업 큐에 job을 등록한다.
  *
@@ -139,16 +145,15 @@ export async function claimPendingJobs(
  * 실행이 끝난 job을 완료 상태로 전환한다.
  *
  * @param database Kysely database connection
- * @param jobId 완료 처리할 job ID
- * @param completedAt 완료 기준 시각
+ * @param options 완료 처리할 job ID, claim한 worker ID, 완료 기준 시각
  * @returns 갱신된 job record
  */
 export async function completeJob(
   database: Database,
-  jobId: string,
-  completedAt: Date | string = new Date(),
+  options: CompleteJobOptions,
 ): Promise<JobRecord> {
-  return database
+  const completedAt = options.completedAt ?? new Date();
+  const completed = await database
     .updateTable("jobs")
     .set({
       status: "COMPLETED",
@@ -156,9 +161,18 @@ export async function completeJob(
       locked_by: null,
       updated_at: completedAt,
     })
-    .where("id", "=", jobId)
+    .where("id", "=", options.jobId)
+    .where("status", "=", "RUNNING")
+    .where("locked_by", "=", options.workerId)
+    .where("locked_at", "is not", null)
     .returningAll()
-    .executeTakeFirstOrThrow();
+    .executeTakeFirst();
+
+  if (completed === undefined) {
+    throw new Error("running job lock was not found for the worker");
+  }
+
+  return completed;
 }
 
 function toInsertableJob(input: EnqueueJobInput): Insertable<JobsTable> {
