@@ -13,8 +13,13 @@ database_identity() {
     -v ON_ERROR_STOP=1 \
     --no-align \
     --tuples-only \
-    -c "SELECT concat(coalesce(inet_server_addr()::text, 'local'), ':', inet_server_port(), '/', current_database());"
+    -c "SELECT concat(current_setting('data_directory'), ':', current_setting('port'), '/', oid, '/', datname) FROM pg_database WHERE datname = current_database();"
 }
+
+if [ "$SEEMIRAI_DATABASE_URL" = "$SEEMIRAI_RESTORE_DATABASE_URL" ]; then
+  printf 'Refusing to restore into the source database: connection strings are identical\n' >&2
+  exit 2
+fi
 
 source_identity="$(database_identity "$SEEMIRAI_DATABASE_URL")"
 restore_identity="$(database_identity "$SEEMIRAI_RESTORE_DATABASE_URL")"

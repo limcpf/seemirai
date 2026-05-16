@@ -27,9 +27,13 @@ describeDb("jobs queue integration", () => {
   afterAll(async () => {
     if (database !== undefined) {
       await destroyDatabase(database);
+      database = undefined;
+      pool = undefined;
+      return;
     }
 
     await pool?.end();
+    pool = undefined;
   });
 
   it("blocks duplicate jobs by idempotency key", async () => {
