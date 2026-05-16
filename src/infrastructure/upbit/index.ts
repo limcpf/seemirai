@@ -1,5 +1,6 @@
 export {
   createUpbitPublicPolicySnapshot,
+  DEFAULT_UPBIT_MVP_MARKETS,
   toMarketPolicy,
   toMarketStatus,
   toOrderRulePolicy,

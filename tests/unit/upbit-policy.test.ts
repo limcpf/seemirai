@@ -85,7 +85,7 @@ describe("Upbit public policy schemas and mappers", () => {
           },
         },
       },
-      { observedAt },
+      { allowedMarkets: ["KRW-TEST"], observedAt },
     );
 
     expect(status).toMatchObject({
@@ -107,7 +107,7 @@ describe("Upbit public policy schemas and mappers", () => {
           caution: true,
         },
       },
-      { observedAt },
+      { allowedMarkets: ["KRW-TEST"], observedAt },
     );
 
     expect(status).toMatchObject({
@@ -125,7 +125,7 @@ describe("Upbit public policy schemas and mappers", () => {
         korean_name: "테스트",
         english_name: "Test",
       },
-      { observedAt },
+      { allowedMarkets: ["KRW-TEST"], observedAt },
     );
 
     expect(status).toMatchObject({
@@ -147,13 +147,33 @@ describe("Upbit public policy schemas and mappers", () => {
           caution: false,
         },
       },
-      { observedAt },
+      { allowedMarkets: ["BTC-ETH"], observedAt },
     );
 
     expect(policy.quoteCurrency).toBe("BTC");
     expect(policy.status).toMatchObject({
       tradable: false,
       reasonCodes: ["unsupported_quote_currency:BTC"],
+    });
+  });
+
+  it("blocks KRW markets outside the default MVP universe", () => {
+    const policy = toMarketPolicy(
+      {
+        market: "KRW-XRP",
+        korean_name: "리플",
+        english_name: "XRP",
+        market_event: {
+          warning: false,
+          caution: false,
+        },
+      },
+      { observedAt },
+    );
+
+    expect(policy.status).toMatchObject({
+      tradable: false,
+      reasonCodes: ["market_not_in_mvp_universe:KRW-XRP"],
     });
   });
 

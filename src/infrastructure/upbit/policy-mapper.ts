@@ -13,6 +13,7 @@ import type {
 import type { UpbitMarket, UpbitOrderbookInstrument } from "./schemas.js";
 
 export const UPBIT_KRW_SPOT_EXCHANGE_ID = "upbit_krw_spot" satisfies ExchangeId;
+export const DEFAULT_UPBIT_MVP_MARKETS = ["KRW-BTC", "KRW-ETH"] as const satisfies readonly MarketCode[];
 
 export interface UpbitOrderbookInstrumentPolicy {
   exchangeId: ExchangeId;
@@ -37,6 +38,7 @@ export interface UpbitPublicPolicySnapshot {
 
 export interface MapUpbitPolicyOptions {
   exchangeId?: ExchangeId;
+  allowedMarkets?: readonly MarketCode[];
   observedAt: TimestampInput;
 }
 
@@ -65,8 +67,10 @@ export function toMarketPolicy(market: UpbitMarket, options: MapUpbitPolicyOptio
 
 export function toMarketStatus(market: UpbitMarket, options: MapUpbitPolicyOptions): MarketStatus {
   const [quoteCurrency] = splitUpbitMarketCode(market.market);
+  const allowedMarkets = options.allowedMarkets ?? DEFAULT_UPBIT_MVP_MARKETS;
   const marketEventMissing = market.market_event === undefined;
   const unsupportedQuoteCurrency = quoteCurrency !== "KRW";
+  const marketNotInUniverse = !allowedMarkets.includes(market.market);
   const warning = market.market_event?.warning ?? false;
   const cautionReasonCodes = market.market_event?.caution
     ? normalizeCautionReasonCodes(market.market_event.caution)
@@ -75,6 +79,7 @@ export function toMarketStatus(market: UpbitMarket, options: MapUpbitPolicyOptio
   const reasonCodes = [
     ...(marketEventMissing ? ["market_event_missing"] : []),
     ...(unsupportedQuoteCurrency ? [`unsupported_quote_currency:${quoteCurrency}`] : []),
+    ...(marketNotInUniverse ? [`market_not_in_mvp_universe:${market.market}`] : []),
     ...(warning ? ["market_warning"] : []),
     ...cautionReasonCodes.map((reasonCode) => `market_caution:${reasonCode}`),
   ];
