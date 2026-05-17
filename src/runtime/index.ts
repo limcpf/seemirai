@@ -41,8 +41,19 @@ export {
   defaultStrategyRuleIds,
   resolveRegistryActivationConfig,
 } from "./registry-config.js";
+export {
+  MeanReversionStrategyParametersSchema,
+  StrategyParametersConfigSchema,
+  TrendFollowingStrategyParametersSchema,
+  defaultStrategyParametersConfig,
+} from "./strategy-parameters.js";
 export type {
   RegistryActivationConfig,
   RegistryActivationResolution,
   ResolvedStrategyActivation,
 } from "./registry-config.js";
+export type {
+  MeanReversionStrategyParameters,
+  StrategyParametersConfig,
+  TrendFollowingStrategyParameters,
+} from "./strategy-parameters.js";

@@ -32,6 +32,7 @@
 | `universe` | `KRW-BTC`, `KRW-ETH` | MVP 거래 후보 universe |
 | `llm` | trade signal 생성 불가 | LLM이 매매 판단을 직접 만들지 못하게 제한 |
 | `registry` | 정적 registry id 참조 | exchange, strategy, rule 활성화 조합 |
+| `strategyParameters` | strategy별 기본 threshold | 전략 후보 생성과 rule 평가에 쓰는 보수적 기준값 |
 | `secrets` | 기본 `{}` | schema shape만 표현하며 실제 secret은 저장하지 않음 |
 
 ## 안전 invariant
@@ -145,15 +146,61 @@ M3는 실제 RiskGate state machine을 구현하지 않고 위 차단 입력 신
 - `strategies[].ruleIds`는 비어 있으면 안 된다.
 - 같은 strategy id를 중복 선언하면 안 된다.
 
+## Strategy Parameters 구조
+
+구현 기준:
+
+- schema: `src/runtime/strategy-parameters.ts`
+- 기본 profile: `config/paper.json`
+
+`strategyParameters`는 strategy id별 threshold를 명시한다. 모든 금융 값은 Decimal로 파싱 가능한 string이어야 하며, JS number는 정밀도와 단위 혼동을 피하기 위해 거부한다. 알 수 없는 strategy id나 threshold key는 오타로 간주해 fail-fast한다.
+
+```json
+{
+  "strategyParameters": {
+    "trend_following": {
+      "max_spread_bps": "8",
+      "min_depth_krw": "50000000",
+      "breakout_lookback_buckets": 20,
+      "min_trade_strength": "1.2",
+      "min_orderbook_imbalance": "0.08"
+    },
+    "mean_reversion": {
+      "max_spread_bps": "6",
+      "min_depth_krw": "70000000",
+      "entry_deviation_bps": "25",
+      "exit_deviation_bps": "8",
+      "stop_loss_bps": "35"
+    }
+  }
+}
+```
+
+| strategy | threshold | 기본값 | 단위 | 보수적 조정 방향 |
+| --- | --- | ---: | --- | --- |
+| `trend_following` | `max_spread_bps` | `8` | bps | 낮출수록 넓은 spread 후보를 더 많이 차단 |
+| `trend_following` | `min_depth_krw` | `50000000` | KRW | 높일수록 유동성이 부족한 후보를 더 많이 차단 |
+| `trend_following` | `breakout_lookback_buckets` | `20` | feature bucket 수 | 높일수록 짧은 돌파 신호를 덜 신뢰 |
+| `trend_following` | `min_trade_strength` | `1.2` | ratio | 높일수록 약한 체결강도 후보를 더 많이 차단 |
+| `trend_following` | `min_orderbook_imbalance` | `0.08` | 0~1 ratio | 높일수록 약한 호가 불균형 후보를 더 많이 차단 |
+| `mean_reversion` | `max_spread_bps` | `6` | bps | 낮출수록 넓은 spread 후보를 더 많이 차단 |
+| `mean_reversion` | `min_depth_krw` | `70000000` | KRW | 높일수록 유동성이 부족한 후보를 더 많이 차단 |
+| `mean_reversion` | `entry_deviation_bps` | `25` | bps | 높일수록 진입 신호를 더 드물게 허용 |
+| `mean_reversion` | `exit_deviation_bps` | `8` | bps | 낮출수록 더 빨리 평균 복귀 청산 후보를 만든다 |
+| `mean_reversion` | `stop_loss_bps` | `35` | bps | 낮출수록 손절 후보를 더 빨리 만든다 |
+
+M4의 `risk_ok` rule은 RiskGate 활성 승인 구현이 아니다. `risk_ok`는 registry/config contract에 남기되, M5 전까지는 `risk_ok_placeholder` WARN으로 평가해 실행 승인으로 해석되지 않게 한다.
+
 ## 변경 절차
 
 설정 구조나 허용 id를 바꾸면 다음을 함께 확인한다.
 
 1. `src/runtime/config.ts` 또는 `src/runtime/registry-config.ts`
-2. `src/application/registry.ts`
-3. `config/paper.json`
-4. 관련 unit test
-5. 이 문서와 기준 설계 문서
+2. `src/runtime/strategy-parameters.ts`
+3. `src/application/registry.ts`
+4. `config/paper.json`
+5. 관련 unit test
+6. 이 문서와 기준 설계 문서
 
 검증 명령:
 
