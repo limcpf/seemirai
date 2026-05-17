@@ -38,6 +38,18 @@ const UpbitWireNumericSchema = z.union([
 const UpbitMillisecondTimestampSchema = z.number().int().nonnegative();
 
 /**
+ * Upbit WebSocket 체결 순번 number 입력 schema다.
+ *
+ * `sequential_id`는 JS safe integer보다 클 수 있다. raw text decoder를 거치면 문자열로 보존되지만, 이미
+ * JSON.parse된 unsafe number는 원본 정밀도가 깨졌을 수 있으므로 schema 단계에서 거부한다.
+ */
+const UpbitSafeSequentialIdNumberSchema = z
+  .number()
+  .int()
+  .nonnegative()
+  .refine(Number.isSafeInteger, "unsafe sequential_id number is not allowed; use raw text decoder");
+
+/**
  * Upbit 시장경보 caution payload schema다.
  *
  * 과거 상세 reason object와 변경 후 boolean 표현을 모두 받아들인다. 업무 판단은 어느 표현이든
@@ -120,7 +132,7 @@ export const UpbitWebSocketTradeSchema = z
     ask_bid: z.enum(["ASK", "BID"]),
     trade_timestamp: UpbitMillisecondTimestampSchema,
     timestamp: UpbitMillisecondTimestampSchema,
-    sequential_id: z.union([z.string().regex(/^\d+$/u), z.number().finite().nonnegative()]),
+    sequential_id: z.union([z.string().regex(/^\d+$/u), UpbitSafeSequentialIdNumberSchema]),
     stream_type: UpbitWebSocketStreamTypeSchema,
     best_ask_price: UpbitWireNumericSchema.optional(),
     best_ask_size: UpbitWireNumericSchema.optional(),

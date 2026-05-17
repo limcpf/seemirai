@@ -170,6 +170,17 @@ describe("Upbit WebSocket schemas, client, and replay", () => {
     });
   });
 
+  it("rejects unsafe numeric sequential_id values when a payload bypasses the raw text decoder", async () => {
+    const payload = await readJsonFixture("websocket-trade.json");
+
+    expect(() =>
+      UpbitWebSocketTradeSchema.parse({
+        ...(payload as Record<string, unknown>),
+        sequential_id: 17303368620470000,
+      }),
+    ).toThrow();
+  });
+
   it("replays trade and orderbook fixtures as a deterministic event sequence", async () => {
     const events = await collectReplay([
       await readJsonFixture("websocket-trade.json"),
