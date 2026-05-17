@@ -67,6 +67,14 @@ Lockfile 변경은 `pnpm-lock.yaml`에 기록한다. M1 DB foundation 범위에�
 - 배포 기준은 Ubuntu 24.04 LTS + Docker Compose다.
 - 상세 결정은 [`design-docs/2026-05-13-mvp-runtime-architecture.md`](./design-docs/2026-05-13-mvp-runtime-architecture.md)를 따른다.
 
+## 코드 주석 규칙
+
+- 외부 시스템 adapter, domain/application port, repository, runtime worker처럼 업무 흐름이나 안전 경계를 담당하는 public type/function/class에는 한국어 JSDoc을 남긴다.
+- JSDoc은 구현 방법보다 업무 책임, 입력/출력 흐름, 안전 기본값, fail-fast 조건, 후속 단계가 의존하는 contract를 설명한다.
+- 거래소 payload, DB row, policy snapshot, rate limit, 주문/리스크 상태처럼 운영 판단에 쓰이는 값은 왜 보존하거나 차단하는지 주석에 명시한다.
+- 단순 getter, 테스트 fixture, 지역 변수처럼 코드 자체로 명확한 부분에는 억지 주석을 달지 않는다.
+- 새 adapter나 외부 입력 schema를 추가할 때는 PR 검토 전에 JSDoc 누락 여부를 함께 확인한다.
+
 ## 로컬 시작
 
 의존성 설치:
