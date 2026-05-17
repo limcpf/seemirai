@@ -30,11 +30,25 @@ export {
   UpbitMarketSchema,
   UpbitOrderbookInstrumentSchema,
   UpbitOrderbookInstrumentsResponseSchema,
+  UpbitWebSocketErrorResponseSchema,
+  UpbitWebSocketMarketDataPayloadSchema,
+  UpbitWebSocketOrderbookSchema,
+  UpbitWebSocketOrderbookUnitSchema,
+  UpbitWebSocketStatusSchema,
+  UpbitWebSocketStreamTypeSchema,
+  UpbitWebSocketTradeSchema,
 } from "./schemas.js";
 export type {
   UpbitMarket,
   UpbitMarketEvent,
   UpbitOrderbookInstrument,
+  UpbitWebSocketErrorResponse,
+  UpbitWebSocketMarketDataPayload,
+  UpbitWebSocketOrderbook,
+  UpbitWebSocketOrderbookUnit,
+  UpbitWebSocketStatus,
+  UpbitWebSocketStreamType,
+  UpbitWebSocketTrade,
 } from "./schemas.js";
 export {
   UpbitPublicRestClient,
@@ -44,3 +58,46 @@ export type {
   UpbitRestClientOptions,
   UpbitRestResponse,
 } from "./rest-client.js";
+export {
+  UPBIT_QUOTATION_WEBSOCKET_URL,
+  UpbitQuotationWebSocketClient,
+  createUpbitOrderbookSubscription,
+  createUpbitTradeSubscription,
+  serializeUpbitWebSocketRequest,
+} from "./websocket-client.js";
+export type {
+  CreateUpbitOrderbookSubscriptionOptions,
+  CreateUpbitWebSocketSubscriptionOptions,
+  UpbitOrderbookSubscriptionMarket,
+  UpbitQuotationWebSocketType,
+  UpbitWebSocketClientOptions,
+  UpbitWebSocketConnection,
+  UpbitWebSocketDataTypeObject,
+  UpbitWebSocketFactory,
+  UpbitWebSocketFormat,
+  UpbitWebSocketFormatObject,
+  UpbitWebSocketRequest,
+  UpbitWebSocketTicketObject,
+} from "./websocket-client.js";
+export {
+  createUpbitMarketDataStatusEvent,
+  toConnectedStatusEvent,
+  toOrderbookEvent,
+  toStaleMarketDataStatusEvent,
+  toTradeEvent,
+  toWebSocketErrorStatusEvent,
+} from "./websocket-mapper.js";
+export type {
+  CreateUpbitMarketDataStatusOptions,
+  MapUpbitWebSocketEventOptions,
+  UpbitStaleMarketDataOptions,
+} from "./websocket-mapper.js";
+export {
+  decodeUpbitWebSocketMessage,
+  replayUpbitWebSocketMessages,
+  toMarketDataEvent,
+} from "./websocket-replay.js";
+export type {
+  ReplayUpbitWebSocketOptions,
+  UpbitWebSocketReplayInput,
+} from "./websocket-replay.js";
