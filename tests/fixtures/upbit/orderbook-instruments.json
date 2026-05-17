@@ -1,0 +1,14 @@
+[
+  {
+    "market": "KRW-BTC",
+    "quote_currency": "KRW",
+    "tick_size": "1000",
+    "supported_levels": ["0", "10000", "100000", "1000000", "10000000", "100000000"]
+  },
+  {
+    "market": "KRW-ETH",
+    "quote_currency": "KRW",
+    "tick_size": "1000",
+    "supported_levels": ["0", "10000", "100000", "1000000"]
+  }
+]

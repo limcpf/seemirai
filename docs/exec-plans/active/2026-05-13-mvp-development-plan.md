@@ -142,18 +142,18 @@ ruleRegistry
 
 ### M3. Upbit market data와 policy snapshot
 
-- [ ] Upbit public REST market list client
-- [ ] Upbit WebSocket trades/orderbook client
-- [ ] Upbit payload Zod schema
-- [ ] `market_event.warning`, `market_event.caution` 저장과 universe 차단
-- [ ] rate limit 상태 모델
-- [ ] raw payload sampling, trades 저장, orderbook metric 1초 집계, snapshot 5초 저장
+- [x] Upbit public REST market list client
+- [x] Upbit WebSocket trades/orderbook client
+- [x] Upbit payload Zod schema
+- [x] `market_event.warning`, `market_event.caution` 저장과 universe 차단
+- [x] rate limit 상태 모델
+- [x] raw payload sampling, trades 저장, orderbook metric 1초 집계, snapshot 5초 저장
 
 검증:
 
-- [ ] Upbit REST fixture contract test
-- [ ] Upbit WebSocket fixture replay test
-- [ ] stale data와 reconnect event 기록 테스트
+- [x] Upbit REST fixture contract test
+- [x] Upbit WebSocket fixture replay test
+- [x] stale data와 reconnect event 기록 테스트
 
 ### M4. Cost, rule, strategy core
 
@@ -241,6 +241,10 @@ ruleRegistry
 - 2026-05-15: issue #3 Sub PR 2는 raw SQL migration runner, `schema_migrations`, 초기 일반 테이블, TimescaleDB hypertable migration, DB integration test harness 범위로 진행한다. Docker가 없는 환경에서는 DB integration test를 기본 skip하고 `SEEMIRAI_RUN_DB_INTEGRATION=1`일 때 실제 DB에 적용한다.
 - 2026-05-16: issue #3 Sub PR 3은 `jobs` queue repository, idempotency duplicate guard 검증, `FOR UPDATE SKIP LOCKED` claim integration test, backup/restore smoke script 초안으로 M1 DB foundation 잔여 검증을 닫는다.
 - 2026-05-16: issue #8은 M2 port/interface와 registry activation config가 서로 강하게 연결된 type boundary 작업이므로 `single PR mode`에서 진행한다. sub PR로 나누면 registry id, contract type, config schema가 순차 충돌할 가능성이 커 리뷰 이점보다 재작업 비용이 크다.
+- 2026-05-17: issue #10은 M3 Upbit market data와 policy snapshot 범위가 REST policy, WebSocket 수집, fixture replay, DB persistence, runtime 검증을 함께 포함하므로 `sub PR mode`에서 진행한다. `issue-10/01-upbit-contracts`가 Upbit public REST schema, fixture, policy mapper, `Remaining-Req` parser를 먼저 고정한 뒤, WebSocket과 persistence PR을 후속으로 진행한다.
+- 2026-05-17: issue #10 Sub PR 2는 `issue-10/02-upbit-websocket`에서 공개 quotation WebSocket `trade`/`orderbook` subscription, DEFAULT payload schema/mapper, fixture replay, stale/reconnect/disconnect status event contract를 고정한다. DB 저장소와 runtime worker 최종 wiring은 후속 sub PR에서 처리한다.
+- 2026-05-17: issue #10 Sub PR 3은 `issue-10/03-market-data-persistence`에서 `policy_snapshots`, `trades`, `orderbook_metrics`, `orderbook_snapshots` repository와 idempotent insert/upsert 경계를 고정한다. runtime worker 연결과 M3 최종 완료 체크는 후속 Sub PR 4에서 처리한다.
+- 2026-05-17: issue #10 Sub PR 4는 `issue-10/04-runtime-verification`에서 `PAPER_NO_KEY` Upbit public quotation runtime assembly, market data event persistence routing, status event의 audit/risk 차단 후보 매핑을 고정하고 M3 체크리스트를 완료 처리한다. 실제 RiskGate state machine과 주문 차단 적용은 M5 범위로 유지한다.
 
 issue #3 sub PR 계획:
 

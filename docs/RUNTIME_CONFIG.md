@@ -53,6 +53,36 @@ MVP 기본 profile에서는 다음 값이 켜져 있으면 안 된다.
 
 `assertSafeRuntimeConfig`는 위반 값을 발견하면 runtime config 로딩을 실패시킨다.
 
+## PAPER_NO_KEY market data runtime
+
+구현 기준:
+
+- assembly: `src/runtime/market-data-runtime.ts`
+- Upbit public WebSocket endpoint: `wss://api.upbit.com/websocket/v1`
+- 기본 consumer id: `paper-no-key-market-data-worker`
+
+`PAPER_NO_KEY` market data runtime은 `config/paper.json`을 로딩한 뒤 다음 조건을 추가로 검증한다.
+
+- `exchange=UPBIT`, `market=KRW_SPOT`, `mode=PAPER_TRADING`이어야 한다.
+- `registry.exchangeId=upbit_krw_spot`이어야 한다.
+- `paper_no_key=true`이어야 한다.
+- `secrets.upbit_access_key`, `secrets.upbit_secret_key`가 없어야 한다.
+- WebSocket subscription message에는 `Authorization`, `Bearer`, private path, `myOrder`, `myAsset`, `orders/chance`, `/v1/orders` 후보가 없어야 한다.
+
+runtime assembly는 `universe.phase_1`의 `KRW-BTC`, `KRW-ETH`에 대해 공개 `trade`, `orderbook` subscription만 만든다. 이 단계는
+실제 주문, 잔고, 인증 API client를 생성하지 않는다.
+
+market data status event는 다음 방식으로 저장 경계를 지난다.
+
+| status | audit_events | risk_events | 신규 주문 차단 입력 |
+| --- | --- | --- | --- |
+| `CONNECTED` | `MARKET_DATA_STATUS`, `INFO` | 없음 | false |
+| `STALE` | `MARKET_DATA_STATUS`, `WARN` | `stale_market_data`, `BLOCK_NEW_ORDERS` | true |
+| `RECONNECTING` | `MARKET_DATA_STATUS`, `WARN` | `market_data_reconnecting`, `BLOCK_NEW_ORDERS` | true |
+| `DISCONNECTED` | `MARKET_DATA_STATUS`, `ERROR` | `market_data_disconnected`, `BLOCK_NEW_ORDERS` | true |
+
+M3는 실제 RiskGate state machine을 구현하지 않고 위 차단 입력 신호까지만 만든다. RiskGate 상태 전이와 주문 차단 적용은 M5 범위다.
+
 ## Universe 구조
 
 ```json

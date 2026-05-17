@@ -162,6 +162,7 @@ export interface OrderRulePolicy {
   minimumOrderNotional: NumericString;
   priceTickPolicy: PriceTickPolicy;
   quantityStepSize?: NumericString;
+  supportedOrderbookLevels?: readonly NumericString[];
   allowedOrderTypes: readonly ("LIMIT" | "MARKET")[];
   updatedAt: TimestampInput;
 }
@@ -213,6 +214,7 @@ export interface FeePolicy {
 export interface RateLimitPolicy {
   exchangeId: ExchangeId;
   group: "REST" | "WEBSOCKET";
+  exchangeGroup?: string;
   remaining?: number;
   resetAt?: TimestampInput;
   policyText?: string;
