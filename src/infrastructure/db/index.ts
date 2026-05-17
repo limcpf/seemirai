@@ -12,6 +12,16 @@ export {
   findJobByIdempotencyKey,
 } from "./jobs.js";
 export {
+  insertTrade,
+  savePolicySnapshot,
+  toOrderbookMetricRow,
+  toOrderbookSnapshotRow,
+  toPolicySnapshotInput,
+  toTradeRow,
+  upsertOrderbookMetric,
+  upsertOrderbookSnapshot,
+} from "./market-data.js";
+export {
   DuplicateMigrationVersionError,
   InvalidMigrationFilenameError,
   MigrationChecksumMismatchError,
@@ -31,6 +41,17 @@ export type {
   JobRecord,
   JobStatus,
 } from "./jobs.js";
+export type {
+  OrderbookMetricInputOptions,
+  OrderbookMetricRecord,
+  OrderbookSnapshotInputOptions,
+  OrderbookSnapshotRecord,
+  PolicySnapshotRecord,
+  SavePolicySnapshotInput,
+  SavePolicySnapshotResult,
+  TradeRecord,
+  UpbitPolicySnapshotPersistenceOptions,
+} from "./market-data.js";
 export type {
   AppliedMigrationRecord,
   MigrationFile,
