@@ -1,0 +1,17 @@
+[
+  {
+    "kind": "status",
+    "status": "RECONNECTING",
+    "market": "KRW-BTC",
+    "observed_at": "2026-05-17T02:12:00.000Z",
+    "reason_code": "websocket_closed",
+    "reconnect_count": 1
+  },
+  {
+    "kind": "status",
+    "status": "DISCONNECTED",
+    "market": "KRW-BTC",
+    "observed_at": "2026-05-17T02:12:30.000Z",
+    "reason_code": "idle_timeout"
+  }
+]

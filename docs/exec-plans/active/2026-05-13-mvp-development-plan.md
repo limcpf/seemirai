@@ -242,6 +242,7 @@ ruleRegistry
 - 2026-05-16: issue #3 Sub PR 3은 `jobs` queue repository, idempotency duplicate guard 검증, `FOR UPDATE SKIP LOCKED` claim integration test, backup/restore smoke script 초안으로 M1 DB foundation 잔여 검증을 닫는다.
 - 2026-05-16: issue #8은 M2 port/interface와 registry activation config가 서로 강하게 연결된 type boundary 작업이므로 `single PR mode`에서 진행한다. sub PR로 나누면 registry id, contract type, config schema가 순차 충돌할 가능성이 커 리뷰 이점보다 재작업 비용이 크다.
 - 2026-05-17: issue #10은 M3 Upbit market data와 policy snapshot 범위가 REST policy, WebSocket 수집, fixture replay, DB persistence, runtime 검증을 함께 포함하므로 `sub PR mode`에서 진행한다. `issue-10/01-upbit-contracts`가 Upbit public REST schema, fixture, policy mapper, `Remaining-Req` parser를 먼저 고정한 뒤, WebSocket과 persistence PR을 후속으로 진행한다.
+- 2026-05-17: issue #10 Sub PR 2는 `issue-10/02-upbit-websocket`에서 공개 quotation WebSocket `trade`/`orderbook` subscription, DEFAULT payload schema/mapper, fixture replay, stale/reconnect/disconnect status event contract를 고정한다. DB 저장소와 runtime worker 최종 wiring은 후속 sub PR에서 처리한다.
 
 issue #3 sub PR 계획:
 
