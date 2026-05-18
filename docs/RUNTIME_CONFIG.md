@@ -84,6 +84,22 @@ market data status event는 다음 방식으로 저장 경계를 지난다.
 
 M3는 실제 RiskGate state machine을 구현하지 않고 위 차단 입력 신호까지만 만든다. RiskGate 상태 전이와 주문 차단 적용은 M5 범위다.
 
+## 주문 후보 폐기 Audit
+
+M4는 주문 후보가 실행 단계로 넘어가지 못한 이유를 `AuditLogPort`로 남길 수 있는 application contract와
+`audit_events` PostgreSQL append adapter를 제공한다.
+
+저장 기준:
+
+- event type: `ORDER_DECISION`
+- severity: `WARN`
+- payload marker: `audit_kind=ORDER_CANDIDATE_DISCARDED`
+- discard stage: `STRATEGY_DECISION`, `INTENT_CONVERSION`, `COST_DECISION`, `RULE_ENGINE`
+- payload 주요 필드: `strategy_id`, `reason_code`, `order_intent`, `strategy_decision`, `intent_conversion`, `cost_decision`, `rule_result`
+
+이 audit event는 실제 주문 제출 근거가 아니라, M5 RiskGate와 M6 ExecutionEngine 이전에 후보가 폐기된 이유를 사람이
+추적하기 위한 append-only 기록이다.
+
 ## Universe 구조
 
 ```json

@@ -157,19 +157,19 @@ ruleRegistry
 
 ### M4. Cost, rule, strategy core
 
-- [ ] Decimal 기반 비용 계산
-- [ ] `cost_bps + safety_buffer_bps` 판정
-- [ ] 기본 buy/sell rule 구현
-- [ ] `trend_following` strategy skeleton
-- [ ] `mean_reversion` strategy skeleton
-- [ ] `StrategyDecision -> OrderIntent` 변환
-- [ ] 폐기 사유 audit log 연결
+- [x] Decimal 기반 비용 계산
+- [x] `cost_bps + safety_buffer_bps` 판정
+- [x] 기본 buy/sell rule 구현
+- [x] `trend_following` strategy skeleton
+- [x] `mean_reversion` strategy skeleton
+- [x] `StrategyDecision -> OrderIntent` 변환
+- [x] 폐기 사유 audit log 연결
 
 검증:
 
-- [ ] 비용 항목 증가 시 거래 가능성이 높아지지 않는 속성 테스트
-- [ ] 저유동성/주의/유의 종목 rule 차단 테스트
-- [ ] 전략이 직접 주문을 제출하지 않는 테스트
+- [x] 비용 항목 증가 시 거래 가능성이 높아지지 않는 속성 테스트
+- [x] 저유동성/주의/유의 종목 rule 차단 테스트
+- [x] 전략이 직접 주문을 제출하지 않는 테스트
 
 ### M5. RiskGate와 상태 전이
 
@@ -245,6 +245,7 @@ ruleRegistry
 - 2026-05-17: issue #10 Sub PR 2는 `issue-10/02-upbit-websocket`에서 공개 quotation WebSocket `trade`/`orderbook` subscription, DEFAULT payload schema/mapper, fixture replay, stale/reconnect/disconnect status event contract를 고정한다. DB 저장소와 runtime worker 최종 wiring은 후속 sub PR에서 처리한다.
 - 2026-05-17: issue #10 Sub PR 3은 `issue-10/03-market-data-persistence`에서 `policy_snapshots`, `trades`, `orderbook_metrics`, `orderbook_snapshots` repository와 idempotent insert/upsert 경계를 고정한다. runtime worker 연결과 M3 최종 완료 체크는 후속 Sub PR 4에서 처리한다.
 - 2026-05-17: issue #10 Sub PR 4는 `issue-10/04-runtime-verification`에서 `PAPER_NO_KEY` Upbit public quotation runtime assembly, market data event persistence routing, status event의 audit/risk 차단 후보 매핑을 고정하고 M3 체크리스트를 완료 처리한다. 실제 RiskGate state machine과 주문 차단 적용은 M5 범위로 유지한다.
+- 2026-05-18: issue #16은 M4 Cost/rule/strategy core 범위가 cost model, strategy config/rules, strategy variants, audit persistence/docs로 나뉘어 `sub PR mode`에서 순차 진행됐다. Sub PR 4는 `AuditLogPort -> audit_events` append adapter와 주문 후보 폐기 audit helper로 폐기 사유 추적 경계를 고정하고 M4 체크리스트를 완료 처리한다.
 
 issue #3 sub PR 계획:
 
