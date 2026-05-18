@@ -168,8 +168,26 @@ export function createTrendFollowingStrategy(options: TrendFollowingStrategyOpti
         });
       }
 
+      const breakoutLookback = requireFeatureDecimal(
+        context,
+        "breakout_lookback_buckets",
+        "trend_following",
+      );
+
+      if (breakoutLookback.kind !== "value") {
+        return breakoutLookback.decision;
+      }
+
+      if (breakoutLookback.value.lessThan(options.breakoutLookbackBuckets)) {
+        return hold("trend_following", "breakout_lookback_below_threshold", {
+          breakout_lookback_buckets: breakoutLookback.value.toFixed(),
+          min_breakout_lookback_buckets: options.breakoutLookbackBuckets,
+        });
+      }
+
       return createOrderDecision(context, "trend_following", side, {
         breakout_lookback_buckets: options.breakoutLookbackBuckets,
+        signal_breakout_lookback_buckets: breakoutLookback.value.toFixed(),
         breakout_direction: breakoutDirection,
         min_trade_strength: minTradeStrength.toFixed(),
         min_orderbook_imbalance: minOrderbookImbalance.toFixed(),
@@ -187,6 +205,7 @@ export function createMeanReversionStrategy(options: MeanReversionStrategyOption
   const maxSpreadBps = parseNonNegativeDecimal(options.maxSpreadBps, "max_spread_bps");
   const minDepthKrw = parseNonNegativeDecimal(options.minDepthKrw, "min_depth_krw");
   const entryDeviationBps = parseNonNegativeDecimal(options.entryDeviationBps, "entry_deviation_bps");
+  const exitDeviationBps = parseNonNegativeDecimal(options.exitDeviationBps, "exit_deviation_bps");
 
   return {
     ...strategyRegistry.mean_reversion,
@@ -210,13 +229,21 @@ export function createMeanReversionStrategy(options: MeanReversionStrategyOption
         return deviation.decision;
       }
 
-      const side = sideFromReversionSignal(deviation.value, entryDeviationBps);
-
       // 1. 가격이 평균보다 충분히 이탈했을 때만 반대 방향 주문 후보를 만든다.
-      if (side !== undefined) {
-        return createOrderDecision(context, "mean_reversion", side, {
+      if (isNegativeReversionSignal(deviation.value, entryDeviationBps)) {
+        return createOrderDecision(context, "mean_reversion", "BUY", {
           entry_deviation_bps: entryDeviationBps.toFixed(),
-          exit_deviation_bps: options.exitDeviationBps,
+          exit_deviation_bps: exitDeviationBps.toFixed(),
+          stop_loss_bps: options.stopLossBps,
+          signal_deviation_bps: deviation.value.toFixed(),
+        });
+      }
+
+      // 2. 평균 근처 복귀 청산 후보는 entry threshold가 아니라 exit threshold로 더 빠르게 만든다.
+      if (isPositiveReversionSignal(deviation.value, exitDeviationBps)) {
+        return createOrderDecision(context, "mean_reversion", "SELL", {
+          entry_deviation_bps: entryDeviationBps.toFixed(),
+          exit_deviation_bps: exitDeviationBps.toFixed(),
           stop_loss_bps: options.stopLossBps,
           signal_deviation_bps: deviation.value.toFixed(),
         });
@@ -224,6 +251,7 @@ export function createMeanReversionStrategy(options: MeanReversionStrategyOption
 
       return hold("mean_reversion", "mean_reversion_deviation_below_threshold", {
         entry_deviation_bps: entryDeviationBps.toFixed(),
+        exit_deviation_bps: exitDeviationBps.toFixed(),
         signal_deviation_bps: deviation.value.toFixed(),
       });
     },
@@ -662,27 +690,23 @@ function sideFromSignedSignal(signal: Decimal, threshold: Decimal): OrderSide | 
 }
 
 function sideFromReversionSignal(signal: Decimal, threshold: Decimal): OrderSide | undefined {
-  if (threshold.isZero()) {
-    if (signal.lessThan(0)) {
-      return "BUY";
-    }
-
-    if (signal.greaterThan(0)) {
-      return "SELL";
-    }
-
-    return undefined;
-  }
-
-  if (signal.lessThanOrEqualTo(threshold.negated())) {
+  if (isNegativeReversionSignal(signal, threshold)) {
     return "BUY";
   }
 
-  if (signal.greaterThanOrEqualTo(threshold)) {
+  if (isPositiveReversionSignal(signal, threshold)) {
     return "SELL";
   }
 
   return undefined;
+}
+
+function isNegativeReversionSignal(signal: Decimal, threshold: Decimal): boolean {
+  return threshold.isZero() ? signal.lessThan(0) : signal.lessThanOrEqualTo(threshold.negated());
+}
+
+function isPositiveReversionSignal(signal: Decimal, threshold: Decimal): boolean {
+  return threshold.isZero() ? signal.greaterThan(0) : signal.greaterThanOrEqualTo(threshold);
 }
 
 function sideFromDirectionFeature(direction: string | undefined): OrderSide | undefined {

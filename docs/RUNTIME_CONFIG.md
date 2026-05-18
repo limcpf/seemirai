@@ -127,7 +127,16 @@ M4는 주문 후보가 실행 단계로 넘어가지 못한 이유를 `AuditLogP
       {
         "id": "trend_following",
         "enabled": true,
-        "ruleIds": ["universe_allowed", "risk_ok"]
+        "ruleIds": [
+          "universe_allowed",
+          "market_warning_absent",
+          "spread_ok",
+          "depth_sufficient",
+          "cost_margin_ok",
+          "risk_ok",
+          "stop_loss",
+          "take_profit"
+        ]
       }
     ]
   }
@@ -163,6 +172,7 @@ M4는 주문 후보가 실행 단계로 넘어가지 못한 이유를 `AuditLogP
 - `registry`와 `strategies[]`의 알 수 없는 키는 오타로 간주해 fail-fast한다.
 - `strategies[].enabled=false`인 strategy는 활성 resolution 결과에서 제외된다.
 - `strategies[].ruleIds`는 비어 있으면 안 된다.
+- 활성 strategy의 `ruleIds`는 `universe_allowed`, `market_warning_absent`, `spread_ok`, `depth_sufficient`, `cost_margin_ok`, `risk_ok` 차단 rule을 모두 포함해야 한다.
 - 같은 strategy id를 중복 선언하면 안 된다.
 
 ## Strategy Parameters 구조

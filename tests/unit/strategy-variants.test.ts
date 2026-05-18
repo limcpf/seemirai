@@ -129,6 +129,7 @@ describe("strategy variants", () => {
             trade_strength: "1.4",
             orderbook_imbalance: "0.12",
             breakout_direction: "UP",
+            breakout_lookback_buckets: "20",
           },
         },
       ],
@@ -204,6 +205,7 @@ describe("strategy variants", () => {
         features: {
           trade_strength: "1.4",
           orderbook_imbalance: "0.12",
+          breakout_lookback_buckets: "20",
         },
       }),
     );
@@ -211,6 +213,26 @@ describe("strategy variants", () => {
     expect(decision).toMatchObject({
       kind: "HOLD",
       reason: "breakout_direction_absent",
+    });
+  });
+
+  it("keeps short trend breakout lookback evidence on HOLD", async () => {
+    const strategy = createTrendFollowingStrategy(variantOptions.trendFollowing);
+    const decision = await evaluate(
+      strategy,
+      contextFor("trend_following", {
+        features: {
+          trade_strength: "1.4",
+          orderbook_imbalance: "0.12",
+          breakout_direction: "UP",
+          breakout_lookback_buckets: "5",
+        },
+      }),
+    );
+
+    expect(decision).toMatchObject({
+      kind: "HOLD",
+      reason: "breakout_lookback_below_threshold",
     });
   });
 
@@ -232,6 +254,7 @@ describe("strategy variants", () => {
             trade_strength: "1.4",
             orderbook_imbalance: "0",
             breakout_direction: "UP",
+            breakout_lookback_buckets: "20",
           },
         }),
       ),
@@ -294,6 +317,45 @@ describe("strategy variants", () => {
     ).resolves.toMatchObject({
       kind: "HOLD",
       reason: "liquidity_reversion_below_threshold",
+    });
+  });
+
+  it("uses the mean reversion exit threshold for SELL candidates", async () => {
+    const strategy = createMeanReversionStrategy(variantOptions.meanReversion);
+
+    await expect(
+      evaluate(
+        strategy,
+        contextFor("mean_reversion", {
+          features: {
+            spread_bps: "3",
+            depth_krw: "80000000",
+            mean_reversion_deviation_bps: "9",
+          },
+        }),
+      ),
+    ).resolves.toMatchObject({
+      kind: "ORDER_INTENT",
+      orderIntents: [
+        {
+          side: "SELL",
+        },
+      ],
+    });
+    await expect(
+      evaluate(
+        strategy,
+        contextFor("mean_reversion", {
+          features: {
+            spread_bps: "3",
+            depth_krw: "80000000",
+            mean_reversion_deviation_bps: "7",
+          },
+        }),
+      ),
+    ).resolves.toMatchObject({
+      kind: "HOLD",
+      reason: "mean_reversion_deviation_below_threshold",
     });
   });
 });

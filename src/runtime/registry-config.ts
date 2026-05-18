@@ -18,6 +18,10 @@ const RegisteredExchangeIdSchema = z.enum(registeredExchangeIds);
 const RegisteredStrategyIdSchema = z.enum(registeredStrategyIds);
 const RegisteredRuleIdSchema = z.enum(registeredRuleIds);
 
+export const requiredBlockingStrategyRuleIds: readonly RegisteredRuleId[] = registeredRuleIds.filter(
+  (ruleId) => ruleRegistry[ruleId].defaultSeverity === "BLOCKING",
+);
+
 const StrategyActivationSchema = z
   .object({
     id: RegisteredStrategyIdSchema,
@@ -45,6 +49,20 @@ export const RegistryActivationConfigSchema = z
       }
 
       seenStrategyIds.add(strategy.id);
+
+      if (strategy.enabled) {
+        const missingRuleIds = requiredBlockingStrategyRuleIds.filter(
+          (ruleId) => !strategy.ruleIds.includes(ruleId),
+        );
+
+        if (missingRuleIds.length > 0) {
+          context.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ["strategies", index, "ruleIds"],
+            message: `strategy rule composition must include required blocking rules: ${missingRuleIds.join(", ")}`,
+          });
+        }
+      }
     }
   });
 

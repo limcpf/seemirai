@@ -111,6 +111,18 @@ describe("runtime config", () => {
     ).toThrow();
   });
 
+  it("rejects unknown top-level config keys before defaults hide typos", () => {
+    expect(() =>
+      loadRuntimeConfig({
+        strategy_parameters: {
+          trend_following: {
+            max_spread_bps: "1",
+          },
+        },
+      }),
+    ).toThrow();
+  });
+
   it("rejects wrong threshold types and invalid decimal ranges", () => {
     expect(() =>
       loadRuntimeConfig({
