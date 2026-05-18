@@ -6,6 +6,8 @@ export type AuditEventType =
   | "STATE_TRANSITION"
   | "REGISTRY_CONFIG_VALIDATION";
 
+export type AuditSeverity = "DEBUG" | "INFO" | "WARN" | "ERROR" | "CRITICAL";
+
 /**
  * 운영 판단 근거를 append-only로 남기기 위한 audit event payload다.
  *
@@ -14,10 +16,12 @@ export type AuditEventType =
  */
 export interface AuditEvent {
   eventType: AuditEventType;
+  severity?: AuditSeverity;
   occurredAt: TimestampInput;
   actor: string;
   reasonCode: string;
   orderId?: string;
+  correlationId?: string;
   strategyId?: string;
   metadata?: JsonRecord;
 }

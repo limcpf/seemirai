@@ -1,6 +1,6 @@
 # 기능 요구사항
 
-이 문서는 PRD를 구현 가능한 요구사항, acceptance criteria, 테스트 요구사항으로 분해한다. MVP 범위는 Upbit KRW 현물, paper trading, `KRW-BTC`/`KRW-ETH`, 추세 추종과 평균회귀, 비용 기반 동적 안전마진, 리스크 게이트, 가상 지정가 중심 실행, 이벤트 기반 백테스트다.
+이 문서는 PRD를 구현 가능한 요구사항, acceptance criteria, 테스트 요구사항으로 분해한다. MVP 범위는 Upbit KRW 현물, paper trading, `KRW-BTC`/`KRW-ETH`, deterministic strategy variants, 비용 기반 동적 안전마진, 리스크 게이트, 가상 지정가 중심 실행, 이벤트 기반 백테스트다.
 
 ## 용어
 
@@ -301,21 +301,25 @@ Acceptance Criteria:
 
 - MVP에서 온체인, 소셜 감성, 뉴스 감성 피처는 자동 주문 피처로 사용하지 않는다.
 
-### FR-STRATEGY-001: MVP 전략은 고유동성 현물 추세 추종과 평균회귀로 제한한다
+### FR-STRATEGY-001: MVP 전략은 고유동성 현물 deterministic variants로 제한한다
 
 설명:
 
 - 전략은 주문을 직접 내지 않고 주문 후보만 생성한다.
 - 주문 후보는 비용 엔진과 리스크 게이트를 통과해야 실행 엔진으로 전달된다.
 - 1차 universe는 `KRW-BTC`, `KRW-ETH`로 제한한다.
+- M4 기본 전략 id는 `trend_following`, `mean_reversion`, `volatility_breakout`, `orderbook_imbalance_momentum`, `liquidity_reversion`으로 제한한다.
 
 Acceptance Criteria:
 
 - [ ] 추세 추종 전략은 고유동성 종목, 낮은 스프레드, 변동성 증가, 호가 불균형, 고점 돌파, 비용 차감 후 기대값 조건을 입력으로 사용한다.
 - [ ] 평균회귀 전략은 대형 코인, 낮은 스프레드, 충분한 호가 깊이, 명확한 손절폭, 공지 리스크 부재 조건을 입력으로 사용한다.
+- [ ] 변동성 돌파 전략은 변동성 확장과 돌파 방향을 함께 확인한다.
+- [ ] 호가 불균형 모멘텀 전략은 호가 불균형과 체결강도를 함께 확인한다.
+- [ ] 유동성 회귀 전략은 충분한 depth와 낮은 spread 조건에서만 회귀 신호를 사용한다.
 - [ ] 전략별 활성화 여부와 파라미터는 설정으로 제어된다.
 - [ ] 전략은 LLM 출력만으로 주문 후보를 만들 수 없다.
-- [ ] 전략 후보가 폐기되면 전략명과 폐기 사유가 기록된다.
+- [ ] 전략 후보가 폐기되면 strategy id, reason code, cost snapshot, rule evaluation 결과가 가능한 범위에서 감사 로그에 기록된다.
 - [ ] 신규 상장 자동 편입은 비활성이다.
 - [ ] phase 1.5 알트는 상장 후 90일 이상, `warning=false`, `caution=false`, 스프레드 p95와 예상 슬리피지 기준 통과, 최대 3개 수동 승인 조건을 모두 만족해야 한다.
 
@@ -323,6 +327,7 @@ Acceptance Criteria:
 
 - 단위 테스트: 조건을 만족하지 않는 fixture에서 주문 후보가 생성되지 않는지 확인한다.
 - 단위 테스트: LLM 분류 결과만 있는 경우 주문 후보가 생성되지 않는지 확인한다.
+- 단위 테스트: 폐기된 주문 후보가 `AuditLogPort` fake 또는 audit repository에 append되는지 확인한다.
 - 백테스트: 추세 추종과 평균회귀 전략을 같은 비용 모델로 평가한다.
 
 문서 요구사항:

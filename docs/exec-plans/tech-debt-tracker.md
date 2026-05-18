@@ -12,4 +12,4 @@
 
 | ID | 상태 | 영향 | 근거 | 권장 처리 |
 | --- | --- | --- | --- | --- |
-|  | open |  |  |  |
+| TD-001 | open | 전략 후보 생성 정확도와 설명력이 현재 feature set에 제한됨 | issue #16 Sub PR 3의 strategy variants는 M4 contract 고정을 위해 `spread_bps`, `depth_krw`, `trade_strength`, `orderbook_imbalance`, `mean_reversion_deviation_bps`, `volatility_expansion_bps`, `breakout_direction`, `liquidity_reversion_bps` 중심의 얇은 feature snapshot만 사용한다. 알파 품질을 높이려면 candle momentum, realized volatility, volume spike, depth slope, depth 변화율, VWAP 이탈, 체결 방향 누적 imbalance, market regime, 시간대별 유동성 filter, cost-adjusted expected return feature를 후속으로 정의해야 한다. | M6 paper execution과 M7 backtest 데이터가 쌓인 뒤 feature 산출식, 부호 의미, threshold 조정 기준을 design doc 또는 runtime config 문서에 고정한다. |

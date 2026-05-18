@@ -5,55 +5,62 @@ import {
   RegistryActivationConfigSchema,
   defaultRegistryActivationConfig,
 } from "./registry-config.js";
+import {
+  StrategyParametersConfigSchema,
+  defaultStrategyParametersConfig,
+} from "./strategy-parameters.js";
 
 const defaultConfigUrl = new URL("../../config/paper.json", import.meta.url);
 
 const MarketCodeSchema = z.string().regex(/^KRW-[A-Z0-9]+$/u, "KRW market code is required");
 
-export const RuntimeConfigSchema = z.object({
-  exchange: z.literal("UPBIT").default("UPBIT"),
-  market: z.literal("KRW_SPOT").default("KRW_SPOT"),
-  mode: z.literal("PAPER_TRADING").default("PAPER_TRADING"),
-  live_trading_enabled: z.boolean().default(false),
-  withdrawal_enabled: z.boolean().default(false),
-  cross_exchange_arbitrage_enabled: z.boolean().default(false),
-  futures_enabled: z.boolean().default(false),
-  leverage_enabled: z.boolean().default(false),
-  market_order_enabled: z.boolean().default(false),
-  entry_market_order_enabled: z.boolean().default(false),
-  paper_no_key: z.boolean().default(true),
-  universe: z
-    .object({
-      phase_1: z.array(MarketCodeSchema).min(1).default(["KRW-BTC", "KRW-ETH"]),
-      auto_include_new_listing: z.boolean().default(false),
-      exclude_warning: z.boolean().default(true),
-      exclude_caution: z.boolean().default(true),
-    })
-    .default({
-      phase_1: ["KRW-BTC", "KRW-ETH"],
-      auto_include_new_listing: false,
-      exclude_warning: true,
-      exclude_caution: true,
-    }),
-  llm: z
-    .object({
-      enabled: z.boolean().default(true),
-      can_generate_trade_signal: z.boolean().default(false),
-    })
-    .default({
-      enabled: true,
-      can_generate_trade_signal: false,
-    }),
-  registry: RegistryActivationConfigSchema.default(defaultRegistryActivationConfig),
-  secrets: z
-    .object({
-      upbit_access_key: z.string().min(1).optional(),
-      upbit_secret_key: z.string().min(1).optional(),
-      telegram_bot_token: z.string().min(1).optional(),
-      local_control_token: z.string().min(1).optional(),
-    })
-    .default({}),
-});
+export const RuntimeConfigSchema = z
+  .object({
+    exchange: z.literal("UPBIT").default("UPBIT"),
+    market: z.literal("KRW_SPOT").default("KRW_SPOT"),
+    mode: z.literal("PAPER_TRADING").default("PAPER_TRADING"),
+    live_trading_enabled: z.boolean().default(false),
+    withdrawal_enabled: z.boolean().default(false),
+    cross_exchange_arbitrage_enabled: z.boolean().default(false),
+    futures_enabled: z.boolean().default(false),
+    leverage_enabled: z.boolean().default(false),
+    market_order_enabled: z.boolean().default(false),
+    entry_market_order_enabled: z.boolean().default(false),
+    paper_no_key: z.boolean().default(true),
+    universe: z
+      .object({
+        phase_1: z.array(MarketCodeSchema).min(1).default(["KRW-BTC", "KRW-ETH"]),
+        auto_include_new_listing: z.boolean().default(false),
+        exclude_warning: z.boolean().default(true),
+        exclude_caution: z.boolean().default(true),
+      })
+      .default({
+        phase_1: ["KRW-BTC", "KRW-ETH"],
+        auto_include_new_listing: false,
+        exclude_warning: true,
+        exclude_caution: true,
+      }),
+    llm: z
+      .object({
+        enabled: z.boolean().default(true),
+        can_generate_trade_signal: z.boolean().default(false),
+      })
+      .default({
+        enabled: true,
+        can_generate_trade_signal: false,
+      }),
+    registry: RegistryActivationConfigSchema.default(defaultRegistryActivationConfig),
+    strategyParameters: StrategyParametersConfigSchema.default(defaultStrategyParametersConfig),
+    secrets: z
+      .object({
+        upbit_access_key: z.string().min(1).optional(),
+        upbit_secret_key: z.string().min(1).optional(),
+        telegram_bot_token: z.string().min(1).optional(),
+        local_control_token: z.string().min(1).optional(),
+      })
+      .default({}),
+  })
+  .strict();
 
 export type RuntimeConfig = z.infer<typeof RuntimeConfigSchema>;
 

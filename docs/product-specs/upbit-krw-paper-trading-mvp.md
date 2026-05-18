@@ -269,6 +269,7 @@ PostgreSQL 일반 테이블:
 - `fills`
 - `balances`
 - `positions`
+- `audit_events`
 - `strategy_configs`
 - `risk_events`
 - `alerts`
@@ -298,7 +299,7 @@ DB-backed queue:
 - `jobs.max_attempts`
 - `jobs.last_error`
 
-Redis와 BullMQ는 MVP에서 제외한다. 주문, 체결, 리스크, 알림, 정책 스냅샷, 비동기 job 상태의 기준 기록은 PostgreSQL/TimescaleDB에 남긴다.
+Redis와 BullMQ는 MVP에서 제외한다. 주문, 체결, 리스크, audit, 알림, 정책 스냅샷, 비동기 job 상태의 기준 기록은 PostgreSQL/TimescaleDB에 남긴다.
 
 ClickHouse는 MVP에서 보류한다. 다거래소, 다종목, tick/orderbook 원천 장기 저장 단계에서 분석 전용 저장소로 재검토한다.
 

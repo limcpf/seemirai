@@ -32,6 +32,7 @@
 | `universe` | `KRW-BTC`, `KRW-ETH` | MVP 거래 후보 universe |
 | `llm` | trade signal 생성 불가 | LLM이 매매 판단을 직접 만들지 못하게 제한 |
 | `registry` | 정적 registry id 참조 | exchange, strategy, rule 활성화 조합 |
+| `strategyParameters` | strategy별 기본 threshold | 전략 후보 생성과 rule 평가에 쓰는 보수적 기준값 |
 | `secrets` | 기본 `{}` | schema shape만 표현하며 실제 secret은 저장하지 않음 |
 
 ## 안전 invariant
@@ -83,6 +84,22 @@ market data status event는 다음 방식으로 저장 경계를 지난다.
 
 M3는 실제 RiskGate state machine을 구현하지 않고 위 차단 입력 신호까지만 만든다. RiskGate 상태 전이와 주문 차단 적용은 M5 범위다.
 
+## 주문 후보 폐기 Audit
+
+M4는 주문 후보가 실행 단계로 넘어가지 못한 이유를 `AuditLogPort`로 남길 수 있는 application contract와
+`audit_events` PostgreSQL append adapter를 제공한다.
+
+저장 기준:
+
+- event type: `ORDER_DECISION`
+- severity: `WARN`
+- payload marker: `audit_kind=ORDER_CANDIDATE_DISCARDED`
+- discard stage: `STRATEGY_DECISION`, `INTENT_CONVERSION`, `COST_DECISION`, `RULE_ENGINE`
+- payload 주요 필드: `strategy_id`, `reason_code`, `order_intent`, `strategy_decision`, `intent_conversion`, `cost_decision`, `rule_result`
+
+이 audit event는 실제 주문 제출 근거가 아니라, M5 RiskGate와 M6 ExecutionEngine 이전에 후보가 폐기된 이유를 사람이
+추적하기 위한 append-only 기록이다.
+
 ## Universe 구조
 
 ```json
@@ -110,7 +127,16 @@ M3는 실제 RiskGate state machine을 구현하지 않고 위 차단 입력 신
       {
         "id": "trend_following",
         "enabled": true,
-        "ruleIds": ["universe_allowed", "risk_ok"]
+        "ruleIds": [
+          "universe_allowed",
+          "market_warning_absent",
+          "spread_ok",
+          "depth_sufficient",
+          "cost_margin_ok",
+          "risk_ok",
+          "stop_loss",
+          "take_profit"
+        ]
       }
     ]
   }
@@ -125,6 +151,9 @@ M3는 실제 RiskGate state machine을 구현하지 않고 위 차단 입력 신
 
 - `trend_following`
 - `mean_reversion`
+- `volatility_breakout`
+- `orderbook_imbalance_momentum`
+- `liquidity_reversion`
 
 허용 rule id:
 
@@ -143,17 +172,96 @@ M3는 실제 RiskGate state machine을 구현하지 않고 위 차단 입력 신
 - `registry`와 `strategies[]`의 알 수 없는 키는 오타로 간주해 fail-fast한다.
 - `strategies[].enabled=false`인 strategy는 활성 resolution 결과에서 제외된다.
 - `strategies[].ruleIds`는 비어 있으면 안 된다.
+- 활성 strategy의 `ruleIds`는 `universe_allowed`, `market_warning_absent`, `spread_ok`, `depth_sufficient`, `cost_margin_ok`, `risk_ok` 차단 rule을 모두 포함해야 한다.
 - 같은 strategy id를 중복 선언하면 안 된다.
+
+## Strategy Parameters 구조
+
+구현 기준:
+
+- schema: `src/runtime/strategy-parameters.ts`
+- 기본 profile: `config/paper.json`
+
+`strategyParameters`는 strategy id별 threshold를 명시한다. 모든 금융 값은 Decimal로 파싱 가능한 string이어야 하며, JS number는 정밀도와 단위 혼동을 피하기 위해 거부한다. 알 수 없는 strategy id나 threshold key는 오타로 간주해 fail-fast한다.
+
+```json
+{
+  "strategyParameters": {
+    "trend_following": {
+      "max_spread_bps": "8",
+      "min_depth_krw": "50000000",
+      "breakout_lookback_buckets": 20,
+      "min_trade_strength": "1.2",
+      "min_orderbook_imbalance": "0.08",
+      "min_volatility_expansion_bps": "18"
+    },
+    "mean_reversion": {
+      "max_spread_bps": "6",
+      "min_depth_krw": "70000000",
+      "entry_deviation_bps": "25",
+      "exit_deviation_bps": "8",
+      "stop_loss_bps": "35"
+    },
+    "volatility_breakout": {
+      "max_spread_bps": "8",
+      "min_depth_krw": "50000000",
+      "breakout_lookback_buckets": 20,
+      "min_volatility_expansion_bps": "18"
+    },
+    "orderbook_imbalance_momentum": {
+      "max_spread_bps": "7",
+      "min_depth_krw": "60000000",
+      "min_trade_strength": "1.25",
+      "min_orderbook_imbalance": "0.1"
+    },
+    "liquidity_reversion": {
+      "max_spread_bps": "5",
+      "min_depth_krw": "90000000",
+      "entry_deviation_bps": "18",
+      "stop_loss_bps": "30"
+    }
+  }
+}
+```
+
+| strategy | threshold | 기본값 | 단위 | 보수적 조정 방향 |
+| --- | --- | ---: | --- | --- |
+| `trend_following` | `max_spread_bps` | `8` | bps | 낮출수록 넓은 spread 후보를 더 많이 차단 |
+| `trend_following` | `min_depth_krw` | `50000000` | KRW | 높일수록 유동성이 부족한 후보를 더 많이 차단 |
+| `trend_following` | `breakout_lookback_buckets` | `20` | feature bucket 수 | 높일수록 짧은 돌파 신호를 덜 신뢰 |
+| `trend_following` | `min_trade_strength` | `1.2` | ratio | 높일수록 약한 체결강도 후보를 더 많이 차단 |
+| `trend_following` | `min_orderbook_imbalance` | `0.08` | 0~1 ratio | 높일수록 약한 호가 불균형 후보를 더 많이 차단 |
+| `trend_following` | `min_volatility_expansion_bps` | `18` | bps | 높일수록 변동성 확장이 약한 추세 후보를 더 많이 차단 |
+| `mean_reversion` | `max_spread_bps` | `6` | bps | 낮출수록 넓은 spread 후보를 더 많이 차단 |
+| `mean_reversion` | `min_depth_krw` | `70000000` | KRW | 높일수록 유동성이 부족한 후보를 더 많이 차단 |
+| `mean_reversion` | `entry_deviation_bps` | `25` | bps | 높일수록 진입 신호를 더 드물게 허용 |
+| `mean_reversion` | `exit_deviation_bps` | `8` | bps | 낮출수록 더 빨리 평균 복귀 청산 후보를 만든다 |
+| `mean_reversion` | `stop_loss_bps` | `35` | bps | 낮출수록 손절 후보를 더 빨리 만든다 |
+| `volatility_breakout` | `max_spread_bps` | `8` | bps | 낮출수록 넓은 spread 후보를 더 많이 차단 |
+| `volatility_breakout` | `min_depth_krw` | `50000000` | KRW | 높일수록 유동성이 부족한 후보를 더 많이 차단 |
+| `volatility_breakout` | `breakout_lookback_buckets` | `20` | feature bucket 수 | 높일수록 짧은 돌파 신호를 덜 신뢰 |
+| `volatility_breakout` | `min_volatility_expansion_bps` | `18` | bps | 높일수록 약한 변동성 확장 후보를 더 많이 차단 |
+| `orderbook_imbalance_momentum` | `max_spread_bps` | `7` | bps | 낮출수록 넓은 spread 후보를 더 많이 차단 |
+| `orderbook_imbalance_momentum` | `min_depth_krw` | `60000000` | KRW | 높일수록 유동성이 부족한 후보를 더 많이 차단 |
+| `orderbook_imbalance_momentum` | `min_trade_strength` | `1.25` | ratio | 높일수록 약한 체결강도 후보를 더 많이 차단 |
+| `orderbook_imbalance_momentum` | `min_orderbook_imbalance` | `0.1` | 0~1 ratio | 높일수록 약한 호가 불균형 후보를 더 많이 차단 |
+| `liquidity_reversion` | `max_spread_bps` | `5` | bps | 낮출수록 넓은 spread 후보를 더 많이 차단 |
+| `liquidity_reversion` | `min_depth_krw` | `90000000` | KRW | 높일수록 유동성이 부족한 후보를 더 많이 차단 |
+| `liquidity_reversion` | `entry_deviation_bps` | `18` | bps | 높일수록 진입 신호를 더 드물게 허용 |
+| `liquidity_reversion` | `stop_loss_bps` | `30` | bps | 낮출수록 손절 후보를 더 빨리 만든다 |
+
+M4의 `risk_ok` rule은 RiskGate 활성 승인 구현이 아니다. `risk_ok`는 registry/config contract에 남기되, M5 전까지는 `risk_ok_placeholder` WARN으로 평가해 실행 승인으로 해석되지 않게 한다.
 
 ## 변경 절차
 
 설정 구조나 허용 id를 바꾸면 다음을 함께 확인한다.
 
 1. `src/runtime/config.ts` 또는 `src/runtime/registry-config.ts`
-2. `src/application/registry.ts`
-3. `config/paper.json`
-4. 관련 unit test
-5. 이 문서와 기준 설계 문서
+2. `src/runtime/strategy-parameters.ts`
+3. `src/application/registry.ts`
+4. `config/paper.json`
+5. 관련 unit test
+6. 이 문서와 기준 설계 문서
 
 검증 명령:
 

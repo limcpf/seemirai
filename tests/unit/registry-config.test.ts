@@ -13,6 +13,7 @@ import type { OrderIntent, OrderSubmission, Rule, Strategy } from "../../src/dom
 import {
   RegistryActivationConfigSchema,
   defaultRegistryActivationConfig,
+  defaultStrategyRuleIds,
   resolveRegistryActivationConfig,
 } from "../../src/runtime/index.js";
 import { loadDefaultRuntimeConfig } from "../../src/runtime/index.js";
@@ -20,7 +21,13 @@ import { loadDefaultRuntimeConfig } from "../../src/runtime/index.js";
 describe("registry foundation", () => {
   it("contains the MVP exchange, strategy, and rule ids", () => {
     expect(exchangeRegistry.upbit_krw_spot.id).toBe("upbit_krw_spot");
-    expect(registeredStrategyIds).toEqual(["trend_following", "mean_reversion"]);
+    expect(registeredStrategyIds).toEqual([
+      "trend_following",
+      "mean_reversion",
+      "volatility_breakout",
+      "orderbook_imbalance_momentum",
+      "liquidity_reversion",
+    ]);
     expect(registeredRuleIds).toEqual([
       "universe_allowed",
       "market_warning_absent",
@@ -42,6 +49,9 @@ describe("registry foundation", () => {
     expect(resolution.activeStrategies.map((entry) => entry.strategy.id)).toEqual([
       "trend_following",
       "mean_reversion",
+      "volatility_breakout",
+      "orderbook_imbalance_momentum",
+      "liquidity_reversion",
     ]);
     expect(resolution.activeStrategies.every((entry) => entry.rules.length > 0)).toBe(true);
   });
@@ -63,7 +73,7 @@ describe("registry foundation", () => {
           {
             id: "scalping",
             enabled: true,
-            ruleIds: ["risk_ok"],
+            ruleIds: [...defaultStrategyRuleIds],
           },
         ],
       }),
@@ -78,7 +88,7 @@ describe("registry foundation", () => {
           {
             id: "trend_following",
             enabled: true,
-            ruleIds: ["risk_ok", "unknown_rule"],
+            ruleIds: [...defaultStrategyRuleIds, "unknown_rule"],
           },
         ],
       }),
@@ -93,7 +103,7 @@ describe("registry foundation", () => {
           {
             id: "trend_following",
             enable: false,
-            ruleIds: ["risk_ok"],
+            ruleIds: [...defaultStrategyRuleIds],
           },
         ],
       }),
@@ -106,7 +116,7 @@ describe("registry foundation", () => {
           {
             id: "trend_following",
             enabled: true,
-            ruleIds: ["risk_ok"],
+            ruleIds: [...defaultStrategyRuleIds],
           },
         ],
         unexpected: true,
@@ -129,6 +139,21 @@ describe("registry foundation", () => {
     ).toThrow("strategy rule composition must not be empty");
   });
 
+  it("rejects enabled strategy rule compositions missing required blocking rules", () => {
+    expect(() =>
+      RegistryActivationConfigSchema.parse({
+        exchangeId: "upbit_krw_spot",
+        strategies: [
+          {
+            id: "trend_following",
+            enabled: true,
+            ruleIds: ["spread_ok"],
+          },
+        ],
+      }),
+    ).toThrow("strategy rule composition must include required blocking rules");
+  });
+
   it("excludes disabled strategies from active resolution", () => {
     const resolution = resolveRegistryActivationConfig({
       exchangeId: "upbit_krw_spot",
@@ -141,7 +166,7 @@ describe("registry foundation", () => {
         {
           id: "mean_reversion",
           enabled: true,
-          ruleIds: ["risk_ok"],
+          ruleIds: [...defaultStrategyRuleIds],
         },
       ],
     });
@@ -156,6 +181,9 @@ describe("registry foundation", () => {
     expect(config.registry.strategies.map((strategy) => strategy.id)).toEqual([
       "trend_following",
       "mean_reversion",
+      "volatility_breakout",
+      "orderbook_imbalance_momentum",
+      "liquidity_reversion",
     ]);
   });
 });

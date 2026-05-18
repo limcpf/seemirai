@@ -1,4 +1,9 @@
 export {
+  PostgresAuditLogRepository,
+  appendAuditEvent,
+  toAuditEventRow,
+} from "./audit-log.js";
+export {
   DatabaseConfigSchema,
   loadDatabaseConfig,
   loadDatabaseConfigFile,
@@ -33,6 +38,7 @@ export {
 } from "./migrations.js";
 export type { DatabaseConfig } from "./config.js";
 export type { Database } from "./database.js";
+export type { AuditEventRecord, AuditEventRowInput } from "./audit-log.js";
 export type {
   ClaimPendingJobsOptions,
   CompleteJobOptions,

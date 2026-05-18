@@ -50,8 +50,85 @@
           "stop_loss",
           "take_profit"
         ]
+      },
+      {
+        "id": "volatility_breakout",
+        "enabled": true,
+        "ruleIds": [
+          "universe_allowed",
+          "market_warning_absent",
+          "spread_ok",
+          "depth_sufficient",
+          "cost_margin_ok",
+          "risk_ok",
+          "stop_loss",
+          "take_profit"
+        ]
+      },
+      {
+        "id": "orderbook_imbalance_momentum",
+        "enabled": true,
+        "ruleIds": [
+          "universe_allowed",
+          "market_warning_absent",
+          "spread_ok",
+          "depth_sufficient",
+          "cost_margin_ok",
+          "risk_ok",
+          "stop_loss",
+          "take_profit"
+        ]
+      },
+      {
+        "id": "liquidity_reversion",
+        "enabled": true,
+        "ruleIds": [
+          "universe_allowed",
+          "market_warning_absent",
+          "spread_ok",
+          "depth_sufficient",
+          "cost_margin_ok",
+          "risk_ok",
+          "stop_loss",
+          "take_profit"
+        ]
       }
     ]
+  },
+  "strategyParameters": {
+    "trend_following": {
+      "max_spread_bps": "8",
+      "min_depth_krw": "50000000",
+      "breakout_lookback_buckets": 20,
+      "min_trade_strength": "1.2",
+      "min_orderbook_imbalance": "0.08",
+      "min_volatility_expansion_bps": "18"
+    },
+    "mean_reversion": {
+      "max_spread_bps": "6",
+      "min_depth_krw": "70000000",
+      "entry_deviation_bps": "25",
+      "exit_deviation_bps": "8",
+      "stop_loss_bps": "35"
+    },
+    "volatility_breakout": {
+      "max_spread_bps": "8",
+      "min_depth_krw": "50000000",
+      "breakout_lookback_buckets": 20,
+      "min_volatility_expansion_bps": "18"
+    },
+    "orderbook_imbalance_momentum": {
+      "max_spread_bps": "7",
+      "min_depth_krw": "60000000",
+      "min_trade_strength": "1.25",
+      "min_orderbook_imbalance": "0.1"
+    },
+    "liquidity_reversion": {
+      "max_spread_bps": "5",
+      "min_depth_krw": "90000000",
+      "entry_deviation_bps": "18",
+      "stop_loss_bps": "30"
+    }
   },
   "secrets": {}
 }

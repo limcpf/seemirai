@@ -1,5 +1,6 @@
 import type { ExchangePolicySnapshot, MarketDataEvent, MarketStatus } from "./market.js";
 import type { OrderIntent } from "./orders.js";
+import type { CostDecision } from "./cost.js";
 import type { ExchangeId, JsonRecord, MarketCode, TimestampInput } from "./types.js";
 
 export type RuleEvaluationStatus = "PASS" | "FAIL" | "WARN";
@@ -25,9 +26,14 @@ export interface RuleContext {
   exchangeId: ExchangeId;
   market: MarketCode;
   observedAt: TimestampInput;
+  universe?: {
+    allowedMarkets: readonly MarketCode[];
+  };
   marketStatus?: MarketStatus;
   policySnapshot?: ExchangePolicySnapshot;
   latestEvents?: readonly MarketDataEvent[];
+  features?: Readonly<Record<string, unknown>>;
+  costDecision?: CostDecision;
   orderIntent?: OrderIntent;
   accountState?: JsonRecord;
   metadata?: JsonRecord;

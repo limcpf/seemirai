@@ -20,6 +20,39 @@ describe("runtime config", () => {
     expect(config.paper_no_key).toBe(true);
     expect(config.secrets.upbit_access_key).toBeUndefined();
     expect(config.universe.phase_1).toEqual(["KRW-BTC", "KRW-ETH"]);
+    expect(config.strategyParameters.trend_following).toMatchObject({
+      max_spread_bps: "8",
+      min_depth_krw: "50000000",
+      breakout_lookback_buckets: 20,
+      min_trade_strength: "1.2",
+      min_orderbook_imbalance: "0.08",
+      min_volatility_expansion_bps: "18",
+    });
+    expect(config.strategyParameters.mean_reversion).toMatchObject({
+      max_spread_bps: "6",
+      min_depth_krw: "70000000",
+      entry_deviation_bps: "25",
+      exit_deviation_bps: "8",
+      stop_loss_bps: "35",
+    });
+    expect(config.strategyParameters.volatility_breakout).toMatchObject({
+      max_spread_bps: "8",
+      min_depth_krw: "50000000",
+      breakout_lookback_buckets: 20,
+      min_volatility_expansion_bps: "18",
+    });
+    expect(config.strategyParameters.orderbook_imbalance_momentum).toMatchObject({
+      max_spread_bps: "7",
+      min_depth_krw: "60000000",
+      min_trade_strength: "1.25",
+      min_orderbook_imbalance: "0.1",
+    });
+    expect(config.strategyParameters.liquidity_reversion).toMatchObject({
+      max_spread_bps: "5",
+      min_depth_krw: "90000000",
+      entry_deviation_bps: "18",
+      stop_loss_bps: "30",
+    });
   });
 
   it("fails fast when a config value has the wrong shape", () => {
@@ -54,5 +87,62 @@ describe("runtime config", () => {
         paper_no_key: false,
       }),
     ).toThrow(UnsafeRuntimeConfigError);
+  });
+
+  it("rejects unknown strategy parameter ids and keys", () => {
+    expect(() =>
+      loadRuntimeConfig({
+        strategyParameters: {
+          scalping: {
+            max_spread_bps: "1",
+          },
+        },
+      }),
+    ).toThrow();
+
+    expect(() =>
+      loadRuntimeConfig({
+        strategyParameters: {
+          trend_following: {
+            max_spread_bps: "8",
+            unknown_threshold: "1",
+          },
+        },
+      }),
+    ).toThrow();
+  });
+
+  it("rejects unknown top-level config keys before defaults hide typos", () => {
+    expect(() =>
+      loadRuntimeConfig({
+        strategy_parameters: {
+          trend_following: {
+            max_spread_bps: "1",
+          },
+        },
+      }),
+    ).toThrow();
+  });
+
+  it("rejects wrong threshold types and invalid decimal ranges", () => {
+    expect(() =>
+      loadRuntimeConfig({
+        strategyParameters: {
+          trend_following: {
+            max_spread_bps: 8,
+          },
+        },
+      }),
+    ).toThrow();
+
+    expect(() =>
+      loadRuntimeConfig({
+        strategyParameters: {
+          trend_following: {
+            min_orderbook_imbalance: "1.2",
+          },
+        },
+      }),
+    ).toThrow("must be between 0 and 1");
   });
 });
