@@ -6,6 +6,7 @@
 
 - schema: `src/runtime/config.ts`
 - registry 활성화 schema: `src/runtime/registry-config.ts`
+- risk threshold schema: `src/runtime/risk-config.ts`
 - 기본 profile: `config/paper.json`
 
 ## 책임
@@ -33,6 +34,7 @@
 | `llm` | trade signal 생성 불가 | LLM이 매매 판단을 직접 만들지 못하게 제한 |
 | `registry` | 정적 registry id 참조 | exchange, strategy, rule 활성화 조합 |
 | `strategyParameters` | strategy별 기본 threshold | 전략 후보 생성과 rule 평가에 쓰는 보수적 기준값 |
+| `risk` | M5 리스크 한도 threshold | RiskGate 평가와 상태 전이 audit에 쓰는 보수적 계정/노출/손실 한도 |
 | `secrets` | 기본 `{}` | schema shape만 표현하며 실제 secret은 저장하지 않음 |
 
 ## 안전 invariant
@@ -82,7 +84,8 @@ market data status event는 다음 방식으로 저장 경계를 지난다.
 | `RECONNECTING` | `MARKET_DATA_STATUS`, `WARN` | `market_data_reconnecting`, `BLOCK_NEW_ORDERS` | true |
 | `DISCONNECTED` | `MARKET_DATA_STATUS`, `ERROR` | `market_data_disconnected`, `BLOCK_NEW_ORDERS` | true |
 
-M3는 실제 RiskGate state machine을 구현하지 않고 위 차단 입력 신호까지만 만든다. RiskGate 상태 전이와 주문 차단 적용은 M5 범위다.
+M3는 실제 RiskGate state machine을 구현하지 않고 위 차단 입력 신호까지만 만든다. M5 Sub PR 1은 state machine과
+threshold config foundation을 제공하고, 실제 주문 차단 적용은 M5 runtime integration 범위다.
 
 ## 주문 후보 폐기 Audit
 
@@ -250,14 +253,58 @@ M4는 주문 후보가 실행 단계로 넘어가지 못한 이유를 `AuditLogP
 | `liquidity_reversion` | `entry_deviation_bps` | `18` | bps | 높일수록 진입 신호를 더 드물게 허용 |
 | `liquidity_reversion` | `stop_loss_bps` | `30` | bps | 낮출수록 손절 후보를 더 빨리 만든다 |
 
-M4의 `risk_ok` rule은 RiskGate 활성 승인 구현이 아니다. `risk_ok`는 registry/config contract에 남기되, M5 전까지는 `risk_ok_placeholder` WARN으로 평가해 실행 승인으로 해석되지 않게 한다.
+M4의 `risk_ok` rule은 RiskGate 활성 승인 구현이 아니다. `risk_ok`는 registry/config contract에 남기되, M5 runtime integration 전까지는 `risk_ok_placeholder` WARN으로 평가해 실행 승인으로 해석되지 않게 한다.
+
+## Risk 구조
+
+구현 기준:
+
+- schema: `src/runtime/risk-config.ts`
+- domain contract: `src/domain/risk.ts`
+- 기본 profile: `config/paper.json`
+
+`risk.thresholds`는 M5 RiskGate evaluator가 사용할 계정 손실, 주문 크기, 포지션 노출, 연속 손실 기준이다. 모든 금융
+비율 값은 bps 단위의 Decimal string이고, 연속 손실 횟수만 양의 정수다.
+
+```json
+{
+  "risk": {
+    "thresholds": {
+      "daily_loss_limit_bps": "100",
+      "weekly_loss_limit_bps": "300",
+      "max_drawdown_bps": "500",
+      "max_order_notional_bps_of_equity": "100",
+      "max_expected_loss_bps_of_equity": "20",
+      "btc_eth_max_position_bps_of_equity": "2000",
+      "alt_max_position_bps_of_equity": "500",
+      "total_alt_max_position_bps_of_equity": "1500",
+      "max_consecutive_strategy_losses": 3
+    }
+  }
+}
+```
+
+| threshold | 기본값 | 의미 |
+| --- | ---: | --- |
+| `daily_loss_limit_bps` | `100` | 일간 손실 -1% 도달 시 신규 주문 차단 |
+| `weekly_loss_limit_bps` | `300` | 주간 손실 -3% 도달 시 신규 주문 차단 |
+| `max_drawdown_bps` | `500` | MDD -5% 도달 시 신규 주문 차단 |
+| `max_order_notional_bps_of_equity` | `100` | 1회 주문 금액을 계정 평가액 1%로 제한 |
+| `max_expected_loss_bps_of_equity` | `20` | 1회 예상 손실을 계정 평가액 0.2%로 제한 |
+| `btc_eth_max_position_bps_of_equity` | `2000` | BTC/ETH 단일 보유를 계정 평가액 20%로 제한 |
+| `alt_max_position_bps_of_equity` | `500` | 단일 알트 보유를 계정 평가액 5%로 제한 |
+| `total_alt_max_position_bps_of_equity` | `1500` | 전체 알트 보유를 계정 평가액 15%로 제한 |
+| `max_consecutive_strategy_losses` | `3` | 동일 전략 연속 손실 3회에서 전략 중지 후보 |
+
+M5 Sub PR 1은 위 기준을 load 가능한 config와 threshold snapshot contract로 고정한다. 실제 RiskGate evaluator,
+`risk_ok` rule 연결, persistence는 후속 sub PR에서 순차로 연결한다.
 
 ## 변경 절차
 
 설정 구조나 허용 id를 바꾸면 다음을 함께 확인한다.
 
 1. `src/runtime/config.ts` 또는 `src/runtime/registry-config.ts`
-2. `src/runtime/strategy-parameters.ts`
+2. `src/runtime/strategy-parameters.ts` 또는 `src/runtime/risk-config.ts`
 3. `src/application/registry.ts`
 4. `config/paper.json`
 5. 관련 unit test

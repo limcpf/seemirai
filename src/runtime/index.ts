@@ -50,6 +50,7 @@ export {
   VolatilityBreakoutStrategyParametersSchema,
   defaultStrategyParametersConfig,
 } from "./strategy-parameters.js";
+export { RiskConfigSchema, RiskThresholdConfigSchema, defaultRiskConfig } from "./risk-config.js";
 export type {
   RegistryActivationConfig,
   RegistryActivationResolution,
@@ -63,3 +64,4 @@ export type {
   TrendFollowingStrategyParameters,
   VolatilityBreakoutStrategyParameters,
 } from "./strategy-parameters.js";
+export type { RiskConfig, RiskThresholdConfig } from "./risk-config.js";
