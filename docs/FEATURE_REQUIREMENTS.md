@@ -191,7 +191,7 @@ Acceptance Criteria:
 
 Acceptance Criteria:
 
-- [ ] `orders`, `fills`, `balances`, `positions`, `strategy_configs`, `risk_events`, `alerts`, `policy_snapshots` 저장 책임이 정의된다.
+- [ ] `orders`, `order_events`, `fills`, `balances`, `positions`, `strategy_configs`, `risk_events`, `alerts`, `policy_snapshots` 저장 책임이 정의된다.
 - [ ] `trades`, `candles`, `orderbook_snapshots`, `orderbook_metrics`, `strategy_signals`, `pnl_snapshots` 시계열 저장 책임이 정의된다.
 - [ ] `jobs` table은 `idempotency_key`, `status`, `attempt_count`, `max_attempts`, `last_error`, `run_after`, `locked_at`, `locked_by`를 가진다.
 - [ ] Redis와 BullMQ 없이 MVP runtime이 동작한다.

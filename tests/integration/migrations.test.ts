@@ -24,9 +24,9 @@ describeDb("database migrations integration", () => {
     const secondRun = await applyMigrations(pool);
     const migrationCount = await pool.query<{ count: string }>("SELECT count(*) FROM schema_migrations");
 
-    expect(firstRun.applied.length + firstRun.skipped.length).toBe(5);
+    expect(firstRun.applied.length + firstRun.skipped.length).toBe(6);
     expect(secondRun.applied).toHaveLength(0);
-    expect(secondRun.skipped).toHaveLength(5);
-    expect(Number(migrationCount.rows[0]?.count)).toBe(5);
+    expect(secondRun.skipped).toHaveLength(6);
+    expect(Number(migrationCount.rows[0]?.count)).toBe(6);
   });
 });

@@ -4,21 +4,28 @@ export type OrderSide = "BUY" | "SELL";
 export type OrderType = "LIMIT" | "MARKET";
 export type TimeInForce = "GTC" | "IOC" | "FOK" | "POST_ONLY";
 
-export type OrderLifecycleStatus =
-  | "CREATED"
-  | "VALIDATED"
-  | "RISK_APPROVED"
-  | "RISK_REJECTED"
-  | "SUBMITTED"
-  | "ACCEPTED"
-  | "PARTIALLY_FILLED"
-  | "FILLED"
-  | "CANCEL_REQUESTED"
-  | "CANCELED"
-  | "REJECTED"
-  | "EXPIRED"
-  | "FAILED"
-  | "MANUAL_REVIEW_REQUIRED";
+/**
+ * 주문 lifecycle에서 허용하는 canonical 상태 목록이다.
+ */
+// DB check constraint, state machine, order_events mapper가 같은 문자열 계약을 공유한다.
+export const orderLifecycleStatuses = [
+  "CREATED",
+  "VALIDATED",
+  "RISK_APPROVED",
+  "RISK_REJECTED",
+  "SUBMITTED",
+  "ACCEPTED",
+  "PARTIALLY_FILLED",
+  "FILLED",
+  "CANCEL_REQUESTED",
+  "CANCELED",
+  "REJECTED",
+  "EXPIRED",
+  "FAILED",
+  "MANUAL_REVIEW_REQUIRED",
+] as const;
+
+export type OrderLifecycleStatus = (typeof orderLifecycleStatuses)[number];
 
 /**
  * 전략이 직접 주문을 제출하지 않고 생성하는 주문 후보 intent의 공통 필드다.

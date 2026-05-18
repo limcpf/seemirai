@@ -17,6 +17,18 @@ export {
   findJobByIdempotencyKey,
 } from "./jobs.js";
 export {
+  PostgresOrderEventRepository,
+  appendOrderStateTransitionEvent,
+  listOrderEventsByOrderId,
+  toOrderEventRow,
+  toStateTransitionAuditRow,
+} from "./order-events.js";
+export {
+  PostgresRiskEventRepository,
+  appendRiskEvent,
+  toRiskEventRow,
+} from "./risk-events.js";
+export {
   insertTrade,
   savePolicySnapshot,
   toOrderbookMetricRow,
@@ -47,6 +59,19 @@ export type {
   JobRecord,
   JobStatus,
 } from "./jobs.js";
+export type {
+  AppendOrderStateTransitionEventInput,
+  ListOrderEventsOptions,
+  OrderEventRecord,
+  OrderEventRowInput,
+  StateTransitionAuditRowInput,
+  StateTransitionAuditRowOptions,
+} from "./order-events.js";
+export type {
+  AppendRiskEventInput,
+  RiskEventRecord,
+  RiskEventRowInput,
+} from "./risk-events.js";
 export type {
   OrderbookMetricInputOptions,
   OrderbookMetricRecord,
