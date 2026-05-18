@@ -1,0 +1,268 @@
+import { describe, expect, it } from "vitest";
+import {
+  appendOrderCandidateDiscardAudit,
+  isOrderCandidateDiscarded,
+  toOrderCandidateDiscardAuditEvent,
+} from "../../src/application/index.js";
+import { toAuditEventRow } from "../../src/infrastructure/index.js";
+import type {
+  AuditEvent,
+  AuditLogPort,
+  OrderCandidateDiscardAuditInput,
+  RuleEngineResult,
+  StrategyDecisionIntentConversion,
+} from "../../src/application/index.js";
+import type { CostDecision, OrderIntent, StrategyDecision } from "../../src/domain/index.js";
+
+const occurredAt = "2026-05-18T12:00:00.000Z";
+
+describe("order candidate discard audit", () => {
+  it("creates an ORDER_DECISION audit event with strategy, cost, rule, and conversion evidence", () => {
+    const event = toOrderCandidateDiscardAuditEvent(discardAuditInput());
+
+    expect(event).toMatchObject({
+      eventType: "ORDER_DECISION",
+      severity: "WARN",
+      occurredAt,
+      actor: "strategy-worker",
+      reasonCode: "spread_too_wide",
+      strategyId: "trend_following",
+      correlationId: "candidate-1",
+    });
+    expect(event.metadata).toMatchObject({
+      audit_kind: "ORDER_CANDIDATE_DISCARDED",
+      discard_stage: "RULE_ENGINE",
+      exchange_id: "upbit_krw_spot",
+      market: "KRW-BTC",
+      strategy_id: "trend_following",
+      intent_conversion: {
+        status: "REJECTED",
+        rejection_count: 1,
+      },
+      cost_decision: {
+        reason_code: "cost_margin_insufficient",
+        snapshot: {
+          margin_bps: "-3",
+        },
+      },
+      rule_result: {
+        status: "FAIL",
+        failed_evaluations: [
+          {
+            reasonCode: "spread_too_wide",
+          },
+        ],
+      },
+      order_intent: {
+        order_type: "LIMIT",
+        requested_price: "10000000",
+      },
+    });
+  });
+
+  it("appends discarded candidates through AuditLogPort and skips clean candidates", async () => {
+    const appended: AuditEvent[] = [];
+    const auditLog: AuditLogPort = {
+      appendEvent: async (event) => {
+        appended.push(event);
+
+        return {
+          auditEventId: "audit-1",
+          appendedAt: occurredAt,
+        };
+      },
+    };
+
+    await expect(appendOrderCandidateDiscardAudit(auditLog, discardAuditInput())).resolves.toEqual({
+      auditEventId: "audit-1",
+      appendedAt: occurredAt,
+    });
+    await expect(
+      appendOrderCandidateDiscardAudit(auditLog, cleanAuditInput()),
+    ).resolves.toBeUndefined();
+
+    expect(appended).toHaveLength(1);
+    expect(appended[0]).toMatchObject({
+      reasonCode: "spread_too_wide",
+    });
+    expect(isOrderCandidateDiscarded(cleanAuditInput())).toBe(false);
+  });
+});
+
+describe("PostgreSQL audit row mapper", () => {
+  it("maps AuditLogPort event fields into audit_events insert row", () => {
+    const row = toAuditEventRow({
+      eventType: "ORDER_DECISION",
+      severity: "WARN",
+      occurredAt,
+      actor: "strategy-worker",
+      reasonCode: "spread_too_wide",
+      strategyId: "trend_following",
+      correlationId: "candidate-1",
+      metadata: {
+        audit_kind: "ORDER_CANDIDATE_DISCARDED",
+      },
+    });
+
+    expect(row).toMatchObject({
+      event_type: "ORDER_DECISION",
+      severity: "WARN",
+      order_id: null,
+      correlation_id: "candidate-1",
+      occurred_at: occurredAt,
+      payload_json: {
+        audit_kind: "ORDER_CANDIDATE_DISCARDED",
+        actor: "strategy-worker",
+        reason_code: "spread_too_wide",
+        strategy_id: "trend_following",
+      },
+    });
+  });
+});
+
+function discardAuditInput(): OrderCandidateDiscardAuditInput {
+  return {
+    occurredAt,
+    actor: "strategy-worker",
+    exchangeId: "upbit_krw_spot",
+    market: "KRW-BTC",
+    correlationId: "candidate-1",
+    strategyDecision: blockStrategyDecision(),
+    intentConversion: rejectedIntentConversion(),
+    costDecision: rejectedCostDecision(),
+    ruleResult: failedRuleResult(),
+    orderIntent: limitIntent(),
+  };
+}
+
+function cleanAuditInput(): OrderCandidateDiscardAuditInput {
+  return {
+    occurredAt,
+    actor: "strategy-worker",
+    strategyDecision: {
+      kind: "ORDER_INTENT",
+      strategyId: "trend_following",
+      reason: "fixture_signal",
+      orderIntents: [limitIntent()],
+    },
+    intentConversion: {
+      status: "PROMOTED",
+      orderIntents: [limitIntent()],
+      reasonCode: "order_intent_promoted",
+      message: "fixture_signal",
+      rejections: [],
+    },
+    costDecision: {
+      ...rejectedCostDecision(),
+      kind: "ALLOW",
+      tradeAllowed: true,
+      reasonCode: "cost_margin_ok",
+      message: "Cost margin is sufficient",
+      snapshot: {
+        ...rejectedCostDecision().snapshot,
+        trade_allowed: true,
+        reason_code: "cost_margin_ok",
+        margin_bps: "3",
+      },
+    },
+    ruleResult: {
+      status: "PASS",
+      passed: true,
+      evaluations: [
+        {
+          status: "PASS",
+          reasonCode: "spread_ok",
+          message: "Spread is ok",
+        },
+      ],
+      failedEvaluations: [],
+      warningEvaluations: [],
+    },
+    orderIntent: limitIntent(),
+  };
+}
+
+function blockStrategyDecision(): StrategyDecision {
+  return {
+    kind: "BLOCK",
+    strategyId: "trend_following",
+    reason: "Spread exceeds the strategy threshold",
+    reasonCode: "spread_too_wide",
+    metadata: {
+      spread_bps: "10",
+    },
+  };
+}
+
+function rejectedIntentConversion(): StrategyDecisionIntentConversion {
+  return {
+    status: "REJECTED",
+    orderIntents: [],
+    reasonCode: "order_intent_validation_failed",
+    message: "Strategy order intents failed validation",
+    rejections: [
+      {
+        index: 0,
+        reasonCode: "requested_price_invalid",
+        message: "LIMIT requestedPrice must be a positive decimal string",
+      },
+    ],
+  };
+}
+
+function rejectedCostDecision(): CostDecision {
+  return {
+    kind: "REJECT",
+    tradeAllowed: false,
+    reasonCode: "cost_margin_insufficient",
+    message: "Expected return is below required return",
+    snapshot: {
+      exchange_id: "upbit_krw_spot",
+      market: "KRW-BTC",
+      expected_return_bps: "10",
+      cost_bps: "3",
+      safety_buffer_bps: "10",
+      required_return_bps: "13",
+      margin_bps: "-3",
+      trade_allowed: false,
+      reason_code: "cost_margin_insufficient",
+    },
+  };
+}
+
+function failedRuleResult(): RuleEngineResult {
+  return {
+    status: "FAIL",
+    passed: false,
+    evaluations: [
+      {
+        status: "FAIL",
+        reasonCode: "spread_too_wide",
+        message: "Spread exceeds threshold",
+      },
+    ],
+    failedEvaluations: [
+      {
+        status: "FAIL",
+        reasonCode: "spread_too_wide",
+        message: "Spread exceeds threshold",
+      },
+    ],
+    warningEvaluations: [],
+  };
+}
+
+function limitIntent(): OrderIntent {
+  return {
+    exchangeId: "upbit_krw_spot",
+    market: "KRW-BTC",
+    strategyId: "trend_following",
+    side: "BUY",
+    orderType: "LIMIT",
+    requestedQuantity: "0.001",
+    requestedNotional: "10000",
+    requestedPrice: "10000000",
+    idempotencyKey: "candidate-1",
+    reason: "fixture",
+  };
+}
