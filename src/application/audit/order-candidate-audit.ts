@@ -152,16 +152,25 @@ function inferStrategyId(input: OrderCandidateDiscardAuditInput): string | undef
 }
 
 function inferExchangeId(input: OrderCandidateDiscardAuditInput): ExchangeId | undefined {
-  return input.exchangeId ?? inferOrderIntent(input)?.exchangeId;
+  return input.exchangeId ?? inferOrderIntent(input)?.exchangeId ?? input.costDecision?.snapshot.exchange_id;
 }
 
 function inferMarket(input: OrderCandidateDiscardAuditInput): MarketCode | undefined {
-  return input.market ?? inferOrderIntent(input)?.market;
+  return input.market ?? inferOrderIntent(input)?.market ?? input.costDecision?.snapshot.market;
 }
 
 function inferOrderIntent(input: OrderCandidateDiscardAuditInput): OrderIntent | undefined {
   if (input.orderIntent !== undefined) {
     return input.orderIntent;
+  }
+
+  const convertedCostMatch = findIntentMatchingCostSnapshot(
+    input.intentConversion?.orderIntents,
+    input.costDecision,
+  );
+
+  if (convertedCostMatch !== undefined) {
+    return convertedCostMatch;
   }
 
   const convertedIntent = input.intentConversion?.orderIntents[0];
@@ -171,6 +180,15 @@ function inferOrderIntent(input: OrderCandidateDiscardAuditInput): OrderIntent |
   }
 
   if (input.strategyDecision?.kind === "ORDER_INTENT") {
+    const strategyCostMatch = findIntentMatchingCostSnapshot(
+      input.strategyDecision.orderIntents,
+      input.costDecision,
+    );
+
+    if (strategyCostMatch !== undefined) {
+      return strategyCostMatch;
+    }
+
     const rejectedIndex = input.intentConversion?.rejections.find((rejection) => rejection.index >= 0)?.index;
 
     if (rejectedIndex !== undefined) {
@@ -181,6 +199,19 @@ function inferOrderIntent(input: OrderCandidateDiscardAuditInput): OrderIntent |
   }
 
   return undefined;
+}
+
+function findIntentMatchingCostSnapshot(
+  intents: readonly OrderIntent[] | undefined,
+  costDecision: CostDecision | undefined,
+): OrderIntent | undefined {
+  if (intents === undefined || costDecision === undefined) {
+    return undefined;
+  }
+
+  const { exchange_id: exchangeId, market } = costDecision.snapshot;
+
+  return intents.find((intent) => intent.exchangeId === exchangeId && intent.market === market);
 }
 
 function toDiscardPayload(
@@ -299,6 +330,8 @@ function toOrderIntentPayload(intent: OrderIntent | undefined): JsonRecord | und
 
   if (intent.orderType === "LIMIT") {
     payload.requested_price = intent.requestedPrice;
+    assignIfDefined(payload, "post_only", intent.postOnly);
+    assignIfDefined(payload, "time_in_force", intent.timeInForce);
   }
 
   assignIfDefined(payload, "metadata", intent.metadata);

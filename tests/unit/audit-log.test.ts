@@ -56,6 +56,8 @@ describe("order candidate discard audit", () => {
       order_intent: {
         order_type: "LIMIT",
         requested_price: "10000000",
+        post_only: true,
+        time_in_force: "GTC",
       },
     });
   });
@@ -145,6 +147,66 @@ describe("order candidate discard audit", () => {
     });
 
     expect(event.metadata).toMatchObject({
+      market: "KRW-ETH",
+      order_intent: {
+        market: "KRW-ETH",
+        requested_price: "3000000",
+        idempotency_key: "candidate-2",
+      },
+    });
+  });
+
+  it("uses cost snapshot market when only cost rejection evidence is provided", () => {
+    const event = toOrderCandidateDiscardAuditEvent({
+      occurredAt,
+      actor: "cost-model",
+      costDecision: rejectedCostDecision({
+        exchangeId: "upbit_krw_spot",
+        market: "KRW-ETH",
+      }),
+    });
+
+    expect(event.metadata).toMatchObject({
+      discard_stage: "COST_DECISION",
+      exchange_id: "upbit_krw_spot",
+      market: "KRW-ETH",
+      cost_decision: {
+        snapshot: {
+          market: "KRW-ETH",
+        },
+      },
+    });
+  });
+
+  it("uses the intent matching the rejected cost snapshot when promoted intents contain multiple markets", () => {
+    const firstIntent = limitIntent({
+      market: "KRW-BTC",
+      requestedPrice: "10000000",
+      idempotencyKey: "candidate-1",
+    });
+    const secondIntent = limitIntent({
+      market: "KRW-ETH",
+      requestedPrice: "3000000",
+      idempotencyKey: "candidate-2",
+    });
+    const event = toOrderCandidateDiscardAuditEvent({
+      occurredAt,
+      actor: "cost-model",
+      intentConversion: {
+        status: "PROMOTED",
+        orderIntents: [firstIntent, secondIntent],
+        reasonCode: "order_intent_promoted",
+        message: "fixture_signal",
+        rejections: [],
+      },
+      costDecision: rejectedCostDecision({
+        exchangeId: "upbit_krw_spot",
+        market: "KRW-ETH",
+      }),
+    });
+
+    expect(event.metadata).toMatchObject({
+      discard_stage: "COST_DECISION",
       market: "KRW-ETH",
       order_intent: {
         market: "KRW-ETH",
@@ -276,15 +338,23 @@ function rejectedIntentConversion(): StrategyDecisionIntentConversion {
   };
 }
 
-function rejectedCostDecision(): CostDecision {
+function rejectedCostDecision(
+  overrides: {
+    exchangeId?: string;
+    market?: string;
+  } = {},
+): CostDecision {
+  const exchangeId = overrides.exchangeId ?? "upbit_krw_spot";
+  const market = overrides.market ?? "KRW-BTC";
+
   return {
     kind: "REJECT",
     tradeAllowed: false,
     reasonCode: "cost_margin_insufficient",
     message: "Expected return is below required return",
     snapshot: {
-      exchange_id: "upbit_krw_spot",
-      market: "KRW-BTC",
+      exchange_id: exchangeId,
+      market,
       expected_return_bps: "10",
       cost_bps: "3",
       safety_buffer_bps: "10",
@@ -328,6 +398,8 @@ function limitIntent(overrides: Partial<OrderIntent> = {}): OrderIntent {
     requestedQuantity: "0.001",
     requestedNotional: "10000",
     requestedPrice: "10000000",
+    postOnly: true,
+    timeInForce: "GTC",
     idempotencyKey: "candidate-1",
     reason: "fixture",
     ...overrides,
