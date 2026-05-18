@@ -306,9 +306,27 @@ export function createVolatilityBreakoutStrategy(options: VolatilityBreakoutStra
         });
       }
 
-      // 1. 변동성 확장 threshold 통과 후 돌파 방향을 지정가 side로 변환한다.
+      const breakoutLookback = requireFeatureDecimal(
+        context,
+        "breakout_lookback_buckets",
+        "volatility_breakout",
+      );
+
+      if (breakoutLookback.kind !== "value") {
+        return breakoutLookback.decision;
+      }
+
+      if (breakoutLookback.value.lessThan(options.breakoutLookbackBuckets)) {
+        return hold("volatility_breakout", "breakout_lookback_below_threshold", {
+          breakout_lookback_buckets: breakoutLookback.value.toFixed(),
+          min_breakout_lookback_buckets: options.breakoutLookbackBuckets,
+        });
+      }
+
+      // 1. 변동성 확장과 돌파 lookback threshold 통과 후 돌파 방향을 지정가 side로 변환한다.
       return createOrderDecision(context, "volatility_breakout", side, {
         breakout_lookback_buckets: options.breakoutLookbackBuckets,
+        signal_breakout_lookback_buckets: breakoutLookback.value.toFixed(),
         min_volatility_expansion_bps: minVolatilityExpansionBps.toFixed(),
         volatility_expansion_bps: expansion.value.toFixed(),
       });

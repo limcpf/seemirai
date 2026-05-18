@@ -100,6 +100,7 @@ export const strategyRegistry: Readonly<Record<RegisteredStrategyId, StrategyReg
       "depth_krw",
       "volatility_expansion_bps",
       "breakout_direction",
+      "breakout_lookback_buckets",
       "limit_price",
       "requested_quantity",
       "requested_notional",

@@ -151,6 +151,7 @@ describe("strategy variants", () => {
           features: {
             volatility_expansion_bps: "20",
             breakout_direction: "UP",
+            breakout_lookback_buckets: "20",
           },
         },
       ],
@@ -224,6 +225,25 @@ describe("strategy variants", () => {
         features: {
           trade_strength: "1.4",
           orderbook_imbalance: "0.12",
+          breakout_direction: "UP",
+          breakout_lookback_buckets: "5",
+        },
+      }),
+    );
+
+    expect(decision).toMatchObject({
+      kind: "HOLD",
+      reason: "breakout_lookback_below_threshold",
+    });
+  });
+
+  it("keeps short volatility breakout lookback evidence on HOLD", async () => {
+    const strategy = createVolatilityBreakoutStrategy(variantOptions.volatilityBreakout);
+    const decision = await evaluate(
+      strategy,
+      contextFor("volatility_breakout", {
+        features: {
+          volatility_expansion_bps: "20",
           breakout_direction: "UP",
           breakout_lookback_buckets: "5",
         },
