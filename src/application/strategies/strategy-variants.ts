@@ -149,8 +149,28 @@ export function createTrendFollowingStrategy(options: TrendFollowingStrategyOpti
         });
       }
 
+      const breakoutDirection = readStringFeature(context, "breakout_direction");
+      const breakoutSide = sideFromDirectionFeature(breakoutDirection);
+
+      // 2. 추세 추종은 호가 방향성만으로 주문 후보를 만들지 않고 돌파 방향 증거를 함께 요구한다.
+      if (breakoutSide === undefined) {
+        return hold("trend_following", "breakout_direction_absent", {
+          breakout_direction: breakoutDirection,
+          breakout_lookback_buckets: options.breakoutLookbackBuckets,
+        });
+      }
+
+      if (breakoutSide !== side) {
+        return hold("trend_following", "breakout_direction_mismatch", {
+          breakout_direction: breakoutDirection,
+          signal_side: side,
+          breakout_side: breakoutSide,
+        });
+      }
+
       return createOrderDecision(context, "trend_following", side, {
         breakout_lookback_buckets: options.breakoutLookbackBuckets,
+        breakout_direction: breakoutDirection,
         min_trade_strength: minTradeStrength.toFixed(),
         min_orderbook_imbalance: minOrderbookImbalance.toFixed(),
         signal_orderbook_imbalance: imbalance.value.toFixed(),
@@ -190,18 +210,11 @@ export function createMeanReversionStrategy(options: MeanReversionStrategyOption
         return deviation.decision;
       }
 
-      // 1. 가격이 평균보다 충분히 낮으면 매수, 충분히 높으면 매도 후보를 만든다.
-      if (deviation.value.lessThanOrEqualTo(entryDeviationBps.negated())) {
-        return createOrderDecision(context, "mean_reversion", "BUY", {
-          entry_deviation_bps: entryDeviationBps.toFixed(),
-          exit_deviation_bps: options.exitDeviationBps,
-          stop_loss_bps: options.stopLossBps,
-          signal_deviation_bps: deviation.value.toFixed(),
-        });
-      }
+      const side = sideFromReversionSignal(deviation.value, entryDeviationBps);
 
-      if (deviation.value.greaterThanOrEqualTo(entryDeviationBps)) {
-        return createOrderDecision(context, "mean_reversion", "SELL", {
+      // 1. 가격이 평균보다 충분히 이탈했을 때만 반대 방향 주문 후보를 만든다.
+      if (side !== undefined) {
+        return createOrderDecision(context, "mean_reversion", side, {
           entry_deviation_bps: entryDeviationBps.toFixed(),
           exit_deviation_bps: options.exitDeviationBps,
           stop_loss_bps: options.stopLossBps,
@@ -625,6 +638,18 @@ function readStringFeature(context: StrategyContext, key: string): string | unde
 }
 
 function sideFromSignedSignal(signal: Decimal, threshold: Decimal): OrderSide | undefined {
+  if (threshold.isZero()) {
+    if (signal.greaterThan(0)) {
+      return "BUY";
+    }
+
+    if (signal.lessThan(0)) {
+      return "SELL";
+    }
+
+    return undefined;
+  }
+
   if (signal.greaterThanOrEqualTo(threshold)) {
     return "BUY";
   }
@@ -637,6 +662,18 @@ function sideFromSignedSignal(signal: Decimal, threshold: Decimal): OrderSide | 
 }
 
 function sideFromReversionSignal(signal: Decimal, threshold: Decimal): OrderSide | undefined {
+  if (threshold.isZero()) {
+    if (signal.lessThan(0)) {
+      return "BUY";
+    }
+
+    if (signal.greaterThan(0)) {
+      return "SELL";
+    }
+
+    return undefined;
+  }
+
   if (signal.lessThanOrEqualTo(threshold.negated())) {
     return "BUY";
   }

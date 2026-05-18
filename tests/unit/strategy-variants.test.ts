@@ -128,6 +128,7 @@ describe("strategy variants", () => {
           features: {
             trade_strength: "1.4",
             orderbook_imbalance: "0.12",
+            breakout_direction: "UP",
           },
         },
       ],
@@ -193,6 +194,107 @@ describe("strategy variants", () => {
         `${strategy.id}:upbit_krw_spot:KRW-BTC:`,
       );
     }
+  });
+
+  it("keeps trend following on HOLD without breakout direction evidence", async () => {
+    const strategy = createTrendFollowingStrategy(variantOptions.trendFollowing);
+    const decision = await evaluate(
+      strategy,
+      contextFor("trend_following", {
+        features: {
+          trade_strength: "1.4",
+          orderbook_imbalance: "0.12",
+        },
+      }),
+    );
+
+    expect(decision).toMatchObject({
+      kind: "HOLD",
+      reason: "breakout_direction_absent",
+    });
+  });
+
+  it("keeps neutral zero signed signals on HOLD even when the imbalance threshold is zero", async () => {
+    const trend = createTrendFollowingStrategy({
+      ...variantOptions.trendFollowing,
+      minOrderbookImbalance: "0",
+    });
+    const momentum = createOrderbookImbalanceMomentumStrategy({
+      ...variantOptions.orderbookImbalanceMomentum,
+      minOrderbookImbalance: "0",
+    });
+
+    await expect(
+      evaluate(
+        trend,
+        contextFor("trend_following", {
+          features: {
+            trade_strength: "1.4",
+            orderbook_imbalance: "0",
+            breakout_direction: "UP",
+          },
+        }),
+      ),
+    ).resolves.toMatchObject({
+      kind: "HOLD",
+      reason: "orderbook_imbalance_below_threshold",
+    });
+    await expect(
+      evaluate(
+        momentum,
+        contextFor("orderbook_imbalance_momentum", {
+          features: {
+            trade_strength: "1.4",
+            orderbook_imbalance: "0",
+          },
+        }),
+      ),
+    ).resolves.toMatchObject({
+      kind: "HOLD",
+      reason: "orderbook_imbalance_below_threshold",
+    });
+  });
+
+  it("keeps neutral zero reversion signals on HOLD even when entry thresholds are zero", async () => {
+    const meanReversion = createMeanReversionStrategy({
+      ...variantOptions.meanReversion,
+      entryDeviationBps: "0",
+    });
+    const liquidityReversion = createLiquidityReversionStrategy({
+      ...variantOptions.liquidityReversion,
+      entryDeviationBps: "0",
+    });
+
+    await expect(
+      evaluate(
+        meanReversion,
+        contextFor("mean_reversion", {
+          features: {
+            spread_bps: "3",
+            depth_krw: "80000000",
+            mean_reversion_deviation_bps: "0",
+          },
+        }),
+      ),
+    ).resolves.toMatchObject({
+      kind: "HOLD",
+      reason: "mean_reversion_deviation_below_threshold",
+    });
+    await expect(
+      evaluate(
+        liquidityReversion,
+        contextFor("liquidity_reversion", {
+          features: {
+            spread_bps: "3",
+            depth_krw: "100000000",
+            liquidity_reversion_bps: "0",
+          },
+        }),
+      ),
+    ).resolves.toMatchObject({
+      kind: "HOLD",
+      reason: "liquidity_reversion_below_threshold",
+    });
   });
 });
 
