@@ -126,6 +126,9 @@ M3는 실제 RiskGate state machine을 구현하지 않고 위 차단 입력 신
 
 - `trend_following`
 - `mean_reversion`
+- `volatility_breakout`
+- `orderbook_imbalance_momentum`
+- `liquidity_reversion`
 
 허용 rule id:
 
@@ -171,6 +174,24 @@ M3는 실제 RiskGate state machine을 구현하지 않고 위 차단 입력 신
       "entry_deviation_bps": "25",
       "exit_deviation_bps": "8",
       "stop_loss_bps": "35"
+    },
+    "volatility_breakout": {
+      "max_spread_bps": "8",
+      "min_depth_krw": "50000000",
+      "breakout_lookback_buckets": 20,
+      "min_volatility_expansion_bps": "18"
+    },
+    "orderbook_imbalance_momentum": {
+      "max_spread_bps": "7",
+      "min_depth_krw": "60000000",
+      "min_trade_strength": "1.25",
+      "min_orderbook_imbalance": "0.1"
+    },
+    "liquidity_reversion": {
+      "max_spread_bps": "5",
+      "min_depth_krw": "90000000",
+      "entry_deviation_bps": "18",
+      "stop_loss_bps": "30"
     }
   }
 }
@@ -188,6 +209,18 @@ M3는 실제 RiskGate state machine을 구현하지 않고 위 차단 입력 신
 | `mean_reversion` | `entry_deviation_bps` | `25` | bps | 높일수록 진입 신호를 더 드물게 허용 |
 | `mean_reversion` | `exit_deviation_bps` | `8` | bps | 낮출수록 더 빨리 평균 복귀 청산 후보를 만든다 |
 | `mean_reversion` | `stop_loss_bps` | `35` | bps | 낮출수록 손절 후보를 더 빨리 만든다 |
+| `volatility_breakout` | `max_spread_bps` | `8` | bps | 낮출수록 넓은 spread 후보를 더 많이 차단 |
+| `volatility_breakout` | `min_depth_krw` | `50000000` | KRW | 높일수록 유동성이 부족한 후보를 더 많이 차단 |
+| `volatility_breakout` | `breakout_lookback_buckets` | `20` | feature bucket 수 | 높일수록 짧은 돌파 신호를 덜 신뢰 |
+| `volatility_breakout` | `min_volatility_expansion_bps` | `18` | bps | 높일수록 약한 변동성 확장 후보를 더 많이 차단 |
+| `orderbook_imbalance_momentum` | `max_spread_bps` | `7` | bps | 낮출수록 넓은 spread 후보를 더 많이 차단 |
+| `orderbook_imbalance_momentum` | `min_depth_krw` | `60000000` | KRW | 높일수록 유동성이 부족한 후보를 더 많이 차단 |
+| `orderbook_imbalance_momentum` | `min_trade_strength` | `1.25` | ratio | 높일수록 약한 체결강도 후보를 더 많이 차단 |
+| `orderbook_imbalance_momentum` | `min_orderbook_imbalance` | `0.1` | 0~1 ratio | 높일수록 약한 호가 불균형 후보를 더 많이 차단 |
+| `liquidity_reversion` | `max_spread_bps` | `5` | bps | 낮출수록 넓은 spread 후보를 더 많이 차단 |
+| `liquidity_reversion` | `min_depth_krw` | `90000000` | KRW | 높일수록 유동성이 부족한 후보를 더 많이 차단 |
+| `liquidity_reversion` | `entry_deviation_bps` | `18` | bps | 높일수록 진입 신호를 더 드물게 허용 |
+| `liquidity_reversion` | `stop_loss_bps` | `30` | bps | 낮출수록 손절 후보를 더 빨리 만든다 |
 
 M4의 `risk_ok` rule은 RiskGate 활성 승인 구현이 아니다. `risk_ok`는 registry/config contract에 남기되, M5 전까지는 `risk_ok_placeholder` WARN으로 평가해 실행 승인으로 해석되지 않게 한다.
 

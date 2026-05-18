@@ -43,8 +43,11 @@ export {
 } from "./registry-config.js";
 export {
   MeanReversionStrategyParametersSchema,
+  LiquidityReversionStrategyParametersSchema,
+  OrderbookImbalanceMomentumStrategyParametersSchema,
   StrategyParametersConfigSchema,
   TrendFollowingStrategyParametersSchema,
+  VolatilityBreakoutStrategyParametersSchema,
   defaultStrategyParametersConfig,
 } from "./strategy-parameters.js";
 export type {
@@ -53,7 +56,10 @@ export type {
   ResolvedStrategyActivation,
 } from "./registry-config.js";
 export type {
+  LiquidityReversionStrategyParameters,
   MeanReversionStrategyParameters,
+  OrderbookImbalanceMomentumStrategyParameters,
   StrategyParametersConfig,
   TrendFollowingStrategyParameters,
+  VolatilityBreakoutStrategyParameters,
 } from "./strategy-parameters.js";

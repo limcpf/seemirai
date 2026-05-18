@@ -20,7 +20,13 @@ import { loadDefaultRuntimeConfig } from "../../src/runtime/index.js";
 describe("registry foundation", () => {
   it("contains the MVP exchange, strategy, and rule ids", () => {
     expect(exchangeRegistry.upbit_krw_spot.id).toBe("upbit_krw_spot");
-    expect(registeredStrategyIds).toEqual(["trend_following", "mean_reversion"]);
+    expect(registeredStrategyIds).toEqual([
+      "trend_following",
+      "mean_reversion",
+      "volatility_breakout",
+      "orderbook_imbalance_momentum",
+      "liquidity_reversion",
+    ]);
     expect(registeredRuleIds).toEqual([
       "universe_allowed",
       "market_warning_absent",
@@ -42,6 +48,9 @@ describe("registry foundation", () => {
     expect(resolution.activeStrategies.map((entry) => entry.strategy.id)).toEqual([
       "trend_following",
       "mean_reversion",
+      "volatility_breakout",
+      "orderbook_imbalance_momentum",
+      "liquidity_reversion",
     ]);
     expect(resolution.activeStrategies.every((entry) => entry.rules.length > 0)).toBe(true);
   });
@@ -156,6 +165,9 @@ describe("registry foundation", () => {
     expect(config.registry.strategies.map((strategy) => strategy.id)).toEqual([
       "trend_following",
       "mean_reversion",
+      "volatility_breakout",
+      "orderbook_imbalance_momentum",
+      "liquidity_reversion",
     ]);
   });
 });
