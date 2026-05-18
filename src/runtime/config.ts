@@ -5,6 +5,10 @@ import {
   RegistryActivationConfigSchema,
   defaultRegistryActivationConfig,
 } from "./registry-config.js";
+import {
+  StrategyParametersConfigSchema,
+  defaultStrategyParametersConfig,
+} from "./strategy-parameters.js";
 
 const defaultConfigUrl = new URL("../../config/paper.json", import.meta.url);
 
@@ -45,6 +49,7 @@ export const RuntimeConfigSchema = z.object({
       can_generate_trade_signal: false,
     }),
   registry: RegistryActivationConfigSchema.default(defaultRegistryActivationConfig),
+  strategyParameters: StrategyParametersConfigSchema.default(defaultStrategyParametersConfig),
   secrets: z
     .object({
       upbit_access_key: z.string().min(1).optional(),
