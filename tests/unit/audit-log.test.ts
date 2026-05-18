@@ -31,7 +31,7 @@ describe("order candidate discard audit", () => {
     });
     expect(event.metadata).toMatchObject({
       audit_kind: "ORDER_CANDIDATE_DISCARDED",
-      discard_stage: "RULE_ENGINE",
+      discard_stage: "STRATEGY_DECISION",
       exchange_id: "upbit_krw_spot",
       market: "KRW-BTC",
       strategy_id: "trend_following",

@@ -99,24 +99,24 @@ export function isOrderCandidateDiscarded(input: OrderCandidateDiscardAuditInput
 function inferDiscardStage(
   input: OrderCandidateDiscardAuditInput,
 ): OrderCandidateDiscardStage | undefined {
-  // 1. rule fail은 비용과 전략을 지난 뒤 마지막으로 후보를 폐기하는 downstream 판단이다.
-  if (input.ruleResult !== undefined && !input.ruleResult.passed) {
-    return "RULE_ENGINE";
+  // 1. 전략이 직접 BLOCK한 후보는 conversion reject와 함께 전달돼도 실제 폐기 지점을 전략 판단으로 남긴다.
+  if (input.strategyDecision !== undefined && input.strategyDecision.kind === "BLOCK") {
+    return "STRATEGY_DECISION";
   }
 
-  // 2. 비용 모델이 거부한 후보는 실행/risk 단계로 넘기지 않는다.
-  if (input.costDecision !== undefined && !input.costDecision.tradeAllowed) {
-    return "COST_DECISION";
-  }
-
-  // 3. 전략 판단을 OrderIntent로 승격하지 못한 경우를 기록한다.
+  // 2. 전략 판단을 OrderIntent로 승격하지 못한 경우를 기록한다.
   if (input.intentConversion !== undefined && input.intentConversion.status === "REJECTED") {
     return "INTENT_CONVERSION";
   }
 
-  // 4. 전략 자체가 안전하지 않다고 판단한 경우를 기록한다.
-  if (input.strategyDecision !== undefined && input.strategyDecision.kind === "BLOCK") {
-    return "STRATEGY_DECISION";
+  // 3. 비용 모델이 거부한 후보는 실행/risk 단계로 넘기지 않는다.
+  if (input.costDecision !== undefined && !input.costDecision.tradeAllowed) {
+    return "COST_DECISION";
+  }
+
+  // 4. rule fail은 cost를 통과한 후보를 rule chain에서 폐기한 판단이다.
+  if (input.ruleResult !== undefined && !input.ruleResult.passed) {
+    return "RULE_ENGINE";
   }
 
   return undefined;

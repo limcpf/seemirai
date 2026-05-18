@@ -30,12 +30,12 @@ export async function appendAuditEvent(
   const inserted = await database
     .insertInto("audit_events")
     .values(toAuditEventRow(event))
-    .returning(["id", "occurred_at"])
+    .returning("id")
     .executeTakeFirstOrThrow();
 
   return {
     auditEventId: inserted.id,
-    appendedAt: inserted.occurred_at,
+    appendedAt: new Date(),
   };
 }
 
