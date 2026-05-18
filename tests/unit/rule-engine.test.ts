@@ -4,12 +4,13 @@ import {
   createDefaultM4Rules,
   createDepthSufficientRule,
   createSpreadOkRule,
+  createStopLossRule,
   evaluateRules,
   marketWarningAbsentRule,
   riskOkPlaceholderRule,
 } from "../../src/application/index.js";
 import { evaluateCost } from "../../src/domain/index.js";
-import type { MarketStatus, RuleContext } from "../../src/domain/index.js";
+import type { MarketStatus, OrderIntent, RuleContext } from "../../src/domain/index.js";
 
 const observedAt = new Date("2026-05-18T00:00:00.000Z");
 
@@ -76,7 +77,7 @@ describe("M4 rule engine", () => {
     const result = await evaluateRules(rules, createContext());
 
     expect(result.status).toBe("WARN");
-    expect(result.passed).toBe(true);
+    expect(result.passed).toBe(false);
     expect(result.failedEvaluations).toEqual([]);
     expect(result.warningEvaluations).toMatchObject([
       {
@@ -286,4 +287,48 @@ describe("M4 rule engine", () => {
       "take_profit_triggered",
     ]);
   });
+
+  it("uses strategy stop loss metadata before the default rule threshold", async () => {
+    const result = await Promise.resolve(
+      createStopLossRule({ stopLossBps: "35" }).evaluate(
+        createContext({
+          features: {
+            unrealized_pnl_bps: "-20",
+          },
+          orderIntent: limitIntent({
+            strategyId: "mean_reversion",
+            metadata: {
+              stop_loss_bps: "15",
+            },
+          }),
+        }),
+      ),
+    );
+
+    expect(result).toMatchObject({
+      status: "WARN",
+      reasonCode: "stop_loss_triggered",
+      metadata: {
+        unrealized_pnl_bps: "-20",
+        stop_loss_bps: "15",
+        stop_loss_bps_source: "order_intent.metadata.stop_loss_bps",
+      },
+    });
+  });
 });
+
+function limitIntent(overrides: Partial<OrderIntent> = {}): OrderIntent {
+  return {
+    exchangeId: "upbit_krw_spot",
+    market: "KRW-BTC",
+    strategyId: "trend_following",
+    side: "BUY",
+    orderType: "LIMIT",
+    requestedPrice: "10000000",
+    requestedQuantity: "0.001",
+    requestedNotional: "10000",
+    idempotencyKey: "candidate-1",
+    reason: "fixture_signal",
+    ...overrides,
+  } as OrderIntent;
+}

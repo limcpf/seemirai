@@ -56,7 +56,7 @@ export function summarizeRuleEvaluations(
 
   return {
     status,
-    passed: status !== "FAIL",
+    passed: status === "PASS",
     evaluations,
     failedEvaluations,
     warningEvaluations,

@@ -8,6 +8,20 @@ import type {
   RuleEvaluation,
 } from "../../domain/index.js";
 
+type OptionalRuleDecimalRead =
+  | {
+      status: "ok";
+      value: Decimal;
+      source: string;
+    }
+  | {
+      status: "missing";
+    }
+  | {
+      status: "invalid";
+      source: string;
+    };
+
 export interface UniverseAllowedRuleOptions {
   allowedMarkets: readonly MarketCode[];
 }
@@ -205,7 +219,7 @@ export const riskOkPlaceholderRule: Rule = {
  * unrealized PnL이 손절 threshold에 도달했는지 확인하는 exit rule을 만든다.
  */
 export function createStopLossRule(options: StopLossRuleOptions): Rule {
-  const stopLossBps = parseRuleDecimal(options.stopLossBps, "stop_loss_bps");
+  const defaultStopLossBps = parseRuleDecimal(options.stopLossBps, "stop_loss_bps");
 
   return {
     id: "stop_loss",
@@ -216,14 +230,34 @@ export function createStopLossRule(options: StopLossRuleOptions): Rule {
         return pass("stop_loss_not_applicable", "unrealized_pnl_bps feature is absent");
       }
 
+      const candidateStopLossBps = readOrderIntentMetadataDecimal(context, "stop_loss_bps");
+
+      if (candidateStopLossBps.status === "invalid") {
+        return fail("stop_loss_bps_invalid", "stop_loss_bps metadata must be a non-negative decimal string", {
+          source: candidateStopLossBps.source,
+        });
+      }
+
+      // 1. 전략별 stop-loss metadata가 있으면 rule 기본값보다 우선 적용한다.
+      const stopLossBps =
+        candidateStopLossBps.status === "ok" ? candidateStopLossBps.value : defaultStopLossBps;
+      const stopLossBpsSource =
+        candidateStopLossBps.status === "ok"
+          ? candidateStopLossBps.source
+          : "rule.default_stop_loss_bps";
+
       if (unrealizedPnlBps.lessThanOrEqualTo(stopLossBps.negated())) {
         return warn("stop_loss_triggered", "Unrealized loss reached the stop loss threshold", {
           unrealized_pnl_bps: unrealizedPnlBps.toFixed(),
           stop_loss_bps: stopLossBps.toFixed(),
+          stop_loss_bps_source: stopLossBpsSource,
         });
       }
 
-      return pass("stop_loss_clear", "Stop loss threshold is not reached");
+      return pass("stop_loss_clear", "Stop loss threshold is not reached", {
+        stop_loss_bps: stopLossBps.toFixed(),
+        stop_loss_bps_source: stopLossBpsSource,
+      });
     },
   };
 }
@@ -282,6 +316,39 @@ function readFeatureDecimal(context: RuleContext, key: string): Decimal | undefi
     return parseFinancialDecimal(value);
   } catch {
     return undefined;
+  }
+}
+
+function readOrderIntentMetadataDecimal(context: RuleContext, key: string): OptionalRuleDecimalRead {
+  const source = `order_intent.metadata.${key}`;
+  const value = context.orderIntent?.metadata?.[key];
+
+  if (value === undefined || value === null) {
+    return {
+      status: "missing",
+    };
+  }
+
+  try {
+    const decimal = parseFinancialDecimal(value);
+
+    if (decimal.isNegative()) {
+      return {
+        status: "invalid",
+        source,
+      };
+    }
+
+    return {
+      status: "ok",
+      value: decimal,
+      source,
+    };
+  } catch {
+    return {
+      status: "invalid",
+      source,
+    };
   }
 }
 

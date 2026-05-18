@@ -90,6 +90,30 @@ describe("order candidate discard audit", () => {
     expect(isOrderCandidateDiscarded(cleanAuditInput())).toBe(false);
   });
 
+  it("records non-passing WARN rule results with the warning reason code", () => {
+    const event = toOrderCandidateDiscardAuditEvent({
+      ...cleanAuditInput(),
+      ruleResult: warningRuleResult(),
+    });
+
+    expect(event).toMatchObject({
+      reasonCode: "risk_ok_placeholder",
+      metadata: {
+        discard_stage: "RULE_ENGINE",
+        rule_result: {
+          status: "WARN",
+          passed: false,
+          warning_evaluations: [
+            {
+              reasonCode: "risk_ok_placeholder",
+            },
+          ],
+        },
+      },
+    });
+    expect(isOrderCandidateDiscarded({ ...cleanAuditInput(), ruleResult: warningRuleResult() })).toBe(true);
+  });
+
   it("uses the original strategy decision intent when rejected conversion has no promoted intents", () => {
     const event = toOrderCandidateDiscardAuditEvent({
       occurredAt,
@@ -385,6 +409,28 @@ function failedRuleResult(): RuleEngineResult {
       },
     ],
     warningEvaluations: [],
+  };
+}
+
+function warningRuleResult(): RuleEngineResult {
+  return {
+    status: "WARN",
+    passed: false,
+    evaluations: [
+      {
+        status: "WARN",
+        reasonCode: "risk_ok_placeholder",
+        message: "Active RiskGate approval is not implemented until M5",
+      },
+    ],
+    failedEvaluations: [],
+    warningEvaluations: [
+      {
+        status: "WARN",
+        reasonCode: "risk_ok_placeholder",
+        message: "Active RiskGate approval is not implemented until M5",
+      },
+    ],
   };
 }
 

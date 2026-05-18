@@ -347,6 +347,49 @@ describe("strategy variants", () => {
     });
   });
 
+  it("keeps zero trade strength on HOLD even when the strength threshold is zero", async () => {
+    const trend = createTrendFollowingStrategy({
+      ...variantOptions.trendFollowing,
+      minTradeStrength: "0",
+    });
+    const momentum = createOrderbookImbalanceMomentumStrategy({
+      ...variantOptions.orderbookImbalanceMomentum,
+      minTradeStrength: "0",
+    });
+
+    await expect(
+      evaluate(
+        trend,
+        contextFor("trend_following", {
+          features: {
+            trade_strength: "0",
+            orderbook_imbalance: "0.12",
+            breakout_direction: "UP",
+            breakout_lookback_buckets: "20",
+            volatility_expansion_bps: "20",
+          },
+        }),
+      ),
+    ).resolves.toMatchObject({
+      kind: "HOLD",
+      reason: "trade_strength_below_threshold",
+    });
+    await expect(
+      evaluate(
+        momentum,
+        contextFor("orderbook_imbalance_momentum", {
+          features: {
+            trade_strength: "0",
+            orderbook_imbalance: "0.12",
+          },
+        }),
+      ),
+    ).resolves.toMatchObject({
+      kind: "HOLD",
+      reason: "trade_strength_below_threshold",
+    });
+  });
+
   it("keeps neutral zero reversion signals on HOLD even when entry thresholds are zero", async () => {
     const meanReversion = createMeanReversionStrategy({
       ...variantOptions.meanReversion,

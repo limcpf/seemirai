@@ -138,7 +138,7 @@ export function createTrendFollowingStrategy(options: TrendFollowingStrategyOpti
       }
 
       // 1. 모멘텀 강도와 호가 방향성이 모두 충분할 때만 주문 후보로 승격한다.
-      if (tradeStrength.value.lessThan(minTradeStrength)) {
+      if (!passesPositiveSignalThreshold(tradeStrength.value, minTradeStrength)) {
         return hold("trend_following", "trade_strength_below_threshold", {
           trade_strength: tradeStrength.value.toFixed(),
           min_trade_strength: minTradeStrength.toFixed(),
@@ -405,7 +405,7 @@ export function createOrderbookImbalanceMomentumStrategy(
         return imbalance.decision;
       }
 
-      if (tradeStrength.value.lessThan(minTradeStrength)) {
+      if (!passesPositiveSignalThreshold(tradeStrength.value, minTradeStrength)) {
         return hold("orderbook_imbalance_momentum", "trade_strength_below_threshold", {
           trade_strength: tradeStrength.value.toFixed(),
           min_trade_strength: minTradeStrength.toFixed(),
@@ -736,6 +736,10 @@ function sideFromSignedSignal(signal: Decimal, threshold: Decimal): OrderSide | 
   }
 
   return undefined;
+}
+
+function passesPositiveSignalThreshold(signal: Decimal, threshold: Decimal): boolean {
+  return threshold.isZero() ? signal.greaterThan(0) : signal.greaterThanOrEqualTo(threshold);
 }
 
 function sideFromReversionSignal(signal: Decimal, threshold: Decimal): OrderSide | undefined {

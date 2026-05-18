@@ -114,7 +114,7 @@ function inferDiscardStage(
     return "COST_DECISION";
   }
 
-  // 4. rule fail은 cost를 통과한 후보를 rule chain에서 폐기한 판단이다.
+  // 4. rule이 PASS가 아니면 cost를 통과한 후보를 rule chain에서 폐기한 판단이다.
   if (input.ruleResult !== undefined && !input.ruleResult.passed) {
     return "RULE_ENGINE";
   }
@@ -127,7 +127,11 @@ function inferReasonCode(
   stage: OrderCandidateDiscardStage,
 ): string {
   if (stage === "RULE_ENGINE") {
-    return input.ruleResult?.failedEvaluations[0]?.reasonCode ?? "rule_engine_failed";
+    return (
+      input.ruleResult?.failedEvaluations[0]?.reasonCode ??
+      input.ruleResult?.warningEvaluations[0]?.reasonCode ??
+      "rule_engine_not_passed"
+    );
   }
 
   if (stage === "COST_DECISION") {
