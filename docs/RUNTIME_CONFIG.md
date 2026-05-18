@@ -192,7 +192,8 @@ M4는 주문 후보가 실행 단계로 넘어가지 못한 이유를 `AuditLogP
       "min_depth_krw": "50000000",
       "breakout_lookback_buckets": 20,
       "min_trade_strength": "1.2",
-      "min_orderbook_imbalance": "0.08"
+      "min_orderbook_imbalance": "0.08",
+      "min_volatility_expansion_bps": "18"
     },
     "mean_reversion": {
       "max_spread_bps": "6",
@@ -230,6 +231,7 @@ M4는 주문 후보가 실행 단계로 넘어가지 못한 이유를 `AuditLogP
 | `trend_following` | `breakout_lookback_buckets` | `20` | feature bucket 수 | 높일수록 짧은 돌파 신호를 덜 신뢰 |
 | `trend_following` | `min_trade_strength` | `1.2` | ratio | 높일수록 약한 체결강도 후보를 더 많이 차단 |
 | `trend_following` | `min_orderbook_imbalance` | `0.08` | 0~1 ratio | 높일수록 약한 호가 불균형 후보를 더 많이 차단 |
+| `trend_following` | `min_volatility_expansion_bps` | `18` | bps | 높일수록 변동성 확장이 약한 추세 후보를 더 많이 차단 |
 | `mean_reversion` | `max_spread_bps` | `6` | bps | 낮출수록 넓은 spread 후보를 더 많이 차단 |
 | `mean_reversion` | `min_depth_krw` | `70000000` | KRW | 높일수록 유동성이 부족한 후보를 더 많이 차단 |
 | `mean_reversion` | `entry_deviation_bps` | `25` | bps | 높일수록 진입 신호를 더 드물게 허용 |

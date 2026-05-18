@@ -122,7 +122,49 @@ describe("M4 rule engine", () => {
     });
   });
 
+  it("fails closed when market status belongs to another context", async () => {
+    const result = await Promise.resolve(
+      marketWarningAbsentRule.evaluate(
+        createContext({
+          marketStatus: {
+            ...healthyMarketStatus,
+            market: "KRW-ETH",
+          },
+        }),
+      ),
+    );
+
+    expect(result).toMatchObject({
+      status: "FAIL",
+      reasonCode: "market_status_mismatch",
+      metadata: {
+        context_exchange_id: "upbit_krw_spot",
+        context_market: "KRW-BTC",
+        status_exchange_id: "upbit_krw_spot",
+        status_market: "KRW-ETH",
+      },
+    });
+  });
+
   it("returns explicit spread and depth fail reasons", async () => {
+    const negativeSpreadResult = await Promise.resolve(
+      createSpreadOkRule({ maxSpreadBps: "6" }).evaluate(
+        createContext({
+          features: {
+            spread_bps: "-1",
+            depth_krw: "80000000",
+          },
+        }),
+      ),
+    );
+    expect(negativeSpreadResult).toMatchObject({
+      status: "FAIL",
+      reasonCode: "spread_negative",
+      metadata: {
+        spread_bps: "-1",
+      },
+    });
+
     const spreadResult = await Promise.resolve(
       createSpreadOkRule({ maxSpreadBps: "6" }).evaluate(
         createContext({

@@ -25,6 +25,7 @@ export interface TrendFollowingStrategyOptions extends EntryGuardOptions {
   breakoutLookbackBuckets: number;
   minTradeStrength: string;
   minOrderbookImbalance: string;
+  minVolatilityExpansionBps: string;
 }
 
 /**
@@ -107,6 +108,10 @@ export function createTrendFollowingStrategy(options: TrendFollowingStrategyOpti
     options.minOrderbookImbalance,
     "min_orderbook_imbalance",
   );
+  const minVolatilityExpansionBps = parseNonNegativeDecimal(
+    options.minVolatilityExpansionBps,
+    "min_volatility_expansion_bps",
+  );
 
   return {
     ...strategyRegistry.trend_following,
@@ -185,10 +190,30 @@ export function createTrendFollowingStrategy(options: TrendFollowingStrategyOpti
         });
       }
 
+      const volatilityExpansion = requireFeatureDecimal(
+        context,
+        "volatility_expansion_bps",
+        "trend_following",
+      );
+
+      if (volatilityExpansion.kind !== "value") {
+        return volatilityExpansion.decision;
+      }
+
+      // 3. 추세 추종은 돌파 증거에 더해 변동성 확장이 충분할 때만 진입 후보를 만든다.
+      if (volatilityExpansion.value.lessThan(minVolatilityExpansionBps)) {
+        return hold("trend_following", "volatility_expansion_below_threshold", {
+          min_volatility_expansion_bps: minVolatilityExpansionBps.toFixed(),
+          volatility_expansion_bps: volatilityExpansion.value.toFixed(),
+        });
+      }
+
       return createOrderDecision(context, "trend_following", side, {
         breakout_lookback_buckets: options.breakoutLookbackBuckets,
         signal_breakout_lookback_buckets: breakoutLookback.value.toFixed(),
         breakout_direction: breakoutDirection,
+        min_volatility_expansion_bps: minVolatilityExpansionBps.toFixed(),
+        volatility_expansion_bps: volatilityExpansion.value.toFixed(),
         min_trade_strength: minTradeStrength.toFixed(),
         min_orderbook_imbalance: minOrderbookImbalance.toFixed(),
         signal_orderbook_imbalance: imbalance.value.toFixed(),
@@ -473,6 +498,12 @@ function evaluateEntryGuards(
 
   if (spread.kind !== "value") {
     return spread.decision;
+  }
+
+  if (spread.value.isNegative()) {
+    return block(strategyId, "spread_negative", "Spread must not be negative", {
+      spread_bps: spread.value.toFixed(),
+    });
   }
 
   if (spread.value.greaterThan(options.maxSpreadBps)) {

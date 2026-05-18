@@ -26,6 +26,7 @@ describe("runtime config", () => {
       breakout_lookback_buckets: 20,
       min_trade_strength: "1.2",
       min_orderbook_imbalance: "0.08",
+      min_volatility_expansion_bps: "18",
     });
     expect(config.strategyParameters.mean_reversion).toMatchObject({
       max_spread_bps: "6",

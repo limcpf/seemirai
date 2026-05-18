@@ -29,6 +29,7 @@ const variantOptions: M4StrategyVariantOptions = {
     breakoutLookbackBuckets: 20,
     minTradeStrength: "1.2",
     minOrderbookImbalance: "0.08",
+    minVolatilityExpansionBps: "18",
   },
   meanReversion: {
     maxSpreadBps: "6",
@@ -130,6 +131,7 @@ describe("strategy variants", () => {
             orderbook_imbalance: "0.12",
             breakout_direction: "UP",
             breakout_lookback_buckets: "20",
+            volatility_expansion_bps: "20",
           },
         },
       ],
@@ -253,6 +255,53 @@ describe("strategy variants", () => {
     expect(decision).toMatchObject({
       kind: "HOLD",
       reason: "breakout_lookback_below_threshold",
+    });
+  });
+
+  it("keeps trend following on HOLD when volatility expansion is weak", async () => {
+    const strategy = createTrendFollowingStrategy(variantOptions.trendFollowing);
+    const decision = await evaluate(
+      strategy,
+      contextFor("trend_following", {
+        features: {
+          trade_strength: "1.4",
+          orderbook_imbalance: "0.12",
+          breakout_direction: "UP",
+          breakout_lookback_buckets: "20",
+          volatility_expansion_bps: "10",
+        },
+      }),
+    );
+
+    expect(decision).toMatchObject({
+      kind: "HOLD",
+      reason: "volatility_expansion_below_threshold",
+      metadata: {
+        min_volatility_expansion_bps: "18",
+        volatility_expansion_bps: "10",
+      },
+    });
+  });
+
+  it("blocks negative spread feature snapshots before signal evaluation", async () => {
+    const strategy = createTrendFollowingStrategy(variantOptions.trendFollowing);
+    const decision = await evaluate(
+      strategy,
+      contextFor("trend_following", {
+        features: {
+          spread_bps: "-1",
+          trade_strength: "1.4",
+          orderbook_imbalance: "0.12",
+          breakout_direction: "UP",
+          breakout_lookback_buckets: "20",
+          volatility_expansion_bps: "20",
+        },
+      }),
+    );
+
+    expect(decision).toMatchObject({
+      kind: "BLOCK",
+      reasonCode: "spread_negative",
     });
   });
 

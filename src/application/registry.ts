@@ -74,6 +74,7 @@ export const strategyRegistry: Readonly<Record<RegisteredStrategyId, StrategyReg
       "orderbook_imbalance",
       "breakout_direction",
       "breakout_lookback_buckets",
+      "volatility_expansion_bps",
       "depth_krw",
       "limit_price",
       "requested_quantity",

@@ -69,6 +69,15 @@ export const marketWarningAbsentRule: Rule = {
       return fail("market_status_missing", "Market status is required before creating a new candidate");
     }
 
+    if (status.exchangeId !== context.exchangeId || status.market !== context.market) {
+      return fail("market_status_mismatch", "Market status does not match the rule context", {
+        context_exchange_id: context.exchangeId,
+        context_market: context.market,
+        status_exchange_id: status.exchangeId,
+        status_market: status.market,
+      });
+    }
+
     if (!status.tradable) {
       return fail("market_not_tradable", "Market is not tradable", {
         reason_codes: [...status.reasonCodes],
@@ -100,6 +109,12 @@ export function createSpreadOkRule(options: SpreadOkRuleOptions): Rule {
 
       if (spreadBps === undefined) {
         return fail("feature_missing_spread_bps", "spread_bps feature is required");
+      }
+
+      if (spreadBps.isNegative()) {
+        return fail("spread_negative", "spread_bps must not be negative", {
+          spread_bps: spreadBps.toFixed(),
+        });
       }
 
       if (spreadBps.greaterThan(maxSpreadBps)) {

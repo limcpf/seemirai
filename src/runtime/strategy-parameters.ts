@@ -22,6 +22,7 @@ export const TrendFollowingStrategyParametersSchema = z
     breakout_lookback_buckets: PositiveIntegerSchema.default(20),
     min_trade_strength: NonNegativeDecimalStringSchema.default("1.2"),
     min_orderbook_imbalance: OrderbookImbalanceThresholdSchema.default("0.08"),
+    min_volatility_expansion_bps: NonNegativeDecimalStringSchema.default("18"),
   })
   .strict();
 
@@ -69,6 +70,7 @@ export const defaultStrategyParametersConfig = {
     breakout_lookback_buckets: 20,
     min_trade_strength: "1.2",
     min_orderbook_imbalance: "0.08",
+    min_volatility_expansion_bps: "18",
   },
   mean_reversion: {
     max_spread_bps: "6",
