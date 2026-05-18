@@ -87,6 +87,30 @@ describe("order candidate discard audit", () => {
     });
     expect(isOrderCandidateDiscarded(cleanAuditInput())).toBe(false);
   });
+
+  it("uses the original strategy decision intent when rejected conversion has no promoted intents", () => {
+    const event = toOrderCandidateDiscardAuditEvent({
+      occurredAt,
+      actor: "strategy-worker",
+      strategyDecision: {
+        kind: "ORDER_INTENT",
+        strategyId: "trend_following",
+        reason: "fixture_signal",
+        orderIntents: [limitIntent()],
+      },
+      intentConversion: rejectedIntentConversion(),
+    });
+
+    expect(event.metadata).toMatchObject({
+      discard_stage: "INTENT_CONVERSION",
+      exchange_id: "upbit_krw_spot",
+      market: "KRW-BTC",
+      strategy_id: "trend_following",
+      order_intent: {
+        requested_price: "10000000",
+      },
+    });
+  });
 });
 
 describe("PostgreSQL audit row mapper", () => {

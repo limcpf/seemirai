@@ -147,17 +147,34 @@ function inferStrategyId(input: OrderCandidateDiscardAuditInput): string | undef
   return (
     input.strategyId ??
     input.strategyDecision?.strategyId ??
-    input.orderIntent?.strategyId ??
-    input.intentConversion?.orderIntents[0]?.strategyId
+    inferOrderIntent(input)?.strategyId
   );
 }
 
 function inferExchangeId(input: OrderCandidateDiscardAuditInput): ExchangeId | undefined {
-  return input.exchangeId ?? input.orderIntent?.exchangeId ?? input.intentConversion?.orderIntents[0]?.exchangeId;
+  return input.exchangeId ?? inferOrderIntent(input)?.exchangeId;
 }
 
 function inferMarket(input: OrderCandidateDiscardAuditInput): MarketCode | undefined {
-  return input.market ?? input.orderIntent?.market ?? input.intentConversion?.orderIntents[0]?.market;
+  return input.market ?? inferOrderIntent(input)?.market;
+}
+
+function inferOrderIntent(input: OrderCandidateDiscardAuditInput): OrderIntent | undefined {
+  if (input.orderIntent !== undefined) {
+    return input.orderIntent;
+  }
+
+  const convertedIntent = input.intentConversion?.orderIntents[0];
+
+  if (convertedIntent !== undefined) {
+    return convertedIntent;
+  }
+
+  if (input.strategyDecision?.kind === "ORDER_INTENT") {
+    return input.strategyDecision.orderIntents[0];
+  }
+
+  return undefined;
 }
 
 function toDiscardPayload(
@@ -179,7 +196,7 @@ function toDiscardPayload(
   assignIfDefined(payload, "intent_conversion", toIntentConversionPayload(input.intentConversion));
   assignIfDefined(payload, "cost_decision", toCostDecisionPayload(input.costDecision));
   assignIfDefined(payload, "rule_result", toRuleResultPayload(input.ruleResult));
-  assignIfDefined(payload, "order_intent", toOrderIntentPayload(input.orderIntent));
+  assignIfDefined(payload, "order_intent", toOrderIntentPayload(inferOrderIntent(input)));
   assignIfDefined(payload, "metadata", input.metadata);
 
   return payload;
