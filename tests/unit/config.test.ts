@@ -34,6 +34,24 @@ describe("runtime config", () => {
       exit_deviation_bps: "8",
       stop_loss_bps: "35",
     });
+    expect(config.strategyParameters.volatility_breakout).toMatchObject({
+      max_spread_bps: "8",
+      min_depth_krw: "50000000",
+      breakout_lookback_buckets: 20,
+      min_volatility_expansion_bps: "18",
+    });
+    expect(config.strategyParameters.orderbook_imbalance_momentum).toMatchObject({
+      max_spread_bps: "7",
+      min_depth_krw: "60000000",
+      min_trade_strength: "1.25",
+      min_orderbook_imbalance: "0.1",
+    });
+    expect(config.strategyParameters.liquidity_reversion).toMatchObject({
+      max_spread_bps: "5",
+      min_depth_krw: "90000000",
+      entry_deviation_bps: "18",
+      stop_loss_bps: "30",
+    });
   });
 
   it("fails fast when a config value has the wrong shape", () => {

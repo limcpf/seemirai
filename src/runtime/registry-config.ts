@@ -95,6 +95,21 @@ export const defaultRegistryActivationConfig: RegistryActivationConfig = {
       enabled: true,
       ruleIds: [...defaultStrategyRuleIds],
     },
+    {
+      id: "volatility_breakout",
+      enabled: true,
+      ruleIds: [...defaultStrategyRuleIds],
+    },
+    {
+      id: "orderbook_imbalance_momentum",
+      enabled: true,
+      ruleIds: [...defaultStrategyRuleIds],
+    },
+    {
+      id: "liquidity_reversion",
+      enabled: true,
+      ruleIds: [...defaultStrategyRuleIds],
+    },
   ],
 };
 

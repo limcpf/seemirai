@@ -1,5 +1,11 @@
 export const registeredExchangeIds = ["upbit_krw_spot"] as const;
-export const registeredStrategyIds = ["trend_following", "mean_reversion"] as const;
+export const registeredStrategyIds = [
+  "trend_following",
+  "mean_reversion",
+  "volatility_breakout",
+  "orderbook_imbalance_momentum",
+  "liquidity_reversion",
+] as const;
 export const registeredRuleIds = [
   "universe_allowed",
   "market_warning_absent",
@@ -64,9 +70,12 @@ export const strategyRegistry: Readonly<Record<RegisteredStrategyId, StrategyReg
     version: "0.1.0",
     requiredFeatures: [
       "spread_bps",
-      "depth_sufficient",
-      "volatility_regime",
       "trade_strength",
+      "orderbook_imbalance",
+      "depth_krw",
+      "limit_price",
+      "requested_quantity",
+      "requested_notional",
     ],
   },
   mean_reversion: {
@@ -74,9 +83,49 @@ export const strategyRegistry: Readonly<Record<RegisteredStrategyId, StrategyReg
     version: "0.1.0",
     requiredFeatures: [
       "spread_bps",
+      "depth_krw",
+      "mean_reversion_deviation_bps",
+      "limit_price",
+      "requested_quantity",
+      "requested_notional",
+    ],
+  },
+  volatility_breakout: {
+    id: "volatility_breakout",
+    version: "0.1.0",
+    requiredFeatures: [
+      "spread_bps",
+      "depth_krw",
+      "volatility_expansion_bps",
+      "breakout_direction",
+      "limit_price",
+      "requested_quantity",
+      "requested_notional",
+    ],
+  },
+  orderbook_imbalance_momentum: {
+    id: "orderbook_imbalance_momentum",
+    version: "0.1.0",
+    requiredFeatures: [
+      "spread_bps",
+      "depth_krw",
       "orderbook_imbalance",
-      "volatility_regime",
-      "utc_kst_reset",
+      "trade_strength",
+      "limit_price",
+      "requested_quantity",
+      "requested_notional",
+    ],
+  },
+  liquidity_reversion: {
+    id: "liquidity_reversion",
+    version: "0.1.0",
+    requiredFeatures: [
+      "spread_bps",
+      "depth_krw",
+      "liquidity_reversion_bps",
+      "limit_price",
+      "requested_quantity",
+      "requested_notional",
     ],
   },
 };

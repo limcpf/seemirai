@@ -1,6 +1,6 @@
 import type { MarketDataEvent } from "./market.js";
 import type { OrderIntent } from "./orders.js";
-import type { JsonRecord, TimestampInput } from "./types.js";
+import type { ExchangeId, JsonRecord, MarketCode, TimestampInput } from "./types.js";
 
 export type StrategyDecisionKind = "HOLD" | "BLOCK" | "ORDER_INTENT";
 
@@ -11,6 +11,8 @@ export type StrategyDecisionKind = "HOLD" | "BLOCK" | "ORDER_INTENT";
  */
 export interface StrategyContext {
   strategyId: string;
+  exchangeId?: ExchangeId;
+  market?: MarketCode;
   observedAt: TimestampInput;
   marketEvents: readonly MarketDataEvent[];
   features: Readonly<Record<string, unknown>>;
