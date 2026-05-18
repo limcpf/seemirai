@@ -111,6 +111,48 @@ describe("order candidate discard audit", () => {
       },
     });
   });
+
+  it("uses the rejected original intent index when a decision has multiple candidates", () => {
+    const firstIntent = limitIntent({
+      market: "KRW-BTC",
+      requestedPrice: "10000000",
+      idempotencyKey: "candidate-1",
+    });
+    const secondIntent = limitIntent({
+      market: "KRW-ETH",
+      requestedPrice: "3000000",
+      idempotencyKey: "candidate-2",
+    });
+    const event = toOrderCandidateDiscardAuditEvent({
+      occurredAt,
+      actor: "strategy-worker",
+      strategyDecision: {
+        kind: "ORDER_INTENT",
+        strategyId: "trend_following",
+        reason: "fixture_signal",
+        orderIntents: [firstIntent, secondIntent],
+      },
+      intentConversion: {
+        ...rejectedIntentConversion(),
+        rejections: [
+          {
+            index: 1,
+            reasonCode: "requested_price_invalid",
+            message: "LIMIT requestedPrice must be a positive decimal string",
+          },
+        ],
+      },
+    });
+
+    expect(event.metadata).toMatchObject({
+      market: "KRW-ETH",
+      order_intent: {
+        market: "KRW-ETH",
+        requested_price: "3000000",
+        idempotency_key: "candidate-2",
+      },
+    });
+  });
 });
 
 describe("PostgreSQL audit row mapper", () => {
@@ -276,7 +318,7 @@ function failedRuleResult(): RuleEngineResult {
   };
 }
 
-function limitIntent(): OrderIntent {
+function limitIntent(overrides: Partial<OrderIntent> = {}): OrderIntent {
   return {
     exchangeId: "upbit_krw_spot",
     market: "KRW-BTC",
@@ -288,5 +330,6 @@ function limitIntent(): OrderIntent {
     requestedPrice: "10000000",
     idempotencyKey: "candidate-1",
     reason: "fixture",
-  };
+    ...overrides,
+  } as OrderIntent;
 }

@@ -171,6 +171,12 @@ function inferOrderIntent(input: OrderCandidateDiscardAuditInput): OrderIntent |
   }
 
   if (input.strategyDecision?.kind === "ORDER_INTENT") {
+    const rejectedIndex = input.intentConversion?.rejections.find((rejection) => rejection.index >= 0)?.index;
+
+    if (rejectedIndex !== undefined) {
+      return input.strategyDecision.orderIntents[rejectedIndex] ?? input.strategyDecision.orderIntents[0];
+    }
+
     return input.strategyDecision.orderIntents[0];
   }
 
