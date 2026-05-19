@@ -5,6 +5,10 @@ import {
   createRiskThresholdSnapshot,
   defaultRiskLimitThresholds,
   getKillSwitchActionPlan,
+  killSwitchStateTransitions,
+  killSwitchStates,
+  orderLifecycleStatuses,
+  orderStateTransitions,
   transitionKillSwitchState,
   transitionOrderState,
 } from "../../src/domain/index.js";
@@ -12,6 +16,18 @@ import {
 const occurredAt = "2026-05-19T00:00:00.000Z";
 
 describe("M5 order state machine foundation", () => {
+  it("keeps order lifecycle statuses centralized and covered by the transition map", () => {
+    expect(Object.keys(orderStateTransitions).sort()).toEqual([...orderLifecycleStatuses].sort());
+
+    for (const [fromState, toStates] of Object.entries(orderStateTransitions)) {
+      expect(orderLifecycleStatuses).toContain(fromState);
+
+      for (const toState of toStates) {
+        expect(orderLifecycleStatuses).toContain(toState);
+      }
+    }
+  });
+
   it("accepts explicit order lifecycle transitions and emits event candidates", () => {
     const decision = transitionOrderState({
       fromState: "CREATED",
@@ -62,6 +78,18 @@ describe("M5 order state machine foundation", () => {
 });
 
 describe("M5 kill switch state machine foundation", () => {
+  it("keeps kill switch states centralized and covered by the transition map", () => {
+    expect(Object.keys(killSwitchStateTransitions).sort()).toEqual([...killSwitchStates].sort());
+
+    for (const [fromState, toStates] of Object.entries(killSwitchStateTransitions)) {
+      expect(killSwitchStates).toContain(fromState);
+
+      for (const toState of toStates) {
+        expect(killSwitchStates).toContain(toState);
+      }
+    }
+  });
+
   it("blocks new orders for stale-data style transitions before hard stop", () => {
     const decision = transitionKillSwitchState({
       fromState: "NORMAL",

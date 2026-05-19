@@ -4,17 +4,27 @@ import type { JsonRecord, TimestampInput } from "./types.js";
 /**
  * 런타임 전체의 신규 주문 허용 상태를 표현하는 kill switch 상태다.
  */
-export type KillSwitchState =
-  | "NORMAL"
-  | "NEW_ORDERS_BLOCKED"
-  | "STRATEGY_PAUSED"
-  | "HARD_STOP"
-  | "MANUAL_REVIEW_REQUIRED";
+// kill switch 상태는 runtime control, audit event, future HTTP endpoint가 같은 문자열을 사용한다.
+export const killSwitchStates = [
+  "NORMAL",
+  "NEW_ORDERS_BLOCKED",
+  "STRATEGY_PAUSED",
+  "HARD_STOP",
+  "MANUAL_REVIEW_REQUIRED",
+] as const;
+
+export type KillSwitchState = (typeof killSwitchStates)[number];
 
 /**
  * append-only event log에 남길 상태 전이 이벤트의 업무 종류다.
  */
-export type StateTransitionEventKind = "ORDER_STATE_TRANSITION" | "KILL_SWITCH_STATE_TRANSITION";
+// event kind도 DB/audit mapper에서 재사용하므로 중앙 목록으로 관리한다.
+export const stateTransitionEventKinds = [
+  "ORDER_STATE_TRANSITION",
+  "KILL_SWITCH_STATE_TRANSITION",
+] as const;
+
+export type StateTransitionEventKind = (typeof stateTransitionEventKinds)[number];
 
 /**
  * 상태 전이를 저장소에 append하기 전 domain layer가 만드는 canonical event 후보 payload다.
@@ -78,7 +88,7 @@ export interface KillSwitchActionPlan {
  * 주문 상태 machine의 허용 전이를 정의한다.
  */
 // 주문은 RiskGate 승인 없이 SUBMITTED로 건너뛰지 못하게 닫힌 전이표로 관리한다.
-const allowedOrderTransitions: Readonly<Record<OrderLifecycleStatus, readonly OrderLifecycleStatus[]>> = {
+export const orderStateTransitions: Readonly<Record<OrderLifecycleStatus, readonly OrderLifecycleStatus[]>> = {
   CREATED: ["VALIDATED", "REJECTED", "FAILED", "MANUAL_REVIEW_REQUIRED"],
   VALIDATED: ["RISK_APPROVED", "RISK_REJECTED", "FAILED", "MANUAL_REVIEW_REQUIRED"],
   RISK_APPROVED: ["SUBMITTED", "FAILED", "MANUAL_REVIEW_REQUIRED"],
@@ -113,7 +123,7 @@ const allowedOrderTransitions: Readonly<Record<OrderLifecycleStatus, readonly Or
  * kill switch 상태 machine의 허용 전이를 정의한다.
  */
 // HARD_STOP은 직접 NORMAL로 복구하지 않고 반드시 사람 검토 상태를 거치게 한다.
-const allowedKillSwitchTransitions: Readonly<Record<KillSwitchState, readonly KillSwitchState[]>> = {
+export const killSwitchStateTransitions: Readonly<Record<KillSwitchState, readonly KillSwitchState[]>> = {
   NORMAL: ["NEW_ORDERS_BLOCKED", "STRATEGY_PAUSED", "HARD_STOP", "MANUAL_REVIEW_REQUIRED"],
   NEW_ORDERS_BLOCKED: ["NORMAL", "STRATEGY_PAUSED", "HARD_STOP", "MANUAL_REVIEW_REQUIRED"],
   STRATEGY_PAUSED: ["NORMAL", "NEW_ORDERS_BLOCKED", "HARD_STOP", "MANUAL_REVIEW_REQUIRED"],
@@ -125,7 +135,7 @@ const allowedKillSwitchTransitions: Readonly<Record<KillSwitchState, readonly Ki
  * kill switch 상태별 runtime 차단과 복구 action plan을 정의한다.
  */
 // HARD_STOP은 pending paper order 취소 계획만 만들고 open position 자동 청산은 금지한다.
-const killSwitchActionPlans: Readonly<Record<KillSwitchState, KillSwitchActionPlan>> = {
+export const killSwitchActionPlans: Readonly<Record<KillSwitchState, KillSwitchActionPlan>> = {
   NORMAL: {
     newOrdersBlocked: false,
     strategyEvaluationBlocked: false,
@@ -170,7 +180,7 @@ export function canTransitionOrderState(
   fromState: OrderLifecycleStatus,
   toState: OrderLifecycleStatus,
 ): boolean {
-  return allowedOrderTransitions[fromState].includes(toState);
+  return orderStateTransitions[fromState].includes(toState);
 }
 
 /**
@@ -197,7 +207,7 @@ export function canTransitionKillSwitchState(
   fromState: KillSwitchState,
   toState: KillSwitchState,
 ): boolean {
-  return allowedKillSwitchTransitions[fromState].includes(toState);
+  return killSwitchStateTransitions[fromState].includes(toState);
 }
 
 /**
