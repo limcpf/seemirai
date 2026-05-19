@@ -79,6 +79,13 @@ export interface OrderSubmission {
   intent: OrderIntent;
   costSnapshot: JsonRecord;
   riskApproval: JsonRecord;
+  /**
+   * RiskGate가 단일 주문 예상 손실 한도 평가에 사용한 top-level 입력이다.
+   *
+   * 기존 OrderIntent metadata에 중복 저장하지 않는 runtime 경로도 ExecutionEngine에서 같은 fingerprint로 대조할 수 있게
+   * submission boundary에 보존한다.
+   */
+  expectedLossBpsOfEquity?: NumericString;
   submittedAt: TimestampInput;
 }
 

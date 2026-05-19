@@ -142,7 +142,7 @@ export class ExecutionEngine {
 
     const currentFingerprint = createOrderIntentEvidence(
       submission.intent,
-      readOrderIntentExpectedLossBps(submission.intent),
+      readSubmissionExpectedLossBps(submission),
     );
     const existingSubmission = this.inFlightByIdempotencyKey.get(submission.intent.idempotencyKey);
     if (existingSubmission !== undefined) {
@@ -284,7 +284,7 @@ function validateMarketOrderSafety(
     });
   }
 
-  if (!safetyConfig.entryMarketOrderEnabled || isEntryMarketOrderIntent(intent)) {
+  if (isEntryMarketOrderIntent(intent) && !safetyConfig.entryMarketOrderEnabled) {
     return reject(
       "entry_market_order_disabled",
       "Entry market order execution is disabled by the MVP execution boundary",
@@ -373,7 +373,7 @@ function validateRiskApproval(
     return reject("risk_approval_missing", "RiskGate evidence requires order intent fingerprint");
   }
 
-  const mismatches = compareRiskApprovalOrderIntent(submission.intent, riskOrderIntent);
+  const mismatches = compareRiskApprovalOrderIntent(submission, riskOrderIntent);
   if (Object.keys(mismatches).length > 0) {
     return reject("risk_approval_mismatch", "RiskGate evidence does not match the execution order intent", {
       mismatches,
@@ -383,10 +383,13 @@ function validateRiskApproval(
   return undefined;
 }
 
-function compareRiskApprovalOrderIntent(intent: OrderIntent, riskOrderIntent: JsonRecord): JsonRecord {
+function compareRiskApprovalOrderIntent(
+  submission: OrderSubmission,
+  riskOrderIntent: JsonRecord,
+): JsonRecord {
   return compareOrderIntentEvidence(
     riskOrderIntent,
-    createOrderIntentEvidence(intent, readOrderIntentExpectedLossBps(intent)),
+    createOrderIntentEvidence(submission.intent, readSubmissionExpectedLossBps(submission)),
   );
 }
 
@@ -540,6 +543,10 @@ function readStringRecordValue(record: JsonRecord, key: string): string | undefi
 
 function readRiskGateExpectedLossBps(context: RiskGateContext): string | undefined {
   return context.expectedLossBpsOfEquity ?? readOrderIntentExpectedLossBps(context.orderIntent);
+}
+
+function readSubmissionExpectedLossBps(submission: OrderSubmission): string | undefined {
+  return submission.expectedLossBpsOfEquity ?? readOrderIntentExpectedLossBps(submission.intent);
 }
 
 function readOrderIntentExpectedLossBps(intent: OrderIntent): string | undefined {

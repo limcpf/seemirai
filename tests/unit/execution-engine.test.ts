@@ -217,11 +217,7 @@ describe("M6 ExecutionEngine contract", () => {
     const engine = new ExecutionEngine({ broker });
     const result = await engine.submitOrder(
       createSubmission({
-        intent: createLimitIntent({
-          metadata: {
-            expected_loss_bps_of_equity: "25",
-          },
-        }),
+        expectedLossBpsOfEquity: "25",
         riskApproval: createRiskApprovalEvidence(createLimitIntent()),
       }),
     );
@@ -271,6 +267,40 @@ describe("M6 ExecutionEngine contract", () => {
       rejection: {
         reasonCode: "entry_market_order_disabled",
       },
+    });
+  });
+
+  it("allows entry market simulation only when both market toggles are explicitly enabled", () => {
+    const intent = createMarketIntent();
+
+    expect(
+      validateExecutionSubmission(createSubmission({ intent }), {
+        liveTradingEnabled: false,
+        marketOrderEnabled: true,
+        entryMarketOrderEnabled: true,
+        paperNoKey: true,
+      }),
+    ).toMatchObject({
+      valid: true,
+    });
+  });
+
+  it("allows reduce-only market simulation when entry market orders stay disabled", () => {
+    const intent = createMarketIntent({
+      metadata: {
+        position_effect: "REDUCE",
+      },
+    });
+
+    expect(
+      validateExecutionSubmission(createSubmission({ intent }), {
+        liveTradingEnabled: false,
+        marketOrderEnabled: true,
+        entryMarketOrderEnabled: false,
+        paperNoKey: true,
+      }),
+    ).toMatchObject({
+      valid: true,
     });
   });
 
@@ -368,6 +398,7 @@ function createSubmission(
     intent,
     costSnapshot: createCostSnapshot(intent),
     riskApproval: createRiskApprovalEvidence(intent),
+    expectedLossBpsOfEquity: "10",
     submittedAt: observedAt,
   };
 
@@ -433,9 +464,6 @@ function createLimitIntent(overrides: Partial<Extract<OrderIntent, { orderType: 
     requestedNotional: "5000",
     idempotencyKey: "execution-candidate-1",
     reason: "unit-test",
-    metadata: {
-      expected_loss_bps_of_equity: "10",
-    },
     ...overrides,
   };
 }
@@ -451,9 +479,6 @@ function createMarketIntent(overrides: Partial<MarketOrderIntent> = {}): MarketO
     requestedNotional: "5000",
     idempotencyKey: "execution-market-candidate-1",
     reason: "unit-test-market",
-    metadata: {
-      expected_loss_bps_of_equity: "10",
-    },
     ...overrides,
   };
 }
