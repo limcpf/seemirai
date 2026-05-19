@@ -177,6 +177,51 @@ describe("PaperBroker", () => {
     });
   });
 
+  it("rejects intents for a different exchange before mutating paper balances", async () => {
+    const broker = new PaperBroker({
+      exchangeId,
+      initialBalances: [
+        {
+          currency: "KRW",
+          available: "1000",
+        },
+      ],
+      orderbookSnapshots: createOrderbook({
+        exchangeId: "other_exchange",
+        asks: [["100", "1"]],
+      }),
+      clock: () => observedAt,
+    });
+
+    const order = await broker.submitOrder(
+      createSubmission({
+        intent: createLimitIntent({
+          exchangeId: "other_exchange",
+          idempotencyKey: "paper-broker-wrong-exchange",
+        }),
+      }),
+    );
+    const balances = await broker.getBalances();
+
+    expect(order).toMatchObject({
+      exchangeId: "other_exchange",
+      status: "REJECTED",
+      remainingQuantity: "0",
+      metadata: {
+        paper_broker_rejection: {
+          reason_code: "paper_exchange_mismatch",
+          broker_exchange_id: exchangeId,
+          intent_exchange_id: "other_exchange",
+        },
+      },
+    });
+    expect(findBalance(balances, "KRW")).toMatchObject({
+      available: "1000",
+      locked: "0",
+      total: "1000",
+    });
+  });
+
   it("keeps a partially filled SELL order open and releases the base lock on cancel", async () => {
     const broker = new PaperBroker({
       exchangeId,

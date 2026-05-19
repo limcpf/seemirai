@@ -90,6 +90,12 @@ interface PaperBrokerBalanceRejectionSummary extends JsonRecord {
   attempted_delta: NumericString;
 }
 
+interface PaperBrokerExchangeRejectionSummary extends JsonRecord {
+  reason_code: "paper_exchange_mismatch";
+  broker_exchange_id: ExchangeId;
+  intent_exchange_id: ExchangeId;
+}
+
 type PaperBrokerBalanceValidationResult =
   | {
       valid: true;
@@ -231,6 +237,17 @@ export class PaperBroker implements BrokerPort {
 
     const brokerOrderId = this.createBrokerOrderId();
     const updatedAt = this.clock();
+    const exchangeRejection = this.createExchangeRejection(submission.intent);
+    if (exchangeRejection !== undefined) {
+      // broker instance의 exchange와 다른 intent는 호가와 잔고를 섞어 상태를 오염시키므로 fill 계산 전에 거부한다.
+      const order = createRejectedBrokerOrder(submission, brokerOrderId, exchangeRejection, updatedAt);
+      this.ordersById.set(order.brokerOrderId, order);
+      this.orderIdsByIdempotencyKey.set(order.idempotencyKey, order.brokerOrderId);
+      this.fingerprintsByIdempotencyKey.set(order.idempotencyKey, fingerprint);
+
+      return cloneBrokerOrder(order);
+    }
+
     const simulationRequest = this.createFillSimulationRequest(submission);
     const simulation = simulatePaperFill({
       intent: submission.intent,
@@ -342,6 +359,18 @@ export class PaperBroker implements BrokerPort {
   private readOrderbooksForIntent(intent: OrderIntent): readonly OrderbookEvent[] {
     const key = createOrderbookKey(intent.exchangeId, intent.market);
     return [...(this.orderbooksByMarket.get(key) ?? [])];
+  }
+
+  private createExchangeRejection(intent: OrderIntent): PaperBrokerExchangeRejectionSummary | undefined {
+    if (intent.exchangeId === this.exchangeId) {
+      return undefined;
+    }
+
+    return {
+      reason_code: "paper_exchange_mismatch",
+      broker_exchange_id: this.exchangeId,
+      intent_exchange_id: intent.exchangeId,
+    };
   }
 
   private createFillSimulationRequest(submission: OrderSubmission): PaperBrokerFillSimulationRequest {
@@ -526,6 +555,40 @@ export class PaperBroker implements BrokerPort {
 
     this.balancesByCurrency.set(normalizedCurrency, nextBalance);
   }
+}
+
+function createRejectedBrokerOrder(
+  submission: OrderSubmission,
+  brokerOrderId: string,
+  rejection: PaperBrokerExchangeRejectionSummary,
+  updatedAt: TimestampInput,
+): BrokerOrder {
+  const baseOrder: BrokerOrder = {
+    brokerOrderId,
+    idempotencyKey: submission.intent.idempotencyKey,
+    exchangeId: submission.intent.exchangeId,
+    market: submission.intent.market,
+    side: submission.intent.side,
+    orderType: submission.intent.orderType,
+    status: "REJECTED",
+    requestedQuantity: normalizeDecimalString(submission.intent.requestedQuantity),
+    remainingQuantity: "0",
+    updatedAt,
+    metadata: {
+      source: "paper_broker_memory",
+      submitted_at: submission.submittedAt,
+      paper_broker_rejection: rejection,
+    },
+  };
+
+  if (submission.intent.orderType === "LIMIT") {
+    return {
+      ...baseOrder,
+      requestedPrice: submission.intent.requestedPrice,
+    };
+  }
+
+  return baseOrder;
 }
 
 function createSubmissionBalanceMutation(
