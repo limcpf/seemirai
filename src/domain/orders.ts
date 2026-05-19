@@ -47,12 +47,17 @@ export interface BaseOrderIntent {
 /**
  * 지정가 주문 후보 intent다.
  *
- * MVP 실행은 지정가 중심이므로 LIMIT 후보는 가격을 필수로 둔다.
+ * MVP 실행은 지정가 중심이므로 LIMIT 후보는 가격을 필수로 둔다. `postOnly`와 `timeInForce`는 후속 PaperBroker가
+ * maker-only, IOC/FOK, aggressive limit 체결 여부를 판단하는 실행 조건이므로 ExecutionEngine evidence fingerprint에도
+ * 포함된다.
  */
 export interface LimitOrderIntent extends BaseOrderIntent {
   orderType: "LIMIT";
+  /** broker와 fill simulator가 사용할 지정가 가격이다. */
   requestedPrice: NumericString;
+  /** true이면 taker 체결 가능성이 있는 주문을 PaperBroker가 즉시 체결시키지 않고 post-only 조건으로 다룬다. */
   postOnly?: boolean;
+  /** 주문 유효 시간 정책이며, 후속 fill/cancel simulation에서 체결 실패 시 상태 전이를 결정하는 입력이다. */
   timeInForce?: TimeInForce;
 }
 
@@ -74,11 +79,31 @@ export type OrderIntent = LimitOrderIntent | MarketOrderIntent;
  * broker port로 넘기는 주문 제출 요청이다.
  *
  * OrderIntent에 비용 snapshot과 risk 승인 근거를 필수로 붙여 PaperBroker와 future live broker가 같은 입력을 받게 한다.
+ * 이 타입은 broker side effect 직전 경계이므로, application layer는 snapshot과 approval이 현재 intent fingerprint와
+ * 일치하는지 다시 검증한 뒤에만 제출할 수 있다.
  */
 export interface OrderSubmission {
   intent: OrderIntent;
+  /**
+   * CostModel이 해당 주문 후보를 허용한 근거 snapshot이다.
+   *
+   * ExecutionEngine에서는 단순 `trade_allowed`만 보지 않고, source/reason/input 상태와 주문 fingerprint를 함께 대조한다.
+   */
   costSnapshot: JsonRecord;
+  /**
+   * RiskGate가 해당 주문 후보를 승인한 근거 snapshot이다.
+   *
+   * 저장소나 mapper 경계를 거친 뒤에도 stale approval을 재사용하지 않도록 source/status/action과 주문 fingerprint를
+   * ExecutionEngine에서 다시 검증한다.
+   */
   riskApproval: JsonRecord;
+  /**
+   * RiskGate가 단일 주문 예상 손실 한도 평가에 사용한 top-level 입력이다.
+   *
+   * 기존 OrderIntent metadata에 중복 저장하지 않는 runtime 경로도 ExecutionEngine에서 같은 fingerprint로 대조할 수 있게
+   * submission boundary에 보존한다.
+   */
+  expectedLossBpsOfEquity?: NumericString;
   submittedAt: TimestampInput;
 }
 

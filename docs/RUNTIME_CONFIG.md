@@ -56,6 +56,32 @@ MVP 기본 profile에서는 다음 값이 켜져 있으면 안 된다.
 
 `assertSafeRuntimeConfig`는 위반 값을 발견하면 runtime config 로딩을 실패시킨다.
 
+## M6 Execution 안전 설정
+
+구현 기준:
+
+- execution guard: `src/application/execution/execution-engine.ts`
+- 기본 profile: `config/paper.json`
+
+M6 `ExecutionEngine`은 runtime config의 실행 관련 안전 toggle을 application layer의 `ExecutionSafetyConfig`로 전달받아
+broker 호출 직전에 다시 검증한다. 이 guard는 PaperBroker 구현체가 붙기 전에도 다음 조건을 fail-closed로 유지한다.
+
+- `liveTradingEnabled=false`
+- `marketOrderEnabled=false`
+- `entryMarketOrderEnabled=false`
+- `paperNoKey=true`
+
+`ExecutionEngine`은 비용 snapshot과 RiskGate approval evidence가 현재 주문 intent의 exchange, market, strategy,
+side, order type, idempotency key, 수량, 명목 금액, 지정가, limit execution option(`postOnly`, `timeInForce`),
+expected loss와 일치할 때만 `BrokerPort.submitOrder`를 호출한다. 비용 snapshot은 `source=cost_model`,
+`trade_allowed=true`, `reason_code=cost_margin_ok`이고 `missing_fields`/`invalid_fields`가 없는 증거만 인정한다.
+RiskGate approval evidence는 `source=risk_gate`, `approved=true`, `action=ALLOW`, `status=PASS|WARN` 조건을
+모두 만족해야 한다. 기본 paper profile에서는 market order와 신규 진입 market order를 broker로 넘기지 않는다. 같은
+process 안에서 같은 `idempotencyKey`가 in-flight 상태로 반복 제출되면 fingerprint가 같은 경우에만 broker submit
+side effect를 한 번으로 억제하고, fingerprint가 다르면 idempotency key collision으로 fail-closed한다. 성공한 key는
+application memory에 계속 보관하지 않는다. DB-backed idempotency와 주문 persistence transaction 경계는 M6 후속
+sub PR에서 고정한다.
+
 ## PAPER_NO_KEY market data runtime
 
 구현 기준:

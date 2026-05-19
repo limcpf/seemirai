@@ -17,6 +17,7 @@ describe("runtime config", () => {
     expect(config.cross_exchange_arbitrage_enabled).toBe(false);
     expect(config.futures_enabled).toBe(false);
     expect(config.market_order_enabled).toBe(false);
+    expect(config.entry_market_order_enabled).toBe(false);
     expect(config.paper_no_key).toBe(true);
     expect(config.secrets.upbit_access_key).toBeUndefined();
     expect(config.universe.phase_1).toEqual(["KRW-BTC", "KRW-ETH"]);

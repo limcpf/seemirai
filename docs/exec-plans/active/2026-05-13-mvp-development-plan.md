@@ -192,8 +192,9 @@ ruleRegistry
 
 ### M6. ExecutionEngine과 PaperBroker
 
-- [ ] `ExecutionEngine -> BrokerPort -> PaperBroker` 구현
-- [ ] idempotency key 필수화
+- [x] `ExecutionEngine` application service contract와 broker submit 전 guard 구현
+- [x] idempotency key 필수화와 process-local in-flight 중복 broker submit 억제
+- [ ] `PaperBroker implements BrokerPort` 구현
 - [ ] depth 기반 paper fill
 - [ ] latency, partial fill, post-only simulation
 - [ ] aggressive limit simulation
@@ -203,9 +204,9 @@ ruleRegistry
 검증:
 
 - [ ] PaperBroker 부분체결 테스트
-- [ ] 중복 주문 차단 테스트
+- [x] `ExecutionEngine` 중복 주문 차단 테스트
 - [ ] live order API 호출 0회 테스트
-- [ ] market order 생성 불가 테스트
+- [x] market order 생성 불가 테스트
 
 ### M7. Backtest bridge
 
@@ -255,6 +256,18 @@ ruleRegistry
 - 2026-05-19: issue #22 Sub PR 2는 `issue-22/02-risk-persistence`에서 상태값을 `as const` 목록과 union type으로 중앙화하고, `orders.status`/`order_events` migration check, `order_events` repository, `audit_events`/`risk_events` row mapper, append persistence test를 고정한다.
 - 2026-05-19: issue #22 Sub PR 3은 `issue-22/03-risk-limit-evaluator`에서 손실/노출/인프라 risk evaluator와 threshold snapshot payload를 구현한다. runtime `risk_ok` 연결, hard stop pending order action event, append-only 저장소 wiring은 Sub PR 4 범위로 유지한다.
 - 2026-05-19: issue #22 Sub PR 4는 `issue-22/04-runtime-rule-integration`에서 `risk_ok`를 현재 후보와 일치하는 context 기반 RiskGate 평가에 연결하고, RiskGate 판단을 주문 상태 전이/kill switch 전이/`risk_events`/`audit_events` combined evidence append 계획으로 변환한다. 현재 kill switch가 신규 주문 차단 상태이면 RiskGate snapshot이 깨끗해도 주문을 거부한다. `HARD_STOP`은 pending paper order 취소 계획 event만 만들며, 실제 broker cancel 호출과 open position 자동 청산은 수행하지 않는다.
+- 2026-05-19: issue #28은 M6 ExecutionEngine과 PaperBroker 범위가 execution contract, fill simulation, broker port, DB persistence, runtime cancel/live guard로 나뉘어 리뷰 위험이 크므로 `sub PR mode`에서 순차 진행한다. Sub PR 1은 `ExecutionEngine`이 비용 snapshot, RiskGate evidence, expected loss fingerprint, idempotency key, market/live order safety guard를 통과한 주문만 `BrokerPort`로 넘기는 contract를 먼저 고정한다. process-local idempotency 중복 억제는 in-flight 요청으로 제한하고 durable 중복 처리는 후속 DB persistence 범위로 남긴다.
+
+issue #28 sub PR 계획:
+
+| 순서 | branch | 목표 | 제외 범위 | 파일 소유권 | 검증 |
+| --- | --- | --- | --- | --- | --- |
+| 1 | `issue-28/01-execution-contracts` | `ExecutionEngine` contract, 비용 snapshot/RiskGate evidence/idempotency guard, market/live order fail-closed, execution config 기본값 확인 | PaperBroker fill simulation, DB persistence, hard stop cancel 실행, live broker stub | `src/application/execution/**`, `src/application/index.ts`, `tests/unit/execution-engine.test.ts`, `tests/unit/config.test.ts`, M6 실행 계획 문서 | `corepack pnpm typecheck`, `corepack pnpm exec vitest run tests/unit/execution-engine.test.ts tests/unit/config.test.ts`, `corepack pnpm test`, `./scripts/verify`, `git diff --check` |
+| 2 | `issue-28/02-paper-fill-simulator` | orderbook depth 기반 full/partial/unfilled, latency, post-only, IOC/FOK aggressive limit paper simulation | DB repository, runtime assembly, live broker stub | `src/application/execution/**` 또는 `src/domain/execution/**`, fill simulator tests/fixtures | `corepack pnpm typecheck`, `corepack pnpm test -- paper-fill`, `./scripts/verify` |
+| 3 | `issue-28/03-paper-broker-port` | `PaperBroker implements BrokerPort`, in-memory broker state, order/balance query, import boundary test | PostgreSQL persistence wiring, runtime worker 최종 조립 | `src/infrastructure/paper/**`, 필요한 port 보강, `tests/unit/paper-broker*.test.ts` | `corepack pnpm typecheck`, `corepack pnpm test -- paper-broker`, `./scripts/verify` |
+| 4 | `issue-28/04-execution-persistence` | `orders`/`paper_orders`/`fills`/`positions` repository, idempotency upsert, state event/fill/position transaction 경계 | live broker 구현, Telegram/Fastify endpoint | `src/infrastructure/db/**`, execution persistence port, integration tests, DB schema docs 필요분 | `corepack pnpm typecheck`, `corepack pnpm test`, `SEEMIRAI_RUN_DB_INTEGRATION=1 corepack pnpm exec vitest run tests/integration`, `./scripts/verify` |
+| 5 | `issue-28/05-runtime-cancel-and-live-guard` | hard stop pending paper order cancel 실행 연결, open position 자동 청산 금지, live broker disabled/stub, PAPER_NO_KEY runtime assembly guard | Telegram alert endpoint, 24h soak test | `src/runtime/**`, `src/application/execution/**`, live stub 필요 시 `src/infrastructure/upbit/**`, runtime/live tests, `docs/RELIABILITY.md`, `docs/RUNTIME_CONFIG.md` | `corepack pnpm typecheck`, `corepack pnpm test`, live API 호출 0회 테스트, `./scripts/verify` |
+| 6 | `issue-28/06-m6-verification-docs` | M6 체크리스트 완료, 결정 로그와 남은 리스크 갱신, 전체 verify와 review drain 준비 | 신규 기능 구현 | M6 관련 docs, 필요 시 generated index | `corepack pnpm typecheck`, `corepack pnpm test`, DB touched 시 integration, `./scripts/verify`, `git diff --check` |
 
 issue #22 sub PR 계획:
 
