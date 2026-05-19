@@ -408,6 +408,22 @@ function evaluateConsecutiveStrategyLosses(
   context: RiskGateContext,
   thresholds: ParsedThresholds,
 ): RiskGateEvaluation {
+  // 다른 전략의 손실 snapshot으로 현재 주문을 승인하거나 중지하지 않도록 먼저 동일성을 고정한다.
+  if (context.strategy.strategyId !== context.orderIntent.strategyId) {
+    return withThresholdSnapshot(
+      fail(
+        "strategy_snapshot_mismatch",
+        "Strategy risk snapshot must match the order intent strategy",
+        "MANUAL_REVIEW_REQUIRED",
+        {
+          order_strategy_id: context.orderIntent.strategyId,
+          snapshot_strategy_id: context.strategy.strategyId,
+        },
+      ),
+      context.thresholdSnapshot,
+    );
+  }
+
   if (!Number.isSafeInteger(context.strategy.consecutiveLosses) || context.strategy.consecutiveLosses < 0) {
     return withThresholdSnapshot(
       fail("consecutive_strategy_losses_invalid", "Consecutive strategy losses must be a non-negative safe integer", "MANUAL_REVIEW_REQUIRED"),

@@ -143,6 +143,37 @@ describe("M5 risk_ok rule integration", () => {
     });
   });
 
+  it("fails closed when a reused RiskGate approval has different order amount fields", async () => {
+    const result = await Promise.resolve(
+      createRiskOkRule().evaluate(
+        createRuleContext({
+          orderIntent: createOrderIntent({
+            requestedPrice: "20000000",
+            requestedQuantity: "0.001",
+            requestedNotional: "20000",
+          }),
+          riskGateContext: createRiskContext(),
+        }),
+      ),
+    );
+
+    expect(result).toMatchObject({
+      status: "FAIL",
+      reasonCode: "risk_gate_context_mismatch",
+      metadata: {
+        execution_approval: false,
+        mismatches: {
+          order_intent_requested_quantity_rule: "0.001",
+          order_intent_requested_quantity_risk_gate: "0.0005",
+          order_intent_requested_notional_rule: "20000",
+          order_intent_requested_notional_risk_gate: "5000",
+          order_intent_requested_price_rule: "20000000",
+          order_intent_requested_price_risk_gate: "10000000",
+        },
+      },
+    });
+  });
+
   it("uses the active RiskGate rule in the M5 default rule chain", async () => {
     const result = await evaluateRules(
       createDefaultM5Rules({
@@ -324,6 +355,37 @@ describe("RiskGate runtime event wiring", () => {
     });
     expect(plan.riskEvents.map((event) => event.riskType)).toContain(
       "risk_gate_runtime_candidate_mismatch",
+    );
+  });
+
+  it("fails closed when RiskGate cannot legally transition the current order state", () => {
+    const plan = createRiskGateRuntimeDecisionPlan({
+      orderId: "order-1",
+      orderStatus: "CREATED",
+      currentKillSwitchState: "NORMAL",
+      riskGateContext: createRiskContext(),
+      actor: "risk-gate",
+      correlationId: "candidate-1",
+    });
+
+    expect(plan.riskGateResult).toMatchObject({
+      approved: false,
+      action: "MANUAL_REVIEW_REQUIRED",
+      failedEvaluations: [
+        expect.objectContaining({
+          reasonCode: "risk_gate_illegal_order_state_transition",
+          action: "MANUAL_REVIEW_REQUIRED",
+        }),
+      ],
+    });
+    expect(plan.orderStateTransition).toMatchObject({
+      accepted: false,
+      fromState: "CREATED",
+      toState: "RISK_REJECTED",
+      reasonCode: "risk_gate_order_rejected",
+    });
+    expect(plan.riskEvents.map((event) => event.riskType)).toContain(
+      "risk_gate_illegal_order_state_transition",
     );
   });
 

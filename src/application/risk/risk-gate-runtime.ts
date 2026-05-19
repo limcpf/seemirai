@@ -146,8 +146,15 @@ export function createRiskGateRuntimeDecisionPlan(
   input: RiskGateRuntimeDecisionInput,
 ): RiskGateRuntimeDecisionPlan {
   // append-only 증거는 현재 snapshot 복구 기준이므로 외부 캐시 결과를 받지 않고 context 기준으로 재평가한다.
-  const riskGateResult = applyRuntimeFailClosedEvaluations(input, evaluateRiskGate(input.riskGateContext));
-  const orderStateTransition = createRiskOrderStateTransition(input, riskGateResult);
+  let riskGateResult = applyRuntimeFailClosedEvaluations(input, evaluateRiskGate(input.riskGateContext));
+  let orderStateTransition = createRiskOrderStateTransition(input, riskGateResult);
+  if (!orderStateTransition.accepted) {
+    // RiskGate 승인/거부 결과가 현재 주문 상태와 맞지 않으면 승인 우회가 아니라 별도 리스크로 닫는다.
+    riskGateResult = appendFailClosedEvaluations(riskGateResult, [
+      createIllegalRiskGateOrderStateTransitionEvaluation(input, orderStateTransition),
+    ]);
+    orderStateTransition = createRiskOrderStateTransition(input, riskGateResult);
+  }
   const killSwitchStateTransition = createKillSwitchTransition(input, riskGateResult);
   const hardStopActionPlan =
     riskGateResult.action === "HARD_STOP"
@@ -225,7 +232,24 @@ function applyRuntimeFailClosedEvaluations(
     return result;
   }
 
-  // runtime 자체의 후보 불일치나 현재 kill switch 차단은 RiskGate snapshot이 깨끗해도 주문 승인을 막는다.
+  return appendFailClosedEvaluations(result, failClosedEvaluations);
+}
+
+/**
+ * runtime에서 발견한 일관성 위반을 RiskGate 실패 평가로 병합한다.
+ *
+ * RiskGate evaluator 자체가 PASS를 반환했더라도 persistence 경계에서 후보 불일치, kill switch 차단, 불법 상태 전이가
+ * 확인되면 현재 주문은 승인하지 않고 같은 evidence 묶음에 실패 원인을 남긴다.
+ */
+function appendFailClosedEvaluations(
+  result: RiskGateResult,
+  failClosedEvaluations: readonly RiskGateEvaluation[],
+): RiskGateResult {
+  if (failClosedEvaluations.length === 0) {
+    return result;
+  }
+
+  // runtime 경계의 일관성 위반은 RiskGate snapshot이 깨끗해도 주문 승인을 막는다.
   return {
     ...result,
     status: "FAIL",
@@ -236,6 +260,31 @@ function applyRuntimeFailClosedEvaluations(
     ]),
     evaluations: [...result.evaluations, ...failClosedEvaluations],
     failedEvaluations: [...result.failedEvaluations, ...failClosedEvaluations],
+  };
+}
+
+/**
+ * RiskGate 결과와 주문 상태 machine이 충돌한 상황을 fail-closed 리스크 평가로 변환한다.
+ */
+function createIllegalRiskGateOrderStateTransitionEvaluation(
+  input: RiskGateRuntimeDecisionInput,
+  transition: StateTransitionDecision<OrderLifecycleStatus>,
+): RiskGateEvaluation {
+  return {
+    status: "FAIL",
+    reasonCode: "risk_gate_illegal_order_state_transition",
+    message: "RiskGate order state transition is not allowed by the order state machine",
+    severity: "CRITICAL",
+    action: "MANUAL_REVIEW_REQUIRED",
+    thresholdSnapshot: input.riskGateContext.thresholdSnapshot,
+    metadata: {
+      order_id: input.orderId,
+      from_state: transition.fromState,
+      to_state: transition.toState,
+      state_transition_reason_code: transition.reasonCode,
+      state_transition_message: transition.message,
+      order_intent: toOrderIntentPayload(input.riskGateContext),
+    },
   };
 }
 

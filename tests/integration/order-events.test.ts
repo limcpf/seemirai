@@ -84,6 +84,11 @@ describeDb("state transition persistence integration", () => {
     });
 
     const events = await listOrderEventsByOrderId(db, { orderId: order.id });
+    const currentOrder = await db
+      .selectFrom("orders")
+      .select(["status", "updated_at"])
+      .where("id", "=", order.id)
+      .executeTakeFirstOrThrow();
     const auditCount = await db
       .selectFrom("audit_events")
       .select((expressionBuilder) => expressionBuilder.fn.countAll<string>().as("count"))
@@ -103,8 +108,41 @@ describeDb("state transition persistence integration", () => {
       reason_code: "risk_limit_daily_loss_exceeded",
       correlation_id: "candidate-1",
     });
+    expect(currentOrder.status).toBe("RISK_REJECTED");
+    expect(new Date(currentOrder.updated_at).toISOString()).toBe(occurredAt);
     expect(Number(auditCount.count)).toBe(1);
     expect(Number(riskCount.count)).toBe(1);
+  });
+
+  it("keeps the current order snapshot unchanged for rejected transition attempts", async () => {
+    const db = await getDatabase();
+    const order = await insertOrder(db);
+    const decision = transitionOrderState({
+      fromState: "VALIDATED",
+      toState: "FILLED",
+      occurredAt,
+      reasonCode: "risk_gate_invalid_target",
+    });
+
+    const orderEvent = await appendOrderStateTransitionEvent(db, {
+      orderId: order.id,
+      correlationId: "candidate-1",
+      event: decision.event,
+    });
+    const currentOrder = await db
+      .selectFrom("orders")
+      .select(["status", "updated_at"])
+      .where("id", "=", order.id)
+      .executeTakeFirstOrThrow();
+
+    expect(orderEvent).toMatchObject({
+      accepted: false,
+      from_status: "VALIDATED",
+      to_status: "FILLED",
+      reason_code: "risk_gate_invalid_target",
+    });
+    expect(currentOrder.status).toBe("VALIDATED");
+    expect(new Date(currentOrder.updated_at).toISOString()).not.toBe(occurredAt);
   });
 
   async function getDatabase(): Promise<Database> {

@@ -259,6 +259,29 @@ describe("M5 risk limit evaluator", () => {
     expect(failedReasonCodes(result)).toContain("consecutive_strategy_loss_limit_exceeded");
   });
 
+  it("fails closed when the strategy loss snapshot belongs to another strategy", () => {
+    const result = evaluateRiskGate(
+      createRiskContext({
+        strategy: {
+          strategyId: "other_strategy",
+          consecutiveLosses: 0,
+        },
+      }),
+    );
+
+    expect(result.approved).toBe(false);
+    expect(result.action).toBe("MANUAL_REVIEW_REQUIRED");
+    expect(failedReasonCodes(result)).toContain("strategy_snapshot_mismatch");
+    expect(
+      result.failedEvaluations.find((evaluation) => evaluation.reasonCode === "strategy_snapshot_mismatch"),
+    ).toMatchObject({
+      metadata: {
+        order_strategy_id: "trend_following",
+        snapshot_strategy_id: "other_strategy",
+      },
+    });
+  });
+
   it("chooses an account-wide new-order block over a strategy-only pause", () => {
     const result = evaluateRiskGate(
       createRiskContext({

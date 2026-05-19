@@ -46,17 +46,41 @@ export class PostgresOrderEventRepository {
 }
 
 /**
- * 주문 상태 전이 event를 `order_events`에 append한다.
+ * 주문 상태 전이 event를 `order_events`에 append하고, 허용된 전이는 `orders.status` snapshot에 반영한다.
+ *
+ * append-only event log와 현재 주문 snapshot이 서로 어긋나면 복구 기준이 흔들리므로 두 write는 같은 DB transaction
+ * 안에서 처리한다. 거부된 전이는 감사 기록으로만 남기고 현재 snapshot은 유지한다.
  */
 export async function appendOrderStateTransitionEvent(
   database: Database,
   input: AppendOrderStateTransitionEventInput,
 ): Promise<OrderEventRecord> {
-  const inserted = await database
-    .insertInto("order_events")
-    .values(toOrderEventRow(input))
-    .returningAll()
-    .executeTakeFirstOrThrow();
+  const inserted = await database.transaction().execute(async (transaction) => {
+    const orderEvent = await transaction
+      .insertInto("order_events")
+      .values(toOrderEventRow(input))
+      .returningAll()
+      .executeTakeFirstOrThrow();
+
+    if (input.event.accepted) {
+      // 허용된 전이만 현재 주문 snapshot을 바꾸고, 거부된 전이는 event log에만 보존한다.
+      const updatedOrder = await transaction
+        .updateTable("orders")
+        .set({
+          status: input.event.toState,
+          updated_at: input.event.occurredAt,
+        })
+        .where("id", "=", input.orderId)
+        .returning("id")
+        .executeTakeFirst();
+
+      if (updatedOrder === undefined) {
+        throw new Error("accepted order state transition target order not found");
+      }
+    }
+
+    return orderEvent;
+  });
 
   return inserted;
 }

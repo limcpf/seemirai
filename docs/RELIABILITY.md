@@ -37,11 +37,14 @@ Codex-native 운영은 Codex, Git, GitHub, shell command, 문서 상태를 연�
 ## RiskGate append-only 기준
 
 - `risk_ok`는 현재 `riskGateContext`를 평가한 실제 RiskGate 승인 결과가 있을 때만 PASS가 될 수 있다.
-- `risk_ok`와 runtime persistence는 현재 주문 후보 식별자와 RiskGate `orderIntent` 식별자가 다르면 fail-closed한다.
+- `risk_ok`와 runtime persistence는 현재 주문 후보 식별자와 RiskGate `orderIntent` 식별자, 수량, 명목 금액, 지정가가 다르면 fail-closed한다.
 - RiskGate가 주문 후보를 거부하면 주문 상태 전이는 `order_events`, 차단 원인은 `risk_events`, 사람이 추적할 판단 근거는 `audit_events`에 append-only로 남긴다.
+- RiskGate runtime이 현재 주문 상태에서 `RISK_APPROVED` 또는 `RISK_REJECTED`로 전이할 수 없으면 승인 우회가 아니라 `risk_events`에 불법 상태 전이 원인을 남기고 fail-closed한다.
 - RiskGate 증거 저장은 주문 전이, kill switch 전이, 리스크 원인, 감사 근거를 하나의 combined event store port로 넘겨 DB transaction 또는 outbox 구현이 원자성을 보장할 수 있게 한다.
+- 허용된 주문 상태 전이는 `order_events` append와 같은 transaction에서 `orders.status`/`orders.updated_at` snapshot을 갱신하고, 거부된 전이는 event log에만 남긴다.
 - 현재 kill switch action plan이 신규 주문 차단 또는 수동 검토를 요구하면 현재 RiskGate snapshot이 PASS여도 주문 상태를 `RISK_REJECTED`로 기록한다.
 - `PAUSE_STRATEGY`는 해당 strategy 범위의 정지 action plan으로만 남기며 전역 kill switch로 승격하지 않는다.
+- strategy 연속 손실 snapshot의 `strategyId`는 주문 후보의 strategy id와 일치해야 하며, 다르면 수동 검토 필요 상태로 fail-closed한다.
 - `HARD_STOP`은 kill switch를 더 강한 상태로만 전이시키며 pending paper order 취소 계획을 감사 이벤트로 남긴다.
 - `HARD_STOP` action plan은 open position 자동 청산을 항상 금지한다. 실제 pending order cancel 호출은 M6 ExecutionEngine/PaperBroker 경계에서만 수행한다.
 

@@ -426,16 +426,28 @@ function createOrderIntentMismatchMetadata(
   appendMismatch(mismatches, "order_intent_strategy_id", ruleIntent.strategyId, riskIntent.strategyId);
   appendMismatch(mismatches, "order_intent_side", ruleIntent.side, riskIntent.side);
   appendMismatch(mismatches, "order_intent_order_type", ruleIntent.orderType, riskIntent.orderType);
+  appendMismatch(mismatches, "order_intent_requested_quantity", ruleIntent.requestedQuantity, riskIntent.requestedQuantity);
+  appendMismatch(mismatches, "order_intent_requested_notional", ruleIntent.requestedNotional, riskIntent.requestedNotional);
+  appendMismatch(
+    mismatches,
+    "order_intent_requested_price",
+    readOrderIntentRequestedPrice(ruleIntent),
+    readOrderIntentRequestedPrice(riskIntent),
+  );
   appendMismatch(mismatches, "order_intent_idempotency_key", ruleIntent.idempotencyKey, riskIntent.idempotencyKey);
 
   return mismatches;
 }
 
+function readOrderIntentRequestedPrice(intent: NonNullable<RuleContext["orderIntent"]>): string | undefined {
+  return intent.orderType === "LIMIT" ? intent.requestedPrice : undefined;
+}
+
 function appendMismatch(
   target: JsonRecord,
   fieldName: string,
-  ruleValue: string,
-  riskGateValue: string,
+  ruleValue: string | undefined,
+  riskGateValue: string | undefined,
 ): void {
   if (ruleValue !== riskGateValue) {
     target[`${fieldName}_rule`] = ruleValue;
