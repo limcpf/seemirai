@@ -135,6 +135,34 @@ describe("paper fill simulator", () => {
     });
   });
 
+  it("skips pre-submit snapshots even when latency is zero", () => {
+    const result = simulatePaperFill({
+      intent: createLimitIntent({
+        requestedPrice: "100",
+      }),
+      orderbooks: [
+        createOrderbook({
+          receivedAt: "2026-05-19T09:59:59.900Z",
+          asks: [["99", "1"]],
+        }),
+        createOrderbook({
+          receivedAt: "2026-05-19T10:00:00.000Z",
+          asks: [["101", "1"]],
+        }),
+      ],
+      options: {
+        submittedAt: observedAt,
+      },
+    });
+
+    expect(result).toMatchObject({
+      status: "UNFILLED",
+      reasonCode: "limit_not_crossed",
+      filledQuantity: "0",
+      openQuantity: "0.5",
+    });
+  });
+
   it("does not fabricate fills when no latency-eligible snapshot exists", () => {
     const result = simulatePaperFill({
       intent: createLimitIntent(),
@@ -234,6 +262,28 @@ describe("paper fill simulator", () => {
     });
   });
 
+  it("classifies non-crossing IOC orders as no-fill canceled", () => {
+    const result = simulatePaperFill({
+      intent: createLimitIntent({
+        requestedPrice: "99",
+        timeInForce: "IOC",
+      }),
+      orderbooks: createOrderbook({
+        asks: [["100", "1"]],
+      }),
+    });
+
+    expect(result).toMatchObject({
+      status: "IOC_CANCELED",
+      orderStatus: "CANCELED",
+      reasonCode: "ioc_unfilled_canceled",
+      filledQuantity: "0",
+      openQuantity: "0",
+      canceledQuantity: "0.5",
+      fills: [],
+    });
+  });
+
   it("cancels FOK aggressive limit orders without partial fills when depth is insufficient", () => {
     const result = simulatePaperFill({
       intent: createLimitIntent({
@@ -258,6 +308,29 @@ describe("paper fill simulator", () => {
       openQuantity: "0",
       canceledQuantity: "1",
       fills: [],
+    });
+  });
+
+  it("rejects orderbooks from a different exchange or market before calculating fills", () => {
+    const result = simulatePaperFill({
+      intent: createLimitIntent(),
+      orderbooks: createOrderbook({
+        market: "KRW-ETH",
+        asks: [["100", "1"]],
+      }),
+    });
+
+    expect(result).toMatchObject({
+      status: "REJECTED",
+      orderStatus: "REJECTED",
+      reasonCode: "orderbook_intent_mismatch",
+      filledQuantity: "0",
+      openQuantity: "0",
+      canceledQuantity: "0.5",
+      metadata: {
+        orderbook_market: "KRW-ETH",
+        intent_market: "KRW-BTC",
+      },
     });
   });
 

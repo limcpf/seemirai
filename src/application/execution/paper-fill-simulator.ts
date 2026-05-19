@@ -35,7 +35,8 @@ export type PaperFillSimulationReasonCode =
   | "fok_not_filled"
   | "market_order_simulation_disabled"
   | "latency_snapshot_missing"
-  | "orderbook_snapshot_missing";
+  | "orderbook_snapshot_missing"
+  | "orderbook_intent_mismatch";
 
 export interface PaperFillSimulatorOptions {
   /**
@@ -119,6 +120,16 @@ export function simulatePaperFill(input: PaperFillSimulationInput): PaperFillSim
     return createNoFillResult("UNFILLED", "ACCEPTED", "latency_snapshot_missing", requestedQuantity);
   }
 
+  if (orderbook.exchangeId !== intent.exchangeId || orderbook.market !== intent.market) {
+    // 다른 거래소/마켓의 호가를 쓰면 잘못된 fill, 수수료, PnL 근거가 생기므로 공개 경계에서 즉시 거부한다.
+    return createNoFillResult("REJECTED", "REJECTED", "orderbook_intent_mismatch", requestedQuantity, {
+      orderbook_exchange_id: orderbook.exchangeId,
+      orderbook_market: orderbook.market,
+      intent_exchange_id: intent.exchangeId,
+      intent_market: intent.market,
+    });
+  }
+
   if (orderbook.asks.length === 0 && orderbook.bids.length === 0) {
     // 비어 있는 호가 snapshot은 체결 근거가 아니므로 주문은 pending/open으로 유지한다.
     return createNoFillResult("UNFILLED", "ACCEPTED", "orderbook_snapshot_missing", requestedQuantity, {
@@ -148,6 +159,13 @@ export function simulatePaperFill(input: PaperFillSimulationInput): PaperFillSim
   }
 
   if (timeInForce === "IOC" && !fullFill) {
+    if (!hasFill) {
+      // IOC가 전혀 교차하지 않으면 부분체결로 분류하지 않고 no-fill 취소 사유를 남긴다.
+      return createNoFillResult("IOC_CANCELED", "CANCELED", "ioc_unfilled_canceled", requestedQuantity, {
+        orderbook_received_at: orderbook.receivedAt,
+      });
+    }
+
     // IOC는 가능한 수량만 즉시 체결하고 남은 수량은 open으로 남기지 않는다.
     return createFillResult("IOC_CANCELED", "CANCELED", "ioc_filled_and_canceled", requestedQuantity, {
       ...depthResult,
@@ -218,11 +236,11 @@ function selectExecutionOrderbook(
     return undefined;
   }
 
-  const latencyMs = options.latencyMs ?? 0;
-  if (latencyMs <= 0 || options.submittedAt === undefined) {
+  if (options.submittedAt === undefined) {
     return snapshots[0];
   }
 
+  const latencyMs = Math.max(options.latencyMs ?? 0, 0);
   const executionTimestamp = readTimestampMillis(options.submittedAt) + latencyMs;
 
   return snapshots.find((snapshot) => readTimestampMillis(snapshot.receivedAt) >= executionTimestamp);
