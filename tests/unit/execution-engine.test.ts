@@ -216,6 +216,38 @@ describe("M6 ExecutionEngine contract", () => {
         reasonCode: "risk_approval_not_approved",
       },
     });
+
+    expect(
+      validateExecutionSubmission(
+        createSubmission({
+          riskApproval: {
+            ...approvedRiskApproval,
+            failed_evaluation_reason_codes: ["expected_loss_limit_exceeded"],
+          },
+        }),
+      ),
+    ).toMatchObject({
+      valid: false,
+      rejection: {
+        reasonCode: "risk_approval_not_approved",
+      },
+    });
+
+    expect(
+      validateExecutionSubmission(
+        createSubmission({
+          riskApproval: {
+            ...approvedRiskApproval,
+            failed_evaluation_reason_codes: "expected_loss_limit_exceeded",
+          },
+        }),
+      ),
+    ).toMatchObject({
+      valid: false,
+      rejection: {
+        reasonCode: "risk_approval_not_approved",
+      },
+    });
   });
 
   it("fails closed when RiskGate evidence describes a different order candidate", async () => {
@@ -404,6 +436,41 @@ describe("M6 ExecutionEngine contract", () => {
       },
     });
     expect(submitOrder).not.toHaveBeenCalled();
+  });
+
+  it("rejects RiskGate evidence when market position effect changed after approval", () => {
+    const approvedEntryIntent = createMarketIntent();
+    const reduceOnlyRuntimeIntent = createMarketIntent({
+      metadata: {
+        position_effect: "REDUCE",
+      },
+    });
+
+    expect(
+      validateExecutionSubmission(
+        createSubmission({
+          intent: reduceOnlyRuntimeIntent,
+          costSnapshot: createCostSnapshot(reduceOnlyRuntimeIntent),
+          riskApproval: createRiskApprovalEvidence(approvedEntryIntent),
+        }),
+        {
+          liveTradingEnabled: false,
+          marketOrderEnabled: true,
+          entryMarketOrderEnabled: false,
+          paperNoKey: true,
+        },
+      ),
+    ).toMatchObject({
+      valid: false,
+      rejection: {
+        reasonCode: "risk_approval_mismatch",
+        metadata: {
+          mismatches: {
+            position_effect_runtime: "REDUCE",
+          },
+        },
+      },
+    });
   });
 
   it("rejects market orders in the default paper profile", async () => {

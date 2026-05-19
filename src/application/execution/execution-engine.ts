@@ -90,8 +90,8 @@ export interface ExecutionEngineOptions {
  * broker 제출 직전에 CostModel/RiskGate 증거와 현재 주문 후보를 대조하기 위한 canonical fingerprint다.
  *
  * 이 evidence는 DB나 audit log를 거쳐 다시 들어와도 같은 비교 규칙을 적용할 수 있게 domain의 camelCase 필드를
- * JSON-safe snake_case로 고정한다. broker side effect에 영향을 주는 limit option과 RiskGate 한도 입력인
- * expected loss까지 포함해, 승인 이후 후보가 바뀌면 ExecutionEngine이 fail-closed할 수 있게 한다.
+ * JSON-safe snake_case로 고정한다. broker side effect에 영향을 주는 position effect, limit option, RiskGate 한도
+ * 입력인 expected loss까지 포함해, 승인 이후 후보가 바뀌면 ExecutionEngine이 fail-closed할 수 있게 한다.
  */
 export type ExecutionOrderIntentEvidence = JsonRecord & {
   exchange_id: string;
@@ -102,6 +102,7 @@ export type ExecutionOrderIntentEvidence = JsonRecord & {
   requested_quantity: string;
   requested_notional: string;
   idempotency_key: string;
+  position_effect?: string;
   requested_price?: string;
   post_only?: boolean;
   time_in_force?: string;
@@ -455,14 +456,16 @@ function validateRiskApproval(
     riskApproval.source !== "risk_gate" ||
     riskApproval.approved !== true ||
     riskApproval.action !== "ALLOW" ||
-    !isApprovalCapableRiskStatus(riskApproval.status)
+    !isApprovalCapableRiskStatus(riskApproval.status) ||
+    hasProblemFieldList(riskApproval.failed_evaluation_reason_codes)
   ) {
-    // RiskGate 승인은 출처, 상태, action이 모두 실행 가능 상태일 때만 유효하다.
+    // RiskGate 승인은 출처, 상태, action, 실패 평가 목록이 모두 실행 가능 상태일 때만 유효하다.
     return reject("risk_approval_not_approved", "RiskGate evidence must be an approval-capable ALLOW result", {
       source: riskApproval.source,
       approved: riskApproval.approved,
       action: riskApproval.action,
       status: riskApproval.status,
+      failed_evaluation_reason_codes: riskApproval.failed_evaluation_reason_codes,
     });
   }
 
@@ -533,6 +536,12 @@ function compareOrderIntentEvidence(
     evidence.idempotency_key,
     readStringRecordValue(runtime, "idempotency_key"),
   );
+  appendStringMismatch(
+    mismatches,
+    "position_effect",
+    evidence.position_effect,
+    readStringRecordValue(runtime, "position_effect"),
+  );
   appendBooleanMismatch(mismatches, "post_only", evidence.post_only, readBooleanRecordValue(runtime, "post_only"));
   appendStringMismatch(
     mismatches,
@@ -571,8 +580,8 @@ function compareOrderIntentEvidence(
 /**
  * OrderIntent와 expected loss를 execution evidence에서 쓰는 canonical JSON fingerprint로 변환한다.
  *
- * 이 함수가 CostModel/RiskGate/idempotency guard의 공통 비교 기준이다. 지정가 주문은 가격뿐 아니라 post-only와
- * time-in-force가 체결/취소 side effect를 바꾸므로 fingerprint에 포함한다.
+ * 이 함수가 CostModel/RiskGate/idempotency guard의 공통 비교 기준이다. 시장가 주문의 entry/reduce 분기와 지정가
+ * 주문의 post-only/time-in-force는 체결/취소 side effect를 바꾸므로 fingerprint에 포함한다.
  */
 function createOrderIntentEvidence(
   intent: OrderIntent,
@@ -588,6 +597,12 @@ function createOrderIntentEvidence(
     requested_notional: normalizeFinancialDecimalString(intent.requestedNotional),
     idempotency_key: intent.idempotencyKey,
   };
+
+  const positionEffect = readOrderIntentPositionEffect(intent);
+  if (positionEffect !== undefined) {
+    // position effect는 시장가 신규 진입 차단 여부를 바꾸므로 approval 이후 metadata 변경도 mismatch로 잡는다.
+    evidence.position_effect = positionEffect;
+  }
 
   if (intent.orderType === "LIMIT") {
     // LIMIT option은 후속 PaperBroker fill simulation 결과를 바꾸는 실행 조건이므로 승인 증거에 고정한다.
@@ -704,9 +719,7 @@ function readNormalizedFinancialDecimalString(value: unknown): string | undefine
 }
 
 function isEntryMarketOrderIntent(intent: OrderIntent): boolean {
-  const positionEffect =
-    readStringMetadata(intent.metadata, "position_effect") ??
-    readStringMetadata(intent.metadata, "positionEffect");
+  const positionEffect = readOrderIntentPositionEffect(intent);
 
   return positionEffect !== "REDUCE" && positionEffect !== "EXIT";
 }
@@ -743,6 +756,13 @@ function readOrderIntentExpectedLossBps(intent: OrderIntent): string | undefined
   return (
     readStringMetadata(intent.metadata, "expected_loss_bps_of_equity") ??
     readStringMetadata(intent.metadata, "expectedLossBpsOfEquity")
+  );
+}
+
+function readOrderIntentPositionEffect(intent: OrderIntent): string | undefined {
+  return (
+    readStringMetadata(intent.metadata, "position_effect") ??
+    readStringMetadata(intent.metadata, "positionEffect")
   );
 }
 
