@@ -253,7 +253,12 @@ M4는 주문 후보가 실행 단계로 넘어가지 못한 이유를 `AuditLogP
 | `liquidity_reversion` | `entry_deviation_bps` | `18` | bps | 높일수록 진입 신호를 더 드물게 허용 |
 | `liquidity_reversion` | `stop_loss_bps` | `30` | bps | 낮출수록 손절 후보를 더 빨리 만든다 |
 
-M4의 `risk_ok` rule은 RiskGate 활성 승인 구현이 아니다. `risk_ok`는 registry/config contract에 남기되, M5 runtime integration 전까지는 `risk_ok_placeholder` WARN으로 평가해 실행 승인으로 해석되지 않게 한다.
+M5 runtime integration 이후 `risk_ok` rule은 현재 `riskGateContext`로 RiskGate를 직접 평가한 결과만 실행 승인
+근거로 사용한다. `riskGateContext`가 없거나 `RuleContext` 후보와 `riskGateContext.orderIntent`의
+exchange/market/idempotency key가 다르면 fail-closed 처리하고, RiskGate가 `approved=true`를 반환할 때만
+`risk_gate_approved` PASS가 된다. 후보 fingerprint가 없는 사전 계산 결과는 stale 승인 우회 위험이 있으므로 rule
+context와 runtime persistence 입력으로 받지 않는다. M4 `risk_ok_placeholder`는 과거 rule chain 검증용 helper로만
+남고, M5 기본 rule 조합은 `createDefaultM5Rules`와 `createRiskOkRule`을 사용한다.
 
 ## Risk 구조
 
@@ -296,8 +301,15 @@ M4의 `risk_ok` rule은 RiskGate 활성 승인 구현이 아니다. `risk_ok`는
 | `total_alt_max_position_bps_of_equity` | `1500` | 전체 알트 보유를 계정 평가액 15%로 제한 |
 | `max_consecutive_strategy_losses` | `3` | 동일 전략 연속 손실 3회에서 전략 중지 후보 |
 
-M5 Sub PR 1은 위 기준을 load 가능한 config와 threshold snapshot contract로 고정한다. 실제 RiskGate evaluator,
-`risk_ok` rule 연결, persistence는 후속 sub PR에서 순차로 연결한다.
+M5 Sub PR 1은 위 기준을 load 가능한 config와 threshold snapshot contract로 고정했고, Sub PR 3은 실제
+RiskGate evaluator를 구현했다. Sub PR 4는 `risk_ok` rule 연결과 `order_events`/`risk_events`/`audit_events`
+append 계획을 연결한다. 증거 저장은 주문 상태 전이, kill switch 상태 전이, risk event, audit event를 combined event
+store port로 묶어 후속 DB transaction/outbox 구현이 원자성을 보장할 수 있게 한다. `PAUSE_STRATEGY`는 해당 strategy
+범위의 정지 계획으로 남기고 전역 kill switch로 승격하지 않는다. `HARD_STOP`은 pending paper order cancel action
+plan을 감사 이벤트로 남기지만, 실제 broker cancel 호출과 open position 자동 청산은 M6 이후 별도 실행 경계에서만
+다룬다. runtime persistence는 `correlationId`와 `riskGateContext.orderIntent.idempotencyKey`가 같아야 하며,
+현재 kill switch action plan이 신규 주문 또는 수동 검토를 요구하면 RiskGate snapshot이 깨끗해도 주문을 승인하지
+않는다.
 
 ## 변경 절차
 
