@@ -98,6 +98,85 @@ describe("PaperBroker", () => {
     await expect(broker.listOpenOrders()).resolves.toEqual([]);
   });
 
+  it("uses the latest pre-submit orderbook when no broker latency is configured", async () => {
+    const broker = new PaperBroker({
+      exchangeId,
+      initialBalances: [
+        {
+          currency: "KRW",
+          available: "1000",
+        },
+      ],
+      orderbookSnapshots: createOrderbook({
+        receivedAt: "2026-05-19T09:59:59.900Z",
+        asks: [["100", "1"]],
+      }),
+      clock: () => observedAt,
+    });
+
+    const order = await broker.submitOrder(createSubmission());
+
+    expect(order).toMatchObject({
+      status: "FILLED",
+      remainingQuantity: "0",
+      metadata: {
+        paper_fill_simulation: {
+          reasonCode: "limit_crossed_full",
+          orderbookReceivedAt: "2026-05-19T09:59:59.900Z",
+        },
+      },
+    });
+  });
+
+  it("rejects orders that would make available paper balances negative", async () => {
+    const broker = new PaperBroker({
+      exchangeId,
+      initialBalances: [
+        {
+          currency: "KRW",
+          available: "25",
+        },
+        {
+          currency: "BTC",
+          available: "0",
+        },
+      ],
+      orderbookSnapshots: createOrderbook({
+        asks: [["100", "1"]],
+      }),
+      clock: () => observedAt,
+    });
+
+    const order = await broker.submitOrder(createSubmission());
+    const balances = await broker.getBalances();
+
+    expect(order).toMatchObject({
+      status: "REJECTED",
+      remainingQuantity: "0",
+      metadata: {
+        balance_mutation_applied: false,
+        paper_balance_rejection: {
+          reason_code: "paper_balance_insufficient",
+          currency: "KRW",
+          required_quantity: "50",
+          available_quantity: "25",
+          shortage_quantity: "25",
+        },
+      },
+    });
+    expect(await broker.listOpenOrders()).toEqual([]);
+    expect(findBalance(balances, "KRW")).toMatchObject({
+      available: "25",
+      locked: "0",
+      total: "25",
+    });
+    expect(findBalance(balances, "BTC")).toMatchObject({
+      available: "0",
+      locked: "0",
+      total: "0",
+    });
+  });
+
   it("keeps a partially filled SELL order open and releases the base lock on cancel", async () => {
     const broker = new PaperBroker({
       exchangeId,

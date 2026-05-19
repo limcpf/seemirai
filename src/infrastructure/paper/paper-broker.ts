@@ -80,6 +80,37 @@ interface PaperBrokerCancelMutationSummary extends JsonRecord {
   canceled_quantity: NumericString;
 }
 
+interface PaperBrokerBalanceRejectionSummary extends JsonRecord {
+  reason_code: "paper_balance_insufficient";
+  currency: string;
+  balance_field: "available";
+  required_quantity: NumericString;
+  available_quantity: NumericString;
+  shortage_quantity: NumericString;
+  attempted_delta: NumericString;
+}
+
+type PaperBrokerBalanceValidationResult =
+  | {
+      valid: true;
+    }
+  | {
+      valid: false;
+      rejection: PaperBrokerBalanceRejectionSummary;
+    };
+
+interface PaperBrokerFillSimulationRequest {
+  orderbooks: readonly OrderbookEvent[];
+  options: PaperFillSimulatorOptions;
+}
+
+interface PaperBrokerOrderState {
+  status: OrderLifecycleStatus;
+  remainingQuantity: NumericString;
+  balanceMutationApplied: boolean;
+  balanceRejection?: PaperBrokerBalanceRejectionSummary;
+}
+
 /**
  * 동일 idempotency key가 서로 다른 주문 후보에 재사용됐을 때 발생하는 broker boundary 오류다.
  *
@@ -200,17 +231,22 @@ export class PaperBroker implements BrokerPort {
 
     const brokerOrderId = this.createBrokerOrderId();
     const updatedAt = this.clock();
-    const orderbooks = this.readOrderbooksForIntent(submission.intent);
+    const simulationRequest = this.createFillSimulationRequest(submission);
     const simulation = simulatePaperFill({
       intent: submission.intent,
-      orderbooks,
-      options: {
-        ...this.fillOptions,
-        submittedAt: submission.submittedAt,
-      },
+      orderbooks: simulationRequest.orderbooks,
+      options: simulationRequest.options,
     });
-    const balanceMutation = this.applySubmissionBalanceMutation(submission.intent, simulation, updatedAt);
-    const order = this.createBrokerOrder(submission, brokerOrderId, simulation, balanceMutation, updatedAt);
+    const balanceMutation = createSubmissionBalanceMutation(submission.intent, simulation);
+    const balanceValidation = this.validateBalanceMutation(balanceMutation);
+    const orderState = createOrderStateFromSimulation(simulation, balanceValidation);
+
+    if (balanceValidation.valid) {
+      // 잔고가 충분한 경우에만 체결/lock delta를 반영해 rejected 주문이 paper 잔고를 오염시키지 않게 한다.
+      this.applySubmissionBalanceMutation(balanceMutation, updatedAt);
+    }
+
+    const order = this.createBrokerOrder(submission, brokerOrderId, simulation, balanceMutation, orderState, updatedAt);
 
     // 주문 저장과 idempotency index 갱신은 같은 submit side effect로 취급해 중복 재진입이 새 주문을 만들지 못하게 한다.
     this.ordersById.set(order.brokerOrderId, order);
@@ -308,13 +344,46 @@ export class PaperBroker implements BrokerPort {
     return [...(this.orderbooksByMarket.get(key) ?? [])];
   }
 
+  private createFillSimulationRequest(submission: OrderSubmission): PaperBrokerFillSimulationRequest {
+    const orderbooks = this.readOrderbooksForIntent(submission.intent);
+    if (shouldWaitForPostSubmitSnapshot(this.fillOptions)) {
+      return {
+        orderbooks,
+        options: {
+          ...this.fillOptions,
+          submittedAt: submission.submittedAt,
+        },
+      };
+    }
+
+    const immediateOrderbook = selectImmediateExecutionOrderbook(orderbooks, submission.submittedAt);
+    return {
+      orderbooks: immediateOrderbook === undefined ? [] : [immediateOrderbook],
+      options: {
+        ...this.fillOptions,
+      },
+    };
+  }
+
   private createBrokerOrder(
     submission: OrderSubmission,
     brokerOrderId: string,
     simulation: PaperFillSimulationResult,
     balanceMutation: PaperBrokerBalanceMutationSummary,
+    orderState: PaperBrokerOrderState,
     updatedAt: TimestampInput,
   ): BrokerOrder {
+    const metadata: JsonRecord = {
+      source: "paper_broker_memory",
+      submitted_at: submission.submittedAt,
+      paper_fill_simulation: simulation,
+      balance_mutation: balanceMutation,
+      balance_mutation_applied: orderState.balanceMutationApplied,
+    };
+    if (orderState.balanceRejection !== undefined) {
+      metadata.paper_balance_rejection = orderState.balanceRejection;
+    }
+
     const baseOrder: BrokerOrder = {
       brokerOrderId,
       idempotencyKey: submission.intent.idempotencyKey,
@@ -322,16 +391,11 @@ export class PaperBroker implements BrokerPort {
       market: submission.intent.market,
       side: submission.intent.side,
       orderType: submission.intent.orderType,
-      status: simulation.orderStatus,
+      status: orderState.status,
       requestedQuantity: simulation.requestedQuantity,
-      remainingQuantity: simulation.openQuantity,
+      remainingQuantity: orderState.remainingQuantity,
       updatedAt,
-      metadata: {
-        source: "paper_broker_memory",
-        submitted_at: submission.submittedAt,
-        paper_fill_simulation: simulation,
-        balance_mutation: balanceMutation,
-      },
+      metadata,
     };
 
     const orderWithPrice =
@@ -353,49 +417,50 @@ export class PaperBroker implements BrokerPort {
   }
 
   private applySubmissionBalanceMutation(
-    intent: OrderIntent,
-    simulation: PaperFillSimulationResult,
+    mutation: PaperBrokerBalanceMutationSummary,
     updatedAt: TimestampInput,
-  ): PaperBrokerBalanceMutationSummary {
-    const { baseCurrency, quoteCurrency } = parseMarketCurrencies(intent.market);
-    const filledQuantity = simulation.filledQuantity;
-    const openQuantity = simulation.openQuantity;
-    const totalFillNotional = simulation.totalFillNotional ?? "0";
-    const totalFee = simulation.totalFee ?? "0";
-    let quoteAvailableDelta = "0";
-    let quoteLockedDelta = "0";
-    let baseAvailableDelta = "0";
-    let baseLockedDelta = "0";
+  ): void {
+    // 체결과 open 주문 lock을 같은 submit 처리 안에서 반영해 주문 상태와 잔고 snapshot이 서로 어긋나지 않게 한다.
+    this.applyBalanceDelta(mutation.quote_currency, mutation.quote_available_delta, mutation.quote_locked_delta, updatedAt);
+    this.applyBalanceDelta(mutation.base_currency, mutation.base_available_delta, mutation.base_locked_delta, updatedAt);
+  }
 
-    if (intent.side === "BUY") {
-      const fillQuoteDebit = addDecimalStrings(totalFillNotional, totalFee);
-      const openQuoteLock = calculateOpenQuoteLock(intent, openQuantity);
-
-      quoteAvailableDelta = negateDecimalString(addDecimalStrings(fillQuoteDebit, openQuoteLock));
-      quoteLockedDelta = openQuoteLock;
-      baseAvailableDelta = filledQuantity;
-    } else {
-      const fillQuoteCredit = subtractDecimalStrings(totalFillNotional, totalFee);
-
-      quoteAvailableDelta = fillQuoteCredit;
-      baseAvailableDelta = negateDecimalString(addDecimalStrings(filledQuantity, openQuantity));
-      baseLockedDelta = openQuantity;
+  private validateBalanceMutation(mutation: PaperBrokerBalanceMutationSummary): PaperBrokerBalanceValidationResult {
+    const quoteValidation = this.validateAvailableBalance(mutation.quote_currency, mutation.quote_available_delta);
+    if (!quoteValidation.valid) {
+      return quoteValidation;
     }
 
-    // 체결과 open 주문 lock을 같은 submit 처리 안에서 반영해 주문 상태와 잔고 snapshot이 서로 어긋나지 않게 한다.
-    this.applyBalanceDelta(quoteCurrency, quoteAvailableDelta, quoteLockedDelta, updatedAt);
-    this.applyBalanceDelta(baseCurrency, baseAvailableDelta, baseLockedDelta, updatedAt);
+    return this.validateAvailableBalance(mutation.base_currency, mutation.base_available_delta);
+  }
+
+  private validateAvailableBalance(currency: string, availableDelta: NumericString): PaperBrokerBalanceValidationResult {
+    if (!isNegativeDecimalString(availableDelta)) {
+      return {
+        valid: true,
+      };
+    }
+
+    const normalizedCurrency = normalizeCurrency(currency);
+    const available = this.balancesByCurrency.get(normalizedCurrency)?.available ?? "0";
+    const required = absDecimalString(availableDelta);
+    if (parseFinancialDecimal(available).greaterThanOrEqualTo(parseFinancialDecimal(required))) {
+      return {
+        valid: true,
+      };
+    }
 
     return {
-      base_currency: baseCurrency,
-      quote_currency: quoteCurrency,
-      filled_quantity: filledQuantity,
-      open_quantity: openQuantity,
-      canceled_quantity: simulation.canceledQuantity,
-      quote_available_delta: quoteAvailableDelta,
-      quote_locked_delta: quoteLockedDelta,
-      base_available_delta: baseAvailableDelta,
-      base_locked_delta: baseLockedDelta,
+      valid: false,
+      rejection: {
+        reason_code: "paper_balance_insufficient",
+        currency: normalizedCurrency,
+        balance_field: "available",
+        required_quantity: required,
+        available_quantity: available,
+        shortage_quantity: subtractDecimalStrings(required, available),
+        attempted_delta: availableDelta,
+      },
     };
   }
 
@@ -463,6 +528,68 @@ export class PaperBroker implements BrokerPort {
   }
 }
 
+function createSubmissionBalanceMutation(
+  intent: OrderIntent,
+  simulation: PaperFillSimulationResult,
+): PaperBrokerBalanceMutationSummary {
+  const { baseCurrency, quoteCurrency } = parseMarketCurrencies(intent.market);
+  const filledQuantity = simulation.filledQuantity;
+  const openQuantity = simulation.openQuantity;
+  const totalFillNotional = simulation.totalFillNotional ?? "0";
+  const totalFee = simulation.totalFee ?? "0";
+  let quoteAvailableDelta = "0";
+  let quoteLockedDelta = "0";
+  let baseAvailableDelta = "0";
+  let baseLockedDelta = "0";
+
+  if (intent.side === "BUY") {
+    const fillQuoteDebit = addDecimalStrings(totalFillNotional, totalFee);
+    const openQuoteLock = calculateOpenQuoteLock(intent, openQuantity);
+
+    quoteAvailableDelta = negateDecimalString(addDecimalStrings(fillQuoteDebit, openQuoteLock));
+    quoteLockedDelta = openQuoteLock;
+    baseAvailableDelta = filledQuantity;
+  } else {
+    const fillQuoteCredit = subtractDecimalStrings(totalFillNotional, totalFee);
+
+    quoteAvailableDelta = fillQuoteCredit;
+    baseAvailableDelta = negateDecimalString(addDecimalStrings(filledQuantity, openQuantity));
+    baseLockedDelta = openQuantity;
+  }
+
+  return {
+    base_currency: baseCurrency,
+    quote_currency: quoteCurrency,
+    filled_quantity: filledQuantity,
+    open_quantity: openQuantity,
+    canceled_quantity: simulation.canceledQuantity,
+    quote_available_delta: quoteAvailableDelta,
+    quote_locked_delta: quoteLockedDelta,
+    base_available_delta: baseAvailableDelta,
+    base_locked_delta: baseLockedDelta,
+  };
+}
+
+function createOrderStateFromSimulation(
+  simulation: PaperFillSimulationResult,
+  balanceValidation: PaperBrokerBalanceValidationResult,
+): PaperBrokerOrderState {
+  if (!balanceValidation.valid) {
+    return {
+      status: "REJECTED",
+      remainingQuantity: "0",
+      balanceMutationApplied: false,
+      balanceRejection: balanceValidation.rejection,
+    };
+  }
+
+  return {
+    status: simulation.orderStatus,
+    remainingQuantity: simulation.openQuantity,
+    balanceMutationApplied: true,
+  };
+}
+
 function createCanceledOrder(
   order: BrokerOrder,
   cancelMutation: PaperBrokerCancelMutationSummary,
@@ -528,6 +655,32 @@ function isOrderbookSnapshotArray(
   snapshots: OrderbookEvent | readonly OrderbookEvent[],
 ): snapshots is readonly OrderbookEvent[] {
   return Array.isArray(snapshots);
+}
+
+function shouldWaitForPostSubmitSnapshot(options: PaperBrokerFillOptions): boolean {
+  return (options.latencyMs ?? 0) > 0;
+}
+
+function selectImmediateExecutionOrderbook(
+  orderbooks: readonly OrderbookEvent[],
+  submittedAt: TimestampInput,
+): OrderbookEvent | undefined {
+  const submittedAtMillis = readTimestampMillis(submittedAt);
+  let latestPreSubmitSnapshot: OrderbookEvent | undefined;
+  let earliestPostSubmitSnapshot: OrderbookEvent | undefined;
+
+  for (const orderbook of orderbooks) {
+    const receivedAtMillis = readTimestampMillis(orderbook.receivedAt);
+    if (receivedAtMillis <= submittedAtMillis) {
+      // latency가 없는 paper submit은 주문 직전에 관측한 최신 snapshot을 즉시 체결 근거로 사용할 수 있어야 한다.
+      latestPreSubmitSnapshot = orderbook;
+      continue;
+    }
+
+    earliestPostSubmitSnapshot ??= orderbook;
+  }
+
+  return latestPreSubmitSnapshot ?? earliestPostSubmitSnapshot;
 }
 
 function parseMarketCurrencies(market: MarketCode): MarketCurrencies {
@@ -631,8 +784,16 @@ function negateDecimalString(value: NumericString): NumericString {
   return parseFinancialDecimal(value).negated().toFixed();
 }
 
+function absDecimalString(value: NumericString): NumericString {
+  return parseFinancialDecimal(value).abs().toFixed();
+}
+
 function isPositiveDecimalString(value: NumericString): boolean {
   return parseFinancialDecimal(value).greaterThan(0);
+}
+
+function isNegativeDecimalString(value: NumericString): boolean {
+  return parseFinancialDecimal(value).lessThan(0);
 }
 
 function isZeroDecimalString(value: NumericString): boolean {
