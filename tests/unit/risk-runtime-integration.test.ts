@@ -174,6 +174,33 @@ describe("M5 risk_ok rule integration", () => {
     });
   });
 
+  it("fails closed when a reused RiskGate approval has different expected loss input", async () => {
+    const result = await Promise.resolve(
+      createRiskOkRule().evaluate(
+        createRuleContext({
+          orderIntent: createOrderIntent({
+            metadata: {
+              expected_loss_bps_of_equity: "25",
+            },
+          }),
+          riskGateContext: createRiskContext(),
+        }),
+      ),
+    );
+
+    expect(result).toMatchObject({
+      status: "FAIL",
+      reasonCode: "risk_gate_context_mismatch",
+      metadata: {
+        execution_approval: false,
+        mismatches: {
+          order_intent_expected_loss_bps_of_equity_rule: "25",
+          order_intent_expected_loss_bps_of_equity_risk_gate: "10",
+        },
+      },
+    });
+  });
+
   it("uses the active RiskGate rule in the M5 default rule chain", async () => {
     const result = await evaluateRules(
       createDefaultM5Rules({
@@ -289,6 +316,39 @@ describe("RiskGate runtime event wiring", () => {
       metadata: {
         global_new_orders_blocked: false,
         global_kill_switch_unchanged: true,
+      },
+    });
+  });
+
+  it("keeps strategy pause evidence when a stronger account block dominates", () => {
+    const plan = createRiskGateRuntimeDecisionPlan({
+      orderId: "order-1",
+      orderStatus: "VALIDATED",
+      currentKillSwitchState: "NORMAL",
+      riskGateContext: createRiskContext({
+        account: {
+          dailyRealizedPnlBps: "-100",
+        },
+        strategy: {
+          consecutiveLosses: 3,
+        },
+      }),
+      actor: "risk-gate",
+      correlationId: "candidate-1",
+    });
+
+    expect(plan.riskGateResult.action).toBe("BLOCK_NEW_ORDER");
+    expect(plan.strategyPauseActionPlan).toMatchObject({
+      action: "PLAN_PAUSE_STRATEGY",
+      strategyId: "trend_following",
+    });
+    expect(plan.killSwitchStateTransition).toMatchObject({
+      toState: "NEW_ORDERS_BLOCKED",
+    });
+    expect(plan.auditEvents.find((event) => event.reasonCode === "strategy_pause_action_plan_created")).toMatchObject({
+      metadata: {
+        global_new_orders_blocked: true,
+        global_kill_switch_unchanged: false,
       },
     });
   });

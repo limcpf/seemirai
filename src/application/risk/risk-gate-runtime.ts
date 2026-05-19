@@ -161,7 +161,7 @@ export function createRiskGateRuntimeDecisionPlan(
       ? createHardStopRuntimeActionPlan(input.pendingPaperOrders ?? [])
       : undefined;
   const strategyPauseActionPlan =
-    riskGateResult.action === "PAUSE_STRATEGY"
+    shouldCreateStrategyPauseActionPlan(riskGateResult)
       ? createStrategyPauseRuntimeActionPlan(input.riskGateContext.strategy)
       : undefined;
   const auditEventInput: CreateRiskGateAuditEventsInput = {
@@ -217,6 +217,16 @@ export async function persistRiskGateRuntimeDecision(
       ? {}
       : { killSwitchEventReceipt: receipt.killSwitchEventReceipt }),
   };
+}
+
+/**
+ * dominant action이 더 강한 전역 차단으로 승격돼도 strategy pause evidence가 필요한지 판단한다.
+ *
+ * 연속 손실 초과는 전역 신규 주문 차단과 독립적으로 해당 strategy의 평가 중지 근거가 되므로, 최종 action이
+ * `BLOCK_NEW_ORDER`/`MANUAL_REVIEW_REQUIRED`/`HARD_STOP`이어도 failed evaluation에 남은 pause 신호를 보존한다.
+ */
+function shouldCreateStrategyPauseActionPlan(result: RiskGateResult): boolean {
+  return result.failedEvaluations.some((evaluation) => evaluation.action === "PAUSE_STRATEGY");
 }
 
 function applyRuntimeFailClosedEvaluations(
@@ -671,6 +681,8 @@ function createStrategyPauseActionPlanAuditEvent(input: {
   riskGateContext: RiskGateContext;
   actor: string;
   correlationId?: string;
+  riskGateResult: RiskGateResult;
+  killSwitchStateTransition?: StateTransitionDecision<KillSwitchState>;
   strategyPauseActionPlan?: StrategyPauseRuntimeActionPlan;
 }): AuditEvent {
   const event: AuditEvent = {
@@ -684,8 +696,8 @@ function createStrategyPauseActionPlanAuditEvent(input: {
     metadata: {
       audit_kind: "STRATEGY_PAUSE_ACTION_PLAN",
       strategy_pause_action: input.strategyPauseActionPlan,
-      global_new_orders_blocked: false,
-      global_kill_switch_unchanged: true,
+      global_new_orders_blocked: input.riskGateResult.action !== "PAUSE_STRATEGY",
+      global_kill_switch_unchanged: input.killSwitchStateTransition === undefined,
     },
   };
 

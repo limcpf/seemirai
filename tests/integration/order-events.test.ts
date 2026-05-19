@@ -145,6 +145,48 @@ describeDb("state transition persistence integration", () => {
     expect(new Date(currentOrder.updated_at).toISOString()).not.toBe(occurredAt);
   });
 
+  it("rejects accepted stale transitions when the current order status already moved", async () => {
+    const db = await getDatabase();
+    const order = await insertOrder(db);
+    const approvedDecision = transitionOrderState({
+      fromState: "VALIDATED",
+      toState: "RISK_APPROVED",
+      occurredAt,
+      reasonCode: "risk_gate_order_approved",
+    });
+    const staleRejectedDecision = transitionOrderState({
+      fromState: "VALIDATED",
+      toState: "RISK_REJECTED",
+      occurredAt: "2026-05-19T01:31:00.000Z",
+      reasonCode: "risk_gate_order_rejected",
+    });
+
+    await appendOrderStateTransitionEvent(db, {
+      orderId: order.id,
+      correlationId: "candidate-1",
+      event: approvedDecision.event,
+    });
+
+    await expect(
+      appendOrderStateTransitionEvent(db, {
+        orderId: order.id,
+        correlationId: "candidate-1",
+        event: staleRejectedDecision.event,
+      }),
+    ).rejects.toThrow("accepted order state transition target order not found or current status mismatch");
+
+    const events = await listOrderEventsByOrderId(db, { orderId: order.id });
+    const currentOrder = await db
+      .selectFrom("orders")
+      .select(["status", "updated_at"])
+      .where("id", "=", order.id)
+      .executeTakeFirstOrThrow();
+
+    expect(events).toHaveLength(1);
+    expect(currentOrder.status).toBe("RISK_APPROVED");
+    expect(new Date(currentOrder.updated_at).toISOString()).toBe(occurredAt);
+  });
+
   async function getDatabase(): Promise<Database> {
     if (database !== undefined) {
       return database;

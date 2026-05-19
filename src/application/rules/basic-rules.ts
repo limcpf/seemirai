@@ -434,6 +434,12 @@ function createOrderIntentMismatchMetadata(
     readOrderIntentRequestedPrice(ruleIntent),
     readOrderIntentRequestedPrice(riskIntent),
   );
+  appendMismatch(
+    mismatches,
+    "order_intent_expected_loss_bps_of_equity",
+    readOrderIntentExpectedLossBps(ruleIntent),
+    readRiskGateExpectedLossBps(context, riskIntent),
+  );
   appendMismatch(mismatches, "order_intent_idempotency_key", ruleIntent.idempotencyKey, riskIntent.idempotencyKey);
 
   return mismatches;
@@ -441,6 +447,21 @@ function createOrderIntentMismatchMetadata(
 
 function readOrderIntentRequestedPrice(intent: NonNullable<RuleContext["orderIntent"]>): string | undefined {
   return intent.orderType === "LIMIT" ? intent.requestedPrice : undefined;
+}
+
+function readRiskGateExpectedLossBps(
+  context: RuleContext,
+  riskIntent: NonNullable<RuleContext["orderIntent"]>,
+): string | undefined {
+  return context.riskGateContext?.expectedLossBpsOfEquity ?? readOrderIntentExpectedLossBps(riskIntent);
+}
+
+function readOrderIntentExpectedLossBps(intent: NonNullable<RuleContext["orderIntent"]>): string | undefined {
+  const value =
+    intent.metadata?.expected_loss_bps_of_equity ??
+    intent.metadata?.expectedLossBpsOfEquity;
+
+  return typeof value === "string" ? value : undefined;
 }
 
 function appendMismatch(
