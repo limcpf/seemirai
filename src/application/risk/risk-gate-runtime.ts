@@ -3,6 +3,7 @@ import {
   transitionKillSwitchState,
   transitionOrderState,
 } from "../../domain/index.js";
+import { parseFinancialDecimal } from "../../shared/index.js";
 import { evaluateRiskGate } from "./risk-gate.js";
 import type { AuditEvent, AuditEventReceipt } from "../ports/index.js";
 import type {
@@ -92,6 +93,12 @@ export interface RiskGateRuntimeDecisionInput {
    * 재사용되지 않도록 한다.
    */
   orderIntent: OrderIntent;
+  /**
+   * 현재 주문 후보의 예상 손실 입력이다.
+   *
+   * RiskGate context가 top-level 예상 손실 값을 쓰는 경우 persistence 경계에서도 같은 값을 비교할 수 있게 한다.
+   */
+  expectedLossBpsOfEquity?: string;
   currentKillSwitchState: KillSwitchState;
   riskGateContext: RiskGateContext;
   actor: string;
@@ -326,19 +333,19 @@ function createRuntimeCandidateMismatchEvaluation(
   appendRuntimeOrderIntentMismatch(mismatches, "order_intent_strategy_id", input.orderIntent.strategyId, intent.strategyId);
   appendRuntimeOrderIntentMismatch(mismatches, "order_intent_side", input.orderIntent.side, intent.side);
   appendRuntimeOrderIntentMismatch(mismatches, "order_intent_order_type", input.orderIntent.orderType, intent.orderType);
-  appendRuntimeOrderIntentMismatch(
+  appendRuntimeDecimalMismatch(
     mismatches,
     "order_intent_requested_quantity",
     input.orderIntent.requestedQuantity,
     intent.requestedQuantity,
   );
-  appendRuntimeOrderIntentMismatch(
+  appendRuntimeDecimalMismatch(
     mismatches,
     "order_intent_requested_notional",
     input.orderIntent.requestedNotional,
     intent.requestedNotional,
   );
-  appendRuntimeOrderIntentMismatch(
+  appendRuntimeDecimalMismatch(
     mismatches,
     "order_intent_requested_price",
     readOrderIntentRequestedPrice(input.orderIntent),
@@ -350,10 +357,10 @@ function createRuntimeCandidateMismatchEvaluation(
     input.orderIntent.idempotencyKey,
     intent.idempotencyKey,
   );
-  appendRuntimeOrderIntentMismatch(
+  appendRuntimeDecimalMismatch(
     mismatches,
     "order_intent_expected_loss_bps_of_equity",
-    readOrderIntentExpectedLossBps(input.orderIntent),
+    readRuntimeExpectedLossBps(input),
     readRiskGateExpectedLossBps(input.riskGateContext),
   );
 
@@ -388,12 +395,42 @@ function appendRuntimeOrderIntentMismatch(
   }
 }
 
+function appendRuntimeDecimalMismatch(
+  target: JsonRecord,
+  fieldName: string,
+  runtimeValue: string | undefined,
+  riskGateValue: string | undefined,
+): void {
+  appendRuntimeOrderIntentMismatch(
+    target,
+    fieldName,
+    normalizeFinancialDecimalString(runtimeValue),
+    normalizeFinancialDecimalString(riskGateValue),
+  );
+}
+
+function normalizeFinancialDecimalString(value: string | undefined): string | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+
+  try {
+    return parseFinancialDecimal(value).toFixed();
+  } catch {
+    return value;
+  }
+}
+
 function readOrderIntentRequestedPrice(intent: OrderIntent): string | undefined {
   return intent.orderType === "LIMIT" ? intent.requestedPrice : undefined;
 }
 
 function readRiskGateExpectedLossBps(context: RiskGateContext): string | undefined {
   return context.expectedLossBpsOfEquity ?? readOrderIntentExpectedLossBps(context.orderIntent);
+}
+
+function readRuntimeExpectedLossBps(input: RiskGateRuntimeDecisionInput): string | undefined {
+  return input.expectedLossBpsOfEquity ?? readOrderIntentExpectedLossBps(input.orderIntent);
 }
 
 function readOrderIntentExpectedLossBps(intent: OrderIntent): string | undefined {
@@ -525,8 +562,8 @@ const killSwitchStateByAction: Readonly<Record<RiskBlockAction, KillSwitchState>
 
 const killSwitchStatePriority: Readonly<Record<KillSwitchState, number>> = {
   NORMAL: 0,
-  NEW_ORDERS_BLOCKED: 1,
-  STRATEGY_PAUSED: 2,
+  STRATEGY_PAUSED: 1,
+  NEW_ORDERS_BLOCKED: 2,
   MANUAL_REVIEW_REQUIRED: 3,
   HARD_STOP: 4,
 };

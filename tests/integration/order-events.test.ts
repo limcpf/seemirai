@@ -40,6 +40,17 @@ describeDb("state transition persistence integration", () => {
     await db.deleteFrom("audit_events").execute();
     await db.deleteFrom("risk_events").execute();
     await db.deleteFrom("orders").execute();
+    await db
+      .updateTable("kill_switch_state")
+      .set({
+        state: "NORMAL",
+        reason_code: "test_reset",
+        correlation_id: null,
+        payload_json: {},
+        updated_at: occurredAt,
+      })
+      .where("scope", "=", "global")
+      .execute();
   });
 
   afterAll(async () => {
@@ -248,8 +259,17 @@ describeDb("state transition persistence integration", () => {
       .selectFrom("audit_events")
       .select((expressionBuilder) => expressionBuilder.fn.countAll<string>().as("count"))
       .executeTakeFirstOrThrow();
+    const killSwitchState = await db
+      .selectFrom("kill_switch_state")
+      .select(["state", "reason_code"])
+      .where("scope", "=", "global")
+      .executeTakeFirstOrThrow();
 
     expect(currentOrder.status).toBe("RISK_REJECTED");
+    expect(killSwitchState).toMatchObject({
+      state: "HARD_STOP",
+      reason_code: "risk_gate_hard_stop",
+    });
     expect(receipt.killSwitchEventReceipt).toBeDefined();
     expect(Number(riskCount.count)).toBeGreaterThan(0);
     expect(Number(auditCount.count)).toBe(plan.auditEvents.length);

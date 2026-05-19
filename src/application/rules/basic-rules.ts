@@ -426,18 +426,18 @@ function createOrderIntentMismatchMetadata(
   appendMismatch(mismatches, "order_intent_strategy_id", ruleIntent.strategyId, riskIntent.strategyId);
   appendMismatch(mismatches, "order_intent_side", ruleIntent.side, riskIntent.side);
   appendMismatch(mismatches, "order_intent_order_type", ruleIntent.orderType, riskIntent.orderType);
-  appendMismatch(mismatches, "order_intent_requested_quantity", ruleIntent.requestedQuantity, riskIntent.requestedQuantity);
-  appendMismatch(mismatches, "order_intent_requested_notional", ruleIntent.requestedNotional, riskIntent.requestedNotional);
-  appendMismatch(
+  appendDecimalMismatch(mismatches, "order_intent_requested_quantity", ruleIntent.requestedQuantity, riskIntent.requestedQuantity);
+  appendDecimalMismatch(mismatches, "order_intent_requested_notional", ruleIntent.requestedNotional, riskIntent.requestedNotional);
+  appendDecimalMismatch(
     mismatches,
     "order_intent_requested_price",
     readOrderIntentRequestedPrice(ruleIntent),
     readOrderIntentRequestedPrice(riskIntent),
   );
-  appendMismatch(
+  appendDecimalMismatch(
     mismatches,
     "order_intent_expected_loss_bps_of_equity",
-    readOrderIntentExpectedLossBps(ruleIntent),
+    readRuleContextExpectedLossBps(context, ruleIntent),
     readRiskGateExpectedLossBps(context, riskIntent),
   );
   appendMismatch(mismatches, "order_intent_idempotency_key", ruleIntent.idempotencyKey, riskIntent.idempotencyKey);
@@ -454,6 +454,13 @@ function readRiskGateExpectedLossBps(
   riskIntent: NonNullable<RuleContext["orderIntent"]>,
 ): string | undefined {
   return context.riskGateContext?.expectedLossBpsOfEquity ?? readOrderIntentExpectedLossBps(riskIntent);
+}
+
+function readRuleContextExpectedLossBps(
+  context: RuleContext,
+  ruleIntent: NonNullable<RuleContext["orderIntent"]>,
+): string | undefined {
+  return context.expectedLossBpsOfEquity ?? readOrderIntentExpectedLossBps(ruleIntent);
 }
 
 function readOrderIntentExpectedLossBps(intent: NonNullable<RuleContext["orderIntent"]>): string | undefined {
@@ -473,6 +480,32 @@ function appendMismatch(
   if (ruleValue !== riskGateValue) {
     target[`${fieldName}_rule`] = ruleValue;
     target[`${fieldName}_risk_gate`] = riskGateValue;
+  }
+}
+
+function appendDecimalMismatch(
+  target: JsonRecord,
+  fieldName: string,
+  ruleValue: string | undefined,
+  riskGateValue: string | undefined,
+): void {
+  appendMismatch(
+    target,
+    fieldName,
+    normalizeFinancialDecimalString(ruleValue),
+    normalizeFinancialDecimalString(riskGateValue),
+  );
+}
+
+function normalizeFinancialDecimalString(value: string | undefined): string | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+
+  try {
+    return parseFinancialDecimal(value).toFixed();
+  } catch {
+    return value;
   }
 }
 

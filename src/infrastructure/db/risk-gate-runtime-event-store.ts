@@ -5,7 +5,9 @@ import type {
   RiskGateRuntimeEventStorePort,
 } from "../../application/index.js";
 import type { JsonRecord } from "../../domain/index.js";
+import type { Transaction } from "kysely";
 import type { Database } from "./database.js";
+import type { DatabaseSchema } from "./schema.js";
 import { toAuditEventRow } from "./audit-log.js";
 import { toOrderEventRow } from "./order-events.js";
 import { toRiskEventRow } from "./risk-events.js";
@@ -92,17 +94,63 @@ export async function appendRiskGateDecisionEvidence(
     };
 
     if (input.killSwitchStateTransition !== undefined) {
-      receipt.killSwitchEventReceipt = createKillSwitchEventReceipt(input, auditEventReceipts);
+      receipt.killSwitchEventReceipt = await updateKillSwitchSnapshot(
+        transaction,
+        input,
+        auditEventReceipts,
+      );
     }
 
     return receipt;
   });
 }
 
-function createKillSwitchEventReceipt(
+async function updateKillSwitchSnapshot(
+  transaction: Transaction<DatabaseSchema>,
   input: RiskGateDecisionEvidenceAppendInput,
   auditEventReceipts: readonly AuditEventReceipt[],
-): unknown {
+): Promise<unknown> {
+  const transition = input.killSwitchStateTransition?.event;
+  if (transition === undefined) {
+    return undefined;
+  }
+
+  if (transition.accepted) {
+    // durable kill switch snapshot도 event의 from 상태와 같을 때만 전진시켜 stale 전이를 막는다.
+    const updatedState = await transaction
+      .updateTable("kill_switch_state")
+      .set({
+        state: transition.toState,
+        reason_code: transition.reasonCode,
+        correlation_id: input.killSwitchStateTransition?.correlationId ?? null,
+        payload_json: toStateTransitionPayload(transition),
+        updated_at: transition.occurredAt,
+      })
+      .where("scope", "=", "global")
+      .where("state", "=", transition.fromState)
+      .returningAll()
+      .executeTakeFirst();
+
+    if (updatedState === undefined) {
+      throw new Error("accepted kill switch state transition current state mismatch");
+    }
+
+    return {
+      state: updatedState,
+      auditEventReceipt: findKillSwitchAuditReceipt(input, auditEventReceipts),
+    };
+  }
+
+  return {
+    event: transition,
+    auditEventReceipt: findKillSwitchAuditReceipt(input, auditEventReceipts),
+  };
+}
+
+function findKillSwitchAuditReceipt(
+  input: RiskGateDecisionEvidenceAppendInput,
+  auditEventReceipts: readonly AuditEventReceipt[],
+): AuditEventReceipt {
   const auditIndex = input.auditEvents.findIndex((event) =>
     event.eventType === "STATE_TRANSITION" &&
     event.reasonCode === input.killSwitchStateTransition?.event.reasonCode &&
@@ -113,10 +161,31 @@ function createKillSwitchEventReceipt(
     throw new Error("kill switch state transition audit event is required");
   }
 
-  return {
-    event: input.killSwitchStateTransition?.event,
-    auditEventReceipt: auditEventReceipts[auditIndex],
+  return auditEventReceipts[auditIndex] as AuditEventReceipt;
+}
+
+function toStateTransitionPayload(event: {
+  eventKind: string;
+  fromState: string;
+  toState: string;
+  accepted: boolean;
+  reasonCode: string;
+  message: string;
+  metadata?: JsonRecord;
+}): JsonRecord {
+  const payload: JsonRecord = {
+    event_kind: event.eventKind,
+    from_state: event.fromState,
+    to_state: event.toState,
+    accepted: event.accepted,
+    reason_code: event.reasonCode,
+    message: event.message,
   };
+  if (event.metadata !== undefined) {
+    payload.metadata = event.metadata;
+  }
+
+  return payload;
 }
 
 function readStringMetadata(metadata: JsonRecord | undefined, key: string): string | undefined {

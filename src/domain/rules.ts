@@ -37,6 +37,13 @@ export interface RuleContext {
   costDecision?: CostDecision;
   orderIntent?: OrderIntent;
   /**
+   * 현재 주문 후보의 예상 손실 입력이다.
+   *
+   * RiskGate context가 top-level `expectedLossBpsOfEquity`를 쓰는 경우 `risk_ok`가 같은 후보인지 대조할 수 있도록
+   * rule context에도 같은 값을 전달한다.
+   */
+  expectedLossBpsOfEquity?: string;
+  /**
    * `risk_ok` rule이 실제 RiskGate evaluator를 실행할 때 사용하는 전체 리스크 입력이다.
    *
    * 이 값이 없으면 runtime은 주문 후보가 RiskGate를 통과했다는 근거를 만들 수 없으므로 fail-closed로 처리한다.

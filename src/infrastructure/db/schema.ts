@@ -1,5 +1,5 @@
 import type { ColumnType, Generated } from "kysely";
-import type { OrderLifecycleStatus } from "../../domain/index.js";
+import type { KillSwitchState, OrderLifecycleStatus } from "../../domain/index.js";
 
 /**
  * PostgreSQL `timestamptz` 컬럼 타입이다.
@@ -73,6 +73,8 @@ export interface DatabaseSchema {
   audit_events: AuditEventsTable;
   /** 리스크 게이트 판단과 차단 이력 */
   risk_events: RiskEventsTable;
+  /** 전역 kill switch의 durable 현재 상태 */
+  kill_switch_state: KillSwitchStateTable;
   /** PostgreSQL 기반 scheduler/worker 작업 큐 */
   jobs: JobsTable;
   /** 거래소 정책, 수수료, 호가 단위, market status snapshot */
@@ -304,6 +306,26 @@ export interface RiskEventsTable {
   payload_json: GeneratedJsonRecord;
   /** 리스크 이벤트 발생 시각 */
   occurred_at: GeneratedTimestamp;
+}
+
+/**
+ * 전역 kill switch의 현재 상태 snapshot이다.
+ *
+ * 상태 전이 감사 로그와 별개로 프로세스 재시작 후에도 신규 주문 차단 상태를 복구할 수 있게 단일 row로 유지한다.
+ */
+export interface KillSwitchStateTable {
+  /** 전역 kill switch row를 고정하는 scope */
+  scope: "global";
+  /** durable 현재 kill switch 상태 */
+  state: KillSwitchState;
+  /** 마지막 상태 변경 사유 */
+  reason_code: string;
+  /** 마지막 상태 변경 correlation id */
+  correlation_id: string | null;
+  /** 상태 전이 event payload와 추가 판단 근거 */
+  payload_json: GeneratedJsonRecord;
+  /** durable snapshot 최종 갱신 시각 */
+  updated_at: GeneratedTimestamp;
 }
 
 /**

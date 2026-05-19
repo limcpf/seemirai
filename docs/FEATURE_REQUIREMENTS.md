@@ -346,14 +346,14 @@ Acceptance Criteria:
 - 장애 상황에서 자동 청산은 기본 동작이 아니다.
 - M5 runtime에서는 `risk_ok` rule이 현재 주문 후보와 일치하는 RiskGate context를 직접 평가한 결과를 실행 승인 근거로
   사용한다. 후보 일치성은 exchange, market, strategy, side, order type, idempotency key, 수량, 명목 금액, 지정가,
-  예상 손실 입력까지 포함하며, 거부 판단은 append-only `order_events`, `risk_events`, `audit_events`와 kill switch
-  전이 증거에 원자적으로 기록된다.
+  예상 손실 입력까지 포함하며 Decimal 정규화 후 비교한다. 거부 판단은 append-only `order_events`, `risk_events`,
+  `audit_events`와 kill switch 전이 증거에 원자적으로 기록된다.
 - RiskGate runtime은 현재 주문 상태에서 RiskGate 승인/거부 상태로 전이할 수 없거나 strategy 손실 snapshot이 주문
   strategy와 다르면 승인하지 않고 fail-closed 리스크 이벤트를 남긴다.
 - 허용된 주문 상태 전이는 DB의 현재 주문 상태가 event의 `fromState`와 같을 때만 현재 snapshot을 갱신하고, strategy
   pause는 더 강한 전역 차단 action이 함께 있어도 별도 evidence로 남긴다.
-- PostgreSQL runtime event store는 주문 전이, risk event, audit event를 하나의 transaction으로 저장하며,
-  `STRATEGY_PAUSED` kill switch 상태는 전역 신규 주문 차단으로 해석하지 않는다.
+- PostgreSQL runtime event store는 주문 전이, risk event, audit event, `kill_switch_state` durable snapshot을 하나의
+  transaction으로 저장하며, `STRATEGY_PAUSED` kill switch 상태는 전역 신규 주문 차단으로 해석하지 않는다.
 
 Acceptance Criteria:
 

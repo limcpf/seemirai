@@ -201,6 +201,53 @@ describe("M5 risk_ok rule integration", () => {
     });
   });
 
+  it("normalizes decimal-scaled order amount fields before comparing RiskGate candidates", async () => {
+    const result = await Promise.resolve(
+      createRiskOkRule().evaluate(
+        createRuleContext({
+          orderIntent: createOrderIntent({
+            requestedPrice: "10000000.000000000000000000",
+            requestedQuantity: "0.000500000000000000",
+            requestedNotional: "5000.00000000",
+            metadata: {
+              expected_loss_bps_of_equity: "10.0",
+            },
+          }),
+          riskGateContext: createRiskContext(),
+        }),
+      ),
+    );
+
+    expect(result).toMatchObject({
+      status: "PASS",
+      reasonCode: "risk_gate_approved",
+    });
+  });
+
+  it("accepts top-level expected loss input when both RuleContext and RiskGateContext use it", async () => {
+    const result = await Promise.resolve(
+      createRiskOkRule().evaluate(
+        createRuleContext({
+          expectedLossBpsOfEquity: "10",
+          orderIntent: createOrderIntent({
+            metadata: {},
+          }),
+          riskGateContext: createRiskContext({
+            orderIntent: {
+              metadata: {},
+            },
+            expectedLossBpsOfEquity: "10",
+          }),
+        }),
+      ),
+    );
+
+    expect(result).toMatchObject({
+      status: "PASS",
+      reasonCode: "risk_gate_approved",
+    });
+  });
+
   it("uses the active RiskGate rule in the M5 default rule chain", async () => {
     const result = await evaluateRules(
       createDefaultM5Rules({
@@ -417,6 +464,29 @@ describe("RiskGate runtime event wiring", () => {
     );
   });
 
+  it("lets global new-order blocks override an existing strategy-scoped pause", () => {
+    const plan = createRiskGateRuntimeDecisionPlan({
+      orderId: "order-1",
+      orderStatus: "VALIDATED",
+      orderIntent: createOrderIntent(),
+      currentKillSwitchState: "STRATEGY_PAUSED",
+      riskGateContext: createRiskContext({
+        account: {
+          dailyRealizedPnlBps: "-100",
+        },
+      }),
+      actor: "risk-gate",
+      correlationId: "candidate-1",
+    });
+
+    expect(plan.riskGateResult.action).toBe("BLOCK_NEW_ORDER");
+    expect(plan.killSwitchStateTransition).toMatchObject({
+      accepted: true,
+      fromState: "STRATEGY_PAUSED",
+      toState: "NEW_ORDERS_BLOCKED",
+    });
+  });
+
   it("rejects persistence plans when the runtime correlation id does not match the RiskGate intent", () => {
     const plan = createRiskGateRuntimeDecisionPlan({
       orderId: "order-1",
@@ -487,6 +557,33 @@ describe("RiskGate runtime event wiring", () => {
       ]),
     );
     expect(plan.riskEvents.map((event) => event.riskType)).toContain(
+      "risk_gate_runtime_candidate_mismatch",
+    );
+  });
+
+  it("normalizes DB-scaled runtime order amount fields before comparing RiskGate intent", () => {
+    const plan = createRiskGateRuntimeDecisionPlan({
+      orderId: "order-1",
+      orderStatus: "VALIDATED",
+      orderIntent: createOrderIntent({
+        requestedPrice: "10000000.000000000000000000",
+        requestedQuantity: "0.000500000000000000",
+        requestedNotional: "5000.00000000",
+        metadata: {
+          expected_loss_bps_of_equity: "10.0",
+        },
+      }),
+      currentKillSwitchState: "NORMAL",
+      riskGateContext: createRiskContext(),
+      actor: "risk-gate",
+      correlationId: "candidate-1",
+    });
+
+    expect(plan.riskGateResult).toMatchObject({
+      approved: true,
+      action: "ALLOW",
+    });
+    expect(plan.riskEvents.map((event) => event.riskType)).not.toContain(
       "risk_gate_runtime_candidate_mismatch",
     );
   });
@@ -620,9 +717,10 @@ function createRiskContext(
     positions?: readonly PositionRiskSnapshot[];
     strategy?: Partial<RiskGateContext["strategy"]>;
     infrastructureSignals?: readonly InfrastructureRiskSnapshot[];
+    expectedLossBpsOfEquity?: RiskGateContext["expectedLossBpsOfEquity"];
   } = {},
 ): RiskGateContext {
-  return {
+  const context: RiskGateContext = {
     orderIntent: createOrderIntent(overrides.orderIntent ?? {}),
     account: {
       equityKrw: "1000000",
@@ -643,6 +741,11 @@ function createRiskContext(
     thresholdSnapshot,
     observedAt,
   };
+  if (overrides.expectedLossBpsOfEquity !== undefined) {
+    context.expectedLossBpsOfEquity = overrides.expectedLossBpsOfEquity;
+  }
+
+  return context;
 }
 
 function createOrderIntent(overrides: Partial<LimitTestOrderIntent> = {}): LimitTestOrderIntent {

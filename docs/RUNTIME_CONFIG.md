@@ -255,7 +255,8 @@ M4는 주문 후보가 실행 단계로 넘어가지 못한 이유를 `AuditLogP
 
 M5 runtime integration 이후 `risk_ok` rule은 현재 `riskGateContext`로 RiskGate를 직접 평가한 결과만 실행 승인
 근거로 사용한다. `riskGateContext`가 없거나 `RuleContext` 후보와 `riskGateContext.orderIntent`의
-exchange/market/idempotency key, 수량, 명목 금액, 지정가, 예상 손실 입력이 다르면 fail-closed 처리하고, RiskGate가 `approved=true`를 반환할 때만
+exchange/market/idempotency key, 수량, 명목 금액, 지정가, 예상 손실 입력이 다르면 fail-closed 처리하고, 금액 계열
+문자열은 Decimal로 정규화해 DB numeric scale 차이를 제거한다. RiskGate가 `approved=true`를 반환할 때만
 `risk_gate_approved` PASS가 된다. 후보 fingerprint가 없는 사전 계산 결과는 stale 승인 우회 위험이 있으므로 rule
 context와 runtime persistence 입력으로 받지 않는다. M4 `risk_ok_placeholder`는 과거 rule chain 검증용 helper로만
 남고, M5 기본 rule 조합은 `createDefaultM5Rules`와 `createRiskOkRule`을 사용한다.
@@ -311,7 +312,8 @@ plan을 감사 이벤트로 남기지만, 실제 broker cancel 호출과 open po
 DB/현재 후보에서 읽은 주문 의도와 `riskGateContext.orderIntent`의 주문 금액/예상 손실 입력도 같아야 한다. 현재 kill
 switch action plan이 신규 주문 또는 수동 검토를 요구하면 RiskGate snapshot이 깨끗해도 주문을 승인하지 않는다. 현재
 주문 상태에서 RiskGate 승인/거부 상태로 전이할 수 없거나 strategy 손실 snapshot이 주문 strategy와 다르면 runtime은
-별도 risk event를 남기고 fail-closed한다.
+별도 risk event를 남기고 fail-closed한다. kill switch 전이는 `kill_switch_state` durable snapshot에도 반영해
+재시작 후 차단 상태를 복구한다.
 strategy 연속 손실 초과는 일간 손실이나 kill switch 같은 더 강한 전역 차단이 함께 발생해도 strategy pause evidence로
 함께 남긴다. `STRATEGY_PAUSED` kill switch 상태는 strategy 평가 중지만 표현하고 전역 신규 주문 차단으로 사용하지
 않는다. PostgreSQL combined event store는 주문 전이, risk event, audit event를 하나의 transaction으로 저장한다.
