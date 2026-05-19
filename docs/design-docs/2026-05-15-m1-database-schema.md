@@ -259,6 +259,16 @@ erDiagram
 | `audit_events` | PostgreSQL | 사람이 나중에 따라갈 수 있는 운영/업무 감사 로그다. 주문 상태 변화, worker action, 외부 호출 결과 같은 사후 추적 정보를 보관한다. |
 | `risk_events` | PostgreSQL | 리스크 게이트가 신규 주문을 차단하거나 경고한 이유를 구조화해 남긴다. market/strategy/order 기준으로 리스크 판단 이력을 조회한다. |
 
+## 실행 영속성 저장 경계
+
+- paper 실행 결과는 `orders.idempotency_key`를 durable 중복 방지 기준으로 삼는다. 같은 key가 재시도되면 기존 `orders`
+  row를 반환하고 `paper_orders`, `fills`, `positions`, `order_events` side effect를 반복하지 않는다.
+- 신규 paper 실행은 하나의 DB transaction 안에서 `orders` 생성, `paper_orders` 저장, 주문 상태 event append,
+  `fills` 저장, `positions` snapshot 갱신을 처리한다. 이 경계가 깨지면 주문 현재 상태와 체결/포지션 근거가 어긋나므로
+  repository는 부분 성공을 외부로 노출하지 않는다.
+- `POST_ONLY`는 DB `paper_orders.time_in_force` check constraint에 넣지 않고 `paper_orders.post_only` boolean으로
+  보존한다. `time_in_force`에는 broker 유효 시간 정책인 `GTC`, `IOC`, `FOK`만 저장한다.
+
 ## 확장 시 변경 원칙
 
 - 새 거래소를 추가할 때는 기존 table에 `exchange` 값을 추가하고 adapter/policy validation을 확장한다. DB market check를 거래소별 regex로 되돌리지 않는다.
