@@ -12,7 +12,7 @@ import type {
   TimestampInput,
 } from "../../domain/index.js";
 import { transitionOrderState } from "../../domain/index.js";
-import { toStorageDecimalString } from "../../shared/index.js";
+import { parseFinancialDecimal, toStorageDecimalString } from "../../shared/index.js";
 import type { Database } from "./database.js";
 import { toOrderEventRow } from "./order-events.js";
 import type {
@@ -82,6 +82,9 @@ export async function persistPaperExecutionInTransaction(
   database: ExecutionPersistenceTransaction,
   input: PersistPaperExecutionInput,
 ): Promise<PersistPaperExecutionResult> {
+  assertBrokerOrderMatchesSubmission(input);
+  assertFillEvidenceMatchesBrokerStatus(input);
+
   const insertedOrder = await database
     .insertInto("orders")
     .values(toExecutionOrderRowInput(input))
@@ -95,6 +98,8 @@ export async function persistPaperExecutionInTransaction(
       .selectAll()
       .where("idempotency_key", "=", input.submission.intent.idempotencyKey)
       .executeTakeFirstOrThrow();
+
+    assertExistingOrderMatchesInput(existingOrder, input);
 
     // idempotent 재시도는 이미 반영된 fill/position을 다시 쓰지 않고 기존 주문만 돌려준다.
     return {
@@ -188,6 +193,10 @@ export function toFillRowInputs(
 ): readonly FillRowInput[] {
   const simulation = readPaperFillSimulation(input.brokerOrder);
   if (simulation === undefined || simulation.fills.length === 0) {
+    return [];
+  }
+  if (!shouldPersistFillRows(input.brokerOrder.status, simulation)) {
+    // balance rejection처럼 simulator는 fill 후보를 만들었지만 broker가 실행을 거부한 경우 회계 근거를 쓰지 않는다.
     return [];
   }
 
@@ -290,6 +299,103 @@ function createOrderEventAppendInput(
     ...appendInput,
     correlationId: input.correlationId,
   };
+}
+
+/**
+ * submission intent와 broker 응답의 핵심 주문 정체성이 같은지 확인한다.
+ *
+ * 이 검증을 통과해야 같은 `order_id` 아래 주문 snapshot, fill, position이 같은 자산/방향을 가리킨다는 전제가 성립한다.
+ */
+function assertBrokerOrderMatchesSubmission(input: PersistPaperExecutionInput): void {
+  const intent = input.submission.intent;
+  const mismatches: string[] = [];
+  addMismatchIf(mismatches, "idempotency_key", input.brokerOrder.idempotencyKey !== intent.idempotencyKey);
+  addMismatchIf(mismatches, "exchange", input.brokerOrder.exchangeId !== intent.exchangeId);
+  addMismatchIf(mismatches, "market", input.brokerOrder.market !== intent.market);
+  addMismatchIf(mismatches, "side", input.brokerOrder.side !== intent.side);
+  addMismatchIf(mismatches, "order_type", input.brokerOrder.orderType !== intent.orderType);
+  addMismatchIf(
+    mismatches,
+    "requested_quantity",
+    !decimalStringEquals(input.brokerOrder.requestedQuantity, intent.requestedQuantity),
+  );
+
+  if (intent.orderType === "LIMIT") {
+    addMismatchIf(
+      mismatches,
+      "requested_price",
+      input.brokerOrder.requestedPrice === undefined ||
+        !decimalStringEquals(input.brokerOrder.requestedPrice, intent.requestedPrice),
+    );
+  }
+
+  if (mismatches.length > 0) {
+    throw new Error(`broker order does not match execution submission: ${mismatches.join(", ")}`);
+  }
+}
+
+/**
+ * idempotency key 충돌이 같은 주문의 재시도인지 확인한다.
+ */
+function assertExistingOrderMatchesInput(
+  existingOrder: ExecutionOrderRecord,
+  input: PersistPaperExecutionInput,
+): void {
+  const expectedOrder = toExecutionOrderRowInput(input);
+  const mismatches: string[] = [];
+
+  addMismatchIf(mismatches, "exchange", existingOrder.exchange !== expectedOrder.exchange);
+  addMismatchIf(mismatches, "market", existingOrder.market !== expectedOrder.market);
+  addMismatchIf(mismatches, "strategy_id", existingOrder.strategy_id !== expectedOrder.strategy_id);
+  addMismatchIf(mismatches, "side", existingOrder.side !== expectedOrder.side);
+  addMismatchIf(mismatches, "order_type", existingOrder.order_type !== expectedOrder.order_type);
+  addMismatchIf(
+    mismatches,
+    "requested_price",
+    !nullableDecimalStringEquals(existingOrder.requested_price, expectedOrder.requested_price ?? null),
+  );
+  addMismatchIf(
+    mismatches,
+    "requested_quantity",
+    !decimalStringEquals(existingOrder.requested_quantity, expectedOrder.requested_quantity),
+  );
+  addMismatchIf(
+    mismatches,
+    "requested_notional",
+    !decimalStringEquals(existingOrder.requested_notional, expectedOrder.requested_notional),
+  );
+
+  if (mismatches.length > 0) {
+    throw new Error(`paper execution idempotency key conflict: ${mismatches.join(", ")}`);
+  }
+}
+
+/**
+ * 체결 상태와 fill simulation payload가 서로 일관되는지 확인한다.
+ */
+function assertFillEvidenceMatchesBrokerStatus(input: PersistPaperExecutionInput): void {
+  const simulation = readPaperFillSimulation(input.brokerOrder);
+  if (input.brokerOrder.status === "FILLED" || input.brokerOrder.status === "PARTIALLY_FILLED") {
+    if (simulation === undefined || simulation.fills.length === 0 || !isPositiveDecimalString(simulation.filledQuantity)) {
+      throw new Error("filled paper execution requires fill evidence");
+    }
+  }
+
+  if (simulation === undefined) {
+    return;
+  }
+
+  const totalFillQuantity = simulation.fills.reduce(
+    (sum, fill) => sum.add(parseFinancialDecimal(fill.quantity)),
+    parseFinancialDecimal("0"),
+  );
+  if (!totalFillQuantity.equals(parseFinancialDecimal(simulation.filledQuantity))) {
+    throw new Error("paper fill evidence quantity does not match simulation filled quantity");
+  }
+
+  if (isPositiveDecimalString(simulation.filledQuantity) && simulation.fills.length === 0) {
+    throw new Error("positive paper fill quantity requires at least one fill row");
+  }
 }
 
 async function insertPaperExecutionFills(
@@ -518,11 +624,29 @@ function toPaperOrderTimeInForce(timeInForce: TimeInForce | undefined): "GTC" | 
 }
 
 function isTerminalOrderStatus(status: OrderLifecycleStatus): boolean {
-  return status === "FILLED" || status === "CANCELED" || status === "REJECTED" || status === "EXPIRED" || status === "FAILED";
+  return (
+    status === "FILLED" ||
+    status === "CANCELED" ||
+    status === "REJECTED" ||
+    status === "EXPIRED" ||
+    status === "FAILED" ||
+    status === "MANUAL_REVIEW_REQUIRED"
+  );
 }
 
 function hasPaperFills(input: PersistPaperExecutionInput): boolean {
   return (readPaperFillSimulation(input.brokerOrder)?.fills.length ?? 0) > 0;
+}
+
+function shouldPersistFillRows(
+  brokerStatus: OrderLifecycleStatus,
+  simulation: PaperFillSimulationResult,
+): boolean {
+  if (brokerStatus === "FILLED" || brokerStatus === "PARTIALLY_FILLED") {
+    return true;
+  }
+
+  return brokerStatus === "CANCELED" && isPositiveDecimalString(simulation.filledQuantity);
 }
 
 function readPaperFillSimulation(order: BrokerOrder): PaperFillSimulationResult | undefined {
@@ -559,4 +683,26 @@ function assignIfDefined(target: JsonRecord, key: string, value: unknown): void 
   if (value !== undefined) {
     target[key] = value;
   }
+}
+
+function addMismatchIf(mismatches: string[], field: string, mismatch: boolean): void {
+  if (mismatch) {
+    mismatches.push(field);
+  }
+}
+
+function nullableDecimalStringEquals(left: NumericString | null, right: NumericString | null): boolean {
+  if (left === null || right === null) {
+    return left === right;
+  }
+
+  return decimalStringEquals(left, right);
+}
+
+function decimalStringEquals(left: NumericString, right: NumericString): boolean {
+  return parseFinancialDecimal(left).equals(parseFinancialDecimal(right));
+}
+
+function isPositiveDecimalString(value: NumericString): boolean {
+  return parseFinancialDecimal(value).greaterThan(0);
 }

@@ -103,6 +103,19 @@ describeDb("execution persistence integration", () => {
       fills: [],
       orderEvents: [],
     });
+    await expect(
+      repository.persistPaperExecution(
+        createPersistInput({
+          idempotencyKey: "execution-integration-1",
+          brokerOrderId: "paper-order-conflict",
+          requestedQuantity: "0.001",
+          requestedNotional: "10000",
+          filledQuantity: "0.001",
+          totalFillNotional: "9990",
+          totalFee: "4.995",
+        }),
+      ),
+    ).rejects.toThrow("paper execution idempotency key conflict");
     expect(order.status).toBe("FILLED");
     expect(paperOrder).toMatchObject({
       order_id: receipt.order.id,
@@ -132,6 +145,44 @@ describeDb("execution persistence integration", () => {
     expectNumericEqual(position.average_entry_price, "9990000");
     expectNumericEqual(position.realized_pnl, "0");
     await expectSingleExecutionRows(db);
+  });
+
+  it("rejects broker orders that do not match the submitted intent", async () => {
+    const db = await getDatabase();
+    const repository = new PostgresExecutionPersistenceRepository(db);
+    const input = createPersistInput();
+
+    await expect(
+      repository.persistPaperExecution({
+        ...input,
+        brokerOrder: {
+          ...input.brokerOrder,
+          market: "KRW-ETH",
+        },
+      }),
+    ).rejects.toThrow("broker order does not match execution submission");
+
+    await expectTableCount(db, "orders", 0);
+  });
+
+  it("rejects filled broker statuses without fill evidence", async () => {
+    const db = await getDatabase();
+    const repository = new PostgresExecutionPersistenceRepository(db);
+    const input = createPersistInput();
+
+    await expect(
+      repository.persistPaperExecution({
+        ...input,
+        brokerOrder: {
+          ...input.brokerOrder,
+          metadata: {
+            source: "missing-fill-evidence-test",
+          },
+        },
+      }),
+    ).rejects.toThrow("filled paper execution requires fill evidence");
+
+    await expectTableCount(db, "orders", 0);
   });
 
   it("keeps first BUY position writes atomic for concurrent fills", async () => {
@@ -223,6 +274,19 @@ async function expectSingleExecutionRows(database: Database): Promise<void> {
   expect(Number(fillCount.count)).toBe(1);
   expect(Number(positionCount.count)).toBe(1);
   expect(Number(orderEventCount.count)).toBe(3);
+}
+
+async function expectTableCount(
+  database: Database,
+  table: "orders" | "paper_orders" | "fills" | "positions" | "order_events",
+  expectedCount: number,
+): Promise<void> {
+  const rowCount = await database
+    .selectFrom(table)
+    .select((expressionBuilder) => expressionBuilder.fn.countAll<string>().as("count"))
+    .executeTakeFirstOrThrow();
+
+  expect(Number(rowCount.count)).toBe(expectedCount);
 }
 
 function expectNumericEqual(actual: string | undefined, expected: string): void {

@@ -63,6 +63,18 @@ describe("execution persistence mappers", () => {
     });
   });
 
+  it("marks manual-review broker outcomes completed for paper order cleanup", () => {
+    const row = toPaperOrderRowInput(
+      "00000000-0000-4000-8000-000000000001",
+      createManualReviewPersistInput(),
+    );
+
+    expect(row).toMatchObject({
+      accepted_at: updatedAt,
+      completed_at: updatedAt,
+    });
+  });
+
   it("maps paper simulation fills to fill rows using quote currency fees", () => {
     const rows = toFillRowInputs("00000000-0000-4000-8000-000000000001", createPersistInput());
 
@@ -212,6 +224,21 @@ function createFilledAndCanceledPersistInput(): PersistPaperExecutionInput {
       metadata: {
         ...(input.brokerOrder.metadata ?? {}),
         paper_fill_simulation: canceledSimulation,
+      },
+    },
+  };
+}
+
+function createManualReviewPersistInput(): PersistPaperExecutionInput {
+  const input = createPersistInput();
+
+  return {
+    ...input,
+    brokerOrder: {
+      ...input.brokerOrder,
+      status: "MANUAL_REVIEW_REQUIRED",
+      metadata: {
+        source: "paper_broker_memory",
       },
     },
   };
