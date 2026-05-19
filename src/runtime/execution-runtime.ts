@@ -269,13 +269,64 @@ function assertHardStopCancelPlanIsSafe(plan: HardStopRuntimeActionPlan): void {
     }
   }
 
+  // cancelOrder 호출 전 replay된 각 action이 실제 pending paper order 취소 계획인지 확인한다.
+  const cancelActions = candidate.pendingPaperOrderCancelActions;
+  if (!Array.isArray(cancelActions)) {
+    violations.push("hard stop cancel execution requires pendingPaperOrderCancelActions array");
+  } else {
+    for (const [index, action] of cancelActions.entries()) {
+      collectPendingPaperOrderCancelActionViolations(violations, index, action);
+    }
+  }
+
   if (violations.length > 0) {
     throw new UnsafeHardStopCancelPlanError(violations);
   }
 }
 
+function collectPendingPaperOrderCancelActionViolations(
+  violations: string[],
+  index: number,
+  action: unknown,
+): void {
+  if (!isJsonRecord(action)) {
+    violations.push(`hard stop cancel action[${index}] requires action object`);
+    return;
+  }
+
+  if (action.action !== "PLAN_CANCEL_PENDING_PAPER_ORDER") {
+    violations.push(`hard stop cancel action[${index}] requires PLAN_CANCEL_PENDING_PAPER_ORDER action`);
+  }
+
+  if (!isNonEmptyString(action.brokerOrderId)) {
+    violations.push(`hard stop cancel action[${index}] requires brokerOrderId string`);
+  }
+
+  if (!isNonEmptyString(action.idempotencyKey)) {
+    violations.push(`hard stop cancel action[${index}] requires idempotencyKey string`);
+  }
+
+  if (!isNonEmptyString(action.market)) {
+    violations.push(`hard stop cancel action[${index}] requires market string`);
+  }
+
+  if (typeof action.status !== "string") {
+    violations.push(`hard stop cancel action[${index}] requires status string`);
+  } else if (!isPendingPaperOrderStatusRequiringCancel(action.status)) {
+    violations.push(`hard stop cancel action[${index}] requires pending order status`);
+  }
+}
+
 function isJsonRecord(value: unknown): value is JsonRecord {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isNonEmptyString(value: unknown): value is string {
+  return typeof value === "string" && value.length > 0;
+}
+
+function isPendingPaperOrderStatusRequiringCancel(value: string): value is OrderLifecycleStatus {
+  return pendingPaperOrderStatusesRequiringCancel.includes(value as OrderLifecycleStatus);
 }
 
 function classifyCancelResultStatus(status: OrderLifecycleStatus): PendingPaperOrderCancelExecutionStatus {

@@ -164,6 +164,55 @@ describe("hard stop pending paper order cancel execution", () => {
     expect(broker.getBalances).not.toHaveBeenCalled();
   });
 
+  it("validates pending cancel action arrays before broker side effects", async () => {
+    const broker = createBrokerPort();
+    const [validAction] = createHardStopPlan().pendingPaperOrderCancelActions;
+    const malformedPlanCases = [
+      {
+        plan: {
+          ...createHardStopPlan(),
+          pendingPaperOrderCancelActions: undefined,
+        } as unknown as HardStopRuntimeActionPlan,
+        expectedViolation: "hard stop cancel execution requires pendingPaperOrderCancelActions array",
+      },
+      {
+        plan: {
+          ...createHardStopPlan(),
+          pendingPaperOrderCancelActions: [{}],
+        } as unknown as HardStopRuntimeActionPlan,
+        expectedViolation: "hard stop cancel action[0] requires brokerOrderId string",
+      },
+      {
+        plan: {
+          ...createHardStopPlan(),
+          pendingPaperOrderCancelActions: [
+            {
+              ...validAction,
+              status: "FILLED",
+            },
+          ],
+        } as unknown as HardStopRuntimeActionPlan,
+        expectedViolation: "hard stop cancel action[0] requires pending order status",
+      },
+    ];
+
+    for (const { plan, expectedViolation } of malformedPlanCases) {
+      await expect(
+        executeHardStopPendingPaperOrderCancels({
+          broker,
+          plan,
+        }),
+      ).rejects.toMatchObject({
+        name: "UnsafeHardStopCancelPlanError",
+        violations: expect.arrayContaining([expectedViolation]),
+      });
+    }
+
+    expect(broker.cancelOrder).not.toHaveBeenCalled();
+    expect(broker.submitOrder).not.toHaveBeenCalled();
+    expect(broker.getBalances).not.toHaveBeenCalled();
+  });
+
   it("collects only currently open broker orders as hard stop cancel candidates", async () => {
     const broker = createBrokerPort({
       openOrders: [
