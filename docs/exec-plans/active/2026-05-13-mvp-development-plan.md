@@ -199,13 +199,15 @@ ruleRegistry
 - [x] latency, partial fill, post-only simulation
 - [x] aggressive limit IOC/FOK simulation
 - [x] market order simulation 기본 비활성
-- [ ] live broker disabled/stub 구현
+- [x] live broker disabled/stub 구현
+- [x] hard stop pending paper order cancel 실행 연결
+- [x] PAPER_NO_KEY execution runtime assembly guard
 
 검증:
 
 - [x] PaperBroker 부분체결 테스트
 - [x] `ExecutionEngine` 중복 주문 차단 테스트
-- [ ] live order API 호출 0회 테스트
+- [x] live order API 호출 0회 테스트
 - [x] market order 생성 불가 테스트
 
 ### M7. Backtest bridge
@@ -260,6 +262,7 @@ ruleRegistry
 - 2026-05-19: issue #28 Sub PR 2는 `issue-28/02-paper-fill-simulator`에서 `OrderIntent + OrderbookEvent`만 입력으로 받는 순수 paper fill simulator를 고정한다. DB persistence, PaperBroker state, runtime assembly는 후속 PR로 남기고, depth 기반 full/partial/unfilled, latency snapshot 선택, post-only maker 보호, IOC/FOK aggressive limit, market order simulation disabled 결과를 Decimal 문자열 경계로 계산한다.
 - 2026-05-19: issue #28 Sub PR 3은 `issue-28/03-paper-broker-port`에서 in-memory `PaperBroker implements BrokerPort`를 고정한다. 주문 제출은 기존 fill simulator 결과를 broker 주문 상태로 변환하고, idempotency key 재제출 억제, open 주문 조회, 취소 시 가상 잔고 lock 해제, 부분체결 잔고 mutation을 같은 memory state에서 처리한다. DB persistence wiring, runtime worker 최종 조립, live broker disabled/stub은 후속 PR 범위로 유지한다.
 - 2026-05-20: issue #28 Sub PR 4는 `issue-28/04-execution-persistence`에서 paper broker 실행 결과를 `orders`/`paper_orders`/`fills`/`positions`와 `order_events`에 같은 DB transaction으로 저장하는 경계를 고정한다. durable idempotency는 `orders.idempotency_key` upsert로 처리하고, 재시도는 기존 주문을 반환하되 fill/position side effect를 반복하지 않는다.
+- 2026-05-20: issue #28 Sub PR 5는 `issue-28/05-runtime-cancel-and-live-guard`에서 `PAPER_NO_KEY` execution runtime assembly를 `ExecutionEngine -> PaperBroker`로 고정하고, Upbit live broker는 모든 `BrokerPort` 메서드가 실패하는 disabled/stub으로만 노출한다. `HARD_STOP`의 pending paper order cancel action plan은 `BrokerPort.cancelOrder`로 실행하되, open position 자동 청산은 실행 직전 guard에서도 금지한다.
 
 issue #28 sub PR 계획:
 

@@ -50,7 +50,9 @@ Codex-native 운영은 Codex, Git, GitHub, shell command, 문서 상태를 연�
 - strategy 연속 손실 snapshot의 `strategyId`는 주문 후보의 strategy id와 일치해야 하며, 다르면 수동 검토 필요 상태로 fail-closed한다.
 - strategy 연속 손실 초과는 더 강한 전역 차단 action에 묻혀도 별도 strategy pause evidence로 남긴다.
 - `HARD_STOP`은 kill switch를 더 강한 상태로만 전이시키며 pending paper order 취소 계획을 감사 이벤트로 남긴다.
-- `HARD_STOP` action plan은 open position 자동 청산을 항상 금지한다. 실제 pending order cancel 호출은 M6 ExecutionEngine/PaperBroker 경계에서만 수행한다.
+- `HARD_STOP` action plan은 open position 자동 청산을 항상 금지한다. 실제 pending order cancel 호출은 M6
+  `executeHardStopPendingPaperOrderCancels` 경계에서 `BrokerPort.cancelOrder`로만 수행하며, 실행 직전에도
+  `autoLiquidateOpenPositions=false`를 재검증한다.
 
 ## 검증 규칙
 
