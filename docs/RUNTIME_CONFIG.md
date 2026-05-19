@@ -72,10 +72,12 @@ broker 호출 직전에 다시 검증한다. 이 guard는 PaperBroker 구현체�
 - `paperNoKey=true`
 
 `ExecutionEngine`은 비용 snapshot과 RiskGate approval evidence가 현재 주문 intent의 exchange, market, strategy,
-side, order type, idempotency key, 수량, 명목 금액, 지정가와 일치할 때만 `BrokerPort.submitOrder`를 호출한다.
-기본 paper profile에서는 market order와 신규 진입 market order를 broker로 넘기지 않는다. 같은 process 안에서 같은
-`idempotencyKey`가 반복 제출되면 broker submit side effect는 한 번만 실행한다. DB-backed idempotency와 주문
-persistence transaction 경계는 M6 후속 sub PR에서 고정한다.
+side, order type, idempotency key, 수량, 명목 금액, 지정가, expected loss와 일치할 때만 `BrokerPort.submitOrder`를
+호출한다. 기본 paper profile에서는 market order와 신규 진입 market order를 broker로 넘기지 않는다. 같은 process
+안에서 같은 `idempotencyKey`가 in-flight 상태로 반복 제출되면 fingerprint가 같은 경우에만 broker submit side effect를
+한 번으로 억제하고, fingerprint가 다르면 idempotency key collision으로 fail-closed한다. 성공한 key는 application
+memory에 계속 보관하지 않는다. DB-backed idempotency와 주문 persistence transaction 경계는 M6 후속 sub PR에서
+고정한다.
 
 ## PAPER_NO_KEY market data runtime
 

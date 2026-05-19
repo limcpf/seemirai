@@ -157,8 +157,12 @@ describe("M6 ExecutionEngine contract", () => {
     const engine = new ExecutionEngine({ broker });
     const submission = createSubmission();
 
-    const firstResult = await engine.submitOrder(submission);
-    const duplicateResult = await engine.submitOrder(submission);
+    const firstResultPromise = engine.submitOrder(submission);
+    const duplicateResultPromise = engine.submitOrder(submission);
+    const [firstResult, duplicateResult] = await Promise.all([
+      firstResultPromise,
+      duplicateResultPromise,
+    ]);
 
     expect(firstResult.status).toBe("SUBMITTED");
     expect(duplicateResult).toMatchObject({
@@ -168,6 +172,73 @@ describe("M6 ExecutionEngine contract", () => {
       },
     });
     expect(submitOrder).toHaveBeenCalledTimes(1);
+  });
+
+  it("rejects in-flight idempotency key reuse when the order fingerprint differs", async () => {
+    const { broker, submitOrder } = createBrokerPort();
+    const engine = new ExecutionEngine({ broker });
+    const firstSubmission = createSubmission();
+    const approvedRiskApproval = createRiskApprovalEvidence(createLimitIntent());
+    const collidingSubmission = createSubmission({
+      intent: createLimitIntent({
+        requestedNotional: "6000",
+      }),
+      riskApproval: {
+        ...approvedRiskApproval,
+        order_intent: {
+          ...approvedRiskApproval.order_intent,
+          requested_notional: "6000",
+        },
+      },
+    });
+
+    const firstResultPromise = engine.submitOrder(firstSubmission);
+    const collisionResult = await engine.submitOrder(collidingSubmission);
+    const firstResult = await firstResultPromise;
+
+    expect(firstResult.status).toBe("SUBMITTED");
+    expect(collisionResult).toMatchObject({
+      status: "REJECTED",
+      rejection: {
+        reasonCode: "idempotency_key_collision",
+        metadata: {
+          mismatches: {
+            requested_notional_evidence: "5000",
+            requested_notional_runtime: "6000",
+          },
+        },
+      },
+    });
+    expect(submitOrder).toHaveBeenCalledTimes(1);
+  });
+
+  it("rejects RiskGate evidence when expected loss input changed after approval", async () => {
+    const { broker, submitOrder } = createBrokerPort();
+    const engine = new ExecutionEngine({ broker });
+    const result = await engine.submitOrder(
+      createSubmission({
+        intent: createLimitIntent({
+          metadata: {
+            expected_loss_bps_of_equity: "25",
+          },
+        }),
+        riskApproval: createRiskApprovalEvidence(createLimitIntent()),
+      }),
+    );
+
+    expect(result).toMatchObject({
+      status: "REJECTED",
+      rejection: {
+        reasonCode: "risk_approval_mismatch",
+        metadata: {
+          mismatches: {
+            expected_loss_bps_of_equity_evidence: "10",
+            expected_loss_bps_of_equity_runtime: "25",
+          },
+        },
+      },
+    });
+    expect(submitOrder).not.toHaveBeenCalled();
   });
 
   it("rejects market orders in the default paper profile", async () => {
@@ -362,6 +433,9 @@ function createLimitIntent(overrides: Partial<Extract<OrderIntent, { orderType: 
     requestedNotional: "5000",
     idempotencyKey: "execution-candidate-1",
     reason: "unit-test",
+    metadata: {
+      expected_loss_bps_of_equity: "10",
+    },
     ...overrides,
   };
 }
@@ -377,6 +451,9 @@ function createMarketIntent(overrides: Partial<MarketOrderIntent> = {}): MarketO
     requestedNotional: "5000",
     idempotencyKey: "execution-market-candidate-1",
     reason: "unit-test-market",
+    metadata: {
+      expected_loss_bps_of_equity: "10",
+    },
     ...overrides,
   };
 }

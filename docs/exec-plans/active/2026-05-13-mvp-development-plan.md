@@ -193,7 +193,7 @@ ruleRegistry
 ### M6. ExecutionEngine과 PaperBroker
 
 - [x] `ExecutionEngine` application service contract와 broker submit 전 guard 구현
-- [x] idempotency key 필수화와 process-local 중복 broker submit 억제
+- [x] idempotency key 필수화와 process-local in-flight 중복 broker submit 억제
 - [ ] `PaperBroker implements BrokerPort` 구현
 - [ ] depth 기반 paper fill
 - [ ] latency, partial fill, post-only simulation
@@ -256,7 +256,7 @@ ruleRegistry
 - 2026-05-19: issue #22 Sub PR 2는 `issue-22/02-risk-persistence`에서 상태값을 `as const` 목록과 union type으로 중앙화하고, `orders.status`/`order_events` migration check, `order_events` repository, `audit_events`/`risk_events` row mapper, append persistence test를 고정한다.
 - 2026-05-19: issue #22 Sub PR 3은 `issue-22/03-risk-limit-evaluator`에서 손실/노출/인프라 risk evaluator와 threshold snapshot payload를 구현한다. runtime `risk_ok` 연결, hard stop pending order action event, append-only 저장소 wiring은 Sub PR 4 범위로 유지한다.
 - 2026-05-19: issue #22 Sub PR 4는 `issue-22/04-runtime-rule-integration`에서 `risk_ok`를 현재 후보와 일치하는 context 기반 RiskGate 평가에 연결하고, RiskGate 판단을 주문 상태 전이/kill switch 전이/`risk_events`/`audit_events` combined evidence append 계획으로 변환한다. 현재 kill switch가 신규 주문 차단 상태이면 RiskGate snapshot이 깨끗해도 주문을 거부한다. `HARD_STOP`은 pending paper order 취소 계획 event만 만들며, 실제 broker cancel 호출과 open position 자동 청산은 수행하지 않는다.
-- 2026-05-19: issue #28은 M6 ExecutionEngine과 PaperBroker 범위가 execution contract, fill simulation, broker port, DB persistence, runtime cancel/live guard로 나뉘어 리뷰 위험이 크므로 `sub PR mode`에서 순차 진행한다. Sub PR 1은 `ExecutionEngine`이 비용 snapshot, RiskGate evidence, idempotency key, market/live order safety guard를 통과한 주문만 `BrokerPort`로 넘기는 contract를 먼저 고정한다.
+- 2026-05-19: issue #28은 M6 ExecutionEngine과 PaperBroker 범위가 execution contract, fill simulation, broker port, DB persistence, runtime cancel/live guard로 나뉘어 리뷰 위험이 크므로 `sub PR mode`에서 순차 진행한다. Sub PR 1은 `ExecutionEngine`이 비용 snapshot, RiskGate evidence, expected loss fingerprint, idempotency key, market/live order safety guard를 통과한 주문만 `BrokerPort`로 넘기는 contract를 먼저 고정한다. process-local idempotency 중복 억제는 in-flight 요청으로 제한하고 durable 중복 처리는 후속 DB persistence 범위로 남긴다.
 
 issue #28 sub PR 계획:
 

@@ -32,6 +32,7 @@ export type ExecutionSubmitStatus = "SUBMITTED" | "DUPLICATE_SUPPRESSED" | "REJE
 
 export type ExecutionRejectionReasonCode =
   | "idempotency_key_missing"
+  | "idempotency_key_collision"
   | "live_trading_disabled"
   | "paper_no_key_required"
   | "market_order_disabled"
@@ -94,6 +95,7 @@ export type ExecutionOrderIntentEvidence = JsonRecord & {
   requested_notional: string;
   idempotency_key: string;
   requested_price?: string;
+  expected_loss_bps_of_equity?: string;
 };
 
 export type ExecutionRiskApprovalEvidence = JsonRecord & {
@@ -104,6 +106,11 @@ export type ExecutionRiskApprovalEvidence = JsonRecord & {
   order_intent: ExecutionOrderIntentEvidence;
 };
 
+interface InFlightExecutionSubmission {
+  fingerprint: ExecutionOrderIntentEvidence;
+  brokerSubmission: Promise<BrokerOrder>;
+}
+
 /**
  * CostModel과 RiskGate를 통과한 주문 후보만 BrokerPort로 넘기는 application service다.
  *
@@ -113,7 +120,7 @@ export type ExecutionRiskApprovalEvidence = JsonRecord & {
 export class ExecutionEngine {
   private readonly broker: BrokerPort;
   private readonly safetyConfig: ExecutionSafetyConfig;
-  private readonly submittedByIdempotencyKey = new Map<string, Promise<BrokerOrder>>();
+  private readonly inFlightByIdempotencyKey = new Map<string, InFlightExecutionSubmission>();
 
   public constructor(ports: ExecutionEnginePorts, options: ExecutionEngineOptions = {}) {
     this.broker = ports.broker;
@@ -133,18 +140,41 @@ export class ExecutionEngine {
       };
     }
 
-    const existingSubmission = this.submittedByIdempotencyKey.get(submission.intent.idempotencyKey);
+    const currentFingerprint = createOrderIntentEvidence(
+      submission.intent,
+      readOrderIntentExpectedLossBps(submission.intent),
+    );
+    const existingSubmission = this.inFlightByIdempotencyKey.get(submission.intent.idempotencyKey);
     if (existingSubmission !== undefined) {
+      const mismatches = compareOrderIntentEvidence(existingSubmission.fingerprint, currentFingerprint);
+      if (Object.keys(mismatches).length > 0) {
+        return {
+          status: "REJECTED",
+          submission,
+          rejection: {
+            reasonCode: "idempotency_key_collision",
+            message: "In-flight idempotency key was reused for a different order fingerprint",
+            metadata: {
+              idempotency_key: submission.intent.idempotencyKey,
+              mismatches,
+            },
+          },
+        };
+      }
+
       return {
         status: "DUPLICATE_SUPPRESSED",
         submission,
-        brokerOrder: await existingSubmission,
+        brokerOrder: await existingSubmission.brokerSubmission,
       };
     }
 
     // 같은 process 안에서 동일 idempotency key가 동시에 들어와도 broker side effect는 한 번만 실행한다.
     const brokerSubmission = this.broker.submitOrder(submission);
-    this.submittedByIdempotencyKey.set(submission.intent.idempotencyKey, brokerSubmission);
+    this.inFlightByIdempotencyKey.set(submission.intent.idempotencyKey, {
+      fingerprint: currentFingerprint,
+      brokerSubmission,
+    });
 
     try {
       return {
@@ -152,9 +182,9 @@ export class ExecutionEngine {
         submission,
         brokerOrder: await brokerSubmission,
       };
-    } catch (error) {
-      this.submittedByIdempotencyKey.delete(submission.intent.idempotencyKey);
-      throw error;
+    } finally {
+      // durable 중복 방지는 DB 경계에서 맡기고, application guard는 in-flight 요청만 보관한다.
+      this.inFlightByIdempotencyKey.delete(submission.intent.idempotencyKey);
     }
   }
 }
@@ -183,7 +213,10 @@ export function createExecutionRiskApprovalEvidence(
     approved: result.approved,
     status: result.status,
     action: result.action,
-    order_intent: createOrderIntentEvidence(context.orderIntent),
+    order_intent: createOrderIntentEvidence(
+      context.orderIntent,
+      readRiskGateExpectedLossBps(context),
+    ),
     threshold_snapshot: context.thresholdSnapshot,
     failed_evaluation_reason_codes: result.failedEvaluations.map((evaluation) => evaluation.reasonCode),
     warning_evaluation_reason_codes: result.warningEvaluations.map((evaluation) => evaluation.reasonCode),
@@ -351,37 +384,66 @@ function validateRiskApproval(
 }
 
 function compareRiskApprovalOrderIntent(intent: OrderIntent, riskOrderIntent: JsonRecord): JsonRecord {
+  return compareOrderIntentEvidence(
+    riskOrderIntent,
+    createOrderIntentEvidence(intent, readOrderIntentExpectedLossBps(intent)),
+  );
+}
+
+function compareOrderIntentEvidence(
+  evidence: JsonRecord,
+  runtime: JsonRecord,
+): JsonRecord {
   const mismatches: JsonRecord = {};
 
-  appendStringMismatch(mismatches, "exchange_id", riskOrderIntent.exchange_id, intent.exchangeId);
-  appendStringMismatch(mismatches, "market", riskOrderIntent.market, intent.market);
-  appendStringMismatch(mismatches, "strategy_id", riskOrderIntent.strategy_id, intent.strategyId);
-  appendStringMismatch(mismatches, "side", riskOrderIntent.side, intent.side);
-  appendStringMismatch(mismatches, "order_type", riskOrderIntent.order_type, intent.orderType);
-  appendStringMismatch(mismatches, "idempotency_key", riskOrderIntent.idempotency_key, intent.idempotencyKey);
+  appendStringMismatch(mismatches, "exchange_id", evidence.exchange_id, readStringRecordValue(runtime, "exchange_id"));
+  appendStringMismatch(mismatches, "market", evidence.market, readStringRecordValue(runtime, "market"));
+  appendStringMismatch(
+    mismatches,
+    "strategy_id",
+    evidence.strategy_id,
+    readStringRecordValue(runtime, "strategy_id"),
+  );
+  appendStringMismatch(mismatches, "side", evidence.side, readStringRecordValue(runtime, "side"));
+  appendStringMismatch(mismatches, "order_type", evidence.order_type, readStringRecordValue(runtime, "order_type"));
+  appendStringMismatch(
+    mismatches,
+    "idempotency_key",
+    evidence.idempotency_key,
+    readStringRecordValue(runtime, "idempotency_key"),
+  );
   appendDecimalMismatch(
     mismatches,
     "requested_quantity",
-    riskOrderIntent.requested_quantity,
-    intent.requestedQuantity,
+    evidence.requested_quantity,
+    readStringRecordValue(runtime, "requested_quantity"),
   );
   appendDecimalMismatch(
     mismatches,
     "requested_notional",
-    riskOrderIntent.requested_notional,
-    intent.requestedNotional,
+    evidence.requested_notional,
+    readStringRecordValue(runtime, "requested_notional"),
   );
   appendDecimalMismatch(
     mismatches,
     "requested_price",
-    riskOrderIntent.requested_price,
-    intent.orderType === "LIMIT" ? intent.requestedPrice : undefined,
+    evidence.requested_price,
+    readStringRecordValue(runtime, "requested_price"),
+  );
+  appendDecimalMismatch(
+    mismatches,
+    "expected_loss_bps_of_equity",
+    evidence.expected_loss_bps_of_equity,
+    readStringRecordValue(runtime, "expected_loss_bps_of_equity"),
   );
 
   return mismatches;
 }
 
-function createOrderIntentEvidence(intent: OrderIntent): ExecutionOrderIntentEvidence {
+function createOrderIntentEvidence(
+  intent: OrderIntent,
+  expectedLossBpsOfEquity?: string,
+): ExecutionOrderIntentEvidence {
   const evidence: ExecutionOrderIntentEvidence = {
     exchange_id: intent.exchangeId,
     market: intent.market,
@@ -395,6 +457,10 @@ function createOrderIntentEvidence(intent: OrderIntent): ExecutionOrderIntentEvi
 
   if (intent.orderType === "LIMIT") {
     evidence.requested_price = normalizeFinancialDecimalString(intent.requestedPrice);
+  }
+
+  if (expectedLossBpsOfEquity !== undefined) {
+    evidence.expected_loss_bps_of_equity = normalizeFinancialDecimalString(expectedLossBpsOfEquity);
   }
 
   return evidence;
@@ -464,6 +530,23 @@ function readStringMetadata(metadata: JsonRecord | undefined, key: string): stri
   const value = metadata?.[key];
 
   return typeof value === "string" ? value : undefined;
+}
+
+function readStringRecordValue(record: JsonRecord, key: string): string | undefined {
+  const value = record[key];
+
+  return typeof value === "string" ? value : undefined;
+}
+
+function readRiskGateExpectedLossBps(context: RiskGateContext): string | undefined {
+  return context.expectedLossBpsOfEquity ?? readOrderIntentExpectedLossBps(context.orderIntent);
+}
+
+function readOrderIntentExpectedLossBps(intent: OrderIntent): string | undefined {
+  return (
+    readStringMetadata(intent.metadata, "expected_loss_bps_of_equity") ??
+    readStringMetadata(intent.metadata, "expectedLossBpsOfEquity")
+  );
 }
 
 function isNonEmptyRecord(value: unknown): value is JsonRecord {
