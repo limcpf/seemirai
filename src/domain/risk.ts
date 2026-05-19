@@ -160,6 +160,12 @@ export interface RiskGateContext {
   infrastructureSignals: readonly InfrastructureRiskSnapshot[];
   thresholdSnapshot: RiskThresholdSnapshot;
   observedAt: TimestampInput;
+  /**
+   * 단일 주문 후보의 예상 손실을 계정 평가액 대비 bps로 표현한 값이다.
+   *
+   * CostModel 또는 strategy가 손절폭/수량 기준으로 계산해 넘기며, 값이 없으면 RiskGate는 주문을 승인하지 않는다.
+   */
+  expectedLossBpsOfEquity?: NumericString;
   metadata?: JsonRecord;
 }
 
