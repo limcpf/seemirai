@@ -34,6 +34,30 @@ export type PaperOrderRowInput = Insertable<PaperOrdersTable>;
 export type FillRowInput = Insertable<FillsTable>;
 
 type ExecutionPersistenceTransaction = Transaction<DatabaseSchema>;
+type FinancialDecimal = ReturnType<typeof parseFinancialDecimal>;
+
+/**
+ * PaperBroker 취소 metadata에서 persistence 검증에 필요한 최소 evidence만 추린 값이다.
+ *
+ * `BrokerOrder.metadata`는 JSON 경계라서 DB 저장 전에 구조를 좁혀야 하며, 여기서는 open 수량을 실제로 해소한
+ * `canceled_quantity`만 상태/회계 불변식 검증에 사용한다.
+ */
+interface PaperCancelEvidence {
+  canceledQuantity: NumericString;
+}
+
+/**
+ * broker 최종 상태 기준으로 정규화한 simulation 수량이다.
+ *
+ * submit 시점 simulation과 cancel 시점 mutation이 나뉘어 들어와도 이후 검증은 이 구조만 보게 해서, 상태별 수량
+ * 규칙이 metadata 모양에 흔들리지 않게 한다.
+ */
+interface EffectiveSimulationQuantities {
+  requestedQuantity: FinancialDecimal;
+  filledQuantity: FinancialDecimal;
+  openQuantity: FinancialDecimal;
+  canceledQuantity: FinancialDecimal;
+}
 
 export interface PersistPaperExecutionInput {
   submission: OrderSubmission;
@@ -409,6 +433,11 @@ function assertSimulationStatusCompatible(
     return;
   }
 
+  if (input.brokerOrder.status === "CANCELED" && readPaperCancelEvidence(input.brokerOrder) !== undefined) {
+    // PaperBroker 취소 응답은 원 fill simulation을 그대로 보존하고 최종 취소 evidence를 별도 metadata로 남긴다.
+    return;
+  }
+
   if (input.brokerOrder.status === "REJECTED" && input.brokerOrder.metadata?.paper_balance_rejection !== undefined) {
     // 잔고 부족 거부는 simulator가 만든 체결 후보를 실제 broker 실행으로 승격하지 않는 예외 경로다.
     return;
@@ -421,13 +450,10 @@ function assertSimulationQuantityMatchesBrokerOrder(
   input: PersistPaperExecutionInput,
   simulation: PaperFillSimulationResult,
 ): void {
-  const requestedQuantity = parseFinancialDecimal(simulation.requestedQuantity);
-  const filledQuantity = parseFinancialDecimal(simulation.filledQuantity);
-  const openQuantity = parseFinancialDecimal(simulation.openQuantity);
-  const canceledQuantity = parseFinancialDecimal(simulation.canceledQuantity);
-  const accountedQuantity = filledQuantity.add(openQuantity).add(canceledQuantity);
+  const quantities = createEffectiveSimulationQuantities(input, simulation);
+  const accountedQuantity = quantities.filledQuantity.add(quantities.openQuantity).add(quantities.canceledQuantity);
 
-  if (!accountedQuantity.equals(requestedQuantity)) {
+  if (!accountedQuantity.equals(quantities.requestedQuantity)) {
     throw new Error("paper simulation quantities do not add up to requested quantity");
   }
 
@@ -439,21 +465,58 @@ function assertSimulationQuantityMatchesBrokerOrder(
     throw new Error("paper simulation requested quantity does not match broker order requested quantity");
   }
 
-  if (!decimalStringEqualsAtScale(input.brokerOrder.remainingQuantity, simulation.openQuantity, 18)) {
+  if (!parseFinancialDecimal(input.brokerOrder.remainingQuantity).equals(quantities.openQuantity)) {
     throw new Error("paper simulation open quantity does not match broker order remaining quantity");
   }
 
-  assertStateSpecificQuantityInvariants(input, simulation);
+  assertStateSpecificQuantityInvariants(input, quantities);
 }
 
-function assertStateSpecificQuantityInvariants(
+/**
+ * broker 최종 상태 기준의 수량 breakdown을 만든다.
+ *
+ * PaperBroker `cancelOrder`는 최초 submit 시점의 `paper_fill_simulation`을 수정하지 않고, 취소로 해소된 open 수량을
+ * `paper_cancel.balance_mutation`에 별도로 기록한다. persistence 경계에서는 이 두 evidence를 합쳐야 `orders.status`,
+ * `fills`, `positions`가 같은 lifecycle을 바라본다.
+ */
+function createEffectiveSimulationQuantities(
   input: PersistPaperExecutionInput,
   simulation: PaperFillSimulationResult,
-): void {
+): EffectiveSimulationQuantities {
   const requestedQuantity = parseFinancialDecimal(simulation.requestedQuantity);
   const filledQuantity = parseFinancialDecimal(simulation.filledQuantity);
   const openQuantity = parseFinancialDecimal(simulation.openQuantity);
   const canceledQuantity = parseFinancialDecimal(simulation.canceledQuantity);
+  const paperCancel = readPaperCancelEvidence(input.brokerOrder);
+
+  if (input.brokerOrder.status !== "CANCELED" || paperCancel === undefined) {
+    return {
+      requestedQuantity,
+      filledQuantity,
+      openQuantity,
+      canceledQuantity,
+    };
+  }
+
+  const cancelCanceledQuantity = parseFinancialDecimal(paperCancel.canceledQuantity);
+  if (!cancelCanceledQuantity.equals(openQuantity)) {
+    throw new Error("paper cancel quantity does not match open simulation quantity");
+  }
+
+  return {
+    requestedQuantity,
+    filledQuantity,
+    // 취소 evidence가 open 수량을 해소했으므로 최종 broker snapshot에서는 잔여 수량을 0으로 본다.
+    openQuantity: parseFinancialDecimal("0"),
+    canceledQuantity: canceledQuantity.add(cancelCanceledQuantity),
+  };
+}
+
+function assertStateSpecificQuantityInvariants(
+  input: PersistPaperExecutionInput,
+  quantities: EffectiveSimulationQuantities,
+): void {
+  const { requestedQuantity, filledQuantity, openQuantity, canceledQuantity } = quantities;
   const remainingQuantity = parseFinancialDecimal(input.brokerOrder.remainingQuantity);
 
   if (input.brokerOrder.status === "FILLED") {
@@ -481,6 +544,9 @@ function assertStateSpecificQuantityInvariants(
   if (input.brokerOrder.status === "CANCELED") {
     if (!remainingQuantity.equals(0) || !openQuantity.equals(0)) {
       throw new Error("canceled paper execution must not have remaining quantity");
+    }
+    if (!canceledQuantity.greaterThan(0) || !filledQuantity.lessThan(requestedQuantity)) {
+      throw new Error("canceled paper execution requires positive canceled quantity below requested quantity");
     }
     return;
   }
@@ -750,6 +816,28 @@ function readPaperFillSimulation(order: BrokerOrder): PaperFillSimulationResult 
   }
 
   return undefined;
+}
+
+/**
+ * PaperBroker `paper_cancel` JSON에서 취소 수량 evidence를 읽는다.
+ *
+ * 외부 입력과 같은 JSON metadata는 타입 선언만 믿지 않고 runtime 구조를 확인한다. 구조가 맞지 않으면 evidence가
+ * 없는 것으로 취급해 기존 status/quantity 검증이 fail-closed 하도록 둔다.
+ */
+function readPaperCancelEvidence(order: BrokerOrder): PaperCancelEvidence | undefined {
+  const cancel = order.metadata?.paper_cancel;
+  if (!isJsonRecord(cancel)) {
+    return undefined;
+  }
+
+  const balanceMutation = cancel.balance_mutation;
+  if (!isJsonRecord(balanceMutation) || typeof balanceMutation.canceled_quantity !== "string") {
+    return undefined;
+  }
+
+  return {
+    canceledQuantity: balanceMutation.canceled_quantity,
+  };
 }
 
 function isPaperFillSimulationResult(value: unknown): value is PaperFillSimulationResult {

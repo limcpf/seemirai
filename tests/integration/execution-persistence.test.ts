@@ -321,6 +321,119 @@ describeDb("execution persistence integration", () => {
     await expectTableCount(db, "orders", 0);
   });
 
+  it("persists PaperBroker cancel payloads that keep the pre-cancel simulation snapshot", async () => {
+    const db = await getDatabase();
+    const repository = new PostgresExecutionPersistenceRepository(db);
+    const input = createPersistInput({
+      idempotencyKey: "execution-paper-cancel-1",
+      brokerOrderId: "paper-order-cancel-1",
+    });
+    const simulation = readSimulation(input);
+    const partialSimulation: PaperFillSimulationResult = {
+      ...simulation,
+      status: "PARTIALLY_FILLED",
+      orderStatus: "PARTIALLY_FILLED",
+      filledQuantity: "0.001",
+      openQuantity: "0.001",
+      canceledQuantity: "0",
+      totalFillNotional: "9990",
+      totalFee: "4.995",
+      fills: [
+        {
+          price: "9990000",
+          quantity: "0.001",
+          notional: "9990",
+          fee: "4.995",
+          liquidity: "TAKER",
+        },
+      ],
+    };
+
+    const receipt = await repository.persistPaperExecution({
+      ...input,
+      brokerOrder: {
+        ...input.brokerOrder,
+        status: "CANCELED",
+        remainingQuantity: "0",
+        metadata: {
+          ...(input.brokerOrder.metadata ?? {}),
+          paper_fill_simulation: partialSimulation,
+          paper_cancel: {
+            canceled_at: updatedAt,
+            balance_mutation: {
+              base_currency: "BTC",
+              quote_currency: "KRW",
+              released_currency: "KRW",
+              released_quantity: "10000",
+              canceled_quantity: "0.001",
+            },
+          },
+        },
+      },
+    });
+
+    const paperOrder = await db
+      .selectFrom("paper_orders")
+      .selectAll()
+      .where("order_id", "=", receipt.order.id)
+      .executeTakeFirstOrThrow();
+    const position = await db
+      .selectFrom("positions")
+      .selectAll()
+      .where("exchange", "=", "upbit_krw_spot")
+      .where("market", "=", "KRW-BTC")
+      .where("strategy_id", "=", "trend_following")
+      .executeTakeFirstOrThrow();
+
+    expect(receipt.order.status).toBe("CANCELED");
+    expect(paperOrder.completed_at).not.toBeNull();
+    expect(paperOrder.completed_at?.toISOString()).toBe(updatedAt);
+    expect(receipt.fills).toHaveLength(1);
+    expectNumericEqual(position.quantity, "0.001");
+    expect(receipt.orderEvents.map((event) => `${event.from_status}->${event.to_status}`)).toEqual([
+      "RISK_APPROVED->SUBMITTED",
+      "SUBMITTED->ACCEPTED",
+      "ACCEPTED->PARTIALLY_FILLED",
+      "PARTIALLY_FILLED->CANCEL_REQUESTED",
+      "CANCEL_REQUESTED->CANCELED",
+    ]);
+  });
+
+  it("rejects fully filled payloads reported as canceled orders", async () => {
+    const db = await getDatabase();
+    const repository = new PostgresExecutionPersistenceRepository(db);
+    const input = createPersistInput({
+      idempotencyKey: "execution-canceled-full-1",
+      brokerOrderId: "paper-order-canceled-full-1",
+    });
+
+    await expect(
+      repository.persistPaperExecution({
+        ...input,
+        brokerOrder: {
+          ...input.brokerOrder,
+          status: "CANCELED",
+          remainingQuantity: "0",
+          metadata: {
+            ...(input.brokerOrder.metadata ?? {}),
+            paper_cancel: {
+              canceled_at: updatedAt,
+              balance_mutation: {
+                base_currency: "BTC",
+                quote_currency: "KRW",
+                released_currency: "KRW",
+                released_quantity: "0",
+                canceled_quantity: "0",
+              },
+            },
+          },
+        },
+      }),
+    ).rejects.toThrow("canceled paper execution requires positive canceled quantity below requested quantity");
+
+    await expectTableCount(db, "orders", 0);
+  });
+
   it("rejects partially filled orders without an open quantity", async () => {
     const db = await getDatabase();
     const repository = new PostgresExecutionPersistenceRepository(db);
