@@ -177,8 +177,8 @@ ruleRegistry
 - [x] kill switch state machine 구현
 - [x] M5 리스크 threshold config와 snapshot contract 구현
 - [x] 주문 상태값 `as const` 중앙 목록화와 `order_events` persistence foundation 구현
-- [ ] 일간/주간/MDD/1회 주문/1회 손실/연속 손실 한도 구현
-- [ ] stale market data, DB write failure, duplicate idempotency key 장애 정책 구현
+- [x] 일간/주간/MDD/1회 주문/1회 손실/연속 손실 한도 evaluator 구현
+- [x] stale market data, DB write failure, duplicate idempotency key 장애 정책 evaluator 구현
 - [ ] append-only `order_events`, `audit_events`, `risk_events` runtime 연결
 
 검증:
@@ -186,7 +186,7 @@ ruleRegistry
 - [x] 주문/kill switch 상태 전이 단위 테스트
 - [x] 상태 목록과 transition map coverage 테스트
 - [x] `order_events` migration/schema/repository 테스트
-- [ ] 각 risk limit 차단 테스트
+- [x] 각 risk limit 차단 테스트
 - [ ] hard stop 시 pending paper order 취소 테스트
 - [ ] open position 자동 청산 금지 테스트
 
@@ -253,6 +253,7 @@ ruleRegistry
 - 2026-05-18: issue #16은 M4 Cost/rule/strategy core 범위가 cost model, strategy config/rules, strategy variants, audit persistence/docs로 나뉘어 `sub PR mode`에서 순차 진행됐다. Sub PR 4는 `AuditLogPort -> audit_events` append adapter와 주문 후보 폐기 audit helper로 폐기 사유 추적 경계를 고정하고 M4 체크리스트를 완료 처리한다.
 - 2026-05-19: issue #22는 M5 RiskGate와 상태 전이 범위가 state machine, `order_events` persistence, risk limit evaluator, runtime `risk_ok` 연결로 나뉘어 리뷰 위험이 크므로 `sub PR mode`에서 순차 진행한다. 공통 RiskGate result type, migration 순서, runtime rule 연결이 서로 맞물려 기본 운영은 병렬이 아니라 선행 PR merge 후 다음 PR을 만드는 방식으로 유지한다.
 - 2026-05-19: issue #22 Sub PR 2는 `issue-22/02-risk-persistence`에서 상태값을 `as const` 목록과 union type으로 중앙화하고, `orders.status`/`order_events` migration check, `order_events` repository, `audit_events`/`risk_events` row mapper, append persistence test를 고정한다.
+- 2026-05-19: issue #22 Sub PR 3은 `issue-22/03-risk-limit-evaluator`에서 손실/노출/인프라 risk evaluator와 threshold snapshot payload를 구현한다. runtime `risk_ok` 연결, hard stop pending order action event, append-only 저장소 wiring은 Sub PR 4 범위로 유지한다.
 
 issue #22 sub PR 계획:
 
