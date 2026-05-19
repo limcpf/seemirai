@@ -1,6 +1,7 @@
 import type { ExchangePolicySnapshot, MarketDataEvent, MarketStatus } from "./market.js";
 import type { OrderIntent } from "./orders.js";
 import type { CostDecision } from "./cost.js";
+import type { RiskGateContext } from "./risk.js";
 import type { ExchangeId, JsonRecord, MarketCode, TimestampInput } from "./types.js";
 
 export type RuleEvaluationStatus = "PASS" | "FAIL" | "WARN";
@@ -35,6 +36,13 @@ export interface RuleContext {
   features?: Readonly<Record<string, unknown>>;
   costDecision?: CostDecision;
   orderIntent?: OrderIntent;
+  /**
+   * `risk_ok` rule이 실제 RiskGate evaluator를 실행할 때 사용하는 전체 리스크 입력이다.
+   *
+   * 이 값이 없으면 runtime은 주문 후보가 RiskGate를 통과했다는 근거를 만들 수 없으므로 fail-closed로 처리한다.
+   * RiskGate 결과는 후보 fingerprint가 없는 외부 캐시를 신뢰하지 않고 이 context에서 매번 재평가한다.
+   */
+  riskGateContext?: RiskGateContext;
   accountState?: JsonRecord;
   metadata?: JsonRecord;
 }

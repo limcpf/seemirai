@@ -344,6 +344,9 @@ Acceptance Criteria:
 
 - 리스크 엔진은 계정 전체, 종목, 전략, 유동성, 손실, 장애 상태를 기준으로 신규 주문을 승인하거나 거부한다.
 - 장애 상황에서 자동 청산은 기본 동작이 아니다.
+- M5 runtime에서는 `risk_ok` rule이 현재 주문 후보와 일치하는 RiskGate context를 직접 평가한 결과를 실행 승인 근거로
+  사용하며, 거부 판단은 append-only `order_events`, `risk_events`, `audit_events`와 kill switch 전이 증거에
+  원자적으로 기록된다.
 
 Acceptance Criteria:
 
@@ -363,6 +366,7 @@ Acceptance Criteria:
 테스트 요구사항:
 
 - 단위 테스트: 각 한도 위반 조건에서 주문이 거부되는지 확인한다.
+- 단위 테스트: `risk_ok`가 RiskGate 승인 없이 PASS가 되지 않고, stale RiskGate 결과나 후보 불일치 RiskGate context를 재사용하지 않으며, 현재 kill switch 차단 상태에서 주문을 승인하지 않고, 전략 손실 정지가 전역 kill switch로 승격되지 않고, hard stop action plan이 open position 자동 청산을 만들지 않는지 확인한다.
 - 통합 테스트: 데이터 지연 이벤트가 리스크 게이트의 신규 주문 차단으로 이어지는지 확인한다.
 - 수동 테스트: kill switch 작동 시 신규 주문 중지, 미체결 주문 취소, 알림 발송 상태가 기록되는지 확인한다.
 
