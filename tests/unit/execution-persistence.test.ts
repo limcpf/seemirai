@@ -97,6 +97,19 @@ describe("execution persistence mappers", () => {
       "paper_execution_accepted_to_partially_filled",
     ]);
   });
+
+  it("preserves partial-fill evidence before a filled-and-canceled order closes", () => {
+    const events = createPaperExecutionStateTransitionEvents(createFilledAndCanceledPersistInput());
+
+    expect(events.map((event) => `${event.fromState}->${event.toState}`)).toEqual([
+      "RISK_APPROVED->SUBMITTED",
+      "SUBMITTED->ACCEPTED",
+      "ACCEPTED->PARTIALLY_FILLED",
+      "PARTIALLY_FILLED->CANCEL_REQUESTED",
+      "CANCEL_REQUESTED->CANCELED",
+    ]);
+    expect(events.every((event) => event.accepted)).toBe(true);
+  });
 });
 
 function createPersistInput(): PersistPaperExecutionInput {
@@ -176,5 +189,30 @@ function createPersistInput(): PersistPaperExecutionInput {
     brokerOrder,
     correlationId: "candidate-1",
     simulatedLatencyMs: 250,
+  };
+}
+
+function createFilledAndCanceledPersistInput(): PersistPaperExecutionInput {
+  const input = createPersistInput();
+  const simulation = input.brokerOrder.metadata?.paper_fill_simulation as PaperFillSimulationResult;
+  const canceledSimulation: PaperFillSimulationResult = {
+    ...simulation,
+    status: "IOC_CANCELED",
+    orderStatus: "CANCELED",
+    openQuantity: "0",
+    canceledQuantity: "0.001",
+  };
+
+  return {
+    ...input,
+    brokerOrder: {
+      ...input.brokerOrder,
+      status: "CANCELED",
+      remainingQuantity: "0",
+      metadata: {
+        ...(input.brokerOrder.metadata ?? {}),
+        paper_fill_simulation: canceledSimulation,
+      },
+    },
   };
 }

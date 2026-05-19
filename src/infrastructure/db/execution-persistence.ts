@@ -1,3 +1,4 @@
+import { sql } from "kysely";
 import type { Insertable, Selectable, Transaction } from "kysely";
 import type { PaperFillSimulationResult } from "../../application/execution/index.js";
 import type {
@@ -11,7 +12,7 @@ import type {
   TimestampInput,
 } from "../../domain/index.js";
 import { transitionOrderState } from "../../domain/index.js";
-import { parseFinancialDecimal, toStorageDecimalString } from "../../shared/index.js";
+import { toStorageDecimalString } from "../../shared/index.js";
 import type { Database } from "./database.js";
 import { toOrderEventRow } from "./order-events.js";
 import type {
@@ -48,12 +49,6 @@ export interface PersistPaperExecutionResult {
   fills: readonly FillRecord[];
   position?: PositionRecord;
   orderEvents: readonly ExecutionOrderEventRecord[];
-}
-
-interface PositionSnapshot {
-  quantity: NumericString;
-  averageEntryPrice: NumericString;
-  realizedPnl: NumericString;
 }
 
 /**
@@ -217,7 +212,7 @@ export function toFillRowInputs(
 export function createPaperExecutionStateTransitionEvents(
   input: PersistPaperExecutionInput,
 ): readonly StateTransitionEventCandidate<OrderLifecycleStatus>[] {
-  const targetStatuses = createPaperExecutionTargetStatuses(input.brokerOrder.status);
+  const targetStatuses = createPaperExecutionTargetStatuses(input);
   const events: StateTransitionEventCandidate<OrderLifecycleStatus>[] = [];
   let fromState: OrderLifecycleStatus = "RISK_APPROVED";
 
@@ -315,91 +310,109 @@ async function upsertPositionFromFills(
   order: ExecutionOrderRecord,
   fills: readonly FillRecord[],
 ): Promise<PositionRecord | undefined> {
-  let position = await database
-    .selectFrom("positions")
-    .selectAll()
-    .where("exchange", "=", order.exchange)
-    .where("market", "=", order.market)
-    .where("strategy_id", "=", order.strategy_id)
-    .executeTakeFirst();
+  let position: PositionRecord | undefined;
 
   for (const fill of fills) {
-    const snapshot = applyFillToPositionSnapshot(position, fill);
-    if (snapshot === undefined) {
+    if (fill.side === "BUY") {
+      position = await upsertBuyPositionFill(database, order, fill);
       continue;
     }
 
-    const updatedAt = fill.filled_at;
-    if (position === undefined) {
-      position = await database
-        .insertInto("positions")
-        .values({
-          exchange: order.exchange,
-          market: order.market,
-          strategy_id: order.strategy_id,
-          quantity: snapshot.quantity,
-          average_entry_price: snapshot.averageEntryPrice,
-          realized_pnl: snapshot.realizedPnl,
-          unrealized_pnl: "0",
-          updated_at: updatedAt,
-        })
-        .returningAll()
-        .executeTakeFirstOrThrow();
-      continue;
-    }
-
-    position = await database
-      .updateTable("positions")
-      .set({
-        quantity: snapshot.quantity,
-        average_entry_price: snapshot.averageEntryPrice,
-        realized_pnl: snapshot.realizedPnl,
-        updated_at: updatedAt,
-      })
-      .where("id", "=", position.id)
-      .returningAll()
-      .executeTakeFirstOrThrow();
+    position = await applySellPositionFill(database, order, fill);
   }
 
   return position;
 }
 
-function applyFillToPositionSnapshot(
-  position: PositionRecord | undefined,
+/**
+ * BUY fill을 포지션 snapshot에 원자적으로 누적한다.
+ *
+ * 최초 포지션 생성과 기존 포지션 평균 단가 갱신을 `ON CONFLICT DO UPDATE` 하나로 묶어, 동시에 들어온 첫 fill이
+ * unique constraint 경합으로 주문 persistence transaction 전체를 롤백시키지 않게 한다.
+ */
+async function upsertBuyPositionFill(
+  database: ExecutionPersistenceTransaction,
+  order: ExecutionOrderRecord,
   fill: FillRecord,
-): PositionSnapshot | undefined {
-  const currentQuantity = parseFinancialDecimal(position?.quantity ?? "0");
-  const currentAverageEntryPrice = parseFinancialDecimal(position?.average_entry_price ?? "0");
-  const currentRealizedPnl = parseFinancialDecimal(position?.realized_pnl ?? "0");
-  const fillQuantity = parseFinancialDecimal(fill.quantity);
-  const fillPrice = parseFinancialDecimal(fill.price);
+): Promise<PositionRecord> {
+  const quantity = toStorageDecimalString(fill.quantity);
+  const price = toStorageDecimalString(fill.price);
+  const result = await sql<PositionRecord>`
+    INSERT INTO positions (
+      exchange,
+      market,
+      strategy_id,
+      quantity,
+      average_entry_price,
+      realized_pnl,
+      unrealized_pnl,
+      updated_at
+    )
+    VALUES (
+      ${order.exchange},
+      ${order.market},
+      ${order.strategy_id},
+      ${quantity},
+      ${price},
+      '0',
+      '0',
+      ${fill.filled_at}
+    )
+    ON CONFLICT (exchange, market, strategy_id) DO UPDATE
+    SET
+      quantity = positions.quantity + EXCLUDED.quantity,
+      average_entry_price = CASE
+        WHEN positions.quantity + EXCLUDED.quantity = 0 THEN 0
+        ELSE (
+          (positions.quantity * positions.average_entry_price)
+          + (EXCLUDED.quantity * EXCLUDED.average_entry_price)
+        ) / (positions.quantity + EXCLUDED.quantity)
+      END,
+      realized_pnl = positions.realized_pnl,
+      unrealized_pnl = positions.unrealized_pnl,
+      updated_at = EXCLUDED.updated_at
+    RETURNING *
+  `.execute(database);
 
-  if (fill.side === "BUY") {
-    const nextQuantity = currentQuantity.add(fillQuantity);
-    const nextNotional = currentQuantity.mul(currentAverageEntryPrice).add(fillQuantity.mul(fillPrice));
-    const averageEntryPrice = nextQuantity.equals(0) ? "0" : nextNotional.div(nextQuantity).toFixed();
-
-    return {
-      quantity: nextQuantity.toFixed(),
-      averageEntryPrice,
-      realizedPnl: currentRealizedPnl.toFixed(),
-    };
-  }
-
+  const position = result.rows[0];
   if (position === undefined) {
-    // 보유 snapshot 없이 들어온 SELL fill은 음수 포지션을 만들지 않고 체결 record만 보존한다.
-    return undefined;
+    throw new Error("buy position upsert did not return a row");
   }
 
-  const closedQuantity = decimalMin(currentQuantity, fillQuantity);
-  const nextQuantity = decimalMax(currentQuantity.sub(fillQuantity), parseFinancialDecimal("0"));
-  const realizedDelta = fillPrice.sub(currentAverageEntryPrice).mul(closedQuantity);
+  return position;
+}
 
-  return {
-    quantity: nextQuantity.toFixed(),
-    averageEntryPrice: nextQuantity.equals(0) ? "0" : currentAverageEntryPrice.toFixed(),
-    realizedPnl: currentRealizedPnl.add(realizedDelta).toFixed(),
-  };
+/**
+ * SELL fill을 기존 포지션 snapshot에 반영한다.
+ *
+ * 보유 snapshot이 없으면 short position을 만들지 않고 fill record만 남긴다. 이미 보유 중인 수량은 단일 `UPDATE`로
+ * 차감해 realized PnL과 잔여 수량이 같은 row version을 기준으로 계산되게 한다.
+ */
+async function applySellPositionFill(
+  database: ExecutionPersistenceTransaction,
+  order: ExecutionOrderRecord,
+  fill: FillRecord,
+): Promise<PositionRecord | undefined> {
+  const quantity = toStorageDecimalString(fill.quantity);
+  const price = toStorageDecimalString(fill.price);
+  const result = await sql<PositionRecord>`
+    UPDATE positions
+    SET
+      realized_pnl = realized_pnl + ((${price}::numeric - average_entry_price) * LEAST(quantity, ${quantity}::numeric)),
+      quantity = GREATEST(quantity - ${quantity}::numeric, 0),
+      average_entry_price = CASE
+        WHEN GREATEST(quantity - ${quantity}::numeric, 0) = 0 THEN 0
+        ELSE average_entry_price
+      END,
+      updated_at = ${fill.filled_at}
+    WHERE exchange = ${order.exchange}
+      AND market = ${order.market}
+      AND strategy_id = ${order.strategy_id}
+    RETURNING *
+  `.execute(database);
+
+  // 보유 snapshot 없이 들어온 SELL fill은 음수 포지션을 만들지 않고 체결 record만 보존한다.
+  return result.rows[0];
 }
 
 function createOrderReasonPayload(input: PersistPaperExecutionInput): JsonRecord {
@@ -443,9 +456,8 @@ function createStateTransitionMetadata(input: PersistPaperExecutionInput): JsonR
   return payload;
 }
 
-function createPaperExecutionTargetStatuses(
-  finalStatus: OrderLifecycleStatus,
-): readonly OrderLifecycleStatus[] {
+function createPaperExecutionTargetStatuses(input: PersistPaperExecutionInput): readonly OrderLifecycleStatus[] {
+  const finalStatus = input.brokerOrder.status;
   switch (finalStatus) {
     case "SUBMITTED":
       return ["SUBMITTED"];
@@ -456,6 +468,10 @@ function createPaperExecutionTargetStatuses(
     case "FILLED":
       return ["SUBMITTED", "ACCEPTED", "FILLED"];
     case "CANCELED":
+      if (hasPaperFills(input)) {
+        // IOC 부분체결 후 취소처럼 fill이 있는 취소 주문은 lifecycle event만으로도 부분체결 이력을 복구할 수 있어야 한다.
+        return ["SUBMITTED", "ACCEPTED", "PARTIALLY_FILLED", "CANCEL_REQUESTED", "CANCELED"];
+      }
       return ["SUBMITTED", "ACCEPTED", "CANCEL_REQUESTED", "CANCELED"];
     case "REJECTED":
       return ["SUBMITTED", "REJECTED"];
@@ -505,6 +521,10 @@ function isTerminalOrderStatus(status: OrderLifecycleStatus): boolean {
   return status === "FILLED" || status === "CANCELED" || status === "REJECTED" || status === "EXPIRED" || status === "FAILED";
 }
 
+function hasPaperFills(input: PersistPaperExecutionInput): boolean {
+  return (readPaperFillSimulation(input.brokerOrder)?.fills.length ?? 0) > 0;
+}
+
 function readPaperFillSimulation(order: BrokerOrder): PaperFillSimulationResult | undefined {
   const simulation = order.metadata?.paper_fill_simulation;
   if (isPaperFillSimulationResult(simulation)) {
@@ -539,12 +559,4 @@ function assignIfDefined(target: JsonRecord, key: string, value: unknown): void 
   if (value !== undefined) {
     target[key] = value;
   }
-}
-
-function decimalMin(left: ReturnType<typeof parseFinancialDecimal>, right: ReturnType<typeof parseFinancialDecimal>) {
-  return left.lessThanOrEqualTo(right) ? left : right;
-}
-
-function decimalMax(left: ReturnType<typeof parseFinancialDecimal>, right: ReturnType<typeof parseFinancialDecimal>) {
-  return left.greaterThanOrEqualTo(right) ? left : right;
 }

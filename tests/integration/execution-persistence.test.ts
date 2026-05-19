@@ -23,6 +23,16 @@ const submittedAt = "2026-05-19T02:00:00.000Z";
 const updatedAt = "2026-05-19T02:00:02.000Z";
 const orderbookReceivedAt = "2026-05-19T02:00:01.000Z";
 
+interface PersistInputOptions {
+  idempotencyKey?: string;
+  brokerOrderId?: string;
+  requestedQuantity?: string;
+  requestedNotional?: string;
+  filledQuantity?: string;
+  totalFillNotional?: string;
+  totalFee?: string;
+}
+
 describeDb("execution persistence integration", () => {
   let pool: Pool | undefined;
   let database: Database | undefined;
@@ -124,6 +134,55 @@ describeDb("execution persistence integration", () => {
     await expectSingleExecutionRows(db);
   });
 
+  it("keeps first BUY position writes atomic for concurrent fills", async () => {
+    const db = await getDatabase();
+    const repository = new PostgresExecutionPersistenceRepository(db);
+    const firstInput = createPersistInput({
+      idempotencyKey: "execution-concurrent-1",
+      brokerOrderId: "paper-order-concurrent-1",
+      requestedQuantity: "0.001",
+      requestedNotional: "10000",
+      filledQuantity: "0.001",
+      totalFillNotional: "9990",
+      totalFee: "4.995",
+    });
+    const secondInput = createPersistInput({
+      idempotencyKey: "execution-concurrent-2",
+      brokerOrderId: "paper-order-concurrent-2",
+      requestedQuantity: "0.002",
+      requestedNotional: "20000",
+      filledQuantity: "0.002",
+      totalFillNotional: "19980",
+      totalFee: "9.99",
+    });
+
+    await Promise.all([
+      repository.persistPaperExecution(firstInput),
+      repository.persistPaperExecution(secondInput),
+    ]);
+
+    const position = await db
+      .selectFrom("positions")
+      .selectAll()
+      .where("exchange", "=", "upbit_krw_spot")
+      .where("market", "=", "KRW-BTC")
+      .where("strategy_id", "=", "trend_following")
+      .executeTakeFirstOrThrow();
+    const orderCount = await db
+      .selectFrom("orders")
+      .select((expressionBuilder) => expressionBuilder.fn.countAll<string>().as("count"))
+      .executeTakeFirstOrThrow();
+    const fillCount = await db
+      .selectFrom("fills")
+      .select((expressionBuilder) => expressionBuilder.fn.countAll<string>().as("count"))
+      .executeTakeFirstOrThrow();
+
+    expect(Number(orderCount.count)).toBe(2);
+    expect(Number(fillCount.count)).toBe(2);
+    expectNumericEqual(position.quantity, "0.003");
+    expectNumericEqual(position.average_entry_price, "9990000");
+  });
+
   async function getDatabase(): Promise<Database> {
     if (database !== undefined) {
       return database;
@@ -171,7 +230,14 @@ function expectNumericEqual(actual: string | undefined, expected: string): void 
   expect(parseFinancialDecimal(actual).eq(parseFinancialDecimal(expected))).toBe(true);
 }
 
-function createPersistInput(): PersistPaperExecutionInput {
+function createPersistInput(options: PersistInputOptions = {}): PersistPaperExecutionInput {
+  const idempotencyKey = options.idempotencyKey ?? "execution-integration-1";
+  const brokerOrderId = options.brokerOrderId ?? "paper-order-1";
+  const requestedQuantity = options.requestedQuantity ?? "0.002";
+  const requestedNotional = options.requestedNotional ?? "20000";
+  const filledQuantity = options.filledQuantity ?? requestedQuantity;
+  const totalFillNotional = options.totalFillNotional ?? "19980";
+  const totalFee = options.totalFee ?? "9.99";
   const intent: LimitOrderIntent = {
     exchangeId: "upbit_krw_spot",
     market: "KRW-BTC",
@@ -179,9 +245,9 @@ function createPersistInput(): PersistPaperExecutionInput {
     side: "BUY",
     orderType: "LIMIT",
     requestedPrice: "10000000",
-    requestedQuantity: "0.002",
-    requestedNotional: "20000",
-    idempotencyKey: "execution-integration-1",
+    requestedQuantity,
+    requestedNotional,
+    idempotencyKey,
     reason: "integration-test-order",
     timeInForce: "GTC",
   };
@@ -202,33 +268,33 @@ function createPersistInput(): PersistPaperExecutionInput {
     status: "FILLED",
     orderStatus: "FILLED",
     reasonCode: "limit_crossed_full",
-    requestedQuantity: "0.002",
-    filledQuantity: "0.002",
+    requestedQuantity,
+    filledQuantity,
     openQuantity: "0",
     canceledQuantity: "0",
     averageFillPrice: "9990000",
-    totalFillNotional: "19980",
-    totalFee: "9.99",
+    totalFillNotional,
+    totalFee,
     fills: [
       {
         price: "9990000",
-        quantity: "0.002",
-        notional: "19980",
-        fee: "9.99",
+        quantity: filledQuantity,
+        notional: totalFillNotional,
+        fee: totalFee,
         liquidity: "TAKER",
       },
     ],
     orderbookReceivedAt,
   };
   const brokerOrder: BrokerOrder = {
-    brokerOrderId: "paper-order-1",
-    idempotencyKey: "execution-integration-1",
+    brokerOrderId,
+    idempotencyKey,
     exchangeId: "upbit_krw_spot",
     market: "KRW-BTC",
     side: "BUY",
     orderType: "LIMIT",
     status: "FILLED",
-    requestedQuantity: "0.002",
+    requestedQuantity,
     remainingQuantity: "0",
     requestedPrice: "10000000",
     acceptedAt: updatedAt,
