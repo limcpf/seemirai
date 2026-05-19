@@ -2,6 +2,7 @@ import { parseFinancialDecimal } from "../../shared/index.js";
 import type { BrokerPort } from "../ports/index.js";
 import type {
   BrokerOrder,
+  CostSnapshot,
   JsonRecord,
   OrderIntent,
   OrderSubmission,
@@ -95,7 +96,16 @@ export type ExecutionOrderIntentEvidence = JsonRecord & {
   requested_notional: string;
   idempotency_key: string;
   requested_price?: string;
+  post_only?: boolean;
+  time_in_force?: string;
   expected_loss_bps_of_equity?: string;
+};
+
+export type ExecutionCostSnapshotEvidence = JsonRecord & {
+  source: "cost_model";
+  trade_allowed: boolean;
+  reason_code: string;
+  order_intent: ExecutionOrderIntentEvidence;
 };
 
 export type ExecutionRiskApprovalEvidence = JsonRecord & {
@@ -226,6 +236,21 @@ export function createExecutionRiskApprovalEvidence(
 }
 
 /**
+ * CostModel snapshot에 ExecutionEngine이 현재 주문과 대조할 order intent fingerprint를 붙인다.
+ */
+export function createExecutionCostSnapshotEvidence(
+  snapshot: CostSnapshot,
+  intent: OrderIntent,
+  expectedLossBpsOfEquity?: string,
+): ExecutionCostSnapshotEvidence {
+  return {
+    ...snapshot,
+    source: "cost_model",
+    order_intent: createOrderIntentEvidence(intent, expectedLossBpsOfEquity),
+  };
+}
+
+/**
  * 주문 제출 요청이 broker side effect를 실행해도 되는지 순수 함수로 검증한다.
  */
 export function validateExecutionSubmission(
@@ -324,16 +349,33 @@ function validateCostSnapshot(
     return reject("cost_snapshot_missing", "Execution submission requires a cost snapshot");
   }
 
-  if (snapshot.trade_allowed !== true) {
-    return reject("cost_snapshot_not_allowed", "Cost snapshot must allow the trade before execution", {
+  if (
+    snapshot.source !== "cost_model" ||
+    snapshot.trade_allowed !== true ||
+    snapshot.reason_code !== "cost_margin_ok" ||
+    hasProblemFieldList(snapshot.missing_fields) ||
+    hasProblemFieldList(snapshot.invalid_fields)
+  ) {
+    // 비용 snapshot은 allow flag뿐 아니라 정상 판정 사유와 입력 상태까지 execution 승인 조건으로 삼는다.
+    return reject("cost_snapshot_not_allowed", "Cost snapshot must allow the trade with an OK margin reason", {
+      source: snapshot.source,
       trade_allowed: snapshot.trade_allowed,
       reason_code: snapshot.reason_code,
+      missing_fields: snapshot.missing_fields,
+      invalid_fields: snapshot.invalid_fields,
     });
   }
 
   const mismatches: JsonRecord = {};
   appendStringMismatch(mismatches, "cost_snapshot_exchange_id", snapshot.exchange_id, submission.intent.exchangeId);
   appendStringMismatch(mismatches, "cost_snapshot_market", snapshot.market, submission.intent.market);
+
+  const costOrderIntent = snapshot.order_intent;
+  if (!isNonEmptyRecord(costOrderIntent)) {
+    return reject("cost_snapshot_mismatch", "Cost snapshot requires order intent fingerprint");
+  }
+
+  Object.assign(mismatches, compareCostSnapshotOrderIntent(submission, costOrderIntent));
 
   if (Object.keys(mismatches).length > 0) {
     return reject("cost_snapshot_mismatch", "Cost snapshot does not match the execution order intent", {
@@ -352,16 +394,15 @@ function validateRiskApproval(
     return reject("risk_approval_missing", "Execution submission requires RiskGate approval evidence");
   }
 
-  if (riskApproval.approved !== true) {
-    return reject("risk_approval_not_approved", "RiskGate evidence must approve the order before execution", {
-      approved: riskApproval.approved,
-      action: riskApproval.action,
-      status: riskApproval.status,
-    });
-  }
-
-  if (riskApproval.action !== "ALLOW") {
-    return reject("risk_approval_not_approved", "RiskGate evidence must have ALLOW action before execution", {
+  if (
+    riskApproval.source !== "risk_gate" ||
+    riskApproval.approved !== true ||
+    riskApproval.action !== "ALLOW" ||
+    !isApprovalCapableRiskStatus(riskApproval.status)
+  ) {
+    // RiskGate 승인은 출처, 상태, action이 모두 실행 가능 상태일 때만 유효하다.
+    return reject("risk_approval_not_approved", "RiskGate evidence must be an approval-capable ALLOW result", {
+      source: riskApproval.source,
       approved: riskApproval.approved,
       action: riskApproval.action,
       status: riskApproval.status,
@@ -381,6 +422,16 @@ function validateRiskApproval(
   }
 
   return undefined;
+}
+
+function compareCostSnapshotOrderIntent(
+  submission: OrderSubmission,
+  costOrderIntent: JsonRecord,
+): JsonRecord {
+  return compareOrderIntentEvidence(
+    costOrderIntent,
+    createOrderIntentEvidence(submission.intent, readSubmissionExpectedLossBps(submission)),
+  );
 }
 
 function compareRiskApprovalOrderIntent(
@@ -415,6 +466,13 @@ function compareOrderIntentEvidence(
     evidence.idempotency_key,
     readStringRecordValue(runtime, "idempotency_key"),
   );
+  appendBooleanMismatch(mismatches, "post_only", evidence.post_only, readBooleanRecordValue(runtime, "post_only"));
+  appendStringMismatch(
+    mismatches,
+    "time_in_force",
+    evidence.time_in_force,
+    readStringRecordValue(runtime, "time_in_force"),
+  );
   appendDecimalMismatch(
     mismatches,
     "requested_quantity",
@@ -433,7 +491,7 @@ function compareOrderIntentEvidence(
     evidence.requested_price,
     readStringRecordValue(runtime, "requested_price"),
   );
-  appendDecimalMismatch(
+  appendRequiredDecimalMismatch(
     mismatches,
     "expected_loss_bps_of_equity",
     evidence.expected_loss_bps_of_equity,
@@ -460,6 +518,10 @@ function createOrderIntentEvidence(
 
   if (intent.orderType === "LIMIT") {
     evidence.requested_price = normalizeFinancialDecimalString(intent.requestedPrice);
+    evidence.post_only = intent.postOnly === true;
+    if (intent.timeInForce !== undefined) {
+      evidence.time_in_force = intent.timeInForce;
+    }
   }
 
   if (expectedLossBpsOfEquity !== undefined) {
@@ -496,6 +558,19 @@ function appendStringMismatch(
   }
 }
 
+function appendBooleanMismatch(
+  target: JsonRecord,
+  fieldName: string,
+  evidenceValue: unknown,
+  runtimeValue: boolean | undefined,
+): void {
+  const normalizedEvidenceValue = typeof evidenceValue === "boolean" ? evidenceValue : undefined;
+  if (normalizedEvidenceValue !== runtimeValue) {
+    target[`${fieldName}_evidence`] = normalizedEvidenceValue;
+    target[`${fieldName}_runtime`] = runtimeValue;
+  }
+}
+
 function appendDecimalMismatch(
   target: JsonRecord,
   fieldName: string,
@@ -513,11 +588,42 @@ function appendDecimalMismatch(
   }
 }
 
+function appendRequiredDecimalMismatch(
+  target: JsonRecord,
+  fieldName: string,
+  evidenceValue: unknown,
+  runtimeValue: string | undefined,
+): void {
+  const normalizedEvidenceValue = readNormalizedFinancialDecimalString(evidenceValue);
+  const normalizedRuntimeValue = readNormalizedFinancialDecimalString(runtimeValue);
+
+  if (
+    normalizedEvidenceValue === undefined ||
+    normalizedRuntimeValue === undefined ||
+    normalizedEvidenceValue !== normalizedRuntimeValue
+  ) {
+    target[`${fieldName}_evidence`] = normalizedEvidenceValue ?? null;
+    target[`${fieldName}_runtime`] = normalizedRuntimeValue ?? null;
+  }
+}
+
 function normalizeFinancialDecimalString(value: string): string {
   try {
     return parseFinancialDecimal(value).toFixed();
   } catch {
     return value;
+  }
+}
+
+function readNormalizedFinancialDecimalString(value: unknown): string | undefined {
+  if (typeof value !== "string") {
+    return undefined;
+  }
+
+  try {
+    return parseFinancialDecimal(value).toFixed();
+  } catch {
+    return undefined;
   }
 }
 
@@ -541,6 +647,12 @@ function readStringRecordValue(record: JsonRecord, key: string): string | undefi
   return typeof value === "string" ? value : undefined;
 }
 
+function readBooleanRecordValue(record: JsonRecord, key: string): boolean | undefined {
+  const value = record[key];
+
+  return typeof value === "boolean" ? value : undefined;
+}
+
 function readRiskGateExpectedLossBps(context: RiskGateContext): string | undefined {
   return context.expectedLossBpsOfEquity ?? readOrderIntentExpectedLossBps(context.orderIntent);
 }
@@ -554,6 +666,14 @@ function readOrderIntentExpectedLossBps(intent: OrderIntent): string | undefined
     readStringMetadata(intent.metadata, "expected_loss_bps_of_equity") ??
     readStringMetadata(intent.metadata, "expectedLossBpsOfEquity")
   );
+}
+
+function isApprovalCapableRiskStatus(value: unknown): boolean {
+  return value === "PASS" || value === "WARN";
+}
+
+function hasProblemFieldList(value: unknown): boolean {
+  return value !== undefined && (!Array.isArray(value) || value.length > 0);
 }
 
 function isNonEmptyRecord(value: unknown): value is JsonRecord {

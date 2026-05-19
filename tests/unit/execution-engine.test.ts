@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 import {
   ExecutionEngine,
+  createExecutionCostSnapshotEvidence,
   createExecutionRiskApprovalEvidence,
   evaluateRiskGate,
   validateExecutionSubmission,
@@ -24,6 +25,11 @@ import type {
 
 const observedAt = "2026-05-19T09:00:00.000Z";
 const thresholdSnapshot = createRiskThresholdSnapshot(defaultRiskLimitThresholds, observedAt);
+
+type CreateSubmissionOverrides = Omit<Partial<OrderSubmission>, "expectedLossBpsOfEquity"> & {
+  expectedLossBpsOfEquity?: OrderSubmission["expectedLossBpsOfEquity"] | undefined;
+  intent?: OrderIntent;
+};
 
 describe("M6 ExecutionEngine contract", () => {
   it("submits a limit order only after cost and RiskGate evidence match the current intent", async () => {
@@ -80,6 +86,84 @@ describe("M6 ExecutionEngine contract", () => {
     });
   });
 
+  it("rejects cost snapshots without the cost model source, OK reason, or clean input fields", () => {
+    const baseCostSnapshot = createCostSnapshot(createLimitIntent());
+
+    expect(
+      validateExecutionSubmission(
+        createSubmission({
+          costSnapshot: {
+            ...baseCostSnapshot,
+            reason_code: "missing_cost_input",
+          },
+        }),
+      ),
+    ).toMatchObject({
+      valid: false,
+      rejection: {
+        reasonCode: "cost_snapshot_not_allowed",
+      },
+    });
+
+    expect(
+      validateExecutionSubmission(
+        createSubmission({
+          costSnapshot: {
+            ...baseCostSnapshot,
+            missing_fields: ["entry_fee_bps"],
+          },
+        }),
+      ),
+    ).toMatchObject({
+      valid: false,
+      rejection: {
+        reasonCode: "cost_snapshot_not_allowed",
+      },
+    });
+
+    expect(
+      validateExecutionSubmission(
+        createSubmission({
+          costSnapshot: {
+            ...baseCostSnapshot,
+            source: "fixture",
+          },
+        }),
+      ),
+    ).toMatchObject({
+      valid: false,
+      rejection: {
+        reasonCode: "cost_snapshot_not_allowed",
+      },
+    });
+  });
+
+  it("fails closed when CostModel evidence describes a different order candidate", () => {
+    const submission = createSubmission({
+      costSnapshot: createCostSnapshot(
+        createLimitIntent({
+          requestedNotional: "6000",
+          idempotencyKey: "execution-candidate-cost-mismatch",
+        }),
+      ),
+    });
+
+    expect(validateExecutionSubmission(submission)).toMatchObject({
+      valid: false,
+      rejection: {
+        reasonCode: "cost_snapshot_mismatch",
+        metadata: {
+          mismatches: {
+            requested_notional_evidence: "6000",
+            requested_notional_runtime: "5000",
+            idempotency_key_evidence: "execution-candidate-cost-mismatch",
+            idempotency_key_runtime: "execution-candidate-1",
+          },
+        },
+      },
+    });
+  });
+
   it("rejects submissions without RiskGate approval evidence before calling BrokerPort", async () => {
     const { broker, submitOrder } = createBrokerPort();
     const engine = new ExecutionEngine({ broker });
@@ -96,6 +180,42 @@ describe("M6 ExecutionEngine contract", () => {
       },
     });
     expect(submitOrder).not.toHaveBeenCalled();
+  });
+
+  it("rejects RiskGate evidence without the risk gate source or approval-capable status", () => {
+    const approvedRiskApproval = createRiskApprovalEvidence(createLimitIntent());
+
+    expect(
+      validateExecutionSubmission(
+        createSubmission({
+          riskApproval: {
+            ...approvedRiskApproval,
+            source: "fixture",
+          },
+        }),
+      ),
+    ).toMatchObject({
+      valid: false,
+      rejection: {
+        reasonCode: "risk_approval_not_approved",
+      },
+    });
+
+    expect(
+      validateExecutionSubmission(
+        createSubmission({
+          riskApproval: {
+            ...approvedRiskApproval,
+            status: "FAIL",
+          },
+        }),
+      ),
+    ).toMatchObject({
+      valid: false,
+      rejection: {
+        reasonCode: "risk_approval_not_approved",
+      },
+    });
   });
 
   it("fails closed when RiskGate evidence describes a different order candidate", async () => {
@@ -230,6 +350,55 @@ describe("M6 ExecutionEngine contract", () => {
           mismatches: {
             expected_loss_bps_of_equity_evidence: "10",
             expected_loss_bps_of_equity_runtime: "25",
+          },
+        },
+      },
+    });
+    expect(submitOrder).not.toHaveBeenCalled();
+  });
+
+  it("rejects execution evidence when expected loss is missing from the order fingerprint", () => {
+    const submission = createSubmission({
+      expectedLossBpsOfEquity: undefined,
+    });
+
+    expect(validateExecutionSubmission(submission)).toMatchObject({
+      valid: false,
+      rejection: {
+        reasonCode: "cost_snapshot_mismatch",
+        metadata: {
+          mismatches: {
+            expected_loss_bps_of_equity_evidence: null,
+            expected_loss_bps_of_equity_runtime: null,
+          },
+        },
+      },
+    });
+  });
+
+  it("rejects RiskGate evidence when limit execution options changed after approval", async () => {
+    const { broker, submitOrder } = createBrokerPort();
+    const engine = new ExecutionEngine({ broker });
+    const approvedRiskApproval = createRiskApprovalEvidence(createLimitIntent());
+    const result = await engine.submitOrder(
+      createSubmission({
+        intent: createLimitIntent({
+          postOnly: true,
+          timeInForce: "IOC",
+        }),
+        riskApproval: approvedRiskApproval,
+      }),
+    );
+
+    expect(result).toMatchObject({
+      status: "REJECTED",
+      rejection: {
+        reasonCode: "risk_approval_mismatch",
+        metadata: {
+          mismatches: {
+            post_only_evidence: false,
+            post_only_runtime: true,
+            time_in_force_runtime: "IOC",
           },
         },
       },
@@ -390,44 +559,70 @@ function createBrokerPort() {
   };
 }
 
-function createSubmission(
-  overrides: Partial<OrderSubmission> & { intent?: OrderIntent } = {},
-): OrderSubmission {
+function createSubmission(overrides: CreateSubmissionOverrides = {}): OrderSubmission {
   const intent = overrides.intent ?? createLimitIntent();
+  const hasExpectedLossOverride = Object.prototype.hasOwnProperty.call(
+    overrides,
+    "expectedLossBpsOfEquity",
+  );
+  const expectedLossBpsOfEquity = hasExpectedLossOverride ? overrides.expectedLossBpsOfEquity : "10";
   const submission: OrderSubmission = {
     intent,
-    costSnapshot: createCostSnapshot(intent),
-    riskApproval: createRiskApprovalEvidence(intent),
-    expectedLossBpsOfEquity: "10",
+    costSnapshot: createCostSnapshot(intent, expectedLossBpsOfEquity, !hasExpectedLossOverride),
+    riskApproval: createRiskApprovalEvidence(intent, expectedLossBpsOfEquity, !hasExpectedLossOverride),
     submittedAt: observedAt,
   };
+  if (expectedLossBpsOfEquity !== undefined) {
+    submission.expectedLossBpsOfEquity = expectedLossBpsOfEquity;
+  }
 
+  const { expectedLossBpsOfEquity: _expectedLossOverride, ...otherOverrides } = overrides;
   return {
     ...submission,
-    ...overrides,
+    ...otherOverrides,
   };
 }
 
-function createCostSnapshot(intent: OrderIntent): OrderSubmission["costSnapshot"] {
-  return evaluateCost({
-    exchangeId: intent.exchangeId,
-    market: intent.market,
-    expectedReturnBps: "30",
-    entryFeeBps: "5",
-    exitFeeBps: "5",
-    spreadCostBpsP75: "1",
-    expectedSlippageBpsP95: "1",
-    cancelRequotePenaltyBps: "0.5",
-  }).snapshot;
+function createCostSnapshot(
+  intent: OrderIntent,
+  expectedLossBpsOfEquity?: string,
+  useDefaultExpectedLoss = true,
+): OrderSubmission["costSnapshot"] {
+  const resolvedExpectedLossBpsOfEquity =
+    expectedLossBpsOfEquity ?? (useDefaultExpectedLoss ? "10" : undefined);
+
+  return createExecutionCostSnapshotEvidence(
+    evaluateCost({
+      exchangeId: intent.exchangeId,
+      market: intent.market,
+      expectedReturnBps: "30",
+      entryFeeBps: "5",
+      exitFeeBps: "5",
+      spreadCostBpsP75: "1",
+      expectedSlippageBpsP95: "1",
+      cancelRequotePenaltyBps: "0.5",
+    }).snapshot,
+    intent,
+    resolvedExpectedLossBpsOfEquity,
+  );
 }
 
-function createRiskApprovalEvidence(intent: OrderIntent): ExecutionRiskApprovalEvidence {
-  const riskContext = createRiskContext(intent);
+function createRiskApprovalEvidence(
+  intent: OrderIntent,
+  expectedLossBpsOfEquity?: string,
+  useDefaultExpectedLoss = true,
+): ExecutionRiskApprovalEvidence {
+  const resolvedExpectedLossBpsOfEquity =
+    expectedLossBpsOfEquity ?? (useDefaultExpectedLoss ? "10" : undefined);
+  const riskContext = createRiskContext(intent, resolvedExpectedLossBpsOfEquity);
   return createExecutionRiskApprovalEvidence(evaluateRiskGate(riskContext), riskContext);
 }
 
-function createRiskContext(intent: OrderIntent): RiskGateContext {
-  return {
+function createRiskContext(
+  intent: OrderIntent,
+  expectedLossBpsOfEquity?: string,
+): RiskGateContext {
+  const context: RiskGateContext = {
     orderIntent: intent,
     account: {
       equityKrw: "1000000",
@@ -445,8 +640,12 @@ function createRiskContext(intent: OrderIntent): RiskGateContext {
     infrastructureSignals: [],
     thresholdSnapshot,
     observedAt,
-    expectedLossBpsOfEquity: "10",
   };
+  if (expectedLossBpsOfEquity !== undefined) {
+    context.expectedLossBpsOfEquity = expectedLossBpsOfEquity;
+  }
+
+  return context;
 }
 
 function createLimitIntent(overrides: Partial<Extract<OrderIntent, { orderType: "LIMIT" }>> = {}): Extract<
