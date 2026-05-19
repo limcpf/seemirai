@@ -53,6 +53,17 @@ describe("runtime config", () => {
       entry_deviation_bps: "18",
       stop_loss_bps: "30",
     });
+    expect(config.risk.thresholds).toEqual({
+      daily_loss_limit_bps: "100",
+      weekly_loss_limit_bps: "300",
+      max_drawdown_bps: "500",
+      max_order_notional_bps_of_equity: "100",
+      max_expected_loss_bps_of_equity: "20",
+      btc_eth_max_position_bps_of_equity: "2000",
+      alt_max_position_bps_of_equity: "500",
+      total_alt_max_position_bps_of_equity: "1500",
+      max_consecutive_strategy_losses: 3,
+    });
   });
 
   it("fails fast when a config value has the wrong shape", () => {
@@ -144,5 +155,15 @@ describe("runtime config", () => {
         },
       }),
     ).toThrow("must be between 0 and 1");
+
+    expect(() =>
+      loadRuntimeConfig({
+        risk: {
+          thresholds: {
+            daily_loss_limit_bps: "-1",
+          },
+        },
+      }),
+    ).toThrow("must be a non-negative decimal string");
   });
 });

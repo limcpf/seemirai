@@ -12,6 +12,7 @@ description: 현재 branch 또는 지정한 PR의 리뷰 댓글, unresolved thre
 - PR에 Codex review comment, GitHub review, inline comment, unresolved thread가 있다.
 - 리뷰 finding별로 DnD를 정의하고 수정/검증/커밋/푸시/resolve/reaction polling을 반복해야 한다.
 - PR 본문 reaction 기준으로 Codex 리뷰 진행 중인지, merge 가능 상태인지 확인해야 한다.
+- 리뷰 댓글을 어떻게 판단했고 어떤 실제 수정으로 닫았는지 운영 기록으로 남겨야 한다.
 
 ## Codex reaction 규칙
 
@@ -86,6 +87,12 @@ description: 현재 branch 또는 지정한 PR의 리뷰 댓글, unresolved thre
     - GitHub checks pass
     - Codex가 현재 head 기준으로 신뢰 가능한 `+1` reaction 또는 "더 이상 major issue 없음/no major issues"에 준하는 리뷰/댓글을 남김
     - 로컬 working tree clean
+14. 리뷰 처리 보고서를 생성하거나 갱신한다.
+    - 저장 위치: `~/vaults/99_운영/seemirai-reviews/PR-<pr-number>.md`
+    - 디렉터리가 없으면 생성한다.
+    - 리뷰 댓글 원문 요지, 판단, 실제 수정 내용, 검증 결과, thread resolve 상태, clean signal 근거를 한 문서에 모은다.
+    - 여러 push/review cycle이 있으면 cycle별로 finding을 묶고, 같은 finding이 재발하거나 보강된 경우 연결 관계를 남긴다.
+    - 보고서 생성에 실패하면 clean 완료로 보지 않고 최종 요약의 남은 리스크와 수동 처리 항목에 기록한다.
 
 ## GitHub 명령 힌트
 
@@ -114,6 +121,59 @@ Finding:
 - 검증 명령:
 ```
 
+## 리뷰 처리 보고서 템플릿
+
+보고서는 PR 번호별 단일 Markdown 파일로 관리한다. 파일명은 `PR-<pr-number>.md`를 사용한다.
+
+```markdown
+# PR #<number> 리뷰 처리 보고서
+
+- PR: <url>
+- base/head: `<base>` ← `<head>`
+- 최종 head SHA: `<sha>`
+- 최종 상태: <merge state/check/reaction/thread 요약>
+- 작성 시각: <ISO 또는 로컬 시각>
+
+## 처리 요약
+
+- 처리한 finding 수:
+- resolved thread 수:
+- Codex clean signal:
+- 남은 리스크:
+
+## 리뷰 댓글별 처리
+
+### Finding <n>. <제목>
+
+- 리뷰 댓글:
+  - 작성자:
+  - 생성 시각:
+  - 위치:
+  - thread:
+  - URL:
+  - 원문 요지:
+- 판단:
+  - 심각도:
+  - 수용 여부:
+  - 판단 근거:
+  - DnD:
+- 실제 수정:
+  - 변경 파일:
+  - 구현 내용:
+  - 추가/수정 테스트:
+  - 커밋:
+- 검증:
+  - 실행 명령:
+  - 결과:
+- 종료 상태:
+  - thread resolve:
+  - 후속 Codex 신호:
+
+## 검증 로그 요약
+
+## 남은 리스크와 후속 작업
+```
+
 ## 완료 기준
 
 - unresolved thread가 없다.
@@ -122,6 +182,7 @@ Finding:
 - 현재 head 기준으로 신뢰 가능한 Codex `+1` reaction 또는 "더 이상 major issue 없음/no major issues"에 준하는 Codex 리뷰/댓글 clean signal이 있다.
 - 로컬 working tree가 clean이다.
 - 수정 commit이 push됐다.
+- `~/vaults/99_운영/seemirai-reviews/PR-<pr-number>.md` 보고서가 생성 또는 갱신됐다.
 - reaction/review polling이 push/review cycle별 30분 안에 완료됐거나, timeout이 남은 리스크로 기록됐다.
 - resolve 실패 thread가 없다.
 - 처리한 finding과 남은 리스크가 최종 요약에 포함됐다.
@@ -140,5 +201,6 @@ Finding:
 - timeout 여부
 - skipped/neutral check 목록
 - resolve 실패 thread와 수동 처리 필요 여부
+- 리뷰 처리 보고서 경로
 - merge 가능 여부
 - 남은 리스크

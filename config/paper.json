@@ -130,5 +130,18 @@
       "stop_loss_bps": "30"
     }
   },
+  "risk": {
+    "thresholds": {
+      "daily_loss_limit_bps": "100",
+      "weekly_loss_limit_bps": "300",
+      "max_drawdown_bps": "500",
+      "max_order_notional_bps_of_equity": "100",
+      "max_expected_loss_bps_of_equity": "20",
+      "btc_eth_max_position_bps_of_equity": "2000",
+      "alt_max_position_bps_of_equity": "500",
+      "total_alt_max_position_bps_of_equity": "1500",
+      "max_consecutive_strategy_losses": 3
+    }
+  },
   "secrets": {}
 }

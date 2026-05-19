@@ -79,6 +79,7 @@ migrations/
   000003_market_data_hypertables.sql
   000004_jobs.sql
   000005_audit_events.sql
+  000006_order_events.sql
 ```
 
 ### AD-006: 큐와 스케줄러
@@ -261,6 +262,7 @@ backup:
   include:
     - schema
     - orders
+    - order_events
     - fills
     - audit_events
     - risk_events

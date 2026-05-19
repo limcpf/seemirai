@@ -3,6 +3,10 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
+  orderLifecycleStatuses,
+  stateTransitionEventKinds,
+} from "../../src/domain/index.js";
+import {
   DuplicateMigrationVersionError,
   MigrationChecksumMismatchError,
   applyMigrations,
@@ -84,6 +88,21 @@ describe("migration runner", () => {
     expect(migrationSql).toContain("CREATE INDEX IF NOT EXISTS jobs_claim_idx");
     expect(migrationSql).toContain("WHERE status = 'PENDING'");
     expect(migrationSql).toContain("CHECK (attempt_count <= max_attempts)");
+  });
+
+  it("keeps order event persistence and state checks aligned with canonical state lists", async () => {
+    const migrations = await loadMigrationFiles(defaultMigrationsDirectory);
+    const migrationSql = migrations.map((migration) => migration.sql).join("\n");
+
+    expect(migrationSql).toContain("CREATE TABLE IF NOT EXISTS order_events");
+    expect(migrationSql).toContain("CREATE INDEX IF NOT EXISTS order_events_order_occurred_at_idx");
+    expect(migrationSql).toContain("CREATE INDEX IF NOT EXISTS order_events_rejected_idx");
+    expect(migrationSql).toContain("'ORDER_STATE_TRANSITION'");
+    expect(stateTransitionEventKinds).toContain("ORDER_STATE_TRANSITION");
+
+    for (const status of orderLifecycleStatuses) {
+      expect(migrationSql).toContain(`'${status}'`);
+    }
   });
 
   it("fails when an applied migration checksum changed on disk", async () => {

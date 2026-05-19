@@ -173,17 +173,22 @@ ruleRegistry
 
 ### M5. RiskGate와 상태 전이
 
-- [ ] 주문 state machine 구현
-- [ ] kill switch state machine 구현
-- [ ] 일간/주간/MDD/1회 주문/1회 손실/연속 손실 한도 구현
-- [ ] stale market data, DB write failure, duplicate idempotency key 장애 정책 구현
-- [ ] append-only `order_events`와 `audit_events` 저장
+- [x] 주문 state machine 구현
+- [x] kill switch state machine 구현
+- [x] M5 리스크 threshold config와 snapshot contract 구현
+- [x] 주문 상태값 `as const` 중앙 목록화와 `order_events` persistence foundation 구현
+- [x] 일간/주간/MDD/1회 주문/1회 손실/연속 손실 한도 evaluator 구현
+- [x] stale market data, DB write failure, duplicate idempotency key 장애 정책 evaluator 구현
+- [x] append-only `order_events`, `audit_events`, `risk_events` runtime 연결
 
 검증:
 
-- [ ] 각 risk limit 차단 테스트
-- [ ] hard stop 시 pending paper order 취소 테스트
-- [ ] open position 자동 청산 금지 테스트
+- [x] 주문/kill switch 상태 전이 단위 테스트
+- [x] 상태 목록과 transition map coverage 테스트
+- [x] `order_events` migration/schema/repository 테스트
+- [x] 각 risk limit 차단 테스트
+- [x] hard stop 시 pending paper order 취소 테스트
+- [x] open position 자동 청산 금지 테스트
 
 ### M6. ExecutionEngine과 PaperBroker
 
@@ -246,6 +251,19 @@ ruleRegistry
 - 2026-05-17: issue #10 Sub PR 3은 `issue-10/03-market-data-persistence`에서 `policy_snapshots`, `trades`, `orderbook_metrics`, `orderbook_snapshots` repository와 idempotent insert/upsert 경계를 고정한다. runtime worker 연결과 M3 최종 완료 체크는 후속 Sub PR 4에서 처리한다.
 - 2026-05-17: issue #10 Sub PR 4는 `issue-10/04-runtime-verification`에서 `PAPER_NO_KEY` Upbit public quotation runtime assembly, market data event persistence routing, status event의 audit/risk 차단 후보 매핑을 고정하고 M3 체크리스트를 완료 처리한다. 실제 RiskGate state machine과 주문 차단 적용은 M5 범위로 유지한다.
 - 2026-05-18: issue #16은 M4 Cost/rule/strategy core 범위가 cost model, strategy config/rules, strategy variants, audit persistence/docs로 나뉘어 `sub PR mode`에서 순차 진행됐다. Sub PR 4는 `AuditLogPort -> audit_events` append adapter와 주문 후보 폐기 audit helper로 폐기 사유 추적 경계를 고정하고 M4 체크리스트를 완료 처리한다.
+- 2026-05-19: issue #22는 M5 RiskGate와 상태 전이 범위가 state machine, `order_events` persistence, risk limit evaluator, runtime `risk_ok` 연결로 나뉘어 리뷰 위험이 크므로 `sub PR mode`에서 순차 진행한다. 공통 RiskGate result type, migration 순서, runtime rule 연결이 서로 맞물려 기본 운영은 병렬이 아니라 선행 PR merge 후 다음 PR을 만드는 방식으로 유지한다.
+- 2026-05-19: issue #22 Sub PR 2는 `issue-22/02-risk-persistence`에서 상태값을 `as const` 목록과 union type으로 중앙화하고, `orders.status`/`order_events` migration check, `order_events` repository, `audit_events`/`risk_events` row mapper, append persistence test를 고정한다.
+- 2026-05-19: issue #22 Sub PR 3은 `issue-22/03-risk-limit-evaluator`에서 손실/노출/인프라 risk evaluator와 threshold snapshot payload를 구현한다. runtime `risk_ok` 연결, hard stop pending order action event, append-only 저장소 wiring은 Sub PR 4 범위로 유지한다.
+- 2026-05-19: issue #22 Sub PR 4는 `issue-22/04-runtime-rule-integration`에서 `risk_ok`를 현재 후보와 일치하는 context 기반 RiskGate 평가에 연결하고, RiskGate 판단을 주문 상태 전이/kill switch 전이/`risk_events`/`audit_events` combined evidence append 계획으로 변환한다. 현재 kill switch가 신규 주문 차단 상태이면 RiskGate snapshot이 깨끗해도 주문을 거부한다. `HARD_STOP`은 pending paper order 취소 계획 event만 만들며, 실제 broker cancel 호출과 open position 자동 청산은 수행하지 않는다.
+
+issue #22 sub PR 계획:
+
+| 순서 | branch | 목표 | 제외 범위 | 파일 소유권 | 검증 |
+| --- | --- | --- | --- | --- | --- |
+| 1 | `issue-22/01-risk-state-foundation` | 주문 state machine, kill switch state machine, RiskGate 타입, M5 threshold config, 상태 전이 단위 테스트 | DB migration/repository, risk limit evaluator, `risk_ok` runtime 연결, broker cancel 호출 | `src/domain/risk.ts`, `src/domain/state-machines.ts`, `src/runtime/risk-config.ts`, `src/runtime/config.ts`, `config/paper.json`, state/config unit test, M5 관련 문서 | `corepack pnpm typecheck`, `corepack pnpm test`, `./scripts/verify` |
+| 2 | `issue-22/02-risk-persistence` | 상태값 `as const` 중앙 목록화, `order_events` migration/schema/repository, state transition event mapper, append persistence integration test | risk limit evaluator, `risk_ok` runtime 연결, PaperBroker 실행 | `migrations/**`, `src/domain/orders.ts`, `src/domain/state-machines.ts`, `src/infrastructure/db/**`, persistence tests, DB schema docs | `corepack pnpm typecheck`, `corepack pnpm test`, `SEEMIRAI_RUN_DB_INTEGRATION=1 corepack pnpm exec vitest run tests/integration`, `./scripts/verify` |
+| 3 | `issue-22/03-risk-limit-evaluator` | 손실/노출/인프라 risk evaluator, threshold snapshot payload, risk limit 단위 테스트 | persistence migration 변경, runtime rule 최종 연결 | `src/domain/risk.ts`, `src/application/risk/**`, risk evaluator tests | `corepack pnpm typecheck`, `corepack pnpm test`, `./scripts/verify` |
+| 4 | `issue-22/04-runtime-rule-integration` | `risk_ok` 실제 RiskGate 결과 연결, hard stop pending paper order cancel action plan/event, M5 문서 최종화 | ExecutionEngine, PaperBroker 체결/부분체결/재호가, Telegram endpoint | runtime/rule integration, audit/risk/order event wiring, M5 docs | `corepack pnpm typecheck`, `corepack pnpm test`, `./scripts/verify` |
 
 issue #3 sub PR 계획:
 

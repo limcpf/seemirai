@@ -1,11 +1,14 @@
 import { Decimal } from "decimal.js";
 import { parseFinancialDecimal } from "../../shared/index.js";
+import { evaluateRiskGate } from "../risk/risk-gate.js";
 import type {
   JsonRecord,
   MarketCode,
   Rule,
   RuleContext,
   RuleEvaluation,
+  RiskGateContext,
+  RiskGateResult,
 } from "../../domain/index.js";
 
 type OptionalRuleDecimalRead =
@@ -48,6 +51,10 @@ export interface DefaultM4RulesOptions {
   minDepthKrw: string;
   stopLossBps: string;
   takeProfitBps: string;
+}
+
+export interface RiskOkRuleOptions {
+  evaluateRiskGate?: (context: RiskGateContext) => RiskGateResult;
 }
 
 /**
@@ -216,6 +223,59 @@ export const riskOkPlaceholderRule: Rule = {
 };
 
 /**
+ * 실제 RiskGate 평가 결과를 `risk_ok` rule 결과로 연결한다.
+ *
+ * RiskGate가 audit-only WARN을 반환해도 `approved=true`이면 rule은 PASS로 남겨 실행 후보를 막지 않는다.
+ *
+ * 후보 fingerprint가 없는 사전 계산 결과는 현재 주문 후보와 일치하는지 검증할 수 없으므로 받지 않는다. 이 rule은 항상
+ * 현재 `riskGateContext`로 RiskGate를 재평가하고, 입력이 없으면 fail-closed로 차단한다.
+ */
+export function createRiskOkRule(options: RiskOkRuleOptions = {}): Rule {
+  const evaluate = options.evaluateRiskGate ?? evaluateRiskGate;
+
+  return {
+    id: "risk_ok",
+    evaluate: (context) => {
+      if (context.riskGateContext === undefined) {
+        // RiskGate 입력 누락은 주문 승인 근거 누락이므로 PASS나 WARN으로 완화하지 않는다.
+        return fail("risk_gate_context_missing", "RiskGate context is required before risk_ok can pass", {
+          active_risk_gate_evaluated: false,
+          execution_approval: false,
+        });
+      }
+
+      const candidateMismatch = validateRiskGateRuleCandidate(context);
+      if (candidateMismatch !== undefined) {
+        return candidateMismatch;
+      }
+
+      // 외부 캐시 결과 대신 현재 context를 평가해 stale 승인 결과가 주문 후보를 우회하지 못하게 한다.
+      const result = evaluate(context.riskGateContext);
+
+      return result.approved
+        ? pass("risk_gate_approved", "RiskGate approved the candidate", toRiskGateRuleMetadata(result))
+        : fail("risk_gate_rejected", "RiskGate rejected the candidate", toRiskGateRuleMetadata(result));
+    },
+  };
+}
+
+/**
+ * M5 이후 runtime 기본 rule 조합을 만든다.
+ */
+export function createDefaultM5Rules(options: DefaultM4RulesOptions): readonly Rule[] {
+  return [
+    createUniverseAllowedRule({ allowedMarkets: options.allowedMarkets }),
+    marketWarningAbsentRule,
+    createSpreadOkRule({ maxSpreadBps: options.maxSpreadBps }),
+    createDepthSufficientRule({ minDepthKrw: options.minDepthKrw }),
+    costMarginOkRule,
+    createRiskOkRule(),
+    createStopLossRule({ stopLossBps: options.stopLossBps }),
+    createTakeProfitRule({ takeProfitBps: options.takeProfitBps }),
+  ];
+}
+
+/**
  * unrealized PnL이 손절 threshold에 도달했는지 확인하는 exit rule을 만든다.
  */
 export function createStopLossRule(options: StopLossRuleOptions): Rule {
@@ -303,6 +363,182 @@ export function createDefaultM4Rules(options: DefaultM4RulesOptions): readonly R
     createStopLossRule({ stopLossBps: options.stopLossBps }),
     createTakeProfitRule({ takeProfitBps: options.takeProfitBps }),
   ];
+}
+
+/**
+ * 현재 rule 후보와 RiskGate 입력 후보가 같은 주문 intent인지 확인한다.
+ *
+ * exchange/market rule과 cost rule은 `RuleContext` 기준으로 통과했는데 `risk_ok`만 다른 후보의 RiskGate snapshot을
+ * 평가하면 stale 승인 우회가 가능하므로, 후보 식별자가 다르면 fail-closed한다.
+ */
+function validateRiskGateRuleCandidate(context: RuleContext): RuleEvaluation | undefined {
+  const riskIntent = context.riskGateContext?.orderIntent;
+
+  if (riskIntent === undefined) {
+    return undefined;
+  }
+
+  if (context.orderIntent === undefined) {
+    return fail("risk_gate_order_intent_missing", "Rule order intent is required before risk_ok can pass", {
+      active_risk_gate_evaluated: false,
+      execution_approval: false,
+      risk_gate_exchange_id: riskIntent.exchangeId,
+      risk_gate_market: riskIntent.market,
+      risk_gate_idempotency_key: riskIntent.idempotencyKey,
+    });
+  }
+
+  const mismatches = createOrderIntentMismatchMetadata(context, riskIntent);
+
+  if (Object.keys(mismatches).length === 0) {
+    return undefined;
+  }
+
+  return fail("risk_gate_context_mismatch", "Rule context and RiskGate context do not describe the same order candidate", {
+    active_risk_gate_evaluated: false,
+    execution_approval: false,
+    mismatches,
+  });
+}
+
+function createOrderIntentMismatchMetadata(
+  context: RuleContext,
+  riskIntent: NonNullable<RuleContext["riskGateContext"]>["orderIntent"],
+): JsonRecord {
+  const ruleIntent = context.orderIntent;
+  const mismatches: JsonRecord = {};
+
+  if (context.exchangeId !== riskIntent.exchangeId) {
+    mismatches.context_exchange_id = context.exchangeId;
+    mismatches.risk_gate_exchange_id = riskIntent.exchangeId;
+  }
+  if (context.market !== riskIntent.market) {
+    mismatches.context_market = context.market;
+    mismatches.risk_gate_market = riskIntent.market;
+  }
+
+  if (ruleIntent === undefined) {
+    return mismatches;
+  }
+
+  appendMismatch(mismatches, "order_intent_exchange_id", ruleIntent.exchangeId, riskIntent.exchangeId);
+  appendMismatch(mismatches, "order_intent_market", ruleIntent.market, riskIntent.market);
+  appendMismatch(mismatches, "order_intent_strategy_id", ruleIntent.strategyId, riskIntent.strategyId);
+  appendMismatch(mismatches, "order_intent_side", ruleIntent.side, riskIntent.side);
+  appendMismatch(mismatches, "order_intent_order_type", ruleIntent.orderType, riskIntent.orderType);
+  appendDecimalMismatch(mismatches, "order_intent_requested_quantity", ruleIntent.requestedQuantity, riskIntent.requestedQuantity);
+  appendDecimalMismatch(mismatches, "order_intent_requested_notional", ruleIntent.requestedNotional, riskIntent.requestedNotional);
+  appendDecimalMismatch(
+    mismatches,
+    "order_intent_requested_price",
+    readOrderIntentRequestedPrice(ruleIntent),
+    readOrderIntentRequestedPrice(riskIntent),
+  );
+  appendDecimalMismatch(
+    mismatches,
+    "order_intent_expected_loss_bps_of_equity",
+    readRuleContextExpectedLossBps(context, ruleIntent),
+    readRiskGateExpectedLossBps(context, riskIntent),
+  );
+  appendMismatch(mismatches, "order_intent_idempotency_key", ruleIntent.idempotencyKey, riskIntent.idempotencyKey);
+
+  return mismatches;
+}
+
+function readOrderIntentRequestedPrice(intent: NonNullable<RuleContext["orderIntent"]>): string | undefined {
+  return intent.orderType === "LIMIT" ? intent.requestedPrice : undefined;
+}
+
+function readRiskGateExpectedLossBps(
+  context: RuleContext,
+  riskIntent: NonNullable<RuleContext["orderIntent"]>,
+): string | undefined {
+  return context.riskGateContext?.expectedLossBpsOfEquity ?? readOrderIntentExpectedLossBps(riskIntent);
+}
+
+function readRuleContextExpectedLossBps(
+  context: RuleContext,
+  ruleIntent: NonNullable<RuleContext["orderIntent"]>,
+): string | undefined {
+  return context.expectedLossBpsOfEquity ?? readOrderIntentExpectedLossBps(ruleIntent);
+}
+
+function readOrderIntentExpectedLossBps(intent: NonNullable<RuleContext["orderIntent"]>): string | undefined {
+  const value =
+    intent.metadata?.expected_loss_bps_of_equity ??
+    intent.metadata?.expectedLossBpsOfEquity;
+
+  return typeof value === "string" ? value : undefined;
+}
+
+function appendMismatch(
+  target: JsonRecord,
+  fieldName: string,
+  ruleValue: string | undefined,
+  riskGateValue: string | undefined,
+): void {
+  if (ruleValue !== riskGateValue) {
+    target[`${fieldName}_rule`] = ruleValue;
+    target[`${fieldName}_risk_gate`] = riskGateValue;
+  }
+}
+
+function appendDecimalMismatch(
+  target: JsonRecord,
+  fieldName: string,
+  ruleValue: string | undefined,
+  riskGateValue: string | undefined,
+): void {
+  appendMismatch(
+    target,
+    fieldName,
+    normalizeFinancialDecimalString(ruleValue),
+    normalizeFinancialDecimalString(riskGateValue),
+  );
+}
+
+function normalizeFinancialDecimalString(value: string | undefined): string | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+
+  try {
+    return parseFinancialDecimal(value).toFixed();
+  } catch {
+    return value;
+  }
+}
+
+function toRiskGateRuleMetadata(result: RiskGateResult): JsonRecord {
+  return {
+    active_risk_gate_evaluated: true,
+    execution_approval: result.approved,
+    risk_gate_status: result.status,
+    risk_gate_action: result.action,
+    threshold_snapshot: result.thresholdSnapshot,
+    failed_evaluations: result.failedEvaluations.map(toRiskGateEvaluationMetadata),
+    warning_evaluations: result.warningEvaluations.map(toRiskGateEvaluationMetadata),
+  };
+}
+
+function toRiskGateEvaluationMetadata(evaluation: RiskGateResult["evaluations"][number]): JsonRecord {
+  const metadata: JsonRecord = {
+    status: evaluation.status,
+    reason_code: evaluation.reasonCode,
+    message: evaluation.message,
+    severity: evaluation.severity,
+    action: evaluation.action,
+  };
+
+  assignIfDefined(metadata, "metadata", evaluation.metadata);
+
+  return metadata;
+}
+
+function assignIfDefined(target: JsonRecord, key: string, value: unknown): void {
+  if (value !== undefined) {
+    target[key] = value;
+  }
 }
 
 function readFeatureDecimal(context: RuleContext, key: string): Decimal | undefined {

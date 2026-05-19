@@ -8,6 +8,7 @@ import type { Pool } from "pg";
 
 const runDbIntegration = process.env.SEEMIRAI_RUN_DB_INTEGRATION === "1";
 const describeDb = runDbIntegration ? describe : describe.skip;
+const expectedMigrationCount = 7;
 
 describeDb("database migrations integration", () => {
   let pool: Pool | undefined;
@@ -24,9 +25,9 @@ describeDb("database migrations integration", () => {
     const secondRun = await applyMigrations(pool);
     const migrationCount = await pool.query<{ count: string }>("SELECT count(*) FROM schema_migrations");
 
-    expect(firstRun.applied.length + firstRun.skipped.length).toBe(5);
+    expect(firstRun.applied.length + firstRun.skipped.length).toBe(expectedMigrationCount);
     expect(secondRun.applied).toHaveLength(0);
-    expect(secondRun.skipped).toHaveLength(5);
-    expect(Number(migrationCount.rows[0]?.count)).toBe(5);
+    expect(secondRun.skipped).toHaveLength(expectedMigrationCount);
+    expect(Number(migrationCount.rows[0]?.count)).toBe(expectedMigrationCount);
   });
 });

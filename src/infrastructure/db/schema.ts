@@ -1,4 +1,5 @@
 import type { ColumnType, Generated } from "kysely";
+import type { KillSwitchState, OrderLifecycleStatus } from "../../domain/index.js";
 
 /**
  * PostgreSQL `timestamptz` 컬럼 타입이다.
@@ -60,6 +61,8 @@ export interface DatabaseSchema {
   schema_migrations: SchemaMigrationsTable;
   /** broker 종류와 무관한 주문 요청의 canonical record */
   orders: OrdersTable;
+  /** 주문 상태 전이의 canonical append-only event log */
+  order_events: OrderEventsTable;
   /** paper trading 전용 주문 실행 metadata */
   paper_orders: PaperOrdersTable;
   /** 주문 체결 record와 비용 계산 입력 */
@@ -70,6 +73,8 @@ export interface DatabaseSchema {
   audit_events: AuditEventsTable;
   /** 리스크 게이트 판단과 차단 이력 */
   risk_events: RiskEventsTable;
+  /** 전역 kill switch의 durable 현재 상태 */
+  kill_switch_state: KillSwitchStateTable;
   /** PostgreSQL 기반 scheduler/worker 작업 큐 */
   jobs: JobsTable;
   /** 거래소 정책, 수수료, 호가 단위, market status snapshot */
@@ -125,7 +130,7 @@ export interface OrdersTable {
   /** 주문 유형. MVP는 지정가 중심이지만 schema는 market order 차단/검증 기록도 표현한다. */
   order_type: "LIMIT" | "MARKET";
   /** application이 관리하는 주문 상태 */
-  status: string;
+  status: OrderLifecycleStatus;
   /** 동일 주문 의도 중복 생성을 막는 업무 idempotency key */
   idempotency_key: string;
   /** 요청 지정가. market order 또는 가격 미정 후보에서는 null일 수 있다. */
@@ -140,6 +145,37 @@ export interface OrdersTable {
   created_at: GeneratedTimestamp;
   /** 주문 상태 또는 metadata 최종 갱신 시각 */
   updated_at: GeneratedTimestamp;
+}
+
+/**
+ * 주문 상태 전이 canonical event log다.
+ *
+ * `orders.status`는 현재 상태 snapshot이고, `order_events`는 허용/거부된 상태 전이 시도 전체를 append-only로
+ * 보존한다. 불법 전이도 `accepted=false`로 남겨 사후 감사와 복구 판단에 사용한다.
+ */
+export interface OrderEventsTable {
+  /** 주문 이벤트 ID */
+  id: Generated<string>;
+  /** 상태 전이가 속한 주문 ID */
+  order_id: string;
+  /** 주문 event 종류. 현재는 상태 전이만 canonical event로 저장한다. */
+  event_type: "ORDER_STATE_TRANSITION";
+  /** 전이 전 주문 상태 */
+  from_status: OrderLifecycleStatus;
+  /** 전이 대상 주문 상태 */
+  to_status: OrderLifecycleStatus;
+  /** state machine이 전이를 허용했는지 여부 */
+  accepted: boolean;
+  /** 허용 또는 거부 사유 코드 */
+  reason_code: string;
+  /** 사람이 읽을 수 있는 상태 전이 설명 */
+  message: string;
+  /** 여러 이벤트를 하나의 업무 흐름으로 묶는 상관관계 ID */
+  correlation_id: string | null;
+  /** state machine metadata와 추가 판단 근거 */
+  payload_json: GeneratedJsonRecord;
+  /** 상태 전이가 발생하거나 거부된 시각 */
+  occurred_at: GeneratedTimestamp;
 }
 
 /**
@@ -270,6 +306,26 @@ export interface RiskEventsTable {
   payload_json: GeneratedJsonRecord;
   /** 리스크 이벤트 발생 시각 */
   occurred_at: GeneratedTimestamp;
+}
+
+/**
+ * 전역 kill switch의 현재 상태 snapshot이다.
+ *
+ * 상태 전이 감사 로그와 별개로 프로세스 재시작 후에도 신규 주문 차단 상태를 복구할 수 있게 단일 row로 유지한다.
+ */
+export interface KillSwitchStateTable {
+  /** 전역 kill switch row를 고정하는 scope */
+  scope: "global";
+  /** durable 현재 kill switch 상태 */
+  state: KillSwitchState;
+  /** 마지막 상태 변경 사유 */
+  reason_code: string;
+  /** 마지막 상태 변경 correlation id */
+  correlation_id: string | null;
+  /** 상태 전이 event payload와 추가 판단 근거 */
+  payload_json: GeneratedJsonRecord;
+  /** durable snapshot 최종 갱신 시각 */
+  updated_at: GeneratedTimestamp;
 }
 
 /**

@@ -9,6 +9,7 @@ import {
   StrategyParametersConfigSchema,
   defaultStrategyParametersConfig,
 } from "./strategy-parameters.js";
+import { RiskConfigSchema, defaultRiskConfig } from "./risk-config.js";
 
 const defaultConfigUrl = new URL("../../config/paper.json", import.meta.url);
 
@@ -51,6 +52,7 @@ export const RuntimeConfigSchema = z
       }),
     registry: RegistryActivationConfigSchema.default(defaultRegistryActivationConfig),
     strategyParameters: StrategyParametersConfigSchema.default(defaultStrategyParametersConfig),
+    risk: RiskConfigSchema.default(defaultRiskConfig),
     secrets: z
       .object({
         upbit_access_key: z.string().min(1).optional(),

@@ -6,6 +6,7 @@
 
 - schema: `src/runtime/config.ts`
 - registry 활성화 schema: `src/runtime/registry-config.ts`
+- risk threshold schema: `src/runtime/risk-config.ts`
 - 기본 profile: `config/paper.json`
 
 ## 책임
@@ -33,6 +34,7 @@
 | `llm` | trade signal 생성 불가 | LLM이 매매 판단을 직접 만들지 못하게 제한 |
 | `registry` | 정적 registry id 참조 | exchange, strategy, rule 활성화 조합 |
 | `strategyParameters` | strategy별 기본 threshold | 전략 후보 생성과 rule 평가에 쓰는 보수적 기준값 |
+| `risk` | M5 리스크 한도 threshold | RiskGate 평가와 상태 전이 audit에 쓰는 보수적 계정/노출/손실 한도 |
 | `secrets` | 기본 `{}` | schema shape만 표현하며 실제 secret은 저장하지 않음 |
 
 ## 안전 invariant
@@ -82,7 +84,8 @@ market data status event는 다음 방식으로 저장 경계를 지난다.
 | `RECONNECTING` | `MARKET_DATA_STATUS`, `WARN` | `market_data_reconnecting`, `BLOCK_NEW_ORDERS` | true |
 | `DISCONNECTED` | `MARKET_DATA_STATUS`, `ERROR` | `market_data_disconnected`, `BLOCK_NEW_ORDERS` | true |
 
-M3는 실제 RiskGate state machine을 구현하지 않고 위 차단 입력 신호까지만 만든다. RiskGate 상태 전이와 주문 차단 적용은 M5 범위다.
+M3는 실제 RiskGate state machine을 구현하지 않고 위 차단 입력 신호까지만 만든다. M5 Sub PR 1은 state machine과
+threshold config foundation을 제공하고, 실제 주문 차단 적용은 M5 runtime integration 범위다.
 
 ## 주문 후보 폐기 Audit
 
@@ -250,14 +253,77 @@ M4는 주문 후보가 실행 단계로 넘어가지 못한 이유를 `AuditLogP
 | `liquidity_reversion` | `entry_deviation_bps` | `18` | bps | 높일수록 진입 신호를 더 드물게 허용 |
 | `liquidity_reversion` | `stop_loss_bps` | `30` | bps | 낮출수록 손절 후보를 더 빨리 만든다 |
 
-M4의 `risk_ok` rule은 RiskGate 활성 승인 구현이 아니다. `risk_ok`는 registry/config contract에 남기되, M5 전까지는 `risk_ok_placeholder` WARN으로 평가해 실행 승인으로 해석되지 않게 한다.
+M5 runtime integration 이후 `risk_ok` rule은 현재 `riskGateContext`로 RiskGate를 직접 평가한 결과만 실행 승인
+근거로 사용한다. `riskGateContext`가 없거나 `RuleContext` 후보와 `riskGateContext.orderIntent`의
+exchange/market/idempotency key, 수량, 명목 금액, 지정가, 예상 손실 입력이 다르면 fail-closed 처리하고, 금액 계열
+문자열은 Decimal로 정규화해 DB numeric scale 차이를 제거한다. RiskGate가 `approved=true`를 반환할 때만
+`risk_gate_approved` PASS가 된다. 후보 fingerprint가 없는 사전 계산 결과는 stale 승인 우회 위험이 있으므로 rule
+context와 runtime persistence 입력으로 받지 않는다. M4 `risk_ok_placeholder`는 과거 rule chain 검증용 helper로만
+남고, M5 기본 rule 조합은 `createDefaultM5Rules`와 `createRiskOkRule`을 사용한다.
+
+## Risk 구조
+
+구현 기준:
+
+- schema: `src/runtime/risk-config.ts`
+- domain contract: `src/domain/risk.ts`
+- 기본 profile: `config/paper.json`
+
+`risk.thresholds`는 M5 RiskGate evaluator가 사용할 계정 손실, 주문 크기, 포지션 노출, 연속 손실 기준이다. 모든 금융
+비율 값은 bps 단위의 Decimal string이고, 연속 손실 횟수만 양의 정수다.
+
+```json
+{
+  "risk": {
+    "thresholds": {
+      "daily_loss_limit_bps": "100",
+      "weekly_loss_limit_bps": "300",
+      "max_drawdown_bps": "500",
+      "max_order_notional_bps_of_equity": "100",
+      "max_expected_loss_bps_of_equity": "20",
+      "btc_eth_max_position_bps_of_equity": "2000",
+      "alt_max_position_bps_of_equity": "500",
+      "total_alt_max_position_bps_of_equity": "1500",
+      "max_consecutive_strategy_losses": 3
+    }
+  }
+}
+```
+
+| threshold | 기본값 | 의미 |
+| --- | ---: | --- |
+| `daily_loss_limit_bps` | `100` | 일간 손실 -1% 도달 시 신규 주문 차단 |
+| `weekly_loss_limit_bps` | `300` | 주간 손실 -3% 도달 시 신규 주문 차단 |
+| `max_drawdown_bps` | `500` | MDD -5% 도달 시 신규 주문 차단 |
+| `max_order_notional_bps_of_equity` | `100` | 1회 주문 금액을 계정 평가액 1%로 제한 |
+| `max_expected_loss_bps_of_equity` | `20` | 1회 예상 손실을 계정 평가액 0.2%로 제한 |
+| `btc_eth_max_position_bps_of_equity` | `2000` | BTC/ETH 단일 보유를 계정 평가액 20%로 제한 |
+| `alt_max_position_bps_of_equity` | `500` | 단일 알트 보유를 계정 평가액 5%로 제한 |
+| `total_alt_max_position_bps_of_equity` | `1500` | 전체 알트 보유를 계정 평가액 15%로 제한 |
+| `max_consecutive_strategy_losses` | `3` | 동일 전략 연속 손실 3회에서 전략 중지 후보 |
+
+M5 Sub PR 1은 위 기준을 load 가능한 config와 threshold snapshot contract로 고정했고, Sub PR 3은 실제
+RiskGate evaluator를 구현했다. Sub PR 4는 `risk_ok` rule 연결과 `order_events`/`risk_events`/`audit_events`
+append 계획을 연결한다. 증거 저장은 주문 상태 전이, kill switch 상태 전이, risk event, audit event를 combined event
+store port로 묶어 후속 DB transaction/outbox 구현이 원자성을 보장할 수 있게 한다. `PAUSE_STRATEGY`는 해당 strategy
+범위의 정지 계획으로 남기고 전역 kill switch로 승격하지 않는다. `HARD_STOP`은 pending paper order cancel action
+plan을 감사 이벤트로 남기지만, 실제 broker cancel 호출과 open position 자동 청산은 M6 이후 별도 실행 경계에서만
+다룬다. runtime persistence는 `correlationId`와 `riskGateContext.orderIntent.idempotencyKey`가 같아야 하며,
+DB/현재 후보에서 읽은 주문 의도와 `riskGateContext.orderIntent`의 주문 금액/예상 손실 입력도 같아야 한다. 현재 kill
+switch action plan이 신규 주문 또는 수동 검토를 요구하면 RiskGate snapshot이 깨끗해도 주문을 승인하지 않는다. 현재
+주문 상태에서 RiskGate 승인/거부 상태로 전이할 수 없거나 strategy 손실 snapshot이 주문 strategy와 다르면 runtime은
+별도 risk event를 남기고 fail-closed한다. kill switch 전이는 `kill_switch_state` durable snapshot에도 반영해
+재시작 후 차단 상태를 복구한다.
+strategy 연속 손실 초과는 일간 손실이나 kill switch 같은 더 강한 전역 차단이 함께 발생해도 strategy pause evidence로
+함께 남긴다. `STRATEGY_PAUSED` kill switch 상태는 strategy 평가 중지만 표현하고 전역 신규 주문 차단으로 사용하지
+않는다. PostgreSQL combined event store는 주문 전이, risk event, audit event를 하나의 transaction으로 저장한다.
 
 ## 변경 절차
 
 설정 구조나 허용 id를 바꾸면 다음을 함께 확인한다.
 
 1. `src/runtime/config.ts` 또는 `src/runtime/registry-config.ts`
-2. `src/runtime/strategy-parameters.ts`
+2. `src/runtime/strategy-parameters.ts` 또는 `src/runtime/risk-config.ts`
 3. `src/application/registry.ts`
 4. `config/paper.json`
 5. 관련 unit test

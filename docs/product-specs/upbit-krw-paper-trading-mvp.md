@@ -266,6 +266,7 @@ storage:
 PostgreSQL 일반 테이블:
 
 - `orders`
+- `order_events`
 - `fills`
 - `balances`
 - `positions`

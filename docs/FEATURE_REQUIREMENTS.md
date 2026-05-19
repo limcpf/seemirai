@@ -191,7 +191,7 @@ Acceptance Criteria:
 
 Acceptance Criteria:
 
-- [ ] `orders`, `fills`, `balances`, `positions`, `strategy_configs`, `risk_events`, `alerts`, `policy_snapshots` 저장 책임이 정의된다.
+- [ ] `orders`, `order_events`, `fills`, `balances`, `positions`, `strategy_configs`, `risk_events`, `alerts`, `policy_snapshots` 저장 책임이 정의된다.
 - [ ] `trades`, `candles`, `orderbook_snapshots`, `orderbook_metrics`, `strategy_signals`, `pnl_snapshots` 시계열 저장 책임이 정의된다.
 - [ ] `jobs` table은 `idempotency_key`, `status`, `attempt_count`, `max_attempts`, `last_error`, `run_after`, `locked_at`, `locked_by`를 가진다.
 - [ ] Redis와 BullMQ 없이 MVP runtime이 동작한다.
@@ -344,6 +344,16 @@ Acceptance Criteria:
 
 - 리스크 엔진은 계정 전체, 종목, 전략, 유동성, 손실, 장애 상태를 기준으로 신규 주문을 승인하거나 거부한다.
 - 장애 상황에서 자동 청산은 기본 동작이 아니다.
+- M5 runtime에서는 `risk_ok` rule이 현재 주문 후보와 일치하는 RiskGate context를 직접 평가한 결과를 실행 승인 근거로
+  사용한다. 후보 일치성은 exchange, market, strategy, side, order type, idempotency key, 수량, 명목 금액, 지정가,
+  예상 손실 입력까지 포함하며 Decimal 정규화 후 비교한다. 거부 판단은 append-only `order_events`, `risk_events`,
+  `audit_events`와 kill switch 전이 증거에 원자적으로 기록된다.
+- RiskGate runtime은 현재 주문 상태에서 RiskGate 승인/거부 상태로 전이할 수 없거나 strategy 손실 snapshot이 주문
+  strategy와 다르면 승인하지 않고 fail-closed 리스크 이벤트를 남긴다.
+- 허용된 주문 상태 전이는 DB의 현재 주문 상태가 event의 `fromState`와 같을 때만 현재 snapshot을 갱신하고, strategy
+  pause는 더 강한 전역 차단 action이 함께 있어도 별도 evidence로 남긴다.
+- PostgreSQL runtime event store는 주문 전이, risk event, audit event, `kill_switch_state` durable snapshot을 하나의
+  transaction으로 저장하며, `STRATEGY_PAUSED` kill switch 상태는 전역 신규 주문 차단으로 해석하지 않는다.
 
 Acceptance Criteria:
 
@@ -363,6 +373,7 @@ Acceptance Criteria:
 테스트 요구사항:
 
 - 단위 테스트: 각 한도 위반 조건에서 주문이 거부되는지 확인한다.
+- 단위 테스트: `risk_ok`가 RiskGate 승인 없이 PASS가 되지 않고, stale RiskGate 결과나 후보 불일치 RiskGate context를 재사용하지 않으며, 현재 kill switch 차단 상태에서 주문을 승인하지 않고, 전략 손실 정지가 전역 kill switch로 승격되지 않고, hard stop action plan이 open position 자동 청산을 만들지 않는지 확인한다.
 - 통합 테스트: 데이터 지연 이벤트가 리스크 게이트의 신규 주문 차단으로 이어지는지 확인한다.
 - 수동 테스트: kill switch 작동 시 신규 주문 중지, 미체결 주문 취소, 알림 발송 상태가 기록되는지 확인한다.
 

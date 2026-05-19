@@ -37,11 +37,14 @@ queue repository는 `jobs.idempotency_key` unique constraint로 중복 생성을
 
 ## 테이블 관계도
 
-아래 Mermaid diagram은 물리 FK와 비즈니스 흐름을 함께 표시한다. 실제 FK는 `paper_orders.order_id`, `fills.order_id`, `audit_events.order_id`, `risk_events.order_id`처럼 주문 ID를 직접 참조하는 관계에만 있다. 나머지는 `exchange`, `market`, `strategy_id`, timestamp를 공유하는 논리 관계다.
+아래 Mermaid diagram은 물리 FK와 비즈니스 흐름을 함께 표시한다. 실제 FK는 `order_events.order_id`,
+`paper_orders.order_id`, `fills.order_id`, `audit_events.order_id`, `risk_events.order_id`처럼 주문 ID를 직접
+참조하는 관계에만 있다. 나머지는 `exchange`, `market`, `strategy_id`, timestamp를 공유하는 논리 관계다.
 
 ```mermaid
 erDiagram
   ORDERS ||--o| PAPER_ORDERS : "paper execution detail"
+  ORDERS ||--o{ ORDER_EVENTS : "state transitions"
   ORDERS ||--o{ FILLS : "filled by"
   ORDERS ||--o{ AUDIT_EVENTS : "audited by"
   ORDERS ||--o{ RISK_EVENTS : "risk context"
@@ -85,6 +88,20 @@ erDiagram
     timestamptz submitted_at
     timestamptz accepted_at
     timestamptz completed_at
+  }
+
+  ORDER_EVENTS {
+    uuid id PK
+    uuid order_id FK
+    text event_type
+    text from_status
+    text to_status
+    boolean accepted
+    text reason_code
+    text message
+    text correlation_id
+    jsonb payload_json
+    timestamptz occurred_at
   }
 
   FILLS {
@@ -227,6 +244,7 @@ erDiagram
 | --- | --- | --- |
 | `schema_migrations` | PostgreSQL | 적용한 raw SQL migration의 version, filename, checksum을 기록한다. 재실행 skip과 checksum mismatch 탐지의 기준이다. |
 | `orders` | PostgreSQL | 전략과 리스크 게이트를 통과한 주문 요청의 canonical record다. paper/live broker가 달라져도 주문 의도, idempotency, 상태는 이 테이블이 기준이다. |
+| `order_events` | PostgreSQL | 주문 상태 전이의 canonical append-only event log다. `orders.status`는 현재 snapshot이고, 허용/거부된 전이 시도 전체는 이 테이블에서 조회한다. |
 | `paper_orders` | PostgreSQL | paper trading 전용 실행 metadata다. 주문의 post-only 여부, simulated latency, fill model, 제출/승인/완료 시간을 분리해 live broker 확장 시 `orders`를 오염시키지 않는다. |
 | `fills` | PostgreSQL | 주문의 부분 또는 전체 체결 record다. 비용, 수량, 유동성 구분을 기록하고 position/PnL 계산의 입력이 된다. |
 | `positions` | PostgreSQL | `exchange + market + strategy_id` 단위 현재 포지션 snapshot이다. 체결 이벤트를 누적해 빠르게 현재 노출과 손익을 조회하기 위한 상태 테이블이다. |
@@ -246,5 +264,7 @@ erDiagram
 - 새 거래소를 추가할 때는 기존 table에 `exchange` 값을 추가하고 adapter/policy validation을 확장한다. DB market check를 거래소별 regex로 되돌리지 않는다.
 - 새 time-series feature가 기존 row grain과 다르면 새 hypertable을 만든다. 기존 `trades`나 `orderbook_metrics`에 의미가 다른 컬럼을 억지로 추가하지 않는다.
 - `orders`는 broker 공통 주문 record로 유지한다. paper-only 또는 live-only metadata는 별도 companion table로 분리한다.
+- 주문 상태값은 TypeScript `enum`이 아니라 `as const` 목록과 union type으로 중앙 관리하고, migration check constraint와
+  state transition mapper가 같은 문자열 계약을 사용하게 한다.
 - `jobs.payload_json`은 작업 입력을 담되, 장기 보존해야 하는 업무 결과를 `jobs`에만 두지 않는다. 결과는 domain table이나 audit/risk table에 기록한다.
 - retention, compression, continuous aggregate는 migration으로 관리하되, 실제 운영 파라미터는 데이터 축적 후 별도 migration에서 조정한다.
