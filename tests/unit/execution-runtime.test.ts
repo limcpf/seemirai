@@ -1,0 +1,255 @@
+import { describe, expect, it, vi } from "vitest";
+import { readFile } from "node:fs/promises";
+import path from "node:path";
+import type {
+  BrokerBalanceSnapshot,
+  BrokerOrder,
+  OrderSubmission,
+} from "../../src/domain/index.js";
+import type { BrokerPort, HardStopRuntimeActionPlan } from "../../src/application/index.js";
+import {
+  DisabledUpbitLiveBroker,
+  UpbitLiveBrokerDisabledError,
+  createDisabledUpbitLiveBroker,
+} from "../../src/infrastructure/index.js";
+import {
+  PAPER_NO_KEY_EXECUTION_WORKER_ID,
+  UnsafeHardStopCancelPlanError,
+  UnsafePaperNoKeyExecutionRuntimeError,
+  createPaperNoKeyExecutionRuntime,
+  executeHardStopPendingPaperOrderCancels,
+  listPendingPaperOrdersForHardStop,
+  loadDefaultRuntimeConfig,
+} from "../../src/runtime/index.js";
+
+const observedAt = "2026-05-20T01:00:00.000Z";
+
+describe("PAPER_NO_KEY execution runtime", () => {
+  it("assembles ExecutionEngine with PaperBroker and a disabled live broker", async () => {
+    const config = await loadDefaultRuntimeConfig();
+    const runtime = createPaperNoKeyExecutionRuntime(config, {
+      initialBalances: [
+        {
+          currency: "KRW",
+          available: "1000000",
+        },
+      ],
+      brokerOrderIdPrefix: "runtime-test-order",
+      clock: () => observedAt,
+    });
+
+    expect(PAPER_NO_KEY_EXECUTION_WORKER_ID).toBe("paper-no-key-execution-worker");
+    expect(runtime.exchangeId).toBe("upbit_krw_spot");
+    expect(runtime.markets).toEqual(["KRW-BTC", "KRW-ETH"]);
+    expect(runtime.executionSafetyConfig).toEqual({
+      liveTradingEnabled: false,
+      marketOrderEnabled: false,
+      entryMarketOrderEnabled: false,
+      paperNoKey: true,
+    });
+    expect(runtime.disabledLiveBroker).toBeInstanceOf(DisabledUpbitLiveBroker);
+    await expect(runtime.broker.getBalances()).resolves.toMatchObject({
+      exchangeId: "upbit_krw_spot",
+      balances: [
+        {
+          currency: "KRW",
+          available: "1000000",
+        },
+      ],
+    });
+  });
+
+  it("rejects API keys in the PAPER_NO_KEY execution runtime", () => {
+    expect(() =>
+      createPaperNoKeyExecutionRuntime({
+        secrets: {
+          upbit_access_key: "fixture-access-key",
+        },
+      }),
+    ).toThrow(UnsafePaperNoKeyExecutionRuntimeError);
+  });
+
+  it("keeps execution runtime assembly free of Upbit private order clients", async () => {
+    const source = await readFile(
+      path.join(process.cwd(), "src", "runtime", "execution-runtime.ts"),
+      "utf8",
+    );
+
+    expect(source).not.toMatch(/UpbitPublicRestClient|orders\/chance|\/v1\/orders|Authorization|Bearer/iu);
+  });
+});
+
+describe("hard stop pending paper order cancel execution", () => {
+  it("executes planned paper order cancels without auto-liquidating open positions", async () => {
+    const broker = createBrokerPort();
+    const plan = createHardStopPlan();
+
+    const summary = await executeHardStopPendingPaperOrderCancels({
+      broker,
+      plan,
+    });
+
+    expect(broker.cancelOrder).toHaveBeenCalledTimes(2);
+    expect(broker.cancelOrder).toHaveBeenNthCalledWith(1, "paper-open-1");
+    expect(broker.cancelOrder).toHaveBeenNthCalledWith(2, "paper-partial-1");
+    expect(broker.submitOrder).not.toHaveBeenCalled();
+    expect(broker.getBalances).not.toHaveBeenCalled();
+    expect(summary).toMatchObject({
+      state: "HARD_STOP",
+      cancelPendingPaperOrders: true,
+      openPositionLiquidationAttempted: false,
+      attemptedCancelCount: 2,
+      canceledCount: 2,
+      failedCount: 0,
+    });
+    expect(summary.results.map((result) => result.status)).toEqual(["CANCELED", "CANCELED"]);
+  });
+
+  it("fails closed before broker side effects when a hard stop plan asks for auto-liquidation", async () => {
+    const broker = createBrokerPort();
+    const unsafePlan = {
+      ...createHardStopPlan(),
+      actionPlan: {
+        ...createHardStopPlan().actionPlan,
+        autoLiquidateOpenPositions: true,
+      },
+    } as unknown as HardStopRuntimeActionPlan;
+
+    await expect(
+      executeHardStopPendingPaperOrderCancels({
+        broker,
+        plan: unsafePlan,
+      }),
+    ).rejects.toBeInstanceOf(UnsafeHardStopCancelPlanError);
+    expect(broker.cancelOrder).not.toHaveBeenCalled();
+    expect(broker.submitOrder).not.toHaveBeenCalled();
+  });
+
+  it("collects only currently open broker orders as hard stop cancel candidates", async () => {
+    const broker = createBrokerPort({
+      openOrders: [
+        createBrokerOrder({
+          brokerOrderId: "paper-open-1",
+          status: "ACCEPTED",
+        }),
+        createBrokerOrder({
+          brokerOrderId: "paper-filled-1",
+          status: "FILLED",
+          remainingQuantity: "0",
+        }),
+      ],
+    });
+
+    await expect(listPendingPaperOrdersForHardStop(broker)).resolves.toEqual([
+      expect.objectContaining({
+        brokerOrderId: "paper-open-1",
+      }),
+    ]);
+  });
+});
+
+describe("disabled Upbit live broker", () => {
+  it("rejects every private broker method before any live API can be called", async () => {
+    const broker = createDisabledUpbitLiveBroker({
+      reason: "unit-test-paper-mode",
+    });
+
+    await expect(broker.submitOrder(createSubmission())).rejects.toBeInstanceOf(UpbitLiveBrokerDisabledError);
+    await expect(broker.cancelOrder("live-order-1")).rejects.toBeInstanceOf(UpbitLiveBrokerDisabledError);
+    await expect(broker.getOrder("live-order-1")).rejects.toBeInstanceOf(UpbitLiveBrokerDisabledError);
+    await expect(broker.listOpenOrders()).rejects.toBeInstanceOf(UpbitLiveBrokerDisabledError);
+    await expect(broker.getBalances()).rejects.toBeInstanceOf(UpbitLiveBrokerDisabledError);
+  });
+});
+
+function createBrokerPort(options: { openOrders?: readonly BrokerOrder[] } = {}) {
+  const openOrders = options.openOrders ?? [];
+  const cancelOrder = vi.fn(async (orderId: string): Promise<BrokerOrder> =>
+    createBrokerOrder({
+      brokerOrderId: orderId,
+      status: "CANCELED",
+      remainingQuantity: "0",
+    }),
+  );
+  const submitOrder = vi.fn(async (_submission: OrderSubmission): Promise<BrokerOrder> => createBrokerOrder());
+  const getBalances = vi.fn(async (): Promise<BrokerBalanceSnapshot> => ({
+    exchangeId: "upbit_krw_spot",
+    balances: [],
+    capturedAt: observedAt,
+  }));
+
+  return {
+    submitOrder,
+    cancelOrder,
+    getOrder: vi.fn(async () => undefined),
+    listOpenOrders: vi.fn(async () => openOrders),
+    getBalances,
+  };
+}
+
+function createHardStopPlan(): HardStopRuntimeActionPlan {
+  return {
+    state: "HARD_STOP",
+    actionPlan: {
+      newOrdersBlocked: true,
+      strategyEvaluationBlocked: true,
+      cancelPendingPaperOrders: true,
+      autoLiquidateOpenPositions: false,
+      requiresManualReview: true,
+    },
+    pendingPaperOrderCancelActions: [
+      {
+        action: "PLAN_CANCEL_PENDING_PAPER_ORDER",
+        brokerOrderId: "paper-open-1",
+        idempotencyKey: "execution-candidate-1",
+        market: "KRW-BTC",
+        status: "ACCEPTED",
+      },
+      {
+        action: "PLAN_CANCEL_PENDING_PAPER_ORDER",
+        brokerOrderId: "paper-partial-1",
+        idempotencyKey: "execution-candidate-2",
+        market: "KRW-BTC",
+        status: "PARTIALLY_FILLED",
+      },
+    ],
+  };
+}
+
+function createBrokerOrder(overrides: Partial<BrokerOrder> = {}): BrokerOrder {
+  return {
+    brokerOrderId: "paper-open-1",
+    idempotencyKey: "execution-candidate-1",
+    exchangeId: "upbit_krw_spot",
+    market: "KRW-BTC",
+    side: "BUY",
+    orderType: "LIMIT",
+    status: "ACCEPTED",
+    requestedQuantity: "0.002",
+    remainingQuantity: "0.001",
+    requestedPrice: "10000000",
+    acceptedAt: observedAt,
+    updatedAt: observedAt,
+    ...overrides,
+  };
+}
+
+function createSubmission(): OrderSubmission {
+  return {
+    intent: {
+      exchangeId: "upbit_krw_spot",
+      market: "KRW-BTC",
+      strategyId: "trend_following",
+      side: "BUY",
+      orderType: "LIMIT",
+      requestedPrice: "10000000",
+      requestedQuantity: "0.001",
+      requestedNotional: "10000",
+      idempotencyKey: "execution-candidate-1",
+      reason: "disabled-live-broker-test",
+    },
+    costSnapshot: {},
+    riskApproval: {},
+    submittedAt: observedAt,
+  };
+}
