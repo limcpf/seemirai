@@ -259,6 +259,7 @@ ruleRegistry
 - 2026-05-19: issue #28은 M6 ExecutionEngine과 PaperBroker 범위가 execution contract, fill simulation, broker port, DB persistence, runtime cancel/live guard로 나뉘어 리뷰 위험이 크므로 `sub PR mode`에서 순차 진행한다. Sub PR 1은 `ExecutionEngine`이 비용 snapshot, RiskGate evidence, expected loss fingerprint, idempotency key, market/live order safety guard를 통과한 주문만 `BrokerPort`로 넘기는 contract를 먼저 고정한다. process-local idempotency 중복 억제는 in-flight 요청으로 제한하고 durable 중복 처리는 후속 DB persistence 범위로 남긴다.
 - 2026-05-19: issue #28 Sub PR 2는 `issue-28/02-paper-fill-simulator`에서 `OrderIntent + OrderbookEvent`만 입력으로 받는 순수 paper fill simulator를 고정한다. DB persistence, PaperBroker state, runtime assembly는 후속 PR로 남기고, depth 기반 full/partial/unfilled, latency snapshot 선택, post-only maker 보호, IOC/FOK aggressive limit, market order simulation disabled 결과를 Decimal 문자열 경계로 계산한다.
 - 2026-05-19: issue #28 Sub PR 3은 `issue-28/03-paper-broker-port`에서 in-memory `PaperBroker implements BrokerPort`를 고정한다. 주문 제출은 기존 fill simulator 결과를 broker 주문 상태로 변환하고, idempotency key 재제출 억제, open 주문 조회, 취소 시 가상 잔고 lock 해제, 부분체결 잔고 mutation을 같은 memory state에서 처리한다. DB persistence wiring, runtime worker 최종 조립, live broker disabled/stub은 후속 PR 범위로 유지한다.
+- 2026-05-20: issue #28 Sub PR 4는 `issue-28/04-execution-persistence`에서 paper broker 실행 결과를 `orders`/`paper_orders`/`fills`/`positions`와 `order_events`에 같은 DB transaction으로 저장하는 경계를 고정한다. durable idempotency는 `orders.idempotency_key` upsert로 처리하고, 재시도는 기존 주문을 반환하되 fill/position side effect를 반복하지 않는다.
 
 issue #28 sub PR 계획:
 
