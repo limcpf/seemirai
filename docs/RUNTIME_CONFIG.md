@@ -308,11 +308,13 @@ store port로 묶어 후속 DB transaction/outbox 구현이 원자성을 보장�
 범위의 정지 계획으로 남기고 전역 kill switch로 승격하지 않는다. `HARD_STOP`은 pending paper order cancel action
 plan을 감사 이벤트로 남기지만, 실제 broker cancel 호출과 open position 자동 청산은 M6 이후 별도 실행 경계에서만
 다룬다. runtime persistence는 `correlationId`와 `riskGateContext.orderIntent.idempotencyKey`가 같아야 하며,
-현재 kill switch action plan이 신규 주문 또는 수동 검토를 요구하면 RiskGate snapshot이 깨끗해도 주문을 승인하지
-않는다. 현재 주문 상태에서 RiskGate 승인/거부 상태로 전이할 수 없거나 strategy 손실 snapshot이 주문 strategy와
-다르면 runtime은 별도 risk event를 남기고 fail-closed한다.
+DB/현재 후보에서 읽은 주문 의도와 `riskGateContext.orderIntent`의 주문 금액/예상 손실 입력도 같아야 한다. 현재 kill
+switch action plan이 신규 주문 또는 수동 검토를 요구하면 RiskGate snapshot이 깨끗해도 주문을 승인하지 않는다. 현재
+주문 상태에서 RiskGate 승인/거부 상태로 전이할 수 없거나 strategy 손실 snapshot이 주문 strategy와 다르면 runtime은
+별도 risk event를 남기고 fail-closed한다.
 strategy 연속 손실 초과는 일간 손실이나 kill switch 같은 더 강한 전역 차단이 함께 발생해도 strategy pause evidence로
-함께 남긴다.
+함께 남긴다. `STRATEGY_PAUSED` kill switch 상태는 strategy 평가 중지만 표현하고 전역 신규 주문 차단으로 사용하지
+않는다. PostgreSQL combined event store는 주문 전이, risk event, audit event를 하나의 transaction으로 저장한다.
 
 ## 변경 절차
 

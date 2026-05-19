@@ -1,8 +1,11 @@
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
+import { createRiskGateRuntimeDecisionPlan } from "../../src/application/index.js";
+import type { RiskGateDecisionEvidenceAppendInput } from "../../src/application/index.js";
 import {
   appendAuditEvent,
   appendOrderStateTransitionEvent,
+  PostgresRiskGateRuntimeEventStore,
   appendRiskEvent,
   applyMigrations,
   createDatabase,
@@ -11,7 +14,16 @@ import {
   listOrderEventsByOrderId,
   loadLocalDatabaseConfig,
 } from "../../src/infrastructure/db/index.js";
-import { transitionOrderState } from "../../src/domain/index.js";
+import {
+  createRiskThresholdSnapshot,
+  defaultRiskLimitThresholds,
+  transitionOrderState,
+} from "../../src/domain/index.js";
+import type {
+  InfrastructureRiskSnapshot,
+  OrderIntent,
+  RiskGateContext,
+} from "../../src/domain/index.js";
 import type { Database } from "../../src/infrastructure/db/index.js";
 
 const runDbIntegration = process.env.SEEMIRAI_RUN_DB_INTEGRATION === "1";
@@ -187,6 +199,62 @@ describeDb("state transition persistence integration", () => {
     expect(new Date(currentOrder.updated_at).toISOString()).toBe(occurredAt);
   });
 
+  it("appends RiskGate decision evidence through the Postgres combined event store", async () => {
+    const db = await getDatabase();
+    const order = await insertOrder(db);
+    const orderIntent = createRuntimeOrderIntent();
+    const plan = createRiskGateRuntimeDecisionPlan({
+      orderId: order.id,
+      orderStatus: "VALIDATED",
+      orderIntent,
+      currentKillSwitchState: "NORMAL",
+      riskGateContext: createRuntimeRiskContext({
+        orderIntent,
+        infrastructureSignals: [createInfrastructureSignal("DB_WRITE_FAILURE")],
+      }),
+      actor: "risk-gate",
+      correlationId: "candidate-1",
+    });
+    const store = new PostgresRiskGateRuntimeEventStore(db);
+
+    const appendInput: RiskGateDecisionEvidenceAppendInput = {
+      orderStateTransition: {
+        orderId: order.id,
+        correlationId: "candidate-1",
+        event: plan.orderStateTransition.event,
+      },
+      riskEvents: plan.riskEvents,
+      auditEvents: plan.auditEvents,
+    };
+    if (plan.killSwitchStateTransition !== undefined) {
+      appendInput.killSwitchStateTransition = {
+        correlationId: "candidate-1",
+        event: plan.killSwitchStateTransition.event,
+      };
+    }
+
+    const receipt = await store.appendDecisionEvidence(appendInput);
+
+    const currentOrder = await db
+      .selectFrom("orders")
+      .select("status")
+      .where("id", "=", order.id)
+      .executeTakeFirstOrThrow();
+    const riskCount = await db
+      .selectFrom("risk_events")
+      .select((expressionBuilder) => expressionBuilder.fn.countAll<string>().as("count"))
+      .executeTakeFirstOrThrow();
+    const auditCount = await db
+      .selectFrom("audit_events")
+      .select((expressionBuilder) => expressionBuilder.fn.countAll<string>().as("count"))
+      .executeTakeFirstOrThrow();
+
+    expect(currentOrder.status).toBe("RISK_REJECTED");
+    expect(receipt.killSwitchEventReceipt).toBeDefined();
+    expect(Number(riskCount.count)).toBeGreaterThan(0);
+    expect(Number(auditCount.count)).toBe(plan.auditEvents.length);
+  });
+
   async function getDatabase(): Promise<Database> {
     if (database !== undefined) {
       return database;
@@ -220,4 +288,66 @@ async function insertOrder(database: Database): Promise<{ id: string }> {
     })
     .returning("id")
     .executeTakeFirstOrThrow();
+}
+
+function createRuntimeOrderIntent(
+  overrides: Partial<Extract<OrderIntent, { orderType: "LIMIT" }>> = {},
+): Extract<OrderIntent, { orderType: "LIMIT" }> {
+  return {
+    exchangeId: "upbit_krw_spot",
+    market: "KRW-BTC",
+    strategyId: "trend_following",
+    side: "BUY",
+    orderType: "LIMIT",
+    requestedPrice: "10000000",
+    requestedQuantity: "0.001",
+    requestedNotional: "10000",
+    idempotencyKey: "candidate-1",
+    reason: "integration-test",
+    metadata: {
+      expected_loss_bps_of_equity: "10",
+    },
+    ...overrides,
+  };
+}
+
+function createRuntimeRiskContext(
+  overrides: {
+    orderIntent?: OrderIntent;
+    infrastructureSignals?: readonly InfrastructureRiskSnapshot[];
+  } = {},
+): RiskGateContext {
+  const thresholdSnapshot = createRiskThresholdSnapshot(defaultRiskLimitThresholds, occurredAt);
+
+  return {
+    orderIntent: overrides.orderIntent ?? createRuntimeOrderIntent(),
+    account: {
+      equityKrw: "1000000",
+      dailyRealizedPnlBps: "-10",
+      weeklyRealizedPnlBps: "-20",
+      maxDrawdownBps: "100",
+      capturedAt: occurredAt,
+    },
+    positions: [],
+    strategy: {
+      strategyId: "trend_following",
+      consecutiveLosses: 0,
+      capturedAt: occurredAt,
+    },
+    infrastructureSignals: overrides.infrastructureSignals ?? [],
+    thresholdSnapshot,
+    observedAt: occurredAt,
+  };
+}
+
+function createInfrastructureSignal(
+  signal: InfrastructureRiskSnapshot["signal"],
+): InfrastructureRiskSnapshot {
+  return {
+    signal,
+    exchangeId: "upbit_krw_spot",
+    market: "KRW-BTC",
+    strategyId: "trend_following",
+    observedAt: occurredAt,
+  };
 }

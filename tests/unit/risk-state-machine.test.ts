@@ -117,6 +117,16 @@ describe("M5 kill switch state machine foundation", () => {
     });
   });
 
+  it("keeps strategy pause scoped away from global new-order blocking", () => {
+    expect(getKillSwitchActionPlan("STRATEGY_PAUSED")).toEqual({
+      newOrdersBlocked: false,
+      strategyEvaluationBlocked: true,
+      cancelPendingPaperOrders: false,
+      autoLiquidateOpenPositions: false,
+      requiresManualReview: false,
+    });
+  });
+
   it("keeps hard stop conservative and forbids direct recovery to normal", () => {
     expect(getKillSwitchActionPlan("HARD_STOP")).toEqual({
       newOrdersBlocked: true,

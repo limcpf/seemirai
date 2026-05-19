@@ -150,8 +150,9 @@ export const killSwitchActionPlans: Readonly<Record<KillSwitchState, KillSwitchA
     autoLiquidateOpenPositions: false,
     requiresManualReview: false,
   },
+  // 전략 정지는 개별 strategy evidence로 처리하고 전역 신규 주문 차단으로 확대하지 않는다.
   STRATEGY_PAUSED: {
-    newOrdersBlocked: true,
+    newOrdersBlocked: false,
     strategyEvaluationBlocked: true,
     cancelPendingPaperOrders: false,
     autoLiquidateOpenPositions: false,

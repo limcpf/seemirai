@@ -230,6 +230,7 @@ describe("RiskGate runtime event wiring", () => {
     const plan = createRiskGateRuntimeDecisionPlan({
       orderId: "order-1",
       orderStatus: "VALIDATED",
+      orderIntent: createOrderIntent(),
       currentKillSwitchState: "NORMAL",
       riskGateContext: hardStopContext,
       actor: "risk-gate",
@@ -294,6 +295,7 @@ describe("RiskGate runtime event wiring", () => {
     const plan = createRiskGateRuntimeDecisionPlan({
       orderId: "order-1",
       orderStatus: "VALIDATED",
+      orderIntent: createOrderIntent(),
       currentKillSwitchState: "NORMAL",
       riskGateContext: createRiskContext({
         strategy: {
@@ -324,6 +326,7 @@ describe("RiskGate runtime event wiring", () => {
     const plan = createRiskGateRuntimeDecisionPlan({
       orderId: "order-1",
       orderStatus: "VALIDATED",
+      orderIntent: createOrderIntent(),
       currentKillSwitchState: "NORMAL",
       riskGateContext: createRiskContext({
         account: {
@@ -357,6 +360,7 @@ describe("RiskGate runtime event wiring", () => {
     const plan = createRiskGateRuntimeDecisionPlan({
       orderId: "order-1",
       orderStatus: "VALIDATED",
+      orderIntent: createOrderIntent(),
       currentKillSwitchState: "HARD_STOP",
       riskGateContext: createRiskContext(),
       actor: "risk-gate",
@@ -389,10 +393,35 @@ describe("RiskGate runtime event wiring", () => {
     });
   });
 
+  it("does not treat a strategy-scoped pause as a global new-order block", () => {
+    const plan = createRiskGateRuntimeDecisionPlan({
+      orderId: "order-1",
+      orderStatus: "VALIDATED",
+      orderIntent: createOrderIntent(),
+      currentKillSwitchState: "STRATEGY_PAUSED",
+      riskGateContext: createRiskContext(),
+      actor: "risk-gate",
+      correlationId: "candidate-1",
+    });
+
+    expect(plan.riskGateResult).toMatchObject({
+      approved: true,
+      action: "ALLOW",
+    });
+    expect(plan.orderStateTransition).toMatchObject({
+      accepted: true,
+      toState: "RISK_APPROVED",
+    });
+    expect(plan.riskEvents.map((event) => event.riskType)).not.toContain(
+      "current_kill_switch_blocks_new_order",
+    );
+  });
+
   it("rejects persistence plans when the runtime correlation id does not match the RiskGate intent", () => {
     const plan = createRiskGateRuntimeDecisionPlan({
       orderId: "order-1",
       orderStatus: "VALIDATED",
+      orderIntent: createOrderIntent(),
       currentKillSwitchState: "NORMAL",
       riskGateContext: createRiskContext(),
       actor: "risk-gate",
@@ -418,10 +447,55 @@ describe("RiskGate runtime event wiring", () => {
     );
   });
 
+  it("rejects persistence plans when runtime order amount inputs differ from RiskGate intent", () => {
+    const plan = createRiskGateRuntimeDecisionPlan({
+      orderId: "order-1",
+      orderStatus: "VALIDATED",
+      orderIntent: createOrderIntent({
+        requestedPrice: "20000000",
+        requestedQuantity: "0.001",
+        requestedNotional: "20000",
+        metadata: {
+          expected_loss_bps_of_equity: "25",
+        },
+      }),
+      currentKillSwitchState: "NORMAL",
+      riskGateContext: createRiskContext(),
+      actor: "risk-gate",
+      correlationId: "candidate-1",
+    });
+
+    expect(plan.riskGateResult.approved).toBe(false);
+    expect(plan.riskGateResult.action).toBe("MANUAL_REVIEW_REQUIRED");
+    expect(plan.riskGateResult.failedEvaluations).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          reasonCode: "risk_gate_runtime_candidate_mismatch",
+          metadata: expect.objectContaining({
+            mismatches: {
+              order_intent_requested_quantity_runtime: "0.001",
+              order_intent_requested_quantity_risk_gate: "0.0005",
+              order_intent_requested_notional_runtime: "20000",
+              order_intent_requested_notional_risk_gate: "5000",
+              order_intent_requested_price_runtime: "20000000",
+              order_intent_requested_price_risk_gate: "10000000",
+              order_intent_expected_loss_bps_of_equity_runtime: "25",
+              order_intent_expected_loss_bps_of_equity_risk_gate: "10",
+            },
+          }),
+        }),
+      ]),
+    );
+    expect(plan.riskEvents.map((event) => event.riskType)).toContain(
+      "risk_gate_runtime_candidate_mismatch",
+    );
+  });
+
   it("fails closed when RiskGate cannot legally transition the current order state", () => {
     const plan = createRiskGateRuntimeDecisionPlan({
       orderId: "order-1",
       orderStatus: "CREATED",
+      orderIntent: createOrderIntent(),
       currentKillSwitchState: "NORMAL",
       riskGateContext: createRiskContext(),
       actor: "risk-gate",
@@ -458,6 +532,7 @@ describe("RiskGate runtime event wiring", () => {
     const result = await persistRiskGateRuntimeDecision(ports, {
       orderId: "order-1",
       orderStatus: "VALIDATED",
+      orderIntent: createOrderIntent(),
       currentKillSwitchState: "NORMAL",
       riskGateContext: createRiskContext({
         infrastructureSignals: [createInfrastructureSignal("DUPLICATE_ORDER_IDEMPOTENCY_KEY")],

@@ -352,6 +352,8 @@ Acceptance Criteria:
   strategy와 다르면 승인하지 않고 fail-closed 리스크 이벤트를 남긴다.
 - 허용된 주문 상태 전이는 DB의 현재 주문 상태가 event의 `fromState`와 같을 때만 현재 snapshot을 갱신하고, strategy
   pause는 더 강한 전역 차단 action이 함께 있어도 별도 evidence로 남긴다.
+- PostgreSQL runtime event store는 주문 전이, risk event, audit event를 하나의 transaction으로 저장하며,
+  `STRATEGY_PAUSED` kill switch 상태는 전역 신규 주문 차단으로 해석하지 않는다.
 
 Acceptance Criteria:
 

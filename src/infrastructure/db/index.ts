@@ -29,6 +29,10 @@ export {
   toRiskEventRow,
 } from "./risk-events.js";
 export {
+  PostgresRiskGateRuntimeEventStore,
+  appendRiskGateDecisionEvidence,
+} from "./risk-gate-runtime-event-store.js";
+export {
   insertTrade,
   savePolicySnapshot,
   toOrderbookMetricRow,
