@@ -125,6 +125,45 @@ describe("hard stop pending paper order cancel execution", () => {
     expect(broker.submitOrder).not.toHaveBeenCalled();
   });
 
+  it("turns malformed replayed hard stop action plans into domain errors before broker side effects", async () => {
+    const broker = createBrokerPort();
+    const malformedPlanCases = [
+      {
+        plan: {
+          ...createHardStopPlan(),
+          actionPlan: undefined,
+        } as unknown as HardStopRuntimeActionPlan,
+        expectedViolation: "hard stop cancel execution requires actionPlan object",
+      },
+      {
+        plan: {
+          ...createHardStopPlan(),
+          actionPlan: {
+            cancelPendingPaperOrders: "true",
+            autoLiquidateOpenPositions: false,
+          },
+        } as unknown as HardStopRuntimeActionPlan,
+        expectedViolation: "hard stop cancel execution requires cancelPendingPaperOrders=true",
+      },
+    ];
+
+    for (const { plan, expectedViolation } of malformedPlanCases) {
+      await expect(
+        executeHardStopPendingPaperOrderCancels({
+          broker,
+          plan,
+        }),
+      ).rejects.toMatchObject({
+        name: "UnsafeHardStopCancelPlanError",
+        violations: expect.arrayContaining([expectedViolation]),
+      });
+    }
+
+    expect(broker.cancelOrder).not.toHaveBeenCalled();
+    expect(broker.submitOrder).not.toHaveBeenCalled();
+    expect(broker.getBalances).not.toHaveBeenCalled();
+  });
+
   it("collects only currently open broker orders as hard stop cancel candidates", async () => {
     const broker = createBrokerPort({
       openOrders: [

@@ -244,27 +244,38 @@ export async function listPendingPaperOrdersForHardStop(
 }
 
 function assertHardStopCancelPlanIsSafe(plan: HardStopRuntimeActionPlan): void {
-  const actionPlan = plan.actionPlan as {
-    cancelPendingPaperOrders: boolean;
-    autoLiquidateOpenPositions: boolean;
-  };
   const violations: string[] = [];
+  const candidate = plan as unknown;
 
-  if ((plan as { state: string }).state !== "HARD_STOP") {
+  if (!isJsonRecord(candidate)) {
+    throw new UnsafeHardStopCancelPlanError(["hard stop cancel execution requires plan object"]);
+  }
+
+  if (candidate.state !== "HARD_STOP") {
     violations.push("hard stop cancel execution requires state=HARD_STOP");
   }
 
-  if (!actionPlan.cancelPendingPaperOrders) {
-    violations.push("hard stop cancel execution requires cancelPendingPaperOrders=true");
-  }
+  // 저장소/재생 경계에서는 타입 정보가 지워지므로, 필드를 읽기 전에 actionPlan 모양을 먼저 검증한다.
+  const actionPlan = candidate.actionPlan;
+  if (!isJsonRecord(actionPlan)) {
+    violations.push("hard stop cancel execution requires actionPlan object");
+  } else {
+    if (actionPlan.cancelPendingPaperOrders !== true) {
+      violations.push("hard stop cancel execution requires cancelPendingPaperOrders=true");
+    }
 
-  if (actionPlan.autoLiquidateOpenPositions) {
-    violations.push("hard stop cancel execution must not auto-liquidate open positions");
+    if (actionPlan.autoLiquidateOpenPositions !== false) {
+      violations.push("hard stop cancel execution must not auto-liquidate open positions");
+    }
   }
 
   if (violations.length > 0) {
     throw new UnsafeHardStopCancelPlanError(violations);
   }
+}
+
+function isJsonRecord(value: unknown): value is JsonRecord {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function classifyCancelResultStatus(status: OrderLifecycleStatus): PendingPaperOrderCancelExecutionStatus {
