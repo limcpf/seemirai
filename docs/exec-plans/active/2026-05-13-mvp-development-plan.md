@@ -194,16 +194,16 @@ ruleRegistry
 
 - [x] `ExecutionEngine` application service contract와 broker submit 전 guard 구현
 - [x] idempotency key 필수화와 process-local in-flight 중복 broker submit 억제
-- [ ] `PaperBroker implements BrokerPort` 구현
+- [x] `PaperBroker implements BrokerPort` 구현
 - [x] depth 기반 paper fill simulator 구현
 - [x] latency, partial fill, post-only simulation
 - [x] aggressive limit IOC/FOK simulation
-- [ ] market order simulation 기본 비활성
+- [x] market order simulation 기본 비활성
 - [ ] live broker disabled/stub 구현
 
 검증:
 
-- [ ] PaperBroker 부분체결 테스트
+- [x] PaperBroker 부분체결 테스트
 - [x] `ExecutionEngine` 중복 주문 차단 테스트
 - [ ] live order API 호출 0회 테스트
 - [x] market order 생성 불가 테스트
@@ -258,6 +258,7 @@ ruleRegistry
 - 2026-05-19: issue #22 Sub PR 4는 `issue-22/04-runtime-rule-integration`에서 `risk_ok`를 현재 후보와 일치하는 context 기반 RiskGate 평가에 연결하고, RiskGate 판단을 주문 상태 전이/kill switch 전이/`risk_events`/`audit_events` combined evidence append 계획으로 변환한다. 현재 kill switch가 신규 주문 차단 상태이면 RiskGate snapshot이 깨끗해도 주문을 거부한다. `HARD_STOP`은 pending paper order 취소 계획 event만 만들며, 실제 broker cancel 호출과 open position 자동 청산은 수행하지 않는다.
 - 2026-05-19: issue #28은 M6 ExecutionEngine과 PaperBroker 범위가 execution contract, fill simulation, broker port, DB persistence, runtime cancel/live guard로 나뉘어 리뷰 위험이 크므로 `sub PR mode`에서 순차 진행한다. Sub PR 1은 `ExecutionEngine`이 비용 snapshot, RiskGate evidence, expected loss fingerprint, idempotency key, market/live order safety guard를 통과한 주문만 `BrokerPort`로 넘기는 contract를 먼저 고정한다. process-local idempotency 중복 억제는 in-flight 요청으로 제한하고 durable 중복 처리는 후속 DB persistence 범위로 남긴다.
 - 2026-05-19: issue #28 Sub PR 2는 `issue-28/02-paper-fill-simulator`에서 `OrderIntent + OrderbookEvent`만 입력으로 받는 순수 paper fill simulator를 고정한다. DB persistence, PaperBroker state, runtime assembly는 후속 PR로 남기고, depth 기반 full/partial/unfilled, latency snapshot 선택, post-only maker 보호, IOC/FOK aggressive limit, market order simulation disabled 결과를 Decimal 문자열 경계로 계산한다.
+- 2026-05-19: issue #28 Sub PR 3은 `issue-28/03-paper-broker-port`에서 in-memory `PaperBroker implements BrokerPort`를 고정한다. 주문 제출은 기존 fill simulator 결과를 broker 주문 상태로 변환하고, idempotency key 재제출 억제, open 주문 조회, 취소 시 가상 잔고 lock 해제, 부분체결 잔고 mutation을 같은 memory state에서 처리한다. DB persistence wiring, runtime worker 최종 조립, live broker disabled/stub은 후속 PR 범위로 유지한다.
 
 issue #28 sub PR 계획:
 
