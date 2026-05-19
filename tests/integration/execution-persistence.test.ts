@@ -245,6 +245,117 @@ describeDb("execution persistence integration", () => {
     await expectTableCount(db, "orders", 0);
   });
 
+  it("rejects filled orders that still report canceled quantity", async () => {
+    const db = await getDatabase();
+    const repository = new PostgresExecutionPersistenceRepository(db);
+    const input = createPersistInput();
+    const simulation = readSimulation(input);
+
+    await expect(
+      repository.persistPaperExecution({
+        ...input,
+        brokerOrder: {
+          ...input.brokerOrder,
+          metadata: {
+            ...(input.brokerOrder.metadata ?? {}),
+            paper_fill_simulation: {
+              ...simulation,
+              filledQuantity: "0.001",
+              canceledQuantity: "0.001",
+              fills: [
+                {
+                  price: "9990000",
+                  quantity: "0.001",
+                  notional: "9990",
+                  fee: "4.995",
+                  liquidity: "TAKER",
+                },
+              ],
+            },
+          },
+        },
+      }),
+    ).rejects.toThrow("filled paper execution quantity breakdown is inconsistent");
+
+    await expectTableCount(db, "orders", 0);
+  });
+
+  it("rejects canceled orders that still have remaining quantity", async () => {
+    const db = await getDatabase();
+    const repository = new PostgresExecutionPersistenceRepository(db);
+    const input = createPersistInput();
+    const simulation = readSimulation(input);
+    const canceledSimulation: PaperFillSimulationResult = {
+      ...simulation,
+      status: "IOC_CANCELED",
+      orderStatus: "CANCELED",
+      filledQuantity: "0.001",
+      openQuantity: "0.001",
+      canceledQuantity: "0",
+      fills: [
+        {
+          price: "9990000",
+          quantity: "0.001",
+          notional: "9990",
+          fee: "4.995",
+          liquidity: "TAKER",
+        },
+      ],
+    };
+
+    await expect(
+      repository.persistPaperExecution({
+        ...input,
+        brokerOrder: {
+          ...input.brokerOrder,
+          status: "CANCELED",
+          remainingQuantity: "0.001",
+          metadata: {
+            ...(input.brokerOrder.metadata ?? {}),
+            paper_fill_simulation: canceledSimulation,
+          },
+        },
+      }),
+    ).rejects.toThrow("canceled paper execution must not have remaining quantity");
+
+    await expectTableCount(db, "orders", 0);
+  });
+
+  it("rejects partially filled orders without an open quantity", async () => {
+    const db = await getDatabase();
+    const repository = new PostgresExecutionPersistenceRepository(db);
+    const input = createPersistInput({
+      idempotencyKey: "execution-partial-invariant-1",
+      brokerOrderId: "paper-order-partial-invariant-1",
+    });
+    const simulation = readSimulation(input);
+    const partialSimulation: PaperFillSimulationResult = {
+      ...simulation,
+      status: "PARTIALLY_FILLED",
+      orderStatus: "PARTIALLY_FILLED",
+      filledQuantity: "0.002",
+      openQuantity: "0",
+      canceledQuantity: "0",
+    };
+
+    await expect(
+      repository.persistPaperExecution({
+        ...input,
+        brokerOrder: {
+          ...input.brokerOrder,
+          status: "PARTIALLY_FILLED",
+          remainingQuantity: "0",
+          metadata: {
+            ...(input.brokerOrder.metadata ?? {}),
+            paper_fill_simulation: partialSimulation,
+          },
+        },
+      }),
+    ).rejects.toThrow("partially filled paper execution requires positive open quantity below requested quantity");
+
+    await expectTableCount(db, "orders", 0);
+  });
+
   it("allows idempotent retries after DB notional scale normalization", async () => {
     const db = await getDatabase();
     const repository = new PostgresExecutionPersistenceRepository(db);

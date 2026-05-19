@@ -442,6 +442,54 @@ function assertSimulationQuantityMatchesBrokerOrder(
   if (!decimalStringEqualsAtScale(input.brokerOrder.remainingQuantity, simulation.openQuantity, 18)) {
     throw new Error("paper simulation open quantity does not match broker order remaining quantity");
   }
+
+  assertStateSpecificQuantityInvariants(input, simulation);
+}
+
+function assertStateSpecificQuantityInvariants(
+  input: PersistPaperExecutionInput,
+  simulation: PaperFillSimulationResult,
+): void {
+  const requestedQuantity = parseFinancialDecimal(simulation.requestedQuantity);
+  const filledQuantity = parseFinancialDecimal(simulation.filledQuantity);
+  const openQuantity = parseFinancialDecimal(simulation.openQuantity);
+  const canceledQuantity = parseFinancialDecimal(simulation.canceledQuantity);
+  const remainingQuantity = parseFinancialDecimal(input.brokerOrder.remainingQuantity);
+
+  if (input.brokerOrder.status === "FILLED") {
+    if (!filledQuantity.equals(requestedQuantity) || !openQuantity.equals(0) || !canceledQuantity.equals(0)) {
+      throw new Error("filled paper execution quantity breakdown is inconsistent");
+    }
+    if (!remainingQuantity.equals(0)) {
+      throw new Error("filled paper execution must not have remaining quantity");
+    }
+    return;
+  }
+
+  if (input.brokerOrder.status === "PARTIALLY_FILLED") {
+    if (
+      !filledQuantity.greaterThan(0) ||
+      !openQuantity.greaterThan(0) ||
+      !openQuantity.lessThan(requestedQuantity) ||
+      !canceledQuantity.equals(0)
+    ) {
+      throw new Error("partially filled paper execution requires positive open quantity below requested quantity");
+    }
+    return;
+  }
+
+  if (input.brokerOrder.status === "CANCELED") {
+    if (!remainingQuantity.equals(0) || !openQuantity.equals(0)) {
+      throw new Error("canceled paper execution must not have remaining quantity");
+    }
+    return;
+  }
+
+  if (input.brokerOrder.status === "ACCEPTED") {
+    if (!filledQuantity.equals(0) || !canceledQuantity.equals(0) || !openQuantity.equals(requestedQuantity)) {
+      throw new Error("accepted paper execution must keep the full requested quantity open");
+    }
+  }
 }
 
 async function insertPaperExecutionFills(
