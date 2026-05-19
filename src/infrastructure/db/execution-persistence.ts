@@ -352,17 +352,17 @@ function assertExistingOrderMatchesInput(
   addMismatchIf(
     mismatches,
     "requested_price",
-    !nullableDecimalStringEquals(existingOrder.requested_price, expectedOrder.requested_price ?? null),
+    !nullableDecimalStringEquals(existingOrder.requested_price, expectedOrder.requested_price ?? null, 18),
   );
   addMismatchIf(
     mismatches,
     "requested_quantity",
-    !decimalStringEquals(existingOrder.requested_quantity, expectedOrder.requested_quantity),
+    !decimalStringEqualsAtScale(existingOrder.requested_quantity, expectedOrder.requested_quantity, 18),
   );
   addMismatchIf(
     mismatches,
     "requested_notional",
-    !decimalStringEquals(existingOrder.requested_notional, expectedOrder.requested_notional),
+    !decimalStringEqualsAtScale(existingOrder.requested_notional, expectedOrder.requested_notional, 8),
   );
 
   if (mismatches.length > 0) {
@@ -385,6 +385,9 @@ function assertFillEvidenceMatchesBrokerStatus(input: PersistPaperExecutionInput
     return;
   }
 
+  assertSimulationStatusCompatible(input, simulation);
+  assertSimulationQuantityMatchesBrokerOrder(input, simulation);
+
   const totalFillQuantity = simulation.fills.reduce(
     (sum, fill) => sum.add(parseFinancialDecimal(fill.quantity)),
     parseFinancialDecimal("0"),
@@ -395,6 +398,49 @@ function assertFillEvidenceMatchesBrokerStatus(input: PersistPaperExecutionInput
 
   if (isPositiveDecimalString(simulation.filledQuantity) && simulation.fills.length === 0) {
     throw new Error("positive paper fill quantity requires at least one fill row");
+  }
+}
+
+function assertSimulationStatusCompatible(
+  input: PersistPaperExecutionInput,
+  simulation: PaperFillSimulationResult,
+): void {
+  if (simulation.orderStatus === input.brokerOrder.status) {
+    return;
+  }
+
+  if (input.brokerOrder.status === "REJECTED" && input.brokerOrder.metadata?.paper_balance_rejection !== undefined) {
+    // 잔고 부족 거부는 simulator가 만든 체결 후보를 실제 broker 실행으로 승격하지 않는 예외 경로다.
+    return;
+  }
+
+  throw new Error("paper simulation order status does not match broker order status");
+}
+
+function assertSimulationQuantityMatchesBrokerOrder(
+  input: PersistPaperExecutionInput,
+  simulation: PaperFillSimulationResult,
+): void {
+  const requestedQuantity = parseFinancialDecimal(simulation.requestedQuantity);
+  const filledQuantity = parseFinancialDecimal(simulation.filledQuantity);
+  const openQuantity = parseFinancialDecimal(simulation.openQuantity);
+  const canceledQuantity = parseFinancialDecimal(simulation.canceledQuantity);
+  const accountedQuantity = filledQuantity.add(openQuantity).add(canceledQuantity);
+
+  if (!accountedQuantity.equals(requestedQuantity)) {
+    throw new Error("paper simulation quantities do not add up to requested quantity");
+  }
+
+  if (input.brokerOrder.status === "REJECTED") {
+    return;
+  }
+
+  if (!decimalStringEqualsAtScale(input.brokerOrder.requestedQuantity, simulation.requestedQuantity, 18)) {
+    throw new Error("paper simulation requested quantity does not match broker order requested quantity");
+  }
+
+  if (!decimalStringEqualsAtScale(input.brokerOrder.remainingQuantity, simulation.openQuantity, 18)) {
+    throw new Error("paper simulation open quantity does not match broker order remaining quantity");
   }
 }
 
@@ -691,16 +737,24 @@ function addMismatchIf(mismatches: string[], field: string, mismatch: boolean): 
   }
 }
 
-function nullableDecimalStringEquals(left: NumericString | null, right: NumericString | null): boolean {
+function nullableDecimalStringEquals(
+  left: NumericString | null,
+  right: NumericString | null,
+  scale: number,
+): boolean {
   if (left === null || right === null) {
     return left === right;
   }
 
-  return decimalStringEquals(left, right);
+  return decimalStringEqualsAtScale(left, right, scale);
 }
 
 function decimalStringEquals(left: NumericString, right: NumericString): boolean {
   return parseFinancialDecimal(left).equals(parseFinancialDecimal(right));
+}
+
+function decimalStringEqualsAtScale(left: NumericString, right: NumericString, scale: number): boolean {
+  return parseFinancialDecimal(left).toDecimalPlaces(scale).equals(parseFinancialDecimal(right).toDecimalPlaces(scale));
 }
 
 function isPositiveDecimalString(value: NumericString): boolean {

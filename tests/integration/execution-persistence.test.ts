@@ -185,6 +185,88 @@ describeDb("execution persistence integration", () => {
     await expectTableCount(db, "orders", 0);
   });
 
+  it("rejects simulation quantities that do not match broker order accounting", async () => {
+    const db = await getDatabase();
+    const repository = new PostgresExecutionPersistenceRepository(db);
+    const input = createPersistInput();
+    const simulation = readSimulation(input);
+    const invalidSimulation: PaperFillSimulationResult = {
+      ...simulation,
+      filledQuantity: "0.003",
+      fills: [
+        {
+          price: "9990000",
+          quantity: "0.003",
+          notional: "29970",
+          fee: "14.985",
+          liquidity: "TAKER",
+        },
+      ],
+    };
+
+    await expect(
+      repository.persistPaperExecution({
+        ...input,
+        brokerOrder: {
+          ...input.brokerOrder,
+          metadata: {
+            ...(input.brokerOrder.metadata ?? {}),
+            paper_fill_simulation: invalidSimulation,
+          },
+        },
+      }),
+    ).rejects.toThrow("paper simulation quantities do not add up to requested quantity");
+
+    await expectTableCount(db, "orders", 0);
+  });
+
+  it("rejects broker and simulation final status mismatches", async () => {
+    const db = await getDatabase();
+    const repository = new PostgresExecutionPersistenceRepository(db);
+    const input = createPersistInput();
+    const simulation = readSimulation(input);
+
+    await expect(
+      repository.persistPaperExecution({
+        ...input,
+        brokerOrder: {
+          ...input.brokerOrder,
+          metadata: {
+            ...(input.brokerOrder.metadata ?? {}),
+            paper_fill_simulation: {
+              ...simulation,
+              orderStatus: "CANCELED",
+            },
+          },
+        },
+      }),
+    ).rejects.toThrow("paper simulation order status does not match broker order status");
+
+    await expectTableCount(db, "orders", 0);
+  });
+
+  it("allows idempotent retries after DB notional scale normalization", async () => {
+    const db = await getDatabase();
+    const repository = new PostgresExecutionPersistenceRepository(db);
+    const input = createPersistInput({
+      idempotencyKey: "execution-scale-retry-1",
+      brokerOrderId: "paper-order-scale-retry-1",
+      requestedNotional: "20000.123456789",
+    });
+
+    const receipt = await repository.persistPaperExecution(input);
+    const retryReceipt = await repository.persistPaperExecution(input);
+
+    expect(receipt.created).toBe(true);
+    expect(retryReceipt).toMatchObject({
+      created: false,
+      order: {
+        id: receipt.order.id,
+      },
+    });
+    await expectTableCount(db, "orders", 1);
+  });
+
   it("keeps first BUY position writes atomic for concurrent fills", async () => {
     const db = await getDatabase();
     const repository = new PostgresExecutionPersistenceRepository(db);
@@ -292,6 +374,10 @@ async function expectTableCount(
 function expectNumericEqual(actual: string | undefined, expected: string): void {
   expect(actual).toBeDefined();
   expect(parseFinancialDecimal(actual).eq(parseFinancialDecimal(expected))).toBe(true);
+}
+
+function readSimulation(input: PersistPaperExecutionInput): PaperFillSimulationResult {
+  return input.brokerOrder.metadata?.paper_fill_simulation as PaperFillSimulationResult;
 }
 
 function createPersistInput(options: PersistInputOptions = {}): PersistPaperExecutionInput {
