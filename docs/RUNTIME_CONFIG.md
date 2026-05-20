@@ -61,7 +61,7 @@ MVP 기본 profile에서는 다음 값이 켜져 있으면 안 된다.
 구현 기준:
 
 - server/route foundation: `src/interfaces/http-control.ts`
-- auth/readiness/status/schema 세부 구현: `src/interfaces/http-control-*.ts`
+- auth/readiness/status/schema 세부 구현: `src/interfaces/http-control/*.ts`
 - 기본 bind: `127.0.0.1`
 - 기본 port: `8787`
 

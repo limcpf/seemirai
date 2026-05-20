@@ -1,13 +1,13 @@
 import { sql } from "kysely";
-import type { KillSwitchState } from "../domain/index.js";
-import { getKillSwitchActionPlan } from "../domain/index.js";
-import type { Database } from "../infrastructure/db/index.js";
-import type { RuntimeConfig } from "../runtime/index.js";
+import type { KillSwitchState } from "../../domain/index.js";
+import { getKillSwitchActionPlan } from "../../domain/index.js";
+import type { Database } from "../../infrastructure/db/index.js";
+import type { RuntimeConfig } from "../../runtime/index.js";
 import type {
   ControlStatusProvider,
   ControlStatusSnapshot,
   CreateDatabaseControlStatusProviderOptions,
-} from "./http-control-types.js";
+} from "./types.js";
 
 /**
  * DB snapshot과 safe runtime config만 사용해 `/status` payload를 만든다.

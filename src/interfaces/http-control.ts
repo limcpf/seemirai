@@ -1,22 +1,22 @@
 import Fastify from "fastify";
 import type { FastifyInstance } from "fastify";
-import { assertHttpControlConfig } from "./http-control-auth.js";
+import { assertHttpControlConfig } from "./http-control/auth.js";
 import {
   DEFAULT_HTTP_CONTROL_HOST,
   DEFAULT_HTTP_CONTROL_PORT,
-} from "./http-control-types.js";
-import type { HttpControlListenOptions, HttpControlServerOptions } from "./http-control-types.js";
-import { createErrorResponse, getCorrelationId, getErrorStatusCode, toErrorMessage } from "./http-control-errors.js";
-import { healthzRouteOptions, readyzRouteOptions, statusRouteOptions } from "./http-control-schemas.js";
+} from "./http-control/types.js";
+import type { HttpControlListenOptions, HttpControlServerOptions } from "./http-control/types.js";
+import { createErrorResponse, getCorrelationId, getErrorStatusCode, toErrorMessage } from "./http-control/errors.js";
+import { healthzRouteOptions, readyzRouteOptions, statusRouteOptions } from "./http-control/schemas.js";
 
-export { assertHttpControlConfig, authenticateLocalControlRequest, createLocalControlAuthPreHandler } from "./http-control-auth.js";
-export { createControlReadinessProvider, createDatabaseControlReadinessProvider } from "./http-control-readiness.js";
-export { createDatabaseControlStatusProvider } from "./http-control-status.js";
+export { assertHttpControlConfig, authenticateLocalControlRequest, createLocalControlAuthPreHandler } from "./http-control/auth.js";
+export { createControlReadinessProvider, createDatabaseControlReadinessProvider } from "./http-control/readiness.js";
+export { createDatabaseControlStatusProvider } from "./http-control/status.js";
 export {
   DEFAULT_HTTP_CONTROL_HOST,
   DEFAULT_HTTP_CONTROL_PORT,
   UnsafeHttpControlConfigError,
-} from "./http-control-types.js";
+} from "./http-control/types.js";
 export type {
   ControlOverallStatus,
   ControlReadinessCheckResult,
@@ -31,7 +31,7 @@ export type {
   HttpControlServerOptions,
   LocalControlAuthInput,
   LocalControlAuthResult,
-} from "./http-control-types.js";
+} from "./http-control/types.js";
 
 /**
  * M8 HTTP control API의 최소 Fastify server를 만든다.

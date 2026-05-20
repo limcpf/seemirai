@@ -1,6 +1,6 @@
-import type { KillSwitchState } from "../domain/index.js";
-import type { Database } from "../infrastructure/db/index.js";
-import type { RuntimeConfig } from "../runtime/index.js";
+import type { KillSwitchState } from "../../domain/index.js";
+import type { Database } from "../../infrastructure/db/index.js";
+import type { RuntimeConfig } from "../../runtime/index.js";
 
 export const DEFAULT_HTTP_CONTROL_HOST = "127.0.0.1";
 export const DEFAULT_HTTP_CONTROL_PORT = 8787;

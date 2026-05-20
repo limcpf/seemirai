@@ -1,8 +1,8 @@
 import { createHash, timingSafeEqual } from "node:crypto";
 import type { FastifyReply, FastifyRequest } from "fastify";
-import { createErrorResponse, getCorrelationId } from "./http-control-errors.js";
-import { UnsafeHttpControlConfigError } from "./http-control-types.js";
-import type { LocalControlAuthInput, LocalControlAuthResult } from "./http-control-types.js";
+import { createErrorResponse, getCorrelationId } from "./errors.js";
+import { UnsafeHttpControlConfigError } from "./types.js";
+import type { LocalControlAuthInput, LocalControlAuthResult } from "./types.js";
 
 /**
  * POST control endpoint가 켜질 때 local token 누락으로 시작하지 않도록 막는다.

@@ -40,7 +40,46 @@ HTTP control foundation에서는 `src/interfaces/http-control.ts`가 route, sche
 
 ## 권장 구조
 
-파일별로 다음과 같은 이름을 우선 사용한다.
+큰 단일 파일을 쪼갤 때는 flat prefix 파일을 늘리는 방식보다, 기존 public entry와 같은 이름의 디렉터리에 세부 구현을 모은다.
+
+기본 형태:
+
+```text
+src/<boundary>/<module-name>.ts
+src/<boundary>/<module-name>/
+  types.ts
+  <responsibility>.ts
+```
+
+기준:
+
+- 기존 import 경로가 이미 쓰이고 있으면 `<module-name>.ts`를 public barrel 또는 얇은 orchestration entry로 유지한다.
+- 세부 구현은 `<module-name>/` 아래에 두고, 내부 import는 `./<module-name>/<file>.js` 또는 폴더 내부 `./<file>.js` 형태로 제한한다.
+- `module-name-auth.ts`, `module-name-status.ts`처럼 같은 디렉터리에 prefix 파일을 여러 개 늘리지 않는다.
+- 새 모듈이라 public 경로 호환성이 필요 없으면 `<module-name>/index.ts`를 사용할 수 있지만, 기존 경로를 바꾸는 경우 migration 경로를 PR 본문에 명시한다.
+
+예시:
+
+```text
+src/interfaces/http-control.ts
+src/interfaces/http-control/
+  auth.ts
+  errors.ts
+  readiness.ts
+  schemas.ts
+  status.ts
+  types.ts
+
+src/infrastructure/db/execution-persistence.ts
+src/infrastructure/db/execution-persistence/
+  evidence-validation.ts
+  event-mapper.ts
+  row-mapper.ts
+  transition-policy.ts
+  types.ts
+```
+
+세부 파일명은 다음과 같은 책임 이름을 우선 사용한다.
 
 - `types.ts` 또는 `contracts.ts`: 외부로 노출되는 type/interface, port, error class
 - `*.validation.ts`: 입력 검증, 상태 invariant, mismatch 비교
