@@ -214,16 +214,20 @@ export function createPaperBrokerCandidateRecords(
 export function createBacktestPaperConsistencyReport(
   input: BacktestPaperConsistencyInput,
 ): BacktestPaperConsistencyReport {
-  const paperByKey = new Map(input.paperCandidates.map((candidate) => [candidate.idempotencyKey, candidate]));
-  const backtestKeys = new Set(input.backtestCandidates.map((candidate) => candidate.idempotencyKey));
+  const backtestByKey = createCandidateMap(input.backtestCandidates);
+  const paperByKey = createCandidateMap(input.paperCandidates);
   const mismatches: BacktestPaperConsistencyMismatch[] = [];
   let matchedCandidateCount = 0;
 
-  for (const backtestCandidate of input.backtestCandidates) {
-    const paperCandidate = paperByKey.get(backtestCandidate.idempotencyKey);
+  // 같은 key가 여러 번 나오면 Map 비교가 덮어쓰기 때문에 먼저 명시적으로 실패시킨다.
+  appendDuplicateCandidateKeyMismatches(mismatches, "backtest", input.backtestCandidates);
+  appendDuplicateCandidateKeyMismatches(mismatches, "paper", input.paperCandidates);
+
+  for (const [idempotencyKey, backtestCandidate] of backtestByKey) {
+    const paperCandidate = paperByKey.get(idempotencyKey);
     if (paperCandidate === undefined) {
       mismatches.push({
-        idempotencyKey: backtestCandidate.idempotencyKey,
+        idempotencyKey,
         field: "paper_candidate",
         backtestValue: "present",
         paperValue: "missing",
@@ -235,10 +239,10 @@ export function createBacktestPaperConsistencyReport(
     appendCandidateMismatches(mismatches, backtestCandidate, paperCandidate);
   }
 
-  for (const paperCandidate of input.paperCandidates) {
-    if (!backtestKeys.has(paperCandidate.idempotencyKey)) {
+  for (const [idempotencyKey] of paperByKey) {
+    if (!backtestByKey.has(idempotencyKey)) {
       mismatches.push({
-        idempotencyKey: paperCandidate.idempotencyKey,
+        idempotencyKey,
         field: "backtest_candidate",
         backtestValue: "missing",
         paperValue: "present",
@@ -294,11 +298,9 @@ function recordFillResult(
 
   if (fillResult.status === "FILLED") {
     summary.filledCount += 1;
-  }
-  if (fillResult.status === "PARTIALLY_FILLED") {
+  } else if (hasFilledQuantity(fillResult)) {
     summary.partiallyFilledCount += 1;
-  }
-  if (fillResult.status === "UNFILLED") {
+  } else {
     summary.unfilledCount += 1;
   }
 
@@ -359,16 +361,16 @@ function createBacktestPaperCandidateRecord(
     record.lifecycleStatus = fillResult.orderStatus;
     record.fillStatus = fillResult.status;
     record.fillReasonCode = fillResult.reasonCode;
-    record.filledQuantity = fillResult.filledQuantity;
-    record.remainingQuantity = fillResult.openQuantity;
+    record.filledQuantity = normalizeDecimalString(fillResult.filledQuantity);
+    record.remainingQuantity = normalizeDecimalString(fillResult.openQuantity);
     if (fillResult.totalFee !== undefined) {
-      record.totalFee = fillResult.totalFee;
+      record.totalFee = normalizeDecimalString(fillResult.totalFee);
     }
     if (fillResult.orderbookReceivedAt !== undefined) {
       record.orderbookReceivedAt = fillResult.orderbookReceivedAt;
     }
     if (fillResult.slippageBps !== undefined) {
-      record.slippageBps = fillResult.slippageBps;
+      record.slippageBps = normalizeDecimalString(fillResult.slippageBps);
     }
   }
 
@@ -382,27 +384,27 @@ function createPaperBrokerCandidateRecord(order: BrokerOrder): BacktestPaperCand
     market: order.market,
     side: order.side,
     orderType: order.orderType,
-    requestedQuantity: order.requestedQuantity,
+    requestedQuantity: normalizeDecimalString(order.requestedQuantity),
     lifecycleStatus: order.status,
-    remainingQuantity: order.remainingQuantity,
+    remainingQuantity: normalizeDecimalString(order.remainingQuantity),
   };
   if (order.requestedPrice !== undefined) {
-    record.requestedPrice = order.requestedPrice;
+    record.requestedPrice = normalizeDecimalString(order.requestedPrice);
   }
 
   const fillResult = readPaperFillSimulation(order);
   if (fillResult !== undefined) {
     record.fillStatus = fillResult.status;
     record.fillReasonCode = fillResult.reasonCode;
-    record.filledQuantity = fillResult.filledQuantity;
+    record.filledQuantity = normalizeDecimalString(fillResult.filledQuantity);
     if (fillResult.totalFee !== undefined) {
-      record.totalFee = fillResult.totalFee;
+      record.totalFee = normalizeDecimalString(fillResult.totalFee);
     }
     if (fillResult.orderbookReceivedAt !== undefined) {
       record.orderbookReceivedAt = fillResult.orderbookReceivedAt;
     }
     if (fillResult.slippageBps !== undefined) {
-      record.slippageBps = fillResult.slippageBps;
+      record.slippageBps = normalizeDecimalString(fillResult.slippageBps);
     }
   }
 
@@ -416,10 +418,10 @@ function createIntentCandidateRecord(intent: OrderIntent): BacktestPaperCandidat
     market: intent.market,
     side: intent.side,
     orderType: intent.orderType,
-    requestedQuantity: intent.requestedQuantity,
+    requestedQuantity: normalizeDecimalString(intent.requestedQuantity),
   };
   if (intent.orderType === "LIMIT") {
-    record.requestedPrice = intent.requestedPrice;
+    record.requestedPrice = normalizeDecimalString(intent.requestedPrice);
   }
 
   return record;
@@ -456,6 +458,43 @@ function appendCandidateMismatches(
         paperValue: paperCandidate[field],
       });
     }
+  }
+}
+
+function createCandidateMap(
+  candidates: readonly BacktestPaperCandidateRecord[],
+): Map<string, BacktestPaperCandidateRecord> {
+  const candidatesByKey = new Map<string, BacktestPaperCandidateRecord>();
+  for (const candidate of candidates) {
+    if (!candidatesByKey.has(candidate.idempotencyKey)) {
+      candidatesByKey.set(candidate.idempotencyKey, candidate);
+    }
+  }
+
+  return candidatesByKey;
+}
+
+function appendDuplicateCandidateKeyMismatches(
+  mismatches: BacktestPaperConsistencyMismatch[],
+  source: "backtest" | "paper",
+  candidates: readonly BacktestPaperCandidateRecord[],
+): void {
+  const counts: Record<string, number> = {};
+  for (const candidate of candidates) {
+    incrementCount(counts, candidate.idempotencyKey);
+  }
+
+  const sortedCounts = Object.entries(counts).sort(([left], [right]) => left.localeCompare(right));
+  for (const [idempotencyKey, count] of sortedCounts) {
+    if (count <= 1) {
+      continue;
+    }
+
+    mismatches.push({
+      idempotencyKey,
+      field: `${source}_duplicate_idempotency_key`,
+      ...(source === "backtest" ? { backtestValue: count } : { paperValue: count }),
+    });
   }
 }
 
@@ -611,6 +650,10 @@ function subtractDecimalStrings(left: NumericString, right: NumericString): Nume
 
 function parseOptionalDecimal(value: NumericString | undefined): Decimal {
   return value === undefined ? zero : parseFinancialDecimal(value);
+}
+
+function hasFilledQuantity(fillResult: PaperFillSimulationResult): boolean {
+  return parseFinancialDecimal(fillResult.filledQuantity).gt(0);
 }
 
 function normalizeDecimalString(value: NumericString): NumericString {

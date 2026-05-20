@@ -16,6 +16,14 @@ import {
   defaultRiskLimitThresholds,
 } from "../../src/domain/index.js";
 import type {
+  BacktestOrderCandidateResult,
+  BacktestPaperCandidateRecord,
+  BacktestRunResult,
+  PaperFillSimulationResult,
+} from "../../src/application/index.js";
+import type {
+  BrokerOrder,
+  CostDecision,
   CostModelInput,
   MarketEvent,
   OrderIntent,
@@ -95,6 +103,50 @@ describe("Backtest report and verification", () => {
     });
   });
 
+  it("counts partial IOC fills and canceled no-fill results in fill metrics", () => {
+    const report = createBacktestRunReport({
+      label: "fill_status_edges",
+      result: createBacktestResult([
+        createSimulatedCandidate({
+          idempotencyKey: "candidate:partial-ioc",
+          fillResult: createFillResult({
+            status: "IOC_CANCELED",
+            orderStatus: "CANCELED",
+            reasonCode: "ioc_filled_and_canceled",
+            requestedQuantity: "1",
+            filledQuantity: "0.5",
+            openQuantity: "0",
+            canceledQuantity: "0.5",
+          }),
+        }),
+        createSimulatedCandidate({
+          idempotencyKey: "candidate:fok-canceled",
+          fillResult: createFillResult({
+            status: "FOK_CANCELED",
+            orderStatus: "CANCELED",
+            reasonCode: "fok_not_filled",
+            requestedQuantity: "1",
+            filledQuantity: "0",
+            openQuantity: "0",
+            canceledQuantity: "1",
+          }),
+        }),
+      ]),
+    });
+
+    expect(report.totals).toMatchObject({
+      simulatedCount: 2,
+      filledCount: 0,
+      partiallyFilledCount: 1,
+      unfilledCount: 1,
+      fillRate: "0.5",
+    });
+    expect(report.fillStatusCounts).toEqual({
+      FOK_CANCELED: 1,
+      IOC_CANCELED: 1,
+    });
+  });
+
   it("verifies backtest candidates against PaperBroker results from the same fixture", async () => {
     const result = await runBacktest("cost_aware_allow");
     const submission = result.candidates[0]?.submission;
@@ -112,6 +164,96 @@ describe("Backtest report and verification", () => {
       matchedCandidateCount: 1,
       mismatches: [],
     });
+  });
+
+  it("normalizes numeric fields before comparing backtest and PaperBroker candidate records", () => {
+    const intent = createIntent({
+      idempotencyKey: "candidate:normalized",
+      requestedPrice: "100.0",
+      requestedQuantity: "1.0",
+      requestedNotional: "100.0",
+    });
+    const result = createBacktestResult([
+      createSimulatedCandidate({
+        intent,
+        fillResult: createFillResult({
+          status: "FILLED",
+          orderStatus: "FILLED",
+          reasonCode: "limit_crossed_full",
+          requestedQuantity: "1.0",
+          filledQuantity: "1.00",
+          openQuantity: "0.0",
+          canceledQuantity: "0.0",
+          totalFee: "0.0500",
+          slippageBps: "0.0",
+        }),
+      }),
+    ]);
+    const paperOrder: BrokerOrder = {
+      brokerOrderId: "paper:normalized",
+      idempotencyKey: intent.idempotencyKey,
+      exchangeId: intent.exchangeId,
+      market: intent.market,
+      side: intent.side,
+      orderType: intent.orderType,
+      status: "FILLED",
+      requestedQuantity: "1",
+      remainingQuantity: "0",
+      requestedPrice: "100",
+      updatedAt: triggerTimestamp,
+      metadata: {
+        paper_fill_simulation: createFillResult({
+          status: "FILLED",
+          orderStatus: "FILLED",
+          reasonCode: "limit_crossed_full",
+          requestedQuantity: "1",
+          filledQuantity: "1",
+          openQuantity: "0",
+          canceledQuantity: "0",
+          totalFee: "0.05",
+          slippageBps: "0",
+        }),
+      },
+    };
+
+    const consistency = createBacktestPaperConsistencyReport({
+      backtestCandidates: createBacktestPaperCandidateRecords(result),
+      paperCandidates: createPaperBrokerCandidateRecords([paperOrder]),
+    });
+
+    expect(consistency).toMatchObject({
+      matches: true,
+      mismatches: [],
+    });
+  });
+
+  it("marks duplicate idempotency keys as consistency mismatches", () => {
+    const backtestRecord = createCandidateRecord("candidate:duplicate");
+    const paperRecord = createCandidateRecord("candidate:duplicate");
+
+    const consistency = createBacktestPaperConsistencyReport({
+      backtestCandidates: [backtestRecord, { ...backtestRecord }],
+      paperCandidates: [paperRecord, { ...paperRecord }],
+    });
+
+    expect(consistency).toMatchObject({
+      matches: false,
+      backtestCandidateCount: 2,
+      paperCandidateCount: 2,
+      matchedCandidateCount: 1,
+    });
+    expect(consistency.mismatches).toEqual([
+      {
+        idempotencyKey: "candidate:duplicate",
+        field: "backtest_duplicate_idempotency_key",
+        backtestValue: 2,
+      },
+      {
+        idempotencyKey: "candidate:duplicate",
+        field: "paper_duplicate_idempotency_key",
+        paperValue: 2,
+      },
+    ]);
   });
 
   it("keeps reporting free from live broker imports", async () => {
@@ -205,6 +347,128 @@ function createFixtureStrategy(): Strategy {
         orderIntents: [intent],
       };
     },
+  };
+}
+
+function createBacktestResult(candidates: readonly BacktestOrderCandidateResult[]): BacktestRunResult {
+  return {
+    events: [],
+    strategyEvaluations: [],
+    candidates,
+  };
+}
+
+function createSimulatedCandidate(input: {
+  idempotencyKey?: string;
+  intent?: OrderIntent;
+  fillResult: PaperFillSimulationResult;
+}): BacktestOrderCandidateResult {
+  const intent =
+    input.intent ?? createIntent({ idempotencyKey: input.idempotencyKey ?? "candidate:simulated" });
+  return {
+    status: "SIMULATED",
+    event: createMetricEvent(),
+    strategyId,
+    intent,
+    costDecision: createCostDecision(),
+    submission: {
+      intent,
+      costSnapshot: createCostDecision().snapshot,
+      riskApproval: {
+        source: "backtest-report.test",
+        status: "APPROVED",
+      },
+      submittedAt: triggerTimestamp,
+    },
+    executionValidation: {
+      valid: true,
+    },
+    fillResult: input.fillResult,
+  };
+}
+
+function createIntent(input: {
+  idempotencyKey: string;
+  requestedPrice?: string;
+  requestedQuantity?: string;
+  requestedNotional?: string;
+}): OrderIntent {
+  const requestedQuantity = input.requestedQuantity ?? "1";
+  return {
+    exchangeId,
+    market,
+    strategyId,
+    side: "BUY",
+    orderType: "LIMIT",
+    requestedPrice: input.requestedPrice ?? "100",
+    requestedQuantity,
+    requestedNotional: input.requestedNotional ?? requestedQuantity,
+    idempotencyKey: input.idempotencyKey,
+    reason: "fixture_signal",
+    timeInForce: "GTC",
+  };
+}
+
+function createFillResult(
+  input: Omit<PaperFillSimulationResult, "fills" | "orderbookReceivedAt">,
+): PaperFillSimulationResult {
+  return {
+    ...input,
+    fills: [],
+    orderbookReceivedAt: triggerTimestamp,
+  };
+}
+
+function createCostDecision(): CostDecision {
+  return {
+    kind: "ALLOW",
+    tradeAllowed: true,
+    reasonCode: "cost_margin_ok",
+    message: "fixture cost decision",
+    snapshot: {
+      exchange_id: exchangeId,
+      market,
+      expected_return_bps: "10",
+      cost_bps: "1",
+      trade_allowed: true,
+      reason_code: "cost_margin_ok",
+    },
+  };
+}
+
+function createMetricEvent(): MarketEvent {
+  return {
+    kind: "ORDERBOOK_METRIC",
+    exchangeId,
+    market,
+    eventTimestamp: triggerTimestamp,
+    receivedAt: triggerTimestamp,
+    sequence: "metric",
+    tieBreakKey: "metric:test",
+    source: source(99),
+    bestBidPrice: "99",
+    bestAskPrice: "101",
+    spreadBps: "2",
+    bidDepth1: "100000000",
+    askDepth1: "100000000",
+  };
+}
+
+function createCandidateRecord(idempotencyKey: string): BacktestPaperCandidateRecord {
+  return {
+    idempotencyKey,
+    exchangeId,
+    market,
+    side: "BUY",
+    orderType: "LIMIT",
+    requestedQuantity: "1",
+    requestedPrice: "100",
+    lifecycleStatus: "FILLED",
+    fillStatus: "FILLED",
+    fillReasonCode: "limit_crossed_full",
+    filledQuantity: "1",
+    remainingQuantity: "0",
+    totalFee: "0.05",
   };
 }
 
