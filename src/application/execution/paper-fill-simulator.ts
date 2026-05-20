@@ -1,4 +1,5 @@
 import { parseFinancialDecimal } from "../../shared/index.js";
+import { parseMarketEventTimestampNanos } from "../../domain/index.js";
 import type {
   JsonRecord,
   NumericString,
@@ -9,6 +10,8 @@ import type {
   TimeInForce,
   TimestampInput,
 } from "../../domain/index.js";
+
+const timestampNanosPerMillisecond = 1_000_000n;
 
 export type PaperFillLiquidity = "TAKER";
 
@@ -240,10 +243,10 @@ function selectExecutionOrderbook(
     return snapshots[0];
   }
 
-  const latencyMs = Math.max(options.latencyMs ?? 0, 0);
-  const executionTimestamp = readTimestampMillis(options.submittedAt) + latencyMs;
+  const latencyNanos = latencyMsToNanos(options.latencyMs ?? 0);
+  const executionTimestamp = readTimestampNanos(options.submittedAt) + latencyNanos;
 
-  return snapshots.find((snapshot) => readTimestampMillis(snapshot.receivedAt) >= executionTimestamp);
+  return snapshots.find((snapshot) => readTimestampNanos(snapshot.receivedAt) >= executionTimestamp);
 }
 
 function isLimitOrderImmediatelyExecutable(
@@ -426,8 +429,17 @@ function isZeroDecimalString(value: NumericString): boolean {
   return parseFinancialDecimal(value).equals(0);
 }
 
-function readTimestampMillis(value: TimestampInput): number {
-  return value instanceof Date ? value.getTime() : new Date(value).getTime();
+function readTimestampNanos(value: TimestampInput): bigint {
+  return parseMarketEventTimestampNanos(value);
+}
+
+function latencyMsToNanos(latencyMs: number): bigint {
+  const normalizedLatencyMs = Math.max(latencyMs, 0);
+  if (!Number.isFinite(normalizedLatencyMs)) {
+    throw new Error(`Invalid latencyMs: ${String(latencyMs)}`);
+  }
+
+  return BigInt(Math.trunc(normalizedLatencyMs * Number(timestampNanosPerMillisecond)));
 }
 
 function DecimalMin(
