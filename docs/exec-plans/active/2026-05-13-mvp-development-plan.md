@@ -242,7 +242,11 @@ M7 진행 근거:
 ### M8. 운영 가드레일과 soak test
 
 - [ ] Fastify `/healthz`, `/readyz`, `/status`, optional `/metrics`
+  - [x] issue #42 Sub PR 1: Fastify dependency, HTTP server foundation, `/healthz`, `/readyz`, `/status`, safe status summary, bearer guard foundation
+  - [ ] optional `/metrics`
 - [ ] local token 기반 kill switch endpoint
+  - [x] issue #42 Sub PR 1: POST control endpoint용 bearer guard와 token 누락 startup fail foundation
+  - [ ] issue #42 Sub PR 2: `POST /kill-switch` 상태 전이 실행
 - [ ] Telegram outbound notifier
 - [ ] alert fingerprint + cooldown
 - [ ] 일간 리포트
@@ -285,6 +289,17 @@ M7 진행 근거:
 - 2026-05-20: issue #36 Sub PR 2는 `issue-36/02-historical-event-source`에서 fixture JSON을 검증한 뒤 deterministic `HistoricalEventSource`로 replay하는 source를 구현한다. replay filtering은 `exchangeId`, `markets`, `from/to`, `sourceId`, `limit`을 지원하고, marketless `STATUS`는 연결 단위 shared event로 market filter가 있어도 유지한다. DB-backed source와 orchestrator는 후속 PR로 유지한다.
 - 2026-05-20: issue #36 Sub PR 3은 `issue-36/03-backtest-orchestrator`에서 fixture/historical replay 이벤트를 기존 strategy, cost model, rule engine, RiskGate, execution evidence validation, paper fill simulator에 순서대로 연결하는 backtest application orchestrator를 고정한다. paper/backtest consistency 리포트와 M7 최종 문서화는 Sub PR 4로 유지한다.
 - 2026-05-20: issue #36 Sub PR 4는 `issue-36/04-backtest-reporting-verification`에서 `BacktestRunResult`를 전략별 거래 수, fill rate, fee, slippage, 추정 PnL 후보로 집계하는 리포트와 비용 0/비용 반영 비교 리포트를 고정한다. 같은 fixture에서 Backtest 제출 후보와 `PaperBroker` 주문 결과를 같은 record로 정규화해 idempotency key 기준 일치 여부를 검증하고 M7 체크리스트를 완료 처리한다.
+- 2026-05-20: issue #42는 M8 운영 가드레일 범위가 HTTP control API, kill switch control, Telegram/cooldown, daily report, soak verification으로 나뉘어 리뷰 위험이 크므로 `sub PR mode`에서 순차 진행한다. Sub PR 1은 `issue-42/01-http-control-foundation`에서 Fastify 5.8.5 runtime dependency와 최소 HTTP server, `/healthz`, `/readyz`, `/status`, safe status response, 공통 error/correlation id, POST control bearer guard foundation을 고정한다. 실제 `/kill-switch` 상태 전이 실행, Telegram delivery, daily report, soak script는 후속 PR 범위로 유지한다.
+
+issue #42 sub PR 계획:
+
+| 순서 | branch | 목표 | 제외 범위 | 파일 소유권 | 검증 |
+| --- | --- | --- | --- | --- | --- |
+| 1 | `issue-42/01-http-control-foundation` | Fastify dependency, 최소 HTTP server, `/healthz`, `/readyz`, `/status`, safe status response, 공통 error/correlation id, POST control bearer guard foundation | kill switch state transition 실행, Telegram, alert cooldown, daily report, soak, `/metrics` | `package.json`, `pnpm-lock.yaml`, `src/interfaces/**`, HTTP control tests, M8 관련 docs | `corepack pnpm typecheck`, `corepack pnpm exec vitest run tests/unit/http-control.test.ts`, `corepack pnpm test`, `./scripts/verify`, `git diff --check` |
+| 2 | `issue-42/02-kill-switch-control` | `POST /kill-switch`, target state enum, illegal transition handling, P0 원인별 mapping, HARD_STOP action plan/job boundary | Telegram delivery, daily report, 24h soak | HTTP control route extension, domain/application kill switch mapping, 관련 unit tests | `corepack pnpm typecheck`, `corepack pnpm test`, `./scripts/verify`, `git diff --check` |
+| 3 | `issue-42/03-alerts-telegram-cooldown` | Telegram outbound adapter with `fetch`, plain text formatting, provider timeout/failure, alert fingerprint, P0/P1 durable cooldown, P2/P3 memory cooldown, severity escalation bypass | Telegram inbound webhook/polling/command, daily report aggregator | notifier adapter/cooldown modules, alert tests, 필요 시 DB migration | `corepack pnpm typecheck`, `corepack pnpm test`, DB migration 시 `SEEMIRAI_RUN_DB_INTEGRATION=1 corepack pnpm exec vitest run tests/integration`, `./scripts/verify` |
+| 4 | `issue-42/04-daily-reporting` | deterministic daily report aggregator, KST 기준일과 UTC query window, realized/estimated PnL 분리, 비용/폐기/차단 사유 집계, jobs idempotency | LLM report draft, soak script | reporting module/tests, jobs integration 필요분 | `corepack pnpm typecheck`, `corepack pnpm test`, `SEEMIRAI_RUN_DB_INTEGRATION=1 corepack pnpm exec vitest run tests/integration`, `./scripts/verify` |
+| 5 | `issue-42/05-soak-verification-docs` | fixture smoke와 24h soak script, `SEEMIRAI_RUN_SOAK=1` guard, live API 0회/audit/stale/status 요약, M8 문서 최종화 | 신규 운영 기능 구현, raw soak log 커밋 | `scripts/**`, `tests/soak/**` 또는 관련 smoke tests, M8 docs | `corepack pnpm typecheck`, `corepack pnpm test`, `./scripts/verify`, `git diff --check`, 별도 `SEEMIRAI_RUN_SOAK=1 ...` |
 
 issue #36 sub PR 계획:
 

@@ -32,6 +32,7 @@
 - 항상 Plan을 먼저 세우고 작업한다.
 - 모든 답변과 작업 요약은 한국어로 작성한다.
 - 비즈니스/시스템 흐름을 표현하는 TypeScript 로직은 한국어 JSDoc으로 의도와 경계를 설명하고, 상태 전이·리스크 차단·외부 side effect 같은 핵심 분기에는 한국어 한 줄 주석을 남긴다.
+- TypeScript 모듈을 새로 만들거나 분리할 때는 public entry와 같은 이름의 디렉터리에 세부 구현을 두는 구조를 기본으로 한다. 상세 기준은 [`docs/design-docs/2026-05-20-typescript-module-structure.md`](./docs/design-docs/2026-05-20-typescript-module-structure.md)를 따른다.
 - 사용자가 명시하지 않은 신규 의존성 추가는 피한다.
 - 관련 없는 파일은 수정하지 않는다.
 - 변경은 가능한 한 최소 범위로 유지한다.

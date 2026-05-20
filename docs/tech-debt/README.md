@@ -3,3 +3,7 @@
 사용자가 명시적으로 기록을 지시한 기술 부채를 이 디렉터리에 둔다.
 
 일반 후속 작업은 먼저 [`../exec-plans/tech-debt-tracker.md`](../exec-plans/tech-debt-tracker.md)에 기록하고, 별도 문서가 필요할 만큼 커졌을 때 이 디렉터리로 분리한다.
+
+## 목록
+
+- [큰 TypeScript 단일 파일의 책임 분리](./2026-05-20-large-typescript-module-boundaries.md)
