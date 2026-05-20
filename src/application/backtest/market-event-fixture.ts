@@ -1,19 +1,28 @@
 import { z } from "zod";
 import type { MarketEvent } from "../../domain/index.js";
-import { assertUniqueMarketEventOrderKeys, sortMarketEvents } from "../../domain/index.js";
+import { assertUniqueMarketEventOrderKeys, parseMarketEventTimestampNanos, sortMarketEvents } from "../../domain/index.js";
 
 const TimezoneExplicitTimestampStringSchema = z
   .string()
   .min(1)
-  .refine((value) => /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-]\d{2}:\d{2})$/u.test(value), {
-    message: "timestamp must be ISO-8601 with an explicit timezone",
+  .refine((value) => canParseMarketEventTimestamp(value), {
+    message: "timestamp must be ISO-8601 with an explicit timezone and valid calendar value",
   });
-const TimestampSchema = z.union([TimezoneExplicitTimestampStringSchema, z.date()]);
-const NumericStringSchema = z
+const TimestampDateSchema = z.date().refine((value) => Number.isFinite(value.getTime()), {
+  message: "timestamp Date must be valid",
+});
+const TimestampSchema = z.union([TimezoneExplicitTimestampStringSchema, TimestampDateSchema]);
+const SignedDecimalStringSchema = z
   .string()
   .min(1)
   .refine((value) => /^-?(?:0|[1-9]\d*)(?:\.\d+)?$/u.test(value), {
     message: "numeric string must be a plain decimal",
+  });
+const NonNegativeDecimalStringSchema = z
+  .string()
+  .min(1)
+  .refine((value) => /^(?:0|[1-9]\d*)(?:\.\d+)?$/u.test(value), {
+    message: "numeric string must be a non-negative plain decimal",
   });
 const JsonRecordSchema = z.record(z.string(), z.unknown());
 const MarketEventSourceMetadataSchema = z
@@ -42,8 +51,8 @@ const MarketScopedEventBaseSchema = {
 
 const OrderbookLevelSchema = z
   .object({
-    price: NumericStringSchema,
-    size: NumericStringSchema,
+    price: NonNegativeDecimalStringSchema,
+    size: NonNegativeDecimalStringSchema,
   })
   .strict();
 
@@ -53,8 +62,8 @@ export const MarketEventSchema = z.discriminatedUnion("kind", [
       kind: z.literal("TRADE"),
       ...MarketScopedEventBaseSchema,
       tradeId: z.string().min(1),
-      price: NumericStringSchema,
-      quantity: NumericStringSchema,
+      price: NonNegativeDecimalStringSchema,
+      quantity: NonNegativeDecimalStringSchema,
       side: z.enum(["BID", "ASK", "UNKNOWN"]),
     })
     .strict(),
@@ -70,14 +79,14 @@ export const MarketEventSchema = z.discriminatedUnion("kind", [
     .object({
       kind: z.literal("ORDERBOOK_METRIC"),
       ...MarketScopedEventBaseSchema,
-      bestBidPrice: NumericStringSchema.optional(),
-      bestAskPrice: NumericStringSchema.optional(),
-      spreadBps: NumericStringSchema.optional(),
-      bidDepth1: NumericStringSchema.optional(),
-      askDepth1: NumericStringSchema.optional(),
-      bidDepth5: NumericStringSchema.optional(),
-      askDepth5: NumericStringSchema.optional(),
-      imbalance5: NumericStringSchema.optional(),
+      bestBidPrice: NonNegativeDecimalStringSchema.optional(),
+      bestAskPrice: NonNegativeDecimalStringSchema.optional(),
+      spreadBps: NonNegativeDecimalStringSchema.optional(),
+      bidDepth1: NonNegativeDecimalStringSchema.optional(),
+      askDepth1: NonNegativeDecimalStringSchema.optional(),
+      bidDepth5: NonNegativeDecimalStringSchema.optional(),
+      askDepth5: NonNegativeDecimalStringSchema.optional(),
+      imbalance5: SignedDecimalStringSchema.optional(),
       metrics: JsonRecordSchema.optional(),
     })
     .strict(),
@@ -85,9 +94,9 @@ export const MarketEventSchema = z.discriminatedUnion("kind", [
     .object({
       kind: z.literal("TICKER"),
       ...MarketScopedEventBaseSchema,
-      tradePrice: NumericStringSchema,
-      changeRate: NumericStringSchema.optional(),
-      accTradePrice24h: NumericStringSchema.optional(),
+      tradePrice: NonNegativeDecimalStringSchema,
+      changeRate: SignedDecimalStringSchema.optional(),
+      accTradePrice24h: NonNegativeDecimalStringSchema.optional(),
     })
     .strict(),
   z
@@ -98,9 +107,9 @@ export const MarketEventSchema = z.discriminatedUnion("kind", [
       warning: z.boolean(),
       caution: z.boolean(),
       reasonCodes: z.array(z.string().min(1)),
-      minimumOrderNotional: NumericStringSchema.optional(),
-      bidFeeBps: NumericStringSchema.optional(),
-      askFeeBps: NumericStringSchema.optional(),
+      minimumOrderNotional: NonNegativeDecimalStringSchema.optional(),
+      bidFeeBps: NonNegativeDecimalStringSchema.optional(),
+      askFeeBps: NonNegativeDecimalStringSchema.optional(),
       policy: JsonRecordSchema.optional(),
     })
     .strict(),
@@ -148,4 +157,13 @@ export function parseMarketEventFixture(input: unknown): MarketEventFixture {
 export function sortMarketEventFixtureEvents(fixture: MarketEventFixture): readonly MarketEvent[] {
   assertUniqueMarketEventOrderKeys(fixture.events);
   return sortMarketEvents(fixture.events);
+}
+
+function canParseMarketEventTimestamp(value: string): boolean {
+  try {
+    parseMarketEventTimestampNanos(value);
+    return true;
+  } catch {
+    return false;
+  }
 }

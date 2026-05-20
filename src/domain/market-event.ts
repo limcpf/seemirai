@@ -106,14 +106,23 @@ export type MarketEvent =
   | MarketPolicyCandidateEvent
   | MarketStatusReplayEvent;
 
+const timestampNanosPerSecond = 1_000_000_000n;
+const timestampNanosPerMillisecond = 1_000_000n;
+const timezoneExplicitIsoTimestampPattern =
+  /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,9}))?(?:Z|([+-])(\d{2}):(\d{2}))$/u;
+
 /**
  * MarketEvent replay 순서를 비교한다.
  *
- * 1차 기준은 eventTimestamp, 2차 기준은 sequence, 3차 기준은 tieBreakKey다. sequence가 숫자 문자열이면 safe
- * integer로 변환하지 않고 길이와 문자열 비교로 정렬해 큰 거래소 sequence도 손실 없이 처리한다.
+ * 1차 기준은 eventTimestamp, 2차 기준은 sequence, 3차 기준은 tieBreakKey, 마지막 기준은 거래소/마켓이다.
+ * timestamp는 서브밀리초 정밀도를 보존하고, sequence가 숫자 문자열이면 safe integer로 변환하지 않고 길이와
+ * 문자열 비교로 정렬해 큰 거래소 sequence도 손실 없이 처리한다.
  */
 export function compareMarketEvents(left: MarketEvent, right: MarketEvent): number {
-  const timestampDiff = readMarketEventTimestampMillis(left) - readMarketEventTimestampMillis(right);
+  const timestampDiff = compareBigInt(
+    parseMarketEventTimestampNanos(left.eventTimestamp),
+    parseMarketEventTimestampNanos(right.eventTimestamp),
+  );
   if (timestampDiff !== 0) {
     return timestampDiff;
   }
@@ -162,29 +171,67 @@ export function assertUniqueMarketEventOrderKeys(events: readonly MarketEvent[])
 }
 
 /**
- * 사람이 읽을 수 있고 테스트 snapshot에 쓰기 쉬운 replay order key를 만든다.
+ * 사람이 읽을 수 있고 충돌 없이 역직렬화할 수 있는 replay order key를 만든다.
  */
 export function createMarketEventOrderKey(event: MarketEvent): string {
-  return [
-    new Date(readMarketEventTimestampMillis(event)).toISOString(),
+  return JSON.stringify([
+    parseMarketEventTimestampNanos(event.eventTimestamp).toString(),
     event.exchangeId,
     event.market ?? "*",
     event.sequence,
     event.tieBreakKey,
-  ].join("#");
+  ]);
 }
 
-function readMarketEventTimestampMillis(event: Pick<BaseMarketEvent, "eventTimestamp">): number {
-  const milliseconds =
-    event.eventTimestamp instanceof Date
-      ? event.eventTimestamp.getTime()
-      : parseTimezoneExplicitTimestamp(event.eventTimestamp);
+/**
+ * timezone이 명시된 timestamp를 epoch nanoseconds로 변환한다.
+ *
+ * Date 입력은 JavaScript Date의 밀리초 정밀도까지만 표현할 수 있지만, 문자열 입력은 fixture와 source가 제공하는
+ * 최대 9자리 fractional second를 보존한다.
+ */
+export function parseMarketEventTimestampNanos(timestamp: TimestampInput): bigint {
+  if (timestamp instanceof Date) {
+    const milliseconds = timestamp.getTime();
 
-  if (!Number.isFinite(milliseconds)) {
-    throw new Error(`Invalid MarketEvent eventTimestamp: ${String(event.eventTimestamp)}`);
+    if (!Number.isFinite(milliseconds)) {
+      throw new Error(`Invalid MarketEvent eventTimestamp: ${String(timestamp)}`);
+    }
+
+    return BigInt(milliseconds) * timestampNanosPerMillisecond;
   }
 
-  return milliseconds;
+  return parseTimezoneExplicitTimestampNanos(timestamp);
+}
+
+function parseTimezoneExplicitTimestampNanos(value: string): bigint {
+  const match = timezoneExplicitIsoTimestampPattern.exec(value);
+
+  if (match === null) {
+    throw new Error(`MarketEvent timestamp must include an explicit timezone: ${value}`);
+  }
+
+  const year = Number(readTimestampCapture(match, 1));
+  const month = Number(readTimestampCapture(match, 2));
+  const day = Number(readTimestampCapture(match, 3));
+  const hour = Number(readTimestampCapture(match, 4));
+  const minute = Number(readTimestampCapture(match, 5));
+  const second = Number(readTimestampCapture(match, 6));
+  const fractionText = match[7] ?? "";
+  const offsetSign = match[8];
+  const offsetHour = offsetSign === undefined ? 0 : Number(readTimestampCapture(match, 9));
+  const offsetMinute = offsetSign === undefined ? 0 : Number(readTimestampCapture(match, 10));
+
+  if (offsetHour > 23 || offsetMinute > 59) {
+    throw new Error(`Invalid MarketEvent timestamp timezone offset: ${value}`);
+  }
+
+  const localTimestampMillis = createUtcMillisFromTimestampParts(year, month, day, hour, minute, second, value);
+  const localEpochSeconds = BigInt(Math.trunc(localTimestampMillis / 1_000));
+  const offsetSeconds =
+    offsetSign === undefined ? 0 : (offsetHour * 60 + offsetMinute) * 60 * (offsetSign === "+" ? 1 : -1);
+  const fractionNanos = fractionText.length === 0 ? 0n : BigInt(fractionText.padEnd(9, "0"));
+
+  return (localEpochSeconds - BigInt(offsetSeconds)) * timestampNanosPerSecond + fractionNanos;
 }
 
 function compareSequence(left: string, right: string): number {
@@ -220,6 +267,14 @@ function compareString(left: string, right: string): number {
   return left < right ? -1 : 1;
 }
 
+function compareBigInt(left: bigint, right: bigint): number {
+  if (left === right) {
+    return 0;
+  }
+
+  return left < right ? -1 : 1;
+}
+
 function isUnsignedIntegerText(value: string): boolean {
   return /^\d+$/u.test(value);
 }
@@ -229,14 +284,45 @@ function trimLeadingZeroes(value: string): string {
   return trimmed.length === 0 ? "0" : trimmed;
 }
 
-function parseTimezoneExplicitTimestamp(value: string): number {
-  if (!isTimezoneExplicitIsoTimestamp(value)) {
-    throw new Error(`MarketEvent timestamp must include an explicit timezone: ${value}`);
+function readTimestampCapture(match: RegExpExecArray, index: number): string {
+  const value = match[index];
+
+  if (value === undefined) {
+    throw new Error("Internal MarketEvent timestamp parser error");
   }
 
-  return Date.parse(value);
+  return value;
 }
 
-function isTimezoneExplicitIsoTimestamp(value: string): boolean {
-  return /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-]\d{2}:\d{2})$/u.test(value);
+function createUtcMillisFromTimestampParts(
+  year: number,
+  month: number,
+  day: number,
+  hour: number,
+  minute: number,
+  second: number,
+  originalValue: string,
+): number {
+  const date = new Date(0);
+  date.setUTCFullYear(year, month - 1, day);
+  date.setUTCHours(hour, minute, second, 0);
+
+  if (
+    date.getUTCFullYear() !== year ||
+    date.getUTCMonth() !== month - 1 ||
+    date.getUTCDate() !== day ||
+    date.getUTCHours() !== hour ||
+    date.getUTCMinutes() !== minute ||
+    date.getUTCSeconds() !== second
+  ) {
+    throw new Error(`Invalid MarketEvent timestamp calendar value: ${originalValue}`);
+  }
+
+  const milliseconds = date.getTime();
+
+  if (!Number.isFinite(milliseconds)) {
+    throw new Error(`Invalid MarketEvent eventTimestamp: ${originalValue}`);
+  }
+
+  return milliseconds;
 }

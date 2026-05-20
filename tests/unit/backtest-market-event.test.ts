@@ -3,7 +3,7 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { parseMarketEventFixture, sortMarketEventFixtureEvents } from "../../src/application/index.js";
 import type { HistoricalEventSource } from "../../src/application/index.js";
-import { createMarketEventOrderKey, sortMarketEvents } from "../../src/domain/index.js";
+import { createMarketEventOrderKey, parseMarketEventTimestampNanos, sortMarketEvents } from "../../src/domain/index.js";
 import type { MarketEvent } from "../../src/domain/index.js";
 
 describe("backtest MarketEvent foundation", () => {
@@ -34,14 +34,45 @@ describe("backtest MarketEvent foundation", () => {
       "ORDERBOOK_SNAPSHOT",
       "TRADE",
     ]);
-    expect(sorted.map(createMarketEventOrderKey)).toEqual([
-      "2026-05-19T23:59:59.900Z#upbit_krw_spot#KRW-BTC#1#policy:public",
-      "2026-05-20T00:00:00.000Z#upbit_krw_spot#*#1#status:connected",
-      "2026-05-20T00:00:00.020Z#upbit_krw_spot#KRW-BTC#1#orderbook_metric:1s",
-      "2026-05-20T00:00:00.050Z#upbit_krw_spot#KRW-BTC#1#ticker:snapshot",
-      "2026-05-20T00:00:00.100Z#upbit_krw_spot#KRW-BTC#2#orderbook:depth",
-      "2026-05-20T00:00:00.100Z#upbit_krw_spot#KRW-BTC#10#trade:17303368620470000",
+    expect(sorted.map((event) => parseOrderKey(createMarketEventOrderKey(event)))).toEqual([
+      expectedOrderKeyParts("2026-05-19T23:59:59.900Z", "KRW-BTC", "1", "policy:public"),
+      expectedOrderKeyParts("2026-05-20T00:00:00.000Z", "*", "1", "status:connected"),
+      expectedOrderKeyParts("2026-05-20T00:00:00.020Z", "KRW-BTC", "1", "orderbook_metric:1s"),
+      expectedOrderKeyParts("2026-05-20T00:00:00.050Z", "KRW-BTC", "1", "ticker:snapshot"),
+      expectedOrderKeyParts("2026-05-20T00:00:00.100Z", "KRW-BTC", "2", "orderbook:depth"),
+      expectedOrderKeyParts("2026-05-20T00:00:00.100Z", "KRW-BTC", "10", "trade:17303368620470000"),
     ]);
+  });
+
+  it("preserves sub-millisecond timestamp precision in sorting and order keys", async () => {
+    const fixture = parseMarketEventFixture(await readFixture());
+    const trade = fixture.events.find((event): event is Extract<MarketEvent, { kind: "TRADE" }> => event.kind === "TRADE");
+
+    expect(trade).toBeDefined();
+
+    const earlier = {
+      ...trade!,
+      eventTimestamp: "2026-05-20T00:00:00.123456Z",
+      sequence: "1",
+      tieBreakKey: "same",
+      tradeId: "sub-ms-earlier",
+    };
+    const later = {
+      ...trade!,
+      eventTimestamp: "2026-05-20T00:00:00.123999Z",
+      sequence: "1",
+      tieBreakKey: "same",
+      tradeId: "sub-ms-later",
+    };
+
+    expect(sortMarketEvents([later, earlier]).map((event) => event.eventTimestamp)).toEqual([
+      "2026-05-20T00:00:00.123456Z",
+      "2026-05-20T00:00:00.123999Z",
+    ]);
+    expect(createMarketEventOrderKey(earlier)).not.toBe(createMarketEventOrderKey(later));
+    expect(parseMarketEventTimestampNanos(earlier.eventTimestamp)).toBeLessThan(
+      parseMarketEventTimestampNanos(later.eventTimestamp),
+    );
   });
 
   it("uses tie-break key when timestamp and sequence are identical", async () => {
@@ -116,11 +147,43 @@ describe("backtest MarketEvent foundation", () => {
     expect(() => parseMarketEventFixture(duplicate)).toThrow("Duplicate MarketEvent order key");
   });
 
-  it("rejects timezone-implicit timestamps and non-decimal numeric strings at the fixture boundary", async () => {
+  it("serializes replay order keys without delimiter collisions", async () => {
     const fixture = parseMarketEventFixture(await readFixture());
     const trade = fixture.events.find((event): event is Extract<MarketEvent, { kind: "TRADE" }> => event.kind === "TRADE");
 
     expect(trade).toBeDefined();
+
+    const left = {
+      ...trade!,
+      sequence: "1#2",
+      tieBreakKey: "3",
+      tradeId: "delimiter-left",
+    };
+    const right = {
+      ...trade!,
+      sequence: "1",
+      tieBreakKey: "2#3",
+      tradeId: "delimiter-right",
+    };
+
+    expect(createMarketEventOrderKey(left)).not.toBe(createMarketEventOrderKey(right));
+    expect(() =>
+      parseMarketEventFixture({
+        schemaVersion: 1,
+        events: [left, right],
+      }),
+    ).not.toThrow();
+  });
+
+  it("rejects invalid timestamps, negative amount fields, and non-decimal numeric strings at the fixture boundary", async () => {
+    const fixture = parseMarketEventFixture(await readFixture());
+    const trade = fixture.events.find((event): event is Extract<MarketEvent, { kind: "TRADE" }> => event.kind === "TRADE");
+    const orderbook = fixture.events.find(
+      (event): event is Extract<MarketEvent, { kind: "ORDERBOOK_SNAPSHOT" }> => event.kind === "ORDERBOOK_SNAPSHOT",
+    );
+
+    expect(trade).toBeDefined();
+    expect(orderbook).toBeDefined();
     expect(() =>
       parseMarketEventFixture({
         schemaVersion: 1,
@@ -138,11 +201,75 @@ describe("backtest MarketEvent foundation", () => {
         events: [
           {
             ...trade!,
+            eventTimestamp: "2026-02-30T00:00:00Z",
+          },
+        ],
+      }),
+    ).toThrow();
+    expect(() =>
+      parseMarketEventFixture({
+        schemaVersion: 1,
+        events: [
+          {
+            ...trade!,
+            price: "-1",
+          },
+        ],
+      }),
+    ).toThrow();
+    expect(() =>
+      parseMarketEventFixture({
+        schemaVersion: 1,
+        events: [
+          {
+            ...orderbook!,
+            asks: [
+              {
+                ...orderbook!.asks[0]!,
+                size: "-0.1",
+              },
+            ],
+          },
+        ],
+      }),
+    ).toThrow();
+    expect(() =>
+      parseMarketEventFixture({
+        schemaVersion: 1,
+        events: [
+          {
+            ...trade!,
             price: "not-a-number",
           },
         ],
       }),
     ).toThrow();
+  });
+
+  it("allows signed rate fields while amount fields stay non-negative", async () => {
+    const fixture = parseMarketEventFixture(await readFixture());
+    const metric = fixture.events.find(
+      (event): event is Extract<MarketEvent, { kind: "ORDERBOOK_METRIC" }> => event.kind === "ORDERBOOK_METRIC",
+    );
+    const ticker = fixture.events.find((event): event is Extract<MarketEvent, { kind: "TICKER" }> => event.kind === "TICKER");
+
+    expect(metric).toBeDefined();
+    expect(ticker).toBeDefined();
+    expect(() =>
+      parseMarketEventFixture({
+        schemaVersion: 1,
+        events: [
+          {
+            ...metric!,
+            imbalance5: "-0.5",
+          },
+          {
+            ...ticker!,
+            changeRate: "-0.01",
+          },
+        ],
+      }),
+    ).not.toThrow();
   });
 
   it("keeps HistoricalEventSource independent from runtime worker lifecycle", async () => {
@@ -178,4 +305,18 @@ async function readFixture(): Promise<unknown> {
   const json = await readFile(fixturePath, "utf8");
 
   return JSON.parse(json) as unknown;
+}
+
+function expectedOrderKeyParts(timestamp: string, market: string, sequence: string, tieBreakKey: string): string[] {
+  return [parseMarketEventTimestampNanos(timestamp).toString(), "upbit_krw_spot", market, sequence, tieBreakKey];
+}
+
+function parseOrderKey(orderKey: string): string[] {
+  const value = JSON.parse(orderKey) as unknown;
+
+  if (!Array.isArray(value) || !value.every((item) => typeof item === "string")) {
+    throw new Error(`Invalid order key shape: ${orderKey}`);
+  }
+
+  return value;
 }
