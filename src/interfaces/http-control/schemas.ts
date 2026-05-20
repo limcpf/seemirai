@@ -202,7 +202,7 @@ export const killSwitchRouteOptions: RouteShorthandOptions = {
       required: ["targetState", "reasonCode"],
       properties: {
         targetState: { enum: killSwitchControlTargetStates },
-        reasonCode: { type: "string", minLength: 1 },
+        reasonCode: { type: "string", minLength: 1, pattern: "^[A-Za-z0-9][A-Za-z0-9_:-]*$" },
         message: { type: "string", minLength: 1 },
         actor: { type: "string", minLength: 1 },
         metadata: {

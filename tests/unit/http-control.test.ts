@@ -545,10 +545,54 @@ describe("HTTP control foundation", () => {
       status: "error",
       correlationId: "corr-illegal-transition",
       error: {
-        code: "operator_recovered",
-        message: "HTTP control requested kill switch transition: HARD_STOP -> NORMAL",
+        code: "illegal_kill_switch_state_transition",
+        message: "Illegal kill switch state transition rejected: HARD_STOP -> NORMAL",
       },
     });
+  });
+
+  it("rejects whitespace-only kill switch reason codes before provider execution", async () => {
+    let providerCalls = 0;
+    server = createHttpControlServer({
+      readinessProvider: staticReadinessProvider(readySummary()),
+      statusProvider: unavailableStatusProvider(),
+      killSwitchControlProvider: {
+        async apply(input) {
+          providerCalls += 1;
+          return createKillSwitchControlDecision({
+            currentState: "NORMAL",
+            targetState: input.targetState,
+            reasonCode: input.reasonCode,
+            correlationId: input.correlationId,
+            occurredAt: checkedAt,
+          });
+        },
+      },
+      localControlToken: "expected-token",
+    });
+
+    const response = await server.inject({
+      method: "POST",
+      url: "/kill-switch",
+      headers: {
+        authorization: "Bearer expected-token",
+        "x-correlation-id": "corr-blank-reason",
+      },
+      payload: {
+        targetState: "HARD_STOP",
+        reasonCode: "   ",
+      },
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.json()).toMatchObject({
+      status: "error",
+      correlationId: "corr-blank-reason",
+      error: {
+        code: "bad_request",
+      },
+    });
+    expect(providerCalls).toBe(0);
   });
 
   it("validates local bearer auth with correlation-aware failures", async () => {

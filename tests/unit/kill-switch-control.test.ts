@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   createHardStopPendingPaperOrderCancelJobPlan,
   createKillSwitchControlDecision,
+  createKillSwitchControlConflictResult,
   hardStopPendingPaperOrderCancelJobType,
   mapKillSwitchReasonToTargetState,
 } from "../../src/application/index.js";
@@ -31,7 +32,7 @@ describe("kill switch control decision", () => {
       accepted: false,
       fromState: "HARD_STOP",
       toState: "NORMAL",
-      reasonCode: "operator_recovered",
+      reasonCode: "illegal_kill_switch_state_transition",
     });
     expect(decision.actionPlan).toMatchObject({
       newOrdersBlocked: true,
@@ -58,6 +59,38 @@ describe("kill switch control decision", () => {
     expect(decision.recommendedTargetState).toBe("HARD_STOP");
   });
 
+  it("converts stale durable updates to conflict results that preserve observed state", () => {
+    const attempted = createKillSwitchControlDecision({
+      currentState: "NORMAL",
+      targetState: "HARD_STOP",
+      reasonCode: "db_write_failure",
+      correlationId: "corr-conflict",
+      occurredAt: "2026-05-21T00:00:00.000Z",
+    });
+
+    const conflict = createKillSwitchControlConflictResult({
+      attemptedResult: attempted,
+      observedState: "NEW_ORDERS_BLOCKED",
+      occurredAt: "2026-05-21T00:00:01.000Z",
+    });
+
+    expect(conflict.transition).toMatchObject({
+      accepted: false,
+      reasonCode: "kill_switch_state_conflict",
+      fromState: "NORMAL",
+      toState: "HARD_STOP",
+    });
+    expect(conflict.actionPlan).toMatchObject({
+      newOrdersBlocked: true,
+      cancelPendingPaperOrders: false,
+    });
+    expect(conflict.transition.event.metadata).toMatchObject({
+      conflict: true,
+      observed_state: "NEW_ORDERS_BLOCKED",
+      requested_reason_code: "db_write_failure",
+    });
+  });
+
   it("creates a HARD_STOP pending paper order cancel job boundary without liquidation", () => {
     const decision = createKillSwitchControlDecision({
       currentState: "NORMAL",
@@ -76,7 +109,7 @@ describe("kill switch control decision", () => {
 
     expect(jobPlan).toMatchObject({
       jobType: hardStopPendingPaperOrderCancelJobType,
-      idempotencyKey: `${hardStopPendingPaperOrderCancelJobType}:corr-hard-stop`,
+      idempotencyKey: `${hardStopPendingPaperOrderCancelJobType}:NORMAL:HARD_STOP:2026-05-21T00:00:00.000Z:corr-hard-stop`,
       maxAttempts: 3,
       payloadJson: {
         reason_code: "db_write_failure",

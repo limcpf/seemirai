@@ -308,13 +308,18 @@ describeDb("state transition persistence integration", () => {
     const hardStopJob = await db
       .selectFrom("jobs")
       .select(["job_type", "idempotency_key", "payload_json"])
-      .where("idempotency_key", "=", "hard_stop_pending_paper_order_cancel:http-kill-switch-1")
+      .where(
+        "idempotency_key",
+        "=",
+        "hard_stop_pending_paper_order_cancel:NORMAL:HARD_STOP:2026-05-19T01:30:00.000Z:http-kill-switch-1",
+      )
       .executeTakeFirstOrThrow();
 
     expect(result.transition.accepted).toBe(true);
     expect(result.hardStopCancelJob).toMatchObject({
       created: true,
-      idempotencyKey: "hard_stop_pending_paper_order_cancel:http-kill-switch-1",
+      idempotencyKey:
+        "hard_stop_pending_paper_order_cancel:NORMAL:HARD_STOP:2026-05-19T01:30:00.000Z:http-kill-switch-1",
     });
     expect(killSwitchState).toEqual({
       state: "HARD_STOP",
@@ -325,7 +330,8 @@ describeDb("state transition persistence integration", () => {
     expect(Number(riskCount.count)).toBe(1);
     expect(hardStopJob).toMatchObject({
       job_type: "hard_stop_pending_paper_order_cancel",
-      idempotency_key: "hard_stop_pending_paper_order_cancel:http-kill-switch-1",
+      idempotency_key:
+        "hard_stop_pending_paper_order_cancel:NORMAL:HARD_STOP:2026-05-19T01:30:00.000Z:http-kill-switch-1",
     });
     expect(hardStopJob.payload_json).toMatchObject({
       action_plan: {

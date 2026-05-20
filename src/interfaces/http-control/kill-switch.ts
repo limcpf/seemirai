@@ -25,9 +25,10 @@ export function createKillSwitchControlRouteHandler(provider: KillSwitchControlP
     reply: FastifyReply,
   ) => {
     const correlationId = getCorrelationId(request);
+    const reasonCode = request.body.reasonCode.trim();
     const result = await provider.apply({
       targetState: request.body.targetState,
-      reasonCode: request.body.reasonCode,
+      reasonCode,
       correlationId,
       ...(request.body.actor === undefined ? {} : { actor: request.body.actor }),
       ...(request.body.message === undefined ? {} : { message: request.body.message }),

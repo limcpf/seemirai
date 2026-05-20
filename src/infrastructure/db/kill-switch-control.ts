@@ -6,6 +6,7 @@ import type {
 import {
   createHardStopPendingPaperOrderCancelJobPlan,
   createKillSwitchControlDecision,
+  createKillSwitchControlConflictResult,
 } from "../../application/index.js";
 import type { JsonRecord, KillSwitchState } from "../../domain/index.js";
 import type { Database } from "./database.js";
@@ -61,7 +62,7 @@ export async function applyPostgresKillSwitchControl(
       throw new Error("global kill switch state row was not found");
     }
 
-    const result = createKillSwitchControlDecision({
+    let result = createKillSwitchControlDecision({
       currentState: current.state,
       targetState: options.request.targetState,
       reasonCode: options.request.reasonCode,
@@ -71,6 +72,36 @@ export async function applyPostgresKillSwitchControl(
       ...(options.request.message === undefined ? {} : { message: options.request.message }),
       ...(options.request.metadata === undefined ? {} : { metadata: options.request.metadata }),
     });
+
+    if (result.transition.accepted) {
+      // 현재 snapshot이 transition의 from 상태와 같을 때만 전진시켜 중복/경합 요청을 409 거부 evidence로 낮춘다.
+      const updatedState = await transaction
+        .updateTable("kill_switch_state")
+        .set({
+          state: result.transition.toState,
+          reason_code: result.transition.reasonCode,
+          correlation_id: options.request.correlationId,
+          payload_json: createKillSwitchSnapshotPayload(result),
+          updated_at: occurredAt,
+        })
+        .where("scope", "=", "global")
+        .where("state", "=", result.transition.fromState)
+        .returning("scope")
+        .executeTakeFirst();
+
+      if (updatedState === undefined) {
+        const observed = await transaction
+          .selectFrom("kill_switch_state")
+          .select("state")
+          .where("scope", "=", "global")
+          .executeTakeFirst();
+        result = createKillSwitchControlConflictResult({
+          attemptedResult: result,
+          observedState: observed?.state,
+          occurredAt,
+        });
+      }
+    }
 
     const insertedAudit = await transaction
       .insertInto("audit_events")
@@ -88,7 +119,7 @@ export async function applyPostgresKillSwitchControl(
       .insertInto("risk_events")
       .values(
         toRiskEventRow({
-          riskType: options.request.reasonCode,
+          riskType: result.transition.reasonCode,
           severity: toKillSwitchControlRiskSeverity(result),
           action: toKillSwitchControlRiskAction(result),
           occurredAt,
@@ -101,27 +132,6 @@ export async function applyPostgresKillSwitchControl(
       )
       .returning("id")
       .executeTakeFirstOrThrow();
-
-    if (result.transition.accepted) {
-      // 현재 snapshot이 transition의 from 상태와 같을 때만 전진시켜 중복/경합 요청을 fail-closed한다.
-      const updatedState = await transaction
-        .updateTable("kill_switch_state")
-        .set({
-          state: result.transition.toState,
-          reason_code: result.transition.reasonCode,
-          correlation_id: options.request.correlationId,
-          payload_json: createKillSwitchSnapshotPayload(result),
-          updated_at: occurredAt,
-        })
-        .where("scope", "=", "global")
-        .where("state", "=", result.transition.fromState)
-        .returning("scope")
-        .executeTakeFirst();
-
-      if (updatedState === undefined) {
-        throw new Error("accepted kill switch control transition current state mismatch");
-      }
-    }
 
     const persistedResult: KillSwitchControlResult = {
       ...result,

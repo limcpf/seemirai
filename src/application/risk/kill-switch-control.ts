@@ -1,4 +1,5 @@
 import {
+  canTransitionKillSwitchState,
   getKillSwitchActionPlan,
   transitionKillSwitchState,
   type JsonRecord,
@@ -90,6 +91,7 @@ export function createKillSwitchControlDecision(
   const reasonMatchesTarget =
     recommendedTargetState === undefined || recommendedTargetState === input.targetState;
   const occurredAt = input.occurredAt ?? new Date();
+  const stateMachineAllowsTransition = canTransitionKillSwitchState(input.currentState, input.targetState);
   const metadata = createControlTransitionMetadata({
     actor,
     correlationId: input.correlationId,
@@ -103,10 +105,14 @@ export function createKillSwitchControlDecision(
         fromState: input.currentState,
         toState: input.targetState,
         occurredAt,
-        reasonCode: input.reasonCode,
-        message:
-          input.message ??
-          `HTTP control requested kill switch transition: ${input.currentState} -> ${input.targetState}`,
+        ...(stateMachineAllowsTransition ? { reasonCode: input.reasonCode } : {}),
+        ...(stateMachineAllowsTransition
+          ? {
+              message:
+                input.message ??
+                `HTTP control requested kill switch transition: ${input.currentState} -> ${input.targetState}`,
+            }
+          : {}),
         metadata,
       })
     : createReasonTargetMismatchDecision({
@@ -132,6 +138,53 @@ export function createKillSwitchControlDecision(
 }
 
 /**
+ * optimistic update 경합을 운영자가 구분할 수 있는 거부 전이 결과로 변환한다.
+ */
+export function createKillSwitchControlConflictResult(input: {
+  attemptedResult: KillSwitchControlResult;
+  observedState: KillSwitchState | undefined;
+  occurredAt: TimestampInput;
+}): KillSwitchControlResult {
+  const metadata: JsonRecord = {
+    ...(input.attemptedResult.transition.event.metadata ?? {}),
+    conflict: true,
+  };
+  if (input.observedState !== undefined) {
+    metadata.observed_state = input.observedState;
+  }
+
+  const event: StateTransitionEventCandidate<KillSwitchState> = {
+    eventKind: "KILL_SWITCH_STATE_TRANSITION",
+    fromState: input.attemptedResult.transition.fromState,
+    toState: input.attemptedResult.transition.toState,
+    accepted: false,
+    reasonCode: "kill_switch_state_conflict",
+    message:
+      input.observedState === undefined
+        ? "Kill switch state changed before control transition could be committed"
+        : `Kill switch state changed before control transition could be committed: observed ${input.observedState}`,
+    occurredAt: input.occurredAt,
+    metadata,
+  };
+
+  return {
+    transition: {
+      accepted: false,
+      fromState: event.fromState,
+      toState: event.toState,
+      reasonCode: event.reasonCode,
+      message: event.message,
+      event,
+    },
+    actionPlan: getKillSwitchActionPlan(input.observedState ?? input.attemptedResult.transition.fromState),
+    reasonMatchesTarget: input.attemptedResult.reasonMatchesTarget,
+    ...(input.attemptedResult.recommendedTargetState === undefined
+      ? {}
+      : { recommendedTargetState: input.attemptedResult.recommendedTargetState }),
+  };
+}
+
+/**
  * HARD_STOP 전이 후 pending paper order 취소를 비동기 job 경계로 남긴다.
  */
 export function createHardStopPendingPaperOrderCancelJobPlan(input: {
@@ -141,15 +194,22 @@ export function createHardStopPendingPaperOrderCancelJobPlan(input: {
   correlationId: string;
   occurredAt: TimestampInput;
 }): HardStopPendingPaperOrderCancelJobPlan {
+  const occurredAt = toIsoTimestamp(input.occurredAt);
   return {
     jobType: hardStopPendingPaperOrderCancelJobType,
-    idempotencyKey: `${hardStopPendingPaperOrderCancelJobType}:${input.correlationId}`,
+    idempotencyKey: [
+      hardStopPendingPaperOrderCancelJobType,
+      input.transition.fromState,
+      input.transition.toState,
+      occurredAt,
+      input.correlationId,
+    ].join(":"),
     payloadJson: {
       correlation_id: input.correlationId,
       reason_code: input.reasonCode,
       from_state: input.transition.fromState,
       to_state: input.transition.toState,
-      occurred_at: toIsoTimestamp(input.occurredAt),
+      occurred_at: occurredAt,
       action_plan: {
         new_orders_blocked: input.actionPlan.newOrdersBlocked,
         strategy_evaluation_blocked: input.actionPlan.strategyEvaluationBlocked,
