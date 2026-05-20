@@ -37,6 +37,7 @@ export function createDatabaseControlStatusProvider(
       const killSwitch = await readKillSwitchStatus(options.database);
       const actionPlan = getKillSwitchActionPlan(killSwitch.state);
       const readiness = await statusReadinessProvider.check();
+      const blockedReason = actionPlan.newOrdersBlocked ? killSwitch.reasonCode : null;
       // kill switch action plan은 상태 문자열을 실제 주문 차단/수동 검토 신호로 변환하는 경계다.
       return {
         generatedAt: clock().toISOString(),
@@ -44,7 +45,7 @@ export function createDatabaseControlStatusProvider(
         tradingState: {
           state: killSwitch.state,
           killSwitchState: killSwitch.state,
-          blockedReason: killSwitch.reasonCode,
+          blockedReason,
           newOrdersBlocked: actionPlan.newOrdersBlocked,
           requiresManualReview: actionPlan.requiresManualReview,
         },

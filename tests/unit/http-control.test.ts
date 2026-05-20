@@ -13,6 +13,7 @@ import {
 } from "../../src/interfaces/index.js";
 import { getKillSwitchActionPlan, type KillSwitchState } from "../../src/domain/index.js";
 import { loadRuntimeConfig } from "../../src/runtime/index.js";
+import type { Database } from "../../src/infrastructure/db/index.js";
 import type {
   ControlReadinessProvider,
   ControlReadinessSummary,
@@ -318,6 +319,35 @@ describe("HTTP control foundation", () => {
     expect(response.body).not.toContain("db_write");
   });
 
+  it("normalizes blockedReason to null when current state does not block new orders", async () => {
+    const runtimeConfig = loadRuntimeConfig({});
+    server = createHttpControlServer({
+      readinessProvider: staticReadinessProvider(readySummary()),
+      statusProvider: createDatabaseControlStatusProvider({
+        runtimeConfig,
+        database: killSwitchStateDatabase({
+          state: "NORMAL",
+          reason_code: "initial_state",
+        }),
+        statusReadinessProvider: staticReadinessProvider(readySummary()),
+      }),
+    });
+
+    const response = await server.inject({
+      method: "GET",
+      url: "/status",
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({
+      tradingState: {
+        state: "NORMAL",
+        blockedReason: null,
+        newOrdersBlocked: false,
+      },
+    });
+  });
+
   it("requires a local control token before enabling POST control endpoints", () => {
     expect(() =>
       createHttpControlServer({
@@ -460,6 +490,29 @@ function unavailableStatusProvider(): ControlStatusProvider {
     blockedReason: null,
     database: readySummary(),
   });
+}
+
+function killSwitchStateDatabase(row: { state: KillSwitchState; reason_code: string | null }): Database {
+  const query = {
+    select() {
+      return query;
+    },
+    where() {
+      return query;
+    },
+    async executeTakeFirst() {
+      return row;
+    },
+  };
+
+  return {
+    selectFrom(tableName: string) {
+      if (tableName !== "kill_switch_state") {
+        throw new Error(`unexpected table: ${tableName}`);
+      }
+      return query;
+    },
+  } as unknown as Database;
 }
 
 function statusSnapshotProvider(input: {
