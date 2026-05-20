@@ -1,5 +1,6 @@
 export * from "./cost.js";
 export * from "./market.js";
+export * from "./market-event.js";
 export * from "./orders.js";
 export * from "./risk.js";
 export * from "./rules.js";
