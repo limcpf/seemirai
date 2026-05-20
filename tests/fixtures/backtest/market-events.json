@@ -48,7 +48,6 @@
     {
       "kind": "STATUS",
       "exchangeId": "upbit_krw_spot",
-      "market": "KRW-BTC",
       "eventTimestamp": "2026-05-20T00:00:00.000Z",
       "receivedAt": "2026-05-20T00:00:00.010Z",
       "sequence": "1",

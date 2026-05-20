@@ -35,12 +35,12 @@ describe("backtest MarketEvent foundation", () => {
       "TRADE",
     ]);
     expect(sorted.map(createMarketEventOrderKey)).toEqual([
-      "2026-05-19T23:59:59.900Z#1#policy:public",
-      "2026-05-20T00:00:00.000Z#1#status:connected",
-      "2026-05-20T00:00:00.020Z#1#orderbook_metric:1s",
-      "2026-05-20T00:00:00.050Z#1#ticker:snapshot",
-      "2026-05-20T00:00:00.100Z#2#orderbook:depth",
-      "2026-05-20T00:00:00.100Z#10#trade:17303368620470000",
+      "2026-05-19T23:59:59.900Z#upbit_krw_spot#KRW-BTC#1#policy:public",
+      "2026-05-20T00:00:00.000Z#upbit_krw_spot#*#1#status:connected",
+      "2026-05-20T00:00:00.020Z#upbit_krw_spot#KRW-BTC#1#orderbook_metric:1s",
+      "2026-05-20T00:00:00.050Z#upbit_krw_spot#KRW-BTC#1#ticker:snapshot",
+      "2026-05-20T00:00:00.100Z#upbit_krw_spot#KRW-BTC#2#orderbook:depth",
+      "2026-05-20T00:00:00.100Z#upbit_krw_spot#KRW-BTC#10#trade:17303368620470000",
     ]);
   });
 
@@ -63,6 +63,43 @@ describe("backtest MarketEvent foundation", () => {
     expect(sorted.map((event) => event.tieBreakKey)).toEqual(["a", "b"]);
   });
 
+  it("keeps sequence ordering deterministic when numeric strings normalize to the same value", async () => {
+    const fixture = parseMarketEventFixture(await readFixture());
+    const [left, right] = fixture.events.slice(0, 2) as [MarketEvent, MarketEvent];
+    const sorted = sortMarketEvents([
+      {
+        ...left,
+        sequence: "1",
+        tieBreakKey: "same",
+      },
+      {
+        ...right,
+        sequence: "01",
+        tieBreakKey: "same",
+      },
+    ]);
+
+    expect(sorted.map((event) => event.sequence)).toEqual(["01", "1"]);
+  });
+
+  it("allows identical local order triples across different markets", async () => {
+    const fixture = parseMarketEventFixture(await readFixture());
+    const first = fixture.events[0]!;
+
+    expect(() =>
+      parseMarketEventFixture({
+        schemaVersion: 1,
+        events: [
+          first,
+          {
+            ...first,
+            market: "KRW-ETH",
+          },
+        ],
+      }),
+    ).not.toThrow();
+  });
+
   it("rejects duplicate replay order keys before a source can stream nondeterministically", async () => {
     const fixture = parseMarketEventFixture(await readFixture());
     const duplicate = {
@@ -80,12 +117,41 @@ describe("backtest MarketEvent foundation", () => {
     expect(() => parseMarketEventFixture(duplicate)).toThrow("Duplicate MarketEvent order key");
   });
 
+  it("rejects timezone-implicit timestamps and non-decimal numeric strings at the fixture boundary", async () => {
+    const fixture = parseMarketEventFixture(await readFixture());
+    const trade = fixture.events.find((event): event is Extract<MarketEvent, { kind: "TRADE" }> => event.kind === "TRADE");
+
+    expect(trade).toBeDefined();
+    expect(() =>
+      parseMarketEventFixture({
+        schemaVersion: 1,
+        events: [
+          {
+            ...trade!,
+            eventTimestamp: "2026-05-20 00:00:00",
+          },
+        ],
+      }),
+    ).toThrow();
+    expect(() =>
+      parseMarketEventFixture({
+        schemaVersion: 1,
+        events: [
+          {
+            ...trade!,
+            price: "not-a-number",
+          },
+        ],
+      }),
+    ).toThrow();
+  });
+
   it("keeps HistoricalEventSource independent from runtime worker lifecycle", async () => {
     const fixture = parseMarketEventFixture(await readFixture());
     const source: HistoricalEventSource = {
       async *replay(request) {
         for (const event of sortMarketEventFixtureEvents(fixture)) {
-          if (request?.markets !== undefined && !request.markets.includes(event.market)) {
+          if (request?.markets !== undefined && event.market !== undefined && !request.markets.includes(event.market)) {
             continue;
           }
 

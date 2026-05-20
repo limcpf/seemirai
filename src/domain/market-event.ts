@@ -37,7 +37,6 @@ export interface MarketEventSourceMetadata {
 export interface BaseMarketEvent<TKind extends MarketEventKind = MarketEventKind> {
   kind: TKind;
   exchangeId: ExchangeId;
-  market: MarketCode;
   eventTimestamp: TimestampInput;
   receivedAt?: TimestampInput;
   sequence: string;
@@ -46,19 +45,23 @@ export interface BaseMarketEvent<TKind extends MarketEventKind = MarketEventKind
   metadata?: JsonRecord;
 }
 
-export interface MarketTradeEvent extends BaseMarketEvent<"TRADE"> {
+export interface MarketScopedEvent<TKind extends MarketEventKind = MarketEventKind> extends BaseMarketEvent<TKind> {
+  market: MarketCode;
+}
+
+export interface MarketTradeEvent extends MarketScopedEvent<"TRADE"> {
   tradeId: string;
   price: NumericString;
   quantity: NumericString;
   side: MarketEventTradeSide;
 }
 
-export interface MarketOrderbookSnapshotEvent extends BaseMarketEvent<"ORDERBOOK_SNAPSHOT"> {
+export interface MarketOrderbookSnapshotEvent extends MarketScopedEvent<"ORDERBOOK_SNAPSHOT"> {
   asks: readonly OrderbookLevel[];
   bids: readonly OrderbookLevel[];
 }
 
-export interface MarketOrderbookMetricEvent extends BaseMarketEvent<"ORDERBOOK_METRIC"> {
+export interface MarketOrderbookMetricEvent extends MarketScopedEvent<"ORDERBOOK_METRIC"> {
   bestBidPrice?: NumericString;
   bestAskPrice?: NumericString;
   spreadBps?: NumericString;
@@ -70,13 +73,13 @@ export interface MarketOrderbookMetricEvent extends BaseMarketEvent<"ORDERBOOK_M
   metrics?: JsonRecord;
 }
 
-export interface MarketTickerEvent extends BaseMarketEvent<"TICKER"> {
+export interface MarketTickerEvent extends MarketScopedEvent<"TICKER"> {
   tradePrice: NumericString;
   changeRate?: NumericString;
   accTradePrice24h?: NumericString;
 }
 
-export interface MarketPolicyCandidateEvent extends BaseMarketEvent<"POLICY_CANDIDATE"> {
+export interface MarketPolicyCandidateEvent extends MarketScopedEvent<"POLICY_CANDIDATE"> {
   tradable: boolean;
   warning: boolean;
   caution: boolean;
@@ -88,6 +91,7 @@ export interface MarketPolicyCandidateEvent extends BaseMarketEvent<"POLICY_CAND
 }
 
 export interface MarketStatusReplayEvent extends BaseMarketEvent<"STATUS"> {
+  market?: MarketCode;
   status: MarketDataConnectionStatus;
   reasonCode?: string;
   websocketLagMs?: number;
@@ -153,13 +157,18 @@ export function assertUniqueMarketEventOrderKeys(events: readonly MarketEvent[])
 export function createMarketEventOrderKey(event: MarketEvent): string {
   return [
     new Date(readMarketEventTimestampMillis(event)).toISOString(),
+    event.exchangeId,
+    event.market ?? "*",
     event.sequence,
     event.tieBreakKey,
   ].join("#");
 }
 
 function readMarketEventTimestampMillis(event: Pick<BaseMarketEvent, "eventTimestamp">): number {
-  const milliseconds = event.eventTimestamp instanceof Date ? event.eventTimestamp.getTime() : Date.parse(event.eventTimestamp);
+  const milliseconds =
+    event.eventTimestamp instanceof Date
+      ? event.eventTimestamp.getTime()
+      : parseTimezoneExplicitTimestamp(event.eventTimestamp);
 
   if (!Number.isFinite(milliseconds)) {
     throw new Error(`Invalid MarketEvent eventTimestamp: ${String(event.eventTimestamp)}`);
@@ -181,7 +190,13 @@ function compareSequence(left: string, right: string): number {
       return normalizedLeft.length - normalizedRight.length;
     }
 
-    return compareString(normalizedLeft, normalizedRight);
+    const normalizedDiff = compareString(normalizedLeft, normalizedRight);
+    if (normalizedDiff !== 0) {
+      return normalizedDiff;
+    }
+
+    // "1"과 "01"처럼 숫자 값은 같아도 raw sequence가 다르면 입력 순서에 기대지 않도록 마지막으로 원문을 비교한다.
+    return compareString(left, right);
   }
 
   return compareString(left, right);
@@ -202,4 +217,16 @@ function isUnsignedIntegerText(value: string): boolean {
 function trimLeadingZeroes(value: string): string {
   const trimmed = value.replace(/^0+/u, "");
   return trimmed.length === 0 ? "0" : trimmed;
+}
+
+function parseTimezoneExplicitTimestamp(value: string): number {
+  if (!isTimezoneExplicitIsoTimestamp(value)) {
+    throw new Error(`MarketEvent timestamp must include an explicit timezone: ${value}`);
+  }
+
+  return Date.parse(value);
+}
+
+function isTimezoneExplicitIsoTimestamp(value: string): boolean {
+  return /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-]\d{2}:\d{2})$/u.test(value);
 }

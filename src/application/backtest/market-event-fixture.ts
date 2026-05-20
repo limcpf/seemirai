@@ -2,8 +2,19 @@ import { z } from "zod";
 import type { MarketEvent } from "../../domain/index.js";
 import { assertUniqueMarketEventOrderKeys, sortMarketEvents } from "../../domain/index.js";
 
-const TimestampSchema = z.union([z.string().min(1), z.date()]);
-const NumericStringSchema = z.string().min(1);
+const TimezoneExplicitTimestampStringSchema = z
+  .string()
+  .min(1)
+  .refine((value) => /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-]\d{2}:\d{2})$/u.test(value), {
+    message: "timestamp must be ISO-8601 with an explicit timezone",
+  });
+const TimestampSchema = z.union([TimezoneExplicitTimestampStringSchema, z.date()]);
+const NumericStringSchema = z
+  .string()
+  .min(1)
+  .refine((value) => /^-?(?:0|[1-9]\d*)(?:\.\d+)?$/u.test(value), {
+    message: "numeric string must be a plain decimal",
+  });
 const JsonRecordSchema = z.record(z.string(), z.unknown());
 const MarketEventSourceMetadataSchema = z
   .object({
@@ -16,13 +27,17 @@ const MarketEventSourceMetadataSchema = z
 
 const MarketEventBaseSchema = {
   exchangeId: z.string().min(1),
-  market: z.string().min(1),
   eventTimestamp: TimestampSchema,
   receivedAt: TimestampSchema.optional(),
   sequence: z.string().min(1),
   tieBreakKey: z.string().min(1),
   source: MarketEventSourceMetadataSchema,
   metadata: JsonRecordSchema.optional(),
+};
+
+const MarketScopedEventBaseSchema = {
+  ...MarketEventBaseSchema,
+  market: z.string().min(1),
 };
 
 const OrderbookLevelSchema = z
@@ -36,7 +51,7 @@ export const MarketEventSchema = z.discriminatedUnion("kind", [
   z
     .object({
       kind: z.literal("TRADE"),
-      ...MarketEventBaseSchema,
+      ...MarketScopedEventBaseSchema,
       tradeId: z.string().min(1),
       price: NumericStringSchema,
       quantity: NumericStringSchema,
@@ -46,7 +61,7 @@ export const MarketEventSchema = z.discriminatedUnion("kind", [
   z
     .object({
       kind: z.literal("ORDERBOOK_SNAPSHOT"),
-      ...MarketEventBaseSchema,
+      ...MarketScopedEventBaseSchema,
       asks: z.array(OrderbookLevelSchema).min(1),
       bids: z.array(OrderbookLevelSchema).min(1),
     })
@@ -54,7 +69,7 @@ export const MarketEventSchema = z.discriminatedUnion("kind", [
   z
     .object({
       kind: z.literal("ORDERBOOK_METRIC"),
-      ...MarketEventBaseSchema,
+      ...MarketScopedEventBaseSchema,
       bestBidPrice: NumericStringSchema.optional(),
       bestAskPrice: NumericStringSchema.optional(),
       spreadBps: NumericStringSchema.optional(),
@@ -69,7 +84,7 @@ export const MarketEventSchema = z.discriminatedUnion("kind", [
   z
     .object({
       kind: z.literal("TICKER"),
-      ...MarketEventBaseSchema,
+      ...MarketScopedEventBaseSchema,
       tradePrice: NumericStringSchema,
       changeRate: NumericStringSchema.optional(),
       accTradePrice24h: NumericStringSchema.optional(),
@@ -78,7 +93,7 @@ export const MarketEventSchema = z.discriminatedUnion("kind", [
   z
     .object({
       kind: z.literal("POLICY_CANDIDATE"),
-      ...MarketEventBaseSchema,
+      ...MarketScopedEventBaseSchema,
       tradable: z.boolean(),
       warning: z.boolean(),
       caution: z.boolean(),
@@ -93,6 +108,7 @@ export const MarketEventSchema = z.discriminatedUnion("kind", [
     .object({
       kind: z.literal("STATUS"),
       ...MarketEventBaseSchema,
+      market: z.string().min(1).optional(),
       status: z.enum(["CONNECTED", "STALE", "RECONNECTING", "DISCONNECTED"]),
       reasonCode: z.string().min(1).optional(),
       websocketLagMs: z.number().int().nonnegative().optional(),
