@@ -11,6 +11,14 @@ export {
 } from "./config.js";
 export { createDatabase, createPostgresPool, destroyDatabase } from "./database.js";
 export {
+  PostgresExecutionPersistenceRepository,
+  createPaperExecutionStateTransitionEvents,
+  persistPaperExecutionInTransaction,
+  toExecutionOrderRowInput,
+  toFillRowInputs,
+  toPaperOrderRowInput,
+} from "./execution-persistence.js";
+export {
   claimPendingJobs,
   completeJob,
   enqueueJob,
@@ -54,6 +62,18 @@ export {
 } from "./migrations.js";
 export type { DatabaseConfig } from "./config.js";
 export type { Database } from "./database.js";
+export type {
+  ExecutionOrderEventRecord,
+  ExecutionOrderRecord,
+  ExecutionOrderRowInput,
+  FillRecord,
+  FillRowInput,
+  PaperOrderRecord,
+  PaperOrderRowInput,
+  PersistPaperExecutionInput,
+  PersistPaperExecutionResult,
+  PositionRecord,
+} from "./execution-persistence.js";
 export type { AuditEventRecord, AuditEventRowInput } from "./audit-log.js";
 export type {
   ClaimPendingJobsOptions,

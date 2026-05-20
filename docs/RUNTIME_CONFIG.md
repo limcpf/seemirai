@@ -56,6 +56,59 @@ MVP 기본 profile에서는 다음 값이 켜져 있으면 안 된다.
 
 `assertSafeRuntimeConfig`는 위반 값을 발견하면 runtime config 로딩을 실패시킨다.
 
+## M6 Execution 안전 설정
+
+구현 기준:
+
+- execution guard: `src/application/execution/execution-engine.ts`
+- 기본 profile: `config/paper.json`
+
+M6 `ExecutionEngine`은 runtime config의 실행 관련 안전 toggle을 application layer의 `ExecutionSafetyConfig`로 전달받아
+broker 호출 직전에 다시 검증한다. 이 guard는 PaperBroker 구현체가 붙기 전에도 다음 조건을 fail-closed로 유지한다.
+
+- `liveTradingEnabled=false`
+- `marketOrderEnabled=false`
+- `entryMarketOrderEnabled=false`
+- `paperNoKey=true`
+
+`ExecutionEngine`은 비용 snapshot과 RiskGate approval evidence가 현재 주문 intent의 exchange, market, strategy,
+side, order type, idempotency key, 수량, 명목 금액, 지정가, limit execution option(`postOnly`, `timeInForce`),
+expected loss와 일치할 때만 `BrokerPort.submitOrder`를 호출한다. 비용 snapshot은 `source=cost_model`,
+`trade_allowed=true`, `reason_code=cost_margin_ok`이고 `missing_fields`/`invalid_fields`가 없는 증거만 인정한다.
+RiskGate approval evidence는 `source=risk_gate`, `approved=true`, `action=ALLOW`, `status=PASS|WARN` 조건을
+모두 만족해야 한다. 기본 paper profile에서는 market order와 신규 진입 market order를 broker로 넘기지 않는다. 같은
+process 안에서 같은 `idempotencyKey`가 in-flight 상태로 반복 제출되면 fingerprint가 같은 경우에만 broker submit
+side effect를 한 번으로 억제하고, fingerprint가 다르면 idempotency key collision으로 fail-closed한다. 성공한 key는
+application memory에 계속 보관하지 않는다. DB-backed idempotency와 주문 persistence transaction 경계는
+`PostgresExecutionPersistenceRepository`가 담당한다.
+
+## PAPER_NO_KEY execution runtime
+
+구현 기준:
+
+- assembly: `src/runtime/execution-runtime.ts`
+- active broker: `src/infrastructure/paper/paper-broker.ts`
+- disabled live stub: `src/infrastructure/upbit/disabled-live-broker.ts`
+- 기본 worker id: `paper-no-key-execution-worker`
+
+`PAPER_NO_KEY` execution runtime은 `config/paper.json`을 로딩한 뒤 다음 조건을 추가로 검증한다.
+
+- `exchange=UPBIT`, `market=KRW_SPOT`, `mode=PAPER_TRADING`이어야 한다.
+- `registry.exchangeId=upbit_krw_spot`이어야 한다.
+- `paper_no_key=true`이어야 한다.
+- `live_trading_enabled=false`, `market_order_enabled=false`, `entry_market_order_enabled=false`이어야 한다.
+- `secrets.upbit_access_key`, `secrets.upbit_secret_key`가 없어야 한다.
+
+runtime assembly는 `ExecutionEngine`에 `PaperBroker`만 연결한다. Upbit live broker는 `DisabledUpbitLiveBroker` stub으로만
+노출되며 `submitOrder`, `cancelOrder`, `getOrder`, `listOpenOrders`, `getBalances`가 모두
+`UpbitLiveBrokerDisabledError`로 실패한다. 이 stub은 Upbit private REST client를 만들지 않으므로 paper profile에서
+실거래 주문/취소/잔고 API 호출이 발생하지 않는다.
+
+hard stop 처리에서 RiskGate가 만든 pending paper order cancel action plan은
+`executeHardStopPendingPaperOrderCancels`가 `BrokerPort.cancelOrder`로 실행한다. 이 함수는 action plan의
+`autoLiquidateOpenPositions=false`를 다시 확인하고, true가 들어오면 broker side effect 전에 실패한다. 따라서 장애
+상황의 자동 조치는 신규 주문 차단과 미체결 paper order 취소에 한정되며, open position 자동 청산은 수행하지 않는다.
+
 ## PAPER_NO_KEY market data runtime
 
 구현 기준:
