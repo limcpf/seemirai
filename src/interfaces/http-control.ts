@@ -13,6 +13,12 @@ export const DEFAULT_HTTP_CONTROL_PORT = 8787;
 export type ControlReadinessStatus = "ok" | "fail";
 export type ControlOverallStatus = "ok" | "error";
 
+/**
+ * `/readyz`를 구성하는 단일 점검 결과다.
+ *
+ * 이 payload는 orchestrator와 운영자가 장애 원인을 빠르게 식별하는 데 필요한 값만 담고,
+ * credential, raw config, SQL payload처럼 외부로 노출되면 안 되는 값은 포함하지 않는다.
+ */
 export interface ControlReadinessCheckResult {
   name: string;
   status: ControlReadinessStatus;
@@ -22,6 +28,13 @@ export interface ControlReadinessCheckResult {
   observedValue: string | number | boolean | null;
 }
 
+/**
+ * readiness endpoint의 최종 판단이다.
+ *
+ * `ready=false`는 프로세스가 살아 있어도 traffic 또는 worker 기동을 받으면 안 되는 상태를 뜻한다.
+ * 거래 중지나 manual review처럼 비즈니스 상태가 막힌 경우는 `/status`가 표현하고,
+ * 이 summary는 런타임 의존성 준비 여부에 집중한다.
+ */
 export interface ControlReadinessSummary {
   status: ControlOverallStatus;
   ready: boolean;
@@ -29,10 +42,21 @@ export interface ControlReadinessSummary {
   checks: readonly ControlReadinessCheckResult[];
 }
 
+/**
+ * 외부 의존성 readiness를 HTTP layer에 주입하기 위한 port다.
+ *
+ * Fastify route는 이 port만 알고 DB 구현, migration 방식, config loader 세부사항에는 직접 의존하지 않는다.
+ */
 export interface ControlReadinessProvider {
   check(): Promise<ControlReadinessSummary>;
 }
 
+/**
+ * `/status`가 반환하는 운영 snapshot이다.
+ *
+ * 운영 판단에 필요한 runtime summary, trading state, lag, paper account 집계만 제공하며,
+ * secret과 원본 runtime config는 의도적으로 제외한다.
+ */
 export interface ControlStatusSnapshot {
   generatedAt: string;
   runtime: {
@@ -78,6 +102,12 @@ export interface ControlStatusProvider {
   getStatus(): Promise<ControlStatusSnapshot>;
 }
 
+/**
+ * HTTP control server 조립 옵션이다.
+ *
+ * POST control endpoint는 후속 PR에서 활성화될 예정이므로,
+ * foundation 단계에서도 token 설정과 guard 경계를 같은 옵션에 고정한다.
+ */
 export interface HttpControlServerOptions {
   readinessProvider: ControlReadinessProvider;
   statusProvider: ControlStatusProvider;
@@ -337,6 +367,10 @@ const statusRouteOptions: RouteShorthandOptions = {
  *
  * Sub PR 1은 읽기 전용 health/readiness/status endpoint와 POST control endpoint가 쓸 공통 bearer guard만 고정한다.
  * kill switch 상태 전이 실행은 후속 PR에서 이 foundation 위에 얹는다.
+ *
+ * - `/healthz`: 프로세스 생존 확인만 수행한다.
+ * - `/readyz`: DB, migration, runtime config처럼 worker 기동에 필요한 의존성을 판단한다.
+ * - `/status`: trading state와 운영 snapshot을 secret 없이 반환한다.
  */
 export function createHttpControlServer(options: HttpControlServerOptions): FastifyInstance {
   assertHttpControlConfig(options);
@@ -347,6 +381,7 @@ export function createHttpControlServer(options: HttpControlServerOptions): Fast
 
   server.setErrorHandler((error, request, reply) => {
     const statusCode = getErrorStatusCode(error);
+    // 5xx에서는 내부 예외 message를 숨기고 correlation id만 남겨 로그 추적 경계를 유지한다.
     return reply.status(statusCode).send(
       createErrorResponse({
         correlationId: getCorrelationId(request),
@@ -356,6 +391,7 @@ export function createHttpControlServer(options: HttpControlServerOptions): Fast
     );
   });
 
+  // healthz는 DB 장애와 분리된 process liveness만 확인해 supervisor restart 오판을 줄인다.
   server.get("/healthz", healthzRouteOptions, async (request) => ({
     status: "ok",
     service: "seemirai",
@@ -367,11 +403,13 @@ export function createHttpControlServer(options: HttpControlServerOptions): Fast
 
   server.get("/readyz", readyzRouteOptions, async (_request, reply) => {
     const readiness = await options.readinessProvider.check();
+    // critical readiness 실패는 traffic과 worker 기동 차단을 위해 HTTP 503으로 드러낸다.
     return reply.status(readiness.ready ? 200 : 503).send(readiness);
   });
 
   server.get("/status", statusRouteOptions, async (request) => {
     const snapshot = await options.statusProvider.getStatus();
+    // status는 거래 차단 상태를 포함하되 readiness 실패와 독립적으로 관측 가능해야 한다.
     return {
       status: "ok",
       correlationId: getCorrelationId(request),
@@ -404,6 +442,7 @@ export function assertHttpControlConfig(options: {
   const violations: string[] = [];
 
   if (options.controlPostEndpointsEnabled && isBlankToken(options.localControlToken)) {
+    // 쓰기형 control route가 무인증으로 열리는 설정은 시작 시점에 바로 차단한다.
     violations.push("local control token is required when POST control endpoints are enabled");
   }
 
@@ -414,10 +453,13 @@ export function assertHttpControlConfig(options: {
 
 /**
  * 후속 POST control route에서 재사용할 local bearer token 검증 함수다.
+ *
+ * 실패 사유별 status code와 error code를 분리해 운영자가 인증 누락, 형식 오류, token 불일치를 구분할 수 있게 한다.
  */
 export function authenticateLocalControlRequest(input: LocalControlAuthInput): LocalControlAuthResult {
   const expectedToken = normalizeToken(input.expectedToken);
   if (expectedToken === undefined) {
+    // 보호 route가 token 없이 조립된 상태는 요청자 문제가 아니라 서버 설정 오류로 본다.
     return {
       ok: false,
       statusCode: 500,
@@ -428,6 +470,7 @@ export function authenticateLocalControlRequest(input: LocalControlAuthInput): L
   }
 
   if (input.authorizationHeader === undefined || input.authorizationHeader.trim() === "") {
+    // header 자체가 없으면 credential challenge가 가능한 인증 누락으로 응답한다.
     return {
       ok: false,
       statusCode: 401,
@@ -439,6 +482,7 @@ export function authenticateLocalControlRequest(input: LocalControlAuthInput): L
 
   const match = /^Bearer\s+(?<token>.+)$/iu.exec(input.authorizationHeader.trim());
   if (match?.groups?.token === undefined || match.groups.token.trim() === "") {
+    // scheme은 대소문자를 허용하되 Bearer token 형식 자체는 엄격하게 유지한다.
     return {
       ok: false,
       statusCode: 401,
@@ -449,6 +493,7 @@ export function authenticateLocalControlRequest(input: LocalControlAuthInput): L
   }
 
   if (!constantTimeTokenEquals(match.groups.token, expectedToken)) {
+    // token이 존재하지만 일치하지 않으면 인증 시도 실패로 보고 권한 거부를 반환한다.
     return {
       ok: false,
       statusCode: 403,
@@ -466,6 +511,8 @@ export function authenticateLocalControlRequest(input: LocalControlAuthInput): L
 
 /**
  * Fastify route `preHandler`로 쓸 bearer guard를 만든다.
+ *
+ * route 등록 시점에 token이 없으면 예외를 던져, 보호 route가 실수로 열린 상태로 부팅되지 않게 한다.
  */
 export function createLocalControlAuthPreHandler(expectedToken: string | undefined) {
   const normalizedToken = normalizeToken(expectedToken);
@@ -483,6 +530,7 @@ export function createLocalControlAuthPreHandler(expectedToken: string | undefin
     });
 
     if (!result.ok) {
+      // route handler로 진입하기 전에 공통 error shape으로 인증 실패를 종료한다.
       return reply.status(result.statusCode).send(
         createErrorResponse({
           correlationId: result.correlationId,
@@ -496,6 +544,8 @@ export function createLocalControlAuthPreHandler(expectedToken: string | undefin
 
 /**
  * readiness check 묶음을 하나의 provider로 합친다.
+ *
+ * 각 check는 독립적으로 실행되며, 최종 ready 여부는 critical check의 성공 여부로만 계산한다.
  */
 export function createControlReadinessProvider(checks: readonly ReadinessCheck[]): ControlReadinessProvider {
   return {
@@ -508,6 +558,8 @@ export function createControlReadinessProvider(checks: readonly ReadinessCheck[]
 
 /**
  * PostgreSQL/TimescaleDB와 runtime config loaded 상태를 확인하는 기본 readiness provider다.
+ *
+ * HTTP control layer의 기본 readiness는 process 생존이 아니라 worker가 안전하게 실행될 수 있는지에 맞춘다.
  */
 export function createDatabaseControlReadinessProvider(
   options: CreateDatabaseReadinessProviderOptions,
@@ -520,6 +572,7 @@ export function createDatabaseControlReadinessProvider(
   ];
 
   if (options.expectedMigrationVersion !== undefined) {
+    // 배포된 코드와 DB schema가 어긋난 상태에서는 worker를 ready로 올리지 않는다.
     checks.push(createMigrationVersionCheck(options.database, options.expectedMigrationVersion, clock));
   }
 
@@ -528,6 +581,9 @@ export function createDatabaseControlReadinessProvider(
 
 /**
  * DB snapshot과 safe runtime config만 사용해 `/status` payload를 만든다.
+ *
+ * status는 운영 대시보드와 수동 점검을 위한 관측면이므로,
+ * 일부 집계 조회가 실패해도 endpoint 전체를 실패시키기보다 null로 표시한다.
  */
 export function createDatabaseControlStatusProvider(
   options: CreateDatabaseControlStatusProviderOptions,
@@ -539,6 +595,7 @@ export function createDatabaseControlStatusProvider(
       const killSwitch = await readKillSwitchStatus(options.database);
       const actionPlan = getKillSwitchActionPlan(killSwitch.state);
       const readiness = await options.readinessProvider.check();
+      // kill switch action plan은 상태 문자열을 실제 주문 차단/수동 검토 신호로 변환하는 경계다.
       return {
         generatedAt: clock().toISOString(),
         runtime: toSafeRuntimeSummary(options.runtimeConfig),
@@ -573,6 +630,11 @@ export function createDatabaseControlStatusProvider(
   };
 }
 
+/**
+ * runtime config loader가 성공했는지 확인한다.
+ *
+ * config가 없으면 거래소, mode, universe 기준을 알 수 없으므로 critical readiness 실패로 처리한다.
+ */
 function createRuntimeConfigLoadedCheck(
   runtimeConfig: RuntimeConfig | undefined,
   clock: () => Date,
@@ -587,6 +649,9 @@ function createRuntimeConfigLoadedCheck(
   });
 }
 
+/**
+ * DB 접속 가능 여부를 가장 작은 read query로 확인한다.
+ */
 function createDatabaseConnectionCheck(database: Database | undefined, clock: () => Date): ReadinessCheck {
   return async () => {
     if (database === undefined) {
@@ -602,6 +667,11 @@ function createDatabaseConnectionCheck(database: Database | undefined, clock: ()
   };
 }
 
+/**
+ * 실제 애플리케이션 table에 쓰기 권한이 있는지 확인한다.
+ *
+ * TEMP table은 운영 schema 권한 문제를 놓칠 수 있으므로 `jobs`에 rollback insert를 수행한다.
+ */
 function createDatabaseWriteCheck(database: Database | undefined, clock: () => Date): ReadinessCheck {
   return async () => {
     if (database === undefined) {
@@ -610,7 +680,7 @@ function createDatabaseWriteCheck(database: Database | undefined, clock: () => D
 
     try {
       await database.transaction().execute(async (transaction) => {
-        // 실제 앱 table에 쓰기 권한이 있는지 확인하고 transaction rollback으로 흔적을 남기지 않는다.
+        // 실제 앱 table 쓰기 권한을 확인한 뒤 의도적 rollback으로 데이터 흔적을 남기지 않는다.
         await transaction
           .insertInto("jobs")
           .values({
@@ -627,6 +697,7 @@ function createDatabaseWriteCheck(database: Database | undefined, clock: () => D
       return passedCheck("db_write", "database write check succeeded", true, clock);
     } catch (error) {
       if (error instanceof ReadinessWriteRollback) {
+        // 의도한 rollback은 쓰기 권한 확인 성공 신호로 해석한다.
         return passedCheck("db_write", "database write check succeeded", true, clock);
       }
 
@@ -635,6 +706,9 @@ function createDatabaseWriteCheck(database: Database | undefined, clock: () => D
   };
 }
 
+/**
+ * 코드가 기대하는 migration version과 DB가 실제 적용한 version을 비교한다.
+ */
 function createMigrationVersionCheck(
   database: Database | undefined,
   expectedMigrationVersion: number,
@@ -652,6 +726,7 @@ function createMigrationVersionCheck(
       `.execute(database);
       const version = result.rows[0]?.version ?? null;
       if (version !== expectedMigrationVersion) {
+        // schema mismatch는 런타임 쿼리 실패로 이어질 수 있으므로 readiness에서 선제 차단한다.
         return failedCheck(
           "migration_version",
           `migration version mismatch: expected ${expectedMigrationVersion}, got ${String(version)}`,
@@ -667,6 +742,9 @@ function createMigrationVersionCheck(
   };
 }
 
+/**
+ * critical check 결과를 `/readyz` 최종 판단으로 접는다.
+ */
 function toReadinessSummary(
   checks: readonly ControlReadinessCheckResult[],
   checkedAt: string,
@@ -712,6 +790,12 @@ function failedCheck(
   };
 }
 
+/**
+ * durable kill switch state를 읽어 `/status` tradingState로 전달한다.
+ *
+ * DB가 없을 때는 local/dev 환경의 기본값으로 NORMAL을 쓰고,
+ * DB 조회 실패나 row 누락은 운영에서 안전한 MANUAL_REVIEW_REQUIRED로 닫는다.
+ */
 async function readKillSwitchStatus(
   database: Database | undefined,
 ): Promise<{ state: KillSwitchState; reasonCode: string | null }> {
@@ -736,6 +820,11 @@ async function readKillSwitchStatus(
   };
 }
 
+/**
+ * status용 paper 주문 대기 건수를 계산한다.
+ *
+ * 이 값은 관측 편의용이므로 조회 실패 시 `/status` 전체 실패 대신 null로 낮춘다.
+ */
 async function countPendingPaperOrders(database: Database | undefined): Promise<number | null> {
   if (database === undefined) {
     return null;
@@ -749,12 +838,18 @@ async function countPendingPaperOrders(database: Database | undefined): Promise<
     .execute(database)
     .catch(() => undefined);
   if (result === undefined) {
+    // 주문 집계 실패는 readiness 실패와 별개로 status snapshot에서 unknown으로 표현한다.
     return null;
   }
 
   return Number(result.rows[0]?.count ?? "0");
 }
 
+/**
+ * status용 open position 수를 계산한다.
+ *
+ * 포지션 집계도 관측 정보이므로 DB 오류를 endpoint 실패로 확대하지 않는다.
+ */
 async function countOpenPositions(database: Database | undefined): Promise<number | null> {
   if (database === undefined) {
     return null;
@@ -768,12 +863,16 @@ async function countOpenPositions(database: Database | undefined): Promise<numbe
     .execute(database)
     .catch(() => undefined);
   if (result === undefined) {
+    // 포지션 집계 실패는 운영자가 구분할 수 있도록 null로 남긴다.
     return null;
   }
 
   return Number(result.rows[0]?.count ?? "0");
 }
 
+/**
+ * runtime config에서 운영 노출이 안전한 필드만 골라낸다.
+ */
 function toSafeRuntimeSummary(config: RuntimeConfig): ControlStatusSnapshot["runtime"] {
   return {
     exchange: config.exchange,
@@ -788,6 +887,9 @@ function toSafeRuntimeSummary(config: RuntimeConfig): ControlStatusSnapshot["run
   };
 }
 
+/**
+ * 모든 HTTP control 오류 응답의 외부 노출 모양을 고정한다.
+ */
 function createErrorResponse(input: { correlationId: string; code: string; message: string }) {
   return {
     status: "error",
@@ -799,6 +901,9 @@ function createErrorResponse(input: { correlationId: string; code: string; messa
   };
 }
 
+/**
+ * route 간 공통 correlation id를 읽는다.
+ */
 function getCorrelationId(request: FastifyRequest): string {
   const header = request.headers["x-correlation-id"];
   if (typeof header === "string" && header.trim() !== "") {
@@ -825,6 +930,9 @@ function normalizeToken(token: string | undefined): string | undefined {
   return trimmed === "" ? undefined : trimmed;
 }
 
+/**
+ * token 비교 시 입력 길이와 byte 단위 비교 시간을 직접 노출하지 않도록 digest끼리 비교한다.
+ */
 function constantTimeTokenEquals(actual: string, expected: string): boolean {
   return timingSafeEqual(sha256(actual), sha256(expected));
 }
