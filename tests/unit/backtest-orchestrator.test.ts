@@ -112,6 +112,80 @@ describe("BacktestOrchestrator", () => {
     });
   });
 
+  it("does not let callback-side replay state mutations affect fill simulation", async () => {
+    let mutated = false;
+    const orchestrator = createOrchestrator({
+      rules: [costMarginOkRule],
+      fixture: createZeroLatencyFixture(),
+    });
+    const result = await orchestrator.run(
+      createRunRequest({
+        latencyMs: 0,
+        observeState: (_phase, state) => {
+          if (mutated) {
+            return;
+          }
+
+          mutated = true;
+          const latestAsk = state.latestOrderbook?.asks[0] as { price: string } | undefined;
+          const historyAsk = state.orderbookHistory[0]?.asks[0] as { price: string } | undefined;
+          const marketDataEvent = state.latestMarketDataEvents[0];
+          const marketDataAsk =
+            marketDataEvent?.type === "ORDERBOOK"
+              ? (marketDataEvent.asks[0] as { price: string } | undefined)
+              : undefined;
+
+          if (latestAsk !== undefined) {
+            latestAsk.price = "101";
+          }
+          if (historyAsk !== undefined) {
+            historyAsk.price = "101";
+          }
+          if (marketDataAsk !== undefined) {
+            marketDataAsk.price = "101";
+          }
+        },
+      }),
+    );
+
+    expect(mutated).toBe(true);
+    expect(result.candidates[0]?.fillResult).toMatchObject({
+      status: "FILLED",
+      filledQuantity: "0.5",
+      orderbookReceivedAt: "2026-05-20T00:00:00.040Z",
+    });
+  });
+
+  it("bounds replay state history exposed to callbacks", async () => {
+    let capturedState: BacktestReplayStateSnapshot | undefined;
+    const orchestrator = createOrchestrator({
+      rules: [costMarginOkRule],
+      fixture: createHistoryLimitFixture(),
+    });
+    await orchestrator.run(
+      createRunRequest({
+        historyLimits: {
+          marketDataEvents: 2,
+          orderbooksPerMarket: 2,
+        },
+        observeState: (phase, state) => {
+          if (phase === "strategy") {
+            capturedState = state;
+          }
+        },
+      }),
+    );
+
+    expect(receivedAtValues(capturedState?.orderbookHistory)).toEqual([
+      "2026-05-20T00:00:00.020Z",
+      "2026-05-20T00:00:00.040Z",
+    ]);
+    expect(marketDataReceivedAtValues(capturedState?.latestMarketDataEvents)).toEqual([
+      "2026-05-20T00:00:00.020Z",
+      "2026-05-20T00:00:00.040Z",
+    ]);
+  });
+
   it("uses receivedAt as the backtest submit time for latency-based fill simulation", async () => {
     const orchestrator = createOrchestrator({
       rules: [costMarginOkRule],
@@ -165,7 +239,7 @@ describe("BacktestOrchestrator", () => {
     });
   });
 
-  it("breaks equal receivedAt ties deterministically before selecting a fill snapshot", async () => {
+  it("preserves equal receivedAt replay order before selecting a fill snapshot", async () => {
     const orchestrator = createOrchestrator({
       rules: [costMarginOkRule],
       fixture: createEqualReceivedAtTieFixture(),
@@ -177,9 +251,12 @@ describe("BacktestOrchestrator", () => {
     );
 
     expect(result.candidates[0]?.fillResult).toMatchObject({
-      status: "FILLED",
-      filledQuantity: "0.5",
-      orderbookReceivedAt: "2026-05-20T00:00:00.035Z",
+      status: "UNFILLED",
+      filledQuantity: "0",
+      reasonCode: "limit_not_crossed",
+      metadata: {
+        orderbook_received_at: "2026-05-20T00:00:00.035Z",
+      },
     });
   });
 
@@ -303,6 +380,7 @@ function createRunRequest(options: {
   expectedReturnBps?: string;
   expectedLossBpsOfEquity?: string;
   latencyMs?: number;
+  historyLimits?: Parameters<BacktestOrchestrator["run"]>[0]["historyLimits"];
   observeState?: (phase: ObservedStatePhase, state: BacktestReplayStateSnapshot) => void;
 } = {}): Parameters<BacktestOrchestrator["run"]>[0] {
   return {
@@ -354,6 +432,7 @@ function createRunRequest(options: {
       latencyMs: options.latencyMs ?? 100,
       takerFeeBps: "10",
     },
+    ...(options.historyLimits === undefined ? {} : { historyLimits: options.historyLimits }),
   };
 }
 
@@ -580,6 +659,38 @@ function createZeroLatencyFixture(): unknown {
       eventTimestamp: triggerTimestamp,
       receivedAt: triggerTimestamp,
       sequence: "3",
+    }),
+  ]);
+}
+
+function createHistoryLimitFixture(): unknown {
+  return createFixtureWithEvents([
+    createPolicyCandidateEvent("1"),
+    createOrderbookSnapshotEvent({
+      eventTimestamp: "2026-05-20T00:00:00.010Z",
+      receivedAt: "2026-05-20T00:00:00.010Z",
+      sequence: "2",
+      tieBreakKey: "orderbook:oldest",
+      askPrice: "101",
+    }),
+    createOrderbookSnapshotEvent({
+      eventTimestamp: "2026-05-20T00:00:00.020Z",
+      receivedAt: "2026-05-20T00:00:00.020Z",
+      sequence: "3",
+      tieBreakKey: "orderbook:middle",
+      askPrice: "101",
+    }),
+    createOrderbookSnapshotEvent({
+      eventTimestamp: "2026-05-20T00:00:00.040Z",
+      receivedAt: "2026-05-20T00:00:00.040Z",
+      sequence: "4",
+      tieBreakKey: "orderbook:latest",
+      askPrice: "101",
+    }),
+    createMetricEventFixture({
+      eventTimestamp: triggerTimestamp,
+      receivedAt: triggerTimestamp,
+      sequence: "5",
     }),
   ]);
 }

@@ -99,6 +99,18 @@ export interface BacktestRunRequest extends HistoricalEventReplayRequest {
   createRuleContext?(input: BacktestRuleContextInput): RuleContext;
   fillOptions?: PaperFillSimulatorOptions | ((input: BacktestFillOptionsInput) => PaperFillSimulatorOptions);
   convertDecisionOptions?: ConvertStrategyDecisionToOrderIntentsOptions;
+  historyLimits?: BacktestReplayHistoryLimits;
+}
+
+/**
+ * backtest replay 중 callback state에 보관할 최근 이벤트 수 상한이다.
+ *
+ * 결과 집계용 `events`는 그대로 반환하되, 전략/비용/리스크 callback이 참조하는 replay state는 긴 입력에서도
+ * 무한히 커지지 않도록 market data와 market별 orderbook window를 따로 제한한다.
+ */
+export interface BacktestReplayHistoryLimits {
+  marketDataEvents?: number;
+  orderbooksPerMarket?: number;
 }
 
 export interface BacktestStrategyEvaluation {
@@ -148,6 +160,12 @@ interface PendingBacktestFill {
 }
 
 const emptyOrderbookHistory: readonly OrderbookEvent[] = [];
+const defaultReplayHistoryLimit = 10_000;
+
+interface NormalizedBacktestReplayHistoryLimits {
+  marketDataEvents: number;
+  orderbooksPerMarket: number;
+}
 
 /**
  * 이벤트 기반 backtest 흐름을 runtime core와 같은 순서로 실행하는 application orchestrator다.
@@ -174,13 +192,14 @@ export class BacktestOrchestrator {
   public async run(request: BacktestRunRequest): Promise<BacktestRunResult> {
     const events: MarketEvent[] = [];
     const state = createReplayState();
+    const historyLimits = normalizeReplayHistoryLimits(request.historyLimits);
     const strategyEvaluations: BacktestStrategyEvaluation[] = [];
     const candidates: BacktestOrderCandidateResult[] = [];
     const pendingFills: PendingBacktestFill[] = [];
 
     for await (const event of this.source.replay(createReplayRequest(request))) {
       events.push(event);
-      updateReplayState(state, event);
+      updateReplayState(state, event, historyLimits);
       if (event.kind === "ORDERBOOK_SNAPSHOT") {
         // 새 호가는 decision state가 아니라 이미 승인된 체결 대기 후보에만 후행 근거로 연결한다.
         resolvePendingFills(pendingFills, false);
@@ -383,17 +402,24 @@ function createReplayState(): BacktestReplayState {
   };
 }
 
-function updateReplayState(state: BacktestReplayState, event: MarketEvent): void {
+function updateReplayState(
+  state: BacktestReplayState,
+  event: MarketEvent,
+  historyLimits: NormalizedBacktestReplayHistoryLimits,
+): void {
   const marketDataEvent = toMarketDataEvent(event);
   if (marketDataEvent !== undefined) {
     state.latestMarketDataEvents.push(marketDataEvent);
+    trimArrayStart(state.latestMarketDataEvents, historyLimits.marketDataEvents);
   }
 
   if (event.kind === "ORDERBOOK_SNAPSHOT") {
     const orderbook = toOrderbookEvent(event);
     const marketKey = createMarketKey(event.exchangeId, event.market);
     state.latestOrderbooksByMarketKey.set(marketKey, orderbook);
-    getOrCreateOrderbookHistory(state, marketKey).push(orderbook);
+    const history = getOrCreateOrderbookHistory(state, marketKey);
+    history.push(orderbook);
+    trimArrayStart(history, historyLimits.orderbooksPerMarket);
   }
 
   if (event.kind === "POLICY_CANDIDATE") {
@@ -416,10 +442,10 @@ function snapshotReplayState(
   const orderbookHistory = marketKey === undefined ? emptyOrderbookHistory : getOrderbookHistoryByMarketKey(state, marketKey);
 
   return {
-    latestMarketDataEvents: createReadonlyArrayView(state.latestMarketDataEvents),
-    orderbookHistory: createReadonlyArrayView(orderbookHistory),
-    ...(latestOrderbook === undefined ? {} : { latestOrderbook }),
-    ...(latestMarketStatus === undefined ? {} : { latestMarketStatus }),
+    latestMarketDataEvents: cloneReplayStateArray(state.latestMarketDataEvents),
+    orderbookHistory: cloneReplayStateArray(orderbookHistory),
+    ...(latestOrderbook === undefined ? {} : { latestOrderbook: cloneReplayStateValue(latestOrderbook) }),
+    ...(latestMarketStatus === undefined ? {} : { latestMarketStatus: cloneReplayStateValue(latestMarketStatus) }),
   };
 }
 
@@ -594,23 +620,8 @@ function sortOrderbooksByReceivedAt(orderbooks: readonly OrderbookEvent[]): read
 }
 
 function compareOrderbooksByReceivedAt(left: OrderbookEvent, right: OrderbookEvent): number {
-  const receivedAtDiff = readTimestampMillis(left.receivedAt) - readTimestampMillis(right.receivedAt);
-  if (receivedAtDiff !== 0) {
-    return receivedAtDiff;
-  }
-
-  const exchangeTimestampDiff =
-    readTimestampMillis(left.exchangeTimestamp) - readTimestampMillis(right.exchangeTimestamp);
-  if (exchangeTimestampDiff !== 0) {
-    return exchangeTimestampDiff;
-  }
-
-  const marketDiff = compareString(left.market, right.market);
-  if (marketDiff !== 0) {
-    return marketDiff;
-  }
-
-  return compareString(JSON.stringify([left.asks, left.bids]), JSON.stringify([right.asks, right.bids]));
+  // receivedAt 동률은 runtime PaperBroker처럼 기존 관측 순서를 보존한다.
+  return readTimestampMillis(left.receivedAt) - readTimestampMillis(right.receivedAt);
 }
 
 function readObservedSubmitTime(event: MarketEvent): TimestampInput {
@@ -626,49 +637,43 @@ function readTimestampMillis(timestamp: TimestampInput): number {
   return milliseconds;
 }
 
-function compareString(left: string, right: string): number {
-  return left < right ? -1 : left > right ? 1 : 0;
+function normalizeReplayHistoryLimits(
+  limits: BacktestReplayHistoryLimits | undefined,
+): NormalizedBacktestReplayHistoryLimits {
+  return {
+    marketDataEvents: normalizeReplayHistoryLimit(limits?.marketDataEvents, "marketDataEvents"),
+    orderbooksPerMarket: normalizeReplayHistoryLimit(limits?.orderbooksPerMarket, "orderbooksPerMarket"),
+  };
 }
 
-/**
- * callback에 넘긴 배열 snapshot이 이후 replay append를 관측하지 못하게 길이만 고정한 view다.
- */
-function createReadonlyArrayView<T>(items: readonly T[]): readonly T[] {
-  const visibleLength = items.length;
-  const target = items as T[];
-
-  return new Proxy(target, {
-    get(arrayTarget, property, receiver) {
-      if (property === "length") {
-        return Math.min(visibleLength, arrayTarget.length);
-      }
-
-      if (isArrayIndex(property)) {
-        const index = Number(property);
-        return index < visibleLength ? Reflect.get(arrayTarget, property, receiver) : undefined;
-      }
-
-      return Reflect.get(arrayTarget, property, receiver);
-    },
-    set() {
-      return false;
-    },
-    deleteProperty() {
-      return false;
-    },
-    defineProperty() {
-      return false;
-    },
-  });
-}
-
-function isArrayIndex(property: string | symbol): property is string {
-  if (typeof property !== "string" || property.trim() === "") {
-    return false;
+function normalizeReplayHistoryLimit(value: number | undefined, name: keyof BacktestReplayHistoryLimits): number {
+  if (value === undefined) {
+    return defaultReplayHistoryLimit;
   }
 
-  const index = Number(property);
-  return Number.isInteger(index) && index >= 0 && index < 2 ** 32 - 1 && String(index) === property;
+  if (!Number.isInteger(value) || value < 1) {
+    throw new Error(`BacktestRunRequest.historyLimits.${name} must be a positive integer`);
+  }
+
+  return value;
+}
+
+function trimArrayStart<T>(items: T[], maxLength: number): void {
+  const overflow = items.length - maxLength;
+  if (overflow <= 0) {
+    return;
+  }
+
+  // 오래된 replay state만 제거해 callback window와 pending fill window가 무한히 커지지 않게 한다.
+  items.splice(0, overflow);
+}
+
+function cloneReplayStateArray<T>(items: readonly T[]): readonly T[] {
+  return items.map(cloneReplayStateValue);
+}
+
+function cloneReplayStateValue<T>(value: T): T {
+  return structuredClone(value) as T;
 }
 
 function toMarketDataEvent(event: MarketEvent): MarketDataEvent | undefined {
