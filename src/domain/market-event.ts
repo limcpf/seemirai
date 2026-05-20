@@ -123,7 +123,17 @@ export function compareMarketEvents(left: MarketEvent, right: MarketEvent): numb
     return sequenceDiff;
   }
 
-  return compareString(left.tieBreakKey, right.tieBreakKey);
+  const tieBreakDiff = compareString(left.tieBreakKey, right.tieBreakKey);
+  if (tieBreakDiff !== 0) {
+    return tieBreakDiff;
+  }
+
+  const exchangeDiff = compareString(left.exchangeId, right.exchangeId);
+  if (exchangeDiff !== 0) {
+    return exchangeDiff;
+  }
+
+  return compareString(left.market ?? "*", right.market ?? "*");
 }
 
 /**

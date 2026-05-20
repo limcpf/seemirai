@@ -85,19 +85,18 @@ describe("backtest MarketEvent foundation", () => {
   it("allows identical local order triples across different markets", async () => {
     const fixture = parseMarketEventFixture(await readFixture());
     const first = fixture.events[0]!;
+    const otherMarket = {
+      ...first,
+      market: "KRW-ETH",
+    };
 
     expect(() =>
       parseMarketEventFixture({
         schemaVersion: 1,
-        events: [
-          first,
-          {
-            ...first,
-            market: "KRW-ETH",
-          },
-        ],
+        events: [first, otherMarket],
       }),
     ).not.toThrow();
+    expect(sortMarketEvents([otherMarket, first]).map((event) => event.market)).toEqual(["KRW-BTC", "KRW-ETH"]);
   });
 
   it("rejects duplicate replay order keys before a source can stream nondeterministically", async () => {
