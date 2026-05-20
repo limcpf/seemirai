@@ -3,6 +3,7 @@ import type { KillSwitchState } from "../../domain/index.js";
 import { getKillSwitchActionPlan } from "../../domain/index.js";
 import type { Database } from "../../infrastructure/db/index.js";
 import type { RuntimeConfig } from "../../runtime/index.js";
+import { createDatabaseControlReadinessProvider } from "./readiness.js";
 import type {
   ControlStatusProvider,
   ControlStatusSnapshot,
@@ -19,12 +20,23 @@ export function createDatabaseControlStatusProvider(
   options: CreateDatabaseControlStatusProviderOptions,
 ): ControlStatusProvider {
   const clock = options.clock ?? (() => new Date());
+  const statusReadinessProvider =
+    options.statusReadinessProvider ??
+    createDatabaseControlReadinessProvider({
+      runtimeConfig: options.runtimeConfig,
+      includeWriteCheck: false,
+      clock,
+      ...(options.database === undefined ? {} : { database: options.database }),
+      ...(options.expectedMigrationVersion === undefined
+        ? {}
+        : { expectedMigrationVersion: options.expectedMigrationVersion }),
+    });
 
   return {
     async getStatus(): Promise<ControlStatusSnapshot> {
       const killSwitch = await readKillSwitchStatus(options.database);
       const actionPlan = getKillSwitchActionPlan(killSwitch.state);
-      const readiness = await options.readinessProvider.check();
+      const readiness = await statusReadinessProvider.check();
       // kill switch action plan은 상태 문자열을 실제 주문 차단/수동 검토 신호로 변환하는 경계다.
       return {
         generatedAt: clock().toISOString(),
@@ -102,8 +114,9 @@ async function countPendingPaperOrders(database: Database | undefined): Promise<
 
   const result = await sql<{ count: string }>`
       SELECT count(*)::text AS count
-      FROM orders
-      WHERE status IN ('SUBMITTED', 'ACCEPTED', 'PARTIALLY_FILLED', 'CANCEL_REQUESTED')
+      FROM orders AS o
+      INNER JOIN paper_orders AS po ON po.order_id = o.id
+      WHERE o.status IN ('SUBMITTED', 'ACCEPTED', 'PARTIALLY_FILLED', 'CANCEL_REQUESTED')
     `
     .execute(database)
     .catch(() => undefined);

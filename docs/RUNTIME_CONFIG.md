@@ -73,15 +73,16 @@ endpoint가 공통으로 사용할 인증 guard만 고정한다.
 - `GET /healthz`: process alive만 확인한다. DB, migration, runtime dependency를 확인하지 않는다.
 - `GET /readyz`: DB 연결, DB write check, migration version, runtime config loaded 상태를 readiness summary로 반환한다.
   DB write check는 `jobs` 실제 앱 테이블에 rollback 가능한 insert를 수행해 TEMP table 권한만 있는 상태를 ready로 보지 않는다.
-- `GET /status`: full config 대신 safe summary만 반환한다.
+- `GET /status`: full config 대신 safe summary만 반환한다. DB write check는 실행하지 않고 read-only 관측에 필요한
+  runtime config, DB connection, migration version만 경량 readiness로 확인한다.
 
 `/status` safe summary는 다음 필드만 노출한다.
 
 - runtime: `exchange`, `market`, `mode`, phase 1 universe, live trading toggle, `paperNoKey`
 - trading state: current kill switch state, blocked reason, 신규 주문 차단 여부, 수동 검토 필요 여부
 - market data: connection status, lag ms, updated time
-- paper: pending paper order count, open position count
-- database: `/readyz`와 같은 readiness summary
+- paper: `paper_orders`에 연결된 pending paper order count, open position count
+- database: `/readyz`에서 write check를 제외한 경량 readiness summary
 - alerts: last sent/skipped timestamp
 - daily report: last status, report date, updated time
 

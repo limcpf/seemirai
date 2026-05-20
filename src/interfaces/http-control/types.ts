@@ -147,8 +147,20 @@ export type LocalControlAuthResult =
 
 export interface CreateDatabaseControlStatusProviderOptions {
   runtimeConfig: RuntimeConfig;
-  readinessProvider: ControlReadinessProvider;
+  /**
+   * `/status` 전용 readiness provider다.
+   *
+   * 지정하지 않으면 DB write check를 제외한 경량 provider를 내부에서 만든다.
+   */
+  statusReadinessProvider?: ControlReadinessProvider;
+  /**
+   * 기존 호출부 호환을 위한 필드다.
+   *
+   * `/status`는 부작용 없는 관측 endpoint로 유지해야 하므로 이 provider를 직접 호출하지 않는다.
+   */
+  readinessProvider?: ControlReadinessProvider;
   database?: Database;
+  expectedMigrationVersion?: number;
   clock?: () => Date;
   marketData?: {
     connectionStatus?: string;
@@ -170,6 +182,7 @@ export interface CreateDatabaseReadinessProviderOptions {
   database?: Database;
   runtimeConfig?: RuntimeConfig;
   expectedMigrationVersion?: number;
+  includeWriteCheck?: boolean;
   clock?: () => Date;
 }
 

@@ -5,6 +5,7 @@ import {
   DEFAULT_HTTP_CONTROL_PORT,
   UnsafeHttpControlConfigError,
   authenticateLocalControlRequest,
+  createControlReadinessProvider,
   createDatabaseControlStatusProvider,
   createHttpControlServer,
   createLocalControlAuthPreHandler,
@@ -113,6 +114,40 @@ describe("HTTP control foundation", () => {
         },
       ],
     });
+  });
+
+  it("absorbs rejected readiness checks into a failed summary item", async () => {
+    const provider = createControlReadinessProvider([
+      async () => ({
+        name: "runtime_config_loaded",
+        status: "ok",
+        critical: true,
+        checkedAt,
+        message: "runtime config is loaded",
+        observedValue: "PAPER_TRADING",
+      }),
+      async () => {
+        throw new Error("unexpected readiness failure");
+      },
+    ]);
+
+    const summary = await provider.check();
+
+    expect(summary.status).toBe("error");
+    expect(summary.ready).toBe(false);
+    expect(summary.checks).toEqual([
+      expect.objectContaining({
+        name: "runtime_config_loaded",
+        status: "ok",
+      }),
+      expect.objectContaining({
+        name: "readiness_check_2",
+        status: "fail",
+        critical: true,
+        message: "unexpected readiness failure",
+        observedValue: null,
+      }),
+    ]);
   });
 
   it("returns a common error response with correlationId when a route throws", async () => {
@@ -239,6 +274,48 @@ describe("HTTP control foundation", () => {
     expect(bodyText).not.toContain("secrets");
     expect(bodyText).not.toContain("telegram_bot_token");
     expect(bodyText).not.toContain("local_control_token");
+  });
+
+  it("keeps /status from running the write readiness provider", async () => {
+    let readyzProviderCalls = 0;
+    const runtimeConfig = loadRuntimeConfig({});
+    server = createHttpControlServer({
+      readinessProvider: staticReadinessProvider(readySummary()),
+      statusProvider: createDatabaseControlStatusProvider({
+        runtimeConfig,
+        readinessProvider: {
+          async check() {
+            readyzProviderCalls += 1;
+            throw new Error("status must not call readyz readiness provider");
+          },
+        },
+      }),
+    });
+
+    const response = await server.inject({
+      method: "GET",
+      url: "/status",
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(readyzProviderCalls).toBe(0);
+    expect(response.json()).toMatchObject({
+      database: {
+        status: "error",
+        ready: false,
+        checks: [
+          {
+            name: "runtime_config_loaded",
+            status: "ok",
+          },
+          {
+            name: "db_connection",
+            status: "fail",
+          },
+        ],
+      },
+    });
+    expect(response.body).not.toContain("db_write");
   });
 
   it("requires a local control token before enabling POST control endpoints", () => {

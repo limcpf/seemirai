@@ -26,8 +26,11 @@ class ReadinessWriteRollback extends Error {
 export function createControlReadinessProvider(checks: readonly ReadinessCheck[]): ControlReadinessProvider {
   return {
     async check(): Promise<ControlReadinessSummary> {
-      const results = await Promise.all(checks.map((check) => check()));
-      return toReadinessSummary(results, new Date().toISOString());
+      const checkedAt = new Date().toISOString();
+      const results = await Promise.all(
+        checks.map((check, index) => runReadinessCheck(check, index, checkedAt)),
+      );
+      return toReadinessSummary(results, checkedAt);
     },
   };
 }
@@ -44,8 +47,12 @@ export function createDatabaseControlReadinessProvider(
   const checks: ReadinessCheck[] = [
     createRuntimeConfigLoadedCheck(options.runtimeConfig, clock),
     createDatabaseConnectionCheck(options.database, clock),
-    createDatabaseWriteCheck(options.database, clock),
   ];
+
+  if (options.includeWriteCheck ?? true) {
+    // readyz는 실제 앱 table 쓰기 권한까지 확인하지만 status용 경량 provider는 이 check를 제외한다.
+    checks.push(createDatabaseWriteCheck(options.database, clock));
+  }
 
   if (options.expectedMigrationVersion !== undefined) {
     // 배포된 코드와 DB schema가 어긋난 상태에서는 worker를 ready로 올리지 않는다.
@@ -72,6 +79,29 @@ function createRuntimeConfigLoadedCheck(
     message: runtimeConfig === undefined ? "runtime config is not loaded" : "runtime config is loaded",
     observedValue: runtimeConfig === undefined ? null : runtimeConfig.mode,
   });
+}
+
+/**
+ * 개별 readiness check 예외를 summary 안의 실패 항목으로 흡수한다.
+ */
+async function runReadinessCheck(
+  check: ReadinessCheck,
+  index: number,
+  checkedAt: string,
+): Promise<ControlReadinessCheckResult> {
+  try {
+    return await check();
+  } catch (error) {
+    // 새 check가 예외 처리를 빠뜨려도 `/readyz` 전체를 500으로 깨뜨리지 않고 실패 원인을 노출한다.
+    return {
+      name: `readiness_check_${index + 1}`,
+      status: "fail",
+      critical: true,
+      checkedAt,
+      message: toErrorMessage(error),
+      observedValue: null,
+    };
+  }
 }
 
 /**
