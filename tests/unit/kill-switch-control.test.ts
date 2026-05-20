@@ -10,6 +10,7 @@ import {
 describe("kill switch control decision", () => {
   it("maps P0/P1 operational reasons to kill switch target states", () => {
     expect(mapKillSwitchReasonToTargetState("db_write_failure")).toBe("HARD_STOP");
+    expect(mapKillSwitchReasonToTargetState("DB_WRITE_FAILURE")).toBe("HARD_STOP");
     expect(mapKillSwitchReasonToTargetState("live_order_api_misuse_detected")).toBe("HARD_STOP");
     expect(mapKillSwitchReasonToTargetState("stale_market_data")).toBe("NEW_ORDERS_BLOCKED");
     expect(mapKillSwitchReasonToTargetState("quote_freshness_insufficient")).toBe("NEW_ORDERS_BLOCKED");
@@ -17,6 +18,25 @@ describe("kill switch control decision", () => {
       "MANUAL_REVIEW_REQUIRED",
     );
     expect(mapKillSwitchReasonToTargetState("operator_recovered")).toBeUndefined();
+    expect(mapKillSwitchReasonToTargetState("constructor")).toBeUndefined();
+  });
+
+  it("canonicalizes reason codes before creating durable evidence", () => {
+    const decision = createKillSwitchControlDecision({
+      currentState: "NORMAL",
+      targetState: "HARD_STOP",
+      reasonCode: "DB_WRITE_FAILURE",
+      correlationId: "corr-canonical",
+      occurredAt: "2026-05-21T00:00:00.000Z",
+    });
+
+    expect(decision.transition).toMatchObject({
+      accepted: true,
+      reasonCode: "db_write_failure",
+    });
+    expect(decision.transition.event.metadata).toMatchObject({
+      requested_reason_code: "db_write_failure",
+    });
   });
 
   it("rejects direct HARD_STOP to NORMAL recovery through the state machine", () => {

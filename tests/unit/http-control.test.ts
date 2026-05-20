@@ -595,6 +595,48 @@ describe("HTTP control foundation", () => {
     expect(providerCalls).toBe(0);
   });
 
+  it("canonicalizes kill switch reason codes before provider execution", async () => {
+    let capturedReasonCode: string | undefined;
+    server = createHttpControlServer({
+      readinessProvider: staticReadinessProvider(readySummary()),
+      statusProvider: unavailableStatusProvider(),
+      killSwitchControlProvider: {
+        async apply(input) {
+          capturedReasonCode = input.reasonCode;
+          return createKillSwitchControlDecision({
+            currentState: "NORMAL",
+            targetState: input.targetState,
+            reasonCode: input.reasonCode,
+            correlationId: input.correlationId,
+            occurredAt: checkedAt,
+          });
+        },
+      },
+      localControlToken: "expected-token",
+    });
+
+    const response = await server.inject({
+      method: "POST",
+      url: "/kill-switch",
+      headers: {
+        authorization: "Bearer expected-token",
+        "x-correlation-id": "corr-canonical-reason",
+      },
+      payload: {
+        targetState: "HARD_STOP",
+        reasonCode: "DB_WRITE_FAILURE",
+      },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(capturedReasonCode).toBe("db_write_failure");
+    expect(response.json()).toMatchObject({
+      transition: {
+        reasonCode: "db_write_failure",
+      },
+    });
+  });
+
   it("validates local bearer auth with correlation-aware failures", async () => {
     expect(
       authenticateLocalControlRequest({

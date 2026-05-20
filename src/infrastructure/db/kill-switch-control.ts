@@ -147,7 +147,7 @@ export async function applyPostgresKillSwitchControl(
       persistedResult.hardStopCancelJob = await enqueueHardStopCancelJob({
         database: transaction,
         result,
-        reasonCode: options.request.reasonCode,
+        reasonCode: result.transition.reasonCode,
         correlationId: options.request.correlationId,
         occurredAt,
       });

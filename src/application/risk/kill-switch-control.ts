@@ -77,7 +77,21 @@ export function isKillSwitchControlTargetState(value: unknown): value is KillSwi
 export function mapKillSwitchReasonToTargetState(
   reasonCode: string,
 ): KillSwitchControlTargetState | undefined {
-  return killSwitchTargetStateByReasonCode[normalizeReasonCode(reasonCode)];
+  const canonicalReasonCode = canonicalizeKillSwitchReasonCode(reasonCode);
+
+  // prototype key가 known reason처럼 판정되지 않도록 own mapping만 허용한다.
+  if (!isKnownKillSwitchReasonCode(canonicalReasonCode)) {
+    return undefined;
+  }
+
+  return killSwitchTargetStateByReasonCode[canonicalReasonCode];
+}
+
+/**
+ * 운영 증거에 저장할 kill switch reason code를 단일 집계 키로 정규화한다.
+ */
+export function canonicalizeKillSwitchReasonCode(reasonCode: string): string {
+  return reasonCode.trim().toLowerCase();
 }
 
 /**
@@ -87,7 +101,8 @@ export function createKillSwitchControlDecision(
   input: KillSwitchControlDecisionInput,
 ): KillSwitchControlResult {
   const actor = input.actor ?? "http-control";
-  const recommendedTargetState = mapKillSwitchReasonToTargetState(input.reasonCode);
+  const reasonCode = canonicalizeKillSwitchReasonCode(input.reasonCode);
+  const recommendedTargetState = mapKillSwitchReasonToTargetState(reasonCode);
   const reasonMatchesTarget =
     recommendedTargetState === undefined || recommendedTargetState === input.targetState;
   const occurredAt = input.occurredAt ?? new Date();
@@ -95,7 +110,7 @@ export function createKillSwitchControlDecision(
   const metadata = createControlTransitionMetadata({
     actor,
     correlationId: input.correlationId,
-    requestedReasonCode: input.reasonCode,
+    requestedReasonCode: reasonCode,
     reasonMatchesTarget,
     recommendedTargetState,
     metadata: input.metadata,
@@ -105,7 +120,7 @@ export function createKillSwitchControlDecision(
         fromState: input.currentState,
         toState: input.targetState,
         occurredAt,
-        ...(stateMachineAllowsTransition ? { reasonCode: input.reasonCode } : {}),
+        ...(stateMachineAllowsTransition ? { reasonCode } : {}),
         ...(stateMachineAllowsTransition
           ? {
               message:
@@ -119,7 +134,7 @@ export function createKillSwitchControlDecision(
         fromState: input.currentState,
         toState: input.targetState,
         occurredAt,
-        reasonCode: input.reasonCode,
+        reasonCode,
         recommendedTargetState: recommendedTargetState as KillSwitchControlTargetState,
         metadata,
       });
@@ -276,15 +291,15 @@ function createReasonTargetMismatchDecision(input: {
   };
 }
 
-function normalizeReasonCode(reasonCode: string): string {
-  return reasonCode.trim().toLowerCase();
+function isKnownKillSwitchReasonCode(reasonCode: string): reasonCode is KnownKillSwitchReasonCode {
+  return Object.prototype.hasOwnProperty.call(killSwitchTargetStateByReasonCode, reasonCode);
 }
 
 function toIsoTimestamp(value: TimestampInput): string {
   return value instanceof Date ? value.toISOString() : value;
 }
 
-const killSwitchTargetStateByReasonCode: Readonly<Record<string, KillSwitchControlTargetState>> = {
+const killSwitchTargetStateByReasonCode = {
   audit_persistence_failure: "HARD_STOP",
   db_write_failure: "HARD_STOP",
   duplicate_order_idempotency_key: "HARD_STOP",
@@ -302,4 +317,6 @@ const killSwitchTargetStateByReasonCode: Readonly<Record<string, KillSwitchContr
   notification_consecutive_failure: "MANUAL_REVIEW_REQUIRED",
   notification_failure_threshold_exceeded: "MANUAL_REVIEW_REQUIRED",
   report_generation_repeated_failure: "MANUAL_REVIEW_REQUIRED",
-};
+} as const satisfies Readonly<Record<string, KillSwitchControlTargetState>>;
+
+type KnownKillSwitchReasonCode = keyof typeof killSwitchTargetStateByReasonCode;

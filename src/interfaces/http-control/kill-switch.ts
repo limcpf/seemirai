@@ -4,6 +4,7 @@ import type {
   KillSwitchControlResult,
   KillSwitchControlTargetState,
 } from "../../application/index.js";
+import { canonicalizeKillSwitchReasonCode } from "../../application/index.js";
 import { createErrorResponse, getCorrelationId } from "./errors.js";
 
 export interface KillSwitchControlRequestBody {
@@ -25,7 +26,7 @@ export function createKillSwitchControlRouteHandler(provider: KillSwitchControlP
     reply: FastifyReply,
   ) => {
     const correlationId = getCorrelationId(request);
-    const reasonCode = request.body.reasonCode.trim();
+    const reasonCode = canonicalizeKillSwitchReasonCode(request.body.reasonCode);
     const result = await provider.apply({
       targetState: request.body.targetState,
       reasonCode,
