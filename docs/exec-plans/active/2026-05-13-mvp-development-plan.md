@@ -223,7 +223,7 @@ M6 완료 근거:
 
 - [x] `MarketEvent` 공통 포맷 정의
 - [x] `HistoricalEventSource`
-- [ ] runtime core 재사용 backtest orchestrator
+- [x] runtime core 재사용 backtest orchestrator
 - [ ] paper trading 결과와 backtest 결과 비교 리포트
 
 M7 진행 근거:
@@ -231,7 +231,8 @@ M7 진행 근거:
 - issue #36은 backtest input contract, fixture/source, orchestrator, reporting/verification 경계가 나뉘어 리뷰 위험이 크므로 `sub PR mode`에서 순차 진행한다.
 - Sub PR 1은 `issue-36/01-market-event-foundation`에서 replay/backtest용 공용 `MarketEvent`, `HistoricalEventSource` port, fixture schema, deterministic ordering rule을 고정한다.
 - Sub PR 2는 `issue-36/02-historical-event-source`에서 fixture 기반 deterministic `HistoricalEventSource` 구현, replay request filtering, 반복 replay 검증을 고정한다.
-- runtime core 재사용 orchestrator, paper/backtest consistency 리포트는 후속 sub PR 범위로 유지한다.
+- Sub PR 3은 `issue-36/03-backtest-orchestrator`에서 `HistoricalEventSource -> Strategy -> CostModel -> RuleEngine -> RiskGate -> Execution evidence validation -> paper fill simulator` 순서의 backtest application orchestrator를 고정한다.
+- paper/backtest consistency 리포트와 M7 최종 검증은 후속 sub PR 범위로 유지한다.
 
 검증:
 
@@ -282,6 +283,7 @@ M7 진행 근거:
 - 2026-05-20: issue #28 Sub PR 6은 `issue-28/06-m6-verification-docs`에서 M6 구현 PR #29~#33의 완료 근거와 전체 검증 범위를 문서화한다. 신규 기능 구현이나 schema 변경은 하지 않고, M7 Backtest bridge와 M8 운영 가드레일은 다음 milestone의 남은 범위로 유지한다.
 - 2026-05-20: issue #36은 M7 Backtest bridge 범위가 공용 event contract, historical source, orchestrator, reporting/verification으로 나뉘어 리뷰 위험이 크므로 `sub PR mode`에서 순차 진행한다. Sub PR 1은 replay/backtest용 `MarketEvent`와 `HistoricalEventSource` port, fixture schema, deterministic ordering rule만 고정하고, 실제 fixture source와 orchestrator/reporting은 후속 PR로 남긴다.
 - 2026-05-20: issue #36 Sub PR 2는 `issue-36/02-historical-event-source`에서 fixture JSON을 검증한 뒤 deterministic `HistoricalEventSource`로 replay하는 source를 구현한다. replay filtering은 `exchangeId`, `markets`, `from/to`, `sourceId`, `limit`을 지원하고, marketless `STATUS`는 연결 단위 shared event로 market filter가 있어도 유지한다. DB-backed source와 orchestrator는 후속 PR로 유지한다.
+- 2026-05-20: issue #36 Sub PR 3은 `issue-36/03-backtest-orchestrator`에서 fixture/historical replay 이벤트를 기존 strategy, cost model, rule engine, RiskGate, execution evidence validation, paper fill simulator에 순서대로 연결하는 backtest application orchestrator를 고정한다. paper/backtest consistency 리포트와 M7 최종 문서화는 Sub PR 4로 유지한다.
 
 issue #36 sub PR 계획:
 
