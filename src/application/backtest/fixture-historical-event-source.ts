@@ -40,7 +40,7 @@ export class FixtureHistoricalEventSource implements HistoricalEventSource {
         continue;
       }
 
-      yield event;
+      yield cloneMarketEvent(event);
       yieldedCount += 1;
 
       // limit은 deterministic 정렬과 필터를 모두 통과한 event 수 기준으로 적용한다.
@@ -49,6 +49,10 @@ export class FixtureHistoricalEventSource implements HistoricalEventSource {
       }
     }
   }
+}
+
+function cloneMarketEvent(event: MarketEvent): MarketEvent {
+  return structuredClone(event) as MarketEvent;
 }
 
 /**

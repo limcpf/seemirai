@@ -147,6 +147,42 @@ describe("BacktestOrchestrator", () => {
     });
   });
 
+  it("uses the latest pre-submit snapshot when latency is disabled", async () => {
+    const orchestrator = createOrchestrator({
+      rules: [costMarginOkRule],
+      fixture: createZeroLatencyFixture(),
+    });
+    const result = await orchestrator.run(
+      createRunRequest({
+        latencyMs: 0,
+      }),
+    );
+
+    expect(result.candidates[0]?.fillResult).toMatchObject({
+      status: "FILLED",
+      filledQuantity: "0.5",
+      orderbookReceivedAt: "2026-05-20T00:00:00.040Z",
+    });
+  });
+
+  it("breaks equal receivedAt ties deterministically before selecting a fill snapshot", async () => {
+    const orchestrator = createOrchestrator({
+      rules: [costMarginOkRule],
+      fixture: createEqualReceivedAtTieFixture(),
+    });
+    const result = await orchestrator.run(
+      createRunRequest({
+        latencyMs: 5,
+      }),
+    );
+
+    expect(result.candidates[0]?.fillResult).toMatchObject({
+      status: "FILLED",
+      filledQuantity: "0.5",
+      orderbookReceivedAt: "2026-05-20T00:00:00.035Z",
+    });
+  });
+
   it("stops before rules, RiskGate, and fill simulation when the cost model rejects", async () => {
     let riskGateCalls = 0;
     const orchestrator = createOrchestrator({
@@ -520,6 +556,49 @@ function createReceivedAtOutOfOrderFixture(): unknown {
       receivedAt: "2026-05-20T00:00:00.035Z",
       sequence: "3",
       tieBreakKey: "orderbook:earlier-received",
+      askPrice: "100",
+    }),
+    createMetricEventFixture({
+      eventTimestamp: "2026-05-20T00:00:00.030Z",
+      receivedAt: "2026-05-20T00:00:00.030Z",
+      sequence: "4",
+    }),
+  ]);
+}
+
+function createZeroLatencyFixture(): unknown {
+  return createFixtureWithEvents([
+    createPolicyCandidateEvent("1"),
+    createOrderbookSnapshotEvent({
+      eventTimestamp: "2026-05-20T00:00:00.040Z",
+      receivedAt: "2026-05-20T00:00:00.040Z",
+      sequence: "2",
+      tieBreakKey: "orderbook:pre-submit",
+      askPrice: "100",
+    }),
+    createMetricEventFixture({
+      eventTimestamp: triggerTimestamp,
+      receivedAt: triggerTimestamp,
+      sequence: "3",
+    }),
+  ]);
+}
+
+function createEqualReceivedAtTieFixture(): unknown {
+  return createFixtureWithEvents([
+    createPolicyCandidateEvent("1"),
+    createOrderbookSnapshotEvent({
+      eventTimestamp: "2026-05-20T00:00:00.010Z",
+      receivedAt: "2026-05-20T00:00:00.035Z",
+      sequence: "2",
+      tieBreakKey: "orderbook:same-received-no-fill",
+      askPrice: "101",
+    }),
+    createOrderbookSnapshotEvent({
+      eventTimestamp: "2026-05-20T00:00:00.010Z",
+      receivedAt: "2026-05-20T00:00:00.035Z",
+      sequence: "3",
+      tieBreakKey: "orderbook:same-received-fill",
       askPrice: "100",
     }),
     createMetricEventFixture({

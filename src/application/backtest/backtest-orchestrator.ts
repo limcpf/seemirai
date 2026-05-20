@@ -493,10 +493,11 @@ function resolvePendingFills(pendingFills: PendingBacktestFill[], force: boolean
 }
 
 function resolvePendingFill(pendingFill: PendingBacktestFill, force: boolean): boolean {
+  const simulationInput = createPaperFillSimulationInput(pendingFill);
   const fillResult = simulatePaperFill({
     intent: pendingFill.intent,
-    orderbooks: sortOrderbooksByReceivedAt(pendingFill.orderbooks),
-    options: pendingFill.options,
+    orderbooks: simulationInput.orderbooks,
+    options: simulationInput.options,
   });
 
   if (!force && fillResult.reasonCode === "latency_snapshot_missing") {
@@ -506,6 +507,58 @@ function resolvePendingFill(pendingFill: PendingBacktestFill, force: boolean): b
 
   pendingFill.result.fillResult = fillResult;
   return true;
+}
+
+function createPaperFillSimulationInput(pendingFill: PendingBacktestFill): {
+  orderbooks: OrderbookEvent | readonly OrderbookEvent[];
+  options: PaperFillSimulatorOptions;
+} {
+  const sortedOrderbooks = sortOrderbooksByReceivedAt(pendingFill.orderbooks);
+  if (!usesImmediateExecutionSnapshot(pendingFill.options)) {
+    return {
+      orderbooks: sortedOrderbooks,
+      options: pendingFill.options,
+    };
+  }
+
+  const selectedOrderbook = selectImmediateExecutionOrderbook(sortedOrderbooks, pendingFill.options.submittedAt);
+  return {
+    orderbooks: selectedOrderbook ?? [],
+    options: omitSubmittedAt(pendingFill.options),
+  };
+}
+
+function usesImmediateExecutionSnapshot(options: PaperFillSimulatorOptions): options is PaperFillSimulatorOptions & {
+  submittedAt: TimestampInput;
+} {
+  return options.submittedAt !== undefined && Math.max(options.latencyMs ?? 0, 0) === 0;
+}
+
+function omitSubmittedAt(options: PaperFillSimulatorOptions): PaperFillSimulatorOptions {
+  const { submittedAt: _submittedAt, ...remainingOptions } = options;
+  return remainingOptions;
+}
+
+function selectImmediateExecutionOrderbook(
+  orderbooks: readonly OrderbookEvent[],
+  submittedAt: TimestampInput,
+): OrderbookEvent | undefined {
+  const submittedAtMillis = readTimestampMillis(submittedAt);
+  let latestPreSubmitSnapshot: OrderbookEvent | undefined;
+  let earliestPostSubmitSnapshot: OrderbookEvent | undefined;
+
+  for (const orderbook of orderbooks) {
+    const receivedAtMillis = readTimestampMillis(orderbook.receivedAt);
+    if (receivedAtMillis <= submittedAtMillis) {
+      // latency가 없으면 runtime PaperBroker처럼 제출 직전에 관측한 최신 snapshot을 즉시 체결 근거로 사용한다.
+      latestPreSubmitSnapshot = orderbook;
+      continue;
+    }
+
+    earliestPostSubmitSnapshot ??= orderbook;
+  }
+
+  return latestPreSubmitSnapshot ?? earliestPostSubmitSnapshot;
 }
 
 function getOrderbookHistory(
@@ -537,9 +590,27 @@ function getOrCreateOrderbookHistory(state: BacktestReplayState, marketKey: stri
 }
 
 function sortOrderbooksByReceivedAt(orderbooks: readonly OrderbookEvent[]): readonly OrderbookEvent[] {
-  return [...orderbooks].sort(
-    (left, right) => readTimestampMillis(left.receivedAt) - readTimestampMillis(right.receivedAt),
-  );
+  return [...orderbooks].sort(compareOrderbooksByReceivedAt);
+}
+
+function compareOrderbooksByReceivedAt(left: OrderbookEvent, right: OrderbookEvent): number {
+  const receivedAtDiff = readTimestampMillis(left.receivedAt) - readTimestampMillis(right.receivedAt);
+  if (receivedAtDiff !== 0) {
+    return receivedAtDiff;
+  }
+
+  const exchangeTimestampDiff =
+    readTimestampMillis(left.exchangeTimestamp) - readTimestampMillis(right.exchangeTimestamp);
+  if (exchangeTimestampDiff !== 0) {
+    return exchangeTimestampDiff;
+  }
+
+  const marketDiff = compareString(left.market, right.market);
+  if (marketDiff !== 0) {
+    return marketDiff;
+  }
+
+  return compareString(JSON.stringify([left.asks, left.bids]), JSON.stringify([right.asks, right.bids]));
 }
 
 function readObservedSubmitTime(event: MarketEvent): TimestampInput {
@@ -553,6 +624,10 @@ function readTimestampMillis(timestamp: TimestampInput): number {
   }
 
   return milliseconds;
+}
+
+function compareString(left: string, right: string): number {
+  return left < right ? -1 : left > right ? 1 : 0;
 }
 
 /**

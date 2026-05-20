@@ -65,6 +65,20 @@ describe("FixtureHistoricalEventSource", () => {
     expect(empty).toEqual([]);
   });
 
+  it("does not let consumer-side event mutation leak into later replays", async () => {
+    const source = createFixtureHistoricalEventSource(await readFixture());
+    const firstReplay = await collectEvents(source);
+    const firstEvent = firstReplay[0];
+    expect(firstEvent).toBeDefined();
+
+    firstEvent!.source.sourceId = "mutated-by-consumer";
+
+    const secondReplay = await collectEvents(source);
+
+    expect(secondReplay[0]).not.toBe(firstEvent);
+    expect(secondReplay[0]?.source.sourceId).toBe("market-events.json");
+  });
+
   it("returns an empty stream when source or exchange filters do not match", async () => {
     const source = createFixtureHistoricalEventSource(await readFixture());
 
