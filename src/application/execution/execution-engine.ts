@@ -608,9 +608,8 @@ function createOrderIntentEvidence(
     // LIMIT option은 후속 PaperBroker fill simulation 결과를 바꾸는 실행 조건이므로 승인 증거에 고정한다.
     evidence.requested_price = normalizeFinancialDecimalString(intent.requestedPrice);
     evidence.post_only = intent.postOnly === true;
-    if (intent.timeInForce !== undefined) {
-      evidence.time_in_force = intent.timeInForce;
-    }
+    // PaperBroker/fill simulator의 기본 LIMIT 유효시간과 같은 의미가 되도록 누락값을 GTC로 정규화한다.
+    evidence.time_in_force = intent.timeInForce ?? "GTC";
   }
 
   if (expectedLossBpsOfEquity !== undefined) {

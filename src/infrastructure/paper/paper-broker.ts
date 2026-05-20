@@ -808,7 +808,7 @@ function isOpenBrokerOrder(order: BrokerOrder): boolean {
 function cloneBrokerOrder(order: BrokerOrder): BrokerOrder {
   const clonedOrder: BrokerOrder = { ...order };
   if (order.metadata !== undefined) {
-    clonedOrder.metadata = { ...order.metadata };
+    clonedOrder.metadata = cloneJsonRecord(order.metadata);
   }
 
   return clonedOrder;
@@ -817,10 +817,37 @@ function cloneBrokerOrder(order: BrokerOrder): BrokerOrder {
 function cloneBrokerBalance(balance: BrokerBalance): BrokerBalance {
   const clonedBalance: BrokerBalance = { ...balance };
   if (balance.metadata !== undefined) {
-    clonedBalance.metadata = { ...balance.metadata };
+    clonedBalance.metadata = cloneJsonRecord(balance.metadata);
   }
 
   return clonedBalance;
+}
+
+function cloneJsonRecord(record: JsonRecord): JsonRecord {
+  const clonedRecord: JsonRecord = {};
+  for (const [key, value] of Object.entries(record)) {
+    clonedRecord[key] = cloneJsonValue(value);
+  }
+
+  return clonedRecord;
+}
+
+function cloneJsonValue(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    // 반환 객체를 수정해도 broker 내부 canonical state가 바뀌지 않도록 nested 배열도 분리한다.
+    return value.map(cloneJsonValue);
+  }
+
+  if (isJsonRecord(value)) {
+    // paper_fill_simulation/balance_mutation 같은 nested metadata는 외부 호출자에게 mutable하게 노출되지 않아야 한다.
+    return cloneJsonRecord(value);
+  }
+
+  return value;
+}
+
+function isJsonRecord(value: unknown): value is JsonRecord {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function normalizeCurrency(currency: string): string {

@@ -438,6 +438,48 @@ describe("M6 ExecutionEngine contract", () => {
     expect(submitOrder).not.toHaveBeenCalled();
   });
 
+  it("treats omitted limit time-in-force as GTC in execution fingerprints", () => {
+    const approvedIntent = createLimitIntent({
+      timeInForce: "GTC",
+    });
+    const runtimeIntent = createLimitIntent();
+
+    expect(
+      validateExecutionSubmission(
+        createSubmission({
+          intent: runtimeIntent,
+          costSnapshot: createCostSnapshot(approvedIntent),
+          riskApproval: createRiskApprovalEvidence(approvedIntent),
+        }),
+      ),
+    ).toMatchObject({
+      valid: true,
+    });
+  });
+
+  it("suppresses duplicate in-flight submissions when omitted and explicit GTC mean the same limit order", async () => {
+    const { broker, submitOrder } = createBrokerPort();
+    const engine = new ExecutionEngine({ broker });
+    const implicitGtcSubmission = createSubmission({
+      intent: createLimitIntent(),
+    });
+    const explicitGtcSubmission = createSubmission({
+      intent: createLimitIntent({
+        timeInForce: "GTC",
+      }),
+    });
+
+    const firstResultPromise = engine.submitOrder(implicitGtcSubmission);
+    const duplicateResult = await engine.submitOrder(explicitGtcSubmission);
+    const firstResult = await firstResultPromise;
+
+    expect(firstResult.status).toBe("SUBMITTED");
+    expect(duplicateResult).toMatchObject({
+      status: "DUPLICATE_SUPPRESSED",
+    });
+    expect(submitOrder).toHaveBeenCalledTimes(1);
+  });
+
   it("rejects RiskGate evidence when market position effect changed after approval", () => {
     const approvedEntryIntent = createMarketIntent();
     const reduceOnlyRuntimeIntent = createMarketIntent({

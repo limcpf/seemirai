@@ -128,6 +128,33 @@ describe("PaperBroker", () => {
     });
   });
 
+  it("returns deep-cloned order metadata so callers cannot mutate broker state", async () => {
+    const broker = new PaperBroker({
+      exchangeId,
+      initialBalances: [
+        {
+          currency: "KRW",
+          available: "1000",
+        },
+      ],
+      orderbookSnapshots: createOrderbook({
+        asks: [["100", "1"]],
+      }),
+      clock: () => observedAt,
+    });
+
+    const order = await broker.submitOrder(createSubmission());
+    const metadata = order.metadata as { paper_fill_simulation: { status: string } };
+
+    metadata.paper_fill_simulation.status = "MUTATED";
+
+    const storedOrder = await broker.getOrder(order.brokerOrderId);
+    const storedMetadata = storedOrder?.metadata as { paper_fill_simulation: { status: string } };
+
+    expect(storedMetadata.paper_fill_simulation).not.toBe(metadata.paper_fill_simulation);
+    expect(storedMetadata.paper_fill_simulation.status).toBe("FILLED");
+  });
+
   it("rejects orders that would make available paper balances negative", async () => {
     const broker = new PaperBroker({
       exchangeId,
