@@ -229,6 +229,67 @@ describe("Backtest report and verification", () => {
     });
   });
 
+  it("preserves sub-millisecond orderbook timestamps in consistency records", () => {
+    const intent = createIntent({
+      idempotencyKey: "candidate:timestamp-precision",
+    });
+    const result = createBacktestResult([
+      createSimulatedCandidate({
+        intent,
+        fillResult: createFillResult({
+          status: "FILLED",
+          orderStatus: "FILLED",
+          reasonCode: "limit_crossed_full",
+          requestedQuantity: "1",
+          filledQuantity: "1",
+          openQuantity: "0",
+          canceledQuantity: "0",
+          totalFee: "0.05",
+          orderbookReceivedAt: "2026-05-20T00:00:00.123100Z",
+        }),
+      }),
+    ]);
+    const paperOrder: BrokerOrder = {
+      brokerOrderId: "paper:timestamp-precision",
+      idempotencyKey: intent.idempotencyKey,
+      exchangeId: intent.exchangeId,
+      market: intent.market,
+      side: intent.side,
+      orderType: intent.orderType,
+      status: "FILLED",
+      requestedQuantity: "1",
+      remainingQuantity: "0",
+      requestedPrice: "100",
+      updatedAt: triggerTimestamp,
+      metadata: {
+        paper_fill_simulation: createFillResult({
+          status: "FILLED",
+          orderStatus: "FILLED",
+          reasonCode: "limit_crossed_full",
+          requestedQuantity: "1",
+          filledQuantity: "1",
+          openQuantity: "0",
+          canceledQuantity: "0",
+          totalFee: "0.05",
+          orderbookReceivedAt: "2026-05-20T00:00:00.123900Z",
+        }),
+      },
+    };
+
+    const consistency = createBacktestPaperConsistencyReport({
+      backtestCandidates: createBacktestPaperCandidateRecords(result),
+      paperCandidates: createPaperBrokerCandidateRecords([paperOrder]),
+    });
+
+    expect(consistency.matches).toBe(false);
+    expect(consistency.mismatches).toContainEqual({
+      idempotencyKey: intent.idempotencyKey,
+      field: "orderbookReceivedAt",
+      backtestValue: "2026-05-20T00:00:00.1231Z",
+      paperValue: "2026-05-20T00:00:00.1239Z",
+    });
+  });
+
   it("marks duplicate idempotency keys as consistency mismatches", () => {
     const backtestRecord = createCandidateRecord("candidate:duplicate");
     const paperRecord = createCandidateRecord("candidate:duplicate");

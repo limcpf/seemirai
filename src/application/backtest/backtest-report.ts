@@ -1,5 +1,6 @@
 import { Decimal } from "decimal.js";
 import { parseFinancialDecimal } from "../../shared/index.js";
+import { parseMarketEventTimestampNanos } from "../../domain/index.js";
 import type {
   BrokerOrder,
   JsonRecord,
@@ -12,6 +13,8 @@ import type {
 } from "../../domain/index.js";
 import type { PaperFillSimulationResult, PaperFillSimulationStatus } from "../execution/index.js";
 import type { BacktestOrderCandidateResult, BacktestRunResult } from "./backtest-orchestrator.js";
+
+const timestampNanosPerSecond = 1_000_000_000n;
 
 export type BacktestReportCountMap = Readonly<Record<string, number>>;
 
@@ -661,12 +664,29 @@ function normalizeDecimalString(value: NumericString): NumericString {
 }
 
 function normalizeTimestampInput(value: TimestampInput): string {
-  const milliseconds = value instanceof Date ? value.getTime() : Date.parse(value);
-  if (!Number.isFinite(milliseconds)) {
-    throw new Error(`Invalid timestamp: ${String(value)}`);
+  return formatEpochNanosAsIsoString(parseMarketEventTimestampNanos(value));
+}
+
+function formatEpochNanosAsIsoString(epochNanos: bigint): string {
+  let epochSeconds = epochNanos / timestampNanosPerSecond;
+  let fractionNanos = epochNanos % timestampNanosPerSecond;
+  if (fractionNanos < 0n) {
+    epochSeconds -= 1n;
+    fractionNanos += timestampNanosPerSecond;
   }
 
-  return new Date(milliseconds).toISOString();
+  const timestampMillis = Number(epochSeconds * 1_000n);
+  if (!Number.isFinite(timestampMillis)) {
+    throw new Error(`Invalid timestamp nanos: ${epochNanos.toString()}`);
+  }
+
+  const secondPrecisionIso = new Date(timestampMillis).toISOString().slice(0, 19);
+  if (fractionNanos === 0n) {
+    return `${secondPrecisionIso}Z`;
+  }
+
+  const fractionText = fractionNanos.toString().padStart(9, "0").replace(/0+$/u, "");
+  return `${secondPrecisionIso}.${fractionText}Z`;
 }
 
 function isJsonRecord(value: unknown): value is JsonRecord {

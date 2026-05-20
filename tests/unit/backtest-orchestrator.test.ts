@@ -156,6 +156,42 @@ describe("BacktestOrchestrator", () => {
     });
   });
 
+  it("does not let callback-side event mutations affect replay state or fill simulation", async () => {
+    let mutated = false;
+    const orchestrator = createOrchestrator({
+      rules: [costMarginOkRule],
+      fixture: createZeroLatencyFixture(),
+    });
+    const result = await orchestrator.run(
+      createRunRequest({
+        latencyMs: 0,
+        mutateEvent: (event) => {
+          if (event.kind !== "ORDERBOOK_SNAPSHOT") {
+            return;
+          }
+
+          const ask = event.asks[0] as { price: string } | undefined;
+          if (ask !== undefined) {
+            mutated = true;
+            ask.price = "101";
+          }
+        },
+      }),
+    );
+    const replayOrderbook = result.events.find(
+      (event): event is Extract<MarketEvent, { kind: "ORDERBOOK_SNAPSHOT" }> =>
+        event.kind === "ORDERBOOK_SNAPSHOT",
+    );
+
+    expect(mutated).toBe(true);
+    expect(replayOrderbook?.asks[0]?.price).toBe("100");
+    expect(result.candidates[0]?.fillResult).toMatchObject({
+      status: "FILLED",
+      filledQuantity: "0.5",
+      orderbookReceivedAt: "2026-05-20T00:00:00.040Z",
+    });
+  });
+
   it("bounds replay state history exposed to callbacks", async () => {
     let capturedState: BacktestReplayStateSnapshot | undefined;
     const orchestrator = createOrchestrator({
@@ -203,6 +239,28 @@ describe("BacktestOrchestrator", () => {
     });
   });
 
+  it("keeps the submission timestamp even if fill options include submittedAt", async () => {
+    const orchestrator = createOrchestrator({
+      rules: [costMarginOkRule],
+      fixture: createLaggedObservationFixture(),
+    });
+    const result = await orchestrator.run(
+      createRunRequest({
+        latencyMs: 100,
+        fillSubmittedAtOverride: "2026-05-20T00:00:00.000Z",
+      }),
+    );
+
+    expect(result.candidates[0]?.submission?.submittedAt).toBe("2026-05-20T00:00:00.200Z");
+    expect(result.candidates[0]?.fillResult).toMatchObject({
+      status: "UNFILLED",
+      reasonCode: "limit_not_crossed",
+      metadata: {
+        orderbook_received_at: "2026-05-20T00:00:00.300Z",
+      },
+    });
+  });
+
   it("sorts replay orderbooks by receivedAt before selecting a fill snapshot", async () => {
     const orchestrator = createOrchestrator({
       rules: [costMarginOkRule],
@@ -218,6 +276,24 @@ describe("BacktestOrchestrator", () => {
       status: "FILLED",
       filledQuantity: "0.5",
       orderbookReceivedAt: "2026-05-20T00:00:00.035Z",
+    });
+  });
+
+  it("preserves sub-millisecond timestamps when selecting latency fill snapshots", async () => {
+    const orchestrator = createOrchestrator({
+      rules: [costMarginOkRule],
+      fixture: createSubMillisecondLatencyFixture(),
+    });
+    const result = await orchestrator.run(
+      createRunRequest({
+        latencyMs: 0.2,
+      }),
+    );
+
+    expect(result.candidates[0]?.fillResult).toMatchObject({
+      status: "FILLED",
+      filledQuantity: "0.5",
+      orderbookReceivedAt: "2026-05-20T00:00:00.050300Z",
     });
   });
 
@@ -380,11 +456,15 @@ function createRunRequest(options: {
   expectedReturnBps?: string;
   expectedLossBpsOfEquity?: string;
   latencyMs?: number;
+  fillSubmittedAtOverride?: string;
   historyLimits?: Parameters<BacktestOrchestrator["run"]>[0]["historyLimits"];
+  mutateEvent?: (event: MarketEvent) => void;
   observeState?: (phase: ObservedStatePhase, state: BacktestReplayStateSnapshot) => void;
 } = {}): Parameters<BacktestOrchestrator["run"]>[0] {
   return {
     createStrategyContext: ({ event, strategy, state }) => {
+      options.mutateEvent?.(event);
+
       if (event.kind !== "ORDERBOOK_METRIC") {
         return undefined;
       }
@@ -431,6 +511,7 @@ function createRunRequest(options: {
     fillOptions: {
       latencyMs: options.latencyMs ?? 100,
       takerFeeBps: "10",
+      ...(options.fillSubmittedAtOverride === undefined ? {} : { submittedAt: options.fillSubmittedAtOverride }),
     },
     ...(options.historyLimits === undefined ? {} : { historyLimits: options.historyLimits }),
   };
@@ -641,6 +722,38 @@ function createReceivedAtOutOfOrderFixture(): unknown {
       eventTimestamp: "2026-05-20T00:00:00.030Z",
       receivedAt: "2026-05-20T00:00:00.030Z",
       sequence: "4",
+    }),
+  ]);
+}
+
+function createSubMillisecondLatencyFixture(): unknown {
+  return createFixtureWithEvents([
+    createPolicyCandidateEvent("1"),
+    createOrderbookSnapshotEvent({
+      eventTimestamp: "2026-05-20T00:00:00.049900Z",
+      receivedAt: "2026-05-20T00:00:00.049900Z",
+      sequence: "2",
+      tieBreakKey: "orderbook:before-submit",
+      askPrice: "101",
+    }),
+    createMetricEventFixture({
+      eventTimestamp: "2026-05-20T00:00:00.050000Z",
+      receivedAt: "2026-05-20T00:00:00.050000Z",
+      sequence: "3",
+    }),
+    createOrderbookSnapshotEvent({
+      eventTimestamp: "2026-05-20T00:00:00.050100Z",
+      receivedAt: "2026-05-20T00:00:00.050100Z",
+      sequence: "4",
+      tieBreakKey: "orderbook:before-submillisecond-threshold",
+      askPrice: "101",
+    }),
+    createOrderbookSnapshotEvent({
+      eventTimestamp: "2026-05-20T00:00:00.050300Z",
+      receivedAt: "2026-05-20T00:00:00.050300Z",
+      sequence: "5",
+      tieBreakKey: "orderbook:after-submillisecond-threshold",
+      askPrice: "100",
     }),
   ]);
 }

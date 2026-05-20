@@ -1,4 +1,4 @@
-import { CostModel } from "../../domain/index.js";
+import { CostModel, parseMarketEventTimestampNanos } from "../../domain/index.js";
 import type {
   CostDecision,
   CostModelInput,
@@ -197,8 +197,9 @@ export class BacktestOrchestrator {
     const candidates: BacktestOrderCandidateResult[] = [];
     const pendingFills: PendingBacktestFill[] = [];
 
-    for await (const event of this.source.replay(createReplayRequest(request))) {
-      events.push(event);
+    for await (const sourceEvent of this.source.replay(createReplayRequest(request))) {
+      const event = cloneReplayStateValue(sourceEvent);
+      events.push(cloneReplayStateValue(event));
       updateReplayState(state, event, historyLimits);
       if (event.kind === "ORDERBOOK_SNAPSHOT") {
         // 새 호가는 decision state가 아니라 이미 승인된 체결 대기 후보에만 후행 근거로 연결한다.
@@ -208,7 +209,7 @@ export class BacktestOrchestrator {
       for (const strategy of this.strategies) {
         const strategyState = snapshotReplayState(state, event);
         const strategyContext = request.createStrategyContext({
-          event,
+          event: cloneReplayStateValue(event),
           strategy,
           state: strategyState,
         });
@@ -263,7 +264,7 @@ export class BacktestOrchestrator {
       fillOrderbooks: readonly OrderbookEvent[];
     },
   ): Promise<BacktestOrderCandidateEvaluation> {
-    const costDecision = this.costModel.evaluate(input.request.createCostInput(input));
+    const costDecision = this.costModel.evaluate(input.request.createCostInput(cloneBacktestCostInput(input)));
     if (!costDecision.tradeAllowed) {
       return {
         result: {
@@ -280,11 +281,11 @@ export class BacktestOrchestrator {
       ...input,
       costDecision,
     };
-    const riskGateContext = input.request.createRiskGateContext(riskInput);
+    const riskGateContext = input.request.createRiskGateContext(cloneBacktestRiskGateContextInput(riskInput));
     const ruleContext =
       input.request.createRuleContext?.({
-        ...riskInput,
-        riskGateContext,
+        ...cloneBacktestRiskGateContextInput(riskInput),
+        riskGateContext: cloneReplayStateValue(riskGateContext),
       }) ?? createDefaultRuleContext(input, costDecision, riskGateContext);
     const ruleResult = await evaluateRules(this.rules, ruleContext);
 
@@ -335,12 +336,13 @@ export class BacktestOrchestrator {
     }
 
     const fillOptions = resolveFillOptions(input.request.fillOptions, {
-      ...input,
-      costDecision,
-      riskGateContext,
-      ruleResult,
-      riskGateResult,
-      submission,
+      ...cloneBacktestRuleContextInput({
+        ...riskInput,
+        riskGateContext,
+      }),
+      ruleResult: cloneReplayStateValue(ruleResult),
+      riskGateResult: cloneReplayStateValue(riskGateResult),
+      submission: cloneReplayStateValue(submission),
     });
     const result: BacktestOrderCandidateResult = {
       status: "SIMULATED",
@@ -358,8 +360,8 @@ export class BacktestOrchestrator {
       intent: input.intent,
       orderbooks: input.fillOrderbooks,
       options: {
-        submittedAt: submission.submittedAt,
         ...fillOptions,
+        submittedAt: submission.submittedAt,
       },
     };
     const resolved = resolvePendingFill(pendingFill, false);
@@ -569,13 +571,13 @@ function selectImmediateExecutionOrderbook(
   orderbooks: readonly OrderbookEvent[],
   submittedAt: TimestampInput,
 ): OrderbookEvent | undefined {
-  const submittedAtMillis = readTimestampMillis(submittedAt);
+  const submittedAtNanos = readTimestampNanos(submittedAt);
   let latestPreSubmitSnapshot: OrderbookEvent | undefined;
   let earliestPostSubmitSnapshot: OrderbookEvent | undefined;
 
   for (const orderbook of orderbooks) {
-    const receivedAtMillis = readTimestampMillis(orderbook.receivedAt);
-    if (receivedAtMillis <= submittedAtMillis) {
+    const receivedAtNanos = readTimestampNanos(orderbook.receivedAt);
+    if (receivedAtNanos <= submittedAtNanos) {
       // latency가 없으면 runtime PaperBroker처럼 제출 직전에 관측한 최신 snapshot을 즉시 체결 근거로 사용한다.
       latestPreSubmitSnapshot = orderbook;
       continue;
@@ -621,20 +623,23 @@ function sortOrderbooksByReceivedAt(orderbooks: readonly OrderbookEvent[]): read
 
 function compareOrderbooksByReceivedAt(left: OrderbookEvent, right: OrderbookEvent): number {
   // receivedAt 동률은 runtime PaperBroker처럼 기존 관측 순서를 보존한다.
-  return readTimestampMillis(left.receivedAt) - readTimestampMillis(right.receivedAt);
+  return compareBigInt(readTimestampNanos(left.receivedAt), readTimestampNanos(right.receivedAt));
 }
 
 function readObservedSubmitTime(event: MarketEvent): TimestampInput {
   return event.receivedAt ?? event.eventTimestamp;
 }
 
-function readTimestampMillis(timestamp: TimestampInput): number {
-  const milliseconds = timestamp instanceof Date ? timestamp.getTime() : Date.parse(timestamp);
-  if (!Number.isFinite(milliseconds)) {
-    throw new Error(`Invalid timestamp: ${String(timestamp)}`);
+function readTimestampNanos(timestamp: TimestampInput): bigint {
+  return parseMarketEventTimestampNanos(timestamp);
+}
+
+function compareBigInt(left: bigint, right: bigint): number {
+  if (left === right) {
+    return 0;
   }
 
-  return milliseconds;
+  return left < right ? -1 : 1;
 }
 
 function normalizeReplayHistoryLimits(
@@ -674,6 +679,43 @@ function cloneReplayStateArray<T>(items: readonly T[]): readonly T[] {
 
 function cloneReplayStateValue<T>(value: T): T {
   return structuredClone(value) as T;
+}
+
+function cloneReplayStateSnapshot(state: BacktestReplayStateSnapshot): BacktestReplayStateSnapshot {
+  return {
+    latestMarketDataEvents: cloneReplayStateArray(state.latestMarketDataEvents),
+    orderbookHistory: cloneReplayStateArray(state.orderbookHistory),
+    ...(state.latestOrderbook === undefined ? {} : { latestOrderbook: cloneReplayStateValue(state.latestOrderbook) }),
+    ...(state.latestMarketStatus === undefined
+      ? {}
+      : { latestMarketStatus: cloneReplayStateValue(state.latestMarketStatus) }),
+  };
+}
+
+function cloneBacktestCostInput(input: BacktestCostInput): BacktestCostInput {
+  return {
+    event: cloneReplayStateValue(input.event),
+    strategy: input.strategy,
+    strategyContext: cloneReplayStateValue(input.strategyContext),
+    decision: cloneReplayStateValue(input.decision),
+    conversion: cloneReplayStateValue(input.conversion),
+    intent: cloneReplayStateValue(input.intent),
+    state: cloneReplayStateSnapshot(input.state),
+  };
+}
+
+function cloneBacktestRiskGateContextInput(input: BacktestRiskGateContextInput): BacktestRiskGateContextInput {
+  return {
+    ...cloneBacktestCostInput(input),
+    costDecision: cloneReplayStateValue(input.costDecision),
+  };
+}
+
+function cloneBacktestRuleContextInput(input: BacktestRuleContextInput): BacktestRuleContextInput {
+  return {
+    ...cloneBacktestRiskGateContextInput(input),
+    riskGateContext: cloneReplayStateValue(input.riskGateContext),
+  };
 }
 
 function toMarketDataEvent(event: MarketEvent): MarketDataEvent | undefined {
