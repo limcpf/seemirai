@@ -17,6 +17,7 @@ import type {
   Strategy,
   StrategyContext,
   StrategyDecision,
+  TimestampInput,
 } from "../../domain/index.js";
 import type { HistoricalEventReplayRequest, HistoricalEventSource } from "../ports/index.js";
 import {
@@ -338,7 +339,7 @@ export class BacktestOrchestrator {
       intent: input.intent,
       orderbooks: input.fillOrderbooks,
       options: {
-        submittedAt: input.event.eventTimestamp,
+        submittedAt: submission.submittedAt,
         ...fillOptions,
       },
     };
@@ -466,7 +467,7 @@ function createBacktestOrderSubmission(
       riskGateContext.expectedLossBpsOfEquity,
     ),
     riskApproval: createExecutionRiskApprovalEvidence(riskGateResult, riskGateContext),
-    submittedAt: input.event.eventTimestamp,
+    submittedAt: readObservedSubmitTime(input.event),
   };
 
   if (riskGateContext.expectedLossBpsOfEquity !== undefined) {
@@ -494,7 +495,7 @@ function resolvePendingFills(pendingFills: PendingBacktestFill[], force: boolean
 function resolvePendingFill(pendingFill: PendingBacktestFill, force: boolean): boolean {
   const fillResult = simulatePaperFill({
     intent: pendingFill.intent,
-    orderbooks: pendingFill.orderbooks,
+    orderbooks: sortOrderbooksByReceivedAt(pendingFill.orderbooks),
     options: pendingFill.options,
   });
 
@@ -533,6 +534,25 @@ function getOrCreateOrderbookHistory(state: BacktestReplayState, marketKey: stri
   const history: OrderbookEvent[] = [];
   state.orderbookHistoryByMarketKey.set(marketKey, history);
   return history;
+}
+
+function sortOrderbooksByReceivedAt(orderbooks: readonly OrderbookEvent[]): readonly OrderbookEvent[] {
+  return [...orderbooks].sort(
+    (left, right) => readTimestampMillis(left.receivedAt) - readTimestampMillis(right.receivedAt),
+  );
+}
+
+function readObservedSubmitTime(event: MarketEvent): TimestampInput {
+  return event.receivedAt ?? event.eventTimestamp;
+}
+
+function readTimestampMillis(timestamp: TimestampInput): number {
+  const milliseconds = timestamp instanceof Date ? timestamp.getTime() : Date.parse(timestamp);
+  if (!Number.isFinite(milliseconds)) {
+    throw new Error(`Invalid timestamp: ${String(timestamp)}`);
+  }
+
+  return milliseconds;
 }
 
 /**

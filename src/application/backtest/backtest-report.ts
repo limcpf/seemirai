@@ -367,7 +367,7 @@ function createBacktestPaperCandidateRecord(
       record.totalFee = normalizeDecimalString(fillResult.totalFee);
     }
     if (fillResult.orderbookReceivedAt !== undefined) {
-      record.orderbookReceivedAt = fillResult.orderbookReceivedAt;
+      record.orderbookReceivedAt = normalizeTimestampInput(fillResult.orderbookReceivedAt);
     }
     if (fillResult.slippageBps !== undefined) {
       record.slippageBps = normalizeDecimalString(fillResult.slippageBps);
@@ -401,7 +401,7 @@ function createPaperBrokerCandidateRecord(order: BrokerOrder): BacktestPaperCand
       record.totalFee = normalizeDecimalString(fillResult.totalFee);
     }
     if (fillResult.orderbookReceivedAt !== undefined) {
-      record.orderbookReceivedAt = fillResult.orderbookReceivedAt;
+      record.orderbookReceivedAt = normalizeTimestampInput(fillResult.orderbookReceivedAt);
     }
     if (fillResult.slippageBps !== undefined) {
       record.slippageBps = normalizeDecimalString(fillResult.slippageBps);
@@ -658,6 +658,15 @@ function hasFilledQuantity(fillResult: PaperFillSimulationResult): boolean {
 
 function normalizeDecimalString(value: NumericString): NumericString {
   return parseFinancialDecimal(value).toFixed();
+}
+
+function normalizeTimestampInput(value: TimestampInput): string {
+  const milliseconds = value instanceof Date ? value.getTime() : Date.parse(value);
+  if (!Number.isFinite(milliseconds)) {
+    throw new Error(`Invalid timestamp: ${String(value)}`);
+  }
+
+  return new Date(milliseconds).toISOString();
 }
 
 function isJsonRecord(value: unknown): value is JsonRecord {

@@ -185,6 +185,7 @@ describe("Backtest report and verification", () => {
           openQuantity: "0.0",
           canceledQuantity: "0.0",
           totalFee: "0.0500",
+          orderbookReceivedAt: new Date(triggerTimestamp),
           slippageBps: "0.0",
         }),
       }),
@@ -211,6 +212,7 @@ describe("Backtest report and verification", () => {
           openQuantity: "0",
           canceledQuantity: "0",
           totalFee: "0.05",
+          orderbookReceivedAt: triggerTimestamp,
           slippageBps: "0",
         }),
       },
@@ -409,13 +411,11 @@ function createIntent(input: {
   };
 }
 
-function createFillResult(
-  input: Omit<PaperFillSimulationResult, "fills" | "orderbookReceivedAt">,
-): PaperFillSimulationResult {
+function createFillResult(input: Omit<PaperFillSimulationResult, "fills">): PaperFillSimulationResult {
   return {
     ...input,
     fills: [],
-    orderbookReceivedAt: triggerTimestamp,
+    orderbookReceivedAt: input.orderbookReceivedAt ?? triggerTimestamp,
   };
 }
 

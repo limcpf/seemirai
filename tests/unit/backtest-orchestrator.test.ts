@@ -112,6 +112,41 @@ describe("BacktestOrchestrator", () => {
     });
   });
 
+  it("uses receivedAt as the backtest submit time for latency-based fill simulation", async () => {
+    const orchestrator = createOrchestrator({
+      rules: [costMarginOkRule],
+      fixture: createLaggedObservationFixture(),
+    });
+    const result = await orchestrator.run(createRunRequest());
+
+    expect(result.candidates[0]?.submission?.submittedAt).toBe("2026-05-20T00:00:00.200Z");
+    expect(result.candidates[0]?.fillResult).toMatchObject({
+      status: "UNFILLED",
+      reasonCode: "limit_not_crossed",
+      metadata: {
+        orderbook_received_at: "2026-05-20T00:00:00.300Z",
+      },
+    });
+  });
+
+  it("sorts replay orderbooks by receivedAt before selecting a fill snapshot", async () => {
+    const orchestrator = createOrchestrator({
+      rules: [costMarginOkRule],
+      fixture: createReceivedAtOutOfOrderFixture(),
+    });
+    const result = await orchestrator.run(
+      createRunRequest({
+        latencyMs: 5,
+      }),
+    );
+
+    expect(result.candidates[0]?.fillResult).toMatchObject({
+      status: "FILLED",
+      filledQuantity: "0.5",
+      orderbookReceivedAt: "2026-05-20T00:00:00.035Z",
+    });
+  });
+
   it("stops before rules, RiskGate, and fill simulation when the cost model rejects", async () => {
     let riskGateCalls = 0;
     const orchestrator = createOrchestrator({
@@ -216,9 +251,10 @@ describe("BacktestOrchestrator", () => {
 function createOrchestrator(options: {
   rules: readonly Rule[];
   evaluateRiskGate?: (context: RiskGateContext) => ReturnType<typeof evaluateRiskGate>;
+  fixture?: unknown;
 }): BacktestOrchestrator {
   return new BacktestOrchestrator({
-    source: createFixtureHistoricalEventSource(createBacktestFixture()),
+    source: createFixtureHistoricalEventSource(options.fixture ?? createBacktestFixture()),
     strategies: [createFixtureStrategy()],
     rules: options.rules,
     ...(options.evaluateRiskGate === undefined ? {} : { evaluateRiskGate: options.evaluateRiskGate }),
@@ -230,6 +266,7 @@ type ObservedStatePhase = "strategy" | "cost" | "risk";
 function createRunRequest(options: {
   expectedReturnBps?: string;
   expectedLossBpsOfEquity?: string;
+  latencyMs?: number;
   observeState?: (phase: ObservedStatePhase, state: BacktestReplayStateSnapshot) => void;
 } = {}): Parameters<BacktestOrchestrator["run"]>[0] {
   return {
@@ -278,7 +315,7 @@ function createRunRequest(options: {
       return createRiskContext(intent, event.eventTimestamp, options.expectedLossBpsOfEquity ?? "1");
     },
     fillOptions: {
-      latencyMs: 100,
+      latencyMs: options.latencyMs ?? 100,
       takerFeeBps: "10",
     },
   };
@@ -431,6 +468,142 @@ function createBacktestFixture(): unknown {
             size: "1",
           },
         ],
+      },
+    ],
+  };
+}
+
+function createLaggedObservationFixture(): unknown {
+  return createFixtureWithEvents([
+    createPolicyCandidateEvent("1"),
+    createOrderbookSnapshotEvent({
+      eventTimestamp: "2026-05-20T00:00:00.040Z",
+      receivedAt: "2026-05-20T00:00:00.040Z",
+      sequence: "2",
+      tieBreakKey: "orderbook:before-latency",
+      askPrice: "101",
+    }),
+    createMetricEventFixture({
+      eventTimestamp: triggerTimestamp,
+      receivedAt: "2026-05-20T00:00:00.200Z",
+      sequence: "3",
+    }),
+    createOrderbookSnapshotEvent({
+      eventTimestamp: "2026-05-20T00:00:00.150Z",
+      receivedAt: "2026-05-20T00:00:00.150Z",
+      sequence: "4",
+      tieBreakKey: "orderbook:exchange-time-after-trigger",
+      askPrice: "100",
+    }),
+    createOrderbookSnapshotEvent({
+      eventTimestamp: "2026-05-20T00:00:00.300Z",
+      receivedAt: "2026-05-20T00:00:00.300Z",
+      sequence: "5",
+      tieBreakKey: "orderbook:observed-latency",
+      askPrice: "101",
+    }),
+  ]);
+}
+
+function createReceivedAtOutOfOrderFixture(): unknown {
+  return createFixtureWithEvents([
+    createPolicyCandidateEvent("1"),
+    createOrderbookSnapshotEvent({
+      eventTimestamp: "2026-05-20T00:00:00.010Z",
+      receivedAt: "2026-05-20T00:00:00.040Z",
+      sequence: "2",
+      tieBreakKey: "orderbook:later-received",
+      askPrice: "101",
+    }),
+    createOrderbookSnapshotEvent({
+      eventTimestamp: "2026-05-20T00:00:00.020Z",
+      receivedAt: "2026-05-20T00:00:00.035Z",
+      sequence: "3",
+      tieBreakKey: "orderbook:earlier-received",
+      askPrice: "100",
+    }),
+    createMetricEventFixture({
+      eventTimestamp: "2026-05-20T00:00:00.030Z",
+      receivedAt: "2026-05-20T00:00:00.030Z",
+      sequence: "4",
+    }),
+  ]);
+}
+
+function createFixtureWithEvents(events: readonly unknown[]): unknown {
+  return {
+    schemaVersion: 1,
+    events,
+  };
+}
+
+function createPolicyCandidateEvent(sequence: string): unknown {
+  return {
+    kind: "POLICY_CANDIDATE",
+    exchangeId,
+    market,
+    eventTimestamp: "2026-05-20T00:00:00.000Z",
+    sequence,
+    tieBreakKey: "policy:healthy",
+    source: source(0),
+    tradable: true,
+    warning: false,
+    caution: false,
+    reasonCodes: [],
+    minimumOrderNotional: "5000",
+    bidFeeBps: "5",
+    askFeeBps: "5",
+  };
+}
+
+function createMetricEventFixture(input: {
+  eventTimestamp: string;
+  receivedAt: string;
+  sequence: string;
+}): unknown {
+  return {
+    kind: "ORDERBOOK_METRIC",
+    exchangeId,
+    market,
+    eventTimestamp: input.eventTimestamp,
+    receivedAt: input.receivedAt,
+    sequence: input.sequence,
+    tieBreakKey: "metric:trigger",
+    source: source(2),
+    bestBidPrice: "99",
+    bestAskPrice: "101",
+    spreadBps: "2",
+    bidDepth1: "100000000",
+    askDepth1: "100000000",
+  };
+}
+
+function createOrderbookSnapshotEvent(input: {
+  eventTimestamp: string;
+  receivedAt: string;
+  sequence: string;
+  tieBreakKey: string;
+  askPrice: string;
+}): unknown {
+  return {
+    kind: "ORDERBOOK_SNAPSHOT",
+    exchangeId,
+    market,
+    eventTimestamp: input.eventTimestamp,
+    receivedAt: input.receivedAt,
+    sequence: input.sequence,
+    tieBreakKey: input.tieBreakKey,
+    source: source(Number(input.sequence)),
+    asks: [
+      {
+        price: input.askPrice,
+        size: "0.5",
+      },
+    ],
+    bids: [
+      {
+        price: "99",
+        size: "1",
       },
     ],
   };
