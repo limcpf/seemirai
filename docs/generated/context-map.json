@@ -233,6 +233,13 @@
       "owner_scope": "docs/tech-debt"
     },
     {
+      "path": "docs/tech-debt/2026-05-20-large-typescript-module-boundaries.md",
+      "kind": "reference",
+      "role": "큰 TypeScript 단일 파일 책임 분리 부채와 처리 순서",
+      "read_when": ["단일 TypeScript 파일 분리", "모듈 경계 리팩터링", "사용자 지시 기술 부채 확인"],
+      "owner_scope": "docs/tech-debt"
+    },
+    {
       "path": ".agents/skills/project-bootstrap/SKILL.md",
       "kind": "skill",
       "role": "새 프로젝트 운영 보일러플레이트 적용 workflow",
