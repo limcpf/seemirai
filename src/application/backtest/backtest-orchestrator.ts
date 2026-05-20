@@ -131,8 +131,22 @@ interface BacktestReplayState {
   latestMarketDataEvents: MarketDataEvent[];
   latestOrderbooksByMarketKey: Map<string, OrderbookEvent>;
   latestMarketStatusesByMarketKey: Map<string, MarketStatus>;
-  orderbookHistoryByMarketKey: Map<string, readonly OrderbookEvent[]>;
+  orderbookHistoryByMarketKey: Map<string, OrderbookEvent[]>;
 }
+
+interface BacktestOrderCandidateEvaluation {
+  result: BacktestOrderCandidateResult;
+  pendingFill?: PendingBacktestFill;
+}
+
+interface PendingBacktestFill {
+  result: BacktestOrderCandidateResult;
+  intent: OrderIntent;
+  orderbooks: readonly OrderbookEvent[];
+  options: PaperFillSimulatorOptions;
+}
+
+const emptyOrderbookHistory: readonly OrderbookEvent[] = [];
 
 /**
  * 이벤트 기반 backtest 흐름을 runtime core와 같은 순서로 실행하는 application orchestrator다.
@@ -157,19 +171,26 @@ export class BacktestOrchestrator {
   }
 
   public async run(request: BacktestRunRequest): Promise<BacktestRunResult> {
-    const events = await collectMarketEvents(this.source.replay(createReplayRequest(request)));
-    const state = createReplayState(events);
+    const events: MarketEvent[] = [];
+    const state = createReplayState();
     const strategyEvaluations: BacktestStrategyEvaluation[] = [];
     const candidates: BacktestOrderCandidateResult[] = [];
+    const pendingFills: PendingBacktestFill[] = [];
 
-    for (const event of events) {
+    for await (const event of this.source.replay(createReplayRequest(request))) {
+      events.push(event);
       updateReplayState(state, event);
+      if (event.kind === "ORDERBOOK_SNAPSHOT") {
+        // 새 호가는 decision state가 아니라 이미 승인된 체결 대기 후보에만 후행 근거로 연결한다.
+        resolvePendingFills(pendingFills, false);
+      }
 
       for (const strategy of this.strategies) {
+        const strategyState = snapshotReplayState(state, event);
         const strategyContext = request.createStrategyContext({
           event,
           strategy,
-          state: snapshotReplayState(state, event),
+          state: strategyState,
         });
 
         if (strategyContext === undefined) {
@@ -187,21 +208,27 @@ export class BacktestOrchestrator {
         });
 
         for (const intent of conversion.orderIntents) {
-          candidates.push(
-            await this.evaluateCandidate({
-              event,
-              strategy,
-              strategyContext,
-              decision,
-              conversion,
-              intent,
-              request,
-              state: snapshotReplayState(state, event, intent),
-            }),
-          );
+          const evaluation = await this.evaluateCandidate({
+            event,
+            strategy,
+            strategyContext,
+            decision,
+            conversion,
+            intent,
+            request,
+            state: snapshotReplayState(state, event, intent),
+            fillOrderbooks: getOrderbookHistory(state, event, intent),
+          });
+
+          candidates.push(evaluation.result);
+          if (evaluation.pendingFill !== undefined) {
+            pendingFills.push(evaluation.pendingFill);
+          }
         }
       }
     }
+
+    resolvePendingFills(pendingFills, true);
 
     return {
       events,
@@ -213,16 +240,19 @@ export class BacktestOrchestrator {
   private async evaluateCandidate(
     input: BacktestCostInput & {
       request: BacktestRunRequest;
+      fillOrderbooks: readonly OrderbookEvent[];
     },
-  ): Promise<BacktestOrderCandidateResult> {
+  ): Promise<BacktestOrderCandidateEvaluation> {
     const costDecision = this.costModel.evaluate(input.request.createCostInput(input));
     if (!costDecision.tradeAllowed) {
       return {
-        status: "COST_REJECTED",
-        event: input.event,
-        strategyId: input.strategy.id,
-        intent: input.intent,
-        costDecision,
+        result: {
+          status: "COST_REJECTED",
+          event: input.event,
+          strategyId: input.strategy.id,
+          intent: input.intent,
+          costDecision,
+        },
       };
     }
 
@@ -240,25 +270,29 @@ export class BacktestOrchestrator {
 
     if (!ruleResult.passed) {
       return {
-        status: "RULE_REJECTED",
-        event: input.event,
-        strategyId: input.strategy.id,
-        intent: input.intent,
-        costDecision,
-        ruleResult,
+        result: {
+          status: "RULE_REJECTED",
+          event: input.event,
+          strategyId: input.strategy.id,
+          intent: input.intent,
+          costDecision,
+          ruleResult,
+        },
       };
     }
 
     const riskGateResult = this.evaluateRiskGate(riskGateContext);
     if (!riskGateResult.approved) {
       return {
-        status: "RISK_REJECTED",
-        event: input.event,
-        strategyId: input.strategy.id,
-        intent: input.intent,
-        costDecision,
-        ruleResult,
-        riskGateResult,
+        result: {
+          status: "RISK_REJECTED",
+          event: input.event,
+          strategyId: input.strategy.id,
+          intent: input.intent,
+          costDecision,
+          ruleResult,
+          riskGateResult,
+        },
       };
     }
 
@@ -266,15 +300,17 @@ export class BacktestOrchestrator {
     const executionValidation = validateExecutionSubmission(submission);
     if (!executionValidation.valid) {
       return {
-        status: "EXECUTION_REJECTED",
-        event: input.event,
-        strategyId: input.strategy.id,
-        intent: input.intent,
-        costDecision,
-        ruleResult,
-        riskGateResult,
-        submission,
-        executionValidation,
+        result: {
+          status: "EXECUTION_REJECTED",
+          event: input.event,
+          strategyId: input.strategy.id,
+          intent: input.intent,
+          costDecision,
+          ruleResult,
+          riskGateResult,
+          submission,
+          executionValidation,
+        },
       };
     }
 
@@ -286,16 +322,7 @@ export class BacktestOrchestrator {
       riskGateResult,
       submission,
     });
-    const fillResult = simulatePaperFill({
-      intent: input.intent,
-      orderbooks: input.state.orderbookHistory,
-      options: {
-        submittedAt: input.event.eventTimestamp,
-        ...fillOptions,
-      },
-    });
-
-    return {
+    const result: BacktestOrderCandidateResult = {
       status: "SIMULATED",
       event: input.event,
       strategyId: input.strategy.id,
@@ -305,8 +332,19 @@ export class BacktestOrchestrator {
       riskGateResult,
       submission,
       executionValidation,
-      fillResult,
     };
+    const pendingFill: PendingBacktestFill = {
+      result,
+      intent: input.intent,
+      orderbooks: input.fillOrderbooks,
+      options: {
+        submittedAt: input.event.eventTimestamp,
+        ...fillOptions,
+      },
+    };
+    const resolved = resolvePendingFill(pendingFill, false);
+
+    return resolved ? { result } : { result, pendingFill };
   }
 }
 
@@ -335,22 +373,12 @@ function createReplayRequest(request: BacktestRunRequest): HistoricalEventReplay
   return replayRequest;
 }
 
-async function collectMarketEvents(stream: AsyncIterable<MarketEvent>): Promise<MarketEvent[]> {
-  const events: MarketEvent[] = [];
-
-  for await (const event of stream) {
-    events.push(event);
-  }
-
-  return events;
-}
-
-function createReplayState(events: readonly MarketEvent[]): BacktestReplayState {
+function createReplayState(): BacktestReplayState {
   return {
     latestMarketDataEvents: [],
     latestOrderbooksByMarketKey: new Map(),
     latestMarketStatusesByMarketKey: new Map(),
-    orderbookHistoryByMarketKey: createOrderbookHistoryByMarketKey(events),
+    orderbookHistoryByMarketKey: new Map(),
   };
 }
 
@@ -362,7 +390,9 @@ function updateReplayState(state: BacktestReplayState, event: MarketEvent): void
 
   if (event.kind === "ORDERBOOK_SNAPSHOT") {
     const orderbook = toOrderbookEvent(event);
-    state.latestOrderbooksByMarketKey.set(createMarketKey(event.exchangeId, event.market), orderbook);
+    const marketKey = createMarketKey(event.exchangeId, event.market);
+    state.latestOrderbooksByMarketKey.set(marketKey, orderbook);
+    getOrCreateOrderbookHistory(state, marketKey).push(orderbook);
   }
 
   if (event.kind === "POLICY_CANDIDATE") {
@@ -382,10 +412,11 @@ function snapshotReplayState(
     marketKey === undefined ? undefined : state.latestOrderbooksByMarketKey.get(marketKey);
   const latestMarketStatus =
     marketKey === undefined ? undefined : state.latestMarketStatusesByMarketKey.get(marketKey);
+  const orderbookHistory = marketKey === undefined ? emptyOrderbookHistory : getOrderbookHistoryByMarketKey(state, marketKey);
 
   return {
-    latestMarketDataEvents: [...state.latestMarketDataEvents],
-    orderbookHistory: marketKey === undefined ? [] : [...(state.orderbookHistoryByMarketKey.get(marketKey) ?? [])],
+    latestMarketDataEvents: createReadonlyArrayView(state.latestMarketDataEvents),
+    orderbookHistory: createReadonlyArrayView(orderbookHistory),
     ...(latestOrderbook === undefined ? {} : { latestOrderbook }),
     ...(latestMarketStatus === undefined ? {} : { latestMarketStatus }),
   };
@@ -452,21 +483,97 @@ function resolveFillOptions(
   return typeof fillOptions === "function" ? fillOptions(input) : fillOptions;
 }
 
-function createOrderbookHistoryByMarketKey(events: readonly MarketEvent[]): Map<string, readonly OrderbookEvent[]> {
-  const history = new Map<string, OrderbookEvent[]>();
-
-  for (const event of events) {
-    if (event.kind !== "ORDERBOOK_SNAPSHOT") {
-      continue;
+function resolvePendingFills(pendingFills: PendingBacktestFill[], force: boolean): void {
+  for (let index = pendingFills.length - 1; index >= 0; index -= 1) {
+    if (resolvePendingFill(pendingFills[index]!, force)) {
+      pendingFills.splice(index, 1);
     }
+  }
+}
 
-    const marketKey = createMarketKey(event.exchangeId, event.market);
-    const snapshots = history.get(marketKey) ?? [];
-    snapshots.push(toOrderbookEvent(event));
-    history.set(marketKey, snapshots);
+function resolvePendingFill(pendingFill: PendingBacktestFill, force: boolean): boolean {
+  const fillResult = simulatePaperFill({
+    intent: pendingFill.intent,
+    orderbooks: pendingFill.orderbooks,
+    options: pendingFill.options,
+  });
+
+  if (!force && fillResult.reasonCode === "latency_snapshot_missing") {
+    // latency 기준 snapshot이 아직 replay되지 않았으면 임의 no-fill로 확정하지 않고 다음 호가를 기다린다.
+    return false;
   }
 
+  pendingFill.result.fillResult = fillResult;
+  return true;
+}
+
+function getOrderbookHistory(
+  state: BacktestReplayState,
+  event: MarketEvent,
+  intent: OrderIntent,
+): readonly OrderbookEvent[] {
+  const targetMarket = intent.market ?? event.market;
+  if (targetMarket === undefined) {
+    return emptyOrderbookHistory;
+  }
+
+  return getOrderbookHistoryByMarketKey(state, createMarketKey(intent.exchangeId, targetMarket));
+}
+
+function getOrderbookHistoryByMarketKey(state: BacktestReplayState, marketKey: string): readonly OrderbookEvent[] {
+  return state.orderbookHistoryByMarketKey.get(marketKey) ?? emptyOrderbookHistory;
+}
+
+function getOrCreateOrderbookHistory(state: BacktestReplayState, marketKey: string): OrderbookEvent[] {
+  const existingHistory = state.orderbookHistoryByMarketKey.get(marketKey);
+  if (existingHistory !== undefined) {
+    return existingHistory;
+  }
+
+  const history: OrderbookEvent[] = [];
+  state.orderbookHistoryByMarketKey.set(marketKey, history);
   return history;
+}
+
+/**
+ * callback에 넘긴 배열 snapshot이 이후 replay append를 관측하지 못하게 길이만 고정한 view다.
+ */
+function createReadonlyArrayView<T>(items: readonly T[]): readonly T[] {
+  const visibleLength = items.length;
+  const target = items as T[];
+
+  return new Proxy(target, {
+    get(arrayTarget, property, receiver) {
+      if (property === "length") {
+        return Math.min(visibleLength, arrayTarget.length);
+      }
+
+      if (isArrayIndex(property)) {
+        const index = Number(property);
+        return index < visibleLength ? Reflect.get(arrayTarget, property, receiver) : undefined;
+      }
+
+      return Reflect.get(arrayTarget, property, receiver);
+    },
+    set() {
+      return false;
+    },
+    deleteProperty() {
+      return false;
+    },
+    defineProperty() {
+      return false;
+    },
+  });
+}
+
+function isArrayIndex(property: string | symbol): property is string {
+  if (typeof property !== "string" || property.trim() === "") {
+    return false;
+  }
+
+  const index = Number(property);
+  return Number.isInteger(index) && index >= 0 && index < 2 ** 32 - 1 && String(index) === property;
 }
 
 function toMarketDataEvent(event: MarketEvent): MarketDataEvent | undefined {

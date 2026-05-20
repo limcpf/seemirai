@@ -7,6 +7,7 @@ import {
   createFixtureHistoricalEventSource,
   evaluateRiskGate,
 } from "../../src/application/index.js";
+import type { BacktestReplayStateSnapshot } from "../../src/application/index.js";
 import {
   createRiskThresholdSnapshot,
   defaultRiskLimitThresholds,
@@ -15,6 +16,7 @@ import type {
   CostModelInput,
   MarketEvent,
   OrderIntent,
+  OrderbookEvent,
   RiskGateContext,
   Rule,
   Strategy,
@@ -80,6 +82,33 @@ describe("BacktestOrchestrator", () => {
         orderbookReceivedAt: "2026-05-20T00:00:00.150Z",
         totalFee: "0.05",
       },
+    });
+  });
+
+  it("does not expose future orderbook snapshots to decision callbacks", async () => {
+    const capturedOrderbooks: Partial<Record<ObservedStatePhase, readonly OrderbookEvent[]>> = {};
+    const capturedMarketData: Partial<
+      Record<ObservedStatePhase, BacktestReplayStateSnapshot["latestMarketDataEvents"]>
+    > = {};
+    const orchestrator = createOrchestrator({
+      rules: [costMarginOkRule],
+    });
+    const result = await orchestrator.run(
+      createRunRequest({
+        observeState: (phase, state) => {
+          capturedOrderbooks[phase] = state.orderbookHistory;
+          capturedMarketData[phase] = state.latestMarketDataEvents;
+        },
+      }),
+    );
+
+    expect(receivedAtValues(capturedOrderbooks.strategy)).toEqual(["2026-05-20T00:00:00.040Z"]);
+    expect(receivedAtValues(capturedOrderbooks.cost)).toEqual(["2026-05-20T00:00:00.040Z"]);
+    expect(receivedAtValues(capturedOrderbooks.risk)).toEqual(["2026-05-20T00:00:00.040Z"]);
+    expect(marketDataReceivedAtValues(capturedMarketData.strategy)).toEqual(["2026-05-20T00:00:00.040Z"]);
+    expect(result.candidates[0]?.fillResult).toMatchObject({
+      status: "FILLED",
+      orderbookReceivedAt: "2026-05-20T00:00:00.150Z",
     });
   });
 
@@ -196,15 +225,20 @@ function createOrchestrator(options: {
   });
 }
 
+type ObservedStatePhase = "strategy" | "cost" | "risk";
+
 function createRunRequest(options: {
   expectedReturnBps?: string;
   expectedLossBpsOfEquity?: string;
+  observeState?: (phase: ObservedStatePhase, state: BacktestReplayStateSnapshot) => void;
 } = {}): Parameters<BacktestOrchestrator["run"]>[0] {
   return {
     createStrategyContext: ({ event, strategy, state }) => {
       if (event.kind !== "ORDERBOOK_METRIC") {
         return undefined;
       }
+
+      options.observeState?.("strategy", state);
 
       return {
         strategyId: strategy.id,
@@ -223,24 +257,43 @@ function createRunRequest(options: {
         },
       };
     },
-    createCostInput: ({ intent, event }): CostModelInput => ({
-      exchangeId: intent.exchangeId,
-      market: intent.market,
-      expectedReturnBps: options.expectedReturnBps ?? "30",
-      entryFeeBps: "5",
-      exitFeeBps: "5",
-      spreadCostBpsP75: "1",
-      expectedSlippageBpsP95: "1",
-      cancelRequotePenaltyBps: "0",
-      evaluatedAt: event.eventTimestamp,
-    }),
-    createRiskGateContext: ({ intent, event }) =>
-      createRiskContext(intent, event.eventTimestamp, options.expectedLossBpsOfEquity ?? "1"),
+    createCostInput: ({ intent, event, state }): CostModelInput => {
+      options.observeState?.("cost", state);
+
+      return {
+        exchangeId: intent.exchangeId,
+        market: intent.market,
+        expectedReturnBps: options.expectedReturnBps ?? "30",
+        entryFeeBps: "5",
+        exitFeeBps: "5",
+        spreadCostBpsP75: "1",
+        expectedSlippageBpsP95: "1",
+        cancelRequotePenaltyBps: "0",
+        evaluatedAt: event.eventTimestamp,
+      };
+    },
+    createRiskGateContext: ({ intent, event, state }) => {
+      options.observeState?.("risk", state);
+
+      return createRiskContext(intent, event.eventTimestamp, options.expectedLossBpsOfEquity ?? "1");
+    },
     fillOptions: {
       latencyMs: 100,
       takerFeeBps: "10",
     },
   };
+}
+
+function receivedAtValues(orderbooks: readonly OrderbookEvent[] | undefined): readonly string[] {
+  return Array.from(orderbooks ?? [], (orderbook) => String(orderbook.receivedAt));
+}
+
+function marketDataReceivedAtValues(
+  events: BacktestReplayStateSnapshot["latestMarketDataEvents"] | undefined,
+): readonly string[] {
+  return Array.from(events ?? [], (event) =>
+    "receivedAt" in event ? String(event.receivedAt) : String(event.observedAt),
+  );
 }
 
 function createFixtureStrategy(): Strategy {
