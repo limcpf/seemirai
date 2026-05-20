@@ -40,7 +40,7 @@ HTTP control foundation에서는 `src/interfaces/http-control.ts`가 route, sche
 
 ## 권장 구조
 
-큰 단일 파일을 쪼갤 때는 flat prefix 파일을 늘리는 방식보다, 기존 public entry와 같은 이름의 디렉터리에 세부 구현을 모은다.
+큰 단일 파일을 쪼갤 때는 flat prefix 파일을 늘리는 방식보다, 기존 public entry와 같은 이름의 디렉터리에 세부 구현을 모은다. 이 구조는 [`../design-docs/2026-05-20-typescript-module-structure.md`](../design-docs/2026-05-20-typescript-module-structure.md)에 저장소 공통 규칙으로 승격되어 있으며, 신규 TypeScript 모듈에도 같은 기준을 적용한다.
 
 기본 형태:
 

@@ -156,6 +156,13 @@
       "owner_scope": "docs/design-docs"
     },
     {
+      "path": "docs/design-docs/2026-05-20-typescript-module-structure.md",
+      "kind": "design-doc",
+      "role": "TypeScript public entry와 same-basename directory 기반 모듈 구조 규칙",
+      "read_when": ["TypeScript 모듈 생성", "단일 파일 분리", "모듈 경계 리팩터링", "파일 배치 결정", "새 구조 규칙 확인"],
+      "owner_scope": "docs/design-docs"
+    },
+    {
       "path": "docs/design-docs/index.md",
       "kind": "index",
       "role": "설계 문서 인덱스",
