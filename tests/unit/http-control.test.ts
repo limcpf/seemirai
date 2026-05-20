@@ -278,7 +278,7 @@ describe("HTTP control foundation", () => {
     });
     expect(
       authenticateLocalControlRequest({
-        authorizationHeader: "Bearer expected-token",
+        authorizationHeader: "bearer expected-token",
         expectedToken: "expected-token",
         correlationId: "corr-auth",
       }),
@@ -289,6 +289,8 @@ describe("HTTP control foundation", () => {
   });
 
   it("provides a reusable Fastify preHandler for future POST control routes", async () => {
+    expect(() => createLocalControlAuthPreHandler(undefined)).toThrow(UnsafeHttpControlConfigError);
+
     server = createHttpControlServer({
       readinessProvider: staticReadinessProvider(readySummary()),
       statusProvider: unavailableStatusProvider(),
@@ -322,7 +324,7 @@ describe("HTTP control foundation", () => {
       method: "POST",
       url: "/test-control",
       headers: {
-        authorization: "Bearer expected-token",
+        authorization: "bearer expected-token",
       },
     });
 

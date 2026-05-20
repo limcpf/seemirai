@@ -1,4 +1,4 @@
-import { createHash, timingSafeEqual } from "node:crypto";
+import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import Fastify from "fastify";
 import type { FastifyInstance, FastifyReply, FastifyRequest, RouteShorthandOptions } from "fastify";
 import { sql } from "kysely";
@@ -98,6 +98,13 @@ export class UnsafeHttpControlConfigError extends Error {
     super(`Unsafe HTTP control config: ${violations.join(", ")}`);
     this.name = "UnsafeHttpControlConfigError";
     this.violations = violations;
+  }
+}
+
+class ReadinessWriteRollback extends Error {
+  public constructor() {
+    super("readyz write check rollback");
+    this.name = "ReadinessWriteRollback";
   }
 }
 
@@ -430,7 +437,7 @@ export function authenticateLocalControlRequest(input: LocalControlAuthInput): L
     };
   }
 
-  const match = /^Bearer (?<token>.+)$/u.exec(input.authorizationHeader);
+  const match = /^Bearer\s+(?<token>.+)$/iu.exec(input.authorizationHeader.trim());
   if (match?.groups?.token === undefined || match.groups.token.trim() === "") {
     return {
       ok: false,
@@ -461,10 +468,17 @@ export function authenticateLocalControlRequest(input: LocalControlAuthInput): L
  * Fastify route `preHandler`로 쓸 bearer guard를 만든다.
  */
 export function createLocalControlAuthPreHandler(expectedToken: string | undefined) {
+  const normalizedToken = normalizeToken(expectedToken);
+  if (normalizedToken === undefined) {
+    throw new UnsafeHttpControlConfigError([
+      "local control token is required for protected control routes",
+    ]);
+  }
+
   return async (request: FastifyRequest, reply: FastifyReply) => {
     const result = authenticateLocalControlRequest({
       authorizationHeader: readAuthorizationHeader(request),
-      expectedToken,
+      expectedToken: normalizedToken,
       correlationId: getCorrelationId(request),
     });
 
@@ -596,15 +610,26 @@ function createDatabaseWriteCheck(database: Database | undefined, clock: () => D
 
     try {
       await database.transaction().execute(async (transaction) => {
-        await sql`
-          CREATE TEMP TABLE IF NOT EXISTS seemirai_readyz_write_check (
-            id integer NOT NULL
-          ) ON COMMIT DROP
-        `.execute(transaction);
-        await sql`INSERT INTO seemirai_readyz_write_check (id) VALUES (1)`.execute(transaction);
+        // 실제 앱 table에 쓰기 권한이 있는지 확인하고 transaction rollback으로 흔적을 남기지 않는다.
+        await transaction
+          .insertInto("jobs")
+          .values({
+            job_type: "readyz.write_check",
+            idempotency_key: `readyz.write_check:${randomUUID()}`,
+            payload_json: {
+              source: "http_control.readyz",
+            },
+            status: "PENDING",
+          })
+          .execute();
+        throw new ReadinessWriteRollback();
       });
       return passedCheck("db_write", "database write check succeeded", true, clock);
     } catch (error) {
+      if (error instanceof ReadinessWriteRollback) {
+        return passedCheck("db_write", "database write check succeeded", true, clock);
+      }
+
       return failedCheck("db_write", toErrorMessage(error), false, clock);
     }
   };
