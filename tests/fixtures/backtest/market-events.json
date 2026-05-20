@@ -1,0 +1,122 @@
+{
+  "schemaVersion": 1,
+  "events": [
+    {
+      "kind": "TRADE",
+      "exchangeId": "upbit_krw_spot",
+      "market": "KRW-BTC",
+      "eventTimestamp": "2026-05-20T00:00:00.100Z",
+      "receivedAt": "2026-05-20T00:00:00.140Z",
+      "sequence": "10",
+      "tieBreakKey": "trade:17303368620470000",
+      "source": {
+        "sourceKind": "FIXTURE",
+        "sourceId": "market-events.json",
+        "sourceIndex": 5
+      },
+      "tradeId": "17303368620470000",
+      "price": "100000000",
+      "quantity": "0.01",
+      "side": "BID"
+    },
+    {
+      "kind": "ORDERBOOK_SNAPSHOT",
+      "exchangeId": "upbit_krw_spot",
+      "market": "KRW-BTC",
+      "eventTimestamp": "2026-05-20T00:00:00.100Z",
+      "receivedAt": "2026-05-20T00:00:00.130Z",
+      "sequence": "2",
+      "tieBreakKey": "orderbook:depth",
+      "source": {
+        "sourceKind": "FIXTURE",
+        "sourceId": "market-events.json",
+        "sourceIndex": 4
+      },
+      "asks": [
+        {
+          "price": "100010000",
+          "size": "0.5"
+        }
+      ],
+      "bids": [
+        {
+          "price": "100000000",
+          "size": "0.4"
+        }
+      ]
+    },
+    {
+      "kind": "STATUS",
+      "exchangeId": "upbit_krw_spot",
+      "eventTimestamp": "2026-05-20T00:00:00.000Z",
+      "receivedAt": "2026-05-20T00:00:00.010Z",
+      "sequence": "1",
+      "tieBreakKey": "status:connected",
+      "source": {
+        "sourceKind": "FIXTURE",
+        "sourceId": "market-events.json",
+        "sourceIndex": 1
+      },
+      "status": "CONNECTED",
+      "reasonCode": "fixture_start"
+    },
+    {
+      "kind": "TICKER",
+      "exchangeId": "upbit_krw_spot",
+      "market": "KRW-BTC",
+      "eventTimestamp": "2026-05-20T00:00:00.050Z",
+      "receivedAt": "2026-05-20T00:00:00.080Z",
+      "sequence": "1",
+      "tieBreakKey": "ticker:snapshot",
+      "source": {
+        "sourceKind": "FIXTURE",
+        "sourceId": "market-events.json",
+        "sourceIndex": 3
+      },
+      "tradePrice": "100000000",
+      "changeRate": "0.01",
+      "accTradePrice24h": "50000000000"
+    },
+    {
+      "kind": "POLICY_CANDIDATE",
+      "exchangeId": "upbit_krw_spot",
+      "market": "KRW-BTC",
+      "eventTimestamp": "2026-05-19T23:59:59.900Z",
+      "receivedAt": "2026-05-19T23:59:59.950Z",
+      "sequence": "1",
+      "tieBreakKey": "policy:public",
+      "source": {
+        "sourceKind": "FIXTURE",
+        "sourceId": "market-events.json",
+        "sourceIndex": 0
+      },
+      "tradable": true,
+      "warning": false,
+      "caution": false,
+      "reasonCodes": [],
+      "minimumOrderNotional": "5000",
+      "bidFeeBps": "5",
+      "askFeeBps": "5"
+    },
+    {
+      "kind": "ORDERBOOK_METRIC",
+      "exchangeId": "upbit_krw_spot",
+      "market": "KRW-BTC",
+      "eventTimestamp": "2026-05-20T00:00:00.020Z",
+      "receivedAt": "2026-05-20T00:00:00.030Z",
+      "sequence": "1",
+      "tieBreakKey": "orderbook_metric:1s",
+      "source": {
+        "sourceKind": "FIXTURE",
+        "sourceId": "market-events.json",
+        "sourceIndex": 2
+      },
+      "bestBidPrice": "100000000",
+      "bestAskPrice": "100010000",
+      "spreadBps": "0.99995",
+      "bidDepth1": "0.4",
+      "askDepth1": "0.5",
+      "imbalance5": "-0.11111111"
+    }
+  ]
+}
