@@ -56,6 +56,41 @@ MVP 기본 profile에서는 다음 값이 켜져 있으면 안 된다.
 
 `assertSafeRuntimeConfig`는 위반 값을 발견하면 runtime config 로딩을 실패시킨다.
 
+## M8 HTTP control foundation
+
+구현 기준:
+
+- server/route foundation: `src/interfaces/http-control.ts`
+- 기본 bind: `127.0.0.1`
+- 기본 port: `8787`
+
+M8 HTTP control API는 headless worker의 로컬 운영 endpoint다. Sub PR 1에서는 읽기 전용 endpoint와 POST control
+endpoint가 공통으로 사용할 인증 guard만 고정한다.
+
+읽기 endpoint:
+
+- `GET /healthz`: process alive만 확인한다. DB, migration, runtime dependency를 확인하지 않는다.
+- `GET /readyz`: DB 연결, DB write check, migration version, runtime config loaded 상태를 readiness summary로 반환한다.
+- `GET /status`: full config 대신 safe summary만 반환한다.
+
+`/status` safe summary는 다음 필드만 노출한다.
+
+- runtime: `exchange`, `market`, `mode`, phase 1 universe, live trading toggle, `paperNoKey`
+- trading state: current kill switch state, blocked reason, 신규 주문 차단 여부, 수동 검토 필요 여부
+- market data: connection status, lag ms, updated time
+- paper: pending paper order count, open position count
+- database: `/readyz`와 같은 readiness summary
+- alerts: last sent/skipped timestamp
+- daily report: last status, report date, updated time
+
+`/status`는 `secrets`, local control token, Telegram token, raw headers, raw order detail, raw position detail을 반환하지 않는다.
+kill switch가 `NEW_ORDERS_BLOCKED` 또는 `HARD_STOP` 같은 active 상태여도 `/readyz` 실패로 표현하지 않고
+`/status.tradingState`에만 나타낸다.
+
+POST control endpoint는 후속 PR에서 `/kill-switch`를 등록한다. 이 foundation은 `Authorization: Bearer <token>` 검증
+함수와 Fastify `preHandler`를 제공하며, POST control endpoint가 활성화된 상태에서 local control token이 없으면 startup
+fail한다. 실제 secret 값은 env 또는 외부 secret 주입으로 전달하고 config/document/status에 기록하지 않는다.
+
 ## M6 Execution 안전 설정
 
 구현 기준:

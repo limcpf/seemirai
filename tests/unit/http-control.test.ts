@@ -1,0 +1,436 @@
+import { afterEach, describe, expect, it } from "vitest";
+import type { FastifyInstance } from "fastify";
+import {
+  DEFAULT_HTTP_CONTROL_HOST,
+  DEFAULT_HTTP_CONTROL_PORT,
+  UnsafeHttpControlConfigError,
+  authenticateLocalControlRequest,
+  createDatabaseControlStatusProvider,
+  createHttpControlServer,
+  createLocalControlAuthPreHandler,
+  getHttpControlListenOptions,
+} from "../../src/interfaces/index.js";
+import { getKillSwitchActionPlan, type KillSwitchState } from "../../src/domain/index.js";
+import { loadRuntimeConfig } from "../../src/runtime/index.js";
+import type {
+  ControlReadinessProvider,
+  ControlReadinessSummary,
+  ControlStatusProvider,
+  ControlStatusSnapshot,
+} from "../../src/interfaces/index.js";
+
+const checkedAt = "2026-05-20T00:00:00.000Z";
+
+describe("HTTP control foundation", () => {
+  let server: FastifyInstance | undefined;
+
+  afterEach(async () => {
+    if (server !== undefined) {
+      await server.close();
+      server = undefined;
+    }
+  });
+
+  it("uses 127.0.0.1 as the default bind host", () => {
+    expect(getHttpControlListenOptions()).toEqual({
+      host: DEFAULT_HTTP_CONTROL_HOST,
+      port: DEFAULT_HTTP_CONTROL_PORT,
+    });
+    expect(getHttpControlListenOptions({ host: "0.0.0.0", port: 9191 })).toEqual({
+      host: "0.0.0.0",
+      port: 9191,
+    });
+  });
+
+  it("serves /healthz without checking DB readiness", async () => {
+    let readinessCalls = 0;
+    server = createHttpControlServer({
+      readinessProvider: {
+        async check() {
+          readinessCalls += 1;
+          throw new Error("healthz must not call readiness");
+        },
+      },
+      statusProvider: unavailableStatusProvider(),
+    });
+
+    const response = await server.inject({
+      method: "GET",
+      url: "/healthz",
+      headers: {
+        "x-correlation-id": "corr-health",
+      },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({
+      status: "ok",
+      service: "seemirai",
+      check: "process",
+      correlationId: "corr-health",
+    });
+    expect(readinessCalls).toBe(0);
+  });
+
+  it("returns 503 from /readyz when a critical readiness check fails", async () => {
+    server = createHttpControlServer({
+      readinessProvider: staticReadinessProvider({
+        status: "error",
+        ready: false,
+        checkedAt,
+        checks: [
+          {
+            name: "migration_version",
+            status: "fail",
+            critical: true,
+            checkedAt,
+            message: "migration version mismatch: expected 7, got 6",
+            observedValue: 6,
+          },
+        ],
+      }),
+      statusProvider: unavailableStatusProvider(),
+    });
+
+    const response = await server.inject({
+      method: "GET",
+      url: "/readyz",
+    });
+
+    expect(response.statusCode).toBe(503);
+    expect(response.json()).toEqual({
+      status: "error",
+      ready: false,
+      checkedAt,
+      checks: [
+        {
+          name: "migration_version",
+          status: "fail",
+          critical: true,
+          checkedAt,
+          message: "migration version mismatch: expected 7, got 6",
+          observedValue: 6,
+        },
+      ],
+    });
+  });
+
+  it("returns a common error response with correlationId when a route throws", async () => {
+    server = createHttpControlServer({
+      readinessProvider: {
+        async check() {
+          throw new Error("database unavailable");
+        },
+      },
+      statusProvider: unavailableStatusProvider(),
+    });
+
+    const response = await server.inject({
+      method: "GET",
+      url: "/readyz",
+      headers: {
+        "x-correlation-id": "corr-ready-error",
+      },
+    });
+
+    expect(response.statusCode).toBe(500);
+    expect(response.json()).toEqual({
+      status: "error",
+      correlationId: "corr-ready-error",
+      error: {
+        code: "internal_error",
+        message: "internal server error",
+      },
+    });
+  });
+
+  it("keeps active kill switch state in /status instead of failing /readyz", async () => {
+    const readiness = readySummary();
+    const statusProvider = statusSnapshotProvider({
+      state: "NEW_ORDERS_BLOCKED",
+      blockedReason: "stale_market_data",
+      database: readiness,
+    });
+    server = createHttpControlServer({
+      readinessProvider: staticReadinessProvider(readiness),
+      statusProvider,
+    });
+
+    const readyz = await server.inject({
+      method: "GET",
+      url: "/readyz",
+    });
+    const status = await server.inject({
+      method: "GET",
+      url: "/status",
+      headers: {
+        "x-correlation-id": "corr-status",
+      },
+    });
+
+    expect(readyz.statusCode).toBe(200);
+    expect(status.statusCode).toBe(200);
+    expect(status.json()).toMatchObject({
+      status: "ok",
+      correlationId: "corr-status",
+      tradingState: {
+        state: "NEW_ORDERS_BLOCKED",
+        killSwitchState: "NEW_ORDERS_BLOCKED",
+        blockedReason: "stale_market_data",
+        newOrdersBlocked: true,
+      },
+    });
+  });
+
+  it("builds a safe /status summary without secrets or raw config", async () => {
+    const runtimeConfig = loadRuntimeConfig({
+      secrets: {
+        telegram_bot_token: "telegram-secret-token",
+        local_control_token: "local-control-secret",
+      },
+    });
+    const readinessProvider = staticReadinessProvider(readySummary());
+    server = createHttpControlServer({
+      readinessProvider,
+      statusProvider: createDatabaseControlStatusProvider({
+        runtimeConfig,
+        readinessProvider,
+        marketData: {
+          connectionStatus: "STALE",
+          lagMs: 12_345,
+          updatedAt: "2026-05-20T00:00:10.000Z",
+        },
+        alerts: {
+          lastSentAt: "2026-05-20T00:00:20.000Z",
+        },
+      }),
+    });
+
+    const response = await server.inject({
+      method: "GET",
+      url: "/status",
+    });
+    const bodyText = response.body;
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({
+      runtime: {
+        exchange: "UPBIT",
+        market: "KRW_SPOT",
+        mode: "PAPER_TRADING",
+        universe: {
+          phase1: ["KRW-BTC", "KRW-ETH"],
+          phase1Count: 2,
+        },
+        liveTradingEnabled: false,
+        paperNoKey: true,
+      },
+      marketData: {
+        connectionStatus: "STALE",
+        lagMs: 12_345,
+      },
+      paper: {
+        pendingPaperOrderCount: null,
+        openPositionCount: null,
+      },
+    });
+    expect(bodyText).not.toContain("telegram-secret-token");
+    expect(bodyText).not.toContain("local-control-secret");
+    expect(bodyText).not.toContain("secrets");
+    expect(bodyText).not.toContain("telegram_bot_token");
+    expect(bodyText).not.toContain("local_control_token");
+  });
+
+  it("requires a local control token before enabling POST control endpoints", () => {
+    expect(() =>
+      createHttpControlServer({
+        readinessProvider: staticReadinessProvider(readySummary()),
+        statusProvider: unavailableStatusProvider(),
+        controlPostEndpointsEnabled: true,
+      }),
+    ).toThrow(UnsafeHttpControlConfigError);
+  });
+
+  it("validates local bearer auth with correlation-aware failures", async () => {
+    expect(
+      authenticateLocalControlRequest({
+        authorizationHeader: undefined,
+        expectedToken: "expected-token",
+        correlationId: "corr-auth",
+      }),
+    ).toMatchObject({
+      ok: false,
+      statusCode: 401,
+      correlationId: "corr-auth",
+      code: "authorization_required",
+    });
+    expect(
+      authenticateLocalControlRequest({
+        authorizationHeader: "Bearer wrong-token",
+        expectedToken: "expected-token",
+        correlationId: "corr-auth",
+      }),
+    ).toMatchObject({
+      ok: false,
+      statusCode: 403,
+      correlationId: "corr-auth",
+      code: "invalid_local_control_token",
+    });
+    expect(
+      authenticateLocalControlRequest({
+        authorizationHeader: "Bearer expected-token",
+        expectedToken: "expected-token",
+        correlationId: "corr-auth",
+      }),
+    ).toEqual({
+      ok: true,
+      correlationId: "corr-auth",
+    });
+  });
+
+  it("provides a reusable Fastify preHandler for future POST control routes", async () => {
+    server = createHttpControlServer({
+      readinessProvider: staticReadinessProvider(readySummary()),
+      statusProvider: unavailableStatusProvider(),
+    });
+    server.post(
+      "/test-control",
+      {
+        preHandler: createLocalControlAuthPreHandler("expected-token"),
+      },
+      async () => ({
+        status: "ok",
+      }),
+    );
+
+    const missing = await server.inject({
+      method: "POST",
+      url: "/test-control",
+      headers: {
+        "x-correlation-id": "corr-missing",
+      },
+    });
+    const mismatch = await server.inject({
+      method: "POST",
+      url: "/test-control",
+      headers: {
+        authorization: "Bearer wrong-token",
+        "x-correlation-id": "corr-mismatch",
+      },
+    });
+    const success = await server.inject({
+      method: "POST",
+      url: "/test-control",
+      headers: {
+        authorization: "Bearer expected-token",
+      },
+    });
+
+    expect(missing.statusCode).toBe(401);
+    expect(missing.json()).toMatchObject({
+      status: "error",
+      correlationId: "corr-missing",
+      error: {
+        code: "authorization_required",
+      },
+    });
+    expect(mismatch.statusCode).toBe(403);
+    expect(mismatch.json()).toMatchObject({
+      status: "error",
+      correlationId: "corr-mismatch",
+      error: {
+        code: "invalid_local_control_token",
+      },
+    });
+    expect(success.statusCode).toBe(200);
+    expect(success.json()).toEqual({
+      status: "ok",
+    });
+  });
+});
+
+function staticReadinessProvider(summary: ControlReadinessSummary): ControlReadinessProvider {
+  return {
+    async check() {
+      return summary;
+    },
+  };
+}
+
+function readySummary(): ControlReadinessSummary {
+  return {
+    status: "ok",
+    ready: true,
+    checkedAt,
+    checks: [
+      {
+        name: "runtime_config_loaded",
+        status: "ok",
+        critical: true,
+        checkedAt,
+        message: "runtime config is loaded",
+        observedValue: "PAPER_TRADING",
+      },
+    ],
+  };
+}
+
+function unavailableStatusProvider(): ControlStatusProvider {
+  return statusSnapshotProvider({
+    state: "NORMAL",
+    blockedReason: null,
+    database: readySummary(),
+  });
+}
+
+function statusSnapshotProvider(input: {
+  state: KillSwitchState;
+  blockedReason: string | null;
+  database: ControlReadinessSummary;
+}): ControlStatusProvider {
+  const actionPlan = getKillSwitchActionPlan(input.state);
+  return {
+    async getStatus(): Promise<ControlStatusSnapshot> {
+      return {
+        generatedAt: checkedAt,
+        runtime: {
+          exchange: "UPBIT",
+          market: "KRW_SPOT",
+          mode: "PAPER_TRADING",
+          universe: {
+            phase1: ["KRW-BTC", "KRW-ETH"],
+            phase1Count: 2,
+          },
+          liveTradingEnabled: false,
+          paperNoKey: true,
+        },
+        tradingState: {
+          state: input.state,
+          killSwitchState: input.state,
+          blockedReason: input.blockedReason,
+          newOrdersBlocked: actionPlan.newOrdersBlocked,
+          requiresManualReview: actionPlan.requiresManualReview,
+        },
+        marketData: {
+          connectionStatus: "unknown",
+          lagMs: null,
+          updatedAt: null,
+        },
+        paper: {
+          pendingPaperOrderCount: null,
+          openPositionCount: null,
+        },
+        database: input.database,
+        alerts: {
+          lastSentAt: null,
+          lastSkippedAt: null,
+        },
+        dailyReport: {
+          lastStatus: "unavailable",
+          reportDate: null,
+          updatedAt: null,
+        },
+      };
+    },
+  };
+}

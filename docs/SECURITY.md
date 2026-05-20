@@ -27,6 +27,16 @@
 - merge는 expected head SHA 확인 없이는 실행하지 않는다.
 - 프로젝트 로컬 Codex Full Access 설정은 owner-operated local workflow에서만 사용한다. 외부 입력을 직접 shell command로 변환하는 runner나 무인 webhook 환경에서는 별도 제한 설정을 사용한다.
 
+## HTTP control API 보안 기준
+
+- HTTP control server의 기본 bind는 `127.0.0.1`이다.
+- `/healthz`, `/readyz`, `/status`는 읽기 전용 endpoint로 유지한다.
+- `/status`는 full config, secret, token, raw headers, raw order detail, raw position detail을 반환하지 않는다.
+- POST control endpoint가 활성화되면 `Authorization: Bearer <token>`을 요구한다.
+- POST control endpoint가 활성화된 상태에서 local control token이 없으면 startup fail한다.
+- local control token과 Telegram token은 env 또는 외부 secret 주입으로만 전달하고 저장소 문서, PR body, 로그, status response에 원문을 남기지 않는다.
+- Authorization header는 logger redaction 대상이며, route error response는 correlation id와 짧은 error code/message만 반환한다.
+
 ## Dependency 추가 승인 기준
 
 - 신규 runtime dependency, dev dependency, package manager 변경은 승인 필요 변경으로 취급한다.
