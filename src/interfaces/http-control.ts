@@ -41,22 +41,26 @@ export type { KillSwitchControlRequestBody } from "./http-control/kill-switch.js
 /**
  * M8 HTTP control API의 최소 Fastify server를 만든다.
  *
- * Sub PR 1은 읽기 전용 health/readiness/status endpoint와 POST control endpoint가 쓸 공통 bearer guard만 고정한다.
- * kill switch 상태 전이 실행은 후속 PR에서 이 foundation 위에 얹는다.
+ * 읽기 전용 health/readiness/status endpoint와 쓰기형 `POST /kill-switch` control endpoint를 한 Fastify instance에 조립한다.
+ * POST control route는 bearer guard와 provider가 모두 있을 때만 등록해, 운영 제어 API가 token 없이 열리거나 DB evidence 없이
+ * 상태를 바꾸는 구성을 시작 시점에 차단한다.
  *
  * - `/healthz`: 프로세스 생존 확인만 수행한다.
  * - `/readyz`: DB, migration, runtime config처럼 worker 기동에 필요한 의존성을 판단한다.
  * - `/status`: trading state와 운영 snapshot을 secret 없이 반환한다.
+ * - `/kill-switch`: 인증된 운영 명령을 durable kill switch 전이, audit/risk evidence, 후속 job 경계로 연결한다.
  */
 export function createHttpControlServer(options: HttpControlServerOptions): FastifyInstance {
   const controlPostEndpointsEnabled =
     options.controlPostEndpointsEnabled === true || options.killSwitchControlProvider !== undefined;
+  // POST route가 하나라도 열리면 local bearer token 존재 여부를 startup invariant로 강제한다.
   assertHttpControlConfig({
     ...options,
     controlPostEndpointsEnabled,
   });
 
   if (controlPostEndpointsEnabled && options.killSwitchControlProvider === undefined) {
+    // 쓰기형 endpoint flag만 켜고 provider를 빠뜨린 구성은 evidence 없는 운영 명령이 되므로 부팅을 막는다.
     throw new UnsafeHttpControlConfigError([
       "kill switch control provider is required when POST control endpoints are enabled",
     ]);
@@ -105,6 +109,7 @@ export function createHttpControlServer(options: HttpControlServerOptions): Fast
   });
 
   if (options.killSwitchControlProvider !== undefined) {
+    // kill switch route는 provider가 있을 때만 등록하고, route handler보다 bearer guard를 먼저 실행한다.
     server.post<{ Body: KillSwitchControlRequestBody }>(
       "/kill-switch",
       {
@@ -120,6 +125,8 @@ export function createHttpControlServer(options: HttpControlServerOptions): Fast
 
 /**
  * HTTP server listen 기본값을 고정한다.
+ *
+ * control API는 기본적으로 loopback에만 열어 로컬 운영 도구와 reverse proxy가 명시적으로 노출 범위를 정하게 한다.
  */
 export function getHttpControlListenOptions(
   options: HttpControlListenOptions = {},

@@ -84,5 +84,7 @@ src/interfaces/http-control/
 - 구조 분리 PR은 기본적으로 무동작 변경이어야 한다.
 - 기존 public entry export는 유지하거나 migration 경로를 명시한다.
 - 새 기능을 추가할 때도 처음부터 이 구조를 적용하되, 불필요한 선행 리팩터링은 별도 PR로 분리한다.
-- 상태 전이, fail-closed, DB side effect 경계에는 한국어 JSDoc과 핵심 분기 주석을 남긴다.
+- 비즈니스/시스템/프로그램 흐름을 담는 TypeScript 타입·인터페이스·클래스·서비스·함수는 한국어 JSDoc으로 책임, 호출 경계, 입력/출력 의미, 유지해야 하는 invariant, 외부 side effect 여부를 설명한다.
+- 상태 전이, fail-closed, 인증/권한, DB write, audit/risk evidence, 외부 API·job·notification 경계에는 한국어 한 줄 주석으로 해당 분기에서 차단·기록·지연·커밋하는 이유를 남긴다.
+- 주석이 함수명이나 타입명을 자연어로 반복하는 수준이면 충분하지 않다. 리뷰어가 운영 리스크와 변경 경계를 이해할 수 있어야 PR 완료로 본다.
 - 대규모 후보와 처리 순서는 [`../tech-debt/2026-05-20-large-typescript-module-boundaries.md`](../tech-debt/2026-05-20-large-typescript-module-boundaries.md)에서 추적한다.

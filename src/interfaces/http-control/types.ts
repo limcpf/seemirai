@@ -101,18 +101,37 @@ export interface ControlStatusProvider {
 /**
  * HTTP control server 조립 옵션이다.
  *
- * POST control endpoint는 후속 PR에서 활성화될 예정이므로,
- * foundation 단계에서도 token 설정과 guard 경계를 같은 옵션에 고정한다.
+ * 읽기 전용 endpoint는 readiness/status provider만 있으면 열 수 있지만, 쓰기형 control endpoint는 provider와 local token이
+ * 함께 있어야 한다. 이 옵션은 server 조립 시점에 fail-closed invariant를 검사할 수 있도록 route provider와 token을 같은
+ * boundary에 둔다.
  */
 export interface HttpControlServerOptions {
   readinessProvider: ControlReadinessProvider;
   statusProvider: ControlStatusProvider;
+  /**
+   * `/kill-switch` 상태 전이를 실제 durable evidence와 후속 job으로 연결하는 provider다.
+   *
+   * 값이 있으면 route가 등록되고, 없으면 쓰기형 route는 열리지 않는다.
+   */
   killSwitchControlProvider?: KillSwitchControlProvider;
   logger?: boolean;
+  /**
+   * 로컬 운영 control route를 보호하는 bearer token이다.
+   *
+   * POST control endpoint가 활성화된 상태에서 비어 있으면 startup guard가 부팅을 거부한다.
+   */
   localControlToken?: string;
+  /**
+   * provider 등록 전에 POST control guard만 검증해야 하는 테스트/조립 경계를 위한 명시 flag다.
+   */
   controlPostEndpointsEnabled?: boolean;
 }
 
+/**
+ * HTTP control server listen 주소다.
+ *
+ * 기본값은 loopback이며, 외부 노출은 배포/reverse proxy가 별도로 책임진다.
+ */
 export interface HttpControlListenOptions {
   host?: string;
   port?: number;

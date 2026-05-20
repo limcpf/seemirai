@@ -55,6 +55,12 @@ const errorResponseSchema = {
   },
 } as const;
 
+/**
+ * kill switch 상태가 런타임에 요구하는 차단 조치의 HTTP 응답 schema다.
+ *
+ * `autoLiquidateOpenPositions`는 MVP paper trading safety invariant에 따라 항상 false다. HARD_STOP이어도 실계좌 청산이나
+ * live broker side effect를 route 응답에서 약속하지 않는다.
+ */
 const actionPlanSchema = {
   type: "object",
   required: [
@@ -202,6 +208,7 @@ export const killSwitchRouteOptions: RouteShorthandOptions = {
       required: ["targetState", "reasonCode"],
       properties: {
         targetState: { enum: killSwitchControlTargetStates },
+        // 운영 증거의 집계 키가 공백이나 임의 포맷으로 깨지지 않도록 reason code 문법을 route 입구에서 고정한다.
         reasonCode: { type: "string", minLength: 1, pattern: "^[A-Za-z0-9][A-Za-z0-9_:-]*$" },
         message: { type: "string", minLength: 1 },
         actor: { type: "string", minLength: 1 },
@@ -213,6 +220,7 @@ export const killSwitchRouteOptions: RouteShorthandOptions = {
     },
     response: {
       200: {
+        // 성공 응답은 수락된 전이와 후속 조치만 담고, 거부 전이는 409 error schema로 분리한다.
         type: "object",
         required: [
           "status",
