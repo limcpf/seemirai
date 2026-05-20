@@ -192,6 +192,26 @@ describe("BacktestOrchestrator", () => {
     });
   });
 
+  it("does not structured-clone user strategy context before cost callbacks", async () => {
+    const orchestrator = createOrchestrator({
+      rules: [costMarginOkRule],
+    });
+
+    await expect(
+      orchestrator.run(
+        createRunRequest({
+          extraFeature: () => "not structured cloneable",
+        }),
+      ),
+    ).resolves.toMatchObject({
+      candidates: [
+        expect.objectContaining({
+          status: "SIMULATED",
+        }),
+      ],
+    });
+  });
+
   it("bounds replay state history exposed to callbacks", async () => {
     let capturedState: BacktestReplayStateSnapshot | undefined;
     const orchestrator = createOrchestrator({
@@ -457,6 +477,7 @@ function createRunRequest(options: {
   expectedLossBpsOfEquity?: string;
   latencyMs?: number;
   fillSubmittedAtOverride?: string;
+  extraFeature?: unknown;
   historyLimits?: Parameters<BacktestOrchestrator["run"]>[0]["historyLimits"];
   mutateEvent?: (event: MarketEvent) => void;
   observeState?: (phase: ObservedStatePhase, state: BacktestReplayStateSnapshot) => void;
@@ -481,6 +502,7 @@ function createRunRequest(options: {
           limit_price: "100",
           requested_quantity: "0.5",
           requested_notional: "50",
+          ...(options.extraFeature === undefined ? {} : { extra_feature: options.extraFeature }),
         },
         metadata: {
           latest_orderbook_received_at: state.latestOrderbook?.receivedAt,

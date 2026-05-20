@@ -696,9 +696,9 @@ function cloneBacktestCostInput(input: BacktestCostInput): BacktestCostInput {
   return {
     event: cloneReplayStateValue(input.event),
     strategy: input.strategy,
-    strategyContext: cloneReplayStateValue(input.strategyContext),
-    decision: cloneReplayStateValue(input.decision),
-    conversion: cloneReplayStateValue(input.conversion),
+    strategyContext: input.strategyContext,
+    decision: input.decision,
+    conversion: input.conversion,
     intent: cloneReplayStateValue(input.intent),
     state: cloneReplayStateSnapshot(input.state),
   };

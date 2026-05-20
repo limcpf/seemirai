@@ -79,6 +79,26 @@ describe("FixtureHistoricalEventSource", () => {
     expect(secondReplay[0]?.source.sourceId).toBe("market-events.json");
   });
 
+  it("does not let post-construction fixture mutation affect replayed events", async () => {
+    const fixture = (await readFixture()) as { events: Array<{ source: { sourceId: string } }> };
+    const source = createFixtureHistoricalEventSource(fixture);
+
+    for (const event of fixture.events) {
+      event.source.sourceId = "mutated-after-source-construction";
+    }
+
+    const replayed = await collectEvents(source);
+
+    expect(replayed.map((event) => event.source.sourceId)).toEqual([
+      "market-events.json",
+      "market-events.json",
+      "market-events.json",
+      "market-events.json",
+      "market-events.json",
+      "market-events.json",
+    ]);
+  });
+
   it("returns an empty stream when source or exchange filters do not match", async () => {
     const source = createFixtureHistoricalEventSource(await readFixture());
 

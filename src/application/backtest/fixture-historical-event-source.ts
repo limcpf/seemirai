@@ -24,7 +24,7 @@ export class FixtureHistoricalEventSource implements HistoricalEventSource {
   private readonly orderedEvents: readonly MarketEvent[];
 
   constructor(fixture: MarketEventFixture) {
-    this.orderedEvents = sortMarketEventFixtureEvents(fixture);
+    this.orderedEvents = sortMarketEventFixtureEvents(fixture).map(cloneMarketEvent);
   }
 
   async *replay(request: HistoricalEventReplayRequest = {}): AsyncIterable<MarketEvent> {

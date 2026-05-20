@@ -128,6 +128,48 @@ describe("PaperBroker", () => {
     });
   });
 
+  it("uses sub-millisecond precision for immediate orderbook selection", async () => {
+    const broker = new PaperBroker({
+      exchangeId,
+      initialBalances: [
+        {
+          currency: "KRW",
+          available: "1000",
+        },
+      ],
+      orderbookSnapshots: [
+        createOrderbook({
+          receivedAt: "2026-05-19T10:00:00.123100Z",
+          asks: [["101", "1"]],
+        }),
+        createOrderbook({
+          receivedAt: "2026-05-19T10:00:00.123900Z",
+          asks: [["100", "1"]],
+        }),
+      ],
+      clock: () => observedAt,
+    });
+
+    const order = await broker.submitOrder(
+      createSubmission({
+        submittedAt: "2026-05-19T10:00:00.123400Z",
+      }),
+    );
+
+    expect(order).toMatchObject({
+      status: "ACCEPTED",
+      remainingQuantity: "0.5",
+      metadata: {
+        paper_fill_simulation: {
+          reasonCode: "limit_not_crossed",
+          metadata: {
+            orderbook_received_at: "2026-05-19T10:00:00.123100Z",
+          },
+        },
+      },
+    });
+  });
+
   it("returns deep-cloned order metadata so callers cannot mutate broker state", async () => {
     const broker = new PaperBroker({
       exchangeId,

@@ -5,6 +5,7 @@ import type {
 } from "../../application/execution/index.js";
 import type { BrokerPort } from "../../application/ports/index.js";
 import { parseFinancialDecimal } from "../../shared/index.js";
+import { parseMarketEventTimestampNanos } from "../../domain/index.js";
 import type {
   BrokerBalance,
   BrokerBalanceSnapshot,
@@ -196,7 +197,7 @@ export class PaperBroker implements BrokerPort {
     const key = createOrderbookKey(snapshot.exchangeId, snapshot.market);
     const snapshots = this.orderbooksByMarket.get(key) ?? [];
     snapshots.push(snapshot);
-    snapshots.sort((left, right) => readTimestampMillis(left.receivedAt) - readTimestampMillis(right.receivedAt));
+    snapshots.sort((left, right) => compareBigInt(readTimestampNanos(left.receivedAt), readTimestampNanos(right.receivedAt)));
     this.orderbooksByMarket.set(key, snapshots);
   }
 
@@ -728,13 +729,13 @@ function selectImmediateExecutionOrderbook(
   orderbooks: readonly OrderbookEvent[],
   submittedAt: TimestampInput,
 ): OrderbookEvent | undefined {
-  const submittedAtMillis = readTimestampMillis(submittedAt);
+  const submittedAtNanos = readTimestampNanos(submittedAt);
   let latestPreSubmitSnapshot: OrderbookEvent | undefined;
   let earliestPostSubmitSnapshot: OrderbookEvent | undefined;
 
   for (const orderbook of orderbooks) {
-    const receivedAtMillis = readTimestampMillis(orderbook.receivedAt);
-    if (receivedAtMillis <= submittedAtMillis) {
+    const receivedAtNanos = readTimestampNanos(orderbook.receivedAt);
+    if (receivedAtNanos <= submittedAtNanos) {
       // latency가 없는 paper submit은 주문 직전에 관측한 최신 snapshot을 즉시 체결 근거로 사용할 수 있어야 한다.
       latestPreSubmitSnapshot = orderbook;
       continue;
@@ -890,6 +891,14 @@ function isZeroDecimalString(value: NumericString): boolean {
   return parseFinancialDecimal(value).equals(0);
 }
 
-function readTimestampMillis(value: TimestampInput): number {
-  return value instanceof Date ? value.getTime() : new Date(value).getTime();
+function readTimestampNanos(value: TimestampInput): bigint {
+  return parseMarketEventTimestampNanos(value);
+}
+
+function compareBigInt(left: bigint, right: bigint): number {
+  if (left === right) {
+    return 0;
+  }
+
+  return left < right ? -1 : 1;
 }
