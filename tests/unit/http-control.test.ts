@@ -5,6 +5,7 @@ import {
   DEFAULT_HTTP_CONTROL_PORT,
   UnsafeHttpControlConfigError,
   authenticateLocalControlRequest,
+  createKillSwitchControlRouteHandler,
   createControlReadinessProvider,
   createDatabaseControlStatusProvider,
   createHttpControlServer,
@@ -12,6 +13,7 @@ import {
   getHttpControlListenOptions,
 } from "../../src/interfaces/index.js";
 import { getKillSwitchActionPlan, type KillSwitchState } from "../../src/domain/index.js";
+import { createKillSwitchControlDecision, type KillSwitchControlProvider } from "../../src/application/index.js";
 import { loadRuntimeConfig } from "../../src/runtime/index.js";
 import type { Database } from "../../src/infrastructure/db/index.js";
 import type {
@@ -358,6 +360,197 @@ describe("HTTP control foundation", () => {
     ).toThrow(UnsafeHttpControlConfigError);
   });
 
+  it("requires a kill switch provider when POST control endpoints are enabled", () => {
+    expect(() =>
+      createHttpControlServer({
+        readinessProvider: staticReadinessProvider(readySummary()),
+        statusProvider: unavailableStatusProvider(),
+        controlPostEndpointsEnabled: true,
+        localControlToken: "expected-token",
+      }),
+    ).toThrow(UnsafeHttpControlConfigError);
+  });
+
+  it("executes POST /kill-switch with local bearer auth and returns action evidence", async () => {
+    let capturedTargetState: string | undefined;
+    const provider: KillSwitchControlProvider = {
+      async apply(input) {
+        capturedTargetState = input.targetState;
+        return {
+          ...createKillSwitchControlDecision({
+            currentState: "NORMAL",
+            targetState: input.targetState,
+            reasonCode: input.reasonCode,
+            correlationId: input.correlationId,
+            occurredAt: checkedAt,
+          }),
+          auditEventId: "audit-1",
+          riskEventId: "risk-1",
+          hardStopCancelJob: {
+            jobType: "hard_stop_pending_paper_order_cancel",
+            idempotencyKey: "hard_stop_pending_paper_order_cancel:corr-kill-switch",
+            jobId: "job-1",
+            created: true,
+          },
+        };
+      },
+    };
+    server = createHttpControlServer({
+      readinessProvider: staticReadinessProvider(readySummary()),
+      statusProvider: unavailableStatusProvider(),
+      killSwitchControlProvider: provider,
+      localControlToken: "expected-token",
+    });
+
+    const missingAuth = await server.inject({
+      method: "POST",
+      url: "/kill-switch",
+      headers: {
+        "x-correlation-id": "corr-missing-kill-switch",
+      },
+      payload: {
+        targetState: "HARD_STOP",
+        reasonCode: "db_write_failure",
+      },
+    });
+    const success = await server.inject({
+      method: "POST",
+      url: "/kill-switch",
+      headers: {
+        authorization: "Bearer expected-token",
+        "x-correlation-id": "corr-kill-switch",
+      },
+      payload: {
+        targetState: "HARD_STOP",
+        reasonCode: "db_write_failure",
+        actor: "operator",
+      },
+    });
+
+    expect(missingAuth.statusCode).toBe(401);
+    expect(missingAuth.json()).toMatchObject({
+      correlationId: "corr-missing-kill-switch",
+      error: {
+        code: "authorization_required",
+      },
+    });
+    expect(success.statusCode).toBe(200);
+    expect(capturedTargetState).toBe("HARD_STOP");
+    expect(success.json()).toMatchObject({
+      status: "ok",
+      correlationId: "corr-kill-switch",
+      transition: {
+        accepted: true,
+        fromState: "NORMAL",
+        toState: "HARD_STOP",
+        reasonCode: "db_write_failure",
+      },
+      actionPlan: {
+        newOrdersBlocked: true,
+        strategyEvaluationBlocked: true,
+        cancelPendingPaperOrders: true,
+        autoLiquidateOpenPositions: false,
+        requiresManualReview: true,
+      },
+      recommendedTargetState: "HARD_STOP",
+      hardStopCancelJob: {
+        jobType: "hard_stop_pending_paper_order_cancel",
+        idempotencyKey: "hard_stop_pending_paper_order_cancel:corr-kill-switch",
+        created: true,
+      },
+      evidence: {
+        auditEventId: "audit-1",
+        riskEventId: "risk-1",
+      },
+    });
+  });
+
+  it("rejects invalid kill switch target states before provider execution", async () => {
+    let providerCalls = 0;
+    server = createHttpControlServer({
+      readinessProvider: staticReadinessProvider(readySummary()),
+      statusProvider: unavailableStatusProvider(),
+      killSwitchControlProvider: {
+        async apply(input) {
+          providerCalls += 1;
+          return createKillSwitchControlDecision({
+            currentState: "NORMAL",
+            targetState: input.targetState,
+            reasonCode: input.reasonCode,
+            correlationId: input.correlationId,
+            occurredAt: checkedAt,
+          });
+        },
+      },
+      localControlToken: "expected-token",
+    });
+
+    const response = await server.inject({
+      method: "POST",
+      url: "/kill-switch",
+      headers: {
+        authorization: "Bearer expected-token",
+        "x-correlation-id": "corr-invalid-target",
+      },
+      payload: {
+        targetState: "STRATEGY_PAUSED",
+        reasonCode: "operator_requested_strategy_pause",
+      },
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.json()).toMatchObject({
+      status: "error",
+      correlationId: "corr-invalid-target",
+      error: {
+        code: "bad_request",
+      },
+    });
+    expect(providerCalls).toBe(0);
+  });
+
+  it("returns 409 with correlationId when the kill switch transition is illegal", async () => {
+    server = createHttpControlServer({
+      readinessProvider: staticReadinessProvider(readySummary()),
+      statusProvider: unavailableStatusProvider(),
+      killSwitchControlProvider: {
+        async apply(input) {
+          return createKillSwitchControlDecision({
+            currentState: "HARD_STOP",
+            targetState: input.targetState,
+            reasonCode: input.reasonCode,
+            correlationId: input.correlationId,
+            occurredAt: checkedAt,
+          });
+        },
+      },
+      localControlToken: "expected-token",
+    });
+
+    const response = await server.inject({
+      method: "POST",
+      url: "/kill-switch",
+      headers: {
+        authorization: "Bearer expected-token",
+        "x-correlation-id": "corr-illegal-transition",
+      },
+      payload: {
+        targetState: "NORMAL",
+        reasonCode: "operator_recovered",
+      },
+    });
+
+    expect(response.statusCode).toBe(409);
+    expect(response.json()).toMatchObject({
+      status: "error",
+      correlationId: "corr-illegal-transition",
+      error: {
+        code: "operator_recovered",
+        message: "HTTP control requested kill switch transition: HARD_STOP -> NORMAL",
+      },
+    });
+  });
+
   it("validates local bearer auth with correlation-aware failures", async () => {
     expect(
       authenticateLocalControlRequest({
@@ -454,6 +647,46 @@ describe("HTTP control foundation", () => {
     expect(success.statusCode).toBe(200);
     expect(success.json()).toEqual({
       status: "ok",
+    });
+  });
+
+  it("keeps the standalone kill switch route handler reusable", async () => {
+    server = createHttpControlServer({
+      readinessProvider: staticReadinessProvider(readySummary()),
+      statusProvider: unavailableStatusProvider(),
+    });
+    server.post(
+      "/standalone-kill-switch",
+      createKillSwitchControlRouteHandler({
+        async apply(input) {
+          return createKillSwitchControlDecision({
+            currentState: "NORMAL",
+            targetState: input.targetState,
+            reasonCode: input.reasonCode,
+            correlationId: input.correlationId,
+            occurredAt: checkedAt,
+          });
+        },
+      }),
+    );
+
+    const response = await server.inject({
+      method: "POST",
+      url: "/standalone-kill-switch",
+      payload: {
+        targetState: "NEW_ORDERS_BLOCKED",
+        reasonCode: "stale_market_data",
+      },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({
+      transition: {
+        toState: "NEW_ORDERS_BLOCKED",
+      },
+      actionPlan: {
+        newOrdersBlocked: true,
+      },
     });
   });
 });

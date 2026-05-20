@@ -1,0 +1,93 @@
+import { describe, expect, it } from "vitest";
+import {
+  createHardStopPendingPaperOrderCancelJobPlan,
+  createKillSwitchControlDecision,
+  hardStopPendingPaperOrderCancelJobType,
+  mapKillSwitchReasonToTargetState,
+} from "../../src/application/index.js";
+
+describe("kill switch control decision", () => {
+  it("maps P0/P1 operational reasons to kill switch target states", () => {
+    expect(mapKillSwitchReasonToTargetState("db_write_failure")).toBe("HARD_STOP");
+    expect(mapKillSwitchReasonToTargetState("live_order_api_misuse_detected")).toBe("HARD_STOP");
+    expect(mapKillSwitchReasonToTargetState("stale_market_data")).toBe("NEW_ORDERS_BLOCKED");
+    expect(mapKillSwitchReasonToTargetState("quote_freshness_insufficient")).toBe("NEW_ORDERS_BLOCKED");
+    expect(mapKillSwitchReasonToTargetState("notification_consecutive_failure")).toBe(
+      "MANUAL_REVIEW_REQUIRED",
+    );
+    expect(mapKillSwitchReasonToTargetState("operator_recovered")).toBeUndefined();
+  });
+
+  it("rejects direct HARD_STOP to NORMAL recovery through the state machine", () => {
+    const decision = createKillSwitchControlDecision({
+      currentState: "HARD_STOP",
+      targetState: "NORMAL",
+      reasonCode: "operator_recovered",
+      correlationId: "corr-hard-stop-normal",
+      occurredAt: "2026-05-21T00:00:00.000Z",
+    });
+
+    expect(decision.transition).toMatchObject({
+      accepted: false,
+      fromState: "HARD_STOP",
+      toState: "NORMAL",
+      reasonCode: "operator_recovered",
+    });
+    expect(decision.actionPlan).toMatchObject({
+      newOrdersBlocked: true,
+      cancelPendingPaperOrders: true,
+      requiresManualReview: true,
+    });
+  });
+
+  it("rejects requests whose known reason maps to a different target state", () => {
+    const decision = createKillSwitchControlDecision({
+      currentState: "NORMAL",
+      targetState: "NORMAL",
+      reasonCode: "db_write_failure",
+      correlationId: "corr-mismatch",
+      occurredAt: "2026-05-21T00:00:00.000Z",
+    });
+
+    expect(decision.transition).toMatchObject({
+      accepted: false,
+      reasonCode: "kill_switch_reason_target_mismatch",
+      message: "Kill switch reason db_write_failure maps to HARD_STOP, not NORMAL",
+    });
+    expect(decision.reasonMatchesTarget).toBe(false);
+    expect(decision.recommendedTargetState).toBe("HARD_STOP");
+  });
+
+  it("creates a HARD_STOP pending paper order cancel job boundary without liquidation", () => {
+    const decision = createKillSwitchControlDecision({
+      currentState: "NORMAL",
+      targetState: "HARD_STOP",
+      reasonCode: "db_write_failure",
+      correlationId: "corr-hard-stop",
+      occurredAt: "2026-05-21T00:00:00.000Z",
+    });
+    const jobPlan = createHardStopPendingPaperOrderCancelJobPlan({
+      transition: decision.transition,
+      actionPlan: decision.actionPlan,
+      reasonCode: "db_write_failure",
+      correlationId: "corr-hard-stop",
+      occurredAt: "2026-05-21T00:00:00.000Z",
+    });
+
+    expect(jobPlan).toMatchObject({
+      jobType: hardStopPendingPaperOrderCancelJobType,
+      idempotencyKey: `${hardStopPendingPaperOrderCancelJobType}:corr-hard-stop`,
+      maxAttempts: 3,
+      payloadJson: {
+        reason_code: "db_write_failure",
+        from_state: "NORMAL",
+        to_state: "HARD_STOP",
+        action_plan: {
+          cancel_pending_paper_orders: true,
+          auto_liquidate_open_positions: false,
+          requires_manual_review: true,
+        },
+      },
+    });
+  });
+});

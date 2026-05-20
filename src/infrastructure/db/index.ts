@@ -25,6 +25,10 @@ export {
   findJobByIdempotencyKey,
 } from "./jobs.js";
 export {
+  applyPostgresKillSwitchControl,
+  createPostgresKillSwitchControlProvider,
+} from "./kill-switch-control.js";
+export {
   PostgresOrderEventRepository,
   appendOrderStateTransitionEvent,
   listOrderEventsByOrderId,
@@ -83,6 +87,10 @@ export type {
   JobRecord,
   JobStatus,
 } from "./jobs.js";
+export type {
+  ApplyPostgresKillSwitchControlOptions,
+  CreatePostgresKillSwitchControlProviderOptions,
+} from "./kill-switch-control.js";
 export type {
   AppendOrderStateTransitionEventInput,
   ListOrderEventsOptions,

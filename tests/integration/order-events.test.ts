@@ -6,6 +6,7 @@ import {
   appendAuditEvent,
   appendOrderStateTransitionEvent,
   PostgresRiskGateRuntimeEventStore,
+  applyPostgresKillSwitchControl,
   appendRiskEvent,
   applyMigrations,
   createDatabase,
@@ -39,6 +40,7 @@ describeDb("state transition persistence integration", () => {
     await db.deleteFrom("order_events").execute();
     await db.deleteFrom("audit_events").execute();
     await db.deleteFrom("risk_events").execute();
+    await db.deleteFrom("jobs").execute();
     await db.deleteFrom("orders").execute();
     await db
       .updateTable("kill_switch_state")
@@ -273,6 +275,64 @@ describeDb("state transition persistence integration", () => {
     expect(receipt.killSwitchEventReceipt).toBeDefined();
     expect(Number(riskCount.count)).toBeGreaterThan(0);
     expect(Number(auditCount.count)).toBe(plan.auditEvents.length);
+  });
+
+  it("persists HTTP kill switch control evidence and hard stop cancel job in one transaction", async () => {
+    const db = await getDatabase();
+
+    const result = await applyPostgresKillSwitchControl({
+      database: db,
+      request: {
+        targetState: "HARD_STOP",
+        reasonCode: "db_write_failure",
+        correlationId: "http-kill-switch-1",
+        occurredAt,
+      },
+    });
+
+    const killSwitchState = await db
+      .selectFrom("kill_switch_state")
+      .select(["state", "reason_code", "correlation_id"])
+      .where("scope", "=", "global")
+      .executeTakeFirstOrThrow();
+    const auditCount = await db
+      .selectFrom("audit_events")
+      .select((expressionBuilder) => expressionBuilder.fn.countAll<string>().as("count"))
+      .where("correlation_id", "=", "http-kill-switch-1")
+      .executeTakeFirstOrThrow();
+    const riskCount = await db
+      .selectFrom("risk_events")
+      .select((expressionBuilder) => expressionBuilder.fn.countAll<string>().as("count"))
+      .where("risk_type", "=", "db_write_failure")
+      .executeTakeFirstOrThrow();
+    const hardStopJob = await db
+      .selectFrom("jobs")
+      .select(["job_type", "idempotency_key", "payload_json"])
+      .where("idempotency_key", "=", "hard_stop_pending_paper_order_cancel:http-kill-switch-1")
+      .executeTakeFirstOrThrow();
+
+    expect(result.transition.accepted).toBe(true);
+    expect(result.hardStopCancelJob).toMatchObject({
+      created: true,
+      idempotencyKey: "hard_stop_pending_paper_order_cancel:http-kill-switch-1",
+    });
+    expect(killSwitchState).toEqual({
+      state: "HARD_STOP",
+      reason_code: "db_write_failure",
+      correlation_id: "http-kill-switch-1",
+    });
+    expect(Number(auditCount.count)).toBe(1);
+    expect(Number(riskCount.count)).toBe(1);
+    expect(hardStopJob).toMatchObject({
+      job_type: "hard_stop_pending_paper_order_cancel",
+      idempotency_key: "hard_stop_pending_paper_order_cancel:http-kill-switch-1",
+    });
+    expect(hardStopJob.payload_json).toMatchObject({
+      action_plan: {
+        cancel_pending_paper_orders: true,
+        auto_liquidate_open_positions: false,
+      },
+    });
   });
 
   async function getDatabase(): Promise<Database> {

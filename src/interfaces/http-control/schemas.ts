@@ -1,4 +1,5 @@
 import type { RouteShorthandOptions } from "fastify";
+import { killSwitchControlTargetStates } from "../../application/index.js";
 
 const readinessCheckSchema = {
   type: "object",
@@ -51,6 +52,24 @@ const errorResponseSchema = {
         message: { type: "string" },
       },
     },
+  },
+} as const;
+
+const actionPlanSchema = {
+  type: "object",
+  required: [
+    "newOrdersBlocked",
+    "strategyEvaluationBlocked",
+    "cancelPendingPaperOrders",
+    "autoLiquidateOpenPositions",
+    "requiresManualReview",
+  ],
+  properties: {
+    newOrdersBlocked: { type: "boolean" },
+    strategyEvaluationBlocked: { type: "boolean" },
+    cancelPendingPaperOrders: { type: "boolean" },
+    autoLiquidateOpenPositions: { const: false },
+    requiresManualReview: { type: "boolean" },
   },
 } as const;
 
@@ -170,6 +189,87 @@ export const statusRouteOptions: RouteShorthandOptions = {
           },
         },
       },
+      500: errorResponseSchema,
+    },
+  },
+};
+
+export const killSwitchRouteOptions: RouteShorthandOptions = {
+  schema: {
+    body: {
+      type: "object",
+      additionalProperties: false,
+      required: ["targetState", "reasonCode"],
+      properties: {
+        targetState: { enum: killSwitchControlTargetStates },
+        reasonCode: { type: "string", minLength: 1 },
+        message: { type: "string", minLength: 1 },
+        actor: { type: "string", minLength: 1 },
+        metadata: {
+          type: "object",
+          additionalProperties: true,
+        },
+      },
+    },
+    response: {
+      200: {
+        type: "object",
+        required: [
+          "status",
+          "correlationId",
+          "transition",
+          "actionPlan",
+          "reasonMatchesTarget",
+          "recommendedTargetState",
+          "hardStopCancelJob",
+          "evidence",
+        ],
+        properties: {
+          status: { const: "ok" },
+          correlationId: { type: "string" },
+          transition: {
+            type: "object",
+            required: ["accepted", "fromState", "toState", "reasonCode", "message"],
+            properties: {
+              accepted: { const: true },
+              fromState: { type: "string" },
+              toState: { type: "string" },
+              reasonCode: { type: "string" },
+              message: { type: "string" },
+            },
+          },
+          actionPlan: actionPlanSchema,
+          reasonMatchesTarget: { type: "boolean" },
+          recommendedTargetState: { type: ["string", "null"] },
+          hardStopCancelJob: {
+            anyOf: [
+              { type: "null" },
+              {
+                type: "object",
+                required: ["jobType", "idempotencyKey", "created"],
+                properties: {
+                  jobType: { type: "string" },
+                  idempotencyKey: { type: "string" },
+                  jobId: { type: "string" },
+                  created: { type: "boolean" },
+                },
+              },
+            ],
+          },
+          evidence: {
+            type: "object",
+            required: ["auditEventId", "riskEventId"],
+            properties: {
+              auditEventId: { type: ["string", "null"] },
+              riskEventId: { type: ["string", "null"] },
+            },
+          },
+        },
+      },
+      400: errorResponseSchema,
+      401: errorResponseSchema,
+      403: errorResponseSchema,
+      409: errorResponseSchema,
       500: errorResponseSchema,
     },
   },

@@ -94,6 +94,32 @@ POST control endpoint는 후속 PR에서 `/kill-switch`를 등록한다. 이 fou
 함수와 Fastify `preHandler`를 제공하며, POST control endpoint가 활성화된 상태에서 local control token이 없으면 startup
 fail한다. 실제 secret 값은 env 또는 외부 secret 주입으로 전달하고 config/document/status에 기록하지 않는다.
 
+M8 Sub PR 2부터 `POST /kill-switch`를 등록할 수 있다. 이 route는 local bearer token을 통과한 요청만 받으며,
+request body는 다음 target state로 제한한다.
+
+- `NEW_ORDERS_BLOCKED`
+- `HARD_STOP`
+- `MANUAL_REVIEW_REQUIRED`
+- `NORMAL`
+
+`STRATEGY_PAUSED`는 전역 HTTP control route의 target에서 제외한다. 전략별 pause/resume은 strategy 상태 저장소와
+audit evidence가 별도로 확정될 때 별도 endpoint로 다룬다.
+
+`POST /kill-switch`는 `kill_switch_state` durable snapshot을 현재 state와 대조한 뒤 state machine으로 전이를 판단한다.
+`HARD_STOP -> NORMAL` 직접 전환은 거부되고, `HARD_STOP -> MANUAL_REVIEW_REQUIRED -> NORMAL` 경로를 요구한다.
+허용/거부된 전이 시도는 모두 `audit_events`와 `risk_events`에 correlation id와 함께 남긴다. 허용된 전이는 같은 DB
+transaction에서 `kill_switch_state`를 전진시키며, `HARD_STOP`은 pending paper order cancel을 즉시 실행하지 않고
+`hard_stop_pending_paper_order_cancel` job으로 예약한다. 이 job payload의 action plan은
+`auto_liquidate_open_positions=false`를 유지한다.
+
+P0/P1 원인 mapping은 application layer의 `mapKillSwitchReasonToTargetState`가 제공한다.
+
+| 원인 | target |
+| --- | --- |
+| `db_write_failure`, `order_idempotency_violation`, `duplicate_order_idempotency_key`, `fill_order_accounting_mismatch`, `risk_limit_calculation_unavailable`, `audit_persistence_failure`, `live_order_api_misuse_detected` | `HARD_STOP` |
+| `stale_market_data`, `public_websocket_lag`, `quote_freshness_insufficient`, `transient_external_data_gap` | `NEW_ORDERS_BLOCKED` |
+| `notification_consecutive_failure`, `notification_failure_threshold_exceeded`, `report_generation_repeated_failure`, `abnormal_state_operator_review_required` | `MANUAL_REVIEW_REQUIRED` |
+
 ## M6 Execution 안전 설정
 
 구현 기준:

@@ -1,13 +1,16 @@
 import Fastify from "fastify";
 import type { FastifyInstance } from "fastify";
-import { assertHttpControlConfig } from "./http-control/auth.js";
+import { assertHttpControlConfig, createLocalControlAuthPreHandler } from "./http-control/auth.js";
 import {
   DEFAULT_HTTP_CONTROL_HOST,
   DEFAULT_HTTP_CONTROL_PORT,
+  UnsafeHttpControlConfigError,
 } from "./http-control/types.js";
 import type { HttpControlListenOptions, HttpControlServerOptions } from "./http-control/types.js";
 import { createErrorResponse, getCorrelationId, getErrorStatusCode, toErrorMessage } from "./http-control/errors.js";
-import { healthzRouteOptions, readyzRouteOptions, statusRouteOptions } from "./http-control/schemas.js";
+import { createKillSwitchControlRouteHandler } from "./http-control/kill-switch.js";
+import type { KillSwitchControlRequestBody } from "./http-control/kill-switch.js";
+import { healthzRouteOptions, killSwitchRouteOptions, readyzRouteOptions, statusRouteOptions } from "./http-control/schemas.js";
 
 export { assertHttpControlConfig, authenticateLocalControlRequest, createLocalControlAuthPreHandler } from "./http-control/auth.js";
 export { createControlReadinessProvider, createDatabaseControlReadinessProvider } from "./http-control/readiness.js";
@@ -32,6 +35,8 @@ export type {
   LocalControlAuthInput,
   LocalControlAuthResult,
 } from "./http-control/types.js";
+export { createKillSwitchControlRouteHandler } from "./http-control/kill-switch.js";
+export type { KillSwitchControlRequestBody } from "./http-control/kill-switch.js";
 
 /**
  * M8 HTTP control API의 최소 Fastify server를 만든다.
@@ -44,7 +49,18 @@ export type {
  * - `/status`: trading state와 운영 snapshot을 secret 없이 반환한다.
  */
 export function createHttpControlServer(options: HttpControlServerOptions): FastifyInstance {
-  assertHttpControlConfig(options);
+  const controlPostEndpointsEnabled =
+    options.controlPostEndpointsEnabled === true || options.killSwitchControlProvider !== undefined;
+  assertHttpControlConfig({
+    ...options,
+    controlPostEndpointsEnabled,
+  });
+
+  if (controlPostEndpointsEnabled && options.killSwitchControlProvider === undefined) {
+    throw new UnsafeHttpControlConfigError([
+      "kill switch control provider is required when POST control endpoints are enabled",
+    ]);
+  }
 
   const server = Fastify({
     logger: options.logger ?? false,
@@ -87,6 +103,17 @@ export function createHttpControlServer(options: HttpControlServerOptions): Fast
       ...snapshot,
     };
   });
+
+  if (options.killSwitchControlProvider !== undefined) {
+    server.post<{ Body: KillSwitchControlRequestBody }>(
+      "/kill-switch",
+      {
+        ...killSwitchRouteOptions,
+        preHandler: createLocalControlAuthPreHandler(options.localControlToken),
+      },
+      createKillSwitchControlRouteHandler(options.killSwitchControlProvider),
+    );
+  }
 
   return server;
 }

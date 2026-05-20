@@ -246,7 +246,7 @@ M7 진행 근거:
   - [ ] optional `/metrics`
 - [ ] local token 기반 kill switch endpoint
   - [x] issue #42 Sub PR 1: POST control endpoint용 bearer guard와 token 누락 startup fail foundation
-  - [ ] issue #42 Sub PR 2: `POST /kill-switch` 상태 전이 실행
+  - [x] issue #42 Sub PR 2: `POST /kill-switch` 상태 전이 실행, target enum, illegal transition 처리, P0 원인 mapping, HARD_STOP pending cancel job 경계
 - [ ] Telegram outbound notifier
 - [ ] alert fingerprint + cooldown
 - [ ] 일간 리포트
@@ -290,6 +290,7 @@ M7 진행 근거:
 - 2026-05-20: issue #36 Sub PR 3은 `issue-36/03-backtest-orchestrator`에서 fixture/historical replay 이벤트를 기존 strategy, cost model, rule engine, RiskGate, execution evidence validation, paper fill simulator에 순서대로 연결하는 backtest application orchestrator를 고정한다. paper/backtest consistency 리포트와 M7 최종 문서화는 Sub PR 4로 유지한다.
 - 2026-05-20: issue #36 Sub PR 4는 `issue-36/04-backtest-reporting-verification`에서 `BacktestRunResult`를 전략별 거래 수, fill rate, fee, slippage, 추정 PnL 후보로 집계하는 리포트와 비용 0/비용 반영 비교 리포트를 고정한다. 같은 fixture에서 Backtest 제출 후보와 `PaperBroker` 주문 결과를 같은 record로 정규화해 idempotency key 기준 일치 여부를 검증하고 M7 체크리스트를 완료 처리한다.
 - 2026-05-20: issue #42는 M8 운영 가드레일 범위가 HTTP control API, kill switch control, Telegram/cooldown, daily report, soak verification으로 나뉘어 리뷰 위험이 크므로 `sub PR mode`에서 순차 진행한다. Sub PR 1은 `issue-42/01-http-control-foundation`에서 Fastify 5.8.5 runtime dependency와 최소 HTTP server, `/healthz`, `/readyz`, `/status`, safe status response, 공통 error/correlation id, POST control bearer guard foundation을 고정한다. 실제 `/kill-switch` 상태 전이 실행, Telegram delivery, daily report, soak script는 후속 PR 범위로 유지한다.
+- 2026-05-21: issue #42 Sub PR 2는 `issue-42/02-kill-switch-control`에서 `POST /kill-switch`를 local bearer token 보호 route로 등록하고, target state enum, `HARD_STOP -> NORMAL` 직접 복구 거부, `kill_switch_state` durable snapshot 갱신, `audit_events`/`risk_events` evidence, `HARD_STOP` pending paper order cancel job 예약 경계를 고정한다. broker cancel 실행, Telegram delivery, daily report, soak script는 후속 PR 범위로 유지한다.
 
 issue #42 sub PR 계획:
 
