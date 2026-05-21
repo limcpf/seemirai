@@ -93,6 +93,20 @@
       "owner_scope": "docs"
     },
     {
+      "path": "docs/runbooks/README.md",
+      "kind": "index",
+      "role": "운영자가 직접 실행하거나 재현해야 하는 runbook 인덱스",
+      "read_when": ["운영 절차 확인", "runbook 탐색", "paper 운영 준비"],
+      "owner_scope": "docs/runbooks"
+    },
+    {
+      "path": "docs/runbooks/m8-paper-operations-guide.md",
+      "kind": "reference",
+      "role": "M8 단계에서 가능한 paper 운영과 24시간 soak 검증 절차",
+      "read_when": ["M8 paper 운영", "24시간 soak 실행", "paper 운영 가이드", "live order API 0회 검증"],
+      "owner_scope": "docs/runbooks"
+    },
+    {
       "path": "docs/DESIGN.md",
       "kind": "policy",
       "role": "구조 변경과 설계 기록 작성 기준",
@@ -195,6 +209,13 @@
       "kind": "exec-plan",
       "role": "Seemirai MVP 개발 실행 계획",
       "read_when": ["MVP 구현", "개발 이정표 확인", "확장성 경계 확인", "검증 계획 확인"],
+      "owner_scope": "docs/exec-plans/active"
+    },
+    {
+      "path": "docs/exec-plans/active/2026-05-22-post-m8-milestone-plan.md",
+      "kind": "exec-plan",
+      "role": "M8 이후 PRD 잔여 범위, 기술 부채, paper 운영, v0.2 pilot 준비 마일스톤 계획",
+      "read_when": ["post-M8 계획", "남은 마일스톤 확인", "기술 부채 우선순위 확인", "paper 운영 계획", "pilot 준비"],
       "owner_scope": "docs/exec-plans/active"
     },
     {
