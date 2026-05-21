@@ -27,6 +27,45 @@
 - merge는 expected head SHA 확인 없이는 실행하지 않는다.
 - 프로젝트 로컬 Codex Full Access 설정은 owner-operated local workflow에서만 사용한다. 외부 입력을 직접 shell command로 변환하는 runner나 무인 webhook 환경에서는 별도 제한 설정을 사용한다.
 
+## HTTP control API 보안 기준
+
+- HTTP control server의 기본 bind는 `127.0.0.1`이다.
+- `/healthz`, `/readyz`, `/status`는 읽기 전용 endpoint로 유지한다.
+- `/status`는 full config, secret, token, raw headers, raw order detail, raw position detail을 반환하지 않는다.
+- POST control endpoint가 활성화되면 `Authorization: Bearer <token>`을 요구한다.
+- POST control endpoint가 활성화된 상태에서 local control token이 없으면 startup fail한다.
+- `POST /kill-switch`는 target state enum만 받으며, `STRATEGY_PAUSED` 같은 전략별 제어는 전역 control route에서 받지 않는다.
+- `/kill-switch` 성공 응답은 상태 전이, action plan, audit/risk evidence id, job idempotency key만 반환하고 secret, raw header, raw order detail을 반환하지 않는다.
+- local control token과 Telegram token은 env 또는 외부 secret 주입으로만 전달하고 저장소 문서, PR body, 로그, status response에 원문을 남기지 않는다.
+- Authorization header는 logger redaction 대상이며, route error response는 correlation id와 짧은 error code/message만 반환한다.
+
+## Telegram outbound 보안 기준
+
+- Telegram adapter는 `sendMessage` outbound API만 호출하며 webhook, polling, command 수신 endpoint를 만들지 않는다.
+- Telegram bot token은 `SEEMIRAI_TELEGRAM_BOT_TOKEN` 또는 외부 secret 주입으로 전달하고, 문서/PR body/log/status response에
+  원문을 남기지 않는다.
+- legacy `TELEGRAM_BOT_TOKEN`은 호환 입력으로만 허용하고, 신규 운영 문서와 `.env.example`은 `SEEMIRAI_` prefix 변수를
+  기준으로 한다.
+- logger redaction은 `telegram.botToken`, `secrets.telegram_bot_token`, `env.TELEGRAM_BOT_TOKEN`,
+  `env.SEEMIRAI_TELEGRAM_BOT_TOKEN`을 모두 가린다.
+- Telegram provider 실패 결과는 HTTP status나 짧은 reason code만 남기며 provider 응답 원문, token 포함 URL, raw request
+  body를 audit metadata에 기록하지 않는다.
+- notifier 예외도 `notification_provider_exception` 같은 짧은 reason code로만 정규화하고, exception message나 stack trace를
+  Telegram payload, audit metadata, HTTP response에 그대로 싣지 않는다.
+- Telegram message text는 provider 제한인 4096자 안으로 잘라 보낸다. 긴 장애 문맥의 전체 원문은 Telegram provider 요청
+  body나 audit metadata에 그대로 남기지 않는다.
+
+## Paper soak 보안 기준
+
+- `scripts/soak-paper-24h.mjs`는 Upbit public quotation WebSocket만 사용하며 Authorization header, Upbit API key, private
+  order endpoint를 사용하지 않는다.
+- 실제 24시간 soak는 `SEEMIRAI_RUN_SOAK=1`이 있을 때만 시작한다. 기본 실행과 CI smoke가 의도하지 않은 장시간 외부 연결을
+  만들지 않게 하기 위한 guard다.
+- `--control-url` probe는 token 없는 `POST /kill-switch`가 거부되는지만 확인한다. control token을 CLI 인자나 summary artifact에
+  싣지 않는다.
+- raw event log와 summary artifact는 기본적으로 저장소 밖 `SEEMIRAI_SOAK_LOG_DIR` 또는 `~/vaults/99_운영/seemirai-soak`에 저장한다.
+  raw log, provider 응답 원문, token 값을 PR body나 git commit에 포함하지 않는다.
+
 ## Dependency 추가 승인 기준
 
 - 신규 runtime dependency, dev dependency, package manager 변경은 승인 필요 변경으로 취급한다.

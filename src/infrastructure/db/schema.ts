@@ -1,5 +1,6 @@
 import type { ColumnType, Generated } from "kysely";
 import type { KillSwitchState, OrderLifecycleStatus } from "../../domain/index.js";
+import type { AlertSeverity } from "../../application/ports/notifier-port.js";
 
 /**
  * PostgreSQL `timestamptz` 컬럼 타입이다.
@@ -75,6 +76,8 @@ export interface DatabaseSchema {
   risk_events: RiskEventsTable;
   /** 전역 kill switch의 durable 현재 상태 */
   kill_switch_state: KillSwitchStateTable;
+  /** P0/P1 alert 중복 전송 억제를 위한 durable cooldown state */
+  alert_cooldowns: AlertCooldownsTable;
   /** PostgreSQL 기반 scheduler/worker 작업 큐 */
   jobs: JobsTable;
   /** 거래소 정책, 수수료, 호가 단위, market status snapshot */
@@ -325,6 +328,40 @@ export interface KillSwitchStateTable {
   /** 상태 전이 event payload와 추가 판단 근거 */
   payload_json: GeneratedJsonRecord;
   /** durable snapshot 최종 갱신 시각 */
+  updated_at: GeneratedTimestamp;
+}
+
+/**
+ * alert fingerprint별 cooldown snapshot이다.
+ *
+ * P0/P1 알림은 프로세스 재시작 후에도 중복 전송을 억제해야 하므로 DB에 마지막 전송/skip 시각을 남긴다.
+ * delivery reservation은 provider 호출 직전 atomic gate로 사용해 동시 알림이 같은 fingerprint로 중복 전송되지 않게 한다.
+ * P2/P3은 memory cooldown으로 시작하지만 schema는 공통 severity 값을 허용해 필요 시 승격할 수 있게 한다.
+ */
+export interface AlertCooldownsTable {
+  /** 중복 억제 기준이 되는 canonical fingerprint */
+  fingerprint: string;
+  /** alert severity */
+  severity: AlertSeverity;
+  /** 장애 또는 운영 알림 유형 */
+  alert_type: string;
+  /** market별 알림이면 market code, 전역 알림이면 null */
+  market: string | null;
+  /** strategy별 알림이면 strategy id, 전역 알림이면 null */
+  strategy_id: string | null;
+  /** 운영 원인 코드 */
+  reason_code: string;
+  /** provider 전송이 성공한 마지막 시각 */
+  last_sent_at: NullableTimestamp;
+  /** cooldown hit로 provider 호출을 건너뛴 마지막 시각 */
+  last_skipped_at: NullableTimestamp;
+  /** provider 호출 경합을 막는 delivery lease 만료 시각 */
+  delivery_reserved_until: NullableTimestamp;
+  /** title, correlation id, 기타 운영 metadata */
+  payload_json: GeneratedJsonRecord;
+  /** cooldown row 생성 시각 */
+  created_at: GeneratedTimestamp;
+  /** cooldown row 최종 갱신 시각 */
   updated_at: GeneratedTimestamp;
 }
 

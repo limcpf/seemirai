@@ -84,6 +84,38 @@ Acceptance Criteria:
 
 - 생성 산출물이나 임시 작업 파일을 문서 라우팅 대상으로 등록하지 않는다.
 
+### FR-COMMON-003: 사용자에게 보이는 문구는 행동 가능한 한국어여야 한다
+
+설명:
+
+- user-facing 문구는 운영자나 사용자가 즉시 판단할 수 있는 한국어를 우선한다.
+- 내부 enum, 상태 machine code, reason code, fingerprint, idempotency key 같은 안정 식별자는 저장·추적·debug 경계에는 필요하지만, 사용자가 처음 보는 제목이나 핵심 본문에 그대로 노출하지 않는다.
+- HTTP 응답, Telegram 알림, daily report, CLI 출력, status payload처럼 사람이 직접 읽는 표면은 상태, 원인, 영향, 필요 조치를 사용자 행동 언어로 먼저 설명하고 내부 식별자는 `추적 정보`, `details`, `debug`, `metadata` 같은 분리된 영역에 보존한다.
+- 새 도메인 코드나 운영 reason code를 추가할 때는 해당 code가 사용자에게 어떤 말로 보일지 매핑을 함께 정의한다.
+
+Acceptance Criteria:
+
+- [ ] user-facing 제목과 첫 본문은 한국어 상태/원인/영향/필요 조치 중 필요한 정보를 포함한다.
+- [ ] 내부 enum/code/reason code/fingerprint가 첫 화면의 주요 설명을 대체하지 않는다.
+- [ ] 내부 식별자가 복구나 감사에 필요하면 추적 전용 영역에 분리해 남긴다.
+- [ ] 새 user-facing formatter나 response shape에는 대표 케이스 테스트 또는 fixture가 있다.
+- [ ] 문구 변경이 운영 판단이나 사용자 행동을 바꾸면 관련 PRD, 기능 요구사항, 런타임/신뢰성 문서 중 해당 기준 문서를 갱신한다.
+
+테스트 요구사항:
+
+- 단위 테스트: 새 formatter 또는 response mapper가 raw code만 반환하지 않고 사용자 문구와 추적 정보를 분리하는지 확인한다.
+- 문서 리뷰: 새 도메인 code가 추가될 때 user-facing 매핑 누락이 없는지 확인한다.
+
+문서 요구사항:
+
+- 채널별 세부 문구 정책은 해당 기준 문서에 둔다. 예를 들어 Telegram 알림은 `docs/RUNTIME_CONFIG.md`와 `docs/RELIABILITY.md`의 alert delivery 기준을 따른다.
+- 전역 규칙이 바뀌면 루트 `AGENTS.md`와 이 요구사항을 함께 갱신한다.
+
+제외 범위:
+
+- machine-to-machine API의 안정 contract, DB column 값, audit metadata, log field name은 user-facing 문구로 번역하지 않는다.
+- 내부 식별자를 숨기기 위해 감사·복구에 필요한 추적 정보를 제거하지 않는다.
+
 ## MVP 기능 요구사항
 
 ### FR-CONFIG-001: MVP 기본 설정은 안전한 paper trading 프로파일이어야 한다
@@ -466,10 +498,14 @@ Acceptance Criteria:
 - [ ] 실거래 전환 가능 여부를 판단할 수 있도록 수수료, 슬리피지, 체결률, 전략별 손익을 리포트한다.
 - [ ] paper trading 모드에서는 거래소 주문 API가 호출되지 않는다.
 - [ ] 기본 모드에서는 실거래 API Key가 없거나 주문 권한이 비활성인 상태로 실행된다.
+- [ ] 24시간 paper soak 결과는 crash 0회, unhandled rejection 0회, 실거래 주문 API 0회, audit 누락 0건, stale data 신규 주문
+  차단, DB write failure 0건, notification failure 0건, daily report 생성 여부를 summary로 남긴다.
 
 테스트 요구사항:
 
 - 통합 테스트: paper trading 모드에서 주문 API client가 호출되지 않는지 확인한다.
+- smoke 테스트: `SEEMIRAI_RUN_SOAK=1`이 없는 기본 실행은 장시간 soak를 skip하고, fixture smoke는 stale data 차단과 live order
+  API 0회 evidence를 검증한다.
 - 회귀 테스트: 동일 이벤트 fixture에서 백테스트와 paper trading의 주문 후보 생성 결과가 일관되는지 확인한다.
 - 수동 테스트: 일간 리포트에 paper trading 성과가 표시되는지 확인한다.
 
@@ -494,12 +530,18 @@ Acceptance Criteria:
 - [ ] 데이터 지연, API 오류, rate limit 접근, WebSocket 재연결이 알림 후보 이벤트로 기록된다.
 - [ ] 모델 drift 후보 지표를 기록할 수 있다.
 - [ ] 일간 리포트는 거래 횟수, 폐기된 주문 후보, 차단 사유, 비용 비중을 포함한다.
+- [ ] 일간 리포트는 KST 기준일과 UTC 조회 window를 함께 표시하고, realized PnL과 estimated/unrealized PnL을 분리한다.
+- [ ] 일간 리포트는 값이 없는 체결 품질 metric을 0으로 꾸미지 않고 `unavailable`로 표시한다.
+- [ ] 일간 리포트의 주문 상태별 집계는 현재 `orders.status`가 아니라 `order_events` 기준의 기준일 종료 시점 상태를 사용한다.
+- [ ] 일간 리포트의 PnL은 snapshot이 있는 scope는 snapshot을 쓰고, snapshot이 없는 scope만 positions fallback을 사용한다.
+- [ ] 일간 리포트의 체결 품질 평균은 `fills.filled_at`이 기준일에 속한 실제 체결 주문만 대상으로 한다.
 - [ ] Telegram P0 알림은 신규 주문 중지 이벤트와 함께 기록된다.
 - [ ] Slack adapter는 정의만 하고 MVP 기본 설정에서는 비활성이다.
 
 테스트 요구사항:
 
 - 단위 테스트: 거래 이벤트 fixture에서 전략별 집계값을 검증한다.
+- 단위 테스트: P0 kill switch 알림은 신규 주문 차단 action plan과 같은 evidence로 전송되는지 확인한다.
 - 통합 테스트: API 오류 fixture에서 알림 후보 이벤트가 생성되는지 확인한다.
 - 수동 테스트: 일간 리포트에 수수료 비중과 주문 차단 사유가 표시되는지 확인한다.
 

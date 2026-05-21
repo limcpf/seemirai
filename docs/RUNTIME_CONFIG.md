@@ -35,6 +35,7 @@
 | `registry` | 정적 registry id 참조 | exchange, strategy, rule 활성화 조합 |
 | `strategyParameters` | strategy별 기본 threshold | 전략 후보 생성과 rule 평가에 쓰는 보수적 기준값 |
 | `risk` | M5 리스크 한도 threshold | RiskGate 평가와 상태 전이 audit에 쓰는 보수적 계정/노출/손실 한도 |
+| `telegram` | `provider_timeout_ms=5000`, optional `chat_id` | Telegram outbound notifier의 provider timeout과 chat id fallback |
 | `secrets` | 기본 `{}` | schema shape만 표현하며 실제 secret은 저장하지 않음 |
 
 ## 안전 invariant
@@ -55,6 +56,199 @@ MVP 기본 profile에서는 다음 값이 켜져 있으면 안 된다.
 ```
 
 `assertSafeRuntimeConfig`는 위반 값을 발견하면 runtime config 로딩을 실패시킨다.
+
+## M8 HTTP control foundation
+
+구현 기준:
+
+- server/route foundation: `src/interfaces/http-control.ts`
+- auth/readiness/status/schema 세부 구현: `src/interfaces/http-control/*.ts`
+- 기본 bind: `127.0.0.1`
+- 기본 port: `8787`
+
+M8 HTTP control API는 headless worker의 로컬 운영 endpoint다. Sub PR 1에서는 읽기 전용 endpoint와 POST control
+endpoint가 공통으로 사용할 인증 guard만 고정한다.
+
+읽기 endpoint:
+
+- `GET /healthz`: process alive만 확인한다. DB, migration, runtime dependency를 확인하지 않는다.
+- `GET /readyz`: DB 연결, DB write check, migration version, runtime config loaded 상태를 readiness summary로 반환한다.
+  DB write check는 `jobs` 실제 앱 테이블에 rollback 가능한 insert를 수행해 TEMP table 권한만 있는 상태를 ready로 보지 않는다.
+- `GET /status`: full config 대신 safe summary만 반환한다. DB write check는 실행하지 않고 read-only 관측에 필요한
+  runtime config, DB connection, migration version만 경량 readiness로 확인한다.
+
+`/status` safe summary는 다음 필드만 노출한다.
+
+- runtime: `exchange`, `market`, `mode`, phase 1 universe, live trading toggle, `paperNoKey`
+- trading state: current kill switch state, blocked reason, 신규 주문 차단 여부, 수동 검토 필요 여부
+- market data: connection status, lag ms, updated time
+- paper: `paper_orders`에 연결된 pending paper order count, open position count
+- database: `/readyz`에서 write check를 제외한 경량 readiness summary
+- alerts: last sent/skipped timestamp
+- daily report: last status, report date, updated time
+
+`/status`는 `secrets`, local control token, Telegram token, raw headers, raw order detail, raw position detail을 반환하지 않는다.
+kill switch가 `NEW_ORDERS_BLOCKED` 또는 `HARD_STOP` 같은 active 상태여도 `/readyz` 실패로 표현하지 않고
+`/status.tradingState`에만 나타낸다.
+
+POST control endpoint는 후속 PR에서 `/kill-switch`를 등록한다. 이 foundation은 `Authorization: Bearer <token>` 검증
+함수와 Fastify `preHandler`를 제공하며, POST control endpoint가 활성화된 상태에서 local control token이 없으면 startup
+fail한다. 실제 secret 값은 env 또는 외부 secret 주입으로 전달하고 config/document/status에 기록하지 않는다.
+
+M8 Sub PR 2부터 `POST /kill-switch`를 등록할 수 있다. 이 route는 local bearer token을 통과한 요청만 받으며,
+request body는 다음 target state로 제한한다.
+
+- `NEW_ORDERS_BLOCKED`
+- `HARD_STOP`
+- `MANUAL_REVIEW_REQUIRED`
+- `NORMAL`
+
+`STRATEGY_PAUSED`는 전역 HTTP control route의 target에서 제외한다. 전략별 pause/resume은 strategy 상태 저장소와
+audit evidence가 별도로 확정될 때 별도 endpoint로 다룬다.
+
+`POST /kill-switch`는 `kill_switch_state` durable snapshot을 현재 state와 대조한 뒤 state machine으로 전이를 판단한다.
+`HARD_STOP -> NORMAL` 직접 전환은 거부되고, `HARD_STOP -> MANUAL_REVIEW_REQUIRED -> NORMAL` 경로를 요구한다.
+허용/거부된 전이 시도는 모두 `audit_events`와 `risk_events`에 correlation id와 함께 남긴다. 허용된 전이는 같은 DB
+transaction에서 `kill_switch_state`를 전진시키며, `HARD_STOP`은 pending paper order cancel을 즉시 실행하지 않고
+`hard_stop_pending_paper_order_cancel` job으로 예약한다. 이 job payload의 action plan은
+`auto_liquidate_open_positions=false`를 유지한다.
+
+P0/P1 원인 mapping은 application layer의 `mapKillSwitchReasonToTargetState`가 제공한다.
+
+| 원인 | target |
+| --- | --- |
+| `db_write_failure`, `order_idempotency_violation`, `duplicate_order_idempotency_key`, `fill_order_accounting_mismatch`, `risk_limit_calculation_unavailable`, `audit_persistence_failure`, `live_order_api_misuse_detected` | `HARD_STOP` |
+| `stale_market_data`, `public_websocket_lag`, `quote_freshness_insufficient`, `transient_external_data_gap` | `NEW_ORDERS_BLOCKED` |
+| `notification_consecutive_failure`, `notification_failure_threshold_exceeded`, `report_generation_repeated_failure`, `abnormal_state_operator_review_required` | `MANUAL_REVIEW_REQUIRED` |
+
+## M8 Telegram outbound 알림
+
+구현 기준:
+
+- application policy: `src/application/alerts/index.ts`
+- outbound adapter: `src/infrastructure/telegram/notifier.ts`
+- durable cooldown repository: `src/infrastructure/db/alert-cooldown.ts`
+- runtime config loader: `src/runtime/notification-config.ts`
+- runtime control wiring: `src/runtime/notification-runtime.ts`
+
+Telegram 알림은 outbound `sendMessage`만 사용한다. 이 단계는 Telegram webhook, polling, command 수신 route를 만들지
+않는다. message format은 Markdown/HTML parse mode 없는 plain text다.
+첫 화면에는 한국어 상태/원인/영향/필요 조치를 배치하고, `fingerprint`, audit/risk event id, correlation id 같은 내부 추적
+값은 하단 `추적 정보` 섹션에만 둔다. Telegram 단일 message text 제한인 4096자를 넘으면 전송 전에 truncation marker를 붙여
+잘라 provider 400으로 알림 전체가 유실되지 않게 한다.
+
+설정 경계:
+
+- alert environment: `SEEMIRAI_ENV` env, fallback `NODE_ENV`, 기본 `local`
+- bot token 우선순위: `SEEMIRAI_TELEGRAM_BOT_TOKEN` env, legacy `TELEGRAM_BOT_TOKEN` env, `secrets.telegram_bot_token`
+- chat id 우선순위: `SEEMIRAI_TELEGRAM_CHAT_ID` env, legacy `TELEGRAM_CHAT_ID` env, `telegram.chat_id`
+- provider timeout: `telegram.provider_timeout_ms`, 기본 `5000`
+
+alert fingerprint는 `environment + run_mode + severity + alert_type + market_or_global + strategy_id_or_global + reason_code`로
+만든다. severity가 key에 들어가므로 P1 cooldown 중에도 같은 원인의 P0 escalation은 막히지 않는다. 각 세그먼트 안의 `:`는
+`%3a`로 escape해 join 구분자와 충돌하지 않게 한다.
+
+cooldown 기본값:
+
+| severity | cooldown | 저장소 |
+| --- | --- | --- |
+| P0 | 1분 | PostgreSQL `alert_cooldowns` |
+| P1 | 5분 | PostgreSQL `alert_cooldowns` |
+| P2 | 1시간 | process memory |
+| P3 | 6시간 | process memory |
+
+P0/P1 provider failure는 `notification_retry` job 후보 payload와 idempotency key를 만든다. Sub PR 3은 실제 jobs insert와
+worker 실행을 연결하지 않고, 후속 runtime 조립이 사용할 retry contract만 고정한다. provider 실패가 연속 3회이거나 첫 실패
+이후 10분 이상 이어지면 `notification_consecutive_failure` 또는 `notification_failure_threshold_exceeded` reason code를
+반환해 kill switch mapping의 `MANUAL_REVIEW_REQUIRED` 후보로 쓸 수 있게 한다.
+
+`createPaperNoKeyKillSwitchControlProvider`는 Telegram 설정이 있을 때 `POST /kill-switch` provider를 alert dispatch 경로와
+함께 조립한다. accepted `HARD_STOP`, `NEW_ORDERS_BLOCKED`, `MANUAL_REVIEW_REQUIRED` 전이는 kill switch state/audit/risk/job
+transaction이 commit된 뒤 Telegram/cooldown/audit 알림 경계로 넘어간다. Telegram 설정이 없으면 control provider는 알림 없이
+동작하지만, 알림 의존성 누락으로 kill switch state update가 차단되지는 않는다. post-commit alert dispatch 실패는
+`alert_dispatch_failed`로 결과 객체에 기록하고 control 전이 성공 자체를 실패로 바꾸지 않는다. 같은 runtime alert dispatch
+옵션 객체는 최신 notification failure state를 보존해 연속 실패 threshold가 실제 호출 간 누적되게 한다.
+
+provider 호출 직전에는 fingerprint 단위 delivery reservation을 먼저 기록한다. 이 atomic gate는 마지막 성공 전송이 cooldown
+안에 있거나 기존 reservation이 만료되지 않았으면 provider 호출 없이 `ALERT_COOLDOWN` audit evidence만 남긴다. 이 경계는
+같은 장애가 동시에 들어와도 두 요청이 모두 Telegram provider를 호출하는 상황을 막기 위한 것이다. cooldown 기준 시각은
+alert 발생 시각이 아니라 reservation/전송 완료 시각을 사용해 지연 처리된 과거 alert가 보호 창을 짧게 만들지 못하게 한다.
+
+## M8 Daily report
+
+구현 기준:
+
+- application 집계/전송 경계: `src/application/daily-report/`
+- PostgreSQL fact repository: `src/infrastructure/db/daily-report/`
+- outbound adapter: `NotifierPort.sendDailyReport`
+- job idempotency: PostgreSQL `jobs.idempotency_key`
+
+daily report 기준일은 KST `YYYY-MM-DD`다. DB timestamp는 UTC로 저장하므로 application은 기준일을
+`kst_start_at`, `kst_end_at`, `utc_start_at`, `utc_end_at`으로 변환해 같은 window를 repository, job payload, Telegram
+summary에 함께 남긴다. 조회 조건은 `utc_start_at <= timestamp < utc_end_at` half-open window를 사용한다.
+standalone repository 조회는 여러 fact table이 같은 MVCC 기준을 보도록 `repeatable read` transaction 안에서 수행한다.
+
+daily report job은 `job_type=report.daily`, `idempotency_key=report.daily:<report_date>`로 예약한다. 현재 `jobs` schema는
+`(job_type, report_date)` composite unique key가 아니라 `idempotency_key` unique constraint를 제공하므로, application
+contract가 두 값을 key에 함께 넣어 같은 기준일의 중복 생성과 중복 전송을 억제한다. payload에는 KST/UTC window를 저장해
+worker retry나 운영 재생이 같은 조회 범위를 사용할 수 있게 한다.
+
+집계 입력:
+
+- `orders`: 기준일 안에 생성된 주문 수와 `order_events`로 복원한 기준일 종료 시점 상태별 건수
+- `fills`: 기준일 안 체결 수, 통화별 수수료, 체결 명목 금액, 수수료 비중
+- `positions`: 현재 포지션 수와 snapshot 누락 scope의 fallback 손익 snapshot. 현재 snapshot table이므로 `updated_at`으로
+  과거 상태를 복원하려고 제외하지 않는다.
+- `pnl_snapshots`: strategy/market별 최신 snapshot의 realized PnL과 unrealized PnL. snapshot이 있는 scope는 positions보다
+  우선하며, 일부 scope의 snapshot이 없을 때만 positions fallback을 섞는다.
+- `audit_events`: `ORDER_CANDIDATE_DISCARDED` payload의 `reason_code`별 폐기 후보 수
+- `risk_events`: `action`, `risk_type`별 차단/리스크 이벤트 수
+- `fills` 기준으로 실제 체결된 주문의 `paper_orders.fill_model_json`, `orders.reason_json.cost_snapshot`: 슬리피지, spread 비용,
+  취소/재호가 비용이 있는 경우의 체결 품질 metric
+
+리포트 문구는 한국어 사용자 문구를 먼저 보여준다. 내부 status/action/reason code는 괄호나 `metadata` 추적 정보에 남기며,
+값이 없으면 임의로 0으로 채우지 않고 `unavailable`로 표시한다. 단, 주문 수, 체결 수, 폐기 후보 수처럼 row 개수를 세는 항목은
+데이터가 없을 때 실제 0으로 표시한다. 실현 손익은 `realized PnL`, 추정 손익은 `unrealized PnL` 기반으로 분리 표기한다.
+
+## M8 Paper soak verification
+
+구현 기준:
+
+- soak harness: `scripts/soak-paper-24h.mjs`
+- fixture smoke: `tests/soak/paper-soak-script.test.ts`
+- stale 차단 fixture: `tests/fixtures/soak/paper-soak-events.json`
+
+24시간 paper soak는 기본 검증에서 자동 실행하지 않는다. `node scripts/soak-paper-24h.mjs`만 실행하면
+`SEEMIRAI_RUN_SOAK=1`이 없다는 summary를 남기고 skip한다. CI와 PR 검증은 다음 fixture smoke로 장시간 실행 guard,
+실거래 주문 API 0회 근거, stale data 차단 evidence, audit 누락 0건, `/status`와 `/kill-switch` route 근거를 확인한다.
+
+```sh
+node scripts/soak-paper-24h.mjs --fixture-smoke
+```
+
+실제 24시간 public quotation WebSocket soak는 운영자가 의도적으로 env를 열 때만 실행한다. control server가 떠 있으면
+`--control-url`을 추가해 `GET /status` 200 응답과 token 없는 `POST /kill-switch` 거부 응답을 함께 확인한다. 24시간 결과를
+완료 evidence로 쓰려면 daily report 생성이 끝난 뒤 `--daily-report-generated`를 함께 넘긴다.
+
+```sh
+SEEMIRAI_RUN_SOAK=1 node scripts/soak-paper-24h.mjs \
+  --duration-ms 86400000 \
+  --control-url http://127.0.0.1:8787 \
+  --daily-report-generated
+```
+
+artifact 기본 위치는 `SEEMIRAI_SOAK_LOG_DIR` 또는 `~/vaults/99_운영/seemirai-soak`다. raw event log, JSON summary, PR 첨부용
+Markdown report는 저장소 밖에 남기는 것을 기본으로 하며, raw log를 git에 커밋하지 않는다.
+
+summary의 완료 판단 필드는 다음과 같다.
+
+- `runtimeExceptions`: crash 0회, unhandled rejection 0회
+- `liveOrderApiCalls`: 실거래 주문 API 호출 0회와 disabled live broker source guard
+- `auditMissing`: stale/reconnect/disconnect 차단 evidence 누락 0건
+- `staleDataBlocked`: stale data가 신규 주문 차단 evidence로 연결됐는지
+- `statusEndpoint`, `killSwitchEndpoint`: source scan 또는 local probe 근거
+- `dbWriteFailures`, `notificationFailures`: 운영자가 관측한 실패 건수
+- `dailyReportGenerated`: 실제 24시간 soak 완료 시 daily report evidence 포함 여부
 
 ## M6 Execution 안전 설정
 

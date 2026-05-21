@@ -1,4 +1,12 @@
 export {
+  PostgresAlertCooldownRepository,
+  recordAlertCooldownSkipped,
+  reserveAlertDelivery,
+  toAlertCooldownRowInput,
+  toAlertCooldownState,
+  upsertAlertCooldown,
+} from "./alert-cooldown.js";
+export {
   PostgresAuditLogRepository,
   appendAuditEvent,
   toAuditEventRow,
@@ -10,6 +18,11 @@ export {
   loadLocalDatabaseConfig,
 } from "./config.js";
 export { createDatabase, createPostgresPool, destroyDatabase } from "./database.js";
+export {
+  PostgresDailyReportRepository,
+  enqueueDailyReportJob,
+  loadDailyReportSourceData,
+} from "./daily-report/index.js";
 export {
   PostgresExecutionPersistenceRepository,
   createPaperExecutionStateTransitionEvents,
@@ -24,6 +37,10 @@ export {
   enqueueJob,
   findJobByIdempotencyKey,
 } from "./jobs.js";
+export {
+  applyPostgresKillSwitchControl,
+  createPostgresKillSwitchControlProvider,
+} from "./kill-switch-control.js";
 export {
   PostgresOrderEventRepository,
   appendOrderStateTransitionEvent,
@@ -75,6 +92,11 @@ export type {
   PositionRecord,
 } from "./execution-persistence.js";
 export type { AuditEventRecord, AuditEventRowInput } from "./audit-log.js";
+export type { AlertCooldownRecord, AlertCooldownRowInput } from "./alert-cooldown.js";
+export type {
+  EnqueueDailyReportJobInput,
+  EnqueueDailyReportJobResult,
+} from "./daily-report/index.js";
 export type {
   ClaimPendingJobsOptions,
   CompleteJobOptions,
@@ -83,6 +105,10 @@ export type {
   JobRecord,
   JobStatus,
 } from "./jobs.js";
+export type {
+  ApplyPostgresKillSwitchControlOptions,
+  CreatePostgresKillSwitchControlProviderOptions,
+} from "./kill-switch-control.js";
 export type {
   AppendOrderStateTransitionEventInput,
   ListOrderEventsOptions,

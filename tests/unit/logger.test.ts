@@ -49,6 +49,10 @@ describe("app logger", () => {
         auth: {
           jwt: "nested-jwt-token",
         },
+        env: {
+          TELEGRAM_BOT_TOKEN: "legacy-telegram-env-token",
+          SEEMIRAI_TELEGRAM_BOT_TOKEN: "scoped-telegram-env-token",
+        },
       },
       "redaction check",
     );
@@ -68,5 +72,7 @@ describe("app logger", () => {
     expect(output).not.toContain("request-jwt-token");
     expect(output).not.toContain("plain-jwt-token");
     expect(output).not.toContain("nested-jwt-token");
+    expect(output).not.toContain("legacy-telegram-env-token");
+    expect(output).not.toContain("scoped-telegram-env-token");
   });
 });

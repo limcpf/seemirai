@@ -1,1 +1,30 @@
-export {};
+export {
+  DEFAULT_HTTP_CONTROL_HOST,
+  DEFAULT_HTTP_CONTROL_PORT,
+  UnsafeHttpControlConfigError,
+  assertHttpControlConfig,
+  authenticateLocalControlRequest,
+  createControlReadinessProvider,
+  createDatabaseControlReadinessProvider,
+  createDatabaseControlStatusProvider,
+  createHttpControlServer,
+  createKillSwitchControlRouteHandler,
+  createLocalControlAuthPreHandler,
+  getHttpControlListenOptions,
+} from "./http-control.js";
+export type {
+  ControlOverallStatus,
+  ControlReadinessCheckResult,
+  ControlReadinessProvider,
+  ControlReadinessStatus,
+  ControlReadinessSummary,
+  ControlStatusProvider,
+  ControlStatusSnapshot,
+  CreateDatabaseControlStatusProviderOptions,
+  CreateDatabaseReadinessProviderOptions,
+  HttpControlListenOptions,
+  HttpControlServerOptions,
+  KillSwitchControlRequestBody,
+  LocalControlAuthInput,
+  LocalControlAuthResult,
+} from "./http-control.js";

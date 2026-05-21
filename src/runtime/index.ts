@@ -52,7 +52,14 @@ export {
   loadRuntimeConfig,
   loadRuntimeConfigFile,
 } from "./config.js";
+export { loadRuntimeNotificationConfig } from "./notification-config.js";
+export {
+  createPaperNoKeyKillSwitchControlProvider,
+  createRuntimeAlertDispatchOptions,
+} from "./notification-runtime.js";
 export type { RuntimeConfig } from "./config.js";
+export type { RuntimeNotificationConfig } from "./notification-config.js";
+export type { PaperNoKeyKillSwitchControlProviderOptions } from "./notification-runtime.js";
 export {
   RegistryActivationConfigSchema,
   defaultRegistryActivationConfig,
