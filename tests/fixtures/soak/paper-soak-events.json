@@ -1,0 +1,89 @@
+{
+  "schemaVersion": 1,
+  "events": [
+    {
+      "kind": "STATUS",
+      "exchangeId": "upbit_krw_spot",
+      "eventTimestamp": "2026-05-21T00:00:00.000Z",
+      "receivedAt": "2026-05-21T00:00:00.005Z",
+      "sequence": "1",
+      "tieBreakKey": "status:connected",
+      "source": {
+        "sourceKind": "FIXTURE",
+        "sourceId": "paper-soak-events.json",
+        "sourceIndex": 0
+      },
+      "status": "CONNECTED",
+      "reasonCode": "fixture_start",
+      "metadata": {
+        "auditEvidence": "soak-fixture-connected"
+      }
+    },
+    {
+      "kind": "ORDERBOOK_SNAPSHOT",
+      "exchangeId": "upbit_krw_spot",
+      "market": "KRW-BTC",
+      "eventTimestamp": "2026-05-21T00:00:00.100Z",
+      "receivedAt": "2026-05-21T00:00:00.130Z",
+      "sequence": "2",
+      "tieBreakKey": "orderbook:depth",
+      "source": {
+        "sourceKind": "FIXTURE",
+        "sourceId": "paper-soak-events.json",
+        "sourceIndex": 1
+      },
+      "asks": [
+        {
+          "price": "100010000",
+          "size": "0.5"
+        }
+      ],
+      "bids": [
+        {
+          "price": "100000000",
+          "size": "0.4"
+        }
+      ]
+    },
+    {
+      "kind": "TRADE",
+      "exchangeId": "upbit_krw_spot",
+      "market": "KRW-BTC",
+      "eventTimestamp": "2026-05-21T00:00:00.120Z",
+      "receivedAt": "2026-05-21T00:00:00.150Z",
+      "sequence": "3",
+      "tieBreakKey": "trade:soak-fixture",
+      "source": {
+        "sourceKind": "FIXTURE",
+        "sourceId": "paper-soak-events.json",
+        "sourceIndex": 2
+      },
+      "tradeId": "soak-fixture-trade-1",
+      "price": "100000000",
+      "quantity": "0.01",
+      "side": "BID"
+    },
+    {
+      "kind": "STATUS",
+      "exchangeId": "upbit_krw_spot",
+      "market": "KRW-BTC",
+      "eventTimestamp": "2026-05-21T00:00:05.000Z",
+      "receivedAt": "2026-05-21T00:00:05.005Z",
+      "sequence": "4",
+      "tieBreakKey": "status:stale",
+      "source": {
+        "sourceKind": "FIXTURE",
+        "sourceId": "paper-soak-events.json",
+        "sourceIndex": 3
+      },
+      "status": "STALE",
+      "reasonCode": "public_websocket_lag",
+      "websocketLagMs": 5000,
+      "metadata": {
+        "newOrdersBlocked": true,
+        "riskAction": "BLOCK_NEW_ORDER",
+        "auditEvidence": "soak-fixture-stale-new-order-blocked"
+      }
+    }
+  ]
+}

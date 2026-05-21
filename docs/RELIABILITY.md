@@ -124,6 +124,21 @@ Codex-native 운영은 Codex, Git, GitHub, shell command, 문서 상태를 연�
 - Telegram daily report 전송은 집계가 끝난 뒤 `NotifierPort.sendDailyReport`에서만 발생한다. DB fact 조회와 집계가 성공한
   사실, provider 전송 성공/실패는 job/audit에서 분리해 추적해야 한다.
 
+## Paper soak 신뢰성 기준
+
+- 24시간 paper soak harness는 기본 실행에서 장시간 public WebSocket 연결을 시작하지 않는다. `SEEMIRAI_RUN_SOAK=1`이 없으면
+  skip summary와 PR 첨부용 Markdown report만 남겨 CI와 로컬 기본 검증이 장시간 작업으로 멈추지 않게 한다.
+- fixture smoke는 stale market data status event가 신규 주문 차단 evidence와 audit evidence로 연결되는지 검증한다. 이 smoke가
+  실패하면 24시간 실행 전에도 stale data 차단 회귀로 보고 PR을 닫지 않는다.
+- live order API 호출 0회는 soak runtime의 실제 호출 카운트와 `PAPER_NO_KEY` execution runtime source scan을 함께 기록한다.
+  source scan은 `ExecutionEngine -> PaperBroker` 조립과 disabled live broker fail-closed 메서드를 확인한다.
+- `/status`와 `/kill-switch`는 기본적으로 source scan으로 route 등록 근거를 확인한다. 운영자가 `--control-url`을 넘기면
+  `/status` 200 응답과 token 없는 `/kill-switch` 거부 응답을 실제 local control server에서 확인한다.
+- 24시간 soak 완료 summary에는 crash 0회, unhandled rejection 0회, live order API 0회, audit 누락 0건, stale data 차단,
+  DB write failure 0건, notification failure 0건, daily report 생성 여부가 들어가야 한다.
+- raw event log와 summary artifact는 기본적으로 저장소 밖 `SEEMIRAI_SOAK_LOG_DIR` 또는 `~/vaults/99_운영/seemirai-soak`에 남긴다.
+  raw log는 재현과 PR evidence 확인용이며 git commit 대상이 아니다.
+
 ## 검증 규칙
 
 - 자동 테스트가 없으면 수동 검증 절차라도 남긴다.

@@ -252,13 +252,16 @@ M7 진행 근거:
 - [x] alert fingerprint + cooldown
 - [x] 일간 리포트
   - [x] issue #42 Sub PR 4: deterministic daily report aggregator, KST 기준일과 UTC query window, realized/estimated PnL 분리, 비용/폐기/차단 사유 집계, `report.daily:<reportDate>` jobs idempotency, `NotifierPort.sendDailyReport` 연결
-- [ ] 24시간 paper trading soak test script
+- [x] 24시간 paper trading soak test script
+  - [x] issue #42 Sub PR 5: `SEEMIRAI_RUN_SOAK=1` guard, fixture smoke, public WebSocket soak harness, live order API 0회/audit/stale/status summary, PR 첨부용 report artifact
 
 검증:
 
 - [ ] P0 알림 시 신규 주문 차단 테스트
-- [ ] Telegram command 수신 경로 없음 확인
+- [x] Telegram command 수신 경로 없음 확인
 - [ ] 24시간 paper soak test: crash 없음, live order API 0회, audit 누락 0건
+  - [x] fixture smoke: stale data 신규 주문 차단, live order API 0회, audit 누락 0건 summary 생성
+  - [ ] 실제 24시간 public WebSocket soak 결과 artifact 첨부
 
 ## 결정 로그
 
@@ -295,6 +298,7 @@ M7 진행 근거:
 - 2026-05-21: issue #42 Sub PR 2는 `issue-42/02-kill-switch-control`에서 `POST /kill-switch`를 local bearer token 보호 route로 등록하고, target state enum, `HARD_STOP -> NORMAL` 직접 복구 거부, `kill_switch_state` durable snapshot 갱신, `audit_events`/`risk_events` evidence, `HARD_STOP` pending paper order cancel job 예약 경계를 고정한다. broker cancel 실행, Telegram delivery, daily report, soak script는 후속 PR 범위로 유지한다.
 - 2026-05-21: issue #42 Sub PR 3은 `issue-42/03-alerts-telegram-cooldown`에서 Telegram `sendMessage` outbound adapter, 한국어 user-facing plain text formatter, 4096자 전송 제한, provider timeout/failure reason, notifier exception 정규화, alert fingerprint 구분자 escape, P0/P1 durable cooldown과 atomic delivery reservation, 실패 시 reservation 즉시 해제와 race 재예약, P2/P3 memory cooldown, severity escalation bypass, kill switch control accepted 전이의 alert runtime wiring, post-commit alert 실패 격리, P0/P1 retry job 후보와 notification failure threshold reason code 누적을 고정한다. Telegram inbound command, daily report aggregator, retry worker 실행, 24시간 soak script는 후속 PR 범위로 유지한다.
 - 2026-05-21: issue #42 Sub PR 4는 `issue-42/04-daily-reporting`에서 daily report application module과 PostgreSQL repository를 `daily-report/` 디렉터리 구조로 추가하고, KST 기준일을 UTC half-open query window로 변환해 `orders`/`fills`/`positions`/`audit_events`/`risk_events`/`pnl_snapshots`/paper execution 품질 값을 deterministic하게 집계한다. standalone fact 조회는 `repeatable read` snapshot으로 묶고, 주문 상태별 집계는 `order_events` 기준 종료 시점 상태를 lifecycle 순서로 복원하며, 체결 품질은 `fills.filled_at` 기준 실제 체결 주문만 사용한다. PnL snapshot은 scope별로 positions fallback을 대체하고, snapshot이 누락된 scope만 positions current snapshot으로 보강한다. realized PnL과 estimated PnL은 분리하고, 결측 metric은 `unavailable`로 표시한다. `report.daily:<reportDate>` idempotency key로 jobs 중복 예약을 막고 `NotifierPort.sendDailyReport`로 Telegram 전송 payload를 만든다. LLM report draft, retry worker 실행, 24시간 soak script는 후속 PR 범위로 유지한다.
+- 2026-05-21: issue #42 Sub PR 5는 `issue-42/05-soak-verification-docs`에서 `scripts/soak-paper-24h.mjs`를 추가해 기본 실행은 `SEEMIRAI_RUN_SOAK=1` 없이는 skip하고, fixture smoke는 stale data 신규 주문 차단 evidence, audit 누락 0건, live order API 0회, Telegram inbound 부재, `/status`와 `/kill-switch` route guard를 요약한다. 실제 24시간 public WebSocket soak는 운영자가 env guard와 `--daily-report-generated`를 명시할 때만 완료 evidence로 인정하며, raw event log와 PR report artifact는 저장소 밖에 남긴다.
 
 issue #42 sub PR 계획:
 
@@ -304,7 +308,7 @@ issue #42 sub PR 계획:
 | 2 | `issue-42/02-kill-switch-control` | `POST /kill-switch`, target state enum, illegal transition handling, P0 원인별 mapping, HARD_STOP action plan/job boundary | Telegram delivery, daily report, 24h soak | HTTP control route extension, domain/application kill switch mapping, 관련 unit tests | `corepack pnpm typecheck`, `corepack pnpm test`, `./scripts/verify`, `git diff --check` |
 | 3 | `issue-42/03-alerts-telegram-cooldown` | Telegram outbound adapter with `fetch`, 한국어 user-facing plain text formatting, provider timeout/failure, notifier exception 정규화, alert fingerprint, P0/P1 durable cooldown, P2/P3 memory cooldown, severity escalation bypass, kill switch control alert wiring | Telegram inbound webhook/polling/command, daily report aggregator, retry worker 실행 | notifier adapter/cooldown modules, runtime notification wiring, alert tests, 필요 시 DB migration | `corepack pnpm typecheck`, `corepack pnpm test`, DB migration 시 `SEEMIRAI_RUN_DB_INTEGRATION=1 corepack pnpm exec vitest run tests/integration`, `./scripts/verify` |
 | 4 | `issue-42/04-daily-reporting` | deterministic daily report aggregator, KST 기준일과 UTC query window, realized/estimated PnL 분리, 비용/폐기/차단 사유 집계, jobs idempotency | LLM report draft, soak script | reporting module/tests, jobs integration 필요분 | `corepack pnpm typecheck`, `corepack pnpm test`, `SEEMIRAI_RUN_DB_INTEGRATION=1 corepack pnpm exec vitest run tests/integration`, `./scripts/verify` |
-| 5 | `issue-42/05-soak-verification-docs` | fixture smoke와 24h soak script, `SEEMIRAI_RUN_SOAK=1` guard, live API 0회/audit/stale/status 요약, M8 문서 최종화 | 신규 운영 기능 구현, raw soak log 커밋 | `scripts/**`, `tests/soak/**` 또는 관련 smoke tests, M8 docs | `corepack pnpm typecheck`, `corepack pnpm test`, `./scripts/verify`, `git diff --check`, 별도 `SEEMIRAI_RUN_SOAK=1 ...` |
+| 5 | `issue-42/05-soak-verification-docs` | fixture smoke와 24h soak script, `SEEMIRAI_RUN_SOAK=1` guard, live API 0회/audit/stale/status 요약, M8 문서 최종화 | 신규 운영 기능 구현, raw soak log 커밋 | `scripts/**`, `tests/soak/**` 또는 관련 smoke tests, M8 docs | `corepack pnpm typecheck`, `corepack pnpm exec vitest run tests/soak/paper-soak-script.test.ts`, `node scripts/soak-paper-24h.mjs --fixture-smoke`, `corepack pnpm test`, `./scripts/verify`, `git diff --check`, 실제 24시간은 `SEEMIRAI_RUN_SOAK=1 node scripts/soak-paper-24h.mjs --duration-ms 86400000 --daily-report-generated` |
 
 issue #36 sub PR 계획:
 

@@ -210,6 +210,46 @@ worker retry나 운영 재생이 같은 조회 범위를 사용할 수 있게 �
 값이 없으면 임의로 0으로 채우지 않고 `unavailable`로 표시한다. 단, 주문 수, 체결 수, 폐기 후보 수처럼 row 개수를 세는 항목은
 데이터가 없을 때 실제 0으로 표시한다. 실현 손익은 `realized PnL`, 추정 손익은 `unrealized PnL` 기반으로 분리 표기한다.
 
+## M8 Paper soak verification
+
+구현 기준:
+
+- soak harness: `scripts/soak-paper-24h.mjs`
+- fixture smoke: `tests/soak/paper-soak-script.test.ts`
+- stale 차단 fixture: `tests/fixtures/soak/paper-soak-events.json`
+
+24시간 paper soak는 기본 검증에서 자동 실행하지 않는다. `node scripts/soak-paper-24h.mjs`만 실행하면
+`SEEMIRAI_RUN_SOAK=1`이 없다는 summary를 남기고 skip한다. CI와 PR 검증은 다음 fixture smoke로 장시간 실행 guard,
+실거래 주문 API 0회 근거, stale data 차단 evidence, audit 누락 0건, `/status`와 `/kill-switch` route 근거를 확인한다.
+
+```sh
+node scripts/soak-paper-24h.mjs --fixture-smoke
+```
+
+실제 24시간 public quotation WebSocket soak는 운영자가 의도적으로 env를 열 때만 실행한다. control server가 떠 있으면
+`--control-url`을 추가해 `GET /status` 200 응답과 token 없는 `POST /kill-switch` 거부 응답을 함께 확인한다. 24시간 결과를
+완료 evidence로 쓰려면 daily report 생성이 끝난 뒤 `--daily-report-generated`를 함께 넘긴다.
+
+```sh
+SEEMIRAI_RUN_SOAK=1 node scripts/soak-paper-24h.mjs \
+  --duration-ms 86400000 \
+  --control-url http://127.0.0.1:8787 \
+  --daily-report-generated
+```
+
+artifact 기본 위치는 `SEEMIRAI_SOAK_LOG_DIR` 또는 `~/vaults/99_운영/seemirai-soak`다. raw event log, JSON summary, PR 첨부용
+Markdown report는 저장소 밖에 남기는 것을 기본으로 하며, raw log를 git에 커밋하지 않는다.
+
+summary의 완료 판단 필드는 다음과 같다.
+
+- `runtimeExceptions`: crash 0회, unhandled rejection 0회
+- `liveOrderApiCalls`: 실거래 주문 API 호출 0회와 disabled live broker source guard
+- `auditMissing`: stale/reconnect/disconnect 차단 evidence 누락 0건
+- `staleDataBlocked`: stale data가 신규 주문 차단 evidence로 연결됐는지
+- `statusEndpoint`, `killSwitchEndpoint`: source scan 또는 local probe 근거
+- `dbWriteFailures`, `notificationFailures`: 운영자가 관측한 실패 건수
+- `dailyReportGenerated`: 실제 24시간 soak 완료 시 daily report evidence 포함 여부
+
 ## M6 Execution 안전 설정
 
 구현 기준:
