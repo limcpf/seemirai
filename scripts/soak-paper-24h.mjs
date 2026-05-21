@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import { once } from "node:events";
 import { createWriteStream } from "node:fs";
 import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import os from "node:os";
@@ -15,6 +16,7 @@ const defaultConfigPath = path.join(repoRoot, "config", "paper.json");
 const defaultFixturePath = path.join(repoRoot, "tests", "fixtures", "soak", "paper-soak-events.json");
 const defaultDurationMs = 24 * 60 * 60 * 1000;
 const defaultWebSocketUrl = "wss://api.upbit.com/websocket/v1";
+const defaultControlProbeTimeoutMs = 5_000;
 const defaultSoakLogDir = path.join(os.homedir(), "vaults", "99_운영", "seemirai-soak");
 const runtimeCounters = {
   unhandledRejections: 0,
@@ -127,6 +129,7 @@ function parseArgs(argv) {
     dailyReportGenerated: false,
     dbWriteFailures: 0,
     notificationFailures: 0,
+    controlProbeTimeoutMs: defaultControlProbeTimeoutMs,
   };
 
   for (let index = 0; index < argv.length; index += 1) {
@@ -160,6 +163,10 @@ function parseArgs(argv) {
         break;
       case "--control-url":
         options.controlUrl = readValue(argv, index, arg).replace(/\/+$/u, "");
+        index += 1;
+        break;
+      case "--control-probe-timeout-ms":
+        options.controlProbeTimeoutMs = readPositiveInteger(readValue(argv, index, arg), arg);
         index += 1;
         break;
       case "--log-dir":
@@ -352,9 +359,13 @@ async function inspectTelegramInboundAbsence() {
 
 async function inspectControlEndpoints(options) {
   if (options.controlUrl !== undefined) {
-    return probeControlEndpoints(options.controlUrl);
+    return probeControlEndpoints(options.controlUrl, options);
   }
 
+  return inspectControlEndpointSource();
+}
+
+async function inspectControlEndpointSource() {
   const source = await readFile(path.join(repoRoot, "src", "interfaces", "http-control.ts"), "utf8");
   const statusRegistered = /server\.get\(\s*"\/status"/u.test(source);
   const killSwitchRegistered =
@@ -370,38 +381,60 @@ async function inspectControlEndpoints(options) {
   };
 }
 
-async function probeControlEndpoints(controlUrl) {
-  const statusResponse = await fetch(`${controlUrl}/status`);
-  const killSwitchResponse = await fetch(`${controlUrl}/kill-switch`, {
-    method: "POST",
-    headers: {
-      "content-type": "application/json",
-    },
-    body: JSON.stringify({
-      targetState: "NORMAL",
-      reasonCode: "soak_probe_without_token",
-    }),
+async function probeControlEndpoints(controlUrl, options) {
+  const sourceChecks = await inspectControlEndpointSource();
+  const statusResponse = await fetchControlEndpoint(`${controlUrl}/status`, {
+    timeoutMs: options.controlProbeTimeoutMs,
   });
 
   return {
-    statusEndpoint:
-      statusResponse.status === 200
-        ? okCheck("`GET /status` probe가 200으로 응답했다.", { mode: "http_probe", statusCode: 200 })
-        : failCheck("`GET /status` probe가 실패했다.", {
-            mode: "http_probe",
-            statusCode: statusResponse.status,
-          }),
-    killSwitchEndpoint:
-      killSwitchResponse.status === 401 || killSwitchResponse.status === 403
-        ? okCheck("`POST /kill-switch`가 token 없는 요청을 거부했다.", {
-            mode: "http_probe",
-            statusCode: killSwitchResponse.status,
-          })
-        : failCheck("`POST /kill-switch`가 token 없는 요청을 안전하게 거부하지 않았다.", {
-            mode: "http_probe",
-            statusCode: killSwitchResponse.status,
-          }),
+    statusEndpoint: statusResponse,
+    // kill-switch는 상태 전이 엔드포인트라 soak probe가 POST를 보내지 않는다. 인증 가드 존재 여부는 source scan으로 남겨 장애 상태를 probe가 해제하지 않게 한다.
+    killSwitchEndpoint: {
+      ...sourceChecks.killSwitchEndpoint,
+      message:
+        sourceChecks.killSwitchEndpoint.status === "ok"
+          ? "`POST /kill-switch` route와 bearer guard 등록 근거가 확인됐다. HTTP probe는 상태 변경 방지를 위해 생략했다."
+          : sourceChecks.killSwitchEndpoint.message,
+      evidence: {
+        ...sourceChecks.killSwitchEndpoint.evidence,
+        mode: "source_scan_after_control_url",
+        controlUrl,
+        stateChangingProbeSkipped: true,
+      },
+    },
   };
+}
+
+async function fetchControlEndpoint(url, { timeoutMs }) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => {
+    controller.abort(new Error(`control probe timed out after ${timeoutMs}ms`));
+  }, timeoutMs);
+
+  try {
+    const response = await fetch(url, { signal: controller.signal });
+    return response.status === 200
+      ? okCheck("`GET /status` probe가 200으로 응답했다.", {
+          mode: "http_probe",
+          statusCode: 200,
+          timeoutMs,
+        })
+      : failCheck("`GET /status` probe가 실패했다.", {
+          mode: "http_probe",
+          statusCode: response.status,
+          timeoutMs,
+        });
+  } catch (error) {
+    return failCheck("`GET /status` probe가 네트워크 오류 또는 timeout으로 실패했다.", {
+      mode: "http_probe",
+      error: toErrorMessage(error),
+      timeoutMs,
+      url,
+    });
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 
 function dailyReportCheck(options) {
@@ -583,7 +616,7 @@ async function recordWebSocketMessage({ data, metrics, rawLogStream }) {
     receivedAt,
     type: payload?.type ?? "unknown",
     code: payload?.code ?? null,
-  })}\n`);
+  })}\n`) || (await once(rawLogStream, "drain"));
 }
 
 async function parseWebSocketPayload(data) {
@@ -818,7 +851,8 @@ Options:
   --fixture <path>                Fixture path for smoke checks.
   --duration-ms <ms>              Long soak duration. Defaults to 86400000.
   --markets <KRW-BTC,KRW-ETH>     Public WebSocket markets. Defaults to config/paper.json universe.
-  --control-url <url>             Probe local HTTP control /status and protected /kill-switch.
+  --control-url <url>             Probe local HTTP control /status and scan protected /kill-switch wiring.
+  --control-probe-timeout-ms <ms>  Timeout for control HTTP probes. Defaults to 5000.
   --daily-report-generated        Mark daily report generation evidence as present for a real 24h run.
   --db-write-failures <count>     Attach observed DB write failure count. Defaults to 0.
   --notification-failures <count> Attach observed notification failure count. Defaults to 0.
