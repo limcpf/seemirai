@@ -40,9 +40,11 @@ M8 구현 이후에도 아직 운영하지 않는 것:
 ## 1. 준비
 
 ```sh
-cd /home/lim/code/seemirai
+cd <repo_root>
 corepack pnpm install --frozen-lockfile
 ```
+
+여기서 `<repo_root>`는 Seemirai 저장소를 checkout한 경로다.
 
 Node.js는 24 계열이어야 한다.
 
@@ -88,7 +90,15 @@ DB integration 검증:
 SEEMIRAI_RUN_DB_INTEGRATION=1 corepack pnpm exec vitest run tests/integration
 ```
 
-백업/복구 smoke는 원본 DB와 복구 DB를 분리해서 실행한다.
+백업/복구 smoke는 원본 DB와 복구 DB를 분리해서 실행한다. 복구 대상 DB는 script가 `SEEMIRAI_RESTORE_DATABASE_URL`로
+먼저 접속하므로, smoke 실행 전에 별도 DB로 만들어 둔다. 이미 존재하는 DB는 script가 `public` schema를 비우고 다시 복원한다.
+
+```sh
+if ! docker compose exec -T postgres psql -U seemirai -d postgres -tAc \
+  "SELECT 1 FROM pg_database WHERE datname = 'seemirai_restore'" | grep -q 1; then
+  docker compose exec -T postgres createdb -U seemirai seemirai_restore
+fi
+```
 
 ```sh
 SEEMIRAI_DATABASE_URL=postgres://seemirai:seemirai_local_password@127.0.0.1:55432/seemirai_local \
@@ -144,7 +154,7 @@ fixture smoke가 실패하면 24시간 soak를 시작하지 않는다. stale dat
 
 ```sh
 export SEEMIRAI_RUN_SOAK=1
-export SEEMIRAI_SOAK_LOG_DIR=/home/lim/vaults/99_운영/seemirai-soak
+export SEEMIRAI_SOAK_LOG_DIR="$HOME/vaults/99_운영/seemirai-soak"
 
 node scripts/soak-paper-24h.mjs \
   --duration-ms 86400000 \
@@ -163,7 +173,7 @@ node scripts/soak-paper-24h.mjs \
 기본 artifact 위치:
 
 ```text
-/home/lim/vaults/99_운영/seemirai-soak
+$HOME/vaults/99_운영/seemirai-soak
 ```
 
 완료로 인정할 summary 조건:
@@ -195,8 +205,8 @@ daily report evidence가 필요하다.
 권장 볼트 위치:
 
 ```text
-/home/lim/vaults/99_운영/seemirai-soak
-/home/lim/vaults/99_운영/seemirai-works
+$HOME/vaults/99_운영/seemirai-soak
+$HOME/vaults/99_운영/seemirai-works
 ```
 
 ## 7. 중단과 복구
