@@ -1,4 +1,5 @@
 import type { RouteShorthandOptions } from "fastify";
+import { killSwitchControlTargetStates } from "../../application/index.js";
 
 const readinessCheckSchema = {
   type: "object",
@@ -51,6 +52,30 @@ const errorResponseSchema = {
         message: { type: "string" },
       },
     },
+  },
+} as const;
+
+/**
+ * kill switch 상태가 런타임에 요구하는 차단 조치의 HTTP 응답 schema다.
+ *
+ * `autoLiquidateOpenPositions`는 MVP paper trading safety invariant에 따라 항상 false다. HARD_STOP이어도 실계좌 청산이나
+ * live broker side effect를 route 응답에서 약속하지 않는다.
+ */
+const actionPlanSchema = {
+  type: "object",
+  required: [
+    "newOrdersBlocked",
+    "strategyEvaluationBlocked",
+    "cancelPendingPaperOrders",
+    "autoLiquidateOpenPositions",
+    "requiresManualReview",
+  ],
+  properties: {
+    newOrdersBlocked: { type: "boolean" },
+    strategyEvaluationBlocked: { type: "boolean" },
+    cancelPendingPaperOrders: { type: "boolean" },
+    autoLiquidateOpenPositions: { const: false },
+    requiresManualReview: { type: "boolean" },
   },
 } as const;
 
@@ -170,6 +195,89 @@ export const statusRouteOptions: RouteShorthandOptions = {
           },
         },
       },
+      500: errorResponseSchema,
+    },
+  },
+};
+
+export const killSwitchRouteOptions: RouteShorthandOptions = {
+  schema: {
+    body: {
+      type: "object",
+      additionalProperties: false,
+      required: ["targetState", "reasonCode"],
+      properties: {
+        targetState: { enum: killSwitchControlTargetStates },
+        // 운영 증거의 집계 키가 공백이나 임의 포맷으로 깨지지 않도록 reason code 문법을 route 입구에서 고정한다.
+        reasonCode: { type: "string", minLength: 1, pattern: "^[A-Za-z0-9][A-Za-z0-9_:-]*$" },
+        message: { type: "string", minLength: 1 },
+        actor: { type: "string", minLength: 1 },
+        metadata: {
+          type: "object",
+          additionalProperties: true,
+        },
+      },
+    },
+    response: {
+      200: {
+        // 성공 응답은 수락된 전이와 후속 조치만 담고, 거부 전이는 409 error schema로 분리한다.
+        type: "object",
+        required: [
+          "status",
+          "correlationId",
+          "transition",
+          "actionPlan",
+          "reasonMatchesTarget",
+          "recommendedTargetState",
+          "hardStopCancelJob",
+          "evidence",
+        ],
+        properties: {
+          status: { const: "ok" },
+          correlationId: { type: "string" },
+          transition: {
+            type: "object",
+            required: ["accepted", "fromState", "toState", "reasonCode", "message"],
+            properties: {
+              accepted: { const: true },
+              fromState: { type: "string" },
+              toState: { type: "string" },
+              reasonCode: { type: "string" },
+              message: { type: "string" },
+            },
+          },
+          actionPlan: actionPlanSchema,
+          reasonMatchesTarget: { type: "boolean" },
+          recommendedTargetState: { type: ["string", "null"] },
+          hardStopCancelJob: {
+            anyOf: [
+              { type: "null" },
+              {
+                type: "object",
+                required: ["jobType", "idempotencyKey", "created"],
+                properties: {
+                  jobType: { type: "string" },
+                  idempotencyKey: { type: "string" },
+                  jobId: { type: "string" },
+                  created: { type: "boolean" },
+                },
+              },
+            ],
+          },
+          evidence: {
+            type: "object",
+            required: ["auditEventId", "riskEventId"],
+            properties: {
+              auditEventId: { type: ["string", "null"] },
+              riskEventId: { type: ["string", "null"] },
+            },
+          },
+        },
+      },
+      400: errorResponseSchema,
+      401: errorResponseSchema,
+      403: errorResponseSchema,
+      409: errorResponseSchema,
       500: errorResponseSchema,
     },
   },

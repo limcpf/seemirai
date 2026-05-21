@@ -34,6 +34,8 @@
 - `/status`는 full config, secret, token, raw headers, raw order detail, raw position detail을 반환하지 않는다.
 - POST control endpoint가 활성화되면 `Authorization: Bearer <token>`을 요구한다.
 - POST control endpoint가 활성화된 상태에서 local control token이 없으면 startup fail한다.
+- `POST /kill-switch`는 target state enum만 받으며, `STRATEGY_PAUSED` 같은 전략별 제어는 전역 control route에서 받지 않는다.
+- `/kill-switch` 성공 응답은 상태 전이, action plan, audit/risk evidence id, job idempotency key만 반환하고 secret, raw header, raw order detail을 반환하지 않는다.
 - local control token과 Telegram token은 env 또는 외부 secret 주입으로만 전달하고 저장소 문서, PR body, 로그, status response에 원문을 남기지 않는다.
 - Authorization header는 logger redaction 대상이며, route error response는 correlation id와 짧은 error code/message만 반환한다.
 

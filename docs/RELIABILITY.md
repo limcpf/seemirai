@@ -53,6 +53,15 @@ Codex-native 운영은 Codex, Git, GitHub, shell command, 문서 상태를 연�
 - `HARD_STOP` action plan은 open position 자동 청산을 항상 금지한다. 실제 pending order cancel 호출은 M6
   `executeHardStopPendingPaperOrderCancels` 경계에서 `BrokerPort.cancelOrder`로만 수행하며, 실행 직전에도
   `autoLiquidateOpenPositions=false`를 재검증한다.
+- HTTP control의 `POST /kill-switch`는 target state를 `NEW_ORDERS_BLOCKED`, `HARD_STOP`,
+  `MANUAL_REVIEW_REQUIRED`, `NORMAL`으로 제한한다. `HARD_STOP -> NORMAL` 직접 복구는 거부하고, 허용/거부된 요청은
+  모두 `audit_events`와 `risk_events`에 남긴다.
+- HTTP control에서 허용된 kill switch 전이는 `kill_switch_state` snapshot, audit evidence, risk evidence,
+  `HARD_STOP` pending cancel job을 하나의 DB transaction으로 저장한다. pending cancel job은 후속 실행 경계를 남길 뿐
+  route handler 안에서 broker cancel side effect를 수행하지 않는다.
+- P0 원인 mapping은 `db_write_failure`, idempotency 위반, fill/order accounting mismatch, risk 계산 불능,
+  audit persistence failure, live order API 오사용을 `HARD_STOP`으로, stale/lag/freshness/data gap을
+  `NEW_ORDERS_BLOCKED`로, 알림/리포트 반복 실패와 운영자 판단 필요 상태를 `MANUAL_REVIEW_REQUIRED`로 수렴시킨다.
 
 ## 검증 규칙
 

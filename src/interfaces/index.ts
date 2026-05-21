@@ -8,6 +8,7 @@ export {
   createDatabaseControlReadinessProvider,
   createDatabaseControlStatusProvider,
   createHttpControlServer,
+  createKillSwitchControlRouteHandler,
   createLocalControlAuthPreHandler,
   getHttpControlListenOptions,
 } from "./http-control.js";
@@ -23,6 +24,7 @@ export type {
   CreateDatabaseReadinessProviderOptions,
   HttpControlListenOptions,
   HttpControlServerOptions,
+  KillSwitchControlRequestBody,
   LocalControlAuthInput,
   LocalControlAuthResult,
 } from "./http-control.js";

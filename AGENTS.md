@@ -31,7 +31,9 @@
 
 - 항상 Plan을 먼저 세우고 작업한다.
 - 모든 답변과 작업 요약은 한국어로 작성한다.
-- 비즈니스/시스템 흐름을 표현하는 TypeScript 로직은 한국어 JSDoc으로 의도와 경계를 설명하고, 상태 전이·리스크 차단·외부 side effect 같은 핵심 분기에는 한국어 한 줄 주석을 남긴다.
+- 비즈니스/시스템/프로그램 흐름을 표현하는 TypeScript 타입·인터페이스·클래스·서비스·함수는 반드시 한국어 JSDoc을 작성한다. JSDoc에는 단순 이름 풀이가 아니라 책임, 호출 경계, 입력/출력 의미, 유지해야 하는 invariant, 외부 side effect 여부를 포함한다.
+- 상태 전이, 리스크 차단, 인증/권한, 재시도/idempotency, DB write, audit/risk evidence, 외부 API·job·notification 같은 핵심 분기에는 반드시 한국어 한 줄 주석을 남긴다. 주석은 “무엇을 하는가”보다 “왜 이 분기에서 차단/기록/지연/커밋하는가”를 설명한다.
+- 새 비즈니스 로직을 추가하거나 기존 로직을 수정할 때 주석 보강을 완료 조건에 포함한다. 주석이 함수명 반복, 타입명 번역, 구현 줄별 설명에 그치면 완료로 보지 않는다.
 - TypeScript 모듈을 새로 만들거나 분리할 때는 public entry와 같은 이름의 디렉터리에 세부 구현을 두는 구조를 기본으로 한다. 상세 기준은 [`docs/design-docs/2026-05-20-typescript-module-structure.md`](./docs/design-docs/2026-05-20-typescript-module-structure.md)를 따른다.
 - 사용자가 명시하지 않은 신규 의존성 추가는 피한다.
 - 관련 없는 파일은 수정하지 않는다.
