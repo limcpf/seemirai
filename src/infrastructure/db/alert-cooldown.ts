@@ -45,6 +45,20 @@ export class PostgresAlertCooldownRepository implements AlertCooldownStore {
     return reserveAlertDelivery(this.database, input);
   }
 
+  /**
+   * provider 실패 후 in-flight lease만 해제한다.
+   *
+   * 실패는 성공 전송 기준점이 아니므로 last_sent_at은 바꾸지 않고, 다음 실제 재시도나 새 실패 evidence가 예약 만료까지
+   * 막히지 않게 delivery_reserved_until만 비운다.
+   */
+  public async releaseDeliveryReservation(input: AlertCooldownRecordInput): Promise<AlertCooldownState> {
+    return upsertAlertCooldown(this.database, input, {
+      lastSentAt: null,
+      lastSkippedAt: null,
+      deliveryReservedUntil: null,
+    });
+  }
+
   public async recordSkipped(input: AlertCooldownRecordInput): Promise<AlertCooldownState> {
     return recordAlertCooldownSkipped(this.database, input);
   }

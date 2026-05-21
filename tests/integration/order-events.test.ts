@@ -1,10 +1,18 @@
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
+import type {
+  AlertNotification,
+  DailyReportNotification,
+  NotificationResult,
+  NotifierPort,
+} from "../../src/application/index.js";
 import { createRiskGateRuntimeDecisionPlan } from "../../src/application/index.js";
 import type { RiskGateDecisionEvidenceAppendInput } from "../../src/application/index.js";
 import {
   appendAuditEvent,
   appendOrderStateTransitionEvent,
+  PostgresAlertCooldownRepository,
+  PostgresAuditLogRepository,
   PostgresRiskGateRuntimeEventStore,
   applyPostgresKillSwitchControl,
   appendRiskEvent,
@@ -37,6 +45,7 @@ describeDb("state transition persistence integration", () => {
 
   beforeEach(async () => {
     const db = await getDatabase();
+    await db.deleteFrom("alert_cooldowns").execute();
     await db.deleteFrom("order_events").execute();
     await db.deleteFrom("audit_events").execute();
     await db.deleteFrom("risk_events").execute();
@@ -341,6 +350,65 @@ describeDb("state transition persistence integration", () => {
     });
   });
 
+  it("dispatches Telegram alert through configured kill switch control runtime path", async () => {
+    const db = await getDatabase();
+    const notifier = new RecordingNotifier();
+
+    const result = await applyPostgresKillSwitchControl({
+      database: db,
+      request: {
+        targetState: "HARD_STOP",
+        reasonCode: "db_write_failure",
+        correlationId: "http-kill-switch-alert",
+        occurredAt,
+      },
+      alertDispatch: {
+        environment: "test",
+        runMode: "paper_trading",
+        notifier,
+        durableCooldownStore: new PostgresAlertCooldownRepository(db),
+        auditLog: new PostgresAuditLogRepository(db),
+        clock: () => new Date(occurredAt),
+      },
+    });
+
+    const cooldown = await db
+      .selectFrom("alert_cooldowns")
+      .select(["fingerprint", "last_sent_at", "delivery_reserved_until"])
+      .where("reason_code", "=", "db_write_failure")
+      .executeTakeFirstOrThrow();
+    const notificationAudit = await db
+      .selectFrom("audit_events")
+      .select(["event_type", "severity", "correlation_id"])
+      .where("correlation_id", "=", "http-kill-switch-alert")
+      .where("event_type", "=", "NOTIFICATION_DELIVERY")
+      .executeTakeFirstOrThrow();
+
+    expect(result.alertDispatch).toMatchObject({
+      notification: {
+        delivered: true,
+      },
+    });
+    expect(notifier.alerts[0]).toMatchObject({
+      severity: "P0",
+      title: "Kill switch HARD_STOP",
+      fingerprint: "alert:test:paper_trading:P0:kill_switch_control:global:global:db_write_failure",
+      metadata: {
+        source: "kill_switch_control",
+      },
+    });
+    expect(cooldown).toMatchObject({
+      fingerprint: "alert:test:paper_trading:P0:kill_switch_control:global:global:db_write_failure",
+      delivery_reserved_until: null,
+    });
+    expect(cooldown.last_sent_at).toEqual(new Date(occurredAt));
+    expect(notificationAudit).toMatchObject({
+      event_type: "NOTIFICATION_DELIVERY",
+      severity: "INFO",
+      correlation_id: "http-kill-switch-alert",
+    });
+  });
+
   async function getDatabase(): Promise<Database> {
     if (database !== undefined) {
       return database;
@@ -353,6 +421,25 @@ describeDb("state transition persistence integration", () => {
     return database;
   }
 });
+
+class RecordingNotifier implements NotifierPort {
+  public readonly alerts: AlertNotification[] = [];
+
+  public async sendAlert(notification: AlertNotification): Promise<NotificationResult> {
+    this.alerts.push(notification);
+    return {
+      delivered: true,
+      providerMessageId: "telegram-integration-1",
+    };
+  }
+
+  public async sendDailyReport(_notification: DailyReportNotification): Promise<NotificationResult> {
+    return {
+      delivered: true,
+      providerMessageId: "telegram-daily-integration-1",
+    };
+  }
+}
 
 async function insertOrder(database: Database): Promise<{ id: string }> {
   return database

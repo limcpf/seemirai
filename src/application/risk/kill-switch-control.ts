@@ -9,6 +9,7 @@ import {
   type StateTransitionDecision,
   type TimestampInput,
 } from "../../domain/index.js";
+import type { AlertDispatchResult } from "../alerts/index.js";
 
 /**
  * HTTP control route가 직접 요청할 수 있는 kill switch target 목록이다.
@@ -91,6 +92,13 @@ export interface KillSwitchControlResult {
     jobId?: string;
     created: boolean;
   };
+  /**
+   * control 전이가 실제 운영 알림으로 이어졌는지 나타내는 선택 결과다.
+   *
+   * HTTP 응답은 이 객체를 그대로 노출하지 않고 필요한 안전 필드만 선택해야 한다. retry payload와 provider 결과가 들어갈 수
+   * 있으므로 route layer가 secret-free response shape을 별도로 유지한다.
+   */
+  alertDispatch?: AlertDispatchResult;
 }
 
 /**

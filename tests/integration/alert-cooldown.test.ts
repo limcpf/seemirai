@@ -93,6 +93,16 @@ describeDb("alert cooldown integration", () => {
       cooldownMs: 60_000,
       reserveUntil: "2026-05-21T00:01:10.000Z",
     });
+    const released = await repository.releaseDeliveryReservation({
+      ...input,
+      occurredAt: "2026-05-21T00:00:15.000Z",
+    });
+    const retryReservation = await repository.reserveDelivery({
+      ...input,
+      occurredAt: "2026-05-21T00:00:16.000Z",
+      cooldownMs: 60_000,
+      reserveUntil: "2026-05-21T00:01:16.000Z",
+    });
     await repository.recordSent({
       ...input,
       occurredAt: "2026-05-21T00:00:20.000Z",
@@ -112,6 +122,13 @@ describeDb("alert cooldown integration", () => {
       reserved: false,
       state: {
         deliveryReservedUntil: new Date("2026-05-21T00:01:00.000Z"),
+      },
+    });
+    expect(released.deliveryReservedUntil).toBeNull();
+    expect(retryReservation).toMatchObject({
+      reserved: true,
+      state: {
+        deliveryReservedUntil: new Date("2026-05-21T00:01:16.000Z"),
       },
     });
     expect(skipped).toMatchObject({

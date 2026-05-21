@@ -50,6 +50,8 @@
   `env.SEEMIRAI_TELEGRAM_BOT_TOKEN`을 모두 가린다.
 - Telegram provider 실패 결과는 HTTP status나 짧은 reason code만 남기며 provider 응답 원문, token 포함 URL, raw request
   body를 audit metadata에 기록하지 않는다.
+- notifier 예외도 `notification_provider_exception` 같은 짧은 reason code로만 정규화하고, exception message나 stack trace를
+  Telegram payload, audit metadata, HTTP response에 그대로 싣지 않는다.
 - Telegram message text는 provider 제한인 4096자 안으로 잘라 보낸다. 긴 장애 문맥의 전체 원문은 Telegram provider 요청
   body나 audit metadata에 그대로 남기지 않는다.
 

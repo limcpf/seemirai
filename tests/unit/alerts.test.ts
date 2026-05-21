@@ -9,9 +9,11 @@ import type {
   NotifierPort,
 } from "../../src/application/index.js";
 import {
+  createKillSwitchControlDecision,
   createAlertFingerprint,
   createInMemoryAlertCooldownStore,
   createNotificationRetryJobPlan,
+  dispatchKillSwitchControlAlert,
   dispatchAlertWithCooldown,
   evaluateNotificationFailure,
   getDefaultAlertCooldownMs,
@@ -31,6 +33,31 @@ describe("alert cooldown and notification policy", () => {
         reasonCode: "DB_WRITE_FAILURE",
       }),
     ).toBe("alert:prod:paper_trading:P0:db_write_failure:krw-btc:trend_following:db_write_failure");
+  });
+
+  it("escapes fingerprint separators inside normalized dimensions", () => {
+    const marketWithSeparator = createAlertFingerprint({
+      environment: "prod",
+      runMode: "paper",
+      severity: "P1",
+      alertType: "risk",
+      market: "a:b",
+      strategyId: "c",
+      reasonCode: "stale_market_data",
+    });
+    const strategyWithSeparator = createAlertFingerprint({
+      environment: "prod",
+      runMode: "paper",
+      severity: "P1",
+      alertType: "risk",
+      market: "a",
+      strategyId: "b:c",
+      reasonCode: "stale_market_data",
+    });
+
+    expect(marketWithSeparator).toContain("a%3ab");
+    expect(strategyWithSeparator).toContain("b%3ac");
+    expect(marketWithSeparator).not.toBe(strategyWithSeparator);
   });
 
   it("keeps severity cooldown windows aligned with M8 policy", () => {
@@ -147,6 +174,61 @@ describe("alert cooldown and notification policy", () => {
     expect(notifier.alerts).toHaveLength(1);
   });
 
+  it("clears delivery reservations after provider failure so immediate retry can send", async () => {
+    const notifier = new RecordingNotifier();
+    const cooldownStore = createInMemoryAlertCooldownStore();
+    const request = {
+      environment: "prod",
+      runMode: "paper_trading",
+      severity: "P0" as const,
+      alertType: "db_write_failure",
+      reasonCode: "db_write_failure",
+      title: "DB write failed",
+      body: "risk evidence cannot be persisted",
+      occurredAt: "2026-05-21T00:00:00.000Z",
+    };
+    notifier.nextResult = {
+      delivered: false,
+      skippedReason: "telegram_http_500",
+    };
+
+    const failed = await dispatchAlertWithCooldown(
+      {
+        notifier,
+        durableCooldownStore: cooldownStore,
+      },
+      request,
+    );
+    const stateAfterFailure = await cooldownStore.findByFingerprint(failed.fingerprint);
+    notifier.nextResult = {
+      delivered: true,
+      providerMessageId: "telegram-2",
+    };
+    const retry = await dispatchAlertWithCooldown(
+      {
+        notifier,
+        durableCooldownStore: cooldownStore,
+      },
+      {
+        ...request,
+        occurredAt: "2026-05-21T00:00:01.000Z",
+      },
+    );
+
+    expect(failed.notification).toMatchObject({
+      delivered: false,
+      skippedReason: "telegram_http_500",
+    });
+    expect(stateAfterFailure?.deliveryReservedUntil).toBeNull();
+    expect(retry).toMatchObject({
+      cooldownHit: false,
+      notification: {
+        delivered: true,
+      },
+    });
+    expect(notifier.alerts).toHaveLength(2);
+  });
+
   it("records cooldown timestamps from delivery time while preserving alert occurrence time", async () => {
     const notifier = new RecordingNotifier();
     const cooldownStore = createInMemoryAlertCooldownStore();
@@ -212,6 +294,46 @@ describe("alert cooldown and notification policy", () => {
 
     expect(escalated.cooldownHit).toBe(false);
     expect(notifier.alerts.map((alert) => alert.severity)).toEqual(["P1", "P0"]);
+  });
+
+  it("normalizes notifier exceptions into failure audit and retry handling", async () => {
+    const notifier = new ThrowingNotifier();
+    const auditLog = new RecordingAuditLog();
+    const cooldownStore = createInMemoryAlertCooldownStore();
+    const result = await dispatchAlertWithCooldown(
+      {
+        notifier,
+        durableCooldownStore: cooldownStore,
+        auditLog,
+      },
+      {
+        environment: "prod",
+        runMode: "paper_trading",
+        severity: "P0",
+        alertType: "db_write_failure",
+        reasonCode: "db_write_failure",
+        title: "DB write failed",
+        body: "risk evidence cannot be persisted",
+        occurredAt: "2026-05-21T00:00:00.000Z",
+        correlationId: "corr-provider-exception",
+      },
+    );
+    const state = await cooldownStore.findByFingerprint(result.fingerprint);
+
+    expect(result.notification).toMatchObject({
+      delivered: false,
+      skippedReason: "notification_provider_exception",
+    });
+    expect(result.retryJobPlan).toMatchObject({
+      jobType: notificationRetryJobType,
+    });
+    expect(result.failureEvaluation.state.consecutiveFailures).toBe(1);
+    expect(state?.deliveryReservedUntil).toBeNull();
+    expect(auditLog.events.at(-1)).toMatchObject({
+      eventType: "NOTIFICATION_DELIVERY",
+      severity: "ERROR",
+      reasonCode: "notification_failure",
+    });
   });
 
   it("creates retry job candidates for P0/P1 notification provider failures", async () => {
@@ -281,6 +403,53 @@ describe("alert cooldown and notification policy", () => {
       },
     });
   });
+
+  it("dispatches accepted kill switch control transitions as operational alerts", async () => {
+    const notifier = new RecordingNotifier();
+    const cooldownStore = createInMemoryAlertCooldownStore();
+    const controlRequest = {
+      targetState: "HARD_STOP" as const,
+      reasonCode: "db_write_failure",
+      correlationId: "corr-kill-switch-alert",
+      actor: "operator",
+      occurredAt: "2026-05-21T00:00:00.000Z",
+    };
+    const controlResult = {
+      ...createKillSwitchControlDecision({
+        currentState: "NORMAL",
+        ...controlRequest,
+      }),
+      auditEventId: "audit-1",
+      riskEventId: "risk-1",
+    };
+
+    const result = await dispatchKillSwitchControlAlert({
+      alertDispatch: {
+        environment: "prod",
+        runMode: "paper_trading",
+        notifier,
+        durableCooldownStore: cooldownStore,
+      },
+      controlRequest,
+      controlResult,
+    });
+
+    expect(result).toMatchObject({
+      cooldownHit: false,
+      notification: {
+        delivered: true,
+      },
+    });
+    expect(notifier.alerts[0]).toMatchObject({
+      severity: "P0",
+      title: "Kill switch HARD_STOP",
+      metadata: {
+        source: "kill_switch_control",
+        audit_event_id: "audit-1",
+        risk_event_id: "risk-1",
+      },
+    });
+  });
 });
 
 class RecordingNotifier implements NotifierPort {
@@ -334,5 +503,11 @@ class BlockingNotifier extends RecordingNotifier {
 
   public resolveDelivery(): void {
     this.resolveResult?.(this.nextResult);
+  }
+}
+
+class ThrowingNotifier extends RecordingNotifier {
+  public override async sendAlert(_notification: AlertNotification): Promise<NotificationResult> {
+    throw new Error("provider exploded");
   }
 }

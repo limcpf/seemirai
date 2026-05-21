@@ -5,6 +5,10 @@ import type {
   NotificationResult,
   NotifierPort,
 } from "../ports/index.js";
+import type {
+  KillSwitchControlRequest,
+  KillSwitchControlResult,
+} from "../risk/index.js";
 import type { JsonRecord, TimestampInput } from "../../domain/index.js";
 
 export const notificationRetryJobType = "notification_retry";
@@ -108,6 +112,12 @@ export interface AlertCooldownReservationResult {
 export interface AlertCooldownStore {
   findByFingerprint(fingerprint: string): Promise<AlertCooldownState | undefined>;
   reserveDelivery(input: AlertCooldownReservationInput): Promise<AlertCooldownReservationResult>;
+  /**
+   * provider 실패 후 전송 예약 lease만 해제한다.
+   *
+   * 실패를 cooldown 성공으로 기록하지 않으면서 다음 실제 재시도나 새 알림 evidence가 예약 창에 막히지 않게 한다.
+   */
+  releaseDeliveryReservation(input: AlertCooldownRecordInput): Promise<AlertCooldownState>;
   recordSent(input: AlertCooldownRecordInput): Promise<AlertCooldownState>;
   recordSkipped(input: AlertCooldownRecordInput): Promise<AlertCooldownState>;
 }
@@ -178,6 +188,17 @@ export interface AlertDispatchServiceOptions {
   clock?: () => Date;
   failureState?: NotificationFailureState;
   deliveryReservationMs?: number;
+}
+
+/**
+ * kill switch control 결과를 alert dispatch로 연결하기 위한 runtime 문맥이다.
+ *
+ * environment와 runMode는 fingerprint의 상위 운영 차원이다. provider/cooldown/audit 의존성은 일반 alert dispatch service와
+ * 같지만, kill switch 전이는 HTTP control이나 자동 가드레일에서 발생할 수 있으므로 호출 경계를 별도 옵션으로 명시한다.
+ */
+export interface KillSwitchAlertDispatchOptions extends AlertDispatchServiceOptions {
+  environment: string;
+  runMode: string;
 }
 
 /**
@@ -279,7 +300,7 @@ export async function dispatchAlertWithCooldown(
     };
   }
 
-  const notification = await options.notifier.sendAlert({
+  const notification = await sendAlertSafely(options.notifier, {
     severity: request.severity,
     title: request.title,
     body: request.body,
@@ -308,6 +329,9 @@ export async function dispatchAlertWithCooldown(
     };
   }
 
+  // provider 실패 후 lease를 바로 해제해야 동일 fingerprint의 실제 재시도나 새 실패 evidence가 예약 만료까지 막히지 않는다.
+  await store.releaseDeliveryReservation(toCooldownRecordInput(request, fingerprint, deliveryCompletedAt));
+
   // P0/P1 provider failure는 즉시 운영 위험이므로 retry job 후보와 audit evidence를 함께 남긴다.
   const retryJobPlan = usesDurableCooldown(request.severity)
     ? createNotificationRetryJobPlan({ request, fingerprint, occurredAt: alertOccurredAt })
@@ -325,6 +349,25 @@ export async function dispatchAlertWithCooldown(
     ...(retryJobPlan === undefined ? {} : { retryJobPlan }),
     failureEvaluation,
   };
+}
+
+/**
+ * accepted kill switch control 전이를 Telegram alert dispatch 요청으로 변환해 전송한다.
+ *
+ * `NORMAL` 복구는 중복 operational noise를 피하기 위해 여기서 alert를 만들지 않는다. 주문 차단, HARD_STOP, 수동 검토처럼
+ * 사람이 즉시 알아야 하는 상태만 P0/P1/P2 alert로 보낸다.
+ */
+export async function dispatchKillSwitchControlAlert(input: {
+  alertDispatch: KillSwitchAlertDispatchOptions;
+  controlRequest: KillSwitchControlRequest;
+  controlResult: KillSwitchControlResult;
+}): Promise<AlertDispatchResult | undefined> {
+  const alertRequest = createKillSwitchControlAlertRequest(input);
+  if (alertRequest === undefined) {
+    return undefined;
+  }
+
+  return dispatchAlertWithCooldown(input.alertDispatch, alertRequest);
 }
 
 /**
@@ -459,6 +502,18 @@ export function createInMemoryAlertCooldownStore(): AlertCooldownStore {
         state,
       };
     },
+    async releaseDeliveryReservation(input) {
+      const previous = states.get(input.fingerprint);
+      const state = toCooldownState(
+        input,
+        previous?.lastSentAt ?? null,
+        previous?.lastSkippedAt ?? null,
+        null,
+      );
+      // provider 실패는 cooldown 성공 기준점이 아니므로 in-flight lease만 지우고 sent/skip evidence는 보존한다.
+      states.set(input.fingerprint, state);
+      return state;
+    },
     async recordSent(input) {
       const previous = states.get(input.fingerprint);
       const state = toCooldownState(input, input.occurredAt, previous?.lastSkippedAt ?? null, null);
@@ -477,6 +532,89 @@ export function createInMemoryAlertCooldownStore(): AlertCooldownStore {
       return state;
     },
   };
+}
+
+async function sendAlertSafely(
+  notifier: NotifierPort,
+  notification: AlertNotification,
+): Promise<NotificationResult> {
+  try {
+    return await notifier.sendAlert(notification);
+  } catch {
+    // provider adapter가 예외를 던져도 retry/audit/failure threshold 경로가 동일하게 실행되도록 짧은 reason code로 낮춘다.
+    return {
+      delivered: false,
+      skippedReason: "notification_provider_exception",
+    };
+  }
+}
+
+function createKillSwitchControlAlertRequest(input: {
+  alertDispatch: KillSwitchAlertDispatchOptions;
+  controlRequest: KillSwitchControlRequest;
+  controlResult: KillSwitchControlResult;
+}): AlertDispatchRequest | undefined {
+  if (!input.controlResult.transition.accepted) {
+    return undefined;
+  }
+
+  const severity = toKillSwitchAlertSeverity(input.controlResult.transition.toState);
+  if (severity === undefined) {
+    return undefined;
+  }
+
+  const transition = input.controlResult.transition;
+  return {
+    environment: input.alertDispatch.environment,
+    runMode: input.alertDispatch.runMode,
+    severity,
+    alertType: "kill_switch_control",
+    reasonCode: transition.reasonCode,
+    title: `Kill switch ${transition.toState}`,
+    body: [
+      `state: ${transition.fromState} -> ${transition.toState}`,
+      `reason: ${transition.reasonCode}`,
+      `message: ${transition.message}`,
+      `new_orders_blocked: ${input.controlResult.actionPlan.newOrdersBlocked}`,
+      `requires_manual_review: ${input.controlResult.actionPlan.requiresManualReview}`,
+    ].join("\n"),
+    occurredAt: transition.event.occurredAt,
+    correlationId: input.controlRequest.correlationId,
+    metadata: {
+      source: "kill_switch_control",
+      actor: input.controlRequest.actor ?? "kill-switch-control",
+      from_state: transition.fromState,
+      to_state: transition.toState,
+      reason_matches_target: input.controlResult.reasonMatchesTarget,
+      recommended_target_state: input.controlResult.recommendedTargetState ?? null,
+      audit_event_id: input.controlResult.auditEventId ?? null,
+      risk_event_id: input.controlResult.riskEventId ?? null,
+      hard_stop_cancel_job: input.controlResult.hardStopCancelJob ?? null,
+      action_plan: {
+        new_orders_blocked: input.controlResult.actionPlan.newOrdersBlocked,
+        strategy_evaluation_blocked: input.controlResult.actionPlan.strategyEvaluationBlocked,
+        cancel_pending_paper_orders: input.controlResult.actionPlan.cancelPendingPaperOrders,
+        auto_liquidate_open_positions: input.controlResult.actionPlan.autoLiquidateOpenPositions,
+        requires_manual_review: input.controlResult.actionPlan.requiresManualReview,
+      },
+    },
+  };
+}
+
+function toKillSwitchAlertSeverity(
+  state: KillSwitchControlResult["transition"]["toState"],
+): AlertSeverity | undefined {
+  switch (state) {
+    case "HARD_STOP":
+      return "P0";
+    case "MANUAL_REVIEW_REQUIRED":
+    case "NEW_ORDERS_BLOCKED":
+      return "P1";
+    case "STRATEGY_PAUSED":
+      return "P2";
+    case "NORMAL":
+      return undefined;
+  }
 }
 
 function selectCooldownStore(
@@ -597,7 +735,9 @@ async function appendAlertAudit(
 }
 
 function normalizeFingerprintPart(value: string): string {
-  return value.trim().toLowerCase().replaceAll(/[^a-z0-9_:-]+/gu, "_");
+  const normalized = value.trim().toLowerCase().replaceAll(/[^a-z0-9_:-]+/gu, "_");
+  // fingerprint join 구분자인 ':'는 세그먼트 내부에서 percent-escape해 서로 다른 business key가 한 row로 충돌하지 않게 한다.
+  return normalized.replaceAll(":", "%3a");
 }
 
 function toIsoTimestamp(value: TimestampInput): string {

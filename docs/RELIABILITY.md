@@ -69,15 +69,23 @@ Codex-native 운영은 Codex, Git, GitHub, shell command, 문서 상태를 연�
 - severity가 fingerprint에 포함되므로 낮은 등급 알림의 cooldown은 P0 escalation을 막지 않는다.
 - P0/P1 cooldown은 `alert_cooldowns` PostgreSQL row로 보존해 프로세스 재시작 후에도 중복 Telegram 전송을 억제한다.
 - P0/P1 provider 호출 전에는 `delivery_reserved_until`을 atomic하게 잡아 같은 fingerprint의 동시 요청을 직렬화한다.
+- provider 실패나 notifier 예외가 발생하면 `delivery_reserved_until`을 즉시 해제해 같은 fingerprint의 실제 재시도와 추가 실패
+  evidence가 reservation 만료까지 막히지 않게 한다.
 - P2/P3 cooldown은 M8 Sub PR 3 범위에서 process memory로 제한한다. 재시작 후 낮은 등급 알림이 다시 전송될 수 있는 점은
   의도한 trade-off이며, durable 저장소 확장은 후속 요구가 있을 때 별도 변경으로 다룬다.
 - cooldown hit는 provider 호출 없이 `last_skipped_at`과 `ALERT_COOLDOWN` audit event를 남긴다.
 - provider 전송 성공만 `last_sent_at`을 갱신하고 `NOTIFICATION_DELIVERY` audit event를 남긴다. `last_sent_at`은 alert 발생
   시각이 아니라 provider 전송 완료 시각 기준이며, out-of-order update가 들어와도 뒤로 가지 않는다.
+- notifier adapter가 예외를 던져도 alert dispatch는 `notification_provider_exception` 실패 결과로 정규화해 audit,
+  retry 후보, failure threshold 평가를 같은 경로로 수행한다.
 - P0/P1 provider failure는 `notification_retry` job 후보를 만들지만, 이 단계에서 jobs table insert나 worker 실행을 직접
   수행하지 않는다.
 - provider 실패가 연속 3회이거나 첫 실패 이후 10분 이상 지속되면 kill switch mapping에서 `MANUAL_REVIEW_REQUIRED` 후보로
   쓰는 reason code를 반환한다.
+- fingerprint 세그먼트 안의 `:`는 join 구분자와 충돌하지 않도록 `%3a`로 escape한다. 서로 다른 market/strategy/reason 조합이
+  같은 cooldown row를 공유해 오억제되는 상황을 막기 위한 규칙이다.
+- Telegram 설정이 있는 runtime kill switch control provider는 accepted 전이를 DB transaction commit 이후 alert dispatch로
+  연결한다. Telegram side effect는 kill switch durable update transaction 안에 넣지 않는다.
 
 ## 검증 규칙
 

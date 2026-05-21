@@ -129,6 +129,7 @@ P0/P1 원인 mapping은 application layer의 `mapKillSwitchReasonToTargetState`�
 - outbound adapter: `src/infrastructure/telegram/notifier.ts`
 - durable cooldown repository: `src/infrastructure/db/alert-cooldown.ts`
 - runtime config loader: `src/runtime/notification-config.ts`
+- runtime control wiring: `src/runtime/notification-runtime.ts`
 
 Telegram 알림은 outbound `sendMessage`만 사용한다. 이 단계는 Telegram webhook, polling, command 수신 route를 만들지
 않으며, daily report 집계도 후속 Sub PR 범위로 유지한다. message format은 Markdown/HTML parse mode 없는 plain text다.
@@ -137,12 +138,14 @@ Telegram 단일 message text 제한인 4096자를 넘으면 전송 전에 trunca
 
 설정 경계:
 
+- alert environment: `SEEMIRAI_ENV` env, fallback `NODE_ENV`, 기본 `local`
 - bot token 우선순위: `SEEMIRAI_TELEGRAM_BOT_TOKEN` env, legacy `TELEGRAM_BOT_TOKEN` env, `secrets.telegram_bot_token`
 - chat id 우선순위: `SEEMIRAI_TELEGRAM_CHAT_ID` env, legacy `TELEGRAM_CHAT_ID` env, `telegram.chat_id`
 - provider timeout: `telegram.provider_timeout_ms`, 기본 `5000`
 
 alert fingerprint는 `environment + run_mode + severity + alert_type + market_or_global + strategy_id_or_global + reason_code`로
-만든다. severity가 key에 들어가므로 P1 cooldown 중에도 같은 원인의 P0 escalation은 막히지 않는다.
+만든다. severity가 key에 들어가므로 P1 cooldown 중에도 같은 원인의 P0 escalation은 막히지 않는다. 각 세그먼트 안의 `:`는
+`%3a`로 escape해 join 구분자와 충돌하지 않게 한다.
 
 cooldown 기본값:
 
@@ -157,6 +160,11 @@ P0/P1 provider failure는 `notification_retry` job 후보 payload와 idempotency
 worker 실행을 연결하지 않고, 후속 runtime 조립이 사용할 retry contract만 고정한다. provider 실패가 연속 3회이거나 첫 실패
 이후 10분 이상 이어지면 `notification_consecutive_failure` 또는 `notification_failure_threshold_exceeded` reason code를
 반환해 kill switch mapping의 `MANUAL_REVIEW_REQUIRED` 후보로 쓸 수 있게 한다.
+
+`createPaperNoKeyKillSwitchControlProvider`는 Telegram 설정이 있을 때 `POST /kill-switch` provider를 alert dispatch 경로와
+함께 조립한다. accepted `HARD_STOP`, `NEW_ORDERS_BLOCKED`, `MANUAL_REVIEW_REQUIRED` 전이는 kill switch state/audit/risk/job
+transaction이 commit된 뒤 Telegram/cooldown/audit 알림 경계로 넘어간다. Telegram 설정이 없으면 control provider는 알림 없이
+동작하지만, 알림 의존성 누락으로 kill switch state update가 차단되지는 않는다.
 
 provider 호출 직전에는 fingerprint 단위 delivery reservation을 먼저 기록한다. 이 atomic gate는 마지막 성공 전송이 cooldown
 안에 있거나 기존 reservation이 만료되지 않았으면 provider 호출 없이 `ALERT_COOLDOWN` audit evidence만 남긴다. 이 경계는
