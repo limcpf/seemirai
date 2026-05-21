@@ -7,6 +7,7 @@ CREATE TABLE IF NOT EXISTS alert_cooldowns (
   reason_code text NOT NULL,
   last_sent_at timestamptz,
   last_skipped_at timestamptz,
+  delivery_reserved_until timestamptz,
   payload_json jsonb NOT NULL DEFAULT '{}'::jsonb,
   created_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now(),
@@ -24,3 +25,7 @@ CREATE INDEX IF NOT EXISTS alert_cooldowns_severity_sent_idx
 CREATE INDEX IF NOT EXISTS alert_cooldowns_market_sent_idx
   ON alert_cooldowns (market, last_sent_at DESC)
   WHERE market IS NOT NULL;
+
+CREATE INDEX IF NOT EXISTS alert_cooldowns_delivery_reserved_idx
+  ON alert_cooldowns (delivery_reserved_until)
+  WHERE delivery_reserved_until IS NOT NULL;

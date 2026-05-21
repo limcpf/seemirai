@@ -8,6 +8,9 @@ import type { TimestampInput } from "../../domain/index.js";
 
 type FetchLike = (input: string, init: RequestInit) => Promise<Response>;
 
+export const telegramMessageMaxLength = 4_096;
+const telegramTruncationSuffix = "\n... [truncated]";
+
 export interface TelegramNotifierOptions {
   botToken: string;
   chatId: string;
@@ -58,7 +61,7 @@ export class TelegramNotifier implements NotifierPort {
         },
         body: JSON.stringify({
           chat_id: this.options.chatId,
-          text,
+          text: enforceTelegramMessageLimit(text),
           disable_web_page_preview: true,
         }),
         signal: controller.signal,
@@ -102,6 +105,26 @@ export class TelegramNotifier implements NotifierPort {
       clearTimeout(timeout);
     }
   }
+}
+
+/**
+ * Telegram Bot API의 단일 message text 길이 제한을 전송 전에 강제한다.
+ *
+ * 운영 장애 alert는 stack trace나 긴 metadata가 붙을 수 있다. provider 400 응답으로 알림 전체가 유실되는 것보다 앞부분의
+ * 핵심 문맥과 truncation marker를 보존하는 쪽이 안전하다. 후속 report/attachment 분할은 별도 기능 범위로 둔다.
+ */
+export function enforceTelegramMessageLimit(
+  text: string,
+  maxLength: number = telegramMessageMaxLength,
+): string {
+  const characters = Array.from(text);
+  if (characters.length <= maxLength) {
+    return text;
+  }
+
+  const suffixCharacters = Array.from(telegramTruncationSuffix);
+  const headLength = Math.max(0, maxLength - suffixCharacters.length);
+  return [...characters.slice(0, headLength), ...suffixCharacters].join("");
 }
 
 /**

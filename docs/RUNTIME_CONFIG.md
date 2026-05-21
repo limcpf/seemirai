@@ -132,6 +132,8 @@ P0/P1 원인 mapping은 application layer의 `mapKillSwitchReasonToTargetState`�
 
 Telegram 알림은 outbound `sendMessage`만 사용한다. 이 단계는 Telegram webhook, polling, command 수신 route를 만들지
 않으며, daily report 집계도 후속 Sub PR 범위로 유지한다. message format은 Markdown/HTML parse mode 없는 plain text다.
+Telegram 단일 message text 제한인 4096자를 넘으면 전송 전에 truncation marker를 붙여 잘라 provider 400으로 알림 전체가
+유실되지 않게 한다.
 
 설정 경계:
 
@@ -155,6 +157,10 @@ P0/P1 provider failure는 `notification_retry` job 후보 payload와 idempotency
 worker 실행을 연결하지 않고, 후속 runtime 조립이 사용할 retry contract만 고정한다. provider 실패가 연속 3회이거나 첫 실패
 이후 10분 이상 이어지면 `notification_consecutive_failure` 또는 `notification_failure_threshold_exceeded` reason code를
 반환해 kill switch mapping의 `MANUAL_REVIEW_REQUIRED` 후보로 쓸 수 있게 한다.
+
+provider 호출 직전에는 fingerprint 단위 delivery reservation을 먼저 기록한다. 이 atomic gate는 마지막 성공 전송이 cooldown
+안에 있거나 기존 reservation이 만료되지 않았으면 provider 호출 없이 `ALERT_COOLDOWN` audit evidence만 남긴다. 이 경계는
+같은 장애가 동시에 들어와도 두 요청이 모두 Telegram provider를 호출하는 상황을 막기 위한 것이다.
 
 ## M6 Execution 안전 설정
 

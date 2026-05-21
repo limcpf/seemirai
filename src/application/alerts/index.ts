@@ -8,6 +8,7 @@ import type {
 import type { JsonRecord, TimestampInput } from "../../domain/index.js";
 
 export const notificationRetryJobType = "notification_retry";
+export const defaultAlertDeliveryReservationMs = 60_000;
 
 /**
  * alert fingerprint를 구성하는 운영 차원이다.
@@ -43,7 +44,8 @@ export interface AlertDispatchRequest extends AlertFingerprintInput {
  * cooldown store에서 조회되는 현재 alert 억제 상태다.
  *
  * lastSentAt은 provider 전송 성공 기준점이고, lastSkippedAt은 cooldown으로 억제된 시각이다. 둘을 분리해 운영자가
- * "실제로 보낸 알림"과 "폭주 방지를 위해 막은 알림"을 감사 로그와 함께 구분할 수 있게 한다.
+ * "실제로 보낸 알림"과 "폭주 방지를 위해 막은 알림"을 감사 로그와 함께 구분할 수 있게 한다. deliveryReservedUntil은
+ * provider 호출 전 check-and-set으로 잡는 짧은 lease라 동시 요청이 provider를 중복 호출하지 못하게 한다.
  */
 export interface AlertCooldownState {
   fingerprint: string;
@@ -54,6 +56,7 @@ export interface AlertCooldownState {
   reasonCode: string;
   lastSentAt: TimestampInput | null;
   lastSkippedAt: TimestampInput | null;
+  deliveryReservedUntil: TimestampInput | null;
   payloadJson: JsonRecord;
 }
 
@@ -75,6 +78,28 @@ export interface AlertCooldownRecordInput {
 }
 
 /**
+ * provider 호출 전에 fingerprint 단위 전송권을 예약하기 위한 입력이다.
+ *
+ * cooldownMs는 마지막 성공 전송 기준 중복 억제 창이고, reserveUntil은 provider 호출 경합을 막기 위한 lease 만료 시각이다.
+ * repository 구현은 이 두 조건을 하나의 atomic write 조건으로 평가해야 한다.
+ */
+export interface AlertCooldownReservationInput extends AlertCooldownRecordInput {
+  cooldownMs: number;
+  reserveUntil: TimestampInput;
+}
+
+/**
+ * alert delivery reservation 결과다.
+ *
+ * reserved=false면 이미 cooldown 또는 in-flight reservation이 있다는 뜻이며, state를 기준으로 skip 이유와 만료 시각을
+ * 계산한다.
+ */
+export interface AlertCooldownReservationResult {
+  reserved: boolean;
+  state: AlertCooldownState;
+}
+
+/**
  * alert cooldown state를 저장하는 application port다.
  *
  * P0/P1은 프로세스 재시작 후에도 중복 전송을 막아야 하므로 PostgreSQL 구현을 사용하고, P2/P3은 memory 구현으로 시작한다.
@@ -82,6 +107,7 @@ export interface AlertCooldownRecordInput {
  */
 export interface AlertCooldownStore {
   findByFingerprint(fingerprint: string): Promise<AlertCooldownState | undefined>;
+  reserveDelivery(input: AlertCooldownReservationInput): Promise<AlertCooldownReservationResult>;
   recordSent(input: AlertCooldownRecordInput): Promise<AlertCooldownState>;
   recordSkipped(input: AlertCooldownRecordInput): Promise<AlertCooldownState>;
 }
@@ -141,7 +167,8 @@ export interface AlertDispatchResult {
  * alert dispatch service를 조립하는 의존성 묶음이다.
  *
  * durableCooldownStore는 P0/P1에 필수이며 memoryCooldownStore는 P2/P3 기본 store를 대체할 때만 넣는다. auditLog는 선택
- * port로 두어 unit test와 후속 runtime wiring이 같은 service를 공유할 수 있게 한다.
+ * port로 두어 unit test와 후속 runtime wiring이 같은 service를 공유할 수 있게 한다. deliveryReservationMs는 provider
+ * 호출이 끝나기 전 같은 fingerprint가 중복 전송되는 경합을 막는 lease 길이다.
  */
 export interface AlertDispatchServiceOptions {
   notifier: NotifierPort;
@@ -150,6 +177,7 @@ export interface AlertDispatchServiceOptions {
   auditLog?: AuditLogPort;
   clock?: () => Date;
   failureState?: NotificationFailureState;
+  deliveryReservationMs?: number;
 }
 
 /**
@@ -206,8 +234,9 @@ export function usesDurableCooldown(severity: AlertSeverity): boolean {
  * 흐름:
  * 1. fingerprint를 만든다.
  * 2. severity에 따라 durable 또는 memory cooldown store를 고른다.
- * 3. cooldown hit면 provider 호출 없이 skip evidence를 남긴다.
- * 4. 전송 실패면 P0/P1 retry job 후보와 notification failure 상태를 만든다.
+ * 3. provider 호출 전에 fingerprint 단위 delivery reservation을 atomic하게 잡는다.
+ * 4. cooldown 또는 in-flight reservation이 있으면 provider 호출 없이 skip evidence를 남긴다.
+ * 5. 전송 실패면 P0/P1 retry job 후보와 notification failure 상태를 만든다.
  */
 export async function dispatchAlertWithCooldown(
   options: AlertDispatchServiceOptions,
@@ -216,20 +245,34 @@ export async function dispatchAlertWithCooldown(
   const occurredAt = request.occurredAt ?? options.clock?.() ?? new Date();
   const fingerprint = createAlertFingerprint(request);
   const store = selectCooldownStore(options, request.severity);
-  const cooldown = await evaluateCooldown(store, fingerprint, request.severity, occurredAt);
+  const cooldownRecordInput = toCooldownRecordInput(request, fingerprint, occurredAt);
+  const reservation = await store.reserveDelivery({
+    ...cooldownRecordInput,
+    cooldownMs: getDefaultAlertCooldownMs(request.severity),
+    reserveUntil: addMs(occurredAt, options.deliveryReservationMs ?? defaultAlertDeliveryReservationMs),
+  });
 
-  if (cooldown.active) {
-    // provider를 호출하지 않아도 cooldown hit 자체는 운영자가 추적해야 하므로 skip timestamp와 audit evidence를 남긴다.
-    await store.recordSkipped(toCooldownRecordInput(request, fingerprint, occurredAt));
-    await appendAlertAudit(options, request, fingerprint, occurredAt, "INFO", "alert_cooldown_hit", {
-      cooldown_until: cooldown.until,
+  if (!reservation.reserved) {
+    const blockedDelivery = describeBlockedDelivery(
+      reservation.state,
+      request.severity,
+      occurredAt,
+    );
+    if (blockedDelivery.skippedReason === undefined) {
+      throw new Error("Alert delivery reservation was rejected without an active cooldown reason");
+    }
+    // provider를 호출하지 않아도 cooldown/reservation hit 자체는 운영자가 추적해야 하므로 skip evidence를 남긴다.
+    await store.recordSkipped(cooldownRecordInput);
+    await appendAlertAudit(options, request, fingerprint, occurredAt, "INFO", "alert_delivery_skipped", {
+      blocked_until: blockedDelivery.until ?? null,
+      skipped_reason: blockedDelivery.skippedReason,
     });
     return {
       fingerprint,
       cooldownHit: true,
       notification: {
         delivered: false,
-        skippedReason: "alert_cooldown_active",
+        skippedReason: blockedDelivery.skippedReason,
       },
       failureEvaluation: preserveNotificationFailureState(options.failureState),
     };
@@ -247,7 +290,7 @@ export async function dispatchAlertWithCooldown(
 
   if (notification.delivered) {
     // 실제 provider 전송이 성공한 시각만 cooldown 기준점으로 기록한다.
-    await store.recordSent(toCooldownRecordInput(request, fingerprint, occurredAt));
+    await store.recordSent(cooldownRecordInput);
     await appendAlertAudit(options, request, fingerprint, occurredAt, "INFO", "notification_delivered", {
       provider_message_id: notification.providerMessageId ?? null,
     });
@@ -388,14 +431,42 @@ export function createInMemoryAlertCooldownStore(): AlertCooldownStore {
     async findByFingerprint(fingerprint) {
       return states.get(fingerprint);
     },
+    async reserveDelivery(input) {
+      const previous = states.get(input.fingerprint);
+      if (previous !== undefined && isDeliveryBlocked(previous, input.severity, input.occurredAt)) {
+        return {
+          reserved: false,
+          state: previous,
+        };
+      }
+
+      // provider 호출 전에 memory state에 lease를 먼저 남겨 같은 process 안의 동시 전송을 직렬화한다.
+      const state = toCooldownState(
+        input,
+        previous?.lastSentAt ?? null,
+        previous?.lastSkippedAt ?? null,
+        input.reserveUntil,
+      );
+      states.set(input.fingerprint, state);
+      return {
+        reserved: true,
+        state,
+      };
+    },
     async recordSent(input) {
-      const state = toCooldownState(input, input.occurredAt, null);
+      const previous = states.get(input.fingerprint);
+      const state = toCooldownState(input, input.occurredAt, previous?.lastSkippedAt ?? null, null);
       states.set(input.fingerprint, state);
       return state;
     },
     async recordSkipped(input) {
       const previous = states.get(input.fingerprint);
-      const state = toCooldownState(input, previous?.lastSentAt ?? null, input.occurredAt);
+      const state = toCooldownState(
+        input,
+        previous?.lastSentAt ?? null,
+        latestTimestamp(previous?.lastSkippedAt ?? null, input.occurredAt),
+        previous?.deliveryReservedUntil ?? null,
+      );
       states.set(input.fingerprint, state);
       return state;
     },
@@ -413,26 +484,38 @@ function selectCooldownStore(
   return options.memoryCooldownStore ?? defaultMemoryAlertCooldownStore;
 }
 
-async function evaluateCooldown(
-  store: AlertCooldownStore,
-  fingerprint: string,
+function isDeliveryBlocked(
+  state: AlertCooldownState,
   severity: AlertSeverity,
   occurredAt: TimestampInput,
-): Promise<{ active: boolean; until?: string }> {
-  const previous = await store.findByFingerprint(fingerprint);
-  if (previous?.lastSentAt === null || previous?.lastSentAt === undefined) {
-    return { active: false };
+): boolean {
+  return describeBlockedDelivery(state, severity, occurredAt).skippedReason !== undefined;
+}
+
+function describeBlockedDelivery(
+  state: AlertCooldownState,
+  severity: AlertSeverity,
+  occurredAt: TimestampInput,
+): { skippedReason?: "alert_cooldown_active" | "alert_delivery_reserved"; until?: string } {
+  const occurredAtMs = toEpochMs(occurredAt);
+  if (state.lastSentAt !== null) {
+    const cooldownUntilMs = toEpochMs(state.lastSentAt) + getDefaultAlertCooldownMs(severity);
+    if (occurredAtMs < cooldownUntilMs) {
+      return {
+        skippedReason: "alert_cooldown_active",
+        until: new Date(cooldownUntilMs).toISOString(),
+      };
+    }
   }
 
-  const untilMs = toEpochMs(previous.lastSentAt) + getDefaultAlertCooldownMs(severity);
-  if (toEpochMs(occurredAt) < untilMs) {
+  if (state.deliveryReservedUntil !== null && occurredAtMs < toEpochMs(state.deliveryReservedUntil)) {
     return {
-      active: true,
-      until: new Date(untilMs).toISOString(),
+      skippedReason: "alert_delivery_reserved",
+      until: toIsoTimestamp(state.deliveryReservedUntil),
     };
   }
 
-  return { active: false };
+  return {};
 }
 
 function toCooldownRecordInput(
@@ -460,6 +543,7 @@ function toCooldownState(
   input: AlertCooldownRecordInput,
   lastSentAt: TimestampInput | null,
   lastSkippedAt: TimestampInput | null,
+  deliveryReservedUntil: TimestampInput | null,
 ): AlertCooldownState {
   return {
     fingerprint: input.fingerprint,
@@ -470,6 +554,7 @@ function toCooldownState(
     reasonCode: input.reasonCode,
     lastSentAt,
     lastSkippedAt,
+    deliveryReservedUntil,
     payloadJson: input.payloadJson ?? {},
   };
 }
@@ -488,7 +573,7 @@ async function appendAlertAudit(
   }
 
   await options.auditLog.appendEvent({
-    eventType: reasonCode === "alert_cooldown_hit" ? "ALERT_COOLDOWN" : "NOTIFICATION_DELIVERY",
+    eventType: reasonCode.startsWith("alert_") ? "ALERT_COOLDOWN" : "NOTIFICATION_DELIVERY",
     severity,
     occurredAt,
     actor: "alert-dispatcher",
@@ -515,6 +600,21 @@ function toIsoTimestamp(value: TimestampInput): string {
 
 function toEpochMs(value: TimestampInput): number {
   return value instanceof Date ? value.getTime() : Date.parse(value);
+}
+
+function addMs(value: TimestampInput, ms: number): string {
+  return new Date(toEpochMs(value) + ms).toISOString();
+}
+
+function latestTimestamp(
+  current: TimestampInput | null,
+  next: TimestampInput,
+): TimestampInput {
+  if (current === null) {
+    return next;
+  }
+
+  return toEpochMs(current) >= toEpochMs(next) ? current : next;
 }
 
 const defaultMemoryAlertCooldownStore = createInMemoryAlertCooldownStore();

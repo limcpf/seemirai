@@ -248,7 +248,7 @@ M7 진행 근거:
   - [x] issue #42 Sub PR 1: POST control endpoint용 bearer guard와 token 누락 startup fail foundation
   - [x] issue #42 Sub PR 2: `POST /kill-switch` 상태 전이 실행, target enum, illegal transition 처리, P0 원인 mapping, HARD_STOP pending cancel job 경계
 - [x] Telegram outbound notifier
-- [x] issue #42 Sub PR 3: Telegram outbound adapter, plain text format, provider timeout/failure, alert fingerprint, P0/P1 durable cooldown, P2/P3 memory cooldown, severity escalation bypass, notification failure threshold reason code
+- [x] issue #42 Sub PR 3: Telegram outbound adapter, plain text format, 4096자 전송 제한, provider timeout/failure, alert fingerprint, P0/P1 durable cooldown, delivery reservation, P2/P3 memory cooldown, severity escalation bypass, notification failure threshold reason code
 - [x] alert fingerprint + cooldown
 - [ ] 일간 리포트
 - [ ] 24시간 paper trading soak test script
@@ -292,7 +292,7 @@ M7 진행 근거:
 - 2026-05-20: issue #36 Sub PR 4는 `issue-36/04-backtest-reporting-verification`에서 `BacktestRunResult`를 전략별 거래 수, fill rate, fee, slippage, 추정 PnL 후보로 집계하는 리포트와 비용 0/비용 반영 비교 리포트를 고정한다. 같은 fixture에서 Backtest 제출 후보와 `PaperBroker` 주문 결과를 같은 record로 정규화해 idempotency key 기준 일치 여부를 검증하고 M7 체크리스트를 완료 처리한다.
 - 2026-05-20: issue #42는 M8 운영 가드레일 범위가 HTTP control API, kill switch control, Telegram/cooldown, daily report, soak verification으로 나뉘어 리뷰 위험이 크므로 `sub PR mode`에서 순차 진행한다. Sub PR 1은 `issue-42/01-http-control-foundation`에서 Fastify 5.8.5 runtime dependency와 최소 HTTP server, `/healthz`, `/readyz`, `/status`, safe status response, 공통 error/correlation id, POST control bearer guard foundation을 고정한다. 실제 `/kill-switch` 상태 전이 실행, Telegram delivery, daily report, soak script는 후속 PR 범위로 유지한다.
 - 2026-05-21: issue #42 Sub PR 2는 `issue-42/02-kill-switch-control`에서 `POST /kill-switch`를 local bearer token 보호 route로 등록하고, target state enum, `HARD_STOP -> NORMAL` 직접 복구 거부, `kill_switch_state` durable snapshot 갱신, `audit_events`/`risk_events` evidence, `HARD_STOP` pending paper order cancel job 예약 경계를 고정한다. broker cancel 실행, Telegram delivery, daily report, soak script는 후속 PR 범위로 유지한다.
-- 2026-05-21: issue #42 Sub PR 3은 `issue-42/03-alerts-telegram-cooldown`에서 Telegram `sendMessage` outbound adapter, plain text formatter, provider timeout/failure reason, alert fingerprint, P0/P1 durable cooldown, P2/P3 memory cooldown, severity escalation bypass, P0/P1 retry job 후보와 notification failure threshold reason code를 고정한다. Telegram inbound command, daily report aggregator, retry worker 실행, 24시간 soak script는 후속 PR 범위로 유지한다.
+- 2026-05-21: issue #42 Sub PR 3은 `issue-42/03-alerts-telegram-cooldown`에서 Telegram `sendMessage` outbound adapter, plain text formatter, 4096자 전송 제한, provider timeout/failure reason, alert fingerprint, P0/P1 durable cooldown과 atomic delivery reservation, P2/P3 memory cooldown, severity escalation bypass, P0/P1 retry job 후보와 notification failure threshold reason code를 고정한다. Telegram inbound command, daily report aggregator, retry worker 실행, 24시간 soak script는 후속 PR 범위로 유지한다.
 
 issue #42 sub PR 계획:
 

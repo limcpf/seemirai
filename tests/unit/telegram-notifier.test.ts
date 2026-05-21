@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
   createTelegramNotifier,
+  enforceTelegramMessageLimit,
   formatAlertMessage,
   formatDailyReportMessage,
+  telegramMessageMaxLength,
 } from "../../src/infrastructure/index.js";
 
 describe("Telegram outbound notifier", () => {
@@ -72,6 +74,31 @@ describe("Telegram outbound notifier", () => {
     expect(Object.keys(notifier).join(" ")).not.toContain("polling");
   });
 
+  it("truncates oversized Telegram text before provider submission", async () => {
+    const requests: Array<{ url: string; init: RequestInit }> = [];
+    const notifier = createTelegramNotifier({
+      botToken: "secret-token",
+      chatId: "chat-1",
+      async fetchImpl(input, init) {
+        requests.push({ url: input, init });
+        return new Response(JSON.stringify({ ok: true }), {
+          status: 200,
+          headers: {
+            "content-type": "application/json",
+          },
+        });
+      },
+    });
+    const longBody = "x".repeat(telegramMessageMaxLength + 200);
+
+    await sendFixtureAlert(notifier, longBody);
+
+    const payload = JSON.parse(String(requests[0]?.init.body)) as { text: string };
+    expect(Array.from(payload.text)).toHaveLength(telegramMessageMaxLength);
+    expect(payload.text.endsWith("\n... [truncated]")).toBe(true);
+    expect(enforceTelegramMessageLimit("short")).toBe("short");
+  });
+
   it("returns safe failure reasons for provider errors and timeouts", async () => {
     const httpFailure = createTelegramNotifier({
       botToken: "secret-token",
@@ -101,11 +128,14 @@ describe("Telegram outbound notifier", () => {
   });
 });
 
-function sendFixtureAlert(notifier: ReturnType<typeof createTelegramNotifier>) {
+function sendFixtureAlert(
+  notifier: ReturnType<typeof createTelegramNotifier>,
+  body = "risk evidence cannot be persisted",
+) {
   return notifier.sendAlert({
     severity: "P0",
     title: "DB write failed",
-    body: "risk evidence cannot be persisted",
+    body,
     fingerprint: "alert:prod:paper:P0:db:global:global:db_write_failure",
     occurredAt: "2026-05-21T00:00:00.000Z",
   });

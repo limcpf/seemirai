@@ -1,5 +1,7 @@
 export {
   PostgresAlertCooldownRepository,
+  recordAlertCooldownSkipped,
+  reserveAlertDelivery,
   toAlertCooldownRowInput,
   toAlertCooldownState,
   upsertAlertCooldown,

@@ -98,7 +98,9 @@ describe("migration runner", () => {
     expect(migrationSql).toContain("fingerprint text PRIMARY KEY");
     expect(migrationSql).toContain("last_sent_at timestamptz");
     expect(migrationSql).toContain("last_skipped_at timestamptz");
+    expect(migrationSql).toContain("delivery_reserved_until timestamptz");
     expect(migrationSql).toContain("CREATE INDEX IF NOT EXISTS alert_cooldowns_severity_sent_idx");
+    expect(migrationSql).toContain("CREATE INDEX IF NOT EXISTS alert_cooldowns_delivery_reserved_idx");
   });
 
   it("keeps order event persistence and state checks aligned with canonical state lists", async () => {

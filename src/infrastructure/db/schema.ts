@@ -335,6 +335,7 @@ export interface KillSwitchStateTable {
  * alert fingerprint별 cooldown snapshot이다.
  *
  * P0/P1 알림은 프로세스 재시작 후에도 중복 전송을 억제해야 하므로 DB에 마지막 전송/skip 시각을 남긴다.
+ * delivery reservation은 provider 호출 직전 atomic gate로 사용해 동시 알림이 같은 fingerprint로 중복 전송되지 않게 한다.
  * P2/P3은 memory cooldown으로 시작하지만 schema는 공통 severity 값을 허용해 필요 시 승격할 수 있게 한다.
  */
 export interface AlertCooldownsTable {
@@ -354,6 +355,8 @@ export interface AlertCooldownsTable {
   last_sent_at: NullableTimestamp;
   /** cooldown hit로 provider 호출을 건너뛴 마지막 시각 */
   last_skipped_at: NullableTimestamp;
+  /** provider 호출 경합을 막는 delivery lease 만료 시각 */
+  delivery_reserved_until: NullableTimestamp;
   /** title, correlation id, 기타 운영 metadata */
   payload_json: GeneratedJsonRecord;
   /** cooldown row 생성 시각 */

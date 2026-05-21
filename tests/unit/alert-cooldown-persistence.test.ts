@@ -19,6 +19,7 @@ describe("alert cooldown persistence mapping", () => {
       {
         lastSentAt: "2026-05-21T00:00:00.000Z",
         lastSkippedAt: null,
+        deliveryReservedUntil: null,
       },
     );
 
@@ -31,6 +32,7 @@ describe("alert cooldown persistence mapping", () => {
       reason_code: "db_write_failure",
       last_sent_at: "2026-05-21T00:00:00.000Z",
       last_skipped_at: null,
+      delivery_reserved_until: null,
       payload_json: {
         correlation_id: "corr-alert",
       },
@@ -50,6 +52,7 @@ describe("alert cooldown persistence mapping", () => {
         reason_code: "public_websocket_lag",
         last_sent_at: sentAt,
         last_skipped_at: null,
+        delivery_reserved_until: sentAt,
         payload_json: {},
         created_at: sentAt,
         updated_at: sentAt,
@@ -63,6 +66,7 @@ describe("alert cooldown persistence mapping", () => {
       reasonCode: "public_websocket_lag",
       lastSentAt: sentAt,
       lastSkippedAt: null,
+      deliveryReservedUntil: sentAt,
     });
   });
 });

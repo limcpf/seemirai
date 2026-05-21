@@ -66,6 +66,86 @@ describeDb("alert cooldown integration", () => {
     });
   });
 
+  it("atomically reserves delivery and preserves last sent timestamp on skips", async () => {
+    const db = await getDatabase();
+    const repository = new PostgresAlertCooldownRepository(db);
+    const input = {
+      fingerprint: "alert:prod:paper:P0:db:global:global:db_write_failure",
+      severity: "P0" as const,
+      alertType: "db",
+      market: null,
+      strategyId: null,
+      reasonCode: "db_write_failure",
+      occurredAt: "2026-05-21T00:00:00.000Z",
+      payloadJson: {
+        correlation_id: "corr-alert",
+      },
+    };
+
+    const reserved = await repository.reserveDelivery({
+      ...input,
+      cooldownMs: 60_000,
+      reserveUntil: "2026-05-21T00:01:00.000Z",
+    });
+    const duplicate = await repository.reserveDelivery({
+      ...input,
+      occurredAt: "2026-05-21T00:00:10.000Z",
+      cooldownMs: 60_000,
+      reserveUntil: "2026-05-21T00:01:10.000Z",
+    });
+    await repository.recordSent({
+      ...input,
+      occurredAt: "2026-05-21T00:00:20.000Z",
+    });
+    const skipped = await repository.recordSkipped({
+      ...input,
+      occurredAt: "2026-05-21T00:00:30.000Z",
+    });
+
+    expect(reserved).toMatchObject({
+      reserved: true,
+      state: {
+        deliveryReservedUntil: new Date("2026-05-21T00:01:00.000Z"),
+      },
+    });
+    expect(duplicate).toMatchObject({
+      reserved: false,
+      state: {
+        deliveryReservedUntil: new Date("2026-05-21T00:01:00.000Z"),
+      },
+    });
+    expect(skipped).toMatchObject({
+      lastSentAt: new Date("2026-05-21T00:00:20.000Z"),
+      lastSkippedAt: new Date("2026-05-21T00:00:30.000Z"),
+    });
+  });
+
+  it("does not roll back last skipped timestamp when an older skip arrives late", async () => {
+    const db = await getDatabase();
+    const repository = new PostgresAlertCooldownRepository(db);
+    const input = {
+      fingerprint: "alert:prod:paper:P1:lag:krw-btc:global:public_websocket_lag",
+      severity: "P1" as const,
+      alertType: "lag",
+      market: "krw-btc",
+      strategyId: null,
+      reasonCode: "public_websocket_lag",
+      occurredAt: "2026-05-21T00:00:00.000Z",
+    };
+
+    await repository.recordSent(input);
+    await repository.recordSkipped({
+      ...input,
+      occurredAt: "2026-05-21T00:02:00.000Z",
+    });
+    const staleSkip = await repository.recordSkipped({
+      ...input,
+      occurredAt: "2026-05-21T00:01:00.000Z",
+    });
+
+    expect(staleSkip.lastSkippedAt).toEqual(new Date("2026-05-21T00:02:00.000Z"));
+  });
+
   async function getDatabase(): Promise<Database> {
     if (database !== undefined) {
       return database;

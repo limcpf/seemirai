@@ -100,6 +100,53 @@ describe("alert cooldown and notification policy", () => {
     ]);
   });
 
+  it("reserves a fingerprint before provider send to suppress concurrent duplicates", async () => {
+    const notifier = new BlockingNotifier();
+    const cooldownStore = createInMemoryAlertCooldownStore();
+    const request = {
+      environment: "prod",
+      runMode: "paper_trading",
+      severity: "P0" as const,
+      alertType: "db_write_failure",
+      reasonCode: "db_write_failure",
+      title: "DB write failed",
+      body: "risk evidence cannot be persisted",
+      occurredAt: "2026-05-21T00:00:00.000Z",
+    };
+
+    const first = dispatchAlertWithCooldown(
+      {
+        notifier,
+        durableCooldownStore: cooldownStore,
+      },
+      request,
+    );
+    await notifier.sendStarted;
+    const duplicate = await dispatchAlertWithCooldown(
+      {
+        notifier,
+        durableCooldownStore: cooldownStore,
+      },
+      request,
+    );
+    notifier.resolveDelivery();
+
+    await expect(first).resolves.toMatchObject({
+      cooldownHit: false,
+      notification: {
+        delivered: true,
+      },
+    });
+    expect(duplicate).toMatchObject({
+      cooldownHit: true,
+      notification: {
+        delivered: false,
+        skippedReason: "alert_delivery_reserved",
+      },
+    });
+    expect(notifier.alerts).toHaveLength(1);
+  });
+
   it("allows severity escalation to bypass an existing lower-severity cooldown", async () => {
     const notifier = new RecordingNotifier();
     const cooldownStore = createInMemoryAlertCooldownStore();
@@ -235,5 +282,30 @@ class RecordingAuditLog implements AuditLogPort {
       auditEventId: `audit-${this.events.length}`,
       appendedAt: event.occurredAt,
     };
+  }
+}
+
+class BlockingNotifier extends RecordingNotifier {
+  public readonly sendStarted: Promise<void>;
+  private resolveStarted: (() => void) | undefined;
+  private resolveResult: ((result: NotificationResult) => void) | undefined;
+
+  public constructor() {
+    super();
+    this.sendStarted = new Promise((resolve) => {
+      this.resolveStarted = resolve;
+    });
+  }
+
+  public override async sendAlert(notification: AlertNotification): Promise<NotificationResult> {
+    this.alerts.push(notification);
+    this.resolveStarted?.();
+    return new Promise((resolve) => {
+      this.resolveResult = resolve;
+    });
+  }
+
+  public resolveDelivery(): void {
+    this.resolveResult?.(this.nextResult);
   }
 }
