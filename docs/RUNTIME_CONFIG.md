@@ -132,7 +132,7 @@ P0/P1 원인 mapping은 application layer의 `mapKillSwitchReasonToTargetState`�
 - runtime control wiring: `src/runtime/notification-runtime.ts`
 
 Telegram 알림은 outbound `sendMessage`만 사용한다. 이 단계는 Telegram webhook, polling, command 수신 route를 만들지
-않으며, daily report 집계도 후속 Sub PR 범위로 유지한다. message format은 Markdown/HTML parse mode 없는 plain text다.
+않는다. message format은 Markdown/HTML parse mode 없는 plain text다.
 첫 화면에는 한국어 상태/원인/영향/필요 조치를 배치하고, `fingerprint`, audit/risk event id, correlation id 같은 내부 추적
 값은 하단 `추적 정보` 섹션에만 둔다. Telegram 단일 message text 제한인 4096자를 넘으면 전송 전에 truncation marker를 붙여
 잘라 provider 400으로 알림 전체가 유실되지 않게 한다.
@@ -173,6 +173,42 @@ provider 호출 직전에는 fingerprint 단위 delivery reservation을 먼저 �
 안에 있거나 기존 reservation이 만료되지 않았으면 provider 호출 없이 `ALERT_COOLDOWN` audit evidence만 남긴다. 이 경계는
 같은 장애가 동시에 들어와도 두 요청이 모두 Telegram provider를 호출하는 상황을 막기 위한 것이다. cooldown 기준 시각은
 alert 발생 시각이 아니라 reservation/전송 완료 시각을 사용해 지연 처리된 과거 alert가 보호 창을 짧게 만들지 못하게 한다.
+
+## M8 Daily report
+
+구현 기준:
+
+- application 집계/전송 경계: `src/application/daily-report/`
+- PostgreSQL fact repository: `src/infrastructure/db/daily-report/`
+- outbound adapter: `NotifierPort.sendDailyReport`
+- job idempotency: PostgreSQL `jobs.idempotency_key`
+
+daily report 기준일은 KST `YYYY-MM-DD`다. DB timestamp는 UTC로 저장하므로 application은 기준일을
+`kst_start_at`, `kst_end_at`, `utc_start_at`, `utc_end_at`으로 변환해 같은 window를 repository, job payload, Telegram
+summary에 함께 남긴다. 조회 조건은 `utc_start_at <= timestamp < utc_end_at` half-open window를 사용한다.
+standalone repository 조회는 여러 fact table이 같은 MVCC 기준을 보도록 `repeatable read` transaction 안에서 수행한다.
+
+daily report job은 `job_type=report.daily`, `idempotency_key=report.daily:<report_date>`로 예약한다. 현재 `jobs` schema는
+`(job_type, report_date)` composite unique key가 아니라 `idempotency_key` unique constraint를 제공하므로, application
+contract가 두 값을 key에 함께 넣어 같은 기준일의 중복 생성과 중복 전송을 억제한다. payload에는 KST/UTC window를 저장해
+worker retry나 운영 재생이 같은 조회 범위를 사용할 수 있게 한다.
+
+집계 입력:
+
+- `orders`: 기준일 안에 생성된 주문 수와 `order_events`로 복원한 기준일 종료 시점 상태별 건수
+- `fills`: 기준일 안 체결 수, 통화별 수수료, 체결 명목 금액, 수수료 비중
+- `positions`: 현재 포지션 수와 snapshot 누락 scope의 fallback 손익 snapshot. 현재 snapshot table이므로 `updated_at`으로
+  과거 상태를 복원하려고 제외하지 않는다.
+- `pnl_snapshots`: strategy/market별 최신 snapshot의 realized PnL과 unrealized PnL. snapshot이 있는 scope는 positions보다
+  우선하며, 일부 scope의 snapshot이 없을 때만 positions fallback을 섞는다.
+- `audit_events`: `ORDER_CANDIDATE_DISCARDED` payload의 `reason_code`별 폐기 후보 수
+- `risk_events`: `action`, `risk_type`별 차단/리스크 이벤트 수
+- `fills` 기준으로 실제 체결된 주문의 `paper_orders.fill_model_json`, `orders.reason_json.cost_snapshot`: 슬리피지, spread 비용,
+  취소/재호가 비용이 있는 경우의 체결 품질 metric
+
+리포트 문구는 한국어 사용자 문구를 먼저 보여준다. 내부 status/action/reason code는 괄호나 `metadata` 추적 정보에 남기며,
+값이 없으면 임의로 0으로 채우지 않고 `unavailable`로 표시한다. 단, 주문 수, 체결 수, 폐기 후보 수처럼 row 개수를 세는 항목은
+데이터가 없을 때 실제 0으로 표시한다. 실현 손익은 `realized PnL`, 추정 손익은 `unrealized PnL` 기반으로 분리 표기한다.
 
 ## M6 Execution 안전 설정
 
