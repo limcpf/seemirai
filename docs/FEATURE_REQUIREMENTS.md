@@ -526,6 +526,8 @@ Acceptance Criteria:
 - [ ] 데이터 지연, API 오류, rate limit 접근, WebSocket 재연결이 알림 후보 이벤트로 기록된다.
 - [ ] 모델 drift 후보 지표를 기록할 수 있다.
 - [ ] 일간 리포트는 거래 횟수, 폐기된 주문 후보, 차단 사유, 비용 비중을 포함한다.
+- [ ] 일간 리포트는 KST 기준일과 UTC 조회 window를 함께 표시하고, realized PnL과 estimated/unrealized PnL을 분리한다.
+- [ ] 일간 리포트는 값이 없는 체결 품질 metric을 0으로 꾸미지 않고 `unavailable`로 표시한다.
 - [ ] Telegram P0 알림은 신규 주문 중지 이벤트와 함께 기록된다.
 - [ ] Slack adapter는 정의만 하고 MVP 기본 설정에서는 비활성이다.
 

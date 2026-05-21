@@ -95,6 +95,24 @@ Codex-native 운영은 Codex, Git, GitHub, shell command, 문서 상태를 연�
 - post-commit alert dispatch가 cooldown/audit/provider 경계에서 실패해도 이미 commit된 kill switch 전이를 5xx로 바꾸지 않고,
   결과 객체에 `alert_dispatch_failed` reason code만 기록한다.
 
+## Daily report 신뢰성 기준
+
+- daily report 기준일은 KST `YYYY-MM-DD`이며, DB 조회는 해당 날짜를 UTC half-open window로 변환한
+  `utcStartAt <= timestamp < utcEndAt` 조건만 사용한다. summary와 job payload에는 KST/UTC window를 함께 남겨 재실행 시
+  같은 범위를 재현할 수 있게 한다.
+- daily report job은 `job_type=report.daily`와 `report_date`를 합친 `report.daily:<reportDate>` idempotency key로
+  예약한다. scheduler 재시작, 수동 재실행, worker retry가 같은 기준일을 다시 예약해도 기존 `jobs` row를 재사용해야 한다.
+- PnL snapshot이 기준일 안에 있으면 strategy/market별 최신 snapshot만 손익 합계에 반영한다. 같은 전략의 과거 snapshot을
+  모두 더하면 손익이 중복 집계되므로 최신 snapshot 선택은 리포트 invariant다.
+- realized PnL과 estimated PnL은 같은 숫자로 합치지 않는다. realized는 확정 손익, estimated는 미실현 손익 기준으로 분리하고
+  source가 `pnl_snapshots`인지 `positions` fallback인지 표시한다.
+- fee, slippage, spread, cancel/requote penalty는 가능한 값만 분리 집계한다. 체결 품질 payload가 없으면 해당 metric은
+  `unavailable`로 남기며, 결측을 0으로 대체하지 않는다.
+- 주문 후보 폐기는 `audit_events.payload_json.audit_kind=ORDER_CANDIDATE_DISCARDED`인 row만 `reason_code`별로 집계한다.
+  일반 audit event를 섞으면 폐기 사유가 과대 집계되므로 payload kind 확인은 필수다.
+- Telegram daily report 전송은 집계가 끝난 뒤 `NotifierPort.sendDailyReport`에서만 발생한다. DB fact 조회와 집계가 성공한
+  사실, provider 전송 성공/실패는 job/audit에서 분리해 추적해야 한다.
+
 ## 검증 규칙
 
 - 자동 테스트가 없으면 수동 검증 절차라도 남긴다.

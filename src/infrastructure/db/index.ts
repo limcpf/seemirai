@@ -19,6 +19,11 @@ export {
 } from "./config.js";
 export { createDatabase, createPostgresPool, destroyDatabase } from "./database.js";
 export {
+  PostgresDailyReportRepository,
+  enqueueDailyReportJob,
+  loadDailyReportSourceData,
+} from "./daily-report/index.js";
+export {
   PostgresExecutionPersistenceRepository,
   createPaperExecutionStateTransitionEvents,
   persistPaperExecutionInTransaction,
@@ -88,6 +93,10 @@ export type {
 } from "./execution-persistence.js";
 export type { AuditEventRecord, AuditEventRowInput } from "./audit-log.js";
 export type { AlertCooldownRecord, AlertCooldownRowInput } from "./alert-cooldown.js";
+export type {
+  EnqueueDailyReportJobInput,
+  EnqueueDailyReportJobResult,
+} from "./daily-report/index.js";
 export type {
   ClaimPendingJobsOptions,
   CompleteJobOptions,

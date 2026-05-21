@@ -154,8 +154,8 @@ export function formatAlertMessage(notification: AlertNotification): string {
 /**
  * Telegram daily report plain text를 만든다.
  *
- * daily report aggregator는 후속 sub PR 범위이므로 여기서는 NotifierPort contract에 맞춘 전송 format만 제공한다. 제목과 추적
- * 라벨은 한국어로 고정해 실제 집계가 붙더라도 Telegram 수신자가 리포트 성격과 생성 시각을 빠르게 구분할 수 있게 한다.
+ * daily report aggregator가 만든 한국어 요약을 Telegram 전송 형식으로 감싼다. formatter는 provider 호출을 하지 않는 순수
+ * presentation 경계이며, 생성 시각 같은 추적 값은 하단에 고정해 운영자가 리포트 본문과 전송 evidence를 분리해 읽게 한다.
  */
 export function formatDailyReportMessage(notification: DailyReportNotification): string {
   return joinMessageLines([
