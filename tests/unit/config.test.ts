@@ -2,8 +2,9 @@ import { describe, expect, it } from "vitest";
 import {
   UnsafeRuntimeConfigError,
   loadDefaultRuntimeConfig,
+  loadRuntimeNotificationConfig,
   loadRuntimeConfig,
-} from "../../src/runtime/config.js";
+} from "../../src/runtime/index.js";
 
 describe("runtime config", () => {
   it("loads the default paper trading profile without API keys", async () => {
@@ -65,6 +66,7 @@ describe("runtime config", () => {
       total_alt_max_position_bps_of_equity: "1500",
       max_consecutive_strategy_losses: 3,
     });
+    expect(config.telegram.provider_timeout_ms).toBe(5000);
   });
 
   it("fails fast when a config value has the wrong shape", () => {
@@ -166,5 +168,38 @@ describe("runtime config", () => {
         },
       }),
     ).toThrow("must be a non-negative decimal string");
+  });
+
+  it("loads Telegram notification config from env without requiring secrets in config files", () => {
+    const config = loadRuntimeConfig({
+      telegram: {
+        chat_id: "config-chat",
+        provider_timeout_ms: 3000,
+      },
+      secrets: {
+        telegram_bot_token: "config-token",
+      },
+    });
+
+    expect(loadRuntimeNotificationConfig(config, {})).toEqual({
+      telegram: {
+        botToken: "config-token",
+        chatId: "config-chat",
+        providerTimeoutMs: 3000,
+      },
+    });
+    expect(
+      loadRuntimeNotificationConfig(config, {
+        SEEMIRAI_TELEGRAM_BOT_TOKEN: "env-token",
+        SEEMIRAI_TELEGRAM_CHAT_ID: "env-chat",
+      }),
+    ).toEqual({
+      telegram: {
+        botToken: "env-token",
+        chatId: "env-chat",
+        providerTimeoutMs: 3000,
+      },
+    });
+    expect(loadRuntimeNotificationConfig(loadRuntimeConfig({}), {})).toEqual({});
   });
 });

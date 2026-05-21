@@ -53,6 +53,14 @@ export const RuntimeConfigSchema = z
     registry: RegistryActivationConfigSchema.default(defaultRegistryActivationConfig),
     strategyParameters: StrategyParametersConfigSchema.default(defaultStrategyParametersConfig),
     risk: RiskConfigSchema.default(defaultRiskConfig),
+    telegram: z
+      .object({
+        chat_id: z.string().min(1).optional(),
+        provider_timeout_ms: z.number().int().positive().default(5_000),
+      })
+      .default({
+        provider_timeout_ms: 5_000,
+      }),
     secrets: z
       .object({
         upbit_access_key: z.string().min(1).optional(),

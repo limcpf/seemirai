@@ -90,6 +90,17 @@ describe("migration runner", () => {
     expect(migrationSql).toContain("CHECK (attempt_count <= max_attempts)");
   });
 
+  it("keeps durable alert cooldown state for P0/P1 notification dedupe", async () => {
+    const migrations = await loadMigrationFiles(defaultMigrationsDirectory);
+    const migrationSql = migrations.map((migration) => migration.sql).join("\n");
+
+    expect(migrationSql).toContain("CREATE TABLE IF NOT EXISTS alert_cooldowns");
+    expect(migrationSql).toContain("fingerprint text PRIMARY KEY");
+    expect(migrationSql).toContain("last_sent_at timestamptz");
+    expect(migrationSql).toContain("last_skipped_at timestamptz");
+    expect(migrationSql).toContain("CREATE INDEX IF NOT EXISTS alert_cooldowns_severity_sent_idx");
+  });
+
   it("keeps order event persistence and state checks aligned with canonical state lists", async () => {
     const migrations = await loadMigrationFiles(defaultMigrationsDirectory);
     const migrationSql = migrations.map((migration) => migration.sql).join("\n");

@@ -1,6 +1,8 @@
 import type { JsonRecord, TimestampInput } from "../../domain/index.js";
 
 export type AuditEventType =
+  | "ALERT_COOLDOWN"
+  | "NOTIFICATION_DELIVERY"
   | "ORDER_DECISION"
   | "RISK_REJECTION"
   | "STATE_TRANSITION"

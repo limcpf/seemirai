@@ -63,6 +63,20 @@ Codex-native 운영은 Codex, Git, GitHub, shell command, 문서 상태를 연�
   audit persistence failure, live order API 오사용을 `HARD_STOP`으로, stale/lag/freshness/data gap을
   `NEW_ORDERS_BLOCKED`로, 알림/리포트 반복 실패와 운영자 판단 필요 상태를 `MANUAL_REVIEW_REQUIRED`로 수렴시킨다.
 
+## Alert delivery 신뢰성 기준
+
+- alert fingerprint는 환경, 실행 모드, severity, alert type, market, strategy, reason code를 모두 포함한다.
+- severity가 fingerprint에 포함되므로 낮은 등급 알림의 cooldown은 P0 escalation을 막지 않는다.
+- P0/P1 cooldown은 `alert_cooldowns` PostgreSQL row로 보존해 프로세스 재시작 후에도 중복 Telegram 전송을 억제한다.
+- P2/P3 cooldown은 M8 Sub PR 3 범위에서 process memory로 제한한다. 재시작 후 낮은 등급 알림이 다시 전송될 수 있는 점은
+  의도한 trade-off이며, durable 저장소 확장은 후속 요구가 있을 때 별도 변경으로 다룬다.
+- cooldown hit는 provider 호출 없이 `last_skipped_at`과 `ALERT_COOLDOWN` audit event를 남긴다.
+- provider 전송 성공만 `last_sent_at`을 갱신하고 `NOTIFICATION_DELIVERY` audit event를 남긴다.
+- P0/P1 provider failure는 `notification_retry` job 후보를 만들지만, 이 단계에서 jobs table insert나 worker 실행을 직접
+  수행하지 않는다.
+- provider 실패가 연속 3회이거나 첫 실패 이후 10분 이상 지속되면 kill switch mapping에서 `MANUAL_REVIEW_REQUIRED` 후보로
+  쓰는 reason code를 반환한다.
+
 ## 검증 규칙
 
 - 자동 테스트가 없으면 수동 검증 절차라도 남긴다.

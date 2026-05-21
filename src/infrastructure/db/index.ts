@@ -1,4 +1,10 @@
 export {
+  PostgresAlertCooldownRepository,
+  toAlertCooldownRowInput,
+  toAlertCooldownState,
+  upsertAlertCooldown,
+} from "./alert-cooldown.js";
+export {
   PostgresAuditLogRepository,
   appendAuditEvent,
   toAuditEventRow,
@@ -79,6 +85,7 @@ export type {
   PositionRecord,
 } from "./execution-persistence.js";
 export type { AuditEventRecord, AuditEventRowInput } from "./audit-log.js";
+export type { AlertCooldownRecord, AlertCooldownRowInput } from "./alert-cooldown.js";
 export type {
   ClaimPendingJobsOptions,
   CompleteJobOptions,
