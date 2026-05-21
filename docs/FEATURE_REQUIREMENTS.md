@@ -541,6 +541,7 @@ Acceptance Criteria:
 테스트 요구사항:
 
 - 단위 테스트: 거래 이벤트 fixture에서 전략별 집계값을 검증한다.
+- 단위 테스트: P0 kill switch 알림은 신규 주문 차단 action plan과 같은 evidence로 전송되는지 확인한다.
 - 통합 테스트: API 오류 fixture에서 알림 후보 이벤트가 생성되는지 확인한다.
 - 수동 테스트: 일간 리포트에 수수료 비중과 주문 차단 사유가 표시되는지 확인한다.
 

@@ -395,14 +395,25 @@ describeDb("state transition persistence integration", () => {
         delivered: true,
       },
     });
+    expect(result.actionPlan).toMatchObject({
+      newOrdersBlocked: true,
+      cancelPendingPaperOrders: true,
+      requiresManualReview: true,
+    });
     expect(notifier.alerts[0]).toMatchObject({
       severity: "P0",
       title: "Kill switch HARD_STOP",
       fingerprint: "alert:test:paper_trading:P0:kill_switch_control:global:global:db_write_failure",
       metadata: {
         source: "kill_switch_control",
+        action_plan: {
+          new_orders_blocked: true,
+          cancel_pending_paper_orders: true,
+          requires_manual_review: true,
+        },
       },
     });
+    expect(notifier.alerts[0]?.body).toContain("new_orders_blocked: true");
     expect(cooldown).toMatchObject({
       fingerprint: "alert:test:paper_trading:P0:kill_switch_control:global:global:db_write_failure",
       delivery_reserved_until: null,

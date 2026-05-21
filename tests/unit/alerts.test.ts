@@ -511,6 +511,11 @@ describe("alert cooldown and notification policy", () => {
         delivered: true,
       },
     });
+    expect(controlResult.actionPlan).toMatchObject({
+      newOrdersBlocked: true,
+      cancelPendingPaperOrders: true,
+      requiresManualReview: true,
+    });
     expect(notifier.alerts[0]).toMatchObject({
       severity: "P0",
       title: "Kill switch HARD_STOP",
@@ -520,8 +525,14 @@ describe("alert cooldown and notification policy", () => {
         reason_code: "db_write_failure",
         audit_event_id: "audit-1",
         risk_event_id: "risk-1",
+        action_plan: {
+          new_orders_blocked: true,
+          cancel_pending_paper_orders: true,
+          requires_manual_review: true,
+        },
       },
     });
+    expect(notifier.alerts[0]?.body).toContain("new_orders_blocked: true");
   });
 
   it("accumulates notification failure state across runtime kill switch alert calls", async () => {
