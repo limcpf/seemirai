@@ -140,6 +140,34 @@ describe("M8 paper soak script", () => {
       await closeServer(server);
     }
   });
+
+  it("preserves summary artifacts when public WebSocket soak fails", async () => {
+    const logDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-soak-"));
+    const { stdout } = await runSoakExpectFailure(
+      [
+        "--json",
+        "--log-dir",
+        logDir,
+        "--duration-ms",
+        "50",
+        "--websocket-url",
+        "ws://127.0.0.1:1",
+        "--daily-report-generated",
+      ],
+      {
+        SEEMIRAI_RUN_SOAK: "1",
+      },
+    );
+    const summary = JSON.parse(stdout) as SoakSummary;
+
+    expect(summary.status).toBe("failed");
+    expect(summary.input).toBe("upbit_public_websocket");
+    expect(getCheck(summary, "publicWebSocket")).toMatchObject({
+      status: "fail",
+    });
+    await expect(stat(summary.artifacts.summaryPath)).resolves.toBeDefined();
+    await expect(stat(summary.artifacts.reportPath)).resolves.toBeDefined();
+  });
 });
 
 async function runSoak(args: readonly string[], env: NodeJS.ProcessEnv = {}) {

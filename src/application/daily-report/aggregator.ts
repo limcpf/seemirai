@@ -30,7 +30,8 @@ export function aggregateDailyReport(
   sourceData: DailyReportSourceData,
 ): DailyReportAggregate {
   const latestPnlSnapshots = selectLatestPnlSnapshots(sourceData.pnlSnapshots);
-  const pnlSource = createPnlSource(latestPnlSnapshots, sourceData.positions);
+  const pnlSnapshotsForAggregation = excludeMarketSnapshotsCoveredByAggregate(latestPnlSnapshots);
+  const pnlSource = createPnlSource(pnlSnapshotsForAggregation, sourceData.positions);
   const realizedPnl = createPnlMetric(pnlSource.facts, "realizedPnl", pnlSource.realizedSource);
   const estimatedPnl = createPnlMetric(
     pnlSource.facts,
@@ -60,7 +61,7 @@ export function aggregateDailyReport(
     discardedCandidates: summarizeDiscardedCandidates(sourceData.auditEvents),
     riskEvents: summarizeRiskEvents(sourceData),
   };
-  const latestPnlSnapshotAt = latestTimestamp(latestPnlSnapshots.map((snapshot) => snapshot.capturedAt));
+  const latestPnlSnapshotAt = latestTimestamp(pnlSnapshotsForAggregation.map((snapshot) => snapshot.capturedAt));
   if (latestPnlSnapshotAt !== undefined) {
     aggregate.latestPnlSnapshotAt = latestPnlSnapshotAt;
   }
@@ -90,11 +91,35 @@ function createPnlMetric(
 }
 
 /**
+ * strategy aggregate snapshot과 per-market snapshot이 함께 있을 때 합산 대상을 하나로 정규화한다.
+ *
+ * `market=null` snapshot은 해당 strategy의 전체 시장 합계다. 같은 strategy의 per-market snapshot을 함께 더하면 손익이
+ * 이중 집계되므로 aggregate snapshot을 우선하고 세부 market snapshot은 리포트 합산에서 제외한다. 이 함수는 집계 입력만
+ * 정규화하며 DB row나 원본 fact를 수정하지 않는다.
+ */
+function excludeMarketSnapshotsCoveredByAggregate(
+  snapshots: readonly DailyReportPnlSnapshotFact[],
+): DailyReportPnlSnapshotFact[] {
+  const strategiesWithAggregateSnapshot = new Set(
+    snapshots
+      .filter((snapshot) => snapshot.market === null || snapshot.market === undefined)
+      .map((snapshot) => snapshot.strategyId),
+  );
+
+  return snapshots.filter(
+    (snapshot) =>
+      snapshot.market === null ||
+      snapshot.market === undefined ||
+      !strategiesWithAggregateSnapshot.has(snapshot.strategyId),
+  );
+}
+
+/**
  * PnL snapshot과 position fallback을 scope별로 합성한다.
  *
  * snapshot이 하나라도 있다는 이유로 전체 positions fallback을 버리면 부분 수집 장애가 손익 누락으로 이어진다. 이 함수는
  * strategy/market scope에 snapshot이 있는 곳은 snapshot을 쓰고, 없는 scope만 positions current snapshot을 fallback으로
- * 보강한다. 외부 side effect는 없으며 같은 입력 배열에서는 항상 같은 fact 순서와 source label을 반환한다.
+ * 보강한다. aggregate snapshot과 market snapshot의 중복 제거는 호출 전 단계에서 끝나 있어야 하며, 외부 side effect는 없다.
  */
 function createPnlSource(
   snapshots: readonly DailyReportPnlSnapshotFact[],

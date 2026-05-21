@@ -521,53 +521,76 @@ async function runPublicWebSocketSoak({ config, options, artifacts }) {
     orderbookMessages: 0,
     statusMessages: 0,
     websocketErrors: 0,
+    websocketErrorMessage: null,
   };
   const messageTasks = new Set();
   await mkdir(path.dirname(artifacts.rawLogPath), { recursive: true });
   const rawLogStream = createWriteStream(artifacts.rawLogPath, { encoding: "utf8" });
 
   try {
-    await new Promise((resolve, reject) => {
-      const websocket = new WebSocket(options.websocketUrl);
-      const timeout = setTimeout(() => {
-        websocket.close(1000, "soak duration elapsed");
-        resolve();
-      }, options.durationMs);
+    try {
+      await new Promise((resolve) => {
+        const websocket = new WebSocket(options.websocketUrl);
+        let resolved = false;
+        let closeFallback;
+        const finish = () => {
+          if (resolved) {
+            return;
+          }
+          resolved = true;
+          clearTimeout(timeout);
+          clearTimeout(closeFallback);
+          resolve();
+        };
+        const timeout = setTimeout(() => {
+          // close 직후 resolve하면 뒤늦은 message task가 raw log stream close 이후 실행될 수 있어 close event까지 기다린다.
+          websocket.close(1000, "soak duration elapsed");
+        }, options.durationMs);
 
-      websocket.addEventListener("open", () => {
-        const ticket = `seemirai-soak-${Date.now()}`;
-        // Upbit quotation WebSocket은 public endpoint라 인증 헤더와 private 주문 scope가 필요 없다.
-        websocket.send(
-          JSON.stringify([
-            { ticket },
-            { type: "trade", codes: markets },
-            { type: "orderbook", codes: markets },
-          ]),
-        );
-      });
-
-      websocket.addEventListener("message", (message) => {
-        const task = recordWebSocketMessage({
-          data: message.data,
-          metrics,
-          rawLogStream,
-        }).finally(() => {
-          messageTasks.delete(task);
+        websocket.addEventListener("open", () => {
+          const ticket = `seemirai-soak-${Date.now()}`;
+          // Upbit quotation WebSocket은 public endpoint라 인증 헤더와 private 주문 scope가 필요 없다.
+          websocket.send(
+            JSON.stringify([
+              { ticket },
+              { type: "trade", codes: markets },
+              { type: "orderbook", codes: markets },
+            ]),
+          );
         });
-        messageTasks.add(task);
-      });
 
-      websocket.addEventListener("error", (event) => {
-        clearTimeout(timeout);
-        metrics.websocketErrors += 1;
-        reject(new Error(`public WebSocket error: ${String(event.type)}`));
-      });
+        websocket.addEventListener("message", (message) => {
+          const task = recordWebSocketMessage({
+            data: message.data,
+            metrics,
+            rawLogStream,
+          }).finally(() => {
+            messageTasks.delete(task);
+          });
+          messageTasks.add(task);
+        });
 
-      websocket.addEventListener("close", () => {
-        clearTimeout(timeout);
-        resolve();
+        websocket.addEventListener("error", (event) => {
+          metrics.websocketErrors += 1;
+          metrics.websocketErrorMessage = `public WebSocket error: ${String(event.type)}`;
+          // 네트워크 오류도 summary/report artifact로 남겨야 하므로 예외 전파 대신 실패 metric으로 수집한다.
+          try {
+            websocket.close(1011, "soak websocket error");
+          } catch {
+            finish();
+            return;
+          }
+          closeFallback = setTimeout(finish, 1_000);
+        });
+
+        websocket.addEventListener("close", () => {
+          finish();
+        });
       });
-    });
+    } catch (error) {
+      metrics.websocketErrors += 1;
+      metrics.websocketErrorMessage = toErrorMessage(error);
+    }
 
     await Promise.all(messageTasks);
   } finally {
@@ -586,7 +609,12 @@ async function runPublicWebSocketSoak({ config, options, artifacts }) {
     },
     checks: {
       publicWebSocket:
-        metrics.websocketMessages > 0
+        metrics.websocketErrors > 0
+          ? failCheck("Upbit public quotation WebSocket 오류가 관측됐다.", {
+              errors: metrics.websocketErrors,
+              lastError: metrics.websocketErrorMessage,
+            })
+          : metrics.websocketMessages > 0
           ? okCheck("Upbit public quotation WebSocket message를 수신했다.", {
               messages: metrics.websocketMessages,
               markets,
