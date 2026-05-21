@@ -103,12 +103,57 @@ function selectLatestPnlSnapshots(
   for (const snapshot of snapshots) {
     const scope = `${snapshot.strategyId}:${snapshot.market ?? "ALL"}`;
     const existing = latestByScope.get(scope);
-    if (existing === undefined || toTime(snapshot.capturedAt) > toTime(existing.capturedAt)) {
+    if (existing === undefined || comparePnlSnapshotCandidate(snapshot, existing) > 0) {
       latestByScope.set(scope, snapshot);
     }
   }
 
   return [...latestByScope.values()].sort(compareSnapshotScope);
+}
+
+/**
+ * 같은 scope의 PnL snapshot 후보 우선순위를 비교한다.
+ *
+ * `captured_at`이 다르면 최신 timestamp가 우선이다. timestamp까지 같으면 DB schema에 row id나 created_at이 없으므로,
+ * snapshot 내용을 정규화한 canonical key로 tie-break한다. 이 선택은 경제적 우열을 뜻하지 않고, 같은 입력 집합에서 조회 순서가
+ * 달라도 항상 같은 row를 고르기 위한 deterministic fallback이다.
+ */
+function comparePnlSnapshotCandidate(
+  left: DailyReportPnlSnapshotFact,
+  right: DailyReportPnlSnapshotFact,
+): number {
+  const leftTime = toTime(left.capturedAt);
+  const rightTime = toTime(right.capturedAt);
+  if (leftTime !== rightTime) {
+    return leftTime - rightTime;
+  }
+
+  return createPnlSnapshotTieBreakKey(left).localeCompare(createPnlSnapshotTieBreakKey(right));
+}
+
+/**
+ * PnL snapshot 동점 비교에 쓰는 canonical content key를 만든다.
+ *
+ * Decimal 문자열은 storage scale 차이로 key가 달라지지 않게 정규화한다. scope와 timestamp가 같은 충돌 상황에서만 사용하며,
+ * 외부 side effect 없이 tie-break 순서를 안정화한다.
+ */
+function createPnlSnapshotTieBreakKey(snapshot: DailyReportPnlSnapshotFact): string {
+  return [
+    snapshot.strategyId,
+    snapshot.market ?? "ALL",
+    toTime(snapshot.capturedAt).toString(),
+    normalizeDecimalForKey(snapshot.equity),
+    normalizeDecimalForKey(snapshot.realizedPnl),
+    normalizeDecimalForKey(snapshot.unrealizedPnl),
+    normalizeDecimalForKey(snapshot.drawdownBps),
+  ].join("\u0001");
+}
+
+/**
+ * Decimal 문자열을 tie-break key에 넣을 표준 표현으로 정규화한다.
+ */
+function normalizeDecimalForKey(value: string): string {
+  return parseFinancialDecimal(value).toFixed();
 }
 
 /**

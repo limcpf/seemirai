@@ -107,6 +107,41 @@ describe("daily report application", () => {
     expect(summary).toContain("주요 리스크 종류: 없음");
   });
 
+  it("selects tied PnL snapshots deterministically when captured_at is equal", () => {
+    const window = createDailyReportWindow("2026-05-21");
+    const lowerTieBreakSnapshot = {
+      strategyId: "tie_strategy",
+      market: "KRW-BTC",
+      capturedAt: "2026-05-21T14:00:00.000Z",
+      equity: "1000.00000000",
+      realizedPnl: "300",
+      unrealizedPnl: "10",
+      drawdownBps: "5",
+    };
+    const higherTieBreakSnapshot = {
+      strategyId: "tie_strategy",
+      market: "KRW-BTC",
+      capturedAt: "2026-05-21T14:00:00.000Z",
+      equity: "2000",
+      realizedPnl: "100",
+      unrealizedPnl: "5",
+      drawdownBps: "2",
+    };
+
+    const firstOrderReport = aggregateDailyReport(window, {
+      ...emptySourceData(),
+      pnlSnapshots: [lowerTieBreakSnapshot, higherTieBreakSnapshot],
+    });
+    const secondOrderReport = aggregateDailyReport(window, {
+      ...emptySourceData(),
+      pnlSnapshots: [higherTieBreakSnapshot, lowerTieBreakSnapshot],
+    });
+
+    expect(firstOrderReport.realizedPnl.value).toBe("100");
+    expect(secondOrderReport.realizedPnl.value).toBe(firstOrderReport.realizedPnl.value);
+    expect(secondOrderReport.estimatedPnl.value).toBe(firstOrderReport.estimatedPnl.value);
+  });
+
   it("creates a report-date idempotency key and replayable job payload", () => {
     const plan = createDailyReportJobPlan({
       reportDate: "2026-05-21",
