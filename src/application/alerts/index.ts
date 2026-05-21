@@ -373,10 +373,12 @@ export async function dispatchKillSwitchControlAlert(input: {
     return undefined;
   }
 
-  const result = await dispatchAlertWithCooldown(input.alertDispatch, alertRequest);
-  // runtime 조립에서 같은 alertDispatch 객체를 재사용하면 provider failure threshold가 호출 간 누적된다.
-  input.alertDispatch.failureState = result.failureEvaluation.state;
-  return result;
+  return runWithFailureStateLock(input.alertDispatch, async () => {
+    const result = await dispatchAlertWithCooldown(input.alertDispatch, alertRequest);
+    // runtime 조립에서 같은 alertDispatch 객체를 재사용하면 provider failure threshold가 호출 간 누적된다.
+    input.alertDispatch.failureState = result.failureEvaluation.state;
+    return result;
+  });
 }
 
 /**
@@ -541,6 +543,39 @@ export function createInMemoryAlertCooldownStore(): AlertCooldownStore {
       return state;
     },
   };
+}
+
+/**
+ * 같은 runtime alert dispatch 옵션 객체에서 발생한 failureState 갱신을 순차 실행한다.
+ *
+ * `failureState`는 durable store가 아니라 런타임 조립 객체에 누적되는 provider 장애 상태다. 같은 프로세스에서 동시에
+ * `/kill-switch` 요청이 들어오면 각 요청이 동일한 이전 상태를 읽고 서로의 증가분을 덮어쓸 수 있으므로, 호출자는 이 helper
+ * 안에서 dispatch와 상태 반영을 하나의 임계 구역으로 실행해야 한다. 입력 옵션 객체 자체를 key로 사용하고 WeakMap에만
+ * 보관하므로 runtime 종료나 옵션 교체 외의 외부 side effect는 없다.
+ */
+async function runWithFailureStateLock<T>(
+  alertDispatch: KillSwitchAlertDispatchOptions,
+  task: () => Promise<T>,
+): Promise<T> {
+  const previous = alertDispatchFailureStateLocks.get(alertDispatch) ?? Promise.resolve();
+  let releaseCurrent: (() => void) | undefined;
+  const current = new Promise<void>((resolve) => {
+    releaseCurrent = resolve;
+  });
+  // 이전 dispatch 성공/실패와 무관하게 같은 옵션 객체의 다음 상태 갱신은 현재 작업 해제 뒤로 밀어둔다.
+  const chained = previous.then(() => current, () => current);
+  alertDispatchFailureStateLocks.set(alertDispatch, chained);
+
+  await previous.catch(() => undefined);
+  try {
+    // failureState는 in-memory runtime 누적값이므로 같은 옵션 객체를 공유하는 dispatch끼리 순서를 보존한다.
+    return await task();
+  } finally {
+    releaseCurrent?.();
+    if (alertDispatchFailureStateLocks.get(alertDispatch) === chained) {
+      alertDispatchFailureStateLocks.delete(alertDispatch);
+    }
+  }
 }
 
 async function reserveAlertDeliveryForDispatch(
@@ -802,3 +837,4 @@ function latestTimestamp(
 }
 
 const defaultMemoryAlertCooldownStore = createInMemoryAlertCooldownStore();
+const alertDispatchFailureStateLocks = new WeakMap<KillSwitchAlertDispatchOptions, Promise<void>>();

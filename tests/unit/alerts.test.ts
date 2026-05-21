@@ -10,6 +10,7 @@ import type {
   AuditEventReceipt,
   AuditLogPort,
   DailyReportNotification,
+  KillSwitchAlertDispatchOptions,
   NotificationResult,
   NotifierPort,
 } from "../../src/application/index.js";
@@ -494,7 +495,7 @@ describe("alert cooldown and notification policy", () => {
       delivered: false,
       skippedReason: "telegram_timeout",
     };
-    const alertDispatch = {
+    const alertDispatch: KillSwitchAlertDispatchOptions = {
       environment: "prod",
       runMode: "paper_trading",
       notifier,
@@ -525,6 +526,50 @@ describe("alert cooldown and notification policy", () => {
       state: {
         consecutiveFailures: 3,
       },
+    });
+  });
+
+  it("serializes concurrent runtime failure-state updates", async () => {
+    const notifier = new RecordingNotifier();
+    notifier.nextResult = {
+      delivered: false,
+      skippedReason: "telegram_timeout",
+    };
+    const alertDispatch: KillSwitchAlertDispatchOptions = {
+      environment: "prod",
+      runMode: "paper_trading",
+      notifier,
+      durableCooldownStore: createInMemoryAlertCooldownStore(),
+    };
+    const controlRequest = {
+      targetState: "HARD_STOP" as const,
+      reasonCode: "db_write_failure",
+      correlationId: "corr-kill-switch-alert-concurrent-failure",
+      actor: "operator",
+      occurredAt: "2026-05-21T00:00:00.000Z",
+    };
+    const controlResult = {
+      ...createKillSwitchControlDecision({
+        currentState: "NORMAL",
+        ...controlRequest,
+      }),
+      auditEventId: "audit-1",
+      riskEventId: "risk-1",
+    };
+
+    const results = await Promise.all([
+      dispatchKillSwitchControlAlert({ alertDispatch, controlRequest, controlResult }),
+      dispatchKillSwitchControlAlert({ alertDispatch, controlRequest, controlResult }),
+      dispatchKillSwitchControlAlert({ alertDispatch, controlRequest, controlResult }),
+    ]);
+
+    expect(results.map((result) => result?.failureEvaluation.state.consecutiveFailures)).toEqual([
+      1,
+      2,
+      3,
+    ]);
+    expect(alertDispatch.failureState).toMatchObject({
+      consecutiveFailures: 3,
     });
   });
 });
