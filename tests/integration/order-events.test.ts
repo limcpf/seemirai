@@ -1,6 +1,11 @@
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
 import type {
+  AlertCooldownRecordInput,
+  AlertCooldownReservationInput,
+  AlertCooldownReservationResult,
+  AlertCooldownState,
+  AlertCooldownStore,
   AlertNotification,
   DailyReportNotification,
   NotificationResult,
@@ -409,6 +414,42 @@ describeDb("state transition persistence integration", () => {
     });
   });
 
+  it("keeps committed kill switch transition successful when post-commit alert dispatch fails", async () => {
+    const db = await getDatabase();
+
+    const result = await applyPostgresKillSwitchControl({
+      database: db,
+      request: {
+        targetState: "HARD_STOP",
+        reasonCode: "db_write_failure",
+        correlationId: "http-kill-switch-alert-failure",
+        occurredAt,
+      },
+      alertDispatch: {
+        environment: "test",
+        runMode: "paper_trading",
+        notifier: new RecordingNotifier(),
+        durableCooldownStore: new FailingAlertCooldownStore(),
+      },
+    });
+
+    const killSwitchState = await db
+      .selectFrom("kill_switch_state")
+      .select(["state", "reason_code", "correlation_id"])
+      .where("scope", "=", "global")
+      .executeTakeFirstOrThrow();
+
+    expect(result.transition.accepted).toBe(true);
+    expect(result.alertDispatchFailure).toEqual({
+      reasonCode: "alert_dispatch_failed",
+    });
+    expect(killSwitchState).toEqual({
+      state: "HARD_STOP",
+      reason_code: "db_write_failure",
+      correlation_id: "http-kill-switch-alert-failure",
+    });
+  });
+
   async function getDatabase(): Promise<Database> {
     if (database !== undefined) {
       return database;
@@ -439,6 +480,47 @@ class RecordingNotifier implements NotifierPort {
       providerMessageId: "telegram-daily-integration-1",
     };
   }
+}
+
+class FailingAlertCooldownStore implements AlertCooldownStore {
+  public async findByFingerprint(_fingerprint: string): Promise<AlertCooldownState | undefined> {
+    return undefined;
+  }
+
+  public async reserveDelivery(
+    _input: AlertCooldownReservationInput,
+  ): Promise<AlertCooldownReservationResult> {
+    throw new Error("cooldown unavailable");
+  }
+
+  public async releaseDeliveryReservation(
+    input: AlertCooldownRecordInput,
+  ): Promise<AlertCooldownState> {
+    return toEmptyCooldownState(input);
+  }
+
+  public async recordSent(input: AlertCooldownRecordInput): Promise<AlertCooldownState> {
+    return toEmptyCooldownState(input);
+  }
+
+  public async recordSkipped(input: AlertCooldownRecordInput): Promise<AlertCooldownState> {
+    return toEmptyCooldownState(input);
+  }
+}
+
+function toEmptyCooldownState(input: AlertCooldownRecordInput): AlertCooldownState {
+  return {
+    fingerprint: input.fingerprint,
+    severity: input.severity,
+    alertType: input.alertType,
+    market: input.market,
+    strategyId: input.strategyId,
+    reasonCode: input.reasonCode,
+    lastSentAt: null,
+    lastSkippedAt: null,
+    deliveryReservedUntil: null,
+    payloadJson: input.payloadJson ?? {},
+  };
 }
 
 async function insertOrder(database: Database): Promise<{ id: string }> {

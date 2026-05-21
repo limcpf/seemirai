@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
 import type {
+  AlertCooldownRecordInput,
+  AlertCooldownReservationInput,
+  AlertCooldownReservationResult,
+  AlertCooldownState,
+  AlertCooldownStore,
   AlertNotification,
   AuditEvent,
   AuditEventReceipt,
@@ -171,6 +176,38 @@ describe("alert cooldown and notification policy", () => {
         skippedReason: "alert_delivery_reserved",
       },
     });
+    expect(notifier.alerts).toHaveLength(1);
+  });
+
+  it("retries reservation once when a released lease makes the rejected state non-blocking", async () => {
+    const notifier = new RecordingNotifier();
+    const cooldownStore = new ReservationRaceCooldownStore();
+    const request = {
+      environment: "prod",
+      runMode: "paper_trading",
+      severity: "P0" as const,
+      alertType: "db_write_failure",
+      reasonCode: "db_write_failure",
+      title: "DB write failed",
+      body: "risk evidence cannot be persisted",
+      occurredAt: "2026-05-21T00:00:00.000Z",
+    };
+
+    const result = await dispatchAlertWithCooldown(
+      {
+        notifier,
+        durableCooldownStore: cooldownStore,
+      },
+      request,
+    );
+
+    expect(result).toMatchObject({
+      cooldownHit: false,
+      notification: {
+        delivered: true,
+      },
+    });
+    expect(cooldownStore.reserveCalls).toBe(2);
     expect(notifier.alerts).toHaveLength(1);
   });
 
@@ -450,6 +487,46 @@ describe("alert cooldown and notification policy", () => {
       },
     });
   });
+
+  it("accumulates notification failure state across runtime kill switch alert calls", async () => {
+    const notifier = new RecordingNotifier();
+    notifier.nextResult = {
+      delivered: false,
+      skippedReason: "telegram_timeout",
+    };
+    const alertDispatch = {
+      environment: "prod",
+      runMode: "paper_trading",
+      notifier,
+      durableCooldownStore: createInMemoryAlertCooldownStore(),
+    };
+    const controlRequest = {
+      targetState: "HARD_STOP" as const,
+      reasonCode: "db_write_failure",
+      correlationId: "corr-kill-switch-alert-failure",
+      actor: "operator",
+      occurredAt: "2026-05-21T00:00:00.000Z",
+    };
+    const controlResult = {
+      ...createKillSwitchControlDecision({
+        currentState: "NORMAL",
+        ...controlRequest,
+      }),
+      auditEventId: "audit-1",
+      riskEventId: "risk-1",
+    };
+
+    await dispatchKillSwitchControlAlert({ alertDispatch, controlRequest, controlResult });
+    await dispatchKillSwitchControlAlert({ alertDispatch, controlRequest, controlResult });
+    const third = await dispatchKillSwitchControlAlert({ alertDispatch, controlRequest, controlResult });
+
+    expect(third?.failureEvaluation).toMatchObject({
+      manualReviewReasonCode: "notification_consecutive_failure",
+      state: {
+        consecutiveFailures: 3,
+      },
+    });
+  });
 });
 
 class RecordingNotifier implements NotifierPort {
@@ -509,5 +586,51 @@ class BlockingNotifier extends RecordingNotifier {
 class ThrowingNotifier extends RecordingNotifier {
   public override async sendAlert(_notification: AlertNotification): Promise<NotificationResult> {
     throw new Error("provider exploded");
+  }
+}
+
+class ReservationRaceCooldownStore implements AlertCooldownStore {
+  private readonly delegate = createInMemoryAlertCooldownStore();
+  public reserveCalls = 0;
+
+  public async findByFingerprint(fingerprint: string): Promise<AlertCooldownState | undefined> {
+    return this.delegate.findByFingerprint(fingerprint);
+  }
+
+  public async reserveDelivery(
+    input: AlertCooldownReservationInput,
+  ): Promise<AlertCooldownReservationResult> {
+    this.reserveCalls += 1;
+    if (this.reserveCalls === 1) {
+      return {
+        reserved: false,
+        state: {
+          fingerprint: input.fingerprint,
+          severity: input.severity,
+          alertType: input.alertType,
+          market: input.market,
+          strategyId: input.strategyId,
+          reasonCode: input.reasonCode,
+          lastSentAt: null,
+          lastSkippedAt: null,
+          deliveryReservedUntil: null,
+          payloadJson: input.payloadJson ?? {},
+        },
+      };
+    }
+
+    return this.delegate.reserveDelivery(input);
+  }
+
+  public async releaseDeliveryReservation(input: AlertCooldownRecordInput): Promise<AlertCooldownState> {
+    return this.delegate.releaseDeliveryReservation(input);
+  }
+
+  public async recordSent(input: AlertCooldownRecordInput): Promise<AlertCooldownState> {
+    return this.delegate.recordSent(input);
+  }
+
+  public async recordSkipped(input: AlertCooldownRecordInput): Promise<AlertCooldownState> {
+    return this.delegate.recordSkipped(input);
   }
 }

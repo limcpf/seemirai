@@ -71,6 +71,8 @@ Codex-native 운영은 Codex, Git, GitHub, shell command, 문서 상태를 연�
 - P0/P1 provider 호출 전에는 `delivery_reserved_until`을 atomic하게 잡아 같은 fingerprint의 동시 요청을 직렬화한다.
 - provider 실패나 notifier 예외가 발생하면 `delivery_reserved_until`을 즉시 해제해 같은 fingerprint의 실제 재시도와 추가 실패
   evidence가 reservation 만료까지 막히지 않게 한다.
+- reservation 거부 직후 최신 state에 cooldown/lease 차단 사유가 없으면, 다른 요청의 release와 경합한 것으로 보고 한 번
+  재예약한다. 재예약도 실패하면 예외 대신 `alert_reservation_race` skip evidence를 남겨 알림 처리 루프를 중단하지 않는다.
 - P2/P3 cooldown은 M8 Sub PR 3 범위에서 process memory로 제한한다. 재시작 후 낮은 등급 알림이 다시 전송될 수 있는 점은
   의도한 trade-off이며, durable 저장소 확장은 후속 요구가 있을 때 별도 변경으로 다룬다.
 - cooldown hit는 provider 호출 없이 `last_skipped_at`과 `ALERT_COOLDOWN` audit event를 남긴다.
@@ -82,10 +84,14 @@ Codex-native 운영은 Codex, Git, GitHub, shell command, 문서 상태를 연�
   수행하지 않는다.
 - provider 실패가 연속 3회이거나 첫 실패 이후 10분 이상 지속되면 kill switch mapping에서 `MANUAL_REVIEW_REQUIRED` 후보로
   쓰는 reason code를 반환한다.
+- runtime kill switch alert dispatch는 같은 `alertDispatch` 옵션 객체에 최신 failure state를 저장해 provider 실패 누적을
+  호출 간 유지한다.
 - fingerprint 세그먼트 안의 `:`는 join 구분자와 충돌하지 않도록 `%3a`로 escape한다. 서로 다른 market/strategy/reason 조합이
   같은 cooldown row를 공유해 오억제되는 상황을 막기 위한 규칙이다.
 - Telegram 설정이 있는 runtime kill switch control provider는 accepted 전이를 DB transaction commit 이후 alert dispatch로
   연결한다. Telegram side effect는 kill switch durable update transaction 안에 넣지 않는다.
+- post-commit alert dispatch가 cooldown/audit/provider 경계에서 실패해도 이미 commit된 kill switch 전이를 5xx로 바꾸지 않고,
+  결과 객체에 `alert_dispatch_failed` reason code만 기록한다.
 
 ## 검증 규칙
 

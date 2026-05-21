@@ -263,43 +263,49 @@ export async function dispatchAlertWithCooldown(
   options: AlertDispatchServiceOptions,
   request: AlertDispatchRequest,
 ): Promise<AlertDispatchResult> {
-  const reservationAt = currentTime(options);
-  const alertOccurredAt = request.occurredAt ?? reservationAt;
   const fingerprint = createAlertFingerprint(request);
   const store = selectCooldownStore(options, request.severity);
-  const reservationRecordInput = toCooldownRecordInput(request, fingerprint, reservationAt);
-  const reservation = await store.reserveDelivery({
-    ...reservationRecordInput,
-    cooldownMs: getDefaultAlertCooldownMs(request.severity),
-    reserveUntil: addMs(reservationAt, options.deliveryReservationMs ?? defaultAlertDeliveryReservationMs),
-  });
+  let reservationContext = await reserveAlertDeliveryForDispatch(options, request, fingerprint, store);
+  let blockedDelivery = reservationContext.reservation.reserved
+    ? undefined
+    : describeBlockedDelivery(
+        reservationContext.reservation.state,
+        request.severity,
+        reservationContext.reservationAt,
+      );
 
-  if (!reservation.reserved) {
-    const blockedDelivery = describeBlockedDelivery(
-      reservation.state,
-      request.severity,
-      reservationAt,
-    );
-    if (blockedDelivery.skippedReason === undefined) {
-      throw new Error("Alert delivery reservation was rejected without an active cooldown reason");
-    }
+  if (!reservationContext.reservation.reserved && blockedDelivery?.skippedReason === undefined) {
+    // 실패한 provider 호출이 lease를 해제한 직후일 수 있으므로 한 번 재예약해 전송 가능한 alert를 예외로 유실하지 않는다.
+    reservationContext = await reserveAlertDeliveryForDispatch(options, request, fingerprint, store);
+    blockedDelivery = reservationContext.reservation.reserved
+      ? undefined
+      : describeBlockedDelivery(
+          reservationContext.reservation.state,
+          request.severity,
+          reservationContext.reservationAt,
+        );
+  }
+
+  if (!reservationContext.reservation.reserved) {
+    const skippedReason = blockedDelivery?.skippedReason ?? "alert_reservation_race";
     // provider를 호출하지 않아도 cooldown/reservation hit 자체는 운영자가 추적해야 하므로 skip evidence를 남긴다.
-    await store.recordSkipped(reservationRecordInput);
-    await appendAlertAudit(options, request, fingerprint, reservationAt, "INFO", "alert_delivery_skipped", {
-      blocked_until: blockedDelivery.until ?? null,
-      skipped_reason: blockedDelivery.skippedReason,
+    await store.recordSkipped(reservationContext.recordInput);
+    await appendAlertAudit(options, request, fingerprint, reservationContext.reservationAt, "INFO", "alert_delivery_skipped", {
+      blocked_until: blockedDelivery?.until ?? null,
+      skipped_reason: skippedReason,
     });
     return {
       fingerprint,
       cooldownHit: true,
       notification: {
         delivered: false,
-        skippedReason: blockedDelivery.skippedReason,
+        skippedReason,
       },
       failureEvaluation: preserveNotificationFailureState(options.failureState),
     };
   }
 
+  const alertOccurredAt = request.occurredAt ?? reservationContext.reservationAt;
   const notification = await sendAlertSafely(options.notifier, {
     severity: request.severity,
     title: request.title,
@@ -367,7 +373,10 @@ export async function dispatchKillSwitchControlAlert(input: {
     return undefined;
   }
 
-  return dispatchAlertWithCooldown(input.alertDispatch, alertRequest);
+  const result = await dispatchAlertWithCooldown(input.alertDispatch, alertRequest);
+  // runtime 조립에서 같은 alertDispatch 객체를 재사용하면 provider failure threshold가 호출 간 누적된다.
+  input.alertDispatch.failureState = result.failureEvaluation.state;
+  return result;
 }
 
 /**
@@ -531,6 +540,31 @@ export function createInMemoryAlertCooldownStore(): AlertCooldownStore {
       states.set(input.fingerprint, state);
       return state;
     },
+  };
+}
+
+async function reserveAlertDeliveryForDispatch(
+  options: AlertDispatchServiceOptions,
+  request: AlertDispatchRequest,
+  fingerprint: string,
+  store: AlertCooldownStore,
+): Promise<{
+  reservationAt: Date;
+  recordInput: AlertCooldownRecordInput;
+  reservation: AlertCooldownReservationResult;
+}> {
+  const reservationAt = currentTime(options);
+  const recordInput = toCooldownRecordInput(request, fingerprint, reservationAt);
+  const reservation = await store.reserveDelivery({
+    ...recordInput,
+    cooldownMs: getDefaultAlertCooldownMs(request.severity),
+    reserveUntil: addMs(reservationAt, options.deliveryReservationMs ?? defaultAlertDeliveryReservationMs),
+  });
+
+  return {
+    reservationAt,
+    recordInput,
+    reservation,
   };
 }
 

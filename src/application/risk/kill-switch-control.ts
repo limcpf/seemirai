@@ -99,6 +99,15 @@ export interface KillSwitchControlResult {
    * 있으므로 route layer가 secret-free response shape을 별도로 유지한다.
    */
   alertDispatch?: AlertDispatchResult;
+  /**
+   * post-commit 알림 경계에서 실패했음을 나타내는 안전한 요약이다.
+   *
+   * kill switch durable state는 이미 commit됐으므로 이 실패는 control 전이 실패로 전파하지 않는다. 원본 exception message나
+   * stack trace는 secret 포함 가능성이 있어 결과에 싣지 않는다.
+   */
+  alertDispatchFailure?: {
+    reasonCode: "alert_dispatch_failed";
+  };
 }
 
 /**

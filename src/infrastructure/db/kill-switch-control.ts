@@ -208,24 +208,34 @@ async function appendKillSwitchAlertDispatch(input: {
     return input.result;
   }
 
-  // 상태 전이 evidence commit 이후에 알림을 전송해 Telegram 장애가 kill switch durable update를 rollback하지 못하게 한다.
-  const alertDispatch = await dispatchKillSwitchControlAlert({
-    alertDispatch: input.options.alertDispatch,
-    controlRequest: {
-      ...input.options.request,
-      occurredAt: input.occurredAt,
-      actor: input.actor,
-    },
-    controlResult: input.result,
-  });
-  if (alertDispatch === undefined) {
-    return input.result;
-  }
+  try {
+    // 상태 전이 evidence commit 이후에 알림을 전송해 Telegram 장애가 kill switch durable update를 rollback하지 못하게 한다.
+    const alertDispatch = await dispatchKillSwitchControlAlert({
+      alertDispatch: input.options.alertDispatch,
+      controlRequest: {
+        ...input.options.request,
+        occurredAt: input.occurredAt,
+        actor: input.actor,
+      },
+      controlResult: input.result,
+    });
+    if (alertDispatch === undefined) {
+      return input.result;
+    }
 
-  return {
-    ...input.result,
-    alertDispatch,
-  };
+    return {
+      ...input.result,
+      alertDispatch,
+    };
+  } catch {
+    // post-commit 알림 실패는 control plane 성공을 5xx로 바꾸지 않고 안전한 reason code만 결과에 남긴다.
+    return {
+      ...input.result,
+      alertDispatchFailure: {
+        reasonCode: "alert_dispatch_failed",
+      },
+    };
+  }
 }
 
 /**

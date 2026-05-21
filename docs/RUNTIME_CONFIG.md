@@ -164,7 +164,9 @@ worker 실행을 연결하지 않고, 후속 runtime 조립이 사용할 retry c
 `createPaperNoKeyKillSwitchControlProvider`는 Telegram 설정이 있을 때 `POST /kill-switch` provider를 alert dispatch 경로와
 함께 조립한다. accepted `HARD_STOP`, `NEW_ORDERS_BLOCKED`, `MANUAL_REVIEW_REQUIRED` 전이는 kill switch state/audit/risk/job
 transaction이 commit된 뒤 Telegram/cooldown/audit 알림 경계로 넘어간다. Telegram 설정이 없으면 control provider는 알림 없이
-동작하지만, 알림 의존성 누락으로 kill switch state update가 차단되지는 않는다.
+동작하지만, 알림 의존성 누락으로 kill switch state update가 차단되지는 않는다. post-commit alert dispatch 실패는
+`alert_dispatch_failed`로 결과 객체에 기록하고 control 전이 성공 자체를 실패로 바꾸지 않는다. 같은 runtime alert dispatch
+옵션 객체는 최신 notification failure state를 보존해 연속 실패 threshold가 실제 호출 간 누적되게 한다.
 
 provider 호출 직전에는 fingerprint 단위 delivery reservation을 먼저 기록한다. 이 atomic gate는 마지막 성공 전송이 cooldown
 안에 있거나 기존 reservation이 만료되지 않았으면 provider 호출 없이 `ALERT_COOLDOWN` audit evidence만 남긴다. 이 경계는
