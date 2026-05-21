@@ -35,6 +35,7 @@
 | `registry` | 정적 registry id 참조 | exchange, strategy, rule 활성화 조합 |
 | `strategyParameters` | strategy별 기본 threshold | 전략 후보 생성과 rule 평가에 쓰는 보수적 기준값 |
 | `risk` | M5 리스크 한도 threshold | RiskGate 평가와 상태 전이 audit에 쓰는 보수적 계정/노출/손실 한도 |
+| `telegram` | `provider_timeout_ms=5000`, optional `chat_id` | Telegram outbound notifier의 provider timeout과 chat id fallback |
 | `secrets` | 기본 `{}` | schema shape만 표현하며 실제 secret은 저장하지 않음 |
 
 ## 안전 invariant
@@ -119,6 +120,59 @@ P0/P1 원인 mapping은 application layer의 `mapKillSwitchReasonToTargetState`�
 | `db_write_failure`, `order_idempotency_violation`, `duplicate_order_idempotency_key`, `fill_order_accounting_mismatch`, `risk_limit_calculation_unavailable`, `audit_persistence_failure`, `live_order_api_misuse_detected` | `HARD_STOP` |
 | `stale_market_data`, `public_websocket_lag`, `quote_freshness_insufficient`, `transient_external_data_gap` | `NEW_ORDERS_BLOCKED` |
 | `notification_consecutive_failure`, `notification_failure_threshold_exceeded`, `report_generation_repeated_failure`, `abnormal_state_operator_review_required` | `MANUAL_REVIEW_REQUIRED` |
+
+## M8 Telegram outbound 알림
+
+구현 기준:
+
+- application policy: `src/application/alerts/index.ts`
+- outbound adapter: `src/infrastructure/telegram/notifier.ts`
+- durable cooldown repository: `src/infrastructure/db/alert-cooldown.ts`
+- runtime config loader: `src/runtime/notification-config.ts`
+- runtime control wiring: `src/runtime/notification-runtime.ts`
+
+Telegram 알림은 outbound `sendMessage`만 사용한다. 이 단계는 Telegram webhook, polling, command 수신 route를 만들지
+않으며, daily report 집계도 후속 Sub PR 범위로 유지한다. message format은 Markdown/HTML parse mode 없는 plain text다.
+첫 화면에는 한국어 상태/원인/영향/필요 조치를 배치하고, `fingerprint`, audit/risk event id, correlation id 같은 내부 추적
+값은 하단 `추적 정보` 섹션에만 둔다. Telegram 단일 message text 제한인 4096자를 넘으면 전송 전에 truncation marker를 붙여
+잘라 provider 400으로 알림 전체가 유실되지 않게 한다.
+
+설정 경계:
+
+- alert environment: `SEEMIRAI_ENV` env, fallback `NODE_ENV`, 기본 `local`
+- bot token 우선순위: `SEEMIRAI_TELEGRAM_BOT_TOKEN` env, legacy `TELEGRAM_BOT_TOKEN` env, `secrets.telegram_bot_token`
+- chat id 우선순위: `SEEMIRAI_TELEGRAM_CHAT_ID` env, legacy `TELEGRAM_CHAT_ID` env, `telegram.chat_id`
+- provider timeout: `telegram.provider_timeout_ms`, 기본 `5000`
+
+alert fingerprint는 `environment + run_mode + severity + alert_type + market_or_global + strategy_id_or_global + reason_code`로
+만든다. severity가 key에 들어가므로 P1 cooldown 중에도 같은 원인의 P0 escalation은 막히지 않는다. 각 세그먼트 안의 `:`는
+`%3a`로 escape해 join 구분자와 충돌하지 않게 한다.
+
+cooldown 기본값:
+
+| severity | cooldown | 저장소 |
+| --- | --- | --- |
+| P0 | 1분 | PostgreSQL `alert_cooldowns` |
+| P1 | 5분 | PostgreSQL `alert_cooldowns` |
+| P2 | 1시간 | process memory |
+| P3 | 6시간 | process memory |
+
+P0/P1 provider failure는 `notification_retry` job 후보 payload와 idempotency key를 만든다. Sub PR 3은 실제 jobs insert와
+worker 실행을 연결하지 않고, 후속 runtime 조립이 사용할 retry contract만 고정한다. provider 실패가 연속 3회이거나 첫 실패
+이후 10분 이상 이어지면 `notification_consecutive_failure` 또는 `notification_failure_threshold_exceeded` reason code를
+반환해 kill switch mapping의 `MANUAL_REVIEW_REQUIRED` 후보로 쓸 수 있게 한다.
+
+`createPaperNoKeyKillSwitchControlProvider`는 Telegram 설정이 있을 때 `POST /kill-switch` provider를 alert dispatch 경로와
+함께 조립한다. accepted `HARD_STOP`, `NEW_ORDERS_BLOCKED`, `MANUAL_REVIEW_REQUIRED` 전이는 kill switch state/audit/risk/job
+transaction이 commit된 뒤 Telegram/cooldown/audit 알림 경계로 넘어간다. Telegram 설정이 없으면 control provider는 알림 없이
+동작하지만, 알림 의존성 누락으로 kill switch state update가 차단되지는 않는다. post-commit alert dispatch 실패는
+`alert_dispatch_failed`로 결과 객체에 기록하고 control 전이 성공 자체를 실패로 바꾸지 않는다. 같은 runtime alert dispatch
+옵션 객체는 최신 notification failure state를 보존해 연속 실패 threshold가 실제 호출 간 누적되게 한다.
+
+provider 호출 직전에는 fingerprint 단위 delivery reservation을 먼저 기록한다. 이 atomic gate는 마지막 성공 전송이 cooldown
+안에 있거나 기존 reservation이 만료되지 않았으면 provider 호출 없이 `ALERT_COOLDOWN` audit evidence만 남긴다. 이 경계는
+같은 장애가 동시에 들어와도 두 요청이 모두 Telegram provider를 호출하는 상황을 막기 위한 것이다. cooldown 기준 시각은
+alert 발생 시각이 아니라 reservation/전송 완료 시각을 사용해 지연 처리된 과거 alert가 보호 창을 짧게 만들지 못하게 한다.
 
 ## M6 Execution 안전 설정
 

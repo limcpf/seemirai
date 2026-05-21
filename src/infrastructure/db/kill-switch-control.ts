@@ -1,4 +1,5 @@
 import type {
+  KillSwitchAlertDispatchOptions,
   KillSwitchControlProvider,
   KillSwitchControlRequest,
   KillSwitchControlResult,
@@ -7,6 +8,7 @@ import {
   createHardStopPendingPaperOrderCancelJobPlan,
   createKillSwitchControlDecision,
   createKillSwitchControlConflictResult,
+  dispatchKillSwitchControlAlert,
 } from "../../application/index.js";
 import type { JsonRecord, KillSwitchState } from "../../domain/index.js";
 import type { Database } from "./database.js";
@@ -28,6 +30,13 @@ export interface CreatePostgresKillSwitchControlProviderOptions {
    * 요청 actor가 없을 때 audit event에 남길 기본 실행 주체다.
    */
   actor?: string;
+  /**
+   * kill switch 전이를 Telegram alert dispatch로 이어 붙이는 선택 의존성이다.
+   *
+   * 값이 없으면 durable state/audit/risk/job 처리만 수행한다. 값이 있으면 DB transaction commit 이후 alert cooldown과 provider
+   * 전송 경계로 이어가되, control evidence transaction 자체에는 Telegram side effect를 섞지 않는다.
+   */
+  alertDispatch?: KillSwitchAlertDispatchOptions;
 }
 
 /**
@@ -69,7 +78,7 @@ export async function applyPostgresKillSwitchControl(
   const occurredAt = options.request.occurredAt ?? options.clock?.() ?? new Date();
   const actor = options.request.actor ?? options.actor ?? "http-control";
 
-  return options.database.transaction().execute(async (transaction) => {
+  const result = await options.database.transaction().execute(async (transaction) => {
     // 전역 kill switch는 단일 durable row가 source of truth이므로 요청 payload가 아니라 DB snapshot에서 현재 상태를 읽는다.
     const current = await transaction
       .selectFrom("kill_switch_state")
@@ -180,6 +189,53 @@ export async function applyPostgresKillSwitchControl(
 
     return persistedResult;
   });
+
+  return appendKillSwitchAlertDispatch({
+    result,
+    options,
+    occurredAt,
+    actor,
+  });
+}
+
+async function appendKillSwitchAlertDispatch(input: {
+  result: KillSwitchControlResult;
+  options: ApplyPostgresKillSwitchControlOptions;
+  occurredAt: Date | string;
+  actor: string;
+}): Promise<KillSwitchControlResult> {
+  if (input.options.alertDispatch === undefined) {
+    return input.result;
+  }
+
+  try {
+    // 상태 전이 evidence commit 이후에 알림을 전송해 Telegram 장애가 kill switch durable update를 rollback하지 못하게 한다.
+    const alertDispatch = await dispatchKillSwitchControlAlert({
+      alertDispatch: input.options.alertDispatch,
+      controlRequest: {
+        ...input.options.request,
+        occurredAt: input.occurredAt,
+        actor: input.actor,
+      },
+      controlResult: input.result,
+    });
+    if (alertDispatch === undefined) {
+      return input.result;
+    }
+
+    return {
+      ...input.result,
+      alertDispatch,
+    };
+  } catch {
+    // post-commit 알림 실패는 control plane 성공을 5xx로 바꾸지 않고 안전한 reason code만 결과에 남긴다.
+    return {
+      ...input.result,
+      alertDispatchFailure: {
+        reasonCode: "alert_dispatch_failed",
+      },
+    };
+  }
 }
 
 /**

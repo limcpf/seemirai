@@ -1,4 +1,5 @@
 export * from "./audit/index.js";
+export * from "./alerts/index.js";
 export * from "./backtest/index.js";
 export * from "./execution/index.js";
 export * from "./ports/index.js";

@@ -8,7 +8,7 @@ import type { Pool } from "pg";
 
 const runDbIntegration = process.env.SEEMIRAI_RUN_DB_INTEGRATION === "1";
 const describeDb = runDbIntegration ? describe : describe.skip;
-const expectedMigrationCount = 7;
+const expectedMigrationCount = 8;
 
 describeDb("database migrations integration", () => {
   let pool: Pool | undefined;

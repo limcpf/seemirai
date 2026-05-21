@@ -84,6 +84,38 @@ Acceptance Criteria:
 
 - 생성 산출물이나 임시 작업 파일을 문서 라우팅 대상으로 등록하지 않는다.
 
+### FR-COMMON-003: 사용자에게 보이는 문구는 행동 가능한 한국어여야 한다
+
+설명:
+
+- user-facing 문구는 운영자나 사용자가 즉시 판단할 수 있는 한국어를 우선한다.
+- 내부 enum, 상태 machine code, reason code, fingerprint, idempotency key 같은 안정 식별자는 저장·추적·debug 경계에는 필요하지만, 사용자가 처음 보는 제목이나 핵심 본문에 그대로 노출하지 않는다.
+- HTTP 응답, Telegram 알림, daily report, CLI 출력, status payload처럼 사람이 직접 읽는 표면은 상태, 원인, 영향, 필요 조치를 사용자 행동 언어로 먼저 설명하고 내부 식별자는 `추적 정보`, `details`, `debug`, `metadata` 같은 분리된 영역에 보존한다.
+- 새 도메인 코드나 운영 reason code를 추가할 때는 해당 code가 사용자에게 어떤 말로 보일지 매핑을 함께 정의한다.
+
+Acceptance Criteria:
+
+- [ ] user-facing 제목과 첫 본문은 한국어 상태/원인/영향/필요 조치 중 필요한 정보를 포함한다.
+- [ ] 내부 enum/code/reason code/fingerprint가 첫 화면의 주요 설명을 대체하지 않는다.
+- [ ] 내부 식별자가 복구나 감사에 필요하면 추적 전용 영역에 분리해 남긴다.
+- [ ] 새 user-facing formatter나 response shape에는 대표 케이스 테스트 또는 fixture가 있다.
+- [ ] 문구 변경이 운영 판단이나 사용자 행동을 바꾸면 관련 PRD, 기능 요구사항, 런타임/신뢰성 문서 중 해당 기준 문서를 갱신한다.
+
+테스트 요구사항:
+
+- 단위 테스트: 새 formatter 또는 response mapper가 raw code만 반환하지 않고 사용자 문구와 추적 정보를 분리하는지 확인한다.
+- 문서 리뷰: 새 도메인 code가 추가될 때 user-facing 매핑 누락이 없는지 확인한다.
+
+문서 요구사항:
+
+- 채널별 세부 문구 정책은 해당 기준 문서에 둔다. 예를 들어 Telegram 알림은 `docs/RUNTIME_CONFIG.md`와 `docs/RELIABILITY.md`의 alert delivery 기준을 따른다.
+- 전역 규칙이 바뀌면 루트 `AGENTS.md`와 이 요구사항을 함께 갱신한다.
+
+제외 범위:
+
+- machine-to-machine API의 안정 contract, DB column 값, audit metadata, log field name은 user-facing 문구로 번역하지 않는다.
+- 내부 식별자를 숨기기 위해 감사·복구에 필요한 추적 정보를 제거하지 않는다.
+
 ## MVP 기능 요구사항
 
 ### FR-CONFIG-001: MVP 기본 설정은 안전한 paper trading 프로파일이어야 한다
