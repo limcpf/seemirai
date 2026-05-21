@@ -133,8 +133,9 @@ P0/P1 원인 mapping은 application layer의 `mapKillSwitchReasonToTargetState`�
 
 Telegram 알림은 outbound `sendMessage`만 사용한다. 이 단계는 Telegram webhook, polling, command 수신 route를 만들지
 않으며, daily report 집계도 후속 Sub PR 범위로 유지한다. message format은 Markdown/HTML parse mode 없는 plain text다.
-Telegram 단일 message text 제한인 4096자를 넘으면 전송 전에 truncation marker를 붙여 잘라 provider 400으로 알림 전체가
-유실되지 않게 한다.
+첫 화면에는 한국어 상태/원인/영향/필요 조치를 배치하고, `fingerprint`, audit/risk event id, correlation id 같은 내부 추적
+값은 하단 `추적 정보` 섹션에만 둔다. Telegram 단일 message text 제한인 4096자를 넘으면 전송 전에 truncation marker를 붙여
+잘라 provider 400으로 알림 전체가 유실되지 않게 한다.
 
 설정 경계:
 

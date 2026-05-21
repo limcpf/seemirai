@@ -678,9 +678,13 @@ function createKillSwitchControlAlertRequest(input: {
     correlationId: input.controlRequest.correlationId,
     metadata: {
       source: "kill_switch_control",
+      // Telegram formatter가 raw enum 대신 한국어 상태/원인/영향 문구를 만들 수 있게 전이 근거를 구조화해 넘긴다.
       actor: input.controlRequest.actor ?? "kill-switch-control",
+      correlation_id: input.controlRequest.correlationId ?? null,
       from_state: transition.fromState,
       to_state: transition.toState,
+      reason_code: transition.reasonCode,
+      transition_message: transition.message,
       reason_matches_target: input.controlResult.reasonMatchesTarget,
       recommended_target_state: input.controlResult.recommendedTargetState ?? null,
       audit_event_id: input.controlResult.auditEventId ?? null,

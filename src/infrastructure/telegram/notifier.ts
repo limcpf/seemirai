@@ -4,12 +4,13 @@ import type {
   NotificationResult,
   NotifierPort,
 } from "../../application/index.js";
-import type { TimestampInput } from "../../domain/index.js";
+import {
+  enforceTelegramMessageLimit,
+  formatAlertMessage,
+  formatDailyReportMessage,
+} from "./message-format.js";
 
 type FetchLike = (input: string, init: RequestInit) => Promise<Response>;
-
-export const telegramMessageMaxLength = 4_096;
-const telegramTruncationSuffix = "\n... [truncated]";
 
 export interface TelegramNotifierOptions {
   botToken: string;
@@ -108,57 +109,10 @@ export class TelegramNotifier implements NotifierPort {
 }
 
 /**
- * Telegram Bot API의 단일 message text 길이 제한을 전송 전에 강제한다.
- *
- * 운영 장애 alert는 stack trace나 긴 metadata가 붙을 수 있다. provider 400 응답으로 알림 전체가 유실되는 것보다 앞부분의
- * 핵심 문맥과 truncation marker를 보존하는 쪽이 안전하다. 후속 report/attachment 분할은 별도 기능 범위로 둔다.
- */
-export function enforceTelegramMessageLimit(
-  text: string,
-  maxLength: number = telegramMessageMaxLength,
-): string {
-  const characters = Array.from(text);
-  if (characters.length <= maxLength) {
-    return text;
-  }
-
-  const suffixCharacters = Array.from(telegramTruncationSuffix);
-  const headLength = Math.max(0, maxLength - suffixCharacters.length);
-  return [...characters.slice(0, headLength), ...suffixCharacters].join("");
-}
-
-/**
  * Telegram outbound notifier를 만든다.
  */
 export function createTelegramNotifier(options: TelegramNotifierOptions): TelegramNotifier {
   return new TelegramNotifier(options);
-}
-
-/**
- * Telegram alert plain text를 만든다.
- *
- * HTML/Markdown parse mode를 쓰지 않아 escaping 오류나 command-like text 해석을 피한다.
- */
-export function formatAlertMessage(notification: AlertNotification): string {
-  return [
-    `[${notification.severity}] ${notification.title}`,
-    notification.body,
-    `fingerprint: ${notification.fingerprint}`,
-    `occurred_at: ${toIsoTimestamp(notification.occurredAt)}`,
-  ].join("\n");
-}
-
-/**
- * Telegram daily report plain text를 만든다.
- *
- * daily report aggregator는 후속 sub PR 범위이므로 여기서는 NotifierPort contract에 맞춘 전송 format만 제공한다.
- */
-export function formatDailyReportMessage(notification: DailyReportNotification): string {
-  return [
-    `[DAILY_REPORT] ${notification.reportDate}`,
-    notification.summary,
-    `generated_at: ${toIsoTimestamp(notification.generatedAt)}`,
-  ].join("\n");
 }
 
 function createTelegramSendMessageUrl(botToken: string): string {
@@ -189,8 +143,4 @@ function isAbortError(error: unknown): boolean {
     "name" in error &&
     (error as { name: unknown }).name === "AbortError"
   );
-}
-
-function toIsoTimestamp(value: TimestampInput): string {
-  return value instanceof Date ? value.toISOString() : value;
 }

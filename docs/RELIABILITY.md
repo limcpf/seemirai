@@ -68,6 +68,8 @@ Codex-native 운영은 Codex, Git, GitHub, shell command, 문서 상태를 연�
 - alert fingerprint는 환경, 실행 모드, severity, alert type, market, strategy, reason code를 모두 포함한다.
 - severity가 fingerprint에 포함되므로 낮은 등급 알림의 cooldown은 P0 escalation을 막지 않는다.
 - P0/P1 cooldown은 `alert_cooldowns` PostgreSQL row로 보존해 프로세스 재시작 후에도 중복 Telegram 전송을 억제한다.
+- Telegram message는 내부 enum/code를 첫 줄에 그대로 노출하지 않고 한국어 사용자 문구로 상태, 원인, 영향, 필요 조치를
+  먼저 보여준다. `fingerprint`, correlation id, audit/risk event id는 복구 추적을 위해 하단 `추적 정보` 섹션에 보존한다.
 - P0/P1 provider 호출 전에는 `delivery_reserved_until`을 atomic하게 잡아 같은 fingerprint의 동시 요청을 직렬화한다.
 - provider 실패나 notifier 예외가 발생하면 `delivery_reserved_until`을 즉시 해제해 같은 fingerprint의 실제 재시도와 추가 실패
   evidence가 reservation 만료까지 막히지 않게 한다.

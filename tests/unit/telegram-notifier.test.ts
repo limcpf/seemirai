@@ -19,10 +19,15 @@ describe("Telegram outbound notifier", () => {
       }),
     ).toBe(
       [
-        "[P0] DB write failed",
-        "risk evidence cannot be persisted",
-        "fingerprint: alert:prod:paper:P0:db:global:global:db_write_failure",
-        "occurred_at: 2026-05-21T00:00:00.000Z",
+        "[P0 긴급] 거래 기록 저장 실패",
+        "",
+        "내용: 주문/리스크 증거를 저장하지 못해 거래 상태를 보수적으로 제한했습니다.",
+        "원문: risk evidence cannot be persisted",
+        "원인: 거래 기록 저장 실패",
+        "",
+        "추적 정보",
+        "알림 식별자: alert:prod:paper:P0:db:global:global:db_write_failure",
+        "발생 시각: 2026-05-21T00:00:00.000Z",
       ].join("\n"),
     );
     expect(
@@ -31,7 +36,69 @@ describe("Telegram outbound notifier", () => {
         summary: "orders: 0",
         generatedAt: "2026-05-21T15:00:00.000Z",
       }),
-    ).toBe(["[DAILY_REPORT] 2026-05-21", "orders: 0", "generated_at: 2026-05-21T15:00:00.000Z"].join("\n"));
+    ).toBe(
+      [
+        "[운영 일간 리포트] 2026-05-21",
+        "",
+        "요약",
+        "orders: 0",
+        "",
+        "추적 정보",
+        "생성 시각: 2026-05-21T15:00:00.000Z",
+      ].join("\n"),
+    );
+  });
+
+  it("formats kill switch control alerts as user-facing Korean guidance", () => {
+    expect(
+      formatAlertMessage({
+        severity: "P0",
+        title: "Kill switch HARD_STOP",
+        body: "state: NORMAL -> HARD_STOP",
+        fingerprint: "alert:prod:paper_trading:P0:kill_switch_control:global:global:db_write_failure",
+        occurredAt: "2026-05-21T00:00:00.000Z",
+        metadata: {
+          source: "kill_switch_control",
+          actor: "operator",
+          correlation_id: "corr-kill-switch-alert",
+          from_state: "NORMAL",
+          to_state: "HARD_STOP",
+          reason_code: "db_write_failure",
+          audit_event_id: "audit-1",
+          risk_event_id: "risk-1",
+          action_plan: {
+            new_orders_blocked: true,
+            strategy_evaluation_blocked: true,
+            cancel_pending_paper_orders: true,
+            auto_liquidate_open_positions: false,
+            requires_manual_review: true,
+          },
+        },
+      }),
+    ).toBe(
+      [
+        "[P0 긴급] 거래 상태가 거래 불가능 상태로 바뀌었습니다",
+        "",
+        "현재 상태: 거래 불가능",
+        "이전 상태: 정상 거래 가능",
+        "원인: 거래 기록 저장 실패",
+        "영향:",
+        "- 신규 주문이 차단됩니다.",
+        "- 자동 전략 평가가 중단됩니다.",
+        "- 대기 중인 모의 주문 취소가 예약됩니다.",
+        "- 보유 포지션은 자동 청산하지 않습니다.",
+        "- 수동 점검 전까지 복구를 보류합니다.",
+        "필요 조치: DB 상태와 최근 감사/리스크 이벤트 저장 여부를 확인해 주세요.",
+        "",
+        "추적 정보",
+        "알림 식별자: alert:prod:paper_trading:P0:kill_switch_control:global:global:db_write_failure",
+        "발생 시각: 2026-05-21T00:00:00.000Z",
+        "요청 ID: corr-kill-switch-alert",
+        "감사 이벤트: audit-1",
+        "리스크 이벤트: risk-1",
+        "요청자: operator",
+      ].join("\n"),
+    );
   });
 
   it("sends Telegram sendMessage requests without adding inbound command behavior", async () => {
@@ -68,7 +135,7 @@ describe("Telegram outbound notifier", () => {
     expect(JSON.parse(String(requests[0]?.init.body))).toMatchObject({
       chat_id: "chat-1",
       disable_web_page_preview: true,
-      text: expect.stringContaining("[P1] WebSocket lag"),
+      text: expect.stringContaining("[P1 중요] 실시간 시세 수신 지연"),
     });
     expect(Object.keys(notifier).join(" ")).not.toContain("webhook");
     expect(Object.keys(notifier).join(" ")).not.toContain("polling");

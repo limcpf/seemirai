@@ -516,6 +516,8 @@ describe("alert cooldown and notification policy", () => {
       title: "Kill switch HARD_STOP",
       metadata: {
         source: "kill_switch_control",
+        correlation_id: "corr-kill-switch-alert",
+        reason_code: "db_write_failure",
         audit_event_id: "audit-1",
         risk_event_id: "risk-1",
       },
