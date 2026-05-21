@@ -1,6 +1,7 @@
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
 import type {
+  AlertCooldownReleaseInput,
   AlertCooldownRecordInput,
   AlertCooldownReservationInput,
   AlertCooldownReservationResult,
@@ -494,7 +495,7 @@ class FailingAlertCooldownStore implements AlertCooldownStore {
   }
 
   public async releaseDeliveryReservation(
-    input: AlertCooldownRecordInput,
+    input: AlertCooldownReleaseInput,
   ): Promise<AlertCooldownState> {
     return toEmptyCooldownState(input);
   }

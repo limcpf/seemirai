@@ -96,6 +96,7 @@ describeDb("alert cooldown integration", () => {
     const released = await repository.releaseDeliveryReservation({
       ...input,
       occurredAt: "2026-05-21T00:00:15.000Z",
+      reservedUntil: "2026-05-21T00:01:00.000Z",
     });
     const retryReservation = await repository.reserveDelivery({
       ...input,
@@ -135,6 +136,51 @@ describeDb("alert cooldown integration", () => {
       lastSentAt: new Date("2026-05-21T00:00:20.000Z"),
       lastSkippedAt: new Date("2026-05-21T00:00:30.000Z"),
     });
+  });
+
+  it("does not clear a newer delivery reservation when an older provider failure finishes late", async () => {
+    const db = await getDatabase();
+    const repository = new PostgresAlertCooldownRepository(db);
+    const input = {
+      fingerprint: "alert:prod:paper:P0:db:global:global:late_provider_failure",
+      severity: "P0" as const,
+      alertType: "db",
+      market: null,
+      strategyId: null,
+      reasonCode: "late_provider_failure",
+      occurredAt: "2026-05-21T00:00:00.000Z",
+    };
+
+    await repository.reserveDelivery({
+      ...input,
+      cooldownMs: 60_000,
+      reserveUntil: "2026-05-21T00:01:00.000Z",
+    });
+    const newerReservation = await repository.reserveDelivery({
+      ...input,
+      occurredAt: "2026-05-21T00:01:01.000Z",
+      cooldownMs: 60_000,
+      reserveUntil: "2026-05-21T00:02:01.000Z",
+    });
+    const staleRelease = await repository.releaseDeliveryReservation({
+      ...input,
+      occurredAt: "2026-05-21T00:01:02.000Z",
+      reservedUntil: "2026-05-21T00:01:00.000Z",
+    });
+    const ownedRelease = await repository.releaseDeliveryReservation({
+      ...input,
+      occurredAt: "2026-05-21T00:01:03.000Z",
+      reservedUntil: "2026-05-21T00:02:01.000Z",
+    });
+
+    expect(newerReservation).toMatchObject({
+      reserved: true,
+      state: {
+        deliveryReservedUntil: new Date("2026-05-21T00:02:01.000Z"),
+      },
+    });
+    expect(staleRelease.deliveryReservedUntil).toEqual(new Date("2026-05-21T00:02:01.000Z"));
+    expect(ownedRelease.deliveryReservedUntil).toBeNull();
   });
 
   it("does not roll back last skipped timestamp when an older skip arrives late", async () => {

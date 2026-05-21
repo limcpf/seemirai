@@ -14,6 +14,8 @@ import { RiskConfigSchema, defaultRiskConfig } from "./risk-config.js";
 const defaultConfigUrl = new URL("../../config/paper.json", import.meta.url);
 
 const MarketCodeSchema = z.string().regex(/^KRW-[A-Z0-9]+$/u, "KRW market code is required");
+// 운영 알림 secret과 chat id는 공백-only 값을 부팅 시점에 차단해야 provider 실패 루프를 만들지 않는다.
+const TrimmedNonEmptyStringSchema = z.string().trim().min(1);
 
 export const RuntimeConfigSchema = z
   .object({
@@ -55,7 +57,7 @@ export const RuntimeConfigSchema = z
     risk: RiskConfigSchema.default(defaultRiskConfig),
     telegram: z
       .object({
-        chat_id: z.string().min(1).optional(),
+        chat_id: TrimmedNonEmptyStringSchema.optional(),
         provider_timeout_ms: z.number().int().positive().default(5_000),
       })
       .default({
@@ -65,7 +67,7 @@ export const RuntimeConfigSchema = z
       .object({
         upbit_access_key: z.string().min(1).optional(),
         upbit_secret_key: z.string().min(1).optional(),
-        telegram_bot_token: z.string().min(1).optional(),
+        telegram_bot_token: TrimmedNonEmptyStringSchema.optional(),
         local_control_token: z.string().min(1).optional(),
       })
       .default({}),

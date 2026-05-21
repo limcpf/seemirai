@@ -173,11 +173,11 @@ describe("runtime config", () => {
   it("loads Telegram notification config from env without requiring secrets in config files", () => {
     const config = loadRuntimeConfig({
       telegram: {
-        chat_id: "config-chat",
+        chat_id: " config-chat ",
         provider_timeout_ms: 3000,
       },
       secrets: {
-        telegram_bot_token: "config-token",
+        telegram_bot_token: " config-token ",
       },
     });
 
@@ -201,5 +201,29 @@ describe("runtime config", () => {
       },
     });
     expect(loadRuntimeNotificationConfig(loadRuntimeConfig({}), {})).toEqual({});
+  });
+
+  it("rejects whitespace-only Telegram config values before notifier wiring", () => {
+    expect(() =>
+      loadRuntimeConfig({
+        telegram: {
+          chat_id: "   ",
+        },
+        secrets: {
+          telegram_bot_token: "config-token",
+        },
+      }),
+    ).toThrow();
+
+    expect(() =>
+      loadRuntimeConfig({
+        telegram: {
+          chat_id: "config-chat",
+        },
+        secrets: {
+          telegram_bot_token: "   ",
+        },
+      }),
+    ).toThrow();
   });
 });

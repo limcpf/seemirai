@@ -18,11 +18,11 @@ export function loadRuntimeNotificationConfig(
   const botToken =
     nonEmptyEnvValue(env.SEEMIRAI_TELEGRAM_BOT_TOKEN) ??
     nonEmptyEnvValue(env.TELEGRAM_BOT_TOKEN) ??
-    config.secrets.telegram_bot_token;
+    nonEmptyEnvValue(config.secrets.telegram_bot_token);
   const chatId =
     nonEmptyEnvValue(env.SEEMIRAI_TELEGRAM_CHAT_ID) ??
     nonEmptyEnvValue(env.TELEGRAM_CHAT_ID) ??
-    config.telegram.chat_id;
+    nonEmptyEnvValue(config.telegram.chat_id);
 
   if (botToken === undefined || chatId === undefined) {
     return {};

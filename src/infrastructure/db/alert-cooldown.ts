@@ -1,6 +1,7 @@
 import { sql } from "kysely";
 import type { Insertable, Selectable } from "kysely";
 import type {
+  AlertCooldownReleaseInput,
   AlertCooldownRecordInput,
   AlertCooldownReservationInput,
   AlertCooldownReservationResult,
@@ -48,15 +49,11 @@ export class PostgresAlertCooldownRepository implements AlertCooldownStore {
   /**
    * provider 실패 후 in-flight lease만 해제한다.
    *
-   * 실패는 성공 전송 기준점이 아니므로 last_sent_at은 바꾸지 않고, 다음 실제 재시도나 새 실패 evidence가 예약 만료까지
-   * 막히지 않게 delivery_reserved_until만 비운다.
+   * 실패는 성공 전송 기준점이 아니므로 last_sent_at은 바꾸지 않는다. 해제 조건은 이 dispatch가 잡은 lease 만료값과 현재 row가
+   * 일치할 때로 제한해, 늦게 끝난 실패 cleanup이 이미 재예약된 새 lease를 지우지 못하게 한다.
    */
-  public async releaseDeliveryReservation(input: AlertCooldownRecordInput): Promise<AlertCooldownState> {
-    return upsertAlertCooldown(this.database, input, {
-      lastSentAt: null,
-      lastSkippedAt: null,
-      deliveryReservedUntil: null,
-    });
+  public async releaseDeliveryReservation(input: AlertCooldownReleaseInput): Promise<AlertCooldownState> {
+    return releaseAlertDeliveryReservation(this.database, input);
   }
 
   public async recordSkipped(input: AlertCooldownRecordInput): Promise<AlertCooldownState> {
@@ -221,6 +218,57 @@ export async function reserveAlertDelivery(
 }
 
 /**
+ * provider 실패 후 이 dispatch가 소유한 delivery lease만 해제한다.
+ *
+ * provider 호출이 lease 만료보다 늦게 끝나면 다른 요청이 같은 fingerprint를 이미 재예약했을 수 있다. 이때 이전 호출의 실패
+ * cleanup이 새 `delivery_reserved_until`을 지우면 다음 요청들이 동시에 provider를 호출할 수 있으므로, 기존 lease 만료값이
+ * `reservedUntil`과 정확히 일치하는 경우에만 compare-and-set 방식으로 null 처리한다.
+ */
+export async function releaseAlertDeliveryReservation(
+  database: Database,
+  input: AlertCooldownReleaseInput,
+): Promise<AlertCooldownState> {
+  const row = toAlertCooldownRowInput(input, {
+    lastSentAt: null,
+    lastSkippedAt: null,
+    deliveryReservedUntil: null,
+  });
+  const payloadJson = JSON.stringify(row.payload_json);
+  const result = await sql<AlertCooldownRecord>`
+    UPDATE alert_cooldowns
+    SET
+      severity = ${row.severity},
+      alert_type = ${row.alert_type},
+      market = ${row.market},
+      strategy_id = ${row.strategy_id},
+      reason_code = ${row.reason_code},
+      delivery_reserved_until = NULL,
+      payload_json = ${payloadJson}::jsonb,
+      updated_at = GREATEST(alert_cooldowns.updated_at, ${row.updated_at})
+    WHERE
+      fingerprint = ${row.fingerprint}
+      AND delivery_reserved_until = ${input.reservedUntil}
+    RETURNING *
+  `.execute(database);
+  const releasedRecord = result.rows[0];
+
+  if (releasedRecord !== undefined) {
+    return toAlertCooldownState(releasedRecord);
+  }
+
+  const existingRecord = await database
+    .selectFrom("alert_cooldowns")
+    .selectAll()
+    .where("fingerprint", "=", input.fingerprint)
+    .executeTakeFirst();
+
+  // row가 이미 삭제됐거나 새 lease가 들어온 경우에는 추가 write 없이 현재 관측 가능한 상태만 반환한다.
+  return existingRecord === undefined
+    ? toReleasedCooldownState(input)
+    : toAlertCooldownState(existingRecord);
+}
+
+/**
  * cooldown/reservation skip 시각을 기록하되 마지막 성공 전송 시각은 DB의 현재 값을 보존한다.
  *
  * skip은 provider 호출 억제 evidence일 뿐 성공 전송 기준점을 바꾸면 안 된다. `GREATEST`로 lastSkippedAt도 뒤로 되돌아가지
@@ -320,6 +368,21 @@ export function toAlertCooldownState(record: AlertCooldownRecord): AlertCooldown
     lastSkippedAt: record.last_skipped_at,
     deliveryReservedUntil: record.delivery_reserved_until,
     payloadJson: record.payload_json,
+  };
+}
+
+function toReleasedCooldownState(input: AlertCooldownReleaseInput): AlertCooldownState {
+  return {
+    fingerprint: input.fingerprint,
+    severity: input.severity,
+    alertType: input.alertType,
+    market: input.market,
+    strategyId: input.strategyId,
+    reasonCode: input.reasonCode,
+    lastSentAt: null,
+    lastSkippedAt: null,
+    deliveryReservedUntil: null,
+    payloadJson: input.payloadJson ?? {},
   };
 }
 

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type {
+  AlertCooldownReleaseInput,
   AlertCooldownRecordInput,
   AlertCooldownReservationInput,
   AlertCooldownReservationResult,
@@ -265,6 +266,38 @@ describe("alert cooldown and notification policy", () => {
       },
     });
     expect(notifier.alerts).toHaveLength(2);
+  });
+
+  it("keeps a newer memory reservation when an older release arrives late", async () => {
+    const cooldownStore = createInMemoryAlertCooldownStore();
+    const input: AlertCooldownRecordInput = {
+      fingerprint: "alert:prod:paper:P0:db:global:global:late_provider_failure",
+      severity: "P0",
+      alertType: "db",
+      market: null,
+      strategyId: null,
+      reasonCode: "late_provider_failure",
+      occurredAt: "2026-05-21T00:00:00.000Z",
+    };
+
+    await cooldownStore.reserveDelivery({
+      ...input,
+      cooldownMs: 60_000,
+      reserveUntil: "2026-05-21T00:01:00.000Z",
+    });
+    await cooldownStore.reserveDelivery({
+      ...input,
+      occurredAt: "2026-05-21T00:01:01.000Z",
+      cooldownMs: 60_000,
+      reserveUntil: "2026-05-21T00:02:01.000Z",
+    });
+    const staleRelease = await cooldownStore.releaseDeliveryReservation({
+      ...input,
+      occurredAt: "2026-05-21T00:01:02.000Z",
+      reservedUntil: "2026-05-21T00:01:00.000Z",
+    });
+
+    expect(staleRelease.deliveryReservedUntil).toBe("2026-05-21T00:02:01.000Z");
   });
 
   it("records cooldown timestamps from delivery time while preserving alert occurrence time", async () => {
@@ -667,7 +700,7 @@ class ReservationRaceCooldownStore implements AlertCooldownStore {
     return this.delegate.reserveDelivery(input);
   }
 
-  public async releaseDeliveryReservation(input: AlertCooldownRecordInput): Promise<AlertCooldownState> {
+  public async releaseDeliveryReservation(input: AlertCooldownReleaseInput): Promise<AlertCooldownState> {
     return this.delegate.releaseDeliveryReservation(input);
   }
 

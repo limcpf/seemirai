@@ -82,6 +82,17 @@ export interface AlertCooldownRecordInput {
 }
 
 /**
+ * provider 실패 후 delivery reservation을 해제할 때 필요한 소유권 검증 입력이다.
+ *
+ * `reservedUntil`은 이 dispatch가 예약할 때 기록한 lease 만료 시각이다. store 구현은 현재 row의
+ * `delivery_reserved_until`이 이 값과 일치할 때만 해제해야 하며, 이미 다른 요청이 같은 fingerprint를 재예약했다면 새
+ * lease를 보존해야 한다.
+ */
+export interface AlertCooldownReleaseInput extends AlertCooldownRecordInput {
+  reservedUntil: TimestampInput;
+}
+
+/**
  * provider 호출 전에 fingerprint 단위 전송권을 예약하기 위한 입력이다.
  *
  * cooldownMs는 마지막 성공 전송 기준 중복 억제 창이고, reserveUntil은 provider 호출 경합을 막기 위한 lease 만료 시각이다.
@@ -115,9 +126,10 @@ export interface AlertCooldownStore {
   /**
    * provider 실패 후 전송 예약 lease만 해제한다.
    *
-   * 실패를 cooldown 성공으로 기록하지 않으면서 다음 실제 재시도나 새 알림 evidence가 예약 창에 막히지 않게 한다.
+   * 실패를 cooldown 성공으로 기록하지 않으면서 다음 실제 재시도나 새 알림 evidence가 예약 창에 막히지 않게 한다. 단, 해제는
+   * `reservedUntil`이 현재 lease와 일치하는 경우에만 수행해 늦게 끝난 provider 실패가 새 요청의 lease를 지우지 못하게 한다.
    */
-  releaseDeliveryReservation(input: AlertCooldownRecordInput): Promise<AlertCooldownState>;
+  releaseDeliveryReservation(input: AlertCooldownReleaseInput): Promise<AlertCooldownState>;
   recordSent(input: AlertCooldownRecordInput): Promise<AlertCooldownState>;
   recordSkipped(input: AlertCooldownRecordInput): Promise<AlertCooldownState>;
 }
@@ -335,8 +347,11 @@ export async function dispatchAlertWithCooldown(
     };
   }
 
-  // provider 실패 후 lease를 바로 해제해야 동일 fingerprint의 실제 재시도나 새 실패 evidence가 예약 만료까지 막히지 않는다.
-  await store.releaseDeliveryReservation(toCooldownRecordInput(request, fingerprint, deliveryCompletedAt));
+  // 내가 잡은 lease만 해제해야 늦게 끝난 실패 cleanup이 새 요청의 reservation을 지워 dedupe를 깨지 않는다.
+  await store.releaseDeliveryReservation({
+    ...toCooldownRecordInput(request, fingerprint, deliveryCompletedAt),
+    reservedUntil: reservationContext.reserveUntil,
+  });
 
   // P0/P1 provider failure는 즉시 운영 위험이므로 retry job 후보와 audit evidence를 함께 남긴다.
   const retryJobPlan = usesDurableCooldown(request.severity)
@@ -515,6 +530,15 @@ export function createInMemoryAlertCooldownStore(): AlertCooldownStore {
     },
     async releaseDeliveryReservation(input) {
       const previous = states.get(input.fingerprint);
+      if (previous === undefined) {
+        return toCooldownState(input, null, null, null);
+      }
+
+      if (!sameTimestamp(previous.deliveryReservedUntil, input.reservedUntil)) {
+        // 늦게 끝난 실패 cleanup이 이미 재예약된 memory lease를 지우면 같은 프로세스 안의 dedupe 경계가 깨진다.
+        return previous;
+      }
+
       const state = toCooldownState(
         input,
         previous?.lastSentAt ?? null,
@@ -585,19 +609,22 @@ async function reserveAlertDeliveryForDispatch(
   store: AlertCooldownStore,
 ): Promise<{
   reservationAt: Date;
+  reserveUntil: TimestampInput;
   recordInput: AlertCooldownRecordInput;
   reservation: AlertCooldownReservationResult;
 }> {
   const reservationAt = currentTime(options);
+  const reserveUntil = addMs(reservationAt, options.deliveryReservationMs ?? defaultAlertDeliveryReservationMs);
   const recordInput = toCooldownRecordInput(request, fingerprint, reservationAt);
   const reservation = await store.reserveDelivery({
     ...recordInput,
     cooldownMs: getDefaultAlertCooldownMs(request.severity),
-    reserveUntil: addMs(reservationAt, options.deliveryReservationMs ?? defaultAlertDeliveryReservationMs),
+    reserveUntil,
   });
 
   return {
     reservationAt,
+    reserveUntil,
     recordInput,
     reservation,
   };
@@ -834,6 +861,10 @@ function latestTimestamp(
   }
 
   return toEpochMs(current) >= toEpochMs(next) ? current : next;
+}
+
+function sameTimestamp(left: TimestampInput | null | undefined, right: TimestampInput): boolean {
+  return left !== null && left !== undefined && toEpochMs(left) === toEpochMs(right);
 }
 
 const defaultMemoryAlertCooldownStore = createInMemoryAlertCooldownStore();
