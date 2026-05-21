@@ -1,5 +1,8 @@
 const orderStatusLabels: Record<string, string> = {
+  CREATED: "주문 생성",
+  VALIDATED: "주문 검증 완료",
   RISK_APPROVED: "리스크 승인",
+  RISK_REJECTED: "리스크 거부",
   SUBMITTED: "제출됨",
   ACCEPTED: "접수됨",
   PARTIALLY_FILLED: "부분 체결",
@@ -56,7 +59,7 @@ const riskTypeLabels: Record<string, string> = {
  * 새 상태가 들어와도 formatter가 실패하지 않게 code를 괄호 안 추적 정보로 남기는 fallback을 유지한다.
  */
 export function labelOrderStatus(code: string): string {
-  return labelCode(code, orderStatusLabels);
+  return labelCode(code, orderStatusLabels, "미분류 주문 상태");
 }
 
 /**

@@ -98,17 +98,20 @@ function createPnlMetric(
 function selectLatestPnlSnapshots(
   snapshots: readonly DailyReportPnlSnapshotFact[],
 ): DailyReportPnlSnapshotFact[] {
-  const latestByScope = new Map<string, DailyReportPnlSnapshotFact>();
+  const latestByScope = new Map<string, Map<string | null, DailyReportPnlSnapshotFact>>();
 
   for (const snapshot of snapshots) {
-    const scope = `${snapshot.strategyId}:${snapshot.market ?? "ALL"}`;
-    const existing = latestByScope.get(scope);
+    const marketKey = snapshot.market ?? null;
+    const latestByMarket = latestByScope.get(snapshot.strategyId) ?? new Map<string | null, DailyReportPnlSnapshotFact>();
+    const existing = latestByMarket.get(marketKey);
     if (existing === undefined || comparePnlSnapshotCandidate(snapshot, existing) > 0) {
-      latestByScope.set(scope, snapshot);
+      // strategy와 market을 문자열로 합치면 구분자 충돌이 손익 scope를 섞을 수 있어 중첩 Map으로 정확히 분리한다.
+      latestByMarket.set(marketKey, snapshot);
     }
+    latestByScope.set(snapshot.strategyId, latestByMarket);
   }
 
-  return [...latestByScope.values()].sort(compareSnapshotScope);
+  return [...latestByScope.values()].flatMap((latestByMarket) => [...latestByMarket.values()]).sort(compareSnapshotScope);
 }
 
 /**
@@ -138,15 +141,15 @@ function comparePnlSnapshotCandidate(
  * 외부 side effect 없이 tie-break 순서를 안정화한다.
  */
 function createPnlSnapshotTieBreakKey(snapshot: DailyReportPnlSnapshotFact): string {
-  return [
+  return JSON.stringify([
     snapshot.strategyId,
-    snapshot.market ?? "ALL",
+    snapshot.market ?? null,
     toTime(snapshot.capturedAt).toString(),
     normalizeDecimalForKey(snapshot.equity),
     normalizeDecimalForKey(snapshot.realizedPnl),
     normalizeDecimalForKey(snapshot.unrealizedPnl),
     normalizeDecimalForKey(snapshot.drawdownBps),
-  ].join("\u0001");
+  ]);
 }
 
 /**
@@ -415,9 +418,32 @@ function toTime(value: unknown): number {
  * latest PnL snapshot 목록을 deterministic한 scope 순서로 정렬한다.
  */
 function compareSnapshotScope(left: DailyReportPnlSnapshotFact, right: DailyReportPnlSnapshotFact): number {
-  const leftScope = `${left.strategyId}:${left.market ?? "ALL"}`;
-  const rightScope = `${right.strategyId}:${right.market ?? "ALL"}`;
-  return leftScope.localeCompare(rightScope);
+  const strategyComparison = left.strategyId.localeCompare(right.strategyId);
+  if (strategyComparison !== 0) {
+    return strategyComparison;
+  }
+
+  return compareOptionalMarket(left.market ?? null, right.market ?? null);
+}
+
+/**
+ * PnL snapshot market scope를 null과 실제 market 문자열로 구분해 정렬한다.
+ *
+ * null은 전체 시장 범위 snapshot을 뜻하므로 `"ALL"` 같은 실제 market code와 합치지 않는다. 이 비교는 표시 순서만 정하고
+ * 손익 선택에는 side effect를 만들지 않는다.
+ */
+function compareOptionalMarket(left: string | null, right: string | null): number {
+  if (left === right) {
+    return 0;
+  }
+  if (left === null) {
+    return -1;
+  }
+  if (right === null) {
+    return 1;
+  }
+
+  return left.localeCompare(right);
 }
 
 /**

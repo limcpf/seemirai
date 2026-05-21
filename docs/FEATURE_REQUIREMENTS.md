@@ -528,6 +528,8 @@ Acceptance Criteria:
 - [ ] 일간 리포트는 거래 횟수, 폐기된 주문 후보, 차단 사유, 비용 비중을 포함한다.
 - [ ] 일간 리포트는 KST 기준일과 UTC 조회 window를 함께 표시하고, realized PnL과 estimated/unrealized PnL을 분리한다.
 - [ ] 일간 리포트는 값이 없는 체결 품질 metric을 0으로 꾸미지 않고 `unavailable`로 표시한다.
+- [ ] 일간 리포트의 주문 상태별 집계는 현재 `orders.status`가 아니라 `order_events` 기준의 기준일 종료 시점 상태를 사용한다.
+- [ ] 일간 리포트의 체결 품질 평균은 `fills.filled_at`이 기준일에 속한 실제 체결 주문만 대상으로 한다.
 - [ ] Telegram P0 알림은 신규 주문 중지 이벤트와 함께 기록된다.
 - [ ] Slack adapter는 정의만 하고 MVP 기본 설정에서는 비활성이다.
 

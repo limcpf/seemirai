@@ -70,23 +70,35 @@ export async function loadDailyReportSourceData(
   window: DailyReportWindow,
 ): Promise<DailyReportSourceData> {
   const queryWindow = toQueryWindow(window);
-  const [
-    orders,
-    fills,
-    positions,
-    pnlSnapshots,
-    auditEvents,
-    riskEvents,
-    executionQuality,
-  ] = await Promise.all([
-    loadOrderFacts(database, queryWindow),
-    loadFillFacts(database, queryWindow),
-    loadPositionFacts(database, queryWindow),
-    loadPnlSnapshotFacts(database, queryWindow),
-    loadAuditEventFacts(database, queryWindow),
-    loadRiskEventFacts(database, queryWindow),
-    loadExecutionQualityFacts(database, queryWindow),
-  ]);
+
+  if (database.isTransaction) {
+    // 이미 열린 transaction은 호출자가 snapshot 경계를 소유하므로, 테스트/상위 workflow의 rollback 범위를 깨지 않는다.
+    return loadDailyReportSourceDataFromSnapshot(database, queryWindow);
+  }
+
+  // 여러 fact table을 서로 다른 MVCC 시점으로 읽으면 같은 기준일 재실행 결과가 흔들리므로 단일 repeatable-read snapshot으로 묶는다.
+  return database.transaction().setIsolationLevel("repeatable read").execute(async (transaction) =>
+    loadDailyReportSourceDataFromSnapshot(transaction, queryWindow),
+  );
+}
+
+/**
+ * 하나의 MVCC snapshot 안에서 daily report fact들을 순서대로 읽는다.
+ *
+ * 이 helper는 외부 side effect 없이 DB read만 수행한다. 호출자는 repeatable-read transaction 또는 이미 열린 transaction을
+ * 넘겨야 하며, 반환된 fact 묶음은 같은 기준일 window와 같은 DB snapshot에서 나온 값이라는 invariant를 유지해야 한다.
+ */
+async function loadDailyReportSourceDataFromSnapshot(
+  database: Database,
+  queryWindow: DailyReportQueryWindow,
+): Promise<DailyReportSourceData> {
+  const orders = await loadOrderFacts(database, queryWindow);
+  const fills = await loadFillFacts(database, queryWindow);
+  const positions = await loadPositionFacts(database, queryWindow);
+  const pnlSnapshots = await loadPnlSnapshotFacts(database, queryWindow);
+  const auditEvents = await loadAuditEventFacts(database, queryWindow);
+  const riskEvents = await loadRiskEventFacts(database, queryWindow);
+  const executionQuality = await loadExecutionQualityFacts(database, queryWindow);
 
   return {
     orders,
@@ -135,13 +147,15 @@ async function loadOrderFacts(
 ): Promise<DailyReportSourceData["orders"]> {
   const rows = await database
     .selectFrom("orders")
-    .select(["status", "strategy_id", "market", "requested_notional", "created_at"])
+    .select(["id", "status", "strategy_id", "market", "requested_notional", "created_at"])
     .where("created_at", ">=", window.utcStartAt)
     .where("created_at", "<", window.utcEndAt)
     .execute();
+  const orderEvents = await loadAcceptedOrderStateEvents(database, rows.map((row) => row.id));
+  const eventsByOrderId = groupOrderEventsByOrderId(orderEvents);
 
   return rows.map((row) => ({
-    status: row.status,
+    status: resolveOrderStatusAtWindowEnd(row.status, eventsByOrderId.get(row.id) ?? [], window),
     strategyId: row.strategy_id,
     market: row.market,
     requestedNotional: row.requested_notional,
@@ -316,19 +330,30 @@ async function loadExecutionQualityFacts(
   window: DailyReportQueryWindow,
 ): Promise<DailyReportExecutionQualityFact[]> {
   const rows = await database
-    .selectFrom("orders as o")
+    .selectFrom("fills as f")
+    .innerJoin("orders as o", "o.id", "f.order_id")
     .leftJoin("paper_orders as p", "p.order_id", "o.id")
     .select([
+      "o.id as order_id",
       "o.strategy_id as strategy_id",
       "o.market as market",
       "o.reason_json as reason_json",
       "p.fill_model_json as fill_model_json",
     ])
-    .where("o.created_at", ">=", window.utcStartAt)
-    .where("o.created_at", "<", window.utcEndAt)
+    .where("f.filled_at", ">=", window.utcStartAt)
+    .where("f.filled_at", "<", window.utcEndAt)
+    .orderBy("o.id", "asc")
+    .orderBy("f.filled_at", "asc")
     .execute();
+  const filledOrders = new Set<string>();
 
-  return rows.map((row) => {
+  return rows.flatMap((row) => {
+    if (filledOrders.has(row.order_id)) {
+      return [];
+    }
+    // 체결 품질은 실제 체결이 있는 주문만 평균에 넣어 주문 후보의 예상 비용이 실행 품질을 왜곡하지 않게 한다.
+    filledOrders.add(row.order_id);
+
     const actualSlippageBps = readNestedString(row.fill_model_json, [
       "paper_fill_simulation",
       "slippageBps",
@@ -352,8 +377,126 @@ async function loadExecutionQualityFacts(
       "cancel_requote_penalty_bps",
     ]));
 
-    return fact;
+    return [fact];
   });
+}
+
+/**
+ * 기준일 종료 시점 주문 상태를 복원하기 위해 읽는 accepted order event row다.
+ *
+ * repository 내부 전용 모델이며 DB row를 수정하지 않는다. `eventId`는 같은 `occurredAt` 동점에서 deterministic tie-breaker로만
+ * 사용하고, 상태 복원은 `fromStatus`/`toStatus`와 half-open window 종료 시각을 기준으로 수행한다.
+ */
+interface DailyReportOrderStateEventRow {
+  /** order_events primary key. 동일 timestamp 전이의 정렬 보조 근거다. */
+  eventId: string;
+  /** 상태 전이가 속한 주문 ID다. */
+  orderId: string;
+  /** 전이 직전 상태이며, window 종료 이후 첫 전이를 만났을 때 과거 상태 복원에 사용한다. */
+  fromStatus: string;
+  /** 전이 이후 상태이며, window 종료 이전 마지막 전이의 기준 상태로 사용한다. */
+  toStatus: string;
+  /** 상태 전이가 발생한 업무 시각이다. */
+  occurredAt: Date | string;
+}
+
+/**
+ * 주문 snapshot을 기준일 종료 시점 상태로 되돌리기 위한 accepted 상태 전이 event를 읽는다.
+ *
+ * `orders.status`는 현재 상태라 과거 기준일 재실행에 그대로 쓰면 deterministic하지 않다. 이 함수는 상태 복원에 필요한
+ * append-only `order_events`만 읽고, 상태 선택 자체는 application fact 변환 단계에서 수행한다.
+ */
+async function loadAcceptedOrderStateEvents(
+  database: Database,
+  orderIds: readonly string[],
+): Promise<DailyReportOrderStateEventRow[]> {
+  if (orderIds.length === 0) {
+    return [];
+  }
+
+  const rows = await database
+    .selectFrom("order_events")
+    .select([
+      "id as event_id",
+      "order_id",
+      "from_status",
+      "to_status",
+      "occurred_at",
+    ])
+    .where("order_id", "in", orderIds)
+    .where("accepted", "=", true)
+    .execute();
+
+  return rows.map((row) => ({
+    eventId: row.event_id,
+    orderId: row.order_id,
+    fromStatus: row.from_status,
+    toStatus: row.to_status,
+    occurredAt: row.occurred_at,
+  }));
+}
+
+/**
+ * 상태 전이 event를 주문 ID별로 묶는다.
+ *
+ * 같은 주문의 전이 순서 비교는 별도 함수에서 하므로 이 함수는 group side effect 없이 Map만 구성한다.
+ */
+function groupOrderEventsByOrderId(
+  events: readonly DailyReportOrderStateEventRow[],
+): Map<string, DailyReportOrderStateEventRow[]> {
+  const grouped = new Map<string, DailyReportOrderStateEventRow[]>();
+  for (const event of events) {
+    const current = grouped.get(event.orderId) ?? [];
+    current.push(event);
+    grouped.set(event.orderId, current);
+  }
+
+  return grouped;
+}
+
+/**
+ * 기준일 종료 직전의 주문 상태를 canonical event log에서 복원한다.
+ *
+ * 종료 이전 accepted event가 있으면 마지막 `to_status`가 기준 상태다. 종료 이후 첫 accepted event만 있는 주문은 그 event의
+ * `from_status`가 종료 시점 상태다. event evidence가 전혀 없을 때만 현재 snapshot을 fallback으로 사용한다.
+ */
+function resolveOrderStatusAtWindowEnd(
+  currentStatus: string,
+  events: readonly DailyReportOrderStateEventRow[],
+  window: DailyReportQueryWindow,
+): string {
+  const orderedEvents = [...events].sort(compareOrderStateEvents);
+  let latestStatusBeforeEnd: string | undefined;
+
+  for (const event of orderedEvents) {
+    if (toTime(event.occurredAt) < window.utcEndAt.getTime()) {
+      latestStatusBeforeEnd = event.toStatus;
+      continue;
+    }
+
+    // window 종료 이후 첫 전이는 from_status가 종료 시점 상태이므로 과거 리포트 재실행 때 현재 snapshot 오염을 막는다.
+    return latestStatusBeforeEnd ?? event.fromStatus;
+  }
+
+  return latestStatusBeforeEnd ?? currentStatus;
+}
+
+/**
+ * 같은 주문의 상태 전이 event를 deterministic하게 정렬한다.
+ *
+ * 업무상 순서는 `occurred_at`이 우선이며, 같은 timestamp가 들어온 경우 DB row id를 tie-breaker로 써 재실행 시 같은 상태를
+ * 선택하게 한다. 이 비교는 read-only 계산이며 DB 상태를 변경하지 않는다.
+ */
+function compareOrderStateEvents(
+  left: DailyReportOrderStateEventRow,
+  right: DailyReportOrderStateEventRow,
+): number {
+  const timeComparison = toTime(left.occurredAt) - toTime(right.occurredAt);
+  if (timeComparison !== 0) {
+    return timeComparison;
+  }
+
+  return left.eventId.localeCompare(right.eventId);
 }
 
 /**
@@ -385,14 +528,39 @@ function assignIfDefined<T extends object, K extends keyof T>(target: T, key: K,
   }
 }
 
+/**
+ * PostgreSQL 조회에 사용하는 UTC half-open window다.
+ *
+ * application `DailyReportWindow`의 문자열 timestamp를 DB driver가 비교할 수 있는 `Date`로 바꾼 내부 모델이다.
+ * 모든 query는 `utcStartAt <= timestamp < utcEndAt` invariant를 공유해야 한다.
+ */
 interface DailyReportQueryWindow {
   utcStartAt: Date;
   utcEndAt: Date;
 }
 
+/**
+ * application window를 DB query용 Date 경계로 변환한다.
+ *
+ * 외부 side effect는 없으며, repository의 모든 fact query가 같은 Date 객체 경계를 쓰게 만드는 adapter 경계다.
+ */
 function toQueryWindow(window: DailyReportWindow): DailyReportQueryWindow {
   return {
     utcStartAt: new Date(window.utcStartAt),
     utcEndAt: new Date(window.utcEndAt),
   };
+}
+
+/**
+ * DB timestamp 값을 epoch millis로 정규화한다.
+ *
+ * 상태 전이 정렬과 window 종료 비교가 잘못된 timestamp를 조용히 받아들이면 과거 주문 상태 복원이 틀어지므로 즉시 실패한다.
+ */
+function toTime(value: Date | string): number {
+  const time = value instanceof Date ? value.getTime() : new Date(value).getTime();
+  if (Number.isNaN(time)) {
+    throw new Error("daily report DB timestamp must be valid");
+  }
+
+  return time;
 }

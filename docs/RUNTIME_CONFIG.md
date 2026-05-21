@@ -186,6 +186,7 @@ alert 발생 시각이 아니라 reservation/전송 완료 시각을 사용해 �
 daily report 기준일은 KST `YYYY-MM-DD`다. DB timestamp는 UTC로 저장하므로 application은 기준일을
 `kst_start_at`, `kst_end_at`, `utc_start_at`, `utc_end_at`으로 변환해 같은 window를 repository, job payload, Telegram
 summary에 함께 남긴다. 조회 조건은 `utc_start_at <= timestamp < utc_end_at` half-open window를 사용한다.
+standalone repository 조회는 여러 fact table이 같은 MVCC 기준을 보도록 `repeatable read` transaction 안에서 수행한다.
 
 daily report job은 `job_type=report.daily`, `idempotency_key=report.daily:<report_date>`로 예약한다. 현재 `jobs` schema는
 `(job_type, report_date)` composite unique key가 아니라 `idempotency_key` unique constraint를 제공하므로, application
@@ -194,13 +195,14 @@ worker retry나 운영 재생이 같은 조회 범위를 사용할 수 있게 �
 
 집계 입력:
 
-- `orders`: 기준일 안에 생성된 주문 수와 상태별 건수
+- `orders`: 기준일 안에 생성된 주문 수와 `order_events`로 복원한 기준일 종료 시점 상태별 건수
 - `fills`: 기준일 안 체결 수, 통화별 수수료, 체결 명목 금액, 수수료 비중
 - `positions`: 현재 포지션 수와 fallback 손익 snapshot
 - `pnl_snapshots`: strategy/market별 최신 snapshot의 realized PnL과 unrealized PnL
 - `audit_events`: `ORDER_CANDIDATE_DISCARDED` payload의 `reason_code`별 폐기 후보 수
 - `risk_events`: `action`, `risk_type`별 차단/리스크 이벤트 수
-- `paper_orders.fill_model_json`, `orders.reason_json.cost_snapshot`: 슬리피지, spread 비용, 취소/재호가 비용이 있는 경우의 체결 품질 metric
+- `fills` 기준으로 실제 체결된 주문의 `paper_orders.fill_model_json`, `orders.reason_json.cost_snapshot`: 슬리피지, spread 비용,
+  취소/재호가 비용이 있는 경우의 체결 품질 metric
 
 리포트 문구는 한국어 사용자 문구를 먼저 보여준다. 내부 status/action/reason code는 괄호나 `metadata` 추적 정보에 남기며,
 값이 없으면 임의로 0으로 채우지 않고 `unavailable`로 표시한다. 단, 주문 수, 체결 수, 폐기 후보 수처럼 row 개수를 세는 항목은

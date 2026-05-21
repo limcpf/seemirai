@@ -80,6 +80,179 @@ describeDb("daily report PostgreSQL integration", () => {
     });
   });
 
+  it("loads execution quality by fill time and ignores unfilled orders", async () => {
+    const db = await getDatabase();
+    await withRollback(db, async (transaction) => {
+      const strategyId = createFixtureStrategyId();
+      const repository = new PostgresDailyReportRepository(transaction);
+      const filledOrder = await transaction
+        .insertInto("orders")
+        .values({
+          exchange: "upbit_krw_spot",
+          market: "KRW-BTC",
+          strategy_id: strategyId,
+          side: "BUY",
+          order_type: "LIMIT",
+          status: "FILLED",
+          idempotency_key: `daily-report-filled-quality-${strategyId}`,
+          requested_price: "1000",
+          requested_quantity: "1",
+          requested_notional: "1000",
+          reason_json: {
+            cost_snapshot: {
+              spread_cost_bps_p75: "4.4",
+              expected_slippage_bps_p95: "9.9",
+              cancel_requote_penalty_bps: "0.7",
+            },
+          },
+          created_at: "2026-05-20T14:30:00.000Z",
+          updated_at: "2026-05-20T15:30:00.000Z",
+        })
+        .returning(["id"])
+        .executeTakeFirstOrThrow();
+
+      await transaction
+        .insertInto("paper_orders")
+        .values({
+          order_id: filledOrder.id,
+          post_only: false,
+          time_in_force: "GTC",
+          fill_model_json: {
+            paper_fill_simulation: {
+              status: "FILLED",
+              slippageBps: "1.25",
+            },
+          },
+          submitted_at: "2026-05-20T14:30:00.000Z",
+          accepted_at: "2026-05-20T14:31:00.000Z",
+          completed_at: "2026-05-20T15:30:00.000Z",
+        })
+        .execute();
+
+      await transaction
+        .insertInto("fills")
+        .values({
+          order_id: filledOrder.id,
+          exchange: "upbit_krw_spot",
+          market: "KRW-BTC",
+          side: "BUY",
+          price: "1000",
+          quantity: "1",
+          fee: "5",
+          fee_currency: "KRW",
+          liquidity: "TAKER",
+          filled_at: "2026-05-20T15:30:00.000Z",
+        })
+        .execute();
+
+      await transaction
+        .insertInto("orders")
+        .values({
+          exchange: "upbit_krw_spot",
+          market: "KRW-ETH",
+          strategy_id: strategyId,
+          side: "SELL",
+          order_type: "LIMIT",
+          status: "CANCELED",
+          idempotency_key: `daily-report-unfilled-quality-${strategyId}`,
+          requested_price: "2000",
+          requested_quantity: "1",
+          requested_notional: "2000",
+          reason_json: {
+            cost_snapshot: {
+              spread_cost_bps_p75: "99",
+              expected_slippage_bps_p95: "88",
+              cancel_requote_penalty_bps: "77",
+            },
+          },
+          created_at: "2026-05-21T01:00:00.000Z",
+          updated_at: "2026-05-21T01:01:00.000Z",
+        })
+        .execute();
+
+      const sourceData = await repository.loadDailyReportSourceData(createDailyReportWindow("2026-05-21"));
+
+      expect(sourceData.executionQuality).toEqual([
+        {
+          strategyId,
+          market: "KRW-BTC",
+          slippageBps: "1.25",
+          spreadCostBps: "4.4",
+          cancelRequotePenaltyBps: "0.7",
+        },
+      ]);
+      expect(sourceData.fills.filter((fill) => fill.strategyId === strategyId)).toHaveLength(1);
+    });
+  });
+
+  it("reconstructs order status at the report window end from order events", async () => {
+    const db = await getDatabase();
+    await withRollback(db, async (transaction) => {
+      const strategyId = createFixtureStrategyId();
+      const repository = new PostgresDailyReportRepository(transaction);
+      const order = await transaction
+        .insertInto("orders")
+        .values({
+          exchange: "upbit_krw_spot",
+          market: "KRW-BTC",
+          strategy_id: strategyId,
+          side: "BUY",
+          order_type: "LIMIT",
+          status: "FILLED",
+          idempotency_key: `daily-report-status-as-of-${strategyId}`,
+          requested_price: "1000",
+          requested_quantity: "1",
+          requested_notional: "1000",
+          reason_json: {},
+          created_at: "2026-05-21T14:00:00.000Z",
+          updated_at: "2026-05-21T15:30:00.000Z",
+        })
+        .returning(["id"])
+        .executeTakeFirstOrThrow();
+
+      await transaction
+        .insertInto("order_events")
+        .values([
+          {
+            order_id: order.id,
+            event_type: "ORDER_STATE_TRANSITION",
+            from_status: "RISK_APPROVED",
+            to_status: "SUBMITTED",
+            accepted: true,
+            reason_code: "submitted",
+            message: "submitted before report window end",
+            correlation_id: null,
+            payload_json: {},
+            occurred_at: "2026-05-21T14:30:00.000Z",
+          },
+          {
+            order_id: order.id,
+            event_type: "ORDER_STATE_TRANSITION",
+            from_status: "SUBMITTED",
+            to_status: "FILLED",
+            accepted: true,
+            reason_code: "filled",
+            message: "filled after report window end",
+            correlation_id: null,
+            payload_json: {},
+            occurred_at: "2026-05-21T15:30:00.000Z",
+          },
+        ])
+        .execute();
+
+      const window = createDailyReportWindow("2026-05-21");
+      const sourceData = await repository.loadDailyReportSourceData(window);
+      const report = aggregateDailyReport(window, sourceData);
+
+      expect(sourceData.orders.find((fact) => fact.strategyId === strategyId)?.status).toBe("SUBMITTED");
+      expect(report.orderStatusCounts).toContainEqual({
+        code: "SUBMITTED",
+        label: "제출됨 (SUBMITTED)",
+        count: 1,
+      });
+    });
+  });
+
   it("enqueues one daily report job per report date", async () => {
     const db = await getDatabase();
     await withRollback(db, async (transaction) => {

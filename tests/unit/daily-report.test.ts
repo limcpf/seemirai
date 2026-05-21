@@ -142,6 +142,61 @@ describe("daily report application", () => {
     expect(secondOrderReport.estimatedPnl.value).toBe(firstOrderReport.estimatedPnl.value);
   });
 
+  it("keeps PnL snapshot scopes separate when strategy or market contains delimiters", () => {
+    const report = aggregateDailyReport(createDailyReportWindow("2026-05-21"), {
+      ...emptySourceData(),
+      pnlSnapshots: [
+        {
+          strategyId: "scope:a",
+          market: "b",
+          capturedAt: "2026-05-21T14:00:00.000Z",
+          equity: "1000",
+          realizedPnl: "100",
+          unrealizedPnl: "10",
+          drawdownBps: "1",
+        },
+        {
+          strategyId: "scope",
+          market: "a:b",
+          capturedAt: "2026-05-21T14:00:00.000Z",
+          equity: "2000",
+          realizedPnl: "200",
+          unrealizedPnl: "20",
+          drawdownBps: "2",
+        },
+      ],
+    });
+
+    expect(report.realizedPnl.value).toBe("300");
+    expect(report.estimatedPnl.value).toBe("30");
+  });
+
+  it("renders order statuses with Korean-first labels and a Korean fallback", () => {
+    const report = aggregateDailyReport(createDailyReportWindow("2026-05-21"), {
+      ...emptySourceData(),
+      orders: [
+        {
+          status: "VALIDATED",
+          strategyId: "trend_following",
+          market: "KRW-BTC",
+          requestedNotional: "1000",
+          createdAt: "2026-05-21T01:00:00.000Z",
+        },
+        {
+          status: "BROKER_HELD",
+          strategyId: "mean_reversion",
+          market: "KRW-ETH",
+          requestedNotional: "1000",
+          createdAt: "2026-05-21T02:00:00.000Z",
+        },
+      ],
+    });
+    const summary = formatDailyReportSummary(report);
+
+    expect(summary).toContain("주문 검증 완료 (VALIDATED) 1건");
+    expect(summary).toContain("미분류 주문 상태 (BROKER_HELD) 1건");
+  });
+
   it("creates a report-date idempotency key and replayable job payload", () => {
     const plan = createDailyReportJobPlan({
       reportDate: "2026-05-21",
