@@ -30,12 +30,12 @@ export function aggregateDailyReport(
   sourceData: DailyReportSourceData,
 ): DailyReportAggregate {
   const latestPnlSnapshots = selectLatestPnlSnapshots(sourceData.pnlSnapshots);
-  const pnlSource = latestPnlSnapshots.length > 0 ? latestPnlSnapshots : sourceData.positions;
-  const realizedPnl = createPnlMetric(pnlSource, "realizedPnl", latestPnlSnapshots.length > 0 ? "pnl_snapshots" : "positions");
+  const pnlSource = createPnlSource(latestPnlSnapshots, sourceData.positions);
+  const realizedPnl = createPnlMetric(pnlSource.facts, "realizedPnl", pnlSource.realizedSource);
   const estimatedPnl = createPnlMetric(
-    pnlSource,
+    pnlSource.facts,
     "unrealizedPnl",
-    latestPnlSnapshots.length > 0 ? "pnl_snapshots.unrealized_pnl" : "positions.unrealized_pnl",
+    pnlSource.estimatedSource,
   );
   const feeTotals = summarizeFees(sourceData.fills);
   const totalFillNotional = summarizeFillNotional(sourceData.fills);
@@ -86,6 +86,84 @@ function createPnlMetric(
   return {
     ...sumMetric(facts.map((fact) => fact[field]), "KRW"),
     source,
+  };
+}
+
+/**
+ * PnL snapshot과 position fallback을 scope별로 합성한다.
+ *
+ * snapshot이 하나라도 있다는 이유로 전체 positions fallback을 버리면 부분 수집 장애가 손익 누락으로 이어진다. 이 함수는
+ * strategy/market scope에 snapshot이 있는 곳은 snapshot을 쓰고, 없는 scope만 positions current snapshot을 fallback으로
+ * 보강한다. 외부 side effect는 없으며 같은 입력 배열에서는 항상 같은 fact 순서와 source label을 반환한다.
+ */
+function createPnlSource(
+  snapshots: readonly DailyReportPnlSnapshotFact[],
+  positions: readonly DailyReportPositionFact[],
+): {
+  facts: readonly (DailyReportPnlSnapshotFact | DailyReportPositionFact)[];
+  realizedSource: string;
+  estimatedSource: string;
+} {
+  const snapshotCoverage = createPnlSnapshotCoverage(snapshots);
+  const fallbackPositions = positions.filter((position) => !snapshotCoverage.coversPosition(position));
+  const facts = [...snapshots, ...fallbackPositions].sort(comparePnlFactScope);
+  const hasSnapshots = snapshots.length > 0;
+  const hasFallbackPositions = fallbackPositions.length > 0;
+
+  if (hasSnapshots && hasFallbackPositions) {
+    return {
+      facts,
+      realizedSource: "pnl_snapshots+positions",
+      estimatedSource: "pnl_snapshots.unrealized_pnl+positions.unrealized_pnl",
+    };
+  }
+
+  if (hasSnapshots) {
+    return {
+      facts,
+      realizedSource: "pnl_snapshots",
+      estimatedSource: "pnl_snapshots.unrealized_pnl",
+    };
+  }
+
+  return {
+    facts,
+    realizedSource: "positions",
+    estimatedSource: "positions.unrealized_pnl",
+  };
+}
+
+/**
+ * snapshot이 존재하는 PnL scope를 빠르게 판정하는 coverage helper를 만든다.
+ *
+ * market이 null인 snapshot은 해당 strategy의 전체 시장 합계를 의미하므로 같은 strategy의 position fallback을 모두 막는다.
+ * market이 있는 snapshot은 동일 strategy+market position만 대체한다.
+ */
+function createPnlSnapshotCoverage(snapshots: readonly DailyReportPnlSnapshotFact[]): {
+  coversPosition(position: DailyReportPositionFact): boolean;
+} {
+  const strategiesWithAggregateSnapshot = new Set<string>();
+  const marketsByStrategy = new Map<string, Set<string>>();
+
+  for (const snapshot of snapshots) {
+    if (snapshot.market === null || snapshot.market === undefined) {
+      // strategy aggregate snapshot과 per-market position을 함께 더하면 같은 손익이 중복될 수 있어 strategy 전체를 덮는다.
+      strategiesWithAggregateSnapshot.add(snapshot.strategyId);
+      continue;
+    }
+
+    const markets = marketsByStrategy.get(snapshot.strategyId) ?? new Set<string>();
+    markets.add(snapshot.market);
+    marketsByStrategy.set(snapshot.strategyId, markets);
+  }
+
+  return {
+    coversPosition(position) {
+      return (
+        strategiesWithAggregateSnapshot.has(position.strategyId) ||
+        (marketsByStrategy.get(position.strategyId)?.has(position.market) ?? false)
+      );
+    },
   };
 }
 
@@ -418,6 +496,23 @@ function toTime(value: unknown): number {
  * latest PnL snapshot 목록을 deterministic한 scope 순서로 정렬한다.
  */
 function compareSnapshotScope(left: DailyReportPnlSnapshotFact, right: DailyReportPnlSnapshotFact): number {
+  const strategyComparison = left.strategyId.localeCompare(right.strategyId);
+  if (strategyComparison !== 0) {
+    return strategyComparison;
+  }
+
+  return compareOptionalMarket(left.market ?? null, right.market ?? null);
+}
+
+/**
+ * PnL fact를 strategy/market scope 기준으로 정렬한다.
+ *
+ * snapshot과 position fallback을 섞어도 집계 source와 테스트 fixture가 입력 순서에 의존하지 않도록 scope 순서를 고정한다.
+ */
+function comparePnlFactScope(
+  left: DailyReportPnlSnapshotFact | DailyReportPositionFact,
+  right: DailyReportPnlSnapshotFact | DailyReportPositionFact,
+): number {
   const strategyComparison = left.strategyId.localeCompare(right.strategyId);
   if (strategyComparison !== 0) {
     return strategyComparison;

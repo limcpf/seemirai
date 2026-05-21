@@ -5,10 +5,15 @@ import type {
   DailyReportWindow,
 } from "../../../application/index.js";
 import { createDailyReportJobPlan } from "../../../application/index.js";
+import { orderLifecycleStatuses } from "../../../domain/index.js";
 import type { JsonRecord } from "../../../domain/index.js";
 import type { Database } from "../database.js";
 import { enqueueJob } from "../jobs.js";
 import type { EnqueueJobResult } from "../jobs.js";
+
+const orderStatusRank = new Map<string, number>(
+  orderLifecycleStatuses.map((status, index) => [status, index]),
+);
 
 /**
  * PostgreSQL에서 daily report facts와 job 예약을 처리하는 repository다.
@@ -207,17 +212,16 @@ async function loadFillFacts(
 /**
  * 기준일 종료 전까지 알려진 포지션 snapshot을 읽는다.
  *
- * positions는 현재 상태 테이블이라 기준일 시계열을 완벽하게 복원하지 못한다. 그래서 application 집계는 PnL snapshot이 있으면
- * 그 값을 우선하고, positions는 open position 수와 fallback 손익 근거로만 사용한다.
+ * positions는 시계열이 아니라 현재 상태 테이블이다. 기준일 종료 후 갱신됐다는 이유로 row를 제외하면 과거 리포트 재실행 때
+ * fallback 손익과 open position 수가 사라지므로, repository는 현재 snapshot 전체를 읽고 application 집계가 source를 표시한다.
  */
 async function loadPositionFacts(
   database: Database,
-  window: DailyReportQueryWindow,
+  _window: DailyReportQueryWindow,
 ): Promise<DailyReportSourceData["positions"]> {
   const rows = await database
     .selectFrom("positions")
     .select(["strategy_id", "market", "quantity", "realized_pnl", "unrealized_pnl", "updated_at"])
-    .where("updated_at", "<", window.utcEndAt)
     .execute();
 
   return rows.map((row) => ({
@@ -384,12 +388,10 @@ async function loadExecutionQualityFacts(
 /**
  * 기준일 종료 시점 주문 상태를 복원하기 위해 읽는 accepted order event row다.
  *
- * repository 내부 전용 모델이며 DB row를 수정하지 않는다. `eventId`는 같은 `occurredAt` 동점에서 deterministic tie-breaker로만
- * 사용하고, 상태 복원은 `fromStatus`/`toStatus`와 half-open window 종료 시각을 기준으로 수행한다.
+ * repository 내부 전용 모델이며 DB row를 수정하지 않는다. 상태 복원은 `fromStatus`/`toStatus`, lifecycle rank,
+ * half-open window 종료 시각을 기준으로 수행한다.
  */
 interface DailyReportOrderStateEventRow {
-  /** order_events primary key. 동일 timestamp 전이의 정렬 보조 근거다. */
-  eventId: string;
   /** 상태 전이가 속한 주문 ID다. */
   orderId: string;
   /** 전이 직전 상태이며, window 종료 이후 첫 전이를 만났을 때 과거 상태 복원에 사용한다. */
@@ -417,7 +419,6 @@ async function loadAcceptedOrderStateEvents(
   const rows = await database
     .selectFrom("order_events")
     .select([
-      "id as event_id",
       "order_id",
       "from_status",
       "to_status",
@@ -428,7 +429,6 @@ async function loadAcceptedOrderStateEvents(
     .execute();
 
   return rows.map((row) => ({
-    eventId: row.event_id,
     orderId: row.order_id,
     fromStatus: row.from_status,
     toStatus: row.to_status,
@@ -484,8 +484,8 @@ function resolveOrderStatusAtWindowEnd(
 /**
  * 같은 주문의 상태 전이 event를 deterministic하게 정렬한다.
  *
- * 업무상 순서는 `occurred_at`이 우선이며, 같은 timestamp가 들어온 경우 DB row id를 tie-breaker로 써 재실행 시 같은 상태를
- * 선택하게 한다. 이 비교는 read-only 계산이며 DB 상태를 변경하지 않는다.
+ * 업무상 순서는 `occurred_at`이 우선이며, 같은 timestamp가 들어온 경우 UUID가 아니라 주문 lifecycle rank로 전이 chain을
+ * 정렬한다. 이 비교는 read-only 계산이며 DB 상태를 변경하지 않는다.
  */
 function compareOrderStateEvents(
   left: DailyReportOrderStateEventRow,
@@ -496,7 +496,37 @@ function compareOrderStateEvents(
     return timeComparison;
   }
 
-  return left.eventId.localeCompare(right.eventId);
+  const fromStatusComparison = compareOrderStatusRank(left.fromStatus, right.fromStatus);
+  if (fromStatusComparison !== 0) {
+    return fromStatusComparison;
+  }
+
+  const toStatusComparison = compareOrderStatusRank(left.toStatus, right.toStatus);
+  if (toStatusComparison !== 0) {
+    return toStatusComparison;
+  }
+
+  return left.fromStatus.localeCompare(right.fromStatus) || left.toStatus.localeCompare(right.toStatus);
+}
+
+/**
+ * lifecycle 상태의 업무 진행 순서로 같은 timestamp 전이를 비교한다.
+ *
+ * 같은 시각에 여러 accepted event가 기록될 수 있으므로 UUID 같은 저장소 식별자가 아니라 상태 machine 순서를 기준으로
+ * 전이 chain을 복원한다.
+ */
+function compareOrderStatusRank(left: string, right: string): number {
+  return readOrderStatusRank(left) - readOrderStatusRank(right);
+}
+
+/**
+ * 주문 상태 code를 lifecycle rank로 변환한다.
+ *
+ * 알 수 없는 상태는 알려진 상태 뒤에 배치해 canonical 상태 chain을 우선 보존한다. fallback은 deterministic 정렬용이며
+ * 상태 code 자체를 변경하지 않는다.
+ */
+function readOrderStatusRank(status: string): number {
+  return orderStatusRank.get(status) ?? orderLifecycleStatuses.length;
 }
 
 /**

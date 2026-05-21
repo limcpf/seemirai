@@ -197,8 +197,10 @@ worker retry나 운영 재생이 같은 조회 범위를 사용할 수 있게 �
 
 - `orders`: 기준일 안에 생성된 주문 수와 `order_events`로 복원한 기준일 종료 시점 상태별 건수
 - `fills`: 기준일 안 체결 수, 통화별 수수료, 체결 명목 금액, 수수료 비중
-- `positions`: 현재 포지션 수와 fallback 손익 snapshot
-- `pnl_snapshots`: strategy/market별 최신 snapshot의 realized PnL과 unrealized PnL
+- `positions`: 현재 포지션 수와 snapshot 누락 scope의 fallback 손익 snapshot. 현재 snapshot table이므로 `updated_at`으로
+  과거 상태를 복원하려고 제외하지 않는다.
+- `pnl_snapshots`: strategy/market별 최신 snapshot의 realized PnL과 unrealized PnL. snapshot이 있는 scope는 positions보다
+  우선하며, 일부 scope의 snapshot이 없을 때만 positions fallback을 섞는다.
 - `audit_events`: `ORDER_CANDIDATE_DISCARDED` payload의 `reason_code`별 폐기 후보 수
 - `risk_events`: `action`, `risk_type`별 차단/리스크 이벤트 수
 - `fills` 기준으로 실제 체결된 주문의 `paper_orders.fill_model_json`, `orders.reason_json.cost_snapshot`: 슬리피지, spread 비용,

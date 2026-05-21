@@ -42,7 +42,10 @@ describeDb("daily report PostgreSQL integration", () => {
 
       const window = createDailyReportWindow("2026-05-21");
       const sourceData = await repository.loadDailyReportSourceData(window);
-      const report = aggregateDailyReport(window, sourceData);
+      const report = aggregateDailyReport(window, {
+        ...sourceData,
+        positions: sourceData.positions.filter((position) => position.strategyId === strategyId),
+      });
 
       expect(sourceData.orders).toHaveLength(1);
       expect(sourceData.fills).toHaveLength(1);
@@ -249,6 +252,122 @@ describeDb("daily report PostgreSQL integration", () => {
         code: "SUBMITTED",
         label: "제출됨 (SUBMITTED)",
         count: 1,
+      });
+    });
+  });
+
+  it("orders same-timestamp state events by lifecycle rank instead of UUID", async () => {
+    const db = await getDatabase();
+    await withRollback(db, async (transaction) => {
+      const strategyId = createFixtureStrategyId();
+      const repository = new PostgresDailyReportRepository(transaction);
+      const order = await transaction
+        .insertInto("orders")
+        .values({
+          exchange: "upbit_krw_spot",
+          market: "KRW-BTC",
+          strategy_id: strategyId,
+          side: "BUY",
+          order_type: "LIMIT",
+          status: "FILLED",
+          idempotency_key: `daily-report-same-time-status-${strategyId}`,
+          requested_price: "1000",
+          requested_quantity: "1",
+          requested_notional: "1000",
+          reason_json: {},
+          created_at: "2026-05-21T14:00:00.000Z",
+          updated_at: "2026-05-21T14:40:00.000Z",
+        })
+        .returning(["id"])
+        .executeTakeFirstOrThrow();
+
+      await transaction
+        .insertInto("order_events")
+        .values([
+          {
+            id: "00000000-0000-0000-0000-000000000010",
+            order_id: order.id,
+            event_type: "ORDER_STATE_TRANSITION",
+            from_status: "RISK_APPROVED",
+            to_status: "SUBMITTED",
+            accepted: true,
+            reason_code: "submitted",
+            message: "submitted before same-time terminal events",
+            correlation_id: null,
+            payload_json: {},
+            occurred_at: "2026-05-21T14:30:00.000Z",
+          },
+          {
+            id: "00000000-0000-0000-0000-000000000002",
+            order_id: order.id,
+            event_type: "ORDER_STATE_TRANSITION",
+            from_status: "SUBMITTED",
+            to_status: "ACCEPTED",
+            accepted: true,
+            reason_code: "accepted",
+            message: "accepted at same timestamp",
+            correlation_id: null,
+            payload_json: {},
+            occurred_at: "2026-05-21T14:40:00.000Z",
+          },
+          {
+            id: "00000000-0000-0000-0000-000000000001",
+            order_id: order.id,
+            event_type: "ORDER_STATE_TRANSITION",
+            from_status: "ACCEPTED",
+            to_status: "FILLED",
+            accepted: true,
+            reason_code: "filled",
+            message: "filled at same timestamp",
+            correlation_id: null,
+            payload_json: {},
+            occurred_at: "2026-05-21T14:40:00.000Z",
+          },
+        ])
+        .execute();
+
+      const sourceData = await repository.loadDailyReportSourceData(createDailyReportWindow("2026-05-21"));
+
+      expect(sourceData.orders.find((fact) => fact.strategyId === strategyId)?.status).toBe("FILLED");
+    });
+  });
+
+  it("keeps positions updated after the report window as current fallback facts", async () => {
+    const db = await getDatabase();
+    await withRollback(db, async (transaction) => {
+      const strategyId = createFixtureStrategyId();
+      const repository = new PostgresDailyReportRepository(transaction);
+
+      await transaction
+        .insertInto("positions")
+        .values({
+          exchange: "upbit_krw_spot",
+          market: "KRW-BTC",
+          strategy_id: strategyId,
+          quantity: "1",
+          average_entry_price: "1000",
+          realized_pnl: "42",
+          unrealized_pnl: "7",
+          updated_at: "2026-05-22T01:00:00.000Z",
+        })
+        .execute();
+
+      const window = createDailyReportWindow("2026-05-21");
+      const sourceData = await repository.loadDailyReportSourceData(window);
+      const report = aggregateDailyReport(window, {
+        ...sourceData,
+        positions: sourceData.positions.filter((position) => position.strategyId === strategyId),
+      });
+      const position = sourceData.positions.find((candidate) => candidate.strategyId === strategyId);
+
+      expect(position).toMatchObject({
+        realizedPnl: "42.00000000",
+        unrealizedPnl: "7.00000000",
+      });
+      expect(new Date(String(position?.updatedAt)).toISOString()).toBe("2026-05-22T01:00:00.000Z");
+      expect(report.realizedPnl).toMatchObject({
+        value: "42",
+        source: "positions",
       });
     });
   });

@@ -171,6 +171,52 @@ describe("daily report application", () => {
     expect(report.estimatedPnl.value).toBe("30");
   });
 
+  it("falls back to positions only for PnL scopes without snapshots", () => {
+    const report = aggregateDailyReport(createDailyReportWindow("2026-05-21"), {
+      ...emptySourceData(),
+      positions: [
+        {
+          strategyId: "covered_by_snapshot",
+          market: "KRW-BTC",
+          quantity: "1",
+          realizedPnl: "999",
+          unrealizedPnl: "999",
+          updatedAt: "2026-05-21T14:10:00.000Z",
+        },
+        {
+          strategyId: "missing_snapshot",
+          market: "KRW-ETH",
+          quantity: "1",
+          realizedPnl: "25",
+          unrealizedPnl: "5",
+          updatedAt: "2026-05-21T14:20:00.000Z",
+        },
+      ],
+      pnlSnapshots: [
+        {
+          strategyId: "covered_by_snapshot",
+          market: "KRW-BTC",
+          capturedAt: "2026-05-21T14:00:00.000Z",
+          equity: "1000",
+          realizedPnl: "100",
+          unrealizedPnl: "10",
+          drawdownBps: "1",
+        },
+      ],
+    });
+
+    expect(report.realizedPnl).toMatchObject({
+      value: "125",
+      sampleCount: 2,
+      source: "pnl_snapshots+positions",
+    });
+    expect(report.estimatedPnl).toMatchObject({
+      value: "15",
+      sampleCount: 2,
+      source: "pnl_snapshots.unrealized_pnl+positions.unrealized_pnl",
+    });
+  });
+
   it("renders order statuses with Korean-first labels and a Korean fallback", () => {
     const report = aggregateDailyReport(createDailyReportWindow("2026-05-21"), {
       ...emptySourceData(),

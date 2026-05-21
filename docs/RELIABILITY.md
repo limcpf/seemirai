@@ -107,11 +107,15 @@ Codex-native 운영은 Codex, Git, GitHub, shell command, 문서 상태를 연�
   예약한다. scheduler 재시작, 수동 재실행, worker retry가 같은 기준일을 다시 예약해도 기존 `jobs` row를 재사용해야 한다.
 - PnL snapshot이 기준일 안에 있으면 strategy/market별 최신 snapshot만 손익 합계에 반영한다. 같은 전략의 과거 snapshot을
   모두 더하면 손익이 중복 집계되므로 최신 snapshot 선택은 리포트 invariant다. strategy id와 market code는 문자열 결합
-  key가 아니라 각각의 scope로 구분해 구분자 충돌이 손익 scope를 섞지 않게 한다.
+  key가 아니라 각각의 scope로 구분해 구분자 충돌이 손익 scope를 섞지 않게 한다. snapshot이 일부 scope에만 있으면
+  snapshot이 없는 scope만 positions current snapshot으로 보강한다.
 - realized PnL과 estimated PnL은 같은 숫자로 합치지 않는다. realized는 확정 손익, estimated는 미실현 손익 기준으로 분리하고
   source가 `pnl_snapshots`인지 `positions` fallback인지 표시한다.
 - 주문 상태별 집계는 `orders.status` 현재 snapshot을 그대로 읽지 않고, accepted `order_events`를 기준으로 report window
-  종료 직전 상태를 복원한다. event evidence가 없는 주문만 현재 snapshot을 fallback으로 사용한다.
+  종료 직전 상태를 복원한다. 같은 timestamp의 accepted event는 UUID가 아니라 주문 lifecycle 순서로 정렬한다. event evidence가
+  없는 주문만 현재 snapshot을 fallback으로 사용한다.
+- positions는 현재 snapshot table이므로 `updated_at < reportEnd` 컷오프로 제외하지 않는다. 과거 시점 복원이 불가능한 fallback
+  source라는 점은 report source label과 문서에 남기고, PnL snapshot이 있으면 해당 scope에서는 positions를 대체한다.
 - fee, slippage, spread, cancel/requote penalty는 가능한 값만 분리 집계한다. 체결 품질 payload가 없으면 해당 metric은
   `unavailable`로 남기며, 결측을 0으로 대체하지 않는다. 체결 품질 평균은 `fills.filled_at`이 기준일 window에 들어온 실제
   체결 주문만 대상으로 하며, 미체결/취소/리스크 거부 주문의 예상 비용 snapshot은 평균 모집단에 넣지 않는다.
