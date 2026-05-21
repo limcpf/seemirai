@@ -146,6 +146,33 @@ describeDb("alert cooldown integration", () => {
     expect(staleSkip.lastSkippedAt).toEqual(new Date("2026-05-21T00:02:00.000Z"));
   });
 
+  it("keeps sent and skipped timestamps monotonic across out-of-order updates", async () => {
+    const db = await getDatabase();
+    const repository = new PostgresAlertCooldownRepository(db);
+    const input = {
+      fingerprint: "alert:prod:paper:P1:lag:krw-eth:global:public_websocket_lag",
+      severity: "P1" as const,
+      alertType: "lag",
+      market: "krw-eth",
+      strategyId: null,
+      reasonCode: "public_websocket_lag",
+      occurredAt: "2026-05-21T00:03:00.000Z",
+    };
+
+    await repository.recordSent(input);
+    await repository.recordSkipped({
+      ...input,
+      occurredAt: "2026-05-21T00:04:00.000Z",
+    });
+    const staleSent = await repository.recordSent({
+      ...input,
+      occurredAt: "2026-05-21T00:02:00.000Z",
+    });
+
+    expect(staleSent.lastSentAt).toEqual(new Date("2026-05-21T00:03:00.000Z"));
+    expect(staleSent.lastSkippedAt).toEqual(new Date("2026-05-21T00:04:00.000Z"));
+  });
+
   async function getDatabase(): Promise<Database> {
     if (database !== undefined) {
       return database;

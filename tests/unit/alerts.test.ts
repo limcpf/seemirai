@@ -147,6 +147,33 @@ describe("alert cooldown and notification policy", () => {
     expect(notifier.alerts).toHaveLength(1);
   });
 
+  it("records cooldown timestamps from delivery time while preserving alert occurrence time", async () => {
+    const notifier = new RecordingNotifier();
+    const cooldownStore = createInMemoryAlertCooldownStore();
+    const deliveredAt = new Date("2026-05-21T00:10:00.000Z");
+    const result = await dispatchAlertWithCooldown(
+      {
+        notifier,
+        durableCooldownStore: cooldownStore,
+        clock: () => deliveredAt,
+      },
+      {
+        environment: "prod",
+        runMode: "paper_trading",
+        severity: "P0",
+        alertType: "db_write_failure",
+        reasonCode: "db_write_failure",
+        title: "DB write failed",
+        body: "risk evidence cannot be persisted",
+        occurredAt: "2026-05-21T00:00:00.000Z",
+      },
+    );
+    const state = await cooldownStore.findByFingerprint(result.fingerprint);
+
+    expect(notifier.alerts[0]?.occurredAt).toBe("2026-05-21T00:00:00.000Z");
+    expect(state?.lastSentAt).toEqual(deliveredAt);
+  });
+
   it("allows severity escalation to bypass an existing lower-severity cooldown", async () => {
     const notifier = new RecordingNotifier();
     const cooldownStore = createInMemoryAlertCooldownStore();

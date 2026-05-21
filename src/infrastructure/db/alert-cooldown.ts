@@ -66,25 +66,63 @@ export async function upsertAlertCooldown(
   },
 ): Promise<AlertCooldownState> {
   const row = toAlertCooldownRowInput(input, timestamps);
-  const record = await database
-    .insertInto("alert_cooldowns")
-    .values(row)
-    .onConflict((conflict) =>
-      conflict.column("fingerprint").doUpdateSet({
-        severity: row.severity,
-        alert_type: row.alert_type,
-        market: row.market,
-        strategy_id: row.strategy_id,
-        reason_code: row.reason_code,
-        last_sent_at: row.last_sent_at,
-        last_skipped_at: row.last_skipped_at,
-        delivery_reserved_until: row.delivery_reserved_until,
-        payload_json: row.payload_json,
-        updated_at: input.occurredAt,
-      }),
+  const payloadJson = JSON.stringify(row.payload_json);
+  const result = await sql<AlertCooldownRecord>`
+    INSERT INTO alert_cooldowns (
+      fingerprint,
+      severity,
+      alert_type,
+      market,
+      strategy_id,
+      reason_code,
+      last_sent_at,
+      last_skipped_at,
+      delivery_reserved_until,
+      payload_json,
+      updated_at
     )
-    .returningAll()
-    .executeTakeFirstOrThrow();
+    VALUES (
+      ${row.fingerprint},
+      ${row.severity},
+      ${row.alert_type},
+      ${row.market},
+      ${row.strategy_id},
+      ${row.reason_code},
+      ${row.last_sent_at},
+      ${row.last_skipped_at},
+      ${row.delivery_reserved_until},
+      ${payloadJson}::jsonb,
+      ${input.occurredAt}
+    )
+    ON CONFLICT (fingerprint) DO UPDATE SET
+      severity = EXCLUDED.severity,
+      alert_type = EXCLUDED.alert_type,
+      market = EXCLUDED.market,
+      strategy_id = EXCLUDED.strategy_id,
+      reason_code = EXCLUDED.reason_code,
+      last_sent_at = CASE
+        WHEN EXCLUDED.last_sent_at IS NULL THEN alert_cooldowns.last_sent_at
+        ELSE GREATEST(
+          COALESCE(alert_cooldowns.last_sent_at, EXCLUDED.last_sent_at),
+          EXCLUDED.last_sent_at
+        )
+      END,
+      last_skipped_at = CASE
+        WHEN EXCLUDED.last_skipped_at IS NULL THEN alert_cooldowns.last_skipped_at
+        ELSE GREATEST(
+          COALESCE(alert_cooldowns.last_skipped_at, EXCLUDED.last_skipped_at),
+          EXCLUDED.last_skipped_at
+        )
+      END,
+      delivery_reserved_until = EXCLUDED.delivery_reserved_until,
+      payload_json = EXCLUDED.payload_json,
+      updated_at = GREATEST(alert_cooldowns.updated_at, EXCLUDED.updated_at)
+    RETURNING *
+  `.execute(database);
+  const record = result.rows[0];
+  if (record === undefined) {
+    throw new Error("alert cooldown upsert did not return a row");
+  }
 
   return toAlertCooldownState(record);
 }

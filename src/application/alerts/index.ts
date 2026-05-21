@@ -242,28 +242,29 @@ export async function dispatchAlertWithCooldown(
   options: AlertDispatchServiceOptions,
   request: AlertDispatchRequest,
 ): Promise<AlertDispatchResult> {
-  const occurredAt = request.occurredAt ?? options.clock?.() ?? new Date();
+  const reservationAt = currentTime(options);
+  const alertOccurredAt = request.occurredAt ?? reservationAt;
   const fingerprint = createAlertFingerprint(request);
   const store = selectCooldownStore(options, request.severity);
-  const cooldownRecordInput = toCooldownRecordInput(request, fingerprint, occurredAt);
+  const reservationRecordInput = toCooldownRecordInput(request, fingerprint, reservationAt);
   const reservation = await store.reserveDelivery({
-    ...cooldownRecordInput,
+    ...reservationRecordInput,
     cooldownMs: getDefaultAlertCooldownMs(request.severity),
-    reserveUntil: addMs(occurredAt, options.deliveryReservationMs ?? defaultAlertDeliveryReservationMs),
+    reserveUntil: addMs(reservationAt, options.deliveryReservationMs ?? defaultAlertDeliveryReservationMs),
   });
 
   if (!reservation.reserved) {
     const blockedDelivery = describeBlockedDelivery(
       reservation.state,
       request.severity,
-      occurredAt,
+      reservationAt,
     );
     if (blockedDelivery.skippedReason === undefined) {
       throw new Error("Alert delivery reservation was rejected without an active cooldown reason");
     }
     // provider를 호출하지 않아도 cooldown/reservation hit 자체는 운영자가 추적해야 하므로 skip evidence를 남긴다.
-    await store.recordSkipped(cooldownRecordInput);
-    await appendAlertAudit(options, request, fingerprint, occurredAt, "INFO", "alert_delivery_skipped", {
+    await store.recordSkipped(reservationRecordInput);
+    await appendAlertAudit(options, request, fingerprint, reservationAt, "INFO", "alert_delivery_skipped", {
       blocked_until: blockedDelivery.until ?? null,
       skipped_reason: blockedDelivery.skippedReason,
     });
@@ -283,15 +284,20 @@ export async function dispatchAlertWithCooldown(
     title: request.title,
     body: request.body,
     fingerprint,
-    occurredAt,
+    occurredAt: alertOccurredAt,
     ...(request.metadata === undefined ? {} : { metadata: request.metadata }),
   });
-  const failureEvaluation = evaluateNotificationFailure(options.failureState, notification, occurredAt);
+  const deliveryCompletedAt = currentTime(options);
+  const failureEvaluation = evaluateNotificationFailure(
+    options.failureState,
+    notification,
+    deliveryCompletedAt,
+  );
 
   if (notification.delivered) {
-    // 실제 provider 전송이 성공한 시각만 cooldown 기준점으로 기록한다.
-    await store.recordSent(cooldownRecordInput);
-    await appendAlertAudit(options, request, fingerprint, occurredAt, "INFO", "notification_delivered", {
+    // 실제 provider 전송 완료 시각만 cooldown 기준점으로 기록해 지연된 요청 시각 때문에 보호 창이 줄어들지 않게 한다.
+    await store.recordSent(toCooldownRecordInput(request, fingerprint, deliveryCompletedAt));
+    await appendAlertAudit(options, request, fingerprint, deliveryCompletedAt, "INFO", "notification_delivered", {
       provider_message_id: notification.providerMessageId ?? null,
     });
     return {
@@ -304,9 +310,9 @@ export async function dispatchAlertWithCooldown(
 
   // P0/P1 provider failure는 즉시 운영 위험이므로 retry job 후보와 audit evidence를 함께 남긴다.
   const retryJobPlan = usesDurableCooldown(request.severity)
-    ? createNotificationRetryJobPlan({ request, fingerprint, occurredAt })
+    ? createNotificationRetryJobPlan({ request, fingerprint, occurredAt: alertOccurredAt })
     : undefined;
-  await appendAlertAudit(options, request, fingerprint, occurredAt, "ERROR", "notification_failure", {
+  await appendAlertAudit(options, request, fingerprint, deliveryCompletedAt, "ERROR", "notification_failure", {
     skipped_reason: notification.skippedReason ?? "notification_provider_failure",
     retry_job: retryJobPlan ?? null,
     manual_review_reason_code: failureEvaluation.manualReviewReasonCode ?? null,
@@ -600,6 +606,10 @@ function toIsoTimestamp(value: TimestampInput): string {
 
 function toEpochMs(value: TimestampInput): number {
   return value instanceof Date ? value.getTime() : Date.parse(value);
+}
+
+function currentTime(options: Pick<AlertDispatchServiceOptions, "clock">): Date {
+  return options.clock?.() ?? new Date();
 }
 
 function addMs(value: TimestampInput, ms: number): string {
