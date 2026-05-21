@@ -498,10 +498,14 @@ Acceptance Criteria:
 - [ ] 실거래 전환 가능 여부를 판단할 수 있도록 수수료, 슬리피지, 체결률, 전략별 손익을 리포트한다.
 - [ ] paper trading 모드에서는 거래소 주문 API가 호출되지 않는다.
 - [ ] 기본 모드에서는 실거래 API Key가 없거나 주문 권한이 비활성인 상태로 실행된다.
+- [ ] 24시간 paper soak 결과는 crash 0회, unhandled rejection 0회, 실거래 주문 API 0회, audit 누락 0건, stale data 신규 주문
+  차단, DB write failure 0건, notification failure 0건, daily report 생성 여부를 summary로 남긴다.
 
 테스트 요구사항:
 
 - 통합 테스트: paper trading 모드에서 주문 API client가 호출되지 않는지 확인한다.
+- smoke 테스트: `SEEMIRAI_RUN_SOAK=1`이 없는 기본 실행은 장시간 soak를 skip하고, fixture smoke는 stale data 차단과 live order
+  API 0회 evidence를 검증한다.
 - 회귀 테스트: 동일 이벤트 fixture에서 백테스트와 paper trading의 주문 후보 생성 결과가 일관되는지 확인한다.
 - 수동 테스트: 일간 리포트에 paper trading 성과가 표시되는지 확인한다.
 
