@@ -180,6 +180,7 @@ alert 발생 시각이 아니라 reservation/전송 완료 시각을 사용해 �
 
 - application 집계/전송 경계: `src/application/daily-report/`
 - PostgreSQL fact repository: `src/infrastructure/db/daily-report/`
+- M9 runner/scheduler boundary: `src/runtime/daily-report-runtime.ts`
 - outbound adapter: `NotifierPort.sendDailyReport`
 - job idempotency: PostgreSQL `jobs.idempotency_key`
 
@@ -209,6 +210,27 @@ worker retry나 운영 재생이 같은 조회 범위를 사용할 수 있게 �
 리포트 문구는 한국어 사용자 문구를 먼저 보여준다. 내부 status/action/reason code는 괄호나 `metadata` 추적 정보에 남기며,
 값이 없으면 임의로 0으로 채우지 않고 `unavailable`로 표시한다. 단, 주문 수, 체결 수, 폐기 후보 수처럼 row 개수를 세는 항목은
 데이터가 없을 때 실제 0으로 표시한다. 실현 손익은 `realized PnL`, 추정 손익은 `unrealized PnL` 기반으로 분리 표기한다.
+
+M9부터 daily report 수동 실행과 scheduler 실행은 같은 runner boundary를 사용한다. 두 경로 모두 먼저
+`report.daily:<reportDate>` idempotency key로 `jobs` row를 예약하거나 재사용한 뒤, claim된 job에서 report fact 조회와
+Telegram 전송을 수행한다. 수동 실행 claim은 `idempotency_key`뿐 아니라 `job_type=report.daily`도 함께 확인해 공용
+jobs table의 다른 worker 책임 row를 전이시키지 않는다. 이미 `COMPLETED`인 같은 기준일 job은 수동 실행에서 다시 전송하지
+않는다. 같은 기준일 job이 `FAILED`로 소진된 경우에는 운영자 수동 실행만 같은 idempotency key row를 `PENDING`으로 재개해
+복구할 수 있다.
+
+runner 결과는 생성과 전송을 분리해 기록한다.
+
+- report fact 조회/집계/formatting 성공: `DAILY_REPORT` audit event, `daily_report_generated`
+- Telegram 전송 성공: `NOTIFICATION_DELIVERY` audit event, `daily_report_notification_delivered`
+- Telegram provider skip/실패/예외: `NOTIFICATION_DELIVERY` audit event, `daily_report_notification_failed`
+- report 생성 실패: `DAILY_REPORT` audit event, `daily_report_generation_failed`, jobs row는 재시도 가능하면 `PENDING`, 한도 초과 시 `FAILED`
+
+Telegram provider 실패는 report 생성 성공을 되돌리지 않는다. provider 실패는 audit evidence로 남기고 claim된 daily report job은
+완료 처리해 같은 기준일의 중복 전송을 막는다. provider 호출 이후 notification audit 저장이 실패해도 job을 generation retry로
+되돌리지 않고 결과의 `errorMessage`에 남긴다. report 생성 실패만 jobs retry 대상이다. scheduler worker는 `limit`가 1보다
+커도 실행 가능한 daily report job을 한 번에 하나씩 claim하고 즉시 실행한다. scheduler 실패 row는 같은 sweep에서 다시
+claim하지 않도록 최소 다음 tick 이후로 `run_after`를 미룬다. report 생성 중 audit 저장소 장애처럼 runner가 예외를 던지면
+runtime이 `failJob`으로 lock을 해제해 같은 row가 retry 또는 수동 복구 대상으로 남게 한다.
 
 ## M8 Paper soak verification
 

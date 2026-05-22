@@ -4,15 +4,19 @@ import {
   aggregateDailyReport,
   createDailyReportWindow,
 } from "../../src/application/index.js";
+import type { AuditLogPort, NotifierPort } from "../../src/application/index.js";
 import {
   applyMigrations,
+  claimJobByIdempotencyKey,
   createDatabase,
   createPostgresPool,
   destroyDatabase,
+  enqueueJob,
   loadLocalDatabaseConfig,
   PostgresDailyReportRepository,
 } from "../../src/infrastructure/db/index.js";
 import type { Database } from "../../src/infrastructure/db/index.js";
+import { createPaperNoKeyDailyReportRuntime } from "../../src/runtime/index.js";
 
 const runDbIntegration = process.env.SEEMIRAI_RUN_DB_INTEGRATION === "1";
 const describeDb = runDbIntegration ? describe : describe.skip;
@@ -405,6 +409,127 @@ describeDb("daily report PostgreSQL integration", () => {
     });
   });
 
+  it("releases the job lock when daily report runner throws before final transition", async () => {
+    const db = await getDatabase();
+    await withRollback(db, async (transaction) => {
+      const workerId = "daily-report-worker";
+      const runtime = createPaperNoKeyDailyReportRuntime({
+        database: transaction,
+        workerId,
+        clock: () => new Date("2026-05-22T15:01:00.000Z"),
+        notifier: deliveredNotifier,
+        auditLog: throwingAuditLog,
+      });
+
+      const result = await runtime.runManualDailyReport({
+        reportDate: "2026-05-22",
+        maxAttempts: 2,
+      });
+
+      expect(result.status).toBe("RUN");
+      expect(result.claimed?.result.status).toBe("GENERATION_FAILED");
+      expect(result.claimed?.result.errorMessage).toContain("daily report runner failed");
+      expect(result.claimed?.finalJob.status).toBe("PENDING");
+      expect(result.claimed?.finalJob.locked_by).toBeNull();
+      expect(result.claimed?.finalJob.last_error).toContain("audit append failed");
+
+      const reclaimed = await claimJobByIdempotencyKey(transaction, {
+        workerId: "daily-report-retry-worker",
+        idempotencyKey: "report.daily:2026-05-22",
+        jobType: "report.daily",
+        now: new Date("2026-05-22T15:02:00.000Z"),
+        ignoreRunAfter: true,
+      });
+
+      expect(reclaimed?.status).toBe("RUNNING");
+      expect(reclaimed?.locked_by).toBe("daily-report-retry-worker");
+    });
+  });
+
+  it("does not reclaim the same failed scheduler job in one sweep", async () => {
+    const db = await getDatabase();
+    const keys = [
+      "report.daily:invalid-payload-2099-12-24",
+      "report.daily:valid-followup-2099-12-24",
+    ];
+    const now = new Date("2099-12-24T15:00:00.000Z");
+    await db.deleteFrom("jobs").where("idempotency_key", "in", keys).execute();
+
+    try {
+      await enqueueJob(db, {
+        jobType: "report.daily",
+        idempotencyKey: "report.daily:invalid-payload-2099-12-24",
+        payloadJson: {},
+        runAfter: now,
+        maxAttempts: 2,
+      });
+      await enqueueJob(db, {
+        jobType: "report.daily",
+        idempotencyKey: "report.daily:valid-followup-2099-12-24",
+        payloadJson: {
+          report_date: "2099-12-24",
+        },
+        runAfter: now,
+      });
+      const runtime = createPaperNoKeyDailyReportRuntime({
+        database: db,
+        workerId: "daily-report-worker",
+        clock: () => now,
+        notifier: deliveredNotifier,
+      });
+
+      const results = await runtime.runDueDailyReportJobs({ limit: 2, now });
+
+      expect(results).toHaveLength(2);
+      expect(results[0]?.job.idempotency_key).toBe("report.daily:invalid-payload-2099-12-24");
+      expect(results[0]?.result.status).toBe("GENERATION_FAILED");
+      expect(results[0]?.finalJob.status).toBe("PENDING");
+      expect(new Date(String(results[0]?.finalJob.run_after)).toISOString()).toBe(
+        "2099-12-24T15:01:00.000Z",
+      );
+      expect(results[1]?.job.idempotency_key).toBe("report.daily:valid-followup-2099-12-24");
+      expect(results[1]?.finalJob.status).toBe("COMPLETED");
+    } finally {
+      await db.deleteFrom("jobs").where("idempotency_key", "in", keys).execute();
+    }
+  });
+
+  it("allows a manual rerun to recover an exhausted daily report job", async () => {
+    const db = await getDatabase();
+    await withRollback(db, async (transaction) => {
+      const failedRuntime = createPaperNoKeyDailyReportRuntime({
+        database: transaction,
+        workerId: "daily-report-worker",
+        clock: () => new Date("2026-05-25T15:00:00.000Z"),
+        notifier: deliveredNotifier,
+        auditLog: throwingAuditLog,
+      });
+      const failed = await failedRuntime.runManualDailyReport({
+        reportDate: "2026-05-25",
+        maxAttempts: 1,
+      });
+
+      expect(failed.claimed?.finalJob.status).toBe("FAILED");
+
+      const recoveryRuntime = createPaperNoKeyDailyReportRuntime({
+        database: transaction,
+        workerId: "daily-report-recovery-worker",
+        clock: () => new Date("2026-05-25T15:05:00.000Z"),
+        notifier: deliveredNotifier,
+      });
+      const recovered = await recoveryRuntime.runManualDailyReport({
+        reportDate: "2026-05-25",
+        maxAttempts: 2,
+      });
+
+      expect(recovered.status).toBe("RUN");
+      expect(recovered.enqueueResult.created).toBe(false);
+      expect(recovered.enqueueResult.job.status).toBe("PENDING");
+      expect(recovered.claimed?.result.status).toBe("DELIVERED");
+      expect(recovered.claimed?.finalJob.status).toBe("COMPLETED");
+    });
+  });
+
   async function getDatabase(): Promise<Database> {
     if (database !== undefined) {
       return database;
@@ -417,6 +542,21 @@ describeDb("daily report PostgreSQL integration", () => {
     return database;
   }
 });
+
+const deliveredNotifier: NotifierPort = {
+  async sendAlert() {
+    return { delivered: true, providerMessageId: "alert-fixture" };
+  },
+  async sendDailyReport() {
+    return { delivered: true, providerMessageId: "daily-report-fixture" };
+  },
+};
+
+const throwingAuditLog: AuditLogPort = {
+  async appendEvent() {
+    throw new Error("audit append failed");
+  },
+};
 
 class RollbackDailyReportIntegration extends Error {
   public constructor() {
