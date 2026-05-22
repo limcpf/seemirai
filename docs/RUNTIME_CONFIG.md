@@ -238,7 +238,9 @@ worker는 `job_type=notification_retry`인 due row만 claim한다. claim된 row�
 완료가 아니라 실패 재예약 경로로 넘긴다. provider 실패나 retry payload 오류는 `failJob`으로 넘겨 `run_after`를 dispatch 처리
 종료 시각 기준 최소 다음 worker tick 이후로 미루고, claim 시각보다 과거가 되지 않게 보정한다. `max_attempts`를 소진하면 job은
 `FAILED`에 고정되고, `notification_retry_manual_review_required` audit evidence와 `notification_consecutive_failure` manual
-review reason을 남긴다.
+review reason을 남긴다. provider 전송이 성공한 뒤 cooldown 기록이나 alert audit 저장에서 예외가 발생하면 job을 재예약하지
+않고 `COMPLETED`로 닫아 Telegram 중복 전송을 막는다. 이 경우 worker audit 저장소가 살아 있으면
+`notification_retry_delivered_after_dispatch_error` evidence에 후처리 오류를 남긴다.
 
 retry worker는 Telegram outbound 재전송만 수행한다. Telegram inbound command, webhook, polling route를 만들지 않고, 실거래
 주문 API나 Upbit private API를 호출하지 않는다.

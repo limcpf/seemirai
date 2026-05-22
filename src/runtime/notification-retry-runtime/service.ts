@@ -1,11 +1,14 @@
 import type {
+  AlertNotification,
   AlertCooldownStore,
   AlertDispatchServiceOptions,
   AuditEventReceipt,
   AuditLogPort,
+  DailyReportNotification,
   NotificationRetryJobEnqueueReceipt,
   NotificationRetryJobPlan,
   NotificationRetryJobQueue,
+  NotificationResult,
   NotifierPort,
 } from "../../application/index.js";
 import {
@@ -234,9 +237,13 @@ async function runClaimedNotificationRetryJob(input: {
   claimNow?: Date | string;
   actor?: string;
 }): Promise<ClaimedNotificationRetryJobRunResult> {
+  const deliveryTracker = new NotificationRetryDeliveryTracker(input.alertDispatch.notifier);
   try {
     const dispatchResult = await dispatchNotificationRetryJob({
-      alertDispatch: input.alertDispatch,
+      alertDispatch: {
+        ...input.alertDispatch,
+        notifier: deliveryTracker,
+      },
       payloadJson: input.job.payload_json,
     });
     const occurredAt = resolveWorkerTimestamp(
@@ -294,6 +301,15 @@ async function runClaimedNotificationRetryJob(input: {
       input.clock,
       input.job.locked_at ?? input.claimNow,
     );
+
+    if (deliveryTracker.deliveredNotificationResult !== undefined) {
+      return completeNotificationRetryJobAfterPostDeliveryFailure(input, {
+        occurredAt,
+        errorMessage: `notification retry post-delivery step failed: ${toErrorMessage(error)}`,
+        notification: deliveryTracker.deliveredNotificationResult,
+      });
+    }
+
     return failNotificationRetryJobWithEvidence(input, {
       occurredAt,
       errorMessage: `notification retry worker failed: ${toErrorMessage(error)}`,
@@ -301,6 +317,62 @@ async function runClaimedNotificationRetryJob(input: {
       invalidPayload: error instanceof NotificationRetryPayloadError,
     });
   }
+}
+
+/**
+ * provider 전송 성공 뒤 후처리 예외가 난 retry job을 완료 상태로 고정한다.
+ *
+ * 입력은 claim된 job과 추적된 provider 결과이며, 출력은 completed job과 가능한 worker audit receipt다. 이 함수는 Telegram
+ * 재전송 side effect를 만들지 않고 jobs table complete 전이와 audit append만 수행해야 한다. provider가 이미 delivered=true를
+ * 반환했다는 invariant가 없으면 호출하면 안 된다.
+ */
+async function completeNotificationRetryJobAfterPostDeliveryFailure(
+  input: {
+    job: JobRecord;
+    workerId: string;
+    queue: NotificationRetryRuntimeJobQueue;
+    auditLog: AuditLogPort;
+    actor?: string;
+  },
+  delivery: {
+    occurredAt: Date;
+    errorMessage: string;
+    notification: NotificationResult;
+  },
+): Promise<ClaimedNotificationRetryJobRunResult> {
+  // Telegram provider가 이미 성공한 뒤의 cooldown/audit 예외는 재시도하면 중복 알림이 되므로 job을 완료 상태로 수렴시킨다.
+  const finalJob = await input.queue.completeNotificationRetryJob({
+    jobId: input.job.id,
+    workerId: input.workerId,
+    completedAt: delivery.occurredAt,
+  });
+  const auditEventReceipts = await appendNotificationRetryAuditSafely(input.auditLog, {
+    job: input.job,
+    finalJob,
+    workerId: input.workerId,
+    occurredAt: delivery.occurredAt,
+    reasonCode: "notification_retry_delivered_after_dispatch_error",
+    severity: "ERROR",
+    metadata: {
+      delivered: true,
+      cooldown_hit: null,
+      skipped_reason: null,
+      provider_message_id: delivery.notification.providerMessageId ?? null,
+      fingerprint: typeof input.job.payload_json.fingerprint === "string"
+        ? input.job.payload_json.fingerprint
+        : null,
+      post_delivery_error_message: delivery.errorMessage,
+    },
+    ...(input.actor === undefined ? {} : { actor: input.actor }),
+  });
+
+  return {
+    job: input.job,
+    status: "DELIVERED",
+    finalJob,
+    auditEventReceipts,
+    errorMessage: delivery.errorMessage,
+  };
 }
 
 async function failNotificationRetryJobWithEvidence(
@@ -398,6 +470,32 @@ async function appendNotificationRetryAuditSafely(
   } catch {
     // 이미 provider와 job 상태 전이가 끝났으므로 audit 저장 실패 때문에 같은 Telegram retry를 반복하지 않는다.
     return [];
+  }
+}
+
+/**
+ * notification retry dispatch 안에서 provider 전송 성공 여부를 기록하는 runtime-local notifier adapter다.
+ *
+ * 입력과 출력은 원 `NotifierPort`에 그대로 위임하되, `sendAlert`가 delivered=true를 반환한 순간만 저장한다. 이 adapter 자체는
+ * 추가 외부 side effect를 만들지 않으며, worker는 이 invariant를 이용해 전송 후 cooldown/audit 예외를 retry failure가 아니라
+ * completion 경계로 분리한다.
+ */
+class NotificationRetryDeliveryTracker implements NotifierPort {
+  public deliveredNotificationResult: NotificationResult | undefined;
+
+  public constructor(private readonly delegate: NotifierPort) {}
+
+  public async sendAlert(notification: AlertNotification): Promise<NotificationResult> {
+    const result = await this.delegate.sendAlert(notification);
+    if (result.delivered) {
+      this.deliveredNotificationResult = result;
+    }
+
+    return result;
+  }
+
+  public async sendDailyReport(notification: DailyReportNotification): Promise<NotificationResult> {
+    return this.delegate.sendDailyReport(notification);
   }
 }
 

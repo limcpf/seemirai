@@ -94,6 +94,9 @@ Codex-native 운영은 Codex, Git, GitHub, shell command, 문서 상태를 연�
   않고 실패 경로로 재예약한다. provider 실패와 deferred reservation은 dispatch 처리 종료 시각을 기준으로 `failJob` 재예약
   시각을 계산하고, claim 시각보다 과거가 되지 않게 보정한다. max attempts를 소진하면 `FAILED`와
   `notification_retry_manual_review_required` audit evidence를 남겨 manual review로 수렴한다.
+- retry worker는 provider 전송 성공을 runtime-local notifier adapter로 추적한다. 전송 성공 뒤 cooldown 기록이나 alert audit
+  저장에서 예외가 발생하면 같은 Telegram message를 다시 보내지 않도록 job을 `COMPLETED`로 닫고, 가능한 경우
+  `notification_retry_delivered_after_dispatch_error` evidence만 남긴다.
 - retry worker의 audit 저장 실패는 이미 발생한 provider side effect나 job 상태 전이를 재시도하지 않는다. 이 장애는 audit 누락
   리스크로 남기고 Telegram 재전송 중복을 만들지 않는다.
 - provider 실패가 연속 3회이거나 첫 실패 이후 10분 이상 지속되면 kill switch mapping에서 `MANUAL_REVIEW_REQUIRED` 후보로

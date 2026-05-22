@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
 import type {
+  AlertCooldownReleaseInput,
+  AlertCooldownRecordInput,
+  AlertCooldownReservationInput,
+  AlertCooldownReservationResult,
+  AlertCooldownState,
+  AlertCooldownStore,
   AlertNotification,
   AuditEvent,
   AuditEventReceipt,
@@ -159,10 +165,41 @@ describe("notification retry runtime", () => {
     expect(result?.finalJob.run_after.toISOString()).toBe("2026-05-22T00:06:00.000Z");
   });
 
-  it("does not classify queue lifecycle errors as invalid payload failures", async () => {
-    const jobQueue = new CompleteThrowingNotificationRetryJobQueue();
+  it("does not classify pre-delivery infrastructure errors as invalid payload failures", async () => {
+    const jobQueue = new MemoryNotificationRetryJobQueue();
     const notifier = new SequenceNotifier([{ delivered: true, providerMessageId: "telegram-retry-1" }]);
     const auditLog = new CapturingAuditLog();
+    const runtime = createPaperNoKeyNotificationRetryRuntime({
+      database: {} as never,
+      notifier,
+      durableCooldownStore: new ThrowingReservationCooldownStore(),
+      auditLog,
+      jobQueue,
+      clock: () => new Date("2026-05-22T00:01:00.000Z"),
+    });
+
+    await runtime.enqueueNotificationRetryJob(createRetryPlan({ maxAttempts: 2 }));
+    const [result] = await runtime.runDueNotificationRetryJobs({
+      now: "2026-05-22T00:01:00.000Z",
+    });
+
+    expect(result).toMatchObject({
+      status: "RETRY_SCHEDULED",
+      finalJob: {
+        status: "PENDING",
+        last_error: "notification retry worker failed: cooldown store unavailable",
+      },
+    });
+    expect(auditLog.events.at(-1)?.metadata).toMatchObject({
+      invalid_payload: false,
+    });
+    expect(notifier.alerts).toHaveLength(0);
+  });
+
+  it("completes jobs when alert audit fails after provider delivery", async () => {
+    const jobQueue = new MemoryNotificationRetryJobQueue();
+    const notifier = new SequenceNotifier([{ delivered: true, providerMessageId: "telegram-retry-1" }]);
+    const auditLog = new AlertDispatchFailingAuditLog();
     const runtime = createPaperNoKeyNotificationRetryRuntime({
       database: {} as never,
       notifier,
@@ -178,15 +215,20 @@ describe("notification retry runtime", () => {
     });
 
     expect(result).toMatchObject({
-      status: "RETRY_SCHEDULED",
+      status: "DELIVERED",
       finalJob: {
-        status: "PENDING",
-        last_error: "notification retry worker failed: complete failed",
+        status: "COMPLETED",
+        last_error: null,
       },
     });
+    expect(result?.errorMessage).toContain("notification retry post-delivery step failed: alert audit unavailable");
     expect(auditLog.events.at(-1)?.metadata).toMatchObject({
-      invalid_payload: false,
+      delivered: true,
+      provider_message_id: "telegram-retry-1",
+      post_delivery_error_message: "notification retry post-delivery step failed: alert audit unavailable",
     });
+    expect(auditLog.events.at(-1)?.reasonCode).toBe("notification_retry_delivered_after_dispatch_error");
+    expect(notifier.alerts).toHaveLength(1);
   });
 
   it("keeps malformed retry payloads in job failure evidence without provider calls", async () => {
@@ -329,14 +371,6 @@ class MemoryNotificationRetryJobQueue implements NotificationRetryRuntimeJobQueu
   }
 }
 
-class CompleteThrowingNotificationRetryJobQueue extends MemoryNotificationRetryJobQueue {
-  public override async completeNotificationRetryJob(
-    _options: { jobId: string; workerId: string; completedAt?: Date | string },
-  ): Promise<JobRecord> {
-    throw new Error("complete failed");
-  }
-}
-
 class SequenceNotifier implements NotifierPort {
   public readonly alerts: AlertNotification[] = [];
 
@@ -380,6 +414,40 @@ class CapturingAuditLog implements AuditLogPort {
       auditEventId: `audit-${this.events.length}`,
       appendedAt: event.occurredAt,
     };
+  }
+}
+
+class AlertDispatchFailingAuditLog extends CapturingAuditLog {
+  public override async appendEvent(event: AuditEvent): Promise<AuditEventReceipt> {
+    if (event.actor === "alert-dispatcher") {
+      throw new Error("alert audit unavailable");
+    }
+
+    return super.appendEvent(event);
+  }
+}
+
+class ThrowingReservationCooldownStore implements AlertCooldownStore {
+  public async findByFingerprint(_fingerprint: string): Promise<AlertCooldownState | undefined> {
+    return undefined;
+  }
+
+  public async reserveDelivery(
+    _input: AlertCooldownReservationInput,
+  ): Promise<AlertCooldownReservationResult> {
+    throw new Error("cooldown store unavailable");
+  }
+
+  public async releaseDeliveryReservation(_input: AlertCooldownReleaseInput): Promise<AlertCooldownState> {
+    throw new Error("cooldown store unavailable");
+  }
+
+  public async recordSent(_input: AlertCooldownRecordInput): Promise<AlertCooldownState> {
+    throw new Error("cooldown store unavailable");
+  }
+
+  public async recordSkipped(_input: AlertCooldownRecordInput): Promise<AlertCooldownState> {
+    throw new Error("cooldown store unavailable");
   }
 }
 
