@@ -547,6 +547,7 @@ async function runControlDrill(controlUrl, options) {
   }
 
   const body = authorized.json;
+  const transition = body?.transition ?? {};
   const actionPlan = body?.actionPlan ?? {};
   const evidence = body?.evidence ?? {};
   const alertDispatch = body?.alertDispatch ?? null;
@@ -558,6 +559,12 @@ async function runControlDrill(controlUrl, options) {
   if (body?.correlationId !== correlationId) {
     failures.push("correlation_id_mismatch");
   }
+  if (transition.accepted !== true) {
+    failures.push("transition_not_accepted");
+  }
+  if (transition.toState !== options.controlDrillTargetState) {
+    failures.push("target_state_mismatch");
+  }
   if (actionPlan.newOrdersBlocked !== targetRequiresNewOrderBlock) {
     failures.push(targetRequiresNewOrderBlock ? "new_orders_not_blocked" : "normal_state_still_blocks_new_orders");
   }
@@ -566,6 +573,12 @@ async function runControlDrill(controlUrl, options) {
   }
   if (hardStopRequiresCancelJob && hardStopCancelJob === null) {
     failures.push("hard_stop_cancel_job_missing");
+  }
+  if (!hardStopRequiresCancelJob && actionPlan.cancelPendingPaperOrders !== false) {
+    failures.push("unexpected_pending_cancel_plan");
+  }
+  if (!hardStopRequiresCancelJob && hardStopCancelJob !== null) {
+    failures.push("unexpected_hard_stop_cancel_job");
   }
   if (typeof evidence.auditEventId !== "string" || typeof evidence.riskEventId !== "string") {
     failures.push("durable_evidence_missing");

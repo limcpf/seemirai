@@ -146,6 +146,33 @@ describe("M9 paper report comparison script", () => {
       }),
     );
   });
+
+  it("fails when a summary cannot prove its operating date", async () => {
+    const workDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-m9-compare-"));
+    const summaries = await writeSummaries(workDir, [
+      createSummary(1),
+      createSummary(2, { startedAt: "not-a-date" }),
+      createSummary(3),
+    ]);
+
+    const { stdout } = await runCompareExpectFailure([
+      "--summary",
+      summaries[0]!,
+      "--summary",
+      summaries[1]!,
+      "--summary",
+      summaries[2]!,
+      "--json",
+    ]);
+    const comparison = JSON.parse(stdout) as ComparisonSummary;
+
+    expect(comparison.status).toBe("failed");
+    expect(comparison.failures).toContainEqual(
+      expect.objectContaining({
+        code: "summary_date_missing",
+      }),
+    );
+  });
 });
 
 async function runCompare(args: readonly string[]) {
@@ -180,6 +207,7 @@ function createSummary(
     notificationFailures?: number;
     notificationManualReviewRequired?: boolean;
     omitNotificationFailures?: boolean;
+    startedAt?: string;
   } = {},
 ) {
   const metrics: Record<string, unknown> = {
@@ -228,7 +256,7 @@ function createSummary(
   return {
     schemaVersion: 1,
     status: "passed",
-    startedAt: `2026-05-${String(19 + day).padStart(2, "0")}T00:00:00.000Z`,
+    startedAt: overrides.startedAt ?? `2026-05-${String(19 + day).padStart(2, "0")}T00:00:00.000Z`,
     git: {
       branch: "issue-51-mother",
       commit: `abcdef123456789${day}`,

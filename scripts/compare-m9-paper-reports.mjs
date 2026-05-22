@@ -237,6 +237,9 @@ function createComparisonRow({ index, summaryPath, summary }) {
   if (row.reportArtifact === null) {
     row.failures.push(rowFailure(row, "report_artifact_missing", "report artifact 경로가 없다."));
   }
+  if (row.date === "unknown") {
+    row.failures.push(rowFailure(row, "summary_date_missing", "summary startedAt 날짜를 확인할 수 없다."));
+  }
   if (row.crashCount !== 0) {
     row.failures.push(rowFailure(row, "crash_observed", "crash가 0회가 아니다.", { crashCount: row.crashCount }));
   }
@@ -294,7 +297,12 @@ function readRecord(value) {
 }
 
 function readDateLabel(value) {
-  return typeof value === "string" && value.length >= 10 ? value.slice(0, 10) : "unknown";
+  if (typeof value !== "string" || value.length < 10) {
+    return "unknown";
+  }
+
+  const dateLabel = value.slice(0, 10);
+  return /^\d{4}-\d{2}-\d{2}$/u.test(dateLabel) ? dateLabel : "unknown";
 }
 
 function readNumber(value) {
