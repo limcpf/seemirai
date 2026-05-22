@@ -1,0 +1,356 @@
+#!/usr/bin/env node
+import { mkdir, readFile, writeFile } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import process from "node:process";
+
+const defaultOutputDir = path.join(os.homedir(), "vaults", "99_운영", "seemirai-m9-paper");
+const minimumSummaryCount = 3;
+
+await main();
+
+async function main() {
+  const options = parseArgs(process.argv.slice(2));
+  if (options.help) {
+    printHelp();
+    return;
+  }
+
+  const comparison = await compareReports(options.summaryPaths);
+  const markdown = renderMarkdownComparison(comparison);
+  const outputPath = options.outputPath ?? path.join(defaultOutputDir, `m9-3day-comparison-${comparison.generatedAt}.md`);
+
+  if (options.outputPath !== undefined) {
+    await mkdir(path.dirname(outputPath), { recursive: true });
+    await writeFile(outputPath, markdown, "utf8");
+    comparison.outputPath = outputPath;
+  }
+
+  if (options.json) {
+    process.stdout.write(`${JSON.stringify(comparison, null, 2)}\n`);
+  } else {
+    process.stdout.write(markdown);
+  }
+
+  if (comparison.status === "failed") {
+    process.exitCode = 1;
+  }
+}
+
+function parseArgs(argv) {
+  const options = {
+    summaryPaths: [],
+    json: false,
+    help: false,
+  };
+
+  for (let index = 0; index < argv.length; index += 1) {
+    const arg = argv[index];
+    switch (arg) {
+      case "--summary":
+        options.summaryPaths.push(path.resolve(readValue(argv, index, arg)));
+        index += 1;
+        break;
+      case "--output":
+        options.outputPath = path.resolve(readValue(argv, index, arg));
+        index += 1;
+        break;
+      case "--json":
+        options.json = true;
+        break;
+      case "--help":
+      case "-h":
+        options.help = true;
+        break;
+      default:
+        if (arg.startsWith("--")) {
+          throw new Error(`Unknown option: ${arg}`);
+        }
+        options.summaryPaths.push(path.resolve(arg));
+        break;
+    }
+  }
+
+  return options;
+}
+
+function readValue(argv, index, flag) {
+  const value = argv[index + 1];
+  if (value === undefined || value.startsWith("--")) {
+    throw new Error(`${flag} requires a value`);
+  }
+  return value;
+}
+
+async function compareReports(summaryPaths) {
+  const generatedAt = new Date().toISOString().replace(/[:.]/gu, "-");
+  const rows = [];
+  const failures = [];
+  const warnings = [];
+
+  if (summaryPaths.length < minimumSummaryCount) {
+    failures.push({
+      code: "summary_count_below_3",
+      message: `3일 비교에는 summary JSON이 최소 ${minimumSummaryCount}개 필요하다.`,
+      evidence: { count: summaryPaths.length },
+    });
+  }
+
+  for (const [index, summaryPath] of summaryPaths.entries()) {
+    const summary = await readJsonFile(summaryPath);
+    const row = createComparisonRow({ index, summaryPath, summary });
+    rows.push(row);
+    failures.push(...row.failures);
+    warnings.push(...row.warnings);
+  }
+
+  return {
+    schemaVersion: 1,
+    status: failures.length === 0 ? "passed" : "failed",
+    generatedAt,
+    inputCount: summaryPaths.length,
+    rows,
+    failures,
+    warnings,
+  };
+}
+
+async function readJsonFile(filePath) {
+  const raw = await readFile(filePath, "utf8");
+  return JSON.parse(raw);
+}
+
+function createComparisonRow({ index, summaryPath, summary }) {
+  const checks = readRecord(summary.checks);
+  const metrics = readRecord(summary.metrics);
+  const artifacts = readRecord(summary.artifacts);
+  const git = readRecord(summary.git);
+  const runtimeExceptions = readRecord(checks.runtimeExceptions?.evidence);
+  const auditMissing = readRecord(checks.auditMissing?.evidence);
+  const notificationFailures = readRecord(checks.notificationFailures?.evidence);
+  const dailyReportGenerated = checks.dailyReportGenerated?.evidence?.generated === true;
+  const notificationFailureCount = readNumber(notificationFailures.count);
+  const notificationResolved = hasNotificationResolutionEvidence(checks, summary);
+  const cost = readComparableMetric(metrics, ["cost", "costSummary", "costBps", "totalCost"]);
+  const slippage = readComparableMetric(metrics, ["slippage", "slippageSummary", "slippageBps"]);
+  const fillRate = readComparableMetric(metrics, ["fillRate", "fillRatePct", "fillRatePercent"]);
+  const blockingReasons = readComparableMetric(metrics, ["blockingReasons", "blockingReasonCounts", "discardReasons"]);
+
+  const row = {
+    day: `Day ${index + 1}`,
+    date: readDateLabel(summary.startedAt),
+    summaryPath,
+    status: summary.status ?? "unknown",
+    commit: typeof git.commit === "string" ? git.commit : "unknown",
+    branch: typeof git.branch === "string" ? git.branch : "unknown",
+    reportArtifact: typeof artifacts.reportPath === "string" && artifacts.reportPath.length > 0 ? artifacts.reportPath : null,
+    crashCount: readNumber(runtimeExceptions.crashCount),
+    unhandledRejectionCount: readNumber(runtimeExceptions.unhandledRejectionCount),
+    liveOrderApiCalls: readNumber(metrics.liveOrderApiCalls),
+    auditMissingCount: readNumber(auditMissing.count),
+    notificationFailureCount,
+    notificationResolved,
+    dailyReportGenerated,
+    cost,
+    slippage,
+    fillRate,
+    blockingReasons,
+    failures: [],
+    warnings: [],
+  };
+
+  if (row.status === "failed") {
+    row.failures.push(rowFailure(row, "summary_failed", "soak summary 자체가 failed 상태다."));
+  }
+  if (row.reportArtifact === null) {
+    row.failures.push(rowFailure(row, "report_artifact_missing", "report artifact 경로가 없다."));
+  }
+  if (row.crashCount !== 0) {
+    row.failures.push(rowFailure(row, "crash_observed", "crash가 0회가 아니다.", { crashCount: row.crashCount }));
+  }
+  if (row.unhandledRejectionCount !== 0) {
+    row.failures.push(
+      rowFailure(row, "unhandled_rejection_observed", "unhandled rejection이 0회가 아니다.", {
+        unhandledRejectionCount: row.unhandledRejectionCount,
+      }),
+    );
+  }
+  if (row.liveOrderApiCalls !== 0) {
+    row.failures.push(
+      rowFailure(row, "live_order_api_observed", "M9 paper 운영 중 live order API 호출이 관측됐다.", {
+        liveOrderApiCalls: row.liveOrderApiCalls,
+      }),
+    );
+  }
+  if (row.auditMissingCount !== 0) {
+    row.failures.push(
+      rowFailure(row, "audit_missing_observed", "차단/장애 status evidence 누락이 0건이 아니다.", {
+        auditMissingCount: row.auditMissingCount,
+      }),
+    );
+  }
+  if (!row.dailyReportGenerated) {
+    row.failures.push(rowFailure(row, "daily_report_missing", "daily report 생성 evidence가 없다."));
+  }
+  if (row.notificationFailureCount > 0 && !row.notificationResolved) {
+    row.failures.push(
+      rowFailure(row, "notification_failure_unresolved", "notification failure에 대한 retry 또는 manual review evidence가 없다.", {
+        notificationFailureCount: row.notificationFailureCount,
+      }),
+    );
+  }
+
+  for (const [name, value] of [
+    ["cost", row.cost],
+    ["slippage", row.slippage],
+    ["fillRate", row.fillRate],
+    ["blockingReasons", row.blockingReasons],
+  ]) {
+    if (value === "unavailable") {
+      row.warnings.push(rowWarning(row, `${name}_unavailable`, `${name} 비교 입력이 summary에 없다.`));
+    }
+  }
+
+  return row;
+}
+
+function readRecord(value) {
+  return value !== null && typeof value === "object" && !Array.isArray(value) ? value : {};
+}
+
+function readDateLabel(value) {
+  return typeof value === "string" && value.length >= 10 ? value.slice(0, 10) : "unknown";
+}
+
+function readNumber(value) {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function readComparableMetric(metrics, keys) {
+  for (const key of keys) {
+    if (metrics[key] !== undefined) {
+      return stringifyMetric(metrics[key]);
+    }
+  }
+
+  return "unavailable";
+}
+
+function stringifyMetric(value) {
+  if (value === null) {
+    return "null";
+  }
+  if (typeof value === "number" || typeof value === "boolean") {
+    return String(value);
+  }
+  if (typeof value === "string") {
+    return value;
+  }
+
+  return JSON.stringify(value);
+}
+
+function hasNotificationResolutionEvidence(checks, summary) {
+  if (checks.notificationRetry?.status === "ok" || checks.notificationRetryWorker?.status === "ok") {
+    return true;
+  }
+  if (checks.manualReview?.status === "ok" || checks.notificationManualReview?.status === "ok") {
+    return true;
+  }
+
+  const metrics = readRecord(summary.metrics);
+  return metrics.notificationRetryResolved === true || metrics.notificationManualReviewRequired === true;
+}
+
+function rowFailure(row, code, message, evidence = {}) {
+  return {
+    day: row.day,
+    code,
+    message,
+    evidence: {
+      summaryPath: row.summaryPath,
+      ...evidence,
+    },
+  };
+}
+
+function rowWarning(row, code, message) {
+  return {
+    day: row.day,
+    code,
+    message,
+    evidence: {
+      summaryPath: row.summaryPath,
+    },
+  };
+}
+
+function renderMarkdownComparison(comparison) {
+  const rows = comparison.rows
+    .map(
+      (row) =>
+        `| ${row.day} | ${row.date} | ${shortCommit(row.commit)} | ${escapeTable(row.reportArtifact ?? "missing")} | ${formatCount(
+          row.crashCount,
+        )} | ${formatCount(row.unhandledRejectionCount)} | ${formatCount(row.liveOrderApiCalls)} | ${formatCount(
+          row.auditMissingCount,
+        )} | ${formatNotification(row)} | ${row.dailyReportGenerated ? "yes" : "no"} | ${escapeTable(row.cost)} | ${escapeTable(
+          row.slippage,
+        )} | ${escapeTable(row.fillRate)} | ${escapeTable(row.blockingReasons)} |`,
+    )
+    .join("\n");
+  const failureRows =
+    comparison.failures.length === 0
+      ? "- 없음"
+      : comparison.failures.map((failure) => `- ${failure.day ?? "전체"}: ${failure.message} (${failure.code})`).join("\n");
+  const warningRows =
+    comparison.warnings.length === 0
+      ? "- 없음"
+      : comparison.warnings.map((warning) => `- ${warning.day}: ${warning.message} (${warning.code})`).join("\n");
+
+  return `# M9 3일 Paper Report 비교
+
+- 비교 상태: ${comparison.status}
+- 입력 summary: ${comparison.inputCount}
+- 생성 시각: ${comparison.generatedAt}
+
+| 일차 | 날짜 | commit | report artifact | crash | unhandled rejection | live order API | audit missing | notification failure | daily report | 비용 | 슬리피지 | 체결률 | 주요 차단 사유 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+${rows}
+
+## 완료 판단
+
+${failureRows}
+
+## 추가 확인
+
+${warningRows}
+`;
+}
+
+function shortCommit(commit) {
+  return commit === "unknown" ? commit : commit.slice(0, 12);
+}
+
+function formatCount(value) {
+  return value === null ? "unknown" : String(value);
+}
+
+function formatNotification(row) {
+  const suffix = row.notificationResolved ? " resolved" : "";
+  return `${formatCount(row.notificationFailureCount)}${suffix}`;
+}
+
+function escapeTable(value) {
+  return String(value).replace(/\|/gu, "\\|").replace(/\n/gu, " ");
+}
+
+function printHelp() {
+  process.stdout.write(`Usage: node scripts/compare-m9-paper-reports.mjs --summary day1.json --summary day2.json --summary day3.json [options]
+
+Options:
+  --summary <path>  Soak summary JSON path. Repeat at least 3 times. Positional paths are also accepted.
+  --output <path>   Write Markdown comparison report to this path.
+  --json            Print machine-readable comparison JSON.
+  --help, -h        Show this help.
+`);
+}

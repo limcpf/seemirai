@@ -76,8 +76,8 @@ export function createKillSwitchControlRouteHandler(provider: KillSwitchControlP
 /**
  * 성공한 kill switch 전이를 HTTP 응답 shape으로 변환한다.
  *
- * 응답에는 secret이나 raw DB row를 넣지 않고, 운영자가 즉시 확인해야 하는 전이 결과, action plan, 후속 job, evidence id만
- * 노출한다. 실패 응답은 이 함수가 아니라 공통 error response를 사용한다.
+ * 응답에는 secret이나 raw DB row를 넣지 않고, 운영자가 즉시 확인해야 하는 전이 결과, action plan, 후속 job, evidence id,
+ * Telegram dispatch 결과만 노출한다. 실패 응답은 이 함수가 아니라 공통 error response를 사용한다.
  */
 function createKillSwitchControlSuccessResponse(
   correlationId: string,
@@ -107,5 +107,78 @@ function createKillSwitchControlSuccessResponse(
       auditEventId: result.auditEventId ?? null,
       riskEventId: result.riskEventId ?? null,
     },
+    alertDispatch: createAlertDispatchResponse(result.alertDispatch),
+    alertDispatchFailure:
+      result.alertDispatchFailure === undefined
+        ? null
+        : {
+            reasonCode: result.alertDispatchFailure.reasonCode,
+            message: "Kill switch 상태 전이는 저장됐지만 Telegram dispatch evidence가 실패했다.",
+          },
   };
+}
+
+/**
+ * kill switch control 후속 Telegram dispatch 결과를 HTTP 응답에 안전하게 싣는 표현으로 줄인다.
+ *
+ * provider message id와 fingerprint는 운영 추적에 필요하지만, retry payload 원문이나 notifier 내부 상태는 외부 응답에 싣지
+ * 않는다. correlation id는 상위 응답 필드와 audit evidence에서 이어 보게 한다.
+ */
+function createAlertDispatchResponse(
+  alertDispatch: KillSwitchControlResult["alertDispatch"],
+) {
+  if (alertDispatch === undefined) {
+    return null;
+  }
+
+  return {
+    fingerprint: alertDispatch.fingerprint,
+    cooldownHit: alertDispatch.cooldownHit,
+    notification: {
+      delivered: alertDispatch.notification.delivered,
+      providerMessageId: alertDispatch.notification.providerMessageId ?? null,
+      skippedReason: alertDispatch.notification.skippedReason ?? null,
+    },
+    retryJobPlan:
+      alertDispatch.retryJobPlan === undefined
+        ? null
+        : {
+            jobType: alertDispatch.retryJobPlan.jobType,
+            idempotencyKey: alertDispatch.retryJobPlan.idempotencyKey,
+            runAfter: toHttpTimestamp(alertDispatch.retryJobPlan.runAfter),
+            maxAttempts: alertDispatch.retryJobPlan.maxAttempts,
+          },
+    retryJobEnqueueReceipt:
+      alertDispatch.retryJobEnqueueReceipt === undefined
+        ? null
+        : {
+            jobType: alertDispatch.retryJobEnqueueReceipt.jobType,
+            idempotencyKey: alertDispatch.retryJobEnqueueReceipt.idempotencyKey,
+            jobId: alertDispatch.retryJobEnqueueReceipt.jobId ?? null,
+            created: alertDispatch.retryJobEnqueueReceipt.created,
+          },
+    retryJobEnqueueFailure: alertDispatch.retryJobEnqueueFailure ?? null,
+    failureEvaluation: {
+      state: {
+        consecutiveFailures: alertDispatch.failureEvaluation.state.consecutiveFailures,
+        firstFailureAt: toNullableHttpTimestamp(alertDispatch.failureEvaluation.state.firstFailureAt),
+        lastFailureAt: toNullableHttpTimestamp(alertDispatch.failureEvaluation.state.lastFailureAt),
+      },
+      manualReviewReasonCode: alertDispatch.failureEvaluation.manualReviewReasonCode ?? null,
+    },
+  };
+}
+
+/**
+ * application layer의 timestamp 입력을 HTTP JSON schema가 기대하는 문자열로 고정한다.
+ */
+function toHttpTimestamp(value: Date | string) {
+  return value instanceof Date ? value.toISOString() : value;
+}
+
+/**
+ * 실패 누적 상태처럼 아직 시각이 없는 값을 HTTP nullable timestamp로 정규화한다.
+ */
+function toNullableHttpTimestamp(value: Date | string | null) {
+  return value === null ? null : toHttpTimestamp(value);
 }

@@ -69,6 +69,11 @@ describe("M8 paper soak script", () => {
     const requests: string[] = [];
     const server = createServer((request, response) => {
       requests.push(`${request.method} ${request.url}`);
+      if (request.method === "GET" && request.url === "/readyz") {
+        response.writeHead(200, { "content-type": "application/json" });
+        response.end(JSON.stringify({ status: "ok", ready: true }));
+        return;
+      }
       if (request.method === "GET" && request.url === "/status") {
         response.writeHead(200, { "content-type": "application/json" });
         response.end(JSON.stringify({ status: "ok" }));
@@ -93,12 +98,136 @@ describe("M8 paper soak script", () => {
       const summary = JSON.parse(stdout) as SoakSummary;
 
       expect(summary.status).toBe("passed");
-      expect(requests).toEqual(["GET /status"]);
+      expect(requests).toEqual(["GET /readyz", "GET /status"]);
+      expect(getCheck(summary, "readyzEndpoint").status).toBe("ok");
       expect(getCheck(summary, "statusEndpoint").status).toBe("ok");
       expect(getCheck(summary, "killSwitchEndpoint")).toMatchObject({
         status: "ok",
         evidence: {
           stateChangingProbeSkipped: true,
+        },
+      });
+    } finally {
+      await closeServer(server);
+    }
+  });
+
+  it("runs an explicit kill-switch control drill with correlation, cancel, and Telegram evidence", async () => {
+    const logDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-soak-"));
+    const requests: string[] = [];
+    const server = createServer((request, response) => {
+      requests.push(`${request.method} ${request.url}`);
+      if (request.method === "GET" && request.url === "/readyz") {
+        response.writeHead(200, { "content-type": "application/json" });
+        response.end(JSON.stringify({ status: "ok", ready: true }));
+        return;
+      }
+      if (request.method === "GET" && request.url === "/status") {
+        response.writeHead(200, { "content-type": "application/json" });
+        response.end(JSON.stringify({ status: "ok" }));
+        return;
+      }
+      if (request.method === "POST" && request.url === "/kill-switch") {
+        if (request.headers.authorization !== "Bearer drill-token") {
+          response.writeHead(401, { "content-type": "application/json" });
+          response.end(JSON.stringify({ status: "error" }));
+          return;
+        }
+
+        response.writeHead(200, { "content-type": "application/json" });
+        response.end(
+          JSON.stringify({
+            status: "ok",
+            correlationId: "corr-drill",
+            transition: {
+              accepted: true,
+              fromState: "NORMAL",
+              toState: "HARD_STOP",
+              reasonCode: "db_write_failure",
+              message: "drill accepted",
+            },
+            actionPlan: {
+              newOrdersBlocked: true,
+              strategyEvaluationBlocked: true,
+              cancelPendingPaperOrders: true,
+              autoLiquidateOpenPositions: false,
+              requiresManualReview: true,
+            },
+            reasonMatchesTarget: true,
+            recommendedTargetState: "HARD_STOP",
+            hardStopCancelJob: {
+              jobType: "hard_stop_pending_paper_order_cancel",
+              idempotencyKey: "hard_stop_pending_paper_order_cancel:corr-drill",
+              created: true,
+            },
+            evidence: {
+              auditEventId: "audit-drill",
+              riskEventId: "risk-drill",
+            },
+            alertDispatch: {
+              fingerprint: "alert:test:paper_trading:P0:kill_switch_control:global:global:db_write_failure",
+              cooldownHit: false,
+              notification: {
+                delivered: true,
+                providerMessageId: "telegram-drill-message",
+                skippedReason: null,
+              },
+            },
+            alertDispatchFailure: null,
+          }),
+        );
+        return;
+      }
+
+      response.writeHead(500);
+      response.end();
+    });
+    const controlUrl = await listenOnLocalhost(server);
+
+    try {
+      const { stdout } = await runSoak(
+        [
+          "--fixture-smoke",
+          "--json",
+          "--log-dir",
+          logDir,
+          "--control-url",
+          controlUrl,
+          "--control-probe-timeout-ms",
+          "500",
+          "--control-drill",
+          "--control-drill-correlation-id",
+          "corr-drill",
+          "--control-token-env",
+          "TEST_CONTROL_TOKEN",
+        ],
+        {
+          TEST_CONTROL_TOKEN: "drill-token",
+        },
+      );
+      const summary = JSON.parse(stdout) as SoakSummary;
+
+      expect(summary.status).toBe("passed");
+      expect(requests).toEqual(["GET /readyz", "GET /status", "POST /kill-switch", "POST /kill-switch"]);
+      expect(getCheck(summary, "controlMissingTokenRejected")).toMatchObject({
+        status: "ok",
+        evidence: {
+          statusCode: 401,
+        },
+      });
+      expect(getCheck(summary, "killSwitchDrill")).toMatchObject({
+        status: "ok",
+        evidence: {
+          correlationId: "corr-drill",
+          auditEventId: "audit-drill",
+          riskEventId: "risk-drill",
+          alertDispatch: {
+            delivered: true,
+            providerMessageId: "telegram-drill-message",
+          },
+          hardStopCancelJob: {
+            created: true,
+          },
         },
       });
     } finally {
