@@ -3,6 +3,7 @@ import {
   runDailyReport,
 } from "../../application/index.js";
 import type {
+  AuditEventReceipt,
   AuditLogPort,
   NotifierPort,
   RunDailyReportResult,
@@ -156,6 +157,7 @@ export function createPaperNoKeyDailyReportRuntime(
       const claimedJob = await claimJobByIdempotencyKey(dependencies.database, {
         workerId,
         idempotencyKey: enqueueResult.plan.idempotencyKey,
+        jobType: dailyReportJobType,
         now,
         ignoreRunAfter: true,
       });
@@ -186,15 +188,23 @@ export function createPaperNoKeyDailyReportRuntime(
     },
 
     async runDueDailyReportJobs(options = {}) {
-      const jobs = await claimPendingJobs(dependencies.database, {
-        workerId,
-        jobType: dailyReportJobType,
-        ...(options.limit === undefined ? {} : { limit: options.limit }),
-        ...(options.now === undefined ? {} : { now: options.now }),
-      });
-
+      const limit = options.limit ?? 1;
+      if (!Number.isSafeInteger(limit) || limit < 1) {
+        throw new Error("daily report job run limit must be a positive safe integer");
+      }
       const results: ClaimedDailyReportJobRunResult[] = [];
-      for (const job of jobs) {
+      for (let claimedCount = 0; claimedCount < limit; claimedCount += 1) {
+        const [job] = await claimPendingJobs(dependencies.database, {
+          workerId,
+          jobType: dailyReportJobType,
+          limit: 1,
+          ...(options.now === undefined ? {} : { now: options.now }),
+        });
+
+        if (job === undefined) {
+          break;
+        }
+
         results.push(
           await runClaimedDailyReportJob({
             database: dependencies.database,
@@ -231,25 +241,34 @@ async function runClaimedDailyReportJob(input: {
   if (reportDate === undefined) {
     const errorMessage = "daily report job payload must include report_date";
     const occurredAt = input.clock?.() ?? new Date();
-    const auditReceipt = await input.auditLog.appendEvent({
-      eventType: "DAILY_REPORT",
-      severity: "ERROR",
-      occurredAt,
-      actor: input.actor ?? "daily_report_runner",
-      reasonCode: "daily_report_job_payload_invalid",
-      ...(input.correlationId === undefined ? {} : { correlationId: input.correlationId }),
-      metadata: {
-        job_id: input.job.id,
-        idempotency_key: input.job.idempotency_key,
-        worker_id: input.workerId,
-        trigger: input.trigger,
-        error_message: errorMessage,
-      },
-    });
+    const auditEventReceipts: AuditEventReceipt[] = [];
+    let failureMessage = errorMessage;
+    try {
+      auditEventReceipts.push(
+        await input.auditLog.appendEvent({
+          eventType: "DAILY_REPORT",
+          severity: "ERROR",
+          occurredAt,
+          actor: input.actor ?? "daily_report_runner",
+          reasonCode: "daily_report_job_payload_invalid",
+          ...(input.correlationId === undefined ? {} : { correlationId: input.correlationId }),
+          metadata: {
+            job_id: input.job.id,
+            idempotency_key: input.job.idempotency_key,
+            worker_id: input.workerId,
+            trigger: input.trigger,
+            error_message: errorMessage,
+          },
+        }),
+      );
+    } catch (error) {
+      // payload 자체가 invalid이면 audit 저장 실패보다 queue lock 회수가 우선이라 실패 사유에 audit 오류를 합쳐 남긴다.
+      failureMessage = `${errorMessage}; audit append failed: ${toErrorMessage(error)}`;
+    }
     const finalJob = await failJob(input.database, {
       jobId: input.job.id,
       workerId: input.workerId,
-      errorMessage,
+      errorMessage: failureMessage,
       failedAt: occurredAt,
     });
 
@@ -258,29 +277,52 @@ async function runClaimedDailyReportJob(input: {
       result: {
         status: "GENERATION_FAILED",
         reportDate: "unknown",
-        auditEventReceipts: [auditReceipt],
-        errorMessage,
+        auditEventReceipts,
+        errorMessage: failureMessage,
       },
       finalJob,
     };
   }
 
-  const result = await runDailyReport({
-    reportDate,
-    dataProvider: input.dataProvider,
-    notifier: input.notifier,
-    auditLog: input.auditLog,
-    trigger: input.trigger,
-    ...(input.clock === undefined ? {} : { clock: input.clock }),
-    ...(input.actor === undefined ? {} : { actor: input.actor }),
-    ...(input.correlationId === undefined ? {} : { correlationId: input.correlationId }),
-    job: {
+  let result: RunDailyReportResult;
+  try {
+    result = await runDailyReport({
+      reportDate,
+      dataProvider: input.dataProvider,
+      notifier: input.notifier,
+      auditLog: input.auditLog,
+      trigger: input.trigger,
+      ...(input.clock === undefined ? {} : { clock: input.clock }),
+      ...(input.actor === undefined ? {} : { actor: input.actor }),
+      ...(input.correlationId === undefined ? {} : { correlationId: input.correlationId }),
+      job: {
+        jobId: input.job.id,
+        idempotencyKey: input.job.idempotency_key,
+        attemptCount: input.job.attempt_count,
+        workerId: input.workerId,
+      },
+    });
+  } catch (error) {
+    const errorMessage = `daily report runner failed: ${toErrorMessage(error)}`;
+    // audit 저장소 장애처럼 application runner가 예외를 던져도 queue lock은 반드시 해제해 재시도/수동 복구 경로를 남긴다.
+    const finalJob = await failJob(input.database, {
       jobId: input.job.id,
-      idempotencyKey: input.job.idempotency_key,
-      attemptCount: input.job.attempt_count,
       workerId: input.workerId,
-    },
-  });
+      errorMessage,
+      failedAt: input.clock?.() ?? new Date(),
+    });
+
+    return {
+      job: input.job,
+      result: {
+        status: "GENERATION_FAILED",
+        reportDate,
+        auditEventReceipts: [],
+        errorMessage,
+      },
+      finalJob,
+    };
+  }
 
   const finalJob =
     result.status === "GENERATION_FAILED"
@@ -313,4 +355,8 @@ function readReportDate(job: JobRecord): string | undefined {
     ? job.idempotency_key.slice(`${dailyReportJobType}:`.length)
     : "";
   return fromKey.length > 0 ? fromKey : undefined;
+}
+
+function toErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }

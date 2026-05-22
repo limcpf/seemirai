@@ -35,12 +35,14 @@ export interface ClaimPendingJobsOptions {
 /**
  * 하나의 idempotency key job을 직접 claim하는 조건이다.
  *
- * 수동 실행은 이미 예약된 같은 key job을 즉시 실행해야 할 수 있으므로 `ignoreRunAfter`로 예약 시각 검사를 우회할 수 있다.
- * scheduler 경계에서는 이 값을 쓰지 않아야 예약 시간이 지켜진다.
+ * `jobType`을 지정하면 key가 같더라도 다른 worker 책임 row를 claim하지 않는다. 수동 실행은 이미 예약된 같은 key job을 즉시
+ * 실행해야 할 수 있으므로 `ignoreRunAfter`로 예약 시각 검사를 우회할 수 있다. scheduler 경계에서는 이 값을 쓰지 않아야
+ * 예약 시간이 지켜진다.
  */
 export interface ClaimJobByIdempotencyKeyOptions {
   workerId: string;
   idempotencyKey: string;
+  jobType?: string;
   now?: Date | string;
   ignoreRunAfter?: boolean;
 }
@@ -198,6 +200,8 @@ export async function claimJobByIdempotencyKey(
 ): Promise<JobRecord | undefined> {
   const now = options.now ?? new Date();
   const runAfterCondition = options.ignoreRunAfter ? sql`` : sql`AND run_after <= ${now}`;
+  const jobTypeCondition =
+    options.jobType === undefined ? sql`` : sql`AND job_type = ${options.jobType}`;
   const result = await sql<JobRecord>`
     UPDATE jobs
     SET
@@ -211,6 +215,7 @@ export async function claimJobByIdempotencyKey(
       FROM jobs
       WHERE status = 'PENDING'
         AND idempotency_key = ${options.idempotencyKey}
+        ${jobTypeCondition}
         ${runAfterCondition}
         AND attempt_count < max_attempts
       FOR UPDATE SKIP LOCKED

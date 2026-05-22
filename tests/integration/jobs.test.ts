@@ -175,6 +175,33 @@ describeDb("jobs queue integration", () => {
     expect(exhausted.last_error).toBe("fixture generation failed again");
   });
 
+  it("does not claim an idempotency key outside the requested job type", async () => {
+    const db = await getDatabase();
+    const enqueued = await enqueueJob(db, {
+      jobType: "policy.sync",
+      idempotencyKey: "report.daily:foreign-owner",
+      runAfter: new Date("2026-05-16T00:00:00.000Z"),
+    });
+
+    const dailyReportClaim = await claimJobByIdempotencyKey(db, {
+      workerId: "daily-report-worker",
+      idempotencyKey: enqueued.job.idempotency_key,
+      jobType: "report.daily",
+      now: new Date("2026-05-16T00:01:00.000Z"),
+    });
+    const policyClaim = await claimJobByIdempotencyKey(db, {
+      workerId: "policy-worker",
+      idempotencyKey: enqueued.job.idempotency_key,
+      jobType: "policy.sync",
+      now: new Date("2026-05-16T00:01:00.000Z"),
+    });
+
+    expect(dailyReportClaim).toBeUndefined();
+    expect(policyClaim?.status).toBe("RUNNING");
+    expect(policyClaim?.job_type).toBe("policy.sync");
+    expect(policyClaim?.locked_by).toBe("policy-worker");
+  });
+
   it("can claim a pending idempotency key immediately for manual execution", async () => {
     const db = await getDatabase();
     const enqueued = await enqueueJob(db, {

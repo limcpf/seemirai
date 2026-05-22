@@ -4,8 +4,10 @@ import {
   aggregateDailyReport,
   createDailyReportWindow,
 } from "../../src/application/index.js";
+import type { AuditLogPort, NotifierPort } from "../../src/application/index.js";
 import {
   applyMigrations,
+  claimJobByIdempotencyKey,
   createDatabase,
   createPostgresPool,
   destroyDatabase,
@@ -13,6 +15,7 @@ import {
   PostgresDailyReportRepository,
 } from "../../src/infrastructure/db/index.js";
 import type { Database } from "../../src/infrastructure/db/index.js";
+import { createPaperNoKeyDailyReportRuntime } from "../../src/runtime/index.js";
 
 const runDbIntegration = process.env.SEEMIRAI_RUN_DB_INTEGRATION === "1";
 const describeDb = runDbIntegration ? describe : describe.skip;
@@ -405,6 +408,43 @@ describeDb("daily report PostgreSQL integration", () => {
     });
   });
 
+  it("releases the job lock when daily report runner throws before final transition", async () => {
+    const db = await getDatabase();
+    await withRollback(db, async (transaction) => {
+      const workerId = "daily-report-worker";
+      const runtime = createPaperNoKeyDailyReportRuntime({
+        database: transaction,
+        workerId,
+        clock: () => new Date("2026-05-22T15:01:00.000Z"),
+        notifier: deliveredNotifier,
+        auditLog: throwingAuditLog,
+      });
+
+      const result = await runtime.runManualDailyReport({
+        reportDate: "2026-05-22",
+        maxAttempts: 2,
+      });
+
+      expect(result.status).toBe("RUN");
+      expect(result.claimed?.result.status).toBe("GENERATION_FAILED");
+      expect(result.claimed?.result.errorMessage).toContain("daily report runner failed");
+      expect(result.claimed?.finalJob.status).toBe("PENDING");
+      expect(result.claimed?.finalJob.locked_by).toBeNull();
+      expect(result.claimed?.finalJob.last_error).toContain("audit append failed");
+
+      const reclaimed = await claimJobByIdempotencyKey(transaction, {
+        workerId: "daily-report-retry-worker",
+        idempotencyKey: "report.daily:2026-05-22",
+        jobType: "report.daily",
+        now: new Date("2026-05-22T15:02:00.000Z"),
+        ignoreRunAfter: true,
+      });
+
+      expect(reclaimed?.status).toBe("RUNNING");
+      expect(reclaimed?.locked_by).toBe("daily-report-retry-worker");
+    });
+  });
+
   async function getDatabase(): Promise<Database> {
     if (database !== undefined) {
       return database;
@@ -417,6 +457,21 @@ describeDb("daily report PostgreSQL integration", () => {
     return database;
   }
 });
+
+const deliveredNotifier: NotifierPort = {
+  async sendAlert() {
+    return { delivered: true, providerMessageId: "alert-fixture" };
+  },
+  async sendDailyReport() {
+    return { delivered: true, providerMessageId: "daily-report-fixture" };
+  },
+};
+
+const throwingAuditLog: AuditLogPort = {
+  async appendEvent() {
+    throw new Error("audit append failed");
+  },
+};
 
 class RollbackDailyReportIntegration extends Error {
   public constructor() {

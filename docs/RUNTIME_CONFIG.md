@@ -213,7 +213,9 @@ worker retry나 운영 재생이 같은 조회 범위를 사용할 수 있게 �
 
 M9부터 daily report 수동 실행과 scheduler 실행은 같은 runner boundary를 사용한다. 두 경로 모두 먼저
 `report.daily:<reportDate>` idempotency key로 `jobs` row를 예약하거나 재사용한 뒤, claim된 job에서 report fact 조회와
-Telegram 전송을 수행한다. 이미 `COMPLETED`인 같은 기준일 job은 수동 실행에서 다시 전송하지 않는다.
+Telegram 전송을 수행한다. 수동 실행 claim은 `idempotency_key`뿐 아니라 `job_type=report.daily`도 함께 확인해 공용
+jobs table의 다른 worker 책임 row를 전이시키지 않는다. 이미 `COMPLETED`인 같은 기준일 job은 수동 실행에서 다시 전송하지
+않는다.
 
 runner 결과는 생성과 전송을 분리해 기록한다.
 
@@ -223,7 +225,9 @@ runner 결과는 생성과 전송을 분리해 기록한다.
 - report 생성 실패: `DAILY_REPORT` audit event, `daily_report_generation_failed`, jobs row는 재시도 가능하면 `PENDING`, 한도 초과 시 `FAILED`
 
 Telegram provider 실패는 report 생성 성공을 되돌리지 않는다. provider 실패는 audit evidence로 남기고 claim된 daily report job은
-완료 처리해 같은 기준일의 중복 전송을 막는다. report 생성 실패만 jobs retry 대상이다.
+완료 처리해 같은 기준일의 중복 전송을 막는다. report 생성 실패만 jobs retry 대상이다. scheduler worker는 `limit`가 1보다
+커도 실행 가능한 daily report job을 한 번에 하나씩 claim하고 즉시 실행한다. report 생성 중 audit 저장소 장애처럼 runner가
+예외를 던지면 runtime이 `failJob`으로 lock을 해제해 같은 row가 retry 또는 수동 복구 대상으로 남게 한다.
 
 ## M8 Paper soak verification
 
