@@ -181,7 +181,29 @@ cooldown 적용 P2:
 - order id 또는 idempotency key
 - correlation id
 
-## 7. Control drill
+## 7. Notification retry worker
+
+P0/P1 Telegram provider 실패는 `notification_retry` jobs row로 재시도한다. runtime alert dispatch에 retry queue가 연결된
+상태에서는 provider 실패가 원 주문/체결/리스크 commit을 되돌리지 않고 같은 idempotency key의 retry job으로 분리된다.
+
+운영 확인 항목:
+
+- `job_type=notification_retry` row만 worker가 claim한다.
+- retry payload에는 `environment`, `run_mode`, `severity`, `alert_type`, `reason_code`, `fingerprint`, `occurred_at`,
+  `correlation_id`, `metadata`가 있다.
+- provider 성공 또는 cooldown skip은 job을 `COMPLETED`로 닫는다.
+- provider 실패는 `PENDING`으로 재예약되며, max attempts 소진 시 `FAILED`와
+  `notification_retry_manual_review_required` audit evidence가 남는다.
+- retry worker는 Telegram outbound만 수행하고 inbound command, webhook, polling, Upbit private API를 열지 않는다.
+
+대표 검증:
+
+```sh
+corepack pnpm exec vitest run tests/unit/alerts.test.ts tests/unit/notification-retry-runtime.test.ts
+SEEMIRAI_RUN_DB_INTEGRATION=1 corepack pnpm exec vitest run tests/integration/jobs.test.ts tests/integration/alert-cooldown.test.ts
+```
+
+## 8. Control drill
 
 HTTP control server가 떠 있는 날에는 다음을 기록한다.
 
@@ -201,7 +223,7 @@ curl -sS -X POST http://127.0.0.1:8787/kill-switch \
 token 있는 drill은 신규 주문 차단 evidence, pending paper order cancel plan, Telegram 알림 evidence가 같은 correlation id로
 추적되어야 한다. `HARD_STOP -> NORMAL` 직접 복구는 금지다.
 
-## 8. 3일 비교 기록
+## 9. 3일 비교 기록
 
 M9 안정화 기준은 3일 연속 paper report 비교로 고정한다.
 
@@ -220,7 +242,7 @@ M9 안정화 기준은 3일 연속 paper report 비교로 고정한다.
 - notification failure가 있으면 retry worker 또는 manual review evidence로 수렴한다.
 - 비용, 슬리피지, 체결률, 차단 사유가 같은 포맷으로 비교된다.
 
-## 9. 결과 기록
+## 10. 결과 기록
 
 저장소에는 raw log를 커밋하지 않는다. PR 또는 실행 계획 문서에는 다음만 남긴다.
 
@@ -241,7 +263,7 @@ $HOME/vaults/99_운영/seemirai-m9-paper
 $HOME/vaults/99_운영/seemirai-works
 ```
 
-## 10. Sub PR handoff
+## 11. Sub PR handoff
 
 - Sub PR 2: daily report 수동 runner와 scheduler boundary를 고정한다.
 - Sub PR 3: paper 매매 이벤트 Telegram 알림 mapper, formatter, cooldown/요약 정책을 구현한다.

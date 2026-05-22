@@ -11,6 +11,7 @@ import {
 import type { Database } from "../infrastructure/index.js";
 import type { RuntimeConfig } from "./config.js";
 import { loadRuntimeNotificationConfig } from "./notification-config.js";
+import { createPostgresNotificationRetryJobQueue } from "./notification-retry-runtime.js";
 
 /**
  * PAPER_NO_KEY kill switch control provider를 Telegram alert dispatch와 함께 조립하기 위한 입력이다.
@@ -64,6 +65,7 @@ export function createRuntimeAlertDispatchOptions(
     runMode: options.runtimeConfig.mode.toLowerCase(),
     notifier: createTelegramNotifier(notificationConfig.telegram),
     durableCooldownStore: new PostgresAlertCooldownRepository(options.database),
+    retryJobQueue: createPostgresNotificationRetryJobQueue(options.database),
     auditLog: new PostgresAuditLogRepository(options.database),
     ...(options.clock === undefined ? {} : { clock: options.clock }),
   };

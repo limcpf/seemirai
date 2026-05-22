@@ -157,8 +157,8 @@ cooldown 기본값:
 | P2 | 1시간 | process memory |
 | P3 | 6시간 | process memory |
 
-P0/P1 provider failure는 `notification_retry` job 후보 payload와 idempotency key를 만든다. Sub PR 3은 실제 jobs insert와
-worker 실행을 연결하지 않고, 후속 runtime 조립이 사용할 retry contract만 고정한다. provider 실패가 연속 3회이거나 첫 실패
+P0/P1 provider failure는 `notification_retry` job 후보 payload와 idempotency key를 만든다. runtime alert dispatch 옵션에
+retry queue가 붙어 있으면 같은 실패 경계에서 jobs table에 idempotent하게 예약한다. provider 실패가 연속 3회이거나 첫 실패
 이후 10분 이상 이어지면 `notification_consecutive_failure` 또는 `notification_failure_threshold_exceeded` reason code를
 반환해 kill switch mapping의 `MANUAL_REVIEW_REQUIRED` 후보로 쓸 수 있게 한다.
 
@@ -212,6 +212,34 @@ Telegram 첫 화면에는 내부 enum/code보다 다음 사용자 문구와 주�
 
 `fingerprint`, order id, idempotency key, correlation id, event kind, reason code는 하단 `추적 정보`에만 둔다. 이 구분은
 운영자가 즉시 행동할 내용과 복구·감사용 안정 식별자를 섞지 않기 위한 presentation invariant다.
+
+## M9 Notification retry worker
+
+구현 기준:
+
+- retry payload/dispatch contract: `src/application/alerts/index.ts`
+- jobs worker runtime: `src/runtime/notification-retry-runtime.ts`, `src/runtime/notification-retry-runtime/service.ts`
+- jobs table adapter: `src/infrastructure/db/jobs.ts`
+
+P0/P1 Telegram provider 실패는 `dispatchAlertWithCooldown` 결과에 `notification_retry` plan으로 남는다. PAPER_NO_KEY runtime은
+`createRuntimeAlertDispatchOptions`에서 PostgreSQL retry queue를 붙이므로, provider 실패가 발생하면 같은 plan을 jobs table에
+예약한다. 이 예약 실패도 원 주문, 리스크, kill switch commit을 되돌리지 않고 `notification_retry_enqueue_failed` evidence로
+분리한다.
+
+retry job payload는 worker가 원 alert 요청을 복원할 수 있도록 다음 필드를 포함한다.
+
+- `environment`, `run_mode`, `severity`, `alert_type`, `market`, `strategy_id`, `reason_code`
+- `title`, `body`, `fingerprint`, `occurred_at`, `correlation_id`
+- formatter와 추적에 필요한 `metadata`
+
+worker는 `job_type=notification_retry`인 due row만 claim한다. claim된 row는 원 payload를 다시 `AlertDispatchRequest`로 복원해
+기존 cooldown/provider/audit 경계를 그대로 통과한다. provider 전송 성공 또는 같은 fingerprint cooldown hit는 job을
+`COMPLETED`로 닫는다. provider 실패나 retry payload 오류는 `failJob`으로 넘겨 `run_after`를 최소 다음 worker tick 이후로
+미룬다. `max_attempts`를 소진하면 job은 `FAILED`에 고정되고, `notification_retry_manual_review_required` audit evidence와
+`notification_consecutive_failure` manual review reason을 남긴다.
+
+retry worker는 Telegram outbound 재전송만 수행한다. Telegram inbound command, webhook, polling route를 만들지 않고, 실거래
+주문 API나 Upbit private API를 호출하지 않는다.
 
 ## M8 Daily report
 

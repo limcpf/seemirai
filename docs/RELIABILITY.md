@@ -82,8 +82,18 @@ Codex-native 운영은 Codex, Git, GitHub, shell command, 문서 상태를 연�
   시각이 아니라 provider 전송 완료 시각 기준이며, out-of-order update가 들어와도 뒤로 가지 않는다.
 - notifier adapter가 예외를 던져도 alert dispatch는 `notification_provider_exception` 실패 결과로 정규화해 audit,
   retry 후보, failure threshold 평가를 같은 경로로 수행한다.
-- P0/P1 provider failure는 `notification_retry` job 후보를 만들지만, 이 단계에서 jobs table insert나 worker 실행을 직접
-  수행하지 않는다.
+- P0/P1 provider failure는 `notification_retry` job 후보를 만들고, runtime retry queue가 연결된 경우 같은 idempotency key로
+  jobs table에 예약한다. retry job 예약 실패는 `notification_retry_enqueue_failed` evidence로 남기되 원 업무 commit을
+  rollback하지 않는다.
+- notification retry worker는 `job_type=notification_retry`만 claim해야 한다. 공용 jobs table에서 job type 조건 없이 claim하면
+  daily report, policy sync 같은 다른 worker 책임 row를 실행할 수 있으므로 merge-blocking 결함으로 본다.
+- notification retry worker는 claim과 실행을 한 건 단위로 반복한다. 배치 전체를 먼저 RUNNING으로 바꾸면 중간 crash 때 아직
+  provider 호출하지 않은 row가 재claim되지 않으므로 금지한다.
+- retry provider 전송 성공 또는 같은 fingerprint cooldown hit는 retry job을 `COMPLETED`로 닫는다. provider 실패는
+  `failJob`으로 재예약하고, max attempts를 소진하면 `FAILED`와 `notification_retry_manual_review_required` audit evidence를
+  남겨 manual review로 수렴한다.
+- retry worker의 audit 저장 실패는 이미 발생한 provider side effect나 job 상태 전이를 재시도하지 않는다. 이 장애는 audit 누락
+  리스크로 남기고 Telegram 재전송 중복을 만들지 않는다.
 - provider 실패가 연속 3회이거나 첫 실패 이후 10분 이상 지속되면 kill switch mapping에서 `MANUAL_REVIEW_REQUIRED` 후보로
   쓰는 reason code를 반환한다.
 - runtime kill switch alert dispatch는 같은 `alertDispatch` 옵션 객체에 최신 failure state를 저장해 provider 실패 누적을
