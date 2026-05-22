@@ -69,6 +69,11 @@ describe("M8 paper soak script", () => {
     const requests: string[] = [];
     const server = createServer((request, response) => {
       requests.push(`${request.method} ${request.url}`);
+      if (request.method === "GET" && request.url === "/readyz") {
+        response.writeHead(200, { "content-type": "application/json" });
+        response.end(JSON.stringify({ status: "ok", ready: true }));
+        return;
+      }
       if (request.method === "GET" && request.url === "/status") {
         response.writeHead(200, { "content-type": "application/json" });
         response.end(JSON.stringify({ status: "ok" }));
@@ -93,7 +98,8 @@ describe("M8 paper soak script", () => {
       const summary = JSON.parse(stdout) as SoakSummary;
 
       expect(summary.status).toBe("passed");
-      expect(requests).toEqual(["GET /status"]);
+      expect(requests).toEqual(["GET /readyz", "GET /status"]);
+      expect(getCheck(summary, "readyzEndpoint").status).toBe("ok");
       expect(getCheck(summary, "statusEndpoint").status).toBe("ok");
       expect(getCheck(summary, "killSwitchEndpoint")).toMatchObject({
         status: "ok",
@@ -101,6 +107,444 @@ describe("M8 paper soak script", () => {
           stateChangingProbeSkipped: true,
         },
       });
+    } finally {
+      await closeServer(server);
+    }
+  });
+
+  it("runs an explicit kill-switch control drill with correlation, cancel, and Telegram evidence", async () => {
+    const logDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-soak-"));
+    const requests: string[] = [];
+    const server = createServer((request, response) => {
+      requests.push(`${request.method} ${request.url}`);
+      if (request.method === "GET" && request.url === "/readyz") {
+        response.writeHead(200, { "content-type": "application/json" });
+        response.end(JSON.stringify({ status: "ok", ready: true }));
+        return;
+      }
+      if (request.method === "GET" && request.url === "/status") {
+        response.writeHead(200, { "content-type": "application/json" });
+        response.end(JSON.stringify({ status: "ok" }));
+        return;
+      }
+      if (request.method === "POST" && request.url === "/kill-switch") {
+        if (request.headers.authorization !== "Bearer drill-token") {
+          response.writeHead(401, { "content-type": "application/json" });
+          response.end(JSON.stringify({ status: "error" }));
+          return;
+        }
+
+        response.writeHead(200, { "content-type": "application/json" });
+        response.end(
+          JSON.stringify({
+            status: "ok",
+            correlationId: "corr-drill",
+            transition: {
+              accepted: true,
+              fromState: "NORMAL",
+              toState: "HARD_STOP",
+              reasonCode: "db_write_failure",
+              message: "drill accepted",
+            },
+            actionPlan: {
+              newOrdersBlocked: true,
+              strategyEvaluationBlocked: true,
+              cancelPendingPaperOrders: true,
+              autoLiquidateOpenPositions: false,
+              requiresManualReview: true,
+            },
+            reasonMatchesTarget: true,
+            recommendedTargetState: "HARD_STOP",
+            hardStopCancelJob: {
+              jobType: "hard_stop_pending_paper_order_cancel",
+              idempotencyKey: "hard_stop_pending_paper_order_cancel:corr-drill",
+              created: true,
+            },
+            evidence: {
+              auditEventId: "audit-drill",
+              riskEventId: "risk-drill",
+            },
+            alertDispatch: {
+              fingerprint: "alert:test:paper_trading:P0:kill_switch_control:global:global:db_write_failure",
+              cooldownHit: false,
+              notification: {
+                delivered: true,
+                providerMessageId: "telegram-drill-message",
+                skippedReason: null,
+              },
+            },
+            alertDispatchFailure: null,
+          }),
+        );
+        return;
+      }
+
+      response.writeHead(500);
+      response.end();
+    });
+    const controlUrl = await listenOnLocalhost(server);
+
+    try {
+      const { stdout } = await runSoak(
+        [
+          "--fixture-smoke",
+          "--json",
+          "--log-dir",
+          logDir,
+          "--control-url",
+          controlUrl,
+          "--control-probe-timeout-ms",
+          "500",
+          "--control-drill",
+          "--control-drill-correlation-id",
+          "corr-drill",
+          "--control-token-env",
+          "TEST_CONTROL_TOKEN",
+        ],
+        {
+          TEST_CONTROL_TOKEN: "drill-token",
+        },
+      );
+      const summary = JSON.parse(stdout) as SoakSummary;
+
+      expect(summary.status).toBe("passed");
+      expect(requests).toEqual(["GET /readyz", "GET /status", "POST /kill-switch", "POST /kill-switch"]);
+      expect(getCheck(summary, "controlMissingTokenRejected")).toMatchObject({
+        status: "ok",
+        evidence: {
+          statusCode: 401,
+        },
+      });
+      expect(getCheck(summary, "killSwitchDrill")).toMatchObject({
+        status: "ok",
+        evidence: {
+          correlationId: "corr-drill",
+          auditEventId: "audit-drill",
+          riskEventId: "risk-drill",
+          alertDispatch: {
+            delivered: true,
+            providerMessageId: "telegram-drill-message",
+          },
+          hardStopCancelJob: {
+            created: true,
+          },
+        },
+      });
+    } finally {
+      await closeServer(server);
+    }
+  });
+
+  it("validates a NORMAL control drill without requiring new-order blocking or hard-stop cancel jobs", async () => {
+    const logDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-soak-"));
+    const server = createServer((request, response) => {
+      if (request.method === "GET" && request.url === "/readyz") {
+        response.writeHead(200, { "content-type": "application/json" });
+        response.end(JSON.stringify({ status: "ok", ready: true }));
+        return;
+      }
+      if (request.method === "GET" && request.url === "/status") {
+        response.writeHead(200, { "content-type": "application/json" });
+        response.end(JSON.stringify({ status: "ok" }));
+        return;
+      }
+      if (request.method === "POST" && request.url === "/kill-switch") {
+        if (request.headers.authorization !== "Bearer drill-token") {
+          response.writeHead(401, { "content-type": "application/json" });
+          response.end(JSON.stringify({ status: "error" }));
+          return;
+        }
+
+        response.writeHead(200, { "content-type": "application/json" });
+        response.end(
+          JSON.stringify({
+            status: "ok",
+            correlationId: "corr-normal-drill",
+            transition: {
+              accepted: true,
+              fromState: "NEW_ORDERS_BLOCKED",
+              toState: "NORMAL",
+              reasonCode: "operator_clear",
+              message: "normal drill accepted",
+            },
+            actionPlan: {
+              newOrdersBlocked: false,
+              strategyEvaluationBlocked: false,
+              cancelPendingPaperOrders: false,
+              autoLiquidateOpenPositions: false,
+              requiresManualReview: false,
+            },
+            reasonMatchesTarget: true,
+            recommendedTargetState: "NORMAL",
+            hardStopCancelJob: null,
+            evidence: {
+              auditEventId: "audit-normal-drill",
+              riskEventId: "risk-normal-drill",
+            },
+            alertDispatch: {
+              fingerprint: "alert:test:paper_trading:P1:kill_switch_control:global:global:operator_clear",
+              cooldownHit: true,
+              notification: {
+                delivered: false,
+                providerMessageId: null,
+                skippedReason: "alert_delivery_reserved",
+              },
+            },
+            alertDispatchFailure: null,
+          }),
+        );
+        return;
+      }
+
+      response.writeHead(500);
+      response.end();
+    });
+    const controlUrl = await listenOnLocalhost(server);
+
+    try {
+      const { stdout } = await runSoak(
+        [
+          "--fixture-smoke",
+          "--json",
+          "--log-dir",
+          logDir,
+          "--control-url",
+          controlUrl,
+          "--control-drill",
+          "--control-drill-target",
+          "NORMAL",
+          "--control-drill-reason",
+          "operator_clear",
+          "--control-drill-correlation-id",
+          "corr-normal-drill",
+          "--control-token-env",
+          "TEST_CONTROL_TOKEN",
+        ],
+        {
+          TEST_CONTROL_TOKEN: "drill-token",
+        },
+      );
+      const summary = JSON.parse(stdout) as SoakSummary;
+
+      expect(summary.status).toBe("passed");
+      expect(getCheck(summary, "killSwitchDrill")).toMatchObject({
+        status: "ok",
+        evidence: {
+          correlationId: "corr-normal-drill",
+          targetState: "NORMAL",
+          hardStopCancelJob: null,
+        },
+      });
+    } finally {
+      await closeServer(server);
+    }
+  });
+
+  it("rejects control drill runs without a control URL", async () => {
+    const logDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-soak-"));
+
+    const failure = await runSoakExpectFailure(["--fixture-smoke", "--json", "--log-dir", logDir, "--control-drill"]);
+
+    expect(failure.stderr).toContain("--control-drill requires --control-url");
+  });
+
+  it("fails a control drill when the response transitions to a different target", async () => {
+    const logDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-soak-"));
+    const server = createServer((request, response) => {
+      if (request.method === "GET" && request.url === "/readyz") {
+        response.writeHead(200, { "content-type": "application/json" });
+        response.end(JSON.stringify({ status: "ok", ready: true }));
+        return;
+      }
+      if (request.method === "GET" && request.url === "/status") {
+        response.writeHead(200, { "content-type": "application/json" });
+        response.end(JSON.stringify({ status: "ok" }));
+        return;
+      }
+      if (request.method === "POST" && request.url === "/kill-switch") {
+        if (request.headers.authorization !== "Bearer drill-token") {
+          response.writeHead(401, { "content-type": "application/json" });
+          response.end(JSON.stringify({ status: "error" }));
+          return;
+        }
+
+        response.writeHead(200, { "content-type": "application/json" });
+        response.end(
+          JSON.stringify(createControlDrillResponse({
+            correlationId: "corr-target-mismatch",
+            toState: "NEW_ORDERS_BLOCKED",
+            newOrdersBlocked: false,
+          })),
+        );
+        return;
+      }
+
+      response.writeHead(500);
+      response.end();
+    });
+    const controlUrl = await listenOnLocalhost(server);
+
+    try {
+      const { stdout } = await runSoakExpectFailure(
+        [
+          "--fixture-smoke",
+          "--json",
+          "--log-dir",
+          logDir,
+          "--control-url",
+          controlUrl,
+          "--control-drill",
+          "--control-drill-target",
+          "NORMAL",
+          "--control-drill-correlation-id",
+          "corr-target-mismatch",
+          "--control-token-env",
+          "TEST_CONTROL_TOKEN",
+        ],
+        {
+          TEST_CONTROL_TOKEN: "drill-token",
+        },
+      );
+      const summary = JSON.parse(stdout) as SoakSummary;
+
+      expect(summary.status).toBe("failed");
+      expect(getCheck(summary, "killSwitchDrill").evidence.failures).toContain("target_state_mismatch");
+    } finally {
+      await closeServer(server);
+    }
+  });
+
+  it("fails a non-HARD_STOP drill when pending cancel remains active", async () => {
+    const logDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-soak-"));
+    const server = createServer((request, response) => {
+      if (request.method === "GET" && request.url === "/readyz") {
+        response.writeHead(200, { "content-type": "application/json" });
+        response.end(JSON.stringify({ status: "ok", ready: true }));
+        return;
+      }
+      if (request.method === "GET" && request.url === "/status") {
+        response.writeHead(200, { "content-type": "application/json" });
+        response.end(JSON.stringify({ status: "ok" }));
+        return;
+      }
+      if (request.method === "POST" && request.url === "/kill-switch") {
+        if (request.headers.authorization !== "Bearer drill-token") {
+          response.writeHead(401, { "content-type": "application/json" });
+          response.end(JSON.stringify({ status: "error" }));
+          return;
+        }
+
+        response.writeHead(200, { "content-type": "application/json" });
+        response.end(
+          JSON.stringify(createControlDrillResponse({
+            correlationId: "corr-unexpected-cancel",
+            cancelPendingPaperOrders: true,
+            hardStopCancelJob: {
+              jobType: "hard_stop_pending_paper_order_cancel",
+              idempotencyKey: "hard_stop_pending_paper_order_cancel:corr-unexpected-cancel",
+              created: true,
+            },
+          })),
+        );
+        return;
+      }
+
+      response.writeHead(500);
+      response.end();
+    });
+    const controlUrl = await listenOnLocalhost(server);
+
+    try {
+      const { stdout } = await runSoakExpectFailure(
+        [
+          "--fixture-smoke",
+          "--json",
+          "--log-dir",
+          logDir,
+          "--control-url",
+          controlUrl,
+          "--control-drill",
+          "--control-drill-target",
+          "NORMAL",
+          "--control-drill-correlation-id",
+          "corr-unexpected-cancel",
+          "--control-token-env",
+          "TEST_CONTROL_TOKEN",
+        ],
+        {
+          TEST_CONTROL_TOKEN: "drill-token",
+        },
+      );
+      const summary = JSON.parse(stdout) as SoakSummary;
+      const failures = getCheck(summary, "killSwitchDrill").evidence.failures;
+
+      expect(summary.status).toBe("failed");
+      expect(failures).toContain("unexpected_pending_cancel_plan");
+      expect(failures).toContain("unexpected_hard_stop_cancel_job");
+    } finally {
+      await closeServer(server);
+    }
+  });
+
+  it("fails a control drill when durable evidence ids are empty", async () => {
+    const logDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-soak-"));
+    const server = createServer((request, response) => {
+      if (request.method === "GET" && request.url === "/readyz") {
+        response.writeHead(200, { "content-type": "application/json" });
+        response.end(JSON.stringify({ status: "ok", ready: true }));
+        return;
+      }
+      if (request.method === "GET" && request.url === "/status") {
+        response.writeHead(200, { "content-type": "application/json" });
+        response.end(JSON.stringify({ status: "ok" }));
+        return;
+      }
+      if (request.method === "POST" && request.url === "/kill-switch") {
+        if (request.headers.authorization !== "Bearer drill-token") {
+          response.writeHead(401, { "content-type": "application/json" });
+          response.end(JSON.stringify({ status: "error" }));
+          return;
+        }
+
+        response.writeHead(200, { "content-type": "application/json" });
+        response.end(
+          JSON.stringify(createControlDrillResponse({
+            auditEventId: "",
+            correlationId: "corr-empty-evidence",
+          })),
+        );
+        return;
+      }
+
+      response.writeHead(500);
+      response.end();
+    });
+    const controlUrl = await listenOnLocalhost(server);
+
+    try {
+      const { stdout } = await runSoakExpectFailure(
+        [
+          "--fixture-smoke",
+          "--json",
+          "--log-dir",
+          logDir,
+          "--control-url",
+          controlUrl,
+          "--control-drill",
+          "--control-drill-target",
+          "NORMAL",
+          "--control-drill-correlation-id",
+          "corr-empty-evidence",
+          "--control-token-env",
+          "TEST_CONTROL_TOKEN",
+        ],
+        {
+          TEST_CONTROL_TOKEN: "drill-token",
+        },
+      );
+      const summary = JSON.parse(stdout) as SoakSummary;
+
+      expect(getCheck(summary, "killSwitchDrill").evidence.failures).toContain("durable_evidence_missing");
     } finally {
       await closeServer(server);
     }
@@ -214,6 +658,58 @@ function getCheck(summary: SoakSummary, name: string): SoakCheck {
   const check = summary.checks[name];
   expect(check).toBeDefined();
   return check!;
+}
+
+/**
+ * control drill 실패 조건을 fixture server에서 재현하기 위한 기본 HTTP 응답이다.
+ *
+ * 테스트별 override만 바꾸고 correlation/evidence/Telegram dispatch 필드는 유지해, 실패 원인이 target/cancel 검증에만
+ * 묶이도록 한다.
+ */
+function createControlDrillResponse(options: {
+  correlationId: string;
+  toState?: string;
+  newOrdersBlocked?: boolean;
+  cancelPendingPaperOrders?: boolean;
+  hardStopCancelJob?: Record<string, unknown> | null;
+  auditEventId?: string;
+  riskEventId?: string;
+}) {
+  return {
+    status: "ok",
+    correlationId: options.correlationId,
+    transition: {
+      accepted: true,
+      fromState: "NEW_ORDERS_BLOCKED",
+      toState: options.toState ?? "NORMAL",
+      reasonCode: "operator_clear",
+      message: "drill accepted",
+    },
+    actionPlan: {
+      newOrdersBlocked: options.newOrdersBlocked ?? false,
+      strategyEvaluationBlocked: false,
+      cancelPendingPaperOrders: options.cancelPendingPaperOrders ?? false,
+      autoLiquidateOpenPositions: false,
+      requiresManualReview: false,
+    },
+    reasonMatchesTarget: true,
+    recommendedTargetState: options.toState ?? "NORMAL",
+    hardStopCancelJob: options.hardStopCancelJob ?? null,
+    evidence: {
+      auditEventId: options.auditEventId ?? `audit-${options.correlationId}`,
+      riskEventId: options.riskEventId ?? `risk-${options.correlationId}`,
+    },
+    alertDispatch: {
+      fingerprint: `alert:test:paper_trading:P1:kill_switch_control:global:global:${options.correlationId}`,
+      cooldownHit: false,
+      notification: {
+        delivered: true,
+        providerMessageId: `telegram-${options.correlationId}`,
+        skippedReason: null,
+      },
+    },
+    alertDispatchFailure: null,
+  };
 }
 
 interface SoakSummary {

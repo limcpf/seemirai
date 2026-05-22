@@ -313,15 +313,18 @@ runtime이 `failJob`으로 lock을 해제해 같은 row가 retry 또는 수동 �
 
 24시간 paper soak는 기본 검증에서 자동 실행하지 않는다. `node scripts/soak-paper-24h.mjs`만 실행하면
 `SEEMIRAI_RUN_SOAK=1`이 없다는 summary를 남기고 skip한다. CI와 PR 검증은 다음 fixture smoke로 장시간 실행 guard,
-실거래 주문 API 0회 근거, stale data 차단 evidence, audit 누락 0건, `/status`와 `/kill-switch` route 근거를 확인한다.
+실거래 주문 API 0회 근거, stale data 차단 evidence, audit 누락 0건, `/readyz`/`/status`와 `/kill-switch` route 근거를
+확인한다.
 
 ```sh
 node scripts/soak-paper-24h.mjs --fixture-smoke
 ```
 
 실제 24시간 public quotation WebSocket soak는 운영자가 의도적으로 env를 열 때만 실행한다. control server가 떠 있으면
-`--control-url`을 추가해 `GET /status` 200 응답과 token 없는 `POST /kill-switch` 거부 응답을 함께 확인한다. 24시간 결과를
-완료 evidence로 쓰려면 daily report 생성이 끝난 뒤 `--daily-report-generated`를 함께 넘긴다.
+`--control-url`을 추가해 `GET /readyz`/`GET /status` 200 응답과 `/kill-switch` route guard 근거를 함께 확인한다. 상태
+변경이 허용되는 disposable local paper runtime에서는 `--control-drill`과 `--control-token-env`를 추가해 token 없는
+`POST /kill-switch` 401 거부, 인증된 전이, pending cancel plan, Telegram dispatch evidence를 같은 correlation id로 확인한다.
+24시간 결과를 완료 evidence로 쓰려면 daily report 생성이 끝난 뒤 `--daily-report-generated`를 함께 넘긴다.
 
 ```sh
 SEEMIRAI_RUN_SOAK=1 node scripts/soak-paper-24h.mjs \
@@ -339,9 +342,21 @@ summary의 완료 판단 필드는 다음과 같다.
 - `liveOrderApiCalls`: 실거래 주문 API 호출 0회와 disabled live broker source guard
 - `auditMissing`: stale/reconnect/disconnect 차단 evidence 누락 0건
 - `staleDataBlocked`: stale data가 신규 주문 차단 evidence로 연결됐는지
-- `statusEndpoint`, `killSwitchEndpoint`: source scan 또는 local probe 근거
+- `readyzEndpoint`, `statusEndpoint`, `killSwitchEndpoint`: source scan 또는 local probe 근거
+- `controlMissingTokenRejected`, `killSwitchDrill`: 명시적 control drill 실행 시 token 거부, 전이, pending cancel, Telegram evidence
 - `dbWriteFailures`, `notificationFailures`: 운영자가 관측한 실패 건수
 - `dailyReportGenerated`: 실제 24시간 soak 완료 시 daily report evidence 포함 여부
+
+3일 paper report 비교는 저장소 밖 summary JSON 3개 이상을 입력으로 받는 별도 도구로 수행한다.
+
+```sh
+node scripts/compare-m9-paper-reports.mjs \
+  --summary "$HOME/vaults/99_운영/seemirai-soak/day-1-summary.json" \
+  --summary "$HOME/vaults/99_운영/seemirai-soak/day-2-summary.json" \
+  --summary "$HOME/vaults/99_운영/seemirai-soak/day-3-summary.json" \
+  --output "$HOME/vaults/99_운영/seemirai-m9-paper/m9-3day-comparison.md" \
+  --json
+```
 
 ## M6 Execution 안전 설정
 

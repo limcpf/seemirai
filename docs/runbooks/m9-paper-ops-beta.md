@@ -220,15 +220,38 @@ token 없는 kill switch 요청은 거부되어야 한다.
 ```sh
 curl -sS -X POST http://127.0.0.1:8787/kill-switch \
   -H 'content-type: application/json' \
-  -d '{"targetState":"NEW_ORDERS_BLOCKED","reason":"m9_drill_missing_token"}'
+  -H 'x-correlation-id: m9-control-drill-missing-token' \
+  -d '{"targetState":"NEW_ORDERS_BLOCKED","reasonCode":"m9_drill_missing_token"}'
 ```
 
-token 있는 drill은 신규 주문 차단 evidence, pending paper order cancel plan, Telegram 알림 evidence가 같은 correlation id로
+상태 변경이 허용되는 disposable local paper runtime에서만 인증된 drill을 실행한다. 이 명령은 실제 `/kill-switch` 전이를
+요청하므로, 실행 전 현재 paper 주문과 복구 경로를 확인한다.
+
+```sh
+SEEMIRAI_LOCAL_CONTROL_TOKEN="$SEEMIRAI_LOCAL_CONTROL_TOKEN" \
+node scripts/soak-paper-24h.mjs \
+  --fixture-smoke \
+  --control-url http://127.0.0.1:8787 \
+  --control-drill \
+  --control-drill-correlation-id "m9-control-drill-$(date +%Y%m%d)" \
+  --json
+```
+
+인증된 drill은 신규 주문 차단 evidence, pending paper order cancel plan, Telegram 알림 dispatch evidence가 같은 correlation id로
 추적되어야 한다. `HARD_STOP -> NORMAL` 직접 복구는 금지다.
 
 ## 9. 3일 비교 기록
 
 M9 안정화 기준은 3일 연속 paper report 비교로 고정한다.
+
+```sh
+node scripts/compare-m9-paper-reports.mjs \
+  --summary "$HOME/vaults/99_운영/seemirai-soak/day-1-summary.json" \
+  --summary "$HOME/vaults/99_운영/seemirai-soak/day-2-summary.json" \
+  --summary "$HOME/vaults/99_운영/seemirai-soak/day-3-summary.json" \
+  --output "$HOME/vaults/99_운영/seemirai-m9-paper/m9-3day-comparison.md" \
+  --json
+```
 
 | 날짜 | commit | report artifact | crash | live order API | audit missing | notification failure | daily report | 비용 | 슬리피지 | 체결률 | 주요 차단 사유 |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |

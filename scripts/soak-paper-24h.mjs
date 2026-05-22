@@ -130,6 +130,11 @@ function parseArgs(argv) {
     dbWriteFailures: 0,
     notificationFailures: 0,
     controlProbeTimeoutMs: defaultControlProbeTimeoutMs,
+    controlDrill: false,
+    controlDrillTargetState: "HARD_STOP",
+    controlDrillReasonCode: "db_write_failure",
+    controlDrillActor: "m9-control-drill",
+    controlTokenEnv: "SEEMIRAI_LOCAL_CONTROL_TOKEN",
   };
 
   for (let index = 0; index < argv.length; index += 1) {
@@ -169,6 +174,29 @@ function parseArgs(argv) {
         options.controlProbeTimeoutMs = readPositiveInteger(readValue(argv, index, arg), arg);
         index += 1;
         break;
+      case "--control-drill":
+        options.controlDrill = true;
+        break;
+      case "--control-drill-target":
+        options.controlDrillTargetState = readValue(argv, index, arg);
+        index += 1;
+        break;
+      case "--control-drill-reason":
+        options.controlDrillReasonCode = readValue(argv, index, arg);
+        index += 1;
+        break;
+      case "--control-drill-actor":
+        options.controlDrillActor = readValue(argv, index, arg);
+        index += 1;
+        break;
+      case "--control-drill-correlation-id":
+        options.controlDrillCorrelationId = readValue(argv, index, arg);
+        index += 1;
+        break;
+      case "--control-token-env":
+        options.controlTokenEnv = readValue(argv, index, arg);
+        index += 1;
+        break;
       case "--log-dir":
         options.logDir = readValue(argv, index, arg);
         index += 1;
@@ -206,6 +234,9 @@ function parseArgs(argv) {
       default:
         throw new Error(`Unknown option: ${arg}`);
     }
+  }
+  if (options.controlDrill && options.controlUrl === undefined) {
+    throw new Error("--control-drill requires --control-url");
   }
 
   return options;
@@ -251,8 +282,13 @@ async function runCommonChecks({ config, options }) {
     configSafety: inspectConfigSafety(config),
     liveOrderApiCalls,
     telegramInboundAbsent: telegramInbound,
+    ...(controlEndpoints.readyzEndpoint === undefined ? {} : { readyzEndpoint: controlEndpoints.readyzEndpoint }),
     statusEndpoint: controlEndpoints.statusEndpoint,
     killSwitchEndpoint: controlEndpoints.killSwitchEndpoint,
+    ...(controlEndpoints.controlMissingTokenRejected === undefined
+      ? {}
+      : { controlMissingTokenRejected: controlEndpoints.controlMissingTokenRejected }),
+    ...(controlEndpoints.killSwitchDrill === undefined ? {} : { killSwitchDrill: controlEndpoints.killSwitchDrill }),
     dbWriteFailures: countCheck(
       options.dbWriteFailures,
       "DB write failure가 관측되지 않았다.",
@@ -367,11 +403,15 @@ async function inspectControlEndpoints(options) {
 
 async function inspectControlEndpointSource() {
   const source = await readFile(path.join(repoRoot, "src", "interfaces", "http-control.ts"), "utf8");
+  const readyzRegistered = /server\.get\(\s*"\/readyz"/u.test(source);
   const statusRegistered = /server\.get\(\s*"\/status"/u.test(source);
   const killSwitchRegistered =
     /server\.post[\s\S]*"\/kill-switch"/u.test(source) && /createLocalControlAuthPreHandler/u.test(source);
 
   return {
+    readyzEndpoint: readyzRegistered
+      ? okCheck("`GET /readyz` route 등록 근거가 확인됐다.", { mode: "source_scan" })
+      : failCheck("`GET /readyz` route 등록 근거를 찾지 못했다.", { mode: "source_scan" }),
     statusEndpoint: statusRegistered
       ? okCheck("`GET /status` route 등록 근거가 확인됐다.", { mode: "source_scan" })
       : failCheck("`GET /status` route 등록 근거를 찾지 못했다.", { mode: "source_scan" }),
@@ -383,11 +423,18 @@ async function inspectControlEndpointSource() {
 
 async function probeControlEndpoints(controlUrl, options) {
   const sourceChecks = await inspectControlEndpointSource();
-  const statusResponse = await fetchControlEndpoint(`${controlUrl}/status`, {
+  const readyzResponse = await fetchControlEndpoint(`${controlUrl}/readyz`, {
+    endpointLabel: "`GET /readyz`",
     timeoutMs: options.controlProbeTimeoutMs,
   });
+  const statusResponse = await fetchControlEndpoint(`${controlUrl}/status`, {
+    endpointLabel: "`GET /status`",
+    timeoutMs: options.controlProbeTimeoutMs,
+  });
+  const drillChecks = options.controlDrill ? await runControlDrill(controlUrl, options) : {};
 
   return {
+    readyzEndpoint: readyzResponse,
     statusEndpoint: statusResponse,
     // kill-switch는 상태 전이 엔드포인트라 soak probe가 POST를 보내지 않는다. 인증 가드 존재 여부는 source scan으로 남겨 장애 상태를 probe가 해제하지 않게 한다.
     killSwitchEndpoint: {
@@ -400,40 +447,233 @@ async function probeControlEndpoints(controlUrl, options) {
         ...sourceChecks.killSwitchEndpoint.evidence,
         mode: "source_scan_after_control_url",
         controlUrl,
-        stateChangingProbeSkipped: true,
+        stateChangingProbeSkipped: !options.controlDrill,
       },
     },
+    ...drillChecks,
   };
 }
 
-async function fetchControlEndpoint(url, { timeoutMs }) {
+async function fetchControlEndpoint(url, { endpointLabel, timeoutMs }) {
+  const result = await fetchControlJson(url, { timeoutMs });
+  if (result.ok && result.statusCode === 200) {
+    return okCheck(`${endpointLabel} probe가 200으로 응답했다.`, {
+      mode: "http_probe",
+      statusCode: 200,
+      timeoutMs,
+    });
+  }
+
+  if (result.error !== undefined) {
+    return failCheck(`${endpointLabel} probe가 네트워크 오류 또는 timeout으로 실패했다.`, {
+      mode: "http_probe",
+      error: result.error,
+      timeoutMs,
+      url,
+    });
+  }
+
+  return failCheck(`${endpointLabel} probe가 실패했다.`, {
+    mode: "http_probe",
+    statusCode: result.statusCode,
+    timeoutMs,
+  });
+}
+
+async function runControlDrill(controlUrl, options) {
+  const correlationId = options.controlDrillCorrelationId ?? `m9-control-drill:${new Date().toISOString()}`;
+  const payload = {
+    targetState: options.controlDrillTargetState,
+    reasonCode: options.controlDrillReasonCode,
+    actor: options.controlDrillActor,
+    metadata: {
+      source: "m9_control_drill",
+      expected_correlation_id: correlationId,
+    },
+  };
+  const missingToken = await fetchControlJson(`${controlUrl}/kill-switch`, {
+    method: "POST",
+    timeoutMs: options.controlProbeTimeoutMs,
+    headers: {
+      "content-type": "application/json",
+      "x-correlation-id": `${correlationId}:missing-token`,
+    },
+    body: JSON.stringify(payload),
+  });
+  const controlMissingTokenRejected =
+    missingToken.statusCode === 401
+      ? okCheck("token 없는 `/kill-switch` 요청이 401로 거부됐다.", {
+          mode: "http_probe",
+          statusCode: missingToken.statusCode,
+          correlationId: `${correlationId}:missing-token`,
+        })
+      : failCheck("token 없는 `/kill-switch` 요청이 기대한 401로 거부되지 않았다.", {
+          mode: "http_probe",
+          statusCode: missingToken.statusCode,
+          error: missingToken.error ?? null,
+        });
+
+  const token = process.env[options.controlTokenEnv];
+  if (typeof token !== "string" || token.length === 0) {
+    return {
+      controlMissingTokenRejected,
+      killSwitchDrill: failCheck("인증된 kill switch drill을 실행할 control token env가 없다.", {
+        tokenEnv: options.controlTokenEnv,
+      }),
+    };
+  }
+
+  const authorized = await fetchControlJson(`${controlUrl}/kill-switch`, {
+    method: "POST",
+    timeoutMs: options.controlProbeTimeoutMs,
+    headers: {
+      authorization: `Bearer ${token}`,
+      "content-type": "application/json",
+      "x-correlation-id": correlationId,
+    },
+    body: JSON.stringify(payload),
+  });
+
+  if (authorized.error !== undefined || authorized.statusCode !== 200) {
+    return {
+      controlMissingTokenRejected,
+      killSwitchDrill: failCheck("인증된 `/kill-switch` drill 요청이 실패했다.", {
+        mode: "http_probe",
+        statusCode: authorized.statusCode,
+        error: authorized.error ?? null,
+        correlationId,
+      }),
+    };
+  }
+
+  const body = authorized.json;
+  const transition = body?.transition ?? {};
+  const actionPlan = body?.actionPlan ?? {};
+  const evidence = body?.evidence ?? {};
+  const alertDispatch = body?.alertDispatch ?? null;
+  const notification = alertDispatch?.notification ?? {};
+  const hardStopCancelJob = body?.hardStopCancelJob ?? null;
+  const targetRequiresNewOrderBlock = options.controlDrillTargetState !== "NORMAL";
+  const hardStopRequiresCancelJob = options.controlDrillTargetState === "HARD_STOP";
+  const failures = [];
+  if (body?.correlationId !== correlationId) {
+    failures.push("correlation_id_mismatch");
+  }
+  if (transition.accepted !== true) {
+    failures.push("transition_not_accepted");
+  }
+  if (transition.toState !== options.controlDrillTargetState) {
+    failures.push("target_state_mismatch");
+  }
+  if (actionPlan.newOrdersBlocked !== targetRequiresNewOrderBlock) {
+    failures.push(targetRequiresNewOrderBlock ? "new_orders_not_blocked" : "normal_state_still_blocks_new_orders");
+  }
+  if (hardStopRequiresCancelJob && actionPlan.cancelPendingPaperOrders !== true) {
+    failures.push("pending_cancel_plan_missing");
+  }
+  if (hardStopRequiresCancelJob && hardStopCancelJob === null) {
+    failures.push("hard_stop_cancel_job_missing");
+  }
+  if (!hardStopRequiresCancelJob && actionPlan.cancelPendingPaperOrders !== false) {
+    failures.push("unexpected_pending_cancel_plan");
+  }
+  if (!hardStopRequiresCancelJob && hardStopCancelJob !== null) {
+    failures.push("unexpected_hard_stop_cancel_job");
+  }
+  if (
+    typeof evidence.auditEventId !== "string" ||
+    evidence.auditEventId.length === 0 ||
+    typeof evidence.riskEventId !== "string" ||
+    evidence.riskEventId.length === 0
+  ) {
+    failures.push("durable_evidence_missing");
+  }
+  if (alertDispatch === null) {
+    failures.push("telegram_alert_dispatch_missing");
+  } else if (
+    notification.delivered !== true &&
+    !["alert_cooldown_active", "alert_delivery_reserved"].includes(notification.skippedReason)
+  ) {
+    failures.push("telegram_alert_evidence_missing");
+  }
+
+  if (failures.length > 0) {
+    return {
+      controlMissingTokenRejected,
+      killSwitchDrill: failCheck("kill switch drill 응답의 correlation/evidence/action plan/Telegram dispatch가 기대와 다르다.", {
+        mode: "http_probe",
+        statusCode: authorized.statusCode,
+        correlationId,
+        failures,
+      }),
+    };
+  }
+
+  return {
+    controlMissingTokenRejected,
+    killSwitchDrill: okCheck("kill switch drill에서 신규 주문 차단, pending cancel plan, durable/Telegram evidence를 같은 correlation id로 확인했다.", {
+      mode: "http_probe",
+      statusCode: authorized.statusCode,
+      correlationId,
+      targetState: options.controlDrillTargetState,
+      reasonCode: options.controlDrillReasonCode,
+      auditEventId: evidence.auditEventId,
+      riskEventId: evidence.riskEventId,
+      alertDispatch:
+        alertDispatch === null
+          ? null
+          : {
+              fingerprint: alertDispatch.fingerprint,
+              cooldownHit: alertDispatch.cooldownHit,
+              delivered: notification.delivered === true,
+              skippedReason: notification.skippedReason ?? null,
+              providerMessageId: notification.providerMessageId ?? null,
+            },
+      hardStopCancelJob: hardStopCancelJob === null
+        ? null
+        : {
+            jobType: hardStopCancelJob.jobType,
+            idempotencyKey: hardStopCancelJob.idempotencyKey,
+            created: hardStopCancelJob.created,
+          },
+    }),
+  };
+}
+
+async function fetchControlJson(url, { method = "GET", headers = {}, body, timeoutMs }) {
   const controller = new AbortController();
   const timeout = setTimeout(() => {
     controller.abort(new Error(`control probe timed out after ${timeoutMs}ms`));
   }, timeoutMs);
 
   try {
-    const response = await fetch(url, { signal: controller.signal });
-    return response.status === 200
-      ? okCheck("`GET /status` probe가 200으로 응답했다.", {
-          mode: "http_probe",
-          statusCode: 200,
-          timeoutMs,
-        })
-      : failCheck("`GET /status` probe가 실패했다.", {
-          mode: "http_probe",
-          statusCode: response.status,
-          timeoutMs,
-        });
+    const response = await fetch(url, { method, headers, body, signal: controller.signal });
+    const text = await response.text();
+    return {
+      ok: response.ok,
+      statusCode: response.status,
+      json: parseJsonSafely(text),
+    };
   } catch (error) {
-    return failCheck("`GET /status` probe가 네트워크 오류 또는 timeout으로 실패했다.", {
-      mode: "http_probe",
+    return {
+      ok: false,
+      statusCode: null,
       error: toErrorMessage(error),
-      timeoutMs,
-      url,
-    });
+    };
   } finally {
     clearTimeout(timeout);
+  }
+}
+
+function parseJsonSafely(text) {
+  if (text.length === 0) {
+    return null;
+  }
+
+  try {
+    return JSON.parse(text);
+  } catch {
+    return null;
   }
 }
 
@@ -881,6 +1121,11 @@ Options:
   --markets <KRW-BTC,KRW-ETH>     Public WebSocket markets. Defaults to config/paper.json universe.
   --control-url <url>             Probe local HTTP control /status and scan protected /kill-switch wiring.
   --control-probe-timeout-ms <ms>  Timeout for control HTTP probes. Defaults to 5000.
+  --control-drill                 With --control-url, run missing-token and authenticated /kill-switch drill.
+  --control-drill-target <state>  Drill target state. Defaults to HARD_STOP.
+  --control-drill-reason <code>   Drill reason code. Defaults to db_write_failure.
+  --control-drill-correlation-id <id> Correlation id for authenticated drill.
+  --control-token-env <name>      Env var that holds the local control token. Defaults to SEEMIRAI_LOCAL_CONTROL_TOKEN.
   --daily-report-generated        Mark daily report generation evidence as present for a real 24h run.
   --db-write-failures <count>     Attach observed DB write failure count. Defaults to 0.
   --notification-failures <count> Attach observed notification failure count. Defaults to 0.

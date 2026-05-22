@@ -121,7 +121,7 @@ Acceptance Criteria:
 | 2 | daily report job 실행 경계와 scheduler/수동 runner | 순차 |
 | 3 | paper 매매 이벤트 Telegram 알림 mapper/formatter/cooldown | 순차 |
 | 4 | P0/P1 notification retry worker | 순차 |
-| 5 | `/status`/`/kill-switch` 운영 drill과 3일 report 비교 템플릿 | 순차 |
+| 5 | `/readyz`/`/status`/`/kill-switch` 운영 drill 자동 검증과 3일 report 비교 도구 | 순차 |
 
 검증:
 
