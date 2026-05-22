@@ -235,6 +235,9 @@ function parseArgs(argv) {
         throw new Error(`Unknown option: ${arg}`);
     }
   }
+  if (options.controlDrill && options.controlUrl === undefined) {
+    throw new Error("--control-drill requires --control-url");
+  }
 
   return options;
 }

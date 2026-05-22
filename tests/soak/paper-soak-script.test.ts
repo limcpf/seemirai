@@ -340,6 +340,14 @@ describe("M8 paper soak script", () => {
     }
   });
 
+  it("rejects control drill runs without a control URL", async () => {
+    const logDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-soak-"));
+
+    const failure = await runSoakExpectFailure(["--fixture-smoke", "--json", "--log-dir", logDir, "--control-drill"]);
+
+    expect(failure.stderr).toContain("--control-drill requires --control-url");
+  });
+
   it("records control probe timeouts as failed checks while still writing artifacts", async () => {
     const logDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-soak-"));
     const server = createServer(() => {
