@@ -191,8 +191,9 @@ P0/P1 Telegram provider 실패는 `notification_retry` jobs row로 재시도한�
 - `job_type=notification_retry` row만 worker가 claim한다.
 - retry payload에는 `environment`, `run_mode`, `severity`, `alert_type`, `reason_code`, `fingerprint`, `occurred_at`,
   `correlation_id`, `metadata`가 있다.
-- provider 성공 또는 cooldown skip은 job을 `COMPLETED`로 닫는다.
-- provider 실패는 `PENDING`으로 재예약되며, max attempts 소진 시 `FAILED`와
+- provider 성공 또는 `alert_cooldown_active` skip은 job을 `COMPLETED`로 닫는다.
+- in-flight reservation 또는 reservation race skip은 완료하지 않고 provider 실패와 같은 재예약 경로로 보낸다.
+- provider 실패는 dispatch 처리 종료 시각과 claim 시각 중 더 늦은 시각 기준으로 `PENDING` 재예약되며, max attempts 소진 시 `FAILED`와
   `notification_retry_manual_review_required` audit evidence가 남는다.
 - retry worker는 Telegram outbound만 수행하고 inbound command, webhook, polling, Upbit private API를 열지 않는다.
 

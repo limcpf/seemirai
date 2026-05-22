@@ -27,6 +27,7 @@ import {
   createPaperTradeAlertRequest,
   dispatchKillSwitchControlAlert,
   dispatchAlertWithCooldown,
+  dispatchNotificationRetryJob,
   evaluateNotificationFailure,
   getDefaultAlertCooldownMs,
   notificationRetryJobType,
@@ -375,6 +376,45 @@ describe("alert cooldown and notification policy", () => {
     });
     expect(cooldownStore.reserveCalls).toBe(2);
     expect(notifier.alerts).toHaveLength(1);
+  });
+
+  it("keeps notification retry jobs pending when delivery is blocked by reservation race", async () => {
+    const retryJobPlan = createNotificationRetryJobPlan({
+      fingerprint: "alert:prod:paper:P1:lag:krw-btc:global:public_websocket_lag",
+      occurredAt: "2026-05-21T00:00:00.000Z",
+      request: {
+        environment: "prod",
+        runMode: "paper",
+        severity: "P1",
+        alertType: "lag",
+        market: "KRW-BTC",
+        reasonCode: "public_websocket_lag",
+        title: "WebSocket lag",
+        body: "lag exceeded threshold",
+      },
+    });
+    const notifier = new RecordingNotifier();
+
+    const result = await dispatchNotificationRetryJob({
+      alertDispatch: {
+        notifier,
+        durableCooldownStore: new PersistentReservationRaceCooldownStore(),
+      },
+      payloadJson: retryJobPlan.payloadJson,
+    });
+
+    expect(result).toMatchObject({
+      status: "FAILED",
+      alertDispatch: {
+        cooldownHit: true,
+        notification: {
+          delivered: false,
+          skippedReason: "alert_reservation_race",
+        },
+      },
+      errorMessage: "notification retry deferred: alert_reservation_race",
+    });
+    expect(notifier.alerts).toHaveLength(0);
   });
 
   it("clears delivery reservations after provider failure so immediate retry can send", async () => {
@@ -1010,6 +1050,46 @@ class ReservationRaceCooldownStore implements AlertCooldownStore {
     }
 
     return this.delegate.reserveDelivery(input);
+  }
+
+  public async releaseDeliveryReservation(input: AlertCooldownReleaseInput): Promise<AlertCooldownState> {
+    return this.delegate.releaseDeliveryReservation(input);
+  }
+
+  public async recordSent(input: AlertCooldownRecordInput): Promise<AlertCooldownState> {
+    return this.delegate.recordSent(input);
+  }
+
+  public async recordSkipped(input: AlertCooldownRecordInput): Promise<AlertCooldownState> {
+    return this.delegate.recordSkipped(input);
+  }
+}
+
+class PersistentReservationRaceCooldownStore implements AlertCooldownStore {
+  private readonly delegate = createInMemoryAlertCooldownStore();
+
+  public async findByFingerprint(fingerprint: string): Promise<AlertCooldownState | undefined> {
+    return this.delegate.findByFingerprint(fingerprint);
+  }
+
+  public async reserveDelivery(
+    input: AlertCooldownReservationInput,
+  ): Promise<AlertCooldownReservationResult> {
+    return {
+      reserved: false,
+      state: {
+        fingerprint: input.fingerprint,
+        severity: input.severity,
+        alertType: input.alertType,
+        market: input.market,
+        strategyId: input.strategyId,
+        reasonCode: input.reasonCode,
+        lastSentAt: null,
+        lastSkippedAt: null,
+        deliveryReservedUntil: null,
+        payloadJson: input.payloadJson ?? {},
+      },
+    };
   }
 
   public async releaseDeliveryReservation(input: AlertCooldownReleaseInput): Promise<AlertCooldownState> {

@@ -89,9 +89,11 @@ Codex-native 운영은 Codex, Git, GitHub, shell command, 문서 상태를 연�
   daily report, policy sync 같은 다른 worker 책임 row를 실행할 수 있으므로 merge-blocking 결함으로 본다.
 - notification retry worker는 claim과 실행을 한 건 단위로 반복한다. 배치 전체를 먼저 RUNNING으로 바꾸면 중간 crash 때 아직
   provider 호출하지 않은 row가 재claim되지 않으므로 금지한다.
-- retry provider 전송 성공 또는 같은 fingerprint cooldown hit는 retry job을 `COMPLETED`로 닫는다. provider 실패는
-  `failJob`으로 재예약하고, max attempts를 소진하면 `FAILED`와 `notification_retry_manual_review_required` audit evidence를
-  남겨 manual review로 수렴한다.
+- retry provider 전송 성공 또는 같은 fingerprint의 활성 cooldown hit(`alert_cooldown_active`)는 retry job을 `COMPLETED`로
+  닫는다. in-flight reservation이나 reservation race로 막힌 경우는 다른 실행이 끝나지 않은 상태일 수 있으므로 완료 처리하지
+  않고 실패 경로로 재예약한다. provider 실패와 deferred reservation은 dispatch 처리 종료 시각을 기준으로 `failJob` 재예약
+  시각을 계산하고, claim 시각보다 과거가 되지 않게 보정한다. max attempts를 소진하면 `FAILED`와
+  `notification_retry_manual_review_required` audit evidence를 남겨 manual review로 수렴한다.
 - retry worker의 audit 저장 실패는 이미 발생한 provider side effect나 job 상태 전이를 재시도하지 않는다. 이 장애는 audit 누락
   리스크로 남기고 Telegram 재전송 중복을 만들지 않는다.
 - provider 실패가 연속 3회이거나 첫 실패 이후 10분 이상 지속되면 kill switch mapping에서 `MANUAL_REVIEW_REQUIRED` 후보로

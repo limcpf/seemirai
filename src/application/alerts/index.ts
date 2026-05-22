@@ -17,6 +17,16 @@ export const notificationRetryJobType = "notification_retry";
 export const defaultAlertDeliveryReservationMs = 60_000;
 
 /**
+ * notification retry payload가 재전송 가능한 alert 요청으로 복원되지 않을 때 사용하는 오류다.
+ *
+ * retry worker는 이 오류만 invalid payload로 분류하고, queue 상태 전이 실패나 audit 저장 실패 같은 infrastructure 오류와
+ * 구분해야 한다. 구분하지 않으면 정상 payload의 운영 장애가 payload 오류로 기록되어 복구 원인 분석을 오도한다.
+ */
+export class NotificationRetryPayloadError extends Error {
+  public override name = "NotificationRetryPayloadError";
+}
+
+/**
  * alert fingerprint를 구성하는 운영 차원이다.
  *
  * 같은 장애라도 환경, 실행 모드, 심각도, 마켓, 전략, 원인 코드가 다르면 다른 운영 이벤트로 취급한다. 특히 severity를
@@ -490,7 +500,7 @@ export function createAlertDispatchRequestFromNotificationRetryPayload(
 ): AlertDispatchRequest {
   const severity = readNotificationRetrySeverity(payloadJson, "severity");
   if (!usesDurableCooldown(severity)) {
-    throw new Error("notification retry payload severity must be P0 or P1");
+    throw new NotificationRetryPayloadError("notification retry payload severity must be P0 or P1");
   }
 
   const correlationId = readOptionalStringField(payloadJson, "correlation_id");
@@ -546,9 +556,17 @@ export async function dispatchNotificationRetryJob(input: {
   }
 
   if (result.cooldownHit) {
+    if (result.notification.skippedReason === "alert_cooldown_active") {
+      return {
+        status: "COOLDOWN_SKIPPED",
+        alertDispatch: result,
+      };
+    }
+
     return {
-      status: "COOLDOWN_SKIPPED",
+      status: "FAILED",
       alertDispatch: result,
+      errorMessage: `notification retry deferred: ${result.notification.skippedReason ?? "alert_delivery_not_sent"}`,
     };
   }
 
@@ -1031,7 +1049,9 @@ function sameTimestamp(left: TimestampInput | null | undefined, right: Timestamp
 function readRequiredStringField(record: JsonRecord, key: string): string {
   const value = record[key];
   if (typeof value !== "string" || value.trim().length === 0) {
-    throw new Error(`notification retry payload field ${key} must be a non-empty string`);
+    throw new NotificationRetryPayloadError(
+      `notification retry payload field ${key} must be a non-empty string`,
+    );
   }
 
   return value;
@@ -1044,7 +1064,9 @@ function readOptionalStringField(record: JsonRecord, key: string): string | unde
   }
 
   if (typeof value !== "string" || value.trim().length === 0) {
-    throw new Error(`notification retry payload field ${key} must be a non-empty string when present`);
+    throw new NotificationRetryPayloadError(
+      `notification retry payload field ${key} must be a non-empty string when present`,
+    );
   }
 
   return value;
@@ -1057,7 +1079,9 @@ function readOptionalJsonRecordField(record: JsonRecord, key: string): JsonRecor
   }
 
   if (typeof value !== "object" || Array.isArray(value)) {
-    throw new Error(`notification retry payload field ${key} must be an object when present`);
+    throw new NotificationRetryPayloadError(
+      `notification retry payload field ${key} must be an object when present`,
+    );
   }
 
   return value as JsonRecord;
@@ -1066,7 +1090,7 @@ function readOptionalJsonRecordField(record: JsonRecord, key: string): JsonRecor
 function readNotificationRetrySeverity(record: JsonRecord, key: string): AlertSeverity {
   const value = readRequiredStringField(record, key);
   if (value !== "P0" && value !== "P1" && value !== "P2" && value !== "P3") {
-    throw new Error(`notification retry payload field ${key} must be a known severity`);
+    throw new NotificationRetryPayloadError(`notification retry payload field ${key} must be a known severity`);
   }
 
   return value;

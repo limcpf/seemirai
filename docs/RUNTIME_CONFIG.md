@@ -233,10 +233,12 @@ retry job payload는 worker가 원 alert 요청을 복원할 수 있도록 다�
 - formatter와 추적에 필요한 `metadata`
 
 worker는 `job_type=notification_retry`인 due row만 claim한다. claim된 row는 원 payload를 다시 `AlertDispatchRequest`로 복원해
-기존 cooldown/provider/audit 경계를 그대로 통과한다. provider 전송 성공 또는 같은 fingerprint cooldown hit는 job을
-`COMPLETED`로 닫는다. provider 실패나 retry payload 오류는 `failJob`으로 넘겨 `run_after`를 최소 다음 worker tick 이후로
-미룬다. `max_attempts`를 소진하면 job은 `FAILED`에 고정되고, `notification_retry_manual_review_required` audit evidence와
-`notification_consecutive_failure` manual review reason을 남긴다.
+기존 cooldown/provider/audit 경계를 그대로 통과한다. provider 전송 성공 또는 같은 fingerprint의 활성 cooldown hit는 job을
+`COMPLETED`로 닫는다. in-flight reservation 또는 reservation race skip은 아직 다른 전송 시도가 끝나지 않은 상태일 수 있어
+완료가 아니라 실패 재예약 경로로 넘긴다. provider 실패나 retry payload 오류는 `failJob`으로 넘겨 `run_after`를 dispatch 처리
+종료 시각 기준 최소 다음 worker tick 이후로 미루고, claim 시각보다 과거가 되지 않게 보정한다. `max_attempts`를 소진하면 job은
+`FAILED`에 고정되고, `notification_retry_manual_review_required` audit evidence와 `notification_consecutive_failure` manual
+review reason을 남긴다.
 
 retry worker는 Telegram outbound 재전송만 수행한다. Telegram inbound command, webhook, polling route를 만들지 않고, 실거래
 주문 API나 Upbit private API를 호출하지 않는다.

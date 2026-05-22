@@ -9,6 +9,7 @@ import type {
   NotifierPort,
 } from "../../application/index.js";
 import {
+  NotificationRetryPayloadError,
   dispatchNotificationRetryJob,
   notificationRetryJobType,
 } from "../../application/index.js";
@@ -212,6 +213,7 @@ export function createPaperNoKeyNotificationRetryRuntime(
               ...(dependencies.clock === undefined ? {} : { clock: dependencies.clock }),
             },
             ...(dependencies.clock === undefined ? {} : { clock: dependencies.clock }),
+            ...(options.now === undefined ? {} : { claimNow: options.now }),
             ...(dependencies.actor === undefined ? {} : { actor: dependencies.actor }),
           }),
         );
@@ -229,14 +231,18 @@ async function runClaimedNotificationRetryJob(input: {
   auditLog: AuditLogPort;
   alertDispatch: AlertDispatchServiceOptions;
   clock?: () => Date;
+  claimNow?: Date | string;
   actor?: string;
 }): Promise<ClaimedNotificationRetryJobRunResult> {
-  const occurredAt = input.clock?.() ?? new Date();
   try {
     const dispatchResult = await dispatchNotificationRetryJob({
       alertDispatch: input.alertDispatch,
       payloadJson: input.job.payload_json,
     });
+    const occurredAt = resolveWorkerTimestamp(
+      input.clock,
+      input.job.locked_at ?? input.claimNow,
+    );
 
     if (dispatchResult.status === "DELIVERED" || dispatchResult.status === "COOLDOWN_SKIPPED") {
       // provider 성공 또는 cooldown skip은 같은 retry row를 다시 실행하지 않도록 완료 상태로 고정한다.
@@ -284,11 +290,15 @@ async function runClaimedNotificationRetryJob(input: {
 
     return failed;
   } catch (error) {
+    const occurredAt = resolveWorkerTimestamp(
+      input.clock,
+      input.job.locked_at ?? input.claimNow,
+    );
     return failNotificationRetryJobWithEvidence(input, {
       occurredAt,
       errorMessage: `notification retry worker failed: ${toErrorMessage(error)}`,
       dispatchMetadata: {},
-      invalidPayload: true,
+      invalidPayload: error instanceof NotificationRetryPayloadError,
     });
   }
 }
@@ -405,6 +415,24 @@ function toNotificationRetryJobEnqueueReceipt(
 function readCorrelationId(job: JobRecord): string | undefined {
   const value = job.payload_json.correlation_id;
   return typeof value === "string" && value.length > 0 ? value : undefined;
+}
+
+function resolveWorkerTimestamp(
+  clock: (() => Date) | undefined,
+  lowerBound: Date | string | null | undefined,
+): Date {
+  const current = clock?.() ?? new Date();
+  if (lowerBound === null || lowerBound === undefined) {
+    return current;
+  }
+
+  const lowerBoundDate = toDate(lowerBound);
+  // claim 시각보다 과거로 재예약하면 같은 due row를 즉시 재claim할 수 있으므로 worker 시각의 하한을 claim 시각으로 둔다.
+  return current.getTime() >= lowerBoundDate.getTime() ? current : lowerBoundDate;
+}
+
+function toDate(value: Date | string): Date {
+  return value instanceof Date ? value : new Date(value);
 }
 
 function toErrorMessage(error: unknown): string {

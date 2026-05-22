@@ -102,6 +102,93 @@ describe("notification retry runtime", () => {
     });
   });
 
+  it("schedules retry delay from provider failure completion time", async () => {
+    const jobQueue = new MemoryNotificationRetryJobQueue();
+    const auditLog = new CapturingAuditLog();
+    let current = new Date("2026-05-22T00:01:00.000Z");
+    const notifier = new AdvancingFailureNotifier(() => {
+      current = new Date("2026-05-22T00:03:00.000Z");
+    });
+    const runtime = createPaperNoKeyNotificationRetryRuntime({
+      database: {} as never,
+      notifier,
+      durableCooldownStore: createInMemoryAlertCooldownStore(),
+      auditLog,
+      jobQueue,
+      clock: () => current,
+    });
+
+    await runtime.enqueueNotificationRetryJob(createRetryPlan({ maxAttempts: 2 }));
+    const [result] = await runtime.runDueNotificationRetryJobs({
+      now: "2026-05-22T00:01:00.000Z",
+    });
+
+    expect(result).toMatchObject({
+      status: "RETRY_SCHEDULED",
+      finalJob: {
+        status: "PENDING",
+      },
+    });
+    expect(result?.finalJob.run_after.toISOString()).toBe("2026-05-22T00:04:00.000Z");
+    expect(result?.finalJob.updated_at.toISOString()).toBe("2026-05-22T00:03:00.000Z");
+  });
+
+  it("keeps failure retry scheduling no earlier than the claim clock", async () => {
+    const jobQueue = new MemoryNotificationRetryJobQueue();
+    const notifier = new SequenceNotifier([{ delivered: false, skippedReason: "telegram_http_500" }]);
+    const runtime = createPaperNoKeyNotificationRetryRuntime({
+      database: {} as never,
+      notifier,
+      durableCooldownStore: createInMemoryAlertCooldownStore(),
+      auditLog: new CapturingAuditLog(),
+      jobQueue,
+      clock: () => new Date("2026-05-22T00:00:00.000Z"),
+    });
+
+    await runtime.enqueueNotificationRetryJob(createRetryPlan({ maxAttempts: 2 }));
+    const [result] = await runtime.runDueNotificationRetryJobs({
+      now: "2026-05-22T00:05:00.000Z",
+    });
+
+    expect(result).toMatchObject({
+      status: "RETRY_SCHEDULED",
+      finalJob: {
+        status: "PENDING",
+      },
+    });
+    expect(result?.finalJob.run_after.toISOString()).toBe("2026-05-22T00:06:00.000Z");
+  });
+
+  it("does not classify queue lifecycle errors as invalid payload failures", async () => {
+    const jobQueue = new CompleteThrowingNotificationRetryJobQueue();
+    const notifier = new SequenceNotifier([{ delivered: true, providerMessageId: "telegram-retry-1" }]);
+    const auditLog = new CapturingAuditLog();
+    const runtime = createPaperNoKeyNotificationRetryRuntime({
+      database: {} as never,
+      notifier,
+      durableCooldownStore: createInMemoryAlertCooldownStore(),
+      auditLog,
+      jobQueue,
+      clock: () => new Date("2026-05-22T00:01:00.000Z"),
+    });
+
+    await runtime.enqueueNotificationRetryJob(createRetryPlan({ maxAttempts: 2 }));
+    const [result] = await runtime.runDueNotificationRetryJobs({
+      now: "2026-05-22T00:01:00.000Z",
+    });
+
+    expect(result).toMatchObject({
+      status: "RETRY_SCHEDULED",
+      finalJob: {
+        status: "PENDING",
+        last_error: "notification retry worker failed: complete failed",
+      },
+    });
+    expect(auditLog.events.at(-1)?.metadata).toMatchObject({
+      invalid_payload: false,
+    });
+  });
+
   it("keeps malformed retry payloads in job failure evidence without provider calls", async () => {
     const jobQueue = new MemoryNotificationRetryJobQueue();
     const notifier = new SequenceNotifier([{ delivered: true }]);
@@ -242,6 +329,14 @@ class MemoryNotificationRetryJobQueue implements NotificationRetryRuntimeJobQueu
   }
 }
 
+class CompleteThrowingNotificationRetryJobQueue extends MemoryNotificationRetryJobQueue {
+  public override async completeNotificationRetryJob(
+    _options: { jobId: string; workerId: string; completedAt?: Date | string },
+  ): Promise<JobRecord> {
+    throw new Error("complete failed");
+  }
+}
+
 class SequenceNotifier implements NotifierPort {
   public readonly alerts: AlertNotification[] = [];
 
@@ -250,6 +345,25 @@ class SequenceNotifier implements NotifierPort {
   public async sendAlert(notification: AlertNotification): Promise<NotificationResult> {
     this.alerts.push(notification);
     return this.results.shift() ?? { delivered: true };
+  }
+
+  public async sendDailyReport(_notification: DailyReportNotification): Promise<NotificationResult> {
+    return { delivered: true };
+  }
+}
+
+class AdvancingFailureNotifier implements NotifierPort {
+  public readonly alerts: AlertNotification[] = [];
+
+  public constructor(private readonly advanceClock: () => void) {}
+
+  public async sendAlert(notification: AlertNotification): Promise<NotificationResult> {
+    this.alerts.push(notification);
+    this.advanceClock();
+    return {
+      delivered: false,
+      skippedReason: "telegram_http_500",
+    };
   }
 
   public async sendDailyReport(_notification: DailyReportNotification): Promise<NotificationResult> {
