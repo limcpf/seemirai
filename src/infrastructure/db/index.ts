@@ -32,10 +32,13 @@ export {
   toPaperOrderRowInput,
 } from "./execution-persistence.js";
 export {
+  claimJobByIdempotencyKey,
   claimPendingJobs,
   completeJob,
   enqueueJob,
+  failJob,
   findJobByIdempotencyKey,
+  requeueFailedJobByIdempotencyKey,
 } from "./jobs.js";
 export {
   applyPostgresKillSwitchControl,
@@ -98,12 +101,15 @@ export type {
   EnqueueDailyReportJobResult,
 } from "./daily-report/index.js";
 export type {
+  ClaimJobByIdempotencyKeyOptions,
   ClaimPendingJobsOptions,
   CompleteJobOptions,
   EnqueueJobInput,
   EnqueueJobResult,
+  FailJobOptions,
   JobRecord,
   JobStatus,
+  RequeueFailedJobByIdempotencyKeyOptions,
 } from "./jobs.js";
 export type {
   ApplyPostgresKillSwitchControlOptions,

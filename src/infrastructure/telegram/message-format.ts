@@ -147,6 +147,10 @@ export function formatAlertMessage(notification: AlertNotification): string {
     // kill switch 전이는 raw enum보다 현재 거래 영향이 먼저 보여야 운영자가 바로 차단 상태를 이해할 수 있다.
     return formatKillSwitchControlAlertMessage(notification, metadata);
   }
+  if (metadata !== undefined && readStringField(metadata, "source") === "paper_trade_event") {
+    // paper 매매 이벤트는 주문/체결 식별자를 추적 정보로 내리고 운영자가 볼 상태와 조치를 먼저 보여준다.
+    return formatPaperTradeAlertMessage(notification, metadata);
+  }
 
   return formatGenericAlertMessage(notification, metadata);
 }
@@ -207,6 +211,148 @@ function formatKillSwitchControlAlertMessage(
     optionalLine("리스크 이벤트", readStringField(metadata, "risk_event_id")),
     optionalLine("요청자", readStringField(metadata, "actor")),
   ]);
+}
+
+/**
+ * paper 매매 이벤트 alert metadata에서 Telegram 문구에 필요한 사용자 표시 필드를 읽어낸 값이다.
+ *
+ * application mapper가 보낸 metadata는 JSON 경계라 일부 필드가 누락될 수 있다. formatter는 확인된 문자열만 첫 화면에
+ * 배치하고, order id/idempotency/correlation id 같은 내부 식별자는 하단 추적 정보에만 둔다. 이 구조는 provider 호출 없이
+ * message text를 만드는 순수 presentation 경계다.
+ */
+interface PaperTradeMessageFields {
+  eventLabel: string;
+  statusText?: string;
+  causeText?: string;
+  impactText?: string;
+  operatorAction?: string;
+  market?: string;
+  side?: string;
+  quantity?: string;
+  requestedPrice?: string;
+  fillPrice?: string;
+  feeAmount?: string;
+  feeCurrency?: string;
+  slippageBps?: string;
+  remainingQuantity?: string;
+  orderId?: string;
+  idempotencyKey?: string;
+  correlationId?: string;
+  eventKind?: string;
+  reasonCode?: string;
+}
+
+/**
+ * paper 주문/체결 lifecycle alert를 한국어 운영 메시지로 재구성한다.
+ *
+ * 첫 화면에는 `PAPER`, market, side, quantity, 가격/비용, 상태/원인/영향/필요 조치를 두고, 내부 식별자와 stable code는
+ * `추적 정보`로 분리한다. 이 함수는 formatter 전용 순수 함수이며 Telegram provider 호출이나 alert cooldown 상태 변경 같은
+ * 외부 side effect를 만들지 않는다.
+ */
+function formatPaperTradeAlertMessage(
+  notification: AlertNotification,
+  metadata: Record<string, unknown>,
+): string {
+  const fields = readPaperTradeMessageFields(notification, metadata);
+
+  return joinMessageLines([
+    `[${labelSeverity(notification.severity)}] PAPER 매매 알림: ${fields.eventLabel}`,
+    "",
+    optionalLine("상태", fields.statusText),
+    optionalLine("원인", fields.causeText),
+    optionalLine("영향", fields.impactText),
+    optionalLine("필요 조치", fields.operatorAction),
+    formatPaperOrderLine(fields),
+    formatPaperPriceLine(fields),
+    formatPaperCostLine(fields),
+    optionalLine("잔량", fields.remainingQuantity),
+    "",
+    "추적 정보",
+    `알림 식별자: ${notification.fingerprint}`,
+    `발생 시각: ${toIsoTimestamp(notification.occurredAt)}`,
+    optionalLine("주문 ID", fields.orderId),
+    optionalLine("주문 키", fields.idempotencyKey),
+    optionalLine("요청 ID", fields.correlationId),
+    optionalLine("이벤트 코드", fields.eventKind),
+    optionalLine("사유 코드", fields.reasonCode),
+  ]);
+}
+
+function readPaperTradeMessageFields(
+  notification: AlertNotification,
+  metadata: Record<string, unknown>,
+): PaperTradeMessageFields {
+  const parsedFingerprint = parseAlertFingerprint(notification.fingerprint);
+
+  return {
+    eventLabel: readStringField(metadata, "event_label") ?? notification.title,
+    ...optionalStringProperty("statusText", readStringField(metadata, "status_text")),
+    ...optionalStringProperty("causeText", readStringField(metadata, "cause_text")),
+    ...optionalStringProperty("impactText", readStringField(metadata, "impact_text")),
+    ...optionalStringProperty("operatorAction", readStringField(metadata, "operator_action")),
+    ...optionalStringProperty("market", readStringField(metadata, "market") ?? parsedFingerprint.market),
+    ...optionalStringProperty("side", readStringField(metadata, "side")),
+    ...optionalStringProperty("quantity", readStringField(metadata, "quantity")),
+    ...optionalStringProperty("requestedPrice", readStringField(metadata, "requested_price")),
+    ...optionalStringProperty("fillPrice", readStringField(metadata, "fill_price")),
+    ...optionalStringProperty("feeAmount", readStringField(metadata, "fee_amount")),
+    ...optionalStringProperty("feeCurrency", readStringField(metadata, "fee_currency")),
+    ...optionalStringProperty("slippageBps", readStringField(metadata, "slippage_bps")),
+    ...optionalStringProperty("remainingQuantity", readStringField(metadata, "remaining_quantity")),
+    ...optionalStringProperty("orderId", readStringField(metadata, "order_id")),
+    ...optionalStringProperty("idempotencyKey", readStringField(metadata, "idempotency_key")),
+    ...optionalStringProperty("correlationId", readStringField(metadata, "correlation_id")),
+    ...optionalStringProperty("eventKind", readStringField(metadata, "event_kind")),
+    ...optionalStringProperty("reasonCode", readStringField(metadata, "reason_code") ?? parsedFingerprint.reasonCode),
+  };
+}
+
+function formatPaperOrderLine(fields: Pick<PaperTradeMessageFields, "market" | "side" | "quantity">): string | undefined {
+  if (fields.market === undefined || fields.side === undefined || fields.quantity === undefined) {
+    return undefined;
+  }
+
+  return `주문: PAPER ${fields.market} ${labelPaperOrderSide(fields.side)} ${fields.quantity}`;
+}
+
+function labelPaperOrderSide(side: string): string {
+  switch (side) {
+    case "BUY":
+      return "매수(BUY)";
+    case "SELL":
+      return "매도(SELL)";
+    default:
+      return side;
+  }
+}
+
+function formatPaperPriceLine(
+  fields: Pick<PaperTradeMessageFields, "requestedPrice" | "fillPrice">,
+): string | undefined {
+  if (fields.requestedPrice === undefined && fields.fillPrice === undefined) {
+    return undefined;
+  }
+
+  return joinMessageLines([
+    "가격:",
+    fields.requestedPrice === undefined ? undefined : `지정가 ${fields.requestedPrice}`,
+    fields.fillPrice === undefined ? undefined : `체결가 ${fields.fillPrice}`,
+  ]).replaceAll("\n", " ");
+}
+
+function formatPaperCostLine(
+  fields: Pick<PaperTradeMessageFields, "feeAmount" | "feeCurrency" | "slippageBps">,
+): string | undefined {
+  const feeText = fields.feeAmount === undefined
+    ? undefined
+    : `수수료 ${joinMessageLines([fields.feeAmount, fields.feeCurrency]).replaceAll("\n", " ")}`;
+  const slippageText = fields.slippageBps === undefined ? undefined : `슬리피지 ${fields.slippageBps} bps`;
+
+  if (feeText === undefined && slippageText === undefined) {
+    return undefined;
+  }
+
+  return joinMessageLines(["비용:", feeText, slippageText]).replaceAll("\n", " ");
 }
 
 /**

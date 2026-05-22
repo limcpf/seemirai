@@ -392,6 +392,21 @@ describe("HTTP control foundation", () => {
             jobId: "job-1",
             created: true,
           },
+          alertDispatch: {
+            fingerprint: "alert:test:paper_trading:P0:kill_switch_control:global:global:db_write_failure",
+            cooldownHit: false,
+            notification: {
+              delivered: true,
+              providerMessageId: "telegram-message-1",
+            },
+            failureEvaluation: {
+              state: {
+                consecutiveFailures: 0,
+                firstFailureAt: null,
+                lastFailureAt: null,
+              },
+            },
+          },
         };
       },
     };
@@ -462,6 +477,15 @@ describe("HTTP control foundation", () => {
         auditEventId: "audit-1",
         riskEventId: "risk-1",
       },
+      alertDispatch: {
+        fingerprint: "alert:test:paper_trading:P0:kill_switch_control:global:global:db_write_failure",
+        notification: {
+          delivered: true,
+          providerMessageId: "telegram-message-1",
+          skippedReason: null,
+        },
+      },
+      alertDispatchFailure: null,
     });
   });
 

@@ -11,8 +11,20 @@ import type {
 } from "../risk/index.js";
 import type { JsonRecord, TimestampInput } from "../../domain/index.js";
 
+export * from "./paper-trade-events.js";
+
 export const notificationRetryJobType = "notification_retry";
 export const defaultAlertDeliveryReservationMs = 60_000;
+
+/**
+ * notification retry payload가 재전송 가능한 alert 요청으로 복원되지 않을 때 사용하는 오류다.
+ *
+ * retry worker는 이 오류만 invalid payload로 분류하고, queue 상태 전이 실패나 audit 저장 실패 같은 infrastructure 오류와
+ * 구분해야 한다. 구분하지 않으면 정상 payload의 운영 장애가 payload 오류로 기록되어 복구 원인 분석을 오도한다.
+ */
+export class NotificationRetryPayloadError extends Error {
+  public override name = "NotificationRetryPayloadError";
+}
 
 /**
  * alert fingerprint를 구성하는 운영 차원이다.
@@ -149,6 +161,41 @@ export interface NotificationRetryJobPlan {
 }
 
 /**
+ * notification retry job을 durable queue에 적재한 결과다.
+ *
+ * application layer는 jobs table 구현을 모르지만, retry 계획이 실제 재시도 경계로 예약됐는지는 알아야 한다. jobId는 저장소가
+ * 제공할 수 있을 때만 채우며, created=false면 같은 idempotency key row를 재사용했다는 뜻이다.
+ */
+export interface NotificationRetryJobEnqueueReceipt {
+  jobType: typeof notificationRetryJobType;
+  idempotencyKey: string;
+  created: boolean;
+  jobId?: string;
+}
+
+/**
+ * notification retry job을 durable queue에 적재하는 application port다.
+ *
+ * P0/P1 provider failure는 원 업무 commit 이후에 발생하므로 alert dispatch service는 이 port를 선택 의존성으로 호출한다.
+ * 구현체는 jobs table 같은 durable queue에 idempotent하게 예약해야 하며, 실패하더라도 원 alert dispatch 결과를 예외로
+ * 되돌리지 않는다.
+ */
+export interface NotificationRetryJobQueue {
+  enqueueNotificationRetryJob(plan: NotificationRetryJobPlan): Promise<NotificationRetryJobEnqueueReceipt>;
+}
+
+/**
+ * notification retry job 예약 실패를 alert dispatch 결과에 남기는 안전한 표현이다.
+ *
+ * retry 예약 자체가 실패해도 이미 끝난 주문/리스크/kill switch commit을 rollback하지 않는다. 대신 짧은 reason code와
+ * 사람이 확인할 메시지를 audit metadata와 dispatch result에 남긴다.
+ */
+export interface NotificationRetryJobEnqueueFailure {
+  reasonCode: "notification_retry_enqueue_failed";
+  message: string;
+}
+
+/**
  * provider failure threshold 평가에 필요한 누적 상태다.
  *
  * 런타임은 이전 dispatch 결과의 state를 다음 호출에 넘겨 연속 실패와 긴 장애를 판단한다. 성공 전송이 한 번 나오면
@@ -182,6 +229,8 @@ export interface AlertDispatchResult {
   cooldownHit: boolean;
   notification: NotificationResult;
   retryJobPlan?: NotificationRetryJobPlan;
+  retryJobEnqueueReceipt?: NotificationRetryJobEnqueueReceipt;
+  retryJobEnqueueFailure?: NotificationRetryJobEnqueueFailure;
   failureEvaluation: NotificationFailureEvaluation;
 }
 
@@ -196,6 +245,7 @@ export interface AlertDispatchServiceOptions {
   notifier: NotifierPort;
   durableCooldownStore: AlertCooldownStore;
   memoryCooldownStore?: AlertCooldownStore;
+  retryJobQueue?: NotificationRetryJobQueue;
   auditLog?: AuditLogPort;
   clock?: () => Date;
   failureState?: NotificationFailureState;
@@ -357,9 +407,14 @@ export async function dispatchAlertWithCooldown(
   const retryJobPlan = usesDurableCooldown(request.severity)
     ? createNotificationRetryJobPlan({ request, fingerprint, occurredAt: alertOccurredAt })
     : undefined;
+  const retryJobEnqueue = retryJobPlan === undefined || options.retryJobQueue === undefined
+    ? undefined
+    : await enqueueNotificationRetryJobSafely(options.retryJobQueue, retryJobPlan);
   await appendAlertAudit(options, request, fingerprint, deliveryCompletedAt, "ERROR", "notification_failure", {
     skipped_reason: notification.skippedReason ?? "notification_provider_failure",
     retry_job: retryJobPlan ?? null,
+    retry_job_enqueue_receipt: retryJobEnqueue?.receipt ?? null,
+    retry_job_enqueue_failure: retryJobEnqueue?.failure ?? null,
     manual_review_reason_code: failureEvaluation.manualReviewReasonCode ?? null,
   });
 
@@ -368,6 +423,8 @@ export async function dispatchAlertWithCooldown(
     cooldownHit: false,
     notification,
     ...(retryJobPlan === undefined ? {} : { retryJobPlan }),
+    ...(retryJobEnqueue?.receipt === undefined ? {} : { retryJobEnqueueReceipt: retryJobEnqueue.receipt }),
+    ...(retryJobEnqueue?.failure === undefined ? {} : { retryJobEnqueueFailure: retryJobEnqueue.failure }),
     failureEvaluation,
   };
 }
@@ -412,7 +469,13 @@ export function createNotificationRetryJobPlan(input: {
     jobType: notificationRetryJobType,
     idempotencyKey: [notificationRetryJobType, input.fingerprint, occurredAt].join(":"),
     payloadJson: {
+      environment: input.request.environment,
+      run_mode: input.request.runMode,
       severity: input.request.severity,
+      alert_type: input.request.alertType,
+      market: input.request.market ?? null,
+      strategy_id: input.request.strategyId ?? null,
+      reason_code: input.request.reasonCode,
       title: input.request.title,
       body: input.request.body,
       fingerprint: input.fingerprint,
@@ -422,6 +485,96 @@ export function createNotificationRetryJobPlan(input: {
     },
     runAfter: input.occurredAt,
     maxAttempts: 3,
+  };
+}
+
+/**
+ * notification retry job payload를 다시 alert dispatch 요청으로 복원한다.
+ *
+ * jobs table payload는 JSON 경계라 필드 누락이나 잘못된 severity가 섞일 수 있다. retry worker는 이 함수를 통해 P0/P1만
+ * 재전송 대상으로 받아들이고, 내부 식별자는 원래 fingerprint와 metadata에 보존한다. 이 함수는 순수 검증/복원만 수행하며
+ * provider 호출이나 DB write 같은 외부 side effect는 없다.
+ */
+export function createAlertDispatchRequestFromNotificationRetryPayload(
+  payloadJson: JsonRecord,
+): AlertDispatchRequest {
+  const severity = readNotificationRetrySeverity(payloadJson, "severity");
+  if (!usesDurableCooldown(severity)) {
+    throw new NotificationRetryPayloadError("notification retry payload severity must be P0 or P1");
+  }
+
+  const correlationId = readOptionalStringField(payloadJson, "correlation_id");
+  const market = readOptionalStringField(payloadJson, "market");
+  const strategyId = readOptionalStringField(payloadJson, "strategy_id");
+
+  return {
+    environment: readRequiredStringField(payloadJson, "environment"),
+    runMode: readRequiredStringField(payloadJson, "run_mode"),
+    severity,
+    alertType: readRequiredStringField(payloadJson, "alert_type"),
+    ...(market === undefined ? {} : { market }),
+    ...(strategyId === undefined ? {} : { strategyId }),
+    reasonCode: readRequiredStringField(payloadJson, "reason_code"),
+    title: readRequiredStringField(payloadJson, "title"),
+    body: readRequiredStringField(payloadJson, "body"),
+    occurredAt: readRequiredStringField(payloadJson, "occurred_at"),
+    ...(correlationId === undefined ? {} : { correlationId }),
+    metadata: readOptionalJsonRecordField(payloadJson, "metadata") ?? {},
+  };
+}
+
+/**
+ * notification retry worker가 단일 job payload를 provider 재전송 경계로 실행한 결과다.
+ *
+ * `DELIVERED`는 provider 전송 성공, `COOLDOWN_SKIPPED`는 다른 경로에서 이미 같은 fingerprint가 처리되어 retry가 불필요한
+ * 상태, `FAILED`는 provider 또는 alert dispatch 경계가 다시 실패해 jobs table retry/final failure로 넘겨야 하는 상태다.
+ */
+export interface NotificationRetryDispatchResult {
+  status: "DELIVERED" | "COOLDOWN_SKIPPED" | "FAILED";
+  alertDispatch: AlertDispatchResult;
+  errorMessage?: string;
+}
+
+/**
+ * notification retry job payload를 alert dispatch service로 재전송한다.
+ *
+ * retry worker는 jobs table claim 이후 이 함수를 호출한다. 성공 또는 cooldown skip은 job completion 대상이고, 실패는 worker가
+ * `failJob`으로 재예약하거나 최종 실패 evidence를 남긴다. 이 함수는 durable queue 상태를 직접 바꾸지 않는다.
+ */
+export async function dispatchNotificationRetryJob(input: {
+  alertDispatch: AlertDispatchServiceOptions;
+  payloadJson: JsonRecord;
+}): Promise<NotificationRetryDispatchResult> {
+  const request = createAlertDispatchRequestFromNotificationRetryPayload(input.payloadJson);
+  const result = await dispatchAlertWithCooldown(input.alertDispatch, request);
+
+  if (result.notification.delivered) {
+    return {
+      status: "DELIVERED",
+      alertDispatch: result,
+    };
+  }
+
+  if (result.cooldownHit) {
+    if (result.notification.skippedReason === "alert_cooldown_active") {
+      return {
+        status: "COOLDOWN_SKIPPED",
+        alertDispatch: result,
+      };
+    }
+
+    return {
+      status: "FAILED",
+      alertDispatch: result,
+      errorMessage: `notification retry deferred: ${result.notification.skippedReason ?? "alert_delivery_not_sent"}`,
+    };
+  }
+
+  const skippedReason = result.notification.skippedReason ?? "notification_retry_provider_failure";
+  return {
+    status: "FAILED",
+    alertDispatch: result,
+    errorMessage: `notification retry failed: ${skippedReason}`,
   };
 }
 
@@ -491,6 +644,28 @@ function preserveNotificationFailureState(
       lastFailureAt: null,
     },
   };
+}
+
+async function enqueueNotificationRetryJobSafely(
+  queue: NotificationRetryJobQueue,
+  plan: NotificationRetryJobPlan,
+): Promise<{
+  receipt?: NotificationRetryJobEnqueueReceipt;
+  failure?: NotificationRetryJobEnqueueFailure;
+}> {
+  try {
+    return {
+      receipt: await queue.enqueueNotificationRetryJob(plan),
+    };
+  } catch (error) {
+    // retry 예약 실패는 원 업무 commit을 되돌릴 수 없으므로 dispatch 결과와 audit evidence에만 남긴다.
+    return {
+      failure: {
+        reasonCode: "notification_retry_enqueue_failed",
+        message: toErrorMessage(error),
+      },
+    };
+  }
 }
 
 /**
@@ -869,6 +1044,60 @@ function latestTimestamp(
 
 function sameTimestamp(left: TimestampInput | null | undefined, right: TimestampInput): boolean {
   return left !== null && left !== undefined && toEpochMs(left) === toEpochMs(right);
+}
+
+function readRequiredStringField(record: JsonRecord, key: string): string {
+  const value = record[key];
+  if (typeof value !== "string" || value.trim().length === 0) {
+    throw new NotificationRetryPayloadError(
+      `notification retry payload field ${key} must be a non-empty string`,
+    );
+  }
+
+  return value;
+}
+
+function readOptionalStringField(record: JsonRecord, key: string): string | undefined {
+  const value = record[key];
+  if (value === null || value === undefined) {
+    return undefined;
+  }
+
+  if (typeof value !== "string" || value.trim().length === 0) {
+    throw new NotificationRetryPayloadError(
+      `notification retry payload field ${key} must be a non-empty string when present`,
+    );
+  }
+
+  return value;
+}
+
+function readOptionalJsonRecordField(record: JsonRecord, key: string): JsonRecord | undefined {
+  const value = record[key];
+  if (value === null || value === undefined) {
+    return undefined;
+  }
+
+  if (typeof value !== "object" || Array.isArray(value)) {
+    throw new NotificationRetryPayloadError(
+      `notification retry payload field ${key} must be an object when present`,
+    );
+  }
+
+  return value as JsonRecord;
+}
+
+function readNotificationRetrySeverity(record: JsonRecord, key: string): AlertSeverity {
+  const value = readRequiredStringField(record, key);
+  if (value !== "P0" && value !== "P1" && value !== "P2" && value !== "P3") {
+    throw new NotificationRetryPayloadError(`notification retry payload field ${key} must be a known severity`);
+  }
+
+  return value;
+}
+
+function toErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 const defaultMemoryAlertCooldownStore = createInMemoryAlertCooldownStore();

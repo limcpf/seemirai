@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
+  createAlertFingerprint,
+  createPaperTradeAlertRequest,
+} from "../../src/application/index.js";
+import {
   createTelegramNotifier,
   enforceTelegramMessageLimit,
   formatAlertMessage,
@@ -97,6 +101,61 @@ describe("Telegram outbound notifier", () => {
         "감사 이벤트: audit-1",
         "리스크 이벤트: risk-1",
         "요청자: operator",
+      ].join("\n"),
+    );
+  });
+
+  it("formats paper trade event alerts with tracking details separated", () => {
+    const request = createPaperTradeAlertRequest({
+      environment: "prod",
+      runMode: "paper_trading",
+      eventKind: "SLIPPAGE_THRESHOLD_EXCEEDED",
+      market: "KRW-BTC",
+      strategyId: "breakout-v1",
+      side: "BUY",
+      quantity: "0.01",
+      requestedPrice: "100000000",
+      fillPrice: "100250000",
+      feeAmount: "25",
+      feeCurrency: "KRW",
+      slippageBps: "25",
+      remainingQuantity: "0",
+      orderId: "paper-order-1",
+      idempotencyKey: "paper-idem-1",
+      correlationId: "corr-paper-1",
+      occurredAt: "2026-05-22T00:00:00.000Z",
+    });
+
+    expect(
+      formatAlertMessage({
+        severity: request.severity,
+        title: request.title,
+        body: request.body,
+        fingerprint: createAlertFingerprint(request),
+        occurredAt: "2026-05-22T00:00:00.000Z",
+        metadata: request.metadata ?? {},
+      }),
+    ).toBe(
+      [
+        "[P1 중요] PAPER 매매 알림: 슬리피지 임계값 초과",
+        "",
+        "상태: PAPER 주문 체결 품질이 기준을 벗어났습니다.",
+        "원인: 실제 체결가가 요청 가격 대비 허용 슬리피지를 초과했습니다.",
+        "영향: 전략 기대값이 비용 차감 후 음수로 바뀔 수 있습니다.",
+        "필요 조치: 해당 전략과 마켓의 가격/호가 상태를 확인하고 필요하면 전략을 일시 중지해 주세요.",
+        "주문: PAPER KRW-BTC 매수(BUY) 0.01",
+        "가격: 지정가 100000000 체결가 100250000",
+        "비용: 수수료 25 KRW 슬리피지 25 bps",
+        "잔량: 0",
+        "",
+        "추적 정보",
+        "알림 식별자: alert:prod:paper_trading:P1:paper_trade_event:krw-btc:breakout-v1:paper_slippage_threshold_exceeded",
+        "발생 시각: 2026-05-22T00:00:00.000Z",
+        "주문 ID: paper-order-1",
+        "주문 키: paper-idem-1",
+        "요청 ID: corr-paper-1",
+        "이벤트 코드: SLIPPAGE_THRESHOLD_EXCEEDED",
+        "사유 코드: paper_slippage_threshold_exceeded",
       ].join("\n"),
     );
   });

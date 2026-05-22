@@ -79,6 +79,100 @@ const actionPlanSchema = {
   },
 } as const;
 
+/**
+ * kill switch control 이후 Telegram dispatch가 실제 provider 전송, cooldown skip, retry 예약 중 어디까지 진행됐는지 보여주는
+ * 안전한 HTTP 응답 schema다. retry payload 원문은 민감 추적 정보가 섞일 수 있어 노출하지 않는다.
+ */
+const alertDispatchResponseSchema = {
+  anyOf: [
+    { type: "null" },
+    {
+      type: "object",
+      required: [
+        "fingerprint",
+        "cooldownHit",
+        "notification",
+        "retryJobPlan",
+        "retryJobEnqueueReceipt",
+        "retryJobEnqueueFailure",
+        "failureEvaluation",
+      ],
+      properties: {
+        fingerprint: { type: "string" },
+        cooldownHit: { type: "boolean" },
+        notification: {
+          type: "object",
+          required: ["delivered", "providerMessageId", "skippedReason"],
+          properties: {
+            delivered: { type: "boolean" },
+            providerMessageId: { type: ["string", "null"] },
+            skippedReason: { type: ["string", "null"] },
+          },
+        },
+        retryJobPlan: {
+          anyOf: [
+            { type: "null" },
+            {
+              type: "object",
+              required: ["jobType", "idempotencyKey", "runAfter", "maxAttempts"],
+              properties: {
+                jobType: { type: "string" },
+                idempotencyKey: { type: "string" },
+                runAfter: { type: "string" },
+                maxAttempts: { type: "number" },
+              },
+            },
+          ],
+        },
+        retryJobEnqueueReceipt: {
+          anyOf: [
+            { type: "null" },
+            {
+              type: "object",
+              required: ["jobType", "idempotencyKey", "jobId", "created"],
+              properties: {
+                jobType: { type: "string" },
+                idempotencyKey: { type: "string" },
+                jobId: { type: ["string", "null"] },
+                created: { type: "boolean" },
+              },
+            },
+          ],
+        },
+        retryJobEnqueueFailure: {
+          anyOf: [
+            { type: "null" },
+            {
+              type: "object",
+              required: ["reasonCode", "message"],
+              properties: {
+                reasonCode: { type: "string" },
+                message: { type: "string" },
+              },
+            },
+          ],
+        },
+        failureEvaluation: {
+          type: "object",
+          required: ["state", "manualReviewReasonCode"],
+          properties: {
+            state: {
+              type: "object",
+              required: ["consecutiveFailures", "firstFailureAt", "lastFailureAt"],
+              properties: {
+                consecutiveFailures: { type: "number" },
+                firstFailureAt: { type: ["string", "null"] },
+                lastFailureAt: { type: ["string", "null"] },
+              },
+            },
+            manualReviewReasonCode: { type: ["string", "null"] },
+          },
+        },
+      },
+    },
+  ],
+} as const;
+
 export const healthzRouteOptions: RouteShorthandOptions = {
   schema: {
     response: {
@@ -231,6 +325,8 @@ export const killSwitchRouteOptions: RouteShorthandOptions = {
           "recommendedTargetState",
           "hardStopCancelJob",
           "evidence",
+          "alertDispatch",
+          "alertDispatchFailure",
         ],
         properties: {
           status: { const: "ok" },
@@ -271,6 +367,20 @@ export const killSwitchRouteOptions: RouteShorthandOptions = {
               auditEventId: { type: ["string", "null"] },
               riskEventId: { type: ["string", "null"] },
             },
+          },
+          alertDispatch: alertDispatchResponseSchema,
+          alertDispatchFailure: {
+            anyOf: [
+              { type: "null" },
+              {
+                type: "object",
+                required: ["reasonCode", "message"],
+                properties: {
+                  reasonCode: { type: "string" },
+                  message: { type: "string" },
+                },
+              },
+            ],
           },
         },
       },

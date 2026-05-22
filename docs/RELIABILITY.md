@@ -82,8 +82,23 @@ Codex-native 운영은 Codex, Git, GitHub, shell command, 문서 상태를 연�
   시각이 아니라 provider 전송 완료 시각 기준이며, out-of-order update가 들어와도 뒤로 가지 않는다.
 - notifier adapter가 예외를 던져도 alert dispatch는 `notification_provider_exception` 실패 결과로 정규화해 audit,
   retry 후보, failure threshold 평가를 같은 경로로 수행한다.
-- P0/P1 provider failure는 `notification_retry` job 후보를 만들지만, 이 단계에서 jobs table insert나 worker 실행을 직접
-  수행하지 않는다.
+- P0/P1 provider failure는 `notification_retry` job 후보를 만들고, runtime retry queue가 연결된 경우 같은 idempotency key로
+  jobs table에 예약한다. retry job 예약 실패는 `notification_retry_enqueue_failed` evidence로 남기되 원 업무 commit을
+  rollback하지 않는다.
+- notification retry worker는 `job_type=notification_retry`만 claim해야 한다. 공용 jobs table에서 job type 조건 없이 claim하면
+  daily report, policy sync 같은 다른 worker 책임 row를 실행할 수 있으므로 merge-blocking 결함으로 본다.
+- notification retry worker는 claim과 실행을 한 건 단위로 반복한다. 배치 전체를 먼저 RUNNING으로 바꾸면 중간 crash 때 아직
+  provider 호출하지 않은 row가 재claim되지 않으므로 금지한다.
+- retry provider 전송 성공 또는 같은 fingerprint의 활성 cooldown hit(`alert_cooldown_active`)는 retry job을 `COMPLETED`로
+  닫는다. in-flight reservation이나 reservation race로 막힌 경우는 다른 실행이 끝나지 않은 상태일 수 있으므로 완료 처리하지
+  않고 실패 경로로 재예약한다. provider 실패와 deferred reservation은 dispatch 처리 종료 시각을 기준으로 `failJob` 재예약
+  시각을 계산하고, claim 시각보다 과거가 되지 않게 보정한다. max attempts를 소진하면 `FAILED`와
+  `notification_retry_manual_review_required` audit evidence를 남겨 manual review로 수렴한다.
+- retry worker는 provider 전송 성공을 runtime-local notifier adapter로 추적한다. 전송 성공 뒤 cooldown 기록이나 alert audit
+  저장에서 예외가 발생하면 같은 Telegram message를 다시 보내지 않도록 job을 `COMPLETED`로 닫고, 가능한 경우
+  `notification_retry_delivered_after_dispatch_error` evidence만 남긴다.
+- retry worker의 audit 저장 실패는 이미 발생한 provider side effect나 job 상태 전이를 재시도하지 않는다. 이 장애는 audit 누락
+  리스크로 남기고 Telegram 재전송 중복을 만들지 않는다.
 - provider 실패가 연속 3회이거나 첫 실패 이후 10분 이상 지속되면 kill switch mapping에서 `MANUAL_REVIEW_REQUIRED` 후보로
   쓰는 reason code를 반환한다.
 - runtime kill switch alert dispatch는 같은 `alertDispatch` 옵션 객체에 최신 failure state를 저장해 provider 실패 누적을
@@ -94,6 +109,12 @@ Codex-native 운영은 Codex, Git, GitHub, shell command, 문서 상태를 연�
   연결한다. Telegram side effect는 kill switch durable update transaction 안에 넣지 않는다.
 - post-commit alert dispatch가 cooldown/audit/provider 경계에서 실패해도 이미 commit된 kill switch 전이를 5xx로 바꾸지 않고,
   결과 객체에 `alert_dispatch_failed` reason code만 기록한다.
+- paper 매매 이벤트 알림 후보는 주문·체결·취소·리스크 evidence가 확정된 뒤 생성한다. mapper는 alert 요청만 만들고 broker
+  side effect나 DB write를 수행하지 않아, Telegram provider 장애가 이미 commit된 주문/체결 상태를 되돌리지 않는다.
+- paper 매매 이벤트 P1은 durable cooldown과 `notification_retry` 후보 대상이며, P2 lifecycle 알림과 P3 요약 알림은 process
+  memory cooldown으로 묶는다. 정상 lifecycle 반복은 단건 즉시 전송보다 summary 정책으로 낮춰 운영 소음을 제한한다.
+- paper 매매 이벤트 Telegram 메시지는 `PAPER`, market, strategy, side, 수량, 가격/비용, 상태·원인·영향·필요 조치를 먼저
+  표시하고, order id, idempotency key, correlation id, event kind, reason code는 하단 `추적 정보`에만 둔다.
 
 ## Daily report 신뢰성 기준
 
@@ -123,6 +144,24 @@ Codex-native 운영은 Codex, Git, GitHub, shell command, 문서 상태를 연�
   일반 audit event를 섞으면 폐기 사유가 과대 집계되므로 payload kind 확인은 필수다.
 - Telegram daily report 전송은 집계가 끝난 뒤 `NotifierPort.sendDailyReport`에서만 발생한다. DB fact 조회와 집계가 성공한
   사실, provider 전송 성공/실패는 job/audit에서 분리해 추적해야 한다.
+- M9 daily report runner는 수동 실행과 scheduler 실행 모두 `report.daily:<reportDate>` idempotency key를 먼저 예약하거나
+  재사용한 뒤 claim된 job만 실행한다. 같은 기준일 job이 이미 `COMPLETED`이면 수동 실행은 provider를 다시 호출하지 않는다.
+  같은 기준일 job이 `FAILED`로 소진됐으면 운영자 수동 실행만 같은 row를 `PENDING`으로 재개해 복구할 수 있다.
+- scheduler worker는 `job_type=report.daily`만 claim해야 하며, 수동 실행의 idempotency-key claim도 같은 job type 조건을
+  함께 강제해야 한다. 공용 jobs table에는 policy sync, notification retry 같은 다른 작업도 들어오므로 daily report worker가
+  다른 job type을 실행하면 운영 side effect가 섞일 수 있다.
+- scheduler worker는 여러 건을 처리하더라도 claim과 실행을 한 건 단위로 반복해야 한다. 배치 전체를 먼저 `RUNNING`으로
+  바꾸면 중간 crash 때 아직 실행하지 않은 row가 재claim되지 않으므로, 다음 job은 이전 job의 최종 전이 이후에만 claim한다.
+- scheduler worker가 generation failure row를 `PENDING`으로 되돌릴 때는 같은 sweep에서 같은 row가 즉시 재claim되지 않도록
+  `run_after`를 최소 다음 tick 이후로 미룬다. 실패 row가 attempt를 한 번에 소진하면 다른 due job 처리도 굶길 수 있다.
+- daily report runner가 audit 저장소 장애처럼 예외를 던져도 runtime은 claim된 job을 `failJob` 경계로 넘겨 lock을 해제해야
+  한다. 이 전이가 실패하지 않는 한 같은 idempotency key는 retry 또는 수동 복구 대상으로 남아야 한다.
+- report 생성 실패와 Telegram provider 실패는 서로 다른 failure class다. fact 조회, 집계, formatting 실패는
+  `daily_report_generation_failed` audit evidence와 jobs retry/FAILED 상태로 남긴다. Telegram provider 실패나 notifier 예외는
+  `daily_report_notification_failed` audit evidence로 남기되, deterministic report 생성 성공을 되돌리거나 같은 기준일을
+  반복 전송하지 않는다.
+- Telegram 전송 성공 이후 notification audit 저장이 실패해도 이미 발생한 provider side effect를 retry하지 않는다. 이 장애는
+  runner 결과의 error message와 job completion evidence로 추적하고, audit 저장소 복구는 별도 운영 조치로 다룬다.
 
 ## Paper soak 신뢰성 기준
 

@@ -157,8 +157,8 @@ cooldown 기본값:
 | P2 | 1시간 | process memory |
 | P3 | 6시간 | process memory |
 
-P0/P1 provider failure는 `notification_retry` job 후보 payload와 idempotency key를 만든다. Sub PR 3은 실제 jobs insert와
-worker 실행을 연결하지 않고, 후속 runtime 조립이 사용할 retry contract만 고정한다. provider 실패가 연속 3회이거나 첫 실패
+P0/P1 provider failure는 `notification_retry` job 후보 payload와 idempotency key를 만든다. runtime alert dispatch 옵션에
+retry queue가 붙어 있으면 같은 실패 경계에서 jobs table에 idempotent하게 예약한다. provider 실패가 연속 3회이거나 첫 실패
 이후 10분 이상 이어지면 `notification_consecutive_failure` 또는 `notification_failure_threshold_exceeded` reason code를
 반환해 kill switch mapping의 `MANUAL_REVIEW_REQUIRED` 후보로 쓸 수 있게 한다.
 
@@ -174,12 +174,84 @@ provider 호출 직전에는 fingerprint 단위 delivery reservation을 먼저 �
 같은 장애가 동시에 들어와도 두 요청이 모두 Telegram provider를 호출하는 상황을 막기 위한 것이다. cooldown 기준 시각은
 alert 발생 시각이 아니라 reservation/전송 완료 시각을 사용해 지연 처리된 과거 alert가 보호 창을 짧게 만들지 못하게 한다.
 
+## M9 Paper 매매 이벤트 Telegram 알림
+
+구현 기준:
+
+- paper event mapper: `src/application/alerts/paper-trade-events.ts`
+- Telegram formatter: `src/infrastructure/telegram/message-format.ts`
+- cooldown/provider failure 경계: `src/application/alerts/index.ts`
+
+paper 주문·체결·취소·재호가·리스크 차단 evidence는 DB commit 또는 broker 결과가 확정된 뒤
+`createPaperTradeAlertRequest`로 alert 후보가 된다. 이 mapper는 Telegram provider를 직접 호출하지 않고, 기존
+`dispatchAlertWithCooldown`으로 넘길 순수 요청만 만든다. provider 실패는 주문/체결 commit을 되돌리지 않으며, P1 실패는
+후속 worker가 사용할 `notification_retry` 후보 payload와 audit evidence로 분리한다.
+
+severity와 전송 정책:
+
+| severity | 정책 | 이벤트 |
+| --- | --- | --- |
+| P1 | immediate | 슬리피지 임계값 초과, 부분체결 장기화, 취소/재호가 실패, 주문/체결 accounting mismatch, 운영자 확인 필요 |
+| P2 | cooldown | paper 주문 제출, paper 부분체결, paper 전체체결, paper 주문 취소, 재호가 완료, 리스크 차단 |
+| P3 | summary | 전략 신호 요약, 주문 후보 폐기 요약, 정상 lifecycle 반복 요약 |
+
+paper 매매 이벤트 fingerprint는 기존 alert 규칙과 같은
+`environment + run_mode + severity + paper_trade_event + market + strategy_id + reason_code`를 사용한다. P1은 durable
+cooldown과 retry 후보 생성 대상이고, P2/P3은 process memory cooldown으로 운영 소음을 줄인다.
+
+Telegram 첫 화면에는 내부 enum/code보다 다음 사용자 문구와 주문 문맥을 먼저 둔다.
+
+- `PAPER` 모드
+- market
+- strategy id
+- side
+- 수량
+- 지정가 또는 체결가
+- 수수료와 슬리피지 가능 값
+- 상태, 원인, 영향, 필요 조치
+
+`fingerprint`, order id, idempotency key, correlation id, event kind, reason code는 하단 `추적 정보`에만 둔다. 이 구분은
+운영자가 즉시 행동할 내용과 복구·감사용 안정 식별자를 섞지 않기 위한 presentation invariant다.
+
+## M9 Notification retry worker
+
+구현 기준:
+
+- retry payload/dispatch contract: `src/application/alerts/index.ts`
+- jobs worker runtime: `src/runtime/notification-retry-runtime.ts`, `src/runtime/notification-retry-runtime/service.ts`
+- jobs table adapter: `src/infrastructure/db/jobs.ts`
+
+P0/P1 Telegram provider 실패는 `dispatchAlertWithCooldown` 결과에 `notification_retry` plan으로 남는다. PAPER_NO_KEY runtime은
+`createRuntimeAlertDispatchOptions`에서 PostgreSQL retry queue를 붙이므로, provider 실패가 발생하면 같은 plan을 jobs table에
+예약한다. 이 예약 실패도 원 주문, 리스크, kill switch commit을 되돌리지 않고 `notification_retry_enqueue_failed` evidence로
+분리한다.
+
+retry job payload는 worker가 원 alert 요청을 복원할 수 있도록 다음 필드를 포함한다.
+
+- `environment`, `run_mode`, `severity`, `alert_type`, `market`, `strategy_id`, `reason_code`
+- `title`, `body`, `fingerprint`, `occurred_at`, `correlation_id`
+- formatter와 추적에 필요한 `metadata`
+
+worker는 `job_type=notification_retry`인 due row만 claim한다. claim된 row는 원 payload를 다시 `AlertDispatchRequest`로 복원해
+기존 cooldown/provider/audit 경계를 그대로 통과한다. provider 전송 성공 또는 같은 fingerprint의 활성 cooldown hit는 job을
+`COMPLETED`로 닫는다. in-flight reservation 또는 reservation race skip은 아직 다른 전송 시도가 끝나지 않은 상태일 수 있어
+완료가 아니라 실패 재예약 경로로 넘긴다. provider 실패나 retry payload 오류는 `failJob`으로 넘겨 `run_after`를 dispatch 처리
+종료 시각 기준 최소 다음 worker tick 이후로 미루고, claim 시각보다 과거가 되지 않게 보정한다. `max_attempts`를 소진하면 job은
+`FAILED`에 고정되고, `notification_retry_manual_review_required` audit evidence와 `notification_consecutive_failure` manual
+review reason을 남긴다. provider 전송이 성공한 뒤 cooldown 기록이나 alert audit 저장에서 예외가 발생하면 job을 재예약하지
+않고 `COMPLETED`로 닫아 Telegram 중복 전송을 막는다. 이 경우 worker audit 저장소가 살아 있으면
+`notification_retry_delivered_after_dispatch_error` evidence에 후처리 오류를 남긴다.
+
+retry worker는 Telegram outbound 재전송만 수행한다. Telegram inbound command, webhook, polling route를 만들지 않고, 실거래
+주문 API나 Upbit private API를 호출하지 않는다.
+
 ## M8 Daily report
 
 구현 기준:
 
 - application 집계/전송 경계: `src/application/daily-report/`
 - PostgreSQL fact repository: `src/infrastructure/db/daily-report/`
+- M9 runner/scheduler boundary: `src/runtime/daily-report-runtime.ts`
 - outbound adapter: `NotifierPort.sendDailyReport`
 - job idempotency: PostgreSQL `jobs.idempotency_key`
 
@@ -210,6 +282,27 @@ worker retry나 운영 재생이 같은 조회 범위를 사용할 수 있게 �
 값이 없으면 임의로 0으로 채우지 않고 `unavailable`로 표시한다. 단, 주문 수, 체결 수, 폐기 후보 수처럼 row 개수를 세는 항목은
 데이터가 없을 때 실제 0으로 표시한다. 실현 손익은 `realized PnL`, 추정 손익은 `unrealized PnL` 기반으로 분리 표기한다.
 
+M9부터 daily report 수동 실행과 scheduler 실행은 같은 runner boundary를 사용한다. 두 경로 모두 먼저
+`report.daily:<reportDate>` idempotency key로 `jobs` row를 예약하거나 재사용한 뒤, claim된 job에서 report fact 조회와
+Telegram 전송을 수행한다. 수동 실행 claim은 `idempotency_key`뿐 아니라 `job_type=report.daily`도 함께 확인해 공용
+jobs table의 다른 worker 책임 row를 전이시키지 않는다. 이미 `COMPLETED`인 같은 기준일 job은 수동 실행에서 다시 전송하지
+않는다. 같은 기준일 job이 `FAILED`로 소진된 경우에는 운영자 수동 실행만 같은 idempotency key row를 `PENDING`으로 재개해
+복구할 수 있다.
+
+runner 결과는 생성과 전송을 분리해 기록한다.
+
+- report fact 조회/집계/formatting 성공: `DAILY_REPORT` audit event, `daily_report_generated`
+- Telegram 전송 성공: `NOTIFICATION_DELIVERY` audit event, `daily_report_notification_delivered`
+- Telegram provider skip/실패/예외: `NOTIFICATION_DELIVERY` audit event, `daily_report_notification_failed`
+- report 생성 실패: `DAILY_REPORT` audit event, `daily_report_generation_failed`, jobs row는 재시도 가능하면 `PENDING`, 한도 초과 시 `FAILED`
+
+Telegram provider 실패는 report 생성 성공을 되돌리지 않는다. provider 실패는 audit evidence로 남기고 claim된 daily report job은
+완료 처리해 같은 기준일의 중복 전송을 막는다. provider 호출 이후 notification audit 저장이 실패해도 job을 generation retry로
+되돌리지 않고 결과의 `errorMessage`에 남긴다. report 생성 실패만 jobs retry 대상이다. scheduler worker는 `limit`가 1보다
+커도 실행 가능한 daily report job을 한 번에 하나씩 claim하고 즉시 실행한다. scheduler 실패 row는 같은 sweep에서 다시
+claim하지 않도록 최소 다음 tick 이후로 `run_after`를 미룬다. report 생성 중 audit 저장소 장애처럼 runner가 예외를 던지면
+runtime이 `failJob`으로 lock을 해제해 같은 row가 retry 또는 수동 복구 대상으로 남게 한다.
+
 ## M8 Paper soak verification
 
 구현 기준:
@@ -220,15 +313,18 @@ worker retry나 운영 재생이 같은 조회 범위를 사용할 수 있게 �
 
 24시간 paper soak는 기본 검증에서 자동 실행하지 않는다. `node scripts/soak-paper-24h.mjs`만 실행하면
 `SEEMIRAI_RUN_SOAK=1`이 없다는 summary를 남기고 skip한다. CI와 PR 검증은 다음 fixture smoke로 장시간 실행 guard,
-실거래 주문 API 0회 근거, stale data 차단 evidence, audit 누락 0건, `/status`와 `/kill-switch` route 근거를 확인한다.
+실거래 주문 API 0회 근거, stale data 차단 evidence, audit 누락 0건, `/readyz`/`/status`와 `/kill-switch` route 근거를
+확인한다.
 
 ```sh
 node scripts/soak-paper-24h.mjs --fixture-smoke
 ```
 
 실제 24시간 public quotation WebSocket soak는 운영자가 의도적으로 env를 열 때만 실행한다. control server가 떠 있으면
-`--control-url`을 추가해 `GET /status` 200 응답과 token 없는 `POST /kill-switch` 거부 응답을 함께 확인한다. 24시간 결과를
-완료 evidence로 쓰려면 daily report 생성이 끝난 뒤 `--daily-report-generated`를 함께 넘긴다.
+`--control-url`을 추가해 `GET /readyz`/`GET /status` 200 응답과 `/kill-switch` route guard 근거를 함께 확인한다. 상태
+변경이 허용되는 disposable local paper runtime에서는 `--control-drill`과 `--control-token-env`를 추가해 token 없는
+`POST /kill-switch` 401 거부, 인증된 전이, pending cancel plan, Telegram dispatch evidence를 같은 correlation id로 확인한다.
+24시간 결과를 완료 evidence로 쓰려면 daily report 생성이 끝난 뒤 `--daily-report-generated`를 함께 넘긴다.
 
 ```sh
 SEEMIRAI_RUN_SOAK=1 node scripts/soak-paper-24h.mjs \
@@ -246,9 +342,21 @@ summary의 완료 판단 필드는 다음과 같다.
 - `liveOrderApiCalls`: 실거래 주문 API 호출 0회와 disabled live broker source guard
 - `auditMissing`: stale/reconnect/disconnect 차단 evidence 누락 0건
 - `staleDataBlocked`: stale data가 신규 주문 차단 evidence로 연결됐는지
-- `statusEndpoint`, `killSwitchEndpoint`: source scan 또는 local probe 근거
+- `readyzEndpoint`, `statusEndpoint`, `killSwitchEndpoint`: source scan 또는 local probe 근거
+- `controlMissingTokenRejected`, `killSwitchDrill`: 명시적 control drill 실행 시 token 거부, 전이, pending cancel, Telegram evidence
 - `dbWriteFailures`, `notificationFailures`: 운영자가 관측한 실패 건수
 - `dailyReportGenerated`: 실제 24시간 soak 완료 시 daily report evidence 포함 여부
+
+3일 paper report 비교는 저장소 밖 summary JSON 3개 이상을 입력으로 받는 별도 도구로 수행한다.
+
+```sh
+node scripts/compare-m9-paper-reports.mjs \
+  --summary "$HOME/vaults/99_운영/seemirai-soak/day-1-summary.json" \
+  --summary "$HOME/vaults/99_운영/seemirai-soak/day-2-summary.json" \
+  --summary "$HOME/vaults/99_운영/seemirai-soak/day-3-summary.json" \
+  --output "$HOME/vaults/99_운영/seemirai-m9-paper/m9-3day-comparison.md" \
+  --json
+```
 
 ## M6 Execution 안전 설정
 

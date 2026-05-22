@@ -19,16 +19,70 @@ export interface EnqueueJobResult {
   created: boolean;
 }
 
+/**
+ * 실행 가능한 job 묶음을 claim하는 조건이다.
+ *
+ * `jobType`을 지정하면 공용 jobs table에서 특정 worker가 자기 책임 job만 가져간다. 지정하지 않으면 기존처럼 모든 job type을
+ * 대상으로 하므로, caller는 worker 경계가 섞이지 않는 상황에서만 생략해야 한다.
+ */
 export interface ClaimPendingJobsOptions {
   workerId: string;
+  jobType?: string;
   limit?: number;
   now?: Date | string;
 }
 
+/**
+ * 하나의 idempotency key job을 직접 claim하는 조건이다.
+ *
+ * `jobType`을 지정하면 key가 같더라도 다른 worker 책임 row를 claim하지 않는다. 수동 실행은 이미 예약된 같은 key job을 즉시
+ * 실행해야 할 수 있으므로 `ignoreRunAfter`로 예약 시각 검사를 우회할 수 있다. scheduler 경계에서는 이 값을 쓰지 않아야
+ * 예약 시간이 지켜진다.
+ */
+export interface ClaimJobByIdempotencyKeyOptions {
+  workerId: string;
+  idempotencyKey: string;
+  jobType?: string;
+  now?: Date | string;
+  ignoreRunAfter?: boolean;
+}
+
+/**
+ * worker가 claim한 job을 완료 처리하기 위한 조건이다.
+ *
+ * `workerId`와 lock metadata를 함께 확인해 다른 worker가 claim한 job을 완료 처리하지 못하게 한다.
+ */
 export interface CompleteJobOptions {
   jobId: string;
   workerId: string;
   completedAt?: Date | string;
+}
+
+/**
+ * worker가 claim한 job의 실패를 기록하기 위한 조건이다.
+ *
+ * 실패 원인은 `last_error`에 남기고, 재시도 가능하면 `retryAfter` 이후 다시 claim 가능하게 만든다.
+ */
+export interface FailJobOptions {
+  jobId: string;
+  workerId: string;
+  errorMessage: string;
+  failedAt?: Date | string;
+  retryAfter?: Date | string;
+}
+
+/**
+ * 실패로 고정된 job을 운영자 수동 재실행 대상으로 되돌리는 조건이다.
+ *
+ * 같은 idempotency key row를 재사용해야 중복 예약이 아니라 명시적 복구 시도로 추적된다. `jobType`을 함께 넘기면 공용 jobs
+ * table에서 다른 worker 책임 row를 되살리지 않는다.
+ */
+export interface RequeueFailedJobByIdempotencyKeyOptions {
+  idempotencyKey: string;
+  jobType?: string;
+  runAfter?: Date | string;
+  maxAttempts?: number;
+  requeuedAt?: Date | string;
 }
 
 /**
@@ -114,9 +168,22 @@ export async function claimPendingJobs(
   }
 
   const now = options.now ?? new Date();
+  const jobTypeCondition =
+    options.jobType === undefined ? sql`` : sql`AND job_type = ${options.jobType}`;
 
-  return database.transaction().execute(async (transaction) => {
+  const claim = async (executor: Database): Promise<JobRecord[]> => {
     const result = await sql<JobRecord>`
+      WITH claimable AS (
+        SELECT id
+        FROM jobs
+        WHERE status = 'PENDING'
+          ${jobTypeCondition}
+          AND run_after <= ${now}
+          AND attempt_count < max_attempts
+        ORDER BY run_after ASC, created_at ASC
+        FOR UPDATE SKIP LOCKED
+        LIMIT ${limit}
+      )
       UPDATE jobs
       SET
         status = 'RUNNING',
@@ -124,21 +191,63 @@ export async function claimPendingJobs(
         locked_by = ${options.workerId},
         attempt_count = attempt_count + 1,
         updated_at = ${now}
-      WHERE id IN (
-        SELECT id
-        FROM jobs
-        WHERE status = 'PENDING'
-          AND run_after <= ${now}
-          AND attempt_count < max_attempts
-        ORDER BY run_after ASC, created_at ASC
-        FOR UPDATE SKIP LOCKED
-        LIMIT ${limit}
-      )
-      RETURNING *
-    `.execute(transaction);
+      FROM claimable
+      WHERE jobs.id = claimable.id
+      RETURNING jobs.*
+    `.execute(executor);
 
     return result.rows;
-  });
+  };
+
+  if (database.isTransaction) {
+    // 상위 workflow가 rollback/snapshot 경계를 이미 소유한 경우 nested transaction을 열지 않고 같은 connection에서 claim한다.
+    return claim(database);
+  }
+
+  return database.transaction().execute((transaction) => claim(transaction));
+}
+
+/**
+ * idempotency key가 가리키는 실행 가능 job 하나를 worker에게 할당한다.
+ *
+ * 수동 daily report 실행은 scheduler와 같은 job row를 재사용해야 중복 전송을 막을 수 있다. 이 함수는 key 단위로 기존
+ * `PENDING` row를 claim하고, 이미 완료/실행 중인 row는 건드리지 않는다.
+ *
+ * @param database Kysely database connection
+ * @param options worker 식별자, idempotency key, 기준 시각
+ * @returns claim한 job record 또는 현재 claim할 수 없으면 `undefined`
+ */
+export async function claimJobByIdempotencyKey(
+  database: Database,
+  options: ClaimJobByIdempotencyKeyOptions,
+): Promise<JobRecord | undefined> {
+  const now = options.now ?? new Date();
+  const runAfterCondition = options.ignoreRunAfter ? sql`` : sql`AND run_after <= ${now}`;
+  const jobTypeCondition =
+    options.jobType === undefined ? sql`` : sql`AND job_type = ${options.jobType}`;
+  const result = await sql<JobRecord>`
+    UPDATE jobs
+    SET
+      status = 'RUNNING',
+      locked_at = ${now},
+      locked_by = ${options.workerId},
+      attempt_count = attempt_count + 1,
+      updated_at = ${now}
+    WHERE id IN (
+      SELECT id
+      FROM jobs
+      WHERE status = 'PENDING'
+        AND idempotency_key = ${options.idempotencyKey}
+        ${jobTypeCondition}
+        ${runAfterCondition}
+        AND attempt_count < max_attempts
+      FOR UPDATE SKIP LOCKED
+      LIMIT 1
+    )
+    RETURNING *
+  `.execute(database);
+
+  return result.rows[0];
 }
 
 /**
@@ -173,6 +282,81 @@ export async function completeJob(
   }
 
   return completed;
+}
+
+/**
+ * 실행 중인 job 실패를 기록하고 재시도 가능 여부에 따라 `PENDING` 또는 `FAILED`로 전환한다.
+ *
+ * `attempt_count`는 claim 시 이미 증가했으므로, 아직 `attempt_count < max_attempts`이면 같은 idempotency key job을 다시
+ * claim할 수 있게 lease를 해제하고 예약 시각을 갱신한다. 재시도 한도를 소진하면 사람이 확인할 수 있도록 `FAILED`에 고정한다.
+ *
+ * @param database Kysely database connection
+ * @param options 실패 처리할 job ID, worker ID, 실패 원인, 다음 예약 시각
+ * @returns 갱신된 job record
+ */
+export async function failJob(database: Database, options: FailJobOptions): Promise<JobRecord> {
+  const failedAt = options.failedAt ?? new Date();
+  const retryAfter = options.retryAfter ?? failedAt;
+  const failed = await database
+    .updateTable("jobs")
+    .set({
+      status: sql<JobStatus>`CASE WHEN attempt_count < max_attempts THEN 'PENDING' ELSE 'FAILED' END`,
+      run_after: retryAfter,
+      locked_at: null,
+      locked_by: null,
+      last_error: options.errorMessage,
+      updated_at: failedAt,
+    })
+    .where("id", "=", options.jobId)
+    .where("status", "=", "RUNNING")
+    .where("locked_by", "=", options.workerId)
+    .where("locked_at", "is not", null)
+    .returningAll()
+    .executeTakeFirst();
+
+  if (failed === undefined) {
+    throw new Error("running job lock was not found for failure handling");
+  }
+
+  return failed;
+}
+
+/**
+ * `FAILED` job을 같은 idempotency key 안에서 수동 재시도 가능한 `PENDING` 상태로 되돌린다.
+ *
+ * attempt count를 0으로 되돌리는 이유는 실패 한도 소진 후 운영자가 원인을 해소하고 명시적으로 재실행하는 경계이기 때문이다.
+ * 이미 다른 상태로 바뀐 row는 건드리지 않아 완료된 job 재전송이나 실행 중 job 탈취를 막는다.
+ *
+ * @param database Kysely database connection
+ * @param options idempotency key, 선택적 job type, 재예약 시각, 재시도 한도
+ * @returns 재개된 job record 또는 현재 재개할 수 없으면 `undefined`
+ */
+export async function requeueFailedJobByIdempotencyKey(
+  database: Database,
+  options: RequeueFailedJobByIdempotencyKeyOptions,
+): Promise<JobRecord | undefined> {
+  const requeuedAt = options.requeuedAt ?? new Date();
+  const runAfter = options.runAfter ?? requeuedAt;
+  let query = database
+    .updateTable("jobs")
+    .set({
+      status: "PENDING",
+      run_after: runAfter,
+      locked_at: null,
+      locked_by: null,
+      attempt_count: 0,
+      last_error: null,
+      updated_at: requeuedAt,
+      ...(options.maxAttempts === undefined ? {} : { max_attempts: options.maxAttempts }),
+    })
+    .where("idempotency_key", "=", options.idempotencyKey)
+    .where("status", "=", "FAILED");
+
+  if (options.jobType !== undefined) {
+    query = query.where("job_type", "=", options.jobType);
+  }
+
+  return query.returningAll().executeTakeFirst();
 }
 
 function toInsertableJob(input: EnqueueJobInput): Insertable<JobsTable> {
