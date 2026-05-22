@@ -140,6 +140,9 @@ node scripts/soak-paper-24h.mjs \
 ## 6. Telegram 매매 이벤트 정책
 
 M9의 Telegram 알림은 outbound 전송만 허용한다. inbound command, webhook, polling은 만들지 않는다.
+현재 구현 경계는 `src/application/alerts/paper-trade-events.ts`의 alert 후보 mapper와
+`src/infrastructure/telegram/message-format.ts`의 Telegram formatter다. 주문/체결 commit 이후 후보를 만들고, provider 실패는
+주문/체결 상태를 되돌리지 않는다.
 
 즉시 전송 P1:
 

@@ -11,6 +11,8 @@ import type {
 } from "../risk/index.js";
 import type { JsonRecord, TimestampInput } from "../../domain/index.js";
 
+export * from "./paper-trade-events.js";
+
 export const notificationRetryJobType = "notification_retry";
 export const defaultAlertDeliveryReservationMs = 60_000;
 

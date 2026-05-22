@@ -20,6 +20,7 @@ import {
   createAlertFingerprint,
   createInMemoryAlertCooldownStore,
   createNotificationRetryJobPlan,
+  createPaperTradeAlertRequest,
   dispatchKillSwitchControlAlert,
   dispatchAlertWithCooldown,
   evaluateNotificationFailure,
@@ -72,6 +73,165 @@ describe("alert cooldown and notification policy", () => {
     expect(getDefaultAlertCooldownMs("P1")).toBe(5 * 60_000);
     expect(getDefaultAlertCooldownMs("P2")).toBe(60 * 60_000);
     expect(getDefaultAlertCooldownMs("P3")).toBe(6 * 60 * 60_000);
+  });
+
+  it("maps P1 paper trade events to immediate Telegram alert candidates", () => {
+    const request = createPaperTradeAlertRequest({
+      environment: "prod",
+      runMode: "paper_trading",
+      eventKind: "SLIPPAGE_THRESHOLD_EXCEEDED",
+      market: "KRW-BTC",
+      strategyId: "breakout-v1",
+      side: "BUY",
+      quantity: "0.01",
+      requestedPrice: "100000000",
+      fillPrice: "100250000",
+      feeAmount: "25",
+      feeCurrency: "KRW",
+      slippageBps: "25",
+      remainingQuantity: "0",
+      orderId: "paper-order-1",
+      idempotencyKey: "paper-idem-1",
+      correlationId: "corr-paper-1",
+      occurredAt: "2026-05-22T00:00:00.000Z",
+    });
+
+    expect(request).toMatchObject({
+      severity: "P1",
+      alertType: "paper_trade_event",
+      reasonCode: "paper_slippage_threshold_exceeded",
+      market: "KRW-BTC",
+      strategyId: "breakout-v1",
+      title: "PAPER 매매 알림: 슬리피지 임계값 초과",
+      metadata: {
+        source: "paper_trade_event",
+        paper_mode: "PAPER",
+        event_kind: "SLIPPAGE_THRESHOLD_EXCEEDED",
+        delivery_policy: "immediate",
+        order_id: "paper-order-1",
+        idempotency_key: "paper-idem-1",
+        correlation_id: "corr-paper-1",
+      },
+    });
+    expect(request.body).toContain("주문: PAPER KRW-BTC BUY 0.01");
+    expect(request.body).toContain("필요 조치: 해당 전략과 마켓의 가격/호가 상태를 확인");
+  });
+
+  it("uses P2 cooldown policy for normal paper lifecycle alerts", async () => {
+    const notifier = new RecordingNotifier();
+    const cooldownStore = createInMemoryAlertCooldownStore();
+    const request = createPaperTradeAlertRequest({
+      environment: "prod",
+      runMode: "paper_trading",
+      eventKind: "ORDER_SUBMITTED",
+      market: "KRW-ETH",
+      strategyId: "mean-reversion-v1",
+      side: "SELL",
+      quantity: "0.2",
+      requestedPrice: "5000000",
+      orderId: "paper-order-2",
+      idempotencyKey: "paper-idem-2",
+      correlationId: "corr-paper-2",
+      occurredAt: "2026-05-22T00:00:00.000Z",
+    });
+
+    const first = await dispatchAlertWithCooldown(
+      {
+        notifier,
+        durableCooldownStore: cooldownStore,
+        memoryCooldownStore: cooldownStore,
+      },
+      request,
+    );
+    const duplicate = await dispatchAlertWithCooldown(
+      {
+        notifier,
+        durableCooldownStore: cooldownStore,
+        memoryCooldownStore: cooldownStore,
+      },
+      {
+        ...request,
+        occurredAt: "2026-05-22T00:01:00.000Z",
+      },
+    );
+
+    expect(request.metadata).toMatchObject({
+      delivery_policy: "cooldown",
+    });
+    expect(first.notification.delivered).toBe(true);
+    expect(duplicate).toMatchObject({
+      cooldownHit: true,
+      notification: {
+        delivered: false,
+        skippedReason: "alert_cooldown_active",
+      },
+    });
+    expect(notifier.alerts).toHaveLength(1);
+  });
+
+  it("maps low-priority paper event noise to P3 summary alert candidates", () => {
+    const request = createPaperTradeAlertRequest({
+      environment: "prod",
+      runMode: "paper_trading",
+      eventKind: "DISCARDED_CANDIDATES_SUMMARY",
+      market: "KRW-BTC",
+      strategyId: "breakout-v1",
+      side: "BUY",
+      quantity: "3 candidates",
+      correlationId: "corr-paper-summary",
+      occurredAt: "2026-05-22T00:00:00.000Z",
+    });
+
+    expect(request).toMatchObject({
+      severity: "P3",
+      reasonCode: "paper_discarded_candidates_summary",
+      metadata: {
+        delivery_policy: "summary",
+        event_label: "폐기 후보 요약",
+      },
+    });
+  });
+
+  it("keeps P1 paper alert provider failures isolated and returns retry candidates", async () => {
+    const notifier = new ThrowingNotifier();
+    const cooldownStore = createInMemoryAlertCooldownStore();
+    const request = createPaperTradeAlertRequest({
+      environment: "prod",
+      runMode: "paper_trading",
+      eventKind: "CANCEL_REQUOTE_FAILED",
+      market: "KRW-BTC",
+      strategyId: "breakout-v1",
+      side: "BUY",
+      quantity: "0.01",
+      orderId: "paper-order-3",
+      idempotencyKey: "paper-idem-3",
+      correlationId: "corr-paper-3",
+      occurredAt: "2026-05-22T00:00:00.000Z",
+    });
+
+    const result = await dispatchAlertWithCooldown(
+      {
+        notifier,
+        durableCooldownStore: cooldownStore,
+      },
+      request,
+    );
+
+    expect(result.notification).toMatchObject({
+      delivered: false,
+      skippedReason: "notification_provider_exception",
+    });
+    expect(result.retryJobPlan).toMatchObject({
+      jobType: notificationRetryJobType,
+      payloadJson: {
+        correlation_id: "corr-paper-3",
+        metadata: {
+          order_id: "paper-order-3",
+          idempotency_key: "paper-idem-3",
+        },
+      },
+    });
+    expect(result.failureEvaluation.state.consecutiveFailures).toBe(1);
   });
 
   it("skips duplicate P0 alerts during durable cooldown and audits the skip", async () => {
