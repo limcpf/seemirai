@@ -580,12 +580,20 @@ async function runControlDrill(controlUrl, options) {
   if (!hardStopRequiresCancelJob && hardStopCancelJob !== null) {
     failures.push("unexpected_hard_stop_cancel_job");
   }
-  if (typeof evidence.auditEventId !== "string" || typeof evidence.riskEventId !== "string") {
+  if (
+    typeof evidence.auditEventId !== "string" ||
+    evidence.auditEventId.length === 0 ||
+    typeof evidence.riskEventId !== "string" ||
+    evidence.riskEventId.length === 0
+  ) {
     failures.push("durable_evidence_missing");
   }
   if (alertDispatch === null) {
     failures.push("telegram_alert_dispatch_missing");
-  } else if (notification.delivered !== true && notification.skippedReason !== "alert_cooldown_active") {
+  } else if (
+    notification.delivered !== true &&
+    !["alert_cooldown_active", "alert_delivery_reserved"].includes(notification.skippedReason)
+  ) {
     failures.push("telegram_alert_evidence_missing");
   }
 

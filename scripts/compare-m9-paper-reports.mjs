@@ -105,6 +105,8 @@ async function compareReports(summaryPaths) {
   rows.sort(compareRowsByStartedAt);
   relabelRows(rows);
   failures.push(...findDuplicateSummaryDateFailures(rows));
+  failures.push(...findNonConsecutiveDateFailures(rows));
+  failures.push(...findMetricFormatFailures(rows));
   for (const row of rows) {
     failures.push(...row.failures);
     warnings.push(...row.warnings);
@@ -161,6 +163,49 @@ function findDuplicateSummaryDateFailures(rows) {
       continue;
     }
     seen.set(row.date, row);
+  }
+  return failures;
+}
+
+function findNonConsecutiveDateFailures(rows) {
+  const failures = [];
+  for (let index = 1; index < rows.length; index += 1) {
+    const previousDate = rows[index - 1].date;
+    const currentDate = rows[index].date;
+    if (previousDate === "unknown" || currentDate === "unknown") {
+      continue;
+    }
+    if (dateToEpochDay(currentDate) - dateToEpochDay(previousDate) !== 1) {
+      failures.push(
+        rowFailure(rows[index], "non_consecutive_summary_date", "summary 날짜가 직전 day와 연속되지 않는다.", {
+          previousDate,
+          currentDate,
+        }),
+      );
+    }
+  }
+  return failures;
+}
+
+function findMetricFormatFailures(rows) {
+  const failures = [];
+  for (const metricName of ["cost", "slippage", "fillRate", "blockingReasons"]) {
+    const first = rows.find((row) => row.metricFormats[metricName] !== "unavailable");
+    if (first === undefined) {
+      continue;
+    }
+    for (const row of rows) {
+      const current = row.metricFormats[metricName];
+      if (current !== "unavailable" && current !== first.metricFormats[metricName]) {
+        failures.push(
+          rowFailure(row, "metric_format_mismatch", `${metricName} metric 포맷이 다른 day와 일치하지 않는다.`, {
+            metricName,
+            expectedFormat: first.metricFormats[metricName],
+            actualFormat: current,
+          }),
+        );
+      }
+    }
   }
   return failures;
 }
@@ -223,16 +268,22 @@ function createComparisonRow({ index, summaryPath, summary }) {
     notificationFailureCount,
     notificationResolved,
     dailyReportGenerated,
-    cost,
-    slippage,
-    fillRate,
-    blockingReasons,
+    cost: cost.value,
+    slippage: slippage.value,
+    fillRate: fillRate.value,
+    blockingReasons: blockingReasons.value,
+    metricFormats: {
+      cost: cost.format,
+      slippage: slippage.format,
+      fillRate: fillRate.format,
+      blockingReasons: blockingReasons.format,
+    },
     failures: [],
     warnings: [],
   };
 
-  if (row.status === "failed") {
-    row.failures.push(rowFailure(row, "summary_failed", "soak summary 자체가 failed 상태다."));
+  if (row.status !== "passed") {
+    row.failures.push(rowFailure(row, "summary_not_passed", "soak summary 상태가 명시적 passed가 아니다.", { status: row.status }));
   }
   if (row.reportArtifact === null) {
     row.failures.push(rowFailure(row, "report_artifact_missing", "report artifact 경로가 없다."));
@@ -285,7 +336,7 @@ function createComparisonRow({ index, summaryPath, summary }) {
     ["blockingReasons", row.blockingReasons],
   ]) {
     if (value === "unavailable") {
-      row.warnings.push(rowWarning(row, `${name}_unavailable`, `${name} 비교 입력이 summary에 없다.`));
+      row.failures.push(rowFailure(row, `${name}_unavailable`, `${name} 비교 입력이 summary에 없다.`));
     }
   }
 
@@ -302,7 +353,26 @@ function readDateLabel(value) {
   }
 
   const dateLabel = value.slice(0, 10);
-  return /^\d{4}-\d{2}-\d{2}$/u.test(dateLabel) ? dateLabel : "unknown";
+  if (!/^\d{4}-\d{2}-\d{2}$/u.test(dateLabel)) {
+    return "unknown";
+  }
+
+  return Number.isFinite(dateToEpochDay(dateLabel)) ? dateLabel : "unknown";
+}
+
+function dateToEpochDay(dateLabel) {
+  const [year, month, day] = dateLabel.split("-").map((part) => Number(part));
+  const timestamp = Date.UTC(year, month - 1, day);
+  const date = new Date(timestamp);
+  if (
+    date.getUTCFullYear() !== year ||
+    date.getUTCMonth() !== month - 1 ||
+    date.getUTCDate() !== day
+  ) {
+    return Number.NaN;
+  }
+
+  return Math.floor(timestamp / 86_400_000);
 }
 
 function readNumber(value) {
@@ -312,11 +382,27 @@ function readNumber(value) {
 function readComparableMetric(metrics, keys) {
   for (const key of keys) {
     if (metrics[key] !== undefined) {
-      return stringifyMetric(metrics[key]);
+      return {
+        value: stringifyMetric(metrics[key]),
+        format: readMetricFormat(metrics[key]),
+      };
     }
   }
 
-  return "unavailable";
+  return {
+    value: "unavailable",
+    format: "unavailable",
+  };
+}
+
+function readMetricFormat(value) {
+  if (value === null) {
+    return "null";
+  }
+  if (Array.isArray(value)) {
+    return "array";
+  }
+  return typeof value;
 }
 
 function stringifyMetric(value) {

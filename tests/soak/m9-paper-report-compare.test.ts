@@ -173,6 +173,92 @@ describe("M9 paper report comparison script", () => {
       }),
     );
   });
+
+  it("fails when operating dates are not consecutive", async () => {
+    const workDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-m9-compare-"));
+    const summaries = await writeSummaries(workDir, [
+      createSummary(1),
+      createSummary(2),
+      createSummary(3, { startedAt: "2026-05-25T00:00:00.000Z" }),
+    ]);
+
+    const { stdout } = await runCompareExpectFailure([
+      "--summary",
+      summaries[0]!,
+      "--summary",
+      summaries[1]!,
+      "--summary",
+      summaries[2]!,
+      "--json",
+    ]);
+    const comparison = JSON.parse(stdout) as ComparisonSummary;
+
+    expect(comparison.failures).toContainEqual(
+      expect.objectContaining({
+        code: "non_consecutive_summary_date",
+      }),
+    );
+  });
+
+  it("fails when summary status is not passed or key metrics are unavailable", async () => {
+    const workDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-m9-compare-"));
+    const summaries = await writeSummaries(workDir, [
+      createSummary(1),
+      createSummary(2, { status: "skipped", omitMetrics: ["cost"] }),
+      createSummary(3),
+    ]);
+
+    const { stdout } = await runCompareExpectFailure([
+      "--summary",
+      summaries[0]!,
+      "--summary",
+      summaries[1]!,
+      "--summary",
+      summaries[2]!,
+      "--json",
+    ]);
+    const comparison = JSON.parse(stdout) as ComparisonSummary;
+
+    expect(comparison.failures).toContainEqual(
+      expect.objectContaining({
+        day: "Day 2",
+        code: "summary_not_passed",
+      }),
+    );
+    expect(comparison.failures).toContainEqual(
+      expect.objectContaining({
+        day: "Day 2",
+        code: "cost_unavailable",
+      }),
+    );
+  });
+
+  it("fails when comparison metric formats differ across days", async () => {
+    const workDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-m9-compare-"));
+    const summaries = await writeSummaries(workDir, [
+      createSummary(1),
+      createSummary(2, { fillRate: { value: "100%" } }),
+      createSummary(3),
+    ]);
+
+    const { stdout } = await runCompareExpectFailure([
+      "--summary",
+      summaries[0]!,
+      "--summary",
+      summaries[1]!,
+      "--summary",
+      summaries[2]!,
+      "--json",
+    ]);
+    const comparison = JSON.parse(stdout) as ComparisonSummary;
+
+    expect(comparison.failures).toContainEqual(
+      expect.objectContaining({
+        day: "Day 2",
+        code: "metric_format_mismatch",
+      }),
+    );
+  });
 });
 
 async function runCompare(args: readonly string[]) {
@@ -208,6 +294,12 @@ function createSummary(
     notificationManualReviewRequired?: boolean;
     omitNotificationFailures?: boolean;
     startedAt?: string;
+    status?: string;
+    omitMetrics?: string[];
+    cost?: unknown;
+    slippage?: unknown;
+    fillRate?: unknown;
+    blockingReasons?: unknown;
   } = {},
 ) {
   const metrics: Record<string, unknown> = {
@@ -223,6 +315,14 @@ function createSummary(
       stale_market_data: day,
     },
   };
+  for (const key of overrides.omitMetrics ?? []) {
+    delete metrics[key];
+  }
+  for (const key of ["cost", "slippage", "fillRate", "blockingReasons"] as const) {
+    if (Object.prototype.hasOwnProperty.call(overrides, key)) {
+      metrics[key] = overrides[key];
+    }
+  }
   if (overrides.notificationManualReviewRequired === true) {
     metrics.notificationManualReviewRequired = true;
   }
@@ -255,7 +355,7 @@ function createSummary(
 
   return {
     schemaVersion: 1,
-    status: "passed",
+    status: overrides.status ?? "passed",
     startedAt: overrides.startedAt ?? `2026-05-${String(19 + day).padStart(2, "0")}T00:00:00.000Z`,
     git: {
       branch: "issue-51-mother",
