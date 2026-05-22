@@ -32,9 +32,11 @@ export {
   toPaperOrderRowInput,
 } from "./execution-persistence.js";
 export {
+  claimJobByIdempotencyKey,
   claimPendingJobs,
   completeJob,
   enqueueJob,
+  failJob,
   findJobByIdempotencyKey,
 } from "./jobs.js";
 export {
@@ -98,10 +100,12 @@ export type {
   EnqueueDailyReportJobResult,
 } from "./daily-report/index.js";
 export type {
+  ClaimJobByIdempotencyKeyOptions,
   ClaimPendingJobsOptions,
   CompleteJobOptions,
   EnqueueJobInput,
   EnqueueJobResult,
+  FailJobOptions,
   JobRecord,
   JobStatus,
 } from "./jobs.js";

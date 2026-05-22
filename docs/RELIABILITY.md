@@ -123,6 +123,14 @@ Codex-native 운영은 Codex, Git, GitHub, shell command, 문서 상태를 연�
   일반 audit event를 섞으면 폐기 사유가 과대 집계되므로 payload kind 확인은 필수다.
 - Telegram daily report 전송은 집계가 끝난 뒤 `NotifierPort.sendDailyReport`에서만 발생한다. DB fact 조회와 집계가 성공한
   사실, provider 전송 성공/실패는 job/audit에서 분리해 추적해야 한다.
+- M9 daily report runner는 수동 실행과 scheduler 실행 모두 `report.daily:<reportDate>` idempotency key를 먼저 예약하거나
+  재사용한 뒤 claim된 job만 실행한다. 같은 기준일 job이 이미 `COMPLETED`이면 수동 실행은 provider를 다시 호출하지 않는다.
+- scheduler worker는 `job_type=report.daily`만 claim해야 한다. 공용 jobs table에는 policy sync, notification retry 같은
+  다른 작업도 들어오므로 daily report worker가 다른 job type을 실행하면 운영 side effect가 섞일 수 있다.
+- report 생성 실패와 Telegram provider 실패는 서로 다른 failure class다. fact 조회, 집계, formatting 실패는
+  `daily_report_generation_failed` audit evidence와 jobs retry/FAILED 상태로 남긴다. Telegram provider 실패나 notifier 예외는
+  `daily_report_notification_failed` audit evidence로 남기되, deterministic report 생성 성공을 되돌리거나 같은 기준일을
+  반복 전송하지 않는다.
 
 ## Paper soak 신뢰성 기준
 

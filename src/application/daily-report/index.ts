@@ -13,6 +13,9 @@ export {
   sendDailyReport,
 } from "./service.js";
 export {
+  runDailyReport,
+} from "./runner.js";
+export {
   createDailyReportWindow,
   toKstReportDate,
 } from "./window.js";
@@ -36,3 +39,10 @@ export type {
   BuildDailyReportNotificationResult,
   DailyReportDataProvider,
 } from "./service.js";
+export type {
+  DailyReportRunJobContext,
+  DailyReportRunStatus,
+  DailyReportRunTrigger,
+  RunDailyReportOptions,
+  RunDailyReportResult,
+} from "./runner.js";

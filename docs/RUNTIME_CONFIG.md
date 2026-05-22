@@ -180,6 +180,7 @@ alert 발생 시각이 아니라 reservation/전송 완료 시각을 사용해 �
 
 - application 집계/전송 경계: `src/application/daily-report/`
 - PostgreSQL fact repository: `src/infrastructure/db/daily-report/`
+- M9 runner/scheduler boundary: `src/runtime/daily-report-runtime.ts`
 - outbound adapter: `NotifierPort.sendDailyReport`
 - job idempotency: PostgreSQL `jobs.idempotency_key`
 
@@ -209,6 +210,20 @@ worker retry나 운영 재생이 같은 조회 범위를 사용할 수 있게 �
 리포트 문구는 한국어 사용자 문구를 먼저 보여준다. 내부 status/action/reason code는 괄호나 `metadata` 추적 정보에 남기며,
 값이 없으면 임의로 0으로 채우지 않고 `unavailable`로 표시한다. 단, 주문 수, 체결 수, 폐기 후보 수처럼 row 개수를 세는 항목은
 데이터가 없을 때 실제 0으로 표시한다. 실현 손익은 `realized PnL`, 추정 손익은 `unrealized PnL` 기반으로 분리 표기한다.
+
+M9부터 daily report 수동 실행과 scheduler 실행은 같은 runner boundary를 사용한다. 두 경로 모두 먼저
+`report.daily:<reportDate>` idempotency key로 `jobs` row를 예약하거나 재사용한 뒤, claim된 job에서 report fact 조회와
+Telegram 전송을 수행한다. 이미 `COMPLETED`인 같은 기준일 job은 수동 실행에서 다시 전송하지 않는다.
+
+runner 결과는 생성과 전송을 분리해 기록한다.
+
+- report fact 조회/집계/formatting 성공: `DAILY_REPORT` audit event, `daily_report_generated`
+- Telegram 전송 성공: `NOTIFICATION_DELIVERY` audit event, `daily_report_notification_delivered`
+- Telegram provider skip/실패/예외: `NOTIFICATION_DELIVERY` audit event, `daily_report_notification_failed`
+- report 생성 실패: `DAILY_REPORT` audit event, `daily_report_generation_failed`, jobs row는 재시도 가능하면 `PENDING`, 한도 초과 시 `FAILED`
+
+Telegram provider 실패는 report 생성 성공을 되돌리지 않는다. provider 실패는 audit evidence로 남기고 claim된 daily report job은
+완료 처리해 같은 기준일의 중복 전송을 막는다. report 생성 실패만 jobs retry 대상이다.
 
 ## M8 Paper soak verification
 
