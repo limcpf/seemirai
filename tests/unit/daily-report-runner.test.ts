@@ -85,6 +85,26 @@ describe("daily report runner", () => {
     });
   });
 
+  it("does not turn a delivered notification into a retry when notification audit append fails", async () => {
+    const auditLog = new FailingOnNthAuditLog(2);
+    const notifier = new CapturingNotifier({ delivered: true, providerMessageId: "telegram-1" });
+
+    const result = await runDailyReport({
+      reportDate: "2026-05-21",
+      dataProvider: new FixtureDailyReportDataProvider(emptySourceData()),
+      notifier,
+      auditLog,
+      trigger: "scheduler",
+      clock: () => new Date("2026-05-21T15:02:00.000Z"),
+    });
+
+    expect(result.status).toBe("DELIVERED");
+    expect(result.errorMessage).toContain("daily report notification audit append failed");
+    expect(result.auditEventReceipts).toHaveLength(1);
+    expect(notifier.dailyReports).toHaveLength(1);
+    expect(auditLog.events.map((event) => event.reasonCode)).toEqual(["daily_report_generated"]);
+  });
+
   it("records generation failure without calling the notifier", async () => {
     const auditLog = new CapturingAuditLog();
     const notifier = new CapturingNotifier({ delivered: true });
@@ -151,6 +171,20 @@ class CapturingAuditLog implements AuditLogPort {
       auditEventId: `audit-${this.events.length}`,
       appendedAt: event.occurredAt,
     };
+  }
+}
+
+class FailingOnNthAuditLog extends CapturingAuditLog {
+  public constructor(private readonly failOnCall: number) {
+    super();
+  }
+
+  public override async appendEvent(event: AuditEvent): Promise<AuditEventReceipt> {
+    if (this.events.length + 1 === this.failOnCall) {
+      throw new Error("audit append failed");
+    }
+
+    return super.appendEvent(event);
   }
 }
 

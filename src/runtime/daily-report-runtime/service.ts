@@ -15,6 +15,7 @@ import {
   claimPendingJobs,
   completeJob,
   failJob,
+  requeueFailedJobByIdempotencyKey,
 } from "../../infrastructure/index.js";
 import type {
   Database,
@@ -23,6 +24,7 @@ import type {
 } from "../../infrastructure/index.js";
 
 export const PAPER_NO_KEY_DAILY_REPORT_WORKER_ID = "paper_no_key_daily_report_worker";
+const SCHEDULER_FAILURE_RETRY_DELAY_MS = 60_000;
 
 export type DailyReportRuntimeJobStatus =
   | "RUN"
@@ -141,7 +143,7 @@ export function createPaperNoKeyDailyReportRuntime(
 
     async runManualDailyReport(options) {
       const now = dependencies.clock?.() ?? new Date();
-      const enqueueResult = await scheduleDailyReportJob({
+      let enqueueResult = await scheduleDailyReportJob({
         reportDate: options.reportDate,
         runAfter: options.runAfter ?? now,
         ...(options.maxAttempts === undefined ? {} : { maxAttempts: options.maxAttempts }),
@@ -151,6 +153,28 @@ export function createPaperNoKeyDailyReportRuntime(
         return {
           status: "SKIPPED_EXISTING_JOB",
           enqueueResult,
+        };
+      }
+
+      if (!enqueueResult.created && enqueueResult.job.status === "FAILED") {
+        const requeuedJob = await requeueFailedJobByIdempotencyKey(dependencies.database, {
+          idempotencyKey: enqueueResult.plan.idempotencyKey,
+          jobType: dailyReportJobType,
+          runAfter: options.runAfter ?? now,
+          requeuedAt: now,
+          ...(options.maxAttempts === undefined ? {} : { maxAttempts: options.maxAttempts }),
+        });
+
+        if (requeuedJob === undefined) {
+          return {
+            status: "NOT_CLAIMABLE",
+            enqueueResult,
+          };
+        }
+
+        enqueueResult = {
+          ...enqueueResult,
+          job: requeuedJob,
         };
       }
 
@@ -240,7 +264,8 @@ async function runClaimedDailyReportJob(input: {
   const reportDate = readReportDate(input.job);
   if (reportDate === undefined) {
     const errorMessage = "daily report job payload must include report_date";
-    const occurredAt = input.clock?.() ?? new Date();
+    const failureTiming = resolveFailureTiming(input);
+    const occurredAt = failureTiming.failedAt;
     const auditEventReceipts: AuditEventReceipt[] = [];
     let failureMessage = errorMessage;
     try {
@@ -270,6 +295,7 @@ async function runClaimedDailyReportJob(input: {
       workerId: input.workerId,
       errorMessage: failureMessage,
       failedAt: occurredAt,
+      ...(failureTiming.retryAfter === undefined ? {} : { retryAfter: failureTiming.retryAfter }),
     });
 
     return {
@@ -304,12 +330,14 @@ async function runClaimedDailyReportJob(input: {
     });
   } catch (error) {
     const errorMessage = `daily report runner failed: ${toErrorMessage(error)}`;
+    const failureTiming = resolveFailureTiming(input);
     // audit 저장소 장애처럼 application runner가 예외를 던져도 queue lock은 반드시 해제해 재시도/수동 복구 경로를 남긴다.
     const finalJob = await failJob(input.database, {
       jobId: input.job.id,
       workerId: input.workerId,
       errorMessage,
-      failedAt: input.clock?.() ?? new Date(),
+      failedAt: failureTiming.failedAt,
+      ...(failureTiming.retryAfter === undefined ? {} : { retryAfter: failureTiming.retryAfter }),
     });
 
     return {
@@ -330,7 +358,7 @@ async function runClaimedDailyReportJob(input: {
           jobId: input.job.id,
           workerId: input.workerId,
           errorMessage: result.errorMessage ?? "daily report generation failed",
-          failedAt: input.clock?.() ?? new Date(),
+          ...toFailJobTimingOptions(resolveFailureTiming(input)),
         })
       : await completeJob(input.database, {
           jobId: input.job.id,
@@ -355,6 +383,32 @@ function readReportDate(job: JobRecord): string | undefined {
     ? job.idempotency_key.slice(`${dailyReportJobType}:`.length)
     : "";
   return fromKey.length > 0 ? fromKey : undefined;
+}
+
+function resolveFailureTiming(input: { trigger: "manual" | "scheduler"; clock?: () => Date }): {
+  failedAt: Date;
+  retryAfter?: Date;
+} {
+  const failedAt = input.clock?.() ?? new Date();
+  if (input.trigger === "manual") {
+    return { failedAt };
+  }
+
+  // scheduler sweep 안에서 같은 실패 row를 즉시 재claim하면 attempt를 한 번에 소진하므로 최소 다음 tick으로 미룬다.
+  return {
+    failedAt,
+    retryAfter: new Date(failedAt.getTime() + SCHEDULER_FAILURE_RETRY_DELAY_MS),
+  };
+}
+
+function toFailJobTimingOptions(timing: { failedAt: Date; retryAfter?: Date }): {
+  failedAt: Date;
+  retryAfter?: Date;
+} {
+  return {
+    failedAt: timing.failedAt,
+    ...(timing.retryAfter === undefined ? {} : { retryAfter: timing.retryAfter }),
+  };
 }
 
 function toErrorMessage(error: unknown): string {

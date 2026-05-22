@@ -57,7 +57,9 @@ export interface RunDailyReportOptions {
  * daily report 실행 결과다.
  *
  * `GENERATION_FAILED`는 report fact 조회 또는 집계/formatting 실패라 job retry 대상이고, `NOTIFICATION_FAILED`는 리포트
- * 생성은 성공했지만 provider가 전송하지 못한 상태라 audit에 분리해 남긴 뒤 runtime이 job 완료 여부를 결정한다.
+ * 생성은 성공했지만 provider가 전송하지 못한 상태라 audit에 분리해 남긴 뒤 runtime이 job 완료 여부를 결정한다. provider 호출
+ * 이후 audit 저장이 실패하면 이미 발생한 outbound side effect를 반복하지 않도록 `errorMessage`에만 남기고 생성 실패로
+ * 되돌리지 않는다.
  */
 export interface RunDailyReportResult {
   status: DailyReportRunStatus;
@@ -74,7 +76,8 @@ export interface RunDailyReportResult {
  *
  * report 생성 실패와 provider 실패를 서로 다른 audit reason으로 기록해야 scheduler 재시도와 운영자 대응이 섞이지 않는다.
  * NotifierPort 예외는 정규화해 `NOTIFICATION_FAILED`로 반환하지만, audit 저장 실패는 운영 evidence 누락이므로 caller에게
- * 그대로 전파한다.
+ * 그대로 전파한다. 단, provider 호출 이후 notification audit 저장이 실패한 경우에는 재시도로 중복 전송하지 않도록 결과에
+ * 오류를 싣고 반환한다.
  */
 export async function runDailyReport(options: RunDailyReportOptions): Promise<RunDailyReportResult> {
   const occurredAt = options.clock?.() ?? new Date();
@@ -123,25 +126,38 @@ export async function runDailyReport(options: RunDailyReportOptions): Promise<Ru
   );
 
   const notificationResult = await sendDailyReportNotification(options.notifier, built.notification);
-  auditEventReceipts.push(
-    await appendDailyReportAudit(options, {
-      eventType: "NOTIFICATION_DELIVERY",
-      severity: notificationResult.delivered ? "INFO" : "WARN",
-      reasonCode: notificationResult.delivered
-        ? "daily_report_notification_delivered"
-        : "daily_report_notification_failed",
-      occurredAt,
-      metadata: {
-        delivered: notificationResult.delivered,
-        ...(notificationResult.providerMessageId === undefined
-          ? {}
-          : { provider_message_id: notificationResult.providerMessageId }),
-        ...(notificationResult.skippedReason === undefined
-          ? {}
-          : { skipped_reason: notificationResult.skippedReason }),
-      },
-    }),
-  );
+  try {
+    auditEventReceipts.push(
+      await appendDailyReportAudit(options, {
+        eventType: "NOTIFICATION_DELIVERY",
+        severity: notificationResult.delivered ? "INFO" : "WARN",
+        reasonCode: notificationResult.delivered
+          ? "daily_report_notification_delivered"
+          : "daily_report_notification_failed",
+        occurredAt,
+        metadata: {
+          delivered: notificationResult.delivered,
+          ...(notificationResult.providerMessageId === undefined
+            ? {}
+            : { provider_message_id: notificationResult.providerMessageId }),
+          ...(notificationResult.skippedReason === undefined
+            ? {}
+            : { skipped_reason: notificationResult.skippedReason }),
+        },
+      }),
+    );
+  } catch (error) {
+    // provider side effect 이후에는 audit 장애를 generation retry로 되돌리면 같은 기준일 리포트가 중복 전송된다.
+    return {
+      status: notificationResult.delivered ? "DELIVERED" : "NOTIFICATION_FAILED",
+      reportDate: options.reportDate,
+      report: built.report,
+      notification: built.notification,
+      notificationResult,
+      auditEventReceipts,
+      errorMessage: `daily report notification audit append failed: ${toErrorMessage(error)}`,
+    };
+  }
 
   return {
     status: notificationResult.delivered ? "DELIVERED" : "NOTIFICATION_FAILED",

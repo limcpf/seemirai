@@ -125,17 +125,22 @@ Codex-native 운영은 Codex, Git, GitHub, shell command, 문서 상태를 연�
   사실, provider 전송 성공/실패는 job/audit에서 분리해 추적해야 한다.
 - M9 daily report runner는 수동 실행과 scheduler 실행 모두 `report.daily:<reportDate>` idempotency key를 먼저 예약하거나
   재사용한 뒤 claim된 job만 실행한다. 같은 기준일 job이 이미 `COMPLETED`이면 수동 실행은 provider를 다시 호출하지 않는다.
+  같은 기준일 job이 `FAILED`로 소진됐으면 운영자 수동 실행만 같은 row를 `PENDING`으로 재개해 복구할 수 있다.
 - scheduler worker는 `job_type=report.daily`만 claim해야 하며, 수동 실행의 idempotency-key claim도 같은 job type 조건을
   함께 강제해야 한다. 공용 jobs table에는 policy sync, notification retry 같은 다른 작업도 들어오므로 daily report worker가
   다른 job type을 실행하면 운영 side effect가 섞일 수 있다.
 - scheduler worker는 여러 건을 처리하더라도 claim과 실행을 한 건 단위로 반복해야 한다. 배치 전체를 먼저 `RUNNING`으로
   바꾸면 중간 crash 때 아직 실행하지 않은 row가 재claim되지 않으므로, 다음 job은 이전 job의 최종 전이 이후에만 claim한다.
+- scheduler worker가 generation failure row를 `PENDING`으로 되돌릴 때는 같은 sweep에서 같은 row가 즉시 재claim되지 않도록
+  `run_after`를 최소 다음 tick 이후로 미룬다. 실패 row가 attempt를 한 번에 소진하면 다른 due job 처리도 굶길 수 있다.
 - daily report runner가 audit 저장소 장애처럼 예외를 던져도 runtime은 claim된 job을 `failJob` 경계로 넘겨 lock을 해제해야
   한다. 이 전이가 실패하지 않는 한 같은 idempotency key는 retry 또는 수동 복구 대상으로 남아야 한다.
 - report 생성 실패와 Telegram provider 실패는 서로 다른 failure class다. fact 조회, 집계, formatting 실패는
   `daily_report_generation_failed` audit evidence와 jobs retry/FAILED 상태로 남긴다. Telegram provider 실패나 notifier 예외는
   `daily_report_notification_failed` audit evidence로 남기되, deterministic report 생성 성공을 되돌리거나 같은 기준일을
   반복 전송하지 않는다.
+- Telegram 전송 성공 이후 notification audit 저장이 실패해도 이미 발생한 provider side effect를 retry하지 않는다. 이 장애는
+  runner 결과의 error message와 job completion evidence로 추적하고, audit 저장소 복구는 별도 운영 조치로 다룬다.
 
 ## Paper soak 신뢰성 기준
 

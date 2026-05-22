@@ -38,6 +38,7 @@ export {
   enqueueJob,
   failJob,
   findJobByIdempotencyKey,
+  requeueFailedJobByIdempotencyKey,
 } from "./jobs.js";
 export {
   applyPostgresKillSwitchControl,
@@ -108,6 +109,7 @@ export type {
   FailJobOptions,
   JobRecord,
   JobStatus,
+  RequeueFailedJobByIdempotencyKeyOptions,
 } from "./jobs.js";
 export type {
   ApplyPostgresKillSwitchControlOptions,
