@@ -92,9 +92,10 @@ SEEMIRAI_RUN_SOAK=1 node scripts/soak-paper-24h.mjs --duration-ms 86400000 --dai
 - `PAPER_NO_KEY` market data, execution, HTTP control, Telegram, daily report를 한 운영 절차로 조립한다.
 - DB migration, backup/restore smoke, daily report job, notification retry 후보를 운영자가 반복 실행할 수 있게 runbook을 작성한다.
 - `report.daily` job 실행과 Telegram daily report 전송을 실제 운영 흐름으로 연결한다.
-- P0/P1 notification retry contract를 jobs table 기반 worker 또는 명시적 수동 재시도 절차로 닫는다.
+- paper 주문 제출, 부분체결, 전체체결, 취소/재호가, 리스크 차단을 Telegram outbound 매매 이벤트 알림으로 관측한다.
+- P0/P1 notification retry contract를 jobs table 기반 worker로 닫는다.
 - `/status`, `/readyz`, `/kill-switch` drill을 포함한 운영 점검 checklist를 만든다.
-- 24시간 1회가 아니라 여러 일자의 paper report를 비교해 비용, 슬리피지, 체결률, 차단 사유가 누적 관측되는지 확인한다.
+- 24시간 1회가 아니라 3일 연속 paper report를 비교해 비용, 슬리피지, 체결률, 차단 사유가 누적 관측되는지 확인한다.
 
 제외 범위:
 
@@ -107,9 +108,10 @@ Acceptance Criteria:
 
 - [ ] 운영자가 문서만 보고 DB 준비, migration, paper runtime 시작, control endpoint 확인, 종료를 재현할 수 있다.
 - [ ] daily report가 수동/스케줄 실행 모두에서 같은 report date idempotency key를 사용한다.
-- [ ] notification retry 실패가 묵살되지 않고 재시도 또는 수동 확인 상태로 수렴한다.
+- [ ] paper 매매 이벤트가 P1 즉시, P2 cooldown, P3 요약 전용 정책에 따라 Telegram 알림 후보로 변환된다.
+- [ ] notification retry 실패가 묵살되지 않고 jobs table 기반 재시도 또는 manual review 상태로 수렴한다.
 - [ ] kill switch drill에서 신규 주문 차단, pending paper order cancel plan, Telegram 알림 evidence가 같은 correlation id로 추적된다.
-- [ ] 최소 3일 이상의 paper report가 같은 포맷으로 비교 가능하다.
+- [ ] 3일 연속 paper report가 같은 포맷으로 비교 가능하다.
 
 예상 sub PR:
 
@@ -117,8 +119,9 @@ Acceptance Criteria:
 | --- | --- | --- |
 | 1 | paper 운영 runbook과 local env/secret 주입 절차 | 독립 |
 | 2 | daily report job 실행 경계와 scheduler/수동 runner | 순차 |
-| 3 | notification retry worker 또는 수동 재시도 runbook | 순차 |
-| 4 | `/status`/`/kill-switch` 운영 drill과 report 비교 템플릿 | 독립 |
+| 3 | paper 매매 이벤트 Telegram 알림 mapper/formatter/cooldown | 순차 |
+| 4 | P0/P1 notification retry worker | 순차 |
+| 5 | `/status`/`/kill-switch` 운영 drill과 3일 report 비교 템플릿 | 순차 |
 
 검증:
 

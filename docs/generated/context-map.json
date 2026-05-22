@@ -107,6 +107,13 @@
       "owner_scope": "docs/runbooks"
     },
     {
+      "path": "docs/runbooks/m9-paper-ops-beta.md",
+      "kind": "reference",
+      "role": "M9 paper 운영 베타, Telegram 매매 이벤트 알림, 3일 report 비교 절차",
+      "read_when": ["M9 paper 운영", "paper 운영 베타", "Telegram 매매 알림", "3일 paper report 비교", "notification retry"],
+      "owner_scope": "docs/runbooks"
+    },
+    {
       "path": "docs/DESIGN.md",
       "kind": "policy",
       "role": "구조 변경과 설계 기록 작성 기준",
