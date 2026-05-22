@@ -95,11 +95,17 @@ async function compareReports(summaryPaths) {
       evidence: { count: summaryPaths.length },
     });
   }
+  failures.push(...findDuplicateSummaryPathFailures(summaryPaths));
 
   for (const [index, summaryPath] of summaryPaths.entries()) {
     const summary = await readJsonFile(summaryPath);
     const row = createComparisonRow({ index, summaryPath, summary });
     rows.push(row);
+  }
+  rows.sort(compareRowsByStartedAt);
+  relabelRows(rows);
+  failures.push(...findDuplicateSummaryDateFailures(rows));
+  for (const row of rows) {
     failures.push(...row.failures);
     warnings.push(...row.warnings);
   }
@@ -120,6 +126,71 @@ async function readJsonFile(filePath) {
   return JSON.parse(raw);
 }
 
+function findDuplicateSummaryPathFailures(summaryPaths) {
+  const seen = new Set();
+  const failures = [];
+  for (const summaryPath of summaryPaths) {
+    if (seen.has(summaryPath)) {
+      failures.push({
+        code: "duplicate_summary_path",
+        message: "같은 summary JSON 경로가 중복 입력됐다.",
+        evidence: { summaryPath },
+      });
+      continue;
+    }
+    seen.add(summaryPath);
+  }
+  return failures;
+}
+
+function findDuplicateSummaryDateFailures(rows) {
+  const seen = new Map();
+  const failures = [];
+  for (const row of rows) {
+    if (row.date === "unknown") {
+      continue;
+    }
+    const previous = seen.get(row.date);
+    if (previous !== undefined) {
+      failures.push(
+        rowFailure(row, "duplicate_summary_date", "같은 날짜의 summary가 중복 입력됐다.", {
+          date: row.date,
+          previousSummaryPath: previous.summaryPath,
+        }),
+      );
+      continue;
+    }
+    seen.set(row.date, row);
+  }
+  return failures;
+}
+
+function compareRowsByStartedAt(left, right) {
+  const leftTime = toSortableTimestamp(left.startedAt);
+  const rightTime = toSortableTimestamp(right.startedAt);
+  if (leftTime !== rightTime) {
+    return leftTime.localeCompare(rightTime);
+  }
+
+  return left.summaryPath.localeCompare(right.summaryPath);
+}
+
+function toSortableTimestamp(value) {
+  return typeof value === "string" && value.length > 0 ? value : "9999-12-31T23:59:59.999Z";
+}
+
+function relabelRows(rows) {
+  rows.forEach((row, index) => {
+    row.day = `Day ${index + 1}`;
+    for (const failure of row.failures) {
+      failure.day = row.day;
+    }
+    for (const warning of row.warnings) {
+      warning.day = row.day;
+    }
+  });
+}
+
 function createComparisonRow({ index, summaryPath, summary }) {
   const checks = readRecord(summary.checks);
   const metrics = readRecord(summary.metrics);
@@ -138,6 +209,7 @@ function createComparisonRow({ index, summaryPath, summary }) {
 
   const row = {
     day: `Day ${index + 1}`,
+    startedAt: typeof summary.startedAt === "string" ? summary.startedAt : null,
     date: readDateLabel(summary.startedAt),
     summaryPath,
     status: summary.status ?? "unknown",
@@ -192,9 +264,12 @@ function createComparisonRow({ index, summaryPath, summary }) {
   if (!row.dailyReportGenerated) {
     row.failures.push(rowFailure(row, "daily_report_missing", "daily report 생성 evidence가 없다."));
   }
+  if (row.notificationFailureCount === null) {
+    row.failures.push(rowFailure(row, "notification_failure_count_missing", "notification failure count evidence가 없다."));
+  }
   if (row.notificationFailureCount > 0 && !row.notificationResolved) {
     row.failures.push(
-      rowFailure(row, "notification_failure_unresolved", "notification failure에 대한 retry 또는 manual review evidence가 없다.", {
+      rowFailure(row, "notification_failure_unresolved", "notification failure에 대한 retry 또는 완료된 manual review evidence가 없다.", {
         notificationFailureCount: row.notificationFailureCount,
       }),
     );
@@ -251,15 +326,17 @@ function stringifyMetric(value) {
 }
 
 function hasNotificationResolutionEvidence(checks, summary) {
-  if (checks.notificationRetry?.status === "ok" || checks.notificationRetryWorker?.status === "ok") {
-    return true;
-  }
-  if (checks.manualReview?.status === "ok" || checks.notificationManualReview?.status === "ok") {
+  if (
+    checks.notificationRetry?.status === "ok" ||
+    checks.notificationRetryWorker?.status === "ok" ||
+    checks.notificationFailureResolved?.status === "ok" ||
+    checks.notificationManualReviewCompleted?.status === "ok"
+  ) {
     return true;
   }
 
   const metrics = readRecord(summary.metrics);
-  return metrics.notificationRetryResolved === true || metrics.notificationManualReviewRequired === true;
+  return metrics.notificationRetryResolved === true || metrics.notificationManualReviewCompleted === true;
 }
 
 function rowFailure(row, code, message, evidence = {}) {

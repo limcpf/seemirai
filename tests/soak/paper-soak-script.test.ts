@@ -235,6 +235,111 @@ describe("M8 paper soak script", () => {
     }
   });
 
+  it("validates a NORMAL control drill without requiring new-order blocking or hard-stop cancel jobs", async () => {
+    const logDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-soak-"));
+    const server = createServer((request, response) => {
+      if (request.method === "GET" && request.url === "/readyz") {
+        response.writeHead(200, { "content-type": "application/json" });
+        response.end(JSON.stringify({ status: "ok", ready: true }));
+        return;
+      }
+      if (request.method === "GET" && request.url === "/status") {
+        response.writeHead(200, { "content-type": "application/json" });
+        response.end(JSON.stringify({ status: "ok" }));
+        return;
+      }
+      if (request.method === "POST" && request.url === "/kill-switch") {
+        if (request.headers.authorization !== "Bearer drill-token") {
+          response.writeHead(401, { "content-type": "application/json" });
+          response.end(JSON.stringify({ status: "error" }));
+          return;
+        }
+
+        response.writeHead(200, { "content-type": "application/json" });
+        response.end(
+          JSON.stringify({
+            status: "ok",
+            correlationId: "corr-normal-drill",
+            transition: {
+              accepted: true,
+              fromState: "NEW_ORDERS_BLOCKED",
+              toState: "NORMAL",
+              reasonCode: "operator_clear",
+              message: "normal drill accepted",
+            },
+            actionPlan: {
+              newOrdersBlocked: false,
+              strategyEvaluationBlocked: false,
+              cancelPendingPaperOrders: false,
+              autoLiquidateOpenPositions: false,
+              requiresManualReview: false,
+            },
+            reasonMatchesTarget: true,
+            recommendedTargetState: "NORMAL",
+            hardStopCancelJob: null,
+            evidence: {
+              auditEventId: "audit-normal-drill",
+              riskEventId: "risk-normal-drill",
+            },
+            alertDispatch: {
+              fingerprint: "alert:test:paper_trading:P1:kill_switch_control:global:global:operator_clear",
+              cooldownHit: false,
+              notification: {
+                delivered: true,
+                providerMessageId: "telegram-normal-drill-message",
+                skippedReason: null,
+              },
+            },
+            alertDispatchFailure: null,
+          }),
+        );
+        return;
+      }
+
+      response.writeHead(500);
+      response.end();
+    });
+    const controlUrl = await listenOnLocalhost(server);
+
+    try {
+      const { stdout } = await runSoak(
+        [
+          "--fixture-smoke",
+          "--json",
+          "--log-dir",
+          logDir,
+          "--control-url",
+          controlUrl,
+          "--control-drill",
+          "--control-drill-target",
+          "NORMAL",
+          "--control-drill-reason",
+          "operator_clear",
+          "--control-drill-correlation-id",
+          "corr-normal-drill",
+          "--control-token-env",
+          "TEST_CONTROL_TOKEN",
+        ],
+        {
+          TEST_CONTROL_TOKEN: "drill-token",
+        },
+      );
+      const summary = JSON.parse(stdout) as SoakSummary;
+
+      expect(summary.status).toBe("passed");
+      expect(getCheck(summary, "killSwitchDrill")).toMatchObject({
+        status: "ok",
+        evidence: {
+          correlationId: "corr-normal-drill",
+          targetState: "NORMAL",
+          hardStopCancelJob: null,
+        },
+      });
+    } finally {
+      await closeServer(server);
+    }
+  });
+
   it("records control probe timeouts as failed checks while still writing artifacts", async () => {
     const logDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-soak-"));
     const server = createServer(() => {

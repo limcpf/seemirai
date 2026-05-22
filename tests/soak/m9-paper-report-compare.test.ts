@@ -11,7 +11,7 @@ const scriptPath = path.join(process.cwd(), "scripts", "compare-m9-paper-reports
 describe("M9 paper report comparison script", () => {
   it("renders a 3-day comparison from soak summary JSON artifacts", async () => {
     const workDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-m9-compare-"));
-    const summaries = await writeSummaries(workDir, [createSummary(1), createSummary(2), createSummary(3)]);
+    const summaries = await writeSummaries(workDir, [createSummary(3), createSummary(1), createSummary(2)]);
     const outputPath = path.join(workDir, "comparison.md");
 
     const { stdout } = await runCompare([
@@ -30,6 +30,7 @@ describe("M9 paper report comparison script", () => {
 
     expect(comparison.status).toBe("passed");
     expect(comparison.rows).toHaveLength(3);
+    expect(comparison.rows.map((row) => row.date)).toEqual(["2026-05-20", "2026-05-21", "2026-05-22"]);
     expect(comparison.rows[0]).toMatchObject({
       day: "Day 1",
       liveOrderApiCalls: 0,
@@ -83,6 +84,68 @@ describe("M9 paper report comparison script", () => {
       }),
     );
   });
+
+  it("fails when the same summary path is provided more than once", async () => {
+    const workDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-m9-compare-"));
+    const summaries = await writeSummaries(workDir, [createSummary(1), createSummary(2), createSummary(3)]);
+
+    const { stdout } = await runCompareExpectFailure([
+      "--summary",
+      summaries[0]!,
+      "--summary",
+      summaries[0]!,
+      "--summary",
+      summaries[2]!,
+      "--json",
+    ]);
+    const comparison = JSON.parse(stdout) as ComparisonSummary;
+
+    expect(comparison.status).toBe("failed");
+    expect(comparison.failures).toContainEqual(
+      expect.objectContaining({
+        code: "duplicate_summary_path",
+      }),
+    );
+    expect(comparison.failures).toContainEqual(
+      expect.objectContaining({
+        code: "duplicate_summary_date",
+      }),
+    );
+  });
+
+  it("fails when notification failure evidence is missing or only marked manual-review-required", async () => {
+    const workDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-m9-compare-"));
+    const summaries = await writeSummaries(workDir, [
+      createSummary(1),
+      createSummary(2, { omitNotificationFailures: true }),
+      createSummary(3, { notificationFailures: 1, notificationManualReviewRequired: true }),
+    ]);
+
+    const { stdout } = await runCompareExpectFailure([
+      "--summary",
+      summaries[0]!,
+      "--summary",
+      summaries[1]!,
+      "--summary",
+      summaries[2]!,
+      "--json",
+    ]);
+    const comparison = JSON.parse(stdout) as ComparisonSummary;
+
+    expect(comparison.status).toBe("failed");
+    expect(comparison.failures).toContainEqual(
+      expect.objectContaining({
+        day: "Day 2",
+        code: "notification_failure_count_missing",
+      }),
+    );
+    expect(comparison.failures).toContainEqual(
+      expect.objectContaining({
+        day: "Day 3",
+        code: "notification_failure_unresolved",
+      }),
+    );
+  });
 });
 
 async function runCompare(args: readonly string[]) {
@@ -110,7 +173,58 @@ async function writeSummaries(workDir: string, summaries: readonly Record<string
   return paths;
 }
 
-function createSummary(day: number, overrides: { liveOrderApiCalls?: number } = {}) {
+function createSummary(
+  day: number,
+  overrides: {
+    liveOrderApiCalls?: number;
+    notificationFailures?: number;
+    notificationManualReviewRequired?: boolean;
+    omitNotificationFailures?: boolean;
+  } = {},
+) {
+  const metrics: Record<string, unknown> = {
+    liveOrderApiCalls: overrides.liveOrderApiCalls ?? 0,
+    cost: {
+      feeKrw: day * 10,
+    },
+    slippage: {
+      bps: day,
+    },
+    fillRate: "100%",
+    blockingReasons: {
+      stale_market_data: day,
+    },
+  };
+  if (overrides.notificationManualReviewRequired === true) {
+    metrics.notificationManualReviewRequired = true;
+  }
+
+  const checks: Record<string, unknown> = {
+    runtimeExceptions: {
+      evidence: {
+        crashCount: 0,
+        unhandledRejectionCount: 0,
+      },
+    },
+    auditMissing: {
+      evidence: {
+        count: 0,
+      },
+    },
+    dailyReportGenerated: {
+      evidence: {
+        generated: true,
+      },
+    },
+  };
+  if (overrides.omitNotificationFailures !== true) {
+    checks.notificationFailures = {
+      evidence: {
+        count: overrides.notificationFailures ?? 0,
+      },
+    };
+  }
+
   return {
     schemaVersion: 1,
     status: "passed",
@@ -122,42 +236,8 @@ function createSummary(day: number, overrides: { liveOrderApiCalls?: number } = 
     artifacts: {
       reportPath: `/vaults/seemirai-m9-paper/report-day-${day}.md`,
     },
-    metrics: {
-      liveOrderApiCalls: overrides.liveOrderApiCalls ?? 0,
-      cost: {
-        feeKrw: day * 10,
-      },
-      slippage: {
-        bps: day,
-      },
-      fillRate: "100%",
-      blockingReasons: {
-        stale_market_data: day,
-      },
-    },
-    checks: {
-      runtimeExceptions: {
-        evidence: {
-          crashCount: 0,
-          unhandledRejectionCount: 0,
-        },
-      },
-      auditMissing: {
-        evidence: {
-          count: 0,
-        },
-      },
-      notificationFailures: {
-        evidence: {
-          count: 0,
-        },
-      },
-      dailyReportGenerated: {
-        evidence: {
-          generated: true,
-        },
-      },
-    },
+    metrics,
+    checks,
   };
 }
 
@@ -171,6 +251,7 @@ interface ComparisonSummary {
   status: "passed" | "failed";
   rows: Array<{
     day: string;
+    date: string;
     liveOrderApiCalls: number | null;
     dailyReportGenerated: boolean;
   }>;

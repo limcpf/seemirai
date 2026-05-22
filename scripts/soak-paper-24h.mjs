@@ -549,13 +549,14 @@ async function runControlDrill(controlUrl, options) {
   const alertDispatch = body?.alertDispatch ?? null;
   const notification = alertDispatch?.notification ?? {};
   const hardStopCancelJob = body?.hardStopCancelJob ?? null;
+  const targetRequiresNewOrderBlock = options.controlDrillTargetState !== "NORMAL";
   const hardStopRequiresCancelJob = options.controlDrillTargetState === "HARD_STOP";
   const failures = [];
   if (body?.correlationId !== correlationId) {
     failures.push("correlation_id_mismatch");
   }
-  if (actionPlan.newOrdersBlocked !== true) {
-    failures.push("new_orders_not_blocked");
+  if (actionPlan.newOrdersBlocked !== targetRequiresNewOrderBlock) {
+    failures.push(targetRequiresNewOrderBlock ? "new_orders_not_blocked" : "normal_state_still_blocks_new_orders");
   }
   if (hardStopRequiresCancelJob && actionPlan.cancelPendingPaperOrders !== true) {
     failures.push("pending_cancel_plan_missing");

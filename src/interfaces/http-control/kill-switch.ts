@@ -157,7 +157,13 @@ function createAlertDispatchResponse(
             jobId: alertDispatch.retryJobEnqueueReceipt.jobId ?? null,
             created: alertDispatch.retryJobEnqueueReceipt.created,
           },
-    retryJobEnqueueFailure: alertDispatch.retryJobEnqueueFailure ?? null,
+    retryJobEnqueueFailure:
+      alertDispatch.retryJobEnqueueFailure === undefined
+        ? null
+        : {
+            reasonCode: alertDispatch.retryJobEnqueueFailure.reasonCode,
+            message: "Notification retry job 예약에 실패했다. 세부 원인은 audit evidence를 확인해야 한다.",
+          },
     failureEvaluation: {
       state: {
         consecutiveFailures: alertDispatch.failureEvaluation.state.consecutiveFailures,
