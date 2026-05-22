@@ -94,6 +94,12 @@ Codex-native 운영은 Codex, Git, GitHub, shell command, 문서 상태를 연�
   연결한다. Telegram side effect는 kill switch durable update transaction 안에 넣지 않는다.
 - post-commit alert dispatch가 cooldown/audit/provider 경계에서 실패해도 이미 commit된 kill switch 전이를 5xx로 바꾸지 않고,
   결과 객체에 `alert_dispatch_failed` reason code만 기록한다.
+- paper 매매 이벤트 알림 후보는 주문·체결·취소·리스크 evidence가 확정된 뒤 생성한다. mapper는 alert 요청만 만들고 broker
+  side effect나 DB write를 수행하지 않아, Telegram provider 장애가 이미 commit된 주문/체결 상태를 되돌리지 않는다.
+- paper 매매 이벤트 P1은 durable cooldown과 `notification_retry` 후보 대상이며, P2 lifecycle 알림과 P3 요약 알림은 process
+  memory cooldown으로 묶는다. 정상 lifecycle 반복은 단건 즉시 전송보다 summary 정책으로 낮춰 운영 소음을 제한한다.
+- paper 매매 이벤트 Telegram 메시지는 `PAPER`, market, strategy, side, 수량, 가격/비용, 상태·원인·영향·필요 조치를 먼저
+  표시하고, order id, idempotency key, correlation id, event kind, reason code는 하단 `추적 정보`에만 둔다.
 
 ## Daily report 신뢰성 기준
 

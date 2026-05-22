@@ -174,6 +174,45 @@ provider 호출 직전에는 fingerprint 단위 delivery reservation을 먼저 �
 같은 장애가 동시에 들어와도 두 요청이 모두 Telegram provider를 호출하는 상황을 막기 위한 것이다. cooldown 기준 시각은
 alert 발생 시각이 아니라 reservation/전송 완료 시각을 사용해 지연 처리된 과거 alert가 보호 창을 짧게 만들지 못하게 한다.
 
+## M9 Paper 매매 이벤트 Telegram 알림
+
+구현 기준:
+
+- paper event mapper: `src/application/alerts/paper-trade-events.ts`
+- Telegram formatter: `src/infrastructure/telegram/message-format.ts`
+- cooldown/provider failure 경계: `src/application/alerts/index.ts`
+
+paper 주문·체결·취소·재호가·리스크 차단 evidence는 DB commit 또는 broker 결과가 확정된 뒤
+`createPaperTradeAlertRequest`로 alert 후보가 된다. 이 mapper는 Telegram provider를 직접 호출하지 않고, 기존
+`dispatchAlertWithCooldown`으로 넘길 순수 요청만 만든다. provider 실패는 주문/체결 commit을 되돌리지 않으며, P1 실패는
+후속 worker가 사용할 `notification_retry` 후보 payload와 audit evidence로 분리한다.
+
+severity와 전송 정책:
+
+| severity | 정책 | 이벤트 |
+| --- | --- | --- |
+| P1 | immediate | 슬리피지 임계값 초과, 부분체결 장기화, 취소/재호가 실패, 주문/체결 accounting mismatch, 운영자 확인 필요 |
+| P2 | cooldown | paper 주문 제출, paper 부분체결, paper 전체체결, paper 주문 취소, 재호가 완료, 리스크 차단 |
+| P3 | summary | 전략 신호 요약, 주문 후보 폐기 요약, 정상 lifecycle 반복 요약 |
+
+paper 매매 이벤트 fingerprint는 기존 alert 규칙과 같은
+`environment + run_mode + severity + paper_trade_event + market + strategy_id + reason_code`를 사용한다. P1은 durable
+cooldown과 retry 후보 생성 대상이고, P2/P3은 process memory cooldown으로 운영 소음을 줄인다.
+
+Telegram 첫 화면에는 내부 enum/code보다 다음 사용자 문구와 주문 문맥을 먼저 둔다.
+
+- `PAPER` 모드
+- market
+- strategy id
+- side
+- 수량
+- 지정가 또는 체결가
+- 수수료와 슬리피지 가능 값
+- 상태, 원인, 영향, 필요 조치
+
+`fingerprint`, order id, idempotency key, correlation id, event kind, reason code는 하단 `추적 정보`에만 둔다. 이 구분은
+운영자가 즉시 행동할 내용과 복구·감사용 안정 식별자를 섞지 않기 위한 presentation invariant다.
+
 ## M8 Daily report
 
 구현 기준:
