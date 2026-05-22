@@ -12,10 +12,14 @@ import type {
   AuditLogPort,
   DailyReportNotification,
   KillSwitchAlertDispatchOptions,
+  NotificationRetryJobPlan,
+  NotificationRetryJobQueue,
+  NotificationRetryJobEnqueueReceipt,
   NotificationResult,
   NotifierPort,
 } from "../../src/application/index.js";
 import {
+  createAlertDispatchRequestFromNotificationRetryPayload,
   createKillSwitchControlDecision,
   createAlertFingerprint,
   createInMemoryAlertCooldownStore,
@@ -23,6 +27,7 @@ import {
   createPaperTradeAlertRequest,
   dispatchKillSwitchControlAlert,
   dispatchAlertWithCooldown,
+  dispatchNotificationRetryJob,
   evaluateNotificationFailure,
   getDefaultAlertCooldownMs,
   notificationRetryJobType,
@@ -373,6 +378,45 @@ describe("alert cooldown and notification policy", () => {
     expect(notifier.alerts).toHaveLength(1);
   });
 
+  it("keeps notification retry jobs pending when delivery is blocked by reservation race", async () => {
+    const retryJobPlan = createNotificationRetryJobPlan({
+      fingerprint: "alert:prod:paper:P1:lag:krw-btc:global:public_websocket_lag",
+      occurredAt: "2026-05-21T00:00:00.000Z",
+      request: {
+        environment: "prod",
+        runMode: "paper",
+        severity: "P1",
+        alertType: "lag",
+        market: "KRW-BTC",
+        reasonCode: "public_websocket_lag",
+        title: "WebSocket lag",
+        body: "lag exceeded threshold",
+      },
+    });
+    const notifier = new RecordingNotifier();
+
+    const result = await dispatchNotificationRetryJob({
+      alertDispatch: {
+        notifier,
+        durableCooldownStore: new PersistentReservationRaceCooldownStore(),
+      },
+      payloadJson: retryJobPlan.payloadJson,
+    });
+
+    expect(result).toMatchObject({
+      status: "FAILED",
+      alertDispatch: {
+        cooldownHit: true,
+        notification: {
+          delivered: false,
+          skippedReason: "alert_reservation_race",
+        },
+      },
+      errorMessage: "notification retry deferred: alert_reservation_race",
+    });
+    expect(notifier.alerts).toHaveLength(0);
+  });
+
   it("clears delivery reservations after provider failure so immediate retry can send", async () => {
     const notifier = new RecordingNotifier();
     const cooldownStore = createInMemoryAlertCooldownStore();
@@ -592,6 +636,117 @@ describe("alert cooldown and notification policy", () => {
         severity: "P0",
         fingerprint: "alert:prod:paper:P0:db:global:global:db_write_failure",
         correlation_id: "corr-retry",
+      },
+    });
+  });
+
+  it("persists retry job dimensions so workers can reconstruct alert dispatch requests", () => {
+    const retryJobPlan = createNotificationRetryJobPlan({
+      fingerprint: "alert:prod:paper:P1:lag:krw-btc:global:public_websocket_lag",
+      occurredAt: "2026-05-21T00:00:00.000Z",
+      request: {
+        environment: "prod",
+        runMode: "paper",
+        severity: "P1",
+        alertType: "lag",
+        market: "KRW-BTC",
+        reasonCode: "public_websocket_lag",
+        title: "WebSocket lag",
+        body: "lag exceeded threshold",
+        correlationId: "corr-retry-payload",
+        metadata: {
+          source: "market_data_runtime",
+        },
+      },
+    });
+
+    expect(retryJobPlan.payloadJson).toMatchObject({
+      environment: "prod",
+      run_mode: "paper",
+      severity: "P1",
+      alert_type: "lag",
+      market: "KRW-BTC",
+      strategy_id: null,
+      reason_code: "public_websocket_lag",
+      correlation_id: "corr-retry-payload",
+    });
+    expect(createAlertDispatchRequestFromNotificationRetryPayload(retryJobPlan.payloadJson)).toMatchObject({
+      environment: "prod",
+      runMode: "paper",
+      severity: "P1",
+      alertType: "lag",
+      market: "KRW-BTC",
+      reasonCode: "public_websocket_lag",
+      correlationId: "corr-retry-payload",
+      metadata: {
+        source: "market_data_runtime",
+      },
+    });
+  });
+
+  it("enqueues P0/P1 retry jobs when a runtime queue is attached", async () => {
+    const notifier = new ThrowingNotifier();
+    const retryJobQueue = new RecordingNotificationRetryJobQueue();
+    const result = await dispatchAlertWithCooldown(
+      {
+        notifier,
+        durableCooldownStore: createInMemoryAlertCooldownStore(),
+        retryJobQueue,
+      },
+      {
+        environment: "prod",
+        runMode: "paper",
+        severity: "P1",
+        alertType: "lag",
+        market: "KRW-BTC",
+        reasonCode: "public_websocket_lag",
+        title: "WebSocket lag",
+        body: "lag exceeded threshold",
+        occurredAt: "2026-05-21T00:00:00.000Z",
+        correlationId: "corr-retry-enqueue",
+      },
+    );
+
+    expect(retryJobQueue.plans).toHaveLength(1);
+    expect(result.retryJobEnqueueReceipt).toMatchObject({
+      jobType: "notification_retry",
+      idempotencyKey:
+        "notification_retry:alert:prod:paper:P1:lag:krw-btc:global:public_websocket_lag:2026-05-21T00:00:00.000Z",
+      created: true,
+      jobId: "notification-retry-job-1",
+    });
+  });
+
+  it("does not fail original alert dispatch when retry enqueue fails", async () => {
+    const notifier = new ThrowingNotifier();
+    const auditLog = new RecordingAuditLog();
+    const result = await dispatchAlertWithCooldown(
+      {
+        notifier,
+        durableCooldownStore: createInMemoryAlertCooldownStore(),
+        retryJobQueue: new ThrowingNotificationRetryJobQueue(),
+        auditLog,
+      },
+      {
+        environment: "prod",
+        runMode: "paper",
+        severity: "P0",
+        alertType: "db",
+        reasonCode: "db_write_failure",
+        title: "DB write failed",
+        body: "risk evidence cannot be persisted",
+        occurredAt: "2026-05-21T00:00:00.000Z",
+      },
+    );
+
+    expect(result.notification.delivered).toBe(false);
+    expect(result.retryJobEnqueueFailure).toMatchObject({
+      reasonCode: "notification_retry_enqueue_failed",
+      message: "queue unavailable",
+    });
+    expect(auditLog.events.at(-1)?.metadata).toMatchObject({
+      retry_job_enqueue_failure: {
+        reasonCode: "notification_retry_enqueue_failed",
       },
     });
   });
@@ -840,6 +995,30 @@ class ThrowingNotifier extends RecordingNotifier {
   }
 }
 
+class RecordingNotificationRetryJobQueue implements NotificationRetryJobQueue {
+  public readonly plans: NotificationRetryJobPlan[] = [];
+
+  public async enqueueNotificationRetryJob(
+    plan: NotificationRetryJobPlan,
+  ): Promise<NotificationRetryJobEnqueueReceipt> {
+    this.plans.push(plan);
+    return {
+      jobType: "notification_retry",
+      idempotencyKey: plan.idempotencyKey,
+      created: true,
+      jobId: `notification-retry-job-${this.plans.length}`,
+    };
+  }
+}
+
+class ThrowingNotificationRetryJobQueue implements NotificationRetryJobQueue {
+  public async enqueueNotificationRetryJob(
+    _plan: NotificationRetryJobPlan,
+  ): Promise<NotificationRetryJobEnqueueReceipt> {
+    throw new Error("queue unavailable");
+  }
+}
+
 class ReservationRaceCooldownStore implements AlertCooldownStore {
   private readonly delegate = createInMemoryAlertCooldownStore();
   public reserveCalls = 0;
@@ -871,6 +1050,46 @@ class ReservationRaceCooldownStore implements AlertCooldownStore {
     }
 
     return this.delegate.reserveDelivery(input);
+  }
+
+  public async releaseDeliveryReservation(input: AlertCooldownReleaseInput): Promise<AlertCooldownState> {
+    return this.delegate.releaseDeliveryReservation(input);
+  }
+
+  public async recordSent(input: AlertCooldownRecordInput): Promise<AlertCooldownState> {
+    return this.delegate.recordSent(input);
+  }
+
+  public async recordSkipped(input: AlertCooldownRecordInput): Promise<AlertCooldownState> {
+    return this.delegate.recordSkipped(input);
+  }
+}
+
+class PersistentReservationRaceCooldownStore implements AlertCooldownStore {
+  private readonly delegate = createInMemoryAlertCooldownStore();
+
+  public async findByFingerprint(fingerprint: string): Promise<AlertCooldownState | undefined> {
+    return this.delegate.findByFingerprint(fingerprint);
+  }
+
+  public async reserveDelivery(
+    input: AlertCooldownReservationInput,
+  ): Promise<AlertCooldownReservationResult> {
+    return {
+      reserved: false,
+      state: {
+        fingerprint: input.fingerprint,
+        severity: input.severity,
+        alertType: input.alertType,
+        market: input.market,
+        strategyId: input.strategyId,
+        reasonCode: input.reasonCode,
+        lastSentAt: null,
+        lastSkippedAt: null,
+        deliveryReservedUntil: null,
+        payloadJson: input.payloadJson ?? {},
+      },
+    };
   }
 
   public async releaseDeliveryReservation(input: AlertCooldownReleaseInput): Promise<AlertCooldownState> {

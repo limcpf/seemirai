@@ -71,9 +71,24 @@ export {
   createPaperNoKeyKillSwitchControlProvider,
   createRuntimeAlertDispatchOptions,
 } from "./notification-runtime.js";
+export {
+  NOTIFICATION_RETRY_FAILURE_DELAY_MS,
+  PAPER_NO_KEY_NOTIFICATION_RETRY_WORKER_ID,
+  createPaperNoKeyNotificationRetryRuntime,
+  createPostgresNotificationRetryJobQueue,
+} from "./notification-retry-runtime.js";
 export type { RuntimeConfig } from "./config.js";
 export type { RuntimeNotificationConfig } from "./notification-config.js";
 export type { PaperNoKeyKillSwitchControlProviderOptions } from "./notification-runtime.js";
+export type {
+  ClaimedNotificationRetryJobRunResult,
+  NotificationRetryRuntimeDependencies,
+  NotificationRetryRuntimeJobQueue,
+  NotificationRetryRuntimeJobStatus,
+  NotificationRetryRuntimeQueueClaimOptions,
+  PaperNoKeyNotificationRetryRuntime,
+  RunDueNotificationRetryJobsOptions,
+} from "./notification-retry-runtime.js";
 export {
   RegistryActivationConfigSchema,
   defaultRegistryActivationConfig,
