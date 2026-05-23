@@ -38,6 +38,9 @@ describe("M10 LLM risk assistant audit persistence", () => {
         provider_id: "codex_oauth",
         status: "ok",
         result_type: "notice_risk_classification",
+        source: {
+          notice_url: expect.stringContaining("[REDACTED]"),
+        },
       },
     });
     expect(row).toMatchObject({
@@ -64,6 +67,7 @@ describe("M10 LLM risk assistant audit persistence", () => {
     expect(serialized).not.toContain("codex-session-raw");
     expect(serialized).not.toContain("github_pat_raw");
     expect(serialized).not.toContain("sk-raw");
+    expect(serialized).not.toContain("notice-token-raw");
   });
 
   it("appends LLM audit through AuditLogPort without direct DB coupling", async () => {
@@ -143,8 +147,17 @@ describe("M10 LLM risk assistant audit persistence", () => {
         access_key: "upbit-access-key-raw",
         safe: "공지 본문",
         prompt: "api_key=upbit-access-key-raw Bearer codex-session-raw",
+        json: '{"token":"json-token-raw","session": "json-session-raw"}',
+        url: "https://example.test/notice?access_token=url-token-raw&api_key=url-key-raw",
       },
-      items: ["sk-rawsecretsecret", "plain"],
+      items: [
+        "sk-rawsecretsecret",
+        "gho_1234567890abcdef",
+        "ghu_1234567890abcdef",
+        "ghs_1234567890abcdef",
+        "ghr_1234567890abcdef",
+        "plain",
+      ],
     });
 
     expect(redacted).toEqual({
@@ -152,12 +165,25 @@ describe("M10 LLM risk assistant audit persistence", () => {
         access_key: "[REDACTED]",
         safe: "공지 본문",
         prompt: "[REDACTED] [REDACTED]",
+        json: "{[REDACTED],[REDACTED]}",
+        url: "https://example.test/notice?[REDACTED]&[REDACTED]",
       },
-      items: ["[REDACTED]", "plain"],
+      items: ["[REDACTED]", "[REDACTED]", "[REDACTED]", "[REDACTED]", "[REDACTED]", "plain"],
     });
     expect(redactLlmRiskAssistantAuditText("Authorization: Bearer codex-session-raw")).toBe(
       "[REDACTED]",
     );
+    expect(redactLlmRiskAssistantAuditText("Authorization: bearer codex-session-raw")).toBe(
+      "[REDACTED]",
+    );
+    expect(redactLlmRiskAssistantAuditText("Authorization: Basic QWxhZGRpbjpvcGVuIHNlc2FtZQ==")).toBe(
+      "[REDACTED]",
+    );
+    expect(
+      redactLlmRiskAssistantAuditText(
+        'provider returned {"api_key":"json-api-key-raw","safe":"kept"}',
+      ),
+    ).not.toContain("json-api-key-raw");
   });
 });
 
@@ -168,7 +194,8 @@ function providerRequestWithSecrets(): LlmRiskAssistantProviderRequest {
       source_id: "upbit-notice-1",
       observed_at: observedAt,
       market: "KRW-BTC",
-      notice_url: "https://upbit.com/service_center/notice?id=1",
+      notice_url:
+        "https://upbit.com/service_center/notice?id=1&access_token=notice-token-raw&api_key=notice-key-raw",
       title: "점검 공지 Authorization: Bearer codex-session-raw",
       content:
         "공식 점검 공지입니다. access_key=upbit-access-key-raw Authorization: Bearer codex-session-raw",

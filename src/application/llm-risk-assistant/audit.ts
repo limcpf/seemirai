@@ -28,13 +28,15 @@ const sensitiveKeyFragments = [
 ] as const;
 
 const sensitiveStringPatterns = [
-  /\bBearer\s+[A-Za-z0-9._~+/=-]+/gu,
+  /\bAuthorization\s*:\s*[^\r\n,;]+/giu,
+  /\bBearer\s+[A-Za-z0-9._~+/=-]+/giu,
   /\bsk-[A-Za-z0-9_-]{12,}\b/gu,
-  /\bghp_[A-Za-z0-9_]{20,}\b/gu,
-  /\bgithub_pat_[A-Za-z0-9_]{20,}\b/gu,
+  /\b(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9_]{10,}\b/gu,
+  /\bgithub_pat_[A-Za-z0-9_]{10,}\b/gu,
   /\bxox[baprs]-[A-Za-z0-9-]{10,}\b/gu,
   /\b[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}\b/gu,
-  /\b(?:token|secret|password|api[_-]?key|access[_-]?key|secret[_-]?key|authorization|cookie|session)\s*[:=]\s*[^\s,;]+/giu,
+  /\b(?:access[_-]?token|api[_-]?key|token|session|secret)[=/][^/?&#\s]+/giu,
+  /(?<![A-Za-z0-9_-])["']?(?:access[_-]?token|token|secret|password|api[_-]?key|access[_-]?key|secret[_-]?key|authorization|cookie|session)["']?\s*[:=]\s*(?:"[^"]*"|'[^']*'|[^\s,;&]+)/giu,
 ] as const;
 
 export interface LlmRiskAssistantAuditInput {
@@ -177,7 +179,7 @@ function toRedactedSourcePayload(input: LlmRiskAssistantInput): JsonRecord {
   };
 
   assignIfDefined(payload, "market", input.market);
-  assignIfDefined(payload, "notice_url", input.notice_url);
+  assignIfDefined(payload, "notice_url", redactOptionalText(input.notice_url));
   assignIfDefined(payload, "title", redactOptionalText(input.title));
 
   return payload;
