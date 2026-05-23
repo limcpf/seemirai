@@ -498,7 +498,7 @@ Acceptance Criteria:
 - [ ] 실거래 전환 가능 여부를 판단할 수 있도록 수수료, 슬리피지, 체결률, 전략별 손익을 리포트한다.
 - [ ] paper trading 모드에서는 거래소 주문 API가 호출되지 않는다.
 - [ ] 기본 모드에서는 실거래 API Key가 없거나 주문 권한이 비활성인 상태로 실행된다.
-- [ ] 24시간 paper soak 결과는 crash 0회, unhandled rejection 0회, 실거래 주문 API 0회, audit 누락 0건, stale data 신규 주문
+- [x] 24시간 paper soak 결과는 crash 0회, unhandled rejection 0회, 실거래 주문 API 0회, audit 누락 0건, stale data 신규 주문
   차단, DB write failure 0건, notification failure 0건, daily report 생성 여부를 summary로 남긴다.
 
 테스트 요구사항:

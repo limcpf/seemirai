@@ -5,7 +5,7 @@
 - 제품 이름: Seemirai
 - 한 줄 설명: Upbit KRW 현물에서 비용 차감 후 기대값이 남는 거래만 paper trading으로 검증하는 자동 주문 엔진
 - 핵심 가치: 좋은 매수 시점을 찾는 것보다 거래소 수수료, 스프레드, 슬리피지, 펀딩비, 유동성 리스크를 이긴 거래만 남기는 것
-- 현재 단계: MVP 업무 명세 확정과 구현 issue 분해 준비
+- 현재 단계: M8-C 완료. Upbit KRW 현물 paper trading MVP 구현과 24시간 public WebSocket soak 검증을 닫았고, 반복 운영은 M9 paper 운영 베타에서 진행한다.
 
 ## 2. 문제 정의
 
