@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { spawn } from "node:child_process";
@@ -15,6 +15,8 @@ import {
 export interface CodexOAuthCommandResult {
   finalMessage: string;
   exitCode: number;
+  outputTooLarge?: boolean | undefined;
+  outputBytes?: number | undefined;
 }
 
 export interface CodexOAuthCommandRunOptions {
@@ -100,6 +102,21 @@ export class CodexOAuthLlmProvider implements LlmRiskAssistantProviderPort {
         });
       }
 
+      if (commandResult.outputTooLarge) {
+        // 파일 크기 기준으로 이미 과대 응답이 확인됐으므로 본문을 읽지 않고 fail-closed evidence만 남긴다.
+        return createLlmProviderFailure({
+          providerId: this.providerId,
+          failureClass: "output_too_large",
+          reasonCode: "llm_provider_output_too_large",
+          message: "LLM provider output exceeded the configured byte limit.",
+          failedAt: this.now(),
+          metadata: {
+            output_bytes: commandResult.outputBytes,
+            max_output_bytes: request.max_output_bytes,
+          },
+        });
+      }
+
       return normalizeLlmProviderTextOutput({
         providerId: this.providerId,
         input: request.input,
@@ -165,14 +182,26 @@ export function createCodexOAuthCommandRunner(
           timeoutMs: runOptions.timeoutMs,
           cwd: runOptions.cwd ?? options.cwd ?? process.cwd(),
         });
-        const finalMessage = await readFile(outputPath, "utf8");
-
-        if (Buffer.byteLength(finalMessage, "utf8") > runOptions.maxOutputBytes) {
+        if (exitCode !== 0) {
+          // 인증 실패나 초기 CLI 오류에서는 last-message 파일이 없을 수 있으므로 본문 읽기를 시도하지 않는다.
           return {
-            finalMessage,
+            finalMessage: "",
             exitCode,
           };
         }
+
+        const outputStat = await stat(outputPath);
+
+        if (outputStat.size > runOptions.maxOutputBytes) {
+          return {
+            finalMessage: "",
+            exitCode,
+            outputTooLarge: true,
+            outputBytes: outputStat.size,
+          };
+        }
+
+        const finalMessage = await readFile(outputPath, "utf8");
 
         return {
           finalMessage,
@@ -222,14 +251,30 @@ function runCodexExecCommand(options: {
       },
     );
     let settled = false;
+    let timedOut = false;
+    let killTimeout: NodeJS.Timeout | undefined;
+
+    const clearTimers = (): void => {
+      clearTimeout(timeout);
+
+      if (killTimeout !== undefined) {
+        clearTimeout(killTimeout);
+      }
+    };
+
     const timeout = setTimeout(() => {
       if (settled) {
         return;
       }
 
-      settled = true;
+      timedOut = true;
       child.kill("SIGTERM");
-      reject(new CodexOAuthCommandTimeoutError());
+      // SIGTERM을 무시하는 child가 남으면 다음 provider 호출까지 리소스를 점유하므로 짧은 grace 뒤 강제 종료한다.
+      killTimeout = setTimeout(() => {
+        if (!settled) {
+          child.kill("SIGKILL");
+        }
+      }, 1_000);
     }, options.timeoutMs);
 
     child.once("error", (error) => {
@@ -238,7 +283,7 @@ function runCodexExecCommand(options: {
       }
 
       settled = true;
-      clearTimeout(timeout);
+      clearTimers();
       reject(new CodexOAuthCommandError(error.message, null));
     });
 
@@ -248,7 +293,13 @@ function runCodexExecCommand(options: {
       }
 
       settled = true;
-      clearTimeout(timeout);
+      clearTimers();
+
+      if (timedOut) {
+        reject(new CodexOAuthCommandTimeoutError());
+        return;
+      }
+
       resolve(code ?? 1);
     });
 

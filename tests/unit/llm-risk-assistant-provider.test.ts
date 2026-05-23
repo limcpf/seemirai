@@ -133,6 +133,57 @@ describe("M10 LLM risk assistant provider runtime", () => {
     });
   });
 
+  it("fails closed when provider output includes unrequested source ids", () => {
+    const result = normalizeLlmProviderTextOutput({
+      providerId: "codex_oauth",
+      input: createProviderRequest().input,
+      resultType: "notice_risk_classification",
+      rawOutput: JSON.stringify({
+        schema_version: LLM_RISK_ASSISTANT_SCHEMA_VERSION,
+        result_type: "notice_risk_classification",
+        source_ids: ["upbit-notice-1", "unrequested-notice-2"],
+        summary: "다른 source가 섞인 응답은 거부되어야 합니다.",
+        recommended_action: "ALERT_ONLY",
+        observed_at: observedAt,
+      }),
+      maxOutputBytes: 16_000,
+      observedAt,
+    });
+
+    expect(result).toMatchObject({
+      status: "failed",
+      failure_class: "invalid_schema",
+      reason_code: "llm_provider_result_mismatch",
+    });
+  });
+
+  it("maps non-zero Codex exit and oversized output into provider failures", async () => {
+    const nonZeroProvider = new CodexOAuthLlmProvider({
+      now: () => new Date(observedAt),
+      runner: createFakeRunner("", {
+        exitCode: 1,
+      }),
+    });
+    const oversizedProvider = new CodexOAuthLlmProvider({
+      now: () => new Date(observedAt),
+      runner: createFakeRunner("", {
+        outputTooLarge: true,
+        outputBytes: 999_999,
+      }),
+    });
+
+    await expect(nonZeroProvider.generate(createProviderRequest())).resolves.toMatchObject({
+      status: "failed",
+      failure_class: "provider_error",
+      reason_code: "codex_oauth_provider_exit_nonzero",
+    });
+    await expect(oversizedProvider.generate(createProviderRequest())).resolves.toMatchObject({
+      status: "failed",
+      failure_class: "output_too_large",
+      reason_code: "llm_provider_output_too_large",
+    });
+  });
+
   it("turns Codex command timeout into failure evidence without a trading signal", async () => {
     const provider = new CodexOAuthLlmProvider({
       now: () => new Date(observedAt),
@@ -206,11 +257,20 @@ function createProviderRequest(): LlmRiskAssistantProviderRequest {
   };
 }
 
-function createFakeRunner(finalMessage: string): CodexOAuthCommandRunner {
+function createFakeRunner(
+  finalMessage: string,
+  options: {
+    exitCode?: number;
+    outputTooLarge?: boolean;
+    outputBytes?: number;
+  } = {},
+): CodexOAuthCommandRunner {
   return {
     run: async () => ({
       finalMessage,
-      exitCode: 0,
+      exitCode: options.exitCode ?? 0,
+      outputTooLarge: options.outputTooLarge,
+      outputBytes: options.outputBytes,
     }),
   };
 }

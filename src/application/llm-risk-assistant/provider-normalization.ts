@@ -225,11 +225,14 @@ function validateProviderResultRequestMatch(options: {
     };
   }
 
-  if (!options.resultSourceIds.includes(options.input.source_id)) {
+  if (
+    options.resultSourceIds.length !== 1 ||
+    options.resultSourceIds[0] !== options.input.source_id
+  ) {
     return {
       path: "source_ids",
       code: "custom",
-      message: "source ids do not include the requested input source id",
+      message: "source ids must exactly match the requested input source id",
     };
   }
 
