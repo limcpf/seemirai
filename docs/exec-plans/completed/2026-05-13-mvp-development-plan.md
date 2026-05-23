@@ -1,7 +1,8 @@
 # Seemirai MVP 개발 실행 계획
 
-- 상태: active
+- 상태: completed
 - 작성일: 2026-05-13
+- 완료일: 2026-05-23
 - 목표: Upbit KRW 현물 paper trading 기반의 자동 주문 엔진 검증 MVP를 구현한다.
 
 ## 기준 문서
@@ -241,10 +242,10 @@ M7 진행 근거:
 
 ### M8. 운영 가드레일과 soak test
 
-- [ ] Fastify `/healthz`, `/readyz`, `/status`, optional `/metrics`
+- [x] Fastify `/healthz`, `/readyz`, `/status`; optional `/metrics`는 M8-C 완료 필수에서 제외
   - [x] issue #42 Sub PR 1: Fastify dependency, HTTP server foundation, `/healthz`, `/readyz`, `/status`, safe status summary, bearer guard foundation
-  - [ ] optional `/metrics`
-- [ ] local token 기반 kill switch endpoint
+  - [x] optional `/metrics` 제외 결정: M8-C에서는 신규 기능으로 구현하지 않고, M9 이후 운영 지표 endpoint가 필요할 때 별도 issue로 정의한다.
+- [x] local token 기반 kill switch endpoint
   - [x] issue #42 Sub PR 1: POST control endpoint용 bearer guard와 token 누락 startup fail foundation
   - [x] issue #42 Sub PR 2: `POST /kill-switch` 상태 전이 실행, target enum, illegal transition 처리, P0 원인 mapping, HARD_STOP pending cancel job 경계
 - [x] Telegram outbound notifier
@@ -260,9 +261,16 @@ M7 진행 근거:
 - [x] P0 알림 시 신규 주문 차단 테스트
   - [x] issue #42 Sub PR 6: accepted P0 kill switch alert가 `actionPlan.newOrdersBlocked=true`와 같은 evidence로 전송되는지 unit/integration regression으로 고정
 - [x] Telegram command 수신 경로 없음 확인
-- [ ] 24시간 paper soak test: crash 없음, live order API 0회, audit 누락 0건
+- [x] 24시간 paper soak test: crash 없음, live order API 0회, audit 누락 0건
   - [x] fixture smoke: stale data 신규 주문 차단, live order API 0회, audit 누락 0건 summary 생성
-  - [ ] 실제 24시간 public WebSocket soak 결과 artifact 첨부
+  - [x] 실제 24시간 public WebSocket soak 결과 artifact 첨부
+
+M8-C 완료 증거:
+
+- summary: `/home/lim/vaults/99_운영/seemirai-soak/m8-paper-soak-2026-05-22T01-20-26-828Z-60c4fb71-summary.json`
+- report: `/home/lim/vaults/99_운영/seemirai-soak/m8-paper-soak-2026-05-22T01-20-26-828Z-60c4fb71-report.md`
+- raw event log: `/home/lim/vaults/99_운영/seemirai-soak/m8-paper-soak-2026-05-22T01-20-26-828Z-60c4fb71-events.jsonl`
+- 결과: `passed`, 관측 시간 `86,400,068ms`, public WebSocket message `1,258,095`, live order API call `0`, crash `0`, unhandled rejection `0`, audit missing `0`, DB write failure `0`, notification failure `0`, daily report evidence `true`
 
 ## 결정 로그
 
@@ -352,15 +360,15 @@ issue #3 sub PR 계획:
 
 ## 남은 이슈
 
-- Node.js 24와 pnpm 실제 설치/CI 환경 구성은 구현 단계에서 확인한다.
+- Node.js 24와 pnpm 로컬 검증은 M8-C에서 통과했다. CI 검증은 PR check로 계속 확인한다.
 - Upbit policy sync에 필요한 최소 API 권한은 pilot 전 별도 검토한다.
 - `trend_following`, `mean_reversion`의 초기 feature threshold는 paper data 축적 후 조정한다.
 - Phase 1.5 알트 편입은 MVP core 완료 후 별도 작업으로 유지한다.
 
 ## 완료 기준
 
-- [ ] M0~M8 acceptance criteria가 모두 통과한다.
-- [ ] `./scripts/verify docs`가 통과한다.
-- [ ] 프로젝트 test/lint/typecheck/build가 정의되고 통과한다.
-- [ ] 24시간 paper soak test 결과가 문서화된다.
-- [ ] 실거래 주문 API 호출 0회가 테스트와 로그로 확인된다.
+- [x] M0~M8 acceptance criteria가 모두 통과한다.
+- [x] `./scripts/verify docs`가 통과한다.
+- [x] 프로젝트 test/lint/typecheck/build가 정의되고 통과한다.
+- [x] 24시간 paper soak test 결과가 문서화된다.
+- [x] 실거래 주문 API 호출 0회가 테스트와 로그로 확인된다.

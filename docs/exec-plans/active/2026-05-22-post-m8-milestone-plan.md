@@ -13,15 +13,16 @@
 - [`../../RUNTIME_CONFIG.md`](../../RUNTIME_CONFIG.md)
 - [`../../RELIABILITY.md`](../../RELIABILITY.md)
 - [`../../SECURITY.md`](../../SECURITY.md)
-- [`./2026-05-13-mvp-development-plan.md`](./2026-05-13-mvp-development-plan.md)
+- [`../completed/2026-05-13-mvp-development-plan.md`](../completed/2026-05-13-mvp-development-plan.md)
 - [`../tech-debt-tracker.md`](../tech-debt-tracker.md)
 - [`../../tech-debt/2026-05-20-large-typescript-module-boundaries.md`](../../tech-debt/2026-05-20-large-typescript-module-boundaries.md)
 
 ## 현재 판단
 
-M0~M7은 실행 계획상 완료 상태다. M8은 HTTP control, kill switch, Telegram outbound, cooldown, daily report, soak harness
-구현이 mother PR로 merge된 상태다. 다만 MVP 완료 판정에 필요한 운영 증거는 아직 닫히지 않았다. 남은 핵심 증거는 실제 24시간
-public WebSocket soak, daily report evidence, 전체 검증 통과, 실거래 주문 API 0회 확인이다.
+M0~M8-C는 완료 상태다. M8은 HTTP control, kill switch, Telegram outbound, cooldown, daily report, soak harness 구현이
+mother PR로 merge됐고, M8-C에서 실제 24시간 public WebSocket soak, daily report evidence, 전체 검증 통과, 실거래 주문 API
+0회 확인까지 닫았다. 24시간 soak는 public WebSocket 연결과 안전 guard 검증이며, 운영 DB 적재와 반복 daily report 운영은 M9
+paper 운영 베타에서 별도 증거로 닫는다.
 
 PRD와 기능 요구사항에는 LLM 보조 정책, phase 1.5 알트 수동 편입, v0.2 pilot 후보가 남아 있다. 이들은 paper 운영이 안정화되기
 전에는 진행하지 않는다. 특히 Upbit account 연동, 자산 조회, 주문 조회, 주문 생성/취소는 MVP가 아니라 v0.2 pilot 범위다.
@@ -33,7 +34,7 @@ PRD와 기능 요구사항에는 LLM 보조 정책, phase 1.5 알트 수동 편�
 
 ## 우선순위 원칙
 
-1. M8 구현이 merge됐더라도 MVP 완료 운영 증거가 없으면 새 거래 범위나 private API 범위를 열지 않는다.
+1. M8-C 운영 증거가 닫혔더라도 M9 반복 paper 운영 전에는 새 거래 범위나 private API 범위를 열지 않는다.
 2. paper 운영 안정화 전에는 Upbit account 연동, 자산 조회, 주문 조회, 주문 생성/취소를 구현하지 않는다.
 3. 전략 품질 개선은 paper/backtest 데이터와 리포트 근거가 쌓인 뒤 진행한다.
 4. 무동작 리팩터링은 기능 변경 PR과 섞지 않는다.
@@ -42,6 +43,8 @@ PRD와 기능 요구사항에는 LLM 보조 정책, phase 1.5 알트 수동 편�
 ## 마일스톤
 
 ### M8-C. MVP 완료 판정과 운영 증거 정리
+
+상태: completed
 
 목적:
 
@@ -53,7 +56,7 @@ PRD와 기능 요구사항에는 LLM 보조 정책, phase 1.5 알트 수동 편�
 - `node scripts/soak-paper-24h.mjs --fixture-smoke`를 통과시킨다.
 - 실제 24시간 public WebSocket soak를 `SEEMIRAI_RUN_SOAK=1`과 `--daily-report-generated`로 실행한다.
 - raw soak log와 summary artifact는 저장소 밖에 남기고, 저장소에는 summary 경로와 핵심 결과만 기록한다.
-- M8 checklist의 optional `/metrics`는 구현하거나, MVP 완료 필수에서 제외한다는 결정을 문서화한다.
+- M8 checklist의 optional `/metrics`는 MVP 완료 필수에서 제외한다는 결정을 문서화한다.
 - `README.md`, `QUALITY_SCORE.md`, PRD/기능 요구사항의 현재 단계 표현이 구현 상태와 맞는지 정리한다.
 - 완료되면 기존 MVP 실행 계획을 completed로 이동할지 결정하고 인덱스와 context map을 갱신한다.
 
@@ -63,14 +66,29 @@ PRD와 기능 요구사항에는 LLM 보조 정책, phase 1.5 알트 수동 편�
 - Upbit private API/account 연동
 - phase 1.5 알트 편입
 
+완료 증거:
+
+- 24시간 soak summary: `/home/lim/vaults/99_운영/seemirai-soak/m8-paper-soak-2026-05-22T01-20-26-828Z-60c4fb71-summary.json`
+- 24시간 soak report: `/home/lim/vaults/99_운영/seemirai-soak/m8-paper-soak-2026-05-22T01-20-26-828Z-60c4fb71-report.md`
+- raw event log: `/home/lim/vaults/99_운영/seemirai-soak/m8-paper-soak-2026-05-22T01-20-26-828Z-60c4fb71-events.jsonl`
+- 실행 기간: `2026-05-22T01:20:26.828Z`부터 `2026-05-23T01:20:26.896Z`까지
+- 관측 시간: `86,400,068ms`
+- 핵심 수치: public WebSocket message `1,258,095`, trade message `288,844`, orderbook message `969,251`, live order API call `0`, crash `0`, unhandled rejection `0`, audit missing `0`, DB write failure `0`, notification failure `0`, daily report evidence `true`
+- 현재 HEAD 검증: `corepack pnpm install --frozen-lockfile`, `node scripts/soak-paper-24h.mjs --fixture-smoke --json`, `./scripts/verify` 통과
+- 커밋 기준: 24시간 soak artifact는 `b7959f680590`에서 생성됐고, 현재 M8-C 문서 정리 시점 HEAD에서는 fixture smoke와 전체 verify로 회귀 없음이 확인됐다.
+
+결정:
+
+- optional `/metrics`는 M8-C 신규 기능으로 구현하지 않고 MVP 완료 필수에서 제외한다. 운영 지표 endpoint가 필요하면 M9 이후 별도 issue에서 HTTP auth, 노출 범위, Prometheus 호환성을 함께 정의한다.
+
 Acceptance Criteria:
 
-- [ ] `corepack pnpm install --frozen-lockfile` 후 `./scripts/verify`가 통과한다.
-- [ ] fixture smoke summary가 stale data 신규 주문 차단, audit 누락 0건, live order API 0회를 포함한다.
-- [ ] 실제 24시간 soak summary가 crash 0회, unhandled rejection 0회, live order API 0회, audit 누락 0건, stale data 차단,
+- [x] `corepack pnpm install --frozen-lockfile` 후 `./scripts/verify`가 통과한다.
+- [x] fixture smoke summary가 stale data 신규 주문 차단, audit 누락 0건, live order API 0회를 포함한다.
+- [x] 실제 24시간 soak summary가 crash 0회, unhandled rejection 0회, live order API 0회, audit 누락 0건, stale data 차단,
       DB write failure 0건, notification failure 0건, daily report evidence를 포함한다.
-- [ ] M8 구현 완료와 MVP 운영 증거 상태가 실행 계획에 현재 상태로 반영된다.
-- [ ] PRD/기능 요구사항/README의 상태 표현이 실제 구현 단계와 충돌하지 않는다.
+- [x] M8 구현 완료와 MVP 운영 증거 상태가 실행 계획에 현재 상태로 반영된다.
+- [x] PRD/기능 요구사항/README의 상태 표현이 실제 구현 단계와 충돌하지 않는다.
 
 검증:
 
@@ -324,9 +342,12 @@ M10과 M12 일부는 M9와 병렬로 검토할 수 있지만, M9의 운영 증�
 ## Open Questions
 
 - 실제 paper 운영 안정화 기준을 3일, 7일, 14일 중 어디로 둘지 결정해야 한다.
-- optional `/metrics`를 MVP 완료 조건에서 제외할지, M9 운영 관측성 범위로 이동할지 결정해야 한다.
 - LLM provider와 모델 선택은 별도 승인과 공식 문서 확인 후 결정해야 한다.
 - v0.2 pilot에서 read-only account integration을 먼저 열지, 주문 조회까지 함께 열지 결정해야 한다.
+
+결정된 항목:
+
+- optional `/metrics`는 MVP 완료 조건에서 제외한다. 운영 관측성 endpoint가 필요하면 M9 이후 별도 issue로 다룬다.
 
 ## 완료 기준
 

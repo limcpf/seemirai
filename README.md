@@ -2,7 +2,7 @@
 
 Seemirai는 암호화폐 자동매매에서 AI가 매수와 매도를 직접 지시하는 방식을 피하고, 수수료, 스프레드, 슬리피지, 펀딩비, 전송 비용을 먼저 차감한 뒤에도 기대값이 남는 거래만 통과시키는 비용 우선 거래 시스템이다.
 
-현재 저장소는 MVP 업무 명세와 요구사항을 바탕으로 Node.js 24, pnpm, TypeScript strict 기반 런타임 skeleton을 시작한 단계다. 실행 가능한 거래 봇, 백테스트 엔진, 거래소 연동 코드는 아직 없다.
+현재 저장소는 Upbit KRW 현물 paper trading MVP 구현과 M8-C 24시간 public WebSocket soak 검증을 완료한 상태다. 실거래 주문 API는 여전히 비활성이며, 다음 단계는 M9 paper 운영 베타에서 DB 적재, daily report, Telegram 알림, 운영 drill을 반복 가능한 절차로 고정하는 것이다.
 
 ## 핵심 원칙
 
