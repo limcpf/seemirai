@@ -25,6 +25,17 @@ export const llmRiskAssistantActions = [
 
 export const llmForbiddenTradeActions = ["BUY", "SELL", "INCREASE_POSITION"] as const;
 
+export const llmRiskAssistantProviderIds = ["noop", "codex_oauth"] as const;
+
+export const llmRiskAssistantProviderFailureClasses = [
+  "timeout",
+  "invalid_json",
+  "invalid_schema",
+  "free_form_output",
+  "output_too_large",
+  "provider_error",
+] as const;
+
 /**
  * LLM 보조 계층이 지원하는 schema version이다.
  *
@@ -64,6 +75,21 @@ export type LlmRiskAssistantAction = (typeof llmRiskAssistantActions)[number];
 export type LlmForbiddenTradeAction = (typeof llmForbiddenTradeActions)[number];
 
 /**
+ * LLM risk assistant provider 구현체 식별자다.
+ *
+ * application contract는 이 union만 알고 실제 인증 방식, CLI 실행, 외부 provider 세부사항은 infrastructure 구현에 숨긴다.
+ */
+export type LlmRiskAssistantProviderId = (typeof llmRiskAssistantProviderIds)[number];
+
+/**
+ * provider 호출 실패를 주문 신호 없는 evidence로 남기기 위한 정규화 분류다.
+ *
+ * 모든 failure class는 후속 audit/persistence가 raw provider body 없이도 실패 원인을 추적할 수 있게 하는 안정 코드다.
+ */
+export type LlmRiskAssistantProviderFailureClass =
+  (typeof llmRiskAssistantProviderFailureClasses)[number];
+
+/**
  * LLM 요청 생성 전에 확정되어야 하는 공식 입력 payload다.
  *
  * 입력은 원천 식별자, 관측 시각, 원문 위치, redaction이 끝난 본문을 포함한다. 이 contract는 provider 호출 전 경계이며,
@@ -77,6 +103,23 @@ export interface LlmRiskAssistantInput {
   market?: MarketCode | undefined;
   notice_url?: string | undefined;
   title?: string | undefined;
+  metadata?: JsonRecord | undefined;
+}
+
+/**
+ * provider가 생성해야 하는 LLM 결과 요청이다.
+ *
+ * 입력 source/result type은 이미 contract 검증을 통과한 값이어야 한다. `prompt`는 provider에 전달되는 redacted text이며,
+ * timeout과 output byte limit은 장시간 외부 호출과 과대 응답을 fail-closed로 끝내는 runtime invariant다.
+ */
+export interface LlmRiskAssistantProviderRequest {
+  input: LlmRiskAssistantInput;
+  result_type: LlmRiskAssistantResultType;
+  prompt: string;
+  requested_at: TimestampInput;
+  timeout_ms: number;
+  max_output_bytes: number;
+  correlation_id?: string | undefined;
   metadata?: JsonRecord | undefined;
 }
 
@@ -98,6 +141,50 @@ export interface LlmRiskAssistantResult {
   requires_human_review?: boolean | undefined;
   evidence?: readonly string[] | undefined;
   metadata?: JsonRecord | undefined;
+}
+
+/**
+ * provider가 schema 검증을 통과한 LLM 결과를 반환한 상태다.
+ *
+ * 성공 상태라도 이 결과는 주문 허용으로 해석할 수 없고, 후속 mapper는 차단/주의/알림 경계로만 넘겨야 한다.
+ */
+export interface LlmRiskAssistantProviderSuccess {
+  status: "ok";
+  provider_id: LlmRiskAssistantProviderId;
+  result: LlmRiskAssistantResult;
+  completed_at: TimestampInput;
+  metadata?: JsonRecord | undefined;
+}
+
+/**
+ * provider 호출이나 normalized output 검증이 실패한 상태다.
+ *
+ * 실패는 거래 신호 없이 evidence만 남겨야 하며, raw output이나 OAuth token/session 원문은 포함하지 않는다.
+ */
+export interface LlmRiskAssistantProviderFailure {
+  status: "failed";
+  provider_id: LlmRiskAssistantProviderId;
+  failure_class: LlmRiskAssistantProviderFailureClass;
+  reason_code: string;
+  message: string;
+  failed_at: TimestampInput;
+  issues?: readonly LlmRiskAssistantContractIssue[] | undefined;
+  metadata?: JsonRecord | undefined;
+}
+
+export type LlmRiskAssistantProviderResponse =
+  | LlmRiskAssistantProviderSuccess
+  | LlmRiskAssistantProviderFailure;
+
+/**
+ * provider 교체 가능성을 보장하는 application port다.
+ *
+ * `noop`, `codex_oauth`, future `openai_api`/`local_model`은 같은 요청을 받아 같은 normalized response union을
+ * 반환해야 한다. port 구현체는 주문 후보 생성, broker 호출, DB write side effect를 직접 수행하지 않는다.
+ */
+export interface LlmRiskAssistantProviderPort {
+  providerId: LlmRiskAssistantProviderId;
+  generate(request: LlmRiskAssistantProviderRequest): Promise<LlmRiskAssistantProviderResponse>;
 }
 
 /**
