@@ -190,23 +190,11 @@ export function createCodexOAuthCommandRunner(
           };
         }
 
-        const outputStat = await stat(outputPath);
-
-        if (outputStat.size > runOptions.maxOutputBytes) {
-          return {
-            finalMessage: "",
-            exitCode,
-            outputTooLarge: true,
-            outputBytes: outputStat.size,
-          };
-        }
-
-        const finalMessage = await readFile(outputPath, "utf8");
-
-        return {
-          finalMessage,
+        return await readCodexLastMessageFile({
+          outputPath,
           exitCode,
-        };
+          maxOutputBytes: runOptions.maxOutputBytes,
+        });
       } finally {
         await rm(tempDir, {
           recursive: true,
@@ -221,6 +209,54 @@ export function createCodexOAuthLlmProvider(
   options: CodexOAuthLlmProviderOptions = {},
 ): CodexOAuthLlmProvider {
   return new CodexOAuthLlmProvider(options);
+}
+
+/**
+ * Codex CLI가 남긴 마지막 메시지 파일을 runner 결과로 변환한다.
+ *
+ * 파일 부재, 권한 오류, I/O 오류는 raw 예외로 전파하지 않고 command failure로 바꾼다. provider는 이 오류를 받아
+ * token/session-like 문자열 없는 provider_error evidence만 남긴다.
+ */
+async function readCodexLastMessageFile(options: {
+  outputPath: string;
+  exitCode: number;
+  maxOutputBytes: number;
+}): Promise<CodexOAuthCommandResult> {
+  let outputStat: Awaited<ReturnType<typeof stat>>;
+
+  try {
+    outputStat = await stat(options.outputPath);
+  } catch (error) {
+    // exit 0이어도 output file이 없으면 성공 결과를 조립할 수 없으므로 provider failure 경로로 보낸다.
+    throw createCodexOAuthOutputAccessError("stat", error);
+  }
+
+  if (outputStat.size > options.maxOutputBytes) {
+    return {
+      finalMessage: "",
+      exitCode: options.exitCode,
+      outputTooLarge: true,
+      outputBytes: outputStat.size,
+    };
+  }
+
+  try {
+    const finalMessage = await readFile(options.outputPath, "utf8");
+
+    return {
+      finalMessage,
+      exitCode: options.exitCode,
+    };
+  } catch (error) {
+    // stat 이후 read가 실패하는 TOCTOU/권한 오류도 partial response 대신 동일한 failure evidence로 접는다.
+    throw createCodexOAuthOutputAccessError("read", error);
+  }
+}
+
+function createCodexOAuthOutputAccessError(operation: "stat" | "read", error: unknown): CodexOAuthCommandError {
+  const causeMessage = error instanceof Error ? error.message : "Unknown output file access error.";
+
+  return new CodexOAuthCommandError(`Codex OAuth output ${operation} failed: ${causeMessage}`, null);
 }
 
 function runCodexExecCommand(options: {
@@ -262,6 +298,16 @@ function runCodexExecCommand(options: {
       }
     };
 
+    const rejectWithCommandError = (error: Error): void => {
+      if (settled || timedOut) {
+        return;
+      }
+
+      settled = true;
+      clearTimers();
+      reject(new CodexOAuthCommandError(error.message, null));
+    };
+
     const timeout = setTimeout(() => {
       if (settled) {
         return;
@@ -277,15 +323,8 @@ function runCodexExecCommand(options: {
       }, 1_000);
     }, options.timeoutMs);
 
-    child.once("error", (error) => {
-      if (settled) {
-        return;
-      }
-
-      settled = true;
-      clearTimers();
-      reject(new CodexOAuthCommandError(error.message, null));
-    });
+    child.once("error", rejectWithCommandError);
+    child.stdin.once("error", rejectWithCommandError);
 
     child.once("close", (code) => {
       if (settled) {
@@ -303,6 +342,10 @@ function runCodexExecCommand(options: {
       resolve(code ?? 1);
     });
 
-    child.stdin.end(options.prompt);
+    try {
+      child.stdin.end(options.prompt);
+    } catch (error) {
+      rejectWithCommandError(error instanceof Error ? error : new Error("Codex stdin write failed."));
+    }
   });
 }

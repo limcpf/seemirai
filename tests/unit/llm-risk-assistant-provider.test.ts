@@ -1,3 +1,6 @@
+import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   LLM_RISK_ASSISTANT_SCHEMA_VERSION,
@@ -9,6 +12,7 @@ import {
   type CodexOAuthCommandRunner,
   CodexOAuthCommandTimeoutError,
   CodexOAuthLlmProvider,
+  createCodexOAuthCommandRunner,
   createCodexOAuthLlmProvider,
 } from "../../src/infrastructure/index.js";
 
@@ -17,7 +21,10 @@ const observedAt = "2026-05-23T00:00:00.000Z";
 describe("M10 LLM risk assistant provider runtime", () => {
   it("returns a normalized no-op result without external side effects", async () => {
     const provider = createNoopLlmRiskAssistantProvider();
-    const result = await provider.generate(createProviderRequest());
+    const result = await provider.generate({
+      ...createProviderRequest(),
+      requested_at: "2026-05-23T00:05:00.000Z",
+    });
 
     expect(result).toMatchObject({
       status: "ok",
@@ -27,6 +34,7 @@ describe("M10 LLM risk assistant provider runtime", () => {
         result_type: "notice_risk_classification",
         source_ids: ["upbit-notice-1"],
         recommended_action: "NO_ACTION",
+        observed_at: observedAt,
       },
     });
   });
@@ -184,6 +192,55 @@ describe("M10 LLM risk assistant provider runtime", () => {
     });
   });
 
+  it("maps missing Codex output file into provider failure evidence", async () => {
+    await withExecutableScript("#!/usr/bin/env node\nprocess.exit(0);\n", async (executablePath, cwd) => {
+      const provider = new CodexOAuthLlmProvider({
+        now: () => new Date(observedAt),
+        runner: createCodexOAuthCommandRunner({
+          executablePath,
+          cwd,
+        }),
+      });
+
+      const result = await provider.generate(createProviderRequest());
+
+      expect(result).toMatchObject({
+        status: "failed",
+        provider_id: "codex_oauth",
+        failure_class: "provider_error",
+        reason_code: "codex_oauth_provider_error",
+      });
+    });
+  });
+
+  it("turns early Codex stdin close into provider failure instead of a process crash", async () => {
+    await withExecutableScript("#!/usr/bin/env node\nprocess.exit(1);\n", async (executablePath, cwd) => {
+      const provider = new CodexOAuthLlmProvider({
+        now: () => new Date(observedAt),
+        runner: createCodexOAuthCommandRunner({
+          executablePath,
+          cwd,
+        }),
+      });
+
+      const result = await provider.generate({
+        ...createProviderRequest(),
+        prompt: "x".repeat(1_000_000),
+      });
+
+      expect(result.status).toBe("failed");
+
+      if (result.status !== "failed") {
+        throw new Error("Expected provider failure.");
+      }
+
+      expect(result.failure_class).toBe("provider_error");
+      expect(["codex_oauth_provider_error", "codex_oauth_provider_exit_nonzero"]).toContain(
+        result.reason_code,
+      );
+    });
+  });
+
   it("turns Codex command timeout into failure evidence without a trading signal", async () => {
     const provider = new CodexOAuthLlmProvider({
       now: () => new Date(observedAt),
@@ -273,4 +330,24 @@ function createFakeRunner(
       outputBytes: options.outputBytes,
     }),
   };
+}
+
+async function withExecutableScript<T>(
+  source: string,
+  run: (executablePath: string, cwd: string) => Promise<T>,
+): Promise<T> {
+  const tempDir = await mkdtemp(path.join(tmpdir(), "seemirai-codex-runner-test-"));
+  const executablePath = path.join(tempDir, "codex-fake");
+
+  try {
+    await writeFile(executablePath, source);
+    await chmod(executablePath, 0o755);
+
+    return await run(executablePath, tempDir);
+  } finally {
+    await rm(tempDir, {
+      recursive: true,
+      force: true,
+    });
+  }
 }

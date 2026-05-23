@@ -27,7 +27,7 @@ export class NoopLlmRiskAssistantProvider implements LlmRiskAssistantProviderPor
         source_ids: [request.input.source_id],
         summary: "LLM provider가 비활성화되어 추가 조치를 만들지 않았습니다.",
         recommended_action: "NO_ACTION",
-        observed_at: request.requested_at,
+        observed_at: request.input.observed_at,
         market: request.input.market,
         reason_codes: ["llm_provider:noop"],
         requires_human_review: false,
