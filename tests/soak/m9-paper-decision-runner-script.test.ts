@@ -7,7 +7,7 @@ import { describe, expect, it } from "vitest";
 
 const execFileAsync = promisify(execFile);
 const scriptPath = path.join(process.cwd(), "scripts", "run-m9-paper-decision-runner.mjs");
-const compileTempPrefix = "seemirai-m9-paper-decision-";
+const compileTempPrefix = "seemirai-m9-paper-decision-compile-";
 
 describe("M9 paper decision runner script", () => {
   it("writes summary, report, and trace to separately created artifact directories", async () => {

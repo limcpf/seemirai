@@ -6,6 +6,7 @@ import { access, mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from "
 import os from "node:os";
 import path from "node:path";
 import process from "node:process";
+import { finished } from "node:stream/promises";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 
@@ -153,7 +154,7 @@ function readPositiveInteger(value, flag) {
 }
 
 async function importCompiledRuntime() {
-  const compileDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-m9-paper-decision-"));
+  const compileDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-m9-paper-decision-compile-"));
   try {
     const tscArgs = [
       "-p",
@@ -287,14 +288,39 @@ async function writeArtifacts({ summary, result, artifacts }) {
 
 async function writeTraceLog(filePath, trace) {
   const stream = createWriteStream(filePath, { encoding: "utf8" });
-  for (const record of trace) {
-    if (!stream.write(`${JSON.stringify(record)}\n`)) {
-      await new Promise((resolve) => stream.once("drain", resolve));
+  try {
+    for (const record of trace) {
+      if (!stream.write(`${JSON.stringify(record)}\n`)) {
+        await waitForDrainOrError(stream);
+      }
     }
+
+    stream.end();
+    await finished(stream);
+  } catch (error) {
+    stream.destroy();
+    throw error;
   }
-  await new Promise((resolve, reject) => {
-    stream.once("error", reject);
-    stream.end(resolve);
+}
+
+function waitForDrainOrError(stream) {
+  return new Promise((resolve, reject) => {
+    const onDrain = () => {
+      cleanup();
+      resolve();
+    };
+    const onError = (error) => {
+      cleanup();
+      reject(error);
+    };
+    const cleanup = () => {
+      stream.off("drain", onDrain);
+      stream.off("error", onError);
+    };
+
+    // trace 파일 쓰기 실패는 passed summary보다 먼저 실패로 전파해야 운영 증거 오염을 막을 수 있다.
+    stream.once("drain", onDrain);
+    stream.once("error", onError);
   });
 }
 
