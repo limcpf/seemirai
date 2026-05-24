@@ -57,6 +57,33 @@ MVP 기본 profile에서는 다음 값이 켜져 있으면 안 된다.
 
 `assertSafeRuntimeConfig`는 위반 값을 발견하면 runtime config 로딩을 실패시킨다.
 
+## M10 LLM 리스크 보조 설정
+
+구현 기준:
+
+- contract/schema: `src/application/llm-risk-assistant/**`
+- Codex OAuth provider: `src/infrastructure/codex-oauth/provider.ts`
+- 기본 profile: `config/paper.json`
+- gated smoke: `tests/unit/llm-risk-assistant-provider.test.ts`
+
+`llm.enabled`는 LLM 보조 계층 사용 가능 여부를 나타내고, `llm.can_generate_trade_signal`은 반드시 `false`여야 한다.
+`assertSafeRuntimeConfig`는 이 값이 `true`인 profile을 부팅 전에 거부한다. 이 invariant는 LLM 결과가 전략 후보, 주문 intent,
+주문 허용 판단으로 직접 연결되는 경로를 만들지 않기 위한 최상위 config guard다.
+
+provider 구현은 application port 뒤에 있으며 현재 지원 provider id는 `noop`, `codex_oauth`다. `codex_oauth`는 운영자 로컬
+Codex OAuth 세션을 사용하는 owner-operated provider이고, `noop`은 같은 normalized response union을 유지하면서 외부 호출을
+만들지 않는 비활성 provider다. provider 선택, timeout, max output bytes는 `LlmRiskAssistantProviderRequest`의 호출 경계에서
+명시하며, 기본 `config/paper.json`은 M9 paper runtime 동작을 흔들지 않도록 거래 안전 toggle만 보유한다.
+
+실제 Codex OAuth smoke는 기본 test/CI에서 실행하지 않는다. 운영자가 다음 env를 명시했을 때만 긴 외부 호출을 허용한다.
+
+```sh
+SEEMIRAI_RUN_CODEX_LLM_SMOKE=1 corepack pnpm exec vitest run tests/unit/llm-risk-assistant-provider.test.ts
+```
+
+provider timeout, invalid JSON, free-form output, output size 초과는 모두 fail-closed failure response로 정규화한다. 실패 response는
+audit evidence와 사람 검토 후보로 남길 수 있지만, RiskGate 주문 허용 신호나 strategy candidate를 만들 수 없다.
+
 ## M8 HTTP control foundation
 
 구현 기준:
