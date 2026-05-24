@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { mkdtemp, readFile, readdir, stat } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -63,6 +63,32 @@ describe("M9 paper decision runner script", () => {
     await expect(stat(reportPath)).resolves.toBeDefined();
     expect([...tempDirsAfter].filter((entry) => !tempDirsBefore.has(entry))).toEqual([]);
   }, 30_000);
+
+  it("fails controlled smoke when no zero-order frame is present", async () => {
+    const workDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-m9-decision-script-"));
+    const fixture = JSON.parse(
+      await readFile(path.join(process.cwd(), "tests", "fixtures", "m9", "paper-decision-runner.json"), "utf8"),
+    );
+    fixture.frames = [fixture.frames[3]];
+    const fixturePath = path.join(workDir, "all-submitted-fixture.json");
+    const summaryPath = path.join(workDir, "summary.json");
+    await writeFile(fixturePath, `${JSON.stringify(fixture, null, 2)}\n`, "utf8");
+
+    const summary = await runScriptExpectingFailure([
+      "--fixture-smoke",
+      "--json",
+      "--fixture",
+      fixturePath,
+      "--summary-path",
+      summaryPath,
+    ]);
+
+    expect(summary.status).toBe("failed");
+    expect(summary.checks.zeroOrderReasonsExplained).toMatchObject({
+      status: "fail",
+      evidence: { zeroOrderFrameCount: 0 },
+    });
+  }, 30_000);
 });
 
 async function readCompileTempDirs() {
@@ -72,4 +98,26 @@ async function readCompileTempDirs() {
       .filter((entry) => entry.isDirectory() && entry.name.startsWith(compileTempPrefix))
       .map((entry) => entry.name),
   );
+}
+
+async function runScriptExpectingFailure(args: readonly string[]) {
+  try {
+    await execFileAsync("node", [scriptPath, ...args]);
+  } catch (error) {
+    const executionError = error as Error & { code?: number; stdout?: string };
+    expect(executionError.code).toBe(1);
+    return JSON.parse(executionError.stdout ?? "{}") as {
+      status: string;
+      checks: {
+        zeroOrderReasonsExplained: {
+          status: string;
+          evidence: {
+            zeroOrderFrameCount: number;
+          };
+        };
+      };
+    };
+  }
+
+  throw new Error("script unexpectedly passed");
 }

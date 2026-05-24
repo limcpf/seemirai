@@ -202,7 +202,7 @@ function createChecks(result, options) {
     result.metrics.paperOrderSubmittedCount > 0 && result.metrics.paperFillCount > 0;
   const zeroOrderFrameExplanation = summarizeZeroOrderFrames(result);
   const liveOrderApiCalls = result.metrics.liveOrderApiCalls;
-  const traceMissingCount = result.trace.length > 0 ? 0 : 1;
+  const auditCoverage = summarizeAuditCoverage(result);
 
   return {
     fixtureControlledPaperPath: hasSubmissionAndFill
@@ -214,21 +214,7 @@ function createChecks(result, options) {
           paperOrderSubmittedCount: result.metrics.paperOrderSubmittedCount,
         paperFillCount: result.metrics.paperFillCount,
       }),
-    zeroOrderReasonsExplained: zeroOrderFrameExplanation.unexplainedFrameIds.length === 0
-      ? okCheck("주문이 0건인 frame도 hold/discard/cost/risk reason count로 설명 가능하다.", {
-          zeroOrderFrameCount: zeroOrderFrameExplanation.zeroOrderFrameCount,
-          explainedZeroOrderFrameCount: zeroOrderFrameExplanation.explainedZeroOrderFrameCount,
-          reasonCounts: zeroOrderFrameExplanation.reasonCounts,
-          holdReasonCounts: result.metrics.holdReasonCounts,
-          discardReasonCounts: result.metrics.discardReasonCounts,
-          costRejectedCount: result.metrics.costRejectedCount,
-          riskRejectedCount: result.metrics.riskRejectedCount,
-        })
-      : failCheck("주문이 0건인 frame 중 hold/discard/cost/risk reason trace가 없는 frame이 있다.", {
-          zeroOrderFrameCount: zeroOrderFrameExplanation.zeroOrderFrameCount,
-          unexplainedFrameIds: zeroOrderFrameExplanation.unexplainedFrameIds,
-          reasonCounts: zeroOrderFrameExplanation.reasonCounts,
-        }),
+    zeroOrderReasonsExplained: createZeroOrderExplanationCheck(zeroOrderFrameExplanation, result.metrics),
     liveOrderApiCalls:
       liveOrderApiCalls === 0
         ? okCheck("M9 decision runner는 PaperBroker만 사용해 live order API 호출이 없다.", {
@@ -238,14 +224,17 @@ function createChecks(result, options) {
             count: liveOrderApiCalls,
           }),
     auditMissing:
-      traceMissingCount === 0
+      auditCoverage.missingCount === 0
         ? okCheck("fixture decision trace가 각 차단/실행 단계를 남겼다.", {
             count: 0,
-            traceRecords: result.trace.length,
+            traceRecords: auditCoverage.traceRecords,
+            decisionOrExecutionTraceRecords: auditCoverage.decisionOrExecutionTraceRecords,
           })
-        : failCheck("fixture decision trace가 비어 있어 차단/실행 감사 근거를 확인할 수 없다.", {
-            count: traceMissingCount,
-            traceRecords: result.trace.length,
+        : failCheck("fixture decision trace에 전략/비용/리스크/실행 단계 감사 근거가 부족하다.", {
+            count: auditCoverage.missingCount,
+            traceRecords: auditCoverage.traceRecords,
+            decisionOrExecutionTraceRecords: auditCoverage.decisionOrExecutionTraceRecords,
+            missingFrameIds: auditCoverage.missingFrameIds,
           }),
     notificationFailures: okCheck("decision runner smoke는 Telegram provider를 호출하지 않는다.", {
       count: 0,
@@ -260,6 +249,31 @@ function createChecks(result, options) {
         }),
     runtimeExceptions: runtimeExceptionCheck(),
   };
+}
+
+function createZeroOrderExplanationCheck(zeroOrderFrameExplanation, metrics) {
+  const evidence = {
+    zeroOrderFrameCount: zeroOrderFrameExplanation.zeroOrderFrameCount,
+    explainedZeroOrderFrameCount: zeroOrderFrameExplanation.explainedZeroOrderFrameCount,
+    reasonCounts: zeroOrderFrameExplanation.reasonCounts,
+    holdReasonCounts: metrics.holdReasonCounts,
+    discardReasonCounts: metrics.discardReasonCounts,
+    costRejectedCount: metrics.costRejectedCount,
+    riskRejectedCount: metrics.riskRejectedCount,
+  };
+
+  if (zeroOrderFrameExplanation.zeroOrderFrameCount < 1) {
+    return failCheck("주문이 0건인 frame이 없어 무거래 원인 설명 경로를 검증하지 못했다.", evidence);
+  }
+
+  if (zeroOrderFrameExplanation.unexplainedFrameIds.length === 0) {
+    return okCheck("주문이 0건인 frame도 hold/discard/cost/risk reason count로 설명 가능하다.", evidence);
+  }
+
+  return failCheck("주문이 0건인 frame 중 hold/discard/cost/risk reason trace가 없는 frame이 있다.", {
+    ...evidence,
+    unexplainedFrameIds: zeroOrderFrameExplanation.unexplainedFrameIds,
+  });
 }
 
 async function writeArtifacts({ summary, result, artifacts }) {
@@ -316,6 +330,41 @@ function summarizeZeroOrderFrames(result) {
   };
 }
 
+function summarizeAuditCoverage(result) {
+  if (result.trace.length === 0) {
+    return {
+      missingCount: 1,
+      missingFrameIds: ["__no_trace__"],
+      traceRecords: 0,
+      decisionOrExecutionTraceRecords: 0,
+    };
+  }
+
+  const frames = new Map();
+  let decisionOrExecutionTraceRecords = 0;
+  for (const record of result.trace) {
+    const summary = readOrCreateAuditFrameSummary(frames, record.frameId);
+    if (record.stage === "FRAME_RECEIVED") {
+      summary.received = true;
+      continue;
+    }
+
+    decisionOrExecutionTraceRecords += 1;
+    summary.hasDecisionOrExecutionTrace = true;
+  }
+
+  const missingFrameIds = [...frames.entries()]
+    .filter(([, frame]) => !frame.hasDecisionOrExecutionTrace)
+    .map(([frameId]) => frameId);
+
+  return {
+    missingCount: missingFrameIds.length,
+    missingFrameIds,
+    traceRecords: result.trace.length,
+    decisionOrExecutionTraceRecords,
+  };
+}
+
 function readOrCreateFrameSummary(frames, frameId) {
   const existing = frames.get(frameId);
   if (existing !== undefined) {
@@ -325,6 +374,20 @@ function readOrCreateFrameSummary(frames, frameId) {
   const created = {
     submitted: false,
     reasons: [],
+  };
+  frames.set(frameId, created);
+  return created;
+}
+
+function readOrCreateAuditFrameSummary(frames, frameId) {
+  const existing = frames.get(frameId);
+  if (existing !== undefined) {
+    return existing;
+  }
+
+  const created = {
+    received: false,
+    hasDecisionOrExecutionTrace: false,
   };
   frames.set(frameId, created);
   return created;

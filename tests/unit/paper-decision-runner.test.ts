@@ -2,8 +2,12 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import {
+  PaperDecisionRunner,
   StaticPaperDecisionInputSource,
 } from "../../src/application/index.js";
+import {
+  PaperBroker,
+} from "../../src/infrastructure/index.js";
 import {
   runM9PaperDecisionFixtureSmoke,
 } from "../../src/runtime/index.js";
@@ -86,5 +90,35 @@ describe("M9 paper decision runner", () => {
     }
 
     expect(frames).toEqual([]);
+  });
+
+  it("does not consume a replay frame beyond maxFrames", async () => {
+    const fixture = JSON.parse(await readFile(fixturePath, "utf8"));
+    let pulledFrameCount = 0;
+    let observedLimit: number | undefined;
+    const source = {
+      async *replay(request: { limit?: number } = {}) {
+        observedLimit = request.limit;
+        for (const frame of fixture.frames.slice(0, 2)) {
+          pulledFrameCount += 1;
+          yield frame;
+        }
+      },
+    };
+    const broker = new PaperBroker({
+      exchangeId: "upbit_krw_spot",
+      initialBalances: fixture.initialBalances,
+    });
+    const runner = new PaperDecisionRunner({
+      source,
+      strategies: [],
+      broker,
+    });
+
+    const result = await runner.run({ maxFrames: 1 });
+
+    expect(result.framesProcessed).toBe(1);
+    expect(pulledFrameCount).toBe(1);
+    expect(observedLimit).toBe(1);
   });
 });

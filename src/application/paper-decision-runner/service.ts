@@ -32,6 +32,7 @@ import type { StrategyDecisionIntentConversion } from "../strategies/index.js";
 import type {
   PaperDecisionBrokerPort,
   PaperDecisionInputFrame,
+  PaperDecisionInputReplayRequest,
   PaperDecisionMetricSummary,
   PaperDecisionRunnerOptions,
   PaperDecisionRunnerPorts,
@@ -99,22 +100,33 @@ export class PaperDecisionRunner {
     const metrics = createMetricAccumulator();
     const trace: PaperDecisionRunnerTraceRecord[] = [];
     let framesProcessed = 0;
+    const replayRequest = createReplayRequest(options);
+    const iterator = this.source.replay(replayRequest)[Symbol.asyncIterator]();
 
-    for await (const frame of this.source.replay(options.sourceRequest)) {
-      if (options.maxFrames !== undefined && framesProcessed >= options.maxFrames) {
-        break;
+    try {
+      while (options.maxFrames === undefined || framesProcessed < options.maxFrames) {
+        // DB/cursor source는 next 호출 자체가 cursor를 전진시킬 수 있어 처리 한도 전에만 frame을 당긴다.
+        const next = await iterator.next();
+        if (next.done === true) {
+          break;
+        }
+
+        const frame = next.value;
+        framesProcessed += 1;
+        trace.push(createTrace(frame, "FRAME_RECEIVED", "received"));
+
+        if (frame.orderbook !== undefined) {
+          // frame-local 호가는 paper fill 근거로만 주입하고 외부 market data 조회를 열지 않는다.
+          this.broker.recordOrderbookSnapshot?.(frame.orderbook);
+        }
+
+        for (const strategy of this.strategies) {
+          await this.evaluateStrategyFrame({ frame, strategy, metrics, trace });
+        }
       }
-
-      framesProcessed += 1;
-      trace.push(createTrace(frame, "FRAME_RECEIVED", "received"));
-
-      if (frame.orderbook !== undefined) {
-        // frame-local 호가는 paper fill 근거로만 주입하고 외부 market data 조회를 열지 않는다.
-        this.broker.recordOrderbookSnapshot?.(frame.orderbook);
-      }
-
-      for (const strategy of this.strategies) {
-        await this.evaluateStrategyFrame({ frame, strategy, metrics, trace });
+    } finally {
+      if (typeof iterator.return === "function") {
+        await iterator.return();
       }
     }
 
@@ -201,6 +213,19 @@ export class PaperDecisionRunner {
     const executionResult = await this.executionEngine.submitOrder(submission);
     recordExecutionResult(input.frame, input.intent, executionResult, input.metrics, input.trace);
   }
+}
+
+function createReplayRequest(options: PaperDecisionRunnerOptions): PaperDecisionInputReplayRequest | undefined {
+  const replayRequest: PaperDecisionInputReplayRequest = {
+    ...(options.sourceRequest ?? {}),
+  };
+
+  if (options.maxFrames !== undefined) {
+    replayRequest.limit =
+      replayRequest.limit === undefined ? options.maxFrames : Math.min(replayRequest.limit, options.maxFrames);
+  }
+
+  return Object.keys(replayRequest).length === 0 ? undefined : replayRequest;
 }
 
 /**
