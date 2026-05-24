@@ -33,6 +33,10 @@ export class StaticPaperDecisionInputSource implements PaperDecisionInputSource 
     const markets = request.markets === undefined ? undefined : new Set(request.markets);
     let yieldedCount = 0;
 
+    if (request.limit !== undefined && request.limit < 1) {
+      return;
+    }
+
     for (const frame of this.frames) {
       if (request.sourceId !== undefined && frame.metadata?.source_id !== request.sourceId) {
         continue;

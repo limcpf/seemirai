@@ -2,6 +2,9 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import {
+  StaticPaperDecisionInputSource,
+} from "../../src/application/index.js";
+import {
   runM9PaperDecisionFixtureSmoke,
 } from "../../src/runtime/index.js";
 
@@ -71,5 +74,17 @@ describe("M9 paper decision runner", () => {
       observedFillCount: 0,
       averageSlippageBps: null,
     });
+  });
+
+  it("does not yield frames when static source replay limit is zero", async () => {
+    const fixture = JSON.parse(await readFile(fixturePath, "utf8"));
+    const source = new StaticPaperDecisionInputSource([fixture.frames[0]]);
+    const frames = [];
+
+    for await (const frame of source.replay({ limit: 0 })) {
+      frames.push(frame);
+    }
+
+    expect(frames).toEqual([]);
   });
 });

@@ -187,12 +187,9 @@ async function readJsonFile(filePath) {
 function createChecks(result, options) {
   const hasSubmissionAndFill =
     result.metrics.paperOrderSubmittedCount > 0 && result.metrics.paperFillCount > 0;
-  const hasZeroOrderExplanation =
-    result.metrics.paperOrderSubmittedCount > 0 ||
-    Object.keys(result.metrics.holdReasonCounts).length > 0 ||
-    Object.keys(result.metrics.discardReasonCounts).length > 0 ||
-    result.metrics.costRejectedCount > 0 ||
-    result.metrics.riskRejectedCount > 0;
+  const zeroOrderFrameExplanation = summarizeZeroOrderFrames(result);
+  const liveOrderApiCalls = result.metrics.liveOrderApiCalls;
+  const traceMissingCount = result.trace.length > 0 ? 0 : 1;
 
   return {
     fixtureControlledPaperPath: hasSubmissionAndFill
@@ -202,23 +199,41 @@ function createChecks(result, options) {
         })
       : failCheck("controlled fixture에서 paper 주문 제출과 체결 경로를 확인하지 못했다.", {
           paperOrderSubmittedCount: result.metrics.paperOrderSubmittedCount,
-          paperFillCount: result.metrics.paperFillCount,
-        }),
-    zeroOrderReasonsExplained: hasZeroOrderExplanation
+        paperFillCount: result.metrics.paperFillCount,
+      }),
+    zeroOrderReasonsExplained: zeroOrderFrameExplanation.unexplainedFrameIds.length === 0
       ? okCheck("주문이 0건인 frame도 hold/discard/cost/risk reason count로 설명 가능하다.", {
+          zeroOrderFrameCount: zeroOrderFrameExplanation.zeroOrderFrameCount,
+          explainedZeroOrderFrameCount: zeroOrderFrameExplanation.explainedZeroOrderFrameCount,
+          reasonCounts: zeroOrderFrameExplanation.reasonCounts,
           holdReasonCounts: result.metrics.holdReasonCounts,
           discardReasonCounts: result.metrics.discardReasonCounts,
           costRejectedCount: result.metrics.costRejectedCount,
           riskRejectedCount: result.metrics.riskRejectedCount,
         })
-      : failCheck("주문이 0건인 이유를 설명할 reason count가 없다."),
-    liveOrderApiCalls: okCheck("M9 decision runner는 PaperBroker만 사용해 live order API 호출이 없다.", {
-      count: result.metrics.liveOrderApiCalls,
-    }),
-    auditMissing: okCheck("fixture decision trace가 각 차단/실행 단계를 남겼다.", {
-      count: 0,
-      traceRecords: result.trace.length,
-    }),
+      : failCheck("주문이 0건인 frame 중 hold/discard/cost/risk reason trace가 없는 frame이 있다.", {
+          zeroOrderFrameCount: zeroOrderFrameExplanation.zeroOrderFrameCount,
+          unexplainedFrameIds: zeroOrderFrameExplanation.unexplainedFrameIds,
+          reasonCounts: zeroOrderFrameExplanation.reasonCounts,
+        }),
+    liveOrderApiCalls:
+      liveOrderApiCalls === 0
+        ? okCheck("M9 decision runner는 PaperBroker만 사용해 live order API 호출이 없다.", {
+            count: liveOrderApiCalls,
+          })
+        : failCheck("M9 decision runner에서 live order API 호출 metric이 0이 아니다.", {
+            count: liveOrderApiCalls,
+          }),
+    auditMissing:
+      traceMissingCount === 0
+        ? okCheck("fixture decision trace가 각 차단/실행 단계를 남겼다.", {
+            count: 0,
+            traceRecords: result.trace.length,
+          })
+        : failCheck("fixture decision trace가 비어 있어 차단/실행 감사 근거를 확인할 수 없다.", {
+            count: traceMissingCount,
+            traceRecords: result.trace.length,
+          }),
     notificationFailures: okCheck("decision runner smoke는 Telegram provider를 호출하지 않는다.", {
       count: 0,
     }),
@@ -236,13 +251,14 @@ function createChecks(result, options) {
 
 async function writeArtifacts({ summary, result, artifacts }) {
   await mkdir(path.dirname(artifacts.summaryPath), { recursive: true });
-  await writeFile(artifacts.summaryPath, `${JSON.stringify(summary, null, 2)}\n`, "utf8");
+  await mkdir(path.dirname(artifacts.reportPath), { recursive: true });
+  await mkdir(path.dirname(artifacts.rawLogPath), { recursive: true });
   await writeFile(artifacts.reportPath, renderMarkdownReport(summary), "utf8");
   await writeTraceLog(artifacts.rawLogPath, result.trace);
+  await writeFile(artifacts.summaryPath, `${JSON.stringify(summary, null, 2)}\n`, "utf8");
 }
 
 async function writeTraceLog(filePath, trace) {
-  await mkdir(path.dirname(filePath), { recursive: true });
   const stream = createWriteStream(filePath, { encoding: "utf8" });
   for (const record of trace) {
     if (!stream.write(`${JSON.stringify(record)}\n`)) {
@@ -253,6 +269,76 @@ async function writeTraceLog(filePath, trace) {
     stream.once("error", reject);
     stream.end(resolve);
   });
+}
+
+function summarizeZeroOrderFrames(result) {
+  const frames = new Map();
+  for (const record of result.trace) {
+    const summary = readOrCreateFrameSummary(frames, record.frameId);
+    if (record.stage === "EXECUTION_RESULT" && record.status === "SUBMITTED") {
+      summary.submitted = true;
+    }
+    const reason = readZeroOrderReason(record);
+    if (reason !== null) {
+      summary.reasons.push(reason);
+    }
+  }
+
+  const zeroOrderFrames = [...frames.entries()].filter(([, frame]) => !frame.submitted);
+  const unexplainedFrameIds = zeroOrderFrames
+    .filter(([, frame]) => frame.reasons.length === 0)
+    .map(([frameId]) => frameId);
+  const reasonCounts = {};
+  for (const [, frame] of zeroOrderFrames) {
+    for (const reason of frame.reasons) {
+      reasonCounts[reason] = (reasonCounts[reason] ?? 0) + 1;
+    }
+  }
+
+  return {
+    zeroOrderFrameCount: zeroOrderFrames.length,
+    explainedZeroOrderFrameCount: zeroOrderFrames.length - unexplainedFrameIds.length,
+    unexplainedFrameIds,
+    reasonCounts,
+  };
+}
+
+function readOrCreateFrameSummary(frames, frameId) {
+  const existing = frames.get(frameId);
+  if (existing !== undefined) {
+    return existing;
+  }
+
+  const created = {
+    submitted: false,
+    reasons: [],
+  };
+  frames.set(frameId, created);
+  return created;
+}
+
+function readZeroOrderReason(record) {
+  if (record.stage === "STRATEGY_DECISION" && (record.status === "HOLD" || record.status === "BLOCK")) {
+    return `${record.status.toLowerCase()}:${record.reasonCode ?? record.message ?? "unknown"}`;
+  }
+  if (record.stage === "ORDER_INTENT_CONVERSION" && record.status === "REJECTED") {
+    return `discard:${record.reasonCode ?? "order_intent_conversion_rejected"}`;
+  }
+  if (record.stage === "COST_DECISION" && record.status === "REJECT") {
+    return `cost:${record.reasonCode ?? "cost_rejected"}`;
+  }
+  if (record.stage === "RISK_DECISION" && record.status === "FAIL") {
+    return `risk:${readFirstString(record.metadata?.failed_reason_codes) ?? record.reasonCode ?? "risk_rejected"}`;
+  }
+  if (record.stage === "EXECUTION_RESULT" && record.status === "REJECTED") {
+    return `discard:${record.reasonCode ?? "execution_rejected"}`;
+  }
+
+  return null;
+}
+
+function readFirstString(value) {
+  return Array.isArray(value) && typeof value[0] === "string" ? value[0] : null;
 }
 
 function renderMarkdownReport(summary) {
