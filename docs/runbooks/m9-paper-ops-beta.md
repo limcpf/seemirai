@@ -109,10 +109,16 @@ SEEMIRAI_RESTORE_DATABASE_URL=postgres://seemirai:seemirai_local_password@127.0.
 
 ```sh
 node scripts/soak-paper-24h.mjs --fixture-smoke --json
+node scripts/run-m9-paper-decision-runner.mjs --fixture-smoke --json
 ```
 
+`soak-paper-24h.mjs`는 public WebSocket 수신과 운영 안전 가드 smoke다. `tradeMessages`와 `orderbookMessages`는 시장 데이터
+수신 수이지 paper 매매 수가 아니다. `run-m9-paper-decision-runner.mjs`는 별도 decision boundary smoke로, deterministic
+fixture에서 feature, strategy evaluation, order intent, cost/risk gate, PaperBroker 제출/체결, 비용·슬리피지·체결률·차단
+사유 summary를 검증한다.
+
 fixture smoke가 실패하면 M9 운영을 시작하지 않는다. stale data 차단, audit 누락, live order API 0회, Telegram inbound 부재,
-control route wiring 근거가 먼저 정상이어야 한다.
+control route wiring, controlled paper 주문 제출/체결 경로가 먼저 정상이어야 한다.
 
 ## 5. Paper 운영 실행
 
@@ -252,6 +258,10 @@ node scripts/compare-m9-paper-reports.mjs \
   --output "$HOME/vaults/99_운영/seemirai-m9-paper/m9-3day-comparison.md" \
   --json
 ```
+
+decision runner summary를 3일 비교 입력으로 사용할 때는 `metrics.costSummary`, `metrics.slippageSummary`, `metrics.fillRate`,
+`metrics.blockingReasonCounts`, `metrics.liveOrderApiCalls`가 모두 채워져 있어야 한다. daily report artifact와 연결한 운영
+summary는 runner 실행 시 `--daily-report-generated`를 함께 남긴다.
 
 | 날짜 | commit | report artifact | crash | live order API | audit missing | notification failure | daily report | 비용 | 슬리피지 | 체결률 | 주요 차단 사유 |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
