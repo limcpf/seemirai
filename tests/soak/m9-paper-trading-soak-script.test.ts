@@ -112,6 +112,45 @@ describe("M9 paper trading soak script", () => {
       "SEEMIRAI_RUN_M9_PAPER_TRADING_SOAK=1",
     );
   });
+
+  it("fails day summaries when public orderbook input is unavailable", async () => {
+    const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-m9-trading-soak-websocket-"));
+    const summary = await runScriptExpectingFailure(
+      [
+        "--json",
+        "--daily-report-generated",
+        "--duration-ms",
+        "50",
+        "--day-ms",
+        "50",
+        "--days",
+        "1",
+        "--cycle-interval-ms",
+        "10",
+        "--websocket-url",
+        "ws://127.0.0.1:1",
+        "--artifact-dir",
+        artifactDir,
+      ],
+      {
+        SEEMIRAI_RUN_M9_PAPER_TRADING_SOAK: "1",
+      },
+    );
+    const daySummary = JSON.parse(await readFile(summary.artifacts.dailySummaryPaths[0]!, "utf8")) as {
+      status: string;
+      checks: { marketDataSource: { status: string; evidence: { orderbookMessages: number } } };
+    };
+
+    expect(summary.status).toBe("failed");
+    expect(summary.checks.marketDataSource.status).toBe("fail");
+    expect(daySummary.status).toBe("failed");
+    expect(daySummary.checks.marketDataSource).toMatchObject({
+      status: "fail",
+      evidence: {
+        orderbookMessages: 0,
+      },
+    });
+  }, 40_000);
 });
 
 async function readCompileTempDirs() {
@@ -121,4 +160,25 @@ async function readCompileTempDirs() {
       .filter((entry) => entry.isDirectory() && entry.name.startsWith(compileTempPrefix))
       .map((entry) => entry.name),
   );
+}
+
+async function runScriptExpectingFailure(args: readonly string[], env: NodeJS.ProcessEnv = {}) {
+  try {
+    await execFileAsync("node", [scriptPath, ...args], {
+      env: {
+        ...process.env,
+        ...env,
+      },
+    });
+  } catch (error) {
+    const executionError = error as Error & { code?: number; stdout?: string };
+    expect(executionError.code).toBe(1);
+    return JSON.parse(executionError.stdout ?? "{}") as {
+      status: string;
+      artifacts: { dailySummaryPaths: string[] };
+      checks: { marketDataSource: { status: string } };
+    };
+  }
+
+  throw new Error("script unexpectedly passed");
 }

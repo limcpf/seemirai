@@ -19,6 +19,7 @@ const defaultWebSocketUrl = "wss://api.upbit.com/websocket/v1";
 const defaultDays = 3;
 const defaultDayMs = 24 * 60 * 60 * 1000;
 const defaultCycleIntervalMs = 60_000;
+const defaultMinimumOrderbookStalenessMs = 5_000;
 const runtimeCounters = {
   unhandledRejections: 0,
   uncaughtExceptions: 0,
@@ -121,6 +122,7 @@ async function main() {
       artifacts,
       bucket,
       aggregateRawLogPath: artifacts.rawLogPath,
+      interrupted: state.interrupted,
     }),
   );
 
@@ -179,6 +181,10 @@ function parseArgs(argv) {
         break;
       case "--cycle-interval-ms":
         options.cycleIntervalMs = readPositiveInteger(readValue(argv, index, arg), arg);
+        index += 1;
+        break;
+      case "--max-orderbook-staleness-ms":
+        options.maxOrderbookStalenessMs = readPositiveInteger(readValue(argv, index, arg), arg);
         index += 1;
         break;
       case "--cycles-per-day":
@@ -251,6 +257,7 @@ function finalizeOptions(options) {
     options.maxCycles = 1;
   }
   options.durationMs ??= options.days * options.dayMs;
+  options.maxOrderbookStalenessMs ??= Math.max(options.cycleIntervalMs * 2, defaultMinimumOrderbookStalenessMs);
   return options;
 }
 
@@ -332,15 +339,21 @@ function createSoakState({ options, startedAt, artifacts }) {
     tradeMessages: 0,
     orderbookMessages: 0,
     websocketErrors: 0,
-    websocketReconnects: 0,
-    lastWebSocketError: null,
-    lastMarketDataAt: null,
-    interrupted: false,
+      websocketReconnects: 0,
+      lastOrderbookAt: null,
+      lastWebSocketError: null,
+      lastMarketDataAt: null,
+      interrupted: false,
     aggregate: createMetricAccumulator(),
     dailyBuckets: Array.from({ length: options.days }, (_, index) => ({
       dayIndex: index,
       cycleCount: 0,
       skippedNoOrderbookCycles: 0,
+      websocketMessages: 0,
+      tradeMessages: 0,
+      orderbookMessages: 0,
+      lastOrderbookAt: null,
+      lastMarketDataAt: null,
       metrics: createMetricAccumulator(),
       traceRecords: 0,
       firstCycleAt: null,
@@ -457,7 +470,7 @@ function createCycleFixture({ fixture, cycleIndex, cycleStartedAt, orderbook }) 
         exchangeTimestamp: orderbook.exchangeTimestamp ?? observedAt,
         receivedAt: orderbook.receivedAt ?? observedAt,
       };
-      nextFrame.features = updateOrderFeaturesForOrderbook(frame.features ?? {}, orderbook, cycleLabel);
+      nextFrame.features = updateOrderFeaturesForOrderbook(frame.features ?? {}, orderbook, cycleLabel, nextFrame.id);
       return nextFrame;
     }
 
@@ -477,7 +490,7 @@ function createCycleFixture({ fixture, cycleIndex, cycleStartedAt, orderbook }) 
   return cloned;
 }
 
-function updateOrderFeaturesForOrderbook(features, orderbook, cycleLabel) {
+function updateOrderFeaturesForOrderbook(features, orderbook, cycleLabel, frameId) {
   const nextFeatures = {
     ...features,
   };
@@ -489,7 +502,7 @@ function updateOrderFeaturesForOrderbook(features, orderbook, cycleLabel) {
       nextFeatures.requested_quantity = calculateQuantity(nextFeatures.requested_notional, bestAsk);
     }
     nextFeatures.idempotency_key =
-      typeof features.idempotency_key === "string" ? `${features.idempotency_key}:${cycleLabel}` : cycleLabel;
+      typeof features.idempotency_key === "string" ? `${features.idempotency_key}:${cycleLabel}` : `${frameId}:${cycleLabel}`;
   }
   return nextFeatures;
 }
@@ -544,6 +557,7 @@ function startPublicMarketDataFeed({ options, config, rawLog, state }) {
       void recordMarketDataMessage({
         data: message.data,
         state,
+        options,
         latestOrderbooks,
         rawLog,
       });
@@ -597,19 +611,32 @@ function resolveMarkets(options, config) {
   return markets;
 }
 
-async function recordMarketDataMessage({ data, state, latestOrderbooks, rawLog }) {
+async function recordMarketDataMessage({ data, state, options, latestOrderbooks, rawLog }) {
   const receivedAt = new Date().toISOString();
   const payload = await parseWebSocketPayload(data);
+  const bucket = readBucketForTimestamp({ state, options, timestamp: receivedAt });
   state.websocketMessages += 1;
   state.lastMarketDataAt = receivedAt;
+  if (bucket !== undefined) {
+    bucket.websocketMessages += 1;
+    bucket.lastMarketDataAt = receivedAt;
+  }
 
   if (payload?.type === "trade") {
     state.tradeMessages += 1;
+    if (bucket !== undefined) {
+      bucket.tradeMessages += 1;
+    }
   } else if (payload?.type === "orderbook") {
     state.orderbookMessages += 1;
     const orderbook = toOrderbookEvent(payload, receivedAt);
     if (orderbook !== null) {
       latestOrderbooks.set(orderbook.market, orderbook);
+      state.lastOrderbookAt = receivedAt;
+      if (bucket !== undefined) {
+        bucket.orderbookMessages += 1;
+        bucket.lastOrderbookAt = receivedAt;
+      }
     }
   }
 
@@ -619,6 +646,15 @@ async function recordMarketDataMessage({ data, state, latestOrderbooks, rawLog }
     type: payload?.type ?? "unknown",
     market: payload?.code ?? null,
   });
+}
+
+function readBucketForTimestamp({ state, options, timestamp }) {
+  const parsed = Date.parse(timestamp);
+  if (!Number.isFinite(parsed)) {
+    return undefined;
+  }
+  const dayIndex = Math.min(options.days - 1, Math.max(0, Math.floor((parsed - state.startedAtMs) / options.dayMs)));
+  return state.dailyBuckets[dayIndex];
 }
 
 async function parseWebSocketPayload(data) {
@@ -852,6 +888,7 @@ function createCompletedSummary({ runId, startedAt, finishedAt, inputMode, optio
     state,
     metrics,
     durationMsObserved: finishedAt.getTime() - startedAt.getTime(),
+    finishedAt,
     isDaily: false,
   });
   return createBaseSummary({
@@ -879,6 +916,7 @@ function createDailySummary({
   artifacts,
   bucket,
   aggregateRawLogPath,
+  interrupted,
 }) {
   const dayStartedAt = new Date(startedAt.getTime() + dayIndex * options.dayMs);
   const dayFinishedAt = new Date(dayStartedAt.getTime() + options.dayMs);
@@ -892,13 +930,15 @@ function createDailySummary({
     state: {
       cycleCount: bucket.cycleCount,
       skippedNoOrderbookCycles: bucket.skippedNoOrderbookCycles,
-      websocketMessages: 0,
-      orderbookMessages: 0,
+      websocketMessages: bucket.websocketMessages,
+      orderbookMessages: bucket.orderbookMessages,
       websocketErrors: 0,
-      interrupted: false,
+      lastOrderbookAt: bucket.lastOrderbookAt,
+      interrupted: bucket.cycleCount === 0 ? false : interrupted,
     },
     metrics,
     durationMsObserved: dayFinishedAt.getTime() - dayStartedAt.getTime(),
+    finishedAt: dayFinishedAt,
     isDaily: true,
   });
 
@@ -948,7 +988,7 @@ function createBaseSummary({ runId, startedAt, finishedAt, inputMode, options, g
   };
 }
 
-function createChecks({ options, state, metrics, durationMsObserved, isDaily }) {
+function createChecks({ options, state, metrics, durationMsObserved, finishedAt, isDaily }) {
   return {
     longRunGuard: okCheck(
       options.fixtureSmoke
@@ -983,20 +1023,27 @@ function createChecks({ options, state, metrics, durationMsObserved, isDaily }) 
             cycles: metrics.paperTradingCycles,
           }),
     marketDataSource:
-      options.fixtureSmoke || isDaily
+      options.fixtureSmoke
         ? okCheck("fixture smoke는 저장된 decision frame을 market-data 입력으로 사용했다.", {
             input: "fixture",
           })
-        : state.orderbookMessages > 0 && metrics.paperTradingCycles > 0
-        ? okCheck("public WebSocket orderbook을 받아 paper decision cycle에 사용했다.", {
+        : state.orderbookMessages > 0 &&
+          metrics.paperTradingCycles > 0 &&
+          calculateOrderbookStalenessMs(state.lastOrderbookAt, finishedAt) <= options.maxOrderbookStalenessMs
+        ? okCheck("public WebSocket orderbook을 받아 최신성 기준 안에서 paper decision cycle에 사용했다.", {
             orderbookMessages: state.orderbookMessages,
             websocketMessages: state.websocketMessages,
             cycles: metrics.paperTradingCycles,
+            lastOrderbookAt: state.lastOrderbookAt,
+            maxOrderbookStalenessMs: options.maxOrderbookStalenessMs,
           })
-        : failCheck("public WebSocket orderbook 기반 paper decision cycle을 만들지 못했다.", {
+        : failCheck("public WebSocket orderbook 기반 paper decision cycle을 최신성 기준 안에서 만들지 못했다.", {
             orderbookMessages: state.orderbookMessages,
             websocketMessages: state.websocketMessages,
             skippedNoOrderbookCycles: state.skippedNoOrderbookCycles,
+            lastOrderbookAt: state.lastOrderbookAt,
+            orderbookStalenessMs: calculateOrderbookStalenessMs(state.lastOrderbookAt, finishedAt),
+            maxOrderbookStalenessMs: options.maxOrderbookStalenessMs,
           }),
     liveOrderApiCalls:
       metrics.liveOrderApiCalls === 0
@@ -1029,6 +1076,17 @@ function createChecks({ options, state, metrics, durationMsObserved, isDaily }) 
       ? failCheck("runner가 signal로 중단되어 3일 운영 완료 증거로 사용할 수 없다.", { interrupted: true })
       : okCheck("runner 중단 signal이 관측되지 않았다.", { interrupted: false }),
   };
+}
+
+function calculateOrderbookStalenessMs(lastOrderbookAt, finishedAt) {
+  if (typeof lastOrderbookAt !== "string") {
+    return Number.POSITIVE_INFINITY;
+  }
+  const lastOrderbookMs = Date.parse(lastOrderbookAt);
+  if (!Number.isFinite(lastOrderbookMs)) {
+    return Number.POSITIVE_INFINITY;
+  }
+  return Math.max(0, finishedAt.getTime() - lastOrderbookMs);
 }
 
 function countCheck(count, okMessage, failMessage) {
@@ -1294,6 +1352,7 @@ function printHelp() {
   --days <count>                   daily summary 개수. 기본값은 3.
   --day-ms <ms>                    day 구간 길이. 기본값은 86400000.
   --cycle-interval-ms <ms>         paper decision cycle 간격. 기본값은 60000.
+  --max-orderbook-staleness-ms <ms> public orderbook 최신성 허용값. 기본값은 cycle 간격의 2배 또는 5000 중 큰 값.
   --cycles-per-day <count>         테스트용 day split 기준 cycle 수.
   --max-cycles <count>             최대 paper decision cycle 수.
   --max-frames <count>             cycle마다 처리할 decision frame 수.
