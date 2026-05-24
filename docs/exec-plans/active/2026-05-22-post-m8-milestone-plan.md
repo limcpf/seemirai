@@ -97,6 +97,8 @@ SEEMIRAI_RUN_SOAK=1 node scripts/soak-paper-24h.mjs --duration-ms 86400000 --dai
 - `/status`, `/readyz`, `/kill-switch` drill을 포함한 운영 점검 checklist를 만든다.
 - public WebSocket soak와 별개로 paper decision runner를 실행해 feature, strategy evaluation, order intent, cost/risk gate,
   PaperBroker 제출/체결, 비용·슬리피지·체결률·차단 사유 metric을 같은 summary shape로 남긴다.
+- 3일 동안 프로세스를 켜두고 public orderbook 또는 fixture 입력으로 PaperBroker 제출/체결 decision cycle을 반복하는
+  paper trading soak runner를 제공한다.
 - 24시간 1회가 아니라 3일 연속 paper report를 비교해 비용, 슬리피지, 체결률, 차단 사유가 누적 관측되는지 확인한다.
 
 제외 범위:
@@ -115,6 +117,8 @@ Acceptance Criteria:
 - [ ] kill switch drill에서 신규 주문 차단, pending paper order cancel plan, Telegram 알림 evidence가 같은 correlation id로 추적된다.
 - [ ] controlled fixture에서 paper decision runner가 최소 1회 paper 주문 제출/체결 경로를 통과하고, 주문 0건 frame은
       hold/discard/cost/risk reason count로 설명된다.
+- [ ] 3일 paper trading soak runner가 `SEEMIRAI_RUN_M9_PAPER_TRADING_SOAK=1` guard 아래에서 PaperBroker 주문/체결 cycle을
+      반복하고 day별 summary를 남긴다.
 - [ ] 3일 연속 paper report가 같은 포맷으로 비교 가능하다.
 
 예상 sub PR:
@@ -133,6 +137,7 @@ Acceptance Criteria:
 corepack pnpm typecheck
 corepack pnpm test
 node scripts/run-m9-paper-decision-runner.mjs --fixture-smoke --json
+node scripts/run-m9-paper-trading-soak.mjs --fixture-smoke --json --daily-report-generated --days 3 --cycles-per-day 1 --max-cycles 3
 ./scripts/verify
 SEEMIRAI_RUN_DB_INTEGRATION=1 corepack pnpm exec vitest run tests/integration
 ```
