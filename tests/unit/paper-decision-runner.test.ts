@@ -80,6 +80,47 @@ describe("M9 paper decision runner", () => {
     });
   });
 
+  it("excludes broker-rejected orders from fill and slippage metrics", async () => {
+    const fixture = JSON.parse(await readFile(fixturePath, "utf8"));
+    fixture.initialBalances = [
+      {
+        currency: "KRW",
+        available: "1",
+      },
+    ];
+    fixture.frames = [fixture.frames[3]];
+
+    const result = await runM9PaperDecisionFixtureSmoke({ fixture });
+
+    expect(result.metrics.paperOrderSubmittedCount).toBe(1);
+    expect(result.metrics.paperFillCount).toBe(0);
+    expect(result.metrics.fillRate).toBe(0);
+    expect(result.metrics.slippageSummary).toMatchObject({
+      observedFillCount: 0,
+      averageSlippageBps: null,
+    });
+    expect(result.metrics.discardReasonCounts).toEqual({
+      paper_broker_rejected: 1,
+    });
+  });
+
+  it("deduplicates repeated broker order ids in submission and fill metrics", async () => {
+    const fixture = JSON.parse(await readFile(fixturePath, "utf8"));
+    fixture.frames = [fixture.frames[3], fixture.frames[3]];
+
+    const result = await runM9PaperDecisionFixtureSmoke({ fixture });
+
+    expect(result.framesProcessed).toBe(2);
+    expect(result.metrics.orderIntentCount).toBe(2);
+    expect(result.metrics.paperOrderSubmittedCount).toBe(1);
+    expect(result.metrics.paperFillCount).toBe(1);
+    expect(result.metrics.fillRate).toBe(1);
+    expect(result.metrics.slippageSummary).toMatchObject({
+      observedFillCount: 1,
+      averageSlippageBps: "0",
+    });
+  });
+
   it("does not yield frames when static source replay limit is zero", async () => {
     const fixture = JSON.parse(await readFile(fixturePath, "utf8"));
     const source = new StaticPaperDecisionInputSource([fixture.frames[0]]);

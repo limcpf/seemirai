@@ -61,6 +61,8 @@ interface PaperDecisionMetricAccumulator {
   costAllowedCount: number;
   costEvaluatedCount: number;
   slippageBpsValues: Decimal[];
+  submittedBrokerOrderIds: Set<string>;
+  filledBrokerOrderIds: Set<string>;
 }
 
 const defaultAccountEquityKrw = "1000000";
@@ -460,18 +462,29 @@ function recordExecutionResult(
     return;
   }
 
-  if (executionResult.status === "SUBMITTED") {
+  const brokerOrderId = executionResult.brokerOrder.brokerOrderId;
+  const brokerRejected = executionResult.brokerOrder.status === "REJECTED";
+  if (executionResult.status === "SUBMITTED" && !metrics.submittedBrokerOrderIds.has(brokerOrderId)) {
+    // broker idempotency 재반환은 신규 제출이 아니므로 운영 제출량 metric을 중복 집계하지 않는다.
+    metrics.submittedBrokerOrderIds.add(brokerOrderId);
     metrics.paperOrderSubmittedCount += 1;
   }
 
   const fillSimulation = readPaperFillSimulation(executionResult.brokerOrder.metadata);
   const filledQuantity = readDecimalValue(fillSimulation?.filledQuantity);
-  if (filledQuantity !== undefined && filledQuantity.greaterThan(0)) {
+  if (
+    !brokerRejected &&
+    !metrics.filledBrokerOrderIds.has(brokerOrderId) &&
+    filledQuantity !== undefined &&
+    filledQuantity.greaterThan(0)
+  ) {
+    // broker가 최종 거부한 주문과 idempotent 재반환은 실제 paper fill 품질 metric에서 제외한다.
+    metrics.filledBrokerOrderIds.add(brokerOrderId);
     metrics.paperFillCount += 1;
+    appendDecimal(metrics.slippageBpsValues, fillSimulation?.slippageBps);
   }
-  appendDecimal(metrics.slippageBpsValues, fillSimulation?.slippageBps);
 
-  if (executionResult.brokerOrder.status === "REJECTED") {
+  if (brokerRejected) {
     increment(metrics.discardReasonCounts, "paper_broker_rejected");
     increment(metrics.blockingReasonCounts, "discard:paper_broker_rejected");
   }
@@ -543,6 +556,8 @@ function createMetricAccumulator(): PaperDecisionMetricAccumulator {
     costAllowedCount: 0,
     costEvaluatedCount: 0,
     slippageBpsValues: [],
+    submittedBrokerOrderIds: new Set(),
+    filledBrokerOrderIds: new Set(),
   };
 }
 
