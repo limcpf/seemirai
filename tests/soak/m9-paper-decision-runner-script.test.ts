@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { mkdtemp, readFile, stat } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, stat } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -7,6 +7,7 @@ import { describe, expect, it } from "vitest";
 
 const execFileAsync = promisify(execFile);
 const scriptPath = path.join(process.cwd(), "scripts", "run-m9-paper-decision-runner.mjs");
+const compileTempPrefix = "seemirai-m9-paper-decision-";
 
 describe("M9 paper decision runner script", () => {
   it("writes summary, report, and trace to separately created artifact directories", async () => {
@@ -14,6 +15,7 @@ describe("M9 paper decision runner script", () => {
     const summaryPath = path.join(workDir, "summary", "summary.json");
     const reportPath = path.join(workDir, "report", "report.md");
     const rawLogPath = path.join(workDir, "trace", "trace.jsonl");
+    const tempDirsBefore = await readCompileTempDirs();
     const { stdout } = await execFileAsync("node", [
       scriptPath,
       "--fixture-smoke",
@@ -26,6 +28,7 @@ describe("M9 paper decision runner script", () => {
       "--raw-log-path",
       rawLogPath,
     ]);
+    const tempDirsAfter = await readCompileTempDirs();
 
     const summary = JSON.parse(stdout) as {
       status: string;
@@ -58,5 +61,15 @@ describe("M9 paper decision runner script", () => {
     expect(persistedSummary.status).toBe("passed");
     expect(trace.trim().split("\n").length).toBeGreaterThan(0);
     await expect(stat(reportPath)).resolves.toBeDefined();
+    expect([...tempDirsAfter].filter((entry) => !tempDirsBefore.has(entry))).toEqual([]);
   }, 30_000);
 });
+
+async function readCompileTempDirs() {
+  const entries = await readdir(os.tmpdir(), { withFileTypes: true });
+  return new Set(
+    entries
+      .filter((entry) => entry.isDirectory() && entry.name.startsWith(compileTempPrefix))
+      .map((entry) => entry.name),
+  );
+}

@@ -2,7 +2,7 @@
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { createWriteStream } from "node:fs";
-import { access, mkdir, mkdtemp, readFile, stat, symlink, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import process from "node:process";
@@ -154,29 +154,42 @@ function readPositiveInteger(value, flag) {
 
 async function importCompiledRuntime() {
   const compileDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-m9-paper-decision-"));
-  const tscArgs = [
-    "-p",
-    path.join(repoRoot, "tsconfig.m9-runner.json"),
-    "--outDir",
-    compileDir,
-    "--noEmit",
-    "false",
-  ];
-  const localTsc = path.join(repoRoot, "node_modules", ".bin", process.platform === "win32" ? "tsc.cmd" : "tsc");
-
   try {
-    await stat(localTsc);
-    await execFileAsync(localTsc, tscArgs, { cwd: repoRoot });
-  } catch (error) {
-    if (await fileExists(localTsc)) {
-      throw error;
-    }
-    await execFileAsync("corepack", ["pnpm", "exec", "tsc", ...tscArgs], { cwd: repoRoot });
-  }
+    const tscArgs = [
+      "-p",
+      path.join(repoRoot, "tsconfig.m9-runner.json"),
+      "--outDir",
+      compileDir,
+      "--noEmit",
+      "false",
+    ];
+    const localTsc = path.join(repoRoot, "node_modules", ".bin", process.platform === "win32" ? "tsc.cmd" : "tsc");
 
-  await symlink(path.join(repoRoot, "node_modules"), path.join(compileDir, "node_modules"), "dir");
-  const runtimePath = path.join(compileDir, "src", "runtime", "paper-decision-runner.js");
-  return import(pathToFileURL(runtimePath).href);
+    try {
+      await stat(localTsc);
+      await execFileAsync(localTsc, tscArgs, { cwd: repoRoot });
+    } catch (error) {
+      if (await fileExists(localTsc)) {
+        throw error;
+      }
+      await execFileAsync("corepack", ["pnpm", "exec", "tsc", ...tscArgs], { cwd: repoRoot });
+    }
+
+    await symlink(path.join(repoRoot, "node_modules"), path.join(compileDir, "node_modules"), "dir");
+    const runtimePath = path.join(compileDir, "src", "runtime", "paper-decision-runner.js");
+    return await import(pathToFileURL(runtimePath).href);
+  } finally {
+    // 임시 compile 산출물은 운영 smoke 반복 실행에서 디스크 사용량을 누적시키지 않도록 항상 정리한다.
+    await removeTemporaryCompileDir(compileDir);
+  }
+}
+
+async function removeTemporaryCompileDir(compileDir) {
+  try {
+    await rm(compileDir, { recursive: true, force: true });
+  } catch (error) {
+    process.stderr.write(`M9 paper decision runner 임시 compile 디렉터리 정리 실패: ${toErrorMessage(error)}\n`);
+  }
 }
 
 async function readJsonFile(filePath) {
