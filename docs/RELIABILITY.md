@@ -163,6 +163,21 @@ Codex-native 운영은 Codex, Git, GitHub, shell command, 문서 상태를 연�
 - Telegram 전송 성공 이후 notification audit 저장이 실패해도 이미 발생한 provider side effect를 retry하지 않는다. 이 장애는
   runner 결과의 error message와 job completion evidence로 추적하고, audit 저장소 복구는 별도 운영 조치로 다룬다.
 
+## M10 LLM 리스크 보조 신뢰성 기준
+
+- LLM provider 호출은 거래 실행 경로의 선행 조건이 아니다. provider timeout, invalid JSON, free-form output, output size 초과,
+  command failure는 모두 실패 evidence로만 남기고 strategy candidate, broker call, 주문 허용 RiskGate evaluation을 만들지 않는다.
+- `codex_oauth`와 `noop` provider는 같은 normalized response union을 반환해야 한다. provider 교체는 application contract와
+  RiskGate mapper 출력의 의미를 바꾸지 않아야 하며, provider별 raw 응답은 경계 밖으로 새지 않아야 한다.
+- RiskGate mapper는 `notice_risk_classification`과 공식 입력 source만 안전 신호로 축약한다. `CANCEL_PENDING`은 직접 취소 실행이
+  아니라 사람 확인 후보로 남겨 주문 lifecycle과 idempotency 경계를 우회하지 않는다.
+- LLM audit 저장은 append-only evidence다. audit 저장 실패는 별도 장애로 다루며, LLM 결과를 주문 허용 신호로 보정하거나
+  deterministic 업무 성공을 되돌리는 근거가 될 수 없다.
+- LLM daily report draft는 deterministic daily report 옆의 보조 텍스트다. provider 실패, 비일간 리포트 result, order-like metadata는
+  draft attachment에서 제외하고 원본 report notification payload를 유지한다.
+- 실제 Codex OAuth smoke는 `SEEMIRAI_RUN_CODEX_LLM_SMOKE=1`이 있을 때만 실행한다. 기본 검증은 fake runner와 deterministic fixture로
+  fail-closed contract를 확인해 CI가 외부 provider 지연에 묶이지 않게 한다.
+
 ## Paper soak 신뢰성 기준
 
 - 24시간 paper soak harness는 기본 실행에서 장시간 public WebSocket 연결을 시작하지 않는다. `SEEMIRAI_RUN_SOAK=1`이 없으면

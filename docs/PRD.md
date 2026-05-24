@@ -195,7 +195,7 @@
 | OQ-005 | decided | 1차 universe는 `KRW-BTC`, `KRW-ETH` | 알트는 phase 1.5에서 최대 3개 수동 편입 |
 | OQ-006 | decided | PostgreSQL + TimescaleDB, Redis/BullMQ MVP 제외 | 비동기 작업은 PostgreSQL `jobs` table 기반 DB-backed queue로 시작 |
 | OQ-007 | decided | 시장가 주문 기본 비활성 | 신규 진입 시장가 금지, emergency 축소는 paper에서 공격적 지정가로 검증 |
-| OQ-008 | decided | LLM 입력은 공식 Upbit 공지/정책/시장경보 | 주문 허용 액션 금지 |
+| OQ-008 | decided | LLM 입력은 공식 Upbit 공지/정책/시장경보로 제한하고 provider는 Codex OAuth first + 교체 가능 port로 둔다 | 주문 허용 액션 금지, LLM 결과는 차단·주의·설명·리포트 초안 보조로만 사용 |
 | OQ-009 | decided | MVP 알림은 Telegram 우선 | Slack adapter는 비활성 |
 | OQ-010 | decided | 출금·송금·차익거래·타인계정 제외 | 본인 계정, 국내 원화 현물, paper trading으로 제한 |
 

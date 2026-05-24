@@ -173,20 +173,27 @@ SEEMIRAI_RUN_DB_INTEGRATION=1 corepack pnpm exec vitest run tests/integration
 
 Acceptance Criteria:
 
-- [ ] LLM output schema가 금지 action을 거부한다.
-- [ ] LLM-only context는 전략 후보를 생성하지 않는다.
-- [ ] LLM 결과가 주문 허용 신호로 변환되지 않는다.
-- [ ] LLM 입력과 출력은 민감정보 없이 audit 가능하게 저장된다.
-- [ ] deterministic daily report가 실패하지 않아도 LLM draft 실패는 독립적으로 격리된다.
+- [x] LLM output schema가 금지 action을 거부한다.
+- [x] LLM-only context는 전략 후보를 생성하지 않는다.
+- [x] LLM 결과가 주문 허용 신호로 변환되지 않는다.
+- [x] LLM 입력과 출력은 민감정보 없이 audit 가능하게 저장된다.
+- [x] deterministic daily report가 실패하지 않아도 LLM draft 실패는 독립적으로 격리된다.
+- [x] Codex OAuth provider smoke는 env gate 뒤에 있어 기본 검증과 CI가 외부 LLM 호출을 만들지 않는다.
 
 예상 sub PR:
 
-| 순서 | 목표 | 병렬성 |
+| 순서 | 목표 | 상태 |
 | --- | --- | --- |
-| 1 | LLM contract/schema와 금지 action 테스트 | 순차 |
-| 2 | notice/market event risk classification mapper | 순차 |
-| 3 | audit persistence와 redaction | 순차 |
-| 4 | daily report draft 보조 경계 | 독립 |
+| 1 | LLM contract/schema와 금지 action 테스트 | PR #60 merged |
+| 2 | provider port, `noop`, `codex_oauth`, provider fail-closed, gated smoke | PR #61 merged |
+| 3 | audit persistence와 redaction | PR #62 merged |
+| 4 | notice/market event risk classification mapper와 RiskGate 안전 신호 | PR #63 merged |
+| 5 | daily report draft 보조 경계 | PR #64 merged |
+| 6 | M10 문서/검증 정합성, M9 보호 경계 재확인 | 진행 중 |
+
+M10 Verification sub PR은 M9 #51이 소유한 paper runtime, daily report runner, Telegram 매매 알림, notification retry,
+control drill, 3일 report 비교 구현을 변경하지 않는다. M10 문서 갱신은 LLM provider, secret redaction, fail-closed, gated smoke
+경계에 한정한다.
 
 ### M11. 전략/피처 품질 보강
 

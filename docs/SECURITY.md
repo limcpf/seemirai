@@ -27,6 +27,14 @@
 - merge는 expected head SHA 확인 없이는 실행하지 않는다.
 - 프로젝트 로컬 Codex Full Access 설정은 owner-operated local workflow에서만 사용한다. 외부 입력을 직접 shell command로 변환하는 runner나 무인 webhook 환경에서는 별도 제한 설정을 사용한다.
 
+## M10 LLM/Codex OAuth 보안 기준
+
+- Codex OAuth provider는 운영자 로컬 세션을 사용하는 owner-operated 경계로만 취급한다. OAuth token, session 파일, raw credential은 DB, audit metadata, log, PR body, issue comment, report artifact에 저장하지 않는다.
+- LLM prompt에는 공식 Upbit 입력과 redacted context만 포함한다. 일반 뉴스, SNS, 커뮤니티, 유튜브, 루머성 텔레그램, secret-like 문자열은 provider 요청 생성 전에 제외하거나 마스킹한다.
+- provider raw stdout/stderr, raw request body, raw credential path는 normalized response와 audit payload에 전파하지 않는다. 저장 가능한 값은 provider id, schema version, prompt hash, redacted input/output, failure class, correlation id로 제한한다.
+- 실제 Codex OAuth smoke는 `SEEMIRAI_RUN_CODEX_LLM_SMOKE=1`이 있을 때만 실행한다. 기본 CI와 `./scripts/verify`는 외부 LLM 호출이나 OAuth 세션 접근을 만들지 않는다.
+- LLM output에 `BUY`, `SELL`, `INCREASE_POSITION`, 목표가, 포지션 크기, 주문 허용 의미의 metadata가 포함되면 fail-closed로 거부하고 주문 후보로 변환하지 않는다.
+
 ## HTTP control API 보안 기준
 
 - HTTP control server의 기본 bind는 `127.0.0.1`이다.
