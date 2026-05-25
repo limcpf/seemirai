@@ -227,27 +227,30 @@ control drill, 3일 report 비교 구현을 변경하지 않는다. M10 문서 �
 
 Acceptance Criteria:
 
-- [ ] feature 정의 문서가 추가되고 context map에 등록된다.
-- [ ] feature 계산 실패나 입력 부족은 주문 후보 중지가 된다.
-- [ ] 같은 fixture에서 backtest와 paper feature 값이 일치한다.
-- [ ] 전략별 threshold 변경 전후 리포트가 비용 반영 기준으로 비교 가능하다.
+- [x] feature 정의 문서가 추가되고 context map에 등록된다.
+- [x] feature 계산 실패나 입력 부족은 주문 후보 중지가 된다.
+- [x] 같은 fixture에서 backtest와 paper feature 값이 일치한다.
+- [x] 전략별 threshold 변경 전후 리포트가 비용 반영 기준으로 비교 가능하다. 실제 보정값 비교는 #68 완료 후 별도
+      calibration PR에서 수행한다.
 
 예상 sub PR:
 
-| 순서 | 목표 | 병렬성 |
+| 순서 | 목표 | 상태 |
 | --- | --- | --- |
-| 1 | feature 정의 design doc과 runtime config contract | 선행 순차 |
-| 2 | 순수 feature calculator와 fixture tests | Sub PR 1 이후, Sub PR 3과 일부 병렬 가능 |
-| 3 | backtest/paper fixture feature parity 검증 | Sub PR 1 이후, Sub PR 2와 일부 병렬 가능 |
-| 4 | strategy variant 입력 확장과 discard audit 보강 | Sub PR 2, 3 이후 순차 |
-| 5 | M9 #68 관측 데이터 기반 calibration report 또는 보수적 제안/후속 issue 후보 정리 | 마지막 순차 |
+| 1 | feature 정의 design doc과 runtime config contract | PR #71 merged |
+| 2 | 순수 feature calculator와 fixture tests | PR #72 merged |
+| 3 | backtest/paper fixture feature parity 검증 | PR #73 merged |
+| 4 | strategy variant 입력 확장과 discard audit 보강 | PR #74 merged |
+| 5 | M9 #68 관측 데이터 기반 calibration report 또는 보수적 제안/후속 issue 후보 정리 | PR #75, #68 데이터 부재로 threshold 변경 보류 |
 
 현재 운영 상태:
 
 - GitHub issue: #70
 - mother branch: `issue-70-mother`
-- Sub PR 1: #71, feature contract와 runtime config contract 문서화
+- Sub PR 1-4: #71, #72, #73, #74 merged
+- Sub PR 5: #75, #68 관측 데이터 부재 시 M11 calibration을 운영 threshold 변경 없이 닫는 closure PR
 - M9 #68 운영 관측 중에는 paper runner, daily report, Telegram, retry, control drill, 3일 비교 포맷과 기본 운영 threshold를 변경하지 않는다.
+- 2026-05-26 기준 #68은 open이고 지정된 `72h-paper-trading-soak` artifact 경로가 없어 실제 threshold 보정값 확정은 보류한다.
 
 ### M12. 큰 TypeScript 모듈 책임 분리
 
