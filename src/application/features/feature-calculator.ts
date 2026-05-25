@@ -25,6 +25,9 @@ const DEFAULT_OPTIONS = {
   orderbookDepthLevels: 15,
   volatileRealizedVolatilityBps: "5000",
   volatileVolumeSpikeRatio: "3",
+  volatileSpreadBps: "150",
+  rangeMaxVwapDeviationBps: "200",
+  liquidityStressSessionLiquidityScore: "0.5",
   trendMomentumBps: "10",
   trendImbalanceRatio: "0.2",
 } as const;
@@ -54,6 +57,9 @@ interface ResolvedFeatureCalculationOptions {
   orderbookDepthLevels: number;
   volatileRealizedVolatilityBps: Decimal;
   volatileVolumeSpikeRatio: Decimal;
+  volatileSpreadBps: Decimal;
+  rangeMaxVwapDeviationBps: Decimal;
+  liquidityStressSessionLiquidityScore: Decimal;
   trendMomentumBps: Decimal;
   trendImbalanceRatio: Decimal;
 }
@@ -103,10 +109,19 @@ export function calculateM11FeatureSnapshot(
   input: FeatureCalculationInput,
   options: FeatureCalculationOptions = {},
 ): FeatureCalculationResult {
-  const context = createCalculationContext(input, options);
+  let context: CalculationContext;
+  try {
+    context = createCalculationContext(input, options);
+  } catch (error) {
+    const failure = normalizeFeatureError(error);
+    // 입력 정규화 실패도 호출자를 중단시키지 않고 전체 snapshot failure로 닫아 strategy 후보 생성을 막는다.
+    return createInputFailureSnapshot(input, failure.reasonCode, failure.message);
+  }
+
   const staleFailure = createStaleFailureIfNeeded(context);
 
   if (staleFailure !== undefined) {
+    // stale 상태가 window 안에 있으면 부분 성공 값이 주문 후보를 열 수 있어 모든 feature를 실패로 닫는다.
     const failures = FEATURE_KEYS.map((key) => createFailure(context, key, staleFailure.reasonCode, staleFailure.message));
     return createSnapshotResult(context, failures, input.metadata);
   }
@@ -138,8 +153,8 @@ export function calculateM11FeatureSnapshot(
     ),
   ];
 
-  results.push(calculateMarketRegimeFeature(context, computed));
   results.push(calculateDecimalFeature(context, "session_liquidity_score", () => calculateSessionLiquidityScore(context), computed));
+  results.push(calculateMarketRegimeFeature(context, computed));
   results.push(calculateSessionLiquidityStateFeature(context, computed));
   results.push(
     calculateDecimalFeature(
@@ -183,6 +198,13 @@ function createCalculationContext(
       ),
       volatileVolumeSpikeRatio: parseOptionDecimal(
         options.volatileVolumeSpikeRatio ?? DEFAULT_OPTIONS.volatileVolumeSpikeRatio,
+      ),
+      volatileSpreadBps: parseOptionDecimal(options.volatileSpreadBps ?? DEFAULT_OPTIONS.volatileSpreadBps),
+      rangeMaxVwapDeviationBps: parseOptionDecimal(
+        options.rangeMaxVwapDeviationBps ?? DEFAULT_OPTIONS.rangeMaxVwapDeviationBps,
+      ),
+      liquidityStressSessionLiquidityScore: parseOptionDecimal(
+        options.liquidityStressSessionLiquidityScore ?? DEFAULT_OPTIONS.liquidityStressSessionLiquidityScore,
       ),
       trendMomentumBps: parseOptionDecimal(options.trendMomentumBps ?? DEFAULT_OPTIONS.trendMomentumBps),
       trendImbalanceRatio: parseOptionDecimal(options.trendImbalanceRatio ?? DEFAULT_OPTIONS.trendImbalanceRatio),
@@ -290,6 +312,13 @@ function calculateDepthChangeRateRatio(context: CalculationContext): Decimal {
   const current = getLatestOrderbook(context);
   const referenceTime = context.observedAt.getTime() - context.options.depthChangeLookbackMs;
   const reference = getLatestOrderbookAtOrBefore(context, referenceTime);
+  const currentTimestampMs = getEventTimestampMs(current);
+  const referenceTimestampMs = getEventTimestampMs(reference);
+
+  if (currentTimestampMs <= referenceTime || currentTimestampMs === referenceTimestampMs) {
+    throw new FeatureCalculationError("FEATURE_INSUFFICIENT_INPUT", "depth change requires current and reference snapshots");
+  }
+
   const currentDepth = calculateDepth5Notional(current);
   const referenceDepth = calculateDepth5Notional(reference);
 
@@ -357,7 +386,9 @@ function calculateMarketRegimeFeature(context: CalculationContext, computed: Com
       "depthChangeRateRatio",
       "tradeDirectionImbalanceRatio",
       "vwapDeviationBps",
+      "sessionLiquidityScore",
     ]);
+    const spreadBps = calculateLatestSpreadBps(context);
     const regime = classifyMarketRegime(context, {
       candleMomentumBps: required.candleMomentumBps,
       realizedVolatilityBps: required.realizedVolatilityBps,
@@ -365,6 +396,8 @@ function calculateMarketRegimeFeature(context: CalculationContext, computed: Com
       depthChangeRateRatio: required.depthChangeRateRatio,
       tradeDirectionImbalanceRatio: required.tradeDirectionImbalanceRatio,
       vwapDeviationBps: required.vwapDeviationBps,
+      sessionLiquidityScore: required.sessionLiquidityScore,
+      spreadBps,
     });
     computed.marketRegime = regime;
     return createSuccess(context, "market_regime", regime);
@@ -383,7 +416,10 @@ function calculateSessionLiquidityScore(context: CalculationContext): Decimal {
 
   const latestVolume = sumTradeNotional(tradeBuckets[tradeBuckets.length - 1]!.trades);
   const volumeBaseline = median(tradeBuckets.slice(0, -1).map((bucket) => sumTradeNotional(bucket.trades)));
-  const orderbooks = getOrderbooksUpToObservedAt(context);
+  const orderbooks = getOrderbooksInLookback(
+    context,
+    context.options.candleBucketMs * context.options.volumeBaselineBucketCount,
+  );
 
   if (orderbooks.length < 2 || volumeBaseline.lessThanOrEqualTo(0)) {
     throw new FeatureCalculationError("FEATURE_INSUFFICIENT_INPUT", "session liquidity requires orderbook and volume baselines");
@@ -452,10 +488,24 @@ function classifyMarketRegime(
     depthChangeRateRatio: Decimal;
     tradeDirectionImbalanceRatio: Decimal;
     vwapDeviationBps: Decimal;
+    sessionLiquidityScore: Decimal;
+    spreadBps: Decimal;
   },
 ): MarketRegime {
-  if (input.depthChangeRateRatio.lessThan("-0.3")) {
+  if (
+    input.depthChangeRateRatio.lessThan("-0.3") ||
+    input.sessionLiquidityScore.lessThan(context.options.liquidityStressSessionLiquidityScore)
+  ) {
+    // 유동성 저하 국면은 가격 신호가 좋아도 체결 품질 리스크가 우선이므로 가장 먼저 차단 국면으로 분류한다.
     return "liquidity_stress";
+  }
+
+  if (
+    input.realizedVolatilityBps.greaterThanOrEqualTo(context.options.volatileRealizedVolatilityBps) ||
+    input.volumeSpikeRatio.greaterThanOrEqualTo(context.options.volatileVolumeSpikeRatio) ||
+    input.spreadBps.greaterThanOrEqualTo(context.options.volatileSpreadBps)
+  ) {
+    return "volatile";
   }
 
   if (
@@ -472,10 +522,7 @@ function classifyMarketRegime(
     return "trend_down";
   }
 
-  if (
-    input.realizedVolatilityBps.greaterThanOrEqualTo(context.options.volatileRealizedVolatilityBps) ||
-    input.volumeSpikeRatio.greaterThanOrEqualTo(context.options.volatileVolumeSpikeRatio)
-  ) {
+  if (input.vwapDeviationBps.abs().greaterThan(context.options.rangeMaxVwapDeviationBps)) {
     return "volatile";
   }
 
@@ -574,6 +621,11 @@ function getOrderbooksUpToObservedAt(context: CalculationContext): readonly Orde
   });
 }
 
+function getOrderbooksInLookback(context: CalculationContext, lookbackMs: number): readonly OrderbookEvent[] {
+  const startMs = context.observedAt.getTime() - lookbackMs;
+  return getOrderbooksUpToObservedAt(context).filter((event) => getEventTimestampMs(event) > startMs);
+}
+
 function sumTradeNotional(trades: readonly TradeEvent[]): Decimal {
   return trades.reduce(
     (sum, trade) =>
@@ -592,6 +644,23 @@ function sumOrderbookNotional(levels: readonly OrderbookLevel[]): Decimal {
 
 function calculateDepth5Notional(orderbook: OrderbookEvent): Decimal {
   return sumOrderbookNotional(orderbook.bids.slice(0, 5)).plus(sumOrderbookNotional(orderbook.asks.slice(0, 5)));
+}
+
+function calculateLatestSpreadBps(context: CalculationContext): Decimal {
+  const orderbook = getLatestOrderbook(context);
+  const bestBid = parsePositiveLevelPrice(orderbook.bids[0] ?? failMissingBestLevel("bid"));
+  const bestAsk = parsePositiveLevelPrice(orderbook.asks[0] ?? failMissingBestLevel("ask"));
+  const midPrice = bestBid.plus(bestAsk).div(2);
+
+  if (bestAsk.lessThanOrEqualTo(bestBid) || midPrice.lessThanOrEqualTo(0)) {
+    throw new FeatureCalculationError("FEATURE_INVALID_MARKET_VALUE", "orderbook spread must be positive");
+  }
+
+  return bestAsk.minus(bestBid).div(midPrice).mul(10_000);
+}
+
+function failMissingBestLevel(side: "bid" | "ask"): never {
+  throw new FeatureCalculationError("FEATURE_INSUFFICIENT_INPUT", `${side} best level is required for spread`);
 }
 
 function readCostValuesWithoutSafetyBuffer(
@@ -679,7 +748,14 @@ function getEventTimestampMs(event: MarketDataEvent): number {
 }
 
 function sortEvents(events: readonly MarketDataEvent[]): readonly MarketDataEvent[] {
-  return [...events].sort((left, right) => getEventTimestampMs(left) - getEventTimestampMs(right));
+  const eventsWithTimestamp = events.map((event) => ({
+    event,
+    timestampMs: getEventTimestampMs(event),
+  }));
+
+  return eventsWithTimestamp
+    .sort((left, right) => left.timestampMs - right.timestampMs)
+    .map(({ event }) => event);
 }
 
 function createStaleFailureIfNeeded(
@@ -796,6 +872,46 @@ function createSnapshotResult(
   }
 
   return snapshot;
+}
+
+function createInputFailureSnapshot(
+  input: FeatureCalculationInput,
+  reasonCode: FeatureCalculationFailureReasonCode,
+  message: string,
+): FeatureCalculationResult {
+  const observedAt = safeObservedAtIso(input.observedAt);
+  const results: FeatureFailureResult[] = FEATURE_KEYS.map((key) => ({
+    status: "failed",
+    key,
+    reasonCode,
+    message,
+    observedAt,
+    windowEndAt: observedAt,
+  }));
+  const snapshot: FeatureCalculationResult = {
+    status: "failed",
+    observedAt,
+    features: {},
+    results,
+    failureReasons: results,
+  };
+
+  if (input.metadata !== undefined) {
+    return {
+      ...snapshot,
+      metadata: input.metadata,
+    };
+  }
+
+  return snapshot;
+}
+
+function safeObservedAtIso(value: TimestampInput): string {
+  try {
+    return parseTimestamp(value).toISOString();
+  } catch {
+    return typeof value === "string" ? value : "invalid";
+  }
 }
 
 function normalizeFeatureError(error: unknown): { reasonCode: FeatureCalculationFailureReasonCode; message: string } {

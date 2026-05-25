@@ -118,6 +118,8 @@ M11 구현 PR은 새 threshold를 `strategyParameters.<strategy_id>` 아래에 �
 | `min_candle_momentum_bps` | bps | Decimal string, 0 이상 | 높일수록 약한 momentum 후보 차단 |
 | `min_realized_volatility_bps` | bps | Decimal string, 0 이상 | 높일수록 변동성 부족 후보 차단 |
 | `max_realized_volatility_bps` | bps | Decimal string, 0 이상 | 낮출수록 급변동 후보 차단 |
+| `max_spread_bps` | bps | Decimal string, 0 이상 | 낮출수록 스프레드 확대 국면을 보수적으로 차단 |
+| `max_abs_vwap_deviation_bps` | bps | Decimal string, 0 이상 | 낮출수록 정상 range로 볼 수 있는 VWAP 이탈 폭 축소 |
 | `min_volume_spike_ratio` | ratio | Decimal string, 0 이상 | 높일수록 거래대금 증가가 약한 후보 차단 |
 | `min_depth_slope_krw_per_bps` | KRW/bps | Decimal string, 0 이상 | 높일수록 얕은 호가 후보 차단 |
 | `min_depth_change_rate_ratio` | ratio | Decimal string | 높일수록 depth 감소 후보 차단 |

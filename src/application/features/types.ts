@@ -98,6 +98,9 @@ export interface FeatureCalculationOptions {
   orderbookDepthLevels?: number;
   volatileRealizedVolatilityBps?: FinancialDecimalInput;
   volatileVolumeSpikeRatio?: FinancialDecimalInput;
+  volatileSpreadBps?: FinancialDecimalInput;
+  rangeMaxVwapDeviationBps?: FinancialDecimalInput;
+  liquidityStressSessionLiquidityScore?: FinancialDecimalInput;
   trendMomentumBps?: FinancialDecimalInput;
   trendImbalanceRatio?: FinancialDecimalInput;
 }

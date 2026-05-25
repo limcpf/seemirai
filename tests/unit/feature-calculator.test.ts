@@ -95,6 +95,45 @@ describe("M11 feature calculator", () => {
     });
   });
 
+  it("returns a failed snapshot when input normalization cannot parse timestamps or options", () => {
+    const invalidObservedAt = calculateM11FeatureSnapshot({
+      observedAt: "not-a-timestamp",
+      events: createFeatureFixtureEvents(),
+      cost: createCostInput(),
+    });
+    const invalidOption = calculateM11FeatureSnapshot(
+      {
+        observedAt: "2026-05-25T00:21:00.000Z",
+        events: createFeatureFixtureEvents(),
+        cost: createCostInput(),
+      },
+      {
+        volatileSpreadBps: "not-a-decimal",
+      },
+    );
+    const invalidEventTimestamp = calculateM11FeatureSnapshot({
+      observedAt: "2026-05-25T00:21:00.000Z",
+      events: [
+        {
+          ...createFeatureFixtureEvents()[0]!,
+          exchangeTimestamp: "not-a-timestamp",
+        } as OrderbookEvent,
+      ],
+      cost: createCostInput(),
+    });
+
+    expect(invalidObservedAt.status).toBe("failed");
+    expect(invalidObservedAt.observedAt).toBe("not-a-timestamp");
+    expect(invalidObservedAt.failureReasons).toHaveLength(13);
+    expect(invalidObservedAt.failureReasons.every((failure) => failure.reasonCode === "FEATURE_INVALID_MARKET_VALUE")).toBe(
+      true,
+    );
+    expect(invalidOption.failureReasons.every((failure) => failure.reasonCode === "FEATURE_INVALID_DECIMAL")).toBe(true);
+    expect(invalidEventTimestamp.failureReasons.every((failure) => failure.reasonCode === "FEATURE_INVALID_MARKET_VALUE")).toBe(
+      true,
+    );
+  });
+
   it("fails closed when stale market data is inside the calculation window", () => {
     const result = calculateM11FeatureSnapshot({
       observedAt: "2026-05-25T00:21:00.000Z",
@@ -150,6 +189,116 @@ describe("M11 feature calculator", () => {
       reasonCode: "FEATURE_INSUFFICIENT_INPUT",
     });
   });
+
+  it("fails depth change when current and reference windows reuse the same orderbook snapshot", () => {
+    const events = createFeatureFixtureEvents().filter(
+      (event) => event.type !== "ORDERBOOK" || event.exchangeTimestamp === "2026-05-25T00:15:00.000Z",
+    );
+    const result = calculateM11FeatureSnapshot({
+      observedAt: "2026-05-25T00:21:00.000Z",
+      events,
+      cost: createCostInput(),
+    });
+
+    expect(findResult(result.results, "depth_change_rate_ratio")).toMatchObject({
+      status: "failed",
+      reasonCode: "FEATURE_INSUFFICIENT_INPUT",
+    });
+  });
+
+  it("limits session liquidity depth baseline to the recent feature window", () => {
+    const events: MarketDataEvent[] = createFeatureFixtureEvents().filter((event) => event.type !== "ORDERBOOK");
+    events.unshift(
+      createOrderbook("2026-05-25T00:00:00.000Z", "10"),
+      createOrderbook("2026-05-25T00:20:50.000Z", "1"),
+    );
+    const result = calculateM11FeatureSnapshot({
+      observedAt: "2026-05-25T00:21:00.000Z",
+      events,
+      cost: createCostInput(),
+    });
+
+    expect(findResult(result.results, "session_liquidity_score")).toMatchObject({
+      status: "failed",
+      reasonCode: "FEATURE_INSUFFICIENT_INPUT",
+    });
+  });
+
+  it("classifies market regime with session liquidity stress before trend signals", () => {
+    const events: MarketDataEvent[] = createFeatureFixtureEvents().filter((event) => event.type !== "ORDERBOOK");
+    events.unshift(
+      createOrderbook("2026-05-25T00:02:00.000Z", "10"),
+      createOrderbook("2026-05-25T00:15:00.000Z", "1"),
+      createOrderbook("2026-05-25T00:20:50.000Z", "1"),
+    );
+    const result = calculateM11FeatureSnapshot({
+      observedAt: "2026-05-25T00:21:00.000Z",
+      events,
+      cost: createCostInput(),
+    });
+
+    expect(findResult(result.results, "session_liquidity_score")).toMatchObject({
+      status: "ok",
+      value: "0.18181818181818181818",
+    });
+    expect(findResult(result.results, "market_regime")).toMatchObject({
+      status: "ok",
+      value: "liquidity_stress",
+    });
+  });
+
+  it("classifies widened spread as volatile before trend signals", () => {
+    const events = createFeatureFixtureEvents();
+    const latestOrderbookIndex = events.findIndex(
+      (event) => event.type === "ORDERBOOK" && event.exchangeTimestamp === "2026-05-25T00:20:50.000Z",
+    );
+    events.splice(latestOrderbookIndex, 1, createOrderbook("2026-05-25T00:20:50.000Z", "1", "103"));
+    const result = calculateM11FeatureSnapshot({
+      observedAt: "2026-05-25T00:21:00.000Z",
+      events,
+      cost: createCostInput(),
+    });
+
+    expect(findResult(result.results, "market_regime")).toMatchObject({
+      status: "ok",
+      value: "volatile",
+    });
+  });
+
+  it("keeps large VWAP deviations out of range classification", () => {
+    const events: MarketDataEvent[] = [
+      createOrderbook("2026-05-25T00:15:00.000Z", "1"),
+      createOrderbook("2026-05-25T00:20:50.000Z", "1"),
+    ];
+
+    for (let minute = 1; minute <= 21; minute += 1) {
+      events.push(
+        createTrade({
+          tradeId: `neutral-${minute}`,
+          observedAt: `2026-05-25T00:${String(minute).padStart(2, "0")}:00.000Z`,
+          price: minute === 21 ? "105" : "100",
+          quantity: "1",
+          side: minute % 2 === 0 ? "BID" : "ASK",
+        }),
+      );
+    }
+
+    const result = calculateM11FeatureSnapshot(
+      {
+        observedAt: "2026-05-25T00:21:00.000Z",
+        events,
+        cost: createCostInput(),
+      },
+      {
+        trendMomentumBps: "1000",
+      },
+    );
+
+    expect(findResult(result.results, "market_regime")).toMatchObject({
+      status: "ok",
+      value: "volatile",
+    });
+  });
 });
 
 function createFeatureFixtureEvents(): MarketDataEvent[] {
@@ -166,6 +315,7 @@ function createFeatureFixtureEvents(): MarketDataEvent[] {
         observedAt: `2026-05-25T00:${String(minute).padStart(2, "0")}:00.000Z`,
         price: isLatest ? "110" : "100",
         quantity: isLatest ? "2" : "1",
+        side: "BID",
       }),
     );
   }
@@ -178,6 +328,7 @@ function createTrade(input: {
   observedAt: string;
   price: string;
   quantity: string;
+  side: TradeEvent["side"];
 }): TradeEvent {
   return {
     type: "TRADE",
@@ -186,14 +337,15 @@ function createTrade(input: {
     tradeId: input.tradeId,
     price: input.price,
     quantity: input.quantity,
-    side: "BID",
+    side: input.side,
     exchangeTimestamp: input.observedAt,
     receivedAt: input.observedAt,
   };
 }
 
-function createOrderbook(observedAt: string, sizeMultiplier: string): OrderbookEvent {
+function createOrderbook(observedAt: string, sizeMultiplier: string, bestAskPrice = "101"): OrderbookEvent {
   const multiplier = new Decimal(sizeMultiplier);
+  const secondAskPrice = new Decimal(bestAskPrice).plus(1).toFixed();
   return {
     type: "ORDERBOOK",
     exchangeId: "upbit_krw_spot",
@@ -203,8 +355,8 @@ function createOrderbook(observedAt: string, sizeMultiplier: string): OrderbookE
       { price: "99", size: multiplier.mul(2).toFixed() },
     ],
     asks: [
-      { price: "101", size: multiplier.toFixed() },
-      { price: "102", size: multiplier.mul(2).toFixed() },
+      { price: bestAskPrice, size: multiplier.toFixed() },
+      { price: secondAskPrice, size: multiplier.mul(2).toFixed() },
     ],
     exchangeTimestamp: observedAt,
     receivedAt: observedAt,
@@ -213,6 +365,18 @@ function createOrderbook(observedAt: string, sizeMultiplier: string): OrderbookE
 
 function findResult(results: readonly FeatureResult[], key: string): FeatureResult | undefined {
   return results.find((result) => result.key === key);
+}
+
+function createCostInput() {
+  return {
+    expectedReturnBps: "40",
+    entryFeeBps: "5",
+    exitFeeBps: "5",
+    spreadCostBpsP75: "2",
+    expectedSlippageBpsP95: "3",
+    cancelRequotePenaltyBps: "0.5",
+    safetyBufferBps: "10",
+  };
 }
 
 function expectedRealizedVolatility(): string {
