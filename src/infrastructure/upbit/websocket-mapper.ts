@@ -65,6 +65,8 @@ export function toTradeEvent(
     side: payload.ask_bid,
     exchangeTimestamp: timestampFromMilliseconds(payload.trade_timestamp),
     receivedAt: options.receivedAt,
+    sequence: String(payload.sequential_id),
+    tieBreakKey: `upbit:trade:${payload.code}:${String(payload.sequential_id)}`,
     raw: payload,
   };
 }
@@ -87,6 +89,8 @@ export function toOrderbookEvent(
     bids: payload.orderbook_units.map((unit) => toOrderbookLevel(unit.bid_price, unit.bid_size)),
     exchangeTimestamp: timestampFromMilliseconds(payload.timestamp),
     receivedAt: options.receivedAt,
+    sequence: String(payload.timestamp),
+    tieBreakKey: createUpbitOrderbookTieBreakKey(payload),
     raw: payload,
   };
 }
@@ -149,6 +153,8 @@ export function createUpbitMarketDataStatusEvent(
     ...(options.market === undefined ? {} : { market: options.market }),
     status: options.status,
     observedAt: options.observedAt,
+    sequence: `status:${timestampToMilliseconds(options.observedAt)}`,
+    tieBreakKey: createUpbitStatusTieBreakKey(options),
     ...(options.reasonCode === undefined ? {} : { reasonCode: options.reasonCode }),
     ...(options.websocketLagMs === undefined ? {} : { websocketLagMs: options.websocketLagMs }),
     ...(options.reconnectCount === undefined ? {} : { reconnectCount: options.reconnectCount }),
@@ -191,6 +197,37 @@ function toOrderbookLevel(price: string | number, size: string | number): Orderb
     price: toNumericString(price),
     size: toNumericString(size),
   };
+}
+
+function createUpbitOrderbookTieBreakKey(payload: UpbitWebSocketOrderbook): string {
+  return JSON.stringify([
+    "upbit",
+    "orderbook",
+    payload.code,
+    payload.timestamp,
+    toNumericString(payload.level),
+    toNumericString(payload.total_ask_size),
+    toNumericString(payload.total_bid_size),
+    payload.orderbook_units.map((unit) => [
+      toNumericString(unit.ask_price),
+      toNumericString(unit.ask_size),
+      toNumericString(unit.bid_price),
+      toNumericString(unit.bid_size),
+    ]),
+  ]);
+}
+
+function createUpbitStatusTieBreakKey(options: CreateUpbitMarketDataStatusOptions): string {
+  return JSON.stringify([
+    "upbit",
+    "status",
+    options.exchangeId ?? UPBIT_KRW_SPOT_EXCHANGE_ID,
+    options.market ?? "*",
+    options.status,
+    options.reasonCode ?? "*",
+    options.websocketLagMs ?? "*",
+    options.reconnectCount ?? "*",
+  ]);
 }
 
 function toNumericString(value: string | number): NumericString {

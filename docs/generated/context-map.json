@@ -184,6 +184,20 @@
       "owner_scope": "docs/design-docs"
     },
     {
+      "path": "docs/design-docs/2026-05-25-feature-quality-calibration.md",
+      "kind": "design-doc",
+      "role": "M11 전략/피처 품질 보강 feature contract와 calibration 경계",
+      "read_when": ["M11 전략/피처 품질 보강", "feature calculator 구현", "backtest paper feature parity", "strategy threshold calibration"],
+      "owner_scope": "docs/design-docs"
+    },
+    {
+      "path": "docs/design-docs/2026-05-26-m11-calibration-closure.md",
+      "kind": "design-doc",
+      "role": "M11 calibration closure와 #68 관측 데이터 부재 guard 결정",
+      "read_when": ["M11 calibration closure", "#68 관측 데이터 확인", "strategy threshold calibration 보류", "M12 진행 가능성 판단"],
+      "owner_scope": "docs/design-docs"
+    },
+    {
       "path": "docs/design-docs/index.md",
       "kind": "index",
       "role": "설계 문서 인덱스",

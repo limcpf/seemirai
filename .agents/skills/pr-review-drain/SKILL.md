@@ -22,7 +22,8 @@ description: 현재 branch 또는 지정한 PR의 리뷰 댓글, unresolved thre
 - `eyes` reaction이 남아 있어도 현재 head 이후 새 review/comment/thread가 있으면 finding 처리 루프를 우선한다.
 - `+1` reaction 또는 "더 이상 major issue 없음/no major issues"에 준하는 Codex 리뷰/댓글이 있고 unresolved finding이 없으면 Codex clean signal 후보로 본다.
 - clean signal은 현재 `headRefOid` 이후에 관찰된 Codex 신호여야 한다. 이전 commit에서 남은 `+1` reaction이나 오래된 clean 댓글은 merge 가능 근거로 쓰지 않는다.
-- reaction 또는 review 대기는 push/review cycle마다 최대 30분이다. 30분을 넘기면 timeout으로 중단하고 남은 리스크에 기록한다.
+- Codex `eyes`, `+1`, 현재 head 이후 review/comment/thread가 모두 없는 무반응 상태는 최대 10분만 대기한다. 10분을 넘기면 no-signal timeout으로 중단하고 남은 리스크에 기록한다.
+- `eyes`가 관찰된 리뷰 진행 상태의 reaction 또는 review 대기는 push/review cycle마다 최대 30분이다. 30분을 넘기면 timeout으로 중단하고 남은 리스크에 기록한다.
 - Codex는 merge를 직접 수행하지 않는다. clean signal을 확인하면 merge 가능 상태로 세션을 정리한다.
 
 ## 읽을 문서
@@ -55,7 +56,8 @@ description: 현재 branch 또는 지정한 PR의 리뷰 댓글, unresolved thre
    - `eyes`만 있고 새 review/comment/thread가 없으면 리뷰 진행 중이다. 30초 대기 후 다시 2번부터 확인한다.
    - `+1` 또는 Codex의 "더 이상 major issue 없음/no major issues"류 메시지는 clean signal 후보이다.
    - reaction 없음: review/comment/thread/check 상태를 보고 계속 진행하거나 30초 대기한다.
-   - reaction/review 대기 시간은 push/review cycle마다 30분을 넘기지 않는다.
+   - `eyes`, `+1`, 현재 head 이후 Codex review/comment/thread가 모두 없으면 무반응 상태로 보고 최대 10분만 대기한다.
+   - `eyes`가 관찰된 reaction/review 대기 시간은 push/review cycle마다 30분을 넘기지 않는다.
 5. GitHub checks 상태를 판단한다.
    - failed 또는 cancelled check가 있으면 clean이 아니며 finding 또는 남은 리스크로 처리한다.
    - pending 또는 queued check가 있으면 30초마다 polling한다.
@@ -81,7 +83,8 @@ description: 현재 branch 또는 지정한 PR의 리뷰 댓글, unresolved thre
     - Codex가 자동으로 `eyes` reaction을 달거나 review를 남길 때까지 30초마다 polling한다.
     - `eyes`가 남아 있어도 현재 head 이후 review가 달렸으면 2번부터 반복한다.
     - `+1` reaction 또는 "더 이상 major issue 없음/no major issues"류 리뷰/댓글이 확인되면 clean signal 확인으로 넘어간다.
-    - 30분을 넘기면 timeout으로 중단하고 최종 요약에 남긴다.
+    - `eyes`, `+1`, 현재 head 이후 Codex review/comment/thread가 모두 없는 무반응 상태가 10분을 넘기면 no-signal timeout으로 중단하고 최종 요약에 남긴다.
+    - `eyes`가 관찰된 리뷰 진행 상태가 30분을 넘기면 timeout으로 중단하고 최종 요약에 남긴다.
 13. clean signal을 확인한다.
     - unresolved thread 없음
     - GitHub checks pass
@@ -183,7 +186,8 @@ Finding:
 - 로컬 working tree가 clean이다.
 - 수정 commit이 push됐다.
 - `~/vaults/99_운영/seemirai-reviews/PR-<pr-number>.md` 보고서가 생성 또는 갱신됐다.
-- reaction/review polling이 push/review cycle별 30분 안에 완료됐거나, timeout이 남은 리스크로 기록됐다.
+- 무반응 상태의 reaction/review polling이 10분 안에 완료됐거나, no-signal timeout이 남은 리스크로 기록됐다.
+- `eyes`가 관찰된 리뷰 진행 상태의 reaction/review polling이 push/review cycle별 30분 안에 완료됐거나, timeout이 남은 리스크로 기록됐다.
 - resolve 실패 thread가 없다.
 - 처리한 finding과 남은 리스크가 최종 요약에 포함됐다.
 
@@ -198,7 +202,7 @@ Finding:
 - 현재 head SHA와 clean signal 최신성 근거
 - Codex clean signal 근거: `+1` reaction 또는 no-major-issues 리뷰/댓글
 - polling 대기 시간
-- timeout 여부
+- timeout 여부와 종류: no-signal 10분 timeout 또는 eyes 진행 30분 timeout
 - skipped/neutral check 목록
 - resolve 실패 thread와 수동 처리 필요 여부
 - 리뷰 처리 보고서 경로

@@ -657,32 +657,59 @@ M4는 주문 후보가 실행 단계로 넘어가지 못한 이유를 `AuditLogP
       "breakout_lookback_buckets": 20,
       "min_trade_strength": "1.2",
       "min_orderbook_imbalance": "0.08",
-      "min_volatility_expansion_bps": "18"
+      "min_volatility_expansion_bps": "18",
+      "min_candle_momentum_bps": "0",
+      "min_realized_volatility_bps": "0",
+      "max_realized_volatility_bps": "100000",
+      "min_volume_spike_ratio": "0",
+      "min_trade_direction_imbalance": "0",
+      "allowed_market_regimes": ["trend_up", "trend_down", "range", "volatile", "liquidity_stress"],
+      "min_cost_adjusted_margin_bps": "0"
     },
     "mean_reversion": {
       "max_spread_bps": "6",
       "min_depth_krw": "70000000",
       "entry_deviation_bps": "25",
       "exit_deviation_bps": "8",
-      "stop_loss_bps": "35"
+      "stop_loss_bps": "35",
+      "min_realized_volatility_bps": "0",
+      "max_realized_volatility_bps": "100000",
+      "min_abs_vwap_deviation_bps": "0",
+      "min_session_liquidity_score": "0",
+      "allowed_market_regimes": ["trend_up", "trend_down", "range", "volatile", "liquidity_stress"],
+      "min_cost_adjusted_margin_bps": "0"
     },
     "volatility_breakout": {
       "max_spread_bps": "8",
       "min_depth_krw": "50000000",
       "breakout_lookback_buckets": 20,
-      "min_volatility_expansion_bps": "18"
+      "min_volatility_expansion_bps": "18",
+      "min_candle_momentum_bps": "0",
+      "min_realized_volatility_bps": "0",
+      "max_realized_volatility_bps": "100000",
+      "min_volume_spike_ratio": "0",
+      "allowed_market_regimes": ["trend_up", "trend_down", "range", "volatile", "liquidity_stress"],
+      "min_cost_adjusted_margin_bps": "0"
     },
     "orderbook_imbalance_momentum": {
       "max_spread_bps": "7",
       "min_depth_krw": "60000000",
       "min_trade_strength": "1.25",
-      "min_orderbook_imbalance": "0.1"
+      "min_orderbook_imbalance": "0.1",
+      "min_depth_slope_krw_per_bps": "0",
+      "min_depth_change_rate_ratio": "-1",
+      "min_trade_direction_imbalance": "0",
+      "min_cost_adjusted_margin_bps": "0"
     },
     "liquidity_reversion": {
       "max_spread_bps": "5",
       "min_depth_krw": "90000000",
       "entry_deviation_bps": "18",
-      "stop_loss_bps": "30"
+      "stop_loss_bps": "30",
+      "min_depth_change_rate_ratio": "-1",
+      "min_abs_vwap_deviation_bps": "0",
+      "min_session_liquidity_score": "0",
+      "min_cost_adjusted_margin_bps": "0"
     }
   }
 }
@@ -713,6 +740,45 @@ M4는 주문 후보가 실행 단계로 넘어가지 못한 이유를 `AuditLogP
 | `liquidity_reversion` | `min_depth_krw` | `90000000` | KRW | 높일수록 유동성이 부족한 후보를 더 많이 차단 |
 | `liquidity_reversion` | `entry_deviation_bps` | `18` | bps | 높일수록 진입 신호를 더 드물게 허용 |
 | `liquidity_reversion` | `stop_loss_bps` | `30` | bps | 낮출수록 손절 후보를 더 빨리 만든다 |
+
+### M11 feature quality 확장 계약
+
+설계 기준:
+
+- [`docs/design-docs/2026-05-25-feature-quality-calibration.md`](./design-docs/2026-05-25-feature-quality-calibration.md)
+
+M11은 feature 정의, 계산기, parity, strategy integration, calibration report를 sub PR로 나눠 진행한다. Sub PR 1은
+runtime 동작을 바꾸지 않고 contract만 고정한다. 실제 schema와 기본 profile 변경은 후속 구현 PR에서 이 계약을 따라
+추가한다.
+
+새 threshold는 기존 `strategyParameters.<strategy_id>` 아래에 추가한다. bps, KRW, ratio 값은 Decimal로 파싱 가능한
+string이어야 하며, bucket 수와 lookback 개수만 양의 정수 number를 허용한다. 알 수 없는 key는 현재 정책처럼 fail-fast한다.
+`allowed_market_regimes`는 비어 있지 않은 known regime string 배열이어야 한다.
+
+M9 #68 운영 관측이 끝나기 전에는 기본 운영 threshold를 더 공격적으로 바꾸지 않는다. Sub PR 2-4는 새 key와 검증을 추가할 수
+있지만, #68 데이터가 필요한 기본값 확정은 Sub PR 5에서만 수행한다. #68 결과가 없으면 실제 기본값 변경 대신 보수적 제안과
+후속 issue 후보로 분리한다.
+
+Sub PR 4의 기본 profile은 M11 feature 누락을 fail-closed로 검증하되, 새 threshold 자체는 대부분 `0`, 전체
+`allowed_market_regimes`, 또는 매우 넓은 `max_realized_volatility_bps=100000`으로 둔다. `min_depth_change_rate_ratio=-1`은
+관측 데이터 없이 depth 감소 후보를 새로 차단하지 않기 위한 보수적 pass-through 기본값이다.
+
+| threshold key | 단위 | 검증 | 보수적 조정 방향 |
+| --- | --- | --- | --- |
+| `min_candle_momentum_bps` | bps | Decimal string, 0 이상 | 높일수록 약한 momentum 후보를 더 많이 차단 |
+| `min_realized_volatility_bps` | bps | Decimal string, 0 이상 | 높일수록 변동성 부족 후보를 더 많이 차단 |
+| `max_realized_volatility_bps` | bps | Decimal string, 0 이상 | 낮출수록 급변동 후보를 더 많이 차단 |
+| `min_volume_spike_ratio` | ratio | Decimal string, 0 이상 | 높일수록 거래대금 증가가 약한 후보를 더 많이 차단 |
+| `min_depth_slope_krw_per_bps` | KRW/bps | Decimal string, 0 이상 | 높일수록 얕은 호가 후보를 더 많이 차단 |
+| `min_depth_change_rate_ratio` | ratio | Decimal string | 높일수록 depth 감소 후보를 더 많이 차단 |
+| `min_abs_vwap_deviation_bps` | bps | Decimal string, 0 이상 | 높일수록 작은 평균회귀 후보를 더 많이 차단 |
+| `min_trade_direction_imbalance` | 0..1 ratio | Decimal string, 0..1 | 높일수록 약한 체결 방향성 후보를 더 많이 차단 |
+| `allowed_market_regimes` | enum list | non-empty known regime list | 줄일수록 허용 regime을 축소 |
+| `min_session_liquidity_score` | 0..1 ratio | Decimal string, 0..1 | 높일수록 얇은 시간대 후보를 더 많이 차단 |
+| `min_cost_adjusted_margin_bps` | bps | Decimal string | 높일수록 비용 차감 후 여유가 작은 후보를 더 많이 차단 |
+
+`cost_adjusted_expected_return_bps`와 `cost_adjusted_margin_bps`는 strategy 설명력과 calibration 비교를 위한 feature다. 실제
+주문 제출 허용은 계속 CostModel과 RiskGate가 담당한다.
 
 M5 runtime integration 이후 `risk_ok` rule은 현재 `riskGateContext`로 RiskGate를 직접 평가한 결과만 실행 승인
 근거로 사용한다. `riskGateContext`가 없거나 `RuleContext` 후보와 `riskGateContext.orderIntent`의
