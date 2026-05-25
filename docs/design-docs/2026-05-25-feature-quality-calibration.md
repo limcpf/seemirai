@@ -7,6 +7,7 @@
   - [`../PRD.md`](../PRD.md)
   - [`../FEATURE_REQUIREMENTS.md`](../FEATURE_REQUIREMENTS.md)
   - [`../RUNTIME_CONFIG.md`](../RUNTIME_CONFIG.md)
+  - [`./2026-05-26-m11-calibration-closure.md`](./2026-05-26-m11-calibration-closure.md)
   - [`../exec-plans/active/2026-05-22-post-m8-milestone-plan.md`](../exec-plans/active/2026-05-22-post-m8-milestone-plan.md)
 
 ## 배경
@@ -156,7 +157,8 @@ M11 Sub PR 1-4는 #68 운영 관측이 끝나기 전에도 진행할 수 있지�
 - control drill과 3일 report 비교 포맷
 - 기본 운영 threshold를 더 공격적으로 바꾸는 설정
 
-#68 결과가 Sub PR 5 시점에도 없으면 M11은 실제 threshold 확정 대신 보수적 제안과 후속 issue 후보만 남긴다.
+#68 결과가 Sub PR 5 시점에도 없으면 M11은 실제 threshold 확정 대신 보수적 제안과 후속 issue 후보만 남긴다. 2026-05-26
+Sub PR 5 판정은 [`2026-05-26-m11-calibration-closure.md`](./2026-05-26-m11-calibration-closure.md)에 기록한다.
 
 ## 대안
 
@@ -169,7 +171,8 @@ M11 Sub PR 1-4는 #68 운영 관측이 끝나기 전에도 진행할 수 있지�
 - Sub PR 2는 이 문서의 feature key와 결측 정책을 기준으로 순수 계산기를 구현한다.
 - Sub PR 3은 같은 fixture에서 backtest와 paper feature 값이 일치하는지 검증한다.
 - Sub PR 4는 strategy variant required feature와 discard audit을 이 계약에 맞춘다.
-- Sub PR 5는 #68 관측 데이터가 있을 때만 threshold 비교와 보수적 기본값 제안을 수행한다.
+- Sub PR 5는 #68 관측 데이터가 있을 때만 threshold 비교와 보수적 기본값 제안을 수행한다. #68 관측 데이터가 없으면
+  calibration closure 문서로 운영 threshold 변경 보류와 후속 처리 기준을 남긴다.
 
 ## 후속 작업
 
@@ -177,3 +180,6 @@ M11 Sub PR 1-4는 #68 운영 관측이 끝나기 전에도 진행할 수 있지�
 2. backtest/paper parity fixture 추가
 3. strategy parameter schema와 strategy variant 입력 확장
 4. calibration report와 #68 결과 유무에 따른 후속 issue 후보 정리
+
+2026-05-26 현재 위 후속 작업은 M11 Sub PR 2-5에서 처리했다. 실제 threshold 보정값 확정은 #68 완료 후 별도 calibration PR 또는
+issue에서 진행한다.
