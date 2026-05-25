@@ -339,16 +339,18 @@ function createSoakState({ options, startedAt, artifacts }) {
     tradeMessages: 0,
     orderbookMessages: 0,
     websocketErrors: 0,
-      websocketReconnects: 0,
-      lastOrderbookAt: null,
-      lastWebSocketError: null,
-      lastMarketDataAt: null,
-      interrupted: false,
+    websocketReconnects: 0,
+    skippedStaleOrderbookCycles: 0,
+    lastOrderbookAt: null,
+    lastWebSocketError: null,
+    lastMarketDataAt: null,
+    interrupted: false,
     aggregate: createMetricAccumulator(),
     dailyBuckets: Array.from({ length: options.days }, (_, index) => ({
       dayIndex: index,
       cycleCount: 0,
       skippedNoOrderbookCycles: 0,
+      skippedStaleOrderbookCycles: 0,
       websocketMessages: 0,
       tradeMessages: 0,
       orderbookMessages: 0,
@@ -385,16 +387,21 @@ async function runTradingCycles({ options, fixture, runtime, rawLog, state, getL
     const dayIndex = calculateDayIndex({ options, state, cycleIndex, cycleStartedAt });
     const bucket = state.dailyBuckets[dayIndex];
     const latestOrderbook = getLatestOrderbook();
+    const orderbookSkip = options.fixtureSmoke
+      ? null
+      : readOrderbookSkip({ orderbook: latestOrderbook, cycleStartedAt, options });
 
-    if (!options.fixtureSmoke && latestOrderbook === null) {
-      state.skippedNoOrderbookCycles += 1;
-      bucket.skippedNoOrderbookCycles += 1;
+    if (orderbookSkip !== null) {
+      incrementSkippedOrderbookCycle({ state, bucket, reason: orderbookSkip.reason });
       await rawLog.write({
         kind: "CYCLE_SKIPPED",
         cycleIndex,
         dayIndex: dayIndex + 1,
         occurredAt: cycleStartedAt.toISOString(),
-        reason: "orderbook_not_ready",
+        reason: orderbookSkip.reason,
+        lastOrderbookAt: orderbookSkip.lastOrderbookAt,
+        orderbookStalenessMs: orderbookSkip.orderbookStalenessMs,
+        maxOrderbookStalenessMs: options.maxOrderbookStalenessMs,
       });
       nextCycleAtMs += options.cycleIntervalMs;
       continue;
@@ -432,6 +439,38 @@ async function runTradingCycles({ options, fixture, runtime, rawLog, state, getL
   }
 
   state.interrupted = stopRequested;
+}
+
+function readOrderbookSkip({ orderbook, cycleStartedAt, options }) {
+  if (orderbook === null) {
+    return {
+      reason: "orderbook_not_ready",
+      lastOrderbookAt: null,
+      orderbookStalenessMs: null,
+    };
+  }
+
+  const orderbookStalenessMs = calculateOrderbookStalenessMs(orderbook.receivedAt, cycleStartedAt);
+  if (orderbookStalenessMs > options.maxOrderbookStalenessMs) {
+    return {
+      reason: "orderbook_stale",
+      lastOrderbookAt: orderbook.receivedAt ?? null,
+      orderbookStalenessMs,
+    };
+  }
+
+  return null;
+}
+
+function incrementSkippedOrderbookCycle({ state, bucket, reason }) {
+  if (reason === "orderbook_stale") {
+    state.skippedStaleOrderbookCycles += 1;
+    bucket.skippedStaleOrderbookCycles += 1;
+    return;
+  }
+
+  state.skippedNoOrderbookCycles += 1;
+  bucket.skippedNoOrderbookCycles += 1;
 }
 
 function calculateDayIndex({ options, state, cycleIndex, cycleStartedAt }) {
@@ -495,16 +534,25 @@ function updateOrderFeaturesForOrderbook(features, orderbook, cycleLabel, frameI
     ...features,
   };
   if (nextFeatures.paper_decision_signal === "ORDER") {
-    const bestAsk = readBestPrice(orderbook.asks);
-    if (bestAsk !== null) {
-      nextFeatures.limit_price = bestAsk;
-      nextFeatures.requested_notional = nextFeatures.requested_notional ?? "10000";
-      nextFeatures.requested_quantity = calculateQuantity(nextFeatures.requested_notional, bestAsk);
+    const referencePrice = readReferencePriceForSide(orderbook, nextFeatures.side);
+    if (referencePrice !== null) {
+      const requestedQuantity = calculateQuantity(nextFeatures.requested_notional ?? "10000", referencePrice);
+      nextFeatures.limit_price = referencePrice;
+      nextFeatures.requested_quantity = requestedQuantity;
+      // live orderbook 가격으로 재산출한 수량은 원 notional과 반올림 차이가 생기므로 RiskGate invariant에 맞춰 함께 고정한다.
+      nextFeatures.requested_notional = calculateNotional(referencePrice, requestedQuantity);
     }
     nextFeatures.idempotency_key =
       typeof features.idempotency_key === "string" ? `${features.idempotency_key}:${cycleLabel}` : `${frameId}:${cycleLabel}`;
   }
   return nextFeatures;
+}
+
+function readReferencePriceForSide(orderbook, side) {
+  if (side === "SELL") {
+    return readBestPrice(orderbook.bids);
+  }
+  return readBestPrice(orderbook.asks);
 }
 
 function readBestPrice(levels) {
@@ -523,6 +571,15 @@ function calculateQuantity(notionalInput, priceInput) {
     return "0";
   }
   return (notional / price).toFixed(8);
+}
+
+function calculateNotional(priceInput, quantityInput) {
+  const price = Number(priceInput);
+  const quantity = Number(quantityInput);
+  if (!Number.isFinite(price) || !Number.isFinite(quantity) || price <= 0 || quantity <= 0) {
+    return "0";
+  }
+  return Number((price * quantity).toFixed(8)).toString();
 }
 
 function startPublicMarketDataFeed({ options, config, rawLog, state }) {
@@ -877,6 +934,7 @@ function createCompletedSummary({ runId, startedAt, finishedAt, inputMode, optio
     ...finalizeMetrics(state.aggregate),
     paperTradingCycles: state.cycleCount,
     cyclesSkippedNoOrderbook: state.skippedNoOrderbookCycles,
+    cyclesSkippedStaleOrderbook: state.skippedStaleOrderbookCycles,
     websocketMessages: state.websocketMessages,
     tradeMessages: state.tradeMessages,
     orderbookMessages: state.orderbookMessages,
@@ -924,12 +982,14 @@ function createDailySummary({
     ...finalizeMetrics(bucket.metrics),
     paperTradingCycles: bucket.cycleCount,
     cyclesSkippedNoOrderbook: bucket.skippedNoOrderbookCycles,
+    cyclesSkippedStaleOrderbook: bucket.skippedStaleOrderbookCycles,
   };
   const checks = createChecks({
     options,
     state: {
       cycleCount: bucket.cycleCount,
       skippedNoOrderbookCycles: bucket.skippedNoOrderbookCycles,
+      skippedStaleOrderbookCycles: bucket.skippedStaleOrderbookCycles,
       websocketMessages: bucket.websocketMessages,
       orderbookMessages: bucket.orderbookMessages,
       websocketErrors: 0,
@@ -1041,6 +1101,7 @@ function createChecks({ options, state, metrics, durationMsObserved, finishedAt,
             orderbookMessages: state.orderbookMessages,
             websocketMessages: state.websocketMessages,
             skippedNoOrderbookCycles: state.skippedNoOrderbookCycles,
+            skippedStaleOrderbookCycles: state.skippedStaleOrderbookCycles,
             lastOrderbookAt: state.lastOrderbookAt,
             orderbookStalenessMs: calculateOrderbookStalenessMs(state.lastOrderbookAt, finishedAt),
             maxOrderbookStalenessMs: options.maxOrderbookStalenessMs,
