@@ -4,6 +4,11 @@ import { calculateM11FeatureSnapshot } from "../../src/application/index.js";
 import type { FeatureResult } from "../../src/application/index.js";
 import type { MarketDataEvent, OrderbookEvent, TradeEvent } from "../../src/domain/index.js";
 
+type TestEventOrderFields = {
+  sequence: string;
+  tieBreakKey: string;
+};
+
 describe("M11 feature calculator", () => {
   it("calculates deterministic feature values from a fixed market fixture", () => {
     const result = calculateM11FeatureSnapshot({
@@ -134,6 +139,101 @@ describe("M11 feature calculator", () => {
     );
   });
 
+  it("rejects timezone-less timestamps before feature calculation", () => {
+    const result = calculateM11FeatureSnapshot({
+      observedAt: "2026-05-25T00:21:00",
+      events: createFeatureFixtureEvents(),
+      cost: createCostInput(),
+    });
+
+    expect(result.status).toBe("failed");
+    expect(result.failureReasons).toHaveLength(13);
+    expect(result.failureReasons.every((failure) => failure.reasonCode === "FEATURE_INVALID_MARKET_VALUE")).toBe(true);
+  });
+
+  it("rejects mixed market event windows as failed snapshots", () => {
+    const events = createFeatureFixtureEvents();
+    const firstTradeIndex = events.findIndex((event) => event.type === "TRADE");
+    events.splice(firstTradeIndex, 1, {
+      ...events[firstTradeIndex]!,
+      market: "KRW-ETH",
+    } as TradeEvent & TestEventOrderFields);
+    const result = calculateM11FeatureSnapshot({
+      observedAt: "2026-05-25T00:21:00.000Z",
+      events,
+      cost: createCostInput(),
+    });
+
+    expect(result.status).toBe("failed");
+    expect(result.failureReasons).toHaveLength(13);
+    expect(result.failureReasons.every((failure) => failure.reasonCode === "FEATURE_INVALID_MARKET_VALUE")).toBe(true);
+  });
+
+  it("uses sequence and tieBreakKey to sort same-timestamp events deterministically", () => {
+    const events = createFeatureFixtureEvents().filter((event) => event.type !== "TRADE" || event.tradeId !== "trade-21");
+    const lowerSequenceTrade = createTrade({
+      tradeId: "same-timestamp-a",
+      observedAt: "2026-05-25T00:21:00.000Z",
+      price: "90",
+      quantity: "1",
+      side: "BID",
+      sequence: "211",
+      tieBreakKey: "trade:same-timestamp-a",
+    });
+    const higherSequenceTrade = createTrade({
+      tradeId: "same-timestamp-b",
+      observedAt: "2026-05-25T00:21:00.000Z",
+      price: "120",
+      quantity: "1",
+      side: "BID",
+      sequence: "212",
+      tieBreakKey: "trade:same-timestamp-b",
+    });
+
+    const forward = calculateM11FeatureSnapshot({
+      observedAt: "2026-05-25T00:21:00.000Z",
+      events: [...events, lowerSequenceTrade, higherSequenceTrade],
+      cost: createCostInput(),
+    });
+    const reversed = calculateM11FeatureSnapshot({
+      observedAt: "2026-05-25T00:21:00.000Z",
+      events: [...events, higherSequenceTrade, lowerSequenceTrade],
+      cost: createCostInput(),
+    });
+
+    expect(forward.status).toBe("ok");
+    expect(reversed.status).toBe("ok");
+    expect(reversed.features).toEqual(forward.features);
+  });
+
+  it("fails closed when same-timestamp events do not provide deterministic order keys", () => {
+    const first = {
+      type: "TRADE",
+      exchangeId: "upbit_krw_spot",
+      market: "KRW-BTC",
+      tradeId: "missing-order-a",
+      price: "100",
+      quantity: "1",
+      side: "BID",
+      exchangeTimestamp: "2026-05-25T00:21:00.000Z",
+      receivedAt: "2026-05-25T00:21:00.000Z",
+    } satisfies TradeEvent;
+    const second = {
+      ...first,
+      tradeId: "missing-order-b",
+      price: "101",
+    } satisfies TradeEvent;
+    const result = calculateM11FeatureSnapshot({
+      observedAt: "2026-05-25T00:21:00.000Z",
+      events: [second, first],
+      cost: createCostInput(),
+    });
+
+    expect(result.status).toBe("failed");
+    expect(result.failureReasons).toHaveLength(13);
+    expect(result.failureReasons.every((failure) => failure.reasonCode === "FEATURE_INVALID_MARKET_VALUE")).toBe(true);
+  });
+
   it("fails closed when stale market data is inside the calculation window", () => {
     const result = calculateM11FeatureSnapshot({
       observedAt: "2026-05-25T00:21:00.000Z",
@@ -210,7 +310,7 @@ describe("M11 feature calculator", () => {
     const events: MarketDataEvent[] = createFeatureFixtureEvents().filter((event) => event.type !== "ORDERBOOK");
     events.unshift(
       createOrderbook("2026-05-25T00:00:00.000Z", "10"),
-      createOrderbook("2026-05-25T00:20:50.000Z", "1"),
+      createOrderbook("2026-05-25T00:21:00.000Z", "1"),
     );
     const result = calculateM11FeatureSnapshot({
       observedAt: "2026-05-25T00:21:00.000Z",
@@ -226,11 +326,7 @@ describe("M11 feature calculator", () => {
 
   it("classifies market regime with session liquidity stress before trend signals", () => {
     const events: MarketDataEvent[] = createFeatureFixtureEvents().filter((event) => event.type !== "ORDERBOOK");
-    events.unshift(
-      createOrderbook("2026-05-25T00:02:00.000Z", "10"),
-      createOrderbook("2026-05-25T00:15:00.000Z", "1"),
-      createOrderbook("2026-05-25T00:20:50.000Z", "1"),
-    );
+    events.unshift(...createOrderbookBaselineEvents({ baselineSize: "10", baselineSizeByMinute: { 16: "1" }, currentSize: "1" }));
     const result = calculateM11FeatureSnapshot({
       observedAt: "2026-05-25T00:21:00.000Z",
       events,
@@ -239,7 +335,7 @@ describe("M11 feature calculator", () => {
 
     expect(findResult(result.results, "session_liquidity_score")).toMatchObject({
       status: "ok",
-      value: "0.18181818181818181818",
+      value: "0.1",
     });
     expect(findResult(result.results, "market_regime")).toMatchObject({
       status: "ok",
@@ -250,9 +346,9 @@ describe("M11 feature calculator", () => {
   it("classifies widened spread as volatile before trend signals", () => {
     const events = createFeatureFixtureEvents();
     const latestOrderbookIndex = events.findIndex(
-      (event) => event.type === "ORDERBOOK" && event.exchangeTimestamp === "2026-05-25T00:20:50.000Z",
+      (event) => event.type === "ORDERBOOK" && event.exchangeTimestamp === "2026-05-25T00:21:00.000Z",
     );
-    events.splice(latestOrderbookIndex, 1, createOrderbook("2026-05-25T00:20:50.000Z", "1", "103"));
+    events.splice(latestOrderbookIndex, 1, createOrderbook("2026-05-25T00:21:00.000Z", "1", "103"));
     const result = calculateM11FeatureSnapshot({
       observedAt: "2026-05-25T00:21:00.000Z",
       events,
@@ -266,10 +362,7 @@ describe("M11 feature calculator", () => {
   });
 
   it("keeps large VWAP deviations out of range classification", () => {
-    const events: MarketDataEvent[] = [
-      createOrderbook("2026-05-25T00:15:00.000Z", "1"),
-      createOrderbook("2026-05-25T00:20:50.000Z", "1"),
-    ];
+    const events: MarketDataEvent[] = createOrderbookBaselineEvents({ baselineSize: "1", currentSize: "1" });
 
     for (let minute = 1; minute <= 21; minute += 1) {
       events.push(
@@ -302,10 +395,7 @@ describe("M11 feature calculator", () => {
 });
 
 function createFeatureFixtureEvents(): MarketDataEvent[] {
-  const events: MarketDataEvent[] = [
-    createOrderbook("2026-05-25T00:15:00.000Z", "0.5"),
-    createOrderbook("2026-05-25T00:20:50.000Z", "1"),
-  ];
+  const events: MarketDataEvent[] = createOrderbookBaselineEvents({ baselineSize: "0.5", currentSize: "1" });
 
   for (let minute = 1; minute <= 21; minute += 1) {
     const isLatest = minute === 21;
@@ -316,6 +406,8 @@ function createFeatureFixtureEvents(): MarketDataEvent[] {
         price: isLatest ? "110" : "100",
         quantity: isLatest ? "2" : "1",
         side: "BID",
+        sequence: String(minute * 10 + 1),
+        tieBreakKey: `trade:${minute}`,
       }),
     );
   }
@@ -329,7 +421,9 @@ function createTrade(input: {
   price: string;
   quantity: string;
   side: TradeEvent["side"];
-}): TradeEvent {
+  sequence?: string;
+  tieBreakKey?: string;
+}): TradeEvent & TestEventOrderFields {
   return {
     type: "TRADE",
     exchangeId: "upbit_krw_spot",
@@ -340,10 +434,18 @@ function createTrade(input: {
     side: input.side,
     exchangeTimestamp: input.observedAt,
     receivedAt: input.observedAt,
+    sequence: input.sequence ?? input.tradeId,
+    tieBreakKey: input.tieBreakKey ?? `trade:${input.tradeId}`,
   };
 }
 
-function createOrderbook(observedAt: string, sizeMultiplier: string, bestAskPrice = "101"): OrderbookEvent {
+function createOrderbook(
+  observedAt: string,
+  sizeMultiplier: string,
+  bestAskPrice = "101",
+  sequence = `orderbook:${observedAt}:${bestAskPrice}`,
+  tieBreakKey = `orderbook:${observedAt}:${bestAskPrice}`,
+): OrderbookEvent & TestEventOrderFields {
   const multiplier = new Decimal(sizeMultiplier);
   const secondAskPrice = new Decimal(bestAskPrice).plus(1).toFixed();
   return {
@@ -360,7 +462,36 @@ function createOrderbook(observedAt: string, sizeMultiplier: string, bestAskPric
     ],
     exchangeTimestamp: observedAt,
     receivedAt: observedAt,
+    sequence,
+    tieBreakKey,
   };
+}
+
+function createOrderbookBaselineEvents(input: {
+  baselineSize: string;
+  currentSize: string;
+  baselineSizeByMinute?: Partial<Record<number, string>>;
+}): (OrderbookEvent & TestEventOrderFields)[] {
+  const events: (OrderbookEvent & TestEventOrderFields)[] = [];
+
+  for (let minute = 1; minute <= 20; minute += 1) {
+    events.push(
+      createOrderbook(
+        formatMinuteTimestamp(minute),
+        input.baselineSizeByMinute?.[minute] ?? input.baselineSize,
+        "101",
+        String(minute * 10),
+        `orderbook:${minute}`,
+      ),
+    );
+  }
+
+  events.push(createOrderbook(formatMinuteTimestamp(21), input.currentSize, "101", "210", "orderbook:21"));
+  return events;
+}
+
+function formatMinuteTimestamp(minute: number): string {
+  return `2026-05-25T00:${String(minute).padStart(2, "0")}:00.000Z`;
 }
 
 function findResult(results: readonly FeatureResult[], key: string): FeatureResult | undefined {

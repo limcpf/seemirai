@@ -1,6 +1,13 @@
 import { Decimal } from "decimal.js";
 import { parseFinancialDecimal } from "../../shared/index.js";
-import type { MarketDataEvent, OrderbookEvent, OrderbookLevel, TimestampInput, TradeEvent } from "../../domain/index.js";
+import {
+  parseMarketEventTimestampNanos,
+  type MarketDataEvent,
+  type OrderbookEvent,
+  type OrderbookLevel,
+  type TimestampInput,
+  type TradeEvent,
+} from "../../domain/index.js";
 import type {
   FeatureCalculationFailureReasonCode,
   FeatureCalculationInput,
@@ -74,6 +81,21 @@ interface CalculationContext {
 interface Bucket {
   startMs: number;
   trades: TradeEvent[];
+}
+
+interface OrderbookBucket {
+  startMs: number;
+  orderbook?: OrderbookEvent;
+}
+
+interface EventOrderCandidate {
+  event: MarketDataEvent;
+  timestampMs: number;
+  timestampNanos: bigint;
+  exchangeId: string;
+  market: string | undefined;
+  sequence: string | undefined;
+  tieBreakKey: string | undefined;
 }
 
 interface Candle {
@@ -181,11 +203,12 @@ function createCalculationContext(
   options: FeatureCalculationOptions,
 ): CalculationContext {
   const observedAt = parseTimestamp(input.observedAt);
+  const events = sortAndValidateEvents(input.events);
 
   return {
     observedAt,
     observedAtIso: observedAt.toISOString(),
-    events: sortEvents(input.events),
+    events,
     options: {
       candleBucketMs: options.candleBucketMs ?? DEFAULT_OPTIONS.candleBucketMs,
       candleBucketCount: options.candleBucketCount ?? DEFAULT_OPTIONS.candleBucketCount,
@@ -416,17 +439,23 @@ function calculateSessionLiquidityScore(context: CalculationContext): Decimal {
 
   const latestVolume = sumTradeNotional(tradeBuckets[tradeBuckets.length - 1]!.trades);
   const volumeBaseline = median(tradeBuckets.slice(0, -1).map((bucket) => sumTradeNotional(bucket.trades)));
-  const orderbooks = getOrderbooksInLookback(
-    context,
-    context.options.candleBucketMs * context.options.volumeBaselineBucketCount,
-  );
+  const orderbookBuckets = buildOrderbookBuckets(context, context.options.volumeBaselineBucketCount + 1);
+  const latestOrderbook = orderbookBuckets[orderbookBuckets.length - 1]!.orderbook;
+  const baselineOrderbooks = orderbookBuckets
+    .slice(0, -1)
+    .map((bucket) => bucket.orderbook)
+    .filter((orderbook): orderbook is OrderbookEvent => orderbook !== undefined);
 
-  if (orderbooks.length < 2 || volumeBaseline.lessThanOrEqualTo(0)) {
+  if (
+    latestOrderbook === undefined ||
+    baselineOrderbooks.length < context.options.volumeBaselineBucketCount ||
+    volumeBaseline.lessThanOrEqualTo(0)
+  ) {
     throw new FeatureCalculationError("FEATURE_INSUFFICIENT_INPUT", "session liquidity requires orderbook and volume baselines");
   }
 
-  const currentDepth = calculateDepth5Notional(orderbooks[orderbooks.length - 1]!);
-  const depthBaseline = median(orderbooks.slice(0, -1).map((orderbook) => calculateDepth5Notional(orderbook)));
+  const currentDepth = calculateDepth5Notional(latestOrderbook);
+  const depthBaseline = median(baselineOrderbooks.map((orderbook) => calculateDepth5Notional(orderbook)));
 
   if (currentDepth.lessThanOrEqualTo(0) || depthBaseline.lessThanOrEqualTo(0)) {
     throw new FeatureCalculationError("FEATURE_INVALID_MARKET_VALUE", "session liquidity depth baseline must be positive");
@@ -579,6 +608,33 @@ function buildTradeBuckets(context: CalculationContext, bucketCount: number): re
   return buckets;
 }
 
+function buildOrderbookBuckets(context: CalculationContext, bucketCount: number): readonly OrderbookBucket[] {
+  const bucketMs = context.options.candleBucketMs;
+  const endBucketStart = Math.floor(context.observedAt.getTime() / bucketMs) * bucketMs;
+  const firstBucketStart = endBucketStart - (bucketCount - 1) * bucketMs;
+  const buckets: OrderbookBucket[] = [];
+
+  for (let index = 0; index < bucketCount; index += 1) {
+    buckets.push({
+      startMs: firstBucketStart + index * bucketMs,
+    });
+  }
+
+  for (const orderbook of getOrderbooksUpToObservedAt(context)) {
+    const timestampMs = getEventTimestampMs(orderbook);
+    if (timestampMs < firstBucketStart || timestampMs > context.observedAt.getTime()) {
+      continue;
+    }
+    const bucketStart = Math.floor(timestampMs / bucketMs) * bucketMs;
+    const bucketIndex = (bucketStart - firstBucketStart) / bucketMs;
+    if (Number.isInteger(bucketIndex) && bucketIndex >= 0 && bucketIndex < buckets.length) {
+      buckets[bucketIndex]!.orderbook = orderbook;
+    }
+  }
+
+  return buckets;
+}
+
 function getTradesInLookback(context: CalculationContext, lookbackMs: number): readonly TradeEvent[] {
   const startMs = context.observedAt.getTime() - lookbackMs;
   return context.events.filter((event): event is TradeEvent => {
@@ -619,11 +675,6 @@ function getOrderbooksUpToObservedAt(context: CalculationContext): readonly Orde
     }
     return getEventTimestampMs(event) <= context.observedAt.getTime();
   });
-}
-
-function getOrderbooksInLookback(context: CalculationContext, lookbackMs: number): readonly OrderbookEvent[] {
-  const startMs = context.observedAt.getTime() - lookbackMs;
-  return getOrderbooksUpToObservedAt(context).filter((event) => getEventTimestampMs(event) > startMs);
 }
 
 function sumTradeNotional(trades: readonly TradeEvent[]): Decimal {
@@ -731,6 +782,10 @@ function parseOptionDecimal(value: unknown): Decimal {
 }
 
 function parseTimestamp(value: TimestampInput): Date {
+  if (typeof value === "string") {
+    parseTimestampNanos(value);
+  }
+
   const parsed = value instanceof Date ? new Date(value.getTime()) : new Date(value);
 
   if (!Number.isFinite(parsed.getTime())) {
@@ -740,6 +795,14 @@ function parseTimestamp(value: TimestampInput): Date {
   return parsed;
 }
 
+function parseTimestampNanos(value: TimestampInput): bigint {
+  try {
+    return parseMarketEventTimestampNanos(value);
+  } catch {
+    throw new FeatureCalculationError("FEATURE_INVALID_MARKET_VALUE", "timestamp must include an explicit timezone");
+  }
+}
+
 function getEventTimestampMs(event: MarketDataEvent): number {
   if (event.type === "STATUS") {
     return parseTimestamp(event.observedAt).getTime();
@@ -747,15 +810,128 @@ function getEventTimestampMs(event: MarketDataEvent): number {
   return parseTimestamp(event.exchangeTimestamp).getTime();
 }
 
-function sortEvents(events: readonly MarketDataEvent[]): readonly MarketDataEvent[] {
-  const eventsWithTimestamp = events.map((event) => ({
+function sortAndValidateEvents(events: readonly MarketDataEvent[]): readonly MarketDataEvent[] {
+  const candidates = events.map((event) => createEventOrderCandidate(event));
+  validateSingleMarketBoundary(candidates);
+  validateDuplicateTimestampOrderKeys(candidates);
+
+  return candidates.sort(compareEventOrderCandidates).map(({ event }) => event);
+}
+
+function createEventOrderCandidate(event: MarketDataEvent): EventOrderCandidate {
+  const timestamp = getEventTimestamp(event);
+  return {
     event,
     timestampMs: getEventTimestampMs(event),
-  }));
+    timestampNanos: parseTimestampNanos(timestamp),
+    exchangeId: event.exchangeId,
+    market: getEventMarket(event),
+    sequence: readEventOrderText(event, "sequence"),
+    tieBreakKey: readEventOrderText(event, "tieBreakKey"),
+  };
+}
 
-  return eventsWithTimestamp
-    .sort((left, right) => left.timestampMs - right.timestampMs)
-    .map(({ event }) => event);
+function getEventTimestamp(event: MarketDataEvent): TimestampInput {
+  return event.type === "STATUS" ? event.observedAt : event.exchangeTimestamp;
+}
+
+function getEventMarket(event: MarketDataEvent): string | undefined {
+  return "market" in event ? event.market : undefined;
+}
+
+function validateSingleMarketBoundary(candidates: readonly EventOrderCandidate[]): void {
+  let exchangeId: string | undefined;
+  let market: string | undefined;
+
+  for (const candidate of candidates) {
+    if (exchangeId === undefined) {
+      exchangeId = candidate.exchangeId;
+    } else if (exchangeId !== candidate.exchangeId) {
+      throw new FeatureCalculationError("FEATURE_INVALID_MARKET_VALUE", "feature input requires a single exchange");
+    }
+
+    if (candidate.market === undefined) {
+      continue;
+    }
+
+    if (market === undefined) {
+      market = candidate.market;
+    } else if (market !== candidate.market) {
+      // 서로 다른 market을 섞으면 정상 값처럼 보이는 오염 snapshot이 되므로 context 생성에서 먼저 차단한다.
+      throw new FeatureCalculationError("FEATURE_INVALID_MARKET_VALUE", "feature input requires a single market");
+    }
+  }
+}
+
+function validateDuplicateTimestampOrderKeys(candidates: readonly EventOrderCandidate[]): void {
+  const timestampCounts = new Map<string, number>();
+  for (const candidate of candidates) {
+    const timestampKey = candidate.timestampNanos.toString();
+    timestampCounts.set(timestampKey, (timestampCounts.get(timestampKey) ?? 0) + 1);
+  }
+
+  const seenOrderKeys = new Set<string>();
+  for (const candidate of candidates) {
+    if ((timestampCounts.get(candidate.timestampNanos.toString()) ?? 0) < 2) {
+      continue;
+    }
+
+    if (candidate.sequence === undefined || candidate.tieBreakKey === undefined) {
+      throw new FeatureCalculationError(
+        "FEATURE_INVALID_MARKET_VALUE",
+        "duplicate timestamp events require sequence and tieBreakKey",
+      );
+    }
+
+    const orderKey = JSON.stringify([
+      candidate.timestampNanos.toString(),
+      candidate.exchangeId,
+      candidate.market ?? "*",
+      candidate.sequence,
+      candidate.tieBreakKey,
+    ]);
+    if (seenOrderKeys.has(orderKey)) {
+      throw new FeatureCalculationError("FEATURE_INVALID_MARKET_VALUE", "duplicate event order key");
+    }
+    seenOrderKeys.add(orderKey);
+  }
+}
+
+function compareEventOrderCandidates(left: EventOrderCandidate, right: EventOrderCandidate): number {
+  const timestampDiff = compareBigInt(left.timestampNanos, right.timestampNanos);
+  if (timestampDiff !== 0) {
+    return timestampDiff;
+  }
+
+  const sequenceDiff = compareSequence(left.sequence ?? "", right.sequence ?? "");
+  if (sequenceDiff !== 0) {
+    return sequenceDiff;
+  }
+
+  const tieBreakDiff = compareString(left.tieBreakKey ?? "", right.tieBreakKey ?? "");
+  if (tieBreakDiff !== 0) {
+    return tieBreakDiff;
+  }
+
+  const exchangeDiff = compareString(left.exchangeId, right.exchangeId);
+  if (exchangeDiff !== 0) {
+    return exchangeDiff;
+  }
+
+  return compareString(left.market ?? "*", right.market ?? "*");
+}
+
+function readEventOrderText(event: MarketDataEvent, key: "sequence" | "tieBreakKey"): string | undefined {
+  const value = (event as unknown as Record<string, unknown>)[key];
+  if (value === undefined) {
+    return undefined;
+  }
+
+  if (typeof value !== "string" || value.length === 0) {
+    throw new FeatureCalculationError("FEATURE_INVALID_MARKET_VALUE", `${key} must be a non-empty string`);
+  }
+
+  return value;
 }
 
 function createStaleFailureIfNeeded(
@@ -989,6 +1165,55 @@ function readRequiredComputedDecimals<T extends readonly (keyof ComputedFeatureV
     output[key] = value;
   }
   return output as { [K in T[number]]: Decimal };
+}
+
+function compareSequence(left: string, right: string): number {
+  if (left === right) {
+    return 0;
+  }
+
+  if (isUnsignedIntegerText(left) && isUnsignedIntegerText(right)) {
+    const normalizedLeft = trimLeadingZeroes(left);
+    const normalizedRight = trimLeadingZeroes(right);
+
+    if (normalizedLeft.length !== normalizedRight.length) {
+      return normalizedLeft.length - normalizedRight.length;
+    }
+
+    const normalizedDiff = compareString(normalizedLeft, normalizedRight);
+    if (normalizedDiff !== 0) {
+      return normalizedDiff;
+    }
+
+    return compareString(left, right);
+  }
+
+  return compareString(left, right);
+}
+
+function compareString(left: string, right: string): number {
+  if (left === right) {
+    return 0;
+  }
+
+  return left < right ? -1 : 1;
+}
+
+function compareBigInt(left: bigint, right: bigint): number {
+  if (left === right) {
+    return 0;
+  }
+
+  return left < right ? -1 : 1;
+}
+
+function isUnsignedIntegerText(value: string): boolean {
+  return /^\d+$/u.test(value);
+}
+
+function trimLeadingZeroes(value: string): string {
+  const trimmed = value.replace(/^0+/u, "");
+  return trimmed.length === 0 ? "0" : trimmed;
 }
 
 function average(values: readonly Decimal[]): Decimal {

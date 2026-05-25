@@ -27,12 +27,14 @@ broker, notifier, clock read side effect를 갖지 않는다. 같은 입력 wind
 
 모든 금융 숫자와 ratio 출력은 decimal string이다. bucket 수, window 길이, count처럼 정수 의미가 있는 값만 number를 허용한다.
 계산에 실패하거나 입력이 부족하면 값을 0으로 보정하지 않고 명시적 failure result를 반환한다.
+입력 window는 단일 `exchangeId`와 단일 `market`만 포함해야 하며, 여러 market이나 exchange가 섞이면 전체 snapshot을 failure로 닫는다.
 
 ### 시간 기준
 
 - 기준 시각: caller가 넘긴 `observedAt`
 - event 포함 범위: `(observedAt - window, observedAt]` half-open window
 - 정렬 기준: `eventTimestamp`, `sequence`, `tieBreakKey`
+- timestamp string은 `Z` 또는 `±hh:mm` timezone을 명시해야 하며, timezone 없는 문자열은 환경 의존성이 있으므로 failure로 처리한다.
 - 지연 판단: `receivedAt`은 WebSocket lag와 stale 판단에만 사용하고 가격/수량 feature의 기준 시간으로 쓰지 않는다.
 - 일별 기준: 24시간 거래대금과 Upbit 일봉 해석은 UTC 기준을 기본으로 두되, KST bucket은 별도 metadata로 함께 보존한다.
 
