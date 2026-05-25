@@ -657,32 +657,59 @@ M4는 주문 후보가 실행 단계로 넘어가지 못한 이유를 `AuditLogP
       "breakout_lookback_buckets": 20,
       "min_trade_strength": "1.2",
       "min_orderbook_imbalance": "0.08",
-      "min_volatility_expansion_bps": "18"
+      "min_volatility_expansion_bps": "18",
+      "min_candle_momentum_bps": "0",
+      "min_realized_volatility_bps": "0",
+      "max_realized_volatility_bps": "100000",
+      "min_volume_spike_ratio": "0",
+      "min_trade_direction_imbalance": "0",
+      "allowed_market_regimes": ["trend_up", "trend_down", "range", "volatile", "liquidity_stress"],
+      "min_cost_adjusted_margin_bps": "0"
     },
     "mean_reversion": {
       "max_spread_bps": "6",
       "min_depth_krw": "70000000",
       "entry_deviation_bps": "25",
       "exit_deviation_bps": "8",
-      "stop_loss_bps": "35"
+      "stop_loss_bps": "35",
+      "min_realized_volatility_bps": "0",
+      "max_realized_volatility_bps": "100000",
+      "min_abs_vwap_deviation_bps": "0",
+      "min_session_liquidity_score": "0",
+      "allowed_market_regimes": ["trend_up", "trend_down", "range", "volatile", "liquidity_stress"],
+      "min_cost_adjusted_margin_bps": "0"
     },
     "volatility_breakout": {
       "max_spread_bps": "8",
       "min_depth_krw": "50000000",
       "breakout_lookback_buckets": 20,
-      "min_volatility_expansion_bps": "18"
+      "min_volatility_expansion_bps": "18",
+      "min_candle_momentum_bps": "0",
+      "min_realized_volatility_bps": "0",
+      "max_realized_volatility_bps": "100000",
+      "min_volume_spike_ratio": "0",
+      "allowed_market_regimes": ["trend_up", "trend_down", "range", "volatile", "liquidity_stress"],
+      "min_cost_adjusted_margin_bps": "0"
     },
     "orderbook_imbalance_momentum": {
       "max_spread_bps": "7",
       "min_depth_krw": "60000000",
       "min_trade_strength": "1.25",
-      "min_orderbook_imbalance": "0.1"
+      "min_orderbook_imbalance": "0.1",
+      "min_depth_slope_krw_per_bps": "0",
+      "min_depth_change_rate_ratio": "-1",
+      "min_trade_direction_imbalance": "0",
+      "min_cost_adjusted_margin_bps": "0"
     },
     "liquidity_reversion": {
       "max_spread_bps": "5",
       "min_depth_krw": "90000000",
       "entry_deviation_bps": "18",
-      "stop_loss_bps": "30"
+      "stop_loss_bps": "30",
+      "min_depth_change_rate_ratio": "-1",
+      "min_abs_vwap_deviation_bps": "0",
+      "min_session_liquidity_score": "0",
+      "min_cost_adjusted_margin_bps": "0"
     }
   }
 }
@@ -731,6 +758,10 @@ string이어야 하며, bucket 수와 lookback 개수만 양의 정수 number를
 M9 #68 운영 관측이 끝나기 전에는 기본 운영 threshold를 더 공격적으로 바꾸지 않는다. Sub PR 2-4는 새 key와 검증을 추가할 수
 있지만, #68 데이터가 필요한 기본값 확정은 Sub PR 5에서만 수행한다. #68 결과가 없으면 실제 기본값 변경 대신 보수적 제안과
 후속 issue 후보로 분리한다.
+
+Sub PR 4의 기본 profile은 M11 feature 누락을 fail-closed로 검증하되, 새 threshold 자체는 대부분 `0`, 전체
+`allowed_market_regimes`, 또는 매우 넓은 `max_realized_volatility_bps=100000`으로 둔다. `min_depth_change_rate_ratio=-1`은
+관측 데이터 없이 depth 감소 후보를 새로 차단하지 않기 위한 보수적 pass-through 기본값이다.
 
 | threshold key | 단위 | 검증 | 보수적 조정 방향 |
 | --- | --- | --- | --- |
