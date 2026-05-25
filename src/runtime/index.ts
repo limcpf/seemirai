@@ -1,4 +1,14 @@
 export {
+  createM9PaperDecisionFixtureRuntime,
+  parseM9PaperDecisionFixture,
+  runM9PaperDecisionFixtureSmoke,
+} from "./paper-decision-runner.js";
+export type {
+  M9PaperDecisionFixture,
+  M9PaperDecisionFixtureRuntime,
+  RunM9PaperDecisionFixtureSmokeOptions,
+} from "./paper-decision-runner.js";
+export {
   PAPER_NO_KEY_DAILY_REPORT_WORKER_ID,
   createPaperNoKeyDailyReportRuntime,
 } from "./daily-report-runtime.js";

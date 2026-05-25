@@ -4,6 +4,7 @@ export * from "./backtest/index.js";
 export * from "./daily-report/index.js";
 export * from "./execution/index.js";
 export * from "./llm-risk-assistant.js";
+export * from "./paper-decision-runner.js";
 export * from "./ports/index.js";
 export * from "./registry.js";
 export * from "./risk/index.js";

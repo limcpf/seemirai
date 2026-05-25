@@ -109,33 +109,57 @@ SEEMIRAI_RESTORE_DATABASE_URL=postgres://seemirai:seemirai_local_password@127.0.
 
 ```sh
 node scripts/soak-paper-24h.mjs --fixture-smoke --json
+node scripts/run-m9-paper-decision-runner.mjs --fixture-smoke --json
+node scripts/run-m9-paper-trading-soak.mjs --fixture-smoke --json --daily-report-generated --days 3 --cycles-per-day 1 --max-cycles 3
 ```
 
+`soak-paper-24h.mjs`는 public WebSocket 수신과 운영 안전 가드 smoke다. `tradeMessages`와 `orderbookMessages`는 시장 데이터
+수신 수이지 paper 매매 수가 아니다. `run-m9-paper-decision-runner.mjs`는 별도 decision boundary smoke로, deterministic
+fixture에서 feature, strategy evaluation, order intent, cost/risk gate, PaperBroker 제출/체결, 비용·슬리피지·체결률·차단
+사유 summary를 검증한다. `run-m9-paper-trading-soak.mjs --fixture-smoke`는 장시간 runner가 PaperBroker 주문/체결 cycle을
+반복하고 day별 summary를 비교 도구 입력으로 만들 수 있는지 짧게 검증한다.
+
 fixture smoke가 실패하면 M9 운영을 시작하지 않는다. stale data 차단, audit 누락, live order API 0회, Telegram inbound 부재,
-control route wiring 근거가 먼저 정상이어야 한다.
+control route wiring, controlled paper 주문 제출/체결 경로가 먼저 정상이어야 한다.
 
 ## 5. Paper 운영 실행
 
-M9의 최종 daily runner와 scheduler command는 issue #51 후속 sub PR에서 고정한다. 이 runbook의 현재 기준은 M8-C soak harness와
-M9 운영 기록 포맷을 연결하는 것이다.
+M9 운영은 두 runner를 분리해서 기록한다.
+
+- `soak-paper-24h.mjs`: public WebSocket 수신과 stale/control/daily report 같은 운영 가드 검증
+- `run-m9-paper-trading-soak.mjs`: 3일 동안 프로세스를 켜두고 public orderbook 또는 fixture 입력으로 PaperBroker 주문/체결
+  decision cycle을 반복 실행
+
+3일 paper trading soak는 실수로 장시간 실행되지 않도록 별도 env가 필요하다. 이 runner는 Upbit public quotation WebSocket만
+열고, cycle마다 최신 orderbook을 decision fixture에 주입해 PaperBroker에만 주문을 제출한다. Upbit private API, live broker,
+Telegram inbound, 시장가 신규 진입은 열지 않는다.
+
+```sh
+export SEEMIRAI_M9_ARTIFACT_DIR="$HOME/vaults/99_운영/seemirai-m9-paper"
+
+SEEMIRAI_RUN_M9_PAPER_TRADING_SOAK=1 \
+node scripts/run-m9-paper-trading-soak.mjs \
+  --daily-report-generated \
+  --artifact-dir "$SEEMIRAI_M9_ARTIFACT_DIR/trading-soak" \
+  --json
+```
+
+운영 가드 soak도 별도로 계속 기록한다.
 
 ```sh
 export SEEMIRAI_RUN_SOAK=1
 export SEEMIRAI_SOAK_LOG_DIR="$HOME/vaults/99_운영/seemirai-soak"
 
-node scripts/soak-paper-24h.mjs \
-  --duration-ms 86400000 \
-  --daily-report-generated
+for day in 1 2 3; do
+  node scripts/soak-paper-24h.mjs \
+    --duration-ms 86400000 \
+    --daily-report-generated \
+    --log-dir "$SEEMIRAI_SOAK_LOG_DIR/day-${day}"
+done
 ```
 
-local HTTP control server를 별도로 띄운 상태라면 `--control-url`을 추가한다.
-
-```sh
-node scripts/soak-paper-24h.mjs \
-  --duration-ms 86400000 \
-  --control-url http://127.0.0.1:8787 \
-  --daily-report-generated
-```
+local HTTP control server를 별도로 띄운 상태라면 `soak-paper-24h.mjs`에 `--control-url`을 추가한다. 상태 변경이 허용되는
+disposable runtime에서만 `--control-drill`을 붙인다.
 
 ## 6. Telegram 매매 이벤트 정책
 
@@ -246,12 +270,16 @@ M9 안정화 기준은 3일 연속 paper report 비교로 고정한다.
 
 ```sh
 node scripts/compare-m9-paper-reports.mjs \
-  --summary "$HOME/vaults/99_운영/seemirai-soak/day-1-summary.json" \
-  --summary "$HOME/vaults/99_운영/seemirai-soak/day-2-summary.json" \
-  --summary "$HOME/vaults/99_운영/seemirai-soak/day-3-summary.json" \
-  --output "$HOME/vaults/99_운영/seemirai-m9-paper/m9-3day-comparison.md" \
+  --summary "$HOME/vaults/99_운영/seemirai-m9-paper/trading-soak/"*-day-1-summary.json \
+  --summary "$HOME/vaults/99_운영/seemirai-m9-paper/trading-soak/"*-day-2-summary.json \
+  --summary "$HOME/vaults/99_운영/seemirai-m9-paper/trading-soak/"*-day-3-summary.json \
+  --output "$HOME/vaults/99_운영/seemirai-m9-paper/m9-3day-trading-soak-comparison.md" \
   --json
 ```
+
+paper trading soak day summary를 3일 비교 입력으로 사용할 때는 `metrics.costSummary`, `metrics.slippageSummary`,
+`metrics.fillRate`, `metrics.blockingReasonCounts`, `metrics.liveOrderApiCalls`가 모두 채워져 있어야 한다. daily report
+artifact와 연결한 운영 summary는 runner 실행 시 `--daily-report-generated`를 함께 남긴다.
 
 | 날짜 | commit | report artifact | crash | live order API | audit missing | notification failure | daily report | 비용 | 슬리피지 | 체결률 | 주요 차단 사유 |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |

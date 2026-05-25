@@ -1,0 +1,163 @@
+{
+  "schemaVersion": 1,
+  "sourceId": "m9-paper-decision-runner.json",
+  "brokerClock": "2026-05-22T00:00:00.500Z",
+  "initialBalances": [
+    {
+      "currency": "KRW",
+      "available": "1000000"
+    },
+    {
+      "currency": "BTC",
+      "available": "0"
+    }
+  ],
+  "fillOptions": {
+    "takerFeeBps": "5",
+    "postOnlyTakerPolicy": "REJECT"
+  },
+  "frames": [
+    {
+      "id": "frame-hold-no-signal",
+      "observedAt": "2026-05-22T00:00:00.000Z",
+      "exchangeId": "upbit_krw_spot",
+      "market": "KRW-BTC",
+      "features": {
+        "paper_decision_signal": "HOLD",
+        "hold_reason": "fixture_waiting_for_signal"
+      }
+    },
+    {
+      "id": "frame-cost-rejected",
+      "observedAt": "2026-05-22T00:00:00.100Z",
+      "exchangeId": "upbit_krw_spot",
+      "market": "KRW-BTC",
+      "features": {
+        "paper_decision_signal": "ORDER",
+        "side": "BUY",
+        "limit_price": "100000000",
+        "requested_quantity": "0.0001",
+        "requested_notional": "10000",
+        "post_only": false,
+        "idempotency_key": "m9-fixture-cost-rejected",
+        "expected_return_bps": "5",
+        "entry_fee_bps": "5",
+        "exit_fee_bps": "5",
+        "spread_cost_bps_p75": "1",
+        "expected_slippage_bps_p95": "2",
+        "cancel_requote_penalty_bps": "0",
+        "safety_buffer_bps": "10",
+        "expected_loss_bps_of_equity": "5"
+      },
+      "orderbook": {
+        "type": "ORDERBOOK",
+        "exchangeId": "upbit_krw_spot",
+        "market": "KRW-BTC",
+        "asks": [
+          {
+            "price": "100000000",
+            "size": "1"
+          }
+        ],
+        "bids": [
+          {
+            "price": "99990000",
+            "size": "1"
+          }
+        ],
+        "exchangeTimestamp": "2026-05-22T00:00:00.090Z",
+        "receivedAt": "2026-05-22T00:00:00.095Z"
+      }
+    },
+    {
+      "id": "frame-risk-rejected",
+      "observedAt": "2026-05-22T00:00:00.200Z",
+      "exchangeId": "upbit_krw_spot",
+      "market": "KRW-BTC",
+      "features": {
+        "paper_decision_signal": "ORDER",
+        "side": "BUY",
+        "limit_price": "100000000",
+        "requested_quantity": "0.0001",
+        "requested_notional": "10000",
+        "post_only": false,
+        "idempotency_key": "m9-fixture-risk-rejected",
+        "expected_return_bps": "30",
+        "entry_fee_bps": "5",
+        "exit_fee_bps": "5",
+        "spread_cost_bps_p75": "1",
+        "expected_slippage_bps_p95": "2",
+        "cancel_requote_penalty_bps": "0",
+        "safety_buffer_bps": "10",
+        "expected_loss_bps_of_equity": "25"
+      },
+      "risk": {
+        "expectedLossBpsOfEquity": "25"
+      },
+      "orderbook": {
+        "type": "ORDERBOOK",
+        "exchangeId": "upbit_krw_spot",
+        "market": "KRW-BTC",
+        "asks": [
+          {
+            "price": "100000000",
+            "size": "1"
+          }
+        ],
+        "bids": [
+          {
+            "price": "99990000",
+            "size": "1"
+          }
+        ],
+        "exchangeTimestamp": "2026-05-22T00:00:00.190Z",
+        "receivedAt": "2026-05-22T00:00:00.195Z"
+      }
+    },
+    {
+      "id": "frame-submit-and-fill",
+      "observedAt": "2026-05-22T00:00:00.300Z",
+      "exchangeId": "upbit_krw_spot",
+      "market": "KRW-BTC",
+      "features": {
+        "paper_decision_signal": "ORDER",
+        "side": "BUY",
+        "limit_price": "100000000",
+        "requested_quantity": "0.0001",
+        "requested_notional": "10000",
+        "post_only": false,
+        "idempotency_key": "m9-fixture-submit-fill",
+        "expected_return_bps": "30",
+        "entry_fee_bps": "5",
+        "exit_fee_bps": "5",
+        "spread_cost_bps_p75": "1",
+        "expected_slippage_bps_p95": "2",
+        "cancel_requote_penalty_bps": "0",
+        "safety_buffer_bps": "10",
+        "expected_loss_bps_of_equity": "5"
+      },
+      "risk": {
+        "expectedLossBpsOfEquity": "5"
+      },
+      "orderbook": {
+        "type": "ORDERBOOK",
+        "exchangeId": "upbit_krw_spot",
+        "market": "KRW-BTC",
+        "asks": [
+          {
+            "price": "100000000",
+            "size": "1"
+          }
+        ],
+        "bids": [
+          {
+            "price": "99990000",
+            "size": "1"
+          }
+        ],
+        "exchangeTimestamp": "2026-05-22T00:00:00.290Z",
+        "receivedAt": "2026-05-22T00:00:00.295Z"
+      }
+    }
+  ]
+}
