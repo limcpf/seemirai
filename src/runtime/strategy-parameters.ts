@@ -37,6 +37,17 @@ type MarketRegime = z.infer<typeof MarketRegimeSchema>;
 const AllowedMarketRegimesSchema = z.array(MarketRegimeSchema).nonempty("must include at least one market regime");
 const allMarketRegimes = ["trend_up", "trend_down", "range", "volatile", "liquidity_stress"] as const;
 
+/**
+ * realized volatility 최소/최대 threshold 쌍을 가진 strategy parameter shape다.
+ *
+ * 개별 Decimal string 검증을 통과한 뒤 cross-field invariant를 확인하는 schema 경계에서만 사용한다. `min <= max`가 깨지면
+ * startup config 오류로 드러나야 하며, strategy runtime에서 모든 후보를 HOLD로 숨기지 않는 것이 invariant다.
+ */
+interface RealizedVolatilityRangeConfig {
+  min_realized_volatility_bps: string;
+  max_realized_volatility_bps: string;
+}
+
 export const TrendFollowingStrategyParametersSchema = z
   .object({
     max_spread_bps: NonNegativeDecimalStringSchema.default("8"),
@@ -53,7 +64,8 @@ export const TrendFollowingStrategyParametersSchema = z
     allowed_market_regimes: AllowedMarketRegimesSchema.default(defaultAllowedMarketRegimes()),
     min_cost_adjusted_margin_bps: DecimalStringSchema.default("0"),
   })
-  .strict();
+  .strict()
+  .superRefine(validateRealizedVolatilityRange);
 
 export const MeanReversionStrategyParametersSchema = z
   .object({
@@ -69,7 +81,8 @@ export const MeanReversionStrategyParametersSchema = z
     allowed_market_regimes: AllowedMarketRegimesSchema.default(defaultAllowedMarketRegimes()),
     min_cost_adjusted_margin_bps: DecimalStringSchema.default("0"),
   })
-  .strict();
+  .strict()
+  .superRefine(validateRealizedVolatilityRange);
 
 export const VolatilityBreakoutStrategyParametersSchema = z
   .object({
@@ -84,7 +97,8 @@ export const VolatilityBreakoutStrategyParametersSchema = z
     allowed_market_regimes: AllowedMarketRegimesSchema.default(defaultAllowedMarketRegimes()),
     min_cost_adjusted_margin_bps: DecimalStringSchema.default("0"),
   })
-  .strict();
+  .strict()
+  .superRefine(validateRealizedVolatilityRange);
 
 export const OrderbookImbalanceMomentumStrategyParametersSchema = z
   .object({
@@ -244,6 +258,29 @@ function canParseDecimal(value: string): boolean {
  */
 function defaultAllowedMarketRegimes(): [MarketRegime, ...MarketRegime[]] {
   return [...allMarketRegimes] as [MarketRegime, ...MarketRegime[]];
+}
+
+/**
+ * realized volatility threshold의 최소/최대 순서를 schema 단계에서 검증한다.
+ *
+ * 잘못된 순서를 runtime HOLD로 늦게 발견하면 전략이 조용히 비활성화되므로, config 로딩 시점에 `max` 필드 오류로 차단한다.
+ * 입력 객체는 수정하지 않고 zod issue만 추가한다.
+ */
+function validateRealizedVolatilityRange(
+  config: RealizedVolatilityRangeConfig,
+  context: z.RefinementCtx,
+): void {
+  if (
+    parseFinancialDecimal(config.min_realized_volatility_bps).greaterThan(
+      parseFinancialDecimal(config.max_realized_volatility_bps),
+    )
+  ) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["max_realized_volatility_bps"],
+      message: "must be greater than or equal to min_realized_volatility_bps",
+    });
+  }
 }
 
 function isDecimalLessThanOrEqualTo(value: string, max: Decimal): boolean {

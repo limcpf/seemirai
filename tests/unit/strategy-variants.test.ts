@@ -202,6 +202,78 @@ describe("strategy variants", () => {
     });
   });
 
+  it("blocks invalid M11 signed ratio feature values", async () => {
+    const strategy = createTrendFollowingStrategy(variantOptions.trendFollowing);
+    const decision = await evaluate(
+      strategy,
+      contextFor("trend_following", {
+        features: {
+          trade_direction_imbalance_ratio: "1.4",
+          trade_strength: "1.4",
+          orderbook_imbalance: "0.12",
+          breakout_direction: "UP",
+          breakout_lookback_buckets: "20",
+          volatility_expansion_bps: "20",
+        },
+      }),
+    );
+
+    expect(decision).toMatchObject({
+      kind: "BLOCK",
+      reasonCode: "feature_invalid_trade_direction_imbalance_ratio",
+      metadata: {
+        feature_key: "trade_direction_imbalance_ratio",
+        reason_family: "feature_invalid",
+      },
+    });
+  });
+
+  it("blocks invalid M11 liquidity score feature values", async () => {
+    const strategy = createMeanReversionStrategy(variantOptions.meanReversion);
+    const decision = await evaluate(
+      strategy,
+      contextFor("mean_reversion", {
+        features: {
+          session_liquidity_score: "1.2",
+          mean_reversion_deviation_bps: "-30",
+        },
+      }),
+    );
+
+    expect(decision).toMatchObject({
+      kind: "BLOCK",
+      reasonCode: "feature_invalid_session_liquidity_score",
+      metadata: {
+        feature_key: "session_liquidity_score",
+        reason_family: "feature_invalid",
+      },
+    });
+  });
+
+  it("blocks invalid negative realized volatility feature values", async () => {
+    const strategy = createVolatilityBreakoutStrategy(variantOptions.volatilityBreakout);
+    const decision = await evaluate(
+      strategy,
+      contextFor("volatility_breakout", {
+        features: {
+          realized_volatility_bps: "-5",
+          volatility_expansion_bps: "20",
+          breakout_direction: "UP",
+          breakout_lookback_buckets: "20",
+        },
+      }),
+    );
+
+    expect(decision).toMatchObject({
+      kind: "BLOCK",
+      reasonCode: "feature_invalid_realized_volatility_bps",
+      metadata: {
+        feature_key: "realized_volatility_bps",
+        reason_family: "feature_invalid",
+      },
+    });
+  });
+
   it("creates centered LIMIT order intents from each strategy signal", async () => {
     const cases: readonly [Strategy, Partial<StrategyContext>][] = [
       [

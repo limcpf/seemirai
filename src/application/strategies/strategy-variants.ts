@@ -752,7 +752,7 @@ function evaluateTrendFollowingM11Guards(
       options.minCandleMomentumBps,
     ) ??
     evaluateMinimumFeatureGuard(context, options.strategyId, "volume_spike_ratio", options.minVolumeSpikeRatio) ??
-    evaluateMinimumAbsFeatureGuard(
+    evaluateSignedRatioAbsFeatureGuard(
       context,
       options.strategyId,
       "trade_direction_imbalance_ratio",
@@ -794,7 +794,7 @@ function evaluateMeanReversionM11Guards(
       "vwap_deviation_bps",
       options.minAbsVwapDeviationBps,
     ) ??
-    evaluateMinimumFeatureGuard(
+    evaluateRatioFeatureGuard(
       context,
       options.strategyId,
       "session_liquidity_score",
@@ -877,7 +877,7 @@ function evaluateOrderbookImbalanceM11Guards(
       "depth_change_rate_ratio",
       options.minDepthChangeRateRatio,
     ) ??
-    evaluateMinimumAbsFeatureGuard(
+    evaluateSignedRatioAbsFeatureGuard(
       context,
       options.strategyId,
       "trade_direction_imbalance_ratio",
@@ -916,7 +916,7 @@ function evaluateLiquidityReversionM11Guards(
       "vwap_deviation_bps",
       options.minAbsVwapDeviationBps,
     ) ??
-    evaluateMinimumFeatureGuard(
+    evaluateRatioFeatureGuard(
       context,
       options.strategyId,
       "session_liquidity_score",
@@ -968,6 +968,19 @@ function evaluateRealizedVolatilityGuard(
 
   if (realizedVolatility.kind !== "value") {
     return realizedVolatility.decision;
+  }
+
+  if (realizedVolatility.value.isNegative()) {
+    return block(
+      strategyId,
+      "feature_invalid_realized_volatility_bps",
+      "realized_volatility_bps feature must not be negative",
+      {
+        feature_key: "realized_volatility_bps",
+        feature_value: realizedVolatility.value.toFixed(),
+        reason_family: "feature_invalid",
+      },
+    );
   }
 
   if (realizedVolatility.value.lessThan(minRealizedVolatilityBps)) {
@@ -1036,6 +1049,83 @@ function evaluateMinimumAbsFeatureGuard(
 
   if (feature.value.abs().lessThan(threshold)) {
     return hold(strategyId, `${featureKey}_below_abs_threshold`, {
+      feature_key: featureKey,
+      feature_value: feature.value.toFixed(),
+      threshold: threshold.toFixed(),
+    });
+  }
+
+  return undefined;
+}
+
+/**
+ * `-1..1` 범위의 signed ratio feature가 유효하고 절대 강도 threshold를 넘는지 검증한다.
+ *
+ * 체결 방향 imbalance처럼 부호가 방향, 절대값이 강도를 뜻하는 feature에 사용한다. 범위 위반은 threshold 미달 HOLD가 아니라
+ * feature 계약 위반 BLOCK으로 기록해 데이터 품질 오류를 숨기지 않는다.
+ */
+function evaluateSignedRatioAbsFeatureGuard(
+  context: StrategyContext,
+  strategyId: string,
+  featureKey: string,
+  threshold: Decimal,
+): StrategyDecision | undefined {
+  const feature = requireFeatureDecimal(context, featureKey, strategyId);
+
+  if (feature.kind !== "value") {
+    return feature.decision;
+  }
+
+  if (feature.value.abs().greaterThan(1)) {
+    return block(strategyId, `feature_invalid_${featureKey}`, `${featureKey} feature must be between -1 and 1`, {
+      feature_key: featureKey,
+      feature_value: feature.value.toFixed(),
+      max_abs_value: "1",
+      reason_family: "feature_invalid",
+    });
+  }
+
+  if (feature.value.abs().lessThan(threshold)) {
+    return hold(strategyId, `${featureKey}_below_abs_threshold`, {
+      feature_key: featureKey,
+      feature_value: feature.value.toFixed(),
+      threshold: threshold.toFixed(),
+    });
+  }
+
+  return undefined;
+}
+
+/**
+ * `0..1` 범위의 ratio feature가 유효하고 최소 threshold 이상인지 검증한다.
+ *
+ * session liquidity score처럼 음수와 1 초과가 모두 feature 계산 오류인 입력에 사용한다. 범위 위반은 fail-closed BLOCK으로
+ * 남기고, 정상 범위의 threshold 미달만 HOLD로 분리한다.
+ */
+function evaluateRatioFeatureGuard(
+  context: StrategyContext,
+  strategyId: string,
+  featureKey: string,
+  threshold: Decimal,
+): StrategyDecision | undefined {
+  const feature = requireFeatureDecimal(context, featureKey, strategyId);
+
+  if (feature.kind !== "value") {
+    return feature.decision;
+  }
+
+  if (feature.value.isNegative() || feature.value.greaterThan(1)) {
+    return block(strategyId, `feature_invalid_${featureKey}`, `${featureKey} feature must be between 0 and 1`, {
+      feature_key: featureKey,
+      feature_value: feature.value.toFixed(),
+      min_value: "0",
+      max_value: "1",
+      reason_family: "feature_invalid",
+    });
+  }
+
+  if (feature.value.lessThan(threshold)) {
+    return hold(strategyId, `${featureKey}_below_threshold`, {
       feature_key: featureKey,
       feature_value: feature.value.toFixed(),
       threshold: threshold.toFixed(),

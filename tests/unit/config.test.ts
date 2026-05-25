@@ -208,6 +208,17 @@ describe("runtime config", () => {
 
     expect(() =>
       loadRuntimeConfig({
+        strategyParameters: {
+          trend_following: {
+            min_realized_volatility_bps: "10",
+            max_realized_volatility_bps: "5",
+          },
+        },
+      }),
+    ).toThrow("must be greater than or equal to min_realized_volatility_bps");
+
+    expect(() =>
+      loadRuntimeConfig({
         risk: {
           thresholds: {
             daily_loss_limit_bps: "-1",
