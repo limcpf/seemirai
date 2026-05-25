@@ -16,11 +16,23 @@ export interface MarketDataStreamRequest {
 }
 
 /**
+ * 같은 timestamp의 market data event를 결정론적으로 정렬하기 위한 선택 key다.
+ *
+ * adapter나 replay source가 거래소 sequence, source index, payload fingerprint를 알고 있으면 이 값을 채워
+ * feature 계산과 backtest/paper parity가 입력 배열 순서에 의존하지 않게 한다. 없는 legacy 입력은 feature calculator가
+ * canonical payload fallback을 만들지만, 원천 순서를 보존해야 하는 경계에서는 명시 key를 제공하는 것이 invariant다.
+ */
+export interface MarketDataEventOrderFields {
+  sequence?: string;
+  tieBreakKey?: string;
+}
+
+/**
  * 거래소 체결 이벤트를 runtime 공통 형태로 정규화한 값이다.
  *
  * exchange timestamp와 local received timestamp를 함께 보존해 WebSocket lag와 stale data 판단에 사용한다.
  */
-export interface TradeEvent {
+export interface TradeEvent extends MarketDataEventOrderFields {
   type: "TRADE";
   exchangeId: ExchangeId;
   market: MarketCode;
@@ -48,7 +60,7 @@ export interface OrderbookLevel {
  *
  * adapter는 거래소별 payload를 이 구조로 바꿔 feature engine과 paper fill model이 같은 입력을 보게 한다.
  */
-export interface OrderbookEvent {
+export interface OrderbookEvent extends MarketDataEventOrderFields {
   type: "ORDERBOOK";
   exchangeId: ExchangeId;
   market: MarketCode;
@@ -64,7 +76,7 @@ export interface OrderbookEvent {
  *
  * stale, reconnecting, disconnected 상태는 리스크 게이트의 신규 주문 차단 입력으로 사용된다.
  */
-export interface MarketDataStatusEvent {
+export interface MarketDataStatusEvent extends MarketDataEventOrderFields {
   type: "STATUS";
   exchangeId: ExchangeId;
   market?: MarketCode;
@@ -81,7 +93,7 @@ export interface MarketDataStatusEvent {
  *
  * REST 보조 조회나 stream snapshot의 결과를 같은 형태로 넘기기 위한 경계 타입이다.
  */
-export interface TickerSnapshot {
+export interface TickerSnapshot extends MarketDataEventOrderFields {
   type: "TICKER";
   exchangeId: ExchangeId;
   market: MarketCode;

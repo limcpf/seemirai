@@ -27,17 +27,20 @@ broker, notifier, clock read side effect를 갖지 않는다. 같은 입력 wind
 
 모든 금융 숫자와 ratio 출력은 decimal string이다. bucket 수, window 길이, count처럼 정수 의미가 있는 값만 number를 허용한다.
 계산에 실패하거나 입력이 부족하면 값을 0으로 보정하지 않고 명시적 failure result를 반환한다.
+입력 window는 단일 `exchangeId`와 단일 `market`만 포함해야 하며, 여러 market이나 exchange가 섞이면 전체 snapshot을 failure로 닫는다.
 
 ### 시간 기준
 
 - 기준 시각: caller가 넘긴 `observedAt`
 - event 포함 범위: `(observedAt - window, observedAt]` half-open window
 - 정렬 기준: `eventTimestamp`, `sequence`, `tieBreakKey`
+- timestamp string은 `Z` 또는 `±hh:mm` timezone을 명시해야 하며, timezone 없는 문자열은 환경 의존성이 있으므로 failure로 처리한다.
 - 지연 판단: `receivedAt`은 WebSocket lag와 stale 판단에만 사용하고 가격/수량 feature의 기준 시간으로 쓰지 않는다.
 - 일별 기준: 24시간 거래대금과 Upbit 일봉 해석은 UTC 기준을 기본으로 두되, KST bucket은 별도 metadata로 함께 보존한다.
 
 동일 timestamp의 이벤트가 여러 개면 fixture와 runtime source는 `sequence`와 `tieBreakKey`로 deterministic order를 제공해야 한다.
-정렬 key가 부족한 입력은 parity 대상 fixture로 인정하지 않는다.
+legacy `MarketDataEvent`처럼 key가 없는 입력은 계산기가 정규화 payload 기반 fallback key로 정렬하되, 이 fallback은 원천 source 순서
+보존이 아니라 재현성 확보용이므로 parity fixture와 runtime adapter는 명시 key를 우선 제공해야 한다.
 
 ### 결측과 fail-closed
 
@@ -107,8 +110,9 @@ Sub PR 4에서 strategy integration을 수행할 때 아래 required feature를 
 ## Runtime config contract
 
 M11 구현 PR은 새 threshold를 `strategyParameters.<strategy_id>` 아래에 추가한다. 모든 bps, KRW, ratio 값은 Decimal string으로
-검증한다. bucket 수와 lookback 개수는 양의 정수 number로 검증한다. `market_regime` 허용 목록은 비어 있지 않은 enum string
-배열이어야 한다.
+검증한다. bucket 수와 lookback 개수는 양의 정수 number로 검증한다. feature calculator option도 context 생성 단계에서 양의
+정수로 검증해 잘못된 설정을 입력 부족 failure로 숨기지 않는다. `market_regime` 허용 목록은 비어 있지 않은 enum string 배열이어야
+한다.
 
 기본 운영 threshold 변경은 M11 마지막 calibration PR 전까지 금지한다. Sub PR 2-4는 새 key와 schema, 테스트를 추가할 수 있지만
 `config/paper.json`의 기본값을 더 공격적으로 바꾸지 않는다.
@@ -118,6 +122,8 @@ M11 구현 PR은 새 threshold를 `strategyParameters.<strategy_id>` 아래에 �
 | `min_candle_momentum_bps` | bps | Decimal string, 0 이상 | 높일수록 약한 momentum 후보 차단 |
 | `min_realized_volatility_bps` | bps | Decimal string, 0 이상 | 높일수록 변동성 부족 후보 차단 |
 | `max_realized_volatility_bps` | bps | Decimal string, 0 이상 | 낮출수록 급변동 후보 차단 |
+| `max_spread_bps` | bps | Decimal string, 0 이상 | 낮출수록 스프레드 확대 국면을 보수적으로 차단 |
+| `max_abs_vwap_deviation_bps` | bps | Decimal string, 0 이상 | 낮출수록 정상 range로 볼 수 있는 VWAP 이탈 폭 축소 |
 | `min_volume_spike_ratio` | ratio | Decimal string, 0 이상 | 높일수록 거래대금 증가가 약한 후보 차단 |
 | `min_depth_slope_krw_per_bps` | KRW/bps | Decimal string, 0 이상 | 높일수록 얕은 호가 후보 차단 |
 | `min_depth_change_rate_ratio` | ratio | Decimal string | 높일수록 depth 감소 후보 차단 |

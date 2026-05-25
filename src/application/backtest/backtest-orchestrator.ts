@@ -731,6 +731,8 @@ function toMarketDataEvent(event: MarketEvent): MarketDataEvent | undefined {
         side: event.side,
         exchangeTimestamp: event.eventTimestamp,
         receivedAt: event.receivedAt ?? event.eventTimestamp,
+        sequence: event.sequence,
+        tieBreakKey: event.tieBreakKey,
         ...(event.source.raw === undefined ? {} : { raw: event.source.raw }),
       };
     case "ORDERBOOK_SNAPSHOT":
@@ -743,6 +745,8 @@ function toMarketDataEvent(event: MarketEvent): MarketDataEvent | undefined {
         tradePrice: event.tradePrice,
         exchangeTimestamp: event.eventTimestamp,
         receivedAt: event.receivedAt ?? event.eventTimestamp,
+        sequence: event.sequence,
+        tieBreakKey: event.tieBreakKey,
         ...(event.source.raw === undefined ? {} : { raw: event.source.raw }),
         ...(event.changeRate === undefined ? {} : { changeRate: event.changeRate }),
         ...(event.accTradePrice24h === undefined ? {} : { accTradePrice24h: event.accTradePrice24h }),
@@ -753,6 +757,8 @@ function toMarketDataEvent(event: MarketEvent): MarketDataEvent | undefined {
         exchangeId: event.exchangeId,
         status: event.status,
         observedAt: event.eventTimestamp,
+        sequence: event.sequence,
+        tieBreakKey: event.tieBreakKey,
         ...(event.market === undefined ? {} : { market: event.market }),
         ...(event.reasonCode === undefined ? {} : { reasonCode: event.reasonCode }),
         ...(event.websocketLagMs === undefined ? {} : { websocketLagMs: event.websocketLagMs }),
@@ -774,6 +780,8 @@ function toOrderbookEvent(event: MarketOrderbookSnapshotEvent): OrderbookEvent {
     bids: event.bids,
     exchangeTimestamp: event.eventTimestamp,
     receivedAt: event.receivedAt ?? event.eventTimestamp,
+    sequence: event.sequence,
+    tieBreakKey: event.tieBreakKey,
     ...(event.source.raw === undefined ? {} : { raw: event.source.raw }),
   };
 }
