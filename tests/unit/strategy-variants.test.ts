@@ -274,6 +274,55 @@ describe("strategy variants", () => {
     });
   });
 
+  it("blocks invalid negative volume spike feature values", async () => {
+    const strategy = createVolatilityBreakoutStrategy(variantOptions.volatilityBreakout);
+    const decision = await evaluate(
+      strategy,
+      contextFor("volatility_breakout", {
+        features: {
+          volume_spike_ratio: "-0.1",
+          volatility_expansion_bps: "20",
+          breakout_direction: "UP",
+          breakout_lookback_buckets: "20",
+        },
+      }),
+    );
+
+    expect(decision).toMatchObject({
+      kind: "BLOCK",
+      reasonCode: "feature_invalid_volume_spike_ratio",
+      metadata: {
+        feature_key: "volume_spike_ratio",
+        reason_family: "feature_invalid",
+      },
+    });
+  });
+
+  it("blocks invalid negative depth slope feature values", async () => {
+    const strategy = createOrderbookImbalanceMomentumStrategy(
+      variantOptions.orderbookImbalanceMomentum,
+    );
+    const decision = await evaluate(
+      strategy,
+      contextFor("orderbook_imbalance_momentum", {
+        features: {
+          bid_depth_slope_krw_per_bps: "-1",
+          trade_strength: "1.3",
+          orderbook_imbalance: "0.12",
+        },
+      }),
+    );
+
+    expect(decision).toMatchObject({
+      kind: "BLOCK",
+      reasonCode: "feature_invalid_bid_depth_slope_krw_per_bps",
+      metadata: {
+        feature_key: "bid_depth_slope_krw_per_bps",
+        reason_family: "feature_invalid",
+      },
+    });
+  });
+
   it("creates centered LIMIT order intents from each strategy signal", async () => {
     const cases: readonly [Strategy, Partial<StrategyContext>][] = [
       [

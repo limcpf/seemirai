@@ -219,6 +219,17 @@ describe("runtime config", () => {
 
     expect(() =>
       loadRuntimeConfig({
+        strategyParameters: {
+          trend_following: {
+            min_realized_volatility_bps: "abc",
+            max_realized_volatility_bps: "5",
+          },
+        },
+      }),
+    ).toThrow("must be a non-negative decimal string");
+
+    expect(() =>
+      loadRuntimeConfig({
         risk: {
           thresholds: {
             daily_loss_limit_bps: "-1",

@@ -270,16 +270,34 @@ function validateRealizedVolatilityRange(
   config: RealizedVolatilityRangeConfig,
   context: z.RefinementCtx,
 ): void {
-  if (
-    parseFinancialDecimal(config.min_realized_volatility_bps).greaterThan(
-      parseFinancialDecimal(config.max_realized_volatility_bps),
-    )
-  ) {
+  const min = tryParseDecimal(config.min_realized_volatility_bps);
+  const max = tryParseDecimal(config.max_realized_volatility_bps);
+
+  // 개별 필드가 이미 invalid면 zod의 원래 path 오류를 보존하고 cross-field 비교는 건너뛴다.
+  if (min === undefined || max === undefined) {
+    return;
+  }
+
+  if (min.greaterThan(max)) {
     context.addIssue({
       code: z.ZodIssueCode.custom,
       path: ["max_realized_volatility_bps"],
       message: "must be greater than or equal to min_realized_volatility_bps",
     });
+  }
+}
+
+/**
+ * cross-field validation에서만 쓰는 안전 Decimal parser다.
+ *
+ * 개별 필드 validation 실패를 일반 예외로 바꾸지 않기 위해 실패 시 undefined를 반환한다. 이 helper는 오류 메시지를 만들지 않고
+ * zod field-level issue가 원래 경로에 남도록 둔다.
+ */
+function tryParseDecimal(value: string): Decimal | undefined {
+  try {
+    return parseFinancialDecimal(value);
+  } catch {
+    return undefined;
   }
 }
 

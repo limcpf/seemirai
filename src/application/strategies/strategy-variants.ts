@@ -751,7 +751,7 @@ function evaluateTrendFollowingM11Guards(
       "candle_momentum_bps",
       options.minCandleMomentumBps,
     ) ??
-    evaluateMinimumFeatureGuard(context, options.strategyId, "volume_spike_ratio", options.minVolumeSpikeRatio) ??
+    evaluateNonNegativeFeatureGuard(context, options.strategyId, "volume_spike_ratio", options.minVolumeSpikeRatio) ??
     evaluateSignedRatioAbsFeatureGuard(
       context,
       options.strategyId,
@@ -836,7 +836,7 @@ function evaluateVolatilityBreakoutM11Guards(
       "candle_momentum_bps",
       options.minCandleMomentumBps,
     ) ??
-    evaluateMinimumFeatureGuard(context, options.strategyId, "volume_spike_ratio", options.minVolumeSpikeRatio) ??
+    evaluateNonNegativeFeatureGuard(context, options.strategyId, "volume_spike_ratio", options.minVolumeSpikeRatio) ??
     evaluateMarketRegimeGuard(context, options.strategyId, options.allowedMarketRegimes)
   );
 }
@@ -859,13 +859,13 @@ function evaluateOrderbookImbalanceM11Guards(
 ): StrategyDecision | undefined {
   return (
     evaluateM11CostMarginGuard(context, options.strategyId, options.minCostAdjustedMarginBps) ??
-    evaluateMinimumFeatureGuard(
+    evaluateNonNegativeFeatureGuard(
       context,
       options.strategyId,
       "bid_depth_slope_krw_per_bps",
       options.minDepthSlopeKrwPerBps,
     ) ??
-    evaluateMinimumFeatureGuard(
+    evaluateNonNegativeFeatureGuard(
       context,
       options.strategyId,
       "ask_depth_slope_krw_per_bps",
@@ -1016,6 +1016,44 @@ function evaluateMinimumFeatureGuard(
 
   if (feature.kind !== "value") {
     return feature.decision;
+  }
+
+  if (feature.value.lessThan(threshold)) {
+    return hold(strategyId, `${featureKey}_below_threshold`, {
+      feature_key: featureKey,
+      feature_value: feature.value.toFixed(),
+      threshold: threshold.toFixed(),
+    });
+  }
+
+  return undefined;
+}
+
+/**
+ * 0 이상이어야 하는 Decimal feature가 유효하고 최소 threshold 이상인지 검증한다.
+ *
+ * volume spike와 depth slope처럼 계산식상 음수가 나올 수 없는 feature에 사용한다. 음수는 정상적인 threshold 미달이 아니라
+ * feature 계약 위반이므로 BLOCK으로 남겨 데이터 품질 이상을 audit에서 분리한다.
+ */
+function evaluateNonNegativeFeatureGuard(
+  context: StrategyContext,
+  strategyId: string,
+  featureKey: string,
+  threshold: Decimal,
+): StrategyDecision | undefined {
+  const feature = requireFeatureDecimal(context, featureKey, strategyId);
+
+  if (feature.kind !== "value") {
+    return feature.decision;
+  }
+
+  if (feature.value.isNegative()) {
+    return block(strategyId, `feature_invalid_${featureKey}`, `${featureKey} feature must not be negative`, {
+      feature_key: featureKey,
+      feature_value: feature.value.toFixed(),
+      min_value: "0",
+      reason_family: "feature_invalid",
+    });
   }
 
   if (feature.value.lessThan(threshold)) {
