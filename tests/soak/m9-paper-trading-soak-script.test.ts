@@ -256,6 +256,62 @@ describe("M9 paper trading soak script", () => {
       await server.close();
     }
   }, 40_000);
+
+  it("selects the freshest cached orderbook across configured markets", async () => {
+    const server = await startOrderbookWebSocketServer(
+      [
+        createOrderbookPayload({ code: "KRW-BTC", askPrice: 100_000_000, bidPrice: 99_990_000 }),
+        createOrderbookPayload({ code: "KRW-ETH", askPrice: 5_000_000, bidPrice: 4_999_000 }),
+        createOrderbookPayload({ code: "KRW-ETH", askPrice: 5_000_000, bidPrice: 4_999_000 }),
+        createOrderbookPayload({ code: "KRW-ETH", askPrice: 5_000_000, bidPrice: 4_999_000 }),
+        createOrderbookPayload({ code: "KRW-ETH", askPrice: 5_000_000, bidPrice: 4_999_000 }),
+        createOrderbookPayload({ code: "KRW-ETH", askPrice: 5_000_000, bidPrice: 4_999_000 }),
+        createOrderbookPayload({ code: "KRW-ETH", askPrice: 5_000_000, bidPrice: 4_999_000 }),
+        createOrderbookPayload({ code: "KRW-ETH", askPrice: 5_000_000, bidPrice: 4_999_000 }),
+      ],
+      [0, 45, 75, 105, 135, 165, 195, 225],
+    );
+    try {
+      const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-m9-trading-soak-freshest-"));
+      const summary = await runScriptAllowingFailure(
+        [
+          "--json",
+          "--daily-report-generated",
+          "--duration-ms",
+          "500",
+          "--day-ms",
+          "500",
+          "--days",
+          "1",
+          "--max-cycles",
+          "1",
+          "--cycle-interval-ms",
+          "30",
+          "--max-orderbook-staleness-ms",
+          "10",
+          "--markets",
+          "KRW-BTC,KRW-ETH",
+          "--websocket-url",
+          server.url,
+          "--artifact-dir",
+          artifactDir,
+        ],
+        {
+          SEEMIRAI_RUN_M9_PAPER_TRADING_SOAK: "1",
+        },
+      );
+
+      expect(summary.metrics.orderbookMessages).toBeGreaterThanOrEqual(2);
+      expect(summary.metrics.cyclesSkippedStaleOrderbook).toBeGreaterThan(0);
+      expect(summary.metrics).toMatchObject({
+        paperTradingCycles: 1,
+        paperOrderSubmittedCount: 1,
+        paperFillCount: 1,
+      });
+    } finally {
+      await server.close();
+    }
+  }, 40_000);
 });
 
 async function readCompileTempDirs() {
@@ -289,7 +345,38 @@ async function runScriptExpectingFailure(args: readonly string[], env: NodeJS.Pr
   throw new Error("script unexpectedly passed");
 }
 
-async function startOrderbookWebSocketServer(payloads: readonly unknown[]) {
+async function runScriptAllowingFailure(args: readonly string[], env: NodeJS.ProcessEnv = {}) {
+  try {
+    const { stdout } = await execFileAsync("node", [scriptPath, ...args], {
+      env: {
+        ...process.env,
+        ...env,
+      },
+    });
+    return JSON.parse(stdout) as {
+      metrics: {
+        paperTradingCycles: number;
+        paperOrderSubmittedCount: number;
+        paperFillCount: number;
+        orderbookMessages: number;
+        cyclesSkippedStaleOrderbook: number;
+      };
+    };
+  } catch (error) {
+    const executionError = error as Error & { stdout?: string };
+    return JSON.parse(executionError.stdout ?? "{}") as {
+      metrics: {
+        paperTradingCycles: number;
+        paperOrderSubmittedCount: number;
+        paperFillCount: number;
+        orderbookMessages: number;
+        cyclesSkippedStaleOrderbook: number;
+      };
+    };
+  }
+}
+
+async function startOrderbookWebSocketServer(payloads: readonly unknown[], delaysMs: readonly number[] = []) {
   const sockets = new Set<net.Socket>();
   const server = net.createServer((socket) => {
     sockets.add(socket);
@@ -309,16 +396,19 @@ async function startOrderbookWebSocketServer(payloads: readonly unknown[]) {
         return;
       }
       socket.write(createWebSocketHandshakeResponse(key));
+      let latestDelayMs = 0;
       payloads.forEach((payload, index) => {
+        const delayMs = delaysMs[index] ?? index * 5;
+        latestDelayMs = Math.max(latestDelayMs, delayMs);
         setTimeout(() => {
           if (!socket.destroyed) {
             socket.write(encodeWebSocketTextFrame(JSON.stringify(payload)));
           }
-        }, index * 5);
+        }, delayMs);
       });
       setTimeout(() => {
         socket.end();
-      }, Math.max(50, payloads.length * 5 + 20));
+      }, Math.max(50, latestDelayMs + 50));
     });
   });
 
@@ -370,16 +460,21 @@ function encodeWebSocketTextFrame(text: string): Buffer {
   return Buffer.concat([Buffer.from([0x81, 126, payload.length >> 8, payload.length & 0xff]), payload]);
 }
 
-function createOrderbookPayload() {
+function createOrderbookPayload(
+  input: { code?: string; askPrice?: number; bidPrice?: number } = {},
+) {
+  const code = input.code ?? "KRW-BTC";
+  const askPrice = input.askPrice ?? 100_000_000;
+  const bidPrice = input.bidPrice ?? 99_990_000;
   return {
     type: "orderbook",
-    code: "KRW-BTC",
+    code,
     timestamp: Date.now(),
     orderbook_units: [
       {
-        ask_price: 100_000_000,
+        ask_price: askPrice,
         ask_size: 1,
-        bid_price: 99_990_000,
+        bid_price: bidPrice,
         bid_size: 1,
       },
     ],

@@ -636,13 +636,14 @@ function startPublicMarketDataFeed({ options, config, rawLog, state }) {
 
   return {
     latestOrderbook() {
+      let latest = null;
       for (const market of markets) {
         const orderbook = latestOrderbooks.get(market);
-        if (orderbook !== undefined) {
-          return orderbook;
+        if (orderbook !== undefined && isFresherOrderbook(orderbook, latest)) {
+          latest = orderbook;
         }
       }
-      return null;
+      return latest;
     },
     async stop() {
       stopped = true;
@@ -658,6 +659,21 @@ function startPublicMarketDataFeed({ options, config, rawLog, state }) {
       }
     },
   };
+}
+
+function isFresherOrderbook(candidate, current) {
+  if (current === null) {
+    return true;
+  }
+  return readTimestampMs(candidate.receivedAt) > readTimestampMs(current.receivedAt);
+}
+
+function readTimestampMs(timestamp) {
+  if (typeof timestamp !== "string") {
+    return Number.NEGATIVE_INFINITY;
+  }
+  const parsed = Date.parse(timestamp);
+  return Number.isFinite(parsed) ? parsed : Number.NEGATIVE_INFINITY;
 }
 
 function resolveMarkets(options, config) {
