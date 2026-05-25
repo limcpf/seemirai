@@ -236,10 +236,18 @@ Acceptance Criteria:
 
 | 순서 | 목표 | 병렬성 |
 | --- | --- | --- |
-| 1 | feature 정의 design doc과 runtime config contract | 순차 |
-| 2 | 순수 feature calculator와 fixture tests | 순차 |
-| 3 | strategy variant 입력 확장과 discard audit 보강 | 순차 |
-| 4 | backtest/paper calibration report | 순차 |
+| 1 | feature 정의 design doc과 runtime config contract | 선행 순차 |
+| 2 | 순수 feature calculator와 fixture tests | Sub PR 1 이후, Sub PR 3과 일부 병렬 가능 |
+| 3 | backtest/paper fixture feature parity 검증 | Sub PR 1 이후, Sub PR 2와 일부 병렬 가능 |
+| 4 | strategy variant 입력 확장과 discard audit 보강 | Sub PR 2, 3 이후 순차 |
+| 5 | M9 #68 관측 데이터 기반 calibration report 또는 보수적 제안/후속 issue 후보 정리 | 마지막 순차 |
+
+현재 운영 상태:
+
+- GitHub issue: #70
+- mother branch: `issue-70-mother`
+- Sub PR 1: #71, feature contract와 runtime config contract 문서화
+- M9 #68 운영 관측 중에는 paper runner, daily report, Telegram, retry, control drill, 3일 비교 포맷과 기본 운영 threshold를 변경하지 않는다.
 
 ### M12. 큰 TypeScript 모듈 책임 분리
 

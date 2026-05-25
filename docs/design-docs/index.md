@@ -5,3 +5,4 @@
 - [`2026-05-13-mvp-runtime-architecture.md`](./2026-05-13-mvp-runtime-architecture.md): Seemirai MVP 런타임, 저장소, execution, 운영 아키텍처 결정
 - [`2026-05-15-m1-database-schema.md`](./2026-05-15-m1-database-schema.md): M1 PostgreSQL/TimescaleDB 테이블 역할, 관계, jobs queue 책임
 - [`2026-05-20-typescript-module-structure.md`](./2026-05-20-typescript-module-structure.md): TypeScript public entry와 same-basename directory 기반 모듈 구조 규칙
+- [`2026-05-25-feature-quality-calibration.md`](./2026-05-25-feature-quality-calibration.md): M11 전략/피처 품질 보강의 feature contract, runtime config contract, calibration 보호 경계
