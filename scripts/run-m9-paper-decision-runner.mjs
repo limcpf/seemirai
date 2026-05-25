@@ -326,10 +326,19 @@ function waitForDrainOrError(stream) {
 
 function summarizeZeroOrderFrames(result) {
   const frames = new Map();
+  const submittedBrokerOrderIds = new Set();
   for (const record of result.trace) {
     const summary = readOrCreateFrameSummary(frames, record.frameId);
     if (record.stage === "EXECUTION_RESULT" && record.status === "SUBMITTED") {
-      summary.submitted = true;
+      const brokerOrderId = readStringValue(record.metadata?.broker_order_id);
+      if (brokerOrderId !== null && submittedBrokerOrderIds.has(brokerOrderId)) {
+        summary.reasons.push("discard:duplicate_broker_order");
+      } else {
+        summary.submitted = true;
+        if (brokerOrderId !== null) {
+          submittedBrokerOrderIds.add(brokerOrderId);
+        }
+      }
     }
     const reason = readZeroOrderReason(record);
     if (reason !== null) {
@@ -435,12 +444,19 @@ function readZeroOrderReason(record) {
   if (record.stage === "EXECUTION_RESULT" && record.status === "REJECTED") {
     return `discard:${record.reasonCode ?? "execution_rejected"}`;
   }
+  if (record.stage === "EXECUTION_RESULT" && record.status === "DUPLICATE_SUPPRESSED") {
+    return `discard:${record.reasonCode ?? "duplicate_suppressed"}`;
+  }
 
   return null;
 }
 
 function readFirstString(value) {
   return Array.isArray(value) && typeof value[0] === "string" ? value[0] : null;
+}
+
+function readStringValue(value) {
+  return typeof value === "string" ? value : null;
 }
 
 function renderMarkdownReport(summary) {

@@ -110,11 +110,12 @@ async function main() {
     artifacts,
     state,
   });
+  const dailyStartedAt = new Date(state.startedAtMs);
   const dailySummaries = state.dailyBuckets.map((bucket, index) =>
     createDailySummary({
       parentRunId: runId,
       dayIndex: index,
-      startedAt,
+      startedAt: dailyStartedAt,
       finishedAt,
       inputMode,
       options,
@@ -342,7 +343,10 @@ function createSoakState({ options, startedAt, artifacts }) {
     websocketErrors: 0,
     websocketReconnects: 0,
     skippedStaleOrderbookCycles: 0,
+    lastCycleAttemptAt: null,
     lastOrderbookAt: null,
+    lastOrderbookUsedAt: null,
+    lastOrderbookUsedForCycleAt: null,
     lastWebSocketError: null,
     lastMarketDataAt: null,
     interrupted: false,
@@ -353,10 +357,14 @@ function createSoakState({ options, startedAt, artifacts }) {
       cycleCount: 0,
       skippedNoOrderbookCycles: 0,
       skippedStaleOrderbookCycles: 0,
+      firstCycleAttemptAt: null,
+      lastCycleAttemptAt: null,
       websocketMessages: 0,
       tradeMessages: 0,
       orderbookMessages: 0,
       lastOrderbookAt: null,
+      lastOrderbookUsedAt: null,
+      lastOrderbookUsedForCycleAt: null,
       lastMarketDataAt: null,
       metrics: createMetricAccumulator(),
       traceRecords: 0,
@@ -372,6 +380,8 @@ async function runTradingCycles({ options, fixture, runtime, rawLog, state, getL
   const startedAtMs = Date.now();
   const endAtMs = startedAtMs + options.durationMs;
   let nextCycleAtMs = startedAtMs;
+  // daily bucket 경계는 compile/setup 시간이 아니라 실제 paper trading loop가 열린 시점부터 계산한다.
+  state.startedAtMs = startedAtMs;
 
   while (!stopRequested && Date.now() < endAtMs) {
     if (options.maxCycles !== undefined && state.cycleAttemptCount >= options.maxCycles) {
@@ -390,6 +400,10 @@ async function runTradingCycles({ options, fixture, runtime, rawLog, state, getL
     const bucket = state.dailyBuckets[dayIndex];
     state.cycleAttemptCount += 1;
     bucket.cycleAttemptCount += 1;
+    // skip된 cycle도 운영 시도와 daily runtime evidence에 포함되어야 max-cycles가 무한 대기로 변하지 않는다.
+    state.lastCycleAttemptAt = cycleStartedAt.toISOString();
+    bucket.firstCycleAttemptAt ??= cycleStartedAt.toISOString();
+    bucket.lastCycleAttemptAt = cycleStartedAt.toISOString();
     const latestOrderbook = getLatestOrderbook();
     const orderbookSkip = options.fixtureSmoke
       ? null
@@ -409,6 +423,14 @@ async function runTradingCycles({ options, fixture, runtime, rawLog, state, getL
       });
       nextCycleAtMs += options.cycleIntervalMs;
       continue;
+    }
+
+    if (!options.fixtureSmoke && latestOrderbook !== null) {
+      // 최신성 evidence는 runner 종료 직전 idle 시간이 아니라 실제 cycle 진입 시점의 orderbook으로 고정한다.
+      state.lastOrderbookUsedAt = latestOrderbook.receivedAt ?? null;
+      state.lastOrderbookUsedForCycleAt = cycleStartedAt.toISOString();
+      bucket.lastOrderbookUsedAt = latestOrderbook.receivedAt ?? null;
+      bucket.lastOrderbookUsedForCycleAt = cycleStartedAt.toISOString();
     }
 
     const cycleFixture = createCycleFixture({
@@ -967,6 +989,7 @@ function createCompletedSummary({ runId, startedAt, finishedAt, inputMode, optio
     state,
     metrics,
     durationMsObserved: finishedAt.getTime() - startedAt.getTime(),
+    requestedDurationMs: options.durationMs,
     finishedAt,
     isDaily: false,
   });
@@ -998,7 +1021,7 @@ function createDailySummary({
   interrupted,
 }) {
   const dayStartedAt = new Date(startedAt.getTime() + dayIndex * options.dayMs);
-  const dayFinishedAt = new Date(dayStartedAt.getTime() + options.dayMs);
+  const dailyTiming = resolveDailyTiming({ dayStartedAt, finishedAt, options, bucket });
   const metrics = {
     ...finalizeMetrics(bucket.metrics),
     paperTradingCycleAttempts: bucket.cycleAttemptCount,
@@ -1016,11 +1039,14 @@ function createDailySummary({
       orderbookMessages: bucket.orderbookMessages,
       websocketErrors: 0,
       lastOrderbookAt: bucket.lastOrderbookAt,
+      lastOrderbookUsedAt: bucket.lastOrderbookUsedAt,
+      lastOrderbookUsedForCycleAt: bucket.lastOrderbookUsedForCycleAt,
       interrupted: bucket.cycleCount === 0 ? false : interrupted,
     },
     metrics,
-    durationMsObserved: dayFinishedAt.getTime() - dayStartedAt.getTime(),
-    finishedAt: dayFinishedAt,
+    durationMsObserved: dailyTiming.durationMsObserved,
+    requestedDurationMs: options.dayMs,
+    finishedAt: dailyTiming.finishedAt,
     isDaily: true,
   });
 
@@ -1030,9 +1056,9 @@ function createDailySummary({
     parentRunId,
     status: deriveStatus(checks),
     startedAt: dayStartedAt.toISOString(),
-    finishedAt: dayFinishedAt.toISOString(),
+    finishedAt: dailyTiming.finishedAt.toISOString(),
     durationMsRequested: options.dayMs,
-    durationMsObserved: dayFinishedAt.getTime() - dayStartedAt.getTime(),
+    durationMsObserved: dailyTiming.durationMsObserved,
     mode: "PAPER_TRADING",
     input: `${inputMode}:day-${dayIndex + 1}`,
     git,
@@ -1070,7 +1096,46 @@ function createBaseSummary({ runId, startedAt, finishedAt, inputMode, options, g
   };
 }
 
-function createChecks({ options, state, metrics, durationMsObserved, finishedAt, isDaily }) {
+function resolveDailyTiming({ dayStartedAt, finishedAt, options, bucket }) {
+  const dayStartedAtMs = dayStartedAt.getTime();
+  const dayWindowEndedAtMs = Math.min(finishedAt.getTime(), dayStartedAtMs + options.dayMs);
+  const latestActivityMs = latestTimestampMs([
+    bucket.lastCycleAt,
+    bucket.lastCycleAttemptAt,
+    bucket.lastMarketDataAt,
+    bucket.lastOrderbookAt,
+  ]);
+  const observedFinishedAtMs =
+    latestActivityMs === null ? dayWindowEndedAtMs : Math.min(dayWindowEndedAtMs, latestActivityMs);
+  const safeFinishedAtMs = Math.max(dayStartedAtMs, observedFinishedAtMs);
+
+  return {
+    finishedAt: new Date(safeFinishedAtMs),
+    durationMsObserved: Math.max(0, safeFinishedAtMs - dayStartedAtMs),
+  };
+}
+
+function latestTimestampMs(values) {
+  let latest = null;
+  for (const value of values) {
+    const parsed = parseTimestampMs(value);
+    if (parsed !== null && (latest === null || parsed > latest)) {
+      latest = parsed;
+    }
+  }
+  return latest;
+}
+
+function parseTimestampMs(value) {
+  if (typeof value !== "string") {
+    return null;
+  }
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function createChecks({ options, state, metrics, durationMsObserved, requestedDurationMs, finishedAt, isDaily }) {
+  const orderbookFreshness = readOrderbookFreshness({ state, finishedAt });
   return {
     longRunGuard: okCheck(
       options.fixtureSmoke
@@ -1083,14 +1148,15 @@ function createChecks({ options, state, metrics, durationMsObserved, finishedAt,
       },
     ),
     durationCompleted:
-      options.fixtureSmoke || options.maxCycles !== undefined || durationMsObserved >= options.durationMs || isDaily
+      options.fixtureSmoke || (!isDaily && options.maxCycles !== undefined) || durationMsObserved >= requestedDurationMs
         ? okCheck("요청한 runner 종료 조건에 도달해 summary를 기록했다.", {
             durationMsObserved,
+            requestedDurationMs,
             maxCycles: options.maxCycles ?? null,
           })
         : failCheck("요청한 duration 전에 runner가 종료됐다.", {
             durationMsObserved,
-            requestedDurationMs: options.durationMs,
+            requestedDurationMs,
           }),
     paperTradingPath:
       metrics.paperOrderSubmittedCount > 0 && metrics.paperFillCount > 0
@@ -1111,12 +1177,15 @@ function createChecks({ options, state, metrics, durationMsObserved, finishedAt,
           })
         : state.orderbookMessages > 0 &&
           metrics.paperTradingCycles > 0 &&
-          calculateOrderbookStalenessMs(state.lastOrderbookAt, finishedAt) <= options.maxOrderbookStalenessMs
+          orderbookFreshness.orderbookStalenessMs <= options.maxOrderbookStalenessMs
         ? okCheck("public WebSocket orderbook을 받아 최신성 기준 안에서 paper decision cycle에 사용했다.", {
             orderbookMessages: state.orderbookMessages,
             websocketMessages: state.websocketMessages,
             cycles: metrics.paperTradingCycles,
             lastOrderbookAt: state.lastOrderbookAt,
+            lastOrderbookUsedAt: state.lastOrderbookUsedAt,
+            orderbookFreshnessCheckedAt: orderbookFreshness.checkedAt,
+            orderbookStalenessMs: orderbookFreshness.orderbookStalenessMs,
             maxOrderbookStalenessMs: options.maxOrderbookStalenessMs,
           })
         : failCheck("public WebSocket orderbook 기반 paper decision cycle을 최신성 기준 안에서 만들지 못했다.", {
@@ -1125,7 +1194,9 @@ function createChecks({ options, state, metrics, durationMsObserved, finishedAt,
             skippedNoOrderbookCycles: state.skippedNoOrderbookCycles,
             skippedStaleOrderbookCycles: state.skippedStaleOrderbookCycles,
             lastOrderbookAt: state.lastOrderbookAt,
-            orderbookStalenessMs: calculateOrderbookStalenessMs(state.lastOrderbookAt, finishedAt),
+            lastOrderbookUsedAt: state.lastOrderbookUsedAt,
+            orderbookFreshnessCheckedAt: orderbookFreshness.checkedAt,
+            orderbookStalenessMs: orderbookFreshness.orderbookStalenessMs,
             maxOrderbookStalenessMs: options.maxOrderbookStalenessMs,
           }),
     liveOrderApiCalls:
@@ -1159,6 +1230,19 @@ function createChecks({ options, state, metrics, durationMsObserved, finishedAt,
       ? failCheck("runner가 signal로 중단되어 3일 운영 완료 증거로 사용할 수 없다.", { interrupted: true })
       : okCheck("runner 중단 signal이 관측되지 않았다.", { interrupted: false }),
   };
+}
+
+function readOrderbookFreshness({ state, finishedAt }) {
+  const checkedAt = parseDateOrFallback(state.lastOrderbookUsedForCycleAt, finishedAt);
+  return {
+    checkedAt: checkedAt.toISOString(),
+    orderbookStalenessMs: calculateOrderbookStalenessMs(state.lastOrderbookUsedAt ?? state.lastOrderbookAt, checkedAt),
+  };
+}
+
+function parseDateOrFallback(value, fallback) {
+  const parsed = parseTimestampMs(value);
+  return parsed === null ? fallback : new Date(parsed);
 }
 
 function calculateOrderbookStalenessMs(lastOrderbookAt, finishedAt) {

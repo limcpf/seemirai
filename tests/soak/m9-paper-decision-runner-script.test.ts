@@ -89,6 +89,57 @@ describe("M9 paper decision runner script", () => {
       evidence: { zeroOrderFrameCount: 0 },
     });
   }, 30_000);
+
+  it("explains duplicate-suppressed execution frames as zero-order reasons", async () => {
+    const workDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-m9-decision-duplicate-"));
+    const fixture = JSON.parse(
+      await readFile(path.join(process.cwd(), "tests", "fixtures", "m9", "paper-decision-runner.json"), "utf8"),
+    );
+    const submittedFrame = fixture.frames[3];
+    fixture.frames = [
+      submittedFrame,
+      {
+        ...submittedFrame,
+        id: "frame-submit-and-fill-duplicate",
+        observedAt: "2026-05-22T00:00:00.400Z",
+      },
+    ];
+    const fixturePath = path.join(workDir, "duplicate-suppressed-fixture.json");
+    await writeFile(fixturePath, `${JSON.stringify(fixture, null, 2)}\n`, "utf8");
+
+    const { stdout } = await execFileAsync("node", [
+      scriptPath,
+      "--fixture-smoke",
+      "--json",
+      "--fixture",
+      fixturePath,
+      "--artifact-dir",
+      workDir,
+    ]);
+    const summary = JSON.parse(stdout) as {
+      status: string;
+      checks: {
+        zeroOrderReasonsExplained: {
+          status: string;
+          evidence: {
+            zeroOrderFrameCount: number;
+            reasonCounts: Record<string, number>;
+          };
+        };
+      };
+    };
+
+    expect(summary.status).toBe("passed");
+    expect(summary.checks.zeroOrderReasonsExplained).toMatchObject({
+      status: "ok",
+      evidence: {
+        zeroOrderFrameCount: 1,
+      },
+    });
+    expect(Object.keys(summary.checks.zeroOrderReasonsExplained.evidence.reasonCounts)).toContain(
+      "discard:duplicate_broker_order",
+    );
+  }, 30_000);
 });
 
 async function readCompileTempDirs() {

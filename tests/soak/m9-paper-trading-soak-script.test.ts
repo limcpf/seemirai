@@ -271,6 +271,71 @@ describe("M9 paper trading soak script", () => {
     }
   }, 40_000);
 
+  it("checks daily orderbook freshness at cycle time and closes the day at actual activity", async () => {
+    const server = await startOrderbookWebSocketServer([createOrderbookPayload()]);
+    try {
+      const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-m9-trading-soak-daily-time-"));
+      const { stdout } = await execFileAsync(
+        "node",
+        [
+          scriptPath,
+          "--json",
+          "--daily-report-generated",
+          "--duration-ms",
+          "1000",
+          "--day-ms",
+          "1000",
+          "--days",
+          "1",
+          "--max-cycles",
+          "2",
+          "--cycle-interval-ms",
+          "200",
+          "--max-orderbook-staleness-ms",
+          "500",
+          "--websocket-url",
+          server.url,
+          "--artifact-dir",
+          artifactDir,
+        ],
+        {
+          env: {
+            ...process.env,
+            SEEMIRAI_RUN_M9_PAPER_TRADING_SOAK: "1",
+          },
+        },
+      );
+      const summary = JSON.parse(stdout) as {
+        status: string;
+        artifacts: { dailySummaryPaths: string[] };
+      };
+      const daySummary = JSON.parse(await readFile(summary.artifacts.dailySummaryPaths[0]!, "utf8")) as {
+        startedAt: string;
+        finishedAt: string;
+        durationMsObserved: number;
+        checks: {
+          durationCompleted: { status: string };
+          marketDataSource: { status: string; evidence: { orderbookFreshnessCheckedAt: string } };
+        };
+      };
+      const dayStartedAtMs = new Date(daySummary.startedAt).getTime();
+      const dayFinishedAtMs = new Date(daySummary.finishedAt).getTime();
+
+      expect(summary.status).toBe("passed");
+      expect(dayFinishedAtMs).toBeLessThan(dayStartedAtMs + 1000);
+      expect(daySummary.durationMsObserved).toBeLessThan(1000);
+      expect(daySummary.checks.durationCompleted.status).toBe("fail");
+      expect(daySummary.checks.marketDataSource).toMatchObject({
+        status: "ok",
+      });
+      expect(new Date(daySummary.checks.marketDataSource.evidence.orderbookFreshnessCheckedAt).getTime()).toBeLessThan(
+        dayFinishedAtMs + 1,
+      );
+    } finally {
+      await server.close();
+    }
+  }, 40_000);
+
   it("selects the freshest cached orderbook across configured markets", async () => {
     const server = await startOrderbookWebSocketServer(
       [
