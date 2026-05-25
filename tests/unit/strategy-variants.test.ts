@@ -30,6 +30,13 @@ const variantOptions: M4StrategyVariantOptions = {
     minTradeStrength: "1.2",
     minOrderbookImbalance: "0.08",
     minVolatilityExpansionBps: "18",
+    minCandleMomentumBps: "0",
+    minRealizedVolatilityBps: "0",
+    maxRealizedVolatilityBps: "100000",
+    minVolumeSpikeRatio: "0",
+    minTradeDirectionImbalance: "0",
+    allowedMarketRegimes: ["trend_up", "trend_down", "range", "volatile", "liquidity_stress"],
+    minCostAdjustedMarginBps: "0",
   },
   meanReversion: {
     maxSpreadBps: "6",
@@ -37,24 +44,44 @@ const variantOptions: M4StrategyVariantOptions = {
     entryDeviationBps: "25",
     exitDeviationBps: "8",
     stopLossBps: "35",
+    minRealizedVolatilityBps: "0",
+    maxRealizedVolatilityBps: "100000",
+    minAbsVwapDeviationBps: "0",
+    minSessionLiquidityScore: "0",
+    allowedMarketRegimes: ["trend_up", "trend_down", "range", "volatile", "liquidity_stress"],
+    minCostAdjustedMarginBps: "0",
   },
   volatilityBreakout: {
     maxSpreadBps: "8",
     minDepthKrw: "50000000",
     breakoutLookbackBuckets: 20,
     minVolatilityExpansionBps: "18",
+    minCandleMomentumBps: "0",
+    minRealizedVolatilityBps: "0",
+    maxRealizedVolatilityBps: "100000",
+    minVolumeSpikeRatio: "0",
+    allowedMarketRegimes: ["trend_up", "trend_down", "range", "volatile", "liquidity_stress"],
+    minCostAdjustedMarginBps: "0",
   },
   orderbookImbalanceMomentum: {
     maxSpreadBps: "7",
     minDepthKrw: "60000000",
     minTradeStrength: "1.25",
     minOrderbookImbalance: "0.1",
+    minDepthSlopeKrwPerBps: "0",
+    minDepthChangeRateRatio: "-1",
+    minTradeDirectionImbalance: "0",
+    minCostAdjustedMarginBps: "0",
   },
   liquidityReversion: {
     maxSpreadBps: "5",
     minDepthKrw: "90000000",
     entryDeviationBps: "18",
     stopLossBps: "30",
+    minDepthChangeRateRatio: "-1",
+    minAbsVwapDeviationBps: "0",
+    minSessionLiquidityScore: "0",
+    minCostAdjustedMarginBps: "0",
   },
 };
 
@@ -117,6 +144,61 @@ describe("strategy variants", () => {
     expect(decision).toMatchObject({
       kind: "BLOCK",
       reasonCode: "feature_missing_volatility_expansion_bps",
+    });
+  });
+
+  it("fails closed when an M11 required strategy feature is missing", async () => {
+    const strategy = createTrendFollowingStrategy(variantOptions.trendFollowing);
+    const decision = await evaluate(
+      strategy,
+      contextFor("trend_following", {
+        features: {
+          cost_adjusted_margin_bps: undefined,
+          trade_strength: "1.4",
+          orderbook_imbalance: "0.12",
+          breakout_direction: "UP",
+          breakout_lookback_buckets: "20",
+          volatility_expansion_bps: "20",
+        },
+      }),
+    );
+
+    expect(decision).toMatchObject({
+      kind: "BLOCK",
+      reasonCode: "feature_missing_cost_adjusted_margin_bps",
+      metadata: {
+        feature_key: "cost_adjusted_margin_bps",
+        reason_family: "feature_missing",
+      },
+    });
+  });
+
+  it("keeps strategy candidates on HOLD when M11 cost-adjusted margin is below threshold", async () => {
+    const strategy = createTrendFollowingStrategy({
+      ...variantOptions.trendFollowing,
+      minCostAdjustedMarginBps: "5",
+    });
+    const decision = await evaluate(
+      strategy,
+      contextFor("trend_following", {
+        features: {
+          cost_adjusted_margin_bps: "4",
+          trade_strength: "1.4",
+          orderbook_imbalance: "0.12",
+          breakout_direction: "UP",
+          breakout_lookback_buckets: "20",
+          volatility_expansion_bps: "20",
+        },
+      }),
+    );
+
+    expect(decision).toMatchObject({
+      kind: "HOLD",
+      reason: "cost_adjusted_margin_below_threshold",
+      metadata: {
+        cost_adjusted_margin_bps: "4",
+        min_cost_adjusted_margin_bps: "5",
+      },
     });
   });
 
@@ -579,6 +661,17 @@ function contextFor(
     features: {
       spread_bps: "2",
       depth_krw: "100000000",
+      candle_momentum_bps: "30",
+      realized_volatility_bps: "20",
+      volume_spike_ratio: "1",
+      bid_depth_slope_krw_per_bps: "1",
+      ask_depth_slope_krw_per_bps: "1",
+      depth_change_rate_ratio: "0",
+      vwap_deviation_bps: "0",
+      trade_direction_imbalance_ratio: "0.2",
+      market_regime: "trend_up",
+      session_liquidity_score: "1",
+      cost_adjusted_margin_bps: "10",
       limit_price: "10000000",
       requested_quantity: "0.001",
       requested_notional: "10000",

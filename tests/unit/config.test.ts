@@ -29,6 +29,13 @@ describe("runtime config", () => {
       min_trade_strength: "1.2",
       min_orderbook_imbalance: "0.08",
       min_volatility_expansion_bps: "18",
+      min_candle_momentum_bps: "0",
+      min_realized_volatility_bps: "0",
+      max_realized_volatility_bps: "100000",
+      min_volume_spike_ratio: "0",
+      min_trade_direction_imbalance: "0",
+      allowed_market_regimes: ["trend_up", "trend_down", "range", "volatile", "liquidity_stress"],
+      min_cost_adjusted_margin_bps: "0",
     });
     expect(config.strategyParameters.mean_reversion).toMatchObject({
       max_spread_bps: "6",
@@ -36,24 +43,44 @@ describe("runtime config", () => {
       entry_deviation_bps: "25",
       exit_deviation_bps: "8",
       stop_loss_bps: "35",
+      min_realized_volatility_bps: "0",
+      max_realized_volatility_bps: "100000",
+      min_abs_vwap_deviation_bps: "0",
+      min_session_liquidity_score: "0",
+      allowed_market_regimes: ["trend_up", "trend_down", "range", "volatile", "liquidity_stress"],
+      min_cost_adjusted_margin_bps: "0",
     });
     expect(config.strategyParameters.volatility_breakout).toMatchObject({
       max_spread_bps: "8",
       min_depth_krw: "50000000",
       breakout_lookback_buckets: 20,
       min_volatility_expansion_bps: "18",
+      min_candle_momentum_bps: "0",
+      min_realized_volatility_bps: "0",
+      max_realized_volatility_bps: "100000",
+      min_volume_spike_ratio: "0",
+      allowed_market_regimes: ["trend_up", "trend_down", "range", "volatile", "liquidity_stress"],
+      min_cost_adjusted_margin_bps: "0",
     });
     expect(config.strategyParameters.orderbook_imbalance_momentum).toMatchObject({
       max_spread_bps: "7",
       min_depth_krw: "60000000",
       min_trade_strength: "1.25",
       min_orderbook_imbalance: "0.1",
+      min_depth_slope_krw_per_bps: "0",
+      min_depth_change_rate_ratio: "-1",
+      min_trade_direction_imbalance: "0",
+      min_cost_adjusted_margin_bps: "0",
     });
     expect(config.strategyParameters.liquidity_reversion).toMatchObject({
       max_spread_bps: "5",
       min_depth_krw: "90000000",
       entry_deviation_bps: "18",
       stop_loss_bps: "30",
+      min_depth_change_rate_ratio: "-1",
+      min_abs_vwap_deviation_bps: "0",
+      min_session_liquidity_score: "0",
+      min_cost_adjusted_margin_bps: "0",
     });
     expect(config.risk.thresholds).toEqual({
       daily_loss_limit_bps: "100",
@@ -154,6 +181,26 @@ describe("runtime config", () => {
         strategyParameters: {
           trend_following: {
             min_orderbook_imbalance: "1.2",
+          },
+        },
+      }),
+    ).toThrow("must be between 0 and 1");
+
+    expect(() =>
+      loadRuntimeConfig({
+        strategyParameters: {
+          trend_following: {
+            allowed_market_regimes: [],
+          },
+        },
+      }),
+    ).toThrow("must include at least one market regime");
+
+    expect(() =>
+      loadRuntimeConfig({
+        strategyParameters: {
+          trend_following: {
+            min_trade_direction_imbalance: "1.2",
           },
         },
       }),
