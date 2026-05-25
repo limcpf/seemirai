@@ -3,7 +3,7 @@
 - 작성일: 2026-05-22
 - 대상 단계: M8 운영 가드레일과 paper soak test
 - 기본 모드: `PAPER_TRADING`, `PAPER_NO_KEY`
-- 기준 문서: [`../RUNTIME_CONFIG.md`](../RUNTIME_CONFIG.md), [`../RELIABILITY.md`](../RELIABILITY.md), [`../SECURITY.md`](../SECURITY.md), [`../exec-plans/active/2026-05-13-mvp-development-plan.md`](../exec-plans/active/2026-05-13-mvp-development-plan.md)
+- 기준 문서: [`../RUNTIME_CONFIG.md`](../RUNTIME_CONFIG.md), [`../RELIABILITY.md`](../RELIABILITY.md), [`../SECURITY.md`](../SECURITY.md), [`../exec-plans/completed/2026-05-13-mvp-development-plan.md`](../exec-plans/completed/2026-05-13-mvp-development-plan.md)
 
 ## 현재 가능한 운영 범위
 
@@ -221,14 +221,21 @@ $HOME/vaults/99_운영/seemirai-works
 
 ## 8. M8 구현 후 MVP 완료 증거 체크리스트
 
-- [ ] `corepack pnpm install --frozen-lockfile` 완료
-- [ ] `./scripts/verify` 통과
-- [ ] `node scripts/soak-paper-24h.mjs --fixture-smoke` 통과
-- [ ] `SEEMIRAI_RUN_SOAK=1 node scripts/soak-paper-24h.mjs --duration-ms 86400000 --daily-report-generated` 완료
-- [ ] summary에 crash 0회, unhandled rejection 0회, live order API 0회, audit 누락 0건이 기록됨
-- [ ] raw log와 summary artifact가 저장소 밖에 저장됨
-- [ ] PR 또는 실행 계획 문서에 secret 없는 요약만 기록됨
-- [ ] M8 체크박스와 MVP 완료 기준이 현재 증거와 일치하게 갱신됨
+- [x] `corepack pnpm install --frozen-lockfile` 완료
+- [x] `./scripts/verify` 통과
+- [x] `node scripts/soak-paper-24h.mjs --fixture-smoke` 통과
+- [x] `SEEMIRAI_RUN_SOAK=1 node scripts/soak-paper-24h.mjs --duration-ms 86400000 --daily-report-generated` 완료
+- [x] summary에 crash 0회, unhandled rejection 0회, live order API 0회, audit 누락 0건이 기록됨
+- [x] raw log와 summary artifact가 저장소 밖에 저장됨
+- [x] PR 또는 실행 계획 문서에 secret 없는 요약만 기록됨
+- [x] M8 체크박스와 MVP 완료 기준이 현재 증거와 일치하게 갱신됨
+
+M8-C 완료 증거:
+
+- 24시간 soak summary: `/home/lim/vaults/99_운영/seemirai-soak/m8-paper-soak-2026-05-22T01-20-26-828Z-60c4fb71-summary.json`
+- 24시간 soak report: `/home/lim/vaults/99_운영/seemirai-soak/m8-paper-soak-2026-05-22T01-20-26-828Z-60c4fb71-report.md`
+- raw event log: `/home/lim/vaults/99_운영/seemirai-soak/m8-paper-soak-2026-05-22T01-20-26-828Z-60c4fb71-events.jsonl`
+- 결과: `passed`, 관측 시간 `86,400,068ms`, public WebSocket message `1,258,095`, live order API call `0`, crash `0`, unhandled rejection `0`, audit missing `0`, DB write failure `0`, notification failure `0`, daily report evidence `true`
 
 ## 다음 단계
 

@@ -15,7 +15,7 @@
 - 구조 변경, 경계 변경, 새 규칙 도입: [`DESIGN.md`](./DESIGN.md), [`design-docs/index.md`](./design-docs/index.md)
 - TypeScript 모듈 파일/폴더 구조 규칙: [`design-docs/2026-05-20-typescript-module-structure.md`](./design-docs/2026-05-20-typescript-module-structure.md)
 - DB 테이블 역할과 관계: [`design-docs/2026-05-15-m1-database-schema.md`](./design-docs/2026-05-15-m1-database-schema.md)
-- 장시간 작업, 중단 후 재개 필요: [`PLANS.md`](./PLANS.md), [`exec-plans/active/README.md`](./exec-plans/active/README.md)
+- 장시간 작업, 중단 후 재개 필요: [`PLANS.md`](./PLANS.md), [`exec-plans/active/README.md`](./exec-plans/active/README.md), [`exec-plans/completed/README.md`](./exec-plans/completed/README.md)
 - 상태 전이, 재시도, 복구, 운영 안정성 변경: [`RELIABILITY.md`](./RELIABILITY.md)
 - 토큰, 권한, webhook, 외부 입력, shell command 정책 변경: [`SECURITY.md`](./SECURITY.md)
 - 품질 수준 판단과 후속 작업 정리: [`QUALITY_SCORE.md`](./QUALITY_SCORE.md), [`exec-plans/tech-debt-tracker.md`](./exec-plans/tech-debt-tracker.md)

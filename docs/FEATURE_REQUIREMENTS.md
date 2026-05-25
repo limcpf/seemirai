@@ -498,7 +498,7 @@ Acceptance Criteria:
 - [ ] 실거래 전환 가능 여부를 판단할 수 있도록 수수료, 슬리피지, 체결률, 전략별 손익을 리포트한다.
 - [ ] paper trading 모드에서는 거래소 주문 API가 호출되지 않는다.
 - [ ] 기본 모드에서는 실거래 API Key가 없거나 주문 권한이 비활성인 상태로 실행된다.
-- [ ] 24시간 paper soak 결과는 crash 0회, unhandled rejection 0회, 실거래 주문 API 0회, audit 누락 0건, stale data 신규 주문
+- [x] 24시간 paper soak 결과는 crash 0회, unhandled rejection 0회, 실거래 주문 API 0회, audit 누락 0건, stale data 신규 주문
   차단, DB write failure 0건, notification failure 0건, daily report 생성 여부를 summary로 남긴다.
 
 테스트 요구사항:
@@ -559,6 +559,9 @@ Acceptance Criteria:
 
 - LLM은 공식 Upbit 공지 요약, 개발자 changelog 요약, 시장경보 분류, 상장/상폐/점검 분류, 이상 이벤트 설명, 일간 리포트 초안에만 사용한다.
 - LLM 출력은 주문 후보 생성이나 주문 제출로 직접 연결될 수 없다.
+- provider는 `noop`과 `codex_oauth`를 같은 port 뒤에 두며, 기본 구현은 로컬 owner-operated Codex OAuth 세션을 사용하는 `codex_oauth`다.
+- provider timeout, invalid JSON, free-form output, output size 초과는 모두 fail-closed로 수렴하고 거래 신호를 만들지 않는다.
+- 일간 리포트 초안은 deterministic daily report 옆의 보조 결과일 뿐이며, LLM 실패가 report 생성 성공을 실패로 바꾸지 않는다.
 
 Acceptance Criteria:
 
@@ -569,17 +572,24 @@ Acceptance Criteria:
 - [ ] LLM 결과만으로 전략 주문 후보를 만들 수 없다.
 - [ ] LLM 결과가 리스크 게이트에 전달될 경우 주문 허용이 아니라 차단 또는 사람 확인 신호로만 사용된다.
 - [ ] LLM 입력과 출력은 감사 가능하도록 저장되며 민감정보를 포함하지 않는다.
+- [ ] provider를 `codex_oauth`에서 `noop`으로 바꿔도 application contract가 바뀌지 않는다.
+- [ ] Codex timeout, invalid output, free-form output은 실패 evidence만 남기고 주문 신호 없이 끝난다.
+- [ ] deterministic daily report는 LLM draft 실패와 독립적으로 성공/실패가 결정된다.
 
 테스트 요구사항:
 
 - 단위 테스트: LLM 결과만 있는 경우 주문 후보가 생성되지 않는지 확인한다.
 - 단위 테스트: LLM 리스크 분류가 주문 허용 신호로 변환되지 않는지 확인한다.
 - 단위 테스트: 금지 액션이 포함된 LLM 출력이 거부되는지 확인한다.
+- 단위 테스트: provider timeout, invalid JSON, free-form output, output size 초과가 fail-closed로 정규화되는지 확인한다.
+- 단위 테스트: LLM daily report draft 실패가 deterministic report payload를 바꾸지 않는지 확인한다.
+- gated smoke: `SEEMIRAI_RUN_CODEX_LLM_SMOKE=1`일 때만 실제 Codex OAuth provider smoke를 실행한다.
 - 수동 테스트: 공지 요약이 리포트에 포함되더라도 주문 실행 로그와 직접 연결되지 않는지 확인한다.
 
 문서 요구사항:
 
 - LLM 입력 소스가 확대되면 업무 명세와 PRD 비범위를 먼저 갱신한다.
+- `docs/RUNTIME_CONFIG.md`, `docs/SECURITY.md`, `docs/RELIABILITY.md`는 provider 교체성, secret redaction, fail-closed 동작, smoke gate를 함께 설명해야 한다.
 
 제외 범위:
 

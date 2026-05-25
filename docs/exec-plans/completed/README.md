@@ -9,3 +9,7 @@
 - 결정 로그
 - 남은 리스크
 - 후속 issue 또는 기술 부채
+
+## 완료 계획
+
+- [`2026-05-13-mvp-development-plan.md`](./2026-05-13-mvp-development-plan.md): Upbit KRW paper trading MVP 개발 실행 계획. M8-C에서 24시간 public WebSocket soak와 전체 verify 증거로 완료 판정했다.
