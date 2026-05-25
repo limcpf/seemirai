@@ -115,6 +115,8 @@ describe("Upbit WebSocket schemas, client, and replay", () => {
       side: "BID",
       exchangeTimestamp: "2024-10-31T01:07:42.047Z",
       receivedAt,
+      sequence: "17303368620470000",
+      tieBreakKey: "upbit:trade:KRW-BTC:17303368620470000",
     });
     expect(event.raw).toMatchObject({
       type: "trade",
@@ -133,7 +135,10 @@ describe("Upbit WebSocket schemas, client, and replay", () => {
       market: "KRW-BTC",
       exchangeTimestamp: "2025-05-07T07:06:13.804Z",
       receivedAt,
+      sequence: "1746601573804",
     });
+    expect(event.tieBreakKey).toContain('"orderbook"');
+    expect(event.tieBreakKey).toContain('"KRW-BTC"');
     expect(event.asks.slice(0, 2)).toEqual([
       {
         price: "137002000",
@@ -230,6 +235,8 @@ describe("Upbit WebSocket schemas, client, and replay", () => {
         observedAt: "2026-05-17T02:12:00.000Z",
         reasonCode: "websocket_closed",
         reconnectCount: 1,
+        sequence: "status:1778983920000",
+        tieBreakKey: "[\"upbit\",\"status\",\"upbit_krw_spot\",\"KRW-BTC\",\"RECONNECTING\",\"websocket_closed\",\"*\",1]",
       },
       {
         type: "STATUS",
@@ -238,6 +245,8 @@ describe("Upbit WebSocket schemas, client, and replay", () => {
         status: "DISCONNECTED",
         observedAt: "2026-05-17T02:12:30.000Z",
         reasonCode: "idle_timeout",
+        sequence: "status:1778983950000",
+        tieBreakKey: "[\"upbit\",\"status\",\"upbit_krw_spot\",\"KRW-BTC\",\"DISCONNECTED\",\"idle_timeout\",\"*\",\"*\"]",
       },
     ]);
   });

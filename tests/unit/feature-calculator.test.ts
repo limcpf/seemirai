@@ -116,6 +116,16 @@ describe("M11 feature calculator", () => {
         volatileSpreadBps: "not-a-decimal",
       },
     );
+    const invalidWindowOption = calculateM11FeatureSnapshot(
+      {
+        observedAt: "2026-05-25T00:21:00.000Z",
+        events: createFeatureFixtureEvents(),
+        cost: createCostInput(),
+      },
+      {
+        candleBucketMs: 0,
+      },
+    );
     const invalidEventTimestamp = calculateM11FeatureSnapshot({
       observedAt: "2026-05-25T00:21:00.000Z",
       events: [
@@ -134,6 +144,9 @@ describe("M11 feature calculator", () => {
       true,
     );
     expect(invalidOption.failureReasons.every((failure) => failure.reasonCode === "FEATURE_INVALID_DECIMAL")).toBe(true);
+    expect(invalidWindowOption.failureReasons.every((failure) => failure.reasonCode === "FEATURE_INVALID_MARKET_VALUE")).toBe(
+      true,
+    );
     expect(invalidEventTimestamp.failureReasons.every((failure) => failure.reasonCode === "FEATURE_INVALID_MARKET_VALUE")).toBe(
       true,
     );
@@ -206,7 +219,8 @@ describe("M11 feature calculator", () => {
     expect(reversed.features).toEqual(forward.features);
   });
 
-  it("fails closed when same-timestamp events do not provide deterministic order keys", () => {
+  it("uses canonical fallback keys when same-timestamp legacy events do not provide explicit order keys", () => {
+    const events = createFeatureFixtureEvents().filter((event) => event.type !== "TRADE" || event.tradeId !== "trade-21");
     const first = {
       type: "TRADE",
       exchangeId: "upbit_krw_spot",
@@ -223,15 +237,20 @@ describe("M11 feature calculator", () => {
       tradeId: "missing-order-b",
       price: "101",
     } satisfies TradeEvent;
-    const result = calculateM11FeatureSnapshot({
+    const forward = calculateM11FeatureSnapshot({
       observedAt: "2026-05-25T00:21:00.000Z",
-      events: [second, first],
+      events: [...events, first, second],
+      cost: createCostInput(),
+    });
+    const reversed = calculateM11FeatureSnapshot({
+      observedAt: "2026-05-25T00:21:00.000Z",
+      events: [...events, second, first],
       cost: createCostInput(),
     });
 
-    expect(result.status).toBe("failed");
-    expect(result.failureReasons).toHaveLength(13);
-    expect(result.failureReasons.every((failure) => failure.reasonCode === "FEATURE_INVALID_MARKET_VALUE")).toBe(true);
+    expect(forward.status).toBe("ok");
+    expect(reversed.status).toBe("ok");
+    expect(reversed.features).toEqual(forward.features);
   });
 
   it("fails closed when stale market data is inside the calculation window", () => {

@@ -94,8 +94,9 @@ interface EventOrderCandidate {
   timestampNanos: bigint;
   exchangeId: string;
   market: string | undefined;
-  sequence: string | undefined;
-  tieBreakKey: string | undefined;
+  sequence: string;
+  tieBreakKey: string;
+  canonicalPayloadKey: string;
 }
 
 interface Candle {
@@ -209,29 +210,7 @@ function createCalculationContext(
     observedAt,
     observedAtIso: observedAt.toISOString(),
     events,
-    options: {
-      candleBucketMs: options.candleBucketMs ?? DEFAULT_OPTIONS.candleBucketMs,
-      candleBucketCount: options.candleBucketCount ?? DEFAULT_OPTIONS.candleBucketCount,
-      volumeBaselineBucketCount: options.volumeBaselineBucketCount ?? DEFAULT_OPTIONS.volumeBaselineBucketCount,
-      tradeImbalanceWindowMs: options.tradeImbalanceWindowMs ?? DEFAULT_OPTIONS.tradeImbalanceWindowMs,
-      depthChangeLookbackMs: options.depthChangeLookbackMs ?? DEFAULT_OPTIONS.depthChangeLookbackMs,
-      orderbookDepthLevels: options.orderbookDepthLevels ?? DEFAULT_OPTIONS.orderbookDepthLevels,
-      volatileRealizedVolatilityBps: parseOptionDecimal(
-        options.volatileRealizedVolatilityBps ?? DEFAULT_OPTIONS.volatileRealizedVolatilityBps,
-      ),
-      volatileVolumeSpikeRatio: parseOptionDecimal(
-        options.volatileVolumeSpikeRatio ?? DEFAULT_OPTIONS.volatileVolumeSpikeRatio,
-      ),
-      volatileSpreadBps: parseOptionDecimal(options.volatileSpreadBps ?? DEFAULT_OPTIONS.volatileSpreadBps),
-      rangeMaxVwapDeviationBps: parseOptionDecimal(
-        options.rangeMaxVwapDeviationBps ?? DEFAULT_OPTIONS.rangeMaxVwapDeviationBps,
-      ),
-      liquidityStressSessionLiquidityScore: parseOptionDecimal(
-        options.liquidityStressSessionLiquidityScore ?? DEFAULT_OPTIONS.liquidityStressSessionLiquidityScore,
-      ),
-      trendMomentumBps: parseOptionDecimal(options.trendMomentumBps ?? DEFAULT_OPTIONS.trendMomentumBps),
-      trendImbalanceRatio: parseOptionDecimal(options.trendImbalanceRatio ?? DEFAULT_OPTIONS.trendImbalanceRatio),
-    },
+    options: resolveFeatureCalculationOptions(options),
   };
 }
 
@@ -781,6 +760,50 @@ function parseOptionDecimal(value: unknown): Decimal {
   return parseDecimalValue(value, "feature option", false);
 }
 
+function resolveFeatureCalculationOptions(options: FeatureCalculationOptions): ResolvedFeatureCalculationOptions {
+  return {
+    candleBucketMs: readPositiveIntegerOption(options.candleBucketMs ?? DEFAULT_OPTIONS.candleBucketMs, "candleBucketMs"),
+    candleBucketCount: readPositiveIntegerOption(options.candleBucketCount ?? DEFAULT_OPTIONS.candleBucketCount, "candleBucketCount"),
+    volumeBaselineBucketCount: readPositiveIntegerOption(
+      options.volumeBaselineBucketCount ?? DEFAULT_OPTIONS.volumeBaselineBucketCount,
+      "volumeBaselineBucketCount",
+    ),
+    tradeImbalanceWindowMs: readPositiveIntegerOption(
+      options.tradeImbalanceWindowMs ?? DEFAULT_OPTIONS.tradeImbalanceWindowMs,
+      "tradeImbalanceWindowMs",
+    ),
+    depthChangeLookbackMs: readPositiveIntegerOption(
+      options.depthChangeLookbackMs ?? DEFAULT_OPTIONS.depthChangeLookbackMs,
+      "depthChangeLookbackMs",
+    ),
+    orderbookDepthLevels: readPositiveIntegerOption(
+      options.orderbookDepthLevels ?? DEFAULT_OPTIONS.orderbookDepthLevels,
+      "orderbookDepthLevels",
+    ),
+    volatileRealizedVolatilityBps: parseOptionDecimal(
+      options.volatileRealizedVolatilityBps ?? DEFAULT_OPTIONS.volatileRealizedVolatilityBps,
+    ),
+    volatileVolumeSpikeRatio: parseOptionDecimal(options.volatileVolumeSpikeRatio ?? DEFAULT_OPTIONS.volatileVolumeSpikeRatio),
+    volatileSpreadBps: parseOptionDecimal(options.volatileSpreadBps ?? DEFAULT_OPTIONS.volatileSpreadBps),
+    rangeMaxVwapDeviationBps: parseOptionDecimal(
+      options.rangeMaxVwapDeviationBps ?? DEFAULT_OPTIONS.rangeMaxVwapDeviationBps,
+    ),
+    liquidityStressSessionLiquidityScore: parseOptionDecimal(
+      options.liquidityStressSessionLiquidityScore ?? DEFAULT_OPTIONS.liquidityStressSessionLiquidityScore,
+    ),
+    trendMomentumBps: parseOptionDecimal(options.trendMomentumBps ?? DEFAULT_OPTIONS.trendMomentumBps),
+    trendImbalanceRatio: parseOptionDecimal(options.trendImbalanceRatio ?? DEFAULT_OPTIONS.trendImbalanceRatio),
+  };
+}
+
+function readPositiveIntegerOption(value: unknown, fieldName: string): number {
+  if (typeof value !== "number" || !Number.isFinite(value) || !Number.isInteger(value) || value <= 0) {
+    throw new FeatureCalculationError("FEATURE_INVALID_MARKET_VALUE", `${fieldName} must be a positive integer`);
+  }
+
+  return value;
+}
+
 function parseTimestamp(value: TimestampInput): Date {
   if (typeof value === "string") {
     parseTimestampNanos(value);
@@ -820,14 +843,16 @@ function sortAndValidateEvents(events: readonly MarketDataEvent[]): readonly Mar
 
 function createEventOrderCandidate(event: MarketDataEvent): EventOrderCandidate {
   const timestamp = getEventTimestamp(event);
+  const canonicalPayloadKey = createCanonicalEventPayloadKey(event);
   return {
     event,
     timestampMs: getEventTimestampMs(event),
     timestampNanos: parseTimestampNanos(timestamp),
     exchangeId: event.exchangeId,
     market: getEventMarket(event),
-    sequence: readEventOrderText(event, "sequence"),
-    tieBreakKey: readEventOrderText(event, "tieBreakKey"),
+    sequence: readEventOrderText(event, "sequence") ?? createFallbackEventSequence(event),
+    tieBreakKey: readEventOrderText(event, "tieBreakKey") ?? canonicalPayloadKey,
+    canonicalPayloadKey,
   };
 }
 
@@ -837,6 +862,76 @@ function getEventTimestamp(event: MarketDataEvent): TimestampInput {
 
 function getEventMarket(event: MarketDataEvent): string | undefined {
   return "market" in event ? event.market : undefined;
+}
+
+function createFallbackEventSequence(event: MarketDataEvent): string {
+  switch (event.type) {
+    case "TRADE":
+      return `trade:${event.tradeId}`;
+    case "ORDERBOOK":
+      return `orderbook:${timestampOrderKey(event.receivedAt)}`;
+    case "TICKER":
+      return `ticker:${timestampOrderKey(event.receivedAt)}`;
+    case "STATUS":
+      return `status:${event.status}:${timestampOrderKey(event.observedAt)}`;
+  }
+}
+
+function createCanonicalEventPayloadKey(event: MarketDataEvent): string {
+  switch (event.type) {
+    case "TRADE":
+      return JSON.stringify([
+        "trade",
+        event.exchangeId,
+        event.market,
+        timestampOrderKey(event.exchangeTimestamp),
+        timestampOrderKey(event.receivedAt),
+        event.tradeId,
+        event.price,
+        event.quantity,
+        event.side,
+      ]);
+    case "ORDERBOOK":
+      return JSON.stringify([
+        "orderbook",
+        event.exchangeId,
+        event.market,
+        timestampOrderKey(event.exchangeTimestamp),
+        timestampOrderKey(event.receivedAt),
+        orderbookLevelPayloadKey(event.asks),
+        orderbookLevelPayloadKey(event.bids),
+      ]);
+    case "TICKER":
+      return JSON.stringify([
+        "ticker",
+        event.exchangeId,
+        event.market,
+        timestampOrderKey(event.exchangeTimestamp),
+        timestampOrderKey(event.receivedAt),
+        event.tradePrice,
+        event.changeRate ?? "*",
+        event.accTradePrice24h ?? "*",
+      ]);
+    case "STATUS":
+      return JSON.stringify([
+        "status",
+        event.exchangeId,
+        event.market ?? "*",
+        timestampOrderKey(event.observedAt),
+        event.status,
+        event.reasonCode ?? "*",
+        event.websocketLagMs ?? "*",
+        event.reconnectCount ?? "*",
+      ]);
+  }
+}
+
+function orderbookLevelPayloadKey(levels: readonly OrderbookLevel[]): readonly (readonly [unknown, unknown])[] {
+  return levels.map((level) => [level.price, level.size] as const);
+}
+
+function timestampOrderKey(value: TimestampInput): string {
+  return parseTimestampNanos(value).toString();
 }
 
 function validateSingleMarketBoundary(candidates: readonly EventOrderCandidate[]): void {
@@ -870,17 +965,10 @@ function validateDuplicateTimestampOrderKeys(candidates: readonly EventOrderCand
     timestampCounts.set(timestampKey, (timestampCounts.get(timestampKey) ?? 0) + 1);
   }
 
-  const seenOrderKeys = new Set<string>();
+  const seenOrderKeys = new Map<string, string>();
   for (const candidate of candidates) {
     if ((timestampCounts.get(candidate.timestampNanos.toString()) ?? 0) < 2) {
       continue;
-    }
-
-    if (candidate.sequence === undefined || candidate.tieBreakKey === undefined) {
-      throw new FeatureCalculationError(
-        "FEATURE_INVALID_MARKET_VALUE",
-        "duplicate timestamp events require sequence and tieBreakKey",
-      );
     }
 
     const orderKey = JSON.stringify([
@@ -890,10 +978,11 @@ function validateDuplicateTimestampOrderKeys(candidates: readonly EventOrderCand
       candidate.sequence,
       candidate.tieBreakKey,
     ]);
-    if (seenOrderKeys.has(orderKey)) {
+    const existingPayloadKey = seenOrderKeys.get(orderKey);
+    if (existingPayloadKey !== undefined && existingPayloadKey !== candidate.canonicalPayloadKey) {
       throw new FeatureCalculationError("FEATURE_INVALID_MARKET_VALUE", "duplicate event order key");
     }
-    seenOrderKeys.add(orderKey);
+    seenOrderKeys.set(orderKey, candidate.canonicalPayloadKey);
   }
 }
 
@@ -903,12 +992,12 @@ function compareEventOrderCandidates(left: EventOrderCandidate, right: EventOrde
     return timestampDiff;
   }
 
-  const sequenceDiff = compareSequence(left.sequence ?? "", right.sequence ?? "");
+  const sequenceDiff = compareSequence(left.sequence, right.sequence);
   if (sequenceDiff !== 0) {
     return sequenceDiff;
   }
 
-  const tieBreakDiff = compareString(left.tieBreakKey ?? "", right.tieBreakKey ?? "");
+  const tieBreakDiff = compareString(left.tieBreakKey, right.tieBreakKey);
   if (tieBreakDiff !== 0) {
     return tieBreakDiff;
   }

@@ -39,7 +39,8 @@ broker, notifier, clock read side effect를 갖지 않는다. 같은 입력 wind
 - 일별 기준: 24시간 거래대금과 Upbit 일봉 해석은 UTC 기준을 기본으로 두되, KST bucket은 별도 metadata로 함께 보존한다.
 
 동일 timestamp의 이벤트가 여러 개면 fixture와 runtime source는 `sequence`와 `tieBreakKey`로 deterministic order를 제공해야 한다.
-정렬 key가 부족한 입력은 parity 대상 fixture로 인정하지 않는다.
+legacy `MarketDataEvent`처럼 key가 없는 입력은 계산기가 정규화 payload 기반 fallback key로 정렬하되, 이 fallback은 원천 source 순서
+보존이 아니라 재현성 확보용이므로 parity fixture와 runtime adapter는 명시 key를 우선 제공해야 한다.
 
 ### 결측과 fail-closed
 
@@ -109,8 +110,9 @@ Sub PR 4에서 strategy integration을 수행할 때 아래 required feature를 
 ## Runtime config contract
 
 M11 구현 PR은 새 threshold를 `strategyParameters.<strategy_id>` 아래에 추가한다. 모든 bps, KRW, ratio 값은 Decimal string으로
-검증한다. bucket 수와 lookback 개수는 양의 정수 number로 검증한다. `market_regime` 허용 목록은 비어 있지 않은 enum string
-배열이어야 한다.
+검증한다. bucket 수와 lookback 개수는 양의 정수 number로 검증한다. feature calculator option도 context 생성 단계에서 양의
+정수로 검증해 잘못된 설정을 입력 부족 failure로 숨기지 않는다. `market_regime` 허용 목록은 비어 있지 않은 enum string 배열이어야
+한다.
 
 기본 운영 threshold 변경은 M11 마지막 calibration PR 전까지 금지한다. Sub PR 2-4는 새 key와 schema, 테스트를 추가할 수 있지만
 `config/paper.json`의 기본값을 더 공격적으로 바꾸지 않는다.

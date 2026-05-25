@@ -86,8 +86,8 @@ export interface FeatureCalculationInput {
 /**
  * feature window와 regime 분류에 쓰는 조정값이다.
  *
- * 모든 duration은 millisecond number이며, 테스트와 runtime이 같은 기본값을 공유하되 후속 calibration PR에서만
- * 운영 기본값 변경을 검토한다.
+ * 모든 duration/count/depth level은 양의 정수 number여야 하며, 테스트와 runtime이 같은 기본값을 공유하되 후속 calibration
+ * PR에서만 운영 기본값 변경을 검토한다. 잘못된 숫자 옵션은 입력 window 부족으로 숨기지 않고 snapshot-level failure로 닫는다.
  */
 export interface FeatureCalculationOptions {
   candleBucketMs?: number;
