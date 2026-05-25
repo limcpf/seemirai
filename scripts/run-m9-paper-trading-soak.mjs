@@ -1175,7 +1175,14 @@ function createEmptyTradingMetrics() {
 
 function resolveDailyTiming({ dayStartedAt, finishedAt, options, bucket }) {
   const dayStartedAtMs = dayStartedAt.getTime();
-  const dayWindowEndedAtMs = Math.min(finishedAt.getTime(), dayStartedAtMs + options.dayMs);
+  const dayEndedAtMs = dayStartedAtMs + options.dayMs;
+  if (finishedAt.getTime() >= dayEndedAtMs) {
+    return {
+      finishedAt: new Date(dayEndedAtMs),
+      durationMsObserved: options.dayMs,
+    };
+  }
+
   const latestActivityMs = latestTimestampMs([
     bucket.lastCycleAt,
     bucket.lastCycleAttemptAt,
@@ -1183,7 +1190,7 @@ function resolveDailyTiming({ dayStartedAt, finishedAt, options, bucket }) {
     bucket.lastOrderbookAt,
   ]);
   const observedFinishedAtMs =
-    latestActivityMs === null ? dayWindowEndedAtMs : Math.min(dayWindowEndedAtMs, latestActivityMs);
+    latestActivityMs === null ? finishedAt.getTime() : Math.min(finishedAt.getTime(), latestActivityMs);
   const safeFinishedAtMs = Math.max(dayStartedAtMs, observedFinishedAtMs);
 
   return {

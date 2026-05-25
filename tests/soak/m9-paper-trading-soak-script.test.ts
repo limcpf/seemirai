@@ -358,6 +358,58 @@ describe("M9 paper trading soak script", () => {
     }
   }, 40_000);
 
+  it("closes completed daily buckets at the configured day boundary", async () => {
+    const server = await startOrderbookWebSocketServer([createOrderbookPayload()]);
+    try {
+      const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-m9-trading-soak-day-boundary-"));
+      const { stdout } = await execFileAsync(
+        "node",
+        [
+          scriptPath,
+          "--json",
+          "--daily-report-generated",
+          "--duration-ms",
+          "260",
+          "--day-ms",
+          "100",
+          "--days",
+          "2",
+          "--cycle-interval-ms",
+          "40",
+          "--max-orderbook-staleness-ms",
+          "10000",
+          "--websocket-url",
+          server.url,
+          "--artifact-dir",
+          artifactDir,
+        ],
+        {
+          env: {
+            ...process.env,
+            SEEMIRAI_RUN_M9_PAPER_TRADING_SOAK: "1",
+          },
+        },
+      );
+      const summary = JSON.parse(stdout) as {
+        status: string;
+        artifacts: { dailySummaryPaths: string[] };
+      };
+      const dayOne = JSON.parse(await readFile(summary.artifacts.dailySummaryPaths[0]!, "utf8")) as {
+        durationMsObserved: number;
+        checks: { durationCompleted: { status: string } };
+      };
+      const dayTwo = JSON.parse(await readFile(summary.artifacts.dailySummaryPaths[1]!, "utf8")) as typeof dayOne;
+
+      expect(summary.status).toBe("passed");
+      expect(dayOne.durationMsObserved).toBe(100);
+      expect(dayTwo.durationMsObserved).toBe(100);
+      expect(dayOne.checks.durationCompleted.status).toBe("ok");
+      expect(dayTwo.checks.durationCompleted.status).toBe("ok");
+    } finally {
+      await server.close();
+    }
+  }, 40_000);
+
   it("selects the freshest cached orderbook across configured markets", async () => {
     const server = await startOrderbookWebSocketServer(
       [
