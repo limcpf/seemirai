@@ -140,6 +140,23 @@ describe("M9 paper decision runner script", () => {
       "discard:duplicate_broker_order",
     );
   }, 30_000);
+
+  it("writes a failed summary and raw fatal log when setup throws", async () => {
+    const workDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-m9-decision-fatal-"));
+    const summary = await runScriptExpectingFatalSummary([
+      "--fixture-smoke",
+      "--json",
+      "--fixture",
+      path.join(workDir, "missing-fixture.json"),
+      "--artifact-dir",
+      workDir,
+    ]);
+    const rawLog = await readFile(summary.artifacts.rawLogPath, "utf8");
+
+    expect(summary.status).toBe("failed");
+    expect(summary.checks.fatalError.status).toBe("fail");
+    expect(rawLog).toContain("RUNNER_FATAL");
+  }, 30_000);
 });
 
 async function readCompileTempDirs() {
@@ -167,6 +184,22 @@ async function runScriptExpectingFailure(args: readonly string[]) {
           };
         };
       };
+    };
+  }
+
+  throw new Error("script unexpectedly passed");
+}
+
+async function runScriptExpectingFatalSummary(args: readonly string[]) {
+  try {
+    await execFileAsync("node", [scriptPath, ...args]);
+  } catch (error) {
+    const executionError = error as Error & { code?: number; stdout?: string };
+    expect(executionError.code).toBe(1);
+    return JSON.parse(executionError.stdout ?? "{}") as {
+      status: string;
+      artifacts: { rawLogPath: string };
+      checks: { fatalError: { status: string } };
     };
   }
 

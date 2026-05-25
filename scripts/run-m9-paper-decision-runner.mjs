@@ -30,7 +30,11 @@ process.on("uncaughtException", (error) => {
   process.exitCode = 1;
 });
 
-await main();
+try {
+  await main();
+} catch (error) {
+  await handleFatalError(error);
+}
 
 async function main() {
   const options = parseArgs(process.argv.slice(2));
@@ -78,6 +82,88 @@ async function main() {
   if (summary.status === "failed") {
     process.exitCode = 1;
   }
+}
+
+async function handleFatalError(error) {
+  runtimeCounters.uncaughtExceptions += 1;
+  const startedAt = new Date();
+  const runId = randomUUID();
+  const options = parseArgsForFailure(process.argv.slice(2));
+  const artifactDir = path.resolve(options.artifactDir ?? process.env.SEEMIRAI_M9_ARTIFACT_DIR ?? defaultArtifactDir);
+  const artifacts = createArtifactPaths({ artifactDir, startedAt, runId, options });
+  const git = await readGitContext();
+  const finishedAt = new Date();
+  const checks = {
+    fatalError: failCheck("runner 예외가 발생해 실패 summary를 기록했다.", {
+      message: toErrorMessage(error),
+    }),
+    runtimeExceptions: runtimeExceptionCheck(),
+  };
+  const summary = {
+    schemaVersion: 1,
+    runId,
+    status: "failed",
+    startedAt: startedAt.toISOString(),
+    finishedAt: finishedAt.toISOString(),
+    durationMsRequested: 0,
+    durationMsObserved: finishedAt.getTime() - startedAt.getTime(),
+    mode: "PAPER_TRADING",
+    input: options.fixtureSmoke ? "m9_paper_decision_fixture_smoke" : "m9_paper_decision_runner_failed",
+    git,
+    artifacts,
+    metrics: createEmptyMetrics(),
+    checks,
+  };
+
+  // 예외 경로에서도 운영 자동화가 실패 원인을 수집할 수 있게 summary/report/raw trace를 남긴다.
+  await writeFailureArtifacts({ summary, artifacts, error });
+  printSummary(summary, options);
+  process.exitCode = 1;
+}
+
+function parseArgsForFailure(argv) {
+  try {
+    return parseArgs(argv);
+  } catch {
+    return {
+      fixturePath: defaultFixturePath,
+      fixtureSmoke: argv.includes("--fixture-smoke"),
+      json: argv.includes("--json"),
+      help: false,
+      dailyReportGenerated: argv.includes("--daily-report-generated"),
+    };
+  }
+}
+
+function createEmptyMetrics() {
+  return {
+    strategyEvaluationCount: 0,
+    orderCandidateCount: 0,
+    orderIntentCount: 0,
+    holdReasonCounts: {},
+    discardReasonCounts: {},
+    costRejectedCount: 0,
+    riskRejectedCount: 0,
+    paperOrderSubmittedCount: 0,
+    paperFillCount: 0,
+    fillRate: 0,
+    costSummary: {
+      evaluatedCount: 0,
+      allowedCount: 0,
+      rejectedCount: 0,
+      averageCostBps: null,
+      averageRequiredReturnBps: null,
+      averageMarginBps: null,
+    },
+    slippageSummary: {
+      observedFillCount: 0,
+      averageSlippageBps: null,
+      minSlippageBps: null,
+      maxSlippageBps: null,
+    },
+    blockingReasonCounts: {},
+    liveOrderApiCalls: 0,
+  };
 }
 
 function parseArgs(argv) {
@@ -283,6 +369,24 @@ async function writeArtifacts({ summary, result, artifacts }) {
   await mkdir(path.dirname(artifacts.rawLogPath), { recursive: true });
   await writeFile(artifacts.reportPath, renderMarkdownReport(summary), "utf8");
   await writeTraceLog(artifacts.rawLogPath, result.trace);
+  await writeFile(artifacts.summaryPath, `${JSON.stringify(summary, null, 2)}\n`, "utf8");
+}
+
+async function writeFailureArtifacts({ summary, artifacts, error }) {
+  await mkdir(path.dirname(artifacts.summaryPath), { recursive: true });
+  await mkdir(path.dirname(artifacts.reportPath), { recursive: true });
+  await mkdir(path.dirname(artifacts.rawLogPath), { recursive: true });
+  await writeFile(
+    artifacts.rawLogPath,
+    `${JSON.stringify({
+      stage: "RUNNER_FATAL",
+      status: "ERROR",
+      message: toErrorMessage(error),
+      occurredAt: summary.finishedAt,
+    })}\n`,
+    "utf8",
+  );
+  await writeFile(artifacts.reportPath, renderMarkdownReport(summary), "utf8");
   await writeFile(artifacts.summaryPath, `${JSON.stringify(summary, null, 2)}\n`, "utf8");
 }
 

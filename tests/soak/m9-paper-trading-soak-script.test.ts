@@ -169,11 +169,29 @@ describe("M9 paper trading soak script", () => {
     });
   }, 40_000);
 
+  it("writes a failed summary and raw fatal log when setup throws", async () => {
+    const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-m9-trading-soak-fatal-"));
+    const summary = await runScriptExpectingFailure([
+      "--fixture-smoke",
+      "--json",
+      "--daily-report-generated",
+      "--fixture",
+      path.join(artifactDir, "missing-fixture.json"),
+      "--artifact-dir",
+      artifactDir,
+    ]);
+    const rawLog = await readFile(summary.artifacts.rawLogPath, "utf8");
+
+    expect(summary.status).toBe("failed");
+    expect(summary.checks.fatalError?.status).toBe("fail");
+    expect(rawLog).toContain("RUNNER_FATAL");
+  }, 40_000);
+
   it("skips stale public orderbook snapshots before a paper cycle", async () => {
     const server = await startOrderbookWebSocketServer([createOrderbookPayload()]);
     try {
       const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-m9-trading-soak-stale-"));
-      const summary = await runScriptExpectingFailure(
+      const summary = await runScriptAllowingFailure(
         [
           "--json",
           "--daily-report-generated",
@@ -307,7 +325,9 @@ describe("M9 paper trading soak script", () => {
       );
       const summary = JSON.parse(stdout) as {
         status: string;
+        durationMsObserved: number;
         artifacts: { dailySummaryPaths: string[] };
+        checks: { durationCompleted: { status: string } };
       };
       const daySummary = JSON.parse(await readFile(summary.artifacts.dailySummaryPaths[0]!, "utf8")) as {
         startedAt: string;
@@ -322,6 +342,8 @@ describe("M9 paper trading soak script", () => {
       const dayFinishedAtMs = new Date(daySummary.finishedAt).getTime();
 
       expect(summary.status).toBe("passed");
+      expect(summary.durationMsObserved).toBeLessThan(1000);
+      expect(summary.checks.durationCompleted.status).toBe("ok");
       expect(dayFinishedAtMs).toBeLessThan(dayStartedAtMs + 1000);
       expect(daySummary.durationMsObserved).toBeLessThan(1000);
       expect(daySummary.checks.durationCompleted.status).toBe("fail");
@@ -414,7 +436,7 @@ async function runScriptExpectingFailure(args: readonly string[], env: NodeJS.Pr
         cyclesSkippedNoOrderbook: number;
         cyclesSkippedStaleOrderbook: number;
       };
-      checks: { marketDataSource: { status: string } };
+      checks: { fatalError?: { status: string }; marketDataSource: { status: string } };
     };
   }
 
@@ -430,6 +452,9 @@ async function runScriptAllowingFailure(args: readonly string[], env: NodeJS.Pro
       },
     });
     return JSON.parse(stdout) as {
+      artifacts: {
+        rawLogPath: string;
+      };
       metrics: {
         paperTradingCycles: number;
         paperOrderSubmittedCount: number;
@@ -441,6 +466,9 @@ async function runScriptAllowingFailure(args: readonly string[], env: NodeJS.Pro
   } catch (error) {
     const executionError = error as Error & { stdout?: string };
     return JSON.parse(executionError.stdout ?? "{}") as {
+      artifacts: {
+        rawLogPath: string;
+      };
       metrics: {
         paperTradingCycles: number;
         paperOrderSubmittedCount: number;

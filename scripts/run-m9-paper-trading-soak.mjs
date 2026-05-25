@@ -47,7 +47,11 @@ process.on("SIGTERM", () => {
   process.stderr.write("M9 paper trading soak 종료 요청을 받았다. 현재 cycle을 정리하고 summary를 기록한다.\n");
 });
 
-await main();
+try {
+  await main();
+} catch (error) {
+  await handleFatalError(error);
+}
 
 async function main() {
   const options = finalizeOptions(parseArgs(process.argv.slice(2)));
@@ -134,6 +138,63 @@ async function main() {
 
   if (summary.status === "failed") {
     process.exitCode = 1;
+  }
+}
+
+async function handleFatalError(error) {
+  runtimeCounters.uncaughtExceptions += 1;
+  const startedAt = new Date();
+  const runId = randomUUID();
+  const options = finalizeOptions(parseArgsForFailure(process.argv.slice(2)));
+  const artifactDir = path.resolve(options.artifactDir ?? process.env.SEEMIRAI_M9_ARTIFACT_DIR ?? defaultArtifactDir);
+  const artifacts = createArtifactPaths({ artifactDir, startedAt, runId, options });
+  const git = await readGitContext();
+  const inputMode = options.fixtureSmoke ? "m9_paper_trading_fixture_loop" : "upbit_public_websocket_paper_trading_loop";
+  const finishedAt = new Date();
+  const checks = {
+    fatalError: failCheck("runner 예외가 발생해 실패 summary를 기록했다.", {
+      message: toErrorMessage(error),
+    }),
+    runtimeExceptions: runtimeExceptionCheck(),
+  };
+  const summary = createBaseSummary({
+    runId,
+    startedAt,
+    finishedAt,
+    inputMode,
+    options,
+    git,
+    artifacts,
+    metrics: createEmptyTradingMetrics(),
+    checks,
+    status: "failed",
+  });
+
+  // 예외 경계에서도 JSON summary와 raw log를 남겨 운영 자동화가 실패 원인을 잃지 않게 한다.
+  await writeFailureArtifacts({ summary, artifacts, error });
+  printSummary(summary, options);
+  process.exitCode = 1;
+}
+
+function parseArgsForFailure(argv) {
+  try {
+    return parseArgs(argv);
+  } catch {
+    return {
+      configPath: defaultConfigPath,
+      fixturePath: defaultFixturePath,
+      fixtureSmoke: argv.includes("--fixture-smoke"),
+      websocketUrl: defaultWebSocketUrl,
+      markets: [],
+      json: argv.includes("--json"),
+      help: false,
+      dailyReportGenerated: argv.includes("--daily-report-generated"),
+      dbWriteFailures: 0,
+      notificationFailures: 0,
+      days: defaultDays,
+      dayMs: defaultDayMs,
+      cycleIntervalMs: defaultCycleIntervalMs,
+    };
   }
 }
 
@@ -972,6 +1033,7 @@ function createSkippedSummary({ runId, startedAt, inputMode, options, git, artif
 }
 
 function createCompletedSummary({ runId, startedAt, finishedAt, inputMode, options, git, artifacts, state }) {
+  const loopStartedAt = new Date(state.startedAtMs);
   const metrics = {
     ...finalizeMetrics(state.aggregate),
     paperTradingCycleAttempts: state.cycleAttemptCount,
@@ -988,14 +1050,14 @@ function createCompletedSummary({ runId, startedAt, finishedAt, inputMode, optio
     options,
     state,
     metrics,
-    durationMsObserved: finishedAt.getTime() - startedAt.getTime(),
+    durationMsObserved: finishedAt.getTime() - loopStartedAt.getTime(),
     requestedDurationMs: options.durationMs,
     finishedAt,
     isDaily: false,
   });
   return createBaseSummary({
     runId,
-    startedAt,
+    startedAt: loopStartedAt,
     finishedAt,
     inputMode,
     options,
@@ -1041,7 +1103,7 @@ function createDailySummary({
       lastOrderbookAt: bucket.lastOrderbookAt,
       lastOrderbookUsedAt: bucket.lastOrderbookUsedAt,
       lastOrderbookUsedForCycleAt: bucket.lastOrderbookUsedForCycleAt,
-      interrupted: bucket.cycleCount === 0 ? false : interrupted,
+      interrupted,
     },
     metrics,
     durationMsObserved: dailyTiming.durationMsObserved,
@@ -1093,6 +1155,21 @@ function createBaseSummary({ runId, startedAt, finishedAt, inputMode, options, g
     },
     metrics,
     checks,
+  };
+}
+
+function createEmptyTradingMetrics() {
+  return {
+    ...finalizeMetrics(createMetricAccumulator()),
+    paperTradingCycleAttempts: 0,
+    paperTradingCycles: 0,
+    cyclesSkippedNoOrderbook: 0,
+    cyclesSkippedStaleOrderbook: 0,
+    websocketMessages: 0,
+    tradeMessages: 0,
+    orderbookMessages: 0,
+    websocketErrors: 0,
+    websocketReconnects: 0,
   };
 }
 
@@ -1395,6 +1472,21 @@ async function writeSummaryAndReport(summary, summaryPath, reportPath) {
   await mkdir(path.dirname(summaryPath), { recursive: true });
   await writeFile(reportPath, renderMarkdownReport(summary), "utf8");
   await writeFile(summaryPath, `${JSON.stringify(summary, null, 2)}\n`, "utf8");
+}
+
+async function writeFailureArtifacts({ summary, artifacts, error }) {
+  await mkdir(path.dirname(artifacts.rawLogPath), { recursive: true });
+  await writeFile(
+    artifacts.rawLogPath,
+    `${JSON.stringify({
+      kind: "RUNNER_FATAL",
+      status: "ERROR",
+      occurredAt: summary.finishedAt,
+      message: toErrorMessage(error),
+    })}\n`,
+    "utf8",
+  );
+  await writeSummaryAndReport(summary, artifacts.summaryPath, artifacts.reportPath);
 }
 
 function renderMarkdownReport(summary) {
