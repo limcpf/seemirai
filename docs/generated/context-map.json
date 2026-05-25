@@ -184,6 +184,13 @@
       "owner_scope": "docs/design-docs"
     },
     {
+      "path": "docs/design-docs/2026-05-25-feature-quality-calibration.md",
+      "kind": "design-doc",
+      "role": "M11 전략/피처 품질 보강 feature contract와 calibration 경계",
+      "read_when": ["M11 전략/피처 품질 보강", "feature calculator 구현", "backtest paper feature parity", "strategy threshold calibration"],
+      "owner_scope": "docs/design-docs"
+    },
+    {
       "path": "docs/design-docs/index.md",
       "kind": "index",
       "role": "설계 문서 인덱스",
