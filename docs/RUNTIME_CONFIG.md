@@ -213,6 +213,85 @@ Telegram 첫 화면에는 내부 enum/code보다 다음 사용자 문구와 주�
 `fingerprint`, order id, idempotency key, correlation id, event kind, reason code는 하단 `추적 정보`에만 둔다. 이 구분은
 운영자가 즉시 행동할 내용과 복구·감사용 안정 식별자를 섞지 않기 위한 presentation invariant다.
 
+## M9 Paper decision runner
+
+구현 기준:
+
+- application runner: `src/application/paper-decision-runner.ts`
+- fixture/runtime assembly: `src/runtime/paper-decision-runner.ts`
+- CLI smoke: `scripts/run-m9-paper-decision-runner.mjs`
+- controlled fixture: `tests/fixtures/m9/paper-decision-runner.json`
+
+M9 paper decision runner는 M8 public WebSocket soak와 다른 검증 경계다. WebSocket soak의 `tradeMessages`와
+`orderbookMessages`는 시장 데이터 수신 수이며 paper 매매 수가 아니므로, decision runner가 별도로
+`feature -> strategy evaluation -> order intent -> CostModel -> RiskGate -> ExecutionEngine -> PaperBroker -> summary`
+순서를 실행한다.
+
+runner는 `PaperDecisionInputSource` port를 소비하므로 deterministic fixture뿐 아니라 후속 DB/market-data cursor source로
+확장할 수 있다. 기본 fixture smoke는 `PaperBroker`만 조립하고 Upbit private client, live broker, Telegram inbound route를
+만들지 않는다. controlled fixture는 최소 1회 paper 주문 제출과 체결을 통과해야 하며, 주문이 0건인 frame도
+`holdReasonCounts`, `discardReasonCounts`, `costRejectedCount`, `riskRejectedCount`, `blockingReasonCounts`로 이유가
+설명되어야 한다.
+
+summary의 `metrics`는 3일 비교 입력을 위해 다음 필드를 항상 포함한다.
+
+- `strategyEvaluationCount`, `orderCandidateCount`, `orderIntentCount`
+- `holdReasonCounts`, `discardReasonCounts`, `blockingReasonCounts`
+- `costRejectedCount`, `riskRejectedCount`
+- `paperOrderSubmittedCount`, `paperFillCount`, `fillRate`
+- `costSummary`, `slippageSummary`
+- `liveOrderApiCalls=0`
+
+## M9 Paper trading soak runner
+
+구현 기준:
+
+- 장시간 runner: `scripts/run-m9-paper-trading-soak.mjs`
+- decision cycle runtime: `src/runtime/paper-decision-runner.ts`
+- smoke test: `tests/soak/m9-paper-trading-soak-script.test.ts`
+
+`run-m9-paper-decision-runner.mjs`는 한 번 실행하고 끝나는 deterministic decision boundary smoke다. 3일 동안 프로세스를
+켜놓고 PaperBroker 제출/체결 경계를 반복 검증하려면 `run-m9-paper-trading-soak.mjs`를 사용한다.
+
+기본 실제 실행은 3일(`--days 3`, `--day-ms 86400000`) 동안 유지되며 `SEEMIRAI_RUN_M9_PAPER_TRADING_SOAK=1`이 있어야
+시작한다. runner는 Upbit public quotation WebSocket의 orderbook을 계속 수신하고, cycle마다 최신 orderbook을 controlled
+decision fixture에 주입해 `feature -> strategy evaluation -> order intent -> CostModel -> RiskGate -> ExecutionEngine ->
+PaperBroker` 경계를 반복 실행한다. 이 경로는 Upbit private API, live broker, Telegram inbound route를 만들지 않고
+`metrics.liveOrderApiCalls=0`을 summary와 check에 남긴다.
+
+빠른 검증은 네트워크 없이 fixture loop로 실행한다.
+
+```sh
+node scripts/run-m9-paper-trading-soak.mjs \
+  --fixture-smoke \
+  --json \
+  --daily-report-generated \
+  --days 3 \
+  --cycles-per-day 1 \
+  --max-cycles 3
+```
+
+실제 3일 운영 evidence는 다음처럼 실행한다.
+
+```sh
+SEEMIRAI_RUN_M9_PAPER_TRADING_SOAK=1 \
+node scripts/run-m9-paper-trading-soak.mjs \
+  --daily-report-generated \
+  --artifact-dir "$HOME/vaults/99_운영/seemirai-m9-paper/trading-soak"
+```
+
+aggregate summary는 전체 3일 metric을 담고, `artifacts.dailySummaryPaths`에는 day별 summary 3개가 들어간다. 3일 비교에는
+이 day summary들을 입력한다.
+
+```sh
+node scripts/compare-m9-paper-reports.mjs \
+  --summary "$HOME/vaults/99_운영/seemirai-m9-paper/trading-soak/"*-day-1-summary.json \
+  --summary "$HOME/vaults/99_운영/seemirai-m9-paper/trading-soak/"*-day-2-summary.json \
+  --summary "$HOME/vaults/99_운영/seemirai-m9-paper/trading-soak/"*-day-3-summary.json \
+  --output "$HOME/vaults/99_운영/seemirai-m9-paper/m9-3day-trading-soak-comparison.md" \
+  --json
+```
+
 ## M9 Notification retry worker
 
 구현 기준:
