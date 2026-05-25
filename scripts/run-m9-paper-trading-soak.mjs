@@ -333,6 +333,7 @@ async function readJsonFile(filePath) {
 function createSoakState({ options, startedAt, artifacts }) {
   return {
     startedAtMs: startedAt.getTime(),
+    cycleAttemptCount: 0,
     cycleCount: 0,
     skippedNoOrderbookCycles: 0,
     websocketMessages: 0,
@@ -348,6 +349,7 @@ function createSoakState({ options, startedAt, artifacts }) {
     aggregate: createMetricAccumulator(),
     dailyBuckets: Array.from({ length: options.days }, (_, index) => ({
       dayIndex: index,
+      cycleAttemptCount: 0,
       cycleCount: 0,
       skippedNoOrderbookCycles: 0,
       skippedStaleOrderbookCycles: 0,
@@ -372,7 +374,7 @@ async function runTradingCycles({ options, fixture, runtime, rawLog, state, getL
   let nextCycleAtMs = startedAtMs;
 
   while (!stopRequested && Date.now() < endAtMs) {
-    if (options.maxCycles !== undefined && state.cycleCount >= options.maxCycles) {
+    if (options.maxCycles !== undefined && state.cycleAttemptCount >= options.maxCycles) {
       break;
     }
 
@@ -383,9 +385,11 @@ async function runTradingCycles({ options, fixture, runtime, rawLog, state, getL
     }
 
     const cycleStartedAt = new Date();
-    const cycleIndex = state.cycleCount;
+    const cycleIndex = state.cycleAttemptCount;
     const dayIndex = calculateDayIndex({ options, state, cycleIndex, cycleStartedAt });
     const bucket = state.dailyBuckets[dayIndex];
+    state.cycleAttemptCount += 1;
+    bucket.cycleAttemptCount += 1;
     const latestOrderbook = getLatestOrderbook();
     const orderbookSkip = options.fixtureSmoke
       ? null
@@ -948,6 +952,7 @@ function createSkippedSummary({ runId, startedAt, inputMode, options, git, artif
 function createCompletedSummary({ runId, startedAt, finishedAt, inputMode, options, git, artifacts, state }) {
   const metrics = {
     ...finalizeMetrics(state.aggregate),
+    paperTradingCycleAttempts: state.cycleAttemptCount,
     paperTradingCycles: state.cycleCount,
     cyclesSkippedNoOrderbook: state.skippedNoOrderbookCycles,
     cyclesSkippedStaleOrderbook: state.skippedStaleOrderbookCycles,
@@ -996,6 +1001,7 @@ function createDailySummary({
   const dayFinishedAt = new Date(dayStartedAt.getTime() + options.dayMs);
   const metrics = {
     ...finalizeMetrics(bucket.metrics),
+    paperTradingCycleAttempts: bucket.cycleAttemptCount,
     paperTradingCycles: bucket.cycleCount,
     cyclesSkippedNoOrderbook: bucket.skippedNoOrderbookCycles,
     cyclesSkippedStaleOrderbook: bucket.skippedStaleOrderbookCycles,

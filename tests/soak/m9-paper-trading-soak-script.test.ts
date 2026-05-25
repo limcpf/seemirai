@@ -123,11 +123,13 @@ describe("M9 paper trading soak script", () => {
         "--json",
         "--daily-report-generated",
         "--duration-ms",
-        "50",
+        "1000",
         "--day-ms",
-        "50",
+        "1000",
         "--days",
         "1",
+        "--max-cycles",
+        "2",
         "--cycle-interval-ms",
         "10",
         "--websocket-url",
@@ -141,12 +143,24 @@ describe("M9 paper trading soak script", () => {
     );
     const daySummary = JSON.parse(await readFile(summary.artifacts.dailySummaryPaths[0]!, "utf8")) as {
       status: string;
+      metrics: {
+        paperTradingCycleAttempts: number;
+        cyclesSkippedNoOrderbook: number;
+      };
       checks: { marketDataSource: { status: string; evidence: { orderbookMessages: number } } };
     };
 
     expect(summary.status).toBe("failed");
+    expect(summary.metrics).toMatchObject({
+      paperTradingCycleAttempts: 2,
+      cyclesSkippedNoOrderbook: 2,
+    });
     expect(summary.checks.marketDataSource.status).toBe("fail");
     expect(daySummary.status).toBe("failed");
+    expect(daySummary.metrics).toMatchObject({
+      paperTradingCycleAttempts: 2,
+      cyclesSkippedNoOrderbook: 2,
+    });
     expect(daySummary.checks.marketDataSource).toMatchObject({
       status: "fail",
       evidence: {
@@ -224,7 +238,7 @@ describe("M9 paper trading soak script", () => {
           "--days",
           "1",
           "--max-cycles",
-          "1",
+          "2",
           "--cycle-interval-ms",
           "20",
           "--max-orderbook-staleness-ms",
@@ -284,7 +298,7 @@ describe("M9 paper trading soak script", () => {
           "--days",
           "1",
           "--max-cycles",
-          "1",
+          "3",
           "--cycle-interval-ms",
           "30",
           "--max-orderbook-staleness-ms",
@@ -337,7 +351,11 @@ async function runScriptExpectingFailure(args: readonly string[], env: NodeJS.Pr
     return JSON.parse(executionError.stdout ?? "{}") as {
       status: string;
       artifacts: { dailySummaryPaths: string[]; rawLogPath: string };
-      metrics: { cyclesSkippedStaleOrderbook: number };
+      metrics: {
+        paperTradingCycleAttempts: number;
+        cyclesSkippedNoOrderbook: number;
+        cyclesSkippedStaleOrderbook: number;
+      };
       checks: { marketDataSource: { status: string } };
     };
   }
@@ -380,6 +398,9 @@ async function startOrderbookWebSocketServer(payloads: readonly unknown[], delay
   const sockets = new Set<net.Socket>();
   const server = net.createServer((socket) => {
     sockets.add(socket);
+    socket.on("error", () => {
+      sockets.delete(socket);
+    });
     socket.on("close", () => {
       sockets.delete(socket);
     });
