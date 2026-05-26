@@ -5,10 +5,13 @@ import {
   access,
   chmod,
   copyFile,
+  lstat,
   mkdir,
   readFile,
+  readlink,
   readdir,
   rm,
+  symlink,
   writeFile,
 } from "node:fs/promises";
 import path from "node:path";
@@ -142,7 +145,7 @@ async function copyReleaseWorkspace(targetDir, excludedRoots) {
     const sourcePath = path.join(repoRoot, relativePath);
     const targetPath = path.join(targetDir, relativePath);
     await mkdir(path.dirname(targetPath), { recursive: true });
-    await copyFile(sourcePath, targetPath);
+    await copyWorkspaceEntry(sourcePath, targetPath);
   }
 }
 
@@ -156,11 +159,29 @@ async function hasGitMetadata() {
 }
 
 async function collectGitTrackedFiles() {
-  const trackedFilesOutput = await runCapture("git", ["ls-files", "-z"], { cwd: repoRoot });
+  const trackedFilesOutput = await runCapture("git", ["ls-files", "--stage", "-z"], { cwd: repoRoot });
   return trackedFilesOutput
     .split("\0")
     .filter((entry) => entry !== "")
-    .filter((relativePath) => !shouldExcludeRelativePath(relativePath));
+    .map(toGitTrackedFile)
+    .filter((entry) => entry !== undefined)
+    .filter(({ relativePath }) => !shouldExcludeRelativePath(relativePath))
+    .map(({ relativePath }) => relativePath);
+}
+
+function toGitTrackedFile(entry) {
+  const tabIndex = entry.indexOf("\t");
+  if (tabIndex < 0) {
+    return undefined;
+  }
+
+  const metadata = entry.slice(0, tabIndex);
+  const [mode] = metadata.split(" ");
+  if (mode !== "100644" && mode !== "100755" && mode !== "120000") {
+    return undefined;
+  }
+
+  return { relativePath: entry.slice(tabIndex + 1) };
 }
 
 async function collectWorkspaceFilesFromDisk(currentDir, excludedRoots) {
@@ -181,6 +202,11 @@ async function collectWorkspaceFilesFromDisk(currentDir, excludedRoots) {
     }
 
     if (entry.isFile()) {
+      collected.push(relativePath);
+      continue;
+    }
+
+    if (entry.isSymbolicLink()) {
       collected.push(relativePath);
     }
   }
@@ -278,6 +304,27 @@ async function assertNoForbiddenReleaseFiles(rootDir) {
 
   if (forbidden.length > 0) {
     throw new Error(`Forbidden secret-like files in offline release: ${forbidden.join(", ")}`);
+  }
+}
+
+async function copyWorkspaceEntry(sourcePath, targetPath) {
+  let sourceStat;
+  try {
+    sourceStat = await lstat(sourcePath);
+  } catch (error) {
+    if (error instanceof Error && "code" in error && error.code === "ENOENT") {
+      return;
+    }
+    throw error;
+  }
+
+  if (sourceStat.isSymbolicLink()) {
+    await symlink(await readlink(sourcePath), targetPath);
+    return;
+  }
+
+  if (sourceStat.isFile()) {
+    await copyFile(sourcePath, targetPath);
   }
 }
 
