@@ -149,6 +149,18 @@ Acceptance Criteria:
 | 4 | P0/P1 notification retry worker | 순차 |
 | 5 | `/readyz`/`/status`/`/kill-switch` 운영 drill 자동 검증과 3일 report 비교 도구 | 순차 |
 
+2026-05-27 기준 issue #87 관측성 보강 sub PR 결과:
+
+| 순서 | PR | 목표 | 상태 |
+| --- | --- | --- | --- |
+| 1 | #88 | M9 artifact discovery/parser와 실시간 상태 CLI | merged |
+| 2 | #89 | #68 evidence validator와 Markdown comment generator | merged |
+| 3 | #91 | `/status` durable paper/alert/daily report 운영 정보 | merged |
+| 4 | #94 | M9 runbook과 runtime/reliability 문서 정리 | merged |
+| 5 | #99 | mother PR 검증 결과와 #68 연동 사용법 closeout | merged |
+
+Mother PR #100은 2026-05-27 기준 `main` 병합 전 리뷰 드레인과 GitHub check 재검증 단계다.
+
 검증:
 
 ```sh

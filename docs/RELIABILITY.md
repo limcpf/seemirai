@@ -187,7 +187,8 @@ Codex-native 운영은 Codex, Git, GitHub, shell command, 문서 상태를 연�
 - live order API 호출 0회는 soak runtime의 실제 호출 카운트와 `PAPER_NO_KEY` execution runtime source scan을 함께 기록한다.
   source scan은 `ExecutionEngine -> PaperBroker` 조립과 disabled live broker fail-closed 메서드를 확인한다.
 - `/status`와 `/kill-switch`는 기본적으로 source scan으로 route 등록 근거를 확인한다. 운영자가 `--control-url`을 넘기면
-  `/status` 200 응답과 token 없는 `/kill-switch` 거부 응답을 실제 local control server에서 확인한다.
+  `/status` 200 응답과 token 없는 `/kill-switch` 거부 응답을 실제 local control server에서 확인한다. `/status`의
+  paper/alerts/daily report durable 조회 실패는 endpoint 실패가 아니라 하위 `unavailable` 상태와 한국어 필요 조치로 남긴다.
 - 24시간 soak 완료 summary에는 crash 0회, unhandled rejection 0회, live order API 0회, audit 누락 0건, stale data 차단,
   DB write failure 0건, notification failure 0건, daily report 생성 여부가 들어가야 한다.
 - raw event log와 summary artifact는 기본적으로 저장소 밖 `SEEMIRAI_SOAK_LOG_DIR` 또는 `~/vaults/99_운영/seemirai-soak`에 남긴다.

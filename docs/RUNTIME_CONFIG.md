@@ -109,14 +109,18 @@ endpoint가 공통으로 사용할 인증 guard만 고정한다.
 - runtime: `exchange`, `market`, `mode`, phase 1 universe, live trading toggle, `paperNoKey`
 - trading state: current kill switch state, blocked reason, 신규 주문 차단 여부, 수동 검토 필요 여부
 - market data: connection status, lag ms, updated time
-- paper: `paper_orders`에 연결된 pending paper order count, open position count
+- paper: `paper_orders`에 연결된 pending paper order count, open position count, 조회 상태의 한국어 label/message/action
 - database: `/readyz`에서 write check를 제외한 경량 readiness summary
-- alerts: last sent/skipped timestamp
-- daily report: last status, report date, updated time
+- alerts: `alert_cooldowns`에서 읽은 last sent/skipped timestamp, 조회 상태의 한국어 label/message/action
+- daily report: `jobs`의 `report.daily` 최신 row에서 읽은 last status, report date, next run time, updated time,
+  조회 상태의 한국어 label/message/action
 
 `/status`는 `secrets`, local control token, Telegram token, raw headers, raw order detail, raw position detail을 반환하지 않는다.
 kill switch가 `NEW_ORDERS_BLOCKED` 또는 `HARD_STOP` 같은 active 상태여도 `/readyz` 실패로 표현하지 않고
 `/status.tradingState`에만 나타낸다.
+paper/alerts/daily report 같은 운영 관측 집계가 DB 조회에 실패하면 endpoint 전체를 실패시키지 않고 해당 하위 객체의
+`status=unavailable`, `null` 값, 한국어 필요 조치로 낮춘다. 내부 source/reason/idempotency key 같은 추적 정보는 각 하위
+객체의 `trace`에 분리해 보존하며 raw provider error, secret, token은 노출하지 않는다.
 
 POST control endpoint는 후속 PR에서 `/kill-switch`를 등록한다. 이 foundation은 `Authorization: Bearer <token>` 검증
 함수와 Fastify `preHandler`를 제공하며, POST control endpoint가 활성화된 상태에서 local control token이 없으면 startup
