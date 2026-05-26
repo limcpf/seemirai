@@ -8,6 +8,13 @@ export const DEFAULT_HTTP_CONTROL_PORT = 8787;
 
 export type ControlReadinessStatus = "ok" | "fail";
 export type ControlOverallStatus = "ok" | "error";
+/**
+ * `/status` 하위 운영 영역의 요약 health code다.
+ *
+ * `ok`는 조회와 업무 상태가 정상 범위임을, `warning`은 조회는 됐지만 운영 확인이 필요함을, `unavailable`은 조회 자체를
+ * 신뢰할 수 없음을 뜻한다. HTTP status code와 독립적으로 사용하며 외부 side effect는 없다.
+ */
+export type ControlOperationalStatusCode = "ok" | "warning" | "unavailable";
 
 /**
  * `/readyz`를 구성하는 단일 점검 결과다.
@@ -48,10 +55,25 @@ export interface ControlReadinessProvider {
 }
 
 /**
+ * `/status` 하위 운영 영역의 사람이 읽는 상태 설명이다.
+ *
+ * 이 구조는 paper, alert, daily report처럼 조회 실패가 endpoint 실패로 번지면 안 되는 영역에 붙는다. 호출자는
+ * `statusLabel/message/action`을 먼저 보여주고, stable code나 source 같은 내부 식별자는 `trace`에만 보존해야 한다.
+ * 이 타입 자체는 외부 side effect가 없으며, invariant는 raw secret/raw provider payload를 포함하지 않는 것이다.
+ */
+export interface ControlOperationalStatusDetail {
+  status: ControlOperationalStatusCode;
+  statusLabel: string;
+  message: string;
+  action: string | null;
+  trace: Record<string, unknown>;
+}
+
+/**
  * `/status`가 반환하는 운영 snapshot이다.
  *
- * 운영 판단에 필요한 runtime summary, trading state, lag, paper account 집계만 제공하며,
- * secret과 원본 runtime config는 의도적으로 제외한다.
+ * 운영 판단에 필요한 runtime summary, trading state, lag, paper account 집계와 durable alert/daily report 상태만 제공한다.
+ * DB 조회 실패는 하위 상태의 `unavailable`로 낮추고, secret과 원본 runtime config는 의도적으로 제외한다.
  */
 export interface ControlStatusSnapshot {
   generatedAt: string;
@@ -78,18 +100,19 @@ export interface ControlStatusSnapshot {
     lagMs: number | null;
     updatedAt: string | null;
   };
-  paper: {
+  paper: ControlOperationalStatusDetail & {
     pendingPaperOrderCount: number | null;
     openPositionCount: number | null;
   };
   database: ControlReadinessSummary;
-  alerts: {
+  alerts: ControlOperationalStatusDetail & {
     lastSentAt: string | null;
     lastSkippedAt: string | null;
   };
-  dailyReport: {
+  dailyReport: ControlOperationalStatusDetail & {
     lastStatus: string;
     reportDate: string | null;
+    nextRunAfter: string | null;
     updatedAt: string | null;
   };
 }

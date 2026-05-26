@@ -38,6 +38,17 @@ const nullableOperationalStatusSchema = {
   },
 } as const;
 
+const operationalStatusDetailSchema = {
+  required: ["status", "statusLabel", "message", "action", "trace"],
+  properties: {
+    status: { enum: ["ok", "warning", "unavailable"] },
+    statusLabel: { type: "string" },
+    message: { type: "string" },
+    action: { type: ["string", "null"] },
+    trace: { type: "object", additionalProperties: true },
+  },
+} as const;
+
 const errorResponseSchema = {
   type: "object",
   required: ["status", "correlationId", "error"],
@@ -263,8 +274,13 @@ export const statusRouteOptions: RouteShorthandOptions = {
           marketData: nullableOperationalStatusSchema,
           paper: {
             type: "object",
-            required: ["pendingPaperOrderCount", "openPositionCount"],
+            required: [
+              ...operationalStatusDetailSchema.required,
+              "pendingPaperOrderCount",
+              "openPositionCount",
+            ],
             properties: {
+              ...operationalStatusDetailSchema.properties,
               pendingPaperOrderCount: { type: ["number", "null"] },
               openPositionCount: { type: ["number", "null"] },
             },
@@ -272,18 +288,27 @@ export const statusRouteOptions: RouteShorthandOptions = {
           database: readinessResponseSchema,
           alerts: {
             type: "object",
-            required: ["lastSentAt", "lastSkippedAt"],
+            required: [...operationalStatusDetailSchema.required, "lastSentAt", "lastSkippedAt"],
             properties: {
+              ...operationalStatusDetailSchema.properties,
               lastSentAt: { type: ["string", "null"] },
               lastSkippedAt: { type: ["string", "null"] },
             },
           },
           dailyReport: {
             type: "object",
-            required: ["lastStatus", "reportDate", "updatedAt"],
+            required: [
+              ...operationalStatusDetailSchema.required,
+              "lastStatus",
+              "reportDate",
+              "nextRunAfter",
+              "updatedAt",
+            ],
             properties: {
+              ...operationalStatusDetailSchema.properties,
               lastStatus: { type: "string" },
               reportDate: { type: ["string", "null"] },
+              nextRunAfter: { type: ["string", "null"] },
               updatedAt: { type: ["string", "null"] },
             },
           },

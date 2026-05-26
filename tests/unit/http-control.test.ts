@@ -268,8 +268,19 @@ describe("HTTP control foundation", () => {
         lagMs: 12_345,
       },
       paper: {
+        status: "unavailable",
         pendingPaperOrderCount: null,
         openPositionCount: null,
+      },
+      alerts: {
+        status: "ok",
+        statusLabel: "조회 가능",
+        lastSentAt: "2026-05-20T00:00:20.000Z",
+      },
+      dailyReport: {
+        status: "unavailable",
+        statusLabel: "조회 불가",
+        lastStatus: "unavailable",
       },
     });
     expect(bodyText).not.toContain("telegram-secret-token");
@@ -277,6 +288,80 @@ describe("HTTP control foundation", () => {
     expect(bodyText).not.toContain("secrets");
     expect(bodyText).not.toContain("telegram_bot_token");
     expect(bodyText).not.toContain("local_control_token");
+  });
+
+  it("reads durable alert and daily report status without exposing raw job errors", async () => {
+    const runtimeConfig = loadRuntimeConfig({});
+    server = createHttpControlServer({
+      readinessProvider: staticReadinessProvider(readySummary()),
+      statusProvider: createDatabaseControlStatusProvider({
+        runtimeConfig,
+        database: operationalStatusDatabase({
+          killSwitch: {
+            state: "NORMAL",
+            reason_code: null,
+          },
+          alerts: {
+            last_sent_at: new Date("2026-05-20T00:00:20.000Z"),
+            last_skipped_at: new Date("2026-05-20T00:00:30.000Z"),
+          },
+          dailyReportJob: {
+            status: "FAILED",
+            payload_json: {
+              report_date: "2026-05-20",
+            },
+            run_after: new Date("2026-05-20T00:05:00.000Z"),
+            last_error: "telegram provider returned secret-provider-detail",
+            updated_at: new Date("2026-05-20T00:06:00.000Z"),
+            idempotency_key: "report.daily:2026-05-20",
+          },
+        }),
+        statusReadinessProvider: staticReadinessProvider(readySummary()),
+      }),
+    });
+
+    const response = await server.inject({
+      method: "GET",
+      url: "/status",
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({
+      alerts: {
+        status: "ok",
+        statusLabel: "조회 가능",
+        message: "alert cooldown 기록에서 마지막 전송/스킵 시각을 읽었다.",
+        lastSentAt: "2026-05-20T00:00:20.000Z",
+        lastSkippedAt: "2026-05-20T00:00:30.000Z",
+        trace: {
+          source: "alert_cooldowns",
+          reason: "alert_cooldown_state_read",
+        },
+      },
+      dailyReport: {
+        status: "warning",
+        statusLabel: "실패",
+        message: "마지막 daily report job이 실패했다.",
+        action: "jobs table의 추적 정보와 audit event를 확인한 뒤 수동 재실행 또는 재시도를 진행한다.",
+        lastStatus: "FAILED",
+        reportDate: "2026-05-20",
+        nextRunAfter: null,
+        updatedAt: "2026-05-20T00:06:00.000Z",
+        trace: {
+          source: "jobs",
+          reason: "daily_report_job_failed",
+          idempotencyKey: "report.daily:2026-05-20",
+          lastErrorPresent: true,
+        },
+      },
+      paper: {
+        status: "unavailable",
+        statusLabel: "조회 불가",
+        pendingPaperOrderCount: null,
+        openPositionCount: null,
+      },
+    });
+    expect(response.body).not.toContain("secret-provider-detail");
   });
 
   it("keeps /status from running the write readiness provider", async () => {
@@ -892,20 +977,111 @@ function statusSnapshotProvider(input: {
           updatedAt: null,
         },
         paper: {
+          ...operationalStatusDetail({
+            status: "unavailable",
+            statusLabel: "조회 불가",
+            message: "paper 주문과 포지션 집계를 읽지 못했다.",
+            action: "DB 연결과 migration 적용 상태를 확인한 뒤 다시 조회한다.",
+            source: "orders+paper_orders+positions",
+            reason: "database_not_configured",
+          }),
           pendingPaperOrderCount: null,
           openPositionCount: null,
         },
         database: input.database,
         alerts: {
+          ...operationalStatusDetail({
+            status: "unavailable",
+            statusLabel: "조회 불가",
+            message: "alert cooldown DB가 연결되지 않아 마지막 전송/스킵 시각을 확인하지 못했다.",
+            action: "DB 연결 상태를 확인한 뒤 다시 조회한다.",
+            source: "alert_cooldowns",
+            reason: "database_not_configured",
+          }),
           lastSentAt: null,
           lastSkippedAt: null,
         },
         dailyReport: {
+          ...operationalStatusDetail({
+            status: "unavailable",
+            statusLabel: "조회 불가",
+            message: "daily report job DB가 연결되지 않아 마지막 실행 상태를 확인하지 못했다.",
+            action: "DB 연결 상태를 확인한 뒤 다시 조회한다.",
+            source: "jobs",
+            reason: "database_not_configured",
+          }),
           lastStatus: "unavailable",
           reportDate: null,
+          nextRunAfter: null,
           updatedAt: null,
         },
       };
     },
   };
+}
+
+function operationalStatusDetail(input: {
+  status: "ok" | "warning" | "unavailable";
+  statusLabel: string;
+  message: string;
+  action: string | null;
+  source: string;
+  reason: string;
+}) {
+  return {
+    status: input.status,
+    statusLabel: input.statusLabel,
+    message: input.message,
+    action: input.action,
+    trace: {
+      source: input.source,
+      reason: input.reason,
+    },
+  };
+}
+
+function operationalStatusDatabase(input: {
+  killSwitch: { state: KillSwitchState; reason_code: string | null };
+  alerts: { last_sent_at: Date | null; last_skipped_at: Date | null };
+  dailyReportJob?: {
+    status: string;
+    payload_json: Record<string, unknown>;
+    run_after: Date;
+    last_error: string | null;
+    updated_at: Date;
+    idempotency_key: string;
+  };
+}): Database {
+  return {
+    selectFrom(tableName: string) {
+      if (tableName === "kill_switch_state") {
+        return fakeSelectQuery(input.killSwitch);
+      }
+      if (tableName === "alert_cooldowns") {
+        return fakeSelectQuery(input.alerts);
+      }
+      if (tableName === "jobs") {
+        return fakeSelectQuery(input.dailyReportJob);
+      }
+      throw new Error(`unexpected table: ${tableName}`);
+    },
+  } as unknown as Database;
+}
+
+function fakeSelectQuery(row: unknown) {
+  const query = {
+    select() {
+      return query;
+    },
+    where() {
+      return query;
+    },
+    orderBy() {
+      return query;
+    },
+    async executeTakeFirst() {
+      return row;
+    },
+  };
+  return query;
 }
