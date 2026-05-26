@@ -5,6 +5,7 @@
 ## 빠른 라우팅
 
 - 프로젝트 개요와 현재 상태: [`../README.md`](../README.md)
+- 처음 합류한 개발자를 위한 아키텍처와 프로그램 흐름: [`ONBOARDING.md`](./ONBOARDING.md)
 - 문서 구조 탐색, 문서 추가/이동, 인덱스 갱신: [`generated/context-map.json`](./generated/context-map.json), 이 문서
 - 제품 목표, MVP 범위, 사용자 시나리오: [`PRD.md`](./PRD.md)
 - 기능 요구사항, acceptance criteria, 테스트 요구사항: [`FEATURE_REQUIREMENTS.md`](./FEATURE_REQUIREMENTS.md)
