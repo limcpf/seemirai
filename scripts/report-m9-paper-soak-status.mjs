@@ -202,6 +202,7 @@ function getOrCreateRun(runs, prefix) {
 
   const run = {
     prefix,
+    startedAtMs: parseStartedAtMsFromPrefix(prefix),
     latestMtimeMs: 0,
     files: [],
     summaryPath: null,
@@ -246,6 +247,11 @@ function selectLatestRun(runs) {
   }
 
   return [...runs].sort((left, right) => {
+    const leftStartedAt = left.startedAtMs ?? Number.NEGATIVE_INFINITY;
+    const rightStartedAt = right.startedAtMs ?? Number.NEGATIVE_INFINITY;
+    if (rightStartedAt !== leftStartedAt) {
+      return rightStartedAt - leftStartedAt;
+    }
     if (right.latestMtimeMs !== left.latestMtimeMs) {
       return right.latestMtimeMs - left.latestMtimeMs;
     }
@@ -561,6 +567,15 @@ function parseStartedAtFromPrefix(prefix) {
   }
   const [, dateHour, minute, second, milli] = match;
   return readTimestamp(`${dateHour}:${minute}:${second}.${milli}`);
+}
+
+function parseStartedAtMsFromPrefix(prefix) {
+  const startedAt = parseStartedAtFromPrefix(prefix);
+  if (startedAt === null) {
+    return null;
+  }
+  const parsed = Date.parse(startedAt);
+  return Number.isFinite(parsed) ? parsed : null;
 }
 
 function readRecentSkips(rawEvents) {

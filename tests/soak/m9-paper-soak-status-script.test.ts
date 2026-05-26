@@ -319,6 +319,36 @@ describe("M9 paper soak status script", () => {
     expect(status.trace.reason).toBe("artifact_file_stat_failed");
     expect(status.trace.detail).toContain("ELOOP");
   });
+
+  it("selects the latest run by prefix time even when an older raw log is touched later", async () => {
+    const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-m9-status-latest-"));
+    const oldPrefix = "m9-paper-trading-soak-2026-05-25T09-00-00-000Z-00112233";
+    const newPrefix = "m9-paper-trading-soak-2026-05-26T09-00-00-000Z-11223344";
+    await writeFile(
+      path.join(artifactDir, `${oldPrefix}-events.jsonl`),
+      `${JSON.stringify({ kind: "MARKET_DATA", receivedAt: "2026-05-25T09:01:00.000Z" })}\n`,
+      "utf8",
+    );
+    await writeFile(
+      path.join(artifactDir, `${newPrefix}-events.jsonl`),
+      `${JSON.stringify({ kind: "MARKET_DATA", receivedAt: "2026-05-26T09:01:00.000Z" })}\n`,
+      "utf8",
+    );
+    await writeFile(
+      path.join(artifactDir, `${oldPrefix}-events.jsonl`),
+      `${JSON.stringify({ kind: "POST_PROCESSED", occurredAt: "2026-05-30T00:00:00.000Z" })}\n`,
+      { flag: "a" },
+    );
+
+    const { stdout } = await execFileAsync("node", [scriptPath, "--artifact-dir", artifactDir, "--json"]);
+    const status = JSON.parse(stdout) as {
+      statusCode: string;
+      artifacts: { prefix: string };
+    };
+
+    expect(status.statusCode).toBe("running");
+    expect(status.artifacts.prefix).toBe(newPrefix);
+  });
 });
 
 async function runScriptAllowingFailure(args: string[]) {
