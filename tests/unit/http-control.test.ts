@@ -364,6 +364,44 @@ describe("HTTP control foundation", () => {
     expect(response.body).not.toContain("secret-provider-detail");
   });
 
+  it("maps injected daily report failures to the same /status warning shape", async () => {
+    const runtimeConfig = loadRuntimeConfig({});
+    server = createHttpControlServer({
+      readinessProvider: staticReadinessProvider(readySummary()),
+      statusProvider: createDatabaseControlStatusProvider({
+        runtimeConfig,
+        dailyReport: {
+          lastStatus: "FAILED",
+          reportDate: "2026-05-20",
+          updatedAt: "2026-05-20T00:06:00.000Z",
+        },
+      }),
+    });
+
+    const response = await server.inject({
+      method: "GET",
+      url: "/status",
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({
+      dailyReport: {
+        status: "warning",
+        statusLabel: "실패",
+        message: "마지막 daily report job이 실패했다.",
+        action: "jobs table의 추적 정보와 audit event를 확인한 뒤 수동 재실행 또는 재시도를 진행한다.",
+        lastStatus: "FAILED",
+        reportDate: "2026-05-20",
+        nextRunAfter: null,
+        updatedAt: "2026-05-20T00:06:00.000Z",
+        trace: {
+          source: "runtime_injected",
+          reason: "daily_report_status_injected_failed",
+        },
+      },
+    });
+  });
+
   it("keeps /status from running the write readiness provider", async () => {
     let readyzProviderCalls = 0;
     const runtimeConfig = loadRuntimeConfig({});

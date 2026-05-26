@@ -344,16 +344,18 @@ async function readDailyReportStatus(
   options: CreateDatabaseControlStatusProviderOptions,
 ): Promise<ControlStatusSnapshot["dailyReport"]> {
   if (options.dailyReport !== undefined) {
+    const lastStatus = options.dailyReport.lastStatus ?? "unavailable";
+    const status = mapDailyReportJobStatus(lastStatus);
     return {
       ...createOperationalStatusDetail({
-        status: "ok",
-        statusLabel: "조회 가능",
-        message: "런타임에서 주입한 daily report 상태를 반환했다.",
-        action: null,
+        status: status.status,
+        statusLabel: status.statusLabel,
+        message: status.message,
+        action: status.action,
         source: "runtime_injected",
-        reason: "daily_report_status_injected",
+        reason: `daily_report_status_injected_${lastStatus.toLowerCase()}`,
       }),
-      lastStatus: options.dailyReport.lastStatus ?? "unavailable",
+      lastStatus,
       reportDate: options.dailyReport.reportDate ?? null,
       nextRunAfter: null,
       updatedAt: options.dailyReport.updatedAt ?? null,
@@ -498,6 +500,13 @@ function mapDailyReportJobStatus(status: string): {
         statusLabel: "취소됨",
         message: "마지막 daily report job이 취소됐다.",
         action: "운영자가 취소 사유를 확인하고 필요하면 다시 예약한다.",
+      };
+    case "unavailable":
+      return {
+        status: "unavailable",
+        statusLabel: "조회 불가",
+        message: "daily report 상태를 확인하지 못했다.",
+        action: "DB 연결 상태 또는 런타임 주입 상태를 확인한 뒤 다시 조회한다.",
       };
     default:
       return {
