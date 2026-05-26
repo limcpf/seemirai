@@ -16,7 +16,7 @@ import {
 } from "node:fs/promises";
 import path from "node:path";
 import { spawn } from "node:child_process";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const defaultOutputDir = path.join(repoRoot, ".local", "releases");
@@ -129,6 +129,10 @@ function validatePackageName(packageName) {
   if (!/^[A-Za-z0-9._-]+$/u.test(packageName)) {
     throw new Error("--package-name must contain only letters, numbers, dot, underscore, and hyphen");
   }
+  // tar 옵션 파싱으로 오해될 수 있는 이름은 릴리즈 생성 전에 차단한다.
+  if (packageName.startsWith("-")) {
+    throw new Error("--package-name must not start with hyphen");
+  }
   if (packageName === "." || packageName === ".." || packageName.includes("..")) {
     throw new Error("--package-name must not contain path traversal segments");
   }
@@ -176,12 +180,17 @@ function toGitTrackedFile(entry) {
   }
 
   const metadata = entry.slice(0, tabIndex);
-  const [mode] = metadata.split(" ");
+  const [mode, , stage] = metadata.split(" ");
+  const relativePath = entry.slice(tabIndex + 1);
+  // 충돌 stage가 섞인 인덱스는 재현 가능한 릴리즈 입력으로 볼 수 없으므로 즉시 실패한다.
+  if (stage !== "0") {
+    throw new Error(`Cannot build offline release with unresolved Git conflict stage ${stage}: ${relativePath}`);
+  }
   if (mode !== "100644" && mode !== "100755" && mode !== "120000") {
     return undefined;
   }
 
-  return { relativePath: entry.slice(tabIndex + 1) };
+  return { relativePath };
 }
 
 async function collectWorkspaceFilesFromDisk(currentDir, excludedRoots) {
@@ -230,8 +239,10 @@ function isSameOrInside(candidatePath, parentPath) {
 
 function shouldExcludeRelativePath(relativePath) {
   const normalizedPath = relativePath.split(path.sep).join("/");
-  const baseName = path.basename(normalizedPath);
-  if (forbiddenDirectoryNames.has(baseName) || forbiddenFileNames.has(baseName)) {
+  const pathSegments = normalizedPath.split("/").filter((segment) => segment !== "");
+  const baseName = pathSegments.at(-1) ?? "";
+  // Git 추적 파일 모드에서도 nested node_modules/dist 같은 산출물 디렉터리는 번들 입력에서 제외한다.
+  if (pathSegments.some((segment) => forbiddenDirectoryNames.has(segment)) || forbiddenFileNames.has(baseName)) {
     return true;
   }
 
@@ -392,7 +403,15 @@ async function runCapture(command, args, options) {
   });
 }
 
-main().catch((error) => {
-  console.error(error instanceof Error ? error.message : String(error));
-  process.exit(1);
-});
+function isDirectRun() {
+  return process.argv[1] !== undefined && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href;
+}
+
+if (isDirectRun()) {
+  main().catch((error) => {
+    console.error(error instanceof Error ? error.message : String(error));
+    process.exit(1);
+  });
+}
+
+export { shouldExcludeRelativePath, toGitTrackedFile, validatePackageName };

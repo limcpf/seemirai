@@ -1,6 +1,6 @@
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { access, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -87,6 +87,94 @@ describe("offline release bundle script", () => {
       stderr: expect.stringContaining("--package-name must contain only letters"),
     });
   });
+
+  it("rejects package names that tar can parse as options", async () => {
+    const outputDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-offline-release-option-name-"));
+
+    await expect(
+      execFileAsync("node", [
+        scriptPath,
+        "--output-dir",
+        outputDir,
+        "--package-name",
+        "-bad",
+        "--skip-fetch",
+        "--json",
+      ]),
+    ).rejects.toMatchObject({
+      stderr: expect.stringContaining("--package-name must not start with hyphen"),
+    });
+  });
+
+  it("filters forbidden directory segments from git tracked release inputs", async () => {
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-offline-release-fake-index-"));
+    const outputDir = path.join(tempDir, "release");
+    const fakeIndexPath = path.join(tempDir, "index");
+    const packageName = "seemirai-offline-forbidden-segment";
+    const leakRelativePath = "offline-release-forbidden-fixture/node_modules/leak.txt";
+    const leakPath = path.join(process.cwd(), leakRelativePath);
+
+    await mkdir(path.dirname(leakPath), { recursive: true });
+    await writeFile(leakPath, "must not be packaged\n", "utf8");
+
+    try {
+      const { stdout: hashStdout } = await execFileAsync("git", ["hash-object", "-w", leakPath], {
+        cwd: process.cwd(),
+      });
+      await updateFakeIndex(
+        fakeIndexPath,
+        `100644 ${hashStdout.trim()} 0\t${leakRelativePath}\n`,
+      );
+
+      const { stdout } = await execFileAsync(
+        "node",
+        [scriptPath, "--output-dir", outputDir, "--package-name", packageName, "--skip-fetch", "--json"],
+        { env: { ...process.env, GIT_INDEX_FILE: fakeIndexPath } },
+      );
+      const summary = JSON.parse(stdout) as { archivePath: string };
+      const extractDir = path.join(tempDir, "extract");
+
+      await mkdir(extractDir, { recursive: true });
+      await execFileAsync("tar", ["-xzf", summary.archivePath, "-C", extractDir]);
+      await expect(stat(path.join(extractDir, packageName, "workspace", leakRelativePath))).rejects.toMatchObject({
+        code: "ENOENT",
+      });
+    } finally {
+      await rm(path.join(process.cwd(), "offline-release-forbidden-fixture"), { recursive: true, force: true });
+      await rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it("fails when the git index contains unresolved conflict stages", async () => {
+    if (!(await pathExists(path.join(process.cwd(), ".git")))) {
+      return;
+    }
+
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-offline-release-conflict-index-"));
+    const outputDir = path.join(tempDir, "release");
+    const fakeIndexPath = path.join(tempDir, "index");
+    const conflictFilePath = path.join(tempDir, "conflict.txt");
+
+    await writeFile(conflictFilePath, "conflict side\n", "utf8");
+    const { stdout: hashStdout } = await execFileAsync("git", ["hash-object", "-w", conflictFilePath], {
+      cwd: process.cwd(),
+    });
+    await updateFakeIndex(fakeIndexPath, `100644 ${hashStdout.trim()} 1\tconflict.txt\n`);
+
+    try {
+      await expect(
+        execFileAsync(
+          "node",
+          [scriptPath, "--output-dir", outputDir, "--package-name", "seemirai-offline-conflict", "--skip-fetch", "--json"],
+          { env: { ...process.env, GIT_INDEX_FILE: fakeIndexPath } },
+        ),
+      ).rejects.toMatchObject({
+        stderr: expect.stringContaining("unresolved Git conflict stage 1"),
+      });
+    } finally {
+      await rm(tempDir, { recursive: true, force: true });
+    }
+  });
 });
 
 async function sha256File(filePath: string): Promise<string> {
@@ -101,4 +189,26 @@ async function pathExists(filePath: string): Promise<boolean> {
   } catch {
     return false;
   }
+}
+
+async function updateFakeIndex(fakeIndexPath: string, indexInfo: string): Promise<void> {
+  await new Promise<void>((resolve, reject) => {
+    const child = spawn("git", ["update-index", "--index-info"], {
+      cwd: process.cwd(),
+      env: { ...process.env, GIT_INDEX_FILE: fakeIndexPath },
+      stdio: ["pipe", "ignore", "pipe"],
+    });
+    const stderrChunks: Buffer[] = [];
+
+    child.stderr.on("data", (chunk) => stderrChunks.push(Buffer.from(chunk)));
+    child.on("error", reject);
+    child.on("exit", (code) => {
+      if (code === 0) {
+        resolve();
+        return;
+      }
+      reject(new Error(`git update-index --index-info exited with code ${code}: ${Buffer.concat(stderrChunks)}`));
+    });
+    child.stdin.end(indexInfo);
+  });
 }
