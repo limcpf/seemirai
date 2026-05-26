@@ -406,8 +406,69 @@ $HOME/vaults/99_운영/seemirai-works
 
 ## 13. Issue #87 Sub PR handoff
 
-- Sub PR 1: M9 artifact discovery/parser와 실시간 상태 CLI를 고정했다.
-- Sub PR 2: #68 evidence validator와 Markdown comment generator를 고정했다.
-- Sub PR 3: `/status` durable 운영 정보 보강을 고정했다.
-- Sub PR 4: 이 runbook과 관련 runtime/reliability 문서를 갱신한다.
+- Sub PR 1 / PR #88: M9 artifact discovery/parser와 실시간 상태 CLI를 고정했다.
+- Sub PR 2 / PR #89: #68 evidence validator와 Markdown comment generator를 고정했다.
+- Sub PR 3 / PR #91: `/status` durable 운영 정보 보강을 고정했다.
+- Sub PR 4 / PR #94: 이 runbook과 관련 runtime/reliability 문서를 갱신했다.
 - Sub PR 5: mother PR 검증 결과와 #68 연동 사용법을 closeout 형식으로 정리한다.
+
+## 14. Issue #87 closeout 패치노트
+
+Issue #87은 #68 72시간 paper trading 관측을 방해하지 않고, 실행 중 상태 확인과 완료 증거 정리를 read-only 도구로 보강한다.
+closeout 댓글이나 mother PR 설명에는 아래 내용을 기준으로 남긴다.
+
+### 새 기능
+
+- `#68 진행 현황 보기`: 실행 중인 M9 paper soak artifact를 읽어 마지막 이벤트 시각, day summary 생성 상태, 최근 실패/스킵 신호를 확인한다.
+- `#68 완료 판정하기`: aggregate summary, day summary 3개, day report 3개, 3일 비교 report를 검사해 `passed`, `failed`, `incomplete`로 판정한다.
+- `#68 댓글 초안 만들기`: issue #68에 붙일 수 있는 Markdown 요약을 생성한다.
+- `운영 status 강화`: `/status`에서 paper 주문/포지션, alert cooldown, daily report job 상태를 한국어 상태/원인/조치와 추적 정보로 분리해 본다.
+
+### 운영자 사용 예시
+
+```sh
+node scripts/report-m9-paper-soak-status.mjs \
+  --artifact-dir "$HOME/vaults/99_운영/seemirai-m9-paper/72h-paper-trading-soak"
+
+node scripts/report-m9-paper-soak-status.mjs \
+  --artifact-dir "$HOME/vaults/99_운영/seemirai-m9-paper/72h-paper-trading-soak" \
+  --json
+
+node scripts/compare-m9-paper-reports.mjs \
+  --summary "$HOME/vaults/99_운영/seemirai-m9-paper/72h-paper-trading-soak/"*-day-1-summary.json \
+  --summary "$HOME/vaults/99_운영/seemirai-m9-paper/72h-paper-trading-soak/"*-day-2-summary.json \
+  --summary "$HOME/vaults/99_운영/seemirai-m9-paper/72h-paper-trading-soak/"*-day-3-summary.json \
+  --output "$HOME/vaults/99_운영/seemirai-m9-paper/m9-3day-trading-soak-comparison.md" \
+  --json
+
+node scripts/validate-m9-paper-soak-evidence.mjs \
+  --artifact-dir "$HOME/vaults/99_운영/seemirai-m9-paper/72h-paper-trading-soak" \
+  --comparison-report "$HOME/vaults/99_운영/seemirai-m9-paper/m9-3day-trading-soak-comparison.md" \
+  --issue-comment
+
+curl -sS http://127.0.0.1:8787/status
+```
+
+### Closeout DnD
+
+- #68 runner 동작과 output schema를 바꾸지 않았다.
+- threshold/config 기본값, 신규 전략, phase 1.5 알트 편입, Upbit private API, live order API를 열지 않았다.
+- read-only CLI와 validator는 artifact를 수정하지 않는다.
+- issue/PR/comment에는 secret, token, raw log 원문, raw order detail, raw position detail을 붙이지 않는다.
+- #68 완료 판정은 `validate-m9-paper-soak-evidence.mjs --issue-comment` 출력 검토 후 사람이 issue 댓글에 붙인다.
+
+### Mother PR 검증 요약
+
+Mother PR을 main으로 보내기 전 최소 검증은 아래 명령으로 다시 실행한다.
+
+```sh
+node scripts/report-m9-paper-soak-status.mjs --help
+node scripts/validate-m9-paper-soak-evidence.mjs --help
+corepack pnpm typecheck
+corepack pnpm vitest run tests/soak/m9-paper-soak-status-script.test.ts tests/soak/m9-paper-soak-evidence-validator.test.ts tests/unit/http-control.test.ts
+./scripts/verify docs
+git diff --check
+./scripts/verify
+```
+
+이 검증은 저장소 안 fixture와 문서 구조를 확인한다. 실제 #68 완료 증거는 저장소 밖 artifact 경로에서 validator를 실행해 별도로 남긴다.
