@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { mkdtemp, readdir, readFile, stat, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, readdir, readFile, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -175,7 +175,138 @@ describe("M9 paper soak status script", () => {
       ]),
     );
   });
+
+  it("does not mark a passed aggregate complete when expected day summaries are missing", async () => {
+    const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-m9-status-incomplete-"));
+    const prefix = "m9-paper-trading-soak-2026-05-26T03-00-00-000Z-badf00d0";
+    const rawLogPath = path.join(artifactDir, `${prefix}-events.jsonl`);
+    const summaryPath = path.join(artifactDir, `${prefix}-summary.json`);
+    const expectedDaySummaryPaths = [1, 2, 3].map((day) => path.join(artifactDir, `${prefix}-day-${day}-summary.json`));
+    await writeAggregateSummary({
+      summaryPath,
+      rawLogPath,
+      status: "passed",
+      dailySummaryPaths: expectedDaySummaryPaths,
+    });
+    await writeFile(rawLogPath, "", "utf8");
+
+    const { stdout } = await execFileAsync("node", [scriptPath, "--artifact-dir", artifactDir, "--json"]);
+    const status = JSON.parse(stdout) as {
+      statusCode: string;
+      statusLabel: string;
+      signals: { recentFailures: Array<{ message: string }> };
+      progress: { daySummaryGeneratedCount: number; expectedDayCount: number };
+    };
+
+    expect(status.statusCode).toBe("incomplete");
+    expect(status.statusLabel).toBe("증거 부족");
+    expect(status.progress).toMatchObject({
+      daySummaryGeneratedCount: 0,
+      expectedDayCount: 3,
+    });
+    expect(status.signals.recentFailures).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          message: "Day 1 summary가 아직 생성되지 않았거나 누락됐다.",
+        }),
+      ]),
+    );
+  });
+
+  it("treats unreadable day summaries and raw logs as structured failure status", async () => {
+    const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-m9-status-unreadable-"));
+    const prefix = "m9-paper-trading-soak-2026-05-26T04-00-00-000Z-c0ffee00";
+    const rawLogPath = path.join(artifactDir, `${prefix}-events.jsonl`);
+    const summaryPath = path.join(artifactDir, `${prefix}-summary.json`);
+    const dayOneSummaryPath = path.join(artifactDir, `${prefix}-day-1-summary.json`);
+    await writeAggregateSummary({
+      summaryPath,
+      rawLogPath,
+      status: "passed",
+      dailySummaryPaths: [dayOneSummaryPath],
+    });
+    await writeFile(dayOneSummaryPath, "{not-json", "utf8");
+    await writeFile(rawLogPath, `${JSON.stringify({ kind: "MARKET_DATA", receivedAt: "2026-05-26T04:01:00.000Z" })}\n`);
+    await chmod(rawLogPath, 0o000);
+
+    try {
+      const { stdout } = await execFileAsync("node", [scriptPath, "--artifact-dir", artifactDir, "--json"]);
+      const status = JSON.parse(stdout) as {
+        statusCode: string;
+        signals: { recentFailures: Array<{ message: string }> };
+        trace: { rawLogReadable: boolean; rawLogError: string | null };
+      };
+
+      expect(status.statusCode).toBe("failed");
+      expect(status.trace.rawLogReadable).toBe(false);
+      expect(status.trace.rawLogError).toBeTypeOf("string");
+      expect(status.signals.recentFailures).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            message: "raw log를 읽지 못해 최근 진행 상태가 제한적으로만 확인된다.",
+          }),
+          expect.objectContaining({
+            message: "Day 1 summary JSON을 읽지 못했다.",
+          }),
+        ]),
+      );
+    } finally {
+      await chmod(rawLogPath, 0o600);
+    }
+  });
 });
+
+async function writeAggregateSummary({
+  summaryPath,
+  rawLogPath,
+  status,
+  dailySummaryPaths,
+}: {
+  summaryPath: string;
+  rawLogPath: string;
+  status: string;
+  dailySummaryPaths: string[];
+}) {
+  await writeFile(
+    summaryPath,
+    JSON.stringify(
+      {
+        schemaVersion: 1,
+        runId: "aggregate-run",
+        status,
+        startedAt: "2026-05-26T03:00:00.000Z",
+        finishedAt: "2026-05-26T03:10:00.000Z",
+        durationMsRequested: 259_200_000,
+        durationMsObserved: 600_000,
+        artifacts: {
+          rawLogPath,
+          summaryPath,
+          reportPath: summaryPath.replace(/summary\.json$/u, "report.md"),
+          dailySummaryPaths,
+        },
+        metrics: {
+          paperTradingCycleAttempts: 3,
+          paperTradingCycles: 3,
+          paperOrderSubmittedCount: 3,
+          paperFillCount: 3,
+          liveOrderApiCalls: 0,
+          cyclesSkippedNoOrderbook: 0,
+          cyclesSkippedStaleOrderbook: 0,
+        },
+        checks: {
+          liveOrderApiCalls: {
+            status: "ok",
+            message: "PaperBroker만 사용했고 live order API 호출이 없다.",
+            evidence: { count: 0 },
+          },
+        },
+      },
+      null,
+      2,
+    ),
+    "utf8",
+  );
+}
 
 async function snapshotDirectory(directory: string) {
   const entries = await readdir(directory);

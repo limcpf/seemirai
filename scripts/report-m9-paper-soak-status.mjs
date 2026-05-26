@@ -220,13 +220,14 @@ function selectLatestRun(runs) {
 async function buildRunStatus({ artifactDir, run }) {
   const aggregate = await readJsonArtifact(run.summaryPath);
   const dailySummaries = await readDailySummaries(run.dailySummaryPaths);
-  const rawEvents = await readRecentRawEvents(run.rawLogPath);
+  const rawLog = await readRecentRawEvents(run.rawLogPath);
+  const rawEvents = rawLog.events;
   const expectedDayCount = resolveExpectedDayCount({ aggregate: aggregate.value, run });
   const daySummaryStatus = createDaySummaryStatus({ run, aggregate: aggregate.value, dailySummaries, expectedDayCount });
   const timing = resolveTiming({ run, aggregate: aggregate.value, rawEvents, expectedDayCount });
   const recentSkips = readRecentSkips(rawEvents);
-  const recentFailures = readRecentFailures({ rawEvents, aggregate, dailySummaries });
-  const statusCode = resolveStatusCode({ run, aggregate, rawEvents });
+  const recentFailures = readRecentFailures({ rawEvents, aggregate, rawLog, daySummaryStatus });
+  const statusCode = resolveStatusCode({ run, aggregate, rawEvents, rawLog, daySummaryStatus });
   const statusLabel = toStatusLabel(statusCode);
 
   return {
@@ -272,6 +273,8 @@ async function buildRunStatus({ artifactDir, run }) {
     trace: {
       aggregateSummaryReadable: aggregate.ok,
       aggregateSummaryError: aggregate.error,
+      rawLogReadable: rawLog.error === null,
+      rawLogError: rawLog.error,
       recentRawEventCount: rawEvents.length,
     },
   };
@@ -351,10 +354,15 @@ async function readDailySummaries(dailySummaryPaths) {
 
 async function readRecentRawEvents(rawLogPath) {
   if (rawLogPath === null) {
-    return [];
+    return { events: [], error: null };
   }
 
-  const lines = await readTailLines(rawLogPath, rawTailBytes, rawTailLineLimit);
+  let lines;
+  try {
+    lines = await readTailLines(rawLogPath, rawTailBytes, rawTailLineLimit);
+  } catch (error) {
+    return { events: [], error: toErrorMessage(error) };
+  }
   const events = [];
   for (const line of lines) {
     try {
@@ -366,7 +374,7 @@ async function readRecentRawEvents(rawLogPath) {
       // tail 첫 줄은 파일 중간에서 시작할 수 있으므로 깨진 JSON line은 최근 상태 근거에서 제외한다.
     }
   }
-  return events;
+  return { events, error: null };
 }
 
 async function readTailLines(filePath, maxBytes, maxLines) {
@@ -405,8 +413,10 @@ function createDaySummaryStatus({ run, aggregate, dailySummaries, expectedDayCou
     const summary = dailySummaries.get(day);
     statuses.push({
       day,
-      generated: discoveredPath !== null && summary?.ok !== false,
+      generated: discoveredPath !== null,
+      readable: summary?.ok ?? false,
       status: summary?.value?.status ?? null,
+      error: summary?.error ?? null,
       summaryPath,
       reportPath: run.dailyReportPaths.get(day) ?? null,
       startedAt: summary?.value?.startedAt ?? null,
@@ -518,8 +528,16 @@ function readRecentSkips(rawEvents) {
     }));
 }
 
-function readRecentFailures({ rawEvents, aggregate, dailySummaries }) {
+function readRecentFailures({ rawEvents, aggregate, rawLog, daySummaryStatus }) {
   const failures = [];
+  if (rawLog.error !== null) {
+    failures.push({
+      message: "raw log를 읽지 못해 최근 진행 상태가 제한적으로만 확인된다.",
+      occurredAt: null,
+      detail: rawLog.error,
+    });
+  }
+
   for (const event of rawEvents) {
     if (event.kind === "RUNNER_FATAL" || event.status === "ERROR") {
       failures.push({
@@ -542,13 +560,41 @@ function readRecentFailures({ rawEvents, aggregate, dailySummaries }) {
     failures.push(...readFailedChecks(aggregate.value.checks, aggregate.value.finishedAt));
   }
 
-  for (const dailySummary of dailySummaries.values()) {
-    if (dailySummary.value?.status === "failed") {
-      failures.push(...readFailedChecks(dailySummary.value.checks, dailySummary.value.finishedAt));
-    }
+  if (aggregate.value !== null) {
+    failures.push(...readDaySummaryEvidenceFailures(daySummaryStatus, aggregate.value.finishedAt));
   }
 
   return failures.slice(-8).reverse();
+}
+
+function readDaySummaryEvidenceFailures(daySummaryStatus, occurredAt) {
+  const failures = [];
+  for (const daySummary of daySummaryStatus) {
+    if (!daySummary.generated) {
+      failures.push({
+        message: `Day ${daySummary.day} summary가 아직 생성되지 않았거나 누락됐다.`,
+        occurredAt: readTimestamp(occurredAt),
+        detail: daySummary.summaryPath,
+      });
+      continue;
+    }
+    if (!daySummary.readable) {
+      failures.push({
+        message: `Day ${daySummary.day} summary JSON을 읽지 못했다.`,
+        occurredAt: readTimestamp(occurredAt),
+        detail: daySummary.error,
+      });
+      continue;
+    }
+    if (daySummary.status === "failed") {
+      failures.push({
+        message: `Day ${daySummary.day} summary가 실패 상태다.`,
+        occurredAt: readTimestamp(daySummary.finishedAt ?? occurredAt),
+        detail: daySummary.summaryPath,
+      });
+    }
+  }
+  return failures;
 }
 
 function readFailedChecks(checks, occurredAt) {
@@ -565,9 +611,19 @@ function readFailedChecks(checks, occurredAt) {
     }));
 }
 
-function resolveStatusCode({ run, aggregate, rawEvents }) {
+function resolveStatusCode({ run, aggregate, rawEvents, rawLog, daySummaryStatus }) {
+  if (rawLog.error !== null || daySummaryStatus.some((day) => day.generated && !day.readable)) {
+    return "failed";
+  }
   if (aggregate.value !== null) {
-    return normalizeSummaryStatus(aggregate.value.status);
+    const aggregateStatus = normalizeSummaryStatus(aggregate.value.status);
+    if (aggregateStatus === "passed" && daySummaryStatus.some((day) => !day.generated)) {
+      return "incomplete";
+    }
+    if (aggregateStatus === "passed" && daySummaryStatus.some((day) => day.status === "failed")) {
+      return "failed";
+    }
+    return aggregateStatus;
   }
   if (aggregate.error !== null) {
     return "failed";
@@ -622,6 +678,8 @@ function toStatusLabel(statusCode) {
       return "실패";
     case "skipped":
       return "시작 안 함";
+    case "incomplete":
+      return "증거 부족";
     case "unknown":
       return "판정 보류";
     default:
@@ -644,6 +702,9 @@ function createOperatorMessage({ statusCode, aggregate, rawEvents, recentFailure
   if (statusCode === "skipped") {
     return "runner가 안전 guard 때문에 장시간 실행을 시작하지 않았다.";
   }
+  if (statusCode === "incomplete") {
+    return "aggregate summary는 통과했지만 기대 day summary 증거가 부족해 완료로 판정하지 않는다.";
+  }
   if (aggregate.error !== null) {
     return "aggregate summary가 있지만 JSON으로 읽지 못해 상태 판정이 실패했다.";
   }
@@ -662,6 +723,9 @@ function createOperatorAction({ statusCode, recentFailures }) {
   }
   if (statusCode === "skipped") {
     return "`SEEMIRAI_RUN_M9_PAPER_TRADING_SOAK=1` guard를 설정하지 않은 실행인지 확인한다.";
+  }
+  if (statusCode === "incomplete") {
+    return "누락된 day summary 파일을 확인하고 완료 validator를 실행하기 전에 artifact를 복구하거나 재실행한다.";
   }
   return "artifact 경로와 runner 실행 여부를 확인한다.";
 }
