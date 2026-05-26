@@ -254,6 +254,8 @@ Acceptance Criteria:
 
 ### M12. 큰 TypeScript 모듈 책임 분리
 
+상태: completed
+
 목적:
 
 - TD-002를 무동작 리팩터링으로 처리해 이후 전략/운영/pilot 변경의 리뷰 비용을 낮춘다.
@@ -280,11 +282,20 @@ Acceptance Criteria:
 - DB schema 변경
 - runtime behavior 변경
 
+완료 증거:
+
+- GitHub issue: #77
+- Mother PR: #85 merged
+- Sub PR: #78 `execution-persistence`, #79 `paper-broker`, #80 `risk-gate-runtime`, #81 `risk-gate`, #82 `execution-engine`,
+  #83 `strategy-variants`, #84 `backtest-orchestrator` merged
+- 현재 `main` 기준 검증: `corepack pnpm typecheck`, `corepack pnpm test`, `./scripts/verify` 통과
+- 테스트 결과: 47 files passed, 7 skipped / 457 passed, 45 skipped
+
 Acceptance Criteria:
 
-- [ ] 기존 public import 경로가 유지되거나 migration 경로가 명시된다.
-- [ ] 각 리팩터링 PR은 동작 변경 없이 관련 테스트가 통과한다.
-- [ ] 책임 없는 `utils.ts`가 아니라 validation, policy, mapper, repository, service처럼 변경 이유가 드러나는 파일명으로 분리한다.
+- [x] 기존 public import 경로가 유지되거나 migration 경로가 명시된다.
+- [x] 각 리팩터링 PR은 동작 변경 없이 관련 테스트가 통과한다.
+- [x] 책임 없는 `utils.ts`가 아니라 validation, policy, mapper, repository, service처럼 변경 이유가 드러나는 파일명으로 분리한다.
 
 ### M13. Phase 1.5 알트 수동 편입
 
