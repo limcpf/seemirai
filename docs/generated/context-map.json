@@ -44,6 +44,13 @@
       "owner_scope": ".github/workflows"
     },
     {
+      "path": ".github/workflows/offline-release.yml",
+      "kind": "reference",
+      "role": "폐쇄망 릴리즈 번들 생성과 GitHub Release asset 업로드 workflow",
+      "read_when": ["폐쇄망 릴리즈", "GitHub Release asset 생성", "offline bundle workflow 수정"],
+      "owner_scope": ".github/workflows"
+    },
+    {
       "path": ".codex/config.toml",
       "kind": "reference",
       "role": "Codex 프로젝트 실행 설정",
@@ -118,6 +125,13 @@
       "kind": "reference",
       "role": "M9 paper 운영 베타, Telegram 매매 이벤트 알림, 3일 report 비교 절차",
       "read_when": ["M9 paper 운영", "paper 운영 베타", "Telegram 매매 알림", "3일 paper report 비교", "notification retry"],
+      "owner_scope": "docs/runbooks"
+    },
+    {
+      "path": "docs/runbooks/offline-release.md",
+      "kind": "reference",
+      "role": "폐쇄망 릴리즈 번들 생성, 업로드, checksum 검증, 설치 smoke 절차",
+      "read_when": ["폐쇄망 릴리즈", "GitHub Release asset 생성", "offline bundle 설치", "checksum 검증"],
       "owner_scope": "docs/runbooks"
     },
     {

@@ -1,0 +1,152 @@
+name: Offline Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "릴리즈 태그 이름"
+        required: true
+        type: string
+      package_name:
+        description: "선택 사항. 비우면 tag에서 seemirai-offline-<version> 이름을 만든다."
+        required: false
+        default: ""
+        type: string
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build-offline-release:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event_name == 'workflow_dispatch' && format('refs/tags/{0}', github.event.inputs.tag) || github.sha }}
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Enable Corepack
+        run: corepack enable
+
+      - name: Resolve release names
+        id: release
+        shell: bash
+        env:
+          DISPATCH_TAG: ${{ inputs.tag }}
+          DISPATCH_PACKAGE_NAME: ${{ inputs.package_name }}
+        run: |
+          set -euo pipefail
+
+          if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
+            release_tag="$DISPATCH_TAG"
+            package_name="$DISPATCH_PACKAGE_NAME"
+          else
+            release_tag="$GITHUB_REF_NAME"
+            package_name=""
+          fi
+
+          if [ -z "$release_tag" ]; then
+            echo "릴리즈 태그를 확인할 수 없습니다." >&2
+            exit 1
+          fi
+
+          tag_ref="refs/tags/$release_tag"
+          if ! git show-ref --verify --quiet "$tag_ref"; then
+            echo "릴리즈 태그 ref가 없습니다: $tag_ref" >&2
+            exit 1
+          fi
+
+          target_sha="$(git rev-parse HEAD)"
+          tag_sha="$(git rev-list -n 1 "$tag_ref")"
+          if [ "$target_sha" != "$tag_sha" ]; then
+            echo "checkout된 revision과 릴리즈 태그가 일치하지 않습니다: $target_sha != $tag_sha" >&2
+            exit 1
+          fi
+
+          if [ -z "$package_name" ]; then
+            version="${release_tag#v}"
+            package_name="seemirai-offline-$version"
+          fi
+
+          {
+            echo "release_tag=$release_tag"
+            echo "package_name=$package_name"
+            echo "target_sha=$target_sha"
+            echo "archive=.local/releases/$package_name.tar.gz"
+            echo "checksum=.local/releases/$package_name.tar.gz.sha256"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Build offline release bundle
+        run: |
+          node scripts/build-offline-release.mjs \
+            --output-dir .local/releases \
+            --package-name "${{ steps.release.outputs.package_name }}"
+
+      - name: Verify checksum
+        working-directory: .local/releases
+        run: sha256sum -c "${{ steps.release.outputs.package_name }}.tar.gz.sha256"
+
+      - name: Scan release archive boundaries
+        shell: bash
+        env:
+          ARCHIVE: ${{ steps.release.outputs.archive }}
+        run: |
+          set -euo pipefail
+
+          if tar -tzf "$ARCHIVE" \
+            | grep -E '(^|/)\.env($|\.)|(^|/)node_modules($|/)|(^|/)\.git($|/)' \
+            | grep -Ev '(^|/)\.env\.example$'; then
+            echo "릴리즈 번들에 포함되면 안 되는 항목이 있습니다." >&2
+            exit 1
+          fi
+
+      - name: Offline bootstrap smoke
+        shell: bash
+        env:
+          ARCHIVE: ${{ steps.release.outputs.archive }}
+          PACKAGE_NAME: ${{ steps.release.outputs.package_name }}
+        run: |
+          set -euo pipefail
+
+          node -e "const fs=require('fs'); fs.rmSync('.local/offline-smoke',{recursive:true,force:true}); fs.mkdirSync('.local/offline-smoke',{recursive:true});"
+          tar -xzf "$ARCHIVE" -C .local/offline-smoke
+          ".local/offline-smoke/$PACKAGE_NAME/workspace/mvnw"
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.release.outputs.package_name }}
+          path: |
+            ${{ steps.release.outputs.archive }}
+            ${{ steps.release.outputs.checksum }}
+          if-no-files-found: error
+
+      - name: Create or update GitHub Release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.release.outputs.release_tag }}
+          TARGET_SHA: ${{ steps.release.outputs.target_sha }}
+          ARCHIVE: ${{ steps.release.outputs.archive }}
+          CHECKSUM: ${{ steps.release.outputs.checksum }}
+        run: |
+          set -euo pipefail
+
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            gh release upload "$RELEASE_TAG" "$ARCHIVE" "$CHECKSUM" --clobber
+          else
+            gh release create "$RELEASE_TAG" "$ARCHIVE" "$CHECKSUM" \
+              --target "$TARGET_SHA" \
+              --title "$RELEASE_TAG" \
+              --notes "Seemirai 폐쇄망 설치용 올인원 릴리즈 번들입니다. checksum 파일로 무결성을 확인한 뒤 runbook 절차에 따라 설치하세요."
+          fi

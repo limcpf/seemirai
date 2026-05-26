@@ -78,7 +78,7 @@ workspace/
 
 프로젝트는 Node/pnpm 기반이므로 `workspace/mvnw.cmd`는 Maven 빌드를 새로 도입하는 목적이 아니라, 폐쇄망 사용자가 기대하는 wrapper 진입점에서 검증 가능한 bootstrap 명령으로 연결하는 호환 계층이다. Unix 계열 환경에서는 동등한 bootstrap 진입점도 함께 제공한다.
 
-릴리즈 자산에는 checksum 또는 해시 파일을 포함하고, secret, token, raw credential, `.env` 원문을 포함하지 않는다.
+릴리즈 자산에는 checksum 또는 해시 파일을 포함하고, secret, token, raw credential, `.env` 원문을 포함하지 않는다. 생성, 업로드, 폐쇄망 설치 절차는 [폐쇄망 릴리즈 번들 운영 runbook](./docs/runbooks/offline-release.md)을 따른다.
 
 ## 보안과 운영 경계
 

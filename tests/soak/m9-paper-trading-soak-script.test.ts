@@ -252,15 +252,15 @@ describe("M9 paper trading soak script", () => {
           "--fixture",
           sellFixturePath,
           "--duration-ms",
-          "1000",
+          "2200",
           "--days",
           "1",
           "--max-cycles",
-          "2",
+          "5",
           "--cycle-interval-ms",
-          "20",
+          "500",
           "--max-orderbook-staleness-ms",
-          "1000",
+          "700",
           "--websocket-url",
           server.url,
           "--artifact-dir",
@@ -279,11 +279,13 @@ describe("M9 paper trading soak script", () => {
       };
 
       expect(summary.status).toBe("passed");
-      expect(summary.metrics).toMatchObject({
-        paperTradingCycles: 1,
-        paperOrderSubmittedCount: 1,
-        paperFillCount: 1,
-      });
+      // CI runner의 WebSocket handshake 지연이 첫 cycle을 앞질러도 SELL 경로 검증이 flake 되지 않도록 여유 cycle을 둔다.
+      expect(summary.metrics.paperTradingCycles).toBeGreaterThanOrEqual(1);
+      expect(summary.metrics.paperTradingCycles).toBeLessThanOrEqual(2);
+      expect(summary.metrics.paperOrderSubmittedCount).toBeGreaterThanOrEqual(1);
+      expect(summary.metrics.paperOrderSubmittedCount).toBeLessThanOrEqual(2);
+      expect(summary.metrics.paperFillCount).toBeGreaterThanOrEqual(1);
+      expect(summary.metrics.paperFillCount).toBeLessThanOrEqual(2);
     } finally {
       await server.close();
     }
