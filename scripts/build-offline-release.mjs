@@ -32,7 +32,7 @@ const forbiddenFileNames = new Set([".DS_Store"]);
 async function main() {
   const options = parseArgs(process.argv.slice(2));
   const packageJson = JSON.parse(await readFile(path.join(repoRoot, "package.json"), "utf8"));
-  const packageName = options.packageName ?? `seemirai-offline-${packageJson.version}`;
+  const packageName = validatePackageName(options.packageName ?? `seemirai-offline-${packageJson.version}`);
   const outputDir = path.resolve(options.outputDir ?? defaultOutputDir);
   const stagingRoot = path.join(outputDir, ".staging");
   const packageRoot = path.join(stagingRoot, packageName);
@@ -45,7 +45,7 @@ async function main() {
   await rm(packageRoot, { recursive: true, force: true });
   await mkdir(pnpmStoreDir, { recursive: true });
   await mkdir(path.join(packageRoot, "maven"), { recursive: true });
-  await copyWorkspace(repoRoot, workspaceDir);
+  await copyReleaseWorkspace(workspaceDir, { outputDir, stagingRoot, packageRoot });
   await writeOfflineEntrypoints(packageRoot);
 
   if (options.skipFetch) {
@@ -122,33 +122,89 @@ function requireValue(args, index, arg) {
   return value;
 }
 
-async function copyWorkspace(sourceDir, targetDir) {
+function validatePackageName(packageName) {
+  if (!/^[A-Za-z0-9._-]+$/u.test(packageName)) {
+    throw new Error("--package-name must contain only letters, numbers, dot, underscore, and hyphen");
+  }
+  if (packageName === "." || packageName === ".." || packageName.includes("..")) {
+    throw new Error("--package-name must not contain path traversal segments");
+  }
+  return packageName;
+}
+
+async function copyReleaseWorkspace(targetDir, excludedRoots) {
   await mkdir(targetDir, { recursive: true });
-  const entries = await readdir(sourceDir, { withFileTypes: true });
+  const trackedFiles = (await hasGitMetadata())
+    ? await collectGitTrackedFiles()
+    : await collectWorkspaceFilesFromDisk(repoRoot, excludedRoots);
 
-  for (const entry of entries) {
-    const sourcePath = path.join(sourceDir, entry.name);
-    const targetPath = path.join(targetDir, entry.name);
-
-    if (shouldExcludePath(sourcePath, entry.name)) {
-      continue;
-    }
-
-    if (entry.isDirectory()) {
-      await copyWorkspace(sourcePath, targetPath);
-      continue;
-    }
-
-    if (!entry.isFile()) {
-      continue;
-    }
-
+  for (const relativePath of trackedFiles) {
+    const sourcePath = path.join(repoRoot, relativePath);
+    const targetPath = path.join(targetDir, relativePath);
     await mkdir(path.dirname(targetPath), { recursive: true });
     await copyFile(sourcePath, targetPath);
   }
 }
 
-function shouldExcludePath(sourcePath, baseName) {
+async function hasGitMetadata() {
+  try {
+    await access(path.join(repoRoot, ".git"));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function collectGitTrackedFiles() {
+  const trackedFilesOutput = await runCapture("git", ["ls-files", "-z"], { cwd: repoRoot });
+  return trackedFilesOutput
+    .split("\0")
+    .filter((entry) => entry !== "")
+    .filter((relativePath) => !shouldExcludeRelativePath(relativePath));
+}
+
+async function collectWorkspaceFilesFromDisk(currentDir, excludedRoots) {
+  const collected = [];
+  const entries = await readdir(currentDir, { withFileTypes: true });
+
+  for (const entry of entries) {
+    const sourcePath = path.join(currentDir, entry.name);
+    const relativePath = path.relative(repoRoot, sourcePath).split(path.sep).join("/");
+
+    if (shouldExcludeSourcePath(sourcePath, relativePath, excludedRoots)) {
+      continue;
+    }
+
+    if (entry.isDirectory()) {
+      collected.push(...(await collectWorkspaceFilesFromDisk(sourcePath, excludedRoots)));
+      continue;
+    }
+
+    if (entry.isFile()) {
+      collected.push(relativePath);
+    }
+  }
+
+  return collected.sort((left, right) => left.localeCompare(right));
+}
+
+function shouldExcludeSourcePath(sourcePath, relativePath, excludedRoots) {
+  return (
+    shouldExcludeRelativePath(relativePath) ||
+    isSameOrInside(sourcePath, excludedRoots.outputDir) ||
+    isSameOrInside(sourcePath, excludedRoots.stagingRoot) ||
+    isSameOrInside(sourcePath, excludedRoots.packageRoot)
+  );
+}
+
+function isSameOrInside(candidatePath, parentPath) {
+  const relativePath = path.relative(path.resolve(parentPath), path.resolve(candidatePath));
+  return relativePath === "" || (!relativePath.startsWith("..") && !path.isAbsolute(relativePath));
+}
+
+function shouldExcludeRelativePath(relativePath) {
+  const normalizedPath = relativePath.split(path.sep).join("/");
+  const baseName = path.basename(normalizedPath);
   if (forbiddenDirectoryNames.has(baseName) || forbiddenFileNames.has(baseName)) {
     return true;
   }
@@ -157,8 +213,7 @@ function shouldExcludePath(sourcePath, baseName) {
     return true;
   }
 
-  const relativePath = path.relative(repoRoot, sourcePath).split(path.sep).join("/");
-  return relativePath === ".codex/tmp" || relativePath.startsWith(".codex/tmp/");
+  return normalizedPath === ".codex/tmp" || normalizedPath.startsWith(".codex/tmp/");
 }
 
 async function writeOfflineEntrypoints(packageRoot) {
@@ -265,6 +320,27 @@ async function run(command, args, options) {
         return;
       }
       reject(new Error(`${command} ${args.join(" ")} exited with code ${code}`));
+    });
+  });
+}
+
+async function runCapture(command, args, options) {
+  return await new Promise((resolve, reject) => {
+    const child = spawn(command, args, {
+      cwd: options.cwd,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    const stdoutChunks = [];
+    const stderrChunks = [];
+    child.stdout.on("data", (chunk) => stdoutChunks.push(chunk));
+    child.stderr.on("data", (chunk) => stderrChunks.push(chunk));
+    child.on("error", reject);
+    child.on("exit", (code) => {
+      if (code === 0) {
+        resolve(Buffer.concat(stdoutChunks).toString("utf8"));
+        return;
+      }
+      reject(new Error(`${command} ${args.join(" ")} exited with code ${code}: ${Buffer.concat(stderrChunks)}`));
     });
   });
 }
