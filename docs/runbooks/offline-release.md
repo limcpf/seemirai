@@ -15,6 +15,8 @@ archive 내부 기준 구조:
 seemirai-offline-<version>/
   maven/
   repository/
+    corepack/
+      corepack.tgz
     pnpm-store/
   workspace/
     mvnw
@@ -22,12 +24,14 @@ seemirai-offline-<version>/
 ```
 
 `workspace/mvnw`와 `workspace/mvnw.cmd`는 Maven을 새로 도입하는 스크립트가 아니라, 폐쇄망 사용자가 기대하는 wrapper 진입점에서 Node/pnpm bootstrap을 실행하는 호환 계층이다.
+`repository/corepack/corepack.tgz`는 신규 폐쇄망 호스트의 Corepack cache가 비어 있어도 pnpm 실행본을 로컬에서 설치하기 위한 package manager archive다.
 
 ## 보안 경계
 
 - 릴리즈 번들은 Git index/object snapshot에서만 생성한다. 더티 워킹트리 파일, untracked 파일, `git add -N` intent-to-add 파일은 릴리즈 입력으로 보지 않는다.
 - `.git` 메타데이터가 없는 소스 디렉터리에서는 번들 생성을 중단한다. Git 추적 여부를 알 수 없는 디스크 순회 fallback은 사용하지 않는다.
 - `.env`, `.env.*`, `.git`, `node_modules`는 archive에 포함하지 않는다. 단, `.env.example`은 예시 파일로 허용한다.
+- `repository/corepack/corepack.tgz`와 `repository/pnpm-store/`를 함께 배포해 Corepack package manager 다운로드와 npm registry 접근을 모두 차단한 상태에서도 bootstrap이 가능해야 한다.
 - secret, token, API key, raw credential은 릴리즈 산출물과 PR/issue 본문에 원문으로 남기지 않는다.
 - 기본 운영 모드는 `PAPER_TRADING`이며, live order와 withdrawal 권한은 릴리즈 설치 절차에서 요구하지 않는다.
 
@@ -87,6 +91,15 @@ tar -tzf .local/releases/seemirai-offline-smoke.tar.gz \
 
 위 명령이 아무 항목도 출력하지 않아야 한다.
 
+Corepack cache를 비운 상태의 bootstrap smoke를 수행한다.
+
+```sh
+node -e "const fs=require('fs'); fs.rmSync('.local/offline-smoke',{recursive:true,force:true}); fs.mkdirSync('.local/offline-smoke',{recursive:true});"
+tar -xzf .local/releases/seemirai-offline-smoke.tar.gz -C .local/offline-smoke
+COREPACK_HOME="$PWD/.local/offline-smoke/corepack-empty" \
+  .local/offline-smoke/seemirai-offline-smoke/workspace/mvnw
+```
+
 ## 폐쇄망 설치
 
 네트워크가 가능한 환경에서 GitHub Release asset 두 개를 내려받은 뒤 폐쇄망 환경으로 전달한다.
@@ -113,6 +126,7 @@ Windows에서는 `certutil` 출력의 SHA256 값이 `.sha256` 파일의 값과 �
 
 wrapper는 다음을 수행한다.
 
+- `corepack install -g --cache-only ../repository/corepack/corepack.tgz`
 - `corepack pnpm install --offline --frozen-lockfile --store-dir ../repository/pnpm-store`
 - `corepack pnpm typecheck`
 - `corepack pnpm test`
@@ -120,6 +134,7 @@ wrapper는 다음을 수행한다.
 ## 실패 시 확인할 항목
 
 - checksum 실패: asset 전송 중 변조 또는 손상이므로 archive와 `.sha256` 파일을 다시 전달한다.
+- Corepack 단계 실패: `repository/corepack/corepack.tgz`가 archive에 포함됐는지 확인하고 release workflow의 `Build offline release bundle` 로그를 확인한다.
 - `--offline` 설치 실패: `repository/pnpm-store`가 archive에 포함됐는지 확인하고 release workflow의 `Build offline release bundle` 로그를 확인한다.
 - `.git 메타데이터` 오류: 릴리즈 생성은 Git checkout에서만 수행한다. 폐쇄망 설치 환경에서 bundle을 다시 생성하지 않는다.
 - forbidden entry scan 실패: `.env`, `.env.*`, `.git`, `node_modules`가 포함된 archive는 배포하지 않는다.

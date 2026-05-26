@@ -33,6 +33,7 @@ async function main() {
   const options = parseArgs(process.argv.slice(2));
   const packageJson = JSON.parse(await readFile(path.join(repoRoot, "package.json"), "utf8"));
   const packageName = validatePackageName(options.packageName ?? `seemirai-offline-${packageJson.version}`);
+  const packageManagerSpec = validatePackageManagerSpec(packageJson.packageManager);
   const outputDir = path.resolve(options.outputDir ?? defaultOutputDir);
   const stagingRoot = path.join(outputDir, ".staging");
   const packageRoot = path.join(stagingRoot, packageName);
@@ -41,6 +42,7 @@ async function main() {
   const workspaceDir = path.join(packageRoot, "workspace");
   const repositoryDir = path.join(packageRoot, "repository");
   const pnpmStoreDir = path.join(repositoryDir, "pnpm-store");
+  const corepackArchivePath = path.join(repositoryDir, "corepack", "corepack.tgz");
 
   await rm(packageRoot, { recursive: true, force: true });
   await mkdir(pnpmStoreDir, { recursive: true });
@@ -50,7 +52,15 @@ async function main() {
 
   if (options.skipFetch) {
     await writeFile(path.join(pnpmStoreDir, ".keep"), "test-only empty offline cache\n", "utf8");
+    await mkdir(path.dirname(corepackArchivePath), { recursive: true });
+    await writeFile(path.join(path.dirname(corepackArchivePath), ".keep"), "test-only empty Corepack cache\n", "utf8");
   } else {
+    // 신규 폐쇄망 호스트의 Corepack cache가 비어 있어도 pnpm 실행본을 archive 내부에서 복구할 수 있어야 한다.
+    await mkdir(path.dirname(corepackArchivePath), { recursive: true });
+    await run("corepack", ["pack", "-o", corepackArchivePath, packageManagerSpec], {
+      cwd: workspaceDir,
+      stdoutToStderr: options.json,
+    });
     await run("corepack", ["pnpm", "fetch", "--frozen-lockfile", "--store-dir", pnpmStoreDir], {
       cwd: workspaceDir,
       stdoutToStderr: options.json,
@@ -74,6 +84,7 @@ async function main() {
     workspaceDir,
     repositoryDir,
     pnpmStoreDir,
+    corepackArchivePath,
     skippedFetch: options.skipFetch,
   };
 
@@ -134,6 +145,14 @@ function validatePackageName(packageName) {
     throw new Error("--package-name must not contain path traversal segments");
   }
   return packageName;
+}
+
+function validatePackageManagerSpec(packageManagerSpec) {
+  if (typeof packageManagerSpec !== "string" || !/^pnpm@[^@\s]+$/u.test(packageManagerSpec)) {
+    throw new Error("package.json packageManager must pin a pnpm version, for example pnpm@10.0.0");
+  }
+
+  return packageManagerSpec;
 }
 
 async function copyReleaseWorkspace(targetDir) {
@@ -245,8 +264,12 @@ async function writeOfflineEntrypoints(packageRoot) {
       "#!/usr/bin/env sh",
       "set -eu",
       'SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"',
+      'COREPACK_ARCHIVE="$SCRIPT_DIR/../repository/corepack/corepack.tgz"',
       'PNPM_STORE_DIR="$SCRIPT_DIR/../repository/pnpm-store"',
+      ': "${COREPACK_HOME:=$SCRIPT_DIR/../repository/corepack-home}"',
+      "export COREPACK_HOME",
       'cd "$SCRIPT_DIR"',
+      'corepack install -g --cache-only "$COREPACK_ARCHIVE"',
       'corepack pnpm install --offline --frozen-lockfile --store-dir "$PNPM_STORE_DIR"',
       "corepack pnpm typecheck",
       "corepack pnpm test",
@@ -262,8 +285,12 @@ async function writeOfflineEntrypoints(packageRoot) {
       "@echo off",
       "setlocal",
       'set "SCRIPT_DIR=%~dp0"',
+      'set "COREPACK_ARCHIVE=%SCRIPT_DIR%..\\repository\\corepack\\corepack.tgz"',
       'set "PNPM_STORE_DIR=%SCRIPT_DIR%..\\repository\\pnpm-store"',
+      'if not defined COREPACK_HOME set "COREPACK_HOME=%SCRIPT_DIR%..\\repository\\corepack-home"',
       'pushd "%SCRIPT_DIR%" || exit /b 1',
+      'corepack install -g --cache-only "%COREPACK_ARCHIVE%"',
+      "if errorlevel 1 exit /b %errorlevel%",
       'corepack pnpm install --offline --frozen-lockfile --store-dir "%PNPM_STORE_DIR%"',
       "if errorlevel 1 exit /b %errorlevel%",
       "corepack pnpm typecheck",

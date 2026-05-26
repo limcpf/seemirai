@@ -115,6 +115,7 @@ jobs:
         env:
           ARCHIVE: ${{ steps.release.outputs.archive }}
           PACKAGE_NAME: ${{ steps.release.outputs.package_name }}
+          COREPACK_HOME: ${{ github.workspace }}/.local/offline-smoke/corepack-empty
         run: |
           set -euo pipefail
 

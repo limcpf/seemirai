@@ -72,7 +72,11 @@ GitHub workflow, PR template, issue form만 검증:
 ```text
 maven/
 repository/
+  corepack/
+    corepack.tgz
+  pnpm-store/
 workspace/
+  mvnw
   mvnw.cmd
 ```
 

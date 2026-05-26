@@ -66,6 +66,13 @@ async function main() {
     );
     requireContains(
       offlineReleaseWorkflow,
+      "COREPACK_HOME",
+      ".github/workflows/offline-release.yml",
+      "offline smoke Corepack cache 격리",
+      errors,
+    );
+    requireContains(
+      offlineReleaseWorkflow,
       "gh release",
       ".github/workflows/offline-release.yml",
       "GitHub Release asset 업로드",

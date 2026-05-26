@@ -53,6 +53,7 @@ describe("offline release bundle script", () => {
       const windowsWrapper = await readFile(path.join(packageRoot, "workspace", "mvnw.cmd"), "utf8");
 
       await expect(stat(path.join(packageRoot, "maven", "README.txt"))).resolves.toBeDefined();
+      await expect(stat(path.join(packageRoot, "repository", "corepack", ".keep"))).resolves.toBeDefined();
       await expect(stat(path.join(packageRoot, "repository", "pnpm-store", ".keep"))).resolves.toBeDefined();
       await expect(stat(path.join(packageRoot, "workspace", "package.json"))).resolves.toBeDefined();
       await expect(stat(path.join(packageRoot, "workspace", ".git"))).rejects.toMatchObject({ code: "ENOENT" });
@@ -64,8 +65,12 @@ describe("offline release bundle script", () => {
         });
       }
       expect(unixWrapper).toContain("pnpm install --offline --frozen-lockfile");
+      expect(unixWrapper).toContain("corepack install -g --cache-only");
+      expect(unixWrapper).toContain("COREPACK_HOME");
       expect(unixWrapper).toContain('PNPM_STORE_DIR="$SCRIPT_DIR/../repository/pnpm-store"');
       expect(windowsWrapper).toContain("pnpm install --offline --frozen-lockfile");
+      expect(windowsWrapper).toContain("corepack install -g --cache-only");
+      expect(windowsWrapper).toContain("COREPACK_HOME");
       expect(windowsWrapper).toContain('PNPM_STORE_DIR=%SCRIPT_DIR%..\\repository\\pnpm-store');
     } finally {
       if (hasGitMetadata) {

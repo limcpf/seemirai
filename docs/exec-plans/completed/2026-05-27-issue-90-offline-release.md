@@ -35,8 +35,8 @@ node scripts/build-offline-release.mjs \
 
 - archive: `.local/releases/seemirai-offline-issue-90-smoke.tar.gz`
 - checksum: `.local/releases/seemirai-offline-issue-90-smoke.tar.gz.sha256`
-- archive size: 18M
-- SHA256: `4ff388038c70c02d968aee29f673f137c11d3415c0ae0e3592eb6fd82c768586`
+- archive size: 22M
+- SHA256: `64a72229a0e835be9cac5e194c46c7a4a2c5e3bdfd62b0cb1522c08c85c655cd`
 
 checksum 검증:
 
@@ -54,6 +54,7 @@ archive 구조 확인:
 
 ```text
 seemirai-offline-issue-90-smoke/repository/pnpm-store/
+seemirai-offline-issue-90-smoke/repository/corepack/corepack.tgz
 seemirai-offline-issue-90-smoke/workspace/mvnw
 seemirai-offline-issue-90-smoke/workspace/package.json
 seemirai-offline-issue-90-smoke/workspace/mvnw.cmd
@@ -80,7 +81,9 @@ tar -xzf .local/releases/seemirai-offline-issue-90-smoke.tar.gz -C .local/offlin
 
 결과:
 
+- `corepack install -g --cache-only ../repository/corepack/corepack.tgz` 통과.
 - `corepack pnpm install --offline --frozen-lockfile --store-dir ../repository/pnpm-store` 통과.
+- `COREPACK_HOME`을 `.local/offline-smoke/corepack-empty`로 격리한 상태에서 `Adding pnpm@10.0.0 to the cache...`가 먼저 실행됐다.
 - install 로그에서 `downloaded 0`, `reused 119`로 offline store 사용을 확인했다.
 - `corepack pnpm typecheck` 통과.
 - `corepack pnpm test` 통과: 48 files passed, 7 skipped / 465 tests passed, 45 skipped.
