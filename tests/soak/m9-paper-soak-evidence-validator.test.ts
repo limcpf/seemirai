@@ -77,6 +77,22 @@ describe("M9 paper soak evidence validator", () => {
     expect(validation.trace.comparisonReportMatchesRun).toBe(true);
   });
 
+  it("finds timestamped comparison reports created by the comparison script default output", async () => {
+    const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-m9-evidence-default-comparison-"));
+    const prefix = "m9-paper-trading-soak-2026-05-26T08-45-00-000Z-cceeff00";
+    const comparisonReportName = "m9-3day-comparison-2026-05-26T13-00-00-000Z.md";
+    await writeCompleteRunArtifacts({ artifactDir, prefix, comparisonReportName });
+
+    const { stdout } = await execFileAsync("node", [scriptPath, "--artifact-dir", artifactDir, "--json"]);
+    const validation = JSON.parse(stdout) as {
+      statusCode: string;
+      artifacts: { comparisonReportPath: string };
+    };
+
+    expect(validation.statusCode).toBe("passed");
+    expect(validation.artifacts.comparisonReportPath).toBe(path.join(artifactDir, comparisonReportName));
+  });
+
   it("fails completed evidence when live order calls or comparison report evidence are missing", async () => {
     const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-m9-evidence-failed-"));
     const prefix = "m9-paper-trading-soak-2026-05-26T09-00-00-000Z-ccddeeff";
@@ -213,12 +229,14 @@ async function writeCompleteRunArtifacts({
   prefix,
   writeComparisonReport = true,
   comparisonReportDir = artifactDir,
+  comparisonReportName = "m9-3day-trading-soak-comparison.md",
   dayOverrides = {},
 }: {
   artifactDir: string;
   prefix: string;
   writeComparisonReport?: boolean;
   comparisonReportDir?: string;
+  comparisonReportName?: string;
   dayOverrides?: Record<number, Record<string, unknown>>;
 }) {
   const rawLogPath = path.join(artifactDir, `${prefix}-events.jsonl`);
@@ -276,7 +294,7 @@ async function writeCompleteRunArtifacts({
 
   if (writeComparisonReport) {
     await writeFile(
-      path.join(comparisonReportDir, "m9-3day-trading-soak-comparison.md"),
+      path.join(comparisonReportDir, comparisonReportName),
       `# M9 3일 Paper Report 비교
 
 - 비교 상태: passed

@@ -500,7 +500,7 @@ async function collectComparisonReportCandidates(artifactDir) {
 
     await Promise.all(
       entries.map(async (entry) => {
-        if (!entry.isFile() || !/^m9-3day-.+comparison.*\.md$/u.test(entry.name)) {
+        if (!entry.isFile() || !/^m9-3day-.*comparison.*\.md$/u.test(entry.name)) {
           return;
         }
         await appendComparisonReportCandidate({
