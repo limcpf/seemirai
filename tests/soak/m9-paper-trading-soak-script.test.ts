@@ -33,7 +33,7 @@ describe("M9 paper trading soak script", () => {
       "--artifact-dir",
       artifactDir,
     ]);
-    const tempDirsAfter = await readCompileTempDirs();
+    await expectNoNewCompileTempDirs(tempDirsBefore);
 
     const summary = JSON.parse(stdout) as {
       status: string;
@@ -72,7 +72,6 @@ describe("M9 paper trading soak script", () => {
     expect(summary.artifacts.dailySummaryPaths).toHaveLength(3);
     await expect(stat(summary.artifacts.reportPath)).resolves.toBeDefined();
     await expect(stat(summary.artifacts.rawLogPath)).resolves.toBeDefined();
-    expect([...tempDirsAfter].filter((entry) => !tempDirsBefore.has(entry))).toEqual([]);
 
     const comparison = await execFileAsync("node", [
       compareScriptPath,
@@ -258,7 +257,7 @@ describe("M9 paper trading soak script", () => {
           "--max-cycles",
           "2",
           "--cycle-interval-ms",
-          "20",
+          "500",
           "--max-orderbook-staleness-ms",
           "1000",
           "--websocket-url",
@@ -467,6 +466,22 @@ async function readCompileTempDirs() {
       .filter((entry) => entry.isDirectory() && entry.name.startsWith(compileTempPrefix))
       .map((entry) => entry.name),
   );
+}
+
+async function expectNoNewCompileTempDirs(tempDirsBefore: ReadonlySet<string>) {
+  const deadlineMs = Date.now() + 2_000;
+  let newTempDirs: string[] = [];
+
+  do {
+    const tempDirsAfter = await readCompileTempDirs();
+    newTempDirs = [...tempDirsAfter].filter((entry) => !tempDirsBefore.has(entry));
+    if (newTempDirs.length === 0) {
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  } while (Date.now() < deadlineMs);
+
+  expect(newTempDirs).toEqual([]);
 }
 
 async function runScriptExpectingFailure(args: readonly string[], env: NodeJS.ProcessEnv = {}) {

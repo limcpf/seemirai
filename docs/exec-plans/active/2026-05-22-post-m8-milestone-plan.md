@@ -157,7 +157,9 @@ Acceptance Criteria:
 | 2 | #89 | #68 evidence validator와 Markdown comment generator | merged |
 | 3 | #91 | `/status` durable paper/alert/daily report 운영 정보 | merged |
 | 4 | #94 | M9 runbook과 runtime/reliability 문서 정리 | merged |
-| 5 | 진행 중 | mother PR 검증 결과와 #68 연동 사용법 closeout | 진행 중 |
+| 5 | #99 | mother PR 검증 결과와 #68 연동 사용법 closeout | merged |
+
+Mother PR #100은 2026-05-27 기준 `main` 병합 전 리뷰 드레인과 GitHub check 재검증 단계다.
 
 검증:
 

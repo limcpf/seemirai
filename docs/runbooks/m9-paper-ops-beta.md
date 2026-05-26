@@ -410,7 +410,7 @@ $HOME/vaults/99_운영/seemirai-works
 - Sub PR 2 / PR #89: #68 evidence validator와 Markdown comment generator를 고정했다.
 - Sub PR 3 / PR #91: `/status` durable 운영 정보 보강을 고정했다.
 - Sub PR 4 / PR #94: 이 runbook과 관련 runtime/reliability 문서를 갱신했다.
-- Sub PR 5: mother PR 검증 결과와 #68 연동 사용법을 closeout 형식으로 정리한다.
+- Sub PR 5 / PR #99: mother PR 검증 결과와 #68 연동 사용법을 closeout 형식으로 정리했다.
 
 ## 14. Issue #87 closeout 패치노트
 
