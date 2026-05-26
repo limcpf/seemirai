@@ -1,22 +1,88 @@
 # Seemirai
 
-Seemirai는 암호화폐 자동매매에서 AI가 매수와 매도를 직접 지시하는 방식을 피하고, 수수료, 스프레드, 슬리피지, 펀딩비, 전송 비용을 먼저 차감한 뒤에도 기대값이 남는 거래만 통과시키는 비용 우선 거래 시스템이다.
+Seemirai는 Upbit KRW 현물 시장에서 실거래 전에 자동 주문 엔진, 비용 모델, 리스크 게이트, 알림, 감사 로그가 안전하게 동작하는지 검증하는 paper trading 시스템이다. 목표는 AI가 매수와 매도를 직접 지시하게 만드는 것이 아니라, 수수료, 스프레드, 슬리피지, 유동성, 손실 한도 같은 비용과 위험을 먼저 차감한 뒤에도 기대값이 남는 거래 후보만 통과시키는 것이다.
 
-현재 저장소는 Upbit KRW 현물 paper trading MVP 구현과 M8-C 24시간 public WebSocket soak 검증을 완료한 상태다. 실거래 주문 API는 여전히 비활성이며, 다음 단계는 M9 paper 운영 베타에서 DB 적재, daily report, Telegram 알림, 운영 drill을 반복 가능한 절차로 고정하는 것이다.
+현재 MVP는 `PAPER_TRADING` 전용이다. 기본 설정에서는 실거래 주문, 출금, 거래소 간 차익거래, 선물, 레버리지, 타인 계정 운용을 활성화하지 않는다.
 
-## 핵심 원칙
+## 프로젝트 개요
 
-- 모든 거래 후보는 비용 차감 후 기대값이 최소 안전마진을 초과해야 한다.
-- 전략보다 리스크 엔진과 자동 정지장치를 먼저 설계한다.
-- LLM은 공지, 뉴스, 리포트 요약에만 사용하고 직접 주문 판단에는 사용하지 않는다.
-- 시장가 주문은 원칙적으로 제한하고, 메이커 지정가와 부분체결 관리, 취소와 재호가를 기본 실행 방식으로 둔다.
-- 24/7 시장 특성을 전제로 UTC/KST 리셋, 거래소 장애, API 지연, 유동성 급감에 대응한다.
+- 거래소: Upbit KRW 현물
+- 기본 모드: paper trading
+- 1차 대상 종목: `KRW-BTC`, `KRW-ETH`
+- 런타임: Node.js 24 LTS, TypeScript, pnpm
+- 저장소: PostgreSQL + TimescaleDB 기준 설계
+- 검증: Vitest, 문서 구조 검증, GitHub 운영 파일 검증
+- 운영 경계: 실거래 전 paper trading, 리스크 차단, Telegram 알림, 감사 로그
 
-## MVP 확정 방향
+핵심 흐름:
 
-MVP는 Upbit KRW 현물 기반 paper trading 시스템으로 확정한다. 목표는 수익 극대화가 아니라 실거래 전 자동 주문 엔진, 비용 모델, 리스크 게이트, 알림, 감사 로그가 실제 시장 데이터에서 사고 없이 작동하는지 검증하는 것이다.
+```text
+Upbit 공개 시장 데이터
+  -> 원천 이벤트와 정규화 이벤트 저장
+  -> 피처 계산과 전략 후보 생성
+  -> 비용 차감
+  -> 리스크 게이트
+  -> paper broker 가상 주문/체결
+  -> 감사 로그, 알림, 운영 리포트
+```
 
-기본 운영 모드:
+## 기본 사용 방법
+
+필수 전제:
+
+- Node.js 24 LTS
+- Corepack 또는 pnpm 10
+- 로컬 검증용 shell 환경
+- DB 통합 검증을 실행할 경우 PostgreSQL + TimescaleDB
+
+의존성 설치:
+
+```sh
+corepack pnpm install --frozen-lockfile
+```
+
+기본 검증:
+
+```sh
+corepack pnpm typecheck
+corepack pnpm test
+./scripts/verify
+```
+
+문서만 검증:
+
+```sh
+./scripts/verify docs
+```
+
+GitHub workflow, PR template, issue form만 검증:
+
+```sh
+./scripts/verify github
+```
+
+기본 paper profile은 `config/paper.json`에서 시작한다. 이 profile은 API key 없이 로딩되어야 하며, 실거래 주문 API와 출금 권한을 요구하지 않는다.
+
+## 폐쇄망 설치와 릴리즈 패키지
+
+폐쇄망 설치는 GitHub Release에 업로드되는 단일 올인원 패키지를 기준으로 한다. 패키지는 네트워크 차단 상태에서도 의존성 설치와 기본 검증을 수행할 수 있도록 로컬 의존성 저장소 또는 동등한 offline cache를 포함해야 한다.
+
+폐쇄망 릴리즈 번들의 기준 구조:
+
+```text
+maven/
+repository/
+workspace/
+  mvnw.cmd
+```
+
+프로젝트는 Node/pnpm 기반이므로 `workspace/mvnw.cmd`는 Maven 빌드를 새로 도입하는 목적이 아니라, 폐쇄망 사용자가 기대하는 wrapper 진입점에서 검증 가능한 bootstrap 명령으로 연결하는 호환 계층이다. Unix 계열 환경에서는 동등한 bootstrap 진입점도 함께 제공한다.
+
+릴리즈 자산에는 checksum 또는 해시 파일을 포함하고, secret, token, raw credential, `.env` 원문을 포함하지 않는다.
+
+## 보안과 운영 경계
+
+기본 안전값:
 
 ```yaml
 mvp:
@@ -29,41 +95,32 @@ mvp:
   futures_enabled: false
 ```
 
-대상 종목은 1차로 `KRW-BTC`, `KRW-ETH`만 포함한다. 알트코인은 phase 1.5에서 시장경보, 거래대금, 스프레드, 슬리피지 기준을 통과한 최대 3개만 수동 편입한다.
+운영자가 확인해야 할 보안 경계:
 
-MVP에서 반드시 검증해야 하는 조건은 다음과 같다.
+- secret, token, API key, `.env` 원문은 저장소와 릴리즈 패키지에 포함하지 않는다.
+- 실거래 주문 API는 MVP 기본 경로에서 호출하지 않는다.
+- LLM은 공식 공지, 정책, 시장경보 리스크 분류에만 사용하고 주문 판단에는 사용하지 않는다.
+- Telegram token과 local control token은 환경 변수나 외부 secret 주입으로만 전달한다.
+- PR comment, issue body, webhook payload는 신뢰할 수 없는 외부 입력으로 취급한다.
+- `force push`, branch 삭제, 보호 규칙 우회 merge는 기본 운영에서 금지한다.
 
-- 비용 기반 동적 안전마진
-- 계정, 종목, 유동성, 일간/주간 손실, 연속 손실 기준의 주문 차단
-- Upbit WebSocket 중심 시장 데이터 수집과 REST 기반 정책 조회
-- 이벤트 기반 백테스트와 paper trading
-- 가상 주문, 가상 체결, 가상 잔고, 전략별 PnL 기록
-- Telegram P0 알림과 신규 주문 차단
-- LLM을 공식 Upbit 공지/정책/시장경보 리스크 분류기로만 사용
-
-선물, 김치프리미엄을 이용한 실제 거래소 간 차익거래, 레버리지, 시장가 신규 진입, 출금/송금 자동화, 온체인/소셜/뉴스 기반 자동 주문, 완전 무인 운영은 MVP 범위가 아니다.
-
-## 문서
+## 문서와 운영 가이드
 
 - [아키텍처](./ARCHITECTURE.md)
-- [PRD](./docs/PRD.md)
+- [제품 요구사항](./docs/PRD.md)
 - [기능 요구사항](./docs/FEATURE_REQUIREMENTS.md)
-- [Upbit KRW Paper Trading MVP 업무 명세](./docs/product-specs/upbit-krw-paper-trading-mvp.md)
+- [개발 환경과 검증 절차](./docs/DEVELOPMENT.md)
+- [보안 가드레일](./docs/SECURITY.md)
+- [런타임 설정](./docs/RUNTIME_CONFIG.md)
+- [운영 runbook](./docs/runbooks/README.md)
 - [문서 시스템](./docs/README.md)
 
-## 로컬 개발
+처음 합류한 개발자는 [온보딩 문서](./docs/ONBOARDING.md)를 먼저 읽고, 구조 변경이나 새 문서 추가 전에는 [문서 시스템](./docs/README.md)과 [context map](./docs/generated/context-map.json)을 함께 확인한다.
 
-```sh
-corepack pnpm install --frozen-lockfile
-corepack pnpm typecheck
-corepack pnpm test
-./scripts/verify
-```
+## 제작자 정보
 
-기본 paper profile은 `config/paper.json`에 있으며 API key 없이 로딩되어야 한다.
+- 저장소: `limcpf/seemirai`
+- 제작자 및 운영자: `limcpf`
+- 프로젝트 언어: 한국어 사용자 문서, TypeScript 런타임
 
-## 참고 출처
-
-- Kraken: [What makes crypto 24/7/365?](https://www.kraken.com/learn/what-makes-crypto-24-7-365)
-- Upbit: [거래 데이터 기준 시간](https://support.upbit.com/hc/ko/articles/900006049666-%EA%B1%B0%EB%9E%98-%EB%8D%B0%EC%9D%B4%ED%84%B0-%EA%B8%B0%EC%A4%80-%EC%8B%9C%EA%B0%84%EC%9D%80-%EC%96%B8%EC%A0%9C%EC%9D%B8%EA%B0%80%EC%9A%94), [거래 수수료](https://support.upbit.com/hc/ko/articles/900006143046-%EA%B1%B0%EB%9E%98-%EC%88%98%EC%88%98%EB%A3%8C%EB%8A%94-%EC%96%BC%EB%A7%88%EC%9D%B8%EA%B0%80%EC%9A%94), [요청 수 제한](https://docs.upbit.com/kr/reference/rate-limits)
-- Binance: [Spot Trading Fee Rate](https://www.binance.com/en/fee/trading), [Futures Fee Structure](https://www.binance.com/en/support/faq/detail/360033544231), [Futures Funding Rates](https://www.binance.com/en/support/faq/detail/360033525031)
+문제 제보, 기능 요청, 운영 개선 제안은 GitHub issue로 기록한다. 보안과 secret 관련 내용은 공개 issue나 PR 본문에 원문 값을 포함하지 않는다.
