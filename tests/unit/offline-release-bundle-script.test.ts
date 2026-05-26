@@ -1,6 +1,6 @@
 import { execFile, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { access, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { access, lstat, mkdir, mkdtemp, readFile, readlink, rm, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -15,6 +15,10 @@ describe("offline release bundle script", () => {
     const packageName = "seemirai-offline-test";
     const untrackedFileName = "UNTRACKED_OFFLINE_RELEASE_SHOULD_NOT_COPY.tmp";
     const hasGitMetadata = await pathExists(path.join(process.cwd(), ".git"));
+    if (!hasGitMetadata) {
+      return;
+    }
+
     if (hasGitMetadata) {
       await writeFile(path.join(process.cwd(), untrackedFileName), "do not package\n", "utf8");
     }
@@ -107,6 +111,10 @@ describe("offline release bundle script", () => {
   });
 
   it("filters forbidden directory segments from git tracked release inputs", async () => {
+    if (!(await pathExists(path.join(process.cwd(), ".git")))) {
+      return;
+    }
+
     const tempDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-offline-release-fake-index-"));
     const outputDir = path.join(tempDir, "release");
     const fakeIndexPath = path.join(tempDir, "index");
@@ -141,6 +149,128 @@ describe("offline release bundle script", () => {
       });
     } finally {
       await rm(path.join(process.cwd(), "offline-release-forbidden-fixture"), { recursive: true, force: true });
+      await rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it("uses the git index blob instead of dirty working tree content", async () => {
+    if (!(await pathExists(path.join(process.cwd(), ".git")))) {
+      return;
+    }
+
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-offline-release-index-blob-"));
+    const outputDir = path.join(tempDir, "release");
+    const fakeIndexPath = path.join(tempDir, "index");
+    const packageName = "seemirai-offline-index-blob";
+    const relativePath = "offline-release-index-fixture.txt";
+    const sourcePath = path.join(process.cwd(), relativePath);
+    const indexedContentPath = path.join(tempDir, "indexed-content.txt");
+
+    await writeFile(indexedContentPath, "index snapshot\n", "utf8");
+    await writeFile(sourcePath, "dirty working tree\n", "utf8");
+
+    try {
+      const { stdout: hashStdout } = await execFileAsync("git", ["hash-object", "-w", indexedContentPath], {
+        cwd: process.cwd(),
+      });
+      await updateFakeIndex(fakeIndexPath, `100644 ${hashStdout.trim()} 0\t${relativePath}\n`);
+
+      const { stdout } = await execFileAsync(
+        "node",
+        [scriptPath, "--output-dir", outputDir, "--package-name", packageName, "--skip-fetch", "--json"],
+        { env: { ...process.env, GIT_INDEX_FILE: fakeIndexPath } },
+      );
+      const summary = JSON.parse(stdout) as { archivePath: string };
+      const extractDir = path.join(tempDir, "extract");
+
+      await mkdir(extractDir, { recursive: true });
+      await execFileAsync("tar", ["-xzf", summary.archivePath, "-C", extractDir]);
+      await expect(readFile(path.join(extractDir, packageName, "workspace", relativePath), "utf8")).resolves.toBe(
+        "index snapshot\n",
+      );
+    } finally {
+      await rm(sourcePath, { force: true });
+      await rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it("excludes intent-to-add index entries from release inputs", async () => {
+    if (!(await pathExists(path.join(process.cwd(), ".git")))) {
+      return;
+    }
+
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-offline-release-intent-"));
+    const outputDir = path.join(tempDir, "release");
+    const fakeIndexPath = path.join(tempDir, "index");
+    const packageName = "seemirai-offline-intent";
+    const relativePath = "offline-release-intent-fixture.txt";
+    const sourcePath = path.join(process.cwd(), relativePath);
+
+    await writeFile(sourcePath, "intent draft\n", "utf8");
+
+    try {
+      await execFileAsync("git", ["add", "-N", relativePath], {
+        cwd: process.cwd(),
+        env: { ...process.env, GIT_INDEX_FILE: fakeIndexPath },
+      });
+
+      const { stdout } = await execFileAsync(
+        "node",
+        [scriptPath, "--output-dir", outputDir, "--package-name", packageName, "--skip-fetch", "--json"],
+        { env: { ...process.env, GIT_INDEX_FILE: fakeIndexPath } },
+      );
+      const summary = JSON.parse(stdout) as { archivePath: string };
+      const extractDir = path.join(tempDir, "extract");
+
+      await mkdir(extractDir, { recursive: true });
+      await execFileAsync("tar", ["-xzf", summary.archivePath, "-C", extractDir]);
+      await expect(stat(path.join(extractDir, packageName, "workspace", relativePath))).rejects.toMatchObject({
+        code: "ENOENT",
+      });
+    } finally {
+      await rm(sourcePath, { force: true });
+      await rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it("preserves symlink entries from the git index mode", async () => {
+    if (!(await pathExists(path.join(process.cwd(), ".git")))) {
+      return;
+    }
+
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-offline-release-symlink-"));
+    const outputDir = path.join(tempDir, "release");
+    const fakeIndexPath = path.join(tempDir, "index");
+    const packageName = "seemirai-offline-symlink";
+    const relativePath = "offline-release-symlink-fixture/link.txt";
+    const sourcePath = path.join(process.cwd(), relativePath);
+    const symlinkBlobPath = path.join(tempDir, "symlink-blob.txt");
+
+    await mkdir(path.dirname(sourcePath), { recursive: true });
+    await writeFile(sourcePath, "checked out as regular file\n", "utf8");
+    await writeFile(symlinkBlobPath, "target.txt", "utf8");
+
+    try {
+      const { stdout: hashStdout } = await execFileAsync("git", ["hash-object", "-w", symlinkBlobPath], {
+        cwd: process.cwd(),
+      });
+      await updateFakeIndex(fakeIndexPath, `120000 ${hashStdout.trim()} 0\t${relativePath}\n`);
+
+      const { stdout } = await execFileAsync(
+        "node",
+        [scriptPath, "--output-dir", outputDir, "--package-name", packageName, "--skip-fetch", "--json"],
+        { env: { ...process.env, GIT_INDEX_FILE: fakeIndexPath } },
+      );
+      const summary = JSON.parse(stdout) as { archivePath: string };
+      const extractDir = path.join(tempDir, "extract");
+      const extractedLinkPath = path.join(extractDir, packageName, "workspace", relativePath);
+
+      await mkdir(extractDir, { recursive: true });
+      await execFileAsync("tar", ["-xzf", summary.archivePath, "-C", extractDir]);
+      expect((await lstat(extractedLinkPath)).isSymbolicLink()).toBe(true);
+      await expect(readlink(extractedLinkPath)).resolves.toBe("target.txt");
+    } finally {
+      await rm(path.join(process.cwd(), "offline-release-symlink-fixture"), { recursive: true, force: true });
       await rm(tempDir, { recursive: true, force: true });
     }
   });

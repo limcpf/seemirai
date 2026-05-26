@@ -4,11 +4,8 @@ import { createReadStream } from "node:fs";
 import {
   access,
   chmod,
-  copyFile,
-  lstat,
   mkdir,
   readFile,
-  readlink,
   readdir,
   rm,
   symlink,
@@ -48,7 +45,7 @@ async function main() {
   await rm(packageRoot, { recursive: true, force: true });
   await mkdir(pnpmStoreDir, { recursive: true });
   await mkdir(path.join(packageRoot, "maven"), { recursive: true });
-  await copyReleaseWorkspace(workspaceDir, { outputDir, stagingRoot, packageRoot });
+  await copyReleaseWorkspace(workspaceDir);
   await writeOfflineEntrypoints(packageRoot);
 
   if (options.skipFetch) {
@@ -139,17 +136,19 @@ function validatePackageName(packageName) {
   return packageName;
 }
 
-async function copyReleaseWorkspace(targetDir, excludedRoots) {
+async function copyReleaseWorkspace(targetDir) {
   await mkdir(targetDir, { recursive: true });
-  const trackedFiles = (await hasGitMetadata())
-    ? await collectGitTrackedFiles()
-    : await collectWorkspaceFilesFromDisk(repoRoot, excludedRoots);
+  if (!(await hasGitMetadata())) {
+    throw new Error("오프라인 릴리즈 번들은 Git index snapshot에서만 생성할 수 있습니다. .git 메타데이터가 있는 저장소에서 실행하세요.");
+  }
 
-  for (const relativePath of trackedFiles) {
-    const sourcePath = path.join(repoRoot, relativePath);
-    const targetPath = path.join(targetDir, relativePath);
+  const intentToAddPaths = await collectIntentToAddPaths();
+  const trackedFiles = await collectGitTrackedFiles(intentToAddPaths);
+
+  for (const trackedFile of trackedFiles) {
+    const targetPath = path.join(targetDir, trackedFile.relativePath);
     await mkdir(path.dirname(targetPath), { recursive: true });
-    await copyWorkspaceEntry(sourcePath, targetPath);
+    await copyGitBlobEntry(trackedFile, targetPath);
   }
 }
 
@@ -162,79 +161,54 @@ async function hasGitMetadata() {
   }
 }
 
-async function collectGitTrackedFiles() {
+async function collectGitTrackedFiles(intentToAddPaths) {
   const trackedFilesOutput = await runCapture("git", ["ls-files", "--stage", "-z"], { cwd: repoRoot });
   return trackedFilesOutput
     .split("\0")
     .filter((entry) => entry !== "")
-    .map(toGitTrackedFile)
+    .map((entry) => toGitTrackedFile(entry, intentToAddPaths))
     .filter((entry) => entry !== undefined)
-    .filter(({ relativePath }) => !shouldExcludeRelativePath(relativePath))
-    .map(({ relativePath }) => relativePath);
+    .filter(({ relativePath }) => !shouldExcludeRelativePath(relativePath));
 }
 
-function toGitTrackedFile(entry) {
+async function collectIntentToAddPaths() {
+  const statusOutput = await runCapture("git", ["status", "--porcelain=v1", "-z", "--untracked-files=no"], {
+    cwd: repoRoot,
+  });
+  const intentToAddPaths = new Set();
+  for (const entry of statusOutput.split("\0").filter((statusEntry) => statusEntry !== "")) {
+    if (entry.startsWith(" A ")) {
+      intentToAddPaths.add(entry.slice(3).split(path.sep).join("/"));
+    }
+  }
+  return intentToAddPaths;
+}
+
+function toGitTrackedFile(entry, intentToAddPaths = new Set()) {
   const tabIndex = entry.indexOf("\t");
   if (tabIndex < 0) {
     return undefined;
   }
 
   const metadata = entry.slice(0, tabIndex);
-  const [mode, , stage] = metadata.split(" ");
+  const [mode, objectId, stage] = metadata.split(" ");
   const relativePath = entry.slice(tabIndex + 1);
   // 충돌 stage가 섞인 인덱스는 재현 가능한 릴리즈 입력으로 볼 수 없으므로 즉시 실패한다.
   if (stage !== "0") {
     throw new Error(`Cannot build offline release with unresolved Git conflict stage ${stage}: ${relativePath}`);
   }
+  // intent-to-add 는 실제 index snapshot이 아닌 워킹트리 초안이므로 릴리즈 입력에서 제외한다.
+  if (intentToAddPaths.has(relativePath)) {
+    return undefined;
+  }
+  if (objectId === undefined) {
+    return undefined;
+  }
   if (mode !== "100644" && mode !== "100755" && mode !== "120000") {
     return undefined;
   }
 
-  return { relativePath };
-}
-
-async function collectWorkspaceFilesFromDisk(currentDir, excludedRoots) {
-  const collected = [];
-  const entries = await readdir(currentDir, { withFileTypes: true });
-
-  for (const entry of entries) {
-    const sourcePath = path.join(currentDir, entry.name);
-    const relativePath = path.relative(repoRoot, sourcePath).split(path.sep).join("/");
-
-    if (shouldExcludeSourcePath(sourcePath, relativePath, excludedRoots)) {
-      continue;
-    }
-
-    if (entry.isDirectory()) {
-      collected.push(...(await collectWorkspaceFilesFromDisk(sourcePath, excludedRoots)));
-      continue;
-    }
-
-    if (entry.isFile()) {
-      collected.push(relativePath);
-      continue;
-    }
-
-    if (entry.isSymbolicLink()) {
-      collected.push(relativePath);
-    }
-  }
-
-  return collected.sort((left, right) => left.localeCompare(right));
-}
-
-function shouldExcludeSourcePath(sourcePath, relativePath, excludedRoots) {
-  return (
-    shouldExcludeRelativePath(relativePath) ||
-    isSameOrInside(sourcePath, excludedRoots.outputDir) ||
-    isSameOrInside(sourcePath, excludedRoots.stagingRoot) ||
-    isSameOrInside(sourcePath, excludedRoots.packageRoot)
-  );
-}
-
-function isSameOrInside(candidatePath, parentPath) {
-  const relativePath = path.relative(path.resolve(parentPath), path.resolve(candidatePath));
-  return relativePath === "" || (!relativePath.startsWith("..") && !path.isAbsolute(relativePath));
+  return { mode, objectId, relativePath };
 }
 
 function shouldExcludeRelativePath(relativePath) {
@@ -318,25 +292,19 @@ async function assertNoForbiddenReleaseFiles(rootDir) {
   }
 }
 
-async function copyWorkspaceEntry(sourcePath, targetPath) {
-  let sourceStat;
-  try {
-    sourceStat = await lstat(sourcePath);
-  } catch (error) {
-    if (error instanceof Error && "code" in error && error.code === "ENOENT") {
-      return;
-    }
-    throw error;
-  }
-
-  if (sourceStat.isSymbolicLink()) {
-    await symlink(await readlink(sourcePath), targetPath);
+async function copyGitBlobEntry(trackedFile, targetPath) {
+  const blob = await runCaptureBuffer("git", ["cat-file", "blob", trackedFile.objectId], { cwd: repoRoot });
+  if (trackedFile.mode === "120000") {
+    await symlink(blob.toString("utf8"), targetPath);
     return;
   }
 
-  if (sourceStat.isFile()) {
-    await copyFile(sourcePath, targetPath);
+  await writeFile(targetPath, blob);
+  if (trackedFile.mode === "100755") {
+    await chmod(targetPath, 0o755);
+    return;
   }
+  await chmod(targetPath, 0o644);
 }
 
 async function walk(dir, onFile) {
@@ -383,6 +351,10 @@ async function run(command, args, options) {
 }
 
 async function runCapture(command, args, options) {
+  return (await runCaptureBuffer(command, args, options)).toString("utf8");
+}
+
+async function runCaptureBuffer(command, args, options) {
   return await new Promise((resolve, reject) => {
     const child = spawn(command, args, {
       cwd: options.cwd,
@@ -395,7 +367,7 @@ async function runCapture(command, args, options) {
     child.on("error", reject);
     child.on("exit", (code) => {
       if (code === 0) {
-        resolve(Buffer.concat(stdoutChunks).toString("utf8"));
+        resolve(Buffer.concat(stdoutChunks));
         return;
       }
       reject(new Error(`${command} ${args.join(" ")} exited with code ${code}: ${Buffer.concat(stderrChunks)}`));
