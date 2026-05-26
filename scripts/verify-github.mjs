@@ -7,17 +7,49 @@ async function main() {
   const errors = [];
 
   await requireFile(".github/workflows/verify.yml", errors);
+  await requireFile(".github/workflows/offline-release.yml", errors);
   await requireFile(".github/pull_request_template.md", errors);
   await requireFile(".github/ISSUE_TEMPLATE/feature.yml", errors);
 
   if (errors.length === 0) {
     const workflow = await readFile(toAbsolute(".github/workflows/verify.yml"), "utf8");
+    const offlineReleaseWorkflow = await readFile(toAbsolute(".github/workflows/offline-release.yml"), "utf8");
     const prTemplate = await readFile(toAbsolute(".github/pull_request_template.md"), "utf8");
     const issueTemplate = await readFile(toAbsolute(".github/ISSUE_TEMPLATE/feature.yml"), "utf8");
 
     requireContains(workflow, "pull_request:", ".github/workflows/verify.yml", "pull_request trigger", errors);
     requireContains(workflow, "push:", ".github/workflows/verify.yml", "push trigger", errors);
     requireContains(workflow, "./scripts/verify", ".github/workflows/verify.yml", "./scripts/verify 실행", errors);
+
+    requireContains(
+      offlineReleaseWorkflow,
+      "workflow_dispatch:",
+      ".github/workflows/offline-release.yml",
+      "workflow_dispatch trigger",
+      errors,
+    );
+    requireContains(offlineReleaseWorkflow, "tags:", ".github/workflows/offline-release.yml", "tag push trigger", errors);
+    requireContains(
+      offlineReleaseWorkflow,
+      "scripts/build-offline-release.mjs",
+      ".github/workflows/offline-release.yml",
+      "offline release build script 실행",
+      errors,
+    );
+    requireContains(
+      offlineReleaseWorkflow,
+      "gh release",
+      ".github/workflows/offline-release.yml",
+      "GitHub Release asset 업로드",
+      errors,
+    );
+    requireContains(
+      offlineReleaseWorkflow,
+      "actions/upload-artifact",
+      ".github/workflows/offline-release.yml",
+      "workflow artifact 업로드",
+      errors,
+    );
 
     for (const section of ["## 목적", "## 구현 범위", "## Definition of Done", "## 검증", "## 남은 리스크"]) {
       requireContains(prTemplate, section, ".github/pull_request_template.md", section, errors);
@@ -47,7 +79,7 @@ async function main() {
     process.exit(1);
   }
 
-  console.log("GitHub 운영 파일 검증 성공: workflow, PR template, issue form을 확인했습니다.");
+  console.log("GitHub 운영 파일 검증 성공: workflow, release workflow, PR template, issue form을 확인했습니다.");
 }
 
 async function requireFile(filePath, errors) {
