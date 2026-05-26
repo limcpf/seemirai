@@ -294,6 +294,31 @@ describe("M9 paper soak status script", () => {
       rawLogError: null,
     });
   });
+
+  it("returns structured unavailable status for non-race artifact stat failures", async () => {
+    const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-m9-status-stat-failure-"));
+    const prefix = "m9-paper-trading-soak-2026-05-26T06-00-00-000Z-5afe0002";
+    const summaryPath = path.join(artifactDir, `${prefix}-summary.json`);
+    const loopingDaySummaryPath = path.join(artifactDir, `${prefix}-day-1-summary.json`);
+    await writeAggregateSummary({
+      summaryPath,
+      rawLogPath: path.join(artifactDir, `${prefix}-events.jsonl`),
+      status: "skipped",
+      dailySummaryPaths: [loopingDaySummaryPath],
+    });
+    await symlink(loopingDaySummaryPath, loopingDaySummaryPath);
+
+    const result = await runScriptAllowingFailure(["--artifact-dir", artifactDir, "--json"]);
+    const status = JSON.parse(result.stdout) as {
+      statusCode: string;
+      trace: { reason: string; detail: string };
+    };
+
+    expect(result.code).toBe(1);
+    expect(status.statusCode).toBe("unavailable");
+    expect(status.trace.reason).toBe("artifact_file_stat_failed");
+    expect(status.trace.detail).toContain("ELOOP");
+  });
 });
 
 async function runScriptAllowingFailure(args: string[]) {

@@ -120,6 +120,7 @@ async function discoverRuns(artifactDir) {
   }
 
   const runs = new Map();
+  const statFailures = [];
   await Promise.all(
     entries.map(async (entry) => {
       const parsed = parseArtifactName(entry.name);
@@ -130,8 +131,15 @@ async function discoverRuns(artifactDir) {
       let fileStat;
       try {
         fileStat = await stat(filePath);
-      } catch {
-        // 장시간 runner가 artifact를 교체/정리하는 순간에는 해당 entry만 건너뛰어 상태 JSON 생성을 유지한다.
+      } catch (error) {
+        if (isMissingArtifactStatError(error)) {
+          // 장시간 runner가 artifact를 교체/정리하는 순간에는 해당 entry만 건너뛰어 상태 JSON 생성을 유지한다.
+          return;
+        }
+        statFailures.push({
+          path: filePath,
+          detail: toErrorMessage(error),
+        });
         return;
       }
       if (!fileStat.isFile()) {
@@ -149,11 +157,22 @@ async function discoverRuns(artifactDir) {
       assignRunFile(run, filePath, parsed);
     }),
   );
+  if (statFailures.length > 0) {
+    return {
+      statusCode: "unavailable",
+      reason: "artifact_file_stat_failed",
+      detail: statFailures.map((failure) => `${failure.path}: ${failure.detail}`).join("; "),
+    };
+  }
 
   return {
     statusCode: "ok",
     runs: [...runs.values()],
   };
+}
+
+function isMissingArtifactStatError(error) {
+  return error !== null && typeof error === "object" && "code" in error && error.code === "ENOENT";
 }
 
 function parseArtifactName(fileName) {
