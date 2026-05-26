@@ -268,6 +268,13 @@
       "owner_scope": "docs/exec-plans/completed"
     },
     {
+      "path": "docs/exec-plans/completed/2026-05-27-issue-90-offline-release.md",
+      "kind": "exec-plan",
+      "role": "issue #90 README/문서 정비와 폐쇄망 릴리즈 번들 구축 완료 기록",
+      "read_when": ["issue #90 완료 근거 확인", "폐쇄망 릴리즈 smoke 증거 확인", "offline bundle checksum 확인", "README 정비 결과 확인"],
+      "owner_scope": "docs/exec-plans/completed"
+    },
+    {
       "path": "docs/exec-plans/tech-debt-tracker.md",
       "kind": "reference",
       "role": "기술 부채와 후속 작업 추적기",
