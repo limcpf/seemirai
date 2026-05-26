@@ -45,6 +45,13 @@ async function main() {
     );
     requireContains(
       offlineReleaseWorkflow,
+      "github.sha",
+      ".github/workflows/offline-release.yml",
+      "tag push event SHA checkout",
+      errors,
+    );
+    requireContains(
+      offlineReleaseWorkflow,
       "git show-ref --verify --quiet \"$tag_ref\"",
       ".github/workflows/offline-release.yml",
       "release tag ref 검증",
