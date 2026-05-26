@@ -147,7 +147,7 @@ async function validateEvidence(options) {
   const aggregate = await readJsonArtifact(run.summaryPath);
   const daySummaries = await readDaySummaries({ run, aggregate: aggregate.value });
   const aggregateCompleted = isAggregateCompleted(aggregate.value);
-  const comparisonReport = await readComparisonReport({ artifactDir, explicitPath: options.comparisonReportPath });
+  const comparisonReport = await readComparisonReport({ artifactDir, explicitPath: options.comparisonReportPath, run });
   const checks = [
     createAggregateSummaryCheck(aggregate),
     await createAggregateReportCheck({ run, aggregate, aggregateCompleted }),
@@ -203,6 +203,8 @@ function completeValidation({ generatedAt, artifactDir, run, aggregate, daySumma
       aggregateStatus: readString(aggregate.value?.status),
       comparisonReportReadable: comparisonReport.ok,
       comparisonReportError: comparisonReport.error,
+      comparisonReportMatchesRun: comparisonReport.matchesRun ?? false,
+      comparisonReportMatchReason: comparisonReport.matchReason ?? null,
     },
   };
   validation.issueComment = renderIssueComment(validation);
@@ -304,6 +306,7 @@ function getOrCreateRun(runs, prefix) {
 
   const run = {
     prefix,
+    startedAtMs: parseStartedAtMsFromPrefix(prefix),
     latestMtimeMs: 0,
     summaryPath: null,
     reportPath: null,
@@ -347,11 +350,27 @@ function selectLatestRun(runs) {
   }
 
   return [...runs].sort((left, right) => {
+    const leftStartedAt = left.startedAtMs ?? Number.NEGATIVE_INFINITY;
+    const rightStartedAt = right.startedAtMs ?? Number.NEGATIVE_INFINITY;
+    if (rightStartedAt !== leftStartedAt) {
+      return rightStartedAt - leftStartedAt;
+    }
     if (right.latestMtimeMs !== left.latestMtimeMs) {
       return right.latestMtimeMs - left.latestMtimeMs;
     }
     return right.prefix.localeCompare(left.prefix);
   })[0];
+}
+
+function parseStartedAtMsFromPrefix(prefix) {
+  const match =
+    /^m9-paper-trading-soak-(\d{4}-\d{2}-\d{2}T\d{2})-(\d{2})-(\d{2})-(\d{3}Z)-[0-9a-f]{8}$/u.exec(prefix);
+  if (match === null) {
+    return null;
+  }
+  const [, dateHour, minute, second, milli] = match;
+  const parsed = Date.parse(`${dateHour}:${minute}:${second}.${milli}`);
+  return Number.isFinite(parsed) ? parsed : null;
 }
 
 function isMissingArtifactStatError(error) {
@@ -424,44 +443,137 @@ function expectedDailySummaryPath(prefix, day, run) {
   return path.join(path.dirname(rawPath), `${prefix}-day-${day}-summary.json`);
 }
 
-async function readComparisonReport({ artifactDir, explicitPath }) {
+async function readComparisonReport({ artifactDir, explicitPath, run }) {
   if (explicitPath !== null) {
-    return readTextArtifact(explicitPath);
+    return attachComparisonReportRunMatch(await readTextArtifact(explicitPath), run);
   }
 
-  for (const fileName of defaultComparisonReportNames) {
-    const candidate = path.join(artifactDir, fileName);
-    const report = await readTextArtifact(candidate);
+  const candidates = await collectComparisonReportCandidates(artifactDir);
+  let firstUnusableReport = null;
+  let firstMismatchedReport = null;
+  for (const candidate of candidates) {
+    const report = attachComparisonReportRunMatch(await readTextArtifact(candidate.path), run);
     if (report.ok) {
       return report;
     }
+    if (report.error === "comparison_report_run_mismatch") {
+      firstMismatchedReport ??= report;
+      continue;
+    }
+    firstUnusableReport ??= report;
   }
 
-  let entries;
-  try {
-    entries = await readdir(artifactDir, { withFileTypes: true });
-  } catch (error) {
-    return { path: path.join(artifactDir, defaultComparisonReportNames[0]), ok: false, value: null, error: toErrorMessage(error) };
-  }
-
-  const candidates = [];
-  await Promise.all(
-    entries.map(async (entry) => {
-      if (!entry.isFile() || !/^m9-3day-.+comparison.*\.md$/u.test(entry.name)) {
-        return;
-      }
-      const candidatePath = path.join(artifactDir, entry.name);
-      try {
-        const fileStat = await stat(candidatePath);
-        candidates.push({ path: candidatePath, mtimeMs: fileStat.mtimeMs });
-      } catch {
-        // 비교 report 후보가 정리되는 순간은 다음 후보 확인으로 넘긴다.
-      }
-    }),
+  return (
+    firstMismatchedReport ??
+    firstUnusableReport ?? {
+      path: path.join(artifactDir, defaultComparisonReportNames[0]),
+      ok: false,
+      value: null,
+      error: null,
+      matchesRun: false,
+      matchReason: "comparison_report_not_found",
+    }
   );
-  candidates.sort((left, right) => right.mtimeMs - left.mtimeMs || right.path.localeCompare(left.path));
+}
 
-  return readTextArtifact(candidates[0]?.path ?? path.join(artifactDir, defaultComparisonReportNames[0]));
+async function collectComparisonReportCandidates(artifactDir) {
+  const candidates = [];
+  const seen = new Set();
+  const searchDirs = comparisonReportSearchDirs(artifactDir);
+
+  for (const [dirIndex, searchDir] of searchDirs.entries()) {
+    for (const [nameIndex, fileName] of defaultComparisonReportNames.entries()) {
+      await appendComparisonReportCandidate({
+        candidates,
+        seen,
+        filePath: path.join(searchDir, fileName),
+        rank: dirIndex * 100 + nameIndex,
+      });
+    }
+
+    let entries;
+    try {
+      entries = await readdir(searchDir, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+
+    await Promise.all(
+      entries.map(async (entry) => {
+        if (!entry.isFile() || !/^m9-3day-.+comparison.*\.md$/u.test(entry.name)) {
+          return;
+        }
+        await appendComparisonReportCandidate({
+          candidates,
+          seen,
+          filePath: path.join(searchDir, entry.name),
+          rank: dirIndex * 100 + defaultComparisonReportNames.length,
+        });
+      }),
+    );
+  }
+
+  candidates.sort((left, right) => left.rank - right.rank || right.mtimeMs - left.mtimeMs || right.path.localeCompare(left.path));
+  return candidates;
+}
+
+function comparisonReportSearchDirs(artifactDir) {
+  const parentDir = path.dirname(artifactDir);
+  return parentDir === artifactDir ? [artifactDir] : [artifactDir, parentDir];
+}
+
+async function appendComparisonReportCandidate({ candidates, seen, filePath, rank }) {
+  if (seen.has(filePath)) {
+    return;
+  }
+  seen.add(filePath);
+
+  try {
+    const fileStat = await stat(filePath);
+    if (fileStat.isFile()) {
+      candidates.push({ path: filePath, rank, mtimeMs: fileStat.mtimeMs });
+    }
+  } catch {
+    // 비교 report 후보가 아직 없거나 정리되는 순간은 다른 후보 확인으로 넘긴다.
+  }
+}
+
+function attachComparisonReportRunMatch(report, run) {
+  if (!report.ok) {
+    return {
+      ...report,
+      matchesRun: false,
+      matchReason: report.error === null ? "comparison_report_not_found" : "comparison_report_unreadable",
+    };
+  }
+
+  if (comparisonReportMatchesRun(report.value, run)) {
+    return {
+      ...report,
+      matchesRun: true,
+      matchReason: "run_reference_found",
+    };
+  }
+
+  return {
+    ...report,
+    ok: false,
+    error: "comparison_report_run_mismatch",
+    matchesRun: false,
+    matchReason: "run_reference_missing",
+  };
+}
+
+function comparisonReportMatchesRun(markdown, run) {
+  const needles = [
+    run.prefix,
+    run.summaryPath,
+    run.reportPath,
+    run.rawLogPath,
+    ...run.dailySummaryPaths.values(),
+    ...run.dailyReportPaths.values(),
+  ].filter((value) => typeof value === "string" && value.length > 0);
+  return needles.some((needle) => markdown.includes(needle));
 }
 
 function createAggregateSummaryCheck(aggregate) {
@@ -607,6 +719,19 @@ function expectedDailyReportPath(prefix, day, run) {
 }
 
 function createComparisonReportCheck({ comparisonReport, aggregateCompleted }) {
+  if (!comparisonReport.ok && comparisonReport.error === "comparison_report_run_mismatch") {
+    return createCheck({
+      id: "comparisonReport",
+      label: "3일 비교 report",
+      // 완료된 run의 비교 report가 다른 run을 가리키면 #68 closeout 근거가 섞이므로 실패로 차단한다.
+      status: aggregateCompleted ? "failed" : "incomplete",
+      message: "3일 비교 report가 최신 run artifact를 참조하지 않는다.",
+      action: "선택된 run의 Day 1/2/3 summary로 비교 report를 다시 생성하거나 `--comparison-report`로 올바른 경로를 지정한다.",
+      evidence: { path: comparisonReport.path },
+      trace: { reason: comparisonReport.error, matchReason: comparisonReport.matchReason },
+    });
+  }
+
   return evidenceFileCheck({
     id: "comparisonReport",
     label: "3일 비교 report",
@@ -1103,7 +1228,7 @@ function printHelp() {
 
 Options:
   --artifact-dir <path>        M9 paper soak artifact 디렉터리. 기본값은 ~/vaults/99_운영/seemirai-m9-paper/trading-soak.
-  --comparison-report <path>   3일 비교 report markdown 경로. 생략하면 artifact dir의 m9-3day-trading-soak-comparison.md 또는 최신 comparison markdown을 찾는다.
+  --comparison-report <path>   3일 비교 report markdown 경로. 생략하면 artifact dir과 상위 운영 루트에서 최신 run을 참조하는 comparison markdown을 찾는다.
   --issue-comment              GitHub issue #68에 붙일 Markdown만 출력한다.
   --json                       Machine-readable validation JSON을 출력한다.
   --help, -h                   도움말을 출력한다.

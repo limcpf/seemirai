@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { mkdtemp, readdir, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -58,6 +58,25 @@ describe("M9 paper soak evidence validator", () => {
     expect(validation.checks.find((check) => check.id === "aggregateSummary")?.status).toBe("incomplete");
   });
 
+  it("finds the runbook comparison report in the parent operation root", async () => {
+    const artifactRoot = await mkdtemp(path.join(os.tmpdir(), "seemirai-m9-evidence-parent-"));
+    const artifactDir = path.join(artifactRoot, "trading-soak");
+    const prefix = "m9-paper-trading-soak-2026-05-26T08-30-00-000Z-bbcceeff";
+    await mkdir(artifactDir);
+    await writeCompleteRunArtifacts({ artifactDir, prefix, comparisonReportDir: artifactRoot });
+
+    const { stdout } = await execFileAsync("node", [scriptPath, "--artifact-dir", artifactDir, "--json"]);
+    const validation = JSON.parse(stdout) as {
+      statusCode: string;
+      artifacts: { comparisonReportPath: string };
+      trace: { comparisonReportMatchesRun: boolean };
+    };
+
+    expect(validation.statusCode).toBe("passed");
+    expect(validation.artifacts.comparisonReportPath).toBe(path.join(artifactRoot, "m9-3day-trading-soak-comparison.md"));
+    expect(validation.trace.comparisonReportMatchesRun).toBe(true);
+  });
+
   it("fails completed evidence when live order calls or comparison report evidence are missing", async () => {
     const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-m9-evidence-failed-"));
     const prefix = "m9-paper-trading-soak-2026-05-26T09-00-00-000Z-ccddeeff";
@@ -73,6 +92,11 @@ describe("M9 paper soak evidence validator", () => {
         },
       },
     });
+    await writeFile(
+      path.join(artifactDir, "m9-3day-trading-soak-comparison.md"),
+      "# M9 3일 Paper Report 비교\n\n- run prefix: m9-paper-trading-soak-2026-05-20T00-00-00-000Z-deadbeef\n",
+      "utf8",
+    );
 
     const result = await runScriptAllowingFailure(["--artifact-dir", artifactDir, "--json"]);
     const validation = JSON.parse(result.stdout) as {
@@ -87,7 +111,30 @@ describe("M9 paper soak evidence validator", () => {
     });
     expect(validation.checks.find((check) => check.id === "comparisonReport")).toMatchObject({
       status: "failed",
+      message: "3일 비교 report가 최신 run artifact를 참조하지 않는다.",
     });
+  });
+
+  it("selects the latest run by prefix time even when an older artifact is touched later", async () => {
+    const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-m9-evidence-latest-"));
+    const oldPrefix = "m9-paper-trading-soak-2026-05-25T09-00-00-000Z-00112233";
+    const newPrefix = "m9-paper-trading-soak-2026-05-26T09-00-00-000Z-11223344";
+    await writeCompleteRunArtifacts({ artifactDir, prefix: oldPrefix });
+    await writeCompleteRunArtifacts({ artifactDir, prefix: newPrefix });
+    await writeFile(
+      path.join(artifactDir, `${oldPrefix}-events.jsonl`),
+      `${JSON.stringify({ kind: "POST_PROCESSED", occurredAt: "2026-05-30T00:00:00.000Z" })}\n`,
+      { flag: "a" },
+    );
+
+    const { stdout } = await execFileAsync("node", [scriptPath, "--artifact-dir", artifactDir, "--json"]);
+    const validation = JSON.parse(stdout) as {
+      statusCode: string;
+      artifacts: { prefix: string };
+    };
+
+    expect(validation.statusCode).toBe("passed");
+    expect(validation.artifacts.prefix).toBe(newPrefix);
   });
 
   it("returns structured incomplete status for invalid artifact directories", async () => {
@@ -128,11 +175,13 @@ async function writeCompleteRunArtifacts({
   artifactDir,
   prefix,
   writeComparisonReport = true,
+  comparisonReportDir = artifactDir,
   dayOverrides = {},
 }: {
   artifactDir: string;
   prefix: string;
   writeComparisonReport?: boolean;
+  comparisonReportDir?: string;
   dayOverrides?: Record<number, Record<string, unknown>>;
 }) {
   const rawLogPath = path.join(artifactDir, `${prefix}-events.jsonl`);
@@ -190,8 +239,18 @@ async function writeCompleteRunArtifacts({
 
   if (writeComparisonReport) {
     await writeFile(
-      path.join(artifactDir, "m9-3day-trading-soak-comparison.md"),
-      "# M9 3일 Paper Report 비교\n\n- 비교 상태: passed\n",
+      path.join(comparisonReportDir, "m9-3day-trading-soak-comparison.md"),
+      `# M9 3일 Paper Report 비교
+
+- 비교 상태: passed
+- run prefix: ${prefix}
+
+| 일차 | report artifact |
+| --- | --- |
+| Day 1 | ${dailyReportPaths[0]} |
+| Day 2 | ${dailyReportPaths[1]} |
+| Day 3 | ${dailyReportPaths[2]} |
+`,
       "utf8",
     );
   }
