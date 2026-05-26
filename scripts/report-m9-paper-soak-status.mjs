@@ -108,29 +108,46 @@ async function discoverRuns(artifactDir) {
     };
   }
 
-  const entries = await readdir(artifactDir, { withFileTypes: true });
+  let entries;
+  try {
+    entries = await readdir(artifactDir, { withFileTypes: true });
+  } catch (error) {
+    return {
+      statusCode: "unavailable",
+      reason: "artifact_dir_unreadable",
+      detail: toErrorMessage(error),
+    };
+  }
+
   const runs = new Map();
   await Promise.all(
-    entries
-      .filter((entry) => entry.isFile())
-      .map(async (entry) => {
-        const parsed = parseArtifactName(entry.name);
-        if (parsed === null) {
-          return;
-        }
-        const filePath = path.join(artifactDir, entry.name);
-        const fileStat = await stat(filePath);
-        const run = getOrCreateRun(runs, parsed.prefix);
-        run.latestMtimeMs = Math.max(run.latestMtimeMs, fileStat.mtimeMs);
-        run.files.push({
-          path: filePath,
-          kind: parsed.kind,
-          dayIndex: parsed.dayIndex,
-          mtimeMs: fileStat.mtimeMs,
-          size: fileStat.size,
-        });
-        assignRunFile(run, filePath, parsed);
-      }),
+    entries.map(async (entry) => {
+      const parsed = parseArtifactName(entry.name);
+      if (parsed === null) {
+        return;
+      }
+      const filePath = path.join(artifactDir, entry.name);
+      let fileStat;
+      try {
+        fileStat = await stat(filePath);
+      } catch {
+        // 장시간 runner가 artifact를 교체/정리하는 순간에는 해당 entry만 건너뛰어 상태 JSON 생성을 유지한다.
+        return;
+      }
+      if (!fileStat.isFile()) {
+        return;
+      }
+      const run = getOrCreateRun(runs, parsed.prefix);
+      run.latestMtimeMs = Math.max(run.latestMtimeMs, fileStat.mtimeMs);
+      run.files.push({
+        path: filePath,
+        kind: parsed.kind,
+        dayIndex: parsed.dayIndex,
+        mtimeMs: fileStat.mtimeMs,
+        size: fileStat.size,
+      });
+      assignRunFile(run, filePath, parsed);
+    }),
   );
 
   return {
@@ -220,7 +237,8 @@ function selectLatestRun(runs) {
 async function buildRunStatus({ artifactDir, run }) {
   const aggregate = await readJsonArtifact(run.summaryPath);
   const dailySummaries = await readDailySummaries(run.dailySummaryPaths);
-  const rawLog = await readRecentRawEvents(run.rawLogPath);
+  const rawLogPath = resolveRawLogPath({ run, aggregate: aggregate.value });
+  const rawLog = await readRecentRawEvents(rawLogPath);
   const rawEvents = rawLog.events;
   const expectedDayCount = resolveExpectedDayCount({ aggregate: aggregate.value, run });
   const daySummaryStatus = createDaySummaryStatus({ run, aggregate: aggregate.value, dailySummaries, expectedDayCount });
@@ -259,7 +277,7 @@ async function buildRunStatus({ artifactDir, run }) {
     },
     artifacts: {
       prefix: run.prefix,
-      rawLogPath: run.rawLogPath,
+      rawLogPath,
       summaryPath: run.summaryPath,
       reportPath: run.reportPath,
       dailySummaryPaths: daySummaryStatus.map((day) => ({
@@ -278,6 +296,17 @@ async function buildRunStatus({ artifactDir, run }) {
       recentRawEventCount: rawEvents.length,
     },
   };
+}
+
+function resolveRawLogPath({ run, aggregate }) {
+  if (run.rawLogPath !== null) {
+    return run.rawLogPath;
+  }
+  if (aggregate?.status === "skipped") {
+    return null;
+  }
+  const rawLogPath = aggregate?.artifacts?.rawLogPath;
+  return typeof rawLogPath === "string" && rawLogPath.length > 0 ? rawLogPath : null;
 }
 
 function createUnavailableStatus({ artifactDir, reason, detail }) {
@@ -560,7 +589,7 @@ function readRecentFailures({ rawEvents, aggregate, rawLog, daySummaryStatus }) 
     failures.push(...readFailedChecks(aggregate.value.checks, aggregate.value.finishedAt));
   }
 
-  if (aggregate.value !== null) {
+  if (aggregate.value !== null && normalizeSummaryStatus(aggregate.value.status) !== "skipped") {
     failures.push(...readDaySummaryEvidenceFailures(daySummaryStatus, aggregate.value.finishedAt));
   }
 

@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { chmod, mkdtemp, readdir, readFile, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, stat, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -216,7 +216,7 @@ describe("M9 paper soak status script", () => {
   it("treats unreadable day summaries and raw logs as structured failure status", async () => {
     const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-m9-status-unreadable-"));
     const prefix = "m9-paper-trading-soak-2026-05-26T04-00-00-000Z-c0ffee00";
-    const rawLogPath = path.join(artifactDir, `${prefix}-events.jsonl`);
+    const rawLogPath = path.join(artifactDir, "raw-log-directory");
     const summaryPath = path.join(artifactDir, `${prefix}-summary.json`);
     const dayOneSummaryPath = path.join(artifactDir, `${prefix}-day-1-summary.json`);
     await writeAggregateSummary({
@@ -226,35 +226,85 @@ describe("M9 paper soak status script", () => {
       dailySummaryPaths: [dayOneSummaryPath],
     });
     await writeFile(dayOneSummaryPath, "{not-json", "utf8");
-    await writeFile(rawLogPath, `${JSON.stringify({ kind: "MARKET_DATA", receivedAt: "2026-05-26T04:01:00.000Z" })}\n`);
-    await chmod(rawLogPath, 0o000);
+    await mkdir(rawLogPath);
 
-    try {
-      const { stdout } = await execFileAsync("node", [scriptPath, "--artifact-dir", artifactDir, "--json"]);
-      const status = JSON.parse(stdout) as {
-        statusCode: string;
-        signals: { recentFailures: Array<{ message: string }> };
-        trace: { rawLogReadable: boolean; rawLogError: string | null };
-      };
+    const { stdout } = await execFileAsync("node", [scriptPath, "--artifact-dir", artifactDir, "--json"]);
+    const status = JSON.parse(stdout) as {
+      statusCode: string;
+      signals: { recentFailures: Array<{ message: string }> };
+      trace: { rawLogReadable: boolean; rawLogError: string | null };
+    };
 
-      expect(status.statusCode).toBe("failed");
-      expect(status.trace.rawLogReadable).toBe(false);
-      expect(status.trace.rawLogError).toBeTypeOf("string");
-      expect(status.signals.recentFailures).toEqual(
-        expect.arrayContaining([
-          expect.objectContaining({
-            message: "raw log를 읽지 못해 최근 진행 상태가 제한적으로만 확인된다.",
-          }),
-          expect.objectContaining({
-            message: "Day 1 summary JSON을 읽지 못했다.",
-          }),
-        ]),
-      );
-    } finally {
-      await chmod(rawLogPath, 0o600);
-    }
+    expect(status.statusCode).toBe("failed");
+    expect(status.trace.rawLogReadable).toBe(false);
+    expect(status.trace.rawLogError).toBeTypeOf("string");
+    expect(status.signals.recentFailures).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          message: "raw log를 읽지 못해 최근 진행 상태가 제한적으로만 확인된다.",
+        }),
+        expect.objectContaining({
+          message: "Day 1 summary JSON을 읽지 못했다.",
+        }),
+      ]),
+    );
+  });
+
+  it("returns structured unavailable status for invalid artifact directories", async () => {
+    const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-m9-status-invalid-dir-"));
+    const notDirectoryPath = path.join(artifactDir, "artifact-file");
+    await writeFile(notDirectoryPath, "not a directory", "utf8");
+
+    const result = await runScriptAllowingFailure(["--artifact-dir", notDirectoryPath, "--json"]);
+    const status = JSON.parse(result.stdout) as {
+      statusCode: string;
+      trace: { reason: string; detail: string };
+    };
+
+    expect(result.code).toBe(1);
+    expect(status.statusCode).toBe("unavailable");
+    expect(status.trace.reason).toBe("artifact_dir_unreadable");
+    expect(status.trace.detail).toContain("ENOTDIR");
+  });
+
+  it("ignores disappearing artifact entries and keeps guard-skipped runs non-failing", async () => {
+    const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-m9-status-skip-race-"));
+    const prefix = "m9-paper-trading-soak-2026-05-26T05-00-00-000Z-5afe0001";
+    const summaryPath = path.join(artifactDir, `${prefix}-summary.json`);
+    const brokenDaySummaryPath = path.join(artifactDir, `${prefix}-day-1-summary.json`);
+    await writeAggregateSummary({
+      summaryPath,
+      rawLogPath: path.join(artifactDir, `${prefix}-events.jsonl`),
+      status: "skipped",
+      dailySummaryPaths: [brokenDaySummaryPath],
+    });
+    await symlink(path.join(artifactDir, "deleted-day-summary.json"), brokenDaySummaryPath);
+
+    const { stdout } = await execFileAsync("node", [scriptPath, "--artifact-dir", artifactDir, "--json"]);
+    const status = JSON.parse(stdout) as {
+      statusCode: string;
+      signals: { recentFailures: Array<unknown> };
+      trace: { rawLogReadable: boolean; rawLogError: string | null };
+    };
+
+    expect(status.statusCode).toBe("skipped");
+    expect(status.signals.recentFailures).toEqual([]);
+    expect(status.trace).toMatchObject({
+      rawLogReadable: true,
+      rawLogError: null,
+    });
   });
 });
+
+async function runScriptAllowingFailure(args: string[]) {
+  try {
+    const { stdout } = await execFileAsync("node", [scriptPath, ...args]);
+    return { code: 0, stdout };
+  } catch (error) {
+    const executionError = error as Error & { code?: number; stdout?: string };
+    return { code: executionError.code ?? 1, stdout: executionError.stdout ?? "" };
+  }
+}
 
 async function writeAggregateSummary({
   summaryPath,
