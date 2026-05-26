@@ -182,7 +182,9 @@ node scripts/report-m9-paper-soak-status.mjs \
 | `running` | aggregate summary는 아직 없지만 raw log가 갱신되어 실행 중으로 보인다. | 마지막 이벤트 시각이 계속 갱신되는지 확인한다. |
 | `passed` | aggregate summary가 통과 상태다. | day summary 3개와 3일 비교 report를 evidence validator 입력으로 넘긴다. |
 | `failed` | 최근 artifact 또는 summary에서 실패 신호가 있다. | 실패 check와 raw log 마지막 event를 먼저 확인한다. |
+| `skipped` | runner가 안전 guard 때문에 장시간 실행을 시작하지 않았다. | `SEEMIRAI_RUN_M9_PAPER_TRADING_SOAK=1` guard 설정 여부와 의도된 미실행인지 확인한다. |
 | `incomplete` | 완료로 보기에는 day summary/report 증거가 부족하다. | 누락 artifact를 확인하고 완료 validator 실행 전 복구 또는 재실행한다. |
+| `unknown` | aggregate summary 상태값을 현재 CLI가 완료/실패/스킵으로 분류하지 못했다. | summary schema와 runner version을 확인하고 #68 완료 증거로 쓰지 않는다. |
 | `unavailable` | artifact 디렉터리나 파일을 읽지 못했다. | 경로, 권한, runner 실행 여부를 확인한다. |
 
 local HTTP control server가 떠 있으면 `/status`도 함께 본다.
