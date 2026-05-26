@@ -28,6 +28,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          ref: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || github.ref }}
 
       - name: Setup Node
         uses: actions/setup-node@v4
@@ -59,6 +60,13 @@ jobs:
             exit 1
           fi
 
+          target_sha="$(git rev-parse HEAD)"
+          tag_sha="$(git rev-list -n 1 "$release_tag")"
+          if [ "$target_sha" != "$tag_sha" ]; then
+            echo "checkout된 revision과 릴리즈 태그가 일치하지 않습니다: $target_sha != $tag_sha" >&2
+            exit 1
+          fi
+
           if [ -z "$package_name" ]; then
             version="${release_tag#v}"
             package_name="seemirai-offline-$version"
@@ -67,6 +75,7 @@ jobs:
           {
             echo "release_tag=$release_tag"
             echo "package_name=$package_name"
+            echo "target_sha=$target_sha"
             echo "archive=.local/releases/$package_name.tar.gz"
             echo "checksum=.local/releases/$package_name.tar.gz.sha256"
           } >> "$GITHUB_OUTPUT"
@@ -121,6 +130,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ steps.release.outputs.release_tag }}
+          TARGET_SHA: ${{ steps.release.outputs.target_sha }}
           ARCHIVE: ${{ steps.release.outputs.archive }}
           CHECKSUM: ${{ steps.release.outputs.checksum }}
         run: |
@@ -130,7 +140,7 @@ jobs:
             gh release upload "$RELEASE_TAG" "$ARCHIVE" "$CHECKSUM" --clobber
           else
             gh release create "$RELEASE_TAG" "$ARCHIVE" "$CHECKSUM" \
-              --target "$GITHUB_SHA" \
+              --target "$TARGET_SHA" \
               --title "$RELEASE_TAG" \
               --notes "Seemirai 폐쇄망 설치용 올인원 릴리즈 번들입니다. checksum 파일로 무결성을 확인한 뒤 runbook 절차에 따라 설치하세요."
           fi

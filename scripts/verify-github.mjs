@@ -38,6 +38,20 @@ async function main() {
     );
     requireContains(
       offlineReleaseWorkflow,
+      "github.event.inputs.tag",
+      ".github/workflows/offline-release.yml",
+      "수동 release tag checkout",
+      errors,
+    );
+    requireContains(
+      offlineReleaseWorkflow,
+      "target_sha",
+      ".github/workflows/offline-release.yml",
+      "release target SHA 고정",
+      errors,
+    );
+    requireContains(
+      offlineReleaseWorkflow,
       "gh release",
       ".github/workflows/offline-release.yml",
       "GitHub Release asset 업로드",

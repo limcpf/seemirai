@@ -43,9 +43,10 @@ git push origin v0.1.0
 수동 실행 기준:
 
 1. GitHub Actions에서 `Offline Release` workflow를 선택한다.
-2. `tag`에 릴리즈 태그를 입력한다.
+2. `tag`에 이미 존재하는 릴리즈 태그를 입력한다.
 3. `package_name`은 비워두면 `seemirai-offline-<tag without v>`로 생성된다.
-4. workflow가 archive, checksum, forbidden entry scan, offline bootstrap smoke를 통과하면 GitHub Release asset을 생성하거나 갱신한다.
+4. workflow는 입력 tag를 checkout한 뒤 그 revision과 release target SHA가 일치하는지 확인한다.
+5. workflow가 archive, checksum, forbidden entry scan, offline bootstrap smoke를 통과하면 GitHub Release asset을 생성하거나 갱신한다.
 
 workflow는 공식 action만 사용한다.
 
