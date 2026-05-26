@@ -13,3 +13,4 @@
 ## 완료 계획
 
 - [`2026-05-13-mvp-development-plan.md`](./2026-05-13-mvp-development-plan.md): Upbit KRW paper trading MVP 개발 실행 계획. M8-C에서 24시간 public WebSocket soak와 전체 verify 증거로 완료 판정했다.
+- [`2026-05-27-issue-90-offline-release.md`](./2026-05-27-issue-90-offline-release.md): issue #90 README/문서 정비와 폐쇄망 릴리즈 번들 구축 완료 기록. 오프라인 archive, checksum, forbidden entry scan, wrapper smoke 증거를 남겼다.
