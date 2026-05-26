@@ -1,6 +1,30 @@
 # 큰 TypeScript 단일 파일의 책임 분리
 
-상태: open
+상태: completed
+
+## 완료 기록
+
+2026-05-26에 #77 mother PR #85와 sub PR #78~#84로 TD-002를 완료했다. 대상 7개 모듈은 기존 public entry를 유지하면서
+같은 이름의 세부 구현 디렉터리로 분리했다.
+
+완료된 대상:
+
+1. `src/infrastructure/db/execution-persistence.ts` -> `src/infrastructure/db/execution-persistence/`
+2. `src/infrastructure/paper/paper-broker.ts` -> `src/infrastructure/paper/paper-broker/`
+3. `src/application/risk/risk-gate-runtime.ts` -> `src/application/risk/risk-gate-runtime/`
+4. `src/application/risk/risk-gate.ts` -> `src/application/risk/risk-gate/`
+5. `src/application/execution/execution-engine.ts` -> `src/application/execution/execution-engine/`
+6. `src/application/strategies/strategy-variants.ts` -> `src/application/strategies/strategy-variants/`
+7. `src/application/backtest/backtest-orchestrator.ts` -> `src/application/backtest/backtest-orchestrator/`
+
+완료 검증:
+
+- `corepack pnpm typecheck` 통과
+- `corepack pnpm test` 통과: 47 files passed, 7 skipped / 457 passed, 45 skipped
+- `./scripts/verify` 통과
+- #85 GitHub check 통과
+
+구조 규칙 자체는 바꾸지 않았으므로 `docs/design-docs/2026-05-20-typescript-module-structure.md`는 유지한다.
 
 ## 배경
 
