@@ -324,6 +324,13 @@
       "owner_scope": ".agents/skills/subpr-orchestrator"
     },
     {
+      "path": ".agents/skills/issue-subpr-runner/SKILL.md",
+      "kind": "skill",
+      "role": "issue 기준 sub PR 순차 개발, DnD/review drain 확인, mother branch merge 실행 workflow",
+      "read_when": ["issue 기준 sub PR 순차 개발", "sub PR review drain 후 merge", "main 대상 final PR drain"],
+      "owner_scope": ".agents/skills/issue-subpr-runner"
+    },
+    {
       "path": ".agents/skills/pr-review-drain/SKILL.md",
       "kind": "skill",
       "role": "PR 리뷰 finding을 clean 상태까지 처리하는 workflow",

@@ -25,6 +25,7 @@
 - PRD와 기능 요구사항 작성: [`.agents/skills/prd-writer/SKILL.md`](./.agents/skills/prd-writer/SKILL.md)
 - GitHub issue 작성과 생성: [`.agents/skills/issue-planner/SKILL.md`](./.agents/skills/issue-planner/SKILL.md)
 - issue 단위 mother/sub PR 운영: [`.agents/skills/subpr-orchestrator/SKILL.md`](./.agents/skills/subpr-orchestrator/SKILL.md)
+- issue 기준 sub PR 순차 개발과 임시 merge 실행: [`.agents/skills/issue-subpr-runner/SKILL.md`](./.agents/skills/issue-subpr-runner/SKILL.md)
 - PR 리뷰 drain: [`.agents/skills/pr-review-drain/SKILL.md`](./.agents/skills/pr-review-drain/SKILL.md)
 
 ## 저장소 공통 규칙
