@@ -1,154 +1,74 @@
 import { simulatePaperFill } from "../../application/execution/index.js";
-import type {
-  PaperFillSimulationResult,
-  PaperFillSimulatorOptions,
-} from "../../application/execution/index.js";
+import type { PaperFillSimulationResult } from "../../application/execution/index.js";
 import type { BrokerPort } from "../../application/ports/index.js";
-import { parseFinancialDecimal } from "../../shared/index.js";
-import { parseMarketEventTimestampNanos } from "../../domain/index.js";
 import type {
   BrokerBalance,
   BrokerBalanceSnapshot,
   BrokerOrder,
   ExchangeId,
-  JsonRecord,
   MarketCode,
   NumericString,
   OrderIntent,
-  OrderLifecycleStatus,
   OrderSubmission,
   OrderbookEvent,
   TimestampInput,
 } from "../../domain/index.js";
+import { createZeroBalance, normalizeInitialBalance } from "./paper-broker/balance-ledger.js";
+import {
+  createOrderStateFromSimulation,
+  createSubmissionBalanceMutation,
+  parseMarketCurrencies,
+} from "./paper-broker/balance-mutation.js";
+import {
+  addDecimalStrings,
+  absDecimalString,
+  isNegativeDecimalString,
+  isPositiveDecimalString,
+  isZeroDecimalString,
+  multiplyDecimalStrings,
+  negateDecimalString,
+  normalizeCurrency,
+  parseFinancialDecimalString,
+  subtractDecimalStrings,
+} from "./paper-broker/decimal-math.js";
+import {
+  PaperBrokerIdempotencyConflictError,
+  PaperBrokerOrderNotFoundError,
+} from "./paper-broker/errors.js";
+import {
+  createBrokerOrderFromSimulation,
+  createCanceledOrder,
+  createExchangeRejection,
+  createRejectedBrokerOrder,
+  createSubmissionFingerprint,
+  isOpenBrokerOrder,
+} from "./paper-broker/order-state.js";
+import {
+  createOrderbookKey,
+  compareBigInt,
+  normalizeOrderbookSnapshots,
+  readTimestampNanos,
+  selectImmediateExecutionOrderbook,
+  shouldWaitForPostSubmitSnapshot,
+} from "./paper-broker/orderbook-window.js";
+import { cloneBrokerBalance, cloneBrokerOrder } from "./paper-broker/snapshot-clone.js";
+import type {
+  PaperBrokerBalanceInput,
+  PaperBrokerBalanceMutationSummary,
+  PaperBrokerBalanceValidationResult,
+  PaperBrokerCancelMutationSummary,
+  PaperBrokerFillOptions,
+  PaperBrokerFillSimulationRequest,
+  PaperBrokerOptions,
+  PaperBrokerOrderState,
+} from "./paper-broker/types.js";
 
-export type PaperBrokerFillOptions = Omit<PaperFillSimulatorOptions, "submittedAt">;
-
-export interface PaperBrokerBalanceInput {
-  currency: string;
-  available: NumericString;
-  locked?: NumericString;
-  total?: NumericString;
-  updatedAt?: TimestampInput;
-  metadata?: JsonRecord;
-}
-
-export interface PaperBrokerOptions {
-  /**
-   * 잔고 snapshot과 주문 결과에 찍을 거래소 식별자다.
-   *
-   * PaperBroker는 거래소별 client를 import하지 않으므로, runtime assembly가 선택한 paper profile의 exchange id를
-   * 명시적으로 주입해야 한다.
-   */
-  exchangeId: ExchangeId;
-  /** 테스트, backtest bridge, paper runtime이 시작 시점에 주입하는 가상 잔고다. */
-  initialBalances?: readonly PaperBrokerBalanceInput[];
-  /**
-   * submit 시점에 사용할 호가 snapshot 묶음이다.
-   *
-   * BrokerPort에는 market data 조회 메서드가 없으므로, runtime은 주문 제출 전에 최신 snapshot을 broker에 기록해 둔다.
-   */
-  orderbookSnapshots?: OrderbookEvent | readonly OrderbookEvent[];
-  /** latency, post-only 정책, 수수료처럼 fill simulator에 넘길 broker-local 옵션이다. */
-  fillOptions?: PaperBrokerFillOptions;
-  /** 사람이 로그에서 구분하기 쉬운 paper 주문 ID prefix다. */
-  brokerOrderIdPrefix?: string;
-  /** 테스트와 replay가 결정적 timestamp를 주입할 수 있게 하는 clock이다. */
-  clock?: () => TimestampInput;
-}
-
-interface MarketCurrencies {
-  quoteCurrency: string;
-  baseCurrency: string;
-}
-
-interface PaperBrokerBalanceMutationSummary extends JsonRecord {
-  base_currency: string;
-  quote_currency: string;
-  filled_quantity: NumericString;
-  open_quantity: NumericString;
-  canceled_quantity: NumericString;
-  quote_available_delta: NumericString;
-  quote_locked_delta: NumericString;
-  base_available_delta: NumericString;
-  base_locked_delta: NumericString;
-}
-
-interface PaperBrokerCancelMutationSummary extends JsonRecord {
-  base_currency: string;
-  quote_currency: string;
-  released_currency: string;
-  released_quantity: NumericString;
-  canceled_quantity: NumericString;
-}
-
-interface PaperBrokerBalanceRejectionSummary extends JsonRecord {
-  reason_code: "paper_balance_insufficient";
-  currency: string;
-  balance_field: "available";
-  required_quantity: NumericString;
-  available_quantity: NumericString;
-  shortage_quantity: NumericString;
-  attempted_delta: NumericString;
-}
-
-interface PaperBrokerExchangeRejectionSummary extends JsonRecord {
-  reason_code: "paper_exchange_mismatch";
-  broker_exchange_id: ExchangeId;
-  intent_exchange_id: ExchangeId;
-}
-
-type PaperBrokerBalanceValidationResult =
-  | {
-      valid: true;
-    }
-  | {
-      valid: false;
-      rejection: PaperBrokerBalanceRejectionSummary;
-    };
-
-interface PaperBrokerFillSimulationRequest {
-  orderbooks: readonly OrderbookEvent[];
-  options: PaperFillSimulatorOptions;
-}
-
-interface PaperBrokerOrderState {
-  status: OrderLifecycleStatus;
-  remainingQuantity: NumericString;
-  balanceMutationApplied: boolean;
-  balanceRejection?: PaperBrokerBalanceRejectionSummary;
-}
-
-/**
- * 동일 idempotency key가 서로 다른 주문 후보에 재사용됐을 때 발생하는 broker boundary 오류다.
- *
- * ExecutionEngine은 동시에 들어온 중복 요청만 억제하므로, PaperBroker는 이미 기록된 key가 다른 fingerprint로
- * 들어오면 durable broker state 오염을 막기 위해 side effect 없이 실패시킨다.
- */
-export class PaperBrokerIdempotencyConflictError extends Error {
-  public readonly idempotencyKey: string;
-
-  public constructor(idempotencyKey: string) {
-    super(`Paper broker idempotency key was reused with a different order fingerprint: ${idempotencyKey}`);
-    this.name = "PaperBrokerIdempotencyConflictError";
-    this.idempotencyKey = idempotencyKey;
-  }
-}
-
-/**
- * 존재하지 않는 paper 주문을 취소하려고 할 때 발생하는 조회 오류다.
- *
- * BrokerPort는 취소 결과로 `BrokerOrder`를 돌려주므로, 알 수 없는 주문 ID를 조용히 성공 처리하면 runtime이
- * 실제 취소 여부를 오판할 수 있다.
- */
-export class PaperBrokerOrderNotFoundError extends Error {
-  public readonly brokerOrderId: string;
-
-  public constructor(brokerOrderId: string) {
-    super(`Paper broker order was not found: ${brokerOrderId}`);
-    this.name = "PaperBrokerOrderNotFoundError";
-    this.brokerOrderId = brokerOrderId;
-  }
-}
+export { PaperBrokerIdempotencyConflictError, PaperBrokerOrderNotFoundError } from "./paper-broker/errors.js";
+export type {
+  PaperBrokerBalanceInput,
+  PaperBrokerFillOptions,
+  PaperBrokerOptions,
+} from "./paper-broker/types.js";
 
 /**
  * MVP paper trading에서 사용하는 in-memory `BrokerPort` 구현체다.
@@ -238,7 +158,7 @@ export class PaperBroker implements BrokerPort {
 
     const brokerOrderId = this.createBrokerOrderId();
     const updatedAt = this.clock();
-    const exchangeRejection = this.createExchangeRejection(submission.intent);
+    const exchangeRejection = createExchangeRejection(submission.intent, this.exchangeId);
     if (exchangeRejection !== undefined) {
       // broker instance의 exchange와 다른 intent는 호가와 잔고를 섞어 상태를 오염시키므로 fill 계산 전에 거부한다.
       const order = createRejectedBrokerOrder(submission, brokerOrderId, exchangeRejection, updatedAt);
@@ -362,18 +282,6 @@ export class PaperBroker implements BrokerPort {
     return [...(this.orderbooksByMarket.get(key) ?? [])];
   }
 
-  private createExchangeRejection(intent: OrderIntent): PaperBrokerExchangeRejectionSummary | undefined {
-    if (intent.exchangeId === this.exchangeId) {
-      return undefined;
-    }
-
-    return {
-      reason_code: "paper_exchange_mismatch",
-      broker_exchange_id: this.exchangeId,
-      intent_exchange_id: intent.exchangeId,
-    };
-  }
-
   private createFillSimulationRequest(submission: OrderSubmission): PaperBrokerFillSimulationRequest {
     const orderbooks = this.readOrderbooksForIntent(submission.intent);
     if (shouldWaitForPostSubmitSnapshot(this.fillOptions)) {
@@ -403,47 +311,7 @@ export class PaperBroker implements BrokerPort {
     orderState: PaperBrokerOrderState,
     updatedAt: TimestampInput,
   ): BrokerOrder {
-    const metadata: JsonRecord = {
-      source: "paper_broker_memory",
-      submitted_at: submission.submittedAt,
-      paper_fill_simulation: simulation,
-      balance_mutation: balanceMutation,
-      balance_mutation_applied: orderState.balanceMutationApplied,
-    };
-    if (orderState.balanceRejection !== undefined) {
-      metadata.paper_balance_rejection = orderState.balanceRejection;
-    }
-
-    const baseOrder: BrokerOrder = {
-      brokerOrderId,
-      idempotencyKey: submission.intent.idempotencyKey,
-      exchangeId: submission.intent.exchangeId,
-      market: submission.intent.market,
-      side: submission.intent.side,
-      orderType: submission.intent.orderType,
-      status: orderState.status,
-      requestedQuantity: simulation.requestedQuantity,
-      remainingQuantity: orderState.remainingQuantity,
-      updatedAt,
-      metadata,
-    };
-
-    const orderWithPrice =
-      submission.intent.orderType === "LIMIT"
-        ? {
-            ...baseOrder,
-            requestedPrice: submission.intent.requestedPrice,
-          }
-        : baseOrder;
-
-    if (isAcceptedBrokerStatus(orderWithPrice.status)) {
-      return {
-        ...orderWithPrice,
-        acceptedAt: updatedAt,
-      };
-    }
-
-    return orderWithPrice;
+    return createBrokerOrderFromSimulation(submission, brokerOrderId, simulation, balanceMutation, orderState, updatedAt);
   }
 
   private applySubmissionBalanceMutation(
@@ -474,7 +342,7 @@ export class PaperBroker implements BrokerPort {
     const normalizedCurrency = normalizeCurrency(currency);
     const available = this.balancesByCurrency.get(normalizedCurrency)?.available ?? "0";
     const required = absDecimalString(availableDelta);
-    if (parseFinancialDecimal(available).greaterThanOrEqualTo(parseFinancialDecimal(required))) {
+    if (parseFinancialDecimalString(available).greaterThanOrEqualTo(parseFinancialDecimalString(required))) {
       return {
         valid: true,
       };
@@ -556,349 +424,4 @@ export class PaperBroker implements BrokerPort {
 
     this.balancesByCurrency.set(normalizedCurrency, nextBalance);
   }
-}
-
-function createRejectedBrokerOrder(
-  submission: OrderSubmission,
-  brokerOrderId: string,
-  rejection: PaperBrokerExchangeRejectionSummary,
-  updatedAt: TimestampInput,
-): BrokerOrder {
-  const baseOrder: BrokerOrder = {
-    brokerOrderId,
-    idempotencyKey: submission.intent.idempotencyKey,
-    exchangeId: submission.intent.exchangeId,
-    market: submission.intent.market,
-    side: submission.intent.side,
-    orderType: submission.intent.orderType,
-    status: "REJECTED",
-    requestedQuantity: normalizeDecimalString(submission.intent.requestedQuantity),
-    remainingQuantity: "0",
-    updatedAt,
-    metadata: {
-      source: "paper_broker_memory",
-      submitted_at: submission.submittedAt,
-      paper_broker_rejection: rejection,
-    },
-  };
-
-  if (submission.intent.orderType === "LIMIT") {
-    return {
-      ...baseOrder,
-      requestedPrice: submission.intent.requestedPrice,
-    };
-  }
-
-  return baseOrder;
-}
-
-function createSubmissionBalanceMutation(
-  intent: OrderIntent,
-  simulation: PaperFillSimulationResult,
-): PaperBrokerBalanceMutationSummary {
-  const { baseCurrency, quoteCurrency } = parseMarketCurrencies(intent.market);
-  const filledQuantity = simulation.filledQuantity;
-  const openQuantity = simulation.openQuantity;
-  const totalFillNotional = simulation.totalFillNotional ?? "0";
-  const totalFee = simulation.totalFee ?? "0";
-  let quoteAvailableDelta = "0";
-  let quoteLockedDelta = "0";
-  let baseAvailableDelta = "0";
-  let baseLockedDelta = "0";
-
-  if (intent.side === "BUY") {
-    const fillQuoteDebit = addDecimalStrings(totalFillNotional, totalFee);
-    const openQuoteLock = calculateOpenQuoteLock(intent, openQuantity);
-
-    quoteAvailableDelta = negateDecimalString(addDecimalStrings(fillQuoteDebit, openQuoteLock));
-    quoteLockedDelta = openQuoteLock;
-    baseAvailableDelta = filledQuantity;
-  } else {
-    const fillQuoteCredit = subtractDecimalStrings(totalFillNotional, totalFee);
-
-    quoteAvailableDelta = fillQuoteCredit;
-    baseAvailableDelta = negateDecimalString(addDecimalStrings(filledQuantity, openQuantity));
-    baseLockedDelta = openQuantity;
-  }
-
-  return {
-    base_currency: baseCurrency,
-    quote_currency: quoteCurrency,
-    filled_quantity: filledQuantity,
-    open_quantity: openQuantity,
-    canceled_quantity: simulation.canceledQuantity,
-    quote_available_delta: quoteAvailableDelta,
-    quote_locked_delta: quoteLockedDelta,
-    base_available_delta: baseAvailableDelta,
-    base_locked_delta: baseLockedDelta,
-  };
-}
-
-function createOrderStateFromSimulation(
-  simulation: PaperFillSimulationResult,
-  balanceValidation: PaperBrokerBalanceValidationResult,
-): PaperBrokerOrderState {
-  if (!balanceValidation.valid) {
-    return {
-      status: "REJECTED",
-      remainingQuantity: "0",
-      balanceMutationApplied: false,
-      balanceRejection: balanceValidation.rejection,
-    };
-  }
-
-  return {
-    status: simulation.orderStatus,
-    remainingQuantity: simulation.openQuantity,
-    balanceMutationApplied: true,
-  };
-}
-
-function createCanceledOrder(
-  order: BrokerOrder,
-  cancelMutation: PaperBrokerCancelMutationSummary,
-  canceledAt: TimestampInput,
-): BrokerOrder {
-  return {
-    ...order,
-    status: "CANCELED",
-    remainingQuantity: "0",
-    updatedAt: canceledAt,
-    metadata: {
-      ...(order.metadata ?? {}),
-      paper_cancel: {
-        canceled_at: canceledAt,
-        balance_mutation: cancelMutation,
-      },
-    },
-  };
-}
-
-function normalizeInitialBalance(input: PaperBrokerBalanceInput, fallbackUpdatedAt: TimestampInput): BrokerBalance {
-  const locked = input.locked ?? "0";
-  const total = input.total ?? addDecimalStrings(input.available, locked);
-  const balance: BrokerBalance = {
-    currency: normalizeCurrency(input.currency),
-    available: normalizeDecimalString(input.available),
-    locked: normalizeDecimalString(locked),
-    total: normalizeDecimalString(total),
-    updatedAt: input.updatedAt ?? fallbackUpdatedAt,
-  };
-  if (input.metadata !== undefined) {
-    balance.metadata = { ...input.metadata };
-  }
-
-  return balance;
-}
-
-function createZeroBalance(currency: string, updatedAt: TimestampInput): BrokerBalance {
-  return {
-    currency: normalizeCurrency(currency),
-    available: "0",
-    locked: "0",
-    total: "0",
-    updatedAt,
-  };
-}
-
-function normalizeOrderbookSnapshots(
-  snapshots: OrderbookEvent | readonly OrderbookEvent[] | undefined,
-): readonly OrderbookEvent[] {
-  if (snapshots === undefined) {
-    return [];
-  }
-
-  if (isOrderbookSnapshotArray(snapshots)) {
-    return snapshots;
-  }
-
-  return [snapshots];
-}
-
-function isOrderbookSnapshotArray(
-  snapshots: OrderbookEvent | readonly OrderbookEvent[],
-): snapshots is readonly OrderbookEvent[] {
-  return Array.isArray(snapshots);
-}
-
-function shouldWaitForPostSubmitSnapshot(options: PaperBrokerFillOptions): boolean {
-  return (options.latencyMs ?? 0) > 0;
-}
-
-function selectImmediateExecutionOrderbook(
-  orderbooks: readonly OrderbookEvent[],
-  submittedAt: TimestampInput,
-): OrderbookEvent | undefined {
-  const submittedAtNanos = readTimestampNanos(submittedAt);
-  let latestPreSubmitSnapshot: OrderbookEvent | undefined;
-  let earliestPostSubmitSnapshot: OrderbookEvent | undefined;
-
-  for (const orderbook of orderbooks) {
-    const receivedAtNanos = readTimestampNanos(orderbook.receivedAt);
-    if (receivedAtNanos <= submittedAtNanos) {
-      // latency가 없는 paper submit은 주문 직전에 관측한 최신 snapshot을 즉시 체결 근거로 사용할 수 있어야 한다.
-      latestPreSubmitSnapshot = orderbook;
-      continue;
-    }
-
-    earliestPostSubmitSnapshot ??= orderbook;
-  }
-
-  return latestPreSubmitSnapshot ?? earliestPostSubmitSnapshot;
-}
-
-function parseMarketCurrencies(market: MarketCode): MarketCurrencies {
-  const separatorIndex = market.indexOf("-");
-  if (separatorIndex <= 0 || separatorIndex === market.length - 1) {
-    throw new Error(`Paper broker requires market codes in QUOTE-BASE format: ${market}`);
-  }
-
-  return {
-    quoteCurrency: normalizeCurrency(market.slice(0, separatorIndex)),
-    baseCurrency: normalizeCurrency(market.slice(separatorIndex + 1)),
-  };
-}
-
-function createOrderbookKey(exchangeId: ExchangeId, market: MarketCode): string {
-  return `${exchangeId}:${market}`;
-}
-
-function createSubmissionFingerprint(intent: OrderIntent): string {
-  const commonFingerprint = {
-    exchange_id: intent.exchangeId,
-    market: intent.market,
-    strategy_id: intent.strategyId,
-    side: intent.side,
-    order_type: intent.orderType,
-    requested_quantity: normalizeDecimalString(intent.requestedQuantity),
-    requested_notional: normalizeDecimalString(intent.requestedNotional),
-    idempotency_key: intent.idempotencyKey,
-  };
-
-  if (intent.orderType === "LIMIT") {
-    return JSON.stringify({
-      ...commonFingerprint,
-      requested_price: normalizeDecimalString(intent.requestedPrice),
-      post_only: intent.postOnly === true,
-      time_in_force: intent.timeInForce ?? "GTC",
-    });
-  }
-
-  return JSON.stringify(commonFingerprint);
-}
-
-function calculateOpenQuoteLock(intent: OrderIntent, openQuantity: NumericString): NumericString {
-  if (intent.orderType !== "LIMIT" || !isPositiveDecimalString(openQuantity)) {
-    return "0";
-  }
-
-  return multiplyDecimalStrings(openQuantity, intent.requestedPrice);
-}
-
-function isAcceptedBrokerStatus(status: OrderLifecycleStatus): boolean {
-  return status !== "REJECTED" && status !== "FAILED";
-}
-
-function isOpenBrokerOrder(order: BrokerOrder): boolean {
-  return (
-    (order.status === "SUBMITTED" || order.status === "ACCEPTED" || order.status === "PARTIALLY_FILLED") &&
-    isPositiveDecimalString(order.remainingQuantity)
-  );
-}
-
-function cloneBrokerOrder(order: BrokerOrder): BrokerOrder {
-  const clonedOrder: BrokerOrder = { ...order };
-  if (order.metadata !== undefined) {
-    clonedOrder.metadata = cloneJsonRecord(order.metadata);
-  }
-
-  return clonedOrder;
-}
-
-function cloneBrokerBalance(balance: BrokerBalance): BrokerBalance {
-  const clonedBalance: BrokerBalance = { ...balance };
-  if (balance.metadata !== undefined) {
-    clonedBalance.metadata = cloneJsonRecord(balance.metadata);
-  }
-
-  return clonedBalance;
-}
-
-function cloneJsonRecord(record: JsonRecord): JsonRecord {
-  const clonedRecord: JsonRecord = {};
-  for (const [key, value] of Object.entries(record)) {
-    clonedRecord[key] = cloneJsonValue(value);
-  }
-
-  return clonedRecord;
-}
-
-function cloneJsonValue(value: unknown): unknown {
-  if (Array.isArray(value)) {
-    // 반환 객체를 수정해도 broker 내부 canonical state가 바뀌지 않도록 nested 배열도 분리한다.
-    return value.map(cloneJsonValue);
-  }
-
-  if (isJsonRecord(value)) {
-    // paper_fill_simulation/balance_mutation 같은 nested metadata는 외부 호출자에게 mutable하게 노출되지 않아야 한다.
-    return cloneJsonRecord(value);
-  }
-
-  return value;
-}
-
-function isJsonRecord(value: unknown): value is JsonRecord {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function normalizeCurrency(currency: string): string {
-  return currency.trim().toUpperCase();
-}
-
-function normalizeDecimalString(value: NumericString): NumericString {
-  return parseFinancialDecimal(value).toFixed();
-}
-
-function addDecimalStrings(left: NumericString, right: NumericString): NumericString {
-  return parseFinancialDecimal(left).add(parseFinancialDecimal(right)).toFixed();
-}
-
-function subtractDecimalStrings(left: NumericString, right: NumericString): NumericString {
-  return parseFinancialDecimal(left).sub(parseFinancialDecimal(right)).toFixed();
-}
-
-function multiplyDecimalStrings(left: NumericString, right: NumericString): NumericString {
-  return parseFinancialDecimal(left).mul(parseFinancialDecimal(right)).toFixed();
-}
-
-function negateDecimalString(value: NumericString): NumericString {
-  return parseFinancialDecimal(value).negated().toFixed();
-}
-
-function absDecimalString(value: NumericString): NumericString {
-  return parseFinancialDecimal(value).abs().toFixed();
-}
-
-function isPositiveDecimalString(value: NumericString): boolean {
-  return parseFinancialDecimal(value).greaterThan(0);
-}
-
-function isNegativeDecimalString(value: NumericString): boolean {
-  return parseFinancialDecimal(value).lessThan(0);
-}
-
-function isZeroDecimalString(value: NumericString): boolean {
-  return parseFinancialDecimal(value).equals(0);
-}
-
-function readTimestampNanos(value: TimestampInput): bigint {
-  return parseMarketEventTimestampNanos(value);
-}
-
-function compareBigInt(left: bigint, right: bigint): number {
-  if (left === right) {
-    return 0;
-  }
-
-  return left < right ? -1 : 1;
 }
