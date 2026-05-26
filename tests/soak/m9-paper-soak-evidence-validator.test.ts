@@ -115,6 +115,43 @@ describe("M9 paper soak evidence validator", () => {
     });
   });
 
+  it("fails comparison reports that only match one day of the selected run", async () => {
+    const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-m9-evidence-mixed-report-"));
+    const prefix = "m9-paper-trading-soak-2026-05-26T09-30-00-000Z-ddeeff00";
+    const artifacts = await writeCompleteRunArtifacts({ artifactDir, prefix, writeComparisonReport: false });
+    await writeFile(
+      path.join(artifactDir, "m9-3day-trading-soak-comparison.md"),
+      `# M9 3일 Paper Report 비교
+
+| 일차 | report artifact |
+| --- | --- |
+| Day 1 | ${artifacts.dailyReportPaths[0]} |
+| Day 2 | /tmp/old-run-day-2-report.md |
+| Day 3 | /tmp/old-run-day-3-report.md |
+`,
+      "utf8",
+    );
+
+    const result = await runScriptAllowingFailure(["--artifact-dir", artifactDir, "--json"]);
+    const validation = JSON.parse(result.stdout) as {
+      statusCode: string;
+      checks: Array<{ id: string; status: string; trace: { matchDetails?: { matchedDays: number[]; missingDays: number[] } } }>;
+    };
+    const comparison = validation.checks.find((check) => check.id === "comparisonReport");
+
+    expect(result.code).toBe(1);
+    expect(validation.statusCode).toBe("failed");
+    expect(comparison).toMatchObject({
+      status: "failed",
+      trace: {
+        matchDetails: {
+          matchedDays: [1],
+          missingDays: [2, 3],
+        },
+      },
+    });
+  });
+
   it("selects the latest run by prefix time even when an older artifact is touched later", async () => {
     const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-m9-evidence-latest-"));
     const oldPrefix = "m9-paper-trading-soak-2026-05-25T09-00-00-000Z-00112233";
@@ -254,6 +291,13 @@ async function writeCompleteRunArtifacts({
       "utf8",
     );
   }
+  return {
+    rawLogPath,
+    summaryPath,
+    reportPath,
+    dailySummaryPaths,
+    dailyReportPaths,
+  };
 }
 
 function createSummary({

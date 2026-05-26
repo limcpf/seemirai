@@ -544,14 +544,17 @@ function attachComparisonReportRunMatch(report, run) {
       ...report,
       matchesRun: false,
       matchReason: report.error === null ? "comparison_report_not_found" : "comparison_report_unreadable",
+      matchDetails: null,
     };
   }
 
-  if (comparisonReportMatchesRun(report.value, run)) {
+  const match = matchComparisonReportRun(report.value, run);
+  if (match.matches) {
     return {
       ...report,
       matchesRun: true,
-      matchReason: "run_reference_found",
+      matchReason: match.reason,
+      matchDetails: match,
     };
   }
 
@@ -560,20 +563,48 @@ function attachComparisonReportRunMatch(report, run) {
     ok: false,
     error: "comparison_report_run_mismatch",
     matchesRun: false,
-    matchReason: "run_reference_missing",
+    matchReason: match.reason,
+    matchDetails: match,
   };
 }
 
-function comparisonReportMatchesRun(markdown, run) {
-  const needles = [
-    run.prefix,
-    run.summaryPath,
-    run.reportPath,
-    run.rawLogPath,
-    ...run.dailySummaryPaths.values(),
-    ...run.dailyReportPaths.values(),
-  ].filter((value) => typeof value === "string" && value.length > 0);
-  return needles.some((needle) => markdown.includes(needle));
+function matchComparisonReportRun(markdown, run) {
+  const dayMatches = Array.from({ length: expectedDayCount }, (_, index) => {
+    const day = index + 1;
+    const needles = [run.dailyReportPaths.get(day), run.dailySummaryPaths.get(day)].filter(
+      (value) => typeof value === "string" && value.length > 0,
+    );
+    return {
+      day,
+      hasEvidence: needles.length > 0,
+      matched: needles.some((needle) => markdown.includes(needle)),
+    };
+  });
+  const missingEvidenceDays = dayMatches.filter((day) => !day.hasEvidence).map((day) => day.day);
+  const missingReferenceDays = dayMatches.filter((day) => day.hasEvidence && !day.matched).map((day) => day.day);
+  const matchedDays = dayMatches.filter((day) => day.matched).map((day) => day.day);
+  if (missingEvidenceDays.length > 0) {
+    return {
+      matches: false,
+      reason: "run_day_artifact_missing",
+      matchedDays,
+      missingDays: missingEvidenceDays,
+    };
+  }
+  if (missingReferenceDays.length > 0) {
+    return {
+      matches: false,
+      reason: "day_reference_missing",
+      matchedDays,
+      missingDays: missingReferenceDays,
+    };
+  }
+  return {
+    matches: true,
+    reason: "all_day_references_found",
+    matchedDays,
+    missingDays: [],
+  };
 }
 
 function createAggregateSummaryCheck(aggregate) {
@@ -728,7 +759,7 @@ function createComparisonReportCheck({ comparisonReport, aggregateCompleted }) {
       message: "3일 비교 report가 최신 run artifact를 참조하지 않는다.",
       action: "선택된 run의 Day 1/2/3 summary로 비교 report를 다시 생성하거나 `--comparison-report`로 올바른 경로를 지정한다.",
       evidence: { path: comparisonReport.path },
-      trace: { reason: comparisonReport.error, matchReason: comparisonReport.matchReason },
+      trace: { reason: comparisonReport.error, matchReason: comparisonReport.matchReason, matchDetails: comparisonReport.matchDetails },
     });
   }
 
