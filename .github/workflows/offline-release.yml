@@ -28,7 +28,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          ref: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || github.ref }}
+          ref: ${{ github.event_name == 'workflow_dispatch' && format('refs/tags/{0}', github.event.inputs.tag) || github.ref }}
 
       - name: Setup Node
         uses: actions/setup-node@v4
@@ -60,8 +60,14 @@ jobs:
             exit 1
           fi
 
+          tag_ref="refs/tags/$release_tag"
+          if ! git show-ref --verify --quiet "$tag_ref"; then
+            echo "릴리즈 태그 ref가 없습니다: $tag_ref" >&2
+            exit 1
+          fi
+
           target_sha="$(git rev-parse HEAD)"
-          tag_sha="$(git rev-list -n 1 "$release_tag")"
+          tag_sha="$(git rev-list -n 1 "$tag_ref")"
           if [ "$target_sha" != "$tag_sha" ]; then
             echo "checkout된 revision과 릴리즈 태그가 일치하지 않습니다: $target_sha != $tag_sha" >&2
             exit 1

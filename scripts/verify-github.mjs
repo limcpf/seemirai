@@ -38,9 +38,16 @@ async function main() {
     );
     requireContains(
       offlineReleaseWorkflow,
-      "github.event.inputs.tag",
+      "refs/tags/",
       ".github/workflows/offline-release.yml",
       "수동 release tag checkout",
+      errors,
+    );
+    requireContains(
+      offlineReleaseWorkflow,
+      "git show-ref --verify --quiet \"$tag_ref\"",
+      ".github/workflows/offline-release.yml",
+      "release tag ref 검증",
       errors,
     );
     requireContains(
