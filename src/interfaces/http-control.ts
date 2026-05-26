@@ -22,6 +22,8 @@ export {
 } from "./http-control/types.js";
 export type {
   ControlOverallStatus,
+  ControlOperationalStatusCode,
+  ControlOperationalStatusDetail,
   ControlReadinessCheckResult,
   ControlReadinessProvider,
   ControlReadinessStatus,
