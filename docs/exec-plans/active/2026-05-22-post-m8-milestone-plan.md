@@ -283,7 +283,7 @@ Acceptance Criteria:
 - Sub PR 1-4: #71, #72, #73, #74 merged
 - Sub PR 5: #75, #68 closeout(pass) 확인 후 M11 calibration을 운영 threshold 변경 제안으로 이행 준비
 - M9 #68 운영 관측 중에는 paper runner, daily report, Telegram, retry, control drill, 3일 비교 포맷과 기본 운영 threshold를 변경하지 않는다.
-- 2026-05-30 기준 #68은 `passed`이며 `72h-paper-trading-soak` artifact 및 3일 비교 report가 확보되어 threshold 비교 후보 산정이 가능하다.
+- 2026-05-30 기준 #68은 `passed`이며 `/home/lim/vaults/99_운영/seemirai-m9-paper/trading-soak` 경로의 3일 run artifact와 3일 비교 report가 확보되어 threshold 비교 후보 산정이 가능하다.
 
 ### M12. 큰 TypeScript 모듈 책임 분리
 
