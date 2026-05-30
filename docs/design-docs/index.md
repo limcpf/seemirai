@@ -6,4 +6,4 @@
 - [`2026-05-15-m1-database-schema.md`](./2026-05-15-m1-database-schema.md): M1 PostgreSQL/TimescaleDB 테이블 역할, 관계, jobs queue 책임
 - [`2026-05-20-typescript-module-structure.md`](./2026-05-20-typescript-module-structure.md): TypeScript public entry와 same-basename directory 기반 모듈 구조 규칙
 - [`2026-05-25-feature-quality-calibration.md`](./2026-05-25-feature-quality-calibration.md): M11 전략/피처 품질 보강의 feature contract, runtime config contract, calibration 보호 경계
-- [`2026-05-26-m11-calibration-closure.md`](./2026-05-26-m11-calibration-closure.md): #68 관측 데이터 부재 시 M11 calibration을 보류하고 구조 완료로 닫는 guard 결정
+- [`2026-05-26-m11-calibration-closure.md`](./2026-05-26-m11-calibration-closure.md): #68 closeout(pass) 검증 후 calibration 비교 기준을 확정하는 guard/후속 처리 기록
