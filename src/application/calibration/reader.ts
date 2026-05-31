@@ -59,11 +59,16 @@ export async function readCalibrationArtifactSummary(options: { summaryPath: str
   const parsed = JSON.parse(await readFile(summaryPath, "utf8")) as unknown;
   const record = requireRecord(parsed, "summary");
   const metrics = parseMetrics(requireRecord(record.metrics, "summary.metrics"), `artifact:${summaryPath}`);
+  const sourceDay = readNullableNumber(record.day);
+  if (options.day !== undefined && options.day !== null && sourceDay !== options.day) {
+    // 파일명에서 기대한 Day와 artifact 내부 Day가 다르면 동일 run shape 증거가 섞인 것이므로 즉시 차단한다.
+    throw new Error(`artifact:${summaryPath}.day must match expected Day ${options.day}`);
+  }
 
   return {
     sourceKind: "artifact_summary",
     sourcePath: summaryPath,
-    day: options.day ?? readNullableNumber(record.day),
+    day: options.day ?? sourceDay,
     status: requireString(record.status, "summary.status"),
     startedAt: readNullableString(record.startedAt),
     finishedAt: readNullableString(record.finishedAt),

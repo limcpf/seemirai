@@ -250,11 +250,73 @@ function validateInput(input) {
   }
   validateRunSummary(input.aggregate, "aggregate", failures);
   input.days.forEach((day, index) => validateRunSummary(day, `days[${index}]`, failures));
+  validateAggregateMatchesDays(input, failures);
 
   return {
     passed: failures.length === 0,
     failures,
   };
+}
+
+function validateAggregateMatchesDays(input, failures) {
+  for (const field of [
+    "costSummary.evaluatedCount",
+    "costSummary.allowedCount",
+    "costSummary.rejectedCount",
+    "slippageSummary.observedFillCount",
+    "costRejectedCount",
+    "riskRejectedCount",
+    "paperOrderSubmittedCount",
+    "paperFillCount",
+    "liveOrderApiCalls",
+  ]) {
+    const aggregateValue = readPath(input.aggregate.metrics, field);
+    const dayValues = input.days.map((day) => readPath(day.metrics, field));
+    if (typeof aggregateValue === "number" && dayValues.every((value) => typeof value === "number")) {
+      const dayTotal = dayValues.reduce((total, value) => total + value, 0);
+      if (aggregateValue !== dayTotal) {
+        failures.push(
+          failure(`aggregate.metrics.${field}`, "aggregate metric은 Day 1/2/3 합계와 일치해야 합니다.", {
+            aggregateValue,
+            dayTotal,
+          }),
+        );
+      }
+    }
+  }
+
+  validateAggregateReasonMap(input, "blockingReasonCounts", failures);
+}
+
+function validateAggregateReasonMap(input, field, failures) {
+  const aggregateCounts = input.aggregate.metrics[field];
+  const dayCounts = input.days.map((day) => day.metrics[field]);
+  const keys = new Set(
+    [...Object.keys(aggregateCounts), ...dayCounts.flatMap((counts) => Object.keys(counts))].filter(
+      (key) => key.startsWith("cost:") || key.startsWith("risk:"),
+    ),
+  );
+  for (const key of keys) {
+    const aggregateValue = aggregateCounts[key] ?? 0;
+    const dayTotal = dayCounts.reduce((total, counts) => total + (counts[key] ?? 0), 0);
+    if (aggregateValue !== dayTotal) {
+      failures.push(
+        failure(`aggregate.metrics.${field}.${key}`, "aggregate reason count는 Day 1/2/3 합계와 일치해야 합니다.", {
+          aggregateValue,
+          dayTotal,
+        }),
+      );
+    }
+  }
+}
+
+function readPath(metrics, metricPath) {
+  return metricPath.split(".").reduce((current, key) => {
+    if (current === null || typeof current !== "object" || !(key in current)) {
+      return undefined;
+    }
+    return current[key];
+  }, metrics);
 }
 
 function validateRunSummary(summary, fieldPrefix, failures) {

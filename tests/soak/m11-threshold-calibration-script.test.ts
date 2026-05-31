@@ -105,6 +105,32 @@ describe("M11 threshold calibration report script", () => {
     );
   });
 
+  it("fails closed when source artifact aggregate totals do not match days", async () => {
+    const fixture = await writeFixtureEvidence({
+      aggregateMetrics: {
+        costSummary: {
+          evaluatedCount: 12958,
+          allowedCount: 8639,
+          rejectedCount: 4319,
+          averageCostBps: "13",
+          averageRequiredReturnBps: "23",
+          averageMarginBps: "-1.333333333333",
+        },
+      },
+    });
+
+    const result = await runScriptAllowingFailure(["--evidence", fixture.evidencePath, "--json"]);
+    const report = JSON.parse(result.stdout) as CalibrationReportJson;
+
+    expect(result.code).toBe(1);
+    expect(report.status).toBe("failed");
+    expect(report.validation.failures).toContainEqual(
+      expect.objectContaining({
+        fieldPath: "aggregate.metrics.costSummary.evaluatedCount",
+      }),
+    );
+  });
+
   it("fails closed when source artifact day content disagrees with the expected day", async () => {
     const fixture = await writeFixtureEvidence();
     const dayTwoPath = path.join(fixture.artifactDir, `${fixture.prefix}-day-2-summary.json`);
@@ -123,7 +149,13 @@ describe("M11 threshold calibration report script", () => {
         paperOrderSubmittedCount: 3,
         paperFillCount: 1,
         fillRate: 0.333333,
+        slippageSummary: createSlippageSummary(1),
       },
+      dayMetrics: [
+        { paperOrderSubmittedCount: 1, paperFillCount: 1, fillRate: 1, slippageSummary: createSlippageSummary(1) },
+        { paperOrderSubmittedCount: 1, paperFillCount: 0, fillRate: 0, slippageSummary: createSlippageSummary(0) },
+        { paperOrderSubmittedCount: 1, paperFillCount: 0, fillRate: 0, slippageSummary: createSlippageSummary(0) },
+      ],
     });
 
     const { stdout } = await execFileAsync("node", [scriptPath, "--evidence", fixture.evidencePath, "--json"]);
@@ -279,7 +311,11 @@ describe("M11 threshold calibration report script", () => {
   it("counts every committed evidence cost reason in day cost rejected totals", async () => {
     const fixture = await writeFixtureEvidence({ skipArtifacts: true });
     const markdown = await readFile(fixture.evidencePath, "utf8");
-    await writeFile(fixture.evidencePath, markdown.replace("cost:cost_margin_insufficient=1439", "cost:spread_too_wide=1439"), "utf8");
+    await writeFile(
+      fixture.evidencePath,
+      markdown.replaceAll("cost:cost_margin_insufficient", "cost:spread_too_wide"),
+      "utf8",
+    );
 
     const { stdout } = await execFileAsync("node", [scriptPath, "--evidence", fixture.evidencePath, "--document-only", "--json"]);
     const report = JSON.parse(stdout) as CalibrationReportJson;
@@ -310,7 +346,11 @@ async function runScriptAllowingFailure(args: string[]) {
   }
 }
 
-async function writeFixtureEvidence(options: { aggregateMetrics?: Partial<CalibrationMetricSummary>; skipArtifacts?: boolean } = {}) {
+async function writeFixtureEvidence(options: {
+  aggregateMetrics?: Partial<CalibrationMetricSummary>;
+  dayMetrics?: Array<Partial<CalibrationMetricSummary>>;
+  skipArtifacts?: boolean;
+} = {}) {
   const root = await mkdtemp(path.join(os.tmpdir(), "seemirai-m11-calibration-"));
   const artifactDir = path.join(root, "trading-soak");
   const prefix = "m9-paper-trading-soak-2026-05-25T11-01-04-344Z-e398a8ee";
@@ -332,15 +372,18 @@ async function writeFixtureEvidence(options: { aggregateMetrics?: Partial<Calibr
     await Promise.all(
       [1, 2, 3].map((day) =>
         writeSummary(path.join(artifactDir, `${prefix}-day-${day}-summary.json`), day, {
+          costSummary: createDayCostSummary(day),
+          slippageSummary: createSlippageSummary(day === 1 ? 664 : day === 2 ? 668 : 798),
           blockingReasonCounts: {
-            "cost:cost_margin_insufficient": 1440,
-            "risk:expected_loss_limit_exceeded": 1440,
-            "risk:order_notional_limit_exceeded": 1400 - day,
+            "cost:cost_margin_insufficient": day === 1 ? 1439 : 1440,
+            "risk:expected_loss_limit_exceeded": day === 1 ? 1439 : 1440,
+            "risk:order_notional_limit_exceeded": day === 1 ? 1550 : day === 2 ? 1544 : 1284,
           },
-          costRejectedCount: 1440,
-          riskRejectedCount: 2200 - day,
-          paperOrderSubmittedCount: 700 + day,
-          paperFillCount: 700 + day,
+          costRejectedCount: day === 1 ? 1439 : 1440,
+          riskRejectedCount: day === 1 ? 2214 : day === 2 ? 2212 : 2082,
+          paperOrderSubmittedCount: day === 1 ? 664 : day === 2 ? 668 : 798,
+          paperFillCount: day === 1 ? 664 : day === 2 ? 668 : 798,
+          ...(options.dayMetrics?.[day - 1] ?? {}),
         }),
       ),
     );
@@ -348,6 +391,28 @@ async function writeFixtureEvidence(options: { aggregateMetrics?: Partial<Calibr
   const evidencePath = path.join(root, "evidence.md");
   await writeFile(evidencePath, createEvidenceMarkdown({ artifactDir, prefix }), "utf8");
   return { root, artifactDir, evidencePath, prefix };
+}
+
+function createDayCostSummary(day: number): CalibrationMetricSummary["costSummary"] {
+  const evaluatedCount = day === 1 ? 4317 : 4320;
+  const rejectedCount = day === 1 ? 1439 : 1440;
+  return {
+    evaluatedCount,
+    allowedCount: evaluatedCount - rejectedCount,
+    rejectedCount,
+    averageCostBps: "13",
+    averageRequiredReturnBps: "23",
+    averageMarginBps: "-1.333333333333",
+  };
+}
+
+function createSlippageSummary(observedFillCount: number): CalibrationMetricSummary["slippageSummary"] {
+  return {
+    observedFillCount,
+    averageSlippageBps: "0",
+    minSlippageBps: "0",
+    maxSlippageBps: "0",
+  };
 }
 
 async function writeSummary(summaryPath: string, day: number | null, overrides: Partial<CalibrationMetricSummary>) {

@@ -92,6 +92,14 @@ describe("M11 calibration input reader", () => {
     await expect(readCalibrationArtifactSummary({ summaryPath })).rejects.toThrow();
   });
 
+  it("rejects source artifact day content that disagrees with the expected day", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "seemirai-calibration-day-mismatch-"));
+    const summaryPath = path.join(root, "day-2-summary.json");
+    await writeFile(summaryPath, JSON.stringify(createSummary(1, {})), "utf8");
+
+    await expect(readCalibrationArtifactSummary({ summaryPath, day: 2 })).rejects.toThrow("day must match expected Day 2");
+  });
+
   it("rejects calibration input when live order API calls are present", async () => {
     const input = await readCalibrationEvidenceInput({
       evidencePath: "docs/references/m9-paper-trading-soak-2026-05-25-e398a8ee.md",
@@ -373,6 +381,24 @@ describe("M11 calibration input reader", () => {
       expect.objectContaining({
         fieldPath: "days",
         message: "Day summary 목록은 배열이어야 합니다.",
+      }),
+    );
+  });
+
+  it("returns failures for missing top-level aggregate instead of throwing", async () => {
+    const input = await readCalibrationEvidenceInput({
+      evidencePath: "docs/references/m9-paper-trading-soak-2026-05-25-e398a8ee.md",
+    });
+    const validation = validateCalibrationEvidenceInput({
+      ...input,
+      aggregate: null as unknown as typeof input.aggregate,
+    });
+
+    expect(validation.passed).toBe(false);
+    expect(validation.failures).toContainEqual(
+      expect.objectContaining({
+        fieldPath: "aggregate",
+        message: "summary는 객체여야 합니다.",
       }),
     );
   });

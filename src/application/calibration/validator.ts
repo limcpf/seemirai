@@ -99,9 +99,11 @@ function validateAggregateMatchesDays(
   input: CalibrationEvidenceInput,
   failures: CalibrationInputValidationFailure[],
 ): void {
-  if (!isRecord(input.aggregate.metrics) || !input.days.every((day) => isRecord(day.metrics))) {
+  const aggregate = (input as { aggregate?: unknown }).aggregate;
+  if (!isRecord(aggregate) || !isRecord((aggregate as { metrics?: unknown }).metrics) || !input.days.every((day) => isRecord(day.metrics))) {
     return;
   }
+  const aggregateMetrics = (aggregate as unknown as CalibrationRunSummary).metrics;
   for (const field of [
     "costSummary.evaluatedCount",
     "costSummary.allowedCount",
@@ -113,7 +115,7 @@ function validateAggregateMatchesDays(
     "paperFillCount",
     "liveOrderApiCalls",
   ]) {
-    const aggregateValue = readPath(input.aggregate.metrics, field);
+    const aggregateValue = readPath(aggregateMetrics, field);
     const dayValues = input.days.map((day) => readPath(day.metrics, field));
     if (typeof aggregateValue === "number" && dayValues.every((value): value is number => typeof value === "number")) {
       const dayTotal = dayValues.reduce((total, value) => total + value, 0);
@@ -142,7 +144,11 @@ function validateAggregateReasonMap(
   field: "holdReasonCounts" | "discardReasonCounts" | "blockingReasonCounts",
   failures: CalibrationInputValidationFailure[],
 ): void {
-  const aggregateCounts = input.aggregate.metrics[field];
+  const aggregate = (input as { aggregate?: unknown }).aggregate;
+  if (!isRecord(aggregate) || !isRecord((aggregate as { metrics?: unknown }).metrics)) {
+    return;
+  }
+  const aggregateCounts = (aggregate as unknown as CalibrationRunSummary).metrics[field];
   const dayCounts = input.days.map((day) => day.metrics[field]);
   if (!isRecord(aggregateCounts) || !dayCounts.every(isRecord)) {
     return;
@@ -171,6 +177,14 @@ function validateRunSummary(
   fieldPrefix: string,
   failures: CalibrationInputValidationFailure[],
 ): void {
+  if (!isRecord(summary)) {
+    failures.push(
+      createFailure(`${fieldPrefix}`, "summary는 객체여야 합니다.", {
+        value: summary,
+      }),
+    );
+    return;
+  }
   if (summary.status !== "passed") {
     failures.push(
       createFailure(`${fieldPrefix}.status`, "summary 판정이 통과가 아니어서 calibration 입력을 중단합니다.", {
