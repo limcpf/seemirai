@@ -135,7 +135,6 @@ function parseDocumentAggregateSummary(input: { evidencePath: string; markdown: 
 }
 
 function parseDocumentDaySummaries(input: { evidencePath: string; markdown: string }): CalibrationRunSummary[] {
-  const aggregateCost = parseTable(input.markdown, "## Cost, slippage, and blocking");
   const table = parseTableRows(input.markdown, "## Day comparison");
   return table.map((row) => {
     const day = Number.parseInt(stripCode(row["일차"] ?? "").replace("Day ", ""), 10);
@@ -150,8 +149,8 @@ function parseDocumentDaySummaries(input: { evidencePath: string; markdown: stri
         evaluatedCount: costEvaluatedCount,
         allowedCount: costEvaluatedCount - costRejectedCount,
         rejectedCount: costRejectedCount,
-        averageCostBps: readTableNullableString(aggregateCost, "averageCostBps"),
-        averageRequiredReturnBps: readTableNullableString(aggregateCost, "averageRequiredReturnBps"),
+        averageCostBps: null,
+        averageRequiredReturnBps: null,
         averageMarginBps: stripCode(row.averageMarginBps ?? ""),
       },
       slippageSummary: {
@@ -340,7 +339,7 @@ function parseBlockingReasonText(value: string): Record<string, number> {
   }
   return Object.fromEntries(
     stripped.split(",").map((entry) => {
-      const [key, count] = entry.split("=").map((part) => part.trim());
+      const [key, count] = entry.split("=").map((part) => stripCode(part.trim()));
       return [requireValue(key, "blocking reason key"), parseInteger(count, `blockingReasonCounts.${key}`)];
     }),
   );

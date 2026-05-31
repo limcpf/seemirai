@@ -115,6 +115,47 @@ function validateRunSummary(
   validateCounts(summary.metrics.discardReasonCounts, `${fieldPrefix}.metrics.discardReasonCounts`, failures, summary.sourcePath);
   validateCounts(summary.metrics.blockingReasonCounts, `${fieldPrefix}.metrics.blockingReasonCounts`, failures, summary.sourcePath);
 
+  if (summary.metrics.costSummary.evaluatedCount > 0) {
+    validatePresentDecimal(
+      summary.metrics.costSummary.averageCostBps,
+      `${fieldPrefix}.metrics.costSummary.averageCostBps`,
+      "비용 평가가 있는 summary에는 평균 비용 bps가 있어야 합니다.",
+      failures,
+      summary.sourcePath,
+    );
+    validatePresentDecimal(
+      summary.metrics.costSummary.averageRequiredReturnBps,
+      `${fieldPrefix}.metrics.costSummary.averageRequiredReturnBps`,
+      "비용 평가가 있는 summary에는 평균 요구수익률 bps가 있어야 합니다.",
+      failures,
+      summary.sourcePath,
+    );
+  }
+
+  if (summary.metrics.slippageSummary.observedFillCount > 0) {
+    validatePresentDecimal(
+      summary.metrics.slippageSummary.averageSlippageBps,
+      `${fieldPrefix}.metrics.slippageSummary.averageSlippageBps`,
+      "체결이 있는 summary에는 평균 슬리피지 bps가 있어야 합니다.",
+      failures,
+      summary.sourcePath,
+    );
+    validatePresentDecimal(
+      summary.metrics.slippageSummary.minSlippageBps,
+      `${fieldPrefix}.metrics.slippageSummary.minSlippageBps`,
+      "체결이 있는 summary에는 최소 슬리피지 bps가 있어야 합니다.",
+      failures,
+      summary.sourcePath,
+    );
+    validatePresentDecimal(
+      summary.metrics.slippageSummary.maxSlippageBps,
+      `${fieldPrefix}.metrics.slippageSummary.maxSlippageBps`,
+      "체결이 있는 summary에는 최대 슬리피지 bps가 있어야 합니다.",
+      failures,
+      summary.sourcePath,
+    );
+  }
+
   if (summary.metrics.liveOrderApiCalls > 0) {
     failures.push(
       createFailure(
@@ -123,6 +164,18 @@ function validateRunSummary(
         { count: summary.metrics.liveOrderApiCalls, sourcePath: summary.sourcePath },
       ),
     );
+  }
+}
+
+function validatePresentDecimal(
+  value: string | null,
+  fieldPath: string,
+  message: string,
+  failures: CalibrationInputValidationFailure[],
+  sourcePath: string,
+): void {
+  if (value === null) {
+    failures.push(createFailure(fieldPath, message, { sourcePath }));
   }
 }
 

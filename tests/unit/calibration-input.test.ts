@@ -11,7 +11,7 @@ import {
 } from "../../src/application/calibration.js";
 
 describe("M11 calibration input reader", () => {
-  it("reads the committed #68 internal evidence document as the primary calibration input", async () => {
+  it("reads the committed #68 internal evidence document and fails closed on day metrics that require source artifacts", async () => {
     const input = await readCalibrationEvidenceInput({
       evidencePath: "docs/references/m9-paper-trading-soak-2026-05-25-e398a8ee.md",
     });
@@ -23,7 +23,15 @@ describe("M11 calibration input reader", () => {
     expect(input.aggregate.metrics.liveOrderApiCalls).toBe(0);
     expect(input.aggregate.metrics.costSummary.averageMarginBps).toBe("-1.333333333333");
     expect(input.days).toHaveLength(3);
-    expect(validation).toMatchObject({ passed: true, failures: [] });
+    expect(input.days[0]?.metrics.blockingReasonCounts["risk:expected_loss_limit_exceeded"]).toBe(1439);
+    expect(input.days[0]?.metrics.costSummary.averageCostBps).toBeNull();
+    expect(validation.passed).toBe(false);
+    expect(validation.failures).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ fieldPath: "days[0].metrics.costSummary.averageCostBps" }),
+        expect.objectContaining({ fieldPath: "days[0].metrics.slippageSummary.averageSlippageBps" }),
+      ]),
+    );
   });
 
   it("can replace document table values with source artifact summaries when requested", async () => {
