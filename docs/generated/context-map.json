@@ -282,6 +282,13 @@
       "owner_scope": "docs/references"
     },
     {
+      "path": "docs/references/m9-paper-trading-soak-2026-05-25-e398a8ee.md",
+      "kind": "reference",
+      "role": "#68 M9 72시간 paper trading soak closeout와 M11 threshold calibration 입력 evidence",
+      "read_when": ["#68 closeout 확인", "M9 paper trading soak evidence 확인", "M11 threshold calibration", "strategy threshold calibration 비교"],
+      "owner_scope": "docs/references"
+    },
+    {
       "path": "docs/tech-debt/README.md",
       "kind": "reference",
       "role": "사용자 지시 기술 부채 목록과 기록 규칙",

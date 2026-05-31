@@ -164,11 +164,11 @@ Mother PR #100은 병합 완료 상태로 종료되었으며, #68 closeout 판�
 ### #68 closeout (2026-05-30)
 
 - `issue-comment` 검증 결과: `passed`
-- aggregate summary: `/home/lim/vaults/99_운영/seemirai-m9-paper/trading-soak/m9-paper-trading-soak-2026-05-25T11-01-04-344Z-e398a8ee-summary.json`
-- aggregate report: `/home/lim/vaults/99_운영/seemirai-m9-paper/trading-soak/m9-paper-trading-soak-2026-05-25T11-01-04-344Z-e398a8ee-report.md`
+- 내부 evidence: [`../../references/m9-paper-trading-soak-2026-05-25-e398a8ee.md`](../../references/m9-paper-trading-soak-2026-05-25-e398a8ee.md)
+- aggregate summary/report 원천 artifact는 내부 evidence의 `Source artifacts`에 추적 정보로 보존한다.
 - day summary: Day 1/2/3 모두 passed
 - day report: Day 1/2/3 모두 생성
-- 3일 비교 report: `/home/lim/vaults/99_운영/seemirai-m9-paper/m9-3day-trading-soak-comparison.md`
+- 3일 비교 report 내용은 내부 evidence의 `Day comparison`에 반입했다.
 - `liveOrderApiCalls=0`, `crash=0`, `unhandledRejection=0`, `daily report evidence` 충족
 - `SEEMIRAI_RUN_M9_PAPER_TRADING_SOAK=1` guard 하에서 3일 연속 운영 확인
 - issue #68 closeout 댓글: https://github.com/limcpf/seemirai/issues/68#issuecomment-4583232258
@@ -263,8 +263,8 @@ Acceptance Criteria:
 - [x] feature 정의 문서가 추가되고 context map에 등록된다.
 - [x] feature 계산 실패나 입력 부족은 주문 후보 중지가 된다.
 - [x] 같은 fixture에서 backtest와 paper feature 값이 일치한다.
-- [x] 전략별 threshold 변경 전후 리포트가 비용 반영 기준으로 비교 가능하다. 실제 보정값 비교는 #68 완료 후 별도
-      calibration PR에서 수행한다.
+- [x] 전략별 threshold 변경 전후 리포트가 비용 반영 기준으로 비교 가능하다. #102에서 #68 evidence 기반 비활성 proposal을
+      생성했으며, 실제 기본값 활성화는 별도 calibration approval PR에서 수행한다.
 
 예상 sub PR:
 
@@ -274,16 +274,21 @@ Acceptance Criteria:
 | 2 | 순수 feature calculator와 fixture tests | PR #72 merged |
 | 3 | backtest/paper fixture feature parity 검증 | PR #73 merged |
 | 4 | strategy variant 입력 확장과 discard audit 보강 | PR #74 merged |
-| 5 | M9 #68 관측 데이터 기반 calibration report 또는 보수적 제안/후속 issue 후보 정리 | PR #75, #68 pass 확인으로 threshold 비교 후보 산정 |
+| 5 | M9 #68 관측 데이터 기반 calibration report 또는 보수적 제안/후속 issue 후보 정리 | #102 Sub PR 1-5로 calibration report/proposal closeout |
 
 현재 운영 상태:
 
 - GitHub issue: #70
 - mother branch: `issue-70-mother`
 - Sub PR 1-4: #71, #72, #73, #74 merged
-- Sub PR 5: #75, #68 closeout(pass) 확인 후 M11 calibration을 운영 threshold 변경 제안으로 이행 준비
+- M11 calibration closeout issue: #102
+- #102 Sub PR 1-4: #103, #104, #105, #106 merged
+- #102 Sub PR 5: #68 closeout(pass) 원천 artifact 재검증, calibration report, 비활성 profile proposal, 문서 closeout
 - M9 #68 운영 관측 중에는 paper runner, daily report, Telegram, retry, control drill, 3일 비교 포맷과 기본 운영 threshold를 변경하지 않는다.
-- 2026-05-30 기준 #68은 `passed`이며 `/home/lim/vaults/99_운영/seemirai-m9-paper/trading-soak` 경로의 3일 run artifact와 3일 비교 report가 확보되어 threshold 비교 후보 산정이 가능하다.
+- 2026-05-30 기준 #68은 `passed`이며 [`../../references/m9-paper-trading-soak-2026-05-25-e398a8ee.md`](../../references/m9-paper-trading-soak-2026-05-25-e398a8ee.md)에 반입한 3일 run evidence와 비교 지표를 기준으로 threshold 비교 후보 산정이 가능하다.
+- 2026-05-31 기준 #102 report는 `/home/lim/vaults/99_운영/seemirai-m9-paper/m11-threshold-calibration-report.md`에 생성됐다.
+  평균 margin은 `-1.333333333333`이므로 공격적 threshold 완화는 차단하고, 기본 `config/paper.json` 활성화 변경 없이
+  `/home/lim/vaults/99_운영/seemirai-m9-paper/m11-threshold-calibration-profile-proposal.json`에 비활성 보수 후보만 남긴다.
 
 ### M12. 큰 TypeScript 모듈 책임 분리
 
