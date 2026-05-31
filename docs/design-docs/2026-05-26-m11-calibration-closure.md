@@ -6,6 +6,7 @@
   - [`./2026-05-25-feature-quality-calibration.md`](./2026-05-25-feature-quality-calibration.md)
   - [`../exec-plans/active/2026-05-22-post-m8-milestone-plan.md`](../exec-plans/active/2026-05-22-post-m8-milestone-plan.md)
   - [`../RUNTIME_CONFIG.md`](../RUNTIME_CONFIG.md)
+  - [`../references/m9-paper-trading-soak-2026-05-25-e398a8ee.md`](../references/m9-paper-trading-soak-2026-05-25-e398a8ee.md)
 
 ## 배경
 
@@ -21,9 +22,9 @@ Sub PR 5는 M9 #68 72시간 paper trading 관측 결과가 있으면 threshold �
 | 증거 | 판정 | 이유 |
 | --- | --- | --- |
 | GitHub issue #68 | 통과 | `validate-m9-paper-soak-evidence.mjs --issue-comment`로 `statusCode=passed` 판정을 재확인했다. |
-| `~/vaults/99_운영/seemirai-m9-paper/trading-soak/m9-paper-trading-soak-2026-05-25T11-01-04-344Z-e398a8ee-summary.json` | 통과 | `status: passed`, 기간 `259,200,011ms`(요청 `259,200,000ms`)를 충족하고 `paperTradingPath`, `durationCompleted` 조건을 만족한다. |
-| 같은 run의 day summary 3개 | 통과 | Day 1/2/3 모두 passed, paper 주문/체결 metric과 비용/슬리피지/체결률/차단 사유 metric이 존재한다. |
-| 3일 비교 report | 통과 | `~/vaults/99_운영/seemirai-m9-paper/m9-3day-trading-soak-comparison.md`에서 Day 1/2/3를 같은 포맷으로 비교했다. |
+| [`M9 #68 72시간 paper trading soak evidence`](../references/m9-paper-trading-soak-2026-05-25-e398a8ee.md) | 통과 | `status: passed`, 기간 `259,200,011ms`(요청 `259,200,000ms`)를 충족하고 `paperTradingPath`, `durationCompleted` 조건을 만족한다. |
+| 같은 run의 day summary 3개 | 통과 | 내부 evidence에 Day 1/2/3 passed, paper 주문/체결 metric과 비용/슬리피지/체결률/차단 사유 metric을 반입했다. |
+| 3일 비교 report | 통과 | 내부 evidence에서 Day 1/2/3를 같은 포맷으로 비교했다. 원천 비교 report는 vault에 추적 정보로 보존한다. |
 | controlled decision fixture summary | 유지 | fixture smoke는 paper 주문/체결 경로 점검용 참고 증거로 활용한다. 72시간 run은 별도 운영 증거로 해석한다. |
 
 ## 결정
@@ -39,7 +40,8 @@ M11은 다음 범위를 완료한 것으로 닫는다.
 - strategy variant required feature와 discard audit 확장
 - threshold 비교에 필요한 cost/risk/hold/discard reason summary 경계 정리
 
-`#68`은 완료 판정 상태이며, 실제 threshold 보정값 확정은 #68 closeout 문구(댓글/운영 로그 참조) 후 별도 calibration PR 또는 issue에서 처리한다.
+`#68`은 완료 판정 상태이며, 실제 threshold 보정값 확정은 내부 반입 evidence와 #68 closeout 문구(댓글/운영 로그 참조) 후 별도
+calibration PR 또는 issue에서 처리한다.
 
 ## 비교 기준
 

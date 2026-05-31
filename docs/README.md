@@ -17,6 +17,7 @@
 - TypeScript 모듈 파일/폴더 구조 규칙: [`design-docs/2026-05-20-typescript-module-structure.md`](./design-docs/2026-05-20-typescript-module-structure.md)
 - M11 전략/피처 품질 보강 feature contract와 calibration 경계: [`design-docs/2026-05-25-feature-quality-calibration.md`](./design-docs/2026-05-25-feature-quality-calibration.md)
 - M11 calibration closure와 #68 closeout(pass) 이후 비교 기준: [`design-docs/2026-05-26-m11-calibration-closure.md`](./design-docs/2026-05-26-m11-calibration-closure.md)
+- #68 M9 72시간 paper trading soak 내부 evidence: [`references/m9-paper-trading-soak-2026-05-25-e398a8ee.md`](./references/m9-paper-trading-soak-2026-05-25-e398a8ee.md)
 - DB 테이블 역할과 관계: [`design-docs/2026-05-15-m1-database-schema.md`](./design-docs/2026-05-15-m1-database-schema.md)
 - 장시간 작업, 중단 후 재개 필요: [`PLANS.md`](./PLANS.md), [`exec-plans/active/README.md`](./exec-plans/active/README.md), [`exec-plans/completed/README.md`](./exec-plans/completed/README.md)
 - 상태 전이, 재시도, 복구, 운영 안정성 변경: [`RELIABILITY.md`](./RELIABILITY.md)

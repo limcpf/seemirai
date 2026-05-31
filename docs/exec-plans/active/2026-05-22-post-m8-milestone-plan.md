@@ -164,11 +164,11 @@ Mother PR #100은 병합 완료 상태로 종료되었으며, #68 closeout 판�
 ### #68 closeout (2026-05-30)
 
 - `issue-comment` 검증 결과: `passed`
-- aggregate summary: `/home/lim/vaults/99_운영/seemirai-m9-paper/trading-soak/m9-paper-trading-soak-2026-05-25T11-01-04-344Z-e398a8ee-summary.json`
-- aggregate report: `/home/lim/vaults/99_운영/seemirai-m9-paper/trading-soak/m9-paper-trading-soak-2026-05-25T11-01-04-344Z-e398a8ee-report.md`
+- 내부 evidence: [`../../references/m9-paper-trading-soak-2026-05-25-e398a8ee.md`](../../references/m9-paper-trading-soak-2026-05-25-e398a8ee.md)
+- aggregate summary/report 원천 artifact는 내부 evidence의 `Source artifacts`에 추적 정보로 보존한다.
 - day summary: Day 1/2/3 모두 passed
 - day report: Day 1/2/3 모두 생성
-- 3일 비교 report: `/home/lim/vaults/99_운영/seemirai-m9-paper/m9-3day-trading-soak-comparison.md`
+- 3일 비교 report 내용은 내부 evidence의 `Day comparison`에 반입했다.
 - `liveOrderApiCalls=0`, `crash=0`, `unhandledRejection=0`, `daily report evidence` 충족
 - `SEEMIRAI_RUN_M9_PAPER_TRADING_SOAK=1` guard 하에서 3일 연속 운영 확인
 - issue #68 closeout 댓글: https://github.com/limcpf/seemirai/issues/68#issuecomment-4583232258
@@ -283,7 +283,7 @@ Acceptance Criteria:
 - Sub PR 1-4: #71, #72, #73, #74 merged
 - Sub PR 5: #75, #68 closeout(pass) 확인 후 M11 calibration을 운영 threshold 변경 제안으로 이행 준비
 - M9 #68 운영 관측 중에는 paper runner, daily report, Telegram, retry, control drill, 3일 비교 포맷과 기본 운영 threshold를 변경하지 않는다.
-- 2026-05-30 기준 #68은 `passed`이며 `/home/lim/vaults/99_운영/seemirai-m9-paper/trading-soak` 경로의 3일 run artifact와 3일 비교 report가 확보되어 threshold 비교 후보 산정이 가능하다.
+- 2026-05-30 기준 #68은 `passed`이며 [`../../references/m9-paper-trading-soak-2026-05-25-e398a8ee.md`](../../references/m9-paper-trading-soak-2026-05-25-e398a8ee.md)에 반입한 3일 run evidence와 비교 지표를 기준으로 threshold 비교 후보 산정이 가능하다.
 
 ### M12. 큰 TypeScript 모듈 책임 분리
 
