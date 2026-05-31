@@ -18,6 +18,7 @@ import type {
   TimestampInput,
 } from "../../domain/index.js";
 import type { ExecutionEngine, ExecutionSubmitOrderResult } from "../execution/index.js";
+import type { PaperPnlSummary } from "../paper-pnl-summary.js";
 import type { BrokerPort } from "../ports/index.js";
 
 /**
@@ -113,6 +114,7 @@ export interface PaperDecisionRunnerPorts {
 export interface PaperDecisionRunnerOptions {
   sourceRequest?: PaperDecisionInputReplayRequest;
   maxFrames?: number;
+  pnlStartingCashKrw?: string;
 }
 
 /**
@@ -162,6 +164,7 @@ export interface PaperDecisionMetricSummary extends JsonRecord {
   fillRate: number;
   costSummary: PaperDecisionCostSummary;
   slippageSummary: PaperDecisionSlippageSummary;
+  pnlSummary: PaperPnlSummary;
   blockingReasonCounts: Record<string, number>;
   liveOrderApiCalls: 0;
 }

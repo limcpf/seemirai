@@ -161,8 +161,24 @@ function createEmptyMetrics() {
       minSlippageBps: null,
       maxSlippageBps: null,
     },
+    pnlSummary: createEmptyPnlSummary(),
     blockingReasonCounts: {},
     liveOrderApiCalls: 0,
+  };
+}
+
+function createEmptyPnlSummary() {
+  return {
+    startingCashKrw: "0",
+    endingCashKrw: "0",
+    positionMarketValueKrw: "0",
+    realizedPnlKrw: "0",
+    unrealizedPnlKrw: "0",
+    totalPnlKrw: "0",
+    totalReturnBps: null,
+    totalFeesKrw: "0",
+    submittedOrderCount: 0,
+    filledOrderCount: 0,
   };
 }
 
@@ -580,6 +596,7 @@ function renderMarkdownReport(summary) {
   const checkRows = Object.entries(summary.checks)
     .map(([name, check]) => `| ${name} | ${check.status} | ${escapeMarkdownTable(check.message)} |`)
     .join("\n");
+  const pnlSummarySection = renderPnlSummarySection(summary.metrics.pnlSummary);
 
   return `# M9 Paper Decision Runner 결과
 
@@ -597,6 +614,8 @@ function renderMarkdownReport(summary) {
 | 항목 | 값 |
 | --- | --- |
 ${metricRows}
+
+${pnlSummarySection}
 
 ## 차단/대기 사유
 
@@ -638,6 +657,8 @@ function printSummary(summary, options) {
   process.stdout.write(`- 리포트: ${summary.artifacts.reportPath}\n`);
   process.stdout.write(`- paper 주문 제출: ${summary.metrics.paperOrderSubmittedCount}\n`);
   process.stdout.write(`- paper 체결: ${summary.metrics.paperFillCount}\n`);
+  process.stdout.write(`- 총 손익: ${formatKrwValue(summary.metrics.pnlSummary?.totalPnlKrw)}\n`);
+  process.stdout.write(`- 수수료: ${formatKrwValue(summary.metrics.pnlSummary?.totalFeesKrw)}\n`);
 }
 
 function deriveStatus(checks) {
@@ -686,6 +707,36 @@ function failCheck(message, evidence = {}) {
 
 function escapeMarkdownTable(value) {
   return String(value).replace(/\|/gu, "\\|").replace(/\n/gu, " ");
+}
+
+function renderPnlSummarySection(pnlSummary) {
+  const rows = [
+    ["총 손익", formatKrwValue(pnlSummary?.totalPnlKrw)],
+    ["실현손익", formatKrwValue(pnlSummary?.realizedPnlKrw)],
+    ["미실현손익", formatKrwValue(pnlSummary?.unrealizedPnlKrw)],
+    ["포지션 평가액", formatKrwValue(pnlSummary?.positionMarketValueKrw)],
+    ["수수료", formatKrwValue(pnlSummary?.totalFeesKrw)],
+    ["수익률", formatBpsValue(pnlSummary?.totalReturnBps)],
+    ["시작 가상 현금", formatKrwValue(pnlSummary?.startingCashKrw)],
+    ["종료 가상 현금", formatKrwValue(pnlSummary?.endingCashKrw)],
+    ["주문/체결", `${pnlSummary?.submittedOrderCount ?? 0} / ${pnlSummary?.filledOrderCount ?? 0}`],
+  ]
+    .map(([name, value]) => `| ${name} | ${escapeMarkdownTable(value)} |`)
+    .join("\n");
+
+  return `## KRW 손익 요약
+
+| 항목 | 값 |
+| --- | --- |
+${rows}`;
+}
+
+function formatKrwValue(value) {
+  return value === null || value === undefined ? "계산 불가" : `${value} KRW`;
+}
+
+function formatBpsValue(value) {
+  return value === null || value === undefined ? "계산 불가" : `${value} bps`;
 }
 
 async function readGitContext() {

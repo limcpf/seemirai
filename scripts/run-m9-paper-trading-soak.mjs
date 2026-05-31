@@ -887,6 +887,19 @@ function createMetricAccumulator() {
     slippageBpsWeightedSum: 0,
     minSlippageBps: null,
     maxSlippageBps: null,
+    pnlStartingCashKrw: 0,
+    pnlEndingCashKrw: 0,
+    pnlPositionMarketValueKrw: 0,
+    pnlPositionMarketValueUnavailable: false,
+    pnlRealizedPnlKrw: 0,
+    pnlRealizedPnlUnavailable: false,
+    pnlUnrealizedPnlKrw: 0,
+    pnlUnrealizedPnlUnavailable: false,
+    pnlTotalPnlKrw: 0,
+    pnlTotalPnlUnavailable: false,
+    pnlTotalFeesKrw: 0,
+    pnlSubmittedOrderCount: 0,
+    pnlFilledOrderCount: 0,
   };
 }
 
@@ -904,6 +917,7 @@ function accumulateMetrics(accumulator, metrics) {
   mergeCounts(accumulator.blockingReasonCounts, metrics.blockingReasonCounts);
   accumulateCostSummary(accumulator, metrics.costSummary);
   accumulateSlippageSummary(accumulator, metrics.slippageSummary);
+  accumulatePnlSummary(accumulator, metrics.pnlSummary);
 }
 
 function mergeCounts(target, source) {
@@ -928,6 +942,48 @@ function accumulateSlippageSummary(accumulator, slippageSummary) {
   accumulator.slippageBpsWeightedSum += readWeightedValue(slippageSummary?.averageSlippageBps, observedFillCount);
   accumulator.minSlippageBps = minNullable(accumulator.minSlippageBps, slippageSummary?.minSlippageBps);
   accumulator.maxSlippageBps = maxNullable(accumulator.maxSlippageBps, slippageSummary?.maxSlippageBps);
+}
+
+function accumulatePnlSummary(accumulator, pnlSummary) {
+  if (pnlSummary === undefined) {
+    return;
+  }
+
+  accumulator.pnlStartingCashKrw += readNumericValue(pnlSummary.startingCashKrw);
+  accumulator.pnlEndingCashKrw += readNumericValue(pnlSummary.endingCashKrw);
+  accumulator.pnlTotalFeesKrw += readNumericValue(pnlSummary.totalFeesKrw);
+  accumulator.pnlSubmittedOrderCount += readSafeInteger(pnlSummary.submittedOrderCount);
+  accumulator.pnlFilledOrderCount += readSafeInteger(pnlSummary.filledOrderCount);
+
+  if (pnlSummary.positionMarketValueKrw === null) {
+    accumulator.pnlPositionMarketValueUnavailable = true;
+  } else {
+    accumulator.pnlPositionMarketValueKrw += readNumericValue(pnlSummary.positionMarketValueKrw);
+  }
+  if (pnlSummary.realizedPnlKrw === null) {
+    accumulator.pnlRealizedPnlUnavailable = true;
+  } else {
+    accumulator.pnlRealizedPnlKrw += readNumericValue(pnlSummary.realizedPnlKrw);
+  }
+  if (pnlSummary.unrealizedPnlKrw === null) {
+    accumulator.pnlUnrealizedPnlUnavailable = true;
+  } else {
+    accumulator.pnlUnrealizedPnlKrw += readNumericValue(pnlSummary.unrealizedPnlKrw);
+  }
+  if (pnlSummary.totalPnlKrw === null) {
+    accumulator.pnlTotalPnlUnavailable = true;
+  } else {
+    accumulator.pnlTotalPnlKrw += readNumericValue(pnlSummary.totalPnlKrw);
+  }
+}
+
+function readNumericValue(value) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function readSafeInteger(value) {
+  return Number.isSafeInteger(value) ? value : 0;
 }
 
 function readWeightedValue(value, count) {
@@ -983,8 +1039,30 @@ function finalizeMetrics(accumulator) {
       minSlippageBps: formatNullableNumber(accumulator.minSlippageBps),
       maxSlippageBps: formatNullableNumber(accumulator.maxSlippageBps),
     },
+    pnlSummary: finalizePnlSummary(accumulator),
     blockingReasonCounts: sortCounts(accumulator.blockingReasonCounts),
     liveOrderApiCalls: accumulator.liveOrderApiCalls,
+  };
+}
+
+function finalizePnlSummary(accumulator) {
+  const totalPnlKrw = accumulator.pnlTotalPnlUnavailable ? null : accumulator.pnlTotalPnlKrw;
+  return {
+    startingCashKrw: formatNumber(accumulator.pnlStartingCashKrw),
+    endingCashKrw: formatNumber(accumulator.pnlEndingCashKrw),
+    positionMarketValueKrw: accumulator.pnlPositionMarketValueUnavailable
+      ? null
+      : formatNumber(accumulator.pnlPositionMarketValueKrw),
+    realizedPnlKrw: accumulator.pnlRealizedPnlUnavailable ? null : formatNumber(accumulator.pnlRealizedPnlKrw),
+    unrealizedPnlKrw: accumulator.pnlUnrealizedPnlUnavailable ? null : formatNumber(accumulator.pnlUnrealizedPnlKrw),
+    totalPnlKrw: totalPnlKrw === null ? null : formatNumber(totalPnlKrw),
+    totalReturnBps:
+      totalPnlKrw === null || accumulator.pnlStartingCashKrw === 0
+        ? null
+        : formatNumber((totalPnlKrw / accumulator.pnlStartingCashKrw) * 10000),
+    totalFeesKrw: formatNumber(accumulator.pnlTotalFeesKrw),
+    submittedOrderCount: accumulator.pnlSubmittedOrderCount,
+    filledOrderCount: accumulator.pnlFilledOrderCount,
   };
 }
 
@@ -1008,6 +1086,10 @@ function averageFromWeightedSum(weightedSum, count) {
 
 function formatNullableNumber(value) {
   return value === null ? null : String(Number(value.toFixed(12)));
+}
+
+function formatNumber(value) {
+  return String(Number(value.toFixed(12)));
 }
 
 function createSkippedSummary({ runId, startedAt, inputMode, options, git, artifacts }) {
@@ -1514,6 +1596,7 @@ function renderMarkdownReport(summary) {
   const checkRows = Object.entries(summary.checks)
     .map(([name, check]) => `| ${name} | ${check.status} | ${escapeMarkdownTable(check.message)} |`)
     .join("\n");
+  const pnlSummarySection = renderPnlSummarySection(summary.metrics.pnlSummary);
 
   return `# M9 Paper Trading Soak 결과
 
@@ -1533,6 +1616,8 @@ function renderMarkdownReport(summary) {
 | 항목 | 값 |
 | --- | --- |
 ${metricRows}
+
+${pnlSummarySection}
 
 ## 차단/대기 사유
 
@@ -1565,6 +1650,8 @@ function printSummary(summary, options) {
   process.stdout.write(`- paper trading cycle: ${summary.metrics.paperTradingCycles ?? 0}\n`);
   process.stdout.write(`- paper 주문 제출: ${summary.metrics.paperOrderSubmittedCount}\n`);
   process.stdout.write(`- paper 체결: ${summary.metrics.paperFillCount}\n`);
+  process.stdout.write(`- 총 손익: ${formatKrwValue(summary.metrics.pnlSummary?.totalPnlKrw)}\n`);
+  process.stdout.write(`- 수수료: ${formatKrwValue(summary.metrics.pnlSummary?.totalFeesKrw)}\n`);
 }
 
 async function readGitContext() {
@@ -1601,6 +1688,36 @@ function sleep(ms) {
 
 function escapeMarkdownTable(value) {
   return String(value).replace(/\|/gu, "\\|").replace(/\n/gu, " ");
+}
+
+function renderPnlSummarySection(pnlSummary) {
+  const rows = [
+    ["총 손익", formatKrwValue(pnlSummary?.totalPnlKrw)],
+    ["실현손익", formatKrwValue(pnlSummary?.realizedPnlKrw)],
+    ["미실현손익", formatKrwValue(pnlSummary?.unrealizedPnlKrw)],
+    ["포지션 평가액", formatKrwValue(pnlSummary?.positionMarketValueKrw)],
+    ["수수료", formatKrwValue(pnlSummary?.totalFeesKrw)],
+    ["수익률", formatBpsValue(pnlSummary?.totalReturnBps)],
+    ["시작 가상 현금", formatKrwValue(pnlSummary?.startingCashKrw)],
+    ["종료 가상 현금", formatKrwValue(pnlSummary?.endingCashKrw)],
+    ["주문/체결", `${pnlSummary?.submittedOrderCount ?? 0} / ${pnlSummary?.filledOrderCount ?? 0}`],
+  ]
+    .map(([name, value]) => `| ${name} | ${escapeMarkdownTable(value)} |`)
+    .join("\n");
+
+  return `## KRW 손익 요약
+
+| 항목 | 값 |
+| --- | --- |
+${rows}`;
+}
+
+function formatKrwValue(value) {
+  return value === null || value === undefined ? "계산 불가" : `${value} KRW`;
+}
+
+function formatBpsValue(value) {
+  return value === null || value === undefined ? "계산 불가" : `${value} bps`;
 }
 
 function toErrorMessage(error) {
