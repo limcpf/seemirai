@@ -79,6 +79,32 @@ describe("M11 threshold calibration report script", () => {
     );
   });
 
+  it("fails closed when source artifact cost summary counts are inconsistent", async () => {
+    const fixture = await writeFixtureEvidence({
+      aggregateMetrics: {
+        costSummary: {
+          evaluatedCount: 3,
+          allowedCount: 3,
+          rejectedCount: 3,
+          averageCostBps: "13",
+          averageRequiredReturnBps: "23",
+          averageMarginBps: "-1.333333333333",
+        },
+      },
+    });
+
+    const result = await runScriptAllowingFailure(["--evidence", fixture.evidencePath, "--json"]);
+    const report = JSON.parse(result.stdout) as CalibrationReportJson;
+
+    expect(result.code).toBe(1);
+    expect(report.status).toBe("failed");
+    expect(report.validation.failures).toContainEqual(
+      expect.objectContaining({
+        fieldPath: "aggregate.metrics.costSummary",
+      }),
+    );
+  });
+
   it("accepts source artifact fill rate rounded to six decimal places", async () => {
     const fixture = await writeFixtureEvidence({
       aggregateMetrics: {
@@ -196,6 +222,17 @@ describe("M11 threshold calibration report script", () => {
 
     expect(result.code).toBe(1);
     expect(result.stderr).toContain("blockingReason.count must be a safe integer");
+  });
+
+  it("rejects missing committed evidence count map rows", async () => {
+    const fixture = await writeFixtureEvidence({ skipArtifacts: true });
+    const markdown = await readFile(fixture.evidencePath, "utf8");
+    await writeFile(fixture.evidencePath, markdown.replace("| blockingReasonCounts | `{\"cost:cost_margin_insufficient\":4319,\"hold:fixture_waiting_for_signal\":4319,\"risk:expected_loss_limit_exceeded\":4319,\"risk:order_notional_limit_exceeded\":4378}` |\n", ""), "utf8");
+
+    const result = await runScriptAllowingFailure(["--evidence", fixture.evidencePath, "--document-only", "--json"]);
+
+    expect(result.code).toBe(1);
+    expect(result.stderr).toContain("table.blockingReasonCounts is required");
   });
 });
 

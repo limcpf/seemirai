@@ -276,6 +276,7 @@ function validateRunSummary(summary, fieldPrefix, failures) {
     }
   }
   validateFillRate(metrics, fieldPrefix, failures, summary.sourcePath);
+  validateCostSummaryCounts(metrics, fieldPrefix, failures, summary.sourcePath);
 
   if (metrics.costSummary.evaluatedCount > 0 && shouldRequireDetailedMetricFields(summary)) {
     for (const [field, value, message] of [
@@ -356,6 +357,25 @@ function validateFillRate(metrics, fieldPrefix, failures, sourcePath) {
         }),
       );
     }
+  }
+}
+
+function validateCostSummaryCounts(metrics, fieldPrefix, failures, sourcePath) {
+  const { evaluatedCount, allowedCount, rejectedCount } = metrics.costSummary;
+  if (
+    Number.isSafeInteger(evaluatedCount) &&
+    Number.isSafeInteger(allowedCount) &&
+    Number.isSafeInteger(rejectedCount) &&
+    allowedCount + rejectedCount !== evaluatedCount
+  ) {
+    failures.push(
+      failure(`${fieldPrefix}.metrics.costSummary`, "비용 허용/차단 count 합계는 평가 count와 일치해야 합니다.", {
+        evaluatedCount,
+        allowedCount,
+        rejectedCount,
+        sourcePath,
+      }),
+    );
   }
 }
 
@@ -1045,8 +1065,8 @@ function readTableNumber(table, key) {
 }
 
 function readTableJsonRecord(table, key) {
-  const value = readTableNullableString(table, key);
-  return value === null ? {} : requireCountRecord(JSON.parse(value), `table.${key}`);
+  const value = readTableString(table, key);
+  return requireCountRecord(JSON.parse(value), `table.${key}`);
 }
 
 function parseBlockingReasonText(value) {

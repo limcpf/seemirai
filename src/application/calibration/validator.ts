@@ -134,6 +134,8 @@ function validateRunSummary(
   validateCounts(summary.metrics.discardReasonCounts, `${fieldPrefix}.metrics.discardReasonCounts`, failures, summary.sourcePath);
   validateCounts(summary.metrics.blockingReasonCounts, `${fieldPrefix}.metrics.blockingReasonCounts`, failures, summary.sourcePath);
   validateFillRate(summary, fieldPrefix, failures);
+  validateCostSummaryCounts(summary, fieldPrefix, failures);
+  validateOptionalDecimalMetrics(summary, fieldPrefix, failures);
 
   if (summary.metrics.costSummary.evaluatedCount > 0) {
     validatePresentDecimal(
@@ -237,6 +239,65 @@ function validateFillRate(
   }
 }
 
+/**
+ * 비용 평가 count의 합계 invariant를 검증한다.
+ *
+ * 이 validator 경계는 이미 구성된 evidence 입력도 받으므로, 각 count의 타입 검증을 통과한 뒤
+ * allowed/rejected 합이 evaluated와 다른 손상 입력을 report 후보 산정 전에 차단한다. 외부 side effect는 없다.
+ */
+function validateCostSummaryCounts(
+  summary: CalibrationRunSummary,
+  fieldPrefix: string,
+  failures: CalibrationInputValidationFailure[],
+): void {
+  const { evaluatedCount, allowedCount, rejectedCount } = summary.metrics.costSummary;
+  if (
+    Number.isSafeInteger(evaluatedCount) &&
+    Number.isSafeInteger(allowedCount) &&
+    Number.isSafeInteger(rejectedCount) &&
+    allowedCount + rejectedCount !== evaluatedCount
+  ) {
+    failures.push(
+      createFailure(`${fieldPrefix}.metrics.costSummary`, "비용 허용/차단 count 합계는 평가 count와 일치해야 합니다.", {
+        evaluatedCount,
+        allowedCount,
+        rejectedCount,
+        sourcePath: summary.sourcePath,
+      }),
+    );
+  }
+}
+
+/**
+ * null이 아닌 decimal metric 값이 후속 Decimal parser에 넘겨도 안전한 문자열인지 검증한다.
+ *
+ * 비용/슬리피지 평가 건수가 0이면 null은 허용하지만, 값이 존재한다면 report 근거로 보존되므로
+ * 항상 유한한 숫자 문자열 invariant를 유지해야 한다. 외부 입력을 읽거나 변경하지 않고 failure만 누적한다.
+ */
+function validateOptionalDecimalMetrics(
+  summary: CalibrationRunSummary,
+  fieldPrefix: string,
+  failures: CalibrationInputValidationFailure[],
+): void {
+  for (const [field, value] of [
+    ["costSummary.averageCostBps", summary.metrics.costSummary.averageCostBps],
+    ["costSummary.averageRequiredReturnBps", summary.metrics.costSummary.averageRequiredReturnBps],
+    ["costSummary.averageMarginBps", summary.metrics.costSummary.averageMarginBps],
+    ["slippageSummary.averageSlippageBps", summary.metrics.slippageSummary.averageSlippageBps],
+    ["slippageSummary.minSlippageBps", summary.metrics.slippageSummary.minSlippageBps],
+    ["slippageSummary.maxSlippageBps", summary.metrics.slippageSummary.maxSlippageBps],
+  ] as const) {
+    if (value !== null && (typeof value !== "string" || !/^-?\d+(?:\.\d+)?$/u.test(value))) {
+      failures.push(
+        createFailure(`${fieldPrefix}.metrics.${field}`, "decimal metric은 유한한 숫자 문자열이어야 합니다.", {
+          value,
+          sourcePath: summary.sourcePath,
+        }),
+      );
+    }
+  }
+}
+
 function validatePresentDecimal(
   value: string | null,
   fieldPath: string,
@@ -246,10 +307,6 @@ function validatePresentDecimal(
 ): void {
   if (value === null) {
     failures.push(createFailure(fieldPath, message, { sourcePath }));
-    return;
-  }
-  if (typeof value !== "string" || !/^-?\d+(?:\.\d+)?$/u.test(value)) {
-    failures.push(createFailure(fieldPath, "decimal metric은 유한한 숫자 문자열이어야 합니다.", { value, sourcePath }));
   }
 }
 

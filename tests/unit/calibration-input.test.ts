@@ -233,6 +233,65 @@ describe("M11 calibration input reader", () => {
     );
   });
 
+  it("rejects malformed decimal strings even when cost evaluation count is zero", async () => {
+    const input = await readCalibrationEvidenceInput({
+      evidencePath: "docs/references/m9-paper-trading-soak-2026-05-25-e398a8ee.md",
+    });
+    const validation = validateCalibrationEvidenceInput({
+      ...input,
+      aggregate: {
+        ...input.aggregate,
+        metrics: {
+          ...input.aggregate.metrics,
+          costSummary: {
+            ...input.aggregate.metrics.costSummary,
+            evaluatedCount: 0,
+            allowedCount: 0,
+            rejectedCount: 0,
+            averageMarginBps: "abc",
+          },
+        },
+      },
+    });
+
+    expect(validation.passed).toBe(false);
+    expect(validation.failures).toContainEqual(
+      expect.objectContaining({
+        fieldPath: "aggregate.metrics.costSummary.averageMarginBps",
+        message: "decimal metric은 유한한 숫자 문자열이어야 합니다.",
+      }),
+    );
+  });
+
+  it("rejects inconsistent cost summary count totals", async () => {
+    const input = await readCalibrationEvidenceInput({
+      evidencePath: "docs/references/m9-paper-trading-soak-2026-05-25-e398a8ee.md",
+    });
+    const validation = validateCalibrationEvidenceInput({
+      ...input,
+      aggregate: {
+        ...input.aggregate,
+        metrics: {
+          ...input.aggregate.metrics,
+          costSummary: {
+            ...input.aggregate.metrics.costSummary,
+            evaluatedCount: 3,
+            allowedCount: 3,
+            rejectedCount: 3,
+          },
+        },
+      },
+    });
+
+    expect(validation.passed).toBe(false);
+    expect(validation.failures).toContainEqual(
+      expect.objectContaining({
+        fieldPath: "aggregate.metrics.costSummary",
+        message: "비용 허용/차단 count 합계는 평가 count와 일치해야 합니다.",
+      }),
+    );
+  });
+
   it("fails closed when day numbers are duplicated or missing", async () => {
     const input = await readCalibrationEvidenceInput({
       evidencePath: "docs/references/m9-paper-trading-soak-2026-05-25-e398a8ee.md",
@@ -273,6 +332,21 @@ describe("M11 calibration input reader", () => {
     );
 
     await expect(readCalibrationEvidenceInput({ evidencePath })).rejects.toThrow("table.liveOrderApiCalls is required");
+  });
+
+  it("rejects exported reader integer cells with trailing text", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "seemirai-calibration-reader-integer-"));
+    const artifactDir = path.join(root, "trading-soak");
+    const prefix = "m9-paper-trading-soak-2026-05-31T00-00-00-000Z-10210212";
+    const evidencePath = path.join(root, "evidence.md");
+    await mkdir(artifactDir);
+    await writeFile(
+      evidencePath,
+      createEvidenceMarkdown({ artifactDir, prefix }).replace("| Day 1 |", "| Day 1 |").replace("`3` | `-1.333333333333` |", "`3abc` | `-1.333333333333` |"),
+      "utf8",
+    );
+
+    await expect(readCalibrationEvidenceInput({ evidencePath })).rejects.toThrow("day.costSummary.evaluatedCount must be a safe integer");
   });
 });
 

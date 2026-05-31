@@ -366,6 +366,9 @@ function parseInteger(value: unknown, fieldPath: string): number {
     if (stripped.length === 0) {
       throw new Error(`${fieldPath} is required`);
     }
+    if (!/^-?\d+$/u.test(stripped)) {
+      throw new Error(`${fieldPath} must be a safe integer`);
+    }
     return requireSafeInteger(Number.parseInt(stripped, 10), fieldPath);
   }
   return requireSafeInteger(value, fieldPath);
