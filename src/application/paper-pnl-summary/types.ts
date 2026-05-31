@@ -44,6 +44,20 @@ export interface PaperPnlSummaryInput {
 }
 
 /**
+ * fill ledger만으로 손익 cost basis를 확정할 수 없을 때 만드는 unavailable summary 입력이다.
+ *
+ * 예를 들어 fixture가 초기 BTC 잔고를 들고 SELL부터 실행하면 현금 변화와 수수료는 알 수 있지만 평균 취득가가 없어
+ * 실현손익을 확정할 수 없다. 이 입력은 runner를 실패시키지 않되 손익 필드를 `null`로 보류하는 경계다.
+ */
+export interface PaperPnlUnavailableSummaryInput {
+  startingCashKrw: NumericString;
+  endingCashKrw: NumericString;
+  totalFeesKrw: NumericString;
+  submittedOrderCount: number;
+  filledOrderCount: number;
+}
+
+/**
  * 운영자와 report가 읽는 paper trading KRW 손익 summary shape다.
  *
  * 미청산 포지션 평가가가 없으면 mark-to-market이 필요한 값은 `null`로 남긴다. 현금, 실현손익, 수수료, 주문/체결 수는
@@ -53,7 +67,7 @@ export interface PaperPnlSummary {
   startingCashKrw: NumericString;
   endingCashKrw: NumericString;
   positionMarketValueKrw: NumericString | null;
-  realizedPnlKrw: NumericString;
+  realizedPnlKrw: NumericString | null;
   unrealizedPnlKrw: NumericString | null;
   totalPnlKrw: NumericString | null;
   totalReturnBps: NumericString | null;

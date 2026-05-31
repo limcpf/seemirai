@@ -887,6 +887,19 @@ function createMetricAccumulator() {
     slippageBpsWeightedSum: 0,
     minSlippageBps: null,
     maxSlippageBps: null,
+    pnlStartingCashKrw: 0,
+    pnlEndingCashKrw: 0,
+    pnlPositionMarketValueKrw: 0,
+    pnlPositionMarketValueUnavailable: false,
+    pnlRealizedPnlKrw: 0,
+    pnlRealizedPnlUnavailable: false,
+    pnlUnrealizedPnlKrw: 0,
+    pnlUnrealizedPnlUnavailable: false,
+    pnlTotalPnlKrw: 0,
+    pnlTotalPnlUnavailable: false,
+    pnlTotalFeesKrw: 0,
+    pnlSubmittedOrderCount: 0,
+    pnlFilledOrderCount: 0,
   };
 }
 
@@ -904,6 +917,7 @@ function accumulateMetrics(accumulator, metrics) {
   mergeCounts(accumulator.blockingReasonCounts, metrics.blockingReasonCounts);
   accumulateCostSummary(accumulator, metrics.costSummary);
   accumulateSlippageSummary(accumulator, metrics.slippageSummary);
+  accumulatePnlSummary(accumulator, metrics.pnlSummary);
 }
 
 function mergeCounts(target, source) {
@@ -928,6 +942,48 @@ function accumulateSlippageSummary(accumulator, slippageSummary) {
   accumulator.slippageBpsWeightedSum += readWeightedValue(slippageSummary?.averageSlippageBps, observedFillCount);
   accumulator.minSlippageBps = minNullable(accumulator.minSlippageBps, slippageSummary?.minSlippageBps);
   accumulator.maxSlippageBps = maxNullable(accumulator.maxSlippageBps, slippageSummary?.maxSlippageBps);
+}
+
+function accumulatePnlSummary(accumulator, pnlSummary) {
+  if (pnlSummary === undefined) {
+    return;
+  }
+
+  accumulator.pnlStartingCashKrw += readNumericValue(pnlSummary.startingCashKrw);
+  accumulator.pnlEndingCashKrw += readNumericValue(pnlSummary.endingCashKrw);
+  accumulator.pnlTotalFeesKrw += readNumericValue(pnlSummary.totalFeesKrw);
+  accumulator.pnlSubmittedOrderCount += readSafeInteger(pnlSummary.submittedOrderCount);
+  accumulator.pnlFilledOrderCount += readSafeInteger(pnlSummary.filledOrderCount);
+
+  if (pnlSummary.positionMarketValueKrw === null) {
+    accumulator.pnlPositionMarketValueUnavailable = true;
+  } else {
+    accumulator.pnlPositionMarketValueKrw += readNumericValue(pnlSummary.positionMarketValueKrw);
+  }
+  if (pnlSummary.realizedPnlKrw === null) {
+    accumulator.pnlRealizedPnlUnavailable = true;
+  } else {
+    accumulator.pnlRealizedPnlKrw += readNumericValue(pnlSummary.realizedPnlKrw);
+  }
+  if (pnlSummary.unrealizedPnlKrw === null) {
+    accumulator.pnlUnrealizedPnlUnavailable = true;
+  } else {
+    accumulator.pnlUnrealizedPnlKrw += readNumericValue(pnlSummary.unrealizedPnlKrw);
+  }
+  if (pnlSummary.totalPnlKrw === null) {
+    accumulator.pnlTotalPnlUnavailable = true;
+  } else {
+    accumulator.pnlTotalPnlKrw += readNumericValue(pnlSummary.totalPnlKrw);
+  }
+}
+
+function readNumericValue(value) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function readSafeInteger(value) {
+  return Number.isSafeInteger(value) ? value : 0;
 }
 
 function readWeightedValue(value, count) {
@@ -983,8 +1039,30 @@ function finalizeMetrics(accumulator) {
       minSlippageBps: formatNullableNumber(accumulator.minSlippageBps),
       maxSlippageBps: formatNullableNumber(accumulator.maxSlippageBps),
     },
+    pnlSummary: finalizePnlSummary(accumulator),
     blockingReasonCounts: sortCounts(accumulator.blockingReasonCounts),
     liveOrderApiCalls: accumulator.liveOrderApiCalls,
+  };
+}
+
+function finalizePnlSummary(accumulator) {
+  const totalPnlKrw = accumulator.pnlTotalPnlUnavailable ? null : accumulator.pnlTotalPnlKrw;
+  return {
+    startingCashKrw: formatNumber(accumulator.pnlStartingCashKrw),
+    endingCashKrw: formatNumber(accumulator.pnlEndingCashKrw),
+    positionMarketValueKrw: accumulator.pnlPositionMarketValueUnavailable
+      ? null
+      : formatNumber(accumulator.pnlPositionMarketValueKrw),
+    realizedPnlKrw: accumulator.pnlRealizedPnlUnavailable ? null : formatNumber(accumulator.pnlRealizedPnlKrw),
+    unrealizedPnlKrw: accumulator.pnlUnrealizedPnlUnavailable ? null : formatNumber(accumulator.pnlUnrealizedPnlKrw),
+    totalPnlKrw: totalPnlKrw === null ? null : formatNumber(totalPnlKrw),
+    totalReturnBps:
+      totalPnlKrw === null || accumulator.pnlStartingCashKrw === 0
+        ? null
+        : formatNumber((totalPnlKrw / accumulator.pnlStartingCashKrw) * 10000),
+    totalFeesKrw: formatNumber(accumulator.pnlTotalFeesKrw),
+    submittedOrderCount: accumulator.pnlSubmittedOrderCount,
+    filledOrderCount: accumulator.pnlFilledOrderCount,
   };
 }
 
@@ -1008,6 +1086,10 @@ function averageFromWeightedSum(weightedSum, count) {
 
 function formatNullableNumber(value) {
   return value === null ? null : String(Number(value.toFixed(12)));
+}
+
+function formatNumber(value) {
+  return String(Number(value.toFixed(12)));
 }
 
 function createSkippedSummary({ runId, startedAt, inputMode, options, git, artifacts }) {

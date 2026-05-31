@@ -6,12 +6,14 @@ import {
 } from "../../domain/index.js";
 import type {
   AccountRiskSnapshot,
+  BrokerOrder,
   CostDecision,
   CostModelInput,
   InfrastructureRiskSnapshot,
   JsonRecord,
   OrderIntent,
   OrderSubmission,
+  OrderbookEvent,
   PositionRiskSnapshot,
   RiskGateContext,
   RiskGateResult,
@@ -26,6 +28,12 @@ import {
   createExecutionCostSnapshotEvidence,
   createExecutionRiskApprovalEvidence,
 } from "../execution/index.js";
+import {
+  PaperPnlSummaryInvariantError,
+  createPaperPnlSummary,
+  createUnavailablePaperPnlSummary,
+} from "../paper-pnl-summary.js";
+import type { PaperPnlFillInput, PaperPnlMarkPriceInput } from "../paper-pnl-summary.js";
 import { evaluateRiskGate as evaluateRiskGateDefault } from "../risk/index.js";
 import { convertStrategyDecisionToOrderIntents } from "../strategies/index.js";
 import type { StrategyDecisionIntentConversion } from "../strategies/index.js";
@@ -63,10 +71,13 @@ interface PaperDecisionMetricAccumulator {
   slippageBpsValues: Decimal[];
   submittedBrokerOrderIds: Set<string>;
   filledBrokerOrderIds: Set<string>;
+  pnlFills: PaperPnlFillInput[];
+  pnlMarkPricesByMarket: Map<string, PaperPnlMarkPriceInput>;
 }
 
 const defaultAccountEquityKrw = "1000000";
 const defaultExpectedLossBpsOfEquity = "5";
+const defaultPnlStartingCashKrw = "1000000";
 
 /**
  * M9 paper decision runner의 application service다.
@@ -120,6 +131,7 @@ export class PaperDecisionRunner {
         if (frame.orderbook !== undefined) {
           // frame-local 호가는 paper fill 근거로만 주입하고 외부 market data 조회를 열지 않는다.
           this.broker.recordOrderbookSnapshot?.(frame.orderbook);
+          recordPnlMarkPrice(metrics, frame.orderbook);
         }
 
         for (const strategy of this.strategies) {
@@ -134,7 +146,7 @@ export class PaperDecisionRunner {
 
     return {
       framesProcessed,
-      metrics: finalizeMetrics(metrics),
+      metrics: finalizeMetrics(metrics, options.pnlStartingCashKrw ?? defaultPnlStartingCashKrw),
       trace,
     };
   }
@@ -482,6 +494,7 @@ function recordExecutionResult(
     metrics.filledBrokerOrderIds.add(brokerOrderId);
     metrics.paperFillCount += 1;
     appendDecimal(metrics.slippageBpsValues, fillSimulation?.slippageBps);
+    appendPaperPnlFills(metrics.pnlFills, executionResult.brokerOrder);
   }
 
   if (brokerRejected) {
@@ -558,10 +571,12 @@ function createMetricAccumulator(): PaperDecisionMetricAccumulator {
     slippageBpsValues: [],
     submittedBrokerOrderIds: new Set(),
     filledBrokerOrderIds: new Set(),
+    pnlFills: [],
+    pnlMarkPricesByMarket: new Map(),
   };
 }
 
-function finalizeMetrics(accumulator: PaperDecisionMetricAccumulator): PaperDecisionMetricSummary {
+function finalizeMetrics(accumulator: PaperDecisionMetricAccumulator, pnlStartingCashKrw: string): PaperDecisionMetricSummary {
   return {
     strategyEvaluationCount: accumulator.strategyEvaluationCount,
     orderCandidateCount: accumulator.orderCandidateCount,
@@ -575,9 +590,51 @@ function finalizeMetrics(accumulator: PaperDecisionMetricAccumulator): PaperDeci
     fillRate: calculateFillRate(accumulator.paperFillCount, accumulator.paperOrderSubmittedCount),
     costSummary: createCostSummary(accumulator),
     slippageSummary: createSlippageSummary(accumulator.slippageBpsValues),
+    pnlSummary: createPnlSummary(accumulator, pnlStartingCashKrw),
     blockingReasonCounts: sortCounts(accumulator.blockingReasonCounts),
     liveOrderApiCalls: 0,
   };
+}
+
+function createPnlSummary(accumulator: PaperDecisionMetricAccumulator, pnlStartingCashKrw: string) {
+  try {
+    return createPaperPnlSummary({
+      startingCashKrw: pnlStartingCashKrw,
+      submittedOrderCount: accumulator.paperOrderSubmittedCount,
+      fills: accumulator.pnlFills,
+      markPrices: [...accumulator.pnlMarkPricesByMarket.values()],
+    });
+  } catch (error) {
+    if (!(error instanceof PaperPnlSummaryInvariantError)) {
+      throw error;
+    }
+
+    // 초기 base 잔고 매도처럼 취득가가 없는 ledger는 runner를 죽이지 않고 손익 필드만 보류한다.
+    return createUnavailablePaperPnlSummary({
+      startingCashKrw: pnlStartingCashKrw,
+      endingCashKrw: calculateCashAfterPnlFills(pnlStartingCashKrw, accumulator.pnlFills),
+      totalFeesKrw: sumPnlFillFees(accumulator.pnlFills),
+      submittedOrderCount: accumulator.paperOrderSubmittedCount,
+      filledOrderCount: new Set(accumulator.pnlFills.map((fill) => fill.orderId)).size,
+    });
+  }
+}
+
+function calculateCashAfterPnlFills(startingCashKrw: string, fills: readonly PaperPnlFillInput[]): string {
+  let cash = parseFinancialDecimal(startingCashKrw);
+  for (const fill of fills) {
+    const notional = parseFinancialDecimal(fill.totalFillNotional);
+    const fee = parseFinancialDecimal(fill.totalFee ?? "0");
+    cash = fill.side === "BUY" ? cash.minus(notional.plus(fee)) : cash.plus(notional.minus(fee));
+  }
+
+  return cash.toFixed();
+}
+
+function sumPnlFillFees(fills: readonly PaperPnlFillInput[]): string {
+  return fills
+    .reduce((sum, fill) => sum.plus(parseFinancialDecimal(fill.totalFee ?? "0")), new Decimal(0))
+    .toFixed();
 }
 
 function createCostSummary(accumulator: PaperDecisionMetricAccumulator): PaperDecisionCostSummary {
@@ -638,6 +695,68 @@ function appendDecimal(target: Decimal[], value: unknown): void {
   if (decimal !== undefined) {
     target.push(decimal);
   }
+}
+
+function appendPaperPnlFills(
+  target: PaperPnlFillInput[],
+  brokerOrder: BrokerOrder,
+): void {
+  if (brokerOrder.status === "REJECTED") {
+    return;
+  }
+
+  const fillSimulation = readPaperFillSimulation(brokerOrder.metadata);
+  const fills = Array.isArray(fillSimulation?.fills) ? fillSimulation.fills : [];
+  for (const fill of fills) {
+    const record = fill !== null && typeof fill === "object" && !Array.isArray(fill) ? (fill as JsonRecord) : undefined;
+    const quantity = readStringRecordValue(record, "quantity");
+    const notional = readStringRecordValue(record, "notional");
+    if (quantity === undefined || notional === undefined) {
+      continue;
+    }
+
+    const parsedQuantity = readDecimalValue(quantity);
+    if (parsedQuantity === undefined || !parsedQuantity.greaterThan(0)) {
+      continue;
+    }
+
+    target.push({
+      orderId: brokerOrder.brokerOrderId,
+      market: brokerOrder.market,
+      side: brokerOrder.side,
+      filledQuantity: quantity,
+      totalFillNotional: notional,
+      totalFee: readStringRecordValue(record, "fee") ?? "0",
+      filledAt: brokerOrder.updatedAt,
+    });
+  }
+}
+
+function recordPnlMarkPrice(metrics: PaperDecisionMetricAccumulator, orderbook: OrderbookEvent): void {
+  const bidPrice = readBestBidPrice(orderbook);
+  if (bidPrice === undefined) {
+    return;
+  }
+
+  metrics.pnlMarkPricesByMarket.set(orderbook.market, {
+    market: orderbook.market,
+    priceKrw: bidPrice,
+    observedAt: orderbook.receivedAt,
+    source: "orderbook_best_bid",
+  });
+}
+
+function readBestBidPrice(orderbook: OrderbookEvent): string | undefined {
+  let bestBid: Decimal | undefined;
+  for (const level of orderbook.bids) {
+    const price = readDecimalValue(level.price);
+    if (price === undefined) {
+      continue;
+    }
+    bestBid = bestBid === undefined || price.greaterThan(bestBid) ? price : bestBid;
+  }
+
+  return bestBid?.toFixed();
 }
 
 function readDecimalValue(value: unknown): Decimal | undefined {

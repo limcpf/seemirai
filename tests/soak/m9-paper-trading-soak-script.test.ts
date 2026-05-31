@@ -49,6 +49,12 @@ describe("M9 paper trading soak script", () => {
         liveOrderApiCalls: number;
         costSummary: { evaluatedCount: number };
         slippageSummary: { observedFillCount: number };
+        pnlSummary: {
+          totalPnlKrw: string | null;
+          totalFeesKrw: string;
+          submittedOrderCount: number;
+          filledOrderCount: number;
+        };
       };
       checks: {
         paperTradingPath: { status: string };
@@ -66,10 +72,25 @@ describe("M9 paper trading soak script", () => {
     });
     expect(summary.metrics.costSummary.evaluatedCount).toBe(9);
     expect(summary.metrics.slippageSummary.observedFillCount).toBe(3);
+    expect(summary.metrics.pnlSummary).toMatchObject({
+      totalPnlKrw: "-18",
+      totalFeesKrw: "15",
+      submittedOrderCount: 3,
+      filledOrderCount: 3,
+    });
     expect(summary.checks.paperTradingPath.status).toBe("ok");
     expect(summary.checks.liveOrderApiCalls.status).toBe("ok");
     expect(summary.checks.dailyReportGenerated.status).toBe("ok");
     expect(summary.artifacts.dailySummaryPaths).toHaveLength(3);
+    const dayOne = JSON.parse(await readFile(summary.artifacts.dailySummaryPaths[0]!, "utf8")) as {
+      metrics: { pnlSummary: typeof summary.metrics.pnlSummary };
+    };
+    expect(dayOne.metrics.pnlSummary).toMatchObject({
+      totalPnlKrw: "-6",
+      totalFeesKrw: "5",
+      submittedOrderCount: 1,
+      filledOrderCount: 1,
+    });
     await expect(stat(summary.artifacts.reportPath)).resolves.toBeDefined();
     await expect(stat(summary.artifacts.rawLogPath)).resolves.toBeDefined();
 

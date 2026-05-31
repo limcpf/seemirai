@@ -161,8 +161,24 @@ function createEmptyMetrics() {
       minSlippageBps: null,
       maxSlippageBps: null,
     },
+    pnlSummary: createEmptyPnlSummary(),
     blockingReasonCounts: {},
     liveOrderApiCalls: 0,
+  };
+}
+
+function createEmptyPnlSummary() {
+  return {
+    startingCashKrw: "0",
+    endingCashKrw: "0",
+    positionMarketValueKrw: "0",
+    realizedPnlKrw: "0",
+    unrealizedPnlKrw: "0",
+    totalPnlKrw: "0",
+    totalReturnBps: null,
+    totalFeesKrw: "0",
+    submittedOrderCount: 0,
+    filledOrderCount: 0,
   };
 }
 

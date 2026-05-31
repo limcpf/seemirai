@@ -36,6 +36,12 @@ describe("M9 paper decision runner script", () => {
         paperOrderSubmittedCount: number;
         paperFillCount: number;
         liveOrderApiCalls: number;
+        pnlSummary: {
+          totalPnlKrw: string | null;
+          totalFeesKrw: string;
+          submittedOrderCount: number;
+          filledOrderCount: number;
+        };
       };
       checks: {
         zeroOrderReasonsExplained: { status: string };
@@ -51,6 +57,12 @@ describe("M9 paper decision runner script", () => {
       paperOrderSubmittedCount: 1,
       paperFillCount: 1,
       liveOrderApiCalls: 0,
+      pnlSummary: {
+        totalPnlKrw: "-6",
+        totalFeesKrw: "5",
+        submittedOrderCount: 1,
+        filledOrderCount: 1,
+      },
     });
     expect(summary.checks.zeroOrderReasonsExplained.status).toBe("ok");
     expect(summary.checks.liveOrderApiCalls).toMatchObject({

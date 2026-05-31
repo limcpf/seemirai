@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   PaperPnlSummaryInvariantError,
   createPaperPnlSummary,
+  createUnavailablePaperPnlSummary,
 } from "../../src/application/index.js";
 
 describe("Paper PnL summary", () => {
@@ -185,6 +186,29 @@ describe("Paper PnL summary", () => {
         ],
       }),
     ).toThrow(PaperPnlSummaryInvariantError);
+  });
+
+  it("creates an unavailable summary when opening cost basis is not known", () => {
+    const summary = createUnavailablePaperPnlSummary({
+      startingCashKrw: "1000000",
+      endingCashKrw: "1099950",
+      totalFeesKrw: "50",
+      submittedOrderCount: 1,
+      filledOrderCount: 1,
+    });
+
+    expect(summary).toEqual({
+      startingCashKrw: "1000000",
+      endingCashKrw: "1099950",
+      positionMarketValueKrw: null,
+      realizedPnlKrw: null,
+      unrealizedPnlKrw: null,
+      totalPnlKrw: null,
+      totalReturnBps: null,
+      totalFeesKrw: "50",
+      submittedOrderCount: 1,
+      filledOrderCount: 1,
+    });
   });
 
   it("deduplicates filled order count while accumulating split fill rows", () => {
