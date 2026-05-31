@@ -913,7 +913,7 @@ function parseDocumentAggregateSummary({ evidencePath, markdown }) {
 
 function parseDocumentDaySummaries({ evidencePath, markdown }) {
   return parseTableRows(markdown, "## Day comparison").map((row) => {
-    const day = Number.parseInt(stripCode(row["일차"] ?? "").replace("Day ", ""), 10);
+    const day = parseDayLabel(row["일차"] ?? "");
     const [startedAt, finishedAt] = (row["기간"] ?? "").split(" - ").map((value) => stripCode(value.trim()));
     const submittedAndFill = stripCode(row["submitted/fill"] ?? "")
       .split("/")
@@ -958,6 +958,15 @@ function parseDocumentDaySummaries({ evidencePath, markdown }) {
       ),
     };
   });
+}
+
+function parseDayLabel(value) {
+  const normalized = stripCode(value ?? "");
+  const match = /^Day (?<day>[1-3])$/u.exec(normalized);
+  if (match?.groups?.day === undefined) {
+    throw new Error("day.label must match Day N");
+  }
+  return parseInteger(match.groups.day, "day.label");
 }
 
 function parseSourceArtifacts(markdown) {

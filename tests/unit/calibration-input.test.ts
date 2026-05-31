@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 
 import type { CalibrationMetricSummary } from "../../src/application/calibration.js";
 import {
+  analyzeCalibrationPolicy,
   readCalibrationArtifactSummary,
   readCalibrationEvidenceInput,
   validateCalibrationEvidenceInput,
@@ -314,6 +315,46 @@ describe("M11 calibration input reader", () => {
         message: "cost summary는 객체여야 합니다.",
       }),
     );
+  });
+
+  it("returns failures for missing metrics objects instead of throwing", async () => {
+    const input = await readCalibrationEvidenceInput({
+      evidencePath: "docs/references/m9-paper-trading-soak-2026-05-25-e398a8ee.md",
+    });
+    const validation = validateCalibrationEvidenceInput({
+      ...input,
+      aggregate: {
+        ...input.aggregate,
+        metrics: null as unknown as CalibrationMetricSummary,
+      },
+    });
+
+    expect(validation.passed).toBe(false);
+    expect(validation.failures).toContainEqual(
+      expect.objectContaining({
+        fieldPath: "aggregate.metrics",
+        message: "summary metrics는 객체여야 합니다.",
+      }),
+    );
+  });
+
+  it("returns failed policy analysis when invalid metrics remove cost summary", async () => {
+    const input = await readCalibrationEvidenceInput({
+      evidencePath: "docs/references/m9-paper-trading-soak-2026-05-25-e398a8ee.md",
+    });
+    const analysis = analyzeCalibrationPolicy({
+      ...input,
+      aggregate: {
+        ...input.aggregate,
+        metrics: {
+          ...input.aggregate.metrics,
+          costSummary: null as unknown as CalibrationMetricSummary["costSummary"],
+        },
+      },
+    });
+
+    expect(analysis.status).toBe("failed");
+    expect(analysis.averageMarginBps).toBeNull();
   });
 
   it("rejects cost reason count totals that do not match cost reject count", async () => {

@@ -97,6 +97,17 @@ function validateRunSummary(
     );
   }
 
+  const rawMetrics = (summary as { metrics?: unknown }).metrics;
+  if (!isRecord(rawMetrics)) {
+    failures.push(
+      createFailure(`${fieldPrefix}.metrics`, "summary metrics는 객체여야 합니다.", {
+        value: rawMetrics,
+        sourcePath: summary.sourcePath,
+      }),
+    );
+    return;
+  }
+
   for (const field of requiredMetricFields) {
     const value = readPath(summary.metrics, field);
     if (value === undefined) {

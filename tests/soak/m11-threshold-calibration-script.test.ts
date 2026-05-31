@@ -253,6 +253,17 @@ describe("M11 threshold calibration report script", () => {
     expect(result.stderr).toContain("day.blockingReasonCounts is required");
   });
 
+  it("rejects committed evidence day labels with trailing text", async () => {
+    const fixture = await writeFixtureEvidence({ skipArtifacts: true });
+    const markdown = await readFile(fixture.evidencePath, "utf8");
+    await writeFile(fixture.evidencePath, markdown.replace("| Day 1 |", "| Day 1abc |"), "utf8");
+
+    const result = await runScriptAllowingFailure(["--evidence", fixture.evidencePath, "--document-only", "--json"]);
+
+    expect(result.code).toBe(1);
+    expect(result.stderr).toContain("day.label must match Day N");
+  });
+
   it("counts every committed evidence cost reason in day cost rejected totals", async () => {
     const fixture = await writeFixtureEvidence({ skipArtifacts: true });
     const markdown = await readFile(fixture.evidencePath, "utf8");

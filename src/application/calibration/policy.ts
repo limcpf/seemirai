@@ -27,7 +27,7 @@ export function analyzeCalibrationPolicy(input: CalibrationEvidenceInput): Calib
       status: "failed",
       validation,
       dayReasonBreakdowns: [],
-      averageMarginBps: input.aggregate.metrics.costSummary.averageMarginBps,
+      averageMarginBps: readFailedAverageMarginBps(input),
       thresholdRelaxationBlocked: true,
       candidates: [],
       riskInteractions: [],
@@ -62,6 +62,25 @@ export function analyzeCalibrationPolicy(input: CalibrationEvidenceInput): Calib
       ? "비용 차감 후 margin이 음수이거나 산출되지 않아 threshold 완화 후보는 기본 제안으로 승격하지 않습니다."
       : "비용 차감 후 margin이 음수가 아니지만 기본 운영값 변경은 별도 승인과 report 비교가 필요합니다.",
   };
+}
+
+/**
+ * 검증 실패 입력에서 평균 margin bps를 best-effort로 읽는다.
+ *
+ * 실패 경로는 손상된 JSON/fixture도 받아야 하므로 nested metric 역참조를 신뢰하지 않는다.
+ * 값이 유한 decimal 문자열일 때만 report trace로 보존하고, 그 외에는 null로 닫으며 외부 side effect는 없다.
+ */
+function readFailedAverageMarginBps(input: CalibrationEvidenceInput): string | null {
+  const metrics = (input.aggregate as { metrics?: unknown }).metrics;
+  if (metrics === null || typeof metrics !== "object" || Array.isArray(metrics)) {
+    return null;
+  }
+  const costSummary = (metrics as { costSummary?: unknown }).costSummary;
+  if (costSummary === null || typeof costSummary !== "object" || Array.isArray(costSummary)) {
+    return null;
+  }
+  const averageMarginBps = (costSummary as { averageMarginBps?: unknown }).averageMarginBps;
+  return typeof averageMarginBps === "string" && /^-?\d+(?:\.\d+)?$/u.test(averageMarginBps) ? averageMarginBps : null;
 }
 
 /**
