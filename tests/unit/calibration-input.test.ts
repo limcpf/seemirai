@@ -40,7 +40,28 @@ describe("M11 calibration input reader", () => {
     const artifactDir = path.join(root, "trading-soak");
     await mkdir(artifactDir);
     const prefix = "m9-paper-trading-soak-2026-05-31T00-00-00-000Z-10210210";
-    await writeSummary(path.join(artifactDir, `${prefix}-summary.json`), null, { paperOrderSubmittedCount: 9, paperFillCount: 9 });
+    await writeSummary(path.join(artifactDir, `${prefix}-summary.json`), null, {
+      costSummary: {
+        evaluatedCount: 9,
+        allowedCount: 6,
+        rejectedCount: 3,
+        averageCostBps: "13",
+        averageRequiredReturnBps: "23",
+        averageMarginBps: "-1.333333333333",
+      },
+      slippageSummary: {
+        observedFillCount: 3,
+        averageSlippageBps: "0",
+        minSlippageBps: "0",
+        maxSlippageBps: "0",
+      },
+      holdReasonCounts: { fixture_waiting_for_signal: 3 },
+      blockingReasonCounts: { "cost:cost_margin_insufficient": 3, "risk:expected_loss_limit_exceeded": 3 },
+      costRejectedCount: 3,
+      riskRejectedCount: 3,
+      paperOrderSubmittedCount: 6,
+      paperFillCount: 6,
+    });
     await Promise.all(
       [1, 2, 3].map((day) =>
         writeSummary(path.join(artifactDir, `${prefix}-day-${day}-summary.json`), day, {
@@ -56,7 +77,7 @@ describe("M11 calibration input reader", () => {
     const validation = validateCalibrationEvidenceInput(input);
 
     expect(input.aggregate.sourceKind).toBe("artifact_summary");
-    expect(input.aggregate.metrics.paperOrderSubmittedCount).toBe(9);
+    expect(input.aggregate.metrics.paperOrderSubmittedCount).toBe(6);
     expect(input.days.map((day) => day.metrics.paperOrderSubmittedCount)).toEqual([1, 2, 3]);
     expect(validation.passed).toBe(true);
   });
@@ -334,6 +355,48 @@ describe("M11 calibration input reader", () => {
       expect.objectContaining({
         fieldPath: "aggregate.metrics",
         message: "summary metrics는 객체여야 합니다.",
+      }),
+    );
+  });
+
+  it("returns failures for missing top-level day lists instead of throwing", async () => {
+    const input = await readCalibrationEvidenceInput({
+      evidencePath: "docs/references/m9-paper-trading-soak-2026-05-25-e398a8ee.md",
+    });
+    const validation = validateCalibrationEvidenceInput({
+      ...input,
+      days: null as unknown as typeof input.days,
+    });
+
+    expect(validation.passed).toBe(false);
+    expect(validation.failures).toContainEqual(
+      expect.objectContaining({
+        fieldPath: "days",
+        message: "Day summary 목록은 배열이어야 합니다.",
+      }),
+    );
+  });
+
+  it("rejects aggregate metrics that do not match day totals", async () => {
+    const input = await readCalibrationEvidenceInput({
+      evidencePath: "docs/references/m9-paper-trading-soak-2026-05-25-e398a8ee.md",
+    });
+    const validation = validateCalibrationEvidenceInput({
+      ...input,
+      aggregate: {
+        ...input.aggregate,
+        metrics: {
+          ...input.aggregate.metrics,
+          paperOrderSubmittedCount: input.aggregate.metrics.paperOrderSubmittedCount + 1,
+        },
+      },
+    });
+
+    expect(validation.passed).toBe(false);
+    expect(validation.failures).toContainEqual(
+      expect.objectContaining({
+        fieldPath: "aggregate.metrics.paperOrderSubmittedCount",
+        message: "aggregate metric은 Day 1/2/3 합계와 일치해야 합니다.",
       }),
     );
   });

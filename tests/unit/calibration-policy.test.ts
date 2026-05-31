@@ -149,7 +149,11 @@ function createEvidenceInput(options: { aggregateMetrics?: Partial<CalibrationMe
       finishedAt: "2026-05-28T11:01:10.055Z",
       metrics: aggregateMetrics,
     },
-    days: [1, 2, 3].map((day) => ({
+    days: [
+      { day: 1, costEvaluatedCount: 4317, paperCount: 664, riskRejectedCount: 2214, orderNotionalCount: 1550 },
+      { day: 2, costEvaluatedCount: 4320, paperCount: 668, riskRejectedCount: 2212, orderNotionalCount: 1544 },
+      { day: 3, costEvaluatedCount: 4320, paperCount: 798, riskRejectedCount: 2082, orderNotionalCount: 1284 },
+    ].map(({ day, costEvaluatedCount, paperCount, riskRejectedCount, orderNotionalCount }) => ({
       sourceKind: "artifact_summary",
       sourcePath: `/vault/day-${day}-summary.json`,
       day,
@@ -157,15 +161,30 @@ function createEvidenceInput(options: { aggregateMetrics?: Partial<CalibrationMe
       startedAt: `2026-05-2${day + 4}T11:01:10.044Z`,
       finishedAt: `2026-05-2${day + 5}T11:01:10.044Z`,
       metrics: createMetrics({
-        blockingReasonCounts: {
-          "cost:cost_margin_insufficient": 1440,
-          "risk:expected_loss_limit_exceeded": 1440,
-          "risk:order_notional_limit_exceeded": 1400 - day,
+        costSummary: {
+          evaluatedCount: costEvaluatedCount,
+          allowedCount: costEvaluatedCount - 1440 + (day === 1 ? 1 : 0),
+          rejectedCount: 1440 - (day === 1 ? 1 : 0),
+          averageCostBps: "13",
+          averageRequiredReturnBps: "23",
+          averageMarginBps: "-1.333333333333",
         },
-        costRejectedCount: 1440,
-        riskRejectedCount: 2200 - day,
-        paperOrderSubmittedCount: 700 + day,
-        paperFillCount: 700 + day,
+        slippageSummary: {
+          observedFillCount: paperCount,
+          averageSlippageBps: "0",
+          minSlippageBps: "0",
+          maxSlippageBps: "0",
+        },
+        holdReasonCounts: {},
+        blockingReasonCounts: {
+          "cost:cost_margin_insufficient": 1440 - (day === 1 ? 1 : 0),
+          "risk:expected_loss_limit_exceeded": 1440 - (day === 1 ? 1 : 0),
+          "risk:order_notional_limit_exceeded": orderNotionalCount,
+        },
+        costRejectedCount: 1440 - (day === 1 ? 1 : 0),
+        riskRejectedCount,
+        paperOrderSubmittedCount: paperCount,
+        paperFillCount: paperCount,
       }),
     })),
   };

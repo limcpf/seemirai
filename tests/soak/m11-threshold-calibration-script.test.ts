@@ -105,6 +105,18 @@ describe("M11 threshold calibration report script", () => {
     );
   });
 
+  it("fails closed when source artifact day content disagrees with the expected day", async () => {
+    const fixture = await writeFixtureEvidence();
+    const dayTwoPath = path.join(fixture.artifactDir, `${fixture.prefix}-day-2-summary.json`);
+    const dayTwoSummary = JSON.parse(await readFile(dayTwoPath, "utf8")) as { day: number };
+    await writeFile(dayTwoPath, JSON.stringify({ ...dayTwoSummary, day: 1 }, null, 2), "utf8");
+
+    const result = await runScriptAllowingFailure(["--evidence", fixture.evidencePath, "--json"]);
+
+    expect(result.code).toBe(1);
+    expect(result.stderr).toContain("day must match expected Day 2");
+  });
+
   it("accepts source artifact fill rate rounded to six decimal places", async () => {
     const fixture = await writeFixtureEvidence({
       aggregateMetrics: {
@@ -335,7 +347,7 @@ async function writeFixtureEvidence(options: { aggregateMetrics?: Partial<Calibr
   }
   const evidencePath = path.join(root, "evidence.md");
   await writeFile(evidencePath, createEvidenceMarkdown({ artifactDir, prefix }), "utf8");
-  return { root, artifactDir, evidencePath };
+  return { root, artifactDir, evidencePath, prefix };
 }
 
 async function writeSummary(summaryPath: string, day: number | null, overrides: Partial<CalibrationMetricSummary>) {

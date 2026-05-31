@@ -48,19 +48,25 @@ export function validateCalibrationEvidenceInput(input: CalibrationEvidenceInput
   if (input.validationCommand === null) {
     failures.push(createFailure("validationCommand", "원천 artifact 재검증 명령이 없어 evidence를 재현할 수 없습니다."));
   }
-  if (input.days.length !== 3) {
+  const rawDays = (input as { days?: unknown }).days;
+  if (!Array.isArray(rawDays)) {
+    failures.push(createFailure("days", "Day summary 목록은 배열이어야 합니다.", { value: rawDays }));
+  } else if (input.days.length !== 3) {
     failures.push(
       createFailure("days", "Day 1/2/3 summary가 모두 있어야 동일 run shape calibration 입력으로 사용할 수 있습니다.", {
         dayCount: input.days.length,
       }),
     );
   }
-  validateDaySet(input.days, failures);
 
   validateRunSummary(input.aggregate, "aggregate", failures);
-  input.days.forEach((day, index) => {
-    validateRunSummary(day, `days[${index}]`, failures);
-  });
+  if (Array.isArray(rawDays)) {
+    validateDaySet(input.days, failures);
+    input.days.forEach((day, index) => {
+      validateRunSummary(day, `days[${index}]`, failures);
+    });
+    validateAggregateMatchesDays(input, failures);
+  }
 
   return {
     passed: failures.length === 0,
@@ -80,6 +86,83 @@ function validateDaySet(
         observedDays,
       }),
     );
+  }
+}
+
+/**
+ * aggregate summary가 Day 1/2/3 summary의 합계와 같은 run shape를 설명하는지 검증한다.
+ *
+ * 각 summary가 개별 contract를 만족해도 다른 run의 Day artifact가 섞이면 aggregate 근거가 손상된다.
+ * paper 주문/체결, 비용/리스크 count, live API, reason count map의 합계 invariant를 비교하며 외부 side effect는 없다.
+ */
+function validateAggregateMatchesDays(
+  input: CalibrationEvidenceInput,
+  failures: CalibrationInputValidationFailure[],
+): void {
+  if (!isRecord(input.aggregate.metrics) || !input.days.every((day) => isRecord(day.metrics))) {
+    return;
+  }
+  for (const field of [
+    "costSummary.evaluatedCount",
+    "costSummary.allowedCount",
+    "costSummary.rejectedCount",
+    "slippageSummary.observedFillCount",
+    "costRejectedCount",
+    "riskRejectedCount",
+    "paperOrderSubmittedCount",
+    "paperFillCount",
+    "liveOrderApiCalls",
+  ]) {
+    const aggregateValue = readPath(input.aggregate.metrics, field);
+    const dayValues = input.days.map((day) => readPath(day.metrics, field));
+    if (typeof aggregateValue === "number" && dayValues.every((value): value is number => typeof value === "number")) {
+      const dayTotal = dayValues.reduce((total, value) => total + value, 0);
+      if (aggregateValue !== dayTotal) {
+        failures.push(
+          createFailure(`aggregate.metrics.${field}`, "aggregate metric은 Day 1/2/3 합계와 일치해야 합니다.", {
+            aggregateValue,
+            dayTotal,
+          }),
+        );
+      }
+    }
+  }
+
+  validateAggregateReasonMap(input, "blockingReasonCounts", failures);
+}
+
+/**
+ * aggregate reason count map이 Day별 reason count map의 key별 합계와 일치하는지 검증한다.
+ *
+ * reason key가 일부 Day에서만 나타나는 경우도 전체 key set으로 비교해 누락과 과집계를 모두 잡는다.
+ * 입력 객체를 변경하지 않고 failure만 누적한다.
+ */
+function validateAggregateReasonMap(
+  input: CalibrationEvidenceInput,
+  field: "holdReasonCounts" | "discardReasonCounts" | "blockingReasonCounts",
+  failures: CalibrationInputValidationFailure[],
+): void {
+  const aggregateCounts = input.aggregate.metrics[field];
+  const dayCounts = input.days.map((day) => day.metrics[field]);
+  if (!isRecord(aggregateCounts) || !dayCounts.every(isRecord)) {
+    return;
+  }
+  const keys = new Set(
+    [...Object.keys(aggregateCounts), ...dayCounts.flatMap((counts) => Object.keys(counts))].filter(
+      (key) => key.startsWith("cost:") || key.startsWith("risk:"),
+    ),
+  );
+  for (const key of keys) {
+    const aggregateValue = aggregateCounts[key] ?? 0;
+    const dayTotal = dayCounts.reduce((total, counts) => total + ((counts[key] as number | undefined) ?? 0), 0);
+    if (aggregateValue !== dayTotal) {
+      failures.push(
+        createFailure(`aggregate.metrics.${field}.${key}`, "aggregate reason count는 Day 1/2/3 합계와 일치해야 합니다.", {
+          aggregateValue,
+          dayTotal,
+        }),
+      );
+    }
   }
 }
 
