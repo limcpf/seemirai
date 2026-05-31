@@ -303,6 +303,13 @@
       "owner_scope": "docs/tech-debt"
     },
     {
+      "path": ".agents/skills/deepseek-implementation-handoff/SKILL.md",
+      "kind": "skill",
+      "role": "구현 에이전트에게 넘길 상세 handoff 문서 작성 workflow",
+      "read_when": ["DeepSeek 구현 handoff 작성", "구현 에이전트 handoff 작성", "handoff contract 작성"],
+      "owner_scope": ".agents/skills/deepseek-implementation-handoff"
+    },
+    {
       "path": ".agents/skills/project-bootstrap/SKILL.md",
       "kind": "skill",
       "role": "새 프로젝트 운영 보일러플레이트 적용 workflow",

@@ -240,6 +240,8 @@ control drill, 3일 report 비교 구현을 변경하지 않는다. M10 문서 �
 
 ### M11. 전략/피처 품질 보강
 
+상태: completed
+
 목적:
 
 - TD-001을 처리해 전략 후보 생성의 설명력과 backtest/paper 보정 가능성을 높인다.
@@ -274,7 +276,7 @@ Acceptance Criteria:
 | 2 | 순수 feature calculator와 fixture tests | PR #72 merged |
 | 3 | backtest/paper fixture feature parity 검증 | PR #73 merged |
 | 4 | strategy variant 입력 확장과 discard audit 보강 | PR #74 merged |
-| 5 | M9 #68 관측 데이터 기반 calibration report 또는 보수적 제안/후속 issue 후보 정리 | #102 Sub PR 1-5로 calibration report/proposal closeout |
+| 5 | M9 #68 관측 데이터 기반 calibration report 또는 보수적 제안/후속 issue 후보 정리 | #102 Sub PR 5까지 완료, calibration report/proposal closeout |
 
 현재 운영 상태:
 
@@ -283,7 +285,9 @@ Acceptance Criteria:
 - Sub PR 1-4: #71, #72, #73, #74 merged
 - M11 calibration closeout issue: #102
 - #102 Sub PR 1-4: #103, #104, #105, #106 merged
-- #102 Sub PR 5: #68 closeout(pass) 원천 artifact 재검증, calibration report, 비활성 profile proposal, 문서 closeout
+- #102 Sub PR 5: #68 closeout(pass) 원천 artifact 재검증, calibration report, 비활성 profile proposal, 문서 closeout 완료
+- M11은 #102 Sub PR 5까지 완료되어 닫힌다. 다만 `config/paper.json` 기본 threshold는 변경하지 않았고, activation은 별도
+  calibration approval PR에서 동일 run shape 전후 비교를 붙여 판단한다.
 - M9 #68 운영 관측 중에는 paper runner, daily report, Telegram, retry, control drill, 3일 비교 포맷과 기본 운영 threshold를 변경하지 않는다.
 - 2026-05-30 기준 #68은 `passed`이며 [`../../references/m9-paper-trading-soak-2026-05-25-e398a8ee.md`](../../references/m9-paper-trading-soak-2026-05-25-e398a8ee.md)에 반입한 3일 run evidence와 비교 지표를 기준으로 threshold 비교 후보 산정이 가능하다.
 - 2026-05-31 기준 #102 report는 `/home/lim/vaults/99_운영/seemirai-m9-paper/m11-threshold-calibration-report.md`에 생성됐다.

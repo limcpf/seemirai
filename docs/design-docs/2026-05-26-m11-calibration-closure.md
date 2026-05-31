@@ -2,6 +2,7 @@
 
 - 상태: accepted
 - 날짜: 2026-05-26
+- M11 closeout 상태: completed
 - 관련 문서:
   - [`./2026-05-25-feature-quality-calibration.md`](./2026-05-25-feature-quality-calibration.md)
   - [`../exec-plans/active/2026-05-22-post-m8-milestone-plan.md`](../exec-plans/active/2026-05-22-post-m8-milestone-plan.md)
@@ -46,8 +47,8 @@ calibration PR 또는 issue에서 처리한다.
 ## 2026-05-31 #102 calibration closeout
 
 Issue #102는 #68 내부 evidence와 원천 artifact를 기준으로 동일 run shape calibration report와 비활성 profile proposal을
-생성하는 범위로 닫는다. 이 closeout은 운영 기본값을 활성화하는 변경이 아니라, 다음 calibration 승인 PR에서 비교할 후보와
-차단 사유를 고정하는 작업이다.
+생성하는 범위로 닫는다. #102 Sub PR 5까지 완료되었으므로 M11 자체는 completed로 닫지만, 이 closeout은 운영 기본값을
+활성화하는 변경이 아니다. 다음 calibration approval PR에서 비교할 후보와 차단 사유를 고정하는 작업이다.
 
 | 항목 | 결과 |
 | --- | --- |
@@ -58,7 +59,7 @@ Issue #102는 #68 내부 evidence와 원천 artifact를 기준으로 동일 run 
 | 비용 요약 | `evaluated=12957`, `allowed=8638`, `rejected=4319`, `averageMarginBps=-1.333333333333` |
 | 차단 사유 | cost `4319`, risk `8697`, hold `4319`, discard `0` |
 | 실거래 주문 API | `liveOrderApiCalls=0` |
-| 기본 profile 활성화 | 보류, `config/paper.json` 변경 없음 |
+| 기본 profile 활성화 | 보류, `config/paper.json` 기본 threshold 변경 없음 |
 
 판정은 다음과 같다.
 
@@ -68,7 +69,7 @@ Issue #102는 #68 내부 evidence와 원천 artifact를 기준으로 동일 run 
 - `cost_safety_buffer_bps`는 현재 `strategyParameters`에 직접 대응 key가 없으므로 자동 patch가 아니라 수동 설계 검토 항목으로
   남긴다.
 - proposal은 `active=false`, `activationRequired=true`, `defaultConfigMutation=false`를 유지해야 하며, 적용은 동일 run shape
-  비교 report를 붙인 별도 PR에서만 검토한다.
+  비교 report를 붙인 별도 calibration approval PR에서만 검토한다.
 
 ## 비교 기준
 
@@ -109,4 +110,4 @@ spread 상한, cost-adjusted margin 하한을 보수적으로 유지하거나 �
 | feature 정의 문서가 추가되고 context map에 등록된다. | Sub PR 1과 이 문서로 충족 |
 | feature 계산 실패나 입력 부족은 주문 후보 중지가 된다. | Sub PR 2와 Sub PR 4의 fail-closed guard로 충족 |
 | 같은 fixture에서 backtest와 paper feature 값이 일치한다. | Sub PR 3의 parity fixture로 충족 |
-| 전략별 threshold 변경 전후 리포트가 비용 반영 기준으로 비교 가능하다. | 비교 항목과 report 경계는 준비 완료, 실제 변경값 비교는 #68 완료 후로 보류 |
+| 전략별 threshold 변경 전후 리포트가 비용 반영 기준으로 비교 가능하다. | #102 Sub PR 5에서 비활성 proposal과 비교 경계는 준비 완료, 실제 기본값 activation은 별도 calibration approval PR로 보류 |
