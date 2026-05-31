@@ -236,7 +236,7 @@ function validateRunSummary(summary, fieldPrefix, failures) {
     }
   }
 
-  if (metrics.costSummary.evaluatedCount > 0) {
+  if (metrics.costSummary.evaluatedCount > 0 && shouldRequireDetailedMetricFields(summary)) {
     for (const [field, value, message] of [
       ["costSummary.averageCostBps", metrics.costSummary.averageCostBps, "비용 평가가 있는 summary에는 평균 비용 bps가 있어야 합니다."],
       [
@@ -252,7 +252,7 @@ function validateRunSummary(summary, fieldPrefix, failures) {
     }
   }
 
-  if (metrics.slippageSummary.observedFillCount > 0) {
+  if (metrics.slippageSummary.observedFillCount > 0 && shouldRequireDetailedMetricFields(summary)) {
     for (const [field, value, message] of [
       [
         "slippageSummary.averageSlippageBps",
@@ -288,6 +288,11 @@ function validateRunSummary(summary, fieldPrefix, failures) {
       }),
     );
   }
+}
+
+function shouldRequireDetailedMetricFields(summary) {
+  // 커밋된 evidence 표는 vault artifact 경로를 안내하는 축약 view라 상세 평균/최소/최대 metric은 source artifact에서만 강제한다.
+  return summary.sourceKind !== "evidence_document";
 }
 
 function createFailedAnalysis(input, validation) {

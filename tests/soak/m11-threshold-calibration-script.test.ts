@@ -71,6 +71,22 @@ describe("M11 threshold calibration report script", () => {
     expect(report.trace.sourceArtifacts.rawEventLogPath).toContain("-events.jsonl");
     expect(report.thresholdCandidates[0]?.title).toBe("전략 threshold 완화");
   });
+
+  it("supports document-only reports from the committed evidence table shape", async () => {
+    const { stdout } = await execFileAsync("node", [
+      scriptPath,
+      "--evidence",
+      "docs/references/m9-paper-trading-soak-2026-05-25-e398a8ee.md",
+      "--document-only",
+      "--json",
+    ]);
+    const report = JSON.parse(stdout) as CalibrationReportJson;
+
+    expect(report.status).toBe("passed");
+    expect(report.days).toHaveLength(3);
+    expect(report.days[0]?.sourceKind).toBe("evidence_document");
+    expect(report.thresholdRelaxationBlocked).toBe(true);
+  });
 });
 
 async function runScriptAllowingFailure(args: string[]) {
@@ -238,6 +254,7 @@ interface CalibrationReportJson {
   operatorSummary: string;
   action: string;
   aggregate: { metrics: CalibrationMetricSummary };
+  days: Array<{ sourceKind: string }>;
   reasonBreakdown: {
     cost: { totalCount: number };
     risk: { totalCount: number };
