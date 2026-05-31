@@ -370,6 +370,21 @@ describe("M11 threshold calibration report script", () => {
     expect(result.stderr).toContain("blockingReason.item must match reason=count");
   });
 
+  it("rejects committed evidence duplicate blocking reason items", async () => {
+    const fixture = await writeFixtureEvidence({ skipArtifacts: true });
+    const markdown = await readFile(fixture.evidencePath, "utf8");
+    await writeFile(
+      fixture.evidencePath,
+      markdown.replace("cost:cost_margin_insufficient=1439", "cost:cost_margin_insufficient=0, cost:cost_margin_insufficient=1439"),
+      "utf8",
+    );
+
+    const result = await runScriptAllowingFailure(["--evidence", fixture.evidencePath, "--document-only", "--json"]);
+
+    expect(result.code).toBe(1);
+    expect(result.stderr).toContain("blockingReason.cost:cost_margin_insufficient must be unique");
+  });
+
   it("rejects committed evidence submitted/fill cells with trailing text", async () => {
     const fixture = await writeFixtureEvidence({ skipArtifacts: true });
     const markdown = await readFile(fixture.evidencePath, "utf8");
@@ -379,6 +394,17 @@ describe("M11 threshold calibration report script", () => {
 
     expect(result.code).toBe(1);
     expect(result.stderr).toContain("day.paperOrderSubmittedCount must be a safe integer");
+  });
+
+  it("rejects committed evidence submitted/fill cells with extra parts", async () => {
+    const fixture = await writeFixtureEvidence({ skipArtifacts: true });
+    const markdown = await readFile(fixture.evidencePath, "utf8");
+    await writeFile(fixture.evidencePath, markdown.replace("`664 / 664`", "`664 / 664 / 0`"), "utf8");
+
+    const result = await runScriptAllowingFailure(["--evidence", fixture.evidencePath, "--document-only", "--json"]);
+
+    expect(result.code).toBe(1);
+    expect(result.stderr).toContain("day.submittedFill must match submitted / fill");
   });
 
   it("rejects empty committed evidence day blocking reason cells", async () => {
@@ -424,6 +450,24 @@ describe("M11 threshold calibration report script", () => {
 
     expect(report.status).toBe("passed");
     expect(report.days[0]?.metrics.costRejectedCount).toBe(1439);
+  });
+
+  it("rejects aggregate unknown reason counts that do not match day totals", async () => {
+    const fixture = await writeFixtureEvidence({ skipArtifacts: true });
+    const markdown = await readFile(fixture.evidencePath, "utf8");
+    await writeFile(
+      fixture.evidencePath,
+      markdown.replace(
+        '"risk:order_notional_limit_exceeded":4378}',
+        '"risk:order_notional_limit_exceeded":4378,"legacy_reason":1}',
+      ),
+      "utf8",
+    );
+
+    const result = await runScriptAllowingFailure(["--evidence", fixture.evidencePath, "--document-only", "--json"]);
+
+    expect(result.code).toBe(1);
+    expect(result.stdout + result.stderr).toContain("aggregate.metrics.blockingReasonCounts.legacy_reason");
   });
 
   it("rejects missing committed evidence count map rows", async () => {

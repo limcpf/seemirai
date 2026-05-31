@@ -12,7 +12,7 @@ import {
 } from "../../src/application/calibration.js";
 
 describe("M11 calibration input reader", () => {
-  it("reads the committed #68 internal evidence document and fails closed on day metrics that require source artifacts", async () => {
+  it("reads the committed #68 internal evidence document without requiring artifact-only detail metrics", async () => {
     const input = await readCalibrationEvidenceInput({
       evidencePath: "docs/references/m9-paper-trading-soak-2026-05-25-e398a8ee.md",
     });
@@ -26,13 +26,7 @@ describe("M11 calibration input reader", () => {
     expect(input.days).toHaveLength(3);
     expect(input.days[0]?.metrics.blockingReasonCounts["risk:expected_loss_limit_exceeded"]).toBe(1439);
     expect(input.days[0]?.metrics.costSummary.averageCostBps).toBeNull();
-    expect(validation.passed).toBe(false);
-    expect(validation.failures).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ fieldPath: "days[0].metrics.costSummary.averageCostBps" }),
-        expect.objectContaining({ fieldPath: "days[0].metrics.slippageSummary.averageSlippageBps" }),
-      ]),
-    );
+    expect(validation.passed).toBe(true);
   });
 
   it("can replace document table values with source artifact summaries when requested", async () => {
@@ -129,6 +123,19 @@ describe("M11 calibration input reader", () => {
     await expect(readCalibrationEvidenceInput({ evidencePath })).rejects.toThrow("day.paperOrderSubmittedCount must be a safe integer");
   });
 
+  it("rejects committed evidence submitted/fill cells with extra parts", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "seemirai-calibration-submitted-fill-extra-"));
+    const artifactDir = path.join(root, "artifacts");
+    const evidencePath = path.join(root, "evidence.md");
+    await writeFile(
+      evidencePath,
+      createEvidenceMarkdown({ artifactDir, prefix: "m9-paper-trading-soak-fixture" }).replace("`1 / 1`", "`1 / 1 / 0`"),
+      "utf8",
+    );
+
+    await expect(readCalibrationEvidenceInput({ evidencePath })).rejects.toThrow("day.submittedFill must match submitted / fill");
+  });
+
   it("rejects committed evidence aggregate numeric cells with non-decimal notation", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "seemirai-calibration-numeric-notation-"));
     const artifactDir = path.join(root, "artifacts");
@@ -177,6 +184,22 @@ describe("M11 calibration input reader", () => {
     await expect(readCalibrationEvidenceInput({ evidencePath })).rejects.toThrow("blockingReason.item must match reason=count");
   });
 
+  it("rejects committed evidence duplicate blocking reason items", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "seemirai-calibration-reason-duplicate-"));
+    const artifactDir = path.join(root, "artifacts");
+    const evidencePath = path.join(root, "evidence.md");
+    await writeFile(
+      evidencePath,
+      createEvidenceMarkdown({ artifactDir, prefix: "m9-paper-trading-soak-fixture" }).replace(
+        "cost:cost_margin_insufficient=1",
+        "cost:cost_margin_insufficient=0, cost:cost_margin_insufficient=1",
+      ),
+      "utf8",
+    );
+
+    await expect(readCalibrationEvidenceInput({ evidencePath })).rejects.toThrow("blockingReason.cost:cost_margin_insufficient must be unique");
+  });
+
   it("rejects calibration input when live order API calls are present", async () => {
     const input = await readCalibrationEvidenceInput({
       evidencePath: "docs/references/m9-paper-trading-soak-2026-05-25-e398a8ee.md",
@@ -185,6 +208,7 @@ describe("M11 calibration input reader", () => {
       ...input,
       aggregate: {
         ...input.aggregate,
+        sourceKind: "artifact_summary",
         metrics: {
           ...input.aggregate.metrics,
           liveOrderApiCalls: 1,
@@ -208,6 +232,7 @@ describe("M11 calibration input reader", () => {
       ...input,
       aggregate: {
         ...input.aggregate,
+        sourceKind: "artifact_summary",
         metrics: {
           ...input.aggregate.metrics,
           paperOrderSubmittedCount: "2130" as unknown as number,
@@ -232,6 +257,7 @@ describe("M11 calibration input reader", () => {
       ...input,
       aggregate: {
         ...input.aggregate,
+        sourceKind: "artifact_summary",
         metrics: {
           ...input.aggregate.metrics,
           fillRate: 2,

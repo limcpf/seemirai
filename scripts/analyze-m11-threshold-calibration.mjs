@@ -291,9 +291,7 @@ function validateAggregateMatchesDays(input, failures) {
 function validateAggregateReasonMap(input, field, failures) {
   const aggregateCounts = input.aggregate.metrics[field];
   const dayCounts = input.days.map((day) => day.metrics[field]);
-  const keys = new Set(
-    [...Object.keys(aggregateCounts), ...dayCounts.flatMap((counts) => Object.keys(counts))].filter((key) => key.includes(":")),
-  );
+  const keys = new Set([...Object.keys(aggregateCounts), ...dayCounts.flatMap((counts) => Object.keys(counts))]);
   for (const key of keys) {
     const aggregateValue = aggregateCounts[key] ?? 0;
     const dayTotal = dayCounts.reduce((total, counts) => total + (counts[key] ?? 0), 0);
@@ -1039,9 +1037,7 @@ function parseDocumentDaySummaries({ evidencePath, markdown }) {
   return parseTableRows(markdown, "## Day comparison").map((row) => {
     const day = parseDayLabel(row["일차"] ?? "");
     const [startedAt, finishedAt] = (row["기간"] ?? "").split(" - ").map((value) => stripCode(value.trim()));
-    const submittedAndFill = stripCode(row["submitted/fill"] ?? "")
-      .split("/")
-      .map((value, index) => parseInteger(value.trim(), `day.${index === 0 ? "paperOrderSubmittedCount" : "paperFillCount"}`));
+    const submittedAndFill = parseSubmittedAndFillCell(row["submitted/fill"] ?? "");
     const blockingReasonCounts = parseBlockingReasonText(row["주요 차단 사유"] ?? "");
     const costRejectedCount = sumReasonCounts(blockingReasonCounts, "cost");
     const costEvaluatedCount = parseInteger(row["cost evaluated"], "day.costSummary.evaluatedCount");
@@ -1242,9 +1238,24 @@ function parseBlockingReasonText(value) {
       throw new Error("blockingReason.item must match reason=count");
     }
     const [key, rawCount] = parts;
-    counts[requireValue(key, "blockingReason.key")] = parseInteger(rawCount, "blockingReason.count");
+    const reasonKey = requireValue(key, "blockingReason.key");
+    if (reasonKey in counts) {
+      throw new Error(`blockingReason.${reasonKey} must be unique`);
+    }
+    counts[reasonKey] = parseInteger(rawCount, "blockingReason.count");
   }
   return counts;
+}
+
+function parseSubmittedAndFillCell(value) {
+  const parts = stripCode(value ?? "").split("/");
+  if (parts.length !== 2) {
+    throw new Error("day.submittedFill must match submitted / fill");
+  }
+  return [
+    parseInteger(parts[0]?.trim(), "day.paperOrderSubmittedCount"),
+    parseInteger(parts[1]?.trim(), "day.paperFillCount"),
+  ];
 }
 
 function filterBlockingCounts(counts, prefix) {

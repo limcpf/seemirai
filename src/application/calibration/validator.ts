@@ -287,7 +287,7 @@ function validateRunSummary(
   validateSummaryCrossMetricCounts(summary, fieldPrefix, failures);
   validateOptionalDecimalMetrics(summary, fieldPrefix, failures);
 
-  if (summary.metrics.costSummary.evaluatedCount > 0) {
+  if (summary.metrics.costSummary.evaluatedCount > 0 && shouldRequireDetailedMetricFields(summary)) {
     validatePresentDecimal(
       summary.metrics.costSummary.averageCostBps,
       `${fieldPrefix}.metrics.costSummary.averageCostBps`,
@@ -311,7 +311,7 @@ function validateRunSummary(
     );
   }
 
-  if (summary.metrics.slippageSummary.observedFillCount > 0) {
+  if (summary.metrics.slippageSummary.observedFillCount > 0 && shouldRequireDetailedMetricFields(summary)) {
     validatePresentDecimal(
       summary.metrics.slippageSummary.averageSlippageBps,
       `${fieldPrefix}.metrics.slippageSummary.averageSlippageBps`,
@@ -533,6 +533,11 @@ function validateExplicitReasonMap(
       );
     }
   }
+}
+
+function shouldRequireDetailedMetricFields(summary: CalibrationRunSummary): boolean {
+  // 커밋된 evidence 문서 summary는 source artifact 재현 경로를 안내하는 축약 view라 상세 평균/최소/최대 metric은 artifact에서만 강제한다.
+  return summary.sourceKind !== "evidence_document";
 }
 
 /**

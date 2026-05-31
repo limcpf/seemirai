@@ -144,9 +144,7 @@ function parseDocumentDaySummaries(input: { evidencePath: string; markdown: stri
   return table.map((row) => {
     const day = parseDayLabel(row["일차"] ?? "");
     const [startedAt, finishedAt] = (row["기간"] ?? "").split(" - ").map((value) => stripCode(value.trim()));
-    const submittedAndFill = stripCode(row["submitted/fill"] ?? "")
-      .split("/")
-      .map((value, index) => parseInteger(value.trim(), `day.${index === 0 ? "paperOrderSubmittedCount" : "paperFillCount"}`));
+    const submittedAndFill = parseSubmittedAndFillCell(row["submitted/fill"] ?? "");
     const blockingReasonCounts = parseBlockingReasonText(row["주요 차단 사유"] ?? "");
     const costRejectedCount = sumReasonCounts(blockingReasonCounts, "cost");
     const costEvaluatedCount = parseInteger(row["cost evaluated"], "day.costSummary.evaluatedCount");
@@ -352,16 +350,31 @@ function parseBlockingReasonText(value: string): Record<string, number> {
   if (stripped.length === 0) {
     return {};
   }
-  return Object.fromEntries(
-    stripped.split(",").map((entry) => {
-      const parts = entry.split("=").map((part) => stripCode(part.trim()));
-      if (parts.length !== 2) {
-        throw new Error("blockingReason.item must match reason=count");
-      }
-      const [key, count] = parts;
-      return [requireValue(key, "blocking reason key"), parseInteger(count, `blockingReasonCounts.${key}`)];
-    }),
-  );
+  const counts: Record<string, number> = {};
+  for (const entry of stripped.split(",")) {
+    const parts = entry.split("=").map((part) => stripCode(part.trim()));
+    if (parts.length !== 2) {
+      throw new Error("blockingReason.item must match reason=count");
+    }
+    const [rawKey, count] = parts;
+    const key = requireValue(rawKey, "blocking reason key");
+    if (key in counts) {
+      throw new Error(`blockingReason.${key} must be unique`);
+    }
+    counts[key] = parseInteger(count, `blockingReasonCounts.${key}`);
+  }
+  return counts;
+}
+
+function parseSubmittedAndFillCell(value: string): [number, number] {
+  const parts = stripCode(value).split("/");
+  if (parts.length !== 2) {
+    throw new Error("day.submittedFill must match submitted / fill");
+  }
+  return [
+    parseInteger(parts[0]?.trim(), "day.paperOrderSubmittedCount"),
+    parseInteger(parts[1]?.trim(), "day.paperFillCount"),
+  ];
 }
 
 function sumReasonCounts(counts: Record<string, number>, prefix: string): number {

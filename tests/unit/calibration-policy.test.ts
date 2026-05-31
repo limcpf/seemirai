@@ -125,6 +125,18 @@ describe("M11 calibration policy", () => {
       }),
     );
   });
+
+  it("returns failed analysis when top-level input is invalid", () => {
+    const analysis = analyzeCalibrationPolicy(null as unknown as CalibrationEvidenceInput);
+
+    expect(analysis.status).toBe("failed");
+    expect(analysis.averageMarginBps).toBeNull();
+    expect(analysis.validation.failures).toContainEqual(
+      expect.objectContaining({
+        fieldPath: "input",
+      }),
+    );
+  });
 });
 
 function createEvidenceInput(options: { aggregateMetrics?: Partial<CalibrationMetricSummary> } = {}): CalibrationEvidenceInput {
