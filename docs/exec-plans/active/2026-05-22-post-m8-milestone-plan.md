@@ -172,7 +172,7 @@ Mother PR #100은 병합 완료 상태로 종료되었으며, #68 closeout 판�
 - `liveOrderApiCalls=0`, `crash=0`, `unhandledRejection=0`, `daily report evidence` 충족
 - `SEEMIRAI_RUN_M9_PAPER_TRADING_SOAK=1` guard 하에서 3일 연속 운영 확인
 - issue #68 closeout 댓글: https://github.com/limcpf/seemirai/issues/68#issuecomment-4583232258
-- 필요 조치: `node scripts/validate-m9-paper-soak-evidence.mjs --issue-comment` 출력으로 closeout 판정 근거가 일치함을 재확인한다.
+- 필요 조치: `node scripts/validate-m9-paper-soak-evidence.mjs --artifact-dir /home/lim/vaults/99_운영/seemirai-m9-paper/trading-soak --issue-comment` 출력으로 closeout 판정 근거가 일치함을 재확인한다.
 
 issue #68 closeout 댓글 본문은 아래 명령으로 재생성 가능하다.
 
