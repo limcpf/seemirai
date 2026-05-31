@@ -151,6 +151,17 @@ describe("M11 threshold calibration report script", () => {
     expect(result.code).toBe(1);
     expect(result.stderr).toContain("table.liveOrderApiCalls is required");
   });
+
+  it("rejects committed evidence integer cells with trailing text", async () => {
+    const fixture = await writeFixtureEvidence({ skipArtifacts: true });
+    const markdown = await readFile(fixture.evidencePath, "utf8");
+    await writeFile(fixture.evidencePath, markdown.replace("`cost:cost_margin_insufficient=1439`", "`cost:cost_margin_insufficient=1439abc`"), "utf8");
+
+    const result = await runScriptAllowingFailure(["--evidence", fixture.evidencePath, "--document-only", "--json"]);
+
+    expect(result.code).toBe(1);
+    expect(result.stderr).toContain("blockingReason.count must be a safe integer");
+  });
 });
 
 async function runScriptAllowingFailure(args: string[]) {

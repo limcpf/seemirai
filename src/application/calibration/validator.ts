@@ -130,6 +130,7 @@ function validateRunSummary(
   validateCounts(summary.metrics.holdReasonCounts, `${fieldPrefix}.metrics.holdReasonCounts`, failures, summary.sourcePath);
   validateCounts(summary.metrics.discardReasonCounts, `${fieldPrefix}.metrics.discardReasonCounts`, failures, summary.sourcePath);
   validateCounts(summary.metrics.blockingReasonCounts, `${fieldPrefix}.metrics.blockingReasonCounts`, failures, summary.sourcePath);
+  validateFillRate(summary, fieldPrefix, failures);
 
   if (summary.metrics.costSummary.evaluatedCount > 0) {
     validatePresentDecimal(
@@ -143,6 +144,13 @@ function validateRunSummary(
       summary.metrics.costSummary.averageRequiredReturnBps,
       `${fieldPrefix}.metrics.costSummary.averageRequiredReturnBps`,
       "비용 평가가 있는 summary에는 평균 요구수익률 bps가 있어야 합니다.",
+      failures,
+      summary.sourcePath,
+    );
+    validatePresentDecimal(
+      summary.metrics.costSummary.averageMarginBps,
+      `${fieldPrefix}.metrics.costSummary.averageMarginBps`,
+      "비용 평가가 있는 summary에는 평균 margin bps가 있어야 합니다.",
       failures,
       summary.sourcePath,
     );
@@ -180,6 +188,42 @@ function validateRunSummary(
         { count: summary.metrics.liveOrderApiCalls, sourcePath: summary.sourcePath },
       ),
     );
+  }
+}
+
+function validateFillRate(
+  summary: CalibrationRunSummary,
+  fieldPrefix: string,
+  failures: CalibrationInputValidationFailure[],
+): void {
+  const { fillRate, paperFillCount, paperOrderSubmittedCount } = summary.metrics;
+  if (typeof fillRate !== "number" || !Number.isFinite(fillRate) || fillRate < 0 || fillRate > 1) {
+    failures.push(
+      createFailure(`${fieldPrefix}.metrics.fillRate`, "fillRate는 0 이상 1 이하의 유한한 숫자여야 합니다.", {
+        value: fillRate,
+        sourcePath: summary.sourcePath,
+      }),
+    );
+    return;
+  }
+  if (
+    Number.isSafeInteger(paperOrderSubmittedCount) &&
+    Number.isSafeInteger(paperFillCount) &&
+    paperOrderSubmittedCount >= 0 &&
+    paperFillCount >= 0
+  ) {
+    const expectedFillRate = paperOrderSubmittedCount === 0 ? 0 : paperFillCount / paperOrderSubmittedCount;
+    if (Math.abs(fillRate - expectedFillRate) > Number.EPSILON) {
+      failures.push(
+        createFailure(`${fieldPrefix}.metrics.fillRate`, "fillRate는 paper 주문/체결 count와 일치해야 합니다.", {
+          value: fillRate,
+          expectedFillRate,
+          paperOrderSubmittedCount,
+          paperFillCount,
+          sourcePath: summary.sourcePath,
+        }),
+      );
+    }
   }
 }
 

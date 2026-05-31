@@ -1089,6 +1089,9 @@ function parseInteger(value, fieldPath) {
   if (normalized.length === 0) {
     throw new Error(`${fieldPath} is required`);
   }
+  if (!/^-?\d+$/u.test(normalized)) {
+    throw new Error(`${fieldPath} must be a safe integer`);
+  }
   const parsed = Number.parseInt(normalized, 10);
   if (!Number.isSafeInteger(parsed)) {
     throw new Error(`${fieldPath} must be a safe integer`);

@@ -39,7 +39,7 @@ describe("M11 calibration input reader", () => {
     const artifactDir = path.join(root, "trading-soak");
     await mkdir(artifactDir);
     const prefix = "m9-paper-trading-soak-2026-05-31T00-00-00-000Z-10210210";
-    await writeSummary(path.join(artifactDir, `${prefix}-summary.json`), null, { paperOrderSubmittedCount: 9 });
+    await writeSummary(path.join(artifactDir, `${prefix}-summary.json`), null, { paperOrderSubmittedCount: 9, paperFillCount: 9 });
     await Promise.all(
       [1, 2, 3].map((day) =>
         writeSummary(path.join(artifactDir, `${prefix}-day-${day}-summary.json`), day, {
@@ -113,6 +113,64 @@ describe("M11 calibration input reader", () => {
       expect.objectContaining({
         fieldPath: "aggregate.metrics.paperOrderSubmittedCount",
         message: "count metric은 0 이상의 안전한 정수여야 합니다.",
+      }),
+    );
+  });
+
+  it("rejects invalid fill rate and missing margin in prebuilt calibration input objects", async () => {
+    const input = await readCalibrationEvidenceInput({
+      evidencePath: "docs/references/m9-paper-trading-soak-2026-05-25-e398a8ee.md",
+    });
+    const validation = validateCalibrationEvidenceInput({
+      ...input,
+      aggregate: {
+        ...input.aggregate,
+        metrics: {
+          ...input.aggregate.metrics,
+          fillRate: 2,
+          costSummary: {
+            ...input.aggregate.metrics.costSummary,
+            averageMarginBps: null,
+          },
+        },
+      },
+    });
+
+    expect(validation.passed).toBe(false);
+    expect(validation.failures).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          fieldPath: "aggregate.metrics.fillRate",
+          message: "fillRate는 0 이상 1 이하의 유한한 숫자여야 합니다.",
+        }),
+        expect.objectContaining({
+          fieldPath: "aggregate.metrics.costSummary.averageMarginBps",
+          message: "비용 평가가 있는 summary에는 평균 margin bps가 있어야 합니다.",
+        }),
+      ]),
+    );
+  });
+
+  it("rejects fill rate values that do not match paper order and fill counts", async () => {
+    const input = await readCalibrationEvidenceInput({
+      evidencePath: "docs/references/m9-paper-trading-soak-2026-05-25-e398a8ee.md",
+    });
+    const validation = validateCalibrationEvidenceInput({
+      ...input,
+      aggregate: {
+        ...input.aggregate,
+        metrics: {
+          ...input.aggregate.metrics,
+          fillRate: 0.5,
+        },
+      },
+    });
+
+    expect(validation.passed).toBe(false);
+    expect(validation.failures).toContainEqual(
+      expect.objectContaining({
+        fieldPath: "aggregate.metrics.fillRate",
+        message: "fillRate는 paper 주문/체결 count와 일치해야 합니다.",
       }),
     );
   });
