@@ -51,6 +51,7 @@ describe("M9 paper decision runner script", () => {
     };
     const persistedSummary = JSON.parse(await readFile(summaryPath, "utf8")) as typeof summary;
     const trace = await readFile(rawLogPath, "utf8");
+    const report = await readFile(reportPath, "utf8");
 
     expect(summary.status).toBe("passed");
     expect(summary.metrics).toMatchObject({
@@ -73,6 +74,9 @@ describe("M9 paper decision runner script", () => {
     expect(persistedSummary.status).toBe("passed");
     expect(trace.trim().split("\n").length).toBeGreaterThan(0);
     await expect(stat(reportPath)).resolves.toBeDefined();
+    expect(report).toContain("## KRW 손익 요약");
+    expect(report).toContain("| 총 손익 | -6 KRW |");
+    expect(report).toContain("| 수수료 | 5 KRW |");
     expect([...tempDirsAfter].filter((entry) => !tempDirsBefore.has(entry))).toEqual([]);
   }, 30_000);
 
