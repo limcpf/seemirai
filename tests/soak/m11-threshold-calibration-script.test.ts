@@ -47,7 +47,7 @@ describe("M11 threshold calibration report script", () => {
       },
     });
 
-    const result = await runScriptAllowingFailure(["--evidence", fixture.evidencePath, "--json"]);
+    const result = await runScriptAllowingFailure(["--evidence", fixture.evidencePath, "--paper-config", path.join(fixture.root, "missing-paper.json"), "--json"]);
     const report = JSON.parse(result.stdout) as CalibrationReportJson;
 
     expect(result.code).toBe(1);
@@ -82,12 +82,14 @@ describe("M11 threshold calibration report script", () => {
       expect.arrayContaining([
         expect.objectContaining({
           path: "/strategyParameters/trend_following/max_spread_bps",
+          value: "7",
           from: "8",
           to: "7",
           aggressiveness: "conservative",
         }),
         expect.objectContaining({
           path: "/strategyParameters/mean_reversion/min_cost_adjusted_margin_bps",
+          value: "2",
           from: "0",
           to: "2",
           aggressiveness: "conservative",
@@ -313,6 +315,7 @@ interface CalibrationProfileProposalJson {
   safety: { defaultConfigMutation: boolean };
   patchOperations: Array<{
     path: string;
+    value: string;
     from: string;
     to: string;
     candidateKey: string;

@@ -468,8 +468,8 @@ function splitReasonCounts(metrics) {
 }
 
 async function createInactiveProfileProposal({ report, paperConfigPath }) {
-  const strategyParameters = await readStrategyParameters(paperConfigPath);
   const supportedCandidates = new Map(report.thresholdCandidates.map((candidate) => [candidate.key, candidate]));
+  const strategyParameters = report.status === "passed" ? await readStrategyParameters(paperConfigPath) : {};
   const patchOperations = report.status === "passed" ? createConservativePatchOperations({ strategyParameters, supportedCandidates }) : [];
   const manualReviewItems = createManualReviewItems(supportedCandidates);
   const blockedCandidates = report.thresholdCandidates
@@ -560,6 +560,7 @@ function createConservativePatchOperations({ strategyParameters, supportedCandid
       operations.push({
         op: "replace",
         path: `/strategyParameters/${strategy}/${rule.key}`,
+        value: formatDecimal(next),
         from: current,
         to: formatDecimal(next),
         candidateKey: rule.key,
