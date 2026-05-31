@@ -143,6 +143,25 @@ describe("M11 threshold calibration report script", () => {
     expect(result.stderr).toContain("day must match expected Day 2");
   });
 
+  it("accepts existing source artifacts that omit top-level day fields", async () => {
+    const fixture = await writeFixtureEvidence();
+    await Promise.all(
+      [null, 1, 2, 3].map(async (day) => {
+        const summaryPath =
+          day === null ? path.join(fixture.artifactDir, `${fixture.prefix}-summary.json`) : path.join(fixture.artifactDir, `${fixture.prefix}-day-${day}-summary.json`);
+        const summary = JSON.parse(await readFile(summaryPath, "utf8")) as Record<string, unknown>;
+        delete summary.day;
+        await writeFile(summaryPath, JSON.stringify(summary, null, 2), "utf8");
+      }),
+    );
+
+    const { stdout } = await execFileAsync("node", [scriptPath, "--evidence", fixture.evidencePath, "--json"]);
+    const report = JSON.parse(stdout) as CalibrationReportJson;
+
+    expect(report.status).toBe("passed");
+    expect(report.days).toHaveLength(3);
+  });
+
   it("accepts source artifact fill rate rounded to six decimal places", async () => {
     const fixture = await writeFixtureEvidence({
       aggregateMetrics: {

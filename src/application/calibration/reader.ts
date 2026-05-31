@@ -60,7 +60,7 @@ export async function readCalibrationArtifactSummary(options: { summaryPath: str
   const record = requireRecord(parsed, "summary");
   const metrics = parseMetrics(requireRecord(record.metrics, "summary.metrics"), `artifact:${summaryPath}`);
   const sourceDay = readNullableNumber(record.day);
-  if (options.day !== undefined && options.day !== null && sourceDay !== options.day) {
+  if (options.day !== undefined && options.day !== null && sourceDay !== null && sourceDay !== options.day) {
     // 파일명에서 기대한 Day와 artifact 내부 Day가 다르면 동일 run shape 증거가 섞인 것이므로 즉시 차단한다.
     throw new Error(`artifact:${summaryPath}.day must match expected Day ${options.day}`);
   }
@@ -142,9 +142,11 @@ function parseDocumentAggregateSummary(input: { evidencePath: string; markdown: 
 function parseDocumentDaySummaries(input: { evidencePath: string; markdown: string }): CalibrationRunSummary[] {
   const table = parseTableRows(input.markdown, "## Day comparison");
   return table.map((row) => {
-    const day = Number.parseInt(stripCode(row["일차"] ?? "").replace("Day ", ""), 10);
+    const day = parseDayLabel(row["일차"] ?? "");
     const [startedAt, finishedAt] = (row["기간"] ?? "").split(" - ").map((value) => stripCode(value.trim()));
-    const submittedAndFill = stripCode(row["submitted/fill"] ?? "").split("/").map((value) => Number.parseInt(value.trim(), 10));
+    const submittedAndFill = stripCode(row["submitted/fill"] ?? "")
+      .split("/")
+      .map((value, index) => parseInteger(value.trim(), `day.${index === 0 ? "paperOrderSubmittedCount" : "paperFillCount"}`));
     const blockingReasonCounts = parseBlockingReasonText(row["주요 차단 사유"] ?? "");
     const costRejectedCount = blockingReasonCounts["cost:cost_margin_insufficient"] ?? 0;
     const costEvaluatedCount = parseInteger(row["cost evaluated"], "day.costSummary.evaluatedCount");
@@ -186,6 +188,14 @@ function parseDocumentDaySummaries(input: { evidencePath: string; markdown: stri
       trace: { dayComparisonRow: row },
     };
   });
+}
+
+function parseDayLabel(value: string): number {
+  const match = /^Day (?<day>[1-3])$/u.exec(stripCode(value));
+  if (match?.groups?.day === undefined) {
+    throw new Error("day.label must match Day N");
+  }
+  return parseInteger(match.groups.day, "day.label");
 }
 
 function filterBlockingCounts(counts: Record<string, number>, prefix: string): Record<string, number> {

@@ -61,17 +61,32 @@ export function validateCalibrationEvidenceInput(input: CalibrationEvidenceInput
 
   validateRunSummary(input.aggregate, "aggregate", failures);
   if (Array.isArray(rawDays)) {
-    validateDaySet(input.days, failures);
-    input.days.forEach((day, index) => {
+    const days = readDaySummaries(rawDays, failures);
+    validateDaySet(days, failures);
+    days.forEach((day, index) => {
       validateRunSummary(day, `days[${index}]`, failures);
     });
-    validateAggregateMatchesDays(input, failures);
+    if (days.length === rawDays.length) {
+      validateAggregateMatchesDays({ ...input, days }, failures);
+    }
   }
 
   return {
     passed: failures.length === 0,
     failures,
   };
+}
+
+function readDaySummaries(rawDays: readonly unknown[], failures: CalibrationInputValidationFailure[]): CalibrationRunSummary[] {
+  const days: CalibrationRunSummary[] = [];
+  rawDays.forEach((day, index) => {
+    if (!isRecord(day)) {
+      failures.push(createFailure(`days[${index}]`, "Day summary는 객체여야 합니다.", { value: day }));
+      return;
+    }
+    days.push(day as unknown as CalibrationRunSummary);
+  });
+  return days;
 }
 
 function validateDaySet(

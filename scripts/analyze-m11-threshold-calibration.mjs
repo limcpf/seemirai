@@ -174,7 +174,7 @@ async function readCalibrationInput({ evidencePath, documentOnly }) {
 async function readArtifactSummary({ summaryPath, day }) {
   const resolvedPath = path.resolve(summaryPath);
   const parsed = JSON.parse(await readFile(resolvedPath, "utf8"));
-  if (day !== undefined && parsed.day !== day) {
+  if (day !== undefined && day !== null && parsed.day !== undefined && parsed.day !== null && parsed.day !== day) {
     throw new Error(`artifact:${resolvedPath}.day must match expected Day ${day}`);
   }
   return {

@@ -100,6 +100,28 @@ describe("M11 calibration input reader", () => {
     await expect(readCalibrationArtifactSummary({ summaryPath, day: 2 })).rejects.toThrow("day must match expected Day 2");
   });
 
+  it("rejects committed evidence day labels with trailing text", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "seemirai-calibration-day-label-"));
+    const artifactDir = path.join(root, "artifacts");
+    const evidencePath = path.join(root, "evidence.md");
+    await writeFile(evidencePath, createEvidenceMarkdown({ artifactDir, prefix: "m9-paper-trading-soak-fixture" }).replace("| Day 1 |", "| Day 1abc |"), "utf8");
+
+    await expect(readCalibrationEvidenceInput({ evidencePath })).rejects.toThrow("day.label must match Day N");
+  });
+
+  it("rejects committed evidence submitted/fill cells with trailing text", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "seemirai-calibration-submitted-fill-"));
+    const artifactDir = path.join(root, "artifacts");
+    const evidencePath = path.join(root, "evidence.md");
+    await writeFile(
+      evidencePath,
+      createEvidenceMarkdown({ artifactDir, prefix: "m9-paper-trading-soak-fixture" }).replace("`1 / 1`", "`1abc / 1`"),
+      "utf8",
+    );
+
+    await expect(readCalibrationEvidenceInput({ evidencePath })).rejects.toThrow("day.paperOrderSubmittedCount must be a safe integer");
+  });
+
   it("rejects calibration input when live order API calls are present", async () => {
     const input = await readCalibrationEvidenceInput({
       evidencePath: "docs/references/m9-paper-trading-soak-2026-05-25-e398a8ee.md",
@@ -399,6 +421,24 @@ describe("M11 calibration input reader", () => {
       expect.objectContaining({
         fieldPath: "aggregate",
         message: "summary는 객체여야 합니다.",
+      }),
+    );
+  });
+
+  it("returns failures for invalid day entries instead of throwing", async () => {
+    const input = await readCalibrationEvidenceInput({
+      evidencePath: "docs/references/m9-paper-trading-soak-2026-05-25-e398a8ee.md",
+    });
+    const validation = validateCalibrationEvidenceInput({
+      ...input,
+      days: [input.days[0]!, null, input.days[2]!] as unknown as typeof input.days,
+    });
+
+    expect(validation.passed).toBe(false);
+    expect(validation.failures).toContainEqual(
+      expect.objectContaining({
+        fieldPath: "days[1]",
+        message: "Day summary는 객체여야 합니다.",
       }),
     );
   });
