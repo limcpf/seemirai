@@ -35,8 +35,12 @@ describe("M9 paper report comparison script", () => {
       day: "Day 1",
       liveOrderApiCalls: 0,
       dailyReportGenerated: true,
+      pnlSummary: expect.stringContaining('"totalPnlKrw":"1"'),
     });
+    expect(comparison.failures).toEqual([]);
     expect(markdown).toContain("M9 3일 Paper Report 비교");
+    expect(markdown).toContain("KRW 손익 요약");
+    expect(markdown).toContain('"totalFeesKrw":"5"');
     expect(markdown).toContain("Day 3");
     expect(markdown).toContain("report-day-1.md");
     await expect(stat(outputPath)).resolves.toBeDefined();
@@ -204,7 +208,7 @@ describe("M9 paper report comparison script", () => {
     const workDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-m9-compare-"));
     const summaries = await writeSummaries(workDir, [
       createSummary(1),
-      createSummary(2, { status: "skipped", omitMetrics: ["cost"] }),
+      createSummary(2, { status: "skipped", omitMetrics: ["cost", "pnlSummary"] }),
       createSummary(3),
     ]);
 
@@ -229,6 +233,12 @@ describe("M9 paper report comparison script", () => {
       expect.objectContaining({
         day: "Day 2",
         code: "cost_unavailable",
+      }),
+    );
+    expect(comparison.failures).toContainEqual(
+      expect.objectContaining({
+        day: "Day 2",
+        code: "pnlSummary_unavailable",
       }),
     );
   });
@@ -256,6 +266,70 @@ describe("M9 paper report comparison script", () => {
       expect.objectContaining({
         day: "Day 2",
         code: "metric_format_mismatch",
+      }),
+    );
+  });
+
+  it("fails when pnlSummary format differs across days", async () => {
+    const workDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-m9-compare-"));
+    const summaries = await writeSummaries(workDir, [
+      createSummary(1),
+      createSummary(2, { pnlSummary: "totalPnlKrw=2,totalFeesKrw=10" }),
+      createSummary(3),
+    ]);
+
+    const { stdout } = await runCompareExpectFailure([
+      "--summary",
+      summaries[0]!,
+      "--summary",
+      summaries[1]!,
+      "--summary",
+      summaries[2]!,
+      "--json",
+    ]);
+    const comparison = JSON.parse(stdout) as ComparisonSummary;
+
+    expect(comparison.failures).toContainEqual(
+      expect.objectContaining({
+        day: "Day 2",
+        code: "pnlSummary_invalid",
+      }),
+    );
+    expect(comparison.failures).toContainEqual(
+      expect.objectContaining({
+        day: "Day 2",
+        code: "metric_format_mismatch",
+        evidence: expect.objectContaining({
+          metricName: "pnlSummary",
+        }),
+      }),
+    );
+  });
+
+  it("fails when every day has null pnlSummary", async () => {
+    const workDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-m9-compare-"));
+    const summaries = await writeSummaries(workDir, [
+      createSummary(1, { pnlSummary: null }),
+      createSummary(2, { pnlSummary: null }),
+      createSummary(3, { pnlSummary: null }),
+    ]);
+
+    const { stdout } = await runCompareExpectFailure([
+      "--summary",
+      summaries[0]!,
+      "--summary",
+      summaries[1]!,
+      "--summary",
+      summaries[2]!,
+      "--json",
+    ]);
+    const comparison = JSON.parse(stdout) as ComparisonSummary;
+
+    expect(comparison.status).toBe("failed");
+    expect(comparison.failures).toContainEqual(
+      expect.objectContaining({
+        day: "Day 1",
+        code: "pnlSummary_invalid",
       }),
     );
   });
@@ -300,6 +374,7 @@ function createSummary(
     slippage?: unknown;
     fillRate?: unknown;
     blockingReasons?: unknown;
+    pnlSummary?: unknown;
   } = {},
 ) {
   const metrics: Record<string, unknown> = {
@@ -314,11 +389,23 @@ function createSummary(
     blockingReasons: {
       stale_market_data: day,
     },
+    pnlSummary: {
+      startingCashKrw: "1000000",
+      endingCashKrw: String(1000000 + day),
+      positionMarketValueKrw: "0",
+      realizedPnlKrw: String(day),
+      unrealizedPnlKrw: "0",
+      totalPnlKrw: String(day),
+      totalReturnBps: String(day / 100),
+      totalFeesKrw: String(day * 5),
+      submittedOrderCount: day,
+      filledOrderCount: day,
+    },
   };
   for (const key of overrides.omitMetrics ?? []) {
     delete metrics[key];
   }
-  for (const key of ["cost", "slippage", "fillRate", "blockingReasons"] as const) {
+  for (const key of ["cost", "slippage", "fillRate", "blockingReasons", "pnlSummary"] as const) {
     if (Object.prototype.hasOwnProperty.call(overrides, key)) {
       metrics[key] = overrides[key];
     }
@@ -382,10 +469,12 @@ interface ComparisonSummary {
     date: string;
     liveOrderApiCalls: number | null;
     dailyReportGenerated: boolean;
+    pnlSummary: string;
   }>;
   failures: Array<{
     day?: string;
     code: string;
+    evidence?: Record<string, unknown>;
   }>;
 }
 
