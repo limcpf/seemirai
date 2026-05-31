@@ -5,6 +5,7 @@ import path from "node:path";
 import process from "node:process";
 
 const defaultEvidencePath = "docs/references/m9-paper-trading-soak-2026-05-25-e398a8ee.md";
+const defaultPaperConfigPath = "config/paper.json";
 const defaultOutputDir = path.join(os.homedir(), "vaults", "99_운영", "seemirai-m9-paper");
 const knownReasonAxes = new Set(["cost", "risk", "hold", "discard"]);
 
@@ -25,8 +26,19 @@ async function main() {
   const evidencePath = path.resolve(options.evidencePath ?? defaultEvidencePath);
   const input = await readCalibrationInput({ evidencePath, documentOnly: options.documentOnly });
   const report = createCalibrationReport({ input, generatedAt: new Date().toISOString() });
-  const markdown = renderMarkdownReport(report);
+  report.profileProposal = await createInactiveProfileProposal({
+    report,
+    paperConfigPath: path.resolve(options.paperConfigPath ?? defaultPaperConfigPath),
+  });
   const outputPath = options.outputPath ?? path.join(defaultOutputDir, `m11-threshold-calibration-report-${safeTimestamp(report.generatedAt)}.md`);
+
+  if (options.proposalOutputPath !== undefined) {
+    await mkdir(path.dirname(options.proposalOutputPath), { recursive: true });
+    await writeFile(options.proposalOutputPath, `${JSON.stringify(report.profileProposal, null, 2)}\n`, "utf8");
+    report.outputs.profileProposalPath = options.proposalOutputPath;
+  }
+
+  const markdown = renderMarkdownReport(report);
 
   if (options.outputPath !== undefined) {
     await mkdir(path.dirname(outputPath), { recursive: true });
@@ -49,6 +61,8 @@ function parseArgs(argv) {
   const options = {
     evidencePath: undefined,
     outputPath: undefined,
+    proposalOutputPath: undefined,
+    paperConfigPath: undefined,
     json: false,
     documentOnly: false,
     help: false,
@@ -63,6 +77,14 @@ function parseArgs(argv) {
         break;
       case "--output":
         options.outputPath = path.resolve(readValue(argv, index, arg));
+        index += 1;
+        break;
+      case "--proposal-output":
+        options.proposalOutputPath = path.resolve(readValue(argv, index, arg));
+        index += 1;
+        break;
+      case "--paper-config":
+        options.paperConfigPath = path.resolve(readValue(argv, index, arg));
         index += 1;
         break;
       case "--json":
@@ -185,7 +207,9 @@ function createCalibrationReport({ input, generatedAt }) {
     },
     outputs: {
       markdownPath: null,
+      profileProposalPath: null,
     },
+    profileProposal: null,
   };
 }
 
@@ -443,6 +467,157 @@ function splitReasonCounts(metrics) {
   };
 }
 
+async function createInactiveProfileProposal({ report, paperConfigPath }) {
+  const strategyParameters = await readStrategyParameters(paperConfigPath);
+  const supportedCandidates = new Map(report.thresholdCandidates.map((candidate) => [candidate.key, candidate]));
+  const patchOperations = report.status === "passed" ? createConservativePatchOperations({ strategyParameters, supportedCandidates }) : [];
+  const manualReviewItems = createManualReviewItems(supportedCandidates);
+  const blockedCandidates = report.thresholdCandidates
+    .filter((candidate) => candidate.status === "blocked" || candidate.aggressiveness === "aggressive")
+    .map((candidate) => ({
+      key: candidate.key,
+      title: candidate.title,
+      status: candidate.status,
+      aggressiveness: candidate.aggressiveness,
+      reason: candidate.rationale,
+      metricEvidence: candidate.metricEvidence,
+    }));
+
+  return {
+    schemaVersion: 1,
+    generatedAt: report.generatedAt,
+    active: false,
+    activationRequired: true,
+    status: report.status === "passed" ? "proposal_ready" : "blocked_by_validation",
+    statusLabel: report.status === "passed" ? "비활성 제안 생성" : "입력 검증 실패로 제안 비활성",
+    safety: {
+      defaultConfigMutation: false,
+      baseConfigPath: paperConfigPath,
+      activationInstructions:
+        "이 산출물은 검토용 후보입니다. 기본 paper config에 자동 적용하지 말고 별도 PR에서 동일 run shape report를 비교한 뒤 수동 승인합니다.",
+    },
+    source: {
+      evidencePath: report.evidence.evidencePath,
+      runPrefix: report.evidence.runPrefix,
+      generatedAt: report.generatedAt,
+      averageMarginBps: report.aggregate.metrics.costSummary.averageMarginBps,
+      thresholdRelaxationBlocked: report.thresholdRelaxationBlocked,
+    },
+    candidateProfile: {
+      id: "m11-issue-102-conservative-candidate",
+      enabled: false,
+      baseConfigPath: paperConfigPath,
+      strategyParametersPatch: buildStrategyParametersPatch(patchOperations),
+    },
+    patchOperations,
+    manualReviewItems,
+    blockedCandidates,
+  };
+}
+
+async function readStrategyParameters(paperConfigPath) {
+  const parsed = JSON.parse(await readFile(paperConfigPath, "utf8"));
+  return requireRecord(requireRecord(parsed, "paperConfig").strategyParameters, "paperConfig.strategyParameters");
+}
+
+function createConservativePatchOperations({ strategyParameters, supportedCandidates }) {
+  const operations = [];
+  const supportedRules = [
+    {
+      key: "max_spread_bps",
+      mutate: (current) => Math.max(1, Number(current) - 1),
+      shouldPatch: (current, next) => next < Number(current),
+    },
+    {
+      key: "min_volume_spike_ratio",
+      mutate: (current) => Math.max(Number(current), 1.1),
+      shouldPatch: (current, next) => next > Number(current),
+    },
+    {
+      key: "min_session_liquidity_score",
+      mutate: (current) => Math.max(Number(current), 0.2),
+      shouldPatch: (current, next) => next > Number(current),
+    },
+    {
+      key: "min_cost_adjusted_margin_bps",
+      mutate: (current) => Math.max(Number(current), 2),
+      shouldPatch: (current, next) => next > Number(current),
+    },
+  ];
+
+  for (const [strategy, parameters] of Object.entries(strategyParameters)) {
+    const record = requireRecord(parameters, `paperConfig.strategyParameters.${strategy}`);
+    for (const rule of supportedRules) {
+      const candidate = supportedCandidates.get(rule.key);
+      if (candidate === undefined || candidate.aggressiveness !== "conservative" || !(rule.key in record)) {
+        continue;
+      }
+      const current = requireDecimalLike(record[rule.key], `paperConfig.strategyParameters.${strategy}.${rule.key}`);
+      const next = rule.mutate(current);
+      if (!Number.isFinite(next) || !rule.shouldPatch(current, next)) {
+        continue;
+      }
+      operations.push({
+        op: "replace",
+        path: `/strategyParameters/${strategy}/${rule.key}`,
+        from: current,
+        to: formatDecimal(next),
+        candidateKey: rule.key,
+        strategy,
+        direction: candidate.direction,
+        aggressiveness: candidate.aggressiveness,
+        rationale: candidate.rationale,
+      });
+    }
+  }
+
+  return operations.sort((left, right) => left.path.localeCompare(right.path));
+}
+
+function createManualReviewItems(supportedCandidates) {
+  const costSafetyBuffer = supportedCandidates.get("cost_safety_buffer_bps");
+  if (costSafetyBuffer === undefined || costSafetyBuffer.aggressiveness !== "conservative") {
+    return [];
+  }
+  return [
+    {
+      candidateKey: "cost_safety_buffer_bps",
+      title: costSafetyBuffer.title,
+      direction: costSafetyBuffer.direction,
+      reason:
+        "현재 paper strategyParameters에는 직접 대응되는 cost_safety_buffer_bps key가 없어 자동 patch로 만들지 않고 별도 설계 검토 항목으로 남깁니다.",
+      metricEvidence: costSafetyBuffer.metricEvidence,
+    },
+  ];
+}
+
+function buildStrategyParametersPatch(patchOperations) {
+  const patch = {};
+  for (const operation of patchOperations) {
+    if (operation.aggressiveness !== "conservative") {
+      throw new Error(`profile proposal cannot include non-conservative operation: ${operation.path}`);
+    }
+    const strategyPatch = (patch[operation.strategy] ??= {});
+    strategyPatch[operation.candidateKey] = operation.to;
+  }
+  return patch;
+}
+
+function requireDecimalLike(value, fieldPath) {
+  if (typeof value !== "string" && typeof value !== "number") {
+    throw new Error(`${fieldPath} must be a decimal string or number`);
+  }
+  const normalized = String(value);
+  if (!/^-?\d+(?:\.\d+)?$/u.test(normalized)) {
+    throw new Error(`${fieldPath} must be a decimal string or number`);
+  }
+  return normalized;
+}
+
+function formatDecimal(value) {
+  return Number.isInteger(value) ? String(value) : String(Number(value.toFixed(6)));
+}
+
 function renderMarkdownReport(report) {
   const candidateRows = report.thresholdCandidates
     .map(
@@ -462,6 +637,21 @@ function renderMarkdownReport(report) {
     report.validation.failures.length === 0
       ? "- 없음"
       : report.validation.failures.map((item) => `- ${item.message} (추적 정보: \`${item.fieldPath}\`)`).join("\n");
+  const proposalRows =
+    report.profileProposal?.patchOperations.length === 0
+      ? "| 없음 | - | - | - | - |"
+      : report.profileProposal.patchOperations
+          .map(
+            (operation) =>
+              `| ${escapeTable(operation.strategy)} | ${escapeTable(operation.candidateKey)} | ${escapeTable(operation.from)} | ${escapeTable(operation.to)} | ${escapeTable(
+                operation.direction,
+              )} |`,
+          )
+          .join("\n");
+  const manualReviewRows =
+    report.profileProposal?.manualReviewItems.length === 0
+      ? "- 없음"
+      : report.profileProposal.manualReviewItems.map((item) => `- ${item.title}: ${item.reason}`).join("\n");
 
   return `# M11 threshold calibration 리포트
 
@@ -499,6 +689,21 @@ function renderMarkdownReport(report) {
 | 후보 | 상태 | 성격 | 방향 | 근거 |
 | --- | --- | --- | --- | --- |
 ${candidateRows || "| 없음 | - | - | - | - |"}
+
+## 비활성 profile proposal
+
+- 상태: ${report.profileProposal?.statusLabel ?? "없음"}
+- 활성화 여부: 비활성
+- 기본 config 자동 변경: 없음
+- proposal 파일: \`${report.outputs.profileProposalPath ?? "미생성"}\`
+
+| 전략 | 후보 | 기존값 | 제안값 | 방향 |
+| --- | --- | --- | --- | --- |
+${proposalRows}
+
+### 수동 검토 항목
+
+${manualReviewRows}
 
 ## risk 상호작용
 
@@ -941,6 +1146,10 @@ function printHelp() {
 Options:
   --evidence <path>    Internal #68 evidence markdown path.
   --output <path>      Write Markdown report to the given path.
+  --proposal-output <path>
+                       Write inactive profile/patch proposal JSON to the given path.
+  --paper-config <path>
+                       Read base paper config for proposal generation. Defaults to config/paper.json.
   --json               Print structured JSON to stdout.
   --document-only      Use committed evidence tables without reading source artifact summaries.
   -h, --help           Show this help.
