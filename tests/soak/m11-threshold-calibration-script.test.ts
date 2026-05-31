@@ -105,6 +105,67 @@ describe("M11 threshold calibration report script", () => {
     );
   });
 
+  it("fails closed when source artifact slippage count differs from paper fill count", async () => {
+    const fixture = await writeFixtureEvidence({
+      aggregateMetrics: {
+        slippageSummary: createSlippageSummary(0),
+      },
+    });
+
+    const result = await runScriptAllowingFailure(["--evidence", fixture.evidencePath, "--json"]);
+    const report = JSON.parse(result.stdout) as CalibrationReportJson;
+
+    expect(result.code).toBe(1);
+    expect(report.validation.failures).toContainEqual(
+      expect.objectContaining({
+        fieldPath: "aggregate.metrics.slippageSummary.observedFillCount",
+      }),
+    );
+  });
+
+  it("fails closed when source artifact cost rejected count differs from cost summary", async () => {
+    const fixture = await writeFixtureEvidence({
+      aggregateMetrics: {
+        costSummary: {
+          evaluatedCount: 12957,
+          allowedCount: 12957,
+          rejectedCount: 0,
+          averageCostBps: "13",
+          averageRequiredReturnBps: "23",
+          averageMarginBps: "-1.333333333333",
+        },
+      },
+    });
+
+    const result = await runScriptAllowingFailure(["--evidence", fixture.evidencePath, "--json"]);
+    const report = JSON.parse(result.stdout) as CalibrationReportJson;
+
+    expect(result.code).toBe(1);
+    expect(report.validation.failures).toContainEqual(
+      expect.objectContaining({
+        fieldPath: "aggregate.metrics.costSummary.rejectedCount",
+      }),
+    );
+  });
+
+  it("fails closed when source artifact explicit hold counts differ from blocking reasons", async () => {
+    const fixture = await writeFixtureEvidence({
+      aggregateMetrics: {
+        holdReasonCounts: {},
+      },
+    });
+
+    const result = await runScriptAllowingFailure(["--evidence", fixture.evidencePath, "--json"]);
+    const report = JSON.parse(result.stdout) as CalibrationReportJson;
+
+    expect(result.code).toBe(1);
+    expect(report.validation.failures).toContainEqual(
+      expect.objectContaining({
+        fieldPath: "aggregate.metrics.holdReasonCounts.fixture_waiting_for_signal",
+      }),
+    );
+  });
+
   it("fails closed when source artifact aggregate totals do not match days", async () => {
     const fixture = await writeFixtureEvidence({
       aggregateMetrics: {
@@ -276,6 +337,17 @@ describe("M11 threshold calibration report script", () => {
     expect(result.stderr).toContain("table.liveOrderApiCalls is required");
   });
 
+  it("rejects committed evidence aggregate numeric cells with non-decimal notation", async () => {
+    const fixture = await writeFixtureEvidence({ skipArtifacts: true });
+    const markdown = await readFile(fixture.evidencePath, "utf8");
+    await writeFile(fixture.evidencePath, markdown.replace("| liveOrderApiCalls | `0` |", "| liveOrderApiCalls | `0x0` |"), "utf8");
+
+    const result = await runScriptAllowingFailure(["--evidence", fixture.evidencePath, "--document-only", "--json"]);
+
+    expect(result.code).toBe(1);
+    expect(result.stderr).toContain("table.liveOrderApiCalls must be a decimal number");
+  });
+
   it("rejects committed evidence integer cells with trailing text", async () => {
     const fixture = await writeFixtureEvidence({ skipArtifacts: true });
     const markdown = await readFile(fixture.evidencePath, "utf8");
@@ -404,6 +476,7 @@ async function writeFixtureEvidence(options: {
         writeSummary(path.join(artifactDir, `${prefix}-day-${day}-summary.json`), day, {
           costSummary: createDayCostSummary(day),
           slippageSummary: createSlippageSummary(day === 1 ? 664 : day === 2 ? 668 : 798),
+          holdReasonCounts: {},
           blockingReasonCounts: {
             "cost:cost_margin_insufficient": day === 1 ? 1439 : 1440,
             "risk:expected_loss_limit_exceeded": day === 1 ? 1439 : 1440,

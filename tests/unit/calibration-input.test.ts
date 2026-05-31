@@ -50,12 +50,12 @@ describe("M11 calibration input reader", () => {
         averageMarginBps: "-1.333333333333",
       },
       slippageSummary: {
-        observedFillCount: 3,
+        observedFillCount: 6,
         averageSlippageBps: "0",
         minSlippageBps: "0",
         maxSlippageBps: "0",
       },
-      holdReasonCounts: { fixture_waiting_for_signal: 3 },
+      holdReasonCounts: {},
       blockingReasonCounts: { "cost:cost_margin_insufficient": 3, "risk:expected_loss_limit_exceeded": 3 },
       costRejectedCount: 3,
       riskRejectedCount: 3,
@@ -65,6 +65,13 @@ describe("M11 calibration input reader", () => {
     await Promise.all(
       [1, 2, 3].map((day) =>
         writeSummary(path.join(artifactDir, `${prefix}-day-${day}-summary.json`), day, {
+          holdReasonCounts: {},
+          slippageSummary: {
+            observedFillCount: day,
+            averageSlippageBps: "0",
+            minSlippageBps: "0",
+            maxSlippageBps: "0",
+          },
           paperOrderSubmittedCount: day,
           paperFillCount: day,
         }),
@@ -120,6 +127,19 @@ describe("M11 calibration input reader", () => {
     );
 
     await expect(readCalibrationEvidenceInput({ evidencePath })).rejects.toThrow("day.paperOrderSubmittedCount must be a safe integer");
+  });
+
+  it("rejects committed evidence aggregate numeric cells with non-decimal notation", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "seemirai-calibration-numeric-notation-"));
+    const artifactDir = path.join(root, "artifacts");
+    const evidencePath = path.join(root, "evidence.md");
+    await writeFile(
+      evidencePath,
+      createEvidenceMarkdown({ artifactDir, prefix: "m9-paper-trading-soak-fixture" }).replace("| liveOrderApiCalls | `0` |", "| liveOrderApiCalls | `0x0` |"),
+      "utf8",
+    );
+
+    await expect(readCalibrationEvidenceInput({ evidencePath })).rejects.toThrow("table.liveOrderApiCalls must be a decimal number");
   });
 
   it("counts every committed evidence cost reason in day cost rejected totals", async () => {
@@ -498,6 +518,32 @@ describe("M11 calibration input reader", () => {
       expect.objectContaining({
         fieldPath: "aggregate.metrics.paperOrderSubmittedCount",
         message: "aggregate metric은 Day 1/2/3 합계와 일치해야 합니다.",
+      }),
+    );
+  });
+
+  it("rejects summary cross metrics that do not describe the same evidence", async () => {
+    const input = await readCalibrationEvidenceInput({
+      evidencePath: "docs/references/m9-paper-trading-soak-2026-05-25-e398a8ee.md",
+    });
+    const validation = validateCalibrationEvidenceInput({
+      ...input,
+      aggregate: {
+        ...input.aggregate,
+        metrics: {
+          ...input.aggregate.metrics,
+          slippageSummary: {
+            ...input.aggregate.metrics.slippageSummary,
+            observedFillCount: 0,
+          },
+        },
+      },
+    });
+
+    expect(validation.passed).toBe(false);
+    expect(validation.failures).toContainEqual(
+      expect.objectContaining({
+        fieldPath: "aggregate.metrics.slippageSummary.observedFillCount",
       }),
     );
   });

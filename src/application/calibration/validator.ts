@@ -279,6 +279,7 @@ function validateRunSummary(
   validateFillRate(summary, fieldPrefix, failures);
   validateCostSummaryCounts(summary, fieldPrefix, failures);
   validateRejectReasonCounts(summary, fieldPrefix, failures);
+  validateSummaryCrossMetricCounts(summary, fieldPrefix, failures);
   validateOptionalDecimalMetrics(summary, fieldPrefix, failures);
 
   if (summary.metrics.costSummary.evaluatedCount > 0) {
@@ -442,6 +443,81 @@ function validateRejectReasonCounts(
         sourcePath: summary.sourcePath,
       }),
     );
+  }
+}
+
+function validateSummaryCrossMetricCounts(
+  summary: CalibrationRunSummary,
+  fieldPrefix: string,
+  failures: CalibrationInputValidationFailure[],
+): void {
+  const { metrics } = summary;
+  if (
+    Number.isSafeInteger(metrics.costSummary.rejectedCount) &&
+    Number.isSafeInteger(metrics.costRejectedCount) &&
+    metrics.costSummary.rejectedCount !== metrics.costRejectedCount
+  ) {
+    failures.push(
+      createFailure(`${fieldPrefix}.metrics.costSummary.rejectedCount`, "cost summary의 rejected count는 비용 reject evidence와 일치해야 합니다.", {
+        rejectedCount: metrics.costSummary.rejectedCount,
+        costRejectedCount: metrics.costRejectedCount,
+        sourcePath: summary.sourcePath,
+      }),
+    );
+  }
+  if (
+    Number.isSafeInteger(metrics.slippageSummary.observedFillCount) &&
+    Number.isSafeInteger(metrics.paperFillCount) &&
+    metrics.slippageSummary.observedFillCount !== metrics.paperFillCount
+  ) {
+    failures.push(
+      createFailure(`${fieldPrefix}.metrics.slippageSummary.observedFillCount`, "slippage 관측 체결 수는 paper 체결 수와 일치해야 합니다.", {
+        observedFillCount: metrics.slippageSummary.observedFillCount,
+        paperFillCount: metrics.paperFillCount,
+        sourcePath: summary.sourcePath,
+      }),
+    );
+  }
+  validateExplicitReasonMap(metrics.holdReasonCounts, metrics.blockingReasonCounts, "hold", `${fieldPrefix}.metrics.holdReasonCounts`, failures, summary.sourcePath);
+  validateExplicitReasonMap(
+    metrics.discardReasonCounts,
+    metrics.blockingReasonCounts,
+    "discard",
+    `${fieldPrefix}.metrics.discardReasonCounts`,
+    failures,
+    summary.sourcePath,
+  );
+}
+
+function validateExplicitReasonMap(
+  explicitCounts: Record<string, number>,
+  blockingCounts: Record<string, number>,
+  prefix: "hold" | "discard",
+  fieldPath: string,
+  failures: CalibrationInputValidationFailure[],
+  sourcePath: string,
+): void {
+  if (!isRecord(explicitCounts) || !isRecord(blockingCounts)) {
+    return;
+  }
+  const blockingByReason = Object.fromEntries(
+    Object.entries(blockingCounts)
+      .filter(([key]) => key.startsWith(`${prefix}:`))
+      .map(([key, count]) => [key.slice(prefix.length + 1), count]),
+  );
+  const keys = new Set([...Object.keys(explicitCounts), ...Object.keys(blockingByReason)]);
+  for (const key of keys) {
+    const explicitValue = explicitCounts[key] ?? 0;
+    const blockingValue = blockingByReason[key] ?? 0;
+    if (explicitValue !== blockingValue) {
+      failures.push(
+        createFailure(`${fieldPath}.${key}`, "explicit reason count는 같은 blocking reason count와 일치해야 합니다.", {
+          explicitValue,
+          blockingValue,
+          sourcePath,
+        }),
+      );
+    }
   }
 }
 

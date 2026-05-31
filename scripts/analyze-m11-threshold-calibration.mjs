@@ -343,6 +343,7 @@ function validateRunSummary(summary, fieldPrefix, failures) {
   validateFillRate(metrics, fieldPrefix, failures, summary.sourcePath);
   validateCostSummaryCounts(metrics, fieldPrefix, failures, summary.sourcePath);
   validateRejectReasonCounts(metrics, fieldPrefix, failures, summary.sourcePath);
+  validateSummaryCrossMetricCounts(metrics, fieldPrefix, failures, summary.sourcePath);
 
   if (metrics.costSummary.evaluatedCount > 0 && shouldRequireDetailedMetricFields(summary)) {
     for (const [field, value, message] of [
@@ -465,6 +466,66 @@ function validateRejectReasonCounts(metrics, fieldPrefix, failures, sourcePath) 
         sourcePath,
       }),
     );
+  }
+}
+
+function validateSummaryCrossMetricCounts(metrics, fieldPrefix, failures, sourcePath) {
+  if (
+    Number.isSafeInteger(metrics.costSummary.rejectedCount) &&
+    Number.isSafeInteger(metrics.costRejectedCount) &&
+    metrics.costSummary.rejectedCount !== metrics.costRejectedCount
+  ) {
+    failures.push(
+      failure(`${fieldPrefix}.metrics.costSummary.rejectedCount`, "cost summary의 rejected count는 비용 reject evidence와 일치해야 합니다.", {
+        rejectedCount: metrics.costSummary.rejectedCount,
+        costRejectedCount: metrics.costRejectedCount,
+        sourcePath,
+      }),
+    );
+  }
+  if (
+    Number.isSafeInteger(metrics.slippageSummary.observedFillCount) &&
+    Number.isSafeInteger(metrics.paperFillCount) &&
+    metrics.slippageSummary.observedFillCount !== metrics.paperFillCount
+  ) {
+    failures.push(
+      failure(`${fieldPrefix}.metrics.slippageSummary.observedFillCount`, "slippage 관측 체결 수는 paper 체결 수와 일치해야 합니다.", {
+        observedFillCount: metrics.slippageSummary.observedFillCount,
+        paperFillCount: metrics.paperFillCount,
+        sourcePath,
+      }),
+    );
+  }
+  validateExplicitReasonMap(metrics.holdReasonCounts, metrics.blockingReasonCounts, "hold", `${fieldPrefix}.metrics.holdReasonCounts`, failures, sourcePath);
+  validateExplicitReasonMap(
+    metrics.discardReasonCounts,
+    metrics.blockingReasonCounts,
+    "discard",
+    `${fieldPrefix}.metrics.discardReasonCounts`,
+    failures,
+    sourcePath,
+  );
+}
+
+function validateExplicitReasonMap(explicitCounts, blockingCounts, prefix, fieldPath, failures, sourcePath) {
+  const blockingByReason = Object.fromEntries(
+    Object.entries(blockingCounts)
+      .filter(([key]) => key.startsWith(`${prefix}:`))
+      .map(([key, count]) => [key.slice(prefix.length + 1), count]),
+  );
+  const keys = new Set([...Object.keys(explicitCounts), ...Object.keys(blockingByReason)]);
+  for (const key of keys) {
+    const explicitValue = explicitCounts[key] ?? 0;
+    const blockingValue = blockingByReason[key] ?? 0;
+    if (explicitValue !== blockingValue) {
+      failures.push(
+        failure(`${fieldPath}.${key}`, "explicit reason count는 같은 blocking reason count와 일치해야 합니다.", {
+          explicitValue,
+          blockingValue,
+          sourcePath,
+        }),
+      );
+    }
   }
 }
 
@@ -1266,6 +1327,9 @@ function parseFiniteNumber(value, fieldPath) {
   const normalized = stripCode(String(value ?? ""));
   if (normalized.length === 0) {
     throw new Error(`${fieldPath} is required`);
+  }
+  if (!/^-?\d+(?:\.\d+)?$/u.test(normalized)) {
+    throw new Error(`${fieldPath} must be a decimal number`);
   }
   const parsed = Number(normalized);
   if (!Number.isFinite(parsed)) {

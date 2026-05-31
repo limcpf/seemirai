@@ -380,6 +380,9 @@ function parseFiniteNumber(value: unknown, fieldPath: string): number {
     if (stripped.length === 0) {
       throw new Error(`${fieldPath} is required`);
     }
+    if (!/^-?\d+(?:\.\d+)?$/u.test(stripped)) {
+      throw new Error(`${fieldPath} must be a decimal number`);
+    }
     return requireFiniteNumber(Number(stripped), fieldPath);
   }
   return requireFiniteNumber(value, fieldPath);
