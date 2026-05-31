@@ -66,9 +66,9 @@
 
 | 일차 | 기간 | status | cycles | submitted/fill | fillRate | cost evaluated | averageMarginBps | riskRejectedCount | 주요 차단 사유 |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| Day 1 | `2026-05-25T11:01:10.044Z` - `2026-05-26T11:01:10.044Z` | passed | `1439` | `664 / 664` | `1` | `4317` | `-1.333333333333` | `2214` | `cost:cost_margin_insufficient=1439`, `risk:expected_loss_limit_exceeded=1439`, `risk:order_notional_limit_exceeded=1550` |
-| Day 2 | `2026-05-26T11:01:10.044Z` - `2026-05-27T11:01:10.044Z` | passed | `1440` | `668 / 668` | `1` | `4320` | `-1.333333333333` | `2212` | `cost:cost_margin_insufficient=1440`, `risk:expected_loss_limit_exceeded=1440`, `risk:order_notional_limit_exceeded=1544` |
-| Day 3 | `2026-05-27T11:01:10.044Z` - `2026-05-28T11:01:10.044Z` | passed | `1440` | `798 / 798` | `1` | `4320` | `-1.333333333333` | `2082` | `cost:cost_margin_insufficient=1440`, `risk:expected_loss_limit_exceeded=1440`, `risk:order_notional_limit_exceeded=1284` |
+| Day 1 | `2026-05-25T11:01:10.044Z` - `2026-05-26T11:01:10.044Z` | passed | `1439` | `664 / 664` | `1` | `4317` | `-1.333333333333` | `2214` | `cost:cost_margin_insufficient=1439`, `hold:fixture_waiting_for_signal=1439`, `risk:expected_loss_limit_exceeded=1439`, `risk:order_notional_limit_exceeded=1550` |
+| Day 2 | `2026-05-26T11:01:10.044Z` - `2026-05-27T11:01:10.044Z` | passed | `1440` | `668 / 668` | `1` | `4320` | `-1.333333333333` | `2212` | `cost:cost_margin_insufficient=1440`, `hold:fixture_waiting_for_signal=1440`, `risk:expected_loss_limit_exceeded=1440`, `risk:order_notional_limit_exceeded=1544` |
+| Day 3 | `2026-05-27T11:01:10.044Z` - `2026-05-28T11:01:10.044Z` | passed | `1440` | `798 / 798` | `1` | `4320` | `-1.333333333333` | `2082` | `cost:cost_margin_insufficient=1440`, `hold:fixture_waiting_for_signal=1440`, `risk:expected_loss_limit_exceeded=1440`, `risk:order_notional_limit_exceeded=1284` |
 
 ## Validation command
 

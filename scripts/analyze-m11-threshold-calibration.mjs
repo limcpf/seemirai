@@ -292,9 +292,7 @@ function validateAggregateReasonMap(input, field, failures) {
   const aggregateCounts = input.aggregate.metrics[field];
   const dayCounts = input.days.map((day) => day.metrics[field]);
   const keys = new Set(
-    [...Object.keys(aggregateCounts), ...dayCounts.flatMap((counts) => Object.keys(counts))].filter(
-      (key) => key.startsWith("cost:") || key.startsWith("risk:"),
-    ),
+    [...Object.keys(aggregateCounts), ...dayCounts.flatMap((counts) => Object.keys(counts))].filter((key) => key.includes(":")),
   );
   for (const key of keys) {
     const aggregateValue = aggregateCounts[key] ?? 0;

@@ -191,9 +191,12 @@ function createEvidenceInput(options: { aggregateMetrics?: Partial<CalibrationMe
           minSlippageBps: "0",
           maxSlippageBps: "0",
         },
-        holdReasonCounts: {},
+        holdReasonCounts: {
+          fixture_waiting_for_signal: 1440 - (day === 1 ? 1 : 0),
+        },
         blockingReasonCounts: {
           "cost:cost_margin_insufficient": 1440 - (day === 1 ? 1 : 0),
+          "hold:fixture_waiting_for_signal": 1440 - (day === 1 ? 1 : 0),
           "risk:expected_loss_limit_exceeded": 1440 - (day === 1 ? 1 : 0),
           "risk:order_notional_limit_exceeded": orderNotionalCount,
         },
