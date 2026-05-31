@@ -24,8 +24,9 @@ mother PR로 merge됐고, M8-C에서 실제 24시간 public WebSocket soak, dail
 0회 확인까지 닫았다. 24시간 soak는 public WebSocket 연결과 안전 guard 검증이며, 운영 DB 적재와 반복 daily report 운영은 M9
 paper 운영 베타에서 별도 증거로 닫는다.
 
-PRD와 기능 요구사항에는 LLM 보조 정책, phase 1.5 알트 수동 편입, v0.2 pilot 후보가 남아 있다. 이들은 paper 운영이 안정화되기
-전에는 진행하지 않는다. 특히 Upbit account 연동, 자산 조회, 주문 조회, 주문 생성/취소는 MVP가 아니라 v0.2 pilot 범위다.
+LLM 보조 정책은 M10에서 완료됐고, PRD와 기능 요구사항에는 phase 1.5 알트 수동 편입, v0.2 pilot 후보가 남아 있다. 이들은
+paper 운영이 안정화되기 전에는 진행하지 않는다. 특히 Upbit account 연동, 자산 조회, 주문 조회, 주문 생성/취소는 MVP가 아니라
+v0.2 pilot 범위다.
 
 기술 부채는 두 축으로 나뉜다.
 
@@ -195,6 +196,8 @@ SEEMIRAI_RUN_DB_INTEGRATION=1 corepack pnpm exec vitest run tests/integration
 
 ### M10. LLM 리스크 보조 경계
 
+상태: completed
+
 목적:
 
 - PRD의 LLM 요구사항을 주문 허용이 아니라 공지/정책/시장경보 기반 차단·설명 보조로만 구현한다.
@@ -232,11 +235,15 @@ Acceptance Criteria:
 | 3 | audit persistence와 redaction | PR #62 merged |
 | 4 | notice/market event risk classification mapper와 RiskGate 안전 신호 | PR #63 merged |
 | 5 | daily report draft 보조 경계 | PR #64 merged |
-| 6 | M10 문서/검증 정합성, M9 보호 경계 재확인 | 진행 중 |
+| 6 | M10 문서/검증 정합성, M9 보호 경계 재확인 | PR #65 merged / #66 mother merged |
 
 M10 Verification sub PR은 M9 #51이 소유한 paper runtime, daily report runner, Telegram 매매 알림, notification retry,
 control drill, 3일 report 비교 구현을 변경하지 않는다. M10 문서 갱신은 LLM provider, secret redaction, fail-closed, gated smoke
 경계에 한정한다.
+
+M10 전체는 #66 병합으로 완료됐다. verification closeout 근거는 `issue-59/06-verification`의 `d0f792d`이며, 해당 sub PR은
+LLM risk assistant contract/provider/audit/RiskGate mapper/daily report draft 단위 검증과 문서 정합성만 닫고 M9 paper runtime
+보호 경계는 변경하지 않았다.
 
 ### M11. 전략/피처 품질 보강
 
