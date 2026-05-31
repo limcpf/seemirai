@@ -52,6 +52,7 @@ export function validateCalibrationEvidenceInput(input: CalibrationEvidenceInput
       }),
     );
   }
+  validateDaySet(input.days, failures);
 
   validateRunSummary(input.aggregate, "aggregate", failures);
   input.days.forEach((day, index) => {
@@ -62,6 +63,21 @@ export function validateCalibrationEvidenceInput(input: CalibrationEvidenceInput
     passed: failures.length === 0,
     failures,
   };
+}
+
+function validateDaySet(
+  days: readonly CalibrationRunSummary[],
+  failures: CalibrationInputValidationFailure[],
+): void {
+  const observedDays = days.map((day) => day.day);
+  const sortedUniqueDays = [...new Set(observedDays)].sort();
+  if (sortedUniqueDays.length !== 3 || sortedUniqueDays[0] !== 1 || sortedUniqueDays[1] !== 2 || sortedUniqueDays[2] !== 3) {
+    failures.push(
+      createFailure("days", "Day summary 번호는 정확히 Day 1/2/3을 한 번씩 포함해야 합니다.", {
+        observedDays,
+      }),
+    );
+  }
 }
 
 function validateRunSummary(

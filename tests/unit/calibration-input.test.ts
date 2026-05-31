@@ -92,6 +92,48 @@ describe("M11 calibration input reader", () => {
       }),
     );
   });
+
+  it("fails closed when day numbers are duplicated or missing", async () => {
+    const input = await readCalibrationEvidenceInput({
+      evidencePath: "docs/references/m9-paper-trading-soak-2026-05-25-e398a8ee.md",
+    });
+    const validation = validateCalibrationEvidenceInput({
+      ...input,
+      days: [
+        input.days[0]!,
+        {
+          ...input.days[1]!,
+          day: 2,
+        },
+        {
+          ...input.days[2]!,
+          day: 2,
+        },
+      ],
+    });
+
+    expect(validation.failures).toContainEqual(
+      expect.objectContaining({
+        fieldPath: "days",
+        message: "Day summary 번호는 정확히 Day 1/2/3을 한 번씩 포함해야 합니다.",
+      }),
+    );
+  });
+
+  it("does not coerce empty numeric markdown cells to zero", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "seemirai-calibration-empty-number-"));
+    const artifactDir = path.join(root, "trading-soak");
+    const prefix = "m9-paper-trading-soak-2026-05-31T00-00-00-000Z-10210211";
+    const evidencePath = path.join(root, "evidence.md");
+    await mkdir(artifactDir);
+    await writeFile(
+      evidencePath,
+      createEvidenceMarkdown({ artifactDir, prefix }).replace("| liveOrderApiCalls | `0` |", "| liveOrderApiCalls |  |"),
+      "utf8",
+    );
+
+    await expect(readCalibrationEvidenceInput({ evidencePath })).rejects.toThrow("table.liveOrderApiCalls is required");
+  });
 });
 
 async function writeSummary(summaryPath: string, day: number | null, overrides: Partial<CalibrationMetricSummary>) {

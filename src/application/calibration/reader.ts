@@ -350,11 +350,25 @@ function stripCode(value: string): string {
 }
 
 function parseFiniteNumber(value: unknown, fieldPath: string): number {
-  return requireFiniteNumber(typeof value === "string" ? Number(stripCode(value)) : value, fieldPath);
+  if (typeof value === "string") {
+    const stripped = stripCode(value);
+    if (stripped.length === 0) {
+      throw new Error(`${fieldPath} is required`);
+    }
+    return requireFiniteNumber(Number(stripped), fieldPath);
+  }
+  return requireFiniteNumber(value, fieldPath);
 }
 
 function parseInteger(value: unknown, fieldPath: string): number {
-  return requireSafeInteger(typeof value === "string" ? Number.parseInt(stripCode(value), 10) : value, fieldPath);
+  if (typeof value === "string") {
+    const stripped = stripCode(value);
+    if (stripped.length === 0) {
+      throw new Error(`${fieldPath} is required`);
+    }
+    return requireSafeInteger(Number.parseInt(stripped, 10), fieldPath);
+  }
+  return requireSafeInteger(value, fieldPath);
 }
 
 function requireArrayNumber(values: readonly number[], index: number, fieldPath: string): number {
