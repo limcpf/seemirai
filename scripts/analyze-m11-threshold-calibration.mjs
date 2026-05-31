@@ -277,6 +277,7 @@ function validateRunSummary(summary, fieldPrefix, failures) {
   }
   validateFillRate(metrics, fieldPrefix, failures, summary.sourcePath);
   validateCostSummaryCounts(metrics, fieldPrefix, failures, summary.sourcePath);
+  validateRejectReasonCounts(metrics, fieldPrefix, failures, summary.sourcePath);
 
   if (metrics.costSummary.evaluatedCount > 0 && shouldRequireDetailedMetricFields(summary)) {
     for (const [field, value, message] of [
@@ -373,6 +374,29 @@ function validateCostSummaryCounts(metrics, fieldPrefix, failures, sourcePath) {
         evaluatedCount,
         allowedCount,
         rejectedCount,
+        sourcePath,
+      }),
+    );
+  }
+}
+
+function validateRejectReasonCounts(metrics, fieldPrefix, failures, sourcePath) {
+  const costReasonTotal = sumReasonCounts(metrics.blockingReasonCounts, "cost");
+  const riskReasonTotal = sumReasonCounts(metrics.blockingReasonCounts, "risk");
+  if (Number.isSafeInteger(metrics.costRejectedCount) && costReasonTotal !== metrics.costRejectedCount) {
+    failures.push(
+      failure(`${fieldPrefix}.metrics.costRejectedCount`, "비용 reject count는 cost reason 합계와 일치해야 합니다.", {
+        costRejectedCount: metrics.costRejectedCount,
+        costReasonTotal,
+        sourcePath,
+      }),
+    );
+  }
+  if (Number.isSafeInteger(metrics.riskRejectedCount) && riskReasonTotal < metrics.riskRejectedCount) {
+    failures.push(
+      failure(`${fieldPrefix}.metrics.riskRejectedCount`, "risk reason 합계는 risk reject count 이상이어야 합니다.", {
+        riskRejectedCount: metrics.riskRejectedCount,
+        riskReasonTotal,
         sourcePath,
       }),
     );
@@ -893,9 +917,9 @@ function parseDocumentDaySummaries({ evidencePath, markdown }) {
     const [startedAt, finishedAt] = (row["기간"] ?? "").split(" - ").map((value) => stripCode(value.trim()));
     const submittedAndFill = stripCode(row["submitted/fill"] ?? "")
       .split("/")
-      .map((value) => Number.parseInt(value.trim(), 10));
+      .map((value, index) => parseInteger(value.trim(), `day.${index === 0 ? "paperOrderSubmittedCount" : "paperFillCount"}`));
     const blockingReasonCounts = parseBlockingReasonText(row["주요 차단 사유"] ?? "");
-    const costRejectedCount = blockingReasonCounts["cost:cost_margin_insufficient"] ?? 0;
+    const costRejectedCount = sumReasonCounts(blockingReasonCounts, "cost");
     const costEvaluatedCount = parseInteger(row["cost evaluated"], "day.costSummary.evaluatedCount");
     return {
       sourceKind: "evidence_document",
@@ -1070,11 +1094,15 @@ function readTableJsonRecord(table, key) {
 }
 
 function parseBlockingReasonText(value) {
+  const normalized = stripCode(value ?? "");
+  if (normalized.length === 0) {
+    throw new Error("day.blockingReasonCounts is required");
+  }
   const counts = {};
-  for (const item of value.split(",")) {
+  for (const item of normalized.split(",")) {
     const stripped = stripCode(item.trim());
     if (stripped.length === 0) {
-      continue;
+      throw new Error("blockingReason.item is required");
     }
     const [key, rawCount] = stripped.split("=");
     counts[requireValue(key, "blockingReason.key")] = parseInteger(rawCount, "blockingReason.count");
@@ -1088,6 +1116,12 @@ function filterBlockingCounts(counts, prefix) {
       .filter(([key]) => key.startsWith(`${prefix}:`))
       .map(([key, value]) => [key.slice(prefix.length + 1), value]),
   );
+}
+
+function sumReasonCounts(counts, prefix) {
+  return Object.entries(counts)
+    .filter(([key]) => key.startsWith(`${prefix}:`))
+    .reduce((total, [, count]) => total + count, 0);
 }
 
 function requireRecord(value, fieldPath) {

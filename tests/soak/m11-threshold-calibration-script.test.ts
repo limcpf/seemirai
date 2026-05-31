@@ -224,6 +224,47 @@ describe("M11 threshold calibration report script", () => {
     expect(result.stderr).toContain("blockingReason.count must be a safe integer");
   });
 
+  it("rejects committed evidence submitted/fill cells with trailing text", async () => {
+    const fixture = await writeFixtureEvidence({ skipArtifacts: true });
+    const markdown = await readFile(fixture.evidencePath, "utf8");
+    await writeFile(fixture.evidencePath, markdown.replace("`664 / 664`", "`664abc / 664`"), "utf8");
+
+    const result = await runScriptAllowingFailure(["--evidence", fixture.evidencePath, "--document-only", "--json"]);
+
+    expect(result.code).toBe(1);
+    expect(result.stderr).toContain("day.paperOrderSubmittedCount must be a safe integer");
+  });
+
+  it("rejects empty committed evidence day blocking reason cells", async () => {
+    const fixture = await writeFixtureEvidence({ skipArtifacts: true });
+    const markdown = await readFile(fixture.evidencePath, "utf8");
+    await writeFile(
+      fixture.evidencePath,
+      markdown.replace(
+        "`cost:cost_margin_insufficient=1439`, `risk:expected_loss_limit_exceeded=1439`, `risk:order_notional_limit_exceeded=1550`",
+        "",
+      ),
+      "utf8",
+    );
+
+    const result = await runScriptAllowingFailure(["--evidence", fixture.evidencePath, "--document-only", "--json"]);
+
+    expect(result.code).toBe(1);
+    expect(result.stderr).toContain("day.blockingReasonCounts is required");
+  });
+
+  it("counts every committed evidence cost reason in day cost rejected totals", async () => {
+    const fixture = await writeFixtureEvidence({ skipArtifacts: true });
+    const markdown = await readFile(fixture.evidencePath, "utf8");
+    await writeFile(fixture.evidencePath, markdown.replace("cost:cost_margin_insufficient=1439", "cost:spread_too_wide=1439"), "utf8");
+
+    const { stdout } = await execFileAsync("node", [scriptPath, "--evidence", fixture.evidencePath, "--document-only", "--json"]);
+    const report = JSON.parse(stdout) as CalibrationReportJson;
+
+    expect(report.status).toBe("passed");
+    expect(report.days[0]?.metrics.costRejectedCount).toBe(1439);
+  });
+
   it("rejects missing committed evidence count map rows", async () => {
     const fixture = await writeFixtureEvidence({ skipArtifacts: true });
     const markdown = await readFile(fixture.evidencePath, "utf8");
@@ -403,7 +444,7 @@ interface CalibrationReportJson {
   operatorSummary: string;
   action: string;
   aggregate: { sourceKind: string; metrics: CalibrationMetricSummary };
-  days: Array<{ sourceKind: string }>;
+  days: Array<{ sourceKind: string; metrics: CalibrationMetricSummary }>;
   reasonBreakdown: {
     cost: { totalCount: number };
     risk: { totalCount: number };

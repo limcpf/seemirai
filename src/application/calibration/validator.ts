@@ -108,6 +108,26 @@ function validateRunSummary(
     }
   }
 
+  if (!isRecord(summary.metrics.costSummary) || !isRecord(summary.metrics.slippageSummary)) {
+    if (!isRecord(summary.metrics.costSummary)) {
+      failures.push(
+        createFailure(`${fieldPrefix}.metrics.costSummary`, "cost summary는 객체여야 합니다.", {
+          value: summary.metrics.costSummary,
+          sourcePath: summary.sourcePath,
+        }),
+      );
+    }
+    if (!isRecord(summary.metrics.slippageSummary)) {
+      failures.push(
+        createFailure(`${fieldPrefix}.metrics.slippageSummary`, "slippage summary는 객체여야 합니다.", {
+          value: summary.metrics.slippageSummary,
+          sourcePath: summary.sourcePath,
+        }),
+      );
+    }
+    return;
+  }
+
   for (const field of [
     "costSummary.evaluatedCount",
     "costSummary.allowedCount",
@@ -135,6 +155,7 @@ function validateRunSummary(
   validateCounts(summary.metrics.blockingReasonCounts, `${fieldPrefix}.metrics.blockingReasonCounts`, failures, summary.sourcePath);
   validateFillRate(summary, fieldPrefix, failures);
   validateCostSummaryCounts(summary, fieldPrefix, failures);
+  validateRejectReasonCounts(summary, fieldPrefix, failures);
   validateOptionalDecimalMetrics(summary, fieldPrefix, failures);
 
   if (summary.metrics.costSummary.evaluatedCount > 0) {
@@ -269,6 +290,39 @@ function validateCostSummaryCounts(
 }
 
 /**
+ * reject count와 blocking reason count가 같은 evidence 방향을 가리키는지 검증한다.
+ *
+ * 비용 차단은 runner에서 단일 cost reason과 함께 증가하므로 exact 합계를 요구한다. risk reason은 한 주문에
+ * 여러 risk reason이 함께 남을 수 있어 reason 합계가 reject count보다 작아지는 손실만 차단한다. 외부 side effect는 없다.
+ */
+function validateRejectReasonCounts(
+  summary: CalibrationRunSummary,
+  fieldPrefix: string,
+  failures: CalibrationInputValidationFailure[],
+): void {
+  const costReasonTotal = sumReasonCounts(summary.metrics.blockingReasonCounts, "cost");
+  const riskReasonTotal = sumReasonCounts(summary.metrics.blockingReasonCounts, "risk");
+  if (Number.isSafeInteger(summary.metrics.costRejectedCount) && costReasonTotal !== summary.metrics.costRejectedCount) {
+    failures.push(
+      createFailure(`${fieldPrefix}.metrics.costRejectedCount`, "비용 reject count는 cost reason 합계와 일치해야 합니다.", {
+        costRejectedCount: summary.metrics.costRejectedCount,
+        costReasonTotal,
+        sourcePath: summary.sourcePath,
+      }),
+    );
+  }
+  if (Number.isSafeInteger(summary.metrics.riskRejectedCount) && riskReasonTotal < summary.metrics.riskRejectedCount) {
+    failures.push(
+      createFailure(`${fieldPrefix}.metrics.riskRejectedCount`, "risk reason 합계는 risk reject count 이상이어야 합니다.", {
+        riskRejectedCount: summary.metrics.riskRejectedCount,
+        riskReasonTotal,
+        sourcePath: summary.sourcePath,
+      }),
+    );
+  }
+}
+
+/**
  * null이 아닌 decimal metric 값이 후속 Decimal parser에 넘겨도 안전한 문자열인지 검증한다.
  *
  * 비용/슬리피지 평가 건수가 0이면 null은 허용하지만, 값이 존재한다면 report 근거로 보존되므로
@@ -339,6 +393,31 @@ function readPath(metrics: CalibrationMetricSummary, path: string): unknown {
     }
     return (current as Record<string, unknown>)[key];
   }, metrics);
+}
+
+/**
+ * validator가 신뢰해도 되는 plain record인지 확인한다.
+ *
+ * 이미 구성된 JSON 객체가 type assertion을 우회해 들어올 수 있으므로, nested summary 역참조 전에 객체 invariant를 확인한다.
+ * 입력을 변경하지 않는 순수 guard다.
+ */
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+/**
+ * blocking reason map에서 지정 축의 count 합계를 계산한다.
+ *
+ * validator 내부 cross-field 검증용 순수 함수이며, 비정상 map은 앞선 failure에서 다루므로 여기서는 0으로 낮춰
+ * 추가 예외 없이 남은 failure 수집을 계속한다.
+ */
+function sumReasonCounts(counts: Record<string, number>, prefix: string): number {
+  if (!isRecord(counts)) {
+    return 0;
+  }
+  return Object.entries(counts)
+    .filter(([key]) => key.startsWith(`${prefix}:`))
+    .reduce((total, [, count]) => total + (typeof count === "number" ? count : 0), 0);
 }
 
 function createFailure(

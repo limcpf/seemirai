@@ -292,6 +292,58 @@ describe("M11 calibration input reader", () => {
     );
   });
 
+  it("returns failures for missing nested summary objects instead of throwing", async () => {
+    const input = await readCalibrationEvidenceInput({
+      evidencePath: "docs/references/m9-paper-trading-soak-2026-05-25-e398a8ee.md",
+    });
+    const validation = validateCalibrationEvidenceInput({
+      ...input,
+      aggregate: {
+        ...input.aggregate,
+        metrics: {
+          ...input.aggregate.metrics,
+          costSummary: null as unknown as CalibrationMetricSummary["costSummary"],
+        },
+      },
+    });
+
+    expect(validation.passed).toBe(false);
+    expect(validation.failures).toContainEqual(
+      expect.objectContaining({
+        fieldPath: "aggregate.metrics.costSummary",
+        message: "cost summary는 객체여야 합니다.",
+      }),
+    );
+  });
+
+  it("rejects cost reason count totals that do not match cost reject count", async () => {
+    const input = await readCalibrationEvidenceInput({
+      evidencePath: "docs/references/m9-paper-trading-soak-2026-05-25-e398a8ee.md",
+    });
+    const validation = validateCalibrationEvidenceInput({
+      ...input,
+      aggregate: {
+        ...input.aggregate,
+        metrics: {
+          ...input.aggregate.metrics,
+          costRejectedCount: 2,
+          blockingReasonCounts: {
+            ...input.aggregate.metrics.blockingReasonCounts,
+            "cost:cost_margin_insufficient": 1,
+          },
+        },
+      },
+    });
+
+    expect(validation.passed).toBe(false);
+    expect(validation.failures).toContainEqual(
+      expect.objectContaining({
+        fieldPath: "aggregate.metrics.costRejectedCount",
+        message: "비용 reject count는 cost reason 합계와 일치해야 합니다.",
+      }),
+    );
+  });
+
   it("fails closed when day numbers are duplicated or missing", async () => {
     const input = await readCalibrationEvidenceInput({
       evidencePath: "docs/references/m9-paper-trading-soak-2026-05-25-e398a8ee.md",
@@ -395,7 +447,7 @@ function createMetrics(overrides: Partial<CalibrationMetricSummary> = {}): Calib
     },
     holdReasonCounts: { fixture_waiting_for_signal: 1 },
     discardReasonCounts: {},
-    blockingReasonCounts: { "cost:cost_margin_insufficient": 1 },
+    blockingReasonCounts: { "cost:cost_margin_insufficient": 1, "risk:expected_loss_limit_exceeded": 1 },
     costRejectedCount: 1,
     riskRejectedCount: 1,
     paperOrderSubmittedCount: 1,
