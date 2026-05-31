@@ -7,6 +7,7 @@ export * from "./execution/index.js";
 export * from "./features.js";
 export * from "./llm-risk-assistant.js";
 export * from "./paper-decision-runner.js";
+export * from "./paper-pnl-summary.js";
 export * from "./ports/index.js";
 export * from "./registry.js";
 export * from "./risk/index.js";
