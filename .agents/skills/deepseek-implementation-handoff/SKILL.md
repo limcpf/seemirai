@@ -40,9 +40,9 @@ docs/generated/YYYY-MM-DD-m<번호>-<slug>.contract.json
    - `docs/PRD.md`
    - `docs/FEATURE_REQUIREMENTS.md`
    - `docs/PLANS.md`
-   - `docs/ARCHITECTURE.md`
+   - `ARCHITECTURE.md`
+   - `docs/README.md`
    - `docs/DEVELOPMENT.md`
-   - `.ai/rules.md`
    - 해당 milestone과 관련된 `docs/references/*`
 2. milestone의 목적을 한 문장으로 고정한다.
    - 예: `M1은 AI 호출 없이 sym run <issue-file>의 실행 골격과 artifact store 규칙만 만든다.`

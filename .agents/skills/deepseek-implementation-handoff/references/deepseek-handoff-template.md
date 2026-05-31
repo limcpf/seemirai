@@ -66,15 +66,15 @@ The implementer must read these files before editing:
 - `docs/PRD.md`
 - `docs/FEATURE_REQUIREMENTS.md`
 - `docs/PLANS.md`
-- `docs/ARCHITECTURE.md`
+- `ARCHITECTURE.md`
+- `docs/README.md`
 - `docs/DEVELOPMENT.md`
-- `.ai/rules.md`
 
 If any instruction conflicts, follow this priority:
 
 1. This handoff document
 2. `AGENTS.md`
-3. `docs/ARCHITECTURE.md`
+3. `ARCHITECTURE.md`
 4. `docs/FEATURE_REQUIREMENTS.md`
 5. `docs/PLANS.md`
 
