@@ -6,6 +6,7 @@ import type {
   PaperPnlMarkPriceInput,
   PaperPnlSummary,
   PaperPnlSummaryInput,
+  PaperPnlUnavailableSummaryInput,
 } from "./types.js";
 
 interface MutablePositionLedger {
@@ -101,6 +102,27 @@ export function createPaperPnlSummary(input: PaperPnlSummaryInput): PaperPnlSumm
     totalFeesKrw: totalFeesKrw.toFixed(),
     submittedOrderCount: input.submittedOrderCount ?? filledOrderCount,
     filledOrderCount,
+  };
+}
+
+/**
+ * cost basis가 부족한 paper run을 null-safe PnL summary로 변환한다.
+ *
+ * cash, fee, 주문 수는 이미 확정된 ledger 값이므로 유지하고, 손익 방향을 단정할 수 없는 필드는 `null`로 보류한다.
+ * 외부 side effect는 없으며, 운영 report는 이 shape를 보고 “손익 계산 불가”로 표시해야 한다.
+ */
+export function createUnavailablePaperPnlSummary(input: PaperPnlUnavailableSummaryInput): PaperPnlSummary {
+  return {
+    startingCashKrw: parseNonNegativeDecimal(input.startingCashKrw, "startingCashKrw").toFixed(),
+    endingCashKrw: parseFinancialDecimal(input.endingCashKrw).toFixed(),
+    positionMarketValueKrw: null,
+    realizedPnlKrw: null,
+    unrealizedPnlKrw: null,
+    totalPnlKrw: null,
+    totalReturnBps: null,
+    totalFeesKrw: parseNonNegativeDecimal(input.totalFeesKrw, "totalFeesKrw").toFixed(),
+    submittedOrderCount: input.submittedOrderCount,
+    filledOrderCount: input.filledOrderCount,
   };
 }
 

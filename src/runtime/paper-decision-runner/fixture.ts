@@ -109,7 +109,10 @@ export async function runM9PaperDecisionFixtureSmoke(
   options: RunM9PaperDecisionFixtureSmokeOptions,
 ): Promise<PaperDecisionRunnerResult> {
   const runtime = createM9PaperDecisionFixtureRuntime(options.fixture);
-  return runtime.runner.run(options.maxFrames === undefined ? {} : { maxFrames: options.maxFrames });
+  return runtime.runner.run({
+    ...(options.maxFrames === undefined ? {} : { maxFrames: options.maxFrames }),
+    pnlStartingCashKrw: readInitialKrwAvailable(runtime.fixture),
+  });
 }
 
 /**
@@ -237,6 +240,11 @@ function readTimestamp(input: unknown, label: string): TimestampInput {
 
 function readOptionalTimestamp(input: unknown): TimestampInput | undefined {
   return input === undefined ? undefined : readTimestamp(input, "optional timestamp");
+}
+
+function readInitialKrwAvailable(fixture: M9PaperDecisionFixture): string {
+  const krwBalance = fixture.initialBalances.find((balance) => balance.currency.toUpperCase() === "KRW");
+  return krwBalance?.available ?? "0";
 }
 
 function assignIfDefined<T extends object, K extends keyof T>(target: T, key: K, value: T[K] | undefined): void {
