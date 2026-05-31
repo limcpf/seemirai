@@ -71,7 +71,11 @@ export function analyzeCalibrationPolicy(input: CalibrationEvidenceInput): Calib
  * 값이 유한 decimal 문자열일 때만 report trace로 보존하고, 그 외에는 null로 닫으며 외부 side effect는 없다.
  */
 function readFailedAverageMarginBps(input: CalibrationEvidenceInput): string | null {
-  const metrics = (input.aggregate as { metrics?: unknown }).metrics;
+  const aggregate = (input as { aggregate?: unknown }).aggregate;
+  if (aggregate === null || typeof aggregate !== "object" || Array.isArray(aggregate)) {
+    return null;
+  }
+  const metrics = (aggregate as { metrics?: unknown }).metrics;
   if (metrics === null || typeof metrics !== "object" || Array.isArray(metrics)) {
     return null;
   }

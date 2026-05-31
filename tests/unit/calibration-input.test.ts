@@ -122,6 +122,41 @@ describe("M11 calibration input reader", () => {
     await expect(readCalibrationEvidenceInput({ evidencePath })).rejects.toThrow("day.paperOrderSubmittedCount must be a safe integer");
   });
 
+  it("counts every committed evidence cost reason in day cost rejected totals", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "seemirai-calibration-cost-reason-"));
+    const artifactDir = path.join(root, "artifacts");
+    const evidencePath = path.join(root, "evidence.md");
+    await writeFile(
+      evidencePath,
+      createEvidenceMarkdown({ artifactDir, prefix: "m9-paper-trading-soak-fixture" }).replaceAll(
+        "cost:cost_margin_insufficient",
+        "cost:spread_too_wide",
+      ),
+      "utf8",
+    );
+
+    const input = await readCalibrationEvidenceInput({ evidencePath });
+
+    expect(input.days[0]?.metrics.costRejectedCount).toBe(1);
+    expect(input.days[0]?.metrics.costSummary.rejectedCount).toBe(1);
+  });
+
+  it("rejects committed evidence blocking reason items with extra delimiters", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "seemirai-calibration-reason-delimiter-"));
+    const artifactDir = path.join(root, "artifacts");
+    const evidencePath = path.join(root, "evidence.md");
+    await writeFile(
+      evidencePath,
+      createEvidenceMarkdown({ artifactDir, prefix: "m9-paper-trading-soak-fixture" }).replace(
+        "cost:cost_margin_insufficient=1",
+        "cost:cost_margin_insufficient=1=stale",
+      ),
+      "utf8",
+    );
+
+    await expect(readCalibrationEvidenceInput({ evidencePath })).rejects.toThrow("blockingReason.item must match reason=count");
+  });
+
   it("rejects calibration input when live order API calls are present", async () => {
     const input = await readCalibrationEvidenceInput({
       evidencePath: "docs/references/m9-paper-trading-soak-2026-05-25-e398a8ee.md",

@@ -287,6 +287,17 @@ describe("M11 threshold calibration report script", () => {
     expect(result.stderr).toContain("blockingReason.count must be a safe integer");
   });
 
+  it("rejects committed evidence blocking reason items with extra delimiters", async () => {
+    const fixture = await writeFixtureEvidence({ skipArtifacts: true });
+    const markdown = await readFile(fixture.evidencePath, "utf8");
+    await writeFile(fixture.evidencePath, markdown.replace("cost:cost_margin_insufficient=1439", "cost:cost_margin_insufficient=1439=stale"), "utf8");
+
+    const result = await runScriptAllowingFailure(["--evidence", fixture.evidencePath, "--document-only", "--json"]);
+
+    expect(result.code).toBe(1);
+    expect(result.stderr).toContain("blockingReason.item must match reason=count");
+  });
+
   it("rejects committed evidence submitted/fill cells with trailing text", async () => {
     const fixture = await writeFixtureEvidence({ skipArtifacts: true });
     const markdown = await readFile(fixture.evidencePath, "utf8");

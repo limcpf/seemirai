@@ -148,7 +148,7 @@ function parseDocumentDaySummaries(input: { evidencePath: string; markdown: stri
       .split("/")
       .map((value, index) => parseInteger(value.trim(), `day.${index === 0 ? "paperOrderSubmittedCount" : "paperFillCount"}`));
     const blockingReasonCounts = parseBlockingReasonText(row["주요 차단 사유"] ?? "");
-    const costRejectedCount = blockingReasonCounts["cost:cost_margin_insufficient"] ?? 0;
+    const costRejectedCount = sumReasonCounts(blockingReasonCounts, "cost");
     const costEvaluatedCount = parseInteger(row["cost evaluated"], "day.costSummary.evaluatedCount");
 
     const metricRecord = {
@@ -354,10 +354,20 @@ function parseBlockingReasonText(value: string): Record<string, number> {
   }
   return Object.fromEntries(
     stripped.split(",").map((entry) => {
-      const [key, count] = entry.split("=").map((part) => stripCode(part.trim()));
+      const parts = entry.split("=").map((part) => stripCode(part.trim()));
+      if (parts.length !== 2) {
+        throw new Error("blockingReason.item must match reason=count");
+      }
+      const [key, count] = parts;
       return [requireValue(key, "blocking reason key"), parseInteger(count, `blockingReasonCounts.${key}`)];
     }),
   );
+}
+
+function sumReasonCounts(counts: Record<string, number>, prefix: string): number {
+  return Object.entries(counts)
+    .filter(([key]) => key.startsWith(`${prefix}:`))
+    .reduce((total, [, count]) => total + count, 0);
 }
 
 function stripCode(value: string): string {

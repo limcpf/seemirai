@@ -109,6 +109,22 @@ describe("M11 calibration policy", () => {
       }),
     );
   });
+
+  it("returns failed analysis when aggregate is missing", () => {
+    const analysis = analyzeCalibrationPolicy({
+      ...createEvidenceInput(),
+      aggregate: null as unknown as CalibrationEvidenceInput["aggregate"],
+    });
+
+    expect(analysis.status).toBe("failed");
+    expect(analysis.averageMarginBps).toBeNull();
+    expect(analysis.candidates).toEqual([]);
+    expect(analysis.validation.failures).toContainEqual(
+      expect.objectContaining({
+        fieldPath: "aggregate",
+      }),
+    );
+  });
 });
 
 function createEvidenceInput(options: { aggregateMetrics?: Partial<CalibrationMetricSummary> } = {}): CalibrationEvidenceInput {

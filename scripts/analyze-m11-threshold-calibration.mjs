@@ -1178,7 +1178,11 @@ function parseBlockingReasonText(value) {
     if (stripped.length === 0) {
       throw new Error("blockingReason.item is required");
     }
-    const [key, rawCount] = stripped.split("=");
+    const parts = stripped.split("=");
+    if (parts.length !== 2) {
+      throw new Error("blockingReason.item must match reason=count");
+    }
+    const [key, rawCount] = parts;
     counts[requireValue(key, "blockingReason.key")] = parseInteger(rawCount, "blockingReason.count");
   }
   return counts;
