@@ -13,18 +13,18 @@ M11 Sub PR 1-4는 feature contract, 순수 계산기, backtest/paper parity, str
 Sub PR 5는 M9 #68 72시간 paper trading 관측 결과가 있으면 threshold 비교와 보수적 기본값 제안을 남기고, 결과가 없으면
 운영 threshold 변경을 강행하지 않는 guard를 남기는 역할이다.
 
-2026-05-26 기준 #68은 open 상태이고 72시간 관측 artifact가 승인 가능한 형태로 남아 있지 않다. 따라서 이 문서는 실제 보정값을
-확정하지 않고, M11을 구조적 준비 완료 상태로 닫기 위한 closure 기록이다.
+2026-05-30 기준, `#68`은 `issue-comment` 증거가 `passed`로 확인되어 closeout 판정을 확정했다.
+따라서 이 문서는 72시간 관측 데이터 부재 guard에서, `#68 pass`로 업데이트된 calibration 후속 상태를 반영한 기록으로 갱신한다.
 
-## 검토한 증거
+## 2026-05-30 검토한 증거
 
 | 증거 | 판정 | 이유 |
 | --- | --- | --- |
-| GitHub issue #68 | 사용 불가 | 2026-05-25T06:33:33Z 이후에도 open이고 댓글이나 완료 결론이 없다. |
-| `~/vaults/99_운영/seemirai-m9-paper/72h-paper-trading-soak` | 사용 불가 | #68 실행 기준 artifact 경로가 존재하지 않는다. |
-| `~/vaults/99_운영/seemirai-m9-paper/trading-soak/m9-paper-trading-soak-2026-05-25T06-10-52-307Z-f5f1d776-summary.json` | 사용 불가 | `status: failed`, 관측 `17,254,189ms`가 요청 `259,200,000ms`보다 짧고, `durationCompleted`, `paperTradingPath`, `interrupted` check가 실패했다. |
-| 같은 trading soak의 metric | 참고만 가능 | `liveOrderApiCalls: 0`은 확인됐지만 `paperOrderSubmittedCount: 0`, `paperFillCount: 0`이라 72시간 calibration 근거가 아니다. |
-| controlled decision fixture summary | 참고만 가능 | fixture smoke는 paper 주문/체결 경로를 확인하지만 72시간 public WebSocket 운영 관측을 대체하지 않는다. |
+| GitHub issue #68 | 통과 | `validate-m9-paper-soak-evidence.mjs --issue-comment`로 `statusCode=passed` 판정을 재확인했다. |
+| `~/vaults/99_운영/seemirai-m9-paper/trading-soak/m9-paper-trading-soak-2026-05-25T11-01-04-344Z-e398a8ee-summary.json` | 통과 | `status: passed`, 기간 `259,200,011ms`(요청 `259,200,000ms`)를 충족하고 `paperTradingPath`, `durationCompleted` 조건을 만족한다. |
+| 같은 run의 day summary 3개 | 통과 | Day 1/2/3 모두 passed, paper 주문/체결 metric과 비용/슬리피지/체결률/차단 사유 metric이 존재한다. |
+| 3일 비교 report | 통과 | `~/vaults/99_운영/seemirai-m9-paper/m9-3day-trading-soak-comparison.md`에서 Day 1/2/3를 같은 포맷으로 비교했다. |
+| controlled decision fixture summary | 유지 | fixture smoke는 paper 주문/체결 경로 점검용 참고 증거로 활용한다. 72시간 run은 별도 운영 증거로 해석한다. |
 
 ## 결정
 
@@ -39,11 +39,11 @@ M11은 다음 범위를 완료한 것으로 닫는다.
 - strategy variant required feature와 discard audit 확장
 - threshold 비교에 필요한 cost/risk/hold/discard reason summary 경계 정리
 
-실제 threshold 보정값 확정은 #68이 완료된 뒤 별도 calibration PR 또는 issue에서 처리한다.
+`#68`은 완료 판정 상태이며, 실제 threshold 보정값 확정은 #68 closeout 문구(댓글/운영 로그 참조) 후 별도 calibration PR 또는 issue에서 처리한다.
 
 ## 비교 기준
 
-#68 완료 후 threshold 변경 전후 report는 최소한 아래 항목을 같은 run shape로 비교해야 한다.
+#68 완료 후 threshold 변경 전후 report는 동일 run shape로 아래 항목을 비교해야 한다.
 
 - `costSummary.evaluatedCount`, `allowedCount`, `rejectedCount`
 - `averageCostBps`, `averageRequiredReturnBps`, `averageMarginBps`
@@ -67,9 +67,9 @@ spread 상한, cost-adjusted margin 하한을 보수적으로 유지하거나 �
 
 ## 후속 처리
 
-1. #68 완료 시 issue 댓글에 72시간 summary, day summary 3개, 3일 비교 report 경로와 pass/fail 결론을 남긴다.
-2. #68 결과가 3일 비교 가능한 형태로 닫히면 별도 calibration issue 또는 PR에서 threshold 후보를 제안한다.
-3. #68이 실패로 닫히면 실패 원인을 M9 운영 보강 이슈로 분리하고 M11 threshold 변경은 계속 보류한다.
+1. #68 완료 시 issue #68 댓글에 72시간 summary, day summary 3개, 3일 비교 report 경로와 pass/fail 결론을 남긴다.
+2. #68 결과가 3일 비교 가능한 형태로 닫혔으므로 별도 calibration issue 또는 PR에서 threshold 후보를 제안한다.
+3. #68이 실패로 닫혔다면 실패 원인을 M9 운영 보강 이슈로 분리하고 M11 threshold 변경은 계속 보류한다.
 4. M12의 무동작 TypeScript 모듈 분리는 #75 merge 뒤 진행할 수 있다. M12는 M9 운영 인증이나 threshold 보정값을 요구하지 않는다.
 
 ## Acceptance mapping

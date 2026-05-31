@@ -135,9 +135,9 @@ Acceptance Criteria:
 - [ ] kill switch drill에서 신규 주문 차단, pending paper order cancel plan, Telegram 알림 evidence가 같은 correlation id로 추적된다.
 - [ ] controlled fixture에서 paper decision runner가 최소 1회 paper 주문 제출/체결 경로를 통과하고, 주문 0건 frame은
       hold/discard/cost/risk reason count로 설명된다.
-- [ ] 3일 paper trading soak runner가 `SEEMIRAI_RUN_M9_PAPER_TRADING_SOAK=1` guard 아래에서 PaperBroker 주문/체결 cycle을
+- [x] 3일 paper trading soak runner가 `SEEMIRAI_RUN_M9_PAPER_TRADING_SOAK=1` guard 아래에서 PaperBroker 주문/체결 cycle을
       반복하고 day별 summary를 남긴다.
-- [ ] 3일 연속 paper report가 같은 포맷으로 비교 가능하다.
+- [x] 3일 연속 paper report가 같은 포맷으로 비교 가능하다.
 
 예상 sub PR:
 
@@ -159,7 +159,28 @@ Acceptance Criteria:
 | 4 | #94 | M9 runbook과 runtime/reliability 문서 정리 | merged |
 | 5 | #99 | mother PR 검증 결과와 #68 연동 사용법 closeout | merged |
 
-Mother PR #100은 2026-05-27 기준 `main` 병합 전 리뷰 드레인과 GitHub check 재검증 단계다.
+Mother PR #100은 병합 완료 상태로 종료되었으며, #68 closeout 판정은 아래 기록으로 확정한다.
+
+### #68 closeout (2026-05-30)
+
+- `issue-comment` 검증 결과: `passed`
+- aggregate summary: `/home/lim/vaults/99_운영/seemirai-m9-paper/trading-soak/m9-paper-trading-soak-2026-05-25T11-01-04-344Z-e398a8ee-summary.json`
+- aggregate report: `/home/lim/vaults/99_운영/seemirai-m9-paper/trading-soak/m9-paper-trading-soak-2026-05-25T11-01-04-344Z-e398a8ee-report.md`
+- day summary: Day 1/2/3 모두 passed
+- day report: Day 1/2/3 모두 생성
+- 3일 비교 report: `/home/lim/vaults/99_운영/seemirai-m9-paper/m9-3day-trading-soak-comparison.md`
+- `liveOrderApiCalls=0`, `crash=0`, `unhandledRejection=0`, `daily report evidence` 충족
+- `SEEMIRAI_RUN_M9_PAPER_TRADING_SOAK=1` guard 하에서 3일 연속 운영 확인
+- issue #68 closeout 댓글: https://github.com/limcpf/seemirai/issues/68#issuecomment-4583232258
+- 필요 조치: `node scripts/validate-m9-paper-soak-evidence.mjs --artifact-dir /home/lim/vaults/99_운영/seemirai-m9-paper/trading-soak --issue-comment` 출력으로 closeout 판정 근거가 일치함을 재확인한다.
+
+issue #68 closeout 댓글 본문은 아래 명령으로 재생성 가능하다.
+
+```sh
+node scripts/validate-m9-paper-soak-evidence.mjs \
+  --artifact-dir /home/lim/vaults/99_운영/seemirai-m9-paper/trading-soak \
+  --issue-comment
+```
 
 검증:
 
@@ -253,16 +274,16 @@ Acceptance Criteria:
 | 2 | 순수 feature calculator와 fixture tests | PR #72 merged |
 | 3 | backtest/paper fixture feature parity 검증 | PR #73 merged |
 | 4 | strategy variant 입력 확장과 discard audit 보강 | PR #74 merged |
-| 5 | M9 #68 관측 데이터 기반 calibration report 또는 보수적 제안/후속 issue 후보 정리 | PR #75, #68 데이터 부재로 threshold 변경 보류 |
+| 5 | M9 #68 관측 데이터 기반 calibration report 또는 보수적 제안/후속 issue 후보 정리 | PR #75, #68 pass 확인으로 threshold 비교 후보 산정 |
 
 현재 운영 상태:
 
 - GitHub issue: #70
 - mother branch: `issue-70-mother`
 - Sub PR 1-4: #71, #72, #73, #74 merged
-- Sub PR 5: #75, #68 관측 데이터 부재 시 M11 calibration을 운영 threshold 변경 없이 닫는 closure PR
+- Sub PR 5: #75, #68 closeout(pass) 확인 후 M11 calibration을 운영 threshold 변경 제안으로 이행 준비
 - M9 #68 운영 관측 중에는 paper runner, daily report, Telegram, retry, control drill, 3일 비교 포맷과 기본 운영 threshold를 변경하지 않는다.
-- 2026-05-26 기준 #68은 open이고 지정된 `72h-paper-trading-soak` artifact 경로가 없어 실제 threshold 보정값 확정은 보류한다.
+- 2026-05-30 기준 #68은 `passed`이며 `/home/lim/vaults/99_운영/seemirai-m9-paper/trading-soak` 경로의 3일 run artifact와 3일 비교 report가 확보되어 threshold 비교 후보 산정이 가능하다.
 
 ### M12. 큰 TypeScript 모듈 책임 분리
 
@@ -392,9 +413,11 @@ M10과 M12 일부는 M9와 병렬로 검토할 수 있지만, M9의 운영 증�
 
 ## Open Questions
 
-- 실제 paper 운영 안정화 기준을 3일, 7일, 14일 중 어디로 둘지 결정해야 한다.
-- LLM provider와 모델 선택은 별도 승인과 공식 문서 확인 후 결정해야 한다.
 - v0.2 pilot에서 read-only account integration을 먼저 열지, 주문 조회까지 함께 열지 결정해야 한다.
+
+### 완료된 판단
+
+- paper 운영 안정화 기준은 `3일(72시간)`로 확정했고, closeout은 `#68` 검증 결과로 반영한다.
 
 결정된 항목:
 
