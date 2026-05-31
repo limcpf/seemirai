@@ -303,6 +303,13 @@
       "owner_scope": "docs/tech-debt"
     },
     {
+      "path": ".agents/skills/deepseek-implementation-handoff/SKILL.md",
+      "kind": "skill",
+      "role": "구현 에이전트에게 milestone 또는 issue 구현 handoff를 작성하는 workflow",
+      "read_when": ["DeepSeek 구현 handoff 작성", "Reasonix 구현 handoff 작성", "외부 구현 에이전트 인계"],
+      "owner_scope": ".agents/skills/deepseek-implementation-handoff"
+    },
+    {
       "path": ".agents/skills/project-bootstrap/SKILL.md",
       "kind": "skill",
       "role": "새 프로젝트 운영 보일러플레이트 적용 workflow",
