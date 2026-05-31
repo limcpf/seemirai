@@ -480,6 +480,18 @@ describe("M11 calibration input reader", () => {
     );
   });
 
+  it("returns failures for invalid top-level input instead of throwing", () => {
+    const validation = validateCalibrationEvidenceInput(null as unknown as Parameters<typeof validateCalibrationEvidenceInput>[0]);
+
+    expect(validation.passed).toBe(false);
+    expect(validation.failures).toContainEqual(
+      expect.objectContaining({
+        fieldPath: "input",
+        message: "calibration 입력은 객체여야 합니다.",
+      }),
+    );
+  });
+
   it("returns failures for invalid day entries instead of throwing", async () => {
     const input = await readCalibrationEvidenceInput({
       evidencePath: "docs/references/m9-paper-trading-soak-2026-05-25-e398a8ee.md",
@@ -522,6 +534,33 @@ describe("M11 calibration input reader", () => {
     );
   });
 
+  it("rejects aggregate unknown reason counts that do not match day totals", async () => {
+    const input = await readCalibrationEvidenceInput({
+      evidencePath: "docs/references/m9-paper-trading-soak-2026-05-25-e398a8ee.md",
+    });
+    const validation = validateCalibrationEvidenceInput({
+      ...input,
+      aggregate: {
+        ...input.aggregate,
+        metrics: {
+          ...input.aggregate.metrics,
+          blockingReasonCounts: {
+            ...input.aggregate.metrics.blockingReasonCounts,
+            legacy_reason: 1,
+          },
+        },
+      },
+    });
+
+    expect(validation.passed).toBe(false);
+    expect(validation.failures).toContainEqual(
+      expect.objectContaining({
+        fieldPath: "aggregate.metrics.blockingReasonCounts.legacy_reason",
+        message: "aggregate reason count는 Day 1/2/3 합계와 일치해야 합니다.",
+      }),
+    );
+  });
+
   it("rejects summary cross metrics that do not describe the same evidence", async () => {
     const input = await readCalibrationEvidenceInput({
       evidencePath: "docs/references/m9-paper-trading-soak-2026-05-25-e398a8ee.md",
@@ -544,6 +583,32 @@ describe("M11 calibration input reader", () => {
     expect(validation.failures).toContainEqual(
       expect.objectContaining({
         fieldPath: "aggregate.metrics.slippageSummary.observedFillCount",
+      }),
+    );
+  });
+
+  it("rejects paper fills when no paper orders were submitted", async () => {
+    const input = await readCalibrationEvidenceInput({
+      evidencePath: "docs/references/m9-paper-trading-soak-2026-05-25-e398a8ee.md",
+    });
+    const validation = validateCalibrationEvidenceInput({
+      ...input,
+      aggregate: {
+        ...input.aggregate,
+        metrics: {
+          ...input.aggregate.metrics,
+          paperOrderSubmittedCount: 0,
+          paperFillCount: 1,
+          fillRate: 0,
+        },
+      },
+    });
+
+    expect(validation.passed).toBe(false);
+    expect(validation.failures).toContainEqual(
+      expect.objectContaining({
+        fieldPath: "aggregate.metrics.paperFillCount",
+        message: "paper 체결 수는 제출 주문 수보다 클 수 없습니다.",
       }),
     );
   });

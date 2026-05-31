@@ -40,6 +40,15 @@ const requiredMetricFields = [
 export function validateCalibrationEvidenceInput(input: CalibrationEvidenceInput): CalibrationInputValidationResult {
   const failures: CalibrationInputValidationFailure[] = [];
 
+  // exported validator 경계에서는 type assertion을 우회한 값도 실패 목록으로 닫아야 한다.
+  if (!isRecord(input)) {
+    failures.push(createFailure("input", "calibration 입력은 객체여야 합니다.", { value: input }));
+    return {
+      passed: false,
+      failures,
+    };
+  }
+
   if (input.status !== "passed") {
     failures.push(createFailure("status", "내부 evidence 문서의 판정이 통과가 아니어서 calibration 입력으로 사용할 수 없습니다.", {
       status: input.status,
@@ -168,9 +177,7 @@ function validateAggregateReasonMap(
   if (!isRecord(aggregateCounts) || !dayCounts.every(isRecord)) {
     return;
   }
-  const keys = new Set(
-    [...Object.keys(aggregateCounts), ...dayCounts.flatMap((counts) => Object.keys(counts))].filter((key) => key.includes(":")),
-  );
+  const keys = new Set([...Object.keys(aggregateCounts), ...dayCounts.flatMap((counts) => Object.keys(counts))]);
   for (const key of keys) {
     const aggregateValue = aggregateCounts[key] ?? 0;
     const dayTotal = dayCounts.reduce((total, counts) => total + ((counts[key] as number | undefined) ?? 0), 0);
@@ -366,6 +373,15 @@ function validateFillRate(
     paperOrderSubmittedCount >= 0 &&
     paperFillCount >= 0
   ) {
+    if (paperFillCount > paperOrderSubmittedCount) {
+      failures.push(
+        createFailure(`${fieldPrefix}.metrics.paperFillCount`, "paper 체결 수는 제출 주문 수보다 클 수 없습니다.", {
+          paperOrderSubmittedCount,
+          paperFillCount,
+          sourcePath: summary.sourcePath,
+        }),
+      );
+    }
     const expectedFillRate = paperOrderSubmittedCount === 0 ? 0 : paperFillCount / paperOrderSubmittedCount;
     const roundedExpectedFillRate = Number(expectedFillRate.toFixed(fillRatePrecision));
     if (Math.abs(fillRate - roundedExpectedFillRate) > fillRateTolerance) {
