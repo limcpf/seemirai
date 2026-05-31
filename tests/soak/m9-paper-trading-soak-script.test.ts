@@ -85,6 +85,9 @@ describe("M9 paper trading soak script", () => {
     const dayOne = JSON.parse(await readFile(summary.artifacts.dailySummaryPaths[0]!, "utf8")) as {
       metrics: { pnlSummary: typeof summary.metrics.pnlSummary };
     };
+    const aggregateReport = await readFile(summary.artifacts.reportPath, "utf8");
+    const dayOneReportPath = summary.artifacts.dailySummaryPaths[0]!.replace(/summary\.json$/u, "report.md");
+    const dayOneReport = await readFile(dayOneReportPath, "utf8");
     expect(dayOne.metrics.pnlSummary).toMatchObject({
       totalPnlKrw: "-6",
       totalFeesKrw: "5",
@@ -92,6 +95,10 @@ describe("M9 paper trading soak script", () => {
       filledOrderCount: 1,
     });
     await expect(stat(summary.artifacts.reportPath)).resolves.toBeDefined();
+    expect(aggregateReport).toContain("## KRW 손익 요약");
+    expect(aggregateReport).toContain("| 총 손익 | -18 KRW |");
+    expect(dayOneReport).toContain("| 총 손익 | -6 KRW |");
+    expect(dayOneReport).toContain("| 수수료 | 5 KRW |");
     await expect(stat(summary.artifacts.rawLogPath)).resolves.toBeDefined();
 
     const comparison = await execFileAsync("node", [
