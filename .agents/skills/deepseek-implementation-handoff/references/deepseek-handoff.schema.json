@@ -1,0 +1,127 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "DeepSeek Implementation Handoff Contract",
+  "type": "object",
+  "required": [
+    "version",
+    "milestone",
+    "title",
+    "status",
+    "handoffMarkdownPath",
+    "goal",
+    "readFirst",
+    "allowedChanges",
+    "forbiddenChanges",
+    "expectedArtifacts",
+    "commands",
+    "acceptanceCriteria",
+    "verification",
+    "reportBack",
+    "risks"
+  ],
+  "properties": {
+    "version": {
+      "type": "integer",
+      "const": 1
+    },
+    "milestone": {
+      "type": "string",
+      "pattern": "^M[0-9]+$"
+    },
+    "title": {
+      "type": "string",
+      "minLength": 1
+    },
+    "status": {
+      "type": "string",
+      "enum": ["draft", "ready-for-implementation", "implemented", "blocked"]
+    },
+    "handoffMarkdownPath": {
+      "type": "string",
+      "minLength": 1
+    },
+    "goal": {
+      "type": "string",
+      "minLength": 1
+    },
+    "readFirst": {
+      "type": "array",
+      "items": { "type": "string" },
+      "minItems": 1
+    },
+    "allowedChanges": {
+      "type": "array",
+      "items": { "type": "string" },
+      "minItems": 1
+    },
+    "forbiddenChanges": {
+      "type": "array",
+      "items": { "type": "string" },
+      "minItems": 1
+    },
+    "expectedArtifacts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["pathPattern", "purpose"],
+        "properties": {
+          "pathPattern": { "type": "string" },
+          "purpose": { "type": "string" },
+          "mustExistAfter": { "type": "boolean" }
+        },
+        "additionalProperties": false
+      }
+    },
+    "commands": {
+      "type": "object",
+      "required": ["handoff", "verification"],
+      "properties": {
+        "handoff": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "verification": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      },
+      "additionalProperties": false
+    },
+    "acceptanceCriteria": {
+      "type": "array",
+      "items": { "type": "string" },
+      "minItems": 1
+    },
+    "verification": {
+      "type": "object",
+      "required": ["required", "commands", "expectedResult"],
+      "properties": {
+        "required": { "type": "boolean" },
+        "commands": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "expectedResult": { "type": "string" }
+      },
+      "additionalProperties": false
+    },
+    "reportBack": {
+      "type": "array",
+      "items": { "type": "string" },
+      "minItems": 1
+    },
+    "risks": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["risk", "mitigation"],
+        "properties": {
+          "risk": { "type": "string" },
+          "mitigation": { "type": "string" }
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false
+}
