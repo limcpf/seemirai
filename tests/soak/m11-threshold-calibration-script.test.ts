@@ -47,7 +47,7 @@ describe("M11 threshold calibration report script", () => {
       },
     });
 
-    const result = await runScriptAllowingFailure(["--evidence", fixture.evidencePath, "--json"]);
+    const result = await runScriptAllowingFailure(["--evidence", fixture.evidencePath, "--paper-config", path.join(fixture.root, "missing-paper.json"), "--json"]);
     const report = JSON.parse(result.stdout) as CalibrationReportJson;
 
     expect(result.code).toBe(1);
@@ -58,6 +58,47 @@ describe("M11 threshold calibration report script", () => {
       }),
     );
     expect(report.thresholdCandidates).toEqual([]);
+  });
+
+  it("writes an inactive conservative profile proposal without mutating paper config", async () => {
+    const fixture = await writeFixtureEvidence();
+    const proposalPath = path.join(fixture.root, "m11-profile-proposal.json");
+    const configPath = path.join(process.cwd(), "config", "paper.json");
+    const beforeConfig = await readFile(configPath, "utf8");
+
+    const { stdout } = await execFileAsync("node", [scriptPath, "--evidence", fixture.evidencePath, "--proposal-output", proposalPath, "--json"]);
+    const report = JSON.parse(stdout) as CalibrationReportJson;
+    const proposal = JSON.parse(await readFile(proposalPath, "utf8")) as CalibrationProfileProposalJson;
+    const afterConfig = await readFile(configPath, "utf8");
+
+    expect(afterConfig).toBe(beforeConfig);
+    expect(report.outputs.profileProposalPath).toBe(proposalPath);
+    expect(report.profileProposal.active).toBe(false);
+    expect(proposal.active).toBe(false);
+    expect(proposal.activationRequired).toBe(true);
+    expect(proposal.safety.defaultConfigMutation).toBe(false);
+    expect(proposal.patchOperations.length).toBeGreaterThan(0);
+    expect(proposal.patchOperations).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          path: "/strategyParameters/trend_following/max_spread_bps",
+          value: "7",
+          from: "8",
+          to: "7",
+          aggressiveness: "conservative",
+        }),
+        expect.objectContaining({
+          path: "/strategyParameters/mean_reversion/min_cost_adjusted_margin_bps",
+          value: "2",
+          from: "0",
+          to: "2",
+          aggressiveness: "conservative",
+        }),
+      ]),
+    );
+    expect(proposal.patchOperations.map((operation) => operation.candidateKey)).not.toContain("relax_alpha_thresholds");
+    expect(proposal.blockedCandidates).toContainEqual(expect.objectContaining({ key: "relax_alpha_thresholds" }));
+    expect(proposal.manualReviewItems).toContainEqual(expect.objectContaining({ candidateKey: "cost_safety_buffer_bps" }));
   });
 
   it("keeps user-facing Korean summary separate from trace identifiers", async () => {
@@ -264,6 +305,24 @@ interface CalibrationReportJson {
   riskInteractions: Array<{ kind: string }>;
   validation: { failures: Array<{ fieldPath: string }> };
   trace: { sourceArtifacts: { rawEventLogPath: string } };
+  outputs: { profileProposalPath: string | null };
+  profileProposal: CalibrationProfileProposalJson;
+}
+
+interface CalibrationProfileProposalJson {
+  active: boolean;
+  activationRequired: boolean;
+  safety: { defaultConfigMutation: boolean };
+  patchOperations: Array<{
+    path: string;
+    value: string;
+    from: string;
+    to: string;
+    candidateKey: string;
+    aggressiveness: string;
+  }>;
+  manualReviewItems: Array<{ candidateKey: string }>;
+  blockedCandidates: Array<{ key: string }>;
 }
 
 interface CalibrationMetricSummary {
