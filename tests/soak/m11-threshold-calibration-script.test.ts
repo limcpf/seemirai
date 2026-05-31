@@ -128,51 +128,76 @@ describe("M11 threshold calibration report script", () => {
     expect(report.days[0]?.sourceKind).toBe("evidence_document");
     expect(report.thresholdRelaxationBlocked).toBe(true);
   });
+
+  it("falls back to committed evidence tables when source artifact summaries are unavailable", async () => {
+    const fixture = await writeFixtureEvidence({ skipArtifacts: true });
+
+    const { stdout } = await execFileAsync("node", [scriptPath, "--evidence", fixture.evidencePath, "--json"]);
+    const report = JSON.parse(stdout) as CalibrationReportJson;
+
+    expect(report.status).toBe("passed");
+    expect(report.aggregate.sourceKind).toBe("evidence_document");
+    expect(report.days[0]?.sourceKind).toBe("evidence_document");
+    expect(report.aggregate.metrics.liveOrderApiCalls).toBe(0);
+  });
+
+  it("does not coerce empty committed evidence numeric cells to zero", async () => {
+    const fixture = await writeFixtureEvidence({ skipArtifacts: true });
+    const markdown = await readFile(fixture.evidencePath, "utf8");
+    await writeFile(fixture.evidencePath, markdown.replace("| liveOrderApiCalls | `0` |", "| liveOrderApiCalls |  |"), "utf8");
+
+    const result = await runScriptAllowingFailure(["--evidence", fixture.evidencePath, "--document-only", "--json"]);
+
+    expect(result.code).toBe(1);
+    expect(result.stderr).toContain("table.liveOrderApiCalls is required");
+  });
 });
 
 async function runScriptAllowingFailure(args: string[]) {
   try {
-    const { stdout } = await execFileAsync("node", [scriptPath, ...args]);
-    return { code: 0, stdout };
+    const { stdout, stderr } = await execFileAsync("node", [scriptPath, ...args]);
+    return { code: 0, stdout, stderr };
   } catch (error) {
-    const failure = error as { code?: number; stdout?: string };
-    return { code: failure.code ?? 1, stdout: failure.stdout ?? "" };
+    const failure = error as { code?: number; stdout?: string; stderr?: string };
+    return { code: failure.code ?? 1, stdout: failure.stdout ?? "", stderr: failure.stderr ?? "" };
   }
 }
 
-async function writeFixtureEvidence(options: { aggregateMetrics?: Partial<CalibrationMetricSummary> } = {}) {
+async function writeFixtureEvidence(options: { aggregateMetrics?: Partial<CalibrationMetricSummary>; skipArtifacts?: boolean } = {}) {
   const root = await mkdtemp(path.join(os.tmpdir(), "seemirai-m11-calibration-"));
   const artifactDir = path.join(root, "trading-soak");
   const prefix = "m9-paper-trading-soak-2026-05-25T11-01-04-344Z-e398a8ee";
-  await mkdir(artifactDir);
-  await writeSummary(path.join(artifactDir, `${prefix}-summary.json`), null, {
-    blockingReasonCounts: {
-      "cost:cost_margin_insufficient": 4319,
-      "hold:fixture_waiting_for_signal": 4319,
-      "risk:expected_loss_limit_exceeded": 4319,
-      "risk:order_notional_limit_exceeded": 4378,
-    },
-    costRejectedCount: 4319,
-    riskRejectedCount: 6508,
-    paperOrderSubmittedCount: 2130,
-    paperFillCount: 2130,
-    ...options.aggregateMetrics,
-  });
-  await Promise.all(
-    [1, 2, 3].map((day) =>
-      writeSummary(path.join(artifactDir, `${prefix}-day-${day}-summary.json`), day, {
-        blockingReasonCounts: {
-          "cost:cost_margin_insufficient": 1440,
-          "risk:expected_loss_limit_exceeded": 1440,
-          "risk:order_notional_limit_exceeded": 1400 - day,
-        },
-        costRejectedCount: 1440,
-        riskRejectedCount: 2200 - day,
-        paperOrderSubmittedCount: 700 + day,
-        paperFillCount: 700 + day,
-      }),
-    ),
-  );
+  if (options.skipArtifacts !== true) {
+    await mkdir(artifactDir);
+    await writeSummary(path.join(artifactDir, `${prefix}-summary.json`), null, {
+      blockingReasonCounts: {
+        "cost:cost_margin_insufficient": 4319,
+        "hold:fixture_waiting_for_signal": 4319,
+        "risk:expected_loss_limit_exceeded": 4319,
+        "risk:order_notional_limit_exceeded": 4378,
+      },
+      costRejectedCount: 4319,
+      riskRejectedCount: 6508,
+      paperOrderSubmittedCount: 2130,
+      paperFillCount: 2130,
+      ...options.aggregateMetrics,
+    });
+    await Promise.all(
+      [1, 2, 3].map((day) =>
+        writeSummary(path.join(artifactDir, `${prefix}-day-${day}-summary.json`), day, {
+          blockingReasonCounts: {
+            "cost:cost_margin_insufficient": 1440,
+            "risk:expected_loss_limit_exceeded": 1440,
+            "risk:order_notional_limit_exceeded": 1400 - day,
+          },
+          costRejectedCount: 1440,
+          riskRejectedCount: 2200 - day,
+          paperOrderSubmittedCount: 700 + day,
+          paperFillCount: 700 + day,
+        }),
+      ),
+    );
+  }
   const evidencePath = path.join(root, "evidence.md");
   await writeFile(evidencePath, createEvidenceMarkdown({ artifactDir, prefix }), "utf8");
   return { root, artifactDir, evidencePath };
@@ -294,7 +319,7 @@ interface CalibrationReportJson {
   status: string;
   operatorSummary: string;
   action: string;
-  aggregate: { metrics: CalibrationMetricSummary };
+  aggregate: { sourceKind: string; metrics: CalibrationMetricSummary };
   days: Array<{ sourceKind: string }>;
   reasonBreakdown: {
     cost: { totalCount: number };

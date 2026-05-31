@@ -117,7 +117,7 @@ function validateRunSummary(
     "liveOrderApiCalls",
   ]) {
     const value = readPath(summary.metrics, field);
-    if (typeof value === "number" && (!Number.isSafeInteger(value) || value < 0)) {
+    if (value !== undefined && (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0)) {
       failures.push(
         createFailure(`${fieldPrefix}.metrics.${field}`, "count metric은 0 이상의 안전한 정수여야 합니다.", {
           value,

@@ -137,16 +137,30 @@ async function readCalibrationInput({ evidencePath, documentOnly }) {
     };
   }
 
-  const aggregate = await readArtifactSummary({
-    summaryPath: requirePath(sourceArtifacts.aggregateSummaryPath, "aggregate summary"),
-    day: null,
-  });
-  const days = await Promise.all(
-    sourceArtifacts.daySummaryPaths
-      .slice()
-      .sort((left, right) => left.day - right.day)
-      .map((entry) => readArtifactSummary({ summaryPath: entry.path, day: entry.day })),
-  );
+  let aggregate;
+  let days;
+  try {
+    aggregate = await readArtifactSummary({
+      summaryPath: requirePath(sourceArtifacts.aggregateSummaryPath, "aggregate summary"),
+      day: null,
+    });
+    days = await Promise.all(
+      sourceArtifacts.daySummaryPaths
+        .slice()
+        .sort((left, right) => left.day - right.day)
+        .map((entry) => readArtifactSummary({ summaryPath: entry.path, day: entry.day })),
+    );
+  } catch (error) {
+    if (!isMissingFileError(error)) {
+      throw error;
+    }
+    // 커밋된 evidence만 있는 fresh checkout에서도 report를 재현할 수 있게 source artifact 부재는 문서 표 파싱으로 낮춘다.
+    return {
+      ...input,
+      aggregate: parseDocumentAggregateSummary({ evidencePath, markdown }),
+      days: parseDocumentDaySummaries({ evidencePath, markdown }),
+    };
+  }
 
   return {
     ...input,
@@ -1071,7 +1085,11 @@ function readNullableDecimalString(value, fieldPath) {
 }
 
 function parseInteger(value, fieldPath) {
-  const parsed = Number.parseInt(stripCode(String(value ?? "")), 10);
+  const normalized = stripCode(String(value ?? ""));
+  if (normalized.length === 0) {
+    throw new Error(`${fieldPath} is required`);
+  }
+  const parsed = Number.parseInt(normalized, 10);
   if (!Number.isSafeInteger(parsed)) {
     throw new Error(`${fieldPath} must be a safe integer`);
   }
@@ -1079,7 +1097,11 @@ function parseInteger(value, fieldPath) {
 }
 
 function parseFiniteNumber(value, fieldPath) {
-  const parsed = Number(stripCode(String(value ?? "")));
+  const normalized = stripCode(String(value ?? ""));
+  if (normalized.length === 0) {
+    throw new Error(`${fieldPath} is required`);
+  }
+  const parsed = Number(normalized);
   if (!Number.isFinite(parsed)) {
     throw new Error(`${fieldPath} must be a finite number`);
   }
@@ -1106,6 +1128,10 @@ function requirePath(value, label) {
     throw new Error(`${label} path is required`);
   }
   return value;
+}
+
+function isMissingFileError(error) {
+  return error instanceof Error && "code" in error && error.code === "ENOENT";
 }
 
 function readString(value) {

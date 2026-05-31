@@ -93,6 +93,30 @@ describe("M11 calibration input reader", () => {
     );
   });
 
+  it("rejects non-number count values in prebuilt calibration input objects", async () => {
+    const input = await readCalibrationEvidenceInput({
+      evidencePath: "docs/references/m9-paper-trading-soak-2026-05-25-e398a8ee.md",
+    });
+    const validation = validateCalibrationEvidenceInput({
+      ...input,
+      aggregate: {
+        ...input.aggregate,
+        metrics: {
+          ...input.aggregate.metrics,
+          paperOrderSubmittedCount: "2130" as unknown as number,
+        },
+      },
+    });
+
+    expect(validation.passed).toBe(false);
+    expect(validation.failures).toContainEqual(
+      expect.objectContaining({
+        fieldPath: "aggregate.metrics.paperOrderSubmittedCount",
+        message: "count metric은 0 이상의 안전한 정수여야 합니다.",
+      }),
+    );
+  });
+
   it("fails closed when day numbers are duplicated or missing", async () => {
     const input = await readCalibrationEvidenceInput({
       evidencePath: "docs/references/m9-paper-trading-soak-2026-05-25-e398a8ee.md",
