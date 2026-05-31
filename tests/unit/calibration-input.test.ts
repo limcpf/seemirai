@@ -175,6 +175,64 @@ describe("M11 calibration input reader", () => {
     );
   });
 
+  it("accepts fill rate rounded to the runner precision", async () => {
+    const input = await readCalibrationEvidenceInput({
+      evidencePath: "docs/references/m9-paper-trading-soak-2026-05-25-e398a8ee.md",
+    });
+    const validation = validateCalibrationEvidenceInput({
+      ...input,
+      aggregate: {
+        ...input.aggregate,
+        metrics: {
+          ...input.aggregate.metrics,
+          paperOrderSubmittedCount: 3,
+          paperFillCount: 1,
+          fillRate: 0.333333,
+        },
+      },
+    });
+
+    expect(validation.failures).not.toContainEqual(
+      expect.objectContaining({
+        fieldPath: "aggregate.metrics.fillRate",
+      }),
+    );
+  });
+
+  it("rejects malformed decimal strings and missing reason count maps in prebuilt inputs", async () => {
+    const input = await readCalibrationEvidenceInput({
+      evidencePath: "docs/references/m9-paper-trading-soak-2026-05-25-e398a8ee.md",
+    });
+    const validation = validateCalibrationEvidenceInput({
+      ...input,
+      aggregate: {
+        ...input.aggregate,
+        metrics: {
+          ...input.aggregate.metrics,
+          costSummary: {
+            ...input.aggregate.metrics.costSummary,
+            averageMarginBps: "abc",
+          },
+          holdReasonCounts: null as unknown as Record<string, number>,
+        },
+      },
+    });
+
+    expect(validation.passed).toBe(false);
+    expect(validation.failures).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          fieldPath: "aggregate.metrics.costSummary.averageMarginBps",
+          message: "decimal metric은 유한한 숫자 문자열이어야 합니다.",
+        }),
+        expect.objectContaining({
+          fieldPath: "aggregate.metrics.holdReasonCounts",
+          message: "reason count map은 객체여야 합니다.",
+        }),
+      ]),
+    );
+  });
+
   it("fails closed when day numbers are duplicated or missing", async () => {
     const input = await readCalibrationEvidenceInput({
       evidencePath: "docs/references/m9-paper-trading-soak-2026-05-25-e398a8ee.md",

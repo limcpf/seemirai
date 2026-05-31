@@ -6,6 +6,9 @@ import type {
   CalibrationRunSummary,
 } from "./types.js";
 
+const fillRatePrecision = 6;
+const fillRateTolerance = 10 ** -fillRatePrecision;
+
 const requiredMetricFields = [
   "costSummary.evaluatedCount",
   "costSummary.allowedCount",
@@ -191,6 +194,12 @@ function validateRunSummary(
   }
 }
 
+/**
+ * paper 주문/체결 count와 fillRate가 동일한 run summary를 설명하는지 검증한다.
+ *
+ * 이 helper는 source artifact reader를 거치지 않고 이미 구성된 입력 객체가 들어오는 validator 경계에서 호출된다.
+ * runner가 fillRate를 6자리 소수로 저장하는 invariant를 기준으로 비교하며, 외부 side effect 없이 failure만 누적한다.
+ */
 function validateFillRate(
   summary: CalibrationRunSummary,
   fieldPrefix: string,
@@ -213,11 +222,12 @@ function validateFillRate(
     paperFillCount >= 0
   ) {
     const expectedFillRate = paperOrderSubmittedCount === 0 ? 0 : paperFillCount / paperOrderSubmittedCount;
-    if (Math.abs(fillRate - expectedFillRate) > Number.EPSILON) {
+    const roundedExpectedFillRate = Number(expectedFillRate.toFixed(fillRatePrecision));
+    if (Math.abs(fillRate - roundedExpectedFillRate) > fillRateTolerance) {
       failures.push(
         createFailure(`${fieldPrefix}.metrics.fillRate`, "fillRate는 paper 주문/체결 count와 일치해야 합니다.", {
           value: fillRate,
-          expectedFillRate,
+          expectedFillRate: roundedExpectedFillRate,
           paperOrderSubmittedCount,
           paperFillCount,
           sourcePath: summary.sourcePath,
@@ -236,6 +246,10 @@ function validatePresentDecimal(
 ): void {
   if (value === null) {
     failures.push(createFailure(fieldPath, message, { sourcePath }));
+    return;
+  }
+  if (typeof value !== "string" || !/^-?\d+(?:\.\d+)?$/u.test(value)) {
+    failures.push(createFailure(fieldPath, "decimal metric은 유한한 숫자 문자열이어야 합니다.", { value, sourcePath }));
   }
 }
 
@@ -245,6 +259,10 @@ function validateCounts(
   failures: CalibrationInputValidationFailure[],
   sourcePath: string,
 ): void {
+  if (counts === null || typeof counts !== "object" || Array.isArray(counts)) {
+    failures.push(createFailure(fieldPath, "reason count map은 객체여야 합니다.", { value: counts, sourcePath }));
+    return;
+  }
   for (const [key, value] of Object.entries(counts)) {
     if (!Number.isSafeInteger(value) || value < 0) {
       failures.push(

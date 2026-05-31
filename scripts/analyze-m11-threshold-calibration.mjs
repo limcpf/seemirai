@@ -8,6 +8,8 @@ const defaultEvidencePath = "docs/references/m9-paper-trading-soak-2026-05-25-e3
 const defaultPaperConfigPath = "config/paper.json";
 const defaultOutputDir = path.join(os.homedir(), "vaults", "99_운영", "seemirai-m9-paper");
 const knownReasonAxes = new Set(["cost", "risk", "hold", "discard"]);
+const fillRatePrecision = 6;
+const fillRateTolerance = 10 ** -fillRatePrecision;
 
 try {
   await main();
@@ -273,6 +275,7 @@ function validateRunSummary(summary, fieldPrefix, failures) {
       failures.push(failure(`${fieldPrefix}.metrics.${field}`, "count metric은 0 이상의 안전한 정수여야 합니다.", { value }));
     }
   }
+  validateFillRate(metrics, fieldPrefix, failures, summary.sourcePath);
 
   if (metrics.costSummary.evaluatedCount > 0 && shouldRequireDetailedMetricFields(summary)) {
     for (const [field, value, message] of [
@@ -325,6 +328,34 @@ function validateRunSummary(summary, fieldPrefix, failures) {
         sourcePath: summary.sourcePath,
       }),
     );
+  }
+}
+
+function validateFillRate(metrics, fieldPrefix, failures, sourcePath) {
+  const { fillRate, paperFillCount, paperOrderSubmittedCount } = metrics;
+  if (typeof fillRate !== "number" || !Number.isFinite(fillRate) || fillRate < 0 || fillRate > 1) {
+    failures.push(failure(`${fieldPrefix}.metrics.fillRate`, "fillRate는 0 이상 1 이하의 유한한 숫자여야 합니다.", { value: fillRate, sourcePath }));
+    return;
+  }
+  if (
+    Number.isSafeInteger(paperOrderSubmittedCount) &&
+    Number.isSafeInteger(paperFillCount) &&
+    paperOrderSubmittedCount >= 0 &&
+    paperFillCount >= 0
+  ) {
+    const expectedFillRate = paperOrderSubmittedCount === 0 ? 0 : paperFillCount / paperOrderSubmittedCount;
+    const roundedExpectedFillRate = Number(expectedFillRate.toFixed(fillRatePrecision));
+    if (Math.abs(fillRate - roundedExpectedFillRate) > fillRateTolerance) {
+      failures.push(
+        failure(`${fieldPrefix}.metrics.fillRate`, "fillRate는 paper 주문/체결 count와 일치해야 합니다.", {
+          value: fillRate,
+          expectedFillRate: roundedExpectedFillRate,
+          paperOrderSubmittedCount,
+          paperFillCount,
+          sourcePath,
+        }),
+      );
+    }
   }
 }
 

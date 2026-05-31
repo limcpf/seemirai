@@ -60,6 +60,41 @@ describe("M11 threshold calibration report script", () => {
     expect(report.thresholdCandidates).toEqual([]);
   });
 
+  it("fails closed when source artifact fill rate is outside the valid range", async () => {
+    const fixture = await writeFixtureEvidence({
+      aggregateMetrics: {
+        fillRate: 2,
+      },
+    });
+
+    const result = await runScriptAllowingFailure(["--evidence", fixture.evidencePath, "--json"]);
+    const report = JSON.parse(result.stdout) as CalibrationReportJson;
+
+    expect(result.code).toBe(1);
+    expect(report.status).toBe("failed");
+    expect(report.validation.failures).toContainEqual(
+      expect.objectContaining({
+        fieldPath: "aggregate.metrics.fillRate",
+      }),
+    );
+  });
+
+  it("accepts source artifact fill rate rounded to six decimal places", async () => {
+    const fixture = await writeFixtureEvidence({
+      aggregateMetrics: {
+        paperOrderSubmittedCount: 3,
+        paperFillCount: 1,
+        fillRate: 0.333333,
+      },
+    });
+
+    const { stdout } = await execFileAsync("node", [scriptPath, "--evidence", fixture.evidencePath, "--json"]);
+    const report = JSON.parse(stdout) as CalibrationReportJson;
+
+    expect(report.status).toBe("passed");
+    expect(report.validation.failures).toEqual([]);
+  });
+
   it("writes an inactive conservative profile proposal without mutating paper config", async () => {
     const fixture = await writeFixtureEvidence();
     const proposalPath = path.join(fixture.root, "m11-profile-proposal.json");
