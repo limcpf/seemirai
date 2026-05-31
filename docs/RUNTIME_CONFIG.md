@@ -760,8 +760,8 @@ string이어야 하며, bucket 수와 lookback 개수만 양의 정수 number를
 `allowed_market_regimes`는 비어 있지 않은 known regime string 배열이어야 한다.
 
 M9 #68 운영 관측이 끝나기 전에는 기본 운영 threshold를 더 공격적으로 바꾸지 않는다. Sub PR 2-4는 새 key와 검증을 추가할 수
-있지만, #68 데이터가 필요한 기본값 확정은 Sub PR 5에서만 수행한다. #68 결과가 없으면 실제 기본값 변경 대신 보수적 제안과
-후속 issue 후보로 분리한다.
+있지만, #68 데이터가 필요한 기본값 확정은 별도 calibration approval PR에서만 수행한다. #102 Sub PR 5는 #68 원천 artifact를
+재검증하고 비활성 profile proposal을 생성하되, 기본 `config/paper.json`을 자동 변경하거나 활성화하지 않는다.
 
 Sub PR 4의 기본 profile은 M11 feature 누락을 fail-closed로 검증하되, 새 threshold 자체는 대부분 `0`, 전체
 `allowed_market_regimes`, 또는 매우 넓은 `max_realized_volatility_bps=100000`으로 둔다. `min_depth_change_rate_ratio=-1`은
@@ -783,6 +783,19 @@ Sub PR 4의 기본 profile은 M11 feature 누락을 fail-closed로 검증하되,
 
 `cost_adjusted_expected_return_bps`와 `cost_adjusted_margin_bps`는 strategy 설명력과 calibration 비교를 위한 feature다. 실제
 주문 제출 허용은 계속 CostModel과 RiskGate가 담당한다.
+
+### #102 calibration proposal closeout
+
+2026-05-31 기준 #102 calibration report는 #68 72시간 paper trading artifact를 다시 읽어 다음 결론으로 닫았다.
+
+- report: `/home/lim/vaults/99_운영/seemirai-m9-paper/m11-threshold-calibration-report.md`
+- 비활성 proposal: `/home/lim/vaults/99_운영/seemirai-m9-paper/m11-threshold-calibration-profile-proposal.json`
+- 주요 metric: `paperOrderSubmittedCount=2130`, `paperFillCount=2130`, `fillRate=1`, `liveOrderApiCalls=0`
+- 비용 판단: `averageMarginBps=-1.333333333333`이라 기본 threshold 완화는 차단한다.
+- proposal invariant: `active=false`, `activationRequired=true`, `defaultConfigMutation=false`
+
+따라서 현재 기본 profile은 M11 feature key를 포함하지만 대부분 pass-through 값을 유지한다. 운영 기본 threshold를 바꾸려면
+proposal을 그대로 적용하지 말고, 동일 run shape report 전후 비교와 별도 승인 기록을 먼저 남긴다.
 
 M5 runtime integration 이후 `risk_ok` rule은 현재 `riskGateContext`로 RiskGate를 직접 평가한 결과만 실행 승인
 근거로 사용한다. `riskGateContext`가 없거나 `RuleContext` 후보와 `riskGateContext.orderIntent`의

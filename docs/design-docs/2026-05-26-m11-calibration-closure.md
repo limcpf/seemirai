@@ -43,6 +43,33 @@ M11은 다음 범위를 완료한 것으로 닫는다.
 `#68`은 완료 판정 상태이며, 실제 threshold 보정값 확정은 내부 반입 evidence와 #68 closeout 문구(댓글/운영 로그 참조) 후 별도
 calibration PR 또는 issue에서 처리한다.
 
+## 2026-05-31 #102 calibration closeout
+
+Issue #102는 #68 내부 evidence와 원천 artifact를 기준으로 동일 run shape calibration report와 비활성 profile proposal을
+생성하는 범위로 닫는다. 이 closeout은 운영 기본값을 활성화하는 변경이 아니라, 다음 calibration 승인 PR에서 비교할 후보와
+차단 사유를 고정하는 작업이다.
+
+| 항목 | 결과 |
+| --- | --- |
+| #68 evidence 재검증 | `validate-m9-paper-soak-evidence.mjs --issue-comment` 통과 |
+| calibration report | `/home/lim/vaults/99_운영/seemirai-m9-paper/m11-threshold-calibration-report.md` |
+| 비활성 profile proposal | `/home/lim/vaults/99_운영/seemirai-m9-paper/m11-threshold-calibration-profile-proposal.json` |
+| paper 주문/체결 | `2130 / 2130`, `fillRate=1` |
+| 비용 요약 | `evaluated=12957`, `allowed=8638`, `rejected=4319`, `averageMarginBps=-1.333333333333` |
+| 차단 사유 | cost `4319`, risk `8697`, hold `4319`, discard `0` |
+| 실거래 주문 API | `liveOrderApiCalls=0` |
+| 기본 profile 활성화 | 보류, `config/paper.json` 변경 없음 |
+
+판정은 다음과 같다.
+
+- 평균 margin이 음수이므로 후보 수를 늘리는 공격적 threshold 완화는 `blocked`로 유지한다.
+- 보수 후보는 spread 상한 하향, volume spike 하한 상향, session liquidity score 하한 상향, cost-adjusted margin 하한 상향
+  방향으로만 proposal에 남긴다.
+- `cost_safety_buffer_bps`는 현재 `strategyParameters`에 직접 대응 key가 없으므로 자동 patch가 아니라 수동 설계 검토 항목으로
+  남긴다.
+- proposal은 `active=false`, `activationRequired=true`, `defaultConfigMutation=false`를 유지해야 하며, 적용은 동일 run shape
+  비교 report를 붙인 별도 PR에서만 검토한다.
+
 ## 비교 기준
 
 #68 완료 후 threshold 변경 전후 report는 동일 run shape로 아래 항목을 비교해야 한다.
@@ -70,7 +97,8 @@ spread 상한, cost-adjusted margin 하한을 보수적으로 유지하거나 �
 ## 후속 처리
 
 1. #68 완료 시 issue #68 댓글에 72시간 summary, day summary 3개, 3일 비교 report 경로와 pass/fail 결론을 남긴다.
-2. #68 결과가 3일 비교 가능한 형태로 닫혔으므로 별도 calibration issue 또는 PR에서 threshold 후보를 제안한다.
+2. #102에서 비활성 profile proposal이 생성됐으므로 별도 calibration approval PR에서 동일 run shape 전후 비교를 붙이고
+   activation 여부를 판단한다.
 3. #68이 실패로 닫혔다면 실패 원인을 M9 운영 보강 이슈로 분리하고 M11 threshold 변경은 계속 보류한다.
 4. M12의 무동작 TypeScript 모듈 분리는 #75 merge 뒤 진행할 수 있다. M12는 M9 운영 인증이나 threshold 보정값을 요구하지 않는다.
 
