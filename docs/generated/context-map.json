@@ -305,8 +305,8 @@
     {
       "path": ".agents/skills/deepseek-implementation-handoff/SKILL.md",
       "kind": "skill",
-      "role": "구현 에이전트에게 넘길 상세 handoff 문서 작성 workflow",
-      "read_when": ["DeepSeek 구현 handoff 작성", "구현 에이전트 handoff 작성", "handoff contract 작성"],
+      "role": "구현 에이전트에게 milestone 또는 issue 구현 handoff를 작성하는 workflow",
+      "read_when": ["DeepSeek 구현 handoff 작성", "Reasonix 구현 handoff 작성", "외부 구현 에이전트 인계"],
       "owner_scope": ".agents/skills/deepseek-implementation-handoff"
     },
     {
