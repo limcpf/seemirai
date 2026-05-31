@@ -30,10 +30,47 @@ describe("M9 paper soak evidence validator", () => {
     expect(validation.statusCode).toBe("passed");
     expect(validation.statusLabel).toBe("통과");
     expect(validation.checks.every((check) => check.status === "passed")).toBe(true);
+    expect(validation.checks.find((check) => check.id === "pnlSummary")).toMatchObject({ status: "passed" });
     expect(validation.artifacts.comparisonReportPath).toBe(path.join(artifactDir, "m9-3day-trading-soak-comparison.md"));
     expect(validation.issueComment).toContain("#68 M9 paper trading 관측 증거 검증");
     expect(issueComment.stdout).toContain("판정: 통과");
     expect(issueComment.stdout).toContain("live order API 호출");
+  });
+
+  it("fails completed evidence when pnlSummary shape is missing from a day summary", async () => {
+    const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-m9-evidence-pnl-missing-"));
+    const prefix = "m9-paper-trading-soak-2026-05-26T07-30-00-000Z-aabbccff";
+    await writeCompleteRunArtifacts({
+      artifactDir,
+      prefix,
+      dayOverrides: {
+        2: {
+          metrics: {
+            pnlSummary: null,
+          },
+        },
+      },
+    });
+
+    const result = await runScriptAllowingFailure(["--artifact-dir", artifactDir, "--json"]);
+    const validation = JSON.parse(result.stdout) as {
+      statusCode: string;
+      checks: Array<{ id: string; status: string; evidence: { invalid?: Array<{ label: string; field: string }> } }>;
+    };
+
+    expect(result.code).toBe(1);
+    expect(validation.statusCode).toBe("failed");
+    expect(validation.checks.find((check) => check.id === "pnlSummary")).toMatchObject({
+      status: "failed",
+      evidence: {
+        invalid: [
+          expect.objectContaining({
+            label: "Day 2",
+            field: "pnlSummary",
+          }),
+        ],
+      },
+    });
   });
 
   it("returns incomplete while the latest run only has a raw log", async () => {
@@ -369,6 +406,18 @@ function createSummary({
       slippageSummary: {
         observedFillCount: 3,
         averageSlippageBps: 2,
+      },
+      pnlSummary: {
+        startingCashKrw: "1000000",
+        endingCashKrw: "999994",
+        positionMarketValueKrw: "9999",
+        realizedPnlKrw: "0",
+        unrealizedPnlKrw: "-6",
+        totalPnlKrw: "-6",
+        totalReturnBps: "-0.06",
+        totalFeesKrw: "5",
+        submittedOrderCount: 3,
+        filledOrderCount: 3,
       },
     },
     checks: {

@@ -158,6 +158,7 @@ async function validateEvidence(options) {
     createRuntimeExceptionCheck({ aggregate, daySummaries, aggregateCompleted }),
     createDailyReportEvidenceCheck({ aggregate, daySummaries, aggregateCompleted }),
     createComparisonMetricCheck({ daySummaries, aggregateCompleted }),
+    createPnlSummaryCheck({ aggregate, daySummaries, aggregateCompleted }),
     createPaperTradingMetricCheck({ aggregate, daySummaries, aggregateCompleted }),
   ];
 
@@ -914,6 +915,7 @@ function createComparisonMetricCheck({ daySummaries, aggregateCompleted }) {
       slippageSummary: ["slippageSummary", "slippage", "slippageBps"],
       fillRate: ["fillRate", "fillRatePct", "fillRatePercent"],
       blockingReasonCounts: ["blockingReasonCounts", "blockingReasons", "discardReasons"],
+      pnlSummary: ["pnlSummary"],
     })) {
       if (!hasAnyKey(metrics, keys)) {
         missing.push({ label: `Day ${day.day}`, metric });
@@ -939,11 +941,83 @@ function createComparisonMetricCheck({ daySummaries, aggregateCompleted }) {
     id: "comparisonMetrics",
     label: "3일 비교 metric",
     status: "passed",
-    message: "Day 1/2/3 summary에 비용, 슬리피지, 체결률, 차단 사유 metric이 있다.",
+    message: "Day 1/2/3 summary에 비용, 슬리피지, 체결률, 차단 사유, KRW 손익 metric이 있다.",
     action: "다음 evidence 항목을 계속 확인한다.",
     evidence: { checkedDayCount: daySummaries.length },
     trace: {},
   });
+}
+
+function createPnlSummaryCheck({ aggregate, daySummaries, aggregateCompleted }) {
+  const summaries = collectReadableSummaries({ aggregate, daySummaries });
+  const invalid = [];
+  for (const summary of summaries) {
+    const failure = validatePnlSummaryShape(summary.value.metrics?.pnlSummary);
+    if (failure !== null) {
+      invalid.push({ label: summary.label, ...failure });
+    }
+  }
+
+  if (invalid.length > 0 || summaries.length < expectedDayCount + 1) {
+    return createCheck({
+      id: "pnlSummary",
+      label: "KRW 손익 summary",
+      // PnL shape가 없으면 #112 완료 증거가 비용/손익 회귀를 판별할 수 없으므로 closeout을 차단한다.
+      status: aggregateCompleted ? "failed" : "incomplete",
+      message: "aggregate 또는 Day 1/2/3 summary의 KRW 손익 summary shape를 확인하지 못했다.",
+      action: aggregateCompleted
+        ? "runner summary의 `metrics.pnlSummary` 생성 경로와 비교 입력 summary를 확인한다."
+        : "summary 생성이 완료된 뒤 다시 검증한다.",
+      evidence: { invalid, readableSummaryCount: summaries.length },
+      trace: { reason: "pnl_summary_shape_invalid" },
+    });
+  }
+
+  return createCheck({
+    id: "pnlSummary",
+    label: "KRW 손익 summary",
+    status: "passed",
+    message: "aggregate와 Day 1/2/3 summary의 KRW 손익 summary shape가 유효하다.",
+    action: "다음 evidence 항목을 계속 확인한다.",
+    evidence: { checkedSummaryCount: summaries.length },
+    trace: {},
+  });
+}
+
+function validatePnlSummaryShape(value) {
+  if (!isRecord(value)) {
+    return { reason: "missing_or_not_object", field: "pnlSummary" };
+  }
+
+  for (const field of ["startingCashKrw", "endingCashKrw", "totalFeesKrw"]) {
+    if (!isNumericEvidenceValue(value[field])) {
+      return { reason: "numeric_field_invalid", field };
+    }
+  }
+
+  for (const field of ["positionMarketValueKrw", "realizedPnlKrw", "unrealizedPnlKrw", "totalPnlKrw", "totalReturnBps"]) {
+    if (value[field] !== null && !isNumericEvidenceValue(value[field])) {
+      return { reason: "nullable_numeric_field_invalid", field };
+    }
+  }
+
+  for (const field of ["submittedOrderCount", "filledOrderCount"]) {
+    if (!Number.isSafeInteger(value[field]) || value[field] < 0) {
+      return { reason: "count_field_invalid", field };
+    }
+  }
+
+  return null;
+}
+
+function isNumericEvidenceValue(value) {
+  if (typeof value === "number") {
+    return Number.isFinite(value);
+  }
+  if (typeof value !== "string" || value.trim().length === 0) {
+    return false;
+  }
+  return Number.isFinite(Number(value));
 }
 
 function createPaperTradingMetricCheck({ aggregate, daySummaries, aggregateCompleted }) {

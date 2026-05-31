@@ -189,7 +189,7 @@ function findNonConsecutiveDateFailures(rows) {
 
 function findMetricFormatFailures(rows) {
   const failures = [];
-  for (const metricName of ["cost", "slippage", "fillRate", "blockingReasons"]) {
+  for (const metricName of ["cost", "slippage", "fillRate", "blockingReasons", "pnlSummary"]) {
     const first = rows.find((row) => row.metricFormats[metricName] !== "unavailable");
     if (first === undefined) {
       continue;
@@ -251,6 +251,7 @@ function createComparisonRow({ index, summaryPath, summary }) {
   const slippage = readComparableMetric(metrics, ["slippage", "slippageSummary", "slippageBps"]);
   const fillRate = readComparableMetric(metrics, ["fillRate", "fillRatePct", "fillRatePercent"]);
   const blockingReasons = readComparableMetric(metrics, ["blockingReasons", "blockingReasonCounts", "discardReasons"]);
+  const pnlSummary = readComparablePnlSummaryMetric(metrics);
 
   const row = {
     day: `Day ${index + 1}`,
@@ -272,11 +273,13 @@ function createComparisonRow({ index, summaryPath, summary }) {
     slippage: slippage.value,
     fillRate: fillRate.value,
     blockingReasons: blockingReasons.value,
+    pnlSummary: pnlSummary.value,
     metricFormats: {
       cost: cost.format,
       slippage: slippage.format,
       fillRate: fillRate.format,
       blockingReasons: blockingReasons.format,
+      pnlSummary: pnlSummary.format,
     },
     failures: [],
     warnings: [],
@@ -334,10 +337,14 @@ function createComparisonRow({ index, summaryPath, summary }) {
     ["slippage", row.slippage],
     ["fillRate", row.fillRate],
     ["blockingReasons", row.blockingReasons],
+    ["pnlSummary", row.pnlSummary],
   ]) {
     if (value === "unavailable") {
       row.failures.push(rowFailure(row, `${name}_unavailable`, `${name} 비교 입력이 summary에 없다.`));
     }
+  }
+  if (row.metricFormats.pnlSummary === "invalid") {
+    row.failures.push(rowFailure(row, "pnlSummary_invalid", "pnlSummary 비교 입력의 필수 shape가 유효하지 않다."));
   }
 
   return row;
@@ -393,6 +400,68 @@ function readComparableMetric(metrics, keys) {
     value: "unavailable",
     format: "unavailable",
   };
+}
+
+function readComparablePnlSummaryMetric(metrics) {
+  if (metrics.pnlSummary === undefined) {
+    return {
+      value: "unavailable",
+      format: "unavailable",
+    };
+  }
+
+  // compare report만 보고도 손익 증거 누락을 알 수 있어야 하므로 null/부분 shape는 통과시키지 않는다.
+  if (!hasValidPnlSummaryShape(metrics.pnlSummary)) {
+    return {
+      value: stringifyMetric(metrics.pnlSummary),
+      format: "invalid",
+    };
+  }
+
+  return {
+    value: stringifyMetric(metrics.pnlSummary),
+    format: readMetricFormat(metrics.pnlSummary),
+  };
+}
+
+function hasValidPnlSummaryShape(value) {
+  if (!readRecordOrNull(value)) {
+    return false;
+  }
+
+  for (const field of ["startingCashKrw", "endingCashKrw", "totalFeesKrw"]) {
+    if (!isNumericEvidenceValue(value[field])) {
+      return false;
+    }
+  }
+
+  for (const field of ["positionMarketValueKrw", "realizedPnlKrw", "unrealizedPnlKrw", "totalPnlKrw", "totalReturnBps"]) {
+    if (value[field] !== null && !isNumericEvidenceValue(value[field])) {
+      return false;
+    }
+  }
+
+  for (const field of ["submittedOrderCount", "filledOrderCount"]) {
+    if (!Number.isSafeInteger(value[field]) || value[field] < 0) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
+function readRecordOrNull(value) {
+  return value !== null && typeof value === "object" && !Array.isArray(value) ? value : null;
+}
+
+function isNumericEvidenceValue(value) {
+  if (typeof value === "number") {
+    return Number.isFinite(value);
+  }
+  if (typeof value !== "string" || value.trim().length === 0) {
+    return false;
+  }
+  return Number.isFinite(Number(value));
 }
 
 function readMetricFormat(value) {
@@ -464,7 +533,7 @@ function renderMarkdownComparison(comparison) {
           row.crashCount,
         )} | ${formatCount(row.unhandledRejectionCount)} | ${formatCount(row.liveOrderApiCalls)} | ${formatCount(
           row.auditMissingCount,
-        )} | ${formatNotification(row)} | ${row.dailyReportGenerated ? "yes" : "no"} | ${escapeTable(row.cost)} | ${escapeTable(
+        )} | ${formatNotification(row)} | ${row.dailyReportGenerated ? "yes" : "no"} | ${escapeTable(row.pnlSummary)} | ${escapeTable(row.cost)} | ${escapeTable(
           row.slippage,
         )} | ${escapeTable(row.fillRate)} | ${escapeTable(row.blockingReasons)} |`,
     )
@@ -484,8 +553,8 @@ function renderMarkdownComparison(comparison) {
 - 입력 summary: ${comparison.inputCount}
 - 생성 시각: ${comparison.generatedAt}
 
-| 일차 | 날짜 | commit | report artifact | crash | unhandled rejection | live order API | audit missing | notification failure | daily report | 비용 | 슬리피지 | 체결률 | 주요 차단 사유 |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 일차 | 날짜 | commit | report artifact | crash | unhandled rejection | live order API | audit missing | notification failure | daily report | KRW 손익 요약 | 비용 | 슬리피지 | 체결률 | 주요 차단 사유 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 ${rows}
 
 ## 완료 판단

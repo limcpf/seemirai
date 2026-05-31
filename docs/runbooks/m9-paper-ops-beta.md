@@ -119,6 +119,11 @@ fixture에서 feature, strategy evaluation, order intent, cost/risk gate, PaperB
 사유 summary를 검증한다. `run-m9-paper-trading-soak.mjs --fixture-smoke`는 장시간 runner가 PaperBroker 주문/체결 cycle을
 반복하고 day별 summary를 비교 도구 입력으로 만들 수 있는지 짧게 검증한다.
 
+두 runner의 JSON summary와 Markdown report에는 `metrics.pnlSummary`가 포함된다. 사전 smoke에서는 이 값이
+`costSummary`, `slippageSummary`, `fillRate`, `blockingReasonCounts`, `liveOrderApiCalls`와 함께 유지되는지 확인한다.
+`pnlSummary`는 운영자가 paper run의 손익 방향을 빠르게 판단하기 위한 관측 metric이며, threshold 자동 변경이나 실거래 전환
+근거로 단독 사용하지 않는다.
+
 fixture smoke가 실패하면 M9 운영을 시작하지 않는다. stale data 차단, audit 누락, live order API 0회, Telegram inbound 부재,
 control route wiring, controlled paper 주문 제출/체결 경로가 먼저 정상이어야 한다.
 
@@ -320,14 +325,25 @@ node scripts/compare-m9-paper-reports.mjs \
 ```
 
 paper trading soak day summary를 3일 비교 입력으로 사용할 때는 `metrics.costSummary`, `metrics.slippageSummary`,
-`metrics.fillRate`, `metrics.blockingReasonCounts`, `metrics.liveOrderApiCalls`가 모두 채워져 있어야 한다. daily report
-artifact와 연결한 운영 summary는 runner 실행 시 `--daily-report-generated`를 함께 남긴다.
+`metrics.fillRate`, `metrics.blockingReasonCounts`, `metrics.liveOrderApiCalls`, `metrics.pnlSummary`가 모두 같은 shape로
+채워져 있어야 한다. daily report artifact와 연결한 운영 summary는 runner 실행 시 `--daily-report-generated`를 함께 남긴다.
 
-| 날짜 | commit | report artifact | crash | live order API | audit missing | notification failure | daily report | 비용 | 슬리피지 | 체결률 | 주요 차단 사유 |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| Day 1 |  |  |  | 0 |  |  |  |  |  |  |  |
-| Day 2 |  |  |  | 0 |  |  |  |  |  |  |  |
-| Day 3 |  |  |  | 0 |  |  |  |  |  |  |  |
+`pnlSummary` 해석 기준:
+
+- `totalPnlKrw`: `realizedPnlKrw + unrealizedPnlKrw` 기준 총 손익이다. 음수이면 해당 paper run의 평가 기준 손익이 손실이다.
+- `realizedPnlKrw`: 청산된 paper 포지션의 실현손익이다. 매수 수수료는 cost basis에, 매도 수수료는 순수취액에 반영된다.
+- `unrealizedPnlKrw`와 `positionMarketValueKrw`: 미청산 포지션을 마지막 평가가로 mark-to-market한 값이다. 평가가가 없거나
+  초기 base 잔고처럼 취득가를 알 수 없으면 `null`이며 Markdown report에는 `계산 불가`로 표시된다.
+- `totalFeesKrw`: 체결된 모든 paper fill 수수료 합계다. 이 값은 손익 계산에 이미 반영되므로 `totalPnlKrw`에서 다시 차감하지 않는다.
+- `totalReturnBps`: 시작 가상 현금 대비 총 손익 bps다. 시작 현금이 0이거나 총 손익을 계산할 수 없으면 `null`이다.
+- `submittedOrderCount`와 `filledOrderCount`: 주문 제출 수와 체결된 주문 수다. 한 주문이 여러 호가 level에서 나뉘어 체결되어도
+  `filledOrderCount`는 주문 ID 기준으로 중복 제거된다.
+
+| 날짜 | commit | report artifact | crash | live order API | audit missing | notification failure | daily report | 총 손익 KRW | 수수료 KRW | 비용 | 슬리피지 | 체결률 | 주요 차단 사유 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| Day 1 |  |  |  | 0 |  |  |  |  |  |  |  |  |  |
+| Day 2 |  |  |  | 0 |  |  |  |  |  |  |  |  |  |
+| Day 3 |  |  |  | 0 |  |  |  |  |  |  |  |  |  |
 
 완료 인정 조건:
 
@@ -336,7 +352,7 @@ artifact와 연결한 운영 summary는 runner 실행 시 `--daily-report-genera
 - 3일 모두 crash와 unhandled rejection이 없다.
 - daily report evidence가 있다.
 - notification failure가 있으면 retry worker 또는 manual review evidence로 수렴한다.
-- 비용, 슬리피지, 체결률, 차단 사유가 같은 포맷으로 비교된다.
+- 비용, 슬리피지, 체결률, 차단 사유, KRW 손익 summary가 같은 포맷으로 비교된다.
 
 ## 11. #68 완료 증거 검증과 댓글 초안
 
@@ -378,6 +394,7 @@ validator가 확인하는 최소 증거:
 - crash/unhandled rejection 0
 - daily report evidence
 - 비용, 슬리피지, 체결률, 차단 사유 metric
+- `pnlSummary`의 총 손익, 실현손익, 미실현손익, 수수료, 수익률 shape
 - paper 주문/체결과 hold/discard/blocking reason count
 
 `--issue-comment` 출력은 사람이 먼저 확인한다. 내부 `statusCode`, run prefix, artifact path는 `추적 정보`로 보존하되, secret이나 raw log 원문은
