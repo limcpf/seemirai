@@ -19,6 +19,36 @@ describe("app logger", () => {
           accessKey: "upbit-access-key",
           secretKey: "upbit-secret-key",
         },
+        upbitAccessKey: "pilot-root-upbit-access-key",
+        upbitSecretKey: "pilot-root-upbit-secret-key",
+        pilotConfig: {
+          upbitAccessKey: "pilot-config-upbit-access-key",
+          upbitSecretKey: "pilot-config-upbit-secret-key",
+        },
+        runtime: {
+          pilotConfig: {
+            upbitAccessKey: "runtime-pilot-upbit-access-key",
+            upbitSecretKey: "runtime-pilot-upbit-secret-key",
+          },
+        },
+        context: {
+          config: {
+            upbitAccessKey: "context-config-upbit-access-key",
+            upbitSecretKey: "context-config-upbit-secret-key",
+          },
+        },
+        nested: {
+          audit: {
+            payload: {
+              runtime: {
+                pilotConfig: {
+                  upbitAccessKey: "deep-pilot-upbit-access-key",
+                  upbitSecretKey: "deep-pilot-upbit-secret-key",
+                },
+              },
+            },
+          },
+        },
         telegram: {
           botToken: "telegram-token",
         },
@@ -50,6 +80,8 @@ describe("app logger", () => {
           jwt: "nested-jwt-token",
         },
         env: {
+          SEEMIRAI_UPBIT_ACCESS_KEY: "scoped-upbit-access-env-key",
+          SEEMIRAI_UPBIT_SECRET_KEY: "scoped-upbit-secret-env-key",
           TELEGRAM_BOT_TOKEN: "legacy-telegram-env-token",
           SEEMIRAI_TELEGRAM_BOT_TOKEN: "scoped-telegram-env-token",
         },
@@ -60,6 +92,16 @@ describe("app logger", () => {
     expect(output).toContain("[REDACTED]");
     expect(output).not.toContain("upbit-access-key");
     expect(output).not.toContain("upbit-secret-key");
+    expect(output).not.toContain("pilot-root-upbit-access-key");
+    expect(output).not.toContain("pilot-root-upbit-secret-key");
+    expect(output).not.toContain("pilot-config-upbit-access-key");
+    expect(output).not.toContain("pilot-config-upbit-secret-key");
+    expect(output).not.toContain("runtime-pilot-upbit-access-key");
+    expect(output).not.toContain("runtime-pilot-upbit-secret-key");
+    expect(output).not.toContain("context-config-upbit-access-key");
+    expect(output).not.toContain("context-config-upbit-secret-key");
+    expect(output).not.toContain("deep-pilot-upbit-access-key");
+    expect(output).not.toContain("deep-pilot-upbit-secret-key");
     expect(output).not.toContain("telegram-token");
     expect(output).not.toContain("control-token");
     expect(output).not.toContain("config-upbit-access-key");
@@ -72,7 +114,33 @@ describe("app logger", () => {
     expect(output).not.toContain("request-jwt-token");
     expect(output).not.toContain("plain-jwt-token");
     expect(output).not.toContain("nested-jwt-token");
+    expect(output).not.toContain("scoped-upbit-access-env-key");
+    expect(output).not.toContain("scoped-upbit-secret-env-key");
     expect(output).not.toContain("legacy-telegram-env-token");
     expect(output).not.toContain("scoped-telegram-env-token");
+  });
+
+  it("redacts nested pilot secrets from child logger bindings", () => {
+    let output = "";
+    const stream = new Writable({
+      write(chunk, _encoding, callback) {
+        output += chunk.toString();
+        callback();
+      },
+    });
+    const logger = createAppLogger({ destination: stream }).child({
+      runtime: {
+        pilotConfig: {
+          upbitAccessKey: "child-runtime-upbit-access-key",
+          upbitSecretKey: "child-runtime-upbit-secret-key",
+        },
+      },
+    });
+
+    logger.info("child redaction check");
+
+    expect(output).toContain("[REDACTED]");
+    expect(output).not.toContain("child-runtime-upbit-access-key");
+    expect(output).not.toContain("child-runtime-upbit-secret-key");
   });
 });
