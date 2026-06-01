@@ -10,6 +10,7 @@
 - 제품 목표, MVP 범위, 사용자 시나리오: [`PRD.md`](./PRD.md)
 - 기능 요구사항, acceptance criteria, 테스트 요구사항: [`FEATURE_REQUIREMENTS.md`](./FEATURE_REQUIREMENTS.md)
 - Upbit KRW paper trading MVP 업무 명세: [`product-specs/upbit-krw-paper-trading-mvp.md`](./product-specs/upbit-krw-paper-trading-mvp.md)
+- Upbit v0.2 pilot private API와 소액 주문 smoke 업무 명세: [`product-specs/upbit-v0-2-pilot-private-api.md`](./product-specs/upbit-v0-2-pilot-private-api.md)
 - 로컬 개발 환경과 검증 절차: [`DEVELOPMENT.md`](./DEVELOPMENT.md)
 - 런타임 설정 구조, 허용값, 안전 invariant: [`RUNTIME_CONFIG.md`](./RUNTIME_CONFIG.md)
 - 운영자가 직접 실행하는 절차와 runbook: [`runbooks/README.md`](./runbooks/README.md), [`runbooks/m9-paper-ops-beta.md`](./runbooks/m9-paper-ops-beta.md)
