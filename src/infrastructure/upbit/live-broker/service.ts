@@ -23,6 +23,7 @@ import {
 } from "../private-mappers.js";
 import type { MapUpbitPrivatePayloadOptions } from "../private-mappers.js";
 import { UPBIT_KRW_SPOT_EXCHANGE_ID } from "../policy-mapper.js";
+import { parseFinancialDecimal } from "../../../shared/index.js";
 import type {
   UpbitLiveBrokerOperation,
   UpbitLiveBrokerOptions,
@@ -66,6 +67,9 @@ export class UpbitLiveBroker implements BrokerPort {
         // 이전 생성 성공 후 응답만 잃은 재시도일 수 있으므로 새 주문 대신 identifier 조회로 기존 주문을 회수한다.
         const lookupResponse = await this.privateClient.getOrder({ identifier: input.identifier });
         const recoveredOrder = toBrokerOrderFromLookup(lookupResponse.payload, this.createMapperOptions());
+
+        // 같은 identifier라도 stale intent 재사용이면 다른 주문을 현재 제출 성공처럼 처리할 수 있어 회수 결과를 대조한다.
+        assertRecoveredOrderMatchesSubmission(recoveredOrder, submission);
 
         return this.withOrderMetadata(recoveredOrder, lookupResponse, "submitOrder", {
           upbitLiveBrokerRecovery: "duplicate_identifier_lookup",
@@ -210,6 +214,7 @@ function toCreateLimitOrderInput(
   const requestedPrice = intent.orderType === "LIMIT" ? intent.requestedPrice : "";
   const timeInForce = intent.orderType === "LIMIT" ? intent.timeInForce : undefined;
   const postOnly = intent.orderType === "LIMIT" ? intent.postOnly : undefined;
+  const privateSide = toPrivateOrderSide(intent.side, violations);
 
   if (intent.exchangeId !== expectedExchangeId) {
     // 승인 증거의 거래소와 실제 broker가 다르면 다른 계정/거래소 주문 side effect로 이어질 수 있어 즉시 차단한다.
@@ -225,8 +230,12 @@ function toCreateLimitOrderInput(
     // identifier를 자동 축약하면 중복 주문 충돌을 숨길 수 있으므로 거래소 호출 전에 닫는다.
     violations.push(`Upbit live broker identifier는 ${UPBIT_PRIVATE_ORDER_IDENTIFIER_MAX_LENGTH}자 이하여야 합니다`);
   }
-  if (intent.orderType === "LIMIT" && requestedPrice.trim().length === 0) {
-    violations.push("Upbit live broker LIMIT 주문에는 requestedPrice가 필요합니다");
+  if (intent.orderType === "LIMIT") {
+    if (requestedPrice.trim().length === 0) {
+      violations.push("Upbit live broker LIMIT 주문에는 requestedPrice가 필요합니다");
+    } else {
+      validatePositiveDecimalString(requestedPrice, "Upbit live broker LIMIT 주문 가격", violations);
+    }
   }
   if (postOnly === true && (timeInForce === "IOC" || timeInForce === "FOK")) {
     // post-only와 IOC/FOK는 체결 조건이 상충하므로 우선순위로 덮어쓰지 않고 증거 불일치를 차단한다.
@@ -234,9 +243,11 @@ function toCreateLimitOrderInput(
   }
   if (intent.requestedQuantity.trim().length === 0) {
     violations.push("Upbit live broker 주문 수량이 필요합니다");
+  } else {
+    validatePositiveDecimalString(intent.requestedQuantity, "Upbit live broker 주문 수량", violations);
   }
 
-  if (violations.length > 0) {
+  if (violations.length > 0 || privateSide === undefined) {
     throw new UnsafeUpbitPrivateRequestError({ violations });
   }
 
@@ -244,12 +255,109 @@ function toCreateLimitOrderInput(
 
   return {
     market: intent.market,
-    side: intent.side === "BUY" ? "bid" : "ask",
+    side: privateSide,
     volume: intent.requestedQuantity,
     price: requestedPrice,
     identifier: intent.idempotencyKey,
     ...(privateTimeInForce === undefined ? {} : { timeInForce: privateTimeInForce }),
   };
+}
+
+/**
+ * broker 제출 직전 주문 방향을 Upbit private API 방향으로 변환한다.
+ *
+ * 타입 경계 밖 JSON이 들어와도 BUY/SELL 외 값은 매도 주문으로 fallback하지 않고 violations에 보존한다. 외부 side effect는
+ * caller가 violations를 확인한 뒤에만 만들 수 있다.
+ */
+function toPrivateOrderSide(
+  side: unknown,
+  violations: string[],
+): UpbitPrivateCreateLimitOrderInput["side"] | undefined {
+  if (side === "BUY") {
+    return "bid";
+  }
+
+  if (side === "SELL") {
+    return "ask";
+  }
+
+  // 런타임 역직렬화 경계에서 타입이 깨지면 반대 방향 실주문으로 이어질 수 있어 fallback하지 않는다.
+  violations.push("Upbit live broker 주문 방향은 BUY 또는 SELL이어야 합니다");
+
+  return undefined;
+}
+
+/**
+ * 거래소 호출 전에 가격/수량 문자열이 양수 decimal인지 검증한다.
+ *
+ * `parseFinancialDecimal`의 provider 비의존 검증을 재사용하되, broker 경계에서는 사용자 행동 언어의 violation으로 정규화한다.
+ */
+function validatePositiveDecimalString(value: string, label: string, violations: string[]): void {
+  try {
+    if (parseFinancialDecimal(value).greaterThan(0)) {
+      return;
+    }
+  } catch {
+    violations.push(`${label}은 0보다 큰 decimal 문자열이어야 합니다`);
+
+    return;
+  }
+
+  violations.push(`${label}은 0보다 큰 decimal 문자열이어야 합니다`);
+}
+
+/**
+ * 중복 identifier 복구 조회 결과가 현재 제출 intent와 같은 주문인지 확인한다.
+ *
+ * 입력 identifier가 stale retry나 운영자 실수로 재사용되면 live broker가 다른 주문을 현재 주문 성공으로 기록할 수 있으므로,
+ * 주문의 핵심 fingerprint가 모두 일치할 때만 복구 결과를 반환한다.
+ */
+function assertRecoveredOrderMatchesSubmission(order: BrokerOrder, submission: OrderSubmission): void {
+  const intent = submission.intent;
+  const violations: string[] = [];
+
+  if (intent.orderType !== "LIMIT" || order.orderType !== "LIMIT") {
+    violations.push("Upbit live broker duplicate identifier 조회 결과는 LIMIT 주문이어야 합니다");
+  }
+  if (order.exchangeId !== intent.exchangeId) {
+    violations.push("Upbit live broker duplicate identifier 조회 결과의 exchangeId가 현재 주문과 일치해야 합니다");
+  }
+  if (order.market !== intent.market) {
+    violations.push("Upbit live broker duplicate identifier 조회 결과의 market이 현재 주문과 일치해야 합니다");
+  }
+  if (order.side !== intent.side) {
+    violations.push("Upbit live broker duplicate identifier 조회 결과의 주문 방향이 현재 주문과 일치해야 합니다");
+  }
+  if (order.idempotencyKey !== intent.idempotencyKey) {
+    violations.push("Upbit live broker duplicate identifier 조회 결과의 identifier가 현재 주문과 일치해야 합니다");
+  }
+  if (!areSameDecimalStrings(order.requestedQuantity, intent.requestedQuantity)) {
+    violations.push("Upbit live broker duplicate identifier 조회 결과의 수량이 현재 주문과 일치해야 합니다");
+  }
+  if (
+    intent.orderType !== "LIMIT" ||
+    order.requestedPrice === undefined ||
+    !areSameDecimalStrings(order.requestedPrice, intent.requestedPrice)
+  ) {
+    violations.push("Upbit live broker duplicate identifier 조회 결과의 가격이 현재 주문과 일치해야 합니다");
+  }
+
+  if (violations.length > 0) {
+    throw new UnsafeUpbitPrivateRequestError({ violations });
+  }
+}
+
+/**
+ * decimal 표현 차이만 있는 주문 fingerprint를 같은 값으로 비교한다.
+ *
+ * 비교 중 파싱 오류가 나면 복구 경계에서는 일치 실패로 다뤄 stale identifier 사용을 차단한다.
+ */
+function areSameDecimalStrings(left: string, right: string): boolean {
+  try {
+    return parseFinancialDecimal(left).equals(parseFinancialDecimal(right));
+  } catch {
+    return false;
+  }
 }
 
 function toPrivateTimeInForce(

@@ -94,6 +94,36 @@ describe("UpbitLiveBroker core", () => {
       name: "UnsafeUpbitPrivateRequestError",
       violations: ["Upbit live broker postOnly 주문은 IOC/FOK timeInForce와 함께 사용할 수 없습니다"],
     } satisfies Partial<UnsafeUpbitPrivateRequestError>);
+    await expect(
+      broker.submitOrder(
+        createSubmission({
+          intent: createLimitIntent({ side: "HOLD" as "BUY" }),
+        }),
+      ),
+    ).rejects.toMatchObject({
+      name: "UnsafeUpbitPrivateRequestError",
+      violations: ["Upbit live broker 주문 방향은 BUY 또는 SELL이어야 합니다"],
+    } satisfies Partial<UnsafeUpbitPrivateRequestError>);
+    await expect(
+      broker.submitOrder(
+        createSubmission({
+          intent: createLimitIntent({ requestedPrice: "abc" }),
+        }),
+      ),
+    ).rejects.toMatchObject({
+      name: "UnsafeUpbitPrivateRequestError",
+      violations: ["Upbit live broker LIMIT 주문 가격은 0보다 큰 decimal 문자열이어야 합니다"],
+    } satisfies Partial<UnsafeUpbitPrivateRequestError>);
+    await expect(
+      broker.submitOrder(
+        createSubmission({
+          intent: createLimitIntent({ requestedQuantity: "0" }),
+        }),
+      ),
+    ).rejects.toMatchObject({
+      name: "UnsafeUpbitPrivateRequestError",
+      violations: ["Upbit live broker 주문 수량은 0보다 큰 decimal 문자열이어야 합니다"],
+    } satisfies Partial<UnsafeUpbitPrivateRequestError>);
     expect(client.createLimitOrder).not.toHaveBeenCalled();
   });
 
@@ -124,6 +154,36 @@ describe("UpbitLiveBroker core", () => {
         rateLimitStatus: defaultRateLimitStatus,
       },
     });
+    expect(client.getOrder).toHaveBeenCalledWith({ identifier: "m15-live-identifier-001" });
+  });
+
+  it("rejects duplicate identifier recovery when the looked-up order differs from the current intent", async () => {
+    const client = createFakePrivateClient({
+      createLimitOrder: vi.fn(async () => {
+        throw new UpbitPrivateRestClientError({
+          status: 400,
+          statusText: "Bad Request",
+          kind: "REQUEST_FAILED",
+          userMessage: "이미 사용한 주문 식별자입니다.",
+          rateLimitStatus: orderRateLimitStatus,
+          trace: {
+            httpStatus: 400,
+            upbitErrorName: "duplicate_identifier",
+            rateLimitStatus: orderRateLimitStatus,
+          },
+        });
+      }),
+      getOrder: vi.fn(async () => ({
+        payload: createLookupOrderPayload({ price: "130000000.0000" }),
+        rateLimitStatus: defaultRateLimitStatus,
+      })),
+    });
+    const broker = new UpbitLiveBroker({ privateClient: client, clock: () => capturedAt });
+
+    await expect(broker.submitOrder(createSubmission())).rejects.toMatchObject({
+      name: "UnsafeUpbitPrivateRequestError",
+      violations: ["Upbit live broker duplicate identifier 조회 결과의 가격이 현재 주문과 일치해야 합니다"],
+    } satisfies Partial<UnsafeUpbitPrivateRequestError>);
     expect(client.getOrder).toHaveBeenCalledWith({ identifier: "m15-live-identifier-001" });
   });
 
@@ -422,12 +482,13 @@ function createCommandOrderPayload(overrides: Record<string, unknown> = {}): Rec
   };
 }
 
-function createLookupOrderPayload(): Record<string, unknown> {
+function createLookupOrderPayload(overrides: Record<string, unknown> = {}): Record<string, unknown> {
   return {
     ...createCommandOrderPayload({
       executed_volume: "0.0004",
       remaining_volume: "0.0006",
       trades_count: 1,
+      ...overrides,
     }),
     trades: [
       {
