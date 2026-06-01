@@ -12,5 +12,4 @@ YYYY-MM-DD-topic.md
 
 ## 활성 계획
 
-- [`2026-06-01-issue-111-phase-1-5-alt-manual-inclusion.md`](./2026-06-01-issue-111-phase-1-5-alt-manual-inclusion.md): issue #111 Phase 1.5 알트 수동 편입 sub PR 실행 계획
 - [`2026-05-22-post-m8-milestone-plan.md`](./2026-05-22-post-m8-milestone-plan.md): M8 이후 PRD 잔여 범위, 기술 부채, paper 운영, v0.2 pilot 준비 마일스톤 계획

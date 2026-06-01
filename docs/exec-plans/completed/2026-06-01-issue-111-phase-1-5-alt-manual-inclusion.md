@@ -55,4 +55,5 @@ MVP paper trading의 `KRW-BTC`/`KRW-ETH` 기본 universe를 유지하면서, 운
 
 ## 남은 이슈
 
-- Sub PR 5 review drain과 mother branch merge 후 최종 main 대상 PR에서 review drain을 진행한다.
+- Sub PR 1~5는 모두 review drain 후 mother branch에 merge했다.
+- 최종 main 대상 PR은 review drain까지만 진행하고 merge는 별도 운영 판단으로 남긴다.
