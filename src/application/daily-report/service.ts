@@ -67,6 +67,7 @@ export async function buildDailyReportNotification(
         order_count: report.orderCount,
         fill_count: report.fillCount,
         discarded_candidate_count: report.discardedCandidates.total,
+        pilot_evidence_count: report.pilotEvidence.total,
         risk_event_count: report.riskEvents.total,
       },
     },

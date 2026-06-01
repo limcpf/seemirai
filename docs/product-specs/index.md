@@ -10,3 +10,5 @@
 세부 업무 명세:
 
 - [`./upbit-krw-paper-trading-mvp.md`](./upbit-krw-paper-trading-mvp.md)
+- [`./upbit-v0-2-pilot-private-api.md`](./upbit-v0-2-pilot-private-api.md)
+- [`./upbit-live-autonomous-trading.md`](./upbit-live-autonomous-trading.md)

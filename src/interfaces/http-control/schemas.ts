@@ -49,6 +49,66 @@ const operationalStatusDetailSchema = {
   },
 } as const;
 
+const pilotEvidenceSafeSummarySchema = {
+  type: ["object", "null"],
+  required: ["profile", "status", "statusLabel", "occurredAt", "correlationId", "message", "action"],
+  properties: {
+    profile: { enum: ["PILOT_READ_ONLY", "PILOT_POLICY_SYNC", "PILOT_ORDER_SMOKE"] },
+    status: { enum: ["SKIPPED", "PASSED", "FAILED", "MANUAL_REVIEW_REQUIRED"] },
+    statusLabel: { type: "string" },
+    occurredAt: { type: "string" },
+    correlationId: { type: "string" },
+    message: { type: "string" },
+    action: { type: ["string", "null"] },
+    auditEventId: { type: "string" },
+    reportArtifactId: { type: "string" },
+    reportArtifactPath: { type: "string" },
+    safeMetadata: { type: "object", additionalProperties: true },
+  },
+  additionalProperties: false,
+} as const;
+
+const pilotRuntimeSafeSummarySchema = {
+  type: "object",
+  required: [
+    "enabled",
+    "profile",
+    "privateSmokeEnabled",
+    "orderSmokeEnabled",
+    "credentialsConfigured",
+    "keyScopes",
+    "keyScopeEvidenceId",
+    "policySyncMarket",
+    "orderSmokeMarket",
+    "orderSmokeMaxKrw",
+    "lookupOrderConfigured",
+    "statusLabel",
+    "message",
+    "action",
+    "lastEvidence",
+    "trace",
+  ],
+  properties: {
+    enabled: { type: "boolean" },
+    profile: { enum: ["PILOT_READ_ONLY", "PILOT_POLICY_SYNC", "PILOT_ORDER_SMOKE", null] },
+    privateSmokeEnabled: { type: "boolean" },
+    orderSmokeEnabled: { type: "boolean" },
+    credentialsConfigured: { type: "boolean" },
+    keyScopes: { type: "array", items: { type: "string" } },
+    keyScopeEvidenceId: { type: ["string", "null"] },
+    policySyncMarket: { type: ["string", "null"] },
+    orderSmokeMarket: { type: ["string", "null"] },
+    orderSmokeMaxKrw: { type: ["string", "null"] },
+    lookupOrderConfigured: { type: "boolean" },
+    statusLabel: { type: "string" },
+    message: { type: "string" },
+    action: { type: ["string", "null"] },
+    lastEvidence: pilotEvidenceSafeSummarySchema,
+    trace: { type: "object", additionalProperties: true },
+  },
+  additionalProperties: false,
+} as const;
+
 const errorResponseSchema = {
   type: "object",
   required: ["status", "correlationId", "error"],
@@ -237,7 +297,7 @@ export const statusRouteOptions: RouteShorthandOptions = {
           generatedAt: { type: "string" },
           runtime: {
             type: "object",
-            required: ["exchange", "market", "mode", "universe", "liveTradingEnabled", "paperNoKey"],
+            required: ["exchange", "market", "mode", "universe", "liveTradingEnabled", "paperNoKey", "pilot"],
             properties: {
               exchange: { type: "string" },
               market: { type: "string" },
@@ -271,6 +331,7 @@ export const statusRouteOptions: RouteShorthandOptions = {
               },
               liveTradingEnabled: { type: "boolean" },
               paperNoKey: { type: "boolean" },
+              pilot: pilotRuntimeSafeSummarySchema,
             },
           },
           tradingState: {

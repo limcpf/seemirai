@@ -37,6 +37,10 @@ export function formatDailyReportSummary(report: DailyReportAggregate): string {
       report.phase15AltApprovals.byAction,
     )}`,
     `- phase 1.5 대상 market: ${formatCountItemsText(report.phase15AltApprovals.byMarket)}`,
+    `- pilot private API evidence: ${report.pilotEvidence.total}건${formatCountItemsInline(
+      report.pilotEvidence.byStatus,
+    )}`,
+    `- pilot profile: ${formatCountItemsText(report.pilotEvidence.byProfile)}`,
     `- 리스크/차단 이벤트: ${report.riskEvents.total}건${formatCountItemsInline(report.riskEvents.byAction)}`,
     `- 주요 리스크 종류: ${formatCountItemsText(report.riskEvents.byRiskType)}`,
   ].join("\n");
