@@ -11,7 +11,6 @@ import type {
 import type { BrokerPort, HardStopRuntimeActionPlan } from "../../src/application/index.js";
 import {
   DisabledUpbitLiveBroker,
-  UpbitLiveBroker,
   UpbitLiveBrokerDisabledError,
   createDisabledUpbitLiveBroker,
 } from "../../src/infrastructure/index.js";
@@ -32,6 +31,7 @@ import {
   loadDefaultRuntimeConfig,
   loadRuntimeConfig,
 } from "../../src/runtime/index.js";
+import type { EnabledPilotRuntimeConfig } from "../../src/runtime/index.js";
 
 const observedAt = "2026-05-20T01:00:00.000Z";
 const defaultUpbitRateLimitStatus = {
@@ -151,6 +151,17 @@ describe("guarded Upbit live broker runtime factory", () => {
         privateClientFactory,
       }),
     ).toThrow(UnsafeUpbitLiveBrokerRuntimeError);
+    expect(() =>
+      createGuardedUpbitLiveBrokerRuntime({
+        liveBrokerEnabled: true,
+        pilotConfig: {
+          ...createEnabledOrderSmokePilotConfig(),
+          orderSmokeMarket: undefined,
+          orderSmokeMaxKrw: undefined,
+        } as unknown as EnabledPilotRuntimeConfig,
+        privateClientFactory,
+      }),
+    ).toThrow(UnsafeUpbitLiveBrokerRuntimeError);
     expect(privateClientFactory).not.toHaveBeenCalled();
   });
 
@@ -172,7 +183,6 @@ describe("guarded Upbit live broker runtime factory", () => {
       clock: () => observedAt,
     });
 
-    expect(runtime.broker).toBeInstanceOf(UpbitLiveBroker);
     expect(privateClientFactory).toHaveBeenCalledTimes(1);
     expect(runtime.summary).toMatchObject({
       enabled: true,
@@ -181,6 +191,8 @@ describe("guarded Upbit live broker runtime factory", () => {
       orderSmokeEnabled: true,
       credentialsConfigured: true,
       keyScopeEvidenceId: "evidence-live-broker-001",
+      orderSmokeMarket: "KRW-BTC",
+      orderSmokeMaxKrw: "5000",
       statusLabel: "live broker 조립 가능",
     });
     expect(JSON.stringify(runtime.summary)).not.toContain("fixture-upbit-access-key");
@@ -195,6 +207,34 @@ describe("guarded Upbit live broker runtime factory", () => {
       ],
     });
     expect(privateClient.getAccounts).toHaveBeenCalledTimes(1);
+  });
+
+  it("blocks submitOrder outside the explicit order-smoke market and KRW limit", async () => {
+    const privateClient = createFakeUpbitLiveBrokerPrivateClient();
+    const runtime = createGuardedUpbitLiveBrokerRuntime({
+      liveBrokerEnabled: true,
+      pilotConfig: createEnabledOrderSmokePilotConfig(),
+      privateClientFactory: vi.fn(() => privateClient),
+      clock: () => observedAt,
+    });
+
+    await expect(runtime.broker.submitOrder(createSubmission({ market: "KRW-ETH" }))).rejects.toMatchObject({
+      name: "UnsafeUpbitLiveBrokerRuntimeError",
+      violations: expect.arrayContaining(["Upbit live broker order smoke market은 KRW-BTC만 허용합니다"]),
+    } satisfies Partial<UnsafeUpbitLiveBrokerRuntimeError>);
+    await expect(
+      runtime.broker.submitOrder(
+        createSubmission({
+          requestedPrice: "6000000",
+          requestedQuantity: "0.001",
+          requestedNotional: "6000",
+        }),
+      ),
+    ).rejects.toMatchObject({
+      name: "UnsafeUpbitLiveBrokerRuntimeError",
+      violations: expect.arrayContaining(["Upbit live broker order smoke 주문 금액은 5000 KRW 이하여야 합니다"]),
+    } satisfies Partial<UnsafeUpbitLiveBrokerRuntimeError>);
+    expect(privateClient.createLimitOrder).not.toHaveBeenCalled();
   });
 
   it("summarizes blocked live broker guards without leaking credentials", () => {
@@ -484,7 +524,9 @@ function createFakeUpbitLiveBrokerPrivateClient(): UpbitLiveBrokerPrivateClient 
   };
 }
 
-function createEnabledOrderSmokePilotConfig() {
+function createEnabledOrderSmokePilotConfig(
+  overrides: Partial<EnabledPilotRuntimeConfig> = {},
+): EnabledPilotRuntimeConfig {
   return {
     enabled: true,
     profile: "PILOT_ORDER_SMOKE",
@@ -497,7 +539,8 @@ function createEnabledOrderSmokePilotConfig() {
     policySyncMarket: "KRW-BTC",
     orderSmokeMarket: "KRW-BTC",
     orderSmokeMaxKrw: "5000",
-  } as const;
+    ...overrides,
+  };
 }
 
 function createHardStopPlan(): HardStopRuntimeActionPlan {
@@ -547,7 +590,7 @@ function createBrokerOrder(overrides: Partial<BrokerOrder> = {}): BrokerOrder {
   };
 }
 
-function createSubmission(): OrderSubmission {
+function createSubmission(overrides: Partial<Extract<OrderSubmission["intent"], { orderType: "LIMIT" }>> = {}): OrderSubmission {
   return {
     intent: {
       exchangeId: "upbit_krw_spot",
@@ -560,6 +603,7 @@ function createSubmission(): OrderSubmission {
       requestedNotional: "10000",
       idempotencyKey: "execution-candidate-1",
       reason: "disabled-live-broker-test",
+      ...overrides,
     },
     costSnapshot: {},
     riskApproval: {},

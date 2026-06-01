@@ -1,14 +1,11 @@
 import type { ExchangeId, JsonRecord, TimestampInput } from "../../domain/index.js";
+import type { BrokerPort } from "../../application/index.js";
 import type {
   PilotRuntimeConfig,
   PilotRuntimeProfile,
   PilotUpbitKeyScope,
 } from "../pilot-config.js";
-import type {
-  UpbitLiveBroker,
-  UpbitLiveBrokerPrivateClient,
-  UpbitPrivateCredentials,
-} from "../../infrastructure/upbit/index.js";
+import type { UpbitLiveBrokerPrivateClient, UpbitPrivateCredentials } from "../../infrastructure/upbit/index.js";
 
 /**
  * UpbitLiveBroker runtime factory가 private client를 만드는 경계다.
@@ -38,11 +35,12 @@ export interface CreateGuardedUpbitLiveBrokerRuntimeInput {
 /**
  * guarded UpbitLiveBroker runtime factory의 반환 contract다.
  *
- * `broker`는 실제 private API side effect를 만들 수 있는 adapter이고, `summary`는 운영자 표면에 노출 가능한 secret-safe
- * 상태다. 호출자는 summary만 log/status/report에 전달해야 하며 broker와 credential은 runtime 내부에만 둔다.
+ * `broker`는 order-smoke market/소액 한도 guard를 통과한 뒤에만 실제 live broker에 위임하는 port이고, `summary`는 운영자
+ * 표면에 노출 가능한 secret-safe 상태다. 호출자는 summary만 log/status/report에 전달해야 하며 credential은 runtime 내부에만
+ * 둔다.
  */
 export interface GuardedUpbitLiveBrokerRuntime {
-  broker: UpbitLiveBroker;
+  broker: BrokerPort;
   summary: UpbitLiveBrokerRuntimeSafeSummary;
 }
 
@@ -71,6 +69,8 @@ export interface UpbitLiveBrokerRuntimeSafeSummary {
   credentialsConfigured: boolean;
   keyScopes: readonly PilotUpbitKeyScope[];
   keyScopeEvidenceId: string | null;
+  orderSmokeMarket: string | null;
+  orderSmokeMaxKrw: string | null;
   statusLabel: string;
   message: string;
   action: string | null;
