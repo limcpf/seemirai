@@ -67,6 +67,33 @@ export type {
   UpbitRestResponse,
 } from "./rest-client.js";
 export {
+  buildUpbitAuthorizationHeader,
+  buildUpbitQueryString,
+  createUpbitJwtToken,
+  createUpbitQueryHash,
+  UPBIT_PRIVATE_API_BASE_URL,
+  UnsafeUpbitPrivateRequestError,
+  UpbitPrivateRestClient,
+  UpbitPrivateRestClientError,
+} from "./private-client.js";
+export type {
+  CreateUpbitJwtTokenInput,
+  UnsafeUpbitPrivateRequestErrorOptions,
+  UpbitJwtPayload,
+  UpbitNonceFactory,
+  UpbitPrivateCredentials,
+  UpbitPrivateErrorKind,
+  UpbitPrivateErrorTrace,
+  UpbitPrivateGetOrderInput,
+  UpbitPrivateRequestMethod,
+  UpbitPrivateRestClientErrorOptions,
+  UpbitPrivateRestClientOptions,
+  UpbitPrivateRestResponse,
+  UpbitQueryParam,
+  UpbitQueryParamValue,
+  UpbitQueryParams,
+} from "./private-client.js";
+export {
   UPBIT_QUOTATION_WEBSOCKET_URL,
   UpbitQuotationWebSocketClient,
   createUpbitOrderbookSubscription,
