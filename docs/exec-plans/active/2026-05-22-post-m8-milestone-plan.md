@@ -379,6 +379,8 @@ Acceptance Criteria:
 
 ### M14. v0.2 Pilot 준비
 
+상태: completed
+
 목적:
 
 - paper 운영에서 확인한 경계만 바탕으로 Upbit account/private API와 소액 실거래 후보를 별도 문서와 별도 runtime profile로 준비한다.
@@ -408,10 +410,17 @@ Acceptance Criteria:
 
 Acceptance Criteria:
 
-- [ ] v0.2 pilot PRD 또는 product spec이 MVP 문서와 분리된다.
-- [ ] 출금 권한 없는 API key만 허용한다는 보안 기준이 문서와 config guard에 반영된다.
-- [ ] read-only account integration이 실거래 주문 생성 경로를 열지 않는다.
-- [ ] live order API 호출은 명시 승인된 pilot profile과 별도 테스트에서만 허용된다.
+- [x] v0.2 pilot PRD 또는 product spec이 MVP 문서와 분리된다.
+- [x] 출금 권한 없는 API key만 허용한다는 보안 기준이 문서와 config guard에 반영된다.
+- [x] read-only account integration이 실거래 주문 생성 경로를 열지 않는다.
+- [x] live order API 호출은 명시 승인된 pilot profile과 별도 테스트에서만 허용된다.
+
+완료 증거:
+
+- GitHub issue: #124 closed
+- Final PR: #132 merged
+- 완료 실행 계획: [`../completed/2026-06-01-issue-124-m14-v0-2-pilot.md`](../completed/2026-06-01-issue-124-m14-v0-2-pilot.md)
+- 실제 private/order smoke는 운영자 secret과 명시 guard가 없으면 실행하지 않는 경계를 유지한다.
 
 ### M15-M24. Upbit 실거래 자율 운용 로드맵
 
