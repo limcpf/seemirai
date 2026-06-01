@@ -208,6 +208,7 @@ describe("Upbit private order lookup mapper", () => {
         ord_type: "market",
         state: "done",
         created_at: "2026-06-01T09:00:00+09:00",
+        volume: "5.5",
         remaining_volume: "0",
         executed_volume: "5.377594",
         reserved_fee: "0",
@@ -226,13 +227,62 @@ describe("Upbit private order lookup mapper", () => {
       side: "SELL",
       orderType: "MARKET",
       status: "FILLED",
-      requestedQuantity: "5.377594",
+      requestedQuantity: "5.5",
       remainingQuantity: "0",
       metadata: {
         upbitOrderType: "market",
         upbitState: "done",
       },
     });
+  });
+
+  it("fails closed for order lookup types that BrokerOrder cannot represent safely", () => {
+    expect(() =>
+      toBrokerOrderFromLookup(
+        {
+          market: "KRW-BTC",
+          uuid: "best-order-uuid",
+          side: "bid",
+          ord_type: "best",
+          state: "cancel",
+          created_at: "2026-06-01T09:00:00+09:00",
+          volume: "0.001",
+          remaining_volume: "0.001",
+          executed_volume: "0",
+          reserved_fee: "0",
+          remaining_fee: "0",
+          paid_fee: "0",
+          locked: "0",
+          time_in_force: "ioc",
+          trades_count: 0,
+          trades: [],
+        },
+        { capturedAt },
+      ),
+    ).toThrow(UpbitPrivatePayloadMappingError);
+
+    expect(() =>
+      toBrokerOrderFromLookup(
+        {
+          market: "KRW-BTC",
+          uuid: "price-order-uuid",
+          side: "bid",
+          ord_type: "price",
+          price: "5000",
+          state: "done",
+          created_at: "2026-06-01T09:00:00+09:00",
+          remaining_volume: "0",
+          executed_volume: "0.000035",
+          reserved_fee: "0",
+          remaining_fee: "0",
+          paid_fee: "2.5",
+          locked: "0",
+          trades_count: 0,
+          trades: [],
+        },
+        { capturedAt },
+      ),
+    ).toThrow(UpbitPrivatePayloadMappingError);
   });
 });
 

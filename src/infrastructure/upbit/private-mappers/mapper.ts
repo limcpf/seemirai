@@ -35,6 +35,12 @@ import type {
   UpbitPrivateUserActionErrorSummary,
 } from "./types.js";
 
+interface DomainOrderMapping {
+  orderType: OrderType;
+  requestedQuantity: NumericString;
+  requestedPrice?: NumericString;
+}
+
 /**
  * Upbit private payload mapping 실패 오류다.
  *
@@ -159,12 +165,9 @@ export function toBrokerOrderFromLookup(
   options: MapUpbitPrivatePayloadOptions,
 ): BrokerOrder {
   const order = parsePrivatePayload(UpbitPrivateOrderLookupResponseSchema, "ORDER_LOOKUP", payload);
-  const orderType = toDomainOrderType(order.ord_type);
   const executedVolume = normalizeDecimalString(order.executed_volume);
   const remainingQuantity = normalizeDecimalString(order.remaining_volume ?? "0");
-  const requestedQuantity = normalizeDecimalString(
-    order.volume ?? addDecimalStrings(executedVolume, remainingQuantity),
-  );
+  const domainOrder = toDomainOrderMapping(order, executedVolume, remainingQuantity);
 
   return {
     brokerOrderId: order.uuid,
@@ -172,13 +175,11 @@ export function toBrokerOrderFromLookup(
     exchangeId: options.exchangeId ?? UPBIT_KRW_SPOT_EXCHANGE_ID,
     market: order.market,
     side: toDomainOrderSide(order.side),
-    orderType,
+    orderType: domainOrder.orderType,
     status: toDomainOrderStatus(order, executedVolume),
-    requestedQuantity,
+    requestedQuantity: domainOrder.requestedQuantity,
     remainingQuantity,
-    ...(orderType === "LIMIT" && order.price !== null && order.price !== undefined
-      ? { requestedPrice: normalizeDecimalString(order.price) }
-      : {}),
+    ...(domainOrder.requestedPrice === undefined ? {} : { requestedPrice: domainOrder.requestedPrice }),
     acceptedAt: order.created_at,
     updatedAt: options.capturedAt,
     metadata: toOrderLookupMetadata(order, executedVolume),
@@ -291,8 +292,60 @@ function toDomainOrderSide(side: UpbitPrivateOrderLookupResponse["side"]): Order
   return side === "bid" ? "BUY" : "SELL";
 }
 
-function toDomainOrderType(orderType: UpbitPrivateOrderLookupResponse["ord_type"]): OrderType {
-  return orderType === "limit" ? "LIMIT" : "MARKET";
+function toDomainOrderMapping(
+  order: UpbitPrivateOrderLookupResponse,
+  executedVolume: NumericString,
+  remainingQuantity: NumericString,
+): DomainOrderMapping {
+  if (order.ord_type === "best") {
+    // 최유리 주문은 domain 주문 유형에 정확한 표현이 없어 잘못된 시장가 evidence로 남기지 않는다.
+    throw createUnsupportedOrderLookupMappingError(
+      "Upbit 최유리 주문은 현재 broker order contract로 안전하게 표현할 수 없어 수동 확인이 필요합니다.",
+      ["ord_type"],
+    );
+  }
+
+  if (order.ord_type === "price") {
+    // 시장가 매수는 quote 주문금액이 핵심 입력이라 base 수량 필드에 대체 저장하면 감사 근거가 틀어진다.
+    throw createUnsupportedOrderLookupMappingError(
+      "Upbit 시장가 매수 주문금액은 broker order의 요청 수량으로 안전하게 표현할 수 없어 수동 확인이 필요합니다.",
+      ["ord_type", "price"],
+    );
+  }
+
+  if (order.ord_type === "market" && order.volume === null) {
+    // 시장가 매도에서 원 요청 수량이 없으면 체결 수량을 요청 수량으로 둔갑시키지 않고 lookup을 닫는다.
+    throw createUnsupportedOrderLookupMappingError(
+      "Upbit 시장가 매도 주문의 원 요청 수량이 없어 broker order contract로 안전하게 표현할 수 없습니다.",
+      ["volume"],
+    );
+  }
+
+  const requestedQuantity = normalizeDecimalString(
+    order.volume ?? addDecimalStrings(executedVolume, remainingQuantity),
+  );
+
+  if (order.ord_type === "limit") {
+    const requestedPrice = order.price;
+    if (requestedPrice === null || requestedPrice === undefined) {
+      // 지정가 주문은 요청 가격이 감사 핵심값이므로 누락된 응답을 정상 주문 evidence로 사용하지 않는다.
+      throw createUnsupportedOrderLookupMappingError(
+        "Upbit 지정가 주문 조회 응답에 요청 가격이 없어 broker order contract로 안전하게 표현할 수 없습니다.",
+        ["price"],
+      );
+    }
+
+    return {
+      orderType: "LIMIT",
+      requestedQuantity,
+      requestedPrice: normalizeDecimalString(requestedPrice),
+    };
+  }
+
+  return {
+    orderType: "MARKET",
+    requestedQuantity,
+  };
 }
 
 function toDomainOrderStatus(
@@ -363,6 +416,17 @@ function toDomainTimeInForce(timeInForce: UpbitPrivateOrderLookupResponse["time_
   }
 
   return undefined;
+}
+
+function createUnsupportedOrderLookupMappingError(
+  userMessage: string,
+  issuePaths: readonly string[],
+): UpbitPrivatePayloadMappingError {
+  return new UpbitPrivatePayloadMappingError({
+    schema: "ORDER_LOOKUP",
+    userMessage,
+    issuePaths,
+  });
 }
 
 function summarizeRestClientError(
