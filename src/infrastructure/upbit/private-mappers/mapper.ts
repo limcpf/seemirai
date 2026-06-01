@@ -281,7 +281,7 @@ function toAllowedOrderTypes(orderChance: UpbitPrivateOrderChancePayload): reado
     allowedOrderTypes.push("LIMIT");
   }
 
-  if ([...wireOrderTypes].some((orderType) => orderType === "price" || orderType === "market" || orderType.startsWith("best"))) {
+  if ([...wireOrderTypes].some((orderType) => orderType === "price" || orderType === "market")) {
     allowedOrderTypes.push("MARKET");
   }
 
@@ -394,7 +394,7 @@ function toOrderLookupMetadata(
       price: normalizeDecimalString(trade.price),
       volume: normalizeDecimalString(trade.volume),
       funds: normalizeDecimalString(trade.funds),
-      trend: trade.trend,
+      ...(trade.trend === undefined ? {} : { trend: trade.trend }),
       createdAt: trade.created_at,
       side: trade.side,
     })),

@@ -141,7 +141,7 @@ export const UpbitPrivateOrderTradeSchema = z
     price: UpbitPrivateNumericStringSchema,
     volume: UpbitPrivateNumericStringSchema,
     funds: UpbitPrivateNumericStringSchema,
-    trend: z.enum(["up", "down"]),
+    trend: z.enum(["up", "down"]).optional(),
     created_at: z.string().min(1),
     side: UpbitPrivateOrderSideSchema,
   })

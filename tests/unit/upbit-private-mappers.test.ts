@@ -136,6 +136,26 @@ describe("Upbit private order chance mapper", () => {
       updatedAt: capturedAt,
     });
   });
+
+  it("does not promote best-only order chance types to MARKET", () => {
+    const payload = createOrderChancePayload() as Record<string, unknown>;
+    const market = payload.market as Record<string, unknown>;
+
+    expect(
+      toOrderChancePolicy(
+        {
+          ...payload,
+          market: {
+            ...market,
+            order_types: ["best"],
+            bid_types: ["best_fok", "best_ioc"],
+            ask_types: ["best_fok", "best_ioc"],
+          },
+        },
+        { capturedAt },
+      ).allowedOrderTypes,
+    ).toEqual([]);
+  });
 });
 
 describe("Upbit private order lookup mapper", () => {
@@ -166,7 +186,6 @@ describe("Upbit private order lookup mapper", () => {
             price: "140000000",
             volume: "0.0005",
             funds: "70000",
-            trend: "up",
             created_at: "2026-06-01T09:00:01.000000+09:00",
             side: "bid",
           },
