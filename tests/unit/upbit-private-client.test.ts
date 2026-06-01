@@ -219,7 +219,7 @@ describe("Upbit private REST client foundation", () => {
           401,
           "Unauthorized",
           { error: { name: "out_of_scope", message: "권한이 부족합니다" } },
-          "group=exchange; min=1800; sec=28",
+          "group=exchange; min=1800; sec=0",
         ),
     });
 
@@ -230,6 +230,28 @@ describe("Upbit private REST client foundation", () => {
       trace: {
         httpStatus: 401,
         upbitErrorName: "out_of_scope",
+      },
+    } satisfies Partial<UpbitPrivateRestClientError>);
+  });
+
+  it("keeps authentication failures ahead of exhausted Remaining-Req hints", async () => {
+    const client = new UpbitPrivateRestClient({
+      credentials,
+      fetchFn: async () =>
+        errorResponse(
+          401,
+          "Unauthorized",
+          { error: { name: "invalid_access_key" } },
+          "group=exchange; min=1800; sec=0",
+        ),
+    });
+
+    await expect(client.getAccounts()).rejects.toMatchObject({
+      status: 401,
+      kind: "AUTHENTICATION_FAILED",
+      rateLimitStatus: {
+        kind: "THROTTLED",
+        httpStatus: 429,
       },
     } satisfies Partial<UpbitPrivateRestClientError>);
   });
@@ -253,6 +275,34 @@ describe("Upbit private REST client foundation", () => {
         userMessage: "Upbit private API에 연결하지 못했습니다. 추가 요청을 중단하고 네트워크 상태를 확인하세요.",
       } satisfies Partial<UpbitPrivateRestClientError>);
       expect(String(error)).not.toContain("raw-provider-detail");
+    }
+  });
+
+  it("wraps malformed Remaining-Req headers as private provider response errors", async () => {
+    const client = new UpbitPrivateRestClient({
+      credentials,
+      fetchFn: async () =>
+        new Response(JSON.stringify({ ok: true }), {
+          status: 200,
+          statusText: "OK",
+          headers: {
+            "content-type": "application/json",
+            "remaining-req": "malformed-raw-header",
+          },
+        }),
+    });
+
+    try {
+      await client.getAccounts();
+      throw new Error("expected request to fail");
+    } catch (error) {
+      expect(error).toMatchObject({
+        name: "UpbitPrivateRestClientError",
+        status: 200,
+        kind: "INVALID_PROVIDER_RESPONSE",
+        userMessage: "Upbit 요청 제한 헤더를 해석하지 못했습니다. 원문 헤더를 저장하지 않고 수동 확인으로 전환합니다.",
+      } satisfies Partial<UpbitPrivateRestClientError>);
+      expect(String(error)).not.toContain("malformed-raw-header");
     }
   });
 

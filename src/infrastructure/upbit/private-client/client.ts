@@ -120,7 +120,13 @@ export class UpbitPrivateRestClient {
       // 응답을 받기 전 네트워크 실패도 raw 예외를 audit으로 흘리지 않고 private client 오류 contract로 닫는다.
       throw createPrivateNetworkError();
     }
-    const remainingReq = parseOptionalRemainingReqHeader(response.headers);
+    let remainingReq: UpbitRemainingReq | undefined;
+    try {
+      remainingReq = parseOptionalRemainingReqHeader(response.headers);
+    } catch {
+      // malformed rate-limit header는 복구 정책을 흐리므로 raw 파싱 예외 대신 provider 응답 오류로 닫는다.
+      throw createMalformedRateLimitHeaderError(response);
+    }
     const retryAfterSeconds = parseOptionalRetryAfterHeader(response.headers);
     const rateLimitStatus = createUpbitRateLimitStatus(response.status, remainingReq, retryAfterSeconds);
 
@@ -218,12 +224,8 @@ function toPrivateErrorKind(
   upbitErrorName: string | undefined,
   rateLimitStatus: UpbitRateLimitStatus,
 ): UpbitPrivateErrorKind {
-  if (rateLimitStatus.kind === "BLOCKED") {
+  if (status === 418) {
     return "RATE_LIMIT_BLOCKED";
-  }
-
-  if (rateLimitStatus.kind === "THROTTLED" || status === 429) {
-    return "RATE_LIMIT_THROTTLED";
   }
 
   if (status === 403 || upbitErrorName === "out_of_scope") {
@@ -232,6 +234,14 @@ function toPrivateErrorKind(
 
   if (status === 401) {
     return "AUTHENTICATION_FAILED";
+  }
+
+  if (status === 429 || rateLimitStatus.kind === "THROTTLED") {
+    return "RATE_LIMIT_THROTTLED";
+  }
+
+  if (rateLimitStatus.kind === "BLOCKED") {
+    return "RATE_LIMIT_BLOCKED";
   }
 
   if (status >= 500) {
@@ -279,6 +289,22 @@ function createPrivateNetworkError(): UpbitPrivateRestClientError {
     userMessage: "Upbit private API에 연결하지 못했습니다. 추가 요청을 중단하고 네트워크 상태를 확인하세요.",
     rateLimitStatus,
     trace: {
+      rateLimitStatus,
+    },
+  });
+}
+
+function createMalformedRateLimitHeaderError(response: Response): UpbitPrivateRestClientError {
+  const rateLimitStatus = createUpbitRateLimitStatus(response.status);
+
+  return new UpbitPrivateRestClientError({
+    status: response.status,
+    statusText: response.statusText,
+    kind: "INVALID_PROVIDER_RESPONSE",
+    userMessage: "Upbit 요청 제한 헤더를 해석하지 못했습니다. 원문 헤더를 저장하지 않고 수동 확인으로 전환합니다.",
+    rateLimitStatus,
+    trace: {
+      httpStatus: response.status,
       rateLimitStatus,
     },
   });
