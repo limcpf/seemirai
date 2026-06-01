@@ -114,6 +114,7 @@ describeUpbitOrderSmoke("Upbit order API smoke integration", () => {
 
       try {
         const lookupResponse = await client.getOrder(plan.lookupOrder);
+        assertLookupConfirmsCanceledOrder(lookupResponse.payload, plan.createOrder.identifier);
         artifact.lookupOrder = summarizeProviderOrderPayload(lookupResponse.payload);
         artifact.lookupRateLimit = lookupResponse.rateLimitStatus;
       } catch (error) {
@@ -251,6 +252,29 @@ function assertOrderChanceCanCoverPlan(policy: OrderChancePolicy, plan: PilotOrd
   }
 }
 
+/**
+ * 주문 조회 응답이 같은 smoke run의 취소 완료 주문인지 확인한다.
+ *
+ * create/cancel 후 lookup이 다른 identifier를 가리키거나 취소 상태가 아니면 성공 evidence로 저장하지 않고 manual review로
+ * 전환한다. 이 함수는 provider payload 검증만 수행하며 추가 API 호출 side effect는 없다.
+ */
+function assertLookupConfirmsCanceledOrder(payload: unknown, expectedIdentifier: string): void {
+  const record = toProviderOrderRecord(payload);
+  if (record === undefined) {
+    throw new UnsafePilotOrderSmokeRequestError(["주문 조회 응답 형식을 확인하지 못해 수동 점검으로 전환합니다"]);
+  }
+
+  if (record.identifier !== expectedIdentifier) {
+    // 취소 확인은 같은 smoke run identifier와 묶여야 하므로 다른 주문이 조회되면 성공 evidence로 쓰지 않는다.
+    throw new UnsafePilotOrderSmokeRequestError(["주문 조회 응답 identifier가 smoke run identifier와 다릅니다"]);
+  }
+
+  if (record.state !== "cancel") {
+    // 주문이 취소 상태로 확인되지 않으면 계정에 주문이 남았을 수 있어 closeout을 통과시키지 않는다.
+    throw new UnsafePilotOrderSmokeRequestError(["주문 조회 응답이 취소 완료 상태가 아니므로 수동 점검이 필요합니다"]);
+  }
+}
+
 function summarizeBalanceSnapshot(snapshot: BrokerBalanceSnapshot): JsonRecord {
   const currencies = snapshot.balances.map((balance) => balance.currency).sort();
   return {
@@ -274,13 +298,13 @@ function summarizeOrderChancePolicy(policy: OrderChancePolicy): JsonRecord {
 }
 
 function summarizeProviderOrderPayload(payload: unknown): JsonRecord {
-  if (payload === null || typeof payload !== "object" || Array.isArray(payload)) {
+  const record = toProviderOrderRecord(payload);
+  if (record === undefined) {
     return {
       payloadShape: "unexpected",
     };
   }
 
-  const record = payload as Record<string, unknown>;
   const summary: JsonRecord = {
     payloadShape: "object",
   };
@@ -299,6 +323,20 @@ function summarizeProviderOrderPayload(payload: unknown): JsonRecord {
   assignIfNumber(summary, "tradesCount", record.trades_count);
 
   return summary;
+}
+
+/**
+ * provider 주문 응답을 summary/검증용 record로 낮춘다.
+ *
+ * raw payload를 artifact에 보존하지 않기 위해 객체 shape 여부만 확인하고, caller가 필요한 안전 필드만 선택하도록 한다.
+ * 순수 변환 경계라 외부 side effect는 없다.
+ */
+function toProviderOrderRecord(payload: unknown): Record<string, unknown> | undefined {
+  if (payload === null || typeof payload !== "object" || Array.isArray(payload)) {
+    return undefined;
+  }
+
+  return payload as Record<string, unknown>;
 }
 
 function assignIfString(target: JsonRecord, key: string, value: unknown): void {
