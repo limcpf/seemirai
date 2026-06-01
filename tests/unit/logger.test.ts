@@ -19,6 +19,12 @@ describe("app logger", () => {
           accessKey: "upbit-access-key",
           secretKey: "upbit-secret-key",
         },
+        upbitAccessKey: "pilot-root-upbit-access-key",
+        upbitSecretKey: "pilot-root-upbit-secret-key",
+        pilotConfig: {
+          upbitAccessKey: "pilot-config-upbit-access-key",
+          upbitSecretKey: "pilot-config-upbit-secret-key",
+        },
         telegram: {
           botToken: "telegram-token",
         },
@@ -62,6 +68,10 @@ describe("app logger", () => {
     expect(output).toContain("[REDACTED]");
     expect(output).not.toContain("upbit-access-key");
     expect(output).not.toContain("upbit-secret-key");
+    expect(output).not.toContain("pilot-root-upbit-access-key");
+    expect(output).not.toContain("pilot-root-upbit-secret-key");
+    expect(output).not.toContain("pilot-config-upbit-access-key");
+    expect(output).not.toContain("pilot-config-upbit-secret-key");
     expect(output).not.toContain("telegram-token");
     expect(output).not.toContain("control-token");
     expect(output).not.toContain("config-upbit-access-key");

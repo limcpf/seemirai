@@ -4,6 +4,10 @@ import type { DestinationStream, Logger, LoggerOptions } from "pino";
 export const SECRET_REDACTION_PATHS = [
   "upbit.accessKey",
   "upbit.secretKey",
+  "upbitAccessKey",
+  "upbitSecretKey",
+  "*.upbitAccessKey",
+  "*.upbitSecretKey",
   "telegram.botToken",
   "control.localToken",
   "secrets.upbit_access_key",
