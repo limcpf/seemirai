@@ -1,6 +1,7 @@
 import type { UpbitRateLimitStatus, UpbitRemainingReq } from "../rate-limit.js";
 
 export const UPBIT_PRIVATE_API_BASE_URL = "https://api.upbit.com";
+export const UPBIT_PRIVATE_ORDER_IDENTIFIER_MAX_LENGTH = 32;
 
 /**
  * Upbit private API 인증에 필요한 원문 credential이다.
@@ -114,6 +115,34 @@ export interface UpbitPrivateRestResponse<TPayload> {
  * 식별자는 조회에만 쓰이고 side effect를 만들지 않는다.
  */
 export interface UpbitPrivateGetOrderInput {
+  uuid?: string;
+  identifier?: string;
+}
+
+/**
+ * Upbit 지정가 주문 생성 endpoint 입력이다.
+ *
+ * low-level private client는 Upbit 공식 `limit` 주문 payload만 만들고, M14 pilot의 KRW/소액/side/profile 제한은 runtime
+ * order smoke guard가 별도로 보장한다. 이 입력은 실제 `POST /v1/orders` side effect 직전 경계이므로 raw secret을 포함하지
+ * 않고, identifier는 계정 내 고유하고 32자 이하라는 invariant를 유지해야 한다.
+ */
+export interface UpbitPrivateCreateLimitOrderInput {
+  market: string;
+  side: "bid" | "ask";
+  volume: string;
+  price: string;
+  identifier: string;
+  timeInForce?: "ioc" | "fok" | "post_only";
+  smpType?: "cancel_maker" | "cancel_taker" | "reduce";
+}
+
+/**
+ * Upbit 개별 주문 취소 endpoint 입력이다.
+ *
+ * uuid 또는 identifier 중 정확히 하나만 허용해 임의 주문 취소를 거래소 호출 전 차단한다. 이 입력은 취소 side effect를
+ * 만들 수 있는 경계에 전달되므로, pilot smoke에서는 같은 smoke run에서 생성한 identifier만 사용해야 한다.
+ */
+export interface UpbitPrivateCancelOrderInput {
   uuid?: string;
   identifier?: string;
 }

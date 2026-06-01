@@ -4,6 +4,7 @@ import {
   UnsafeUpbitPrivateRequestError,
   UpbitPrivateRestClient,
   UpbitPrivateRestClientError,
+  UPBIT_PRIVATE_ORDER_IDENTIFIER_MAX_LENGTH,
   buildUpbitQueryString,
   buildUpbitUrlQueryString,
   createUpbitJwtToken,
@@ -181,6 +182,125 @@ describe("Upbit private REST client foundation", () => {
     expect(fetchCalls).toBe(0);
   });
 
+  it("creates limit orders with JSON body params hashed in the JWT payload", async () => {
+    let capturedRequest: CapturedRequest | undefined;
+    const client = new UpbitPrivateRestClient({
+      credentials,
+      nonceFactory: () => "create-order-nonce",
+      fetchFn: async (input, init) => {
+        capturedRequest = captureRequest(input, init);
+        return jsonResponse({ uuid: "order-uuid", identifier: "m14smoke000000000000000001" }, "group=order; min=1800; sec=7");
+      },
+    });
+
+    await client.createLimitOrder({
+      market: "KRW-BTC",
+      side: "bid",
+      volume: "0.0001",
+      price: "50000000",
+      identifier: "m14smoke000000000000000001",
+      timeInForce: "post_only",
+    });
+
+    const authorization = capturedRequest?.headers.get("authorization");
+    const decoded = decodeJwt(readBearerToken(authorization));
+    const expectedQueryString =
+      "market=KRW-BTC&side=bid&volume=0.0001&price=50000000&ord_type=limit&identifier=m14smoke000000000000000001&time_in_force=post_only";
+
+    expect(capturedRequest).toMatchObject({
+      url: "https://api.upbit.com/v1/orders",
+      method: "POST",
+      body: JSON.stringify({
+        market: "KRW-BTC",
+        side: "bid",
+        volume: "0.0001",
+        price: "50000000",
+        ord_type: "limit",
+        identifier: "m14smoke000000000000000001",
+        time_in_force: "post_only",
+      }),
+    });
+    expect(capturedRequest?.headers.get("content-type")).toBe("application/json");
+    expect(decoded.payload).toMatchObject({
+      nonce: "create-order-nonce",
+      query_hash: createUpbitQueryHash(expectedQueryString),
+      query_hash_alg: "SHA512",
+    });
+  });
+
+  it("cancels orders by the same identifier with URL query params hashed before encoding", async () => {
+    let capturedRequest: CapturedRequest | undefined;
+    const client = new UpbitPrivateRestClient({
+      credentials,
+      nonceFactory: () => "cancel-order-nonce",
+      fetchFn: async (input, init) => {
+        capturedRequest = captureRequest(input, init);
+        return jsonResponse({ uuid: "order-uuid", state: "cancel" }, "group=order; min=1800; sec=6");
+      },
+    });
+
+    await client.cancelOrder({ identifier: "smoke:run/001, cancel" });
+
+    const authorization = capturedRequest?.headers.get("authorization");
+    const decoded = decodeJwt(readBearerToken(authorization));
+    expect(capturedRequest).toMatchObject({
+      url: "https://api.upbit.com/v1/order?identifier=smoke%3Arun%2F001%2C%20cancel",
+      method: "DELETE",
+    });
+    expect(decoded.payload).toMatchObject({
+      nonce: "cancel-order-nonce",
+      query_hash: createUpbitQueryHash("identifier=smoke:run/001, cancel"),
+      query_hash_alg: "SHA512",
+    });
+  });
+
+  it("fails locally before fetch when order create or cancel inputs are unsafe", async () => {
+    let fetchCalls = 0;
+    const client = new UpbitPrivateRestClient({
+      credentials,
+      fetchFn: async () => {
+        fetchCalls += 1;
+        return jsonResponse({}, "group=order; min=1800; sec=7");
+      },
+    });
+
+    await expect(
+      client.createLimitOrder({
+        market: "KRW-BTC",
+        side: "bid",
+        volume: "0.0001",
+        price: "50000000",
+        identifier: "x".repeat(UPBIT_PRIVATE_ORDER_IDENTIFIER_MAX_LENGTH + 1),
+        timeInForce: "post_only",
+      }),
+    ).rejects.toMatchObject({
+      name: "UnsafeUpbitPrivateRequestError",
+      violations: [`주문 생성 identifier는 ${UPBIT_PRIVATE_ORDER_IDENTIFIER_MAX_LENGTH}자 이하여야 합니다`],
+    } satisfies Partial<UnsafeUpbitPrivateRequestError>);
+    await expect(
+      client.createLimitOrder({
+        market: "KRW-BTC",
+        side: "bid",
+        volume: "0.0001",
+        price: "50000000",
+        identifier: "m14smoke000000000000000001",
+        timeInForce: "post_only",
+        smpType: "cancel_maker",
+      }),
+    ).rejects.toMatchObject({
+      violations: ["post_only 주문은 smp_type과 함께 사용할 수 없습니다"],
+    } satisfies Partial<UnsafeUpbitPrivateRequestError>);
+    await expect(
+      client.cancelOrder({ uuid: "order-uuid", identifier: "order-identifier" }),
+    ).rejects.toMatchObject({
+      violations: ["주문 취소 식별자는 uuid 또는 identifier 중 하나만 지정해야 합니다"],
+    } satisfies Partial<UnsafeUpbitPrivateRequestError>);
+    await expect(client.cancelOrder({})).rejects.toMatchObject({
+      violations: ["주문 취소에는 uuid 또는 identifier가 필요합니다"],
+    } satisfies Partial<UnsafeUpbitPrivateRequestError>);
+    expect(fetchCalls).toBe(0);
+  });
+
   it("normalizes permission failures without preserving raw provider body", async () => {
     const client = new UpbitPrivateRestClient({
       credentials,
@@ -353,6 +473,7 @@ interface CapturedRequest {
   url: string;
   method: string;
   headers: Headers;
+  body?: string;
 }
 
 interface DecodedJwt {
@@ -368,6 +489,7 @@ function captureRequest(input: string | URL | Request, init: RequestInit | undef
     url: input.toString(),
     method: init?.method ?? request?.method ?? "GET",
     headers: new Headers(init?.headers ?? request?.headers),
+    ...(typeof init?.body === "string" ? { body: init.body } : {}),
   };
 }
 
