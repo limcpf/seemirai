@@ -3,9 +3,18 @@ export {
   UpbitLiveBrokerDisabledError,
   createDisabledUpbitLiveBroker,
 } from "./disabled-live-broker.js";
+export {
+  UpbitLiveBroker,
+  createUpbitLiveBroker,
+} from "./live-broker.js";
 export type {
   DisabledUpbitLiveBrokerOptions,
 } from "./disabled-live-broker.js";
+export type {
+  UpbitLiveBrokerOperation,
+  UpbitLiveBrokerOptions,
+  UpbitLiveBrokerPrivateClient,
+} from "./live-broker.js";
 export {
   createUpbitPublicPolicySnapshot,
   DEFAULT_UPBIT_MVP_MARKETS,
@@ -107,10 +116,12 @@ export {
   UpbitPrivateOpenOrdersResponseSchema,
   UpbitPrivateOrderChancePayloadSchema,
   UpbitPrivateOrderChanceResponseSchema,
+  UpbitPrivateOrderCommandResponseSchema,
   UpbitPrivateOrderLookupResponseSchema,
   UpbitPrivateOrderTradeSchema,
   UpbitPrivatePayloadMappingError,
   toBrokerBalanceSnapshot,
+  toBrokerOrderFromCommand,
   toBrokerOrderFromLookup,
   toBrokerOrdersFromOpenOrders,
   toFeePolicyFromOrderChance,
@@ -127,6 +138,7 @@ export type {
   UpbitPrivateOpenOrdersResponse,
   UpbitPrivateOrderChancePayload,
   UpbitPrivateOrderChanceResponse,
+  UpbitPrivateOrderCommandResponse,
   UpbitPrivateOrderLookupResponse,
   UpbitPrivateOrderTrade,
   UpbitPrivatePayloadMappingErrorOptions,
