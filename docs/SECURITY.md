@@ -74,6 +74,23 @@
 - raw event log와 summary artifact는 기본적으로 저장소 밖 `SEEMIRAI_SOAK_LOG_DIR` 또는 `~/vaults/99_운영/seemirai-soak`에 저장한다.
   raw log, provider 응답 원문, token 값을 PR body나 git commit에 포함하지 않는다.
 
+## v0.2 Pilot private API 보안 기준
+
+- v0.2 pilot은 기본 `PAPER_NO_KEY` runtime을 실거래 profile로 승격하지 않는다. private API는 별도 pilot profile, 명시 env guard,
+  운영자 승인, 소액 한도를 모두 통과한 owner-operated smoke에서만 허용한다.
+- Upbit API key 원문은 `/home/lim/code/seemirai-worktrees/secrets/m14-pilot.env` 같은 저장소 밖 임시 secret 파일 또는 후속
+  운영 secret 저장소로만 주입한다. git diff, 문서, issue/PR 본문, log, audit payload, smoke artifact에는 원문을 남기지 않는다.
+- 허용 권한은 `자산조회`, `주문조회`, `주문하기`로 제한한다. `출금조회`, `출금하기`, 입출금 자동화, 선물/레버리지, 타인 계정
+  범위가 포함되면 pilot profile은 fail-closed 한다.
+- Upbit API는 key scope를 조회 API로 확인할 수 없으므로 `SEEMIRAI_UPBIT_KEY_SCOPE`는 신뢰 원천이 아니라 운영자 확인값이다.
+  private/order smoke는 저장소 밖 redacted 체크리스트 또는 캡처 요약을 가리키는 `SEEMIRAI_UPBIT_KEY_SCOPE_EVIDENCE_ID` 없이
+  실행하지 않는다.
+- `SEEMIRAI_RUN_UPBIT_PRIVATE_SMOKE=1` 없이는 account, orders/chance, order lookup 같은 private read API를 호출하지 않는다.
+- `SEEMIRAI_RUN_UPBIT_ORDER_SMOKE=1` 없이는 주문 생성/취소 API를 호출하지 않는다. order smoke는 KRW 현물 지정가,
+  `time_in_force=post_only`, smoke 총액 상한을 필수 invariant로 요구한다.
+- `Authorization` header, JWT, access key, secret key, query hash 입력은 logger redaction과 audit redaction 대상이다. 실패
+  응답은 사용자 행동 언어와 추적 정보로 정규화하고 raw provider body나 raw header를 보존하지 않는다.
+
 ## Dependency 추가 승인 기준
 
 - 신규 runtime dependency, dev dependency, package manager 변경은 승인 필요 변경으로 취급한다.

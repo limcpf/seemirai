@@ -75,7 +75,8 @@ chmod 600 /home/lim/code/seemirai-worktrees/secrets/m14-pilot.env
 | --- | --- | --- |
 | `SEEMIRAI_UPBIT_ACCESS_KEY` | Upbit access key | 원문 금지 |
 | `SEEMIRAI_UPBIT_SECRET_KEY` | Upbit secret key | 원문 금지 |
-| `SEEMIRAI_UPBIT_KEY_SCOPE` | 운영자가 기대하는 권한 목록 | scope 이름만 가능 |
+| `SEEMIRAI_UPBIT_KEY_SCOPE` | 운영자가 Upbit PC 웹에서 확인한 권한 목록 | scope 이름만 가능 |
+| `SEEMIRAI_UPBIT_KEY_SCOPE_EVIDENCE_ID` | 저장소 밖 redacted 권한 확인 증거 ID | 가능 |
 | `SEEMIRAI_PILOT_PROFILE` | `PILOT_READ_ONLY`, `PILOT_POLICY_SYNC`, `PILOT_ORDER_SMOKE` | 가능 |
 | `SEEMIRAI_RUN_UPBIT_PRIVATE_SMOKE` | private smoke 실행 guard | 가능 |
 | `SEEMIRAI_RUN_UPBIT_ORDER_SMOKE` | 실주문 smoke 별도 guard | 가능 |
@@ -85,6 +86,8 @@ chmod 600 /home/lim/code/seemirai-worktrees/secrets/m14-pilot.env
 | `SEEMIRAI_UPBIT_LOOKUP_ORDER_IDENTIFIER` | read-only 주문 조회용 기존 주문 identifier | 가능 |
 
 secret 원문은 git diff, 문서, issue/PR 본문, log, audit payload, smoke artifact에 남기지 않는다. 이 경로는 M14 임시 운영 편의 경계이며, 후속 hardening에서는 Docker Compose secrets 또는 운영 secret 저장 방식으로 승격한다.
+
+`SEEMIRAI_UPBIT_KEY_SCOPE`는 API가 검증한 값이 아니라 운영자가 Upbit PC 웹 Open API 관리 화면에서 확인한 결과를 전달하는 수동 증거다. Upbit API Key 목록 조회는 권한 scope를 반환하지 않으므로, private smoke와 order smoke는 `SEEMIRAI_UPBIT_KEY_SCOPE_EVIDENCE_ID`가 가리키는 저장소 밖 redacted 체크리스트 또는 캡처 요약이 없으면 fail-closed 한다. 증거에는 access key 원문, secret key 원문, 전체 화면 캡처를 저장하지 않고, 허용 권한과 금지 권한 확인 결과만 남긴다.
 
 ## 6. 안전 invariant
 
