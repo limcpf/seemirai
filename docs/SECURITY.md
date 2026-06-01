@@ -89,8 +89,13 @@
 - `SEEMIRAI_RUN_UPBIT_ORDER_SMOKE=1` 없이는 주문 생성/취소 API를 호출하지 않는다. order smoke는 KRW 현물 지정가 매수,
   `time_in_force=post_only`, smoke 총액 상한, 32자 이하 smoke run idempotency key를 Upbit `identifier`로 전송하고 그
   `identifier`로만 조회/취소하는 경계를 필수 invariant로 요구한다.
+- 실제 order smoke test는 `SEEMIRAI_UPBIT_ORDER_SMOKE_PRICE`, `SEEMIRAI_UPBIT_ORDER_SMOKE_VOLUME`,
+  `SEEMIRAI_UPBIT_ORDER_SMOKE_IDENTIFIER`가 없으면 주문 API 호출 전에 fail-closed 한다. 가격과 수량을 코드가 자동 산정하지
+  않게 해 운영자가 의도하지 않은 실주문 입력 생성을 막는다.
 - `Authorization` header, JWT, access key, secret key, query hash 입력은 logger redaction과 audit redaction 대상이다. 실패
   응답은 사용자 행동 언어와 추적 정보로 정규화하고 raw provider body나 raw header를 보존하지 않는다.
+- smoke artifact는 `SEEMIRAI_UPBIT_SMOKE_ARTIFACT_DIR` 또는 gitignore 대상 `test-results/upbit-smoke`에 저장하며, 저장 전
+  access key, secret key, raw Authorization/JWT 포함 여부를 검사한다.
 
 ## Dependency 추가 승인 기준
 
