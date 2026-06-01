@@ -226,6 +226,18 @@ describe("HTTP control foundation", () => {
         telegram_bot_token: "telegram-secret-token",
         local_control_token: "local-control-secret",
       },
+      universe: {
+        phase_1_5: {
+          enabled: true,
+          candidate_markets: ["KRW-SOL"],
+          manual_approvals: [
+            {
+              market: "KRW-SOL",
+              approved_at: "2026-06-01T00:00:00.000Z",
+            },
+          ],
+        },
+      },
     });
     const readinessProvider = staticReadinessProvider(readySummary());
     server = createHttpControlServer({
@@ -259,6 +271,14 @@ describe("HTTP control foundation", () => {
         universe: {
           phase1: ["KRW-BTC", "KRW-ETH"],
           phase1Count: 2,
+          phase15: {
+            enabled: true,
+            approvedAltMarkets: ["KRW-SOL"],
+            approvedAltCount: 1,
+            candidateMarkets: ["KRW-SOL"],
+            candidateMarketCount: 1,
+            maxManualApprovals: 3,
+          },
         },
         liveTradingEnabled: false,
         paperNoKey: true,
@@ -998,6 +1018,14 @@ function statusSnapshotProvider(input: {
           universe: {
             phase1: ["KRW-BTC", "KRW-ETH"],
             phase1Count: 2,
+            phase15: {
+              enabled: false,
+              approvedAltMarkets: [],
+              approvedAltCount: 0,
+              candidateMarkets: [],
+              candidateMarketCount: 0,
+              maxManualApprovals: 3,
+            },
           },
           liveTradingEnabled: false,
           paperNoKey: true,

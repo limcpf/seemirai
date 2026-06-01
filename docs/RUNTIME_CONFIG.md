@@ -110,6 +110,10 @@ config invariant:
 - threshold 숫자는 음수가 아닌 Decimal string이어야 한다.
 - 이 설정은 자동 신규 상장 편입을 열지 않으며, 실제 편입 여부는 후속 evaluator가 market warning/caution, 유동성,
   slippage, depth evidence를 모두 통과한 뒤 audit evidence와 함께 결정한다.
+- 승인/거부/철회/만료 evidence는 `PHASE_1_5_ALT_APPROVAL` audit event로 남긴다. payload는
+  `audit_kind=PHASE_1_5_ALT_APPROVAL`, action, market, threshold snapshot, 조건별 판정, 한국어 상태/필요 조치 문구를 포함한다.
+- `/status.runtime.universe.phase15`는 safe summary로 `enabled`, 승인 알트 목록/개수, 후보 목록/개수, 최대 수동 승인 수만 노출한다.
+  secret, raw config 전체, operator token은 노출하지 않는다.
 
 ## M10 LLM 리스크 보조 설정
 
@@ -160,7 +164,7 @@ endpoint가 공통으로 사용할 인증 guard만 고정한다.
 
 `/status` safe summary는 다음 필드만 노출한다.
 
-- runtime: `exchange`, `market`, `mode`, phase 1 universe, live trading toggle, `paperNoKey`
+- runtime: `exchange`, `market`, `mode`, phase 1 universe, phase 1.5 safe summary, live trading toggle, `paperNoKey`
 - trading state: current kill switch state, blocked reason, 신규 주문 차단 여부, 수동 검토 필요 여부
 - market data: connection status, lag ms, updated time
 - paper: `paper_orders`에 연결된 pending paper order count, open position count, 조회 상태의 한국어 label/message/action
@@ -437,7 +441,8 @@ worker retry나 운영 재생이 같은 조회 범위를 사용할 수 있게 �
   과거 상태를 복원하려고 제외하지 않는다.
 - `pnl_snapshots`: strategy/market별 최신 snapshot의 realized PnL과 unrealized PnL. snapshot이 있는 scope는 positions보다
   우선하며, 일부 scope의 snapshot이 없을 때만 positions fallback을 섞는다.
-- `audit_events`: `ORDER_CANDIDATE_DISCARDED` payload의 `reason_code`별 폐기 후보 수
+- `audit_events`: `ORDER_CANDIDATE_DISCARDED` payload의 `reason_code`별 폐기 후보 수,
+  `PHASE_1_5_ALT_APPROVAL` payload의 action/market별 승인·거부·철회·만료 기록 수
 - `risk_events`: `action`, `risk_type`별 차단/리스크 이벤트 수
 - `fills` 기준으로 실제 체결된 주문의 `paper_orders.fill_model_json`, `orders.reason_json.cost_snapshot`: 슬리피지, spread 비용,
   취소/재호가 비용이 있는 경우의 체결 품질 metric
@@ -621,6 +626,17 @@ M4는 주문 후보가 실행 단계로 넘어가지 못한 이유를 `AuditLogP
 
 이 audit event는 실제 주문 제출 근거가 아니라, M5 RiskGate와 M6 ExecutionEngine 이전에 후보가 폐기된 이유를 사람이
 추적하기 위한 append-only 기록이다.
+
+Phase 1.5 알트 수동 편입 evidence는 다음 기준으로 저장한다.
+
+- event type: `PHASE_1_5_ALT_APPROVAL`
+- severity: 승인은 `INFO`, 거부/철회/만료는 `WARN`
+- payload marker: `audit_kind=PHASE_1_5_ALT_APPROVAL`
+- action: `APPROVE`, `REJECT`, `REVOKE`, `EXPIRE`
+- payload 주요 필드: `status_label`, `operator_action`, `exchange_id`, `market`, `evidence_id`, `thresholds`, `conditions`
+
+이 audit event는 config diff만으로 복원하기 어려운 operator 판단 근거를 보존하기 위한 기록이다. daily report는 이 marker를
+읽어 phase 1.5 알트 편입 기록 수를 action과 market별로 표시한다.
 
 ## Universe 구조
 

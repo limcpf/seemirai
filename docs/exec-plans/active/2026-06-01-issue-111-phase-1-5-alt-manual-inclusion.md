@@ -40,6 +40,7 @@ MVP paper trading의 `KRW-BTC`/`KRW-ETH` 기본 universe를 유지하면서, 운
 - 2026-06-01: phase 1.5 기본 config는 비활성/빈 승인 목록으로 두어 기존 BTC/ETH paper runtime을 변경하지 않는다.
 - 2026-06-01: eligibility evaluator는 외부 API/DB를 호출하지 않는 순수 함수로 두고, 모든 조건별 pass/fail을 approval evidence에 남긴다.
 - 2026-06-01: runtime integration은 `RuntimeConfig.universe`를 policy mapper, `universe_allowed` rule, CostModel TOP_ALT safety buffer가 함께 읽는 해석 결과로 고정한다.
+- 2026-06-01: 승인/거부/철회/만료 evidence는 `PHASE_1_5_ALT_APPROVAL` audit event로 남기고, `/status`와 daily report는 safe summary만 표시한다.
 
 ## 남은 이슈
 

@@ -84,6 +84,14 @@ export interface ControlStatusSnapshot {
     universe: {
       phase1: readonly string[];
       phase1Count: number;
+      phase15: {
+        enabled: boolean;
+        approvedAltMarkets: readonly string[];
+        approvedAltCount: number;
+        candidateMarkets: readonly string[];
+        candidateMarketCount: number;
+        maxManualApprovals: number;
+      };
     };
     liveTradingEnabled: boolean;
     paperNoKey: boolean;

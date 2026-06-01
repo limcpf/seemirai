@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
   appendOrderCandidateDiscardAudit,
+  appendPhase15AltApprovalAudit,
   isOrderCandidateDiscarded,
   toOrderCandidateDiscardAuditEvent,
+  toPhase15AltApprovalAuditEvent,
 } from "../../src/application/index.js";
 import { toAuditEventRow } from "../../src/infrastructure/index.js";
 import type {
@@ -272,6 +274,72 @@ describe("PostgreSQL audit row mapper", () => {
   });
 });
 
+describe("phase 1.5 alt approval audit", () => {
+  it("maps approval evidence into a Korean-first audit event payload", () => {
+    const event = toPhase15AltApprovalAuditEvent({
+      evidence: phase15ApprovalEvidence("APPROVE"),
+    });
+    const row = toAuditEventRow(event);
+
+    expect(event).toMatchObject({
+      eventType: "PHASE_1_5_ALT_APPROVAL",
+      severity: "INFO",
+      occurredAt,
+      actor: "operator-lim",
+      reasonCode: "phase_1_5_alt_approve",
+      correlationId: "phase15:KRW-SOL:2026-06-01",
+    });
+    expect(row).toMatchObject({
+      event_type: "PHASE_1_5_ALT_APPROVAL",
+      severity: "INFO",
+      correlation_id: "phase15:KRW-SOL:2026-06-01",
+      payload_json: {
+        audit_kind: "PHASE_1_5_ALT_APPROVAL",
+        status_label: "수동 승인",
+        operator_action: "조건 snapshot과 config 승인 목록을 함께 확인한다.",
+        actor: "operator-lim",
+        reason_code: "phase_1_5_alt_approve",
+        exchange_id: "upbit_krw_spot",
+        market: "KRW-SOL",
+        action: "APPROVE",
+      },
+    });
+  });
+
+  it("appends revoke evidence through AuditLogPort with warning severity", async () => {
+    const appended: AuditEvent[] = [];
+    const auditLog: AuditLogPort = {
+      appendEvent: async (event) => {
+        appended.push(event);
+
+        return {
+          auditEventId: "phase15-audit-1",
+          appendedAt: occurredAt,
+        };
+      },
+    };
+
+    await expect(
+      appendPhase15AltApprovalAudit(auditLog, {
+        evidence: phase15ApprovalEvidence("REVOKE"),
+        actor: "ops-console",
+      }),
+    ).resolves.toEqual({
+      auditEventId: "phase15-audit-1",
+      appendedAt: occurredAt,
+    });
+    expect(appended[0]).toMatchObject({
+      severity: "WARN",
+      actor: "ops-console",
+      reasonCode: "phase_1_5_alt_revoke",
+      metadata: {
+        status_label: "승인 철회",
+        operator_action: "철회된 market이 runtime universe에서 제외됐는지 확인한다.",
+      },
+    });
+  });
+});
+
 function discardAuditInput(): OrderCandidateDiscardAuditInput {
   return {
     occurredAt,
@@ -332,6 +400,34 @@ function cleanAuditInput(): OrderCandidateDiscardAuditInput {
     },
     orderIntent: limitIntent(),
   };
+}
+
+function phase15ApprovalEvidence(action: "APPROVE" | "REJECT" | "REVOKE" | "EXPIRE") {
+  return {
+    exchangeId: "upbit_krw_spot",
+    market: "KRW-SOL",
+    action,
+    observedAt: occurredAt,
+    approvedBy: "operator-lim",
+    evidenceId: "phase15:KRW-SOL:2026-06-01",
+    source: "fixture",
+    thresholds: {
+      minListingAgeDays: 90,
+      minThirtyDayAverageTradeValueKrw: "10000000000",
+      maxSevenDaySpreadP95Bps: "15",
+      maxExpectedSlippageBps: "20",
+      minDepthKrw: "100000000",
+    },
+    conditions: [
+      {
+        key: "listing_age",
+        passed: true,
+        reasonCode: "phase_1_5_listing_age_sufficient",
+        actualValue: 120,
+        thresholdValue: 90,
+      },
+    ],
+  } as const;
 }
 
 function blockStrategyDecision(): StrategyDecision {

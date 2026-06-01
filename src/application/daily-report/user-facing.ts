@@ -52,6 +52,13 @@ const riskTypeLabels: Record<string, string> = {
   stale_market_data: "오래된 시세 데이터",
 };
 
+const phase15AltApprovalActionLabels: Record<string, string> = {
+  APPROVE: "수동 승인",
+  REJECT: "승인 거부",
+  REVOKE: "승인 철회",
+  EXPIRE: "승인 만료",
+};
+
 /**
  * 주문 상태 code를 Telegram 리포트용 한국어 문구로 바꾼다.
  *
@@ -90,6 +97,15 @@ export function labelRiskAction(code: string): string {
  */
 export function labelRiskType(code: string): string {
   return labelCode(code, riskTypeLabels, "미분류 리스크");
+}
+
+/**
+ * phase 1.5 알트 수동 편입 action code를 운영자가 읽을 수 있는 상태 문구로 바꾼다.
+ *
+ * audit event의 action code는 재현 key로 유지하고, daily report 본문은 승인/거부/철회/만료라는 행동 언어를 먼저 보여준다.
+ */
+export function labelPhase15AltApprovalAction(code: string): string {
+  return labelCode(code, phase15AltApprovalActionLabels, "미분류 알트 편입 상태");
 }
 
 function labelCode(code: string, labels: Record<string, string>, fallbackPrefix?: string): string {

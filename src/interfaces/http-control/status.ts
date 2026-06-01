@@ -592,6 +592,14 @@ function toSafeRuntimeSummary(config: RuntimeConfig): ControlStatusSnapshot["run
     universe: {
       phase1: config.universe.phase_1,
       phase1Count: config.universe.phase_1.length,
+      phase15: {
+        enabled: config.universe.phase_1_5.enabled,
+        approvedAltMarkets: config.universe.phase_1_5.manual_approvals.map((approval) => approval.market),
+        approvedAltCount: config.universe.phase_1_5.manual_approvals.length,
+        candidateMarkets: [...config.universe.phase_1_5.candidate_markets],
+        candidateMarketCount: config.universe.phase_1_5.candidate_markets.length,
+        maxManualApprovals: config.universe.phase_1_5.max_manual_approvals,
+      },
     },
     liveTradingEnabled: config.live_trading_enabled,
     paperNoKey: config.paper_no_key,

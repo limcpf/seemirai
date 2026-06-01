@@ -33,6 +33,10 @@ export function formatDailyReportSummary(report: DailyReportAggregate): string {
     `- 폐기된 주문 후보: ${report.discardedCandidates.total}건${formatCountItemsInline(
       report.discardedCandidates.byReason,
     )}`,
+    `- phase 1.5 알트 편입 기록: ${report.phase15AltApprovals.total}건${formatCountItemsInline(
+      report.phase15AltApprovals.byAction,
+    )}`,
+    `- phase 1.5 대상 market: ${formatCountItemsText(report.phase15AltApprovals.byMarket)}`,
     `- 리스크/차단 이벤트: ${report.riskEvents.total}건${formatCountItemsInline(report.riskEvents.byAction)}`,
     `- 주요 리스크 종류: ${formatCountItemsText(report.riskEvents.byRiskType)}`,
   ].join("\n");
