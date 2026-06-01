@@ -59,6 +59,19 @@ const phase15AltApprovalActionLabels: Record<string, string> = {
   EXPIRE: "승인 만료",
 };
 
+const pilotEvidenceStatusLabels: Record<string, string> = {
+  FAILED: "검증 실패",
+  MANUAL_REVIEW_REQUIRED: "수동 점검 필요",
+  PASSED: "검증 통과",
+  SKIPPED: "실행 생략",
+};
+
+const pilotProfileLabels: Record<string, string> = {
+  PILOT_ORDER_SMOKE: "소액 주문 smoke",
+  PILOT_POLICY_SYNC: "정책 조회",
+  PILOT_READ_ONLY: "읽기 전용",
+};
+
 /**
  * 주문 상태 code를 Telegram 리포트용 한국어 문구로 바꾼다.
  *
@@ -106,6 +119,26 @@ export function labelRiskType(code: string): string {
  */
 export function labelPhase15AltApprovalAction(code: string): string {
   return labelCode(code, phase15AltApprovalActionLabels, "미분류 알트 편입 상태");
+}
+
+/**
+ * pilot private API evidence 상태 code를 daily report용 한국어 문구로 바꾼다.
+ *
+ * status code는 audit row와 연결하기 위한 안정 식별자이므로 괄호에 보존하고, 본문에는 검증 통과/실패/수동 점검 같은 운영
+ * 행동 언어를 먼저 보여준다. 알 수 없는 code도 리포트 생성을 막지 않는다.
+ */
+export function labelPilotEvidenceStatus(code: string): string {
+  return labelCode(code, pilotEvidenceStatusLabels, "미분류 pilot evidence 상태");
+}
+
+/**
+ * pilot profile code를 daily report용 한국어 문구로 바꾼다.
+ *
+ * profile은 private API side effect 범위를 구분하는 key이므로 원본 code를 유지하되, 운영자는 읽기 전용/정책 조회/주문
+ * smoke 단계가 먼저 보이도록 label을 사용한다.
+ */
+export function labelPilotProfile(code: string): string {
+  return labelCode(code, pilotProfileLabels, "미분류 pilot profile");
 }
 
 function labelCode(code: string, labels: Record<string, string>, fallbackPrefix?: string): string {

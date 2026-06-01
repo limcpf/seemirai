@@ -3,6 +3,7 @@ import {
   UPBIT_PILOT_IDENTIFIER_MAX_LENGTH,
   UPBIT_PILOT_ORDER_SMOKE_MIN_KRW_LIMIT,
   UnsafePilotRuntimeConfigError,
+  createPilotRuntimeSafeSummary,
   loadDefaultRuntimeConfig,
   loadPilotRuntimeConfigFromEnv,
 } from "../../src/runtime/index.js";
@@ -212,5 +213,101 @@ describe("pilot runtime config", () => {
   it("documents the Upbit identifier limit that later order smoke idempotency must keep", () => {
     expect(UPBIT_PILOT_IDENTIFIER_MAX_LENGTH).toBe(32);
     expect(UPBIT_PILOT_ORDER_SMOKE_MIN_KRW_LIMIT).toBe(5000);
+  });
+
+  it("creates a disabled safe summary for the keyless PAPER_NO_KEY default", () => {
+    const summary = createPilotRuntimeSafeSummary(loadPilotRuntimeConfigFromEnv({}), {
+      generatedAt: "2026-06-01T00:00:00.000Z",
+    });
+
+    expect(summary).toEqual({
+      enabled: false,
+      profile: null,
+      privateSmokeEnabled: false,
+      orderSmokeEnabled: false,
+      credentialsConfigured: false,
+      keyScopes: [],
+      keyScopeEvidenceId: null,
+      policySyncMarket: null,
+      orderSmokeMarket: null,
+      orderSmokeMaxKrw: null,
+      lookupOrderConfigured: false,
+      statusLabel: "비활성",
+      message: "pilot private API profile이 꺼져 있어 기본 PAPER_NO_KEY runtime이 API key 없이 동작한다.",
+      action: null,
+      lastEvidence: null,
+      trace: {
+        source: "pilot_runtime_config",
+        reason: "pilot_profile_disabled",
+        generatedAt: "2026-06-01T00:00:00.000Z",
+      },
+    });
+  });
+
+  it("summarizes enabled pilot config and latest evidence without leaking keys or auth material", () => {
+    const pilotConfig = loadPilotRuntimeConfigFromEnv({
+      SEEMIRAI_PILOT_PROFILE: "PILOT_ORDER_SMOKE",
+      SEEMIRAI_RUN_UPBIT_PRIVATE_SMOKE: "1",
+      SEEMIRAI_RUN_UPBIT_ORDER_SMOKE: "1",
+      SEEMIRAI_UPBIT_ACCESS_KEY: "access-key-raw",
+      SEEMIRAI_UPBIT_SECRET_KEY: "secret-key-raw",
+      SEEMIRAI_UPBIT_KEY_SCOPE: "자산조회,주문조회,주문하기",
+      SEEMIRAI_UPBIT_KEY_SCOPE_EVIDENCE_ID: "scope-evidence-2026-06-01",
+      SEEMIRAI_UPBIT_POLICY_SYNC_MARKET: "KRW-BTC",
+      SEEMIRAI_UPBIT_ORDER_SMOKE_MARKET: "KRW-BTC",
+      SEEMIRAI_UPBIT_ORDER_SMOKE_MAX_KRW: "5000",
+    });
+    const summary = createPilotRuntimeSafeSummary(pilotConfig, {
+      generatedAt: "2026-06-01T00:00:00.000Z",
+      lastEvidence: {
+        profile: "PILOT_ORDER_SMOKE",
+        status: "FAILED",
+        occurredAt: "2026-06-01T00:01:00.000Z",
+        correlationId: "pilot-order-smoke-correlation-123456",
+        message: "pilot 주문 smoke가 실패했다.",
+        action: "Upbit 주문 내역과 audit artifact를 대조한다.",
+        auditEventId: "audit-1",
+        reportArtifactId: "pilot-report-1",
+        safeMetadata: {
+          market: "KRW-BTC",
+          authorization: "Bearer raw-token",
+          nested: {
+            upbitAccessKey: "nested-access-key",
+          },
+        },
+      },
+    });
+    const serialized = JSON.stringify(summary);
+
+    expect(summary).toMatchObject({
+      enabled: true,
+      profile: "PILOT_ORDER_SMOKE",
+      privateSmokeEnabled: true,
+      orderSmokeEnabled: true,
+      credentialsConfigured: true,
+      keyScopes: ["자산조회", "주문조회", "주문하기"],
+      keyScopeEvidenceId: "scope-evidence-2026-06-01",
+      policySyncMarket: "KRW-BTC",
+      orderSmokeMarket: "KRW-BTC",
+      orderSmokeMaxKrw: "5000",
+      lookupOrderConfigured: false,
+      statusLabel: "주문 smoke 준비",
+      lastEvidence: {
+        status: "FAILED",
+        statusLabel: "검증 실패",
+        correlationId: "pilot-...3456",
+        safeMetadata: {
+          market: "KRW-BTC",
+          authorization: "[REDACTED]",
+          nested: {
+            upbitAccessKey: "[REDACTED]",
+          },
+        },
+      },
+    });
+    expect(serialized).not.toContain("access-key-raw");
+    expect(serialized).not.toContain("secret-key-raw");
+    expect(serialized).not.toContain("Bearer raw-token");
+    expect(serialized).not.toContain("nested-access-key");
   });
 });

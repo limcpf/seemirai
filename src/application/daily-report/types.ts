@@ -210,6 +210,11 @@ export interface DailyReportAggregate {
     byAction: readonly DailyReportCountItem[];
     byMarket: readonly DailyReportCountItem[];
   };
+  pilotEvidence: {
+    total: number;
+    byStatus: readonly DailyReportCountItem[];
+    byProfile: readonly DailyReportCountItem[];
+  };
   riskEvents: {
     total: number;
     byAction: readonly DailyReportCountItem[];

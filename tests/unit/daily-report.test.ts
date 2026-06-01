@@ -74,6 +74,9 @@ describe("daily report application", () => {
       phase15AltApprovals: {
         total: 1,
       },
+      pilotEvidence: {
+        total: 1,
+      },
       riskEvents: {
         total: 2,
       },
@@ -90,6 +93,9 @@ describe("daily report application", () => {
     expect(summary).toContain("폐기된 주문 후보: 2건");
     expect(summary).toContain("phase 1.5 알트 편입 기록: 1건");
     expect(summary).toContain("수동 승인 (APPROVE) 1건");
+    expect(summary).toContain("pilot private API evidence: 1건");
+    expect(summary).toContain("검증 통과 (PASSED) 1건");
+    expect(summary).toContain("정책 조회 (PILOT_POLICY_SYNC) 1건");
     expect(summary).toContain("주문 차단 (BLOCK_ORDER) 1건");
   });
 
@@ -344,6 +350,7 @@ describe("daily report application", () => {
         order_count: 2,
         fill_count: 2,
         discarded_candidate_count: 2,
+        pilot_evidence_count: 1,
         risk_event_count: 2,
       },
     });
@@ -493,6 +500,16 @@ function fixtureSourceData(): DailyReportSourceData {
           market: "KRW-SOL",
         },
         occurredAt: "2026-05-21T03:30:00.000Z",
+      },
+      {
+        eventType: "PILOT_PRIVATE_API_EVIDENCE",
+        severity: "INFO",
+        payloadJson: {
+          audit_kind: "PILOT_PRIVATE_API_EVIDENCE",
+          status: "PASSED",
+          profile: "PILOT_POLICY_SYNC",
+        },
+        occurredAt: "2026-05-21T03:40:00.000Z",
       },
     ],
     riskEvents: [

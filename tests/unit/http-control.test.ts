@@ -19,7 +19,7 @@ import {
   type Phase15AltApprovalEvidenceSnapshot,
 } from "../../src/domain/index.js";
 import { createKillSwitchControlDecision, type KillSwitchControlProvider } from "../../src/application/index.js";
-import { loadRuntimeConfig } from "../../src/runtime/index.js";
+import { loadPilotRuntimeConfigFromEnv, loadRuntimeConfig } from "../../src/runtime/index.js";
 import type { Database } from "../../src/infrastructure/db/index.js";
 import type {
   ControlReadinessProvider,
@@ -245,10 +245,34 @@ describe("HTTP control foundation", () => {
       },
     });
     const readinessProvider = staticReadinessProvider(readySummary());
+    const pilotConfig = loadPilotRuntimeConfigFromEnv({
+      SEEMIRAI_PILOT_PROFILE: "PILOT_POLICY_SYNC",
+      SEEMIRAI_RUN_UPBIT_PRIVATE_SMOKE: "1",
+      SEEMIRAI_UPBIT_ACCESS_KEY: "upbit-access-key-secret",
+      SEEMIRAI_UPBIT_SECRET_KEY: "upbit-secret-key-secret",
+      SEEMIRAI_UPBIT_KEY_SCOPE: "자산조회,주문조회",
+      SEEMIRAI_UPBIT_KEY_SCOPE_EVIDENCE_ID: "scope-evidence-2026-06-01",
+      SEEMIRAI_UPBIT_POLICY_SYNC_MARKET: "KRW-BTC",
+    });
     server = createHttpControlServer({
       readinessProvider,
       statusProvider: createDatabaseControlStatusProvider({
         runtimeConfig,
+        pilotConfig,
+        pilotEvidence: {
+          profile: "PILOT_POLICY_SYNC",
+          status: "PASSED",
+          occurredAt: "2026-06-01T00:00:30.000Z",
+          correlationId: "pilot-policy-sync-correlation-123456",
+          message: "pilot 정책 조회 evidence가 저장됐다.",
+          action: null,
+          auditEventId: "pilot-audit-1",
+          reportArtifactId: "pilot-report-1",
+          safeMetadata: {
+            market: "KRW-BTC",
+            authorization: "Bearer raw-upbit-auth",
+          },
+        },
         readinessProvider,
         clock: () => new Date("2026-06-01T00:00:00.000Z"),
         marketData: {
@@ -288,6 +312,28 @@ describe("HTTP control foundation", () => {
         },
         liveTradingEnabled: false,
         paperNoKey: true,
+        pilot: {
+          enabled: true,
+          profile: "PILOT_POLICY_SYNC",
+          privateSmokeEnabled: true,
+          orderSmokeEnabled: false,
+          credentialsConfigured: true,
+          keyScopes: ["자산조회", "주문조회"],
+          keyScopeEvidenceId: "scope-evidence-2026-06-01",
+          policySyncMarket: "KRW-BTC",
+          statusLabel: "정책 조회 준비",
+          lastEvidence: {
+            status: "PASSED",
+            statusLabel: "검증 통과",
+            correlationId: "pilot-...3456",
+            auditEventId: "pilot-audit-1",
+            reportArtifactId: "pilot-report-1",
+            safeMetadata: {
+              market: "KRW-BTC",
+              authorization: "[REDACTED]",
+            },
+          },
+        },
       },
       marketData: {
         connectionStatus: "STALE",
@@ -311,6 +357,9 @@ describe("HTTP control foundation", () => {
     });
     expect(bodyText).not.toContain("telegram-secret-token");
     expect(bodyText).not.toContain("local-control-secret");
+    expect(bodyText).not.toContain("upbit-access-key-secret");
+    expect(bodyText).not.toContain("upbit-secret-key-secret");
+    expect(bodyText).not.toContain("Bearer raw-upbit-auth");
     expect(bodyText).not.toContain("secrets");
     expect(bodyText).not.toContain("telegram_bot_token");
     expect(bodyText).not.toContain("local_control_token");
@@ -1109,6 +1158,28 @@ function statusSnapshotProvider(input: {
           },
           liveTradingEnabled: false,
           paperNoKey: true,
+          pilot: {
+            enabled: false,
+            profile: null,
+            privateSmokeEnabled: false,
+            orderSmokeEnabled: false,
+            credentialsConfigured: false,
+            keyScopes: [],
+            keyScopeEvidenceId: null,
+            policySyncMarket: null,
+            orderSmokeMarket: null,
+            orderSmokeMaxKrw: null,
+            lookupOrderConfigured: false,
+            statusLabel: "비활성",
+            message: "pilot private API profile이 꺼져 있어 기본 PAPER_NO_KEY runtime이 API key 없이 동작한다.",
+            action: null,
+            lastEvidence: null,
+            trace: {
+              source: "pilot_runtime_config",
+              reason: "pilot_profile_disabled",
+              generatedAt: checkedAt,
+            },
+          },
         },
         tradingState: {
           state: input.state,

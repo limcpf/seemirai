@@ -12,3 +12,5 @@ export type {
   PilotUpbitKeyScope,
 } from "./pilot-config/types.js";
 export { loadPilotRuntimeConfigFromEnv } from "./pilot-config/validation.js";
+export { createPilotRuntimeSafeSummary } from "./pilot-config/summary.js";
+export type { CreatePilotRuntimeSafeSummaryOptions } from "./pilot-config/summary.js";
