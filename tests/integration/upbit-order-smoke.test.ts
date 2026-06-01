@@ -6,6 +6,7 @@ import type {
   OrderChancePolicy,
   PilotEvidenceStatus,
 } from "../../src/domain/index.js";
+import type { Decimal } from "decimal.js";
 import { redactPilotCorrelationId } from "../../src/domain/index.js";
 import {
   UpbitPrivateRestClient,
@@ -53,7 +54,7 @@ describeUpbitOrderSmoke("Upbit order API smoke integration", () => {
     const occurredAt = new Date().toISOString();
     const artifact: JsonRecord = createBaseArtifact("UPBIT_ORDER_SMOKE", occurredAt, correlationId);
     let plan: PilotOrderSmokeRequestPlan | undefined;
-    let createSucceeded = false;
+    let orderSideEffectPossible = false;
     let failure: unknown;
 
     try {
@@ -86,7 +87,6 @@ describeUpbitOrderSmoke("Upbit order API smoke integration", () => {
       const client = createPrivateClient(config);
       const accountsResponse = await client.getAccounts();
       const balances = toBrokerBalanceSnapshot(accountsResponse.payload, { capturedAt: occurredAt });
-      assertKrwBalanceCanCoverOrder(balances, plan.notionalKrw);
       artifact.accounts = summarizeBalanceSnapshot(balances);
       artifact.accountsRateLimit = accountsResponse.rateLimitStatus;
 
@@ -95,11 +95,20 @@ describeUpbitOrderSmoke("Upbit order API smoke integration", () => {
       );
       const orderChance = toOrderChancePolicy(orderChanceResponse.payload, { capturedAt: occurredAt });
       assertOrderChanceCanCoverPlan(orderChance, plan);
+      assertKrwBalanceCanCoverOrder(balances, plan.notionalKrw, orderChance);
       artifact.orderChance = summarizeOrderChancePolicy(orderChance);
       artifact.orderChanceRateLimit = orderChanceResponse.rateLimitStatus;
 
-      const createResponse = await client.createLimitOrder(plan.createOrder);
-      createSucceeded = true;
+      let createResponse: Awaited<ReturnType<UpbitPrivateRestClient["createLimitOrder"]>>;
+      try {
+        orderSideEffectPossible = true;
+        createResponse = await client.createLimitOrder(plan.createOrder);
+      } catch (error) {
+        artifact.createError = toSafeOrderSmokeErrorSummary(error, correlationId);
+        await attemptOrderCleanupAfterAmbiguousCreateFailure(client, plan, artifact, correlationId);
+        throw error;
+      }
+
       artifact.createdOrder = summarizeProviderOrderPayload(createResponse.payload);
       artifact.createRateLimit = createResponse.rateLimitStatus;
 
@@ -110,6 +119,7 @@ describeUpbitOrderSmoke("Upbit order API smoke integration", () => {
         artifact.cancelRateLimit = cancelResponse.rateLimitStatus;
       } catch (error) {
         cancelFailure = error;
+        artifact.cancelWarning = toSafeOrderSmokeErrorSummary(error, correlationId);
       }
 
       try {
@@ -117,6 +127,7 @@ describeUpbitOrderSmoke("Upbit order API smoke integration", () => {
         assertLookupConfirmsCanceledOrder(lookupResponse.payload, plan.createOrder.identifier);
         artifact.lookupOrder = summarizeProviderOrderPayload(lookupResponse.payload);
         artifact.lookupRateLimit = lookupResponse.rateLimitStatus;
+        cancelFailure = undefined;
       } catch (error) {
         if (cancelFailure === undefined) {
           cancelFailure = error;
@@ -131,13 +142,13 @@ describeUpbitOrderSmoke("Upbit order API smoke integration", () => {
       artifact.message = "Upbit order smoke가 단일 주문 생성, 취소, 조회 경로를 완료했습니다.";
     } catch (error) {
       failure = error;
-      artifact.status = createSucceeded
+      artifact.status = orderSideEffectPossible
         ? ("MANUAL_REVIEW_REQUIRED" satisfies PilotEvidenceStatus)
         : ("FAILED" satisfies PilotEvidenceStatus);
-      artifact.message = createSucceeded
+      artifact.message = orderSideEffectPossible
         ? "주문 생성 이후 취소 또는 조회 확인이 실패해 추가 주문 없이 수동 점검으로 전환했습니다."
         : "주문 생성 전에 smoke가 실패했거나 거래소가 주문 생성을 거부했습니다.";
-      artifact.action = createSucceeded
+      artifact.action = orderSideEffectPossible
         ? "같은 identifier로 Upbit 웹 또는 private order lookup에서 주문 상태와 취소 여부를 수동 확인하세요."
         : "환경, 잔고, 주문 가능 정책, 운영자 입력값을 확인한 뒤 private read smoke부터 다시 실행하세요.";
       artifact.error = toSafeOrderSmokeErrorSummary(error, correlationId);
@@ -218,16 +229,29 @@ function requireConfigValue(value: string | undefined, key: string): string {
   return value;
 }
 
-function assertKrwBalanceCanCoverOrder(snapshot: BrokerBalanceSnapshot, notionalKrw: string): void {
+function assertKrwBalanceCanCoverOrder(
+  snapshot: BrokerBalanceSnapshot,
+  notionalKrw: string,
+  policy: OrderChancePolicy,
+): void {
   const krwBalance = snapshot.balances.find((balance) => balance.currency === "KRW");
+  const requiredReserveKrw = calculateRequiredBidReserveKrw(notionalKrw, policy);
   if (krwBalance === undefined) {
     // KRW 계정이 확인되지 않으면 잔고 부족과 권한 문제를 구분할 수 없어 주문 생성 전에 중단한다.
     throw new UnsafePilotOrderSmokeRequestError(["KRW 잔고 계정이 확인되지 않아 주문 생성 전에 중단했습니다"]);
   }
 
-  if (parseFinancialDecimal(krwBalance.available).lessThan(parseFinancialDecimal(notionalKrw))) {
-    // 주문 생성 전 계정 잔고를 한 번 더 확인해 거래소 거부를 기다리지 않고 소액 smoke를 닫는다.
-    throw new UnsafePilotOrderSmokeRequestError(["KRW 주문 가능 잔고가 smoke 주문 총액보다 작아 주문 생성 전에 중단했습니다"]);
+  if (parseFinancialDecimal(krwBalance.available).lessThan(requiredReserveKrw)) {
+    // 주문 총액과 예약 수수료를 함께 감당하지 못하면 거래소 거부 전에 identifier 사용을 막는다.
+    throw new UnsafePilotOrderSmokeRequestError(["KRW 주문 가능 잔고가 smoke 주문 총액과 예상 수수료 합계보다 작아 주문 생성 전에 중단했습니다"]);
+  }
+
+  if (
+    policy.bidAvailableBalance !== undefined &&
+    parseFinancialDecimal(policy.bidAvailableBalance).lessThan(requiredReserveKrw)
+  ) {
+    // orders/chance가 보는 주문 가능 KRW가 부족하면 계정 snapshot보다 거래소 정책 근거를 우선해 닫는다.
+    throw new UnsafePilotOrderSmokeRequestError(["orders/chance 기준 주문 가능 KRW가 smoke 주문 총액과 예상 수수료 합계보다 작습니다"]);
   }
 }
 
@@ -250,6 +274,42 @@ function assertOrderChanceCanCoverPlan(policy: OrderChancePolicy, plan: PilotOrd
   ) {
     throw new UnsafePilotOrderSmokeRequestError(["smoke 주문 총액이 orders/chance 최대 주문금액보다 큽니다"]);
   }
+}
+
+/**
+ * 모호한 주문 생성 실패 뒤 같은 identifier의 주문을 취소/조회해 열린 주문 위험을 줄인다.
+ *
+ * `POST /v1/orders`가 throw해도 거래소에 도달했을 수 있으므로, 같은 smoke identifier로만 cancel과 lookup을 시도한다. 이
+ * 함수는 새 주문을 만들지 않고 cleanup evidence만 artifact에 남기며, 실패해도 원래 create 오류를 덮어쓰지 않는다.
+ */
+async function attemptOrderCleanupAfterAmbiguousCreateFailure(
+  client: UpbitPrivateRestClient,
+  plan: PilotOrderSmokeRequestPlan,
+  artifact: JsonRecord,
+  correlationId: string,
+): Promise<void> {
+  let cleanupFailure: unknown;
+
+  try {
+    const cancelResponse = await client.cancelOrder(plan.cancelOrder);
+    artifact.cleanupCancelOrder = summarizeProviderOrderPayload(cancelResponse.payload);
+    artifact.cleanupCancelRateLimit = cancelResponse.rateLimitStatus;
+  } catch (error) {
+    cleanupFailure = error;
+    artifact.cleanupCancelWarning = toSafeOrderSmokeErrorSummary(error, correlationId);
+  }
+
+  try {
+    const lookupResponse = await client.getOrder(plan.lookupOrder);
+    assertLookupConfirmsCanceledOrder(lookupResponse.payload, plan.createOrder.identifier);
+    artifact.cleanupLookupOrder = summarizeProviderOrderPayload(lookupResponse.payload);
+    artifact.cleanupLookupRateLimit = lookupResponse.rateLimitStatus;
+    return;
+  } catch (error) {
+    cleanupFailure = error;
+  }
+
+  artifact.cleanupError = toSafeOrderSmokeErrorSummary(cleanupFailure, correlationId);
 }
 
 /**
@@ -295,6 +355,32 @@ function summarizeOrderChancePolicy(policy: OrderChancePolicy): JsonRecord {
     maximumBidNotional: policy.maximumBidNotional ?? null,
     capturedAt: policy.capturedAt,
   };
+}
+
+/**
+ * 지정가 매수 주문 전에 필요한 KRW 예비금을 계산한다.
+ *
+ * 주문 총액에 orders/chance 수수료율 중 보수적인 값을 더해, 잔고 부족으로 identifier를 소모하는 주문 시도를 줄인다. 순수
+ * 계산 경계라 외부 API나 파일 side effect가 없다.
+ */
+function calculateRequiredBidReserveKrw(notionalKrw: string, policy: OrderChancePolicy): Decimal {
+  const notional = parseFinancialDecimal(notionalKrw);
+  const feeBps = readConservativeBidFeeBps(policy);
+
+  return notional.add(notional.mul(feeBps).div(10_000));
+}
+
+/**
+ * order smoke 잔고 검증에 사용할 보수적 매수 수수료 bps를 고른다.
+ *
+ * post_only 주문은 maker 수수료가 기대되지만 provider 정책 차이를 고려해 기본 bid fee와 maker bid fee 중 큰 값을 사용한다.
+ * 입력 policy만 읽는 순수 함수다.
+ */
+function readConservativeBidFeeBps(policy: OrderChancePolicy): Decimal {
+  const bidFeeBps = parseFinancialDecimal(policy.bidFeeBps);
+  const makerBidFeeBps = policy.makerBidFeeBps === undefined ? bidFeeBps : parseFinancialDecimal(policy.makerBidFeeBps);
+
+  return bidFeeBps.greaterThan(makerBidFeeBps) ? bidFeeBps : makerBidFeeBps;
 }
 
 function summarizeProviderOrderPayload(payload: unknown): JsonRecord {
