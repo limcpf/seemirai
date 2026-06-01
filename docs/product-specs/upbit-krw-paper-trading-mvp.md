@@ -117,6 +117,9 @@ Phase 1에서는 BTC와 ETH만 거래 후보로 본다. 두 종목도 `warning =
 - 주문금액 대비 예상 슬리피지 기준 통과
 - 거래지원 종료, 유의종목, 입출금 이슈 공지가 없음
 
+승인, 거부, 철회, 만료 판단은 조건별 snapshot을 포함한 audit evidence로 남긴다. 운영 표시는 `/status`의 safe runtime
+summary와 deterministic daily report에서 확인하며, 실거래 주문 API나 Upbit private account API를 열지 않는다.
+
 금지:
 
 - 신규 상장 자동 편입

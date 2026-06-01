@@ -34,6 +34,17 @@ MVP paper trading의 `KRW-BTC`/`KRW-ETH` 기본 universe를 유지하면서, 운
 - `./scripts/verify`
 - `node scripts/run-m9-paper-decision-runner.mjs --fixture-smoke --json`
 
+## 검증 결과
+
+- 2026-06-01: Sub PR 1 Foundation에서 config/schema, docs 구조, config unit test를 통과했다.
+- 2026-06-01: Sub PR 2 Eligibility에서 후보 evaluator fixture와 warning/caution/invalid evidence regression test를 통과했다.
+- 2026-06-01: Sub PR 3 Runtime integration에서 resolved universe, policy/rule/cost/runtime 연결, `./scripts/verify`를 통과했다.
+- 2026-06-01: Sub PR 4 Audit/reporting에서 `PHASE_1_5_ALT_APPROVAL` audit event, `/status` safe summary, daily report 표시, `./scripts/verify`를 통과했다.
+- 2026-06-01: Sub PR 5 Verification docs에서 `node scripts/run-m9-paper-decision-runner.mjs --fixture-smoke --json`을 실행했다.
+  run id `5e571373-47c1-47ee-870a-3158610a8574`, status `passed`, live order API calls `0`, paper order submitted `1`,
+  paper fill `1`, audit missing `0`. Artifact:
+  `/home/lim/vaults/99_운영/seemirai-m9-paper/m9-paper-decision-2026-06-01T00-59-52-368Z-5e571373-summary.json`.
+
 ## 결정 로그
 
 - 2026-06-01: issue #111 본문 계획에 맞춰 순차 sub PR mode로 진행한다.
@@ -44,4 +55,4 @@ MVP paper trading의 `KRW-BTC`/`KRW-ETH` 기본 universe를 유지하면서, 운
 
 ## 남은 이슈
 
-- 각 sub PR review drain과 mother branch merge 후 이 문서를 완료 상태로 이동한다.
+- Sub PR 5 review drain과 mother branch merge 후 최종 main 대상 PR에서 review drain을 진행한다.

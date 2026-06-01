@@ -283,7 +283,7 @@ Acceptance Criteria:
 - [ ] 주문 후보는 예상수익률, 진입 수수료, 청산 수수료, 스프레드 p75, 예상 슬리피지 p95, 취소/재호가 패널티, safety buffer를 포함한다.
 - [ ] `expected_return_bps >= cost_bps + safety_buffer_bps` 조건을 만족하지 못하면 주문 후보가 폐기된다.
 - [ ] BTC/ETH safety buffer 기본값은 10 bps다.
-- [ ] phase 1.5 상위 알트 safety buffer 기본값은 20 bps다.
+- [x] phase 1.5 상위 알트 safety buffer 기본값은 20 bps다.
 - [ ] 저유동성 알트, 신규 상장, 유의/주의 종목은 비용 계산 전 거래 금지 상태로 처리된다.
 - [ ] 폐기된 주문 후보는 폐기 사유와 차감 항목을 감사 로그에 남긴다.
 - [ ] 실제 체결 후 수수료와 슬리피지를 예상값과 비교해 기록한다.
@@ -353,7 +353,7 @@ Acceptance Criteria:
 - [ ] 전략은 LLM 출력만으로 주문 후보를 만들 수 없다.
 - [ ] 전략 후보가 폐기되면 strategy id, reason code, cost snapshot, rule evaluation 결과가 가능한 범위에서 감사 로그에 기록된다.
 - [ ] 신규 상장 자동 편입은 비활성이다.
-- [ ] phase 1.5 알트는 상장 후 90일 이상, `warning=false`, `caution=false`, 스프레드 p95와 예상 슬리피지 기준 통과, 최대 3개 수동 승인 조건을 모두 만족해야 한다.
+- [x] phase 1.5 알트는 상장 후 90일 이상, `warning=false`, `caution=false`, 스프레드 p95와 예상 슬리피지 기준 통과, 최대 3개 수동 승인 조건을 모두 만족해야 한다.
 
 테스트 요구사항:
 
