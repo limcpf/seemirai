@@ -154,6 +154,15 @@ describe("guarded Upbit live broker runtime factory", () => {
     expect(() =>
       createGuardedUpbitLiveBrokerRuntime({
         liveBrokerEnabled: true,
+        pilotConfig: createEnabledOrderSmokePilotConfig({
+          keyScopes: ["자산조회", "주문조회", "주문하기", "출금하기"] as unknown as EnabledPilotRuntimeConfig["keyScopes"],
+        }),
+        privateClientFactory,
+      }),
+    ).toThrow(UnsafeUpbitLiveBrokerRuntimeError);
+    expect(() =>
+      createGuardedUpbitLiveBrokerRuntime({
+        liveBrokerEnabled: true,
         pilotConfig: {
           ...createEnabledOrderSmokePilotConfig(),
           orderSmokeMarket: undefined,
@@ -209,7 +218,7 @@ describe("guarded Upbit live broker runtime factory", () => {
     expect(privateClient.getAccounts).toHaveBeenCalledTimes(1);
   });
 
-  it("blocks submitOrder outside the explicit order-smoke market and KRW limit", async () => {
+  it("blocks submitOrder outside the explicit order-smoke invariant", async () => {
     const privateClient = createFakeUpbitLiveBrokerPrivateClient();
     const runtime = createGuardedUpbitLiveBrokerRuntime({
       liveBrokerEnabled: true,
@@ -221,6 +230,30 @@ describe("guarded Upbit live broker runtime factory", () => {
     await expect(runtime.broker.submitOrder(createSubmission({ market: "KRW-ETH" }))).rejects.toMatchObject({
       name: "UnsafeUpbitLiveBrokerRuntimeError",
       violations: expect.arrayContaining(["Upbit live broker order smoke market은 KRW-BTC만 허용합니다"]),
+    } satisfies Partial<UnsafeUpbitLiveBrokerRuntimeError>);
+    await expect(runtime.broker.submitOrder(createSubmission({ side: "SELL" }))).rejects.toMatchObject({
+      name: "UnsafeUpbitLiveBrokerRuntimeError",
+      violations: expect.arrayContaining(["Upbit live broker order smoke는 지정가 매수만 허용합니다"]),
+    } satisfies Partial<UnsafeUpbitLiveBrokerRuntimeError>);
+    await expect(runtime.broker.submitOrder(createSubmission({ timeInForce: "IOC" }))).rejects.toMatchObject({
+      name: "UnsafeUpbitLiveBrokerRuntimeError",
+      violations: expect.arrayContaining(["Upbit live broker order smoke는 post-only 지정가만 허용합니다"]),
+    } satisfies Partial<UnsafeUpbitLiveBrokerRuntimeError>);
+    await expect(runtime.broker.submitOrder(createSubmission({ idempotencyKey: "x".repeat(33) }))).rejects.toMatchObject({
+      name: "UnsafeUpbitLiveBrokerRuntimeError",
+      violations: expect.arrayContaining(["Upbit live broker order smoke identifier는 1자 이상 32자 이하여야 합니다"]),
+    } satisfies Partial<UnsafeUpbitLiveBrokerRuntimeError>);
+    await expect(
+      runtime.broker.submitOrder(
+        createSubmission({
+          requestedPrice: "4000000",
+          requestedQuantity: "0.001",
+          requestedNotional: "4000",
+        }),
+      ),
+    ).rejects.toMatchObject({
+      name: "UnsafeUpbitLiveBrokerRuntimeError",
+      violations: expect.arrayContaining(["Upbit live broker order smoke 주문 금액은 5000 KRW 이상이어야 합니다"]),
     } satisfies Partial<UnsafeUpbitLiveBrokerRuntimeError>);
     await expect(
       runtime.broker.submitOrder(
@@ -235,6 +268,28 @@ describe("guarded Upbit live broker runtime factory", () => {
       violations: expect.arrayContaining(["Upbit live broker order smoke 주문 금액은 5000 KRW 이하여야 합니다"]),
     } satisfies Partial<UnsafeUpbitLiveBrokerRuntimeError>);
     expect(privateClient.createLimitOrder).not.toHaveBeenCalled();
+  });
+
+  it("cancels only orders submitted by the same guarded smoke runtime", async () => {
+    const privateClient = createFakeUpbitLiveBrokerPrivateClient();
+    const runtime = createGuardedUpbitLiveBrokerRuntime({
+      liveBrokerEnabled: true,
+      pilotConfig: createEnabledOrderSmokePilotConfig(),
+      privateClientFactory: vi.fn(() => privateClient),
+      clock: () => observedAt,
+    });
+
+    await expect(runtime.broker.cancelOrder("other-live-order")).rejects.toMatchObject({
+      name: "UnsafeUpbitLiveBrokerRuntimeError",
+      violations: ["Upbit live broker order smoke는 같은 runtime이 생성한 주문만 취소할 수 있습니다"],
+    } satisfies Partial<UnsafeUpbitLiveBrokerRuntimeError>);
+
+    const submittedOrder = await runtime.broker.submitOrder(createSubmission());
+    await expect(runtime.broker.cancelOrder(submittedOrder.brokerOrderId)).resolves.toMatchObject({
+      brokerOrderId: "upbit-order-001",
+    });
+    expect(privateClient.createLimitOrder).toHaveBeenCalledTimes(1);
+    expect(privateClient.cancelOrder).toHaveBeenCalledWith({ uuid: "upbit-order-001" });
   });
 
   it("summarizes blocked live broker guards without leaking credentials", () => {
@@ -493,11 +548,11 @@ function createBrokerPort(options: { openOrders?: readonly BrokerOrder[] } = {})
 function createFakeUpbitLiveBrokerPrivateClient(): UpbitLiveBrokerPrivateClient {
   return {
     createLimitOrder: vi.fn(async () => ({
-      payload: {},
+      payload: createUpbitCommandOrderPayload(),
       rateLimitStatus: defaultUpbitRateLimitStatus,
     })),
     cancelOrder: vi.fn(async () => ({
-      payload: {},
+      payload: createUpbitCommandOrderPayload({ state: "wait" }),
       rateLimitStatus: defaultUpbitRateLimitStatus,
     })),
     getOrder: vi.fn(async () => ({
@@ -521,6 +576,31 @@ function createFakeUpbitLiveBrokerPrivateClient(): UpbitLiveBrokerPrivateClient 
       ],
       rateLimitStatus: defaultUpbitRateLimitStatus,
     })),
+  };
+}
+
+function createUpbitCommandOrderPayload(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    market: "KRW-BTC",
+    uuid: "upbit-order-001",
+    side: "bid",
+    ord_type: "limit",
+    price: "5000000",
+    state: "wait",
+    created_at: observedAt,
+    volume: "0.001",
+    remaining_volume: "0.001",
+    executed_volume: "0",
+    reserved_fee: "2.5",
+    remaining_fee: "2.5",
+    paid_fee: "0",
+    locked: "5002.5",
+    time_in_force: "post_only",
+    identifier: "execution-candidate-1",
+    prevented_volume: "0",
+    prevented_locked: "0",
+    trades_count: 0,
+    ...overrides,
   };
 }
 
@@ -590,7 +670,9 @@ function createBrokerOrder(overrides: Partial<BrokerOrder> = {}): BrokerOrder {
   };
 }
 
-function createSubmission(overrides: Partial<Extract<OrderSubmission["intent"], { orderType: "LIMIT" }>> = {}): OrderSubmission {
+function createSubmission(
+  overrides: Partial<Extract<OrderSubmission["intent"], { orderType: "LIMIT" }>> = {},
+): OrderSubmission {
   return {
     intent: {
       exchangeId: "upbit_krw_spot",
@@ -598,11 +680,13 @@ function createSubmission(overrides: Partial<Extract<OrderSubmission["intent"], 
       strategyId: "trend_following",
       side: "BUY",
       orderType: "LIMIT",
-      requestedPrice: "10000000",
+      requestedPrice: "5000000",
       requestedQuantity: "0.001",
-      requestedNotional: "10000",
+      requestedNotional: "5000",
       idempotencyKey: "execution-candidate-1",
       reason: "disabled-live-broker-test",
+      postOnly: true,
+      timeInForce: "POST_ONLY",
       ...overrides,
     },
     costSnapshot: {},

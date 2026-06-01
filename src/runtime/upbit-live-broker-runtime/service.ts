@@ -14,6 +14,7 @@ import type {
 import type { BrokerPort } from "../../application/index.js";
 import { parseFinancialDecimal } from "../../shared/index.js";
 import {
+  UPBIT_PILOT_IDENTIFIER_MAX_LENGTH,
   UPBIT_PILOT_ORDER_SMOKE_MAX_KRW_LIMIT,
   UPBIT_PILOT_ORDER_SMOKE_MIN_KRW_LIMIT,
 } from "../pilot-config.js";
@@ -33,6 +34,8 @@ import type {
 } from "./types.js";
 
 const REQUIRED_LIVE_BROKER_SCOPES: readonly PilotUpbitKeyScope[] = ["자산조회", "주문조회", "주문하기"];
+const ALLOWED_LIVE_BROKER_SCOPES: readonly string[] = ["자산조회", "주문조회", "주문하기"];
+const FORBIDDEN_LIVE_BROKER_SCOPES: readonly string[] = ["출금조회", "출금하기", "입금조회", "입금하기", "선물", "레버리지"];
 const KRW_MARKET_PATTERN = /^KRW-[A-Z0-9]+$/u;
 const POSITIVE_DECIMAL_PATTERN = /^(?:0|[1-9]\d*)(?:\.\d+)?$/u;
 
@@ -189,6 +192,21 @@ function validateEnabledPilotConfig(config: EnabledPilotRuntimeConfig, violation
       violations.push(`Upbit live broker runtime key scope에 ${requiredScope} 권한이 필요합니다`);
     }
   }
+
+  validateLiveBrokerKeyScopes(config.keyScopes, violations);
+}
+
+function validateLiveBrokerKeyScopes(keyScopes: readonly string[], violations: string[]): void {
+  for (const keyScope of keyScopes) {
+    if (FORBIDDEN_LIVE_BROKER_SCOPES.includes(keyScope)) {
+      violations.push(`Upbit live broker runtime에 금지된 key scope가 포함되어 있습니다: ${keyScope}`);
+      continue;
+    }
+
+    if (!ALLOWED_LIVE_BROKER_SCOPES.includes(keyScope)) {
+      violations.push(`Upbit live broker runtime에 알 수 없는 key scope가 포함되어 있습니다: ${keyScope}`);
+    }
+  }
 }
 
 function validateOrderSmokeMarket(market: string | undefined, violations: string[]): void {
@@ -230,6 +248,8 @@ function validateOrderSmokeMaxKrw(maxKrw: string | undefined, violations: string
  * side effect를 만들 수 있다.
  */
 class OrderSmokeGuardedBroker implements BrokerPort {
+  private readonly submittedOrderIds = new Set<string>();
+
   public constructor(
     private readonly delegate: BrokerPort,
     private readonly orderSmokeMarket: MarketCode,
@@ -239,10 +259,22 @@ class OrderSmokeGuardedBroker implements BrokerPort {
   public async submitOrder(submission: OrderSubmission): Promise<BrokerOrder> {
     assertOrderSmokeSubmissionWithinGuard(submission, this.orderSmokeMarket, this.orderSmokeMaxKrw);
 
-    return this.delegate.submitOrder(submission);
+    const brokerOrder = await this.delegate.submitOrder(submission);
+
+    // 같은 smoke run에서 생성된 주문만 이후 취소할 수 있도록 성공한 broker order id만 로컬 evidence로 기록한다.
+    this.submittedOrderIds.add(brokerOrder.brokerOrderId);
+
+    return brokerOrder;
   }
 
   public async cancelOrder(orderId: string): Promise<BrokerOrder> {
+    if (!this.submittedOrderIds.has(orderId)) {
+      // 임의 UUID 취소는 smoke market/budget guard를 우회하는 실계좌 side effect이므로 wrapper 경계에서 차단한다.
+      throw new UnsafeUpbitLiveBrokerRuntimeError([
+        "Upbit live broker order smoke는 같은 runtime이 생성한 주문만 취소할 수 있습니다",
+      ]);
+    }
+
     return this.delegate.cancelOrder(orderId);
   }
 
@@ -270,10 +302,27 @@ function assertOrderSmokeSubmissionWithinGuard(
     violations.push(`Upbit live broker order smoke market은 ${orderSmokeMarket}만 허용합니다`);
   }
 
+  if (submission.intent.idempotencyKey.length === 0 || submission.intent.idempotencyKey.length > UPBIT_PILOT_IDENTIFIER_MAX_LENGTH) {
+    violations.push(`Upbit live broker order smoke identifier는 1자 이상 ${UPBIT_PILOT_IDENTIFIER_MAX_LENGTH}자 이하여야 합니다`);
+  }
+
+  if (submission.intent.side !== "BUY") {
+    violations.push("Upbit live broker order smoke는 지정가 매수만 허용합니다");
+  }
+
   if (submission.intent.orderType !== "LIMIT") {
     violations.push("Upbit live broker order smoke는 LIMIT 주문만 허용합니다");
-  } else if (!isLimitNotionalWithinMaxKrw(submission.intent.requestedPrice, submission.intent.requestedQuantity, orderSmokeMaxKrw)) {
-    violations.push(`Upbit live broker order smoke 주문 금액은 ${orderSmokeMaxKrw} KRW 이하여야 합니다`);
+  } else {
+    if (submission.intent.postOnly !== true || submission.intent.timeInForce !== "POST_ONLY") {
+      violations.push("Upbit live broker order smoke는 post-only 지정가만 허용합니다");
+    }
+
+    collectOrderSmokeNotionalViolations(
+      submission.intent.requestedPrice,
+      submission.intent.requestedQuantity,
+      orderSmokeMaxKrw,
+      violations,
+    );
   }
 
   if (violations.length > 0) {
@@ -282,11 +331,23 @@ function assertOrderSmokeSubmissionWithinGuard(
   }
 }
 
-function isLimitNotionalWithinMaxKrw(price: string, quantity: string, maxKrw: string): boolean {
+function collectOrderSmokeNotionalViolations(
+  price: string,
+  quantity: string,
+  maxKrw: string,
+  violations: string[],
+): void {
   try {
-    return parseFinancialDecimal(price).mul(parseFinancialDecimal(quantity)).lessThanOrEqualTo(parseFinancialDecimal(maxKrw));
+    const notional = parseFinancialDecimal(price).mul(parseFinancialDecimal(quantity));
+    if (notional.lessThan(UPBIT_PILOT_ORDER_SMOKE_MIN_KRW_LIMIT)) {
+      violations.push(`Upbit live broker order smoke 주문 금액은 ${UPBIT_PILOT_ORDER_SMOKE_MIN_KRW_LIMIT} KRW 이상이어야 합니다`);
+    }
+
+    if (notional.greaterThan(parseFinancialDecimal(maxKrw))) {
+      violations.push(`Upbit live broker order smoke 주문 금액은 ${maxKrw} KRW 이하여야 합니다`);
+    }
   } catch {
-    return false;
+    violations.push("Upbit live broker order smoke 주문 가격과 수량은 decimal 문자열이어야 합니다");
   }
 }
 
