@@ -5,6 +5,7 @@ import {
   UpbitPrivateRestClientError,
   toBrokerBalanceSnapshot,
   toBrokerOrderFromLookup,
+  toBrokerOrdersFromOpenOrders,
   toFeePolicyFromOrderChance,
   toOrderChancePolicy,
   toUpbitPrivateUserActionErrorSummary,
@@ -302,6 +303,131 @@ describe("Upbit private order lookup mapper", () => {
         { capturedAt },
       ),
     ).toThrow(UpbitPrivatePayloadMappingError);
+  });
+});
+
+describe("Upbit private open orders mapper", () => {
+  it("maps open order list payloads to broker order contracts", () => {
+    const orders = toBrokerOrdersFromOpenOrders(
+      [
+        {
+          market: "KRW-BTC",
+          uuid: "open-order-001",
+          side: "bid",
+          ord_type: "limit",
+          price: "140000000.0000",
+          state: "wait",
+          created_at: "2026-06-01T09:00:00+09:00",
+          volume: "0.002",
+          remaining_volume: "0.002",
+          executed_volume: "0",
+          executed_funds: "0",
+          reserved_fee: "140",
+          remaining_fee: "140",
+          paid_fee: "0",
+          locked: "280140",
+          time_in_force: "post_only",
+          identifier: "m15-open-001",
+          trades_count: 0,
+        },
+        {
+          market: "KRW-ETH",
+          uuid: "open-order-002",
+          side: "ask",
+          ord_type: "limit",
+          price: "6000000",
+          state: "watch",
+          created_at: "2026-06-01T09:01:00+09:00",
+          volume: "0.05",
+          remaining_volume: "0.03",
+          executed_volume: "0.02",
+          executed_funds: "120000",
+          reserved_fee: "0",
+          remaining_fee: "0",
+          paid_fee: "60",
+          locked: "0.03",
+          smp_type: "reduce",
+          identifier: "m15-open-002",
+          prevented_volume: "0",
+          prevented_locked: "0",
+          trades_count: 1,
+        },
+      ],
+      { capturedAt },
+    );
+
+    expect(orders).toMatchObject([
+      {
+        brokerOrderId: "open-order-001",
+        idempotencyKey: "m15-open-001",
+        exchangeId: "upbit_krw_spot",
+        market: "KRW-BTC",
+        side: "BUY",
+        orderType: "LIMIT",
+        status: "ACCEPTED",
+        requestedQuantity: "0.002",
+        remainingQuantity: "0.002",
+        requestedPrice: "140000000",
+        metadata: {
+          source: "upbit_private_open_order",
+          upbitTimeInForce: "POST_ONLY",
+          executedFunds: "0",
+          tradesCount: 0,
+        },
+      },
+      {
+        brokerOrderId: "open-order-002",
+        idempotencyKey: "m15-open-002",
+        market: "KRW-ETH",
+        side: "SELL",
+        status: "PARTIALLY_FILLED",
+        requestedQuantity: "0.05",
+        remainingQuantity: "0.03",
+        requestedPrice: "6000000",
+        metadata: {
+          source: "upbit_private_open_order",
+          upbitSmpType: "reduce",
+          executedFunds: "120000",
+          tradesCount: 1,
+        },
+      },
+    ]);
+    expect(JSON.stringify(orders)).not.toContain("Authorization");
+    expect(JSON.stringify(orders)).not.toContain("\"raw\"");
+  });
+
+  it("fails open order mapping without echoing raw invalid values", () => {
+    try {
+      toBrokerOrdersFromOpenOrders(
+        [
+          {
+            market: "KRW-BTC",
+            uuid: "open-order-secret",
+            side: "bid",
+            ord_type: "limit",
+            price: "provider-secret-price",
+            state: "wait",
+            created_at: "2026-06-01T09:00:00+09:00",
+            volume: "0.002",
+            remaining_volume: "0.002",
+            executed_volume: "0",
+            reserved_fee: "140",
+            remaining_fee: "140",
+            paid_fee: "0",
+            locked: "280140",
+          },
+        ],
+        { capturedAt },
+      );
+      throw new Error("expected mapper to fail");
+    } catch (error) {
+      expect(error).toMatchObject({
+        name: "UpbitPrivatePayloadMappingError",
+        schema: "OPEN_ORDERS",
+        issuePaths: ["0.price"],
+      } satisfies Partial<UpbitPrivatePayloadMappingError>);
+      expect(String(error)).not.toContain("provider-secret-price");
+    }
   });
 });
 

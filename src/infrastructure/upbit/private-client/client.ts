@@ -17,6 +17,7 @@ import type {
   UpbitPrivateErrorKind,
   UpbitPrivateErrorTrace,
   UpbitPrivateGetOrderInput,
+  UpbitPrivateListOpenOrdersInput,
   UpbitPrivateRequestMethod,
   UpbitPrivateRestClientOptions,
   UpbitPrivateRestResponse,
@@ -97,6 +98,24 @@ export class UpbitPrivateRestClient {
       method: "GET",
       pathname: "/v1/order",
       queryParams: toSingleOrderIdentifierQueryParams(input, "주문 조회"),
+    });
+  }
+
+  /**
+   * 체결 대기 주문 목록 조회 endpoint를 호출한다.
+   *
+   * M15 live broker의 `listOpenOrders` 입력 경계이며, 예약 주문 대기 누락을 막기 위해 기본 조회도 `wait`와 `watch`를
+   * 함께 요청한다. query hash와 URL query는 같은 순서의 key-value 목록에서 생성한다.
+   */
+  public async listOpenOrders(
+    input: UpbitPrivateListOpenOrdersInput = {},
+  ): Promise<UpbitPrivateRestResponse<unknown>> {
+    const queryParams = toListOpenOrdersQueryParams(input);
+
+    return this.requestJson({
+      method: "GET",
+      pathname: "/v1/orders/open",
+      queryParams,
     });
   }
 
@@ -271,9 +290,67 @@ function toCreateLimitOrderBodyParams(input: UpbitPrivateCreateLimitOrderInput):
   ];
 }
 
+function toListOpenOrdersQueryParams(input: UpbitPrivateListOpenOrdersInput): UpbitQueryParams {
+  const violations: string[] = [];
+  const params: UpbitQueryParams[number][] = [];
+  const states = input.states ?? ["wait", "watch"];
+
+  if (input.market !== undefined) {
+    validateRequiredString(input.market, "체결 대기 주문 조회 market", violations);
+    params.push({ key: "market", value: input.market });
+  }
+
+  if (states.length === 0) {
+    violations.push("체결 대기 주문 조회 states[]는 비어 있을 수 없습니다");
+  }
+  for (const state of states) {
+    if (state !== "wait" && state !== "watch") {
+      violations.push("체결 대기 주문 조회 states[]는 wait 또는 watch만 허용합니다");
+      break;
+    }
+  }
+  if (states.length > 0) {
+    // 예약 주문 대기(`watch`)가 reconcile 대상에서 빠지지 않도록 기본 조회도 배열형 상태 필터로 고정한다.
+    params.push({ key: "states[]", value: states });
+  }
+
+  if (input.page !== undefined) {
+    validatePositiveInteger(input.page, "체결 대기 주문 조회 page", violations);
+    params.push({ key: "page", value: input.page });
+  }
+
+  if (input.limit !== undefined) {
+    validatePositiveInteger(input.limit, "체결 대기 주문 조회 limit", violations);
+    if (input.limit > 100) {
+      // Upbit open orders limit 상한은 100이므로 과도한 pagination 요청을 거래소 호출 전에 닫는다.
+      violations.push("체결 대기 주문 조회 limit은 100 이하여야 합니다");
+    }
+    params.push({ key: "limit", value: input.limit });
+  }
+
+  if (input.orderBy !== undefined) {
+    if (input.orderBy !== "asc" && input.orderBy !== "desc") {
+      violations.push("체결 대기 주문 조회 order_by는 asc 또는 desc 여야 합니다");
+    }
+    params.push({ key: "order_by", value: input.orderBy });
+  }
+
+  if (violations.length > 0) {
+    throw new UnsafeUpbitPrivateRequestError({ violations });
+  }
+
+  return params;
+}
+
 function validateRequiredString(value: string, label: string, violations: string[]): void {
   if (typeof value !== "string" || value.trim().length === 0) {
     violations.push(`${label} 값이 필요합니다`);
+  }
+}
+
+function validatePositiveInteger(value: number, label: string, violations: string[]): void {
+  if (!Number.isInteger(value) || value < 1) {
+    violations.push(`${label}는 1 이상의 정수여야 합니다`);
   }
 }
 
