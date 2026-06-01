@@ -121,11 +121,14 @@ export function createPaperNoKeyExecutionRuntime(
 ): PaperNoKeyExecutionRuntime {
   const config = assertPaperNoKeyExecutionRuntimeConfig(loadRuntimeConfig(input));
   const registry = resolveRegistryActivationConfig(config.registry);
+  const exchangeId = registry.exchange.id;
   const universeOptions: {
     observedAt: TimestampInput;
     evidence?: readonly Phase15AltApprovalEvidenceSnapshot[];
+    exchangeId?: typeof exchangeId;
   } = {
     observedAt: options.clock?.() ?? new Date().toISOString(),
+    exchangeId,
   };
 
   if (options.phase15ApprovalEvidence !== undefined) {
@@ -133,7 +136,6 @@ export function createPaperNoKeyExecutionRuntime(
   }
 
   const universe = resolveRuntimeUniverse(config.universe, universeOptions);
-  const exchangeId = registry.exchange.id;
   const paperBrokerOptions: PaperBrokerOptions = {
     exchangeId,
     initialBalances: options.initialBalances ?? [],

@@ -598,6 +598,7 @@ function toSafeRuntimeSummary(
   const universe = resolveRuntimeUniverse(config.universe, {
     observedAt,
     evidence: phase15ApprovalEvidence,
+    exchangeId: config.registry.exchangeId,
   });
 
   return {

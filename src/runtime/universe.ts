@@ -1,4 +1,5 @@
 import type {
+  ExchangeId,
   MarketCode,
   Phase15AltApprovalEvidenceCondition,
   Phase15AltApprovalEvidenceSnapshot,
@@ -48,10 +49,12 @@ export function resolveRuntimeUniverse(
   options: {
     observedAt: TimestampInput;
     evidence?: readonly Phase15AltApprovalEvidenceSnapshot[];
+    exchangeId?: ExchangeId;
   },
 ): RuntimeUniverseResolution {
   const observedAtMs = toTimestampMs(options.observedAt);
   const evidence = options.evidence ?? [];
+  const exchangeId = options.exchangeId;
   const phase15ApprovedAltMarkets: MarketCode[] = [];
   const phase15ExpiredAltMarkets: MarketCode[] = [];
   const phase15PendingAltMarkets: MarketCode[] = [];
@@ -73,20 +76,27 @@ export function resolveRuntimeUniverse(
         continue;
       }
 
-      const latestEvidence = findLatestEvidenceAfterApproval(approval.market, approvedAtMs, observedAtMs, evidence);
-
-      if (hasBlockingEvidenceAfterApproval(approval.market, approvedAtMs, observedAtMs, evidence)) {
+      if (hasBlockingEvidenceAfterApproval(approval.market, approvedAtMs, observedAtMs, evidence, exchangeId)) {
         phase15BlockedAltMarkets.push(approval.market);
         continue;
       }
 
-      if (latestEvidence === undefined || !matchesManualApprovalEvidence(approval.evidence_id, latestEvidence)) {
+      const approvalEvidence = findApprovalEvidenceAfterApproval(
+        approval.market,
+        approval.evidence_id,
+        approvedAtMs,
+        observedAtMs,
+        evidence,
+        exchangeId,
+      );
+
+      if (approvalEvidence === undefined) {
         // 수동 config만으로 알트가 열리면 eligibility/audit 누락을 우회하므로 승인 evidence가 없으면 닫아 둔다.
         phase15MissingEvidenceAltMarkets.push(approval.market);
         continue;
       }
 
-      if (!isApprovingEvidence(latestEvidence)) {
+      if (!isApprovingEvidence(approvalEvidence)) {
         // APPROVE가 아니거나 조건 snapshot이 통과하지 않은 evidence는 신규 진입 근거로 쓰지 않는다.
         phase15MissingEvidenceAltMarkets.push(approval.market);
         continue;
@@ -127,14 +137,17 @@ function dedupeMarkets(markets: readonly MarketCode[]): readonly MarketCode[] {
   return [...new Set(markets)];
 }
 
-function findLatestEvidenceAfterApproval(
+function findApprovalEvidenceAfterApproval(
   market: MarketCode,
+  manualApprovalEvidenceId: string | undefined,
   approvedAtMs: number,
   observedAtMs: number,
   evidence: readonly Phase15AltApprovalEvidenceSnapshot[],
+  exchangeId: ExchangeId | undefined,
 ): Phase15AltApprovalEvidenceSnapshot | undefined {
   return evidence
-    .filter((snapshot) => snapshot.market === market)
+    .filter((snapshot) => snapshot.market === market && matchesExchange(snapshot, exchangeId))
+    .filter((snapshot) => matchesManualApprovalEvidence(manualApprovalEvidenceId, snapshot))
     .map((snapshot) => ({
       snapshot,
       observedAtMs: toTimestampMs(snapshot.observedAt),
@@ -155,9 +168,10 @@ function hasBlockingEvidenceAfterApproval(
   approvedAtMs: number,
   observedAtMs: number,
   evidence: readonly Phase15AltApprovalEvidenceSnapshot[],
+  exchangeId: ExchangeId | undefined,
 ): boolean {
   return evidence.some((snapshot) => {
-    if (snapshot.market !== market || !isBlockingEvidenceAction(snapshot.action)) {
+    if (snapshot.market !== market || !matchesExchange(snapshot, exchangeId) || !isBlockingEvidenceAction(snapshot.action)) {
       return false;
     }
 
@@ -182,6 +196,13 @@ function matchesManualApprovalEvidence(
   evidence: Phase15AltApprovalEvidenceSnapshot,
 ): boolean {
   return manualApprovalEvidenceId === undefined || evidence.evidenceId === manualApprovalEvidenceId;
+}
+
+function matchesExchange(
+  evidence: Phase15AltApprovalEvidenceSnapshot,
+  exchangeId: ExchangeId | undefined,
+): boolean {
+  return exchangeId === undefined || evidence.exchangeId === exchangeId;
 }
 
 function toTimestampMs(input: TimestampInput): number {

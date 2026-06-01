@@ -249,11 +249,14 @@ function createPaperNoKeyMarketDataRuntimeFromConfig(
   registry: RegistryActivationResolution,
   options: PaperNoKeyMarketDataRuntimeOptions,
 ): PaperNoKeyMarketDataRuntime {
+  const exchangeId = registry.exchange.id;
   const universeOptions: {
     observedAt: TimestampInput;
     evidence?: readonly Phase15AltApprovalEvidenceSnapshot[];
+    exchangeId?: typeof exchangeId;
   } = {
     observedAt: options.clock?.() ?? new Date().toISOString(),
+    exchangeId,
   };
 
   if (options.phase15ApprovalEvidence !== undefined) {
@@ -261,7 +264,6 @@ function createPaperNoKeyMarketDataRuntimeFromConfig(
   }
 
   const universe = resolveRuntimeUniverse(config.universe, universeOptions);
-  const exchangeId = registry.exchange.id;
   const consumerId = options.consumerId ?? PAPER_NO_KEY_MARKET_DATA_CONSUMER_ID;
   const tradeStreamRequest: MarketDataStreamRequest = {
     exchangeId,

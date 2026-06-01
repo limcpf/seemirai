@@ -112,6 +112,9 @@ config invariant:
   slippage, depth evidence를 모두 통과한 뒤 audit evidence와 함께 결정한다.
 - runtime universe는 수동 승인 config만으로 알트를 열지 않는다. 승인 시각 이후 현재 시각 이하의 `APPROVE` evidence가
   없거나, 최신 evidence가 `REJECT`/`REVOKE`/`EXPIRE`이면 해당 알트는 fail-closed로 phase 1 universe 밖에 둔다.
+- `manual_approvals[].evidence_id`가 있으면 같은 id의 승인 evidence를 기준으로 삼고, 더 최신의 다른 `APPROVE` snapshot이
+  있어도 기존 승인 근거를 덮어쓰지 않는다. 단 승인 시각 이후의 차단 evidence는 항상 우선한다.
+- runtime universe는 현재 조립 중인 exchange id와 일치하는 approval evidence만 인정한다.
 - `APPROVE` evidence는 `listing_age`, `market_warning`, `market_caution`, `thirty_day_average_trade_value`,
   `seven_day_spread_p95`, `expected_slippage`, `depth` 조건이 모두 존재하고 통과해야 승인 근거로 인정한다.
 - market-data/execution runtime과 `/status`는 `PHASE_1_5_ALT_APPROVAL` audit event를 같은 evidence snapshot으로 읽어

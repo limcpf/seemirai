@@ -372,6 +372,68 @@ describe("phase 1.5 runtime integration", () => {
     expect(universe.allowedMarkets).toEqual(["KRW-BTC", "KRW-ETH"]);
     expect(universe.phase15MissingEvidenceAltMarkets).toEqual(["KRW-SOL"]);
   });
+
+  it("keeps using the configured approval evidence id when newer approval snapshots exist", () => {
+    const config = loadRuntimeConfig({
+      universe: {
+        phase_1_5: {
+          enabled: true,
+          manual_approvals: [
+            {
+              market: "KRW-SOL",
+              approved_at: "2026-05-31T00:00:00.000Z",
+              evidence_id: "phase15:KRW-SOL:approved-config",
+            },
+          ],
+        },
+      },
+    });
+    const universe = resolveRuntimeUniverse(config.universe, {
+      observedAt,
+      evidence: [
+        {
+          ...createEvidenceSnapshot("KRW-SOL", "APPROVE", "2026-05-31T00:00:00.000Z"),
+          evidenceId: "phase15:KRW-SOL:approved-config",
+        },
+        {
+          ...createEvidenceSnapshot("KRW-SOL", "APPROVE", "2026-06-01T00:00:00.000Z"),
+          evidenceId: "phase15:KRW-SOL:later-refresh",
+        },
+      ],
+    });
+
+    expect(universe.allowedMarkets).toEqual(["KRW-BTC", "KRW-ETH", "KRW-SOL"]);
+    expect(universe.phase15ApprovedAltMarkets).toEqual(["KRW-SOL"]);
+  });
+
+  it("ignores approval evidence from a different exchange when exchange id is provided", () => {
+    const config = loadRuntimeConfig({
+      universe: {
+        phase_1_5: {
+          enabled: true,
+          manual_approvals: [
+            {
+              market: "KRW-SOL",
+              approved_at: "2026-05-31T00:00:00.000Z",
+            },
+          ],
+        },
+      },
+    });
+    const universe = resolveRuntimeUniverse(config.universe, {
+      observedAt,
+      exchangeId: "upbit_krw_spot",
+      evidence: [
+        {
+          ...createEvidenceSnapshot("KRW-SOL", "APPROVE", "2026-05-31T00:00:00.000Z"),
+          exchangeId: "other_krw_spot",
+        },
+      ],
+    });
+
+    expect(universe.allowedMarkets).toEqual(["KRW-BTC", "KRW-ETH"]);
+    expect(universe.phase15MissingEvidenceAltMarkets).toEqual(["KRW-SOL"]);
+  });
 });
 
 function createEvidenceSnapshot(
