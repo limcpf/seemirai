@@ -233,6 +233,13 @@
       "owner_scope": "docs/product-specs"
     },
     {
+      "path": "docs/product-specs/upbit-live-autonomous-trading.md",
+      "kind": "product-spec",
+      "role": "Upbit 실거래 자율 운용과 Telegram 질의응답 기반 M15 이후 로드맵",
+      "read_when": ["M15 이후 구현", "자동 실거래", "UpbitLiveBroker 구현", "Telegram 질의응답", "PnL 설명", "24시간 자동매매"],
+      "owner_scope": "docs/product-specs"
+    },
+    {
       "path": "docs/exec-plans/active/README.md",
       "kind": "index",
       "role": "진행 중 실행 계획 인덱스",

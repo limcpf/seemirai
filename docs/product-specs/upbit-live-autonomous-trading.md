@@ -1,0 +1,392 @@
+# Upbit Live Autonomous Trading 로드맵
+
+- 상태: draft
+- 작성일: 2026-06-01
+- 관련 범위: M15 이후 post-MVP 실거래 자율 운용
+- 기준 문서: [`../PRD.md`](../PRD.md), [`../FEATURE_REQUIREMENTS.md`](../FEATURE_REQUIREMENTS.md), [`../../ARCHITECTURE.md`](../../ARCHITECTURE.md), [`./upbit-v0-2-pilot-private-api.md`](./upbit-v0-2-pilot-private-api.md), [`../RUNTIME_CONFIG.md`](../RUNTIME_CONFIG.md), [`../RELIABILITY.md`](../RELIABILITY.md), [`../SECURITY.md`](../SECURITY.md)
+
+## 1. 목표
+
+이 로드맵의 목표는 Upbit KRW 현물에서 운영자 본인 계정을 대상으로 24시간 시장을 감시하고, 비용·유동성·리스크·전략 조건을 통과한 경우에만 자동 매수/자동 매도를 수행하며, 운영자가 Telegram으로 현재 상태와 판단 이유를 언제든 조회할 수 있는 실거래 운영 시스템을 단계적으로 만드는 것이다.
+
+시스템은 수익을 보장하지 않는다. 구현 목표는 자동으로 돈을 벌겠다는 약속이 아니라, 다음 불변식을 지키는 운영 가능한 자동매매 시스템이다.
+
+- 모든 주문은 비용 차감 후 기대값, 유동성, 정책, 리스크 게이트를 통과해야 한다.
+- 보유, 미보유, 현금 보유, 매수, 매도, 주문 취소 판단은 모두 나중에 설명 가능한 evidence를 남겨야 한다.
+- 운영자가 잠들거나 일하는 동안에도 신규 주문 차단, 미체결 주문 복구, kill switch, 알림 재시도, 상태 조회가 동작해야 한다.
+- LLM은 주문 판단자가 아니라 공식 입력 요약, 판단 이유 설명, 리포트 초안 보조자다.
+- 기본 `PAPER_NO_KEY` runtime은 계속 실거래 주문 API를 호출하지 않아야 한다.
+
+## 2. 현재 경계
+
+M14 v0.2 pilot은 실거래 자동매매가 아니다. M14의 목적은 owner-operated private API profile에서 잔고, 주문 가능 정보, 주문 조회, 소액 지정가 주문 생성/취소 smoke를 guard 뒤에서 검증하는 것이다.
+
+M14 이후에도 다음은 여전히 사실이어야 한다.
+
+- `PAPER_NO_KEY` 기본 runtime은 `live_trading_enabled=false`다.
+- `UpbitLiveBroker`는 명시 live profile 없이 조립되지 않는다.
+- order smoke는 운영자가 지정한 가격, 수량, identifier로 한 번 주문하고 즉시 취소하는 검증일 뿐 자동 전략 실행이 아니다.
+- 출금, 입출금 자동화, 선물, 레버리지, 타인 계정, 신호 판매는 범위 밖이다.
+
+## 3. 비목표
+
+- 수익 보장
+- 투자 자문, 세무·법률 판단 자동화
+- 타인 자금 운용 또는 신호 판매
+- 출금 API 권한, 입출금 자동화
+- 선물, 레버리지, 마진, 청산 위험이 있는 포지션
+- 거래소 간 송금 기반 차익거래
+- 비공식 뉴스, SNS, 커뮤니티, 루머 기반 자동 주문
+- LLM이 `BUY`, `SELL`, 목표가, 포지션 크기, 주문 허용 여부를 직접 결정하는 구조
+- 신규 진입 시장가 주문 기본 허용
+- 장애 상황의 무조건 자동 시장가 청산
+
+## 4. 운영 모드
+
+| 모드 | 목적 | 주문 side effect | 자동성 |
+| --- | --- | --- | --- |
+| `PAPER_NO_KEY` | 기본 paper trading | 없음 | paper 자동 |
+| `PILOT_ORDER_SMOKE` | M14 소액 지정가 생성/취소 검증 | 운영자 입력 1회 | 자동매매 아님 |
+| `LIVE_READ_ONLY_RECONCILE` | 실계좌 잔고, 주문, 체결 조회와 로컬 상태 복구 | 없음 | 읽기 전용 |
+| `LIVE_ARMED_MANUAL_APPROVAL` | 자동 후보 생성 후 운영자 Telegram 승인으로 주문 | 승인된 주문만 | 반자동 |
+| `LIVE_AUTONOMOUS_SMALL_BUDGET` | 단일 또는 제한 universe 소액 자동 매수/매도 | 제한적 허용 | 완전 자동 소액 |
+| `LIVE_AUTONOMOUS_SCALED` | 검증된 전략과 운영 evidence 기반 예산 확대 | 제한적 허용 | 완전 자동 확장 |
+
+모드 승격은 config 하나를 바꾸는 것으로 끝나지 않는다. 각 모드는 별도 acceptance criteria, 검증 artifact, 운영자 승인 기록을 요구한다.
+
+## 5. 핵심 사용자 시나리오
+
+### 시나리오 1: 자는 동안 자동 운용
+
+1. 운영자가 `LIVE_AUTONOMOUS_SMALL_BUDGET`을 명시적으로 arm 한다.
+2. 시스템이 market data, policy, account state를 동기화한다.
+3. 전략이 주문 후보를 만들면 비용 엔진과 리스크 게이트가 먼저 통과 여부를 판단한다.
+4. 통과한 후보만 `UpbitLiveBroker`를 통해 지정가 주문으로 제출한다.
+5. 부분 체결, 미체결, 취소, 재호가, 청산 판단은 모두 evidence와 PnL snapshot으로 남는다.
+6. 오류, stale data, rate limit, reconcile mismatch, 손실 한도 초과가 발생하면 신규 주문을 중지한다.
+
+### 시나리오 2: Telegram으로 현재 상황 조회
+
+1. 운영자가 Telegram에서 `/status`, `/positions`, `/pnl`, `/why KRW-BTC`, `/risk` 같은 명령을 보낸다.
+2. 시스템은 허용된 운영자 chat id와 명령 권한을 확인한다.
+3. 응답은 한국어로 총자산, 현금, 보유 종목, 미체결 주문, realized/unrealized PnL, 최근 판단 이유, 리스크 상태를 보여준다.
+4. 내부 order id, idempotency key, correlation id는 하단 `추적 정보`에 분리한다.
+
+### 시나리오 3: 왜 현금으로 들고 있는지 설명
+
+1. 운영자가 `/why cash` 또는 `/why KRW-ETH`를 묻는다.
+2. 시스템은 최근 strategy decision, cost model, risk gate, universe policy, liquidity snapshot을 조회한다.
+3. 예를 들어 기대값 부족, 스프레드 과대, 슬리피지 위험, 시세 지연, 손실 한도 접근, 전략 pause 같은 이유를 한국어로 요약한다.
+4. 설명은 주문을 새로 만들지 않고 읽기 전용으로만 동작한다.
+
+### 시나리오 4: 수동 중지와 복구
+
+1. 운영자가 Telegram 또는 local control API로 pause, resume, kill switch를 요청한다.
+2. 시스템은 명령 권한과 확인 절차를 통과한 요청만 수락한다.
+3. kill switch는 신규 주문 차단, 미체결 주문 취소 계획, manual review 상태 전이를 audit/risk evidence와 함께 저장한다.
+4. 복구 시에는 거래소 상태와 로컬 상태 reconcile이 먼저 통과해야 한다.
+
+## 6. 필수 capability
+
+### Live broker
+
+- `BrokerPort` contract를 Upbit private API로 구현한다.
+- 주문 생성, 취소, 개별 주문 조회, 미체결 주문 조회, 잔고 조회를 지원한다.
+- 모든 주문은 계정 내 고유 `identifier`와 내부 idempotency key를 연결해야 한다.
+- Upbit `Remaining-Req` header와 API 그룹별 제한을 runtime rate limiter에 반영한다.
+- 신규 진입은 지정가 중심으로 시작하고, `post_only` 지원 여부와 self-match prevention 충돌을 검증한다.
+
+### 상태 동기화
+
+- 로컬 `orders`, `order_events`, `fills`, `balances`, `positions`, `pnl_snapshots`는 거래소 상태와 주기적으로 대조한다.
+- 프로세스 재시작 후 open order, partial fill, balance, position을 복구한다.
+- 거래소와 로컬 snapshot이 충돌하면 신규 주문을 fail-closed 하고 manual review로 수렴한다.
+
+### PnL 회계
+
+- realized PnL과 unrealized PnL을 분리한다.
+- 수수료, 스프레드, 슬리피지, 취소/재호가 비용을 가능한 범위에서 분해한다.
+- 종목별, 전략별, 일간, 주간, 누적 PnL snapshot을 남긴다.
+- 결측은 0으로 대체하지 않고 `계산 불가`와 원인을 표시한다.
+
+### 판단 이유 저장소
+
+- 주문 후보 생성, 폐기, 승인, 제출, 취소, 청산 판단은 모두 append-only evidence를 가진다.
+- 현금 보유도 판단 결과로 취급한다.
+- 설명 API와 Telegram 응답은 이 evidence를 읽어 한국어 운영자 문구로 요약한다.
+- LLM 요약은 deterministic evidence를 대체하지 않는다.
+
+### Exit engine
+
+- 자동매수보다 자동매도와 포지션 축소를 먼저 안전하게 닫는다.
+- 손절, 익절, trailing stop, 시간 기반 청산, 전략 exit signal, 리스크 기반 축소를 독립 rule로 구성한다.
+- 부분 체결과 미체결 exit 주문은 잔여 수량 기준으로 reconcile 한다.
+- 장애 상황의 자동 청산은 기본 동작이 아니라 별도 정책과 검증을 요구한다.
+
+### Telegram inbound 운영
+
+- 현재 보안 기준은 outbound 전송만 허용한다. Telegram command 수신은 별도 보안 설계와 문서 갱신 없이는 구현하지 않는다.
+- command 수신은 owner chat id allowlist, secret redaction, replay/중복 명령 방지, 권한별 확인 절차를 요구한다.
+- 조회 명령과 trading control 명령을 분리한다.
+- 메시지는 Telegram provider 제한을 고려해 요약과 추적 정보를 분리하고, 긴 설명은 분할 또는 축약한다.
+
+## 7. 마일스톤
+
+### M15. `UpbitLiveBroker` 실구현
+
+목표:
+
+- M14 private client를 `BrokerPort` 경계로 끌어올려 실제 broker 구현을 만든다.
+
+범위:
+
+- `submitOrder`, `cancelOrder`, `getOrder`, `listOpenOrders`, `getBalances` 구현
+- idempotency key와 Upbit `identifier` 매핑
+- 주문 생성/취소/조회 오류 정규화
+- rate limit 추적과 backoff
+- fake Upbit adapter 기반 테스트
+- 기본 runtime에서는 live broker 미조립 유지
+
+제외 범위:
+
+- 자동 전략 실행
+- Telegram inbound 명령
+- 예산 확대
+
+완료 조건:
+
+- fake broker integration test가 주문 제출, 중복 방지, 취소, 조회, rate limit을 검증한다.
+- gated real smoke가 소액 지정가 주문 생성/취소 경로를 통과하거나 guard skip evidence를 남긴다.
+- `PAPER_NO_KEY`에서 live order API 호출 0회가 유지된다.
+
+### M16. 실계좌 상태 reconcile
+
+목표:
+
+- 실계좌 잔고, 주문, 체결, 포지션을 로컬 상태와 대조하고 재시작 후 복구한다.
+
+범위:
+
+- live read-only reconcile worker
+- open order, closed order, partial fill, cancel failure 복구
+- balance와 position snapshot 갱신
+- mismatch 발생 시 신규 주문 차단
+- private WebSocket `myOrder`, `myAsset` 도입 여부 검토
+
+완료 조건:
+
+- 프로세스 재시작 후 open order와 position snapshot이 복구된다.
+- 거래소와 로컬 상태 충돌 시 manual review evidence가 남고 신규 주문이 차단된다.
+- reconcile summary를 `/status` 또는 CLI에서 secret 없이 확인할 수 있다.
+
+### M17. PnL/포지션 회계
+
+목표:
+
+- 운영자가 Telegram과 report에서 손익과 보유 상태를 신뢰할 수 있게 한다.
+
+범위:
+
+- realized/unrealized PnL 계산
+- fee, spread, slippage, cancel/requote penalty 분해
+- 종목별/전략별/일간/주간/누적 snapshot
+- 현금과 보유 자산의 평가 금액, 노출 비중
+- 결측 source 표시
+
+완료 조건:
+
+- 동일 fixture에서 PnL 계산이 deterministic 하다.
+- live read-only reconcile 결과와 PnL snapshot source가 연결된다.
+- Telegram/status formatter가 내부 code보다 한국어 상태, 원인, 영향, 필요 조치를 먼저 보여준다.
+
+### M18. 판단 이유 ledger와 설명 API
+
+목표:
+
+- 시스템이 왜 샀는지, 왜 팔았는지, 왜 보유 중인지, 왜 현금인지 설명할 수 있게 한다.
+
+범위:
+
+- strategy decision, order intent, discard reason, cost breakdown, risk decision 저장
+- cash hold reason 저장
+- `why` query service
+- LLM summary는 deterministic evidence를 읽는 보조 계층으로 제한
+
+완료 조건:
+
+- 종목별 최근 판단 이유를 조회할 수 있다.
+- 주문 후보 0건 frame도 hold/discard reason count로 설명된다.
+- LLM 장애가 설명 생성 실패 evidence로만 남고 주문 판단을 바꾸지 않는다.
+
+### M19. 자동 매도와 포지션 축소
+
+목표:
+
+- 자동매수 전에 포지션을 어떻게 줄이고 닫을지 안전하게 구현한다.
+
+범위:
+
+- 손절, 익절, trailing stop, 시간 기반 청산, 전략 exit signal
+- exit order intent와 RiskGate 연동
+- 부분 체결 잔량 reconcile
+- exit 실패 시 신규 진입 중지
+- paper/live parity test
+
+완료 조건:
+
+- paper fixture에서 모든 exit rule이 검증된다.
+- live pilot에서 소액 포지션의 진입, 청산, 취소, 실패 복구가 evidence로 남는다.
+- 장애 상황의 무조건 시장가 청산은 여전히 비활성이다.
+
+### M20. Telegram 양방향 운영
+
+목표:
+
+- 운영자가 Telegram으로 상태를 묻고, 제한된 제어 명령을 실행할 수 있게 한다.
+
+범위:
+
+- Telegram webhook 또는 polling 방식 결정
+- owner chat id allowlist
+- `/status`, `/positions`, `/pnl`, `/why <market>`, `/orders`, `/risk`
+- `/pause`, `/resume`, `/kill` 같은 control 명령의 확인 절차
+- inbound command audit
+- `SECURITY.md`, `RUNTIME_CONFIG.md`, `RELIABILITY.md` 갱신
+
+완료 조건:
+
+- 허용되지 않은 chat id의 명령은 무시되고 audit evidence만 남는다.
+- 조회 명령은 주문 side effect를 만들지 않는다.
+- control 명령은 인증, 확인, idempotency를 통과해야 한다.
+- Telegram token, raw header, raw provider body는 저장되지 않는다.
+
+### M21. 수동 승인 live pilot
+
+목표:
+
+- 자동 후보 생성은 켜되 실제 주문은 운영자 승인 뒤에만 실행한다.
+
+범위:
+
+- order proposal Telegram 알림
+- 승인/거부 command
+- 단일 market 또는 BTC/ETH 소액 budget
+- 승인된 주문만 `UpbitLiveBroker` 제출
+- 승인 만료와 중복 승인 방지
+
+완료 조건:
+
+- 승인 없는 live 주문 0건
+- 모든 승인 주문은 proposal, approval, risk decision, broker submission evidence를 가진다.
+- 최소 1주 운영 중 reconcile mismatch, duplicate order, untracked fill이 없어야 다음 단계로 넘어간다.
+
+### M22. 제한적 완전 자동매매
+
+목표:
+
+- 운영자가 명시적으로 arm 한 소액 예산에서 자동 매수와 자동 매도를 허용한다.
+
+범위:
+
+- 단일 market 또는 제한 universe
+- 총 예산, 1회 주문, 종목별 노출, 일간/주간 손실 한도
+- 자동 exit rule 활성화
+- stale data, API 오류, reconcile mismatch, 손실 한도 초과 시 신규 주문 중지
+- daily live report와 Telegram status
+
+완료 조건:
+
+- 24시간 live autonomous pilot에서 crash 0회, unhandled rejection 0회, risk gate 우회 주문 0건, reconcile mismatch 0건을 증명한다.
+- 운영자가 Telegram으로 보유, 현금, PnL, 최근 판단 이유를 조회할 수 있다.
+- 실패 시 kill switch와 manual review로 수렴한다.
+
+### M23. 24/7 운영 안정화
+
+목표:
+
+- 자는 동안과 업무 중에도 운영 가능한 수준으로 배포와 복구를 강화한다.
+
+범위:
+
+- Docker Compose live profile
+- process supervisor 또는 systemd 재시작 정책
+- DB backup/restore drill
+- health/readiness/status
+- alert retry와 daily report
+- 장애 drill과 runbook
+- Upbit 장애, 점검, market warning 대응
+
+완료 조건:
+
+- 7일 연속 live small-budget 운영 리포트가 생성된다.
+- process 재시작 후 reconcile과 status가 정상 복구된다.
+- Telegram P0/P1 알림 실패 retry와 manual review 수렴이 검증된다.
+
+### M24. 전략 확장과 예산 확대
+
+목표:
+
+- 작은 자동매매가 안정적으로 운용된 뒤 universe와 예산을 제한적으로 확대한다.
+
+범위:
+
+- 알트 최대 3개 수동 편입
+- 전략별 capital allocation
+- regime별 전략 on/off
+- 성과 저하 전략 pause
+- paper/live shadow 비교
+- 예산 확대 승인 기록
+
+완료 조건:
+
+- 종목 추가 전 paper/live shadow 비교가 통과한다.
+- 전략별 PnL과 손실 기여도가 report로 분해된다.
+- 예산 확대는 운영자 승인과 rollback plan을 가진다.
+
+## 8. 자동 실거래 가능 판정
+
+사용자가 기대한 “알아서 매수하고 알아서 매도”는 M22부터 제한적으로 가능하다. M15-M21은 자동매매를 가능하게 하기 위한 필수 안전 기반이다.
+
+M22 진입 전에는 다음을 모두 만족해야 한다.
+
+- `UpbitLiveBroker`가 `BrokerPort` 기준으로 구현되고 검증됐다.
+- 실계좌 상태 reconcile이 재시작과 mismatch 상황을 복구하거나 fail-closed 한다.
+- PnL과 position accounting이 Telegram/status/report에서 조회 가능하다.
+- 매수뿐 아니라 매도/축소/청산 rule이 paper와 live pilot에서 검증됐다.
+- Telegram 조회와 control 명령이 보안 문서와 신뢰성 문서 기준을 충족한다.
+- manual approval live pilot에서 승인 없는 주문, 중복 주문, 추적 불가 체결이 0건이다.
+
+## 9. 검증 전략
+
+기본 문서 검증:
+
+```sh
+./scripts/verify docs
+./scripts/verify
+```
+
+구현 마일스톤별 검증:
+
+- unit: mapper, validator, rate limiter, PnL calculator, decision ledger
+- integration fake: fake Upbit broker, fake Telegram inbound, fake DB queue
+- gated live read-only: accounts, orders/chance, order lookup, reconcile
+- gated live order smoke: 소액 지정가 생성/취소
+- paper/live parity: 같은 event fixture에서 decision, cost, risk, exit 결과 비교
+- soak: 24시간 small-budget live autonomous pilot, 이후 7일 운영 안정화
+
+## 10. Open Questions
+
+- 첫 `LIVE_AUTONOMOUS_SMALL_BUDGET` 대상 market을 BTC 단일로 할지 BTC/ETH로 할지 결정해야 한다.
+- 첫 live autonomous 총 예산과 1회 주문 한도를 운영자가 별도 승인해야 한다.
+- 초기 exit rule 조합을 손절/익절/시간 기반으로 시작할지 trailing stop까지 포함할지 결정해야 한다.
+- Telegram inbound는 webhook과 polling 중 하나를 선택해야 한다.
+- 배포 위치와 고정 IP, Upbit API key allowlist 운영 방식을 결정해야 한다.
+
+## 11. 공식 문서 확인 기준
+
+2026-06-01 기준 다음 공식 문서를 전제로 한다. 구현 전에는 변경 여부를 다시 확인한다.
+
+- Upbit 요청 수 제한: https://docs.upbit.com/kr/kr/reference/rate-limits
+- Upbit 주문 생성: https://docs.upbit.com/kr/kr/reference/new-order
+- Upbit WebSocket 기본 정보: https://docs.upbit.com/kr/v1.5.9/reference/general-info
+- Telegram Bot API: https://core.telegram.org/bots/api
