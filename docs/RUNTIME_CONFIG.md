@@ -83,6 +83,11 @@ pilot profile은 env 기반 실행 guard로만 열며, 기본 runtime config의 
 | `SEEMIRAI_UPBIT_KEY_SCOPE_EVIDENCE_ID` | 필수 | 필수 |
 | `SEEMIRAI_UPBIT_POLICY_SYNC_MARKET` | `PILOT_POLICY_SYNC`에서 필수 | order smoke market과 같아야 함 |
 | `SEEMIRAI_UPBIT_ORDER_SMOKE_MARKET` | 불필요 | 필수 |
+| `SEEMIRAI_UPBIT_ORDER_SMOKE_MAX_KRW` | 불필요 | 필수, 5,000~50,000 KRW |
+| `SEEMIRAI_UPBIT_ORDER_SMOKE_PRICE` | 불필요 | 실제 smoke 실행 시 필수 |
+| `SEEMIRAI_UPBIT_ORDER_SMOKE_VOLUME` | 불필요 | 실제 smoke 실행 시 필수 |
+| `SEEMIRAI_UPBIT_ORDER_SMOKE_IDENTIFIER` | 불필요 | 실제 smoke 실행 시 필수, 32자 이하 고유값 |
+| `SEEMIRAI_UPBIT_SMOKE_ARTIFACT_DIR` | 선택 | 선택, 미지정 시 `test-results/upbit-smoke` |
 
 pilot private read smoke는 `자산조회`와 `주문조회` 권한만 요구한다. order smoke는 추가로 `주문하기` 권한을 요구하지만,
 `출금조회`, `출금하기`, 입출금 자동화, 선물/레버리지 관련 권한이나 설정이 관찰되면 profile을 시작하지 않는다.
@@ -94,6 +99,7 @@ order smoke는 다음 runtime invariant를 모두 만족해야 한다.
 - 주문 유형은 `ord_type=limit`만 허용한다.
 - `time_in_force=post_only`가 필수다.
 - smoke run의 idempotency key를 Upbit 계정 내 고유하고 32자 이하인 `identifier`로 주문 생성 요청에 포함해야 한다.
+- 실제 order smoke test는 운영자가 명시한 `price`, `volume`, `identifier` 없이는 주문 API 호출 전에 fail-closed 한다.
 - smoke 총액은 Upbit 최소 주문금액 이상이고 운영자가 설정한 소액 상한 이하이어야 한다.
 - 주문 취소와 상태 조회는 같은 smoke run에서 전송한 `identifier`로만 허용한다.
 - `PILOT_ORDER_SMOKE`는 전략 worker, paper execution worker, kill switch 자동 주문 흐름을 대체하거나 연결하지 않는다.
@@ -101,6 +107,10 @@ order smoke는 다음 runtime invariant를 모두 만족해야 한다.
 `/status` 또는 운영 CLI에 pilot 상태를 노출할 경우 safe summary만 반환한다. 허용 가능한 값은 profile id, guard 충족 여부,
 권한 evidence id, 마지막 smoke 시각, 마지막 smoke 상태, redacted correlation id 수준이며, API key 원문, secret key 원문,
 JWT, Authorization header, raw order response는 노출하지 않는다.
+
+실제 smoke artifact는 저장 전 access key, secret key, raw Authorization/JWT 포함 여부를 검사한다. 계정 잔고는 통화 목록과
+KRW 계정 존재 여부 수준으로 요약하고, 정책/주문 결과는 raw provider payload가 아니라 수수료, 최소/최대 주문금액, 주문 상태
+필드만 저장한다.
 
 ## Phase 1.5 알트 수동 편입 설정
 

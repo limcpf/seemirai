@@ -83,6 +83,10 @@ chmod 600 /home/lim/code/seemirai-worktrees/secrets/m14-pilot.env
 | `SEEMIRAI_UPBIT_POLICY_SYNC_MARKET` | `orders/chance` standalone policy sync market | 가능 |
 | `SEEMIRAI_UPBIT_ORDER_SMOKE_MARKET` | 첫 smoke market | 가능 |
 | `SEEMIRAI_UPBIT_ORDER_SMOKE_MAX_KRW` | 첫 smoke 총액 상한 | 가능 |
+| `SEEMIRAI_UPBIT_ORDER_SMOKE_PRICE` | 운영자가 확정한 첫 지정가 매수 가격 | 가능 |
+| `SEEMIRAI_UPBIT_ORDER_SMOKE_VOLUME` | 운영자가 확정한 첫 지정가 매수 수량 | 가능 |
+| `SEEMIRAI_UPBIT_ORDER_SMOKE_IDENTIFIER` | 첫 smoke run의 Upbit `identifier` idempotency key, 32자 이하 | 가능 |
+| `SEEMIRAI_UPBIT_SMOKE_ARTIFACT_DIR` | redacted smoke artifact 저장 디렉터리, 미지정 시 `test-results/upbit-smoke` | 가능 |
 | `SEEMIRAI_UPBIT_LOOKUP_ORDER_UUID` | read-only 주문 조회용 기존 주문 uuid | 가능 |
 | `SEEMIRAI_UPBIT_LOOKUP_ORDER_IDENTIFIER` | read-only 주문 조회용 기존 주문 identifier | 가능 |
 
@@ -99,11 +103,13 @@ secret 원문은 git diff, 문서, issue/PR 본문, log, audit payload, smoke ar
 - 주문 생성은 KRW 현물 지정가 매수(`side=bid`)만 허용한다.
 - 주문 생성은 `time_in_force=post_only`를 필수로 요구하고, Upbit 응답이나 profile이 이를 지원하지 않으면 skip 또는 fail-closed 한다.
 - 주문 생성은 smoke run의 idempotency key를 Upbit 계정 내 고유 `identifier`로 전송해야 하며, `identifier`는 32자 이하로 생성한다.
+- 첫 실주문 smoke의 `price`, `volume`, `identifier`는 운영자가 명시한 env에서만 읽고 자동 산정하지 않는다.
 - 주문 조회와 취소는 같은 smoke run에서 전송한 `identifier`로만 허용하고, 운영자가 임의로 전달한 기존 주문 식별자는 취소하지 않는다.
 - 신규 진입 시장가 주문, `ord_type=price`, `ord_type=market`, `ord_type=best`는 M14 order smoke에서 금지한다.
 - 출금 권한, 시장가 신규 진입, 한도 초과, guard 누락, 인증 실패, 권한 부족, rate limit 차단은 fail-closed 한다.
 - 실패한 smoke는 추가 주문을 만들지 않고 manual review evidence를 남긴다.
 - raw `Authorization` header, JWT, access key, secret key는 logger redaction과 audit redaction 대상이다.
+- smoke artifact는 raw provider payload를 저장하지 않고 계정/정책/주문 상태 요약만 남기며, 저장 전 access key, secret key, raw Authorization/JWT 포함 여부를 검사한다.
 
 ## 7. 첫 주문 smoke 기준
 
@@ -112,7 +118,7 @@ secret 원문은 git diff, 문서, issue/PR 본문, log, audit payload, smoke ar
 1. `GET /v1/accounts`로 KRW 사용 가능 금액을 확인한다.
 2. `GET /v1/orders/chance?market=<market>`로 최소 주문금액, 주문 가능 유형, 수수료, 잔고를 확인한다.
 3. 운영자가 명시한 `SEEMIRAI_UPBIT_ORDER_SMOKE_MAX_KRW`가 정책 최소 주문금액 이상이고 총 테스트 예산 50,000 KRW 이하인지 확인한다.
-4. 지정가 가격과 수량은 `orders/chance`, public market policy, 운영자 입력을 기준으로 산정한다.
+4. 지정가 가격과 수량은 `orders/chance`, public market policy, 운영자 입력을 기준으로 운영자가 확정한 뒤 env로 전달한다.
 5. `side=bid`, `ord_type=limit`, `time_in_force=post_only`, 계정 내 고유하고 32자 이하인 `identifier` 조건을 모두 갖춘 보수적 지정가 매수 주문을 1회 생성한다.
 6. 생성 직후 같은 smoke run의 `identifier`만 사용해 `DELETE /v1/order`로 취소한다.
 7. 같은 smoke run의 `identifier`만 사용해 `GET /v1/order`로 생성/취소 상태를 확인한다.
@@ -180,5 +186,8 @@ set -a
 set +a
 SEEMIRAI_RUN_UPBIT_PRIVATE_SMOKE=1 \
 SEEMIRAI_RUN_UPBIT_ORDER_SMOKE=1 \
+SEEMIRAI_UPBIT_ORDER_SMOKE_PRICE=<운영자가 확정한 지정가> \
+SEEMIRAI_UPBIT_ORDER_SMOKE_VOLUME=<운영자가 확정한 수량> \
+SEEMIRAI_UPBIT_ORDER_SMOKE_IDENTIFIER=<32자 이하 고유 identifier> \
 corepack pnpm exec vitest run tests/integration/upbit-order-smoke.test.ts
 ```
