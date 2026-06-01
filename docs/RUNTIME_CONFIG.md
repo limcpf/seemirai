@@ -58,6 +58,50 @@ MVP 기본 profile에서는 다음 값이 켜져 있으면 안 된다.
 
 `assertSafeRuntimeConfig`는 위반 값을 발견하면 runtime config 로딩을 실패시킨다.
 
+## v0.2 Pilot profile guard
+
+구현 기준 후보:
+
+- product spec: [`product-specs/upbit-v0-2-pilot-private-api.md`](./product-specs/upbit-v0-2-pilot-private-api.md)
+- 기본 profile: `config/paper.json`
+- 기본 runtime guard: `assertSafeRuntimeConfig`
+
+v0.2 pilot은 `config/paper.json`을 실거래 profile로 바꾸지 않는다. `PAPER_NO_KEY`는 계속 `paper_no_key=true`,
+`live_trading_enabled=false`, `withdrawal_enabled=false`, `market_order_enabled=false`,
+`entry_market_order_enabled=false`로 유지한다.
+
+pilot profile은 env 기반 실행 guard로만 열며, 기본 runtime config의 안전 invariant를 우회해 자동 주문 runtime을 켜는 용도가
+아니다. 후속 구현은 별도 `PilotRuntimeConfig` 또는 pilot runner 입력을 두고, 다음 조합을 fail-closed로 검증해야 한다.
+
+| guard | private read smoke | order smoke |
+| --- | --- | --- |
+| `SEEMIRAI_PILOT_PROFILE=PILOT_READ_ONLY` | 허용 | 금지 |
+| `SEEMIRAI_PILOT_PROFILE=PILOT_POLICY_SYNC` | 허용 | 금지 |
+| `SEEMIRAI_PILOT_PROFILE=PILOT_ORDER_SMOKE` | 허용 | 조건부 허용 |
+| `SEEMIRAI_RUN_UPBIT_PRIVATE_SMOKE=1` | 필수 | 필수 |
+| `SEEMIRAI_RUN_UPBIT_ORDER_SMOKE=1` | 불필요 | 필수 |
+| `SEEMIRAI_UPBIT_KEY_SCOPE_EVIDENCE_ID` | 필수 | 필수 |
+| `SEEMIRAI_UPBIT_POLICY_SYNC_MARKET` | `PILOT_POLICY_SYNC`에서 필수 | order smoke market과 같아야 함 |
+| `SEEMIRAI_UPBIT_ORDER_SMOKE_MARKET` | 불필요 | 필수 |
+
+pilot private read smoke는 `자산조회`와 `주문조회` 권한만 요구한다. order smoke는 추가로 `주문하기` 권한을 요구하지만,
+`출금조회`, `출금하기`, 입출금 자동화, 선물/레버리지 관련 권한이나 설정이 관찰되면 profile을 시작하지 않는다.
+
+order smoke는 다음 runtime invariant를 모두 만족해야 한다.
+
+- market은 KRW 현물이어야 한다.
+- 주문 방향은 KRW 예산 상한으로 노출을 제한할 수 있는 매수(`side=bid`)만 허용한다.
+- 주문 유형은 `ord_type=limit`만 허용한다.
+- `time_in_force=post_only`가 필수다.
+- smoke run의 idempotency key를 Upbit 계정 내 고유하고 32자 이하인 `identifier`로 주문 생성 요청에 포함해야 한다.
+- smoke 총액은 Upbit 최소 주문금액 이상이고 운영자가 설정한 소액 상한 이하이어야 한다.
+- 주문 취소와 상태 조회는 같은 smoke run에서 전송한 `identifier`로만 허용한다.
+- `PILOT_ORDER_SMOKE`는 전략 worker, paper execution worker, kill switch 자동 주문 흐름을 대체하거나 연결하지 않는다.
+
+`/status` 또는 운영 CLI에 pilot 상태를 노출할 경우 safe summary만 반환한다. 허용 가능한 값은 profile id, guard 충족 여부,
+권한 evidence id, 마지막 smoke 시각, 마지막 smoke 상태, redacted correlation id 수준이며, API key 원문, secret key 원문,
+JWT, Authorization header, raw order response는 노출하지 않는다.
+
 ## Phase 1.5 알트 수동 편입 설정
 
 구현 기준:
