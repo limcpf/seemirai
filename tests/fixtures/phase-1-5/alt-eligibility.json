@@ -1,0 +1,47 @@
+{
+  "thresholds": {
+    "minListingAgeDays": 90,
+    "minThirtyDayAverageTradeValueKrw": "10000000000",
+    "maxSevenDaySpreadP95Bps": "15",
+    "maxExpectedSlippageBps": "20",
+    "minDepthKrw": "100000000"
+  },
+  "healthy": {
+    "exchangeId": "upbit_krw_spot",
+    "market": "KRW-SOL",
+    "observedAt": "2026-06-01T00:00:00.000Z",
+    "listingAgeDays": 180,
+    "thirtyDayAverageTradeValueKrw": "25000000000",
+    "sevenDaySpreadP95Bps": "9.5",
+    "expectedSlippageBps": "12",
+    "depthKrw": "250000000",
+    "marketStatus": {
+      "exchangeId": "upbit_krw_spot",
+      "market": "KRW-SOL",
+      "tradable": true,
+      "warning": false,
+      "caution": false,
+      "reasonCodes": [],
+      "updatedAt": "2026-06-01T00:00:00.000Z"
+    }
+  },
+  "blocked": {
+    "exchangeId": "upbit_krw_spot",
+    "market": "KRW-XRP",
+    "observedAt": "2026-06-01T00:00:00.000Z",
+    "listingAgeDays": 30,
+    "thirtyDayAverageTradeValueKrw": "9000000000",
+    "sevenDaySpreadP95Bps": "18",
+    "expectedSlippageBps": "25",
+    "depthKrw": "50000000",
+    "marketStatus": {
+      "exchangeId": "upbit_krw_spot",
+      "market": "KRW-XRP",
+      "tradable": false,
+      "warning": true,
+      "caution": true,
+      "reasonCodes": ["market_warning"],
+      "updatedAt": "2026-06-01T00:00:00.000Z"
+    }
+  }
+}
