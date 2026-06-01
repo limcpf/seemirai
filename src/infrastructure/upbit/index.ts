@@ -95,6 +95,34 @@ export type {
   UpbitQueryParams,
 } from "./private-client.js";
 export {
+  UpbitPrivateAccountBalanceSchema,
+  UpbitPrivateAccountsResponseSchema,
+  UpbitPrivateOrderChancePayloadSchema,
+  UpbitPrivateOrderChanceResponseSchema,
+  UpbitPrivateOrderLookupResponseSchema,
+  UpbitPrivateOrderTradeSchema,
+  UpbitPrivatePayloadMappingError,
+  toBrokerBalanceSnapshot,
+  toBrokerOrderFromLookup,
+  toFeePolicyFromOrderChance,
+  toOrderChancePolicy,
+  toUpbitPrivateUserActionErrorSummary,
+} from "./private-mappers.js";
+export type {
+  CreateUpbitPrivateErrorSummaryOptions,
+  MapUpbitPrivatePayloadOptions,
+  UpbitPrivateAccountBalance,
+  UpbitPrivateAccountsResponse,
+  UpbitPrivateErrorSummaryTrace,
+  UpbitPrivateOrderChancePayload,
+  UpbitPrivateOrderChanceResponse,
+  UpbitPrivateOrderLookupResponse,
+  UpbitPrivateOrderTrade,
+  UpbitPrivatePayloadMappingErrorOptions,
+  UpbitPrivatePayloadSchemaName,
+  UpbitPrivateUserActionErrorSummary,
+} from "./private-mappers.js";
+export {
   UPBIT_QUOTATION_WEBSOCKET_URL,
   UpbitQuotationWebSocketClient,
   createUpbitOrderbookSubscription,
