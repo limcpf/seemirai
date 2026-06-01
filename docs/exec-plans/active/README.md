@@ -12,4 +12,5 @@ YYYY-MM-DD-topic.md
 
 ## 활성 계획
 
+- [`2026-06-02-issue-135-m15-upbit-live-broker.md`](./2026-06-02-issue-135-m15-upbit-live-broker.md): issue #135 M15 UpbitLiveBroker 실구현. BrokerPort 기반 live broker, open orders wrapper, guarded smoke, 기본 PAPER_NO_KEY live order API 0회 유지 계획
 - [`2026-05-22-post-m8-milestone-plan.md`](./2026-05-22-post-m8-milestone-plan.md): M8 이후 PRD 잔여 범위, 기술 부채, paper 운영, v0.2 pilot 준비 마일스톤 계획
