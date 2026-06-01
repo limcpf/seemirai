@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import type {
   MarketDataStatusEvent,
   OrderbookEvent,
+  Phase15AltApprovalEvidenceCondition,
+  Phase15AltApprovalEvidenceSnapshot,
   TradeEvent,
 } from "../../src/domain/index.js";
 import {
@@ -17,7 +19,7 @@ import {
   toMarketDataStatusRiskRow,
 } from "../../src/runtime/index.js";
 import type { MarketDataRuntimeEventStore } from "../../src/runtime/index.js";
-import { loadDefaultRuntimeConfig } from "../../src/runtime/index.js";
+import { loadDefaultRuntimeConfig, loadRuntimeConfig } from "../../src/runtime/index.js";
 
 const observedAt = "2026-05-17T10:30:00.000Z";
 
@@ -58,6 +60,74 @@ describe("PAPER_NO_KEY market data runtime", () => {
     expect(serialized).not.toMatch(/authorization|bearer|\/private|myOrder|myAsset|orders\/chance/iu);
     expect(runtime.config.secrets.upbit_access_key).toBeUndefined();
     expect(runtime.config.secrets.upbit_secret_key).toBeUndefined();
+  });
+
+  it("subscribes to the resolved phase 1.5 universe when manual approvals are active", () => {
+    const runtime = createPaperNoKeyMarketDataRuntime(
+      loadRuntimeConfig({
+        universe: {
+          phase_1_5: {
+            enabled: true,
+            manual_approvals: [
+              {
+                market: "KRW-SOL",
+                approved_at: "2026-05-31T00:00:00.000Z",
+              },
+            ],
+          },
+        },
+      }),
+      {
+        clock: () => "2026-06-01T00:00:00.000Z",
+        phase15ApprovalEvidence: [
+          createPhase15ApprovalEvidence("KRW-SOL", "APPROVE", "2026-05-31T00:00:00.000Z"),
+        ],
+      },
+    );
+
+    expect(runtime.markets).toEqual(["KRW-BTC", "KRW-ETH", "KRW-SOL"]);
+    expect(runtime.tradeStreamRequest.markets).toEqual(["KRW-BTC", "KRW-ETH", "KRW-SOL"]);
+    expect(JSON.parse(runtime.tradeSubscriptionMessage)).toMatchObject([
+      { ticket: PAPER_NO_KEY_MARKET_DATA_CONSUMER_ID },
+      {
+        type: "trade",
+        codes: ["KRW-BTC", "KRW-ETH", "KRW-SOL"],
+      },
+      { format: "DEFAULT" },
+    ]);
+  });
+
+  it("re-resolves phase 1.5 universe so expired approvals leave stream requests", () => {
+    const runtime = createPaperNoKeyMarketDataRuntime(
+      loadRuntimeConfig({
+        universe: {
+          phase_1_5: {
+            enabled: true,
+            manual_approvals: [
+              {
+                market: "KRW-SOL",
+                approved_at: "2026-05-31T00:00:00.000Z",
+                expires_at: "2026-06-01T00:30:00.000Z",
+              },
+            ],
+          },
+        },
+      }),
+      {
+        clock: () => "2026-06-01T00:00:00.000Z",
+        phase15ApprovalEvidence: [
+          createPhase15ApprovalEvidence("KRW-SOL", "APPROVE", "2026-05-31T00:00:00.000Z"),
+        ],
+      },
+    );
+    const refreshed = runtime.refreshUniverse({
+      clock: () => "2026-06-01T00:31:00.000Z",
+    });
+
+    expect(runtime.markets).toEqual(["KRW-BTC", "KRW-ETH", "KRW-SOL"]);
+    expect(refreshed.markets).toEqual(["KRW-BTC", "KRW-ETH"]);
+    expect(refreshed.tradeStreamRequest.markets).toEqual(["KRW-BTC", "KRW-ETH"]);
+    expect(refreshed.universe.phase15ExpiredAltMarkets).toEqual(["KRW-SOL"]);
   });
 
   it("rejects Upbit API keys in the PAPER_NO_KEY market data runtime", () => {
@@ -191,6 +261,43 @@ describe("PAPER_NO_KEY market data runtime", () => {
     });
   });
 });
+
+function createPhase15ApprovalEvidence(
+  market: string,
+  action: "APPROVE" | "REJECT" | "REVOKE" | "EXPIRE",
+  observedAt: string,
+): Phase15AltApprovalEvidenceSnapshot {
+  return {
+    exchangeId: "upbit_krw_spot",
+    market,
+    action,
+    observedAt,
+    thresholds: {
+      minListingAgeDays: 90,
+      minThirtyDayAverageTradeValueKrw: "10000000000",
+      maxSevenDaySpreadP95Bps: "15",
+      maxExpectedSlippageBps: "20",
+      minDepthKrw: "100000000",
+    },
+    conditions: action === "APPROVE" ? createPassingPhase15Conditions() : [],
+  };
+}
+
+function createPassingPhase15Conditions(): readonly Phase15AltApprovalEvidenceCondition[] {
+  return [
+    { key: "listing_age", passed: true, reasonCode: "phase_1_5_listing_age_sufficient" },
+    { key: "market_warning", passed: true, reasonCode: "phase_1_5_market_warning_absent" },
+    { key: "market_caution", passed: true, reasonCode: "phase_1_5_market_caution_absent" },
+    {
+      key: "thirty_day_average_trade_value",
+      passed: true,
+      reasonCode: "phase_1_5_30d_trade_value_sufficient",
+    },
+    { key: "seven_day_spread_p95", passed: true, reasonCode: "phase_1_5_spread_p95_within_limit" },
+    { key: "expected_slippage", passed: true, reasonCode: "phase_1_5_expected_slippage_within_limit" },
+    { key: "depth", passed: true, reasonCode: "phase_1_5_depth_sufficient" },
+  ];
+}
 
 function createStatusEvent(status: MarketDataStatusEvent["status"]): MarketDataStatusEvent {
   return {

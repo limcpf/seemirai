@@ -12,7 +12,12 @@ import {
   createLocalControlAuthPreHandler,
   getHttpControlListenOptions,
 } from "../../src/interfaces/index.js";
-import { getKillSwitchActionPlan, type KillSwitchState } from "../../src/domain/index.js";
+import {
+  getKillSwitchActionPlan,
+  type KillSwitchState,
+  type Phase15AltApprovalEvidenceCondition,
+  type Phase15AltApprovalEvidenceSnapshot,
+} from "../../src/domain/index.js";
 import { createKillSwitchControlDecision, type KillSwitchControlProvider } from "../../src/application/index.js";
 import { loadRuntimeConfig } from "../../src/runtime/index.js";
 import type { Database } from "../../src/infrastructure/db/index.js";
@@ -226,6 +231,18 @@ describe("HTTP control foundation", () => {
         telegram_bot_token: "telegram-secret-token",
         local_control_token: "local-control-secret",
       },
+      universe: {
+        phase_1_5: {
+          enabled: true,
+          candidate_markets: ["KRW-SOL"],
+          manual_approvals: [
+            {
+              market: "KRW-SOL",
+              approved_at: "2026-06-01T00:00:00.000Z",
+            },
+          ],
+        },
+      },
     });
     const readinessProvider = staticReadinessProvider(readySummary());
     server = createHttpControlServer({
@@ -233,6 +250,7 @@ describe("HTTP control foundation", () => {
       statusProvider: createDatabaseControlStatusProvider({
         runtimeConfig,
         readinessProvider,
+        clock: () => new Date("2026-06-01T00:00:00.000Z"),
         marketData: {
           connectionStatus: "STALE",
           lagMs: 12_345,
@@ -259,6 +277,14 @@ describe("HTTP control foundation", () => {
         universe: {
           phase1: ["KRW-BTC", "KRW-ETH"],
           phase1Count: 2,
+          phase15: {
+            enabled: true,
+            approvedAltMarkets: [],
+            approvedAltCount: 0,
+            candidateMarkets: ["KRW-SOL"],
+            candidateMarketCount: 1,
+            maxManualApprovals: 3,
+          },
         },
         liveTradingEnabled: false,
         paperNoKey: true,
@@ -288,6 +314,80 @@ describe("HTTP control foundation", () => {
     expect(bodyText).not.toContain("secrets");
     expect(bodyText).not.toContain("telegram_bot_token");
     expect(bodyText).not.toContain("local_control_token");
+  });
+
+  it("shows only active phase 1.5 approvals in /status runtime summary", async () => {
+    const provider = createDatabaseControlStatusProvider({
+      runtimeConfig: loadRuntimeConfig({
+        universe: {
+          phase_1_5: {
+            enabled: true,
+            candidate_markets: ["KRW-SOL", "KRW-XRP"],
+            manual_approvals: [
+              {
+                market: "KRW-SOL",
+                approved_at: "2026-06-02T00:00:00.000Z",
+              },
+              {
+                market: "KRW-XRP",
+                approved_at: "2026-05-01T00:00:00.000Z",
+                expires_at: "2026-05-31T00:00:00.000Z",
+              },
+            ],
+          },
+        },
+      }),
+      readinessProvider: staticReadinessProvider(readySummary()),
+      clock: () => new Date("2026-06-01T00:00:00.000Z"),
+    });
+
+    await expect(provider.getStatus()).resolves.toMatchObject({
+      runtime: {
+        universe: {
+          phase15: {
+            approvedAltMarkets: [],
+            approvedAltCount: 0,
+            candidateMarkets: ["KRW-SOL", "KRW-XRP"],
+            candidateMarketCount: 2,
+          },
+        },
+      },
+    });
+  });
+
+  it("uses phase 1.5 approval evidence when building /status runtime summary", async () => {
+    const provider = createDatabaseControlStatusProvider({
+      runtimeConfig: loadRuntimeConfig({
+        universe: {
+          phase_1_5: {
+            enabled: true,
+            candidate_markets: ["KRW-SOL"],
+            manual_approvals: [
+              {
+                market: "KRW-SOL",
+                approved_at: "2026-05-31T00:00:00.000Z",
+              },
+            ],
+          },
+        },
+      }),
+      readinessProvider: staticReadinessProvider(readySummary()),
+      phase15ApprovalEvidence: [
+        createPhase15ApprovalEvidence("KRW-SOL", "APPROVE", "2026-05-31T00:00:00.000Z"),
+      ],
+      clock: () => new Date("2026-06-01T00:00:00.000Z"),
+    });
+
+    await expect(provider.getStatus()).resolves.toMatchObject({
+      runtime: {
+        universe: {
+          phase15: {
+            approvedAltMarkets: ["KRW-SOL"],
+            approvedAltCount: 1,
+          },
+        },
+      },
+    });
   });
 
   it("reads durable alert and daily report status without exposing raw job errors", async () => {
@@ -998,6 +1098,14 @@ function statusSnapshotProvider(input: {
           universe: {
             phase1: ["KRW-BTC", "KRW-ETH"],
             phase1Count: 2,
+            phase15: {
+              enabled: false,
+              approvedAltMarkets: [],
+              approvedAltCount: 0,
+              candidateMarkets: [],
+              candidateMarketCount: 0,
+              maxManualApprovals: 3,
+            },
           },
           liveTradingEnabled: false,
           paperNoKey: true,
@@ -1075,6 +1183,41 @@ function operationalStatusDetail(input: {
       source: input.source,
       reason: input.reason,
     },
+  };
+}
+
+function createPhase15ApprovalEvidence(
+  market: string,
+  action: "APPROVE" | "REJECT" | "REVOKE" | "EXPIRE",
+  observedAt: string,
+): Phase15AltApprovalEvidenceSnapshot {
+  const conditions: readonly Phase15AltApprovalEvidenceCondition[] = [
+    { key: "listing_age", passed: true, reasonCode: "phase_1_5_listing_age_sufficient" },
+    { key: "market_warning", passed: true, reasonCode: "phase_1_5_market_warning_absent" },
+    { key: "market_caution", passed: true, reasonCode: "phase_1_5_market_caution_absent" },
+    {
+      key: "thirty_day_average_trade_value",
+      passed: true,
+      reasonCode: "phase_1_5_30d_trade_value_sufficient",
+    },
+    { key: "seven_day_spread_p95", passed: true, reasonCode: "phase_1_5_spread_p95_within_limit" },
+    { key: "expected_slippage", passed: true, reasonCode: "phase_1_5_expected_slippage_within_limit" },
+    { key: "depth", passed: true, reasonCode: "phase_1_5_depth_sufficient" },
+  ];
+
+  return {
+    exchangeId: "upbit_krw_spot",
+    market,
+    action,
+    observedAt,
+    thresholds: {
+      minListingAgeDays: 90,
+      minThirtyDayAverageTradeValueKrw: "10000000000",
+      maxSevenDaySpreadP95Bps: "15",
+      maxExpectedSlippageBps: "20",
+      minDepthKrw: "100000000",
+    },
+    conditions,
   };
 }
 

@@ -22,6 +22,19 @@ describe("runtime config", () => {
     expect(config.paper_no_key).toBe(true);
     expect(config.secrets.upbit_access_key).toBeUndefined();
     expect(config.universe.phase_1).toEqual(["KRW-BTC", "KRW-ETH"]);
+    expect(config.universe.phase_1_5).toEqual({
+      enabled: false,
+      candidate_markets: [],
+      manual_approvals: [],
+      max_manual_approvals: 3,
+      thresholds: {
+        min_listing_age_days: 90,
+        min_30d_avg_trade_value_krw: "10000000000",
+        max_7d_spread_p95_bps: "15",
+        max_expected_slippage_bps: "20",
+        min_depth_krw: "100000000",
+      },
+    });
     expect(config.strategyParameters.trend_following).toMatchObject({
       max_spread_bps: "8",
       min_depth_krw: "50000000",
@@ -237,6 +250,109 @@ describe("runtime config", () => {
         },
       }),
     ).toThrow("must be a non-negative decimal string");
+  });
+
+  it("loads phase 1.5 manual alt approvals while keeping the maximum approval invariant", () => {
+    const config = loadRuntimeConfig({
+      universe: {
+        phase_1_5: {
+          enabled: true,
+          candidate_markets: ["KRW-SOL", "KRW-XRP"],
+          manual_approvals: [
+            {
+              market: "KRW-SOL",
+              approved_at: "2026-06-01T00:00:00.000Z",
+              approved_by: "operator",
+              evidence_id: "phase15:KRW-SOL:2026-06-01",
+              expires_at: "2026-07-01T00:00:00.000Z",
+            },
+          ],
+          thresholds: {
+            min_listing_age_days: 120,
+            min_30d_avg_trade_value_krw: "20000000000",
+            max_7d_spread_p95_bps: "12",
+            max_expected_slippage_bps: "18",
+            min_depth_krw: "150000000",
+          },
+        },
+      },
+    });
+
+    expect(config.universe.phase_1_5).toMatchObject({
+      enabled: true,
+      candidate_markets: ["KRW-SOL", "KRW-XRP"],
+      max_manual_approvals: 3,
+      thresholds: {
+        min_listing_age_days: 120,
+        min_30d_avg_trade_value_krw: "20000000000",
+      },
+    });
+    expect(config.universe.phase_1_5.manual_approvals).toHaveLength(1);
+  });
+
+  it("rejects unsafe phase 1.5 alt universe config", () => {
+    expect(() =>
+      loadRuntimeConfig({
+        universe: {
+          phase_1_5: {
+            candidate_markets: ["KRW-BTC"],
+          },
+        },
+      }),
+    ).toThrow("phase 1.5 alt market must not include KRW-BTC or KRW-ETH");
+
+    expect(() =>
+      loadRuntimeConfig({
+        universe: {
+          phase_1_5: {
+            candidate_markets: ["KRW-SOL", "KRW-SOL"],
+          },
+        },
+      }),
+    ).toThrow("candidate_markets must not contain duplicate markets");
+
+    expect(() =>
+      loadRuntimeConfig({
+        universe: {
+          phase_1_5: {
+            manual_approvals: [
+              { market: "KRW-SOL", approved_at: "2026-06-01T00:00:00.000Z" },
+              { market: "KRW-XRP", approved_at: "2026-06-01T00:00:00.000Z" },
+              { market: "KRW-ADA", approved_at: "2026-06-01T00:00:00.000Z" },
+              { market: "KRW-DOGE", approved_at: "2026-06-01T00:00:00.000Z" },
+            ],
+          },
+        },
+      }),
+    ).toThrow();
+
+    expect(() =>
+      loadRuntimeConfig({
+        universe: {
+          phase_1_5: {
+            thresholds: {
+              min_30d_avg_trade_value_krw: "-1",
+            },
+          },
+        },
+      }),
+    ).toThrow("must be a non-negative decimal string");
+
+    expect(() =>
+      loadRuntimeConfig({
+        universe: {
+          phase_1_5: {
+            manual_approvals: [
+              {
+                market: "KRW-SOL",
+                approved_at: "2026-06-02T00:00:00.000Z",
+                expires_at: "2026-06-01T00:00:00.000Z",
+              },
+            ],
+          },
+        },
+      }),
+    ).toThrow("expires_at must be after approved_at");
   });
 
   it("loads Telegram notification config from env without requiring secrets in config files", () => {

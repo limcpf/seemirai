@@ -1,4 +1,4 @@
-import type { KillSwitchState } from "../../domain/index.js";
+import type { KillSwitchState, Phase15AltApprovalEvidenceSnapshot } from "../../domain/index.js";
 import type { KillSwitchControlProvider } from "../../application/index.js";
 import type { Database } from "../../infrastructure/db/index.js";
 import type { RuntimeConfig } from "../../runtime/index.js";
@@ -84,6 +84,14 @@ export interface ControlStatusSnapshot {
     universe: {
       phase1: readonly string[];
       phase1Count: number;
+      phase15: {
+        enabled: boolean;
+        approvedAltMarkets: readonly string[];
+        approvedAltCount: number;
+        candidateMarkets: readonly string[];
+        candidateMarketCount: number;
+        maxManualApprovals: number;
+      };
     };
     liveTradingEnabled: boolean;
     paperNoKey: boolean;
@@ -204,6 +212,7 @@ export interface CreateDatabaseControlStatusProviderOptions {
    */
   readinessProvider?: ControlReadinessProvider;
   database?: Database;
+  phase15ApprovalEvidence?: readonly Phase15AltApprovalEvidenceSnapshot[];
   expectedMigrationVersion?: number;
   clock?: () => Date;
   marketData?: {

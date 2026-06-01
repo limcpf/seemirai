@@ -364,6 +364,10 @@ function createPaperDecisionCostInput(
     readCostInput(frame, "cancelRequotePenaltyBps", "cancel_requote_penalty_bps"),
   );
   assignIfDefined(input, "safetyBufferBps", readCostInput(frame, "safetyBufferBps", "safety_buffer_bps"));
+  if (input.safetyBufferBps === undefined && frame.universe?.phase15ApprovedAltMarkets?.includes(intent.market)) {
+    // phase 1.5 universe evidence가 붙은 프레임만 TOP_ALT 기본 buffer를 열어 미승인 알트의 비용 입력 누락 차단을 유지한다.
+    input.safetyBufferMarketCategory = "TOP_ALT";
+  }
 
   return input;
 }

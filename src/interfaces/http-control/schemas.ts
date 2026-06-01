@@ -244,10 +244,29 @@ export const statusRouteOptions: RouteShorthandOptions = {
               mode: { type: "string" },
               universe: {
                 type: "object",
-                required: ["phase1", "phase1Count"],
+                required: ["phase1", "phase1Count", "phase15"],
                 properties: {
                   phase1: { type: "array", items: { type: "string" } },
                   phase1Count: { type: "number" },
+                  phase15: {
+                    type: "object",
+                    required: [
+                      "enabled",
+                      "approvedAltMarkets",
+                      "approvedAltCount",
+                      "candidateMarkets",
+                      "candidateMarketCount",
+                      "maxManualApprovals",
+                    ],
+                    properties: {
+                      enabled: { type: "boolean" },
+                      approvedAltMarkets: { type: "array", items: { type: "string" } },
+                      approvedAltCount: { type: "number" },
+                      candidateMarkets: { type: "array", items: { type: "string" } },
+                      candidateMarketCount: { type: "number" },
+                      maxManualApprovals: { type: "number" },
+                    },
+                  },
                 },
               },
               liveTradingEnabled: { type: "boolean" },

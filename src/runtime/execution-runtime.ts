@@ -7,6 +7,8 @@ import type {
   PaperBrokerFillOptions,
   PaperBrokerOptions,
 } from "../infrastructure/paper/index.js";
+import { listPhase15AltApprovalEvidenceSnapshots } from "../infrastructure/db/audit-log.js";
+import type { Database } from "../infrastructure/db/database.js";
 import { DisabledUpbitLiveBroker } from "../infrastructure/upbit/disabled-live-broker.js";
 import type {
   BrokerOrder,
@@ -14,12 +16,15 @@ import type {
   MarketCode,
   OrderLifecycleStatus,
   OrderbookEvent,
+  Phase15AltApprovalEvidenceSnapshot,
   TimestampInput,
 } from "../domain/index.js";
 import { loadRuntimeConfig } from "./config.js";
 import type { RuntimeConfig } from "./config.js";
 import { resolveRegistryActivationConfig } from "./registry-config.js";
 import type { RegistryActivationResolution } from "./registry-config.js";
+import { resolveRuntimeUniverse } from "./universe.js";
+import type { RuntimeUniverseResolution } from "./universe.js";
 
 export const PAPER_NO_KEY_EXECUTION_WORKER_ID = "paper-no-key-execution-worker";
 
@@ -28,12 +33,24 @@ export interface PaperNoKeyExecutionRuntimeOptions {
   orderbookSnapshots?: OrderbookEvent | readonly OrderbookEvent[];
   fillOptions?: PaperBrokerFillOptions;
   brokerOrderIdPrefix?: string;
+  phase15ApprovalEvidence?: readonly Phase15AltApprovalEvidenceSnapshot[];
   clock?: () => TimestampInput;
+}
+
+/**
+ * audit evidence를 DB에서 읽어 execution runtime을 조립할 때 필요한 입력이다.
+ *
+ * worker entrypoint는 이 async factory를 사용해 수동 승인 config와 durable approval evidence를 같은 universe 해석에
+ * 주입한다. DB 조회 외 side effect는 없고, 실제 주문 side effect는 반환된 `ExecutionEngine` 호출 전까지 발생하지 않는다.
+ */
+export interface PaperNoKeyExecutionRuntimeAuditEvidenceOptions extends PaperNoKeyExecutionRuntimeOptions {
+  database: Database;
 }
 
 export interface PaperNoKeyExecutionRuntime {
   config: RuntimeConfig;
   registry: RegistryActivationResolution;
+  universe: RuntimeUniverseResolution;
   exchangeId: string;
   markets: readonly MarketCode[];
   broker: PaperBroker;
@@ -105,6 +122,20 @@ export function createPaperNoKeyExecutionRuntime(
   const config = assertPaperNoKeyExecutionRuntimeConfig(loadRuntimeConfig(input));
   const registry = resolveRegistryActivationConfig(config.registry);
   const exchangeId = registry.exchange.id;
+  const universeOptions: {
+    observedAt: TimestampInput;
+    evidence?: readonly Phase15AltApprovalEvidenceSnapshot[];
+    exchangeId?: typeof exchangeId;
+  } = {
+    observedAt: options.clock?.() ?? new Date().toISOString(),
+    exchangeId,
+  };
+
+  if (options.phase15ApprovalEvidence !== undefined) {
+    universeOptions.evidence = options.phase15ApprovalEvidence;
+  }
+
+  const universe = resolveRuntimeUniverse(config.universe, universeOptions);
   const paperBrokerOptions: PaperBrokerOptions = {
     exchangeId,
     initialBalances: options.initialBalances ?? [],
@@ -130,13 +161,33 @@ export function createPaperNoKeyExecutionRuntime(
   return {
     config,
     registry,
+    universe,
     exchangeId,
-    markets: config.universe.phase_1,
+    markets: universe.allowedMarkets,
     broker,
     disabledLiveBroker,
     executionEngine,
     executionSafetyConfig,
   };
+}
+
+/**
+ * audit_events에 저장된 phase 1.5 evidence를 주입해 `PAPER_NO_KEY` execution runtime을 조립한다.
+ *
+ * config에 남은 수동 승인 market만으로 paper execution universe를 열지 않고, 같은 DB에 저장된 APPROVE/REVOKE/EXPIRE
+ * evidence를 먼저 재해석해 비용/RiskGate 경계의 market 목록을 고정한다.
+ */
+export async function createPaperNoKeyExecutionRuntimeWithAuditEvidence(
+  input: unknown,
+  options: PaperNoKeyExecutionRuntimeAuditEvidenceOptions,
+): Promise<PaperNoKeyExecutionRuntime> {
+  const phase15ApprovalEvidence =
+    options.phase15ApprovalEvidence ?? await listPhase15AltApprovalEvidenceSnapshots(options.database);
+
+  return createPaperNoKeyExecutionRuntime(input, {
+    ...options,
+    phase15ApprovalEvidence,
+  });
 }
 
 /**

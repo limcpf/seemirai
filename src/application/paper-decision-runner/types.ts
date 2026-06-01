@@ -49,7 +49,19 @@ export interface PaperDecisionInputFrame {
   orderbook?: OrderbookEvent;
   costInput?: Partial<CostModelInput>;
   risk?: PaperDecisionRiskInput;
+  universe?: PaperDecisionUniverseInput;
   metadata?: JsonRecord;
+}
+
+/**
+ * runner가 비용 모델에 넘길 universe 보조 입력이다.
+ *
+ * runtime source가 이미 phase 1.5 수동 승인 목록을 해석한 뒤 프레임에 붙이는 값이며, runner는 이 목록으로
+ * 명시 safety buffer가 없는 승인 알트에만 `TOP_ALT` 기본 buffer를 주입한다. 이 타입은 외부 상태를 조회하지 않는
+ * frame-local evidence 계약이다.
+ */
+export interface PaperDecisionUniverseInput {
+  phase15ApprovedAltMarkets?: readonly MarketCode[];
 }
 
 /**

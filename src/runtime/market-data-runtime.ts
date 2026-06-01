@@ -6,6 +6,8 @@ import type {
   MarketDataStatusEvent,
   MarketDataStreamRequest,
   OrderbookEvent,
+  Phase15AltApprovalEvidenceSnapshot,
+  TimestampInput,
   TradeEvent,
 } from "../domain/index.js";
 import {
@@ -18,6 +20,7 @@ import {
   upsertOrderbookMetric,
   upsertOrderbookSnapshot,
 } from "../infrastructure/db/market-data.js";
+import { listPhase15AltApprovalEvidenceSnapshots } from "../infrastructure/db/audit-log.js";
 import type {
   OrderbookMetricInputOptions,
   OrderbookSnapshotInputOptions,
@@ -28,6 +31,8 @@ import { loadRuntimeConfig } from "./config.js";
 import type { RuntimeConfig } from "./config.js";
 import { resolveRegistryActivationConfig } from "./registry-config.js";
 import type { RegistryActivationResolution } from "./registry-config.js";
+import { resolveRuntimeUniverse } from "./universe.js";
+import type { RuntimeUniverseResolution } from "./universe.js";
 
 export const PAPER_NO_KEY_MARKET_DATA_CONSUMER_ID = "paper-no-key-market-data-worker";
 export const MARKET_DATA_STATUS_AUDIT_EVENT_TYPE = "MARKET_DATA_STATUS";
@@ -79,6 +84,14 @@ export class UnsafePaperNoKeyMarketDataRuntimeError extends Error {
 export interface PaperNoKeyMarketDataRuntimeOptions {
   consumerId?: string;
   orderbookLevel?: string;
+  phase15ApprovalEvidence?: readonly Phase15AltApprovalEvidenceSnapshot[];
+  /**
+   * phase 1.5 승인 시작/만료 판단에 사용할 runtime 시각이다.
+   *
+   * 운영 runtime은 기본 현재 시각을 쓰고, 테스트와 재현 실행은 이 값을 고정해 같은 config에서 동일한 구독 목록을
+   * 만들 수 있다. 외부 API 호출이나 DB write는 일으키지 않는다.
+   */
+  clock?: () => TimestampInput;
 }
 
 /**
@@ -90,13 +103,38 @@ export interface PaperNoKeyMarketDataRuntimeOptions {
 export interface PaperNoKeyMarketDataRuntime {
   config: RuntimeConfig;
   registry: RegistryActivationResolution;
+  universe: RuntimeUniverseResolution;
   exchangeId: string;
   markets: readonly MarketCode[];
+  orderbookLevel?: string;
   publicQuotationEndpoint: string;
   tradeStreamRequest: MarketDataStreamRequest;
   orderbookStreamRequest: MarketDataStreamRequest;
   tradeSubscriptionMessage: string;
   orderbookSubscriptionMessage: string;
+  refreshUniverse(options?: PaperNoKeyMarketDataRuntimeRefreshOptions): PaperNoKeyMarketDataRuntime;
+}
+
+/**
+ * 실행 중 universe 재해석에 필요한 입력이다.
+ *
+ * 24/7 worker는 장시간 살아 있으므로 manual approval 만료나 철회 evidence가 도착하면 이 값으로 구독 요청을 다시
+ * 만들 수 있어야 한다. 이 타입은 WebSocket 재연결 자체를 수행하지 않고, 다음 연결에 쓸 요청/메시지만 갱신한다.
+ */
+export interface PaperNoKeyMarketDataRuntimeRefreshOptions {
+  clock?: () => TimestampInput;
+  phase15ApprovalEvidence?: readonly Phase15AltApprovalEvidenceSnapshot[];
+  orderbookLevel?: string;
+}
+
+/**
+ * audit evidence를 DB에서 읽어 market data runtime을 조립할 때 필요한 입력이다.
+ *
+ * worker entrypoint는 이 async factory를 사용해 config와 append-only approval evidence를 같은 시점에 해석한다.
+ * DB 조회 외 side effect는 없으며, WebSocket 연결은 반환된 subscription message를 소비하는 상위 worker가 담당한다.
+ */
+export interface PaperNoKeyMarketDataRuntimeAuditEvidenceOptions extends PaperNoKeyMarketDataRuntimeOptions {
+  database: Database;
 }
 
 /**
@@ -184,16 +222,57 @@ export function createPaperNoKeyMarketDataRuntime(
 ): PaperNoKeyMarketDataRuntime {
   const config = assertPaperNoKeyMarketDataRuntimeConfig(loadRuntimeConfig(input));
   const registry = resolveRegistryActivationConfig(config.registry);
+  return createPaperNoKeyMarketDataRuntimeFromConfig(config, registry, options);
+}
+
+/**
+ * audit_events에 저장된 phase 1.5 evidence를 주입해 `PAPER_NO_KEY` market data runtime을 조립한다.
+ *
+ * 수동 승인 config와 durable APPROVE/REVOKE/EXPIRE evidence를 같은 universe 해석에 넣어 운영 worker가 테스트 전용
+ * 옵션 없이도 승인 알트를 열거나 닫을 수 있게 한다.
+ */
+export async function createPaperNoKeyMarketDataRuntimeWithAuditEvidence(
+  input: unknown,
+  options: PaperNoKeyMarketDataRuntimeAuditEvidenceOptions,
+): Promise<PaperNoKeyMarketDataRuntime> {
+  const phase15ApprovalEvidence =
+    options.phase15ApprovalEvidence ?? await listPhase15AltApprovalEvidenceSnapshots(options.database);
+
+  return createPaperNoKeyMarketDataRuntime(input, {
+    ...options,
+    phase15ApprovalEvidence,
+  });
+}
+
+function createPaperNoKeyMarketDataRuntimeFromConfig(
+  config: RuntimeConfig,
+  registry: RegistryActivationResolution,
+  options: PaperNoKeyMarketDataRuntimeOptions,
+): PaperNoKeyMarketDataRuntime {
   const exchangeId = registry.exchange.id;
+  const universeOptions: {
+    observedAt: TimestampInput;
+    evidence?: readonly Phase15AltApprovalEvidenceSnapshot[];
+    exchangeId?: typeof exchangeId;
+  } = {
+    observedAt: options.clock?.() ?? new Date().toISOString(),
+    exchangeId,
+  };
+
+  if (options.phase15ApprovalEvidence !== undefined) {
+    universeOptions.evidence = options.phase15ApprovalEvidence;
+  }
+
+  const universe = resolveRuntimeUniverse(config.universe, universeOptions);
   const consumerId = options.consumerId ?? PAPER_NO_KEY_MARKET_DATA_CONSUMER_ID;
   const tradeStreamRequest: MarketDataStreamRequest = {
     exchangeId,
-    markets: config.universe.phase_1,
+    markets: universe.allowedMarkets,
     consumerId,
   };
   const orderbookStreamRequest: MarketDataStreamRequest = {
     exchangeId,
-    markets: config.universe.phase_1,
+    markets: universe.allowedMarkets,
     consumerId,
   };
   const client = new UpbitQuotationWebSocketClient();
@@ -211,17 +290,44 @@ export function createPaperNoKeyMarketDataRuntime(
 
   assertPublicQuotationRuntimeMessages([tradeSubscriptionMessage, orderbookSubscriptionMessage]);
 
-  return {
+  const runtime: PaperNoKeyMarketDataRuntime = {
     config,
     registry,
+    universe,
     exchangeId,
-    markets: config.universe.phase_1,
+    markets: universe.allowedMarkets,
     publicQuotationEndpoint: UPBIT_QUOTATION_WEBSOCKET_URL,
     tradeStreamRequest,
     orderbookStreamRequest,
     tradeSubscriptionMessage,
     orderbookSubscriptionMessage,
+    refreshUniverse: (refreshOptions = {}) => {
+      const nextOptions: PaperNoKeyMarketDataRuntimeOptions = {
+        consumerId,
+      };
+      const nextOrderbookLevel = refreshOptions.orderbookLevel ?? options.orderbookLevel;
+      const nextClock = refreshOptions.clock ?? options.clock;
+      const nextEvidence = refreshOptions.phase15ApprovalEvidence ?? options.phase15ApprovalEvidence;
+
+      if (nextOrderbookLevel !== undefined) {
+        nextOptions.orderbookLevel = nextOrderbookLevel;
+      }
+      if (nextClock !== undefined) {
+        nextOptions.clock = nextClock;
+      }
+      if (nextEvidence !== undefined) {
+        nextOptions.phase15ApprovalEvidence = nextEvidence;
+      }
+
+      return createPaperNoKeyMarketDataRuntimeFromConfig(config, registry, nextOptions);
+    },
   };
+
+  if (options.orderbookLevel !== undefined) {
+    runtime.orderbookLevel = options.orderbookLevel;
+  }
+
+  return runtime;
 }
 
 /**

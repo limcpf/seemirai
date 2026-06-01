@@ -89,8 +89,8 @@ export interface DailyReportPnlSnapshotFact {
 /**
  * 감사 이벤트에서 리포트가 읽는 최소 입력이다.
  *
- * 주문 후보 폐기는 `payloadJson.audit_kind = ORDER_CANDIDATE_DISCARDED`와 `reason_code`를 기준으로 집계한다. 그 외
- * 감사 이벤트는 알림/운영 추적 metadata로 남길 수 있지만, 이 타입은 DB row를 수정하지 않는 읽기 전용 사실만 표현한다.
+ * 주문 후보 폐기와 phase 1.5 알트 편입은 `payloadJson.audit_kind`를 기준으로 집계한다. 그 외 감사 이벤트는 알림/운영
+ * 추적 metadata로 남길 수 있지만, 이 타입은 DB row를 수정하지 않는 읽기 전용 사실만 표현한다.
  */
 export interface DailyReportAuditEventFact {
   eventType: string;
@@ -204,6 +204,11 @@ export interface DailyReportAggregate {
   discardedCandidates: {
     total: number;
     byReason: readonly DailyReportCountItem[];
+  };
+  phase15AltApprovals: {
+    total: number;
+    byAction: readonly DailyReportCountItem[];
+    byMarket: readonly DailyReportCountItem[];
   };
   riskEvents: {
     total: number;

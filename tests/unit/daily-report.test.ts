@@ -71,6 +71,9 @@ describe("daily report application", () => {
       discardedCandidates: {
         total: 2,
       },
+      phase15AltApprovals: {
+        total: 1,
+      },
       riskEvents: {
         total: 2,
       },
@@ -85,6 +88,8 @@ describe("daily report application", () => {
     expect(summary).toContain("실현 손익: 1250 KRW (pnl_snapshots 기준)");
     expect(summary).toContain("평균 슬리피지: 2 bps");
     expect(summary).toContain("폐기된 주문 후보: 2건");
+    expect(summary).toContain("phase 1.5 알트 편입 기록: 1건");
+    expect(summary).toContain("수동 승인 (APPROVE) 1건");
     expect(summary).toContain("주문 차단 (BLOCK_ORDER) 1건");
   });
 
@@ -478,6 +483,16 @@ function fixtureSourceData(): DailyReportSourceData {
           reason_code: "sent",
         },
         occurredAt: "2026-05-21T03:20:00.000Z",
+      },
+      {
+        eventType: "PHASE_1_5_ALT_APPROVAL",
+        severity: "INFO",
+        payloadJson: {
+          audit_kind: "PHASE_1_5_ALT_APPROVAL",
+          action: "APPROVE",
+          market: "KRW-SOL",
+        },
+        occurredAt: "2026-05-21T03:30:00.000Z",
       },
     ],
     riskEvents: [

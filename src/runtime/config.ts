@@ -10,6 +10,10 @@ import {
   defaultStrategyParametersConfig,
 } from "./strategy-parameters.js";
 import { RiskConfigSchema, defaultRiskConfig } from "./risk-config.js";
+import {
+  Phase15AltUniverseConfigSchema,
+  defaultPhase15AltUniverseConfig,
+} from "./phase-1-5-config.js";
 
 const defaultConfigUrl = new URL("../../config/paper.json", import.meta.url);
 
@@ -36,12 +40,14 @@ export const RuntimeConfigSchema = z
         auto_include_new_listing: z.boolean().default(false),
         exclude_warning: z.boolean().default(true),
         exclude_caution: z.boolean().default(true),
+        phase_1_5: Phase15AltUniverseConfigSchema.default(defaultPhase15AltUniverseConfig),
       })
       .default({
         phase_1: ["KRW-BTC", "KRW-ETH"],
         auto_include_new_listing: false,
         exclude_warning: true,
         exclude_caution: true,
+        phase_1_5: defaultPhase15AltUniverseConfig,
       }),
     llm: z
       .object({

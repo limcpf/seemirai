@@ -30,6 +30,7 @@ export {
   assertPaperNoKeyMarketDataRuntimeConfig,
   createDatabaseMarketDataRuntimeEventStore,
   createPaperNoKeyMarketDataRuntime,
+  createPaperNoKeyMarketDataRuntimeWithAuditEvidence,
   marketDataStatusBlocksNewOrders,
   persistMarketDataRuntimeEvent,
   persistMarketDataRuntimeEvents,
@@ -45,7 +46,9 @@ export type {
   MarketDataRuntimeWriteTarget,
   MarketDataStatusPersistenceContext,
   PaperNoKeyMarketDataRuntime,
+  PaperNoKeyMarketDataRuntimeAuditEvidenceOptions,
   PaperNoKeyMarketDataRuntimeOptions,
+  PaperNoKeyMarketDataRuntimeRefreshOptions,
   MarketDataRuntimeEvent,
   MarketDataStatusAuditRow,
   MarketDataStatusRiskRow,
@@ -56,6 +59,7 @@ export {
   UnsafePaperNoKeyExecutionRuntimeError,
   assertPaperNoKeyExecutionRuntimeConfig,
   createPaperNoKeyExecutionRuntime,
+  createPaperNoKeyExecutionRuntimeWithAuditEvidence,
   createPaperNoKeyExecutionSafetyConfig,
   executeHardStopPendingPaperOrderCancels,
   listPendingPaperOrdersForHardStop,
@@ -64,6 +68,7 @@ export type {
   ExecuteHardStopPendingPaperOrderCancelsInput,
   HardStopPendingPaperOrderCancelExecutionSummary,
   PaperNoKeyExecutionRuntime,
+  PaperNoKeyExecutionRuntimeAuditEvidenceOptions,
   PaperNoKeyExecutionRuntimeOptions,
   PendingPaperOrderCancelExecutionResult,
   PendingPaperOrderCancelExecutionStatus,
@@ -76,6 +81,16 @@ export {
   loadRuntimeConfig,
   loadRuntimeConfigFile,
 } from "./config.js";
+export {
+  Phase15AltEligibilityThresholdConfigSchema,
+  Phase15AltUniverseConfigSchema,
+  Phase15ManualAltApprovalConfigSchema,
+  defaultPhase15AltUniverseConfig,
+} from "./phase-1-5-config.js";
+export {
+  resolveRuntimeSafetyBufferMarketCategory,
+  resolveRuntimeUniverse,
+} from "./universe.js";
 export { loadRuntimeNotificationConfig } from "./notification-config.js";
 export {
   createPaperNoKeyKillSwitchControlProvider,
@@ -88,6 +103,12 @@ export {
   createPostgresNotificationRetryJobQueue,
 } from "./notification-retry-runtime.js";
 export type { RuntimeConfig } from "./config.js";
+export type {
+  Phase15AltEligibilityThresholdConfig,
+  Phase15AltUniverseRuntimeConfig,
+  Phase15ManualAltApprovalRuntimeConfig,
+} from "./phase-1-5-config.js";
+export type { RuntimeUniverseResolution } from "./universe.js";
 export type { RuntimeNotificationConfig } from "./notification-config.js";
 export type { PaperNoKeyKillSwitchControlProviderOptions } from "./notification-runtime.js";
 export type {

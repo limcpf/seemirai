@@ -31,6 +31,7 @@
 | `entry_market_order_enabled` | `false` 필수 | 신규 진입 시장가 주문 차단 |
 | `paper_no_key` | `true` 필수 | paper mode가 API key 없이 시작됨을 보장 |
 | `universe` | `KRW-BTC`, `KRW-ETH` | MVP 거래 후보 universe |
+| `universe.phase_1_5` | 비활성, 빈 수동 승인 목록 | 최대 3개 알트 수동 승인 config contract와 조건 threshold |
 | `llm` | trade signal 생성 불가 | LLM이 매매 판단을 직접 만들지 못하게 제한 |
 | `registry` | 정적 registry id 참조 | exchange, strategy, rule 활성화 조합 |
 | `strategyParameters` | strategy별 기본 threshold | 전략 후보 생성과 rule 평가에 쓰는 보수적 기준값 |
@@ -56,6 +57,72 @@ MVP 기본 profile에서는 다음 값이 켜져 있으면 안 된다.
 ```
 
 `assertSafeRuntimeConfig`는 위반 값을 발견하면 runtime config 로딩을 실패시킨다.
+
+## Phase 1.5 알트 수동 편입 설정
+
+구현 기준:
+
+- schema: `src/runtime/phase-1-5-config.ts`
+- evidence contract: `src/domain/phase-1-5.ts`
+- 기본 profile: `config/paper.json`
+
+`universe.phase_1_5`는 BTC/ETH phase 1 universe를 유지한 상태에서, 운영자가 근거 snapshot을 확인한 알트만 paper
+runtime 후보에 추가하기 위한 config contract다. 기본 profile은 비활성이고 수동 승인 목록이 비어 있으므로 기존
+`KRW-BTC`/`KRW-ETH` 동작을 바꾸지 않는다.
+
+```json
+{
+  "universe": {
+    "phase_1_5": {
+      "enabled": false,
+      "candidate_markets": [],
+      "manual_approvals": [],
+      "max_manual_approvals": 3,
+      "thresholds": {
+        "min_listing_age_days": 90,
+        "min_30d_avg_trade_value_krw": "10000000000",
+        "max_7d_spread_p95_bps": "15",
+        "max_expected_slippage_bps": "20",
+        "min_depth_krw": "100000000"
+      }
+    }
+  }
+}
+```
+
+| 필드 | 기본값 | 의미 |
+| --- | ---: | --- |
+| `enabled` | `false` | phase 1.5 수동 승인 목록을 runtime universe에 반영할지 여부 |
+| `candidate_markets` | `[]` | 운영자가 검토할 KRW 알트 후보 목록 |
+| `manual_approvals` | `[]` | 승인 시각, 승인자, evidence id, 만료 시각을 가진 수동 승인 목록 |
+| `max_manual_approvals` | `3` | 동시에 승인할 수 있는 알트 수 상한 |
+| `thresholds.min_listing_age_days` | `90` | 상장 후 최소 경과 일수 |
+| `thresholds.min_30d_avg_trade_value_krw` | `10000000000` | 30일 평균 거래대금 최소값 |
+| `thresholds.max_7d_spread_p95_bps` | `15` | 최근 7일 spread p95 허용 상한 |
+| `thresholds.max_expected_slippage_bps` | `20` | 주문금액 대비 예상 slippage 허용 상한 |
+| `thresholds.min_depth_krw` | `100000000` | 주문 후보 검토에 필요한 최소 depth |
+
+config invariant:
+
+- `manual_approvals`는 최대 3개이며 중복 market을 허용하지 않는다.
+- `candidate_markets`와 `manual_approvals[].market`은 `KRW-BTC`, `KRW-ETH`를 포함할 수 없다.
+- `expires_at`이 있으면 `approved_at`보다 뒤여야 한다.
+- threshold 숫자는 음수가 아닌 Decimal string이어야 한다.
+- 이 설정은 자동 신규 상장 편입을 열지 않으며, 실제 편입 여부는 후속 evaluator가 market warning/caution, 유동성,
+  slippage, depth evidence를 모두 통과한 뒤 audit evidence와 함께 결정한다.
+- runtime universe는 수동 승인 config만으로 알트를 열지 않는다. 승인 시각 이후 현재 시각 이하의 `APPROVE` evidence가
+  없거나, 최신 evidence가 `REJECT`/`REVOKE`/`EXPIRE`이면 해당 알트는 fail-closed로 phase 1 universe 밖에 둔다.
+- `manual_approvals[].evidence_id`가 있으면 같은 id의 승인 evidence를 기준으로 삼고, 더 최신의 다른 `APPROVE` snapshot이
+  있어도 기존 승인 근거를 덮어쓰지 않는다. 단 승인 시각 이후의 차단 evidence는 항상 우선한다.
+- runtime universe는 현재 조립 중인 exchange id와 일치하는 approval evidence만 인정한다.
+- `APPROVE` evidence는 `listing_age`, `market_warning`, `market_caution`, `thirty_day_average_trade_value`,
+  `seven_day_spread_p95`, `expected_slippage`, `depth` 조건이 모두 존재하고 통과해야 승인 근거로 인정한다.
+- market-data/execution runtime과 `/status`는 `PHASE_1_5_ALT_APPROVAL` audit event를 같은 evidence snapshot으로 읽어
+  승인 알트 목록을 해석한다. audit 조회가 실패하거나 evidence가 없으면 승인 알트는 열지 않는다.
+- 승인/거부/철회/만료 evidence는 `PHASE_1_5_ALT_APPROVAL` audit event로 남긴다. payload는
+  `audit_kind=PHASE_1_5_ALT_APPROVAL`, action, market, threshold snapshot, 조건별 판정, 한국어 상태/필요 조치 문구를 포함한다.
+- `/status.runtime.universe.phase15`는 safe summary로 `enabled`, 승인 알트 목록/개수, 후보 목록/개수, 최대 수동 승인 수만 노출한다.
+  secret, raw config 전체, operator token은 노출하지 않는다.
 
 ## M10 LLM 리스크 보조 설정
 
@@ -106,7 +173,7 @@ endpoint가 공통으로 사용할 인증 guard만 고정한다.
 
 `/status` safe summary는 다음 필드만 노출한다.
 
-- runtime: `exchange`, `market`, `mode`, phase 1 universe, live trading toggle, `paperNoKey`
+- runtime: `exchange`, `market`, `mode`, phase 1 universe, phase 1.5 safe summary, live trading toggle, `paperNoKey`
 - trading state: current kill switch state, blocked reason, 신규 주문 차단 여부, 수동 검토 필요 여부
 - market data: connection status, lag ms, updated time
 - paper: `paper_orders`에 연결된 pending paper order count, open position count, 조회 상태의 한국어 label/message/action
@@ -383,7 +450,8 @@ worker retry나 운영 재생이 같은 조회 범위를 사용할 수 있게 �
   과거 상태를 복원하려고 제외하지 않는다.
 - `pnl_snapshots`: strategy/market별 최신 snapshot의 realized PnL과 unrealized PnL. snapshot이 있는 scope는 positions보다
   우선하며, 일부 scope의 snapshot이 없을 때만 positions fallback을 섞는다.
-- `audit_events`: `ORDER_CANDIDATE_DISCARDED` payload의 `reason_code`별 폐기 후보 수
+- `audit_events`: `ORDER_CANDIDATE_DISCARDED` payload의 `reason_code`별 폐기 후보 수,
+  `PHASE_1_5_ALT_APPROVAL` payload의 action/market별 승인·거부·철회·만료 기록 수
 - `risk_events`: `action`, `risk_type`별 차단/리스크 이벤트 수
 - `fills` 기준으로 실제 체결된 주문의 `paper_orders.fill_model_json`, `orders.reason_json.cost_snapshot`: 슬리피지, spread 비용,
   취소/재호가 비용이 있는 경우의 체결 품질 metric
@@ -567,6 +635,17 @@ M4는 주문 후보가 실행 단계로 넘어가지 못한 이유를 `AuditLogP
 
 이 audit event는 실제 주문 제출 근거가 아니라, M5 RiskGate와 M6 ExecutionEngine 이전에 후보가 폐기된 이유를 사람이
 추적하기 위한 append-only 기록이다.
+
+Phase 1.5 알트 수동 편입 evidence는 다음 기준으로 저장한다.
+
+- event type: `PHASE_1_5_ALT_APPROVAL`
+- severity: 승인은 `INFO`, 거부/철회/만료는 `WARN`
+- payload marker: `audit_kind=PHASE_1_5_ALT_APPROVAL`
+- action: `APPROVE`, `REJECT`, `REVOKE`, `EXPIRE`
+- payload 주요 필드: `status_label`, `operator_action`, `exchange_id`, `market`, `evidence_id`, `thresholds`, `conditions`
+
+이 audit event는 config diff만으로 복원하기 어려운 operator 판단 근거를 보존하기 위한 기록이다. daily report는 이 marker를
+읽어 phase 1.5 알트 편입 기록 수를 action과 market별로 표시한다.
 
 ## Universe 구조
 

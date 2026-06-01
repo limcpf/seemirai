@@ -247,6 +247,13 @@
       "owner_scope": "docs/exec-plans/completed"
     },
     {
+      "path": "docs/exec-plans/completed/2026-06-01-issue-111-phase-1-5-alt-manual-inclusion.md",
+      "kind": "exec-plan",
+      "role": "issue #111 Phase 1.5 알트 수동 편입 완료 실행 계획",
+      "read_when": ["issue #111 결과 확인", "phase 1.5 알트 수동 편입 완료 증거", "sub PR 검증 결과 확인"],
+      "owner_scope": "docs/exec-plans/completed"
+    },
+    {
       "path": "docs/exec-plans/completed/2026-05-13-mvp-development-plan.md",
       "kind": "exec-plan",
       "role": "Seemirai MVP 개발 완료 기록과 M8-C 24시간 soak 증거",
@@ -329,6 +336,13 @@
       "role": "PRD 기반 GitHub issue 작성 workflow",
       "read_when": ["GitHub issue 생성", "issue 본문 작성", "sub PR 초안 작성"],
       "owner_scope": ".agents/skills/issue-planner"
+    },
+    {
+      "path": ".agents/skills/issue-subpr-runner/SKILL.md",
+      "kind": "skill",
+      "role": "issue 기준 sub PR 순차 개발, review drain, mother branch merge workflow",
+      "read_when": ["issue sub PR 순차 개발", "sub PR DnD 검증", "mother branch 임시 merge", "final PR review drain"],
+      "owner_scope": ".agents/skills/issue-subpr-runner"
     },
     {
       "path": ".agents/skills/subpr-orchestrator/SKILL.md",

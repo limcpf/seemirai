@@ -14,7 +14,20 @@
     "phase_1": ["KRW-BTC", "KRW-ETH"],
     "auto_include_new_listing": false,
     "exclude_warning": true,
-    "exclude_caution": true
+    "exclude_caution": true,
+    "phase_1_5": {
+      "enabled": false,
+      "candidate_markets": [],
+      "manual_approvals": [],
+      "max_manual_approvals": 3,
+      "thresholds": {
+        "min_listing_age_days": 90,
+        "min_30d_avg_trade_value_krw": "10000000000",
+        "max_7d_spread_p95_bps": "15",
+        "max_expected_slippage_bps": "20",
+        "min_depth_krw": "100000000"
+      }
+    }
   },
   "llm": {
     "enabled": true,
