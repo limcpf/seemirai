@@ -2,6 +2,7 @@ export {
   UpbitPrivatePayloadMappingError,
   toBrokerBalanceSnapshot,
   toBrokerOrderFromLookup,
+  toBrokerOrdersFromOpenOrders,
   toFeePolicyFromOrderChance,
   toOrderChancePolicy,
   toUpbitPrivateUserActionErrorSummary,
@@ -17,6 +18,8 @@ export type {
 export {
   UpbitPrivateAccountBalanceSchema,
   UpbitPrivateAccountsResponseSchema,
+  UpbitPrivateOpenOrderResponseSchema,
+  UpbitPrivateOpenOrdersResponseSchema,
   UpbitPrivateOrderChancePayloadSchema,
   UpbitPrivateOrderChanceResponseSchema,
   UpbitPrivateOrderLookupResponseSchema,
@@ -25,6 +28,8 @@ export {
 export type {
   UpbitPrivateAccountBalance,
   UpbitPrivateAccountsResponse,
+  UpbitPrivateOpenOrderResponse,
+  UpbitPrivateOpenOrdersResponse,
   UpbitPrivateOrderChancePayload,
   UpbitPrivateOrderChanceResponse,
   UpbitPrivateOrderLookupResponse,

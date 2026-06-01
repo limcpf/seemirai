@@ -161,6 +161,67 @@ describe("Upbit private REST client foundation", () => {
     });
   });
 
+  it("lists open orders with states array hashed before URL encoding", async () => {
+    let capturedRequest: CapturedRequest | undefined;
+    const client = new UpbitPrivateRestClient({
+      credentials,
+      nonceFactory: () => "open-orders-nonce",
+      fetchFn: async (input, init) => {
+        capturedRequest = captureRequest(input, init);
+        return jsonResponse([], "group=default; min=1800; sec=29");
+      },
+    });
+
+    await client.listOpenOrders({
+      market: "KRW-BTC",
+      states: ["wait", "watch"],
+      page: 2,
+      limit: 50,
+      orderBy: "asc",
+    });
+
+    const authorization = capturedRequest?.headers.get("authorization");
+    const decoded = decodeJwt(readBearerToken(authorization));
+    const expectedQueryString = "market=KRW-BTC&states[]=wait&states[]=watch&page=2&limit=50&order_by=asc";
+
+    expect(capturedRequest).toMatchObject({
+      url: "https://api.upbit.com/v1/orders/open?market=KRW-BTC&states[]=wait&states[]=watch&page=2&limit=50&order_by=asc",
+      method: "GET",
+    });
+    expect(decoded.payload).toMatchObject({
+      nonce: "open-orders-nonce",
+      query_hash: createUpbitQueryHash(expectedQueryString),
+      query_hash_alg: "SHA512",
+    });
+  });
+
+  it("fails locally before fetch when open order list inputs are unsafe", async () => {
+    let fetchCalls = 0;
+    const client = new UpbitPrivateRestClient({
+      credentials,
+      fetchFn: async () => {
+        fetchCalls += 1;
+        return jsonResponse([], "group=default; min=1800; sec=29");
+      },
+    });
+
+    await expect(
+      client.listOpenOrders({ states: ["done" as "wait"], limit: 101, page: 0, orderBy: "latest" as "asc" }),
+    ).rejects.toMatchObject({
+      name: "UnsafeUpbitPrivateRequestError",
+      violations: [
+        "체결 대기 주문 조회 states[]는 wait 또는 watch만 허용합니다",
+        "체결 대기 주문 조회 page는 1 이상의 정수여야 합니다",
+        "체결 대기 주문 조회 limit은 100 이하여야 합니다",
+        "체결 대기 주문 조회 order_by는 asc 또는 desc 여야 합니다",
+      ],
+    } satisfies Partial<UnsafeUpbitPrivateRequestError>);
+    await expect(client.listOpenOrders({ states: [] })).rejects.toMatchObject({
+      violations: ["체결 대기 주문 조회 states[]는 비어 있을 수 없습니다"],
+    } satisfies Partial<UnsafeUpbitPrivateRequestError>);
+    expect(fetchCalls).toBe(0);
+  });
+
   it("fails locally before fetch when order lookup identifiers are unsafe", async () => {
     let fetchCalls = 0;
     const client = new UpbitPrivateRestClient({
