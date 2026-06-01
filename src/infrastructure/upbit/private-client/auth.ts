@@ -15,11 +15,21 @@ const UPBIT_JWT_HEADER = {
 /**
  * Upbit query hash 기준 문자열을 만든다.
  *
- * 호출자는 이 반환값을 URL query와 JWT `query_hash` 입력에 동일하게 사용해야 한다. 입력 순서와 중복 key를 보존해
- * Upbit 인증 서버가 계산하는 해시와 어긋나지 않게 하며, 외부 side effect는 없다.
+ * Upbit 인증 문서 기준으로 URL 인코딩 전 원문 query string을 반환한다. 호출자는 이 값을 JWT `query_hash`에만 사용하고,
+ * 실제 URL에는 `buildUpbitUrlQueryString`을 사용해야 하며, 외부 side effect는 없다.
  */
 export function buildUpbitQueryString(params: UpbitQueryParams = []): string {
-  return params.flatMap(toQueryStringEntries).join("&");
+  return params.flatMap((param) => toQueryStringEntries(param, toRawQueryPart)).join("&");
+}
+
+/**
+ * Upbit private request URL에 붙일 query string을 만든다.
+ *
+ * query hash는 인코딩 전 문자열을 써야 하지만, 전송 URL은 안전하게 인코딩해야 하므로 두 경계를 분리한다. 입력 순서와 중복
+ * key는 보존하며, 이 함수는 외부 API 호출 없이 문자열만 만든다.
+ */
+export function buildUpbitUrlQueryString(params: UpbitQueryParams = []): string {
+  return params.flatMap((param) => toQueryStringEntries(param, encodeUrlQueryPart)).join("&");
 }
 
 /**
@@ -65,16 +75,23 @@ export function buildUpbitAuthorizationHeader(input: CreateUpbitJwtTokenInput): 
   return `Bearer ${createUpbitJwtToken(input)}`;
 }
 
-function toQueryStringEntries(param: UpbitQueryParam): readonly string[] {
+function toQueryStringEntries(
+  param: UpbitQueryParam,
+  encodePart: (value: string) => string,
+): readonly string[] {
   const values = Array.isArray(param.value) ? param.value : [param.value];
-  return values.map((value) => `${encodeUpbitQueryPart(param.key)}=${encodeUpbitQueryPart(toQueryValue(value))}`);
+  return values.map((value) => `${encodePart(param.key)}=${encodePart(toQueryValue(value))}`);
 }
 
 function toQueryValue(value: UpbitQueryParamValue): string {
   return typeof value === "string" ? value : String(value);
 }
 
-function encodeUpbitQueryPart(value: string): string {
+function toRawQueryPart(value: string): string {
+  return value;
+}
+
+function encodeUrlQueryPart(value: string): string {
   return encodeURIComponent(value).replace(/%5B/gu, "[").replace(/%5D/gu, "]");
 }
 

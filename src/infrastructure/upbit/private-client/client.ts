@@ -3,7 +3,7 @@ import {
   createUpbitRateLimitStatus,
   parseRemainingReqHeader,
 } from "../rate-limit.js";
-import { buildUpbitAuthorizationHeader, buildUpbitQueryString } from "./auth.js";
+import { buildUpbitAuthorizationHeader, buildUpbitQueryString, buildUpbitUrlQueryString } from "./auth.js";
 import {
   UPBIT_PRIVATE_API_BASE_URL,
   UnsafeUpbitPrivateRequestError,
@@ -99,7 +99,7 @@ export class UpbitPrivateRestClient {
     input: UpbitPrivateRequestInput,
   ): Promise<UpbitPrivateRestResponse<TPayload>> {
     const queryString = buildUpbitQueryString(input.queryParams);
-    const url = this.buildUrl(input.pathname, queryString);
+    const url = this.buildUrl(input.pathname, buildUpbitUrlQueryString(input.queryParams));
     const headers = new Headers({
       accept: "application/json",
       authorization: buildUpbitAuthorizationHeader({

@@ -1,6 +1,7 @@
 export {
   buildUpbitAuthorizationHeader,
   buildUpbitQueryString,
+  buildUpbitUrlQueryString,
   createUpbitJwtToken,
   createUpbitQueryHash,
 } from "./private-client/auth.js";

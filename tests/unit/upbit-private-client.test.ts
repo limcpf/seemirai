@@ -5,6 +5,7 @@ import {
   UpbitPrivateRestClient,
   UpbitPrivateRestClientError,
   buildUpbitQueryString,
+  buildUpbitUrlQueryString,
   createUpbitJwtToken,
   createUpbitQueryHash,
 } from "../../src/infrastructure/upbit/index.js";
@@ -16,14 +17,23 @@ const credentials = {
 };
 
 describe("Upbit private JWT auth", () => {
-  it("builds the query string that is shared by URL and JWT query_hash", () => {
+  it("separates raw query_hash input from URL-encoded query strings", () => {
     expect(
       buildUpbitQueryString([
         { key: "market", value: "KRW-BTC" },
         { key: "states[]", value: ["wait", "watch"] },
+        { key: "identifier", value: "smoke:run/001, waiting" },
         { key: "limit", value: 10 },
       ]),
-    ).toBe("market=KRW-BTC&states[]=wait&states[]=watch&limit=10");
+    ).toBe("market=KRW-BTC&states[]=wait&states[]=watch&identifier=smoke:run/001, waiting&limit=10");
+    expect(
+      buildUpbitUrlQueryString([
+        { key: "market", value: "KRW-BTC" },
+        { key: "states[]", value: ["wait", "watch"] },
+        { key: "identifier", value: "smoke:run/001, waiting" },
+        { key: "limit", value: 10 },
+      ]),
+    ).toBe("market=KRW-BTC&states[]=wait&states[]=watch&identifier=smoke%3Arun%2F001%2C%20waiting&limit=10");
   });
 
   it("creates HS512 JWT payloads with SHA512 query_hash when query params exist", () => {
@@ -123,6 +133,31 @@ describe("Upbit private REST client foundation", () => {
       query_hash_alg: "SHA512",
     });
     expect(decoded.signingInput).not.toContain(credentials.secretKey);
+  });
+
+  it("hashes order lookup identifiers before URL encoding", async () => {
+    let capturedRequest: CapturedRequest | undefined;
+    const client = new UpbitPrivateRestClient({
+      credentials,
+      nonceFactory: () => "lookup-nonce",
+      fetchFn: async (input, init) => {
+        capturedRequest = captureRequest(input, init);
+        return jsonResponse({ uuid: "order-uuid" }, "group=order; min=1800; sec=6");
+      },
+    });
+
+    await client.getOrder({ identifier: "smoke:run/001, waiting" });
+
+    const authorization = capturedRequest?.headers.get("authorization");
+    const decoded = decodeJwt(readBearerToken(authorization));
+    expect(capturedRequest?.url).toBe(
+      "https://api.upbit.com/v1/order?identifier=smoke%3Arun%2F001%2C%20waiting",
+    );
+    expect(decoded.payload).toMatchObject({
+      nonce: "lookup-nonce",
+      query_hash: createUpbitQueryHash("identifier=smoke:run/001, waiting"),
+      query_hash_alg: "SHA512",
+    });
   });
 
   it("fails locally before fetch when order lookup identifiers are unsafe", async () => {

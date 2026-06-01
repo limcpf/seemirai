@@ -69,6 +69,7 @@ export type {
 export {
   buildUpbitAuthorizationHeader,
   buildUpbitQueryString,
+  buildUpbitUrlQueryString,
   createUpbitJwtToken,
   createUpbitQueryHash,
   UPBIT_PRIVATE_API_BASE_URL,
