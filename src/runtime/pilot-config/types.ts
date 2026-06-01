@@ -1,5 +1,7 @@
-export const PILOT_PROFILES = ["PILOT_READ_ONLY", "PILOT_POLICY_SYNC", "PILOT_ORDER_SMOKE"] as const;
-export const ALLOWED_KEY_SCOPES = ["자산조회", "주문조회", "주문하기"] as const;
+import type { PilotKeyScope, PilotProfileId } from "../../domain/index.js";
+
+export const PILOT_PROFILES = ["PILOT_READ_ONLY", "PILOT_POLICY_SYNC", "PILOT_ORDER_SMOKE"] as const satisfies readonly PilotProfileId[];
+export const ALLOWED_KEY_SCOPES = ["자산조회", "주문조회", "주문하기"] as const satisfies readonly PilotKeyScope[];
 export const FORBIDDEN_KEY_SCOPES = [
   "출금조회",
   "출금하기",
@@ -19,7 +21,7 @@ export const UPBIT_PILOT_ORDER_SMOKE_MAX_KRW_LIMIT = 50_000;
  * env 입력과 후속 private API wrapper 사이의 호출 경계에서 사용하며, 기본 `PAPER_NO_KEY` runtime과 pilot side effect 범위를
  * 분리하는 invariant를 유지한다. 이 type 자체는 외부 side effect를 만들지 않는다.
  */
-export type PilotRuntimeProfile = (typeof PILOT_PROFILES)[number];
+export type PilotRuntimeProfile = PilotProfileId;
 
 /**
  * M14 pilot에서 허용되는 Upbit key 권한 이름이다.
@@ -27,7 +29,7 @@ export type PilotRuntimeProfile = (typeof PILOT_PROFILES)[number];
  * 운영자가 PC 웹에서 확인한 scope evidence를 코드 guard가 비교할 수 있는 값으로 제한한다. 출금/입출금/레버리지 scope는 이
  * union에 포함하지 않아 profile 조립 전에 fail-closed 되며, 외부 side effect는 없다.
  */
-export type PilotUpbitKeyScope = (typeof ALLOWED_KEY_SCOPES)[number];
+export type PilotUpbitKeyScope = PilotKeyScope;
 
 /**
  * pilot profile이 비활성인 기본 상태를 표현한다.

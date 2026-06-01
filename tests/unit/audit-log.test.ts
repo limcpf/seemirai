@@ -2,9 +2,11 @@ import { describe, expect, it } from "vitest";
 import {
   appendOrderCandidateDiscardAudit,
   appendPhase15AltApprovalAudit,
+  appendPilotEvidenceAudit,
   isOrderCandidateDiscarded,
   toOrderCandidateDiscardAuditEvent,
   toPhase15AltApprovalAuditEvent,
+  toPilotEvidenceAuditEvent,
 } from "../../src/application/index.js";
 import { listPhase15AltApprovalEvidenceSnapshots, toAuditEventRow } from "../../src/infrastructure/index.js";
 import type {
@@ -380,6 +382,81 @@ describe("phase 1.5 alt approval audit", () => {
   });
 });
 
+describe("pilot private API evidence audit", () => {
+  it("maps pilot evidence into a Korean-first audit payload without raw secrets", () => {
+    const event = toPilotEvidenceAuditEvent({
+      evidence: pilotEvidence("MANUAL_REVIEW_REQUIRED"),
+      actor: "pilot-runner",
+    });
+    const row = toAuditEventRow(event);
+    const serialized = JSON.stringify(row);
+
+    expect(event).toMatchObject({
+      eventType: "PILOT_PRIVATE_API_EVIDENCE",
+      severity: "WARN",
+      occurredAt,
+      actor: "pilot-runner",
+      reasonCode: "pilot_private_api_manual_review_required",
+      correlationId: "pilot-order-smoke-correlation-123456",
+    });
+    expect(row).toMatchObject({
+      event_type: "PILOT_PRIVATE_API_EVIDENCE",
+      severity: "WARN",
+      correlation_id: "pilot-order-smoke-correlation-123456",
+      payload_json: {
+        audit_kind: "PILOT_PRIVATE_API_EVIDENCE",
+        status_label: "수동 점검 필요",
+        operator_action: "Upbit 주문 내역과 audit artifact를 대조한다.",
+        actor: "pilot-runner",
+        reason_code: "pilot_private_api_manual_review_required",
+        profile: "PILOT_ORDER_SMOKE",
+        status: "MANUAL_REVIEW_REQUIRED",
+        redacted_correlation_id: "pilot-...3456",
+        report_artifact_id: "pilot-report-1",
+        safe_metadata: {
+          market: "KRW-BTC",
+          authorization: "[REDACTED]",
+          nested: {
+            upbitSecretKey: "[REDACTED]",
+          },
+        },
+      },
+    });
+    expect(serialized).not.toContain("Bearer raw-secret-token");
+    expect(serialized).not.toContain("raw-upbit-secret");
+  });
+
+  it("appends pilot evidence through AuditLogPort with status-based severity", async () => {
+    const appended: AuditEvent[] = [];
+    const auditLog: AuditLogPort = {
+      appendEvent: async (event) => {
+        appended.push(event);
+
+        return {
+          auditEventId: "pilot-audit-1",
+          appendedAt: occurredAt,
+        };
+      },
+    };
+
+    await expect(
+      appendPilotEvidenceAudit(auditLog, {
+        evidence: pilotEvidence("FAILED"),
+      }),
+    ).resolves.toEqual({
+      auditEventId: "pilot-audit-1",
+      appendedAt: occurredAt,
+    });
+    expect(appended[0]).toMatchObject({
+      severity: "ERROR",
+      reasonCode: "pilot_private_api_failed",
+      metadata: {
+        status_label: "검증 실패",
+      },
+    });
+  });
+});
+
 function discardAuditInput(): OrderCandidateDiscardAuditInput {
   return {
     occurredAt,
@@ -467,6 +544,26 @@ function phase15ApprovalEvidence(action: "APPROVE" | "REJECT" | "REVOKE" | "EXPI
         thresholdValue: 90,
       },
     ],
+  } as const;
+}
+
+function pilotEvidence(status: "SKIPPED" | "PASSED" | "FAILED" | "MANUAL_REVIEW_REQUIRED") {
+  return {
+    profile: "PILOT_ORDER_SMOKE",
+    status,
+    occurredAt,
+    correlationId: "pilot-order-smoke-correlation-123456",
+    message: "pilot 주문 smoke 결과를 확인해야 한다.",
+    action: "Upbit 주문 내역과 audit artifact를 대조한다.",
+    reportArtifactId: "pilot-report-1",
+    reportArtifactPath: "/tmp/seemirai/pilot-report-1.json",
+    safeMetadata: {
+      market: "KRW-BTC",
+      authorization: "Bearer raw-secret-token",
+      nested: {
+        upbitSecretKey: "raw-upbit-secret",
+      },
+    },
   } as const;
 }
 

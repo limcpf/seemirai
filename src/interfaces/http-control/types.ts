@@ -1,7 +1,12 @@
-import type { KillSwitchState, Phase15AltApprovalEvidenceSnapshot } from "../../domain/index.js";
+import type {
+  KillSwitchState,
+  Phase15AltApprovalEvidenceSnapshot,
+  PilotEvidenceSnapshot,
+  PilotRuntimeSafeSummary,
+} from "../../domain/index.js";
 import type { KillSwitchControlProvider } from "../../application/index.js";
 import type { Database } from "../../infrastructure/db/index.js";
-import type { RuntimeConfig } from "../../runtime/index.js";
+import type { PilotRuntimeConfig, RuntimeConfig } from "../../runtime/index.js";
 
 export const DEFAULT_HTTP_CONTROL_HOST = "127.0.0.1";
 export const DEFAULT_HTTP_CONTROL_PORT = 8787;
@@ -95,6 +100,7 @@ export interface ControlStatusSnapshot {
     };
     liveTradingEnabled: boolean;
     paperNoKey: boolean;
+    pilot: PilotRuntimeSafeSummary;
   };
   tradingState: {
     state: KillSwitchState;
@@ -213,6 +219,8 @@ export interface CreateDatabaseControlStatusProviderOptions {
   readinessProvider?: ControlReadinessProvider;
   database?: Database;
   phase15ApprovalEvidence?: readonly Phase15AltApprovalEvidenceSnapshot[];
+  pilotConfig?: PilotRuntimeConfig;
+  pilotEvidence?: PilotEvidenceSnapshot | null;
   expectedMigrationVersion?: number;
   clock?: () => Date;
   marketData?: {

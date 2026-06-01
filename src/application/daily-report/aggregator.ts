@@ -3,6 +3,8 @@ import {
   labelDiscardReason,
   labelOrderStatus,
   labelPhase15AltApprovalAction,
+  labelPilotEvidenceStatus,
+  labelPilotProfile,
   labelRiskAction,
   labelRiskType,
 } from "./user-facing.js";
@@ -61,6 +63,7 @@ export function aggregateDailyReport(
     ),
     discardedCandidates: summarizeDiscardedCandidates(sourceData.auditEvents),
     phase15AltApprovals: summarizePhase15AltApprovals(sourceData.auditEvents),
+    pilotEvidence: summarizePilotEvidence(sourceData.auditEvents),
     riskEvents: summarizeRiskEvents(sourceData),
   };
   const latestPnlSnapshotAt = latestTimestamp(pnlSnapshotsForAggregation.map((snapshot) => snapshot.capturedAt));
@@ -384,6 +387,33 @@ function summarizePhase15AltApprovals(
     total: actions.length,
     byAction: countBy(actions, labelPhase15AltApprovalAction),
     byMarket: countBy(markets, (market) => market),
+  };
+}
+
+/**
+ * pilot private API evidence audit event를 daily report용으로 집계한다.
+ *
+ * private smoke evidence는 주문 후보나 phase 1.5 evidence와 같은 audit_events 테이블에 저장되므로 `audit_kind`로 좁혀야
+ * 다른 운영 로그가 pilot 검증 건수로 섞이지 않는다.
+ */
+function summarizePilotEvidence(
+  auditEvents: readonly DailyReportAuditEventFact[],
+): DailyReportAggregate["pilotEvidence"] {
+  const statuses: string[] = [];
+  const profiles: string[] = [];
+  for (const event of auditEvents) {
+    if (event.payloadJson.audit_kind !== "PILOT_PRIVATE_API_EVIDENCE") {
+      continue;
+    }
+
+    statuses.push(readString(event.payloadJson.status) ?? "UNKNOWN");
+    profiles.push(readString(event.payloadJson.profile) ?? "UNKNOWN");
+  }
+
+  return {
+    total: statuses.length,
+    byStatus: countBy(statuses, labelPilotEvidenceStatus),
+    byProfile: countBy(profiles, labelPilotProfile),
   };
 }
 

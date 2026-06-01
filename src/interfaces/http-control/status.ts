@@ -6,8 +6,8 @@ import {
   listPhase15AltApprovalEvidenceSnapshots,
 } from "../../infrastructure/db/index.js";
 import type { Database } from "../../infrastructure/db/index.js";
-import { resolveRuntimeUniverse } from "../../runtime/index.js";
-import type { RuntimeConfig } from "../../runtime/index.js";
+import { createPilotRuntimeSafeSummary, resolveRuntimeUniverse } from "../../runtime/index.js";
+import type { PilotRuntimeConfig, RuntimeConfig } from "../../runtime/index.js";
 import { createDatabaseControlReadinessProvider } from "./readiness.js";
 import type {
   ControlOperationalStatusCode,
@@ -18,6 +18,12 @@ import type {
 } from "./types.js";
 
 type TimestampValue = Date | string | null | undefined;
+
+const disabledPilotRuntimeConfig = {
+  enabled: false,
+  privateSmokeEnabled: false,
+  orderSmokeEnabled: false,
+} satisfies PilotRuntimeConfig;
 
 /**
  * `/status`가 durable 집계 하나를 읽은 결과다.
@@ -85,7 +91,7 @@ export function createDatabaseControlStatusProvider(
       // kill switch action plan은 상태 문자열을 실제 주문 차단/수동 검토 신호로 변환하는 경계다.
       return {
         generatedAt,
-        runtime: toSafeRuntimeSummary(options.runtimeConfig, generatedAt, phase15ApprovalEvidence),
+        runtime: toSafeRuntimeSummary(options.runtimeConfig, generatedAt, phase15ApprovalEvidence, options),
         tradingState: {
           state: killSwitch.state,
           killSwitchState: killSwitch.state,
@@ -594,6 +600,7 @@ function toSafeRuntimeSummary(
   config: RuntimeConfig,
   observedAt: string,
   phase15ApprovalEvidence: readonly Phase15AltApprovalEvidenceSnapshot[],
+  options: CreateDatabaseControlStatusProviderOptions,
 ): ControlStatusSnapshot["runtime"] {
   const universe = resolveRuntimeUniverse(config.universe, {
     observedAt,
@@ -619,6 +626,10 @@ function toSafeRuntimeSummary(
     },
     liveTradingEnabled: config.live_trading_enabled,
     paperNoKey: config.paper_no_key,
+    pilot: createPilotRuntimeSafeSummary(options.pilotConfig ?? disabledPilotRuntimeConfig, {
+      generatedAt: observedAt,
+      lastEvidence: options.pilotEvidence ?? null,
+    }),
   };
 }
 
