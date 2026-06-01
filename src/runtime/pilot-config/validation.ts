@@ -2,6 +2,8 @@ import {
   ALLOWED_KEY_SCOPES,
   FORBIDDEN_KEY_SCOPES,
   PILOT_PROFILES,
+  UPBIT_PILOT_IDENTIFIER_MAX_LENGTH,
+  UPBIT_PILOT_ORDER_SMOKE_MIN_KRW_LIMIT,
   UPBIT_PILOT_ORDER_SMOKE_MAX_KRW_LIMIT,
   UnsafePilotRuntimeConfigError,
 } from "./types.js";
@@ -74,9 +76,8 @@ export function loadPilotRuntimeConfigFromEnv(
     violations.push("SEEMIRAI_UPBIT_KEY_SCOPE_EVIDENCE_ID 가 필요합니다");
   }
 
-  validateLookupOrderInput(lookupOrderUuid, lookupOrderIdentifier, keyScopes, violations);
-
   if (parsedProfile !== undefined) {
+    validateLookupOrderInput(parsedProfile, lookupOrderUuid, lookupOrderIdentifier, keyScopes, violations);
     validateProfileSpecificGuards({
       profile: parsedProfile,
       orderSmokeGuard,
@@ -177,6 +178,7 @@ function isForbiddenKeyScope(scope: string): boolean {
 }
 
 function validateLookupOrderInput(
+  profile: PilotRuntimeProfile,
   lookupOrderUuid: string | undefined,
   lookupOrderIdentifier: string | undefined,
   keyScopes: readonly PilotUpbitKeyScope[],
@@ -184,6 +186,19 @@ function validateLookupOrderInput(
 ): void {
   if (lookupOrderUuid !== undefined && lookupOrderIdentifier !== undefined) {
     violations.push("주문 조회 식별자는 uuid 또는 identifier 중 하나만 지정해야 합니다");
+  }
+
+  if (
+    lookupOrderIdentifier !== undefined &&
+    lookupOrderIdentifier.length > UPBIT_PILOT_IDENTIFIER_MAX_LENGTH
+  ) {
+    // Upbit identifier 길이 제한은 API 호출 전에 닫아야 env guard가 smoke 실패를 앞단에서 막을 수 있다.
+    violations.push(`SEEMIRAI_UPBIT_LOOKUP_ORDER_IDENTIFIER 는 ${UPBIT_PILOT_IDENTIFIER_MAX_LENGTH}자 이하여야 합니다`);
+  }
+
+  if ((lookupOrderUuid !== undefined || lookupOrderIdentifier !== undefined) && profile !== "PILOT_READ_ONLY") {
+    // 운영자가 넘긴 기존 주문 식별자는 read-only 조회에만 쓰고, policy/order smoke가 임의 주문을 참조하지 못하게 닫는다.
+    violations.push("SEEMIRAI_UPBIT_LOOKUP_ORDER_UUID/IDENTIFIER 는 PILOT_READ_ONLY 에서만 사용할 수 있습니다");
   }
 
   if ((lookupOrderUuid !== undefined || lookupOrderIdentifier !== undefined) && !keyScopes.includes("주문조회")) {
@@ -308,6 +323,10 @@ function validateOrderSmokeMaxKrw(maxKrw: string | undefined, violations: string
   if (!POSITIVE_DECIMAL_PATTERN.test(maxKrw) || Number(maxKrw) <= 0) {
     violations.push("SEEMIRAI_UPBIT_ORDER_SMOKE_MAX_KRW 는 양수 KRW 금액이어야 합니다");
     return;
+  }
+
+  if (Number(maxKrw) < UPBIT_PILOT_ORDER_SMOKE_MIN_KRW_LIMIT) {
+    violations.push("SEEMIRAI_UPBIT_ORDER_SMOKE_MAX_KRW 는 5000 KRW 이상이어야 합니다");
   }
 
   if (Number(maxKrw) > UPBIT_PILOT_ORDER_SMOKE_MAX_KRW_LIMIT) {

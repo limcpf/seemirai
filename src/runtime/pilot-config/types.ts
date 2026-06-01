@@ -10,6 +10,7 @@ export const FORBIDDEN_KEY_SCOPES = [
 ] as const;
 
 export const UPBIT_PILOT_IDENTIFIER_MAX_LENGTH = 32;
+export const UPBIT_PILOT_ORDER_SMOKE_MIN_KRW_LIMIT = 5_000;
 export const UPBIT_PILOT_ORDER_SMOKE_MAX_KRW_LIMIT = 50_000;
 
 /**

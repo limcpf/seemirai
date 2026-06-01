@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   UPBIT_PILOT_IDENTIFIER_MAX_LENGTH,
+  UPBIT_PILOT_ORDER_SMOKE_MIN_KRW_LIMIT,
   UnsafePilotRuntimeConfigError,
   loadDefaultRuntimeConfig,
   loadPilotRuntimeConfigFromEnv,
@@ -55,6 +56,20 @@ describe("pilot runtime config", () => {
     });
   });
 
+  it("rejects read-only lookup identifiers that exceed the Upbit length limit", () => {
+    expect(() =>
+      loadPilotRuntimeConfigFromEnv({
+        SEEMIRAI_PILOT_PROFILE: "PILOT_READ_ONLY",
+        SEEMIRAI_RUN_UPBIT_PRIVATE_SMOKE: "1",
+        SEEMIRAI_UPBIT_ACCESS_KEY: "access-key",
+        SEEMIRAI_UPBIT_SECRET_KEY: "secret-key",
+        SEEMIRAI_UPBIT_KEY_SCOPE: "자산조회,주문조회",
+        SEEMIRAI_UPBIT_KEY_SCOPE_EVIDENCE_ID: "scope-evidence-2026-06-01",
+        SEEMIRAI_UPBIT_LOOKUP_ORDER_IDENTIFIER: "x".repeat(UPBIT_PILOT_IDENTIFIER_MAX_LENGTH + 1),
+      }),
+    ).toThrow(`${UPBIT_PILOT_IDENTIFIER_MAX_LENGTH}자 이하여야 합니다`);
+  });
+
   it("fails closed when forbidden scopes or order guards appear in read-only pilot env", () => {
     expect(() =>
       loadPilotRuntimeConfigFromEnv({
@@ -92,6 +107,19 @@ describe("pilot runtime config", () => {
         SEEMIRAI_UPBIT_KEY_SCOPE_EVIDENCE_ID: "scope-evidence-2026-06-01",
       }),
     ).toThrow("SEEMIRAI_UPBIT_POLICY_SYNC_MARKET");
+
+    expect(() =>
+      loadPilotRuntimeConfigFromEnv({
+        SEEMIRAI_PILOT_PROFILE: "PILOT_POLICY_SYNC",
+        SEEMIRAI_RUN_UPBIT_PRIVATE_SMOKE: "1",
+        SEEMIRAI_UPBIT_ACCESS_KEY: "access-key",
+        SEEMIRAI_UPBIT_SECRET_KEY: "secret-key",
+        SEEMIRAI_UPBIT_KEY_SCOPE: "자산조회,주문조회",
+        SEEMIRAI_UPBIT_KEY_SCOPE_EVIDENCE_ID: "scope-evidence-2026-06-01",
+        SEEMIRAI_UPBIT_POLICY_SYNC_MARKET: "KRW-BTC",
+        SEEMIRAI_UPBIT_LOOKUP_ORDER_IDENTIFIER: "existing-order",
+      }),
+    ).toThrow("PILOT_READ_ONLY 에서만 사용할 수 있습니다");
 
     expect(
       loadPilotRuntimeConfigFromEnv({
@@ -146,12 +174,43 @@ describe("pilot runtime config", () => {
         SEEMIRAI_UPBIT_KEY_SCOPE_EVIDENCE_ID: "scope-evidence-2026-06-01",
         SEEMIRAI_UPBIT_POLICY_SYNC_MARKET: "KRW-BTC",
         SEEMIRAI_UPBIT_ORDER_SMOKE_MARKET: "KRW-ETH",
-        SEEMIRAI_UPBIT_ORDER_SMOKE_MAX_KRW: "50001",
+        SEEMIRAI_UPBIT_ORDER_SMOKE_MAX_KRW: "4999",
       }),
     ).toThrow(UnsafePilotRuntimeConfigError);
+
+    expect(() =>
+      loadPilotRuntimeConfigFromEnv({
+        SEEMIRAI_PILOT_PROFILE: "PILOT_ORDER_SMOKE",
+        SEEMIRAI_RUN_UPBIT_PRIVATE_SMOKE: "1",
+        SEEMIRAI_RUN_UPBIT_ORDER_SMOKE: "1",
+        SEEMIRAI_UPBIT_ACCESS_KEY: "access-key",
+        SEEMIRAI_UPBIT_SECRET_KEY: "secret-key",
+        SEEMIRAI_UPBIT_KEY_SCOPE: "자산조회,주문조회,주문하기",
+        SEEMIRAI_UPBIT_KEY_SCOPE_EVIDENCE_ID: "scope-evidence-2026-06-01",
+        SEEMIRAI_UPBIT_POLICY_SYNC_MARKET: "KRW-BTC",
+        SEEMIRAI_UPBIT_ORDER_SMOKE_MARKET: "KRW-BTC",
+        SEEMIRAI_UPBIT_ORDER_SMOKE_MAX_KRW: "4999",
+      }),
+    ).toThrow("5000 KRW 이상");
+
+    expect(() =>
+      loadPilotRuntimeConfigFromEnv({
+        SEEMIRAI_PILOT_PROFILE: "PILOT_ORDER_SMOKE",
+        SEEMIRAI_RUN_UPBIT_PRIVATE_SMOKE: "1",
+        SEEMIRAI_RUN_UPBIT_ORDER_SMOKE: "1",
+        SEEMIRAI_UPBIT_ACCESS_KEY: "access-key",
+        SEEMIRAI_UPBIT_SECRET_KEY: "secret-key",
+        SEEMIRAI_UPBIT_KEY_SCOPE: "자산조회,주문조회,주문하기",
+        SEEMIRAI_UPBIT_KEY_SCOPE_EVIDENCE_ID: "scope-evidence-2026-06-01",
+        SEEMIRAI_UPBIT_POLICY_SYNC_MARKET: "KRW-BTC",
+        SEEMIRAI_UPBIT_ORDER_SMOKE_MARKET: "KRW-BTC",
+        SEEMIRAI_UPBIT_ORDER_SMOKE_MAX_KRW: "50001",
+      }),
+    ).toThrow("50000 KRW 이하");
   });
 
   it("documents the Upbit identifier limit that later order smoke idempotency must keep", () => {
     expect(UPBIT_PILOT_IDENTIFIER_MAX_LENGTH).toBe(32);
+    expect(UPBIT_PILOT_ORDER_SMOKE_MIN_KRW_LIMIT).toBe(5000);
   });
 });

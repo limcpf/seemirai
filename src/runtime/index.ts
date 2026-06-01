@@ -83,6 +83,7 @@ export {
 } from "./config.js";
 export {
   UPBIT_PILOT_IDENTIFIER_MAX_LENGTH,
+  UPBIT_PILOT_ORDER_SMOKE_MIN_KRW_LIMIT,
   UPBIT_PILOT_ORDER_SMOKE_MAX_KRW_LIMIT,
   UnsafePilotRuntimeConfigError,
   loadPilotRuntimeConfigFromEnv,
