@@ -82,6 +82,10 @@ export {
   Phase15ManualAltApprovalConfigSchema,
   defaultPhase15AltUniverseConfig,
 } from "./phase-1-5-config.js";
+export {
+  resolveRuntimeSafetyBufferMarketCategory,
+  resolveRuntimeUniverse,
+} from "./universe.js";
 export { loadRuntimeNotificationConfig } from "./notification-config.js";
 export {
   createPaperNoKeyKillSwitchControlProvider,
@@ -99,6 +103,7 @@ export type {
   Phase15AltUniverseRuntimeConfig,
   Phase15ManualAltApprovalRuntimeConfig,
 } from "./phase-1-5-config.js";
+export type { RuntimeUniverseResolution } from "./universe.js";
 export type { RuntimeNotificationConfig } from "./notification-config.js";
 export type { PaperNoKeyKillSwitchControlProviderOptions } from "./notification-runtime.js";
 export type {
