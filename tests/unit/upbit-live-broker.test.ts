@@ -51,7 +51,38 @@ describe("UpbitLiveBroker core", () => {
     expect(JSON.stringify(order)).not.toContain("\"raw\"");
   });
 
-  it("fails closed before private client calls for unsupported orders and unsafe identifiers", async () => {
+  it("derives a stable Upbit identifier when strategy idempotency keys exceed the provider limit", async () => {
+    const longIdempotencyKey = "trend_following:upbit_krw_spot:KRW-BTC:BUY:2026-06-02T00:00:00.000Z";
+    const client = createFakePrivateClient({
+      createLimitOrder: vi.fn(async (input) => ({
+        payload: createCommandOrderPayload({ identifier: input.identifier }),
+        rateLimitStatus: orderRateLimitStatus,
+      })),
+    });
+    const broker = new UpbitLiveBroker({ privateClient: client, clock: () => capturedAt });
+
+    const order = await broker.submitOrder(
+      createSubmission({
+        intent: createLimitIntent({ idempotencyKey: longIdempotencyKey }),
+      }),
+    );
+
+    expect(client.createLimitOrder).toHaveBeenCalledWith(
+      expect.objectContaining({
+        identifier: "smr12542b51dabbe42a6d75cd4e0f0f6",
+      }),
+    );
+    expect(order).toMatchObject({
+      idempotencyKey: "smr12542b51dabbe42a6d75cd4e0f0f6",
+      metadata: {
+        upbitIdentifier: "smr12542b51dabbe42a6d75cd4e0f0f6",
+        upbitLiveBrokerIntentIdempotencyKey: longIdempotencyKey,
+        upbitLiveBrokerIdentifierSource: "derived",
+      },
+    });
+  });
+
+  it("fails closed before private client calls for unsupported orders and unsafe inputs", async () => {
     const { broker, client } = createBroker();
 
     await expect(
@@ -63,16 +94,6 @@ describe("UpbitLiveBroker core", () => {
     ).rejects.toMatchObject({
       name: "UnsafeUpbitPrivateRequestError",
       violations: ["Upbit live broker는 LIMIT 주문만 제출할 수 있습니다"],
-    } satisfies Partial<UnsafeUpbitPrivateRequestError>);
-    await expect(
-      broker.submitOrder(
-        createSubmission({
-          intent: createLimitIntent({ idempotencyKey: "x".repeat(33) }),
-        }),
-      ),
-    ).rejects.toMatchObject({
-      name: "UnsafeUpbitPrivateRequestError",
-      violations: ["Upbit live broker identifier는 32자 이하여야 합니다"],
     } satisfies Partial<UnsafeUpbitPrivateRequestError>);
     await expect(
       broker.submitOrder(
@@ -187,12 +208,41 @@ describe("UpbitLiveBroker core", () => {
     expect(client.getOrder).toHaveBeenCalledWith({ identifier: "m15-live-identifier-001" });
   });
 
+  it("rejects duplicate identifier recovery when execution conditions differ", async () => {
+    const client = createFakePrivateClient({
+      createLimitOrder: vi.fn(async () => {
+        throw new UpbitPrivateRestClientError({
+          status: 400,
+          statusText: "Bad Request",
+          kind: "REQUEST_FAILED",
+          userMessage: "이미 사용한 주문 식별자입니다.",
+          rateLimitStatus: orderRateLimitStatus,
+          trace: {
+            httpStatus: 400,
+            upbitErrorName: "duplicate_identifier",
+            rateLimitStatus: orderRateLimitStatus,
+          },
+        });
+      }),
+      getOrder: vi.fn(async () => ({
+        payload: createLookupOrderPayload({ time_in_force: "ioc" }),
+        rateLimitStatus: defaultRateLimitStatus,
+      })),
+    });
+    const broker = new UpbitLiveBroker({ privateClient: client, clock: () => capturedAt });
+
+    await expect(broker.submitOrder(createSubmission())).rejects.toMatchObject({
+      name: "UnsafeUpbitPrivateRequestError",
+      violations: ["Upbit live broker duplicate identifier 조회 결과의 실행 조건이 현재 주문과 일치해야 합니다"],
+    } satisfies Partial<UnsafeUpbitPrivateRequestError>);
+  });
+
   it("maps cancel, get, list open orders, and balances through safe broker contracts", async () => {
     const { broker, client } = createBroker();
 
     await expect(broker.cancelOrder("upbit-order-001")).resolves.toMatchObject({
       brokerOrderId: "upbit-order-001",
-      status: "CANCELED",
+      status: "CANCEL_REQUESTED",
       metadata: {
         upbitLiveBrokerOperation: "cancelOrder",
         rateLimitStatus: orderRateLimitStatus,
@@ -373,7 +423,7 @@ function createFakePrivateClient(
     })),
     cancelOrder: vi.fn(async () => ({
       payload: createCommandOrderPayload({
-        state: "cancel",
+        state: "wait",
         remaining_volume: "0.001",
       }),
       rateLimitStatus: orderRateLimitStatus,

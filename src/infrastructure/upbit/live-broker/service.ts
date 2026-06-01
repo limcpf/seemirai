@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type { BrokerPort } from "../../../application/ports/index.js";
 import type {
   BrokerBalance,
@@ -30,6 +31,7 @@ import type {
 } from "./types.js";
 
 const UPBIT_OPEN_ORDERS_PAGE_LIMIT = 100;
+const UPBIT_DERIVED_IDENTIFIER_PREFIX = "smr1";
 
 /**
  * Upbit private REST client를 `BrokerPort`로 노출하는 live broker 구현체다.
@@ -52,11 +54,12 @@ export class UpbitLiveBroker implements BrokerPort {
   /**
    * LIMIT 주문 제출 요청을 Upbit `POST /v1/orders`로 전달한다.
    *
-   * `OrderIntent.idempotencyKey`는 자동 변경 없이 Upbit `identifier`가 되며, 길이/주문 유형/가격 invariant가 깨지면 외부
-   * 주문 side effect를 만들기 전에 `UnsafeUpbitPrivateRequestError`로 닫는다.
+   * `OrderIntent.idempotencyKey`는 주문 evidence 원본으로 보존하고, Upbit 길이 제한을 넘으면 안정 hash identifier로
+   * 축약한다. 주문 유형/가격 invariant가 깨지면 외부 주문 side effect를 만들기 전에 `UnsafeUpbitPrivateRequestError`로 닫는다.
    */
   public async submitOrder(submission: OrderSubmission): Promise<BrokerOrder> {
     const input = toCreateLimitOrderInput(submission, this.exchangeId);
+    const identifierMetadata = toIdentifierMetadata(submission.intent.idempotencyKey, input.identifier);
 
     let response: UpbitPrivateRestResponse<unknown>;
     try {
@@ -69,9 +72,10 @@ export class UpbitLiveBroker implements BrokerPort {
         const recoveredOrder = toBrokerOrderFromLookup(lookupResponse.payload, this.createMapperOptions());
 
         // 같은 identifier라도 stale intent 재사용이면 다른 주문을 현재 제출 성공처럼 처리할 수 있어 회수 결과를 대조한다.
-        assertRecoveredOrderMatchesSubmission(recoveredOrder, submission);
+        assertRecoveredOrderMatchesSubmission(recoveredOrder, submission, input.identifier);
 
         return this.withOrderMetadata(recoveredOrder, lookupResponse, "submitOrder", {
+          ...identifierMetadata,
           upbitLiveBrokerRecovery: "duplicate_identifier_lookup",
         });
       }
@@ -79,7 +83,7 @@ export class UpbitLiveBroker implements BrokerPort {
     }
     const brokerOrder = toBrokerOrderFromCommand(response.payload, this.createMapperOptions());
 
-    return this.withOrderMetadata(brokerOrder, response, "submitOrder");
+    return this.withOrderMetadata(brokerOrder, response, "submitOrder", identifierMetadata);
   }
 
   /**
@@ -95,7 +99,7 @@ export class UpbitLiveBroker implements BrokerPort {
     const response = await this.privateClient.cancelOrder({ uuid: orderId });
     const brokerOrder = toBrokerOrderFromCommand(response.payload, this.createMapperOptions());
 
-    return this.withOrderMetadata(brokerOrder, response, "cancelOrder");
+    return this.withOrderMetadata(toCancelRequestedOrder(brokerOrder), response, "cancelOrder");
   }
 
   /**
@@ -226,10 +230,6 @@ function toCreateLimitOrderInput(
   if (intent.idempotencyKey.trim().length === 0) {
     violations.push("Upbit live broker identifier는 비어 있을 수 없습니다");
   }
-  if (intent.idempotencyKey.length > UPBIT_PRIVATE_ORDER_IDENTIFIER_MAX_LENGTH) {
-    // identifier를 자동 축약하면 중복 주문 충돌을 숨길 수 있으므로 거래소 호출 전에 닫는다.
-    violations.push(`Upbit live broker identifier는 ${UPBIT_PRIVATE_ORDER_IDENTIFIER_MAX_LENGTH}자 이하여야 합니다`);
-  }
   if (intent.orderType === "LIMIT") {
     if (requestedPrice.trim().length === 0) {
       violations.push("Upbit live broker LIMIT 주문에는 requestedPrice가 필요합니다");
@@ -258,8 +258,40 @@ function toCreateLimitOrderInput(
     side: privateSide,
     volume: intent.requestedQuantity,
     price: requestedPrice,
-    identifier: intent.idempotencyKey,
+    identifier: toUpbitOrderIdentifier(intent.idempotencyKey),
     ...(privateTimeInForce === undefined ? {} : { timeInForce: privateTimeInForce }),
+  };
+}
+
+/**
+ * domain idempotency key를 Upbit `identifier` 제약에 맞는 안정 키로 변환한다.
+ *
+ * 기존 전략 파이프라인의 긴 evidence key는 metadata에 보존하고, provider 계정 내 중복 방지는 같은 원문이 항상 같은 짧은
+ * identifier로 축약되는 invariant에 맡긴다.
+ */
+function toUpbitOrderIdentifier(idempotencyKey: string): string {
+  if (idempotencyKey.length <= UPBIT_PRIVATE_ORDER_IDENTIFIER_MAX_LENGTH) {
+    return idempotencyKey;
+  }
+
+  const digest = createHash("sha256").update(idempotencyKey).digest("hex");
+
+  return `${UPBIT_DERIVED_IDENTIFIER_PREFIX}${digest.slice(
+    0,
+    UPBIT_PRIVATE_ORDER_IDENTIFIER_MAX_LENGTH - UPBIT_DERIVED_IDENTIFIER_PREFIX.length,
+  )}`;
+}
+
+/**
+ * live broker 반환 주문에 원본 idempotency evidence와 Upbit identifier 생성 방식을 남긴다.
+ *
+ * top-level `BrokerOrder.idempotencyKey`는 provider identifier를 따르므로, 긴 전략 key가 축약된 경우에도 audit/reconcile이
+ * 원본 intent key와 provider key를 함께 추적할 수 있게 metadata로 분리 보존한다.
+ */
+function toIdentifierMetadata(intentIdempotencyKey: string, upbitIdentifier: string): JsonRecord {
+  return {
+    upbitLiveBrokerIntentIdempotencyKey: intentIdempotencyKey,
+    upbitLiveBrokerIdentifierSource: intentIdempotencyKey === upbitIdentifier ? "intent" : "derived",
   };
 }
 
@@ -312,7 +344,11 @@ function validatePositiveDecimalString(value: string, label: string, violations:
  * 입력 identifier가 stale retry나 운영자 실수로 재사용되면 live broker가 다른 주문을 현재 주문 성공으로 기록할 수 있으므로,
  * 주문의 핵심 fingerprint가 모두 일치할 때만 복구 결과를 반환한다.
  */
-function assertRecoveredOrderMatchesSubmission(order: BrokerOrder, submission: OrderSubmission): void {
+function assertRecoveredOrderMatchesSubmission(
+  order: BrokerOrder,
+  submission: OrderSubmission,
+  expectedIdentifier: string,
+): void {
   const intent = submission.intent;
   const violations: string[] = [];
 
@@ -328,7 +364,7 @@ function assertRecoveredOrderMatchesSubmission(order: BrokerOrder, submission: O
   if (order.side !== intent.side) {
     violations.push("Upbit live broker duplicate identifier 조회 결과의 주문 방향이 현재 주문과 일치해야 합니다");
   }
-  if (order.idempotencyKey !== intent.idempotencyKey) {
+  if (order.idempotencyKey !== expectedIdentifier) {
     violations.push("Upbit live broker duplicate identifier 조회 결과의 identifier가 현재 주문과 일치해야 합니다");
   }
   if (!areSameDecimalStrings(order.requestedQuantity, intent.requestedQuantity)) {
@@ -341,10 +377,63 @@ function assertRecoveredOrderMatchesSubmission(order: BrokerOrder, submission: O
   ) {
     violations.push("Upbit live broker duplicate identifier 조회 결과의 가격이 현재 주문과 일치해야 합니다");
   }
+  if (readStringMetadata(order.metadata, "upbitTimeInForce") !== toExpectedOrderTimeInForce(intent)) {
+    violations.push("Upbit live broker duplicate identifier 조회 결과의 실행 조건이 현재 주문과 일치해야 합니다");
+  }
 
   if (violations.length > 0) {
     throw new UnsafeUpbitPrivateRequestError({ violations });
   }
+}
+
+/**
+ * duplicate recovery에서 대조할 주문 실행 조건을 domain time-in-force로 정규화한다.
+ *
+ * `postOnly`는 실제 provider 요청에서 `post_only`로 side effect를 바꾸므로, 명시 timeInForce와 같은 fingerprint 축으로
+ * 비교해야 한다.
+ */
+function toExpectedOrderTimeInForce(intent: OrderSubmission["intent"]): TimeInForce | undefined {
+  if (intent.orderType !== "LIMIT") {
+    return undefined;
+  }
+
+  if (intent.postOnly === true || intent.timeInForce === "POST_ONLY") {
+    return "POST_ONLY";
+  }
+
+  if (intent.timeInForce === "IOC" || intent.timeInForce === "FOK") {
+    return intent.timeInForce;
+  }
+
+  return undefined;
+}
+
+/**
+ * provider mapper metadata에서 문자열 fingerprint 값만 읽는다.
+ *
+ * raw payload를 다시 해석하지 않고 mapper가 안전하게 정규화한 metadata만 비교해 duplicate recovery 경계를 단순하게 유지한다.
+ */
+function readStringMetadata(metadata: JsonRecord | undefined, key: string): string | undefined {
+  const value = metadata?.[key];
+
+  return typeof value === "string" ? value : undefined;
+}
+
+/**
+ * Upbit 취소 성공 응답을 broker cancel 접수 상태로 정규화한다.
+ *
+ * Upbit cancel endpoint의 200 응답은 최종 취소 완료가 아니라 접수 대상 주문 상태일 수 있으므로, 아직 열린 주문으로 보이는
+ * 응답은 hard-stop/smoke가 실패로 오판하지 않도록 `CANCEL_REQUESTED`로 낮춘다.
+ */
+function toCancelRequestedOrder(order: BrokerOrder): BrokerOrder {
+  if (order.status !== "ACCEPTED" && order.status !== "PARTIALLY_FILLED") {
+    return order;
+  }
+
+  return {
+    ...order,
+    status: "CANCEL_REQUESTED",
+  };
 }
 
 /**
