@@ -28,6 +28,8 @@ import type {
   UpbitLiveBrokerOptions,
 } from "./types.js";
 
+const UPBIT_OPEN_ORDERS_PAGE_LIMIT = 100;
+
 /**
  * Upbit private REST client를 `BrokerPort`로 노출하는 live broker 구현체다.
  *
@@ -53,10 +55,24 @@ export class UpbitLiveBroker implements BrokerPort {
    * 주문 side effect를 만들기 전에 `UnsafeUpbitPrivateRequestError`로 닫는다.
    */
   public async submitOrder(submission: OrderSubmission): Promise<BrokerOrder> {
-    const input = toCreateLimitOrderInput(submission);
+    const input = toCreateLimitOrderInput(submission, this.exchangeId);
 
-    // 주문 생성은 실계좌 side effect이므로 live broker 경계에서 마지막 invariant를 통과한 뒤에만 호출한다.
-    const response = await this.privateClient.createLimitOrder(input);
+    let response: UpbitPrivateRestResponse<unknown>;
+    try {
+      // 주문 생성은 실계좌 side effect이므로 live broker 경계에서 마지막 invariant를 통과한 뒤에만 호출한다.
+      response = await this.privateClient.createLimitOrder(input);
+    } catch (error) {
+      if (isDuplicateIdentifierError(error)) {
+        // 이전 생성 성공 후 응답만 잃은 재시도일 수 있으므로 새 주문 대신 identifier 조회로 기존 주문을 회수한다.
+        const lookupResponse = await this.privateClient.getOrder({ identifier: input.identifier });
+        const recoveredOrder = toBrokerOrderFromLookup(lookupResponse.payload, this.createMapperOptions());
+
+        return this.withOrderMetadata(recoveredOrder, lookupResponse, "submitOrder", {
+          upbitLiveBrokerRecovery: "duplicate_identifier_lookup",
+        });
+      }
+      throw error;
+    }
     const brokerOrder = toBrokerOrderFromCommand(response.payload, this.createMapperOptions());
 
     return this.withOrderMetadata(brokerOrder, response, "submitOrder");
@@ -108,10 +124,27 @@ export class UpbitLiveBroker implements BrokerPort {
    * private client wrapper의 기본 `wait`/`watch` 상태 조회를 사용하며, market이 주어지면 해당 market으로만 제한한다.
    */
   public async listOpenOrders(market?: MarketCode): Promise<readonly BrokerOrder[]> {
-    const response = await this.privateClient.listOpenOrders(market === undefined ? {} : { market });
-    const orders = toBrokerOrdersFromOpenOrders(response.payload, this.createMapperOptions());
+    const orders: BrokerOrder[] = [];
+    let page = 1;
 
-    return orders.map((order) => this.withOrderMetadata(order, response, "listOpenOrders"));
+    while (true) {
+      const response = await this.privateClient.listOpenOrders(
+        market === undefined
+          ? { page, limit: UPBIT_OPEN_ORDERS_PAGE_LIMIT, orderBy: "asc" }
+          : { market, page, limit: UPBIT_OPEN_ORDERS_PAGE_LIMIT, orderBy: "asc" },
+      );
+      const pageOrders = toBrokerOrdersFromOpenOrders(response.payload, this.createMapperOptions());
+
+      orders.push(...pageOrders.map((order) => this.withOrderMetadata(order, response, "listOpenOrders")));
+      if (pageOrders.length < UPBIT_OPEN_ORDERS_PAGE_LIMIT) {
+        break;
+      }
+
+      // limit과 같은 개수가 오면 뒤 페이지가 있을 수 있으므로 누락을 피하기 위해 다음 page를 계속 조회한다.
+      page += 1;
+    }
+
+    return orders;
   }
 
   /**
@@ -142,10 +175,11 @@ export class UpbitLiveBroker implements BrokerPort {
     order: BrokerOrder,
     response: UpbitPrivateRestResponse<unknown>,
     operation: UpbitLiveBrokerOperation,
+    extraMetadata: JsonRecord = {},
   ): BrokerOrder {
     return {
       ...order,
-      metadata: withLiveBrokerMetadata(order.metadata, response.rateLimitStatus, operation),
+      metadata: withLiveBrokerMetadata(order.metadata, response.rateLimitStatus, operation, extraMetadata),
     };
   }
 
@@ -167,13 +201,20 @@ export function createUpbitLiveBroker(options: UpbitLiveBrokerOptions): UpbitLiv
   return new UpbitLiveBroker(options);
 }
 
-function toCreateLimitOrderInput(submission: OrderSubmission): UpbitPrivateCreateLimitOrderInput {
+function toCreateLimitOrderInput(
+  submission: OrderSubmission,
+  expectedExchangeId: string,
+): UpbitPrivateCreateLimitOrderInput {
   const violations: string[] = [];
   const intent = submission.intent;
   const requestedPrice = intent.orderType === "LIMIT" ? intent.requestedPrice : "";
   const timeInForce = intent.orderType === "LIMIT" ? intent.timeInForce : undefined;
   const postOnly = intent.orderType === "LIMIT" ? intent.postOnly : undefined;
 
+  if (intent.exchangeId !== expectedExchangeId) {
+    // 승인 증거의 거래소와 실제 broker가 다르면 다른 계정/거래소 주문 side effect로 이어질 수 있어 즉시 차단한다.
+    violations.push("Upbit live broker 주문 exchangeId가 broker exchangeId와 일치해야 합니다");
+  }
   if (intent.orderType !== "LIMIT") {
     violations.push("Upbit live broker는 LIMIT 주문만 제출할 수 있습니다");
   }
@@ -186,6 +227,10 @@ function toCreateLimitOrderInput(submission: OrderSubmission): UpbitPrivateCreat
   }
   if (intent.orderType === "LIMIT" && requestedPrice.trim().length === 0) {
     violations.push("Upbit live broker LIMIT 주문에는 requestedPrice가 필요합니다");
+  }
+  if (postOnly === true && (timeInForce === "IOC" || timeInForce === "FOK")) {
+    // post-only와 IOC/FOK는 체결 조건이 상충하므로 우선순위로 덮어쓰지 않고 증거 불일치를 차단한다.
+    violations.push("Upbit live broker postOnly 주문은 IOC/FOK timeInForce와 함께 사용할 수 없습니다");
   }
   if (intent.requestedQuantity.trim().length === 0) {
     violations.push("Upbit live broker 주문 수량이 필요합니다");
@@ -235,16 +280,42 @@ function assertRequiredOrderId(orderId: string, operationLabel: string): void {
 }
 
 function isOrderNotFoundError(error: unknown): boolean {
-  return error instanceof UpbitPrivateRestClientError && error.trace.httpStatus === 404;
+  if (!(error instanceof UpbitPrivateRestClientError) || error.trace.httpStatus !== 404) {
+    return false;
+  }
+
+  return isKnownOrderNotFoundErrorName(error.trace.upbitErrorName);
+}
+
+function isDuplicateIdentifierError(error: unknown): boolean {
+  if (!(error instanceof UpbitPrivateRestClientError)) {
+    return false;
+  }
+
+  return isKnownDuplicateIdentifierErrorName(error.trace.upbitErrorName);
+}
+
+function isKnownOrderNotFoundErrorName(upbitErrorName: string | undefined): boolean {
+  return upbitErrorName === "order_not_found" || upbitErrorName === "not_found_order";
+}
+
+function isKnownDuplicateIdentifierErrorName(upbitErrorName: string | undefined): boolean {
+  return (
+    upbitErrorName === "duplicate_identifier" ||
+    upbitErrorName === "identifier_already_used" ||
+    upbitErrorName === "used_identifier"
+  );
 }
 
 function withLiveBrokerMetadata(
   metadata: JsonRecord | undefined,
   rateLimitStatus: UpbitRateLimitStatus,
   operation: UpbitLiveBrokerOperation,
+  extraMetadata: JsonRecord = {},
 ): JsonRecord {
   return {
     ...withoutRawPayload(metadata),
+    ...extraMetadata,
     upbitLiveBrokerOperation: operation,
     rateLimitStatus,
   };

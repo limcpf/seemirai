@@ -74,7 +74,57 @@ describe("UpbitLiveBroker core", () => {
       name: "UnsafeUpbitPrivateRequestError",
       violations: ["Upbit live broker identifier는 32자 이하여야 합니다"],
     } satisfies Partial<UnsafeUpbitPrivateRequestError>);
+    await expect(
+      broker.submitOrder(
+        createSubmission({
+          intent: createLimitIntent({ exchangeId: "other_exchange" }),
+        }),
+      ),
+    ).rejects.toMatchObject({
+      name: "UnsafeUpbitPrivateRequestError",
+      violations: ["Upbit live broker 주문 exchangeId가 broker exchangeId와 일치해야 합니다"],
+    } satisfies Partial<UnsafeUpbitPrivateRequestError>);
+    await expect(
+      broker.submitOrder(
+        createSubmission({
+          intent: createLimitIntent({ postOnly: true, timeInForce: "IOC" }),
+        }),
+      ),
+    ).rejects.toMatchObject({
+      name: "UnsafeUpbitPrivateRequestError",
+      violations: ["Upbit live broker postOnly 주문은 IOC/FOK timeInForce와 함께 사용할 수 없습니다"],
+    } satisfies Partial<UnsafeUpbitPrivateRequestError>);
     expect(client.createLimitOrder).not.toHaveBeenCalled();
+  });
+
+  it("recovers duplicate identifier submit retries by looking up the existing order", async () => {
+    const client = createFakePrivateClient({
+      createLimitOrder: vi.fn(async () => {
+        throw new UpbitPrivateRestClientError({
+          status: 400,
+          statusText: "Bad Request",
+          kind: "REQUEST_FAILED",
+          userMessage: "이미 사용한 주문 식별자입니다.",
+          rateLimitStatus: orderRateLimitStatus,
+          trace: {
+            httpStatus: 400,
+            upbitErrorName: "identifier_already_used",
+            rateLimitStatus: orderRateLimitStatus,
+          },
+        });
+      }),
+    });
+    const broker = new UpbitLiveBroker({ privateClient: client, clock: () => capturedAt });
+
+    await expect(broker.submitOrder(createSubmission())).resolves.toMatchObject({
+      brokerOrderId: "upbit-order-001",
+      metadata: {
+        upbitLiveBrokerOperation: "submitOrder",
+        upbitLiveBrokerRecovery: "duplicate_identifier_lookup",
+        rateLimitStatus: defaultRateLimitStatus,
+      },
+    });
+    expect(client.getOrder).toHaveBeenCalledWith({ identifier: "m15-live-identifier-001" });
   });
 
   it("maps cancel, get, list open orders, and balances through safe broker contracts", async () => {
@@ -110,7 +160,12 @@ describe("UpbitLiveBroker core", () => {
 
     expect(client.cancelOrder).toHaveBeenCalledWith({ uuid: "upbit-order-001" });
     expect(client.getOrder).toHaveBeenCalledWith({ uuid: "upbit-order-001" });
-    expect(client.listOpenOrders).toHaveBeenCalledWith({ market: "KRW-BTC" });
+    expect(client.listOpenOrders).toHaveBeenCalledWith({
+      market: "KRW-BTC",
+      page: 1,
+      limit: 100,
+      orderBy: "asc",
+    });
     expect(balances).toMatchObject({
       exchangeId: "upbit_krw_spot",
       metadata: {
@@ -134,6 +189,39 @@ describe("UpbitLiveBroker core", () => {
     expect(JSON.stringify(balances)).not.toContain("\"raw\"");
   });
 
+  it("continues open order pagination until the last short page", async () => {
+    const firstPage = Array.from({ length: 100 }, (_value, index) =>
+      createCommandOrderPayload({
+        uuid: `open-order-${index.toString().padStart(3, "0")}`,
+        identifier: `m15-open-${index.toString().padStart(3, "0")}`,
+      }),
+    );
+    const client = createFakePrivateClient({
+      listOpenOrders: vi.fn(async (input) => ({
+        payload:
+          input?.page === 2
+            ? [createCommandOrderPayload({ uuid: "open-order-100", identifier: "m15-open-100" })]
+            : firstPage,
+        rateLimitStatus: defaultRateLimitStatus,
+      })),
+    });
+    const broker = new UpbitLiveBroker({ privateClient: client, clock: () => capturedAt });
+
+    await expect(broker.listOpenOrders("KRW-BTC")).resolves.toHaveLength(101);
+    expect(client.listOpenOrders).toHaveBeenNthCalledWith(1, {
+      market: "KRW-BTC",
+      page: 1,
+      limit: 100,
+      orderBy: "asc",
+    });
+    expect(client.listOpenOrders).toHaveBeenNthCalledWith(2, {
+      market: "KRW-BTC",
+      page: 2,
+      limit: 100,
+      orderBy: "asc",
+    });
+  });
+
   it("returns undefined for not found order lookups without hiding other private errors", async () => {
     const client = createFakePrivateClient({
       getOrder: vi.fn(async () => {
@@ -145,6 +233,7 @@ describe("UpbitLiveBroker core", () => {
           rateLimitStatus: defaultRateLimitStatus,
           trace: {
             httpStatus: 404,
+            upbitErrorName: "order_not_found",
             rateLimitStatus: defaultRateLimitStatus,
           },
         });
@@ -175,6 +264,28 @@ describe("UpbitLiveBroker core", () => {
     await expect(unavailableBroker.getOrder("upbit-order-001")).rejects.toMatchObject({
       name: "UpbitPrivateRestClientError",
       kind: "PROVIDER_UNAVAILABLE",
+    } satisfies Partial<UpbitPrivateRestClientError>);
+
+    const ambiguousNotFoundClient = createFakePrivateClient({
+      getOrder: vi.fn(async () => {
+        throw new UpbitPrivateRestClientError({
+          status: 404,
+          statusText: "Not Found",
+          kind: "REQUEST_FAILED",
+          userMessage: "라우팅된 endpoint를 찾지 못했습니다.",
+          rateLimitStatus: defaultRateLimitStatus,
+          trace: {
+            httpStatus: 404,
+            rateLimitStatus: defaultRateLimitStatus,
+          },
+        });
+      }),
+    });
+    const ambiguousBroker = new UpbitLiveBroker({ privateClient: ambiguousNotFoundClient, clock: () => capturedAt });
+
+    await expect(ambiguousBroker.getOrder("upbit-order-001")).rejects.toMatchObject({
+      name: "UpbitPrivateRestClientError",
+      status: 404,
     } satisfies Partial<UpbitPrivateRestClientError>);
   });
 });
