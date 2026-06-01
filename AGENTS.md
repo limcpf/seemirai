@@ -24,6 +24,7 @@
 - 새 프로젝트 구조 생성: [`.agents/skills/project-bootstrap/SKILL.md`](./.agents/skills/project-bootstrap/SKILL.md)
 - PRD와 기능 요구사항 작성: [`.agents/skills/prd-writer/SKILL.md`](./.agents/skills/prd-writer/SKILL.md)
 - GitHub issue 작성과 생성: [`.agents/skills/issue-planner/SKILL.md`](./.agents/skills/issue-planner/SKILL.md)
+- issue 기준 sub PR 순차 개발과 임시 mother merge 운영: [`.agents/skills/issue-subpr-runner/SKILL.md`](./.agents/skills/issue-subpr-runner/SKILL.md)
 - issue 단위 mother/sub PR 운영: [`.agents/skills/subpr-orchestrator/SKILL.md`](./.agents/skills/subpr-orchestrator/SKILL.md)
 - PR 리뷰 drain: [`.agents/skills/pr-review-drain/SKILL.md`](./.agents/skills/pr-review-drain/SKILL.md)
 
