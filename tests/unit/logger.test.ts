@@ -50,6 +50,8 @@ describe("app logger", () => {
           jwt: "nested-jwt-token",
         },
         env: {
+          SEEMIRAI_UPBIT_ACCESS_KEY: "scoped-upbit-access-env-key",
+          SEEMIRAI_UPBIT_SECRET_KEY: "scoped-upbit-secret-env-key",
           TELEGRAM_BOT_TOKEN: "legacy-telegram-env-token",
           SEEMIRAI_TELEGRAM_BOT_TOKEN: "scoped-telegram-env-token",
         },
@@ -72,6 +74,8 @@ describe("app logger", () => {
     expect(output).not.toContain("request-jwt-token");
     expect(output).not.toContain("plain-jwt-token");
     expect(output).not.toContain("nested-jwt-token");
+    expect(output).not.toContain("scoped-upbit-access-env-key");
+    expect(output).not.toContain("scoped-upbit-secret-env-key");
     expect(output).not.toContain("legacy-telegram-env-token");
     expect(output).not.toContain("scoped-telegram-env-token");
   });
