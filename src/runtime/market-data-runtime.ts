@@ -20,6 +20,7 @@ import {
   upsertOrderbookMetric,
   upsertOrderbookSnapshot,
 } from "../infrastructure/db/market-data.js";
+import { listPhase15AltApprovalEvidenceSnapshots } from "../infrastructure/db/audit-log.js";
 import type {
   OrderbookMetricInputOptions,
   OrderbookSnapshotInputOptions,
@@ -127,6 +128,16 @@ export interface PaperNoKeyMarketDataRuntimeRefreshOptions {
 }
 
 /**
+ * audit evidence를 DB에서 읽어 market data runtime을 조립할 때 필요한 입력이다.
+ *
+ * worker entrypoint는 이 async factory를 사용해 config와 append-only approval evidence를 같은 시점에 해석한다.
+ * DB 조회 외 side effect는 없으며, WebSocket 연결은 반환된 subscription message를 소비하는 상위 worker가 담당한다.
+ */
+export interface PaperNoKeyMarketDataRuntimeAuditEvidenceOptions extends PaperNoKeyMarketDataRuntimeOptions {
+  database: Database;
+}
+
+/**
  * orderbook event 저장 시 metric과 snapshot 저장 옵션을 분리한다.
  *
  * M3 worker는 1초 metric과 5초 snapshot을 함께 남기지만, 테스트와 replay는 lag/reconnect count 같은 metric
@@ -212,6 +223,25 @@ export function createPaperNoKeyMarketDataRuntime(
   const config = assertPaperNoKeyMarketDataRuntimeConfig(loadRuntimeConfig(input));
   const registry = resolveRegistryActivationConfig(config.registry);
   return createPaperNoKeyMarketDataRuntimeFromConfig(config, registry, options);
+}
+
+/**
+ * audit_events에 저장된 phase 1.5 evidence를 주입해 `PAPER_NO_KEY` market data runtime을 조립한다.
+ *
+ * 수동 승인 config와 durable APPROVE/REVOKE/EXPIRE evidence를 같은 universe 해석에 넣어 운영 worker가 테스트 전용
+ * 옵션 없이도 승인 알트를 열거나 닫을 수 있게 한다.
+ */
+export async function createPaperNoKeyMarketDataRuntimeWithAuditEvidence(
+  input: unknown,
+  options: PaperNoKeyMarketDataRuntimeAuditEvidenceOptions,
+): Promise<PaperNoKeyMarketDataRuntime> {
+  const phase15ApprovalEvidence =
+    options.phase15ApprovalEvidence ?? await listPhase15AltApprovalEvidenceSnapshots(options.database);
+
+  return createPaperNoKeyMarketDataRuntime(input, {
+    ...options,
+    phase15ApprovalEvidence,
+  });
 }
 
 function createPaperNoKeyMarketDataRuntimeFromConfig(

@@ -242,9 +242,10 @@ function evaluateMarketWarning(input: Phase15AltEligibilityInput): Phase15AltApp
     return condition("market_warning", false, "phase_1_5_market_warning_present", true, false);
   }
 
-  if (status?.tradable === false) {
+  const nonUniverseReasonCodes = withoutUniverseMembershipReasonCodes(status?.reasonCodes ?? []);
+  if (status?.tradable === false && nonUniverseReasonCodes.length > 0) {
     return condition("market_warning", false, "phase_1_5_market_not_tradable", false, false, {
-      reason_codes: [...status.reasonCodes],
+      reason_codes: nonUniverseReasonCodes,
     });
   }
 
@@ -271,9 +272,10 @@ function evaluateMarketCaution(input: Phase15AltEligibilityInput): Phase15AltApp
     return condition("market_caution", false, "phase_1_5_market_caution_present", true, false);
   }
 
-  if (status?.tradable === false) {
+  const nonUniverseReasonCodes = withoutUniverseMembershipReasonCodes(status?.reasonCodes ?? []);
+  if (status?.tradable === false && nonUniverseReasonCodes.length > 0) {
     return condition("market_caution", false, "phase_1_5_market_not_tradable", false, false, {
-      reason_codes: [...status.reasonCodes],
+      reason_codes: nonUniverseReasonCodes,
     });
   }
 
@@ -284,6 +286,10 @@ function evaluateMarketCaution(input: Phase15AltEligibilityInput): Phase15AltApp
     false,
     false,
   );
+}
+
+function withoutUniverseMembershipReasonCodes(reasonCodes: readonly string[]): readonly string[] {
+  return reasonCodes.filter((reasonCode) => !reasonCode.startsWith("market_not_in_mvp_universe:"));
 }
 
 function evaluateMarketStatusIdentity(input: Phase15AltEligibilityInput):

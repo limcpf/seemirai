@@ -9,6 +9,7 @@ export {
 export {
   PostgresAuditLogRepository,
   appendAuditEvent,
+  listPhase15AltApprovalEvidenceSnapshots,
   toAuditEventRow,
 } from "./audit-log.js";
 export {

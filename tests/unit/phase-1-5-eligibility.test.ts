@@ -120,6 +120,23 @@ describe("phase 1.5 alt eligibility evaluator", () => {
         ?.actualValue,
     ).toBe("NaN");
   });
+
+  it("does not treat MVP universe membership as a candidate eligibility failure", async () => {
+    const fixture = await loadFixture();
+    const decision = evaluatePhase15AltEligibility({
+      ...fixture.healthy,
+      marketStatus: {
+        ...fixture.healthy.marketStatus,
+        tradable: false,
+        reasonCodes: ["market_not_in_mvp_universe:KRW-SOL"],
+      },
+      thresholds: fixture.thresholds,
+    });
+
+    expect(decision.eligible).toBe(true);
+    expect(decision.evidence.action).toBe("APPROVE");
+    expect(decision.failedConditions).toEqual([]);
+  });
 });
 
 async function loadFixture(): Promise<Phase15EligibilityFixture> {

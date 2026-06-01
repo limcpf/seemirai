@@ -9,6 +9,8 @@ import {
 import type {
   CostModelInput,
   MarketStatus,
+  Phase15AltApprovalEvidenceCondition,
+  Phase15AltApprovalEvidenceSnapshot,
   RuleContext,
   SafetyBufferMarketCategory,
 } from "../../src/domain/index.js";
@@ -316,13 +318,67 @@ describe("phase 1.5 runtime integration", () => {
     expect(universe.phase15ApprovedAltMarkets).toEqual(["KRW-SOL"]);
     expect(universe.phase15BlockedAltMarkets).toEqual([]);
   });
+
+  it("keeps a market blocked when revoke evidence exists after the config approval", () => {
+    const config = loadRuntimeConfig({
+      universe: {
+        phase_1_5: {
+          enabled: true,
+          manual_approvals: [
+            {
+              market: "KRW-SOL",
+              approved_at: "2026-05-31T00:00:00.000Z",
+            },
+          ],
+        },
+      },
+    });
+    const universe = resolveRuntimeUniverse(config.universe, {
+      observedAt,
+      evidence: [
+        createEvidenceSnapshot("KRW-SOL", "REVOKE", "2026-05-31T12:00:00.000Z"),
+        createEvidenceSnapshot("KRW-SOL", "APPROVE", "2026-06-01T00:00:00.000Z"),
+      ],
+    });
+
+    expect(universe.allowedMarkets).toEqual(["KRW-BTC", "KRW-ETH"]);
+    expect(universe.phase15BlockedAltMarkets).toEqual(["KRW-SOL"]);
+  });
+
+  it("does not accept approve evidence when required condition keys are missing", () => {
+    const config = loadRuntimeConfig({
+      universe: {
+        phase_1_5: {
+          enabled: true,
+          manual_approvals: [
+            {
+              market: "KRW-SOL",
+              approved_at: "2026-05-31T00:00:00.000Z",
+            },
+          ],
+        },
+      },
+    });
+    const universe = resolveRuntimeUniverse(config.universe, {
+      observedAt,
+      evidence: [
+        {
+          ...createEvidenceSnapshot("KRW-SOL", "APPROVE", "2026-05-31T00:00:00.000Z"),
+          conditions: [],
+        },
+      ],
+    });
+
+    expect(universe.allowedMarkets).toEqual(["KRW-BTC", "KRW-ETH"]);
+    expect(universe.phase15MissingEvidenceAltMarkets).toEqual(["KRW-SOL"]);
+  });
 });
 
 function createEvidenceSnapshot(
   market: string,
   action: "APPROVE" | "REJECT" | "REVOKE" | "EXPIRE",
   evidenceObservedAt: string,
-) {
+): Phase15AltApprovalEvidenceSnapshot {
   return {
     exchangeId: "upbit_krw_spot",
     market,
@@ -335,8 +391,48 @@ function createEvidenceSnapshot(
       maxExpectedSlippageBps: "20",
       minDepthKrw: "100000000",
     },
-    conditions: [],
+    conditions: action === "APPROVE" ? createPassingPhase15Conditions() : [],
   };
+}
+
+function createPassingPhase15Conditions(): readonly Phase15AltApprovalEvidenceCondition[] {
+  return [
+    {
+      key: "listing_age",
+      passed: true,
+      reasonCode: "phase_1_5_listing_age_sufficient",
+    },
+    {
+      key: "market_warning",
+      passed: true,
+      reasonCode: "phase_1_5_market_warning_absent",
+    },
+    {
+      key: "market_caution",
+      passed: true,
+      reasonCode: "phase_1_5_market_caution_absent",
+    },
+    {
+      key: "thirty_day_average_trade_value",
+      passed: true,
+      reasonCode: "phase_1_5_30d_trade_value_sufficient",
+    },
+    {
+      key: "seven_day_spread_p95",
+      passed: true,
+      reasonCode: "phase_1_5_spread_p95_within_limit",
+    },
+    {
+      key: "expected_slippage",
+      passed: true,
+      reasonCode: "phase_1_5_expected_slippage_within_limit",
+    },
+    {
+      key: "depth",
+      passed: true,
+      reasonCode: "phase_1_5_depth_sufficient",
+    },
+  ];
 }
 
 function createAltCostInput(

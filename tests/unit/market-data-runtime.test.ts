@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import type {
   MarketDataStatusEvent,
   OrderbookEvent,
+  Phase15AltApprovalEvidenceCondition,
+  Phase15AltApprovalEvidenceSnapshot,
   TradeEvent,
 } from "../../src/domain/index.js";
 import {
@@ -260,7 +262,11 @@ describe("PAPER_NO_KEY market data runtime", () => {
   });
 });
 
-function createPhase15ApprovalEvidence(market: string, action: "APPROVE" | "REJECT" | "REVOKE" | "EXPIRE", observedAt: string) {
+function createPhase15ApprovalEvidence(
+  market: string,
+  action: "APPROVE" | "REJECT" | "REVOKE" | "EXPIRE",
+  observedAt: string,
+): Phase15AltApprovalEvidenceSnapshot {
   return {
     exchangeId: "upbit_krw_spot",
     market,
@@ -273,8 +279,24 @@ function createPhase15ApprovalEvidence(market: string, action: "APPROVE" | "REJE
       maxExpectedSlippageBps: "20",
       minDepthKrw: "100000000",
     },
-    conditions: [],
+    conditions: action === "APPROVE" ? createPassingPhase15Conditions() : [],
   };
+}
+
+function createPassingPhase15Conditions(): readonly Phase15AltApprovalEvidenceCondition[] {
+  return [
+    { key: "listing_age", passed: true, reasonCode: "phase_1_5_listing_age_sufficient" },
+    { key: "market_warning", passed: true, reasonCode: "phase_1_5_market_warning_absent" },
+    { key: "market_caution", passed: true, reasonCode: "phase_1_5_market_caution_absent" },
+    {
+      key: "thirty_day_average_trade_value",
+      passed: true,
+      reasonCode: "phase_1_5_30d_trade_value_sufficient",
+    },
+    { key: "seven_day_spread_p95", passed: true, reasonCode: "phase_1_5_spread_p95_within_limit" },
+    { key: "expected_slippage", passed: true, reasonCode: "phase_1_5_expected_slippage_within_limit" },
+    { key: "depth", passed: true, reasonCode: "phase_1_5_depth_sufficient" },
+  ];
 }
 
 function createStatusEvent(status: MarketDataStatusEvent["status"]): MarketDataStatusEvent {

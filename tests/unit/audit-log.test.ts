@@ -6,7 +6,7 @@ import {
   toOrderCandidateDiscardAuditEvent,
   toPhase15AltApprovalAuditEvent,
 } from "../../src/application/index.js";
-import { toAuditEventRow } from "../../src/infrastructure/index.js";
+import { listPhase15AltApprovalEvidenceSnapshots, toAuditEventRow } from "../../src/infrastructure/index.js";
 import type {
   AuditEvent,
   AuditLogPort,
@@ -15,6 +15,7 @@ import type {
   StrategyDecisionIntentConversion,
 } from "../../src/application/index.js";
 import type { CostDecision, OrderIntent, StrategyDecision } from "../../src/domain/index.js";
+import type { Database } from "../../src/infrastructure/index.js";
 
 const occurredAt = "2026-05-18T12:00:00.000Z";
 
@@ -337,6 +338,45 @@ describe("phase 1.5 alt approval audit", () => {
         operator_action: "철회된 market이 runtime universe에서 제외됐는지 확인한다.",
       },
     });
+  });
+
+  it("loads durable phase 1.5 approval evidence snapshots from audit rows", async () => {
+    const row = toAuditEventRow(toPhase15AltApprovalAuditEvent({
+      evidence: phase15ApprovalEvidence("APPROVE"),
+    }));
+    const database = {
+      selectFrom() {
+        const query = {
+          select() {
+            return query;
+          },
+          where() {
+            return query;
+          },
+          orderBy() {
+            return query;
+          },
+          async execute() {
+            return [
+              {
+                occurred_at: row.occurred_at,
+                payload_json: row.payload_json,
+              },
+            ];
+          },
+        };
+        return query;
+      },
+    } as unknown as Database;
+
+    await expect(listPhase15AltApprovalEvidenceSnapshots(database)).resolves.toMatchObject([
+      {
+        exchangeId: "upbit_krw_spot",
+        market: "KRW-SOL",
+        action: "APPROVE",
+        evidenceId: "phase15:KRW-SOL:2026-06-01",
+      },
+    ]);
   });
 });
 

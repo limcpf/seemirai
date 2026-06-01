@@ -1,10 +1,21 @@
 import type {
   MarketCode,
+  Phase15AltApprovalEvidenceCondition,
   Phase15AltApprovalEvidenceSnapshot,
   SafetyBufferMarketCategory,
   TimestampInput,
 } from "../domain/index.js";
 import type { RuntimeConfig } from "./config.js";
+
+const requiredPhase15ApprovalConditionKeys: readonly Phase15AltApprovalEvidenceCondition["key"][] = [
+  "listing_age",
+  "market_warning",
+  "market_caution",
+  "thirty_day_average_trade_value",
+  "seven_day_spread_p95",
+  "expected_slippage",
+  "depth",
+];
 
 /**
  * runtime universe 해석 결과다.
@@ -64,14 +75,14 @@ export function resolveRuntimeUniverse(
 
       const latestEvidence = findLatestEvidenceAfterApproval(approval.market, approvedAtMs, observedAtMs, evidence);
 
-      if (latestEvidence === undefined || !matchesManualApprovalEvidence(approval.evidence_id, latestEvidence)) {
-        // 수동 config만으로 알트가 열리면 eligibility/audit 누락을 우회하므로 승인 evidence가 없으면 닫아 둔다.
-        phase15MissingEvidenceAltMarkets.push(approval.market);
+      if (hasBlockingEvidenceAfterApproval(approval.market, approvedAtMs, observedAtMs, evidence)) {
+        phase15BlockedAltMarkets.push(approval.market);
         continue;
       }
 
-      if (isBlockingEvidenceAction(latestEvidence.action)) {
-        phase15BlockedAltMarkets.push(approval.market);
+      if (latestEvidence === undefined || !matchesManualApprovalEvidence(approval.evidence_id, latestEvidence)) {
+        // 수동 config만으로 알트가 열리면 eligibility/audit 누락을 우회하므로 승인 evidence가 없으면 닫아 둔다.
+        phase15MissingEvidenceAltMarkets.push(approval.market);
         continue;
       }
 
@@ -139,8 +150,31 @@ function isBlockingEvidenceAction(action: Phase15AltApprovalEvidenceSnapshot["ac
   return action === "REJECT" || action === "REVOKE" || action === "EXPIRE";
 }
 
+function hasBlockingEvidenceAfterApproval(
+  market: MarketCode,
+  approvedAtMs: number,
+  observedAtMs: number,
+  evidence: readonly Phase15AltApprovalEvidenceSnapshot[],
+): boolean {
+  return evidence.some((snapshot) => {
+    if (snapshot.market !== market || !isBlockingEvidenceAction(snapshot.action)) {
+      return false;
+    }
+
+    const evidenceObservedAtMs = toTimestampMs(snapshot.observedAt);
+    // 철회/만료 이후 재개방은 config 승인 시각을 새로 갱신한 승인만 허용한다.
+    return evidenceObservedAtMs >= approvedAtMs && evidenceObservedAtMs <= observedAtMs;
+  });
+}
+
 function isApprovingEvidence(evidence: Phase15AltApprovalEvidenceSnapshot): boolean {
-  return evidence.action === "APPROVE" && evidence.conditions.every((condition) => condition.passed);
+  if (evidence.action !== "APPROVE") {
+    return false;
+  }
+
+  const conditionsByKey = new Map(evidence.conditions.map((condition) => [condition.key, condition]));
+
+  return requiredPhase15ApprovalConditionKeys.every((key) => conditionsByKey.get(key)?.passed === true);
 }
 
 function matchesManualApprovalEvidence(

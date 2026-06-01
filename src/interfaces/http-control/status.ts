@@ -1,7 +1,10 @@
 import { sql } from "kysely";
 import { dailyReportJobType } from "../../application/index.js";
-import type { KillSwitchState } from "../../domain/index.js";
+import type { KillSwitchState, Phase15AltApprovalEvidenceSnapshot } from "../../domain/index.js";
 import { getKillSwitchActionPlan } from "../../domain/index.js";
+import {
+  listPhase15AltApprovalEvidenceSnapshots,
+} from "../../infrastructure/db/index.js";
 import type { Database } from "../../infrastructure/db/index.js";
 import { resolveRuntimeUniverse } from "../../runtime/index.js";
 import type { RuntimeConfig } from "../../runtime/index.js";
@@ -72,16 +75,17 @@ export function createDatabaseControlStatusProvider(
       const actionPlan = getKillSwitchActionPlan(killSwitch.state);
       const readiness = await statusReadinessProvider.check();
       const blockedReason = actionPlan.newOrdersBlocked ? killSwitch.reasonCode : null;
-      const [paper, alerts, dailyReport] = await Promise.all([
+      const [paper, alerts, dailyReport, phase15ApprovalEvidence] = await Promise.all([
         readPaperStatus(options.database),
         readAlertStatus(options),
         readDailyReportStatus(options),
+        readPhase15ApprovalEvidence(options),
       ]);
       const generatedAt = clock().toISOString();
       // kill switch action plan은 상태 문자열을 실제 주문 차단/수동 검토 신호로 변환하는 경계다.
       return {
         generatedAt,
-        runtime: toSafeRuntimeSummary(options.runtimeConfig, generatedAt),
+        runtime: toSafeRuntimeSummary(options.runtimeConfig, generatedAt, phase15ApprovalEvidence),
         tradingState: {
           state: killSwitch.state,
           killSwitchState: killSwitch.state,
@@ -586,8 +590,15 @@ function toIsoString(value: TimestampValue): string | null {
 /**
  * runtime config에서 운영 노출이 안전한 필드만 골라낸다.
  */
-function toSafeRuntimeSummary(config: RuntimeConfig, observedAt: string): ControlStatusSnapshot["runtime"] {
-  const universe = resolveRuntimeUniverse(config.universe, { observedAt });
+function toSafeRuntimeSummary(
+  config: RuntimeConfig,
+  observedAt: string,
+  phase15ApprovalEvidence: readonly Phase15AltApprovalEvidenceSnapshot[],
+): ControlStatusSnapshot["runtime"] {
+  const universe = resolveRuntimeUniverse(config.universe, {
+    observedAt,
+    evidence: phase15ApprovalEvidence,
+  });
 
   return {
     exchange: config.exchange,
@@ -608,4 +619,22 @@ function toSafeRuntimeSummary(config: RuntimeConfig, observedAt: string): Contro
     liveTradingEnabled: config.live_trading_enabled,
     paperNoKey: config.paper_no_key,
   };
+}
+
+async function readPhase15ApprovalEvidence(
+  options: CreateDatabaseControlStatusProviderOptions,
+): Promise<readonly Phase15AltApprovalEvidenceSnapshot[]> {
+  if (options.phase15ApprovalEvidence !== undefined) {
+    return options.phase15ApprovalEvidence;
+  }
+  if (options.database === undefined) {
+    return [];
+  }
+
+  try {
+    return await listPhase15AltApprovalEvidenceSnapshots(options.database);
+  } catch {
+    // status endpoint는 audit 조회 실패 때문에 전체 응답을 깨기보다 승인 universe를 보수적으로 비워 둔다.
+    return [];
+  }
 }
