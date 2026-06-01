@@ -2,6 +2,7 @@ import { parseFinancialDecimal } from "../../shared/index.js";
 import {
   labelDiscardReason,
   labelOrderStatus,
+  labelPhase15AltApprovalAction,
   labelRiskAction,
   labelRiskType,
 } from "./user-facing.js";
@@ -59,6 +60,7 @@ export function aggregateDailyReport(
       "bps",
     ),
     discardedCandidates: summarizeDiscardedCandidates(sourceData.auditEvents),
+    phase15AltApprovals: summarizePhase15AltApprovals(sourceData.auditEvents),
     riskEvents: summarizeRiskEvents(sourceData),
   };
   const latestPnlSnapshotAt = latestTimestamp(pnlSnapshotsForAggregation.map((snapshot) => snapshot.capturedAt));
@@ -355,6 +357,33 @@ function summarizeDiscardedCandidates(
   return {
     total: reasonCodes.length,
     byReason: countBy(reasonCodes, labelDiscardReason),
+  };
+}
+
+/**
+ * phase 1.5 알트 승인/거부/철회/만료 audit event를 daily report용으로 집계한다.
+ *
+ * audit_events는 여러 운영 기록을 함께 담으므로 payload의 `audit_kind`를 기준으로 좁혀야 알트 편입 상태가 주문 폐기나
+ * 알림 감사 로그와 섞이지 않는다.
+ */
+function summarizePhase15AltApprovals(
+  auditEvents: readonly DailyReportAuditEventFact[],
+): DailyReportAggregate["phase15AltApprovals"] {
+  const actions: string[] = [];
+  const markets: string[] = [];
+  for (const event of auditEvents) {
+    if (event.payloadJson.audit_kind !== "PHASE_1_5_ALT_APPROVAL") {
+      continue;
+    }
+
+    actions.push(readString(event.payloadJson.action) ?? "UNKNOWN");
+    markets.push(readString(event.payloadJson.market) ?? "UNKNOWN");
+  }
+
+  return {
+    total: actions.length,
+    byAction: countBy(actions, labelPhase15AltApprovalAction),
+    byMarket: countBy(markets, (market) => market),
   };
 }
 

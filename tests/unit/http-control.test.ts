@@ -226,6 +226,18 @@ describe("HTTP control foundation", () => {
         telegram_bot_token: "telegram-secret-token",
         local_control_token: "local-control-secret",
       },
+      universe: {
+        phase_1_5: {
+          enabled: true,
+          candidate_markets: ["KRW-SOL"],
+          manual_approvals: [
+            {
+              market: "KRW-SOL",
+              approved_at: "2026-06-01T00:00:00.000Z",
+            },
+          ],
+        },
+      },
     });
     const readinessProvider = staticReadinessProvider(readySummary());
     server = createHttpControlServer({
@@ -233,6 +245,7 @@ describe("HTTP control foundation", () => {
       statusProvider: createDatabaseControlStatusProvider({
         runtimeConfig,
         readinessProvider,
+        clock: () => new Date("2026-06-01T00:00:00.000Z"),
         marketData: {
           connectionStatus: "STALE",
           lagMs: 12_345,
@@ -259,6 +272,14 @@ describe("HTTP control foundation", () => {
         universe: {
           phase1: ["KRW-BTC", "KRW-ETH"],
           phase1Count: 2,
+          phase15: {
+            enabled: true,
+            approvedAltMarkets: ["KRW-SOL"],
+            approvedAltCount: 1,
+            candidateMarkets: ["KRW-SOL"],
+            candidateMarketCount: 1,
+            maxManualApprovals: 3,
+          },
         },
         liveTradingEnabled: false,
         paperNoKey: true,
@@ -288,6 +309,45 @@ describe("HTTP control foundation", () => {
     expect(bodyText).not.toContain("secrets");
     expect(bodyText).not.toContain("telegram_bot_token");
     expect(bodyText).not.toContain("local_control_token");
+  });
+
+  it("shows only active phase 1.5 approvals in /status runtime summary", async () => {
+    const provider = createDatabaseControlStatusProvider({
+      runtimeConfig: loadRuntimeConfig({
+        universe: {
+          phase_1_5: {
+            enabled: true,
+            candidate_markets: ["KRW-SOL", "KRW-XRP"],
+            manual_approvals: [
+              {
+                market: "KRW-SOL",
+                approved_at: "2026-06-02T00:00:00.000Z",
+              },
+              {
+                market: "KRW-XRP",
+                approved_at: "2026-05-01T00:00:00.000Z",
+                expires_at: "2026-05-31T00:00:00.000Z",
+              },
+            ],
+          },
+        },
+      }),
+      readinessProvider: staticReadinessProvider(readySummary()),
+      clock: () => new Date("2026-06-01T00:00:00.000Z"),
+    });
+
+    await expect(provider.getStatus()).resolves.toMatchObject({
+      runtime: {
+        universe: {
+          phase15: {
+            approvedAltMarkets: [],
+            approvedAltCount: 0,
+            candidateMarkets: ["KRW-SOL", "KRW-XRP"],
+            candidateMarketCount: 2,
+          },
+        },
+      },
+    });
   });
 
   it("reads durable alert and daily report status without exposing raw job errors", async () => {
@@ -998,6 +1058,14 @@ function statusSnapshotProvider(input: {
           universe: {
             phase1: ["KRW-BTC", "KRW-ETH"],
             phase1Count: 2,
+            phase15: {
+              enabled: false,
+              approvedAltMarkets: [],
+              approvedAltCount: 0,
+              candidateMarkets: [],
+              candidateMarketCount: 0,
+              maxManualApprovals: 3,
+            },
           },
           liveTradingEnabled: false,
           paperNoKey: true,
