@@ -35,7 +35,7 @@ v0.2 pilot = Upbit KRW 현물 + owner-operated private API + gated small limit o
 | `PAPER_NO_KEY` | 기본 MVP paper runtime | 공개 quotation API | 없음 |
 | `PILOT_READ_ONLY` | 계정 잔고와 선택적 주문 조회 contract 확인 | `GET /v1/accounts`, `GET /v1/order?uuid=<uuid>` 또는 `GET /v1/order?identifier=<identifier>` | 없음 |
 | `PILOT_POLICY_SYNC` | 계정 조건이 반영된 주문 가능 정보 확인 | `GET /v1/orders/chance` | 없음 |
-| `PILOT_ORDER_SMOKE` | 최소 금액 지정가 생성/취소 smoke | `POST /v1/orders`, `DELETE /v1/order` | 운영자 승인 guard 통과 시 1회 |
+| `PILOT_ORDER_SMOKE` | 최소 금액 지정가 생성/취소 smoke | `GET /v1/accounts`, `GET /v1/orders/chance`, `POST /v1/orders`, `GET /v1/order?uuid=<smoke-run-order-uuid>` 또는 `GET /v1/order?identifier=<smoke-run-order-identifier>`, `DELETE /v1/order` | 운영자 승인 guard 통과 시 1회 |
 
 `PILOT_READ_ONLY`의 개별 주문 조회는 운영자가 기존 `uuid` 또는 `identifier`를 명시한 경우에만 실행한다. Upbit 개별 주문 조회는 조회 식별자 하나가 필수이므로, 식별자가 없으면 계정 잔고 조회만 read-only 선행 검증으로 본다. `PILOT_ORDER_SMOKE`는 계정 잔고 조회와 `PILOT_POLICY_SYNC`가 실패하면 시작하지 않는다. 주문 생성 후 취소가 실패하거나 주문 상태를 확인하지 못하면 추가 주문을 시도하지 않고 manual review 상태로 수렴한다.
 
@@ -47,7 +47,7 @@ v0.2 pilot = Upbit KRW 현물 + owner-operated private API + gated small limit o
 | 주문 가능 정보 조회 | `주문조회` | 허용 | `orders/chance` 정책 snapshot과 수수료 확인 |
 | 개별 주문 조회 | `주문조회` | 허용 | smoke 생성/취소 결과 확인 |
 | 주문 생성 | `주문하기` | 조건부 허용 | `PILOT_ORDER_SMOKE`와 별도 order guard 필요 |
-| 주문 취소 | `주문하기` | 조건부 허용 | 생성한 smoke 주문 또는 지정한 uuid/identifier만 |
+| 주문 취소 | `주문하기` | 조건부 허용 | 같은 smoke run에서 생성한 주문의 uuid/identifier만 |
 | 출금조회 | `출금조회` | 금지 | key scope에 포함되면 fail-closed |
 | 출금하기 | `출금하기` | 금지 | key scope에 포함되면 fail-closed |
 | 입금 자동화 | `입금조회`, `입금하기` | 금지 | M14 범위 아님 |
@@ -95,8 +95,9 @@ secret 원문은 git diff, 문서, issue/PR 본문, log, audit payload, smoke ar
 - pilot profile은 `PAPER_NO_KEY` 기본 profile로 자동 승격되지 않는다.
 - `SEEMIRAI_RUN_UPBIT_PRIVATE_SMOKE=1` 없이는 private smoke test가 skip된다.
 - `SEEMIRAI_RUN_UPBIT_ORDER_SMOKE=1` 없이는 주문 생성/취소 smoke가 skip된다.
-- 주문 생성은 KRW 현물 지정가만 허용한다.
+- 주문 생성은 KRW 현물 지정가 매수(`side=bid`)만 허용한다.
 - 주문 생성은 `time_in_force=post_only`를 필수로 요구하고, Upbit 응답이나 profile이 이를 지원하지 않으면 skip 또는 fail-closed 한다.
+- 주문 취소는 같은 smoke run에서 생성한 주문의 uuid 또는 identifier로만 허용하고, 운영자가 임의로 전달한 기존 주문 식별자는 취소하지 않는다.
 - 신규 진입 시장가 주문, `ord_type=price`, `ord_type=market`, `ord_type=best`는 M14 order smoke에서 금지한다.
 - 출금 권한, 시장가 신규 진입, 한도 초과, guard 누락, 인증 실패, 권한 부족, rate limit 차단은 fail-closed 한다.
 - 실패한 smoke는 추가 주문을 만들지 않고 manual review evidence를 남긴다.
@@ -110,9 +111,9 @@ secret 원문은 git diff, 문서, issue/PR 본문, log, audit payload, smoke ar
 2. `GET /v1/orders/chance?market=<market>`로 최소 주문금액, 주문 가능 유형, 수수료, 잔고를 확인한다.
 3. 운영자가 명시한 `SEEMIRAI_UPBIT_ORDER_SMOKE_MAX_KRW`가 정책 최소 주문금액 이상이고 총 테스트 예산 50,000 KRW 이하인지 확인한다.
 4. 지정가 가격과 수량은 `orders/chance`, public market policy, 운영자 입력을 기준으로 산정한다.
-5. `ord_type=limit`, `time_in_force=post_only` 조건을 모두 갖춘 보수적 지정가 주문을 1회 생성한다.
-6. 생성 직후 `DELETE /v1/order`로 취소한다.
-7. `GET /v1/order`로 생성/취소 상태를 확인한다.
+5. `side=bid`, `ord_type=limit`, `time_in_force=post_only` 조건을 모두 갖춘 보수적 지정가 매수 주문을 1회 생성한다.
+6. 생성 직후 같은 smoke run의 order uuid 또는 identifier만 사용해 `DELETE /v1/order`로 취소한다.
+7. 같은 smoke run의 order uuid 또는 identifier만 사용해 `GET /v1/order`로 생성/취소 상태를 확인한다.
 8. 결과 artifact에는 order uuid, market, side, price, volume, cancel status, correlation id, idempotency key, fee/balance 변화 요약만 남긴다.
 
 첫 smoke의 대상 market, 지정가 산정 방식, 최대 KRW 금액은 실행 시점의 잔고와 Upbit 정책 조회 결과를 기준으로 최종 확정한다.

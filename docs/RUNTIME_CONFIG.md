@@ -88,9 +88,11 @@ pilot private read smoke는 `자산조회`와 `주문조회` 권한만 요구한
 order smoke는 다음 runtime invariant를 모두 만족해야 한다.
 
 - market은 KRW 현물이어야 한다.
+- 주문 방향은 KRW 예산 상한으로 노출을 제한할 수 있는 매수(`side=bid`)만 허용한다.
 - 주문 유형은 `ord_type=limit`만 허용한다.
 - `time_in_force=post_only`가 필수다.
 - smoke 총액은 Upbit 최소 주문금액 이상이고 운영자가 설정한 소액 상한 이하이어야 한다.
+- 주문 취소와 상태 조회는 같은 smoke run에서 생성한 주문의 uuid 또는 identifier로만 허용한다.
 - `PILOT_ORDER_SMOKE`는 전략 worker, paper execution worker, kill switch 자동 주문 흐름을 대체하거나 연결하지 않는다.
 
 `/status` 또는 운영 CLI에 pilot 상태를 노출할 경우 safe summary만 반환한다. 허용 가능한 값은 profile id, guard 충족 여부,
