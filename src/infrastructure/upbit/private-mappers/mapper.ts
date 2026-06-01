@@ -381,6 +381,8 @@ function toBrokerOrderFromPrivateOrder(
   const executedVolume = normalizeDecimalString(order.executed_volume);
   const remainingQuantity = normalizeDecimalString(order.remaining_volume ?? "0");
   const domainOrder = toDomainOrderMapping(order, executedVolume, remainingQuantity);
+  // open order 목록은 status/audit에 반복 노출되므로 raw provider payload를 safe 요약 metadata에서 제외한다.
+  const includeRawPayload = source === "upbit_private_order_lookup";
 
   return {
     brokerOrderId: order.uuid,
@@ -395,7 +397,7 @@ function toBrokerOrderFromPrivateOrder(
     ...(domainOrder.requestedPrice === undefined ? {} : { requestedPrice: domainOrder.requestedPrice }),
     acceptedAt: order.created_at,
     updatedAt: options.capturedAt,
-    metadata: toOrderMetadata(order, source, executedVolume),
+    metadata: toOrderMetadata(order, source, executedVolume, includeRawPayload),
   };
 }
 
@@ -404,7 +406,7 @@ function toOrderLookupMetadata(
   executedVolume: NumericString,
 ): JsonRecord {
   return {
-    ...toOrderMetadata(order, "upbit_private_order_lookup", executedVolume),
+    ...toOrderMetadata(order, "upbit_private_order_lookup", executedVolume, true),
     trades: order.trades.map((trade) => ({
       uuid: trade.uuid,
       market: trade.market,
@@ -422,6 +424,7 @@ function toOrderMetadata(
   order: UpbitPrivateOrderSummaryPayload,
   source: "upbit_private_order_lookup" | "upbit_private_open_order",
   executedVolume: NumericString,
+  includeRawPayload: boolean,
 ): JsonRecord {
   const executedFunds =
     "executed_funds" in order && typeof order.executed_funds === "string" ? order.executed_funds : undefined;
@@ -444,7 +447,7 @@ function toOrderMetadata(
     ...(order.prevented_locked === undefined ? {} : { preventedLocked: normalizeDecimalString(order.prevented_locked) }),
     ...(executedFunds === undefined ? {} : { executedFunds: normalizeDecimalString(executedFunds) }),
     ...(order.trades_count === undefined ? {} : { tradesCount: order.trades_count }),
-    raw: order as JsonRecord,
+    ...(includeRawPayload ? { raw: order as JsonRecord } : {}),
   };
 }
 

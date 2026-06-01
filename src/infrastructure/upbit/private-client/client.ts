@@ -104,8 +104,8 @@ export class UpbitPrivateRestClient {
   /**
    * 체결 대기 주문 목록 조회 endpoint를 호출한다.
    *
-   * M15 live broker의 `listOpenOrders` 입력 경계이며, `state`/`states[]` 동시 사용 위험을 피하기 위해 배열형 `states[]`만
-   * 지원한다. query hash와 URL query는 같은 순서의 key-value 목록에서 생성한다.
+   * M15 live broker의 `listOpenOrders` 입력 경계이며, 예약 주문 대기 누락을 막기 위해 기본 조회도 `wait`와 `watch`를
+   * 함께 요청한다. query hash와 URL query는 같은 순서의 key-value 목록에서 생성한다.
    */
   public async listOpenOrders(
     input: UpbitPrivateListOpenOrdersInput = {},
@@ -115,7 +115,7 @@ export class UpbitPrivateRestClient {
     return this.requestJson({
       method: "GET",
       pathname: "/v1/orders/open",
-      ...(queryParams === undefined ? {} : { queryParams }),
+      queryParams,
     });
   }
 
@@ -290,28 +290,28 @@ function toCreateLimitOrderBodyParams(input: UpbitPrivateCreateLimitOrderInput):
   ];
 }
 
-function toListOpenOrdersQueryParams(input: UpbitPrivateListOpenOrdersInput): UpbitQueryParams | undefined {
+function toListOpenOrdersQueryParams(input: UpbitPrivateListOpenOrdersInput): UpbitQueryParams {
   const violations: string[] = [];
   const params: UpbitQueryParams[number][] = [];
+  const states = input.states ?? ["wait", "watch"];
 
   if (input.market !== undefined) {
     validateRequiredString(input.market, "체결 대기 주문 조회 market", violations);
     params.push({ key: "market", value: input.market });
   }
 
-  if (input.states !== undefined) {
-    if (input.states.length === 0) {
-      violations.push("체결 대기 주문 조회 states[]는 비어 있을 수 없습니다");
+  if (states.length === 0) {
+    violations.push("체결 대기 주문 조회 states[]는 비어 있을 수 없습니다");
+  }
+  for (const state of states) {
+    if (state !== "wait" && state !== "watch") {
+      violations.push("체결 대기 주문 조회 states[]는 wait 또는 watch만 허용합니다");
+      break;
     }
-    for (const state of input.states) {
-      if (state !== "wait" && state !== "watch") {
-        violations.push("체결 대기 주문 조회 states[]는 wait 또는 watch만 허용합니다");
-        break;
-      }
-    }
-    if (input.states.length > 0) {
-      params.push({ key: "states[]", value: input.states });
-    }
+  }
+  if (states.length > 0) {
+    // 예약 주문 대기(`watch`)가 reconcile 대상에서 빠지지 않도록 기본 조회도 배열형 상태 필터로 고정한다.
+    params.push({ key: "states[]", value: states });
   }
 
   if (input.page !== undefined) {
@@ -339,7 +339,7 @@ function toListOpenOrdersQueryParams(input: UpbitPrivateListOpenOrdersInput): Up
     throw new UnsafeUpbitPrivateRequestError({ violations });
   }
 
-  return params.length === 0 ? undefined : params;
+  return params;
 }
 
 function validateRequiredString(value: string, label: string, violations: string[]): void {

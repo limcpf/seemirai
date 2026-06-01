@@ -393,6 +393,7 @@ describe("Upbit private open orders mapper", () => {
       },
     ]);
     expect(JSON.stringify(orders)).not.toContain("Authorization");
+    expect(JSON.stringify(orders)).not.toContain("\"raw\"");
   });
 
   it("fails open order mapping without echoing raw invalid values", () => {

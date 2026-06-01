@@ -195,6 +195,31 @@ describe("Upbit private REST client foundation", () => {
     });
   });
 
+  it("defaults open order listing to wait and watch states", async () => {
+    let capturedRequest: CapturedRequest | undefined;
+    const client = new UpbitPrivateRestClient({
+      credentials,
+      nonceFactory: () => "open-orders-default-nonce",
+      fetchFn: async (input, init) => {
+        capturedRequest = captureRequest(input, init);
+        return jsonResponse([], "group=default; min=1800; sec=29");
+      },
+    });
+
+    await client.listOpenOrders();
+
+    const authorization = capturedRequest?.headers.get("authorization");
+    const decoded = decodeJwt(readBearerToken(authorization));
+    const expectedQueryString = "states[]=wait&states[]=watch";
+
+    expect(capturedRequest?.url).toBe("https://api.upbit.com/v1/orders/open?states[]=wait&states[]=watch");
+    expect(decoded.payload).toMatchObject({
+      nonce: "open-orders-default-nonce",
+      query_hash: createUpbitQueryHash(expectedQueryString),
+      query_hash_alg: "SHA512",
+    });
+  });
+
   it("fails locally before fetch when open order list inputs are unsafe", async () => {
     let fetchCalls = 0;
     const client = new UpbitPrivateRestClient({
