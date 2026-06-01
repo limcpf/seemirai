@@ -112,6 +112,47 @@ JWT, Authorization header, raw order response는 노출하지 않는다.
 KRW 계정 존재 여부 수준으로 요약하고, 정책/주문 결과는 raw provider payload가 아니라 수수료, 최소/최대 주문금액, 주문 상태
 필드만 저장한다.
 
+## M15 UpbitLiveBroker 조립 guard
+
+구현 기준:
+
+- 실행 계획: [`exec-plans/active/2026-06-02-issue-135-m15-upbit-live-broker.md`](./exec-plans/active/2026-06-02-issue-135-m15-upbit-live-broker.md)
+- live broker contract: `src/infrastructure/upbit/live-broker.ts`
+- 기본 paper 조립: `src/runtime/execution-runtime.ts`
+
+M15는 `UpbitLiveBroker` 구현을 추가하지만 기본 `config/paper.json`을 live profile로 승격하지 않는다. `PAPER_NO_KEY` runtime은 계속
+`PaperBroker`만 active `BrokerPort`로 조립하고, `DisabledUpbitLiveBroker`는 회귀 guard로 남긴다.
+
+M15 live broker factory는 다음 조건을 모두 만족하는 명시 입력에서만 실제 broker를 생성해야 한다.
+
+| 조건 | 의미 |
+| --- | --- |
+| pilot/live profile guard | 기본 paper runtime이 아니라 운영자가 선택한 private API 검증 경계 |
+| `SEEMIRAI_RUN_UPBIT_PRIVATE_SMOKE=1` | private read API 호출 승인 |
+| `SEEMIRAI_RUN_UPBIT_LIVE_BROKER_SMOKE=1` | M15 live broker smoke 실행 승인 |
+| `SEEMIRAI_UPBIT_KEY_SCOPE_EVIDENCE_ID` | 저장소 밖 redacted 권한 확인 증거 |
+| credential input | access key와 secret key를 env 또는 외부 secret 주입으로만 전달 |
+
+주문 생성 smoke를 실행할 때는 기존 M14 order smoke guard도 함께 요구한다.
+
+- `SEEMIRAI_RUN_UPBIT_ORDER_SMOKE=1`
+- `SEEMIRAI_UPBIT_ORDER_SMOKE_MARKET`
+- `SEEMIRAI_UPBIT_ORDER_SMOKE_MAX_KRW`
+- `SEEMIRAI_UPBIT_ORDER_SMOKE_PRICE`
+- `SEEMIRAI_UPBIT_ORDER_SMOKE_VOLUME`
+- `SEEMIRAI_UPBIT_ORDER_SMOKE_IDENTIFIER`
+
+`UpbitLiveBroker.submitOrder`는 M15에서 `LIMIT` 주문만 허용한다. 내부 `OrderSubmission.intent.idempotencyKey`는 Upbit
+`identifier`로 그대로 전송하며, 1자 이상 32자 이하가 아니면 거래소 호출 전 fail-closed 한다. 자동 truncate/hash는 숨은 충돌을
+만들 수 있으므로 M15 범위에서 금지한다.
+
+`time_in_force=post_only`는 우선 지원 대상이고, `post_only`와 `smp_type`이 동시에 설정되면 Upbit 호출 전에 차단한다. `ord_type=price`,
+`ord_type=market`, `ord_type=best`는 M15 신규 진입 주문에서 금지한다.
+
+factory, status summary, smoke artifact는 access key, secret key, JWT, Authorization header, raw provider payload를 반환하지 않는다.
+허용 가능한 노출 값은 profile id, guard 충족 여부, 권한 evidence id, market, 주문 상태 요약, redacted correlation id, rate-limit
+safe summary 수준이다.
+
 ## Phase 1.5 알트 수동 편입 설정
 
 구현 기준:

@@ -97,6 +97,24 @@
 - smoke artifact는 `SEEMIRAI_UPBIT_SMOKE_ARTIFACT_DIR` 또는 gitignore 대상 `test-results/upbit-smoke`에 저장하며, 저장 전
   access key, secret key, raw Authorization/JWT 포함 여부를 검사한다.
 
+## M15 UpbitLiveBroker 보안 기준
+
+- M15는 `UpbitLiveBroker` 구현을 추가하지만 기본 `PAPER_NO_KEY` runtime을 실거래 profile로 승격하지 않는다. 기본 실행에서 live
+  order API 호출 0회 조건은 계속 merge-blocking invariant다.
+- 실제 live broker factory는 `SEEMIRAI_RUN_UPBIT_PRIVATE_SMOKE=1`, `SEEMIRAI_RUN_UPBIT_LIVE_BROKER_SMOKE=1`, 권한 evidence id,
+  credential input이 모두 있을 때만 생성한다. 주문 생성 smoke는 기존 `SEEMIRAI_RUN_UPBIT_ORDER_SMOKE=1`과 운영자 price/volume/
+  identifier 입력도 함께 요구한다.
+- `UpbitLiveBroker`는 M15에서 `BrokerPort` contract 검증과 gated smoke에만 사용한다. 자동 전략 루프, Telegram inbound 승인, live
+  pilot 자동 주문 연결은 M21 이후 별도 보안 설계 전까지 금지한다.
+- 내부 idempotency key는 Upbit `identifier`로 그대로 매핑하며, identifier가 1자 이상 32자 이하가 아니면 거래소 호출 전에
+  fail-closed 한다. 자동 truncate/hash는 중복 주문 충돌을 숨길 수 있으므로 금지한다.
+- 신규 주문은 KRW 현물 `LIMIT` 주문으로 제한하고, `ord_type=price`, `ord_type=market`, `ord_type=best`는 거래소 호출 전에
+  차단한다. `post_only`와 `smp_type` 동시 사용도 local guard에서 차단한다.
+- `listOpenOrders`는 `주문조회` 권한이 있는 owner-operated key에서만 허용하고, `wait`/`watch` 조회 결과는 raw provider payload가
+  아니라 safe `BrokerOrder` 요약으로만 audit/status/smoke artifact에 남긴다.
+- raw access key, secret key, JWT, Authorization header, query hash 입력, raw provider payload는 log, audit, status, smoke
+  artifact, PR body에 남기지 않는다. 실패 응답은 한국어 사용자 행동 문구와 추적 정보를 분리한다.
+
 ## Dependency 추가 승인 기준
 
 - 신규 runtime dependency, dev dependency, package manager 변경은 승인 필요 변경으로 취급한다.
