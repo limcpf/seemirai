@@ -20,6 +20,8 @@ import { loadRuntimeConfig } from "./config.js";
 import type { RuntimeConfig } from "./config.js";
 import { resolveRegistryActivationConfig } from "./registry-config.js";
 import type { RegistryActivationResolution } from "./registry-config.js";
+import { resolveRuntimeUniverse } from "./universe.js";
+import type { RuntimeUniverseResolution } from "./universe.js";
 
 export const PAPER_NO_KEY_EXECUTION_WORKER_ID = "paper-no-key-execution-worker";
 
@@ -34,6 +36,7 @@ export interface PaperNoKeyExecutionRuntimeOptions {
 export interface PaperNoKeyExecutionRuntime {
   config: RuntimeConfig;
   registry: RegistryActivationResolution;
+  universe: RuntimeUniverseResolution;
   exchangeId: string;
   markets: readonly MarketCode[];
   broker: PaperBroker;
@@ -104,6 +107,9 @@ export function createPaperNoKeyExecutionRuntime(
 ): PaperNoKeyExecutionRuntime {
   const config = assertPaperNoKeyExecutionRuntimeConfig(loadRuntimeConfig(input));
   const registry = resolveRegistryActivationConfig(config.registry);
+  const universe = resolveRuntimeUniverse(config.universe, {
+    observedAt: options.clock?.() ?? new Date().toISOString(),
+  });
   const exchangeId = registry.exchange.id;
   const paperBrokerOptions: PaperBrokerOptions = {
     exchangeId,
@@ -130,8 +136,9 @@ export function createPaperNoKeyExecutionRuntime(
   return {
     config,
     registry,
+    universe,
     exchangeId,
-    markets: config.universe.phase_1,
+    markets: universe.allowedMarkets,
     broker,
     disabledLiveBroker,
     executionEngine,

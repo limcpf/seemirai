@@ -17,7 +17,7 @@ import {
   toMarketDataStatusRiskRow,
 } from "../../src/runtime/index.js";
 import type { MarketDataRuntimeEventStore } from "../../src/runtime/index.js";
-import { loadDefaultRuntimeConfig } from "../../src/runtime/index.js";
+import { loadDefaultRuntimeConfig, loadRuntimeConfig } from "../../src/runtime/index.js";
 
 const observedAt = "2026-05-17T10:30:00.000Z";
 
@@ -58,6 +58,38 @@ describe("PAPER_NO_KEY market data runtime", () => {
     expect(serialized).not.toMatch(/authorization|bearer|\/private|myOrder|myAsset|orders\/chance/iu);
     expect(runtime.config.secrets.upbit_access_key).toBeUndefined();
     expect(runtime.config.secrets.upbit_secret_key).toBeUndefined();
+  });
+
+  it("subscribes to the resolved phase 1.5 universe when manual approvals are active", () => {
+    const runtime = createPaperNoKeyMarketDataRuntime(
+      loadRuntimeConfig({
+        universe: {
+          phase_1_5: {
+            enabled: true,
+            manual_approvals: [
+              {
+                market: "KRW-SOL",
+                approved_at: "2026-05-31T00:00:00.000Z",
+              },
+            ],
+          },
+        },
+      }),
+      {
+        clock: () => "2026-06-01T00:00:00.000Z",
+      },
+    );
+
+    expect(runtime.markets).toEqual(["KRW-BTC", "KRW-ETH", "KRW-SOL"]);
+    expect(runtime.tradeStreamRequest.markets).toEqual(["KRW-BTC", "KRW-ETH", "KRW-SOL"]);
+    expect(JSON.parse(runtime.tradeSubscriptionMessage)).toMatchObject([
+      { ticket: PAPER_NO_KEY_MARKET_DATA_CONSUMER_ID },
+      {
+        type: "trade",
+        codes: ["KRW-BTC", "KRW-ETH", "KRW-SOL"],
+      },
+      { format: "DEFAULT" },
+    ]);
   });
 
   it("rejects Upbit API keys in the PAPER_NO_KEY market data runtime", () => {

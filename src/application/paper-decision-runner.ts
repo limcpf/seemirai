@@ -21,4 +21,5 @@ export type {
   PaperDecisionRiskInput,
   PaperDecisionSlippageSummary,
   PaperDecisionCostSummary,
+  PaperDecisionUniverseInput,
 } from "./paper-decision-runner/types.js";

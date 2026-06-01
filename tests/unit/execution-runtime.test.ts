@@ -20,6 +20,7 @@ import {
   executeHardStopPendingPaperOrderCancels,
   listPendingPaperOrdersForHardStop,
   loadDefaultRuntimeConfig,
+  loadRuntimeConfig,
 } from "../../src/runtime/index.js";
 
 const observedAt = "2026-05-20T01:00:00.000Z";
@@ -57,6 +58,30 @@ describe("PAPER_NO_KEY execution runtime", () => {
         },
       ],
     });
+  });
+
+  it("exposes resolved phase 1.5 approved markets to execution runtime callers", () => {
+    const runtime = createPaperNoKeyExecutionRuntime(
+      loadRuntimeConfig({
+        universe: {
+          phase_1_5: {
+            enabled: true,
+            manual_approvals: [
+              {
+                market: "KRW-SOL",
+                approved_at: "2026-05-31T00:00:00.000Z",
+              },
+            ],
+          },
+        },
+      }),
+      {
+        clock: () => "2026-06-01T00:00:00.000Z",
+      },
+    );
+
+    expect(runtime.markets).toEqual(["KRW-BTC", "KRW-ETH", "KRW-SOL"]);
+    expect(runtime.universe.phase15ApprovedAltMarkets).toEqual(["KRW-SOL"]);
   });
 
   it("rejects API keys in the PAPER_NO_KEY execution runtime", () => {
