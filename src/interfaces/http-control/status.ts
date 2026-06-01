@@ -3,6 +3,7 @@ import { dailyReportJobType } from "../../application/index.js";
 import type { KillSwitchState } from "../../domain/index.js";
 import { getKillSwitchActionPlan } from "../../domain/index.js";
 import type { Database } from "../../infrastructure/db/index.js";
+import { resolveRuntimeUniverse } from "../../runtime/index.js";
 import type { RuntimeConfig } from "../../runtime/index.js";
 import { createDatabaseControlReadinessProvider } from "./readiness.js";
 import type {
@@ -76,10 +77,11 @@ export function createDatabaseControlStatusProvider(
         readAlertStatus(options),
         readDailyReportStatus(options),
       ]);
+      const generatedAt = clock().toISOString();
       // kill switch action plan은 상태 문자열을 실제 주문 차단/수동 검토 신호로 변환하는 경계다.
       return {
-        generatedAt: clock().toISOString(),
-        runtime: toSafeRuntimeSummary(options.runtimeConfig),
+        generatedAt,
+        runtime: toSafeRuntimeSummary(options.runtimeConfig, generatedAt),
         tradingState: {
           state: killSwitch.state,
           killSwitchState: killSwitch.state,
@@ -584,7 +586,9 @@ function toIsoString(value: TimestampValue): string | null {
 /**
  * runtime config에서 운영 노출이 안전한 필드만 골라낸다.
  */
-function toSafeRuntimeSummary(config: RuntimeConfig): ControlStatusSnapshot["runtime"] {
+function toSafeRuntimeSummary(config: RuntimeConfig, observedAt: string): ControlStatusSnapshot["runtime"] {
+  const universe = resolveRuntimeUniverse(config.universe, { observedAt });
+
   return {
     exchange: config.exchange,
     market: config.market,
@@ -594,8 +598,8 @@ function toSafeRuntimeSummary(config: RuntimeConfig): ControlStatusSnapshot["run
       phase1Count: config.universe.phase_1.length,
       phase15: {
         enabled: config.universe.phase_1_5.enabled,
-        approvedAltMarkets: config.universe.phase_1_5.manual_approvals.map((approval) => approval.market),
-        approvedAltCount: config.universe.phase_1_5.manual_approvals.length,
+        approvedAltMarkets: universe.phase15ApprovedAltMarkets,
+        approvedAltCount: universe.phase15ApprovedAltMarkets.length,
         candidateMarkets: [...config.universe.phase_1_5.candidate_markets],
         candidateMarketCount: config.universe.phase_1_5.candidate_markets.length,
         maxManualApprovals: config.universe.phase_1_5.max_manual_approvals,
