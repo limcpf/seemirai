@@ -176,6 +176,51 @@ describe("Upbit private REST client foundation", () => {
     }
   });
 
+  it("classifies out_of_scope as permission failure even when Upbit returns 401", async () => {
+    const client = new UpbitPrivateRestClient({
+      credentials,
+      fetchFn: async () =>
+        errorResponse(
+          401,
+          "Unauthorized",
+          { error: { name: "out_of_scope", message: "권한이 부족합니다" } },
+          "group=exchange; min=1800; sec=28",
+        ),
+    });
+
+    await expect(client.getAccounts()).rejects.toMatchObject({
+      status: 401,
+      kind: "PERMISSION_DENIED",
+      userMessage: "Upbit 권한이 부족합니다. pilot profile에 필요한 권한 증거를 다시 확인하세요.",
+      trace: {
+        httpStatus: 401,
+        upbitErrorName: "out_of_scope",
+      },
+    } satisfies Partial<UpbitPrivateRestClientError>);
+  });
+
+  it("normalizes fetch rejections without leaking raw network errors", async () => {
+    const client = new UpbitPrivateRestClient({
+      credentials,
+      fetchFn: async () => {
+        throw new TypeError("tls reset raw-provider-detail");
+      },
+    });
+
+    try {
+      await client.getAccounts();
+      throw new Error("expected request to fail");
+    } catch (error) {
+      expect(error).toMatchObject({
+        name: "UpbitPrivateRestClientError",
+        status: 0,
+        kind: "REQUEST_FAILED",
+        userMessage: "Upbit private API에 연결하지 못했습니다. 추가 요청을 중단하고 네트워크 상태를 확인하세요.",
+      } satisfies Partial<UpbitPrivateRestClientError>);
+      expect(String(error)).not.toContain("raw-provider-detail");
+    }
+  });
+
   it("keeps rate-limit status on throttled and blocked responses", async () => {
     const throttledClient = new UpbitPrivateRestClient({
       credentials,

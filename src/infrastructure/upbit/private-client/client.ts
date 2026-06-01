@@ -110,10 +110,16 @@ export class UpbitPrivateRestClient {
       }),
     });
 
-    const response = await this.fetchFn(url, {
-      method: input.method,
-      headers,
-    });
+    let response: Response;
+    try {
+      response = await this.fetchFn(url, {
+        method: input.method,
+        headers,
+      });
+    } catch {
+      // 응답을 받기 전 네트워크 실패도 raw 예외를 audit으로 흘리지 않고 private client 오류 contract로 닫는다.
+      throw createPrivateNetworkError();
+    }
     const remainingReq = parseOptionalRemainingReqHeader(response.headers);
     const retryAfterSeconds = parseOptionalRetryAfterHeader(response.headers);
     const rateLimitStatus = createUpbitRateLimitStatus(response.status, remainingReq, retryAfterSeconds);
@@ -220,12 +226,12 @@ function toPrivateErrorKind(
     return "RATE_LIMIT_THROTTLED";
   }
 
-  if (status === 401) {
-    return "AUTHENTICATION_FAILED";
-  }
-
   if (status === 403 || upbitErrorName === "out_of_scope") {
     return "PERMISSION_DENIED";
+  }
+
+  if (status === 401) {
+    return "AUTHENTICATION_FAILED";
   }
 
   if (status >= 500) {
@@ -261,6 +267,21 @@ function toPrivateErrorUserMessage(kind: UpbitPrivateErrorKind): string {
   }
 
   return "Upbit private API 요청이 실패했습니다. 추적 정보를 기준으로 원인을 확인하세요.";
+}
+
+function createPrivateNetworkError(): UpbitPrivateRestClientError {
+  const rateLimitStatus = createUpbitRateLimitStatus(0);
+
+  return new UpbitPrivateRestClientError({
+    status: 0,
+    statusText: "NETWORK_ERROR",
+    kind: "REQUEST_FAILED",
+    userMessage: "Upbit private API에 연결하지 못했습니다. 추가 요청을 중단하고 네트워크 상태를 확인하세요.",
+    rateLimitStatus,
+    trace: {
+      rateLimitStatus,
+    },
+  });
 }
 
 function parseOptionalRemainingReqHeader(headers: Headers): UpbitRemainingReq | undefined {
