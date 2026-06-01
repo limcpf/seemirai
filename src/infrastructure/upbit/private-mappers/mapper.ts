@@ -21,10 +21,12 @@ import {
   UpbitPrivateAccountsResponseSchema,
   UpbitPrivateOpenOrdersResponseSchema,
   UpbitPrivateOrderChanceResponseSchema,
+  UpbitPrivateOrderCommandResponseSchema,
   UpbitPrivateOrderLookupResponseSchema,
 } from "./schemas.js";
 import type {
   UpbitPrivateOpenOrderResponse,
+  UpbitPrivateOrderCommandResponse,
   UpbitPrivateOrderChancePayload,
   UpbitPrivateOrderLookupResponse,
 } from "./schemas.js";
@@ -43,7 +45,10 @@ interface DomainOrderMapping {
   requestedPrice?: NumericString;
 }
 
-type UpbitPrivateOrderSummaryPayload = UpbitPrivateOrderLookupResponse | UpbitPrivateOpenOrderResponse;
+type UpbitPrivateOrderSummaryPayload =
+  | UpbitPrivateOrderLookupResponse
+  | UpbitPrivateOrderCommandResponse
+  | UpbitPrivateOpenOrderResponse;
 
 /**
  * Upbit private payload mapping 실패 오류다.
@@ -175,6 +180,21 @@ export function toBrokerOrderFromLookup(
     ...brokerOrder,
     metadata: toOrderLookupMetadata(order, normalizeDecimalString(order.executed_volume)),
   };
+}
+
+/**
+ * Upbit 주문 생성/취소 응답을 broker order contract로 변환한다.
+ *
+ * command 응답은 실제 주문 생성/취소 side effect 직후의 provider payload이므로, 반환값에는 상태와 추적용 요약만 남기고
+ * raw payload를 metadata에 보존하지 않는다. 이 함수는 이미 받은 payload 정규화만 수행하며 외부 API를 호출하지 않는다.
+ */
+export function toBrokerOrderFromCommand(
+  payload: unknown,
+  options: MapUpbitPrivatePayloadOptions,
+): BrokerOrder {
+  const order = parsePrivatePayload(UpbitPrivateOrderCommandResponseSchema, "ORDER_COMMAND", payload);
+
+  return toBrokerOrderFromPrivateOrder(order, options, "upbit_private_order_command");
 }
 
 /**
@@ -376,7 +396,7 @@ function toDomainOrderStatus(
 function toBrokerOrderFromPrivateOrder(
   order: UpbitPrivateOrderSummaryPayload,
   options: MapUpbitPrivatePayloadOptions,
-  source: "upbit_private_order_lookup" | "upbit_private_open_order",
+  source: "upbit_private_order_lookup" | "upbit_private_order_command" | "upbit_private_open_order",
 ): BrokerOrder {
   const executedVolume = normalizeDecimalString(order.executed_volume);
   const remainingQuantity = normalizeDecimalString(order.remaining_volume ?? "0");
@@ -422,7 +442,7 @@ function toOrderLookupMetadata(
 
 function toOrderMetadata(
   order: UpbitPrivateOrderSummaryPayload,
-  source: "upbit_private_order_lookup" | "upbit_private_open_order",
+  source: "upbit_private_order_lookup" | "upbit_private_order_command" | "upbit_private_open_order",
   executedVolume: NumericString,
   includeRawPayload: boolean,
 ): JsonRecord {

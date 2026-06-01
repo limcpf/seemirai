@@ -1,6 +1,7 @@
 export {
   UpbitPrivatePayloadMappingError,
   toBrokerBalanceSnapshot,
+  toBrokerOrderFromCommand,
   toBrokerOrderFromLookup,
   toBrokerOrdersFromOpenOrders,
   toFeePolicyFromOrderChance,
@@ -22,6 +23,7 @@ export {
   UpbitPrivateOpenOrdersResponseSchema,
   UpbitPrivateOrderChancePayloadSchema,
   UpbitPrivateOrderChanceResponseSchema,
+  UpbitPrivateOrderCommandResponseSchema,
   UpbitPrivateOrderLookupResponseSchema,
   UpbitPrivateOrderTradeSchema,
 } from "./private-mappers/schemas.js";
@@ -32,6 +34,7 @@ export type {
   UpbitPrivateOpenOrdersResponse,
   UpbitPrivateOrderChancePayload,
   UpbitPrivateOrderChanceResponse,
+  UpbitPrivateOrderCommandResponse,
   UpbitPrivateOrderLookupResponse,
   UpbitPrivateOrderTrade,
 } from "./private-mappers/schemas.js";

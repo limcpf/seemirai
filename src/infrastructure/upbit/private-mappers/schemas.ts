@@ -183,6 +183,37 @@ export const UpbitPrivateOrderLookupResponseSchema = z
   .passthrough();
 
 /**
+ * `/v1/orders` 생성과 `/v1/order` 취소 응답의 주문 요약 schema다.
+ *
+ * command 응답은 개별 주문 조회와 달리 체결 row 배열을 포함하지 않는다. live broker는 이 payload를 즉시 `BrokerOrder`
+ * contract로 정규화하되, raw provider payload는 반환 metadata에 보존하지 않는다.
+ */
+export const UpbitPrivateOrderCommandResponseSchema = z
+  .object({
+    market: UpbitPrivateMarketCodeSchema,
+    uuid: z.string().min(1),
+    side: UpbitPrivateOrderSideSchema,
+    ord_type: UpbitPrivateOrderTypeSchema,
+    price: UpbitPrivateNumericStringSchema.nullish(),
+    state: UpbitPrivateOrderStateSchema,
+    created_at: z.string().min(1),
+    volume: UpbitPrivateNumericStringSchema.nullish(),
+    remaining_volume: UpbitPrivateNumericStringSchema,
+    executed_volume: UpbitPrivateNumericStringSchema,
+    reserved_fee: UpbitPrivateNumericStringSchema,
+    remaining_fee: UpbitPrivateNumericStringSchema,
+    paid_fee: UpbitPrivateNumericStringSchema,
+    locked: UpbitPrivateNumericStringSchema,
+    time_in_force: UpbitPrivateTimeInForceSchema.optional(),
+    smp_type: UpbitPrivateSmpTypeSchema.optional(),
+    prevented_volume: UpbitPrivateNumericStringSchema.optional(),
+    prevented_locked: UpbitPrivateNumericStringSchema.optional(),
+    identifier: z.string().min(1).optional(),
+    trades_count: z.number().int().nonnegative().optional(),
+  })
+  .passthrough();
+
+/**
  * `/v1/orders/open` 체결 대기 주문 단일 row schema다.
  *
  * open order 목록은 개별 주문 조회와 달리 체결 목록을 포함하지 않으므로, broker order 요약에 필요한 주문 상태와 잔량
@@ -223,5 +254,6 @@ export type UpbitPrivateOrderChancePayload = z.infer<typeof UpbitPrivateOrderCha
 export type UpbitPrivateOrderChanceResponse = z.infer<typeof UpbitPrivateOrderChanceResponseSchema>;
 export type UpbitPrivateOrderTrade = z.infer<typeof UpbitPrivateOrderTradeSchema>;
 export type UpbitPrivateOrderLookupResponse = z.infer<typeof UpbitPrivateOrderLookupResponseSchema>;
+export type UpbitPrivateOrderCommandResponse = z.infer<typeof UpbitPrivateOrderCommandResponseSchema>;
 export type UpbitPrivateOpenOrderResponse = z.infer<typeof UpbitPrivateOpenOrderResponseSchema>;
 export type UpbitPrivateOpenOrdersResponse = z.infer<typeof UpbitPrivateOpenOrdersResponseSchema>;

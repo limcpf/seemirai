@@ -22,6 +22,7 @@ export type UpbitPrivatePayloadSchemaName =
   | "ACCOUNTS"
   | "ORDER_CHANCE"
   | "ORDER_LOOKUP"
+  | "ORDER_COMMAND"
   | "OPEN_ORDERS";
 
 /**
