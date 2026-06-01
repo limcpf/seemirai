@@ -338,6 +338,13 @@
       "owner_scope": ".agents/skills/issue-planner"
     },
     {
+      "path": ".agents/skills/issue-subpr-runner/SKILL.md",
+      "kind": "skill",
+      "role": "issue 기준 sub PR 순차 개발, review drain, mother branch merge workflow",
+      "read_when": ["issue sub PR 순차 개발", "sub PR DnD 검증", "mother branch 임시 merge", "final PR review drain"],
+      "owner_scope": ".agents/skills/issue-subpr-runner"
+    },
+    {
       "path": ".agents/skills/subpr-orchestrator/SKILL.md",
       "kind": "skill",
       "role": "issue를 mother branch에서 운영하고 필요 시 sub PR/worktree 흐름으로 분할하는 workflow",
