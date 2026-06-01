@@ -274,8 +274,8 @@ describe("HTTP control foundation", () => {
           phase1Count: 2,
           phase15: {
             enabled: true,
-            approvedAltMarkets: ["KRW-SOL"],
-            approvedAltCount: 1,
+            approvedAltMarkets: [],
+            approvedAltCount: 0,
             candidateMarkets: ["KRW-SOL"],
             candidateMarketCount: 1,
             maxManualApprovals: 3,

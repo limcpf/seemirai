@@ -5,6 +5,7 @@ import {
 } from "../../application/index.js";
 import type {
   PaperDecisionInputFrame,
+  PaperDecisionUniverseInput,
   PaperDecisionRunnerResult,
 } from "../../application/index.js";
 import type {
@@ -25,7 +26,8 @@ import type {
  * M9 paper decision runner fixture 파일의 public schema다.
  *
  * fixture는 market data 수신 smoke가 아니라 decision boundary 검증에 필요한 frame, paper 잔고, fill option만 담는다.
- * 이 구조는 DB 입력 source로 확장할 때도 runner 입력 frame과 broker 초기 조건을 분리해 유지하기 위한 기준이다.
+ * top-level universe는 frame에 누락된 phase 1.5 승인 context를 보강해 fixture 작성자가 같은 승인 목록을 반복하지
+ * 않게 하며, 이 구조는 DB 입력 source로 확장할 때도 runner 입력 frame과 broker 초기 조건을 분리해 유지하기 위한 기준이다.
  */
 export interface M9PaperDecisionFixture {
   schemaVersion: 1;
@@ -33,6 +35,7 @@ export interface M9PaperDecisionFixture {
   initialBalances: readonly PaperBrokerBalanceInput[];
   fillOptions?: PaperBrokerFillOptions;
   brokerClock?: TimestampInput;
+  universe?: PaperDecisionUniverseInput;
   frames: readonly PaperDecisionInputFrame[];
 }
 
@@ -69,13 +72,7 @@ export interface RunM9PaperDecisionFixtureSmokeOptions {
 export function createM9PaperDecisionFixtureRuntime(input: unknown): M9PaperDecisionFixtureRuntime {
   const fixture = parseM9PaperDecisionFixture(input);
   const source = new StaticPaperDecisionInputSource(
-    fixture.frames.map((frame) => ({
-      ...frame,
-      metadata: {
-        ...(frame.metadata ?? {}),
-        source_id: fixture.sourceId,
-      },
-    })),
+    fixture.frames.map((frame) => withFixtureDefaults(frame, fixture)),
   );
   const brokerOptions: PaperBrokerOptions = {
     exchangeId: "upbit_krw_spot",
@@ -97,6 +94,27 @@ export function createM9PaperDecisionFixtureRuntime(input: unknown): M9PaperDeci
     broker,
     runner,
   };
+}
+
+function withFixtureDefaults(
+  frame: PaperDecisionInputFrame,
+  fixture: M9PaperDecisionFixture,
+): PaperDecisionInputFrame {
+  const frameWithDefaults: PaperDecisionInputFrame = {
+    ...frame,
+    metadata: {
+      ...(frame.metadata ?? {}),
+      source_id: fixture.sourceId,
+    },
+  };
+  const universe = frame.universe ?? fixture.universe;
+
+  if (universe !== undefined) {
+    // fixture-level universe는 frame-local 승인 context가 비어 있을 때만 보강해 오래된 frame 값을 덮어쓰지 않는다.
+    frameWithDefaults.universe = universe;
+  }
+
+  return frameWithDefaults;
 }
 
 /**
@@ -144,6 +162,9 @@ export function parseM9PaperDecisionFixture(input: unknown): M9PaperDecisionFixt
   }
   if (record.brokerClock !== undefined) {
     fixture.brokerClock = readTimestamp(record.brokerClock, "fixture.brokerClock");
+  }
+  if (record.universe !== undefined) {
+    fixture.universe = readRecord(record.universe, "fixture.universe") as unknown as PaperDecisionUniverseInput;
   }
 
   return fixture;

@@ -110,6 +110,8 @@ config invariant:
 - threshold 숫자는 음수가 아닌 Decimal string이어야 한다.
 - 이 설정은 자동 신규 상장 편입을 열지 않으며, 실제 편입 여부는 후속 evaluator가 market warning/caution, 유동성,
   slippage, depth evidence를 모두 통과한 뒤 audit evidence와 함께 결정한다.
+- runtime universe는 수동 승인 config만으로 알트를 열지 않는다. 승인 시각 이후 현재 시각 이하의 `APPROVE` evidence가
+  없거나, 최신 evidence가 `REJECT`/`REVOKE`/`EXPIRE`이면 해당 알트는 fail-closed로 phase 1 universe 밖에 둔다.
 - 승인/거부/철회/만료 evidence는 `PHASE_1_5_ALT_APPROVAL` audit event로 남긴다. payload는
   `audit_kind=PHASE_1_5_ALT_APPROVAL`, action, market, threshold snapshot, 조건별 판정, 한국어 상태/필요 조치 문구를 포함한다.
 - `/status.runtime.universe.phase15`는 safe summary로 `enabled`, 승인 알트 목록/개수, 후보 목록/개수, 최대 수동 승인 수만 노출한다.

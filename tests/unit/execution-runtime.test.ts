@@ -77,6 +77,9 @@ describe("PAPER_NO_KEY execution runtime", () => {
       }),
       {
         clock: () => "2026-06-01T00:00:00.000Z",
+        phase15ApprovalEvidence: [
+          createPhase15ApprovalEvidence("KRW-SOL", "APPROVE", "2026-05-31T00:00:00.000Z"),
+        ],
       },
     );
 
@@ -103,6 +106,23 @@ describe("PAPER_NO_KEY execution runtime", () => {
     expect(source).not.toMatch(/UpbitPublicRestClient|orders\/chance|\/v1\/orders|Authorization|Bearer/iu);
   });
 });
+
+function createPhase15ApprovalEvidence(market: string, action: "APPROVE" | "REJECT" | "REVOKE" | "EXPIRE", observedAt: string) {
+  return {
+    exchangeId: "upbit_krw_spot",
+    market,
+    action,
+    observedAt,
+    thresholds: {
+      minListingAgeDays: 90,
+      minThirtyDayAverageTradeValueKrw: "10000000000",
+      maxSevenDaySpreadP95Bps: "15",
+      maxExpectedSlippageBps: "20",
+      minDepthKrw: "100000000",
+    },
+    conditions: [],
+  };
+}
 
 describe("hard stop pending paper order cancel execution", () => {
   it("executes planned paper order cancels without auto-liquidating open positions", async () => {

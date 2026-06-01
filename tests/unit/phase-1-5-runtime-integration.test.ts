@@ -44,7 +44,15 @@ describe("phase 1.5 runtime integration", () => {
         },
       },
     });
-    const universe = resolveRuntimeUniverse(config.universe, { observedAt });
+    const universe = resolveRuntimeUniverse(config.universe, {
+      observedAt,
+      evidence: [
+        {
+          ...createEvidenceSnapshot("KRW-SOL", "APPROVE", "2026-05-31T00:00:00.000Z"),
+          evidenceId: "phase15:KRW-SOL:2026-05-31",
+        },
+      ],
+    });
 
     expect(universe.allowedMarkets).toEqual(["KRW-BTC", "KRW-ETH", "KRW-SOL"]);
     expect(universe.phase15ApprovedAltMarkets).toEqual(["KRW-SOL"]);
@@ -91,7 +99,12 @@ describe("phase 1.5 runtime integration", () => {
         },
       },
     });
-    const universe = resolveRuntimeUniverse(config.universe, { observedAt });
+    const universe = resolveRuntimeUniverse(config.universe, {
+      observedAt,
+      evidence: [
+        createEvidenceSnapshot("KRW-SOL", "APPROVE", "2026-05-31T00:00:00.000Z"),
+      ],
+    });
 
     const warningStatus = toMarketStatus(
       {
@@ -144,7 +157,12 @@ describe("phase 1.5 runtime integration", () => {
         },
       },
     });
-    const universe = resolveRuntimeUniverse(config.universe, { observedAt });
+    const universe = resolveRuntimeUniverse(config.universe, {
+      observedAt,
+      evidence: [
+        createEvidenceSnapshot("KRW-SOL", "APPROVE", "2026-05-31T00:00:00.000Z"),
+      ],
+    });
     const approvedAltCostDecision = evaluateCost(createAltCostInput(
       "KRW-SOL",
       resolveRuntimeSafetyBufferMarketCategory("KRW-SOL", universe),
@@ -203,6 +221,27 @@ describe("phase 1.5 runtime integration", () => {
     expect(universe.allowedMarkets).toEqual(["KRW-BTC", "KRW-ETH"]);
     expect(universe.phase15ApprovedAltMarkets).toEqual([]);
     expect(universe.phase15BlockedAltMarkets).toEqual(["KRW-SOL"]);
+  });
+
+  it("fails closed when manual approvals have no approval evidence", () => {
+    const config = loadRuntimeConfig({
+      universe: {
+        phase_1_5: {
+          enabled: true,
+          manual_approvals: [
+            {
+              market: "KRW-SOL",
+              approved_at: "2026-05-31T00:00:00.000Z",
+            },
+          ],
+        },
+      },
+    });
+    const universe = resolveRuntimeUniverse(config.universe, { observedAt });
+
+    expect(universe.allowedMarkets).toEqual(["KRW-BTC", "KRW-ETH"]);
+    expect(universe.phase15ApprovedAltMarkets).toEqual([]);
+    expect(universe.phase15MissingEvidenceAltMarkets).toEqual(["KRW-SOL"]);
   });
 
   it("requires approval time to be active before adding phase 1.5 alts", () => {
@@ -269,6 +308,7 @@ describe("phase 1.5 runtime integration", () => {
       observedAt,
       evidence: [
         createEvidenceSnapshot("KRW-SOL", "REJECT", "2026-05-30T00:00:00.000Z"),
+        createEvidenceSnapshot("KRW-SOL", "APPROVE", "2026-05-31T00:00:00.000Z"),
       ],
     });
 

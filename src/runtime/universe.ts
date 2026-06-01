@@ -20,6 +20,7 @@ export interface RuntimeUniverseResolution {
   phase15ExpiredAltMarkets: readonly MarketCode[];
   phase15PendingAltMarkets: readonly MarketCode[];
   phase15BlockedAltMarkets: readonly MarketCode[];
+  phase15MissingEvidenceAltMarkets: readonly MarketCode[];
   phase15Enabled: boolean;
   evidence: readonly Phase15AltApprovalEvidenceSnapshot[];
 }
@@ -28,8 +29,8 @@ export interface RuntimeUniverseResolution {
  * `config.universe`를 runtime policy/rule/cost 경계에서 사용할 수 있는 market 목록으로 해석한다.
  *
  * phase 1.5가 꺼져 있으면 BTC/ETH phase 1만 반환한다. 켜져 있어도 아직 시작되지 않은 승인, 만료된 승인,
- * 승인 이후의 차단 evidence가 있는 market은 허용 목록에서 제외해 오래되었거나 철회된 수동 승인으로 신규 진입이
- * 열리지 않게 한다.
+ * 승인 이후의 APPROVE evidence가 없거나 차단 evidence가 있는 market은 허용 목록에서 제외해 config diff만으로
+ * 신규 진입이 열리지 않게 한다.
  */
 export function resolveRuntimeUniverse(
   universe: RuntimeConfig["universe"],
@@ -44,6 +45,7 @@ export function resolveRuntimeUniverse(
   const phase15ExpiredAltMarkets: MarketCode[] = [];
   const phase15PendingAltMarkets: MarketCode[] = [];
   const phase15BlockedAltMarkets: MarketCode[] = [];
+  const phase15MissingEvidenceAltMarkets: MarketCode[] = [];
 
   if (universe.phase_1_5.enabled) {
     for (const approval of universe.phase_1_5.manual_approvals) {
@@ -60,8 +62,22 @@ export function resolveRuntimeUniverse(
         continue;
       }
 
-      if (hasBlockingEvidenceAfterApproval(approval.market, approvedAtMs, observedAtMs, evidence)) {
+      const latestEvidence = findLatestEvidenceAfterApproval(approval.market, approvedAtMs, observedAtMs, evidence);
+
+      if (latestEvidence === undefined || !matchesManualApprovalEvidence(approval.evidence_id, latestEvidence)) {
+        // 수동 config만으로 알트가 열리면 eligibility/audit 누락을 우회하므로 승인 evidence가 없으면 닫아 둔다.
+        phase15MissingEvidenceAltMarkets.push(approval.market);
+        continue;
+      }
+
+      if (isBlockingEvidenceAction(latestEvidence.action)) {
         phase15BlockedAltMarkets.push(approval.market);
+        continue;
+      }
+
+      if (!isApprovingEvidence(latestEvidence)) {
+        // APPROVE가 아니거나 조건 snapshot이 통과하지 않은 evidence는 신규 진입 근거로 쓰지 않는다.
+        phase15MissingEvidenceAltMarkets.push(approval.market);
         continue;
       }
 
@@ -78,6 +94,7 @@ export function resolveRuntimeUniverse(
     phase15ExpiredAltMarkets,
     phase15PendingAltMarkets,
     phase15BlockedAltMarkets,
+    phase15MissingEvidenceAltMarkets,
     phase15Enabled: universe.phase_1_5.enabled,
     evidence,
   };
@@ -99,13 +116,13 @@ function dedupeMarkets(markets: readonly MarketCode[]): readonly MarketCode[] {
   return [...new Set(markets)];
 }
 
-function hasBlockingEvidenceAfterApproval(
+function findLatestEvidenceAfterApproval(
   market: MarketCode,
   approvedAtMs: number,
   observedAtMs: number,
   evidence: readonly Phase15AltApprovalEvidenceSnapshot[],
-): boolean {
-  const latestEvidence = evidence
+): Phase15AltApprovalEvidenceSnapshot | undefined {
+  return evidence
     .filter((snapshot) => snapshot.market === market)
     .map((snapshot) => ({
       snapshot,
@@ -116,12 +133,21 @@ function hasBlockingEvidenceAfterApproval(
       return evidenceObservedAtMs >= approvedAtMs && evidenceObservedAtMs <= observedAtMs;
     })
     .sort((left, right) => right.observedAtMs - left.observedAtMs)[0]?.snapshot;
-
-  return latestEvidence === undefined ? false : isBlockingEvidenceAction(latestEvidence.action);
 }
 
 function isBlockingEvidenceAction(action: Phase15AltApprovalEvidenceSnapshot["action"]): boolean {
   return action === "REJECT" || action === "REVOKE" || action === "EXPIRE";
+}
+
+function isApprovingEvidence(evidence: Phase15AltApprovalEvidenceSnapshot): boolean {
+  return evidence.action === "APPROVE" && evidence.conditions.every((condition) => condition.passed);
+}
+
+function matchesManualApprovalEvidence(
+  manualApprovalEvidenceId: string | undefined,
+  evidence: Phase15AltApprovalEvidenceSnapshot,
+): boolean {
+  return manualApprovalEvidenceId === undefined || evidence.evidenceId === manualApprovalEvidenceId;
 }
 
 function toTimestampMs(input: TimestampInput): number {

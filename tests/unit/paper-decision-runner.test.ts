@@ -136,13 +136,14 @@ describe("M9 paper decision runner", () => {
     const fixture = JSON.parse(await readFile(fixturePath, "utf8"));
     const frame = fixture.frames[3];
     fixture.frames = [frame];
+    fixture.universe = {
+      phase15ApprovedAltMarkets: ["KRW-SOL"],
+    };
     frame.market = "KRW-SOL";
     frame.orderbook.market = "KRW-SOL";
     frame.features.expected_return_bps = "35";
     delete frame.features.safety_buffer_bps;
-    frame.universe = {
-      phase15ApprovedAltMarkets: ["KRW-SOL"],
-    };
+    delete frame.universe;
 
     const result = await runM9PaperDecisionFixtureSmoke({ fixture });
 

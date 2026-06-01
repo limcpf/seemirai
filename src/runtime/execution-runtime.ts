@@ -14,6 +14,7 @@ import type {
   MarketCode,
   OrderLifecycleStatus,
   OrderbookEvent,
+  Phase15AltApprovalEvidenceSnapshot,
   TimestampInput,
 } from "../domain/index.js";
 import { loadRuntimeConfig } from "./config.js";
@@ -30,6 +31,7 @@ export interface PaperNoKeyExecutionRuntimeOptions {
   orderbookSnapshots?: OrderbookEvent | readonly OrderbookEvent[];
   fillOptions?: PaperBrokerFillOptions;
   brokerOrderIdPrefix?: string;
+  phase15ApprovalEvidence?: readonly Phase15AltApprovalEvidenceSnapshot[];
   clock?: () => TimestampInput;
 }
 
@@ -107,9 +109,18 @@ export function createPaperNoKeyExecutionRuntime(
 ): PaperNoKeyExecutionRuntime {
   const config = assertPaperNoKeyExecutionRuntimeConfig(loadRuntimeConfig(input));
   const registry = resolveRegistryActivationConfig(config.registry);
-  const universe = resolveRuntimeUniverse(config.universe, {
+  const universeOptions: {
+    observedAt: TimestampInput;
+    evidence?: readonly Phase15AltApprovalEvidenceSnapshot[];
+  } = {
     observedAt: options.clock?.() ?? new Date().toISOString(),
-  });
+  };
+
+  if (options.phase15ApprovalEvidence !== undefined) {
+    universeOptions.evidence = options.phase15ApprovalEvidence;
+  }
+
+  const universe = resolveRuntimeUniverse(config.universe, universeOptions);
   const exchangeId = registry.exchange.id;
   const paperBrokerOptions: PaperBrokerOptions = {
     exchangeId,
