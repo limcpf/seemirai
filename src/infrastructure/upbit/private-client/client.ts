@@ -6,10 +6,13 @@ import {
 import { buildUpbitAuthorizationHeader, buildUpbitQueryString, buildUpbitUrlQueryString } from "./auth.js";
 import {
   UPBIT_PRIVATE_API_BASE_URL,
+  UPBIT_PRIVATE_ORDER_IDENTIFIER_MAX_LENGTH,
   UnsafeUpbitPrivateRequestError,
   UpbitPrivateRestClientError,
 } from "./types.js";
 import type {
+  UpbitPrivateCancelOrderInput,
+  UpbitPrivateCreateLimitOrderInput,
   UpbitPrivateCredentials,
   UpbitPrivateErrorKind,
   UpbitPrivateErrorTrace,
@@ -17,6 +20,7 @@ import type {
   UpbitPrivateRequestMethod,
   UpbitPrivateRestClientOptions,
   UpbitPrivateRestResponse,
+  UpbitQueryParamValue,
   UpbitQueryParams,
 } from "./types.js";
 import type { UpbitRateLimitStatus, UpbitRemainingReq } from "../rate-limit.js";
@@ -25,6 +29,7 @@ interface UpbitPrivateRequestInput {
   method: UpbitPrivateRequestMethod;
   pathname: string;
   queryParams?: UpbitQueryParams;
+  bodyParams?: UpbitQueryParams;
 }
 
 interface UpbitProviderErrorPayload {
@@ -38,8 +43,8 @@ interface UpbitProviderErrorPayload {
  * Upbit private REST client foundation이다.
  *
  * 이 client는 JWT 인증, query hash, rate-limit envelope, 실패 정규화만 담당한다. 기본 `PAPER_NO_KEY` runtime에서 자동
- * 생성하지 않고, pilot env guard를 통과한 runner가 명시적으로 조립해야 한다. 주문 생성/취소 side effect method는 sub PR 3
- * 범위에서 제공하지 않는다.
+ * 생성하지 않고, pilot env guard를 통과한 runner가 명시적으로 조립해야 한다. 주문 생성/취소 method는 low-level endpoint
+ * wrapper이며, M14 소액 지정가 smoke 제한은 runtime guard가 통과한 입력만 전달해야 한다.
  */
 export class UpbitPrivateRestClient {
   private readonly baseUrl: string;
@@ -91,14 +96,45 @@ export class UpbitPrivateRestClient {
     return this.requestJson({
       method: "GET",
       pathname: "/v1/order",
-      queryParams: toOrderLookupQueryParams(input),
+      queryParams: toSingleOrderIdentifierQueryParams(input, "주문 조회"),
+    });
+  }
+
+  /**
+   * Upbit 지정가 주문 생성 endpoint를 호출한다.
+   *
+   * 이 method는 실제 주문 생성 side effect를 만들 수 있으므로, 호출자는 반드시 runtime order smoke guard가 만든 입력만
+   * 전달해야 한다. JSON body와 JWT query hash는 같은 순서의 key-value 목록에서 생성한다.
+   */
+  public async createLimitOrder(
+    input: UpbitPrivateCreateLimitOrderInput,
+  ): Promise<UpbitPrivateRestResponse<unknown>> {
+    return this.requestJson({
+      method: "POST",
+      pathname: "/v1/orders",
+      bodyParams: toCreateLimitOrderBodyParams(input),
+    });
+  }
+
+  /**
+   * Upbit 개별 주문 취소 endpoint를 호출한다.
+   *
+   * 취소는 실계좌 side effect이므로 wrapper는 uuid/identifier 동시 지정이나 누락을 거래소 호출 전 차단한다. pilot smoke는
+   * 같은 run에서 생성한 identifier만 이 method에 전달해야 한다.
+   */
+  public async cancelOrder(input: UpbitPrivateCancelOrderInput): Promise<UpbitPrivateRestResponse<unknown>> {
+    return this.requestJson({
+      method: "DELETE",
+      pathname: "/v1/order",
+      queryParams: toSingleOrderIdentifierQueryParams(input, "주문 취소"),
     });
   }
 
   private async requestJson<TPayload = unknown>(
     input: UpbitPrivateRequestInput,
   ): Promise<UpbitPrivateRestResponse<TPayload>> {
-    const queryString = buildUpbitQueryString(input.queryParams);
+    const body = input.bodyParams === undefined ? undefined : JSON.stringify(toJsonBody(input.bodyParams));
+    const queryString = buildUpbitQueryString(input.bodyParams ?? input.queryParams);
     const url = this.buildUrl(input.pathname, buildUpbitUrlQueryString(input.queryParams));
     const headers = new Headers({
       accept: "application/json",
@@ -109,12 +145,16 @@ export class UpbitPrivateRestClient {
         queryString,
       }),
     });
+    if (body !== undefined) {
+      headers.set("content-type", "application/json");
+    }
 
     let response: Response;
     try {
       response = await this.fetchFn(url, {
         method: input.method,
         headers,
+        ...(body === undefined ? {} : { body }),
       });
     } catch {
       // 응답을 받기 전 네트워크 실패도 raw 예외를 audit으로 흘리지 않고 private client 오류 contract로 닫는다.
@@ -168,22 +208,88 @@ export class UpbitPrivateRestClient {
   }
 }
 
-function toOrderLookupQueryParams(input: UpbitPrivateGetOrderInput): UpbitQueryParams {
+function toSingleOrderIdentifierQueryParams(
+  input: UpbitPrivateGetOrderInput | UpbitPrivateCancelOrderInput,
+  operationLabel: string,
+): UpbitQueryParams {
   if (input.uuid !== undefined && input.identifier !== undefined) {
     throw new UnsafeUpbitPrivateRequestError({
-      violations: ["주문 조회 식별자는 uuid 또는 identifier 중 하나만 지정해야 합니다"],
+      violations: [`${operationLabel} 식별자는 uuid 또는 identifier 중 하나만 지정해야 합니다`],
     });
   }
 
   if (input.uuid === undefined && input.identifier === undefined) {
     throw new UnsafeUpbitPrivateRequestError({
-      violations: ["주문 조회에는 uuid 또는 identifier가 필요합니다"],
+      violations: [`${operationLabel}에는 uuid 또는 identifier가 필요합니다`],
     });
   }
 
   return input.uuid === undefined
     ? [{ key: "identifier", value: input.identifier! }]
     : [{ key: "uuid", value: input.uuid }];
+}
+
+function toCreateLimitOrderBodyParams(input: UpbitPrivateCreateLimitOrderInput): UpbitQueryParams {
+  const violations: string[] = [];
+  validateRequiredString(input.market, "주문 생성 market", violations);
+  validateOrderSide(input.side, violations);
+  validateRequiredString(input.volume, "주문 생성 volume", violations);
+  validateRequiredString(input.price, "주문 생성 price", violations);
+  validateRequiredString(input.identifier, "주문 생성 identifier", violations);
+
+  if (input.identifier.length > UPBIT_PRIVATE_ORDER_IDENTIFIER_MAX_LENGTH) {
+    // Upbit identifier 재사용/길이 오류는 실주문 호출 전 local guard에서 차단해 중복 주문 위험을 줄인다.
+    violations.push(`주문 생성 identifier는 ${UPBIT_PRIVATE_ORDER_IDENTIFIER_MAX_LENGTH}자 이하여야 합니다`);
+  }
+
+  if (input.timeInForce !== undefined && !["ioc", "fok", "post_only"].includes(input.timeInForce)) {
+    violations.push("주문 생성 time_in_force는 ioc, fok, post_only 중 하나여야 합니다");
+  }
+
+  if (input.smpType !== undefined && !["cancel_maker", "cancel_taker", "reduce"].includes(input.smpType)) {
+    violations.push("주문 생성 smp_type은 cancel_maker, cancel_taker, reduce 중 하나여야 합니다");
+  }
+
+  if (input.timeInForce === "post_only" && input.smpType !== undefined) {
+    // Upbit 문서상 post_only와 SMP는 함께 사용할 수 없으므로 거래소 거부 전에 닫는다.
+    violations.push("post_only 주문은 smp_type과 함께 사용할 수 없습니다");
+  }
+
+  if (violations.length > 0) {
+    throw new UnsafeUpbitPrivateRequestError({ violations });
+  }
+
+  return [
+    { key: "market", value: input.market },
+    { key: "side", value: input.side },
+    { key: "volume", value: input.volume },
+    { key: "price", value: input.price },
+    { key: "ord_type", value: "limit" },
+    { key: "identifier", value: input.identifier },
+    ...(input.timeInForce === undefined ? [] : [{ key: "time_in_force", value: input.timeInForce }]),
+    ...(input.smpType === undefined ? [] : [{ key: "smp_type", value: input.smpType }]),
+  ];
+}
+
+function validateRequiredString(value: string, label: string, violations: string[]): void {
+  if (typeof value !== "string" || value.trim().length === 0) {
+    violations.push(`${label} 값이 필요합니다`);
+  }
+}
+
+function validateOrderSide(side: string, violations: string[]): void {
+  if (side !== "bid" && side !== "ask") {
+    violations.push("주문 생성 side는 bid 또는 ask 여야 합니다");
+  }
+}
+
+function toJsonBody(params: UpbitQueryParams): Record<string, UpbitQueryParamValue | readonly UpbitQueryParamValue[]> {
+  const body: Record<string, UpbitQueryParamValue | readonly UpbitQueryParamValue[]> = {};
+  for (const param of params) {
+    body[param.key] = param.value;
+  }
+
+  return body;
 }
 
 async function createPrivateRestClientError(

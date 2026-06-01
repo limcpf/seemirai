@@ -90,6 +90,10 @@ export {
   loadPilotRuntimeConfigFromEnv,
 } from "./pilot-config.js";
 export {
+  UnsafePilotOrderSmokeRequestError,
+  createPilotOrderSmokeRequestPlan,
+} from "./pilot-order-smoke.js";
+export {
   Phase15AltEligibilityThresholdConfigSchema,
   Phase15AltUniverseConfigSchema,
   Phase15ManualAltApprovalConfigSchema,
@@ -119,6 +123,11 @@ export type {
   PilotRuntimeProfile,
   PilotUpbitKeyScope,
 } from "./pilot-config.js";
+export type {
+  CreatePilotOrderSmokeRequestPlanInput,
+  PilotOrderSmokeLimitOrderIntent,
+  PilotOrderSmokeRequestPlan,
+} from "./pilot-order-smoke.js";
 export type {
   Phase15AltEligibilityThresholdConfig,
   Phase15AltUniverseRuntimeConfig,

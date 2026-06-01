@@ -10,6 +10,7 @@ export {
 } from "./private-client/client.js";
 export {
   UPBIT_PRIVATE_API_BASE_URL,
+  UPBIT_PRIVATE_ORDER_IDENTIFIER_MAX_LENGTH,
   UnsafeUpbitPrivateRequestError,
   UpbitPrivateRestClientError,
 } from "./private-client/types.js";
@@ -18,7 +19,9 @@ export type {
   UnsafeUpbitPrivateRequestErrorOptions,
   UpbitJwtPayload,
   UpbitNonceFactory,
+  UpbitPrivateCancelOrderInput,
   UpbitPrivateCredentials,
+  UpbitPrivateCreateLimitOrderInput,
   UpbitPrivateErrorKind,
   UpbitPrivateErrorTrace,
   UpbitPrivateGetOrderInput,
