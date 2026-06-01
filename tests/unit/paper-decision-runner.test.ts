@@ -132,6 +132,29 @@ describe("M9 paper decision runner", () => {
     });
   });
 
+  it("uses phase 1.5 approved alt universe evidence for TOP_ALT safety buffer defaults", async () => {
+    const fixture = JSON.parse(await readFile(fixturePath, "utf8"));
+    const frame = fixture.frames[3];
+    fixture.frames = [frame];
+    frame.market = "KRW-SOL";
+    frame.orderbook.market = "KRW-SOL";
+    frame.features.expected_return_bps = "35";
+    delete frame.features.safety_buffer_bps;
+    frame.universe = {
+      phase15ApprovedAltMarkets: ["KRW-SOL"],
+    };
+
+    const result = await runM9PaperDecisionFixtureSmoke({ fixture });
+
+    expect(result.metrics.costRejectedCount).toBe(0);
+    expect(result.metrics.paperOrderSubmittedCount).toBe(1);
+    expect(result.metrics.costSummary).toMatchObject({
+      evaluatedCount: 1,
+      allowedCount: 1,
+      averageRequiredReturnBps: "33",
+    });
+  });
+
   it("deduplicates repeated broker order ids in submission and fill metrics", async () => {
     const fixture = JSON.parse(await readFile(fixturePath, "utf8"));
     fixture.frames = [fixture.frames[3], fixture.frames[3]];

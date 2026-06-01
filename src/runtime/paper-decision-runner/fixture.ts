@@ -181,6 +181,7 @@ function parseFrame(input: unknown, index: number, sourceId: string): PaperDecis
   assignIfDefined(frame, "orderbook", parseOptionalOrderbook(record.orderbook, index));
   assignIfDefined(frame, "costInput", readOptionalRecord(record.costInput));
   assignIfDefined(frame, "risk", readOptionalRecord(record.risk));
+  assignIfDefined(frame, "universe", readOptionalRecord(record.universe));
 
   return frame;
 }

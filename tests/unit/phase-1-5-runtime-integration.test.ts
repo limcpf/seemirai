@@ -166,7 +166,7 @@ describe("phase 1.5 runtime integration", () => {
     expect(unapprovedAltCostDecision.snapshot.missing_fields).toEqual(["safety_buffer_bps"]);
   });
 
-  it("keeps rejected eligibility evidence out of the approved runtime universe", () => {
+  it("keeps blocking eligibility evidence out of the approved runtime universe", () => {
     const config = loadRuntimeConfig({
       universe: {
         phase_1_5: {
@@ -202,9 +202,102 @@ describe("phase 1.5 runtime integration", () => {
 
     expect(universe.allowedMarkets).toEqual(["KRW-BTC", "KRW-ETH"]);
     expect(universe.phase15ApprovedAltMarkets).toEqual([]);
-    expect(universe.phase15RejectedAltMarkets).toEqual(["KRW-SOL"]);
+    expect(universe.phase15BlockedAltMarkets).toEqual(["KRW-SOL"]);
+  });
+
+  it("requires approval time to be active before adding phase 1.5 alts", () => {
+    const config = loadRuntimeConfig({
+      universe: {
+        phase_1_5: {
+          enabled: true,
+          manual_approvals: [
+            {
+              market: "KRW-SOL",
+              approved_at: "2026-06-02T00:00:00.000Z",
+            },
+          ],
+        },
+      },
+    });
+    const universe = resolveRuntimeUniverse(config.universe, { observedAt });
+
+    expect(universe.allowedMarkets).toEqual(["KRW-BTC", "KRW-ETH"]);
+    expect(universe.phase15ApprovedAltMarkets).toEqual([]);
+    expect(universe.phase15PendingAltMarkets).toEqual(["KRW-SOL"]);
+  });
+
+  it.each(["REVOKE", "EXPIRE"] as const)("blocks a manual approval when latest evidence is %s", (action) => {
+    const config = loadRuntimeConfig({
+      universe: {
+        phase_1_5: {
+          enabled: true,
+          manual_approvals: [
+            {
+              market: "KRW-SOL",
+              approved_at: "2026-05-31T00:00:00.000Z",
+            },
+          ],
+        },
+      },
+    });
+    const universe = resolveRuntimeUniverse(config.universe, {
+      observedAt,
+      evidence: [
+        createEvidenceSnapshot("KRW-SOL", action, "2026-06-01T00:00:00.000Z"),
+      ],
+    });
+
+    expect(universe.allowedMarkets).toEqual(["KRW-BTC", "KRW-ETH"]);
+    expect(universe.phase15BlockedAltMarkets).toEqual(["KRW-SOL"]);
+  });
+
+  it("ignores older reject evidence once a newer manual approval is active", () => {
+    const config = loadRuntimeConfig({
+      universe: {
+        phase_1_5: {
+          enabled: true,
+          manual_approvals: [
+            {
+              market: "KRW-SOL",
+              approved_at: "2026-05-31T00:00:00.000Z",
+            },
+          ],
+        },
+      },
+    });
+    const universe = resolveRuntimeUniverse(config.universe, {
+      observedAt,
+      evidence: [
+        createEvidenceSnapshot("KRW-SOL", "REJECT", "2026-05-30T00:00:00.000Z"),
+      ],
+    });
+
+    expect(universe.allowedMarkets).toEqual(["KRW-BTC", "KRW-ETH", "KRW-SOL"]);
+    expect(universe.phase15ApprovedAltMarkets).toEqual(["KRW-SOL"]);
+    expect(universe.phase15BlockedAltMarkets).toEqual([]);
   });
 });
+
+function createEvidenceSnapshot(
+  market: string,
+  action: "APPROVE" | "REJECT" | "REVOKE" | "EXPIRE",
+  evidenceObservedAt: string,
+) {
+  return {
+    exchangeId: "upbit_krw_spot",
+    market,
+    action,
+    observedAt: evidenceObservedAt,
+    thresholds: {
+      minListingAgeDays: 90,
+      minThirtyDayAverageTradeValueKrw: "10000000000",
+      maxSevenDaySpreadP95Bps: "15",
+      maxExpectedSlippageBps: "20",
+      minDepthKrw: "100000000",
+    },
+    conditions: [],
+  };
+}
 
 function createAltCostInput(
   market: string,

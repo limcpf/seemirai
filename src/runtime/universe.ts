@@ -18,7 +18,8 @@ export interface RuntimeUniverseResolution {
   phase1Markets: readonly MarketCode[];
   phase15ApprovedAltMarkets: readonly MarketCode[];
   phase15ExpiredAltMarkets: readonly MarketCode[];
-  phase15RejectedAltMarkets: readonly MarketCode[];
+  phase15PendingAltMarkets: readonly MarketCode[];
+  phase15BlockedAltMarkets: readonly MarketCode[];
   phase15Enabled: boolean;
   evidence: readonly Phase15AltApprovalEvidenceSnapshot[];
 }
@@ -26,8 +27,9 @@ export interface RuntimeUniverseResolution {
 /**
  * `config.universe`를 runtime policy/rule/cost 경계에서 사용할 수 있는 market 목록으로 해석한다.
  *
- * phase 1.5가 꺼져 있으면 BTC/ETH phase 1만 반환한다. 켜져 있어도 만료된 승인이나 REJECT evidence가 있는 market은
- * 허용 목록에서 제외해 오래된 수동 승인으로 신규 진입이 열리지 않게 한다.
+ * phase 1.5가 꺼져 있으면 BTC/ETH phase 1만 반환한다. 켜져 있어도 아직 시작되지 않은 승인, 만료된 승인,
+ * 승인 이후의 차단 evidence가 있는 market은 허용 목록에서 제외해 오래되었거나 철회된 수동 승인으로 신규 진입이
+ * 열리지 않게 한다.
  */
 export function resolveRuntimeUniverse(
   universe: RuntimeConfig["universe"],
@@ -38,24 +40,28 @@ export function resolveRuntimeUniverse(
 ): RuntimeUniverseResolution {
   const observedAtMs = toTimestampMs(options.observedAt);
   const evidence = options.evidence ?? [];
-  const rejectedMarkets = new Set(
-    evidence
-      .filter((snapshot) => snapshot.action === "REJECT")
-      .map((snapshot) => snapshot.market),
-  );
   const phase15ApprovedAltMarkets: MarketCode[] = [];
   const phase15ExpiredAltMarkets: MarketCode[] = [];
+  const phase15PendingAltMarkets: MarketCode[] = [];
+  const phase15BlockedAltMarkets: MarketCode[] = [];
 
   if (universe.phase_1_5.enabled) {
     for (const approval of universe.phase_1_5.manual_approvals) {
+      const approvedAtMs = toTimestampMs(approval.approved_at);
       const isExpired = approval.expires_at !== undefined && toTimestampMs(approval.expires_at) <= observedAtMs;
+
+      if (approvedAtMs > observedAtMs) {
+        phase15PendingAltMarkets.push(approval.market);
+        continue;
+      }
 
       if (isExpired) {
         phase15ExpiredAltMarkets.push(approval.market);
         continue;
       }
 
-      if (rejectedMarkets.has(approval.market)) {
+      if (hasBlockingEvidenceAfterApproval(approval.market, approvedAtMs, observedAtMs, evidence)) {
+        phase15BlockedAltMarkets.push(approval.market);
         continue;
       }
 
@@ -70,7 +76,8 @@ export function resolveRuntimeUniverse(
     phase1Markets: [...universe.phase_1],
     phase15ApprovedAltMarkets,
     phase15ExpiredAltMarkets,
-    phase15RejectedAltMarkets: [...rejectedMarkets],
+    phase15PendingAltMarkets,
+    phase15BlockedAltMarkets,
     phase15Enabled: universe.phase_1_5.enabled,
     evidence,
   };
@@ -90,6 +97,31 @@ export function resolveRuntimeSafetyBufferMarketCategory(
 
 function dedupeMarkets(markets: readonly MarketCode[]): readonly MarketCode[] {
   return [...new Set(markets)];
+}
+
+function hasBlockingEvidenceAfterApproval(
+  market: MarketCode,
+  approvedAtMs: number,
+  observedAtMs: number,
+  evidence: readonly Phase15AltApprovalEvidenceSnapshot[],
+): boolean {
+  const latestEvidence = evidence
+    .filter((snapshot) => snapshot.market === market)
+    .map((snapshot) => ({
+      snapshot,
+      observedAtMs: toTimestampMs(snapshot.observedAt),
+    }))
+    .filter(({ observedAtMs: evidenceObservedAtMs }) => {
+      // 승인 이전 또는 미래 evidence는 현재 수동 승인 상태를 덮어쓰면 안 된다.
+      return evidenceObservedAtMs >= approvedAtMs && evidenceObservedAtMs <= observedAtMs;
+    })
+    .sort((left, right) => right.observedAtMs - left.observedAtMs)[0]?.snapshot;
+
+  return latestEvidence === undefined ? false : isBlockingEvidenceAction(latestEvidence.action);
+}
+
+function isBlockingEvidenceAction(action: Phase15AltApprovalEvidenceSnapshot["action"]): boolean {
+  return action === "REJECT" || action === "REVOKE" || action === "EXPIRE";
 }
 
 function toTimestampMs(input: TimestampInput): number {

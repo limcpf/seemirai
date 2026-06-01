@@ -6,6 +6,7 @@ import type {
   MarketDataStatusEvent,
   MarketDataStreamRequest,
   OrderbookEvent,
+  TimestampInput,
   TradeEvent,
 } from "../domain/index.js";
 import {
@@ -28,6 +29,8 @@ import { loadRuntimeConfig } from "./config.js";
 import type { RuntimeConfig } from "./config.js";
 import { resolveRegistryActivationConfig } from "./registry-config.js";
 import type { RegistryActivationResolution } from "./registry-config.js";
+import { resolveRuntimeUniverse } from "./universe.js";
+import type { RuntimeUniverseResolution } from "./universe.js";
 
 export const PAPER_NO_KEY_MARKET_DATA_CONSUMER_ID = "paper-no-key-market-data-worker";
 export const MARKET_DATA_STATUS_AUDIT_EVENT_TYPE = "MARKET_DATA_STATUS";
@@ -79,6 +82,13 @@ export class UnsafePaperNoKeyMarketDataRuntimeError extends Error {
 export interface PaperNoKeyMarketDataRuntimeOptions {
   consumerId?: string;
   orderbookLevel?: string;
+  /**
+   * phase 1.5 승인 시작/만료 판단에 사용할 runtime 시각이다.
+   *
+   * 운영 runtime은 기본 현재 시각을 쓰고, 테스트와 재현 실행은 이 값을 고정해 같은 config에서 동일한 구독 목록을
+   * 만들 수 있다. 외부 API 호출이나 DB write는 일으키지 않는다.
+   */
+  clock?: () => TimestampInput;
 }
 
 /**
@@ -90,6 +100,7 @@ export interface PaperNoKeyMarketDataRuntimeOptions {
 export interface PaperNoKeyMarketDataRuntime {
   config: RuntimeConfig;
   registry: RegistryActivationResolution;
+  universe: RuntimeUniverseResolution;
   exchangeId: string;
   markets: readonly MarketCode[];
   publicQuotationEndpoint: string;
@@ -184,16 +195,19 @@ export function createPaperNoKeyMarketDataRuntime(
 ): PaperNoKeyMarketDataRuntime {
   const config = assertPaperNoKeyMarketDataRuntimeConfig(loadRuntimeConfig(input));
   const registry = resolveRegistryActivationConfig(config.registry);
+  const universe = resolveRuntimeUniverse(config.universe, {
+    observedAt: options.clock?.() ?? new Date().toISOString(),
+  });
   const exchangeId = registry.exchange.id;
   const consumerId = options.consumerId ?? PAPER_NO_KEY_MARKET_DATA_CONSUMER_ID;
   const tradeStreamRequest: MarketDataStreamRequest = {
     exchangeId,
-    markets: config.universe.phase_1,
+    markets: universe.allowedMarkets,
     consumerId,
   };
   const orderbookStreamRequest: MarketDataStreamRequest = {
     exchangeId,
-    markets: config.universe.phase_1,
+    markets: universe.allowedMarkets,
     consumerId,
   };
   const client = new UpbitQuotationWebSocketClient();
@@ -214,8 +228,9 @@ export function createPaperNoKeyMarketDataRuntime(
   return {
     config,
     registry,
+    universe,
     exchangeId,
-    markets: config.universe.phase_1,
+    markets: universe.allowedMarkets,
     publicQuotationEndpoint: UPBIT_QUOTATION_WEBSOCKET_URL,
     tradeStreamRequest,
     orderbookStreamRequest,
