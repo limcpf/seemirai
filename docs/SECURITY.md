@@ -127,8 +127,8 @@
   evidence를 기록한다. read-only는 거래소 주문 생성/취소 side effect 금지 의미이며, 로컬 복구 쓰기 자체를 금지하지 않는다.
 - 주문 lifecycle 복구 쓰기는 exchange order uuid/identifier, market, side, 원주문 volume/price 같은 immutable identity
   fingerprint가 로컬 주문과 일치하는 경우에만 기존 `orders`/`order_events`/`fills` repository transaction을 통해 수행한다.
-  거래소 state는 매칭 조건이 아니라 적용해야 할 전이 입력이다. `fills` insert는 거래소 체결 id 또는 정규화 fill fingerprint를
-  `live_reconcile_fill_recovery_keys` unique key로 선점한 뒤에만 허용한다. `positions` 갱신은 authoritative fill price/volume으로
+  거래소 state는 매칭 조건이 아니라 적용해야 할 전이 입력이다. `fills` insert는 거래소 체결 id와 정규화 fill fingerprint 중
+  관측 가능한 값을 모두 `live_reconcile_fill_recovery_keys` unique key로 선점한 뒤에만 허용한다. `positions` 갱신은 authoritative fill price/volume으로
   `average_entry_price`를 계산할 수 있을 때만 허용하며, 근거가 없으면 append-only position snapshot과 manual review evidence만
   남긴다. 기존 domain table을 우회하는 임의 SQL 쓰기 경로를 만들지 않는다.
 - reconcile summary(/status, CLI)는 access key, secret key, JWT, Authorization header, raw REST/WebSocket provider payload,

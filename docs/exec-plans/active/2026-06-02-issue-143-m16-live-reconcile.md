@@ -40,7 +40,7 @@ M15 `UpbitLiveBroker` contract 검증이 완료된 상태에서, 실계좌 잔�
 - **포지션 복구**: 재시작 후 open order, balance, position snapshot을 복구한다.
 - **mismatch fail-closed**: 거래소와 로컬 상태 충돌 시 신규 주문을 차단하고 manual review evidence를 남긴다. 차단은 append-only evidence만이 아니라 주문 경로가 읽는 `risk_events`와 `kill_switch_state` durable snapshot에 연결한다.
 - **append-only reconcile persistence**: reconcile run, balance snapshot, exchange order snapshot, position snapshot, mismatch evidence를 M16 전용 append-only reconcile tables에 저장한다.
-- **로컬 lifecycle 복구 쓰기 경계**: read-only는 거래소 API side effect 금지 의미다. 주문/체결 복구는 uuid/identifier, market, side, 원주문 price/volume 같은 immutable identity fingerprint가 일치한 경우에만 기존 domain repository transaction을 통해 `orders`/`order_events`/`fills`를 갱신할 수 있다. 거래소 state는 fingerprint가 아니라 적용해야 할 전이 입력으로 분리한다. `fills` insert는 거래소 체결 id 또는 정규화된 fill fingerprint를 `live_reconcile_fill_recovery_keys` unique key로 선점한 뒤에만 허용한다. `positions` 갱신은 authoritative fill price/volume으로 `average_entry_price`를 계산할 수 있을 때만 허용한다. 근거가 없으면 `live_reconcile_position_snapshots.recovery_status=MANUAL_REVIEW_REQUIRED`로 남기고 기존 `positions`는 갱신하지 않는다.
+- **로컬 lifecycle 복구 쓰기 경계**: read-only는 거래소 API side effect 금지 의미다. 주문/체결 복구는 uuid/identifier, market, side, 원주문 price/volume 같은 immutable identity fingerprint가 일치한 경우에만 기존 domain repository transaction을 통해 `orders`/`order_events`/`fills`를 갱신할 수 있다. 거래소 state는 fingerprint가 아니라 적용해야 할 전이 입력으로 분리한다. `fills` insert는 거래소 체결 id와 정규화된 fill fingerprint 중 관측 가능한 값을 모두 `live_reconcile_fill_recovery_keys` unique key로 선점한 뒤에만 허용한다. `positions` 갱신은 authoritative fill price/volume으로 `average_entry_price`를 계산할 수 있을 때만 허용한다. 근거가 없으면 `live_reconcile_position_snapshots.recovery_status=MANUAL_REVIEW_REQUIRED`로 남기고 기존 `positions`는 갱신하지 않는다.
 - **상태 summary**: 마지막 reconcile 시각, 결과, mismatch 수, open order 수, balance snapshot 상태, WebSocket 상태, 필요한 조치를 한국어로 제공하고 내부 식별자는 `추적 정보`로 분리한다.
 - **Guard**: `SEEMIRAI_RUN_UPBIT_LIVE_RECONCILE=1` env가 있어야 reconcile worker가 시작된다.
 - **허용 private 권한**: `자산조회`, `주문조회`만 요구한다. `주문하기` 권한은 요구하지 않는다.
@@ -171,6 +171,6 @@ corepack pnpm exec vitest run tests/unit/http-control-status.test.ts
 | `POST /v1/orders` 호출 금지 | 어떤 경로로도 live order API 호출 금지 | sub PR 06, 07 |
 | mismatch 시 fail-closed | 신규 주문 차단, `risk_events`/`kill_switch_state` durable 차단, manual review | sub PR 05, 06, 08 |
 | closed order window | `start_time`/`end_time` 지정 시 7일 이하 구간 조회, 조회 horizon 밖 또는 identity/fingerprint 불일치만 자동 복구 금지 | sub PR 02, 06 |
-| fill recovery idempotency | 거래소 체결 id 또는 정규화 fill fingerprint unique key 선점 없이는 `fills` insert 금지 | sub PR 04, 05 |
+| fill recovery idempotency | 거래소 체결 id와 정규화 fill fingerprint 중 관측 가능한 값을 모두 unique key로 선점하기 전에는 `fills` insert 금지 | sub PR 04, 05 |
 | bootstrap gap | WebSocket 구독 성공 후 event buffer를 열고 REST snapshot을 잡아 초기 공백을 닫음 | sub PR 03, 05 |
 | PnL 계산 금지 | 평균단가/PnL은 `계산 불가/수동 검토 필요` | sub PR 06, 08 |

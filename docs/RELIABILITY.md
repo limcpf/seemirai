@@ -205,7 +205,8 @@ Codex-native 운영은 Codex, Git, GitHub, shell command, 문서 상태를 연�
   `NEW_ORDERS_BLOCKED` 또는 `MANUAL_REVIEW_REQUIRED`로 전진시켜 RiskGate/주문 경로가 재시작 후에도 차단 상태를 읽게 한다.
   mismatch를 0으로 자동 복구하지 않는다. 주문/체결 로컬 복구 쓰기는 immutable identity fingerprint가 일치한 경우에만 기존
   domain repository transaction에서 수행하고, 거래소 state는 적용할 전이 입력으로 분리한다. 같은 reconcile run의 append-only
-  evidence를 함께 남기며, `fills` insert는 거래소 체결 id 또는 정규화 fill fingerprint unique key 선점으로 멱등화한다.
+  evidence를 함께 남기며, `fills` insert는 거래소 체결 id와 정규화 fill fingerprint 중 관측 가능한 값을 모두 unique key로
+  선점해 멱등화한다. mismatch evidence는 `evidence_fingerprint` unique key로 중복 append를 차단한다.
   `positions` 갱신은 authoritative fill price/volume으로 평균단가를 계산할 수 있을 때만 허용한다.
 - idempotent run: 같은 reconcile worker가 중복 실행되어도 같은 시각의 같은 snapshot을 다시 조회해 동일한 mismatch 결과를
   반환한다. reconcile 실행 자체는 run idempotency key와 snapshot/evidence fingerprint로 중복 기록을 차단한다.

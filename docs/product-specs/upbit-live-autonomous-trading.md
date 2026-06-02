@@ -178,7 +178,7 @@ M14 이후에도 다음은 여전히 사실이어야 한다.
 - mismatch 발생 시 신규 주문 fail-closed, manual review evidence
 - M16 전용 append-only reconcile tables에 run, balance snapshot, exchange order snapshot, position snapshot, mismatch evidence 기록
 - immutable identity fingerprint가 일치한 주문 lifecycle 복구는 기존 domain repository transaction을 통해 로컬 `orders`/`order_events`/`fills`에 반영하고, 거래소 state는 전이 입력으로 분리
-- `fills` 복구 쓰기는 거래소 체결 id 또는 정규화 fill fingerprint unique key로 멱등화
+- `fills` 복구 쓰기는 거래소 체결 id와 정규화 fill fingerprint 중 관측 가능한 값을 모두 unique key로 선점해 멱등화
 - `positions` 갱신은 authoritative fill price/volume으로 평균단가를 계산할 수 있을 때만 허용하고, 근거가 없으면 append-only position snapshot과 manual review evidence로 남긴다.
 - 허용 권한: `자산조회`, `주문조회`만 요구 (`주문하기` 권한 불필요)
 - 평균단가/PnL은 M17 범위이므로 `계산 불가/수동 검토 필요`로 남긴다.

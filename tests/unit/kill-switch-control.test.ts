@@ -14,6 +14,11 @@ describe("kill switch control decision", () => {
     expect(mapKillSwitchReasonToTargetState("live_order_api_misuse_detected")).toBe("HARD_STOP");
     expect(mapKillSwitchReasonToTargetState("stale_market_data")).toBe("NEW_ORDERS_BLOCKED");
     expect(mapKillSwitchReasonToTargetState("quote_freshness_insufficient")).toBe("NEW_ORDERS_BLOCKED");
+    expect(mapKillSwitchReasonToTargetState("live_reconcile_mismatch")).toBe("NEW_ORDERS_BLOCKED");
+    expect(mapKillSwitchReasonToTargetState("LIVE_RECONCILE_MISMATCH")).toBe("NEW_ORDERS_BLOCKED");
+    expect(mapKillSwitchReasonToTargetState("live_reconcile_identity_conflict")).toBe(
+      "MANUAL_REVIEW_REQUIRED",
+    );
     expect(mapKillSwitchReasonToTargetState("notification_consecutive_failure")).toBe(
       "MANUAL_REVIEW_REQUIRED",
     );
