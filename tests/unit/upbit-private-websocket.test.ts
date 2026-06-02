@@ -7,10 +7,12 @@ import {
   UpbitPrivateWebSocketClient,
   UpbitPrivateWebSocketMyOrderSchema,
   UpbitPrivateWebSocketMyAssetSchema,
+  UpbitPrivateWebSocketMessageSchema,
   UpbitPrivateWebSocketPayloadSchema,
   createUpbitPrivateMyOrderSubscription,
   createUpbitPrivateMyAssetSubscription,
   createUpbitPrivateCombinedSubscription,
+  parseUpbitPrivateWebSocketMessage,
   toUpbitPrivateMyOrderEvent,
   toUpbitPrivateMyAssetEvent,
 } from "../../src/infrastructure/upbit/private-websocket-client.js";
@@ -424,6 +426,24 @@ describe("Upbit private WebSocket client", () => {
     expect(completedEvidence.reasonCode).toBe("SUBSCRIPTION_NOT_CONFIRMED_BEFORE_SNAPSHOT");
   });
 
+  it("compares Date timestamps by epoch milliseconds for bootstrap gap evidence", () => {
+    const buffer = new UpbitPrivateWebSocketBootstrapBuffer({
+      now: () => new Date("2026-06-02T12:00:00.000Z"),
+    });
+
+    buffer.markSubscribed(new Date("2026-06-02T12:00:02.000Z"));
+    const evidence = buffer.markSnapshotStarted(new Date("2026-06-02T12:00:01.000Z"));
+
+    expect(evidence).toEqual({
+      bufferOpenedAt: "2026-06-02T12:00:00.000Z",
+      subscribedAt: "2026-06-02T12:00:02.000Z",
+      snapshotStartedAt: "2026-06-02T12:00:01.000Z",
+      bufferedMessageCount: 0,
+      hasBootstrapGap: true,
+      reasonCode: "SUBSCRIPTION_NOT_CONFIRMED_BEFORE_SNAPSHOT",
+    });
+  });
+
   it("reports undrained buffer after snapshot completion as gap evidence", () => {
     const buffer = new UpbitPrivateWebSocketBootstrapBuffer({
       now: createClock([
@@ -485,7 +505,7 @@ describe("Upbit private WebSocket myOrder schema and mapper", () => {
     expect(parsed.volume).toBe("0.001");
     expect(parsed.remaining_volume).toBe("0.0005");
     expect(parsed.executed_volume).toBe("0.0005");
-    expect(parsed.trade_price).toBe("100000000");
+    expect(parsed.avg_price).toBe("100000000");
     expect(parsed.paid_fee).toBe("250");
     expect(parsed.fee_currency).toBe("KRW");
     expect(parsed.order_timestamp).toBe(1750000000000);
@@ -507,6 +527,7 @@ describe("Upbit private WebSocket myOrder schema and mapper", () => {
     expect(event.state).toBe("wait");
     expect(event.price).toBe("100000000");
     expect(event.volume).toBe("0.001");
+    expect(event.eventVolume).toBe("0.001");
     expect(event.remainingVolume).toBe("0.0005");
     expect(event.executedVolume).toBe("0.0005");
     expect(event.tradePrice).toBe("100000000");
@@ -529,7 +550,7 @@ describe("Upbit private WebSocket myOrder schema and mapper", () => {
       volume: "0.001",
       remaining_volume: "0",
       executed_volume: "0.001",
-      trade_price: "101000000",
+      avg_price: "101000000",
       paid_fee: "250",
       fee_currency: "KRW",
       order_timestamp: 1750000000000,
@@ -540,7 +561,32 @@ describe("Upbit private WebSocket myOrder schema and mapper", () => {
 
     expect(event.side).toBe("ASK");
     expect(event.state).toBe("trade");
+    expect(event.volume).toBe("0.001");
+    expect(event.eventVolume).toBe("0.001");
     expect(event.streamType).toBe("REALTIME");
+  });
+
+  it("keeps trade event volume separate from reconstructed order volume", () => {
+    const payload = UpbitPrivateWebSocketMyOrderSchema.parse({
+      type: "myOrder",
+      uuid: "test-uuid",
+      code: "KRW-BTC",
+      ask_bid: "BID",
+      state: "trade",
+      price: "100000000",
+      volume: "0.0001",
+      remaining_volume: "0.0007",
+      executed_volume: "0.0003",
+      avg_price: "100000000",
+      paid_fee: "10",
+      order_timestamp: 1750000000000,
+      timestamp: 1750000000000,
+      stream_type: "REALTIME",
+    });
+    const event = toUpbitPrivateMyOrderEvent(payload, { receivedAt });
+
+    expect(event.volume).toBe("0.001");
+    expect(event.eventVolume).toBe("0.0001");
   });
 
   it("accepts myOrder prevented state for SMP event tracking", () => {
@@ -554,7 +600,7 @@ describe("Upbit private WebSocket myOrder schema and mapper", () => {
       volume: "0.001",
       remaining_volume: "0",
       executed_volume: "0",
-      trade_price: "0",
+      avg_price: "0",
       paid_fee: "0",
       order_timestamp: 1750000000000,
       timestamp: 1750000000000,
@@ -587,7 +633,7 @@ describe("Upbit private WebSocket myOrder schema and mapper", () => {
       volume: "1",
       remaining_volume: "0",
       executed_volume: "1",
-      trade_price: "1000",
+      avg_price: "1000",
       paid_fee: "0",
       fee_currency: "KRW",
       order_timestamp: 1750000000000,
@@ -596,6 +642,87 @@ describe("Upbit private WebSocket myOrder schema and mapper", () => {
     };
 
     expect(() => UpbitPrivateWebSocketMyOrderSchema.parse(malformed)).toThrow();
+  });
+});
+
+describe("Upbit private WebSocket raw message parser", () => {
+  it("preserves numeric lexemes before JSON.parse for DEFAULT messages", () => {
+    const parsed = parseUpbitPrivateWebSocketMessage(
+      `{
+        "type":"myAsset",
+        "assets":[
+          {
+            "currency":"BTC",
+            "balance":0.12345678901234567890,
+            "locked":0.00000000000000000001
+          }
+        ],
+        "asset_timestamp":1750000000000,
+        "timestamp":1750000000000,
+        "stream_type":"REALTIME"
+      }`,
+    );
+
+    expect(parsed).toMatchObject({
+      type: "myAsset",
+      assets: [
+        {
+          currency: "BTC",
+          balance: "0.12345678901234567890",
+          locked: "0.00000000000000000001",
+        },
+      ],
+    });
+  });
+
+  it("fails closed when precision fields are already parsed as JS numbers", () => {
+    expect(() =>
+      UpbitPrivateWebSocketMyAssetSchema.parse({
+        type: "myAsset",
+        assets: [
+          {
+            currency: "BTC",
+            balance: 0.12345678901234568,
+            locked: "0",
+          },
+        ],
+        asset_timestamp: 1750000000000,
+        timestamp: 1750000000000,
+        stream_type: "REALTIME",
+      }),
+    ).toThrow();
+  });
+
+  it("parses JSON_LIST array messages", () => {
+    const parsed = parseUpbitPrivateWebSocketMessage(
+      `[{
+        "type":"myOrder",
+        "uuid":"json-list-order",
+        "code":"KRW-BTC",
+        "ask_bid":"BID",
+        "state":"wait",
+        "price":100000000.123456789,
+        "volume":0.001,
+        "remaining_volume":0.001,
+        "executed_volume":0,
+        "avg_price":0,
+        "paid_fee":0,
+        "order_timestamp":1750000000000,
+        "timestamp":1750000000000,
+        "stream_type":"REALTIME"
+      }]`,
+    );
+
+    expect(Array.isArray(parsed)).toBe(true);
+    expect(parsed).toEqual([
+      expect.objectContaining({
+        type: "myOrder",
+        price: "100000000.123456789",
+        volume: "0.001",
+        avg_price: "0",
+      }),
+    ]);
+    expect(UpbitPrivateWebSocketMessageSchema.parse(parsed)).toEqual(parsed);
   });
 });
 

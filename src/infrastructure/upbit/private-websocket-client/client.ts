@@ -56,28 +56,29 @@ export function createDefaultUpbitPrivateWebSocket(
 export class UpbitPrivateWebSocketBootstrapBuffer implements UpbitPrivateWebSocketSubscriptionSession {
   public readonly bufferOpenedAt: string;
   readonly #now: () => TimestampInput;
-  #subscribedAt: string | undefined;
-  #snapshotStartedAt: string | undefined;
-  #snapshotCompletedAt: string | undefined;
-  #drainedAt: string | undefined;
+  #subscribedAt: RecordedTimestamp | undefined;
+  #snapshotStartedAt: RecordedTimestamp | undefined;
+  #snapshotCompletedAt: RecordedTimestamp | undefined;
+  #drainedAt: RecordedTimestamp | undefined;
   #lastBufferedMessageCount = 0;
   readonly #messages: UpbitPrivateWebSocketBufferedMessage[] = [];
 
   public constructor(options: UpbitPrivateWebSocketBootstrapBufferOptions = {}) {
     this.#now = options.now ?? defaultClock;
-    this.bufferOpenedAt = String(this.#now());
+    const openedAt = recordTimestamp(this.#now());
+    this.bufferOpenedAt = openedAt.value;
   }
 
   public get subscribedAt(): string | undefined {
-    return this.#subscribedAt;
+    return this.#subscribedAt?.value;
   }
 
   public get snapshotStartedAt(): string | undefined {
-    return this.#snapshotStartedAt;
+    return this.#snapshotStartedAt?.value;
   }
 
   public get snapshotCompletedAt(): string | undefined {
-    return this.#snapshotCompletedAt;
+    return this.#snapshotCompletedAt?.value;
   }
 
   /**
@@ -87,27 +88,27 @@ export class UpbitPrivateWebSocketBootstrapBuffer implements UpbitPrivateWebSock
    * 위해 send 직후 또는 open event send 직후에만 호출한다.
    */
   public markSubscribed(observedAt: TimestampInput = this.#now()): UpbitPrivateWebSocketBootstrapGapEvidence {
-    this.#subscribedAt = String(observedAt);
+    this.#subscribedAt = recordTimestamp(observedAt);
     return this.getGapEvidence();
   }
 
   public handleMessage(data: unknown, receivedAt: TimestampInput = this.#now()): void {
-    this.#messages.push({ data, receivedAt });
+    this.#messages.push({ data, receivedAt: recordTimestamp(receivedAt).value });
     this.#lastBufferedMessageCount = this.#messages.length;
   }
 
   public markSnapshotStarted(observedAt: TimestampInput = this.#now()): UpbitPrivateWebSocketBootstrapGapEvidence {
-    this.#snapshotStartedAt = String(observedAt);
+    this.#snapshotStartedAt = recordTimestamp(observedAt);
     return this.getGapEvidence();
   }
 
   public markSnapshotCompleted(observedAt: TimestampInput = this.#now()): UpbitPrivateWebSocketBootstrapGapEvidence {
-    this.#snapshotCompletedAt = String(observedAt);
+    this.#snapshotCompletedAt = recordTimestamp(observedAt);
     return this.getGapEvidence();
   }
 
   public drainBufferedMessages(observedAt: TimestampInput = this.#now()): UpbitPrivateWebSocketBufferedMessageDrain {
-    this.#drainedAt = String(observedAt);
+    this.#drainedAt = recordTimestamp(observedAt);
     this.#lastBufferedMessageCount = this.#messages.length;
     const messages = this.#messages.splice(0);
 
@@ -126,10 +127,10 @@ export class UpbitPrivateWebSocketBootstrapBuffer implements UpbitPrivateWebSock
       bufferOpenedAt: this.bufferOpenedAt,
       bufferedMessageCount,
       hasBootstrapGap: reasonCode !== undefined,
-      ...(this.#subscribedAt === undefined ? {} : { subscribedAt: this.#subscribedAt }),
-      ...(this.#snapshotStartedAt === undefined ? {} : { snapshotStartedAt: this.#snapshotStartedAt }),
-      ...(this.#snapshotCompletedAt === undefined ? {} : { snapshotCompletedAt: this.#snapshotCompletedAt }),
-      ...(this.#drainedAt === undefined ? {} : { drainedAt: this.#drainedAt }),
+      ...(this.#subscribedAt === undefined ? {} : { subscribedAt: this.#subscribedAt.value }),
+      ...(this.#snapshotStartedAt === undefined ? {} : { snapshotStartedAt: this.#snapshotStartedAt.value }),
+      ...(this.#snapshotCompletedAt === undefined ? {} : { snapshotCompletedAt: this.#snapshotCompletedAt.value }),
+      ...(this.#drainedAt === undefined ? {} : { drainedAt: this.#drainedAt.value }),
       ...(reasonCode === undefined ? {} : { reasonCode }),
     };
 
@@ -139,7 +140,7 @@ export class UpbitPrivateWebSocketBootstrapBuffer implements UpbitPrivateWebSock
   private resolveReasonCode(): UpbitPrivateWebSocketBootstrapGapEvidence["reasonCode"] {
     if (
       this.#snapshotStartedAt !== undefined &&
-      (this.#subscribedAt === undefined || this.#snapshotStartedAt < this.#subscribedAt)
+      (this.#subscribedAt === undefined || this.#snapshotStartedAt.epochMs < this.#subscribedAt.epochMs)
     ) {
       return "SUBSCRIPTION_NOT_CONFIRMED_BEFORE_SNAPSHOT";
     }
@@ -233,6 +234,24 @@ export class UpbitPrivateWebSocketClient {
 
 function defaultClock(): string {
   return new Date().toISOString();
+}
+
+interface RecordedTimestamp {
+  value: string;
+  epochMs: number;
+}
+
+function recordTimestamp(input: TimestampInput): RecordedTimestamp {
+  const epochMs = input instanceof Date ? input.getTime() : Date.parse(input);
+
+  if (!Number.isFinite(epochMs)) {
+    throw new Error("Upbit private WebSocket timestamp must be a valid Date or ISO string");
+  }
+
+  return {
+    value: new Date(epochMs).toISOString(),
+    epochMs,
+  };
 }
 
 function readWebSocketMessageData(event: unknown): unknown {

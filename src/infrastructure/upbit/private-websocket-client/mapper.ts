@@ -48,10 +48,11 @@ export function toUpbitPrivateMyOrderEvent(
     side: payload.ask_bid,
     state: payload.state,
     price: toNumericString(payload.price),
-    volume: toNumericString(payload.volume),
+    volume: toOrderVolumeString(payload),
+    eventVolume: toNumericString(payload.volume),
     remainingVolume: toNumericString(payload.remaining_volume),
     executedVolume: toNumericString(payload.executed_volume),
-    tradePrice: toNumericString(payload.trade_price),
+    tradePrice: toNumericString(payload.avg_price),
     paidFee: toNumericString(payload.paid_fee),
     // Upbit myOrder 공식 payload에는 fee currency가 없으므로 관측된 경우에만 보존한다.
     ...(payload.fee_currency === undefined ? {} : { feeCurrency: payload.fee_currency }),
@@ -103,8 +104,19 @@ export function toUpbitPrivateMyAssetEvent(
  * number(1750000000000)와 문자열("0.001") 입력을 모두 Decimal로
  * 정규화해 후속 저장/비교 경계에서 정밀도 차이가 발생하지 않게 한다.
  */
-function toNumericString(value: string | number): NumericString {
+function toNumericString(value: string): NumericString {
   return new Decimal(value).toFixed();
+}
+
+function toOrderVolumeString(payload: UpbitPrivateWebSocketMyOrder): NumericString {
+  if (payload.state !== "trade") {
+    return toNumericString(payload.volume);
+  }
+
+  // trade 이벤트의 volume은 해당 체결 수량이므로 주문 기준 수량은 누적 체결+잔량으로 복원한다.
+  return new Decimal(payload.remaining_volume)
+    .plus(payload.executed_volume)
+    .toFixed() as NumericString;
 }
 
 function timestampFromMilliseconds(timestamp: number): string {

@@ -39,14 +39,18 @@ export type {
   CreateUpbitPrivateMyAssetSubscriptionOptions,
 } from "./private-websocket-client/subscriptions.js";
 export {
+  parseUpbitPrivateWebSocketMessage,
   UpbitPrivateWebSocketMyOrderSchema,
   UpbitPrivateWebSocketMyAssetSchema,
   UpbitPrivateWebSocketPayloadSchema,
+  UpbitPrivateWebSocketJsonListPayloadSchema,
+  UpbitPrivateWebSocketMessageSchema,
 } from "./private-websocket-client/schemas.js";
 export type {
   UpbitPrivateWebSocketMyOrder,
   UpbitPrivateWebSocketMyAsset,
   UpbitPrivateWebSocketPayload,
+  UpbitPrivateWebSocketMessage,
 } from "./private-websocket-client/schemas.js";
 export {
   toUpbitPrivateMyOrderEvent,

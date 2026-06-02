@@ -8,7 +8,7 @@
   "volume": "0.001",
   "remaining_volume": "0.0005",
   "executed_volume": "0.0005",
-  "trade_price": "100000000",
+  "avg_price": "100000000",
   "paid_fee": "250",
   "fee_currency": "KRW",
   "order_timestamp": 1750000000000,

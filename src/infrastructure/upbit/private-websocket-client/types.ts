@@ -182,13 +182,15 @@ export interface UpbitPrivateMyOrderEvent {
   state: "wait" | "watch" | "trade" | "done" | "cancel" | "prevented";
   /** 주문 시점의 지정가다. 시장가 주문은 빈 문자열일 수 있다. */
   price: NumericString;
-  /** 최초 주문 수량이다. */
+  /** 주문 기준 수량이다. trade 이벤트에서는 remaining_volume + executed_volume으로 복원한다. */
   volume: NumericString;
+  /** raw 이벤트의 volume이다. trade 이벤트에서는 해당 체결 수량이다. */
+  eventVolume: NumericString;
   /** 미체결 수량이다. */
   remainingVolume: NumericString;
   /** 체결된 수량이다. */
   executedVolume: NumericString;
-  /** 누적 체결 평균 가격이다. */
+  /** 누적 체결 평균 가격(avg_price)이다. */
   tradePrice: NumericString;
   /** 누적 수수료다. */
   paidFee: NumericString;

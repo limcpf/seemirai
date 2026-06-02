@@ -14,15 +14,16 @@ import { z } from "zod";
  * log/status/audit payload에 절대 저장하지 않는다.
  * ============================================================ */
 
-/** Upbit private WebSocket 숫자 payload schema다.
+/** Upbit private WebSocket 정밀 숫자 payload schema다.
  *
- * WebSocket은 문자열 또는 number로 numeric 값을 전달할 수 있다.
- * mapper는 두 입력을 모두 문자열로 정규화해 정밀도를 보존한다.
+ * JSON number는 JSON.parse 시점에 원문 소수 자릿수를 잃을 수
+ * 있으므로 schema 경계에서는 문자열만 허용한다. DEFAULT raw
+ * JSON number는 parseUpbitPrivateWebSocketMessage가 lexeme을
+ * 문자열로 보존한 뒤 이 schema에 전달한다.
  */
-const UpbitPrivateWsNumericSchema = z.union([
-  z.number().finite().nonnegative(),
-  z.string().regex(/^(?:0|[1-9]\d*)(?:\.\d+)?$/u, "numeric string is required"),
-]);
+const UpbitPrivateWsNumericSchema = z
+  .string()
+  .regex(/^(?:0|[1-9]\d*)(?:\.\d+)?$/u, "numeric string is required");
 
 /** Upbit private WebSocket market code schema다. */
 const UpbitPrivateWsMarketCodeSchema = z
@@ -37,7 +38,7 @@ const UpbitPrivateWsStreamTypeSchema = z.enum(["SNAPSHOT", "REALTIME"]);
  *
  * Upbit 공식 문서 기준 필드를 포함하며, 알 수 없는 추가 필드는
  * .passthrough()로 보존한다. myOrder 이벤트는 주문 uuid, code,
- * ask_bid, state, 수량, 체결가, 수수료, order_timestamp, timestamp,
+ * ask_bid, state, 수량, 평균 체결가, 수수료, order_timestamp, timestamp,
  * stream_type을 포함한다.
  * ============================================================ */
 
@@ -58,7 +59,7 @@ export const UpbitPrivateWebSocketMyOrderSchema = z
     volume: UpbitPrivateWsNumericSchema,
     remaining_volume: UpbitPrivateWsNumericSchema,
     executed_volume: UpbitPrivateWsNumericSchema,
-    trade_price: UpbitPrivateWsNumericSchema,
+    avg_price: UpbitPrivateWsNumericSchema,
     paid_fee: UpbitPrivateWsNumericSchema,
     fee_currency: z.string().min(1).optional(),
     order_timestamp: z.number().int().nonnegative(),
@@ -115,3 +116,64 @@ export const UpbitPrivateWebSocketPayloadSchema = z.union([
 ]);
 
 export type UpbitPrivateWebSocketPayload = z.infer<typeof UpbitPrivateWebSocketPayloadSchema>;
+
+/** JSON_LIST format에서 수신되는 payload 배열 schema다. */
+export const UpbitPrivateWebSocketJsonListPayloadSchema = z.array(
+  UpbitPrivateWebSocketPayloadSchema,
+);
+
+/** DEFAULT 단일 객체와 JSON_LIST 배열을 모두 받는 raw message schema다. */
+export const UpbitPrivateWebSocketMessageSchema = z.union([
+  UpbitPrivateWebSocketPayloadSchema,
+  UpbitPrivateWebSocketJsonListPayloadSchema,
+]);
+
+export type UpbitPrivateWebSocketMessage = z.infer<typeof UpbitPrivateWebSocketMessageSchema>;
+
+/**
+ * Upbit private WebSocket raw JSON 문자열을 schema contract로 파싱한다.
+ *
+ * DEFAULT format은 balance/price/volume 같은 필드를 JSON number로
+ * 보낼 수 있다. JSON.parse 후에는 숫자 원문을 복구할 수 없으므로,
+ * 정밀 필드의 number lexeme만 먼저 문자열로 감싼 뒤 schema를
+ * 적용한다. raw payload는 caller가 즉시 정규화하고 저장/로그에는
+ * redacted event 또는 gap evidence만 남기는 invariant를 유지한다.
+ */
+export function parseUpbitPrivateWebSocketMessage(rawMessage: string): UpbitPrivateWebSocketMessage {
+  if (rawMessage.trim().length === 0) {
+    throw new Error("Upbit private WebSocket message is required");
+  }
+
+  const parsed = JSON.parse(stringifyPrivateNumericLexemes(rawMessage)) as unknown;
+
+  return UpbitPrivateWebSocketMessageSchema.parse(parsed);
+}
+
+const PRIVATE_NUMERIC_JSON_FIELDS = new Set([
+  "price",
+  "volume",
+  "remaining_volume",
+  "executed_volume",
+  "avg_price",
+  "paid_fee",
+  "balance",
+  "locked",
+]);
+
+function stringifyPrivateNumericLexemes(rawMessage: string): string {
+  return rawMessage.replace(
+    /"(?<field>[A-Za-z_]+)"\s*:\s*(?<value>(?:0|[1-9]\d*)(?:\.\d+)?)(?=\s*[,}\]])/gu,
+    (match: string, ...args: unknown[]): string => {
+      const groups = args.at(-1) as { field?: string; value?: string } | undefined;
+      const field = groups?.field;
+      const value = groups?.value;
+
+      if (field === undefined || value === undefined || !PRIVATE_NUMERIC_JSON_FIELDS.has(field)) {
+        return match;
+      }
+
+      // 정밀 수량/금액 필드만 JSON.parse 전에 문자열화해 double 반올림을 막는다.
+      return `"${field}":"${value}"`;
+    },
+  );
+}
