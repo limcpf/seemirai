@@ -930,6 +930,45 @@ describe("reconcileOrders — state advancement candidates", () => {
     expect(hasAdvancement).toBe(false);
   });
 
+  it("fingerprint-only match는 상태 전진 후보 대신 ORDER_STATE_ADVANCEMENT_BLOCKED를 남긴다", () => {
+    const localOrders = [
+      createLocalOrder({
+        orderId: "local-fingerprint-fill-blocked",
+        status: "ACCEPTED",
+        identifier: undefined,
+        exchangeOrderId: undefined,
+      }),
+    ];
+    const exchangeOrders = [
+      createExchangeOrder({
+        source: "closed",
+        identifier: undefined,
+        exchangeOrderId: undefined,
+        exchangeStatus: "done",
+        remainingQuantity: "0",
+      }),
+    ];
+
+    const results = reconcileOrders(exchangeOrders, localOrders, observedAt);
+
+    expect(results[0]!.identityMatch).toMatchObject({
+      matchType: "fingerprint",
+    });
+    expect(results[0]!.stateAdvancement).toBeUndefined();
+    expect(results[0]!.mismatches).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          mismatchType: "ORDER_STATE_ADVANCEMENT_BLOCKED",
+          severity: "ERROR",
+          trace: expect.objectContaining({
+            reasonCode: "fingerprint_only_identity",
+            matchType: "fingerprint",
+          }) as object,
+        }),
+      ]),
+    );
+  });
+
   it("exchange done + local CANCEL_REQUESTED → ORDER_STATE_ADVANCEMENT_BLOCKED, 상태 전진 없음", () => {
     const localOrders = [
       createLocalOrder({

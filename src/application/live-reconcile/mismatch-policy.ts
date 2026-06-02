@@ -523,6 +523,26 @@ function evaluateMatchedPair(
   );
 
   if (stateAdvancement !== undefined) {
+    if (identity.matchType === "fingerprint") {
+      // fingerprint-only 일치는 특정 로컬 주문을 증명하지 못하므로 자동 체결/취소 전진을 막고 사람 검토로 올린다.
+      mismatches.push(
+        createOrderStateAdvancementBlockedMismatch(
+          exchangeOrder,
+          localOrder,
+          identity,
+          stateAdvancement.targetLocalStatus,
+          observedAt,
+          "fingerprint_only_identity",
+        ),
+      );
+      return {
+        localOrderId: localOrder.orderId,
+        exchangeSource: exchangeOrder.source,
+        identityMatch: identity,
+        mismatches,
+      };
+    }
+
     if (
       stateAdvancement.targetLocalStatus !== undefined &&
       !canTransitionOrderState(localOrder.status, stateAdvancement.targetLocalStatus)
@@ -535,6 +555,7 @@ function evaluateMatchedPair(
           identity,
           stateAdvancement.targetLocalStatus,
           observedAt,
+          "state_machine_transition_not_allowed",
         ),
       );
       return {
@@ -737,16 +758,23 @@ function createOrderStateAdvancementBlockedMismatch(
   identity: IdentityMatchSuccess,
   targetLocalStatus: ReconcileStateAdvancementCandidate["targetLocalStatus"],
   observedAt: string,
+  reasonCode: "state_machine_transition_not_allowed" | "fingerprint_only_identity" = "state_machine_transition_not_allowed",
 ): ReconcileMismatchEvidence {
+  const detailMessage =
+    reasonCode === "fingerprint_only_identity"
+      ? `fingerprint만으로 연결된 주문(${identity.identity})은 동일 조건 주문이 여러 건일 수 있어 로컬 상태 ${localOrder.status}에서 ${String(targetLocalStatus)}로 자동 전진할 수 없습니다.`
+      : `거래소 주문(${identity.identity})은 ${exchangeOrder.exchangeStatus} 상태지만 로컬 상태 ${localOrder.status}에서 ${String(targetLocalStatus)}로 자동 전진할 수 없습니다.`;
+
   return {
     mismatchType: "ORDER_STATE_ADVANCEMENT_BLOCKED",
     severity: "ERROR",
     market: exchangeOrder.market,
     orderIdentity: identity.identity,
-    userMessage: `거래소 주문(${identity.identity})은 ${exchangeOrder.exchangeStatus} 상태지만 로컬 상태 ${localOrder.status}에서 ${String(targetLocalStatus)}로 자동 전진할 수 없습니다.`,
+    userMessage: detailMessage,
     requiredAction: "수동 검토 필요: 취소/체결 경합 여부와 실제 체결 내역을 확인한 뒤 로컬 주문 상태를 수동으로 정리하세요.",
-    evidenceFingerprint: `state-advancement-blocked:${identity.identity}:${localOrder.status}:${String(targetLocalStatus)}:${observedAt}`,
+    evidenceFingerprint: `state-advancement-blocked:${identity.identity}:${localOrder.status}:${String(targetLocalStatus)}:${reasonCode}:${observedAt}`,
     trace: {
+      reasonCode,
       exchangeStatus: exchangeOrder.exchangeStatus,
       localStatus: localOrder.status,
       targetLocalStatus,
@@ -792,7 +820,7 @@ function createPartialFillMismatch(
  * - exchange=done, local≠FILLED → FILL_CANDIDATE (remainingQuantity>0이면 PARTIALLY_FILLED_CANDIDATE)
  * - exchange=cancel, local=CANCEL_REQUESTED → CANCEL_CANDIDATE
  * - exchange=cancel, local≠CANCEL_REQUESTED → mismatch evidence만 남기고 자동 전진 금지
- * - fingerprint match는 identifier/uuid match보다 신뢰도가 낮아 자동 전진을 제한할 수 있음
+ * - fingerprint match는 특정 주문을 증명하지 못하므로 전진 후보를 manual-review evidence로 차단
  */
 function createStateAdvancementCandidate(
   exchangeOrder: ReconcileExchangeOrderSnapshot,
