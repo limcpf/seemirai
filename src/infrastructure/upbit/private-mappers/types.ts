@@ -1,4 +1,4 @@
-import type { ExchangeId, TimestampInput } from "../../../domain/index.js";
+import type { BrokerOrder, ExchangeId, TimestampInput } from "../../../domain/index.js";
 import type { UpbitRateLimitStatus } from "../rate-limit.js";
 import type { UpbitPrivateErrorKind } from "../private-client.js";
 
@@ -11,6 +11,42 @@ import type { UpbitPrivateErrorKind } from "../private-client.js";
 export interface MapUpbitPrivatePayloadOptions {
   exchangeId?: ExchangeId;
   capturedAt: TimestampInput;
+}
+
+export type UpbitClosedOrderManualReviewReason =
+  | "UNSUPPORTED_ORDER_TYPE"
+  | "MISSING_MARKET_VOLUME"
+  | "MISSING_LIMIT_PRICE";
+
+/**
+ * closed order row 중 현재 broker order contract로 정규화하지 못한 주문의 수동 검토 evidence다.
+ *
+ * raw provider payload를 저장하지 않고, 거래소 주문 식별자와 지원 불가 사유만 보존한다. 후속 M16 reconcile persistence는 이
+ * 값을 append-only mismatch/manual-review evidence로 저장해야 하며, 이 타입 자체는 외부 side effect를 만들지 않는다.
+ */
+export interface UpbitClosedOrderManualReviewEvidence {
+  brokerOrderId: string;
+  idempotencyKey: string;
+  exchangeId: ExchangeId;
+  market: string;
+  side: string;
+  state: string;
+  upbitOrderType: string;
+  acceptedAt: TimestampInput;
+  capturedAt: TimestampInput;
+  reasonCode: UpbitClosedOrderManualReviewReason;
+  message: string;
+}
+
+/**
+ * closed order 목록 mapper의 정규화 결과다.
+ *
+ * `orders`는 broker contract로 표현 가능한 주문이고, `manualReview`는 관측됐지만 자동 정규화하지 않는 주문이다. 두 배열을
+ * 함께 저장해야 reconcile snapshot이 지원 불가 row를 누락으로 오인하지 않는다.
+ */
+export interface UpbitClosedOrdersSnapshotMapping {
+  orders: readonly BrokerOrder[];
+  manualReview: readonly UpbitClosedOrderManualReviewEvidence[];
 }
 
 /**

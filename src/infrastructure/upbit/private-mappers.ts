@@ -5,6 +5,7 @@ export {
   toBrokerOrderFromLookup,
   toBrokerOrdersFromClosedOrders,
   toBrokerOrdersFromOpenOrders,
+  toClosedOrdersSnapshotFromClosedOrders,
   toFeePolicyFromOrderChance,
   toOrderChancePolicy,
   toUpbitPrivateUserActionErrorSummary,
@@ -12,6 +13,9 @@ export {
 export type {
   CreateUpbitPrivateErrorSummaryOptions,
   MapUpbitPrivatePayloadOptions,
+  UpbitClosedOrderManualReviewEvidence,
+  UpbitClosedOrderManualReviewReason,
+  UpbitClosedOrdersSnapshotMapping,
   UpbitPrivateErrorSummaryTrace,
   UpbitPrivatePayloadMappingErrorOptions,
   UpbitPrivatePayloadSchemaName,

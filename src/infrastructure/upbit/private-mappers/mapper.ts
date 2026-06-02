@@ -35,6 +35,9 @@ import type {
 import type {
   CreateUpbitPrivateErrorSummaryOptions,
   MapUpbitPrivatePayloadOptions,
+  UpbitClosedOrderManualReviewEvidence,
+  UpbitClosedOrderManualReviewReason,
+  UpbitClosedOrdersSnapshotMapping,
   UpbitPrivateErrorSummaryTrace,
   UpbitPrivatePayloadMappingErrorOptions,
   UpbitPrivatePayloadSchemaName,
@@ -211,16 +214,38 @@ export function toBrokerOrdersFromClosedOrders(
   payload: unknown,
   options: MapUpbitPrivatePayloadOptions,
 ): readonly BrokerOrder[] {
-  const orders = parsePrivatePayload(UpbitPrivateClosedOrdersResponseSchema, "CLOSED_ORDERS", payload);
+  return toClosedOrdersSnapshotFromClosedOrders(payload, options).orders;
+}
 
-  return orders.flatMap((order) => {
-    // closed snapshot은 일부 unsupported row가 있어도 나머지 주문 evidence를 잃지 않아야 하므로 표현 가능한 row만 정규화한다.
-    if (!canMapClosedOrderToBrokerOrder(order)) {
-      return [];
+/**
+ * Upbit 종료 주문 목록 응답을 broker order와 manual-review evidence로 함께 변환한다.
+ *
+ * M16 reconcile은 조회 window 안의 모든 거래소 row 관측 사실을 보존해야 한다. 현재 broker order contract로 표현 가능한 row는
+ * `orders`에 담고, `price`/`best`처럼 자동 정규화가 위험한 row는 secret-safe `manualReview` evidence로 분리한다.
+ * 입력/출력 모두 외부 side effect가 없다.
+ */
+export function toClosedOrdersSnapshotFromClosedOrders(
+  payload: unknown,
+  options: MapUpbitPrivatePayloadOptions,
+): UpbitClosedOrdersSnapshotMapping {
+  const orders = parsePrivatePayload(UpbitPrivateClosedOrdersResponseSchema, "CLOSED_ORDERS", payload);
+  const brokerOrders: BrokerOrder[] = [];
+  const manualReview: UpbitClosedOrderManualReviewEvidence[] = [];
+
+  for (const order of orders) {
+    const manualReviewEvidence = toClosedOrderManualReviewEvidence(order, options);
+    if (manualReviewEvidence !== null) {
+      manualReview.push(manualReviewEvidence);
+      continue;
     }
 
-    return [toBrokerOrderFromPrivateOrder(order, options, "upbit_private_closed_order")];
-  });
+    brokerOrders.push(toBrokerOrderFromPrivateOrder(order, options, "upbit_private_closed_order"));
+  }
+
+  return {
+    orders: brokerOrders,
+    manualReview,
+  };
 }
 
 /**
@@ -426,20 +451,76 @@ function toDomainOrderStatus(
  * 입력은 schema를 통과한 closed order row이고, 출력은 정규화 가능 여부다. 외부 side effect는 없으며, false row는 후속
  * reconcile 단계에서 manual-review evidence 대상으로 남겨야 한다.
  */
-function canMapClosedOrderToBrokerOrder(order: UpbitPrivateClosedOrderResponse): boolean {
+/**
+ * 자동 정규화가 위험한 closed order row를 수동 검토 evidence로 낮춘다.
+ *
+ * 호출 경계는 closed-order snapshot mapper 내부이며, 입력 row는 schema 검증을 통과한 provider 요약이다. 반환값은 secret-safe
+ * evidence 또는 자동 정규화 가능함을 뜻하는 null이다. raw payload를 보존하지 않고 외부 side effect도 만들지 않는다.
+ */
+function toClosedOrderManualReviewEvidence(
+  order: UpbitPrivateClosedOrderResponse,
+  options: MapUpbitPrivatePayloadOptions,
+): UpbitClosedOrderManualReviewEvidence | null {
+  const reasonCode = toClosedOrderManualReviewReason(order);
+  if (reasonCode === null) {
+    return null;
+  }
+
+  return {
+    brokerOrderId: order.uuid,
+    idempotencyKey: order.identifier ?? order.uuid,
+    exchangeId: options.exchangeId ?? UPBIT_KRW_SPOT_EXCHANGE_ID,
+    market: order.market,
+    side: order.side,
+    state: order.state,
+    upbitOrderType: order.ord_type,
+    acceptedAt: order.created_at,
+    capturedAt: options.capturedAt,
+    reasonCode,
+    message: toClosedOrderManualReviewMessage(reasonCode),
+  };
+}
+
+/**
+ * closed order row가 manual review로 분리돼야 하는 이유를 판정한다.
+ *
+ * broker order contract의 invariant를 유지하기 위한 순수 판정 함수다. `null`은 자동 정규화 가능하다는 뜻이며, 문자열 reason은
+ * 후속 persistence가 사람이 읽는 evidence message와 안정 reason code를 함께 저장하는 입력이다.
+ */
+function toClosedOrderManualReviewReason(
+  order: UpbitPrivateClosedOrderResponse,
+): UpbitClosedOrderManualReviewReason | null {
   if (order.ord_type === "best" || order.ord_type === "price") {
-    return false;
+    return "UNSUPPORTED_ORDER_TYPE";
   }
 
   if (order.ord_type === "market" && order.volume === null) {
-    return false;
+    return "MISSING_MARKET_VOLUME";
   }
 
   if (order.ord_type === "limit" && (order.price === null || order.price === undefined)) {
-    return false;
+    return "MISSING_LIMIT_PRICE";
   }
 
-  return true;
+  return null;
+}
+
+/**
+ * closed order manual-review reason code를 운영자가 읽을 한국어 조치 문구로 변환한다.
+ *
+ * 내부 reason code는 audit/debug 추적을 위해 유지하고, message는 `/status`나 evidence summary에서 바로 노출 가능한 설명을
+ * 제공한다. 변환 자체는 외부 side effect가 없다.
+ */
+function toClosedOrderManualReviewMessage(reason: UpbitClosedOrderManualReviewReason): string {
+  if (reason === "UNSUPPORTED_ORDER_TYPE") {
+    return "현재 broker order contract로 표현할 수 없는 종료 주문 유형이 관측되어 수동 검토 evidence로 분리했습니다.";
+  }
+
+  if (reason === "MISSING_MARKET_VOLUME") {
+    return "시장가 종료 주문의 원 요청 수량이 없어 수동 검토 evidence로 분리했습니다.";
+  }
+
+  return "지정가 종료 주문의 요청 가격이 없어 수동 검토 evidence로 분리했습니다.";
 }
 
 function toBrokerOrderFromPrivateOrder(

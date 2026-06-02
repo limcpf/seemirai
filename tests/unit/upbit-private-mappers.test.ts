@@ -7,6 +7,7 @@ import {
   toBrokerOrderFromLookup,
   toBrokerOrdersFromClosedOrders,
   toBrokerOrdersFromOpenOrders,
+  toClosedOrdersSnapshotFromClosedOrders,
   toFeePolicyFromOrderChance,
   toOrderChancePolicy,
   toUpbitPrivateUserActionErrorSummary,
@@ -428,8 +429,8 @@ describe("Upbit private closed orders mapper", () => {
     expect(JSON.stringify(orders)).not.toContain('"raw"');
   });
 
-  it("keeps mappable closed orders when unsupported rows require manual review", () => {
-    const orders = toBrokerOrdersFromClosedOrders(
+  it("keeps manual review evidence for unsupported closed order rows", () => {
+    const snapshot = toClosedOrdersSnapshotFromClosedOrders(
       [
         {
           market: "KRW-BTC",
@@ -483,6 +484,53 @@ describe("Upbit private closed orders mapper", () => {
       { capturedAt },
     );
 
+    const orders = toBrokerOrdersFromClosedOrders(
+      [
+        {
+          market: "KRW-BTC",
+          uuid: "closed-order-supported",
+          side: "ask",
+          ord_type: "limit",
+          price: "140000000",
+          state: "done",
+          created_at: "2026-06-01T09:00:00+09:00",
+          volume: "0.002",
+          remaining_volume: "0",
+          executed_volume: "0.002",
+          reserved_fee: "0",
+          remaining_fee: "0",
+          paid_fee: "140",
+          locked: "0",
+        },
+      ],
+      { capturedAt },
+    );
+
+    expect(snapshot.orders).toHaveLength(1);
+    expect(snapshot.manualReview).toMatchObject([
+      {
+        brokerOrderId: "closed-order-price",
+        idempotencyKey: "closed-order-price",
+        exchangeId: "upbit_krw_spot",
+        market: "KRW-BTC",
+        side: "bid",
+        state: "done",
+        upbitOrderType: "price",
+        reasonCode: "UNSUPPORTED_ORDER_TYPE",
+        message: "현재 broker order contract로 표현할 수 없는 종료 주문 유형이 관측되어 수동 검토 evidence로 분리했습니다.",
+      },
+      {
+        brokerOrderId: "closed-order-best",
+        idempotencyKey: "closed-order-best",
+        exchangeId: "upbit_krw_spot",
+        market: "KRW-BTC",
+        side: "ask",
+        state: "cancel",
+        upbitOrderType: "best",
+        reasonCode: "UNSUPPORTED_ORDER_TYPE",
+      },
+    ]);
+    expect(JSON.stringify(snapshot.manualReview)).not.toContain('"raw"');
     expect(orders).toHaveLength(1);
     expect(orders[0]).toMatchObject({
       brokerOrderId: "closed-order-supported",
