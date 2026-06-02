@@ -68,6 +68,8 @@ CREATE TABLE IF NOT EXISTS live_reconcile_exchange_order_snapshots (
   metadata_json jsonb NOT NULL DEFAULT '{}'::jsonb,
   CHECK (btrim(market) <> ''),
   CHECK (exchange_order_id IS NOT NULL OR identifier IS NOT NULL),
+  CHECK (exchange_order_id IS NULL OR btrim(exchange_order_id) <> ''),
+  CHECK (identifier IS NULL OR btrim(identifier) <> ''),
   CHECK (requested_quantity > 0),
   CHECK (remaining_quantity IS NULL OR remaining_quantity >= 0),
   CHECK (requested_price IS NULL OR requested_price > 0)
@@ -153,7 +155,8 @@ CREATE TABLE IF NOT EXISTS live_reconcile_position_snapshots (
   CHECK (btrim(strategy_id) <> ''),
   CHECK (quantity >= 0),
   CHECK (average_entry_price IS NULL OR average_entry_price >= 0),
-  CHECK (average_entry_price IS NOT NULL OR recovery_status = 'MANUAL_REVIEW_REQUIRED')
+  CHECK (average_entry_price IS NOT NULL OR recovery_status = 'MANUAL_REVIEW_REQUIRED'),
+  CHECK (recovery_status = 'MANUAL_REVIEW_REQUIRED' OR quantity = 0 OR average_entry_price > 0)
 );
 
 -- 같은 run의 같은 포지션/source/captured_at snapshot 중복을 차단한다.

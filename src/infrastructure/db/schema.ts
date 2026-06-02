@@ -665,6 +665,7 @@ export interface LiveReconcileBalanceSnapshotsTable {
  *
  * 같은 run에서 같은 `exchange_order_id`는 한 번만 저장된다.
  * identifier가 확인된 주문은 `exchange_order_id` 관측 전후가 달라도 같은 run 안에서 `identifier`로 unique를 보장한다.
+ * 두 식별자가 모두 있는 bridge snapshot은 repository에서 partial snapshot을 하나로 정규화하며, 빈 문자열 식별자는 DB가 거부한다.
  */
 export interface LiveReconcileExchangeOrderSnapshotsTable {
   /** order snapshot record ID */
@@ -741,6 +742,7 @@ export interface LiveReconcileMismatchEvidenceTable {
  *
  * `positions` 현재 상태를 바로 덮어쓰지 않고, 같은 run에서 관측한 수량과 평균단가 산출 근거를 append-only로 남긴다.
  * 평균단가를 계산할 수 없는 후보는 `MANUAL_REVIEW_REQUIRED`로만 저장해 근거 없는 포지션 갱신을 차단한다.
+ * 양수 수량을 `RECOVERABLE`로 저장하려면 평균단가도 양수여야 한다.
  */
 export interface LiveReconcilePositionSnapshotsTable {
   /** position snapshot record ID */

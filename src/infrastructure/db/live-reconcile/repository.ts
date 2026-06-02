@@ -109,6 +109,10 @@ export class PostgresLiveReconcileRepository {
       return [];
     }
 
+    if (!(await this.isLiveReconcileRunRunning(runId))) {
+      return [];
+    }
+
     const rows = snapshots.map((snapshot) =>
       toLiveReconcileBalanceSnapshotRowInput(runId, snapshot),
     );
@@ -156,17 +160,83 @@ export class PostgresLiveReconcileRepository {
       return [];
     }
 
-    const rows = snapshots.map((snapshot) =>
-      toLiveReconcileExchangeOrderSnapshotRowInput(runId, snapshot),
-    );
+    if (!(await this.isLiveReconcileRunRunning(runId))) {
+      return [];
+    }
 
-    // ON CONFLICT DO NOTHING으로 모든 unique index 위반을 무시한다.
-    const inserted = await this.database
-      .insertInto("live_reconcile_exchange_order_snapshots")
-      .values(rows)
-      .onConflict((conflict) => conflict.doNothing())
-      .returningAll()
-      .execute();
+    const inserted = await this.database.transaction().execute(async (transaction) => {
+      const records: LiveReconcileExchangeOrderSnapshotRecord[] = [];
+
+      for (const snapshot of snapshots) {
+        const row = toLiveReconcileExchangeOrderSnapshotRowInput(runId, snapshot);
+        const exchangeOrderId = row.exchange_order_id;
+        const identifier = row.identifier;
+
+        if (typeof exchangeOrderId === "string" && typeof identifier === "string") {
+          const existingRows = await transaction
+            .selectFrom("live_reconcile_exchange_order_snapshots")
+            .selectAll()
+            .where("run_id", "=", runId)
+            .where((eb) =>
+              eb.or([
+                eb("exchange_order_id", "=", exchangeOrderId),
+                eb("identifier", "=", identifier),
+              ]),
+            )
+            .execute();
+
+          if (existingRows.length > 0) {
+            const primary = existingRows[0]!;
+            const duplicateIds = existingRows
+              .slice(1)
+              .map((existingRow) => existingRow.id);
+
+            if (duplicateIds.length > 0) {
+              // 같은 run 안에서 uuid-only/identifier-only partial row가 갈라진 경우 bridge row를 기준으로 하나로 정규화한다.
+              await transaction
+                .deleteFrom("live_reconcile_exchange_order_snapshots")
+                .where("id", "in", duplicateIds)
+                .execute();
+            }
+
+            const normalized = await transaction
+              .updateTable("live_reconcile_exchange_order_snapshots")
+              .set({
+                exchange_order_id: row.exchange_order_id,
+                identifier: row.identifier,
+                market: row.market,
+                side: row.side,
+                status: row.status,
+                requested_quantity: row.requested_quantity,
+                remaining_quantity: row.remaining_quantity,
+                requested_price: row.requested_price,
+                source: row.source,
+                captured_at: row.captured_at,
+                metadata_json: row.metadata_json,
+              })
+              .where("id", "=", primary.id)
+              .returningAll()
+              .executeTakeFirstOrThrow();
+            records.push(normalized);
+            continue;
+          }
+        }
+
+        // ON CONFLICT DO NOTHING으로 unique index 위반을 무시하고, bridge row는 위에서 먼저 정규화한다.
+        const insertedRow = await transaction
+          .insertInto("live_reconcile_exchange_order_snapshots")
+          .values(row)
+          .onConflict((conflict) => conflict.doNothing())
+          .returningAll()
+          .executeTakeFirst();
+
+        if (insertedRow !== undefined) {
+          records.push(insertedRow);
+        }
+      }
+
+      return records;
+    });
 
     return inserted;
   }
@@ -198,6 +268,10 @@ export class PostgresLiveReconcileRepository {
     }>,
   ): Promise<LiveReconcileMismatchEvidenceRecord[]> {
     if (evidenceList.length === 0) {
+      return [];
+    }
+
+    if (!(await this.isLiveReconcileRunRunning(runId))) {
       return [];
     }
 
@@ -245,6 +319,10 @@ export class PostgresLiveReconcileRepository {
       return [];
     }
 
+    if (!(await this.isLiveReconcileRunRunning(runId))) {
+      return [];
+    }
+
     const rows = snapshots.map((snapshot) =>
       toLiveReconcilePositionSnapshotRowInput(runId, snapshot),
     );
@@ -287,6 +365,10 @@ export class PostgresLiveReconcileRepository {
     }>,
   ): Promise<LiveReconcileFillRecoveryKeyRecord[]> {
     if (keys.length === 0) {
+      return [];
+    }
+
+    if (!(await this.isLiveReconcileRunRunning(runId))) {
       return [];
     }
 
@@ -358,12 +440,21 @@ export class PostgresLiveReconcileRepository {
    * @returns 최근 reconcile run 요약. run이 없으면 `run: null`과 count 0
    */
   public async getLatestLiveReconcileSummary(): Promise<LiveReconcileSummary> {
-    const run = await this.database
+    const finalRun = await this.database
       .selectFrom("live_reconcile_runs")
       .selectAll()
+      .where("status", "!=", "RUNNING")
       .orderBy("started_at", "desc")
       .limit(1)
       .executeTakeFirst();
+    const run =
+      finalRun ??
+      (await this.database
+        .selectFrom("live_reconcile_runs")
+        .selectAll()
+        .orderBy("started_at", "desc")
+        .limit(1)
+        .executeTakeFirst());
 
     if (run === undefined) {
       return {
@@ -418,5 +509,23 @@ export class PostgresLiveReconcileRepository {
       positionSnapshotCount: Number(positionCount.count),
       fillRecoveryKeyCount: Number(fillRecoveryKeyCount.count),
     };
+  }
+
+  /**
+   * append-only 하위 row를 final run에 뒤늦게 섞지 않기 위해 RUNNING 여부를 확인한다.
+   *
+   * 존재하지 않는 run은 호출 경계 오류이므로 기존 FK 실패처럼 throw하고, final run은 재시도 side effect를 막기 위해 false를 반환한다.
+   *
+   * @param runId 확인할 reconcile run ID
+   * @returns 하위 snapshot/evidence/key append가 허용되는 RUNNING run이면 true
+   */
+  private async isLiveReconcileRunRunning(runId: string): Promise<boolean> {
+    const run = await this.database
+      .selectFrom("live_reconcile_runs")
+      .select(["status"])
+      .where("id", "=", runId)
+      .executeTakeFirstOrThrow();
+
+    return run.status === "RUNNING";
   }
 }

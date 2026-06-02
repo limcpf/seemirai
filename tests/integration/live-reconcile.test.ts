@@ -323,7 +323,7 @@ describeDb("live reconcile persistence integration", () => {
     expect(snapshots[0]?.identifier).toBe("ident-only-1");
   });
 
-  it("skips duplicate exchange order snapshots with the same identifier after uuid is observed", async () => {
+  it("normalizes an identifier-only exchange order snapshot after uuid is observed", async () => {
     const { run } = await repository!.beginLiveReconcileRun({
       idempotencyKey: "run-integration-orders-ident-dup",
     });
@@ -351,9 +351,96 @@ describeDb("live reconcile persistence integration", () => {
         capturedAt: new Date("2026-06-03T00:00:01Z"),
       },
     ]);
+    const summary = await repository!.getLatestLiveReconcileSummary();
 
     expect(identifierOnly).toHaveLength(1);
-    expect(withUuid).toHaveLength(0);
+    expect(withUuid).toHaveLength(1);
+    expect(withUuid[0]?.id).toBe(identifierOnly[0]?.id);
+    expect(withUuid[0]?.exchange_order_id).toBe("uuid-observed-later");
+    expect(withUuid[0]?.identifier).toBe("ident-dup-after-uuid");
+    expect(summary.exchangeOrderSnapshotCount).toBe(1);
+  });
+
+  it("normalizes split exchange order identities when a bridge snapshot is observed", async () => {
+    const { run } = await repository!.beginLiveReconcileRun({
+      idempotencyKey: "run-integration-orders-bridge",
+    });
+
+    const uuidOnly = await repository!.appendLiveReconcileExchangeOrderSnapshots(run.id, [
+      {
+        exchangeOrderId: "uuid-bridge",
+        market: "KRW-BTC",
+        side: "BUY",
+        status: "OPEN",
+        requestedQuantity: "0.001",
+        source: "open",
+        capturedAt: new Date("2026-06-03T00:00:00Z"),
+      },
+    ]);
+    const identifierOnly = await repository!.appendLiveReconcileExchangeOrderSnapshots(run.id, [
+      {
+        identifier: "ident-bridge",
+        market: "KRW-BTC",
+        side: "BUY",
+        status: "OPEN",
+        requestedQuantity: "0.001",
+        source: "ws",
+        capturedAt: new Date("2026-06-03T00:00:01Z"),
+      },
+    ]);
+    const bridge = await repository!.appendLiveReconcileExchangeOrderSnapshots(run.id, [
+      {
+        exchangeOrderId: "uuid-bridge",
+        identifier: "ident-bridge",
+        market: "KRW-BTC",
+        side: "BUY",
+        status: "OPEN",
+        requestedQuantity: "0.001",
+        source: "lookup",
+        capturedAt: new Date("2026-06-03T00:00:02Z"),
+      },
+    ]);
+    const summary = await repository!.getLatestLiveReconcileSummary();
+
+    expect(uuidOnly).toHaveLength(1);
+    expect(identifierOnly).toHaveLength(1);
+    expect(bridge).toHaveLength(1);
+    expect(bridge[0]?.exchange_order_id).toBe("uuid-bridge");
+    expect(bridge[0]?.identifier).toBe("ident-bridge");
+    expect(summary.exchangeOrderSnapshotCount).toBe(1);
+  });
+
+  it("rejects blank exchange order identifiers", async () => {
+    const { run } = await repository!.beginLiveReconcileRun({
+      idempotencyKey: "run-integration-orders-blank-identities",
+    });
+
+    await expect(
+      repository!.appendLiveReconcileExchangeOrderSnapshots(run.id, [
+        {
+          exchangeOrderId: "",
+          market: "KRW-BTC",
+          side: "BUY",
+          status: "OPEN",
+          requestedQuantity: "0.001",
+          source: "open",
+          capturedAt: new Date("2026-06-03T00:00:00Z"),
+        },
+      ]),
+    ).rejects.toThrow();
+    await expect(
+      repository!.appendLiveReconcileExchangeOrderSnapshots(run.id, [
+        {
+          identifier: " ",
+          market: "KRW-BTC",
+          side: "BUY",
+          status: "OPEN",
+          requestedQuantity: "0.001",
+          source: "ws",
+          capturedAt: new Date("2026-06-03T00:00:00Z"),
+        },
+      ]),
+    ).rejects.toThrow();
   });
 
   // ── appendLiveReconcileMismatchEvidence ──
@@ -527,6 +614,27 @@ describeDb("live reconcile persistence integration", () => {
 
     expect(first).toHaveLength(1);
     expect(second).toHaveLength(0);
+  });
+
+  it("rejects recoverable positive position snapshots with zero average entry price", async () => {
+    const { run } = await repository!.beginLiveReconcileRun({
+      idempotencyKey: "run-integration-position-zero-average",
+    });
+
+    await expect(
+      repository!.appendLiveReconcilePositionSnapshots(run.id, [
+        {
+          exchange: "UPBIT",
+          market: "KRW-BTC",
+          strategyId: "trend-following",
+          quantity: "0.02",
+          averageEntryPrice: "0",
+          recoveryStatus: "RECOVERABLE",
+          source: "fills",
+          capturedAt: new Date("2026-06-03T00:00:00Z"),
+        },
+      ]),
+    ).rejects.toThrow();
   });
 
   // ── appendLiveReconcileFillRecoveryKeys ──
@@ -742,6 +850,33 @@ describeDb("live reconcile persistence integration", () => {
     expect(summary.fillRecoveryKeyCount).toBe(0);
   });
 
+  it("keeps the latest final run in summary while a newer run is still running", async () => {
+    const { run: failedRun } = await repository!.beginLiveReconcileRun({
+      idempotencyKey: "run-integration-summary-final-first",
+    });
+    await repository!.appendLiveReconcileMismatchEvidence(failedRun.id, [
+      {
+        mismatchType: "BALANCE_LOCK_MISMATCH",
+        severity: "ERROR",
+        currency: "KRW",
+        message: "잔고 불일치",
+        action: "수동 검토",
+        evidenceFingerprint: "summary-final-first-fp",
+        occurredAt: new Date("2026-06-03T00:00:00Z"),
+      },
+    ]);
+    await repository!.completeLiveReconcileRun({ runId: failedRun.id, status: "FAILED" });
+    await repository!.beginLiveReconcileRun({
+      idempotencyKey: "run-integration-summary-running-after-final",
+    });
+
+    const summary = await repository!.getLatestLiveReconcileSummary();
+
+    expect(summary.run?.id).toBe(failedRun.id);
+    expect(summary.run?.status).toBe("FAILED");
+    expect(summary.mismatchEvidenceCount).toBe(1);
+  });
+
   // ── append-only invariant (run 실패 시 snapshot/evidence 유지) ──
 
   it("keeps snapshots and evidence even when run completes with FAILED status", async () => {
@@ -777,6 +912,82 @@ describeDb("live reconcile persistence integration", () => {
     expect(summary.run!.status).toBe("FAILED");
     expect(summary.balanceSnapshotCount).toBe(1);
     expect(summary.mismatchEvidenceCount).toBe(1);
+  });
+
+  it("does not append snapshots or evidence after a run reaches a final status", async () => {
+    const { run } = await repository!.beginLiveReconcileRun({
+      idempotencyKey: "run-integration-final-append-guard",
+    });
+    await repository!.completeLiveReconcileRun({ runId: run.id, status: "COMPLETED" });
+
+    const balance = await repository!.appendLiveReconcileBalanceSnapshots(run.id, [
+      {
+        currency: "KRW",
+        available: "1000000",
+        locked: "0",
+        total: "1000000",
+        capturedAt: new Date("2026-06-03T00:00:00Z"),
+        source: "REST",
+      },
+    ]);
+    const orders = await repository!.appendLiveReconcileExchangeOrderSnapshots(run.id, [
+      {
+        exchangeOrderId: "uuid-final-append",
+        market: "KRW-BTC",
+        side: "BUY",
+        status: "OPEN",
+        requestedQuantity: "0.001",
+        source: "open",
+        capturedAt: new Date("2026-06-03T00:00:00Z"),
+      },
+    ]);
+    const evidence = await repository!.appendLiveReconcileMismatchEvidence(run.id, [
+      {
+        mismatchType: "BALANCE_LOCK_MISMATCH",
+        severity: "ERROR",
+        currency: "KRW",
+        message: "잔고 불일치",
+        action: "수동 검토",
+        evidenceFingerprint: "final-append-guard-fp",
+        occurredAt: new Date("2026-06-03T00:00:00Z"),
+      },
+    ]);
+    const positions = await repository!.appendLiveReconcilePositionSnapshots(run.id, [
+      {
+        exchange: "UPBIT",
+        market: "KRW-BTC",
+        strategyId: "trend-following",
+        quantity: "0.001",
+        averageEntryPrice: "10000000",
+        recoveryStatus: "RECOVERABLE",
+        source: "fills",
+        capturedAt: new Date("2026-06-03T00:00:00Z"),
+      },
+    ]);
+    const fillKeys = await repository!.appendLiveReconcileFillRecoveryKeys(run.id, [
+      {
+        exchange: "UPBIT",
+        market: "KRW-BTC",
+        exchangeFillId: "fill-final-append",
+        fillFingerprint: "fill-final-append-fp",
+        side: "BUY",
+        price: "10000000",
+        quantity: "0.001",
+        filledAt: new Date("2026-06-03T00:00:00Z"),
+      },
+    ]);
+    const summary = await repository!.getLatestLiveReconcileSummary();
+
+    expect(balance).toHaveLength(0);
+    expect(orders).toHaveLength(0);
+    expect(evidence).toHaveLength(0);
+    expect(positions).toHaveLength(0);
+    expect(fillKeys).toHaveLength(0);
+    expect(summary.balanceSnapshotCount).toBe(0);
+    expect(summary.exchangeOrderSnapshotCount).toBe(0);
+    expect(summary.mismatchEvidenceCount).toBe(0);
+    expect(summary.positionSnapshotCount).toBe(0);
+    expect(summary.fillRecoveryKeyCount).toBe(0);
   });
 
   // ── 모든 mismatch type 저장 확인 ──
