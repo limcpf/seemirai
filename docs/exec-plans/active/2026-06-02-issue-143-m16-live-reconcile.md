@@ -30,7 +30,9 @@ M15 `UpbitLiveBroker` contract 검증이 완료된 상태에서, 실계좌 잔�
 - 기본 runtime에서 live order API 호출 0회 invariant는 유지된다.
 - M15는 `listOpenOrders`에서 `wait`와 `watch` 상태를 함께 조회한다.
 - M15 duplicate identifier 복구로 회수한 기존 주문은 M16 reconcile 전까지 재시작 복구 취소를 열지 않는다.
-- 아직 M16 reconcile worker, private WebSocket, append-only persistence, mismatch diff engine은 구현되지 않았다.
+- Sub PR 02/03/04에서 closed orders REST, private WebSocket, append-only reconcile persistence가 준비됐다.
+- Sub PR 05에서 mismatch diff engine, fail-closed policy, immutable identity matching, balance lock policy, WebSocket gap evidence, state advancement 후보 산출을 구현했다.
+- 아직 M16 reconcile worker, status/CLI surface, fake/live smoke closeout은 구현되지 않았다.
 
 ## 범위
 
@@ -99,6 +101,31 @@ sub PR 의존성 그래프:
 ```
 
 Sub PR 02/03/04는 01 merge 뒤 파일 소유권이 분리되어 병렬 진행 가능하다. 05는 02/03/04의 REST mapper, WebSocket event contract, persistence contract를 입력으로 받으므로 순차 진행한다.
+
+## Sub PR 05 closeout (2026-06-03)
+
+- PR: [#148](https://github.com/limcpf/seemirai/pull/148)
+- branch: `issue-143-05-subpr`
+- 최종 head: `64db5c053bc7bee64e64736569636b2aa614915d`
+- 완료 범위:
+  - `src/application/live-reconcile.ts` public barrel과 `live-reconcile/` 세부 구현 구조 추가
+  - 거래소/로컬 주문 identity matching: identifier, uuid, immutable order fingerprint 비교
+  - `UNTRACKED_EXCHANGE_OPEN_ORDER`, `LOCAL_OPEN_ORDER_MISSING_ON_EXCHANGE`, `PARTIAL_FILL_MISMATCH`, `CANCEL_FAILURE_RETRY_NEEDED`, `EXCHANGE_CANCEL_STATE_MISMATCH`, `ORDER_IDENTITY_CONFLICT`, `ORDER_STATE_ADVANCEMENT_BLOCKED`, `BALANCE_LOCK_MISMATCH`, `BALANCE_SNAPSHOT_UNAVAILABLE`, `CLOSED_ORDER_WINDOW_EXCEEDED`, `WEBSOCKET_GAP_MANUAL_REVIEW` evidence 생성
+  - mismatch가 하나라도 있으면 severity와 무관하게 신규 주문을 fail-closed 하고, manual-review 유형은 `MANUAL_REVIEW_REQUIRED` target으로 승격
+  - closed/lookup/open/ws snapshot의 최신 관측 우선순위와 duplicate source 처리
+  - fingerprint-only match의 자동 상태 전진 차단과 duplicate identifier conflict 감지
+  - BUY remaining fee 포함 balance locked 계산, 로컬/거래소 balance snapshot 부재 및 field mismatch 차단
+  - repository row mapper의 fingerprint-only snapshot persistence contract 보존
+- 검증:
+  - `corepack pnpm typecheck`: PASS
+  - `corepack pnpm exec vitest run tests/unit/live-reconcile.test.ts`: PASS, 87 tests
+  - `corepack pnpm exec vitest run tests/integration/live-reconcile.test.ts`: PASS, 35 skipped
+  - `./scripts/verify`: PASS, 64 passed / 10 skipped files, 801 passed / 83 skipped tests
+  - GitHub Actions `verify`: PASS
+  - PR review drain: unresolved thread 0개, Codex `+1` reaction 확인
+- 남은 범위:
+  - Sub PR 06에서 read-only startup guard, worker/service, `/status` 또는 CLI summary, durable kill switch/risk event 연결을 구현한다.
+  - Sub PR 07/08에서 fake/live read-only smoke, secret/artifact redaction, 최종 M16 closeout을 수행한다.
 
 ## DnD (Definition of Done)
 
