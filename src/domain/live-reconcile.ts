@@ -53,6 +53,10 @@ export interface ReconcileLocalOrderSnapshot {
   requestedQuantity: NumericString;
   remainingQuantity: NumericString;
   requestedPrice?: NumericString;
+  /** BUY 주문의 전체 예약 수수료다. 거래소 payload에 남아 있으면 locked 설명 보조값으로 사용한다. */
+  reservedFee?: NumericString;
+  /** BUY 주문의 남은 예약 수수료다. 부분 체결 이후 KRW locked가 주문 금액과 함께 줄어드는 invariant를 검증한다. */
+  remainingFee?: NumericString;
   updatedAt: TimestampInput;
   /** 주문이 최초 생성된 로컬 시각이다. closed order window 판정에 사용한다. */
   createdAt?: TimestampInput;

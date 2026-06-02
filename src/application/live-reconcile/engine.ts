@@ -34,6 +34,7 @@ import type { KillSwitchState } from "../../domain/state-machines.js";
 export function runReconcileEngine(input: ReconcileEngineInput): ReconcileEngineOutput {
   const allMismatches: ReconcileMismatchEvidence[] = [];
   const allStateAdvancements: ReconcileStateAdvancementCandidate[] = [];
+  const observedAt = normalizeObservedAt(input.observedAt);
 
   // 1. exchange order를 unified list로 합친다 (open + closed + lookup)
   const allExchangeOrders = prioritizeExchangeOrderSnapshots([
@@ -46,7 +47,7 @@ export function runReconcileEngine(input: ReconcileEngineInput): ReconcileEngine
   const orderResults = reconcileOrders(
     allExchangeOrders,
     input.localOpenOrders,
-    input.observedAt as string,
+    observedAt,
   );
 
   for (const result of orderResults) {
@@ -67,7 +68,7 @@ export function runReconcileEngine(input: ReconcileEngineInput): ReconcileEngine
   const windowMismatches = checkClosedOrderWindow(
     input.localOpenOrders,
     input.closedOrderWindow,
-    input.observedAt as string,
+    observedAt,
     exchangeVerifiedLocalOrderIds,
   );
   allMismatches.push(...windowMismatches);
@@ -75,7 +76,7 @@ export function runReconcileEngine(input: ReconcileEngineInput): ReconcileEngine
   // 4. WebSocket gap/stale 검사
   const wsMismatches = checkWebSocketGap(
     input.websocketContext,
-    input.observedAt as string,
+    observedAt,
   );
   allMismatches.push(...wsMismatches);
 
@@ -84,7 +85,7 @@ export function runReconcileEngine(input: ReconcileEngineInput): ReconcileEngine
     input.localOpenOrders,
     input.localBalances,
     input.exchangeBalances,
-    input.observedAt as string,
+    observedAt,
   );
   allMismatches.push(...balanceResult.mismatches);
 
@@ -123,24 +124,47 @@ export function runReconcileEngine(input: ReconcileEngineInput): ReconcileEngine
 /**
  * 같은 주문의 여러 exchange snapshot 중 상태 복구에 더 강한 관측을 먼저 평가한다.
  *
- * lookup/closed snapshot은 open 목록보다 최신 최종 상태를 포함할 수 있으므로 먼저 대조한다.
- * 같은 source 안에서는 capturedAt이 더 늦은 snapshot을 우선한다. 이 함수는 입력 배열을 복사해 정렬하는
+ * capturedAt이 더 늦은 snapshot을 우선한다. 같은 시각이면 lookup/closed snapshot이
+ * open 목록보다 더 강한 보강 관측일 수 있으므로 source rank를 tie-breaker로 쓴다. 이 함수는 입력 배열을 복사해 정렬하는
  * 순수 helper이며 DB write나 외부 API 호출을 하지 않는다.
  */
 function prioritizeExchangeOrderSnapshots(
   exchangeOrders: readonly ReconcileExchangeOrderSnapshot[],
 ): ReconcileExchangeOrderSnapshot[] {
   return [...exchangeOrders].sort((left, right) => {
-    const sourceDelta = getExchangeSnapshotSourceRank(left) - getExchangeSnapshotSourceRank(right);
-    if (sourceDelta !== 0) {
-      return sourceDelta;
+    const capturedAtDelta =
+      toTimestampMs(right.capturedAt) -
+      toTimestampMs(left.capturedAt);
+    if (capturedAtDelta !== 0) {
+      return capturedAtDelta;
     }
 
-    return (
-      new Date(right.capturedAt).getTime() -
-      new Date(left.capturedAt).getTime()
-    );
+    return getExchangeSnapshotSourceRank(left) - getExchangeSnapshotSourceRank(right);
   });
+}
+
+/**
+ * engine 경계에서 실행 시각을 ISO 문자열로 고정한다.
+ *
+ * 하위 policy는 evidence fingerprint와 occurredAt에 같은 문자열을 사용하므로,
+ * Date 객체가 런타임 timezone 표현으로 문자열화되면 재시도 중복 차단 invariant가 깨진다.
+ */
+function normalizeObservedAt(observedAt: ReconcileEngineInput["observedAt"]): string {
+  if (observedAt instanceof Date) {
+    return observedAt.toISOString();
+  }
+
+  return observedAt;
+}
+
+/**
+ * source ordering 전에 snapshot 관측 시각을 비교하기 위한 순수 변환 helper다.
+ *
+ * Date/string 입력을 같은 epoch millisecond로 바꿔 최신 REST open 관측이 오래된 lookup terminal 관측에
+ * 밀리지 않도록 보장한다. 외부 side effect는 없다.
+ */
+function toTimestampMs(timestamp: ReconcileExchangeOrderSnapshot["capturedAt"]): number {
+  return timestamp instanceof Date ? timestamp.getTime() : new Date(timestamp).getTime();
 }
 
 function getExchangeSnapshotSourceRank(order: ReconcileExchangeOrderSnapshot): number {

@@ -1042,6 +1042,40 @@ describe("checkBalanceLock — 잠김 잔고 설명 가능성", () => {
     expect(result.mismatches).toHaveLength(0);
   });
 
+  it("BUY 미체결 주문의 remainingFee를 KRW locked 계산에 포함한다", () => {
+    const localOrders = [
+      createLocalOrder({
+        orderId: "buy-with-fee",
+        side: "BUY",
+        market: "KRW-BTC",
+        requestedPrice: "5000000",
+        requestedQuantity: "0.001",
+        remainingQuantity: "0.001",
+        remainingFee: "2.5",
+        status: "ACCEPTED",
+      }),
+    ];
+    const exchangeBalances: BrokerBalance[] = [
+      {
+        currency: "KRW",
+        available: "1000000",
+        locked: "5002.5",
+        total: "1005002.5",
+        updatedAt: observedAt,
+      },
+    ];
+
+    const result = checkBalanceLock(
+      localOrders,
+      exchangeBalances,
+      exchangeBalances,
+      observedAt,
+    );
+
+    expect(result.status).toBe("OK");
+    expect(result.mismatches).toHaveLength(0);
+  });
+
   it("KRW locked이 로컬 미체결로 설명되지 않으면 BALANCE_LOCK_MISMATCH", () => {
     const localOrders: ReconcileLocalOrderSnapshot[] = [];
     const exchangeBalances: BrokerBalance[] = [
@@ -1743,6 +1777,45 @@ describe("runReconcileEngine — 전체 orchestrator", () => {
     expect(output.failClosed).toBe(true);
   });
 
+  it("오래된 lookup terminal snapshot보다 최신 open snapshot을 우선해 stale 상태 전진을 막는다", () => {
+    const input: ReconcileEngineInput = {
+      exchangeOpenOrders: [
+        createExchangeOrder({
+          source: "open",
+          identifier: "latest-open-priority",
+          exchangeStatus: "wait",
+          capturedAt: "2026-06-02T12:00:30.000Z",
+        }),
+      ],
+      exchangeClosedOrders: [],
+      orderLookups: [
+        createExchangeOrder({
+          source: "lookup",
+          identifier: "latest-open-priority",
+          exchangeStatus: "done",
+          remainingQuantity: "0",
+          capturedAt: "2026-06-02T11:59:00.000Z",
+        }),
+      ],
+      websocketContext: defaultWsContext,
+      localOpenOrders: [
+        createLocalOrder({
+          orderId: "local-latest-open-priority",
+          identifier: "latest-open-priority",
+          status: "ACCEPTED",
+        }),
+      ],
+      closedOrderWindow: defaultWindow,
+      observedAt,
+    };
+
+    const output = runReconcileEngine(withDefaultBalances(input));
+
+    expect(output.stateAdvancements).toHaveLength(0);
+    expect(output.summary.result).toBe("CLEAN");
+    expect(output.failClosed).toBe(false);
+  });
+
   it("양쪽 balance snapshot이 모두 없으면 failClosed=true, MANUAL_REVIEW_REQUIRED", () => {
     const input: ReconcileEngineInput = {
       exchangeOpenOrders: [],
@@ -1765,6 +1838,30 @@ describe("runReconcileEngine — 전체 orchestrator", () => {
     );
     expect(output.failClosed).toBe(true);
     expect(output.targetKillSwitchState).toBe("MANUAL_REVIEW_REQUIRED");
+  });
+
+  it("observedAt Date 입력을 ISO 문자열로 정규화해 evidence fingerprint를 안정화한다", () => {
+    const input: ReconcileEngineInput = {
+      exchangeOpenOrders: [
+        createExchangeOrder({
+          source: "open",
+          identifier: "date-observed-untracked",
+        }),
+      ],
+      exchangeClosedOrders: [],
+      orderLookups: [],
+      websocketContext: defaultWsContext,
+      localOpenOrders: [],
+      closedOrderWindow: defaultWindow,
+      observedAt: new Date(observedAt),
+    };
+
+    const output = runReconcileEngine(withDefaultBalances(input));
+
+    expect(output.mismatches[0]).toMatchObject({
+      evidenceFingerprint: `untracked:identifier:date-observed-untracked:${observedAt}`,
+      occurredAt: observedAt,
+    });
   });
 
   it("UNTRACKED_EXCHANGE_OPEN_ORDER → WARN이어도 failClosed=true, NEW_ORDERS_BLOCKED", () => {

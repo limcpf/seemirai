@@ -27,8 +27,8 @@ export interface BalanceCheckResult {
 /**
  * 거래소 잠김 잔고가 로컬 미체결 주문과 로컬 잔고 snapshot으로 설명되는지 검증한다.
  *
- * 매수(BUY) 미체결 주문의 `remainingQuantity × requestedPrice` 합계가
- * 해당 통화의 exchange locked 금액을 설명해야 한다. 매수 주문의
+ * 매수(BUY) 미체결 주문의 `remainingQuantity × requestedPrice + remainingFee`
+ * 합계가 해당 통화의 exchange locked 금액을 설명해야 한다. 매수 주문의
  * requestedPrice가 없으면 locked 설명 불가로 간주한다.
  * 로컬 잔고 snapshot과 거래소 snapshot의 available/locked/total도 같은
  * currency별로 일치해야 한다.
@@ -165,7 +165,7 @@ export function checkBalanceLock(
 /**
  * 로컬 미체결 주문으로 설명되는 통화별 예상 locked 금액을 계산한다.
  *
- * - KRW locked: BUY 주문의 remainingQuantity × requestedPrice 합계
+ * - KRW locked: BUY 주문의 remainingQuantity × requestedPrice + remainingFee 합계
  * - 암호화폐 locked: SELL 주문의 remainingQuantity 합계
  *
  * requestedPrice가 없는 BUY 주문은 locked 설명 불가 → 해당 currency의
@@ -196,9 +196,11 @@ function computeExpectedLocked(
         }
       } else {
         const currentLocked = lockedByCurrency.get("KRW") ?? "0";
-        // Decimal 안전 계산: orderedLocked = remaining × price
+        // Upbit는 BUY 주문 금액과 남은 예약 수수료를 함께 locked로 잡으므로 fee 누락 시 정상 주문도 fail-closed될 수 있다.
+        const remainingFee = getBuyOrderRemainingFee(order);
         const orderedLocked = parseFinancialDecimal(order.remainingQuantity)
           .mul(order.requestedPrice)
+          .plus(remainingFee)
           .toString();
         lockedByCurrency.set(
           "KRW",
@@ -220,6 +222,28 @@ function computeExpectedLocked(
   }
 
   return { lockedByCurrency, priceMissingBuyOrders };
+}
+
+/**
+ * BUY 주문의 KRW locked에 포함되는 남은 예약 수수료를 계산한다.
+ *
+ * Upbit는 주문 금액뿐 아니라 remaining_fee도 locked에 포함한다. remainingFee가 있으면 그것을 우선하고,
+ * 아직 체결되지 않은 주문에서만 reservedFee를 같은 값으로 볼 수 있다. 부분 체결 주문의 reservedFee fallback은
+ * 과대 계산 위험이 있어 사용하지 않는다.
+ */
+function getBuyOrderRemainingFee(order: ReconcileLocalOrderSnapshot): NumericString {
+  if (order.remainingFee !== undefined) {
+    return order.remainingFee;
+  }
+
+  if (
+    order.reservedFee !== undefined &&
+    parseFinancialDecimal(order.remainingQuantity).eq(order.requestedQuantity)
+  ) {
+    return order.reservedFee;
+  }
+
+  return "0";
 }
 
 /**
