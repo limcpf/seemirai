@@ -323,7 +323,7 @@ describeDb("live reconcile persistence integration", () => {
     expect(snapshots[0]?.identifier).toBe("ident-only-1");
   });
 
-  it("stores fingerprint-only exchange order snapshots without uuid or identifier", async () => {
+  it("stores fingerprint-only exchange order snapshots append-only without uuid or identifier", async () => {
     const { run } = await repository!.beginLiveReconcileRun({
       idempotencyKey: "run-integration-orders-fingerprint-only",
     });
@@ -349,11 +349,12 @@ describeDb("live reconcile persistence integration", () => {
     const summary = await repository!.getLatestLiveReconcileSummary();
 
     expect(snapshots).toHaveLength(1);
-    expect(duplicate).toHaveLength(0);
+    expect(duplicate).toHaveLength(1);
     expect(snapshots[0]?.exchange_order_id).toBeNull();
     expect(snapshots[0]?.identifier).toBeNull();
     expect(snapshots[0]?.identity_fingerprint).toBe("KRW-BTC|BUY|0.001|10000000");
-    expect(summary.exchangeOrderSnapshotCount).toBe(1);
+    expect(duplicate[0]?.identity_fingerprint).toBe("KRW-BTC|BUY|0.001|10000000");
+    expect(summary.exchangeOrderSnapshotCount).toBe(2);
   });
 
   it("normalizes an identifier-only exchange order snapshot after uuid is observed", async () => {

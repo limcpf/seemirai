@@ -544,6 +544,44 @@ describe("reconcileOrders — local open order missing on exchange", () => {
     ).toBe(false);
   });
 
+  it("이미 매칭된 identifier의 두 번째 exchange uuid 충돌도 ORDER_IDENTITY_CONFLICT로 남긴다", () => {
+    const localOrders = [
+      createLocalOrder({
+        orderId: "local-duplicate-identifier-conflict",
+        identifier: "duplicate-identifier",
+        exchangeOrderId: "matched-uuid",
+      }),
+    ];
+    const exchangeOrders = [
+      createExchangeOrder({
+        source: "open",
+        identifier: "duplicate-identifier",
+        exchangeOrderId: "matched-uuid",
+      }),
+      createExchangeOrder({
+        source: "open",
+        identifier: "duplicate-identifier",
+        exchangeOrderId: "other-uuid",
+      }),
+    ];
+
+    const results = reconcileOrders(exchangeOrders, localOrders, observedAt);
+    const mismatches = results.flatMap((result) => result.mismatches);
+
+    expect(results.filter((result) => result.identityMatch !== undefined)).toHaveLength(1);
+    expect(mismatches).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          mismatchType: "ORDER_IDENTITY_CONFLICT",
+          severity: "ERROR",
+          trace: expect.objectContaining({
+            reason: expect.stringContaining("uuid_mismatch_after_identifier_match") as string,
+          }) as object,
+        }),
+      ]),
+    );
+  });
+
   it("같은 uuid의 identifier 충돌도 ORDER_IDENTITY_CONFLICT로 manual review evidence를 남긴다", () => {
     const localOrders = [
       createLocalOrder({

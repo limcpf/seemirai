@@ -73,6 +73,23 @@ export function reconcileOrders(
       hasMatchedExchangeIdentity(exchangeOrder, matchedExchangeIdentityKeys) ||
       hasMatchedExchangeIdentity(exchangeOrder, strongerExchangeIdentityKeys)
     ) {
+      const conflict = findIdentityConflictAnyLocalOrder(exchangeOrder, localOpenOrders);
+      if (conflict !== undefined) {
+        // 동일 identifier/uuid 축의 두 번째 exchange 관측이 다른 uuid/fingerprint를 가지면 중복 source가 아니라 충돌 증거다.
+        matchedLocalIds.add(conflict.local.orderId);
+        matchedExchangeOrders.add(exchangeOrder);
+        addExchangeIdentityKeys(exchangeOrder, matchedExchangeIdentityKeys);
+        results.push(
+          createIdentityConflictResult(
+            exchangeOrder,
+            conflict.local,
+            conflict.identity,
+            observedAt,
+          ),
+        );
+        continue;
+      }
+
       // 더 강한 lookup/closed 관측이나 이미 처리된 중복 source가 있으면 새 untracked 주문으로 세지 않는다.
       matchedExchangeOrders.add(exchangeOrder);
       continue;
@@ -365,6 +382,26 @@ function findIdentityConflictLocalOrder(
       continue;
     }
 
+    const result = matchOrderIdentity(exchangeOrder, localOrder);
+    if (!result.matched && isIdentityConflictReason(result.reason)) {
+      return { local: localOrder, identity: result };
+    }
+  }
+  return undefined;
+}
+
+/**
+ * 이미 매칭된 로컬 주문까지 포함해 exchange identity 충돌을 찾는다.
+ *
+ * 같은 identifier/uuid 키가 앞선 snapshot에서 처리됐더라도, 뒤따라온 exchange row의 uuid나
+ * immutable fingerprint가 다르면 단순 중복 source가 아니라 운영자가 확인해야 하는 충돌이다.
+ * 이 helper는 순수 비교만 수행하고 외부 side effect는 만들지 않는다.
+ */
+function findIdentityConflictAnyLocalOrder(
+  exchangeOrder: ReconcileExchangeOrderSnapshot,
+  localOrders: readonly ReconcileLocalOrderSnapshot[],
+): { local: ReconcileLocalOrderSnapshot; identity: IdentityMatchFailure } | undefined {
+  for (const localOrder of localOrders) {
     const result = matchOrderIdentity(exchangeOrder, localOrder);
     if (!result.matched && isIdentityConflictReason(result.reason)) {
       return { local: localOrder, identity: result };
