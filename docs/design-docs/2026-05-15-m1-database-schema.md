@@ -236,6 +236,70 @@ erDiagram
     jsonb payload_json
     timestamptz occurred_at
   }
+
+  LIVE_RECONCILE_RUNS {
+    uuid id PK
+    text idempotency_key UK
+    text status
+    timestamptz started_at
+    timestamptz finished_at
+    jsonb metadata_json
+  }
+
+  LIVE_RECONCILE_BALANCE_SNAPSHOTS {
+    uuid id PK
+    uuid run_id FK
+    text currency
+    numeric available
+    numeric locked
+    numeric total
+    timestamptz captured_at
+  }
+
+  LIVE_RECONCILE_EXCHANGE_ORDER_SNAPSHOTS {
+    uuid id PK
+    uuid run_id FK
+    text exchange_order_id
+    text identifier
+    text market
+    text status
+    jsonb payload_json
+    timestamptz captured_at
+  }
+
+  LIVE_RECONCILE_POSITION_SNAPSHOTS {
+    uuid id PK
+    uuid run_id FK
+    text exchange
+    text market
+    text strategy_id
+    numeric quantity
+    numeric average_entry_price
+    text recovery_status
+    jsonb evidence_json
+    timestamptz captured_at
+  }
+
+  LIVE_RECONCILE_FILL_RECOVERY_KEYS {
+    uuid id PK
+    uuid run_id FK
+    uuid local_order_id FK
+    text exchange_order_id
+    text exchange_fill_id UK
+    text fill_fingerprint UK
+    timestamptz recovered_at
+  }
+
+  LIVE_RECONCILE_MISMATCH_EVIDENCE {
+    uuid id PK
+    uuid run_id FK
+    text mismatch_type
+    text severity
+    text evidence_fingerprint UK
+    text message
+    jsonb trace_json
+    timestamptz occurred_at
+  }
 ```
 
 ## 테이블별 비즈니스 책임
@@ -258,6 +322,7 @@ erDiagram
 | `jobs` | PostgreSQL | scheduler와 worker 사이의 DB-backed queue다. 중복 작업 생성 방지, 예약 실행, worker lock, retry metadata를 제공한다. |
 | `audit_events` | PostgreSQL | 사람이 나중에 따라갈 수 있는 운영/업무 감사 로그다. 주문 상태 변화, worker action, 외부 호출 결과 같은 사후 추적 정보를 보관한다. |
 | `risk_events` | PostgreSQL | 리스크 게이트가 신규 주문을 차단하거나 경고한 이유를 구조화해 남긴다. market/strategy/order 기준으로 리스크 판단 이력을 조회한다. |
+| `live_reconcile_runs` 등 M16 후보 tables | PostgreSQL | 실계좌와 로컬 상태 간 reconcile run, balance snapshot, exchange order snapshot, position snapshot, fill recovery key, mismatch evidence를 append-only로 기록한다. `live_reconcile_position_snapshots`는 exchange/market/strategy 단위 복구 후보와 평균단가 근거 상태를 저장하고, `live_reconcile_fill_recovery_keys`는 거래소 체결 id와 정규화 fill fingerprint를 각각 unique key로 보존해 반복 reconcile이 같은 체결을 중복 insert하지 않게 한다. `live_reconcile_mismatch_evidence.evidence_fingerprint`는 같은 snapshot/mismatch 재시도 기록이 mismatch count를 부풀리지 않게 하는 durable unique key다. 주문/체결/포지션 로컬 복구 쓰기는 immutable identity fingerprint가 일치할 때만 기존 domain repository transaction으로 수행한다. |
 
 ## 실행 영속성 저장 경계
 

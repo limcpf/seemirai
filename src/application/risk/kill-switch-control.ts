@@ -405,8 +405,8 @@ function toIsoTimestamp(value: TimestampInput): string {
  * 운영 장애 reason code별 권장 kill switch target mapping이다.
  *
  * HARD_STOP은 주문 회계/DB 영속성/실거래 API 오용처럼 즉시 실행 경계를 멈춰야 하는 P0 사유다. NEW_ORDERS_BLOCKED는
- * market data freshness처럼 신규 주문만 막고 관측/복구를 기다릴 수 있는 사유이며, MANUAL_REVIEW_REQUIRED는 알림/리포트
- * 반복 실패처럼 사람이 상태를 확인해야 하는 사유다.
+ * market data freshness나 live reconcile mismatch처럼 신규 주문만 막고 관측/복구를 기다릴 수 있는 사유이며,
+ * MANUAL_REVIEW_REQUIRED는 알림/리포트 반복 실패나 live reconcile identity 충돌처럼 사람이 상태를 확인해야 하는 사유다.
  */
 const killSwitchTargetStateByReasonCode = {
   audit_persistence_failure: "HARD_STOP",
@@ -421,8 +421,10 @@ const killSwitchTargetStateByReasonCode = {
   quote_freshness_insufficient: "NEW_ORDERS_BLOCKED",
   stale_market_data: "NEW_ORDERS_BLOCKED",
   transient_external_data_gap: "NEW_ORDERS_BLOCKED",
+  live_reconcile_mismatch: "NEW_ORDERS_BLOCKED",
 
   abnormal_state_operator_review_required: "MANUAL_REVIEW_REQUIRED",
+  live_reconcile_identity_conflict: "MANUAL_REVIEW_REQUIRED",
   notification_consecutive_failure: "MANUAL_REVIEW_REQUIRED",
   notification_failure_threshold_exceeded: "MANUAL_REVIEW_REQUIRED",
   report_generation_repeated_failure: "MANUAL_REVIEW_REQUIRED",
