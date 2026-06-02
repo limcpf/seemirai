@@ -1,0 +1,17 @@
+{
+  "type": "myOrder",
+  "uuid": "9a3b6c8d-1e2f-4a5b-8c7d-9e0f1a2b3c4d",
+  "code": "KRW-BTC",
+  "ask_bid": "BID",
+  "state": "wait",
+  "price": "100000000",
+  "volume": "0.001",
+  "remaining_volume": "0.0005",
+  "executed_volume": "0.0005",
+  "trade_price": "100000000",
+  "paid_fee": "250",
+  "fee_currency": "KRW",
+  "order_timestamp": 1750000000000,
+  "timestamp": 1750000000000,
+  "stream_type": "SNAPSHOT"
+}
