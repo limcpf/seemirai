@@ -3,6 +3,7 @@ import { mkdtemp, readFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
+import type { BrokerPort } from "../../src/application/index.js";
 import type {
   BrokerBalanceSnapshot,
   BrokerOrder,
@@ -139,6 +140,45 @@ describe("Upbit live broker smoke integration with fake adapter", () => {
     expect(artifactText).not.toContain("jwt");
     assertUpbitSmokeArtifactHasNoSecretText(JSON.parse(artifactText) as JsonRecord, env);
   });
+
+  it("submit 성공 후 cancel 전 조회 실패가 나면 broker order id로 cleanup cancel을 시도한다", async () => {
+    const fakeClient = createStatefulFakeUpbitLiveBrokerPrivateClient();
+    const runtime = createGuardedUpbitLiveBrokerRuntime({
+      liveBrokerEnabled: true,
+      pilotConfig: createEnabledOrderSmokePilotConfig(),
+      privateClientFactory: vi.fn(() => fakeClient),
+      clock: () => observedAt,
+    });
+    const plan = createPilotOrderSmokeRequestPlan({
+      pilotConfig: createEnabledOrderSmokePilotConfig(),
+      intent: {
+        market: "KRW-BTC",
+        side: "bid",
+        price: "5000000",
+        volume: "0.001",
+        identifier: "live-broker-smoke-1",
+        timeInForce: "post_only",
+      },
+    });
+    const submittedOrder = await runtime.broker.submitOrder(createLiveBrokerSmokeSubmissionFromPlan(plan));
+    vi.mocked(fakeClient.getOrder).mockRejectedValueOnce(new Error("temporary lookup failure"));
+
+    await expect(runtime.broker.getOrder(submittedOrder.brokerOrderId)).rejects.toThrow("temporary lookup failure");
+    const artifact = createBaseArtifact("UPBIT_LIVE_BROKER_FAKE_SMOKE", observedAt, randomUUID());
+    await attemptLiveBrokerSmokeCleanup({
+      runtimeBroker: runtime.broker,
+      runtimeBrokerOrder: submittedOrder,
+      cancelConfirmed: false,
+      artifact,
+      correlationId: randomUUID(),
+    });
+
+    expect(fakeClient.cancelOrder).toHaveBeenCalledWith({ uuid: "upbit-order-001" });
+    expect(artifact.cleanupBrokerCancelOrder).toMatchObject({
+      brokerOrderId: "upbit-order-001",
+      status: "CANCELED",
+    });
+  });
 });
 
 describeUpbitLiveBrokerSmoke("Upbit live broker real smoke integration", () => {
@@ -147,9 +187,11 @@ describeUpbitLiveBrokerSmoke("Upbit live broker real smoke integration", () => {
     const occurredAt = new Date().toISOString();
     const artifact = createBaseArtifact("UPBIT_LIVE_BROKER_SMOKE", occurredAt, correlationId);
     let plan: PilotOrderSmokeRequestPlan | undefined;
+    let runtimeBroker: BrokerPort | undefined;
     let runtimeBrokerOrder: BrokerOrder | undefined;
     let privateClient: UpbitPrivateRestClient | undefined;
     let orderSideEffectPossible = false;
+    let cancelConfirmed = false;
     let failure: unknown;
 
     try {
@@ -174,25 +216,27 @@ describeUpbitLiveBrokerSmoke("Upbit live broker real smoke integration", () => {
           return privateClient;
         },
       });
+      runtimeBroker = runtime.broker;
       artifact.profile = config.profile;
       artifact.keyScopeEvidenceId = config.keyScopeEvidenceId;
       artifact.runtimeSummary = summarizeRuntimeSummary(runtime.summary);
       artifact.orderPlan = summarizeOrderSmokePlan(plan);
 
-      const balances = await runtime.broker.getBalances();
+      const balances = await runtimeBroker.getBalances();
       artifact.balances = summarizeBalanceSnapshot(balances);
 
       orderSideEffectPossible = true;
-      runtimeBrokerOrder = await runtime.broker.submitOrder(createLiveBrokerSmokeSubmissionFromPlan(plan));
+      runtimeBrokerOrder = await runtimeBroker.submitOrder(createLiveBrokerSmokeSubmissionFromPlan(plan));
       artifact.submittedOrder = summarizeBrokerOrder(runtimeBrokerOrder);
 
-      const lookupOrder = await runtime.broker.getOrder(runtimeBrokerOrder.brokerOrderId);
+      const lookupOrder = await runtimeBroker.getOrder(runtimeBrokerOrder.brokerOrderId);
       artifact.lookupOrder = summarizeOptionalBrokerOrder(lookupOrder);
 
-      const canceledOrder = await runtime.broker.cancelOrder(runtimeBrokerOrder.brokerOrderId);
+      const canceledOrder = await runtimeBroker.cancelOrder(runtimeBrokerOrder.brokerOrderId);
+      cancelConfirmed = true;
       artifact.canceledOrder = summarizeBrokerOrder(canceledOrder);
 
-      const postCancelLookup = await runtime.broker.getOrder(runtimeBrokerOrder.brokerOrderId);
+      const postCancelLookup = await runtimeBroker.getOrder(runtimeBrokerOrder.brokerOrderId);
       artifact.postCancelLookupOrder = summarizeOptionalBrokerOrder(postCancelLookup);
       artifact.status = "PASSED" satisfies PilotEvidenceStatus;
       artifact.message = "Upbit live broker smoke가 BrokerPort 경유 주문 생성, 조회, 취소를 완료했습니다.";
@@ -208,7 +252,15 @@ describeUpbitLiveBrokerSmoke("Upbit live broker real smoke integration", () => {
         ? "같은 identifier와 broker order id로 Upbit 웹 또는 private order lookup에서 주문 상태와 취소 여부를 수동 확인하세요."
         : "환경, guard, key scope evidence, 잔고, 운영자 입력값을 확인한 뒤 private/order smoke부터 다시 실행하세요.";
       artifact.error = toSafeLiveBrokerSmokeErrorSummary(error, correlationId);
-      await attemptLiveBrokerSmokeCleanup(privateClient, plan, runtimeBrokerOrder, artifact, correlationId);
+      await attemptLiveBrokerSmokeCleanup({
+        privateClient,
+        plan,
+        runtimeBroker,
+        runtimeBrokerOrder,
+        cancelConfirmed,
+        artifact,
+        correlationId,
+      });
     } finally {
       const artifactPath = await writeUpbitSmokeArtifact({
         filePrefix: "upbit-live-broker-smoke",
@@ -586,24 +638,60 @@ function summarizeBrokerOrderList(orders: readonly BrokerOrder[]): readonly Json
   return orders.map((order) => summarizeBrokerOrder(order));
 }
 
-async function attemptLiveBrokerSmokeCleanup(
-  privateClient: UpbitPrivateRestClient | undefined,
-  plan: PilotOrderSmokeRequestPlan | undefined,
-  runtimeBrokerOrder: BrokerOrder | undefined,
-  artifact: JsonRecord,
-  correlationId: string,
-): Promise<void> {
-  if (privateClient === undefined || plan === undefined || runtimeBrokerOrder !== undefined) {
+/**
+ * live broker smoke cleanup 함수에 넘기는 실행 상태다.
+ *
+ * runtime broker와 private client 중 사용 가능한 정리 경계를 표현한다. 이미 취소가 확인된 주문에는 추가 side effect를 만들지
+ * 않고, 취소 미확인 주문만 같은 smoke UUID/identifier 경계에서 정리해야 한다는 invariant를 유지한다.
+ */
+interface AttemptLiveBrokerSmokeCleanupInput {
+  privateClient?: Pick<UpbitLiveBrokerPrivateClient, "cancelOrder"> | undefined;
+  plan?: PilotOrderSmokeRequestPlan | undefined;
+  runtimeBroker?: BrokerPort | undefined;
+  runtimeBrokerOrder?: BrokerOrder | undefined;
+  cancelConfirmed: boolean;
+  artifact: JsonRecord;
+  correlationId: string;
+}
+
+/**
+ * live broker smoke 실패 시 남을 수 있는 실주문을 같은 smoke evidence로 정리한다.
+ *
+ * submit이 성공했지만 조회/후속 검증이 실패한 경우에는 wrapper가 기록한 broker order id로 먼저 취소하고, submit 응답을 받지 못한
+ * 모호한 실패에서는 M14 order-smoke identifier cleanup으로 내려간다. 새 주문은 만들지 않고 취소 evidence만 artifact에 남긴다.
+ */
+async function attemptLiveBrokerSmokeCleanup(input: AttemptLiveBrokerSmokeCleanupInput): Promise<void> {
+  if (input.cancelConfirmed) {
+    return;
+  }
+
+  if (input.runtimeBroker !== undefined && input.runtimeBrokerOrder !== undefined) {
+    try {
+      // submit 성공 후 조회 실패처럼 아직 취소 전인 경로는 같은 runtime wrapper가 허용한 UUID로 먼저 정리한다.
+      const cleanupCancel = await input.runtimeBroker.cancelOrder(input.runtimeBrokerOrder.brokerOrderId);
+      input.artifact.cleanupBrokerCancelOrder = summarizeBrokerOrder(cleanupCancel);
+      return;
+    } catch (error) {
+      input.artifact.cleanupBrokerCancelWarning = toSafeLiveBrokerSmokeErrorSummary(error, input.correlationId);
+    }
+  }
+
+  if (input.privateClient === undefined || input.plan === undefined) {
     return;
   }
 
   try {
-    // submit이 거래소에 도달했을 수 있으므로 같은 smoke identifier로만 cleanup을 시도해 임의 주문 취소를 피한다.
-    const cleanupCancel = await privateClient.cancelOrder(plan.cancelOrder);
-    artifact.cleanupCancelOrder = summarizeProviderOrderPayload(cleanupCancel.payload);
-    artifact.cleanupCancelRateLimit = cleanupCancel.rateLimitStatus;
+    const cleanupCancelInput =
+      input.runtimeBrokerOrder === undefined
+        ? input.plan.cancelOrder
+        : { uuid: input.runtimeBrokerOrder.brokerOrderId };
+
+    // submit 응답이 없거나 wrapper cleanup이 실패한 경우에도 같은 UUID/identifier 경계로만 정리한다.
+    const cleanupCancel = await input.privateClient.cancelOrder(cleanupCancelInput);
+    input.artifact.cleanupCancelOrder = summarizeProviderOrderPayload(cleanupCancel.payload);
+    input.artifact.cleanupCancelRateLimit = cleanupCancel.rateLimitStatus;
   } catch (error) {
-    artifact.cleanupError = toSafeLiveBrokerSmokeErrorSummary(error, correlationId);
+    input.artifact.cleanupError = toSafeLiveBrokerSmokeErrorSummary(error, input.correlationId);
   }
 }
 
