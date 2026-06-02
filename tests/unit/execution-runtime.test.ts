@@ -12,6 +12,7 @@ import type { BrokerPort, HardStopRuntimeActionPlan } from "../../src/applicatio
 import {
   DisabledUpbitLiveBroker,
   UpbitLiveBrokerDisabledError,
+  UpbitPrivateRestClientError,
   createDisabledUpbitLiveBroker,
 } from "../../src/infrastructure/index.js";
 import type {
@@ -163,6 +164,14 @@ describe("guarded Upbit live broker runtime factory", () => {
     expect(() =>
       createGuardedUpbitLiveBrokerRuntime({
         liveBrokerEnabled: true,
+        pilotConfig: createEnabledOrderSmokePilotConfig(),
+        privateClientFactory,
+        exchangeId: "paper" as never,
+      }),
+    ).toThrow(UnsafeUpbitLiveBrokerRuntimeError);
+    expect(() =>
+      createGuardedUpbitLiveBrokerRuntime({
+        liveBrokerEnabled: true,
         pilotConfig: {
           ...createEnabledOrderSmokePilotConfig(),
           orderSmokeMarket: undefined,
@@ -231,6 +240,10 @@ describe("guarded Upbit live broker runtime factory", () => {
       name: "UnsafeUpbitLiveBrokerRuntimeError",
       violations: expect.arrayContaining(["Upbit live broker order smoke market은 KRW-BTC만 허용합니다"]),
     } satisfies Partial<UnsafeUpbitLiveBrokerRuntimeError>);
+    await expect(runtime.broker.submitOrder(createSubmission({ exchangeId: "paper" }))).rejects.toMatchObject({
+      name: "UnsafeUpbitLiveBrokerRuntimeError",
+      violations: expect.arrayContaining(["Upbit live broker order smoke exchangeId는 upbit_krw_spot만 허용합니다"]),
+    } satisfies Partial<UnsafeUpbitLiveBrokerRuntimeError>);
     await expect(runtime.broker.submitOrder(createSubmission({ side: "SELL" }))).rejects.toMatchObject({
       name: "UnsafeUpbitLiveBrokerRuntimeError",
       violations: expect.arrayContaining(["Upbit live broker order smoke는 지정가 매수만 허용합니다"]),
@@ -290,6 +303,34 @@ describe("guarded Upbit live broker runtime factory", () => {
     });
     expect(privateClient.createLimitOrder).toHaveBeenCalledTimes(1);
     expect(privateClient.cancelOrder).toHaveBeenCalledWith({ uuid: "upbit-order-001" });
+  });
+
+  it("does not treat duplicate-identifier recovery as same-run cancel evidence", async () => {
+    const privateClient = createFakeUpbitLiveBrokerPrivateClient();
+    vi.mocked(privateClient.createLimitOrder).mockRejectedValueOnce(createDuplicateIdentifierError());
+    vi.mocked(privateClient.getOrder).mockResolvedValueOnce({
+      payload: createUpbitLookupOrderPayload(),
+      rateLimitStatus: defaultUpbitRateLimitStatus,
+    });
+    const runtime = createGuardedUpbitLiveBrokerRuntime({
+      liveBrokerEnabled: true,
+      pilotConfig: createEnabledOrderSmokePilotConfig(),
+      privateClientFactory: vi.fn(() => privateClient),
+      clock: () => observedAt,
+    });
+
+    const recoveredOrder = await runtime.broker.submitOrder(createSubmission());
+    expect(recoveredOrder).toMatchObject({
+      brokerOrderId: "upbit-order-001",
+      metadata: {
+        upbitLiveBrokerRecovery: "duplicate_identifier_lookup",
+      },
+    });
+    await expect(runtime.broker.cancelOrder(recoveredOrder.brokerOrderId)).rejects.toMatchObject({
+      name: "UnsafeUpbitLiveBrokerRuntimeError",
+      violations: ["Upbit live broker order smoke는 같은 runtime이 생성한 주문만 취소할 수 있습니다"],
+    } satisfies Partial<UnsafeUpbitLiveBrokerRuntimeError>);
+    expect(privateClient.cancelOrder).not.toHaveBeenCalled();
   });
 
   it("summarizes blocked live broker guards without leaking credentials", () => {
@@ -602,6 +643,28 @@ function createUpbitCommandOrderPayload(overrides: Record<string, unknown> = {})
     trades_count: 0,
     ...overrides,
   };
+}
+
+function createUpbitLookupOrderPayload(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    ...createUpbitCommandOrderPayload(overrides),
+    trades: [],
+  };
+}
+
+function createDuplicateIdentifierError(): UpbitPrivateRestClientError {
+  return new UpbitPrivateRestClientError({
+    status: 400,
+    statusText: "Bad Request",
+    kind: "REQUEST_FAILED",
+    userMessage: "이미 사용한 주문 식별자입니다.",
+    rateLimitStatus: defaultUpbitRateLimitStatus,
+    trace: {
+      httpStatus: 400,
+      upbitErrorName: "duplicate_identifier",
+      rateLimitStatus: defaultUpbitRateLimitStatus,
+    },
+  });
 }
 
 function createEnabledOrderSmokePilotConfig(

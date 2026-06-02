@@ -1,4 +1,5 @@
 import {
+  UPBIT_KRW_SPOT_EXCHANGE_ID,
   UpbitPrivateRestClient,
   createUpbitLiveBroker,
 } from "../../infrastructure/upbit/index.js";
@@ -48,7 +49,10 @@ const POSITIVE_DECIMAL_PATTERN = /^(?:0|[1-9]\d*)(?:\.\d+)?$/u;
 export function createGuardedUpbitLiveBrokerRuntime(
   input: CreateGuardedUpbitLiveBrokerRuntimeInput,
 ): GuardedUpbitLiveBrokerRuntime {
-  const violations = collectUpbitLiveBrokerRuntimeViolations(input);
+  const violations = [
+    ...collectUpbitLiveBrokerRuntimeViolations(input),
+    ...collectUpbitLiveBrokerExchangeIdViolations(input.exchangeId),
+  ];
 
   if (violations.length > 0 || !input.pilotConfig.enabled) {
     // credential이 일부 있어도 guard가 완성되지 않으면 private client 객체조차 만들지 않아 기본 runtime 경계를 보존한다.
@@ -64,7 +68,8 @@ export function createGuardedUpbitLiveBrokerRuntime(
   });
   const liveBroker = createUpbitLiveBroker({
     privateClient,
-    ...(input.exchangeId === undefined ? {} : { exchangeId: input.exchangeId }),
+    // 실거래 audit/reconcile이 잘못된 거래소로 분류되지 않도록 Upbit 전용 runtime은 KRW 현물 exchange로 고정한다.
+    exchangeId: UPBIT_KRW_SPOT_EXCHANGE_ID,
     ...(input.clock === undefined ? {} : { clock: input.clock }),
   });
   const broker = new OrderSmokeGuardedBroker(
@@ -156,6 +161,14 @@ function collectUpbitLiveBrokerRuntimeViolations(
   validateEnabledPilotConfig(input.pilotConfig, violations);
 
   return violations;
+}
+
+function collectUpbitLiveBrokerExchangeIdViolations(exchangeId: string | undefined): string[] {
+  if (exchangeId === undefined || exchangeId === UPBIT_KRW_SPOT_EXCHANGE_ID) {
+    return [];
+  }
+
+  return [`Upbit live broker runtime exchangeId는 ${UPBIT_KRW_SPOT_EXCHANGE_ID}만 허용합니다`];
 }
 
 function validateEnabledPilotConfig(config: EnabledPilotRuntimeConfig, violations: string[]): void {
@@ -261,6 +274,11 @@ class OrderSmokeGuardedBroker implements BrokerPort {
 
     const brokerOrder = await this.delegate.submitOrder(submission);
 
+    if (isDuplicateIdentifierRecovery(brokerOrder)) {
+      // identifier 복구 조회는 기존 주문을 회수한 결과라서 현재 smoke run이 새로 만든 취소 evidence로 인정하지 않는다.
+      return brokerOrder;
+    }
+
     // 같은 smoke run에서 생성된 주문만 이후 취소할 수 있도록 성공한 broker order id만 로컬 evidence로 기록한다.
     this.submittedOrderIds.add(brokerOrder.brokerOrderId);
 
@@ -300,6 +318,10 @@ function assertOrderSmokeSubmissionWithinGuard(
 
   if (submission.intent.market !== orderSmokeMarket) {
     violations.push(`Upbit live broker order smoke market은 ${orderSmokeMarket}만 허용합니다`);
+  }
+
+  if (submission.intent.exchangeId !== UPBIT_KRW_SPOT_EXCHANGE_ID) {
+    violations.push(`Upbit live broker order smoke exchangeId는 ${UPBIT_KRW_SPOT_EXCHANGE_ID}만 허용합니다`);
   }
 
   if (submission.intent.idempotencyKey.length === 0 || submission.intent.idempotencyKey.length > UPBIT_PILOT_IDENTIFIER_MAX_LENGTH) {
@@ -349,6 +371,10 @@ function collectOrderSmokeNotionalViolations(
   } catch {
     violations.push("Upbit live broker order smoke 주문 가격과 수량은 decimal 문자열이어야 합니다");
   }
+}
+
+function isDuplicateIdentifierRecovery(order: BrokerOrder): boolean {
+  return order.metadata?.upbitLiveBrokerRecovery === "duplicate_identifier_lookup";
 }
 
 function createDefaultUpbitLiveBrokerPrivateClient(

@@ -28,6 +28,7 @@ export interface CreateGuardedUpbitLiveBrokerRuntimeInput {
   liveBrokerEnabled: boolean;
   pilotConfig: PilotRuntimeConfig;
   privateClientFactory?: UpbitLiveBrokerPrivateClientFactory;
+  /** Upbit 전용 runtime은 audit/reconcile 분류를 보존하기 위해 생략하거나 `upbit_krw_spot`만 허용한다. */
   exchangeId?: ExchangeId;
   clock?: () => TimestampInput;
 }
