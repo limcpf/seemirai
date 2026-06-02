@@ -232,6 +232,12 @@ describe("buildOrderFingerprint", () => {
       "KRW-ETH|SELL|0.5|",
     );
   });
+
+  it("수량과 가격 scale 차이는 Decimal 기준으로 정규화한다", () => {
+    expect(
+      buildOrderFingerprint("KRW-BTC", "BUY", "0.00100000", "10000000.0000"),
+    ).toBe("KRW-BTC|BUY|0.001|10000000");
+  });
 });
 
 describe("describeExchangeOrderIdentity", () => {
@@ -311,6 +317,20 @@ describe("reconcileOrders — untracked exchange open order", () => {
     expect(results[0]!.mismatches[0]!.mismatchType).toBe(
       "UNTRACKED_EXCHANGE_OPEN_ORDER",
     );
+  });
+
+  it("종료된 ws 주문은 untracked open으로 분류하지 않는다", () => {
+    const exchangeOrders = [
+      createExchangeOrder({
+        source: "ws",
+        identifier: "ws-terminal-order",
+        exchangeStatus: "done",
+      }),
+    ];
+
+    const results = reconcileOrders(exchangeOrders, [], observedAt);
+
+    expect(results).toHaveLength(0);
   });
 
   it("fingerprint fallback은 이미 매칭된 로컬 주문을 재사용하지 않는다", () => {
@@ -415,6 +435,45 @@ describe("reconcileOrders — local open order missing on exchange", () => {
       ),
     );
     expect(missingMismatches).toHaveLength(0);
+  });
+
+  it("같은 identifier의 uuid 충돌은 ORDER_IDENTITY_CONFLICT로 manual review evidence를 남긴다", () => {
+    const localOrders = [
+      createLocalOrder({
+        orderId: "local-conflict",
+        identifier: "shared-identifier",
+        exchangeOrderId: "local-uuid",
+      }),
+    ];
+    const exchangeOrders = [
+      createExchangeOrder({
+        source: "open",
+        identifier: "shared-identifier",
+        exchangeOrderId: "exchange-uuid",
+      }),
+    ];
+
+    const results = reconcileOrders(exchangeOrders, localOrders, observedAt);
+    const mismatches = results.flatMap((result) => result.mismatches);
+
+    expect(mismatches).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          mismatchType: "ORDER_IDENTITY_CONFLICT",
+          severity: "ERROR",
+        }),
+      ]),
+    );
+    expect(
+      mismatches.some(
+        (mismatch) => mismatch.mismatchType === "UNTRACKED_EXCHANGE_OPEN_ORDER",
+      ),
+    ).toBe(false);
+    expect(
+      mismatches.some(
+        (mismatch) => mismatch.mismatchType === "LOCAL_OPEN_ORDER_MISSING_ON_EXCHANGE",
+      ),
+    ).toBe(false);
   });
 
   it("로컬 주문이 exchange lookup에서 발견되면 missing 아님", () => {
@@ -658,6 +717,41 @@ describe("reconcileOrders — state advancement candidates", () => {
       targetLocalStatus: "PARTIALLY_FILLED",
       reasonCode: "exchange_done_with_remaining",
     });
+  });
+
+  it("exchange wait + remainingQuantity 감소 → PARTIALLY_FILLED_CANDIDATE", () => {
+    const localOrders = [
+      createLocalOrder({
+        orderId: "local-open-partial-adv",
+        status: "ACCEPTED",
+        identifier: "open-partial-candidate",
+        remainingQuantity: "0.001",
+      }),
+    ];
+    const exchangeOrders = [
+      createExchangeOrder({
+        source: "open",
+        identifier: "open-partial-candidate",
+        exchangeStatus: "wait",
+        remainingQuantity: "0.0004",
+      }),
+    ];
+
+    const results = reconcileOrders(exchangeOrders, localOrders, observedAt);
+
+    expect(results[0]!.stateAdvancement).toMatchObject({
+      localOrderId: "local-open-partial-adv",
+      advancementType: "PARTIALLY_FILLED_CANDIDATE",
+      targetLocalStatus: "PARTIALLY_FILLED",
+      reasonCode: "exchange_open_remaining_reduced",
+    });
+    expect(results[0]!.mismatches).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          mismatchType: "PARTIAL_FILL_MISMATCH",
+        }),
+      ]),
+    );
   });
 
   it("exchange cancel + local CANCEL_REQUESTED → CANCEL_CANDIDATE", () => {
@@ -1072,6 +1166,40 @@ describe("checkBalanceLock — 잠김 잔고 설명 가능성", () => {
     );
   });
 
+  it("가격 없는 BUY 미체결 주문은 거래소 locked가 0이어도 BALANCE_LOCK_MISMATCH", () => {
+    const localOrders = [
+      createLocalOrder({
+        orderId: "buy-open-missing-price",
+        side: "BUY",
+        requestedPrice: undefined,
+        remainingQuantity: "0.001",
+        status: "ACCEPTED",
+      }),
+    ];
+    const balances: BrokerBalance[] = [
+      {
+        currency: "KRW",
+        available: "1000000",
+        locked: "0",
+        total: "1000000",
+        updatedAt: observedAt,
+      },
+    ];
+
+    const result = checkBalanceLock(localOrders, balances, balances, observedAt);
+
+    expect(result.status).toBe("LOCK_MISMATCH");
+    expect(result.mismatches).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          mismatchType: "BALANCE_LOCK_MISMATCH",
+          currency: "KRW",
+          evidenceFingerprint: `balance-lock:KRW:buy_price_missing:buy-open-missing-price:${observedAt}`,
+        }),
+      ]),
+    );
+  });
+
   it("로컬 balance snapshot 필드가 거래소와 다르면 BALANCE_LOCK_MISMATCH", () => {
     const localBalances: BrokerBalance[] = [
       {
@@ -1261,6 +1389,29 @@ describe("checkClosedOrderWindow", () => {
  * ============================================================ */
 
 describe("checkWebSocketGap", () => {
+  it("bootstrapCompleteAt 없이 이벤트가 있으면 WEBSOCKET_GAP_MANUAL_REVIEW", () => {
+    const wsContext: ReconcileWebSocketContext = {
+      events: [
+        {
+          type: "myOrder",
+          occurredAt: "2026-06-02T12:01:00.000Z",
+          payload: { market: "KRW-BTC" },
+        },
+      ],
+    };
+
+    const mismatches = checkWebSocketGap(wsContext, observedAt);
+
+    expect(mismatches).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          mismatchType: "WEBSOCKET_GAP_MANUAL_REVIEW",
+          severity: "ERROR",
+        }),
+      ]),
+    );
+  });
+
   it("bootstrap 이전 이벤트가 있으면 WEBSOCKET_GAP_MANUAL_REVIEW", () => {
     const wsContext: ReconcileWebSocketContext = {
       bootstrapCompleteAt: "2026-06-02T12:00:00.000Z",
@@ -1604,6 +1755,42 @@ describe("runReconcileEngine — 전체 orchestrator", () => {
       expect.arrayContaining([
         expect.objectContaining({
           mismatchType: "EXCHANGE_CANCEL_STATE_MISMATCH",
+        }),
+      ]),
+    );
+    expect(output.failClosed).toBe(true);
+    expect(output.targetKillSwitchState).toBe("MANUAL_REVIEW_REQUIRED");
+  });
+
+  it("ORDER_IDENTITY_CONFLICT → failClosed=true, MANUAL_REVIEW_REQUIRED", () => {
+    const input: ReconcileEngineInput = {
+      exchangeOpenOrders: [
+        createExchangeOrder({
+          source: "open",
+          identifier: "identity-conflict-engine",
+          exchangeOrderId: "exchange-uuid-conflict",
+        }),
+      ],
+      exchangeClosedOrders: [],
+      orderLookups: [],
+      websocketContext: defaultWsContext,
+      localOpenOrders: [
+        createLocalOrder({
+          orderId: "local-identity-conflict-engine",
+          identifier: "identity-conflict-engine",
+          exchangeOrderId: "local-uuid-conflict",
+        }),
+      ],
+      closedOrderWindow: defaultWindow,
+      observedAt,
+    };
+
+    const output = runReconcileEngine(withDefaultBalances(input));
+
+    expect(output.mismatches).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          mismatchType: "ORDER_IDENTITY_CONFLICT",
         }),
       ]),
     );

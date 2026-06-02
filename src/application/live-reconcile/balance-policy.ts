@@ -103,7 +103,8 @@ export function checkBalanceLock(
   }
 
   // 로컬 미체결 주문으로 설명되는 통화별 locked 금액 계산
-  const expectedLockedByCurrency = computeExpectedLocked(localOpenOrders);
+  const expectedLocked = computeExpectedLocked(localOpenOrders);
+  const expectedLockedByCurrency = expectedLocked.lockedByCurrency;
 
   const mismatches: ReconcileMismatchEvidence[] = [];
 
@@ -113,6 +114,20 @@ export function checkBalanceLock(
     exchangeByCurrency,
     observedAt,
   );
+
+  for (const order of expectedLocked.priceMissingBuyOrders) {
+    // 가격 없는 BUY 주문은 거래소 locked가 0이어도 예약금 검증 자체가 불가능하므로 fail-closed evidence로 남긴다.
+    mismatches.push(
+      createBalanceLockMismatch(
+        "KRW",
+        "UNKNOWN",
+        "BUY_ORDER_PRICE_MISSING",
+        `로컬 BUY 미체결 주문(${order.orderId})에 requestedPrice가 없어 KRW 예약금을 계산할 수 없습니다.`,
+        observedAt,
+        `buy_price_missing:${order.orderId}`,
+      ),
+    );
+  }
 
   const lockedCurrencies = new Set([
     ...expectedLockedByCurrency.keys(),
@@ -158,8 +173,12 @@ export function checkBalanceLock(
  */
 function computeExpectedLocked(
   orders: readonly ReconcileLocalOrderSnapshot[],
-): Map<string, NumericString> {
+): {
+  lockedByCurrency: Map<string, NumericString>;
+  priceMissingBuyOrders: ReconcileLocalOrderSnapshot[];
+} {
   const lockedByCurrency = new Map<string, NumericString>();
+  const priceMissingBuyOrders: ReconcileLocalOrderSnapshot[] = [];
 
   for (const order of orders) {
     // terminal state인 주문은 locked에서 제외
@@ -171,6 +190,7 @@ function computeExpectedLocked(
       // BUY 주문: KRW locked = remainingQuantity × requestedPrice
       if (order.requestedPrice === undefined) {
         // 가격이 없는 BUY 주문은 locked 계산 불가 → 0으로 남기고 mismatch에서 잡음
+        priceMissingBuyOrders.push(order);
         if (!lockedByCurrency.has("KRW")) {
           lockedByCurrency.set("KRW", "0");
         }
@@ -199,7 +219,7 @@ function computeExpectedLocked(
     }
   }
 
-  return lockedByCurrency;
+  return { lockedByCurrency, priceMissingBuyOrders };
 }
 
 /**

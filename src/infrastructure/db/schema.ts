@@ -665,6 +665,7 @@ export interface LiveReconcileBalanceSnapshotsTable {
  *
  * 같은 run에서 같은 `exchange_order_id`는 한 번만 저장된다.
  * uuid-only, identifier-only, bridge snapshot은 각각 같은 row grain의 중복 insert를 차단한다.
+ * 두 식별자가 모두 없는 snapshot은 identity_fingerprint만 저장하되, 충돌 가능성이 있어 row를 접지 않는다.
  * 두 식별자가 모두 있는 bridge snapshot은 append-only로 보존하고, summary count에서 canonical identity로 collapse한다.
  */
 export interface LiveReconcileExchangeOrderSnapshotsTable {
@@ -674,8 +675,10 @@ export interface LiveReconcileExchangeOrderSnapshotsTable {
   run_id: string;
   /** 거래소 주문 UUID. identifier만 있는 주문은 null일 수 있다. */
   exchange_order_id: string | null;
-  /** 거래소 주문 identifier(idempotency key). exchange_order_id가 null이면 필수 */
+  /** 거래소 주문 identifier(idempotency key). uuid가 없을 때도 관측되지 않을 수 있다. */
   identifier: string | null;
+  /** uuid/identifier가 없는 주문을 감사 로그에 남기기 위한 immutable 주문 fingerprint */
+  identity_fingerprint: string | null;
   /** 정규화 market code */
   market: string;
   /** 주문 방향 */
@@ -716,6 +719,7 @@ export interface LiveReconcileMismatchEvidenceTable {
     | "CANCEL_FAILURE_RETRY_NEEDED"
     | "EXCHANGE_CANCEL_STATE_MISMATCH"
     | "ORDER_STATE_ADVANCEMENT_BLOCKED"
+    | "ORDER_IDENTITY_CONFLICT"
     | "BALANCE_LOCK_MISMATCH"
     | "BALANCE_SNAPSHOT_UNAVAILABLE"
     | "CLOSED_ORDER_WINDOW_EXCEEDED"

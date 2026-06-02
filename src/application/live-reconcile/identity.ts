@@ -2,6 +2,7 @@ import type {
   ReconcileExchangeOrderSnapshot,
   ReconcileLocalOrderSnapshot,
 } from "../../domain/live-reconcile.js";
+import { parseFinancialDecimal } from "../../shared/decimal.js";
 
 /* ============================================================
  * Order Identity / Fingerprint Matching
@@ -151,7 +152,7 @@ export function matchOrderIdentity(
  * fingerprint가 일치해도 identifier 기반 일치보다 신뢰도가 낮으므로
  * 자동 상태 전진을 제한할 수 있다.
  *
- * @returns `${market}|${side}|${quantity}|${price ?? ''}` 형식의 fingerprint
+ * @returns `${market}|${side}|${normalizedQuantity}|${normalizedPrice ?? ''}` 형식의 fingerprint
  */
 export function buildOrderFingerprint(
   market: string,
@@ -159,7 +160,12 @@ export function buildOrderFingerprint(
   quantity: string,
   price?: string,
 ): string {
-  return `${market}|${side}|${quantity}|${price ?? ""}`;
+  return [
+    market,
+    side,
+    normalizeFingerprintDecimal(quantity),
+    price === undefined ? "" : normalizeFingerprintDecimal(price),
+  ].join("|");
 }
 
 /**
@@ -278,4 +284,8 @@ function matchByFingerprint(
     matched: false,
     reason: `fingerprint_mismatch: exchange="${exchangeFp}" vs local="${localFp}"`,
   };
+}
+
+function normalizeFingerprintDecimal(value: string): string {
+  return parseFinancialDecimal(value).toString();
 }

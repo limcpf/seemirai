@@ -12,7 +12,7 @@ import type {
   ReconcileClosedOrderWindow,
 } from "../../domain/live-reconcile.js";
 import { canTransitionOrderState } from "../../domain/state-machines.js";
-import type { IdentityMatchSuccess } from "./identity.js";
+import type { IdentityMatchFailure, IdentityMatchSuccess } from "./identity.js";
 
 /* ============================================================
  * Mismatch Policy — order 상태 차이 판정
@@ -61,13 +61,33 @@ export function reconcileOrders(
 
   // 각 exchange open order에 대해 로컬 매칭 시도
   for (const exchangeOrder of exchangeOrders) {
-    // open source인 것만 untracked 판정 대상
-    if (exchangeOrder.source !== "open" && exchangeOrder.source !== "ws") {
+    // WebSocket terminal event는 이미 닫힌 주문 알림일 수 있어 untracked open으로 분류하지 않는다.
+    if (!isUntrackedExchangeOpenCandidate(exchangeOrder)) {
       continue;
     }
 
     const match = findMatchingLocalOrder(exchangeOrder, localOpenOrders, matchedLocalIds);
     if (match === undefined) {
+      const conflict = findIdentityConflictLocalOrder(
+        exchangeOrder,
+        localOpenOrders,
+        matchedLocalIds,
+      );
+      if (conflict !== undefined) {
+        // 동일 identifier/uuid 충돌은 누락 주문 두 건이 아니라 stale mapping으로 수동 검토해야 한다.
+        matchedLocalIds.add(conflict.local.orderId);
+        matchedExchangeOrders.add(exchangeOrder);
+        results.push(
+          createIdentityConflictResult(
+            exchangeOrder,
+            conflict.local,
+            conflict.identity,
+            observedAt,
+          ),
+        );
+        continue;
+      }
+
       // 로컬에서 찾지 못한 exchange open order
       results.push({
         mismatches: [createUntrackedExchangeOrderMismatch(exchangeOrder, observedAt)],
@@ -91,10 +111,29 @@ export function reconcileOrders(
 
     const match = findMatchingExchangeOrder(localOrder, exchangeOrders, matchedExchangeOrders);
     if (match === undefined) {
-      results.push({
-        localOrderId: localOrder.orderId,
-        mismatches: [createMissingLocalOrderMismatch(localOrder, observedAt)],
-      });
+      const conflict = findIdentityConflictExchangeOrder(
+        localOrder,
+        exchangeOrders,
+        matchedExchangeOrders,
+      );
+      if (conflict !== undefined) {
+        // closed/lookup에서 확인된 충돌도 낮은 missing-local 상태로 숨기지 않고 manual review evidence로 남긴다.
+        matchedLocalIds.add(localOrder.orderId);
+        matchedExchangeOrders.add(conflict.exchange);
+        results.push(
+          createIdentityConflictResult(
+            conflict.exchange,
+            localOrder,
+            conflict.identity,
+            observedAt,
+          ),
+        );
+      } else {
+        results.push({
+          localOrderId: localOrder.orderId,
+          mismatches: [createMissingLocalOrderMismatch(localOrder, observedAt)],
+        });
+      }
     } else {
       // exchange order 중 open이 아닌 source(closed, lookup)에서 찾음
       matchedLocalIds.add(localOrder.orderId);
@@ -201,6 +240,14 @@ export function checkWebSocketGap(
 ): ReconcileMismatchEvidence[] {
   const mismatches: ReconcileMismatchEvidence[] = [];
 
+  if (
+    websocketContext.bootstrapCompleteAt === undefined &&
+    websocketContext.events.length > 0
+  ) {
+    // REST snapshot 기준점 없이 수신된 WebSocket 이벤트는 순서를 증명할 수 없어 자동 복구 근거로 쓰지 않는다.
+    mismatches.push(createWebSocketBootstrapMissingMismatch(websocketContext, observedAt));
+  }
+
   // bootstrap 이전 이벤트 검사
   if (websocketContext.bootstrapCompleteAt !== undefined) {
     const bootstrapAt = new Date(websocketContext.bootstrapCompleteAt).getTime();
@@ -248,6 +295,24 @@ export function checkWebSocketGap(
   return mismatches;
 }
 
+function createWebSocketBootstrapMissingMismatch(
+  websocketContext: ReconcileWebSocketContext,
+  observedAt: string,
+): ReconcileMismatchEvidence {
+  return {
+    mismatchType: "WEBSOCKET_GAP_MANUAL_REVIEW",
+    severity: "ERROR",
+    userMessage: `WebSocket 이벤트 ${websocketContext.events.length}건이 있지만 REST bootstrap 완료 시각이 없어 snapshot 기준점을 확인할 수 없습니다.`,
+    requiredAction: "수동 검토 필요: private WebSocket을 REST snapshot 기준으로 다시 bootstrap하고, 기준점 없는 이벤트는 거래소 REST 상태와 대조하세요.",
+    evidenceFingerprint: `ws-bootstrap-missing:${observedAt}`,
+    trace: {
+      eventCount: websocketContext.events.length,
+      eventTypes: [...new Set(websocketContext.events.map((event) => event.type))],
+    },
+    occurredAt: observedAt,
+  };
+}
+
 /* ============================================================
  * 내부 구현
  * ============================================================ */
@@ -274,6 +339,24 @@ function findMatchingLocalOrder(
   return undefined;
 }
 
+function findIdentityConflictLocalOrder(
+  exchangeOrder: ReconcileExchangeOrderSnapshot,
+  localOrders: readonly ReconcileLocalOrderSnapshot[],
+  matchedLocalIds: ReadonlySet<string>,
+): { local: ReconcileLocalOrderSnapshot; identity: IdentityMatchFailure } | undefined {
+  for (const localOrder of localOrders) {
+    if (matchedLocalIds.has(localOrder.orderId)) {
+      continue;
+    }
+
+    const result = matchOrderIdentity(exchangeOrder, localOrder);
+    if (!result.matched && isIdentityConflictReason(result.reason)) {
+      return { local: localOrder, identity: result };
+    }
+  }
+  return undefined;
+}
+
 /**
  * 로컬 주문과 일치하는 exchange 주문을 찾는다 (모든 source 대상).
  */
@@ -292,6 +375,44 @@ function findMatchingExchangeOrder(
     }
   }
   return undefined;
+}
+
+function findIdentityConflictExchangeOrder(
+  localOrder: ReconcileLocalOrderSnapshot,
+  exchangeOrders: readonly ReconcileExchangeOrderSnapshot[],
+  matchedExchangeOrders: ReadonlySet<ReconcileExchangeOrderSnapshot>,
+): { exchange: ReconcileExchangeOrderSnapshot; identity: IdentityMatchFailure } | undefined {
+  for (const exchangeOrder of exchangeOrders) {
+    if (matchedExchangeOrders.has(exchangeOrder)) {
+      continue;
+    }
+
+    const result = matchOrderIdentity(exchangeOrder, localOrder);
+    if (!result.matched && isIdentityConflictReason(result.reason)) {
+      return { exchange: exchangeOrder, identity: result };
+    }
+  }
+  return undefined;
+}
+
+function isIdentityConflictReason(reason: string): boolean {
+  return (
+    reason.startsWith("uuid_mismatch_after_identifier_match") ||
+    reason.startsWith("immutable_fingerprint_mismatch")
+  );
+}
+
+function isUntrackedExchangeOpenCandidate(
+  exchangeOrder: ReconcileExchangeOrderSnapshot,
+): boolean {
+  return (
+    (exchangeOrder.source === "open" || exchangeOrder.source === "ws") &&
+    isOpenExchangeStatus(exchangeOrder.exchangeStatus)
+  );
+}
+
+function isOpenExchangeStatus(exchangeStatus: string): boolean {
+  return exchangeStatus === "wait" || exchangeStatus === "watch";
 }
 
 /**
@@ -389,6 +510,21 @@ function evaluateMatchedPair(
   };
 }
 
+function createIdentityConflictResult(
+  exchangeOrder: ReconcileExchangeOrderSnapshot,
+  localOrder: ReconcileLocalOrderSnapshot,
+  identity: IdentityMatchFailure,
+  observedAt: string,
+): OrderPairReconcileResult {
+  return {
+    localOrderId: localOrder.orderId,
+    exchangeSource: exchangeOrder.source,
+    mismatches: [
+      createOrderIdentityConflictMismatch(exchangeOrder, localOrder, identity, observedAt),
+    ],
+  };
+}
+
 /**
  * 거래소에는 있지만 로컬에 없는 미체결 주문 mismatch evidence를 생성한다.
  */
@@ -411,6 +547,45 @@ function createUntrackedExchangeOrderMismatch(
       side: exchangeOrder.side,
       requestedQuantity: exchangeOrder.requestedQuantity,
       requestedPrice: exchangeOrder.requestedPrice,
+      source: exchangeOrder.source,
+    },
+    occurredAt: observedAt,
+  };
+}
+
+/**
+ * 같은 identifier/uuid 축에서 다른 immutable fingerprint가 관측된 주문 충돌 evidence다.
+ */
+function createOrderIdentityConflictMismatch(
+  exchangeOrder: ReconcileExchangeOrderSnapshot,
+  localOrder: ReconcileLocalOrderSnapshot,
+  identity: IdentityMatchFailure,
+  observedAt: string,
+): ReconcileMismatchEvidence {
+  const exchangeIdentity = describeExchangeOrderIdentity(exchangeOrder);
+  return {
+    mismatchType: "ORDER_IDENTITY_CONFLICT",
+    severity: "ERROR",
+    market: exchangeOrder.market,
+    orderIdentity: `${exchangeIdentity}|local:${localOrder.orderId}`,
+    userMessage: `주문 식별자 충돌이 감지되었습니다. 거래소 주문(${exchangeIdentity})과 로컬 주문(${localOrder.orderId})이 같은 식별자 축에 있지만 원주문 정보가 일치하지 않습니다.`,
+    requiredAction: "수동 검토 필요: 거래소 uuid/identifier와 로컬 주문의 market, side, 수량, 가격을 대조하고 stale mapping 또는 중복 identifier를 정리하세요.",
+    evidenceFingerprint: `identity-conflict:${exchangeIdentity}:local:${localOrder.orderId}:${observedAt}`,
+    trace: {
+      reason: identity.reason,
+      exchangeOrderId: exchangeOrder.exchangeOrderId,
+      exchangeIdentifier: exchangeOrder.identifier,
+      localOrderId: localOrder.orderId,
+      localExchangeOrderId: localOrder.exchangeOrderId,
+      localIdentifier: localOrder.identifier,
+      exchangeMarket: exchangeOrder.market,
+      localMarket: localOrder.market,
+      exchangeSide: exchangeOrder.side,
+      localSide: localOrder.side,
+      exchangeRequestedQuantity: exchangeOrder.requestedQuantity,
+      localRequestedQuantity: localOrder.requestedQuantity,
+      exchangeRequestedPrice: exchangeOrder.requestedPrice,
+      localRequestedPrice: localOrder.requestedPrice,
       source: exchangeOrder.source,
     },
     occurredAt: observedAt,
@@ -573,6 +748,34 @@ function createStateAdvancementCandidate(
   identity: IdentityMatchSuccess,
 ): ReconcileStateAdvancementCandidate | undefined {
   const exchangeStatus = exchangeOrder.exchangeStatus;
+
+  if (isOpenExchangeStatus(exchangeStatus) && exchangeOrder.remainingQuantity !== undefined) {
+    const exchangeRemaining = parseFinancialDecimal(exchangeOrder.remainingQuantity);
+    const localRemaining = parseFinancialDecimal(localOrder.remainingQuantity);
+
+    if (exchangeRemaining.gt(0) && exchangeRemaining.lt(localRemaining)) {
+      if (localOrder.status === "PARTIALLY_FILLED") {
+        return undefined;
+      }
+
+      return {
+        localOrderId: localOrder.orderId,
+        exchangeOrderIdentity: identity.identity,
+        exchangeStatus,
+        currentLocalStatus: localOrder.status,
+        targetLocalStatus: "PARTIALLY_FILLED",
+        advancementType: "PARTIALLY_FILLED_CANDIDATE",
+        reasonCode: "exchange_open_remaining_reduced",
+        userMessage: `거래소 주문(${identity.identity})이 아직 열려 있지만 미체결 수량이 줄어 부분 체결로 판단됩니다.`,
+        trace: {
+          matchType: identity.matchType,
+          exchangeRemainingQuantity: exchangeOrder.remainingQuantity,
+          localRemainingQuantity: localOrder.remainingQuantity,
+          localStatus: localOrder.status,
+        },
+      };
+    }
+  }
 
   // exchange done: 체결 완료
   if (exchangeStatus === "done") {
