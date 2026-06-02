@@ -186,6 +186,10 @@ export interface UpbitPrivateMyOrderEvent {
   volume: NumericString;
   /** raw 이벤트의 volume이다. trade 이벤트에서는 해당 체결 수량이다. */
   eventVolume: NumericString;
+  /** 거래소 체결 uuid다. trade 이벤트에 있을 때만 보존한다. */
+  tradeId?: string;
+  /** 거래소 체결 시각(trade_timestamp)이다. trade 이벤트에 있을 때만 보존한다. */
+  tradeTimestamp?: string;
   /** 미체결 수량이다. */
   remainingVolume: NumericString;
   /** 체결된 수량이다. */

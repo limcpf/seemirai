@@ -45,16 +45,22 @@ export {
   UpbitPrivateWebSocketPayloadSchema,
   UpbitPrivateWebSocketJsonListPayloadSchema,
   UpbitPrivateWebSocketMessageSchema,
+  UpbitPrivateWebSocketStatusMessageSchema,
+  UpbitPrivateWebSocketProviderErrorMessageSchema,
 } from "./private-websocket-client/schemas.js";
 export type {
   UpbitPrivateWebSocketMyOrder,
   UpbitPrivateWebSocketMyAsset,
   UpbitPrivateWebSocketPayload,
   UpbitPrivateWebSocketMessage,
+  UpbitPrivateWebSocketStatusMessage,
+  UpbitPrivateWebSocketProviderErrorMessage,
 } from "./private-websocket-client/schemas.js";
 export {
   toUpbitPrivateMyOrderEvent,
   toUpbitPrivateMyAssetEvent,
+  toUpbitPrivateWebSocketStatusEvent,
+  toUpbitPrivateWebSocketProviderErrorEvent,
 } from "./private-websocket-client/mapper.js";
 export type {
   MapUpbitPrivateWebSocketEventOptions,

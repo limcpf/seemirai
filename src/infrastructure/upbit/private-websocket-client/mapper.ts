@@ -2,12 +2,16 @@ import { Decimal } from "decimal.js";
 import type { ExchangeId, MarketCode, NumericString, TimestampInput } from "../../../domain/index.js";
 import { UPBIT_KRW_SPOT_EXCHANGE_ID } from "../policy-mapper.js";
 import type {
+  UpbitPrivateWebSocketErrorEvent,
+  UpbitPrivateWebSocketLifecycleEvent,
   UpbitPrivateMyAssetEvent,
   UpbitPrivateMyOrderEvent,
 } from "./types.js";
 import type {
   UpbitPrivateWebSocketMyAsset,
   UpbitPrivateWebSocketMyOrder,
+  UpbitPrivateWebSocketProviderErrorMessage,
+  UpbitPrivateWebSocketStatusMessage,
 } from "./schemas.js";
 
 /* ============================================================
@@ -50,6 +54,10 @@ export function toUpbitPrivateMyOrderEvent(
     price: toNumericString(payload.price),
     volume: toOrderVolumeString(payload),
     eventVolume: toNumericString(payload.volume),
+    ...(payload.trade_uuid === undefined ? {} : { tradeId: payload.trade_uuid }),
+    ...(payload.trade_timestamp === undefined
+      ? {}
+      : { tradeTimestamp: timestampFromMilliseconds(payload.trade_timestamp) }),
     remainingVolume: toNumericString(payload.remaining_volume),
     executedVolume: toNumericString(payload.executed_volume),
     tradePrice: toNumericString(payload.avg_price),
@@ -64,6 +72,56 @@ export function toUpbitPrivateMyOrderEvent(
       // raw payload 중 정규화 필드 외 추가 정보를 보존하되
       // secret, JWT, Authorization header는 절대 포함하지 않는다.
       rawType: payload.type,
+    },
+  };
+}
+
+/**
+ * Upbit private WebSocket status envelope을 lifecycle event로 변환한다.
+ *
+ * ping/pong liveness는 계정 데이터 부재와 별개로 판단해야 하므로,
+ * `{status:"UP"}` 응답은 malformed account event가 아니라
+ * CONNECTED evidence로 정규화한다.
+ */
+export function toUpbitPrivateWebSocketStatusEvent(
+  payload: UpbitPrivateWebSocketStatusMessage,
+  options: MapUpbitPrivateWebSocketEventOptions,
+): UpbitPrivateWebSocketLifecycleEvent {
+  const exchangeId = options.exchangeId ?? UPBIT_KRW_SPOT_EXCHANGE_ID;
+
+  return {
+    type: "LIFECYCLE",
+    exchangeId,
+    status: "CONNECTED",
+    observedAt: options.receivedAt,
+    reasonCode: "UPBIT_PRIVATE_WEBSOCKET_STATUS_UP",
+    metadata: {
+      rawType: "status",
+      status: payload.status,
+    },
+  };
+}
+
+/**
+ * Upbit private WebSocket error envelope을 safe error event로 변환한다.
+ *
+ * provider error의 name만 안정 식별자로 보존하고, raw provider
+ * message/body는 status/audit 표면으로 전파하지 않는다.
+ */
+export function toUpbitPrivateWebSocketProviderErrorEvent(
+  payload: UpbitPrivateWebSocketProviderErrorMessage,
+  options: MapUpbitPrivateWebSocketEventOptions,
+): UpbitPrivateWebSocketErrorEvent {
+  const exchangeId = options.exchangeId ?? UPBIT_KRW_SPOT_EXCHANGE_ID;
+
+  return {
+    type: "ERROR",
+    exchangeId,
+    observedAt: options.receivedAt,
+    errorKind: payload.error.name,
+    schemaPath: "error.name",
+    metadata: {
+      rawType: "error",
     },
   };
 }

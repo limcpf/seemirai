@@ -9,12 +9,16 @@ import {
   UpbitPrivateWebSocketMyAssetSchema,
   UpbitPrivateWebSocketMessageSchema,
   UpbitPrivateWebSocketPayloadSchema,
+  UpbitPrivateWebSocketProviderErrorMessageSchema,
+  UpbitPrivateWebSocketStatusMessageSchema,
   createUpbitPrivateMyOrderSubscription,
   createUpbitPrivateMyAssetSubscription,
   createUpbitPrivateCombinedSubscription,
   parseUpbitPrivateWebSocketMessage,
   toUpbitPrivateMyOrderEvent,
   toUpbitPrivateMyAssetEvent,
+  toUpbitPrivateWebSocketStatusEvent,
+  toUpbitPrivateWebSocketProviderErrorEvent,
 } from "../../src/infrastructure/upbit/private-websocket-client.js";
 import type {
   UpbitPrivateWebSocketConnectionStatus,
@@ -371,6 +375,27 @@ describe("Upbit private WebSocket client", () => {
     ]);
   });
 
+  it("stops buffering message events after bootstrap drain", () => {
+    const buffer = new UpbitPrivateWebSocketBootstrapBuffer({
+      now: createClock([
+        "2026-06-02T12:00:00.000Z",
+        "2026-06-02T12:00:01.000Z",
+        "2026-06-02T12:00:02.000Z",
+      ]),
+    });
+
+    buffer.handleMessage("bootstrap-message");
+    const firstDrain = buffer.drainBufferedMessages();
+    buffer.handleMessage("post-bootstrap-message");
+    const secondDrain = buffer.drainBufferedMessages();
+
+    expect(firstDrain.messages).toEqual([
+      { data: "bootstrap-message", receivedAt: "2026-06-02T12:00:01.000Z" },
+    ]);
+    expect(secondDrain.messages).toEqual([]);
+    expect(secondDrain.evidence.bufferedMessageCount).toBe(1);
+  });
+
   it("sends subscription after transport opens when readyState is not 1", () => {
     const sent: string[] = [];
     let openListener: (() => void) | undefined;
@@ -579,6 +604,8 @@ describe("Upbit private WebSocket myOrder schema and mapper", () => {
       executed_volume: "0.0003",
       avg_price: "100000000",
       paid_fee: "10",
+      trade_uuid: "trade-uuid-1",
+      trade_timestamp: 1750000000123,
       order_timestamp: 1750000000000,
       timestamp: 1750000000000,
       stream_type: "REALTIME",
@@ -587,6 +614,8 @@ describe("Upbit private WebSocket myOrder schema and mapper", () => {
 
     expect(event.volume).toBe("0.001");
     expect(event.eventVolume).toBe("0.0001");
+    expect(event.tradeId).toBe("trade-uuid-1");
+    expect(event.tradeTimestamp).toBe("2025-06-15T15:06:40.123Z");
   });
 
   it("accepts myOrder prevented state for SMP event tracking", () => {
@@ -723,6 +752,53 @@ describe("Upbit private WebSocket raw message parser", () => {
       }),
     ]);
     expect(UpbitPrivateWebSocketMessageSchema.parse(parsed)).toEqual(parsed);
+  });
+
+  it("parses status envelope and maps it to lifecycle event", () => {
+    const parsed = parseUpbitPrivateWebSocketMessage(`{"status":"UP"}`);
+
+    if (Array.isArray(parsed) || !("status" in parsed)) {
+      throw new Error("status envelope expected");
+    }
+
+    const status = UpbitPrivateWebSocketStatusMessageSchema.parse(parsed);
+
+    expect(status).toEqual({ status: "UP" });
+    expect(toUpbitPrivateWebSocketStatusEvent(status, { receivedAt })).toEqual({
+      type: "LIFECYCLE",
+      exchangeId: "upbit_krw_spot",
+      status: "CONNECTED",
+      observedAt: receivedAt,
+      reasonCode: "UPBIT_PRIVATE_WEBSOCKET_STATUS_UP",
+      metadata: {
+        rawType: "status",
+        status: "UP",
+      },
+    });
+  });
+
+  it("parses provider error envelope and maps only safe error fields", () => {
+    const parsed = parseUpbitPrivateWebSocketMessage(
+      `{"error":{"name":"INVALID_AUTH","message":"raw provider detail"}}`,
+    );
+
+    if (Array.isArray(parsed) || !("error" in parsed)) {
+      throw new Error("error envelope expected");
+    }
+
+    const error = UpbitPrivateWebSocketProviderErrorMessageSchema.parse(parsed);
+
+    expect(error).toMatchObject({ error: { name: "INVALID_AUTH" } });
+    expect(toUpbitPrivateWebSocketProviderErrorEvent(error, { receivedAt })).toEqual({
+      type: "ERROR",
+      exchangeId: "upbit_krw_spot",
+      observedAt: receivedAt,
+      errorKind: "INVALID_AUTH",
+      schemaPath: "error.name",
+      metadata: {
+        rawType: "error",
+      },
+    });
   });
 });
 

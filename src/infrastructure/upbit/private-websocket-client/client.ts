@@ -60,6 +60,7 @@ export class UpbitPrivateWebSocketBootstrapBuffer implements UpbitPrivateWebSock
   #snapshotStartedAt: RecordedTimestamp | undefined;
   #snapshotCompletedAt: RecordedTimestamp | undefined;
   #drainedAt: RecordedTimestamp | undefined;
+  #isClosed = false;
   #lastBufferedMessageCount = 0;
   readonly #messages: UpbitPrivateWebSocketBufferedMessage[] = [];
 
@@ -93,6 +94,10 @@ export class UpbitPrivateWebSocketBootstrapBuffer implements UpbitPrivateWebSock
   }
 
   public handleMessage(data: unknown, receivedAt: TimestampInput = this.#now()): void {
+    if (this.#isClosed) {
+      return;
+    }
+
     this.#messages.push({ data, receivedAt: recordTimestamp(receivedAt).value });
     this.#lastBufferedMessageCount = this.#messages.length;
   }
@@ -108,8 +113,16 @@ export class UpbitPrivateWebSocketBootstrapBuffer implements UpbitPrivateWebSock
   }
 
   public drainBufferedMessages(observedAt: TimestampInput = this.#now()): UpbitPrivateWebSocketBufferedMessageDrain {
+    if (this.#isClosed) {
+      return {
+        messages: [],
+        evidence: this.getGapEvidence(),
+      };
+    }
+
     this.#drainedAt = recordTimestamp(observedAt);
     this.#lastBufferedMessageCount = this.#messages.length;
+    this.#isClosed = true;
     const messages = this.#messages.splice(0);
 
     return {

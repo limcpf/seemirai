@@ -62,6 +62,8 @@ export const UpbitPrivateWebSocketMyOrderSchema = z
     avg_price: UpbitPrivateWsNumericSchema,
     paid_fee: UpbitPrivateWsNumericSchema,
     fee_currency: z.string().min(1).optional(),
+    trade_uuid: z.string().min(1).optional(),
+    trade_timestamp: z.number().int().nonnegative().optional(),
     order_timestamp: z.number().int().nonnegative(),
     timestamp: z.number().int().nonnegative(),
     stream_type: UpbitPrivateWsStreamTypeSchema,
@@ -117,6 +119,33 @@ export const UpbitPrivateWebSocketPayloadSchema = z.union([
 
 export type UpbitPrivateWebSocketPayload = z.infer<typeof UpbitPrivateWebSocketPayloadSchema>;
 
+/** Upbit private WebSocket ping 응답 status message schema다. */
+export const UpbitPrivateWebSocketStatusMessageSchema = z
+  .object({
+    status: z.literal("UP"),
+  })
+  .passthrough();
+
+export type UpbitPrivateWebSocketStatusMessage = z.infer<
+  typeof UpbitPrivateWebSocketStatusMessageSchema
+>;
+
+/** Upbit private WebSocket provider error envelope schema다. */
+export const UpbitPrivateWebSocketProviderErrorMessageSchema = z
+  .object({
+    error: z
+      .object({
+        name: z.string().min(1),
+        message: z.string().optional(),
+      })
+      .passthrough(),
+  })
+  .passthrough();
+
+export type UpbitPrivateWebSocketProviderErrorMessage = z.infer<
+  typeof UpbitPrivateWebSocketProviderErrorMessageSchema
+>;
+
 /** JSON_LIST format에서 수신되는 payload 배열 schema다. */
 export const UpbitPrivateWebSocketJsonListPayloadSchema = z.array(
   UpbitPrivateWebSocketPayloadSchema,
@@ -126,6 +155,8 @@ export const UpbitPrivateWebSocketJsonListPayloadSchema = z.array(
 export const UpbitPrivateWebSocketMessageSchema = z.union([
   UpbitPrivateWebSocketPayloadSchema,
   UpbitPrivateWebSocketJsonListPayloadSchema,
+  UpbitPrivateWebSocketStatusMessageSchema,
+  UpbitPrivateWebSocketProviderErrorMessageSchema,
 ]);
 
 export type UpbitPrivateWebSocketMessage = z.infer<typeof UpbitPrivateWebSocketMessageSchema>;
