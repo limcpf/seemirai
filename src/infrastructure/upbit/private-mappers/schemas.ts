@@ -30,6 +30,9 @@ const UpbitPrivateOrderStateSchema = z.enum(["wait", "watch", "done", "cancel"])
 /** Upbit private 체결 대기 주문 목록 상태 schema다. */
 const UpbitPrivateOpenOrderStateSchema = z.enum(["wait", "watch"]);
 
+/** Upbit private 종료 주문 목록 상태 schema다. */
+const UpbitPrivateClosedOrderStateSchema = z.enum(["done", "cancel"]);
+
 /** Upbit private time_in_force schema다. */
 const UpbitPrivateTimeInForceSchema = z.enum(["fok", "ioc", "post_only"]);
 
@@ -248,6 +251,42 @@ export const UpbitPrivateOpenOrderResponseSchema = z
 /** `/v1/orders/open` 전체 응답 schema다. */
 export const UpbitPrivateOpenOrdersResponseSchema = z.array(UpbitPrivateOpenOrderResponseSchema);
 
+/**
+ * `/v1/orders/closed` 종료 주문 단일 row schema다.
+ *
+ * closed order 목록은 개별 주문 조회와 달리 체결 목록을 포함하지 않는다. `state`는 `done` 또는 `cancel`만 허용하며,
+ * broker order 요약에 필요한 주문 상태와 잔량 필드만 검증한다. raw provider payload는 mapper metadata 안에서
+ * 보존하지 않고 safe 요약만 포함한다.
+ */
+export const UpbitPrivateClosedOrderResponseSchema = z
+  .object({
+    market: UpbitPrivateMarketCodeSchema,
+    uuid: z.string().min(1),
+    side: UpbitPrivateOrderSideSchema,
+    ord_type: UpbitPrivateOrderTypeSchema,
+    price: UpbitPrivateNumericStringSchema.nullish(),
+    state: UpbitPrivateClosedOrderStateSchema,
+    created_at: z.string().min(1),
+    volume: UpbitPrivateNumericStringSchema.nullish(),
+    remaining_volume: UpbitPrivateNumericStringSchema,
+    executed_volume: UpbitPrivateNumericStringSchema,
+    executed_funds: UpbitPrivateNumericStringSchema.optional(),
+    reserved_fee: UpbitPrivateNumericStringSchema,
+    remaining_fee: UpbitPrivateNumericStringSchema,
+    paid_fee: UpbitPrivateNumericStringSchema,
+    locked: UpbitPrivateNumericStringSchema,
+    time_in_force: UpbitPrivateTimeInForceSchema.optional(),
+    smp_type: UpbitPrivateSmpTypeSchema.optional(),
+    prevented_volume: UpbitPrivateNumericStringSchema.optional(),
+    prevented_locked: UpbitPrivateNumericStringSchema.optional(),
+    identifier: z.string().min(1).optional(),
+    trades_count: z.number().int().nonnegative().optional(),
+  })
+  .passthrough();
+
+/** `/v1/orders/closed` 전체 응답 schema다. */
+export const UpbitPrivateClosedOrdersResponseSchema = z.array(UpbitPrivateClosedOrderResponseSchema);
+
 export type UpbitPrivateAccountBalance = z.infer<typeof UpbitPrivateAccountBalanceSchema>;
 export type UpbitPrivateAccountsResponse = z.infer<typeof UpbitPrivateAccountsResponseSchema>;
 export type UpbitPrivateOrderChancePayload = z.infer<typeof UpbitPrivateOrderChancePayloadSchema>;
@@ -257,3 +296,5 @@ export type UpbitPrivateOrderLookupResponse = z.infer<typeof UpbitPrivateOrderLo
 export type UpbitPrivateOrderCommandResponse = z.infer<typeof UpbitPrivateOrderCommandResponseSchema>;
 export type UpbitPrivateOpenOrderResponse = z.infer<typeof UpbitPrivateOpenOrderResponseSchema>;
 export type UpbitPrivateOpenOrdersResponse = z.infer<typeof UpbitPrivateOpenOrdersResponseSchema>;
+export type UpbitPrivateClosedOrderResponse = z.infer<typeof UpbitPrivateClosedOrderResponseSchema>;
+export type UpbitPrivateClosedOrdersResponse = z.infer<typeof UpbitPrivateClosedOrdersResponseSchema>;
