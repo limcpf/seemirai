@@ -48,8 +48,10 @@ export function toUpbitPrivateMyOrderEvent(
     type: "MY_ORDER",
     exchangeId,
     orderId: payload.uuid,
+    ...(payload.identifier === undefined ? {} : { identifier: payload.identifier }),
     market: payload.code as MarketCode,
     side: payload.ask_bid,
+    ...(payload.order_type === undefined ? {} : { orderType: payload.order_type }),
     state: payload.state,
     price: toNumericString(payload.price),
     volume: toOrderVolumeString(payload),
@@ -62,6 +64,13 @@ export function toUpbitPrivateMyOrderEvent(
     executedVolume: toNumericString(payload.executed_volume),
     tradePrice: toNumericString(payload.avg_price),
     paidFee: toNumericString(payload.paid_fee),
+    ...(payload.trade_fee === undefined ? {} : { tradeFee: toNumericString(payload.trade_fee) }),
+    ...(payload.prevented_volume === undefined
+      ? {}
+      : { preventedVolume: toNumericString(payload.prevented_volume) }),
+    ...(payload.prevented_locked === undefined
+      ? {}
+      : { preventedLocked: toNumericString(payload.prevented_locked) }),
     // Upbit myOrder 공식 payload에는 fee currency가 없으므로 관측된 경우에만 보존한다.
     ...(payload.fee_currency === undefined ? {} : { feeCurrency: payload.fee_currency }),
     orderTimestamp: timestampFromMilliseconds(payload.order_timestamp),

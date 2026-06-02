@@ -10,6 +10,8 @@
   "executed_volume": "0.0005",
   "avg_price": "100000000",
   "paid_fee": "250",
+  "identifier": "m16-websocket-fixture-001",
+  "order_type": "limit",
   "fee_currency": "KRW",
   "order_timestamp": 1750000000000,
   "timestamp": 1750000000000,

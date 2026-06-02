@@ -33,6 +33,9 @@ const UpbitPrivateWsMarketCodeSchema = z
 /** Upbit private WebSocket stream type schema다. */
 const UpbitPrivateWsStreamTypeSchema = z.enum(["SNAPSHOT", "REALTIME"]);
 
+/** Upbit private WebSocket myOrder 주문 유형 schema다. */
+const UpbitPrivateWsOrderTypeSchema = z.enum(["limit", "price", "market", "best"]);
+
 /* ============================================================
  * myOrder raw payload schema
  *
@@ -61,6 +64,11 @@ export const UpbitPrivateWebSocketMyOrderSchema = z
     executed_volume: UpbitPrivateWsNumericSchema,
     avg_price: UpbitPrivateWsNumericSchema,
     paid_fee: UpbitPrivateWsNumericSchema,
+    trade_fee: UpbitPrivateWsNumericSchema.optional(),
+    prevented_volume: UpbitPrivateWsNumericSchema.optional(),
+    prevented_locked: UpbitPrivateWsNumericSchema.optional(),
+    identifier: z.string().min(1).optional(),
+    order_type: UpbitPrivateWsOrderTypeSchema.optional(),
     fee_currency: z.string().min(1).optional(),
     trade_uuid: z.string().min(1).optional(),
     trade_timestamp: z.number().int().nonnegative().optional(),
@@ -187,6 +195,9 @@ const PRIVATE_NUMERIC_JSON_FIELDS = new Set([
   "executed_volume",
   "avg_price",
   "paid_fee",
+  "trade_fee",
+  "prevented_volume",
+  "prevented_locked",
   "balance",
   "locked",
 ]);

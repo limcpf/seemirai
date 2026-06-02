@@ -176,8 +176,12 @@ export interface UpbitPrivateMyOrderEvent {
   exchangeId: ExchangeId;
   /** 주문 uuid다. */
   orderId: string;
+  /** 주문 제출 identifier다. live broker idempotencyKey와 연결할 때 사용한다. */
+  identifier?: string;
   market: MarketCode;
   side: "ASK" | "BID";
+  /** Upbit myOrder 주문 유형이다. 가격/수량 해석은 이 값과 state를 함께 봐야 한다. */
+  orderType?: "limit" | "price" | "market" | "best";
   /** Upbit 주문 상태다. */
   state: "wait" | "watch" | "trade" | "done" | "cancel" | "prevented";
   /** 주문 시점의 지정가다. 시장가 주문은 빈 문자열일 수 있다. */
@@ -198,6 +202,12 @@ export interface UpbitPrivateMyOrderEvent {
   tradePrice: NumericString;
   /** 누적 수수료다. */
   paidFee: NumericString;
+  /** 단일 체결 수수료다. trade 이벤트에 있을 때만 보존한다. */
+  tradeFee?: NumericString;
+  /** SMP 때문에 취소된 수량이다. prevented 이벤트에 있을 때만 보존한다. */
+  preventedVolume?: NumericString;
+  /** SMP 때문에 취소된 잠금 금액이다. prevented 이벤트에 있을 때만 보존한다. */
+  preventedLocked?: NumericString;
   /** 수수료 통화다. Upbit myOrder raw payload에 없으면 undefined로 둔다. */
   feeCurrency?: string;
   /** 거래소 주문 생성 시각(order_timestamp)이다. */
