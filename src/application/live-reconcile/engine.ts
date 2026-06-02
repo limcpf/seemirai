@@ -95,7 +95,7 @@ export function runReconcileEngine(input: ReconcileEngineInput): ReconcileEngine
   // 7. summary 생성
   const summary = buildSummary(
     allMismatches,
-    input.exchangeOpenOrders,
+    countSummaryExchangeOpenOrders(allExchangeOrders),
     input.localOpenOrders,
     balanceResult.status,
   );
@@ -241,7 +241,7 @@ function requiresManualReview(
  */
 function buildSummary(
   mismatches: readonly ReconcileMismatchEvidence[],
-  exchangeOpenOrders: readonly ReconcileExchangeOrderSnapshot[],
+  exchangeOpenOrderCount: number,
   localOpenOrders: readonly ReconcileLocalOrderSnapshot[],
   balanceStatus: "OK" | "LOCK_MISMATCH" | "NOT_AVAILABLE",
 ): ReconcileSummary {
@@ -264,7 +264,7 @@ function buildSummary(
     result,
     mismatchCount: mismatches.length,
     openOrderCount: {
-      exchange: exchangeOpenOrders.length,
+      exchange: exchangeOpenOrderCount,
       local: localOpenOrders.length,
     },
     balanceStatus,
@@ -273,4 +273,85 @@ function buildSummary(
     cancelFailures: cancelFails,
     windowExceededOrders: windowExceeded,
   };
+}
+
+/**
+ * status/CLI summary에 표시할 거래소 미체결 주문 수를 계산한다.
+ *
+ * REST open뿐 아니라 lookup/ws에서 확인된 wait/watch 주문도 운영자가 보는
+ * 노출 수에 포함한다. uuid/identifier가 있는 중복 source는 한 주문으로 접고,
+ * fingerprint-only 행은 실제 복수 주문 가능성이 있어 행 단위로 보존한다.
+ *
+ * @param exchangeOrders reconcile engine에 입력된 거래소 주문 snapshot 전체
+ * @returns 운영 요약에 표시할 거래소 미체결 주문 수
+ */
+function countSummaryExchangeOpenOrders(
+  exchangeOrders: readonly ReconcileExchangeOrderSnapshot[],
+): number {
+  let count = 0;
+  const seenStrongIdentities = new Set<string>();
+
+  for (const exchangeOrder of exchangeOrders) {
+    if (!isSummaryExchangeOpenOrder(exchangeOrder)) {
+      continue;
+    }
+
+    const strongIdentity = getSummaryExchangeOpenOrderIdentity(exchangeOrder);
+    if (strongIdentity !== undefined) {
+      if (seenStrongIdentities.has(strongIdentity)) {
+        continue;
+      }
+      seenStrongIdentities.add(strongIdentity);
+    }
+
+    count += 1;
+  }
+
+  return count;
+}
+
+/**
+ * summary count에 포함할 거래소 미체결 snapshot인지 판정한다.
+ *
+ * closed source나 terminal 상태는 현재 열려 있는 노출이 아니므로 제외하고,
+ * lookup/ws에서 wait/watch로 확인된 주문은 운영 summary에 포함한다.
+ *
+ * @param exchangeOrder 거래소 주문 snapshot
+ * @returns summary open count 포함 여부
+ */
+function isSummaryExchangeOpenOrder(
+  exchangeOrder: ReconcileExchangeOrderSnapshot,
+): boolean {
+  return (
+    (
+      exchangeOrder.source === "open" ||
+      exchangeOrder.source === "lookup" ||
+      exchangeOrder.source === "ws"
+    ) &&
+    (exchangeOrder.exchangeStatus === "wait" || exchangeOrder.exchangeStatus === "watch")
+  );
+}
+
+/**
+ * summary count dedupe에 사용할 강한 거래소 주문 식별자를 반환한다.
+ *
+ * uuid가 있으면 uuid를 우선하고, 없으면 identifier를 사용한다. 둘 다 없으면
+ * 동일 fingerprint의 실제 복수 주문을 구분할 수 없어 dedupe key를 반환하지 않는다.
+ *
+ * @param exchangeOrder 거래소 주문 snapshot
+ * @returns 중복 source 제거용 강한 식별자 또는 undefined
+ */
+function getSummaryExchangeOpenOrderIdentity(
+  exchangeOrder: ReconcileExchangeOrderSnapshot,
+): string | undefined {
+  if (exchangeOrder.exchangeOrderId !== undefined) {
+    return `uuid:${exchangeOrder.exchangeOrderId}`;
+  }
+
+  if (exchangeOrder.identifier !== undefined) {
+    return `identifier:${exchangeOrder.identifier}`;
+  }
+
+  // fingerprint-only snapshot은 동일 가격/수량의 실제 복수 주문 가능성이 있어 summary에서도 행 단위로 보존한다.
+  return undefined;
 }

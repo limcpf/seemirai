@@ -4,6 +4,7 @@ import {
   checkBalanceLock,
   checkClosedOrderWindow,
   checkWebSocketGap,
+  describeReconcileSummary,
   describeExchangeOrderIdentity,
   matchOrderIdentity,
   reconcileOrders,
@@ -474,6 +475,42 @@ describe("reconcileOrders — untracked exchange open order", () => {
     );
   });
 
+  it("fingerprint-only untracked evidence는 Date와 ISO capturedAt을 같은 fingerprint로 정규화한다", () => {
+    const dateCapturedAt = reconcileOrders(
+      [
+        createExchangeOrder({
+          source: "open",
+          identifier: undefined,
+          exchangeOrderId: undefined,
+          requestedPrice: "10000000",
+          capturedAt: new Date("2026-06-02T12:00:00.000Z"),
+        }),
+      ],
+      [],
+      observedAt,
+    )[0]!.mismatches[0]!;
+    const stringCapturedAt = reconcileOrders(
+      [
+        createExchangeOrder({
+          source: "open",
+          identifier: undefined,
+          exchangeOrderId: undefined,
+          requestedPrice: "10000000",
+          capturedAt: "2026-06-02T12:00:00.000Z",
+        }),
+      ],
+      [],
+      observedAt,
+    )[0]!.mismatches[0]!;
+
+    expect(dateCapturedAt.evidenceFingerprint).toBe(
+      stringCapturedAt.evidenceFingerprint,
+    );
+    expect(dateCapturedAt.evidenceFingerprint).toContain(
+      "2026-06-02T12:00:00.000Z",
+    );
+  });
+
   it("closed/terminal lookup source는 untracked 판정에서 제외한다", () => {
     const exchangeOrders = [
       createExchangeOrder({ source: "closed", identifier: "closed-1" }),
@@ -618,6 +655,46 @@ describe("reconcileOrders — local open order missing on exchange", () => {
             reason: expect.stringContaining("uuid_mismatch_after_identifier_match") as string,
           }) as object,
         }),
+      ]),
+    );
+  });
+
+  it("같은 identifier의 여러 exchange uuid 충돌은 evidence fingerprint를 각각 보존한다", () => {
+    const localOrders = [
+      createLocalOrder({
+        orderId: "local-multi-conflict",
+        identifier: "multi-conflict-identifier",
+        exchangeOrderId: "local-uuid",
+      }),
+    ];
+    const exchangeOrders = [
+      createExchangeOrder({
+        source: "open",
+        identifier: "multi-conflict-identifier",
+        exchangeOrderId: "exchange-uuid-1",
+      }),
+      createExchangeOrder({
+        source: "open",
+        identifier: "multi-conflict-identifier",
+        exchangeOrderId: "exchange-uuid-2",
+      }),
+    ];
+
+    const mismatches = reconcileOrders(exchangeOrders, localOrders, observedAt).flatMap(
+      (result) => result.mismatches,
+    );
+    const conflictMismatches = mismatches.filter(
+      (mismatch) => mismatch.mismatchType === "ORDER_IDENTITY_CONFLICT",
+    );
+
+    expect(conflictMismatches).toHaveLength(2);
+    expect(
+      new Set(conflictMismatches.map((mismatch) => mismatch.evidenceFingerprint)).size,
+    ).toBe(2);
+    expect(conflictMismatches.map((mismatch) => mismatch.evidenceFingerprint)).toEqual(
+      expect.arrayContaining([
+        expect.stringContaining("exchange-uuid:exchange-uuid-1") as string,
+        expect.stringContaining("exchange-uuid:exchange-uuid-2") as string,
       ]),
     );
   });
@@ -1727,6 +1804,20 @@ describe("checkWebSocketGap", () => {
 });
 
 /* ============================================================
+ * User Facing Summary Tests
+ * ============================================================ */
+
+describe("describeReconcileSummary", () => {
+  it("잔고 스냅샷 부재는 검증 skip이 아니라 차단 영향과 필요 조치를 설명한다", () => {
+    const message = describeReconcileSummary("MISMATCH_DETECTED", 1, "NOT_AVAILABLE");
+
+    expect(message).toContain("잔고 스냅샷이 없어 상태 판정이 불가능");
+    expect(message).toContain("신규 주문은 차단");
+    expect(message).toContain("reconcile 재실행 또는 수동 확인");
+  });
+});
+
+/* ============================================================
  * Engine Integration Tests
  * ============================================================ */
 
@@ -2474,6 +2565,34 @@ describe("runReconcileEngine — 전체 orchestrator", () => {
         local: 1,
       },
     });
+  });
+
+  it("summary exchange open count는 lookup/ws에서 확인된 open 주문도 포함한다", () => {
+    const input: ReconcileEngineInput = {
+      exchangeOpenOrders: [
+        createExchangeOrder({
+          source: "ws",
+          identifier: "ws-open-summary",
+        }),
+      ],
+      exchangeClosedOrders: [],
+      orderLookups: [
+        createExchangeOrder({
+          source: "lookup",
+          identifier: "lookup-open-summary",
+          exchangeStatus: "watch",
+        }),
+      ],
+      websocketContext: defaultWsContext,
+      localOpenOrders: [],
+      closedOrderWindow: defaultWindow,
+      observedAt,
+    };
+
+    const output = runReconcileEngine(withDefaultBalances(input));
+
+    expect(output.summary.openOrderCount.exchange).toBe(2);
+    expect(output.summary.untrackedExchangeOrders).toBe(2);
   });
 });
 

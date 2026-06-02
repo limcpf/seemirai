@@ -96,7 +96,9 @@ export function describeReconcileSummary(
   if (balanceStatus === "LOCK_MISMATCH") {
     parts.push("잠김 잔고 불일치가 있습니다.");
   } else if (balanceStatus === "NOT_AVAILABLE") {
-    parts.push("잔고 정보가 없어 잠김 잔고 검증을 건너뛰었습니다.");
+    parts.push(
+      "잔고 스냅샷이 없어 상태 판정이 불가능합니다. 신규 주문은 차단되며 잔고 조회 복구 후 reconcile 재실행 또는 수동 확인이 필요합니다.",
+    );
   }
 
   return parts.join(" ");

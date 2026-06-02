@@ -703,10 +703,32 @@ function buildUntrackedExchangeEvidenceFingerprint(
     "untracked",
     identity,
     exchangeOrder.source,
-    String(exchangeOrder.capturedAt),
+    normalizeEvidenceTimestamp(exchangeOrder.capturedAt),
     `row:${exchangeOrderIndex}`,
     observedAt,
   ].join(":");
+}
+
+/**
+ * evidence fingerprint에 들어갈 snapshot 시각을 ISO 문자열로 정규화한다.
+ *
+ * Reconcile 입력은 Date와 string을 모두 허용하므로, 같은 시각의 snapshot이
+ * 서로 다른 런타임 문자열 표현으로 저장되면 run 내 evidence dedupe가 깨진다.
+ *
+ * @param timestamp 거래소 snapshot 관측 시각
+ * @returns ISO timestamp 또는 파싱 불가능한 원문 문자열
+ */
+function normalizeEvidenceTimestamp(
+  timestamp: ReconcileExchangeOrderSnapshot["capturedAt"],
+): string {
+  const date = timestamp instanceof Date ? timestamp : new Date(timestamp);
+  const time = date.getTime();
+
+  if (Number.isNaN(time)) {
+    return String(timestamp);
+  }
+
+  return new Date(time).toISOString();
 }
 
 function isFingerprintOnlyExchangeOrder(
@@ -735,7 +757,13 @@ function createOrderIdentityConflictMismatch(
     orderIdentity: `${exchangeIdentity}|local:${localOrder.orderId}`,
     userMessage: `주문 식별자 충돌이 감지되었습니다. 거래소 주문(${exchangeIdentity})과 로컬 주문(${localOrder.orderId})이 같은 식별자 축에 있지만 원주문 정보가 일치하지 않습니다.`,
     requiredAction: "수동 검토 필요: 거래소 uuid/identifier와 로컬 주문의 market, side, 수량, 가격을 대조하고 stale mapping 또는 중복 identifier를 정리하세요.",
-    evidenceFingerprint: `identity-conflict:${exchangeIdentity}:local:${localOrder.orderId}:${observedAt}`,
+    evidenceFingerprint: buildIdentityConflictEvidenceFingerprint(
+      exchangeOrder,
+      localOrder,
+      exchangeIdentity,
+      identity,
+      observedAt,
+    ),
     trace: {
       reason: identity.reason,
       exchangeOrderId: exchangeOrder.exchangeOrderId,
@@ -755,6 +783,38 @@ function createOrderIdentityConflictMismatch(
     },
     occurredAt: observedAt,
   };
+}
+
+/**
+ * identity conflict evidence의 결정론적 fingerprint를 생성한다.
+ *
+ * 같은 identifier 축에서 여러 거래소 uuid가 충돌할 수 있으므로 exchange/local
+ * uuid와 conflict reason을 포함한다. 이 함수는 DB write 없이 문자열만 생성한다.
+ *
+ * @param exchangeOrder 충돌한 거래소 주문 snapshot
+ * @param localOrder 충돌한 로컬 주문 snapshot
+ * @param exchangeIdentity 사용자/trace에 남길 거래소 식별자 설명
+ * @param identity identity matcher가 반환한 충돌 사유
+ * @param observedAt reconcile 실행 시각
+ * @returns 같은 run 내 충돌 증거 dedupe에 사용할 fingerprint
+ */
+function buildIdentityConflictEvidenceFingerprint(
+  exchangeOrder: ReconcileExchangeOrderSnapshot,
+  localOrder: ReconcileLocalOrderSnapshot,
+  exchangeIdentity: string,
+  identity: IdentityMatchFailure,
+  observedAt: string,
+): string {
+  // 같은 identifier 축에서 여러 uuid가 충돌하면 각 거래소 행의 증거가 DB dedupe로 접히면 안 된다.
+  return [
+    "identity-conflict",
+    exchangeIdentity,
+    `exchange-uuid:${exchangeOrder.exchangeOrderId ?? "none"}`,
+    `local-uuid:${localOrder.exchangeOrderId ?? "none"}`,
+    `reason:${identity.reason}`,
+    `local:${localOrder.orderId}`,
+    observedAt,
+  ].join(":");
 }
 
 /**
