@@ -116,7 +116,7 @@ KRW 계정 존재 여부 수준으로 요약하고, 정책/주문 결과는 raw 
 
 구현 기준:
 
-- 실행 계획: [`exec-plans/active/2026-06-02-issue-135-m15-upbit-live-broker.md`](./exec-plans/active/2026-06-02-issue-135-m15-upbit-live-broker.md)
+- 완료 기록: [`exec-plans/completed/2026-06-02-issue-135-m15-upbit-live-broker.md`](./exec-plans/completed/2026-06-02-issue-135-m15-upbit-live-broker.md)
 - live broker contract: `src/infrastructure/upbit/live-broker.ts`
 - 기본 paper 조립: `src/runtime/execution-runtime.ts`
 

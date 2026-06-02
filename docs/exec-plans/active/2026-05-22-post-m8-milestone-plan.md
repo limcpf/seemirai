@@ -426,7 +426,7 @@ Acceptance Criteria:
 
 상세 제품 명세: [`../../product-specs/upbit-live-autonomous-trading.md`](../../product-specs/upbit-live-autonomous-trading.md)
 
-M15 상태: active. issue #135의 상세 실행 계획은 [`2026-06-02-issue-135-m15-upbit-live-broker.md`](./2026-06-02-issue-135-m15-upbit-live-broker.md)를 기준으로 한다.
+M15 상태: completed. issue #135의 완료 기록은 [`../completed/2026-06-02-issue-135-m15-upbit-live-broker.md`](../completed/2026-06-02-issue-135-m15-upbit-live-broker.md)를 기준으로 한다. 다음 작업은 M16 실계좌 상태 reconcile이다.
 
 목적:
 
