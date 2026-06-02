@@ -64,7 +64,9 @@ export function toUpbitPrivateMyOrderEvent(
     executedVolume: toNumericString(payload.executed_volume),
     tradePrice: toNumericString(payload.avg_price),
     paidFee: toNumericString(payload.paid_fee),
-    ...(payload.trade_fee === undefined ? {} : { tradeFee: toNumericString(payload.trade_fee) }),
+    ...(payload.state !== "trade" || payload.trade_fee == null
+      ? {}
+      : { tradeFee: toNumericString(payload.trade_fee) }),
     ...(payload.prevented_volume === undefined
       ? {}
       : { preventedVolume: toNumericString(payload.prevented_volume) }),
@@ -156,7 +158,8 @@ export function toUpbitPrivateMyAssetEvent(
       balance: toNumericString(unit.balance),
       locked: toNumericString(unit.locked),
     })),
-    eventTimestamp: timestampFromMilliseconds(payload.asset_timestamp),
+    eventTimestamp: timestampFromMilliseconds(payload.timestamp),
+    assetTimestamp: timestampFromMilliseconds(payload.asset_timestamp),
     receivedAt: options.receivedAt,
     streamType: payload.stream_type,
     metadata: {

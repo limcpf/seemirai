@@ -240,7 +240,10 @@ export interface UpbitPrivateMyAssetEvent {
   type: "MY_ASSET";
   exchangeId: ExchangeId;
   balances: readonly UpbitPrivateMyAssetBalance[];
+  /** WebSocket message 기준 이벤트 시각(timestamp)이다. */
   eventTimestamp: string;
+  /** 자산 snapshot 자체의 기준 시각(asset_timestamp)이다. */
+  assetTimestamp: string;
   receivedAt: TimestampInput;
   streamType: "SNAPSHOT" | "REALTIME";
   metadata?: JsonRecord;

@@ -64,7 +64,7 @@ export const UpbitPrivateWebSocketMyOrderSchema = z
     executed_volume: UpbitPrivateWsNumericSchema,
     avg_price: UpbitPrivateWsNumericSchema,
     paid_fee: UpbitPrivateWsNumericSchema,
-    trade_fee: UpbitPrivateWsNumericSchema.optional(),
+    trade_fee: UpbitPrivateWsNumericSchema.nullish(),
     prevented_volume: UpbitPrivateWsNumericSchema.optional(),
     prevented_locked: UpbitPrivateWsNumericSchema.optional(),
     identifier: z.string().min(1).optional(),
@@ -170,20 +170,26 @@ export const UpbitPrivateWebSocketMessageSchema = z.union([
 export type UpbitPrivateWebSocketMessage = z.infer<typeof UpbitPrivateWebSocketMessageSchema>;
 
 /**
- * Upbit private WebSocket raw JSON 문자열을 schema contract로 파싱한다.
+ * Upbit private WebSocket raw message를 schema contract로 파싱한다.
  *
  * DEFAULT format은 balance/price/volume 같은 필드를 JSON number로
  * 보낼 수 있다. JSON.parse 후에는 숫자 원문을 복구할 수 없으므로,
  * 정밀 필드의 number lexeme만 먼저 문자열로 감싼 뒤 schema를
- * 적용한다. raw payload는 caller가 즉시 정규화하고 저장/로그에는
- * redacted event 또는 gap evidence만 남기는 invariant를 유지한다.
+ * 적용한다. transport가 byte payload를 주는 경우에는 parser 경계에서
+ * UTF-8 문자열로 정규화한다. raw payload는 caller가 즉시 정규화하고
+ * 저장/로그에는 redacted event 또는 gap evidence만 남기는 invariant를
+ * 유지한다.
  */
-export function parseUpbitPrivateWebSocketMessage(rawMessage: string): UpbitPrivateWebSocketMessage {
-  if (rawMessage.trim().length === 0) {
+export function parseUpbitPrivateWebSocketMessage(
+  rawMessage: string | ArrayBuffer | ArrayBufferView,
+): UpbitPrivateWebSocketMessage {
+  const messageText = toUtf8MessageText(rawMessage);
+
+  if (messageText.trim().length === 0) {
     throw new Error("Upbit private WebSocket message is required");
   }
 
-  const parsed = JSON.parse(stringifyPrivateNumericLexemes(rawMessage)) as unknown;
+  const parsed = JSON.parse(stringifyPrivateNumericLexemes(messageText)) as unknown;
 
   return UpbitPrivateWebSocketMessageSchema.parse(parsed);
 }
@@ -201,6 +207,23 @@ const PRIVATE_NUMERIC_JSON_FIELDS = new Set([
   "balance",
   "locked",
 ]);
+
+function toUtf8MessageText(rawMessage: string | ArrayBuffer | ArrayBufferView): string {
+  if (typeof rawMessage === "string") {
+    return rawMessage;
+  }
+
+  if (rawMessage instanceof ArrayBuffer) {
+    return new TextDecoder().decode(new Uint8Array(rawMessage));
+  }
+
+  const bytes = new Uint8Array(
+    rawMessage.buffer.slice(rawMessage.byteOffset, rawMessage.byteOffset + rawMessage.byteLength),
+  );
+
+  // Node transport는 text frame도 Buffer/Uint8Array로 줄 수 있으므로 parser 경계에서 UTF-8 문자열로 고정한다.
+  return new TextDecoder().decode(bytes);
+}
 
 function stringifyPrivateNumericLexemes(rawMessage: string): string {
   return rawMessage.replace(

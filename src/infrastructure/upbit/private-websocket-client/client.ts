@@ -268,9 +268,27 @@ function recordTimestamp(input: TimestampInput): RecordedTimestamp {
 }
 
 function readWebSocketMessageData(event: unknown): unknown {
-  if (typeof event === "object" && event !== null && "data" in event) {
-    return (event as { data: unknown }).data;
+  const data = typeof event === "object" && event !== null && "data" in event
+    ? (event as { data: unknown }).data
+    : event;
+
+  if (typeof data === "string") {
+    return data;
   }
 
-  return event;
+  if (data instanceof ArrayBuffer) {
+    // transport별 binary/text frame 표현 차이가 parser TypeError로 번지지 않도록 buffer 경계에서 문자열로 고정한다.
+    return new TextDecoder().decode(new Uint8Array(data));
+  }
+
+  if (ArrayBuffer.isView(data)) {
+    const bytes = new Uint8Array(
+      data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength),
+    );
+
+    // Buffer/Uint8Array text frame도 WebSocket 계정 event로 취급할 수 있게 UTF-8 decode한다.
+    return new TextDecoder().decode(bytes);
+  }
+
+  return data;
 }

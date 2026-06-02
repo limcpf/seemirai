@@ -375,6 +375,43 @@ describe("Upbit private WebSocket client", () => {
     ]);
   });
 
+  it("decodes byte WebSocket message events before buffering", () => {
+    const sent: string[] = [];
+    const messageListeners: Array<(event: unknown) => void> = [];
+    const transport: UpbitPrivateWebSocketTransport = {
+      url: UPBIT_PRIVATE_WEBSOCKET_URL,
+      readyState: 1,
+      send: (data) => sent.push(data),
+      close: () => undefined,
+      addEventListener: (type, listener) => {
+        if (type === "message") {
+          messageListeners.push(listener);
+        }
+      },
+    };
+    const client = new UpbitPrivateWebSocketClient({
+      authorizationHeader: "Bearer test-token",
+      websocketFactory: () => transport,
+      clock: createClock([
+        "2026-06-02T12:00:00.000Z",
+        "2026-06-02T12:00:01.000Z",
+        "2026-06-02T12:00:02.000Z",
+      ]),
+    });
+    const session = client.subscribe(
+      transport,
+      JSON.stringify(createUpbitPrivateMyAssetSubscription({ ticket: "test" })),
+    );
+
+    messageListeners[0]?.({ data: Buffer.from("event-from-byte-transport", "utf8") });
+    const drain = session.drainBufferedMessages();
+
+    expect(sent).toHaveLength(1);
+    expect(drain.messages).toEqual([
+      { data: "event-from-byte-transport", receivedAt: "2026-06-02T12:00:02.000Z" },
+    ]);
+  });
+
   it("stops buffering message events after bootstrap drain", () => {
     const buffer = new UpbitPrivateWebSocketBootstrapBuffer({
       now: createClock([
@@ -678,6 +715,30 @@ describe("Upbit private WebSocket myOrder schema and mapper", () => {
     expect(event.feeCurrency).toBeUndefined();
   });
 
+  it("accepts null trade_fee on non-trade myOrder events", () => {
+    const payload = UpbitPrivateWebSocketMyOrderSchema.parse({
+      type: "myOrder",
+      uuid: "test-uuid",
+      code: "KRW-BTC",
+      ask_bid: "BID",
+      state: "wait",
+      price: "101000000",
+      volume: "0.001",
+      remaining_volume: "0.001",
+      executed_volume: "0",
+      avg_price: "0",
+      paid_fee: "0",
+      trade_fee: null,
+      order_timestamp: 1750000000000,
+      timestamp: 1750000000000,
+      stream_type: "REALTIME",
+    });
+    const event = toUpbitPrivateMyOrderEvent(payload, { receivedAt });
+
+    expect(payload.trade_fee).toBeNull();
+    expect(event.tradeFee).toBeUndefined();
+  });
+
   it("fails fast on malformed myOrder payload", async () => {
     const malformed = {
       type: "myOrder",
@@ -793,6 +854,27 @@ describe("Upbit private WebSocket raw message parser", () => {
     expect(UpbitPrivateWebSocketMessageSchema.parse(parsed)).toEqual(parsed);
   });
 
+  it("parses byte payload messages through the public parser", () => {
+    const parsed = parseUpbitPrivateWebSocketMessage(
+      Buffer.from(
+        `{
+          "type":"myAsset",
+          "assets":[{"currency":"BTC","balance":0.1,"locked":0}],
+          "asset_timestamp":1750000000000,
+          "timestamp":1750000000123,
+          "stream_type":"REALTIME"
+        }`,
+        "utf8",
+      ),
+    );
+
+    expect(parsed).toMatchObject({
+      type: "myAsset",
+      assets: [{ currency: "BTC", balance: "0.1", locked: "0" }],
+      timestamp: 1750000000123,
+    });
+  });
+
   it("parses status envelope and maps it to lifecycle event", () => {
     const parsed = parseUpbitPrivateWebSocketMessage(`{"status":"UP"}`);
 
@@ -856,7 +938,7 @@ describe("Upbit private WebSocket myAsset schema and mapper", () => {
     expect(parsed.assets[1]?.balance).toBe("0.5");
     expect(parsed.assets[1]?.locked).toBe("0.1");
     expect(parsed.asset_timestamp).toBe(1750000000000);
-    expect(parsed.timestamp).toBe(1750000000000);
+    expect(parsed.timestamp).toBe(1750000000123);
     expect(parsed.stream_type).toBe("SNAPSHOT");
   });
 
@@ -879,7 +961,8 @@ describe("Upbit private WebSocket myAsset schema and mapper", () => {
       balance: "0.5",
       locked: "0.1",
     });
-    expect(event.eventTimestamp).toBe("2025-06-15T15:06:40.000Z");
+    expect(event.eventTimestamp).toBe("2025-06-15T15:06:40.123Z");
+    expect(event.assetTimestamp).toBe("2025-06-15T15:06:40.000Z");
     expect(event.streamType).toBe("SNAPSHOT");
     expect(event.receivedAt).toBe(receivedAt);
   });
