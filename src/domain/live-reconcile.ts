@@ -65,8 +65,9 @@ export interface ReconcileLocalOrderSnapshot {
 /**
  * WebSocket 이벤트의 단일 메시지 정규화 표현이다.
  *
- * myOrder와 myAsset 이벤트를 공통 contract로 담으며,
- * bootstrap buffer drain 전후 이벤트를 구분하기 위해 receivedAt을 보존한다.
+ * myOrder와 myAsset 이벤트를 공통 contract로 담는다. 이벤트 발생 시각은
+ * REST bootstrap 완료 시각보다 앞설 수 있으며, 기준점이 확인된 context에서는
+ * subscription-first bootstrap 버퍼에서 drain된 정상 이벤트로 취급한다.
  */
 export interface ReconcileWebSocketEvent {
   type: "myOrder" | "myAsset";
@@ -77,8 +78,10 @@ export interface ReconcileWebSocketEvent {
 /**
  * WebSocket 연결 불연속 증거다.
  *
- * reconnect, stale, gap 모두 같은 contract로 표현하며,
- * runtime worker가 누적한 reconnect count와 기간을 포함한다.
+ * close/error, ping 실패, reconnect discontinuity처럼 실제 연결 liveness가
+ * 깨진 증거를 runtime worker가 이 contract로 전달한다. `staleSince`는
+ * 진단 보조값이며, event-only stream의 데이터 부재만으로 주문 경로를
+ * 차단하는 근거가 되어서는 안 된다.
  */
 export interface ReconcileDisconnectEvidence {
   lastConnectedAt?: TimestampInput;
@@ -95,13 +98,15 @@ export interface ReconcileDisconnectEvidence {
 /**
  * subscription-first bootstrap 이후 WebSocket context를 묶은 입력이다.
  *
- * REST snapshot 이전 이벤트와 reconnect gap을 engine이 판단할 수 있도록
- * bootstrap 시점 정보와 이벤트 목록을 함께 전달한다.
+ * REST snapshot 기준점 유무와 reconnect gap을 engine이 판단할 수 있도록
+ * bootstrap 시점 정보와 이벤트 목록을 함께 전달한다. 기준점이 확인된 경우
+ * bootstrap 이전에 발생한 buffered event는 정상 이벤트로 남기고 gap evidence로
+ * 승격하지 않는다.
  */
 export interface ReconcileWebSocketContext {
-  /** REST bootstrap 완료 시각. 이 이전 이벤트는 신뢰하지 않는다. */
+  /** REST bootstrap 완료 시각. 없으면 수신 이벤트를 snapshot 기준으로 해석할 수 없다. */
   bootstrapCompleteAt?: TimestampInput;
-  /** bootstrap 완료 이후 수신한 모든 private WebSocket 이벤트다. */
+  /** private WebSocket에서 수신해 reconcile 입력으로 정규화한 이벤트다. */
   events: readonly ReconcileWebSocketEvent[];
   /** reconnect 불연속 증거. 없으면 연결이 안정적이다. */
   disconnectEvidence?: ReconcileDisconnectEvidence;

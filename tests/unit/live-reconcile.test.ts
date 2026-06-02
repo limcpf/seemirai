@@ -434,6 +434,46 @@ describe("reconcileOrders — untracked exchange open order", () => {
     ).toHaveLength(0);
   });
 
+  it("uuid와 identifier가 없는 exchange-only 주문은 같은 fingerprint라도 evidence를 접지 않는다", () => {
+    const exchangeOrders = [
+      createExchangeOrder({
+        source: "open",
+        identifier: undefined,
+        exchangeOrderId: undefined,
+        requestedPrice: "10000000",
+        capturedAt: "2026-06-02T12:00:00.000Z",
+      }),
+      createExchangeOrder({
+        source: "open",
+        identifier: undefined,
+        exchangeOrderId: undefined,
+        requestedPrice: "10000000",
+        capturedAt: "2026-06-02T12:00:00.000Z",
+      }),
+    ];
+
+    const mismatches = reconcileOrders(exchangeOrders, [], observedAt).flatMap(
+      (result) => result.mismatches,
+    );
+
+    expect(mismatches).toHaveLength(2);
+    expect(
+      new Set(mismatches.map((mismatch) => mismatch.evidenceFingerprint)).size,
+    ).toBe(2);
+    expect(mismatches).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          orderIdentity: "fingerprint:KRW-BTC|BUY|0.001|10000000",
+          trace: expect.objectContaining({ exchangeSnapshotIndex: 0 }) as object,
+        }),
+        expect.objectContaining({
+          orderIdentity: "fingerprint:KRW-BTC|BUY|0.001|10000000",
+          trace: expect.objectContaining({ exchangeSnapshotIndex: 1 }) as object,
+        }),
+      ]),
+    );
+  });
+
   it("closed/terminal lookup source는 untracked 판정에서 제외한다", () => {
     const exchangeOrders = [
       createExchangeOrder({ source: "closed", identifier: "closed-1" }),
@@ -1619,7 +1659,7 @@ describe("checkWebSocketGap", () => {
     );
   });
 
-  it("bootstrap 이전 이벤트가 있으면 WEBSOCKET_GAP_MANUAL_REVIEW", () => {
+  it("bootstrap 완료 전 발생한 buffered 이벤트는 기준점이 있으면 mismatch가 아니다", () => {
     const wsContext: ReconcileWebSocketContext = {
       bootstrapCompleteAt: "2026-06-02T12:00:00.000Z",
       events: [
@@ -1633,15 +1673,7 @@ describe("checkWebSocketGap", () => {
 
     const mismatches = checkWebSocketGap(wsContext, observedAt);
 
-    expect(mismatches).toHaveLength(1);
-    expect(mismatches[0]!).toMatchObject({
-      mismatchType: "WEBSOCKET_GAP_MANUAL_REVIEW",
-      severity: "WARN",
-    });
-    expect(mismatches[0]!.userMessage).toContain("bootstrap");
-    expect(mismatches[0]!.trace).toMatchObject({
-      preBootstrapEventCount: 1,
-    });
+    expect(mismatches).toHaveLength(0);
   });
 
   it("disconnectEvidence가 있으면 WEBSOCKET_GAP_MANUAL_REVIEW (ERROR)", () => {
@@ -1661,6 +1693,19 @@ describe("checkWebSocketGap", () => {
       mismatchType: "WEBSOCKET_GAP_MANUAL_REVIEW",
       severity: "ERROR",
     });
+  });
+
+  it("staleSince 단독 disconnectEvidence는 event-only stream 특성상 mismatch가 아니다", () => {
+    const wsContext: ReconcileWebSocketContext = {
+      events: [],
+      disconnectEvidence: {
+        staleSince: "2026-06-02T11:59:00.000Z",
+      },
+    };
+
+    const mismatches = checkWebSocketGap(wsContext, observedAt);
+
+    expect(mismatches).toHaveLength(0);
   });
 
   it("bootstrap 이후 이벤트만 있고 disconnect 없으면 mismatch 없음", () => {
@@ -2208,13 +2253,12 @@ describe("runReconcileEngine — 전체 orchestrator", () => {
     expect(output.targetKillSwitchState).toBe("MANUAL_REVIEW_REQUIRED");
   });
 
-  it("bootstrap 이전 WebSocket 이벤트 → WARN이어도 failClosed=true, MANUAL_REVIEW_REQUIRED", () => {
+  it("bootstrap 기준점 없는 WebSocket 이벤트 → failClosed=true, MANUAL_REVIEW_REQUIRED", () => {
     const input: ReconcileEngineInput = {
       exchangeOpenOrders: [],
       exchangeClosedOrders: [],
       orderLookups: [],
       websocketContext: {
-        bootstrapCompleteAt: observedAt,
         events: [
           {
             type: "myOrder",
@@ -2234,7 +2278,7 @@ describe("runReconcileEngine — 전체 orchestrator", () => {
       expect.arrayContaining([
         expect.objectContaining({
           mismatchType: "WEBSOCKET_GAP_MANUAL_REVIEW",
-          severity: "WARN",
+          severity: "ERROR",
         }),
       ]),
     );

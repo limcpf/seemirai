@@ -62,7 +62,7 @@ export function reconcileOrders(
   const strongerExchangeIdentityKeys = new Set<string>();
 
   // 각 exchange open order에 대해 로컬 매칭 시도
-  for (const exchangeOrder of exchangeOrders) {
+  for (const [exchangeOrderIndex, exchangeOrder] of exchangeOrders.entries()) {
     // WebSocket terminal event는 이미 닫힌 주문 알림일 수 있어 untracked open으로 분류하지 않는다.
     if (!isUntrackedExchangeOpenCandidate(exchangeOrder)) {
       addExchangeIdentityKeys(exchangeOrder, strongerExchangeIdentityKeys);
@@ -120,7 +120,13 @@ export function reconcileOrders(
 
       // 로컬에서 찾지 못한 exchange open order
       results.push({
-        mismatches: [createUntrackedExchangeOrderMismatch(exchangeOrder, observedAt)],
+        mismatches: [
+          createUntrackedExchangeOrderMismatch(
+            exchangeOrder,
+            observedAt,
+            exchangeOrderIndex,
+          ),
+        ],
       });
       continue;
     }
@@ -260,10 +266,12 @@ function createClosedOrderWindowExhaustedMismatch(
 }
 
 /**
- * WebSocket context에서 gap/stale 의심 증거가 있는지 확인한다.
+ * WebSocket context에서 주문 복구를 멈춰야 하는 gap 증거가 있는지 확인한다.
  *
- * REST bootstrap 완료 이전 이벤트, reconnect discontinuity,
- * stale 의심 기간이 있으면 manual review evidence를 생성한다.
+ * REST bootstrap 기준점 없이 수신한 이벤트와 명시적인 연결 불연속만
+ * manual review evidence로 남긴다. subscription-first bootstrap 중
+ * 버퍼에 쌓인 pre-snapshot 이벤트와 event-only stream의 데이터 부재는
+ * 정상 대기 상태일 수 있으므로 단독 차단 근거로 쓰지 않는다.
  *
  * @returns WebSocket gap mismatch evidence 또는 빈 배열
  */
@@ -281,38 +289,18 @@ export function checkWebSocketGap(
     mismatches.push(createWebSocketBootstrapMissingMismatch(websocketContext, observedAt));
   }
 
-  // bootstrap 이전 이벤트 검사
-  if (websocketContext.bootstrapCompleteAt !== undefined) {
-    const bootstrapAt = new Date(websocketContext.bootstrapCompleteAt).getTime();
-    const preBootstrapEvents = websocketContext.events.filter(
-      (event) => new Date(event.occurredAt).getTime() < bootstrapAt,
-    );
-    if (preBootstrapEvents.length > 0) {
-      mismatches.push({
-        mismatchType: "WEBSOCKET_GAP_MANUAL_REVIEW",
-        severity: "WARN",
-        userMessage: `WebSocket bootstrap(${websocketContext.bootstrapCompleteAt}) 이전에 ${preBootstrapEvents.length}건의 이벤트가 수신되어 신뢰할 수 없습니다.`,
-        requiredAction: "수동 검토: bootstrap 이전 이벤트는 무시하고 REST snapshot 기준 상태만 신뢰하세요. 필요하면 reconcile을 재실행하세요.",
-        evidenceFingerprint: `ws-pre-bootstrap:${observedAt}`,
-        trace: {
-          bootstrapCompleteAt: websocketContext.bootstrapCompleteAt,
-          preBootstrapEventCount: preBootstrapEvents.length,
-          preBootstrapEventTypes: [...new Set(preBootstrapEvents.map((e) => e.type))],
-        },
-        occurredAt: observedAt,
-      });
-    }
-  }
-
   // 연결 불연속 증거 검사
-  if (websocketContext.disconnectEvidence !== undefined) {
+  if (
+    websocketContext.disconnectEvidence !== undefined &&
+    hasWebSocketLivenessGapEvidence(websocketContext.disconnectEvidence)
+  ) {
     const evidence = websocketContext.disconnectEvidence;
     mismatches.push({
       mismatchType: "WEBSOCKET_GAP_MANUAL_REVIEW",
       severity: "ERROR",
       userMessage: buildWebSocketGapMessage(evidence),
       requiredAction: "수동 검토: WebSocket 재연결 후 REST snapshot을 다시 조회하여 bootstrap을 재수행하세요. 불연속 기간 중 발생한 주문/체결은 거래소 웹에서 직접 확인하세요.",
-      evidenceFingerprint: `ws-disconnect:${evidence.disconnectedAt ?? observedAt}:${observedAt}`,
+      evidenceFingerprint: `ws-disconnect:${getWebSocketGapEvidenceAnchor(evidence, observedAt)}:${observedAt}`,
       trace: {
         lastConnectedAt: evidence.lastConnectedAt,
         disconnectedAt: evidence.disconnectedAt,
@@ -344,6 +332,30 @@ function createWebSocketBootstrapMissingMismatch(
     },
     occurredAt: observedAt,
   };
+}
+
+function hasWebSocketLivenessGapEvidence(
+  evidence: NonNullable<ReconcileWebSocketContext["disconnectEvidence"]>,
+): boolean {
+  return (
+    evidence.disconnectedAt !== undefined ||
+    evidence.reconnectedAt !== undefined ||
+    (evidence.gapDurationMs ?? 0) > 0 ||
+    (evidence.reconnectCount ?? 0) > 0
+  );
+}
+
+function getWebSocketGapEvidenceAnchor(
+  evidence: NonNullable<ReconcileWebSocketContext["disconnectEvidence"]>,
+  observedAt: string,
+): string {
+  return String(
+    evidence.disconnectedAt ??
+      evidence.reconnectedAt ??
+      evidence.gapDurationMs ??
+      evidence.reconnectCount ??
+      observedAt,
+  );
 }
 
 /* ============================================================
@@ -641,8 +653,28 @@ function createIdentityConflictResult(
 function createUntrackedExchangeOrderMismatch(
   exchangeOrder: ReconcileExchangeOrderSnapshot,
   observedAt: string,
+  exchangeOrderIndex: number,
 ): ReconcileMismatchEvidence {
   const identity = describeExchangeOrderIdentity(exchangeOrder);
+  const evidenceFingerprint = buildUntrackedExchangeEvidenceFingerprint(
+    exchangeOrder,
+    identity,
+    observedAt,
+    exchangeOrderIndex,
+  );
+  const trace: ReconcileMismatchEvidence["trace"] = {
+    exchangeStatus: exchangeOrder.exchangeStatus,
+    market: exchangeOrder.market,
+    side: exchangeOrder.side,
+    requestedQuantity: exchangeOrder.requestedQuantity,
+    requestedPrice: exchangeOrder.requestedPrice,
+    source: exchangeOrder.source,
+  };
+
+  if (isFingerprintOnlyExchangeOrder(exchangeOrder)) {
+    trace.exchangeSnapshotIndex = exchangeOrderIndex;
+  }
+
   return {
     mismatchType: "UNTRACKED_EXCHANGE_OPEN_ORDER",
     severity: "WARN",
@@ -650,17 +682,40 @@ function createUntrackedExchangeOrderMismatch(
     orderIdentity: identity,
     userMessage: `거래소에 미체결 상태(${exchangeOrder.exchangeStatus})로 존재하지만 로컬에 기록이 없는 주문이 발견되었습니다. (${identity})`,
     requiredAction: "확인 필요: 거래소 웹/앱에서 해당 주문의 생성 경로를 확인하세요. 로컬에 수동 등록하거나 거래소에서 취소하세요.",
-    evidenceFingerprint: `untracked:${identity}:${observedAt}`,
-    trace: {
-      exchangeStatus: exchangeOrder.exchangeStatus,
-      market: exchangeOrder.market,
-      side: exchangeOrder.side,
-      requestedQuantity: exchangeOrder.requestedQuantity,
-      requestedPrice: exchangeOrder.requestedPrice,
-      source: exchangeOrder.source,
-    },
+    evidenceFingerprint,
+    trace,
     occurredAt: observedAt,
   };
+}
+
+function buildUntrackedExchangeEvidenceFingerprint(
+  exchangeOrder: ReconcileExchangeOrderSnapshot,
+  identity: string,
+  observedAt: string,
+  exchangeOrderIndex: number,
+): string {
+  if (!isFingerprintOnlyExchangeOrder(exchangeOrder)) {
+    return `untracked:${identity}:${observedAt}`;
+  }
+
+  // uuid/identifier가 없는 exchange-only 주문은 같은 가격/수량의 여러 행을 같은 evidence로 접으면 안 된다.
+  return [
+    "untracked",
+    identity,
+    exchangeOrder.source,
+    String(exchangeOrder.capturedAt),
+    `row:${exchangeOrderIndex}`,
+    observedAt,
+  ].join(":");
+}
+
+function isFingerprintOnlyExchangeOrder(
+  exchangeOrder: ReconcileExchangeOrderSnapshot,
+): boolean {
+  return (
+    exchangeOrder.exchangeOrderId === undefined &&
+    exchangeOrder.identifier === undefined
+  );
 }
 
 /**
