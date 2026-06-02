@@ -199,8 +199,11 @@ Codex-native 운영은 Codex, Git, GitHub, shell command, 문서 상태를 연�
 - REST snapshot이 reconcile의 bootstrap source of truth다. private WebSocket `myOrder`/`myAsset`은 snapshot 이후 변경
   추적과 연결 liveness/gap evidence에만 사용한다. WebSocket 단절 시 REST fallback/bootstrap으로 상태를 재조회한다.
 - reconcile mismatch가 발견되면 신규 주문을 fail-closed 하고 M16 전용 append-only reconcile tables에 mismatch evidence를 남긴다.
-  mismatch를 0으로 자동 복구하지 않는다. 주문/체결/포지션 로컬 복구 쓰기는 exchange identity와 fingerprint가 일치한 경우에만
-  기존 domain repository transaction에서 수행하고, 같은 reconcile run의 append-only evidence를 함께 남긴다.
+  같은 transaction에서 `risk_events`에 `live_reconcile_mismatch` 차단 근거를 append하고 `kill_switch_state`를
+  `NEW_ORDERS_BLOCKED` 또는 `MANUAL_REVIEW_REQUIRED`로 전진시켜 RiskGate/주문 경로가 재시작 후에도 차단 상태를 읽게 한다.
+  mismatch를 0으로 자동 복구하지 않는다. 주문/체결 로컬 복구 쓰기는 exchange identity와 fingerprint가 일치한 경우에만
+  기존 domain repository transaction에서 수행하고, 같은 reconcile run의 append-only evidence를 함께 남긴다. `positions` 갱신은
+  authoritative fill price/volume으로 평균단가를 계산할 수 있을 때만 허용한다.
 - idempotent run: 같은 reconcile worker가 중복 실행되어도 같은 시각의 같은 snapshot을 다시 조회해 동일한 mismatch 결과를
   반환한다. reconcile 실행 자체는 run idempotency key와 snapshot/evidence fingerprint로 중복 기록을 차단한다.
 - closed order 조회는 `start_time`/`end_time`을 지정해 7일 이하 구간으로 나눠 수행한다. 설정된 조회 horizon 밖이거나

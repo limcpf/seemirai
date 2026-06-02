@@ -187,13 +187,14 @@ reconcile summary는 `/status` 또는 CLI에서 다음 필드를 secret 없이 �
 | `lastReconcileAt` | 마지막 reconcile 실행 시각 (ISO 8601) |
 | `result` | `SUCCESS`, `MISMATCH_DETECTED`, `FAILED`, `SKIPPED` |
 | `mismatchCount` | 감지된 mismatch 수 |
-| `mismatches` | 최근 mismatch 상세 (최대 5건, raw provider payload 제외) |
 | `openOrderCount` | 현재 open order 수 |
 | `balanceStatus` | balance snapshot 상태 (`OK`, `STALE`, `UNAVAILABLE`) |
 | `websocketStatus` | private WebSocket 연결 상태 (`CONNECTED`, `DISCONNECTED`, `RECONNECTING`, `DEGRADED`) |
 | `actionRequired` | 한국어로 표시된 필요 조치 (`정상`, `불일치 확인 필요`, `수동 검토 필요`) |
 
-내부 식별자(run id, mismatch id, correlation id)는 `추적 정보` 하위 객체에 분리해 보존한다.
+내부 식별자(run id, mismatch id, correlation id)는 `추적 정보` 하위 객체에 분리해 보존한다. `/status`와 CLI summary는
+mismatch trace detail, raw order detail, fingerprint를 노출하지 않는다. 상세 evidence는 저장소 밖 운영 리포트 또는 보호된 debug
+tooling에서 redaction 후 조회한다.
 
 ## Phase 1.5 알트 수동 편입 설정
 
@@ -353,8 +354,8 @@ P0/P1 원인 mapping은 application layer의 `mapKillSwitchReasonToTargetState`�
 | 원인 | target |
 | --- | --- |
 | `db_write_failure`, `order_idempotency_violation`, `duplicate_order_idempotency_key`, `fill_order_accounting_mismatch`, `risk_limit_calculation_unavailable`, `audit_persistence_failure`, `live_order_api_misuse_detected` | `HARD_STOP` |
-| `stale_market_data`, `public_websocket_lag`, `quote_freshness_insufficient`, `transient_external_data_gap` | `NEW_ORDERS_BLOCKED` |
-| `notification_consecutive_failure`, `notification_failure_threshold_exceeded`, `report_generation_repeated_failure`, `abnormal_state_operator_review_required` | `MANUAL_REVIEW_REQUIRED` |
+| `stale_market_data`, `public_websocket_lag`, `quote_freshness_insufficient`, `transient_external_data_gap`, `live_reconcile_mismatch` | `NEW_ORDERS_BLOCKED` |
+| `notification_consecutive_failure`, `notification_failure_threshold_exceeded`, `report_generation_repeated_failure`, `abnormal_state_operator_review_required`, `live_reconcile_identity_conflict` | `MANUAL_REVIEW_REQUIRED` |
 
 ## M8 Telegram outbound 알림
 
