@@ -129,7 +129,7 @@ export class PostgresLiveReconcileRepository {
    *
    * idempotency: partial unique index로 중복 row를 차단한다.
    * `exchange_order_id`가 있는 row는 run_id+exchange_order_id partial unique index로,
-   * `exchange_order_id`가 없고 identifier만 있는 row는 run_id+identifier partial unique index로 중복을 차단한다.
+   * identifier가 있는 row는 uuid 관측 여부와 무관하게 run_id+identifier partial unique index로 중복을 차단한다.
    * `ON CONFLICT DO NOTHING`으로 중복은 무시하고 계속 진행한다.
    *
    * @param runId 소속 run ID
@@ -172,9 +172,10 @@ export class PostgresLiveReconcileRepository {
   }
 
   /**
-   * mismatch evidence를 batch insert한다. 같은 `evidence_fingerprint`는 중복 저장되지 않는다.
+   * mismatch evidence를 batch insert한다. 같은 run 안의 `evidence_fingerprint`는 중복 저장되지 않는다.
    *
-   * idempotency: `evidence_fingerprint` UNIQUE constraint로 중복을 차단한다.
+   * idempotency: `run_id + evidence_fingerprint` UNIQUE constraint로 같은 run의 재시도 중복만 차단한다.
+   * 다음 run에서 반복 관측된 mismatch는 최신 summary와 fail-closed 근거로 다시 남아야 한다.
    * `ON CONFLICT DO NOTHING`으로 중복은 무시하고 계속 진행한다.
    *
    * @param runId 소속 run ID
@@ -204,7 +205,7 @@ export class PostgresLiveReconcileRepository {
       toLiveReconcileMismatchEvidenceRowInput(runId, evidence),
     );
 
-    // ON CONFLICT DO NOTHING으로 evidence_fingerprint UNIQUE 위반을 무시한다.
+    // 반복 mismatch를 최신 run에도 남기기 위해 전역 fingerprint가 아니라 run 범위 중복만 무시한다.
     const inserted = await this.database
       .insertInto("live_reconcile_mismatch_evidence")
       .values(rows)

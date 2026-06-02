@@ -323,6 +323,39 @@ describeDb("live reconcile persistence integration", () => {
     expect(snapshots[0]?.identifier).toBe("ident-only-1");
   });
 
+  it("skips duplicate exchange order snapshots with the same identifier after uuid is observed", async () => {
+    const { run } = await repository!.beginLiveReconcileRun({
+      idempotencyKey: "run-integration-orders-ident-dup",
+    });
+
+    const identifierOnly = await repository!.appendLiveReconcileExchangeOrderSnapshots(run.id, [
+      {
+        identifier: "ident-dup-after-uuid",
+        market: "KRW-BTC",
+        side: "BUY",
+        status: "OPEN",
+        requestedQuantity: "0.001",
+        source: "ws",
+        capturedAt: new Date("2026-06-03T00:00:00Z"),
+      },
+    ]);
+    const withUuid = await repository!.appendLiveReconcileExchangeOrderSnapshots(run.id, [
+      {
+        exchangeOrderId: "uuid-observed-later",
+        identifier: "ident-dup-after-uuid",
+        market: "KRW-BTC",
+        side: "BUY",
+        status: "OPEN",
+        requestedQuantity: "0.001",
+        source: "lookup",
+        capturedAt: new Date("2026-06-03T00:00:01Z"),
+      },
+    ]);
+
+    expect(identifierOnly).toHaveLength(1);
+    expect(withUuid).toHaveLength(0);
+  });
+
   // ── appendLiveReconcileMismatchEvidence ──
 
   it("appends mismatch evidence to a run", async () => {
@@ -394,6 +427,46 @@ describeDb("live reconcile persistence integration", () => {
 
     expect(first).toHaveLength(1);
     expect(second).toHaveLength(0);
+  });
+
+  it("records the same mismatch fingerprint again in a later reconcile run", async () => {
+    const { run: firstRun } = await repository!.beginLiveReconcileRun({
+      idempotencyKey: "run-integration-evidence-repeat-1",
+    });
+    const first = await repository!.appendLiveReconcileMismatchEvidence(firstRun.id, [
+      {
+        mismatchType: "BALANCE_LOCK_MISMATCH",
+        severity: "ERROR",
+        currency: "KRW",
+        message: "KRW 잔고 lock 불일치",
+        action: "수동 검토가 필요합니다.",
+        evidenceFingerprint: "repeat-fingerprint-001",
+        occurredAt: new Date("2026-06-03T00:00:00Z"),
+      },
+    ]);
+    await repository!.completeLiveReconcileRun({ runId: firstRun.id, status: "FAILED" });
+
+    const { run: secondRun } = await repository!.beginLiveReconcileRun({
+      idempotencyKey: "run-integration-evidence-repeat-2",
+    });
+    const second = await repository!.appendLiveReconcileMismatchEvidence(secondRun.id, [
+      {
+        mismatchType: "BALANCE_LOCK_MISMATCH",
+        severity: "ERROR",
+        currency: "KRW",
+        message: "KRW 잔고 lock 불일치",
+        action: "수동 검토가 필요합니다.",
+        evidenceFingerprint: "repeat-fingerprint-001",
+        occurredAt: new Date("2026-06-03T00:01:00Z"),
+      },
+    ]);
+    await repository!.completeLiveReconcileRun({ runId: secondRun.id, status: "FAILED" });
+
+    const summary = await repository!.getLatestLiveReconcileSummary();
+    expect(first).toHaveLength(1);
+    expect(second).toHaveLength(1);
+    expect(summary.run?.id).toBe(secondRun.id);
+    expect(summary.mismatchEvidenceCount).toBe(1);
   });
 
   // ── appendLiveReconcilePositionSnapshots ──
@@ -528,6 +601,43 @@ describeDb("live reconcile persistence integration", () => {
     expect(first).toHaveLength(1);
     expect(duplicateExchangeFill).toHaveLength(0);
     expect(duplicateFingerprint).toHaveLength(0);
+  });
+
+  it("rejects fill recovery key reservation when order_id does not exist", async () => {
+    const { run } = await repository!.beginLiveReconcileRun({
+      idempotencyKey: "run-integration-fill-key-order-fk",
+    });
+
+    await expect(
+      repository!.appendLiveReconcileFillRecoveryKeys(run.id, [
+        {
+          exchange: "UPBIT",
+          market: "KRW-BTC",
+          orderId: "00000000-0000-4000-8000-000000000001",
+          exchangeFillId: "fill-invalid-order",
+          fillFingerprint: "fill-invalid-order-fingerprint",
+          side: "BUY",
+          price: "10000000",
+          quantity: "0.001",
+          filledAt: new Date("2026-06-03T00:00:00Z"),
+        },
+      ]),
+    ).rejects.toThrow();
+
+    const retryWithoutInvalidOrder = await repository!.appendLiveReconcileFillRecoveryKeys(run.id, [
+      {
+        exchange: "UPBIT",
+        market: "KRW-BTC",
+        exchangeFillId: "fill-invalid-order",
+        fillFingerprint: "fill-invalid-order-fingerprint",
+        side: "BUY",
+        price: "10000000",
+        quantity: "0.001",
+        filledAt: new Date("2026-06-03T00:00:00Z"),
+      },
+    ]);
+
+    expect(retryWithoutInvalidOrder).toHaveLength(1);
   });
 
   // ── getLatestLiveReconcileSummary ──

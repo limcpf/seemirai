@@ -51,7 +51,7 @@ CREATE INDEX IF NOT EXISTS live_reconcile_balance_snapshots_run_id_idx
 
 -- live_reconcile_exchange_order_snapshots: reconcile 시점의 거래소 주문 상태 snapshot.
 -- append-only invariant: 같은 run에서 같은 exchange_order_id는 한 번만 저장된다.
--- exchange_order_id가 없는 주문(identifier 기반)은 identifier로 unique를 보장한다.
+-- identifier가 확인된 주문은 uuid 관측 전후가 달라도 identifier로 unique를 보장한다.
 CREATE TABLE IF NOT EXISTS live_reconcile_exchange_order_snapshots (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   run_id uuid NOT NULL REFERENCES live_reconcile_runs (id) ON DELETE CASCADE,
@@ -74,20 +74,20 @@ CREATE TABLE IF NOT EXISTS live_reconcile_exchange_order_snapshots (
 );
 
 -- 같은 run에서 같은 exchange_order_id의 중복을 차단한다.
--- exchange_order_id가 NULL인(identifier만 있는) 주문은 별도 unique index로 보호한다.
+-- identifier가 있으면 uuid 관측 여부와 무관하게 같은 주문의 중복 snapshot을 차단한다.
 CREATE UNIQUE INDEX IF NOT EXISTS live_reconcile_exchange_order_snapshots_run_order_uidx
   ON live_reconcile_exchange_order_snapshots (run_id, exchange_order_id)
   WHERE exchange_order_id IS NOT NULL;
 
 CREATE UNIQUE INDEX IF NOT EXISTS live_reconcile_exchange_order_snapshots_run_identifier_uidx
   ON live_reconcile_exchange_order_snapshots (run_id, identifier)
-  WHERE exchange_order_id IS NULL AND identifier IS NOT NULL;
+  WHERE identifier IS NOT NULL;
 
 CREATE INDEX IF NOT EXISTS live_reconcile_exchange_order_snapshots_run_id_idx
   ON live_reconcile_exchange_order_snapshots (run_id);
 
 -- live_reconcile_mismatch_evidence: reconcile에서 발견한 불일치 증거.
--- append-only invariant: 같은 evidence_fingerprint는 중복 저장되지 않는다.
+-- append-only invariant: 같은 run 안의 evidence_fingerprint 중복만 차단하고 반복 mismatch는 다음 run에 다시 기록한다.
 -- message/action은 한국어 사용자 문구로 저장하고, trace_json에 안정적인 내부 코드를 분리한다.
 CREATE TABLE IF NOT EXISTS live_reconcile_mismatch_evidence (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -109,7 +109,7 @@ CREATE TABLE IF NOT EXISTS live_reconcile_mismatch_evidence (
   currency text,
   message text NOT NULL,
   action text NOT NULL,
-  evidence_fingerprint text NOT NULL UNIQUE,
+  evidence_fingerprint text NOT NULL,
   trace_json jsonb NOT NULL DEFAULT '{}'::jsonb,
   occurred_at timestamptz NOT NULL,
   CHECK (market IS NULL OR btrim(market) <> ''),
@@ -122,6 +122,10 @@ CREATE TABLE IF NOT EXISTS live_reconcile_mismatch_evidence (
 
 CREATE INDEX IF NOT EXISTS live_reconcile_mismatch_evidence_run_id_idx
   ON live_reconcile_mismatch_evidence (run_id);
+
+-- 같은 run 안의 재시도 중복만 차단하고, 다음 run에서 반복 관측된 mismatch는 새 evidence로 남긴다.
+CREATE UNIQUE INDEX IF NOT EXISTS live_reconcile_mismatch_evidence_run_fingerprint_uidx
+  ON live_reconcile_mismatch_evidence (run_id, evidence_fingerprint);
 
 CREATE INDEX IF NOT EXISTS live_reconcile_mismatch_evidence_type_idx
   ON live_reconcile_mismatch_evidence (mismatch_type);
@@ -169,7 +173,7 @@ CREATE TABLE IF NOT EXISTS live_reconcile_fill_recovery_keys (
   run_id uuid NOT NULL REFERENCES live_reconcile_runs (id) ON DELETE CASCADE,
   exchange text NOT NULL,
   market text NOT NULL,
-  order_id uuid,
+  order_id uuid REFERENCES orders (id),
   exchange_order_id text,
   exchange_fill_id text,
   fill_fingerprint text NOT NULL,

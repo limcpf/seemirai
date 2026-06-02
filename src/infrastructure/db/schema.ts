@@ -103,11 +103,11 @@ export interface DatabaseSchema {
   live_reconcile_balance_snapshots: LiveReconcileBalanceSnapshotsTable;
   /** reconcile 시점의 거래소 주문 상태 snapshot. 같은 run/exchange_order_id 중복 insert 불가 */
   live_reconcile_exchange_order_snapshots: LiveReconcileExchangeOrderSnapshotsTable;
-  /** reconcile에서 발견한 불일치 증거. 같은 evidence_fingerprint 중복 저장 불가 */
+  /** reconcile에서 발견한 불일치 증거. 같은 run/evidence_fingerprint 중복 저장 불가 */
   live_reconcile_mismatch_evidence: LiveReconcileMismatchEvidenceTable;
   /** 복구 후보 포지션과 평균단가 근거 snapshot. 같은 run/position/time/source 중복 insert 불가 */
   live_reconcile_position_snapshots: LiveReconcilePositionSnapshotsTable;
-  /** fill 복구 전 durable unique key 선점 기록. 같은 exchange fill 또는 fingerprint 중복 insert 불가 */
+  /** fill 복구 전 durable unique key 선점 기록. order_id FK와 같은 exchange fill 또는 fingerprint 중복 insert 불가 */
   live_reconcile_fill_recovery_keys: LiveReconcileFillRecoveryKeysTable;
 }
 
@@ -664,7 +664,7 @@ export interface LiveReconcileBalanceSnapshotsTable {
  * reconcile 시점의 거래소 주문 상태 snapshot table interface.
  *
  * 같은 run에서 같은 `exchange_order_id`는 한 번만 저장된다.
- * `exchange_order_id`가 없는 주문(identifier 기반)은 `identifier`로 unique를 보장한다.
+ * identifier가 확인된 주문은 `exchange_order_id` 관측 전후가 달라도 같은 run 안에서 `identifier`로 unique를 보장한다.
  */
 export interface LiveReconcileExchangeOrderSnapshotsTable {
   /** order snapshot record ID */
@@ -698,7 +698,8 @@ export interface LiveReconcileExchangeOrderSnapshotsTable {
 /**
  * reconcile에서 발견한 불일치 증거 table interface.
  *
- * 같은 `evidence_fingerprint`는 중복 저장되지 않는다.
+ * 같은 run 안의 `evidence_fingerprint`는 중복 저장되지 않는다.
+ * 다음 run에서 반복 관측된 mismatch는 최신 summary에 남아야 하므로 run 범위 unique만 적용한다.
  * `message`와 `action`은 한국어 사용자 문구로 저장하고, 안정적인 내부 코드는 `trace_json`에 분리한다.
  */
 export interface LiveReconcileMismatchEvidenceTable {
@@ -772,7 +773,8 @@ export interface LiveReconcilePositionSnapshotsTable {
  * reconcile fill 복구 unique key 선점 table interface.
  *
  * `fills` insert 전에 거래소 체결 ID와 정규화 fingerprint를 durable key로 선점해 같은 체결이 재시도나 중복 reconcile에서
- * 다시 insert되지 않게 한다. 이 table은 복구 가능성 판단의 선행 side effect이며 domain table을 직접 갱신하지 않는다.
+ * 다시 insert되지 않게 한다. `order_id`가 있으면 `orders.id` FK로 검증해 잘못된 주문 ID가 key를 선점하지 못하게 한다.
+ * 이 table은 복구 가능성 판단의 선행 side effect이며 domain table을 직접 갱신하지 않는다.
  */
 export interface LiveReconcileFillRecoveryKeysTable {
   /** recovery key record ID */
