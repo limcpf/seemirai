@@ -165,18 +165,19 @@ M14 이후에도 다음은 여전히 사실이어야 한다.
 
 - 실계좌 잔고, 주문, 체결, 포지션을 로컬 상태와 대조하고 재시작 후 상태를 복구한다.
 - REST snapshot을 bootstrap source of truth로 사용한다.
-- private WebSocket `myOrder`/`myAsset`은 snapshot 이후 변경 추적과 stale/gap evidence에만 사용한다.
+- private WebSocket `myOrder`/`myAsset`은 snapshot 이후 변경 추적과 연결 liveness/gap evidence에만 사용한다.
 
 범위:
 
-- REST snapshot bootstrap: `GET /v1/accounts`, `GET /v1/orders/open`, `GET /v1/orders/closed`, `GET /v1/orders/:uuid`
+- REST snapshot bootstrap: `GET /v1/accounts`, `GET /v1/orders/open`, `GET /v1/orders/closed`, `GET /v1/order?uuid=...` 또는 `GET /v1/order?identifier=...`
 - private WebSocket `myOrder` 구독 및 정규화
 - private WebSocket `myAsset` 구독, balance 변경 추적, REST bootstrap fallback
 - read-only reconcile worker: 주기적 REST snapshot → WebSocket 변경 추적 → diff → append-only persist
-- open order, closed order(window 7일), partial fill, cancel failure 상태 복구
+- open order, 7일 이하 구간 단위 closed order, partial fill, cancel failure 상태 복구
 - balance와 position snapshot 갱신
 - mismatch 발생 시 신규 주문 fail-closed, manual review evidence
-- M16 전용 append-only reconcile tables에 run, balance snapshot, exchange order snapshot, mismatch evidence 기록
+- M16 전용 append-only reconcile tables에 run, balance snapshot, exchange order snapshot, position snapshot, mismatch evidence 기록
+- exchange identity/fingerprint가 일치한 주문 lifecycle 복구는 기존 domain repository transaction을 통해 로컬 `orders`/`order_events`/`fills`/`positions`에 반영
 - 허용 권한: `자산조회`, `주문조회`만 요구 (`주문하기` 권한 불필요)
 - 평균단가/PnL은 M17 범위이므로 `계산 불가/수동 검토 필요`로 남긴다.
 
@@ -185,8 +186,8 @@ M14 이후에도 다음은 여전히 사실이어야 한다.
 - 프로세스 재시작 후 open order와 position snapshot이 복구된다.
 - 거래소와 로컬 상태 충돌 시 manual review evidence가 남고 신규 주문이 차단된다.
 - reconcile summary를 `/status` 또는 CLI에서 secret 없이 확인할 수 있다.
-- private WebSocket `myOrder`/`myAsset`이 snapshot 이후 변경 추적과 gap detection에 사용된다.
-- closed order window(7일) 밖 주문은 자동 복구하지 않고 manual review로 남긴다.
+- private WebSocket `myOrder`/`myAsset`이 snapshot 이후 변경 추적과 ping/pong·close/error 기반 connection gap detection에 사용된다.
+- closed order는 7일 이하 구간으로 나눠 조회하고, 조회 horizon 밖이거나 identity/fingerprint를 확인할 수 없는 주문만 manual review로 남긴다.
 - M16 runtime은 `자산조회`/`주문조회` 권한만 요구하고 `주문하기`를 요구하지 않는다.
 
 ### M17. PnL/포지션 회계

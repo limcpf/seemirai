@@ -298,7 +298,7 @@ erDiagram
 | `jobs` | PostgreSQL | scheduler와 worker 사이의 DB-backed queue다. 중복 작업 생성 방지, 예약 실행, worker lock, retry metadata를 제공한다. |
 | `audit_events` | PostgreSQL | 사람이 나중에 따라갈 수 있는 운영/업무 감사 로그다. 주문 상태 변화, worker action, 외부 호출 결과 같은 사후 추적 정보를 보관한다. |
 | `risk_events` | PostgreSQL | 리스크 게이트가 신규 주문을 차단하거나 경고한 이유를 구조화해 남긴다. market/strategy/order 기준으로 리스크 판단 이력을 조회한다. |
-| `live_reconcile_runs` 등 M16 후보 tables | PostgreSQL | 실계좌와 로컬 상태 간 reconcile run, balance snapshot, exchange order snapshot, mismatch evidence를 append-only로 기록한다. 기존 `orders`/`positions`를 직접 수정하지 않고 mismatch evidence만 저장한다. |
+| `live_reconcile_runs` 등 M16 후보 tables | PostgreSQL | 실계좌와 로컬 상태 간 reconcile run, balance snapshot, exchange order snapshot, position snapshot, mismatch evidence를 append-only로 기록한다. 주문/체결/포지션 로컬 복구 쓰기는 exchange identity와 fingerprint가 일치할 때만 기존 domain repository transaction으로 수행한다. |
 
 ## 실행 영속성 저장 경계
 

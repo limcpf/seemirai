@@ -176,7 +176,7 @@ M16 read-only reconcile runtime은 실계좌 상태를 조회하고 로컬 상�
 - `POST /v1/orders`, `DELETE /v1/order` 호출 금지
 - 자동 전략 루프에서 live broker 연결 금지
 - PnL 계산 금지 (평균단가/PnL은 `계산 불가/수동 검토 필요`로 남긴다)
-- closed order window(7일) 밖 주문 자동 복구 금지
+- closed order는 `start_time`/`end_time` 지정으로 7일 이하 구간 조회, 조회 horizon 밖 또는 identity/fingerprint 불일치 시 자동 복구 금지
 
 **Status summary 기준 (secret-safe):**
 
@@ -190,7 +190,7 @@ reconcile summary는 `/status` 또는 CLI에서 다음 필드를 secret 없이 �
 | `mismatches` | 최근 mismatch 상세 (최대 5건, raw provider payload 제외) |
 | `openOrderCount` | 현재 open order 수 |
 | `balanceStatus` | balance snapshot 상태 (`OK`, `STALE`, `UNAVAILABLE`) |
-| `websocketStatus` | private WebSocket 연결 상태 (`CONNECTED`, `DISCONNECTED`, `RECONNECTING`, `STALE`) |
+| `websocketStatus` | private WebSocket 연결 상태 (`CONNECTED`, `DISCONNECTED`, `RECONNECTING`, `DEGRADED`) |
 | `actionRequired` | 한국어로 표시된 필요 조치 (`정상`, `불일치 확인 필요`, `수동 검토 필요`) |
 
 내부 식별자(run id, mismatch id, correlation id)는 `추적 정보` 하위 객체에 분리해 보존한다.

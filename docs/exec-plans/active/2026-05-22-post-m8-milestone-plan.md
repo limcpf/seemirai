@@ -448,7 +448,7 @@ M16 상태: active. issue #143의 실행 계획은 [`2026-06-02-issue-143-m16-li
 | 단계 | 목표 | 다음 단계 진입 조건 |
 | --- | --- | --- |
 | M15 | `UpbitLiveBroker` 실구현 | `BrokerPort` 기반 submit/cancel/get/list/balance 구현, idempotency와 rate limit 테스트, 기본 runtime live API 0회 |
-| M16 | 실계좌 상태 reconcile | REST snapshot bootstrap + private WebSocket myOrder/myAsset 변경 추적, append-only reconcile tables, mismatch fail-closed, closed order window(7일) 밖 자동 복구 금지, PnL 계산 금지, read-only 권한(자산조회/주문조회)만 요구 |
+| M16 | 실계좌 상태 reconcile | REST snapshot bootstrap + private WebSocket myOrder/myAsset 변경 추적, append-only reconcile tables, mismatch fail-closed, closed order 7일 이하 구간 조회, PnL 계산 금지, read-only 권한(자산조회/주문조회)만 요구 |
 | M17 | PnL/포지션 회계 | realized/unrealized PnL, fee/spread/slippage 비용 분해, Telegram/status용 safe summary |
 | M18 | 판단 이유 ledger와 설명 API | 매수, 매도, 보유, 현금 보유 이유를 deterministic evidence로 조회 가능 |
 | M19 | 자동 매도와 포지션 축소 | 손절, 익절, trailing stop, 시간 기반 청산, 전략 exit signal의 paper/live pilot 검증 |

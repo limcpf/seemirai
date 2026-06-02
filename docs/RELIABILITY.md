@@ -197,20 +197,23 @@ Codex-native 운영은 Codex, Git, GitHub, shell command, 문서 상태를 연�
 ## M16 Live Reconcile 신뢰성 기준
 
 - REST snapshot이 reconcile의 bootstrap source of truth다. private WebSocket `myOrder`/`myAsset`은 snapshot 이후 변경
-  추적과 stale/gap evidence에만 사용한다. WebSocket 단절 시 REST fallback/bootstrap으로 상태를 재조회한다.
+  추적과 연결 liveness/gap evidence에만 사용한다. WebSocket 단절 시 REST fallback/bootstrap으로 상태를 재조회한다.
 - reconcile mismatch가 발견되면 신규 주문을 fail-closed 하고 M16 전용 append-only reconcile tables에 mismatch evidence를 남긴다.
-  mismatch를 0으로 자동 복구하지 않는다. reconcile persistence는 기존 `orders`/`positions` table을 직접 수정하지 않는다.
+  mismatch를 0으로 자동 복구하지 않는다. 주문/체결/포지션 로컬 복구 쓰기는 exchange identity와 fingerprint가 일치한 경우에만
+  기존 domain repository transaction에서 수행하고, 같은 reconcile run의 append-only evidence를 함께 남긴다.
 - idempotent run: 같은 reconcile worker가 중복 실행되어도 같은 시각의 같은 snapshot을 다시 조회해 동일한 mismatch 결과를
   반환한다. reconcile 실행 자체는 run idempotency key와 snapshot/evidence fingerprint로 중복 기록을 차단한다.
-- closed order 조회 window(7일) 밖 주문은 자동 복구하지 않고 manual review로 남긴다. window 밖 주문의 불완전한 evidence는
-  mismatch count에 포함하되 `복구 불가/수동 검토 필요`로 분류한다.
+- closed order 조회는 `start_time`/`end_time`을 지정해 7일 이하 구간으로 나눠 수행한다. 설정된 조회 horizon 밖이거나
+  identity/fingerprint를 확인할 수 없는 주문만 manual review로 남긴다. 불완전한 evidence는 mismatch count에 포함하되
+  `복구 불가/수동 검토 필요`로 분류한다.
 - private WebSocket gap/reconnect 기준:
-  - `myOrder` WebSocket이 30초 이상 메시지가 없으면 STALE 상태로 전이한다.
-  - `myAsset` WebSocket이 60초 이상 메시지가 없으면 STALE 상태로 전이하고 REST `/v1/accounts` fallback 조회를 실행한다.
-  - WebSocket 재연결 시 기존 snapshot을 유지하고 새로운 변경 이벤트부터 추적을 재개한다. snapshot을 폐기하지 않는다.
-  - 재연결 실패가 3회 연속이면 reconcile worker를 중지하고 manual review evidence를 남긴다.
+  - `myOrder`와 `myAsset` 데이터 메시지 부재는 정상 대기 상태일 수 있으므로 STALE 전이 조건으로 쓰지 않는다.
+  - 연결 liveness는 ping/pong 실패, close/error, 인증 실패, reconnect discontinuity로 판단한다.
+  - WebSocket 재연결 시 REST bootstrap을 다시 실행해 snapshot 기준점을 갱신한 뒤 새로운 변경 이벤트부터 추적을 재개한다.
+  - WebSocket 재연결 실패가 3회 연속이면 WebSocket만 `DEGRADED`로 표시하고 manual review evidence를 남긴다. REST/auth 조회가
+    가능한 동안 reconcile worker는 REST-only degraded mode로 계속 실행한다.
 - reconcile worker 실패(rate limit 초과, API 5xx, network error)는 최대 3회 재시도한다. 3회 초과 시 reconcile worker를
-  중지하고 manual review로 수렴한다.
+  중지하고 manual review로 수렴한다. 이 중지 기준은 REST/private read path 실패에만 적용하며, WebSocket 단독 장애에는 적용하지 않는다.
 - reconcile summary(/status, CLI)는 마지막 reconcile 시각, 결과, mismatch 수, open order 수, balance snapshot 상태,
   WebSocket 상태, 필요한 조치를 한국어로 제공한다. 내부 식별자는 `추적 정보`로 분리한다.
 - PnL 계산은 M17 범위이므로 reconcile 단계에서는 `계산 불가/수동 검토 필요`로 남긴다. balance snapshot을 PnL 근거로

@@ -34,12 +34,13 @@ M15 `UpbitLiveBroker` contract 검증이 완료된 상태에서, 실계좌 잔�
 
 ## 범위
 
-- **REST snapshot bootstrap**: `GET /v1/accounts`, `GET /v1/orders/open`, `GET /v1/orders/closed`, `GET /v1/orders/:uuid`를 활용해 최초 reconcile snapshot을 만든다. REST snapshot이 reconcile의 source of truth다.
-- **private WebSocket `myOrder`/`myAsset`**: snapshot 이후 변경 추적과 stale/gap evidence에만 사용한다. WebSocket이 primary source of truth가 아니다.
+- **REST snapshot bootstrap**: `GET /v1/accounts`, `GET /v1/orders/open`, `GET /v1/orders/closed`, `GET /v1/order?uuid=...` 또는 `GET /v1/order?identifier=...`를 활용해 최초 reconcile snapshot을 만든다. REST snapshot이 reconcile의 source of truth다.
+- **private WebSocket `myOrder`/`myAsset`**: snapshot 이후 변경 추적과 연결 liveness/gap evidence에만 사용한다. WebSocket이 primary source of truth가 아니다.
 - **read-only reconcile worker**: 주기적으로 실계좌 상태를 로컬 상태와 대조한다.
 - **포지션 복구**: 재시작 후 open order, balance, position snapshot을 복구한다.
 - **mismatch fail-closed**: 거래소와 로컬 상태 충돌 시 신규 주문을 차단하고 manual review evidence를 남긴다.
-- **append-only reconcile persistence**: reconcile run, balance snapshot, exchange order snapshot, mismatch evidence를 M16 전용 append-only reconcile tables에 저장한다.
+- **append-only reconcile persistence**: reconcile run, balance snapshot, exchange order snapshot, position snapshot, mismatch evidence를 M16 전용 append-only reconcile tables에 저장한다.
+- **로컬 lifecycle 복구 쓰기 경계**: read-only는 거래소 API side effect 금지 의미다. 주문/체결/포지션 복구는 exchange identity와 fingerprint가 일치한 경우에만 기존 domain repository transaction을 통해 `orders`/`order_events`/`fills`/`positions`를 갱신할 수 있고, append-only reconcile evidence를 같은 run에 남긴다.
 - **상태 summary**: 마지막 reconcile 시각, 결과, mismatch 수, open order 수, balance snapshot 상태, WebSocket 상태, 필요한 조치를 한국어로 제공하고 내부 식별자는 `추적 정보`로 분리한다.
 - **Guard**: `SEEMIRAI_RUN_UPBIT_LIVE_RECONCILE=1` env가 있어야 reconcile worker가 시작된다.
 - **허용 private 권한**: `자산조회`, `주문조회`만 요구한다. `주문하기` 권한은 요구하지 않는다.
@@ -64,8 +65,10 @@ M15 `UpbitLiveBroker` contract 검증이 완료된 상태에서, 실계좌 잔�
 
 2026-06-02 기준 다음 Upbit 공식 문서를 전제로 한다. 구현 전 변경 여부를 다시 확인한다.
 
-- **Closed order 조회 window**: Upbit `GET /v1/orders/closed`는 최근 7일 이내 체결 완료 주문만 조회 가능하다. 이 window 밖 주문은 자동 복구하지 않고 manual review로 남긴다. ([Upbit API 문서](https://docs.upbit.com/kr/reference/order-info))
+- **개별 주문 조회 endpoint**: Upbit 개별 주문 보강 조회는 path parameter가 아니라 `GET /v1/order`에 `uuid` 또는 `identifier` query를 붙여 호출한다. ([Upbit API 문서](https://global-docs.upbit.com/reference/get-order))
+- **Closed order 조회 window**: Upbit `GET /v1/orders/closed`는 `start_time`/`end_time`이 없으면 최근 7일을 기본 조회하지만, 시간을 지정하면 최대 7일 범위씩 조회할 수 있다. 로컬 주문의 생성/수정 시각을 기준으로 7일 이하 구간을 나눠 조회하고, 설정된 조회 horizon 밖이거나 API 결과로 identity/fingerprint를 확인할 수 없는 주문만 manual review로 남긴다. ([Upbit API 문서](https://docs.upbit.com/kr/v1.5.9/reference/%EC%A2%85%EB%A3%8C-%EC%A3%BC%EB%AC%B8-%EC%A1%B0%ED%9A%8C))
 - **Private WebSocket endpoint**: `{host}:{port}/websocket/v1/private`로 `myOrder`와 `myAsset` 구독이 가능하다. 인증은 JWT 또는 query hash 방식이며, REST API key와 동일한 권한 범위를 가진다.
+- **WebSocket event-only delivery**: `myOrder`와 `myAsset`은 이벤트가 있을 때만 데이터를 전송한다. 연결 직후 또는 조용한 계정에서 데이터가 없어도 정상이며, 연결 liveness는 ping/pong, close/error, reconnect discontinuity로 판단한다.
 - **`myAsset` 최초 수신 지연**: WebSocket 연결 직후 `myAsset` snapshot이 즉시 전송되지 않을 수 있다. snapshot 대신 REST `/v1/accounts`로 bootstrap한 뒤 WebSocket을 변경 추적으로만 사용한다.
 - **요청 수 제한**: REST `/v1/accounts`와 `/v1/orders` API는 Exchange 기본 그룹 rate limit을 공유한다. reconcile 주기는 이 제한을 고려해 설계한다.
 
@@ -76,7 +79,7 @@ M15 `UpbitLiveBroker` contract 검증이 완료된 상태에서, 실계좌 잔�
 | 1 | `issue-143/01-m16-plan-contract` | M16 실행계획, runtime/security/reliability/product-spec 문서, context map | `./scripts/verify docs` 통과 | 없음 |
 | 2 | `issue-143/02-closed-orders-client-mapper` | `GET /v1/orders/closed` wrapper, schema, mapper, query/window guard tests | `tests/unit/upbit-private-client.test.ts`, `tests/unit/upbit-private-mappers.test.ts` 통과 | 01 |
 | 3 | `issue-143/03-private-websocket-client` | private WebSocket `myOrder`/`myAsset` subscription, schema, reconnect/gap contract | `tests/unit/upbit-private-websocket.test.ts` 통과 | 01 |
-| 4 | `issue-143/04-reconcile-persistence` | append-only reconcile tables, repository, idempotent snapshot/evidence 저장 | migration/integration tests 통과 | 01 |
+| 4 | `issue-143/04-reconcile-persistence` | append-only reconcile tables, repository, idempotent balance/order/position snapshot/evidence 저장 | migration/integration tests 통과 | 01 |
 | 5 | `issue-143/05-reconcile-engine` | diff engine, mismatch taxonomy, manual review/fail-closed evidence 후보 | `tests/unit/live-reconcile.test.ts` 통과 | 02, 03, 04 |
 | 6 | `issue-143/06-reconcile-runtime-status` | read-only guard, worker/service, CLI 또는 `/status` summary, source scan | runtime/status/source scan tests 통과 | 05 |
 | 7 | `issue-143/07-reconcile-smoke` | fake integration, gated live read-only/WebSocket smoke, artifact redaction | guard skip/fake flow/secret scan 통과 | 06 |
@@ -140,21 +143,21 @@ corepack pnpm exec vitest run tests/unit/http-control-status.test.ts
 
 | 일자 | 결정 |
 | --- | --- |
-| 2026-06-02 | REST snapshot이 bootstrap source of truth다. private WebSocket `myOrder`/`myAsset`은 snapshot 이후 변경 추적과 stale/gap evidence에만 사용한다. |
+| 2026-06-02 | REST snapshot이 bootstrap source of truth다. private WebSocket `myOrder`/`myAsset`은 snapshot 이후 변경 추적과 연결 liveness/gap evidence에만 사용한다. |
 | 2026-06-02 | M16 read-only runtime은 `자산조회`/`주문조회` 권한만 요구하고 `주문하기` 권한을 요구하지 않는다. |
 | 2026-06-02 | mismatch는 신규 주문 허용 신호가 아니라 durable fail-closed / manual review evidence로 수렴한다. |
-| 2026-06-02 | closed order 조회 window(7일) 밖 주문은 자동 복구하지 않는다. |
+| 2026-06-02 | closed order는 `start_time`/`end_time`으로 7일 이하 구간을 나눠 조회한다. 조회 horizon 밖이거나 identity/fingerprint를 확인할 수 없는 주문만 자동 복구하지 않는다. |
 | 2026-06-02 | 평균단가/PnL은 M17 범위이므로 근거가 없으면 `계산 불가/수동 검토 필요`로 남긴다. |
 | 2026-06-02 | Guard 이름은 `SEEMIRAI_RUN_UPBIT_LIVE_RECONCILE=1`로 고정한다. |
 | 2026-06-02 | private WebSocket은 M16 포함으로 확정한다. sub PR 03에서 `myOrder`/`myAsset` contract를 함께 구현한다. |
-| 2026-06-02 | M16 persistence는 append-only reconcile 전용 tables로 설계하고, `orders`/`positions` 직접 수정 없이 mismatch evidence만 기록한다. |
+| 2026-06-02 | M16 persistence는 append-only reconcile 전용 tables에 run, balance snapshot, exchange order snapshot, position snapshot, mismatch evidence를 기록한다. 주문/체결/포지션 로컬 복구는 exchange identity와 fingerprint가 일치한 경우에만 기존 domain repository transaction으로 수행한다. |
 
 ## Open Questions
 
 - reconcile 주기 기본값을 몇 초로 할지 (REST rate limit 고려, 초안 60초)
-- `myAsset` 최초 수신 타임아웃 기본값 (초안 10초, 이후 REST fallback)
+- WebSocket ping/pong liveness interval과 reconnect backoff 기본값
 - mismatch 발생 시 재시도 간격 (초안 300초, 3회 초과 시 manual review)
-- WebSocket 재연결 시 기존 `myOrder`/`myAsset` snapshot을 폐기하고 REST 재bootstrap할지
+- WebSocket 재연결 후 REST 재bootstrap을 항상 수행할지, reconnect discontinuity가 있는 경우에만 수행할지
 - `/status` reconcile summary에 포함할 mismatch 상세 수준 (초안: count + 가장 최근 mismatch 5건)
 
 ## Guard 요약 (다음 sub PR이 반드시 지켜야 할 경계)
@@ -166,5 +169,5 @@ corepack pnpm exec vitest run tests/unit/http-control-status.test.ts
 | 금지 권한 | `주문하기` 요구, 출금, 입출금 자동화, 선물, 레버리지 | sub PR 03 |
 | `POST /v1/orders` 호출 금지 | 어떤 경로로도 live order API 호출 금지 | sub PR 07 |
 | mismatch 시 fail-closed | 신규 주문 차단, manual review | sub PR 07, 08 |
-| closed order window | 7일 초과 주문은 자동 복구 금지 | sub PR 03, 06 |
+| closed order window | `start_time`/`end_time` 지정 시 7일 이하 구간 조회, 조회 horizon 밖 또는 identity/fingerprint 불일치만 자동 복구 금지 | sub PR 02, 06 |
 | PnL 계산 금지 | 평균단가/PnL은 `계산 불가/수동 검토 필요` | sub PR 06, 08 |
