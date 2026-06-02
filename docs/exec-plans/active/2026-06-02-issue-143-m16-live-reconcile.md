@@ -67,7 +67,7 @@ M15 `UpbitLiveBroker` contract 검증이 완료된 상태에서, 실계좌 잔�
 
 - **개별 주문 조회 endpoint**: Upbit 개별 주문 보강 조회는 path parameter가 아니라 `GET /v1/order`에 `uuid` 또는 `identifier` query를 붙여 호출한다. ([Upbit API 문서](https://global-docs.upbit.com/reference/get-order))
 - **Closed order 조회 window**: Upbit `GET /v1/orders/closed`는 `start_time`/`end_time`이 없으면 최근 7일을 기본 조회하지만, 시간을 지정하면 최대 7일 범위씩 조회할 수 있다. 로컬 주문의 생성/수정 시각을 기준으로 7일 이하 구간을 나눠 조회하고, 설정된 조회 horizon 밖이거나 API 결과로 identity/fingerprint를 확인할 수 없는 주문만 manual review로 남긴다. ([Upbit API 문서](https://docs.upbit.com/kr/v1.5.9/reference/%EC%A2%85%EB%A3%8C-%EC%A3%BC%EB%AC%B8-%EC%A1%B0%ED%9A%8C))
-- **Private WebSocket endpoint**: `{host}:{port}/websocket/v1/private`로 `myOrder`와 `myAsset` 구독이 가능하다. 인증은 JWT 또는 query hash 방식이며, REST API key와 동일한 권한 범위를 가진다.
+- **Private WebSocket endpoint**: `{host}:{port}/websocket/v1/private`로 `myOrder`와 `myAsset` 구독이 가능하다. 인증은 REST와 동일하게 `Authorization: Bearer <JWT>` header로 수행하며, `query_hash`는 REST query가 있는 JWT payload 요소이지 private WebSocket의 대체 인증 방식이 아니다. ([Upbit API 문서](https://docs.upbit.com/kr/v1.5.9/reference/authentication))
 - **WebSocket event-only delivery**: `myOrder`와 `myAsset`은 이벤트가 있을 때만 데이터를 전송한다. 연결 직후 또는 조용한 계정에서 데이터가 없어도 정상이며, 연결 liveness는 ping/pong, close/error, reconnect discontinuity로 판단한다.
 - **`myAsset` 최초 수신 지연**: WebSocket 연결 직후 `myAsset` snapshot이 즉시 전송되지 않을 수 있다. snapshot 대신 REST `/v1/accounts`로 bootstrap한 뒤 WebSocket을 변경 추적으로만 사용한다.
 - **요청 수 제한**: REST `/v1/accounts`와 `/v1/orders` API는 Exchange 기본 그룹 rate limit을 공유한다. reconcile 주기는 이 제한을 고려해 설계한다.

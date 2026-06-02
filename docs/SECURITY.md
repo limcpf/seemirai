@@ -121,8 +121,8 @@
   시작하지 않는다.
 - reconcile runtime은 `POST /v1/orders`와 `DELETE /v1/order`를 호출하지 않는다. 어떤 경로로도 주문 생성/취소 API를 호출하면
   fail-closed 한다.
-- private WebSocket `myOrder`/`myAsset`은 읽기 전용 변경 추적으로만 사용하며, WebSocket 인증 정보(JWT, query hash)는 log,
-  audit, status, artifact에 원문을 남기지 않는다.
+- private WebSocket `myOrder`/`myAsset`은 읽기 전용 변경 추적으로만 사용하며, 인증은 `Authorization: Bearer <JWT>` header로만
+  수행한다. WebSocket JWT와 Authorization header는 log, audit, status, artifact에 원문을 남기지 않는다.
 - M16 전용 reconcile tables는 append-only로 설계해 run, balance snapshot, exchange order snapshot, position snapshot, mismatch
   evidence를 기록한다. read-only는 거래소 주문 생성/취소 side effect 금지 의미이며, 로컬 복구 쓰기 자체를 금지하지 않는다.
 - 주문 lifecycle 복구 쓰기는 exchange order uuid/identifier, market, side, volume, price, state fingerprint가 로컬 주문과 일치하는
@@ -131,7 +131,7 @@
 - reconcile summary(/status, CLI)는 access key, secret key, JWT, Authorization header, raw REST/WebSocket provider payload,
   raw balance detail, raw order detail을 반환하지 않는다. 허용 가능한 필드는 마지막 reconcile 시각, 결과, mismatch 수,
   open order 수, balance 상태, WebSocket 상태, 한국어 필요 조치로 제한한다.
-- private REST/WebSocket credential redaction: access key, secret key, JWT, Authorization header, query hash는 logger
+- private REST/WebSocket credential redaction: access key, secret key, JWT, Authorization header, REST query hash는 logger
   redaction 대상이며, reconcile worker startup에서 credential이 주입된 후에도 log/audit/status에 원문을 전파하지 않는다.
 - 주문 side effect 금지: reconcile worker는 어떤 조건에서도 `submitOrder`, `cancelOrder`, 자동 취소, 자동 재주문을 실행하지
   않는다. mismatch 발견 시 신규 주문 차단과 manual review evidence만 남긴다.
