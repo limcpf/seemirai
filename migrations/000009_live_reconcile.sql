@@ -72,18 +72,24 @@ CREATE TABLE IF NOT EXISTS live_reconcile_exchange_order_snapshots (
   CHECK (identifier IS NULL OR btrim(identifier) <> ''),
   CHECK (requested_quantity > 0),
   CHECK (remaining_quantity IS NULL OR remaining_quantity >= 0),
+  CHECK (remaining_quantity IS NULL OR remaining_quantity <= requested_quantity),
   CHECK (requested_price IS NULL OR requested_price > 0)
 );
 
--- 같은 run에서 같은 exchange_order_id의 중복을 차단한다.
--- identifier가 있으면 uuid 관측 여부와 무관하게 같은 주문의 중복 snapshot을 차단한다.
+-- 같은 run에서 uuid-only snapshot 자체가 중복 저장되지 않게 한다.
 CREATE UNIQUE INDEX IF NOT EXISTS live_reconcile_exchange_order_snapshots_run_order_uidx
   ON live_reconcile_exchange_order_snapshots (run_id, exchange_order_id)
-  WHERE exchange_order_id IS NOT NULL;
+  WHERE exchange_order_id IS NOT NULL AND identifier IS NULL;
 
+-- 같은 run에서 identifier-only snapshot 자체가 중복 저장되지 않게 한다.
 CREATE UNIQUE INDEX IF NOT EXISTS live_reconcile_exchange_order_snapshots_run_identifier_uidx
   ON live_reconcile_exchange_order_snapshots (run_id, identifier)
-  WHERE identifier IS NOT NULL;
+  WHERE exchange_order_id IS NULL AND identifier IS NOT NULL;
+
+-- 두 식별자가 모두 관측된 bridge snapshot은 append-only로 보존하되 같은 bridge만 중복 차단한다.
+CREATE UNIQUE INDEX IF NOT EXISTS live_reconcile_exchange_order_snapshots_run_bridge_uidx
+  ON live_reconcile_exchange_order_snapshots (run_id, exchange_order_id, identifier)
+  WHERE exchange_order_id IS NOT NULL AND identifier IS NOT NULL;
 
 CREATE INDEX IF NOT EXISTS live_reconcile_exchange_order_snapshots_run_id_idx
   ON live_reconcile_exchange_order_snapshots (run_id);
@@ -156,7 +162,8 @@ CREATE TABLE IF NOT EXISTS live_reconcile_position_snapshots (
   CHECK (quantity >= 0),
   CHECK (average_entry_price IS NULL OR average_entry_price >= 0),
   CHECK (average_entry_price IS NOT NULL OR recovery_status = 'MANUAL_REVIEW_REQUIRED'),
-  CHECK (recovery_status = 'MANUAL_REVIEW_REQUIRED' OR quantity = 0 OR average_entry_price > 0)
+  CHECK (recovery_status = 'MANUAL_REVIEW_REQUIRED' OR quantity = 0 OR average_entry_price > 0),
+  CHECK (recovery_status <> 'RECOVERABLE' OR source = 'fills')
 );
 
 -- 같은 run의 같은 포지션/source/captured_at snapshot 중복을 차단한다.

@@ -1,5 +1,6 @@
-import { sql } from "kysely";
+import { sql, type Transaction } from "kysely";
 import type { Database } from "../database.js";
+import type { DatabaseSchema } from "../schema.js";
 import type {
   LiveReconcileBalanceSnapshotRecord,
   LiveReconcileExchangeOrderSnapshotRecord,
@@ -109,23 +110,23 @@ export class PostgresLiveReconcileRepository {
       return [];
     }
 
-    if (!(await this.isLiveReconcileRunRunning(runId))) {
-      return [];
-    }
-
     const rows = snapshots.map((snapshot) =>
       toLiveReconcileBalanceSnapshotRowInput(runId, snapshot),
     );
 
-    // ON CONFLICT DO NOTHING으로 모든 unique index 위반을 무시한다.
-    const inserted = await this.database
-      .insertInto("live_reconcile_balance_snapshots")
-      .values(rows)
-      .onConflict((conflict) => conflict.doNothing())
-      .returningAll()
-      .execute();
+    return this.database.transaction().execute(async (transaction) => {
+      if (!(await this.lockLiveReconcileRunForAppend(transaction, runId))) {
+        return [];
+      }
 
-    return inserted;
+      // ON CONFLICT DO NOTHING으로 모든 unique index 위반을 무시한다.
+      return transaction
+        .insertInto("live_reconcile_balance_snapshots")
+        .values(rows)
+        .onConflict((conflict) => conflict.doNothing())
+        .returningAll()
+        .execute();
+    });
   }
 
   /**
@@ -160,69 +161,17 @@ export class PostgresLiveReconcileRepository {
       return [];
     }
 
-    if (!(await this.isLiveReconcileRunRunning(runId))) {
-      return [];
-    }
+    return this.database.transaction().execute(async (transaction) => {
+      if (!(await this.lockLiveReconcileRunForAppend(transaction, runId))) {
+        return [];
+      }
 
-    const inserted = await this.database.transaction().execute(async (transaction) => {
       const records: LiveReconcileExchangeOrderSnapshotRecord[] = [];
 
       for (const snapshot of snapshots) {
         const row = toLiveReconcileExchangeOrderSnapshotRowInput(runId, snapshot);
-        const exchangeOrderId = row.exchange_order_id;
-        const identifier = row.identifier;
 
-        if (typeof exchangeOrderId === "string" && typeof identifier === "string") {
-          const existingRows = await transaction
-            .selectFrom("live_reconcile_exchange_order_snapshots")
-            .selectAll()
-            .where("run_id", "=", runId)
-            .where((eb) =>
-              eb.or([
-                eb("exchange_order_id", "=", exchangeOrderId),
-                eb("identifier", "=", identifier),
-              ]),
-            )
-            .execute();
-
-          if (existingRows.length > 0) {
-            const primary = existingRows[0]!;
-            const duplicateIds = existingRows
-              .slice(1)
-              .map((existingRow) => existingRow.id);
-
-            if (duplicateIds.length > 0) {
-              // 같은 run 안에서 uuid-only/identifier-only partial row가 갈라진 경우 bridge row를 기준으로 하나로 정규화한다.
-              await transaction
-                .deleteFrom("live_reconcile_exchange_order_snapshots")
-                .where("id", "in", duplicateIds)
-                .execute();
-            }
-
-            const normalized = await transaction
-              .updateTable("live_reconcile_exchange_order_snapshots")
-              .set({
-                exchange_order_id: row.exchange_order_id,
-                identifier: row.identifier,
-                market: row.market,
-                side: row.side,
-                status: row.status,
-                requested_quantity: row.requested_quantity,
-                remaining_quantity: row.remaining_quantity,
-                requested_price: row.requested_price,
-                source: row.source,
-                captured_at: row.captured_at,
-                metadata_json: row.metadata_json,
-              })
-              .where("id", "=", primary.id)
-              .returningAll()
-              .executeTakeFirstOrThrow();
-            records.push(normalized);
-            continue;
-          }
-        }
-
-        // ON CONFLICT DO NOTHING으로 unique index 위반을 무시하고, bridge row는 위에서 먼저 정규화한다.
+        // bridge snapshot은 기존 partial evidence를 삭제하지 않고 canonical summary에서만 연결한다.
         const insertedRow = await transaction
           .insertInto("live_reconcile_exchange_order_snapshots")
           .values(row)
@@ -237,8 +186,6 @@ export class PostgresLiveReconcileRepository {
 
       return records;
     });
-
-    return inserted;
   }
 
   /**
@@ -271,23 +218,23 @@ export class PostgresLiveReconcileRepository {
       return [];
     }
 
-    if (!(await this.isLiveReconcileRunRunning(runId))) {
-      return [];
-    }
-
     const rows = evidenceList.map((evidence) =>
       toLiveReconcileMismatchEvidenceRowInput(runId, evidence),
     );
 
-    // 반복 mismatch를 최신 run에도 남기기 위해 전역 fingerprint가 아니라 run 범위 중복만 무시한다.
-    const inserted = await this.database
-      .insertInto("live_reconcile_mismatch_evidence")
-      .values(rows)
-      .onConflict((conflict) => conflict.doNothing())
-      .returningAll()
-      .execute();
+    return this.database.transaction().execute(async (transaction) => {
+      if (!(await this.lockLiveReconcileRunForAppend(transaction, runId))) {
+        return [];
+      }
 
-    return inserted;
+      // 반복 mismatch를 최신 run에도 남기기 위해 전역 fingerprint가 아니라 run 범위 중복만 무시한다.
+      return transaction
+        .insertInto("live_reconcile_mismatch_evidence")
+        .values(rows)
+        .onConflict((conflict) => conflict.doNothing())
+        .returningAll()
+        .execute();
+    });
   }
 
   /**
@@ -319,23 +266,23 @@ export class PostgresLiveReconcileRepository {
       return [];
     }
 
-    if (!(await this.isLiveReconcileRunRunning(runId))) {
-      return [];
-    }
-
     const rows = snapshots.map((snapshot) =>
       toLiveReconcilePositionSnapshotRowInput(runId, snapshot),
     );
 
-    // 복구 후보는 근거 감사가 우선이므로 중복 snapshot만 무시하고 기존 position row는 여기서 건드리지 않는다.
-    const inserted = await this.database
-      .insertInto("live_reconcile_position_snapshots")
-      .values(rows)
-      .onConflict((conflict) => conflict.doNothing())
-      .returningAll()
-      .execute();
+    return this.database.transaction().execute(async (transaction) => {
+      if (!(await this.lockLiveReconcileRunForAppend(transaction, runId))) {
+        return [];
+      }
 
-    return inserted;
+      // 복구 후보는 근거 감사가 우선이므로 중복 snapshot만 무시하고 기존 position row는 여기서 건드리지 않는다.
+      return transaction
+        .insertInto("live_reconcile_position_snapshots")
+        .values(rows)
+        .onConflict((conflict) => conflict.doNothing())
+        .returningAll()
+        .execute();
+    });
   }
 
   /**
@@ -368,21 +315,21 @@ export class PostgresLiveReconcileRepository {
       return [];
     }
 
-    if (!(await this.isLiveReconcileRunRunning(runId))) {
-      return [];
-    }
-
     const rows = keys.map((key) => toLiveReconcileFillRecoveryKeyRowInput(runId, key));
 
-    // 체결 복구는 unique key 선점이 성공한 항목만 진행해야 중복 fills insert를 피할 수 있다.
-    const inserted = await this.database
-      .insertInto("live_reconcile_fill_recovery_keys")
-      .values(rows)
-      .onConflict((conflict) => conflict.doNothing())
-      .returningAll()
-      .execute();
+    return this.database.transaction().execute(async (transaction) => {
+      if (!(await this.lockLiveReconcileRunForAppend(transaction, runId))) {
+        return [];
+      }
 
-    return inserted;
+      // 체결 복구는 unique key 선점이 성공한 항목만 진행해야 중복 fills insert를 피할 수 있다.
+      return transaction
+        .insertInto("live_reconcile_fill_recovery_keys")
+        .values(rows)
+        .onConflict((conflict) => conflict.doNothing())
+        .returningAll()
+        .execute();
+    });
   }
 
   /**
@@ -444,6 +391,7 @@ export class PostgresLiveReconcileRepository {
       .selectFrom("live_reconcile_runs")
       .selectAll()
       .where("status", "!=", "RUNNING")
+      .orderBy("finished_at", "desc")
       .orderBy("started_at", "desc")
       .limit(1)
       .executeTakeFirst();
@@ -469,7 +417,7 @@ export class PostgresLiveReconcileRepository {
 
     const [
       balanceCount,
-      exchangeOrderCount,
+      exchangeOrderRows,
       mismatchCount,
       positionCount,
       fillRecoveryKeyCount,
@@ -481,9 +429,9 @@ export class PostgresLiveReconcileRepository {
         .executeTakeFirstOrThrow(),
       this.database
         .selectFrom("live_reconcile_exchange_order_snapshots")
-        .select((eb) => eb.fn.countAll<string>().as("count"))
+        .select(["exchange_order_id", "identifier"])
         .where("run_id", "=", run.id)
-        .executeTakeFirstOrThrow(),
+        .execute(),
       this.database
         .selectFrom("live_reconcile_mismatch_evidence")
         .select((eb) => eb.fn.countAll<string>().as("count"))
@@ -504,7 +452,8 @@ export class PostgresLiveReconcileRepository {
     return {
       run,
       balanceSnapshotCount: Number(balanceCount.count),
-      exchangeOrderSnapshotCount: Number(exchangeOrderCount.count),
+      exchangeOrderSnapshotCount:
+        countCanonicalExchangeOrderSnapshots(exchangeOrderRows),
       mismatchEvidenceCount: Number(mismatchCount.count),
       positionSnapshotCount: Number(positionCount.count),
       fillRecoveryKeyCount: Number(fillRecoveryKeyCount.count),
@@ -512,20 +461,85 @@ export class PostgresLiveReconcileRepository {
   }
 
   /**
-   * append-only 하위 row를 final run에 뒤늦게 섞지 않기 위해 RUNNING 여부를 확인한다.
+   * append-only 하위 row를 final run에 뒤늦게 섞지 않기 위해 run row를 transaction 안에서 잠근다.
    *
    * 존재하지 않는 run은 호출 경계 오류이므로 기존 FK 실패처럼 throw하고, final run은 재시도 side effect를 막기 위해 false를 반환한다.
+   * 같은 transaction의 row lock으로 완료 전이와 snapshot append가 서로 끼어들지 못하게 한다.
    *
+   * @param transaction append insert를 수행할 transaction
    * @param runId 확인할 reconcile run ID
    * @returns 하위 snapshot/evidence/key append가 허용되는 RUNNING run이면 true
    */
-  private async isLiveReconcileRunRunning(runId: string): Promise<boolean> {
-    const run = await this.database
+  private async lockLiveReconcileRunForAppend(
+    transaction: Transaction<DatabaseSchema>,
+    runId: string,
+  ): Promise<boolean> {
+    const run = await transaction
       .selectFrom("live_reconcile_runs")
       .select(["status"])
       .where("id", "=", runId)
+      .forUpdate()
       .executeTakeFirstOrThrow();
 
     return run.status === "RUNNING";
   }
+}
+
+/**
+ * exchange order snapshot row를 append-only로 보존하면서 summary에는 canonical 주문 수를 계산한다.
+ *
+ * uuid-only와 identifier-only로 따로 관측된 row는 두 식별자가 모두 있는 bridge snapshot이 들어온 뒤 하나의
+ * 주문 identity로 연결된다. 이 함수는 DB row를 수정하지 않는 읽기 전용 계산이며 외부 side effect가 없다.
+ */
+function countCanonicalExchangeOrderSnapshots(
+  rows: Array<{ exchange_order_id: string | null; identifier: string | null }>,
+): number {
+  const parent = new Map<string, string>();
+
+  const find = (key: string): string => {
+    const existing = parent.get(key);
+    if (existing === undefined) {
+      parent.set(key, key);
+      return key;
+    }
+
+    if (existing === key) {
+      return key;
+    }
+
+    const root = find(existing);
+    parent.set(key, root);
+    return root;
+  };
+
+  const union = (left: string, right: string): void => {
+    const leftRoot = find(left);
+    const rightRoot = find(right);
+
+    if (leftRoot !== rightRoot) {
+      parent.set(rightRoot, leftRoot);
+    }
+  };
+
+  for (const row of rows) {
+    const exchangeOrderKey =
+      row.exchange_order_id === null ? undefined : `exchange:${row.exchange_order_id}`;
+    const identifierKey =
+      row.identifier === null ? undefined : `identifier:${row.identifier}`;
+
+    if (exchangeOrderKey !== undefined) {
+      find(exchangeOrderKey);
+    }
+
+    if (identifierKey !== undefined) {
+      find(identifierKey);
+    }
+
+    if (exchangeOrderKey !== undefined && identifierKey !== undefined) {
+      // bridge row는 partial row를 삭제하지 않고 두 관측 식별자만 같은 canonical 주문으로 연결한다.
+      union(exchangeOrderKey, identifierKey);
+    }
+  }
+
+  return new Set(Array.from(parent.keys(), (key) => find(key))).size;
 }
