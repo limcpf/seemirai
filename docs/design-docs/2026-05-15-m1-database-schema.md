@@ -262,8 +262,13 @@ erDiagram
     text exchange_order_id
     text identifier
     text market
+    text side
     text status
-    jsonb payload_json
+    numeric requested_quantity
+    numeric remaining_quantity
+    numeric requested_price
+    text source
+    jsonb metadata_json
     timestamptz captured_at
   }
 
@@ -276,18 +281,27 @@ erDiagram
     numeric quantity
     numeric average_entry_price
     text recovery_status
+    text source
     jsonb evidence_json
+    jsonb metadata_json
     timestamptz captured_at
   }
 
   LIVE_RECONCILE_FILL_RECOVERY_KEYS {
     uuid id PK
     uuid run_id FK
-    uuid local_order_id FK
+    text exchange
+    text market
+    uuid order_id FK
     text exchange_order_id
     text exchange_fill_id UK
     text fill_fingerprint UK
-    timestamptz recovered_at
+    text side
+    numeric price
+    numeric quantity
+    timestamptz filled_at
+    timestamptz reserved_at
+    jsonb metadata_json
   }
 
   LIVE_RECONCILE_MISMATCH_EVIDENCE {
@@ -295,7 +309,7 @@ erDiagram
     uuid run_id FK
     text mismatch_type
     text severity
-    text evidence_fingerprint UK
+    text evidence_fingerprint
     text message
     jsonb trace_json
     timestamptz occurred_at
@@ -322,7 +336,12 @@ erDiagram
 | `jobs` | PostgreSQL | scheduler와 worker 사이의 DB-backed queue다. 중복 작업 생성 방지, 예약 실행, worker lock, retry metadata를 제공한다. |
 | `audit_events` | PostgreSQL | 사람이 나중에 따라갈 수 있는 운영/업무 감사 로그다. 주문 상태 변화, worker action, 외부 호출 결과 같은 사후 추적 정보를 보관한다. |
 | `risk_events` | PostgreSQL | 리스크 게이트가 신규 주문을 차단하거나 경고한 이유를 구조화해 남긴다. market/strategy/order 기준으로 리스크 판단 이력을 조회한다. |
-| `live_reconcile_runs` 등 M16 후보 tables | PostgreSQL | 실계좌와 로컬 상태 간 reconcile run, balance snapshot, exchange order snapshot, position snapshot, fill recovery key, mismatch evidence를 append-only로 기록한다. `live_reconcile_position_snapshots`는 exchange/market/strategy 단위 복구 후보와 평균단가 근거 상태를 저장하고, `live_reconcile_fill_recovery_keys`는 거래소 체결 id와 정규화 fill fingerprint를 각각 unique key로 보존해 반복 reconcile이 같은 체결을 중복 insert하지 않게 한다. `live_reconcile_mismatch_evidence.evidence_fingerprint`는 같은 snapshot/mismatch 재시도 기록이 mismatch count를 부풀리지 않게 하는 durable unique key다. 주문/체결/포지션 로컬 복구 쓰기는 immutable identity fingerprint가 일치할 때만 기존 domain repository transaction으로 수행한다. |
+| `live_reconcile_runs` | PostgreSQL | reconcile 실행 단위. 같은 `idempotency_key` 재실행은 중복 row를 만들지 않고 기존 run row를 재사용한다. `status`는 RUNNING에서만 COMPLETED/FAILED/MANUAL_REVIEW_REQUIRED로 전이하고, 같은 final 상태 재시도는 기존 row를 반환하며, 서로 다른 final 상태로 덮어쓰지 않는다. row 자체는 append-only로 남긴다. |
+| `live_reconcile_balance_snapshots` | PostgreSQL | reconcile 시점의 통화별 잔고 snapshot. 같은 run/currency/captured_at/source 조합은 unique index로 중복 insert를 차단한다. `total = available + locked` invariant가 check constraint로 보호된다. |
+| `live_reconcile_exchange_order_snapshots` | PostgreSQL | reconcile 시점의 거래소 주문 상태 snapshot. uuid-only, identifier-only, bridge snapshot은 각각 unique index로 같은 row grain의 중복 insert를 차단한다. 두 식별자가 모두 있는 bridge snapshot은 append-only로 보존하고, summary count는 bridge로 연결된 partial snapshot을 canonical identity로 collapse해 계산한다. 빈 문자열 식별자와 `remaining_quantity > requested_quantity`는 허용하지 않는다. |
+| `live_reconcile_mismatch_evidence` | PostgreSQL | reconcile에서 발견한 불일치 증거. `run_id + evidence_fingerprint` UNIQUE constraint로 같은 run의 재시도 중복만 차단하고, 다음 run에서 반복 관측된 mismatch는 최신 run evidence로 다시 저장한다. `message`/`action`은 한국어 사용자 문구로 저장하고, 안정적인 내부 코드는 `trace_json`에 분리한다. mismatch type은 `UNTRACKED_EXCHANGE_OPEN_ORDER`, `LOCAL_OPEN_ORDER_MISSING_ON_EXCHANGE`, `PARTIAL_FILL_MISMATCH`, `CANCEL_FAILURE_RETRY_NEEDED`, `BALANCE_LOCK_MISMATCH`, `CLOSED_ORDER_WINDOW_EXCEEDED`, `WEBSOCKET_GAP_MANUAL_REVIEW` 중 하나다. |
+| `live_reconcile_position_snapshots` | PostgreSQL | exchange/market/strategy 단위 복구 후보와 평균단가 산출 근거를 append-only로 저장한다. 평균단가 근거가 없으면 `MANUAL_REVIEW_REQUIRED` snapshot만 남기고 `positions` 갱신을 허용하지 않는다. `RECOVERABLE`은 fill 기반 source에서만 허용하고, 양수 수량을 `RECOVERABLE`로 저장하려면 평균단가도 양수여야 한다. 같은 run/exchange/market/strategy/captured_at/source 조합은 unique index로 중복 insert를 차단한다. |
+| `live_reconcile_fill_recovery_keys` | PostgreSQL | `fills` 복구 insert 전에 거래소 체결 id와 정규화 fill fingerprint를 durable unique key로 선점한다. `order_id`가 있으면 `orders.id` FK로 먼저 검증해 잘못된 주문 ID가 fingerprint를 선점하지 못하게 한다. 관측 가능한 key 중 하나라도 이미 존재하면 같은 체결 복구를 반복하지 않으며, 선점에 성공한 row만 후속 domain repository transaction의 입력으로 사용할 수 있다. |
 
 ## 실행 영속성 저장 경계
 

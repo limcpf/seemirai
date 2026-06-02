@@ -94,6 +94,21 @@ export interface DatabaseSchema {
   pnl_snapshots: PnlSnapshotsTable;
   /** 전략이 생성한 BUY/SELL/HOLD/BLOCK 판단 이력 */
   strategy_signals: StrategySignalsTable;
+
+  // ── M16 실계좌 상태 Reconcile append-only tables ──
+
+  /** reconcile 실행 단위. 같은 idempotency_key 재실행은 중복 row를 만들지 않는다. */
+  live_reconcile_runs: LiveReconcileRunsTable;
+  /** reconcile 시점의 통화별 잔고 snapshot. 같은 run/currency/captured_at/source 중복 insert 불가 */
+  live_reconcile_balance_snapshots: LiveReconcileBalanceSnapshotsTable;
+  /** reconcile 시점의 거래소 주문 상태 snapshot. 같은 run/exchange_order_id 중복 insert 불가 */
+  live_reconcile_exchange_order_snapshots: LiveReconcileExchangeOrderSnapshotsTable;
+  /** reconcile에서 발견한 불일치 증거. 같은 run/evidence_fingerprint 중복 저장 불가 */
+  live_reconcile_mismatch_evidence: LiveReconcileMismatchEvidenceTable;
+  /** 복구 후보 포지션과 평균단가 근거 snapshot. 같은 run/position/time/source 중복 insert 불가 */
+  live_reconcile_position_snapshots: LiveReconcilePositionSnapshotsTable;
+  /** fill 복구 전 durable unique key 선점 기록. order_id FK와 같은 exchange fill 또는 fingerprint 중복 insert 불가 */
+  live_reconcile_fill_recovery_keys: LiveReconcileFillRecoveryKeysTable;
 }
 
 /**
@@ -587,4 +602,209 @@ export interface StrategySignalsTable {
   payload_json: GeneratedJsonRecord;
   /** signal 생성 시각. hypertable time column이자 primary key 일부 */
   generated_at: Timestamp;
+}
+
+// ── M16 실계좌 상태 Reconcile append-only tables ──
+
+/**
+ * reconcile 실행 단위 table interface.
+ *
+ * 같은 `idempotency_key` 재실행은 중복 row를 만들지 않고 기존 run row를 재사용한다.
+ * `status`만 RUNNING->COMPLETED/FAILED/MANUAL_REVIEW_REQUIRED로 전이하고 row 자체는 삭제/덮어쓰기하지 않는다.
+ */
+export interface LiveReconcileRunsTable {
+  /** run record ID */
+  id: Generated<string>;
+  /** 중복 실행을 막는 idempotency key */
+  idempotency_key: string;
+  /** reconcile 실행 상태 */
+  status: "RUNNING" | "COMPLETED" | "FAILED" | "MANUAL_REVIEW_REQUIRED";
+  /** run 시작 시각 */
+  started_at: GeneratedTimestamp;
+  /** run 완료 시각. null이면 아직 실행 중 */
+  finished_at: NullableTimestamp;
+  /** reconcile을 시작한 guard 또는 profile 식별자 */
+  guard_profile: string | null;
+  /** reconcile이 참조한 source 요약. 예: "REST: accounts+open, WS: myOrder" */
+  source_summary: string | null;
+  /** 여러 event를 하나의 업무 흐름으로 묶는 상관관계 ID */
+  correlation_id: string | null;
+  /** run metadata. raw provider payload, Authorization/JWT, access key, secret key를 넣지 않는다. */
+  metadata_json: GeneratedJsonRecord;
+}
+
+/**
+ * reconcile 시점의 통화별 잔고 snapshot table interface.
+ *
+ * 같은 run에서 같은 `currency` + `captured_at` + `source` 조합은 중복 insert되지 않는다.
+ * `total = available + locked` invariant가 유지된다.
+ */
+export interface LiveReconcileBalanceSnapshotsTable {
+  /** balance snapshot record ID */
+  id: Generated<string>;
+  /** 소속 run ID */
+  run_id: string;
+  /** 통화 코드. 예: "KRW", "BTC", "ETH" */
+  currency: string;
+  /** 사용 가능 잔고 */
+  available: NumericString;
+  /** 주문 lock 잔고 */
+  locked: NumericString;
+  /** 총 잔고 (available + locked) */
+  total: NumericString;
+  /** 거래소 기준 snapshot 시각 */
+  captured_at: Timestamp;
+  /** snapshot 출처. REST API 조회 또는 WebSocket 이벤트 */
+  source: "REST" | "WS";
+  /** balance metadata. raw provider payload, Authorization/JWT, access key, secret key를 넣지 않는다. */
+  metadata_json: GeneratedJsonRecord;
+}
+
+/**
+ * reconcile 시점의 거래소 주문 상태 snapshot table interface.
+ *
+ * 같은 run에서 같은 `exchange_order_id`는 한 번만 저장된다.
+ * uuid-only, identifier-only, bridge snapshot은 각각 같은 row grain의 중복 insert를 차단한다.
+ * 두 식별자가 모두 있는 bridge snapshot은 append-only로 보존하고, summary count에서 canonical identity로 collapse한다.
+ */
+export interface LiveReconcileExchangeOrderSnapshotsTable {
+  /** order snapshot record ID */
+  id: Generated<string>;
+  /** 소속 run ID */
+  run_id: string;
+  /** 거래소 주문 UUID. identifier만 있는 주문은 null일 수 있다. */
+  exchange_order_id: string | null;
+  /** 거래소 주문 identifier(idempotency key). exchange_order_id가 null이면 필수 */
+  identifier: string | null;
+  /** 정규화 market code */
+  market: string;
+  /** 주문 방향 */
+  side: "BUY" | "SELL";
+  /** 거래소 주문 상태 */
+  status: string;
+  /** 요청 수량 */
+  requested_quantity: NumericString;
+  /** 미체결 수량. null이면 알 수 없음 */
+  remaining_quantity: NumericString | null;
+  /** 요청 가격. 시장가 주문이면 null */
+  requested_price: NumericString | null;
+  /** snapshot 출처: open(미체결 목록), closed(체결/취소 목록), lookup(개별 조회), ws(WebSocket) */
+  source: "open" | "closed" | "lookup" | "ws";
+  /** 거래소 기준 snapshot 시각 */
+  captured_at: Timestamp;
+  /** order snapshot metadata. raw provider payload, Authorization/JWT, access key, secret key를 넣지 않는다. */
+  metadata_json: GeneratedJsonRecord;
+}
+
+/**
+ * reconcile에서 발견한 불일치 증거 table interface.
+ *
+ * 같은 run 안의 `evidence_fingerprint`는 중복 저장되지 않는다.
+ * 다음 run에서 반복 관측된 mismatch는 최신 summary에 남아야 하므로 run 범위 unique만 적용한다.
+ * `message`와 `action`은 한국어 사용자 문구로 저장하고, 안정적인 내부 코드는 `trace_json`에 분리한다.
+ */
+export interface LiveReconcileMismatchEvidenceTable {
+  /** mismatch evidence record ID */
+  id: Generated<string>;
+  /** 소속 run ID */
+  run_id: string;
+  /** 불일치 유형 */
+  mismatch_type:
+    | "UNTRACKED_EXCHANGE_OPEN_ORDER"
+    | "LOCAL_OPEN_ORDER_MISSING_ON_EXCHANGE"
+    | "PARTIAL_FILL_MISMATCH"
+    | "CANCEL_FAILURE_RETRY_NEEDED"
+    | "BALANCE_LOCK_MISMATCH"
+    | "CLOSED_ORDER_WINDOW_EXCEEDED"
+    | "WEBSOCKET_GAP_MANUAL_REVIEW";
+  /** 불일치 심각도 */
+  severity: "INFO" | "WARN" | "ERROR" | "CRITICAL";
+  /** 관련 market. 전역 불일치면 null */
+  market: string | null;
+  /** 관련 주문 식별자(Upbit uuid 또는 identifier). 주문과 무관한 불일치면 null */
+  order_identity: string | null;
+  /** 관련 통화. 잔고 불일치인 경우 null이 아닌 값 */
+  currency: string | null;
+  /** 사용자-facing 한국어 메시지 */
+  message: string;
+  /** 사용자-facing 한국어 필요 조치 */
+  action: string;
+  /** 중복 저장을 막는 stable evidence fingerprint */
+  evidence_fingerprint: string;
+  /** 추적 metadata. 안정적인 내부 reason code, correlation id, debug 정보를 분리 보존 */
+  trace_json: GeneratedJsonRecord;
+  /** 불일치 발견 시각 */
+  occurred_at: Timestamp;
+}
+
+/**
+ * reconcile 기반 포지션 복구 후보 snapshot table interface.
+ *
+ * `positions` 현재 상태를 바로 덮어쓰지 않고, 같은 run에서 관측한 수량과 평균단가 산출 근거를 append-only로 남긴다.
+ * 평균단가를 계산할 수 없는 후보는 `MANUAL_REVIEW_REQUIRED`로만 저장해 근거 없는 포지션 갱신을 차단한다.
+ * `RECOVERABLE`은 fill 기반 source에서만 허용하고, 양수 수량을 `RECOVERABLE`로 저장하려면 평균단가도 양수여야 한다.
+ */
+export interface LiveReconcilePositionSnapshotsTable {
+  /** position snapshot record ID */
+  id: Generated<string>;
+  /** 소속 run ID */
+  run_id: string;
+  /** 거래소 식별자 */
+  exchange: string;
+  /** 정규화 market code */
+  market: string;
+  /** 포지션을 소유한 strategy 식별자 */
+  strategy_id: string;
+  /** 복구 후보 수량 */
+  quantity: NumericString;
+  /** authoritative fill price/volume으로 계산한 평균단가. 근거가 없으면 null */
+  average_entry_price: NumericString | null;
+  /** domain `positions` 갱신 가능 여부 */
+  recovery_status: "RECOVERABLE" | "MANUAL_REVIEW_REQUIRED";
+  /** snapshot 근거 출처 */
+  source: "fills" | "balances" | "local" | "manual_review";
+  /** 거래소 또는 reconcile 기준 snapshot 시각 */
+  captured_at: Timestamp;
+  /** 평균단가 산출에 사용한 구조화 근거. raw provider payload와 secret은 저장하지 않는다. */
+  evidence_json: GeneratedJsonRecord;
+  /** position snapshot metadata. raw provider payload, Authorization/JWT, access key, secret key를 넣지 않는다. */
+  metadata_json: GeneratedJsonRecord;
+}
+
+/**
+ * reconcile fill 복구 unique key 선점 table interface.
+ *
+ * `fills` insert 전에 거래소 체결 ID와 정규화 fingerprint를 durable key로 선점해 같은 체결이 재시도나 중복 reconcile에서
+ * 다시 insert되지 않게 한다. `order_id`가 있으면 `orders.id` FK로 검증해 잘못된 주문 ID가 key를 선점하지 못하게 한다.
+ * 이 table은 복구 가능성 판단의 선행 side effect이며 domain table을 직접 갱신하지 않는다.
+ */
+export interface LiveReconcileFillRecoveryKeysTable {
+  /** recovery key record ID */
+  id: Generated<string>;
+  /** 소속 run ID */
+  run_id: string;
+  /** 거래소 식별자 */
+  exchange: string;
+  /** 정규화 market code */
+  market: string;
+  /** 매칭된 로컬 주문 ID. 아직 확정하지 못했으면 null */
+  order_id: string | null;
+  /** 거래소 주문 UUID */
+  exchange_order_id: string | null;
+  /** 거래소 체결 ID. provider가 노출하지 않으면 null */
+  exchange_fill_id: string | null;
+  /** 정규화 fill fingerprint */
+  fill_fingerprint: string;
+  /** 체결 방향 */
+  side: "BUY" | "SELL";
+  /** 체결 가격 */
+  price: NumericString;
+  /** 체결 수량 */
+  quantity: NumericString;
+  /** 거래소 기준 체결 시각 */
+  filled_at: Timestamp;
+  /** durable key를 선점한 시각 */
+  reserved_at: GeneratedTimestamp;
+  /** recovery key metadata. raw provider payload, Authorization/JWT, access key, secret key를 넣지 않는다. */
+  metadata_json: GeneratedJsonRecord;
 }
