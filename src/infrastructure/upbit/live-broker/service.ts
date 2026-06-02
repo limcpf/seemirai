@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto";
 import type { BrokerPort } from "../../../application/ports/index.js";
 import type {
   BrokerBalance,
@@ -31,7 +30,6 @@ import type {
 } from "./types.js";
 
 const UPBIT_OPEN_ORDERS_PAGE_LIMIT = 100;
-const UPBIT_DERIVED_IDENTIFIER_PREFIX = "smr1";
 
 /**
  * Upbit private REST client를 `BrokerPort`로 노출하는 live broker 구현체다.
@@ -54,12 +52,12 @@ export class UpbitLiveBroker implements BrokerPort {
   /**
    * LIMIT 주문 제출 요청을 Upbit `POST /v1/orders`로 전달한다.
    *
-   * `OrderIntent.idempotencyKey`는 주문 evidence 원본으로 보존하고, Upbit 길이 제한을 넘으면 안정 hash identifier로
-   * 축약한다. 주문 유형/가격 invariant가 깨지면 외부 주문 side effect를 만들기 전에 `UnsafeUpbitPrivateRequestError`로 닫는다.
+   * `OrderIntent.idempotencyKey`는 주문 evidence 원본이자 Upbit identifier이므로 자동 축약하지 않는다. 주문 유형/가격/identifier
+   * invariant가 깨지면 외부 주문 side effect를 만들기 전에 `UnsafeUpbitPrivateRequestError`로 닫는다.
    */
   public async submitOrder(submission: OrderSubmission): Promise<BrokerOrder> {
     const input = toCreateLimitOrderInput(submission, this.exchangeId);
-    const identifierMetadata = toIdentifierMetadata(submission.intent.idempotencyKey, input.identifier);
+    const identifierMetadata = toIdentifierMetadata(submission.intent.idempotencyKey);
 
     let response: UpbitPrivateRestResponse<unknown>;
     try {
@@ -229,6 +227,9 @@ function toCreateLimitOrderInput(
   }
   if (intent.idempotencyKey.trim().length === 0) {
     violations.push("Upbit live broker identifier는 비어 있을 수 없습니다");
+  } else if (intent.idempotencyKey.length > UPBIT_PRIVATE_ORDER_IDENTIFIER_MAX_LENGTH) {
+    // provider identifier를 따로 축약하면 persistence idempotency invariant가 깨지므로 긴 key는 주문 전에 닫는다.
+    violations.push(`Upbit live broker identifier는 ${UPBIT_PRIVATE_ORDER_IDENTIFIER_MAX_LENGTH}자 이하여야 합니다`);
   }
   if (intent.orderType === "LIMIT") {
     if (requestedPrice.trim().length === 0) {
@@ -258,40 +259,21 @@ function toCreateLimitOrderInput(
     side: privateSide,
     volume: intent.requestedQuantity,
     price: requestedPrice,
-    identifier: toUpbitOrderIdentifier(intent.idempotencyKey),
+    identifier: intent.idempotencyKey,
     ...(privateTimeInForce === undefined ? {} : { timeInForce: privateTimeInForce }),
   };
 }
 
 /**
- * domain idempotency key를 Upbit `identifier` 제약에 맞는 안정 키로 변환한다.
+ * live broker 반환 주문에 Upbit identifier가 원본 intent idempotency key에서 왔다는 evidence를 남긴다.
  *
- * 기존 전략 파이프라인의 긴 evidence key는 metadata에 보존하고, provider 계정 내 중복 방지는 같은 원문이 항상 같은 짧은
- * identifier로 축약되는 invariant에 맡긴다.
+ * top-level `BrokerOrder.idempotencyKey`와 persistence idempotency key가 달라지면 같은 주문을 다른 주문으로 저장할 수 있으므로,
+ * M15 live broker는 provider용 별도 key를 만들지 않고 source만 기록한다.
  */
-function toUpbitOrderIdentifier(idempotencyKey: string): string {
-  if (idempotencyKey.length <= UPBIT_PRIVATE_ORDER_IDENTIFIER_MAX_LENGTH) {
-    return idempotencyKey;
-  }
-
-  const digest = createHash("sha256").update(idempotencyKey).digest("hex");
-
-  return `${UPBIT_DERIVED_IDENTIFIER_PREFIX}${digest.slice(
-    0,
-    UPBIT_PRIVATE_ORDER_IDENTIFIER_MAX_LENGTH - UPBIT_DERIVED_IDENTIFIER_PREFIX.length,
-  )}`;
-}
-
-/**
- * live broker 반환 주문에 원본 idempotency evidence와 Upbit identifier 생성 방식을 남긴다.
- *
- * top-level `BrokerOrder.idempotencyKey`는 provider identifier를 따르므로, 긴 전략 key가 축약된 경우에도 audit/reconcile이
- * 원본 intent key와 provider key를 함께 추적할 수 있게 metadata로 분리 보존한다.
- */
-function toIdentifierMetadata(intentIdempotencyKey: string, upbitIdentifier: string): JsonRecord {
+function toIdentifierMetadata(intentIdempotencyKey: string): JsonRecord {
   return {
     upbitLiveBrokerIntentIdempotencyKey: intentIdempotencyKey,
-    upbitLiveBrokerIdentifierSource: intentIdempotencyKey === upbitIdentifier ? "intent" : "derived",
+    upbitLiveBrokerIdentifierSource: "intent",
   };
 }
 

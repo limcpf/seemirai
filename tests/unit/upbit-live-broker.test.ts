@@ -51,8 +51,26 @@ describe("UpbitLiveBroker core", () => {
     expect(JSON.stringify(order)).not.toContain("\"raw\"");
   });
 
-  it("derives a stable Upbit identifier when strategy idempotency keys exceed the provider limit", async () => {
+  it("fails closed before provider calls when idempotency keys exceed the Upbit identifier limit", async () => {
     const longIdempotencyKey = "trend_following:upbit_krw_spot:KRW-BTC:BUY:2026-06-02T00:00:00.000Z";
+    const client = createFakePrivateClient();
+    const broker = new UpbitLiveBroker({ privateClient: client, clock: () => capturedAt });
+
+    await expect(
+      broker.submitOrder(
+        createSubmission({
+          intent: createLimitIntent({ idempotencyKey: longIdempotencyKey }),
+        }),
+      ),
+    ).rejects.toMatchObject({
+      name: "UnsafeUpbitPrivateRequestError",
+      violations: ["Upbit live broker identifier는 32자 이하여야 합니다"],
+    } satisfies Partial<UnsafeUpbitPrivateRequestError>);
+    expect(client.createLimitOrder).not.toHaveBeenCalled();
+  });
+
+  it("preserves the original idempotency key when submitting provider-accepted identifiers", async () => {
+    const idempotencyKey = "m15-identifier-32-chars-000001";
     const client = createFakePrivateClient({
       createLimitOrder: vi.fn(async (input) => ({
         payload: createCommandOrderPayload({ identifier: input.identifier }),
@@ -63,21 +81,21 @@ describe("UpbitLiveBroker core", () => {
 
     const order = await broker.submitOrder(
       createSubmission({
-        intent: createLimitIntent({ idempotencyKey: longIdempotencyKey }),
+        intent: createLimitIntent({ idempotencyKey }),
       }),
     );
 
     expect(client.createLimitOrder).toHaveBeenCalledWith(
       expect.objectContaining({
-        identifier: "smr12542b51dabbe42a6d75cd4e0f0f6",
+        identifier: idempotencyKey,
       }),
     );
     expect(order).toMatchObject({
-      idempotencyKey: "smr12542b51dabbe42a6d75cd4e0f0f6",
+      idempotencyKey,
       metadata: {
-        upbitIdentifier: "smr12542b51dabbe42a6d75cd4e0f0f6",
-        upbitLiveBrokerIntentIdempotencyKey: longIdempotencyKey,
-        upbitLiveBrokerIdentifierSource: "derived",
+        upbitIdentifier: idempotencyKey,
+        upbitLiveBrokerIntentIdempotencyKey: idempotencyKey,
+        upbitLiveBrokerIdentifierSource: "intent",
       },
     });
   });
