@@ -53,7 +53,13 @@ export function checkBalanceLock(
 
   if (localUnavailable && exchangeUnavailable) {
     return {
-      mismatches: [],
+      mismatches: [
+        createBalanceSnapshotUnavailableMismatch(
+          "BOTH",
+          "로컬 잔고 snapshot과 거래소 REST 잔고 snapshot이 모두 없어 잔고와 미체결 주문 예약금을 대조할 수 없습니다.",
+          observedAt,
+        ),
+      ],
       status: "NOT_AVAILABLE",
     };
   }
@@ -125,6 +131,7 @@ export function checkBalanceLock(
           expectedLocked,
           `거래소 잠김 잔고(${exchangeLocked})와 로컬 미체결 주문 예상 잠김 금액(${expectedLocked})이 일치하지 않습니다.`,
           observedAt,
+          "expected_locked",
         ),
       );
     }
@@ -228,6 +235,7 @@ function appendBalanceSnapshotMismatches(
           "LOCAL_SNAPSHOT_MISSING",
           `거래소에는 ${currency} 잔고가 있지만 로컬 잔고 snapshot에 해당 통화가 없습니다.`,
           observedAt,
+          "local_snapshot_missing",
         ),
       );
       continue;
@@ -241,6 +249,7 @@ function appendBalanceSnapshotMismatches(
           local.locked,
           `로컬에는 ${currency} 잔고가 있지만 거래소 잔고 snapshot에 해당 통화가 없습니다.`,
           observedAt,
+          "exchange_snapshot_missing",
         ),
       );
       continue;
@@ -297,7 +306,7 @@ function createBalanceLockMismatch(
     currency,
     userMessage: `거래소 ${currency} 잠김 잔고 불일치: ${detailMessage}`,
     requiredAction: `수동 검토 필요: ${currency} 잠김 잔고 내역을 거래소 웹/앱에서 확인하고 로컬 미체결 주문의 수량/가격을 대조하세요.`,
-    evidenceFingerprint: `balance-lock:${currency}:${observedAt}`,
+    evidenceFingerprint: `balance-lock:${currency}:${field}:${observedAt}`,
     trace: {
       currency,
       exchangeLocked,
@@ -310,7 +319,7 @@ function createBalanceLockMismatch(
 }
 
 function createBalanceSnapshotUnavailableMismatch(
-  source: "LOCAL" | "EXCHANGE",
+  source: "LOCAL" | "EXCHANGE" | "BOTH",
   detailMessage: string,
   observedAt: TimestampInput,
 ): ReconcileMismatchEvidence {

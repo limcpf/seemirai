@@ -56,11 +56,19 @@ export function runReconcileEngine(input: ReconcileEngineInput): ReconcileEngine
     }
   }
 
+  const exchangeVerifiedLocalOrderIds = new Set<string>();
+  for (const result of orderResults) {
+    if (result.identityMatch !== undefined && result.localOrderId !== undefined) {
+      exchangeVerifiedLocalOrderIds.add(result.localOrderId);
+    }
+  }
+
   // 3. closed order window 밖 주문 검사
   const windowMismatches = checkClosedOrderWindow(
     input.localOpenOrders,
     input.closedOrderWindow,
     input.observedAt as string,
+    exchangeVerifiedLocalOrderIds,
   );
   allMismatches.push(...windowMismatches);
 
@@ -154,6 +162,7 @@ function requiresManualReview(
   switch (mismatchType) {
     case "CANCEL_FAILURE_RETRY_NEEDED":
     case "EXCHANGE_CANCEL_STATE_MISMATCH":
+    case "ORDER_STATE_ADVANCEMENT_BLOCKED":
     case "WEBSOCKET_GAP_MANUAL_REVIEW":
     case "BALANCE_LOCK_MISMATCH":
     case "BALANCE_SNAPSHOT_UNAVAILABLE":

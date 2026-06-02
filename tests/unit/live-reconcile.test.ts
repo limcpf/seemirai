@@ -313,6 +313,43 @@ describe("reconcileOrders — untracked exchange open order", () => {
     );
   });
 
+  it("fingerprint fallback은 이미 매칭된 로컬 주문을 재사용하지 않는다", () => {
+    const exchangeOrders = [
+      createExchangeOrder({
+        source: "open",
+        identifier: undefined,
+        exchangeOrderId: undefined,
+        requestedPrice: "10000000",
+      }),
+      createExchangeOrder({
+        source: "open",
+        identifier: undefined,
+        exchangeOrderId: undefined,
+        requestedPrice: "10000000",
+      }),
+    ];
+    const localOrders = [
+      createLocalOrder({
+        orderId: "local-fingerprint-only",
+        identifier: undefined,
+        exchangeOrderId: undefined,
+        requestedPrice: "10000000",
+      }),
+    ];
+
+    const results = reconcileOrders(exchangeOrders, localOrders, observedAt);
+    const mismatches = results.flatMap((result) => result.mismatches);
+
+    expect(results.filter((result) => result.identityMatch !== undefined)).toHaveLength(1);
+    expect(mismatches).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          mismatchType: "UNTRACKED_EXCHANGE_OPEN_ORDER",
+        }),
+      ]),
+    );
+  });
+
   it("closed/lookup source는 untracked 판정에서 제외한다", () => {
     const exchangeOrders = [
       createExchangeOrder({ source: "closed", identifier: "closed-1" }),
@@ -703,6 +740,36 @@ describe("reconcileOrders — state advancement candidates", () => {
     expect(hasAdvancement).toBe(false);
   });
 
+  it("exchange done + local CANCEL_REQUESTED → ORDER_STATE_ADVANCEMENT_BLOCKED, 상태 전진 없음", () => {
+    const localOrders = [
+      createLocalOrder({
+        orderId: "local-cancel-race",
+        status: "CANCEL_REQUESTED",
+        identifier: "cancel-race",
+      }),
+    ];
+    const exchangeOrders = [
+      createExchangeOrder({
+        source: "closed",
+        identifier: "cancel-race",
+        exchangeStatus: "done",
+        remainingQuantity: "0",
+      }),
+    ];
+
+    const results = reconcileOrders(exchangeOrders, localOrders, observedAt);
+
+    expect(results[0]!.stateAdvancement).toBeUndefined();
+    expect(results[0]!.mismatches).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          mismatchType: "ORDER_STATE_ADVANCEMENT_BLOCKED",
+          severity: "ERROR",
+        }),
+      ]),
+    );
+  });
+
   it("local이 이미 FILLED면 exchange done에 대해 전진 불필요", () => {
     const localOrders = [
       createLocalOrder({
@@ -836,10 +903,17 @@ describe("checkBalanceLock — 잠김 잔고 설명 가능성", () => {
     expect(result.status).toBe("OK");
   });
 
-  it("양쪽 balance snapshot이 모두 없으면 NOT_AVAILABLE만 반환한다", () => {
+  it("양쪽 balance snapshot이 모두 없으면 BALANCE_SNAPSHOT_UNAVAILABLE", () => {
     const result = checkBalanceLock([], undefined, undefined, observedAt);
     expect(result.status).toBe("NOT_AVAILABLE");
-    expect(result.mismatches).toHaveLength(0);
+    expect(result.mismatches).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          mismatchType: "BALANCE_SNAPSHOT_UNAVAILABLE",
+          severity: "ERROR",
+        }),
+      ]),
+    );
   });
 
   it("로컬 balance snapshot만 없으면 BALANCE_SNAPSHOT_UNAVAILABLE", () => {
@@ -1030,6 +1104,39 @@ describe("checkBalanceLock — 잠김 잔고 설명 가능성", () => {
       ]),
     );
   });
+
+  it("여러 balance 필드가 다르면 evidence fingerprint가 필드별로 분리된다", () => {
+    const localBalances: BrokerBalance[] = [
+      {
+        currency: "KRW",
+        available: "900000",
+        locked: "1",
+        total: "900001",
+        updatedAt: observedAt,
+      },
+    ];
+    const exchangeBalances: BrokerBalance[] = [
+      {
+        currency: "KRW",
+        available: "1000000",
+        locked: "2",
+        total: "1000002",
+        updatedAt: observedAt,
+      },
+    ];
+
+    const result = checkBalanceLock([], localBalances, exchangeBalances, observedAt);
+    const fingerprints = result.mismatches.map((mismatch) => mismatch.evidenceFingerprint);
+
+    expect(fingerprints).toEqual(
+      expect.arrayContaining([
+        `balance-lock:KRW:available:${observedAt}`,
+        `balance-lock:KRW:locked:${observedAt}`,
+        `balance-lock:KRW:total:${observedAt}`,
+      ]),
+    );
+    expect(new Set(fingerprints).size).toBe(fingerprints.length);
+  });
 });
 
 /* ============================================================
@@ -1082,6 +1189,51 @@ describe("checkClosedOrderWindow", () => {
     const mismatches = checkClosedOrderWindow(localOrders, window, observedAt);
 
     expect(mismatches).toHaveLength(0);
+  });
+
+  it("거래소 snapshot에서 확인된 주문은 생성 시각이 window 이전이어도 mismatch 없음", () => {
+    const localOrders = [
+      createLocalOrder({
+        orderId: "old-open-order",
+        status: "ACCEPTED",
+        createdAt: "2026-05-20T00:00:00.000Z",
+      }),
+    ];
+    const window: ReconcileClosedOrderWindow = {
+      windowStart: "2026-06-01T00:00:00.000Z",
+      windowEnd: "2026-06-02T00:00:00.000Z",
+      windowExhausted: false,
+      queryCount: 1,
+    };
+
+    const mismatches = checkClosedOrderWindow(
+      localOrders,
+      window,
+      observedAt,
+      new Set(["old-open-order"]),
+    );
+
+    expect(mismatches).toHaveLength(0);
+  });
+
+  it("closed order window가 exhausted이면 manual review mismatch 생성", () => {
+    const window: ReconcileClosedOrderWindow = {
+      windowStart: "2026-06-01T00:00:00.000Z",
+      windowEnd: "2026-06-02T00:00:00.000Z",
+      windowExhausted: true,
+      queryCount: 10,
+    };
+
+    const mismatches = checkClosedOrderWindow([], window, observedAt);
+
+    expect(mismatches).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          mismatchType: "CLOSED_ORDER_WINDOW_EXCEEDED",
+          severity: "ERROR",
+        }),
+      ]),
+    );
   });
 
   it("createdAt이 없으면 window 판정 건너뜀", () => {
@@ -1188,6 +1340,53 @@ describe("runReconcileEngine — 전체 orchestrator", () => {
     events: [],
   };
 
+  const defaultBalances: readonly BrokerBalance[] = [
+    {
+      currency: "KRW",
+      available: "1000000",
+      locked: "0",
+      total: "1000000",
+      updatedAt: observedAt,
+    },
+  ];
+
+  function withDefaultBalances(input: ReconcileEngineInput): ReconcileEngineInput {
+    const balances = createBalancesForLocalOrders(input.localOpenOrders);
+    return {
+      ...input,
+      localBalances: input.localBalances ?? balances,
+      exchangeBalances: input.exchangeBalances ?? balances,
+    };
+  }
+
+  function createBalancesForLocalOrders(
+    localOrders: readonly ReconcileLocalOrderSnapshot[],
+  ): readonly BrokerBalance[] {
+    let krwLocked = 0;
+    for (const order of localOrders) {
+      if (["CANCELED", "REJECTED", "EXPIRED", "FAILED"].includes(order.status)) {
+        continue;
+      }
+      if (order.side === "BUY" && order.requestedPrice !== undefined) {
+        krwLocked += Number(order.remainingQuantity) * Number(order.requestedPrice);
+      }
+    }
+
+    if (krwLocked === 0) {
+      return defaultBalances;
+    }
+
+    return [
+      {
+        currency: "KRW",
+        available: "1000000",
+        locked: String(krwLocked),
+        total: String(1000000 + krwLocked),
+        updatedAt: observedAt,
+      },
+    ];
+  }
+
   it("모든 snapshot이 일치하면 CLEAN 결과와 failClosed=false 반환", () => {
     const input: ReconcileEngineInput = {
       exchangeOpenOrders: [
@@ -1229,7 +1428,7 @@ describe("runReconcileEngine — 전체 orchestrator", () => {
       observedAt,
     };
 
-    const output = runReconcileEngine(input);
+    const output = runReconcileEngine(withDefaultBalances(input));
 
     expect(output.summary).toMatchObject({
       result: "CLEAN",
@@ -1237,6 +1436,30 @@ describe("runReconcileEngine — 전체 orchestrator", () => {
     });
     expect(output.failClosed).toBe(false);
     expect(output.targetKillSwitchState).toBeUndefined();
+  });
+
+  it("양쪽 balance snapshot이 모두 없으면 failClosed=true, MANUAL_REVIEW_REQUIRED", () => {
+    const input: ReconcileEngineInput = {
+      exchangeOpenOrders: [],
+      exchangeClosedOrders: [],
+      orderLookups: [],
+      websocketContext: defaultWsContext,
+      localOpenOrders: [],
+      closedOrderWindow: defaultWindow,
+      observedAt,
+    };
+
+    const output = runReconcileEngine(input);
+
+    expect(output.mismatches).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          mismatchType: "BALANCE_SNAPSHOT_UNAVAILABLE",
+        }),
+      ]),
+    );
+    expect(output.failClosed).toBe(true);
+    expect(output.targetKillSwitchState).toBe("MANUAL_REVIEW_REQUIRED");
   });
 
   it("UNTRACKED_EXCHANGE_OPEN_ORDER → WARN이어도 failClosed=true, NEW_ORDERS_BLOCKED", () => {
@@ -1255,7 +1478,7 @@ describe("runReconcileEngine — 전체 orchestrator", () => {
       observedAt,
     };
 
-    const output = runReconcileEngine(input);
+    const output = runReconcileEngine(withDefaultBalances(input));
 
     expect(output.summary.result).toBe("MISMATCH_DETECTED");
     expect(output.mismatches).toHaveLength(1);
@@ -1286,7 +1509,7 @@ describe("runReconcileEngine — 전체 orchestrator", () => {
       observedAt,
     };
 
-    const output = runReconcileEngine(input);
+    const output = runReconcileEngine(withDefaultBalances(input));
 
     expect(output.mismatches).toEqual(
       expect.arrayContaining([
@@ -1317,7 +1540,7 @@ describe("runReconcileEngine — 전체 orchestrator", () => {
       observedAt,
     };
 
-    const output = runReconcileEngine(input);
+    const output = runReconcileEngine(withDefaultBalances(input));
 
     expect(output.failClosed).toBe(true);
     expect(output.targetKillSwitchState).toBe("NEW_ORDERS_BLOCKED");
@@ -1346,7 +1569,7 @@ describe("runReconcileEngine — 전체 orchestrator", () => {
       observedAt,
     };
 
-    const output = runReconcileEngine(input);
+    const output = runReconcileEngine(withDefaultBalances(input));
 
     expect(output.failClosed).toBe(true);
     expect(output.targetKillSwitchState).toBe("MANUAL_REVIEW_REQUIRED");
@@ -1375,7 +1598,7 @@ describe("runReconcileEngine — 전체 orchestrator", () => {
       observedAt,
     };
 
-    const output = runReconcileEngine(input);
+    const output = runReconcileEngine(withDefaultBalances(input));
 
     expect(output.mismatches).toEqual(
       expect.arrayContaining([
@@ -1417,7 +1640,7 @@ describe("runReconcileEngine — 전체 orchestrator", () => {
       observedAt,
     };
 
-    const output = runReconcileEngine(input);
+    const output = runReconcileEngine(withDefaultBalances(input));
 
     expect(output.failClosed).toBe(true);
     expect(output.targetKillSwitchState).toBe("MANUAL_REVIEW_REQUIRED");
@@ -1440,7 +1663,7 @@ describe("runReconcileEngine — 전체 orchestrator", () => {
       observedAt,
     };
 
-    const output = runReconcileEngine(input);
+    const output = runReconcileEngine(withDefaultBalances(input));
 
     expect(output.failClosed).toBe(true);
     expect(output.targetKillSwitchState).toBe("MANUAL_REVIEW_REQUIRED");
@@ -1463,7 +1686,7 @@ describe("runReconcileEngine — 전체 orchestrator", () => {
       observedAt,
     };
 
-    const output = runReconcileEngine(input);
+    const output = runReconcileEngine(withDefaultBalances(input));
 
     expect(output.summary.result).toBe("MISMATCH_DETECTED");
     expect(output.failClosed).toBe(true);
@@ -1490,7 +1713,7 @@ describe("runReconcileEngine — 전체 orchestrator", () => {
       observedAt,
     };
 
-    const output = runReconcileEngine(input);
+    const output = runReconcileEngine(withDefaultBalances(input));
 
     expect(output.mismatches).toEqual(
       expect.arrayContaining([
@@ -1550,7 +1773,7 @@ describe("runReconcileEngine — 전체 orchestrator", () => {
       observedAt,
     };
 
-    const output = runReconcileEngine(input);
+    const output = runReconcileEngine(withDefaultBalances(input));
 
     // CANCEL_FAILURE가 MANUAL_REVIEW_REQUIRED로 승격
     expect(output.failClosed).toBe(true);
@@ -1587,7 +1810,7 @@ describe("runReconcileEngine — 전체 orchestrator", () => {
       observedAt,
     };
 
-    const output = runReconcileEngine(input);
+    const output = runReconcileEngine(withDefaultBalances(input));
 
     expect(output.mismatches).toEqual(
       expect.arrayContaining([
@@ -1633,7 +1856,7 @@ describe("runReconcileEngine — 전체 orchestrator", () => {
       observedAt,
     };
 
-    const output = runReconcileEngine(input);
+    const output = runReconcileEngine(withDefaultBalances(input));
 
     expect(output.stateAdvancements).toHaveLength(2);
     expect(output.stateAdvancements).toEqual(
@@ -1680,7 +1903,7 @@ describe("runReconcileEngine — 전체 orchestrator", () => {
       observedAt,
     };
 
-    const output = runReconcileEngine(input);
+    const output = runReconcileEngine(withDefaultBalances(input));
 
     expect(output.summary).toMatchObject({
       result: "MISMATCH_DETECTED",

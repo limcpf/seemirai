@@ -28,6 +28,8 @@ export function getDefaultSeverity(mismatchType: ReconcileMismatchType): Reconci
       return "ERROR";
     case "EXCHANGE_CANCEL_STATE_MISMATCH":
       return "ERROR";
+    case "ORDER_STATE_ADVANCEMENT_BLOCKED":
+      return "ERROR";
     case "BALANCE_LOCK_MISMATCH":
       return "ERROR";
     case "BALANCE_SNAPSHOT_UNAVAILABLE":
@@ -56,6 +58,8 @@ export function getMismatchTypeLabel(mismatchType: ReconcileMismatchType): strin
       return "취소 실패";
     case "EXCHANGE_CANCEL_STATE_MISMATCH":
       return "거래소 취소 상태 불일치";
+    case "ORDER_STATE_ADVANCEMENT_BLOCKED":
+      return "주문 상태 전진 불가";
     case "BALANCE_LOCK_MISMATCH":
       return "잠김 잔고 불일치";
     case "BALANCE_SNAPSHOT_UNAVAILABLE":

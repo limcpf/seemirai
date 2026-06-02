@@ -1,6 +1,5 @@
 import { parseFinancialDecimal } from "../../shared/decimal.js";
 import {
-  buildOrderFingerprint,
   describeExchangeOrderIdentity,
   matchOrderIdentity,
 } from "./identity.js";
@@ -12,6 +11,7 @@ import type {
   ReconcileWebSocketContext,
   ReconcileClosedOrderWindow,
 } from "../../domain/live-reconcile.js";
+import { canTransitionOrderState } from "../../domain/state-machines.js";
 import type { IdentityMatchSuccess } from "./identity.js";
 
 /* ============================================================
@@ -26,6 +26,10 @@ import type { IdentityMatchSuccess } from "./identity.js";
  * 단일 exchange/local order pair에 대한 대조 결과다.
  */
 export interface OrderPairReconcileResult {
+  /** 이 결과가 연결된 로컬 주문 id다. exchange-only mismatch이면 없다. */
+  localOrderId?: string;
+  /** identity match에 사용한 거래소 snapshot source다. */
+  exchangeSource?: ReconcileExchangeOrderSnapshot["source"];
   /** identity 일치가 확인된 경우의 match 정보다. */
   identityMatch?: IdentityMatchSuccess;
   /** 이 pair에서 발생한 mismatch evidence 목록이다. */
@@ -53,30 +57,7 @@ export function reconcileOrders(
 ): OrderPairReconcileResult[] {
   const results: OrderPairReconcileResult[] = [];
   const matchedLocalIds = new Set<string>();
-
-  // identity map: identifier → exchange order index
-  const exchangeByIdentifier = new Map<string, ReconcileExchangeOrderSnapshot>();
-  // identity map: uuid → exchange order index
-  const exchangeByUuid = new Map<string, ReconcileExchangeOrderSnapshot>();
-  // fingerprint → exchange order (for fingerprint-only matching)
-  const exchangeByFingerprint = new Map<string, ReconcileExchangeOrderSnapshot>();
-
-  for (const order of exchangeOrders) {
-    if (order.identifier !== undefined) {
-      exchangeByIdentifier.set(order.identifier, order);
-    }
-    if (order.exchangeOrderId !== undefined) {
-      exchangeByUuid.set(order.exchangeOrderId, order);
-    }
-    // 항상 fingerprint도 등록 (identifier 없는 order의 fallback)
-    const fp = buildOrderFingerprint(
-      order.market,
-      order.side,
-      order.requestedQuantity,
-      order.requestedPrice,
-    );
-    exchangeByFingerprint.set(fp, order);
-  }
+  const matchedExchangeOrders = new Set<ReconcileExchangeOrderSnapshot>();
 
   // 각 exchange open order에 대해 로컬 매칭 시도
   for (const exchangeOrder of exchangeOrders) {
@@ -85,7 +66,7 @@ export function reconcileOrders(
       continue;
     }
 
-    const match = findMatchingLocalOrder(exchangeOrder, localOpenOrders);
+    const match = findMatchingLocalOrder(exchangeOrder, localOpenOrders, matchedLocalIds);
     if (match === undefined) {
       // 로컬에서 찾지 못한 exchange open order
       results.push({
@@ -96,6 +77,7 @@ export function reconcileOrders(
 
     // identity가 일치하는 pair 발견
     matchedLocalIds.add(match.local.orderId);
+    matchedExchangeOrders.add(exchangeOrder);
     results.push(
       evaluateMatchedPair(exchangeOrder, match.local, match.identity, observedAt),
     );
@@ -107,14 +89,16 @@ export function reconcileOrders(
       continue;
     }
 
-    const match = findMatchingExchangeOrder(localOrder, exchangeOrders);
+    const match = findMatchingExchangeOrder(localOrder, exchangeOrders, matchedExchangeOrders);
     if (match === undefined) {
       results.push({
+        localOrderId: localOrder.orderId,
         mismatches: [createMissingLocalOrderMismatch(localOrder, observedAt)],
       });
     } else {
       // exchange order 중 open이 아닌 source(closed, lookup)에서 찾음
       matchedLocalIds.add(localOrder.orderId);
+      matchedExchangeOrders.add(match.exchange);
       results.push(
         evaluateMatchedPair(match.exchange, localOrder, match.identity, observedAt),
       );
@@ -139,11 +123,20 @@ export function checkClosedOrderWindow(
   localOpenOrders: readonly ReconcileLocalOrderSnapshot[],
   closedOrderWindow: ReconcileClosedOrderWindow,
   observedAt: string,
+  verifiedLocalOrderIds: ReadonlySet<string> = new Set(),
 ): ReconcileMismatchEvidence[] {
   const mismatches: ReconcileMismatchEvidence[] = [];
   const windowStart = new Date(closedOrderWindow.windowStart).getTime();
 
+  if (closedOrderWindow.windowExhausted) {
+    mismatches.push(createClosedOrderWindowExhaustedMismatch(closedOrderWindow, observedAt));
+  }
+
   for (const localOrder of localOpenOrders) {
+    if (verifiedLocalOrderIds.has(localOrder.orderId)) {
+      continue;
+    }
+
     // createdAt이 없으면 window 판정 불가 → skip (다른 mismatch에서 잡음)
     if (localOrder.createdAt === undefined) {
       continue;
@@ -172,6 +165,26 @@ export function checkClosedOrderWindow(
   }
 
   return mismatches;
+}
+
+function createClosedOrderWindowExhaustedMismatch(
+  closedOrderWindow: ReconcileClosedOrderWindow,
+  observedAt: string,
+): ReconcileMismatchEvidence {
+  return {
+    mismatchType: "CLOSED_ORDER_WINDOW_EXCEEDED",
+    severity: "ERROR",
+    userMessage: `거래소 종료 주문 조회 window(${closedOrderWindow.windowStart} ~ ${closedOrderWindow.windowEnd})가 API limit으로 소진되어 일부 종료 주문이 누락됐을 수 있습니다.`,
+    requiredAction: "수동 검토 필요: 종료 주문 조회 구간을 더 작게 나눠 재조회하거나 거래소 웹/앱에서 해당 기간 주문 상태를 확인하세요.",
+    evidenceFingerprint: `closed-window-exhausted:${closedOrderWindow.windowStart}:${closedOrderWindow.windowEnd}:${observedAt}`,
+    trace: {
+      windowStart: closedOrderWindow.windowStart,
+      windowEnd: closedOrderWindow.windowEnd,
+      queryCount: closedOrderWindow.queryCount,
+      windowExhausted: closedOrderWindow.windowExhausted,
+    },
+    occurredAt: observedAt,
+  };
 }
 
 /**
@@ -247,8 +260,12 @@ export function checkWebSocketGap(
 function findMatchingLocalOrder(
   exchangeOrder: ReconcileExchangeOrderSnapshot,
   localOrders: readonly ReconcileLocalOrderSnapshot[],
+  matchedLocalIds: ReadonlySet<string>,
 ): { local: ReconcileLocalOrderSnapshot; identity: IdentityMatchSuccess } | undefined {
   for (const localOrder of localOrders) {
+    if (matchedLocalIds.has(localOrder.orderId)) {
+      continue;
+    }
     const result = matchOrderIdentity(exchangeOrder, localOrder);
     if (result.matched) {
       return { local: localOrder, identity: result };
@@ -263,8 +280,12 @@ function findMatchingLocalOrder(
 function findMatchingExchangeOrder(
   localOrder: ReconcileLocalOrderSnapshot,
   exchangeOrders: readonly ReconcileExchangeOrderSnapshot[],
+  matchedExchangeOrders: ReadonlySet<ReconcileExchangeOrderSnapshot>,
 ): { exchange: ReconcileExchangeOrderSnapshot; identity: IdentityMatchSuccess } | undefined {
   for (const exchangeOrder of exchangeOrders) {
+    if (matchedExchangeOrders.has(exchangeOrder)) {
+      continue;
+    }
     const result = matchOrderIdentity(exchangeOrder, localOrder);
     if (result.matched) {
       return { exchange: exchangeOrder, identity: result };
@@ -329,10 +350,43 @@ function evaluateMatchedPair(
   );
 
   if (stateAdvancement !== undefined) {
-    return { identityMatch: identity, mismatches, stateAdvancement };
+    if (
+      stateAdvancement.targetLocalStatus !== undefined &&
+      !canTransitionOrderState(localOrder.status, stateAdvancement.targetLocalStatus)
+    ) {
+      // 거래소 상태만으로 state machine을 우회하면 취소/체결 경합에서 잘못된 최종 상태가 커밋될 수 있다.
+      mismatches.push(
+        createOrderStateAdvancementBlockedMismatch(
+          exchangeOrder,
+          localOrder,
+          identity,
+          stateAdvancement.targetLocalStatus,
+          observedAt,
+        ),
+      );
+      return {
+        localOrderId: localOrder.orderId,
+        exchangeSource: exchangeOrder.source,
+        identityMatch: identity,
+        mismatches,
+      };
+    }
+
+    return {
+      localOrderId: localOrder.orderId,
+      exchangeSource: exchangeOrder.source,
+      identityMatch: identity,
+      mismatches,
+      stateAdvancement,
+    };
   }
 
-  return { identityMatch: identity, mismatches };
+  return {
+    localOrderId: localOrder.orderId,
+    exchangeSource: exchangeOrder.source,
+    identityMatch: identity,
+    mismatches,
+  };
 }
 
 /**
@@ -441,6 +495,35 @@ function createExchangeCancelStateMismatch(
       localStatus: localOrder.status,
       matchType: identity.matchType,
       market: exchangeOrder.market,
+      source: exchangeOrder.source,
+    },
+    occurredAt: observedAt,
+  };
+}
+
+/**
+ * 거래소 상태로 만든 전진 후보가 로컬 주문 state machine에서 불가능한 경우의 evidence다.
+ */
+function createOrderStateAdvancementBlockedMismatch(
+  exchangeOrder: ReconcileExchangeOrderSnapshot,
+  localOrder: ReconcileLocalOrderSnapshot,
+  identity: IdentityMatchSuccess,
+  targetLocalStatus: ReconcileStateAdvancementCandidate["targetLocalStatus"],
+  observedAt: string,
+): ReconcileMismatchEvidence {
+  return {
+    mismatchType: "ORDER_STATE_ADVANCEMENT_BLOCKED",
+    severity: "ERROR",
+    market: exchangeOrder.market,
+    orderIdentity: identity.identity,
+    userMessage: `거래소 주문(${identity.identity})은 ${exchangeOrder.exchangeStatus} 상태지만 로컬 상태 ${localOrder.status}에서 ${String(targetLocalStatus)}로 자동 전진할 수 없습니다.`,
+    requiredAction: "수동 검토 필요: 취소/체결 경합 여부와 실제 체결 내역을 확인한 뒤 로컬 주문 상태를 수동으로 정리하세요.",
+    evidenceFingerprint: `state-advancement-blocked:${identity.identity}:${localOrder.status}:${String(targetLocalStatus)}:${observedAt}`,
+    trace: {
+      exchangeStatus: exchangeOrder.exchangeStatus,
+      localStatus: localOrder.status,
+      targetLocalStatus,
+      matchType: identity.matchType,
       source: exchangeOrder.source,
     },
     occurredAt: observedAt,
