@@ -115,6 +115,25 @@
 - raw access key, secret key, JWT, Authorization header, query hash 입력, raw provider payload는 log, audit, status, smoke
   artifact, PR body에 남기지 않는다. 실패 응답은 한국어 사용자 행동 문구와 추적 정보를 분리한다.
 
+## M16 Read-Only Reconcile 보안 기준
+
+- M16 read-only reconcile runtime은 `자산조회`와 `주문조회` 권한만 요구한다. `주문하기` 권한이 관찰되면 reconcile worker를
+  시작하지 않는다.
+- reconcile runtime은 `POST /v1/orders`와 `DELETE /v1/order`를 호출하지 않는다. 어떤 경로로도 주문 생성/취소 API를 호출하면
+  fail-closed 한다.
+- private WebSocket `myOrder`/`myAsset`은 읽기 전용 변경 추적으로만 사용하며, WebSocket 인증 정보(JWT, query hash)는 log,
+  audit, status, artifact에 원문을 남기지 않는다.
+- M16 전용 reconcile tables는 append-only로 설계한다. 기존 `orders`, `positions` table을 직접 수정하지 않고 mismatch evidence만
+  기록한다. 기존 domain table을 우회하는 쓰기 경로를 만들지 않는다.
+- reconcile summary(/status, CLI)는 access key, secret key, JWT, Authorization header, raw REST/WebSocket provider payload,
+  raw balance detail, raw order detail을 반환하지 않는다. 허용 가능한 필드는 마지막 reconcile 시각, 결과, mismatch 수,
+  open order 수, balance 상태, WebSocket 상태, 한국어 필요 조치로 제한한다.
+- private REST/WebSocket credential redaction: access key, secret key, JWT, Authorization header, query hash는 logger
+  redaction 대상이며, reconcile worker startup에서 credential이 주입된 후에도 log/audit/status에 원문을 전파하지 않는다.
+- 주문 side effect 금지: reconcile worker는 어떤 조건에서도 `submitOrder`, `cancelOrder`, 자동 취소, 자동 재주문을 실행하지
+  않는다. mismatch 발견 시 신규 주문 차단과 manual review evidence만 남긴다.
+- closed order 조회 window(7일) 밖 주문은 자동 복구하지 않는다. window 밖 주문의 존재는 manual review evidence로만 남긴다.
+
 ## Dependency 추가 승인 기준
 
 - 신규 runtime dependency, dev dependency, package manager 변경은 승인 필요 변경으로 취급한다.

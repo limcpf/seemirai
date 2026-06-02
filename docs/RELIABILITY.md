@@ -194,6 +194,28 @@ Codex-native 운영은 Codex, Git, GitHub, shell command, 문서 상태를 연�
 - raw event log와 summary artifact는 기본적으로 저장소 밖 `SEEMIRAI_SOAK_LOG_DIR` 또는 `~/vaults/99_운영/seemirai-soak`에 남긴다.
   raw log는 재현과 PR evidence 확인용이며 git commit 대상이 아니다.
 
+## M16 Live Reconcile 신뢰성 기준
+
+- REST snapshot이 reconcile의 bootstrap source of truth다. private WebSocket `myOrder`/`myAsset`은 snapshot 이후 변경
+  추적과 stale/gap evidence에만 사용한다. WebSocket 단절 시 REST fallback/bootstrap으로 상태를 재조회한다.
+- reconcile mismatch가 발견되면 신규 주문을 fail-closed 하고 M16 전용 append-only reconcile tables에 mismatch evidence를 남긴다.
+  mismatch를 0으로 자동 복구하지 않는다. reconcile persistence는 기존 `orders`/`positions` table을 직접 수정하지 않는다.
+- idempotent run: 같은 reconcile worker가 중복 실행되어도 같은 시각의 같은 snapshot을 다시 조회해 동일한 mismatch 결과를
+  반환한다. reconcile 실행 자체는 run idempotency key와 snapshot/evidence fingerprint로 중복 기록을 차단한다.
+- closed order 조회 window(7일) 밖 주문은 자동 복구하지 않고 manual review로 남긴다. window 밖 주문의 불완전한 evidence는
+  mismatch count에 포함하되 `복구 불가/수동 검토 필요`로 분류한다.
+- private WebSocket gap/reconnect 기준:
+  - `myOrder` WebSocket이 30초 이상 메시지가 없으면 STALE 상태로 전이한다.
+  - `myAsset` WebSocket이 60초 이상 메시지가 없으면 STALE 상태로 전이하고 REST `/v1/accounts` fallback 조회를 실행한다.
+  - WebSocket 재연결 시 기존 snapshot을 유지하고 새로운 변경 이벤트부터 추적을 재개한다. snapshot을 폐기하지 않는다.
+  - 재연결 실패가 3회 연속이면 reconcile worker를 중지하고 manual review evidence를 남긴다.
+- reconcile worker 실패(rate limit 초과, API 5xx, network error)는 최대 3회 재시도한다. 3회 초과 시 reconcile worker를
+  중지하고 manual review로 수렴한다.
+- reconcile summary(/status, CLI)는 마지막 reconcile 시각, 결과, mismatch 수, open order 수, balance snapshot 상태,
+  WebSocket 상태, 필요한 조치를 한국어로 제공한다. 내부 식별자는 `추적 정보`로 분리한다.
+- PnL 계산은 M17 범위이므로 reconcile 단계에서는 `계산 불가/수동 검토 필요`로 남긴다. balance snapshot을 PnL 근거로
+  사용하지 않는다.
+
 ## 검증 규칙
 
 - 자동 테스트가 없으면 수동 검증 절차라도 남긴다.

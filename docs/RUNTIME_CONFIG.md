@@ -153,6 +153,48 @@ factory, status summary, smoke artifact는 access key, secret key, JWT, Authoriz
 허용 가능한 노출 값은 profile id, guard 충족 여부, 권한 evidence id, market, 주문 상태 요약, redacted correlation id, rate-limit
 safe summary 수준이다.
 
+## M16 Live Read-Only Reconcile guard
+
+구현 기준:
+
+- 실행 계획: [`exec-plans/active/2026-06-02-issue-143-m16-live-reconcile.md`](./exec-plans/active/2026-06-02-issue-143-m16-live-reconcile.md)
+- runtime mode label: `LIVE_READ_ONLY_RECONCILE`
+- guard env: `SEEMIRAI_RUN_UPBIT_LIVE_RECONCILE=1`
+
+M16 read-only reconcile runtime은 실계좌 상태를 조회하고 로컬 상태와 대조하지만 주문 side effect를 만들지 않는다.
+
+| 조건 | 의미 |
+| --- | --- |
+| `SEEMIRAI_RUN_UPBIT_LIVE_RECONCILE=1` | reconcile worker 시작 승인 |
+| 허용 private 권한 | `자산조회`, `주문조회`만 요구 |
+| `SEEMIRAI_UPBIT_KEY_SCOPE_EVIDENCE_ID` | 저장소 밖 redacted 권한 확인 증거 (M15 pilot smoke와 공유) |
+| credential input | access key와 secret key를 env 또는 외부 secret 주입으로만 전달 |
+
+**금지 사항:**
+
+- `주문하기` 권한 요구 금지
+- `POST /v1/orders`, `DELETE /v1/order` 호출 금지
+- 자동 전략 루프에서 live broker 연결 금지
+- PnL 계산 금지 (평균단가/PnL은 `계산 불가/수동 검토 필요`로 남긴다)
+- closed order window(7일) 밖 주문 자동 복구 금지
+
+**Status summary 기준 (secret-safe):**
+
+reconcile summary는 `/status` 또는 CLI에서 다음 필드를 secret 없이 노출한다.
+
+| 필드 | 설명 |
+| --- | --- |
+| `lastReconcileAt` | 마지막 reconcile 실행 시각 (ISO 8601) |
+| `result` | `SUCCESS`, `MISMATCH_DETECTED`, `FAILED`, `SKIPPED` |
+| `mismatchCount` | 감지된 mismatch 수 |
+| `mismatches` | 최근 mismatch 상세 (최대 5건, raw provider payload 제외) |
+| `openOrderCount` | 현재 open order 수 |
+| `balanceStatus` | balance snapshot 상태 (`OK`, `STALE`, `UNAVAILABLE`) |
+| `websocketStatus` | private WebSocket 연결 상태 (`CONNECTED`, `DISCONNECTED`, `RECONNECTING`, `STALE`) |
+| `actionRequired` | 한국어로 표시된 필요 조치 (`정상`, `불일치 확인 필요`, `수동 검토 필요`) |
+
+내부 식별자(run id, mismatch id, correlation id)는 `추적 정보` 하위 객체에 분리해 보존한다.
+
 ## Phase 1.5 알트 수동 편입 설정
 
 구현 기준:
