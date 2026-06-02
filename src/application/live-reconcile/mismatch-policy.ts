@@ -345,17 +345,27 @@ function hasWebSocketLivenessGapEvidence(
   );
 }
 
+/**
+ * WebSocket gap evidence fingerprint에 사용할 기준 anchor를 만든다.
+ *
+ * disconnect/reconnect 시각은 Date/string 입력을 같은 ISO 문자열로 정규화해
+ * 재시도 시 evidence dedupe가 흔들리지 않도록 한다. 시각이 없으면 기간이나
+ * 재연결 횟수를 보조 anchor로 사용한다.
+ *
+ * @param evidence WebSocket 연결 불연속 증거
+ * @param observedAt reconcile 실행 시각
+ * @returns evidence fingerprint에 포함할 결정론적 anchor
+ */
 function getWebSocketGapEvidenceAnchor(
   evidence: NonNullable<ReconcileWebSocketContext["disconnectEvidence"]>,
   observedAt: string,
 ): string {
-  return String(
-    evidence.disconnectedAt ??
-      evidence.reconnectedAt ??
-      evidence.gapDurationMs ??
-      evidence.reconnectCount ??
-      observedAt,
-  );
+  const timestampAnchor = evidence.disconnectedAt ?? evidence.reconnectedAt;
+  if (timestampAnchor !== undefined) {
+    return normalizeEvidenceTimestamp(timestampAnchor);
+  }
+
+  return String(evidence.gapDurationMs ?? evidence.reconnectCount ?? observedAt);
 }
 
 /* ============================================================
@@ -718,9 +728,7 @@ function buildUntrackedExchangeEvidenceFingerprint(
  * @param timestamp 거래소 snapshot 관측 시각
  * @returns ISO timestamp 또는 파싱 불가능한 원문 문자열
  */
-function normalizeEvidenceTimestamp(
-  timestamp: ReconcileExchangeOrderSnapshot["capturedAt"],
-): string {
+function normalizeEvidenceTimestamp(timestamp: Date | string): string {
   const date = timestamp instanceof Date ? timestamp : new Date(timestamp);
   const time = date.getTime();
 

@@ -36,11 +36,13 @@ export function runReconcileEngine(input: ReconcileEngineInput): ReconcileEngine
   const allStateAdvancements: ReconcileStateAdvancementCandidate[] = [];
   const observedAt = normalizeObservedAt(input.observedAt);
 
-  // 1. exchange order를 unified list로 합친다 (open + closed + lookup)
+  // 1. exchange order를 unified list로 합친다 (open + closed + lookup + ws myOrder)
+  const websocketOrderSnapshots = buildWebSocketOrderSnapshots(input.websocketContext);
   const allExchangeOrders = prioritizeExchangeOrderSnapshots([
     ...input.exchangeOpenOrders,
     ...input.exchangeClosedOrders,
     ...input.orderLookups,
+    ...websocketOrderSnapshots,
   ]);
 
   // 2. 주문 대조 — identity matching과 mismatch 분류
@@ -155,6 +157,152 @@ function normalizeObservedAt(observedAt: ReconcileEngineInput["observedAt"]): st
   }
 
   return observedAt;
+}
+
+/**
+ * private WebSocket myOrder 이벤트를 주문 diff용 거래소 snapshot으로 변환한다.
+ *
+ * REST snapshot이 bootstrap source of truth지만, bootstrap 이후 들어온 myOrder는
+ * 최신 상태 보강 근거가 될 수 있다. 필수 주문 필드가 없는 이벤트는 raw payload를
+ * 추측하지 않고 제외해 잘못된 상태 전진 후보를 만들지 않는다.
+ *
+ * @param websocketContext private WebSocket 이벤트와 bootstrap context
+ * @returns diff engine에서 평가할 ws source 주문 snapshot 목록
+ */
+function buildWebSocketOrderSnapshots(
+  websocketContext: ReconcileEngineInput["websocketContext"],
+): ReconcileExchangeOrderSnapshot[] {
+  const snapshots: ReconcileExchangeOrderSnapshot[] = [];
+
+  for (const event of websocketContext.events) {
+    const snapshot = toWebSocketOrderSnapshot(event);
+    if (snapshot !== undefined) {
+      snapshots.push(snapshot);
+    }
+  }
+
+  return snapshots;
+}
+
+/**
+ * 단일 myOrder 이벤트 payload를 ReconcileExchangeOrderSnapshot으로 정규화한다.
+ *
+ * Upbit 원천 필드(`uuid`, `state`, `volume`, `remaining_volume`, `price`)와
+ * 이미 정규화된 camelCase 필드를 모두 허용한다. 변환은 순수하게 payload를
+ * 읽기만 하며 외부 side effect나 DB write를 만들지 않는다.
+ *
+ * @param event private WebSocket 이벤트
+ * @returns 주문 snapshot 또는 필수 필드 누락 시 undefined
+ */
+function toWebSocketOrderSnapshot(
+  event: ReconcileEngineInput["websocketContext"]["events"][number],
+): ReconcileExchangeOrderSnapshot | undefined {
+  if (event.type !== "myOrder") {
+    return undefined;
+  }
+
+  const payload = event.payload;
+  const market = readStringField(payload, "market", "code");
+  const side = normalizeWebSocketOrderSide(readStringField(payload, "side", "ask_bid"));
+  const exchangeStatus = readStringField(payload, "exchangeStatus", "exchange_status", "state");
+  const requestedQuantity = readStringField(
+    payload,
+    "requestedQuantity",
+    "requested_quantity",
+    "volume",
+  );
+
+  if (
+    market === undefined ||
+    side === undefined ||
+    exchangeStatus === undefined ||
+    requestedQuantity === undefined
+  ) {
+    return undefined;
+  }
+
+  const snapshot: ReconcileExchangeOrderSnapshot = {
+    market,
+    side,
+    exchangeStatus,
+    requestedQuantity,
+    source: "ws",
+    capturedAt: event.occurredAt,
+  };
+  const exchangeOrderId = readStringField(
+    payload,
+    "exchangeOrderId",
+    "exchange_order_id",
+    "uuid",
+  );
+  const identifier = readStringField(payload, "identifier");
+  const remainingQuantity = readStringField(
+    payload,
+    "remainingQuantity",
+    "remaining_quantity",
+    "remaining_volume",
+  );
+  const requestedPrice = readStringField(payload, "requestedPrice", "requested_price", "price");
+
+  if (exchangeOrderId !== undefined) {
+    snapshot.exchangeOrderId = exchangeOrderId;
+  }
+  if (identifier !== undefined) {
+    snapshot.identifier = identifier;
+  }
+  if (remainingQuantity !== undefined) {
+    snapshot.remainingQuantity = remainingQuantity;
+  }
+  if (requestedPrice !== undefined) {
+    snapshot.requestedPrice = requestedPrice;
+  }
+
+  return snapshot;
+}
+
+/**
+ * WebSocket payload에서 허용된 후보 필드명 중 첫 문자열 값을 읽는다.
+ *
+ * provider raw field와 정규화 field가 공존할 수 있으므로 mapper 경계에서만
+ * 선택하고, 숫자/객체 같은 예기치 않은 값은 주문 snapshot 근거로 쓰지 않는다.
+ *
+ * @param payload private WebSocket 이벤트 payload
+ * @param fieldNames 우선순위대로 읽을 필드명
+ * @returns 비어 있지 않은 문자열 값 또는 undefined
+ */
+function readStringField(
+  payload: Record<string, unknown>,
+  ...fieldNames: readonly string[]
+): string | undefined {
+  for (const fieldName of fieldNames) {
+    const value = payload[fieldName];
+    if (typeof value === "string" && value.length > 0) {
+      return value;
+    }
+  }
+
+  return undefined;
+}
+
+/**
+ * Upbit side 표현을 로컬 reconcile domain의 BUY/SELL 값으로 정규화한다.
+ *
+ * Upbit raw payload의 `bid`/`ask`와 이미 정규화된 `BUY`/`SELL`을 모두 허용한다.
+ * 알 수 없는 값은 상태 전진 후보를 만들지 않도록 undefined로 남긴다.
+ *
+ * @param side WebSocket payload의 side 문자열
+ * @returns reconcile side 또는 알 수 없는 값일 때 undefined
+ */
+function normalizeWebSocketOrderSide(side: string | undefined): "BUY" | "SELL" | undefined {
+  const normalized = side?.toUpperCase();
+  if (normalized === "BUY" || normalized === "BID") {
+    return "BUY";
+  }
+  if (normalized === "SELL" || normalized === "ASK") {
+    return "SELL";
+  }
+
+  return undefined;
 }
 
 /**
@@ -292,11 +440,18 @@ function countSummaryExchangeOpenOrders(
   const seenStrongIdentities = new Set<string>();
 
   for (const exchangeOrder of exchangeOrders) {
+    const strongIdentity = getSummaryExchangeOpenOrderIdentity(exchangeOrder);
+    if (isSummaryExchangeTerminalOrder(exchangeOrder)) {
+      if (strongIdentity !== undefined) {
+        seenStrongIdentities.add(strongIdentity);
+      }
+      continue;
+    }
+
     if (!isSummaryExchangeOpenOrder(exchangeOrder)) {
       continue;
     }
 
-    const strongIdentity = getSummaryExchangeOpenOrderIdentity(exchangeOrder);
     if (strongIdentity !== undefined) {
       if (seenStrongIdentities.has(strongIdentity)) {
         continue;
@@ -329,6 +484,25 @@ function isSummaryExchangeOpenOrder(
       exchangeOrder.source === "ws"
     ) &&
     (exchangeOrder.exchangeStatus === "wait" || exchangeOrder.exchangeStatus === "watch")
+  );
+}
+
+/**
+ * 최신 terminal snapshot이 오래된 open snapshot의 summary count를 억제해야 하는지 판정한다.
+ *
+ * done/cancel은 현재 거래소 미체결 노출이 아니므로 count에 더하지 않지만,
+ * 같은 uuid/identifier의 이전 open snapshot이 뒤에서 다시 세어지지 않도록
+ * 강한 식별자를 seen set에 남기는 분기에서 사용한다.
+ *
+ * @param exchangeOrder 거래소 주문 snapshot
+ * @returns summary open count 억제용 terminal 여부
+ */
+function isSummaryExchangeTerminalOrder(
+  exchangeOrder: ReconcileExchangeOrderSnapshot,
+): boolean {
+  return (
+    exchangeOrder.exchangeStatus === "done" ||
+    exchangeOrder.exchangeStatus === "cancel"
   );
 }
 

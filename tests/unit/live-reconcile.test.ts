@@ -1772,6 +1772,32 @@ describe("checkWebSocketGap", () => {
     });
   });
 
+  it("WebSocket gap evidence fingerprint는 Date와 ISO disconnectedAt을 같게 정규화한다", () => {
+    const dateAnchor = checkWebSocketGap(
+      {
+        events: [],
+        disconnectEvidence: {
+          disconnectedAt: new Date("2026-06-02T11:00:00.000Z"),
+          gapDurationMs: 300000,
+        },
+      },
+      observedAt,
+    )[0]!;
+    const stringAnchor = checkWebSocketGap(
+      {
+        events: [],
+        disconnectEvidence: {
+          disconnectedAt: "2026-06-02T11:00:00.000Z",
+          gapDurationMs: 300000,
+        },
+      },
+      observedAt,
+    )[0]!;
+
+    expect(dateAnchor.evidenceFingerprint).toBe(stringAnchor.evidenceFingerprint);
+    expect(dateAnchor.evidenceFingerprint).toContain("2026-06-02T11:00:00.000Z");
+  });
+
   it("staleSince 단독 disconnectEvidence는 event-only stream 특성상 mismatch가 아니다", () => {
     const wsContext: ReconcileWebSocketContext = {
       events: [],
@@ -1987,7 +2013,71 @@ describe("runReconcileEngine — 전체 orchestrator", () => {
         (mismatch) => mismatch.mismatchType === "UNTRACKED_EXCHANGE_OPEN_ORDER",
       ),
     ).toBe(false);
+    expect(output.summary.openOrderCount.exchange).toBe(0);
     expect(output.failClosed).toBe(true);
+  });
+
+  it("WebSocket myOrder terminal 이벤트를 최신 주문 diff snapshot으로 반영한다", () => {
+    const input: ReconcileEngineInput = {
+      exchangeOpenOrders: [
+        createExchangeOrder({
+          source: "open",
+          identifier: "ws-terminal-diff",
+          exchangeOrderId: "ws-terminal-uuid",
+          exchangeStatus: "wait",
+          capturedAt: "2026-06-02T11:59:00.000Z",
+        }),
+      ],
+      exchangeClosedOrders: [],
+      orderLookups: [],
+      websocketContext: {
+        bootstrapCompleteAt: observedAt,
+        events: [
+          {
+            type: "myOrder",
+            occurredAt: "2026-06-02T12:00:30.000Z",
+            payload: {
+              uuid: "ws-terminal-uuid",
+              identifier: "ws-terminal-diff",
+              market: "KRW-BTC",
+              side: "bid",
+              state: "done",
+              volume: "0.001",
+              remaining_volume: "0",
+              price: "10000000",
+            },
+          },
+        ],
+      },
+      localOpenOrders: [
+        createLocalOrder({
+          orderId: "local-ws-terminal-diff",
+          identifier: "ws-terminal-diff",
+          exchangeOrderId: "ws-terminal-uuid",
+          status: "ACCEPTED",
+        }),
+      ],
+      closedOrderWindow: defaultWindow,
+      observedAt,
+    };
+
+    const output = runReconcileEngine(withDefaultBalances(input));
+
+    expect(output.stateAdvancements).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          localOrderId: "local-ws-terminal-diff",
+          advancementType: "FILL_CANDIDATE",
+          targetLocalStatus: "FILLED",
+        }),
+      ]),
+    );
+    expect(output.summary.openOrderCount.exchange).toBe(0);
+    expect(
+      output.mismatches.some(
+        (mismatch) => mismatch.mismatchType === "UNTRACKED_EXCHANGE_OPEN_ORDER",
+      ),
+    ).toBe(false);
   });
 
   it("오래된 lookup terminal snapshot보다 최신 open snapshot을 우선해 stale 상태 전진을 막는다", () => {
