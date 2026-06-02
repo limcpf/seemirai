@@ -136,6 +136,57 @@ export type UpbitPrivateOpenOrderState = "wait" | "watch";
 export type UpbitPrivateOpenOrdersOrderBy = "asc" | "desc";
 
 /**
+ * Upbit 종료 주문 목록 조회가 허용하는 closed order 상태다.
+ *
+ * 공식 API는 `done`과 `cancel`만 closed order 목록에서 조회할 수 있다. M16 reconcile은 체결 완료와 취소 주문을
+ * 같은 조회 경계에서 관측하며, type 자체는 외부 side effect를 만들지 않는다.
+ */
+export type UpbitPrivateClosedOrderState = "done" | "cancel";
+
+/**
+ * Upbit 종료 주문 목록 조회 정렬 방향이다.
+ *
+ * 거래소 API의 `order_by` query 값으로만 전달되며, 조회 window 순서가 바뀌면 reconcile pagination 방향도 바뀌므로
+ * 호출자가 명시한 값만 통과시킨다. type 자체는 외부 side effect를 만들지 않는다.
+ */
+export type UpbitPrivateClosedOrdersOrderBy = "asc" | "desc";
+
+/**
+ * Upbit 종료 주문 목록 조회 입력이다.
+ *
+ * `state`와 `states[]`는 동시에 사용할 수 없다. 기본 상태는 `done`과 `cancel`이다. `page`는 Upbit 공식 closed API가
+ * 지원하지 않으므로 이 입력에 포함하지 않는다. query 순서는 JWT hash와 URL query에 함께 쓰이므로 wrapper가 안정적인
+ * 순서로 직렬화해야 한다. 이 입력은 read-only 조회만 만들며 side effect를 만들지 않는다.
+ */
+export interface UpbitPrivateListClosedOrdersInput {
+  market?: string;
+  /**
+   * 단일 상태 필터다. `states[]`와 동시에 지정할 수 없다.
+   */
+  state?: UpbitPrivateClosedOrderState;
+  /**
+   * 배열 상태 필터다. `state`와 동시에 지정할 수 없다. 기본값은 `["done", "cancel"]`이다.
+   */
+  states?: readonly UpbitPrivateClosedOrderState[];
+  /**
+   * 조회할 최대 주문 건수다. 1 이상 1000 이하 정수만 허용한다.
+   */
+  limit?: number;
+  /**
+   * 정렬 방향이다. `asc` 또는 `desc`만 허용한다.
+   */
+  orderBy?: UpbitPrivateClosedOrdersOrderBy;
+  /**
+   * 조회 시작 시각이다. ISO 8601 문자열 또는 Unix timestamp(ms) 숫자를 받으며, 7일 이내 window만 허용한다.
+   */
+  startTime?: string | number;
+  /**
+   * 조회 종료 시각이다. ISO 8601 문자열 또는 Unix timestamp(ms) 숫자를 받으며, 7일 이내 window만 허용한다.
+   */
+  endTime?: string | number;
+}
+
+/**
  * Upbit 체결 대기 주문 목록 조회 입력이다.
  *
  * `state` 단일 파라미터와 `states[]`는 동시에 사용할 수 없으므로 M15 client는 배열형 `states[]`만 지원한다. query 순서는

@@ -3,6 +3,7 @@ export {
   toBrokerBalanceSnapshot,
   toBrokerOrderFromCommand,
   toBrokerOrderFromLookup,
+  toBrokerOrdersFromClosedOrders,
   toBrokerOrdersFromOpenOrders,
   toFeePolicyFromOrderChance,
   toOrderChancePolicy,
@@ -19,6 +20,8 @@ export type {
 export {
   UpbitPrivateAccountBalanceSchema,
   UpbitPrivateAccountsResponseSchema,
+  UpbitPrivateClosedOrderResponseSchema,
+  UpbitPrivateClosedOrdersResponseSchema,
   UpbitPrivateOpenOrderResponseSchema,
   UpbitPrivateOpenOrdersResponseSchema,
   UpbitPrivateOrderChancePayloadSchema,
@@ -30,6 +33,8 @@ export {
 export type {
   UpbitPrivateAccountBalance,
   UpbitPrivateAccountsResponse,
+  UpbitPrivateClosedOrderResponse,
+  UpbitPrivateClosedOrdersResponse,
   UpbitPrivateOpenOrderResponse,
   UpbitPrivateOpenOrdersResponse,
   UpbitPrivateOrderChancePayload,

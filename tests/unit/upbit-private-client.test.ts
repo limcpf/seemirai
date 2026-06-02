@@ -340,6 +340,177 @@ describe("Upbit private REST client foundation", () => {
     });
   });
 
+  it("lists closed orders with default done and cancel states hashed before URL encoding", async () => {
+    let capturedRequest: CapturedRequest | undefined;
+    const client = new UpbitPrivateRestClient({
+      credentials,
+      nonceFactory: () => "closed-orders-nonce",
+      fetchFn: async (input, init) => {
+        capturedRequest = captureRequest(input, init);
+        return jsonResponse([], "group=default; min=1800; sec=29");
+      },
+    });
+
+    await client.listClosedOrders();
+
+    const authorization = capturedRequest?.headers.get("authorization");
+    const decoded = decodeJwt(readBearerToken(authorization));
+    const expectedQueryString = "states[]=done&states[]=cancel";
+
+    expect(capturedRequest).toMatchObject({
+      url: "https://api.upbit.com/v1/orders/closed?states[]=done&states[]=cancel",
+      method: "GET",
+    });
+    expect(decoded.payload).toMatchObject({
+      nonce: "closed-orders-nonce",
+      query_hash: createUpbitQueryHash(expectedQueryString),
+      query_hash_alg: "SHA512",
+    });
+  });
+
+  it("lists closed orders with single state and timestamp params hash before URL encoding", async () => {
+    let capturedRequest: CapturedRequest | undefined;
+    const client = new UpbitPrivateRestClient({
+      credentials,
+      nonceFactory: () => "closed-orders-ts-nonce",
+      fetchFn: async (input, init) => {
+        capturedRequest = captureRequest(input, init);
+        return jsonResponse([], "group=default; min=1800; sec=29");
+      },
+    });
+
+    await client.listClosedOrders({
+      market: "KRW-BTC",
+      state: "done",
+      limit: 100,
+      orderBy: "desc",
+      startTime: "2026-06-01T00:00:00.000Z",
+      endTime: "2026-06-02T00:00:00.000Z",
+    });
+
+    const authorization = capturedRequest?.headers.get("authorization");
+    const decoded = decodeJwt(readBearerToken(authorization));
+    const expectedQueryString =
+      "market=KRW-BTC&state=done&limit=100&order_by=desc&start_time=1780272000000&end_time=1780358400000";
+
+    expect(capturedRequest?.url).toBe(
+      "https://api.upbit.com/v1/orders/closed?market=KRW-BTC&state=done&limit=100&order_by=desc&start_time=1780272000000&end_time=1780358400000",
+    );
+    expect(decoded.payload).toMatchObject({
+      nonce: "closed-orders-ts-nonce",
+      query_hash: createUpbitQueryHash(expectedQueryString),
+      query_hash_alg: "SHA512",
+    });
+  });
+
+  it("lists closed orders with numeric timestamps", async () => {
+    let capturedRequest: CapturedRequest | undefined;
+    const client = new UpbitPrivateRestClient({
+      credentials,
+      nonceFactory: () => "closed-orders-num-nonce",
+      fetchFn: async (input, init) => {
+        capturedRequest = captureRequest(input, init);
+        return jsonResponse([], "group=default; min=1800; sec=29");
+      },
+    });
+
+    await client.listClosedOrders({
+      startTime: 1746230400000,
+      endTime: 1746316800000,
+    });
+
+    const authorization = capturedRequest?.headers.get("authorization");
+    const decoded = decodeJwt(readBearerToken(authorization));
+    const expectedQueryString = "states[]=done&states[]=cancel&start_time=1746230400000&end_time=1746316800000";
+
+    expect(capturedRequest?.url).toBe(
+      "https://api.upbit.com/v1/orders/closed?states[]=done&states[]=cancel&start_time=1746230400000&end_time=1746316800000",
+    );
+    expect(decoded.payload).toMatchObject({
+      nonce: "closed-orders-num-nonce",
+      query_hash: createUpbitQueryHash(expectedQueryString),
+      query_hash_alg: "SHA512",
+    });
+  });
+
+  it("fails locally before fetch when closed order inputs are unsafe", async () => {
+    let fetchCalls = 0;
+    const client = new UpbitPrivateRestClient({
+      credentials,
+      fetchFn: async () => {
+        fetchCalls += 1;
+        return jsonResponse([], "group=default; min=1800; sec=29");
+      },
+    });
+
+    // state와 states[] 동시 지정
+    await expect(
+      client.listClosedOrders({
+        state: "done",
+        states: ["cancel"],
+      }),
+    ).rejects.toMatchObject({
+      name: "UnsafeUpbitPrivateRequestError",
+      violations: ["종료 주문 조회 state와 states[]는 동시에 지정할 수 없습니다"],
+    } satisfies Partial<UnsafeUpbitPrivateRequestError>);
+
+    // 빈 states[]
+    await expect(
+      client.listClosedOrders({ states: [] }),
+    ).rejects.toMatchObject({
+      name: "UnsafeUpbitPrivateRequestError",
+      violations: ["종료 주문 조회 states[]는 비어 있을 수 없습니다"],
+    } satisfies Partial<UnsafeUpbitPrivateRequestError>);
+
+    // limit 초과
+    await expect(
+      client.listClosedOrders({ limit: 1001 }),
+    ).rejects.toMatchObject({
+      name: "UnsafeUpbitPrivateRequestError",
+      violations: ["종료 주문 조회 limit은 1000 이하여야 합니다"],
+    } satisfies Partial<UnsafeUpbitPrivateRequestError>);
+
+    // 유효하지 않은 상태
+    await expect(
+      client.listClosedOrders({ states: ["done" as "done", "invalid" as "done"] }),
+    ).rejects.toMatchObject({
+      name: "UnsafeUpbitPrivateRequestError",
+      violations: ["종료 주문 조회 states[]는 done 또는 cancel만 허용합니다"],
+    } satisfies Partial<UnsafeUpbitPrivateRequestError>);
+
+    // limit이 양의 정수가 아님
+    await expect(
+      client.listClosedOrders({ limit: 0 }),
+    ).rejects.toMatchObject({
+      name: "UnsafeUpbitPrivateRequestError",
+      violations: ["종료 주문 조회 limit는 1 이상의 정수여야 합니다"],
+    } satisfies Partial<UnsafeUpbitPrivateRequestError>);
+
+    // 종료 시각이 시작 시각보다 앞서면 reconcile window가 의미를 잃으므로 거래소 호출 전에 차단
+    await expect(
+      client.listClosedOrders({
+        startTime: "2026-06-02T00:00:00.000Z",
+        endTime: "2026-06-01T00:00:00.000Z",
+      }),
+    ).rejects.toMatchObject({
+      name: "UnsafeUpbitPrivateRequestError",
+      violations: ["종료 주문 조회 end_time은 start_time 이후여야 합니다"],
+    } satisfies Partial<UnsafeUpbitPrivateRequestError>);
+
+    // Upbit closed order 조회는 7일 초과 window를 받으면 snapshot 신뢰성이 흔들리므로 fail-closed 한다.
+    await expect(
+      client.listClosedOrders({
+        startTime: "2026-06-01T00:00:00.000Z",
+        endTime: "2026-06-09T00:00:00.000Z",
+      }),
+    ).rejects.toMatchObject({
+      name: "UnsafeUpbitPrivateRequestError",
+      violations: ["종료 주문 조회 start_time/end_time window는 7일 이하여야 합니다"],
+    } satisfies Partial<UnsafeUpbitPrivateRequestError>);
+
+    expect(fetchCalls).toBe(0);
+  });
+
   it("fails locally before fetch when order create or cancel inputs are unsafe", async () => {
     let fetchCalls = 0;
     const client = new UpbitPrivateRestClient({

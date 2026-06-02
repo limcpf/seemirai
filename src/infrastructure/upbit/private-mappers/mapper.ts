@@ -19,12 +19,14 @@ import {
 import { UPBIT_KRW_SPOT_EXCHANGE_ID } from "../policy-mapper.js";
 import {
   UpbitPrivateAccountsResponseSchema,
+  UpbitPrivateClosedOrdersResponseSchema,
   UpbitPrivateOpenOrdersResponseSchema,
   UpbitPrivateOrderChanceResponseSchema,
   UpbitPrivateOrderCommandResponseSchema,
   UpbitPrivateOrderLookupResponseSchema,
 } from "./schemas.js";
 import type {
+  UpbitPrivateClosedOrderResponse,
   UpbitPrivateOpenOrderResponse,
   UpbitPrivateOrderCommandResponse,
   UpbitPrivateOrderChancePayload,
@@ -48,7 +50,8 @@ interface DomainOrderMapping {
 type UpbitPrivateOrderSummaryPayload =
   | UpbitPrivateOrderLookupResponse
   | UpbitPrivateOrderCommandResponse
-  | UpbitPrivateOpenOrderResponse;
+  | UpbitPrivateOpenOrderResponse
+  | UpbitPrivateClosedOrderResponse;
 
 /**
  * Upbit private payload mapping 실패 오류다.
@@ -195,6 +198,22 @@ export function toBrokerOrderFromCommand(
   const order = parsePrivatePayload(UpbitPrivateOrderCommandResponseSchema, "ORDER_COMMAND", payload);
 
   return toBrokerOrderFromPrivateOrder(order, options, "upbit_private_order_command");
+}
+
+/**
+ * Upbit 종료 주문 목록 응답을 broker order 목록으로 변환한다.
+ *
+ * closed order 목록은 M16 read-only reconcile의 조회 결과이며, raw provider payload를 strategy나 runtime으로 직접
+ * 넘기지 않고 `BrokerOrder` contract로 정규화한다. raw provider payload는 metadata에 보존하지 않는다.
+ * 입력/출력 모두 외부 side effect가 없다.
+ */
+export function toBrokerOrdersFromClosedOrders(
+  payload: unknown,
+  options: MapUpbitPrivatePayloadOptions,
+): readonly BrokerOrder[] {
+  const orders = parsePrivatePayload(UpbitPrivateClosedOrdersResponseSchema, "CLOSED_ORDERS", payload);
+
+  return orders.map((order) => toBrokerOrderFromPrivateOrder(order, options, "upbit_private_closed_order"));
 }
 
 /**
@@ -396,7 +415,7 @@ function toDomainOrderStatus(
 function toBrokerOrderFromPrivateOrder(
   order: UpbitPrivateOrderSummaryPayload,
   options: MapUpbitPrivatePayloadOptions,
-  source: "upbit_private_order_lookup" | "upbit_private_order_command" | "upbit_private_open_order",
+  source: "upbit_private_order_lookup" | "upbit_private_order_command" | "upbit_private_open_order" | "upbit_private_closed_order",
 ): BrokerOrder {
   const executedVolume = normalizeDecimalString(order.executed_volume);
   const remainingQuantity = normalizeDecimalString(order.remaining_volume ?? "0");
@@ -442,7 +461,7 @@ function toOrderLookupMetadata(
 
 function toOrderMetadata(
   order: UpbitPrivateOrderSummaryPayload,
-  source: "upbit_private_order_lookup" | "upbit_private_order_command" | "upbit_private_open_order",
+  source: "upbit_private_order_lookup" | "upbit_private_order_command" | "upbit_private_open_order" | "upbit_private_closed_order",
   executedVolume: NumericString,
   includeRawPayload: boolean,
 ): JsonRecord {

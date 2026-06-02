@@ -17,6 +17,7 @@ import type {
   UpbitPrivateErrorKind,
   UpbitPrivateErrorTrace,
   UpbitPrivateGetOrderInput,
+  UpbitPrivateListClosedOrdersInput,
   UpbitPrivateListOpenOrdersInput,
   UpbitPrivateRequestMethod,
   UpbitPrivateRestClientOptions,
@@ -38,6 +39,19 @@ interface UpbitProviderErrorPayload {
     name?: unknown;
     message?: unknown;
   };
+}
+
+const CLOSED_ORDERS_MAX_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
+
+/**
+ * Upbit 종료 주문 조회 시간 파라미터의 정규화 결과다.
+ *
+ * `value`는 URL query와 JWT query hash에 그대로 쓰는 Unix timestamp(ms) 문자열이고, `timestampMs`는 거래소 호출 전
+ * 조회 window invariant를 검증하기 위한 숫자 값이다. 이 구조는 파싱 결과만 보존하며 외부 side effect를 만들지 않는다.
+ */
+interface UpbitClosedOrdersTimestamp {
+  value: string;
+  timestampMs: number;
 }
 
 /**
@@ -98,6 +112,26 @@ export class UpbitPrivateRestClient {
       method: "GET",
       pathname: "/v1/order",
       queryParams: toSingleOrderIdentifierQueryParams(input, "주문 조회"),
+    });
+  }
+
+  /**
+   * 종료 주문 목록 조회 endpoint를 호출한다.
+   *
+   * M16 read-only reconcile이 체결 완료와 취소 주문을 조회하는 read-only wrapper다. `state`와 `states[]` 동시 지정,
+   * 빈 `states[]`, 지원하지 않는 상태, `limit > 1000`은 fetch 전에 fail-closed 한다. `page`는 Upbit 공식 closed API가
+   * 지원하지 않으므로 이 wrapper에 포함하지 않는다. `start_time`/`end_time` timestamp는 query hash와 URL query에
+   * 같은 순서로 반영된다.
+   */
+  public async listClosedOrders(
+    input: UpbitPrivateListClosedOrdersInput = {},
+  ): Promise<UpbitPrivateRestResponse<unknown>> {
+    const queryParams = toListClosedOrdersQueryParams(input);
+
+    return this.requestJson({
+      method: "GET",
+      pathname: "/v1/orders/closed",
+      queryParams,
     });
   }
 
@@ -288,6 +322,113 @@ function toCreateLimitOrderBodyParams(input: UpbitPrivateCreateLimitOrderInput):
     ...(input.timeInForce === undefined ? [] : [{ key: "time_in_force", value: input.timeInForce }]),
     ...(input.smpType === undefined ? [] : [{ key: "smp_type", value: input.smpType }]),
   ];
+}
+
+function toListClosedOrdersQueryParams(input: UpbitPrivateListClosedOrdersInput): UpbitQueryParams {
+  const violations: string[] = [];
+  const params: UpbitQueryParams[number][] = [];
+
+  // `state`와 `states[]`는 동시에 지정할 수 없다.
+  if (input.state !== undefined && input.states !== undefined) {
+    violations.push("종료 주문 조회 state와 states[]는 동시에 지정할 수 없습니다");
+  }
+
+  if (input.market !== undefined) {
+    validateRequiredString(input.market, "종료 주문 조회 market", violations);
+    params.push({ key: "market", value: input.market });
+  }
+
+  if (input.state !== undefined) {
+    if (input.state !== "done" && input.state !== "cancel") {
+      violations.push("종료 주문 조회 state는 done 또는 cancel만 허용합니다");
+    }
+    params.push({ key: "state", value: input.state });
+  } else {
+    // 기본 상태는 체결 완료와 취소 주문을 함께 조회한다.
+    const states = input.states ?? ["done", "cancel"];
+
+    if (states.length === 0) {
+      violations.push("종료 주문 조회 states[]는 비어 있을 수 없습니다");
+    }
+    for (const state of states) {
+      if (state !== "done" && state !== "cancel") {
+        violations.push("종료 주문 조회 states[]는 done 또는 cancel만 허용합니다");
+        break;
+      }
+    }
+    if (states.length > 0) {
+      params.push({ key: "states[]", value: states });
+    }
+  }
+
+  if (input.limit !== undefined) {
+    validatePositiveInteger(input.limit, "종료 주문 조회 limit", violations);
+    if (input.limit > 1000) {
+      violations.push("종료 주문 조회 limit은 1000 이하여야 합니다");
+    }
+    params.push({ key: "limit", value: input.limit });
+  }
+
+  if (input.orderBy !== undefined) {
+    if (input.orderBy !== "asc" && input.orderBy !== "desc") {
+      violations.push("종료 주문 조회 order_by는 asc 또는 desc 여야 합니다");
+    }
+    params.push({ key: "order_by", value: input.orderBy });
+  }
+
+  const startTime = input.startTime === undefined ? undefined : toUpbitTimestamp(input.startTime);
+  const endTime = input.endTime === undefined ? undefined : toUpbitTimestamp(input.endTime);
+
+  if (startTime !== undefined && endTime !== undefined) {
+    if (endTime.timestampMs < startTime.timestampMs) {
+      violations.push("종료 주문 조회 end_time은 start_time 이후여야 합니다");
+    }
+    if (endTime.timestampMs - startTime.timestampMs > CLOSED_ORDERS_MAX_WINDOW_MS) {
+      violations.push("종료 주문 조회 start_time/end_time window는 7일 이하여야 합니다");
+    }
+  }
+
+  // reconcile snapshot이 거래소 거부나 누락에 의존하지 않도록 시간 window를 로컬에서 먼저 닫는다.
+  if (startTime !== undefined) {
+    params.push({ key: "start_time", value: startTime.value });
+  }
+
+  if (endTime !== undefined) {
+    params.push({ key: "end_time", value: endTime.value });
+  }
+
+  if (violations.length > 0) {
+    throw new UnsafeUpbitPrivateRequestError({ violations });
+  }
+
+  return params;
+}
+
+/**
+ * ISO 8601 문자열 또는 Unix timestamp(ms) 숫자를 Upbit API가 요구하는 Unix timestamp(ms) 문자열로 변환한다.
+ *
+ * 이 함수는 결정적이어야 하며, 같은 입력이 항상 같은 문자열을 반환해 JWT query hash가 일관되게 유지되도록 한다.
+ * 외부 side effect는 없으며, 파싱 실패 시 원본을 그대로 반영하지 않고 오류로 닫는다.
+ */
+function toUpbitTimestamp(value: string | number): UpbitClosedOrdersTimestamp {
+  if (typeof value === "number") {
+    if (!Number.isFinite(value)) {
+      throw new UnsafeUpbitPrivateRequestError({
+        violations: [`종료 주문 조회 start_time/end_time을 해석할 수 없습니다: 유효하지 않은 시간 형식입니다`],
+      });
+    }
+    return { value: String(value), timestampMs: value };
+  }
+
+  // ISO 8601 문자열을 Date로 파싱해 Unix timestamp(ms)로 변환한다.
+  const timestampMs = new Date(value).getTime();
+  if (Number.isNaN(timestampMs)) {
+    throw new UnsafeUpbitPrivateRequestError({
+      violations: [`종료 주문 조회 start_time/end_time을 해석할 수 없습니다: 유효하지 않은 시간 형식입니다`],
+    });
+  }
+
+  return { value: String(timestampMs), timestampMs };
 }
 
 function toListOpenOrdersQueryParams(input: UpbitPrivateListOpenOrdersInput): UpbitQueryParams {

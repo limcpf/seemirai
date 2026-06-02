@@ -23,7 +23,8 @@ export type UpbitPrivatePayloadSchemaName =
   | "ORDER_CHANCE"
   | "ORDER_LOOKUP"
   | "ORDER_COMMAND"
-  | "OPEN_ORDERS";
+  | "OPEN_ORDERS"
+  | "CLOSED_ORDERS";
 
 /**
  * Upbit private 오류 요약에 포함할 선택 추적 입력이다.
