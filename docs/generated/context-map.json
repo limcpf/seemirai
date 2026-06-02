@@ -254,6 +254,13 @@
       "owner_scope": "docs/exec-plans/active"
     },
     {
+      "path": "docs/exec-plans/completed/2026-06-02-issue-135-m15-upbit-live-broker.md",
+      "kind": "exec-plan",
+      "role": "issue #135 M15 UpbitLiveBroker 완료 기록",
+      "read_when": ["issue #135 완료", "M15 완료", "UpbitLiveBroker 구현", "live broker guard", "open orders wrapper", "M16 선행 조건 확인"],
+      "owner_scope": "docs/exec-plans/completed"
+    },
+    {
       "path": "docs/exec-plans/completed/2026-06-01-issue-124-m14-v0-2-pilot.md",
       "kind": "exec-plan",
       "role": "issue #124 M14 v0.2 pilot Upbit private API와 소액 현물 주문 경계 완료 기록",

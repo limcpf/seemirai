@@ -120,6 +120,36 @@ export interface UpbitPrivateGetOrderInput {
 }
 
 /**
+ * Upbit 체결 대기 주문 목록 조회가 허용하는 open order 상태다.
+ *
+ * 공식 API는 `wait`와 `watch`만 open order 목록에서 조회할 수 있다. M15 live broker는 미체결 주문과 예약 주문 대기를
+ * 같은 broker surface에서 관측하기 위해 두 상태를 함께 조회할 수 있어야 하며, type 자체는 외부 side effect를 만들지 않는다.
+ */
+export type UpbitPrivateOpenOrderState = "wait" | "watch";
+
+/**
+ * Upbit 체결 대기 주문 목록 조회 정렬 방향이다.
+ *
+ * 거래소 API의 `order_by` query 값으로만 전달되며, pagination 순서가 바뀌면 reconcile 입력 순서도 바뀌므로 호출자가
+ * 명시한 값만 통과시킨다. type 자체는 외부 side effect를 만들지 않는다.
+ */
+export type UpbitPrivateOpenOrdersOrderBy = "asc" | "desc";
+
+/**
+ * Upbit 체결 대기 주문 목록 조회 입력이다.
+ *
+ * `state` 단일 파라미터와 `states[]`는 동시에 사용할 수 없으므로 M15 client는 배열형 `states[]`만 지원한다. query 순서는
+ * JWT hash와 URL query에 함께 쓰이므로 wrapper가 안정적인 순서로 직렬화해야 한다.
+ */
+export interface UpbitPrivateListOpenOrdersInput {
+  market?: string;
+  states?: readonly UpbitPrivateOpenOrderState[];
+  page?: number;
+  limit?: number;
+  orderBy?: UpbitPrivateOpenOrdersOrderBy;
+}
+
+/**
  * Upbit 지정가 주문 생성 endpoint 입력이다.
  *
  * low-level private client는 Upbit 공식 `limit` 주문 payload만 만들고, M14 pilot의 KRW/소액/side/profile 제한은 runtime

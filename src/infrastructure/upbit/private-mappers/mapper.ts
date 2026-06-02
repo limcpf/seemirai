@@ -19,10 +19,14 @@ import {
 import { UPBIT_KRW_SPOT_EXCHANGE_ID } from "../policy-mapper.js";
 import {
   UpbitPrivateAccountsResponseSchema,
+  UpbitPrivateOpenOrdersResponseSchema,
   UpbitPrivateOrderChanceResponseSchema,
+  UpbitPrivateOrderCommandResponseSchema,
   UpbitPrivateOrderLookupResponseSchema,
 } from "./schemas.js";
 import type {
+  UpbitPrivateOpenOrderResponse,
+  UpbitPrivateOrderCommandResponse,
   UpbitPrivateOrderChancePayload,
   UpbitPrivateOrderLookupResponse,
 } from "./schemas.js";
@@ -40,6 +44,11 @@ interface DomainOrderMapping {
   requestedQuantity: NumericString;
   requestedPrice?: NumericString;
 }
+
+type UpbitPrivateOrderSummaryPayload =
+  | UpbitPrivateOrderLookupResponse
+  | UpbitPrivateOrderCommandResponse
+  | UpbitPrivateOpenOrderResponse;
 
 /**
  * Upbit private payload mapping 실패 오류다.
@@ -165,25 +174,42 @@ export function toBrokerOrderFromLookup(
   options: MapUpbitPrivatePayloadOptions,
 ): BrokerOrder {
   const order = parsePrivatePayload(UpbitPrivateOrderLookupResponseSchema, "ORDER_LOOKUP", payload);
-  const executedVolume = normalizeDecimalString(order.executed_volume);
-  const remainingQuantity = normalizeDecimalString(order.remaining_volume ?? "0");
-  const domainOrder = toDomainOrderMapping(order, executedVolume, remainingQuantity);
+  const brokerOrder = toBrokerOrderFromPrivateOrder(order, options, "upbit_private_order_lookup");
 
   return {
-    brokerOrderId: order.uuid,
-    idempotencyKey: order.identifier ?? order.uuid,
-    exchangeId: options.exchangeId ?? UPBIT_KRW_SPOT_EXCHANGE_ID,
-    market: order.market,
-    side: toDomainOrderSide(order.side),
-    orderType: domainOrder.orderType,
-    status: toDomainOrderStatus(order, executedVolume),
-    requestedQuantity: domainOrder.requestedQuantity,
-    remainingQuantity,
-    ...(domainOrder.requestedPrice === undefined ? {} : { requestedPrice: domainOrder.requestedPrice }),
-    acceptedAt: order.created_at,
-    updatedAt: options.capturedAt,
-    metadata: toOrderLookupMetadata(order, executedVolume),
+    ...brokerOrder,
+    metadata: toOrderLookupMetadata(order, normalizeDecimalString(order.executed_volume)),
   };
+}
+
+/**
+ * Upbit 주문 생성/취소 응답을 broker order contract로 변환한다.
+ *
+ * command 응답은 실제 주문 생성/취소 side effect 직후의 provider payload이므로, 반환값에는 상태와 추적용 요약만 남기고
+ * raw payload를 metadata에 보존하지 않는다. 이 함수는 이미 받은 payload 정규화만 수행하며 외부 API를 호출하지 않는다.
+ */
+export function toBrokerOrderFromCommand(
+  payload: unknown,
+  options: MapUpbitPrivatePayloadOptions,
+): BrokerOrder {
+  const order = parsePrivatePayload(UpbitPrivateOrderCommandResponseSchema, "ORDER_COMMAND", payload);
+
+  return toBrokerOrderFromPrivateOrder(order, options, "upbit_private_order_command");
+}
+
+/**
+ * Upbit 체결 대기 주문 목록 응답을 broker order 목록으로 변환한다.
+ *
+ * open order 목록은 M15 live broker의 `listOpenOrders` 조회 결과이며, raw provider payload를 strategy나 runtime으로 직접
+ * 넘기지 않고 `BrokerOrder` contract로 정규화한다. 입력/출력 모두 외부 side effect가 없다.
+ */
+export function toBrokerOrdersFromOpenOrders(
+  payload: unknown,
+  options: MapUpbitPrivatePayloadOptions,
+): readonly BrokerOrder[] {
+  const orders = parsePrivatePayload(UpbitPrivateOpenOrdersResponseSchema, "OPEN_ORDERS", payload);
+
+  return orders.map((order) => toBrokerOrderFromPrivateOrder(order, options, "upbit_private_open_order"));
 }
 
 /**
@@ -288,12 +314,12 @@ function toAllowedOrderTypes(orderChance: UpbitPrivateOrderChancePayload): reado
   return allowedOrderTypes;
 }
 
-function toDomainOrderSide(side: UpbitPrivateOrderLookupResponse["side"]): OrderSide {
+function toDomainOrderSide(side: UpbitPrivateOrderSummaryPayload["side"]): OrderSide {
   return side === "bid" ? "BUY" : "SELL";
 }
 
 function toDomainOrderMapping(
-  order: UpbitPrivateOrderLookupResponse,
+  order: UpbitPrivateOrderSummaryPayload,
   executedVolume: NumericString,
   remainingQuantity: NumericString,
 ): DomainOrderMapping {
@@ -349,7 +375,7 @@ function toDomainOrderMapping(
 }
 
 function toDomainOrderStatus(
-  order: UpbitPrivateOrderLookupResponse,
+  order: UpbitPrivateOrderSummaryPayload,
   executedVolume: NumericString,
 ): OrderLifecycleStatus {
   if (order.state === "done") {
@@ -367,12 +393,64 @@ function toDomainOrderStatus(
   return "ACCEPTED";
 }
 
+function toBrokerOrderFromPrivateOrder(
+  order: UpbitPrivateOrderSummaryPayload,
+  options: MapUpbitPrivatePayloadOptions,
+  source: "upbit_private_order_lookup" | "upbit_private_order_command" | "upbit_private_open_order",
+): BrokerOrder {
+  const executedVolume = normalizeDecimalString(order.executed_volume);
+  const remainingQuantity = normalizeDecimalString(order.remaining_volume ?? "0");
+  const domainOrder = toDomainOrderMapping(order, executedVolume, remainingQuantity);
+  // open order 목록은 status/audit에 반복 노출되므로 raw provider payload를 safe 요약 metadata에서 제외한다.
+  const includeRawPayload = source === "upbit_private_order_lookup";
+
+  return {
+    brokerOrderId: order.uuid,
+    idempotencyKey: order.identifier ?? order.uuid,
+    exchangeId: options.exchangeId ?? UPBIT_KRW_SPOT_EXCHANGE_ID,
+    market: order.market,
+    side: toDomainOrderSide(order.side),
+    orderType: domainOrder.orderType,
+    status: toDomainOrderStatus(order, executedVolume),
+    requestedQuantity: domainOrder.requestedQuantity,
+    remainingQuantity,
+    ...(domainOrder.requestedPrice === undefined ? {} : { requestedPrice: domainOrder.requestedPrice }),
+    acceptedAt: order.created_at,
+    updatedAt: options.capturedAt,
+    metadata: toOrderMetadata(order, source, executedVolume, includeRawPayload),
+  };
+}
+
 function toOrderLookupMetadata(
   order: UpbitPrivateOrderLookupResponse,
   executedVolume: NumericString,
 ): JsonRecord {
   return {
-    source: "upbit_private_order_lookup",
+    ...toOrderMetadata(order, "upbit_private_order_lookup", executedVolume, true),
+    trades: order.trades.map((trade) => ({
+      uuid: trade.uuid,
+      market: trade.market,
+      price: normalizeDecimalString(trade.price),
+      volume: normalizeDecimalString(trade.volume),
+      funds: normalizeDecimalString(trade.funds),
+      ...(trade.trend === undefined ? {} : { trend: trade.trend }),
+      createdAt: trade.created_at,
+      side: trade.side,
+    })),
+  };
+}
+
+function toOrderMetadata(
+  order: UpbitPrivateOrderSummaryPayload,
+  source: "upbit_private_order_lookup" | "upbit_private_order_command" | "upbit_private_open_order",
+  executedVolume: NumericString,
+  includeRawPayload: boolean,
+): JsonRecord {
+  const executedFunds =
+    "executed_funds" in order && typeof order.executed_funds === "string" ? order.executed_funds : undefined;
+
+  return {
+    source,
     upbitUuid: order.uuid,
     ...(order.identifier === undefined ? {} : { upbitIdentifier: order.identifier }),
     upbitSide: order.side,
@@ -387,18 +465,9 @@ function toOrderLookupMetadata(
     locked: normalizeDecimalString(order.locked),
     ...(order.prevented_volume === undefined ? {} : { preventedVolume: normalizeDecimalString(order.prevented_volume) }),
     ...(order.prevented_locked === undefined ? {} : { preventedLocked: normalizeDecimalString(order.prevented_locked) }),
-    tradesCount: order.trades_count,
-    trades: order.trades.map((trade) => ({
-      uuid: trade.uuid,
-      market: trade.market,
-      price: normalizeDecimalString(trade.price),
-      volume: normalizeDecimalString(trade.volume),
-      funds: normalizeDecimalString(trade.funds),
-      ...(trade.trend === undefined ? {} : { trend: trade.trend }),
-      createdAt: trade.created_at,
-      side: trade.side,
-    })),
-    raw: order as JsonRecord,
+    ...(executedFunds === undefined ? {} : { executedFunds: normalizeDecimalString(executedFunds) }),
+    ...(order.trades_count === undefined ? {} : { tradesCount: order.trades_count }),
+    ...(includeRawPayload ? { raw: order as JsonRecord } : {}),
   };
 }
 

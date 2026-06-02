@@ -21,7 +21,9 @@ export interface MapUpbitPrivatePayloadOptions {
 export type UpbitPrivatePayloadSchemaName =
   | "ACCOUNTS"
   | "ORDER_CHANCE"
-  | "ORDER_LOOKUP";
+  | "ORDER_LOOKUP"
+  | "ORDER_COMMAND"
+  | "OPEN_ORDERS";
 
 /**
  * Upbit private 오류 요약에 포함할 선택 추적 입력이다.

@@ -426,6 +426,8 @@ Acceptance Criteria:
 
 상세 제품 명세: [`../../product-specs/upbit-live-autonomous-trading.md`](../../product-specs/upbit-live-autonomous-trading.md)
 
+M15 상태: completed. issue #135의 완료 기록은 [`../completed/2026-06-02-issue-135-m15-upbit-live-broker.md`](../completed/2026-06-02-issue-135-m15-upbit-live-broker.md)를 기준으로 한다. 다음 작업은 M16 실계좌 상태 reconcile이다.
+
 목적:
 
 - 운영자 본인 계정의 Upbit KRW 현물에서 24시간 시장을 감시하고, 비용·리스크·유동성 조건을 통과한 경우에만 자동 매수/자동 매도를 수행한다.
