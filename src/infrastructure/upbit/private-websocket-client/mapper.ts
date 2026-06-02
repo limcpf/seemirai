@@ -1,0 +1,194 @@
+import { Decimal } from "decimal.js";
+import type { ExchangeId, MarketCode, NumericString, TimestampInput } from "../../../domain/index.js";
+import { UPBIT_KRW_SPOT_EXCHANGE_ID } from "../policy-mapper.js";
+import type {
+  UpbitPrivateWebSocketErrorEvent,
+  UpbitPrivateWebSocketLifecycleEvent,
+  UpbitPrivateMyAssetEvent,
+  UpbitPrivateMyOrderEvent,
+} from "./types.js";
+import type {
+  UpbitPrivateWebSocketMyAsset,
+  UpbitPrivateWebSocketMyOrder,
+  UpbitPrivateWebSocketProviderErrorMessage,
+  UpbitPrivateWebSocketStatusMessage,
+} from "./schemas.js";
+
+/* ============================================================
+ * Private WebSocket payload mapper
+ *
+ * raw myOrder/myAsset payload를 정규화된 event contract로
+ * 변환한다. numeric 값은 Decimal을 통해 문자열로 보존해
+ * 정밀도 손실을 방지한다.
+ *
+ * raw payload, Authorization/JWT, access key, secret key는
+ * 정규화 결과에 포함하지 않는다.
+ * ============================================================ */
+
+/** mapper 공통 옵션이다. */
+export interface MapUpbitPrivateWebSocketEventOptions {
+  exchangeId?: ExchangeId;
+  receivedAt: TimestampInput;
+}
+
+/**
+ * myOrder raw payload를 정규화된 `UpbitPrivateMyOrderEvent`로 변환한다.
+ *
+ * Upbit private WebSocket은 sequence가 없으므로 event 식별자와
+ * timestamp만 보존한다. runtime worker가 gap/stale을 판단할 때는
+ * eventTimestamp나 receivedAt을 기준으로 삼아야 한다.
+ */
+export function toUpbitPrivateMyOrderEvent(
+  payload: UpbitPrivateWebSocketMyOrder,
+  options: MapUpbitPrivateWebSocketEventOptions,
+): UpbitPrivateMyOrderEvent {
+  const exchangeId = options.exchangeId ?? UPBIT_KRW_SPOT_EXCHANGE_ID;
+
+  return {
+    type: "MY_ORDER",
+    exchangeId,
+    orderId: payload.uuid,
+    ...(payload.identifier === undefined ? {} : { identifier: payload.identifier }),
+    market: payload.code as MarketCode,
+    side: payload.ask_bid,
+    ...(payload.order_type === undefined ? {} : { orderType: payload.order_type }),
+    state: payload.state,
+    price: toNumericString(payload.price),
+    volume: toOrderVolumeString(payload),
+    eventVolume: toNumericString(payload.volume),
+    ...(payload.trade_uuid === undefined ? {} : { tradeId: payload.trade_uuid }),
+    ...(payload.trade_timestamp === undefined
+      ? {}
+      : { tradeTimestamp: timestampFromMilliseconds(payload.trade_timestamp) }),
+    remainingVolume: toNumericString(payload.remaining_volume),
+    executedVolume: toNumericString(payload.executed_volume),
+    tradePrice: toNumericString(payload.avg_price),
+    paidFee: toNumericString(payload.paid_fee),
+    ...(payload.state !== "trade" || payload.trade_fee == null
+      ? {}
+      : { tradeFee: toNumericString(payload.trade_fee) }),
+    ...(payload.prevented_volume === undefined
+      ? {}
+      : { preventedVolume: toNumericString(payload.prevented_volume) }),
+    ...(payload.prevented_locked === undefined
+      ? {}
+      : { preventedLocked: toNumericString(payload.prevented_locked) }),
+    // Upbit myOrder 공식 payload에는 fee currency가 없으므로 관측된 경우에만 보존한다.
+    ...(payload.fee_currency === undefined ? {} : { feeCurrency: payload.fee_currency }),
+    orderTimestamp: timestampFromMilliseconds(payload.order_timestamp),
+    eventTimestamp: timestampFromMilliseconds(payload.timestamp),
+    receivedAt: options.receivedAt,
+    streamType: payload.stream_type,
+    metadata: {
+      // raw payload 중 정규화 필드 외 추가 정보를 보존하되
+      // secret, JWT, Authorization header는 절대 포함하지 않는다.
+      rawType: payload.type,
+    },
+  };
+}
+
+/**
+ * Upbit private WebSocket status envelope을 lifecycle event로 변환한다.
+ *
+ * ping/pong liveness는 계정 데이터 부재와 별개로 판단해야 하므로,
+ * `{status:"UP"}` 응답은 malformed account event가 아니라
+ * CONNECTED evidence로 정규화한다.
+ */
+export function toUpbitPrivateWebSocketStatusEvent(
+  payload: UpbitPrivateWebSocketStatusMessage,
+  options: MapUpbitPrivateWebSocketEventOptions,
+): UpbitPrivateWebSocketLifecycleEvent {
+  const exchangeId = options.exchangeId ?? UPBIT_KRW_SPOT_EXCHANGE_ID;
+
+  return {
+    type: "LIFECYCLE",
+    exchangeId,
+    status: "CONNECTED",
+    observedAt: options.receivedAt,
+    reasonCode: "UPBIT_PRIVATE_WEBSOCKET_STATUS_UP",
+    metadata: {
+      rawType: "status",
+      status: payload.status,
+    },
+  };
+}
+
+/**
+ * Upbit private WebSocket error envelope을 safe error event로 변환한다.
+ *
+ * provider error의 name만 안정 식별자로 보존하고, raw provider
+ * message/body는 status/audit 표면으로 전파하지 않는다.
+ */
+export function toUpbitPrivateWebSocketProviderErrorEvent(
+  payload: UpbitPrivateWebSocketProviderErrorMessage,
+  options: MapUpbitPrivateWebSocketEventOptions,
+): UpbitPrivateWebSocketErrorEvent {
+  const exchangeId = options.exchangeId ?? UPBIT_KRW_SPOT_EXCHANGE_ID;
+
+  return {
+    type: "ERROR",
+    exchangeId,
+    observedAt: options.receivedAt,
+    errorKind: payload.error.name,
+    schemaPath: "error.name",
+    metadata: {
+      rawType: "error",
+    },
+  };
+}
+
+/**
+ * myAsset raw payload를 정규화된 `UpbitPrivateMyAssetEvent`로 변환한다.
+ *
+ * balance/locked는 numeric string으로 보존한다.
+ * raw payload, secret, JWT, Authorization header는
+ * 반환 객체에 포함하지 않는다.
+ */
+export function toUpbitPrivateMyAssetEvent(
+  payload: UpbitPrivateWebSocketMyAsset,
+  options: MapUpbitPrivateWebSocketEventOptions,
+): UpbitPrivateMyAssetEvent {
+  const exchangeId = options.exchangeId ?? UPBIT_KRW_SPOT_EXCHANGE_ID;
+
+  return {
+    type: "MY_ASSET",
+    exchangeId,
+    balances: payload.assets.map((unit) => ({
+      currency: unit.currency,
+      balance: toNumericString(unit.balance),
+      locked: toNumericString(unit.locked),
+    })),
+    eventTimestamp: timestampFromMilliseconds(payload.timestamp),
+    assetTimestamp: timestampFromMilliseconds(payload.asset_timestamp),
+    receivedAt: options.receivedAt,
+    streamType: payload.stream_type,
+    metadata: {
+      rawType: payload.type,
+    },
+  };
+}
+
+/**
+ * WebSocket numeric 값을 안정적인 문자열로 변환한다.
+ *
+ * number(1750000000000)와 문자열("0.001") 입력을 모두 Decimal로
+ * 정규화해 후속 저장/비교 경계에서 정밀도 차이가 발생하지 않게 한다.
+ */
+function toNumericString(value: string): NumericString {
+  return new Decimal(value).toFixed();
+}
+
+function toOrderVolumeString(payload: UpbitPrivateWebSocketMyOrder): NumericString {
+  if (payload.state !== "trade") {
+    return toNumericString(payload.volume);
+  }
+
+  // trade 이벤트의 volume은 해당 체결 수량이므로 주문 기준 수량은 누적 체결+잔량으로 복원한다.
+  return new Decimal(payload.remaining_volume)
+    .plus(payload.executed_volume)
+    .toFixed() as NumericString;
+}
+
+function timestampFromMilliseconds(timestamp: number): string {
+  return new Date(timestamp).toISOString();
+}

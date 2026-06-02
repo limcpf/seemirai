@@ -1,0 +1,19 @@
+{
+  "type": "myAsset",
+  "asset_uuid": "asset-fixture-uuid",
+  "assets": [
+    {
+      "currency": "KRW",
+      "balance": "5000000",
+      "locked": "100000"
+    },
+    {
+      "currency": "BTC",
+      "balance": "0.5",
+      "locked": "0.1"
+    }
+  ],
+  "asset_timestamp": 1750000000000,
+  "timestamp": 1750000000123,
+  "stream_type": "SNAPSHOT"
+}
