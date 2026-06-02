@@ -10,6 +10,7 @@ import type {
   ReconcileSummary,
 } from "../../domain/live-reconcile.js";
 import type { KillSwitchState } from "../../domain/state-machines.js";
+import { parseFinancialDecimal } from "../../shared/decimal.js";
 
 /* ============================================================
  * Reconcile Diff Engine — 순수 Orchestration
@@ -97,7 +98,7 @@ export function runReconcileEngine(input: ReconcileEngineInput): ReconcileEngine
   // 7. summary 생성
   const summary = buildSummary(
     allMismatches,
-    countSummaryExchangeOpenOrders(allExchangeOrders),
+    countSummaryExchangeOpenOrders(allExchangeOrders, input.localOpenOrders),
     input.localOpenOrders,
     balanceResult.status,
   );
@@ -172,6 +173,10 @@ function normalizeObservedAt(observedAt: ReconcileEngineInput["observedAt"]): st
 function buildWebSocketOrderSnapshots(
   websocketContext: ReconcileEngineInput["websocketContext"],
 ): ReconcileExchangeOrderSnapshot[] {
+  if (!canUseWebSocketOrderSnapshots(websocketContext)) {
+    return [];
+  }
+
   const snapshots: ReconcileExchangeOrderSnapshot[] = [];
 
   for (const event of websocketContext.events) {
@@ -202,15 +207,25 @@ function toWebSocketOrderSnapshot(
   }
 
   const payload = event.payload;
-  const market = readStringField(payload, "market", "code");
-  const side = normalizeWebSocketOrderSide(readStringField(payload, "side", "ask_bid"));
-  const exchangeStatus = readStringField(payload, "exchangeStatus", "exchange_status", "state");
-  const requestedQuantity = readStringField(
+  const market = readStringField(payload, "market", "code", "cd");
+  const side = normalizeWebSocketOrderSide(readStringField(payload, "side", "ask_bid", "ab"));
+  const rawExchangeStatus = readStringField(
     payload,
-    "requestedQuantity",
-    "requested_quantity",
-    "volume",
+    "exchangeStatus",
+    "exchange_status",
+    "state",
+    "s",
   );
+  const remainingQuantity = readStringField(
+    payload,
+    "remainingQuantity",
+    "remaining_quantity",
+    "remainingVolume",
+    "remaining_volume",
+    "rv",
+  );
+  const exchangeStatus = normalizeWebSocketExchangeStatus(rawExchangeStatus, remainingQuantity);
+  const requestedQuantity = readWebSocketRequestedQuantity(payload, rawExchangeStatus);
 
   if (
     market === undefined ||
@@ -233,16 +248,13 @@ function toWebSocketOrderSnapshot(
     payload,
     "exchangeOrderId",
     "exchange_order_id",
+    "orderId",
+    "order_id",
     "uuid",
+    "uid",
   );
   const identifier = readStringField(payload, "identifier");
-  const remainingQuantity = readStringField(
-    payload,
-    "remainingQuantity",
-    "remaining_quantity",
-    "remaining_volume",
-  );
-  const requestedPrice = readStringField(payload, "requestedPrice", "requested_price", "price");
+  const requestedPrice = readStringField(payload, "requestedPrice", "requested_price", "price", "p");
 
   if (exchangeOrderId !== undefined) {
     snapshot.exchangeOrderId = exchangeOrderId;
@@ -261,10 +273,163 @@ function toWebSocketOrderSnapshot(
 }
 
 /**
+ * WebSocket 주문 snapshot을 상태 diff 근거로 사용할 수 있는지 판단한다.
+ *
+ * REST bootstrap 기준점이 없거나 실제 liveness gap이 있으면 myOrder 이벤트의
+ * 순서를 증명할 수 없으므로, gap evidence는 남기되 상태 전진 후보 입력에서는
+ * 제외한다. staleSince 단독 증거는 event-only stream 특성상 gap으로 보지 않는다.
+ *
+ * @param websocketContext private WebSocket 이벤트와 gap context
+ * @returns myOrder 이벤트를 diff snapshot으로 승격해도 되는지 여부
+ */
+function canUseWebSocketOrderSnapshots(
+  websocketContext: ReconcileEngineInput["websocketContext"],
+): boolean {
+  if (websocketContext.bootstrapCompleteAt === undefined) {
+    return false;
+  }
+
+  const evidence = websocketContext.disconnectEvidence;
+  if (evidence === undefined) {
+    return true;
+  }
+
+  return !(
+    evidence.disconnectedAt !== undefined ||
+    evidence.reconnectedAt !== undefined ||
+    (evidence.gapDurationMs ?? 0) > 0 ||
+    (evidence.reconnectCount ?? 0) > 0
+  );
+}
+
+/**
+ * WebSocket payload에서 주문 기준 수량을 읽는다.
+ *
+ * normalized myOrder event의 `volume`은 이미 주문 기준 수량이지만, Upbit raw
+ * `state=trade` payload의 `volume`은 단일 체결량이다. raw trade 이벤트는
+ * 정규화 필드나 `remaining + executed` 복원이 가능할 때만 snapshot으로 쓴다.
+ *
+ * @param payload private WebSocket myOrder payload
+ * @param rawExchangeStatus 원천 myOrder state
+ * @returns 주문 기준 수량 또는 복원 불가 시 undefined
+ */
+function readWebSocketRequestedQuantity(
+  payload: Record<string, unknown>,
+  rawExchangeStatus: string | undefined,
+): string | undefined {
+  const normalizedQuantity = readStringField(
+    payload,
+    "requestedQuantity",
+    "requested_quantity",
+    "orderQuantity",
+    "order_quantity",
+  );
+  if (normalizedQuantity !== undefined) {
+    return normalizedQuantity;
+  }
+
+  const payloadType = readStringField(payload, "type");
+  const isRawTradeEvent =
+    rawExchangeStatus === "trade" && payloadType !== "MY_ORDER";
+  if (isRawTradeEvent) {
+    return reconstructTradeOrderQuantity(payload);
+  }
+
+  return readStringField(payload, "volume", "v");
+}
+
+/**
+ * raw myOrder trade 이벤트에서 주문 기준 수량을 복원한다.
+ *
+ * trade 이벤트의 `volume`은 해당 체결량이므로 immutable fingerprint에 쓰면
+ * 원주문 수량과 충돌한다. remaining/executed 누적 수량이 둘 다 있을 때만
+ * 주문 기준 수량으로 복원한다.
+ *
+ * @param payload raw private WebSocket myOrder payload
+ * @returns remaining + executed 수량 또는 복원 불가 시 undefined
+ */
+function reconstructTradeOrderQuantity(payload: Record<string, unknown>): string | undefined {
+  const remaining = readStringField(
+    payload,
+    "remainingQuantity",
+    "remaining_quantity",
+    "remainingVolume",
+    "remaining_volume",
+    "rv",
+  );
+  const executed = readStringField(
+    payload,
+    "executedQuantity",
+    "executed_quantity",
+    "executedVolume",
+    "executed_volume",
+    "ev",
+  );
+
+  if (remaining === undefined || executed === undefined) {
+    return undefined;
+  }
+
+  try {
+    return parseFinancialDecimal(remaining)
+      .plus(parseFinancialDecimal(executed))
+      .toFixed();
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * WebSocket state를 reconcile policy가 이해하는 거래소 상태로 정규화한다.
+ *
+ * raw `trade` 이벤트는 상태 전이 이벤트이며 주문의 terminal/open 상태가 아니므로
+ * remaining volume 기준으로 open(wait) 또는 done으로 변환한다.
+ *
+ * @param rawExchangeStatus WebSocket myOrder state
+ * @param remainingQuantity 미체결 수량
+ * @returns reconcile용 exchange status
+ */
+function normalizeWebSocketExchangeStatus(
+  rawExchangeStatus: string | undefined,
+  remainingQuantity: string | undefined,
+): string | undefined {
+  if (rawExchangeStatus !== "trade") {
+    return rawExchangeStatus;
+  }
+
+  if (
+    remainingQuantity !== undefined &&
+    isPositiveFinancialDecimalString(remainingQuantity)
+  ) {
+    return "wait";
+  }
+
+  return "done";
+}
+
+/**
+ * decimal 문자열이 0보다 큰지 안전하게 판정한다.
+ *
+ * raw WebSocket payload가 schema 검증 전 값으로 들어올 수 있으므로 파싱 실패는
+ * 상태 전진 근거로 쓰지 않고 false로 처리한다.
+ *
+ * @param value decimal 후보 문자열
+ * @returns 유효한 양수 decimal 여부
+ */
+function isPositiveFinancialDecimalString(value: string): boolean {
+  try {
+    return parseFinancialDecimal(value).gt(0);
+  } catch {
+    return false;
+  }
+}
+
+/**
  * WebSocket payload에서 허용된 후보 필드명 중 첫 문자열 값을 읽는다.
  *
  * provider raw field와 정규화 field가 공존할 수 있으므로 mapper 경계에서만
- * 선택하고, 숫자/객체 같은 예기치 않은 값은 주문 snapshot 근거로 쓰지 않는다.
+ * 선택한다. 숫자 wire 값은 decimal 문자열로 바꿔 domain snapshot에 넣고,
+ * 객체 같은 예기치 않은 값은 주문 snapshot 근거로 쓰지 않는다.
  *
  * @param payload private WebSocket 이벤트 payload
  * @param fieldNames 우선순위대로 읽을 필드명
@@ -278,6 +443,9 @@ function readStringField(
     const value = payload[fieldName];
     if (typeof value === "string" && value.length > 0) {
       return value;
+    }
+    if (typeof value === "number" && Number.isFinite(value)) {
+      return String(value);
     }
   }
 
@@ -435,6 +603,7 @@ function buildSummary(
  */
 function countSummaryExchangeOpenOrders(
   exchangeOrders: readonly ReconcileExchangeOrderSnapshot[],
+  localOpenOrders: readonly ReconcileLocalOrderSnapshot[],
 ): number {
   let count = 0;
   const seenStrongIdentities = new Set<string>();
@@ -442,9 +611,11 @@ function countSummaryExchangeOpenOrders(
   for (const exchangeOrder of exchangeOrders) {
     const strongIdentity = getSummaryExchangeOpenOrderIdentity(exchangeOrder);
     if (isSummaryExchangeTerminalOrder(exchangeOrder)) {
-      if (strongIdentity !== undefined) {
-        seenStrongIdentities.add(strongIdentity);
-      }
+      addSummaryExchangeIdentityWithLocalBridge(
+        exchangeOrder,
+        localOpenOrders,
+        seenStrongIdentities,
+      );
       continue;
     }
 
@@ -456,13 +627,74 @@ function countSummaryExchangeOpenOrders(
       if (seenStrongIdentities.has(strongIdentity)) {
         continue;
       }
-      seenStrongIdentities.add(strongIdentity);
+      addSummaryExchangeIdentityWithLocalBridge(
+        exchangeOrder,
+        localOpenOrders,
+        seenStrongIdentities,
+      );
     }
 
     count += 1;
   }
 
   return count;
+}
+
+/**
+ * summary count dedupe set에 exchange identity와 local bridge identity를 함께 추가한다.
+ *
+ * 최신 terminal/open snapshot이 identifier만 또는 uuid만 갖는 경우에도, 같은 로컬
+ * 주문이 두 key를 모두 알고 있으면 다른 source의 split identity snapshot을 같은
+ * 주문으로 접어야 status/CLI의 open count가 과대 표시되지 않는다.
+ *
+ * @param exchangeOrder 거래소 주문 snapshot
+ * @param localOpenOrders bridge 후보 로컬 미체결 주문 목록
+ * @param seenStrongIdentities summary count dedupe key set
+ */
+function addSummaryExchangeIdentityWithLocalBridge(
+  exchangeOrder: ReconcileExchangeOrderSnapshot,
+  localOpenOrders: readonly ReconcileLocalOrderSnapshot[],
+  seenStrongIdentities: Set<string>,
+): void {
+  const exchangeIdentity = getSummaryExchangeOpenOrderIdentity(exchangeOrder);
+  if (exchangeIdentity !== undefined) {
+    seenStrongIdentities.add(exchangeIdentity);
+  }
+
+  for (const localOrder of localOpenOrders) {
+    if (hasSummarySharedStrongIdentity(exchangeOrder, localOrder)) {
+      for (const localIdentity of getSummaryLocalOrderIdentities(localOrder)) {
+        seenStrongIdentities.add(localIdentity);
+      }
+    }
+  }
+}
+
+/**
+ * summary bridge를 위해 exchange/local이 강한 identity 축을 공유하는지 판정한다.
+ *
+ * 이 함수는 상태 전진용 identity match가 아니라 summary dedupe key 전파 여부만
+ * 결정한다. uuid/identifier 중 하나가 직접 일치할 때만 local의 다른 key를
+ * bridge로 신뢰한다.
+ *
+ * @param exchangeOrder 거래소 주문 snapshot
+ * @param localOrder 로컬 주문 snapshot
+ * @returns uuid 또는 identifier 공유 여부
+ */
+function hasSummarySharedStrongIdentity(
+  exchangeOrder: ReconcileExchangeOrderSnapshot,
+  localOrder: ReconcileLocalOrderSnapshot,
+): boolean {
+  return (
+    (
+      exchangeOrder.exchangeOrderId !== undefined &&
+      exchangeOrder.exchangeOrderId === localOrder.exchangeOrderId
+    ) ||
+    (
+      exchangeOrder.identifier !== undefined &&
+      exchangeOrder.identifier === localOrder.identifier
+    )
+  );
 }
 
 /**
@@ -528,4 +760,26 @@ function getSummaryExchangeOpenOrderIdentity(
 
   // fingerprint-only snapshot은 동일 가격/수량의 실제 복수 주문 가능성이 있어 summary에서도 행 단위로 보존한다.
   return undefined;
+}
+
+/**
+ * summary count bridge에 사용할 로컬 주문의 강한 식별자 목록을 만든다.
+ *
+ * uuid와 identifier만 source dedupe에 충분한 강한 key로 사용한다. fingerprint는
+ * 동일 가격/수량 복수 주문 가능성이 있어 summary count 억제에 쓰지 않는다.
+ *
+ * @param localOrder 로컬 주문 snapshot
+ * @returns `uuid:*`, `identifier:*` key 목록
+ */
+function getSummaryLocalOrderIdentities(
+  localOrder: ReconcileLocalOrderSnapshot,
+): string[] {
+  const identities: string[] = [];
+  if (localOrder.exchangeOrderId !== undefined) {
+    identities.push(`uuid:${localOrder.exchangeOrderId}`);
+  }
+  if (localOrder.identifier !== undefined) {
+    identities.push(`identifier:${localOrder.identifier}`);
+  }
+  return identities;
 }

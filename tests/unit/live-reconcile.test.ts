@@ -2080,6 +2080,205 @@ describe("runReconcileEngine — 전체 orchestrator", () => {
     ).toBe(false);
   });
 
+  it("WebSocket myOrder JSON_LIST 축약/숫자 필드를 주문 diff snapshot으로 반영한다", () => {
+    const input: ReconcileEngineInput = {
+      exchangeOpenOrders: [],
+      exchangeClosedOrders: [],
+      orderLookups: [],
+      websocketContext: {
+        bootstrapCompleteAt: observedAt,
+        events: [
+          {
+            type: "myOrder",
+            occurredAt: "2026-06-02T12:00:30.000Z",
+            payload: {
+              uid: "ws-json-list-uuid",
+              cd: "KRW-BTC",
+              ab: "BID",
+              s: "wait",
+              v: 0.001,
+              rv: 0.0005,
+              p: 10000000,
+            },
+          },
+        ],
+      },
+      localOpenOrders: [
+        createLocalOrder({
+          orderId: "local-ws-json-list",
+          exchangeOrderId: "ws-json-list-uuid",
+          identifier: undefined,
+          status: "ACCEPTED",
+        }),
+      ],
+      closedOrderWindow: defaultWindow,
+      observedAt,
+    };
+
+    const output = runReconcileEngine(withDefaultBalances(input));
+
+    expect(output.stateAdvancements).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          localOrderId: "local-ws-json-list",
+          advancementType: "PARTIALLY_FILLED_CANDIDATE",
+          targetLocalStatus: "PARTIALLY_FILLED",
+        }),
+      ]),
+    );
+    expect(output.summary.openOrderCount.exchange).toBe(1);
+  });
+
+  it("WebSocket raw trade 이벤트는 체결량이 아니라 remaining+executed를 원주문 수량으로 쓴다", () => {
+    const input: ReconcileEngineInput = {
+      exchangeOpenOrders: [],
+      exchangeClosedOrders: [],
+      orderLookups: [],
+      websocketContext: {
+        bootstrapCompleteAt: observedAt,
+        events: [
+          {
+            type: "myOrder",
+            occurredAt: "2026-06-02T12:00:30.000Z",
+            payload: {
+              type: "myOrder",
+              uuid: "ws-trade-uuid",
+              code: "KRW-BTC",
+              ask_bid: "BID",
+              state: "trade",
+              volume: 0.0001,
+              remaining_volume: 0.0007,
+              executed_volume: 0.0003,
+              price: 10000000,
+            },
+          },
+        ],
+      },
+      localOpenOrders: [
+        createLocalOrder({
+          orderId: "local-ws-trade",
+          exchangeOrderId: "ws-trade-uuid",
+          identifier: undefined,
+          status: "ACCEPTED",
+        }),
+      ],
+      closedOrderWindow: defaultWindow,
+      observedAt,
+    };
+
+    const output = runReconcileEngine(withDefaultBalances(input));
+
+    expect(output.stateAdvancements).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          localOrderId: "local-ws-trade",
+          advancementType: "PARTIALLY_FILLED_CANDIDATE",
+          targetLocalStatus: "PARTIALLY_FILLED",
+        }),
+      ]),
+    );
+    expect(
+      output.mismatches.some(
+        (mismatch) => mismatch.mismatchType === "ORDER_IDENTITY_CONFLICT",
+      ),
+    ).toBe(false);
+  });
+
+  it("bootstrap 기준점 없는 WebSocket 주문 이벤트는 상태 전진 후보로 쓰지 않는다", () => {
+    const input: ReconcileEngineInput = {
+      exchangeOpenOrders: [],
+      exchangeClosedOrders: [],
+      orderLookups: [],
+      websocketContext: {
+        events: [
+          {
+            type: "myOrder",
+            occurredAt: "2026-06-02T12:00:30.000Z",
+            payload: {
+              uuid: "ws-untrusted-uuid",
+              market: "KRW-BTC",
+              side: "bid",
+              state: "done",
+              volume: "0.001",
+              remaining_volume: "0",
+              price: "10000000",
+            },
+          },
+        ],
+      },
+      localOpenOrders: [
+        createLocalOrder({
+          orderId: "local-ws-untrusted",
+          exchangeOrderId: "ws-untrusted-uuid",
+          identifier: undefined,
+          status: "ACCEPTED",
+        }),
+      ],
+      closedOrderWindow: defaultWindow,
+      observedAt,
+    };
+
+    const output = runReconcileEngine(withDefaultBalances(input));
+
+    expect(output.stateAdvancements).toHaveLength(0);
+    expect(output.mismatches).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          mismatchType: "WEBSOCKET_GAP_MANUAL_REVIEW",
+        }),
+      ]),
+    );
+  });
+
+  it("최신 terminal identifier-only snapshot은 오래된 uuid-only open snapshot을 억제한다", () => {
+    const input: ReconcileEngineInput = {
+      exchangeOpenOrders: [
+        createExchangeOrder({
+          source: "open",
+          identifier: undefined,
+          exchangeOrderId: "split-identity-uuid",
+          exchangeStatus: "wait",
+          capturedAt: "2026-06-02T11:59:00.000Z",
+        }),
+      ],
+      exchangeClosedOrders: [],
+      orderLookups: [
+        createExchangeOrder({
+          source: "lookup",
+          identifier: "split-identity",
+          exchangeOrderId: undefined,
+          exchangeStatus: "done",
+          remainingQuantity: "0",
+          capturedAt: "2026-06-02T12:00:30.000Z",
+        }),
+      ],
+      websocketContext: defaultWsContext,
+      localOpenOrders: [
+        createLocalOrder({
+          orderId: "local-split-identity",
+          identifier: "split-identity",
+          exchangeOrderId: "split-identity-uuid",
+          status: "ACCEPTED",
+        }),
+      ],
+      closedOrderWindow: defaultWindow,
+      observedAt,
+    };
+
+    const output = runReconcileEngine(withDefaultBalances(input));
+
+    expect(output.stateAdvancements).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          localOrderId: "local-split-identity",
+          advancementType: "FILL_CANDIDATE",
+          targetLocalStatus: "FILLED",
+        }),
+      ]),
+    );
+    expect(output.summary.openOrderCount.exchange).toBe(0);
+  });
+
   it("오래된 lookup terminal snapshot보다 최신 open snapshot을 우선해 stale 상태 전진을 막는다", () => {
     const input: ReconcileEngineInput = {
       exchangeOpenOrders: [

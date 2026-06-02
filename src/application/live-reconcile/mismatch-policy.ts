@@ -65,7 +65,11 @@ export function reconcileOrders(
   for (const [exchangeOrderIndex, exchangeOrder] of exchangeOrders.entries()) {
     // WebSocket terminal event는 이미 닫힌 주문 알림일 수 있어 untracked open으로 분류하지 않는다.
     if (!isUntrackedExchangeOpenCandidate(exchangeOrder)) {
-      addExchangeIdentityKeys(exchangeOrder, strongerExchangeIdentityKeys);
+      addExchangeIdentityKeysWithLocalBridge(
+        exchangeOrder,
+        localOpenOrders,
+        strongerExchangeIdentityKeys,
+      );
       continue;
     }
 
@@ -78,7 +82,7 @@ export function reconcileOrders(
         // 동일 identifier/uuid 축의 두 번째 exchange 관측이 다른 uuid/fingerprint를 가지면 중복 source가 아니라 충돌 증거다.
         matchedLocalIds.add(conflict.local.orderId);
         matchedExchangeOrders.add(exchangeOrder);
-        addExchangeIdentityKeys(exchangeOrder, matchedExchangeIdentityKeys);
+        addMatchedIdentityKeys(exchangeOrder, conflict.local, matchedExchangeIdentityKeys);
         results.push(
           createIdentityConflictResult(
             exchangeOrder,
@@ -106,7 +110,7 @@ export function reconcileOrders(
         // 동일 identifier/uuid 충돌은 누락 주문 두 건이 아니라 stale mapping으로 수동 검토해야 한다.
         matchedLocalIds.add(conflict.local.orderId);
         matchedExchangeOrders.add(exchangeOrder);
-        addExchangeIdentityKeys(exchangeOrder, matchedExchangeIdentityKeys);
+        addMatchedIdentityKeys(exchangeOrder, conflict.local, matchedExchangeIdentityKeys);
         results.push(
           createIdentityConflictResult(
             exchangeOrder,
@@ -134,7 +138,7 @@ export function reconcileOrders(
     // identity가 일치하는 pair 발견
     matchedLocalIds.add(match.local.orderId);
     matchedExchangeOrders.add(exchangeOrder);
-    addExchangeIdentityKeys(exchangeOrder, matchedExchangeIdentityKeys);
+    addMatchedIdentityKeys(exchangeOrder, match.local, matchedExchangeIdentityKeys);
     results.push(
       evaluateMatchedPair(exchangeOrder, match.local, match.identity, observedAt),
     );
@@ -157,7 +161,7 @@ export function reconcileOrders(
         // closed/lookup에서 확인된 충돌도 낮은 missing-local 상태로 숨기지 않고 manual review evidence로 남긴다.
         matchedLocalIds.add(localOrder.orderId);
         matchedExchangeOrders.add(conflict.exchange);
-        addExchangeIdentityKeys(conflict.exchange, matchedExchangeIdentityKeys);
+        addMatchedIdentityKeys(conflict.exchange, localOrder, matchedExchangeIdentityKeys);
         results.push(
           createIdentityConflictResult(
             conflict.exchange,
@@ -176,7 +180,7 @@ export function reconcileOrders(
       // exchange order 중 open이 아닌 source(closed, lookup)에서 찾음
       matchedLocalIds.add(localOrder.orderId);
       matchedExchangeOrders.add(match.exchange);
-      addExchangeIdentityKeys(match.exchange, matchedExchangeIdentityKeys);
+      addMatchedIdentityKeys(match.exchange, localOrder, matchedExchangeIdentityKeys);
       results.push(
         evaluateMatchedPair(match.exchange, localOrder, match.identity, observedAt),
       );
@@ -513,6 +517,95 @@ function addExchangeIdentityKeys(
   }
 }
 
+/**
+ * terminal/강한 관측의 identity key와 로컬 bridge key를 함께 기록한다.
+ *
+ * 최신 terminal snapshot이 identifier만 갖고 오래된 open snapshot이 uuid만 갖는
+ * split identity에서는 로컬 주문이 두 key를 모두 알고 있어야 같은 주문임을
+ * 연결할 수 있다. bridge key를 기록하지 않으면 오래된 open row가 다시 매칭되어
+ * terminal 상태 전진 후보가 사라진다.
+ *
+ * @param exchangeOrder 더 강한 거래소 관측 snapshot
+ * @param localOpenOrders bridge 후보 로컬 미체결 주문 목록
+ * @param matchedExchangeIdentityKeys 중복/억제에 사용할 identity key set
+ */
+function addExchangeIdentityKeysWithLocalBridge(
+  exchangeOrder: ReconcileExchangeOrderSnapshot,
+  localOpenOrders: readonly ReconcileLocalOrderSnapshot[],
+  matchedExchangeIdentityKeys: Set<string>,
+): void {
+  addExchangeIdentityKeys(exchangeOrder, matchedExchangeIdentityKeys);
+
+  for (const localOrder of localOpenOrders) {
+    if (hasSharedStrongIdentity(exchangeOrder, localOrder)) {
+      addLocalIdentityKeys(localOrder, matchedExchangeIdentityKeys);
+    }
+  }
+}
+
+/**
+ * 매칭된 exchange/local pair의 양쪽 강한 식별자를 모두 기록한다.
+ *
+ * source별 snapshot이 uuid만 또는 identifier만 포함하는 경우가 있어, 매칭 후
+ * 한쪽 key만 기록하면 같은 주문의 다른 source가 새 주문처럼 다시 평가될 수 있다.
+ *
+ * @param exchangeOrder 매칭된 거래소 snapshot
+ * @param localOrder 매칭된 로컬 주문 snapshot
+ * @param matchedExchangeIdentityKeys 중복 source 억제용 identity key set
+ */
+function addMatchedIdentityKeys(
+  exchangeOrder: ReconcileExchangeOrderSnapshot,
+  localOrder: ReconcileLocalOrderSnapshot,
+  matchedExchangeIdentityKeys: Set<string>,
+): void {
+  addExchangeIdentityKeys(exchangeOrder, matchedExchangeIdentityKeys);
+  addLocalIdentityKeys(localOrder, matchedExchangeIdentityKeys);
+}
+
+/**
+ * exchange snapshot과 local snapshot이 uuid 또는 identifier 축을 공유하는지 확인한다.
+ *
+ * 이 비교는 fingerprint 자동 매칭이 아니라 bridge key 전파 여부만 판단한다.
+ * shared key가 없으면 서로 다른 주문일 수 있어 local key를 억제 set에 추가하지 않는다.
+ *
+ * @param exchangeOrder 거래소 주문 snapshot
+ * @param localOrder 로컬 주문 snapshot
+ * @returns 강한 식별자 축 공유 여부
+ */
+function hasSharedStrongIdentity(
+  exchangeOrder: ReconcileExchangeOrderSnapshot,
+  localOrder: ReconcileLocalOrderSnapshot,
+): boolean {
+  return (
+    (
+      exchangeOrder.exchangeOrderId !== undefined &&
+      exchangeOrder.exchangeOrderId === localOrder.exchangeOrderId
+    ) ||
+    (
+      exchangeOrder.identifier !== undefined &&
+      exchangeOrder.identifier === localOrder.identifier
+    )
+  );
+}
+
+/**
+ * 로컬 주문의 강한 식별자를 exchange identity key set에 추가한다.
+ *
+ * 로컬 주문이 uuid와 identifier를 모두 알고 있으면 split source를 한 주문으로
+ * 묶는 bridge 역할을 한다. 이 함수는 set 변경 외 side effect가 없다.
+ *
+ * @param localOrder 로컬 주문 snapshot
+ * @param matchedExchangeIdentityKeys 중복 source 억제용 identity key set
+ */
+function addLocalIdentityKeys(
+  localOrder: ReconcileLocalOrderSnapshot,
+  matchedExchangeIdentityKeys: Set<string>,
+): void {
+  for (const key of getStrongLocalIdentityKeys(localOrder)) {
+    matchedExchangeIdentityKeys.add(key);
+  }
+}
+
 function getStrongExchangeIdentityKeys(
   exchangeOrder: ReconcileExchangeOrderSnapshot,
 ): string[] {
@@ -522,6 +615,25 @@ function getStrongExchangeIdentityKeys(
   }
   if (exchangeOrder.identifier !== undefined) {
     keys.push(`identifier:${exchangeOrder.identifier}`);
+  }
+  return keys;
+}
+
+/**
+ * 로컬 주문이 보유한 uuid/identifier 기반 강한 identity key 목록을 만든다.
+ *
+ * fingerprint는 충돌 가능성이 있어 split source 억제 key로 사용하지 않는다.
+ *
+ * @param localOrder 로컬 주문 snapshot
+ * @returns `uuid:*`, `identifier:*` key 목록
+ */
+function getStrongLocalIdentityKeys(localOrder: ReconcileLocalOrderSnapshot): string[] {
+  const keys: string[] = [];
+  if (localOrder.exchangeOrderId !== undefined) {
+    keys.push(`uuid:${localOrder.exchangeOrderId}`);
+  }
+  if (localOrder.identifier !== undefined) {
+    keys.push(`identifier:${localOrder.identifier}`);
   }
   return keys;
 }
