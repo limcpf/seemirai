@@ -12,20 +12,37 @@ import type { BrokerPort, HardStopRuntimeActionPlan } from "../../src/applicatio
 import {
   DisabledUpbitLiveBroker,
   UpbitLiveBrokerDisabledError,
+  UpbitPrivateRestClientError,
   createDisabledUpbitLiveBroker,
+} from "../../src/infrastructure/index.js";
+import type {
+  UpbitLiveBrokerPrivateClient,
+  UpbitRateLimitStatus,
 } from "../../src/infrastructure/index.js";
 import {
   PAPER_NO_KEY_EXECUTION_WORKER_ID,
   UnsafeHardStopCancelPlanError,
   UnsafePaperNoKeyExecutionRuntimeError,
+  UnsafeUpbitLiveBrokerRuntimeError,
+  createGuardedUpbitLiveBrokerRuntime,
   createPaperNoKeyExecutionRuntime,
+  createUpbitLiveBrokerRuntimeSafeSummary,
   executeHardStopPendingPaperOrderCancels,
   listPendingPaperOrdersForHardStop,
   loadDefaultRuntimeConfig,
   loadRuntimeConfig,
 } from "../../src/runtime/index.js";
+import type { EnabledPilotRuntimeConfig } from "../../src/runtime/index.js";
 
 const observedAt = "2026-05-20T01:00:00.000Z";
+const defaultUpbitRateLimitStatus = {
+  kind: "OK",
+  remainingReq: {
+    group: "default",
+    sec: 30,
+    exhausted: false,
+  },
+} satisfies UpbitRateLimitStatus;
 
 describe("PAPER_NO_KEY execution runtime", () => {
   it("assembles ExecutionEngine with PaperBroker and a disabled live broker", async () => {
@@ -106,6 +123,233 @@ describe("PAPER_NO_KEY execution runtime", () => {
     );
 
     expect(source).not.toMatch(/UpbitPublicRestClient|orders\/chance|\/v1\/orders|Authorization|Bearer/iu);
+    expect(source).not.toMatch(/createGuardedUpbitLiveBrokerRuntime|UpbitPrivateRestClient|createUpbitLiveBroker/iu);
+  });
+});
+
+describe("guarded Upbit live broker runtime factory", () => {
+  it("rejects disabled or incomplete guards before creating a private client", () => {
+    const privateClientFactory = vi.fn(() => createFakeUpbitLiveBrokerPrivateClient());
+
+    expect(() =>
+      createGuardedUpbitLiveBrokerRuntime({
+        liveBrokerEnabled: false,
+        pilotConfig: {
+          enabled: false,
+          privateSmokeEnabled: false,
+          orderSmokeEnabled: false,
+        },
+        privateClientFactory,
+      }),
+    ).toThrow(UnsafeUpbitLiveBrokerRuntimeError);
+    expect(() =>
+      createGuardedUpbitLiveBrokerRuntime({
+        liveBrokerEnabled: true,
+        pilotConfig: {
+          ...createEnabledOrderSmokePilotConfig(),
+          orderSmokeEnabled: false,
+        },
+        privateClientFactory,
+      }),
+    ).toThrow(UnsafeUpbitLiveBrokerRuntimeError);
+    expect(() =>
+      createGuardedUpbitLiveBrokerRuntime({
+        liveBrokerEnabled: true,
+        pilotConfig: createEnabledOrderSmokePilotConfig({
+          keyScopes: ["자산조회", "주문조회", "주문하기", "출금하기"] as unknown as EnabledPilotRuntimeConfig["keyScopes"],
+        }),
+        privateClientFactory,
+      }),
+    ).toThrow(UnsafeUpbitLiveBrokerRuntimeError);
+    expect(() =>
+      createGuardedUpbitLiveBrokerRuntime({
+        liveBrokerEnabled: true,
+        pilotConfig: createEnabledOrderSmokePilotConfig(),
+        privateClientFactory,
+        exchangeId: "paper" as never,
+      }),
+    ).toThrow(UnsafeUpbitLiveBrokerRuntimeError);
+    expect(() =>
+      createGuardedUpbitLiveBrokerRuntime({
+        liveBrokerEnabled: true,
+        pilotConfig: {
+          ...createEnabledOrderSmokePilotConfig(),
+          orderSmokeMarket: undefined,
+          orderSmokeMaxKrw: undefined,
+        } as unknown as EnabledPilotRuntimeConfig,
+        privateClientFactory,
+      }),
+    ).toThrow(UnsafeUpbitLiveBrokerRuntimeError);
+    expect(privateClientFactory).not.toHaveBeenCalled();
+  });
+
+  it("creates a live broker only with explicit order-smoke guard and secret-safe summary", async () => {
+    const privateClient = createFakeUpbitLiveBrokerPrivateClient();
+    const privateClientFactory = vi.fn((credentials) => {
+      expect(credentials).toEqual({
+        accessKey: "fixture-upbit-access-key",
+        secretKey: "fixture-upbit-secret-key",
+      });
+
+      return privateClient;
+    });
+
+    const runtime = createGuardedUpbitLiveBrokerRuntime({
+      liveBrokerEnabled: true,
+      pilotConfig: createEnabledOrderSmokePilotConfig(),
+      privateClientFactory,
+      clock: () => observedAt,
+    });
+
+    expect(privateClientFactory).toHaveBeenCalledTimes(1);
+    expect(runtime.summary).toMatchObject({
+      enabled: true,
+      profile: "PILOT_ORDER_SMOKE",
+      privateSmokeEnabled: true,
+      orderSmokeEnabled: true,
+      credentialsConfigured: true,
+      keyScopeEvidenceId: "evidence-live-broker-001",
+      orderSmokeMarket: "KRW-BTC",
+      orderSmokeMaxKrw: "5000",
+      statusLabel: "live broker 조립 가능",
+    });
+    expect(JSON.stringify(runtime.summary)).not.toContain("fixture-upbit-access-key");
+    expect(JSON.stringify(runtime.summary)).not.toContain("fixture-upbit-secret-key");
+    await expect(runtime.broker.getBalances()).resolves.toMatchObject({
+      exchangeId: "upbit_krw_spot",
+      balances: [
+        {
+          currency: "KRW",
+          available: "10000",
+        },
+      ],
+    });
+    expect(privateClient.getAccounts).toHaveBeenCalledTimes(1);
+  });
+
+  it("blocks submitOrder outside the explicit order-smoke invariant", async () => {
+    const privateClient = createFakeUpbitLiveBrokerPrivateClient();
+    const runtime = createGuardedUpbitLiveBrokerRuntime({
+      liveBrokerEnabled: true,
+      pilotConfig: createEnabledOrderSmokePilotConfig(),
+      privateClientFactory: vi.fn(() => privateClient),
+      clock: () => observedAt,
+    });
+
+    await expect(runtime.broker.submitOrder(createSubmission({ market: "KRW-ETH" }))).rejects.toMatchObject({
+      name: "UnsafeUpbitLiveBrokerRuntimeError",
+      violations: expect.arrayContaining(["Upbit live broker order smoke market은 KRW-BTC만 허용합니다"]),
+    } satisfies Partial<UnsafeUpbitLiveBrokerRuntimeError>);
+    await expect(runtime.broker.submitOrder(createSubmission({ exchangeId: "paper" }))).rejects.toMatchObject({
+      name: "UnsafeUpbitLiveBrokerRuntimeError",
+      violations: expect.arrayContaining(["Upbit live broker order smoke exchangeId는 upbit_krw_spot만 허용합니다"]),
+    } satisfies Partial<UnsafeUpbitLiveBrokerRuntimeError>);
+    await expect(runtime.broker.submitOrder(createSubmission({ side: "SELL" }))).rejects.toMatchObject({
+      name: "UnsafeUpbitLiveBrokerRuntimeError",
+      violations: expect.arrayContaining(["Upbit live broker order smoke는 지정가 매수만 허용합니다"]),
+    } satisfies Partial<UnsafeUpbitLiveBrokerRuntimeError>);
+    await expect(runtime.broker.submitOrder(createSubmission({ timeInForce: "IOC" }))).rejects.toMatchObject({
+      name: "UnsafeUpbitLiveBrokerRuntimeError",
+      violations: expect.arrayContaining(["Upbit live broker order smoke는 post-only 지정가만 허용합니다"]),
+    } satisfies Partial<UnsafeUpbitLiveBrokerRuntimeError>);
+    await expect(runtime.broker.submitOrder(createSubmission({ idempotencyKey: "x".repeat(33) }))).rejects.toMatchObject({
+      name: "UnsafeUpbitLiveBrokerRuntimeError",
+      violations: expect.arrayContaining(["Upbit live broker order smoke identifier는 1자 이상 32자 이하여야 합니다"]),
+    } satisfies Partial<UnsafeUpbitLiveBrokerRuntimeError>);
+    await expect(
+      runtime.broker.submitOrder(
+        createSubmission({
+          requestedPrice: "4000000",
+          requestedQuantity: "0.001",
+          requestedNotional: "4000",
+        }),
+      ),
+    ).rejects.toMatchObject({
+      name: "UnsafeUpbitLiveBrokerRuntimeError",
+      violations: expect.arrayContaining(["Upbit live broker order smoke 주문 금액은 5000 KRW 이상이어야 합니다"]),
+    } satisfies Partial<UnsafeUpbitLiveBrokerRuntimeError>);
+    await expect(
+      runtime.broker.submitOrder(
+        createSubmission({
+          requestedPrice: "6000000",
+          requestedQuantity: "0.001",
+          requestedNotional: "6000",
+        }),
+      ),
+    ).rejects.toMatchObject({
+      name: "UnsafeUpbitLiveBrokerRuntimeError",
+      violations: expect.arrayContaining(["Upbit live broker order smoke 주문 금액은 5000 KRW 이하여야 합니다"]),
+    } satisfies Partial<UnsafeUpbitLiveBrokerRuntimeError>);
+    expect(privateClient.createLimitOrder).not.toHaveBeenCalled();
+  });
+
+  it("cancels only orders submitted by the same guarded smoke runtime", async () => {
+    const privateClient = createFakeUpbitLiveBrokerPrivateClient();
+    const runtime = createGuardedUpbitLiveBrokerRuntime({
+      liveBrokerEnabled: true,
+      pilotConfig: createEnabledOrderSmokePilotConfig(),
+      privateClientFactory: vi.fn(() => privateClient),
+      clock: () => observedAt,
+    });
+
+    await expect(runtime.broker.cancelOrder("other-live-order")).rejects.toMatchObject({
+      name: "UnsafeUpbitLiveBrokerRuntimeError",
+      violations: ["Upbit live broker order smoke는 같은 runtime이 생성한 주문만 취소할 수 있습니다"],
+    } satisfies Partial<UnsafeUpbitLiveBrokerRuntimeError>);
+
+    const submittedOrder = await runtime.broker.submitOrder(createSubmission());
+    await expect(runtime.broker.cancelOrder(submittedOrder.brokerOrderId)).resolves.toMatchObject({
+      brokerOrderId: "upbit-order-001",
+    });
+    expect(privateClient.createLimitOrder).toHaveBeenCalledTimes(1);
+    expect(privateClient.cancelOrder).toHaveBeenCalledWith({ uuid: "upbit-order-001" });
+  });
+
+  it("does not treat duplicate-identifier recovery as same-run cancel evidence", async () => {
+    const privateClient = createFakeUpbitLiveBrokerPrivateClient();
+    vi.mocked(privateClient.createLimitOrder).mockRejectedValueOnce(createDuplicateIdentifierError());
+    vi.mocked(privateClient.getOrder).mockResolvedValueOnce({
+      payload: createUpbitLookupOrderPayload(),
+      rateLimitStatus: defaultUpbitRateLimitStatus,
+    });
+    const runtime = createGuardedUpbitLiveBrokerRuntime({
+      liveBrokerEnabled: true,
+      pilotConfig: createEnabledOrderSmokePilotConfig(),
+      privateClientFactory: vi.fn(() => privateClient),
+      clock: () => observedAt,
+    });
+
+    const recoveredOrder = await runtime.broker.submitOrder(createSubmission());
+    expect(recoveredOrder).toMatchObject({
+      brokerOrderId: "upbit-order-001",
+      metadata: {
+        upbitLiveBrokerRecovery: "duplicate_identifier_lookup",
+      },
+    });
+    await expect(runtime.broker.cancelOrder(recoveredOrder.brokerOrderId)).rejects.toMatchObject({
+      name: "UnsafeUpbitLiveBrokerRuntimeError",
+      violations: ["Upbit live broker order smoke는 같은 runtime이 생성한 주문만 취소할 수 있습니다"],
+    } satisfies Partial<UnsafeUpbitLiveBrokerRuntimeError>);
+    expect(privateClient.cancelOrder).not.toHaveBeenCalled();
+  });
+
+  it("summarizes blocked live broker guards without leaking credentials", () => {
+    const summary = createUpbitLiveBrokerRuntimeSafeSummary({
+      liveBrokerEnabled: false,
+      pilotConfig: createEnabledOrderSmokePilotConfig(),
+    });
+
+    expect(summary).toMatchObject({
+      enabled: false,
+      credentialsConfigured: true,
+      statusLabel: "live broker guard 미충족",
+      trace: {
+        reason: "guard_blocked",
+        violations: ["Upbit live broker runtime에는 liveBrokerEnabled=true guard가 필요합니다"],
+      },
+    });
+    expect(JSON.stringify(summary)).not.toContain("fixture-upbit-access-key");
+    expect(JSON.stringify(summary)).not.toContain("fixture-upbit-secret-key");
   });
 });
 
@@ -342,6 +586,106 @@ function createBrokerPort(options: { openOrders?: readonly BrokerOrder[] } = {})
   };
 }
 
+function createFakeUpbitLiveBrokerPrivateClient(): UpbitLiveBrokerPrivateClient {
+  return {
+    createLimitOrder: vi.fn(async () => ({
+      payload: createUpbitCommandOrderPayload(),
+      rateLimitStatus: defaultUpbitRateLimitStatus,
+    })),
+    cancelOrder: vi.fn(async () => ({
+      payload: createUpbitCommandOrderPayload({ state: "wait" }),
+      rateLimitStatus: defaultUpbitRateLimitStatus,
+    })),
+    getOrder: vi.fn(async () => ({
+      payload: {},
+      rateLimitStatus: defaultUpbitRateLimitStatus,
+    })),
+    listOpenOrders: vi.fn(async () => ({
+      payload: [],
+      rateLimitStatus: defaultUpbitRateLimitStatus,
+    })),
+    getAccounts: vi.fn(async () => ({
+      payload: [
+        {
+          currency: "KRW",
+          balance: "10000",
+          locked: "0",
+          avg_buy_price: "0",
+          avg_buy_price_modified: false,
+          unit_currency: "KRW",
+        },
+      ],
+      rateLimitStatus: defaultUpbitRateLimitStatus,
+    })),
+  };
+}
+
+function createUpbitCommandOrderPayload(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    market: "KRW-BTC",
+    uuid: "upbit-order-001",
+    side: "bid",
+    ord_type: "limit",
+    price: "5000000",
+    state: "wait",
+    created_at: observedAt,
+    volume: "0.001",
+    remaining_volume: "0.001",
+    executed_volume: "0",
+    reserved_fee: "2.5",
+    remaining_fee: "2.5",
+    paid_fee: "0",
+    locked: "5002.5",
+    time_in_force: "post_only",
+    identifier: "execution-candidate-1",
+    prevented_volume: "0",
+    prevented_locked: "0",
+    trades_count: 0,
+    ...overrides,
+  };
+}
+
+function createUpbitLookupOrderPayload(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    ...createUpbitCommandOrderPayload(overrides),
+    trades: [],
+  };
+}
+
+function createDuplicateIdentifierError(): UpbitPrivateRestClientError {
+  return new UpbitPrivateRestClientError({
+    status: 400,
+    statusText: "Bad Request",
+    kind: "REQUEST_FAILED",
+    userMessage: "이미 사용한 주문 식별자입니다.",
+    rateLimitStatus: defaultUpbitRateLimitStatus,
+    trace: {
+      httpStatus: 400,
+      upbitErrorName: "duplicate_identifier",
+      rateLimitStatus: defaultUpbitRateLimitStatus,
+    },
+  });
+}
+
+function createEnabledOrderSmokePilotConfig(
+  overrides: Partial<EnabledPilotRuntimeConfig> = {},
+): EnabledPilotRuntimeConfig {
+  return {
+    enabled: true,
+    profile: "PILOT_ORDER_SMOKE",
+    privateSmokeEnabled: true,
+    orderSmokeEnabled: true,
+    upbitAccessKey: "fixture-upbit-access-key",
+    upbitSecretKey: "fixture-upbit-secret-key",
+    keyScopes: ["자산조회", "주문조회", "주문하기"],
+    keyScopeEvidenceId: "evidence-live-broker-001",
+    policySyncMarket: "KRW-BTC",
+    orderSmokeMarket: "KRW-BTC",
+    orderSmokeMaxKrw: "5000",
+    ...overrides,
+  };
+}
+
 function createHardStopPlan(): HardStopRuntimeActionPlan {
   return {
     state: "HARD_STOP",
@@ -389,7 +733,9 @@ function createBrokerOrder(overrides: Partial<BrokerOrder> = {}): BrokerOrder {
   };
 }
 
-function createSubmission(): OrderSubmission {
+function createSubmission(
+  overrides: Partial<Extract<OrderSubmission["intent"], { orderType: "LIMIT" }>> = {},
+): OrderSubmission {
   return {
     intent: {
       exchangeId: "upbit_krw_spot",
@@ -397,11 +743,14 @@ function createSubmission(): OrderSubmission {
       strategyId: "trend_following",
       side: "BUY",
       orderType: "LIMIT",
-      requestedPrice: "10000000",
+      requestedPrice: "5000000",
       requestedQuantity: "0.001",
-      requestedNotional: "10000",
+      requestedNotional: "5000",
       idempotencyKey: "execution-candidate-1",
       reason: "disabled-live-broker-test",
+      postOnly: true,
+      timeInForce: "POST_ONLY",
+      ...overrides,
     },
     costSnapshot: {},
     riskApproval: {},
