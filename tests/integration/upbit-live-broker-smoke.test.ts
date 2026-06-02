@@ -179,6 +179,30 @@ describe("Upbit live broker smoke integration with fake adapter", () => {
       status: "CANCELED",
     });
   });
+
+  it("취소 완료 상태가 확인되지 않으면 smoke 성공 조건으로 취급하지 않는다", () => {
+    const requestedCancel = createBrokerOrderFixture({ status: "CANCEL_REQUESTED" });
+    const acceptedLookup = createBrokerOrderFixture({ status: "ACCEPTED" });
+
+    expect(() =>
+      assertLiveBrokerSmokeCancelConfirmed({
+        canceledOrder: requestedCancel,
+        postCancelLookup: acceptedLookup,
+      }),
+    ).toThrow(UnsafeUpbitLiveBrokerRuntimeError);
+    expect(() =>
+      assertLiveBrokerSmokeCancelConfirmed({
+        canceledOrder: createBrokerOrderFixture({ status: "CANCELED" }),
+        postCancelLookup: acceptedLookup,
+      }),
+    ).not.toThrow();
+    expect(() =>
+      assertLiveBrokerSmokeCancelConfirmed({
+        canceledOrder: requestedCancel,
+        postCancelLookup: createBrokerOrderFixture({ status: "CANCELED" }),
+      }),
+    ).not.toThrow();
+  });
 });
 
 describeUpbitLiveBrokerSmoke("Upbit live broker real smoke integration", () => {
@@ -233,11 +257,15 @@ describeUpbitLiveBrokerSmoke("Upbit live broker real smoke integration", () => {
       artifact.lookupOrder = summarizeOptionalBrokerOrder(lookupOrder);
 
       const canceledOrder = await runtimeBroker.cancelOrder(runtimeBrokerOrder.brokerOrderId);
-      cancelConfirmed = true;
       artifact.canceledOrder = summarizeBrokerOrder(canceledOrder);
 
       const postCancelLookup = await runtimeBroker.getOrder(runtimeBrokerOrder.brokerOrderId);
       artifact.postCancelLookupOrder = summarizeOptionalBrokerOrder(postCancelLookup);
+      assertLiveBrokerSmokeCancelConfirmed({
+        canceledOrder,
+        postCancelLookup,
+      });
+      cancelConfirmed = true;
       artifact.status = "PASSED" satisfies PilotEvidenceStatus;
       artifact.message = "Upbit live broker smoke가 BrokerPort 경유 주문 생성, 조회, 취소를 완료했습니다.";
     } catch (error) {
@@ -538,6 +566,25 @@ function createBaseArtifact(kind: string, occurredAt: string, correlationId: str
   };
 }
 
+function createBrokerOrderFixture(overrides: Partial<BrokerOrder> = {}): BrokerOrder {
+  return {
+    brokerOrderId: "upbit-order-001",
+    idempotencyKey: "live-broker-smoke-1",
+    exchangeId: "upbit_krw_spot",
+    market: "KRW-BTC",
+    side: "BUY",
+    orderType: "LIMIT",
+    status: "ACCEPTED",
+    requestedQuantity: "0.001",
+    remainingQuantity: "0.001",
+    requestedPrice: "5000000",
+    acceptedAt: observedAt,
+    updatedAt: observedAt,
+    metadata: {},
+    ...overrides,
+  };
+}
+
 function createLiveBrokerSmokeArtifact(input: {
   kind: string;
   status: PilotEvidenceStatus;
@@ -632,6 +679,30 @@ function summarizeOptionalBrokerOrder(order: BrokerOrder | undefined): JsonRecor
     found: true,
     ...summarizeBrokerOrder(order),
   };
+}
+
+/**
+ * 실제 smoke의 취소 성공 조건을 terminal cancel evidence로 제한한다.
+ *
+ * Upbit cancel 응답이 아직 open 상태면 wrapper는 `CANCEL_REQUESTED`를 반환할 수 있다. 이 상태를 PASSED로 올리면 미확인 실주문이
+ * 남을 수 있으므로, cancel 응답 또는 직후 lookup 중 하나가 `CANCELED`일 때만 smoke 성공으로 인정한다.
+ */
+function assertLiveBrokerSmokeCancelConfirmed(input: {
+  canceledOrder: BrokerOrder;
+  postCancelLookup: BrokerOrder | undefined;
+}): void {
+  if (input.canceledOrder.status === "CANCELED" || input.postCancelLookup?.status === "CANCELED") {
+    return;
+  }
+
+  // 취소 요청 접수만으로는 주문이 닫혔다고 볼 수 없어 artifact를 수동 점검 상태로 전환하게 한다.
+  throw new UnsafeUpbitLiveBrokerRuntimeError([
+    [
+      "Upbit live broker smoke 취소 완료 상태를 확인하지 못했습니다",
+      `cancel 응답 상태: ${input.canceledOrder.status}`,
+      `취소 후 조회 상태: ${input.postCancelLookup?.status ?? "조회 결과 없음"}`,
+    ].join("; "),
+  ]);
 }
 
 function summarizeBrokerOrderList(orders: readonly BrokerOrder[]): readonly JsonRecord[] {
