@@ -328,22 +328,32 @@ describeDb("live reconcile persistence integration", () => {
       idempotencyKey: "run-integration-orders-fingerprint-only",
     });
 
+    const snapshotInput = {
+      market: "KRW-BTC" as const,
+      side: "BUY" as const,
+      status: "OPEN",
+      requestedQuantity: "0.00100000",
+      requestedPrice: "10000000.0000",
+      source: "open" as const,
+      capturedAt: new Date("2026-06-03T00:00:00Z"),
+    };
+
     const snapshots = await repository!.appendLiveReconcileExchangeOrderSnapshots(run.id, [
+      snapshotInput,
+    ]);
+    const duplicate = await repository!.appendLiveReconcileExchangeOrderSnapshots(run.id, [
       {
-        market: "KRW-BTC",
-        side: "BUY",
-        status: "OPEN",
-        requestedQuantity: "0.00100000",
-        requestedPrice: "10000000.0000",
-        source: "open",
-        capturedAt: new Date("2026-06-03T00:00:00Z"),
+        ...snapshotInput,
       },
     ]);
+    const summary = await repository!.getLatestLiveReconcileSummary();
 
     expect(snapshots).toHaveLength(1);
+    expect(duplicate).toHaveLength(0);
     expect(snapshots[0]?.exchange_order_id).toBeNull();
     expect(snapshots[0]?.identifier).toBeNull();
     expect(snapshots[0]?.identity_fingerprint).toBe("KRW-BTC|BUY|0.001|10000000");
+    expect(summary.exchangeOrderSnapshotCount).toBe(1);
   });
 
   it("normalizes an identifier-only exchange order snapshot after uuid is observed", async () => {

@@ -58,11 +58,23 @@ export function reconcileOrders(
   const results: OrderPairReconcileResult[] = [];
   const matchedLocalIds = new Set<string>();
   const matchedExchangeOrders = new Set<ReconcileExchangeOrderSnapshot>();
+  const matchedExchangeIdentityKeys = new Set<string>();
+  const strongerExchangeIdentityKeys = new Set<string>();
 
   // 각 exchange open order에 대해 로컬 매칭 시도
   for (const exchangeOrder of exchangeOrders) {
     // WebSocket terminal event는 이미 닫힌 주문 알림일 수 있어 untracked open으로 분류하지 않는다.
     if (!isUntrackedExchangeOpenCandidate(exchangeOrder)) {
+      addExchangeIdentityKeys(exchangeOrder, strongerExchangeIdentityKeys);
+      continue;
+    }
+
+    if (
+      hasMatchedExchangeIdentity(exchangeOrder, matchedExchangeIdentityKeys) ||
+      hasMatchedExchangeIdentity(exchangeOrder, strongerExchangeIdentityKeys)
+    ) {
+      // 더 강한 lookup/closed 관측이나 이미 처리된 중복 source가 있으면 새 untracked 주문으로 세지 않는다.
+      matchedExchangeOrders.add(exchangeOrder);
       continue;
     }
 
@@ -77,6 +89,7 @@ export function reconcileOrders(
         // 동일 identifier/uuid 충돌은 누락 주문 두 건이 아니라 stale mapping으로 수동 검토해야 한다.
         matchedLocalIds.add(conflict.local.orderId);
         matchedExchangeOrders.add(exchangeOrder);
+        addExchangeIdentityKeys(exchangeOrder, matchedExchangeIdentityKeys);
         results.push(
           createIdentityConflictResult(
             exchangeOrder,
@@ -98,6 +111,7 @@ export function reconcileOrders(
     // identity가 일치하는 pair 발견
     matchedLocalIds.add(match.local.orderId);
     matchedExchangeOrders.add(exchangeOrder);
+    addExchangeIdentityKeys(exchangeOrder, matchedExchangeIdentityKeys);
     results.push(
       evaluateMatchedPair(exchangeOrder, match.local, match.identity, observedAt),
     );
@@ -120,6 +134,7 @@ export function reconcileOrders(
         // closed/lookup에서 확인된 충돌도 낮은 missing-local 상태로 숨기지 않고 manual review evidence로 남긴다.
         matchedLocalIds.add(localOrder.orderId);
         matchedExchangeOrders.add(conflict.exchange);
+        addExchangeIdentityKeys(conflict.exchange, matchedExchangeIdentityKeys);
         results.push(
           createIdentityConflictResult(
             conflict.exchange,
@@ -138,6 +153,7 @@ export function reconcileOrders(
       // exchange order 중 open이 아닌 source(closed, lookup)에서 찾음
       matchedLocalIds.add(localOrder.orderId);
       matchedExchangeOrders.add(match.exchange);
+      addExchangeIdentityKeys(match.exchange, matchedExchangeIdentityKeys);
       results.push(
         evaluateMatchedPair(match.exchange, localOrder, match.identity, observedAt),
       );
@@ -397,6 +413,7 @@ function findIdentityConflictExchangeOrder(
 
 function isIdentityConflictReason(reason: string): boolean {
   return (
+    reason.startsWith("identifier_mismatch_after_uuid_match") ||
     reason.startsWith("uuid_mismatch_after_identifier_match") ||
     reason.startsWith("immutable_fingerprint_mismatch")
   );
@@ -406,13 +423,48 @@ function isUntrackedExchangeOpenCandidate(
   exchangeOrder: ReconcileExchangeOrderSnapshot,
 ): boolean {
   return (
-    (exchangeOrder.source === "open" || exchangeOrder.source === "ws") &&
+    (
+      exchangeOrder.source === "open" ||
+      exchangeOrder.source === "ws" ||
+      exchangeOrder.source === "lookup"
+    ) &&
     isOpenExchangeStatus(exchangeOrder.exchangeStatus)
   );
 }
 
 function isOpenExchangeStatus(exchangeStatus: string): boolean {
   return exchangeStatus === "wait" || exchangeStatus === "watch";
+}
+
+function hasMatchedExchangeIdentity(
+  exchangeOrder: ReconcileExchangeOrderSnapshot,
+  matchedExchangeIdentityKeys: ReadonlySet<string>,
+): boolean {
+  return getStrongExchangeIdentityKeys(exchangeOrder).some((key) =>
+    matchedExchangeIdentityKeys.has(key),
+  );
+}
+
+function addExchangeIdentityKeys(
+  exchangeOrder: ReconcileExchangeOrderSnapshot,
+  matchedExchangeIdentityKeys: Set<string>,
+): void {
+  for (const key of getStrongExchangeIdentityKeys(exchangeOrder)) {
+    matchedExchangeIdentityKeys.add(key);
+  }
+}
+
+function getStrongExchangeIdentityKeys(
+  exchangeOrder: ReconcileExchangeOrderSnapshot,
+): string[] {
+  const keys: string[] = [];
+  if (exchangeOrder.exchangeOrderId !== undefined) {
+    keys.push(`uuid:${exchangeOrder.exchangeOrderId}`);
+  }
+  if (exchangeOrder.identifier !== undefined) {
+    keys.push(`identifier:${exchangeOrder.identifier}`);
+  }
+  return keys;
 }
 
 /**

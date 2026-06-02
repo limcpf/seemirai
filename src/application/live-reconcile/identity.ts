@@ -68,6 +68,17 @@ export function matchOrderIdentity(
   // 1. identifier가 같아도 원주문 fingerprint가 다르면 stale mapping으로 보고 자동 전진을 막는다.
   if (exchange.identifier !== undefined && local.identifier !== undefined) {
     if (exchange.identifier !== local.identifier) {
+      if (
+        exchange.exchangeOrderId !== undefined &&
+        local.exchangeOrderId !== undefined &&
+        exchange.exchangeOrderId === local.exchangeOrderId
+      ) {
+        return {
+          matched: false,
+          reason: `identifier_mismatch_after_uuid_match: exchange="${exchange.identifier}" vs local="${local.identifier}"`,
+        };
+      }
+
       return {
         matched: false,
         reason: `identifier_mismatch: exchange="${exchange.identifier}" vs local="${local.identifier}"`,

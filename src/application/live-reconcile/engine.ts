@@ -36,11 +36,11 @@ export function runReconcileEngine(input: ReconcileEngineInput): ReconcileEngine
   const allStateAdvancements: ReconcileStateAdvancementCandidate[] = [];
 
   // 1. exchange order를 unified list로 합친다 (open + closed + lookup)
-  const allExchangeOrders: ReconcileExchangeOrderSnapshot[] = [
+  const allExchangeOrders = prioritizeExchangeOrderSnapshots([
     ...input.exchangeOpenOrders,
     ...input.exchangeClosedOrders,
     ...input.orderLookups,
-  ];
+  ]);
 
   // 2. 주문 대조 — identity matching과 mismatch 분류
   const orderResults = reconcileOrders(
@@ -119,6 +119,42 @@ export function runReconcileEngine(input: ReconcileEngineInput): ReconcileEngine
 /* ============================================================
  * 내부 구현
  * ============================================================ */
+
+/**
+ * 같은 주문의 여러 exchange snapshot 중 상태 복구에 더 강한 관측을 먼저 평가한다.
+ *
+ * lookup/closed snapshot은 open 목록보다 최신 최종 상태를 포함할 수 있으므로 먼저 대조한다.
+ * 같은 source 안에서는 capturedAt이 더 늦은 snapshot을 우선한다. 이 함수는 입력 배열을 복사해 정렬하는
+ * 순수 helper이며 DB write나 외부 API 호출을 하지 않는다.
+ */
+function prioritizeExchangeOrderSnapshots(
+  exchangeOrders: readonly ReconcileExchangeOrderSnapshot[],
+): ReconcileExchangeOrderSnapshot[] {
+  return [...exchangeOrders].sort((left, right) => {
+    const sourceDelta = getExchangeSnapshotSourceRank(left) - getExchangeSnapshotSourceRank(right);
+    if (sourceDelta !== 0) {
+      return sourceDelta;
+    }
+
+    return (
+      new Date(right.capturedAt).getTime() -
+      new Date(left.capturedAt).getTime()
+    );
+  });
+}
+
+function getExchangeSnapshotSourceRank(order: ReconcileExchangeOrderSnapshot): number {
+  switch (order.source) {
+    case "lookup":
+      return 0;
+    case "closed":
+      return 1;
+    case "open":
+      return 2;
+    case "ws":
+      return 3;
+  }
+}
 
 /**
  * 전체 mismatch evidence 목록에서 fail-closed 여부와 target kill switch 상태를 판정한다.

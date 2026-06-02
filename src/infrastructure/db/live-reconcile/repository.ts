@@ -135,7 +135,7 @@ export class PostgresLiveReconcileRepository {
    * idempotency: partial unique index로 중복 row를 차단한다.
    * `exchange_order_id`가 있는 row는 run_id+exchange_order_id partial unique index로,
    * identifier가 있는 row는 uuid 관측 여부와 무관하게 run_id+identifier partial unique index로 중복을 차단한다.
-   * uuid/identifier가 모두 없는 fingerprint-only row는 동일 주문 여러 건을 숨기지 않기 위해 중복 제거하지 않는다.
+   * uuid/identifier가 모두 없는 fingerprint-only row는 run+fingerprint+source+capturedAt이 모두 같은 재시도만 중복 제거한다.
    * `ON CONFLICT DO NOTHING`으로 중복은 무시하고 계속 진행한다.
    *
    * @param runId 소속 run ID

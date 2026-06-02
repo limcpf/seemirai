@@ -79,6 +79,24 @@ describe("matchOrderIdentity — identifier / uuid / fingerprint 3단계 매칭"
     });
   });
 
+  it("uuid가 같은데 identifier만 다르면 identity conflict reason을 반환한다", () => {
+    const result = matchOrderIdentity(
+      createExchangeOrder({
+        identifier: "exchange-identifier",
+        exchangeOrderId: "same-uuid",
+      }),
+      createLocalOrder({
+        identifier: "local-identifier",
+        exchangeOrderId: "same-uuid",
+      }),
+    );
+
+    expect(result).toEqual({
+      matched: false,
+      reason: 'identifier_mismatch_after_uuid_match: exchange="exchange-identifier" vs local="local-identifier"',
+    });
+  });
+
   it("exchangeOrderId(uuid)가 양쪽에 존재하고 일치하면 uuid match", () => {
     const result = matchOrderIdentity(
       createExchangeOrder({
@@ -319,6 +337,24 @@ describe("reconcileOrders — untracked exchange open order", () => {
     );
   });
 
+  it("lookup에서 확인된 wait/watch 주문도 로컬에 없으면 UNTRACKED_EXCHANGE_OPEN_ORDER", () => {
+    const exchangeOrders = [
+      createExchangeOrder({
+        source: "lookup",
+        identifier: "lookup-open-order",
+        exchangeStatus: "watch",
+      }),
+    ];
+
+    const results = reconcileOrders(exchangeOrders, [], observedAt);
+
+    expect(results).toHaveLength(1);
+    expect(results[0]!.mismatches[0]).toMatchObject({
+      mismatchType: "UNTRACKED_EXCHANGE_OPEN_ORDER",
+      orderIdentity: "identifier:lookup-open-order",
+    });
+  });
+
   it("종료된 ws 주문은 untracked open으로 분류하지 않는다", () => {
     const exchangeOrders = [
       createExchangeOrder({
@@ -370,10 +406,42 @@ describe("reconcileOrders — untracked exchange open order", () => {
     );
   });
 
-  it("closed/lookup source는 untracked 판정에서 제외한다", () => {
+  it("동일 identifier가 open/ws 중복 source로 관측되어도 두 번째 snapshot을 untracked로 세지 않는다", () => {
+    const exchangeOrders = [
+      createExchangeOrder({
+        source: "open",
+        identifier: "duplicate-source-order",
+      }),
+      createExchangeOrder({
+        source: "ws",
+        identifier: "duplicate-source-order",
+      }),
+    ];
+    const localOrders = [
+      createLocalOrder({
+        orderId: "local-duplicate-source-order",
+        identifier: "duplicate-source-order",
+      }),
+    ];
+
+    const results = reconcileOrders(exchangeOrders, localOrders, observedAt);
+    const mismatches = results.flatMap((result) => result.mismatches);
+
+    expect(
+      mismatches.filter(
+        (mismatch) => mismatch.mismatchType === "UNTRACKED_EXCHANGE_OPEN_ORDER",
+      ),
+    ).toHaveLength(0);
+  });
+
+  it("closed/terminal lookup source는 untracked 판정에서 제외한다", () => {
     const exchangeOrders = [
       createExchangeOrder({ source: "closed", identifier: "closed-1" }),
-      createExchangeOrder({ source: "lookup", identifier: "lookup-1" }),
+      createExchangeOrder({
+        source: "lookup",
+        identifier: "lookup-1",
+        exchangeStatus: "done",
+      }),
     ];
     const results = reconcileOrders(exchangeOrders, [], observedAt);
 
@@ -474,6 +542,34 @@ describe("reconcileOrders — local open order missing on exchange", () => {
         (mismatch) => mismatch.mismatchType === "LOCAL_OPEN_ORDER_MISSING_ON_EXCHANGE",
       ),
     ).toBe(false);
+  });
+
+  it("같은 uuid의 identifier 충돌도 ORDER_IDENTITY_CONFLICT로 manual review evidence를 남긴다", () => {
+    const localOrders = [
+      createLocalOrder({
+        orderId: "local-uuid-identifier-conflict",
+        identifier: "local-identifier",
+        exchangeOrderId: "same-uuid",
+      }),
+    ];
+    const exchangeOrders = [
+      createExchangeOrder({
+        source: "open",
+        identifier: "exchange-identifier",
+        exchangeOrderId: "same-uuid",
+      }),
+    ];
+
+    const results = reconcileOrders(exchangeOrders, localOrders, observedAt);
+
+    expect(results.flatMap((result) => result.mismatches)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          mismatchType: "ORDER_IDENTITY_CONFLICT",
+          severity: "ERROR",
+        }),
+      ]),
+    );
   });
 
   it("로컬 주문이 exchange lookup에서 발견되면 missing 아님", () => {
@@ -1587,6 +1683,64 @@ describe("runReconcileEngine — 전체 orchestrator", () => {
     });
     expect(output.failClosed).toBe(false);
     expect(output.targetKillSwitchState).toBeUndefined();
+  });
+
+  it("open wait보다 최신 lookup done snapshot을 먼저 평가해 상태 전진 후보를 만든다", () => {
+    const input: ReconcileEngineInput = {
+      exchangeOpenOrders: [
+        createExchangeOrder({
+          source: "open",
+          identifier: "lookup-priority",
+          exchangeStatus: "wait",
+          capturedAt: "2026-06-02T11:59:00.000Z",
+        }),
+      ],
+      exchangeClosedOrders: [],
+      orderLookups: [
+        createExchangeOrder({
+          source: "lookup",
+          identifier: "lookup-priority",
+          exchangeStatus: "done",
+          remainingQuantity: "0",
+          capturedAt: "2026-06-02T12:00:30.000Z",
+        }),
+      ],
+      websocketContext: defaultWsContext,
+      localOpenOrders: [
+        createLocalOrder({
+          orderId: "local-lookup-priority",
+          identifier: "lookup-priority",
+          status: "ACCEPTED",
+        }),
+      ],
+      closedOrderWindow: defaultWindow,
+      observedAt,
+    };
+
+    const output = runReconcileEngine(withDefaultBalances(input));
+
+    expect(output.stateAdvancements).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          localOrderId: "local-lookup-priority",
+          advancementType: "FILL_CANDIDATE",
+          targetLocalStatus: "FILLED",
+        }),
+      ]),
+    );
+    expect(output.mismatches).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          mismatchType: "PARTIAL_FILL_MISMATCH",
+        }),
+      ]),
+    );
+    expect(
+      output.mismatches.some(
+        (mismatch) => mismatch.mismatchType === "UNTRACKED_EXCHANGE_OPEN_ORDER",
+      ),
+    ).toBe(false);
+    expect(output.failClosed).toBe(true);
   });
 
   it("양쪽 balance snapshot이 모두 없으면 failClosed=true, MANUAL_REVIEW_REQUIRED", () => {
