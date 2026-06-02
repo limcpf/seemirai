@@ -428,6 +428,69 @@ describe("Upbit private closed orders mapper", () => {
     expect(JSON.stringify(orders)).not.toContain('"raw"');
   });
 
+  it("keeps mappable closed orders when unsupported rows require manual review", () => {
+    const orders = toBrokerOrdersFromClosedOrders(
+      [
+        {
+          market: "KRW-BTC",
+          uuid: "closed-order-supported",
+          side: "ask",
+          ord_type: "limit",
+          price: "140000000",
+          state: "done",
+          created_at: "2026-06-01T09:00:00+09:00",
+          volume: "0.002",
+          remaining_volume: "0",
+          executed_volume: "0.002",
+          reserved_fee: "0",
+          remaining_fee: "0",
+          paid_fee: "140",
+          locked: "0",
+        },
+        {
+          market: "KRW-BTC",
+          uuid: "closed-order-price",
+          side: "bid",
+          ord_type: "price",
+          price: "10000",
+          state: "done",
+          created_at: "2026-06-01T09:01:00+09:00",
+          volume: null,
+          remaining_volume: "0",
+          executed_volume: "0.00007142",
+          reserved_fee: "0",
+          remaining_fee: "0",
+          paid_fee: "5",
+          locked: "0",
+        },
+        {
+          market: "KRW-BTC",
+          uuid: "closed-order-best",
+          side: "ask",
+          ord_type: "best",
+          price: "140000000",
+          state: "cancel",
+          created_at: "2026-06-01T09:02:00+09:00",
+          volume: "0.001",
+          remaining_volume: "0.001",
+          executed_volume: "0",
+          reserved_fee: "0",
+          remaining_fee: "0",
+          paid_fee: "0",
+          locked: "0",
+        },
+      ],
+      { capturedAt },
+    );
+
+    expect(orders).toHaveLength(1);
+    expect(orders[0]).toMatchObject({
+      brokerOrderId: "closed-order-supported",
+      orderType: "LIMIT",
+      status: "FILLED",
+    });
+  });
+
   it("fails closed order mapping without echoing raw invalid values", () => {
     try {
       toBrokerOrdersFromClosedOrders(

@@ -405,7 +405,7 @@ function toListClosedOrdersQueryParams(input: UpbitPrivateListClosedOrdersInput)
 }
 
 /**
- * ISO 8601 문자열 또는 Unix timestamp(ms) 숫자를 Upbit API가 요구하는 Unix timestamp(ms) 문자열로 변환한다.
+ * ISO 8601 문자열, Unix timestamp(ms) 숫자, Unix timestamp(ms) 문자열을 Upbit API timestamp 문자열로 변환한다.
  *
  * 이 함수는 결정적이어야 하며, 같은 입력이 항상 같은 문자열을 반환해 JWT query hash가 일관되게 유지되도록 한다.
  * 외부 side effect는 없으며, 파싱 실패 시 원본을 그대로 반영하지 않고 오류로 닫는다.
@@ -418,6 +418,17 @@ function toUpbitTimestamp(value: string | number): UpbitClosedOrdersTimestamp {
       });
     }
     return { value: String(value), timestampMs: value };
+  }
+
+  if (/^(?:0|[1-9]\d*)$/u.test(value)) {
+    const timestampMs = Number(value);
+    if (!Number.isSafeInteger(timestampMs)) {
+      throw new UnsafeUpbitPrivateRequestError({
+        violations: [`종료 주문 조회 start_time/end_time을 해석할 수 없습니다: 유효하지 않은 시간 형식입니다`],
+      });
+    }
+    // CLI/env/DB에서 문자열로 전달된 timestamp도 같은 reconcile window로 인정해야 불필요한 API 차단을 피할 수 있다.
+    return { value, timestampMs };
   }
 
   // ISO 8601 문자열을 Date로 파싱해 Unix timestamp(ms)로 변환한다.

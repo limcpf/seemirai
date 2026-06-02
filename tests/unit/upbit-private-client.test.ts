@@ -433,6 +433,36 @@ describe("Upbit private REST client foundation", () => {
     });
   });
 
+  it("lists closed orders with numeric timestamp strings", async () => {
+    let capturedRequest: CapturedRequest | undefined;
+    const client = new UpbitPrivateRestClient({
+      credentials,
+      nonceFactory: () => "closed-orders-num-string-nonce",
+      fetchFn: async (input, init) => {
+        capturedRequest = captureRequest(input, init);
+        return jsonResponse([], "group=default; min=1800; sec=29");
+      },
+    });
+
+    await client.listClosedOrders({
+      startTime: "1746230400000",
+      endTime: "1746316800000",
+    });
+
+    const authorization = capturedRequest?.headers.get("authorization");
+    const decoded = decodeJwt(readBearerToken(authorization));
+    const expectedQueryString = "states[]=done&states[]=cancel&start_time=1746230400000&end_time=1746316800000";
+
+    expect(capturedRequest?.url).toBe(
+      "https://api.upbit.com/v1/orders/closed?states[]=done&states[]=cancel&start_time=1746230400000&end_time=1746316800000",
+    );
+    expect(decoded.payload).toMatchObject({
+      nonce: "closed-orders-num-string-nonce",
+      query_hash: createUpbitQueryHash(expectedQueryString),
+      query_hash_alg: "SHA512",
+    });
+  });
+
   it("fails locally before fetch when closed order inputs are unsafe", async () => {
     let fetchCalls = 0;
     const client = new UpbitPrivateRestClient({

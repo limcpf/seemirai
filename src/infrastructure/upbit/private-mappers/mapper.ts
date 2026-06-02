@@ -213,7 +213,14 @@ export function toBrokerOrdersFromClosedOrders(
 ): readonly BrokerOrder[] {
   const orders = parsePrivatePayload(UpbitPrivateClosedOrdersResponseSchema, "CLOSED_ORDERS", payload);
 
-  return orders.map((order) => toBrokerOrderFromPrivateOrder(order, options, "upbit_private_closed_order"));
+  return orders.flatMap((order) => {
+    // closed snapshot은 일부 unsupported row가 있어도 나머지 주문 evidence를 잃지 않아야 하므로 표현 가능한 row만 정규화한다.
+    if (!canMapClosedOrderToBrokerOrder(order)) {
+      return [];
+    }
+
+    return [toBrokerOrderFromPrivateOrder(order, options, "upbit_private_closed_order")];
+  });
 }
 
 /**
@@ -410,6 +417,29 @@ function toDomainOrderStatus(
   }
 
   return "ACCEPTED";
+}
+
+/**
+ * closed order row를 현재 broker order contract로 표현할 수 있는지 판정한다.
+ *
+ * 이 helper는 M16 REST snapshot에서 지원 불가 주문 한 건이 전체 window 정규화를 깨뜨리지 않게 하는 mapper 내부 경계다.
+ * 입력은 schema를 통과한 closed order row이고, 출력은 정규화 가능 여부다. 외부 side effect는 없으며, false row는 후속
+ * reconcile 단계에서 manual-review evidence 대상으로 남겨야 한다.
+ */
+function canMapClosedOrderToBrokerOrder(order: UpbitPrivateClosedOrderResponse): boolean {
+  if (order.ord_type === "best" || order.ord_type === "price") {
+    return false;
+  }
+
+  if (order.ord_type === "market" && order.volume === null) {
+    return false;
+  }
+
+  if (order.ord_type === "limit" && (order.price === null || order.price === undefined)) {
+    return false;
+  }
+
+  return true;
 }
 
 function toBrokerOrderFromPrivateOrder(
