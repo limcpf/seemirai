@@ -81,6 +81,8 @@ export function createLiveReconcileRuntimeWorker(
         repository: input.repository,
         observedAt,
         correlationId,
+        actor,
+        provider: input.killSwitchControlProvider,
         loadSnapshot: () =>
           input.snapshotProvider.loadSnapshot({
             observedAt,
@@ -112,6 +114,8 @@ export function createLiveReconcileRuntimeWorker(
       try {
         const engineOutput = runReconcileEngine(engineInput);
 
+        const stateAdvancementRequiresManualReview =
+          hasStateAdvancementCandidatesWithoutRuntimeWrite(engineOutput);
         const killSwitchResult = await applyFailClosedIfNeeded({
           engineOutput,
           correlationId,
@@ -119,6 +123,7 @@ export function createLiveReconcileRuntimeWorker(
           actor,
           provider: input.killSwitchControlProvider,
           runId: begun.run.id,
+          stateAdvancementRequiresManualReview,
         });
 
         await persistReconcileEngineEvidence({
@@ -127,13 +132,16 @@ export function createLiveReconcileRuntimeWorker(
           engineInput,
           engineOutput,
         });
-        const finalStatus = engineOutput.failClosed
+        const finalStatus = engineOutput.failClosed || stateAdvancementRequiresManualReview
           ? "MANUAL_REVIEW_REQUIRED"
           : "COMPLETED";
         const completedRun = await input.repository.completeLiveReconcileRun({
           runId: begun.run.id,
           status: finalStatus,
-          metadata: createLiveReconcileCompletionMetadata(engineOutput),
+          metadata: createLiveReconcileCompletionMetadata({
+            engineOutput,
+            stateAdvancementRequiresManualReview,
+          }),
         });
         const statusSummary = createStatusSummaryFromEngine({
           engineOutput,
@@ -141,6 +149,7 @@ export function createLiveReconcileRuntimeWorker(
           correlationId,
           observedAt,
           websocketStatus: resolveRuntimeWebSocketStatus(engineInput, engineOutput),
+          stateAdvancementRequiresManualReview,
         });
 
         const result: LiveReconcileRuntimeRunResult = {
@@ -173,12 +182,21 @@ async function loadSnapshotOrRecordFailure(input: {
   repository: LiveReconcileRuntimeRepository;
   observedAt: TimestampInput;
   correlationId: string;
+  actor: string;
+  provider: CreateLiveReconcileRuntimeWorkerInput["killSwitchControlProvider"];
   loadSnapshot: () => ReturnType<CreateLiveReconcileRuntimeWorkerInput["snapshotProvider"]["loadSnapshot"]>;
 }): ReturnType<CreateLiveReconcileRuntimeWorkerInput["snapshotProvider"]["loadSnapshot"]> {
   try {
     return await input.loadSnapshot();
   } catch (error) {
     const failedRun = await recordSnapshotLoadFailureRun(input);
+    await applySnapshotFailureFailClosed({
+      provider: input.provider,
+      runId: failedRun.id,
+      correlationId: input.correlationId,
+      observedAt: input.observedAt,
+      actor: input.actor,
+    });
     throw new UnsafeLiveReconcileRuntimeError([
       `live reconcile snapshot load failed: ${failedRun.id}`,
       toSafeErrorMessage(error),
@@ -223,9 +241,11 @@ async function recordSnapshotLoadFailureRun(input: {
   });
 }
 
-function createLiveReconcileCompletionMetadata(
-  engineOutput: ReconcileEngineOutput,
-): Record<string, unknown> {
+function createLiveReconcileCompletionMetadata(input: {
+  engineOutput: ReconcileEngineOutput;
+  stateAdvancementRequiresManualReview: boolean;
+}): Record<string, unknown> {
+  const { engineOutput } = input;
   return {
     live_reconcile_engine_summary: {
       result: engineOutput.summary.result,
@@ -240,6 +260,7 @@ function createLiveReconcileCompletionMetadata(
       cancel_failures: engineOutput.summary.cancelFailures,
       window_exceeded_orders: engineOutput.summary.windowExceededOrders,
     },
+    state_advancement_requires_manual_review: input.stateAdvancementRequiresManualReview,
     live_reconcile_state_advancements: engineOutput.stateAdvancements.map((candidate) => ({
       local_order_id: candidate.localOrderId,
       exchange_order_identity: candidate.exchangeOrderIdentity,
@@ -393,6 +414,7 @@ function toBalanceSnapshotRow(balance: BrokerBalance): {
   source: "REST";
   metadata?: Record<string, unknown>;
 } {
+  const metadata = sanitizeReconcileEvidenceMetadata(balance.metadata);
   return {
     currency: balance.currency,
     available: balance.available,
@@ -400,7 +422,7 @@ function toBalanceSnapshotRow(balance: BrokerBalance): {
     total: balance.total,
     capturedAt: balance.updatedAt,
     source: "REST",
-    ...(balance.metadata === undefined ? {} : { metadata: balance.metadata }),
+    ...(metadata === undefined ? {} : { metadata }),
   };
 }
 
@@ -463,17 +485,24 @@ async function applyFailClosedIfNeeded(input: {
   actor: string;
   provider: CreateLiveReconcileRuntimeWorkerInput["killSwitchControlProvider"];
   runId: string;
+  stateAdvancementRequiresManualReview: boolean;
 }) {
-  if (!input.engineOutput.failClosed || input.provider === undefined) {
-    if (input.engineOutput.failClosed) {
+  const shouldApplyKillSwitch =
+    input.engineOutput.failClosed || input.stateAdvancementRequiresManualReview;
+  if (!shouldApplyKillSwitch || input.provider === undefined) {
+    if (shouldApplyKillSwitch) {
       throw new UnsafeLiveReconcileRuntimeError([
-        "live reconcile mismatch를 차단할 kill switch provider가 없습니다",
+        input.stateAdvancementRequiresManualReview
+          ? "live reconcile 상태 전진 후보를 차단할 kill switch provider가 없습니다"
+          : "live reconcile mismatch를 차단할 kill switch provider가 없습니다",
       ]);
     }
     return undefined;
   }
 
-  const targetState = toKillSwitchControlTarget(input.engineOutput);
+  const targetState = input.stateAdvancementRequiresManualReview
+    ? "MANUAL_REVIEW_REQUIRED"
+    : toKillSwitchControlTarget(input.engineOutput);
   if (targetState === undefined) {
     return undefined;
   }
@@ -481,16 +510,75 @@ async function applyFailClosedIfNeeded(input: {
   // mismatch는 신규 주문 허용 신호가 아니므로 append-only evidence보다 먼저 durable kill switch를 닫아 fail-open 창을 없앤다.
   return input.provider.apply({
     targetState,
-    reasonCode: toKillSwitchReasonCode(input.engineOutput),
+    reasonCode: input.stateAdvancementRequiresManualReview
+      ? "live_reconcile_state_advancement_pending"
+      : toKillSwitchReasonCode(input.engineOutput),
     correlationId: input.correlationId,
     actor: input.actor,
-    message: "Live reconcile mismatch가 감지되어 신규 주문을 차단합니다.",
+    message: input.stateAdvancementRequiresManualReview
+      ? "Live reconcile 상태 전진 후보가 확인되어 수동 검토 전까지 신규 주문을 차단합니다."
+      : "Live reconcile mismatch가 감지되어 신규 주문을 차단합니다.",
     metadata: {
       live_reconcile_run_id: input.runId,
       mismatch_count: input.engineOutput.summary.mismatchCount,
+      state_advancement_count: input.engineOutput.stateAdvancements.length,
     },
     occurredAt: input.observedAt,
   });
+}
+
+/**
+ * snapshot provider 실패를 durable manual review 전이로 닫는다.
+ *
+ * 이 함수는 REST/WebSocket read path가 실패해 로컬/거래소 상태를 증명할 수 없을 때 호출된다. 입력의 run id와
+ * correlation id를 kill switch evidence에 연결하고, provider가 없거나 실패하면 secret-free 오류로 중단한다.
+ * 외부 side effect는 kill switch control port 호출 1회뿐이다.
+ */
+async function applySnapshotFailureFailClosed(input: {
+  provider: CreateLiveReconcileRuntimeWorkerInput["killSwitchControlProvider"];
+  runId: string;
+  correlationId: string;
+  observedAt: TimestampInput;
+  actor: string;
+}) {
+  if (input.provider === undefined) {
+    throw new UnsafeLiveReconcileRuntimeError([
+      "live reconcile snapshot 실패를 차단할 kill switch provider가 없습니다",
+    ]);
+  }
+
+  try {
+    // read-only snapshot 자체가 없으면 로컬/거래소 상태를 증명할 수 없어 주문 허용을 보수적으로 닫는다.
+    return await input.provider.apply({
+      targetState: "MANUAL_REVIEW_REQUIRED",
+      reasonCode: "live_reconcile_snapshot_provider_failed",
+      correlationId: input.correlationId,
+      actor: input.actor,
+      message: "Live reconcile snapshot 조회가 실패해 수동 검토 전까지 신규 주문을 차단합니다.",
+      metadata: {
+        live_reconcile_run_id: input.runId,
+        failure_phase: "snapshot_provider",
+      },
+      occurredAt: input.observedAt,
+    });
+  } catch (error) {
+    throw new UnsafeLiveReconcileRuntimeError([
+      "live reconcile snapshot 실패 kill switch 전이를 완료하지 못했습니다",
+      toSafeErrorMessage(error),
+    ]);
+  }
+}
+
+/**
+ * runtime worker가 직접 반영하지 못한 주문 상태 전진 후보가 있는지 판정한다.
+ *
+ * state advancement 후보는 identity가 일치한 관측이지만 이 worker에는 orders/fills/positions write port가 없다.
+ * 따라서 후보가 하나라도 있으면 성공 summary로 숨기지 않고 manual review kill switch 전이로 수렴해야 한다.
+ */
+function hasStateAdvancementCandidatesWithoutRuntimeWrite(
+  engineOutput: ReconcileEngineOutput,
+): boolean {
+  return engineOutput.stateAdvancements.length > 0;
 }
 
 function resolveRuntimeWebSocketStatus(
@@ -589,10 +677,13 @@ function createStatusSummaryFromEngine(input: {
   correlationId: string;
   observedAt: TimestampInput;
   websocketStatus: "CONNECTED" | "DEGRADED";
+  stateAdvancementRequiresManualReview: boolean;
 }): ReconcileStatusSummary {
   return createReconcileStatusSummary({
     lastReconcileAt: toIsoString(input.observedAt),
-    reconcileResult: input.engineOutput.summary.result,
+    reconcileResult: input.stateAdvancementRequiresManualReview
+      ? "MISMATCH_DETECTED"
+      : input.engineOutput.summary.result,
     mismatchCount: input.engineOutput.summary.mismatchCount,
     openOrderCount: input.engineOutput.summary.openOrderCount.exchange,
     balanceStatus: input.engineOutput.summary.balanceStatus,
@@ -626,4 +717,71 @@ function toNullableIsoString(value: Date | string | null): string | null {
 
 function toSafeErrorMessage(error: unknown): string {
   return error instanceof Error ? error.name : "unknown_error";
+}
+
+// raw provider payload와 credential 후보 key는 append-only reconcile evidence에 보존하지 않는다.
+const rawProviderMetadataKeys = new Set([
+  "raw",
+  "raw_payload",
+  "rawPayload",
+  "provider_payload",
+  "providerPayload",
+  "authorization",
+  "Authorization",
+  "jwt",
+  "JWT",
+  "accessKey",
+  "secretKey",
+  "upbitAccessKey",
+  "upbitSecretKey",
+]);
+
+/**
+ * append-only reconcile evidence에 저장할 metadata를 secret-safe 형태로 줄인다.
+ *
+ * provider raw payload, Authorization/JWT, credential 후보 key를 재귀적으로 제거한다. 안전 필드는 유지하고,
+ * 제거 후 빈 객체만 남으면 metadata 자체를 생략한다. 외부 side effect는 없다.
+ */
+function sanitizeReconcileEvidenceMetadata(
+  metadata: Record<string, unknown> | undefined,
+): Record<string, unknown> | undefined {
+  if (metadata === undefined) {
+    return undefined;
+  }
+  const sanitized = sanitizeReconcileEvidenceValue(metadata);
+  if (!isRecord(sanitized) || Object.keys(sanitized).length === 0) {
+    return undefined;
+  }
+  return sanitized;
+}
+
+/**
+ * metadata 내부 값을 재귀적으로 redaction한다.
+ *
+ * 배열은 순서를 유지하고 객체는 raw/credential 후보 key만 제거한다. DB에 쓰기 직전 호출되는 순수 변환 경계다.
+ */
+function sanitizeReconcileEvidenceValue(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map(sanitizeReconcileEvidenceValue);
+  }
+  if (!isRecord(value)) {
+    return value;
+  }
+
+  const sanitized: Record<string, unknown> = {};
+  for (const [key, nestedValue] of Object.entries(value)) {
+    if (rawProviderMetadataKeys.has(key)) {
+      continue;
+    }
+    const sanitizedValue = sanitizeReconcileEvidenceValue(nestedValue);
+    if (isRecord(sanitizedValue) && Object.keys(sanitizedValue).length === 0) {
+      continue;
+    }
+    sanitized[key] = sanitizedValue;
+  }
+  return sanitized;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
