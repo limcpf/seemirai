@@ -254,7 +254,7 @@ function toWebSocketOrderSnapshot(
     "uid",
   );
   const identifier = readStringField(payload, "identifier");
-  const requestedPrice = readStringField(payload, "requestedPrice", "requested_price", "price", "p");
+  const requestedPrice = readWebSocketRequestedPrice(payload, rawExchangeStatus);
 
   if (exchangeOrderId !== undefined) {
     snapshot.exchangeOrderId = exchangeOrderId;
@@ -300,6 +300,39 @@ function canUseWebSocketOrderSnapshots(
     (evidence.gapDurationMs ?? 0) > 0 ||
     (evidence.reconnectCount ?? 0) > 0
   );
+}
+
+/**
+ * WebSocket payload에서 주문 기준 가격을 읽는다.
+ *
+ * Upbit raw myOrder `state=trade` 이벤트의 `price`/`p`는 체결 가격이라 원주문 immutable fingerprint 가격으로
+ * 사용할 수 없다. trade 이벤트는 provider가 명시적으로 정규화한 주문 가격 필드가 있을 때만 requestedPrice를 채운다.
+ *
+ * @param payload private WebSocket myOrder payload
+ * @param rawExchangeStatus 원천 myOrder state
+ * @returns 주문 기준 가격 또는 확인 불가 시 undefined
+ */
+function readWebSocketRequestedPrice(
+  payload: Record<string, unknown>,
+  rawExchangeStatus: string | undefined,
+): string | undefined {
+  const normalizedOrderPrice = readStringField(
+    payload,
+    "requestedPrice",
+    "requested_price",
+    "orderPrice",
+    "order_price",
+  );
+  if (normalizedOrderPrice !== undefined) {
+    return normalizedOrderPrice;
+  }
+
+  if (rawExchangeStatus === "trade") {
+    // trade 이벤트의 `price`는 체결가이므로 원주문 가격 충돌 근거로 durable evidence에 쓰지 않는다.
+    return undefined;
+  }
+
+  return readStringField(payload, "price", "p");
 }
 
 /**

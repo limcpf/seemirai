@@ -801,6 +801,44 @@ describe("createLiveReconcileRuntimeWorker", () => {
     expect(status.trace).toMatchObject({ reason: "reconcile_running", runId: "run-running" });
   });
 
+  it("MANUAL_REVIEW_REQUIRED latest run은 mismatch evidence가 없어도 CLEAN으로 표시하지 않는다", async () => {
+    const repository = fakeRepository();
+    repository.latestSummary = {
+      run: {
+        id: "run-state-advancement",
+        idempotency_key: "idem-state-advancement",
+        status: "MANUAL_REVIEW_REQUIRED",
+        started_at: new Date("2026-06-02T12:00:00.000Z"),
+        finished_at: new Date("2026-06-02T12:00:01.000Z"),
+        guard_profile: "LIVE_READ_ONLY_RECONCILE",
+        source_summary: "fixture",
+        correlation_id: "corr-state-advancement",
+        metadata_json: {
+          state_advancement_requires_manual_review: true,
+        },
+      },
+      balanceSnapshotCount: 2,
+      exchangeOrderSnapshotCount: 1,
+      openExchangeOrderSnapshotCount: 0,
+      mismatchEvidenceCount: 0,
+      mismatchTypes: [],
+      positionSnapshotCount: 0,
+      fillRecoveryKeyCount: 0,
+    };
+
+    const status = await createLiveReconcileStatusProvider(repository).getReconcileStatus();
+
+    expect(status.result).toBe("MISMATCH_DETECTED");
+    expect(status.mismatchCount).toBe(0);
+    expect(status.actionRequired).toContain("수동 검토 필요");
+    expect(status.message).toContain("수동 검토");
+    expect(status.trace).toMatchObject({
+      reason: "reconcile_state_advancement_manual_review_required",
+      runId: "run-state-advancement",
+      correlationId: "corr-state-advancement",
+    });
+  });
+
   it("latest summary는 open source order 수와 balance mismatch 상태를 보존한다", async () => {
     const repository = fakeRepository();
     repository.latestSummary = {

@@ -2129,7 +2129,7 @@ describe("runReconcileEngine — 전체 orchestrator", () => {
     expect(output.summary.openOrderCount.exchange).toBe(1);
   });
 
-  it("WebSocket raw trade 이벤트는 체결량이 아니라 remaining+executed를 원주문 수량으로 쓴다", () => {
+  it("WebSocket raw trade 이벤트는 체결량과 체결가를 원주문 fingerprint로 쓰지 않는다", () => {
     const input: ReconcileEngineInput = {
       exchangeOpenOrders: [],
       exchangeClosedOrders: [],
@@ -2149,7 +2149,7 @@ describe("runReconcileEngine — 전체 orchestrator", () => {
               volume: 0.0001,
               remaining_volume: 0.0007,
               executed_volume: 0.0003,
-              price: 10000000,
+              price: 9900000,
             },
           },
         ],

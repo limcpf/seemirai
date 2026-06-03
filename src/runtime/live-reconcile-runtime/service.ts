@@ -338,6 +338,11 @@ export function createLiveReconcileStatusProvider(
         };
       }
 
+      if (latest.run.status === "MANUAL_REVIEW_REQUIRED") {
+        // 수동 검토로 닫힌 run은 mismatch evidence가 0건이어도 상태 전진 후보가 미반영된 운영 차단 상태일 수 있다.
+        return createManualReviewRequiredStatusSummary(latest, latest.run);
+      }
+
       const reconcileResult =
         latest.mismatchEvidenceCount > 0 ? "MISMATCH_DETECTED" : "CLEAN";
 
@@ -351,6 +356,48 @@ export function createLiveReconcileStatusProvider(
         runId: latest.run.id,
         ...(latest.run.correlation_id === null ? {} : { correlationId: latest.run.correlation_id }),
       });
+    },
+  };
+}
+
+/**
+ * 최신 reconcile run이 수동 검토 상태로 닫힌 경우의 `/status` summary를 만든다.
+ *
+ * append-only mismatch evidence가 없어도 state advancement 후보가 로컬 DB write 없이 보류됐을 수 있으므로,
+ * `CLEAN`/`SUCCESS`로 낮추지 않고 운영자가 직접 확인해야 하는 상태를 사용자 행동 언어로 반환한다.
+ *
+ * @param latest repository가 반환한 최신 reconcile summary
+ * @param run null이 아님을 호출 경계에서 확인한 최신 reconcile run
+ * @returns 운영자 표면에 노출 가능한 수동 검토 summary
+ */
+function createManualReviewRequiredStatusSummary(
+  latest: Awaited<ReturnType<LiveReconcileRuntimeRepository["getLatestLiveReconcileSummary"]>>,
+  run: NonNullable<
+    Awaited<ReturnType<LiveReconcileRuntimeRepository["getLatestLiveReconcileSummary"]>>["run"]
+  >,
+): ReconcileStatusSummary {
+  const hasMismatchEvidence = latest.mismatchEvidenceCount > 0;
+
+  return {
+    lastReconcileAt: toNullableIsoString(run.finished_at ?? run.started_at),
+    result: "MISMATCH_DETECTED",
+    mismatchCount: latest.mismatchEvidenceCount,
+    openOrderCount: latest.openExchangeOrderSnapshotCount,
+    balanceStatus: toStatusSummaryBalanceStatus(resolveLatestBalanceStatus(latest)),
+    websocketStatus: resolveLatestWebSocketStatus(latest),
+    actionRequired: hasMismatchEvidence
+      ? "수동 검토 필요: 저장된 reconcile evidence를 확인하고 모든 불일치를 해소한 뒤 kill switch를 NORMAL로 복구하세요."
+      : "수동 검토 필요: 거래소에서 확인된 주문 상태 전진 후보를 로컬 상태에 반영하거나 기각한 뒤 reconcile을 재실행하세요.",
+    message: hasMismatchEvidence
+      ? "실계좌 상태 대조에서 수동 확인이 필요한 불일치가 발견되었습니다. 신규 주문은 안전 확인 전까지 열지 마세요."
+      : "실계좌 상태 대조가 수동 검토로 닫혔습니다. 로컬 주문 상태가 최신 거래소 관측을 아직 반영하지 않았을 수 있습니다.",
+    trace: {
+      source: "live_reconcile_status",
+      reason: hasMismatchEvidence
+        ? "reconcile_manual_review_required"
+        : "reconcile_state_advancement_manual_review_required",
+      runId: run.id,
+      ...(run.correlation_id === null ? {} : { correlationId: run.correlation_id }),
     },
   };
 }
@@ -604,6 +651,28 @@ function resolveLatestBalanceStatus(
     return "LOCK_MISMATCH";
   }
   return "OK";
+}
+
+/**
+ * repository summary의 balance 판정값을 `/status` public contract로 낮춘다.
+ *
+ * 내부 engine 용어(`LOCK_MISMATCH`, `NOT_AVAILABLE`)는 사용자-facing summary type에 직접 노출하지 않고,
+ * 운영자가 상태를 해석할 수 있는 canonical 값으로 변환한다. 외부 side effect는 없다.
+ *
+ * @param balanceStatus latest summary에서 계산한 engine balance 상태
+ * @returns `/status`에 노출 가능한 balance 상태
+ */
+function toStatusSummaryBalanceStatus(
+  balanceStatus: "OK" | "LOCK_MISMATCH" | "NOT_AVAILABLE",
+): ReconcileStatusSummary["balanceStatus"] {
+  switch (balanceStatus) {
+    case "OK":
+      return "OK";
+    case "LOCK_MISMATCH":
+      return "STALE";
+    case "NOT_AVAILABLE":
+      return "UNAVAILABLE";
+  }
 }
 
 function resolveLatestWebSocketStatus(

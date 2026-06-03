@@ -9,15 +9,15 @@ import { parseFinancialDecimal } from "../../shared/decimal.js";
  *
  * 거래소 주문과 로컬 주문이 같은 주문인지 판단하는 순수 함수들이다.
  * identifier, uuid, fingerprint 3단계 fallback으로 identity를 확인하되,
- * identifier/uuid가 일치해도 market/side/quantity/price fingerprint가
+ * identifier/uuid가 일치해도 관측 가능한 market/side/quantity/price fingerprint가
  * 어긋나면 identity 불일치로 처리해 자동 상태 전진을 막는다.
  * ============================================================ */
 
 /**
  * identity 일치 유형이다.
  *
- * - `identifier`: 클라이언트가 부여한 identifier와 immutable fingerprint가 일치
- * - `uuid`: 거래소가 부여한 exchangeOrderId와 immutable fingerprint가 일치
+ * - `identifier`: 클라이언트가 부여한 identifier와 관측 가능한 immutable fingerprint가 일치
+ * - `uuid`: 거래소가 부여한 exchangeOrderId와 관측 가능한 immutable fingerprint가 일치
  * - `fingerprint`: 식별자가 없을 때 (market, side, quantity, price)가 일치
  */
 export type IdentityMatchType = "identifier" | "uuid" | "fingerprint";
@@ -211,7 +211,9 @@ export function describeExchangeOrderIdentity(
  * 이 함수는 거래소 state를 적용할 전이 입력과 identity matching 조건을
  * 분리하기 위한 순수 guard다. market, side, 원주문 수량, 원주문 가격이
  * 다르면 같은 identifier/uuid라도 stale mapping 또는 충돌로 보고 외부
- * side effect 없이 match 실패만 반환한다.
+ * side effect 없이 match 실패만 반환한다. 단, WebSocket trade 이벤트처럼
+ * 원주문 가격이 관측되지 않은 경우에는 체결가를 가격 fingerprint로 오인하지
+ * 않도록 관측 가능한 필드만 비교한다.
  */
 function compareImmutableFingerprint(
   exchange: {
@@ -242,6 +244,24 @@ function compareImmutableFingerprint(
 
   if (exchangeFp === localFp) {
     return { matched: true };
+  }
+
+  if (exchange.requestedPrice === undefined || local.requestedPrice === undefined) {
+    const exchangeObservedFp = buildOrderFingerprint(
+      exchange.market,
+      exchange.side,
+      exchange.requestedQuantity,
+    );
+    const localObservedFp = buildOrderFingerprint(
+      local.market,
+      local.side,
+      local.requestedQuantity,
+    );
+
+    if (exchangeObservedFp === localObservedFp) {
+      // id 기반 match에서 한쪽 가격이 미관측이면 raw trade 체결가를 주문가 충돌로 승격하지 않는다.
+      return { matched: true };
+    }
   }
 
   return {
