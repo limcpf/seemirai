@@ -1,7 +1,8 @@
 # Post-M8 마일스톤 계획
 
-- 상태: active
+- 상태: completed
 - 작성일: 2026-05-22
+- 완료일: 2026-06-03
 - 목표: M8 이후 남은 PRD 요구사항, 운영 검증 공백, 기술 부채를 paper 운영과 v0.2 pilot 준비 순서로 재정렬한다.
 
 ## 기준 문서
@@ -102,6 +103,8 @@ SEEMIRAI_RUN_SOAK=1 node scripts/soak-paper-24h.mjs --duration-ms 86400000 --dai
 
 ### M9. Paper 운영 베타
 
+상태: completed
+
 목적:
 
 - MVP 코어를 개발 검증이 아니라 반복 가능한 paper 운영 절차로 올린다.
@@ -129,12 +132,12 @@ SEEMIRAI_RUN_SOAK=1 node scripts/soak-paper-24h.mjs --duration-ms 86400000 --dai
 
 Acceptance Criteria:
 
-- [ ] 운영자가 문서만 보고 DB 준비, migration, paper runtime 시작, control endpoint 확인, 종료를 재현할 수 있다.
-- [ ] daily report가 수동/스케줄 실행 모두에서 같은 report date idempotency key를 사용한다.
-- [ ] paper 매매 이벤트가 P1 즉시, P2 cooldown, P3 요약 전용 정책에 따라 Telegram 알림 후보로 변환된다.
-- [ ] notification retry 실패가 묵살되지 않고 jobs table 기반 재시도 또는 manual review 상태로 수렴한다.
-- [ ] kill switch drill에서 신규 주문 차단, pending paper order cancel plan, Telegram 알림 evidence가 같은 correlation id로 추적된다.
-- [ ] controlled fixture에서 paper decision runner가 최소 1회 paper 주문 제출/체결 경로를 통과하고, 주문 0건 frame은
+- [x] 운영자가 문서만 보고 DB 준비, migration, paper runtime 시작, control endpoint 확인, 종료를 재현할 수 있다.
+- [x] daily report가 수동/스케줄 실행 모두에서 같은 report date idempotency key를 사용한다.
+- [x] paper 매매 이벤트가 P1 즉시, P2 cooldown, P3 요약 전용 정책에 따라 Telegram 알림 후보로 변환된다.
+- [x] notification retry 실패가 묵살되지 않고 jobs table 기반 재시도 또는 manual review 상태로 수렴한다.
+- [x] kill switch drill에서 신규 주문 차단, pending paper order cancel plan, Telegram 알림 evidence가 같은 correlation id로 추적된다.
+- [x] controlled fixture에서 paper decision runner가 최소 1회 paper 주문 제출/체결 경로를 통과하고, 주문 0건 frame은
       hold/discard/cost/risk reason count로 설명된다.
 - [x] 3일 paper trading soak runner가 `SEEMIRAI_RUN_M9_PAPER_TRADING_SOAK=1` guard 아래에서 PaperBroker 주문/체결 cycle을
       반복하고 day별 summary를 남긴다.
@@ -419,16 +422,16 @@ Acceptance Criteria:
 
 - GitHub issue: #124 closed
 - Final PR: #132 merged
-- 완료 실행 계획: [`../completed/2026-06-01-issue-124-m14-v0-2-pilot.md`](../completed/2026-06-01-issue-124-m14-v0-2-pilot.md)
+- 완료 실행 계획: [`2026-06-01-issue-124-m14-v0-2-pilot.md`](./2026-06-01-issue-124-m14-v0-2-pilot.md)
 - 실제 private/order smoke는 운영자 secret과 명시 guard가 없으면 실행하지 않는 경계를 유지한다.
 
 ### M15-M24. Upbit 실거래 자율 운용 로드맵
 
 상세 제품 명세: [`../../product-specs/upbit-live-autonomous-trading.md`](../../product-specs/upbit-live-autonomous-trading.md)
 
-M15 상태: completed. issue #135의 완료 기록은 [`../completed/2026-06-02-issue-135-m15-upbit-live-broker.md`](../completed/2026-06-02-issue-135-m15-upbit-live-broker.md)를 기준으로 한다.
+M15 상태: completed. issue #135의 완료 기록은 [`2026-06-02-issue-135-m15-upbit-live-broker.md`](./2026-06-02-issue-135-m15-upbit-live-broker.md)를 기준으로 한다.
 
-M16 상태: active. issue #143의 실행 계획은 [`2026-06-02-issue-143-m16-live-reconcile.md`](./2026-06-02-issue-143-m16-live-reconcile.md)를 기준으로 한다. read-only reconcile runtime, private WebSocket myOrder/myAsset, REST snapshot bootstrap, mismatch fail-closed를 포함한다. M17 PnL 회계, M18 판단 이유 ledger, M19 exit engine, M20 Telegram inbound, M21 수동 승인, M22 autonomous trading은 M16 범위 밖이다.
+M16 상태: active. issue #143의 실행 계획은 [`../active/2026-06-02-issue-143-m16-live-reconcile.md`](../active/2026-06-02-issue-143-m16-live-reconcile.md)를 기준으로 한다. read-only reconcile runtime, private WebSocket myOrder/myAsset, REST snapshot bootstrap, mismatch fail-closed를 포함한다. M17 PnL 회계, M18 판단 이유 ledger, M19 exit engine, M20 Telegram inbound, M21 수동 승인, M22 autonomous trading은 M16 범위 밖이다.
 
 목적:
 
@@ -522,6 +525,6 @@ M10과 M12 일부는 M9와 병렬로 검토할 수 있지만, M9의 운영 증�
 
 ## 완료 기준
 
-- [ ] 이 계획을 기준으로 M8-C 이후 issue 초안을 만들 수 있다.
-- [ ] 새 마일스톤 문서가 active plan 인덱스와 context map에 등록된다.
-- [ ] `./scripts/verify docs`가 통과한다.
+- [x] 이 계획을 기준으로 M8-C 이후 issue 초안을 만들 수 있다.
+- [x] 새 마일스톤 문서가 completed plan 인덱스와 context map에 등록된다.
+- [x] `./scripts/verify docs`가 통과한다.

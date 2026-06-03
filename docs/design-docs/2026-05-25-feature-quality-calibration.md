@@ -8,7 +8,7 @@
   - [`../FEATURE_REQUIREMENTS.md`](../FEATURE_REQUIREMENTS.md)
   - [`../RUNTIME_CONFIG.md`](../RUNTIME_CONFIG.md)
   - [`./2026-05-26-m11-calibration-closure.md`](./2026-05-26-m11-calibration-closure.md)
-  - [`../exec-plans/active/2026-05-22-post-m8-milestone-plan.md`](../exec-plans/active/2026-05-22-post-m8-milestone-plan.md)
+  - [`../exec-plans/completed/2026-05-22-post-m8-milestone-plan.md`](../exec-plans/completed/2026-05-22-post-m8-milestone-plan.md)
 
 ## 배경
 

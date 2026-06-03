@@ -5,7 +5,7 @@
 - M11 closeout 상태: completed
 - 관련 문서:
   - [`./2026-05-25-feature-quality-calibration.md`](./2026-05-25-feature-quality-calibration.md)
-  - [`../exec-plans/active/2026-05-22-post-m8-milestone-plan.md`](../exec-plans/active/2026-05-22-post-m8-milestone-plan.md)
+  - [`../exec-plans/completed/2026-05-22-post-m8-milestone-plan.md`](../exec-plans/completed/2026-05-22-post-m8-milestone-plan.md)
   - [`../RUNTIME_CONFIG.md`](../RUNTIME_CONFIG.md)
   - [`../references/m9-paper-trading-soak-2026-05-25-e398a8ee.md`](../references/m9-paper-trading-soak-2026-05-25-e398a8ee.md)
 
