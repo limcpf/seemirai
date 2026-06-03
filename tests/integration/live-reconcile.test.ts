@@ -1366,3 +1366,706 @@ describeDb("live reconcile persistence integration", () => {
     await db.deleteFrom("live_reconcile_runs").execute();
   }
 });
+
+/* ============================================================
+ * Fake Integration Tests
+ *
+ * 실제 DB와 Upbit API 호출 없이 in-memory fake provider로
+ * reconcile worker의 전체 흐름을 검증한다.
+ * ============================================================ */
+
+import {
+  createLiveReconcileRuntimeWorker,
+} from "../../src/runtime/index.js";
+import type {
+  BeginLiveReconcileRunInput,
+  CompleteLiveReconcileRunInput,
+  LiveReconcileBalanceSnapshotRecord,
+  LiveReconcileExchangeOrderSnapshotRecord,
+  LiveReconcileMismatchEvidenceRecord,
+  LiveReconcileRunRecord,
+  LiveReconcileSummary,
+} from "../../src/infrastructure/db/index.js";
+import type {
+  LiveReconcileRuntimeRepository,
+  LiveReconcileSnapshotProvider,
+  LiveReconcileRuntimeSnapshot,
+} from "../../src/runtime/index.js";
+import type {
+  BrokerBalance,
+  ReconcileEngineInput,
+  ReconcileLocalOrderSnapshot,
+} from "../../src/domain/index.js";
+import type { KillSwitchControlProvider, KillSwitchControlResult } from "../../src/application/index.js";
+
+/**
+ * in-memory fake reconcile repository다.
+ *
+ * DB 없이 reconcile worker의 append-only evidence 저장과 run lifecycle을 검증하기 위한
+ * 테스트 전용 구현이며, 실제 PostgreSQL 연결을 만들지 않는다.
+ */
+class FakeLiveReconcileRepository implements LiveReconcileRuntimeRepository {
+  public runs: Map<string, LiveReconcileRunRecord> = new Map();
+  public runIdByIdempotencyKey: Map<string, string> = new Map();
+  public balanceSnapshots: LiveReconcileBalanceSnapshotRecord[] = [];
+  public exchangeOrderSnapshots: LiveReconcileExchangeOrderSnapshotRecord[] = [];
+  public mismatchEvidence: LiveReconcileMismatchEvidenceRecord[] = [];
+  private runAutoIncrement = 1;
+  private balanceAutoIncrement = 1;
+  private orderAutoIncrement = 1;
+  private evidenceAutoIncrement = 1;
+
+  async beginLiveReconcileRun(input: BeginLiveReconcileRunInput): Promise<{ created: boolean; run: LiveReconcileRunRecord }> {
+    const existingRunId = this.runIdByIdempotencyKey.get(input.idempotencyKey);
+    if (existingRunId !== undefined) {
+      const existingRun = this.runs.get(existingRunId)!;
+      return { created: false, run: existingRun };
+    }
+
+    const id = `fake-run-${this.runAutoIncrement++}`;
+    const run: LiveReconcileRunRecord = {
+      id,
+      idempotency_key: input.idempotencyKey,
+      status: "RUNNING",
+      started_at: new Date(),
+      finished_at: null,
+      guard_profile: input.guardProfile ?? null,
+      source_summary: input.sourceSummary ?? null,
+      correlation_id: input.correlationId ?? null,
+      metadata_json: input.metadata ?? {},
+    };
+    this.runs.set(id, run);
+    this.runIdByIdempotencyKey.set(input.idempotencyKey, id);
+    return { created: true, run };
+  }
+
+  async appendLiveReconcileBalanceSnapshots(
+    runId: string,
+    snapshots: Array<{
+      currency: string;
+      available: string;
+      locked: string;
+      total: string;
+      capturedAt: Date | string;
+      source: "REST" | "WS";
+      metadata?: Record<string, unknown>;
+    }>,
+  ): Promise<LiveReconcileBalanceSnapshotRecord[]> {
+    const records: LiveReconcileBalanceSnapshotRecord[] = snapshots.map((snapshot) => {
+      const capturedAt = snapshot.capturedAt instanceof Date ? snapshot.capturedAt : new Date(snapshot.capturedAt);
+      const record: LiveReconcileBalanceSnapshotRecord = {
+        id: `fake-balance-${this.balanceAutoIncrement++}`,
+        run_id: runId,
+        currency: snapshot.currency,
+        available: snapshot.available,
+        locked: snapshot.locked,
+        total: snapshot.total,
+        captured_at: capturedAt,
+        source: snapshot.source,
+        metadata_json: snapshot.metadata ?? {},
+      };
+      this.balanceSnapshots.push(record);
+      return record;
+    });
+    return records;
+  }
+
+  async appendLiveReconcileExchangeOrderSnapshots(
+    runId: string,
+    snapshots: Array<{
+      exchangeOrderId?: string;
+      identifier?: string;
+      market: string;
+      side: "BUY" | "SELL";
+      status: string;
+      requestedQuantity: string;
+      remainingQuantity?: string;
+      requestedPrice?: string;
+      source: "open" | "closed" | "lookup" | "ws";
+      capturedAt: Date | string;
+      metadata?: Record<string, unknown>;
+    }>,
+  ): Promise<LiveReconcileExchangeOrderSnapshotRecord[]> {
+    const records: LiveReconcileExchangeOrderSnapshotRecord[] = snapshots.map((snapshot) => {
+      const capturedAt = snapshot.capturedAt instanceof Date ? snapshot.capturedAt : new Date(snapshot.capturedAt);
+      const record: LiveReconcileExchangeOrderSnapshotRecord = {
+        id: `fake-order-${this.orderAutoIncrement++}`,
+        run_id: runId,
+        exchange_order_id: snapshot.exchangeOrderId ?? null,
+        identifier: snapshot.identifier ?? null,
+        identity_fingerprint: snapshot.exchangeOrderId ?? snapshot.identifier ?? null,
+        market: snapshot.market,
+        side: snapshot.side,
+        status: snapshot.status,
+        requested_quantity: snapshot.requestedQuantity,
+        remaining_quantity: snapshot.remainingQuantity ?? null,
+        requested_price: snapshot.requestedPrice ?? null,
+        source: snapshot.source,
+        captured_at: capturedAt,
+        metadata_json: snapshot.metadata ?? {},
+      };
+      this.exchangeOrderSnapshots.push(record);
+      return record;
+    });
+    return records;
+  }
+
+  async appendLiveReconcileMismatchEvidence(
+    runId: string,
+    evidenceList: Array<{
+      mismatchType: string;
+      severity: "INFO" | "WARN" | "ERROR" | "CRITICAL";
+      market?: string;
+      orderIdentity?: string;
+      currency?: string;
+      message: string;
+      action: string;
+      evidenceFingerprint: string;
+      trace?: Record<string, unknown>;
+      occurredAt: Date | string;
+    }>,
+  ): Promise<LiveReconcileMismatchEvidenceRecord[]> {
+    const existingFingerprints = new Set(
+      this.mismatchEvidence
+        .filter((evidence) => evidence.run_id === runId)
+        .map((evidence) => evidence.evidence_fingerprint),
+    );
+
+    const records: LiveReconcileMismatchEvidenceRecord[] = [];
+    for (const evidence of evidenceList) {
+      if (existingFingerprints.has(evidence.evidenceFingerprint)) {
+        continue;
+      }
+      const occurredAt = evidence.occurredAt instanceof Date ? evidence.occurredAt : new Date(evidence.occurredAt);
+      const record: LiveReconcileMismatchEvidenceRecord = {
+        id: `fake-evidence-${this.evidenceAutoIncrement++}`,
+        run_id: runId,
+        mismatch_type: evidence.mismatchType as LiveReconcileMismatchEvidenceRecord["mismatch_type"],
+        severity: evidence.severity,
+        market: evidence.market ?? null,
+        order_identity: evidence.orderIdentity ?? null,
+        currency: evidence.currency ?? null,
+        message: evidence.message,
+        action: evidence.action,
+        evidence_fingerprint: evidence.evidenceFingerprint,
+        trace_json: evidence.trace ?? {},
+        occurred_at: occurredAt,
+      };
+      this.mismatchEvidence.push(record);
+      existingFingerprints.add(evidence.evidenceFingerprint);
+      records.push(record);
+    }
+    return records;
+  }
+
+  async completeLiveReconcileRun(input: CompleteLiveReconcileRunInput): Promise<LiveReconcileRunRecord> {
+    const run = this.runs.get(input.runId);
+    if (run === undefined) {
+      throw new Error(`run not found: ${input.runId}`);
+    }
+
+    // 최종 상태가 이미 설정된 중복 완료 요청은 같은 row를 반환한다.
+    if (run.status !== "RUNNING" && run.status === input.status) {
+      return run;
+    }
+
+    const updatedRun: LiveReconcileRunRecord = {
+      ...run,
+      status: input.status,
+      finished_at: new Date(),
+      metadata_json: input.metadata !== undefined
+        ? { ...run.metadata_json, ...input.metadata }
+        : run.metadata_json,
+    };
+    this.runs.set(input.runId, updatedRun);
+    return updatedRun;
+  }
+
+  async getLatestLiveReconcileSummary(): Promise<LiveReconcileSummary> {
+    const runs = [...this.runs.values()].sort(
+      (left, right) => right.started_at.getTime() - left.started_at.getTime(),
+    );
+    const latestRun = runs[0] ?? null;
+    const runId = latestRun?.id;
+
+    const balanceSnapshotCount = runId === undefined
+      ? 0
+      : this.balanceSnapshots.filter((snapshot) => snapshot.run_id === runId).length;
+    const exchangeOrderSnapshotCount = runId === undefined
+      ? 0
+      : this.exchangeOrderSnapshots.filter((snapshot) => snapshot.run_id === runId).length;
+    const mismatchEvidenceCount = runId === undefined
+      ? 0
+      : this.mismatchEvidence.filter((evidence) => evidence.run_id === runId).length;
+    const mismatchTypes = runId === undefined
+      ? []
+      : [...new Set(
+          this.mismatchEvidence
+            .filter((evidence) => evidence.run_id === runId)
+            .map((evidence) => evidence.mismatch_type),
+        )];
+
+    return {
+      run: latestRun,
+      balanceSnapshotCount,
+      exchangeOrderSnapshotCount,
+      openExchangeOrderSnapshotCount: exchangeOrderSnapshotCount,
+      mismatchEvidenceCount,
+      mismatchTypes,
+      positionSnapshotCount: 0,
+      fillRecoveryKeyCount: 0,
+    };
+  }
+}
+
+/**
+ * fake snapshot provider로, 미리 설정한 reconcile engine 입력을 반환한다.
+ *
+ * 실제 Upbit API 호출 없이 fake balances, orders, websocket context를 주입해
+ * engine의 모든 분기를 검증한다.
+ */
+class FakeReconcileSnapshotProvider implements LiveReconcileSnapshotProvider {
+  private snapshot: LiveReconcileRuntimeSnapshot;
+
+  constructor(snapshot: LiveReconcileRuntimeSnapshot) {
+    this.snapshot = snapshot;
+  }
+
+  async loadSnapshot(): Promise<LiveReconcileRuntimeSnapshot> {
+    return this.snapshot;
+  }
+}
+
+/**
+ * fake kill switch control provider로, 요청을 기록하고 성공으로 응답한다.
+ *
+ * 실제 durable kill switch DB를 건드리지 않고 worker가 provider를 호출했는지만 검증한다.
+ */
+class FakeKillSwitchControlProvider implements KillSwitchControlProvider {
+  public appliedRequests: Array<{
+    targetState: string;
+    reasonCode: string;
+    correlationId: string;
+  }> = [];
+
+  async apply(input: {
+    targetState: string;
+    reasonCode: string;
+    correlationId: string;
+    actor?: string;
+    message?: string;
+    metadata?: Record<string, unknown>;
+    occurredAt?: Date | string;
+  }): Promise<KillSwitchControlResult> {
+    this.appliedRequests.push({
+      targetState: input.targetState,
+      reasonCode: input.reasonCode,
+      correlationId: input.correlationId,
+    });
+
+    return {
+      transition: {
+        accepted: true,
+        fromState: "NORMAL",
+        toState: input.targetState as "NEW_ORDERS_BLOCKED" | "MANUAL_REVIEW_REQUIRED",
+        reasonCode: input.reasonCode,
+        message: input.message ?? "fake kill switch applied",
+        event: {
+          eventKind: "KILL_SWITCH_STATE_TRANSITION",
+          fromState: "NORMAL",
+          toState: input.targetState as "NEW_ORDERS_BLOCKED" | "MANUAL_REVIEW_REQUIRED",
+          accepted: true,
+          reasonCode: input.reasonCode,
+          message: input.message ?? "fake kill switch applied",
+          occurredAt: input.occurredAt instanceof Date ? input.occurredAt : new Date(),
+          metadata: input.metadata ?? {},
+        },
+      },
+      actionPlan: {
+        newOrdersBlocked: true,
+        strategyEvaluationBlocked: false,
+        cancelPendingPaperOrders: false,
+        autoLiquidateOpenPositions: false,
+        requiresManualReview: input.targetState === "MANUAL_REVIEW_REQUIRED",
+      },
+      reasonMatchesTarget: true,
+    };
+  }
+}
+
+function createFakeBrokerBalance(overrides: Partial<BrokerBalance> = {}): BrokerBalance {
+  return {
+    currency: "KRW",
+    available: "1000000",
+    locked: "100000",
+    total: "1100000",
+    updatedAt: "2026-06-03T00:00:00Z",
+    ...overrides,
+  };
+}
+
+function createFakeExchangeOpenOrder(overrides: Partial<ReconcileEngineInput["exchangeOpenOrders"][number]> = {}): ReconcileEngineInput["exchangeOpenOrders"][number] {
+  return {
+    exchangeOrderId: "uuid-open-001",
+    identifier: "ident-open-001",
+    market: "KRW-BTC",
+    side: "BUY",
+    exchangeStatus: "wait",
+    requestedQuantity: "0.001",
+    remainingQuantity: "0.001",
+    requestedPrice: "100000000",
+    source: "open",
+    capturedAt: "2026-06-03T00:00:00Z",
+    ...overrides,
+  };
+}
+
+function createFakeLocalOpenOrder(overrides: Partial<ReconcileLocalOrderSnapshot> = {}): ReconcileLocalOrderSnapshot {
+  return {
+    orderId: "local-order-001",
+    exchangeOrderId: "uuid-open-001",
+    identifier: "ident-open-001",
+    market: "KRW-BTC",
+    side: "BUY",
+    orderType: "LIMIT",
+    status: "ACCEPTED",
+    requestedQuantity: "0.001",
+    remainingQuantity: "0.001",
+    requestedPrice: "100000000",
+    updatedAt: "2026-06-03T00:00:00Z",
+    ...overrides,
+  };
+}
+
+function createFakeEngineInput(overrides: Partial<ReconcileEngineInput> = {}): ReconcileEngineInput {
+  return {
+    exchangeOpenOrders: [],
+    exchangeClosedOrders: [],
+    orderLookups: [],
+    websocketContext: {
+      bootstrapCompleteAt: "2026-06-03T00:00:00Z",
+      events: [],
+    },
+    localOpenOrders: [],
+    localBalances: [],
+    exchangeBalances: [],
+    closedOrderWindow: {
+      windowStart: "2026-05-27T00:00:00Z",
+      windowEnd: "2026-06-03T00:00:00Z",
+      windowExhausted: false,
+      queryCount: 1,
+    },
+    observedAt: "2026-06-03T00:00:00Z",
+    ...overrides,
+  };
+}
+
+describe("live reconcile fake integration", () => {
+  it("정상 reconcile은 CLEAN summary와 zero mismatch를 반환한다", async () => {
+    const repository = new FakeLiveReconcileRepository();
+    const engineInput = createFakeEngineInput({
+      exchangeOpenOrders: [createFakeExchangeOpenOrder()],
+      localOpenOrders: [createFakeLocalOpenOrder()],
+      exchangeBalances: [createFakeBrokerBalance()],
+      localBalances: [createFakeBrokerBalance()],
+    });
+    const snapshotProvider = new FakeReconcileSnapshotProvider({
+      engineInput,
+      sourceSummary: "REST: accounts+open",
+    });
+    const worker = createLiveReconcileRuntimeWorker({
+      snapshotProvider,
+      repository,
+      clock: () => new Date("2026-06-03T00:00:00Z"),
+    });
+
+    const result = await worker.runOnce();
+
+    expect(result.engineOutput.summary.result).toBe("CLEAN");
+    expect(result.engineOutput.summary.mismatchCount).toBe(0);
+    expect(result.engineOutput.failClosed).toBe(false);
+    expect(result.statusSummary.result).toBe("SUCCESS");
+    expect(result.run.status).toBe("COMPLETED");
+    expect(repository.balanceSnapshots).toHaveLength(1);
+    expect(repository.exchangeOrderSnapshots).toHaveLength(1);
+    expect(repository.mismatchEvidence).toHaveLength(0);
+  });
+
+  it("거래소 미체결 주문과 로컬 미체결 주문이 다르면 fail-closed evidence를 남긴다", async () => {
+    const repository = new FakeLiveReconcileRepository();
+    const killSwitchProvider = new FakeKillSwitchControlProvider();
+    // 거래소에는 있지만 로컬에는 없는 미체결 주문 상황
+    const engineInput = createFakeEngineInput({
+      exchangeOpenOrders: [
+        createFakeExchangeOpenOrder({ exchangeOrderId: "uuid-exchange-only", identifier: "ident-exchange-only" }),
+      ],
+      localOpenOrders: [],
+      exchangeBalances: [createFakeBrokerBalance({ locked: "0", total: "1000000" })],
+      localBalances: [createFakeBrokerBalance({ locked: "0", total: "1000000" })],
+    });
+    const snapshotProvider = new FakeReconcileSnapshotProvider({
+      engineInput,
+      sourceSummary: "REST: accounts+open",
+    });
+    const worker = createLiveReconcileRuntimeWorker({
+      snapshotProvider,
+      repository,
+      killSwitchControlProvider: killSwitchProvider,
+      clock: () => new Date("2026-06-03T00:00:00Z"),
+    });
+
+    const result = await worker.runOnce();
+
+    expect(result.engineOutput.summary.result).toBe("MISMATCH_DETECTED");
+    expect(result.engineOutput.summary.mismatchCount).toBeGreaterThan(0);
+    expect(result.engineOutput.failClosed).toBe(true);
+    expect(result.statusSummary.result).toBe("MISMATCH_DETECTED");
+    expect(result.run.status).toBe("MANUAL_REVIEW_REQUIRED");
+    expect(repository.mismatchEvidence.length).toBeGreaterThan(0);
+    // kill switch provider가 호출되어 신규 주문을 차단해야 한다
+    expect(killSwitchProvider.appliedRequests.length).toBeGreaterThan(0);
+    expect(killSwitchProvider.appliedRequests[0]!.targetState).toBe("NEW_ORDERS_BLOCKED");
+  });
+
+  it("주문 identity conflict는 MANUAL_REVIEW_REQUIRED kill switch로 승격된다", async () => {
+    const repository = new FakeLiveReconcileRepository();
+    const killSwitchProvider = new FakeKillSwitchControlProvider();
+    // uuid는 일치하지만 identifier가 다른 identity conflict 상황
+    const engineInput = createFakeEngineInput({
+      exchangeOpenOrders: [
+        createFakeExchangeOpenOrder({
+          exchangeOrderId: "uuid-conflict",
+          identifier: "ident-exchange",
+        }),
+      ],
+      localOpenOrders: [
+        createFakeLocalOpenOrder({
+          orderId: "local-conflict",
+          exchangeOrderId: "uuid-conflict",
+          identifier: "ident-local",
+        }),
+      ],
+      exchangeBalances: [createFakeBrokerBalance()],
+      localBalances: [createFakeBrokerBalance()],
+    });
+    const snapshotProvider = new FakeReconcileSnapshotProvider({
+      engineInput,
+      sourceSummary: "REST: accounts+open",
+    });
+    const worker = createLiveReconcileRuntimeWorker({
+      snapshotProvider,
+      repository,
+      killSwitchControlProvider: killSwitchProvider,
+      clock: () => new Date("2026-06-03T00:00:00Z"),
+    });
+
+    const result = await worker.runOnce();
+
+    // ORDER_IDENTITY_CONFLICT는 MANUAL_REVIEW_REQUIRED로 승격되어야 한다
+    const hasIdentityConflict = result.engineOutput.mismatches.some(
+      (mismatch) => mismatch.mismatchType === "ORDER_IDENTITY_CONFLICT",
+    );
+    expect(hasIdentityConflict).toBe(true);
+    expect(result.engineOutput.failClosed).toBe(true);
+    expect(result.run.status).toBe("MANUAL_REVIEW_REQUIRED");
+    expect(killSwitchProvider.appliedRequests.length).toBeGreaterThan(0);
+    expect(killSwitchProvider.appliedRequests[0]!.targetState).toBe("MANUAL_REVIEW_REQUIRED");
+    expect(killSwitchProvider.appliedRequests[0]!.reasonCode).toBe("live_reconcile_identity_conflict");
+  });
+
+  it("잔고 lock 불일치는 mismatch evidence와 fail-closed를 만든다", async () => {
+    const repository = new FakeLiveReconcileRepository();
+    const killSwitchProvider = new FakeKillSwitchControlProvider();
+    // 거래소 잔고와 로컬 잔고의 locked 값이 다른 상황
+    const engineInput = createFakeEngineInput({
+      exchangeOpenOrders: [
+        createFakeExchangeOpenOrder({
+          exchangeOrderId: "uuid-balance-lock",
+          identifier: "ident-balance-lock",
+        }),
+      ],
+      localOpenOrders: [
+        createFakeLocalOpenOrder({
+          orderId: "local-balance-lock",
+          exchangeOrderId: "uuid-balance-lock",
+          identifier: "ident-balance-lock",
+          remainingQuantity: "0.001",
+        }),
+      ],
+      exchangeBalances: [createFakeBrokerBalance({ locked: "5000" })],
+      localBalances: [createFakeBrokerBalance({ locked: "10000" })],
+    });
+    const snapshotProvider = new FakeReconcileSnapshotProvider({
+      engineInput,
+      sourceSummary: "REST: accounts+open",
+    });
+    const worker = createLiveReconcileRuntimeWorker({
+      snapshotProvider,
+      repository,
+      killSwitchControlProvider: killSwitchProvider,
+      clock: () => new Date("2026-06-03T00:00:00Z"),
+    });
+
+    const result = await worker.runOnce();
+
+    const hasBalanceMismatch = result.engineOutput.mismatches.some(
+      (mismatch) => mismatch.mismatchType === "BALANCE_LOCK_MISMATCH",
+    );
+    expect(hasBalanceMismatch).toBe(true);
+    expect(result.engineOutput.failClosed).toBe(true);
+    expect(result.run.status).toBe("MANUAL_REVIEW_REQUIRED");
+    expect(repository.mismatchEvidence.length).toBeGreaterThan(0);
+  });
+
+  it("kill switch provider 없는 mismatch는 오류로 실패한다", async () => {
+    const repository = new FakeLiveReconcileRepository();
+    const engineInput = createFakeEngineInput({
+      exchangeOpenOrders: [
+        createFakeExchangeOpenOrder({ exchangeOrderId: "uuid-no-kill", identifier: "ident-no-kill" }),
+      ],
+      localOpenOrders: [],
+      exchangeBalances: [createFakeBrokerBalance()],
+      localBalances: [createFakeBrokerBalance()],
+    });
+    const snapshotProvider = new FakeReconcileSnapshotProvider({
+      engineInput,
+      sourceSummary: "REST: accounts+open",
+    });
+    const worker = createLiveReconcileRuntimeWorker({
+      snapshotProvider,
+      repository,
+      // killSwitchControlProvider 없이 mismatch가 발생하면 worker는 evidence 저장 전에 실패해야 한다
+      clock: () => new Date("2026-06-03T00:00:00Z"),
+    });
+
+    await expect(worker.runOnce()).rejects.toThrow();
+
+    // kill switch provider 없이 mismatch가 발생하면 evidence를 저장하지 않고 run도 FAILED로 닫힌다
+    expect(repository.mismatchEvidence).toHaveLength(0);
+    const runs = [...repository.runs.values()];
+    expect(runs.length).toBe(1);
+    expect(runs[0]!.status).toBe("FAILED");
+  });
+
+  it("거래소 closed order 조회 window 밖 로컬 주문은 mismatch evidence를 남긴다", async () => {
+    const repository = new FakeLiveReconcileRepository();
+    const killSwitchProvider = new FakeKillSwitchControlProvider();
+    // 로컬에는 있지만 거래소 closed order window에 포함되지 않은 주문
+    const engineInput = createFakeEngineInput({
+      exchangeOpenOrders: [],
+      exchangeClosedOrders: [],
+      orderLookups: [],
+      localOpenOrders: [
+        createFakeLocalOpenOrder({
+          orderId: "local-old-order",
+          identifier: "ident-old",
+          createdAt: "2026-05-01T00:00:00Z",
+        }),
+      ],
+      exchangeBalances: [createFakeBrokerBalance()],
+      localBalances: [createFakeBrokerBalance()],
+      closedOrderWindow: {
+        windowStart: "2026-05-27T00:00:00Z",
+        windowEnd: "2026-06-03T00:00:00Z",
+        windowExhausted: false,
+        queryCount: 1,
+      },
+    });
+    const snapshotProvider = new FakeReconcileSnapshotProvider({
+      engineInput,
+      sourceSummary: "REST: accounts+open+closed",
+    });
+    const worker = createLiveReconcileRuntimeWorker({
+      snapshotProvider,
+      repository,
+      killSwitchControlProvider: killSwitchProvider,
+      clock: () => new Date("2026-06-03T00:00:00Z"),
+    });
+
+    const result = await worker.runOnce();
+
+    const hasWindowExceeded = result.engineOutput.mismatches.some(
+      (mismatch) => mismatch.mismatchType === "CLOSED_ORDER_WINDOW_EXCEEDED",
+    );
+    expect(hasWindowExceeded).toBe(true);
+    expect(result.engineOutput.failClosed).toBe(true);
+    expect(repository.mismatchEvidence.length).toBeGreaterThan(0);
+  });
+
+  it("WebSocket gap이 감지되면 mismatch evidence를 남기고 DEGRADED 상태가 된다", async () => {
+    const repository = new FakeLiveReconcileRepository();
+    const killSwitchProvider = new FakeKillSwitchControlProvider();
+    // WebSocket disconnect evidence가 있는 상황
+    const engineInput = createFakeEngineInput({
+      exchangeOpenOrders: [createFakeExchangeOpenOrder()],
+      localOpenOrders: [createFakeLocalOpenOrder()],
+      exchangeBalances: [createFakeBrokerBalance()],
+      localBalances: [createFakeBrokerBalance()],
+      websocketContext: {
+        bootstrapCompleteAt: "2026-06-03T00:00:00Z",
+        events: [],
+        disconnectEvidence: {
+          disconnectedAt: "2026-06-03T00:00:01Z",
+          reconnectedAt: "2026-06-03T00:00:31Z",
+          gapDurationMs: 30000,
+          reconnectCount: 1,
+        },
+      },
+    });
+    const snapshotProvider = new FakeReconcileSnapshotProvider({
+      engineInput,
+      sourceSummary: "REST: accounts+open, WS: myOrder+myAsset",
+    });
+    const worker = createLiveReconcileRuntimeWorker({
+      snapshotProvider,
+      repository,
+      killSwitchControlProvider: killSwitchProvider,
+      clock: () => new Date("2026-06-03T00:00:00Z"),
+    });
+
+    const result = await worker.runOnce();
+
+    const hasWsGap = result.engineOutput.mismatches.some(
+      (mismatch) => mismatch.mismatchType === "WEBSOCKET_GAP_MANUAL_REVIEW",
+    );
+    expect(hasWsGap).toBe(true);
+    expect(result.statusSummary.websocketStatus).toBe("DEGRADED");
+    expect(result.engineOutput.failClosed).toBe(true);
+  });
+
+  it("idempotency key가 같은 재실행은 같은 run을 재사용한다", async () => {
+    const repository = new FakeLiveReconcileRepository();
+    const engineInput = createFakeEngineInput({
+      exchangeOpenOrders: [createFakeExchangeOpenOrder()],
+      localOpenOrders: [createFakeLocalOpenOrder()],
+      exchangeBalances: [createFakeBrokerBalance()],
+      localBalances: [createFakeBrokerBalance()],
+    });
+    const snapshotProvider = new FakeReconcileSnapshotProvider({
+      engineInput,
+      sourceSummary: "REST: accounts+open",
+    });
+    const fixedClock = () => new Date("2026-06-03T00:00:00Z");
+    const worker1 = createLiveReconcileRuntimeWorker({
+      snapshotProvider,
+      repository,
+      clock: fixedClock,
+    });
+
+    // 첫 번째 실행: 성공
+    const result1 = await worker1.runOnce({ correlationId: "same-correlation-id" });
+    expect(result1.engineOutput.summary.result).toBe("CLEAN");
+
+    // 같은 correlationId + clock이면 같은 idempotency key로 두 번째 runOnce 시도 시 중복 차단
+    const worker2 = createLiveReconcileRuntimeWorker({
+      snapshotProvider,
+      repository,
+      clock: fixedClock,
+    });
+
+    await expect(worker2.runOnce({ correlationId: "same-correlation-id" })).rejects.toThrow();
+
+    // run은 하나만 생성됐는지 확인
+    expect(repository.runs.size).toBe(1);
+  });
+});
