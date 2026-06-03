@@ -84,6 +84,49 @@ describe("kill switch control decision", () => {
     expect(decision.recommendedTargetState).toBe("HARD_STOP");
   });
 
+  it("rejects live reconcile attempts to downgrade an existing stronger kill switch state", () => {
+    const manualReviewDecision = createKillSwitchControlDecision({
+      currentState: "MANUAL_REVIEW_REQUIRED",
+      targetState: "NEW_ORDERS_BLOCKED",
+      reasonCode: "live_reconcile_mismatch",
+      correlationId: "corr-reconcile-downgrade",
+      occurredAt: "2026-06-03T00:00:00.000Z",
+    });
+
+    expect(manualReviewDecision.transition).toMatchObject({
+      accepted: false,
+      fromState: "MANUAL_REVIEW_REQUIRED",
+      toState: "NEW_ORDERS_BLOCKED",
+      reasonCode: "live_reconcile_downgrade_blocked",
+    });
+    expect(manualReviewDecision.actionPlan).toMatchObject({
+      newOrdersBlocked: true,
+      strategyEvaluationBlocked: true,
+      requiresManualReview: true,
+    });
+
+    const hardStopDecision = createKillSwitchControlDecision({
+      currentState: "HARD_STOP",
+      targetState: "MANUAL_REVIEW_REQUIRED",
+      reasonCode: "live_reconcile_identity_conflict",
+      correlationId: "corr-reconcile-hard-stop-downgrade",
+      occurredAt: "2026-06-03T00:00:00.000Z",
+    });
+
+    expect(hardStopDecision.transition).toMatchObject({
+      accepted: false,
+      fromState: "HARD_STOP",
+      toState: "MANUAL_REVIEW_REQUIRED",
+      reasonCode: "live_reconcile_downgrade_blocked",
+    });
+    expect(hardStopDecision.actionPlan).toMatchObject({
+      newOrdersBlocked: true,
+      strategyEvaluationBlocked: true,
+      cancelPendingPaperOrders: true,
+      requiresManualReview: true,
+    });
+  });
+
   it("converts stale durable updates to conflict results that preserve observed state", () => {
     const attempted = createKillSwitchControlDecision({
       currentState: "NORMAL",

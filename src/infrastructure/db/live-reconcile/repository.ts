@@ -440,9 +440,8 @@ export class PostgresLiveReconcileRepository {
         .execute(),
       this.database
         .selectFrom("live_reconcile_exchange_order_snapshots")
-        .select(["id", "exchange_order_id", "identifier"])
+        .select(["id", "exchange_order_id", "identifier", "status"])
         .where("run_id", "=", run.id)
-        .where("status", "in", OPEN_EXCHANGE_ORDER_STATUSES)
         .execute(),
       this.database
         .selectFrom("live_reconcile_mismatch_evidence")
@@ -473,7 +472,7 @@ export class PostgresLiveReconcileRepository {
       exchangeOrderSnapshotCount:
         countCanonicalExchangeOrderSnapshots(exchangeOrderRows),
       openExchangeOrderSnapshotCount:
-        countCanonicalExchangeOrderSnapshots(openExchangeOrderRows),
+        countCanonicalOpenExchangeOrderSnapshots(openExchangeOrderRows),
       mismatchEvidenceCount: Number(mismatchCount.count),
       mismatchTypes: mismatchTypeRows.map((row) => row.mismatch_type),
       positionSnapshotCount: Number(positionCount.count),
@@ -524,6 +523,7 @@ function toTimeMs(value: Date | string): number {
 }
 
 const OPEN_EXCHANGE_ORDER_STATUSES = ["wait", "watch", "open", "OPEN"] as const;
+const TERMINAL_EXCHANGE_ORDER_STATUSES = ["done", "cancel", "DONE", "CANCEL"] as const;
 
 /**
  * exchange order snapshot row를 append-only로 보존하면서 summary에는 canonical 주문 수를 계산한다.
@@ -589,4 +589,97 @@ function countCanonicalExchangeOrderSnapshots(
   }
 
   return new Set(Array.from(parent.keys(), (key) => find(key))).size + fingerprintOnlyRowCount;
+}
+
+/**
+ * terminal snapshot까지 함께 보며 summary에 표시할 현재 미체결 주문 수를 계산한다.
+ *
+ * 같은 uuid/identifier 그룹에 wait/watch/open과 done/cancel이 같이 있으면 terminal 보강 조회가 더 최신 거래소 상태일 수
+ * 있으므로 open count를 억제한다. DB row는 append-only라 수정하지 않고 읽기 전용 union-find 계산만 수행한다.
+ */
+function countCanonicalOpenExchangeOrderSnapshots(
+  rows: Array<{
+    id: string;
+    exchange_order_id: string | null;
+    identifier: string | null;
+    status: string;
+  }>,
+): number {
+  const parent = new Map<string, string>();
+  const groups = new Map<string, { hasOpen: boolean; hasTerminal: boolean }>();
+  let fingerprintOnlyOpenRowCount = 0;
+
+  const find = (key: string): string => {
+    const existing = parent.get(key);
+    if (existing === undefined) {
+      parent.set(key, key);
+      return key;
+    }
+
+    if (existing === key) {
+      return key;
+    }
+
+    const root = find(existing);
+    parent.set(key, root);
+    return root;
+  };
+
+  const union = (left: string, right: string): void => {
+    const leftRoot = find(left);
+    const rightRoot = find(right);
+    if (leftRoot !== rightRoot) {
+      parent.set(rightRoot, leftRoot);
+    }
+  };
+
+  const keyedRows: Array<{ key: string; status: string }> = [];
+  for (const row of rows) {
+    const exchangeOrderKey =
+      row.exchange_order_id === null ? undefined : `exchange:${row.exchange_order_id}`;
+    const identifierKey =
+      row.identifier === null ? undefined : `identifier:${row.identifier}`;
+
+    if (exchangeOrderKey === undefined && identifierKey === undefined) {
+      if (isOpenExchangeOrderStatus(row.status)) {
+        fingerprintOnlyOpenRowCount += 1;
+      }
+      continue;
+    }
+
+    if (exchangeOrderKey !== undefined && identifierKey !== undefined) {
+      union(exchangeOrderKey, identifierKey);
+    }
+
+    keyedRows.push({ key: exchangeOrderKey ?? identifierKey!, status: row.status });
+  }
+
+  for (const row of keyedRows) {
+    const root = find(row.key);
+    const group = groups.get(root) ?? { hasOpen: false, hasTerminal: false };
+    group.hasOpen = group.hasOpen || isOpenExchangeOrderStatus(row.status);
+    group.hasTerminal = group.hasTerminal || isTerminalExchangeOrderStatus(row.status);
+    groups.set(root, group);
+  }
+
+  let count = fingerprintOnlyOpenRowCount;
+  for (const group of groups.values()) {
+    if (group.hasOpen && !group.hasTerminal) {
+      count += 1;
+    }
+  }
+
+  return count;
+}
+
+function isOpenExchangeOrderStatus(status: string): boolean {
+  return OPEN_EXCHANGE_ORDER_STATUSES.includes(
+    status as (typeof OPEN_EXCHANGE_ORDER_STATUSES)[number],
+  );
+}
+
+function isTerminalExchangeOrderStatus(status: string): boolean {
+  return TERMINAL_EXCHANGE_ORDER_STATUSES.includes(
+    status as (typeof TERMINAL_EXCHANGE_ORDER_STATUSES)[number],
+  );
 }

@@ -19,7 +19,7 @@ import type {
 export function createLiveReconcileRuntimeSafeSummary(
   input: CreateLiveReconcileRuntimeSafeSummaryInput,
 ): LiveReconcileRuntimeSafeSummary {
-  if (!input.reconcileConfig.enabled) {
+  if (!input.liveReconcileEnabled || !input.reconcileConfig.enabled) {
     return {
       enabled: false,
       profile: null,

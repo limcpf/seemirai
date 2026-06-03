@@ -436,6 +436,38 @@ describeDb("live reconcile persistence integration", () => {
     expect(summary.openExchangeOrderSnapshotCount).toBe(2);
   });
 
+  it("suppresses open count when a terminal snapshot exists for the same exchange identity", async () => {
+    const { run } = await repository!.beginLiveReconcileRun({
+      idempotencyKey: "run-integration-orders-open-count-terminal-suppression",
+    });
+
+    await repository!.appendLiveReconcileExchangeOrderSnapshots(run.id, [
+      {
+        exchangeOrderId: "uuid-terminal-suppressed",
+        market: "KRW-BTC",
+        side: "BUY",
+        status: "wait",
+        requestedQuantity: "0.001",
+        source: "open",
+        capturedAt: new Date("2026-06-03T00:00:00Z"),
+      },
+      {
+        exchangeOrderId: "uuid-terminal-suppressed",
+        market: "KRW-BTC",
+        side: "BUY",
+        status: "done",
+        requestedQuantity: "0.001",
+        source: "lookup",
+        capturedAt: new Date("2026-06-03T00:00:01Z"),
+      },
+    ]);
+
+    const summary = await repository!.getLatestLiveReconcileSummary();
+
+    expect(summary.exchangeOrderSnapshotCount).toBe(1);
+    expect(summary.openExchangeOrderSnapshotCount).toBe(0);
+  });
+
   it("normalizes split exchange order identities when a bridge snapshot is observed", async () => {
     const { run } = await repository!.beginLiveReconcileRun({
       idempotencyKey: "run-integration-orders-bridge",

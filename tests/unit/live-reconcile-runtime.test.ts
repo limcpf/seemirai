@@ -724,6 +724,20 @@ describe("createLiveReconcileRuntimeSafeSummary", () => {
     expect(summary.action).toContain("SEEMIRAI_RUN_UPBIT_LIVE_RECONCILE=1");
   });
 
+  it("liveReconcileEnabled guard가 꺼져 있으면 config가 enabled여도 disabled summary를 반환한다", () => {
+    const summary = createLiveReconcileRuntimeSafeSummary({
+      liveReconcileEnabled: false,
+      reconcileConfig: enabledInput.reconcileConfig,
+    });
+
+    expect(summary.enabled).toBe(false);
+    expect(summary.profile).toBeNull();
+    expect(summary.trace).toMatchObject({
+      reason: "reconcile_guard_disabled",
+      liveReconcileEnabled: false,
+    });
+  });
+
   it("활성 상태일 때 enabled summary를 반환한다", () => {
     const summary = createLiveReconcileRuntimeSafeSummary(enabledInput);
 

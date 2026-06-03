@@ -186,7 +186,15 @@ export function createKillSwitchControlDecision(
     metadata: input.metadata,
   });
   // known P0/P1 reason이 다른 target과 결합되면 state machine 이전에 운영 원인 mismatch로 차단한다.
-  const transition = reasonMatchesTarget
+  const transition = isLiveReconcileDowngrade(input.currentState, input.targetState, reasonCode)
+    ? createLiveReconcileDowngradeBlockedDecision({
+        fromState: input.currentState,
+        toState: input.targetState,
+        occurredAt,
+        reasonCode,
+        metadata,
+      })
+    : reasonMatchesTarget
     ? transitionKillSwitchState({
         fromState: input.currentState,
         toState: input.targetState,
@@ -222,6 +230,32 @@ export function createKillSwitchControlDecision(
   }
 
   return result;
+}
+
+function isLiveReconcileDowngrade(
+  currentState: KillSwitchState,
+  targetState: KillSwitchControlTargetState,
+  reasonCode: string,
+): boolean {
+  return (
+    reasonCode.startsWith("live_reconcile_") &&
+    getKillSwitchStateStrength(currentState) > getKillSwitchStateStrength(targetState)
+  );
+}
+
+function getKillSwitchStateStrength(state: KillSwitchState): number {
+  switch (state) {
+    case "NORMAL":
+      return 0;
+    case "STRATEGY_PAUSED":
+      return 1;
+    case "NEW_ORDERS_BLOCKED":
+      return 2;
+    case "MANUAL_REVIEW_REQUIRED":
+      return 3;
+    case "HARD_STOP":
+      return 4;
+  }
 }
 
 /**
@@ -372,6 +406,43 @@ function createReasonTargetMismatchDecision(input: {
     message: `Kill switch reason ${input.reasonCode} maps to ${input.recommendedTargetState}, not ${input.toState}`,
     occurredAt: input.occurredAt,
     metadata: input.metadata,
+  };
+
+  return {
+    accepted: false,
+    fromState: input.fromState,
+    toState: input.toState,
+    reasonCode: event.reasonCode,
+    message: event.message,
+    event,
+  };
+}
+
+/**
+ * live reconcile 자동 차단이 기존 durable kill switch를 더 약한 상태로 낮추려는 경우의 거부 전이를 만든다.
+ *
+ * reconcile mismatch는 복구 신호가 아니므로 사람이 설정했거나 이전 장애가 만든 MANUAL_REVIEW_REQUIRED/HARD_STOP을 자동으로
+ * 완화하면 안 된다. 거부 event는 남기되 action plan은 caller가 현재 상태 기준으로 유지한다.
+ */
+function createLiveReconcileDowngradeBlockedDecision(input: {
+  fromState: KillSwitchState;
+  toState: KillSwitchControlTargetState;
+  occurredAt: TimestampInput;
+  reasonCode: string;
+  metadata: JsonRecord;
+}): StateTransitionDecision<KillSwitchState> {
+  const event: StateTransitionEventCandidate<KillSwitchState> = {
+    eventKind: "KILL_SWITCH_STATE_TRANSITION",
+    fromState: input.fromState,
+    toState: input.toState,
+    accepted: false,
+    reasonCode: "live_reconcile_downgrade_blocked",
+    message: `Live reconcile cannot downgrade kill switch state: ${input.fromState} -> ${input.toState}`,
+    occurredAt: input.occurredAt,
+    metadata: {
+      ...input.metadata,
+      requested_reason_code: input.reasonCode,
+    },
   };
 
   return {
