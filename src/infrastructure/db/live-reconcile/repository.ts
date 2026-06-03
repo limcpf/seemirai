@@ -388,22 +388,23 @@ export class PostgresLiveReconcileRepository {
    * @returns 최근 reconcile run 요약. run이 없으면 `run: null`과 count 0
    */
   public async getLatestLiveReconcileSummary(): Promise<LiveReconcileSummary> {
-    const finalRun = await this.database
-      .selectFrom("live_reconcile_runs")
-      .selectAll()
-      .where("status", "!=", "RUNNING")
-      .orderBy("finished_at", "desc")
-      .orderBy("started_at", "desc")
-      .limit(1)
-      .executeTakeFirst();
-    const run =
-      finalRun ??
-      (await this.database
+    const [finalRun, latestRun] = await Promise.all([
+      this.database
+        .selectFrom("live_reconcile_runs")
+        .selectAll()
+        .where("status", "!=", "RUNNING")
+        .orderBy("finished_at", "desc")
+        .orderBy("started_at", "desc")
+        .limit(1)
+        .executeTakeFirst(),
+      this.database
         .selectFrom("live_reconcile_runs")
         .selectAll()
         .orderBy("started_at", "desc")
         .limit(1)
-        .executeTakeFirst());
+        .executeTakeFirst(),
+    ]);
+    const run = selectLatestVisibleReconcileRun(finalRun, latestRun);
 
     if (run === undefined) {
       return {
@@ -503,6 +504,23 @@ export class PostgresLiveReconcileRepository {
 
     return run.status === "RUNNING";
   }
+}
+
+function selectLatestVisibleReconcileRun<T extends { status: string; started_at: Date | string }>(
+  finalRun: T | undefined,
+  latestRun: T | undefined,
+): T | undefined {
+  if (latestRun?.status === "RUNNING") {
+    if (finalRun === undefined || toTimeMs(latestRun.started_at) > toTimeMs(finalRun.started_at)) {
+      // 더 최근 RUNNING run은 이전 final 결과를 stale한 최신 상태로 보이지 않게 우선 노출한다.
+      return latestRun;
+    }
+  }
+  return finalRun ?? latestRun;
+}
+
+function toTimeMs(value: Date | string): number {
+  return value instanceof Date ? value.getTime() : new Date(value).getTime();
 }
 
 /**

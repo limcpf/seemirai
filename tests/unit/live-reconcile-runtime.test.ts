@@ -363,6 +363,57 @@ describe("createLiveReconcileRuntimeWorker", () => {
     ]);
   });
 
+  it("WebSocket myOrder snapshot을 runtime evidence로 저장한다", async () => {
+    const repository = fakeRepository();
+    const worker = createLiveReconcileRuntimeWorker({
+      snapshotProvider: websocketOrderSnapshotProvider(),
+      repository,
+      killSwitchControlProvider: {
+        async apply(input) {
+          return {
+            transition: {
+              accepted: true,
+              fromState: "NORMAL",
+              toState: input.targetState,
+              reasonCode: input.reasonCode,
+              message: input.message ?? "accepted",
+              event: {
+                eventKind: "KILL_SWITCH_STATE_TRANSITION",
+                fromState: "NORMAL",
+                toState: input.targetState,
+                accepted: true,
+                reasonCode: input.reasonCode,
+                message: input.message ?? "accepted",
+                occurredAt: input.occurredAt ?? "2026-06-02T12:00:00.000Z",
+              },
+            },
+            actionPlan: {
+              newOrdersBlocked: true,
+              strategyEvaluationBlocked: false,
+              cancelPendingPaperOrders: false,
+              requiresManualReview: true,
+              autoLiquidateOpenPositions: false,
+            },
+            reasonMatchesTarget: true,
+          };
+        },
+      },
+      clock: () => new Date("2026-06-02T12:00:00.000Z"),
+    });
+
+    const result = await worker.runOnce({ correlationId: "corr-ws-order" });
+
+    expect(result.statusSummary.result).toBe("MISMATCH_DETECTED");
+    expect(repository.exchangeOrderSnapshots).toEqual([
+      expect.objectContaining({
+        exchangeOrderId: "uuid-ws-open",
+        market: "KRW-BTC",
+        side: "BUY",
+        source: "ws",
+      }),
+    ]);
+  });
+
   it("kill switch 전이가 실패하면 evidence를 append하지 않고 run을 실패로 닫는다", async () => {
     const repository = fakeRepository();
     const worker = createLiveReconcileRuntimeWorker({
@@ -445,6 +496,20 @@ describe("createLiveReconcileRuntimeWorker", () => {
     expect(killSwitchRequests).toEqual([
       { reasonCode: "live_reconcile_balance_lock_mismatch" },
     ]);
+    expect(result.statusSummary.websocketStatus).toBe("CONNECTED");
+  });
+
+  it("staleSince 단독 WebSocket evidence는 runtime 연결 상태를 낮추지 않는다", async () => {
+    const repository = fakeRepository();
+    const worker = createLiveReconcileRuntimeWorker({
+      snapshotProvider: staleSinceOnlySnapshotProvider(),
+      repository,
+      clock: () => new Date("2026-06-02T12:00:00.000Z"),
+    });
+
+    const result = await worker.runOnce({ correlationId: "corr-ws-stale-only" });
+
+    expect(result.statusSummary.result).toBe("SUCCESS");
     expect(result.statusSummary.websocketStatus).toBe("CONNECTED");
   });
 
@@ -1087,6 +1152,126 @@ function balanceMismatchSnapshotProvider(): LiveReconcileSnapshotProvider {
               available: "1000",
               locked: "0",
               total: "1000",
+              updatedAt: "2026-06-02T12:00:00.000Z",
+            },
+          ],
+          closedOrderWindow: {
+            windowStart: "2026-06-01T12:00:00.000Z",
+            windowEnd: "2026-06-02T12:00:00.000Z",
+            windowExhausted: false,
+            queryCount: 1,
+          },
+          observedAt: "2026-06-02T12:00:00.000Z",
+        },
+      };
+    },
+  };
+}
+
+function websocketOrderSnapshotProvider(): LiveReconcileSnapshotProvider {
+  return {
+    async loadSnapshot() {
+      return {
+        sourceSummary: "fixture websocket myOrder",
+        engineInput: {
+          exchangeOpenOrders: [],
+          exchangeClosedOrders: [],
+          orderLookups: [],
+          websocketContext: {
+            bootstrapCompleteAt: "2026-06-02T12:00:00.000Z",
+            events: [
+              {
+                type: "myOrder",
+                occurredAt: "2026-06-02T12:00:01.000Z",
+                payload: {
+                  uuid: "uuid-ws-open",
+                  market: "KRW-BTC",
+                  side: "bid",
+                  state: "wait",
+                  volume: "0.01",
+                  remaining_volume: "0.01",
+                  price: "100000000",
+                },
+              },
+            ],
+          },
+          localOpenOrders: [
+            {
+              orderId: "local-ws-open",
+              exchangeOrderId: "uuid-ws-open",
+              market: "KRW-BTC",
+              side: "BUY",
+              orderType: "LIMIT",
+              status: "ACCEPTED",
+              requestedQuantity: "0.01",
+              remainingQuantity: "0.01",
+              requestedPrice: "100000000",
+              updatedAt: "2026-06-02T12:00:00.000Z",
+            },
+          ],
+          localBalances: [
+            {
+              currency: "KRW",
+              available: "0",
+              locked: "0",
+              total: "0",
+              updatedAt: "2026-06-02T12:00:00.000Z",
+            },
+          ],
+          exchangeBalances: [
+            {
+              currency: "KRW",
+              available: "0",
+              locked: "0",
+              total: "0",
+              updatedAt: "2026-06-02T12:00:00.000Z",
+            },
+          ],
+          closedOrderWindow: {
+            windowStart: "2026-06-01T12:00:00.000Z",
+            windowEnd: "2026-06-02T12:00:00.000Z",
+            windowExhausted: false,
+            queryCount: 1,
+          },
+          observedAt: "2026-06-02T12:00:00.000Z",
+        },
+      };
+    },
+  };
+}
+
+function staleSinceOnlySnapshotProvider(): LiveReconcileSnapshotProvider {
+  return {
+    async loadSnapshot() {
+      return {
+        sourceSummary: "fixture websocket staleSince only",
+        engineInput: {
+          exchangeOpenOrders: [],
+          exchangeClosedOrders: [],
+          orderLookups: [],
+          websocketContext: {
+            bootstrapCompleteAt: "2026-06-02T12:00:00.000Z",
+            events: [],
+            disconnectEvidence: {
+              staleSince: "2026-06-02T11:59:00.000Z",
+            },
+          },
+          localOpenOrders: [],
+          localBalances: [
+            {
+              currency: "KRW",
+              available: "0",
+              locked: "0",
+              total: "0",
+              updatedAt: "2026-06-02T12:00:00.000Z",
+            },
+          ],
+          exchangeBalances: [
+            {
+              currency: "KRW",
+              available: "0",
+              locked: "0",
+              total: "0",
               updatedAt: "2026-06-02T12:00:00.000Z",
             },
           ],

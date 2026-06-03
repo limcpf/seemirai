@@ -1,4 +1,7 @@
-import { runReconcileEngine } from "../../application/index.js";
+import {
+  buildWebSocketOrderSnapshots,
+  runReconcileEngine,
+} from "../../application/index.js";
 import type {
   BrokerBalance,
   ReconcileEngineInput,
@@ -277,9 +280,10 @@ async function persistReconcileEngineEvidence(input: {
       ...input.engineInput.exchangeOpenOrders,
       ...input.engineInput.exchangeClosedOrders,
       ...input.engineInput.orderLookups,
+      ...buildWebSocketOrderSnapshots(input.engineInput.websocketContext),
     ].map(toExchangeOrderSnapshotRow),
   );
-  // mismatch evidence는 kill switch 전이보다 먼저 durable하게 남겨 재시작 후에도 차단 근거를 추적할 수 있게 한다.
+  // kill switch 전이가 끝난 뒤 append-only evidence를 남겨 차단 상태와 감사 근거가 서로 갈라지지 않게 한다.
   await input.repository.appendLiveReconcileMismatchEvidence(
     input.runId,
     input.engineOutput.mismatches.map(toMismatchEvidenceRow),
@@ -400,7 +404,7 @@ function resolveRuntimeWebSocketStatus(
   engineOutput: ReconcileEngineOutput,
 ): "CONNECTED" | "DEGRADED" {
   if (
-    engineInput.websocketContext.disconnectEvidence !== undefined ||
+    hasWebSocketLivenessGapEvidence(engineInput.websocketContext.disconnectEvidence) ||
     hasEngineMismatch(engineOutput, "WEBSOCKET_GAP_MANUAL_REVIEW")
   ) {
     return "DEGRADED";
@@ -434,6 +438,20 @@ function hasEngineMismatch(
   mismatchType: ReconcileMismatchType,
 ): boolean {
   return output.mismatches.some((mismatch) => mismatch.mismatchType === mismatchType);
+}
+
+function hasWebSocketLivenessGapEvidence(
+  evidence: ReconcileEngineInput["websocketContext"]["disconnectEvidence"],
+): boolean {
+  if (evidence === undefined) {
+    return false;
+  }
+  return (
+    evidence.disconnectedAt !== undefined ||
+    evidence.reconnectedAt !== undefined ||
+    (evidence.gapDurationMs ?? 0) > 0 ||
+    (evidence.reconnectCount ?? 0) > 0
+  );
 }
 
 function toKillSwitchReasonCode(output: ReconcileEngineOutput): string {

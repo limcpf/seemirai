@@ -926,7 +926,7 @@ describeDb("live reconcile persistence integration", () => {
     expect(summary.fillRecoveryKeyCount).toBe(0);
   });
 
-  it("keeps the latest final run in summary while a newer run is still running", async () => {
+  it("exposes a newer running run instead of hiding it behind the latest final summary", async () => {
     const { run: failedRun } = await repository!.beginLiveReconcileRun({
       idempotencyKey: "run-integration-summary-final-first",
     });
@@ -942,15 +942,15 @@ describeDb("live reconcile persistence integration", () => {
       },
     ]);
     await repository!.completeLiveReconcileRun({ runId: failedRun.id, status: "FAILED" });
-    await repository!.beginLiveReconcileRun({
+    const { run: runningRun } = await repository!.beginLiveReconcileRun({
       idempotencyKey: "run-integration-summary-running-after-final",
     });
 
     const summary = await repository!.getLatestLiveReconcileSummary();
 
-    expect(summary.run?.id).toBe(failedRun.id);
-    expect(summary.run?.status).toBe("FAILED");
-    expect(summary.mismatchEvidenceCount).toBe(1);
+    expect(summary.run?.id).toBe(runningRun.id);
+    expect(summary.run?.status).toBe("RUNNING");
+    expect(summary.mismatchEvidenceCount).toBe(0);
   });
 
   it("uses finished_at to select the latest final run in summary", async () => {

@@ -3,12 +3,6 @@
 ALTER TABLE live_reconcile_exchange_order_snapshots
   ADD COLUMN IF NOT EXISTS identity_fingerprint text;
 
-ALTER TABLE live_reconcile_exchange_order_snapshots
-  DROP CONSTRAINT IF EXISTS live_reconcile_exchange_order_snapshots_identity_present_check;
-
-ALTER TABLE live_reconcile_exchange_order_snapshots
-  DROP CONSTRAINT IF EXISTS live_reconcile_exchange_order_snapshots_identity_fingerprint_check;
-
 DO $$
 DECLARE
   old_constraint_name text;
