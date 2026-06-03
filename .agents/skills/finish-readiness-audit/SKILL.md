@@ -1,6 +1,6 @@
 ---
 name: finish-readiness-audit
-description: 개발 마무리, PR 준비, milestone closeout, issue 완료 전 현재 Git 브랜치와 staged/unstaged/untracked 워크트리가 목표, acceptance criteria, Definition of Done 기준으로 넘겨도 되는 상태인지 한국어로 감사할 때 사용한다. 파일을 수정하지 않고 PASS/FAIL/PARTIAL 판정, blocking/non-blocking finding, 검증 결과, 커밋/PR 준비 상태를 보고하는 리뷰 전용 workflow다.
+description: 개발 마무리, PR 생성 전 readiness, milestone closeout, issue 완료 전 현재 Git 브랜치와 staged/unstaged/untracked 워크트리가 목표, acceptance criteria, Definition of Done 기준으로 넘겨도 되는 상태인지 한국어로 감사할 때 사용한다. 파일을 수정하지 않고 PASS/FAIL/PARTIAL 판정, blocking/non-blocking finding, 검증 결과, 커밋 준비 상태를 보고하는 리뷰 전용 workflow다.
 ---
 
 # finish-readiness-audit
@@ -16,6 +16,7 @@ description: 개발 마무리, PR 준비, milestone closeout, issue 완료 전 �
 - `.runs/`, `.env`, local log 같은 커밋 제외 대상과 secret 노출 위험
 
 로컬 산출물은 검증 증거로만 사용한다. `.runs/`나 `.env`를 커밋 대상 변경으로 취급하지 않는다.
+PR 생성 여부는 감사 결과의 PASS/FAIL/PARTIAL 판정 기준으로 삼지 않는다. 이미 열린 PR이 있으면 checks, unresolved thread, review 상태를 추가 증거로 참고할 수 있지만, PR이 아직 없다는 사실만으로 finding을 만들지 않는다.
 
 ## 금지 사항
 
@@ -32,7 +33,7 @@ description: 개발 마무리, PR 준비, milestone closeout, issue 완료 전 �
 3. `docs/generated/context-map.json`
 4. 목표와 관련된 `docs/PRD.md`, `docs/FEATURE_REQUIREMENTS.md`, `docs/PLANS.md`, `docs/DEVELOPMENT.md`
 5. 관련 issue, handoff, contract JSON, active/completed exec plan, review checklist
-6. PR이 있으면 PR 본문과 checks, unresolved thread
+6. PR이 이미 있으면 PR 본문과 checks, unresolved thread
 
 ## workflow
 
@@ -43,7 +44,7 @@ description: 개발 마무리, PR 준비, milestone closeout, issue 완료 전 �
    - 필요 시 `git log --oneline --decorate -n 20`
 2. 기준 브랜치를 추론한다.
    - 사용자가 지정한 base가 있으면 우선한다.
-   - PR이 있으면 PR base를 사용한다.
+   - PR이 이미 있으면 PR base를 사용할 수 있다.
    - issue sub PR worktree면 관련 mother branch를 우선한다.
    - 추론 실패 시 `origin/main` 또는 현재 branch upstream을 후보로 두고, 불확실성을 기록한다.
 3. diff를 확인한다.
@@ -60,7 +61,8 @@ description: 개발 마무리, PR 준비, milestone closeout, issue 완료 전 �
    - 커밋 제외 대상, secret, local config, generated artifact 노출 여부
    - 테스트, lint, build, 문서 검증, hook/GitHub 검증 통과 여부
    - 변경 범위와 리뷰 가능성
-   - branch/upstream/base 관계와 PR 준비 상태
+   - branch/upstream/base 관계와 커밋 준비 상태
+   - 이미 열린 PR이 있으면 실패한 check나 unresolved review를 증거로 기록하되, PR 미생성 자체는 차단 사유에서 제외
 6. 검증 명령을 실행한다.
    - 명확한 검증 명령이 있으면 실행하고 결과를 기록한다.
    - 문서/skill/hook/GitHub template/project 검증 설정/lockfile 변경이 있으면 `./scripts/verify`를 실행한다.
@@ -111,8 +113,8 @@ description: 개발 마무리, PR 준비, milestone closeout, issue 완료 전 �
 5. 실행한 검증 명령과 결과
 - `<command>` -> <결과>
 
-6. 커밋/PR 준비 상태
-- <준비 여부와 이유>
+6. 커밋 준비 상태
+- <준비 여부와 이유. PR 생성 여부는 판정에서 제외하고, 이미 열린 PR의 실패한 check/review가 있으면 별도 증거로만 기록한다.>
 
 7. 권장 다음 액션
 - <구체적 다음 행동>
@@ -123,6 +125,6 @@ finding이 없으면 `Blocking findings`에 `없음`이라고 쓴다. `PASS` 판
 ## 판정 강도
 
 - PASS를 남발하지 않는다. 모든 blocking 조건과 필수 검증이 해소됐을 때만 PASS다.
-- 사용자가 "마무리 가능?"이라고 물으면 PR/commit 가능한 상태까지 본다.
+- 사용자가 "마무리 가능?"이라고 물으면 커밋 가능한 상태까지 본다. PR 생성 여부는 audit 이후 제출 절차로 분리하고, PR이 없다는 사실만으로 FAIL/PARTIAL을 내지 않는다.
 - 목표 문서가 없고 사용자의 한 문장 목표만 있으면 그 목표를 기준으로 감사하되, 문서 기준 부족을 명시한다.
 - local-only 산출물이 ignore되어 있더라도, 커밋 후보에 올라와 있으면 blocking으로 본다.

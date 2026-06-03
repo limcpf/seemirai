@@ -39,7 +39,7 @@ M16은 REST snapshot bootstrap, private WebSocket `myOrder`/`myAsset`, append-on
 | 05 | `issue-143-05-subpr` | [#148](https://github.com/limcpf/seemirai/pull/148) | diff engine, mismatch taxonomy, immutable identity matching, fill recovery idempotency, manual review/fail-closed evidence | merged |
 | 06 | `issue-143-06-reconcile-runtime-status` | [#149](https://github.com/limcpf/seemirai/pull/149) | read-only startup guard, worker/service, CLI summary, durable kill switch/risk event 연결 | merged |
 | 07 | `issue-143-07-reconcile-smoke` | [#150](https://github.com/limcpf/seemirai/pull/150) | fake integration, gated live read-only/WebSocket smoke, artifact redaction | merged |
-| 08 | `issue-143-08-verification-closeout` | (closeout) | 전체 검증, 문서 closeout, final PR 준비 | in progress |
+| 08 | `issue-143-08-verification-closeout` | [#151](https://github.com/limcpf/seemirai/pull/151) | 전체 검증, 문서 closeout, final PR 준비 | merged |
 
 sub PR 의존성 그래프:
 
@@ -67,6 +67,7 @@ Sub PR 02/03/04는 병렬 진행했고, 05-08은 순차 진행했다.
 - **로컬 lifecycle 복구 쓰기 경계**: immutable identity fingerprint 일치 시에만 기존 domain repository transaction으로 갱신. `fills` insert는 `live_reconcile_fill_recovery_keys` unique key 선점 후 허용. `positions` 갱신은 authoritative fill 기반일 때만 허용.
 - **상태 summary**: 마지막 reconcile 시각, 결과, mismatch 수, open order 수, balance snapshot 상태, WebSocket 상태, 한국어 필요 조치 제공. 내부 식별자는 `추적 정보`로 분리.
 - **Guard**: `SEEMIRAI_RUN_UPBIT_LIVE_RECONCILE=1` env가 있어야 reconcile worker 시작.
+- **운영 closeout 보강**: `finish-readiness-audit`는 PR 생성 전 마지막 readiness 감사에 쓰는 workflow로 정리했다. PR 생성 여부는 audit 판정에서 제외하고, 커밋 가능한 상태와 필수 검증 증거를 기준으로 PASS/FAIL/PARTIAL을 낸다.
 
 ## 제외 범위 (구현되지 않은 항목)
 
@@ -200,6 +201,7 @@ node scripts/verify-github.mjs
 | 2026-06-03 | Sub PR 01-07이 모두 mother branch에 merge됐다. Sub PR 08(closeout)에서 전체 검증을 수행하고 문서 정리를 완료한다. |
 | 2026-06-03 | closeout 검증 결과: typecheck 통과, unit tests 812 passed, integration 12 passed, soak 79 passed, verify docs/hooks/github 통과, live order API 0회 source scan 확인, 기본 reconcile smoke guard-skip 확인. |
 | 2026-06-03 | 추가 closeout 검증 결과: DB integration migrations/live-reconcile 48 tests 통과, Upbit read-only REST live reconcile smoke 통과, Upbit private WebSocket smoke 통과. |
+| 2026-06-04 | Sub PR 08 closeout PR #151이 mother branch에 merge된 상태를 완료 기록에 반영했다. `finish-readiness-audit`는 PR 생성 전 audit workflow로 쓰도록 정리하고, PR 미생성 자체는 finding/FAIL/PARTIAL 기준에서 제외하기로 했다. |
 
 ## Open Questions (closeout 시점)
 
@@ -226,20 +228,20 @@ node scripts/verify-github.mjs
 - [ ] M19 exit engine (자동 매도, 손절, 익절)
 - [ ] Upbit account 기준 reconcile 주기, rate limit 검증
 
-## Final Mother PR 사용자 Merge 가이드
+## Final Main PR 사용자 Merge 가이드
 
-final mother PR (closeout branch → `issue-143-mother`)은 Reasonix가 생성하지 않는다. 사용자가 직접 다음 절차로 진행한다:
+closeout branch → `issue-143-mother` PR #151은 merge 완료됐다. 남은 제출 절차는 다음과 같다:
 
-1. closeout branch의 변경사항을 확인하고 `issue-143-mother`에 merge
-2. `issue-143-mother` → `main` PR 생성
-3. GitHub `verify` workflow 통과 확인
-4. PR review drain 수행
-5. merge 수행
+1. `issue-143-mother` → `main` PR 생성
+2. GitHub `verify` workflow 통과 확인
+3. PR review drain 수행
+4. merge 수행
 
-closeout branch 변경사항:
+Sub PR 08 및 closeout 보강 변경사항:
 - `docs/exec-plans/completed/2026-06-02-issue-143-m16-live-reconcile.md` (신규, 완료 기록)
 - `docs/exec-plans/active/2026-06-02-issue-143-m16-live-reconcile.md` (삭제, completed로 이동)
 - `docs/exec-plans/active/README.md` (M16 항목 제거)
 - `docs/exec-plans/completed/README.md` (M16 항목 추가)
 - `docs/generated/context-map.json` (M16 plan 경로 갱신)
 - `docs/exec-plans/completed/2026-05-22-post-m8-milestone-plan.md` (M16 상태 completed로 갱신)
+- `.agents/skills/finish-readiness-audit/SKILL.md` (PR 생성 전 readiness 감사 기준으로 정리, PR 미생성 자체를 판정에서 제외)

@@ -256,8 +256,8 @@
     {
       "path": "docs/exec-plans/completed/2026-06-02-issue-143-m16-live-reconcile.md",
       "kind": "exec-plan",
-      "role": "Issue #143 M16 실계좌 상태 Reconcile 완료 기록 — sub PR 01-07 merge, 전체 검증, DB integration, Upbit live REST/WebSocket smoke, live order API 0회 확인",
-      "read_when": ["M16 완료 기록", "M16 검증 결과 확인", "M16 DB integration 결과 확인", "M16 live smoke 결과 확인", "M16 sub PR merge 상태 확인", "실계좌 reconcile 완료 증거"],
+      "role": "Issue #143 M16 실계좌 상태 Reconcile 완료 기록 — sub PR 01-08 merge, 전체 검증, DB integration, Upbit live REST/WebSocket smoke, live order API 0회, finish-readiness-audit closeout 보강 확인",
+      "read_when": ["M16 완료 기록", "M16 검증 결과 확인", "M16 DB integration 결과 확인", "M16 live smoke 결과 확인", "M16 sub PR merge 상태 확인", "실계좌 reconcile 완료 증거", "finish-readiness-audit closeout 보강 확인"],
       "owner_scope": "docs/exec-plans/completed"
     },
     {
@@ -403,8 +403,8 @@
     {
       "path": ".agents/skills/finish-readiness-audit/SKILL.md",
       "kind": "skill",
-      "role": "개발 마무리 전 branch와 워크트리 완료 가능 상태를 감사하는 workflow",
-      "read_when": ["개발 마무리 감사", "PR 준비 상태 확인", "완료 가능 상태 점검"],
+      "role": "개발 마무리와 PR 생성 전 branch/워크트리 완료 가능 상태를 감사하는 workflow",
+      "read_when": ["개발 마무리 감사", "PR 생성 전 readiness 확인", "완료 가능 상태 점검"],
       "owner_scope": ".agents/skills/finish-readiness-audit"
     }
   ]
