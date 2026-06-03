@@ -7,6 +7,7 @@ import type {
   LiveReconcilePositionSnapshotInsertInput,
   LiveReconcileRunInsertInput,
 } from "./types.js";
+import { parseFinancialDecimal } from "../../../shared/decimal.js";
 
 /**
  * Run 시작 입력을 `live_reconcile_runs` insert row로 변환한다.
@@ -85,6 +86,7 @@ export function toLiveReconcileExchangeOrderSnapshotRowInput(
     run_id: runId,
     exchange_order_id: snapshot.exchangeOrderId ?? null,
     identifier: snapshot.identifier ?? null,
+    identity_fingerprint: buildLiveReconcileOrderIdentityFingerprint(snapshot),
     market: snapshot.market,
     side: snapshot.side,
     status: snapshot.status,
@@ -95,6 +97,29 @@ export function toLiveReconcileExchangeOrderSnapshotRowInput(
     captured_at: typeof snapshot.capturedAt === "string" ? snapshot.capturedAt : snapshot.capturedAt,
     metadata_json: (snapshot.metadata ?? {}) as Record<string, unknown>,
   };
+}
+
+/**
+ * DB에 저장할 거래소 주문 immutable identity fingerprint를 만든다.
+ *
+ * uuid/identifier가 없는 snapshot도 reconcile evidence로 보존해야 하므로
+ * persistence boundary에서 market/side/수량/가격을 Decimal scale 차이 없이
+ * 정규화한다. 이 함수는 순수 변환이며 DB write나 외부 API 호출을 하지 않는다.
+ */
+function buildLiveReconcileOrderIdentityFingerprint(snapshot: {
+  market: string;
+  side: "BUY" | "SELL";
+  requestedQuantity: string;
+  requestedPrice?: string;
+}): string {
+  return [
+    snapshot.market,
+    snapshot.side,
+    parseFinancialDecimal(snapshot.requestedQuantity).toString(),
+    snapshot.requestedPrice === undefined
+      ? ""
+      : parseFinancialDecimal(snapshot.requestedPrice).toString(),
+  ].join("|");
 }
 
 /**

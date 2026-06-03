@@ -323,6 +323,40 @@ describeDb("live reconcile persistence integration", () => {
     expect(snapshots[0]?.identifier).toBe("ident-only-1");
   });
 
+  it("stores fingerprint-only exchange order snapshots append-only without uuid or identifier", async () => {
+    const { run } = await repository!.beginLiveReconcileRun({
+      idempotencyKey: "run-integration-orders-fingerprint-only",
+    });
+
+    const snapshotInput = {
+      market: "KRW-BTC" as const,
+      side: "BUY" as const,
+      status: "OPEN",
+      requestedQuantity: "0.00100000",
+      requestedPrice: "10000000.0000",
+      source: "open" as const,
+      capturedAt: new Date("2026-06-03T00:00:00Z"),
+    };
+
+    const snapshots = await repository!.appendLiveReconcileExchangeOrderSnapshots(run.id, [
+      snapshotInput,
+    ]);
+    const duplicate = await repository!.appendLiveReconcileExchangeOrderSnapshots(run.id, [
+      {
+        ...snapshotInput,
+      },
+    ]);
+    const summary = await repository!.getLatestLiveReconcileSummary();
+
+    expect(snapshots).toHaveLength(1);
+    expect(duplicate).toHaveLength(1);
+    expect(snapshots[0]?.exchange_order_id).toBeNull();
+    expect(snapshots[0]?.identifier).toBeNull();
+    expect(snapshots[0]?.identity_fingerprint).toBe("KRW-BTC|BUY|0.001|10000000");
+    expect(duplicate[0]?.identity_fingerprint).toBe("KRW-BTC|BUY|0.001|10000000");
+    expect(summary.exchangeOrderSnapshotCount).toBe(2);
+  });
+
   it("normalizes an identifier-only exchange order snapshot after uuid is observed", async () => {
     const { run } = await repository!.beginLiveReconcileRun({
       idempotencyKey: "run-integration-orders-ident-dup",
@@ -1114,21 +1148,57 @@ describeDb("live reconcile persistence integration", () => {
         occurredAt: new Date("2026-06-03T00:00:00Z"),
       },
       {
-        mismatchType: "BALANCE_LOCK_MISMATCH",
+        mismatchType: "EXCHANGE_CANCEL_STATE_MISMATCH",
         severity: "ERROR",
-        currency: "KRW",
-        message: "KRW lock 잔고 불일치",
+        orderIdentity: "uuid-4",
+        message: "거래소 취소 상태 불일치",
         action: "수동 검토",
         evidenceFingerprint: "all-types-005",
         occurredAt: new Date("2026-06-03T00:00:00Z"),
       },
       {
+        mismatchType: "ORDER_STATE_ADVANCEMENT_BLOCKED",
+        severity: "ERROR",
+        orderIdentity: "uuid-5",
+        message: "주문 상태 전진 불가",
+        action: "수동 검토",
+        evidenceFingerprint: "all-types-006",
+        occurredAt: new Date("2026-06-03T00:00:00Z"),
+      },
+      {
+        mismatchType: "ORDER_IDENTITY_CONFLICT",
+        severity: "ERROR",
+        orderIdentity: "uuid-6",
+        message: "주문 식별자 충돌",
+        action: "수동 검토",
+        evidenceFingerprint: "all-types-007",
+        occurredAt: new Date("2026-06-03T00:00:00Z"),
+      },
+      {
+        mismatchType: "BALANCE_LOCK_MISMATCH",
+        severity: "ERROR",
+        currency: "KRW",
+        message: "KRW lock 잔고 불일치",
+        action: "수동 검토",
+        evidenceFingerprint: "all-types-008",
+        occurredAt: new Date("2026-06-03T00:00:00Z"),
+      },
+      {
+        mismatchType: "BALANCE_SNAPSHOT_UNAVAILABLE",
+        severity: "ERROR",
+        currency: "KRW",
+        message: "잔고 snapshot 판정 불가",
+        action: "수동 검토",
+        evidenceFingerprint: "all-types-009",
+        occurredAt: new Date("2026-06-03T00:00:00Z"),
+      },
+      {
         mismatchType: "CLOSED_ORDER_WINDOW_EXCEEDED",
         severity: "WARN",
-        orderIdentity: "uuid-4",
+        orderIdentity: "uuid-7",
         message: "종료 주문 조회 기간 초과",
         action: "수동 확인 필요",
-        evidenceFingerprint: "all-types-006",
+        evidenceFingerprint: "all-types-010",
         occurredAt: new Date("2026-06-03T00:00:00Z"),
       },
       {
@@ -1136,12 +1206,12 @@ describeDb("live reconcile persistence integration", () => {
         severity: "WARN",
         message: "WebSocket 데이터 갭 발생",
         action: "REST 재조회 후 확인",
-        evidenceFingerprint: "all-types-007",
+        evidenceFingerprint: "all-types-011",
         occurredAt: new Date("2026-06-03T00:00:00Z"),
       },
     ]);
 
-    expect(evidence).toHaveLength(7);
+    expect(evidence).toHaveLength(11);
   });
 
   async function getDatabase(): Promise<Database> {

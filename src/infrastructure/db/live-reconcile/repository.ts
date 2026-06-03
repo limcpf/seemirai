@@ -135,6 +135,7 @@ export class PostgresLiveReconcileRepository {
    * idempotency: partial unique index로 중복 row를 차단한다.
    * `exchange_order_id`가 있는 row는 run_id+exchange_order_id partial unique index로,
    * identifier가 있는 row는 uuid 관측 여부와 무관하게 run_id+identifier partial unique index로 중복을 차단한다.
+   * uuid/identifier가 모두 없는 fingerprint-only row는 실제 중복 주문 가능성이 있어 unique dedupe하지 않고 append-only로 보존한다.
    * `ON CONFLICT DO NOTHING`으로 중복은 무시하고 계속 진행한다.
    *
    * @param runId 소속 run ID
@@ -429,7 +430,7 @@ export class PostgresLiveReconcileRepository {
         .executeTakeFirstOrThrow(),
       this.database
         .selectFrom("live_reconcile_exchange_order_snapshots")
-        .select(["exchange_order_id", "identifier"])
+        .select(["id", "exchange_order_id", "identifier"])
         .where("run_id", "=", run.id)
         .execute(),
       this.database
@@ -492,9 +493,10 @@ export class PostgresLiveReconcileRepository {
  * 주문 identity로 연결된다. 이 함수는 DB row를 수정하지 않는 읽기 전용 계산이며 외부 side effect가 없다.
  */
 function countCanonicalExchangeOrderSnapshots(
-  rows: Array<{ exchange_order_id: string | null; identifier: string | null }>,
+  rows: Array<{ id: string; exchange_order_id: string | null; identifier: string | null }>,
 ): number {
   const parent = new Map<string, string>();
+  let fingerprintOnlyRowCount = 0;
 
   const find = (key: string): string => {
     const existing = parent.get(key);
@@ -527,6 +529,12 @@ function countCanonicalExchangeOrderSnapshots(
     const identifierKey =
       row.identifier === null ? undefined : `identifier:${row.identifier}`;
 
+    if (exchangeOrderKey === undefined && identifierKey === undefined) {
+      // fingerprint-only row는 동일 fingerprint 충돌 가능성이 있으므로 summary에서도 개별 snapshot으로 보존한다.
+      fingerprintOnlyRowCount += 1;
+      continue;
+    }
+
     if (exchangeOrderKey !== undefined) {
       find(exchangeOrderKey);
     }
@@ -541,5 +549,5 @@ function countCanonicalExchangeOrderSnapshots(
     }
   }
 
-  return new Set(Array.from(parent.keys(), (key) => find(key))).size;
+  return new Set(Array.from(parent.keys(), (key) => find(key))).size + fingerprintOnlyRowCount;
 }
