@@ -400,6 +400,54 @@ describe("createLiveReconcileRuntimeWorker", () => {
     expect(repository.completedStatus).toBe("FAILED");
   });
 
+  it("kill switch reason code를 mismatch 원인별로 보존한다", async () => {
+    const repository = fakeRepository();
+    const killSwitchRequests: Array<{ reasonCode?: string }> = [];
+    const worker = createLiveReconcileRuntimeWorker({
+      snapshotProvider: balanceMismatchSnapshotProvider(),
+      repository,
+      killSwitchControlProvider: {
+        async apply(input) {
+          killSwitchRequests.push({ reasonCode: input.reasonCode });
+          return {
+            transition: {
+              accepted: true,
+              fromState: "NORMAL",
+              toState: input.targetState,
+              reasonCode: input.reasonCode,
+              message: input.message ?? "accepted",
+              event: {
+                eventKind: "KILL_SWITCH_STATE_TRANSITION",
+                fromState: "NORMAL",
+                toState: input.targetState,
+                accepted: true,
+                reasonCode: input.reasonCode,
+                message: input.message ?? "accepted",
+                occurredAt: input.occurredAt ?? "2026-06-02T12:00:00.000Z",
+              },
+            },
+            actionPlan: {
+              newOrdersBlocked: true,
+              strategyEvaluationBlocked: false,
+              cancelPendingPaperOrders: false,
+              requiresManualReview: true,
+              autoLiquidateOpenPositions: false,
+            },
+            reasonMatchesTarget: true,
+          };
+        },
+      },
+      clock: () => new Date("2026-06-02T12:00:00.000Z"),
+    });
+
+    const result = await worker.runOnce({ correlationId: "corr-balance-mismatch" });
+
+    expect(killSwitchRequests).toEqual([
+      { reasonCode: "live_reconcile_balance_lock_mismatch" },
+    ]);
+    expect(result.statusSummary.websocketStatus).toBe("CONNECTED");
+  });
+
   it("같은 idempotency key의 기존 run을 재사용하면 side effect 전에 중단한다", async () => {
     const repository = fakeRepository();
     const killSwitchRequests: unknown[] = [];
@@ -535,7 +583,7 @@ describe("createLiveReconcileRuntimeWorker", () => {
     expect(status.result).toBe("MISMATCH_DETECTED");
     expect(status.openOrderCount).toBe(0);
     expect(status.balanceStatus).toBe("STALE");
-    expect(status.websocketStatus).toBe("DEGRADED");
+    expect(status.websocketStatus).toBe("CONNECTED");
   });
 
   it("WebSocket gap mismatch는 연결 상태를 DEGRADED로 표시한다", async () => {
@@ -994,6 +1042,51 @@ function mismatchSnapshotProvider(): LiveReconcileSnapshotProvider {
               available: "0",
               locked: "0",
               total: "0",
+              updatedAt: "2026-06-02T12:00:00.000Z",
+            },
+          ],
+          closedOrderWindow: {
+            windowStart: "2026-06-01T12:00:00.000Z",
+            windowEnd: "2026-06-02T12:00:00.000Z",
+            windowExhausted: false,
+            queryCount: 1,
+          },
+          observedAt: "2026-06-02T12:00:00.000Z",
+        },
+      };
+    },
+  };
+}
+
+function balanceMismatchSnapshotProvider(): LiveReconcileSnapshotProvider {
+  return {
+    async loadSnapshot() {
+      return {
+        sourceSummary: "fixture accounts balance mismatch",
+        engineInput: {
+          exchangeOpenOrders: [],
+          exchangeClosedOrders: [],
+          orderLookups: [],
+          websocketContext: {
+            bootstrapCompleteAt: "2026-06-02T12:00:00.000Z",
+            events: [],
+          },
+          localOpenOrders: [],
+          localBalances: [
+            {
+              currency: "KRW",
+              available: "0",
+              locked: "1000",
+              total: "1000",
+              updatedAt: "2026-06-02T12:00:00.000Z",
+            },
+          ],
+          exchangeBalances: [
+            {
+              currency: "KRW",
+              available: "1000",
+              locked: "0",
+              total: "1000",
               updatedAt: "2026-06-02T12:00:00.000Z",
             },
           ],

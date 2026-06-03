@@ -383,9 +383,7 @@ async function applyFailClosedIfNeeded(input: {
   // mismatch는 신규 주문 허용 신호가 아니므로 append-only evidence보다 먼저 durable kill switch를 닫아 fail-open 창을 없앤다.
   return input.provider.apply({
     targetState,
-    reasonCode: targetState === "MANUAL_REVIEW_REQUIRED"
-      ? "live_reconcile_identity_conflict"
-      : "live_reconcile_mismatch",
+    reasonCode: toKillSwitchReasonCode(input.engineOutput),
     correlationId: input.correlationId,
     actor: input.actor,
     message: "Live reconcile mismatch가 감지되어 신규 주문을 차단합니다.",
@@ -425,10 +423,7 @@ function resolveLatestBalanceStatus(
 function resolveLatestWebSocketStatus(
   latest: Awaited<ReturnType<LiveReconcileRuntimeRepository["getLatestLiveReconcileSummary"]>>,
 ): "CONNECTED" | "DEGRADED" {
-  if (
-    latest.run?.status === "MANUAL_REVIEW_REQUIRED" ||
-    latest.mismatchTypes.includes("WEBSOCKET_GAP_MANUAL_REVIEW")
-  ) {
+  if (latest.mismatchTypes.includes("WEBSOCKET_GAP_MANUAL_REVIEW")) {
     return "DEGRADED";
   }
   return "CONNECTED";
@@ -439,6 +434,31 @@ function hasEngineMismatch(
   mismatchType: ReconcileMismatchType,
 ): boolean {
   return output.mismatches.some((mismatch) => mismatch.mismatchType === mismatchType);
+}
+
+function toKillSwitchReasonCode(output: ReconcileEngineOutput): string {
+  if (hasEngineMismatch(output, "ORDER_IDENTITY_CONFLICT")) {
+    return "live_reconcile_identity_conflict";
+  }
+  if (hasEngineMismatch(output, "BALANCE_LOCK_MISMATCH")) {
+    return "live_reconcile_balance_lock_mismatch";
+  }
+  if (hasEngineMismatch(output, "BALANCE_SNAPSHOT_UNAVAILABLE")) {
+    return "live_reconcile_balance_snapshot_unavailable";
+  }
+  if (hasEngineMismatch(output, "WEBSOCKET_GAP_MANUAL_REVIEW")) {
+    return "live_reconcile_websocket_gap";
+  }
+  if (hasEngineMismatch(output, "ORDER_STATE_ADVANCEMENT_BLOCKED")) {
+    return "live_reconcile_order_state_advancement_blocked";
+  }
+  if (hasEngineMismatch(output, "EXCHANGE_CANCEL_STATE_MISMATCH")) {
+    return "live_reconcile_exchange_cancel_state_mismatch";
+  }
+  if (hasEngineMismatch(output, "CANCEL_FAILURE_RETRY_NEEDED")) {
+    return "live_reconcile_cancel_retry_needed";
+  }
+  return "live_reconcile_mismatch";
 }
 
 function toKillSwitchControlTarget(
