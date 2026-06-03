@@ -6,7 +6,12 @@ import type {
 } from "../../domain/index.js";
 import type { KillSwitchControlProvider } from "../../application/index.js";
 import type { Database } from "../../infrastructure/db/index.js";
-import type { PilotRuntimeConfig, RuntimeConfig } from "../../runtime/index.js";
+import type {
+  PilotRuntimeConfig,
+  ReconcileStatusProvider,
+  ReconcileStatusSummary,
+  RuntimeConfig,
+} from "../../runtime/index.js";
 
 export const DEFAULT_HTTP_CONTROL_HOST = "127.0.0.1";
 export const DEFAULT_HTTP_CONTROL_PORT = 8787;
@@ -129,6 +134,8 @@ export interface ControlStatusSnapshot {
     nextRunAfter: string | null;
     updatedAt: string | null;
   };
+  /** M16 read-only reconcile 상태 summary다. reconcile worker가 비활성이면 SKIPPED/UNAVAILABLE로 표시한다. */
+  reconcile: ReconcileStatusSummary;
 }
 
 export interface ControlStatusProvider {
@@ -237,6 +244,18 @@ export interface CreateDatabaseControlStatusProviderOptions {
     reportDate?: string | null;
     updatedAt?: string | null;
   };
+  /**
+   * `/status`에 노출할 reconcile 상태 summary다.
+   *
+   * 지정하지 않으면 SKIPPED 상태로 표시한다. 테스트 fixture나 수동 status 조립에서만 사용한다.
+   */
+  reconcile?: ReconcileStatusSummary;
+  /**
+   * `/status` 호출 시점에 최신 reconcile 상태를 읽는 provider다.
+   *
+   * runtime worker가 활성화된 운영 조립에서는 정적 `reconcile` 대신 이 provider를 주입해 최신 DB/worker 상태를 노출한다.
+   */
+  reconcileStatusProvider?: ReconcileStatusProvider;
 }
 
 export interface CreateDatabaseReadinessProviderOptions {

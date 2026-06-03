@@ -1,0 +1,4 @@
+interface:
+  display_name: "Finish Readiness Audit"
+  short_description: "마무리 전 브랜치와 워크트리 완료 상태 감사용"
+  default_prompt: "Use $finish-readiness-audit to audit whether the current branch and worktree are ready to finish against the goal and Definition of Done."

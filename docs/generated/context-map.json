@@ -392,6 +392,20 @@
       "role": "PR 리뷰 finding을 clean 상태까지 처리하는 workflow",
       "read_when": ["PR 리뷰 처리", "unresolved thread 해결", "Codex reaction clean signal 확인"],
       "owner_scope": ".agents/skills/pr-review-drain"
+    },
+    {
+      "path": ".agents/skills/reasonix-codex-review/SKILL.md",
+      "kind": "skill",
+      "role": "Reasonix 구현 이후 staged, unstaged, untracked 변경을 코드 리뷰하는 workflow",
+      "read_when": ["Reasonix 구현 리뷰", "구현 에이전트 작업 검토", "워크트리 변경 리뷰"],
+      "owner_scope": ".agents/skills/reasonix-codex-review"
+    },
+    {
+      "path": ".agents/skills/finish-readiness-audit/SKILL.md",
+      "kind": "skill",
+      "role": "개발 마무리 전 branch와 워크트리 완료 가능 상태를 감사하는 workflow",
+      "read_when": ["개발 마무리 감사", "PR 준비 상태 확인", "완료 가능 상태 점검"],
+      "owner_scope": ".agents/skills/finish-readiness-audit"
     }
   ]
 }

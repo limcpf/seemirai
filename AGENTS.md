@@ -27,6 +27,8 @@
 - issue 기준 sub PR 순차 개발과 임시 mother merge 운영: [`.agents/skills/issue-subpr-runner/SKILL.md`](./.agents/skills/issue-subpr-runner/SKILL.md)
 - issue 단위 mother/sub PR 운영: [`.agents/skills/subpr-orchestrator/SKILL.md`](./.agents/skills/subpr-orchestrator/SKILL.md)
 - PR 리뷰 drain: [`.agents/skills/pr-review-drain/SKILL.md`](./.agents/skills/pr-review-drain/SKILL.md)
+- Reasonix 구현 후 워크트리 코드 리뷰: [`.agents/skills/reasonix-codex-review/SKILL.md`](./.agents/skills/reasonix-codex-review/SKILL.md)
+- 개발 마무리 전 완료 가능 상태 감사: [`.agents/skills/finish-readiness-audit/SKILL.md`](./.agents/skills/finish-readiness-audit/SKILL.md)
 
 ## 저장소 공통 규칙
 
