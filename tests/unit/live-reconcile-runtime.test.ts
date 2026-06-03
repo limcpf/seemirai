@@ -305,63 +305,10 @@ describe("createGuardedLiveReconcileRuntime", () => {
 });
 
 describe("createLiveReconcileRuntimeWorker", () => {
-  it("snapshot을 engine으로 대조하고 evidence 저장 후 fail-closed kill switch를 요청한다", async () => {
+  it("snapshot을 engine으로 대조하고 fail-closed kill switch 전이 후 evidence를 저장한다", async () => {
     const repository = fakeRepository();
     const killSwitchRequests: unknown[] = [];
-    const snapshotProvider: LiveReconcileSnapshotProvider = {
-      async loadSnapshot() {
-        return {
-          sourceSummary: "fixture accounts+open",
-          engineInput: {
-            exchangeOpenOrders: [
-              {
-                exchangeOrderId: "uuid-untracked",
-                market: "KRW-BTC",
-                side: "BUY",
-                exchangeStatus: "wait",
-                requestedQuantity: "0.01",
-                remainingQuantity: "0.01",
-                requestedPrice: "100000000",
-                source: "open",
-                capturedAt: "2026-06-02T12:00:00.000Z",
-              },
-            ],
-            exchangeClosedOrders: [],
-            orderLookups: [],
-            websocketContext: {
-              bootstrapCompleteAt: "2026-06-02T12:00:00.000Z",
-              events: [],
-            },
-            localOpenOrders: [],
-            localBalances: [
-              {
-                currency: "KRW",
-                available: "0",
-                locked: "0",
-                total: "0",
-                updatedAt: "2026-06-02T12:00:00.000Z",
-              },
-            ],
-            exchangeBalances: [
-              {
-                currency: "KRW",
-                available: "0",
-                locked: "0",
-                total: "0",
-                updatedAt: "2026-06-02T12:00:00.000Z",
-              },
-            ],
-            closedOrderWindow: {
-              windowStart: "2026-06-01T12:00:00.000Z",
-              windowEnd: "2026-06-02T12:00:00.000Z",
-              windowExhausted: false,
-              queryCount: 1,
-            },
-            observedAt: "2026-06-02T12:00:00.000Z",
-          },
-        };
-      },
-    };
+    const snapshotProvider = mismatchSnapshotProvider();
     const killSwitchControlProvider: KillSwitchControlProvider = {
       async apply(input) {
         killSwitchRequests.push(input);
@@ -416,6 +363,81 @@ describe("createLiveReconcileRuntimeWorker", () => {
     ]);
   });
 
+  it("kill switch 전이가 실패하면 evidence를 append하지 않고 run을 실패로 닫는다", async () => {
+    const repository = fakeRepository();
+    const worker = createLiveReconcileRuntimeWorker({
+      snapshotProvider: mismatchSnapshotProvider(),
+      repository,
+      killSwitchControlProvider: {
+        async apply() {
+          throw new Error("kill switch unavailable");
+        },
+      },
+      clock: () => new Date("2026-06-02T12:00:00.000Z"),
+    });
+
+    await expect(worker.runOnce({ correlationId: "corr-reconcile" })).rejects.toThrow(
+      UnsafeLiveReconcileRuntimeError,
+    );
+    expect(repository.exchangeOrderSnapshots).toHaveLength(0);
+    expect(repository.mismatchEvidence).toHaveLength(0);
+    expect(repository.completedStatus).toBe("FAILED");
+  });
+
+  it("mismatch 실행에 kill switch provider가 없으면 evidence를 append하지 않는다", async () => {
+    const repository = fakeRepository();
+    const worker = createLiveReconcileRuntimeWorker({
+      snapshotProvider: mismatchSnapshotProvider(),
+      repository,
+      clock: () => new Date("2026-06-02T12:00:00.000Z"),
+    });
+
+    await expect(worker.runOnce({ correlationId: "corr-reconcile" })).rejects.toThrow(
+      UnsafeLiveReconcileRuntimeError,
+    );
+    expect(repository.exchangeOrderSnapshots).toHaveLength(0);
+    expect(repository.mismatchEvidence).toHaveLength(0);
+    expect(repository.completedStatus).toBe("FAILED");
+  });
+
+  it("같은 idempotency key의 기존 run을 재사용하면 side effect 전에 중단한다", async () => {
+    const repository = fakeRepository();
+    const killSwitchRequests: unknown[] = [];
+    repository.beginLiveReconcileRun = async () => ({
+      created: false,
+      run: {
+        id: "run-existing",
+        idempotency_key: "idem-existing",
+        status: "COMPLETED",
+        started_at: new Date("2026-06-02T12:00:00.000Z"),
+        finished_at: new Date("2026-06-02T12:00:01.000Z"),
+        guard_profile: "LIVE_READ_ONLY_RECONCILE",
+        source_summary: "fixture",
+        correlation_id: "corr-existing",
+        metadata_json: {},
+      },
+    });
+    const worker = createLiveReconcileRuntimeWorker({
+      snapshotProvider: mismatchSnapshotProvider(),
+      repository,
+      killSwitchControlProvider: {
+        async apply(input) {
+          killSwitchRequests.push(input);
+          throw new Error("must not apply");
+        },
+      },
+      clock: () => new Date("2026-06-02T12:00:00.000Z"),
+    });
+
+    await expect(worker.runOnce({ correlationId: "corr-reconcile" })).rejects.toThrow(
+      UnsafeLiveReconcileRuntimeError,
+    );
+    expect(repository.exchangeOrderSnapshots).toHaveLength(0);
+    expect(repository.mismatchEvidence).toHaveLength(0);
+    expect(repository.completedStatus).toBeNull();
+    expect(killSwitchRequests).toHaveLength(0);
+  });
+
   it("latest repository summary를 /status provider로 변환한다", async () => {
     const repository = fakeRepository();
     repository.latestSummary = {
@@ -431,8 +453,10 @@ describe("createLiveReconcileRuntimeWorker", () => {
         metadata_json: {},
       },
       balanceSnapshotCount: 2,
-      exchangeOrderSnapshotCount: 1,
+      exchangeOrderSnapshotCount: 3,
+      openExchangeOrderSnapshotCount: 1,
       mismatchEvidenceCount: 0,
+      mismatchTypes: [],
       positionSnapshotCount: 0,
       fillRecoveryKeyCount: 0,
     };
@@ -451,6 +475,95 @@ describe("createLiveReconcileRuntimeWorker", () => {
         correlationId: "corr-latest",
       },
     });
+  });
+
+  it("RUNNING latest run은 성공으로 승격하지 않는다", async () => {
+    const repository = fakeRepository();
+    repository.latestSummary = {
+      run: {
+        id: "run-running",
+        idempotency_key: "idem-running",
+        status: "RUNNING",
+        started_at: new Date("2026-06-02T12:00:00.000Z"),
+        finished_at: null,
+        guard_profile: "LIVE_READ_ONLY_RECONCILE",
+        source_summary: "fixture",
+        correlation_id: "corr-running",
+        metadata_json: {},
+      },
+      balanceSnapshotCount: 0,
+      exchangeOrderSnapshotCount: 0,
+      openExchangeOrderSnapshotCount: 0,
+      mismatchEvidenceCount: 0,
+      mismatchTypes: [],
+      positionSnapshotCount: 0,
+      fillRecoveryKeyCount: 0,
+    };
+
+    const status = await createLiveReconcileStatusProvider(repository).getReconcileStatus();
+
+    expect(status.result).toBe("UNAVAILABLE");
+    expect(status.actionRequired).toBe("reconcile 실행 중");
+    expect(status.trace).toMatchObject({ reason: "reconcile_running", runId: "run-running" });
+  });
+
+  it("latest summary는 open source order 수와 balance mismatch 상태를 보존한다", async () => {
+    const repository = fakeRepository();
+    repository.latestSummary = {
+      run: {
+        id: "run-mismatch",
+        idempotency_key: "idem-mismatch",
+        status: "MANUAL_REVIEW_REQUIRED",
+        started_at: new Date("2026-06-02T12:00:00.000Z"),
+        finished_at: new Date("2026-06-02T12:00:01.000Z"),
+        guard_profile: "LIVE_READ_ONLY_RECONCILE",
+        source_summary: "fixture",
+        correlation_id: "corr-mismatch",
+        metadata_json: {},
+      },
+      balanceSnapshotCount: 2,
+      exchangeOrderSnapshotCount: 4,
+      openExchangeOrderSnapshotCount: 0,
+      mismatchEvidenceCount: 1,
+      mismatchTypes: ["BALANCE_LOCK_MISMATCH"],
+      positionSnapshotCount: 0,
+      fillRecoveryKeyCount: 0,
+    };
+
+    const status = await createLiveReconcileStatusProvider(repository).getReconcileStatus();
+
+    expect(status.result).toBe("MISMATCH_DETECTED");
+    expect(status.openOrderCount).toBe(0);
+    expect(status.balanceStatus).toBe("STALE");
+    expect(status.websocketStatus).toBe("DEGRADED");
+  });
+
+  it("WebSocket gap mismatch는 연결 상태를 DEGRADED로 표시한다", async () => {
+    const repository = fakeRepository();
+    repository.latestSummary = {
+      run: {
+        id: "run-ws-gap",
+        idempotency_key: "idem-ws-gap",
+        status: "MANUAL_REVIEW_REQUIRED",
+        started_at: new Date("2026-06-02T12:00:00.000Z"),
+        finished_at: new Date("2026-06-02T12:00:01.000Z"),
+        guard_profile: "LIVE_READ_ONLY_RECONCILE",
+        source_summary: "fixture",
+        correlation_id: "corr-ws-gap",
+        metadata_json: {},
+      },
+      balanceSnapshotCount: 2,
+      exchangeOrderSnapshotCount: 0,
+      openExchangeOrderSnapshotCount: 0,
+      mismatchEvidenceCount: 1,
+      mismatchTypes: ["WEBSOCKET_GAP_MANUAL_REVIEW"],
+      positionSnapshotCount: 0,
+      fillRecoveryKeyCount: 0,
+    };
+
+    const status = await createLiveReconcileStatusProvider(repository).getReconcileStatus();
+
+    expect(status.websocketStatus).toBe("DEGRADED");
   });
 });
 
@@ -840,6 +953,63 @@ function fakeWorker(): LiveReconcileRuntimeWorker {
   };
 }
 
+function mismatchSnapshotProvider(): LiveReconcileSnapshotProvider {
+  return {
+    async loadSnapshot() {
+      return {
+        sourceSummary: "fixture accounts+open",
+        engineInput: {
+          exchangeOpenOrders: [
+            {
+              exchangeOrderId: "uuid-untracked",
+              market: "KRW-BTC",
+              side: "BUY",
+              exchangeStatus: "wait",
+              requestedQuantity: "0.01",
+              remainingQuantity: "0.01",
+              requestedPrice: "100000000",
+              source: "open",
+              capturedAt: "2026-06-02T12:00:00.000Z",
+            },
+          ],
+          exchangeClosedOrders: [],
+          orderLookups: [],
+          websocketContext: {
+            bootstrapCompleteAt: "2026-06-02T12:00:00.000Z",
+            events: [],
+          },
+          localOpenOrders: [],
+          localBalances: [
+            {
+              currency: "KRW",
+              available: "0",
+              locked: "0",
+              total: "0",
+              updatedAt: "2026-06-02T12:00:00.000Z",
+            },
+          ],
+          exchangeBalances: [
+            {
+              currency: "KRW",
+              available: "0",
+              locked: "0",
+              total: "0",
+              updatedAt: "2026-06-02T12:00:00.000Z",
+            },
+          ],
+          closedOrderWindow: {
+            windowStart: "2026-06-01T12:00:00.000Z",
+            windowEnd: "2026-06-02T12:00:00.000Z",
+            windowExhausted: false,
+            queryCount: 1,
+          },
+          observedAt: "2026-06-02T12:00:00.000Z",
+        },
+      };
+    },
+  };
+}
+
 function fakeRepository(): LiveReconcileRuntimeRepository & {
   exchangeOrderSnapshots: unknown[];
   mismatchEvidence: unknown[];
@@ -854,7 +1024,9 @@ function fakeRepository(): LiveReconcileRuntimeRepository & {
       run: null,
       balanceSnapshotCount: 0,
       exchangeOrderSnapshotCount: 0,
+      openExchangeOrderSnapshotCount: 0,
       mismatchEvidenceCount: 0,
+      mismatchTypes: [],
       positionSnapshotCount: 0,
       fillRecoveryKeyCount: 0,
     },

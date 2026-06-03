@@ -132,8 +132,12 @@ export interface LiveReconcileSummary {
   balanceSnapshotCount: number;
   /** exchange order snapshot 개수 */
   exchangeOrderSnapshotCount: number;
+  /** source=open 기준 canonical exchange order snapshot 개수 */
+  openExchangeOrderSnapshotCount: number;
   /** mismatch evidence 개수 */
   mismatchEvidenceCount: number;
+  /** 마지막 run에서 관찰된 mismatch type 목록 */
+  mismatchTypes: string[];
   /** position snapshot 개수 */
   positionSnapshotCount: number;
   /** fill recovery key 개수 */

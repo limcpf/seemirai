@@ -268,8 +268,8 @@ export interface LiveReconcileRuntimeRepository {
  * live reconcile worker 생성 입력이다.
  *
  * snapshotProvider는 읽기 전용 외부 조회를, repository는 append-only evidence 저장을, killSwitchControlProvider는
- * mismatch fail-closed 상태 전이를 담당한다. kill switch provider가 없으면 worker는 evidence만 저장하고 주문 경로 차단은
- * 호출자가 별도 경계에서 처리해야 한다.
+ * mismatch fail-closed 상태 전이를 담당한다. mismatch가 감지됐는데 kill switch provider가 없으면 worker는 evidence를 저장하지
+ * 않고 실패로 닫아 신규 주문 차단 없이 evidence만 남는 상태를 만들지 않는다.
  */
 export interface CreateLiveReconcileRuntimeWorkerInput {
   snapshotProvider: LiveReconcileSnapshotProvider;

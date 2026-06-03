@@ -1414,6 +1414,52 @@ describe("/status reconcile section", () => {
     });
   });
 
+  it("HTTP /status 응답 schema가 reconcile 섹션을 직렬화한다", async () => {
+    const runtimeConfig = loadRuntimeConfig({});
+    const server = createHttpControlServer({
+      readinessProvider: staticReadinessProvider(readySummary()),
+      statusProvider: createDatabaseControlStatusProvider({
+        runtimeConfig,
+        readinessProvider: staticReadinessProvider(readySummary()),
+        reconcile: {
+          lastReconcileAt: "2026-06-02T12:00:00.000Z",
+          result: "SUCCESS",
+          mismatchCount: 0,
+          openOrderCount: 1,
+          balanceStatus: "OK",
+          websocketStatus: "CONNECTED",
+          actionRequired: "정상",
+          message: "거래소-로컬 상태 일치",
+          trace: {
+            source: "live_reconcile_status",
+            reason: "reconcile_clean",
+            runId: "run-schema",
+          },
+        },
+      }),
+    });
+
+    try {
+      const response = await server.inject({
+        method: "GET",
+        url: "/status",
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toMatchObject({
+        reconcile: {
+          result: "SUCCESS",
+          openOrderCount: 1,
+          trace: {
+            runId: "run-schema",
+          },
+        },
+      });
+    } finally {
+      await server.close();
+    }
+  });
+
   it("reconcileStatusProvider가 있으면 정적 reconcile보다 최신 provider 값을 우선한다", async () => {
     const runtimeConfig = loadRuntimeConfig({});
     const provider = createDatabaseControlStatusProvider({

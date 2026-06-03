@@ -4,6 +4,7 @@ import type {
   ReconcileEngineInput,
   ReconcileEngineOutput,
   ReconcileExchangeOrderSnapshot,
+  ReconcileMismatchType,
   ReconcileMismatchEvidence,
   TimestampInput,
 } from "../../domain/index.js";
@@ -58,7 +59,7 @@ export function createGuardedLiveReconcileRuntime(
  * M16 read-only reconcile worker를 생성한다.
  *
  * worker는 주문 생성/취소 API를 직접 알지 못하고, 주입된 snapshotProvider에서 이미 정규화된 snapshot만 받아 engine을 실행한다.
- * mismatch가 있으면 append-only evidence를 저장한 뒤 kill switch control port로 fail-closed 전이를 요청한다.
+ * mismatch가 있으면 kill switch control port로 fail-closed 전이를 먼저 확정한 뒤 append-only evidence를 저장한다.
  *
  * @param input snapshot/repository/control provider와 clock
  * @returns 단일 reconcile 실행 worker
@@ -92,15 +93,15 @@ export function createLiveReconcileRuntimeWorker(
         },
       });
 
+      if (!begun.created) {
+        // 같은 idempotency key의 기존 run에 새 snapshot side effect가 섞이면 append-only evidence와 차단 상태가 갈라진다.
+        throw new UnsafeLiveReconcileRuntimeError([
+          `live reconcile idempotency key가 이미 사용됐습니다: ${begun.run.id}`,
+        ]);
+      }
+
       try {
         const engineOutput = runReconcileEngine(engineInput);
-
-        await persistReconcileEngineEvidence({
-          repository: input.repository,
-          runId: begun.run.id,
-          engineInput,
-          engineOutput,
-        });
 
         const killSwitchResult = await applyFailClosedIfNeeded({
           engineOutput,
@@ -109,6 +110,13 @@ export function createLiveReconcileRuntimeWorker(
           actor,
           provider: input.killSwitchControlProvider,
           runId: begun.run.id,
+        });
+
+        await persistReconcileEngineEvidence({
+          repository: input.repository,
+          runId: begun.run.id,
+          engineInput,
+          engineOutput,
         });
         const finalStatus = engineOutput.failClosed
           ? "MANUAL_REVIEW_REQUIRED"
@@ -122,9 +130,7 @@ export function createLiveReconcileRuntimeWorker(
           runId: completedRun.id,
           correlationId,
           observedAt,
-          websocketStatus: engineInput.websocketContext.disconnectEvidence === undefined
-            ? "CONNECTED"
-            : "DEGRADED",
+          websocketStatus: resolveRuntimeWebSocketStatus(engineInput, engineOutput),
         });
 
         const result: LiveReconcileRuntimeRunResult = {
@@ -195,6 +201,25 @@ export function createLiveReconcileStatusProvider(
         };
       }
 
+      if (latest.run.status === "RUNNING") {
+        return {
+          lastReconcileAt: toNullableIsoString(latest.run.started_at),
+          result: "UNAVAILABLE",
+          mismatchCount: null,
+          openOrderCount: null,
+          balanceStatus: "UNAVAILABLE",
+          websocketStatus: "DEGRADED",
+          actionRequired: "reconcile 실행 중",
+          message: "실계좌 상태 대조가 아직 완료되지 않았습니다. 완료된 run이 기록된 뒤 상태를 다시 확인하세요.",
+          trace: {
+            source: "live_reconcile_status",
+            reason: "reconcile_running",
+            runId: latest.run.id,
+            ...(latest.run.correlation_id === null ? {} : { correlationId: latest.run.correlation_id }),
+          },
+        };
+      }
+
       const reconcileResult =
         latest.mismatchEvidenceCount > 0 ? "MISMATCH_DETECTED" : "CLEAN";
 
@@ -202,9 +227,9 @@ export function createLiveReconcileStatusProvider(
         lastReconcileAt: toNullableIsoString(latest.run.finished_at ?? latest.run.started_at),
         reconcileResult,
         mismatchCount: latest.mismatchEvidenceCount,
-        openOrderCount: latest.exchangeOrderSnapshotCount,
-        balanceStatus: latest.balanceSnapshotCount > 0 ? "OK" : "NOT_AVAILABLE",
-        websocketStatus: latest.run.status === "MANUAL_REVIEW_REQUIRED" ? "DEGRADED" : "CONNECTED",
+        openOrderCount: latest.openExchangeOrderSnapshotCount,
+        balanceStatus: resolveLatestBalanceStatus(latest),
+        websocketStatus: resolveLatestWebSocketStatus(latest),
         runId: latest.run.id,
         ...(latest.run.correlation_id === null ? {} : { correlationId: latest.run.correlation_id }),
       });
@@ -342,6 +367,11 @@ async function applyFailClosedIfNeeded(input: {
   runId: string;
 }) {
   if (!input.engineOutput.failClosed || input.provider === undefined) {
+    if (input.engineOutput.failClosed) {
+      throw new UnsafeLiveReconcileRuntimeError([
+        "live reconcile mismatch를 차단할 kill switch provider가 없습니다",
+      ]);
+    }
     return undefined;
   }
 
@@ -350,7 +380,7 @@ async function applyFailClosedIfNeeded(input: {
     return undefined;
   }
 
-  // mismatch는 신규 주문 허용 신호가 아니므로 engine 결과 직후 durable kill switch로 닫는다.
+  // mismatch는 신규 주문 허용 신호가 아니므로 append-only evidence보다 먼저 durable kill switch를 닫아 fail-open 창을 없앤다.
   return input.provider.apply({
     targetState,
     reasonCode: targetState === "MANUAL_REVIEW_REQUIRED"
@@ -365,6 +395,50 @@ async function applyFailClosedIfNeeded(input: {
     },
     occurredAt: input.observedAt,
   });
+}
+
+function resolveRuntimeWebSocketStatus(
+  engineInput: ReconcileEngineInput,
+  engineOutput: ReconcileEngineOutput,
+): "CONNECTED" | "DEGRADED" {
+  if (
+    engineInput.websocketContext.disconnectEvidence !== undefined ||
+    hasEngineMismatch(engineOutput, "WEBSOCKET_GAP_MANUAL_REVIEW")
+  ) {
+    return "DEGRADED";
+  }
+  return "CONNECTED";
+}
+
+function resolveLatestBalanceStatus(
+  latest: Awaited<ReturnType<LiveReconcileRuntimeRepository["getLatestLiveReconcileSummary"]>>,
+): "OK" | "LOCK_MISMATCH" | "NOT_AVAILABLE" {
+  if (latest.balanceSnapshotCount === 0 || latest.mismatchTypes.includes("BALANCE_SNAPSHOT_UNAVAILABLE")) {
+    return "NOT_AVAILABLE";
+  }
+  if (latest.mismatchTypes.includes("BALANCE_LOCK_MISMATCH")) {
+    return "LOCK_MISMATCH";
+  }
+  return "OK";
+}
+
+function resolveLatestWebSocketStatus(
+  latest: Awaited<ReturnType<LiveReconcileRuntimeRepository["getLatestLiveReconcileSummary"]>>,
+): "CONNECTED" | "DEGRADED" {
+  if (
+    latest.run?.status === "MANUAL_REVIEW_REQUIRED" ||
+    latest.mismatchTypes.includes("WEBSOCKET_GAP_MANUAL_REVIEW")
+  ) {
+    return "DEGRADED";
+  }
+  return "CONNECTED";
+}
+
+function hasEngineMismatch(
+  output: ReconcileEngineOutput,
+  mismatchType: ReconcileMismatchType,
+): boolean {
+  return output.mismatches.some((mismatch) => mismatch.mismatchType === mismatchType);
 }
 
 function toKillSwitchControlTarget(

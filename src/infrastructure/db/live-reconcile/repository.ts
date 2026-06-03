@@ -410,7 +410,9 @@ export class PostgresLiveReconcileRepository {
         run: null,
         balanceSnapshotCount: 0,
         exchangeOrderSnapshotCount: 0,
+        openExchangeOrderSnapshotCount: 0,
         mismatchEvidenceCount: 0,
+        mismatchTypes: [],
         positionSnapshotCount: 0,
         fillRecoveryKeyCount: 0,
       };
@@ -419,7 +421,9 @@ export class PostgresLiveReconcileRepository {
     const [
       balanceCount,
       exchangeOrderRows,
+      openExchangeOrderRows,
       mismatchCount,
+      mismatchTypeRows,
       positionCount,
       fillRecoveryKeyCount,
     ] = await Promise.all([
@@ -434,10 +438,22 @@ export class PostgresLiveReconcileRepository {
         .where("run_id", "=", run.id)
         .execute(),
       this.database
+        .selectFrom("live_reconcile_exchange_order_snapshots")
+        .select(["id", "exchange_order_id", "identifier"])
+        .where("run_id", "=", run.id)
+        .where("source", "=", "open")
+        .execute(),
+      this.database
         .selectFrom("live_reconcile_mismatch_evidence")
         .select((eb) => eb.fn.countAll<string>().as("count"))
         .where("run_id", "=", run.id)
         .executeTakeFirstOrThrow(),
+      this.database
+        .selectFrom("live_reconcile_mismatch_evidence")
+        .select("mismatch_type")
+        .distinct()
+        .where("run_id", "=", run.id)
+        .execute(),
       this.database
         .selectFrom("live_reconcile_position_snapshots")
         .select((eb) => eb.fn.countAll<string>().as("count"))
@@ -455,7 +471,10 @@ export class PostgresLiveReconcileRepository {
       balanceSnapshotCount: Number(balanceCount.count),
       exchangeOrderSnapshotCount:
         countCanonicalExchangeOrderSnapshots(exchangeOrderRows),
+      openExchangeOrderSnapshotCount:
+        countCanonicalExchangeOrderSnapshots(openExchangeOrderRows),
       mismatchEvidenceCount: Number(mismatchCount.count),
+      mismatchTypes: mismatchTypeRows.map((row) => row.mismatch_type),
       positionSnapshotCount: Number(positionCount.count),
       fillRecoveryKeyCount: Number(fillRecoveryKeyCount.count),
     };
