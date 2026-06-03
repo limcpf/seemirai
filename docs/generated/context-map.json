@@ -254,11 +254,11 @@
       "owner_scope": "docs/exec-plans/completed"
     },
     {
-      "path": "docs/exec-plans/active/2026-06-02-issue-143-m16-live-reconcile.md",
+      "path": "docs/exec-plans/completed/2026-06-02-issue-143-m16-live-reconcile.md",
       "kind": "exec-plan",
-      "role": "Issue #143 M16 실계좌 상태 Reconcile — REST snapshot bootstrap, private WebSocket myOrder/myAsset, read-only reconcile worker, mismatch fail-closed",
-      "read_when": ["M16 실행 계획", "M16 범위 확인", "M16 sub PR 계획", "M16 guard 확인", "실계좌 reconcile"],
-      "owner_scope": "docs/exec-plans/active"
+      "role": "Issue #143 M16 실계좌 상태 Reconcile 완료 기록 — sub PR 01-07 merge, 전체 검증, DB integration, Upbit live REST/WebSocket smoke, live order API 0회 확인",
+      "read_when": ["M16 완료 기록", "M16 검증 결과 확인", "M16 DB integration 결과 확인", "M16 live smoke 결과 확인", "M16 sub PR merge 상태 확인", "실계좌 reconcile 완료 증거"],
+      "owner_scope": "docs/exec-plans/completed"
     },
     {
       "path": "docs/exec-plans/completed/2026-06-02-issue-135-m15-upbit-live-broker.md",

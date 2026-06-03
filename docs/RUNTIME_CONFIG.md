@@ -157,7 +157,7 @@ safe summary 수준이다.
 
 구현 기준:
 
-- 실행 계획: [`exec-plans/active/2026-06-02-issue-143-m16-live-reconcile.md`](./exec-plans/active/2026-06-02-issue-143-m16-live-reconcile.md)
+- 실행 계획: [`exec-plans/completed/2026-06-02-issue-143-m16-live-reconcile.md`](./exec-plans/completed/2026-06-02-issue-143-m16-live-reconcile.md)
 - runtime mode label: `LIVE_READ_ONLY_RECONCILE`
 - guard env: `SEEMIRAI_RUN_UPBIT_LIVE_RECONCILE=1`
 

@@ -130,11 +130,10 @@ export class PostgresLiveReconcileRepository {
   }
 
   /**
-   * exchange order snapshot을 batch insert한다. 같은 run/exchange_order_id 조합은 중복 insert되지 않는다.
+   * exchange order snapshot을 batch insert한다.
    *
-   * idempotency: partial unique index로 중복 row를 차단한다.
-   * `exchange_order_id`가 있는 row는 run_id+exchange_order_id partial unique index로,
-   * identifier가 있는 row는 uuid 관측 여부와 무관하게 run_id+identifier partial unique index로 중복을 차단한다.
+   * idempotency: 같은 run에서 같은 identity/source/status/captured_at 조합만 중복 row로 차단한다.
+   * 같은 주문의 다른 captured_at 또는 status 관측은 최신 reconcile summary와 manual review evidence에 필요하므로 append-only로 보존한다.
    * uuid/identifier가 모두 없는 fingerprint-only row는 실제 중복 주문 가능성이 있어 unique dedupe하지 않고 append-only로 보존한다.
    * `ON CONFLICT DO NOTHING`으로 중복은 무시하고 계속 진행한다.
    *
@@ -172,7 +171,7 @@ export class PostgresLiveReconcileRepository {
       for (const snapshot of snapshots) {
         const row = toLiveReconcileExchangeOrderSnapshotRowInput(runId, snapshot);
 
-        // bridge snapshot은 기존 partial evidence를 삭제하지 않고 canonical summary에서만 연결한다.
+        // 서로 다른 시점의 같은 주문 상태 관측은 복구 판단에 필요하므로 동일 관측 재시도만 DB unique index가 접는다.
         const insertedRow = await transaction
           .insertInto("live_reconcile_exchange_order_snapshots")
           .values(row)
