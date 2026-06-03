@@ -12,4 +12,4 @@ YYYY-MM-DD-topic.md
 
 ## 활성 계획
 
-- [`2026-06-02-issue-143-m16-live-reconcile.md`](./2026-06-02-issue-143-m16-live-reconcile.md): Issue #143 M16 실계좌 상태 Reconcile — REST snapshot bootstrap, private WebSocket myOrder/myAsset, read-only reconcile worker, mismatch fail-closed
+현재 활성 계획이 없다.

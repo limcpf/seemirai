@@ -431,7 +431,7 @@ Acceptance Criteria:
 
 M15 상태: completed. issue #135의 완료 기록은 [`2026-06-02-issue-135-m15-upbit-live-broker.md`](./2026-06-02-issue-135-m15-upbit-live-broker.md)를 기준으로 한다.
 
-M16 상태: active. issue #143의 실행 계획은 [`../active/2026-06-02-issue-143-m16-live-reconcile.md`](../active/2026-06-02-issue-143-m16-live-reconcile.md)를 기준으로 한다. read-only reconcile runtime, private WebSocket myOrder/myAsset, REST snapshot bootstrap, mismatch fail-closed를 포함한다. M17 PnL 회계, M18 판단 이유 ledger, M19 exit engine, M20 Telegram inbound, M21 수동 승인, M22 autonomous trading은 M16 범위 밖이다.
+M16 상태: completed. issue #143의 완료 기록은 [`2026-06-02-issue-143-m16-live-reconcile.md`](./2026-06-02-issue-143-m16-live-reconcile.md)를 기준으로 한다. Sub PR 01-07이 mother branch로 merge됐고, 08 closeout에서 전체 검증(typecheck, 903 tests, verify docs/hooks/github) 통과, DB integration 48 tests 통과, Upbit read-only REST/private WebSocket live reconcile smoke 통과, live order API 0회 확인을 완료했다. read-only reconcile runtime, private WebSocket myOrder/myAsset, REST snapshot bootstrap, mismatch fail-closed를 포함한다. M17 PnL 회계, M18 판단 이유 ledger, M19 exit engine, M20 Telegram inbound, M21 수동 승인, M22 autonomous trading은 M16 범위 밖이다.
 
 목적:
 
