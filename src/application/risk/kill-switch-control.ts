@@ -172,38 +172,55 @@ export function createKillSwitchControlDecision(
   const actor = input.actor ?? "http-control";
   const reasonCode = canonicalizeKillSwitchReasonCode(input.reasonCode);
   const recommendedTargetState = mapKillSwitchReasonToTargetState(reasonCode);
+  const effectiveTargetState =
+    resolveLiveReconcileEffectiveTargetState({
+      currentState: input.currentState,
+      requestedTargetState: input.targetState,
+      reasonCode,
+    }) ?? input.targetState;
+  const targetPromoted = effectiveTargetState !== input.targetState;
   const reasonMatchesTarget =
-    recommendedTargetState === undefined || recommendedTargetState === input.targetState;
+    recommendedTargetState === undefined || recommendedTargetState === input.targetState || targetPromoted;
   const occurredAt = input.occurredAt ?? new Date();
-  const stateMachineAllowsTransition = canTransitionKillSwitchState(input.currentState, input.targetState);
+  const stateMachineAllowsTransition = canTransitionKillSwitchState(input.currentState, effectiveTargetState);
   // 요청 사유와 추천 target을 metadata에 남겨 거부 전이도 사후 감사에서 재구성할 수 있게 한다.
   const metadata = createControlTransitionMetadata({
     actor,
     correlationId: input.correlationId,
     requestedReasonCode: reasonCode,
+    requestedTargetState: input.targetState,
+    effectiveTargetState: targetPromoted ? effectiveTargetState : undefined,
     reasonMatchesTarget,
     recommendedTargetState,
     metadata: input.metadata,
   });
   // known P0/P1 reason이 다른 target과 결합되면 state machine 이전에 운영 원인 mismatch로 차단한다.
-  const transition = reasonMatchesTarget
+  const transition = isLiveReconcileDowngrade(input.currentState, effectiveTargetState, reasonCode)
+    ? createLiveReconcileDowngradeBlockedDecision({
+        fromState: input.currentState,
+        toState: effectiveTargetState,
+        occurredAt,
+        reasonCode,
+        metadata,
+      })
+    : reasonMatchesTarget
     ? transitionKillSwitchState({
         fromState: input.currentState,
-        toState: input.targetState,
+        toState: effectiveTargetState,
         occurredAt,
         ...(stateMachineAllowsTransition ? { reasonCode } : {}),
         ...(stateMachineAllowsTransition
           ? {
               message:
                 input.message ??
-                `HTTP control requested kill switch transition: ${input.currentState} -> ${input.targetState}`,
+                `HTTP control requested kill switch transition: ${input.currentState} -> ${effectiveTargetState}`,
             }
           : {}),
         metadata,
       })
     : createReasonTargetMismatchDecision({
         fromState: input.currentState,
-        toState: input.targetState,
+        toState: effectiveTargetState,
         occurredAt,
         reasonCode,
         recommendedTargetState: recommendedTargetState as KillSwitchControlTargetState,
@@ -213,7 +230,7 @@ export function createKillSwitchControlDecision(
   // 거부 전이는 실제 상태가 바뀌지 않았으므로 현재 상태 기준 action plan을 유지한다.
   const result: KillSwitchControlResult = {
     transition,
-    actionPlan: getKillSwitchActionPlan(transition.accepted ? input.targetState : input.currentState),
+    actionPlan: getKillSwitchActionPlan(transition.accepted ? effectiveTargetState : input.currentState),
     reasonMatchesTarget,
   };
 
@@ -222,6 +239,49 @@ export function createKillSwitchControlDecision(
   }
 
   return result;
+}
+
+/**
+ * live reconcile 자동 차단이 기존 전략 정지 차단과 결합될 때 실제 durable target을 고른다.
+ *
+ * 요청 target 자체는 reason mapping 증거로 보존하되, `STRATEGY_PAUSED`에서 reconcile mismatch가 오면 신규 주문 차단까지 함께
+ * 유지해야 한다. 이 helper는 외부 side effect 없이 현재 state와 canonical reason만 보고 더 약하지 않은 target으로 승격한다.
+ */
+function resolveLiveReconcileEffectiveTargetState(input: {
+  currentState: KillSwitchState;
+  requestedTargetState: KillSwitchControlTargetState;
+  reasonCode: string;
+}): KillSwitchControlTargetState | undefined {
+  if (
+    input.reasonCode.startsWith("live_reconcile_") &&
+    input.currentState === "STRATEGY_PAUSED" &&
+    input.requestedTargetState === "NEW_ORDERS_BLOCKED"
+  ) {
+    // reconcile mismatch는 신규 주문 차단도 필요하므로 전략 정지 차단을 잃지 않는 수동 검토 상태로 승격한다.
+    return "MANUAL_REVIEW_REQUIRED";
+  }
+
+  return undefined;
+}
+
+function isLiveReconcileDowngrade(
+  currentState: KillSwitchState,
+  targetState: KillSwitchControlTargetState,
+  reasonCode: string,
+): boolean {
+  if (!reasonCode.startsWith("live_reconcile_")) {
+    return false;
+  }
+
+  const currentPlan = getKillSwitchActionPlan(currentState);
+  const targetPlan = getKillSwitchActionPlan(targetState);
+  return (
+    (currentPlan.newOrdersBlocked && !targetPlan.newOrdersBlocked) ||
+    (currentPlan.strategyEvaluationBlocked && !targetPlan.strategyEvaluationBlocked) ||
+    (currentPlan.cancelPendingPaperOrders && !targetPlan.cancelPendingPaperOrders) ||
+    (currentPlan.requiresManualReview && !targetPlan.requiresManualReview) ||
+    (currentPlan.autoLiquidateOpenPositions && !targetPlan.autoLiquidateOpenPositions)
+  );
 }
 
 /**
@@ -328,6 +388,8 @@ function createControlTransitionMetadata(input: {
   actor: string;
   correlationId: string;
   requestedReasonCode: string;
+  requestedTargetState: KillSwitchControlTargetState;
+  effectiveTargetState: KillSwitchControlTargetState | undefined;
   reasonMatchesTarget: boolean;
   recommendedTargetState: KillSwitchControlTargetState | undefined;
   metadata: JsonRecord | undefined;
@@ -338,8 +400,14 @@ function createControlTransitionMetadata(input: {
     actor: input.actor,
     correlation_id: input.correlationId,
     requested_reason_code: input.requestedReasonCode,
+    requested_target_state: input.requestedTargetState,
     reason_matches_target: input.reasonMatchesTarget,
   };
+
+  if (input.effectiveTargetState !== undefined) {
+    // 자동 승격은 운영 요청과 실제 durable state가 달라지는 지점이라 audit에서 명시적으로 추적한다.
+    metadata.effective_target_state = input.effectiveTargetState;
+  }
 
   if (input.recommendedTargetState !== undefined) {
     // known reason의 추천 target은 거부/수락 모두에서 운영자가 원인 mapping을 검증하는 근거다.
@@ -385,6 +453,43 @@ function createReasonTargetMismatchDecision(input: {
 }
 
 /**
+ * live reconcile 자동 차단이 기존 durable kill switch를 더 약한 상태로 낮추려는 경우의 거부 전이를 만든다.
+ *
+ * reconcile mismatch는 복구 신호가 아니므로 사람이 설정했거나 이전 장애가 만든 MANUAL_REVIEW_REQUIRED/HARD_STOP을 자동으로
+ * 완화하면 안 된다. 거부 event는 남기되 action plan은 caller가 현재 상태 기준으로 유지한다.
+ */
+function createLiveReconcileDowngradeBlockedDecision(input: {
+  fromState: KillSwitchState;
+  toState: KillSwitchControlTargetState;
+  occurredAt: TimestampInput;
+  reasonCode: string;
+  metadata: JsonRecord;
+}): StateTransitionDecision<KillSwitchState> {
+  const event: StateTransitionEventCandidate<KillSwitchState> = {
+    eventKind: "KILL_SWITCH_STATE_TRANSITION",
+    fromState: input.fromState,
+    toState: input.toState,
+    accepted: false,
+    reasonCode: "live_reconcile_downgrade_blocked",
+    message: `Live reconcile cannot downgrade kill switch state: ${input.fromState} -> ${input.toState}`,
+    occurredAt: input.occurredAt,
+    metadata: {
+      ...input.metadata,
+      requested_reason_code: input.reasonCode,
+    },
+  };
+
+  return {
+    accepted: false,
+    fromState: input.fromState,
+    toState: input.toState,
+    reasonCode: event.reasonCode,
+    message: event.message,
+    event,
+  };
+}
+
+/**
  * reason mapping 조회를 own key로 제한한다.
  *
  * plain object prototype의 `constructor` 같은 키가 known reason처럼 판정되면 unknown reason 허용 정책이 깨지고 감사 증거가
@@ -405,8 +510,8 @@ function toIsoTimestamp(value: TimestampInput): string {
  * 운영 장애 reason code별 권장 kill switch target mapping이다.
  *
  * HARD_STOP은 주문 회계/DB 영속성/실거래 API 오용처럼 즉시 실행 경계를 멈춰야 하는 P0 사유다. NEW_ORDERS_BLOCKED는
- * market data freshness처럼 신규 주문만 막고 관측/복구를 기다릴 수 있는 사유이며, MANUAL_REVIEW_REQUIRED는 알림/리포트
- * 반복 실패처럼 사람이 상태를 확인해야 하는 사유다.
+ * market data freshness나 live reconcile mismatch처럼 신규 주문만 막고 관측/복구를 기다릴 수 있는 사유이며,
+ * MANUAL_REVIEW_REQUIRED는 알림/리포트 반복 실패나 live reconcile identity 충돌처럼 사람이 상태를 확인해야 하는 사유다.
  */
 const killSwitchTargetStateByReasonCode = {
   audit_persistence_failure: "HARD_STOP",
@@ -421,8 +526,10 @@ const killSwitchTargetStateByReasonCode = {
   quote_freshness_insufficient: "NEW_ORDERS_BLOCKED",
   stale_market_data: "NEW_ORDERS_BLOCKED",
   transient_external_data_gap: "NEW_ORDERS_BLOCKED",
+  live_reconcile_mismatch: "NEW_ORDERS_BLOCKED",
 
   abnormal_state_operator_review_required: "MANUAL_REVIEW_REQUIRED",
+  live_reconcile_identity_conflict: "MANUAL_REVIEW_REQUIRED",
   notification_consecutive_failure: "MANUAL_REVIEW_REQUIRED",
   notification_failure_threshold_exceeded: "MANUAL_REVIEW_REQUIRED",
   report_generation_repeated_failure: "MANUAL_REVIEW_REQUIRED",

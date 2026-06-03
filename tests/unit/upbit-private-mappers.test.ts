@@ -5,7 +5,9 @@ import {
   UpbitPrivateRestClientError,
   toBrokerBalanceSnapshot,
   toBrokerOrderFromLookup,
+  toBrokerOrdersFromClosedOrders,
   toBrokerOrdersFromOpenOrders,
+  toClosedOrdersSnapshotFromClosedOrders,
   toFeePolicyFromOrderChance,
   toOrderChancePolicy,
   toUpbitPrivateUserActionErrorSummary,
@@ -303,6 +305,302 @@ describe("Upbit private order lookup mapper", () => {
         { capturedAt },
       ),
     ).toThrow(UpbitPrivatePayloadMappingError);
+  });
+});
+
+describe("Upbit private closed orders mapper", () => {
+  it("maps closed order list payloads to broker order contracts", () => {
+    const orders = toBrokerOrdersFromClosedOrders(
+      [
+        {
+          market: "KRW-BTC",
+          uuid: "closed-order-001",
+          side: "bid",
+          ord_type: "limit",
+          price: "140000000.0000",
+          state: "done",
+          created_at: "2026-06-01T09:00:00+09:00",
+          volume: "0.002",
+          remaining_volume: "0",
+          executed_volume: "0.002",
+          executed_funds: "280000",
+          reserved_fee: "140",
+          remaining_fee: "0",
+          paid_fee: "140",
+          locked: "0",
+          time_in_force: "post_only",
+          identifier: "m16-closed-001",
+          trades_count: 1,
+        },
+        {
+          market: "KRW-ETH",
+          uuid: "closed-order-002",
+          side: "ask",
+          ord_type: "limit",
+          price: "6000000",
+          state: "cancel",
+          created_at: "2026-06-01T09:01:00+09:00",
+          volume: "0.05",
+          remaining_volume: "0.05",
+          executed_volume: "0",
+          reserved_fee: "0",
+          remaining_fee: "0",
+          paid_fee: "0",
+          locked: "0",
+          smp_type: "reduce",
+          identifier: "m16-closed-002",
+          trades_count: 0,
+        },
+        {
+          market: "KRW-BTC",
+          uuid: "closed-order-003",
+          side: "ask",
+          ord_type: "market",
+          state: "done",
+          created_at: "2026-06-01T09:02:00+09:00",
+          volume: "5.5",
+          remaining_volume: "0",
+          executed_volume: "5.377594",
+          reserved_fee: "0",
+          remaining_fee: "0",
+          paid_fee: "3.697095875",
+          locked: "0",
+          trades_count: 0,
+        },
+      ],
+      { capturedAt },
+    );
+
+    expect(orders).toMatchObject([
+      {
+        brokerOrderId: "closed-order-001",
+        idempotencyKey: "m16-closed-001",
+        exchangeId: "upbit_krw_spot",
+        market: "KRW-BTC",
+        side: "BUY",
+        orderType: "LIMIT",
+        status: "FILLED",
+        requestedQuantity: "0.002",
+        remainingQuantity: "0",
+        requestedPrice: "140000000",
+        metadata: {
+          source: "upbit_private_closed_order",
+          upbitTimeInForce: "POST_ONLY",
+          executedFunds: "280000",
+          tradesCount: 1,
+        },
+      },
+      {
+        brokerOrderId: "closed-order-002",
+        idempotencyKey: "m16-closed-002",
+        exchangeId: "upbit_krw_spot",
+        market: "KRW-ETH",
+        side: "SELL",
+        orderType: "LIMIT",
+        status: "CANCELED",
+        requestedQuantity: "0.05",
+        remainingQuantity: "0.05",
+        requestedPrice: "6000000",
+        metadata: {
+          source: "upbit_private_closed_order",
+          upbitState: "cancel",
+          upbitSmpType: "reduce",
+          tradesCount: 0,
+        },
+      },
+      {
+        brokerOrderId: "closed-order-003",
+        idempotencyKey: "closed-order-003",
+        exchangeId: "upbit_krw_spot",
+        market: "KRW-BTC",
+        side: "SELL",
+        orderType: "MARKET",
+        status: "FILLED",
+        requestedQuantity: "5.5",
+        remainingQuantity: "0",
+        metadata: {
+          source: "upbit_private_closed_order",
+          upbitOrderType: "market",
+          upbitState: "done",
+        },
+      },
+    ]);
+    expect(JSON.stringify(orders)).not.toContain("Authorization");
+    expect(JSON.stringify(orders)).not.toContain('"raw"');
+  });
+
+  it("keeps manual review evidence for unsupported closed order rows", () => {
+    const snapshot = toClosedOrdersSnapshotFromClosedOrders(
+      [
+        {
+          market: "KRW-BTC",
+          uuid: "closed-order-supported",
+          side: "ask",
+          ord_type: "limit",
+          price: "140000000",
+          state: "done",
+          created_at: "2026-06-01T09:00:00+09:00",
+          volume: "0.002",
+          remaining_volume: "0",
+          executed_volume: "0.002",
+          reserved_fee: "0",
+          remaining_fee: "0",
+          paid_fee: "140",
+          locked: "0",
+        },
+        {
+          market: "KRW-BTC",
+          uuid: "closed-order-price",
+          side: "bid",
+          ord_type: "price",
+          price: "10000",
+          state: "done",
+          created_at: "2026-06-01T09:01:00+09:00",
+          volume: null,
+          remaining_volume: "0",
+          executed_volume: "0.00007142",
+          reserved_fee: "0",
+          remaining_fee: "0",
+          paid_fee: "5",
+          locked: "0",
+        },
+        {
+          market: "KRW-BTC",
+          uuid: "closed-order-best",
+          side: "ask",
+          ord_type: "best",
+          price: "140000000",
+          state: "cancel",
+          created_at: "2026-06-01T09:02:00+09:00",
+          volume: "0.001",
+          remaining_volume: "0.001",
+          executed_volume: "0",
+          reserved_fee: "0",
+          remaining_fee: "0",
+          paid_fee: "0",
+          locked: "0",
+        },
+      ],
+      { capturedAt },
+    );
+
+    const orders = toBrokerOrdersFromClosedOrders(
+      [
+        {
+          market: "KRW-BTC",
+          uuid: "closed-order-supported",
+          side: "ask",
+          ord_type: "limit",
+          price: "140000000",
+          state: "done",
+          created_at: "2026-06-01T09:00:00+09:00",
+          volume: "0.002",
+          remaining_volume: "0",
+          executed_volume: "0.002",
+          reserved_fee: "0",
+          remaining_fee: "0",
+          paid_fee: "140",
+          locked: "0",
+        },
+      ],
+      { capturedAt },
+    );
+
+    expect(snapshot.orders).toHaveLength(1);
+    expect(snapshot.manualReview).toMatchObject([
+      {
+        brokerOrderId: "closed-order-price",
+        idempotencyKey: "closed-order-price",
+        exchangeId: "upbit_krw_spot",
+        market: "KRW-BTC",
+        side: "bid",
+        state: "done",
+        upbitOrderType: "price",
+        reasonCode: "UNSUPPORTED_ORDER_TYPE",
+        message: "현재 broker order contract로 표현할 수 없는 종료 주문 유형이 관측되어 수동 검토 evidence로 분리했습니다.",
+      },
+      {
+        brokerOrderId: "closed-order-best",
+        idempotencyKey: "closed-order-best",
+        exchangeId: "upbit_krw_spot",
+        market: "KRW-BTC",
+        side: "ask",
+        state: "cancel",
+        upbitOrderType: "best",
+        reasonCode: "UNSUPPORTED_ORDER_TYPE",
+      },
+    ]);
+    expect(JSON.stringify(snapshot.manualReview)).not.toContain('"raw"');
+    expect(orders).toHaveLength(1);
+    expect(orders[0]).toMatchObject({
+      brokerOrderId: "closed-order-supported",
+      orderType: "LIMIT",
+      status: "FILLED",
+    });
+  });
+
+  it("fails closed order mapping without echoing raw invalid values", () => {
+    try {
+      toBrokerOrdersFromClosedOrders(
+        [
+          {
+            market: "KRW-BTC",
+            uuid: "closed-order-secret",
+            side: "bid",
+            ord_type: "limit",
+            price: "provider-secret-price",
+            state: "done",
+            created_at: "2026-06-01T09:00:00+09:00",
+            volume: "0.002",
+            remaining_volume: "0",
+            executed_volume: "0.002",
+            reserved_fee: "140",
+            remaining_fee: "0",
+            paid_fee: "140",
+            locked: "0",
+          },
+        ],
+        { capturedAt },
+      );
+      throw new Error("expected mapper to fail");
+    } catch (error) {
+      expect(error).toMatchObject({
+        name: "UpbitPrivatePayloadMappingError",
+        schema: "CLOSED_ORDERS",
+        issuePaths: ["0.price"],
+      } satisfies Partial<UpbitPrivatePayloadMappingError>);
+      expect(String(error)).not.toContain("provider-secret-price");
+    }
+  });
+
+  it("uses idempotencyKey fallback to uuid when identifier is missing in closed orders", () => {
+    const orders = toBrokerOrdersFromClosedOrders(
+      [
+        {
+          market: "KRW-BTC",
+          uuid: "closed-order-no-identifier",
+          side: "bid",
+          ord_type: "limit",
+          price: "50000000.0000",
+          state: "done",
+          created_at: "2026-06-01T09:00:00+09:00",
+          volume: "0.001",
+          remaining_volume: "0",
+          executed_volume: "0.001",
+          reserved_fee: "50",
+          remaining_fee: "0",
+          paid_fee: "50",
+          locked: "0",
+          trades_count: 1,
+        },
+      ],
+      { capturedAt },
+    );
+
+    expect(orders[0]).toMatchObject({
+      brokerOrderId: "closed-order-no-identifier",
+      idempotencyKey: "closed-order-no-identifier",
+    });
   });
 });
 

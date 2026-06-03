@@ -194,6 +194,38 @@ Codex-native 운영은 Codex, Git, GitHub, shell command, 문서 상태를 연�
 - raw event log와 summary artifact는 기본적으로 저장소 밖 `SEEMIRAI_SOAK_LOG_DIR` 또는 `~/vaults/99_운영/seemirai-soak`에 남긴다.
   raw log는 재현과 PR evidence 확인용이며 git commit 대상이 아니다.
 
+## M16 Live Reconcile 신뢰성 기준
+
+- REST snapshot이 reconcile의 bootstrap source of truth다. private WebSocket `myOrder`/`myAsset`은 구독 성공 후 이벤트 버퍼를
+  열고 REST snapshot을 잡은 뒤 변경 추적과 연결 liveness/gap evidence에만 사용한다. 버퍼를 열 수 없거나 구독과 snapshot 사이
+  공백을 확인할 수 없으면 초기 reconcile을 성공으로 기록하지 않고 REST 재bootstrap 또는 manual review로 수렴한다.
+  WebSocket 단절 시 REST fallback/bootstrap으로 상태를 재조회한다.
+- reconcile mismatch가 발견되면 신규 주문을 fail-closed 하고 M16 전용 append-only reconcile tables에 mismatch evidence를 남긴다.
+  같은 transaction에서 `risk_events`에 `live_reconcile_mismatch` 차단 근거를 append하고 `kill_switch_state`를
+  `NEW_ORDERS_BLOCKED` 또는 `MANUAL_REVIEW_REQUIRED`로 전진시켜 RiskGate/주문 경로가 재시작 후에도 차단 상태를 읽게 한다.
+  mismatch를 0으로 자동 복구하지 않는다. 주문/체결 로컬 복구 쓰기는 immutable identity fingerprint가 일치한 경우에만 기존
+  domain repository transaction에서 수행하고, 거래소 state는 적용할 전이 입력으로 분리한다. 같은 reconcile run의 append-only
+  evidence를 함께 남기며, `fills` insert는 거래소 체결 id와 정규화 fill fingerprint 중 관측 가능한 값을 모두 unique key로
+  선점해 멱등화한다. mismatch evidence는 `evidence_fingerprint` unique key로 중복 append를 차단한다.
+  `positions` 갱신은 authoritative fill price/volume으로 평균단가를 계산할 수 있을 때만 허용한다.
+- idempotent run: 같은 reconcile worker가 중복 실행되어도 같은 시각의 같은 snapshot을 다시 조회해 동일한 mismatch 결과를
+  반환한다. reconcile 실행 자체는 run idempotency key와 snapshot/evidence fingerprint로 중복 기록을 차단한다.
+- closed order 조회는 `start_time`/`end_time`을 지정해 7일 이하 구간으로 나눠 수행한다. 설정된 조회 horizon 밖이거나
+  identity/fingerprint를 확인할 수 없는 주문만 manual review로 남긴다. 불완전한 evidence는 mismatch count에 포함하되
+  `복구 불가/수동 검토 필요`로 분류한다.
+- private WebSocket gap/reconnect 기준:
+  - `myOrder`와 `myAsset` 데이터 메시지 부재는 정상 대기 상태일 수 있으므로 STALE 전이 조건으로 쓰지 않는다.
+  - 연결 liveness는 ping/pong 실패, close/error, 인증 실패, reconnect discontinuity로 판단한다.
+  - WebSocket 재연결 시 REST bootstrap을 다시 실행해 snapshot 기준점을 갱신한 뒤 새로운 변경 이벤트부터 추적을 재개한다.
+  - WebSocket 재연결 실패가 3회 연속이면 WebSocket만 `DEGRADED`로 표시하고 manual review evidence를 남긴다. REST/auth 조회가
+    가능한 동안 reconcile worker는 REST-only degraded mode로 계속 실행한다.
+- reconcile worker 실패(rate limit 초과, API 5xx, network error)는 최대 3회 재시도한다. 3회 초과 시 reconcile worker를
+  중지하고 manual review로 수렴한다. 이 중지 기준은 REST/private read path 실패에만 적용하며, WebSocket 단독 장애에는 적용하지 않는다.
+- reconcile summary(/status, CLI)는 마지막 reconcile 시각, 결과, mismatch 수, open order 수, balance snapshot 상태,
+  WebSocket 상태, 필요한 조치를 한국어로 제공한다. 내부 식별자는 `추적 정보`로 분리한다.
+- PnL 계산은 M17 범위이므로 reconcile 단계에서는 `계산 불가/수동 검토 필요`로 남긴다. balance snapshot을 PnL 근거로
+  사용하지 않는다.
+
 ## 검증 규칙
 
 - 자동 테스트가 없으면 수동 검증 절차라도 남긴다.

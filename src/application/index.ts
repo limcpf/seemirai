@@ -5,6 +5,7 @@ export * from "./calibration.js";
 export * from "./daily-report/index.js";
 export * from "./execution/index.js";
 export * from "./features.js";
+export * from "./live-reconcile.js";
 export * from "./llm-risk-assistant.js";
 export * from "./paper-decision-runner.js";
 export * from "./paper-pnl-summary.js";

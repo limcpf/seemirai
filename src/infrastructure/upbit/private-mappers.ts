@@ -3,7 +3,9 @@ export {
   toBrokerBalanceSnapshot,
   toBrokerOrderFromCommand,
   toBrokerOrderFromLookup,
+  toBrokerOrdersFromClosedOrders,
   toBrokerOrdersFromOpenOrders,
+  toClosedOrdersSnapshotFromClosedOrders,
   toFeePolicyFromOrderChance,
   toOrderChancePolicy,
   toUpbitPrivateUserActionErrorSummary,
@@ -11,6 +13,9 @@ export {
 export type {
   CreateUpbitPrivateErrorSummaryOptions,
   MapUpbitPrivatePayloadOptions,
+  UpbitClosedOrderManualReviewEvidence,
+  UpbitClosedOrderManualReviewReason,
+  UpbitClosedOrdersSnapshotMapping,
   UpbitPrivateErrorSummaryTrace,
   UpbitPrivatePayloadMappingErrorOptions,
   UpbitPrivatePayloadSchemaName,
@@ -19,6 +24,8 @@ export type {
 export {
   UpbitPrivateAccountBalanceSchema,
   UpbitPrivateAccountsResponseSchema,
+  UpbitPrivateClosedOrderResponseSchema,
+  UpbitPrivateClosedOrdersResponseSchema,
   UpbitPrivateOpenOrderResponseSchema,
   UpbitPrivateOpenOrdersResponseSchema,
   UpbitPrivateOrderChancePayloadSchema,
@@ -30,6 +37,8 @@ export {
 export type {
   UpbitPrivateAccountBalance,
   UpbitPrivateAccountsResponse,
+  UpbitPrivateClosedOrderResponse,
+  UpbitPrivateClosedOrdersResponse,
   UpbitPrivateOpenOrderResponse,
   UpbitPrivateOpenOrdersResponse,
   UpbitPrivateOrderChancePayload,

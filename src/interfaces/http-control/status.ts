@@ -6,8 +6,12 @@ import {
   listPhase15AltApprovalEvidenceSnapshots,
 } from "../../infrastructure/db/index.js";
 import type { Database } from "../../infrastructure/db/index.js";
-import { createPilotRuntimeSafeSummary, resolveRuntimeUniverse } from "../../runtime/index.js";
-import type { PilotRuntimeConfig, RuntimeConfig } from "../../runtime/index.js";
+import {
+  createPilotRuntimeSafeSummary,
+  createReconcileStatusSummary,
+  resolveRuntimeUniverse,
+} from "../../runtime/index.js";
+import type { PilotRuntimeConfig, ReconcileStatusSummary, RuntimeConfig } from "../../runtime/index.js";
 import { createDatabaseControlReadinessProvider } from "./readiness.js";
 import type {
   ControlOperationalStatusCode,
@@ -108,6 +112,7 @@ export function createDatabaseControlStatusProvider(
         database: readiness,
         alerts,
         dailyReport,
+        reconcile: await toReconcileStatus(options),
       };
     },
   };
@@ -649,4 +654,49 @@ async function readPhase15ApprovalEvidence(
     // status endpoint는 audit 조회 실패 때문에 전체 응답을 깨기보다 승인 universe를 보수적으로 비워 둔다.
     return [];
   }
+}
+
+/**
+ * reconcile 상태 summary 입력을 `/status` 노출용으로 정규화한다.
+ *
+ * reconcile이 주입되지 않았으면 SKIPPED 기본값을 반환하고, 주입됐으면 그대로 전달한다.
+ * 이 함수는 순수 변환 경계이며 외부 side effect가 없다.
+ */
+async function toReconcileStatus(
+  options: CreateDatabaseControlStatusProviderOptions,
+): Promise<ReconcileStatusSummary> {
+  if (options.reconcileStatusProvider !== undefined) {
+    try {
+      return await options.reconcileStatusProvider.getReconcileStatus();
+    } catch {
+      // status endpoint는 reconcile provider 장애를 전체 HTTP 실패로 키우지 않고 운영자가 볼 수 있는 실패 summary로 낮춘다.
+      return {
+        lastReconcileAt: null,
+        result: "FAILED",
+        mismatchCount: null,
+        openOrderCount: null,
+        balanceStatus: "UNAVAILABLE",
+        websocketStatus: "DEGRADED",
+        actionRequired: "reconcile 상태 조회 실패",
+        message: "reconcile 상태를 읽지 못했습니다. worker와 DB 상태를 확인한 뒤 다시 조회하세요.",
+        trace: {
+          source: "live_reconcile_status",
+          reason: "reconcile_status_provider_failed",
+        },
+      };
+    }
+  }
+
+  if (options.reconcile !== undefined) {
+    return options.reconcile;
+  }
+
+  return createReconcileStatusSummary({
+    lastReconcileAt: null,
+    reconcileResult: null,
+    mismatchCount: null,
+    openOrderCount: null,
+    balanceStatus: null,
+    websocketStatus: "DISCONNECTED",
+  });
 }

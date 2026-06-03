@@ -109,6 +109,33 @@ const pilotRuntimeSafeSummarySchema = {
   additionalProperties: false,
 } as const;
 
+const reconcileStatusSummarySchema = {
+  type: "object",
+  required: [
+    "lastReconcileAt",
+    "result",
+    "mismatchCount",
+    "openOrderCount",
+    "balanceStatus",
+    "websocketStatus",
+    "actionRequired",
+    "message",
+    "trace",
+  ],
+  properties: {
+    lastReconcileAt: { type: ["string", "null"] },
+    result: { enum: ["SUCCESS", "MISMATCH_DETECTED", "FAILED", "SKIPPED", "UNAVAILABLE"] },
+    mismatchCount: { type: ["number", "null"] },
+    openOrderCount: { type: ["number", "null"] },
+    balanceStatus: { enum: ["OK", "STALE", "UNAVAILABLE"] },
+    websocketStatus: { enum: ["CONNECTED", "DISCONNECTED", "RECONNECTING", "DEGRADED"] },
+    actionRequired: { type: "string" },
+    message: { type: "string" },
+    trace: { type: "object", additionalProperties: true },
+  },
+  additionalProperties: false,
+} as const;
+
 const errorResponseSchema = {
   type: "object",
   required: ["status", "correlationId", "error"],
@@ -290,6 +317,7 @@ export const statusRouteOptions: RouteShorthandOptions = {
           "database",
           "alerts",
           "dailyReport",
+          "reconcile",
         ],
         properties: {
           status: { const: "ok" },
@@ -392,6 +420,7 @@ export const statusRouteOptions: RouteShorthandOptions = {
               updatedAt: { type: ["string", "null"] },
             },
           },
+          reconcile: reconcileStatusSummarySchema,
         },
       },
       500: errorResponseSchema,

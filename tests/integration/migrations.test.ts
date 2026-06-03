@@ -2,13 +2,14 @@ import { afterAll, describe, expect, it } from "vitest";
 import {
   applyMigrations,
   createPostgresPool,
+  defaultMigrationsDirectory,
+  loadMigrationFiles,
   loadLocalDatabaseConfig,
 } from "../../src/infrastructure/db/index.js";
 import type { Pool } from "pg";
 
 const runDbIntegration = process.env.SEEMIRAI_RUN_DB_INTEGRATION === "1";
 const describeDb = runDbIntegration ? describe : describe.skip;
-const expectedMigrationCount = 8;
 
 describeDb("database migrations integration", () => {
   let pool: Pool | undefined;
@@ -18,6 +19,7 @@ describeDb("database migrations integration", () => {
   });
 
   it("applies every migration and skips already applied migrations", async () => {
+    const expectedMigrationCount = (await loadMigrationFiles(defaultMigrationsDirectory)).length;
     const config = await loadLocalDatabaseConfig();
     pool = createPostgresPool(config);
 

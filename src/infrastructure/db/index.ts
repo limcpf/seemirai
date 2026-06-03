@@ -7,6 +7,18 @@ export {
   upsertAlertCooldown,
 } from "./alert-cooldown.js";
 export {
+  LiveReconcileRunAlreadyFinalizedError,
+  PostgresLiveReconcileRepository,
+} from "./live-reconcile.js";
+export {
+  toLiveReconcileBalanceSnapshotRowInput,
+  toLiveReconcileExchangeOrderSnapshotRowInput,
+  toLiveReconcileFillRecoveryKeyRowInput,
+  toLiveReconcileMismatchEvidenceRowInput,
+  toLiveReconcilePositionSnapshotRowInput,
+  toLiveReconcileRunRowInput,
+} from "./live-reconcile.js";
+export {
   PostgresAuditLogRepository,
   appendAuditEvent,
   listPhase15AltApprovalEvidenceSnapshots,
@@ -97,6 +109,23 @@ export type {
 } from "./execution-persistence.js";
 export type { AuditEventRecord, AuditEventRowInput } from "./audit-log.js";
 export type { AlertCooldownRecord, AlertCooldownRowInput } from "./alert-cooldown.js";
+export type {
+  BeginLiveReconcileRunInput,
+  CompleteLiveReconcileRunInput,
+  LiveReconcileBalanceSnapshotInsertInput,
+  LiveReconcileBalanceSnapshotRecord,
+  LiveReconcileExchangeOrderSnapshotInsertInput,
+  LiveReconcileExchangeOrderSnapshotRecord,
+  LiveReconcileFillRecoveryKeyInsertInput,
+  LiveReconcileFillRecoveryKeyRecord,
+  LiveReconcileMismatchEvidenceInsertInput,
+  LiveReconcileMismatchEvidenceRecord,
+  LiveReconcilePositionSnapshotInsertInput,
+  LiveReconcilePositionSnapshotRecord,
+  LiveReconcileRunInsertInput,
+  LiveReconcileRunRecord,
+  LiveReconcileSummary,
+} from "./live-reconcile.js";
 export type {
   EnqueueDailyReportJobInput,
   EnqueueDailyReportJobResult,

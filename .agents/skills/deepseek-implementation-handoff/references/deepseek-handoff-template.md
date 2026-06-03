@@ -1,13 +1,36 @@
-# M<N> <Milestone Name> Implementation Handoff
+# <Work ID> <Work Name> Implementation Handoff
 
 ## Goal
 
-Write one precise paragraph that defines what this milestone must achieve.
+Write one precise paragraph that defines what this milestone, issue, or implementation unit must achieve.
 
 Example:
 
 M1 builds the first executable Symphony CLI skeleton. It must create `sym run <issue-file>`, create a unique `.runs/<run-id>/` directory, copy the input issue file to `.runs/<run-id>/issue.md`, and print enough information for a human to continue. It must not call Codex, Reasonix, Aider, OpenRouter, or any model API.
 
+## Split Decision
+
+State whether this work should be a single handoff or part of a split plan.
+
+Use a single handoff when the work forms one runtime flow, such as:
+
+- schema + prompt + adapter + core + command integration
+- dependency/lockfile + a small CLI option needed by the same flow
+- one environment variable plus the adapter behavior that consumes it
+
+Split only when file ownership, runtime responsibility, or verification responsibility is genuinely separate. Prefer 2-3 implementation units. If using 4 or more units, explain why adjacent units cannot be merged.
+
+## Unit Metadata
+
+- Goal:
+- Owns:
+- Excludes:
+- Dependencies:
+- Parallel:
+- Verification:
+- Handoff command:
+
+For a single handoff, mark `Parallel: not applicable` and explain that this unit owns the full implementation path.
 
 ## Mandatory Implementation Rules
 
@@ -80,7 +103,7 @@ If any instruction conflicts, follow this priority:
 
 ## Current State
 
-Describe the current repository state relevant to this milestone.
+Describe the current repository state relevant to this work.
 
 For M1, expected state before implementation:
 
@@ -107,7 +130,7 @@ For M1, allowed changes should include:
 
 ## Non-goals
 
-List what must not be implemented in this milestone.
+List what must not be implemented in this work.
 
 For M1, forbid:
 
@@ -149,6 +172,8 @@ Layer responsibilities:
 - `src/core/run-context.ts`: resolve repo root, create run id, create run directory, copy issue artifact.
 
 Do not create adapter, prompt, reviewer, schema, or report writer files during M1 unless the handoff explicitly says so.
+
+If this work was split from a larger milestone or issue, explicitly name adjacent units and forbid implementing their scope.
 
 ## Dependency Direction
 
@@ -312,6 +337,18 @@ Expected result:
 - Each contains `issue.md`.
 - Verification passes.
 
+## Final Hygiene Self-Check
+
+Before reporting completion, read `.reasonix/skills/implementation-hygiene-self-check.md` if it exists and perform the 03 implementation hygiene self-check.
+
+If a contract JSON exists and the repository provides the checker, run:
+
+```sh
+bun scripts/check-implementation-hygiene.mjs --contract <contract-json-path>
+```
+
+Fix hard failures before reporting back. Re-check warnings and either fix them or explain in Korean why they are not changed. The final report must include hard failures, warnings, fixed items, and intentionally unchanged items with reasons.
+
 ## Report Back
 
 After implementation, report these items:
@@ -333,3 +370,5 @@ npx --yes reasonix run \
   --transcript .runs/m1-reasonix.transcript.jsonl \
   "Read docs/exec-plans/active/YYYY-MM-DD-m1-cli-skeleton.md and implement M1 exactly. Do not implement M2 or later. Do not commit."
 ```
+
+For split work, include one command per implementation unit in the orchestration document. Each command must name the handoff document, the allowed unit scope, adjacent excluded units, and the repository's commit/PR rule.

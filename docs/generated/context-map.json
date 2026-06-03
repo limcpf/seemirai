@@ -247,11 +247,18 @@
       "owner_scope": "docs/exec-plans/active"
     },
     {
-      "path": "docs/exec-plans/active/2026-05-22-post-m8-milestone-plan.md",
+      "path": "docs/exec-plans/completed/2026-05-22-post-m8-milestone-plan.md",
       "kind": "exec-plan",
-      "role": "M8 이후 PRD 잔여 범위, 기술 부채, paper 운영, v0.2 pilot 준비 마일스톤 계획",
-      "read_when": ["post-M8 계획", "남은 마일스톤 확인", "기술 부채 우선순위 확인", "paper 운영 계획", "pilot 준비"],
-      "owner_scope": "docs/exec-plans/active"
+      "role": "M8 이후 PRD 잔여 범위, 기술 부채, paper 운영, v0.2 pilot 준비 완료 기록",
+      "read_when": ["post-M8 완료 기록", "완료된 마일스톤 확인", "기술 부채 처리 이력 확인", "paper 운영 closeout", "pilot 준비 이력"],
+      "owner_scope": "docs/exec-plans/completed"
+    },
+    {
+      "path": "docs/exec-plans/completed/2026-06-02-issue-143-m16-live-reconcile.md",
+      "kind": "exec-plan",
+      "role": "Issue #143 M16 실계좌 상태 Reconcile 완료 기록 — sub PR 01-08 merge, 전체 검증, DB integration, Upbit live REST/WebSocket smoke, live order API 0회, finish-readiness-audit closeout 보강 확인",
+      "read_when": ["M16 완료 기록", "M16 검증 결과 확인", "M16 DB integration 결과 확인", "M16 live smoke 결과 확인", "M16 sub PR merge 상태 확인", "실계좌 reconcile 완료 증거", "finish-readiness-audit closeout 보강 확인"],
+      "owner_scope": "docs/exec-plans/completed"
     },
     {
       "path": "docs/exec-plans/completed/2026-06-02-issue-135-m15-upbit-live-broker.md",
@@ -385,6 +392,20 @@
       "role": "PR 리뷰 finding을 clean 상태까지 처리하는 workflow",
       "read_when": ["PR 리뷰 처리", "unresolved thread 해결", "Codex reaction clean signal 확인"],
       "owner_scope": ".agents/skills/pr-review-drain"
+    },
+    {
+      "path": ".agents/skills/reasonix-codex-review/SKILL.md",
+      "kind": "skill",
+      "role": "Reasonix 구현 이후 staged, unstaged, untracked 변경을 코드 리뷰하는 workflow",
+      "read_when": ["Reasonix 구현 리뷰", "구현 에이전트 작업 검토", "워크트리 변경 리뷰"],
+      "owner_scope": ".agents/skills/reasonix-codex-review"
+    },
+    {
+      "path": ".agents/skills/finish-readiness-audit/SKILL.md",
+      "kind": "skill",
+      "role": "개발 마무리와 PR 생성 전 branch/워크트리 완료 가능 상태를 감사하는 workflow",
+      "read_when": ["개발 마무리 감사", "PR 생성 전 readiness 확인", "완료 가능 상태 점검"],
+      "owner_scope": ".agents/skills/finish-readiness-audit"
     }
   ]
 }
