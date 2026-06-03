@@ -125,6 +125,25 @@ describe("kill switch control decision", () => {
       cancelPendingPaperOrders: true,
       requiresManualReview: true,
     });
+
+    const strategyPausedDecision = createKillSwitchControlDecision({
+      currentState: "STRATEGY_PAUSED",
+      targetState: "NEW_ORDERS_BLOCKED",
+      reasonCode: "live_reconcile_mismatch",
+      correlationId: "corr-reconcile-strategy-paused",
+      occurredAt: "2026-06-03T00:00:00.000Z",
+    });
+
+    expect(strategyPausedDecision.transition).toMatchObject({
+      accepted: false,
+      fromState: "STRATEGY_PAUSED",
+      toState: "NEW_ORDERS_BLOCKED",
+      reasonCode: "live_reconcile_downgrade_blocked",
+    });
+    expect(strategyPausedDecision.actionPlan).toMatchObject({
+      newOrdersBlocked: false,
+      strategyEvaluationBlocked: true,
+    });
   });
 
   it("converts stale durable updates to conflict results that preserve observed state", () => {

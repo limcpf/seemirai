@@ -140,7 +140,7 @@ function mapReconcileResult(
   reconcileResult: "CLEAN" | "MISMATCH_DETECTED",
   balanceStatus: "OK" | "LOCK_MISMATCH" | "NOT_AVAILABLE" | null,
 ): ReconcileStatusSummary["result"] {
-  if (balanceStatus === "NOT_AVAILABLE") {
+  if (balanceStatus === "NOT_AVAILABLE" && reconcileResult === "CLEAN") {
     return "FAILED";
   }
 

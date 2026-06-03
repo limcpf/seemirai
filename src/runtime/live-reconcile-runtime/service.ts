@@ -133,6 +133,7 @@ export function createLiveReconcileRuntimeWorker(
         const completedRun = await input.repository.completeLiveReconcileRun({
           runId: begun.run.id,
           status: finalStatus,
+          metadata: createLiveReconcileCompletionMetadata(engineOutput),
         });
         const statusSummary = createStatusSummaryFromEngine({
           engineOutput,
@@ -201,6 +202,17 @@ async function recordSnapshotLoadFailureRun(input: {
   });
 
   if (!begun.created) {
+    if (begun.run.status === "RUNNING") {
+      // snapshot provider 실패 기록 중 중단된 재시도 run은 계속 실행 중으로 남기지 않고 같은 key에서 FAILED로 닫는다.
+      return input.repository.completeLiveReconcileRun({
+        runId: begun.run.id,
+        status: "FAILED",
+        metadata: {
+          failure_phase: "snapshot_provider",
+          idempotent_failure_recovery: true,
+        },
+      });
+    }
     return begun.run;
   }
 
@@ -209,6 +221,39 @@ async function recordSnapshotLoadFailureRun(input: {
     runId: begun.run.id,
     status: "FAILED",
   });
+}
+
+function createLiveReconcileCompletionMetadata(
+  engineOutput: ReconcileEngineOutput,
+): Record<string, unknown> {
+  return {
+    live_reconcile_engine_summary: {
+      result: engineOutput.summary.result,
+      mismatch_count: engineOutput.summary.mismatchCount,
+      open_order_count: {
+        exchange: engineOutput.summary.openOrderCount.exchange,
+        local: engineOutput.summary.openOrderCount.local,
+      },
+      balance_status: engineOutput.summary.balanceStatus,
+      untracked_exchange_orders: engineOutput.summary.untrackedExchangeOrders,
+      missing_local_orders: engineOutput.summary.missingLocalOrders,
+      cancel_failures: engineOutput.summary.cancelFailures,
+      window_exceeded_orders: engineOutput.summary.windowExceededOrders,
+    },
+    live_reconcile_state_advancements: engineOutput.stateAdvancements.map((candidate) => ({
+      local_order_id: candidate.localOrderId,
+      exchange_order_identity: candidate.exchangeOrderIdentity,
+      exchange_status: candidate.exchangeStatus,
+      current_local_status: candidate.currentLocalStatus,
+      ...(candidate.targetLocalStatus === undefined
+        ? {}
+        : { target_local_status: candidate.targetLocalStatus }),
+      advancement_type: candidate.advancementType,
+      reason_code: candidate.reasonCode,
+      user_message: candidate.userMessage,
+      trace: candidate.trace,
+    })),
+  };
 }
 
 /**

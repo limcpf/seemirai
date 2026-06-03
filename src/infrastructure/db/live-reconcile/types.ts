@@ -120,6 +120,8 @@ export interface CompleteLiveReconcileRunInput {
   runId: string;
   /** 최종 실행 상태 */
   status: "COMPLETED" | "FAILED" | "MANUAL_REVIEW_REQUIRED";
+  /** 완료 시점에 추가로 보존할 run metadata */
+  metadata?: Record<string, unknown>;
 }
 
 /**

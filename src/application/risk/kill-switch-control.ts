@@ -237,25 +237,19 @@ function isLiveReconcileDowngrade(
   targetState: KillSwitchControlTargetState,
   reasonCode: string,
 ): boolean {
-  return (
-    reasonCode.startsWith("live_reconcile_") &&
-    getKillSwitchStateStrength(currentState) > getKillSwitchStateStrength(targetState)
-  );
-}
-
-function getKillSwitchStateStrength(state: KillSwitchState): number {
-  switch (state) {
-    case "NORMAL":
-      return 0;
-    case "STRATEGY_PAUSED":
-      return 1;
-    case "NEW_ORDERS_BLOCKED":
-      return 2;
-    case "MANUAL_REVIEW_REQUIRED":
-      return 3;
-    case "HARD_STOP":
-      return 4;
+  if (!reasonCode.startsWith("live_reconcile_")) {
+    return false;
   }
+
+  const currentPlan = getKillSwitchActionPlan(currentState);
+  const targetPlan = getKillSwitchActionPlan(targetState);
+  return (
+    (currentPlan.newOrdersBlocked && !targetPlan.newOrdersBlocked) ||
+    (currentPlan.strategyEvaluationBlocked && !targetPlan.strategyEvaluationBlocked) ||
+    (currentPlan.cancelPendingPaperOrders && !targetPlan.cancelPendingPaperOrders) ||
+    (currentPlan.requiresManualReview && !targetPlan.requiresManualReview) ||
+    (currentPlan.autoLiquidateOpenPositions && !targetPlan.autoLiquidateOpenPositions)
+  );
 }
 
 /**

@@ -351,6 +351,9 @@ export class PostgresLiveReconcileRepository {
       .set({
         status: input.status,
         finished_at: sql`now()`,
+        ...(input.metadata === undefined
+          ? {}
+          : { metadata_json: sql`metadata_json || ${JSON.stringify(input.metadata)}::jsonb` }),
       })
       .where("id", "=", input.runId)
       .where("status", "=", "RUNNING")
@@ -440,7 +443,7 @@ export class PostgresLiveReconcileRepository {
         .execute(),
       this.database
         .selectFrom("live_reconcile_exchange_order_snapshots")
-        .select(["id", "exchange_order_id", "identifier", "status"])
+        .select(["id", "exchange_order_id", "identifier", "status", "captured_at"])
         .where("run_id", "=", run.id)
         .execute(),
       this.database
@@ -472,6 +475,7 @@ export class PostgresLiveReconcileRepository {
       exchangeOrderSnapshotCount:
         countCanonicalExchangeOrderSnapshots(exchangeOrderRows),
       openExchangeOrderSnapshotCount:
+        readStoredExchangeOpenOrderCount(run.metadata_json) ??
         countCanonicalOpenExchangeOrderSnapshots(openExchangeOrderRows),
       mismatchEvidenceCount: Number(mismatchCount.count),
       mismatchTypes: mismatchTypeRows.map((row) => row.mismatch_type),
@@ -520,6 +524,21 @@ function selectLatestVisibleReconcileRun<T extends { status: string; started_at:
 
 function toTimeMs(value: Date | string): number {
   return value instanceof Date ? value.getTime() : new Date(value).getTime();
+}
+
+function readStoredExchangeOpenOrderCount(metadata: Record<string, unknown>): number | undefined {
+  const summary = metadata.live_reconcile_engine_summary;
+  if (summary === null || typeof summary !== "object") {
+    return undefined;
+  }
+  const openOrderCount = (summary as Record<string, unknown>).open_order_count;
+  if (openOrderCount === null || typeof openOrderCount !== "object") {
+    return undefined;
+  }
+  const exchange = (openOrderCount as Record<string, unknown>).exchange;
+  return typeof exchange === "number" && Number.isSafeInteger(exchange) && exchange >= 0
+    ? exchange
+    : undefined;
 }
 
 const OPEN_EXCHANGE_ORDER_STATUSES = ["wait", "watch", "open", "OPEN"] as const;
@@ -603,10 +622,11 @@ function countCanonicalOpenExchangeOrderSnapshots(
     exchange_order_id: string | null;
     identifier: string | null;
     status: string;
+    captured_at: Date | string;
   }>,
 ): number {
   const parent = new Map<string, string>();
-  const groups = new Map<string, { hasOpen: boolean; hasTerminal: boolean }>();
+  const groups = new Map<string, { capturedAtMs: number; status: string }>();
   let fingerprintOnlyOpenRowCount = 0;
 
   const find = (key: string): string => {
@@ -633,7 +653,7 @@ function countCanonicalOpenExchangeOrderSnapshots(
     }
   };
 
-  const keyedRows: Array<{ key: string; status: string }> = [];
+  const keyedRows: Array<{ key: string; status: string; capturedAtMs: number }> = [];
   for (const row of rows) {
     const exchangeOrderKey =
       row.exchange_order_id === null ? undefined : `exchange:${row.exchange_order_id}`;
@@ -651,20 +671,24 @@ function countCanonicalOpenExchangeOrderSnapshots(
       union(exchangeOrderKey, identifierKey);
     }
 
-    keyedRows.push({ key: exchangeOrderKey ?? identifierKey!, status: row.status });
+    keyedRows.push({
+      key: exchangeOrderKey ?? identifierKey!,
+      status: row.status,
+      capturedAtMs: toTimeMs(row.captured_at),
+    });
   }
 
   for (const row of keyedRows) {
     const root = find(row.key);
-    const group = groups.get(root) ?? { hasOpen: false, hasTerminal: false };
-    group.hasOpen = group.hasOpen || isOpenExchangeOrderStatus(row.status);
-    group.hasTerminal = group.hasTerminal || isTerminalExchangeOrderStatus(row.status);
-    groups.set(root, group);
+    const existing = groups.get(root);
+    if (existing === undefined || row.capturedAtMs >= existing.capturedAtMs) {
+      groups.set(root, { capturedAtMs: row.capturedAtMs, status: row.status });
+    }
   }
 
   let count = fingerprintOnlyOpenRowCount;
   for (const group of groups.values()) {
-    if (group.hasOpen && !group.hasTerminal) {
+    if (isOpenExchangeOrderStatus(group.status)) {
       count += 1;
     }
   }

@@ -565,6 +565,93 @@ describe("createLiveReconcileRuntimeWorker", () => {
     expect(repository.completedStatus).toBe("FAILED");
   });
 
+  it("기존 RUNNING snapshot 실패 run도 재시도에서 FAILED로 닫는다", async () => {
+    const repository = fakeRepository();
+    repository.beginLiveReconcileRun = async () => ({
+      created: false,
+      run: {
+        id: "run-existing-snapshot-failure",
+        idempotency_key: "idem-existing-snapshot-failure",
+        status: "RUNNING",
+        started_at: new Date("2026-06-02T12:00:00.000Z"),
+        finished_at: null,
+        guard_profile: "LIVE_READ_ONLY_RECONCILE",
+        source_summary: "snapshot failure",
+        correlation_id: "corr-snapshot-failed",
+        metadata_json: {},
+      },
+    });
+    const worker = createLiveReconcileRuntimeWorker({
+      snapshotProvider: throwingSnapshotProvider(),
+      repository,
+      clock: () => new Date("2026-06-02T12:00:00.000Z"),
+    });
+
+    await expect(worker.runOnce({ correlationId: "corr-snapshot-failed" })).rejects.toThrow(
+      UnsafeLiveReconcileRuntimeError,
+    );
+    expect(repository.completedStatus).toBe("FAILED");
+    expect(repository.completedMetadata).toMatchObject({
+      failure_phase: "snapshot_provider",
+      idempotent_failure_recovery: true,
+    });
+  });
+
+  it("state advancement 후보와 engine summary를 완료 run metadata에 보존한다", async () => {
+    const repository = fakeRepository();
+    const worker = createLiveReconcileRuntimeWorker({
+      snapshotProvider: stateAdvancementSnapshotProvider(),
+      repository,
+      killSwitchControlProvider: {
+        async apply(input) {
+          return {
+            transition: {
+              accepted: true,
+              fromState: "NORMAL",
+              toState: input.targetState,
+              reasonCode: input.reasonCode,
+              message: input.message ?? "accepted",
+              event: {
+                eventKind: "KILL_SWITCH_STATE_TRANSITION",
+                fromState: "NORMAL",
+                toState: input.targetState,
+                accepted: true,
+                reasonCode: input.reasonCode,
+                message: input.message ?? "accepted",
+                occurredAt: input.occurredAt ?? "2026-06-02T12:00:00.000Z",
+              },
+            },
+            actionPlan: {
+              newOrdersBlocked: true,
+              strategyEvaluationBlocked: false,
+              cancelPendingPaperOrders: false,
+              requiresManualReview: input.targetState === "MANUAL_REVIEW_REQUIRED",
+              autoLiquidateOpenPositions: false,
+            },
+            reasonMatchesTarget: true,
+          };
+        },
+      },
+      clock: () => new Date("2026-06-02T12:00:00.000Z"),
+    });
+
+    await worker.runOnce({ correlationId: "corr-state-advancement" });
+
+    expect(repository.completedMetadata).toMatchObject({
+      live_reconcile_engine_summary: {
+        result: expect.any(String),
+        open_order_count: { exchange: 0, local: 1 },
+      },
+      live_reconcile_state_advancements: [
+        expect.objectContaining({
+          local_order_id: "local-fill-candidate",
+          advancement_type: "FILL_CANDIDATE",
+          target_local_status: "FILLED",
+        }),
+      ],
+    });
+  });
+
   it("latest repository summary를 /status provider로 변환한다", async () => {
     const repository = fakeRepository();
     repository.latestSummary = {
@@ -839,6 +926,20 @@ describe("createReconcileStatusSummary", () => {
     expect(status.result).toBe("FAILED");
     expect(status.balanceStatus).toBe("UNAVAILABLE");
     expect(status.actionRequired).toContain("잔고 스냅샷");
+  });
+
+  it("잔고 스냅샷 부재가 mismatch evidence이면 MISMATCH_DETECTED를 유지한다", () => {
+    const status = createReconcileStatusSummary({
+      lastReconcileAt: "2026-06-02T12:00:00.000Z",
+      reconcileResult: "MISMATCH_DETECTED",
+      mismatchCount: 1,
+      openOrderCount: 0,
+      balanceStatus: "NOT_AVAILABLE",
+      websocketStatus: "CONNECTED",
+    });
+
+    expect(status.result).toBe("MISMATCH_DETECTED");
+    expect(status.balanceStatus).toBe("UNAVAILABLE");
   });
 
   it("잠김 잔고 불일치는 STALE balance 상태로 표시한다", () => {
@@ -1324,16 +1425,90 @@ function throwingSnapshotProvider(): LiveReconcileSnapshotProvider {
   };
 }
 
+function stateAdvancementSnapshotProvider(): LiveReconcileSnapshotProvider {
+  return {
+    async loadSnapshot() {
+      return {
+        sourceSummary: "fixture state advancement",
+        engineInput: {
+          exchangeOpenOrders: [],
+          exchangeClosedOrders: [
+            {
+              exchangeOrderId: "uuid-fill-candidate",
+              identifier: "ident-fill-candidate",
+              market: "KRW-BTC",
+              side: "BUY",
+              exchangeStatus: "done",
+              requestedQuantity: "0.01",
+              remainingQuantity: "0",
+              requestedPrice: "100000000",
+              source: "closed",
+              capturedAt: "2026-06-02T12:00:00.000Z",
+            },
+          ],
+          orderLookups: [],
+          websocketContext: {
+            bootstrapCompleteAt: "2026-06-02T12:00:00.000Z",
+            events: [],
+          },
+          localOpenOrders: [
+            {
+              orderId: "local-fill-candidate",
+              exchangeOrderId: "uuid-fill-candidate",
+              identifier: "ident-fill-candidate",
+              market: "KRW-BTC",
+              side: "BUY",
+              orderType: "LIMIT",
+              status: "ACCEPTED",
+              requestedQuantity: "0.01",
+              remainingQuantity: "0.01",
+              requestedPrice: "100000000",
+              updatedAt: "2026-06-02T12:00:00.000Z",
+            },
+          ],
+          localBalances: [
+            {
+              currency: "KRW",
+              available: "0",
+              locked: "0",
+              total: "0",
+              updatedAt: "2026-06-02T12:00:00.000Z",
+            },
+          ],
+          exchangeBalances: [
+            {
+              currency: "KRW",
+              available: "0",
+              locked: "0",
+              total: "0",
+              updatedAt: "2026-06-02T12:00:00.000Z",
+            },
+          ],
+          closedOrderWindow: {
+            windowStart: "2026-06-01T12:00:00.000Z",
+            windowEnd: "2026-06-02T12:00:00.000Z",
+            windowExhausted: false,
+            queryCount: 1,
+          },
+          observedAt: "2026-06-02T12:00:00.000Z",
+        },
+      };
+    },
+  };
+}
+
 function fakeRepository(): LiveReconcileRuntimeRepository & {
   exchangeOrderSnapshots: unknown[];
   mismatchEvidence: unknown[];
   completedStatus: string | null;
+  completedMetadata: Record<string, unknown> | undefined;
   latestSummary: Awaited<ReturnType<LiveReconcileRuntimeRepository["getLatestLiveReconcileSummary"]>>;
 } {
   const repository = {
     exchangeOrderSnapshots: [] as unknown[],
     mismatchEvidence: [] as unknown[],
     completedStatus: null as string | null,
+    completedMetadata: undefined as Record<string, unknown> | undefined,
     latestSummary: {
       run: null,
       balanceSnapshotCount: 0,
@@ -1371,8 +1546,9 @@ function fakeRepository(): LiveReconcileRuntimeRepository & {
       repository.mismatchEvidence.push(...evidenceList);
       return [];
     },
-    async completeLiveReconcileRun(input: { status: string }) {
+    async completeLiveReconcileRun(input: { status: string; metadata?: Record<string, unknown> }) {
       repository.completedStatus = input.status;
+      repository.completedMetadata = input.metadata;
       return {
         id: "run-001",
         idempotency_key: "idem-001",
@@ -1382,7 +1558,7 @@ function fakeRepository(): LiveReconcileRuntimeRepository & {
         guard_profile: "LIVE_READ_ONLY_RECONCILE",
         source_summary: "fixture",
         correlation_id: "corr-reconcile",
-        metadata_json: {},
+        metadata_json: input.metadata ?? {},
       };
     },
     async getLatestLiveReconcileSummary() {
@@ -1394,6 +1570,7 @@ function fakeRepository(): LiveReconcileRuntimeRepository & {
     exchangeOrderSnapshots: unknown[];
     mismatchEvidence: unknown[];
     completedStatus: string | null;
+    completedMetadata: Record<string, unknown> | undefined;
     latestSummary: Awaited<ReturnType<LiveReconcileRuntimeRepository["getLatestLiveReconcileSummary"]>>;
   };
 }
