@@ -395,6 +395,47 @@ describeDb("live reconcile persistence integration", () => {
     expect(summary.exchangeOrderSnapshotCount).toBe(1);
   });
 
+  it("counts lookup and websocket open exchange order snapshots in latest summary", async () => {
+    const { run } = await repository!.beginLiveReconcileRun({
+      idempotencyKey: "run-integration-orders-open-count-lookup-ws",
+    });
+
+    await repository!.appendLiveReconcileExchangeOrderSnapshots(run.id, [
+      {
+        exchangeOrderId: "uuid-lookup-open-count",
+        market: "KRW-BTC",
+        side: "BUY",
+        status: "wait",
+        requestedQuantity: "0.001",
+        source: "lookup",
+        capturedAt: new Date("2026-06-03T00:00:00Z"),
+      },
+      {
+        identifier: "ident-ws-open-count",
+        market: "KRW-ETH",
+        side: "SELL",
+        status: "watch",
+        requestedQuantity: "0.02",
+        source: "ws",
+        capturedAt: new Date("2026-06-03T00:00:01Z"),
+      },
+      {
+        exchangeOrderId: "uuid-closed-not-open-count",
+        market: "KRW-XRP",
+        side: "BUY",
+        status: "done",
+        requestedQuantity: "10",
+        source: "open",
+        capturedAt: new Date("2026-06-03T00:00:02Z"),
+      },
+    ]);
+
+    const summary = await repository!.getLatestLiveReconcileSummary();
+
+    expect(summary.exchangeOrderSnapshotCount).toBe(3);
+    expect(summary.openExchangeOrderSnapshotCount).toBe(2);
+  });
+
   it("normalizes split exchange order identities when a bridge snapshot is observed", async () => {
     const { run } = await repository!.beginLiveReconcileRun({
       idempotencyKey: "run-integration-orders-bridge",

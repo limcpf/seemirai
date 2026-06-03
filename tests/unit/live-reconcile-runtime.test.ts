@@ -551,6 +551,20 @@ describe("createLiveReconcileRuntimeWorker", () => {
     expect(killSwitchRequests).toHaveLength(0);
   });
 
+  it("snapshot provider 실패도 FAILED reconcile run으로 남긴다", async () => {
+    const repository = fakeRepository();
+    const worker = createLiveReconcileRuntimeWorker({
+      snapshotProvider: throwingSnapshotProvider(),
+      repository,
+      clock: () => new Date("2026-06-02T12:00:00.000Z"),
+    });
+
+    await expect(worker.runOnce({ correlationId: "corr-snapshot-failed" })).rejects.toThrow(
+      UnsafeLiveReconcileRuntimeError,
+    );
+    expect(repository.completedStatus).toBe("FAILED");
+  });
+
   it("latest repository summary를 /status provider로 변환한다", async () => {
     const repository = fakeRepository();
     repository.latestSummary = {
@@ -1284,6 +1298,14 @@ function staleSinceOnlySnapshotProvider(): LiveReconcileSnapshotProvider {
           observedAt: "2026-06-02T12:00:00.000Z",
         },
       };
+    },
+  };
+}
+
+function throwingSnapshotProvider(): LiveReconcileSnapshotProvider {
+  return {
+    async loadSnapshot() {
+      throw new Error("upbit REST unavailable");
     },
   };
 }

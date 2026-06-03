@@ -132,7 +132,7 @@ export interface LiveReconcileSummary {
   balanceSnapshotCount: number;
   /** exchange order snapshot 개수 */
   exchangeOrderSnapshotCount: number;
-  /** source=open 기준 canonical exchange order snapshot 개수 */
+  /** 거래소 열린 상태(wait/watch/open) 기준 canonical exchange order snapshot 개수 */
   openExchangeOrderSnapshotCount: number;
   /** mismatch evidence 개수 */
   mismatchEvidenceCount: number;

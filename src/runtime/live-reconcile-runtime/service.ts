@@ -77,9 +77,15 @@ export function createLiveReconcileRuntimeWorker(
     async runOnce(options: RunLiveReconcileOnceOptions = {}): Promise<LiveReconcileRuntimeRunResult> {
       const observedAt = options.observedAt ?? clock();
       const correlationId = options.correlationId ?? createReconcileCorrelationId(observedAt);
-      const snapshot = await input.snapshotProvider.loadSnapshot({
+      const snapshot = await loadSnapshotOrRecordFailure({
+        repository: input.repository,
         observedAt,
         correlationId,
+        loadSnapshot: () =>
+          input.snapshotProvider.loadSnapshot({
+            observedAt,
+            correlationId,
+          }),
       });
       const engineInput = withObservedAt(snapshot.engineInput, observedAt);
       const idempotencyKey =
@@ -160,6 +166,49 @@ export function createLiveReconcileRuntimeWorker(
       }
     },
   };
+}
+
+async function loadSnapshotOrRecordFailure(input: {
+  repository: LiveReconcileRuntimeRepository;
+  observedAt: TimestampInput;
+  correlationId: string;
+  loadSnapshot: () => ReturnType<CreateLiveReconcileRuntimeWorkerInput["snapshotProvider"]["loadSnapshot"]>;
+}): ReturnType<CreateLiveReconcileRuntimeWorkerInput["snapshotProvider"]["loadSnapshot"]> {
+  try {
+    return await input.loadSnapshot();
+  } catch (error) {
+    const failedRun = await recordSnapshotLoadFailureRun(input);
+    throw new UnsafeLiveReconcileRuntimeError([
+      `live reconcile snapshot load failed: ${failedRun.id}`,
+      toSafeErrorMessage(error),
+    ]);
+  }
+}
+
+async function recordSnapshotLoadFailureRun(input: {
+  repository: LiveReconcileRuntimeRepository;
+  observedAt: TimestampInput;
+  correlationId: string;
+}): Promise<Awaited<ReturnType<LiveReconcileRuntimeRepository["beginLiveReconcileRun"]>>["run"]> {
+  const begun = await input.repository.beginLiveReconcileRun({
+    idempotencyKey: createReconcileIdempotencyKey(input.observedAt, input.correlationId),
+    guardProfile: "LIVE_READ_ONLY_RECONCILE",
+    sourceSummary: "snapshot provider failed before reconcile engine input was available",
+    correlationId: input.correlationId,
+    metadata: {
+      failure_phase: "snapshot_provider",
+    },
+  });
+
+  if (!begun.created) {
+    return begun.run;
+  }
+
+  // snapshot 조회 실패도 이전 final summary 뒤에 숨지 않도록 FAILED run으로 남긴다.
+  return input.repository.completeLiveReconcileRun({
+    runId: begun.run.id,
+    status: "FAILED",
+  });
 }
 
 /**

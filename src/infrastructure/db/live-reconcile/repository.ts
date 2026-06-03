@@ -442,7 +442,7 @@ export class PostgresLiveReconcileRepository {
         .selectFrom("live_reconcile_exchange_order_snapshots")
         .select(["id", "exchange_order_id", "identifier"])
         .where("run_id", "=", run.id)
-        .where("source", "=", "open")
+        .where("status", "in", OPEN_EXCHANGE_ORDER_STATUSES)
         .execute(),
       this.database
         .selectFrom("live_reconcile_mismatch_evidence")
@@ -522,6 +522,8 @@ function selectLatestVisibleReconcileRun<T extends { status: string; started_at:
 function toTimeMs(value: Date | string): number {
   return value instanceof Date ? value.getTime() : new Date(value).getTime();
 }
+
+const OPEN_EXCHANGE_ORDER_STATUSES = ["wait", "watch", "open", "OPEN"] as const;
 
 /**
  * exchange order snapshot row를 append-only로 보존하면서 summary에는 canonical 주문 수를 계산한다.
