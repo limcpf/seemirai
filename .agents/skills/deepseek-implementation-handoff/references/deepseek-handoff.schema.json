@@ -26,7 +26,8 @@
     },
     "milestone": {
       "type": "string",
-      "pattern": "^M[0-9]+$"
+      "description": "Milestone, issue, or implementation unit identifier (for example M5, issue-9, issue-9-01)",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._/-]*$"
     },
     "title": {
       "type": "string",
