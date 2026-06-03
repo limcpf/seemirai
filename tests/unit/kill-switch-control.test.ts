@@ -135,14 +135,21 @@ describe("kill switch control decision", () => {
     });
 
     expect(strategyPausedDecision.transition).toMatchObject({
-      accepted: false,
+      accepted: true,
       fromState: "STRATEGY_PAUSED",
-      toState: "NEW_ORDERS_BLOCKED",
-      reasonCode: "live_reconcile_downgrade_blocked",
+      toState: "MANUAL_REVIEW_REQUIRED",
+      reasonCode: "live_reconcile_mismatch",
     });
     expect(strategyPausedDecision.actionPlan).toMatchObject({
-      newOrdersBlocked: false,
+      newOrdersBlocked: true,
       strategyEvaluationBlocked: true,
+      requiresManualReview: true,
+    });
+    expect(strategyPausedDecision.reasonMatchesTarget).toBe(true);
+    expect(strategyPausedDecision.transition.event.metadata).toMatchObject({
+      requested_target_state: "NEW_ORDERS_BLOCKED",
+      effective_target_state: "MANUAL_REVIEW_REQUIRED",
+      recommended_target_state: "NEW_ORDERS_BLOCKED",
     });
   });
 
