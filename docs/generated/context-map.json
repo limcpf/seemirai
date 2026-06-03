@@ -247,11 +247,11 @@
       "owner_scope": "docs/exec-plans/active"
     },
     {
-      "path": "docs/exec-plans/active/2026-05-22-post-m8-milestone-plan.md",
+      "path": "docs/exec-plans/completed/2026-05-22-post-m8-milestone-plan.md",
       "kind": "exec-plan",
-      "role": "M8 이후 PRD 잔여 범위, 기술 부채, paper 운영, v0.2 pilot 준비 마일스톤 계획",
-      "read_when": ["post-M8 계획", "남은 마일스톤 확인", "기술 부채 우선순위 확인", "paper 운영 계획", "pilot 준비"],
-      "owner_scope": "docs/exec-plans/active"
+      "role": "M8 이후 PRD 잔여 범위, 기술 부채, paper 운영, v0.2 pilot 준비 완료 기록",
+      "read_when": ["post-M8 완료 기록", "완료된 마일스톤 확인", "기술 부채 처리 이력 확인", "paper 운영 closeout", "pilot 준비 이력"],
+      "owner_scope": "docs/exec-plans/completed"
     },
     {
       "path": "docs/exec-plans/active/2026-06-02-issue-143-m16-live-reconcile.md",

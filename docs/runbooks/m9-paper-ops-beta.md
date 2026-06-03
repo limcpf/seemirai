@@ -4,7 +4,7 @@
 - 대상 단계: M9 Paper 운영 베타
 - 기준 issue: [#51](https://github.com/limcpf/seemirai/issues/51)
 - 기본 모드: `PAPER_TRADING`, `PAPER_NO_KEY`
-- 기준 문서: [`m8-paper-operations-guide.md`](./m8-paper-operations-guide.md), [`../RUNTIME_CONFIG.md`](../RUNTIME_CONFIG.md), [`../RELIABILITY.md`](../RELIABILITY.md), [`../exec-plans/active/2026-05-22-post-m8-milestone-plan.md`](../exec-plans/active/2026-05-22-post-m8-milestone-plan.md)
+- 기준 문서: [`m8-paper-operations-guide.md`](./m8-paper-operations-guide.md), [`../RUNTIME_CONFIG.md`](../RUNTIME_CONFIG.md), [`../RELIABILITY.md`](../RELIABILITY.md), [`../exec-plans/completed/2026-05-22-post-m8-milestone-plan.md`](../exec-plans/completed/2026-05-22-post-m8-milestone-plan.md)
 
 ## 목적
 
