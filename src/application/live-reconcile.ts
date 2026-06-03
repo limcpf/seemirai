@@ -10,7 +10,10 @@
 export { checkBalanceLock } from "./live-reconcile/balance-policy.js";
 export type { BalanceCheckResult } from "./live-reconcile/balance-policy.js";
 
-export { runReconcileEngine } from "./live-reconcile/engine.js";
+export {
+  buildWebSocketOrderSnapshots,
+  runReconcileEngine,
+} from "./live-reconcile/engine.js";
 
 export {
   buildOrderFingerprint,

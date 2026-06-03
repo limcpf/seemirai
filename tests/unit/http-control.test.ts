@@ -1232,6 +1232,20 @@ function statusSnapshotProvider(input: {
           nextRunAfter: null,
           updatedAt: null,
         },
+        reconcile: {
+          lastReconcileAt: null,
+          result: "SKIPPED",
+          mismatchCount: null,
+          openOrderCount: null,
+          balanceStatus: "UNAVAILABLE",
+          websocketStatus: "DISCONNECTED",
+          actionRequired: "reconcile 실행 필요",
+          message: "아직 reconcile이 실행되지 않았다. 실계좌 상태 대조를 시작하려면 reconcile worker를 활성화한다.",
+          trace: {
+            source: "live_reconcile_status",
+            reason: "reconcile_not_run",
+          },
+        },
       };
     },
   };
@@ -1337,3 +1351,249 @@ function fakeSelectQuery(row: unknown) {
   };
   return query;
 }
+
+/* ============================================================
+ * M16 Reconcile /status Integration Tests
+ * ============================================================ */
+
+describe("/status reconcile section", () => {
+  it("reconcile이 주입되지 않으면 SKIPPED 기본값을 반환한다", async () => {
+    const runtimeConfig = loadRuntimeConfig({});
+    const provider = createDatabaseControlStatusProvider({
+      runtimeConfig,
+      readinessProvider: staticReadinessProvider(readySummary()),
+    });
+
+    const snapshot = await provider.getStatus();
+
+    expect(snapshot.reconcile).toMatchObject({
+      result: "SKIPPED",
+      lastReconcileAt: null,
+      mismatchCount: null,
+      balanceStatus: "UNAVAILABLE",
+      actionRequired: "reconcile 실행 필요",
+    });
+  });
+
+  it("reconcile이 주입되면 해당 summary를 반환한다", async () => {
+    const runtimeConfig = loadRuntimeConfig({});
+    const provider = createDatabaseControlStatusProvider({
+      runtimeConfig,
+      readinessProvider: staticReadinessProvider(readySummary()),
+      reconcile: {
+        lastReconcileAt: "2026-06-02T12:00:00.000Z",
+        result: "SUCCESS",
+        mismatchCount: 0,
+        openOrderCount: 3,
+        balanceStatus: "OK",
+        websocketStatus: "CONNECTED",
+        actionRequired: "정상",
+        message: "거래소-로컬 상태 일치",
+        trace: {
+          source: "live_reconcile_status",
+          reason: "reconcile_clean",
+        },
+      },
+    });
+
+    const snapshot = await provider.getStatus();
+
+    expect(snapshot.reconcile).toEqual({
+      lastReconcileAt: "2026-06-02T12:00:00.000Z",
+      result: "SUCCESS",
+      mismatchCount: 0,
+      openOrderCount: 3,
+      balanceStatus: "OK",
+      websocketStatus: "CONNECTED",
+      actionRequired: "정상",
+      message: "거래소-로컬 상태 일치",
+      trace: {
+        source: "live_reconcile_status",
+        reason: "reconcile_clean",
+      },
+    });
+  });
+
+  it("HTTP /status 응답 schema가 reconcile 섹션을 직렬화한다", async () => {
+    const runtimeConfig = loadRuntimeConfig({});
+    const server = createHttpControlServer({
+      readinessProvider: staticReadinessProvider(readySummary()),
+      statusProvider: createDatabaseControlStatusProvider({
+        runtimeConfig,
+        readinessProvider: staticReadinessProvider(readySummary()),
+        reconcile: {
+          lastReconcileAt: "2026-06-02T12:00:00.000Z",
+          result: "SUCCESS",
+          mismatchCount: 0,
+          openOrderCount: 1,
+          balanceStatus: "OK",
+          websocketStatus: "CONNECTED",
+          actionRequired: "정상",
+          message: "거래소-로컬 상태 일치",
+          trace: {
+            source: "live_reconcile_status",
+            reason: "reconcile_clean",
+            runId: "run-schema",
+          },
+        },
+      }),
+    });
+
+    try {
+      const response = await server.inject({
+        method: "GET",
+        url: "/status",
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toMatchObject({
+        reconcile: {
+          result: "SUCCESS",
+          openOrderCount: 1,
+          trace: {
+            runId: "run-schema",
+          },
+        },
+      });
+    } finally {
+      await server.close();
+    }
+  });
+
+  it("reconcileStatusProvider가 있으면 정적 reconcile보다 최신 provider 값을 우선한다", async () => {
+    const runtimeConfig = loadRuntimeConfig({});
+    const provider = createDatabaseControlStatusProvider({
+      runtimeConfig,
+      readinessProvider: staticReadinessProvider(readySummary()),
+      reconcile: {
+        lastReconcileAt: null,
+        result: "SKIPPED",
+        mismatchCount: null,
+        openOrderCount: null,
+        balanceStatus: "UNAVAILABLE",
+        websocketStatus: "DISCONNECTED",
+        actionRequired: "정적 값",
+        message: "정적 값",
+        trace: {
+          source: "static",
+        },
+      },
+      reconcileStatusProvider: {
+        async getReconcileStatus() {
+          return {
+            lastReconcileAt: "2026-06-02T12:00:00.000Z",
+            result: "SUCCESS",
+            mismatchCount: 0,
+            openOrderCount: 1,
+            balanceStatus: "OK",
+            websocketStatus: "CONNECTED",
+            actionRequired: "정상",
+            message: "최신 provider 값",
+            trace: {
+              source: "live_reconcile_status",
+              reason: "reconcile_clean",
+              runId: "run-provider",
+            },
+          };
+        },
+      },
+    });
+
+    const snapshot = await provider.getStatus();
+
+    expect(snapshot.reconcile).toMatchObject({
+      result: "SUCCESS",
+      message: "최신 provider 값",
+      trace: {
+        runId: "run-provider",
+      },
+    });
+  });
+
+  it("MISMATCH_DETECTED 상태를 올바르게 노출한다", async () => {
+    const runtimeConfig = loadRuntimeConfig({});
+    const provider = createDatabaseControlStatusProvider({
+      runtimeConfig,
+      readinessProvider: staticReadinessProvider(readySummary()),
+      reconcile: {
+        lastReconcileAt: "2026-06-02T12:00:00.000Z",
+        result: "MISMATCH_DETECTED",
+        mismatchCount: 5,
+        openOrderCount: 3,
+        balanceStatus: "OK",
+        websocketStatus: "CONNECTED",
+        actionRequired: "불일치 5건을 확인하세요.",
+        message: "불일치 발견: 5건의 불일치가 감지되었습니다.",
+        trace: {
+          source: "live_reconcile_status",
+          reason: "reconcile_mismatch_detected",
+          runId: "run-001",
+        },
+      },
+    });
+
+    const snapshot = await provider.getStatus();
+
+    expect(snapshot.reconcile.result).toBe("MISMATCH_DETECTED");
+    expect(snapshot.reconcile.mismatchCount).toBe(5);
+    expect(snapshot.reconcile.actionRequired).toContain("5건");
+  });
+
+  it("reconcile summary에 secret 원문이 노출되지 않는다", async () => {
+    const runtimeConfig = loadRuntimeConfig({});
+    const provider = createDatabaseControlStatusProvider({
+      runtimeConfig,
+      readinessProvider: staticReadinessProvider(readySummary()),
+      reconcile: {
+        lastReconcileAt: "2026-06-02T12:00:00.000Z",
+        result: "SUCCESS",
+        mismatchCount: 0,
+        openOrderCount: 0,
+        balanceStatus: "OK",
+        websocketStatus: "CONNECTED",
+        actionRequired: "정상",
+        message: "상태 일치",
+        trace: {
+          source: "live_reconcile_status",
+          reason: "reconcile_clean",
+          runId: "run-secret-test",
+        },
+      },
+    });
+
+    const snapshot = await provider.getStatus();
+    const serialized = JSON.stringify(snapshot.reconcile);
+
+    // reconcile section에 credential 관련 값이 없어야 함
+    expect(serialized).not.toContain("accessKey");
+    expect(serialized).not.toContain("secretKey");
+    expect(serialized).not.toContain("Authorization");
+    expect(serialized).not.toContain("JWT");
+  });
+
+  it("WebSocket 상태가 올바르게 전달된다", async () => {
+    const runtimeConfig = loadRuntimeConfig({});
+    const provider = createDatabaseControlStatusProvider({
+      runtimeConfig,
+      readinessProvider: staticReadinessProvider(readySummary()),
+      reconcile: {
+        lastReconcileAt: "2026-06-02T12:00:00.000Z",
+        result: "SUCCESS",
+        mismatchCount: 0,
+        openOrderCount: 0,
+        balanceStatus: "OK",
+        websocketStatus: "DEGRADED",
+        actionRequired: "정상",
+        message: "상태 일치",
+        trace: {
+          source: "live_reconcile_status",
+          reason: "reconcile_clean",
+        },
+      },
+    });
+
+    const snapshot = await provider.getStatus();
+
+    expect(snapshot.reconcile.websocketStatus).toBe("DEGRADED");
+  });
+});

@@ -395,6 +395,141 @@ describeDb("live reconcile persistence integration", () => {
     expect(summary.exchangeOrderSnapshotCount).toBe(1);
   });
 
+  it("counts lookup and websocket open exchange order snapshots in latest summary", async () => {
+    const { run } = await repository!.beginLiveReconcileRun({
+      idempotencyKey: "run-integration-orders-open-count-lookup-ws",
+    });
+
+    await repository!.appendLiveReconcileExchangeOrderSnapshots(run.id, [
+      {
+        exchangeOrderId: "uuid-lookup-open-count",
+        market: "KRW-BTC",
+        side: "BUY",
+        status: "wait",
+        requestedQuantity: "0.001",
+        source: "lookup",
+        capturedAt: new Date("2026-06-03T00:00:00Z"),
+      },
+      {
+        identifier: "ident-ws-open-count",
+        market: "KRW-ETH",
+        side: "SELL",
+        status: "watch",
+        requestedQuantity: "0.02",
+        source: "ws",
+        capturedAt: new Date("2026-06-03T00:00:01Z"),
+      },
+      {
+        exchangeOrderId: "uuid-closed-not-open-count",
+        market: "KRW-XRP",
+        side: "BUY",
+        status: "done",
+        requestedQuantity: "10",
+        source: "open",
+        capturedAt: new Date("2026-06-03T00:00:02Z"),
+      },
+    ]);
+
+    const summary = await repository!.getLatestLiveReconcileSummary();
+
+    expect(summary.exchangeOrderSnapshotCount).toBe(3);
+    expect(summary.openExchangeOrderSnapshotCount).toBe(2);
+  });
+
+  it("suppresses open count when a terminal snapshot exists for the same exchange identity", async () => {
+    const { run } = await repository!.beginLiveReconcileRun({
+      idempotencyKey: "run-integration-orders-open-count-terminal-suppression",
+    });
+
+    await repository!.appendLiveReconcileExchangeOrderSnapshots(run.id, [
+      {
+        exchangeOrderId: "uuid-terminal-suppressed",
+        market: "KRW-BTC",
+        side: "BUY",
+        status: "wait",
+        requestedQuantity: "0.001",
+        source: "open",
+        capturedAt: new Date("2026-06-03T00:00:00Z"),
+      },
+      {
+        exchangeOrderId: "uuid-terminal-suppressed",
+        market: "KRW-BTC",
+        side: "BUY",
+        status: "done",
+        requestedQuantity: "0.001",
+        source: "lookup",
+        capturedAt: new Date("2026-06-03T00:00:01Z"),
+      },
+    ]);
+
+    const summary = await repository!.getLatestLiveReconcileSummary();
+
+    expect(summary.exchangeOrderSnapshotCount).toBe(1);
+    expect(summary.openExchangeOrderSnapshotCount).toBe(0);
+  });
+
+  it("uses the latest captured exchange status when metadata summary is unavailable", async () => {
+    const { run } = await repository!.beginLiveReconcileRun({
+      idempotencyKey: "run-integration-orders-open-count-latest-status",
+    });
+
+    await repository!.appendLiveReconcileExchangeOrderSnapshots(run.id, [
+      {
+        exchangeOrderId: "uuid-latest-open",
+        market: "KRW-BTC",
+        side: "BUY",
+        status: "done",
+        requestedQuantity: "0.001",
+        source: "lookup",
+        capturedAt: new Date("2026-06-03T00:00:00Z"),
+      },
+      {
+        exchangeOrderId: "uuid-latest-open",
+        market: "KRW-BTC",
+        side: "BUY",
+        status: "wait",
+        requestedQuantity: "0.001",
+        source: "open",
+        capturedAt: new Date("2026-06-03T00:00:01Z"),
+      },
+    ]);
+
+    const summary = await repository!.getLatestLiveReconcileSummary();
+
+    expect(summary.openExchangeOrderSnapshotCount).toBe(1);
+  });
+
+  it("prefers durable engine summary open count over reconstructed snapshot count", async () => {
+    const { run } = await repository!.beginLiveReconcileRun({
+      idempotencyKey: "run-integration-orders-open-count-engine-summary",
+    });
+
+    await repository!.appendLiveReconcileExchangeOrderSnapshots(run.id, [
+      {
+        exchangeOrderId: "uuid-open-but-engine-suppressed",
+        market: "KRW-BTC",
+        side: "BUY",
+        status: "wait",
+        requestedQuantity: "0.001",
+        source: "open",
+        capturedAt: new Date("2026-06-03T00:00:00Z"),
+      },
+    ]);
+    await repository!.completeLiveReconcileRun({
+      runId: run.id,
+      status: "COMPLETED",
+      metadata: {
+        live_reconcile_engine_summary: {
+          open_order_count: { exchange: 0, local: 1 },
+        },
+      },
+    });
+
+    const summary = await repository!.getLatestLiveReconcileSummary();
+
+    expect(summary.openExchangeOrderSnapshotCount).toBe(0);
+  });
+
   it("normalizes split exchange order identities when a bridge snapshot is observed", async () => {
     const { run } = await repository!.beginLiveReconcileRun({
       idempotencyKey: "run-integration-orders-bridge",
@@ -926,7 +1061,7 @@ describeDb("live reconcile persistence integration", () => {
     expect(summary.fillRecoveryKeyCount).toBe(0);
   });
 
-  it("keeps the latest final run in summary while a newer run is still running", async () => {
+  it("exposes a newer running run instead of hiding it behind the latest final summary", async () => {
     const { run: failedRun } = await repository!.beginLiveReconcileRun({
       idempotencyKey: "run-integration-summary-final-first",
     });
@@ -942,15 +1077,15 @@ describeDb("live reconcile persistence integration", () => {
       },
     ]);
     await repository!.completeLiveReconcileRun({ runId: failedRun.id, status: "FAILED" });
-    await repository!.beginLiveReconcileRun({
+    const { run: runningRun } = await repository!.beginLiveReconcileRun({
       idempotencyKey: "run-integration-summary-running-after-final",
     });
 
     const summary = await repository!.getLatestLiveReconcileSummary();
 
-    expect(summary.run?.id).toBe(failedRun.id);
-    expect(summary.run?.status).toBe("FAILED");
-    expect(summary.mismatchEvidenceCount).toBe(1);
+    expect(summary.run?.id).toBe(runningRun.id);
+    expect(summary.run?.status).toBe("RUNNING");
+    expect(summary.mismatchEvidenceCount).toBe(0);
   });
 
   it("uses finished_at to select the latest final run in summary", async () => {

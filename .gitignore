@@ -3,6 +3,7 @@
 .env.*
 !.env.example
 .local/
+.reasonix/
 .worktrees/
 .codex/tmp/
 node_modules/

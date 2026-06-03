@@ -170,7 +170,7 @@ function normalizeObservedAt(observedAt: ReconcileEngineInput["observedAt"]): st
  * @param websocketContext private WebSocket 이벤트와 bootstrap context
  * @returns diff engine에서 평가할 ws source 주문 snapshot 목록
  */
-function buildWebSocketOrderSnapshots(
+export function buildWebSocketOrderSnapshots(
   websocketContext: ReconcileEngineInput["websocketContext"],
 ): ReconcileExchangeOrderSnapshot[] {
   if (!canUseWebSocketOrderSnapshots(websocketContext)) {

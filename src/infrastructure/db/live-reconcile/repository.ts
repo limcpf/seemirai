@@ -351,6 +351,9 @@ export class PostgresLiveReconcileRepository {
       .set({
         status: input.status,
         finished_at: sql`now()`,
+        ...(input.metadata === undefined
+          ? {}
+          : { metadata_json: sql`metadata_json || ${JSON.stringify(input.metadata)}::jsonb` }),
       })
       .where("id", "=", input.runId)
       .where("status", "=", "RUNNING")
@@ -388,29 +391,32 @@ export class PostgresLiveReconcileRepository {
    * @returns 최근 reconcile run 요약. run이 없으면 `run: null`과 count 0
    */
   public async getLatestLiveReconcileSummary(): Promise<LiveReconcileSummary> {
-    const finalRun = await this.database
-      .selectFrom("live_reconcile_runs")
-      .selectAll()
-      .where("status", "!=", "RUNNING")
-      .orderBy("finished_at", "desc")
-      .orderBy("started_at", "desc")
-      .limit(1)
-      .executeTakeFirst();
-    const run =
-      finalRun ??
-      (await this.database
+    const [finalRun, latestRun] = await Promise.all([
+      this.database
+        .selectFrom("live_reconcile_runs")
+        .selectAll()
+        .where("status", "!=", "RUNNING")
+        .orderBy("finished_at", "desc")
+        .orderBy("started_at", "desc")
+        .limit(1)
+        .executeTakeFirst(),
+      this.database
         .selectFrom("live_reconcile_runs")
         .selectAll()
         .orderBy("started_at", "desc")
         .limit(1)
-        .executeTakeFirst());
+        .executeTakeFirst(),
+    ]);
+    const run = selectLatestVisibleReconcileRun(finalRun, latestRun);
 
     if (run === undefined) {
       return {
         run: null,
         balanceSnapshotCount: 0,
         exchangeOrderSnapshotCount: 0,
+        openExchangeOrderSnapshotCount: 0,
         mismatchEvidenceCount: 0,
+        mismatchTypes: [],
         positionSnapshotCount: 0,
         fillRecoveryKeyCount: 0,
       };
@@ -419,7 +425,9 @@ export class PostgresLiveReconcileRepository {
     const [
       balanceCount,
       exchangeOrderRows,
+      openExchangeOrderRows,
       mismatchCount,
+      mismatchTypeRows,
       positionCount,
       fillRecoveryKeyCount,
     ] = await Promise.all([
@@ -434,10 +442,21 @@ export class PostgresLiveReconcileRepository {
         .where("run_id", "=", run.id)
         .execute(),
       this.database
+        .selectFrom("live_reconcile_exchange_order_snapshots")
+        .select(["id", "exchange_order_id", "identifier", "status", "captured_at"])
+        .where("run_id", "=", run.id)
+        .execute(),
+      this.database
         .selectFrom("live_reconcile_mismatch_evidence")
         .select((eb) => eb.fn.countAll<string>().as("count"))
         .where("run_id", "=", run.id)
         .executeTakeFirstOrThrow(),
+      this.database
+        .selectFrom("live_reconcile_mismatch_evidence")
+        .select("mismatch_type")
+        .distinct()
+        .where("run_id", "=", run.id)
+        .execute(),
       this.database
         .selectFrom("live_reconcile_position_snapshots")
         .select((eb) => eb.fn.countAll<string>().as("count"))
@@ -455,7 +474,11 @@ export class PostgresLiveReconcileRepository {
       balanceSnapshotCount: Number(balanceCount.count),
       exchangeOrderSnapshotCount:
         countCanonicalExchangeOrderSnapshots(exchangeOrderRows),
+      openExchangeOrderSnapshotCount:
+        readStoredExchangeOpenOrderCount(run.metadata_json) ??
+        countCanonicalOpenExchangeOrderSnapshots(openExchangeOrderRows),
       mismatchEvidenceCount: Number(mismatchCount.count),
+      mismatchTypes: mismatchTypeRows.map((row) => row.mismatch_type),
       positionSnapshotCount: Number(positionCount.count),
       fillRecoveryKeyCount: Number(fillRecoveryKeyCount.count),
     };
@@ -485,6 +508,41 @@ export class PostgresLiveReconcileRepository {
     return run.status === "RUNNING";
   }
 }
+
+function selectLatestVisibleReconcileRun<T extends { status: string; started_at: Date | string }>(
+  finalRun: T | undefined,
+  latestRun: T | undefined,
+): T | undefined {
+  if (latestRun?.status === "RUNNING") {
+    if (finalRun === undefined || toTimeMs(latestRun.started_at) > toTimeMs(finalRun.started_at)) {
+      // 더 최근 RUNNING run은 이전 final 결과를 stale한 최신 상태로 보이지 않게 우선 노출한다.
+      return latestRun;
+    }
+  }
+  return finalRun ?? latestRun;
+}
+
+function toTimeMs(value: Date | string): number {
+  return value instanceof Date ? value.getTime() : new Date(value).getTime();
+}
+
+function readStoredExchangeOpenOrderCount(metadata: Record<string, unknown>): number | undefined {
+  const summary = metadata.live_reconcile_engine_summary;
+  if (summary === null || typeof summary !== "object") {
+    return undefined;
+  }
+  const openOrderCount = (summary as Record<string, unknown>).open_order_count;
+  if (openOrderCount === null || typeof openOrderCount !== "object") {
+    return undefined;
+  }
+  const exchange = (openOrderCount as Record<string, unknown>).exchange;
+  return typeof exchange === "number" && Number.isSafeInteger(exchange) && exchange >= 0
+    ? exchange
+    : undefined;
+}
+
+const OPEN_EXCHANGE_ORDER_STATUSES = ["wait", "watch", "open", "OPEN"] as const;
+const TERMINAL_EXCHANGE_ORDER_STATUSES = ["done", "cancel", "DONE", "CANCEL"] as const;
 
 /**
  * exchange order snapshot row를 append-only로 보존하면서 summary에는 canonical 주문 수를 계산한다.
@@ -550,4 +608,102 @@ function countCanonicalExchangeOrderSnapshots(
   }
 
   return new Set(Array.from(parent.keys(), (key) => find(key))).size + fingerprintOnlyRowCount;
+}
+
+/**
+ * terminal snapshot까지 함께 보며 summary에 표시할 현재 미체결 주문 수를 계산한다.
+ *
+ * 같은 uuid/identifier 그룹에 wait/watch/open과 done/cancel이 같이 있으면 terminal 보강 조회가 더 최신 거래소 상태일 수
+ * 있으므로 open count를 억제한다. DB row는 append-only라 수정하지 않고 읽기 전용 union-find 계산만 수행한다.
+ */
+function countCanonicalOpenExchangeOrderSnapshots(
+  rows: Array<{
+    id: string;
+    exchange_order_id: string | null;
+    identifier: string | null;
+    status: string;
+    captured_at: Date | string;
+  }>,
+): number {
+  const parent = new Map<string, string>();
+  const groups = new Map<string, { capturedAtMs: number; status: string }>();
+  let fingerprintOnlyOpenRowCount = 0;
+
+  const find = (key: string): string => {
+    const existing = parent.get(key);
+    if (existing === undefined) {
+      parent.set(key, key);
+      return key;
+    }
+
+    if (existing === key) {
+      return key;
+    }
+
+    const root = find(existing);
+    parent.set(key, root);
+    return root;
+  };
+
+  const union = (left: string, right: string): void => {
+    const leftRoot = find(left);
+    const rightRoot = find(right);
+    if (leftRoot !== rightRoot) {
+      parent.set(rightRoot, leftRoot);
+    }
+  };
+
+  const keyedRows: Array<{ key: string; status: string; capturedAtMs: number }> = [];
+  for (const row of rows) {
+    const exchangeOrderKey =
+      row.exchange_order_id === null ? undefined : `exchange:${row.exchange_order_id}`;
+    const identifierKey =
+      row.identifier === null ? undefined : `identifier:${row.identifier}`;
+
+    if (exchangeOrderKey === undefined && identifierKey === undefined) {
+      if (isOpenExchangeOrderStatus(row.status)) {
+        fingerprintOnlyOpenRowCount += 1;
+      }
+      continue;
+    }
+
+    if (exchangeOrderKey !== undefined && identifierKey !== undefined) {
+      union(exchangeOrderKey, identifierKey);
+    }
+
+    keyedRows.push({
+      key: exchangeOrderKey ?? identifierKey!,
+      status: row.status,
+      capturedAtMs: toTimeMs(row.captured_at),
+    });
+  }
+
+  for (const row of keyedRows) {
+    const root = find(row.key);
+    const existing = groups.get(root);
+    if (existing === undefined || row.capturedAtMs >= existing.capturedAtMs) {
+      groups.set(root, { capturedAtMs: row.capturedAtMs, status: row.status });
+    }
+  }
+
+  let count = fingerprintOnlyOpenRowCount;
+  for (const group of groups.values()) {
+    if (isOpenExchangeOrderStatus(group.status)) {
+      count += 1;
+    }
+  }
+
+  return count;
+}
+
+function isOpenExchangeOrderStatus(status: string): boolean {
+  return OPEN_EXCHANGE_ORDER_STATUSES.includes(
+    status as (typeof OPEN_EXCHANGE_ORDER_STATUSES)[number],
+  );
+}
+
+function isTerminalExchangeOrderStatus(status: string): boolean {
+  return TERMINAL_EXCHANGE_ORDER_STATUSES.includes(
+    status as (typeof TERMINAL_EXCHANGE_ORDER_STATUSES)[number],
+  );
 }

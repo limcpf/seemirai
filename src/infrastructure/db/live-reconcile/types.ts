@@ -120,6 +120,8 @@ export interface CompleteLiveReconcileRunInput {
   runId: string;
   /** 최종 실행 상태 */
   status: "COMPLETED" | "FAILED" | "MANUAL_REVIEW_REQUIRED";
+  /** 완료 시점에 추가로 보존할 run metadata */
+  metadata?: Record<string, unknown>;
 }
 
 /**
@@ -132,8 +134,12 @@ export interface LiveReconcileSummary {
   balanceSnapshotCount: number;
   /** exchange order snapshot 개수 */
   exchangeOrderSnapshotCount: number;
+  /** 거래소 열린 상태(wait/watch/open) 기준 canonical exchange order snapshot 개수 */
+  openExchangeOrderSnapshotCount: number;
   /** mismatch evidence 개수 */
   mismatchEvidenceCount: number;
+  /** 마지막 run에서 관찰된 mismatch type 목록 */
+  mismatchTypes: string[];
   /** position snapshot 개수 */
   positionSnapshotCount: number;
   /** fill recovery key 개수 */

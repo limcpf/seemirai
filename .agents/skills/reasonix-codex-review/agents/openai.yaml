@@ -1,0 +1,4 @@
+interface:
+  display_name: "Reasonix Codex Review"
+  short_description: "Reasonix 작업 후 Codex 코드 리뷰"
+  default_prompt: "Use $reasonix-codex-review to review staged, unstaged, and untracked changes after Reasonix implementation."
