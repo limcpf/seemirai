@@ -1,4 +1,5 @@
 import type { NumericString } from "../../domain/index.js";
+import { parseFinancialDecimal } from "../../shared/index.js";
 import type {
   PnLAccountingScope,
   PnLFillFact,
@@ -121,8 +122,11 @@ export function resolvePnLSources(
       continue;
     }
 
-    // 평균단가 결측 → 개별 position 레벨에서 계산 불가
-    if (position.averageEntryPrice === null || position.averageEntryPrice === undefined) {
+    // 오픈 수량이 있을 때만 평균단가가 MTM에 필요하며, 청산 완료 position은 realizedPnl만 보존하면 된다.
+    if (
+      hasOpenQuantity(position.quantity) &&
+      (position.averageEntryPrice === null || position.averageEntryPrice === undefined)
+    ) {
       missingReasons.push({
         message: "평균단가 근거 없음",
         reasonCode: "AVERAGE_ENTRY_MISSING",
@@ -187,6 +191,16 @@ function toPositionLike(reconcile: PnLReconcileFact): PnLPositionFact {
     updatedAt: reconcile.reconciledAt,
     source: `live_reconcile_position_snapshots:${reconcile.averageEntrySource ?? "reconciled"}`,
   };
+}
+
+/**
+ * 포지션 수량이 MTM 평균단가를 요구하는 오픈 상태인지 판정한다.
+ *
+ * `resolvePnLSources` 내부에서만 호출하며, 입력은 non-negative decimal 문자열이라는 domain invariant를
+ * 유지해야 한다. 반환값은 평균단가 결측을 계산 불가 원인으로 기록할지 결정하는 데 쓰이며 side effect는 없다.
+ */
+function hasOpenQuantity(quantity: NumericString): boolean {
+  return parseFinancialDecimal(quantity).greaterThan(0);
 }
 
 /**

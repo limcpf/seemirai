@@ -21,13 +21,21 @@ export type PnLAccountingStatus =
  * source가 복합이면 "+"로 연결하고, 실제 값은 formatSource 또는 sourcePriority 결과로 정규화한다.
  */
 export type PnLSource =
-  | "pnl_snapshots"
-  | "positions"
-  | "live_reconcile_position_snapshots"
   | "fills"
-  | "pnl_snapshots+positions"
-  | "live_reconcile_position_snapshots+positions"
+  | "fills+live_reconcile_position_snapshots"
+  | "fills+live_reconcile_position_snapshots+pnl_snapshots"
+  | "fills+live_reconcile_position_snapshots+pnl_snapshots+positions"
+  | "fills+live_reconcile_position_snapshots+positions"
+  | "fills+pnl_snapshots"
+  | "fills+pnl_snapshots+positions"
   | "fills+positions"
+  | "live_reconcile_position_snapshots"
+  | "live_reconcile_position_snapshots+pnl_snapshots"
+  | "live_reconcile_position_snapshots+pnl_snapshots+positions"
+  | "live_reconcile_position_snapshots+positions"
+  | "pnl_snapshots"
+  | "pnl_snapshots+positions"
+  | "positions"
   | "unavailable";
 
 /**

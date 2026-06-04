@@ -1010,13 +1010,18 @@ function buildScopes(
     if (seenScopes.has(key) || snapshotCoverage.isCovered(r.strategyId, r.market)) continue;
     if (r.recoveryStatus !== "RECOVERABLE") continue;
     if (positionCoverage.isCovered(r.strategyId, r.market)) continue;
+    const reconcileStatus =
+      r.averageEntryPrice === null || r.averageEntryPrice === undefined
+        ? "MANUAL_REVIEW_REQUIRED"
+        : "PARTIAL";
     seenScopes.add(key);
     scopes.push({
       strategyId: r.strategyId,
       market: r.market,
       capturedAt,
       source: "live_reconcile_position_snapshots",
-      status: "PARTIAL",
+      // 평균단가 없는 RECOVERABLE은 수량 이전에 진입가 근거가 없어 계산 scope도 수동 검토로 올린다.
+      status: reconcileStatus,
     });
   }
 

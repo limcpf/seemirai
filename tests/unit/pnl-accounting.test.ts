@@ -17,6 +17,7 @@ import type {
   PnLMarkPriceFact,
   PnLPositionFact,
   PnLReconcileFact,
+  PnLSource,
   PnLSnapshotFact,
 } from "../../src/application/index.js";
 
@@ -531,6 +532,35 @@ describe("M17 PnL accounting calculator", () => {
       expect(result.scopes[0]!.status).toBe("PARTIAL");
       expect(
         result.missingReasons.some((r) => r.reasonCode === "POSITION_QUANTITY_MISSING"),
+      ).toBe(true);
+    });
+
+    it("RECOVERABLE이어도 평균단가가 없으면 수동 검토 scope로 남긴다", () => {
+      const reconcile: PnLReconcileFact = {
+        strategyId: "trend_following",
+        market: "KRW-BTC",
+        recoveryStatus: "RECOVERABLE",
+        averageEntryPrice: null,
+        reconciledAt: new Date("2026-06-01T00:00:00Z"),
+        averageEntrySource: "live_reconcile",
+      };
+
+      const input: PnLAccountingInput = {
+        fills: [],
+        positions: [],
+        markPrices: [markPrice("KRW-BTC", "101000000")],
+        cash: defaultCash(),
+        costQuality: [],
+        pnlSnapshots: [],
+        reconcileFacts: [reconcile],
+      };
+
+      const result = calculatePnLAccounting(input);
+
+      expect(result.status).toBe("MANUAL_REVIEW_REQUIRED");
+      expect(result.scopes[0]!.status).toBe("MANUAL_REVIEW_REQUIRED");
+      expect(
+        result.missingReasons.some((r) => r.reasonCode === "AVERAGE_ENTRY_MISSING"),
       ).toBe(true);
     });
 
@@ -1264,10 +1294,12 @@ describe("source priority 순수 로직", () => {
   });
 
   it("buildSourceLabel: source 조합을 '+'로 연결한다", () => {
+    const compositeSource: PnLSource = "fills+pnl_snapshots+positions";
+
     expect(buildSourceLabel(["fills"])).toBe("fills");
     expect(buildSourceLabel(["fills", "positions"])).toBe("fills+positions");
     expect(buildSourceLabel(["pnl_snapshots", "fills", "positions"])).toBe(
-      "fills+pnl_snapshots+positions",
+      compositeSource,
     );
     expect(buildSourceLabel([])).toBe("unavailable");
   });
@@ -1386,6 +1418,30 @@ describe("source priority 순수 로직", () => {
     expect(
       result.missingReasons.some((r) => r.reasonCode === "MANUAL_REVIEW_REQUIRED"),
     ).toBe(true);
+  });
+
+  it("resolvePnLSources: 청산 position은 평균단가 없이도 source로 남긴다", () => {
+    const result = resolvePnLSources(
+      [],
+      [
+        {
+          strategyId: "trend_following",
+          market: "KRW-BTC",
+          quantity: "0",
+          averageEntryPrice: null,
+          realizedPnl: "12345",
+          unrealizedPnl: null,
+          updatedAt: new Date(),
+          source: "positions",
+        },
+      ],
+      [],
+    );
+
+    expect(result.resolvedPositions).toHaveLength(1);
+    expect(
+      result.missingReasons.some((r) => r.reasonCode === "AVERAGE_ENTRY_MISSING"),
+    ).toBe(false);
   });
 });
 
