@@ -45,6 +45,8 @@ export function labelMissingReasonCode(code: string): string {
       return "평가가 없음";
     case "AVERAGE_ENTRY_MISSING":
       return "평균단가 근거 없음";
+    case "POSITION_QUANTITY_MISSING":
+      return "보유 수량 근거 없음";
     case "MANUAL_REVIEW_REQUIRED":
       return "수동 검토 필요";
     case "NO_POSITION_SOURCE":

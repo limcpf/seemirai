@@ -82,7 +82,7 @@ export function calculatePnLAccounting(input: PnLAccountingInput): PnLAccounting
   );
   const snapshotTotals = summarizeSnapshots(snapshotFacts);
   const fillCoverage = createFillScopeCoverage(accountingInput.fills);
-  const positionCoverage = createQuantifiedPositionScopeCoverage(accountingInput.positions);
+  const positionCoverage = createPositionScopeCoverage(accountingInput.positions);
 
   // ── 2. reconcile fact 수집 ────────────────────────────────────────────────
   const reconciledPositions: PnLPositionFact[] = [];
@@ -214,9 +214,12 @@ export function calculatePnLAccounting(input: PnLAccountingInput): PnLAccounting
 
   const hasUnquantifiedReconcile =
     hasUnknownReconcilePosition || hasUnquantifiedReconcilePosition(reconciledPositions);
-  // reconcile-only source는 수량 결측이므로 aggregate 평가액을 0으로 확정하지 않는다.
+  const hasLedgerPositionDetails = positionDetails.length > 0;
+  // reconcile-only/source snapshot-only는 평가액 원천이 없으므로 position value를 0으로 확정하지 않는다.
   const positionMarketValueKrw = hasUnquantifiedReconcile
     ? null
+    : snapshotFacts.length > 0 && !hasLedgerPositionDetails
+      ? null
     : computePositionMarketValue(positionDetails);
   const ledgerUnrealizedPnlKrw = hasUnquantifiedReconcile
     ? null
@@ -240,7 +243,9 @@ export function calculatePnLAccounting(input: PnLAccountingInput): PnLAccounting
   const equityKrw =
     snapshotTotals.equityKrw !== null
       ? positionMarketValueKrw === null
-        ? null
+        ? hasLedgerPositionDetails || hasUnquantifiedReconcile
+          ? null
+          : snapshotTotals.equityKrw
         : snapshotTotals.equityKrw.plus(positionMarketValueKrw)
       : cashKrw !== null && positionMarketValueKrw !== null
         ? cashKrw.plus(positionMarketValueKrw)
@@ -398,20 +403,18 @@ function createFillScopeCoverage(fills: readonly PnLFillFact[]): {
 }
 
 /**
- * current positions가 실제 보유 수량을 제공하는 scope를 판정한다.
+ * current positions가 존재하는 scope를 판정한다.
  *
- * RECOVERABLE reconcile은 평균단가만 제공하므로, 같은 scope의 positions가 수량을 제공하면
- * unknown-position guard 대신 positions fallback의 결측/평가 로직에 맡긴다.
+ * RECOVERABLE reconcile은 평균단가만 제공하므로, 같은 scope의 positions가 있으면 flat realized PnL이나
+ * open quantity 처리를 positions fallback의 결측/평가 로직에 맡긴다.
  */
-function createQuantifiedPositionScopeCoverage(positions: readonly PnLPositionFact[]): {
+function createPositionScopeCoverage(positions: readonly PnLPositionFact[]): {
   isCovered(strategyId: string, market: string): boolean;
 } {
   const positionScopes = new Set<string>();
 
   for (const position of positions) {
-    if (parseNonNegativeDecimal(position.quantity).greaterThan(0)) {
-      positionScopes.add(scopeKey(position.strategyId, position.market));
-    }
+    positionScopes.add(scopeKey(position.strategyId, position.market));
   }
 
   return {
@@ -739,6 +742,11 @@ function compareMarkPriceCandidate(
     return leftTime - rightTime;
   }
 
+  const sourceRankCompare = markPriceSourceRank(left.source) - markPriceSourceRank(right.source);
+  if (sourceRankCompare !== 0) {
+    return sourceRankCompare;
+  }
+
   return createMarkPriceTieBreakKey(left).localeCompare(createMarkPriceTieBreakKey(right));
 }
 
@@ -746,6 +754,17 @@ function observedTimeOrUnknown(markPrice: PnLMarkPriceFact): number {
   return markPrice.observedAt === undefined
     ? Number.NEGATIVE_INFINITY
     : toTime(markPrice.observedAt);
+}
+
+function markPriceSourceRank(source: string): number {
+  const normalized = source.toLowerCase();
+  if (normalized.includes("bid")) {
+    return 2;
+  }
+  if (normalized.includes("last")) {
+    return 1;
+  }
+  return 0;
 }
 
 function createMarkPriceTieBreakKey(markPrice: PnLMarkPriceFact): string {
@@ -928,7 +947,7 @@ function buildScopes(
   const snapshotCoverage = createSnapshotCoverage(
     snapshots.map((s) => ({ strategyId: s.strategyId, market: s.market })),
   );
-  const positionCoverage = createQuantifiedPositionScopeCoverage(input.positions);
+  const positionCoverage = createPositionScopeCoverage(input.positions);
   const seenScopes = new Set<string>();
 
   // snapshot에서 scope 추가

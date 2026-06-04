@@ -4,6 +4,7 @@ import {
   PnLAccountingInvariantError,
   formatPnLAccountingStatus,
   formatMissingReason,
+  labelMissingReasonCode,
   buildSourceLabel,
   createSnapshotCoverage,
   resolvePnLSources,
@@ -283,6 +284,37 @@ describe("M17 PnL accounting calculator", () => {
       expect(result.positionMarketValueKrw).toBe("1010000");
     });
 
+    it("평가가 observedAt이 같으면 bid source를 last보다 우선한다", () => {
+      const observedAt = new Date("2026-06-01T00:02:00Z");
+      const input: PnLAccountingInput = {
+        fills: [
+          buyFill("b1", "KRW-BTC", "0.01", "100000000", "50"),
+        ],
+        positions: [],
+        markPrices: [
+          {
+            ...markPrice("KRW-BTC", "105000000"),
+            observedAt,
+            source: "last",
+          },
+          {
+            ...markPrice("KRW-BTC", "100000000"),
+            observedAt,
+            source: "bid",
+          },
+        ],
+        cash: defaultCash(),
+        costQuality: [],
+        pnlSnapshots: [],
+        reconcileFacts: [],
+      };
+
+      const result = calculatePnLAccounting(input);
+
+      expect(result.positionMarketValueKrw).toBe("1000000");
+      expect(result.unrealizedPnlKrw).toBe("-50");
+    });
+
     it("평가가가 없으면 미실현손익과 총손익이 null이다", () => {
       const input: PnLAccountingInput = {
         fills: [
@@ -385,6 +417,7 @@ describe("M17 PnL accounting calculator", () => {
       expect(result.realizedPnlKrw).toBe("50000");
       expect(result.unrealizedPnlKrw).toBe("0");
       expect(result.totalPnlKrw).toBe("50000");
+      expect(result.positionMarketValueKrw).toBeNull();
       expect(result.equityKrw).toBe("1050000");
       expect(result.positions.filter((p) => p.strategyId === "trend_following")).toHaveLength(0);
     });
@@ -427,6 +460,7 @@ describe("M17 PnL accounting calculator", () => {
       // position이 무시되고 aggregate snapshot 값만 손익에 반영되어야 함
       expect(result.realizedPnlKrw).toBe("50000");
       expect(result.unrealizedPnlKrw).toBe("0");
+      expect(result.positionMarketValueKrw).toBeNull();
       expect(result.equityKrw).toBe("1050000");
       expect(result.positions.filter((p) => p.strategyId === "trend_following")).toHaveLength(0);
     });
@@ -561,6 +595,46 @@ describe("M17 PnL accounting calculator", () => {
       expect(marketScope).toBeDefined();
       expect(marketScope!.source).toBe("fills");
       expect(marketScope!.status).toBe("CALCULATED");
+      expect(
+        result.missingReasons.some((r) => r.reasonCode === "POSITION_QUANTITY_MISSING"),
+      ).toBe(false);
+    });
+
+    it("청산 완료 position은 RECOVERABLE reconcile 수량 결측보다 우선한다", () => {
+      const position: PnLPositionFact = {
+        strategyId: "trend_following",
+        market: "KRW-BTC",
+        quantity: "0",
+        averageEntryPrice: null,
+        realizedPnl: "12345",
+        unrealizedPnl: null,
+        updatedAt: new Date("2026-06-01T00:00:00Z"),
+        source: "positions",
+      };
+      const reconcile: PnLReconcileFact = {
+        strategyId: "trend_following",
+        market: "KRW-BTC",
+        recoveryStatus: "RECOVERABLE",
+        averageEntryPrice: "100000000",
+        reconciledAt: new Date("2026-06-01T00:01:00Z"),
+        averageEntrySource: "live_reconcile",
+      };
+
+      const input: PnLAccountingInput = {
+        fills: [],
+        positions: [position],
+        markPrices: [],
+        cash: defaultCash(),
+        costQuality: [],
+        pnlSnapshots: [],
+        reconcileFacts: [reconcile],
+      };
+
+      const result = calculatePnLAccounting(input);
+
+      expect(result.status).toBe("CALCULATED");
+      expect(result.realizedPnlKrw).toBe("12345");
+      expect(result.totalPnlKrw).toBe("12345");
       expect(
         result.missingReasons.some((r) => r.reasonCode === "POSITION_QUANTITY_MISSING"),
       ).toBe(false);
@@ -1333,5 +1407,11 @@ describe("formatter 한국어 메시지", () => {
       source: "mark_prices",
     };
     expect(formatMissingReason(reason)).toBe("평가가 없음");
+  });
+
+  it("labelMissingReasonCode: POSITION_QUANTITY_MISSING을 한국어로 변환한다", () => {
+    expect(labelMissingReasonCode("POSITION_QUANTITY_MISSING")).toBe(
+      "보유 수량 근거 없음",
+    );
   });
 });
