@@ -89,6 +89,9 @@ export function resolvePnLSources(
         scope: key,
         source: "live_reconcile_position_snapshots",
       });
+      // non-RECOVERABLE reconcile은 해당 scope의 포지션 근거가 신뢰 불가하다는 evidence이므로
+      // 아래 positions fallback이 계산 source로 다시 선택되지 않게 scope를 점유한다.
+      scopeSources.set(key, "live_reconcile_position_snapshots");
       continue;
     }
 

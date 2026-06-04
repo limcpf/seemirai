@@ -838,6 +838,7 @@ describe("M17 PnL accounting calculator", () => {
       expect(result.positionMarketValueKrw).toBe("1010000");
       expect(result.feeTotals).toEqual([{ currency: "KRW", amount: "50" }]);
       expect(result.scopes.some((s) => s.strategyId === "mean_reversion")).toBe(false);
+      expect(result.scopes.some((s) => s.strategyId === "trend_following" && s.market === null)).toBe(false);
     });
 
     it("호출 시각이 달라도 동일 입력에서 항상 같은 결과를 반환한다 (deterministic)", () => {
@@ -1011,6 +1012,71 @@ describe("M17 PnL accounting calculator", () => {
       );
       expect(hasTrendFollowing).toBe(true);
       expect(hasMeanReversion).toBe(true);
+    });
+
+    it("aggregate fill scope는 모든 open child position에 mark price가 있어야 계산 완료다", () => {
+      const input: PnLAccountingInput = {
+        fills: [
+          buyFill("b1", "KRW-BTC", "0.01", "100000000", "50", "trend_following"),
+          buyFill("b2", "KRW-ETH", "2", "3000000", "30", "trend_following"),
+        ],
+        positions: [],
+        markPrices: [
+          markPrice("KRW-BTC", "101000000"),
+        ],
+        cash: defaultCash(),
+        costQuality: [],
+        pnlSnapshots: [],
+        reconcileFacts: [],
+      };
+
+      const result = calculatePnLAccounting(input);
+      const aggregateScope = result.scopes.find(
+        (s) => s.strategyId === "trend_following" && s.market === null,
+      );
+
+      expect(aggregateScope).toBeDefined();
+      expect(aggregateScope!.status).toBe("PARTIAL");
+    });
+
+    it("positions가 RECOVERABLE reconcile 수량 결측을 정량화하면 평가액을 계산한다", () => {
+      const position: PnLPositionFact = {
+        strategyId: "trend_following",
+        market: "KRW-BTC",
+        quantity: "0.01",
+        averageEntryPrice: "100000000",
+        realizedPnl: "0",
+        unrealizedPnl: null,
+        updatedAt: new Date("2026-06-01T00:00:00Z"),
+        source: "positions",
+      };
+      const reconcile: PnLReconcileFact = {
+        strategyId: "trend_following",
+        market: "KRW-BTC",
+        recoveryStatus: "RECOVERABLE",
+        averageEntryPrice: "100000000",
+        reconciledAt: new Date("2026-06-01T00:01:00Z"),
+        averageEntrySource: "live_reconcile",
+      };
+
+      const input: PnLAccountingInput = {
+        fills: [],
+        positions: [position],
+        markPrices: [markPrice("KRW-BTC", "101000000")],
+        cash: defaultCash(),
+        costQuality: [],
+        pnlSnapshots: [],
+        reconcileFacts: [reconcile],
+      };
+
+      const result = calculatePnLAccounting(input);
+
+      expect(result.status).toBe("CALCULATED");
+      expect(result.positionMarketValueKrw).toBe("1010000");
+      expect(result.unrealizedPnlKrw).toBe("10000");
+      expect(
+        result.missingReasons.some((r) => r.reasonCode === "POSITION_QUANTITY_MISSING"),
+      ).toBe(false);
     });
 
     it("fills와 positions가 같은 scope에 있으면 scope source는 fills를 보존한다", () => {
@@ -1213,6 +1279,38 @@ describe("source priority 순수 로직", () => {
     expect(result.resolvedPositions).toHaveLength(0);
     expect(
       result.missingReasons.some((r) => r.reasonCode === "RECOVERABLE_ONLY"),
+    ).toBe(true);
+  });
+
+  it("resolvePnLSources: non-RECOVERABLE reconcile scope는 positions fallback을 차단한다", () => {
+    const result = resolvePnLSources(
+      [],
+      [
+        {
+          strategyId: "trend_following",
+          market: "KRW-BTC",
+          quantity: "0.01",
+          averageEntryPrice: "100000000",
+          realizedPnl: "0",
+          unrealizedPnl: "0",
+          updatedAt: new Date(),
+          source: "positions",
+        },
+      ],
+      [
+        {
+          strategyId: "trend_following",
+          market: "KRW-BTC",
+          recoveryStatus: "MANUAL_REVIEW_REQUIRED",
+          averageEntryPrice: null,
+          reconciledAt: new Date(),
+        },
+      ],
+    );
+
+    expect(result.resolvedPositions).toHaveLength(0);
+    expect(
+      result.missingReasons.some((r) => r.reasonCode === "MANUAL_REVIEW_REQUIRED"),
     ).toBe(true);
   });
 });

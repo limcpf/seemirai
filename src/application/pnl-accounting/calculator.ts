@@ -82,6 +82,7 @@ export function calculatePnLAccounting(input: PnLAccountingInput): PnLAccounting
   );
   const snapshotTotals = summarizeSnapshots(snapshotFacts);
   const fillCoverage = createFillScopeCoverage(accountingInput.fills);
+  const positionCoverage = createQuantifiedPositionScopeCoverage(accountingInput.positions);
 
   // ── 2. reconcile fact 수집 ────────────────────────────────────────────────
   const reconciledPositions: PnLPositionFact[] = [];
@@ -93,6 +94,7 @@ export function calculatePnLAccounting(input: PnLAccountingInput): PnLAccounting
     }
 
     const hasFillForReconcileScope = fillCoverage.isCovered(reconcile.strategyId, reconcile.market);
+    const hasPositionForReconcileScope = positionCoverage.isCovered(reconcile.strategyId, reconcile.market);
 
     if (reconcile.recoveryStatus !== "RECOVERABLE") {
       missingReasons.push({
@@ -112,8 +114,8 @@ export function calculatePnLAccounting(input: PnLAccountingInput): PnLAccounting
       continue;
     }
 
-    if (hasFillForReconcileScope) {
-      // 실제 체결 근거가 있으면 평균단가뿐인 RECOVERABLE reconcile은 scope/source를 차지하지 않는다.
+    if (hasFillForReconcileScope || hasPositionForReconcileScope) {
+      // 실제 체결/포지션 근거가 있으면 평균단가뿐인 RECOVERABLE reconcile은 scope/source를 차지하지 않는다.
       continue;
     }
 
@@ -391,6 +393,30 @@ function createFillScopeCoverage(fills: readonly PnLFillFact[]): {
   return {
     isCovered(strategyId: string, market: string): boolean {
       return fillScopes.has(scopeKey(strategyId, market));
+    },
+  };
+}
+
+/**
+ * current positions가 실제 보유 수량을 제공하는 scope를 판정한다.
+ *
+ * RECOVERABLE reconcile은 평균단가만 제공하므로, 같은 scope의 positions가 수량을 제공하면
+ * unknown-position guard 대신 positions fallback의 결측/평가 로직에 맡긴다.
+ */
+function createQuantifiedPositionScopeCoverage(positions: readonly PnLPositionFact[]): {
+  isCovered(strategyId: string, market: string): boolean;
+} {
+  const positionScopes = new Set<string>();
+
+  for (const position of positions) {
+    if (parseNonNegativeDecimal(position.quantity).greaterThan(0)) {
+      positionScopes.add(scopeKey(position.strategyId, position.market));
+    }
+  }
+
+  return {
+    isCovered(strategyId: string, market: string): boolean {
+      return positionScopes.has(scopeKey(strategyId, market));
     },
   };
 }
@@ -902,11 +928,13 @@ function buildScopes(
   const snapshotCoverage = createSnapshotCoverage(
     snapshots.map((s) => ({ strategyId: s.strategyId, market: s.market })),
   );
+  const positionCoverage = createQuantifiedPositionScopeCoverage(input.positions);
   const seenScopes = new Set<string>();
 
   // snapshot에서 scope 추가
   for (const snapshot of snapshots) {
     const key = scopeKey(snapshot.strategyId, snapshot.market);
+    if (!shouldIncludeOutputScope(input.targetScopes, snapshot.strategyId, snapshot.market)) continue;
     if (seenScopes.has(key)) continue;
     seenScopes.add(key);
     scopes.push({
@@ -921,6 +949,7 @@ function buildScopes(
   // non-recoverable reconcile은 계산 source보다 수동 검토 evidence가 우선이므로 먼저 scope를 고정한다.
   for (const r of input.reconcileFacts) {
     const key = scopeKey(r.strategyId, r.market);
+    if (!shouldIncludeOutputScope(input.targetScopes, r.strategyId, r.market)) continue;
     if (seenScopes.has(key) || snapshotCoverage.isCovered(r.strategyId, r.market)) continue;
     if (r.recoveryStatus === "RECOVERABLE") continue;
     seenScopes.add(key);
@@ -936,19 +965,13 @@ function buildScopes(
   // fill에서 scope 추가
   const fillScopes = resolveFillScopes(fills);
   for (const [key, scope] of fillScopes) {
+    if (!shouldIncludeOutputScope(input.targetScopes, scope.strategyId, scope.market)) continue;
     if (seenScopes.has(key)) continue;
     seenScopes.add(key);
-    // mark price가 없고 open position이 있는 scope는 PARTIAL
-    // aggregate scope(market=null)는 하위 market 중 하나라도 평가가 있으면 OK
-    const hasMarkPriceForMarket =
-      scope.market === null
-        ? input.markPrices.length > 0
-        : input.markPrices.some((mp) => mp.market === scope.market);
-    const hasOpenPosition = [...ledger.positions.values()].some(
-      (p) =>
-        p.strategyId === scope.strategyId &&
-        (scope.market === null || p.market === scope.market) &&
-        p.quantity.greaterThan(0),
+    const openPositions = findOpenPositionsForScope(ledger, scope.strategyId, scope.market);
+    const hasOpenPosition = openPositions.length > 0;
+    const hasMarkPriceForMarket = openPositions.every((p) =>
+      input.markPrices.some((mp) => mp.market === p.market),
     );
     const fillStatus =
       hasOpenPosition && !hasMarkPriceForMarket ? "PARTIAL" : "CALCULATED";
@@ -964,8 +987,10 @@ function buildScopes(
   // RECOVERABLE reconcile은 fill이 없는 scope에서만 fallback evidence로 남긴다.
   for (const r of input.reconcileFacts) {
     const key = scopeKey(r.strategyId, r.market);
+    if (!shouldIncludeOutputScope(input.targetScopes, r.strategyId, r.market)) continue;
     if (seenScopes.has(key) || snapshotCoverage.isCovered(r.strategyId, r.market)) continue;
     if (r.recoveryStatus !== "RECOVERABLE") continue;
+    if (positionCoverage.isCovered(r.strategyId, r.market)) continue;
     seenScopes.add(key);
     scopes.push({
       strategyId: r.strategyId,
@@ -979,6 +1004,7 @@ function buildScopes(
   // position fallback에서 scope 추가
   for (const p of input.positions) {
     const key = scopeKey(p.strategyId, p.market);
+    if (!shouldIncludeOutputScope(input.targetScopes, p.strategyId, p.market)) continue;
     if (seenScopes.has(key) || snapshotCoverage.isCovered(p.strategyId, p.market)) continue;
     seenScopes.add(key);
     const hasAverageEntry = p.averageEntryPrice !== null && p.averageEntryPrice !== undefined;
@@ -1042,6 +1068,43 @@ function determineStatus(
 }
 
 // ── helpers ──────────────────────────────────────────────────────────────────
+
+/**
+ * targetScopes가 지정된 계산에서 output scope를 노출해도 되는지 판정한다.
+ *
+ * 특정 market target은 해당 market scope만 반환하고, market=null target은 strategy 전체 요청으로 보아
+ * aggregate와 하위 market scope를 모두 허용한다.
+ */
+function shouldIncludeOutputScope(
+  targetScopes: readonly PnLAccountingScope[] | undefined,
+  strategyId: string,
+  market: string | null,
+): boolean {
+  if (targetScopes === undefined || targetScopes.length === 0) {
+    return true;
+  }
+
+  return targetScopes.some((target) => {
+    if (target.strategyId !== strategyId) {
+      return false;
+    }
+
+    return target.market === null || target.market === market;
+  });
+}
+
+function findOpenPositionsForScope(
+  ledger: Ledger,
+  strategyId: string,
+  market: string | null,
+): PositionLedger[] {
+  return [...ledger.positions.values()].filter(
+    (position) =>
+      position.strategyId === strategyId &&
+      (market === null || position.market === market) &&
+      position.quantity.greaterThan(0),
+  );
+}
 
 function getOrCreatePositionLedger(
   ledger: Ledger,
