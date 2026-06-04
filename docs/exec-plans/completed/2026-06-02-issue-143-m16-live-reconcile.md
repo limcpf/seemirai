@@ -186,6 +186,36 @@ node scripts/verify-github.mjs
 - 결과: private WebSocket 연결과 `myOrder`/`myAsset` subscription 확인이 secret-safe artifact 저장과 함께 통과했다.
 - artifact 저장 위치: 저장소 밖 `/tmp/seemirai-upbit-ws-smoke-only-*`.
 
+### Final PR #152 Review Drain Gated 재검증
+
+PR #152 review drain 중 runtime review fix를 추가한 뒤 gated 검증을 다시 실행했다.
+
+```sh
+./scripts/verify
+```
+✅ **67 test files passed, 9 skipped / 905 tests passed, 90 skipped**
+
+```sh
+SEEMIRAI_RUN_DB_INTEGRATION=1 \
+SEEMIRAI_DATABASE_URL=postgres://.../<disposable-db> \
+corepack pnpm exec vitest run tests/integration/migrations.test.ts tests/integration/live-reconcile.test.ts
+```
+✅ **2 files passed, 48 tests passed**
+
+기존 로컬 `seemirai_local` DB에는 이전 migration checksum이 남아 있어 `000012_live_reconcile_exchange_order_snapshot_dedupe.sql` checksum mismatch가 발생했다. 기존 DB의 `schema_migrations`를 수정하지 않고, 같은 PostgreSQL 인스턴스에 disposable DB를 생성해 현재 migration set을 처음부터 적용하는 방식으로 재검증했다.
+
+```sh
+SEEMIRAI_RUN_UPBIT_PRIVATE_SMOKE=1 \
+SEEMIRAI_RUN_UPBIT_LIVE_RECONCILE=1 \
+SEEMIRAI_RUN_UPBIT_LIVE_RECONCILE_WS_SMOKE=1 \
+corepack pnpm exec vitest run tests/integration/upbit-live-reconcile-smoke.test.ts
+```
+✅ **1 file passed, 4 tests passed**
+
+- smoke artifact: `/tmp/seemirai-upbit-pr152-Mpv6Ud`
+- GitHub Actions `verify`: success
+- Codex review drain: 모든 review thread resolved, Codex `+1` clean signal 확인
+
 ## 결정 로그
 
 | 일자 | 결정 |
@@ -202,6 +232,7 @@ node scripts/verify-github.mjs
 | 2026-06-03 | closeout 검증 결과: typecheck 통과, unit tests 812 passed, integration 12 passed, soak 79 passed, verify docs/hooks/github 통과, live order API 0회 source scan 확인, 기본 reconcile smoke guard-skip 확인. |
 | 2026-06-03 | 추가 closeout 검증 결과: DB integration migrations/live-reconcile 48 tests 통과, Upbit read-only REST live reconcile smoke 통과, Upbit private WebSocket smoke 통과. |
 | 2026-06-04 | Sub PR 08 closeout PR #151이 mother branch에 merge된 상태를 완료 기록에 반영했다. `finish-readiness-audit`는 PR 생성 전 audit workflow로 쓰도록 정리하고, PR 미생성 자체는 finding/FAIL/PARTIAL 기준에서 제외하기로 했다. |
+| 2026-06-04 | Final PR #152 review drain에서 live reconcile runtime review fix 후 gated DB integration과 Upbit live REST/WebSocket smoke를 재실행했다. 로컬 DB checksum mismatch는 기존 DB 상태 문제로 판단하고 disposable DB에서 48 tests 통과를 확인했다. PR #152는 main에 merge됐다. |
 
 ## Open Questions (closeout 시점)
 
@@ -228,14 +259,11 @@ node scripts/verify-github.mjs
 - [ ] M19 exit engine (자동 매도, 손절, 익절)
 - [ ] Upbit account 기준 reconcile 주기, rate limit 검증
 
-## Final Main PR 사용자 Merge 가이드
+## Final Main PR 결과
 
-closeout branch → `issue-143-mother` PR #151은 merge 완료됐다. 남은 제출 절차는 다음과 같다:
-
-1. `issue-143-mother` → `main` PR 생성
-2. GitHub `verify` workflow 통과 확인
-3. PR review drain 수행
-4. merge 수행
+- closeout branch → `issue-143-mother` PR #151: merge 완료
+- `issue-143-mother` → `main` PR #152: merge 완료
+- PR #152 review drain: 5개 review finding 처리, 모든 review thread resolved, GitHub `verify` success, Codex `+1` clean signal 확인
 
 Sub PR 08 및 closeout 보강 변경사항:
 - `docs/exec-plans/completed/2026-06-02-issue-143-m16-live-reconcile.md` (신규, 완료 기록)
