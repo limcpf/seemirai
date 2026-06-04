@@ -81,14 +81,18 @@ export function calculatePnLAccounting(input: PnLAccountingInput): PnLAccounting
     snapshotFacts.map((s) => ({ strategyId: s.strategyId, market: s.market })),
   );
   const snapshotTotals = summarizeSnapshots(snapshotFacts);
+  const fillCoverage = createFillScopeCoverage(accountingInput.fills);
 
   // ── 2. reconcile fact 수집 ────────────────────────────────────────────────
   const reconciledPositions: PnLPositionFact[] = [];
+  let hasUnknownReconcilePosition = false;
   for (const reconcile of accountingInput.reconcileFacts) {
     // snapshot이 이미 coverage 중이면 reconcile을 skip
     if (snapshotCoverage.isCovered(reconcile.strategyId, reconcile.market)) {
       continue;
     }
+
+    const hasFillForReconcileScope = fillCoverage.isCovered(reconcile.strategyId, reconcile.market);
 
     if (reconcile.recoveryStatus !== "RECOVERABLE") {
       missingReasons.push({
@@ -101,6 +105,15 @@ export function calculatePnLAccounting(input: PnLAccountingInput): PnLAccounting
         scope: scopeKey(reconcile.strategyId, reconcile.market),
         source: "live_reconcile_position_snapshots",
       });
+      if (!hasFillForReconcileScope) {
+        // 수동 검토 대상만 있는 scope는 포지션 규모를 모르므로 equity를 현금만으로 확정하지 않는다.
+        hasUnknownReconcilePosition = true;
+      }
+      continue;
+    }
+
+    if (hasFillForReconcileScope) {
+      // 실제 체결 근거가 있으면 평균단가뿐인 RECOVERABLE reconcile은 scope/source를 차지하지 않는다.
       continue;
     }
 
@@ -111,6 +124,7 @@ export function calculatePnLAccounting(input: PnLAccountingInput): PnLAccounting
         scope: scopeKey(reconcile.strategyId, reconcile.market),
         source: reconcile.averageEntrySource ?? "live_reconcile_position_snapshots",
       });
+      hasUnknownReconcilePosition = true;
       continue;
     }
 
@@ -124,6 +138,7 @@ export function calculatePnLAccounting(input: PnLAccountingInput): PnLAccounting
       scope: scopeKey(reconcile.strategyId, reconcile.market),
       source: "live_reconcile_position_snapshots",
     });
+    hasUnknownReconcilePosition = true;
     // 향후 reconcile에 실제 보유 수량이 추가되면 이 로직을 보강해야 한다.
     // [보강 경로]: reconcile source에서 quantity 필드가 추가되면
     //   seedLedgerFromReconcile에서 quantity>0인 경우 costBasisKrw를 채워
@@ -147,7 +162,11 @@ export function calculatePnLAccounting(input: PnLAccountingInput): PnLAccounting
       continue;
     }
 
-    if (position.averageEntryPrice === null || position.averageEntryPrice === undefined) {
+    const positionQuantity = parseNonNegativeDecimal(position.quantity);
+    if (
+      positionQuantity.greaterThan(0) &&
+      (position.averageEntryPrice === null || position.averageEntryPrice === undefined)
+    ) {
       missingReasons.push({
         message: "평균단가 근거 없음",
         reasonCode: "AVERAGE_ENTRY_MISSING",
@@ -191,7 +210,8 @@ export function calculatePnLAccounting(input: PnLAccountingInput): PnLAccounting
   const markPriceMap = buildMarkPriceMap(accountingInput.markPrices);
   const positionDetails = calculatePositionDetails(ledger, markPriceMap, cashKrw, missingReasons);
 
-  const hasUnquantifiedReconcile = hasUnquantifiedReconcilePosition(reconciledPositions);
+  const hasUnquantifiedReconcile =
+    hasUnknownReconcilePosition || hasUnquantifiedReconcilePosition(reconciledPositions);
   // reconcile-only source는 수량 결측이므로 aggregate 평가액을 0으로 확정하지 않는다.
   const positionMarketValueKrw = hasUnquantifiedReconcile
     ? null
@@ -353,6 +373,24 @@ function createTargetScopeFilter(targetScopes: readonly PnLAccountingScope[]): {
     },
     matchesMarkPrice(market: string): boolean {
       return aggregateStrategies.size > 0 || targetMarkets.has(market);
+    },
+  };
+}
+
+/**
+ * fill이 존재하는 strategy/market scope를 빠르게 판정한다.
+ *
+ * RECOVERABLE reconcile은 평균단가 보조 evidence라 실제 fill이 있는 scope에서는 계산 source로 승격하지
+ * 않기 위해 이 coverage를 사용한다.
+ */
+function createFillScopeCoverage(fills: readonly PnLFillFact[]): {
+  isCovered(strategyId: string, market: string): boolean;
+} {
+  const fillScopes = new Set(fills.map((fill) => scopeKey(fill.strategyId, fill.market)));
+
+  return {
+    isCovered(strategyId: string, market: string): boolean {
+      return fillScopes.has(scopeKey(strategyId, market));
     },
   };
 }
@@ -699,6 +737,11 @@ function calculatePositionDetails(
   missingReasons: PnLMissingReason[],
 ): PnLPositionDetail[] {
   const details: PnLPositionDetail[] = [];
+  const totalMarketValueForExposure = computeLedgerMarketValueForExposure(ledger, markPriceMap);
+  const exposureEquityKrw =
+    cashKrw !== null && totalMarketValueForExposure !== null
+      ? cashKrw.plus(totalMarketValueForExposure)
+      : null;
 
   for (const [key, pos] of ledger.positions) {
     if (pos.quantity.isZero()) {
@@ -740,8 +783,8 @@ function calculatePositionDetails(
 
     // 노출 비중 계산
     let exposureBps: Decimal | null = null;
-    if (cashKrw !== null && marketValueKrw !== null && cashKrw.plus(marketValueKrw).greaterThan(0)) {
-      exposureBps = marketValueKrw.div(cashKrw.plus(marketValueKrw)).times(10000);
+    if (marketValueKrw !== null && exposureEquityKrw !== null && exposureEquityKrw.greaterThan(0)) {
+      exposureBps = marketValueKrw.div(exposureEquityKrw).times(10000);
     }
 
     details.push({
@@ -756,6 +799,33 @@ function calculatePositionDetails(
   }
 
   return details;
+}
+
+/**
+ * 모든 open position의 평가액 합계를 노출 비중 계산용으로 먼저 산출한다.
+ *
+ * 어느 한 포지션이라도 평가가가 없으면 전체 equity 기준 노출을 확정할 수 없으므로 null을 반환한다.
+ */
+function computeLedgerMarketValueForExposure(
+  ledger: Ledger,
+  markPriceMap: Map<string, Decimal>,
+): Decimal | null {
+  let total = new Decimal(0);
+
+  for (const pos of ledger.positions.values()) {
+    if (pos.quantity.isZero()) {
+      continue;
+    }
+
+    const markPrice = markPriceMap.get(pos.market === "__aggregate__" ? "" : pos.market);
+    if (markPrice === undefined) {
+      return null;
+    }
+
+    total = total.plus(pos.quantity.times(markPrice));
+  }
+
+  return total;
 }
 
 // ── 비용 분해 ────────────────────────────────────────────────────────────────
@@ -848,18 +918,18 @@ function buildScopes(
     });
   }
 
-  // reconcile에서 scope 추가
+  // non-recoverable reconcile은 계산 source보다 수동 검토 evidence가 우선이므로 먼저 scope를 고정한다.
   for (const r of input.reconcileFacts) {
     const key = scopeKey(r.strategyId, r.market);
     if (seenScopes.has(key) || snapshotCoverage.isCovered(r.strategyId, r.market)) continue;
+    if (r.recoveryStatus === "RECOVERABLE") continue;
     seenScopes.add(key);
     scopes.push({
       strategyId: r.strategyId,
       market: r.market,
       capturedAt,
       source: "live_reconcile_position_snapshots",
-      // RECOVERABLE reconcile은 평균단가 근거일 뿐 수량이 없어 PnL 확정 source로 승격하지 않는다.
-      status: r.recoveryStatus === "RECOVERABLE" ? "PARTIAL" : "MANUAL_REVIEW_REQUIRED",
+      status: "MANUAL_REVIEW_REQUIRED",
     });
   }
 
@@ -891,6 +961,21 @@ function buildScopes(
     });
   }
 
+  // RECOVERABLE reconcile은 fill이 없는 scope에서만 fallback evidence로 남긴다.
+  for (const r of input.reconcileFacts) {
+    const key = scopeKey(r.strategyId, r.market);
+    if (seenScopes.has(key) || snapshotCoverage.isCovered(r.strategyId, r.market)) continue;
+    if (r.recoveryStatus !== "RECOVERABLE") continue;
+    seenScopes.add(key);
+    scopes.push({
+      strategyId: r.strategyId,
+      market: r.market,
+      capturedAt,
+      source: "live_reconcile_position_snapshots",
+      status: "PARTIAL",
+    });
+  }
+
   // position fallback에서 scope 추가
   for (const p of input.positions) {
     const key = scopeKey(p.strategyId, p.market);
@@ -900,7 +985,7 @@ function buildScopes(
     const hasOpenPosition = parseNonNegativeDecimal(p.quantity).greaterThan(0);
     const hasMarkPrice = input.markPrices.some((mp) => mp.market === p.market);
     const positionStatus =
-      hasAverageEntry && (!hasOpenPosition || hasMarkPrice) ? "CALCULATED" : "PARTIAL";
+      !hasOpenPosition || (hasAverageEntry && hasMarkPrice) ? "CALCULATED" : "PARTIAL";
     scopes.push({
       strategyId: p.strategyId,
       market: p.market,
