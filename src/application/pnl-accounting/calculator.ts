@@ -97,6 +97,10 @@ export function calculatePnLAccounting(input: PnLAccountingInput): PnLAccounting
     const hasPositionForReconcileScope = positionCoverage.isCovered(reconcile.strategyId, reconcile.market);
 
     if (reconcile.recoveryStatus !== "RECOVERABLE") {
+      if (hasFillForReconcileScope) {
+        // 실제 체결 ledger가 있는 scope에서는 stale reconcile failure가 계산 source와 상태를 덮지 못하게 한다.
+        continue;
+      }
       missingReasons.push({
         message: reconcile.recoveryStatus === "MANUAL_REVIEW_REQUIRED"
           ? "수동 검토 필요"
@@ -107,10 +111,8 @@ export function calculatePnLAccounting(input: PnLAccountingInput): PnLAccounting
         scope: scopeKey(reconcile.strategyId, reconcile.market),
         source: "live_reconcile_position_snapshots",
       });
-      if (!hasFillForReconcileScope) {
-        // 수동 검토 대상만 있는 scope는 포지션 규모를 모르므로 equity를 현금만으로 확정하지 않는다.
-        hasUnknownReconcilePosition = true;
-      }
+      // 수동 검토 대상만 있는 scope는 포지션 규모를 모르므로 equity를 현금만으로 확정하지 않는다.
+      hasUnknownReconcilePosition = true;
       continue;
     }
 
@@ -239,14 +241,18 @@ export function calculatePnLAccounting(input: PnLAccountingInput): PnLAccounting
     fallbackPositions.length > 0 ||
     hasQuantifiedReconcile;
 
-  const realizedPnlKrw = sumDecimalParts([
-    { active: snapshotFacts.length > 0, value: snapshotTotals.realizedPnlKrw },
-    { active: hasLedgerTradingData, value: ledger.realizedPnlKrw },
-  ]);
-  const unrealizedPnlKrw = sumDecimalParts([
-    { active: snapshotFacts.length > 0, value: snapshotTotals.unrealizedPnlKrw },
-    { active: hasLedgerTradingData, value: ledgerUnrealizedPnlKrw },
-  ]);
+  const realizedPnlKrw = hasUnquantifiedReconcile
+    ? null
+    : sumDecimalParts([
+      { active: snapshotFacts.length > 0, value: snapshotTotals.realizedPnlKrw },
+      { active: hasLedgerTradingData, value: ledger.realizedPnlKrw },
+    ]);
+  const unrealizedPnlKrw = hasUnquantifiedReconcile
+    ? null
+    : sumDecimalParts([
+      { active: snapshotFacts.length > 0, value: snapshotTotals.unrealizedPnlKrw },
+      { active: hasLedgerTradingData, value: ledgerUnrealizedPnlKrw },
+    ]);
 
   // ── 8. equity ─────────────────────────────────────────────────────────────
   const equityKrw =
@@ -1004,6 +1010,7 @@ function buildScopes(
     snapshots.map((s) => ({ strategyId: s.strategyId, market: s.market })),
   );
   const positionCoverage = createPositionScopeCoverage(input.positions);
+  const fillCoverage = createFillScopeCoverage(fills);
   const seenScopes = new Set<string>();
 
   // snapshot에서 scope 추가
@@ -1026,6 +1033,7 @@ function buildScopes(
     const key = scopeKey(r.strategyId, r.market);
     if (!shouldIncludeOutputScope(input.targetScopes, r.strategyId, r.market)) continue;
     if (seenScopes.has(key) || snapshotCoverage.isCovered(r.strategyId, r.market)) continue;
+    if (fillCoverage.isCovered(r.strategyId, r.market)) continue;
     if (r.recoveryStatus === "RECOVERABLE") continue;
     seenScopes.add(key);
     scopes.push({

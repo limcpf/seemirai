@@ -50,6 +50,9 @@ export function resolvePnLSources(
   // ── 1. snapshot coverage 판정 ──────────────────────────────────────────────
   const strategiesWithAggregateSnapshot = new Set<string>();
   const marketsCoveredBySnapshot = new Set<string>();
+  const positionFallbackScopes = new Set(
+    positions.map((position) => scopeKey(position.strategyId, position.market)),
+  );
 
   for (const snapshot of snapshots) {
     if (snapshot.market === null || snapshot.market === undefined) {
@@ -93,6 +96,11 @@ export function resolvePnLSources(
       // non-RECOVERABLE reconcile은 해당 scope의 포지션 근거가 신뢰 불가하다는 evidence이므로
       // 아래 positions fallback이 계산 source로 다시 선택되지 않게 scope를 점유한다.
       scopeSources.set(key, "live_reconcile_position_snapshots");
+      continue;
+    }
+
+    if (positionFallbackScopes.has(key)) {
+      // current position은 수량과 확정 손익을 갖기 때문에 평균단가뿐인 reconcile보다 우선한다.
       continue;
     }
 
