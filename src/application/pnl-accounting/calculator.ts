@@ -30,7 +30,6 @@ import type {
 interface Ledger {
   cashKrw: Decimal;
   realizedPnlKrw: Decimal;
-  totalFeesByCurrency: Map<string, Decimal>;
   /** strategy/market → position ledger */
   positions: Map<string, PositionLedger>;
   filledOrderIds: Set<string>;
@@ -63,8 +62,8 @@ interface PositionLedger {
  *   동일 출력을 여러 번 생성한다.
  *
  * 계산 흐름:
-   * 1. snapshot source priority 적용 — snapshot이 있는 scope의 하위 source 중복 계산을 차단
-   * 2. snapshot 미보유 scope의 fill 누적 — 평균단가 기반 실현손익 계산
+ * 1. snapshot source priority 적용 — snapshot이 있는 scope의 하위 source 중복 계산을 차단
+ * 2. snapshot 미보유 scope의 fill 누적 — 평균단가 기반 실현손익 계산
  * 3. mark price 평가 — 미실현손익, 시장가치, 노출 비중 계산
  * 4. 비용 분해 — 수수료, spread, slippage, cancel/requote 집계
  * 5. missing reasons 수집
@@ -115,6 +114,13 @@ export function calculatePnLAccounting(input: PnLAccountingInput): PnLAccounting
     // reconcile fact를 position fact로 승격
     // ⚠️ reconcile은 현재 평균단가만 제공하고 보유 수량 정보는 없다.
     // 따라서 quantity를 "0"으로 설정하며, 시장가치와 미실현손익은 이 사실만으로 계산할 수 없다.
+    // 평균단가만으로 0 PnL을 확정하면 실제 보유 규모를 숨기므로 부분 계산 원인을 함께 남긴다.
+    missingReasons.push({
+      message: "보유 수량 근거 없음",
+      reasonCode: "POSITION_QUANTITY_MISSING",
+      scope: scopeKey(reconcile.strategyId, reconcile.market),
+      source: "live_reconcile_position_snapshots",
+    });
     // 향후 reconcile에 실제 보유 수량이 추가되면 이 로직을 보강해야 한다.
     // [보강 경로]: reconcile source에서 quantity 필드가 추가되면
     //   seedLedgerFromReconcile에서 quantity>0인 경우 costBasisKrw를 채워
@@ -151,8 +157,10 @@ export function calculatePnLAccounting(input: PnLAccountingInput): PnLAccounting
   }
 
   // ── 4. fill 기반 ledger 구축 ──────────────────────────────────────────────
-  const ledgerFills = input.fills.filter(
-    (fill) => !snapshotCoverage.isCovered(fill.strategyId, fill.market),
+  const ledgerFills = sortFillsByExecutionTime(
+    input.fills.filter(
+      (fill) => !snapshotCoverage.isCovered(fill.strategyId, fill.market),
+    ),
   );
   const ledger = buildFillLedger(ledgerFills);
 
@@ -180,12 +188,19 @@ export function calculatePnLAccounting(input: PnLAccountingInput): PnLAccounting
   const markPriceMap = buildMarkPriceMap(input.markPrices);
   const positionDetails = calculatePositionDetails(ledger, markPriceMap, cashKrw, missingReasons);
 
-  const positionMarketValueKrw = computePositionMarketValue(positionDetails);
-  const ledgerUnrealizedPnlKrw = computeUnrealizedPnl(positionDetails);
+  const hasUnquantifiedReconcile = hasUnquantifiedReconcilePosition(reconciledPositions);
+  // reconcile-only source는 수량 결측이므로 aggregate 평가액을 0으로 확정하지 않는다.
+  const positionMarketValueKrw = hasUnquantifiedReconcile
+    ? null
+    : computePositionMarketValue(positionDetails);
+  const ledgerUnrealizedPnlKrw = hasUnquantifiedReconcile
+    ? null
+    : computeUnrealizedPnl(positionDetails);
+  const hasQuantifiedReconcile = hasQuantifiedPosition(reconciledPositions);
   const hasLedgerTradingData =
     ledgerFills.length > 0 ||
     fallbackPositions.length > 0 ||
-    reconciledPositions.length > 0;
+    hasQuantifiedReconcile;
 
   const realizedPnlKrw = sumDecimalParts([
     { active: snapshotFacts.length > 0, value: snapshotTotals.realizedPnlKrw },
@@ -212,7 +227,8 @@ export function calculatePnLAccounting(input: PnLAccountingInput): PnLAccounting
       : null;
 
   // ── 9. 비용 분해 ─────────────────────────────────────────────────────────
-  const feeTotals = buildFeeTotals(ledger.totalFeesByCurrency);
+  // 비용 분해는 PnL source priority와 독립된 evidence이므로 snapshot으로 덮인 fill fee도 보존한다.
+  const feeTotals = buildFeeTotals(aggregateFeesByCurrency(input.fills));
   const spreadCost = aggregateQualityMetric(input.costQuality, "spreadCostBps");
   const slippage = aggregateQualityMetric(input.costQuality, "slippageBps");
   const cancelRequote = aggregateQualityMetric(
@@ -231,7 +247,7 @@ export function calculatePnLAccounting(input: PnLAccountingInput): PnLAccounting
     ledgerFills.length > 0 ||
     fallbackPositions.length > 0 ||
     snapshotFacts.length > 0 ||
-    reconciledPositions.length > 0;
+    hasQuantifiedReconcile;
 
   return {
     scopes,
@@ -258,7 +274,6 @@ function buildFillLedger(fills: readonly PnLFillFact[]): Ledger {
   const ledger: Ledger = {
     cashKrw: new Decimal(0),
     realizedPnlKrw: new Decimal(0),
-    totalFeesByCurrency: new Map(),
     positions: new Map(),
     filledOrderIds: new Set(),
     filledCount: 0,
@@ -269,14 +284,11 @@ function buildFillLedger(fills: readonly PnLFillFact[]): Ledger {
     const price = parseNonNegativeDecimal(fill.price);
     const notional = quantity.times(price);
     const fee = parseNonNegativeDecimal(fill.fee);
+    const feeKrw = fill.feeCurrency === "KRW" ? fee : new Decimal(0);
 
     if (quantity.isZero()) {
       continue;
     }
-
-    // fee 누적
-    const existingFee = ledger.totalFeesByCurrency.get(fill.feeCurrency) ?? new Decimal(0);
-    ledger.totalFeesByCurrency.set(fill.feeCurrency, existingFee.plus(fee));
 
     // filled order 수 중복 제거
     if (!ledger.filledOrderIds.has(fill.orderId)) {
@@ -288,7 +300,8 @@ function buildFillLedger(fills: readonly PnLFillFact[]): Ledger {
     const pos = getOrCreatePositionLedger(ledger, key, fill.strategyId, fill.market);
 
     if (fill.side === "BUY") {
-      const fillCostKrw = notional.plus(fee);
+      // KRW 원가에는 KRW로 확정된 수수료만 반영하고, 비-KRW fee는 feeTotals evidence로만 분리한다.
+      const fillCostKrw = notional.plus(feeKrw);
       ledger.cashKrw = ledger.cashKrw.minus(fillCostKrw);
       pos.quantity = pos.quantity.plus(quantity);
       pos.costBasisKrw = pos.costBasisKrw.plus(fillCostKrw);
@@ -305,8 +318,9 @@ function buildFillLedger(fills: readonly PnLFillFact[]): Ledger {
         ? new Decimal(0)
         : pos.costBasisKrw.div(pos.quantity);
       const realizedCostBasisKrw = averageCostKrw.times(quantity);
-      ledger.realizedPnlKrw = ledger.realizedPnlKrw.plus(notional.minus(realizedCostBasisKrw).minus(fee));
-      ledger.cashKrw = ledger.cashKrw.plus(notional.minus(fee));
+      // 매도 손익도 KRW 환산 근거가 없는 비-KRW fee를 섞지 않아 KRW PnL 오염을 막는다.
+      ledger.realizedPnlKrw = ledger.realizedPnlKrw.plus(notional.minus(realizedCostBasisKrw).minus(feeKrw));
+      ledger.cashKrw = ledger.cashKrw.plus(notional.minus(feeKrw));
       pos.quantity = pos.quantity.minus(quantity);
       pos.costBasisKrw = pos.quantity.isZero()
         ? new Decimal(0)
@@ -315,6 +329,49 @@ function buildFillLedger(fills: readonly PnLFillFact[]): Ledger {
   }
 
   return ledger;
+}
+
+/**
+ * fill fact를 계산기가 소비할 deterministic execution order로 정렬한다.
+ *
+ * caller나 DB 반환 순서에 의존하면 같은 체결 집합도 다른 realized PnL을 만들 수 있으므로
+ * `filledAt`을 우선하고, 동일 시각은 매수 우선 tie-break로 초과 매도 false positive를 줄인다.
+ * 입력 배열은 변경하지 않는다.
+ */
+function sortFillsByExecutionTime(fills: readonly PnLFillFact[]): PnLFillFact[] {
+  return [...fills].sort(compareFillFact);
+}
+
+function compareFillFact(left: PnLFillFact, right: PnLFillFact): number {
+  const leftTime = toTime(left.filledAt);
+  const rightTime = toTime(right.filledAt);
+  if (leftTime !== rightTime) {
+    return leftTime - rightTime;
+  }
+
+  const sideCompare = sideSortRank(left.side) - sideSortRank(right.side);
+  if (sideCompare !== 0) {
+    return sideCompare;
+  }
+
+  return createFillTieBreakKey(left).localeCompare(createFillTieBreakKey(right));
+}
+
+function sideSortRank(side: PnLFillFact["side"]): number {
+  return side === "BUY" ? 0 : 1;
+}
+
+function createFillTieBreakKey(fill: PnLFillFact): string {
+  return JSON.stringify([
+    fill.strategyId,
+    fill.market,
+    fill.orderId,
+    fill.price,
+    fill.quantity,
+    fill.fee,
+    fill.feeCurrency,
+    fill.liquidity,
+  ]);
 }
 
 // ── snapshot source priority ─────────────────────────────────────────────────
@@ -464,6 +521,7 @@ function seedLedgerFromPositions(
   for (const pos of positions) {
     const key = scopeKey(pos.strategyId, pos.market);
     const existing = ledger.positions.get(key);
+    const shouldApplyFallbackRealizedPnl = existing === undefined;
     if (existing !== undefined && existing.quantity.greaterThan(0)) {
       // fill 또는 reconcile로 이미 수량이 있으면 position fallback으로 덮지 않는다.
       continue;
@@ -474,6 +532,11 @@ function seedLedgerFromPositions(
       ? parseFinancialDecimal(pos.averageEntryPrice)
       : null;
     entry.initialAverageEntryPrice = avgPrice;
+
+    if (shouldApplyFallbackRealizedPnl) {
+      // position-only fallback에서는 positions.realizedPnl이 확정 손익 source이므로 ledger에 보존한다.
+      ledger.realizedPnlKrw = ledger.realizedPnlKrw.plus(parseFinancialDecimal(pos.realizedPnl));
+    }
 
     if (pos.quantity !== "0") {
       const qty = parseNonNegativeDecimal(pos.quantity);
@@ -490,12 +553,48 @@ function seedLedgerFromPositions(
 function buildMarkPriceMap(
   markPrices: readonly PnLMarkPriceFact[],
 ): Map<string, Decimal> {
-  const map = new Map<string, Decimal>();
+  const latestByMarket = new Map<string, PnLMarkPriceFact>();
   for (const mp of markPrices) {
-    map.set(mp.market, parseNonNegativeDecimal(mp.priceKrw));
+    const existing = latestByMarket.get(mp.market);
+    if (existing === undefined || compareMarkPriceCandidate(mp, existing) > 0) {
+      // 같은 market의 평가가가 여러 개면 가장 최신 관측값만 MTM evidence로 사용한다.
+      latestByMarket.set(mp.market, mp);
+    }
   }
 
-  return map;
+  return new Map(
+    [...latestByMarket.entries()].map(([market, fact]) => [
+      market,
+      parseNonNegativeDecimal(fact.priceKrw),
+    ]),
+  );
+}
+
+function compareMarkPriceCandidate(
+  left: PnLMarkPriceFact,
+  right: PnLMarkPriceFact,
+): number {
+  const leftTime = observedTimeOrUnknown(left);
+  const rightTime = observedTimeOrUnknown(right);
+  if (leftTime !== rightTime) {
+    return leftTime - rightTime;
+  }
+
+  return createMarkPriceTieBreakKey(left).localeCompare(createMarkPriceTieBreakKey(right));
+}
+
+function observedTimeOrUnknown(markPrice: PnLMarkPriceFact): number {
+  return markPrice.observedAt === undefined
+    ? Number.NEGATIVE_INFINITY
+    : toTime(markPrice.observedAt);
+}
+
+function createMarkPriceTieBreakKey(markPrice: PnLMarkPriceFact): string {
+  return JSON.stringify([
+    markPrice.market,
+    markPrice.priceKrw,
+    markPrice.source,
+  ]);
 }
 
 function calculatePositionDetails(
@@ -558,6 +657,24 @@ function calculatePositionDetails(
 }
 
 // ── 비용 분해 ────────────────────────────────────────────────────────────────
+
+/**
+ * 전체 fill fact의 통화별 fee evidence를 집계한다.
+ *
+ * snapshot source priority는 손익 중복 합산만 막아야 하며, 비용 분해 evidence는 체결 원천 전체에서
+ * 독립적으로 보여줘야 하므로 snapshot coverage를 적용하지 않는다.
+ */
+function aggregateFeesByCurrency(fills: readonly PnLFillFact[]): Map<string, Decimal> {
+  const feesByCurrency = new Map<string, Decimal>();
+
+  for (const fill of fills) {
+    const fee = parseNonNegativeDecimal(fill.fee);
+    const existingFee = feesByCurrency.get(fill.feeCurrency) ?? new Decimal(0);
+    feesByCurrency.set(fill.feeCurrency, existingFee.plus(fee));
+  }
+
+  return feesByCurrency;
+}
 
 function buildFeeTotals(feesByCurrency: Map<string, Decimal>): PnLFeeTotal[] {
   return [...feesByCurrency.entries()]
@@ -639,7 +756,8 @@ function buildScopes(
       market: r.market,
       capturedAt,
       source: "live_reconcile_position_snapshots",
-      status: r.recoveryStatus === "RECOVERABLE" ? "CALCULATED" : "MANUAL_REVIEW_REQUIRED",
+      // RECOVERABLE reconcile은 평균단가 근거일 뿐 수량이 없어 PnL 확정 source로 승격하지 않는다.
+      status: r.recoveryStatus === "RECOVERABLE" ? "PARTIAL" : "MANUAL_REVIEW_REQUIRED",
     });
   }
 
@@ -755,6 +873,19 @@ function getOrCreatePositionLedger(
   ledger.positions.set(key, pos);
 
   return pos;
+}
+
+/**
+ * 수량이 있는 position-like fact가 하나라도 있는지 확인한다.
+ *
+ * realized/unrealized PnL을 0으로 확정할지, 계산 불가(null)로 남길지 결정하는 guard다.
+ */
+function hasQuantifiedPosition(positions: readonly PnLPositionFact[]): boolean {
+  return positions.some((position) => parseNonNegativeDecimal(position.quantity).greaterThan(0));
+}
+
+function hasUnquantifiedReconcilePosition(positions: readonly PnLPositionFact[]): boolean {
+  return positions.some((position) => parseNonNegativeDecimal(position.quantity).isZero());
 }
 
 function parseNonNegativeDecimal(value: string | undefined): Decimal {

@@ -180,6 +180,55 @@ describe("M17 PnL accounting calculator", () => {
         PnLAccountingInvariantError,
       );
     });
+
+    it("입력 순서가 뒤섞여도 filledAt 기준으로 실현손익을 계산한다", () => {
+      const buy = {
+        ...buyFill("b1", "KRW-BTC", "0.01", "100000000", "50"),
+        filledAt: new Date("2026-06-01T00:00:00Z"),
+      };
+      const sell = {
+        ...sellFill("s1", "KRW-BTC", "0.01", "101000000", "50"),
+        filledAt: new Date("2026-06-01T00:01:00Z"),
+      };
+
+      const input: PnLAccountingInput = {
+        fills: [sell, buy],
+        positions: [],
+        markPrices: [],
+        cash: defaultCash(),
+        costQuality: [],
+        pnlSnapshots: [],
+        reconcileFacts: [],
+      };
+
+      const result = calculatePnLAccounting(input);
+
+      expect(result.status).toBe("CALCULATED");
+      expect(result.realizedPnlKrw).toBe("9900");
+      expect(result.totalPnlKrw).toBe("9900");
+    });
+
+    it("비-KRW 수수료는 KRW 원가와 실현손익에 섞지 않는다", () => {
+      const input: PnLAccountingInput = {
+        fills: [
+          {
+            ...buyFill("b1", "KRW-BTC", "0.01", "100000000", "0.00001"),
+            feeCurrency: "BTC",
+          },
+        ],
+        positions: [],
+        markPrices: [markPrice("KRW-BTC", "101000000")],
+        cash: defaultCash(),
+        costQuality: [],
+        pnlSnapshots: [],
+        reconcileFacts: [],
+      };
+
+      const result = calculatePnLAccounting(input);
+
+      expect(result.unrealizedPnlKrw).toBe("10000");
+      expect(result.feeTotals).toEqual([{ currency: "BTC", amount: "0.00001" }]);
+    });
   });
 
   describe("MTM 미실현손익", () => {
@@ -202,6 +251,36 @@ describe("M17 PnL accounting calculator", () => {
       expect(result.unrealizedPnlKrw).not.toBeNull();
       expect(parseFloat(result.unrealizedPnlKrw!)).toBeCloseTo(9950, -2);
       expect(result.totalPnlKrw).not.toBeNull();
+    });
+
+    it("같은 market 평가가가 여러 개면 observedAt이 가장 최신인 값을 사용한다", () => {
+      const input: PnLAccountingInput = {
+        fills: [
+          buyFill("b1", "KRW-BTC", "0.01", "100000000", "50"),
+        ],
+        positions: [],
+        markPrices: [
+          {
+            ...markPrice("KRW-BTC", "101000000"),
+            observedAt: new Date("2026-06-01T00:02:00Z"),
+            source: "newer_bid",
+          },
+          {
+            ...markPrice("KRW-BTC", "90000000"),
+            observedAt: new Date("2026-06-01T00:01:00Z"),
+            source: "older_bid",
+          },
+        ],
+        cash: defaultCash(),
+        costQuality: [],
+        pnlSnapshots: [],
+        reconcileFacts: [],
+      };
+
+      const result = calculatePnLAccounting(input);
+
+      expect(result.unrealizedPnlKrw).toBe("9950");
+      expect(result.positionMarketValueKrw).toBe("1010000");
     });
 
     it("평가가가 없으면 미실현손익과 총손익이 null이다", () => {
@@ -382,7 +461,7 @@ describe("M17 PnL accounting calculator", () => {
       ).toBe(true);
     });
 
-    it("RECOVERABLE이고 평균단가가 있으면 계산 source로 승격된다", () => {
+    it("RECOVERABLE이고 평균단가만 있으면 부분 계산 source로 남긴다", () => {
       const reconcile: PnLReconcileFact = {
         strategyId: "trend_following",
         market: "KRW-BTC",
@@ -404,8 +483,15 @@ describe("M17 PnL accounting calculator", () => {
 
       const result = calculatePnLAccounting(input);
 
-      // reconcile fact가 position으로 승격되어 MTM 평가됨
-      expect(result.status !== "UNAVAILABLE").toBe(true);
+      expect(result.status).toBe("PARTIAL");
+      expect(result.realizedPnlKrw).toBeNull();
+      expect(result.unrealizedPnlKrw).toBeNull();
+      expect(result.positionMarketValueKrw).toBeNull();
+      expect(result.equityKrw).toBeNull();
+      expect(result.scopes[0]!.status).toBe("PARTIAL");
+      expect(
+        result.missingReasons.some((r) => r.reasonCode === "POSITION_QUANTITY_MISSING"),
+      ).toBe(true);
     });
 
     it("RECOVERABLE이 아닌 reconcile은 평균단가가 있어도 계산 source로 승격하지 않는다", () => {
@@ -546,6 +632,36 @@ describe("M17 PnL accounting calculator", () => {
       ).toBe(true);
     });
 
+    it("position fallback만 있으면 positions.realizedPnl을 보존한다", () => {
+      const position: PnLPositionFact = {
+        strategyId: "trend_following",
+        market: "KRW-BTC",
+        quantity: "0.01",
+        averageEntryPrice: "100000000",
+        realizedPnl: "12345",
+        unrealizedPnl: null,
+        updatedAt: new Date("2026-06-01T00:00:00Z"),
+        source: "positions",
+      };
+
+      const input: PnLAccountingInput = {
+        fills: [],
+        positions: [position],
+        markPrices: [markPrice("KRW-BTC", "101000000")],
+        cash: defaultCash(),
+        costQuality: [],
+        pnlSnapshots: [],
+        reconcileFacts: [],
+      };
+
+      const result = calculatePnLAccounting(input);
+
+      expect(result.status).toBe("CALCULATED");
+      expect(result.realizedPnlKrw).toBe("12345");
+      expect(result.unrealizedPnlKrw).toBe("10000");
+      expect(result.totalPnlKrw).toBe("22345");
+    });
+
     it("호출 시각이 달라도 동일 입력에서 항상 같은 결과를 반환한다 (deterministic)", () => {
       const input: PnLAccountingInput = {
         fills: [
@@ -598,6 +714,36 @@ describe("M17 PnL accounting calculator", () => {
       expect(result.feeTotals).toHaveLength(1);
       expect(result.feeTotals[0]!.currency).toBe("KRW");
       expect(parseFloat(result.feeTotals[0]!.amount)).toBe(75);
+    });
+
+    it("snapshot으로 덮인 fill도 feeTotals에는 포함한다", () => {
+      const snapshot: PnLSnapshotFact = {
+        strategyId: "trend_following",
+        market: "KRW-BTC",
+        capturedAt: new Date("2026-06-01T00:00:00Z"),
+        equity: "1050000",
+        realizedPnl: "50000",
+        unrealizedPnl: "0",
+        drawdownBps: "0",
+      };
+
+      const input: PnLAccountingInput = {
+        fills: [
+          buyFill("covered-fill", "KRW-BTC", "0.01", "100000000", "50"),
+        ],
+        positions: [],
+        markPrices: [],
+        cash: defaultCash(),
+        costQuality: [],
+        pnlSnapshots: [snapshot],
+        reconcileFacts: [],
+      };
+
+      const result = calculatePnLAccounting(input);
+
+      expect(result.realizedPnlKrw).toBe("50000");
+      expect(result.unrealizedPnlKrw).toBe("0");
+      expect(result.feeTotals).toEqual([{ currency: "KRW", amount: "50" }]);
     });
 
     it("spread/slippage/cancel-requote 비용을 집계한다", () => {
