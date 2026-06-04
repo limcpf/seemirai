@@ -577,12 +577,16 @@ describe("M17 PnL accounting calculator", () => {
 
       const result = calculatePnLAccounting(input);
 
+      expect(result.status).toBe("PARTIAL");
       expect(result.scopes).toHaveLength(1);
       expect(result.scopes[0]!.market).toBe("KRW-BTC");
       expect(result.scopes[0]!.capturedAt).toBe("2026-06-04T00:00:00.000Z");
       expect(result.equityKrw).toBe("2000");
       expect(result.realizedPnlKrw).toBe("20");
       expect(result.unrealizedPnlKrw).toBe("5");
+      expect(
+        result.missingReasons.some((r) => r.reasonCode === "SNAPSHOT_COVERAGE_PARTIAL"),
+      ).toBe(true);
     });
   });
 
@@ -1726,6 +1730,12 @@ describe("formatter 한국어 메시지", () => {
   it("labelMissingReasonCode: POSITION_QUANTITY_MISSING을 한국어로 변환한다", () => {
     expect(labelMissingReasonCode("POSITION_QUANTITY_MISSING")).toBe(
       "보유 수량 근거 없음",
+    );
+  });
+
+  it("labelMissingReasonCode: SNAPSHOT_COVERAGE_PARTIAL을 한국어로 변환한다", () => {
+    expect(labelMissingReasonCode("SNAPSHOT_COVERAGE_PARTIAL")).toBe(
+      "일부 snapshot coverage만 확인됨",
     );
   });
 });

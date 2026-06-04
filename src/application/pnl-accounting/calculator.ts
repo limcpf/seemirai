@@ -76,7 +76,9 @@ export function calculatePnLAccounting(input: PnLAccountingInput): PnLAccounting
   const scopes: PnLAccountingScope[] = [];
 
   // ── 1. snapshot coverage 판정 ──────────────────────────────────────────────
-  const snapshotFacts = selectEffectiveSnapshots(accountingInput.pnlSnapshots);
+  const snapshotSelection = selectEffectiveSnapshots(accountingInput.pnlSnapshots);
+  const snapshotFacts = snapshotSelection.snapshots;
+  missingReasons.push(...snapshotSelection.missingReasons);
   const snapshotCoverage = createSnapshotCoverage(
     snapshotFacts.map((s) => ({ strategyId: s.strategyId, market: s.market })),
   );
@@ -549,7 +551,7 @@ function createFillTieBreakKey(fill: PnLFillFact): string {
 
 function selectEffectiveSnapshots(
   snapshots: readonly PnLSnapshotFact[],
-): PnLSnapshotFact[] {
+): { snapshots: PnLSnapshotFact[]; missingReasons: PnLMissingReason[] } {
   const latestByStrategy = new Map<string, Map<string | null, PnLSnapshotFact>>();
 
   for (const snapshot of snapshots) {
@@ -563,9 +565,14 @@ function selectEffectiveSnapshots(
     latestByStrategy.set(snapshot.strategyId, latestByMarket);
   }
 
-  return excludeMarketSnapshotsCoveredByAggregate(
+  const selected = excludeMarketSnapshotsCoveredByAggregate(
     [...latestByStrategy.values()].flatMap((latestByMarket) => [...latestByMarket.values()]),
-  ).sort(compareSnapshotScope);
+  );
+
+  return {
+    snapshots: selected.snapshots.sort(compareSnapshotScope),
+    missingReasons: selected.missingReasons,
+  };
 }
 
 /**
@@ -573,12 +580,12 @@ function selectEffectiveSnapshots(
  *
  * `selectEffectiveSnapshots` 내부에서 strategy별 최신 snapshot 후보를 받은 뒤 호출된다. aggregate가 market
  * layer보다 최신이면 aggregate 하나가 strategy 전체를 대표하고, 더 최신 market snapshot이 있으면 오래된
- * aggregate가 최신 market evidence를 덮지 못하게 market layer를 선택한다. 입력과 출력은 모두 snapshot
- * fact 배열이며 외부 side effect는 없다.
+ * aggregate가 최신 market evidence를 덮지 못하게 market layer를 선택한다. 출력은 선택 snapshot과
+ * coverage 결측 reason이며 외부 side effect는 없다.
  */
 function excludeMarketSnapshotsCoveredByAggregate(
   snapshots: readonly PnLSnapshotFact[],
-): PnLSnapshotFact[] {
+): { snapshots: PnLSnapshotFact[]; missingReasons: PnLMissingReason[] } {
   const byStrategy = new Map<string, PnLSnapshotFact[]>();
   for (const snapshot of snapshots) {
     const strategySnapshots = byStrategy.get(snapshot.strategyId) ?? [];
@@ -587,6 +594,7 @@ function excludeMarketSnapshotsCoveredByAggregate(
   }
 
   const selected: PnLSnapshotFact[] = [];
+  const missingReasons: PnLMissingReason[] = [];
   for (const strategySnapshots of byStrategy.values()) {
     const aggregate = strategySnapshots.find(
       (snapshot) => snapshot.market === null || snapshot.market === undefined,
@@ -613,10 +621,16 @@ function excludeMarketSnapshotsCoveredByAggregate(
     } else {
       // 더 최신 market snapshot이 있으면 오래된 aggregate 전체 합계가 최신 per-market 값을 덮지 못하게 한다.
       selected.push(...markets);
+      missingReasons.push({
+        message: "최신 market snapshot coverage가 일부만 확인됨",
+        reasonCode: "SNAPSHOT_COVERAGE_PARTIAL",
+        scope: scopeKey(aggregate.strategyId, null),
+        source: "pnl_snapshots",
+      });
     }
   }
 
-  return selected;
+  return { snapshots: selected, missingReasons };
 }
 
 function compareSnapshotCandidate(left: PnLSnapshotFact, right: PnLSnapshotFact): number {

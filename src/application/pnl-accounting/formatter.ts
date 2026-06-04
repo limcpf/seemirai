@@ -57,6 +57,8 @@ export function labelMissingReasonCode(code: string): string {
       return "체결 내역 없음";
     case "RECOVERABLE_ONLY":
       return "복구 가능 상태만 사용 가능";
+    case "SNAPSHOT_COVERAGE_PARTIAL":
+      return "일부 snapshot coverage만 확인됨";
     default:
       return `계산 불가 (${code})`;
   }
