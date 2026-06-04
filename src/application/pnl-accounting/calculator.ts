@@ -43,6 +43,8 @@ interface PositionLedger {
   strategyId: string;
   /** position source에서 넘어온 평균단가. fill 누적이 없으면 이 값을 기준으로 삼는다. */
   initialAverageEntryPrice: Decimal | null;
+  /** mark price가 없을 때 positions snapshot에서 보존하는 미실현손익 추정값이다. */
+  fallbackUnrealizedPnlKrw: Decimal | null;
 }
 
 /**
@@ -69,11 +71,12 @@ interface PositionLedger {
  * 5. missing reasons 수집
  */
 export function calculatePnLAccounting(input: PnLAccountingInput): PnLAccountingOutput {
+  const accountingInput = applyTargetScopeFilter(input);
   const missingReasons: PnLMissingReason[] = [];
   const scopes: PnLAccountingScope[] = [];
 
   // ── 1. snapshot coverage 판정 ──────────────────────────────────────────────
-  const snapshotFacts = selectEffectiveSnapshots(input.pnlSnapshots);
+  const snapshotFacts = selectEffectiveSnapshots(accountingInput.pnlSnapshots);
   const snapshotCoverage = createSnapshotCoverage(
     snapshotFacts.map((s) => ({ strategyId: s.strategyId, market: s.market })),
   );
@@ -81,7 +84,7 @@ export function calculatePnLAccounting(input: PnLAccountingInput): PnLAccounting
 
   // ── 2. reconcile fact 수집 ────────────────────────────────────────────────
   const reconciledPositions: PnLPositionFact[] = [];
-  for (const reconcile of input.reconcileFacts) {
+  for (const reconcile of accountingInput.reconcileFacts) {
     // snapshot이 이미 coverage 중이면 reconcile을 skip
     if (snapshotCoverage.isCovered(reconcile.strategyId, reconcile.market)) {
       continue;
@@ -139,7 +142,7 @@ export function calculatePnLAccounting(input: PnLAccountingInput): PnLAccounting
 
   // ── 3. positions fallback 수집 ─────────────────────────────────────────────
   const fallbackPositions: PnLPositionFact[] = [];
-  for (const position of input.positions) {
+  for (const position of accountingInput.positions) {
     if (snapshotCoverage.isCovered(position.strategyId, position.market)) {
       continue;
     }
@@ -158,7 +161,7 @@ export function calculatePnLAccounting(input: PnLAccountingInput): PnLAccounting
 
   // ── 4. fill 기반 ledger 구축 ──────────────────────────────────────────────
   const ledgerFills = sortFillsByExecutionTime(
-    input.fills.filter(
+    accountingInput.fills.filter(
       (fill) => !snapshotCoverage.isCovered(fill.strategyId, fill.market),
     ),
   );
@@ -172,8 +175,8 @@ export function calculatePnLAccounting(input: PnLAccountingInput): PnLAccounting
 
   // ── 6. 현금 처리 ─────────────────────────────────────────────────────────
   let cashKrw: Decimal | null;
-  if (input.cash !== null && input.cash !== undefined) {
-    cashKrw = parseFinancialDecimal(input.cash.totalKrw);
+  if (accountingInput.cash !== null && accountingInput.cash !== undefined) {
+    cashKrw = parseFinancialDecimal(accountingInput.cash.totalKrw);
   } else {
     cashKrw = null;
     missingReasons.push({
@@ -185,7 +188,7 @@ export function calculatePnLAccounting(input: PnLAccountingInput): PnLAccounting
   }
 
   // ── 7. MTM 평가 ──────────────────────────────────────────────────────────
-  const markPriceMap = buildMarkPriceMap(input.markPrices);
+  const markPriceMap = buildMarkPriceMap(accountingInput.markPrices);
   const positionDetails = calculatePositionDetails(ledger, markPriceMap, cashKrw, missingReasons);
 
   const hasUnquantifiedReconcile = hasUnquantifiedReconcilePosition(reconciledPositions);
@@ -228,19 +231,26 @@ export function calculatePnLAccounting(input: PnLAccountingInput): PnLAccounting
 
   // ── 9. 비용 분해 ─────────────────────────────────────────────────────────
   // 비용 분해는 PnL source priority와 독립된 evidence이므로 snapshot으로 덮인 fill fee도 보존한다.
-  const feeTotals = buildFeeTotals(aggregateFeesByCurrency(input.fills));
-  const spreadCost = aggregateQualityMetric(input.costQuality, "spreadCostBps");
-  const slippage = aggregateQualityMetric(input.costQuality, "slippageBps");
+  const feeTotals = buildFeeTotals(aggregateFeesByCurrency(accountingInput.fills));
+  const spreadCost = aggregateQualityMetric(accountingInput.costQuality, "spreadCostBps");
+  const slippage = aggregateQualityMetric(accountingInput.costQuality, "slippageBps");
   const cancelRequote = aggregateQualityMetric(
-    input.costQuality,
+    accountingInput.costQuality,
     "cancelRequotePenaltyBps",
   );
 
   // ── 10. scope 빌드 ───────────────────────────────────────────────────────
-  buildScopes(scopes, input, snapshotFacts, ledgerFills, ledger, resolveCalculationCapturedAt(input));
+  buildScopes(
+    scopes,
+    accountingInput,
+    snapshotFacts,
+    ledgerFills,
+    ledger,
+    resolveCalculationCapturedAt(accountingInput),
+  );
 
   // ── 11. 상태 판정 ────────────────────────────────────────────────────────
-  const status = determineStatus(scopes, missingReasons, input);
+  const status = determineStatus(scopes, missingReasons, accountingInput);
 
   // 거래 데이터가 전혀 없으면 PnL은 null로 남긴다 (실제 0과 계산 불가를 구분)
   const hasTradingData =
@@ -264,7 +274,86 @@ export function calculatePnLAccounting(input: PnLAccountingInput): PnLAccounting
     slippage,
     cancelRequote,
     missingReasons,
-    trace: buildTrace(input, snapshotFacts),
+    trace: buildTrace(accountingInput, snapshotFacts),
+  };
+}
+
+/**
+ * targetScopes 계약을 계산 입력 전체에 적용한다.
+ *
+ * application 경계에서 batch source를 받아도 호출자가 요청한 strategy/market만 계산해야 하므로
+ * scope가 있는 source는 동일한 필터를 통과시킨다. cash는 전역 잔고 evidence라 그대로 유지한다.
+ */
+function applyTargetScopeFilter(input: PnLAccountingInput): PnLAccountingInput {
+  if (input.targetScopes === undefined || input.targetScopes.length === 0) {
+    return input;
+  }
+
+  const scopeFilter = createTargetScopeFilter(input.targetScopes);
+
+  return {
+    ...input,
+    fills: input.fills.filter((fill) =>
+      scopeFilter.matchesScopedFact(fill.strategyId, fill.market),
+    ),
+    positions: input.positions.filter((position) =>
+      scopeFilter.matchesScopedFact(position.strategyId, position.market),
+    ),
+    markPrices: input.markPrices.filter((markPrice) =>
+      scopeFilter.matchesMarkPrice(markPrice.market),
+    ),
+    costQuality: input.costQuality.filter((fact) =>
+      scopeFilter.matchesScopedFact(fact.strategyId, fact.market),
+    ),
+    pnlSnapshots: input.pnlSnapshots.filter((snapshot) =>
+      scopeFilter.matchesSnapshot(snapshot.strategyId, snapshot.market),
+    ),
+    reconcileFacts: input.reconcileFacts.filter((reconcile) =>
+      scopeFilter.matchesScopedFact(reconcile.strategyId, reconcile.market),
+    ),
+  };
+}
+
+/**
+ * targetScopes를 source별 predicate로 바꾸는 작은 필터 객체를 만든다.
+ *
+ * market=null target은 strategy aggregate를 뜻해 해당 strategy의 모든 scoped fact를 포함한다.
+ * 반대로 특정 market target은 aggregate snapshot을 포함하지 않아 단일 market 요청에 strategy 합계가
+ * 섞이지 않게 한다.
+ */
+function createTargetScopeFilter(targetScopes: readonly PnLAccountingScope[]): {
+  matchesScopedFact(strategyId: string, market: string): boolean;
+  matchesSnapshot(strategyId: string, market: string | null): boolean;
+  matchesMarkPrice(market: string): boolean;
+} {
+  const aggregateStrategies = new Set<string>();
+  const scopedMarkets = new Set<string>();
+  const targetMarkets = new Set<string>();
+
+  for (const scope of targetScopes) {
+    if (scope.market === null) {
+      aggregateStrategies.add(scope.strategyId);
+      continue;
+    }
+
+    scopedMarkets.add(scopeKey(scope.strategyId, scope.market));
+    targetMarkets.add(scope.market);
+  }
+
+  return {
+    matchesScopedFact(strategyId: string, market: string): boolean {
+      return aggregateStrategies.has(strategyId) || scopedMarkets.has(scopeKey(strategyId, market));
+    },
+    matchesSnapshot(strategyId: string, market: string | null): boolean {
+      if (aggregateStrategies.has(strategyId)) {
+        return true;
+      }
+
+      return market !== null && scopedMarkets.has(scopeKey(strategyId, market));
+    },
+    matchesMarkPrice(market: string): boolean {
+      return aggregateStrategies.size > 0 || targetMarkets.has(market);
+    },
   };
 }
 
@@ -532,6 +621,9 @@ function seedLedgerFromPositions(
       ? parseFinancialDecimal(pos.averageEntryPrice)
       : null;
     entry.initialAverageEntryPrice = avgPrice;
+    entry.fallbackUnrealizedPnlKrw = pos.unrealizedPnl !== null
+      ? parseFinancialDecimal(pos.unrealizedPnl)
+      : null;
 
     if (shouldApplyFallbackRealizedPnl) {
       // position-only fallback에서는 positions.realizedPnl이 확정 손익 source이므로 ledger에 보존한다.
@@ -540,9 +632,12 @@ function seedLedgerFromPositions(
 
     if (pos.quantity !== "0") {
       const qty = parseNonNegativeDecimal(pos.quantity);
-      if (qty.greaterThan(0) && avgPrice !== null) {
+      if (qty.greaterThan(0)) {
+        // 평균단가가 없어도 수량은 평가액/equity 근거이므로 먼저 보존한다.
         entry.quantity = qty;
-        entry.costBasisKrw = qty.times(avgPrice);
+        if (avgPrice !== null) {
+          entry.costBasisKrw = qty.times(avgPrice);
+        }
       }
     }
   }
@@ -624,8 +719,15 @@ function calculatePositionDetails(
         unrealizedPnlKrw = marketValueKrw.minus(pos.costBasisKrw);
       } else if (averageEntryPrice !== null) {
         unrealizedPnlKrw = pos.quantity.times(markPrice).minus(pos.quantity.times(averageEntryPrice));
+      } else if (pos.fallbackUnrealizedPnlKrw !== null) {
+        // 평균단가가 결측이어도 position snapshot의 미실현손익 추정값은 fallback evidence로 보존한다.
+        unrealizedPnlKrw = pos.fallbackUnrealizedPnlKrw;
       }
     } else {
+      if (pos.fallbackUnrealizedPnlKrw !== null) {
+        // 평가가가 없으면 시장가치는 불명확하지만, position snapshot의 미실현손익은 총손익 근거로 유지한다.
+        unrealizedPnlKrw = pos.fallbackUnrealizedPnlKrw;
+      }
       // 평가가가 없음
       const scope = pos.market === "__aggregate__" ? scopeKey(pos.strategyId, null) : key;
       missingReasons.push({
@@ -761,21 +863,6 @@ function buildScopes(
     });
   }
 
-  // position fallback에서 scope 추가
-  for (const p of input.positions) {
-    const key = scopeKey(p.strategyId, p.market);
-    if (seenScopes.has(key) || snapshotCoverage.isCovered(p.strategyId, p.market)) continue;
-    seenScopes.add(key);
-    const hasAverageEntry = p.averageEntryPrice !== null && p.averageEntryPrice !== undefined;
-    scopes.push({
-      strategyId: p.strategyId,
-      market: p.market,
-      capturedAt,
-      source: "positions",
-      status: hasAverageEntry ? "CALCULATED" : "PARTIAL",
-    });
-  }
-
   // fill에서 scope 추가
   const fillScopes = resolveFillScopes(fills);
   for (const [key, scope] of fillScopes) {
@@ -801,6 +888,25 @@ function buildScopes(
       capturedAt,
       source: "fills",
       status: fillStatus,
+    });
+  }
+
+  // position fallback에서 scope 추가
+  for (const p of input.positions) {
+    const key = scopeKey(p.strategyId, p.market);
+    if (seenScopes.has(key) || snapshotCoverage.isCovered(p.strategyId, p.market)) continue;
+    seenScopes.add(key);
+    const hasAverageEntry = p.averageEntryPrice !== null && p.averageEntryPrice !== undefined;
+    const hasOpenPosition = parseNonNegativeDecimal(p.quantity).greaterThan(0);
+    const hasMarkPrice = input.markPrices.some((mp) => mp.market === p.market);
+    const positionStatus =
+      hasAverageEntry && (!hasOpenPosition || hasMarkPrice) ? "CALCULATED" : "PARTIAL";
+    scopes.push({
+      strategyId: p.strategyId,
+      market: p.market,
+      capturedAt,
+      source: "positions",
+      status: positionStatus,
     });
   }
 
@@ -869,6 +975,7 @@ function getOrCreatePositionLedger(
     market,
     strategyId,
     initialAverageEntryPrice: null,
+    fallbackUnrealizedPnlKrw: null,
   };
   ledger.positions.set(key, pos);
 

@@ -632,6 +632,39 @@ describe("M17 PnL accounting calculator", () => {
       ).toBe(true);
     });
 
+    it("평균단가가 없어도 position fallback 수량과 시장가치는 보존한다", () => {
+      const position: PnLPositionFact = {
+        strategyId: "trend_following",
+        market: "KRW-BTC",
+        quantity: "0.01",
+        averageEntryPrice: null,
+        realizedPnl: "1000",
+        unrealizedPnl: null,
+        updatedAt: new Date("2026-06-01T00:00:00Z"),
+        source: "positions",
+      };
+
+      const input: PnLAccountingInput = {
+        fills: [],
+        positions: [position],
+        markPrices: [markPrice("KRW-BTC", "101000000")],
+        cash: defaultCash(),
+        costQuality: [],
+        pnlSnapshots: [],
+        reconcileFacts: [],
+      };
+
+      const result = calculatePnLAccounting(input);
+
+      expect(result.status).toBe("PARTIAL");
+      expect(result.positions).toHaveLength(1);
+      expect(result.positions[0]!.quantity).toBe("0.01");
+      expect(result.positions[0]!.marketValueKrw).toBe("1010000");
+      expect(result.positions[0]!.unrealizedPnlKrw).toBeNull();
+      expect(result.positionMarketValueKrw).toBe("1010000");
+      expect(result.equityKrw).toBe("2010000");
+    });
+
     it("position fallback만 있으면 positions.realizedPnl을 보존한다", () => {
       const position: PnLPositionFact = {
         strategyId: "trend_following",
@@ -660,6 +693,75 @@ describe("M17 PnL accounting calculator", () => {
       expect(result.realizedPnlKrw).toBe("12345");
       expect(result.unrealizedPnlKrw).toBe("10000");
       expect(result.totalPnlKrw).toBe("22345");
+    });
+
+    it("mark price가 없으면 position fallback의 unrealizedPnl 추정값을 보존한다", () => {
+      const position: PnLPositionFact = {
+        strategyId: "trend_following",
+        market: "KRW-BTC",
+        quantity: "0.01",
+        averageEntryPrice: "100000000",
+        realizedPnl: "12345",
+        unrealizedPnl: "5000",
+        updatedAt: new Date("2026-06-01T00:00:00Z"),
+        source: "positions",
+      };
+
+      const input: PnLAccountingInput = {
+        fills: [],
+        positions: [position],
+        markPrices: [],
+        cash: defaultCash(),
+        costQuality: [],
+        pnlSnapshots: [],
+        reconcileFacts: [],
+      };
+
+      const result = calculatePnLAccounting(input);
+
+      expect(result.status).toBe("PARTIAL");
+      expect(result.realizedPnlKrw).toBe("12345");
+      expect(result.unrealizedPnlKrw).toBe("5000");
+      expect(result.totalPnlKrw).toBe("17345");
+      expect(result.positionMarketValueKrw).toBeNull();
+      expect(result.equityKrw).toBeNull();
+      expect(result.scopes[0]!.status).toBe("PARTIAL");
+    });
+
+    it("targetScopes가 있으면 요청한 scope만 계산한다", () => {
+      const input: PnLAccountingInput = {
+        targetScopes: [
+          {
+            strategyId: "trend_following",
+            market: "KRW-BTC",
+            capturedAt: "2026-06-01T00:00:00.000Z",
+            source: "fills",
+            status: "CALCULATED",
+          },
+        ],
+        fills: [
+          buyFill("b1", "KRW-BTC", "0.01", "100000000", "50", "trend_following"),
+          buyFill("b2", "KRW-ETH", "2", "3000000", "30", "mean_reversion"),
+        ],
+        positions: [],
+        markPrices: [
+          markPrice("KRW-BTC", "101000000"),
+          markPrice("KRW-ETH", "3010000"),
+        ],
+        cash: defaultCash(),
+        costQuality: [],
+        pnlSnapshots: [],
+        reconcileFacts: [],
+      };
+
+      const result = calculatePnLAccounting(input);
+
+      expect(result.positions).toHaveLength(1);
+      expect(result.positions[0]!.strategyId).toBe("trend_following");
+      expect(result.positions[0]!.market).toBe("KRW-BTC");
+      expect(result.positionMarketValueKrw).toBe("1010000");
+      expect(result.feeTotals).toEqual([{ currency: "KRW", amount: "50" }]);
+      expect(result.scopes.some((s) => s.strategyId === "mean_reversion")).toBe(false);
     });
 
     it("호출 시각이 달라도 동일 입력에서 항상 같은 결과를 반환한다 (deterministic)", () => {
@@ -833,6 +935,65 @@ describe("M17 PnL accounting calculator", () => {
       );
       expect(hasTrendFollowing).toBe(true);
       expect(hasMeanReversion).toBe(true);
+    });
+
+    it("fills와 positions가 같은 scope에 있으면 scope source는 fills를 보존한다", () => {
+      const position: PnLPositionFact = {
+        strategyId: "trend_following",
+        market: "KRW-BTC",
+        quantity: "0.01",
+        averageEntryPrice: "100000000",
+        realizedPnl: "0",
+        unrealizedPnl: "0",
+        updatedAt: new Date("2026-06-01T00:00:00Z"),
+        source: "positions",
+      };
+
+      const input: PnLAccountingInput = {
+        fills: [
+          buyFill("b1", "KRW-BTC", "0.01", "100000000", "50"),
+        ],
+        positions: [position],
+        markPrices: [markPrice("KRW-BTC", "101000000")],
+        cash: defaultCash(),
+        costQuality: [],
+        pnlSnapshots: [],
+        reconcileFacts: [],
+      };
+
+      const result = calculatePnLAccounting(input);
+      const marketScope = result.scopes.find((s) => s.market === "KRW-BTC");
+
+      expect(marketScope).toBeDefined();
+      expect(marketScope!.source).toBe("fills");
+    });
+
+    it("mark price가 없는 open position fallback scope는 PARTIAL이다", () => {
+      const position: PnLPositionFact = {
+        strategyId: "trend_following",
+        market: "KRW-BTC",
+        quantity: "0.01",
+        averageEntryPrice: "100000000",
+        realizedPnl: "0",
+        unrealizedPnl: null,
+        updatedAt: new Date("2026-06-01T00:00:00Z"),
+        source: "positions",
+      };
+
+      const input: PnLAccountingInput = {
+        fills: [],
+        positions: [position],
+        markPrices: [],
+        cash: defaultCash(),
+        costQuality: [],
+        pnlSnapshots: [],
+        reconcileFacts: [],
+      };
+
+      const result = calculatePnLAccounting(input);
+
+      expect(result.scopes[0]!.source).toBe("positions");
+      expect(result.scopes[0]!.status).toBe("PARTIAL");
     });
   });
 
