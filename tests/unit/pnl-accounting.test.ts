@@ -376,6 +376,48 @@ describe("M17 PnL accounting calculator", () => {
         );
       }
     });
+
+    it("snapshot equity를 position exposure 분모에 포함한다", () => {
+      const snapshot: PnLSnapshotFact = {
+        strategyId: "trend_following",
+        market: null,
+        capturedAt: new Date("2026-06-01T00:00:00Z"),
+        equity: "10000000",
+        realizedPnl: "0",
+        unrealizedPnl: "0",
+        drawdownBps: "0",
+      };
+      const position: PnLPositionFact = {
+        strategyId: "mean_reversion",
+        market: "KRW-BTC",
+        quantity: "0.01",
+        averageEntryPrice: "100000000",
+        realizedPnl: "0",
+        unrealizedPnl: null,
+        updatedAt: new Date("2026-06-01T00:00:00Z"),
+        source: "positions",
+      };
+
+      const input: PnLAccountingInput = {
+        fills: [],
+        positions: [position],
+        markPrices: [markPrice("KRW-BTC", "100000000")],
+        cash: defaultCash(),
+        costQuality: [],
+        pnlSnapshots: [snapshot],
+        reconcileFacts: [],
+      };
+
+      const result = calculatePnLAccounting(input);
+      const btc = result.positions.find((p) => p.market === "KRW-BTC");
+
+      expect(result.equityKrw).toBe("11000000");
+      expect(btc).toBeDefined();
+      expect(parseFloat(btc!.exposureBps!)).toBeCloseTo(
+        (1000000 / 11000000) * 10000,
+        5,
+      );
+    });
   });
 
   describe("source priority", () => {
@@ -423,6 +465,43 @@ describe("M17 PnL accounting calculator", () => {
       expect(result.positions.filter((p) => p.strategyId === "trend_following")).toHaveLength(0);
     });
 
+    it("snapshot scope capturedAt은 제외된 fallback timestamp를 쓰지 않는다", () => {
+      const snapshot: PnLSnapshotFact = {
+        strategyId: "trend_following",
+        market: null,
+        capturedAt: new Date("2026-06-01T00:00:00Z"),
+        equity: "1050000",
+        realizedPnl: "50000",
+        unrealizedPnl: "0",
+        drawdownBps: "0",
+      };
+      const position: PnLPositionFact = {
+        strategyId: "trend_following",
+        market: "KRW-BTC",
+        quantity: "0.01",
+        averageEntryPrice: "100000000",
+        realizedPnl: "0",
+        unrealizedPnl: null,
+        updatedAt: new Date("2026-06-04T00:00:00Z"),
+        source: "positions",
+      };
+
+      const input: PnLAccountingInput = {
+        fills: [],
+        positions: [position],
+        markPrices: [markPrice("KRW-BTC", "101000000")],
+        cash: defaultCash(),
+        costQuality: [],
+        pnlSnapshots: [snapshot],
+        reconcileFacts: [],
+      };
+
+      const result = calculatePnLAccounting(input);
+
+      expect(result.scopes[0]!.source).toBe("pnl_snapshots");
+      expect(result.scopes[0]!.capturedAt).toBe("2026-06-01T00:00:00.000Z");
+    });
+
     it("strategy aggregate snapshot(market=null)은 같은 strategy의 모든 market position을 덮는다", () => {
       const snapshot: PnLSnapshotFact = {
         strategyId: "trend_following",
@@ -464,6 +543,46 @@ describe("M17 PnL accounting calculator", () => {
       expect(result.positionMarketValueKrw).toBeNull();
       expect(result.equityKrw).toBe("1050000");
       expect(result.positions.filter((p) => p.strategyId === "trend_following")).toHaveLength(0);
+    });
+
+    it("오래된 aggregate snapshot으로 최신 market snapshot을 덮지 않는다", () => {
+      const aggregateSnapshot: PnLSnapshotFact = {
+        strategyId: "trend_following",
+        market: null,
+        capturedAt: new Date("2026-06-01T00:00:00Z"),
+        equity: "1000",
+        realizedPnl: "10",
+        unrealizedPnl: "0",
+        drawdownBps: "0",
+      };
+      const marketSnapshot: PnLSnapshotFact = {
+        strategyId: "trend_following",
+        market: "KRW-BTC",
+        capturedAt: new Date("2026-06-04T00:00:00Z"),
+        equity: "2000",
+        realizedPnl: "20",
+        unrealizedPnl: "5",
+        drawdownBps: "0",
+      };
+
+      const input: PnLAccountingInput = {
+        fills: [],
+        positions: [],
+        markPrices: [],
+        cash: defaultCash(),
+        costQuality: [],
+        pnlSnapshots: [aggregateSnapshot, marketSnapshot],
+        reconcileFacts: [],
+      };
+
+      const result = calculatePnLAccounting(input);
+
+      expect(result.scopes).toHaveLength(1);
+      expect(result.scopes[0]!.market).toBe("KRW-BTC");
+      expect(result.scopes[0]!.capturedAt).toBe("2026-06-04T00:00:00.000Z");
+      expect(result.equityKrw).toBe("2000");
+      expect(result.realizedPnlKrw).toBe("20");
+      expect(result.unrealizedPnlKrw).toBe("5");
     });
   });
 
@@ -720,6 +839,36 @@ describe("M17 PnL accounting calculator", () => {
       expect(
         result.missingReasons.some((r) => r.reasonCode === "NO_CASH_SOURCE"),
       ).toBe(true);
+    });
+
+    it("snapshot-only 계산은 현금 source가 없어도 계산 완료로 유지한다", () => {
+      const snapshot: PnLSnapshotFact = {
+        strategyId: "trend_following",
+        market: null,
+        capturedAt: new Date("2026-06-01T00:00:00Z"),
+        equity: "1050000",
+        realizedPnl: "50000",
+        unrealizedPnl: "10000",
+        drawdownBps: "0",
+      };
+      const input: PnLAccountingInput = {
+        fills: [],
+        positions: [],
+        markPrices: [],
+        cash: null,
+        costQuality: [],
+        pnlSnapshots: [snapshot],
+        reconcileFacts: [],
+      };
+
+      const result = calculatePnLAccounting(input);
+
+      expect(result.status).toBe("CALCULATED");
+      expect(result.cashKrw).toBeNull();
+      expect(result.equityKrw).toBe("1050000");
+      expect(
+        result.missingReasons.some((r) => r.reasonCode === "NO_CASH_SOURCE"),
+      ).toBe(false);
     });
 
     it("현금 source가 없으면 fills 순현금흐름을 실제 현금 잔고로 표시하지 않는다", () => {

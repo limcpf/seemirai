@@ -200,17 +200,26 @@ export function calculatePnLAccounting(input: PnLAccountingInput): PnLAccounting
     cashKrw = parseFinancialDecimal(accountingInput.cash.totalKrw);
   } else {
     cashKrw = null;
-    missingReasons.push({
-      message: "현금 정보 없음",
-      reasonCode: "NO_CASH_SOURCE",
-      scope: "global",
-      source: "cash",
-    });
+    if (snapshotTotals.equityKrw === null) {
+      // snapshot equity가 없을 때만 현금 결측이 총자산 계산을 막으므로 missing reason으로 승격한다.
+      missingReasons.push({
+        message: "현금 정보 없음",
+        reasonCode: "NO_CASH_SOURCE",
+        scope: "global",
+        source: "cash",
+      });
+    }
   }
 
   // ── 7. MTM 평가 ──────────────────────────────────────────────────────────
   const markPriceMap = buildMarkPriceMap(accountingInput.markPrices);
-  const positionDetails = calculatePositionDetails(ledger, markPriceMap, cashKrw, missingReasons);
+  const positionDetails = calculatePositionDetails(
+    ledger,
+    markPriceMap,
+    cashKrw,
+    snapshotTotals.equityKrw,
+    missingReasons,
+  );
 
   const hasUnquantifiedReconcile =
     hasUnknownReconcilePosition || hasUnquantifiedReconcilePosition(reconciledPositions);
@@ -553,21 +562,55 @@ function selectEffectiveSnapshots(
   ).sort(compareSnapshotScope);
 }
 
+/**
+ * 같은 strategy의 aggregate snapshot과 market snapshot 중 중복 합산 없이 쓸 layer를 선택한다.
+ *
+ * `selectEffectiveSnapshots` 내부에서 strategy별 최신 snapshot 후보를 받은 뒤 호출된다. aggregate가 market
+ * layer보다 최신이면 aggregate 하나가 strategy 전체를 대표하고, 더 최신 market snapshot이 있으면 오래된
+ * aggregate가 최신 market evidence를 덮지 못하게 market layer를 선택한다. 입력과 출력은 모두 snapshot
+ * fact 배열이며 외부 side effect는 없다.
+ */
 function excludeMarketSnapshotsCoveredByAggregate(
   snapshots: readonly PnLSnapshotFact[],
 ): PnLSnapshotFact[] {
-  const strategiesWithAggregate = new Set(
-    snapshots
-      .filter((snapshot) => snapshot.market === null || snapshot.market === undefined)
-      .map((snapshot) => snapshot.strategyId),
-  );
+  const byStrategy = new Map<string, PnLSnapshotFact[]>();
+  for (const snapshot of snapshots) {
+    const strategySnapshots = byStrategy.get(snapshot.strategyId) ?? [];
+    strategySnapshots.push(snapshot);
+    byStrategy.set(snapshot.strategyId, strategySnapshots);
+  }
 
-  return snapshots.filter(
-    (snapshot) =>
-      snapshot.market === null ||
-      snapshot.market === undefined ||
-      !strategiesWithAggregate.has(snapshot.strategyId),
-  );
+  const selected: PnLSnapshotFact[] = [];
+  for (const strategySnapshots of byStrategy.values()) {
+    const aggregate = strategySnapshots.find(
+      (snapshot) => snapshot.market === null || snapshot.market === undefined,
+    );
+    const markets = strategySnapshots.filter(
+      (snapshot) => snapshot.market !== null && snapshot.market !== undefined,
+    );
+
+    if (aggregate === undefined) {
+      selected.push(...markets);
+      continue;
+    }
+
+    if (markets.length === 0) {
+      selected.push(aggregate);
+      continue;
+    }
+
+    const aggregateTime = toTime(aggregate.capturedAt);
+    const latestMarketTime = Math.max(...markets.map((snapshot) => toTime(snapshot.capturedAt)));
+    if (aggregateTime >= latestMarketTime) {
+      // aggregate가 market layer 이상으로 최신일 때만 하위 market snapshot을 덮어 중복 합산을 막는다.
+      selected.push(aggregate);
+    } else {
+      // 더 최신 market snapshot이 있으면 오래된 aggregate 전체 합계가 최신 per-market 값을 덮지 못하게 한다.
+      selected.push(...markets);
+    }
+  }
+
+  return selected;
 }
 
 function compareSnapshotCandidate(left: PnLSnapshotFact, right: PnLSnapshotFact): number {
@@ -775,18 +818,31 @@ function createMarkPriceTieBreakKey(markPrice: PnLMarkPriceFact): string {
   ]);
 }
 
+/**
+ * ledger position을 output detail로 변환하고 노출 비중을 계산한다.
+ *
+ * calculator 내부에서만 호출되며, ledger와 mark price, cash 또는 snapshot equity를 읽어 position별 평가액,
+ * 미실현손익, exposure를 산출한다. snapshot equity가 있으면 최종 output equity의 분모와 맞추기 위해
+ * cash 대신 snapshot equity를 exposure denominator로 사용한다. missingReasons 배열에는 평가가 결측만
+ * 추가하며 그 외 외부 side effect는 없다.
+ */
 function calculatePositionDetails(
   ledger: Ledger,
   markPriceMap: Map<string, Decimal>,
   cashKrw: Decimal | null,
+  snapshotEquityKrw: Decimal | null,
   missingReasons: PnLMissingReason[],
 ): PnLPositionDetail[] {
   const details: PnLPositionDetail[] = [];
   const totalMarketValueForExposure = computeLedgerMarketValueForExposure(ledger, markPriceMap);
   const exposureEquityKrw =
-    cashKrw !== null && totalMarketValueForExposure !== null
-      ? cashKrw.plus(totalMarketValueForExposure)
-      : null;
+    totalMarketValueForExposure === null
+      ? null
+      : snapshotEquityKrw !== null
+        ? snapshotEquityKrw.plus(totalMarketValueForExposure)
+        : cashKrw !== null
+          ? cashKrw.plus(totalMarketValueForExposure)
+          : null;
 
   for (const [key, pos] of ledger.positions) {
     if (pos.quantity.isZero()) {
@@ -959,7 +1015,7 @@ function buildScopes(
     scopes.push({
       strategyId: snapshot.strategyId,
       market: snapshot.market,
-      capturedAt,
+      capturedAt: normalizeTimestamp(snapshot.capturedAt),
       source: "pnl_snapshots",
       status: "CALCULATED",
     });
@@ -975,7 +1031,7 @@ function buildScopes(
     scopes.push({
       strategyId: r.strategyId,
       market: r.market,
-      capturedAt,
+      capturedAt: normalizeTimestamp(r.reconciledAt),
       source: "live_reconcile_position_snapshots",
       status: "MANUAL_REVIEW_REQUIRED",
     });
@@ -997,7 +1053,7 @@ function buildScopes(
     scopes.push({
       strategyId: scope.strategyId,
       market: scope.market,
-      capturedAt,
+      capturedAt: resolveFillScopeCapturedAt(fills, scope.strategyId, scope.market, capturedAt),
       source: "fills",
       status: fillStatus,
     });
@@ -1018,7 +1074,7 @@ function buildScopes(
     scopes.push({
       strategyId: r.strategyId,
       market: r.market,
-      capturedAt,
+      capturedAt: normalizeTimestamp(r.reconciledAt),
       source: "live_reconcile_position_snapshots",
       // 평균단가 없는 RECOVERABLE은 수량 이전에 진입가 근거가 없어 계산 scope도 수동 검토로 올린다.
       status: reconcileStatus,
@@ -1039,7 +1095,7 @@ function buildScopes(
     scopes.push({
       strategyId: p.strategyId,
       market: p.market,
-      capturedAt,
+      capturedAt: normalizeTimestamp(p.updatedAt),
       source: "positions",
       status: positionStatus,
     });
@@ -1055,6 +1111,28 @@ function buildScopes(
       status: "UNAVAILABLE",
     });
   }
+}
+
+/**
+ * fill 기반 output scope의 source timestamp를 산출한다.
+ *
+ * `buildScopes` 내부에서만 호출하며, snapshot coverage 이후 실제 ledger에 쓰인 fill 목록만 입력으로 받는다.
+ * market이 null이면 strategy aggregate fill scope이므로 해당 strategy의 최신 fill 시각을 반환한다.
+ * 입력 source가 비어 있으면 caller가 넘긴 fallback capturedAt을 유지하며 외부 side effect는 없다.
+ */
+function resolveFillScopeCapturedAt(
+  fills: readonly PnLFillFact[],
+  strategyId: string,
+  market: string | null,
+  fallbackCapturedAt: string,
+): string {
+  const sourceTimes = fills
+    .filter((fill) => fill.strategyId === strategyId && (market === null || fill.market === market))
+    .map((fill) => toTime(fill.filledAt));
+
+  return sourceTimes.length === 0
+    ? fallbackCapturedAt
+    : new Date(Math.max(...sourceTimes)).toISOString();
 }
 
 function determineStatus(
