@@ -68,7 +68,16 @@ function fixtureInput(): PnLAccountingInput {
       source: "paper_broker",
       observedAt: new Date("2026-06-01T00:00:00Z"),
     },
-    costQuality: [],
+    costQuality: [
+      {
+        strategyId: "trend",
+        market: "KRW-BTC",
+        spreadCostBps: "1",
+        slippageBps: "1",
+        cancelRequotePenaltyBps: "0",
+        source: "test_cost_quality",
+      },
+    ],
     pnlSnapshots: [],
     reconcileFacts: [],
   };
@@ -244,6 +253,26 @@ describe("M17 PnL accounting closeout", () => {
 
     expect(observedCapturedAt).toBeUndefined();
     expect(result.capturedAt).toBe("2026-06-01T00:00:00.000Z");
+  });
+
+  it("captured_at 없으면 최신 valuation source timestamp를 사용한다", async () => {
+    const input: PnLAccountingInput = {
+      ...fixtureInput(),
+      markPrices: [
+        {
+          ...fixtureInput().markPrices[0]!,
+          observedAt: new Date("2026-06-01T00:10:00Z"),
+        },
+      ],
+    };
+    const repository = new MemoryPnlRepository();
+
+    const result = await runPnLAccountingCloseout({
+      dataProvider: createFixtureDataProvider(input),
+      repository,
+    });
+
+    expect(result.capturedAt).toBe("2026-06-01T00:10:00.000Z");
   });
 
   it("drawdown history의 이전 snapshot equity가 더 낮으면 drawdown은 0이다", async () => {

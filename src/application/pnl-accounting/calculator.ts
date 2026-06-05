@@ -323,8 +323,24 @@ export function calculatePnLAccounting(input: PnLAccountingInput): PnLAccounting
     ]);
 
   // ── 8. equity ─────────────────────────────────────────────────────────────
+  const hasMixedSourceCashGap =
+    snapshotTotals.equityKrw !== null &&
+    cashKrw === null &&
+    positionMarketValueKrw !== null &&
+    hasLedgerPositionDetails;
+  if (hasMixedSourceCashGap) {
+    // snapshot 밖 fallback scope의 현금 잔고를 알 수 없으면 총자산을 정상 숫자로 확정하지 않는다.
+    addMissingReasonOnce(missingReasons, {
+      message: "현금 정보 없음",
+      reasonCode: "NO_CASH_SOURCE",
+      scope: "global",
+      source: "cash",
+    });
+  }
   const equityKrw =
-    snapshotTotals.equityKrw !== null
+    hasMixedSourceCashGap
+      ? null
+      : snapshotTotals.equityKrw !== null
       ? positionMarketValueKrw === null
         ? hasLedgerPositionDetails || hasUnquantifiedReconcile
           ? null
@@ -347,6 +363,15 @@ export function calculatePnLAccounting(input: PnLAccountingInput): PnLAccounting
   const cancelRequote = aggregateQualityMetric(
     accountingInput.costQuality,
     "cancelRequotePenaltyBps",
+  );
+  const requiresCostQuality =
+    accountingInput.fills.length > 0 ||
+    hasOpenPositionQuantity(fallbackPositions) ||
+    hasOpenPositionQuantity(reconciledPositions);
+  appendCostQualityMissingReasons(
+    missingReasons,
+    requiresCostQuality,
+    { spreadCost, slippage, cancelRequote },
   );
 
   // ── 10. scope 빌드 ───────────────────────────────────────────────────────
@@ -949,9 +974,9 @@ function createMarkPriceTieBreakKey(markPrice: PnLMarkPriceFact): string {
  * ledger position을 output detail로 변환하고 노출 비중을 계산한다.
  *
  * calculator 내부에서만 호출되며, ledger와 mark price, cash 또는 snapshot equity를 읽어 position별 평가액,
- * 미실현손익, exposure를 산출한다. snapshot equity가 있으면 최종 output equity의 분모와 맞추기 위해
- * cash 대신 snapshot equity를 exposure denominator로 사용한다. missingReasons 배열에는 평가가 결측만
- * 추가하며 그 외 외부 side effect는 없다.
+ * 미실현손익, exposure를 산출한다. snapshot equity가 있으면 최종 output equity의 분모와 맞추되,
+ * fallback scope 현금 source가 없으면 exposure denominator도 확정하지 않는다. missingReasons 배열에는
+ * 평가가 결측만 추가하며 그 외 외부 side effect는 없다.
  */
 function calculatePositionDetails(
   ledger: Ledger,
@@ -966,7 +991,9 @@ function calculatePositionDetails(
     totalMarketValueForExposure === null
       ? null
       : snapshotEquityKrw !== null
-        ? snapshotEquityKrw.plus(totalMarketValueForExposure)
+        ? cashKrw === null
+          ? null
+          : snapshotEquityKrw.plus(totalMarketValueForExposure)
         : cashKrw !== null
           ? cashKrw.plus(totalMarketValueForExposure)
           : null;
@@ -1085,6 +1112,62 @@ function buildFeeTotals(feesByCurrency: Map<string, Decimal>): PnLFeeTotal[] {
     }));
 }
 
+/**
+ * 비용 품질 source 결측을 계산 불가 원인으로 승격한다.
+ *
+ * fill/position/reconcile 같은 거래 근거가 있는데 spread/slippage/cancel-requote evidence가 없으면
+ * 비용을 0으로 보정한 완전 계산으로 오해할 수 있으므로 metric별 결측을 durable output에 남긴다.
+ */
+function appendCostQualityMissingReasons(
+  missingReasons: PnLMissingReason[],
+  required: boolean,
+  metrics: {
+    spreadCost: PnLExecutionQualityMetric;
+    slippage: PnLExecutionQualityMetric;
+    cancelRequote: PnLExecutionQualityMetric;
+  },
+): void {
+  if (!required) {
+    return;
+  }
+
+  if (!metrics.spreadCost.available) {
+    addMissingReasonOnce(missingReasons, {
+      message: "스프레드 비용 근거 없음",
+      reasonCode: "SPREAD_COST_SOURCE_MISSING",
+      scope: "global",
+      source: "cost_quality_facts",
+    });
+  }
+  if (!metrics.slippage.available) {
+    addMissingReasonOnce(missingReasons, {
+      message: "슬리피지 근거 없음",
+      reasonCode: "SLIPPAGE_SOURCE_MISSING",
+      scope: "global",
+      source: "cost_quality_facts",
+    });
+  }
+  if (!metrics.cancelRequote.available) {
+    addMissingReasonOnce(missingReasons, {
+      message: "취소/재호가 비용 근거 없음",
+      reasonCode: "CANCEL_REQUOTE_SOURCE_MISSING",
+      scope: "global",
+      source: "cost_quality_facts",
+    });
+  }
+}
+
+/**
+ * 비용 품질 evidence가 필수인 open position source인지 판정한다.
+ *
+ * snapshot coverage에서 제외되어 실제 fallback 계산에 쓰인 position/reconcile 중 수량이 남은 경우에만
+ * spread/slippage/cancel-requote 결측이 현재 PnL 상태에 영향을 준다. 청산 완료 수량 0은 비용 품질 원천을
+ * 새로 요구하지 않는다.
+ */
+function hasOpenPositionQuantity(positions: readonly PnLPositionFact[]): boolean {
+  return positions.some((position) => parseNonNegativeDecimal(position.quantity).greaterThan(0));
+}
+
 function aggregateQualityMetric(
   facts: readonly PnLCostQualityFact[],
   field: "spreadCostBps" | "slippageBps" | "cancelRequotePenaltyBps",
@@ -1115,6 +1198,27 @@ function aggregateQualityMetric(
     sampleCount: values.length,
     source: "cost_quality_facts",
   };
+}
+
+/**
+ * 동일 결측 원인을 한 번만 보존한다.
+ *
+ * 현금, 비용, 평가가 결측은 여러 계산 분기에서 감지될 수 있지만 output contract는 사용자-facing 원인을
+ * scope/code/source 단위로 안정적으로 보존해야 하므로 중복 push를 차단한다.
+ */
+function addMissingReasonOnce(
+  missingReasons: PnLMissingReason[],
+  reason: PnLMissingReason,
+): void {
+  const alreadyExists = missingReasons.some(
+    (existing) =>
+      existing.reasonCode === reason.reasonCode &&
+      existing.scope === reason.scope &&
+      existing.source === reason.source,
+  );
+  if (!alreadyExists) {
+    missingReasons.push(reason);
+  }
 }
 
 // ── scope / status ───────────────────────────────────────────────────────────

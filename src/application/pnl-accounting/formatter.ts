@@ -63,6 +63,12 @@ export function labelMissingReasonCode(code: string): string {
       return "positions 실현손익은 수수료 반영 근거 없음";
     case "FILL_OPENING_POSITION_SOURCE_MISSING":
       return "체결 전 opening position 근거 없음";
+    case "SPREAD_COST_SOURCE_MISSING":
+      return "스프레드 비용 근거 없음";
+    case "SLIPPAGE_SOURCE_MISSING":
+      return "슬리피지 근거 없음";
+    case "CANCEL_REQUOTE_SOURCE_MISSING":
+      return "취소/재호가 비용 근거 없음";
     default:
       return `계산 불가 (${code})`;
   }

@@ -263,12 +263,15 @@ function selectPersistableScopeKeys(
  * calculator output의 source timestamp에서 closeout capturedAt을 결정한다.
  *
  * 명시 capturedAt이 없을 때 실행 시각을 쓰면 같은 source 재처리가 중복 snapshot을 만들 수 있으므로,
- * output scope의 최신 source timestamp를 durable capturedAt으로 사용한다.
+ * output scope와 trace의 최신 source timestamp를 durable capturedAt으로 사용한다.
  */
 function resolveOutputCapturedAt(output: PnLAccountingOutput): string {
-  const sourceTimes = output.scopes
-    .map((scope) => toTimeMs(scope.capturedAt))
-    .filter((time) => Number.isFinite(time));
+  const sourceTimes = [
+    ...output.scopes.map((scope) => toTimeMs(scope.capturedAt)),
+    output.trace.lastSourceTimestamp === undefined
+      ? Number.NaN
+      : toTimeMs(output.trace.lastSourceTimestamp),
+  ].filter((time) => Number.isFinite(time));
 
   return sourceTimes.length === 0
     ? "1970-01-01T00:00:00.000Z"

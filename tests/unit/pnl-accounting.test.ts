@@ -97,6 +97,28 @@ function markPrice(market: string, priceKrw: string): PnLMarkPriceFact {
   };
 }
 
+/**
+ * 비용 결측이 아닌 계산 경로를 검증할 때 쓰는 완전한 체결 품질 fixture다.
+ *
+ * 테스트가 손익 금액이나 source priority를 보려는 경우 비용 source 결측으로 상태가 PARTIAL이 되는
+ * 부수 효과를 피하기 위해 spread/slippage/cancel-requote evidence를 함께 제공한다.
+ */
+function completeCostQuality(
+  strategyId = "trend_following",
+  market = "KRW-BTC",
+): PnLAccountingInput["costQuality"] {
+  return [
+    {
+      strategyId,
+      market,
+      spreadCostBps: "1",
+      slippageBps: "1",
+      cancelRequotePenaltyBps: "0",
+      source: "test_cost_quality",
+    },
+  ];
+}
+
 // ── 테스트 ──────────────────────────────────────────────────────────────────
 
 describe("M17 PnL accounting calculator", () => {
@@ -110,7 +132,7 @@ describe("M17 PnL accounting calculator", () => {
         positions: [],
         markPrices: [],
         cash: defaultCash(),
-        costQuality: [],
+        costQuality: completeCostQuality(),
         pnlSnapshots: [],
         reconcileFacts: [],
       };
@@ -139,7 +161,7 @@ describe("M17 PnL accounting calculator", () => {
         positions: [],
         markPrices: [markPrice("KRW-BTC", "107000000")],
         cash: defaultCash(),
-        costQuality: [],
+        costQuality: completeCostQuality(),
         pnlSnapshots: [],
         reconcileFacts: [],
       };
@@ -205,7 +227,7 @@ describe("M17 PnL accounting calculator", () => {
         positions: [position],
         markPrices: [markPrice("KRW-BTC", "105000000")],
         cash: defaultCash(),
-        costQuality: [],
+        costQuality: completeCostQuality(),
         pnlSnapshots: [],
         reconcileFacts: [],
       };
@@ -280,7 +302,7 @@ describe("M17 PnL accounting calculator", () => {
         positions: [],
         markPrices: [markPrice("KRW-BTC", "105000000")],
         cash: defaultCash(),
-        costQuality: [],
+        costQuality: completeCostQuality(),
         pnlSnapshots: [],
         reconcileFacts: [reconcile],
       };
@@ -308,7 +330,7 @@ describe("M17 PnL accounting calculator", () => {
         positions: [],
         markPrices: [],
         cash: defaultCash(),
-        costQuality: [],
+        costQuality: completeCostQuality(),
         pnlSnapshots: [],
         reconcileFacts: [],
       };
@@ -760,7 +782,7 @@ describe("M17 PnL accounting calculator", () => {
         positions: [],
         markPrices: [markPrice("KRW-BTC", "101000000")],
         cash: defaultCash(),
-        costQuality: [],
+        costQuality: completeCostQuality(),
         pnlSnapshots: [],
         reconcileFacts: [reconcile],
       };
@@ -794,7 +816,7 @@ describe("M17 PnL accounting calculator", () => {
         positions: [],
         markPrices: [markPrice("KRW-BTC", "101000000")],
         cash: defaultCash(),
-        costQuality: [],
+        costQuality: completeCostQuality(),
         pnlSnapshots: [],
         reconcileFacts: [reconcile],
       };
@@ -906,7 +928,7 @@ describe("M17 PnL accounting calculator", () => {
         positions: [],
         markPrices: [markPrice("KRW-BTC", "101000000")],
         cash: defaultCash(),
-        costQuality: [],
+        costQuality: completeCostQuality(),
         pnlSnapshots: [],
         reconcileFacts: [reconcile],
       };
@@ -935,7 +957,7 @@ describe("M17 PnL accounting calculator", () => {
         positions: [],
         markPrices: [markPrice("KRW-BTC", "101000000")],
         cash: defaultCash(),
-        costQuality: [],
+        costQuality: completeCostQuality(),
         pnlSnapshots: [],
         reconcileFacts: [reconcile],
       };
@@ -969,7 +991,7 @@ describe("M17 PnL accounting calculator", () => {
         positions: [],
         markPrices: [markPrice("KRW-BTC", "101000000")],
         cash: defaultCash(),
-        costQuality: [],
+        costQuality: completeCostQuality(),
         pnlSnapshots: [],
         reconcileFacts: [reconcile],
       };
@@ -1003,7 +1025,7 @@ describe("M17 PnL accounting calculator", () => {
         positions: [],
         markPrices: [markPrice("KRW-BTC", "101000000")],
         cash: defaultCash(),
-        costQuality: [],
+        costQuality: completeCostQuality(),
         pnlSnapshots: [],
         reconcileFacts: [reconcile],
       };
@@ -1143,6 +1165,39 @@ describe("M17 PnL accounting calculator", () => {
       expect(
         result.missingReasons.some((r) => r.reasonCode === "NO_CASH_SOURCE"),
       ).toBe(false);
+    });
+
+    it("snapshot과 fallback scope가 섞이면 현금 source 없이 equity를 확정하지 않는다", () => {
+      const snapshot: PnLSnapshotFact = {
+        strategyId: "trend_following",
+        market: "KRW-BTC",
+        capturedAt: new Date("2026-06-01T00:00:00Z"),
+        equity: "1050000",
+        realizedPnl: "50000",
+        unrealizedPnl: "0",
+        drawdownBps: "0",
+      };
+      const input: PnLAccountingInput = {
+        fills: [
+          buyFill("eth-buy", "KRW-ETH", "1", "3000000", "30", "mean_reversion"),
+        ],
+        positions: [],
+        markPrices: [markPrice("KRW-ETH", "3100000")],
+        cash: null,
+        costQuality: completeCostQuality("mean_reversion", "KRW-ETH"),
+        pnlSnapshots: [snapshot],
+        reconcileFacts: [],
+      };
+
+      const result = calculatePnLAccounting(input);
+
+      expect(result.status).toBe("PARTIAL");
+      expect(result.positionMarketValueKrw).toBe("3100000");
+      expect(result.equityKrw).toBeNull();
+      expect(result.positions[0]!.exposureBps).toBeNull();
+      expect(
+        result.missingReasons.some((r) => r.reasonCode === "NO_CASH_SOURCE"),
+      ).toBe(true);
     });
 
     it("현금 source가 없으면 fills 순현금흐름을 실제 현금 잔고로 표시하지 않는다", () => {
@@ -1518,6 +1573,36 @@ describe("M17 PnL accounting calculator", () => {
       expect(result.spreadCost.available).toBe(false);
       expect(result.spreadCost.value).toBeNull();
       expect(result.slippage.available).toBe(false);
+    });
+
+    it("거래 source가 있는데 비용 품질 source가 없으면 PARTIAL로 표시한다", () => {
+      const input: PnLAccountingInput = {
+        fills: [
+          buyFill("b1", "KRW-BTC", "0.01", "100000000", "50"),
+        ],
+        positions: [],
+        markPrices: [markPrice("KRW-BTC", "101000000")],
+        cash: defaultCash(),
+        costQuality: [],
+        pnlSnapshots: [],
+        reconcileFacts: [],
+      };
+
+      const result = calculatePnLAccounting(input);
+
+      expect(result.status).toBe("PARTIAL");
+      expect(result.spreadCost.available).toBe(false);
+      expect(result.slippage.available).toBe(false);
+      expect(result.cancelRequote.available).toBe(false);
+      expect(
+        result.missingReasons.some((r) => r.reasonCode === "SPREAD_COST_SOURCE_MISSING"),
+      ).toBe(true);
+      expect(
+        result.missingReasons.some((r) => r.reasonCode === "SLIPPAGE_SOURCE_MISSING"),
+      ).toBe(true);
+      expect(
+        result.missingReasons.some((r) => r.reasonCode === "CANCEL_REQUOTE_SOURCE_MISSING"),
+      ).toBe(true);
     });
   });
 
@@ -1956,6 +2041,18 @@ describe("formatter 한국어 메시지", () => {
   it("labelMissingReasonCode: FILL_OPENING_POSITION_SOURCE_MISSING을 한국어로 변환한다", () => {
     expect(labelMissingReasonCode("FILL_OPENING_POSITION_SOURCE_MISSING")).toBe(
       "체결 전 opening position 근거 없음",
+    );
+  });
+
+  it("labelMissingReasonCode: 비용 품질 결측 code를 한국어로 변환한다", () => {
+    expect(labelMissingReasonCode("SPREAD_COST_SOURCE_MISSING")).toBe(
+      "스프레드 비용 근거 없음",
+    );
+    expect(labelMissingReasonCode("SLIPPAGE_SOURCE_MISSING")).toBe(
+      "슬리피지 근거 없음",
+    );
+    expect(labelMissingReasonCode("CANCEL_REQUOTE_SOURCE_MISSING")).toBe(
+      "취소/재호가 비용 근거 없음",
     );
   });
 });
