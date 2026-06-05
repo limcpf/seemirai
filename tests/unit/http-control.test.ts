@@ -18,7 +18,11 @@ import {
   type Phase15AltApprovalEvidenceCondition,
   type Phase15AltApprovalEvidenceSnapshot,
 } from "../../src/domain/index.js";
-import { createKillSwitchControlDecision, type KillSwitchControlProvider } from "../../src/application/index.js";
+import {
+  createKillSwitchControlDecision,
+  type KillSwitchControlProvider,
+  type PnLAccountingStatusSummary,
+} from "../../src/application/index.js";
 import { loadPilotRuntimeConfigFromEnv, loadRuntimeConfig } from "../../src/runtime/index.js";
 import type { Database } from "../../src/infrastructure/db/index.js";
 import type {
@@ -354,6 +358,12 @@ describe("HTTP control foundation", () => {
         statusLabel: "조회 불가",
         lastStatus: "unavailable",
       },
+      pnl: {
+        status: "unavailable",
+        statusLabel: "조회 불가",
+        latestEquityKrw: null,
+        snapshotCount: 0,
+      },
     });
     expect(bodyText).not.toContain("telegram-secret-token");
     expect(bodyText).not.toContain("local-control-secret");
@@ -464,6 +474,19 @@ describe("HTTP control foundation", () => {
             updated_at: new Date("2026-05-20T00:06:00.000Z"),
             idempotency_key: "report.daily:2026-05-20",
           },
+          pnlSnapshot: {
+            strategy_id: "trend",
+            market: "KRW-BTC",
+            captured_at: new Date("2026-05-20T00:07:00.000Z"),
+            equity: "2100000",
+            realized_pnl: "1250",
+            unrealized_pnl: "500",
+            drawdown_bps: "12.5",
+            payload_json: {
+              status: "CALCULATED",
+              sourceFingerprint: "fingerprint-1",
+            },
+          },
         }),
         statusReadinessProvider: staticReadinessProvider(readySummary()),
       }),
@@ -503,6 +526,25 @@ describe("HTTP control foundation", () => {
           lastErrorPresent: true,
         },
       },
+      pnl: {
+        status: "ok",
+        statusLabel: "조회 가능",
+        message: "최신 PnL snapshot에서 손익과 평가자산을 읽었다.",
+        action: null,
+        latestCapturedAt: "2026-05-20T00:07:00.000Z",
+        latestEquityKrw: "2100000",
+        latestRealizedPnlKrw: "1250",
+        latestUnrealizedPnlKrw: "500",
+        latestDrawdownBps: "12.5",
+        latestSource: "pnl_snapshots",
+        snapshotCount: 1,
+        trace: {
+          source: "pnl_snapshots",
+          reason: "pnl_snapshot_latest_read",
+          readStatus: "OK",
+          latestStatus: "CALCULATED",
+        },
+      },
       paper: {
         status: "unavailable",
         statusLabel: "조회 불가",
@@ -511,6 +553,46 @@ describe("HTTP control foundation", () => {
       },
     });
     expect(response.body).not.toContain("secret-provider-detail");
+  });
+
+  it("maps PnL provider failure to /status pnl unavailable without failing HTTP", async () => {
+    const runtimeConfig = loadRuntimeConfig({});
+    server = createHttpControlServer({
+      readinessProvider: staticReadinessProvider(readySummary()),
+      statusProvider: createDatabaseControlStatusProvider({
+        runtimeConfig,
+        statusReadinessProvider: staticReadinessProvider(readySummary()),
+        pnlAccountingStatusProvider: {
+          async getStatus(): Promise<PnLAccountingStatusSummary> {
+            throw new Error("pnl provider exploded with raw detail");
+          },
+        },
+      }),
+    });
+
+    const response = await server.inject({
+      method: "GET",
+      url: "/status",
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({
+      pnl: {
+        status: "unavailable",
+        statusLabel: "조회 불가",
+        message: "PnL snapshot 상태를 DB에서 읽지 못했다.",
+        action: "DB 연결, migration 적용 상태, pnl_snapshots table 접근 권한을 확인한다.",
+        latestCapturedAt: null,
+        latestEquityKrw: null,
+        snapshotCount: 0,
+        trace: {
+          source: "pnl_accounting_status_provider",
+          reason: "pnl_accounting_status_provider_failed",
+          readStatus: "UNAVAILABLE",
+        },
+      },
+    });
+    expect(response.body).not.toContain("raw detail");
   });
 
   it("maps injected daily report failures to the same /status warning shape", async () => {
@@ -1232,6 +1314,23 @@ function statusSnapshotProvider(input: {
           nextRunAfter: null,
           updatedAt: null,
         },
+        pnl: {
+          ...operationalStatusDetail({
+            status: "unavailable",
+            statusLabel: "조회 불가",
+            message: "PnL snapshot 상태를 DB에서 읽지 못했다.",
+            action: "DB 연결, migration 적용 상태, pnl_snapshots table 접근 권한을 확인한다.",
+            source: "pnl_snapshots",
+            reason: "database_not_configured",
+          }),
+          latestCapturedAt: null,
+          latestEquityKrw: null,
+          latestRealizedPnlKrw: null,
+          latestUnrealizedPnlKrw: null,
+          latestDrawdownBps: null,
+          latestSource: null,
+          snapshotCount: 0,
+        },
         reconcile: {
           lastReconcileAt: null,
           result: "SKIPPED",
@@ -1317,6 +1416,16 @@ function operationalStatusDatabase(input: {
     updated_at: Date;
     idempotency_key: string;
   };
+  pnlSnapshot?: {
+    strategy_id: string;
+    market: string | null;
+    captured_at: Date;
+    equity: string;
+    realized_pnl: string;
+    unrealized_pnl: string;
+    drawdown_bps: string;
+    payload_json: Record<string, unknown>;
+  };
 }): Database {
   return {
     selectFrom(tableName: string) {
@@ -1329,14 +1438,25 @@ function operationalStatusDatabase(input: {
       if (tableName === "jobs") {
         return fakeSelectQuery(input.dailyReportJob);
       }
+      if (tableName === "pnl_snapshots") {
+        return fakeSelectQuery(input.pnlSnapshot, input.pnlSnapshot === undefined ? 0 : 1);
+      }
       throw new Error(`unexpected table: ${tableName}`);
     },
   } as unknown as Database;
 }
 
-function fakeSelectQuery(row: unknown) {
+function fakeSelectQuery(row: unknown, count?: number) {
+  let mode: "row" | "count" = "row";
   const query = {
-    select() {
+    selectAll() {
+      mode = "row";
+      return query;
+    },
+    select(selection?: unknown) {
+      if (count !== undefined && typeof selection === "function") {
+        mode = "count";
+      }
       return query;
     },
     where() {
@@ -1345,8 +1465,11 @@ function fakeSelectQuery(row: unknown) {
     orderBy() {
       return query;
     },
+    limit() {
+      return query;
+    },
     async executeTakeFirst() {
-      return row;
+      return mode === "count" ? { count: String(count) } : row;
     },
   };
   return query;

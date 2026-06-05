@@ -39,7 +39,7 @@ describeDb("PnL accounting PostgreSQL integration", () => {
     const capturedAt = "2026-06-05T00:00:00.000Z";
     const capturedAtDate = new Date(capturedAt);
     const output = createCalculatedOutput(strategyId, capturedAt);
-    const sourceFingerprint = computePnlSnapshotSourceFingerprint(output, capturedAt, "4");
+    const sourceFingerprint = computePnlSnapshotSourceFingerprint(output, capturedAt);
 
     try {
       const results = await Promise.all(

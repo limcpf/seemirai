@@ -3,6 +3,9 @@ export {
   computePnlSnapshotSourceFingerprint,
 } from "./pnl-accounting/repository.js";
 export {
+  createDatabasePnLAccountingStatusProvider,
+} from "./pnl-accounting/status-provider.js";
+export {
   toPnlSnapshotRowInputs,
   toReconcilePositionSnapshotRecord,
 } from "./pnl-accounting/row-mapper.js";

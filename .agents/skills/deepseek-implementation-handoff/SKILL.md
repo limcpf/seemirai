@@ -68,6 +68,9 @@ docs/generated/YYYY-MM-DD-<work-id>-<slug>.contract.json
 9. edge case, failure mode, acceptance criteria, verification을 쓴다.
    - 구현자가 완료 판정을 스스로 할 수 있어야 한다.
    - 검증 명령과 기대 결과를 포함한다.
+   - acceptance criteria마다 사용자 관측면, 예상 수정 파일, 필수 테스트, 완료로 보지 않는 shortcut을 trace matrix로 연결한다.
+   - status, report, CLI, HTTP, Telegram처럼 사용자-facing surface가 있으면 실제 route/formatter/provider wiring과 surface 테스트를 요구한다.
+   - 같은 타입이더라도 의미가 다른 데이터(current source vs historical source, empty vs unavailable, 0 vs unknown)는 semantic contract로 분리한다.
 10. 각 handoff에는 구현 에이전트용 실행 명령을 반드시 포함한다.
     - Reasonix/DeepSeek/Aider에게 넘길 명령을 포함한다.
     - 가능하면 `--budget`, `--transcript`, handoff 문서 경로, 범위 제한, commit 금지를 포함한다.
@@ -152,6 +155,7 @@ When your changes create orphans:
 
 - 제목은 저장소 관례를 따른다. 관례가 없으면 `<work-id> <이름> Implementation Handoff` 형식을 사용한다.
 - 단일 handoff에는 `Goal`, `Split Decision`, `Unit Metadata`, `Mandatory Implementation Rules`, `Read First`, `Current State`, `Scope`, `Non-goals`, `Architecture Direction`, `Dependency Direction`, `Contracts`, `Edge Cases`, `Acceptance Criteria`, `Verification`, `Final Hygiene Self-Check`, `Report Back`, `Handoff Command` 섹션을 포함한다.
+- 사용자-facing surface나 integration 변경이 있으면 `Acceptance Criteria Trace Matrix`, `Forbidden Completion Shortcuts`, `User-Facing Surface Checklist`, `Semantic Contracts` 섹션도 포함한다.
 - 분할 orchestration 문서에는 전체 목표, 분할 판단, 단위 목록, 순서, 병렬 가능성, 단위별 명령, 4개 이상 분할 사유를 포함한다.
 - `Scope`보다 `Non-goals`를 짧게 쓰지 않는다. 구현 에이전트는 금지 범위를 명확히 알아야 한다.
 - DeepSeek에게 요구하는 말투는 명령형으로 쓴다.
@@ -169,6 +173,42 @@ When your changes create orphans:
 - `Parallel`: 병렬 가능 여부와 이유
 - `Verification`: 이 단위 완료를 판정할 명령과 기대 결과
 - `Handoff command`: 구현 에이전트 실행 명령
+
+## Integration 완료판정 Guardrail
+
+구현 에이전트가 "코드는 만들었지만 실제 사용자 표면에 연결하지 않은" 상태를 완료로 보고하지 않도록, integration 성격의 handoff에는 아래 항목을 요구한다.
+
+### Acceptance Criteria Trace Matrix
+
+각 acceptance criteria는 아래 표 형태로 추적한다.
+
+```text
+| AC | 사용자 관측면 | 예상 수정 파일 | 필수 테스트 | 완료로 보지 않는 경우 |
+| --- | --- | --- | --- | --- |
+| /status에 PnL 노출 | GET /status JSON | src/interfaces/http-control/* | tests/unit/http-control.test.ts | provider export만 한 경우 |
+```
+
+### Forbidden Completion Shortcuts
+
+작업 성격에 맞게 아래 금지 항목을 포함한다.
+
+- 새 provider/function/type을 만들거나 export한 것만으로 integration 완료라고 보고하지 않는다.
+- 새 함수 직접 호출 테스트만으로 HTTP, CLI, Telegram, daily report 같은 사용자 표면 검증을 대체하지 않는다.
+- 기존 formatter가 있다는 이유만으로 report/status integration 완료라고 주장하지 않는다.
+- handoff 문서나 필수 기준 문서를 읽을 수 없으면 추론 구현하지 말고 중단 보고한다.
+
+### User-Facing Surface Checklist
+
+사용자 표면이 있는 작업은 route/provider wiring, response schema 또는 formatter shape, 한국어 label/message/action, trace/debug 분리, 실제 surface 호출 테스트를 모두 확인한다.
+
+### Semantic Contracts
+
+같은 TypeScript 타입이라도 업무 의미가 다른 값은 별도 입력/출력 또는 명확한 필드로 분리하게 한다.
+
+- current source와 historical source를 같은 배열/필드로 섞지 않는다.
+- empty/not found와 read failure/unavailable을 같은 null 응답으로 합치지 않는다.
+- 실제 0과 unknown/unavailable을 구분한다.
+- raw provider payload, secret, Authorization header는 trace에도 원문으로 남기지 않는다.
 
 ## Final Hygiene Self-Check 작성 규칙
 
@@ -188,6 +228,8 @@ warning은 실제 문제인지 재검토하고, 수정하지 않으면 이유를
 최종 보고에는 hard fail, warning, 수정한 항목, 수정하지 않은 항목과 이유를 포함한다.
 ```
 
+Final Hygiene Self-Check 뒤에는 acceptance criteria trace matrix를 다시 채우고, 각 AC가 어떤 테스트와 사용자 표면으로 검증됐는지 보고하게 한다.
+
 ## JSON contract 작성 규칙
 
 JSON contract는 구현 에이전트 또는 후속 검수자가 milestone 의도를 기계적으로 읽기 위한 파일이다. 필요할 때만 생성한다.
@@ -206,6 +248,7 @@ JSON contract는 구현 에이전트 또는 후속 검수자가 milestone 의도
 - `expectedArtifacts`
 - `commands`
 - `acceptanceCriteria`
+- `acceptanceCriteriaTrace`
 - `verification`
 - `reportBack`
 - `risks`

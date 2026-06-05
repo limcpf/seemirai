@@ -67,6 +67,7 @@ export {
 export {
   PostgresPnlAccountingRepository,
   computePnlSnapshotSourceFingerprint,
+  createDatabasePnLAccountingStatusProvider,
 } from "./pnl-accounting.js";
 export {
   toPnlSnapshotRowInputs,
