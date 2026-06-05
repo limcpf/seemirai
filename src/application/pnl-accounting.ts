@@ -39,7 +39,10 @@ export {
   runPnLAccountingCloseout,
 } from "./pnl-accounting/closeout.js";
 export type {
+  PersistPnLAccountingSnapshotInput,
   PnLAccountingDataProvider,
+  PnLAccountingSnapshotPersistencePort,
+  PnLAccountingSnapshotPersistenceResult,
   RunPnLAccountingCloseoutOptions,
   RunPnLAccountingCloseoutResult,
 } from "./pnl-accounting/closeout.js";

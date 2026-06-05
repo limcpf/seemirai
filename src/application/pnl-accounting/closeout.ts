@@ -1,7 +1,4 @@
-import {
-  PostgresPnlAccountingRepository,
-  computePnlSnapshotSourceFingerprint,
-} from "../../infrastructure/db/index.js";
+import { createHash } from "node:crypto";
 import { parseFinancialDecimal } from "../../shared/index.js";
 import { calculatePnLAccounting } from "./calculator.js";
 import type {
@@ -10,7 +7,6 @@ import type {
   PnLSnapshotFact,
 } from "./types.js";
 import { scopeKey } from "./source-priority.js";
-import type { PersistPnlSnapshotResult } from "../../infrastructure/db/pnl-accounting/types.js";
 
 /**
  * PnL 회계 closeout이 DB에서 읽어야 하는 source data provider port다.
@@ -40,20 +36,57 @@ export interface PnLAccountingDataProvider {
 }
 
 /**
+ * PnL snapshot persistence port에 전달하는 저장 입력이다.
+ *
+ * application closeout은 DB 구현을 알지 않고, calculator output과 idempotency fingerprint를 persistence 경계로 넘긴다.
+ * 구현체는 PostgreSQL repository일 수도 있고 테스트/worker fixture일 수도 있으며, 이 입력을 변경 없이 해석해야 한다.
+ */
+export interface PersistPnLAccountingSnapshotInput {
+  /** calculator가 생성한 PnL 회계 output */
+  output: PnLAccountingOutput;
+  /** durable snapshot 기준 시각 */
+  capturedAt: Date | string;
+  /** closeout이 산출한 drawdown bps */
+  drawdownBps: string;
+  /** 동일 source 재처리 중복 차단에 쓰는 deterministic fingerprint */
+  sourceFingerprint: string;
+}
+
+/**
+ * PnL snapshot persistence port의 최소 결과다.
+ *
+ * closeout은 저장 성공 여부와 저장된 row 수만 관찰한다. 실제 DB row shape은 infrastructure 소유라 application 경계에서
+ * 구체 타입으로 요구하지 않는다.
+ */
+export interface PnLAccountingSnapshotPersistenceResult {
+  /** 새 snapshot insert가 발생했는지 여부 */
+  inserted: boolean;
+  /** 저장되었거나 기존 중복으로 반환된 snapshot 목록 */
+  snapshots: readonly unknown[];
+}
+
+/**
+ * PnL closeout이 의존하는 snapshot persistence port다.
+ *
+ * application layer는 이 port만 호출하고 PostgreSQL repository concrete class나 DB schema에는 의존하지 않는다.
+ */
+export interface PnLAccountingSnapshotPersistencePort {
+  persistPnlSnapshot(input: PersistPnLAccountingSnapshotInput): Promise<PnLAccountingSnapshotPersistenceResult>;
+}
+
+/**
  * PnL 회계 closeout 실행 입력이다.
  *
  * data provider와 repository를 주입받아 순수 계산 → persistence까지 하나의 use case로 묶는다.
-   * drawdown 산출은 data provider의 별도 snapshot history method로만 수행해 현재 계산 source와 과거 peak source를 섞지 않는다.
+ * drawdown 산출은 data provider의 별도 snapshot history method로만 수행해 현재 계산 source와 과거 peak source를 섞지 않는다.
  */
 export interface RunPnLAccountingCloseoutOptions {
   /** source data provider — fills, positions, reconcile, snapshots, mark prices, cash, cost quality를 읽는다 */
   dataProvider: PnLAccountingDataProvider;
-  /** PnL snapshot persistence repository */
-  repository: PostgresPnlAccountingRepository;
+  /** PnL snapshot persistence port */
+  repository: PnLAccountingSnapshotPersistencePort;
   /** snapshot 캡처 시각. 없으면 provider가 source timestamp에서 도출한다. */
   capturedAt?: Date | string;
-  /** 테스트 재현성을 위한 clock 주입. 없으면 실제 현재 시각을 사용한다. */
-  clock?: () => Date;
 }
 
 /**
@@ -66,7 +99,7 @@ export interface RunPnLAccountingCloseoutResult {
   /** calculator 출력 */
   output: PnLAccountingOutput;
   /** persistence 결과. inserted=false면 source fingerprint 충돌로 중복이 차단됐거나 저장 가능한 snapshot이 없었다. */
-  persisted: PersistPnlSnapshotResult;
+  persisted: PnLAccountingSnapshotPersistenceResult;
   /** 중복 감지에 사용된 source fingerprint */
   sourceFingerprint: string;
   /** closeout에 사용된 snapshot 캡처 시각 */
@@ -85,7 +118,7 @@ export interface RunPnLAccountingCloseoutResult {
  * ## Drawdown 산출
  *
  * drawdown은 `(peakEquity - currentEquity) / peakEquity * 10000` bps로 계산한다.
-   * peak equity는 별도로 로딩한 과거 `pnl_snapshots` history 중 동일 strategy/market scope의 equity를 기준으로 한다.
+ * peak equity는 별도로 로딩한 과거 `pnl_snapshots` history 중 durable persistence scope와 동일한 equity를 기준으로 한다.
  * 이전 snapshot이 없거나 current equity가 peak보다 크면 drawdown은 0이다.
  *
  * @param options closeout 실행 입력
@@ -94,14 +127,16 @@ export interface RunPnLAccountingCloseoutResult {
 export async function runPnLAccountingCloseout(
   options: RunPnLAccountingCloseoutOptions,
 ): Promise<RunPnLAccountingCloseoutResult> {
-  const clock = options.clock ?? (() => new Date());
-  const capturedAt = normalizeCapturedAt(options.capturedAt ?? clock());
+  const explicitCapturedAt = options.capturedAt === undefined
+    ? undefined
+    : normalizeCapturedAt(options.capturedAt);
 
   // ── 1. source data 로딩 ──────────────────────────────────────────────────
-  const accountingInput = await options.dataProvider.loadPnLAccountingInput(capturedAt);
+  const accountingInput = await options.dataProvider.loadPnLAccountingInput(explicitCapturedAt);
 
   // ── 2. 순수 계산 ────────────────────────────────────────────────────────
   const output = calculatePnLAccounting(accountingInput);
+  const capturedAt = explicitCapturedAt ?? resolveOutputCapturedAt(output);
 
   // ── 3. drawdown 산출 ────────────────────────────────────────────────────
   // drawdown은 현재 snapshot의 capturedAt보다 이전 snapshot 중에서 peak equity를 찾아 비교한다.
@@ -163,7 +198,7 @@ function computeDrawdownBps(
 
   const currentEquity = parseFinancialDecimal(output.equityKrw);
   let peakEquity = currentEquity;
-  const outputScopeKeys = new Set(output.scopes.map((scope) => scopeKey(scope.strategyId, scope.market)));
+  const outputScopeKeys = selectPersistableScopeKeys(output.scopes);
   if (outputScopeKeys.size === 0) {
     return "0";
   }
@@ -192,6 +227,85 @@ function computeDrawdownBps(
   // drawdown bps = (peak - current) / peak * 10000
   const drawdown = peakEquity.minus(currentEquity).div(peakEquity).mul(10000);
   return drawdown.toFixed(2).replace(/\.?0+$/, "");
+}
+
+/**
+ * durable snapshot으로 저장될 scope만 drawdown 비교 기준으로 선택한다.
+ *
+ * persistence mapper와 같은 의미 규칙을 사용해 aggregate row를 저장할 때 market row history를 peak 후보로 섞지 않는다.
+ */
+function selectPersistableScopeKeys(
+  scopes: PnLAccountingOutput["scopes"],
+): Set<string> {
+  const strategyIds = [...new Set(scopes.map((scope) => scope.strategyId))];
+  if (strategyIds.length > 1) {
+    return new Set();
+  }
+
+  const aggregateScopes = scopes.filter((scope) => scope.market === null);
+  if (aggregateScopes.length === 1) {
+    const [scope] = aggregateScopes;
+    return new Set([scopeKey(scope!.strategyId, null)]);
+  }
+
+  if (aggregateScopes.length > 1) {
+    return new Set();
+  }
+
+  if (scopes.length === 1) {
+    const [scope] = scopes;
+    return new Set([scopeKey(scope!.strategyId, scope!.market)]);
+  }
+
+  return new Set();
+}
+
+/**
+ * calculator output의 source timestamp에서 closeout capturedAt을 결정한다.
+ *
+ * 명시 capturedAt이 없을 때 실행 시각을 쓰면 같은 source 재처리가 중복 snapshot을 만들 수 있으므로,
+ * output scope의 최신 source timestamp를 durable capturedAt으로 사용한다.
+ */
+function resolveOutputCapturedAt(output: PnLAccountingOutput): string {
+  const sourceTimes = output.scopes
+    .map((scope) => toTimeMs(scope.capturedAt))
+    .filter((time) => Number.isFinite(time));
+
+  return sourceTimes.length === 0
+    ? "1970-01-01T00:00:00.000Z"
+    : new Date(Math.max(...sourceTimes)).toISOString();
+}
+
+/**
+ * PnL snapshot persistence를 위한 source fingerprint를 계산한다.
+ *
+ * capturedAt, 저장 후보 scope, 상태와 주요 금액을 묶어 동일 source 재처리를 deterministic하게 식별한다.
+ */
+function computePnlSnapshotSourceFingerprint(
+  output: PnLAccountingOutput,
+  capturedAt: Date | string,
+  drawdownBps: string,
+): string {
+  const captured = normalizeCapturedAt(capturedAt);
+  const scopeEntries = output.scopes
+    .map((scope) => `${scope.strategyId}|${scope.market ?? "*"}|${scope.status}|${scope.source}`)
+    .sort()
+    .join(";");
+
+  const payload = [
+    captured,
+    scopeEntries,
+    output.status,
+    output.realizedPnlKrw ?? "null",
+    output.unrealizedPnlKrw ?? "null",
+    output.totalPnlKrw ?? "null",
+    output.equityKrw ?? "null",
+    output.cashKrw ?? "null",
+    output.positionMarketValueKrw ?? "null",
+    drawdownBps,
+  ].join("|");
+
+  return createHash("sha256").update(payload, "utf8").digest("hex");
 }
 
 /**

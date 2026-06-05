@@ -1439,19 +1439,24 @@ function operationalStatusDatabase(input: {
         return fakeSelectQuery(input.dailyReportJob);
       }
       if (tableName === "pnl_snapshots") {
-        return fakeSelectQuery(input.pnlSnapshot);
+        return fakeSelectQuery(input.pnlSnapshot, input.pnlSnapshot === undefined ? 0 : 1);
       }
       throw new Error(`unexpected table: ${tableName}`);
     },
   } as unknown as Database;
 }
 
-function fakeSelectQuery(row: unknown) {
+function fakeSelectQuery(row: unknown, count?: number) {
+  let mode: "row" | "count" = "row";
   const query = {
     selectAll() {
+      mode = "row";
       return query;
     },
-    select() {
+    select(selection?: unknown) {
+      if (count !== undefined && typeof selection === "function") {
+        mode = "count";
+      }
       return query;
     },
     where() {
@@ -1464,7 +1469,7 @@ function fakeSelectQuery(row: unknown) {
       return query;
     },
     async executeTakeFirst() {
-      return row;
+      return mode === "count" ? { count: String(count) } : row;
     },
   };
   return query;

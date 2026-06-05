@@ -9,13 +9,13 @@ import {
 } from "../../src/application/index.js";
 import type {
   PnLAccountingDataProvider,
+  PnLAccountingSnapshotPersistencePort,
+  PnLAccountingSnapshotPersistenceResult,
+  PersistPnLAccountingSnapshotInput,
 } from "../../src/application/index.js";
 import type {
-  PersistPnlSnapshotInput,
-  PersistPnlSnapshotResult,
   PnlSnapshotRecord,
 } from "../../src/infrastructure/db/index.js";
-import { PostgresPnlAccountingRepository } from "../../src/infrastructure/db/index.js";
 import type { Database } from "../../src/infrastructure/db/index.js";
 
 // ── fixture data provider ────────────────────────────────────────────────────
@@ -74,17 +74,12 @@ function fixtureInput(): PnLAccountingInput {
 
 // ── memory-backed repository for tests ──────────────────────────────────────
 
-class MemoryPnlRepository extends PostgresPnlAccountingRepository {
+class MemoryPnlRepository implements PnLAccountingSnapshotPersistencePort {
   private stored: Map<string, PnlSnapshotRecord> = new Map();
 
-  public constructor() {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    super(undefined as any);
-  }
-
-  public override async persistPnlSnapshot(
-    input: PersistPnlSnapshotInput,
-  ): Promise<PersistPnlSnapshotResult> {
+  public async persistPnlSnapshot(
+    input: PersistPnLAccountingSnapshotInput,
+  ): Promise<PnLAccountingSnapshotPersistenceResult> {
     const capturedAt = normalizeCapturedAt(input.capturedAt);
     const inserted: PnlSnapshotRecord[] = [];
 
@@ -190,18 +185,26 @@ describe("M17 PnL accounting closeout", () => {
     expect(result1.sourceFingerprint).not.toBe(result2.sourceFingerprint);
   });
 
-  it("captured_at 없으면 clock을 사용한다", async () => {
-    const dataProvider = createFixtureDataProvider(fixtureInput());
+  it("captured_at 없으면 provider source timestamp를 사용한다", async () => {
+    let observedCapturedAt: Date | string | undefined = "not-called";
+    const dataProvider: PnLAccountingDataProvider = {
+      async loadPnLAccountingInput(capturedAt?: Date | string): Promise<PnLAccountingInput> {
+        observedCapturedAt = capturedAt;
+        return fixtureInput();
+      },
+      async loadPnLAccountingSnapshotHistory(): Promise<readonly PnLSnapshotFact[]> {
+        return [];
+      },
+    };
     const repository = new MemoryPnlRepository();
-    const fixedClock = new Date("2026-06-01T12:00:00.000Z");
 
     const result = await runPnLAccountingCloseout({
       dataProvider,
       repository,
-      clock: () => fixedClock,
     });
 
-    expect(result.capturedAt).toBe("2026-06-01T12:00:00.000Z");
+    expect(observedCapturedAt).toBeUndefined();
+    expect(result.capturedAt).toBe("2026-06-01T00:00:00.000Z");
   });
 
   it("drawdown history의 이전 snapshot equity가 더 낮으면 drawdown은 0이다", async () => {
@@ -228,10 +231,10 @@ describe("M17 PnL accounting closeout", () => {
     expect(result.drawdownBps).toBe("0");
   });
 
-  it("동일 scope의 peak equity보다 current equity가 낮으면 양수 drawdown을 산출한다", async () => {
+  it("persist되는 aggregate scope의 peak equity보다 current equity가 낮으면 양수 drawdown을 산출한다", async () => {
     const previousSnapshot: PnLSnapshotFact = {
       strategyId: "trend",
-      market: "KRW-BTC",
+      market: null,
       capturedAt: new Date("2026-05-30T00:00:00Z"),
       equity: "3000000",
       realizedPnl: "0",
@@ -250,6 +253,36 @@ describe("M17 PnL accounting closeout", () => {
 
     expect(result.output.equityKrw).toBe("2010000");
     expect(result.drawdownBps).toBe("3300");
+  });
+
+  it("aggregate snapshot closeout에서 market scope history를 drawdown peak로 섞지 않는다", async () => {
+    const marketSnapshot: PnLSnapshotFact = {
+      strategyId: "trend",
+      market: "KRW-BTC",
+      capturedAt: new Date("2026-05-30T00:00:00Z"),
+      equity: "3000000",
+      realizedPnl: "0",
+      unrealizedPnl: "0",
+      drawdownBps: "0",
+    };
+
+    const dataProvider = createFixtureDataProvider(fixtureInput(), [marketSnapshot]);
+    const repository = new MemoryPnlRepository();
+
+    const result = await runPnLAccountingCloseout({
+      dataProvider,
+      repository,
+      capturedAt: "2026-06-01T00:00:00.000Z",
+    });
+
+    expect(result.output.scopes).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ strategyId: "trend", market: null }),
+        expect.objectContaining({ strategyId: "trend", market: "KRW-BTC" }),
+      ]),
+    );
+    expect(result.output.equityKrw).toBe("2010000");
+    expect(result.drawdownBps).toBe("0");
   });
 
   it("현재 계산 source의 pnlSnapshots를 drawdown history로 재사용하지 않는다", async () => {
@@ -321,19 +354,21 @@ describe("M17 PnL accounting status provider", () => {
   });
 
   it("최신 pnl snapshot row를 status summary로 반환한다", async () => {
-    const provider = createDatabasePnLAccountingStatusProvider(pnlSnapshotStatusDatabase({
-      strategy_id: "trend",
-      market: "KRW-BTC",
-      captured_at: new Date("2026-06-01T00:00:00.000Z"),
-      equity: "2010000",
-      realized_pnl: "0",
-      unrealized_pnl: "10000",
-      drawdown_bps: "3300",
-      payload_json: {
-        status: "CALCULATED",
-        sourceFingerprint: "fingerprint-1",
-      },
-    }));
+    const provider = createDatabasePnLAccountingStatusProvider(
+      pnlSnapshotStatusDatabase({
+        strategy_id: "trend",
+        market: "KRW-BTC",
+        captured_at: new Date("2026-06-01T00:00:00.000Z"),
+        equity: "2010000",
+        realized_pnl: "0",
+        unrealized_pnl: "10000",
+        drawdown_bps: "3300",
+        payload_json: {
+          status: "CALCULATED",
+          sourceFingerprint: "fingerprint-1",
+        },
+      }, false, 3),
+    );
 
     await expect(provider.getStatus()).resolves.toMatchObject({
       readStatus: "OK",
@@ -344,7 +379,7 @@ describe("M17 PnL accounting status provider", () => {
       latestDrawdownBps: "3300",
       latestSource: "pnl_snapshots",
       latestStatus: "CALCULATED",
-      snapshotCount: 1,
+      snapshotCount: 3,
       reason: "pnl_snapshot_latest_read",
     });
   });
@@ -365,9 +400,33 @@ describe("M17 PnL accounting status provider", () => {
 function pnlSnapshotStatusDatabase(
   row: PnlSnapshotRecord | undefined,
   shouldThrow = false,
+  snapshotCount = row === undefined ? 0 : 1,
 ): Database {
+  return {
+    selectFrom(tableName: string) {
+      if (tableName !== "pnl_snapshots") {
+        throw new Error(`unexpected table: ${tableName}`);
+      }
+      return createPnlSnapshotStatusQuery(row, shouldThrow, snapshotCount);
+    },
+  } as unknown as Database;
+}
+
+function createPnlSnapshotStatusQuery(
+  row: PnlSnapshotRecord | undefined,
+  shouldThrow: boolean,
+  snapshotCount: number,
+) {
+  let mode: "latest" | "count" = "latest";
   const query = {
     selectAll() {
+      mode = "latest";
+      return query;
+    },
+    select(selection?: unknown) {
+      if (typeof selection === "function") {
+        mode = "count";
+      }
       return query;
     },
     orderBy() {
@@ -383,16 +442,8 @@ function pnlSnapshotStatusDatabase(
       if (shouldThrow) {
         throw new Error("pnl_snapshots unavailable");
       }
-      return row;
+      return mode === "count" ? { count: String(snapshotCount) } : row;
     },
   };
-
-  return {
-    selectFrom(tableName: string) {
-      if (tableName !== "pnl_snapshots") {
-        throw new Error(`unexpected table: ${tableName}`);
-      }
-      return query;
-    },
-  } as unknown as Database;
+  return query;
 }

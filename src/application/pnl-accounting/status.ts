@@ -62,25 +62,35 @@ export function createDatabasePnLAccountingStatusProvider(
   return {
     async getStatus(): Promise<PnLAccountingStatus> {
       try {
-        let query = database
+        let latestQuery = database
           .selectFrom("pnl_snapshots")
           .selectAll()
           .orderBy("captured_at", "desc")
           .limit(1);
+        let countQuery = database
+          .selectFrom("pnl_snapshots")
+          .select((expressionBuilder) => expressionBuilder.fn.countAll<string>().as("count"));
 
         if (scope?.strategyId !== undefined) {
-          query = query.where("strategy_id", "=", scope.strategyId);
+          latestQuery = latestQuery.where("strategy_id", "=", scope.strategyId);
+          countQuery = countQuery.where("strategy_id", "=", scope.strategyId);
         }
 
         if (scope?.market !== undefined) {
           if (scope.market === null) {
-            query = query.where("market", "is", null);
+            latestQuery = latestQuery.where("market", "is", null);
+            countQuery = countQuery.where("market", "is", null);
           } else {
-            query = query.where("market", "=", scope.market);
+            latestQuery = latestQuery.where("market", "=", scope.market);
+            countQuery = countQuery.where("market", "=", scope.market);
           }
         }
 
-        const row = await query.executeTakeFirst();
+        const [row, countRow] = await Promise.all([
+          latestQuery.executeTakeFirst(),
+          countQuery.executeTakeFirst(),
+        ]);
+        const snapshotCount = parseSnapshotCount(countRow?.count);
 
         if (row === undefined) {
           return emptyStatus("NOT_FOUND", "pnl_snapshot_not_found");
@@ -104,7 +114,7 @@ export function createDatabasePnLAccountingStatusProvider(
           latestDrawdownBps: row.drawdown_bps,
           latestSource: source,
           latestStatus: status,
-          snapshotCount: 1,
+          snapshotCount,
           reason: "pnl_snapshot_latest_read",
         };
       } catch {
@@ -131,6 +141,23 @@ function emptyStatus(
     snapshotCount: 0,
     reason,
   };
+}
+
+function parseSnapshotCount(value: unknown): number {
+  if (typeof value === "number") {
+    return Number.isFinite(value) ? value : 0;
+  }
+
+  if (typeof value === "bigint") {
+    return Number(value);
+  }
+
+  if (typeof value === "string") {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : 0;
+  }
+
+  return 0;
 }
 
 /**
