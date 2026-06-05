@@ -91,21 +91,27 @@ describeDb("PnL accounting PostgreSQL integration", () => {
             id: olderRunId,
             idempotency_key: `${strategyId}:older`,
             status: "MANUAL_REVIEW_REQUIRED",
+            started_at: "2026-06-05T00:00:00.000Z",
+            finished_at: "2026-06-05T00:00:10.000Z",
           },
           {
             id: latestRunId,
             idempotency_key: `${strategyId}:latest`,
             status: "COMPLETED",
+            started_at: "2026-06-05T00:01:00.000Z",
+            finished_at: "2026-06-05T00:01:10.000Z",
           },
           {
             id: failedRunId,
             idempotency_key: `${strategyId}:failed`,
             status: "FAILED",
+            started_at: "2026-06-05T00:02:00.000Z",
           },
           {
             id: runningRunId,
             idempotency_key: `${strategyId}:running`,
             status: "RUNNING",
+            started_at: "2026-06-05T00:03:00.000Z",
           },
         ])
         .execute();
@@ -122,7 +128,7 @@ describeDb("PnL accounting PostgreSQL integration", () => {
             average_entry_price: null,
             recovery_status: "MANUAL_REVIEW_REQUIRED",
             source: "manual_review",
-            captured_at: "2026-06-05T00:00:00.000Z",
+            captured_at: "2026-06-05T00:01:00.000Z",
             evidence_json: { manualReviewEvidenceId: "ev-old" },
           },
           {

@@ -154,6 +154,10 @@ export class PostgresPnlAccountingRepository {
         "live_reconcile_position_snapshots.run_id",
       )
       .selectAll("live_reconcile_position_snapshots")
+      .select([
+        "live_reconcile_runs.started_at as run_started_at",
+        "live_reconcile_runs.finished_at as run_finished_at",
+      ])
       .where("live_reconcile_runs.status", "in", ["COMPLETED", "MANUAL_REVIEW_REQUIRED"]);
 
     if (input.strategyId !== undefined) {
@@ -173,7 +177,11 @@ export class PostgresPnlAccountingRepository {
       .orderBy("live_reconcile_position_snapshots.captured_at", "desc")
       .execute();
 
-    const records: ReconcilePositionSnapshotRecord[] = rows.map(toReconcilePositionSnapshotRecord);
+    const records: ReconcilePositionSnapshotRecord[] = rows.map((row) => ({
+      ...toReconcilePositionSnapshotRecord(row),
+      runStartedAt: row.run_started_at,
+      runFinishedAt: row.run_finished_at,
+    }));
 
     // 같은 scope의 과거 run이 최신 recovery 상태를 오염시키지 않도록 strategy/market 기준 최신 snapshot만 채택한다.
     const deduped = deduplicateReconcileRecords(records);
@@ -236,8 +244,18 @@ function compareReconcileRecordFreshness(
     return timeDiff;
   }
 
-  // 동일 timestamp에서는 run/id 순서를 tie-break로 써 결과를 deterministic하게 유지한다.
+  const runTimeDiff = toRunTieBreakMs(left) - toRunTieBreakMs(right);
+  if (runTimeDiff !== 0) {
+    return runTimeDiff;
+  }
+
+  // 동일 source/run timestamp에서는 run/id 순서를 최후 tie-break로 써 결과를 deterministic하게 유지한다.
   return `${left.runId}:${left.id}`.localeCompare(`${right.runId}:${right.id}`);
+}
+
+function toRunTieBreakMs(record: ReconcilePositionSnapshotRecord): number {
+  const value = record.runFinishedAt ?? record.runStartedAt;
+  return value === undefined || value === null ? 0 : toTimeMs(value);
 }
 
 function toTimeMs(value: Date | string): number {

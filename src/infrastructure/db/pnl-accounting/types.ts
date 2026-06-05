@@ -72,6 +72,10 @@ export interface ReconcilePositionSnapshotRecord {
   id: string;
   /** 소속 run ID */
   runId: string;
+  /** reconcile run 시작 시각. 동일 capturedAt tie-break에서 최신 run 판정에 사용된다. */
+  runStartedAt?: Date | string;
+  /** reconcile run 완료 시각. 있으면 시작 시각보다 우선하는 tie-break 근거다. */
+  runFinishedAt?: Date | string | null;
   /** 거래소 식별자 */
   exchange: string;
   /** market code */
