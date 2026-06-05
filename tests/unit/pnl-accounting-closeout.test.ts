@@ -187,6 +187,43 @@ describe("M17 PnL accounting closeout", () => {
     expect(result1.sourceFingerprint).not.toBe(result2.sourceFingerprint);
   });
 
+  it("비용 evidence만 달라져도 closeout source fingerprint를 다르게 만든다", async () => {
+    const input1 = {
+      ...fixtureInput(),
+      fills: [
+        {
+          ...fixtureInput().fills[0]!,
+          fee: "0.00001",
+          feeCurrency: "BTC",
+        },
+      ],
+    };
+    const input2 = {
+      ...fixtureInput(),
+      fills: [
+        {
+          ...fixtureInput().fills[0]!,
+          fee: "0.00002",
+          feeCurrency: "BTC",
+        },
+      ],
+    };
+
+    const result1 = await runPnLAccountingCloseout({
+      dataProvider: createFixtureDataProvider(input1),
+      repository: new MemoryPnlRepository(),
+      capturedAt: "2026-06-01T00:00:00.000Z",
+    });
+    const result2 = await runPnLAccountingCloseout({
+      dataProvider: createFixtureDataProvider(input2),
+      repository: new MemoryPnlRepository(),
+      capturedAt: "2026-06-01T00:00:00.000Z",
+    });
+
+    expect(result1.output.totalPnlKrw).toBe(result2.output.totalPnlKrw);
+    expect(result1.sourceFingerprint).not.toBe(result2.sourceFingerprint);
+  });
+
   it("captured_at 없으면 provider source timestamp를 사용한다", async () => {
     let observedCapturedAt: Date | string | undefined = "not-called";
     const dataProvider: PnLAccountingDataProvider = {

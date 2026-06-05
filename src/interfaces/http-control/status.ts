@@ -169,7 +169,7 @@ function toPnlAccountingStatus(
   summary: PnLAccountingStatusSummary,
   source: string,
 ): ControlStatusSnapshot["pnl"] {
-  const status = mapPnlAccountingReadStatus(summary.readStatus);
+  const status = mapPnlAccountingReadStatus(summary.readStatus, summary.latestStatus);
   return {
     ...createOperationalStatusDetail({
       status: status.status,
@@ -193,7 +193,10 @@ function toPnlAccountingStatus(
   };
 }
 
-function mapPnlAccountingReadStatus(readStatus: PnLAccountingStatusSummary["readStatus"]): {
+function mapPnlAccountingReadStatus(
+  readStatus: PnLAccountingStatusSummary["readStatus"],
+  latestStatus: PnLAccountingStatusSummary["latestStatus"],
+): {
   status: ControlOperationalStatusCode;
   statusLabel: string;
   message: string;
@@ -201,6 +204,30 @@ function mapPnlAccountingReadStatus(readStatus: PnLAccountingStatusSummary["read
 } {
   switch (readStatus) {
     case "OK":
+      if (latestStatus === "PARTIAL") {
+        return {
+          status: "warning",
+          statusLabel: "일부 계산 가능",
+          message: "최신 PnL snapshot은 일부 source만 계산된 상태다.",
+          action: "payload_json의 missingReasons와 source trace를 확인한 뒤 누락된 평가가나 회계 source를 보강한다.",
+        };
+      }
+      if (latestStatus === "MANUAL_REVIEW_REQUIRED") {
+        return {
+          status: "warning",
+          statusLabel: "수동 검토 필요",
+          message: "최신 PnL snapshot에 수동 검토가 필요한 회계 source가 있다.",
+          action: "reconcile evidence와 pnl_snapshots payload_json의 missingReasons를 확인한다.",
+        };
+      }
+      if (latestStatus === "UNAVAILABLE") {
+        return {
+          status: "unavailable",
+          statusLabel: "계산 불가",
+          message: "최신 PnL snapshot이 계산 불가 상태로 저장됐다.",
+          action: "PnL source 입력, migration, provider trace를 확인한 뒤 closeout을 재실행한다.",
+        };
+      }
       return {
         status: "ok",
         statusLabel: "조회 가능",

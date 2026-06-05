@@ -301,6 +301,14 @@ function computePnlSnapshotSourceFingerprint(
     output.equityKrw ?? "null",
     output.cashKrw ?? "null",
     output.positionMarketValueKrw ?? "null",
+    JSON.stringify({
+      feeTotals: output.feeTotals
+        .map((fee): [string, string] => [fee.currency, fee.amount])
+        .sort(([left], [right]) => left.localeCompare(right)),
+      spreadCost: output.spreadCost,
+      slippage: output.slippage,
+      cancelRequote: output.cancelRequote,
+    }),
   ].join("|");
 
   return createHash("sha256").update(payload, "utf8").digest("hex");

@@ -219,6 +219,46 @@ describe("M17 PnL accounting calculator", () => {
       expect(result.positions[0]!.unrealizedPnlKrw).toBe("50000");
     });
 
+    it("현재 position snapshot은 과거 opening lot으로 재사용하지 않는다", () => {
+      const currentPosition: PnLPositionFact = {
+        strategyId: "trend_following",
+        market: "KRW-BTC",
+        quantity: "0.5",
+        averageEntryPrice: "100000000",
+        realizedPnl: "0",
+        unrealizedPnl: null,
+        updatedAt: new Date("2026-06-01T00:06:00Z"),
+        source: "positions",
+      };
+
+      const input: PnLAccountingInput = {
+        fills: [
+          {
+            ...sellFill("s1", "KRW-BTC", "0.5", "110000000", "50"),
+            filledAt: new Date("2026-06-01T00:05:00Z"),
+          },
+        ],
+        positions: [currentPosition],
+        markPrices: [markPrice("KRW-BTC", "105000000")],
+        cash: defaultCash(),
+        costQuality: [],
+        pnlSnapshots: [],
+        reconcileFacts: [],
+      };
+
+      const result = calculatePnLAccounting(input);
+
+      expect(result.status).toBe("PARTIAL");
+      expect(result.realizedPnlKrw).toBeNull();
+      expect(result.positions[0]!.quantity).toBe("0.5");
+      expect(result.positions[0]!.marketValueKrw).toBe("52500000");
+      expect(
+        result.missingReasons.some(
+          (reason) => reason.reasonCode === "FILL_OPENING_POSITION_SOURCE_MISSING",
+        ),
+      ).toBe(true);
+    });
+
     it("RECOVERABLE reconcile opening lot이 있으면 후속 SELL fill을 replay한다", () => {
       const reconcile: PnLReconcileFact = {
         strategyId: "trend_following",
@@ -1910,6 +1950,12 @@ describe("formatter 한국어 메시지", () => {
   it("labelMissingReasonCode: POSITION_REALIZED_PNL_UNADJUSTED를 한국어로 변환한다", () => {
     expect(labelMissingReasonCode("POSITION_REALIZED_PNL_UNADJUSTED")).toBe(
       "positions 실현손익은 수수료 반영 근거 없음",
+    );
+  });
+
+  it("labelMissingReasonCode: FILL_OPENING_POSITION_SOURCE_MISSING을 한국어로 변환한다", () => {
+    expect(labelMissingReasonCode("FILL_OPENING_POSITION_SOURCE_MISSING")).toBe(
+      "체결 전 opening position 근거 없음",
     );
   });
 });

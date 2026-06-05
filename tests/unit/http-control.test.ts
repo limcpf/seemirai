@@ -555,6 +555,67 @@ describe("HTTP control foundation", () => {
     expect(response.body).not.toContain("secret-provider-detail");
   });
 
+  it("maps PARTIAL PnL snapshot to warning status", async () => {
+    const runtimeConfig = loadRuntimeConfig({});
+    server = createHttpControlServer({
+      readinessProvider: staticReadinessProvider(readySummary()),
+      statusProvider: createDatabaseControlStatusProvider({
+        runtimeConfig,
+        database: operationalStatusDatabase({
+          killSwitch: {
+            state: "NORMAL",
+            reason_code: null,
+          },
+          alerts: {
+            last_sent_at: null,
+            last_skipped_at: null,
+          },
+          pnlSnapshot: {
+            strategy_id: "trend",
+            market: null,
+            captured_at: new Date("2026-05-20T00:07:00.000Z"),
+            equity: "2100000",
+            realized_pnl: "1250",
+            unrealized_pnl: "500",
+            drawdown_bps: "12.5",
+            payload_json: {
+              status: "PARTIAL",
+              sourceFingerprint: "fingerprint-partial",
+              missingReasons: [
+                {
+                  message: "최신 market snapshot coverage가 일부만 확인됨",
+                  reasonCode: "SNAPSHOT_COVERAGE_PARTIAL",
+                  scope: "trend::*",
+                  source: "pnl_snapshots",
+                },
+              ],
+            },
+          },
+        }),
+        statusReadinessProvider: staticReadinessProvider(readySummary()),
+      }),
+    });
+
+    const response = await server.inject({
+      method: "GET",
+      url: "/status",
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({
+      pnl: {
+        status: "warning",
+        statusLabel: "일부 계산 가능",
+        message: "최신 PnL snapshot은 일부 source만 계산된 상태다.",
+        action: "payload_json의 missingReasons와 source trace를 확인한 뒤 누락된 평가가나 회계 source를 보강한다.",
+        latestCapturedAt: "2026-05-20T00:07:00.000Z",
+        trace: {
+          latestStatus: "PARTIAL",
+        },
+      },
+    });
+  });
+
   it("maps PnL provider failure to /status pnl unavailable without failing HTTP", async () => {
     const runtimeConfig = loadRuntimeConfig({});
     server = createHttpControlServer({

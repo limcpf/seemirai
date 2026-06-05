@@ -61,6 +61,8 @@ export function labelMissingReasonCode(code: string): string {
       return "일부 snapshot coverage만 확인됨";
     case "POSITION_REALIZED_PNL_UNADJUSTED":
       return "positions 실현손익은 수수료 반영 근거 없음";
+    case "FILL_OPENING_POSITION_SOURCE_MISSING":
+      return "체결 전 opening position 근거 없음";
     default:
       return `계산 불가 (${code})`;
   }

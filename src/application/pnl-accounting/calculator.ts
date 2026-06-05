@@ -85,6 +85,7 @@ export function calculatePnLAccounting(input: PnLAccountingInput): PnLAccounting
   const snapshotTotals = summarizeSnapshots(snapshotFacts);
   const fillCoverage = createFillScopeCoverage(accountingInput.fills);
   const positionCoverage = createPositionScopeCoverage(accountingInput.positions);
+  const blockedFillReplayScopes = new Set<string>();
 
   // ── 2. reconcile fact 수집 ────────────────────────────────────────────────
   const reconciledPositions: PnLPositionFact[] = [];
@@ -118,16 +119,34 @@ export function calculatePnLAccounting(input: PnLAccountingInput): PnLAccounting
       continue;
     }
 
-    if (
-      hasFillForReconcileScope &&
-      !requiresOpeningPositionSeed(accountingInput.fills, reconcile.strategyId, reconcile.market)
-    ) {
+    const reconcileOpeningSeedRequiredAt = findOpeningPositionSeedRequiredAt(
+      accountingInput.fills,
+      reconcile.strategyId,
+      reconcile.market,
+    );
+    if (hasFillForReconcileScope && reconcileOpeningSeedRequiredAt === null) {
       // 체결만으로 수량 흐름이 닫히면 RECOVERABLE reconcile 평균단가가 fill 원가를 덮지 못하게 한다.
       continue;
     }
 
     if (hasPositionForReconcileScope) {
       // positions가 같은 scope의 opening lot을 제공하면 reconcile은 중복 seed source로 쓰지 않는다.
+      continue;
+    }
+
+    if (
+      reconcileOpeningSeedRequiredAt !== null &&
+      toTime(reconcile.reconciledAt) > reconcileOpeningSeedRequiredAt
+    ) {
+      const key = scopeKey(reconcile.strategyId, reconcile.market);
+      blockedFillReplayScopes.add(key);
+      missingReasons.push({
+        message: "체결 전 opening position 근거 없음",
+        reasonCode: "FILL_OPENING_POSITION_SOURCE_MISSING",
+        scope: key,
+        source: "live_reconcile_position_snapshots",
+      });
+      hasUnknownReconcilePosition = true;
       continue;
     }
 
@@ -176,8 +195,13 @@ export function calculatePnLAccounting(input: PnLAccountingInput): PnLAccounting
     }
 
     const hasFillForPositionScope = fillCoverage.isCovered(position.strategyId, position.market);
-    const needsOpeningSeed = !hasFillForPositionScope ||
-      requiresOpeningPositionSeed(accountingInput.fills, position.strategyId, position.market);
+    const positionOpeningSeedRequiredAt = findOpeningPositionSeedRequiredAt(
+      accountingInput.fills,
+      position.strategyId,
+      position.market,
+    );
+    const canUsePositionAsOpeningSeed = positionOpeningSeedRequiredAt === null ||
+      toTime(position.updatedAt) <= positionOpeningSeedRequiredAt;
     const positionQuantity = parseNonNegativeDecimal(position.quantity);
     if (
       positionQuantity.greaterThan(0) &&
@@ -191,8 +215,20 @@ export function calculatePnLAccounting(input: PnLAccountingInput): PnLAccounting
       });
     }
 
-    if (needsOpeningSeed) {
+    if (!hasFillForPositionScope || positionOpeningSeedRequiredAt !== null) {
       openingSeedPositions.push(position);
+    }
+
+    if (positionOpeningSeedRequiredAt !== null && !canUsePositionAsOpeningSeed) {
+      const key = scopeKey(position.strategyId, position.market);
+      blockedFillReplayScopes.add(key);
+      positionRealizedGapScopes.add(key);
+      missingReasons.push({
+        message: "체결 전 opening position 근거 없음",
+        reasonCode: "FILL_OPENING_POSITION_SOURCE_MISSING",
+        scope: key,
+        source: "positions",
+      });
     }
 
     if (!hasFillForPositionScope) {
@@ -214,7 +250,9 @@ export function calculatePnLAccounting(input: PnLAccountingInput): PnLAccounting
   // ── 4. fill 기반 ledger 구축 ──────────────────────────────────────────────
   const ledgerFills = sortFillsByExecutionTime(
     accountingInput.fills.filter(
-      (fill) => !snapshotCoverage.isCovered(fill.strategyId, fill.market),
+      (fill) =>
+        !snapshotCoverage.isCovered(fill.strategyId, fill.market) &&
+        !blockedFillReplayScopes.has(scopeKey(fill.strategyId, fill.market)),
     ),
   );
   const ledger = createEmptyLedger();
@@ -546,17 +584,17 @@ function applyFillsToLedger(ledger: Ledger, fills: readonly PnLFillFact[]): void
 }
 
 /**
- * 특정 strategy/market의 fill replay가 opening position seed를 필요로 하는지 판정한다.
+ * 특정 strategy/market의 fill replay가 opening position seed를 필요로 하는 최초 시각을 찾는다.
  *
- * `positions` 또는 RECOVERABLE reconcile snapshot 이후 들어온 SELL fill은 과거 BUY fill이 없어도 계산해야 한다.
- * 이 helper는 fill만으로 수량 흐름을 재생했을 때 최초 초과 SELL이 발생하는지 확인한다. true면 호출자는 opening
- * quantity/average entry source를 먼저 seed해야 하며, 입력 배열과 외부 시스템에는 side effect가 없다.
+ * `positions` 또는 RECOVERABLE reconcile snapshot 이후 들어온 SELL fill은 과거 BUY fill이 없어도 계산할 수 있다.
+ * 다만 current position snapshot을 과거 opening lot으로 오인하면 현재 잔량을 과소 계산하므로, caller는 반환된
+ * underflow 시각보다 오래된 seed source만 opening lot으로 사용할 수 있다. 입력 배열과 외부 시스템에는 side effect가 없다.
  */
-function requiresOpeningPositionSeed(
+function findOpeningPositionSeedRequiredAt(
   fills: readonly PnLFillFact[],
   strategyId: string,
   market: string,
-): boolean {
+): number | null {
   let quantity = new Decimal(0);
 
   for (const fill of sortFillsByExecutionTime(
@@ -575,13 +613,13 @@ function requiresOpeningPositionSeed(
     }
 
     if (quantity.lessThan(fillQuantity)) {
-      return true;
+      return toTime(fill.filledAt);
     }
 
     quantity = quantity.minus(fillQuantity);
   }
 
-  return false;
+  return null;
 }
 
 /**

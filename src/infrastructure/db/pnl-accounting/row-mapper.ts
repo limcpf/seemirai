@@ -146,19 +146,28 @@ function buildPnlSnapshotPayload(
     payload.sourceFingerprint = sourceFingerprint;
   }
 
-  // scope가 명시된 경우 해당 scope의 position detail을 포함한다.
-  if (scope !== undefined && scope.market !== null) {
-    const posDetail = output.positions.find(
-      (pos) => pos.strategyId === scope.strategyId && pos.market === scope.market,
-    );
-    if (posDetail !== undefined) {
-      payload.positionDetail = {
-        quantity: posDetail.quantity,
-        averageEntryPrice: posDetail.averageEntryPrice,
-        marketValueKrw: posDetail.marketValueKrw,
-        unrealizedPnlKrw: posDetail.unrealizedPnlKrw,
-        exposureBps: posDetail.exposureBps,
-      };
+  // 저장되는 aggregate row만으로도 포지션 회계 근거를 감사할 수 있게 scope에 맞는 detail을 보존한다.
+  if (scope !== undefined) {
+    if (scope.market === null) {
+      const positionDetails = output.positions
+        .filter((pos) => pos.strategyId === scope.strategyId)
+        .map(toPositionDetailPayload);
+      if (positionDetails.length > 0) {
+        payload.positionDetails = positionDetails;
+      }
+    } else {
+      const posDetail = output.positions.find(
+        (pos) => pos.strategyId === scope.strategyId && pos.market === scope.market,
+      );
+      if (posDetail !== undefined) {
+        payload.positionDetail = {
+          quantity: posDetail.quantity,
+          averageEntryPrice: posDetail.averageEntryPrice,
+          marketValueKrw: posDetail.marketValueKrw,
+          unrealizedPnlKrw: posDetail.unrealizedPnlKrw,
+          exposureBps: posDetail.exposureBps,
+        };
+      }
     }
   }
 
@@ -173,7 +182,12 @@ function buildPnlSnapshotPayload(
   }
 
   // trace 정보는 최소한만 보존한다 (runId, correlationId, sourceTables, lastSourceTimestamp).
-  if (output.trace.runId !== undefined || output.trace.correlationId !== undefined) {
+  if (
+    output.trace.runId !== undefined ||
+    output.trace.correlationId !== undefined ||
+    (output.trace.sourceTables?.length ?? 0) > 0 ||
+    output.trace.lastSourceTimestamp !== undefined
+  ) {
     payload.trace = {
       runId: output.trace.runId,
       correlationId: output.trace.correlationId,
@@ -183,6 +197,25 @@ function buildPnlSnapshotPayload(
   }
 
   return payload;
+}
+
+/**
+ * calculator position detail을 `payload_json`에 저장 가능한 secret-free 구조로 정규화한다.
+ *
+ * row mapper 내부에서만 호출되며, market/quantity/평균단가/평가액/노출 비중 evidence를 보존한다.
+ * 입력 detail을 변경하지 않고 새 object를 반환하며 외부 side effect는 없다.
+ */
+function toPositionDetailPayload(
+  posDetail: PnLAccountingOutput["positions"][number],
+): Record<string, string | null> {
+  return {
+    market: posDetail.market,
+    quantity: posDetail.quantity,
+    averageEntryPrice: posDetail.averageEntryPrice,
+    marketValueKrw: posDetail.marketValueKrw,
+    unrealizedPnlKrw: posDetail.unrealizedPnlKrw,
+    exposureBps: posDetail.exposureBps,
+  };
 }
 
 /**

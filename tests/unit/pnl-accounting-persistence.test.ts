@@ -95,6 +95,89 @@ describe("M17 PnL accounting persistence mapper", () => {
     });
   });
 
+  it("aggregate row payload에 같은 strategy의 position details를 보존한다", () => {
+    const rows = toPnlSnapshotRowInputs(
+      {
+        ...baseOutput(),
+        scopes: [
+          {
+            strategyId: "trend",
+            market: null,
+            capturedAt: "2026-06-05T00:00:00.000Z",
+            source: "fills" as const,
+            status: "CALCULATED" as const,
+          },
+        ],
+        positions: [
+          {
+            strategyId: "trend",
+            market: "KRW-BTC",
+            quantity: "0.01",
+            averageEntryPrice: "100000000",
+            marketValueKrw: "1010000",
+            unrealizedPnlKrw: "10000",
+            exposureBps: "5000",
+          },
+          {
+            strategyId: "mean",
+            market: "KRW-ETH",
+            quantity: "1",
+            averageEntryPrice: "3000000",
+            marketValueKrw: "3100000",
+            unrealizedPnlKrw: "100000",
+            exposureBps: "3000",
+          },
+        ],
+      },
+      "2026-06-05T00:00:00.000Z",
+      { sourceFingerprint: "fp-position-details", drawdownBps: "9" },
+    );
+
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.payload_json).toMatchObject({
+      positionDetails: [
+        {
+          market: "KRW-BTC",
+          quantity: "0.01",
+          averageEntryPrice: "100000000",
+          marketValueKrw: "1010000",
+          unrealizedPnlKrw: "10000",
+          exposureBps: "5000",
+        },
+      ],
+    });
+  });
+
+  it("run id가 없어도 source table trace를 payload에 보존한다", () => {
+    const rows = toPnlSnapshotRowInputs(
+      {
+        ...baseOutput(),
+        scopes: [
+          {
+            strategyId: "trend",
+            market: null,
+            capturedAt: "2026-06-05T00:00:00.000Z",
+            source: "fills" as const,
+            status: "CALCULATED" as const,
+          },
+        ],
+        trace: {
+          sourceTables: ["fills", "positions"],
+          lastSourceTimestamp: "2026-06-05T00:00:00.000Z",
+        },
+      },
+      "2026-06-05T00:00:00.000Z",
+      { sourceFingerprint: "fp-trace", drawdownBps: "9" },
+    );
+
+    expect(rows[0]!.payload_json).toMatchObject({
+      trace: {
+        sourceTables: ["fills", "positions"],
+        lastSourceTimestamp: "2026-06-05T00:00:00.000Z",
+      },
+    });
+  });
+
   it("여러 strategy aggregate에 global PnL을 복제 저장하지 않는다", () => {
     const rows = toPnlSnapshotRowInputs(
       {
