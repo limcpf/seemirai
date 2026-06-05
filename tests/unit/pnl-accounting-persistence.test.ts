@@ -189,6 +189,34 @@ describe("M17 PnL accounting persistence mapper", () => {
     );
   });
 
+  it("source fingerprint는 비용 evidence가 바뀌면 달라진다", () => {
+    const base = baseOutput();
+    const withFeeEvidence: PnLAccountingOutput = {
+      ...base,
+      feeTotals: [{ currency: "BTC", amount: "0.00001" }],
+    };
+    const withQualityEvidence: PnLAccountingOutput = {
+      ...base,
+      spreadCost: {
+        value: "3",
+        available: true,
+        sampleCount: 1,
+        source: "cost_quality_facts",
+      },
+    };
+
+    expect(
+      computePnlSnapshotSourceFingerprint(base, "2026-06-05T00:00:00Z"),
+    ).not.toBe(
+      computePnlSnapshotSourceFingerprint(withFeeEvidence, "2026-06-05T00:00:00Z"),
+    );
+    expect(
+      computePnlSnapshotSourceFingerprint(base, "2026-06-05T00:00:00Z"),
+    ).not.toBe(
+      computePnlSnapshotSourceFingerprint(withQualityEvidence, "2026-06-05T00:00:00Z"),
+    );
+  });
+
   it("live reconcile 조회 row를 calculator 입력 record로 변환한다", () => {
     const capturedAt = new Date("2026-06-05T00:00:00.000Z");
     const row: Selectable<LiveReconcilePositionSnapshotsTable> = {

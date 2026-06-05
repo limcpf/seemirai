@@ -183,6 +183,76 @@ describe("M17 PnL accounting calculator", () => {
       );
     });
 
+    it("position opening lot이 있으면 후속 SELL fill을 replay한다", () => {
+      const position: PnLPositionFact = {
+        strategyId: "trend_following",
+        market: "KRW-BTC",
+        quantity: "0.02",
+        averageEntryPrice: "100000000",
+        realizedPnl: "0",
+        unrealizedPnl: null,
+        updatedAt: new Date("2026-06-01T00:00:00Z"),
+        source: "positions",
+      };
+
+      const input: PnLAccountingInput = {
+        fills: [
+          {
+            ...sellFill("s1", "KRW-BTC", "0.01", "110000000", "50"),
+            filledAt: new Date("2026-06-01T00:05:00Z"),
+          },
+        ],
+        positions: [position],
+        markPrices: [markPrice("KRW-BTC", "105000000")],
+        cash: defaultCash(),
+        costQuality: [],
+        pnlSnapshots: [],
+        reconcileFacts: [],
+      };
+
+      const result = calculatePnLAccounting(input);
+
+      expect(result.status).toBe("CALCULATED");
+      expect(result.realizedPnlKrw).toBe("99950");
+      expect(result.positions).toHaveLength(1);
+      expect(result.positions[0]!.quantity).toBe("0.01");
+      expect(result.positions[0]!.unrealizedPnlKrw).toBe("50000");
+    });
+
+    it("RECOVERABLE reconcile opening lot이 있으면 후속 SELL fill을 replay한다", () => {
+      const reconcile: PnLReconcileFact = {
+        strategyId: "trend_following",
+        market: "KRW-BTC",
+        quantity: "0.02",
+        recoveryStatus: "RECOVERABLE",
+        averageEntryPrice: "100000000",
+        reconciledAt: new Date("2026-06-01T00:00:00Z"),
+        averageEntrySource: "live_reconcile",
+      };
+
+      const input: PnLAccountingInput = {
+        fills: [
+          {
+            ...sellFill("s1", "KRW-BTC", "0.01", "110000000", "50"),
+            filledAt: new Date("2026-06-01T00:05:00Z"),
+          },
+        ],
+        positions: [],
+        markPrices: [markPrice("KRW-BTC", "105000000")],
+        cash: defaultCash(),
+        costQuality: [],
+        pnlSnapshots: [],
+        reconcileFacts: [reconcile],
+      };
+
+      const result = calculatePnLAccounting(input);
+
+      expect(result.status).toBe("CALCULATED");
+      expect(result.realizedPnlKrw).toBe("99950");
+      expect(result.positions[0]!.quantity).toBe("0.01");
+      expect(result.positions[0]!.unrealizedPnlKrw).toBe("50000");
+    });
+
     it("입력 순서가 뒤섞여도 filledAt 기준으로 실현손익을 계산한다", () => {
       const buy = {
         ...buyFill("b1", "KRW-BTC", "0.01", "100000000", "50"),
@@ -564,6 +634,15 @@ describe("M17 PnL accounting calculator", () => {
         unrealizedPnl: "5",
         drawdownBps: "0",
       };
+      const staleMarketSnapshot: PnLSnapshotFact = {
+        strategyId: "trend_following",
+        market: "KRW-ETH",
+        capturedAt: new Date("2026-05-31T00:00:00Z"),
+        equity: "900",
+        realizedPnl: "9",
+        unrealizedPnl: "1",
+        drawdownBps: "0",
+      };
 
       const input: PnLAccountingInput = {
         fills: [],
@@ -571,7 +650,7 @@ describe("M17 PnL accounting calculator", () => {
         markPrices: [],
         cash: defaultCash(),
         costQuality: [],
-        pnlSnapshots: [aggregateSnapshot, marketSnapshot],
+        pnlSnapshots: [aggregateSnapshot, marketSnapshot, staleMarketSnapshot],
         reconcileFacts: [],
       };
 
@@ -581,6 +660,7 @@ describe("M17 PnL accounting calculator", () => {
       expect(result.scopes).toHaveLength(1);
       expect(result.scopes[0]!.market).toBe("KRW-BTC");
       expect(result.scopes[0]!.capturedAt).toBe("2026-06-04T00:00:00.000Z");
+      expect(result.scopes.some((scope) => scope.market === "KRW-ETH")).toBe(false);
       expect(result.equityKrw).toBe("2000");
       expect(result.realizedPnlKrw).toBe("20");
       expect(result.unrealizedPnlKrw).toBe("5");
@@ -932,12 +1012,15 @@ describe("M17 PnL accounting calculator", () => {
 
       const result = calculatePnLAccounting(input);
 
-      expect(result.status).toBe("CALCULATED");
-      expect(result.realizedPnlKrw).toBe("12345");
-      expect(result.totalPnlKrw).toBe("12345");
+      expect(result.status).toBe("PARTIAL");
+      expect(result.realizedPnlKrw).toBeNull();
+      expect(result.totalPnlKrw).toBeNull();
       expect(
         result.missingReasons.some((r) => r.reasonCode === "POSITION_QUANTITY_MISSING"),
       ).toBe(false);
+      expect(
+        result.missingReasons.some((r) => r.reasonCode === "POSITION_REALIZED_PNL_UNADJUSTED"),
+      ).toBe(true);
     });
   });
 
@@ -1102,14 +1185,17 @@ describe("M17 PnL accounting calculator", () => {
 
       const result = calculatePnLAccounting(input);
 
-      expect(result.status).toBe("CALCULATED");
-      expect(result.realizedPnlKrw).toBe("12345");
+      expect(result.status).toBe("PARTIAL");
+      expect(result.realizedPnlKrw).toBeNull();
       expect(result.unrealizedPnlKrw).toBe("0");
-      expect(result.totalPnlKrw).toBe("12345");
+      expect(result.totalPnlKrw).toBeNull();
       expect(result.scopes[0]!.status).toBe("CALCULATED");
       expect(
         result.missingReasons.some((r) => r.reasonCode === "AVERAGE_ENTRY_MISSING"),
       ).toBe(false);
+      expect(
+        result.missingReasons.some((r) => r.reasonCode === "POSITION_REALIZED_PNL_UNADJUSTED"),
+      ).toBe(true);
     });
 
     it("평균단가가 없어도 position fallback 수량과 시장가치는 보존한다", () => {
@@ -1145,7 +1231,7 @@ describe("M17 PnL accounting calculator", () => {
       expect(result.equityKrw).toBe("2010000");
     });
 
-    it("position fallback만 있으면 positions.realizedPnl을 보존한다", () => {
+    it("position fallback만 있으면 fee 보정 없는 positions.realizedPnl을 확정하지 않는다", () => {
       const position: PnLPositionFact = {
         strategyId: "trend_following",
         market: "KRW-BTC",
@@ -1169,10 +1255,15 @@ describe("M17 PnL accounting calculator", () => {
 
       const result = calculatePnLAccounting(input);
 
-      expect(result.status).toBe("CALCULATED");
-      expect(result.realizedPnlKrw).toBe("12345");
+      expect(result.status).toBe("PARTIAL");
+      expect(result.realizedPnlKrw).toBeNull();
       expect(result.unrealizedPnlKrw).toBe("10000");
-      expect(result.totalPnlKrw).toBe("22345");
+      expect(result.totalPnlKrw).toBeNull();
+      expect(
+        result.missingReasons.some(
+          (reason) => reason.reasonCode === "POSITION_REALIZED_PNL_UNADJUSTED",
+        ),
+      ).toBe(true);
     });
 
     it("mark price가 없으면 position fallback의 unrealizedPnl 추정값을 보존한다", () => {
@@ -1200,9 +1291,9 @@ describe("M17 PnL accounting calculator", () => {
       const result = calculatePnLAccounting(input);
 
       expect(result.status).toBe("PARTIAL");
-      expect(result.realizedPnlKrw).toBe("12345");
+      expect(result.realizedPnlKrw).toBeNull();
       expect(result.unrealizedPnlKrw).toBe("5000");
-      expect(result.totalPnlKrw).toBe("17345");
+      expect(result.totalPnlKrw).toBeNull();
       expect(result.positionMarketValueKrw).toBeNull();
       expect(result.equityKrw).toBeNull();
       expect(result.scopes[0]!.status).toBe("PARTIAL");
@@ -1475,12 +1566,16 @@ describe("M17 PnL accounting calculator", () => {
 
       const result = calculatePnLAccounting(input);
 
-      expect(result.status).toBe("CALCULATED");
+      expect(result.status).toBe("PARTIAL");
       expect(result.positionMarketValueKrw).toBe("1010000");
       expect(result.unrealizedPnlKrw).toBe("10000");
+      expect(result.realizedPnlKrw).toBeNull();
       expect(
         result.missingReasons.some((r) => r.reasonCode === "POSITION_QUANTITY_MISSING"),
       ).toBe(false);
+      expect(
+        result.missingReasons.some((r) => r.reasonCode === "POSITION_REALIZED_PNL_UNADJUSTED"),
+      ).toBe(true);
     });
 
     it("fills와 positions가 같은 scope에 있으면 scope source는 fills를 보존한다", () => {
@@ -1809,6 +1904,12 @@ describe("formatter 한국어 메시지", () => {
   it("labelMissingReasonCode: SNAPSHOT_COVERAGE_PARTIAL을 한국어로 변환한다", () => {
     expect(labelMissingReasonCode("SNAPSHOT_COVERAGE_PARTIAL")).toBe(
       "일부 snapshot coverage만 확인됨",
+    );
+  });
+
+  it("labelMissingReasonCode: POSITION_REALIZED_PNL_UNADJUSTED를 한국어로 변환한다", () => {
+    expect(labelMissingReasonCode("POSITION_REALIZED_PNL_UNADJUSTED")).toBe(
+      "positions 실현손익은 수수료 반영 근거 없음",
     );
   });
 });

@@ -118,8 +118,16 @@ export function calculatePnLAccounting(input: PnLAccountingInput): PnLAccounting
       continue;
     }
 
-    if (hasFillForReconcileScope || hasPositionForReconcileScope) {
-      // 실제 체결/포지션 근거가 있으면 평균단가뿐인 RECOVERABLE reconcile은 scope/source를 차지하지 않는다.
+    if (
+      hasFillForReconcileScope &&
+      !requiresOpeningPositionSeed(accountingInput.fills, reconcile.strategyId, reconcile.market)
+    ) {
+      // 체결만으로 수량 흐름이 닫히면 RECOVERABLE reconcile 평균단가가 fill 원가를 덮지 못하게 한다.
+      continue;
+    }
+
+    if (hasPositionForReconcileScope) {
+      // positions가 같은 scope의 opening lot을 제공하면 reconcile은 중복 seed source로 쓰지 않는다.
       continue;
     }
 
@@ -160,11 +168,16 @@ export function calculatePnLAccounting(input: PnLAccountingInput): PnLAccounting
 
   // ── 3. positions fallback 수집 ─────────────────────────────────────────────
   const fallbackPositions: PnLPositionFact[] = [];
+  const openingSeedPositions: PnLPositionFact[] = [];
+  const positionRealizedGapScopes = new Set<string>();
   for (const position of accountingInput.positions) {
     if (snapshotCoverage.isCovered(position.strategyId, position.market)) {
       continue;
     }
 
+    const hasFillForPositionScope = fillCoverage.isCovered(position.strategyId, position.market);
+    const needsOpeningSeed = !hasFillForPositionScope ||
+      requiresOpeningPositionSeed(accountingInput.fills, position.strategyId, position.market);
     const positionQuantity = parseNonNegativeDecimal(position.quantity);
     if (
       positionQuantity.greaterThan(0) &&
@@ -178,6 +191,23 @@ export function calculatePnLAccounting(input: PnLAccountingInput): PnLAccounting
       });
     }
 
+    if (needsOpeningSeed) {
+      openingSeedPositions.push(position);
+    }
+
+    if (!hasFillForPositionScope) {
+      const key = scopeKey(position.strategyId, position.market);
+      if (!positionRealizedGapScopes.has(key)) {
+        positionRealizedGapScopes.add(key);
+        missingReasons.push({
+          message: "positions 실현손익은 수수료 반영 근거 없음",
+          reasonCode: "POSITION_REALIZED_PNL_UNADJUSTED",
+          scope: key,
+          source: "positions",
+        });
+      }
+    }
+
     fallbackPositions.push(position);
   }
 
@@ -187,13 +217,13 @@ export function calculatePnLAccounting(input: PnLAccountingInput): PnLAccounting
       (fill) => !snapshotCoverage.isCovered(fill.strategyId, fill.market),
     ),
   );
-  const ledger = buildFillLedger(ledgerFills);
+  const ledger = createEmptyLedger();
 
-  // ── 5. position source에서 초기 ledger 보강 ────────────────────────────────
-  // reconcile로 복구한 position 정보를 ledger에 반영
+  // ── 5. opening position source에서 초기 ledger 보강 ────────────────────────
+  // 기존 보유 수량이 후속 SELL replay를 뒷받침해야 초과 매도 false positive를 피할 수 있다.
   seedLedgerFromReconcile(ledger, reconciledPositions);
-  // position fallback에서 평균단가 정보를 보강
-  seedLedgerFromPositions(ledger, fallbackPositions);
+  seedLedgerFromPositions(ledger, openingSeedPositions);
+  applyFillsToLedger(ledger, ledgerFills);
 
   // ── 6. 현금 처리 ─────────────────────────────────────────────────────────
   let cashKrw: Decimal | null;
@@ -235,12 +265,13 @@ export function calculatePnLAccounting(input: PnLAccountingInput): PnLAccounting
     : computeUnrealizedPnl(positionDetails);
   const hasReconcileQuantityEvidence =
     reconciledPositions.length > 0 && !hasUnknownReconcilePosition;
+  const hasPositionFallbackRealizedGap = positionRealizedGapScopes.size > 0;
   const hasLedgerTradingData =
     ledgerFills.length > 0 ||
     fallbackPositions.length > 0 ||
     hasReconcileQuantityEvidence;
 
-  const realizedPnlKrw = hasUnquantifiedReconcile
+  const realizedPnlKrw = hasUnquantifiedReconcile || hasPositionFallbackRealizedGap
     ? null
     : sumDecimalParts([
       { active: snapshotFacts.length > 0, value: snapshotTotals.realizedPnlKrw },
@@ -440,15 +471,30 @@ function createPositionScopeCoverage(positions: readonly PnLPositionFact[]): {
 
 // ── fill ledger ──────────────────────────────────────────────────────────────
 
-function buildFillLedger(fills: readonly PnLFillFact[]): Ledger {
-  const ledger: Ledger = {
+/**
+ * fill replay를 시작하기 전 빈 PnL ledger를 만든다.
+ *
+ * calculator 내부에서만 호출되며, opening position seed와 fill replay가 공유하는 mutable 상태를 초기화한다.
+ * 입력은 없고, 반환 ledger는 수량/원가/실현손익/filled order count가 모두 0이어야 한다. 외부 side effect는 없다.
+ */
+function createEmptyLedger(): Ledger {
+  return {
     cashKrw: new Decimal(0),
     realizedPnlKrw: new Decimal(0),
     positions: new Map(),
     filledOrderIds: new Set(),
     filledCount: 0,
   };
+}
 
+/**
+ * 정렬된 fill fact를 기존 ledger에 replay한다.
+ *
+ * 호출자는 이 함수 전에 필요한 opening position/reconcile seed를 ledger에 반영해야 한다. BUY는 KRW 원가와
+ * 보유 수량을 늘리고, SELL은 보유 수량을 초과하면 invariant error로 중단한다. 입력 ledger만 변경하며 DB/API
+ * 같은 외부 side effect는 없다.
+ */
+function applyFillsToLedger(ledger: Ledger, fills: readonly PnLFillFact[]): void {
   for (const fill of fills) {
     const quantity = parseNonNegativeDecimal(fill.quantity);
     const price = parseNonNegativeDecimal(fill.price);
@@ -497,8 +543,45 @@ function buildFillLedger(fills: readonly PnLFillFact[]): Ledger {
         : pos.costBasisKrw.minus(realizedCostBasisKrw);
     }
   }
+}
 
-  return ledger;
+/**
+ * 특정 strategy/market의 fill replay가 opening position seed를 필요로 하는지 판정한다.
+ *
+ * `positions` 또는 RECOVERABLE reconcile snapshot 이후 들어온 SELL fill은 과거 BUY fill이 없어도 계산해야 한다.
+ * 이 helper는 fill만으로 수량 흐름을 재생했을 때 최초 초과 SELL이 발생하는지 확인한다. true면 호출자는 opening
+ * quantity/average entry source를 먼저 seed해야 하며, 입력 배열과 외부 시스템에는 side effect가 없다.
+ */
+function requiresOpeningPositionSeed(
+  fills: readonly PnLFillFact[],
+  strategyId: string,
+  market: string,
+): boolean {
+  let quantity = new Decimal(0);
+
+  for (const fill of sortFillsByExecutionTime(
+    fills.filter((candidate) =>
+      candidate.strategyId === strategyId && candidate.market === market,
+    ),
+  )) {
+    const fillQuantity = parseNonNegativeDecimal(fill.quantity);
+    if (fillQuantity.isZero()) {
+      continue;
+    }
+
+    if (fill.side === "BUY") {
+      quantity = quantity.plus(fillQuantity);
+      continue;
+    }
+
+    if (quantity.lessThan(fillQuantity)) {
+      return true;
+    }
+
+    quantity = quantity.minus(fillQuantity);
+  }
+
+  return false;
 }
 
 /**
@@ -616,8 +699,8 @@ function excludeMarketSnapshotsCoveredByAggregate(
       // aggregate가 market layer 이상으로 최신일 때만 하위 market snapshot을 덮어 중복 합산을 막는다.
       selected.push(aggregate);
     } else {
-      // 더 최신 market snapshot이 있으면 오래된 aggregate 전체 합계가 최신 per-market 값을 덮지 못하게 한다.
-      selected.push(...markets);
+      // 더 최신 market snapshot만 선택하고, aggregate보다 오래된 market snapshot은 stale 합산을 막기 위해 제외한다.
+      selected.push(...markets.filter((snapshot) => toTime(snapshot.capturedAt) > aggregateTime));
       missingReasons.push({
         message: "최신 market snapshot coverage가 일부만 확인됨",
         reasonCode: "SNAPSHOT_COVERAGE_PARTIAL",
@@ -732,7 +815,6 @@ function seedLedgerFromPositions(
   for (const pos of positions) {
     const key = scopeKey(pos.strategyId, pos.market);
     const existing = ledger.positions.get(key);
-    const shouldApplyFallbackRealizedPnl = existing === undefined;
     if (existing !== undefined && existing.quantity.greaterThan(0)) {
       // fill 또는 reconcile로 이미 수량이 있으면 position fallback으로 덮지 않는다.
       continue;
@@ -746,11 +828,6 @@ function seedLedgerFromPositions(
     entry.fallbackUnrealizedPnlKrw = pos.unrealizedPnl !== null
       ? parseFinancialDecimal(pos.unrealizedPnl)
       : null;
-
-    if (shouldApplyFallbackRealizedPnl) {
-      // position-only fallback에서는 positions.realizedPnl이 확정 손익 source이므로 ledger에 보존한다.
-      ledger.realizedPnlKrw = ledger.realizedPnlKrw.plus(parseFinancialDecimal(pos.realizedPnl));
-    }
 
     if (pos.quantity !== "0") {
       const qty = parseNonNegativeDecimal(pos.quantity);
