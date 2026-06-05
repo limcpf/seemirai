@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { Selectable } from "kysely";
 import type { PnLAccountingOutput } from "../../src/application/index.js";
 import {
+  computePnlSnapshotSourceFingerprint,
   toPnlSnapshotRowInputs,
   toReconcilePositionSnapshotRecord,
 } from "../../src/infrastructure/db/index.js";
@@ -27,7 +28,7 @@ describe("M17 PnL accounting persistence mapper", () => {
         ],
       },
       "2026-06-05T00:00:00.000Z",
-      "fp-unavailable",
+      { sourceFingerprint: "fp-unavailable", drawdownBps: "7" },
     );
 
     expect(rows).toEqual([]);
@@ -55,7 +56,7 @@ describe("M17 PnL accounting persistence mapper", () => {
         ],
       },
       "2026-06-05T00:00:00.000Z",
-      "fp-aggregate",
+      { sourceFingerprint: "fp-aggregate", drawdownBps: "7" },
     );
 
     expect(rows).toHaveLength(1);
@@ -65,6 +66,7 @@ describe("M17 PnL accounting persistence mapper", () => {
       equity: "1000000",
       realized_pnl: "1200",
       unrealized_pnl: "300",
+      drawdown_bps: "7",
     });
     expect(rows[0]!.payload_json).toMatchObject({
       sourceFingerprint: "fp-aggregate",
@@ -93,14 +95,62 @@ describe("M17 PnL accounting persistence mapper", () => {
         ],
       },
       "2026-06-05T00:00:00.000Z",
-      "fp-existing-aggregate",
+      { sourceFingerprint: "fp-existing-aggregate", drawdownBps: "9" },
     );
 
     expect(rows).toHaveLength(1);
     expect(rows[0]).toMatchObject({
       strategy_id: "trend",
       market: null,
+      drawdown_bps: "9",
     });
+  });
+
+  it("여러 strategy aggregate에 global PnL을 복제 저장하지 않는다", () => {
+    const rows = toPnlSnapshotRowInputs(
+      {
+        ...baseOutput(),
+        scopes: [
+          {
+            strategyId: "trend",
+            market: null,
+            capturedAt: "2026-06-05T00:00:00.000Z",
+            source: "fills",
+            status: "CALCULATED",
+          },
+          {
+            strategyId: "mean",
+            market: null,
+            capturedAt: "2026-06-05T00:00:00.000Z",
+            source: "fills",
+            status: "CALCULATED",
+          },
+        ],
+      },
+      "2026-06-05T00:00:00Z",
+      { sourceFingerprint: "fp-global-total", drawdownBps: "3" },
+    );
+
+    expect(rows).toEqual([]);
+  });
+
+  it("source fingerprint는 동등한 Date와 timestamp 문자열을 같은 instant로 정규화한다", () => {
+    const output = {
+      ...baseOutput(),
+      scopes: [
+        {
+          strategyId: "trend",
+          market: null,
+          capturedAt: "2026-06-05T00:00:00.000Z",
+          source: "fills" as const,
+          status: "CALCULATED" as const,
+        },
+      ],
+    };
+
+    expect(
+      computePnlSnapshotSourceFingerprint(output, new Date("2026-06-05T00:00:00.000Z")),
+    ).toBe(computePnlSnapshotSourceFingerprint(output, "2026-06-05T00:00:00Z"));
   });
 
   it("live reconcile 조회 row를 calculator 입력 record로 변환한다", () => {

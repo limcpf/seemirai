@@ -47,6 +47,7 @@ describeDb("PnL accounting PostgreSQL integration", () => {
           repository.persistPnlSnapshot({
             output,
             capturedAt,
+            drawdownBps: "4",
             sourceFingerprint,
           }),
         ),
@@ -62,12 +63,87 @@ describeDb("PnL accounting PostgreSQL integration", () => {
         .execute();
 
       expect(rows).toHaveLength(1);
+      expect(rows[0]!.drawdown_bps).toBe("4.000000");
       expect(results.filter((result) => result.inserted)).toHaveLength(1);
       expect(results.every((result) => result.snapshots.length === 1)).toBe(true);
     } finally {
       await db
         .deleteFrom("pnl_snapshots")
         .where("strategy_id", "=", strategyId)
+        .execute();
+    }
+  });
+
+  it("latest reconcile facts are deduplicated by strategy and market with quantity preserved", async () => {
+    const db = await getDatabase();
+    const repository = new PostgresPnlAccountingRepository(db);
+    const strategyId = `pnl_reconcile_${Date.now()}_${Math.random().toString(16).slice(2)}`;
+    const olderRunId = "10000000-0000-4000-8000-000000000101";
+    const latestRunId = "10000000-0000-4000-8000-000000000102";
+
+    try {
+      await db
+        .insertInto("live_reconcile_runs")
+        .values([
+          {
+            id: olderRunId,
+            idempotency_key: `${strategyId}:older`,
+            status: "MANUAL_REVIEW_REQUIRED",
+          },
+          {
+            id: latestRunId,
+            idempotency_key: `${strategyId}:latest`,
+            status: "COMPLETED",
+          },
+        ])
+        .execute();
+
+      await db
+        .insertInto("live_reconcile_position_snapshots")
+        .values([
+          {
+            run_id: olderRunId,
+            exchange: "upbit_krw_spot",
+            market: "KRW-BTC",
+            strategy_id: strategyId,
+            quantity: "0.01",
+            average_entry_price: null,
+            recovery_status: "MANUAL_REVIEW_REQUIRED",
+            source: "manual_review",
+            captured_at: "2026-06-05T00:00:00.000Z",
+            evidence_json: { manualReviewEvidenceId: "ev-old" },
+          },
+          {
+            run_id: latestRunId,
+            exchange: "upbit_krw_spot",
+            market: "KRW-BTC",
+            strategy_id: strategyId,
+            quantity: "0.02",
+            average_entry_price: "100000000",
+            recovery_status: "RECOVERABLE",
+            source: "fills",
+            captured_at: "2026-06-05T00:01:00.000Z",
+          },
+        ])
+        .execute();
+
+      const result = await repository.loadReconcileFacts({ strategyId });
+
+      expect(result.records).toHaveLength(2);
+      expect(result.reconcileFacts).toEqual([
+        expect.objectContaining({
+          strategyId,
+          market: "KRW-BTC",
+          quantity: "0.020000000000000000",
+          recoveryStatus: "RECOVERABLE",
+          averageEntryPrice: "100000000.000000000000000000",
+          averageEntrySource: "fills",
+        }),
+      ]);
+    } finally {
+      await db
+        .deleteFrom("live_reconcile_runs")
+        .where("idempotency_key", "like", `${strategyId}:%`)
         .execute();
     }
   });

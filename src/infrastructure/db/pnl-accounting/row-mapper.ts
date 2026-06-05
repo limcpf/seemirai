@@ -4,6 +4,19 @@ import type { PnlSnapshotInsertInput, ReconcilePositionSnapshotRecord } from "./
 import type { LiveReconcilePositionSnapshotsTable } from "../schema.js";
 
 /**
+ * PnL snapshot row 변환 옵션이다.
+ *
+ * drawdown은 calculator output에 포함되지 않는 별도 시계열 값이므로 호출자가 명시적으로 제공해야 한다.
+ * unknown을 0으로 보정하면 risk report가 낙폭 해소로 오판할 수 있어 required option으로 둔다.
+ */
+export interface PnlSnapshotRowInputOptions {
+  /** payload에 보존할 source fingerprint */
+  sourceFingerprint?: string;
+  /** 호출자가 산출한 최대 낙폭 bps */
+  drawdownBps: string;
+}
+
+/**
  * PnL 회계 output을 `pnl_snapshots` table insert row 목록으로 변환한다.
  *
  * 각 scope가 하나의 snapshot row가 되며, `market=null`은 strategy aggregate snapshot이다.
@@ -17,9 +30,9 @@ import type { LiveReconcilePositionSnapshotsTable } from "../schema.js";
 export function toPnlSnapshotRowInputs(
   output: PnLAccountingOutput,
   capturedAt: Date | string,
-  sourceFingerprint?: string,
+  options: PnlSnapshotRowInputOptions,
 ): PnlSnapshotInsertInput[] {
-  const captured = typeof capturedAt === "string" ? capturedAt : capturedAt.toISOString();
+  const captured = normalizeCapturedAt(capturedAt);
 
   if (
     output.scopes.length === 0 ||
@@ -45,8 +58,8 @@ export function toPnlSnapshotRowInputs(
       equity: output.equityKrw,
       realized_pnl: output.realizedPnlKrw,
       unrealized_pnl: output.unrealizedPnlKrw,
-      drawdown_bps: "0",
-      payload_json: buildPnlSnapshotPayload(output, scope, sourceFingerprint),
+      drawdown_bps: options.drawdownBps,
+      payload_json: buildPnlSnapshotPayload(output, scope, options.sourceFingerprint),
     });
   }
 
@@ -57,18 +70,22 @@ export function toPnlSnapshotRowInputs(
  * `pnl_snapshots`에 저장 가능한 scope만 고른다.
  *
  * calculator output의 최상위 PnL 값은 여러 market scope에 균등 분배할 수 없는 aggregate 값이다.
- * 따라서 aggregate scope가 있으면 aggregate만 저장하고, 단일 market 계산일 때만 market row를 허용한다.
+ * 따라서 aggregate scope가 정확히 하나 있으면 그 row만 저장하고, 단일 market 계산일 때만 market row를 허용한다.
  * 단일 전략의 여러 market만 계산된 경우에는 strategy aggregate row 하나로 접어 중복 과대 표시를 막는다.
+ * 여러 strategy aggregate가 섞이면 top-level global PnL을 strategy별 값으로 배분할 근거가 없어 저장하지 않는다.
  */
 function selectPersistableScopes(
   scopes: PnLAccountingOutput["scopes"],
 ): Array<{ strategyId: string; market: string | null }> {
   const aggregateScopes = scopes.filter((scope) => scope.market === null);
-  if (aggregateScopes.length > 0) {
-    return aggregateScopes.map((scope) => ({
-      strategyId: scope.strategyId,
-      market: null,
-    }));
+  if (aggregateScopes.length === 1) {
+    const [scope] = aggregateScopes;
+    return [{ strategyId: scope!.strategyId, market: null }];
+  }
+
+  if (aggregateScopes.length > 1) {
+    // 최상위 PnL은 전역 합계라 strategy별 aggregate row로 복제하면 report와 risk evidence가 과대 표시된다.
+    return [];
   }
 
   if (scopes.length === 1) {
@@ -191,4 +208,8 @@ export function toReconcilePositionSnapshotRecord(
     capturedAt: row.captured_at,
     evidence: (row.evidence_json ?? {}) as Record<string, unknown>,
   };
+}
+
+function normalizeCapturedAt(value: Date | string): string {
+  return value instanceof Date ? value.toISOString() : new Date(value).toISOString();
 }

@@ -204,6 +204,8 @@ export interface PnLReconcileFact {
   strategyId: string;
   /** market code */
   market: string;
+  /** reconcile snapshot에서 확인한 보유 수량. 결측이면 규모를 알 수 없어 부분 계산으로 남긴다. */
+  quantity?: NumericString;
   /** reconcile 복구 상태: RECOVERABLE, MANUAL_REVIEW_REQUIRED, MISMATCH 등 */
   recoveryStatus: string;
   /** 평균 진입 단가 (KRW). MANUAL_REVIEW_REQUIRED나 근거 없음이면 null */

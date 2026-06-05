@@ -72,6 +72,9 @@ export {
   toPnlSnapshotRowInputs,
   toReconcilePositionSnapshotRecord,
 } from "./pnl-accounting.js";
+export type {
+  PnlSnapshotRowInputOptions,
+} from "./pnl-accounting.js";
 export {
   PostgresRiskEventRepository,
   appendRiskEvent,

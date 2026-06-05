@@ -134,25 +134,22 @@ export function calculatePnLAccounting(input: PnLAccountingInput): PnLAccounting
       continue;
     }
 
-    // reconcile fact를 position fact로 승격
-    // ⚠️ reconcile은 현재 평균단가만 제공하고 보유 수량 정보는 없다.
-    // 따라서 quantity를 "0"으로 설정하며, 시장가치와 미실현손익은 이 사실만으로 계산할 수 없다.
-    // 평균단가만으로 0 PnL을 확정하면 실제 보유 규모를 숨기므로 부분 계산 원인을 함께 남긴다.
-    missingReasons.push({
-      message: "보유 수량 근거 없음",
-      reasonCode: "POSITION_QUANTITY_MISSING",
-      scope: scopeKey(reconcile.strategyId, reconcile.market),
-      source: "live_reconcile_position_snapshots",
-    });
-    hasUnknownReconcilePosition = true;
-    // 향후 reconcile에 실제 보유 수량이 추가되면 이 로직을 보강해야 한다.
-    // [보강 경로]: reconcile source에서 quantity 필드가 추가되면
-    //   seedLedgerFromReconcile에서 quantity>0인 경우 costBasisKrw를 채워
-    //   MTM 평가 단계에서 marketValueKrw와 unrealizedPnlKrw가 정상 계산되게 한다.
+    if (reconcile.quantity === undefined) {
+      missingReasons.push({
+        message: "보유 수량 근거 없음",
+        reasonCode: "POSITION_QUANTITY_MISSING",
+        scope: scopeKey(reconcile.strategyId, reconcile.market),
+        source: "live_reconcile_position_snapshots",
+      });
+      // 평균단가만으로 0 PnL을 확정하면 실제 보유 규모를 숨기므로 전체 금액을 부분 계산으로 남긴다.
+      hasUnknownReconcilePosition = true;
+    }
+
+    // DB reconcile 수량이 있으면 MTM 평가에 쓰고, 없으면 결측 evidence만 남긴 position-like fact로 승격한다.
     reconciledPositions.push({
       strategyId: reconcile.strategyId,
       market: reconcile.market,
-      quantity: "0",
+      quantity: reconcile.quantity ?? "0",
       averageEntryPrice: reconcile.averageEntryPrice,
       realizedPnl: "0",
       unrealizedPnl: null,
@@ -696,12 +693,8 @@ function summarizeSnapshots(snapshots: readonly PnLSnapshotFact[]): {
 /**
  * reconcile fact에서 승격한 position 정보를 ledger에 보강한다.
  *
- * ⚠️ reconcile 원천 데이터는 현재 평균단가만 제공하고 보유 수량은 알 수 없다.
- * 따라서 `pos.quantity`는 "0"이며, 이 함수는 평균단가(initialAverageEntryPrice)만 설정한다.
- * fill이 없는 scope에서 reconcile의 평균단가를 참조할 수 있게 하는 것이 목적이다.
- *
- * 향후 reconcile에 quantity가 추가되면 아래 `pos.quantity !== "0"` 분기가 활성화되어
- * 시장가치와 미실현손익도 정상 계산된다.
+ * reconcile 원천 데이터가 quantity를 제공하면 평균단가와 함께 cost basis를 복구해 MTM 평가에 사용한다.
+ * quantity가 없는 legacy 입력은 평균단가만 보존하고 계산기는 별도 missing reason으로 금액 확정을 막는다.
  */
 function seedLedgerFromReconcile(
   ledger: Ledger,
@@ -722,7 +715,6 @@ function seedLedgerFromReconcile(
       : null;
     entry.initialAverageEntryPrice = avgPrice;
 
-    // reconcile에 quantity가 추가되면 이 분기가 활성화된다.
     if (pos.quantity !== "0") {
       const qty = parseNonNegativeDecimal(pos.quantity);
       if (qty.greaterThan(0) && avgPrice !== null) {
@@ -1088,17 +1080,24 @@ function buildScopes(
     if (seenScopes.has(key) || snapshotCoverage.isCovered(r.strategyId, r.market)) continue;
     if (r.recoveryStatus !== "RECOVERABLE") continue;
     if (positionCoverage.isCovered(r.strategyId, r.market)) continue;
+    const hasAverageEntry = r.averageEntryPrice !== null && r.averageEntryPrice !== undefined;
+    const hasQuantityEvidence = r.quantity !== undefined;
+    const hasOpenReconcileQuantity =
+      hasQuantityEvidence && parseNonNegativeDecimal(r.quantity).greaterThan(0);
+    const hasMarkPrice = input.markPrices.some((mp) => mp.market === r.market);
     const reconcileStatus =
-      r.averageEntryPrice === null || r.averageEntryPrice === undefined
+      !hasAverageEntry
         ? "MANUAL_REVIEW_REQUIRED"
-        : "PARTIAL";
+        : !hasQuantityEvidence || (hasOpenReconcileQuantity && !hasMarkPrice)
+          ? "PARTIAL"
+          : "CALCULATED";
     seenScopes.add(key);
     scopes.push({
       strategyId: r.strategyId,
       market: r.market,
       capturedAt: normalizeTimestamp(r.reconciledAt),
       source: "live_reconcile_position_snapshots",
-      // 평균단가 없는 RECOVERABLE은 수량 이전에 진입가 근거가 없어 계산 scope도 수동 검토로 올린다.
+      // 평균단가/수량/평가가가 모두 있을 때만 reconcile scope를 확정 계산으로 표시한다.
       status: reconcileStatus,
     });
   }

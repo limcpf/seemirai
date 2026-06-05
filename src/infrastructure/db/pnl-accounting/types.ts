@@ -21,12 +21,15 @@ export type PnlSnapshotInsertInput = Insertable<PnlSnapshotsTable>;
  *
  * `output`은 calculator가 생성한 계산 결과이고, `sourceFingerprint`는 payload에 보존되어
  * `captured_at` + scope와 함께 중복 insert 방지의 idempotency key로 사용된다.
+ * `drawdownBps`는 호출자가 별도 시계열 기준으로 산출한 낙폭 값이며, unknown을 0으로 보정하지 않는다.
  */
 export interface PersistPnlSnapshotInput {
   /** calculator 출력 */
   output: PnLAccountingOutput;
   /** snapshot 캡처 시각. `captured_at` 컬럼에 기록된다. */
   capturedAt: Date | string;
+  /** 호출자가 산출한 최대 낙폭 bps. 알 수 없는 값은 persist 호출 전에 차단해야 한다. */
+  drawdownBps: string;
   /** 중복 감지 source fingerprint. captured_at + strategy/market/scope 조합의 hash */
   sourceFingerprint: string;
 }
@@ -102,6 +105,7 @@ export interface LoadReconcileFactsResult {
   reconcileFacts: ReadonlyArray<{
     strategyId: string;
     market: string;
+    quantity: string;
     recoveryStatus: string;
     averageEntryPrice: string | null;
     reconciledAt: Date | string;

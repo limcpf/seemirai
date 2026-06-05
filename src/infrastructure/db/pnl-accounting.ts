@@ -7,6 +7,9 @@ export {
   toReconcilePositionSnapshotRecord,
 } from "./pnl-accounting/row-mapper.js";
 export type {
+  PnlSnapshotRowInputOptions,
+} from "./pnl-accounting/row-mapper.js";
+export type {
   LoadReconcileFactsInput,
   LoadReconcileFactsResult,
   PersistPnlSnapshotInput,

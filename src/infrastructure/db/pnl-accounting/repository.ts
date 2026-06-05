@@ -63,7 +63,10 @@ export class PostgresPnlAccountingRepository {
     const rows = toPnlSnapshotRowInputs(
       input.output,
       input.capturedAt,
-      input.sourceFingerprint,
+      {
+        sourceFingerprint: input.sourceFingerprint,
+        drawdownBps: input.drawdownBps,
+      },
     );
 
     if (rows.length === 0) {
@@ -165,7 +168,7 @@ export class PostgresPnlAccountingRepository {
 
     const records: ReconcilePositionSnapshotRecord[] = rows.map(toReconcilePositionSnapshotRecord);
 
-    // strategy/market/run_id 기준으로 중복을 제거하고 최신 captured_at snapshot만 채택한다.
+    // 같은 scope의 과거 run이 최신 recovery 상태를 오염시키지 않도록 strategy/market 기준 최신 snapshot만 채택한다.
     const deduped = deduplicateReconcileRecords(records);
 
     const reconcileFacts = deduped.map((record) => {
@@ -173,6 +176,7 @@ export class PostgresPnlAccountingRepository {
       return {
         strategyId: record.strategyId,
         market: record.market,
+        quantity: record.quantity,
         recoveryStatus: record.recoveryStatus,
         averageEntryPrice: record.averageEntryPrice,
         reconciledAt: record.capturedAt,
@@ -188,7 +192,7 @@ export class PostgresPnlAccountingRepository {
 }
 
 /**
- * reconcile position snapshot record 목록에서 strategy/market/run_id 기준 중복을 제거하고
+ * reconcile position snapshot record 목록에서 strategy/market 기준 중복을 제거하고
  * 가장 최근 captured_at 기준 record 하나만 남긴다.
  *
  * 여러 reconcile run에서 같은 scope가 반복 관측되면 최신 evidence가 과거 record를 덮지 않고
@@ -203,17 +207,30 @@ function deduplicateReconcileRecords(
   const latest = new Map<string, ReconcilePositionSnapshotRecord>();
 
   for (const record of records) {
-    const key = `${record.strategyId}::${record.market}::${record.runId}`;
+    const key = `${record.strategyId}::${record.market}`;
     const existing = latest.get(key);
     if (
       existing === undefined ||
-      toTimeMs(record.capturedAt) > toTimeMs(existing.capturedAt)
+      compareReconcileRecordFreshness(record, existing) > 0
     ) {
       latest.set(key, record);
     }
   }
 
   return [...latest.values()];
+}
+
+function compareReconcileRecordFreshness(
+  left: ReconcilePositionSnapshotRecord,
+  right: ReconcilePositionSnapshotRecord,
+): number {
+  const timeDiff = toTimeMs(left.capturedAt) - toTimeMs(right.capturedAt);
+  if (timeDiff !== 0) {
+    return timeDiff;
+  }
+
+  // 동일 timestamp에서는 run/id 순서를 tie-break로 써 결과를 deterministic하게 유지한다.
+  return `${left.runId}:${left.id}`.localeCompare(`${right.runId}:${right.id}`);
 }
 
 function toTimeMs(value: Date | string): number {
@@ -251,7 +268,7 @@ async function lockPnlSnapshotScope(
 }
 
 function normalizeCapturedAt(value: Date | string): string {
-  return value instanceof Date ? value.toISOString() : value;
+  return value instanceof Date ? value.toISOString() : new Date(value).toISOString();
 }
 
 function computeAdvisoryLockKey(parts: readonly string[]): string {
@@ -278,7 +295,7 @@ export function computePnlSnapshotSourceFingerprint(
   output: PnLAccountingOutput,
   capturedAt: Date | string,
 ): string {
-  const captured = typeof capturedAt === "string" ? capturedAt : capturedAt.toISOString();
+  const captured = normalizeCapturedAt(capturedAt);
   const scopeEntries = output.scopes
     .map((scope) => `${scope.strategyId}|${scope.market ?? "*"}|${scope.status}|${scope.source}`)
     .sort()
