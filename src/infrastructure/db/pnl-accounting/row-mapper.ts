@@ -71,7 +71,7 @@ export function toPnlSnapshotRowInputs(
  *
  * calculator output의 최상위 PnL 값은 여러 market scope에 균등 분배할 수 없는 aggregate 값이다.
  * 따라서 aggregate scope가 정확히 하나 있으면 그 row만 저장하고, 단일 market 계산일 때만 market row를 허용한다.
- * 단일 전략의 여러 market만 계산된 경우에는 strategy aggregate row 하나로 접어 중복 과대 표시를 막는다.
+ * 단일 전략의 여러 market만 있고 aggregate scope가 없으면 strategy 전체 snapshot을 invent하지 않는다.
  * 여러 strategy aggregate가 섞이면 top-level global PnL을 strategy별 값으로 배분할 근거가 없어 저장하지 않는다.
  */
 function selectPersistableScopes(
@@ -97,10 +97,6 @@ function selectPersistableScopes(
   if (scopes.length === 1) {
     const [scope] = scopes;
     return [{ strategyId: scope!.strategyId, market: scope!.market }];
-  }
-
-  if (strategyIds.length === 1) {
-    return [{ strategyId: strategyIds[0]!, market: null }];
   }
 
   // 여러 strategy가 섞인 output은 단일 row로 의미 있게 표현할 수 없어 저장하지 않는다.

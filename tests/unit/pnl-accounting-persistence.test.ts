@@ -34,7 +34,7 @@ describe("M17 PnL accounting persistence mapper", () => {
     expect(rows).toEqual([]);
   });
 
-  it("여러 market scope의 aggregate PnL을 market별 row로 중복 저장하지 않는다", () => {
+  it("여러 market scope만 있으면 strategy aggregate row를 새로 만들지 않는다", () => {
     const rows = toPnlSnapshotRowInputs(
       {
         ...baseOutput(),
@@ -59,18 +59,7 @@ describe("M17 PnL accounting persistence mapper", () => {
       { sourceFingerprint: "fp-aggregate", drawdownBps: "7" },
     );
 
-    expect(rows).toHaveLength(1);
-    expect(rows[0]).toMatchObject({
-      strategy_id: "trend",
-      market: null,
-      equity: "1000000",
-      realized_pnl: "1200",
-      unrealized_pnl: "300",
-      drawdown_bps: "7",
-    });
-    expect(rows[0]!.payload_json).toMatchObject({
-      sourceFingerprint: "fp-aggregate",
-    });
+    expect(rows).toEqual([]);
   });
 
   it("aggregate scope가 있으면 aggregate row만 저장한다", () => {
@@ -177,8 +166,27 @@ describe("M17 PnL accounting persistence mapper", () => {
     };
 
     expect(
-      computePnlSnapshotSourceFingerprint(output, new Date("2026-06-05T00:00:00.000Z")),
-    ).toBe(computePnlSnapshotSourceFingerprint(output, "2026-06-05T00:00:00Z"));
+      computePnlSnapshotSourceFingerprint(output, new Date("2026-06-05T00:00:00.000Z"), "7"),
+    ).toBe(computePnlSnapshotSourceFingerprint(output, "2026-06-05T00:00:00Z", "7"));
+  });
+
+  it("source fingerprint는 저장되는 drawdown 값이 바뀌면 달라진다", () => {
+    const output = {
+      ...baseOutput(),
+      scopes: [
+        {
+          strategyId: "trend",
+          market: null,
+          capturedAt: "2026-06-05T00:00:00.000Z",
+          source: "fills" as const,
+          status: "CALCULATED" as const,
+        },
+      ],
+    };
+
+    expect(computePnlSnapshotSourceFingerprint(output, "2026-06-05T00:00:00Z", "7")).not.toBe(
+      computePnlSnapshotSourceFingerprint(output, "2026-06-05T00:00:00Z", "8"),
+    );
   });
 
   it("live reconcile 조회 row를 calculator 입력 record로 변환한다", () => {

@@ -319,6 +319,7 @@ function computeAdvisoryLockKey(parts: readonly string[]): string {
 export function computePnlSnapshotSourceFingerprint(
   output: PnLAccountingOutput,
   capturedAt: Date | string,
+  drawdownBps: string,
 ): string {
   const captured = normalizeCapturedAt(capturedAt);
   const scopeEntries = output.scopes
@@ -336,6 +337,7 @@ export function computePnlSnapshotSourceFingerprint(
     output.equityKrw ?? "null",
     output.cashKrw ?? "null",
     output.positionMarketValueKrw ?? "null",
+    drawdownBps,
   ].join("|");
 
   return createHash("sha256").update(payload, "utf8").digest("hex");
