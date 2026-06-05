@@ -1666,6 +1666,57 @@ describe("M17 PnL accounting calculator", () => {
         result.missingReasons.some((r) => r.reasonCode === "CANCEL_REQUOTE_SOURCE_MISSING"),
       ).toBe(true);
     });
+
+    it("일부 scope 비용 품질 source가 없으면 해당 scope 결측으로 PARTIAL을 유지한다", () => {
+      const input: PnLAccountingInput = {
+        fills: [
+          buyFill("btc-buy", "KRW-BTC", "0.01", "100000000", "50"),
+          buyFill("eth-buy", "KRW-ETH", "0.1", "3000000", "30"),
+        ],
+        positions: [],
+        markPrices: [
+          markPrice("KRW-BTC", "101000000"),
+          markPrice("KRW-ETH", "3100000"),
+        ],
+        cash: {
+          ...defaultCash(),
+          availableKrw: "2000000",
+          totalKrw: "2000000",
+        },
+        costQuality: completeCostQuality("trend_following", "KRW-BTC"),
+        pnlSnapshots: [],
+        reconcileFacts: [],
+      };
+
+      const result = calculatePnLAccounting(input);
+      const ethScope = scopeKey("trend_following", "KRW-ETH");
+
+      expect(result.status).toBe("PARTIAL");
+      expect(result.spreadCost.available).toBe(true);
+      expect(result.missingReasons).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            reasonCode: "SPREAD_COST_SOURCE_MISSING",
+            scope: ethScope,
+          }),
+          expect.objectContaining({
+            reasonCode: "SLIPPAGE_SOURCE_MISSING",
+            scope: ethScope,
+          }),
+          expect.objectContaining({
+            reasonCode: "CANCEL_REQUOTE_SOURCE_MISSING",
+            scope: ethScope,
+          }),
+        ]),
+      );
+      expect(
+        result.missingReasons.some(
+          (reason) =>
+            reason.reasonCode === "SPREAD_COST_SOURCE_MISSING" &&
+            reason.scope === scopeKey("trend_following", "KRW-BTC"),
+        ),
+      ).toBe(false);
+    });
   });
 
   describe("scope 빌드", () => {

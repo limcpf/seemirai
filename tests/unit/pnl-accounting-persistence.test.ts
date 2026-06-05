@@ -95,6 +95,45 @@ describe("M17 PnL accounting persistence mapper", () => {
     });
   });
 
+  it("단일 market row payload에는 저장 scope의 status를 보존한다", () => {
+    const rows = toPnlSnapshotRowInputs(
+      {
+        ...baseOutput(),
+        status: "PARTIAL",
+        scopes: [
+          {
+            strategyId: "trend",
+            market: "KRW-BTC",
+            capturedAt: "2026-06-05T00:00:00.000Z",
+            source: "fills" as const,
+            status: "CALCULATED" as const,
+          },
+        ],
+        missingReasons: [
+          {
+            message: "전략 aggregate coverage 부족",
+            reasonCode: "SNAPSHOT_COVERAGE_PARTIAL",
+            scope: "global",
+            source: "pnl_snapshots",
+          },
+        ],
+      },
+      "2026-06-05T00:00:00.000Z",
+      { sourceFingerprint: "fp-market-scope-status", drawdownBps: "9" },
+    );
+
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.payload_json).toMatchObject({
+      status: "CALCULATED",
+      missingReasons: [
+        {
+          reasonCode: "SNAPSHOT_COVERAGE_PARTIAL",
+          scope: "global",
+        },
+      ],
+    });
+  });
+
   it("aggregate row payload에 같은 strategy의 position details를 보존한다", () => {
     const rows = toPnlSnapshotRowInputs(
       {
@@ -297,6 +336,44 @@ describe("M17 PnL accounting persistence mapper", () => {
       computePnlSnapshotSourceFingerprint(base, "2026-06-05T00:00:00Z"),
     ).not.toBe(
       computePnlSnapshotSourceFingerprint(withQualityEvidence, "2026-06-05T00:00:00Z"),
+    );
+  });
+
+  it("source fingerprint는 포지션 detail evidence가 바뀌면 달라진다", () => {
+    const base = baseOutput();
+    const withBtcPosition: PnLAccountingOutput = {
+      ...base,
+      positions: [
+        {
+          strategyId: "trend",
+          market: "KRW-BTC",
+          quantity: "0.01",
+          averageEntryPrice: "100000000",
+          marketValueKrw: "1010000",
+          unrealizedPnlKrw: "10000",
+          exposureBps: "5000",
+        },
+      ],
+    };
+    const withChangedPosition: PnLAccountingOutput = {
+      ...base,
+      positions: [
+        {
+          strategyId: "trend",
+          market: "KRW-BTC",
+          quantity: "0.02",
+          averageEntryPrice: "50000000",
+          marketValueKrw: "1010000",
+          unrealizedPnlKrw: "10000",
+          exposureBps: "5000",
+        },
+      ],
+    };
+
+    expect(
+      computePnlSnapshotSourceFingerprint(withBtcPosition, "2026-06-05T00:00:00Z"),
+    ).not.toBe(
+      computePnlSnapshotSourceFingerprint(withChangedPosition, "2026-06-05T00:00:00Z"),
     );
   });
 

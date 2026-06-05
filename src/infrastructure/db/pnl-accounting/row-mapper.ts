@@ -76,7 +76,7 @@ export function toPnlSnapshotRowInputs(
  */
 function selectPersistableScopes(
   scopes: PnLAccountingOutput["scopes"],
-): Array<{ strategyId: string; market: string | null }> {
+): Array<PnLAccountingOutput["scopes"][number]> {
   const strategyIds = [...new Set(scopes.map((scope) => scope.strategyId))];
   if (strategyIds.length > 1) {
     // output 금액은 전역 합계라 여러 strategy 중 일부 aggregate row에 안전하게 배분할 수 없다.
@@ -86,7 +86,7 @@ function selectPersistableScopes(
   const aggregateScopes = scopes.filter((scope) => scope.market === null);
   if (aggregateScopes.length === 1) {
     const [scope] = aggregateScopes;
-    return [{ strategyId: scope!.strategyId, market: null }];
+    return [scope!];
   }
 
   if (aggregateScopes.length > 1) {
@@ -96,7 +96,7 @@ function selectPersistableScopes(
 
   if (scopes.length === 1) {
     const [scope] = scopes;
-    return [{ strategyId: scope!.strategyId, market: scope!.market }];
+    return [scope!];
   }
 
   // 여러 strategy가 섞인 output은 단일 row로 의미 있게 표현할 수 없어 저장하지 않는다.
@@ -115,11 +115,11 @@ function selectPersistableScopes(
  */
 function buildPnlSnapshotPayload(
   output: PnLAccountingOutput,
-  scope?: { strategyId: string; market: string | null },
+  scope?: PnLAccountingOutput["scopes"][number],
   sourceFingerprint?: string,
 ): Record<string, unknown> {
   const payload: Record<string, unknown> = {
-    status: output.status,
+    status: scope?.status ?? output.status,
     feeTotals: output.feeTotals.map((fee) => ({
       currency: fee.currency,
       amount: fee.amount,

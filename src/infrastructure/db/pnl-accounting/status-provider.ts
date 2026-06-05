@@ -38,14 +38,15 @@ export function createDatabasePnLAccountingStatusProvider(
           countQuery = countQuery.where("strategy_id", "=", scope.strategyId);
         }
 
-        if (scope?.market !== undefined) {
-          if (scope.market === null) {
-            latestQuery = latestQuery.where("market", "is", null);
-            countQuery = countQuery.where("market", "is", null);
-          } else {
-            latestQuery = latestQuery.where("market", "=", scope.market);
-            countQuery = countQuery.where("market", "=", scope.market);
-          }
+        if (scope?.market === undefined) {
+          // 전역/strategy status는 market별 최신 row를 전체 상태처럼 노출하지 않도록 aggregate row만 최신값 후보로 삼는다.
+          latestQuery = latestQuery.where("market", "is", null);
+        } else if (scope.market === null) {
+          latestQuery = latestQuery.where("market", "is", null);
+          countQuery = countQuery.where("market", "is", null);
+        } else {
+          latestQuery = latestQuery.where("market", "=", scope.market);
+          countQuery = countQuery.where("market", "=", scope.market);
         }
 
         const [row, countRow] = await Promise.all([

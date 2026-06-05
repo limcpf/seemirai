@@ -346,6 +346,21 @@ export function computePnlSnapshotSourceFingerprint(
       slippage: output.slippage,
       cancelRequote: output.cancelRequote,
     }),
+    JSON.stringify(
+      output.positions
+        .map((position) => ({
+          strategyId: position.strategyId,
+          market: position.market,
+          quantity: position.quantity,
+          averageEntryPrice: position.averageEntryPrice,
+          marketValueKrw: position.marketValueKrw,
+          unrealizedPnlKrw: position.unrealizedPnlKrw,
+          exposureBps: position.exposureBps,
+        }))
+        .sort((left, right) =>
+          `${left.strategyId}|${left.market}`.localeCompare(`${right.strategyId}|${right.market}`),
+        ),
+    ),
   ].join("|");
 
   return createHash("sha256").update(payload, "utf8").digest("hex");

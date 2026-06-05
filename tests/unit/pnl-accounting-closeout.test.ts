@@ -507,7 +507,7 @@ describe("M17 PnL accounting status provider", () => {
     const provider = createDatabasePnLAccountingStatusProvider(
       pnlSnapshotStatusDatabase({
         strategy_id: "trend",
-        market: "KRW-BTC",
+        market: null,
         captured_at: new Date("2026-06-01T00:00:00.000Z"),
         equity: "2010000",
         realized_pnl: "0",
@@ -534,6 +534,52 @@ describe("M17 PnL accounting status provider", () => {
     });
   });
 
+  it("전역 status는 최신 market row보다 aggregate row를 우선한다", async () => {
+    const provider = createDatabasePnLAccountingStatusProvider(
+      pnlSnapshotStatusDatabase([
+        {
+          strategy_id: "trend",
+          market: "KRW-BTC",
+          captured_at: new Date("2026-06-01T01:00:00.000Z"),
+          equity: "1010000",
+          realized_pnl: "0",
+          unrealized_pnl: "10000",
+          drawdown_bps: "1200",
+          payload_json: {
+            status: "CALCULATED",
+            sourceFingerprint: "market-fingerprint",
+          },
+        },
+        {
+          strategy_id: "trend",
+          market: null,
+          captured_at: new Date("2026-06-01T00:00:00.000Z"),
+          equity: "2010000",
+          realized_pnl: "1000",
+          unrealized_pnl: "10000",
+          drawdown_bps: "3300",
+          payload_json: {
+            status: "PARTIAL",
+            sourceFingerprint: "aggregate-fingerprint",
+          },
+        },
+      ]),
+    );
+
+    await expect(provider.getStatus()).resolves.toMatchObject({
+      readStatus: "OK",
+      latestCapturedAt: "2026-06-01T00:00:00.000Z",
+      latestEquityKrw: "2010000",
+      latestRealizedPnlKrw: "1000",
+      latestUnrealizedPnlKrw: "10000",
+      latestDrawdownBps: "3300",
+      latestSource: "pnl_snapshots",
+      latestStatus: "PARTIAL",
+      snapshotCount: 2,
+      reason: "pnl_snapshot_latest_read",
+    });
+  });
+
   it("DB 조회 실패는 빈 테이블과 구분해 UNAVAILABLE로 반환한다", async () => {
     const provider = createDatabasePnLAccountingStatusProvider(pnlSnapshotStatusDatabase(undefined, true));
 
@@ -547,27 +593,50 @@ describe("M17 PnL accounting status provider", () => {
   });
 });
 
+/**
+ * status provider fake query가 누적한 where 조건이다.
+ *
+ * 실제 Kysely query builder처럼 latest row 선택 경계와 count 경계를 분리해
+ * 전역 status가 market row를 최신값으로 잘못 선택하는 회귀를 테스트한다.
+ */
+interface PnlSnapshotStatusQueryFilter {
+  strategyId?: string;
+  marketEquals?: string;
+  marketIsNull?: boolean;
+}
+
 function pnlSnapshotStatusDatabase(
-  row: PnlSnapshotRecord | undefined,
+  rowOrRows: PnlSnapshotRecord | readonly PnlSnapshotRecord[] | undefined,
   shouldThrow = false,
-  snapshotCount = row === undefined ? 0 : 1,
+  snapshotCount = rowOrRows === undefined
+    ? 0
+    : Array.isArray(rowOrRows)
+      ? rowOrRows.length
+      : 1,
 ): Database {
+  const rows = rowOrRows === undefined
+    ? []
+    : Array.isArray(rowOrRows)
+      ? [...rowOrRows]
+      : [rowOrRows];
+
   return {
     selectFrom(tableName: string) {
       if (tableName !== "pnl_snapshots") {
         throw new Error(`unexpected table: ${tableName}`);
       }
-      return createPnlSnapshotStatusQuery(row, shouldThrow, snapshotCount);
+      return createPnlSnapshotStatusQuery(rows, shouldThrow, snapshotCount);
     },
   } as unknown as Database;
 }
 
 function createPnlSnapshotStatusQuery(
-  row: PnlSnapshotRecord | undefined,
+  rows: readonly PnlSnapshotRecord[],
   shouldThrow: boolean,
   snapshotCount: number,
 ) {
   let mode: "latest" | "count" = "latest";
+  const filter: PnlSnapshotStatusQueryFilter = {};
   const query = {
     selectAll() {
       mode = "latest";
@@ -585,15 +654,54 @@ function createPnlSnapshotStatusQuery(
     limit() {
       return query;
     },
-    where() {
+    where(columnName: string, operator: string, value?: unknown) {
+      if (columnName === "strategy_id" && operator === "=" && typeof value === "string") {
+        filter.strategyId = value;
+      }
+      if (columnName === "market" && operator === "is" && value === null) {
+        filter.marketIsNull = true;
+        delete filter.marketEquals;
+      }
+      if (columnName === "market" && operator === "=" && typeof value === "string") {
+        filter.marketEquals = value;
+        filter.marketIsNull = false;
+      }
       return query;
     },
     async executeTakeFirst() {
       if (shouldThrow) {
         throw new Error("pnl_snapshots unavailable");
       }
-      return mode === "count" ? { count: String(snapshotCount) } : row;
+      if (mode === "count") {
+        return { count: String(snapshotCount) };
+      }
+
+      return selectLatestMatchingRow(rows, filter);
     },
   };
   return query;
+}
+
+function selectLatestMatchingRow(
+  rows: readonly PnlSnapshotRecord[],
+  filter: PnlSnapshotStatusQueryFilter,
+): PnlSnapshotRecord | undefined {
+  return rows
+    .filter((row) => {
+      if (filter.strategyId !== undefined && row.strategy_id !== filter.strategyId) {
+        return false;
+      }
+      if (filter.marketIsNull === true && row.market !== null) {
+        return false;
+      }
+      if (filter.marketEquals !== undefined && row.market !== filter.marketEquals) {
+        return false;
+      }
+      return true;
+    })
+    .sort((left, right) => toTime(right.captured_at) - toTime(left.captured_at))[0];
+}
+
+function toTime(value: Date | string): number {
+  return value instanceof Date ? value.getTime() : new Date(value).getTime();
 }

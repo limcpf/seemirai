@@ -48,6 +48,20 @@ interface PositionLedger {
 }
 
 /**
+ * 비용 품질 evidence가 필요한 strategy/market scope다.
+ *
+ * calculator 내부에서 실제 거래 또는 open position 근거가 있는 scope만 모아
+ * spread/slippage/cancel-requote 결측을 scope별로 판정한다. 동일 scope는 한 번만 보존하며,
+ * 외부 호출 경계로 노출되지 않고 side effect도 없다.
+ */
+interface CostQualityScopeRequirement {
+  /** 비용 품질 evidence를 요구하는 전략 식별자 */
+  strategyId: string;
+  /** 비용 품질 evidence를 요구하는 market code */
+  market: string;
+}
+
+/**
  * PnL/포지션 회계 계산기의 순수 진입점이다.
  *
  * 이 함수는 모든 입력을 받아 deterministic한 PnL/포지션 회계 output을 생성한다.
@@ -383,14 +397,15 @@ export function calculatePnLAccounting(input: PnLAccountingInput): PnLAccounting
     accountingInput.costQuality,
     "cancelRequotePenaltyBps",
   );
-  const requiresCostQuality =
-    accountingInput.fills.length > 0 ||
-    hasOpenPositionQuantity(fallbackPositions) ||
-    hasOpenPositionQuantity(reconciledPositions);
+  const costQualityScopeRequirements = resolveCostQualityScopeRequirements(
+    accountingInput.fills,
+    fallbackPositions,
+    reconciledPositions,
+  );
   appendCostQualityMissingReasons(
     missingReasons,
-    requiresCostQuality,
-    { spreadCost, slippage, cancelRequote },
+    costQualityScopeRequirements,
+    accountingInput.costQuality,
   );
 
   // ── 10. scope 빌드 ───────────────────────────────────────────────────────
@@ -1247,41 +1262,88 @@ function buildFeeTotals(feesByCurrency: Map<string, Decimal>): PnLFeeTotal[] {
  */
 function appendCostQualityMissingReasons(
   missingReasons: PnLMissingReason[],
-  required: boolean,
-  metrics: {
-    spreadCost: PnLExecutionQualityMetric;
-    slippage: PnLExecutionQualityMetric;
-    cancelRequote: PnLExecutionQualityMetric;
-  },
+  requiredScopes: readonly CostQualityScopeRequirement[],
+  facts: readonly PnLCostQualityFact[],
 ): void {
-  if (!required) {
-    return;
+  for (const requiredScope of requiredScopes) {
+    const reasonScope = scopeKey(requiredScope.strategyId, requiredScope.market);
+    if (!hasCostQualityMetric(facts, requiredScope, "spreadCostBps")) {
+      addMissingReasonOnce(missingReasons, {
+        message: "스프레드 비용 근거 없음",
+        reasonCode: "SPREAD_COST_SOURCE_MISSING",
+        scope: reasonScope,
+        source: "cost_quality_facts",
+      });
+    }
+    if (!hasCostQualityMetric(facts, requiredScope, "slippageBps")) {
+      addMissingReasonOnce(missingReasons, {
+        message: "슬리피지 근거 없음",
+        reasonCode: "SLIPPAGE_SOURCE_MISSING",
+        scope: reasonScope,
+        source: "cost_quality_facts",
+      });
+    }
+    if (!hasCostQualityMetric(facts, requiredScope, "cancelRequotePenaltyBps")) {
+      addMissingReasonOnce(missingReasons, {
+        message: "취소/재호가 비용 근거 없음",
+        reasonCode: "CANCEL_REQUOTE_SOURCE_MISSING",
+        scope: reasonScope,
+        source: "cost_quality_facts",
+      });
+    }
+  }
+}
+
+/**
+ * 실제 손익 계산에 비용 품질 evidence가 필요한 scope 목록을 만든다.
+ *
+ * 체결 수량이 있거나 snapshot coverage에서 제외된 open position/reconcile 수량이 남은 scope는
+ * 비용 품질을 0으로 가정할 수 없다. 동일 scope는 한 번만 요구하고, 입력 순서와 무관한 안정 정렬로 반환한다.
+ */
+function resolveCostQualityScopeRequirements(
+  fills: readonly PnLFillFact[],
+  fallbackPositions: readonly PnLPositionFact[],
+  reconciledPositions: readonly PnLPositionFact[],
+): CostQualityScopeRequirement[] {
+  const requirements = new Map<string, CostQualityScopeRequirement>();
+  const addRequirement = (strategyId: string, market: string): void => {
+    requirements.set(scopeKey(strategyId, market), { strategyId, market });
+  };
+
+  for (const fill of fills) {
+    if (parseNonNegativeDecimal(fill.quantity).greaterThan(0)) {
+      addRequirement(fill.strategyId, fill.market);
+    }
+  }
+  for (const position of [...fallbackPositions, ...reconciledPositions]) {
+    if (parseNonNegativeDecimal(position.quantity).greaterThan(0)) {
+      addRequirement(position.strategyId, position.market);
+    }
   }
 
-  if (!metrics.spreadCost.available) {
-    addMissingReasonOnce(missingReasons, {
-      message: "스프레드 비용 근거 없음",
-      reasonCode: "SPREAD_COST_SOURCE_MISSING",
-      scope: "global",
-      source: "cost_quality_facts",
-    });
-  }
-  if (!metrics.slippage.available) {
-    addMissingReasonOnce(missingReasons, {
-      message: "슬리피지 근거 없음",
-      reasonCode: "SLIPPAGE_SOURCE_MISSING",
-      scope: "global",
-      source: "cost_quality_facts",
-    });
-  }
-  if (!metrics.cancelRequote.available) {
-    addMissingReasonOnce(missingReasons, {
-      message: "취소/재호가 비용 근거 없음",
-      reasonCode: "CANCEL_REQUOTE_SOURCE_MISSING",
-      scope: "global",
-      source: "cost_quality_facts",
-    });
-  }
+  return [...requirements.values()].sort((left, right) =>
+    scopeKey(left.strategyId, left.market).localeCompare(scopeKey(right.strategyId, right.market)),
+  );
+}
+
+/**
+ * 특정 scope의 비용 품질 metric 관측 여부를 판정한다.
+ *
+ * metric 값이 빈 문자열이면 관측 부재로 취급한다. 다른 scope의 evidence를 재사용하면 market별 비용 결측이
+ * 사라지므로 strategyId와 market이 모두 일치하는 fact만 인정한다.
+ */
+function hasCostQualityMetric(
+  facts: readonly PnLCostQualityFact[],
+  requiredScope: CostQualityScopeRequirement,
+  field: "spreadCostBps" | "slippageBps" | "cancelRequotePenaltyBps",
+): boolean {
+  return facts.some(
+    (fact) =>
+      fact.strategyId === requiredScope.strategyId &&
+      fact.market === requiredScope.market &&
+      typeof fact[field] === "string" &&
+      fact[field].length > 0,
+  );
 }
 
 /**
@@ -1305,17 +1367,6 @@ function appendNonKrwFeeMissingReasons(
       source: "fills",
     });
   }
-}
-
-/**
- * 비용 품질 evidence가 필수인 open position source인지 판정한다.
- *
- * snapshot coverage에서 제외되어 실제 fallback 계산에 쓰인 position/reconcile 중 수량이 남은 경우에만
- * spread/slippage/cancel-requote 결측이 현재 PnL 상태에 영향을 준다. 청산 완료 수량 0은 비용 품질 원천을
- * 새로 요구하지 않는다.
- */
-function hasOpenPositionQuantity(positions: readonly PnLPositionFact[]): boolean {
-  return positions.some((position) => parseNonNegativeDecimal(position.quantity).greaterThan(0));
 }
 
 /**
