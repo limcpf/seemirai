@@ -309,6 +309,7 @@ function computeAdvisoryLockKey(parts: readonly string[]): string {
  * 호출자는 captured_at + scope strategy/market 조합 + status + 주요 출력값을 기반으로
  * 이 hash를 만들어 repository에 전달한다. repository는 이 값을 payload에 보존하고
  * captured_at + strategy_id + market + fingerprint 기준으로 중복을 확인한다.
+ * drawdown은 과거 snapshot history에 따라 달라지는 파생값이므로 source fingerprint에 포함하지 않는다.
  *
  * 이 함수는 순수 계산이며 side effect는 없다.
  *
@@ -319,7 +320,7 @@ function computeAdvisoryLockKey(parts: readonly string[]): string {
 export function computePnlSnapshotSourceFingerprint(
   output: PnLAccountingOutput,
   capturedAt: Date | string,
-  drawdownBps: string,
+  _drawdownBps?: string,
 ): string {
   const captured = normalizeCapturedAt(capturedAt);
   const scopeEntries = output.scopes
@@ -337,7 +338,6 @@ export function computePnlSnapshotSourceFingerprint(
     output.equityKrw ?? "null",
     output.cashKrw ?? "null",
     output.positionMarketValueKrw ?? "null",
-    drawdownBps,
   ].join("|");
 
   return createHash("sha256").update(payload, "utf8").digest("hex");

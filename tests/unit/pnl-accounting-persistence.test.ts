@@ -166,11 +166,11 @@ describe("M17 PnL accounting persistence mapper", () => {
     };
 
     expect(
-      computePnlSnapshotSourceFingerprint(output, new Date("2026-06-05T00:00:00.000Z"), "7"),
-    ).toBe(computePnlSnapshotSourceFingerprint(output, "2026-06-05T00:00:00Z", "7"));
+      computePnlSnapshotSourceFingerprint(output, new Date("2026-06-05T00:00:00.000Z")),
+    ).toBe(computePnlSnapshotSourceFingerprint(output, "2026-06-05T00:00:00Z"));
   });
 
-  it("source fingerprint는 저장되는 drawdown 값이 바뀌면 달라진다", () => {
+  it("source fingerprint는 파생 drawdown 값이 바뀌어도 유지된다", () => {
     const output = {
       ...baseOutput(),
       scopes: [
@@ -184,7 +184,7 @@ describe("M17 PnL accounting persistence mapper", () => {
       ],
     };
 
-    expect(computePnlSnapshotSourceFingerprint(output, "2026-06-05T00:00:00Z", "7")).not.toBe(
+    expect(computePnlSnapshotSourceFingerprint(output, "2026-06-05T00:00:00Z", "7")).toBe(
       computePnlSnapshotSourceFingerprint(output, "2026-06-05T00:00:00Z", "8"),
     );
   });

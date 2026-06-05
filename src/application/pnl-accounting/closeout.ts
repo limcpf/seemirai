@@ -148,7 +148,6 @@ export async function runPnLAccountingCloseout(
   const sourceFingerprint = computePnlSnapshotSourceFingerprint(
     output,
     capturedAt,
-    drawdownBps,
   );
 
   // ── 5. durable snapshot persistence ─────────────────────────────────────
@@ -280,11 +279,11 @@ function resolveOutputCapturedAt(output: PnLAccountingOutput): string {
  * PnL snapshot persistence를 위한 source fingerprint를 계산한다.
  *
  * capturedAt, 저장 후보 scope, 상태와 주요 금액을 묶어 동일 source 재처리를 deterministic하게 식별한다.
+ * drawdown은 history 상태에 따라 재계산되는 파생값이라 fingerprint에서 제외해 closeout 재처리 멱등성을 유지한다.
  */
 function computePnlSnapshotSourceFingerprint(
   output: PnLAccountingOutput,
   capturedAt: Date | string,
-  drawdownBps: string,
 ): string {
   const captured = normalizeCapturedAt(capturedAt);
   const scopeEntries = output.scopes
@@ -302,7 +301,6 @@ function computePnlSnapshotSourceFingerprint(
     output.equityKrw ?? "null",
     output.cashKrw ?? "null",
     output.positionMarketValueKrw ?? "null",
-    drawdownBps,
   ].join("|");
 
   return createHash("sha256").update(payload, "utf8").digest("hex");

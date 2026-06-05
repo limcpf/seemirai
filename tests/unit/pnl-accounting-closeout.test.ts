@@ -4,7 +4,6 @@ import type {
   PnLSnapshotFact,
 } from "../../src/application/index.js";
 import {
-  createDatabasePnLAccountingStatusProvider,
   runPnLAccountingCloseout,
 } from "../../src/application/index.js";
 import type {
@@ -15,6 +14,9 @@ import type {
 } from "../../src/application/index.js";
 import type {
   PnlSnapshotRecord,
+} from "../../src/infrastructure/db/index.js";
+import {
+  createDatabasePnLAccountingStatusProvider,
 } from "../../src/infrastructure/db/index.js";
 import type { Database } from "../../src/infrastructure/db/index.js";
 
@@ -283,6 +285,34 @@ describe("M17 PnL accounting closeout", () => {
     );
     expect(result.output.equityKrw).toBe("2010000");
     expect(result.drawdownBps).toBe("0");
+  });
+
+  it("drawdown history만 달라져도 source fingerprint는 유지한다", async () => {
+    const previousSnapshot: PnLSnapshotFact = {
+      strategyId: "trend",
+      market: null,
+      capturedAt: new Date("2026-05-30T00:00:00Z"),
+      equity: "3000000",
+      realizedPnl: "0",
+      unrealizedPnl: "0",
+      drawdownBps: "0",
+    };
+    const capturedAt = "2026-06-01T00:00:00.000Z";
+
+    const withoutDrawdown = await runPnLAccountingCloseout({
+      dataProvider: createFixtureDataProvider(fixtureInput()),
+      repository: new MemoryPnlRepository(),
+      capturedAt,
+    });
+    const withDrawdown = await runPnLAccountingCloseout({
+      dataProvider: createFixtureDataProvider(fixtureInput(), [previousSnapshot]),
+      repository: new MemoryPnlRepository(),
+      capturedAt,
+    });
+
+    expect(withoutDrawdown.drawdownBps).toBe("0");
+    expect(withDrawdown.drawdownBps).toBe("3300");
+    expect(withoutDrawdown.sourceFingerprint).toBe(withDrawdown.sourceFingerprint);
   });
 
   it("현재 계산 source의 pnlSnapshots를 drawdown history로 재사용하지 않는다", async () => {

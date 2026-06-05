@@ -46,9 +46,6 @@ export type {
   RunPnLAccountingCloseoutOptions,
   RunPnLAccountingCloseoutResult,
 } from "./pnl-accounting/closeout.js";
-export {
-  createDatabasePnLAccountingStatusProvider,
-} from "./pnl-accounting/status.js";
 export type {
   PnLAccountingStatusReadStatus,
   PnLAccountingStatus as PnLAccountingStatusSummary,
