@@ -33,7 +33,7 @@ export interface SourceResolution {
  *    합산에서 제외한다.
  * 2. `market=null` snapshot은 strategy aggregate이므로 같은 strategy의 모든 market positions fallback을
  *    덮는다.
- * 3. `live_reconcile_position_snapshots`는 `RECOVERABLE`이고 평균단가 근거가 있을 때만 source 후보가 된다.
+ * 3. `live_reconcile_position_snapshots`는 `RECOVERABLE`이고 평균단가 근거가 있을 때 source 후보가 된다.
  * 4. `MANUAL_REVIEW_REQUIRED`거나 평균단가가 결측이면 계산 불가 원인으로만 남긴다.
  * 5. snapshot도 reconcile도 없는 scope만 `positions` current snapshot을 fallback으로 사용한다.
  *
@@ -177,22 +177,14 @@ export function resolvePnLSources(
 /**
  * reconcile fact를 position fact 형태로 변환해 calculator가 동일하게 처리할 수 있게 한다.
  *
- * ⚠️ reconcile 원천 데이터(`live_reconcile_position_snapshots`)는 현재 평균단가만 제공하고
- * 보유 수량 정보는 없다. 따라서 quantity를 "0"으로 설정한다.
- *
- * ## 향후 보강 경로
- *
- * reconcile source에 quantity 필드가 추가되면:
- * 1. `PnLReconcileFact` 타입에 `quantity?: NumericString` 필드를 추가한다.
- * 2. 이 함수에서 `quantity: reconcile.quantity ?? "0"`으로 연결한다.
- * 3. `seedLedgerFromReconcile`의 `pos.quantity !== "0"` 분기가 자동 활성화되어
- *    costBasisKrw가 채워지고 MTM 평가에서 시장가치와 미실현손익이 계산된다.
+ * DB reconcile source는 quantity와 평균단가를 함께 제공할 수 있으므로 quantity가 있으면 그대로 보존한다.
+ * 외부 caller가 아직 quantity를 제공하지 않는 경우만 "0"으로 둬 계산기가 규모 결측을 분리해 처리하게 한다.
  */
 function toPositionLike(reconcile: PnLReconcileFact): PnLPositionFact {
   return {
     strategyId: reconcile.strategyId,
     market: reconcile.market,
-    quantity: "0", // reconcile은 보유 수량을 직접 제공하지 않으므로 quantity 정보가 없음
+    quantity: reconcile.quantity ?? "0",
     averageEntryPrice: reconcile.averageEntryPrice,
     realizedPnl: "0",
     unrealizedPnl: null,

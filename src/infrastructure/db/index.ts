@@ -65,6 +65,17 @@ export {
   toStateTransitionAuditRow,
 } from "./order-events.js";
 export {
+  PostgresPnlAccountingRepository,
+  computePnlSnapshotSourceFingerprint,
+} from "./pnl-accounting.js";
+export {
+  toPnlSnapshotRowInputs,
+  toReconcilePositionSnapshotRecord,
+} from "./pnl-accounting.js";
+export type {
+  PnlSnapshotRowInputOptions,
+} from "./pnl-accounting.js";
+export {
   PostgresRiskEventRepository,
   appendRiskEvent,
   toRiskEventRow,
@@ -176,4 +187,13 @@ export type {
   SqlConnectionProvider,
   SqlExecutor,
 } from "./migrations.js";
+export type {
+  LoadReconcileFactsInput,
+  LoadReconcileFactsResult,
+  PersistPnlSnapshotInput,
+  PersistPnlSnapshotResult,
+  PnlSnapshotInsertInput,
+  PnlSnapshotRecord,
+  ReconcilePositionSnapshotRecord,
+} from "./pnl-accounting.js";
 export type { DatabaseSchema } from "./schema.js";
