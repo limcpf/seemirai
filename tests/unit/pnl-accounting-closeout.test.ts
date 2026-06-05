@@ -233,6 +233,60 @@ describe("M17 PnL accounting closeout", () => {
     expect(result1.sourceFingerprint).not.toBe(result2.sourceFingerprint);
   });
 
+  it("포지션 detail evidence만 달라져도 closeout source fingerprint를 다르게 만든다", async () => {
+    const input1: PnLAccountingInput = {
+      ...fixtureInput(),
+      fills: [
+        {
+          ...fixtureInput().fills[0]!,
+          price: "100000000",
+          quantity: "0.01",
+          fee: "0",
+        },
+      ],
+      markPrices: [
+        {
+          ...fixtureInput().markPrices[0]!,
+          priceKrw: "101000000",
+        },
+      ],
+    };
+    const input2: PnLAccountingInput = {
+      ...fixtureInput(),
+      fills: [
+        {
+          ...fixtureInput().fills[0]!,
+          price: "50000000",
+          quantity: "0.02",
+          fee: "0",
+        },
+      ],
+      markPrices: [
+        {
+          ...fixtureInput().markPrices[0]!,
+          priceKrw: "50500000",
+        },
+      ],
+    };
+
+    const result1 = await runPnLAccountingCloseout({
+      dataProvider: createFixtureDataProvider(input1),
+      repository: new MemoryPnlRepository(),
+      capturedAt: "2026-06-01T00:00:00.000Z",
+    });
+    const result2 = await runPnLAccountingCloseout({
+      dataProvider: createFixtureDataProvider(input2),
+      repository: new MemoryPnlRepository(),
+      capturedAt: "2026-06-01T00:00:00.000Z",
+    });
+
+    expect(result1.output.totalPnlKrw).toBe(result2.output.totalPnlKrw);
+    expect(result1.output.positionMarketValueKrw).toBe(result2.output.positionMarketValueKrw);
+    expect(result1.output.equityKrw).toBe(result2.output.equityKrw);
+    expect(result1.output.positions[0]!.quantity).not.toBe(result2.output.positions[0]!.quantity);
+    expect(result1.sourceFingerprint).not.toBe(result2.sourceFingerprint);
+  });
+
   it("captured_at 없으면 provider source timestamp를 사용한다", async () => {
     let observedCapturedAt: Date | string | undefined = "not-called";
     const dataProvider: PnLAccountingDataProvider = {

@@ -69,6 +69,10 @@ export function labelMissingReasonCode(code: string): string {
       return "슬리피지 근거 없음";
     case "CANCEL_REQUOTE_SOURCE_MISSING":
       return "취소/재호가 비용 근거 없음";
+    case "NON_KRW_FEE_CONVERSION_MISSING":
+      return "비-KRW 수수료 KRW 환산 근거 없음";
+    case "SCOPED_CASH_SOURCE_MISSING":
+      return "scope별 현금 배분 근거 없음";
     default:
       return `계산 불가 (${code})`;
   }

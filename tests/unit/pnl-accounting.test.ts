@@ -353,15 +353,19 @@ describe("M17 PnL accounting calculator", () => {
         positions: [],
         markPrices: [markPrice("KRW-BTC", "101000000")],
         cash: defaultCash(),
-        costQuality: [],
+        costQuality: completeCostQuality(),
         pnlSnapshots: [],
         reconcileFacts: [],
       };
 
       const result = calculatePnLAccounting(input);
 
+      expect(result.status).toBe("PARTIAL");
       expect(result.unrealizedPnlKrw).toBe("10000");
       expect(result.feeTotals).toEqual([{ currency: "BTC", amount: "0.00001" }]);
+      expect(
+        result.missingReasons.some((r) => r.reasonCode === "NON_KRW_FEE_CONVERSION_MISSING"),
+      ).toBe(true);
     });
   });
 
@@ -479,11 +483,17 @@ describe("M17 PnL accounting calculator", () => {
         ],
         positions: [],
         markPrices: [
-          markPrice("KRW-BTC", "101000000"),
-          markPrice("KRW-ETH", "3010000"),
+          {
+            ...markPrice("KRW-BTC", "101000000"),
+            observedAt: new Date("2026-06-01T00:05:00Z"),
+          },
+          {
+            ...markPrice("KRW-ETH", "3010000"),
+            observedAt: new Date("2026-06-01T00:10:00Z"),
+          },
         ],
         cash: defaultCash(),
-        costQuality: [],
+        costQuality: completeCostQuality(),
         pnlSnapshots: [],
         reconcileFacts: [],
       };
@@ -1167,6 +1177,46 @@ describe("M17 PnL accounting calculator", () => {
       ).toBe(false);
     });
 
+    it("snapshot payload의 PARTIAL 상태와 missing reason을 보존한다", () => {
+      const snapshot: PnLSnapshotFact = {
+        strategyId: "trend_following",
+        market: null,
+        capturedAt: new Date("2026-06-01T00:00:00Z"),
+        equity: "1050000",
+        realizedPnl: "50000",
+        unrealizedPnl: "10000",
+        drawdownBps: "0",
+        payloadJson: {
+          status: "PARTIAL",
+          missingReasons: [
+            {
+              message: "일부 snapshot coverage만 확인됨",
+              reasonCode: "SNAPSHOT_COVERAGE_PARTIAL",
+              scope: "trend_following::*",
+              source: "pnl_snapshots",
+            },
+          ],
+        },
+      };
+      const input: PnLAccountingInput = {
+        fills: [],
+        positions: [],
+        markPrices: [],
+        cash: null,
+        costQuality: [],
+        pnlSnapshots: [snapshot],
+        reconcileFacts: [],
+      };
+
+      const result = calculatePnLAccounting(input);
+
+      expect(result.status).toBe("PARTIAL");
+      expect(result.scopes[0]!.status).toBe("PARTIAL");
+      expect(
+        result.missingReasons.some((r) => r.reasonCode === "SNAPSHOT_COVERAGE_PARTIAL"),
+      ).toBe(true);
+    });
+
     it("snapshot과 fallback scope가 섞이면 현금 source 없이 equity를 확정하지 않는다", () => {
       const snapshot: PnLSnapshotFact = {
         strategyId: "trend_following",
@@ -1411,11 +1461,17 @@ describe("M17 PnL accounting calculator", () => {
         ],
         positions: [],
         markPrices: [
-          markPrice("KRW-BTC", "101000000"),
-          markPrice("KRW-ETH", "3010000"),
+          {
+            ...markPrice("KRW-BTC", "101000000"),
+            observedAt: new Date("2026-06-01T00:05:00Z"),
+          },
+          {
+            ...markPrice("KRW-ETH", "3010000"),
+            observedAt: new Date("2026-06-01T00:10:00Z"),
+          },
         ],
         cash: defaultCash(),
-        costQuality: [],
+        costQuality: completeCostQuality(),
         pnlSnapshots: [],
         reconcileFacts: [],
       };
@@ -1427,6 +1483,12 @@ describe("M17 PnL accounting calculator", () => {
       expect(result.positions[0]!.market).toBe("KRW-BTC");
       expect(result.positionMarketValueKrw).toBe("1010000");
       expect(result.feeTotals).toEqual([{ currency: "KRW", amount: "50" }]);
+      expect(result.equityKrw).toBeNull();
+      expect(result.positions[0]!.exposureBps).toBeNull();
+      expect(result.trace.lastSourceTimestamp).toBe("2026-06-01T00:05:00.000Z");
+      expect(
+        result.missingReasons.some((r) => r.reasonCode === "SCOPED_CASH_SOURCE_MISSING"),
+      ).toBe(true);
       expect(result.scopes.some((s) => s.strategyId === "mean_reversion")).toBe(false);
       expect(result.scopes.some((s) => s.strategyId === "trend_following" && s.market === null)).toBe(false);
     });
@@ -2053,6 +2115,15 @@ describe("formatter 한국어 메시지", () => {
     );
     expect(labelMissingReasonCode("CANCEL_REQUOTE_SOURCE_MISSING")).toBe(
       "취소/재호가 비용 근거 없음",
+    );
+  });
+
+  it("labelMissingReasonCode: fee 환산과 scoped cash 결측 code를 한국어로 변환한다", () => {
+    expect(labelMissingReasonCode("NON_KRW_FEE_CONVERSION_MISSING")).toBe(
+      "비-KRW 수수료 KRW 환산 근거 없음",
+    );
+    expect(labelMissingReasonCode("SCOPED_CASH_SOURCE_MISSING")).toBe(
+      "scope별 현금 배분 근거 없음",
     );
   });
 });

@@ -74,11 +74,14 @@ export function calculatePnLAccounting(input: PnLAccountingInput): PnLAccounting
   const accountingInput = applyTargetScopeFilter(input);
   const missingReasons: PnLMissingReason[] = [];
   const scopes: PnLAccountingScope[] = [];
+  const hasTargetScopeFilter =
+    accountingInput.targetScopes !== undefined && accountingInput.targetScopes.length > 0;
 
   // ── 1. snapshot coverage 판정 ──────────────────────────────────────────────
   const snapshotSelection = selectEffectiveSnapshots(accountingInput.pnlSnapshots);
   const snapshotFacts = snapshotSelection.snapshots;
   missingReasons.push(...snapshotSelection.missingReasons);
+  missingReasons.push(...extractSnapshotPayloadMissingReasons(snapshotFacts));
   const snapshotCoverage = createSnapshotCoverage(
     snapshotFacts.map((s) => ({ strategyId: s.strategyId, market: s.market })),
   );
@@ -287,6 +290,7 @@ export function calculatePnLAccounting(input: PnLAccountingInput): PnLAccounting
     markPriceMap,
     cashKrw,
     snapshotTotals.equityKrw,
+    hasTargetScopeFilter,
     missingReasons,
   );
 
@@ -337,8 +341,22 @@ export function calculatePnLAccounting(input: PnLAccountingInput): PnLAccounting
       source: "cash",
     });
   }
+  const hasScopedCashAllocationGap =
+    hasTargetScopeFilter &&
+    snapshotTotals.equityKrw === null &&
+    cashKrw !== null &&
+    positionMarketValueKrw !== null;
+  if (hasScopedCashAllocationGap) {
+    // 전역 현금을 단일 strategy/market scope에 더하면 scoped snapshot equity가 과대 계산된다.
+    addMissingReasonOnce(missingReasons, {
+      message: "scope별 현금 배분 근거 없음",
+      reasonCode: "SCOPED_CASH_SOURCE_MISSING",
+      scope: resolveTargetScopeReasonScope(accountingInput.targetScopes),
+      source: "cash",
+    });
+  }
   const equityKrw =
-    hasMixedSourceCashGap
+    hasMixedSourceCashGap || hasScopedCashAllocationGap
       ? null
       : snapshotTotals.equityKrw !== null
       ? positionMarketValueKrw === null
@@ -358,6 +376,7 @@ export function calculatePnLAccounting(input: PnLAccountingInput): PnLAccounting
   // ── 9. 비용 분해 ─────────────────────────────────────────────────────────
   // 비용 분해는 PnL source priority와 독립된 evidence이므로 snapshot으로 덮인 fill fee도 보존한다.
   const feeTotals = buildFeeTotals(aggregateFeesByCurrency(accountingInput.fills));
+  appendNonKrwFeeMissingReasons(missingReasons, accountingInput.fills);
   const spreadCost = aggregateQualityMetric(accountingInput.costQuality, "spreadCostBps");
   const slippage = aggregateQualityMetric(accountingInput.costQuality, "slippageBps");
   const cancelRequote = aggregateQualityMetric(
@@ -425,27 +444,34 @@ function applyTargetScopeFilter(input: PnLAccountingInput): PnLAccountingInput {
   }
 
   const scopeFilter = createTargetScopeFilter(input.targetScopes);
+  const fills = input.fills.filter((fill) =>
+    scopeFilter.matchesScopedFact(fill.strategyId, fill.market),
+  );
+  const positions = input.positions.filter((position) =>
+    scopeFilter.matchesScopedFact(position.strategyId, position.market),
+  );
+  const costQuality = input.costQuality.filter((fact) =>
+    scopeFilter.matchesScopedFact(fact.strategyId, fact.market),
+  );
+  const reconcileFacts = input.reconcileFacts.filter((reconcile) =>
+    scopeFilter.matchesScopedFact(reconcile.strategyId, reconcile.market),
+  );
+  const markPriceMarkets = resolveTargetMarkPriceMarkets(input.targetScopes, {
+    fills,
+    positions,
+    reconcileFacts,
+  });
 
   return {
     ...input,
-    fills: input.fills.filter((fill) =>
-      scopeFilter.matchesScopedFact(fill.strategyId, fill.market),
-    ),
-    positions: input.positions.filter((position) =>
-      scopeFilter.matchesScopedFact(position.strategyId, position.market),
-    ),
-    markPrices: input.markPrices.filter((markPrice) =>
-      scopeFilter.matchesMarkPrice(markPrice.market),
-    ),
-    costQuality: input.costQuality.filter((fact) =>
-      scopeFilter.matchesScopedFact(fact.strategyId, fact.market),
-    ),
+    fills,
+    positions,
+    markPrices: input.markPrices.filter((markPrice) => markPriceMarkets.has(markPrice.market)),
+    costQuality,
     pnlSnapshots: input.pnlSnapshots.filter((snapshot) =>
       scopeFilter.matchesSnapshot(snapshot.strategyId, snapshot.market),
     ),
-    reconcileFacts: input.reconcileFacts.filter((reconcile) =>
-      scopeFilter.matchesScopedFact(reconcile.strategyId, reconcile.market),
-    ),
+    reconcileFacts,
   };
 }
 
@@ -459,11 +485,9 @@ function applyTargetScopeFilter(input: PnLAccountingInput): PnLAccountingInput {
 function createTargetScopeFilter(targetScopes: readonly PnLAccountingScope[]): {
   matchesScopedFact(strategyId: string, market: string): boolean;
   matchesSnapshot(strategyId: string, market: string | null): boolean;
-  matchesMarkPrice(market: string): boolean;
 } {
   const aggregateStrategies = new Set<string>();
   const scopedMarkets = new Set<string>();
-  const targetMarkets = new Set<string>();
 
   for (const scope of targetScopes) {
     if (scope.market === null) {
@@ -472,7 +496,6 @@ function createTargetScopeFilter(targetScopes: readonly PnLAccountingScope[]): {
     }
 
     scopedMarkets.add(scopeKey(scope.strategyId, scope.market));
-    targetMarkets.add(scope.market);
   }
 
   return {
@@ -486,10 +509,40 @@ function createTargetScopeFilter(targetScopes: readonly PnLAccountingScope[]): {
 
       return market !== null && scopedMarkets.has(scopeKey(strategyId, market));
     },
-    matchesMarkPrice(market: string): boolean {
-      return aggregateStrategies.size > 0 || targetMarkets.has(market);
-    },
   };
+}
+
+/**
+ * target scope 계산에서 사용할 mark price market 집합을 산출한다.
+ *
+ * aggregate target은 strategy 전체 요청이지만, mark price는 실제 fill/position/reconcile market에만 의미가 있다.
+ * 관련 없는 늦은 tick을 trace timestamp로 끌어오면 동일 PnL snapshot이 불필요하게 새 capturedAt으로 저장된다.
+ */
+function resolveTargetMarkPriceMarkets(
+  targetScopes: readonly PnLAccountingScope[],
+  sources: {
+    fills: readonly PnLFillFact[];
+    positions: readonly PnLPositionFact[];
+    reconcileFacts: readonly PnLReconcileFact[];
+  },
+): Set<string> {
+  const markets = new Set<string>();
+  for (const target of targetScopes) {
+    if (target.market !== null) {
+      markets.add(target.market);
+    }
+  }
+  for (const fill of sources.fills) {
+    markets.add(fill.market);
+  }
+  for (const position of sources.positions) {
+    markets.add(position.market);
+  }
+  for (const reconcile of sources.reconcileFacts) {
+    markets.add(reconcile.market);
+  }
+
+  return markets;
 }
 
 /**
@@ -776,6 +829,79 @@ function excludeMarketSnapshotsCoveredByAggregate(
   return { snapshots: selected, missingReasons };
 }
 
+/**
+ * 이전 durable snapshot payload에 보존된 결측 원인을 다시 계산 output으로 복원한다.
+ *
+ * snapshot source를 재사용하는 closeout/daily 계산에서 payload의 PARTIAL 근거를 잃으면 이후 결과가
+ * CALCULATED로 승격될 수 있으므로, 안전하게 구조가 확인된 missing reason만 반영한다.
+ */
+function extractSnapshotPayloadMissingReasons(
+  snapshots: readonly PnLSnapshotFact[],
+): PnLMissingReason[] {
+  const reasons: PnLMissingReason[] = [];
+  for (const snapshot of snapshots) {
+    const rawReasons = snapshot.payloadJson?.["missingReasons"];
+    if (!Array.isArray(rawReasons)) {
+      continue;
+    }
+    for (const rawReason of rawReasons) {
+      if (!isSnapshotPayloadMissingReason(rawReason)) {
+        continue;
+      }
+      reasons.push({
+        message: rawReason.message,
+        reasonCode: rawReason.reasonCode,
+        scope: rawReason.scope,
+        source: rawReason.source,
+      });
+    }
+  }
+
+  return reasons;
+}
+
+/**
+ * snapshot payload의 missing reason 구조를 검증한다.
+ *
+ * 외부 저장 payload는 unknown이므로 필수 문자열 필드가 모두 있을 때만 사용자-facing reason으로 복원한다.
+ */
+function isSnapshotPayloadMissingReason(value: unknown): value is PnLMissingReason {
+  if (typeof value !== "object" || value === null) {
+    return false;
+  }
+
+  const reason = value as Record<string, unknown>;
+  return (
+    typeof reason["message"] === "string" &&
+    typeof reason["reasonCode"] === "string" &&
+    typeof reason["scope"] === "string" &&
+    typeof reason["source"] === "string"
+  );
+}
+
+/**
+ * snapshot payload에 저장된 계산 상태를 복원한다.
+ *
+ * payload가 없거나 알 수 없는 값이면 과거 row 호환성을 위해 CALCULATED로 fallback하지만,
+ * PARTIAL/MANUAL_REVIEW_REQUIRED는 후속 closeout에서 그대로 보존한다.
+ */
+function resolveSnapshotStatus(snapshot: PnLSnapshotFact): PnLAccountingStatus {
+  const status = snapshot.payloadJson?.["status"];
+  return isPnLAccountingStatus(status) ? status : "CALCULATED";
+}
+
+/**
+ * payload status가 현재 output contract의 상태 코드인지 확인한다.
+ */
+function isPnLAccountingStatus(value: unknown): value is PnLAccountingStatus {
+  return (
+    value === "CALCULATED" ||
+    value === "PARTIAL" ||
+    value === "UNAVAILABLE" ||
+    value === "MANUAL_REVIEW_REQUIRED"
+  );
+}
+
 function compareSnapshotCandidate(left: PnLSnapshotFact, right: PnLSnapshotFact): number {
   const leftTime = toTime(left.capturedAt);
   const rightTime = toTime(right.capturedAt);
@@ -975,14 +1101,15 @@ function createMarkPriceTieBreakKey(markPrice: PnLMarkPriceFact): string {
  *
  * calculator 내부에서만 호출되며, ledger와 mark price, cash 또는 snapshot equity를 읽어 position별 평가액,
  * 미실현손익, exposure를 산출한다. snapshot equity가 있으면 최종 output equity의 분모와 맞추되,
- * fallback scope 현금 source가 없으면 exposure denominator도 확정하지 않는다. missingReasons 배열에는
- * 평가가 결측만 추가하며 그 외 외부 side effect는 없다.
+ * fallback scope 현금 source가 없거나 target scope 계산에서 전역 현금을 scope에 배분할 근거가 없으면
+ * exposure denominator도 확정하지 않는다. missingReasons 배열에는 평가가 결측만 추가하며 그 외 외부 side effect는 없다.
  */
 function calculatePositionDetails(
   ledger: Ledger,
   markPriceMap: Map<string, Decimal>,
   cashKrw: Decimal | null,
   snapshotEquityKrw: Decimal | null,
+  hasTargetScopeFilter: boolean,
   missingReasons: PnLMissingReason[],
 ): PnLPositionDetail[] {
   const details: PnLPositionDetail[] = [];
@@ -994,7 +1121,7 @@ function calculatePositionDetails(
         ? cashKrw === null
           ? null
           : snapshotEquityKrw.plus(totalMarketValueForExposure)
-        : cashKrw !== null
+        : cashKrw !== null && !hasTargetScopeFilter
           ? cashKrw.plus(totalMarketValueForExposure)
           : null;
 
@@ -1158,6 +1285,29 @@ function appendCostQualityMissingReasons(
 }
 
 /**
+ * KRW가 아닌 fill fee가 KRW 손익에 반영되지 못한 사실을 결측 원인으로 남긴다.
+ *
+ * feeTotals에는 원 통화 evidence를 보존하지만, 환산가 source가 없으면 realized/unrealized KRW PnL은
+ * 수수료만큼 과대 표시될 수 있으므로 완전 계산으로 승격하지 않는다.
+ */
+function appendNonKrwFeeMissingReasons(
+  missingReasons: PnLMissingReason[],
+  fills: readonly PnLFillFact[],
+): void {
+  for (const fill of fills) {
+    if (fill.feeCurrency === "KRW" || parseNonNegativeDecimal(fill.fee).isZero()) {
+      continue;
+    }
+    addMissingReasonOnce(missingReasons, {
+      message: "비-KRW 수수료 KRW 환산 근거 없음",
+      reasonCode: "NON_KRW_FEE_CONVERSION_MISSING",
+      scope: scopeKey(fill.strategyId, fill.market),
+      source: "fills",
+    });
+  }
+}
+
+/**
  * 비용 품질 evidence가 필수인 open position source인지 판정한다.
  *
  * snapshot coverage에서 제외되어 실제 fallback 계산에 쓰인 position/reconcile 중 수량이 남은 경우에만
@@ -1166,6 +1316,21 @@ function appendCostQualityMissingReasons(
  */
 function hasOpenPositionQuantity(positions: readonly PnLPositionFact[]): boolean {
   return positions.some((position) => parseNonNegativeDecimal(position.quantity).greaterThan(0));
+}
+
+/**
+ * target scope cash 결측 reason의 scope key를 안정적으로 정한다.
+ *
+ * 단일 target이면 해당 scope에 귀속하고, 여러 target이면 현금 배분 근거가 공통으로 없으므로 global reason으로 둔다.
+ */
+function resolveTargetScopeReasonScope(
+  targetScopes: readonly PnLAccountingScope[] | undefined,
+): string {
+  if (targetScopes === undefined || targetScopes.length !== 1) {
+    return "global";
+  }
+  const [target] = targetScopes;
+  return target === undefined ? "global" : scopeKey(target.strategyId, target.market);
 }
 
 function aggregateQualityMetric(
@@ -1249,7 +1414,7 @@ function buildScopes(
       market: snapshot.market,
       capturedAt: normalizeTimestamp(snapshot.capturedAt),
       source: "pnl_snapshots",
-      status: "CALCULATED",
+      status: resolveSnapshotStatus(snapshot),
     });
   }
 

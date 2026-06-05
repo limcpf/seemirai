@@ -281,8 +281,8 @@ function resolveOutputCapturedAt(output: PnLAccountingOutput): string {
 /**
  * PnL snapshot persistence를 위한 source fingerprint를 계산한다.
  *
- * capturedAt, 저장 후보 scope, 상태와 주요 금액을 묶어 동일 source 재처리를 deterministic하게 식별한다.
- * drawdown은 history 상태에 따라 재계산되는 파생값이라 fingerprint에서 제외해 closeout 재처리 멱등성을 유지한다.
+ * capturedAt, 저장 후보 scope, 상태, 주요 금액, 비용/포지션 evidence를 묶어 동일 source 재처리를 deterministic하게
+ * 식별한다. drawdown은 history 상태에 따라 재계산되는 파생값이라 fingerprint에서 제외해 closeout 재처리 멱등성을 유지한다.
  */
 function computePnlSnapshotSourceFingerprint(
   output: PnLAccountingOutput,
@@ -312,6 +312,21 @@ function computePnlSnapshotSourceFingerprint(
       slippage: output.slippage,
       cancelRequote: output.cancelRequote,
     }),
+    JSON.stringify(
+      output.positions
+        .map((position) => ({
+          strategyId: position.strategyId,
+          market: position.market,
+          quantity: position.quantity,
+          averageEntryPrice: position.averageEntryPrice,
+          marketValueKrw: position.marketValueKrw,
+          unrealizedPnlKrw: position.unrealizedPnlKrw,
+          exposureBps: position.exposureBps,
+        }))
+        .sort((left, right) =>
+          `${left.strategyId}|${left.market}`.localeCompare(`${right.strategyId}|${right.market}`),
+        ),
+    ),
   ].join("|");
 
   return createHash("sha256").update(payload, "utf8").digest("hex");
