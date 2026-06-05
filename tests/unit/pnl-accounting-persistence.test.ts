@@ -134,6 +134,34 @@ describe("M17 PnL accounting persistence mapper", () => {
     expect(rows).toEqual([]);
   });
 
+  it("aggregate scope가 하나여도 다른 strategy scope가 섞이면 저장하지 않는다", () => {
+    const rows = toPnlSnapshotRowInputs(
+      {
+        ...baseOutput(),
+        scopes: [
+          {
+            strategyId: "trend",
+            market: null,
+            capturedAt: "2026-06-05T00:00:00.000Z",
+            source: "fills",
+            status: "CALCULATED",
+          },
+          {
+            strategyId: "mean",
+            market: "KRW-ETH",
+            capturedAt: "2026-06-05T00:00:00.000Z",
+            source: "positions",
+            status: "CALCULATED",
+          },
+        ],
+      },
+      "2026-06-05T00:00:00Z",
+      { sourceFingerprint: "fp-mixed-strategy", drawdownBps: "3" },
+    );
+
+    expect(rows).toEqual([]);
+  });
+
   it("source fingerprint는 동등한 Date와 timestamp 문자열을 같은 instant로 정규화한다", () => {
     const output = {
       ...baseOutput(),

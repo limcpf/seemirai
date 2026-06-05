@@ -130,6 +130,7 @@ export class PostgresPnlAccountingRepository {
    *
    * - RECOVERABLE snapshot은 계산 가능한 평균단가 source 후보가 된다.
    * - MANUAL_REVIEW_REQUIRED snapshot은 PnL 계산 불가 원인과 수동 검토 evidence로 남긴다.
+   * - RUNNING/FAILED run의 중간 snapshot은 손익 source로 승격하지 않는다.
    * - 선택적 `strategyId`, `market`, `since` 필터를 적용한다.
    *
    * ## 반환
@@ -147,23 +148,29 @@ export class PostgresPnlAccountingRepository {
   ): Promise<LoadReconcileFactsResult> {
     let query = this.database
       .selectFrom("live_reconcile_position_snapshots")
-      .selectAll();
+      .innerJoin(
+        "live_reconcile_runs",
+        "live_reconcile_runs.id",
+        "live_reconcile_position_snapshots.run_id",
+      )
+      .selectAll("live_reconcile_position_snapshots")
+      .where("live_reconcile_runs.status", "in", ["COMPLETED", "MANUAL_REVIEW_REQUIRED"]);
 
     if (input.strategyId !== undefined) {
-      query = query.where("strategy_id", "=", input.strategyId);
+      query = query.where("live_reconcile_position_snapshots.strategy_id", "=", input.strategyId);
     }
 
     if (input.market !== undefined) {
-      query = query.where("market", "=", input.market);
+      query = query.where("live_reconcile_position_snapshots.market", "=", input.market);
     }
 
     if (input.since !== undefined) {
       const sinceValue = typeof input.since === "string" ? input.since : input.since;
-      query = query.where("captured_at", ">=", sinceValue as Date);
+      query = query.where("live_reconcile_position_snapshots.captured_at", ">=", sinceValue as Date);
     }
 
     const rows = await query
-      .orderBy("captured_at", "desc")
+      .orderBy("live_reconcile_position_snapshots.captured_at", "desc")
       .execute();
 
     const records: ReconcilePositionSnapshotRecord[] = rows.map(toReconcilePositionSnapshotRecord);

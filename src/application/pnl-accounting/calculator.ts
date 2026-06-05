@@ -222,8 +222,7 @@ export function calculatePnLAccounting(input: PnLAccountingInput): PnLAccounting
     missingReasons,
   );
 
-  const hasUnquantifiedReconcile =
-    hasUnknownReconcilePosition || hasUnquantifiedReconcilePosition(reconciledPositions);
+  const hasUnquantifiedReconcile = hasUnknownReconcilePosition;
   const hasLedgerPositionDetails = positionDetails.length > 0;
   // reconcile-only/source snapshot-only는 평가액 원천이 없으므로 position value를 0으로 확정하지 않는다.
   const positionMarketValueKrw = hasUnquantifiedReconcile
@@ -234,11 +233,12 @@ export function calculatePnLAccounting(input: PnLAccountingInput): PnLAccounting
   const ledgerUnrealizedPnlKrw = hasUnquantifiedReconcile
     ? null
     : computeUnrealizedPnl(positionDetails);
-  const hasQuantifiedReconcile = hasQuantifiedPosition(reconciledPositions);
+  const hasReconcileQuantityEvidence =
+    reconciledPositions.length > 0 && !hasUnknownReconcilePosition;
   const hasLedgerTradingData =
     ledgerFills.length > 0 ||
     fallbackPositions.length > 0 ||
-    hasQuantifiedReconcile;
+    hasReconcileQuantityEvidence;
 
   const realizedPnlKrw = hasUnquantifiedReconcile
     ? null
@@ -298,7 +298,7 @@ export function calculatePnLAccounting(input: PnLAccountingInput): PnLAccounting
     ledgerFills.length > 0 ||
     fallbackPositions.length > 0 ||
     snapshotFacts.length > 0 ||
-    hasQuantifiedReconcile;
+    hasReconcileQuantityEvidence;
 
   return {
     scopes,
@@ -1251,19 +1251,6 @@ function getOrCreatePositionLedger(
   ledger.positions.set(key, pos);
 
   return pos;
-}
-
-/**
- * 수량이 있는 position-like fact가 하나라도 있는지 확인한다.
- *
- * realized/unrealized PnL을 0으로 확정할지, 계산 불가(null)로 남길지 결정하는 guard다.
- */
-function hasQuantifiedPosition(positions: readonly PnLPositionFact[]): boolean {
-  return positions.some((position) => parseNonNegativeDecimal(position.quantity).greaterThan(0));
-}
-
-function hasUnquantifiedReconcilePosition(positions: readonly PnLPositionFact[]): boolean {
-  return positions.some((position) => parseNonNegativeDecimal(position.quantity).isZero());
 }
 
 function parseNonNegativeDecimal(value: string | undefined): Decimal {

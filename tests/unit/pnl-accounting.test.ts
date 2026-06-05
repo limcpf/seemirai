@@ -698,6 +698,39 @@ describe("M17 PnL accounting calculator", () => {
       ).toBe(false);
     });
 
+    it("RECOVERABLE reconcile의 0 수량은 결측이 아니라 청산 상태로 계산한다", () => {
+      const reconcile: PnLReconcileFact = {
+        strategyId: "trend_following",
+        market: "KRW-BTC",
+        quantity: "0",
+        recoveryStatus: "RECOVERABLE",
+        averageEntryPrice: "100000000",
+        reconciledAt: new Date("2026-06-01T00:00:00Z"),
+        averageEntrySource: "live_reconcile",
+      };
+
+      const input: PnLAccountingInput = {
+        fills: [],
+        positions: [],
+        markPrices: [],
+        cash: defaultCash(),
+        costQuality: [],
+        pnlSnapshots: [],
+        reconcileFacts: [reconcile],
+      };
+
+      const result = calculatePnLAccounting(input);
+
+      expect(result.status).toBe("CALCULATED");
+      expect(result.realizedPnlKrw).toBe("0");
+      expect(result.unrealizedPnlKrw).toBe("0");
+      expect(result.positionMarketValueKrw).toBe("0");
+      expect(result.equityKrw).toBe("1000000");
+      expect(
+        result.missingReasons.some((r) => r.reasonCode === "POSITION_QUANTITY_MISSING"),
+      ).toBe(false);
+    });
+
     it("snapshot과 별도 unknown reconcile이 함께 있으면 전체 PnL을 확정하지 않는다", () => {
       const snapshot: PnLSnapshotFact = {
         strategyId: "trend_following",

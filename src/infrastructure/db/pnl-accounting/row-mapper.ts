@@ -77,6 +77,12 @@ export function toPnlSnapshotRowInputs(
 function selectPersistableScopes(
   scopes: PnLAccountingOutput["scopes"],
 ): Array<{ strategyId: string; market: string | null }> {
+  const strategyIds = [...new Set(scopes.map((scope) => scope.strategyId))];
+  if (strategyIds.length > 1) {
+    // output 금액은 전역 합계라 여러 strategy 중 일부 aggregate row에 안전하게 배분할 수 없다.
+    return [];
+  }
+
   const aggregateScopes = scopes.filter((scope) => scope.market === null);
   if (aggregateScopes.length === 1) {
     const [scope] = aggregateScopes;
@@ -93,7 +99,6 @@ function selectPersistableScopes(
     return [{ strategyId: scope!.strategyId, market: scope!.market }];
   }
 
-  const strategyIds = [...new Set(scopes.map((scope) => scope.strategyId))];
   if (strategyIds.length === 1) {
     return [{ strategyId: strategyIds[0]!, market: null }];
   }

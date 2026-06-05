@@ -80,6 +80,8 @@ describeDb("PnL accounting PostgreSQL integration", () => {
     const strategyId = `pnl_reconcile_${Date.now()}_${Math.random().toString(16).slice(2)}`;
     const olderRunId = "10000000-0000-4000-8000-000000000101";
     const latestRunId = "10000000-0000-4000-8000-000000000102";
+    const failedRunId = "10000000-0000-4000-8000-000000000103";
+    const runningRunId = "10000000-0000-4000-8000-000000000104";
 
     try {
       await db
@@ -94,6 +96,16 @@ describeDb("PnL accounting PostgreSQL integration", () => {
             id: latestRunId,
             idempotency_key: `${strategyId}:latest`,
             status: "COMPLETED",
+          },
+          {
+            id: failedRunId,
+            idempotency_key: `${strategyId}:failed`,
+            status: "FAILED",
+          },
+          {
+            id: runningRunId,
+            idempotency_key: `${strategyId}:running`,
+            status: "RUNNING",
           },
         ])
         .execute();
@@ -123,6 +135,28 @@ describeDb("PnL accounting PostgreSQL integration", () => {
             recovery_status: "RECOVERABLE",
             source: "fills",
             captured_at: "2026-06-05T00:01:00.000Z",
+          },
+          {
+            run_id: failedRunId,
+            exchange: "upbit_krw_spot",
+            market: "KRW-BTC",
+            strategy_id: strategyId,
+            quantity: "0.03",
+            average_entry_price: "100000000",
+            recovery_status: "RECOVERABLE",
+            source: "fills",
+            captured_at: "2026-06-05T00:02:00.000Z",
+          },
+          {
+            run_id: runningRunId,
+            exchange: "upbit_krw_spot",
+            market: "KRW-BTC",
+            strategy_id: strategyId,
+            quantity: "0.04",
+            average_entry_price: "100000000",
+            recovery_status: "RECOVERABLE",
+            source: "fills",
+            captured_at: "2026-06-05T00:03:00.000Z",
           },
         ])
         .execute();
