@@ -1,5 +1,9 @@
 import { sql } from "kysely";
-import { dailyReportJobType } from "../../application/index.js";
+import {
+  createDatabasePnLAccountingStatusProvider,
+  dailyReportJobType,
+} from "../../application/index.js";
+import type { PnLAccountingStatusSummary } from "../../application/index.js";
 import type { KillSwitchState, Phase15AltApprovalEvidenceSnapshot } from "../../domain/index.js";
 import { getKillSwitchActionPlan } from "../../domain/index.js";
 import {
@@ -85,10 +89,11 @@ export function createDatabaseControlStatusProvider(
       const actionPlan = getKillSwitchActionPlan(killSwitch.state);
       const readiness = await statusReadinessProvider.check();
       const blockedReason = actionPlan.newOrdersBlocked ? killSwitch.reasonCode : null;
-      const [paper, alerts, dailyReport, phase15ApprovalEvidence] = await Promise.all([
+      const [paper, alerts, dailyReport, pnl, phase15ApprovalEvidence] = await Promise.all([
         readPaperStatus(options.database),
         readAlertStatus(options),
         readDailyReportStatus(options),
+        readPnlAccountingStatus(options),
         readPhase15ApprovalEvidence(options),
       ]);
       const generatedAt = clock().toISOString();
@@ -112,9 +117,128 @@ export function createDatabaseControlStatusProvider(
         database: readiness,
         alerts,
         dailyReport,
+        pnl,
         reconcile: await toReconcileStatus(options),
       };
     },
+  };
+}
+
+/**
+ * PnL accounting durable snapshot을 `/status.pnl` safe summary로 변환한다.
+ *
+ * PnL 조회는 운영 관측면이므로 실패해도 endpoint 전체를 깨뜨리지 않는다. 단, 빈 snapshot과 DB 실패는 서로 다른
+ * 한국어 상태/조치 문구로 표시해 운영자가 migration/권한 문제를 "아직 데이터 없음"으로 오해하지 않게 한다.
+ */
+async function readPnlAccountingStatus(
+  options: CreateDatabaseControlStatusProviderOptions,
+): Promise<ControlStatusSnapshot["pnl"]> {
+  if (options.pnlAccounting !== undefined) {
+    return toPnlAccountingStatus(options.pnlAccounting, "runtime_injected");
+  }
+
+  if (options.pnlAccountingStatusProvider !== undefined) {
+    try {
+      return toPnlAccountingStatus(
+        await options.pnlAccountingStatusProvider.getStatus(),
+        "pnl_accounting_status_provider",
+      );
+    } catch {
+      // status endpoint는 PnL provider 장애를 전체 HTTP 실패로 키우지 않고 운영자가 볼 수 있는 실패 summary로 낮춘다.
+      return toPnlAccountingStatus(
+        emptyPnlAccountingStatus("UNAVAILABLE", "pnl_accounting_status_provider_failed"),
+        "pnl_accounting_status_provider",
+      );
+    }
+  }
+
+  if (options.database === undefined) {
+    return toPnlAccountingStatus(
+      emptyPnlAccountingStatus("UNAVAILABLE", "database_not_configured"),
+      "pnl_snapshots",
+    );
+  }
+
+  return toPnlAccountingStatus(
+    await createDatabasePnLAccountingStatusProvider(options.database).getStatus(),
+    "pnl_snapshots",
+  );
+}
+
+function toPnlAccountingStatus(
+  summary: PnLAccountingStatusSummary,
+  source: string,
+): ControlStatusSnapshot["pnl"] {
+  const status = mapPnlAccountingReadStatus(summary.readStatus);
+  return {
+    ...createOperationalStatusDetail({
+      status: status.status,
+      statusLabel: status.statusLabel,
+      message: status.message,
+      action: status.action,
+      source,
+      reason: summary.reason,
+      extraTrace: {
+        readStatus: summary.readStatus,
+        latestStatus: summary.latestStatus,
+      },
+    }),
+    latestCapturedAt: summary.latestCapturedAt,
+    latestEquityKrw: summary.latestEquityKrw,
+    latestRealizedPnlKrw: summary.latestRealizedPnlKrw,
+    latestUnrealizedPnlKrw: summary.latestUnrealizedPnlKrw,
+    latestDrawdownBps: summary.latestDrawdownBps,
+    latestSource: summary.latestSource,
+    snapshotCount: summary.snapshotCount,
+  };
+}
+
+function mapPnlAccountingReadStatus(readStatus: PnLAccountingStatusSummary["readStatus"]): {
+  status: ControlOperationalStatusCode;
+  statusLabel: string;
+  message: string;
+  action: string | null;
+} {
+  switch (readStatus) {
+    case "OK":
+      return {
+        status: "ok",
+        statusLabel: "조회 가능",
+        message: "최신 PnL snapshot에서 손익과 평가자산을 읽었다.",
+        action: null,
+      };
+    case "NOT_FOUND":
+      return {
+        status: "ok",
+        statusLabel: "기록 없음",
+        message: "PnL snapshot 기록이 아직 없다.",
+        action: "closeout 또는 daily report 경계에서 PnL snapshot 생성을 먼저 실행한다.",
+      };
+    case "UNAVAILABLE":
+      return {
+        status: "unavailable",
+        statusLabel: "조회 불가",
+        message: "PnL snapshot 상태를 DB에서 읽지 못했다.",
+        action: "DB 연결, migration 적용 상태, pnl_snapshots table 접근 권한을 확인한다.",
+      };
+  }
+}
+
+function emptyPnlAccountingStatus(
+  readStatus: Exclude<PnLAccountingStatusSummary["readStatus"], "OK">,
+  reason: string,
+): PnLAccountingStatusSummary {
+  return {
+    readStatus,
+    latestCapturedAt: null,
+    latestEquityKrw: null,
+    latestRealizedPnlKrw: null,
+    latestUnrealizedPnlKrw: null,
+    latestDrawdownBps: null,
+    latestSource: null,
+    latestStatus: null,
+    snapshotCount: 0,
+    reason,
   };
 }
 

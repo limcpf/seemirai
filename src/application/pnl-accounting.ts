@@ -35,3 +35,19 @@ export {
   scopeKey,
 } from "./pnl-accounting/source-priority.js";
 export type { SourceResolution } from "./pnl-accounting/source-priority.js";
+export {
+  runPnLAccountingCloseout,
+} from "./pnl-accounting/closeout.js";
+export type {
+  PnLAccountingDataProvider,
+  RunPnLAccountingCloseoutOptions,
+  RunPnLAccountingCloseoutResult,
+} from "./pnl-accounting/closeout.js";
+export {
+  createDatabasePnLAccountingStatusProvider,
+} from "./pnl-accounting/status.js";
+export type {
+  PnLAccountingStatusReadStatus,
+  PnLAccountingStatus as PnLAccountingStatusSummary,
+  PnLAccountingStatusProvider,
+} from "./pnl-accounting/status.js";

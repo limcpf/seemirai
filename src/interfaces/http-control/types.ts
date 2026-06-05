@@ -4,7 +4,11 @@ import type {
   PilotEvidenceSnapshot,
   PilotRuntimeSafeSummary,
 } from "../../domain/index.js";
-import type { KillSwitchControlProvider } from "../../application/index.js";
+import type {
+  KillSwitchControlProvider,
+  PnLAccountingStatusProvider,
+  PnLAccountingStatusSummary,
+} from "../../application/index.js";
 import type { Database } from "../../infrastructure/db/index.js";
 import type {
   PilotRuntimeConfig,
@@ -134,6 +138,16 @@ export interface ControlStatusSnapshot {
     nextRunAfter: string | null;
     updatedAt: string | null;
   };
+  /** M17 PnL 회계 safe summary다. 원천 상태 code는 trace에 두고 운영자는 한국어 상태/조치 문구를 먼저 본다. */
+  pnl: ControlOperationalStatusDetail & {
+    latestCapturedAt: string | null;
+    latestEquityKrw: string | null;
+    latestRealizedPnlKrw: string | null;
+    latestUnrealizedPnlKrw: string | null;
+    latestDrawdownBps: string | null;
+    latestSource: string | null;
+    snapshotCount: number;
+  };
   /** M16 read-only reconcile 상태 summary다. reconcile worker가 비활성이면 SKIPPED/UNAVAILABLE로 표시한다. */
   reconcile: ReconcileStatusSummary;
 }
@@ -244,6 +258,19 @@ export interface CreateDatabaseControlStatusProviderOptions {
     reportDate?: string | null;
     updatedAt?: string | null;
   };
+  /**
+   * `/status`에 노출할 PnL 회계 상태 summary다.
+   *
+   * 테스트 fixture나 수동 조립에서만 사용한다. 운영 조립에서는 `pnlAccountingStatusProvider` 또는 DB 기반 provider를 사용한다.
+   */
+  pnlAccounting?: PnLAccountingStatusSummary;
+  /**
+   * `/status` 호출 시점에 최신 PnL snapshot 상태를 읽는 provider다.
+   *
+   * 지정하지 않고 DB가 있으면 `pnl_snapshots`에서 최신 safe summary를 읽는다. provider 실패는 endpoint 실패가 아니라
+   * `pnl.status=unavailable`로 낮춘다.
+   */
+  pnlAccountingStatusProvider?: PnLAccountingStatusProvider;
   /**
    * `/status`에 노출할 reconcile 상태 summary다.
    *

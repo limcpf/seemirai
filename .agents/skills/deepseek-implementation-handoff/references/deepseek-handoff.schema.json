@@ -15,6 +15,7 @@
     "expectedArtifacts",
     "commands",
     "acceptanceCriteria",
+    "acceptanceCriteriaTrace",
     "verification",
     "reportBack",
     "risks"
@@ -91,6 +92,38 @@
     "acceptanceCriteria": {
       "type": "array",
       "items": { "type": "string" },
+      "minItems": 1
+    },
+    "acceptanceCriteriaTrace": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "acceptanceCriterion",
+          "userFacingSurface",
+          "expectedFiles",
+          "requiredTests",
+          "notDoneIf"
+        ],
+        "properties": {
+          "acceptanceCriterion": { "type": "string" },
+          "userFacingSurface": { "type": "string" },
+          "expectedFiles": {
+            "type": "array",
+            "items": { "type": "string" }
+          },
+          "requiredTests": {
+            "type": "array",
+            "items": { "type": "string" }
+          },
+          "notDoneIf": {
+            "type": "array",
+            "items": { "type": "string" },
+            "minItems": 1
+          }
+        },
+        "additionalProperties": false
+      },
       "minItems": 1
     },
     "verification": {

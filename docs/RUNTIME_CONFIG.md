@@ -319,6 +319,8 @@ endpoint가 공통으로 사용할 인증 guard만 고정한다.
 - alerts: `alert_cooldowns`에서 읽은 last sent/skipped timestamp, 조회 상태의 한국어 label/message/action
 - daily report: `jobs`의 `report.daily` 최신 row에서 읽은 last status, report date, next run time, updated time,
   조회 상태의 한국어 label/message/action
+- PnL: `pnl_snapshots`의 최신 safe summary에서 평가자산, 실현/미실현 손익, drawdown, snapshot count,
+  조회 상태의 한국어 label/message/action
 
 `/status`는 `secrets`, local control token, Telegram token, raw headers, raw order detail, raw position detail을 반환하지 않는다.
 kill switch가 `NEW_ORDERS_BLOCKED` 또는 `HARD_STOP` 같은 active 상태여도 `/readyz` 실패로 표현하지 않고

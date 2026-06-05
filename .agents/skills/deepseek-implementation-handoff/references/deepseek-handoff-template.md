@@ -315,6 +315,42 @@ If TypeScript compiler setup requires adjustment, keep it minimal and explain th
 - [ ] M1 does not create `plan.md`, `implementation.log`, `test.log`, `review.json`, or `report.md`.
 - [ ] `./scripts/verify` passes.
 
+## Acceptance Criteria Trace Matrix
+
+Map each acceptance criterion to the observable surface, expected files, required tests, and shortcuts that do not count as done.
+
+```text
+| AC | 사용자 관측면 | 예상 수정 파일 | 필수 테스트 | 완료로 보지 않는 경우 |
+| --- | --- | --- | --- | --- |
+| CLI run creates issue artifact | `bun run sym run <issue-file>` output and `.runs/<id>/issue.md` | `src/cli.ts`, `src/commands/run.ts`, `src/core/run-context.ts` | CLI smoke command | helper function만 만들고 CLI command에 연결하지 않은 경우 |
+```
+
+## Forbidden Completion Shortcuts
+
+- 새 function/type을 만들거나 export한 것만으로 integration 완료라고 보고하지 않는다.
+- 새 함수 직접 호출 테스트만으로 CLI, HTTP, Telegram, daily report 같은 사용자 표면 검증을 대체하지 않는다.
+- 기존 formatter나 helper가 있다는 이유만으로 사용자-facing integration 완료라고 주장하지 않는다.
+- 이 handoff나 필수 기준 문서를 읽을 수 없으면 추론 구현하지 말고 중단 보고한다.
+
+## User-Facing Surface Checklist
+
+If this work has a user-facing surface, verify all relevant items:
+
+- route/command/provider wiring
+- response schema or output shape
+- Korean-first label/message/action where applicable
+- trace/debug separation for internal codes
+- smoke or automated test that exercises the actual surface
+
+## Semantic Contracts
+
+State any business meaning that must not be collapsed even when TypeScript shapes are similar.
+
+- current source vs historical source:
+- empty/not found vs unavailable/read failure:
+- actual 0 vs unknown/unavailable:
+- raw provider payload/secret handling:
+
 ## Manual Smoke Scenario
 
 Use this smoke scenario after implementation:
