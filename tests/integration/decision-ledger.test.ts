@@ -313,6 +313,37 @@ describeDb("decision ledger PostgreSQL integration", () => {
       ).rejects.toThrow(DecisionLedgerEvidenceFrameConflictError);
     });
 
+    it("다른 frame fingerprint 충돌이 섞인 batch는 신규 evidence를 남기지 않는다", async () => {
+      const db = await getDatabase();
+      const repository = new PostgresDecisionLedgerRepository(db);
+
+      const frame1 = await repository.appendFrame({ frame: makeFrame("ev-conflict-atomic-frame-1") });
+      const frame2 = await repository.appendFrame({ frame: makeFrame("ev-conflict-atomic-frame-2") });
+      const conflictingEvidence = makeEvidence("ev-conflict-atomic-existing", {
+        payload: { expectedReturnBps: "15", requiredReturnBps: "30" },
+      });
+      const newEvidence = makeEvidence("ev-conflict-atomic-new", {
+        evidenceKind: "RISK_DECISION",
+        category: "RISK_REJECTED",
+        userMessage: "리스크 한도 초과로 주문을 차단했습니다.",
+        source: "risk-gate",
+        sourceId: "risk-atomic-001",
+      });
+
+      await repository.appendEvidenceItems(frame1.record.id, [{ item: conflictingEvidence }]);
+
+      await expect(
+        repository.appendEvidenceItems(frame2.record.id, [
+          { item: conflictingEvidence },
+          { item: newEvidence },
+        ]),
+      ).rejects.toThrow(DecisionLedgerEvidenceFrameConflictError);
+
+      // 충돌 batch는 호출자에게 실패를 돌려주므로 현재 frame에 부분 evidence를 남기지 않는다.
+      await expect(repository.findEvidenceByFrameId(frame2.record.id)).resolves.toHaveLength(0);
+      await expect(repository.findEvidenceByFrameId(frame1.record.id)).resolves.toHaveLength(1);
+    });
+
     it("빈 evidence 목록은 아무 작업도 하지 않는다", async () => {
       const db = await getDatabase();
       const repository = new PostgresDecisionLedgerRepository(db);

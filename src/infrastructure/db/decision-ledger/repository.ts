@@ -102,35 +102,45 @@ export class PostgresDecisionLedgerRepository {
       toDecisionLedgerEvidenceRowInput(frameId, input.item),
     );
 
-    const inserted = await this.database
-      .insertInto("decision_ledger_evidence")
-      .values(rows)
-      .onConflict((conflict) => conflict.column("evidence_fingerprint").doNothing())
-      .returningAll()
-      .execute();
-
-    // 이미 존재하는 evidence fingerprint를 파악하기 위해 모든 요청 fingerprint 목록으로 조회
     const fingerprints = items.map((input) => input.item.evidenceFingerprint);
-    const allRecords = await this.database
-      .selectFrom("decision_ledger_evidence")
-      .selectAll()
-      .where("evidence_fingerprint", "in", fingerprints)
-      .orderBy("occurred_at", "asc")
-      .orderBy("id", "asc")
-      .execute();
-    const conflictingFrameIds = [
-      ...new Set(allRecords.filter((record) => record.frame_id !== frameId).map((record) => record.frame_id)),
-    ];
-    if (conflictingFrameIds.length > 0) {
-      // fingerprint 충돌이 다른 frame evidence를 현재 frame에 연결한 것처럼 보이게 만들 수 있어 즉시 실패시킨다.
-      throw new DecisionLedgerEvidenceFrameConflictError(frameId, conflictingFrameIds);
-    }
+    return this.database.transaction().execute(async (transaction) => {
+      const existingRecords = await transaction
+        .selectFrom("decision_ledger_evidence")
+        .selectAll()
+        .where("evidence_fingerprint", "in", fingerprints)
+        .execute();
+      const existingConflictingFrameIds = collectConflictingFrameIds(existingRecords, frameId);
+      if (existingConflictingFrameIds.length > 0) {
+        // 다른 frame fingerprint가 섞인 batch는 append-only row 일부가 남기 전에 전체 write를 중단한다.
+        throw new DecisionLedgerEvidenceFrameConflictError(frameId, existingConflictingFrameIds);
+      }
 
-    return {
-      inserted: inserted.length,
-      skipped: items.length - inserted.length,
-      records: allRecords,
-    };
+      const inserted = await transaction
+        .insertInto("decision_ledger_evidence")
+        .values(rows)
+        .onConflict((conflict) => conflict.column("evidence_fingerprint").doNothing())
+        .returningAll()
+        .execute();
+
+      // concurrent insert가 끼어들어도 충돌 감지 시 transaction rollback으로 신규 row 잔류를 막는다.
+      const allRecords = await transaction
+        .selectFrom("decision_ledger_evidence")
+        .selectAll()
+        .where("evidence_fingerprint", "in", fingerprints)
+        .orderBy("occurred_at", "asc")
+        .orderBy("id", "asc")
+        .execute();
+      const conflictingFrameIds = collectConflictingFrameIds(allRecords, frameId);
+      if (conflictingFrameIds.length > 0) {
+        throw new DecisionLedgerEvidenceFrameConflictError(frameId, conflictingFrameIds);
+      }
+
+      return {
+        inserted: inserted.length,
+        skipped: items.length - inserted.length,
+        records: allRecords,
+      };
+    });
   }
 
   /**
@@ -190,4 +200,19 @@ export class PostgresDecisionLedgerRepository {
       .orderBy("occurred_at", "asc")
       .execute();
   }
+}
+
+/**
+ * 요청 frame이 아닌 곳에 이미 연결된 evidence frame id를 dedupe해서 반환한다.
+ *
+ * 같은 fingerprint가 다른 frame에 속하면 현재 append 결과를 신뢰할 수 없으므로, transaction 경계에서 이 목록을
+ * conflict error로 승격해 batch 전체를 rollback한다.
+ */
+function collectConflictingFrameIds(
+  records: readonly DecisionLedgerEvidenceRecord[],
+  expectedFrameId: string,
+): readonly string[] {
+  return [
+    ...new Set(records.filter((record) => record.frame_id !== expectedFrameId).map((record) => record.frame_id)),
+  ];
 }

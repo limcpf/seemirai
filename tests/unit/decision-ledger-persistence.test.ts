@@ -137,6 +137,30 @@ describe("decision-ledger row mapper", () => {
       );
     });
 
+    it("sourceRunId와 correlationId가 undefined이면 null 사유 contract 우회를 거부한다", () => {
+      const frame = {
+        ledgerVersion: DECISION_LEDGER_VERSION,
+        sourceFrameId: "frame-invalid-undefined-identifiers",
+        exchange: "UPBIT",
+        market: null,
+        strategyId: null,
+        category: "CASH_HOLD",
+        summaryStatus: "RECORDED",
+        observedAt: new Date("2026-06-06T01:00:00Z"),
+        decisionAt: new Date("2026-06-06T01:00:01Z"),
+        reasonCounts: { all_strategies_hold: 1 },
+        dedupeKey: "upbit::cash:frame-invalid-undefined-identifiers",
+        trace: {
+          sourceRunUnavailableReason: "runtime 실행 단위 식별자가 없는 테스트 frame입니다.",
+          correlationUnavailableReason: "주문 후보 0건 frame이라 correlation id가 없습니다.",
+        },
+      } as unknown as DecisionLedgerFrame;
+
+      expect(() => toDecisionLedgerFrameRowInput(frame)).toThrow(
+        DecisionLedgerPersistenceValidationError,
+      );
+    });
+
     it("frame category에 EXPLANATION_FAILED가 들어오면 변환을 거부한다", () => {
       const frame = {
         ledgerVersion: DECISION_LEDGER_VERSION,
@@ -328,6 +352,64 @@ describe("decision-ledger row mapper", () => {
       expect(() => toDecisionLedgerEvidenceRowInput(frameId, item)).toThrow(
         DecisionLedgerPersistenceValidationError,
       );
+    });
+
+    it("사용자-facing 문구와 출처 문자열의 secret 후보를 거부한다", () => {
+      const itemWithSecretMessage = {
+        evidenceKind: "RISK_DECISION",
+        category: "RISK_REJECTED",
+        reasonCode: "risk_block",
+        userMessage: "Authorization: Bearer dummySecretToken1234567890",
+        impact: null,
+        action: null,
+        occurredAt: new Date("2026-06-06T04:00:00Z"),
+        source: "risk-gate",
+        sourceId: "risk-001",
+        payload: {},
+        evidenceFingerprint: "fp-invalid-secret-message",
+        trace: {},
+      } as unknown as DecisionEvidenceItem;
+      const itemWithSecretSource = {
+        ...itemWithSecretMessage,
+        userMessage: "리스크 한도 초과로 주문을 차단했습니다.",
+        source: "risk-gate?token=dummySecretToken1234567890",
+        evidenceFingerprint: "fp-invalid-secret-source",
+      } as unknown as DecisionEvidenceItem;
+
+      expect(() => toDecisionLedgerEvidenceRowInput(frameId, itemWithSecretMessage)).toThrow(
+        DecisionLedgerPersistenceValidationError,
+      );
+      expect(() => toDecisionLedgerEvidenceRowInput(frameId, itemWithSecretSource)).toThrow(
+        DecisionLedgerPersistenceValidationError,
+      );
+    });
+
+    it("secret 후보 key를 거부할 때 오류 메시지에 key 원문을 남기지 않는다", () => {
+      const secretLikeKey = "token_actual_secret_value_1234567890";
+      const item = {
+        evidenceKind: "RISK_DECISION",
+        category: "RISK_REJECTED",
+        reasonCode: "risk_block",
+        userMessage: "리스크 한도 초과로 주문을 차단했습니다.",
+        impact: null,
+        action: null,
+        occurredAt: new Date("2026-06-06T04:00:00Z"),
+        source: "risk-gate",
+        sourceId: "risk-001",
+        payload: { [secretLikeKey]: "redacted" },
+        evidenceFingerprint: "fp-invalid-secret-key-redacted",
+        trace: {},
+      } as unknown as DecisionEvidenceItem;
+
+      expect(() => toDecisionLedgerEvidenceRowInput(frameId, item)).toThrow(
+        DecisionLedgerPersistenceValidationError,
+      );
+      try {
+        toDecisionLedgerEvidenceRowInput(frameId, item);
+      } catch (error) {
+        expect((error as Error).message).toContain("[redacted_key]");
+        expect((error as Error).message).not.toContain(secretLikeKey);
+      }
     });
 
     it("EXPLANATION_FAILURE와 EXPLANATION_FAILED 전용 조합을 런타임에도 강제한다", () => {

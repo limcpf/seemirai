@@ -67,13 +67,13 @@ export function assertValidDecisionLedgerFrame(frame: DecisionLedgerFrame): void
     throw validationError("ledger_version", "지원하는 decision ledger contract version이 아닙니다.");
   }
 
-  assertNonEmptyString("source_frame_id", frame.sourceFrameId);
-  assertNonEmptyString("exchange", frame.exchange);
-  assertOptionalNonEmptyString("source_run_id", frame.sourceRunId);
-  assertOptionalNonEmptyString("market", frame.market);
-  assertOptionalNonEmptyString("strategy_id", frame.strategyId);
-  assertOptionalNonEmptyString("correlation_id", frame.correlationId);
-  assertNonEmptyString("dedupe_key", frame.dedupeKey);
+  assertSecretSafeNonEmptyString("source_frame_id", frame.sourceFrameId);
+  assertSecretSafeNonEmptyString("exchange", frame.exchange);
+  assertNullableSecretSafeNonEmptyString("source_run_id", frame.sourceRunId);
+  assertNullableSecretSafeNonEmptyString("market", frame.market);
+  assertNullableSecretSafeNonEmptyString("strategy_id", frame.strategyId);
+  assertNullableSecretSafeNonEmptyString("correlation_id", frame.correlationId);
+  assertSecretSafeNonEmptyString("dedupe_key", frame.dedupeKey);
   assertAllowedValue(
     "category",
     frame.category,
@@ -110,15 +110,15 @@ export function assertValidDecisionLedgerEvidenceItem(
   frameId: string,
   item: DecisionEvidenceItem,
 ): void {
-  assertNonEmptyString("frame_id", frameId);
+  assertSecretSafeNonEmptyString("frame_id", frameId);
   assertAllowedValue("evidence_kind", item.evidenceKind, Object.values(EvidenceKindValue));
-  assertNonEmptyString("user_message", item.userMessage);
-  assertOptionalNonEmptyString("reason_code", item.reasonCode);
-  assertOptionalNonEmptyString("impact", item.impact);
-  assertOptionalNonEmptyString("action", item.action);
-  assertNonEmptyString("source", item.source);
-  assertOptionalNonEmptyString("source_id", item.sourceId);
-  assertNonEmptyString("evidence_fingerprint", item.evidenceFingerprint);
+  assertSecretSafeNonEmptyString("user_message", item.userMessage);
+  assertNullableSecretSafeNonEmptyString("reason_code", item.reasonCode);
+  assertNullableSecretSafeNonEmptyString("impact", item.impact);
+  assertNullableSecretSafeNonEmptyString("action", item.action);
+  assertSecretSafeNonEmptyString("source", item.source);
+  assertNullableSecretSafeNonEmptyString("source_id", item.sourceId);
+  assertSecretSafeNonEmptyString("evidence_fingerprint", item.evidenceFingerprint);
   assertValidDate("occurred_at", item.occurredAt);
   assertDecisionLedgerJsonRecord("payload_json", item.payload);
   assertDecisionLedgerJsonRecord("trace_json", item.trace);
@@ -201,8 +201,8 @@ function assertJsonValue(path: string, value: unknown, visiting: WeakSet<object>
   assertPlainObject(path, value);
 
   for (const [key, entryValue] of Object.entries(value as Record<string, unknown>)) {
-    assertSecretSafeKey(`${path}.${key}`, key);
-    assertJsonValue(`${path}.${key}`, entryValue, visiting);
+    assertSecretSafeKey(path, key);
+    assertJsonValue(toSafeObjectPath(path, key), entryValue, visiting);
   }
 
   visiting.delete(value);
@@ -212,10 +212,10 @@ function assertReasonCounts(reasonCounts: unknown): void {
   assertPlainObject("reason_counts_json", reasonCounts);
 
   for (const [reasonCode, count] of Object.entries(reasonCounts as Record<string, unknown>)) {
-    assertNonEmptyString("reason_counts_json key", reasonCode);
+    assertSecretSafeNonEmptyString("reason_counts_json key", reasonCode);
     if (typeof count !== "number" || !Number.isSafeInteger(count) || count < 0) {
       throw validationError(
-        `reason_counts_json.${reasonCode}`,
+        toSafeObjectPath("reason_counts_json", reasonCode),
         "reason count는 0 이상의 안전한 정수여야 합니다.",
       );
     }
@@ -226,6 +226,7 @@ function assertTraceReason(path: string, value: unknown): void {
   if (typeof value !== "string" || value.trim().length === 0) {
     throw validationError(path, "식별자가 null이면 한국어 누락 사유를 trace에 남겨야 합니다.");
   }
+  assertSecretSafeString(path, value);
 }
 
 function assertNonEmptyString(path: string, value: unknown): void {
@@ -234,12 +235,17 @@ function assertNonEmptyString(path: string, value: unknown): void {
   }
 }
 
-function assertOptionalNonEmptyString(path: string, value: unknown): void {
-  if (value === null || value === undefined) {
+function assertSecretSafeNonEmptyString(path: string, value: unknown): void {
+  assertNonEmptyString(path, value);
+  assertSecretSafeString(path, value as string);
+}
+
+function assertNullableSecretSafeNonEmptyString(path: string, value: unknown): void {
+  if (value === null) {
     return;
   }
 
-  assertNonEmptyString(path, value);
+  assertSecretSafeNonEmptyString(path, value);
 }
 
 function assertAllowedValue(path: string, value: unknown, allowedValues: readonly string[]): void {
@@ -265,10 +271,13 @@ function assertPlainObject(path: string, value: unknown): void {
   }
 }
 
-function assertSecretSafeKey(path: string, key: string): void {
+function assertSecretSafeKey(parentPath: string, key: string): void {
   const normalized = key.toLowerCase().replace(/[^a-z0-9]/gu, "");
   if (sensitiveKeyFragments.some((fragment) => normalized.includes(fragment))) {
-    throw validationError(path, "secret 또는 raw payload 후보 key는 ledger JSONB에 저장할 수 없습니다.");
+    throw validationError(
+      `${parentPath}.[redacted_key]`,
+      "secret 또는 raw payload 후보 key는 ledger JSONB에 저장할 수 없습니다.",
+    );
   }
 }
 
@@ -283,4 +292,17 @@ function assertSecretSafeString(path: string, value: string): void {
 
 function validationError(path: string, reason: string): DecisionLedgerPersistenceValidationError {
   return new DecisionLedgerPersistenceValidationError(`decision ledger ${path}: ${reason}`);
+}
+
+/**
+ * validation error에 사용할 JSON object path를 만든다.
+ *
+ * key 자체가 secret 후보이면 운영 로그에 원문이 남지 않도록 안정적인 redacted segment만 반환한다.
+ */
+function toSafeObjectPath(parentPath: string, key: string): string {
+  const normalized = key.toLowerCase().replace(/[^a-z0-9]/gu, "");
+  if (sensitiveKeyFragments.some((fragment) => normalized.includes(fragment))) {
+    return `${parentPath}.[redacted_key]`;
+  }
+  return `${parentPath}.${key}`;
 }
