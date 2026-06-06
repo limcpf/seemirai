@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import {
+  DECISION_LEDGER_VERSION,
   DecisionCategoryValue,
   DecisionFrameCategoryValue,
   SummaryStatusValue,
@@ -131,7 +132,7 @@ describe("DecisionLedgerFrame type contract", () => {
    */
   it("최소 필수 필드를 가진 frame 객체가 type contract를 만족한다", () => {
     const frame: DecisionLedgerFrame = {
-      ledgerVersion: "m18.decision_ledger.v1",
+      ledgerVersion: DECISION_LEDGER_VERSION,
       sourceRunId: "run-2026-06-06-001",
       sourceFrameId: "frame-abc-123",
       exchange: "UPBIT",
@@ -147,7 +148,7 @@ describe("DecisionLedgerFrame type contract", () => {
       trace: { sourceTable: "decision_ledger_frames", correlationId: "corr-xyz-789" },
     };
 
-    expect(frame.ledgerVersion).toBe("m18.decision_ledger.v1");
+    expect(frame.ledgerVersion).toBe(DECISION_LEDGER_VERSION);
     expect(frame.market).toBe("KRW-BTC");
     expect(frame.category).toBe("HOLD");
     expect(frame.summaryStatus).toBe("RECORDED");
@@ -157,7 +158,7 @@ describe("DecisionLedgerFrame type contract", () => {
 
   it("market과 strategyId가 null인 frame도 유효하다 (cash/global 판단)", () => {
     const frame: DecisionLedgerFrame = {
-      ledgerVersion: "m18.decision_ledger.v1",
+      ledgerVersion: DECISION_LEDGER_VERSION,
       sourceRunId: null,
       sourceFrameId: "frame-cash-001",
       exchange: "UPBIT",
@@ -186,7 +187,7 @@ describe("DecisionLedgerFrame type contract", () => {
 
   it("sourceRunId가 null이면 trace에 누락 사유가 필요하다", () => {
     const frame: DecisionLedgerFrame = {
-      ledgerVersion: "m18.decision_ledger.v1",
+      ledgerVersion: DECISION_LEDGER_VERSION,
       sourceRunId: null,
       sourceFrameId: "frame-cash-002",
       exchange: "UPBIT",
@@ -214,7 +215,7 @@ describe("DecisionLedgerFrame type contract", () => {
 
   it("correlationId가 null이면 trace에 누락 사유가 필요하다", () => {
     const frame: DecisionLedgerFrame = {
-      ledgerVersion: "m18.decision_ledger.v1",
+      ledgerVersion: DECISION_LEDGER_VERSION,
       sourceRunId: "run-001",
       sourceFrameId: "frame-hold-001",
       exchange: "UPBIT",
@@ -239,7 +240,7 @@ describe("DecisionLedgerFrame type contract", () => {
 
   it("EXPLANATION_FAILED는 frame category로 사용할 수 없다", () => {
     const frame = {
-      ledgerVersion: "m18.decision_ledger.v1",
+      ledgerVersion: DECISION_LEDGER_VERSION,
       sourceRunId: "run-001",
       sourceFrameId: "frame-llm-fail-001",
       exchange: "UPBIT",
@@ -262,7 +263,7 @@ describe("DecisionLedgerFrame type contract", () => {
 
   it("reasonCounts가 빈 객체여도 유효하다", () => {
     const frame: DecisionLedgerFrame = {
-      ledgerVersion: "m18.decision_ledger.v1",
+      ledgerVersion: DECISION_LEDGER_VERSION,
       sourceRunId: "run-001",
       sourceFrameId: "frame-002",
       exchange: "UPBIT",
@@ -279,6 +280,29 @@ describe("DecisionLedgerFrame type contract", () => {
     };
 
     expect(frame.reasonCounts).toEqual({});
+  });
+
+  it("ledgerVersion은 안정 literal만 허용한다", () => {
+    const frame: DecisionLedgerFrame = {
+      ledgerVersion: DECISION_LEDGER_VERSION,
+      sourceRunId: "run-001",
+      sourceFrameId: "frame-version-001",
+      exchange: "UPBIT",
+      market: "KRW-BTC",
+      strategyId: "strategy.mean-reversion",
+      category: "HOLD",
+      summaryStatus: "RECORDED",
+      observedAt: new Date("2026-06-06T01:00:00Z"),
+      decisionAt: new Date("2026-06-06T01:00:01Z"),
+      correlationId: "corr-version-001",
+      reasonCounts: {},
+      dedupeKey: "upbit:krw-btc:version:frame-version-001",
+      trace: {},
+    };
+
+    // @ts-expect-error contract version은 임의 string이 아니라 stable literal만 허용한다.
+    const invalidFrame: DecisionLedgerFrame = { ...frame, ledgerVersion: "m18.decision_ledger.v2" };
+    expect(invalidFrame.ledgerVersion).toBe("m18.decision_ledger.v2");
   });
 });
 
@@ -377,6 +401,43 @@ describe("DecisionEvidenceItem type contract", () => {
     expect(item.category).toBe("EXPLANATION_FAILED");
   });
 
+  it("EXPLANATION_FAILURE와 EXPLANATION_FAILED는 전용 조합으로만 허용한다", () => {
+    // @ts-expect-error 설명 실패 category는 일반 risk evidence에 붙일 수 없다.
+    const invalidRiskEvidence: DecisionEvidenceItem = {
+      evidenceKind: "RISK_DECISION",
+      category: "EXPLANATION_FAILED",
+      reasonCode: "llm_timeout",
+      userMessage: "리스크 판단이 아니라 설명 생성 실패입니다.",
+      impact: null,
+      action: null,
+      occurredAt: new Date("2026-06-06T03:10:00Z"),
+      source: "risk-gate",
+      sourceId: null,
+      payload: {},
+      evidenceFingerprint: "fp-invalid-risk-llm-001",
+      trace: {},
+    };
+
+    // @ts-expect-error EXPLANATION_FAILURE evidence는 BUY 같은 주문 판단 category를 가질 수 없다.
+    const invalidExplanationEvidence: DecisionEvidenceItem = {
+      evidenceKind: "EXPLANATION_FAILURE",
+      category: "BUY",
+      reasonCode: "llm_timeout",
+      userMessage: "LLM 설명 생성이 시간 초과로 실패했습니다.",
+      impact: null,
+      action: null,
+      occurredAt: new Date("2026-06-06T03:11:00Z"),
+      source: "llm-summary",
+      sourceId: null,
+      payload: {},
+      evidenceFingerprint: "fp-invalid-llm-buy-001",
+      trace: {},
+    };
+
+    expect(invalidRiskEvidence.category).toBe("EXPLANATION_FAILED");
+    expect(invalidExplanationEvidence.category).toBe("BUY");
+  });
+
   it("impact와 action이 null인 evidence item도 유효하다", () => {
     const item: DecisionEvidenceItem = {
       evidenceKind: "ORDER_INTENT",
@@ -406,7 +467,7 @@ describe("WhySummary type contract", () => {
       message: "최근 trend-following 전략이 매수 신호를 생성했습니다.",
       impact: "현재 0.001 BTC를 보유 중입니다.",
       action: null,
-      latestDecisionAt: new Date("2026-06-06T00:00:00Z"),
+      latestDecisionAt: "2026-06-06T00:00:00.000Z",
       trace: { category: "BUY", correlationId: "corr-001" },
     };
 
@@ -416,7 +477,7 @@ describe("WhySummary type contract", () => {
       message: "상승 추세가 감지되어 매수 신호를 생성했습니다.",
       impact: "현재 추세 강도는 중간 수준입니다.",
       action: null,
-      latestDecisionAt: new Date("2026-06-06T00:00:00Z"),
+      latestDecisionAt: "2026-06-06T00:00:00.000Z",
       trace: { category: "BUY" },
     };
 
@@ -425,11 +486,11 @@ describe("WhySummary type contract", () => {
       message: "모든 전략이 현금 보유를 선택했습니다.",
       impact: "기대 수익이 비용을 하회하여 신규 진입을 보류 중입니다.",
       action: "시장 조건이 개선될 때까지 기다리세요.",
-      latestDecisionAt: new Date("2026-06-06T00:00:00Z"),
-      holdReasonCounts: {
-        insufficient_expected_return: 2,
-        wide_spread: 1,
-      },
+      latestDecisionAt: "2026-06-06T00:00:00.000Z",
+      holdReasons: [
+        { label: "기대 수익 부족", count: 2, trace: { reasonCode: "insufficient_expected_return" } },
+        { label: "스프레드 확대", count: 1, trace: { reasonCode: "wide_spread" } },
+      ],
       trace: { category: "CASH_HOLD" },
     };
 
@@ -455,7 +516,7 @@ describe("WhySummary type contract", () => {
       markets: marketSection,
       strategies: strategySection,
       cash: cashSection,
-      generatedAt: new Date("2026-06-06T04:00:00Z"),
+      generatedAt: "2026-06-06T04:00:00.000Z",
       readStatus: "OK",
       trace: { querySource: "decision_ledger_frames" },
     };
@@ -468,8 +529,11 @@ describe("WhySummary type contract", () => {
     expect(summary.cash.item).not.toBeNull();
     expect(summary.cash.readStatus).toBe("OK");
     // noUncheckedIndexedAccess 환경이므로 bracket 접근으로 undefined 허용
-    const cashCounts = summary.cash.item!.holdReasonCounts;
-    expect(cashCounts["insufficient_expected_return"]).toBe(2);
+    const cashReasons = summary.cash.item!.holdReasons;
+    expect(cashReasons[0]!.label).toBe("기대 수익 부족");
+    expect(cashReasons[0]!.count).toBe(2);
+    expect(cashReasons[0]!.trace.reasonCode).toBe("insufficient_expected_return");
+    expect("holdReasonCounts" in summary.cash.item!).toBe(false);
     expect("category" in marketSummary).toBe(false);
     expect(marketSummary.trace.category).toBe("BUY");
     expect(summary.readStatus).toBe("OK");
@@ -480,7 +544,7 @@ describe("WhySummary type contract", () => {
       markets: { readStatus: "NOT_FOUND", items: [], trace: {} },
       strategies: { readStatus: "NOT_FOUND", items: [], trace: {} },
       cash: { readStatus: "NOT_FOUND", item: null, trace: {} },
-      generatedAt: new Date(),
+      generatedAt: new Date().toISOString(),
       readStatus: "NOT_FOUND",
       trace: {},
     };
@@ -496,7 +560,7 @@ describe("WhySummary type contract", () => {
       markets: { readStatus: "UNAVAILABLE", items: [], trace: { reason: "market_query_failed" } },
       strategies: { readStatus: "OK", items: [], trace: {} },
       cash: { readStatus: "UNAVAILABLE", item: null, trace: { reason: "cash_query_failed" } },
-      generatedAt: new Date(),
+      generatedAt: new Date().toISOString(),
       readStatus: "UNAVAILABLE",
       trace: { reason: "no_ledger_data" },
     };

@@ -15,6 +15,7 @@
  * `application`은 `infrastructure`를 import하지 않는다.
  */
 export type {
+  DecisionLedgerVersion,
   DecisionLedgerFrame,
   DecisionEvidenceItem,
   WhySummary,
@@ -26,7 +27,10 @@ export type {
   WhyStrategySummary,
   WhyCashSummarySection,
   WhyCashSummary,
+  WhyCashHoldReasonSummary,
 } from "./decision-ledger/types.js";
+
+export { DECISION_LEDGER_VERSION } from "./decision-ledger/types.js";
 
 export {
   DecisionCategoryValue,

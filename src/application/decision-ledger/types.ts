@@ -1,6 +1,19 @@
 import type { DecisionCategory, DecisionFrameCategory, EvidenceKind, SummaryStatus } from "./category.js";
 
 /**
+ * M18 decision ledger public contract의 안정 버전이다.
+ *
+ * producer, repository, status provider는 이 literal만 기록/조회 대상으로 삼고, 호환되지 않는
+ * shape 변경이 생기면 새 literal을 추가해 migration/query 경계를 명시해야 한다.
+ */
+export const DECISION_LEDGER_VERSION = "m18.decision_ledger.v1" as const;
+
+/**
+ * Decision ledger frame에 허용되는 contract version literal이다.
+ */
+export type DecisionLedgerVersion = typeof DECISION_LEDGER_VERSION;
+
+/**
  * M18 decision ledger의 공개 계약 — 모든 타입은 append-only evidence와 read-only why summary의
  * shape를 고정한다. 이 모듈은 persistence, producer, LLM, HTTP route를 포함하지 않으며
  * 순수 type contract와 category 상수만 제공한다.
@@ -26,7 +39,7 @@ import type { DecisionCategory, DecisionFrameCategory, EvidenceKind, SummaryStat
  */
 interface DecisionLedgerFrameBase {
   /** M18 contract version. 예: `"m18.decision_ledger.v1"`. */
-  readonly ledgerVersion: string;
+  readonly ledgerVersion: DecisionLedgerVersion;
 
   /** `PaperDecisionInputFrame.id`. runner 입력 frame 식별자. */
   readonly sourceFrameId: string;
@@ -119,23 +132,12 @@ export type DecisionLedgerFrame = DecisionLedgerFrameBase &
   DecisionLedgerCorrelationContract;
 
 /**
- * frame 아래 append-only로 저장되는 단일 근거 evidence item이다.
+ * decision evidence의 공통 사용자-facing/trace 필드다.
  *
- * 하나의 frame은 여러 evidence item을 가질 수 있다 (예: STRATEGY_DECISION → ORDER_INTENT →
- * COST_BREAKDOWN → RISK_DECISION → EXECUTION_RESULT).
- *
- * ## 보안
- *
- * `payload`와 `trace`에는 raw provider payload, raw order detail, secret 후보,
- * Authorization/JWT/API key를 넣지 않는다.
+ * `evidenceKind`와 `category` 조합은 설명 실패 전용 evidence가 실제 주문 판단처럼 보존되지
+ * 않도록 하위 union에서 제한한다.
  */
-export interface DecisionEvidenceItem {
-  /** 근거 종류. */
-  readonly evidenceKind: EvidenceKind;
-
-  /** 연관된 판단 범주. */
-  readonly category: DecisionCategory;
-
+interface DecisionEvidenceItemBase {
   /** 내부 reason code. 사용자-facing 문구는 `userMessage`로 분리한다. */
   readonly reasonCode: string | null;
 
@@ -176,6 +178,49 @@ export interface DecisionEvidenceItem {
 }
 
 /**
+ * LLM 설명 실패를 제외한 일반 decision evidence item이다.
+ *
+ * 일반 evidence는 실제 판단 category만 가질 수 있고, 설명 장애 전용 `EXPLANATION_FAILED`를
+ * category로 저장하지 않는다.
+ */
+interface DecisionEvidenceDecisionItem extends DecisionEvidenceItemBase {
+  /** 근거 종류. 설명 실패 전용 `EXPLANATION_FAILURE`는 제외한다. */
+  readonly evidenceKind: Exclude<EvidenceKind, "EXPLANATION_FAILURE">;
+
+  /** 연관된 실제 판단 범주. */
+  readonly category: DecisionFrameCategory;
+}
+
+/**
+ * LLM 설명 생성 실패 evidence item이다.
+ *
+ * provider timeout, invalid output, output size 초과 같은 설명 장애는 주문 판단을 대체하지 않게
+ * `EXPLANATION_FAILURE + EXPLANATION_FAILED` 조합으로만 저장한다.
+ */
+interface DecisionEvidenceExplanationFailureItem extends DecisionEvidenceItemBase {
+  /** LLM 설명 실패 전용 근거 종류. */
+  readonly evidenceKind: "EXPLANATION_FAILURE";
+
+  /** 설명 실패 전용 category. */
+  readonly category: "EXPLANATION_FAILED";
+}
+
+/**
+ * frame 아래 append-only로 저장되는 단일 근거 evidence item이다.
+ *
+ * 하나의 frame은 여러 evidence item을 가질 수 있다 (예: STRATEGY_DECISION → ORDER_INTENT →
+ * COST_BREAKDOWN → RISK_DECISION → EXECUTION_RESULT).
+ *
+ * ## 보안
+ *
+ * `payload`와 `trace`에는 raw provider payload, raw order detail, secret 후보,
+ * Authorization/JWT/API key를 넣지 않는다.
+ */
+export type DecisionEvidenceItem =
+  | DecisionEvidenceDecisionItem
+  | DecisionEvidenceExplanationFailureItem;
+
+/**
  * `/status` 하위 read-only `why` summary의 최상위 응답 shape다.
  *
  * 이 summary는 read-only며, 별도 write/control endpoint를 만들지 않는다.
@@ -189,11 +234,11 @@ export interface WhySummary {
   /** strategy별 최근 판단 이유 section. */
   readonly strategies: WhyStrategySummarySection;
 
-  /** 현금 보유 이유 section. 주문 후보 0건이면 `item=null`이 아니라 hold reason counts를 포함한다. */
+  /** 현금 보유 이유 section. 주문 후보 0건이면 `item=null`이 아니라 한국어 hold reason 목록을 포함한다. */
   readonly cash: WhyCashSummarySection;
 
-  /** summary 생성 시각. */
-  readonly generatedAt: Date;
+  /** summary 생성 시각. HTTP JSON 응답과 같은 ISO 8601 문자열이다. */
+  readonly generatedAt: string;
 
   /** summary 조회 상태. */
   readonly readStatus: "OK" | "NOT_FOUND" | "UNAVAILABLE";
@@ -256,7 +301,7 @@ export interface WhyCashSummarySection {
   /** 이 section의 조회 상태. */
   readonly readStatus: WhyReadStatus;
 
-  /** cash summary. 조회 전/기록 없음이면 `null`, 주문 후보 0건이면 reason count를 가진 item. */
+  /** cash summary. 조회 전/기록 없음이면 `null`, 주문 후보 0건이면 한국어 reason count 목록을 가진 item. */
   readonly item: WhyCashSummary | null;
 
   /** query source와 실패 사유 같은 내부 추적 정보만 포함. */
@@ -285,8 +330,8 @@ export interface WhyMarketSummary {
   /** 한국어 필요 조치. 없으면 `null`. */
   readonly action: string | null;
 
-  /** 최신 판단 시각. 기록이 없으면 `null`. */
-  readonly latestDecisionAt: Date | null;
+  /** 최신 판단 시각. 기록이 없으면 `null`, 있으면 HTTP-safe ISO 8601 문자열이다. */
+  readonly latestDecisionAt: string | null;
 
   /** 내부 식별자, query source, correlation id만 포함. */
   readonly trace: WhySummaryTrace;
@@ -311,8 +356,8 @@ export interface WhyStrategySummary {
   /** 한국어 필요 조치. 없으면 `null`. */
   readonly action: string | null;
 
-  /** 최신 판단 시각. 기록이 없으면 `null`. */
-  readonly latestDecisionAt: Date | null;
+  /** 최신 판단 시각. 기록이 없으면 `null`, 있으면 HTTP-safe ISO 8601 문자열이다. */
+  readonly latestDecisionAt: string | null;
 
   /** 내부 식별자, query source, correlation id만 포함. */
   readonly trace: WhySummaryTrace;
@@ -321,7 +366,7 @@ export interface WhyStrategySummary {
 /**
  * 현금 보유 이유 summary.
  *
- * 주문 후보 0건 frame이면 `holdReasonCounts`에 구체적인 차단 사유별 개수를 보존한다.
+ * 주문 후보 0건 frame이면 `holdReasons`에 구체적인 차단 사유별 한국어 label/count를 보존한다.
  * 이 객체는 `null`이 될 수 있으며, `null`은 cash hold data가 아직 수집되지 않았음을 의미한다.
  */
 export interface WhyCashSummary {
@@ -337,15 +382,32 @@ export interface WhyCashSummary {
   /** 한국어 필요 조치. 없으면 `null`. */
   readonly action: string | null;
 
-  /** 최신 판단 시각. 기록이 없으면 `null`. */
-  readonly latestDecisionAt: Date | null;
+  /** 최신 판단 시각. 기록이 없으면 `null`, 있으면 HTTP-safe ISO 8601 문자열이다. */
+  readonly latestDecisionAt: string | null;
 
   /**
    * 현금 보유 사유별 발생 횟수.
-   * key는 reason code, value는 해당 사유 발생 횟수.
+   * 사용자-facing 필드에는 한국어 label과 count만 두고, 안정 reason code는 각 item의 trace로 분리한다.
    */
-  readonly holdReasonCounts: Readonly<Record<string, number>>;
+  readonly holdReasons: readonly WhyCashHoldReasonSummary[];
 
   /** 내부 식별자, query source, correlation id만 포함. */
+  readonly trace: WhySummaryTrace;
+}
+
+/**
+ * 현금 보유 사유별 사용자-facing count item이다.
+ *
+ * route formatter는 내부 reason code map을 그대로 노출하지 않고 한국어 label/count 목록을 만들며,
+ * 감사나 debug에 필요한 안정 code는 `trace.reasonCode`에만 둔다.
+ */
+export interface WhyCashHoldReasonSummary {
+  /** 한국어 사유 label. */
+  readonly label: string;
+
+  /** 해당 사유 발생 횟수. */
+  readonly count: number;
+
+  /** 내부 reason code, source id 같은 추적 정보만 포함. */
   readonly trace: WhySummaryTrace;
 }

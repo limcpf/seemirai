@@ -144,7 +144,7 @@
 ## M18 Decision Ledger 보안 기준
 
 - decision ledger의 `payload_json`과 `trace_json`에는 raw provider payload, raw order detail, secret 후보, Authorization header, JWT, API key, secret key, query hash 원문을 저장하지 않는다.
-- `WhySummary`의 사용자-facing 응답은 내부 enum/code를 첫 화면에 노출하지 않고 한국어 상태/원인/영향/필요 조치를 먼저 배치한다.
+- `WhySummary`의 사용자-facing 응답은 내부 enum/code와 reason code map을 첫 화면에 노출하지 않고 한국어 상태/원인/영향/필요 조치와 한국어 reason label/count를 먼저 배치한다. 내부 category와 reason code는 `trace` 또는 debug/detail 영역에만 둔다.
 - `/status.why`는 read-only safe summary만 반환한다. raw config, secret, token, raw order detail, raw position detail을 반환하지 않는다.
 - decision ledger DB 조회가 `/status`에서 실패해도 endpoint를 5xx로 만들지 않고 해당 하위 객체의 `readStatus`를 `UNAVAILABLE`로 낮춘다.
 - LLM summary 보조 계층은 M10 LLM 보안 기준을 재사용한다. LLM output이 주문 지시, 포지션 크기, 주문 허용 의미를 포함하면 fail-closed로 차단한다.

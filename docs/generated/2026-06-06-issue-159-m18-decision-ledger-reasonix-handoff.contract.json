@@ -117,7 +117,7 @@
     "종목별 최근 판단 이유를 /status 하위 why summary에서 조회할 수 있다.",
     "strategy별 최근 판단 이유를 /status 하위 why summary에서 조회할 수 있다.",
     "주문 후보가 생성된 frame은 strategy decision, order intent, cost breakdown, risk decision, execution result를 연결한다.",
-    "주문 후보 0건 frame도 HOLD/CASH_HOLD/DISCARD reason count로 설명된다.",
+    "주문 후보 0건 frame도 HOLD/CASH_HOLD/DISCARD reason count와 why.cash 한국어 reason 목록으로 설명된다.",
     "cost rejection과 risk rejection은 서로 다른 판단 이유로 저장되고 조회 응답에서 구분된다.",
     "ledger row는 append-only이고 같은 frame/source/correlation 재실행으로 중복 evidence가 생기지 않는다.",
     "사용자-facing 응답은 내부 code보다 한국어 상태, 원인, 영향, 필요 조치를 먼저 보여준다.",
@@ -150,8 +150,8 @@
       "notDoneIf": ["strategy/cost/risk/execution 중 일부 evidence만 저장한 경우"]
     },
     {
-      "acceptanceCriterion": "주문 후보 0건 frame도 HOLD/CASH_HOLD/DISCARD reason count로 설명된다.",
-      "userFacingSurface": "GET /status response why.cash and ledger reason counts",
+      "acceptanceCriterion": "주문 후보 0건 frame도 HOLD/CASH_HOLD/DISCARD reason count와 why.cash 한국어 reason 목록으로 설명된다.",
+      "userFacingSurface": "GET /status response why.cash Korean reason labels and ledger reason counts",
       "expectedFiles": ["src/application/paper-decision-runner/**", "src/application/decision-ledger/**"],
       "requiredTests": ["tests/unit/paper-decision-runner.test.ts", "tests/unit/decision-ledger.test.ts"],
       "notDoneIf": ["order intent가 없다는 이유로 frame을 저장하지 않은 경우"]
@@ -247,7 +247,7 @@
     },
     {
       "risk": "주문 후보 0건 frame이 저장되지 않으면 현금 보유 이유를 설명하지 못한다.",
-      "mitigation": "HOLD/CASH_HOLD/DISCARD reason count를 AC와 paper-decision-runner tests에 포함한다."
+      "mitigation": "HOLD/CASH_HOLD/DISCARD reason count와 why.cash 한국어 reason 목록을 AC와 paper-decision-runner tests에 포함한다."
     },
     {
       "risk": "같은 frame 재실행이 append-only table에 중복 evidence를 만들 수 있다.",
