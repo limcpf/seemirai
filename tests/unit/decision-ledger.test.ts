@@ -238,6 +238,34 @@ describe("DecisionLedgerFrame type contract", () => {
     expect(invalidFrame.correlationId).toBeNull();
   });
 
+  it("frame trace는 JSON-safe 값만 허용한다", () => {
+    const frame: DecisionLedgerFrame = {
+      ledgerVersion: DECISION_LEDGER_VERSION,
+      sourceRunId: "run-001",
+      sourceFrameId: "frame-json-trace-001",
+      exchange: "UPBIT",
+      market: "KRW-BTC",
+      strategyId: "strategy.mean-reversion",
+      category: "HOLD",
+      summaryStatus: "RECORDED",
+      observedAt: new Date("2026-06-06T01:00:00Z"),
+      decisionAt: new Date("2026-06-06T01:00:01Z"),
+      correlationId: "corr-json-trace-001",
+      reasonCounts: {},
+      dedupeKey: "upbit:krw-btc:json-trace:frame-json-trace-001",
+      trace: { sourceTable: "decision_ledger_frames", retryCount: 0, sourceIds: ["frame-json-trace-001"] },
+    };
+
+    const invalidFrame: DecisionLedgerFrame = {
+      ...frame,
+      trace: {
+        // @ts-expect-error JSONB trace에는 function 같은 비 JSON 값을 넣지 않는다.
+        callback: () => undefined,
+      },
+    };
+    expect(typeof invalidFrame.trace.callback).toBe("function");
+  });
+
   it("EXPLANATION_FAILED는 frame category로 사용할 수 없다", () => {
     const frame = {
       ledgerVersion: DECISION_LEDGER_VERSION,
@@ -457,6 +485,46 @@ describe("DecisionEvidenceItem type contract", () => {
     expect(item.impact).toBeNull();
     expect(item.action).toBeNull();
   });
+
+  it("payload와 trace는 JSON-safe 값만 허용한다", () => {
+    const item: DecisionEvidenceItem = {
+      evidenceKind: "COST_BREAKDOWN",
+      category: "COST_REJECTED",
+      reasonCode: "insufficient_expected_return",
+      userMessage: "기대 수익이 비용을 충당하지 못해 주문 후보를 차단했습니다.",
+      impact: "현재 시장 조건에서는 신규 진입하지 않습니다.",
+      action: "비용 조건이 개선될 때까지 대기하세요.",
+      occurredAt: new Date("2026-06-06T04:00:00Z"),
+      source: "cost-model",
+      sourceId: "cost-evaluation-001",
+      payload: {
+        requiredReturnBps: "30",
+        rejected: true,
+        components: [{ name: "spread", bps: "12" }],
+      },
+      evidenceFingerprint: "fp-json-safe-001",
+      trace: { frameId: "frame-json-safe-001", attempts: 1, sourceIds: ["cost-evaluation-001"] },
+    };
+
+    const invalidPayloadItem: DecisionEvidenceItem = {
+      ...item,
+      payload: {
+        // @ts-expect-error JSONB payload에는 Date 객체를 넣지 않는다.
+        observedAt: new Date("2026-06-06T04:00:00Z"),
+      },
+    };
+    const invalidTraceItem: DecisionEvidenceItem = {
+      ...item,
+      trace: {
+        // @ts-expect-error JSONB trace에는 function 같은 비 JSON 값을 넣지 않는다.
+        callback: () => undefined,
+      },
+    };
+
+    expect(item.payload["rejected"]).toBe(true);
+    expect(invalidPayloadItem.payload["observedAt"]).toBeInstanceOf(Date);
+    expect(typeof invalidTraceItem.trace.callback).toBe("function");
+  });
 });
 
 describe("WhySummary type contract", () => {
@@ -496,18 +564,30 @@ describe("WhySummary type contract", () => {
 
     const marketSection: WhyMarketSummarySection = {
       readStatus: "OK",
+      statusLabel: "조회 완료",
+      message: "시장별 최근 판단 이유를 조회했습니다.",
+      impact: null,
+      action: null,
       items: [marketSummary],
       trace: { querySource: "decision_ledger_frames" },
     };
 
     const strategySection: WhyStrategySummarySection = {
       readStatus: "OK",
+      statusLabel: "조회 완료",
+      message: "전략별 최근 판단 이유를 조회했습니다.",
+      impact: null,
+      action: null,
       items: [strategySummary],
       trace: { querySource: "decision_ledger_frames" },
     };
 
     const cashSection: WhyCashSummarySection = {
       readStatus: "OK",
+      statusLabel: "조회 완료",
+      message: "현금 보유 이유를 조회했습니다.",
+      impact: null,
+      action: null,
       item: cashSummary,
       trace: { querySource: "decision_ledger_frames" },
     };
@@ -541,9 +621,33 @@ describe("WhySummary type contract", () => {
 
   it("cash summary가 null이어도 유효하다", () => {
     const summary: WhySummary = {
-      markets: { readStatus: "NOT_FOUND", items: [], trace: {} },
-      strategies: { readStatus: "NOT_FOUND", items: [], trace: {} },
-      cash: { readStatus: "NOT_FOUND", item: null, trace: {} },
+      markets: {
+        readStatus: "NOT_FOUND",
+        statusLabel: "기록 없음",
+        message: "시장별 판단 이유가 아직 기록되지 않았습니다.",
+        impact: null,
+        action: null,
+        items: [],
+        trace: {},
+      },
+      strategies: {
+        readStatus: "NOT_FOUND",
+        statusLabel: "기록 없음",
+        message: "전략별 판단 이유가 아직 기록되지 않았습니다.",
+        impact: null,
+        action: null,
+        items: [],
+        trace: {},
+      },
+      cash: {
+        readStatus: "NOT_FOUND",
+        statusLabel: "기록 없음",
+        message: "현금 보유 이유가 아직 기록되지 않았습니다.",
+        impact: null,
+        action: null,
+        item: null,
+        trace: {},
+      },
       generatedAt: new Date().toISOString(),
       readStatus: "NOT_FOUND",
       trace: {},
@@ -557,9 +661,33 @@ describe("WhySummary type contract", () => {
 
   it("UNAVAILABLE 상태 summary도 type contract를 만족한다", () => {
     const summary: WhySummary = {
-      markets: { readStatus: "UNAVAILABLE", items: [], trace: { reason: "market_query_failed" } },
-      strategies: { readStatus: "OK", items: [], trace: {} },
-      cash: { readStatus: "UNAVAILABLE", item: null, trace: { reason: "cash_query_failed" } },
+      markets: {
+        readStatus: "UNAVAILABLE",
+        statusLabel: "조회 불가",
+        message: "시장별 판단 이유를 일시적으로 읽지 못했습니다.",
+        impact: "시장별 최신 판단 설명이 비어 있을 수 있습니다.",
+        action: "잠시 후 다시 확인하거나 ledger DB 상태를 점검하세요.",
+        items: [],
+        trace: { reason: "market_query_failed" },
+      },
+      strategies: {
+        readStatus: "OK",
+        statusLabel: "조회 완료",
+        message: "전략별 판단 이유 조회가 완료되었습니다.",
+        impact: null,
+        action: null,
+        items: [],
+        trace: {},
+      },
+      cash: {
+        readStatus: "UNAVAILABLE",
+        statusLabel: "조회 불가",
+        message: "현금 보유 이유를 일시적으로 읽지 못했습니다.",
+        impact: "현금 보유 이유가 비어 있을 수 있습니다.",
+        action: "잠시 후 다시 확인하거나 ledger DB 상태를 점검하세요.",
+        item: null,
+        trace: { reason: "cash_query_failed" },
+      },
       generatedAt: new Date().toISOString(),
       readStatus: "UNAVAILABLE",
       trace: { reason: "no_ledger_data" },
@@ -567,8 +695,10 @@ describe("WhySummary type contract", () => {
 
     expect(summary.readStatus).toBe("UNAVAILABLE");
     expect(summary.markets.readStatus).toBe("UNAVAILABLE");
+    expect(summary.markets.action).toContain("ledger DB");
     expect(summary.strategies.readStatus).toBe("OK");
     expect(summary.cash.readStatus).toBe("UNAVAILABLE");
+    expect(summary.cash.message).toContain("현금 보유 이유");
   });
 
   it("시장별 summary의 action이 null이어도 유효하다", () => {

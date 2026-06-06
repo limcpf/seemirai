@@ -231,9 +231,9 @@ Codex-native 운영은 Codex, Git, GitHub, shell command, 문서 상태를 연�
 - decision ledger는 append-only 저장소다. frame과 evidence는 insert만 수행하며 update, delete는 구현하지 않는다.
 - 같은 `dedupe_key` 또는 `evidence_fingerprint` 충돌은 중복 append 없이 기존 row를 재사용하거나 `inserted=false` 결과로 반환한다. 기존 row를 update해 최신 summary처럼 덮어쓰지 않는다.
 - ledger write 실패는 이미 발생한 broker/order side effect를 재시도하지 않는다. write 실패는 주문 허용 신호로 보정하지 않으며, 실패 evidence를 runner result, audit/risk evidence 또는 ledger failure summary에 남긴다.
-- `decision_ledger_frames`와 `decision_ledger_evidence`는 `audit_events`, `risk_events`, `orders`, `pnl_snapshots`와 stable id 또는 correlation id만 연결한다. raw provider payload, raw order detail, secret 후보, Authorization/JWT/API key는 payload_json과 trace_json에 저장하지 않는다.
+- `decision_ledger_frames`와 `decision_ledger_evidence`는 `audit_events`, `risk_events`, `orders`, `pnl_snapshots`와 stable id 또는 correlation id만 연결한다. raw provider payload, raw order detail, secret 후보, Authorization/JWT/API key는 payload_json과 trace_json에 저장하지 않는다. payload_json과 trace_json은 JSONB에 안전하게 저장 가능한 JSON value만 허용한다.
 - `/status` 하위 `why` summary는 read-only다. 별도 write/control endpoint를 만들지 않으며, route handler 안에서 DB write side effect를 수행하지 않는다.
-- why summary는 사용자-facing 한국어 상태/원인/영향/필요 조치를 먼저 배치하고, 내부 식별자는 `trace`에 분리한다. 현금 보유 사유도 내부 reason code map을 직접 노출하지 않고 한국어 label/count 목록으로 표현한다. DB 조회 실패 시 endpoint 전체를 실패시키지 않고 해당 하위 객체의 `readStatus`를 `UNAVAILABLE`로 낮춘다.
+- why summary는 사용자-facing 한국어 상태/원인/영향/필요 조치를 먼저 배치하고, 내부 식별자는 `trace`에 분리한다. 현금 보유 사유도 내부 reason code map을 직접 노출하지 않고 한국어 label/count 목록으로 표현한다. DB 조회 실패 시 endpoint 전체를 실패시키지 않고 해당 하위 객체의 `readStatus`를 `UNAVAILABLE`로 낮추며, 실패 section에도 한국어 안내와 필요한 조치를 남긴다.
 - LLM summary는 deterministic evidence를 대체하지 않는다. LLM provider timeout, invalid JSON, output size 초과, provider 장애는 `EXPLANATION_FAILURE` evidence로만 저장하며, 주문 판단을 변경하지 않는다. `EXPLANATION_FAILURE`는 category `EXPLANATION_FAILED`와만 조합하고, 다른 evidence kind는 설명 실패 category를 갖지 않는다.
 - LLM output에 `BUY`, `SELL`, `INCREASE_POSITION`, 목표가, 포지션 크기, 주문 허용 의미가 포함되면 fail-closed로 차단하고 요약 attachment에서 제외한다.
 - decision ledger contract version은 `m18.decision_ledger.v1`이며, contract 변경 시 version을 명시적으로 올린다.

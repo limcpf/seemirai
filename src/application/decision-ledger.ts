@@ -16,6 +16,9 @@
  */
 export type {
   DecisionLedgerVersion,
+  DecisionLedgerJsonPrimitive,
+  DecisionLedgerJsonValue,
+  DecisionLedgerJsonRecord,
   DecisionLedgerFrame,
   DecisionEvidenceItem,
   WhySummary,

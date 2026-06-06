@@ -345,7 +345,7 @@ Evidence item은 frame 아래 append-only로 저장되는 단일 근거다.
 - `payload`
 - `trace`
 
-`payload`와 `trace`에는 raw provider payload, raw order detail, secret 후보, Authorization/JWT/API key를 넣지 않는다.
+`payload`와 `trace`에는 raw provider payload, raw order detail, secret 후보, Authorization/JWT/API key를 넣지 않는다. 또한 JSONB에 안전하게 저장 가능한 JSON value만 허용하며 `Date`, `BigInt`, function, class instance 같은 비 JSON 값은 contract 단계에서 차단한다.
 
 ### Persistence Contract
 
@@ -425,7 +425,7 @@ Repository invariant:
 - `readStatus`: 전체 summary 조회 상태 (`OK`, `NOT_FOUND`, `UNAVAILABLE`). 개별 section 실패는 각 section `readStatus`로도 보존한다.
 - `trace`: 내부 식별자, query source, correlation id만 포함.
 
-각 summary item은 사용자-facing 정보를 먼저 가진다.
+각 section과 summary item은 사용자-facing 정보를 먼저 가진다. section level 문구는 DB 조회 실패로 item 목록이 비거나 `cash.item=null`인 경우에도 한국어 상태와 필요한 조치를 잃지 않게 한다.
 
 - `statusLabel`: 한국어 상태.
 - `message`: 한국어 원인.
@@ -434,7 +434,7 @@ Repository invariant:
 - `latestDecisionAt`: 기록이 없으면 `null`, 있으면 ISO 8601 string이다.
 - `category`와 `reasonCode`는 사용자-facing 최상위 item 필드가 아니라 `trace` 또는 detail 영역에 분리.
 
-DB 조회 실패는 `/status` 전체 실패가 아니라 실패한 section의 `readStatus=UNAVAILABLE`로 낮춘다. 기록 없음과 조회 실패는 서로 다른 상태로 표현한다.
+DB 조회 실패는 `/status` 전체 실패가 아니라 실패한 section의 `readStatus=UNAVAILABLE`로 낮춘다. 실패 section은 내부 trace reason만 노출하지 않고 section-level `statusLabel/message/impact/action`에 한국어 안내와 필요한 조치를 담는다. 기록 없음과 조회 실패는 서로 다른 상태로 표현한다.
 
 ### LLM Summary Contract
 

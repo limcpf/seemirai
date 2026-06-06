@@ -121,10 +121,12 @@
     "cost rejection과 risk rejection은 서로 다른 판단 이유로 저장되고 조회 응답에서 구분된다.",
     "ledger row는 append-only이고 같은 frame/source/correlation 재실행으로 중복 evidence가 생기지 않는다.",
     "사용자-facing 응답은 내부 code보다 한국어 상태, 원인, 영향, 필요 조치를 먼저 보여준다.",
+    "DB 조회 실패 section도 한국어 상태, 원인, 영향, 필요 조치를 함께 보여준다.",
     "내부 id, fingerprint, reason code, correlation id는 추적 정보 또는 debug/detail 영역에 분리된다.",
     "LLM summary는 deterministic evidence를 읽는 보조 계층이며, LLM 실패가 주문 판단이나 RiskGate/Broker 결과를 바꾸지 않는다.",
     "LLM output에 주문 지시, 포지션 크기, 매수/매도 허용 의미가 있으면 fail-closed evidence로 남고 사용자 summary에 그대로 노출하지 않는다.",
     "raw access key, secret key, JWT, Authorization header, raw provider payload, raw order detail이 ledger/status/API/report artifact에 남지 않는다.",
+    "ledger payload와 trace는 JSONB-safe value만 허용한다.",
     "기본 PAPER_NO_KEY runtime에서 live order API 호출 0회 invariant가 유지된다."
   ],
   "acceptanceCriteriaTrace": [
@@ -176,6 +178,20 @@
       "expectedFiles": ["src/application/decision-ledger/user-facing.ts", "src/interfaces/http-control/**"],
       "requiredTests": ["tests/unit/decision-ledger.test.ts", "tests/unit/http-control.test.ts"],
       "notDoneIf": ["내부 reason code가 첫 문구를 대체하는 경우"]
+    },
+    {
+      "acceptanceCriterion": "DB 조회 실패 section도 한국어 상태, 원인, 영향, 필요 조치를 함께 보여준다.",
+      "userFacingSurface": "GET /status response why section statusLabel/message/impact/action",
+      "expectedFiles": ["src/application/decision-ledger/**", "src/interfaces/http-control/**"],
+      "requiredTests": ["tests/unit/decision-ledger.test.ts", "tests/unit/http-control.test.ts"],
+      "notDoneIf": ["UNAVAILABLE section이 빈 items/null item과 내부 trace reason만 반환하는 경우"]
+    },
+    {
+      "acceptanceCriterion": "ledger payload와 trace는 JSONB-safe value만 허용한다.",
+      "userFacingSurface": "Decision ledger payload_json and trace_json",
+      "expectedFiles": ["src/application/decision-ledger/**", "src/infrastructure/db/decision-ledger/**"],
+      "requiredTests": ["tests/unit/decision-ledger.test.ts", "tests/unit/decision-ledger-persistence.test.ts"],
+      "notDoneIf": ["Date, BigInt, function, class instance가 payload_json 또는 trace_json type contract를 통과하는 경우"]
     },
     {
       "acceptanceCriterion": "내부 id, fingerprint, reason code, correlation id는 추적 정보 또는 debug/detail 영역에 분리된다.",

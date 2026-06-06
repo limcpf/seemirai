@@ -14,6 +14,27 @@ export const DECISION_LEDGER_VERSION = "m18.decision_ledger.v1" as const;
 export type DecisionLedgerVersion = typeof DECISION_LEDGER_VERSION;
 
 /**
+ * decision ledger JSONB payload/trace에 저장할 수 있는 primitive 값이다.
+ */
+export type DecisionLedgerJsonPrimitive = string | number | boolean | null;
+
+/**
+ * decision ledger JSONB payload/trace에 저장할 수 있는 값이다.
+ *
+ * Date, BigInt, function, class instance처럼 JSON 직렬화 경계에서 변형되거나 실패할 수 있는 값은
+ * contract 단계에서 허용하지 않는다.
+ */
+export type DecisionLedgerJsonValue =
+  | DecisionLedgerJsonPrimitive
+  | readonly DecisionLedgerJsonValue[]
+  | { readonly [key: string]: DecisionLedgerJsonValue };
+
+/**
+ * decision ledger JSONB payload/trace에 저장할 수 있는 object record다.
+ */
+export type DecisionLedgerJsonRecord = { readonly [key: string]: DecisionLedgerJsonValue };
+
+/**
  * M18 decision ledger의 공개 계약 — 모든 타입은 append-only evidence와 read-only why summary의
  * shape를 고정한다. 이 모듈은 persistence, producer, LLM, HTTP route를 포함하지 않으며
  * 순수 type contract와 category 상수만 제공한다.
@@ -73,8 +94,8 @@ interface DecisionLedgerFrameBase {
    */
   readonly reasonCounts: Readonly<Record<string, number>>;
 
-  /** 내부 id, fingerprint, source table, source id, correlation id 같은 추적 정보만 담는다. */
-  readonly trace: Readonly<Record<string, unknown>>;
+  /** 내부 id, fingerprint, source table, source id, correlation id 같은 JSON-safe 추적 정보만 담는다. */
+  readonly trace: DecisionLedgerJsonRecord;
 
   /**
    * 같은 frame/source/correlation 재실행 중복 append를 차단하는 deterministic key.
@@ -93,7 +114,7 @@ interface DecisionLedgerFrameWithoutSourceRun {
   /** runner 또는 runtime 실행 단위 식별자를 알 수 없는 경우 `null`로 보존한다. */
   readonly sourceRunId: null;
 
-  readonly trace: Readonly<Record<string, unknown>> & {
+  readonly trace: DecisionLedgerJsonRecord & {
     readonly sourceRunUnavailableReason: string;
   };
 }
@@ -107,7 +128,7 @@ interface DecisionLedgerFrameWithoutCorrelation {
   /** stable correlation id가 아직 없거나 조회 불가능한 경우 `null`로 보존한다. */
   readonly correlationId: null;
 
-  readonly trace: Readonly<Record<string, unknown>> & {
+  readonly trace: DecisionLedgerJsonRecord & {
     readonly correlationUnavailableReason: string;
   };
 }
@@ -164,7 +185,7 @@ interface DecisionEvidenceItemBase {
    *
    * evidence kind별로 허용되는 payload shape는 evidence kind contract에서 정의한다.
    */
-  readonly payload: Readonly<Record<string, unknown>>;
+  readonly payload: DecisionLedgerJsonRecord;
 
   /**
    * evidence 중복 append를 차단하는 deterministic fingerprint.
@@ -173,8 +194,8 @@ interface DecisionEvidenceItemBase {
    */
   readonly evidenceFingerprint: string;
 
-  /** 내부 id, 상위 frame id, correlation id 같은 추적 정보만 담는다. */
-  readonly trace: Readonly<Record<string, unknown>>;
+  /** 내부 id, 상위 frame id, correlation id 같은 JSON-safe 추적 정보만 담는다. */
+  readonly trace: DecisionLedgerJsonRecord;
 }
 
 /**
@@ -243,8 +264,8 @@ export interface WhySummary {
   /** summary 조회 상태. */
   readonly readStatus: "OK" | "NOT_FOUND" | "UNAVAILABLE";
 
-  /** 내부 식별자, query source, correlation id만 포함. */
-  readonly trace: Readonly<Record<string, unknown>>;
+  /** 내부 식별자, query source, correlation id만 포함하는 JSON-safe record다. */
+  readonly trace: DecisionLedgerJsonRecord;
 }
 
 /**
@@ -261,51 +282,59 @@ export type WhyReadStatus = "OK" | "NOT_FOUND" | "UNAVAILABLE";
  * 사용자-facing 필드에는 한국어 상태/원인/영향/조치만 두고, 내부 category와 reason code는
  * 이 trace 또는 후속 detail 영역에 분리한다.
  */
-export type WhySummaryTrace = Readonly<Record<string, unknown>> & {
+export type WhySummaryTrace = DecisionLedgerJsonRecord & {
   readonly category?: DecisionCategory | null;
   readonly reasonCode?: string | null;
 };
 
 /**
- * market별 최근 판단 이유 목록과 조회 상태를 묶는 read-only section이다.
+ * why summary section의 사용자-facing 상태 문구와 내부 trace를 묶는 공통 계약이다.
+ *
+ * DB 조회 실패나 partial unavailable 상태에서도 빈 목록과 내부 trace만 내려가지 않도록,
+ * 각 section은 한국어 상태/원인/영향/필요 조치를 section level에 항상 포함한다.
  */
-export interface WhyMarketSummarySection {
+interface WhySummarySectionBase {
   /** 이 section의 조회 상태. */
   readonly readStatus: WhyReadStatus;
 
-  /** market별 최근 판단 이유 목록. */
-  readonly items: readonly WhyMarketSummary[];
+  /** section 상태를 설명하는 한국어 label. */
+  readonly statusLabel: string;
+
+  /** section 조회 결과나 실패 원인을 설명하는 한국어 문장. */
+  readonly message: string;
+
+  /** section 상태가 사용자나 운영 판단에 미치는 영향. 없으면 `null`. */
+  readonly impact: string | null;
+
+  /** 사용자가 취할 수 있는 다음 조치. 없으면 `null`. */
+  readonly action: string | null;
 
   /** query source와 실패 사유 같은 내부 추적 정보만 포함. */
   readonly trace: WhySummaryTrace;
+}
+
+/**
+ * market별 최근 판단 이유 목록과 조회 상태를 묶는 read-only section이다.
+ */
+export interface WhyMarketSummarySection extends WhySummarySectionBase {
+  /** market별 최근 판단 이유 목록. */
+  readonly items: readonly WhyMarketSummary[];
 }
 
 /**
  * strategy별 최근 판단 이유 목록과 조회 상태를 묶는 read-only section이다.
  */
-export interface WhyStrategySummarySection {
-  /** 이 section의 조회 상태. */
-  readonly readStatus: WhyReadStatus;
-
+export interface WhyStrategySummarySection extends WhySummarySectionBase {
   /** strategy별 최근 판단 이유 목록. */
   readonly items: readonly WhyStrategySummary[];
-
-  /** query source와 실패 사유 같은 내부 추적 정보만 포함. */
-  readonly trace: WhySummaryTrace;
 }
 
 /**
  * 현금 보유 이유와 조회 상태를 묶는 read-only section이다.
  */
-export interface WhyCashSummarySection {
-  /** 이 section의 조회 상태. */
-  readonly readStatus: WhyReadStatus;
-
+export interface WhyCashSummarySection extends WhySummarySectionBase {
   /** cash summary. 조회 전/기록 없음이면 `null`, 주문 후보 0건이면 한국어 reason count 목록을 가진 item. */
   readonly item: WhyCashSummary | null;
-
-  /** query source와 실패 사유 같은 내부 추적 정보만 포함. */
-  readonly trace: WhySummaryTrace;
 }
 
 /**
