@@ -13,7 +13,7 @@ import type { WhySummary } from "../../../application/decision-ledger.js";
  * decision ledger DB에서 최신 frame을 읽어 `/status.why` summary를 만드는 provider다.
  *
  * 이 구현은 read-only DB query만 수행하며, write side effect를 만들지 않는다.
- * DB가 연결되지 않았거나 query가 실패하면 빈 NOT_FOUND summary를 반환한다.
+ * DB가 연결되지 않았거나 query가 실패하면 UNAVAILABLE summary를 반환한다.
  *
  * ## 조회 방식
  *
@@ -56,35 +56,24 @@ export function createDatabaseWhySummaryProvider(
 async function queryLatestMarketFrames(
   database: Database,
 ): Promise<readonly WhyFrameProjection[]> {
-  // market별 최신 decision_at을 가진 frame의 id를 먼저 찾고, 해당 row 전체를 조회한다.
-  const subquery = database
+  const rows = await database
     .selectFrom("decision_ledger_frames")
     .select([
       "market",
-      database.fn.max("decision_at").as("max_decision_at"),
+      "category",
+      "summary_status",
+      "reason_counts_json",
+      "decision_at",
+      "trace_json",
     ])
     .where("market", "is not", null)
-    .groupBy("market");
-
-  const rows = await database
-    .selectFrom("decision_ledger_frames as df")
-    .innerJoin(subquery.as("latest"), (join) =>
-      join
-        .onRef("df.market", "=", "latest.market")
-        .onRef("df.decision_at", "=", "latest.max_decision_at"),
-    )
-    .select([
-      "df.market",
-      "df.category",
-      "df.summary_status",
-      "df.reason_counts_json",
-      "df.decision_at",
-      "df.trace_json",
-    ])
-    .orderBy("df.decision_at", "desc")
+    .orderBy("market", "asc")
+    .orderBy("decision_at", "desc")
+    .orderBy("id", "desc")
     .execute();
 
-  return rows.map((row) => ({
+  // decision_at이 같은 frame이 여러 개여도 id desc tie-breaker 기준 market별 최신 1건만 노출한다.
+  return uniqueBy(rows, (row) => row.market).map((row) => ({
     market: row.market,
     category: row.category as WhyFrameProjection["category"],
     summaryStatus: row.summary_status as WhyFrameProjection["summaryStatus"],
@@ -100,34 +89,23 @@ async function queryLatestMarketFrames(
 async function queryLatestStrategyFrames(
   database: Database,
 ): Promise<readonly WhyStrategyFrameProjection[]> {
-  const subquery = database
+  const rows = await database
     .selectFrom("decision_ledger_frames")
     .select([
       "strategy_id",
-      database.fn.max("decision_at").as("max_decision_at"),
+      "category",
+      "summary_status",
+      "reason_counts_json",
+      "decision_at",
+      "trace_json",
     ])
     .where("strategy_id", "is not", null)
-    .groupBy("strategy_id");
-
-  const rows = await database
-    .selectFrom("decision_ledger_frames as df")
-    .innerJoin(subquery.as("latest"), (join) =>
-      join
-        .onRef("df.strategy_id", "=", "latest.strategy_id")
-        .onRef("df.decision_at", "=", "latest.max_decision_at"),
-    )
-    .select([
-      "df.strategy_id",
-      "df.category",
-      "df.summary_status",
-      "df.reason_counts_json",
-      "df.decision_at",
-      "df.trace_json",
-    ])
-    .orderBy("df.decision_at", "desc")
+    .orderBy("strategy_id", "asc")
+    .orderBy("decision_at", "desc")
+    .orderBy("id", "desc")
     .execute();
 
-  return rows.map((row) => ({
+  return uniqueBy(rows, (row) => row.strategy_id).map((row) => ({
     strategyId: row.strategy_id,
     category: row.category as WhyStrategyFrameProjection["category"],
     summaryStatus: row.summary_status as WhyStrategyFrameProjection["summaryStatus"],
@@ -135,6 +113,26 @@ async function queryLatestStrategyFrames(
     latestDecisionAt: row.decision_at,
     trace: (row.trace_json ?? {}) as Record<string, unknown>,
   }));
+}
+
+/**
+ * 이미 최신순으로 정렬된 DB row 목록에서 key별 첫 row만 남긴다.
+ */
+function uniqueBy<Row>(
+  rows: readonly Row[],
+  keyOf: (row: Row) => string | null,
+): readonly Row[] {
+  const seen = new Set<string>();
+  const result: Row[] = [];
+  for (const row of rows) {
+    const key = keyOf(row);
+    if (key === null || seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    result.push(row);
+  }
+  return result;
 }
 
 /**

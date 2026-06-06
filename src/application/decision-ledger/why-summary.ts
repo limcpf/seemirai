@@ -94,9 +94,9 @@ export function buildWhySummary(
   const strategies = buildStrategySection(projections.strategies);
   const cash = buildCashSection(projections.cashFrames);
 
-  const allOk =
-    markets.readStatus === "OK" &&
-    strategies.readStatus === "OK" &&
+  const anyOk =
+    markets.readStatus === "OK" ||
+    strategies.readStatus === "OK" ||
     cash.readStatus === "OK";
 
   const anyUnavailable =
@@ -104,10 +104,10 @@ export function buildWhySummary(
     strategies.readStatus === "UNAVAILABLE" ||
     cash.readStatus === "UNAVAILABLE";
 
-  const readStatus: WhyReadStatus = allOk
-    ? "OK"
-    : anyUnavailable
-      ? "UNAVAILABLE"
+  const readStatus: WhyReadStatus = anyUnavailable
+    ? "UNAVAILABLE"
+    : anyOk
+      ? "OK"
       : "NOT_FOUND";
 
   return {

@@ -72,13 +72,6 @@ export function resolveFrameCategory(input: BuildFrameCategoryInput): FrameCateg
     return { category: "EXECUTION_REJECTED", summaryStatus: "RECORDED" };
   }
 
-  if (input.paperOrderSubmittedCount > 0 && input.paperFillCount === 0) {
-    // 제출은 됐지만 체결이 없으면 실행 거부 또는 미체결로 본다.
-    // 이 분기는 실제 broker 거부인지, paper simulation에서 체결 조건 미충족인지 trace를 봐야 하지만,
-    // producer는 evidence item 단위로 구체적 사유를 남기므로 frame category는 EXECUTION_REJECTED로 둔다.
-    return { category: "EXECUTION_REJECTED", summaryStatus: "RECORDED" };
-  }
-
   if (input.riskRejectedCount > 0) {
     return { category: "RISK_REJECTED", summaryStatus: "RECORDED" };
   }
@@ -186,20 +179,35 @@ function mapTraceStatusToCategory(
       // reasonCode("order_intent_promoted" 등)는 방향이 아니므로 사용하지 않는다.
       return resolveConversionDirection(record);
     case "COST_DECISION":
-      return isCostRejected(record) ? "COST_REJECTED" : "BUY";
+      return isCostRejected(record) ? "COST_REJECTED" : resolveTraceIntentSide(record);
     case "RISK_DECISION":
-      return isRiskRejected(record) ? "RISK_REJECTED" : "BUY";
+      return isRiskRejected(record) ? "RISK_REJECTED" : resolveTraceIntentSide(record);
     case "EXECUTION_RESULT":
       if (isExecutionRejected(record)) {
         return "EXECUTION_REJECTED";
       }
-      if (record.status === "SUBMITTED" || record.status === "FILLED") {
+      if (record.status === "FILLED" || isPositiveQuantity(record.metadata?.filled_quantity)) {
         return "EXECUTED";
       }
-      return "EXECUTED";
+      return resolveTraceIntentSide(record);
     default:
       return "HOLD";
   }
+}
+
+/**
+ * trace metadata에 보존된 주문 방향을 evidence category로 복원한다.
+ *
+ * 방향을 알 수 없으면 BUY로 추정하지 않고 HOLD로 낮춰, SELL 근거를 매수 근거로 오표시하지 않는다.
+ */
+function resolveTraceIntentSide(
+  record: PaperDecisionRunnerTraceRecord,
+): DecisionFrameCategory {
+  const side = record.metadata?.intent_side;
+  if (side === "BUY" || side === "SELL") {
+    return side;
+  }
+  return "HOLD";
 }
 
 /**
@@ -674,8 +682,7 @@ function computeGroupMetric(
         if (record.status === "SUBMITTED" || record.status === "FILLED") {
           paperOrderSubmittedCount += 1;
           // filled_quantity가 명시적으로 0보다 크면 paper fill로 센다.
-          const filledQuantity = record.metadata?.filled_quantity;
-          if (typeof filledQuantity === "string" && filledQuantity !== "0") {
+          if (isPositiveQuantity(record.metadata?.filled_quantity)) {
             paperFillCount += 1;
           }
         }
@@ -851,6 +858,17 @@ function isRiskRejected(record: PaperDecisionRunnerTraceRecord): boolean {
  */
 function isExecutionRejected(record: PaperDecisionRunnerTraceRecord): boolean {
   return record.status === "REJECTED" || record.metadata?.broker_order_status === "REJECTED";
+}
+
+/**
+ * paper broker fill 수량 metadata가 실제 양수 체결을 의미하는지 판정한다.
+ */
+function isPositiveQuantity(value: unknown): boolean {
+  if (typeof value !== "string") {
+    return false;
+  }
+  const numericValue = Number(value.trim());
+  return Number.isFinite(numericValue) && numericValue > 0;
 }
 
 /**

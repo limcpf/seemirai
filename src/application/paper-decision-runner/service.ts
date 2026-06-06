@@ -482,6 +482,7 @@ function recordCostDecision(
       reasonCode: costDecision.reasonCode,
       message: costDecision.message,
       metadata: {
+        intent_side: intent.side,
         trade_allowed: costDecision.tradeAllowed,
         cost_bps: costDecision.snapshot.cost_bps ?? null,
         margin_bps: costDecision.snapshot.margin_bps ?? null,
@@ -510,6 +511,7 @@ function recordRiskDecision(
       reasonCode: riskGateResult.action,
       message: riskGateResult.approved ? "RiskGate approved paper order intent" : "RiskGate rejected paper order intent",
       metadata: {
+        intent_side: intent.side,
         approved: riskGateResult.approved,
         action: riskGateResult.action,
         failed_reason_codes: riskGateResult.failedEvaluations.map((evaluation) => evaluation.reasonCode),
@@ -577,6 +579,7 @@ function recordExecutionResult(
     metadata: {
       broker_order_id: executionResult.brokerOrder.brokerOrderId,
       broker_order_status: executionResult.brokerOrder.status,
+      intent_side: intent.side,
       filled_quantity: fillSimulation?.filledQuantity ?? "0",
       slippage_bps: fillSimulation?.slippageBps ?? null,
     },

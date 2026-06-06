@@ -822,6 +822,19 @@ describe("HTTP control foundation", () => {
     });
   });
 
+  it("DB-backed why provider는 decision_at 동률에서 market/strategy별 최신 1건만 반환한다", async () => {
+    const summary = await createDatabaseWhySummaryProvider(
+      tieBreakWhySummaryDatabase(),
+      () => new Date("2026-06-06T04:00:00.000Z"),
+    ).getWhySummary();
+
+    expect(summary.readStatus).toBe("OK");
+    expect(summary.markets.items).toHaveLength(1);
+    expect(summary.markets.items[0]!.trace.selected).toBe("market-newer-id");
+    expect(summary.strategies.items).toHaveLength(1);
+    expect(summary.strategies.items[0]!.trace.strategySelected).toBe("strategy-newer-id");
+  });
+
   it("maps injected daily report failures to the same /status warning shape", async () => {
     const runtimeConfig = loadRuntimeConfig({});
     server = createHttpControlServer({
@@ -1564,6 +1577,113 @@ function emptyWhySummaryDatabase(): Database {
       return query;
     },
   } as unknown as Database;
+}
+
+function tieBreakWhySummaryDatabase(): Database {
+  type WhySummaryRow = {
+    id: string;
+    market: string | null;
+    strategy_id: string | null;
+    category: string;
+    summary_status: string;
+    reason_counts_json: Record<string, number>;
+    decision_at: Date;
+    trace_json: Record<string, unknown>;
+  };
+
+  const tiedAt = new Date("2026-06-06T03:00:00.000Z");
+  const rows: WhySummaryRow[] = [
+    {
+      id: "frame-003",
+      market: null,
+      strategy_id: null,
+      category: "CASH_HOLD",
+      summary_status: "RECORDED",
+      reason_counts_json: { fixture_waiting_for_signal: 1 },
+      decision_at: tiedAt,
+      trace_json: { selected: "cash" },
+    },
+    {
+      id: "frame-002",
+      market: "KRW-BTC",
+      strategy_id: "strategy.tie",
+      category: "SELL",
+      summary_status: "RECORDED",
+      reason_counts_json: {},
+      decision_at: tiedAt,
+      trace_json: { selected: "market-newer-id", strategySelected: "strategy-newer-id" },
+    },
+    {
+      id: "frame-001",
+      market: "KRW-BTC",
+      strategy_id: "strategy.tie",
+      category: "BUY",
+      summary_status: "RECORDED",
+      reason_counts_json: {},
+      decision_at: tiedAt,
+      trace_json: { selected: "older-id", strategySelected: "older-id" },
+    },
+  ];
+
+  return {
+    selectFrom() {
+      return createTieBreakWhyQuery(rows);
+    },
+  } as unknown as Database;
+}
+
+function createTieBreakWhyQuery(rows: readonly {
+  id: string;
+  market: string | null;
+  strategy_id: string | null;
+  category: string;
+  summary_status: string;
+  reason_counts_json: Record<string, number>;
+  decision_at: Date;
+  trace_json: Record<string, unknown>;
+}[]) {
+  type QueryMode = "all" | "market" | "strategy" | "cash";
+  let mode: QueryMode = "all";
+  let limitCount: number | null = null;
+  const query = {
+    select() {
+      return query;
+    },
+    where(left: string, operator: string, right: unknown) {
+      if (left === "market" && operator === "is not" && right === null) {
+        mode = "market";
+      } else if (left === "strategy_id" && operator === "is not" && right === null) {
+        mode = "strategy";
+      } else if (left === "category" && operator === "=" && right === "CASH_HOLD") {
+        mode = "cash";
+      }
+      return query;
+    },
+    orderBy() {
+      return query;
+    },
+    limit(count: number) {
+      limitCount = count;
+      return query;
+    },
+    async execute() {
+      const filtered = rows.filter((row) => {
+        if (mode === "market") {
+          return row.market !== null;
+        }
+        if (mode === "strategy") {
+          return row.strategy_id !== null;
+        }
+        if (mode === "cash") {
+          return row.category === "CASH_HOLD";
+        }
+        return true;
+      });
+      const sorted = [...filtered].sort((left, right) => right.id.localeCompare(left.id));
+      return limitCount === null ? sorted : sorted.slice(0, limitCount);
+    },
+  };
+  return query;
 }
 
 function unavailableStatusProvider(): ControlStatusProvider {
