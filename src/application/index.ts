@@ -9,6 +9,7 @@ export * from "./live-reconcile.js";
 export * from "./llm-risk-assistant.js";
 export * from "./paper-decision-runner.js";
 export * from "./paper-pnl-summary.js";
+export * from "./pnl-accounting.js";
 export * from "./ports/index.js";
 export * from "./registry.js";
 export * from "./risk/index.js";

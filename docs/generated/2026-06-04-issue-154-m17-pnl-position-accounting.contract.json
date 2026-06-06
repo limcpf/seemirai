@@ -1,0 +1,170 @@
+{
+  "version": 1,
+  "milestone": "issue-154/M17",
+  "title": "M17 PnL/포지션 회계",
+  "status": "mother-merged-ready-for-final-pr",
+  "handoffMarkdownPath": "docs/exec-plans/completed/2026-06-04-issue-154-m17-pnl-position-accounting.md",
+  "closeout": {
+    "issue": "https://github.com/limcpf/seemirai/issues/154",
+    "motherBranch": "issue-154-mother",
+    "finalPrStatus": "to-be-created-after-closeout-commit",
+    "implementationPullRequests": [
+      "https://github.com/limcpf/seemirai/pull/155",
+      "https://github.com/limcpf/seemirai/pull/156",
+      "https://github.com/limcpf/seemirai/pull/157"
+    ],
+    "remainingGate": "main 대상 최종 PR의 GitHub checks와 Codex clean signal은 pr-review-drain에서 확인한다."
+  },
+  "goal": "M16 live read-only reconcile 결과와 기존 paper/daily report 경계를 연결해 운영자가 status와 report에서 손익, 보유 상태, 결측 원인을 신뢰할 수 있게 하는 PnL/포지션 회계 기반을 구현한다.",
+  "readFirst": [
+    "AGENTS.md",
+    "ARCHITECTURE.md",
+    "docs/PRD.md",
+    "docs/FEATURE_REQUIREMENTS.md",
+    "docs/DEVELOPMENT.md",
+    "docs/RUNTIME_CONFIG.md",
+    "docs/product-specs/upbit-live-autonomous-trading.md",
+    "docs/exec-plans/completed/2026-06-02-issue-143-m16-live-reconcile.md",
+    "docs/design-docs/2026-05-15-m1-database-schema.md",
+    "docs/design-docs/2026-05-20-typescript-module-structure.md",
+    "src/application/paper-pnl-summary/**",
+    "src/application/daily-report/**",
+    "src/interfaces/http-control/**",
+    "src/infrastructure/db/daily-report/repository.ts",
+    "src/infrastructure/db/live-reconcile/**",
+    "src/runtime/live-reconcile-runtime/**"
+  ],
+  "allowedChanges": [
+    "PnL/position accounting application module and focused tests",
+    "DB repository/provider for pnl_snapshots, positions, and live_reconcile_position_snapshots source connection",
+    "Status and daily report safe summary integration",
+    "Korean user-facing messages for calculation unavailable and source/missing reason",
+    "Focused documentation updates for M17 runtime/status/report behavior",
+    "Schema migration only if existing pnl_snapshots payload_json cannot encode the required contract"
+  ],
+  "forbiddenChanges": [
+    "Live order submission or cancellation paths including POST /v1/orders and DELETE /v1/order",
+    "Telegram inbound commands such as /pnl or /positions",
+    "Automatic sell, stop loss, take profit, trailing stop, or exit engine",
+    "Always-on PnL worker scheduling and retry loop",
+    "M18 or later roadmap scope",
+    "New runtime dependencies",
+    "Secret, API key, JWT, Authorization header, or raw provider payload exposure",
+    "Replacing missing accounting source with zero",
+    "Automatic git commit, PR creation, branch merge, or force push",
+    "Unrelated refactoring or broad formatting changes"
+  ],
+  "expectedArtifacts": [
+    {
+      "pathPattern": "src/application/pnl-accounting.ts",
+      "purpose": "PnL/position accounting public application entry",
+      "mustExistAfter": true
+    },
+    {
+      "pathPattern": "src/application/pnl-accounting/**",
+      "purpose": "Accounting types, pure calculator, source priority, and user-facing formatting helpers",
+      "mustExistAfter": true
+    },
+    {
+      "pathPattern": "src/infrastructure/db/pnl-accounting.ts",
+      "purpose": "DB provider/repository public entry if persistence source connection is implemented as a separate module",
+      "mustExistAfter": false
+    },
+    {
+      "pathPattern": "tests/unit/pnl-accounting.test.ts",
+      "purpose": "Deterministic accounting calculator and missing-source contract tests",
+      "mustExistAfter": true
+    },
+    {
+      "pathPattern": "tests/unit/http-control.test.ts",
+      "purpose": "Status safe summary regression tests",
+      "mustExistAfter": true
+    },
+    {
+      "pathPattern": "tests/unit/daily-report.test.ts",
+      "purpose": "Daily report PnL source priority and Korean unavailable message tests",
+      "mustExistAfter": true
+    },
+    {
+      "pathPattern": "docs/RUNTIME_CONFIG.md",
+      "purpose": "M17 status/report accounting behavior documentation",
+      "mustExistAfter": true
+    },
+    {
+      "pathPattern": "docs/product-specs/upbit-live-autonomous-trading.md",
+      "purpose": "M17 completion criteria and non-goal boundary update",
+      "mustExistAfter": true
+    }
+  ],
+  "commands": {
+    "handoff": [
+      "mkdir -p .local/transcripts && npx --yes reasonix run --effort high --budget 0.80 --transcript .local/transcripts/issue-154-unit-01-foundation.reasonix.jsonl \"Read docs/exec-plans/completed/2026-06-04-issue-154-m17-pnl-position-accounting.md and implement Unit 01 Foundation only. Do not implement Unit 02, Unit 03, automatic commit, PR creation, merge, or unrelated changes. Report back in Korean.\"",
+      "mkdir -p .local/transcripts && npx --yes reasonix run --effort high --budget 1.00 --transcript .local/transcripts/issue-154-unit-02-persistence.reasonix.jsonl \"Read docs/exec-plans/completed/2026-06-04-issue-154-m17-pnl-position-accounting.md and implement Unit 02 Persistence & Reconcile Source only. Assume Unit 01 is complete. Do not implement Unit 03, automatic commit, PR creation, merge, or unrelated changes. Report back in Korean.\"",
+      "mkdir -p .local/transcripts && npx --yes reasonix run --effort high --budget 1.00 --transcript .local/transcripts/issue-154-unit-03-status-report.reasonix.jsonl \"Read docs/exec-plans/completed/2026-06-04-issue-154-m17-pnl-position-accounting.md and implement Unit 03 Status, Report & Closeout only. Assume Unit 01 and Unit 02 are complete. Do not implement Telegram inbound, exit engine, automatic commit, PR creation, merge, or unrelated changes. Report back in Korean.\"",
+      "mkdir -p .local/transcripts && npx --yes reasonix run --effort high --budget 2.50 --transcript .local/transcripts/issue-154-m17-pnl-position-accounting.reasonix.jsonl \"Read docs/exec-plans/completed/2026-06-04-issue-154-m17-pnl-position-accounting.md and implement Unit 01, then Unit 02, then Unit 03 sequentially. Do not implement M18 or later, automatic commit, PR creation, merge, or unrelated changes. Report back in Korean.\""
+    ],
+    "verification": [
+      "corepack pnpm typecheck",
+      "corepack pnpm exec vitest run tests/unit/pnl-accounting.test.ts tests/unit/paper-pnl-summary.test.ts tests/unit/daily-report.test.ts tests/unit/http-control.test.ts tests/unit/live-reconcile-runtime.test.ts",
+      "corepack pnpm exec vitest run tests/integration/daily-report.test.ts tests/integration/migrations.test.ts",
+      "./scripts/verify docs",
+      "./scripts/verify",
+      "git diff --name-only -- src/application src/infrastructure src/interfaces src/runtime | xargs --no-run-if-empty rg -n \"POST /v1/orders|DELETE /v1/order|submitOrder|cancelOrder\""
+    ]
+  },
+  "acceptanceCriteria": [
+    "동일 fixture에서 PnL 계산 결과가 deterministic 하다.",
+    "realized PnL과 unrealized PnL이 분리된다.",
+    "평균단가, 현금, 보유 자산 평가액, 노출 비중이 strategy/market scope별로 계산된다.",
+    "수수료, spread, slippage, cancel/requote penalty가 가능한 source에서 분해된다.",
+    "결측 source는 0이 아니라 계산 불가와 원인으로 표시된다.",
+    "live read-only reconcile 결과와 PnL snapshot source가 연결된다.",
+    "pnl_snapshots가 있는 scope는 snapshot을 우선하고, 없는 scope만 positions fallback을 사용한다.",
+    "/status와 daily report formatter가 내부 code보다 한국어 상태, 원인, 영향, 필요 조치를 먼저 보여준다.",
+    "secret, raw provider payload, Authorization header가 status/report/audit에 노출되지 않는다.",
+    "기본 PAPER_NO_KEY runtime에서 live order API 호출 0회 invariant가 유지된다."
+  ],
+  "verification": {
+    "required": true,
+    "commands": [
+      "corepack pnpm typecheck",
+      "corepack pnpm exec vitest run tests/unit/pnl-accounting.test.ts tests/unit/paper-pnl-summary.test.ts tests/unit/daily-report.test.ts tests/unit/http-control.test.ts tests/unit/live-reconcile-runtime.test.ts",
+      "corepack pnpm exec vitest run tests/integration/daily-report.test.ts tests/integration/migrations.test.ts",
+      "./scripts/verify docs",
+      "./scripts/verify"
+    ],
+    "expectedResult": "typecheck, targeted tests, docs verify, and final verify pass. DB integration may be guard-skipped only with explicit Korean report-back evidence."
+  },
+  "reportBack": [
+    "완료한 Unit 번호와 범위",
+    "변경한 주요 파일",
+    "PnL source priority 구현 방식",
+    "계산 불가 원인과 사용자-facing 한국어 문구 예시",
+    "실행한 검증 명령과 결과",
+    "DB integration 또는 전체 verify를 실행하지 못했다면 정확한 이유",
+    "live order API 호출 경로를 추가하지 않았다는 scan 근거",
+    "남은 리스크와 open question"
+  ],
+  "risks": [
+    {
+      "risk": "pnl_snapshots와 positions를 중복 합산해 손익이 부풀 수 있다.",
+      "mitigation": "scope coverage helper로 snapshot이 있는 strategy/market fallback을 차단하고 aggregate snapshot 우선 테스트를 둔다."
+    },
+    {
+      "risk": "평균단가 또는 평가가 결측을 0으로 표시하면 운영자가 손실 없음으로 오해할 수 있다.",
+      "mitigation": "숫자 0과 계산 불가를 분리하고 한국어 missing reason을 status/report에 노출한다."
+    },
+    {
+      "risk": "M17 구현 중 live order scope가 섞일 수 있다.",
+      "mitigation": "live broker 연결, POST /v1/orders, DELETE /v1/order, Telegram inbound, exit engine을 forbidden scope로 두고 rg scan을 수행한다."
+    },
+    {
+      "risk": "pnl_snapshots에는 별도 idempotency key가 없어 반복 snapshot insert가 발생할 수 있다.",
+      "mitigation": "repository에서 deterministic captured_at/source fingerprint 전략을 명시하고 한계가 있으면 report back에 남긴다."
+    },
+    {
+      "risk": "status/report에 source trace를 노출하면서 raw provider payload나 secret 후보가 섞일 수 있다.",
+      "mitigation": "trace에는 stable id와 source timestamp만 남기고 raw payload, Authorization, JWT, access/secret key를 금지한다."
+    }
+  ]
+}

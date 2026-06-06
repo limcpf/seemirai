@@ -247,6 +247,13 @@
       "owner_scope": "docs/exec-plans/active"
     },
     {
+      "path": "docs/exec-plans/completed/2026-06-04-issue-154-m17-pnl-position-accounting.md",
+      "kind": "exec-plan",
+      "role": "Issue #154 M17 PnL/포지션 회계 closeout — Unit 01-03 sub PR 병합, PnL accounting/status 통합, 최종 PR review drain 기준",
+      "read_when": ["issue #154 완료 기록", "M17 PnL/포지션 회계 closeout", "PnL accounting 구현 결과", "status/report PnL 표시", "최종 PR review drain"],
+      "owner_scope": "docs/exec-plans/completed"
+    },
+    {
       "path": "docs/exec-plans/completed/2026-05-22-post-m8-milestone-plan.md",
       "kind": "exec-plan",
       "role": "M8 이후 PRD 잔여 범위, 기술 부채, paper 운영, v0.2 pilot 준비 완료 기록",
@@ -314,6 +321,13 @@
       "kind": "generated",
       "role": "Codex 문서 라우팅 색인",
       "read_when": ["문서 라우팅", "작업 전 문맥 선택", "문서 구조 검증"],
+      "owner_scope": "docs/generated"
+    },
+    {
+      "path": "docs/generated/2026-06-04-issue-154-m17-pnl-position-accounting.contract.json",
+      "kind": "generated",
+      "role": "Issue #154 M17 PnL/포지션 회계 구현 closeout machine-readable contract",
+      "read_when": ["issue #154 closeout contract", "M17 closeout contract", "implementation hygiene self-check"],
       "owner_scope": "docs/generated"
     },
     {
