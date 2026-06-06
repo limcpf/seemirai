@@ -1,0 +1,278 @@
+{
+  "version": 1,
+  "milestone": "issue-159/subpr-03-codex-review-repair",
+  "title": "Issue #159 Sub PR 03 Codex review repair DeepSeek handoff",
+  "status": "ready-for-implementation",
+  "handoffMarkdownPath": "docs/exec-plans/active/2026-06-06-issue-159-subpr-03-codex-review-repair-deepseek-handoff.md",
+  "goal": "Codex review에서 남은 Issue #159 Sub PR 03 Producer & Status Why Summary 결함을 모두 수정해 durable runner ledger write, frame/strategy producer correctness, /status.why unavailable semantics, typecheck, tests, verify를 통과시킨다.",
+  "readFirst": [
+    "AGENTS.md",
+    "ARCHITECTURE.md",
+    "docs/README.md",
+    "docs/generated/context-map.json",
+    "docs/PRD.md",
+    "docs/FEATURE_REQUIREMENTS.md",
+    "docs/DEVELOPMENT.md",
+    "docs/PLANS.md",
+    "docs/RELIABILITY.md",
+    "docs/SECURITY.md",
+    "docs/exec-plans/active/2026-06-06-issue-159-m18-decision-ledger-reasonix-handoff.md",
+    "docs/exec-plans/active/2026-06-06-issue-159-subpr-03-review-fix-deepseek-handoff.md",
+    "docs/exec-plans/active/2026-06-06-issue-159-subpr-03-codex-review-repair-deepseek-handoff.md",
+    "src/application/paper-decision-runner/service.ts",
+    "src/application/paper-decision-runner/types.ts",
+    "src/application/decision-ledger/frame-builder.ts",
+    "src/application/decision-ledger/why-summary.ts",
+    "src/infrastructure/db/decision-ledger/repository.ts",
+    "src/infrastructure/db/decision-ledger/status-provider.ts",
+    "src/interfaces/http-control/status.ts",
+    "src/interfaces/http-control/schemas.ts",
+    "src/interfaces/http-control/types.ts",
+    "tests/unit/decision-ledger.test.ts",
+    "tests/unit/paper-decision-runner.test.ts",
+    "tests/unit/http-control.test.ts"
+  ],
+  "allowedChanges": [
+    "Adjust PaperDecisionLedgerWriterPort so appendFrame returns durable DB frame id.",
+    "Make PaperDecisionRunner append evidence with durable DB frame id, not sourceFrameId.",
+    "Append evidence even when frame append is idempotent inserted=false so retry can fill missing evidence.",
+    "Add the minimal infrastructure/runtime adapter needed to map PostgresDecisionLedgerRepository to the application writer port without importing infrastructure from application.",
+    "Make producer group by source frame plus strategy flow and compute category/reasonCounts from group-local trace.",
+    "Make evidence fingerprints stable for repeated same-stage, multi-strategy, and multi-order evidence.",
+    "Keep ORDER_INTENT_CONVERSION direction based on actual intent direction metadata only.",
+    "Represent DB-backed why provider query failure as UNAVAILABLE, not NOT_FOUND.",
+    "Update /status schema, ControlStatusSnapshot fixtures, and HTTP tests for why success, null, injected failure, and DB provider failure.",
+    "Fix decision-ledger and paper-decision-runner unit tests so typecheck and targeted vitest pass."
+  ],
+  "forbiddenChanges": [
+    "LLM summary provider or LLM boundary implementation",
+    "Telegram inbound /why or any Telegram command",
+    "Separate /why write/control endpoint",
+    "Live broker wiring or UpbitLiveBroker connection to paper-decision-runner",
+    "New POST /v1/orders or DELETE /v1/order call path",
+    "Order side effect retry caused by ledger write failure",
+    "M19 exit engine, automatic sell, stop loss, take profit, or trailing stop",
+    "New runtime dependency or lockfile change without explicit approval",
+    "Migration addition or modification",
+    "Raw provider payload, raw order detail, Authorization header, JWT, API key, secret key, or query hash exposure",
+    "Automatic commit, PR creation, merge, force push, or unrelated refactor"
+  ],
+  "expectedArtifacts": [
+    {
+      "pathPattern": "src/application/paper-decision-runner/**",
+      "purpose": "Runner writer port durable id contract, evidence append retry semantics, and write failure isolation",
+      "mustExistAfter": true
+    },
+    {
+      "pathPattern": "src/application/decision-ledger/frame-builder.ts",
+      "purpose": "Frame/strategy producer grouping, group-local category and reasonCounts, fingerprint correctness",
+      "mustExistAfter": true
+    },
+    {
+      "pathPattern": "src/infrastructure/db/decision-ledger/**",
+      "purpose": "DB repository adapter or provider unavailable semantics without changing migrations",
+      "mustExistAfter": true
+    },
+    {
+      "pathPattern": "src/interfaces/http-control/**",
+      "purpose": "/status why schema and provider failure surface",
+      "mustExistAfter": true
+    },
+    {
+      "pathPattern": "tests/unit/decision-ledger.test.ts",
+      "purpose": "Producer shape, multi-frame, multi-strategy, fingerprint, and why summary coverage",
+      "mustExistAfter": true
+    },
+    {
+      "pathPattern": "tests/unit/paper-decision-runner.test.ts",
+      "purpose": "Runner ledger writer integration, duplicate frame evidence append, and failure isolation coverage",
+      "mustExistAfter": true
+    },
+    {
+      "pathPattern": "tests/unit/http-control.test.ts",
+      "purpose": "GET /status why success/null/unavailable and fixture type safety coverage",
+      "mustExistAfter": true
+    }
+  ],
+  "commands": {
+    "handoff": [
+      "mkdir -p .local/transcripts && npx --yes reasonix run --effort high --budget 1.20 --transcript .local/transcripts/issue-159-subpr-03-codex-review-repair.deepseek.jsonl \"Read docs/exec-plans/active/2026-06-06-issue-159-subpr-03-codex-review-repair-deepseek-handoff.md and fix all Codex review findings for Issue #159 Sub PR 03 only. Work on the existing unstaged/untracked implementation. Do not implement LLM boundary, Telegram inbound, live broker wiring, live order API paths, migrations, lockfile changes, automatic commit, PR creation, or unrelated refactors. Report back in Korean.\""
+    ],
+    "verification": [
+      "corepack pnpm typecheck",
+      "corepack pnpm exec vitest run tests/unit/decision-ledger.test.ts tests/unit/decision-ledger-persistence.test.ts tests/unit/paper-decision-runner.test.ts tests/unit/http-control.test.ts",
+      "corepack pnpm exec vitest run tests/integration/decision-ledger.test.ts tests/integration/migrations.test.ts",
+      "./scripts/verify docs",
+      "./scripts/verify",
+      "git diff --name-only origin/main...HEAD -- src/application src/infrastructure src/interfaces src/runtime | xargs --no-run-if-empty rg -n \"POST /v1/orders|DELETE /v1/order|UpbitLiveBroker|createUpbitLiveBroker|submitOrder\\\\(|cancelOrder\\\\(\""
+    ]
+  },
+  "acceptanceCriteria": [
+    "runner 실행 결과가 decision ledger writer를 통해 frame/evidence append를 호출한다.",
+    "runner evidence append는 durable DB frame id를 사용한다.",
+    "duplicate frame 재시도에서도 evidence append가 idempotent하게 시도된다.",
+    "ledger write 실패는 broker/execution 재시도를 만들지 않고 runner result를 유지한다.",
+    "producer는 다중 input frame을 여러 ledger frame으로 보존한다.",
+    "producer는 같은 input frame의 다중 strategy 흐름을 섞지 않는다.",
+    "producer category와 reasonCounts는 group-local evidence에서 산출된다.",
+    "producer evidence fingerprint는 같은 frame/stage 반복에서도 충돌하지 않는다.",
+    "order intent conversion category는 실제 direction을 사용하고 order_intent_promoted를 SELL로 오분류하지 않는다.",
+    "DB-backed /status.why provider 실패는 UNAVAILABLE summary와 한국어 조치 문구로 표현된다.",
+    "기록 없음(NOT_FOUND)과 조회 실패(UNAVAILABLE)가 test에서 구분된다.",
+    "ControlStatusSnapshot fixture와 HTTP schema가 why contract에 맞는다.",
+    "실제 HTTP status provider test가 why.markets, why.strategies, why.cash, why: null, injected provider failure, DB provider failure를 검증한다.",
+    "cost rejection과 risk rejection evidence가 서로 다른 category/reason으로 남는다.",
+    "payload/trace에는 raw provider payload, raw order detail, Authorization/JWT/API key/secret이 없다.",
+    "기본 PAPER_NO_KEY runtime에서 live order API 신규 호출 경로가 생기지 않는다.",
+    "corepack pnpm typecheck, targeted unit tests, ./scripts/verify docs, ./scripts/verify가 통과한다."
+  ],
+  "acceptanceCriteriaTrace": [
+    {
+      "acceptanceCriterion": "runner evidence append는 durable DB frame id를 사용한다.",
+      "userFacingSurface": "decision ledger frame/evidence DB relation",
+      "expectedFiles": [
+        "src/application/paper-decision-runner/**",
+        "src/infrastructure/db/decision-ledger/**"
+      ],
+      "requiredTests": [
+        "tests/unit/paper-decision-runner.test.ts",
+        "tests/unit/decision-ledger-persistence.test.ts"
+      ],
+      "notDoneIf": [
+        "appendEvidenceItems에 sourceFrameId를 넘기는 경우"
+      ]
+    },
+    {
+      "acceptanceCriterion": "duplicate frame 재시도에서도 evidence append가 idempotent하게 시도된다.",
+      "userFacingSurface": "rerun/retry ledger completeness",
+      "expectedFiles": [
+        "src/application/paper-decision-runner/service.ts"
+      ],
+      "requiredTests": [
+        "tests/unit/paper-decision-runner.test.ts"
+      ],
+      "notDoneIf": [
+        "appendFrame inserted=false에서 evidence append를 생략하는 경우"
+      ]
+    },
+    {
+      "acceptanceCriterion": "producer는 같은 input frame의 다중 strategy 흐름을 섞지 않는다.",
+      "userFacingSurface": "/status.why strategies summary",
+      "expectedFiles": [
+        "src/application/decision-ledger/frame-builder.ts"
+      ],
+      "requiredTests": [
+        "tests/unit/decision-ledger.test.ts"
+      ],
+      "notDoneIf": [
+        "frameId만으로 그룹화해 첫 strategyId만 frame에 저장하는 경우"
+      ]
+    },
+    {
+      "acceptanceCriterion": "producer category와 reasonCounts는 group-local evidence에서 산출된다.",
+      "userFacingSurface": "/status.why market/strategy/cash categories",
+      "expectedFiles": [
+        "src/application/decision-ledger/frame-builder.ts"
+      ],
+      "requiredTests": [
+        "tests/unit/decision-ledger.test.ts"
+      ],
+      "notDoneIf": [
+        "runner 전체 paperFillCount 또는 blockingReasonCounts를 모든 frame에 복사하는 경우"
+      ]
+    },
+    {
+      "acceptanceCriterion": "DB-backed /status.why provider 실패는 UNAVAILABLE summary와 한국어 조치 문구로 표현된다.",
+      "userFacingSurface": "GET /status JSON",
+      "expectedFiles": [
+        "src/infrastructure/db/decision-ledger/status-provider.ts",
+        "src/interfaces/http-control/status.ts",
+        "src/interfaces/http-control/schemas.ts"
+      ],
+      "requiredTests": [
+        "tests/unit/http-control.test.ts"
+      ],
+      "notDoneIf": [
+        "DB query 실패가 빈 projection NOT_FOUND로 내려가는 경우"
+      ]
+    },
+    {
+      "acceptanceCriterion": "ControlStatusSnapshot fixture와 HTTP schema가 why contract에 맞는다.",
+      "userFacingSurface": "GET /status schema serialization",
+      "expectedFiles": [
+        "src/interfaces/http-control/types.ts",
+        "src/interfaces/http-control/schemas.ts",
+        "tests/unit/http-control.test.ts"
+      ],
+      "requiredTests": [
+        "corepack pnpm typecheck",
+        "tests/unit/http-control.test.ts"
+      ],
+      "notDoneIf": [
+        "status fixture helper에 why가 빠져 HTTP /status가 500을 반환하는 경우"
+      ]
+    },
+    {
+      "acceptanceCriterion": "기본 PAPER_NO_KEY runtime에서 live order API 신규 호출 경로가 생기지 않는다.",
+      "userFacingSurface": "source scan and runtime safety invariant",
+      "expectedFiles": [
+        "src/application/**",
+        "src/infrastructure/**",
+        "src/interfaces/**",
+        "src/runtime/**"
+      ],
+      "requiredTests": [
+        "live order API source scan"
+      ],
+      "notDoneIf": [
+        "새 live broker wiring 또는 POST /v1/orders, DELETE /v1/order 경로를 추가하는 경우"
+      ]
+    }
+  ],
+  "verification": {
+    "required": true,
+    "commands": [
+      "corepack pnpm typecheck",
+      "corepack pnpm exec vitest run tests/unit/decision-ledger.test.ts tests/unit/decision-ledger-persistence.test.ts tests/unit/paper-decision-runner.test.ts tests/unit/http-control.test.ts",
+      "corepack pnpm exec vitest run tests/integration/decision-ledger.test.ts tests/integration/migrations.test.ts",
+      "./scripts/verify docs",
+      "./scripts/verify",
+      "git diff --name-only origin/main...HEAD -- src/application src/infrastructure src/interfaces src/runtime | xargs --no-run-if-empty rg -n \"POST /v1/orders|DELETE /v1/order|UpbitLiveBroker|createUpbitLiveBroker|submitOrder\\\\(|cancelOrder\\\\(\""
+    ],
+    "expectedResult": "typecheck, targeted unit tests, document verification, full verify pass. DB integration may guard-skip only when DB env is intentionally disabled. Live order scan must show no new live order API call path."
+  },
+  "reportBack": [
+    "완료한 범위와 수정한 Codex review finding 목록",
+    "변경한 주요 파일",
+    "runner writer port가 durable DB frame id를 어떻게 보존하는지",
+    "duplicate frame 재시도에서 evidence append가 어떻게 동작하는지",
+    "producer가 frame/strategy 단위 category와 reasonCounts를 어떻게 계산하는지",
+    "cost rejection과 risk rejection을 어떻게 구분했는지",
+    "주문 후보 0건 frame을 어떻게 설명했는지",
+    "/status.why에서 why: null, NOT_FOUND, UNAVAILABLE을 어떻게 구분했는지",
+    "사용자-facing 한국어 문구 예시",
+    "실행한 검증 명령과 결과",
+    "DB integration 또는 전체 verify를 실행하지 못했다면 정확한 이유",
+    "live order API 호출 경로를 추가하지 않았다는 scan 근거",
+    "hard fail/warning 자기검열 결과",
+    "남은 리스크와 open question"
+  ],
+  "risks": [
+    {
+      "risk": "writer port를 repository concrete type에 맞추는 과정에서 application layer가 infrastructure를 import할 수 있다.",
+      "mitigation": "application에는 port contract만 두고 repository mapping은 infrastructure 또는 runtime/test adapter에서 처리한다."
+    },
+    {
+      "risk": "producer grouping 수정이 기존 tests fixture expectations를 크게 바꿀 수 있다.",
+      "mitigation": "frame/strategy grain과 group-local category를 먼저 고정하고 테스트 fixture를 그 contract에 맞춰 최소 수정한다."
+    },
+    {
+      "risk": "DB provider failure와 no rows를 모두 한 catch path로 처리해 UNAVAILABLE/NOT_FOUND가 다시 섞일 수 있다.",
+      "mitigation": "query failure test와 empty rows test를 별도로 작성하고 HTTP response readStatus를 직접 assert한다."
+    },
+    {
+      "risk": "full ./scripts/verify가 기존 unrelated failure로 막힐 수 있다.",
+      "mitigation": "현재 알려진 failure는 이 handoff scope의 typecheck/unit failure이므로 먼저 고치고, 남는 unrelated failure가 있으면 경로와 이유를 분리 보고한다."
+    }
+  ]
+}

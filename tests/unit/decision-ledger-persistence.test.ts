@@ -1,14 +1,88 @@
 import { describe, it, expect } from "vitest";
 import {
+  createDecisionLedgerWriterPort,
   DecisionLedgerPersistenceValidationError,
   toDecisionLedgerFrameRowInput,
   toDecisionLedgerEvidenceRowInput,
+} from "../../src/infrastructure/db/decision-ledger.js";
+import type {
+  AppendDecisionLedgerEvidenceResult,
+  AppendDecisionLedgerFrameResult,
 } from "../../src/infrastructure/db/decision-ledger.js";
 import type {
   DecisionLedgerFrame,
   DecisionEvidenceItem,
 } from "../../src/application/decision-ledger.js";
 import { DECISION_LEDGER_VERSION } from "../../src/application/decision-ledger.js";
+
+describe("decision-ledger runner writer port adapter", () => {
+  it("repository durable record id를 runner writer durableFrameId로 변환한다", async () => {
+    const frame: DecisionLedgerFrame = {
+      ledgerVersion: DECISION_LEDGER_VERSION,
+      sourceRunId: "run-writer-adapter",
+      sourceFrameId: "frame-writer-adapter",
+      exchange: "UPBIT",
+      market: "KRW-BTC",
+      strategyId: "strategy.adapter",
+      category: "HOLD",
+      summaryStatus: "RECORDED",
+      observedAt: new Date("2026-06-06T00:00:00Z"),
+      decisionAt: new Date("2026-06-06T00:00:01Z"),
+      correlationId: null,
+      reasonCounts: { adapter_hold: 1 },
+      dedupeKey: "UPBIT:run-writer-adapter:frame:frame-writer-adapter:strategy:strategy.adapter",
+      trace: {
+        correlationUnavailableReason: "주문 후보 0건",
+      },
+    };
+    const evidence: DecisionEvidenceItem = {
+      evidenceKind: "STRATEGY_DECISION",
+      category: "HOLD",
+      reasonCode: "adapter_hold",
+      userMessage: "전략이 대기를 선택했습니다.",
+      impact: null,
+      action: null,
+      occurredAt: new Date("2026-06-06T00:00:00Z"),
+      source: "strategy.adapter",
+      sourceId: "strategy.adapter",
+      payload: { stage: "STRATEGY_DECISION" },
+      evidenceFingerprint: "fp-adapter-hold",
+      trace: { strategyId: "strategy.adapter" },
+    };
+    const frameInputs: DecisionLedgerFrame[] = [];
+    const evidenceInputs: Array<{ frameId: string; items: readonly { readonly item: DecisionEvidenceItem }[] }> = [];
+    const writer = createDecisionLedgerWriterPort({
+      async appendFrame(input): Promise<AppendDecisionLedgerFrameResult> {
+        frameInputs.push(input.frame);
+        return {
+          inserted: false,
+          record: { id: "db-frame-adapter" } as AppendDecisionLedgerFrameResult["record"],
+        };
+      },
+      async appendEvidenceItems(frameId, items): Promise<AppendDecisionLedgerEvidenceResult> {
+        evidenceInputs.push({ frameId, items });
+        return {
+          inserted: 0,
+          skipped: 1,
+          records: [],
+        };
+      },
+    });
+
+    const frameResult = await writer.appendFrame(frame);
+    const evidenceResult = await writer.appendEvidenceItems(frameResult.durableFrameId, [evidence]);
+
+    expect(frameInputs).toEqual([frame]);
+    expect(frameResult).toEqual({ inserted: false, durableFrameId: "db-frame-adapter" });
+    expect(evidenceInputs).toEqual([
+      {
+        frameId: "db-frame-adapter",
+        items: [{ item: evidence }],
+      },
+    ]);
+    expect(evidenceResult).toEqual({ inserted: 0, skipped: 1 });
+  });
+});
 
 describe("decision-ledger row mapper", () => {
   /**

@@ -1,0 +1,208 @@
+import type { Database } from "../database.js";
+import type {
+  WhySummaryProvider,
+  WhyProjections,
+  WhyFrameProjection,
+  WhyStrategyFrameProjection,
+  WhyCashFrameProjection,
+} from "../../../application/decision-ledger/why-summary.js";
+import { buildWhySummary } from "../../../application/decision-ledger/why-summary.js";
+import type { WhySummary } from "../../../application/decision-ledger.js";
+
+/**
+ * decision ledger DB에서 최신 frame을 읽어 `/status.why` summary를 만드는 provider다.
+ *
+ * 이 구현은 read-only DB query만 수행하며, write side effect를 만들지 않는다.
+ * DB가 연결되지 않았거나 query가 실패하면 빈 NOT_FOUND summary를 반환한다.
+ *
+ * ## 조회 방식
+ *
+ * - market별: `market IS NOT NULL`인 frame을 market별로 group해 최신 1건씩
+ * - strategy별: `strategy_id IS NOT NULL`인 frame을 strategy별로 group해 최신 1건씩
+ * - cash: `category = 'CASH_HOLD'`인 frame 중 최신 1건
+ */
+export function createDatabaseWhySummaryProvider(
+  database: Database,
+  clock: () => Date = () => new Date(),
+): WhySummaryProvider {
+  return {
+    async getWhySummary(): Promise<WhySummary> {
+      try {
+        const [marketFrames, strategyFrames, cashFrames] = await Promise.all([
+          queryLatestMarketFrames(database),
+          queryLatestStrategyFrames(database),
+          queryLatestCashFrames(database),
+        ]);
+
+        const projections: WhyProjections = {
+          markets: marketFrames,
+          strategies: strategyFrames,
+          cashFrames,
+        };
+
+        return buildWhySummary(projections, clock().toISOString());
+      } catch {
+        // DB 조회 실패는 빈 NOT_FOUND로 낮추지 않고, 명시적 UNAVAILABLE summary를 반환한다.
+        // 운영자가 migration/권한 문제를 "아직 데이터 없음"으로 오해하지 않게 하기 위함이다.
+        return createUnavailableWhySummary(clock().toISOString());
+      }
+    },
+  };
+}
+
+/**
+ * market별 최신 frame을 조회한다.
+ */
+async function queryLatestMarketFrames(
+  database: Database,
+): Promise<readonly WhyFrameProjection[]> {
+  // market별 최신 decision_at을 가진 frame의 id를 먼저 찾고, 해당 row 전체를 조회한다.
+  const subquery = database
+    .selectFrom("decision_ledger_frames")
+    .select([
+      "market",
+      database.fn.max("decision_at").as("max_decision_at"),
+    ])
+    .where("market", "is not", null)
+    .groupBy("market");
+
+  const rows = await database
+    .selectFrom("decision_ledger_frames as df")
+    .innerJoin(subquery.as("latest"), (join) =>
+      join
+        .onRef("df.market", "=", "latest.market")
+        .onRef("df.decision_at", "=", "latest.max_decision_at"),
+    )
+    .select([
+      "df.market",
+      "df.category",
+      "df.summary_status",
+      "df.reason_counts_json",
+      "df.decision_at",
+      "df.trace_json",
+    ])
+    .orderBy("df.decision_at", "desc")
+    .execute();
+
+  return rows.map((row) => ({
+    market: row.market,
+    category: row.category as WhyFrameProjection["category"],
+    summaryStatus: row.summary_status as WhyFrameProjection["summaryStatus"],
+    reasonCounts: (row.reason_counts_json ?? {}) as Record<string, number>,
+    latestDecisionAt: row.decision_at,
+    trace: (row.trace_json ?? {}) as Record<string, unknown>,
+  }));
+}
+
+/**
+ * strategy별 최신 frame을 조회한다.
+ */
+async function queryLatestStrategyFrames(
+  database: Database,
+): Promise<readonly WhyStrategyFrameProjection[]> {
+  const subquery = database
+    .selectFrom("decision_ledger_frames")
+    .select([
+      "strategy_id",
+      database.fn.max("decision_at").as("max_decision_at"),
+    ])
+    .where("strategy_id", "is not", null)
+    .groupBy("strategy_id");
+
+  const rows = await database
+    .selectFrom("decision_ledger_frames as df")
+    .innerJoin(subquery.as("latest"), (join) =>
+      join
+        .onRef("df.strategy_id", "=", "latest.strategy_id")
+        .onRef("df.decision_at", "=", "latest.max_decision_at"),
+    )
+    .select([
+      "df.strategy_id",
+      "df.category",
+      "df.summary_status",
+      "df.reason_counts_json",
+      "df.decision_at",
+      "df.trace_json",
+    ])
+    .orderBy("df.decision_at", "desc")
+    .execute();
+
+  return rows.map((row) => ({
+    strategyId: row.strategy_id,
+    category: row.category as WhyStrategyFrameProjection["category"],
+    summaryStatus: row.summary_status as WhyStrategyFrameProjection["summaryStatus"],
+    reasonCounts: (row.reason_counts_json ?? {}) as Record<string, number>,
+    latestDecisionAt: row.decision_at,
+    trace: (row.trace_json ?? {}) as Record<string, unknown>,
+  }));
+}
+
+/**
+ * 최신 CASH_HOLD frame을 조회한다.
+ */
+async function queryLatestCashFrames(
+  database: Database,
+): Promise<readonly WhyCashFrameProjection[]> {
+  const rows = await database
+    .selectFrom("decision_ledger_frames")
+    .select([
+      "category",
+      "summary_status",
+      "reason_counts_json",
+      "decision_at",
+      "trace_json",
+    ])
+    .where("category", "=", "CASH_HOLD")
+    .orderBy("decision_at", "desc")
+    .limit(1)
+    .execute();
+
+  return rows.map((row) => ({
+    category: row.category as WhyCashFrameProjection["category"],
+    summaryStatus: row.summary_status as WhyCashFrameProjection["summaryStatus"],
+    reasonCounts: (row.reason_counts_json ?? {}) as Record<string, number>,
+    latestDecisionAt: row.decision_at,
+    trace: (row.trace_json ?? {}) as Record<string, unknown>,
+  }));
+}
+
+/**
+ * DB 조회 실패 전용 UNAVAILABLE WhySummary를 생성한다.
+ *
+ * 빈 projection 기반 NOT_FOUND와 달리, 각 section에 한국어 조회 불가 문구와
+ * 조치 방법을 명시해 운영자가 DB 장애를 "아직 데이터 없음"으로 오해하지 않게 한다.
+ */
+function createUnavailableWhySummary(generatedAt: string): WhySummary {
+  return {
+    markets: {
+      readStatus: "UNAVAILABLE",
+      statusLabel: "조회 불가",
+      message: "시장별 판단 이유를 DB에서 읽지 못했습니다.",
+      impact: "decision ledger DB 연결 또는 쿼리 실패로 시장별 why summary를 조회할 수 없습니다.",
+      action: "DB 연결 상태와 decision_ledger_frames table 접근 권한을 확인한 뒤 다시 조회하세요.",
+      items: [],
+      trace: { querySource: "decision_ledger_frames", reason: "db_query_failed" },
+    },
+    strategies: {
+      readStatus: "UNAVAILABLE",
+      statusLabel: "조회 불가",
+      message: "전략별 판단 이유를 DB에서 읽지 못했습니다.",
+      impact: "decision ledger DB 연결 또는 쿼리 실패로 전략별 why summary를 조회할 수 없습니다.",
+      action: "DB 연결 상태와 decision_ledger_frames table 접근 권한을 확인한 뒤 다시 조회하세요.",
+      items: [],
+      trace: { querySource: "decision_ledger_frames", reason: "db_query_failed" },
+    },
+    cash: {
+      readStatus: "UNAVAILABLE",
+      statusLabel: "조회 불가",
+      message: "현금 보유 이유를 DB에서 읽지 못했습니다.",
+      impact: "decision ledger DB 연결 또는 쿼리 실패로 현금 보유 why summary를 조회할 수 없습니다.",
+      action: "DB 연결 상태와 decision_ledger_frames table 접근 권한을 확인한 뒤 다시 조회하세요.",
+      item: null,
+      trace: { querySource: "decision_ledger_frames", reason: "db_query_failed" },
+    },
+    generatedAt,
+    readStatus: "UNAVAILABLE",
+    trace: { querySource: "decision_ledger_frames", reason: "db_query_failed" },
+  };
+}

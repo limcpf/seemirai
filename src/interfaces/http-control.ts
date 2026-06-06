@@ -37,6 +37,7 @@ export type {
   LocalControlAuthInput,
   LocalControlAuthResult,
 } from "./http-control/types.js";
+export type { WhySummary, WhySummaryProvider } from "./http-control/types.js";
 export { createKillSwitchControlRouteHandler } from "./http-control/kill-switch.js";
 export type { KillSwitchControlRequestBody } from "./http-control/kill-switch.js";
 
