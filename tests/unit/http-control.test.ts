@@ -1520,6 +1520,7 @@ function emptyWhySummaryDatabase(): Database {
     onRef(left: string, operator: string, right: string): EmptyWhyJoin;
   }
   interface EmptyWhyQuery {
+    distinctOn(columnName: string): EmptyWhyQuery;
     select(selection: unknown): EmptyWhyQuery;
     where(left: string, operator: string, right: unknown): EmptyWhyQuery;
     groupBy(columnName: string): EmptyWhyQuery;
@@ -1536,6 +1537,9 @@ function emptyWhySummaryDatabase(): Database {
     },
   };
   const query: EmptyWhyQuery = {
+    distinctOn() {
+      return query;
+    },
     select() {
       return query;
     },
@@ -1645,7 +1649,12 @@ function createTieBreakWhyQuery(rows: readonly {
   type QueryMode = "all" | "market" | "strategy" | "cash";
   let mode: QueryMode = "all";
   let limitCount: number | null = null;
+  let distinctColumn: "market" | "strategy_id" | null = null;
   const query = {
+    distinctOn(columnName: "market" | "strategy_id") {
+      distinctColumn = columnName;
+      return query;
+    },
     select() {
       return query;
     },
@@ -1680,10 +1689,28 @@ function createTieBreakWhyQuery(rows: readonly {
         return true;
       });
       const sorted = [...filtered].sort((left, right) => right.id.localeCompare(left.id));
-      return limitCount === null ? sorted : sorted.slice(0, limitCount);
+      const distinctRows = distinctColumn === null ? sorted : uniqueRowsByColumn(sorted, distinctColumn);
+      return limitCount === null ? distinctRows : distinctRows.slice(0, limitCount);
     },
   };
   return query;
+}
+
+function uniqueRowsByColumn<Row extends Record<"market" | "strategy_id", string | null>>(
+  rows: readonly Row[],
+  columnName: "market" | "strategy_id",
+): readonly Row[] {
+  const seen = new Set<string>();
+  const result: Row[] = [];
+  for (const row of rows) {
+    const value = row[columnName];
+    if (value === null || seen.has(value)) {
+      continue;
+    }
+    seen.add(value);
+    result.push(row);
+  }
+  return result;
 }
 
 function unavailableStatusProvider(): ControlStatusProvider {

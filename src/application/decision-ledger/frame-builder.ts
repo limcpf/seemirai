@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { DECISION_LEDGER_VERSION } from "./types.js";
 import type {
   DecisionLedgerFrame,
@@ -111,6 +112,12 @@ export function resolveFrameCategory(input: BuildFrameCategoryInput): FrameCateg
         summaryStatus: "RECORDED",
       };
     }
+    if (lastDecision.status === "ORDER_INTENT") {
+      return {
+        category: resolveConversionDirection(lastDecision),
+        summaryStatus: "RECORDED",
+      };
+    }
   }
 
   // 아무 판단도 없으면 CASH_HOLD
@@ -164,6 +171,9 @@ function mapTraceStatusToCategory(
       }
       if (status === "HOLD") {
         return "HOLD";
+      }
+      if (status === "ORDER_INTENT") {
+        return resolveConversionDirection(record);
       }
       if (status === "BLOCK") {
         return "DISCARD";
@@ -916,18 +926,11 @@ function resolveStableEvidenceMetadataPart(record: PaperDecisionRunnerTraceRecor
 }
 
 /**
- * evidence fingerprint 생성을 위한 단순 해시 함수다.
+ * evidence fingerprint 생성을 위한 충돌 저항 digest 함수다.
  *
- * crypto.hash 없이 결정론적 fingerprint를 만든다. 충돌 가능성이 있지만,
- * dedupe key + strategyId + stage + frameId + occurrenceIndex 조합은
- * 같은 frame/stage의 다중 evidence를 구분하는 데 충분하다.
+ * append-only evidence fingerprint는 DB 전역 unique key이므로 32-bit 해시로 줄이지 않고
+ * SHA-256 hex digest를 사용해 장기 24/7 runner에서도 우발 충돌 가능성을 낮춘다.
  */
 function simpleHash(input: string): string {
-  let hash = 0;
-  for (let i = 0; i < input.length; i += 1) {
-    const char = input.charCodeAt(i);
-    hash = ((hash << 5) - hash + char) | 0;
-  }
-  const absHash = Math.abs(hash);
-  return `fp-${absHash.toString(16).padStart(8, "0")}`;
+  return `fp-${createHash("sha256").update(input).digest("hex")}`;
 }

@@ -58,6 +58,7 @@ async function queryLatestMarketFrames(
 ): Promise<readonly WhyFrameProjection[]> {
   const rows = await database
     .selectFrom("decision_ledger_frames")
+    .distinctOn("market")
     .select([
       "market",
       "category",
@@ -72,8 +73,7 @@ async function queryLatestMarketFrames(
     .orderBy("id", "desc")
     .execute();
 
-  // decision_at이 같은 frame이 여러 개여도 id desc tie-breaker 기준 market별 최신 1건만 노출한다.
-  return uniqueBy(rows, (row) => row.market).map((row) => ({
+  return rows.map((row) => ({
     market: row.market,
     category: row.category as WhyFrameProjection["category"],
     summaryStatus: row.summary_status as WhyFrameProjection["summaryStatus"],
@@ -91,6 +91,7 @@ async function queryLatestStrategyFrames(
 ): Promise<readonly WhyStrategyFrameProjection[]> {
   const rows = await database
     .selectFrom("decision_ledger_frames")
+    .distinctOn("strategy_id")
     .select([
       "strategy_id",
       "category",
@@ -105,7 +106,7 @@ async function queryLatestStrategyFrames(
     .orderBy("id", "desc")
     .execute();
 
-  return uniqueBy(rows, (row) => row.strategy_id).map((row) => ({
+  return rows.map((row) => ({
     strategyId: row.strategy_id,
     category: row.category as WhyStrategyFrameProjection["category"],
     summaryStatus: row.summary_status as WhyStrategyFrameProjection["summaryStatus"],
@@ -113,26 +114,6 @@ async function queryLatestStrategyFrames(
     latestDecisionAt: row.decision_at,
     trace: (row.trace_json ?? {}) as Record<string, unknown>,
   }));
-}
-
-/**
- * 이미 최신순으로 정렬된 DB row 목록에서 key별 첫 row만 남긴다.
- */
-function uniqueBy<Row>(
-  rows: readonly Row[],
-  keyOf: (row: Row) => string | null,
-): readonly Row[] {
-  const seen = new Set<string>();
-  const result: Row[] = [];
-  for (const row of rows) {
-    const key = keyOf(row);
-    if (key === null || seen.has(key)) {
-      continue;
-    }
-    seen.add(key);
-    result.push(row);
-  }
-  return result;
 }
 
 /**
@@ -152,6 +133,7 @@ async function queryLatestCashFrames(
     ])
     .where("category", "=", "CASH_HOLD")
     .orderBy("decision_at", "desc")
+    .orderBy("id", "desc")
     .limit(1)
     .execute();
 

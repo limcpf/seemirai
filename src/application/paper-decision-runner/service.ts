@@ -199,11 +199,19 @@ export class PaperDecisionRunner {
       strategyId: string;
       reasonCode?: string;
       message: string;
+      metadata?: JsonRecord;
     } = {
       strategyId: input.strategy.id,
       message: decision.reason,
     };
     assignIfDefined(strategyTraceOptions, "reasonCode", readDecisionReasonCode(decision));
+    if (decision.kind === "ORDER_INTENT") {
+      const intentDirections = decision.orderIntents.map((intent) => intent.side);
+      strategyTraceOptions.metadata = {
+        order_intent_count: decision.orderIntents.length,
+        intent_directions: intentDirections,
+      };
+    }
     input.trace.push(createTrace(input.frame, "STRATEGY_DECISION", decision.kind, strategyTraceOptions));
 
     if (decision.kind === "HOLD") {

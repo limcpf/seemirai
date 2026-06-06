@@ -1123,7 +1123,7 @@ describe("Frame builder (producer)", () => {
       ledgerWriteStatus: "NOT_CONFIGURED" as const,
       trace: [
         { frameId: "submitted-open-frame", strategyId: "strategy.buy", stage: "FRAME_RECEIVED", status: "received", observedAt: "2026-06-06T09:00:00Z" },
-        { frameId: "submitted-open-frame", strategyId: "strategy.buy", stage: "STRATEGY_DECISION", status: "BUY", reasonCode: "trend_up", message: "매수", observedAt: "2026-06-06T09:00:01Z" },
+        { frameId: "submitted-open-frame", strategyId: "strategy.buy", stage: "STRATEGY_DECISION", status: "ORDER_INTENT", reasonCode: "trend_up", message: "매수", observedAt: "2026-06-06T09:00:01Z", metadata: { intent_directions: ["BUY"], order_intent_count: 1 } },
         { frameId: "submitted-open-frame", strategyId: "strategy.buy", stage: "ORDER_INTENT_CONVERSION", status: "CONVERTED", reasonCode: "order_intent_promoted", message: "변환", observedAt: "2026-06-06T09:00:02Z", metadata: { intent_directions: ["BUY"] } },
         { frameId: "submitted-open-frame", strategyId: "strategy.buy", stage: "COST_DECISION", status: "ALLOW", reasonCode: "cost_margin_ok", message: "비용 통과", observedAt: "2026-06-06T09:00:03Z", metadata: { trade_allowed: true, intent_side: "BUY" } },
         { frameId: "submitted-open-frame", strategyId: "strategy.buy", stage: "RISK_DECISION", status: "PASS", reasonCode: "ALLOW", message: "리스크 통과", observedAt: "2026-06-06T09:00:04Z", metadata: { approved: true, intent_side: "BUY" } },
@@ -1140,8 +1140,12 @@ describe("Frame builder (producer)", () => {
     const executionEvidence = frames[0]!.evidenceItems.find(
       (item) => item.evidenceKind === "EXECUTION_RESULT",
     );
+    const strategyEvidence = frames[0]!.evidenceItems.find(
+      (item) => item.evidenceKind === "STRATEGY_DECISION",
+    );
 
     expect(frame.category).toBe("BUY");
+    expect(strategyEvidence!.category).toBe("BUY");
     expect(executionEvidence!.category).toBe("BUY");
   });
 
