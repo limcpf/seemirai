@@ -141,6 +141,15 @@
 - closed order는 `start_time`/`end_time`을 지정해 7일 이하 구간으로 나눠 조회한다. 설정된 조회 horizon 밖이거나
   exchange identity/fingerprint를 확인할 수 없는 주문만 자동 복구하지 않고 manual review evidence로 남긴다.
 
+## M18 Decision Ledger 보안 기준
+
+- decision ledger의 `payload_json`과 `trace_json`에는 raw provider payload, raw order detail, secret 후보, Authorization header, JWT, API key, secret key, query hash 원문을 저장하지 않는다.
+- `WhySummary`의 사용자-facing 응답은 내부 enum/code를 첫 화면에 노출하지 않고 한국어 상태/원인/영향/필요 조치를 먼저 배치한다.
+- `/status.why`는 read-only safe summary만 반환한다. raw config, secret, token, raw order detail, raw position detail을 반환하지 않는다.
+- decision ledger DB 조회가 `/status`에서 실패해도 endpoint를 5xx로 만들지 않고 해당 하위 객체의 `readStatus`를 `UNAVAILABLE`로 낮춘다.
+- LLM summary 보조 계층은 M10 LLM 보안 기준을 재사용한다. LLM output이 주문 지시, 포지션 크기, 주문 허용 의미를 포함하면 fail-closed로 차단한다.
+- LLM provider 원문 응답은 normalized response로 정규화하며 raw stdout/stderr/request body를 audit metadata에 기록하지 않는다.
+
 ## Dependency 추가 승인 기준
 
 - 신규 runtime dependency, dev dependency, package manager 변경은 승인 필요 변경으로 취급한다.
