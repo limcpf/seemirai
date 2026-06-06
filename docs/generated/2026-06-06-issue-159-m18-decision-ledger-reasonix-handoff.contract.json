@@ -158,7 +158,7 @@
     },
     {
       "acceptanceCriterion": "cost rejection과 risk rejection은 서로 다른 판단 이유로 저장되고 조회 응답에서 구분된다.",
-      "userFacingSurface": "GET /status response why category and reason message",
+      "userFacingSurface": "GET /status response why trace category and reason message",
       "expectedFiles": ["src/application/decision-ledger/**", "src/interfaces/http-control/**"],
       "requiredTests": ["tests/unit/decision-ledger.test.ts", "tests/unit/http-control.test.ts"],
       "notDoneIf": ["rejection을 모두 DISCARD 하나로 합친 경우"]

@@ -18,21 +18,29 @@ export type {
   DecisionLedgerFrame,
   DecisionEvidenceItem,
   WhySummary,
+  WhyReadStatus,
+  WhySummaryTrace,
+  WhyMarketSummarySection,
   WhyMarketSummary,
+  WhyStrategySummarySection,
   WhyStrategySummary,
+  WhyCashSummarySection,
   WhyCashSummary,
 } from "./decision-ledger/types.js";
 
 export {
   DecisionCategoryValue,
+  DecisionFrameCategoryValue,
   SummaryStatusValue,
   EvidenceKindValue,
   isValidDecisionCategory,
+  isValidDecisionFrameCategory,
   isValidEvidenceKind,
 } from "./decision-ledger/category.js";
 
 export type {
   DecisionCategory,
+  DecisionFrameCategory,
   SummaryStatus,
   EvidenceKind,
 } from "./decision-ledger/category.js";

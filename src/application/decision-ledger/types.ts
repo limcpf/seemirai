@@ -1,4 +1,4 @@
-import type { DecisionCategory, EvidenceKind, SummaryStatus } from "./category.js";
+import type { DecisionCategory, DecisionFrameCategory, EvidenceKind, SummaryStatus } from "./category.js";
 
 /**
  * M18 decision ledger의 공개 계약 — 모든 타입은 append-only evidence와 read-only why summary의
@@ -19,9 +19,10 @@ import type { DecisionCategory, EvidenceKind, SummaryStatus } from "./category.j
 /**
  * DecisionLedgerFrame의 공통 본문이다.
  *
- * source run id 존재 여부에 따라 trace 요구사항이 달라지므로 외부 계약은 union type으로
- * 노출한다. 공통 본문은 한 번의 feature → strategy → gate → broker 흐름에서 보존해야 하는
- * 판단 시각, 대상, 범주, dedupe key를 고정하며 persistence나 외부 side effect를 포함하지 않는다.
+ * source run id와 correlation id 존재 여부에 따라 trace 요구사항이 달라지므로 외부 계약은
+ * union/intersection type으로 노출한다. 공통 본문은 한 번의 feature → strategy → gate → broker
+ * 흐름에서 보존해야 하는 판단 시각, 대상, 범주, dedupe key를 고정하며 persistence나 외부
+ * side effect를 포함하지 않는다.
  */
 interface DecisionLedgerFrameBase {
   /** M18 contract version. 예: `"m18.decision_ledger.v1"`. */
@@ -39,8 +40,8 @@ interface DecisionLedgerFrameBase {
   /** strategy별 판단이면 strategy id. cash/global 판단이면 `null`. */
   readonly strategyId: string | null;
 
-  /** 판단 결과 범주. */
-  readonly category: DecisionCategory;
+  /** LLM 설명 실패가 아닌 실제 판단 결과 범주. */
+  readonly category: DecisionFrameCategory;
 
   /** frame 기록/조회 상태. */
   readonly summaryStatus: SummaryStatus;
@@ -51,9 +52,6 @@ interface DecisionLedgerFrameBase {
   /** 판단이 확정된 시각. */
   readonly decisionAt: Date;
 
-  /** 주문, risk, execution evidence와 연결할 수 있는 stable id. 없으면 `null`. */
-  readonly correlationId: string | null;
-
   /**
    * hold/discard/cost/risk/execution reason count.
    *
@@ -61,6 +59,9 @@ interface DecisionLedgerFrameBase {
    * 주문 후보 0건 frame은 `CASH_HOLD`와 구체적 차단 사유 개수를 여기에 보존한다.
    */
   readonly reasonCounts: Readonly<Record<string, number>>;
+
+  /** 내부 id, fingerprint, source table, source id, correlation id 같은 추적 정보만 담는다. */
+  readonly trace: Readonly<Record<string, unknown>>;
 
   /**
    * 같은 frame/source/correlation 재실행 중복 append를 차단하는 deterministic key.
@@ -70,35 +71,41 @@ interface DecisionLedgerFrameBase {
   readonly dedupeKey: string;
 }
 
-/**
- * runner 또는 runtime 실행 단위 식별자가 있는 decision ledger frame이다.
- *
- * trace는 내부 id, fingerprint, source table, source id, correlation id 같은 추적 정보만 담는다.
- * sourceRunId가 있으므로 별도 unavailable reason은 요구하지 않는다.
- */
-export interface DecisionLedgerFrameWithSourceRun extends DecisionLedgerFrameBase {
+interface DecisionLedgerFrameWithSourceRun {
   /** runner 또는 runtime 실행 단위 식별자. */
   readonly sourceRunId: string;
-
-  /** 내부 id, fingerprint, source table, source id, correlation id 같은 추적 정보만 담는다. */
-  readonly trace: Readonly<Record<string, unknown>>;
 }
 
-/**
- * runner 또는 runtime 실행 단위 식별자를 알 수 없는 decision ledger frame이다.
- *
- * `unknown` 같은 가짜 실행 id를 만들지 않고 `sourceRunId=null`을 유지하되, 감사/복구 추적성을
- * 잃지 않기 위해 trace에 누락 사유를 반드시 남긴다. persistence side effect는 이 타입에 없다.
- */
-export interface DecisionLedgerFrameWithoutSourceRun extends DecisionLedgerFrameBase {
+interface DecisionLedgerFrameWithoutSourceRun {
   /** runner 또는 runtime 실행 단위 식별자를 알 수 없는 경우 `null`로 보존한다. */
   readonly sourceRunId: null;
 
-  /** 내부 추적 정보와 source run id 누락 사유를 함께 담는다. */
   readonly trace: Readonly<Record<string, unknown>> & {
     readonly sourceRunUnavailableReason: string;
   };
 }
+
+interface DecisionLedgerFrameWithCorrelation {
+  /** 주문, risk, execution evidence와 연결할 수 있는 stable id. */
+  readonly correlationId: string;
+}
+
+interface DecisionLedgerFrameWithoutCorrelation {
+  /** stable correlation id가 아직 없거나 조회 불가능한 경우 `null`로 보존한다. */
+  readonly correlationId: null;
+
+  readonly trace: Readonly<Record<string, unknown>> & {
+    readonly correlationUnavailableReason: string;
+  };
+}
+
+type DecisionLedgerSourceRunContract =
+  | DecisionLedgerFrameWithSourceRun
+  | DecisionLedgerFrameWithoutSourceRun;
+
+type DecisionLedgerCorrelationContract =
+  | DecisionLedgerFrameWithCorrelation
+  | DecisionLedgerFrameWithoutCorrelation;
 
 /**
  * 한 frame의 decision ledger 기록 — runner가 한 번의 feature → strategy → gate → broker 흐름을
@@ -107,7 +114,9 @@ export interface DecisionLedgerFrameWithoutSourceRun extends DecisionLedgerFrame
  * frame은 `dedupeKey`로 중복 append를 차단하며, 여러 evidence item을 하위에 가질 수 있다.
  * 주문 후보 0건 frame도 HOLD/CASH_HOLD/DISCARD 이유를 reasonCounts로 보존한다.
  */
-export type DecisionLedgerFrame = DecisionLedgerFrameWithSourceRun | DecisionLedgerFrameWithoutSourceRun;
+export type DecisionLedgerFrame = DecisionLedgerFrameBase &
+  DecisionLedgerSourceRunContract &
+  DecisionLedgerCorrelationContract;
 
 /**
  * frame 아래 append-only로 저장되는 단일 근거 evidence item이다.
@@ -174,14 +183,14 @@ export interface DecisionEvidenceItem {
  * 내부 식별자는 `trace`에 분리한다.
  */
 export interface WhySummary {
-  /** market별 최근 판단 이유 목록. */
-  readonly markets: readonly WhyMarketSummary[];
+  /** market별 최근 판단 이유 section. */
+  readonly markets: WhyMarketSummarySection;
 
-  /** strategy별 최근 판단 이유 목록. */
-  readonly strategies: readonly WhyStrategySummary[];
+  /** strategy별 최근 판단 이유 section. */
+  readonly strategies: WhyStrategySummarySection;
 
-  /** 현금 보유 이유 summary. 주문 후보 0건이면 `null`이 아니라 hold reason counts를 포함한다. */
-  readonly cash: WhyCashSummary | null;
+  /** 현금 보유 이유 section. 주문 후보 0건이면 `item=null`이 아니라 hold reason counts를 포함한다. */
+  readonly cash: WhyCashSummarySection;
 
   /** summary 생성 시각. */
   readonly generatedAt: Date;
@@ -191,6 +200,67 @@ export interface WhySummary {
 
   /** 내부 식별자, query source, correlation id만 포함. */
   readonly trace: Readonly<Record<string, unknown>>;
+}
+
+/**
+ * why summary의 section별 조회 상태다.
+ *
+ * 각 section은 독립적으로 DB/read provider 실패를 `UNAVAILABLE`로 낮출 수 있어야 하므로,
+ * 최상위 summary status만으로 개별 조회 실패를 표현하지 않는다.
+ */
+export type WhyReadStatus = "OK" | "NOT_FOUND" | "UNAVAILABLE";
+
+/**
+ * why summary의 추적 정보 영역이다.
+ *
+ * 사용자-facing 필드에는 한국어 상태/원인/영향/조치만 두고, 내부 category와 reason code는
+ * 이 trace 또는 후속 detail 영역에 분리한다.
+ */
+export type WhySummaryTrace = Readonly<Record<string, unknown>> & {
+  readonly category?: DecisionCategory | null;
+  readonly reasonCode?: string | null;
+};
+
+/**
+ * market별 최근 판단 이유 목록과 조회 상태를 묶는 read-only section이다.
+ */
+export interface WhyMarketSummarySection {
+  /** 이 section의 조회 상태. */
+  readonly readStatus: WhyReadStatus;
+
+  /** market별 최근 판단 이유 목록. */
+  readonly items: readonly WhyMarketSummary[];
+
+  /** query source와 실패 사유 같은 내부 추적 정보만 포함. */
+  readonly trace: WhySummaryTrace;
+}
+
+/**
+ * strategy별 최근 판단 이유 목록과 조회 상태를 묶는 read-only section이다.
+ */
+export interface WhyStrategySummarySection {
+  /** 이 section의 조회 상태. */
+  readonly readStatus: WhyReadStatus;
+
+  /** strategy별 최근 판단 이유 목록. */
+  readonly items: readonly WhyStrategySummary[];
+
+  /** query source와 실패 사유 같은 내부 추적 정보만 포함. */
+  readonly trace: WhySummaryTrace;
+}
+
+/**
+ * 현금 보유 이유와 조회 상태를 묶는 read-only section이다.
+ */
+export interface WhyCashSummarySection {
+  /** 이 section의 조회 상태. */
+  readonly readStatus: WhyReadStatus;
+
+  /** cash summary. 조회 전/기록 없음이면 `null`, 주문 후보 0건이면 reason count를 가진 item. */
+  readonly item: WhyCashSummary | null;
+
+  /** query source와 실패 사유 같은 내부 추적 정보만 포함. */
+  readonly trace: WhySummaryTrace;
 }
 
 /**
@@ -218,11 +288,8 @@ export interface WhyMarketSummary {
   /** 최신 판단 시각. 기록이 없으면 `null`. */
   readonly latestDecisionAt: Date | null;
 
-  /** 최신 판단 범주. 기록이 없으면 `null`. */
-  readonly category: DecisionCategory | null;
-
   /** 내부 식별자, query source, correlation id만 포함. */
-  readonly trace: Readonly<Record<string, unknown>>;
+  readonly trace: WhySummaryTrace;
 }
 
 /**
@@ -247,11 +314,8 @@ export interface WhyStrategySummary {
   /** 최신 판단 시각. 기록이 없으면 `null`. */
   readonly latestDecisionAt: Date | null;
 
-  /** 최신 판단 범주. 기록이 없으면 `null`. */
-  readonly category: DecisionCategory | null;
-
   /** 내부 식별자, query source, correlation id만 포함. */
-  readonly trace: Readonly<Record<string, unknown>>;
+  readonly trace: WhySummaryTrace;
 }
 
 /**
@@ -276,9 +340,6 @@ export interface WhyCashSummary {
   /** 최신 판단 시각. 기록이 없으면 `null`. */
   readonly latestDecisionAt: Date | null;
 
-  /** 최신 판단 범주. 기록이 없으면 `null`. */
-  readonly category: DecisionCategory | null;
-
   /**
    * 현금 보유 사유별 발생 횟수.
    * key는 reason code, value는 해당 사유 발생 횟수.
@@ -286,5 +347,5 @@ export interface WhyCashSummary {
   readonly holdReasonCounts: Readonly<Record<string, number>>;
 
   /** 내부 식별자, query source, correlation id만 포함. */
-  readonly trace: Readonly<Record<string, unknown>>;
+  readonly trace: WhySummaryTrace;
 }

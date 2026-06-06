@@ -1,9 +1,11 @@
 import { describe, it, expect } from "vitest";
 import {
   DecisionCategoryValue,
+  DecisionFrameCategoryValue,
   SummaryStatusValue,
   EvidenceKindValue,
   isValidDecisionCategory,
+  isValidDecisionFrameCategory,
   isValidEvidenceKind,
 } from "../../src/application/decision-ledger.js";
 import type {
@@ -13,8 +15,11 @@ import type {
   DecisionLedgerFrame,
   DecisionEvidenceItem,
   WhySummary,
+  WhyMarketSummarySection,
   WhyMarketSummary,
+  WhyStrategySummarySection,
   WhyStrategySummary,
+  WhyCashSummarySection,
   WhyCashSummary,
 } from "../../src/application/decision-ledger.js";
 
@@ -58,6 +63,12 @@ describe("DecisionLedger categories", () => {
       expect(isValidDecisionCategory("UNKNOWN")).toBe(false);
       expect(isValidDecisionCategory("")).toBe(false);
       expect(isValidDecisionCategory("buy")).toBe(false);
+    });
+
+    it("DecisionFrameCategory는 설명 실패 전용 category를 제외한다", () => {
+      expect(DecisionFrameCategoryValue).not.toHaveProperty("EXPLANATION_FAILED");
+      expect(isValidDecisionFrameCategory("BUY")).toBe(true);
+      expect(isValidDecisionFrameCategory("EXPLANATION_FAILED")).toBe(false);
     });
   });
 
@@ -159,7 +170,10 @@ describe("DecisionLedgerFrame type contract", () => {
       correlationId: null,
       reasonCounts: { all_strategies_hold: 2 },
       dedupeKey: "upbit::cash:frame-cash-001",
-      trace: { sourceRunUnavailableReason: "runtime 실행 단위 식별자를 제공하지 않은 cash/global fixture입니다." },
+      trace: {
+        sourceRunUnavailableReason: "runtime 실행 단위 식별자를 제공하지 않은 cash/global fixture입니다.",
+        correlationUnavailableReason: "주문 후보 0건 cash/global frame이라 correlation id가 없습니다.",
+      },
     };
 
     expect(frame.market).toBeNull();
@@ -167,6 +181,7 @@ describe("DecisionLedgerFrame type contract", () => {
     expect(frame.correlationId).toBeNull();
     expect(frame.category).toBe("CASH_HOLD");
     expect(frame.trace.sourceRunUnavailableReason).toContain("cash/global fixture");
+    expect(frame.trace.correlationUnavailableReason).toContain("주문 후보 0건");
   });
 
   it("sourceRunId가 null이면 trace에 누락 사유가 필요하다", () => {
@@ -184,7 +199,10 @@ describe("DecisionLedgerFrame type contract", () => {
       correlationId: null,
       reasonCounts: { no_order_intent: 1 },
       dedupeKey: "upbit::cash:frame-cash-002",
-      trace: { sourceRunUnavailableReason: "로컬 fixture 실행이라 source run id가 없습니다." },
+      trace: {
+        sourceRunUnavailableReason: "로컬 fixture 실행이라 source run id가 없습니다.",
+        correlationUnavailableReason: "주문 후보가 생성되지 않아 correlation id가 없습니다.",
+      },
     };
 
     expect(frame.trace.sourceRunUnavailableReason).toContain("source run id");
@@ -192,6 +210,54 @@ describe("DecisionLedgerFrame type contract", () => {
     // @ts-expect-error sourceRunId가 null인 frame은 trace에 누락 사유를 반드시 남겨야 한다.
     const invalidFrame: DecisionLedgerFrame = { ...frame, trace: {} };
     expect(invalidFrame.sourceRunId).toBeNull();
+  });
+
+  it("correlationId가 null이면 trace에 누락 사유가 필요하다", () => {
+    const frame: DecisionLedgerFrame = {
+      ledgerVersion: "m18.decision_ledger.v1",
+      sourceRunId: "run-001",
+      sourceFrameId: "frame-hold-001",
+      exchange: "UPBIT",
+      market: "KRW-BTC",
+      strategyId: "strategy.mean-reversion",
+      category: "HOLD",
+      summaryStatus: "RECORDED",
+      observedAt: new Date("2026-06-06T01:00:00Z"),
+      decisionAt: new Date("2026-06-06T01:00:01Z"),
+      correlationId: null,
+      reasonCounts: { strategy_hold: 1 },
+      dedupeKey: "upbit:krw-btc:hold:frame-hold-001",
+      trace: { correlationUnavailableReason: "전략 HOLD라 주문 correlation id가 생성되지 않았습니다." },
+    };
+
+    expect(frame.trace.correlationUnavailableReason).toContain("전략 HOLD");
+
+    // @ts-expect-error correlationId가 null인 frame은 trace에 누락 사유를 반드시 남겨야 한다.
+    const invalidFrame: DecisionLedgerFrame = { ...frame, trace: {} };
+    expect(invalidFrame.correlationId).toBeNull();
+  });
+
+  it("EXPLANATION_FAILED는 frame category로 사용할 수 없다", () => {
+    const frame = {
+      ledgerVersion: "m18.decision_ledger.v1",
+      sourceRunId: "run-001",
+      sourceFrameId: "frame-llm-fail-001",
+      exchange: "UPBIT",
+      market: "KRW-BTC",
+      strategyId: "strategy.mean-reversion",
+      category: "EXPLANATION_FAILED",
+      summaryStatus: "EXPLANATION_FAILED",
+      observedAt: new Date("2026-06-06T01:00:00Z"),
+      decisionAt: new Date("2026-06-06T01:00:01Z"),
+      correlationId: "corr-llm-fail-001",
+      reasonCounts: {},
+      dedupeKey: "upbit:krw-btc:llm-fail:frame-llm-fail-001",
+      trace: {},
+    };
+
+    // @ts-expect-error 설명 실패는 frame 판단 category가 아니라 evidence/status에만 남긴다.
+    const invalidFrame: DecisionLedgerFrame = frame;
+    expect(invalidFrame.category).toBe("EXPLANATION_FAILED");
   });
 
   it("reasonCounts가 빈 객체여도 유효하다", () => {
@@ -341,8 +407,7 @@ describe("WhySummary type contract", () => {
       impact: "현재 0.001 BTC를 보유 중입니다.",
       action: null,
       latestDecisionAt: new Date("2026-06-06T00:00:00Z"),
-      category: "BUY",
-      trace: { correlationId: "corr-001" },
+      trace: { category: "BUY", correlationId: "corr-001" },
     };
 
     const strategySummary: WhyStrategySummary = {
@@ -352,8 +417,7 @@ describe("WhySummary type contract", () => {
       impact: "현재 추세 강도는 중간 수준입니다.",
       action: null,
       latestDecisionAt: new Date("2026-06-06T00:00:00Z"),
-      category: "BUY",
-      trace: {},
+      trace: { category: "BUY" },
     };
 
     const cashSummary: WhyCashSummary = {
@@ -362,59 +426,85 @@ describe("WhySummary type contract", () => {
       impact: "기대 수익이 비용을 하회하여 신규 진입을 보류 중입니다.",
       action: "시장 조건이 개선될 때까지 기다리세요.",
       latestDecisionAt: new Date("2026-06-06T00:00:00Z"),
-      category: "CASH_HOLD",
       holdReasonCounts: {
         insufficient_expected_return: 2,
         wide_spread: 1,
       },
-      trace: {},
+      trace: { category: "CASH_HOLD" },
+    };
+
+    const marketSection: WhyMarketSummarySection = {
+      readStatus: "OK",
+      items: [marketSummary],
+      trace: { querySource: "decision_ledger_frames" },
+    };
+
+    const strategySection: WhyStrategySummarySection = {
+      readStatus: "OK",
+      items: [strategySummary],
+      trace: { querySource: "decision_ledger_frames" },
+    };
+
+    const cashSection: WhyCashSummarySection = {
+      readStatus: "OK",
+      item: cashSummary,
+      trace: { querySource: "decision_ledger_frames" },
     };
 
     const summary: WhySummary = {
-      markets: [marketSummary],
-      strategies: [strategySummary],
-      cash: cashSummary,
+      markets: marketSection,
+      strategies: strategySection,
+      cash: cashSection,
       generatedAt: new Date("2026-06-06T04:00:00Z"),
       readStatus: "OK",
       trace: { querySource: "decision_ledger_frames" },
     };
 
-    expect(summary.markets).toHaveLength(1);
-    expect(summary.markets[0]!.market).toBe("KRW-BTC");
-    expect(summary.strategies).toHaveLength(1);
-    expect(summary.cash).not.toBeNull();
+    expect(summary.markets.items).toHaveLength(1);
+    expect(summary.markets.items[0]!.market).toBe("KRW-BTC");
+    expect(summary.markets.readStatus).toBe("OK");
+    expect(summary.strategies.items).toHaveLength(1);
+    expect(summary.strategies.readStatus).toBe("OK");
+    expect(summary.cash.item).not.toBeNull();
+    expect(summary.cash.readStatus).toBe("OK");
     // noUncheckedIndexedAccess 환경이므로 bracket 접근으로 undefined 허용
-    const cashCounts = summary.cash!.holdReasonCounts;
+    const cashCounts = summary.cash.item!.holdReasonCounts;
     expect(cashCounts["insufficient_expected_return"]).toBe(2);
+    expect("category" in marketSummary).toBe(false);
+    expect(marketSummary.trace.category).toBe("BUY");
     expect(summary.readStatus).toBe("OK");
   });
 
   it("cash summary가 null이어도 유효하다", () => {
     const summary: WhySummary = {
-      markets: [],
-      strategies: [],
-      cash: null,
+      markets: { readStatus: "NOT_FOUND", items: [], trace: {} },
+      strategies: { readStatus: "NOT_FOUND", items: [], trace: {} },
+      cash: { readStatus: "NOT_FOUND", item: null, trace: {} },
       generatedAt: new Date(),
       readStatus: "NOT_FOUND",
       trace: {},
     };
 
-    expect(summary.cash).toBeNull();
+    expect(summary.cash.item).toBeNull();
+    expect(summary.cash.readStatus).toBe("NOT_FOUND");
     expect(summary.readStatus).toBe("NOT_FOUND");
-    expect(summary.markets).toHaveLength(0);
+    expect(summary.markets.items).toHaveLength(0);
   });
 
   it("UNAVAILABLE 상태 summary도 type contract를 만족한다", () => {
     const summary: WhySummary = {
-      markets: [],
-      strategies: [],
-      cash: null,
+      markets: { readStatus: "UNAVAILABLE", items: [], trace: { reason: "market_query_failed" } },
+      strategies: { readStatus: "OK", items: [], trace: {} },
+      cash: { readStatus: "UNAVAILABLE", item: null, trace: { reason: "cash_query_failed" } },
       generatedAt: new Date(),
       readStatus: "UNAVAILABLE",
       trace: { reason: "no_ledger_data" },
     };
 
     expect(summary.readStatus).toBe("UNAVAILABLE");
+    expect(summary.markets.readStatus).toBe("UNAVAILABLE");
+    expect(summary.strategies.readStatus).toBe("OK");
+    expect(summary.cash.readStatus).toBe("UNAVAILABLE");
   });
 
   it("시장별 summary의 action이 null이어도 유효하다", () => {
@@ -425,12 +515,11 @@ describe("WhySummary type contract", () => {
       impact: null,
       action: null,
       latestDecisionAt: null,
-      category: null,
-      trace: {},
+      trace: { category: null },
     };
 
     expect(marketSummary.latestDecisionAt).toBeNull();
-    expect(marketSummary.category).toBeNull();
+    expect(marketSummary.trace.category).toBeNull();
     expect(marketSummary.action).toBeNull();
   });
 });

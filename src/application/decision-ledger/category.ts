@@ -39,6 +39,15 @@ export type DecisionCategory =
   | "EXPLANATION_FAILED";
 
 /**
+ * ledger frame의 판단 결과 범주다.
+ *
+ * frame은 실제 전략/비용/리스크/실행 판단을 대표하므로, LLM 설명 장애 전용인
+ * `EXPLANATION_FAILED`를 포함하지 않는다. 설명 실패는 evidence 또는 summary status로만
+ * 보존해 최신 frame 조회가 실제 주문 판단을 잃지 않게 한다.
+ */
+export type DecisionFrameCategory = Exclude<DecisionCategory, "EXPLANATION_FAILED">;
+
+/**
  * DecisionCategory 상수 객체 — 코드에서 오타 없이 참조하기 위한 안정 참조값이다.
  */
 export const DecisionCategoryValue = {
@@ -53,6 +62,21 @@ export const DecisionCategoryValue = {
   EXECUTED: "EXECUTED",
   EXPLANATION_FAILED: "EXPLANATION_FAILED",
 } as const satisfies Record<string, DecisionCategory>;
+
+/**
+ * DecisionLedgerFrame에서 사용할 수 있는 category 상수 객체다.
+ */
+export const DecisionFrameCategoryValue = {
+  BUY: "BUY",
+  SELL: "SELL",
+  HOLD: "HOLD",
+  CASH_HOLD: "CASH_HOLD",
+  DISCARD: "DISCARD",
+  COST_REJECTED: "COST_REJECTED",
+  RISK_REJECTED: "RISK_REJECTED",
+  EXECUTION_REJECTED: "EXECUTION_REJECTED",
+  EXECUTED: "EXECUTED",
+} as const satisfies Record<string, DecisionFrameCategory>;
 
 /**
  * ledger frame 또는 why summary의 읽기/조회 상태다.
@@ -123,6 +147,13 @@ export const EvidenceKindValue = {
  */
 export function isValidDecisionCategory(value: string): value is DecisionCategory {
   return Object.values(DecisionCategoryValue).includes(value as DecisionCategory);
+}
+
+/**
+ * 주어진 문자열이 frame category로 유효한지 런타임에 검사한다.
+ */
+export function isValidDecisionFrameCategory(value: string): value is DecisionFrameCategory {
+  return Object.values(DecisionFrameCategoryValue).includes(value as DecisionFrameCategory);
 }
 
 /**

@@ -305,8 +305,8 @@ Decision frame은 한 입력 frame과 하나의 strategy 평가 흐름을 기본
 - `strategyId`: strategy별 판단이면 strategy id, cash/global 판단이면 `null` 허용.
 - `observedAt`: 시장/feature frame 관측 시각.
 - `decisionAt`: 판단이 확정된 시각.
-- `correlationId`: 주문, risk, execution evidence와 연결할 수 있는 stable id. 없으면 runner가 만든 deterministic id 또는 `null`과 reason을 trace에 남긴다.
-- `category`: stable decision category. 사용자-facing 문구를 대체하지 않는다.
+- `correlationId`: 주문, risk, execution evidence와 연결할 수 있는 stable id. 없으면 runner가 만든 deterministic id 또는 `null`과 `correlationUnavailableReason`을 trace에 남긴다.
+- `category`: stable frame decision category. 사용자-facing 문구를 대체하지 않으며, LLM 장애 전용 `EXPLANATION_FAILED`는 frame category가 아니라 evidence/status로만 남긴다.
 - `summaryStatus`: `RECORDED`, `PARTIAL`, `UNAVAILABLE`, `EXPLANATION_FAILED` 같은 read/query 상태.
 - `reasonCounts`: hold/discard/cost/risk/execution reason count.
 - `dedupeKey`: 같은 frame/source/correlation 재실행 중복 append를 차단하는 deterministic key.
@@ -409,11 +409,17 @@ Repository invariant:
 
 필수 하위 summary:
 
-- `markets`: market별 최근 판단 이유. 예: `KRW-BTC`, `KRW-ETH`.
-- `strategies`: strategy별 최근 판단 이유.
-- `cash`: 주문 후보 0건 또는 현금 보유 이유 summary.
+- `markets`: market별 최근 판단 이유 section. 예: `KRW-BTC`, `KRW-ETH`.
+- `markets.readStatus`: market section 조회 상태 (`OK`, `NOT_FOUND`, `UNAVAILABLE`).
+- `markets.items`: market별 최근 판단 이유 item 목록.
+- `strategies`: strategy별 최근 판단 이유 section.
+- `strategies.readStatus`: strategy section 조회 상태 (`OK`, `NOT_FOUND`, `UNAVAILABLE`).
+- `strategies.items`: strategy별 최근 판단 이유 item 목록.
+- `cash`: 주문 후보 0건 또는 현금 보유 이유 summary section.
+- `cash.readStatus`: cash section 조회 상태 (`OK`, `NOT_FOUND`, `UNAVAILABLE`).
+- `cash.item`: cash hold summary. 조회 전/기록 없음이면 `null`, 주문 후보 0건이면 hold reason count를 포함한다.
 - `generatedAt`: summary 생성 시각.
-- `readStatus`: `OK`, `NOT_FOUND`, `UNAVAILABLE`.
+- `readStatus`: 전체 summary 조회 상태 (`OK`, `NOT_FOUND`, `UNAVAILABLE`). 개별 section 실패는 각 section `readStatus`로도 보존한다.
 - `trace`: 내부 식별자, query source, correlation id만 포함.
 
 각 summary item은 사용자-facing 정보를 먼저 가진다.
@@ -423,10 +429,9 @@ Repository invariant:
 - `impact`: 한국어 영향.
 - `action`: 한국어 필요 조치 또는 `null`.
 - `latestDecisionAt`
-- `category`
-- `reasonCode`는 `trace` 또는 detail 영역에 분리.
+- `category`와 `reasonCode`는 사용자-facing 최상위 item 필드가 아니라 `trace` 또는 detail 영역에 분리.
 
-DB 조회 실패는 `/status` 전체 실패가 아니라 `why.status=unavailable`로 낮춘다. 기록 없음과 조회 실패는 서로 다른 상태로 표현한다.
+DB 조회 실패는 `/status` 전체 실패가 아니라 실패한 section의 `readStatus=UNAVAILABLE`로 낮춘다. 기록 없음과 조회 실패는 서로 다른 상태로 표현한다.
 
 ### LLM Summary Contract
 
@@ -484,7 +489,7 @@ LLM summary는 deterministic why summary 옆에 붙는 보조 attachment다.
 | strategy별 최근 판단 이유 조회 | `GET /status` 응답의 `why.strategies` | `src/interfaces/http-control/**`, `src/application/decision-ledger/**` | `tests/unit/http-control.test.ts`, `tests/unit/decision-ledger.test.ts` | strategy id를 trace에만 저장하고 사용자 summary가 없는 경우 |
 | 주문 후보 frame evidence 연결 | ledger frame/detail query 또는 repository fixture | `src/application/paper-decision-runner/**`, `src/application/decision-ledger/**`, `src/infrastructure/db/decision-ledger/**` | `tests/unit/paper-decision-runner.test.ts`, `tests/integration/decision-ledger.test.ts` | strategy/cost/risk/execution 중 일부 evidence만 저장한 경우 |
 | 주문 후보 0건 frame 설명 | `/status.why.cash`와 ledger reason count | `src/application/paper-decision-runner/**`, `src/application/decision-ledger/**` | `tests/unit/paper-decision-runner.test.ts`, `tests/unit/decision-ledger.test.ts` | order intent가 없다는 이유로 frame을 저장하지 않은 경우 |
-| cost/risk rejection 구분 | `/status.why` category와 reason message | `src/application/decision-ledger/**`, `src/interfaces/http-control/**` | `tests/unit/decision-ledger.test.ts`, `tests/unit/http-control.test.ts` | rejection을 모두 `DISCARD` 하나로 합친 경우 |
+| cost/risk rejection 구분 | `/status.why` trace category와 reason message | `src/application/decision-ledger/**`, `src/interfaces/http-control/**` | `tests/unit/decision-ledger.test.ts`, `tests/unit/http-control.test.ts` | rejection을 모두 `DISCARD` 하나로 합친 경우 |
 | append-only와 dedupe | DB repository 결과와 migration constraint | `migrations/000013_decision_ledger.sql`, `src/infrastructure/db/decision-ledger/**`, `src/infrastructure/db/schema.ts` | `tests/unit/decision-ledger-persistence.test.ts`, `tests/integration/decision-ledger.test.ts`, `tests/integration/migrations.test.ts` | update/delete로 최신 row를 덮거나 재실행 때 evidence가 중복되는 경우 |
 | 한국어 사용자 문구 우선 | `/status.why` item의 `statusLabel/message/impact/action` | `src/application/decision-ledger/user-facing.ts`, `src/interfaces/http-control/**` | `tests/unit/decision-ledger.test.ts`, `tests/unit/http-control.test.ts` | 내부 reason code가 첫 문구를 대체하는 경우 |
 | 내부 추적 정보 분리 | `/status.why.*.trace` 또는 `추적 정보` | `src/application/decision-ledger/**`, `src/interfaces/http-control/**` | `tests/unit/http-control.test.ts` | correlation id, fingerprint를 숨기거나 첫 화면 문구로 노출하는 경우 |
@@ -663,4 +668,3 @@ npx --yes reasonix run \
   --transcript .local/transcripts/issue-159-m18-decision-ledger.reasonix.jsonl \
   "Read docs/exec-plans/active/2026-06-06-issue-159-m18-decision-ledger-reasonix-handoff.md and implement Sub PR 01, then 02, then 03, then 04 sequentially. Stop after each Sub PR verification and report before continuing. Do not implement M19 or later, automatic commit, PR creation, merge, or unrelated changes. Report back in Korean."
 ```
-
