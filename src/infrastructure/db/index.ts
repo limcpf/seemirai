@@ -165,6 +165,23 @@ export type {
   StateTransitionAuditRowInput,
   StateTransitionAuditRowOptions,
 } from "./order-events.js";
+export {
+  DecisionLedgerEvidenceFrameConflictError,
+  DecisionLedgerPersistenceValidationError,
+  PostgresDecisionLedgerRepository,
+  toDecisionLedgerFrameRowInput,
+  toDecisionLedgerEvidenceRowInput,
+} from "./decision-ledger.js";
+export type {
+  AppendDecisionLedgerFrameInput,
+  AppendDecisionLedgerFrameResult,
+  AppendDecisionLedgerEvidenceInput,
+  AppendDecisionLedgerEvidenceResult,
+  DecisionLedgerFrameRecord,
+  DecisionLedgerEvidenceRecord,
+  DecisionLedgerFrameInsertInput,
+  DecisionLedgerEvidenceInsertInput,
+} from "./decision-ledger.js";
 export type {
   AppendRiskEventInput,
   RiskEventRecord,

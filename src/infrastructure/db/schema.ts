@@ -1,6 +1,13 @@
 import type { ColumnType, Generated } from "kysely";
 import type { KillSwitchState, OrderLifecycleStatus } from "../../domain/index.js";
 import type { AlertSeverity } from "../../application/ports/notifier-port.js";
+import type {
+  DecisionCategory,
+  DecisionFrameCategory,
+  DecisionLedgerVersion,
+  EvidenceKind,
+  SummaryStatus,
+} from "../../application/decision-ledger.js";
 
 /**
  * PostgreSQL `timestamptz` 컬럼 타입이다.
@@ -109,6 +116,13 @@ export interface DatabaseSchema {
   live_reconcile_position_snapshots: LiveReconcilePositionSnapshotsTable;
   /** fill 복구 전 durable unique key 선점 기록. order_id FK와 같은 exchange fill 또는 fingerprint 중복 insert 불가 */
   live_reconcile_fill_recovery_keys: LiveReconcileFillRecoveryKeysTable;
+
+  // ── M18 판단 이유 ledger append-only tables ──
+
+  /** 판단 이유 ledger의 frame 단위 append-only 기록. dedupe_key unique constraint로 중복 append를 차단한다. */
+  decision_ledger_frames: DecisionLedgerFramesTable;
+  /** frame 아래 append-only evidence. evidence_fingerprint unique constraint로 중복 append를 차단한다. */
+  decision_ledger_evidence: DecisionLedgerEvidenceTable;
 }
 
 /**
@@ -814,4 +828,90 @@ export interface LiveReconcileFillRecoveryKeysTable {
   reserved_at: GeneratedTimestamp;
   /** recovery key metadata. raw provider payload, Authorization/JWT, access key, secret key를 넣지 않는다. */
   metadata_json: GeneratedJsonRecord;
+}
+
+// ── M18 판단 이유 ledger append-only tables ──
+
+/**
+ * 판단 이유 ledger의 frame 단위 append-only 기록 table interface.
+ *
+ * runner가 한 번의 feature → strategy → gate → broker 흐름을 평가한 뒤 남기는 최상위 단위로,
+ * `dedupe_key` unique constraint로 같은 frame/source/correlation 재실행 중복 append를 차단한다.
+ * 모든 column은 append-only이며 update/delete를 허용하지 않는다.
+ */
+export interface DecisionLedgerFramesTable {
+  /** frame record ID */
+  id: Generated<string>;
+  /** M18 contract version literal. 예: `"m18.decision_ledger.v1"` */
+  ledger_version: DecisionLedgerVersion;
+  /** runner 또는 runtime 실행 단위 식별자. 알 수 없으면 null */
+  source_run_id: string | null;
+  /** `PaperDecisionInputFrame.id`. runner 입력 frame 식별자 */
+  source_frame_id: string;
+  /** 거래소 식별자. 예: `"UPBIT"` */
+  exchange: string;
+  /** market code. cash/global 판단이면 null */
+  market: string | null;
+  /** strategy 식별자. cash/global 판단이면 null */
+  strategy_id: string | null;
+  /** 안정 판단 범주. LLM 장애 전용 EXPLANATION_FAILED는 포함하지 않는다. */
+  category: DecisionFrameCategory;
+  /** frame 기록/조회 상태 */
+  summary_status: SummaryStatus;
+  /** 시장/feature frame 관측 시각 */
+  observed_at: Timestamp;
+  /** 판단이 확정된 시각 */
+  decision_at: Timestamp;
+  /** 주문, risk, execution evidence와 연결하는 stable id. 없으면 null */
+  correlation_id: string | null;
+  /** hold/discard/cost/risk/execution reason count. key는 reason code, value는 count */
+  reason_counts_json: GeneratedJsonRecord;
+  /** frame summary metadata. Category, 최신 evidence 요약, trace link */
+  summary_json: GeneratedJsonRecord;
+  /** 내부 id, fingerprint, source table 같은 JSON-safe 추적 정보 */
+  trace_json: GeneratedJsonRecord;
+  /** 같은 frame/source/correlation 재실행 중복 append를 차단하는 deterministic key */
+  dedupe_key: string;
+  /** DB record 생성 시각 */
+  created_at: GeneratedTimestamp;
+}
+
+/**
+ * frame 아래 append-only evidence table interface.
+ *
+ * `evidence_fingerprint` unique constraint로 중복 append를 차단한다.
+ * EXPLANATION_FAILURE evidence는 category EXPLANATION_FAILED와만 조합하고,
+ * 다른 evidence kind는 EXPLANATION_FAILED category를 가질 수 없다.
+ */
+export interface DecisionLedgerEvidenceTable {
+  /** evidence record ID */
+  id: Generated<string>;
+  /** 상위 frame ID */
+  frame_id: string;
+  /** 근거 종류. STRATEGY_DECISION, ORDER_INTENT, DISCARD_REASON, COST_BREAKDOWN, RISK_DECISION, EXECUTION_RESULT, PNL_STATUS_CONTEXT, EXPLANATION_SUMMARY, EXPLANATION_FAILURE 중 하나 */
+  evidence_kind: EvidenceKind;
+  /** 연관 판단 범주. EXPLANATION_FAILURE evidence는 EXPLANATION_FAILED만 허용 */
+  category: DecisionCategory;
+  /** 내부 reason code. 사용자-facing 문구는 user_message에 분리 */
+  reason_code: string | null;
+  /** 사용자-facing 한국어 상태 메시지 */
+  user_message: string;
+  /** 한국어 영향 설명. 없으면 null */
+  impact: string | null;
+  /** 한국어 필요 조치. 없으면 null */
+  action: string | null;
+  /** 근거 출처 시스템/모듈명 */
+  source: string;
+  /** 근거 출처 내부 식별자. 없으면 null */
+  source_id: string | null;
+  /** 근거 상세 payload. raw provider payload, secret, token을 포함하지 않는다. */
+  payload_json: GeneratedJsonRecord;
+  /** 내부 id, 상위 frame id, correlation id 같은 JSON-safe 추적 정보 */
+  trace_json: GeneratedJsonRecord;
+  /** evidence 중복 append를 차단하는 deterministic fingerprint */
+  evidence_fingerprint: string;
+  /** 근거가 발생한 시각 */
+  occurred_at: Timestamp;
+  /** DB record 생성 시각 */
+  created_at: GeneratedTimestamp;
 }
