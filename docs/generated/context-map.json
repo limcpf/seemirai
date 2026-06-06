@@ -434,6 +434,34 @@
       "role": "개발 마무리와 PR 생성 전 branch/워크트리 완료 가능 상태를 감사하는 workflow",
       "read_when": ["개발 마무리 감사", "PR 생성 전 readiness 확인", "완료 가능 상태 점검"],
       "owner_scope": ".agents/skills/finish-readiness-audit"
+    },
+    {
+      "path": "src/application/decision-ledger.ts",
+      "kind": "reference",
+      "role": "M18 decision ledger public entry — type contract와 category 상수만 제공하며 persistence, producer, LLM boundary를 포함하지 않음",
+      "read_when": ["decision ledger type contract 확인", "M18 decision ledger 구현", "DecisionCategory/EvidenceKind 참조"],
+      "owner_scope": "src/application"
+    },
+    {
+      "path": "src/application/decision-ledger/category.ts",
+      "kind": "reference",
+      "role": "M18 안정 판단 범주(DecisionCategory), evidence 종류(EvidenceKind), summary 상태(SummaryStatus) 상수 정의",
+      "read_when": ["category 상수 추가", "evidence kind 확장", "summary status 확인"],
+      "owner_scope": "src/application/decision-ledger"
+    },
+    {
+      "path": "src/application/decision-ledger/types.ts",
+      "kind": "reference",
+      "role": "M18 DecisionLedgerFrame, DecisionEvidenceItem, WhySummary type contract 정의",
+      "read_when": ["decision ledger type 확인", "evidence item shape 확인", "why summary contract 확인"],
+      "owner_scope": "src/application/decision-ledger"
+    },
+    {
+      "path": "tests/unit/decision-ledger.test.ts",
+      "kind": "reference",
+      "role": "M18 decision ledger type contract 검증 테스트 — category 상수 완전성, frame/evidence/summary shape 확인",
+      "read_when": ["decision ledger test 실행", "category 상수 검증", "type contract 회귀 확인"],
+      "owner_scope": "tests/unit"
     }
   ]
 }
