@@ -1,0 +1,269 @@
+{
+  "version": 1,
+  "milestone": "issue-159/M18",
+  "title": "M18 판단 이유 ledger와 설명 API Reasonix handoff",
+  "status": "ready-for-implementation",
+  "handoffMarkdownPath": "docs/exec-plans/active/2026-06-06-issue-159-m18-decision-ledger-reasonix-handoff.md",
+  "goal": "이미 생성된 strategy decision, order intent, discard reason, cost breakdown, risk decision, execution result, PnL/status context를 append-only decision ledger로 보존하고 /status 하위 why summary가 이를 한국어 사용자 문구와 추적 정보로 설명하게 만든다.",
+  "readFirst": [
+    "AGENTS.md",
+    "ARCHITECTURE.md",
+    "docs/README.md",
+    "docs/generated/context-map.json",
+    "docs/PRD.md",
+    "docs/FEATURE_REQUIREMENTS.md",
+    "docs/DEVELOPMENT.md",
+    "docs/PLANS.md",
+    "docs/RUNTIME_CONFIG.md",
+    "docs/RELIABILITY.md",
+    "docs/SECURITY.md",
+    "docs/product-specs/upbit-live-autonomous-trading.md",
+    "docs/design-docs/2026-05-15-m1-database-schema.md",
+    "docs/design-docs/2026-05-20-typescript-module-structure.md",
+    "docs/exec-plans/completed/2026-06-04-issue-154-m17-pnl-position-accounting.md",
+    "src/application/paper-decision-runner/**",
+    "src/interfaces/http-control/**",
+    "src/application/llm-risk-assistant/**",
+    "src/infrastructure/db/schema.ts",
+    "migrations/*.sql"
+  ],
+  "allowedChanges": [
+    "M18 active plan, product/runtime/reliability/security documentation updates",
+    "DecisionLedger and WhySummary public application contract",
+    "Append-only decision ledger migration, schema, repository, and idempotency tests",
+    "paper-decision-runner trace to ledger producer integration",
+    "/status read-only why summary provider and Korean user-facing formatter",
+    "LLM summary helper that only reads deterministic evidence and fails closed",
+    "Targeted tests, DB integration tests when available, docs verify, full verify, and live order API source scan",
+    "M18 closeout documentation after all sub PRs complete"
+  ],
+  "forbiddenChanges": [
+    "Separate /why write/control endpoint",
+    "Telegram inbound commands",
+    "M19 exit engine, automatic sell, stop loss, take profit, or trailing stop",
+    "M20, M21, M22 or later roadmap scope",
+    "LLM direct buy/sell decision or LLM output as RiskGate/Broker input",
+    "Live order creation/cancellation paths including POST /v1/orders and DELETE /v1/order",
+    "New runtime dependency without explicit user approval",
+    "Raw provider payload, raw order detail, Authorization header, JWT, API key, or secret exposure",
+    "Investment advice, buy/sell recommendation, or profit guarantee language",
+    "Automatic git commit, PR creation, branch merge, or force push",
+    "Unrelated refactoring, broad formatting changes, or existing migration edits"
+  ],
+  "expectedArtifacts": [
+    {
+      "pathPattern": "docs/exec-plans/active/2026-06-06-issue-159-m18-decision-ledger-reasonix-handoff.md",
+      "purpose": "Reasonix가 sub PR별 구현 범위와 검증 기준을 읽는 active handoff 문서",
+      "mustExistAfter": true
+    },
+    {
+      "pathPattern": "src/application/decision-ledger.ts",
+      "purpose": "Decision ledger public application entry",
+      "mustExistAfter": true
+    },
+    {
+      "pathPattern": "src/application/decision-ledger/**",
+      "purpose": "Decision frame, evidence, why summary, Korean user-facing formatter, optional LLM summary helper",
+      "mustExistAfter": true
+    },
+    {
+      "pathPattern": "migrations/000013_decision_ledger.sql",
+      "purpose": "Append-only decision ledger table migration if dedicated table is required",
+      "mustExistAfter": true
+    },
+    {
+      "pathPattern": "src/infrastructure/db/decision-ledger.ts",
+      "purpose": "Decision ledger DB repository/provider public entry",
+      "mustExistAfter": true
+    },
+    {
+      "pathPattern": "tests/unit/decision-ledger.test.ts",
+      "purpose": "Decision ledger contract, user-facing mapping, zero-order frame, rejection category tests",
+      "mustExistAfter": true
+    },
+    {
+      "pathPattern": "tests/unit/paper-decision-runner.test.ts",
+      "purpose": "Producer integration and ledger write failure isolation tests",
+      "mustExistAfter": true
+    },
+    {
+      "pathPattern": "tests/unit/http-control.test.ts",
+      "purpose": "/status why summary integration tests",
+      "mustExistAfter": true
+    },
+    {
+      "pathPattern": "tests/integration/decision-ledger.test.ts",
+      "purpose": "Repository append-only and idempotency integration tests",
+      "mustExistAfter": true
+    }
+  ],
+  "commands": {
+    "handoff": [
+      "mkdir -p .local/transcripts && npx --yes reasonix run --effort high --budget 0.90 --transcript .local/transcripts/issue-159-subpr-01-plan-contract.reasonix.jsonl \"Read docs/exec-plans/active/2026-06-06-issue-159-m18-decision-ledger-reasonix-handoff.md and implement Sub PR 01 M18 Plan & Contract only. Do not implement persistence, producer status summary, LLM boundary, automatic commit, PR creation, merge, or unrelated changes. Report back in Korean.\"",
+      "mkdir -p .local/transcripts && npx --yes reasonix run --effort high --budget 1.10 --transcript .local/transcripts/issue-159-subpr-02-ledger-persistence.reasonix.jsonl \"Read docs/exec-plans/active/2026-06-06-issue-159-m18-decision-ledger-reasonix-handoff.md and implement Sub PR 02 Ledger Foundation & Persistence only. Assume Sub PR 01 is complete. Do not implement producer/status wiring, LLM boundary, automatic commit, PR creation, merge, or unrelated changes. Report back in Korean.\"",
+      "mkdir -p .local/transcripts && npx --yes reasonix run --effort high --budget 1.10 --transcript .local/transcripts/issue-159-subpr-03-producer-status.reasonix.jsonl \"Read docs/exec-plans/active/2026-06-06-issue-159-m18-decision-ledger-reasonix-handoff.md and implement Sub PR 03 Producer & Status Why Summary only. Assume Sub PR 01 and Sub PR 02 are complete. Do not implement LLM boundary, Telegram inbound, automatic commit, PR creation, merge, or unrelated changes. Report back in Korean.\"",
+      "mkdir -p .local/transcripts && npx --yes reasonix run --effort high --budget 1.00 --transcript .local/transcripts/issue-159-subpr-04-llm-closeout.reasonix.jsonl \"Read docs/exec-plans/active/2026-06-06-issue-159-m18-decision-ledger-reasonix-handoff.md and implement Sub PR 04 LLM Boundary, Verification & Closeout only. Assume Sub PR 01, 02, and 03 are complete. Do not implement M19 or later, Telegram inbound, automatic commit, PR creation, merge, or unrelated changes. Report back in Korean.\""
+    ],
+    "verification": [
+      "corepack pnpm typecheck",
+      "corepack pnpm exec vitest run tests/unit/decision-ledger.test.ts tests/unit/decision-ledger-persistence.test.ts tests/unit/paper-decision-runner.test.ts tests/unit/http-control.test.ts tests/unit/llm-risk-assistant-provider.test.ts",
+      "SEEMIRAI_RUN_DB_INTEGRATION=1 corepack pnpm exec vitest run tests/integration/decision-ledger.test.ts tests/integration/migrations.test.ts",
+      "./scripts/verify docs",
+      "./scripts/verify",
+      "git diff --name-only origin/main...HEAD -- src/application src/infrastructure src/interfaces src/runtime | xargs --no-run-if-empty rg -n \"POST /v1/orders|DELETE /v1/order|submitOrder|cancelOrder\""
+    ]
+  },
+  "acceptanceCriteria": [
+    "종목별 최근 판단 이유를 /status 하위 why summary에서 조회할 수 있다.",
+    "strategy별 최근 판단 이유를 /status 하위 why summary에서 조회할 수 있다.",
+    "주문 후보가 생성된 frame은 strategy decision, order intent, cost breakdown, risk decision, execution result를 연결한다.",
+    "주문 후보 0건 frame도 HOLD/CASH_HOLD/DISCARD reason count로 설명된다.",
+    "cost rejection과 risk rejection은 서로 다른 판단 이유로 저장되고 조회 응답에서 구분된다.",
+    "ledger row는 append-only이고 같은 frame/source/correlation 재실행으로 중복 evidence가 생기지 않는다.",
+    "사용자-facing 응답은 내부 code보다 한국어 상태, 원인, 영향, 필요 조치를 먼저 보여준다.",
+    "내부 id, fingerprint, reason code, correlation id는 추적 정보 또는 debug/detail 영역에 분리된다.",
+    "LLM summary는 deterministic evidence를 읽는 보조 계층이며, LLM 실패가 주문 판단이나 RiskGate/Broker 결과를 바꾸지 않는다.",
+    "LLM output에 주문 지시, 포지션 크기, 매수/매도 허용 의미가 있으면 fail-closed evidence로 남고 사용자 summary에 그대로 노출하지 않는다.",
+    "raw access key, secret key, JWT, Authorization header, raw provider payload, raw order detail이 ledger/status/API/report artifact에 남지 않는다.",
+    "기본 PAPER_NO_KEY runtime에서 live order API 호출 0회 invariant가 유지된다."
+  ],
+  "acceptanceCriteriaTrace": [
+    {
+      "acceptanceCriterion": "종목별 최근 판단 이유를 /status 하위 why summary에서 조회할 수 있다.",
+      "userFacingSurface": "GET /status response why.markets",
+      "expectedFiles": ["src/interfaces/http-control/**", "src/application/decision-ledger/**", "src/infrastructure/db/decision-ledger/**"],
+      "requiredTests": ["tests/unit/http-control.test.ts", "tests/unit/decision-ledger.test.ts"],
+      "notDoneIf": ["provider만 export하고 /status response에 연결하지 않은 경우"]
+    },
+    {
+      "acceptanceCriterion": "strategy별 최근 판단 이유를 /status 하위 why summary에서 조회할 수 있다.",
+      "userFacingSurface": "GET /status response why.strategies",
+      "expectedFiles": ["src/interfaces/http-control/**", "src/application/decision-ledger/**"],
+      "requiredTests": ["tests/unit/http-control.test.ts", "tests/unit/decision-ledger.test.ts"],
+      "notDoneIf": ["strategy id가 trace에만 있고 사용자 summary가 없는 경우"]
+    },
+    {
+      "acceptanceCriterion": "주문 후보가 생성된 frame은 strategy decision, order intent, cost breakdown, risk decision, execution result를 연결한다.",
+      "userFacingSurface": "Decision ledger repository/query and /status why trace",
+      "expectedFiles": ["src/application/paper-decision-runner/**", "src/application/decision-ledger/**", "src/infrastructure/db/decision-ledger/**"],
+      "requiredTests": ["tests/unit/paper-decision-runner.test.ts", "tests/integration/decision-ledger.test.ts"],
+      "notDoneIf": ["strategy/cost/risk/execution 중 일부 evidence만 저장한 경우"]
+    },
+    {
+      "acceptanceCriterion": "주문 후보 0건 frame도 HOLD/CASH_HOLD/DISCARD reason count로 설명된다.",
+      "userFacingSurface": "GET /status response why.cash and ledger reason counts",
+      "expectedFiles": ["src/application/paper-decision-runner/**", "src/application/decision-ledger/**"],
+      "requiredTests": ["tests/unit/paper-decision-runner.test.ts", "tests/unit/decision-ledger.test.ts"],
+      "notDoneIf": ["order intent가 없다는 이유로 frame을 저장하지 않은 경우"]
+    },
+    {
+      "acceptanceCriterion": "cost rejection과 risk rejection은 서로 다른 판단 이유로 저장되고 조회 응답에서 구분된다.",
+      "userFacingSurface": "GET /status response why category and reason message",
+      "expectedFiles": ["src/application/decision-ledger/**", "src/interfaces/http-control/**"],
+      "requiredTests": ["tests/unit/decision-ledger.test.ts", "tests/unit/http-control.test.ts"],
+      "notDoneIf": ["rejection을 모두 DISCARD 하나로 합친 경우"]
+    },
+    {
+      "acceptanceCriterion": "ledger row는 append-only이고 같은 frame/source/correlation 재실행으로 중복 evidence가 생기지 않는다.",
+      "userFacingSurface": "Repository result and DB integration evidence",
+      "expectedFiles": ["migrations/000013_decision_ledger.sql", "src/infrastructure/db/decision-ledger/**", "src/infrastructure/db/schema.ts"],
+      "requiredTests": ["tests/unit/decision-ledger-persistence.test.ts", "tests/integration/decision-ledger.test.ts", "tests/integration/migrations.test.ts"],
+      "notDoneIf": ["update/delete로 최신 row를 덮거나 재실행 때 evidence가 중복되는 경우"]
+    },
+    {
+      "acceptanceCriterion": "사용자-facing 응답은 내부 code보다 한국어 상태, 원인, 영향, 필요 조치를 먼저 보여준다.",
+      "userFacingSurface": "GET /status response why statusLabel/message/impact/action",
+      "expectedFiles": ["src/application/decision-ledger/user-facing.ts", "src/interfaces/http-control/**"],
+      "requiredTests": ["tests/unit/decision-ledger.test.ts", "tests/unit/http-control.test.ts"],
+      "notDoneIf": ["내부 reason code가 첫 문구를 대체하는 경우"]
+    },
+    {
+      "acceptanceCriterion": "내부 id, fingerprint, reason code, correlation id는 추적 정보 또는 debug/detail 영역에 분리된다.",
+      "userFacingSurface": "GET /status response why trace",
+      "expectedFiles": ["src/application/decision-ledger/**", "src/interfaces/http-control/**"],
+      "requiredTests": ["tests/unit/http-control.test.ts"],
+      "notDoneIf": ["correlation id, fingerprint를 숨기거나 첫 화면 문구로 노출하는 경우"]
+    },
+    {
+      "acceptanceCriterion": "LLM summary는 deterministic evidence를 읽는 보조 계층이며, LLM 실패가 주문 판단이나 RiskGate/Broker 결과를 바꾸지 않는다.",
+      "userFacingSurface": "GET /status deterministic why summary with optional LLM attachment",
+      "expectedFiles": ["src/application/decision-ledger/llm-summary.ts", "src/application/llm-risk-assistant/**"],
+      "requiredTests": ["tests/unit/decision-ledger.test.ts", "tests/unit/llm-risk-assistant-provider.test.ts"],
+      "notDoneIf": ["provider 실패가 runner result, RiskGate, Broker 결과를 바꾸는 경우"]
+    },
+    {
+      "acceptanceCriterion": "LLM output에 주문 지시, 포지션 크기, 매수/매도 허용 의미가 있으면 fail-closed evidence로 남고 사용자 summary에 그대로 노출하지 않는다.",
+      "userFacingSurface": "GET /status why LLM attachment omitted with failure evidence",
+      "expectedFiles": ["src/application/decision-ledger/llm-summary.ts", "src/application/llm-risk-assistant/**"],
+      "requiredTests": ["tests/unit/llm-risk-assistant-contract.test.ts", "tests/unit/decision-ledger.test.ts"],
+      "notDoneIf": ["BUY/SELL/position size를 사용자 summary에 그대로 노출하는 경우"]
+    },
+    {
+      "acceptanceCriterion": "raw access key, secret key, JWT, Authorization header, raw provider payload, raw order detail이 ledger/status/API/report artifact에 남지 않는다.",
+      "userFacingSurface": "Ledger payload, /status response, report artifacts",
+      "expectedFiles": ["src/application/decision-ledger/**", "src/infrastructure/db/decision-ledger/**", "src/interfaces/http-control/**"],
+      "requiredTests": ["tests/unit/decision-ledger.test.ts", "tests/unit/http-control.test.ts"],
+      "notDoneIf": ["raw provider payload, raw order detail, Authorization/JWT/API key가 payload/trace에 남는 경우"]
+    },
+    {
+      "acceptanceCriterion": "기본 PAPER_NO_KEY runtime에서 live order API 호출 0회 invariant가 유지된다.",
+      "userFacingSurface": "Verification report and source scan",
+      "expectedFiles": ["src/application/**", "src/infrastructure/**", "src/interfaces/**", "src/runtime/**"],
+      "requiredTests": ["source scan", "corepack pnpm test"],
+      "notDoneIf": ["POST /v1/orders, DELETE /v1/order, live broker submit/cancel 경로를 추가한 경우"]
+    }
+  ],
+  "verification": {
+    "required": true,
+    "commands": [
+      "corepack pnpm typecheck",
+      "corepack pnpm exec vitest run tests/unit/decision-ledger.test.ts tests/unit/decision-ledger-persistence.test.ts tests/unit/paper-decision-runner.test.ts tests/unit/http-control.test.ts tests/unit/llm-risk-assistant-provider.test.ts",
+      "SEEMIRAI_RUN_DB_INTEGRATION=1 corepack pnpm exec vitest run tests/integration/decision-ledger.test.ts tests/integration/migrations.test.ts",
+      "./scripts/verify docs",
+      "./scripts/verify",
+      "git diff --name-only origin/main...HEAD -- src/application src/infrastructure src/interfaces src/runtime | xargs --no-run-if-empty rg -n \"POST /v1/orders|DELETE /v1/order|submitOrder|cancelOrder\""
+    ],
+    "expectedResult": "typecheck, targeted tests, docs verify, full verify, and live order API source scan pass. DB integration may be guard-skipped only with explicit Korean report-back evidence when local DB is unavailable."
+  },
+  "reportBack": [
+    "완료한 Sub PR 번호와 범위",
+    "변경한 주요 파일",
+    "구현한 decision ledger/why summary contract",
+    "사용자-facing 한국어 문구 예시",
+    "append-only/idempotency 보장 방식",
+    "cost rejection과 risk rejection 구분 방식",
+    "주문 후보 0건 frame 설명 방식",
+    "LLM summary가 있는 경우 deterministic summary와 분리한 방식",
+    "실행한 검증 명령과 결과",
+    "DB integration 또는 전체 verify를 실행하지 못했다면 정확한 이유",
+    "live order API 호출 경로를 추가하지 않았다는 scan 근거",
+    "hard fail/warning 자기검열 결과",
+    "남은 리스크와 open question"
+  ],
+  "risks": [
+    {
+      "risk": "Decision ledger가 runner trace 일부만 저장해 운영자가 실제 판단 흐름을 재구성하지 못할 수 있다.",
+      "mitigation": "strategy, order intent, cost, risk, execution evidence kind를 필수 contract와 tests로 고정한다."
+    },
+    {
+      "risk": "주문 후보 0건 frame이 저장되지 않으면 현금 보유 이유를 설명하지 못한다.",
+      "mitigation": "HOLD/CASH_HOLD/DISCARD reason count를 AC와 paper-decision-runner tests에 포함한다."
+    },
+    {
+      "risk": "같은 frame 재실행이 append-only table에 중복 evidence를 만들 수 있다.",
+      "mitigation": "frame dedupe key와 evidence fingerprint unique constraint를 migration/repository tests로 검증한다."
+    },
+    {
+      "risk": "LLM summary가 주문 지시처럼 보이는 출력을 사용자에게 노출할 수 있다.",
+      "mitigation": "order-like output을 fail-closed evidence로 남기고 attachment에서 제외하는 tests를 둔다."
+    },
+    {
+      "risk": "status trace에 raw provider payload, raw order detail, secret 후보가 섞일 수 있다.",
+      "mitigation": "trace 허용 필드를 stable id/correlation/source timestamp로 제한하고 redaction tests를 둔다."
+    },
+    {
+      "risk": "M18 구현 중 live order path가 섞일 수 있다.",
+      "mitigation": "live broker 연결, POST /v1/orders, DELETE /v1/order, submitOrder/cancelOrder 신규 경로를 forbidden scope로 두고 source scan을 수행한다."
+    }
+  ]
+}

@@ -12,4 +12,4 @@ YYYY-MM-DD-topic.md
 
 ## 활성 계획
 
-현재 활성 계획이 없다.
+- [`2026-06-06-issue-159-m18-decision-ledger-reasonix-handoff.md`](./2026-06-06-issue-159-m18-decision-ledger-reasonix-handoff.md): Issue #159 M18 판단 이유 ledger와 설명 API Reasonix 구현 handoff. 4개 순차 sub PR의 범위, guardrail, acceptance criteria trace matrix, 검증 명령을 고정한다.
