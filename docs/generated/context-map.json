@@ -508,7 +508,7 @@
     {
       "path": "tests/unit/decision-ledger-llm-summary.test.ts",
       "kind": "reference",
-      "role": "M18 LLM 보조 summary fail-closed 경계 검증 테스트 — 성공/실패/fail-closed/order-like output 차단 23개 테스트",
+      "role": "M18 LLM 보조 summary fail-closed 경계 검증 테스트 — 성공/실패/fail-closed/order-like output 차단 26개 테스트",
       "read_when": ["LLM summary 테스트 실행", "order-like output 차단 검증", "LLM fail-closed 검증", "noop provider fixture 검증"],
       "owner_scope": "tests/unit"
     }

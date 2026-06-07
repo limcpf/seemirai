@@ -1,9 +1,12 @@
+import { Buffer } from "node:buffer";
 import { createHash } from "node:crypto";
 import type { DecisionLedgerFrame, DecisionEvidenceItem, DecisionLedgerJsonRecord } from "./types.js";
 import type {
   LlmRiskAssistantProviderPort,
   LlmRiskAssistantProviderResponse,
 } from "../llm-risk-assistant/contracts.js";
+
+const LLM_SUMMARY_PROMPT_MAX_CHARS = 20_000;
 
 /**
  * LLM summary 생성에 필요한 결정론적 ledger context다.
@@ -90,6 +93,22 @@ export async function generateLlmSummary(
   // 과거 LLM 설명 산출물은 다음 LLM 입력 근거가 되면 경계가 순환하므로 결정론적 evidence만 prompt에 넣는다.
   const deterministicEvidenceItems = evidenceItems.filter(isDeterministicEvidenceItem);
   const prompt = buildLlmSummaryPrompt(frame, deterministicEvidenceItems);
+  if (prompt.length > LLM_SUMMARY_PROMPT_MAX_CHARS) {
+    return buildExplanationFailureEvidence({
+      frameDedupeKey: frame.dedupeKey,
+      sourceFrameId: frame.sourceFrameId,
+      reasonCode: "llm_summary_prompt_too_large",
+      userMessage: "LLM 설명 생성 입력이 허용 크기를 초과해 provider 호출을 생략했습니다.",
+      failureClass: "output_too_large",
+      occurredAt: new Date(),
+      metadataPayload: {
+        providerId: provider.providerId,
+        promptLength: prompt.length,
+        maxPromptChars: LLM_SUMMARY_PROMPT_MAX_CHARS,
+        evidenceCount: deterministicEvidenceItems.length,
+      },
+    });
+  }
 
   let response: LlmRiskAssistantProviderResponse;
   try {
@@ -151,6 +170,24 @@ export async function generateLlmSummary(
   }
 
   const result = response.result;
+
+  // provider가 byte cap을 놓쳐도 append-only ledger에는 허용 크기를 넘는 LLM 본문을 저장하지 않는다.
+  const summaryBytes = Buffer.byteLength(result.summary, "utf8");
+  if (summaryBytes > maxOutputBytes) {
+    return buildExplanationFailureEvidence({
+      frameDedupeKey: frame.dedupeKey,
+      sourceFrameId: frame.sourceFrameId,
+      reasonCode: "llm_summary_output_too_large",
+      userMessage: "LLM 설명 생성 결과가 허용 크기를 초과해 요약에서 제외했습니다.",
+      failureClass: "output_too_large",
+      occurredAt: new Date(),
+      metadataPayload: {
+        providerId: response.provider_id,
+        summaryBytes,
+        maxOutputBytes,
+      },
+    });
+  }
 
   // LLM output에 주문 지시나 order-like 출력이 있는지 검사한다.
   const orderLikeIssue = detectOrderLikeOutput(result.summary);
@@ -386,8 +423,10 @@ function detectOrderLikeOutput(summaryText: string): string | null {
 
   // 1. 명시적 매수/매도 추천 문구
   const tradeRecommendPatterns: Array<{ pattern: RegExp; label: string }> = [
-    { pattern: /매수\s*(하세|추천|권장|해야|하는\s*것이|하십시오|바랍니다)/, label: "매수 추천 문구" },
-    { pattern: /매도\s*(하세|추천|권장|해야|하는\s*것이|하십시오|바랍니다)/, label: "매도 추천 문구" },
+    { pattern: /매수(?:를|을)?\s*(하세|추천|권장|해야|하십시오|바랍니다)/, label: "매수 추천 문구" },
+    { pattern: /매도(?:를|을)?\s*(하세|추천|권장|해야|하십시오|바랍니다)/, label: "매도 추천 문구" },
+    { pattern: /매수\s*하는\s*것(?:이|을)?(?:\s*(추천|권장|해야|하십시오|바랍니다))?/, label: "매수 추천 문구" },
+    { pattern: /매도\s*하는\s*것(?:이|을)?(?:\s*(추천|권장|해야|하십시오|바랍니다))?/, label: "매도 추천 문구" },
     { pattern: /buy\s*(now|immediately|recommend|should|must)/i, label: "영문 매수 추천" },
     { pattern: /sell\s*(now|immediately|recommend|should|must)/i, label: "영문 매도 추천" },
     { pattern: /지금\s*(사세요|팔|매수|매도)/, label: "즉시 주문 추천" },

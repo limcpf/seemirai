@@ -371,6 +371,27 @@ describe("generateLlmSummary", () => {
       }
     });
 
+    it("조사형 매수·매도 권장 output도 차단된다", async () => {
+      const summaries = [
+        "KRW-BTC 매수를 권장합니다. 비용 조건은 별도로 확인해야 합니다.",
+        "KRW-BTC를 매도하는 것을 권장합니다. 변동성 확대에 대비해야 합니다.",
+      ];
+
+      for (const summary of summaries) {
+        const provider = createFakeSuccessProvider(summary);
+
+        const result = await generateLlmSummary(provider, {
+          frame: createTestFrame(),
+          evidenceItems: createTestEvidenceItems(),
+        });
+
+        expect(result.status).toBe("failed");
+        if (result.status === "failed") {
+          expect(result.evidence.reasonCode).toBe("llm_summary_order_like_output_blocked");
+        }
+      }
+    });
+
     it("수익 보장 표현이 포함된 output은 차단된다", async () => {
       const provider = createFakeSuccessProvider(
         "이 전략을 따르면 확실한 수익을 얻을 수 있으며 손실은 나지 않습니다.",
@@ -415,6 +436,30 @@ describe("generateLlmSummary", () => {
       expect(result.status).toBe("failed");
       if (result.status === "failed") {
         expect(result.evidence.reasonCode).toBe("llm_summary_too_short");
+      }
+    });
+
+    it("provider 성공 응답이 maxOutputBytes를 초과하면 거부된다", async () => {
+      const provider = createFakeSuccessProvider(
+        "비용 평가와 리스크 판단 근거를 종합하면 진입 보류가 적절합니다.",
+      );
+
+      const result = await generateLlmSummary(
+        provider,
+        {
+          frame: createTestFrame(),
+          evidenceItems: createTestEvidenceItems(),
+        },
+        { maxOutputBytes: 16 },
+      );
+
+      expect(result.status).toBe("failed");
+      if (result.status === "failed") {
+        expect(result.evidence.reasonCode).toBe("llm_summary_output_too_large");
+        expect(result.failureClass).toBe("output_too_large");
+        expect(result.evidence.payload).toMatchObject({
+          maxOutputBytes: 16,
+        });
       }
     });
   });
@@ -571,6 +616,55 @@ describe("generateLlmSummary", () => {
       expect(capturedMetadata).toMatchObject({
         evidence_count: 2,
       });
+    });
+
+    it("prompt가 provider content 한도를 넘으면 provider를 호출하지 않고 실패 evidence를 반환한다", async () => {
+      let providerCalled = false;
+      const provider: LlmRiskAssistantProviderPort = {
+        providerId: "noop" as const,
+        async generate(request: LlmRiskAssistantProviderRequest): Promise<LlmRiskAssistantProviderResponse> {
+          providerCalled = true;
+          return createLlmProviderSuccess({
+            providerId: "noop",
+            completedAt: request.requested_at,
+            result: {
+              schema_version: LLM_RISK_ASSISTANT_SCHEMA_VERSION,
+              result_type: request.result_type,
+              source_ids: [request.input.source_id],
+              summary: "호출되면 안 되는 provider 응답입니다.",
+              recommended_action: "NO_ACTION",
+              observed_at: request.input.observed_at,
+              reason_codes: ["llm_summary_test"],
+              requires_human_review: false,
+            },
+          });
+        },
+      };
+      const baseEvidenceItems = createTestEvidenceItems();
+      const oversizedEvidenceItems: DecisionEvidenceItem[] = [
+        {
+          ...baseEvidenceItems[0]!,
+          userMessage: "가".repeat(20_500),
+          evidenceFingerprint: "fp-strategy-oversized-prompt",
+        },
+        ...baseEvidenceItems.slice(1),
+      ];
+
+      const result = await generateLlmSummary(provider, {
+        frame: createTestFrame(),
+        evidenceItems: oversizedEvidenceItems,
+      });
+
+      expect(providerCalled).toBe(false);
+      expect(result.status).toBe("failed");
+      if (result.status === "failed") {
+        expect(result.evidence.reasonCode).toBe("llm_summary_prompt_too_large");
+        expect(result.failureClass).toBe("output_too_large");
+        expect(result.evidence.payload).toMatchObject({
+          maxPromptChars: 20_000,
+          evidenceCount: 2,
+        });
+      }
     });
   });
 
