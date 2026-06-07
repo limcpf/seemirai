@@ -822,17 +822,23 @@ describe("HTTP control foundation", () => {
     });
   });
 
-  it("DB-backed why provider는 decision_at 동률에서 market/strategy별 최신 1건만 반환한다", async () => {
+  it("DB-backed why provider는 market+strategy frame을 보존하고 시간 기준으로 최신 판단을 고른다", async () => {
     const summary = await createDatabaseWhySummaryProvider(
       tieBreakWhySummaryDatabase(),
       () => new Date("2026-06-06T04:00:00.000Z"),
     ).getWhySummary();
 
     expect(summary.readStatus).toBe("OK");
-    expect(summary.markets.items).toHaveLength(1);
-    expect(summary.markets.items[0]!.trace.selected).toBe("market-newer-id");
-    expect(summary.strategies.items).toHaveLength(1);
-    expect(summary.strategies.items[0]!.trace.strategySelected).toBe("strategy-newer-id");
+    expect(summary.markets.items).toHaveLength(2);
+    expect(summary.markets.items.map((item) => item.trace.selected)).toEqual([
+      "market-newer-created-at",
+      "market-second-strategy",
+    ]);
+    expect(summary.strategies.items).toHaveLength(2);
+    expect(summary.strategies.items.map((item) => item.trace.strategySelected)).toEqual([
+      "strategy-newer-created-at",
+      "strategy-second-strategy",
+    ]);
   });
 
   it("maps injected daily report failures to the same /status warning shape", async () => {
@@ -1591,11 +1597,15 @@ function tieBreakWhySummaryDatabase(): Database {
     category: string;
     summary_status: string;
     reason_counts_json: Record<string, number>;
+    observed_at: Date;
     decision_at: Date;
+    created_at: Date;
     trace_json: Record<string, unknown>;
   };
 
   const tiedAt = new Date("2026-06-06T03:00:00.000Z");
+  const olderCreatedAt = new Date("2026-06-06T03:00:01.000Z");
+  const newerCreatedAt = new Date("2026-06-06T03:00:02.000Z");
   const rows: WhySummaryRow[] = [
     {
       id: "frame-003",
@@ -1604,7 +1614,9 @@ function tieBreakWhySummaryDatabase(): Database {
       category: "CASH_HOLD",
       summary_status: "RECORDED",
       reason_counts_json: { fixture_waiting_for_signal: 1 },
+      observed_at: tiedAt,
       decision_at: tiedAt,
+      created_at: newerCreatedAt,
       trace_json: { selected: "cash" },
     },
     {
@@ -1614,8 +1626,10 @@ function tieBreakWhySummaryDatabase(): Database {
       category: "SELL",
       summary_status: "RECORDED",
       reason_counts_json: {},
+      observed_at: tiedAt,
       decision_at: tiedAt,
-      trace_json: { selected: "market-newer-id", strategySelected: "strategy-newer-id" },
+      created_at: newerCreatedAt,
+      trace_json: { selected: "market-newer-created-at", strategySelected: "strategy-newer-created-at" },
     },
     {
       id: "frame-001",
@@ -1624,8 +1638,22 @@ function tieBreakWhySummaryDatabase(): Database {
       category: "BUY",
       summary_status: "RECORDED",
       reason_counts_json: {},
+      observed_at: tiedAt,
       decision_at: tiedAt,
+      created_at: olderCreatedAt,
       trace_json: { selected: "older-id", strategySelected: "older-id" },
+    },
+    {
+      id: "frame-004",
+      market: "KRW-BTC",
+      strategy_id: "strategy.other",
+      category: "RISK_REJECTED",
+      summary_status: "RECORDED",
+      reason_counts_json: {},
+      observed_at: tiedAt,
+      decision_at: tiedAt,
+      created_at: olderCreatedAt,
+      trace_json: { selected: "market-second-strategy", strategySelected: "strategy-second-strategy" },
     },
   ];
 
@@ -1643,16 +1671,18 @@ function createTieBreakWhyQuery(rows: readonly {
   category: string;
   summary_status: string;
   reason_counts_json: Record<string, number>;
+  observed_at: Date;
   decision_at: Date;
+  created_at: Date;
   trace_json: Record<string, unknown>;
 }[]) {
   type QueryMode = "all" | "market" | "strategy" | "cash";
   let mode: QueryMode = "all";
   let limitCount: number | null = null;
-  let distinctColumn: "market" | "strategy_id" | null = null;
+  let distinctColumns: readonly ("market" | "strategy_id")[] = [];
   const query = {
-    distinctOn(columnName: "market" | "strategy_id") {
-      distinctColumn = columnName;
+    distinctOn(columnName: "market" | "strategy_id" | readonly ("market" | "strategy_id")[]) {
+      distinctColumns = Array.isArray(columnName) ? columnName : [columnName];
       return query;
     },
     select() {
@@ -1688,26 +1718,37 @@ function createTieBreakWhyQuery(rows: readonly {
         }
         return true;
       });
-      const sorted = [...filtered].sort((left, right) => right.id.localeCompare(left.id));
-      const distinctRows = distinctColumn === null ? sorted : uniqueRowsByColumn(sorted, distinctColumn);
+      const sorted = [...filtered].sort(compareWhyRowsByLatestFirst);
+      const distinctRows = distinctColumns.length === 0 ? sorted : uniqueRowsByColumns(sorted, distinctColumns);
       return limitCount === null ? distinctRows : distinctRows.slice(0, limitCount);
     },
   };
   return query;
 }
 
-function uniqueRowsByColumn<Row extends Record<"market" | "strategy_id", string | null>>(
+function compareWhyRowsByLatestFirst(
+  left: { decision_at: Date; created_at: Date; observed_at: Date },
+  right: { decision_at: Date; created_at: Date; observed_at: Date },
+): number {
+  return (
+    right.decision_at.getTime() - left.decision_at.getTime() ||
+    right.created_at.getTime() - left.created_at.getTime() ||
+    right.observed_at.getTime() - left.observed_at.getTime()
+  );
+}
+
+function uniqueRowsByColumns<Row extends Record<"market" | "strategy_id", string | null>>(
   rows: readonly Row[],
-  columnName: "market" | "strategy_id",
+  columnNames: readonly ("market" | "strategy_id")[],
 ): readonly Row[] {
   const seen = new Set<string>();
   const result: Row[] = [];
   for (const row of rows) {
-    const value = row[columnName];
-    if (value === null || seen.has(value)) {
+    const key = columnNames.map((columnName) => row[columnName] ?? "<null>").join("\u0000");
+    if (seen.has(key)) {
       continue;
     }
-    seen.add(value);
+    seen.add(key);
     result.push(row);
   }
   return result;

@@ -111,28 +111,23 @@ export interface PaperDecisionInputSource {
  */
 export interface PaperDecisionLedgerWriterPort {
   /**
-   * frame 하나를 append-only로 기록한다.
+   * frame과 evidence 목록을 같은 원자적 write로 기록한다.
+   *
+   * frame만 저장되고 evidence가 누락된 `RECORDED` 상태가 `/status.why`에 노출되면 안 되므로,
+   * production 구현은 transaction으로 frame/evidence를 함께 append한다. duplicate frame이어도 기존 durable id로
+   * evidence append를 재시도할 수 있어야 한다.
    *
    * @param frame 기록할 decision ledger frame
-   * @returns durable insert 결과. inserted=false면 idempotent skip을 의미한다.
-   *   durableFrameId는 항상 반환되며, inserted=false일 때도 이전에 저장된 frame의 id다.
-   */
-  appendFrame(frame: DecisionLedgerFrame): Promise<{ inserted: boolean; durableFrameId: string }>;
-
-  /**
-   * frame 아래 evidence item 목록을 append-only로 기록한다.
-   *
-   * frame/evidence 재시도 복구를 위해 duplicate frame이어도 호출할 수 있어야 한다.
-   * repository는 evidence fingerprint unique constraint로 중복을 차단한다.
-   *
-   * @param durableFrameId DB decision_ledger_frames.id (FK). sourceFrameId가 아니다.
    * @param evidenceItems 기록할 evidence item 목록
-   * @returns evidence batch append의 aggregate idempotency 결과
+   * @returns frame/evidence batch append의 aggregate idempotency 결과
    */
-  appendEvidenceItems(
-    durableFrameId: string,
+  appendFrameWithEvidence(
+    frame: DecisionLedgerFrame,
     evidenceItems: readonly DecisionEvidenceItem[],
-  ): Promise<{ inserted: number; skipped: number }>;
+  ): Promise<{
+    frame: { inserted: boolean; durableFrameId: string };
+    evidence: { inserted: number; skipped: number };
+  }>;
 }
 
 /**

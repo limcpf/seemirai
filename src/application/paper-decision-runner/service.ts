@@ -171,12 +171,8 @@ export class PaperDecisionRunner {
       const ledgerResult = buildDecisionLedgerFromRunnerResult(ledgerInput, sourceRunId, exchange);
 
       for (const { frame, evidenceItems } of ledgerResult.frames) {
-        // frame append — idempotency key로 중복을 차단한다.
-        const frameResult = await this.decisionLedgerWriter.appendFrame(frame);
-        // evidence append는 항상 시도한다. duplicate frame이어도 durableFrameId를 받아
-        // 이전 실행에서 evidence만 실패한 경우 재시도 복구가 가능하다.
-        // repository는 evidence fingerprint unique constraint로 중복을 차단한다.
-        await this.decisionLedgerWriter.appendEvidenceItems(frameResult.durableFrameId, evidenceItems);
+        // frame/evidence를 한 원자적 writer 호출로 묶어 근거 없는 RECORDED frame이 status에 노출되지 않게 한다.
+        await this.decisionLedgerWriter.appendFrameWithEvidence(frame, evidenceItems);
       }
 
       return { ...runnerResult, ledgerWriteStatus: "RECORDED" };

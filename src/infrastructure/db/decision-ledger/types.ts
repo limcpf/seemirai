@@ -74,3 +74,26 @@ export interface AppendDecisionLedgerEvidenceResult {
   /** DB에 저장된 durable evidence record 목록 */
   readonly records: readonly DecisionLedgerEvidenceRecord[];
 }
+
+/**
+ * frame과 evidence batch를 같은 원자적 write로 append할 때 사용하는 입력이다.
+ *
+ * runner는 frame만 저장되고 evidence가 누락된 `RECORDED` 상태를 만들면 안 되므로,
+ * production writer는 이 입력을 transaction 경계에서 처리한다.
+ */
+export interface AppendDecisionLedgerFrameWithEvidenceInput {
+  /** append할 domain frame */
+  readonly frame: DecisionLedgerFrame;
+  /** frame 아래에 함께 append할 evidence item 목록 */
+  readonly evidenceItems: readonly AppendDecisionLedgerEvidenceInput[];
+}
+
+/**
+ * frame과 evidence batch를 같은 transaction에서 append한 결과다.
+ */
+export interface AppendDecisionLedgerFrameWithEvidenceResult {
+  /** frame append 또는 idempotent reuse 결과 */
+  readonly frame: AppendDecisionLedgerFrameResult;
+  /** evidence batch append 결과 */
+  readonly evidence: AppendDecisionLedgerEvidenceResult;
+}

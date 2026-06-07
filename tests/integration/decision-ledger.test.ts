@@ -359,6 +359,43 @@ describeDb("decision ledger PostgreSQL integration", () => {
     });
   });
 
+  describe("appendFrameWithEvidence", () => {
+    it("frame과 evidence를 같은 transaction에서 append한다", async () => {
+      const db = await getDatabase();
+      const repository = new PostgresDecisionLedgerRepository(db);
+      const frame = makeFrame("atomic-with-evidence");
+      const evidence = makeEvidence("atomic-with-evidence");
+
+      const result = await repository.appendFrameWithEvidence({
+        frame,
+        evidenceItems: [{ item: evidence }],
+      });
+
+      expect(result.frame.inserted).toBe(true);
+      expect(result.evidence.inserted).toBe(1);
+      const storedEvidence = await repository.findEvidenceByFrameId(result.frame.record.id);
+      expect(storedEvidence).toHaveLength(1);
+      expect(storedEvidence[0]!.evidence_fingerprint).toBe(evidence.evidenceFingerprint);
+    });
+
+    it("evidence 변환 실패 시 frame-only row를 남기지 않는다", async () => {
+      const db = await getDatabase();
+      const repository = new PostgresDecisionLedgerRepository(db);
+      const frame = makeFrame("atomic-rollback");
+      const invalidEvidence = makeEvidence("atomic-rollback", {
+        payload: { invalidDate: new Date("2026-06-06T00:00:00Z") } as unknown as Record<string, unknown>,
+      });
+
+      await expect(
+        repository.appendFrameWithEvidence({
+          frame,
+          evidenceItems: [{ item: invalidEvidence }],
+        }),
+      ).rejects.toThrow();
+      await expect(repository.findFrameByDedupeKey(frame.dedupeKey)).resolves.toBeUndefined();
+    });
+  });
+
   describe("findEvidenceByFrameId / findEvidenceByFrameIds", () => {
     it("여러 frame의 evidence를 batch로 조회할 수 있다", async () => {
       const db = await getDatabase();

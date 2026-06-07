@@ -17,7 +17,7 @@ import type { WhySummary } from "../../../application/decision-ledger.js";
  *
  * ## 조회 방식
  *
- * - market별: `market IS NOT NULL`인 frame을 market별로 group해 최신 1건씩
+ * - market별: `market IS NOT NULL`인 frame을 market+strategy별로 group해 최신 1건씩
  * - strategy별: `strategy_id IS NOT NULL`인 frame을 strategy별로 group해 최신 1건씩
  * - cash: `category = 'CASH_HOLD'`인 frame 중 최신 1건
  */
@@ -51,26 +51,31 @@ export function createDatabaseWhySummaryProvider(
 }
 
 /**
- * market별 최신 frame을 조회한다.
+ * market+strategy별 최신 frame을 조회한다.
  */
 async function queryLatestMarketFrames(
   database: Database,
 ): Promise<readonly WhyFrameProjection[]> {
   const rows = await database
     .selectFrom("decision_ledger_frames")
-    .distinctOn("market")
+    .distinctOn(["market", "strategy_id"])
     .select([
       "market",
+      "strategy_id",
       "category",
       "summary_status",
       "reason_counts_json",
+      "observed_at",
       "decision_at",
+      "created_at",
       "trace_json",
     ])
     .where("market", "is not", null)
     .orderBy("market", "asc")
+    .orderBy("strategy_id", "asc")
     .orderBy("decision_at", "desc")
-    .orderBy("id", "desc")
+    .orderBy("created_at", "desc")
+    .orderBy("observed_at", "desc")
     .execute();
 
   return rows.map((row) => ({
@@ -79,7 +84,10 @@ async function queryLatestMarketFrames(
     summaryStatus: row.summary_status as WhyFrameProjection["summaryStatus"],
     reasonCounts: (row.reason_counts_json ?? {}) as Record<string, number>,
     latestDecisionAt: row.decision_at,
-    trace: (row.trace_json ?? {}) as Record<string, unknown>,
+    trace: {
+      ...((row.trace_json ?? {}) as Record<string, unknown>),
+      strategyId: row.strategy_id,
+    },
   }));
 }
 
@@ -97,13 +105,16 @@ async function queryLatestStrategyFrames(
       "category",
       "summary_status",
       "reason_counts_json",
+      "observed_at",
       "decision_at",
+      "created_at",
       "trace_json",
     ])
     .where("strategy_id", "is not", null)
     .orderBy("strategy_id", "asc")
     .orderBy("decision_at", "desc")
-    .orderBy("id", "desc")
+    .orderBy("created_at", "desc")
+    .orderBy("observed_at", "desc")
     .execute();
 
   return rows.map((row) => ({
@@ -128,12 +139,15 @@ async function queryLatestCashFrames(
       "category",
       "summary_status",
       "reason_counts_json",
+      "observed_at",
       "decision_at",
+      "created_at",
       "trace_json",
     ])
     .where("category", "=", "CASH_HOLD")
     .orderBy("decision_at", "desc")
-    .orderBy("id", "desc")
+    .orderBy("created_at", "desc")
+    .orderBy("observed_at", "desc")
     .limit(1)
     .execute();
 

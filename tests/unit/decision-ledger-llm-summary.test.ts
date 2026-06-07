@@ -179,6 +179,33 @@ describe("generateLlmSummary", () => {
         expect(result.summaryText).toContain("차단");
       }
     });
+
+    it("같은 frame/provider 재시도는 summary 본문이 달라도 같은 fingerprint를 사용한다", async () => {
+      const frame = createTestFrame();
+      const evidenceItems = createTestEvidenceItems();
+      const first = await generateLlmSummary(
+        createFakeSuccessProvider(
+          "현재 KRW-BTC 판단은 비용과 리스크 조건을 고려해 진입을 보류한 상태입니다. " +
+          "전략 근거는 유지되지만 순기대수익이 안전마진을 넘지 못했습니다. " +
+          "운영자는 추가 조치 없이 다음 frame을 기다리면 됩니다.",
+        ),
+        { frame, evidenceItems },
+      );
+      const second = await generateLlmSummary(
+        createFakeSuccessProvider(
+          "KRW-BTC에서는 이번 frame의 판단 근거가 비용 조건을 넘지 못해 대기 상태로 정리되었습니다. " +
+          "리스크 게이트와 실행 경계는 변경되지 않았고 주문 판단은 결정론적 evidence를 따릅니다. " +
+          "따라서 현재는 현금 보유가 유지됩니다.",
+        ),
+        { frame, evidenceItems },
+      );
+
+      expect(first.status).toBe("success");
+      expect(second.status).toBe("success");
+      if (first.status === "success" && second.status === "success") {
+        expect(first.evidence.evidenceFingerprint).toBe(second.evidence.evidenceFingerprint);
+      }
+    });
   });
 
   describe("fail-closed — provider 실패 시 EXPLANATION_FAILURE evidence", () => {

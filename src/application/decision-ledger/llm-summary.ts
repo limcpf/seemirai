@@ -387,7 +387,7 @@ function buildExplanationSummaryEvidence(options: {
   sourceId: string;
   providerId: string;
 }): DecisionEvidenceItem {
-  const evidenceFingerprint = `fp-llm-summary:${options.frameDedupeKey}:${hashSimple(options.summaryText)}`;
+  const evidenceFingerprint = `fp-llm-summary:${options.frameDedupeKey}:${options.providerId}`;
 
   return {
     evidenceKind: "EXPLANATION_SUMMARY",

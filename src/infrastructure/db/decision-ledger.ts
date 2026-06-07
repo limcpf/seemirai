@@ -21,6 +21,8 @@ export type {
   AppendDecisionLedgerFrameResult,
   AppendDecisionLedgerEvidenceInput,
   AppendDecisionLedgerEvidenceResult,
+  AppendDecisionLedgerFrameWithEvidenceInput,
+  AppendDecisionLedgerFrameWithEvidenceResult,
   DecisionLedgerFrameRecord,
   DecisionLedgerEvidenceRecord,
   DecisionLedgerFrameInsertInput,

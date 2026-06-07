@@ -227,98 +227,83 @@ describe("M9 paper decision runner", () => {
 
   it("ledger writer가 주입되면 durable frame id로 evidence를 append한다", async () => {
     const frame = createLedgerWriterTestFrame("ledger-frame-001", "run-ledger-writer-001");
-    const appendFrame = vi.fn<PaperDecisionLedgerWriterPort["appendFrame"]>(async () => ({
-      inserted: true,
-      durableFrameId: "db-frame-001",
-    }));
-    const appendEvidenceItems = vi.fn<PaperDecisionLedgerWriterPort["appendEvidenceItems"]>(async () => ({
-      inserted: 1,
-      skipped: 0,
-    }));
+    const appendFrameWithEvidence = vi.fn<PaperDecisionLedgerWriterPort["appendFrameWithEvidence"]>(
+      async () => ({
+        frame: { inserted: true, durableFrameId: "db-frame-001" },
+        evidence: { inserted: 1, skipped: 0 },
+      }),
+    );
     const runner = createLedgerWriterTestRunner(frame, {
-      appendFrame,
-      appendEvidenceItems,
+      appendFrameWithEvidence,
     });
 
     const result = await runner.run({ sourceRequest: { sourceId: "run-ledger-writer-001" } });
 
     expect(result.ledgerWriteStatus).toBe("RECORDED");
-    expect(appendFrame).toHaveBeenCalledTimes(2);
-    expect(appendEvidenceItems).toHaveBeenCalledTimes(2);
-    expect(appendEvidenceItems.mock.calls[0]![0]).toBe("db-frame-001");
-    expect(appendEvidenceItems.mock.calls[0]![1]).toHaveLength(1);
-    expect(appendEvidenceItems.mock.calls[1]![0]).toBe("db-frame-001");
-    expect(appendEvidenceItems.mock.calls[1]![1]).toHaveLength(0);
+    expect(appendFrameWithEvidence).toHaveBeenCalledTimes(2);
+    expect(appendFrameWithEvidence.mock.calls[0]![1]).toHaveLength(1);
+    expect(appendFrameWithEvidence.mock.calls[1]![1]).toHaveLength(0);
   });
 
   it("duplicate frame이어도 기존 durable id로 evidence append를 재시도한다", async () => {
     const frame = createLedgerWriterTestFrame("ledger-frame-duplicate", "run-ledger-writer-duplicate");
-    const appendFrame = vi.fn<PaperDecisionLedgerWriterPort["appendFrame"]>(async () => ({
-      inserted: false,
-      durableFrameId: "db-frame-existing",
-    }));
-    const appendEvidenceItems = vi.fn<PaperDecisionLedgerWriterPort["appendEvidenceItems"]>(async () => ({
-      inserted: 0,
-      skipped: 1,
-    }));
+    const appendFrameWithEvidence = vi.fn<PaperDecisionLedgerWriterPort["appendFrameWithEvidence"]>(
+      async () => ({
+        frame: { inserted: false, durableFrameId: "db-frame-existing" },
+        evidence: { inserted: 0, skipped: 1 },
+      }),
+    );
     const runner = createLedgerWriterTestRunner(frame, {
-      appendFrame,
-      appendEvidenceItems,
+      appendFrameWithEvidence,
     });
 
     const result = await runner.run({ sourceRequest: { sourceId: "run-ledger-writer-duplicate" } });
 
     expect(result.ledgerWriteStatus).toBe("RECORDED");
-    expect(appendFrame).toHaveBeenCalledTimes(2);
-    expect(appendEvidenceItems).toHaveBeenCalledTimes(2);
-    expect(appendEvidenceItems.mock.calls[0]![0]).toBe("db-frame-existing");
-    expect(appendEvidenceItems.mock.calls[1]![0]).toBe("db-frame-existing");
+    expect(appendFrameWithEvidence).toHaveBeenCalledTimes(2);
+    expect(appendFrameWithEvidence.mock.results[0]!.type).toBe("return");
   });
 
   it("ledger writer 실패는 broker 재시도 없이 UNAVAILABLE로 격리한다", async () => {
     const frame = createLedgerWriterTestFrame("ledger-frame-failure", "run-ledger-writer-failure");
-    const appendFrame = vi.fn<PaperDecisionLedgerWriterPort["appendFrame"]>(async () => {
+    const appendFrameWithEvidence = vi.fn<PaperDecisionLedgerWriterPort["appendFrameWithEvidence"]>(async () => {
       throw new Error("ledger unavailable");
     });
-    const appendEvidenceItems = vi.fn<PaperDecisionLedgerWriterPort["appendEvidenceItems"]>(async () => ({
-      inserted: 0,
-      skipped: 0,
-    }));
     const runner = createLedgerWriterTestRunner(frame, {
-      appendFrame,
-      appendEvidenceItems,
+      appendFrameWithEvidence,
     });
 
     const result = await runner.run({ sourceRequest: { sourceId: "run-ledger-writer-failure" } });
 
     expect(result.framesProcessed).toBe(1);
     expect(result.ledgerWriteStatus).toBe("UNAVAILABLE");
-    expect(appendFrame).toHaveBeenCalledTimes(1);
-    expect(appendEvidenceItems).not.toHaveBeenCalled();
+    expect(appendFrameWithEvidence).toHaveBeenCalledTimes(1);
   });
 
   it("sourceId가 없으면 같은 input frame에 대해 결정론적 ledger dedupe key를 사용한다", async () => {
     const frame = createLedgerWriterTestFrame("ledger-frame-deterministic");
-    const firstAppendFrame = vi.fn<PaperDecisionLedgerWriterPort["appendFrame"]>(async () => ({
-      inserted: true,
-      durableFrameId: "db-frame-first",
-    }));
-    const secondAppendFrame = vi.fn<PaperDecisionLedgerWriterPort["appendFrame"]>(async () => ({
-      inserted: true,
-      durableFrameId: "db-frame-second",
-    }));
+    const firstAppendFrameWithEvidence = vi.fn<PaperDecisionLedgerWriterPort["appendFrameWithEvidence"]>(
+      async () => ({
+        frame: { inserted: true, durableFrameId: "db-frame-first" },
+        evidence: { inserted: 1, skipped: 0 },
+      }),
+    );
+    const secondAppendFrameWithEvidence = vi.fn<PaperDecisionLedgerWriterPort["appendFrameWithEvidence"]>(
+      async () => ({
+        frame: { inserted: true, durableFrameId: "db-frame-second" },
+        evidence: { inserted: 1, skipped: 0 },
+      }),
+    );
 
     await createLedgerWriterTestRunner(frame, {
-      appendFrame: firstAppendFrame,
-      appendEvidenceItems: vi.fn<PaperDecisionLedgerWriterPort["appendEvidenceItems"]>(async () => ({ inserted: 1, skipped: 0 })),
+      appendFrameWithEvidence: firstAppendFrameWithEvidence,
     }).run();
     await createLedgerWriterTestRunner(frame, {
-      appendFrame: secondAppendFrame,
-      appendEvidenceItems: vi.fn<PaperDecisionLedgerWriterPort["appendEvidenceItems"]>(async () => ({ inserted: 1, skipped: 0 })),
+      appendFrameWithEvidence: secondAppendFrameWithEvidence,
     }).run();
 
-    const firstDedupeKey = firstAppendFrame.mock.calls[0]![0].dedupeKey;
-    const secondDedupeKey = secondAppendFrame.mock.calls[0]![0].dedupeKey;
+    const firstDedupeKey = firstAppendFrameWithEvidence.mock.calls[0]![0].dedupeKey;
+    const secondDedupeKey = secondAppendFrameWithEvidence.mock.calls[0]![0].dedupeKey;
     expect(firstDedupeKey).toBe(secondDedupeKey);
     expect(firstDedupeKey).toContain("UPBIT:paper-runner:");
     expect(firstDedupeKey).toContain("frame:ledger-frame-deterministic:strategy:strategy.hold-ledger");

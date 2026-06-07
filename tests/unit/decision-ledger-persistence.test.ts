@@ -8,6 +8,7 @@ import {
 import type {
   AppendDecisionLedgerEvidenceResult,
   AppendDecisionLedgerFrameResult,
+  AppendDecisionLedgerFrameWithEvidenceResult,
 } from "../../src/infrastructure/db/decision-ledger.js";
 import type {
   DecisionLedgerFrame,
@@ -49,38 +50,52 @@ describe("decision-ledger runner writer port adapter", () => {
       evidenceFingerprint: "fp-adapter-hold",
       trace: { strategyId: "strategy.adapter" },
     };
-    const frameInputs: DecisionLedgerFrame[] = [];
-    const evidenceInputs: Array<{ frameId: string; items: readonly { readonly item: DecisionEvidenceItem }[] }> = [];
+    const frameWithEvidenceInputs: Array<{
+      frame: DecisionLedgerFrame;
+      evidenceItems: readonly { readonly item: DecisionEvidenceItem }[];
+    }> = [];
     const writer = createDecisionLedgerWriterPort({
       async appendFrame(input): Promise<AppendDecisionLedgerFrameResult> {
-        frameInputs.push(input.frame);
         return {
           inserted: false,
           record: { id: "db-frame-adapter" } as AppendDecisionLedgerFrameResult["record"],
         };
       },
       async appendEvidenceItems(frameId, items): Promise<AppendDecisionLedgerEvidenceResult> {
-        evidenceInputs.push({ frameId, items });
         return {
           inserted: 0,
           skipped: 1,
           records: [],
         };
       },
+      async appendFrameWithEvidence(input): Promise<AppendDecisionLedgerFrameWithEvidenceResult> {
+        frameWithEvidenceInputs.push(input);
+        return {
+          frame: {
+            inserted: false,
+            record: { id: "db-frame-adapter" } as AppendDecisionLedgerFrameResult["record"],
+          },
+          evidence: {
+            inserted: 0,
+            skipped: 1,
+            records: [],
+          },
+        };
+      },
     });
 
-    const frameResult = await writer.appendFrame(frame);
-    const evidenceResult = await writer.appendEvidenceItems(frameResult.durableFrameId, [evidence]);
+    const result = await writer.appendFrameWithEvidence(frame, [evidence]);
 
-    expect(frameInputs).toEqual([frame]);
-    expect(frameResult).toEqual({ inserted: false, durableFrameId: "db-frame-adapter" });
-    expect(evidenceInputs).toEqual([
+    expect(frameWithEvidenceInputs).toEqual([
       {
-        frameId: "db-frame-adapter",
-        items: [{ item: evidence }],
+        frame,
+        evidenceItems: [{ item: evidence }],
       },
     ]);
-    expect(evidenceResult).toEqual({ inserted: 0, skipped: 1 });
+    expect(result).toEqual({
+      frame: { inserted: false, durableFrameId: "db-frame-adapter" },
+      evidence: { inserted: 0, skipped: 1 },
+    });
   });
 });
 

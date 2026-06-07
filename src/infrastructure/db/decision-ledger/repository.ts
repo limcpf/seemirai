@@ -4,6 +4,8 @@ import type {
   AppendDecisionLedgerFrameResult,
   AppendDecisionLedgerEvidenceInput,
   AppendDecisionLedgerEvidenceResult,
+  AppendDecisionLedgerFrameWithEvidenceInput,
+  AppendDecisionLedgerFrameWithEvidenceResult,
   DecisionLedgerFrameRecord,
   DecisionLedgerEvidenceRecord,
 } from "./types.js";
@@ -57,27 +59,7 @@ export class PostgresDecisionLedgerRepository {
   public async appendFrame(
     input: AppendDecisionLedgerFrameInput,
   ): Promise<AppendDecisionLedgerFrameResult> {
-    const row = toDecisionLedgerFrameRowInput(input.frame);
-
-    const inserted = await this.database
-      .insertInto("decision_ledger_frames")
-      .values(row)
-      .onConflict((conflict) => conflict.column("dedupe_key").doNothing())
-      .returningAll()
-      .executeTakeFirst();
-
-    if (inserted !== undefined) {
-      return { inserted: true, record: inserted };
-    }
-
-    // 같은 dedupe_key의 기존 frame을 반환한다.
-    const existing = await this.database
-      .selectFrom("decision_ledger_frames")
-      .selectAll()
-      .where("dedupe_key", "=", input.frame.dedupeKey)
-      .executeTakeFirstOrThrow();
-
-    return { inserted: false, record: existing };
+    return appendFrameWithExecutor(this.database, input);
   }
 
   /**
@@ -98,48 +80,32 @@ export class PostgresDecisionLedgerRepository {
       return { inserted: 0, skipped: 0, records: [] };
     }
 
-    const rows = items.map((input) =>
-      toDecisionLedgerEvidenceRowInput(frameId, input.item),
-    );
-
-    const fingerprints = items.map((input) => input.item.evidenceFingerprint);
     return this.database.transaction().execute(async (transaction) => {
-      const existingRecords = await transaction
-        .selectFrom("decision_ledger_evidence")
-        .selectAll()
-        .where("evidence_fingerprint", "in", fingerprints)
-        .execute();
-      const existingConflictingFrameIds = collectConflictingFrameIds(existingRecords, frameId);
-      if (existingConflictingFrameIds.length > 0) {
-        // 다른 frame fingerprint가 섞인 batch는 append-only row 일부가 남기 전에 전체 write를 중단한다.
-        throw new DecisionLedgerEvidenceFrameConflictError(frameId, existingConflictingFrameIds);
-      }
+      return appendEvidenceItemsWithExecutor(transaction, frameId, items);
+    });
+  }
 
-      const inserted = await transaction
-        .insertInto("decision_ledger_evidence")
-        .values(rows)
-        .onConflict((conflict) => conflict.column("evidence_fingerprint").doNothing())
-        .returningAll()
-        .execute();
-
-      // concurrent insert가 끼어들어도 충돌 감지 시 transaction rollback으로 신규 row 잔류를 막는다.
-      const allRecords = await transaction
-        .selectFrom("decision_ledger_evidence")
-        .selectAll()
-        .where("evidence_fingerprint", "in", fingerprints)
-        .orderBy("occurred_at", "asc")
-        .orderBy("id", "asc")
-        .execute();
-      const conflictingFrameIds = collectConflictingFrameIds(allRecords, frameId);
-      if (conflictingFrameIds.length > 0) {
-        throw new DecisionLedgerEvidenceFrameConflictError(frameId, conflictingFrameIds);
-      }
-
-      return {
-        inserted: inserted.length,
-        skipped: items.length - inserted.length,
-        records: allRecords,
-      };
+  /**
+   * frame과 evidence batch를 같은 transaction에서 append한다.
+   *
+   * frame insert 후 evidence append가 실패하면 transaction rollback으로 frame-only `RECORDED` 상태가 남지 않는다.
+   * duplicate frame이면 기존 durable frame id를 재사용해 이전 partial 실패의 evidence 재시도를 허용한다.
+   *
+   * @param input append할 frame과 evidence batch
+   * @returns frame/evidence append 결과
+   */
+  public async appendFrameWithEvidence(
+    input: AppendDecisionLedgerFrameWithEvidenceInput,
+  ): Promise<AppendDecisionLedgerFrameWithEvidenceResult> {
+    return this.database.transaction().execute(async (transaction) => {
+      // frame과 evidence를 한 transaction에 묶어 `/status.why`가 근거 없는 RECORDED frame을 읽지 않게 한다.
+      const frame = await appendFrameWithExecutor(transaction, { frame: input.frame });
+      const evidence = await appendEvidenceItemsWithExecutor(
+        transaction,
+        frame.record.id,
+        input.evidenceItems,
+      );
+      return { frame, evidence };
     });
   }
 
@@ -200,6 +166,87 @@ export class PostgresDecisionLedgerRepository {
       .orderBy("occurred_at", "asc")
       .execute();
   }
+}
+
+type DecisionLedgerExecutor = Pick<Database, "insertInto" | "selectFrom">;
+
+async function appendFrameWithExecutor(
+  executor: DecisionLedgerExecutor,
+  input: AppendDecisionLedgerFrameInput,
+): Promise<AppendDecisionLedgerFrameResult> {
+  const row = toDecisionLedgerFrameRowInput(input.frame);
+
+  const inserted = await executor
+    .insertInto("decision_ledger_frames")
+    .values(row)
+    .onConflict((conflict) => conflict.column("dedupe_key").doNothing())
+    .returningAll()
+    .executeTakeFirst();
+
+  if (inserted !== undefined) {
+    return { inserted: true, record: inserted };
+  }
+
+  // 같은 dedupe_key의 기존 frame을 반환한다.
+  const existing = await executor
+    .selectFrom("decision_ledger_frames")
+    .selectAll()
+    .where("dedupe_key", "=", input.frame.dedupeKey)
+    .executeTakeFirstOrThrow();
+
+  return { inserted: false, record: existing };
+}
+
+async function appendEvidenceItemsWithExecutor(
+  executor: DecisionLedgerExecutor,
+  frameId: string,
+  items: readonly AppendDecisionLedgerEvidenceInput[],
+): Promise<AppendDecisionLedgerEvidenceResult> {
+  if (items.length === 0) {
+    return { inserted: 0, skipped: 0, records: [] };
+  }
+
+  const rows = items.map((input) =>
+    toDecisionLedgerEvidenceRowInput(frameId, input.item),
+  );
+
+  const fingerprints = items.map((input) => input.item.evidenceFingerprint);
+  const existingRecords = await executor
+    .selectFrom("decision_ledger_evidence")
+    .selectAll()
+    .where("evidence_fingerprint", "in", fingerprints)
+    .execute();
+  const existingConflictingFrameIds = collectConflictingFrameIds(existingRecords, frameId);
+  if (existingConflictingFrameIds.length > 0) {
+    // 다른 frame fingerprint가 섞인 batch는 append-only row 일부가 남기 전에 전체 write를 중단한다.
+    throw new DecisionLedgerEvidenceFrameConflictError(frameId, existingConflictingFrameIds);
+  }
+
+  const inserted = await executor
+    .insertInto("decision_ledger_evidence")
+    .values(rows)
+    .onConflict((conflict) => conflict.column("evidence_fingerprint").doNothing())
+    .returningAll()
+    .execute();
+
+  // concurrent insert가 끼어들어도 충돌 감지 시 transaction rollback으로 신규 row 잔류를 막는다.
+  const allRecords = await executor
+    .selectFrom("decision_ledger_evidence")
+    .selectAll()
+    .where("evidence_fingerprint", "in", fingerprints)
+    .orderBy("occurred_at", "asc")
+    .orderBy("id", "asc")
+    .execute();
+  const conflictingFrameIds = collectConflictingFrameIds(allRecords, frameId);
+  if (conflictingFrameIds.length > 0) {
+    throw new DecisionLedgerEvidenceFrameConflictError(frameId, conflictingFrameIds);
+  }
+
+  return {
+    inserted: inserted.length,
+    skipped: items.length - inserted.length,
+    records: allRecords,
+  };
 }
 
 /**
