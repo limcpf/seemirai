@@ -247,25 +247,32 @@
       "owner_scope": "docs/exec-plans/active"
     },
     {
-      "path": "docs/exec-plans/active/2026-06-06-issue-159-m18-decision-ledger-reasonix-handoff.md",
+      "path": "docs/exec-plans/completed/2026-06-06-issue-159-m18-decision-ledger-reasonix-handoff.md",
       "kind": "exec-plan",
-      "role": "Issue #159 M18 판단 이유 ledger와 설명 API Reasonix 구현 handoff — 4개 순차 sub PR, acceptance criteria trace matrix, LLM 보조 경계, live order API 0회 검증 기준",
-      "read_when": ["issue #159 구현", "M18 판단 이유 ledger", "why summary 구현", "Reasonix handoff", "decision ledger 구현", "LLM summary 경계"],
-      "owner_scope": "docs/exec-plans/active"
+      "role": "✅ 완료 — Issue #159 M18 판단 이유 ledger와 설명 API Reasonix 구현 handoff (4개 sub PR 순차 실행 기준)",
+      "read_when": ["issue #159 구현 이력 확인", "M18 handoff contract 확인"],
+      "owner_scope": "docs/exec-plans/completed"
     },
     {
-      "path": "docs/exec-plans/active/2026-06-06-issue-159-subpr-03-review-fix-deepseek-handoff.md",
+      "path": "docs/exec-plans/completed/2026-06-06-issue-159-subpr-03-review-fix-deepseek-handoff.md",
       "kind": "exec-plan",
-      "role": "Issue #159 Sub PR 03 Producer & Status Why Summary 리뷰 finding 수정 DeepSeek handoff — runner ledger write, producer frame/fingerprint, /status.why unavailable semantics, HTTP/runner 테스트 완료 기준",
-      "read_when": ["issue #159 Sub PR 03 리뷰 수정", "Producer Status Why Summary 수정", "DeepSeek handoff", "runner ledger write 수정", "why summary unavailable 수정", "decision ledger producer 수정"],
-      "owner_scope": "docs/exec-plans/active"
+      "role": "✅ 완료 — Issue #159 Sub PR 03 Producer & Status Why Summary 리뷰 finding 수정 DeepSeek handoff",
+      "read_when": ["issue #159 Sub PR 03 review fix 이력 확인"],
+      "owner_scope": "docs/exec-plans/completed"
     },
     {
-      "path": "docs/exec-plans/active/2026-06-06-issue-159-subpr-03-codex-review-repair-deepseek-handoff.md",
+      "path": "docs/exec-plans/completed/2026-06-06-issue-159-subpr-03-codex-review-repair-deepseek-handoff.md",
       "kind": "exec-plan",
-      "role": "Issue #159 Sub PR 03 Codex review repair DeepSeek handoff — durable DB frame id writer, frame/strategy producer correctness, /status.why DB failure semantics, typecheck/unit/verify 완료 기준",
-      "read_when": ["issue #159 Sub PR 03 Codex review repair", "Sub PR 03 durable writer 수정", "frame strategy producer 수정", "why summary DB failure 수정", "typecheck unit verify 복구", "DeepSeek repair handoff"],
-      "owner_scope": "docs/exec-plans/active"
+      "role": "✅ 완료 — Issue #159 Sub PR 03 Codex review repair DeepSeek handoff",
+      "read_when": ["issue #159 Sub PR 03 codex repair 이력 확인"],
+      "owner_scope": "docs/exec-plans/completed"
+    },
+    {
+      "path": "docs/exec-plans/completed/2026-06-06-issue-159-m18-decision-ledger-closeout.md",
+      "kind": "exec-plan",
+      "role": "Issue #159 M18 판단 이유 ledger와 설명 API 4개 sub PR 완료 closeout — LLM 보조 summary, fail-closed order-like output 차단, verification 결과",
+      "read_when": ["issue #159 closeout 확인", "M18 완료 증거", "LLM summary 경계 확인", "order-like output 차단 확인"],
+      "owner_scope": "docs/exec-plans/completed"
     },
     {
       "path": "docs/exec-plans/completed/2026-06-04-issue-154-m17-pnl-position-accounting.md",
@@ -466,9 +473,16 @@
     {
       "path": "src/application/decision-ledger.ts",
       "kind": "reference",
-      "role": "M18 decision ledger public entry — type contract와 category 상수만 제공하며 persistence, producer, LLM boundary를 포함하지 않음",
-      "read_when": ["decision ledger type contract 확인", "M18 decision ledger 구현", "DecisionCategory/EvidenceKind 참조"],
+      "role": "M18 decision ledger public entry — type contract, category 상수, frame builder, user-facing mapper, why summary builder, LLM summary generator를 export",
+      "read_when": ["decision ledger type contract 확인", "M18 decision ledger 구현", "DecisionCategory/EvidenceKind 참조", "LLM summary generator 참조"],
       "owner_scope": "src/application"
+    },
+    {
+      "path": "src/application/decision-ledger/llm-summary.ts",
+      "kind": "reference",
+      "role": "M18 LLM 보조 summary 생성기 — 결정론적 evidence를 읽어 LLM provider로 한국어 설명 초안을 만들며, order-like output을 차단하고 provider 실패를 fail-closed evidence로 기록",
+      "read_when": ["LLM summary 생성", "order-like output 차단", "LLM fail-closed 경계 구현", "EXPLANATION_SUMMARY evidence 생성"],
+      "owner_scope": "src/application/decision-ledger"
     },
     {
       "path": "src/application/decision-ledger/category.ts",
@@ -489,6 +503,13 @@
       "kind": "reference",
       "role": "M18 decision ledger type contract 검증 테스트 — category 상수 완전성, frame/evidence/summary shape 확인",
       "read_when": ["decision ledger test 실행", "category 상수 검증", "type contract 회귀 확인"],
+      "owner_scope": "tests/unit"
+    },
+    {
+      "path": "tests/unit/decision-ledger-llm-summary.test.ts",
+      "kind": "reference",
+      "role": "M18 LLM 보조 summary fail-closed 경계 검증 테스트 — 성공/실패/fail-closed/order-like output 차단 29개 테스트",
+      "read_when": ["LLM summary 테스트 실행", "order-like output 차단 검증", "LLM fail-closed 검증", "noop provider fixture 검증"],
       "owner_scope": "tests/unit"
     }
   ]

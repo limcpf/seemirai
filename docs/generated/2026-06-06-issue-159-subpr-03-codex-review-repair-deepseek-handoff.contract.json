@@ -3,7 +3,7 @@
   "milestone": "issue-159/subpr-03-codex-review-repair",
   "title": "Issue #159 Sub PR 03 Codex review repair DeepSeek handoff",
   "status": "ready-for-implementation",
-  "handoffMarkdownPath": "docs/exec-plans/active/2026-06-06-issue-159-subpr-03-codex-review-repair-deepseek-handoff.md",
+  "handoffMarkdownPath": "docs/exec-plans/completed/2026-06-06-issue-159-subpr-03-codex-review-repair-deepseek-handoff.md",
   "goal": "Codex review에서 남은 Issue #159 Sub PR 03 Producer & Status Why Summary 결함을 모두 수정해 durable runner ledger write, frame/strategy producer correctness, /status.why unavailable semantics, typecheck, tests, verify를 통과시킨다.",
   "readFirst": [
     "AGENTS.md",
@@ -16,9 +16,9 @@
     "docs/PLANS.md",
     "docs/RELIABILITY.md",
     "docs/SECURITY.md",
-    "docs/exec-plans/active/2026-06-06-issue-159-m18-decision-ledger-reasonix-handoff.md",
-    "docs/exec-plans/active/2026-06-06-issue-159-subpr-03-review-fix-deepseek-handoff.md",
-    "docs/exec-plans/active/2026-06-06-issue-159-subpr-03-codex-review-repair-deepseek-handoff.md",
+    "docs/exec-plans/completed/2026-06-06-issue-159-m18-decision-ledger-reasonix-handoff.md",
+    "docs/exec-plans/completed/2026-06-06-issue-159-subpr-03-review-fix-deepseek-handoff.md",
+    "docs/exec-plans/completed/2026-06-06-issue-159-subpr-03-codex-review-repair-deepseek-handoff.md",
     "src/application/paper-decision-runner/service.ts",
     "src/application/paper-decision-runner/types.ts",
     "src/application/decision-ledger/frame-builder.ts",
@@ -96,7 +96,7 @@
   ],
   "commands": {
     "handoff": [
-      "mkdir -p .local/transcripts && npx --yes reasonix run --effort high --budget 1.20 --transcript .local/transcripts/issue-159-subpr-03-codex-review-repair.deepseek.jsonl \"Read docs/exec-plans/active/2026-06-06-issue-159-subpr-03-codex-review-repair-deepseek-handoff.md and fix all Codex review findings for Issue #159 Sub PR 03 only. Work on the existing unstaged/untracked implementation. Do not implement LLM boundary, Telegram inbound, live broker wiring, live order API paths, migrations, lockfile changes, automatic commit, PR creation, or unrelated refactors. Report back in Korean.\""
+      "mkdir -p .local/transcripts && npx --yes reasonix run --effort high --budget 1.20 --transcript .local/transcripts/issue-159-subpr-03-codex-review-repair.deepseek.jsonl \"Read docs/exec-plans/completed/2026-06-06-issue-159-subpr-03-codex-review-repair-deepseek-handoff.md and fix all Codex review findings for Issue #159 Sub PR 03 only. Work on the existing unstaged/untracked implementation. Do not implement LLM boundary, Telegram inbound, live broker wiring, live order API paths, migrations, lockfile changes, automatic commit, PR creation, or unrelated refactors. Report back in Korean.\""
     ],
     "verification": [
       "corepack pnpm typecheck",

@@ -3,7 +3,7 @@
   "milestone": "issue-159/subpr-03-review-fix",
   "title": "Issue #159 Sub PR 03 Producer & Status Why Summary review fix handoff",
   "status": "ready-for-implementation",
-  "handoffMarkdownPath": "docs/exec-plans/active/2026-06-06-issue-159-subpr-03-review-fix-deepseek-handoff.md",
+  "handoffMarkdownPath": "docs/exec-plans/completed/2026-06-06-issue-159-subpr-03-review-fix-deepseek-handoff.md",
   "goal": "Codex review에서 발견된 Sub PR 03 결함을 모두 수정해 paper-decision-runner ledger write, frame별 producer correctness, /status.why unavailable semantics, HTTP/runner tests를 완성한다.",
   "readFirst": [
     "AGENTS.md",
@@ -17,7 +17,7 @@
     "docs/RUNTIME_CONFIG.md",
     "docs/RELIABILITY.md",
     "docs/SECURITY.md",
-    "docs/exec-plans/active/2026-06-06-issue-159-m18-decision-ledger-reasonix-handoff.md",
+    "docs/exec-plans/completed/2026-06-06-issue-159-m18-decision-ledger-reasonix-handoff.md",
     "src/application/paper-decision-runner/service.ts",
     "src/application/paper-decision-runner/types.ts",
     "src/application/decision-ledger.ts",
@@ -99,7 +99,7 @@
   ],
   "commands": {
     "handoff": [
-      "mkdir -p .local/transcripts && npx --yes reasonix run --effort high --budget 1.20 --transcript .local/transcripts/issue-159-subpr-03-review-fix.deepseek.jsonl \"Read docs/exec-plans/active/2026-06-06-issue-159-subpr-03-review-fix-deepseek-handoff.md and implement all review fixes for Sub PR 03 only. Assume Sub PR 01 and Sub PR 02 are complete and current Sub PR 03 initial changes may already exist. Do not implement LLM boundary, Telegram inbound, live broker wiring, automatic commit, PR creation, merge, or unrelated changes. Report back in Korean.\""
+      "mkdir -p .local/transcripts && npx --yes reasonix run --effort high --budget 1.20 --transcript .local/transcripts/issue-159-subpr-03-review-fix.deepseek.jsonl \"Read docs/exec-plans/completed/2026-06-06-issue-159-subpr-03-review-fix-deepseek-handoff.md and implement all review fixes for Sub PR 03 only. Assume Sub PR 01 and Sub PR 02 are complete and current Sub PR 03 initial changes may already exist. Do not implement LLM boundary, Telegram inbound, live broker wiring, automatic commit, PR creation, merge, or unrelated changes. Report back in Korean.\""
     ],
     "verification": [
       "corepack pnpm typecheck",
