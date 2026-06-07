@@ -5,6 +5,7 @@ import type {
   ExitRule,
   ExitRuleContext,
   ExitRuleEvaluation,
+  TimestampInput,
 } from "../../domain/index.js";
 
 // ---------------------------------------------------------------------------
@@ -236,7 +237,10 @@ export function createTimeBasedExitRule(): ExitRule {
         return pass("time_based_exit", "time_based_not_configured", "시간 기반 청산 설정이 없어 평가를 건너뜁니다.");
       }
 
-      const deadline = new Date(context.timeBasedConfig.deadline);
+      const deadline = parseDeadlineTimestamp(
+        context.timeBasedConfig.deadline,
+        context.timeBasedConfig.timezone,
+      );
       const observedAt = new Date(context.observedAt);
 
       // 관측 시각이 유효하지 않으면 deadline 비교 자체가 불가능하므로 BLOCKED로 차단한다.
@@ -295,6 +299,20 @@ export function createStrategyExitSignalRule(): ExitRule {
 
       const signal = context.strategyExitSignal;
 
+      // 다른 strategy/position scope의 signal을 현재 포지션 exit로 승격하면 잘못된 SELL 후보가 만들어진다.
+      if (!matchesCurrentStrategyScope(signal.strategyId, context)) {
+        return blocked(
+          "strategy_exit_signal",
+          "strategy_exit_scope_mismatch",
+          "전략 exit signal의 scope가 현재 포지션과 일치하지 않아 청산 판단을 차단합니다.",
+          {
+            signal_strategy_id: signal.strategyId,
+            context_strategy_id: context.strategyId,
+            position_strategy_id: context.position.strategyId ?? "",
+          },
+        );
+      }
+
       return triggered(
         "strategy_exit_signal",
         signal.reasonCode,
@@ -331,6 +349,23 @@ export function createRiskReductionExitRule(): ExitRule {
       }
 
       const signal = context.riskReductionSignal;
+      const reductionRatio = parseDecimal(signal.reductionRatio);
+
+      // risk signal이 잘못된 축소 비율을 들고 오면 후속 sizing이 invalid SELL 수량을 만들 수 있어 여기서 차단한다.
+      if (
+        reductionRatio === undefined ||
+        reductionRatio.lessThanOrEqualTo(0) ||
+        reductionRatio.greaterThan(1)
+      ) {
+        return blocked(
+          "risk_reduction_exit",
+          "risk_reduction_ratio_invalid",
+          "리스크 축소 신호의 reductionRatio가 유효하지 않습니다. 0보다 크고 1 이하인 숫자여야 합니다.",
+          {
+            reduction_ratio: signal.reductionRatio,
+          },
+        );
+      }
 
       return triggered(
         "risk_reduction_exit",
@@ -338,7 +373,7 @@ export function createRiskReductionExitRule(): ExitRule {
         signal.reason,
         signal.intention,
         {
-          reduction_ratio: signal.reductionRatio,
+          reduction_ratio: reductionRatio.toFixed(),
           signal_intention: signal.intention,
           signal_observed_at: String(signal.observedAt),
         },
@@ -394,6 +429,117 @@ function parseDecimal(value: string): Decimal | undefined {
   } catch {
     return undefined;
   }
+}
+
+function parseDeadlineTimestamp(
+  value: TimestampInput,
+  timezone: "UTC" | "KST",
+): Date {
+  if (value instanceof Date) {
+    return new Date(value.getTime());
+  }
+
+  const trimmed = value.trim();
+  if (trimmed === "") {
+    return new Date(NaN);
+  }
+
+  if (hasExplicitTimezone(trimmed)) {
+    return new Date(trimmed);
+  }
+
+  const wallClock = parseWallClockIsoTimestamp(trimmed);
+  if (wallClock === undefined) {
+    return new Date(NaN);
+  }
+
+  const timezoneOffsetMinutes = timezone === "KST" ? 9 * 60 : 0;
+  return new Date(wallClock.utcMilliseconds - timezoneOffsetMinutes * 60_000);
+}
+
+function hasExplicitTimezone(value: string): boolean {
+  return /(?:[zZ]|[+-]\d{2}:?\d{2})$/.test(value);
+}
+
+function parseWallClockIsoTimestamp(value: string): { utcMilliseconds: number } | undefined {
+  const match = value.match(
+    /^(\d{4})-(\d{2})-(\d{2})(?:[T ](\d{2})(?::(\d{2})(?::(\d{2})(?:\.(\d{1,9}))?)?)?)?$/,
+  );
+  if (match === null) {
+    return undefined;
+  }
+
+  const [
+    ,
+    yearRaw,
+    monthRaw,
+    dayRaw,
+    hourRaw = "0",
+    minuteRaw = "0",
+    secondRaw = "0",
+    fractionRaw = "",
+  ] = match;
+  const year = Number(yearRaw);
+  const month = Number(monthRaw);
+  const day = Number(dayRaw);
+  const hour = Number(hourRaw);
+  const minute = Number(minuteRaw);
+  const second = Number(secondRaw);
+  const millisecond = fractionRaw === "" ? 0 : Number(fractionRaw.padEnd(3, "0").slice(0, 3));
+
+  if (
+    month < 1 ||
+    month > 12 ||
+    day < 1 ||
+    day > 31 ||
+    hour < 0 ||
+    hour > 23 ||
+    minute < 0 ||
+    minute > 59 ||
+    second < 0 ||
+    second > 59
+  ) {
+    return undefined;
+  }
+
+  const utcMilliseconds = Date.UTC(year, month - 1, day, hour, minute, second, millisecond);
+  const probe = new Date(utcMilliseconds);
+  if (
+    probe.getUTCFullYear() !== year ||
+    probe.getUTCMonth() !== month - 1 ||
+    probe.getUTCDate() !== day ||
+    probe.getUTCHours() !== hour ||
+    probe.getUTCMinutes() !== minute ||
+    probe.getUTCSeconds() !== second ||
+    probe.getUTCMilliseconds() !== millisecond
+  ) {
+    return undefined;
+  }
+
+  return { utcMilliseconds };
+}
+
+function matchesCurrentStrategyScope(signalStrategyId: string, context: ExitRuleContext): boolean {
+  const normalizedSignalStrategyId = signalStrategyId.trim();
+  if (normalizedSignalStrategyId === "") {
+    return false;
+  }
+
+  const contextStrategyId = context.strategyId.trim();
+  if (contextStrategyId !== "" && normalizedSignalStrategyId !== contextStrategyId) {
+    return false;
+  }
+
+  const positionStrategyId = context.position.strategyId?.trim();
+  if (
+    positionStrategyId !== undefined &&
+    positionStrategyId !== "" &&
+    normalizedSignalStrategyId !== positionStrategyId
+  ) {
+    return false;
+  }
+
+  return contextStrategyId !== "" || (positionStrategyId !== undefined && positionStrategyId !== "");
 }
 
 function pass(

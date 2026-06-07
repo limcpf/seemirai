@@ -431,6 +431,39 @@ describe("exit rule engine", () => {
       expect(result.metadata?.timezone).toBe("KST");
     });
 
+    it("interprets KST wall-clock deadlines as UTC+9 before comparison", async () => {
+      const timeConfig: ExitTimeBasedConfig = {
+        deadline: "2026-06-08T09:00:00",
+        timezone: "KST",
+      };
+      const result = await evaluateRule(rule, createContext({
+        timeBasedConfig: timeConfig,
+        observedAt: "2026-06-08T00:00:00.000Z",
+      }));
+      expect(result).toMatchObject({
+        status: "TRIGGERED",
+        reasonCode: "time_based_triggered",
+        metadata: {
+          timezone: "KST",
+        },
+      });
+    });
+
+    it("interprets UTC wall-clock deadlines as UTC rather than process local time", async () => {
+      const timeConfig: ExitTimeBasedConfig = {
+        deadline: "2026-06-08T09:00:00",
+        timezone: "UTC",
+      };
+      const result = await evaluateRule(rule, createContext({
+        timeBasedConfig: timeConfig,
+        observedAt: "2026-06-08T00:00:00.000Z",
+      }));
+      expect(result).toMatchObject({
+        status: "PASS",
+        reasonCode: "time_based_not_reached",
+      });
+    });
+
     it("blocks on invalid deadline values", async () => {
       const timeConfig: ExitTimeBasedConfig = {
         deadline: "not-a-date",
@@ -473,7 +506,7 @@ describe("exit rule engine", () => {
     it("triggers EXIT when strategy signal has EXIT intention", async () => {
       const signal: ExitStrategySignal = {
         intention: "EXIT",
-        strategyId: "mean_reversion",
+        strategyId: "trend_following",
         reasonCode: "mean_reversion_exit",
         reason: "평균 복귀 exit signal",
         observedAt,
@@ -484,7 +517,7 @@ describe("exit rule engine", () => {
         exitIntention: "EXIT",
         reasonCode: "mean_reversion_exit",
         metadata: {
-          signal_strategy_id: "mean_reversion",
+          signal_strategy_id: "trend_following",
         },
       });
     });
@@ -501,6 +534,29 @@ describe("exit rule engine", () => {
       expect(result).toMatchObject({
         status: "TRIGGERED",
         exitIntention: "REDUCE",
+      });
+    });
+
+    it("blocks when strategy signal scope does not match current position scope", async () => {
+      const signal: ExitStrategySignal = {
+        intention: "EXIT",
+        strategyId: "mean_reversion",
+        reasonCode: "mean_reversion_exit",
+        reason: "다른 전략의 exit signal",
+        observedAt,
+      };
+      const result = await evaluateRule(rule, createContext({
+        position: { ...btcPosition, strategyId: "trend_following" },
+        strategyExitSignal: signal,
+      }));
+      expect(result).toMatchObject({
+        status: "BLOCKED",
+        reasonCode: "strategy_exit_scope_mismatch",
+      });
+      expect(result.metadata).toMatchObject({
+        signal_strategy_id: "mean_reversion",
+        context_strategy_id: "trend_following",
+        position_strategy_id: "trend_following",
       });
     });
   });
@@ -548,6 +604,24 @@ describe("exit rule engine", () => {
         status: "TRIGGERED",
         exitIntention: "EXIT",
       });
+    });
+
+    it("blocks when risk reduction ratio is invalid", async () => {
+      for (const reductionRatio of ["not-a-ratio", "-0.5", "0", "2"]) {
+        const signal: ExitRiskReductionSignal = {
+          intention: "REDUCE",
+          reductionRatio,
+          reasonCode: "daily_loss_limit_approaching",
+          reason: "일간 손실 한도 접근, 포지션 축소",
+          observedAt,
+        };
+        const result = await evaluateRule(rule, createContext({ riskReductionSignal: signal }));
+        expect(result).toMatchObject({
+          status: "BLOCKED",
+          reasonCode: "risk_reduction_ratio_invalid",
+        });
+        expect(result.metadata?.reduction_ratio).toBe(reductionRatio);
+      }
     });
   });
 });
@@ -769,7 +843,7 @@ describe("exit sizing", () => {
     });
   });
 
-  it("detects dust residue when remaining quantity is below threshold", () => {
+  it("blocks dust residue so partial sell does not become a broker candidate", () => {
     const result = evaluateExitSizing({
       requestedQuantity: "0.00495",
       positionScope: {
@@ -783,12 +857,14 @@ describe("exit sizing", () => {
     });
 
     expect(result).toMatchObject({
-      valid: true,
-      executableQuantity: "0.00495",
+      valid: false,
+      executableQuantity: "0",
       dustQuantity: "0.00005",
+      rejectionReason: "dust_remainder",
     });
     expect(result.dustReason).toBeDefined();
     expect(result.dustReason).toContain("처리 불가 잔량");
+    expect(formatSizingUserMessage(result)).toContain("주문 후보 생성을 차단");
   });
 
   it("detects exact exit (no dust) when selling the full position", () => {
@@ -1063,6 +1139,22 @@ describe("exit sizing", () => {
     const priceMsg = formatSizingUserMessage(priceInvalid);
     expect(priceMsg).not.toContain("exit_price_invalid");
     expect(priceMsg).toContain("현재가");
+
+    const dustRemainder = evaluateExitSizing({
+      requestedQuantity: "0.00495",
+      positionScope: {
+        market: "KRW-BTC",
+        strategyId: "trend_following",
+        totalQuantity: "0.005",
+        observedAt,
+      },
+      policySnapshot: paperPolicy,
+      currentPrice: "128000000",
+    });
+    expect(dustRemainder.rejectionReason).toBe("dust_remainder");
+    const dustMsg = formatSizingUserMessage(dustRemainder);
+    expect(dustMsg).not.toContain("dust_remainder");
+    expect(dustMsg).toContain("처리 불가 잔량");
   });
 });
 
