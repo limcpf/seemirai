@@ -558,7 +558,7 @@ describe("WhySummary type contract", () => {
       holdReasons: [
         { label: "기대 수익 부족", count: 2, trace: { reasonCode: "insufficient_expected_return" } },
         { label: "스프레드 확대", count: 1, trace: { reasonCode: "wide_spread" } },
-      ],
+      ] as const,
       trace: { category: "CASH_HOLD" },
     };
 
@@ -715,5 +715,723 @@ describe("WhySummary type contract", () => {
     expect(marketSummary.latestDecisionAt).toBeNull();
     expect(marketSummary.trace.category).toBeNull();
     expect(marketSummary.action).toBeNull();
+  });
+});
+
+describe("Frame builder (producer)", () => {
+  it("실행 성공 runner 결과에서 EXECUTED frame과 evidence를 생성한다", async () => {
+    const {
+      buildDecisionLedgerFromRunnerResult,
+    } = await import("../../src/application/decision-ledger/frame-builder.js");
+
+    const result = {
+      framesProcessed: 2,
+      metrics: {
+        strategyEvaluationCount: 2,
+        orderCandidateCount: 1,
+        orderIntentCount: 1,
+        holdReasonCounts: {},
+        discardReasonCounts: {},
+        costRejectedCount: 0,
+        riskRejectedCount: 0,
+        paperOrderSubmittedCount: 1,
+        paperFillCount: 1,
+        fillRate: 1,
+        costSummary: { evaluatedCount: 1, allowedCount: 1, rejectedCount: 0, averageCostBps: "10", averageRequiredReturnBps: "20", averageMarginBps: "10" },
+        slippageSummary: { observedFillCount: 1, averageSlippageBps: "0", minSlippageBps: "0", maxSlippageBps: "0" },
+        pnlSummary: { startingCashKrw: "1000000", endingCashKrw: "990000", positionMarketValueKrw: "10000", realizedPnlKrw: "0", unrealizedPnlKrw: "0", totalPnlKrw: "0", totalReturnBps: "0", totalFeesKrw: "5", submittedOrderCount: 1, filledOrderCount: 1 },
+        blockingReasonCounts: {},
+        liveOrderApiCalls: 0 as const,
+      },
+      ledgerWriteStatus: "NOT_CONFIGURED" as const,
+      trace: [
+        { frameId: "frame-001", strategyId: "strategy.trend-following", stage: "FRAME_RECEIVED", status: "received", observedAt: "2026-06-06T00:00:00Z" },
+        { frameId: "frame-001", strategyId: "strategy.trend-following", stage: "STRATEGY_DECISION", status: "BUY", reasonCode: "trend_up", message: "상승 추세 감지", observedAt: "2026-06-06T00:00:01Z" },
+        { frameId: "frame-001", strategyId: "strategy.trend-following", stage: "ORDER_INTENT_CONVERSION", status: "CONVERTED", reasonCode: "order_intent_promoted", message: "주문 후보 생성됨", observedAt: "2026-06-06T00:00:02Z", metadata: { promoted_count: 1, rejection_count: 0, intent_directions: ["BUY"] } },
+        { frameId: "frame-001", strategyId: "strategy.trend-following", stage: "COST_DECISION", status: "ALLOWED", reasonCode: "cost_ok", message: "비용 통과", observedAt: "2026-06-06T00:00:03Z", metadata: { trade_allowed: true, cost_bps: "10", margin_bps: "10" } },
+        { frameId: "frame-001", strategyId: "strategy.trend-following", stage: "RISK_DECISION", status: "APPROVED", reasonCode: "risk_ok", message: "RiskGate approved", observedAt: "2026-06-06T00:00:04Z", metadata: { approved: true } },
+        { frameId: "frame-001", strategyId: "strategy.trend-following", stage: "EXECUTION_RESULT", status: "SUBMITTED", message: "Paper broker returned an execution result", observedAt: "2026-06-06T00:00:05Z", metadata: { broker_order_id: "order-001", broker_order_status: "FILLED", filled_quantity: "0.001", slippage_bps: "0" } },
+      ] as const,
+    };
+
+    const { frames } = buildDecisionLedgerFromRunnerResult(
+      result,
+      "run-smoke-001",
+      "UPBIT",
+    );
+    const frame = frames[0]!.frame;
+    const evidenceItems = frames[0]!.evidenceItems;
+
+    expect(frame.category).toBe("EXECUTED");
+    expect(frame.summaryStatus).toBe("RECORDED");
+    expect(frame.ledgerVersion).toBe(DECISION_LEDGER_VERSION);
+    expect(frame.sourceRunId).toBe("run-smoke-001");
+    expect(frame.exchange).toBe("UPBIT");
+    expect(frame.dedupeKey).toContain("run-smoke-001");
+    expect(frame.dedupeKey).toContain("frame-001");
+
+    // FRAME_RECEIVED는 evidence로 변환되지 않는다
+    const evidenceKinds = evidenceItems.map((item) => item.evidenceKind);
+    expect(evidenceKinds).toContain("STRATEGY_DECISION");
+    expect(evidenceKinds).toContain("ORDER_INTENT");
+    expect(evidenceKinds).toContain("COST_BREAKDOWN");
+    expect(evidenceKinds).toContain("RISK_DECISION");
+    expect(evidenceKinds).toContain("EXECUTION_RESULT");
+    expect(evidenceKinds).not.toContain("FRAME_RECEIVED");
+
+    // 모든 evidence가 fingerprint를 가진다
+    for (const item of evidenceItems as readonly DecisionEvidenceItem[]) {
+      expect(item.evidenceFingerprint).toMatch(/^fp-/);
+      expect(item.userMessage).toBeTruthy();
+    }
+  });
+
+  it("주문 후보 0건 HOLD runner 결과에서 CASH_HOLD frame을 생성한다", async () => {
+    const {
+      buildDecisionLedgerFromRunnerResult,
+    } = await import("../../src/application/decision-ledger/frame-builder.js");
+
+    const result = {
+      framesProcessed: 1,
+      metrics: {
+        strategyEvaluationCount: 1,
+        orderCandidateCount: 0,
+        orderIntentCount: 0,
+        holdReasonCounts: { fixture_waiting_for_signal: 1 },
+        discardReasonCounts: {},
+        costRejectedCount: 0,
+        riskRejectedCount: 0,
+        paperOrderSubmittedCount: 0,
+        paperFillCount: 0,
+        fillRate: 0,
+        costSummary: { evaluatedCount: 0, allowedCount: 0, rejectedCount: 0, averageCostBps: null, averageRequiredReturnBps: null, averageMarginBps: null },
+        slippageSummary: { observedFillCount: 0, averageSlippageBps: null, minSlippageBps: null, maxSlippageBps: null },
+        pnlSummary: { startingCashKrw: "1000000", endingCashKrw: "1000000", positionMarketValueKrw: "0", realizedPnlKrw: "0", unrealizedPnlKrw: "0", totalPnlKrw: "0", totalReturnBps: "0", totalFeesKrw: "0", submittedOrderCount: 0, filledOrderCount: 0 },
+        blockingReasonCounts: { "hold:fixture_waiting_for_signal": 1 },
+        liveOrderApiCalls: 0 as const,
+      },
+      ledgerWriteStatus: "NOT_CONFIGURED" as const,
+      trace: [
+        { frameId: "frame-hold-001", strategyId: "strategy.mean-reversion", stage: "FRAME_RECEIVED", status: "received", observedAt: "2026-06-06T01:00:00Z" },
+        { frameId: "frame-hold-001", strategyId: "strategy.mean-reversion", stage: "STRATEGY_DECISION", status: "HOLD", reasonCode: "fixture_waiting_for_signal", message: "신호 대기 중", observedAt: "2026-06-06T01:00:01Z" },
+      ] as const,
+    };
+
+    const { frames } = buildDecisionLedgerFromRunnerResult(
+      result,
+      "run-hold-001",
+      "UPBIT",
+    );
+    expect(frames).toHaveLength(2);
+    const strategyFrame = frames.find((item) => item.frame.strategyId === "strategy.mean-reversion")!.frame;
+    const cashFrame = frames.find((item) => item.frame.strategyId === null)!.frame;
+    const evidenceItems = frames.find((item) => item.frame.strategyId === "strategy.mean-reversion")!.evidenceItems;
+
+    expect(strategyFrame.category).toBe("HOLD");
+    expect(strategyFrame.summaryStatus).toBe("RECORDED");
+    expect(strategyFrame.reasonCounts["fixture_waiting_for_signal"]).toBe(1);
+    expect(strategyFrame.reasonCounts["hold:fixture_waiting_for_signal"]).toBeUndefined();
+    expect(cashFrame.category).toBe("CASH_HOLD");
+    expect(cashFrame.strategyId).toBeNull();
+    expect(cashFrame.reasonCounts["fixture_waiting_for_signal"]).toBe(1);
+
+    // HOLD decision은 STRATEGY_DECISION evidence로 남는다
+    const strategyEvidence = evidenceItems.find(
+      (item) => item.evidenceKind === "STRATEGY_DECISION",
+    );
+    expect(strategyEvidence).toBeDefined();
+    expect(strategyEvidence!.category).toBe("HOLD");
+  });
+
+  it("리스크 차단 runner 결과에서 RISK_REJECTED frame을 생성한다", async () => {
+    const {
+      buildDecisionLedgerFromRunnerResult,
+    } = await import("../../src/application/decision-ledger/frame-builder.js");
+
+    const result = {
+      framesProcessed: 1,
+      metrics: {
+        strategyEvaluationCount: 1,
+        orderCandidateCount: 1,
+        orderIntentCount: 1,
+        holdReasonCounts: {},
+        discardReasonCounts: {},
+        costRejectedCount: 0,
+        riskRejectedCount: 1,
+        paperOrderSubmittedCount: 0,
+        paperFillCount: 0,
+        fillRate: 0,
+        costSummary: { evaluatedCount: 1, allowedCount: 1, rejectedCount: 0, averageCostBps: "10", averageRequiredReturnBps: "20", averageMarginBps: "10" },
+        slippageSummary: { observedFillCount: 0, averageSlippageBps: null, minSlippageBps: null, maxSlippageBps: null },
+        pnlSummary: { startingCashKrw: "1000000", endingCashKrw: "1000000", positionMarketValueKrw: "0", realizedPnlKrw: "0", unrealizedPnlKrw: "0", totalPnlKrw: "0", totalReturnBps: "0", totalFeesKrw: "0", submittedOrderCount: 0, filledOrderCount: 0 },
+        blockingReasonCounts: { "risk:expected_loss_limit_exceeded": 1 },
+        liveOrderApiCalls: 0 as const,
+      },
+      ledgerWriteStatus: "NOT_CONFIGURED" as const,
+      trace: [
+        { frameId: "frame-risk-001", strategyId: "strategy.trend-following", stage: "FRAME_RECEIVED", status: "received", observedAt: "2026-06-06T02:00:00Z" },
+        { frameId: "frame-risk-001", strategyId: "strategy.trend-following", stage: "STRATEGY_DECISION", status: "BUY", reasonCode: "trend_up", message: "상승 추세", observedAt: "2026-06-06T02:00:01Z" },
+        { frameId: "frame-risk-001", stage: "ORDER_INTENT_CONVERSION", status: "CONVERTED", reasonCode: "BUY", message: "주문 후보 생성됨", observedAt: "2026-06-06T02:00:02Z" },
+        { frameId: "frame-risk-001", stage: "COST_DECISION", status: "ALLOWED", reasonCode: "cost_ok", message: "비용 통과", observedAt: "2026-06-06T02:00:03Z" },
+        { frameId: "frame-risk-001", strategyId: "strategy.trend-following", stage: "RISK_DECISION", status: "REJECTED", reasonCode: "expected_loss_limit_exceeded", message: "RiskGate rejected paper order intent", observedAt: "2026-06-06T02:00:04Z", metadata: { approved: false, failed_reason_codes: ["expected_loss_limit_exceeded"] } },
+      ] as const,
+    };
+
+    const { frames: riskFrames } = buildDecisionLedgerFromRunnerResult(
+      result,
+      "run-risk-001",
+      "UPBIT",
+    );
+
+    const frame = riskFrames[0]!.frame;
+    const evidenceItems = riskFrames[0]!.evidenceItems;
+
+    expect(frame.category).toBe("RISK_REJECTED");
+    expect(frame.summaryStatus).toBe("RECORDED");
+
+    const riskEvidence = evidenceItems.find(
+      (item) => item.evidenceKind === "RISK_DECISION",
+    );
+    expect(riskEvidence).toBeDefined();
+    expect(riskEvidence!.category).toBe("RISK_REJECTED");
+    expect(riskEvidence!.reasonCode).toBe("expected_loss_limit_exceeded");
+  });
+
+  it("dedupe key가 sourceRunId와 sourceFrameId를 포함한다", async () => {
+    const {
+      buildDecisionLedgerFromRunnerResult,
+    } = await import("../../src/application/decision-ledger/frame-builder.js");
+
+    const result = {
+      framesProcessed: 1,
+      metrics: {
+        strategyEvaluationCount: 1,
+        orderCandidateCount: 0,
+        orderIntentCount: 0,
+        holdReasonCounts: { hold_reason: 1 },
+        discardReasonCounts: {},
+        costRejectedCount: 0,
+        riskRejectedCount: 0,
+        paperOrderSubmittedCount: 0,
+        paperFillCount: 0,
+        fillRate: 0,
+        costSummary: { evaluatedCount: 0, allowedCount: 0, rejectedCount: 0, averageCostBps: null, averageRequiredReturnBps: null, averageMarginBps: null },
+        slippageSummary: { observedFillCount: 0, averageSlippageBps: null, minSlippageBps: null, maxSlippageBps: null },
+        pnlSummary: { startingCashKrw: "1000000", endingCashKrw: "1000000", positionMarketValueKrw: "0", realizedPnlKrw: "0", unrealizedPnlKrw: "0", totalPnlKrw: "0", totalReturnBps: "0", totalFeesKrw: "0", submittedOrderCount: 0, filledOrderCount: 0 },
+        blockingReasonCounts: {},
+        liveOrderApiCalls: 0 as const,
+      },
+      ledgerWriteStatus: "NOT_CONFIGURED" as const,
+      trace: [
+        { frameId: "frame-dedupe-001", strategyId: "s1", stage: "FRAME_RECEIVED", status: "received", observedAt: "2026-06-06T03:00:00Z" },
+        { frameId: "frame-dedupe-001", strategyId: "s1", stage: "STRATEGY_DECISION", status: "HOLD", reasonCode: "hold_reason", message: "보유", observedAt: "2026-06-06T03:00:01Z" },
+      ] as const,
+    };
+
+    const { frames: dedupeFrames } = buildDecisionLedgerFromRunnerResult(
+      result,
+      "run-dedupe-001",
+      "UPBIT",
+    );
+
+    const frame = dedupeFrames[0]!.frame;
+
+    // dedupe key 형식: {prefix}:frame:{sourceFrameId}:strategy:{strategyId}
+    expect(frame.dedupeKey).toBe("UPBIT:run-dedupe-001:frame:frame-dedupe-001:strategy:s1");
+  });
+
+  it("같은 input frame의 다중 strategy를 별도 ledger frame으로 보존한다", async () => {
+    const {
+      buildDecisionLedgerFromRunnerResult,
+    } = await import("../../src/application/decision-ledger/frame-builder.js");
+
+    const result = {
+      framesProcessed: 1,
+      metrics: {
+        strategyEvaluationCount: 2,
+        orderCandidateCount: 1,
+        orderIntentCount: 1,
+        holdReasonCounts: { wait_for_s1: 1 },
+        discardReasonCounts: {},
+        costRejectedCount: 1,
+        riskRejectedCount: 0,
+        paperOrderSubmittedCount: 0,
+        paperFillCount: 0,
+        fillRate: 0,
+        costSummary: { evaluatedCount: 1, allowedCount: 0, rejectedCount: 1, averageCostBps: "40", averageRequiredReturnBps: "30", averageMarginBps: "-10" },
+        slippageSummary: { observedFillCount: 0, averageSlippageBps: null, minSlippageBps: null, maxSlippageBps: null },
+        pnlSummary: { startingCashKrw: "1000000", endingCashKrw: "1000000", positionMarketValueKrw: "0", realizedPnlKrw: "0", unrealizedPnlKrw: "0", totalPnlKrw: "0", totalReturnBps: "0", totalFeesKrw: "0", submittedOrderCount: 0, filledOrderCount: 0 },
+        blockingReasonCounts: { "risk:must_not_leak": 1 },
+        liveOrderApiCalls: 0 as const,
+      },
+      ledgerWriteStatus: "NOT_CONFIGURED" as const,
+      trace: [
+        { frameId: "multi-strategy-frame", stage: "FRAME_RECEIVED", status: "received", observedAt: "2026-06-06T06:00:00Z", metadata: { market: "KRW-BTC" } },
+        { frameId: "multi-strategy-frame", strategyId: "strategy.hold", stage: "STRATEGY_DECISION", status: "HOLD", reasonCode: "wait_for_s1", message: "대기", observedAt: "2026-06-06T06:00:01Z" },
+        { frameId: "multi-strategy-frame", strategyId: "strategy.buy", stage: "STRATEGY_DECISION", status: "BUY", reasonCode: "trend_up", message: "매수", observedAt: "2026-06-06T06:00:02Z" },
+        { frameId: "multi-strategy-frame", strategyId: "strategy.buy", stage: "ORDER_INTENT_CONVERSION", status: "CONVERTED", reasonCode: "order_intent_promoted", message: "변환", observedAt: "2026-06-06T06:00:03Z", metadata: { intent_directions: ["BUY"] } },
+        { frameId: "multi-strategy-frame", strategyId: "strategy.buy", stage: "COST_DECISION", status: "REJECT", reasonCode: "cost_margin_insufficient", message: "비용 차단", observedAt: "2026-06-06T06:00:04Z", metadata: { trade_allowed: false } },
+      ] as const,
+    };
+
+    const { frames } = buildDecisionLedgerFromRunnerResult(
+      result,
+      "run-multi-strategy",
+      "UPBIT",
+    );
+
+    expect(frames).toHaveLength(2);
+    const holdFrame = frames.find((item) => item.frame.strategyId === "strategy.hold")!.frame;
+    const buyFrame = frames.find((item) => item.frame.strategyId === "strategy.buy")!.frame;
+
+    expect(holdFrame.category).toBe("HOLD");
+    expect(holdFrame.reasonCounts).toEqual({ wait_for_s1: 1 });
+    expect(holdFrame.dedupeKey).toBe("UPBIT:run-multi-strategy:frame:multi-strategy-frame:strategy:strategy.hold");
+    expect(buyFrame.category).toBe("COST_REJECTED");
+    expect(buyFrame.reasonCounts).toEqual({ cost_margin_insufficient: 1 });
+    expect(buyFrame.reasonCounts["risk:must_not_leak"]).toBeUndefined();
+    expect(buyFrame.dedupeKey).toBe("UPBIT:run-multi-strategy:frame:multi-strategy-frame:strategy:strategy.buy");
+  });
+
+  it("같은 input frame의 모든 strategy가 HOLD면 strategy HOLD와 cash summary를 분리한다", async () => {
+    const {
+      buildDecisionLedgerFromRunnerResult,
+    } = await import("../../src/application/decision-ledger/frame-builder.js");
+
+    const result = {
+      framesProcessed: 1,
+      metrics: {
+        strategyEvaluationCount: 2,
+        orderCandidateCount: 0,
+        orderIntentCount: 0,
+        holdReasonCounts: { wait_for_signal: 1, wide_spread: 1 },
+        discardReasonCounts: {},
+        costRejectedCount: 0,
+        riskRejectedCount: 0,
+        paperOrderSubmittedCount: 0,
+        paperFillCount: 0,
+        fillRate: 0,
+        costSummary: { evaluatedCount: 0, allowedCount: 0, rejectedCount: 0, averageCostBps: null, averageRequiredReturnBps: null, averageMarginBps: null },
+        slippageSummary: { observedFillCount: 0, averageSlippageBps: null, minSlippageBps: null, maxSlippageBps: null },
+        pnlSummary: { startingCashKrw: "1000000", endingCashKrw: "1000000", positionMarketValueKrw: "0", realizedPnlKrw: "0", unrealizedPnlKrw: "0", totalPnlKrw: "0", totalReturnBps: "0", totalFeesKrw: "0", submittedOrderCount: 0, filledOrderCount: 0 },
+        blockingReasonCounts: { "hold:wait_for_signal": 1, "hold:wide_spread": 1 },
+        liveOrderApiCalls: 0 as const,
+      },
+      ledgerWriteStatus: "NOT_CONFIGURED" as const,
+      trace: [
+        { frameId: "all-hold-frame", stage: "FRAME_RECEIVED", status: "received", observedAt: "2026-06-06T08:00:00Z", metadata: { market: "KRW-BTC" } },
+        { frameId: "all-hold-frame", strategyId: "strategy.mean-reversion", stage: "STRATEGY_DECISION", status: "HOLD", reasonCode: "wait_for_signal", message: "신호 대기", observedAt: "2026-06-06T08:00:01Z" },
+        { frameId: "all-hold-frame", strategyId: "strategy.trend-following", stage: "STRATEGY_DECISION", status: "HOLD", reasonCode: "wide_spread", message: "스프레드 확대", observedAt: "2026-06-06T08:00:02Z" },
+      ] as const,
+    };
+
+    const { frames } = buildDecisionLedgerFromRunnerResult(
+      result,
+      "run-all-hold",
+      "UPBIT",
+    );
+
+    expect(frames).toHaveLength(3);
+    const meanReversionFrame = frames.find((item) => item.frame.strategyId === "strategy.mean-reversion")!;
+    const trendFrame = frames.find((item) => item.frame.strategyId === "strategy.trend-following")!;
+    const cashFrame = frames.find((item) => item.frame.strategyId === null)!;
+
+    expect(meanReversionFrame.frame.category).toBe("HOLD");
+    expect(meanReversionFrame.frame.reasonCounts).toEqual({ wait_for_signal: 1 });
+    expect(trendFrame.frame.category).toBe("HOLD");
+    expect(trendFrame.frame.reasonCounts).toEqual({ wide_spread: 1 });
+    expect(cashFrame.frame.category).toBe("CASH_HOLD");
+    expect(cashFrame.frame.reasonCounts).toEqual({ wait_for_signal: 1, wide_spread: 1 });
+    expect(cashFrame.evidenceItems).toHaveLength(0);
+  });
+
+  it("execution validation reject를 BUY/SELL이 아닌 EXECUTION_REJECTED frame으로 기록한다", async () => {
+    const {
+      buildDecisionLedgerFromRunnerResult,
+    } = await import("../../src/application/decision-ledger/frame-builder.js");
+
+    const result = {
+      framesProcessed: 1,
+      metrics: {
+        strategyEvaluationCount: 1,
+        orderCandidateCount: 1,
+        orderIntentCount: 1,
+        holdReasonCounts: {},
+        discardReasonCounts: { cost_snapshot_missing: 1 },
+        costRejectedCount: 0,
+        riskRejectedCount: 0,
+        paperOrderSubmittedCount: 0,
+        paperFillCount: 0,
+        fillRate: 0,
+        costSummary: { evaluatedCount: 1, allowedCount: 1, rejectedCount: 0, averageCostBps: "10", averageRequiredReturnBps: "20", averageMarginBps: "10" },
+        slippageSummary: { observedFillCount: 0, averageSlippageBps: null, minSlippageBps: null, maxSlippageBps: null },
+        pnlSummary: { startingCashKrw: "1000000", endingCashKrw: "1000000", positionMarketValueKrw: "0", realizedPnlKrw: "0", unrealizedPnlKrw: "0", totalPnlKrw: "0", totalReturnBps: "0", totalFeesKrw: "0", submittedOrderCount: 0, filledOrderCount: 0 },
+        blockingReasonCounts: { "discard:cost_snapshot_missing": 1 },
+        liveOrderApiCalls: 0 as const,
+      },
+      ledgerWriteStatus: "NOT_CONFIGURED" as const,
+      trace: [
+        { frameId: "execution-reject-frame", strategyId: "strategy.buy", stage: "FRAME_RECEIVED", status: "received", observedAt: "2026-06-06T07:00:00Z" },
+        { frameId: "execution-reject-frame", strategyId: "strategy.buy", stage: "STRATEGY_DECISION", status: "BUY", reasonCode: "trend_up", message: "매수", observedAt: "2026-06-06T07:00:01Z" },
+        { frameId: "execution-reject-frame", strategyId: "strategy.buy", stage: "ORDER_INTENT_CONVERSION", status: "CONVERTED", reasonCode: "order_intent_promoted", message: "변환", observedAt: "2026-06-06T07:00:02Z", metadata: { intent_directions: ["BUY"] } },
+        { frameId: "execution-reject-frame", strategyId: "strategy.buy", stage: "COST_DECISION", status: "ALLOW", reasonCode: "cost_margin_ok", message: "비용 통과", observedAt: "2026-06-06T07:00:03Z", metadata: { trade_allowed: true } },
+        { frameId: "execution-reject-frame", strategyId: "strategy.buy", stage: "RISK_DECISION", status: "PASS", reasonCode: "ALLOW", message: "리스크 통과", observedAt: "2026-06-06T07:00:04Z", metadata: { approved: true } },
+        { frameId: "execution-reject-frame", strategyId: "strategy.buy", stage: "EXECUTION_RESULT", status: "REJECTED", reasonCode: "cost_snapshot_missing", message: "실행 검증 실패", observedAt: "2026-06-06T07:00:05Z" },
+      ] as const,
+    };
+
+    const { frames } = buildDecisionLedgerFromRunnerResult(
+      result,
+      "run-execution-reject",
+      "UPBIT",
+    );
+
+    const frame = frames[0]!.frame;
+    const executionEvidence = frames[0]!.evidenceItems.find(
+      (item) => item.evidenceKind === "EXECUTION_RESULT",
+    );
+
+    expect(frame.category).toBe("EXECUTION_REJECTED");
+    expect(frame.reasonCounts).toEqual({ cost_snapshot_missing: 1 });
+    expect(executionEvidence!.category).toBe("EXECUTION_REJECTED");
+  });
+
+  it("접수됐지만 아직 미체결인 주문을 EXECUTION_REJECTED로 오분류하지 않는다", async () => {
+    const {
+      buildDecisionLedgerFromRunnerResult,
+    } = await import("../../src/application/decision-ledger/frame-builder.js");
+
+    const result = {
+      framesProcessed: 1,
+      metrics: {
+        strategyEvaluationCount: 1,
+        orderCandidateCount: 1,
+        orderIntentCount: 1,
+        holdReasonCounts: {},
+        discardReasonCounts: {},
+        costRejectedCount: 0,
+        riskRejectedCount: 0,
+        paperOrderSubmittedCount: 1,
+        paperFillCount: 0,
+        fillRate: 0,
+        costSummary: { evaluatedCount: 1, allowedCount: 1, rejectedCount: 0, averageCostBps: "10", averageRequiredReturnBps: "20", averageMarginBps: "10" },
+        slippageSummary: { observedFillCount: 0, averageSlippageBps: null, minSlippageBps: null, maxSlippageBps: null },
+        pnlSummary: { startingCashKrw: "1000000", endingCashKrw: "1000000", positionMarketValueKrw: "0", realizedPnlKrw: "0", unrealizedPnlKrw: "0", totalPnlKrw: "0", totalReturnBps: "0", totalFeesKrw: "0", submittedOrderCount: 1, filledOrderCount: 0 },
+        blockingReasonCounts: {},
+        liveOrderApiCalls: 0 as const,
+      },
+      ledgerWriteStatus: "NOT_CONFIGURED" as const,
+      trace: [
+        { frameId: "submitted-open-frame", strategyId: "strategy.buy", stage: "FRAME_RECEIVED", status: "received", observedAt: "2026-06-06T09:00:00Z" },
+        { frameId: "submitted-open-frame", strategyId: "strategy.buy", stage: "STRATEGY_DECISION", status: "ORDER_INTENT", reasonCode: "trend_up", message: "매수", observedAt: "2026-06-06T09:00:01Z", metadata: { intent_directions: ["BUY"], order_intent_count: 1 } },
+        { frameId: "submitted-open-frame", strategyId: "strategy.buy", stage: "ORDER_INTENT_CONVERSION", status: "CONVERTED", reasonCode: "order_intent_promoted", message: "변환", observedAt: "2026-06-06T09:00:02Z", metadata: { intent_directions: ["BUY"] } },
+        { frameId: "submitted-open-frame", strategyId: "strategy.buy", stage: "COST_DECISION", status: "ALLOW", reasonCode: "cost_margin_ok", message: "비용 통과", observedAt: "2026-06-06T09:00:03Z", metadata: { trade_allowed: true, intent_side: "BUY" } },
+        { frameId: "submitted-open-frame", strategyId: "strategy.buy", stage: "RISK_DECISION", status: "PASS", reasonCode: "ALLOW", message: "리스크 통과", observedAt: "2026-06-06T09:00:04Z", metadata: { approved: true, intent_side: "BUY" } },
+        { frameId: "submitted-open-frame", strategyId: "strategy.buy", stage: "EXECUTION_RESULT", status: "SUBMITTED", reasonCode: "paper_order_accepted", message: "접수", observedAt: "2026-06-06T09:00:05Z", metadata: { broker_order_id: "open-order-001", broker_order_status: "ACCEPTED", filled_quantity: "0.0", intent_side: "BUY" } },
+      ] as const,
+    };
+
+    const { frames } = buildDecisionLedgerFromRunnerResult(
+      result,
+      "run-submitted-open",
+      "UPBIT",
+    );
+    const frame = frames[0]!.frame;
+    const executionEvidence = frames[0]!.evidenceItems.find(
+      (item) => item.evidenceKind === "EXECUTION_RESULT",
+    );
+    const strategyEvidence = frames[0]!.evidenceItems.find(
+      (item) => item.evidenceKind === "STRATEGY_DECISION",
+    );
+
+    expect(frame.category).toBe("BUY");
+    expect(strategyEvidence!.category).toBe("BUY");
+    expect(executionEvidence!.category).toBe("BUY");
+  });
+
+  it("SELL 주문 후보의 cost/risk 승인 evidence category를 SELL로 보존한다", async () => {
+    const {
+      buildDecisionLedgerFromRunnerResult,
+    } = await import("../../src/application/decision-ledger/frame-builder.js");
+
+    const result = {
+      framesProcessed: 1,
+      metrics: {
+        strategyEvaluationCount: 1,
+        orderCandidateCount: 1,
+        orderIntentCount: 1,
+        holdReasonCounts: {},
+        discardReasonCounts: {},
+        costRejectedCount: 0,
+        riskRejectedCount: 0,
+        paperOrderSubmittedCount: 0,
+        paperFillCount: 0,
+        fillRate: 0,
+        costSummary: { evaluatedCount: 1, allowedCount: 1, rejectedCount: 0, averageCostBps: "10", averageRequiredReturnBps: "20", averageMarginBps: "10" },
+        slippageSummary: { observedFillCount: 0, averageSlippageBps: null, minSlippageBps: null, maxSlippageBps: null },
+        pnlSummary: { startingCashKrw: "1000000", endingCashKrw: "1000000", positionMarketValueKrw: "0", realizedPnlKrw: "0", unrealizedPnlKrw: "0", totalPnlKrw: "0", totalReturnBps: "0", totalFeesKrw: "0", submittedOrderCount: 0, filledOrderCount: 0 },
+        blockingReasonCounts: {},
+        liveOrderApiCalls: 0 as const,
+      },
+      ledgerWriteStatus: "NOT_CONFIGURED" as const,
+      trace: [
+        { frameId: "sell-side-frame", strategyId: "strategy.sell", stage: "FRAME_RECEIVED", status: "received", observedAt: "2026-06-06T10:00:00Z" },
+        { frameId: "sell-side-frame", strategyId: "strategy.sell", stage: "STRATEGY_DECISION", status: "SELL", reasonCode: "trend_down", message: "매도", observedAt: "2026-06-06T10:00:01Z" },
+        { frameId: "sell-side-frame", strategyId: "strategy.sell", stage: "ORDER_INTENT_CONVERSION", status: "CONVERTED", reasonCode: "order_intent_promoted", message: "변환", observedAt: "2026-06-06T10:00:02Z", metadata: { intent_directions: ["SELL"] } },
+        { frameId: "sell-side-frame", strategyId: "strategy.sell", stage: "COST_DECISION", status: "ALLOW", reasonCode: "cost_margin_ok", message: "비용 통과", observedAt: "2026-06-06T10:00:03Z", metadata: { trade_allowed: true, intent_side: "SELL" } },
+        { frameId: "sell-side-frame", strategyId: "strategy.sell", stage: "RISK_DECISION", status: "PASS", reasonCode: "ALLOW", message: "리스크 통과", observedAt: "2026-06-06T10:00:04Z", metadata: { approved: true, intent_side: "SELL" } },
+      ] as const,
+    };
+
+    const { frames } = buildDecisionLedgerFromRunnerResult(
+      result,
+      "run-sell-side",
+      "UPBIT",
+    );
+
+    const costEvidence = frames[0]!.evidenceItems.find((item) => item.evidenceKind === "COST_BREAKDOWN");
+    const riskEvidence = frames[0]!.evidenceItems.find((item) => item.evidenceKind === "RISK_DECISION");
+    expect(costEvidence!.category).toBe("SELL");
+    expect(riskEvidence!.category).toBe("SELL");
+  });
+
+  it("evidence fingerprint는 모두 고유하고 중복이 없다", async () => {
+    const {
+      buildDecisionLedgerFromRunnerResult,
+    } = await import("../../src/application/decision-ledger/frame-builder.js");
+
+    const result = {
+      framesProcessed: 2,
+      metrics: {
+        strategyEvaluationCount: 2,
+        orderCandidateCount: 2,
+        orderIntentCount: 2,
+        holdReasonCounts: {},
+        discardReasonCounts: {},
+        costRejectedCount: 0,
+        riskRejectedCount: 0,
+        paperOrderSubmittedCount: 2,
+        paperFillCount: 2,
+        fillRate: 1,
+        costSummary: { evaluatedCount: 2, allowedCount: 2, rejectedCount: 0, averageCostBps: "10", averageRequiredReturnBps: "20", averageMarginBps: "10" },
+        slippageSummary: { observedFillCount: 2, averageSlippageBps: "0", minSlippageBps: "0", maxSlippageBps: "0" },
+        pnlSummary: { startingCashKrw: "1000000", endingCashKrw: "980000", positionMarketValueKrw: "20000", realizedPnlKrw: "0", unrealizedPnlKrw: "0", totalPnlKrw: "0", totalReturnBps: "0", totalFeesKrw: "10", submittedOrderCount: 2, filledOrderCount: 2 },
+        blockingReasonCounts: {},
+        liveOrderApiCalls: 0 as const,
+      },
+      ledgerWriteStatus: "NOT_CONFIGURED" as const,
+      trace: [
+        { frameId: "fp-frame-001", strategyId: "s1", stage: "FRAME_RECEIVED", status: "received", observedAt: "2026-06-06T04:00:00Z" },
+        { frameId: "fp-frame-001", strategyId: "s1", stage: "STRATEGY_DECISION", status: "BUY", reasonCode: "trend_up", message: "매수", observedAt: "2026-06-06T04:00:01Z" },
+        { frameId: "fp-frame-001", strategyId: "s1", stage: "ORDER_INTENT_CONVERSION", status: "CONVERTED", message: "변환", observedAt: "2026-06-06T04:00:02Z" },
+        { frameId: "fp-frame-001", strategyId: "s1", stage: "COST_DECISION", status: "ALLOWED", message: "비용", observedAt: "2026-06-06T04:00:03Z" },
+        { frameId: "fp-frame-001", strategyId: "s1", stage: "RISK_DECISION", status: "APPROVED", message: "리스크", observedAt: "2026-06-06T04:00:04Z" },
+        { frameId: "fp-frame-001", strategyId: "s1", stage: "EXECUTION_RESULT", status: "SUBMITTED", message: "실행", observedAt: "2026-06-06T04:00:05Z" },
+        { frameId: "fp-frame-002", strategyId: "s2", stage: "FRAME_RECEIVED", status: "received", observedAt: "2026-06-06T05:00:00Z" },
+        { frameId: "fp-frame-002", strategyId: "s2", stage: "STRATEGY_DECISION", status: "SELL", reasonCode: "trend_down", message: "매도", observedAt: "2026-06-06T05:00:01Z" },
+        { frameId: "fp-frame-002", strategyId: "s2", stage: "ORDER_INTENT_CONVERSION", status: "CONVERTED", message: "변환", observedAt: "2026-06-06T05:00:02Z" },
+        { frameId: "fp-frame-002", strategyId: "s2", stage: "COST_DECISION", status: "ALLOWED", message: "비용", observedAt: "2026-06-06T05:00:03Z" },
+        { frameId: "fp-frame-002", strategyId: "s2", stage: "RISK_DECISION", status: "APPROVED", message: "리스크", observedAt: "2026-06-06T05:00:04Z" },
+        { frameId: "fp-frame-002", strategyId: "s2", stage: "EXECUTION_RESULT", status: "SUBMITTED", message: "실행", observedAt: "2026-06-06T05:00:05Z" },
+      ] as const,
+    };
+
+    const { frames: fpFrames } = buildDecisionLedgerFromRunnerResult(
+      result,
+      "run-fp-001",
+      "UPBIT",
+    );
+
+    const evidenceItems = fpFrames[0]!.evidenceItems;
+
+    const fingerprints = evidenceItems.map((item: DecisionEvidenceItem) => item.evidenceFingerprint);
+    const uniqueFingerprints = new Set(fingerprints);
+    expect(uniqueFingerprints.size).toBe(fingerprints.length);
+  });
+});
+
+describe("User-facing message mapper", () => {
+  it("모든 category에 대한 한국어 label이 정의되어 있다", async () => {
+    const { toCategoryLabel } = await import("../../src/application/decision-ledger/user-facing.js");
+
+    expect(toCategoryLabel("BUY")).toBe("매수 판단");
+    expect(toCategoryLabel("SELL")).toBe("매도 판단");
+    expect(toCategoryLabel("HOLD")).toBe("보유");
+    expect(toCategoryLabel("CASH_HOLD")).toBe("현금 보유");
+    expect(toCategoryLabel("DISCARD")).toBe("주문 폐기");
+    expect(toCategoryLabel("COST_REJECTED")).toBe("비용 차단");
+    expect(toCategoryLabel("RISK_REJECTED")).toBe("리스크 차단");
+    expect(toCategoryLabel("EXECUTION_REJECTED")).toBe("실행 거부");
+    expect(toCategoryLabel("EXECUTED")).toBe("실행 완료");
+    expect(toCategoryLabel("EXPLANATION_FAILED")).toBe("설명 생성 실패");
+  });
+
+  it("HOLD category에 대한 why status message가 한국어로 제공된다", async () => {
+    const { toWhyStatusMessages } = await import("../../src/application/decision-ledger/user-facing.js");
+
+    const messages = toWhyStatusMessages("HOLD", "KRW-BTC");
+    expect(messages.statusLabel).toBe("보유");
+    expect(messages.message).toContain("KRW-BTC");
+    expect(messages.message).toContain("진입 또는 청산하지 않기로");
+    expect(messages.action).toContain("대기");
+  });
+
+  it("category가 null이면 기록 없음 메시지를 반환한다", async () => {
+    const { toWhyStatusMessages } = await import("../../src/application/decision-ledger/user-facing.js");
+
+    const messages = toWhyStatusMessages(null, "KRW-ETH");
+    expect(messages.statusLabel).toBe("기록 없음");
+    expect(messages.message).toContain("KRW-ETH");
+    expect(messages.action).toContain("다시 조회");
+  });
+
+  it("알려진 reason code를 한국어 label로 변환한다", async () => {
+    const { toHoldReasonLabel } = await import("../../src/application/decision-ledger/user-facing.js");
+
+    expect(toHoldReasonLabel("fixture_waiting_for_signal")).toBe("신호 대기 중");
+    expect(toHoldReasonLabel("insufficient_expected_return")).toBe("기대 수익 부족");
+    expect(toHoldReasonLabel("wide_spread")).toBe("스프레드 확대");
+    expect(toHoldReasonLabel("cost_margin_insufficient")).toBe("비용 마진 부족");
+    expect(toHoldReasonLabel("exposure_limit_exceeded")).toBe("노출 한도 초과");
+  });
+
+  it("알려지지 않은 reason code는 그대로 반환한다", async () => {
+    const { toHoldReasonLabel } = await import("../../src/application/decision-ledger/user-facing.js");
+
+    expect(toHoldReasonLabel("custom_unknown_code")).toBe("custom_unknown_code");
+  });
+});
+
+describe("WhySummary build function", () => {
+  it("market projection으로 WhySummary를 빌드한다", async () => {
+    const { buildWhySummary } = await import("../../src/application/decision-ledger/why-summary.js");
+
+    const summary = buildWhySummary(
+      {
+        markets: [
+          {
+            market: "KRW-BTC",
+            category: "BUY",
+            summaryStatus: "RECORDED",
+            reasonCounts: {},
+            latestDecisionAt: new Date("2026-06-06T00:00:00Z"),
+            trace: { correlationId: "corr-001" },
+          },
+        ],
+        strategies: [
+          {
+            strategyId: "strategy.trend-following",
+            category: "BUY",
+            summaryStatus: "RECORDED",
+            reasonCounts: {},
+            latestDecisionAt: new Date("2026-06-06T00:00:00Z"),
+            trace: {},
+          },
+        ],
+        cashFrames: [
+          {
+            category: "CASH_HOLD",
+            summaryStatus: "RECORDED",
+            reasonCounts: { fixture_waiting_for_signal: 2, wide_spread: 1 },
+            latestDecisionAt: new Date("2026-06-06T00:00:00Z"),
+            trace: {},
+          },
+        ],
+      },
+      "2026-06-06T04:00:00.000Z",
+    );
+
+    expect(summary.readStatus).toBe("OK");
+    expect(summary.markets.readStatus).toBe("OK");
+    expect(summary.markets.items).toHaveLength(1);
+    expect(summary.markets.items[0]!.market).toBe("KRW-BTC");
+    expect(summary.markets.items[0]!.statusLabel).toBe("매수 판단");
+    expect(summary.strategies.items).toHaveLength(1);
+    expect(summary.cash.readStatus).toBe("OK");
+    expect(summary.cash.item).not.toBeNull();
+    expect(summary.cash.item!.holdReasons).toHaveLength(2);
+    expect(summary.cash.item!.holdReasons[0]!.label).toBe("신호 대기 중");
+    expect(summary.cash.item!.holdReasons[0]!.count).toBe(2);
+    expect(summary.cash.item!.holdReasons[1]!.label).toBe("스프레드 확대");
+    expect(summary.cash.item!.holdReasons[1]!.count).toBe(1);
+  });
+
+  it("빈 projection은 NOT_FOUND summary를 반환한다", async () => {
+    const { buildWhySummary } = await import("../../src/application/decision-ledger/why-summary.js");
+
+    const summary = buildWhySummary(
+      { markets: [], strategies: [], cashFrames: [] },
+      "2026-06-06T04:00:00.000Z",
+    );
+
+    expect(summary.readStatus).toBe("NOT_FOUND");
+    expect(summary.markets.readStatus).toBe("NOT_FOUND");
+    expect(summary.markets.items).toHaveLength(0);
+    expect(summary.strategies.readStatus).toBe("NOT_FOUND");
+    expect(summary.strategies.items).toHaveLength(0);
+    expect(summary.cash.readStatus).toBe("NOT_FOUND");
+    expect(summary.cash.item).toBeNull();
+  });
+
+  it("일부 why section에 데이터가 있으면 최상위 readStatus를 OK로 유지한다", async () => {
+    const { buildWhySummary } = await import("../../src/application/decision-ledger/why-summary.js");
+
+    const summary = buildWhySummary(
+      {
+        markets: [
+          {
+            market: "KRW-BTC",
+            category: "BUY",
+            summaryStatus: "RECORDED",
+            reasonCounts: {},
+            latestDecisionAt: new Date("2026-06-06T00:00:00Z"),
+            trace: {},
+          },
+        ],
+        strategies: [
+          {
+            strategyId: "strategy.trend-following",
+            category: "BUY",
+            summaryStatus: "RECORDED",
+            reasonCounts: {},
+            latestDecisionAt: new Date("2026-06-06T00:00:00Z"),
+            trace: {},
+          },
+        ],
+        cashFrames: [],
+      },
+      "2026-06-06T04:00:00.000Z",
+    );
+
+    expect(summary.readStatus).toBe("OK");
+    expect(summary.markets.readStatus).toBe("OK");
+    expect(summary.strategies.readStatus).toBe("OK");
+    expect(summary.cash.readStatus).toBe("NOT_FOUND");
+  });
+
+  it("cash hold reason count가 0인 항목은 제외한다", async () => {
+    const { buildWhySummary } = await import("../../src/application/decision-ledger/why-summary.js");
+
+    const summary = buildWhySummary(
+      {
+        markets: [],
+        strategies: [],
+        cashFrames: [
+          {
+            category: "CASH_HOLD",
+            summaryStatus: "RECORDED",
+            reasonCounts: { active_reason: 3, zero_reason: 0 },
+            latestDecisionAt: new Date("2026-06-06T00:00:00Z"),
+            trace: {},
+          },
+        ],
+      },
+      "2026-06-06T04:00:00.000Z",
+    );
+
+    expect(summary.cash.item).not.toBeNull();
+    expect(summary.cash.item!.holdReasons).toHaveLength(1);
+    expect(summary.cash.item!.holdReasons[0]!.label).toBe("active_reason");
+    expect(summary.cash.item!.holdReasons[0]!.count).toBe(3);
   });
 });

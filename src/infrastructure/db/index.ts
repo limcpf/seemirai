@@ -169,9 +169,12 @@ export {
   DecisionLedgerEvidenceFrameConflictError,
   DecisionLedgerPersistenceValidationError,
   PostgresDecisionLedgerRepository,
+  createDecisionLedgerWriterPort,
   toDecisionLedgerFrameRowInput,
   toDecisionLedgerEvidenceRowInput,
 } from "./decision-ledger.js";
+export { createDatabaseWhySummaryProvider } from "./decision-ledger/status-provider.js";
+export type { DecisionLedgerWriterRepositoryPort } from "./decision-ledger.js";
 export type {
   AppendDecisionLedgerFrameInput,
   AppendDecisionLedgerFrameResult,

@@ -51,3 +51,34 @@ export type {
   SummaryStatus,
   EvidenceKind,
 } from "./decision-ledger/category.js";
+
+export {
+  buildDecisionLedgerFromRunnerResult,
+  buildEvidenceItem,
+  resolveFrameCategory,
+} from "./decision-ledger/frame-builder.js";
+export type {
+  BuildEvidenceOptions,
+  BuildFrameCategoryInput,
+  FrameCategoryResult,
+} from "./decision-ledger/frame-builder.js";
+/** runner ledger write port를 application layer에서 재export한다. */
+export type { PaperDecisionLedgerWriterPort } from "./paper-decision-runner/types.js";
+
+export {
+  toCategoryLabel,
+  toEvidenceKindLabel,
+  toWhyStatusMessages,
+  toHoldReasonLabel,
+} from "./decision-ledger/user-facing.js";
+
+export {
+  buildWhySummary,
+} from "./decision-ledger/why-summary.js";
+export type {
+  WhySummaryProvider,
+  WhyFrameProjection,
+  WhyStrategyFrameProjection,
+  WhyCashFrameProjection,
+  WhyProjections,
+} from "./decision-ledger/why-summary.js";

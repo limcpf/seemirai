@@ -1,9 +1,13 @@
 import { readFile } from "node:fs/promises";
 import path from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   PaperDecisionRunner,
   StaticPaperDecisionInputSource,
+} from "../../src/application/index.js";
+import type {
+  PaperDecisionInputFrame,
+  PaperDecisionLedgerWriterPort,
 } from "../../src/application/index.js";
 import {
   PaperBroker,
@@ -11,6 +15,7 @@ import {
 import {
   runM9PaperDecisionFixtureSmoke,
 } from "../../src/runtime/index.js";
+import type { Strategy } from "../../src/domain/index.js";
 
 const fixturePath = path.join(process.cwd(), "tests", "fixtures", "m9", "paper-decision-runner.json");
 
@@ -219,4 +224,155 @@ describe("M9 paper decision runner", () => {
     expect(pulledFrameCount).toBe(1);
     expect(observedLimit).toBe(1);
   });
+
+  it("ledger writer가 주입되면 durable frame id로 evidence를 append한다", async () => {
+    const frame = createLedgerWriterTestFrame("ledger-frame-001", "run-ledger-writer-001");
+    const appendFrame = vi.fn<PaperDecisionLedgerWriterPort["appendFrame"]>(async () => ({
+      inserted: true,
+      durableFrameId: "db-frame-001",
+    }));
+    const appendEvidenceItems = vi.fn<PaperDecisionLedgerWriterPort["appendEvidenceItems"]>(async () => ({
+      inserted: 1,
+      skipped: 0,
+    }));
+    const runner = createLedgerWriterTestRunner(frame, {
+      appendFrame,
+      appendEvidenceItems,
+    });
+
+    const result = await runner.run({ sourceRequest: { sourceId: "run-ledger-writer-001" } });
+
+    expect(result.ledgerWriteStatus).toBe("RECORDED");
+    expect(appendFrame).toHaveBeenCalledTimes(2);
+    expect(appendEvidenceItems).toHaveBeenCalledTimes(2);
+    expect(appendEvidenceItems.mock.calls[0]![0]).toBe("db-frame-001");
+    expect(appendEvidenceItems.mock.calls[0]![1]).toHaveLength(1);
+    expect(appendEvidenceItems.mock.calls[1]![0]).toBe("db-frame-001");
+    expect(appendEvidenceItems.mock.calls[1]![1]).toHaveLength(0);
+  });
+
+  it("duplicate frame이어도 기존 durable id로 evidence append를 재시도한다", async () => {
+    const frame = createLedgerWriterTestFrame("ledger-frame-duplicate", "run-ledger-writer-duplicate");
+    const appendFrame = vi.fn<PaperDecisionLedgerWriterPort["appendFrame"]>(async () => ({
+      inserted: false,
+      durableFrameId: "db-frame-existing",
+    }));
+    const appendEvidenceItems = vi.fn<PaperDecisionLedgerWriterPort["appendEvidenceItems"]>(async () => ({
+      inserted: 0,
+      skipped: 1,
+    }));
+    const runner = createLedgerWriterTestRunner(frame, {
+      appendFrame,
+      appendEvidenceItems,
+    });
+
+    const result = await runner.run({ sourceRequest: { sourceId: "run-ledger-writer-duplicate" } });
+
+    expect(result.ledgerWriteStatus).toBe("RECORDED");
+    expect(appendFrame).toHaveBeenCalledTimes(2);
+    expect(appendEvidenceItems).toHaveBeenCalledTimes(2);
+    expect(appendEvidenceItems.mock.calls[0]![0]).toBe("db-frame-existing");
+    expect(appendEvidenceItems.mock.calls[1]![0]).toBe("db-frame-existing");
+  });
+
+  it("ledger writer 실패는 broker 재시도 없이 UNAVAILABLE로 격리한다", async () => {
+    const frame = createLedgerWriterTestFrame("ledger-frame-failure", "run-ledger-writer-failure");
+    const appendFrame = vi.fn<PaperDecisionLedgerWriterPort["appendFrame"]>(async () => {
+      throw new Error("ledger unavailable");
+    });
+    const appendEvidenceItems = vi.fn<PaperDecisionLedgerWriterPort["appendEvidenceItems"]>(async () => ({
+      inserted: 0,
+      skipped: 0,
+    }));
+    const runner = createLedgerWriterTestRunner(frame, {
+      appendFrame,
+      appendEvidenceItems,
+    });
+
+    const result = await runner.run({ sourceRequest: { sourceId: "run-ledger-writer-failure" } });
+
+    expect(result.framesProcessed).toBe(1);
+    expect(result.ledgerWriteStatus).toBe("UNAVAILABLE");
+    expect(appendFrame).toHaveBeenCalledTimes(1);
+    expect(appendEvidenceItems).not.toHaveBeenCalled();
+  });
+
+  it("sourceId가 없으면 같은 input frame에 대해 결정론적 ledger dedupe key를 사용한다", async () => {
+    const frame = createLedgerWriterTestFrame("ledger-frame-deterministic");
+    const firstAppendFrame = vi.fn<PaperDecisionLedgerWriterPort["appendFrame"]>(async () => ({
+      inserted: true,
+      durableFrameId: "db-frame-first",
+    }));
+    const secondAppendFrame = vi.fn<PaperDecisionLedgerWriterPort["appendFrame"]>(async () => ({
+      inserted: true,
+      durableFrameId: "db-frame-second",
+    }));
+
+    await createLedgerWriterTestRunner(frame, {
+      appendFrame: firstAppendFrame,
+      appendEvidenceItems: vi.fn<PaperDecisionLedgerWriterPort["appendEvidenceItems"]>(async () => ({ inserted: 1, skipped: 0 })),
+    }).run();
+    await createLedgerWriterTestRunner(frame, {
+      appendFrame: secondAppendFrame,
+      appendEvidenceItems: vi.fn<PaperDecisionLedgerWriterPort["appendEvidenceItems"]>(async () => ({ inserted: 1, skipped: 0 })),
+    }).run();
+
+    const firstDedupeKey = firstAppendFrame.mock.calls[0]![0].dedupeKey;
+    const secondDedupeKey = secondAppendFrame.mock.calls[0]![0].dedupeKey;
+    expect(firstDedupeKey).toBe(secondDedupeKey);
+    expect(firstDedupeKey).toContain("UPBIT:paper-runner:");
+    expect(firstDedupeKey).toContain("frame:ledger-frame-deterministic:strategy:strategy.hold-ledger");
+  });
 });
+
+function createLedgerWriterTestRunner(
+  frame: PaperDecisionInputFrame,
+  decisionLedgerWriter: PaperDecisionLedgerWriterPort,
+): PaperDecisionRunner {
+  const source = new StaticPaperDecisionInputSource([frame]);
+  const broker = new PaperBroker({
+    exchangeId: "upbit_krw_spot",
+    initialBalances: [
+      {
+        currency: "KRW",
+        available: "1000000",
+      },
+    ],
+  });
+
+  return new PaperDecisionRunner({
+    source,
+    strategies: [createHoldStrategy()],
+    broker,
+    decisionLedgerWriter,
+  });
+}
+
+function createLedgerWriterTestFrame(id: string, sourceId?: string): PaperDecisionInputFrame {
+  const frame: PaperDecisionInputFrame = {
+    id,
+    observedAt: "2026-06-06T08:00:00.000Z",
+    exchangeId: "upbit_krw_spot",
+    market: "KRW-BTC",
+    features: {},
+  };
+  if (sourceId !== undefined) {
+    frame.metadata = { source_id: sourceId };
+  }
+  return frame;
+}
+
+function createHoldStrategy(): Strategy {
+  return {
+    id: "strategy.hold-ledger",
+    version: "test",
+    requiredFeatures: [],
+    evaluate() {
+      return {
+        kind: "HOLD",
+        strategyId: "strategy.hold-ledger",
+        reason: "ledger_hold_reason",
+      };
+    },
+  };
+}

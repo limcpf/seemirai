@@ -9,6 +9,8 @@ import type {
   PnLAccountingStatusProvider,
   PnLAccountingStatusSummary,
 } from "../../application/index.js";
+import type { WhySummary, WhySummaryProvider } from "../../application/decision-ledger.js";
+export type { WhySummary, WhySummaryProvider };
 import type { Database } from "../../infrastructure/db/index.js";
 import type {
   PilotRuntimeConfig,
@@ -150,6 +152,8 @@ export interface ControlStatusSnapshot {
   };
   /** M16 read-only reconcile 상태 summary다. reconcile worker가 비활성이면 SKIPPED/UNAVAILABLE로 표시한다. */
   reconcile: ReconcileStatusSummary;
+  /** M18 판단 이유 ledger 기반 `/status.why` safe summary다. 별도 write/control endpoint는 없다. */
+  why: WhySummary | null;
 }
 
 export interface ControlStatusProvider {
@@ -283,6 +287,13 @@ export interface CreateDatabaseControlStatusProviderOptions {
    * runtime worker가 활성화된 운영 조립에서는 정적 `reconcile` 대신 이 provider를 주입해 최신 DB/worker 상태를 노출한다.
    */
   reconcileStatusProvider?: ReconcileStatusProvider;
+  /**
+   * `/status` 호출 시점에 M18 decision ledger why summary를 읽는 provider다.
+   *
+   * 지정하지 않으면 `/status` 응답에서 `why`는 `null`로 표시한다.
+   * DB-backed 구현은 `createDatabaseWhySummaryProvider`를 사용한다.
+   */
+  whySummaryProvider?: WhySummaryProvider;
 }
 
 export interface CreateDatabaseReadinessProviderOptions {

@@ -254,6 +254,20 @@
       "owner_scope": "docs/exec-plans/active"
     },
     {
+      "path": "docs/exec-plans/active/2026-06-06-issue-159-subpr-03-review-fix-deepseek-handoff.md",
+      "kind": "exec-plan",
+      "role": "Issue #159 Sub PR 03 Producer & Status Why Summary 리뷰 finding 수정 DeepSeek handoff — runner ledger write, producer frame/fingerprint, /status.why unavailable semantics, HTTP/runner 테스트 완료 기준",
+      "read_when": ["issue #159 Sub PR 03 리뷰 수정", "Producer Status Why Summary 수정", "DeepSeek handoff", "runner ledger write 수정", "why summary unavailable 수정", "decision ledger producer 수정"],
+      "owner_scope": "docs/exec-plans/active"
+    },
+    {
+      "path": "docs/exec-plans/active/2026-06-06-issue-159-subpr-03-codex-review-repair-deepseek-handoff.md",
+      "kind": "exec-plan",
+      "role": "Issue #159 Sub PR 03 Codex review repair DeepSeek handoff — durable DB frame id writer, frame/strategy producer correctness, /status.why DB failure semantics, typecheck/unit/verify 완료 기준",
+      "read_when": ["issue #159 Sub PR 03 Codex review repair", "Sub PR 03 durable writer 수정", "frame strategy producer 수정", "why summary DB failure 수정", "typecheck unit verify 복구", "DeepSeek repair handoff"],
+      "owner_scope": "docs/exec-plans/active"
+    },
+    {
       "path": "docs/exec-plans/completed/2026-06-04-issue-154-m17-pnl-position-accounting.md",
       "kind": "exec-plan",
       "role": "Issue #154 M17 PnL/포지션 회계 closeout — Unit 01-03 sub PR 병합, PnL accounting/status 통합, 최종 PR review drain 기준",
@@ -342,6 +356,20 @@
       "kind": "generated",
       "role": "Issue #159 M18 판단 이유 ledger와 설명 API Reasonix handoff machine-readable contract",
       "read_when": ["issue #159 handoff contract", "M18 handoff contract", "Reasonix implementation contract", "implementation hygiene self-check"],
+      "owner_scope": "docs/generated"
+    },
+    {
+      "path": "docs/generated/2026-06-06-issue-159-subpr-03-review-fix-deepseek-handoff.contract.json",
+      "kind": "generated",
+      "role": "Issue #159 Sub PR 03 리뷰 finding 수정 DeepSeek handoff machine-readable contract",
+      "read_when": ["issue #159 Sub PR 03 review fix contract", "DeepSeek implementation contract", "producer status why summary fix", "implementation hygiene self-check"],
+      "owner_scope": "docs/generated"
+    },
+    {
+      "path": "docs/generated/2026-06-06-issue-159-subpr-03-codex-review-repair-deepseek-handoff.contract.json",
+      "kind": "generated",
+      "role": "Issue #159 Sub PR 03 Codex review repair DeepSeek handoff machine-readable contract",
+      "read_when": ["issue #159 Sub PR 03 Codex repair contract", "DeepSeek repair implementation contract", "durable writer repair", "producer why summary repair", "implementation hygiene self-check"],
       "owner_scope": "docs/generated"
     },
     {

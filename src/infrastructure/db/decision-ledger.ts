@@ -13,6 +13,9 @@ export {
   toDecisionLedgerEvidenceRowInput,
 } from "./decision-ledger/row-mapper.js";
 export { DecisionLedgerPersistenceValidationError } from "./decision-ledger/validation.js";
+export { createDatabaseWhySummaryProvider } from "./decision-ledger/status-provider.js";
+export { createDecisionLedgerWriterPort } from "./decision-ledger/writer-port.js";
+export type { DecisionLedgerWriterRepositoryPort } from "./decision-ledger/writer-port.js";
 export type {
   AppendDecisionLedgerFrameInput,
   AppendDecisionLedgerFrameResult,
