@@ -4,6 +4,7 @@ export * from "./backtest/index.js";
 export * from "./calibration.js";
 export * from "./decision-ledger.js";
 export * from "./daily-report/index.js";
+export * from "./exit-engine.js";
 export * from "./execution/index.js";
 export * from "./features.js";
 export * from "./live-reconcile.js";
