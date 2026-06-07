@@ -103,6 +103,10 @@ describe("exit rule engine", () => {
   describe("stop loss exit rule", () => {
     const rule = createStopLossExitRule({ stopLossBps: "3000" });
 
+    it("rejects zero stop loss thresholds", () => {
+      expect(() => createStopLossExitRule({ stopLossBps: "0" })).toThrow("greater than zero");
+    });
+
     it("passes when unrealized loss is below stop loss threshold", async () => {
       const result = await evaluateRule(rule, createContext({ position: { ...btcPosition, unrealizedPnlBps: "-2400" } }));
       expect(result).toMatchObject({
@@ -160,6 +164,10 @@ describe("exit rule engine", () => {
   describe("take profit exit rule", () => {
     const rule = createTakeProfitExitRule({ takeProfitBps: "2000" });
 
+    it("rejects zero take profit thresholds", () => {
+      expect(() => createTakeProfitExitRule({ takeProfitBps: "0" })).toThrow("greater than zero");
+    });
+
     it("passes when unrealized profit is below take profit threshold", async () => {
       const result = await evaluateRule(rule, createContext({ position: { ...btcPosition, unrealizedPnlBps: "1500" } }));
       expect(result).toMatchObject({
@@ -216,6 +224,10 @@ describe("exit rule engine", () => {
 
   describe("trailing stop exit rule", () => {
     const rule = createTrailingStopExitRule({ defaultTrailBps: "500" });
+
+    it("rejects zero default trailing thresholds", () => {
+      expect(() => createTrailingStopExitRule({ defaultTrailBps: "0" })).toThrow("greater than zero");
+    });
 
     it("returns UNAVAILABLE when trailing state snapshot is missing", async () => {
       const result = await evaluateRule(rule, createContext());
@@ -303,6 +315,22 @@ describe("exit rule engine", () => {
       });
     });
 
+    it("blocks when anchor observed time is invalid", async () => {
+      const trailingState: ExitTrailingState = {
+        anchorPrice: "130000000",
+        anchorObservedAt: "not-a-date",
+        trailBps: "500",
+      };
+      const result = await evaluateRule(rule, createContext({
+        trailingState,
+        position: { ...btcPosition, currentPrice: "120000000" },
+      }));
+      expect(result).toMatchObject({
+        status: "BLOCKED",
+        reasonCode: "trailing_anchor_observed_at_invalid",
+      });
+    });
+
     it("blocks when currentPrice is invalid", async () => {
       const trailingState: ExitTrailingState = {
         anchorPrice: "130000000",
@@ -351,20 +379,22 @@ describe("exit rule engine", () => {
       });
     });
 
-    it("blocks when trailBps is negative", async () => {
-      const trailingState: ExitTrailingState = {
-        anchorPrice: "130000000",
-        anchorObservedAt: new Date("2026-06-07T08:00:00.000Z"),
-        trailBps: "-500",
-      };
-      const result = await evaluateRule(rule, createContext({
-        trailingState,
-        position: { ...btcPosition, currentPrice: "120000000" },
-      }));
-      expect(result).toMatchObject({
-        status: "BLOCKED",
-        reasonCode: "trailing_trail_bps_invalid",
-      });
+    it("blocks when trailBps is zero or negative", async () => {
+      for (const trailBps of ["0", "-500"]) {
+        const trailingState: ExitTrailingState = {
+          anchorPrice: "130000000",
+          anchorObservedAt: new Date("2026-06-07T08:00:00.000Z"),
+          trailBps,
+        };
+        const result = await evaluateRule(rule, createContext({
+          trailingState,
+          position: { ...btcPosition, currentPrice: "120000000" },
+        }));
+        expect(result).toMatchObject({
+          status: "BLOCKED",
+          reasonCode: "trailing_trail_bps_invalid",
+        });
+      }
     });
 
     it("uses default trailBps when trailing state has no trailBps override", async () => {
@@ -1081,6 +1111,32 @@ describe("exit sizing", () => {
     });
   });
 
+  it("blocks when remaining position notional would be below min order amount", () => {
+    const result = evaluateExitSizing({
+      requestedQuantity: "0.006",
+      positionScope: {
+        market: "KRW-BTC",
+        strategyId: "trend_following",
+        totalQuantity: "0.01",
+        observedAt,
+      },
+      policySnapshot: {
+        ...paperPolicy,
+        minOrderNotional: "5000",
+        dustThreshold: "0.0001",
+      },
+      currentPrice: "1000000",
+    });
+    expect(result).toMatchObject({
+      valid: false,
+      executableQuantity: "0",
+      remainingBelowMinOrderNotional: true,
+      rejectionReason: "remaining_below_min_order_notional",
+    });
+    expect(result.dustQuantity).toBe("0");
+    expect(formatSizingUserMessage(result)).toContain("잔여 포지션");
+  });
+
   it("blocks when min order policy is zero or negative", () => {
     for (const minOrderNotional of ["0", "-1"]) {
       const result = evaluateExitSizing({
@@ -1271,6 +1327,26 @@ describe("exit sizing", () => {
     const dustMsg = formatSizingUserMessage(dustRemainder);
     expect(dustMsg).not.toContain("dust_remainder");
     expect(dustMsg).toContain("처리 불가 잔량");
+
+    const remainingBelowMin = evaluateExitSizing({
+      requestedQuantity: "0.006",
+      positionScope: {
+        market: "KRW-BTC",
+        strategyId: "trend_following",
+        totalQuantity: "0.01",
+        observedAt,
+      },
+      policySnapshot: {
+        ...paperPolicy,
+        minOrderNotional: "5000",
+        dustThreshold: "0.0001",
+      },
+      currentPrice: "1000000",
+    });
+    expect(remainingBelowMin.rejectionReason).toBe("remaining_below_min_order_notional");
+    const remainingBelowMinMsg = formatSizingUserMessage(remainingBelowMin);
+    expect(remainingBelowMinMsg).not.toContain("remaining_below_min_order_notional");
+    expect(remainingBelowMinMsg).toContain("잔여 포지션");
   });
 });
 

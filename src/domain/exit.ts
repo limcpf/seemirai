@@ -306,6 +306,10 @@ export interface ExitSizing {
   belowMinOrderNotional: boolean;
   /** 최소 주문금액 미달 원인 */
   belowMinOrderReason?: string;
+  /** 청산 후 남는 포지션 평가금액이 최소 주문금액 미만인지 여부 */
+  remainingBelowMinOrderNotional?: boolean;
+  /** 잔여 포지션 최소 주문금액 미달 원인 */
+  remainingBelowMinOrderReason?: string;
   /** 요청 수량이 open position을 초과했는지 여부 */
   exceedsPosition: boolean;
   /** 포지션 초과 원인 */

@@ -99,6 +99,7 @@ export function evaluateExitSizing(options: ExitSizingOptions): ExitSizing {
   // 최소 주문금액 검증: executableQuantity * currentPrice
   const executableQty = requestedQty;
   const executableNotional = executableQty.mul(currentPrice);
+  const remainingNotional = remainingAfterSell.mul(currentPrice);
 
   if (executableNotional.lessThan(minOrderNotional)) {
     return {
@@ -110,6 +111,20 @@ export function evaluateExitSizing(options: ExitSizingOptions): ExitSizing {
       exceedsPosition: false,
       valid: false,
       rejectionReason: "below_min_order_notional",
+    };
+  }
+
+  if (remainingAfterSell.greaterThan(0) && remainingNotional.lessThan(minOrderNotional)) {
+    return {
+      requestedQuantity: requestedQty.toFixed(),
+      executableQuantity: "0",
+      dustQuantity: "0",
+      belowMinOrderNotional: false,
+      remainingBelowMinOrderNotional: true,
+      remainingBelowMinOrderReason: `청산 후 잔여 포지션 예상 금액(${remainingNotional.toFixed()} KRW)이 최소 주문금액(${minOrderNotional.toFixed()} KRW) 미만입니다. 유의미한 잔여 포지션을 남기지 않도록 주문 후보 생성을 차단합니다.`,
+      exceedsPosition: false,
+      valid: false,
+      rejectionReason: "remaining_below_min_order_notional",
     };
   }
 
@@ -159,6 +174,10 @@ export function formatSizingUserMessage(sizing: ExitSizing): string {
     return sizing.belowMinOrderReason ?? "청산 주문 금액이 최소 주문금액 미만입니다.";
   }
 
+  if (sizing.remainingBelowMinOrderNotional === true) {
+    return sizing.remainingBelowMinOrderReason ?? "청산 후 잔여 포지션 금액이 최소 주문금액 미만입니다.";
+  }
+
   if (sizing.rejectionReason === "dust_remainder" && sizing.dustReason !== undefined) {
     return `${sizing.dustReason} 전체 청산 또는 요청 수량 재계산이 필요합니다.`;
   }
@@ -187,6 +206,7 @@ const REJECTION_MESSAGE_MAP: Record<string, string> = {
   exit_policy_invalid: "청산 정책값이 유효하지 않습니다. 최소 주문금액과 dust threshold 설정을 확인하세요.",
   exit_price_invalid: "현재가가 유효하지 않습니다. 0보다 큰 가격으로 다시 평가해야 합니다.",
   dust_remainder: "청산 후 처리 불가 잔량이 남아 주문 후보 생성을 차단했습니다. 전체 청산 또는 요청 수량 재계산이 필요합니다.",
+  remaining_below_min_order_notional: "청산 후 잔여 포지션 금액이 최소 주문금액 미만입니다. 전체 청산 또는 요청 수량 재계산이 필요합니다.",
   exit_no_position: "청산할 포지션이 없습니다. open position 수량이 0이거나 음수입니다.",
   exit_quantity_invalid: "청산 요청 수량이 0 이하입니다. 유효한 수량을 입력하세요.",
   position_exceeded: "청산 수량이 보유 수량을 초과하여 주문이 차단되었습니다.",

@@ -154,11 +154,11 @@ export function createTrailingStopExitRule(options: TrailingStopExitRuleOptions)
         trailBps = defaultTrailBps;
       } else {
         const parsed = parseDecimal(trailBpsRaw);
-        if (parsed === undefined || parsed.isNegative()) {
+        if (parsed === undefined || parsed.lessThanOrEqualTo(0)) {
           return blocked(
             "trailing_stop_exit",
             "trailing_trail_bps_invalid",
-            "trailing stop의 trailBps가 유효하지 않습니다. 음수가 아닌 숫자여야 합니다.",
+            "trailing stop의 trailBps가 유효하지 않습니다. 0보다 큰 숫자여야 합니다.",
           );
         }
         trailBps = parsed;
@@ -191,6 +191,16 @@ export function createTrailingStopExitRule(options: TrailingStopExitRuleOptions)
         );
       }
 
+      const anchorObservedAt = new Date(context.trailingState.anchorObservedAt);
+      // anchor 관측시각이 깨진 snapshot은 stale/corrupt trailing state일 수 있으므로 SELL 후보 생성을 차단한다.
+      if (isNaN(anchorObservedAt.getTime())) {
+        return blocked(
+          "trailing_stop_exit",
+          "trailing_anchor_observed_at_invalid",
+          "trailing stop 기준가(anchorPrice)의 관측 시각이 유효하지 않습니다.",
+        );
+      }
+
       // anchorPrice 대비 현재가 하락 비율 (bps) 계산
       // 하락 = (anchor - current) / anchor * 10000
       const dropBps = anchorPrice
@@ -209,7 +219,7 @@ export function createTrailingStopExitRule(options: TrailingStopExitRuleOptions)
             current_price: currentPrice.toFixed(),
             drop_bps: dropBps.toFixed(),
             trail_bps: trailBps.toFixed(),
-            anchor_observed_at: String(context.trailingState.anchorObservedAt),
+            anchor_observed_at: anchorObservedAt.toISOString(),
           },
         );
       }
@@ -435,8 +445,8 @@ export function createDefaultExitRules(options: DefaultExitRulesOptions): readon
 function parseRuleDecimal(value: string, fieldName: string): Decimal {
   const decimal = parseFinancialDecimal(value);
 
-  if (decimal.isNegative()) {
-    throw new Error(`${fieldName} must not be negative`);
+  if (decimal.lessThanOrEqualTo(0)) {
+    throw new Error(`${fieldName} must be greater than zero`);
   }
 
   return decimal;
