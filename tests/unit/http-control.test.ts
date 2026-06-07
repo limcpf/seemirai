@@ -24,12 +24,15 @@ import {
   type PnLAccountingStatusSummary,
 } from "../../src/application/index.js";
 import { loadPilotRuntimeConfigFromEnv, loadRuntimeConfig } from "../../src/runtime/index.js";
+import { createDatabaseWhySummaryProvider } from "../../src/infrastructure/db/index.js";
 import type { Database } from "../../src/infrastructure/db/index.js";
 import type {
   ControlReadinessProvider,
   ControlReadinessSummary,
   ControlStatusProvider,
   ControlStatusSnapshot,
+  WhySummary,
+  WhySummaryProvider,
 } from "../../src/interfaces/index.js";
 
 const checkedAt = "2026-05-20T00:00:00.000Z";
@@ -656,6 +659,188 @@ describe("HTTP control foundation", () => {
     expect(response.body).not.toContain("raw detail");
   });
 
+  it("why provider가 주입되지 않으면 /status why를 null로 반환한다", async () => {
+    const provider = createDatabaseControlStatusProvider({
+      runtimeConfig: loadRuntimeConfig({}),
+      statusReadinessProvider: staticReadinessProvider(readySummary()),
+    });
+
+    const snapshot = await provider.getStatus();
+
+    expect(snapshot.why).toBeNull();
+  });
+
+  it("injected why provider 성공 summary를 /status 응답에 포함한다", async () => {
+    server = createHttpControlServer({
+      readinessProvider: staticReadinessProvider(readySummary()),
+      statusProvider: createDatabaseControlStatusProvider({
+        runtimeConfig: loadRuntimeConfig({}),
+        statusReadinessProvider: staticReadinessProvider(readySummary()),
+        whySummaryProvider: staticWhySummaryProvider(whySummaryFixture()),
+      }),
+    });
+
+    const response = await server.inject({
+      method: "GET",
+      url: "/status",
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({
+      why: {
+        readStatus: "OK",
+        markets: {
+          readStatus: "OK",
+          items: [
+            {
+              market: "KRW-BTC",
+              statusLabel: "매수 판단",
+            },
+          ],
+        },
+        strategies: {
+          readStatus: "OK",
+          items: [
+            {
+              strategyId: "strategy.trend-following",
+              statusLabel: "보유",
+            },
+          ],
+        },
+        cash: {
+          readStatus: "OK",
+          item: {
+            statusLabel: "현금 보유",
+            holdReasons: [
+              {
+                label: "신호 대기 중",
+                count: 1,
+              },
+            ],
+          },
+        },
+      },
+    });
+  });
+
+  it("injected why provider 실패를 HTTP 200과 UNAVAILABLE summary로 낮춘다", async () => {
+    server = createHttpControlServer({
+      readinessProvider: staticReadinessProvider(readySummary()),
+      statusProvider: createDatabaseControlStatusProvider({
+        runtimeConfig: loadRuntimeConfig({}),
+        statusReadinessProvider: staticReadinessProvider(readySummary()),
+        whySummaryProvider: {
+          async getWhySummary(): Promise<WhySummary> {
+            throw new Error("why provider raw detail");
+          },
+        },
+      }),
+    });
+
+    const response = await server.inject({
+      method: "GET",
+      url: "/status",
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({
+      why: {
+        readStatus: "UNAVAILABLE",
+        markets: {
+          readStatus: "UNAVAILABLE",
+          statusLabel: "조회 불가",
+          action: "DB 연결 상태와 decision_ledger_frames table 접근 권한을 확인한 뒤 다시 조회하세요.",
+        },
+        strategies: {
+          readStatus: "UNAVAILABLE",
+        },
+        cash: {
+          readStatus: "UNAVAILABLE",
+          item: null,
+        },
+        trace: {
+          reason: "why_summary_provider_failed",
+        },
+      },
+    });
+    expect(response.body).not.toContain("raw detail");
+  });
+
+  it("DB-backed why provider query failure를 UNAVAILABLE로 구분한다", async () => {
+    const provider = createDatabaseControlStatusProvider({
+      runtimeConfig: loadRuntimeConfig({}),
+      statusReadinessProvider: staticReadinessProvider(readySummary()),
+      whySummaryProvider: createDatabaseWhySummaryProvider(
+        failingWhySummaryDatabase(),
+        () => new Date("2026-06-06T04:00:00.000Z"),
+      ),
+    });
+
+    const snapshot = await provider.getStatus();
+
+    expect(snapshot.why).toMatchObject({
+      readStatus: "UNAVAILABLE",
+      generatedAt: "2026-06-06T04:00:00.000Z",
+      markets: {
+        readStatus: "UNAVAILABLE",
+        statusLabel: "조회 불가",
+      },
+      cash: {
+        readStatus: "UNAVAILABLE",
+        item: null,
+      },
+      trace: {
+        reason: "db_query_failed",
+      },
+    });
+  });
+
+  it("DB-backed why provider의 빈 ledger 결과는 NOT_FOUND로 반환한다", async () => {
+    const provider = createDatabaseControlStatusProvider({
+      runtimeConfig: loadRuntimeConfig({}),
+      statusReadinessProvider: staticReadinessProvider(readySummary()),
+      whySummaryProvider: createDatabaseWhySummaryProvider(
+        emptyWhySummaryDatabase(),
+        () => new Date("2026-06-06T04:00:00.000Z"),
+      ),
+    });
+
+    const snapshot = await provider.getStatus();
+
+    expect(snapshot.why).toMatchObject({
+      readStatus: "NOT_FOUND",
+      markets: {
+        readStatus: "NOT_FOUND",
+      },
+      strategies: {
+        readStatus: "NOT_FOUND",
+      },
+      cash: {
+        readStatus: "NOT_FOUND",
+        item: null,
+      },
+    });
+  });
+
+  it("DB-backed why provider는 market+strategy frame을 보존하고 시간 기준으로 최신 판단을 고른다", async () => {
+    const summary = await createDatabaseWhySummaryProvider(
+      tieBreakWhySummaryDatabase(),
+      () => new Date("2026-06-06T04:00:00.000Z"),
+    ).getWhySummary();
+
+    expect(summary.readStatus).toBe("OK");
+    expect(summary.markets.items).toHaveLength(2);
+    expect(summary.markets.items.map((item) => item.trace.selected)).toEqual([
+      "market-newer-created-at",
+      "market-second-strategy",
+    ]);
+    expect(summary.strategies.items).toHaveLength(2);
+    expect(summary.strategies.items.map((item) => item.trace.strategySelected)).toEqual([
+      "strategy-newer-created-at",
+      "strategy-second-strategy",
+    ]);
+  });
+
   it("maps injected daily report failures to the same /status warning shape", async () => {
     const runtimeConfig = loadRuntimeConfig({});
     server = createHttpControlServer({
@@ -1242,6 +1427,333 @@ function readySummary(): ControlReadinessSummary {
   };
 }
 
+function staticWhySummaryProvider(summary: WhySummary): WhySummaryProvider {
+  return {
+    async getWhySummary() {
+      return summary;
+    },
+  };
+}
+
+function whySummaryFixture(): WhySummary {
+  return {
+    markets: {
+      readStatus: "OK",
+      statusLabel: "조회 완료",
+      message: "시장별 최근 판단 이유를 조회했습니다.",
+      impact: null,
+      action: null,
+      items: [
+        {
+          market: "KRW-BTC",
+          statusLabel: "매수 판단",
+          message: "KRW-BTC 시장은 매수 후보로 판단되었습니다.",
+          impact: null,
+          action: null,
+          latestDecisionAt: "2026-06-06T03:00:00.000Z",
+          trace: { category: "BUY" },
+        },
+      ],
+      trace: { querySource: "decision_ledger_frames" },
+    },
+    strategies: {
+      readStatus: "OK",
+      statusLabel: "조회 완료",
+      message: "전략별 최근 판단 이유를 조회했습니다.",
+      impact: null,
+      action: null,
+      items: [
+        {
+          strategyId: "strategy.trend-following",
+          statusLabel: "보유",
+          message: "전략이 대기를 선택했습니다.",
+          impact: null,
+          action: "다음 frame을 기다립니다.",
+          latestDecisionAt: "2026-06-06T03:00:00.000Z",
+          trace: { category: "HOLD" },
+        },
+      ],
+      trace: { querySource: "decision_ledger_frames" },
+    },
+    cash: {
+      readStatus: "OK",
+      statusLabel: "조회 완료",
+      message: "현금 보유 이유를 조회했습니다.",
+      impact: null,
+      action: null,
+      item: {
+        statusLabel: "현금 보유",
+        message: "주문 후보가 없어 현금을 유지했습니다.",
+        impact: null,
+        action: "전략 신호와 비용 조건을 다시 확인하세요.",
+        latestDecisionAt: "2026-06-06T03:00:00.000Z",
+        holdReasons: [
+          {
+            label: "신호 대기 중",
+            count: 1,
+            trace: { reasonCode: "fixture_waiting_for_signal" },
+          },
+        ],
+        trace: { category: "CASH_HOLD" },
+      },
+      trace: { querySource: "decision_ledger_frames" },
+    },
+    generatedAt: "2026-06-06T04:00:00.000Z",
+    readStatus: "OK",
+    trace: { querySource: "decision_ledger_frames" },
+  };
+}
+
+function failingWhySummaryDatabase(): Database {
+  return {
+    fn: {
+      max(_columnName: string) {
+        return {
+          as(alias: string) {
+            return alias;
+          },
+        };
+      },
+    },
+    selectFrom(_tableName: string) {
+      throw new Error("decision ledger query failed with raw detail");
+    },
+  } as unknown as Database;
+}
+
+function emptyWhySummaryDatabase(): Database {
+  interface EmptyWhyJoin {
+    onRef(left: string, operator: string, right: string): EmptyWhyJoin;
+  }
+  interface EmptyWhyQuery {
+    distinctOn(columnName: string): EmptyWhyQuery;
+    select(selection: unknown): EmptyWhyQuery;
+    where(left: string, operator: string, right: unknown): EmptyWhyQuery;
+    groupBy(columnName: string): EmptyWhyQuery;
+    as(alias: string): EmptyWhyQuery;
+    innerJoin(source: unknown, callback: (join: EmptyWhyJoin) => unknown): EmptyWhyQuery;
+    orderBy(columnName: string, direction: string): EmptyWhyQuery;
+    limit(count: number): EmptyWhyQuery;
+    execute(): Promise<readonly unknown[]>;
+  }
+
+  const join: EmptyWhyJoin = {
+    onRef() {
+      return join;
+    },
+  };
+  const query: EmptyWhyQuery = {
+    distinctOn() {
+      return query;
+    },
+    select() {
+      return query;
+    },
+    where() {
+      return query;
+    },
+    groupBy() {
+      return query;
+    },
+    as() {
+      return query;
+    },
+    innerJoin(_source, callback) {
+      callback(join);
+      return query;
+    },
+    orderBy() {
+      return query;
+    },
+    limit() {
+      return query;
+    },
+    async execute() {
+      return [];
+    },
+  };
+
+  return {
+    fn: {
+      max(_columnName: string) {
+        return {
+          as(alias: string) {
+            return alias;
+          },
+        };
+      },
+    },
+    selectFrom() {
+      return query;
+    },
+  } as unknown as Database;
+}
+
+function tieBreakWhySummaryDatabase(): Database {
+  type WhySummaryRow = {
+    id: string;
+    market: string | null;
+    strategy_id: string | null;
+    category: string;
+    summary_status: string;
+    reason_counts_json: Record<string, number>;
+    observed_at: Date;
+    decision_at: Date;
+    created_at: Date;
+    trace_json: Record<string, unknown>;
+  };
+
+  const tiedAt = new Date("2026-06-06T03:00:00.000Z");
+  const olderCreatedAt = new Date("2026-06-06T03:00:01.000Z");
+  const newerCreatedAt = new Date("2026-06-06T03:00:02.000Z");
+  const rows: WhySummaryRow[] = [
+    {
+      id: "frame-003",
+      market: null,
+      strategy_id: null,
+      category: "CASH_HOLD",
+      summary_status: "RECORDED",
+      reason_counts_json: { fixture_waiting_for_signal: 1 },
+      observed_at: tiedAt,
+      decision_at: tiedAt,
+      created_at: newerCreatedAt,
+      trace_json: { selected: "cash" },
+    },
+    {
+      id: "frame-002",
+      market: "KRW-BTC",
+      strategy_id: "strategy.tie",
+      category: "SELL",
+      summary_status: "RECORDED",
+      reason_counts_json: {},
+      observed_at: tiedAt,
+      decision_at: tiedAt,
+      created_at: newerCreatedAt,
+      trace_json: { selected: "market-newer-created-at", strategySelected: "strategy-newer-created-at" },
+    },
+    {
+      id: "frame-001",
+      market: "KRW-BTC",
+      strategy_id: "strategy.tie",
+      category: "BUY",
+      summary_status: "RECORDED",
+      reason_counts_json: {},
+      observed_at: tiedAt,
+      decision_at: tiedAt,
+      created_at: olderCreatedAt,
+      trace_json: { selected: "older-id", strategySelected: "older-id" },
+    },
+    {
+      id: "frame-004",
+      market: "KRW-BTC",
+      strategy_id: "strategy.other",
+      category: "RISK_REJECTED",
+      summary_status: "RECORDED",
+      reason_counts_json: {},
+      observed_at: tiedAt,
+      decision_at: tiedAt,
+      created_at: olderCreatedAt,
+      trace_json: { selected: "market-second-strategy", strategySelected: "strategy-second-strategy" },
+    },
+  ];
+
+  return {
+    selectFrom() {
+      return createTieBreakWhyQuery(rows);
+    },
+  } as unknown as Database;
+}
+
+function createTieBreakWhyQuery(rows: readonly {
+  id: string;
+  market: string | null;
+  strategy_id: string | null;
+  category: string;
+  summary_status: string;
+  reason_counts_json: Record<string, number>;
+  observed_at: Date;
+  decision_at: Date;
+  created_at: Date;
+  trace_json: Record<string, unknown>;
+}[]) {
+  type QueryMode = "all" | "market" | "strategy" | "cash";
+  let mode: QueryMode = "all";
+  let limitCount: number | null = null;
+  let distinctColumns: readonly ("market" | "strategy_id")[] = [];
+  const query = {
+    distinctOn(columnName: "market" | "strategy_id" | readonly ("market" | "strategy_id")[]) {
+      distinctColumns = Array.isArray(columnName) ? columnName : [columnName];
+      return query;
+    },
+    select() {
+      return query;
+    },
+    where(left: string, operator: string, right: unknown) {
+      if (left === "market" && operator === "is not" && right === null) {
+        mode = "market";
+      } else if (left === "strategy_id" && operator === "is not" && right === null) {
+        mode = "strategy";
+      } else if (left === "category" && operator === "=" && right === "CASH_HOLD") {
+        mode = "cash";
+      }
+      return query;
+    },
+    orderBy() {
+      return query;
+    },
+    limit(count: number) {
+      limitCount = count;
+      return query;
+    },
+    async execute() {
+      const filtered = rows.filter((row) => {
+        if (mode === "market") {
+          return row.market !== null;
+        }
+        if (mode === "strategy") {
+          return row.strategy_id !== null;
+        }
+        if (mode === "cash") {
+          return row.category === "CASH_HOLD";
+        }
+        return true;
+      });
+      const sorted = [...filtered].sort(compareWhyRowsByLatestFirst);
+      const distinctRows = distinctColumns.length === 0 ? sorted : uniqueRowsByColumns(sorted, distinctColumns);
+      return limitCount === null ? distinctRows : distinctRows.slice(0, limitCount);
+    },
+  };
+  return query;
+}
+
+function compareWhyRowsByLatestFirst(
+  left: { decision_at: Date; created_at: Date; observed_at: Date },
+  right: { decision_at: Date; created_at: Date; observed_at: Date },
+): number {
+  return (
+    right.decision_at.getTime() - left.decision_at.getTime() ||
+    right.created_at.getTime() - left.created_at.getTime() ||
+    right.observed_at.getTime() - left.observed_at.getTime()
+  );
+}
+
+function uniqueRowsByColumns<Row extends Record<"market" | "strategy_id", string | null>>(
+  rows: readonly Row[],
+  columnNames: readonly ("market" | "strategy_id")[],
+): readonly Row[] {
+  const seen = new Set<string>();
+  const result: Row[] = [];
+  for (const row of rows) {
+    const key = columnNames.map((columnName) => row[columnName] ?? "<null>").join("\u0000");
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    result.push(row);
+  }
+  return result;
+}
+
 function unavailableStatusProvider(): ControlStatusProvider {
   return statusSnapshotProvider({
     state: "NORMAL",
@@ -1406,6 +1918,7 @@ function statusSnapshotProvider(input: {
             reason: "reconcile_not_run",
           },
         },
+        why: null,
       };
     },
   };

@@ -12,4 +12,6 @@ YYYY-MM-DD-topic.md
 
 ## 활성 계획
 
-현재 활성 계획이 없다.
+현재 활성 계획 없음.
+
+완료된 Issue #159 M18 판단 이유 ledger 작업은 [`../completed/2026-06-06-issue-159-m18-decision-ledger-closeout.md`](../completed/2026-06-06-issue-159-m18-decision-ledger-closeout.md)에서 확인한다.

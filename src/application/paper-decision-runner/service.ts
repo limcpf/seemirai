@@ -37,6 +37,9 @@ import type { PaperPnlFillInput, PaperPnlMarkPriceInput } from "../paper-pnl-sum
 import { evaluateRiskGate as evaluateRiskGateDefault } from "../risk/index.js";
 import { convertStrategyDecisionToOrderIntents } from "../strategies/index.js";
 import type { StrategyDecisionIntentConversion } from "../strategies/index.js";
+import {
+  buildDecisionLedgerFromRunnerResult,
+} from "../decision-ledger.js";
 import type {
   PaperDecisionBrokerPort,
   PaperDecisionInputFrame,
@@ -48,6 +51,7 @@ import type {
   PaperDecisionRunnerTraceRecord,
   PaperDecisionCostSummary,
   PaperDecisionSlippageSummary,
+  PaperDecisionLedgerWriteStatus,
 } from "./types.js";
 
 type MutableCounts = Record<string, number>;
@@ -93,6 +97,7 @@ export class PaperDecisionRunner {
   private readonly costModel: Pick<CostModel, "evaluate">;
   private readonly evaluateRiskGate: (context: RiskGateContext) => RiskGateResult;
   private readonly executionEngine: Pick<ExecutionEngine, "submitOrder">;
+  private readonly decisionLedgerWriter: PaperDecisionRunnerPorts["decisionLedgerWriter"];
 
   public constructor(ports: PaperDecisionRunnerPorts) {
     this.source = ports.source;
@@ -101,6 +106,7 @@ export class PaperDecisionRunner {
     this.costModel = ports.costModel ?? new CostModel();
     this.evaluateRiskGate = ports.evaluateRiskGate ?? evaluateRiskGateDefault;
     this.executionEngine = ports.executionEngine ?? new ExecutionEngine({ broker: ports.broker });
+    this.decisionLedgerWriter = ports.decisionLedgerWriter;
   }
 
   /**
@@ -144,11 +150,36 @@ export class PaperDecisionRunner {
       }
     }
 
-    return {
+    const finalMetrics = finalizeMetrics(metrics, options.pnlStartingCashKrw ?? defaultPnlStartingCashKrw);
+    const runnerResult: Omit<PaperDecisionRunnerResult, "ledgerWriteStatus"> = {
       framesProcessed,
-      metrics: finalizeMetrics(metrics, options.pnlStartingCashKrw ?? defaultPnlStartingCashKrw),
+      metrics: finalMetrics,
       trace,
     };
+
+    // ledger writer가 주입되지 않았으면 NOT_CONFIGURED 상태로 완료한다.
+    if (this.decisionLedgerWriter === undefined) {
+      return { ...runnerResult, ledgerWriteStatus: "NOT_CONFIGURED" };
+    }
+
+    // decision ledger write. 실패해도 broker/execution 재시도를 하지 않고 runner 결과를 보존한다.
+    try {
+      const sourceRunId = resolveLedgerSourceRunId(options, trace);
+      const exchange = "UPBIT";
+      // buildDecisionLedgerFromRunnerResult는 ledgerWriteStatus가 없는 runnerResult도 받을 수 있다.
+      const ledgerInput: PaperDecisionRunnerResult = { ...runnerResult, ledgerWriteStatus: "RECORDED" };
+      const ledgerResult = buildDecisionLedgerFromRunnerResult(ledgerInput, sourceRunId, exchange);
+
+      for (const { frame, evidenceItems } of ledgerResult.frames) {
+        // frame/evidence를 한 원자적 writer 호출로 묶어 근거 없는 RECORDED frame이 status에 노출되지 않게 한다.
+        await this.decisionLedgerWriter.appendFrameWithEvidence(frame, evidenceItems);
+      }
+
+      return { ...runnerResult, ledgerWriteStatus: "RECORDED" };
+    } catch {
+      // ledger write 실패는 broker retry나 주문 허용 보정을 하지 않고, trace로만 남긴다.
+      return { ...runnerResult, ledgerWriteStatus: "UNAVAILABLE" };
+    }
   }
 
   private async evaluateStrategyFrame(input: {
@@ -164,11 +195,19 @@ export class PaperDecisionRunner {
       strategyId: string;
       reasonCode?: string;
       message: string;
+      metadata?: JsonRecord;
     } = {
       strategyId: input.strategy.id,
       message: decision.reason,
     };
     assignIfDefined(strategyTraceOptions, "reasonCode", readDecisionReasonCode(decision));
+    if (decision.kind === "ORDER_INTENT") {
+      const intentDirections = decision.orderIntents.map((intent) => intent.side);
+      strategyTraceOptions.metadata = {
+        order_intent_count: decision.orderIntents.length,
+        intent_directions: intentDirections,
+      };
+    }
     input.trace.push(createTrace(input.frame, "STRATEGY_DECISION", decision.kind, strategyTraceOptions));
 
     if (decision.kind === "HOLD") {
@@ -240,6 +279,26 @@ function createReplayRequest(options: PaperDecisionRunnerOptions): PaperDecision
   }
 
   return Object.keys(replayRequest).length === 0 ? undefined : replayRequest;
+}
+
+/**
+ * runner 결과를 ledger에 기록할 source run id를 결정한다.
+ *
+ * caller가 source id를 제공하면 그대로 사용하고, 없으면 처리된 frame id 목록으로 결정론적 id를 만든다.
+ * Date.now 기반 id를 쓰면 같은 input 재실행이 매번 다른 dedupe key로 저장되어 append-only idempotency가 깨진다.
+ */
+function resolveLedgerSourceRunId(
+  options: PaperDecisionRunnerOptions,
+  trace: readonly PaperDecisionRunnerTraceRecord[],
+): string {
+  const explicitSourceId = options.sourceRequest?.sourceId?.trim();
+  if (explicitSourceId !== undefined && explicitSourceId.length > 0) {
+    return explicitSourceId;
+  }
+
+  const frameIds = [...new Set(trace.map((record) => record.frameId))];
+  const seed = frameIds.length === 0 ? "empty" : frameIds.join("|");
+  return `paper-runner:${stableHash(seed)}`;
 }
 
 /**
@@ -379,15 +438,20 @@ function recordConversion(
   metrics: PaperDecisionMetricAccumulator,
   trace: PaperDecisionRunnerTraceRecord[],
 ): void {
+  // conversion 결과에서 개별 intent의 direction(side)을 추출해 trace에 보존한다.
+  // ORDER_INTENT_CONVERSION category 판정 시 reasonCode 대신 실제 intent 방향을 사용하기 위함.
+  const intentDirections = conversion.orderIntents.map((intent) => intent.side);
+  const metadata: JsonRecord = {
+    promoted_count: conversion.orderIntents.length,
+    rejection_count: conversion.rejections.length,
+  };
+  assignIfDefined(metadata, "intent_directions", intentDirections.length > 0 ? intentDirections : undefined);
   trace.push(
     createTrace(frame, "ORDER_INTENT_CONVERSION", conversion.status, {
       strategyId: strategy.id,
       reasonCode: conversion.reasonCode,
       message: conversion.message,
-      metadata: {
-        promoted_count: conversion.orderIntents.length,
-        rejection_count: conversion.rejections.length,
-      },
+      metadata,
     }),
   );
 
@@ -422,6 +486,7 @@ function recordCostDecision(
       reasonCode: costDecision.reasonCode,
       message: costDecision.message,
       metadata: {
+        intent_side: intent.side,
         trade_allowed: costDecision.tradeAllowed,
         cost_bps: costDecision.snapshot.cost_bps ?? null,
         margin_bps: costDecision.snapshot.margin_bps ?? null,
@@ -450,6 +515,7 @@ function recordRiskDecision(
       reasonCode: riskGateResult.action,
       message: riskGateResult.approved ? "RiskGate approved paper order intent" : "RiskGate rejected paper order intent",
       metadata: {
+        intent_side: intent.side,
         approved: riskGateResult.approved,
         action: riskGateResult.action,
         failed_reason_codes: riskGateResult.failedEvaluations.map((evaluation) => evaluation.reasonCode),
@@ -517,6 +583,7 @@ function recordExecutionResult(
     metadata: {
       broker_order_id: executionResult.brokerOrder.brokerOrderId,
       broker_order_status: executionResult.brokerOrder.status,
+      intent_side: intent.side,
       filled_quantity: fillSimulation?.filledQuantity ?? "0",
       slippage_bps: fillSimulation?.slippageBps ?? null,
     },
@@ -853,13 +920,47 @@ function createTrace(
   assignIfDefined(record, "strategyId", options.strategyId);
   assignIfDefined(record, "reasonCode", options.reasonCode);
   assignIfDefined(record, "message", options.message);
-  assignIfDefined(record, "metadata", options.metadata);
+  const metadata = createTraceMetadata(frame, options.metadata);
+  assignIfDefined(record, "metadata", Object.keys(metadata).length > 0 ? metadata : undefined);
 
   return record;
+}
+
+/**
+ * runner trace에 frame-local market/source context를 보강한다.
+ *
+ * ledger producer는 trace만 보고 market별 why summary를 만들기 때문에 모든 stage에 안전한 식별 context를 넣어도
+ * broker나 외부 API side effect는 늘어나지 않는다.
+ */
+function createTraceMetadata(
+  frame: PaperDecisionInputFrame,
+  metadata: JsonRecord | undefined,
+): JsonRecord {
+  const traceMetadata: JsonRecord = {
+    market: frame.market,
+    exchange_id: frame.exchangeId,
+    ...(metadata ?? {}),
+  };
+  assignIfDefined(traceMetadata, "source_id", readStringRecordValue(frame.metadata, "source_id"));
+  return traceMetadata;
 }
 
 function assignIfDefined<T extends object, K extends keyof T>(target: T, key: K, value: T[K] | undefined): void {
   if (value !== undefined) {
     target[key] = value;
   }
+}
+
+/**
+ * 짧은 deterministic id 생성을 위한 비암호화 hash다.
+ *
+ * 보안 fingerprint가 아니라 같은 frame id 목록의 재실행 dedupe key를 안정화하는 용도이므로 외부 side effect가 없다.
+ */
+function stableHash(input: string): string {
+  let hash = 0;
+  for (let index = 0; index < input.length; index += 1) {
+    hash = ((hash << 5) - hash + input.charCodeAt(index)) | 0;
+  }
+
+  return Math.abs(hash).toString(16).padStart(8, "0");
 }

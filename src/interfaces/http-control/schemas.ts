@@ -319,6 +319,7 @@ export const statusRouteOptions: RouteShorthandOptions = {
           "dailyReport",
           "pnl",
           "reconcile",
+          "why",
         ],
         properties: {
           status: { const: "ok" },
@@ -445,6 +446,124 @@ export const statusRouteOptions: RouteShorthandOptions = {
             },
           },
           reconcile: reconcileStatusSummarySchema,
+          why: {
+            anyOf: [
+              { type: "null" },
+              {
+                type: "object",
+                required: [
+                  "markets",
+                  "strategies",
+                  "cash",
+                  "generatedAt",
+                  "readStatus",
+                  "trace",
+                ],
+                properties: {
+                  markets: {
+                    type: "object",
+                    required: ["readStatus", "statusLabel", "message", "impact", "action", "items", "trace"],
+                    properties: {
+                      readStatus: { enum: ["OK", "NOT_FOUND", "UNAVAILABLE"] },
+                      statusLabel: { type: "string" },
+                      message: { type: "string" },
+                      impact: { type: ["string", "null"] },
+                      action: { type: ["string", "null"] },
+                      items: {
+                        type: "array",
+                        items: {
+                          type: "object",
+                          required: ["market", "statusLabel", "message", "impact", "action", "latestDecisionAt", "trace"],
+                          properties: {
+                            market: { type: "string" },
+                            statusLabel: { type: "string" },
+                            message: { type: "string" },
+                            impact: { type: ["string", "null"] },
+                            action: { type: ["string", "null"] },
+                            latestDecisionAt: { type: ["string", "null"] },
+                            trace: { type: "object", additionalProperties: true },
+                          },
+                        },
+                      },
+                      trace: { type: "object", additionalProperties: true },
+                    },
+                  },
+                  strategies: {
+                    type: "object",
+                    required: ["readStatus", "statusLabel", "message", "impact", "action", "items", "trace"],
+                    properties: {
+                      readStatus: { enum: ["OK", "NOT_FOUND", "UNAVAILABLE"] },
+                      statusLabel: { type: "string" },
+                      message: { type: "string" },
+                      impact: { type: ["string", "null"] },
+                      action: { type: ["string", "null"] },
+                      items: {
+                        type: "array",
+                        items: {
+                          type: "object",
+                          required: ["strategyId", "statusLabel", "message", "impact", "action", "latestDecisionAt", "trace"],
+                          properties: {
+                            strategyId: { type: "string" },
+                            statusLabel: { type: "string" },
+                            message: { type: "string" },
+                            impact: { type: ["string", "null"] },
+                            action: { type: ["string", "null"] },
+                            latestDecisionAt: { type: ["string", "null"] },
+                            trace: { type: "object", additionalProperties: true },
+                          },
+                        },
+                      },
+                      trace: { type: "object", additionalProperties: true },
+                    },
+                  },
+                  cash: {
+                    type: "object",
+                    required: ["readStatus", "statusLabel", "message", "impact", "action", "item", "trace"],
+                    properties: {
+                      readStatus: { enum: ["OK", "NOT_FOUND", "UNAVAILABLE"] },
+                      statusLabel: { type: "string" },
+                      message: { type: "string" },
+                      impact: { type: ["string", "null"] },
+                      action: { type: ["string", "null"] },
+                      item: {
+                        anyOf: [
+                          { type: "null" },
+                          {
+                            type: "object",
+                            required: ["statusLabel", "message", "impact", "action", "latestDecisionAt", "holdReasons", "trace"],
+                            properties: {
+                              statusLabel: { type: "string" },
+                              message: { type: "string" },
+                              impact: { type: ["string", "null"] },
+                              action: { type: ["string", "null"] },
+                              latestDecisionAt: { type: ["string", "null"] },
+                              holdReasons: {
+                                type: "array",
+                                items: {
+                                  type: "object",
+                                  required: ["label", "count", "trace"],
+                                  properties: {
+                                    label: { type: "string" },
+                                    count: { type: "number" },
+                                    trace: { type: "object", additionalProperties: true },
+                                  },
+                                },
+                              },
+                              trace: { type: "object", additionalProperties: true },
+                            },
+                          },
+                        ],
+                      },
+                      trace: { type: "object", additionalProperties: true },
+                    },
+                  },
+                  generatedAt: { type: "string" },
+                  readStatus: { enum: ["OK", "NOT_FOUND", "UNAVAILABLE"] },
+                  trace: { type: "object", additionalProperties: true },
+                },
+              },
+            ],
+          },
         },
       },
       500: errorResponseSchema,

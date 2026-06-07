@@ -27,4 +27,6 @@ export type {
   KillSwitchControlRequestBody,
   LocalControlAuthInput,
   LocalControlAuthResult,
+  WhySummary,
+  WhySummaryProvider,
 } from "./http-control.js";

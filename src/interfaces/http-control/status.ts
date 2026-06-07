@@ -2,7 +2,7 @@ import { sql } from "kysely";
 import {
   dailyReportJobType,
 } from "../../application/index.js";
-import type { PnLAccountingStatusSummary } from "../../application/index.js";
+import type { PnLAccountingStatusSummary, WhySummary } from "../../application/index.js";
 import type { KillSwitchState, Phase15AltApprovalEvidenceSnapshot } from "../../domain/index.js";
 import { getKillSwitchActionPlan } from "../../domain/index.js";
 import {
@@ -89,12 +89,13 @@ export function createDatabaseControlStatusProvider(
       const actionPlan = getKillSwitchActionPlan(killSwitch.state);
       const readiness = await statusReadinessProvider.check();
       const blockedReason = actionPlan.newOrdersBlocked ? killSwitch.reasonCode : null;
-      const [paper, alerts, dailyReport, pnl, phase15ApprovalEvidence] = await Promise.all([
+      const [paper, alerts, dailyReport, pnl, phase15ApprovalEvidence, why] = await Promise.all([
         readPaperStatus(options.database),
         readAlertStatus(options),
         readDailyReportStatus(options),
         readPnlAccountingStatus(options),
         readPhase15ApprovalEvidence(options),
+        readWhySummary(options),
       ]);
       const generatedAt = clock().toISOString();
       // kill switch action plan은 상태 문자열을 실제 주문 차단/수동 검토 신호로 변환하는 경계다.
@@ -119,6 +120,7 @@ export function createDatabaseControlStatusProvider(
         dailyReport,
         pnl,
         reconcile: await toReconcileStatus(options),
+        why,
       };
     },
   };
@@ -850,4 +852,61 @@ async function toReconcileStatus(
     balanceStatus: null,
     websocketStatus: "DISCONNECTED",
   });
+}
+
+/**
+ * `/status.why` summary를 읽는다.
+ *
+ * whySummaryProvider가 주입되지 않았으면 `null`을 반환한다. (의도적 미구성)
+ * 주입된 provider가 조회에 실패하면 `null`이 아니라 UNAVAILABLE summary를 반환해
+ * 운영자가 "기록 없음"과 "조회 실패"를 구분할 수 있게 한다.
+ * `/status` endpoint 전체를 실패시키지 않는다.
+ */
+async function readWhySummary(
+  options: CreateDatabaseControlStatusProviderOptions,
+): Promise<WhySummary | null> {
+  if (options.whySummaryProvider === undefined) {
+    // provider 미주입은 의도적 미구성이므로 null로 둔다.
+    return null;
+  }
+
+  try {
+    return await options.whySummaryProvider.getWhySummary();
+  } catch {
+    // 주입된 provider의 조회 실패는 UNAVAILABLE summary로 표현한다.
+    // null로 낮추면 운영자가 DB 장애와 기록 없음을 구분하지 못한다.
+    const generatedAt = new Date().toISOString();
+    return {
+      markets: {
+        readStatus: "UNAVAILABLE",
+        statusLabel: "조회 불가",
+        message: "시장별 판단 이유를 DB에서 읽지 못했습니다.",
+        impact: "decision ledger DB 연결 또는 쿼리 실패로 시장별 why summary를 조회할 수 없습니다.",
+        action: "DB 연결 상태와 decision_ledger_frames table 접근 권한을 확인한 뒤 다시 조회하세요.",
+        items: [],
+        trace: { querySource: "decision_ledger_frames", reason: "why_summary_provider_failed" },
+      },
+      strategies: {
+        readStatus: "UNAVAILABLE",
+        statusLabel: "조회 불가",
+        message: "전략별 판단 이유를 DB에서 읽지 못했습니다.",
+        impact: "decision ledger DB 연결 또는 쿼리 실패로 전략별 why summary를 조회할 수 없습니다.",
+        action: "DB 연결 상태와 decision_ledger_frames table 접근 권한을 확인한 뒤 다시 조회하세요.",
+        items: [],
+        trace: { querySource: "decision_ledger_frames", reason: "why_summary_provider_failed" },
+      },
+      cash: {
+        readStatus: "UNAVAILABLE",
+        statusLabel: "조회 불가",
+        message: "현금 보유 이유를 DB에서 읽지 못했습니다.",
+        impact: "decision ledger DB 연결 또는 쿼리 실패로 현금 보유 why summary를 조회할 수 없습니다.",
+        action: "DB 연결 상태와 decision_ledger_frames table 접근 권한을 확인한 뒤 다시 조회하세요.",
+        item: null,
+        trace: { querySource: "decision_ledger_frames", reason: "why_summary_provider_failed" },
+      },
+      generatedAt,
+      readStatus: "UNAVAILABLE",
+      trace: { querySource: "decision_ledger_frames", reason: "why_summary_provider_failed" },
+    };
+  }
 }

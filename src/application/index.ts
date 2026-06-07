@@ -2,6 +2,7 @@ export * from "./audit/index.js";
 export * from "./alerts/index.js";
 export * from "./backtest/index.js";
 export * from "./calibration.js";
+export * from "./decision-ledger.js";
 export * from "./daily-report/index.js";
 export * from "./execution/index.js";
 export * from "./features.js";

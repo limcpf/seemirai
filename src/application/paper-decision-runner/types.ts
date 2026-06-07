@@ -20,6 +20,7 @@ import type {
 import type { ExecutionEngine, ExecutionSubmitOrderResult } from "../execution/index.js";
 import type { PaperPnlSummary } from "../paper-pnl-summary.js";
 import type { BrokerPort } from "../ports/index.js";
+import type { DecisionLedgerFrame, DecisionEvidenceItem } from "../decision-ledger.js";
 
 /**
  * paper decision runner가 주문 제출 전후에 사용하는 broker port다.
@@ -103,10 +104,38 @@ export interface PaperDecisionInputSource {
 }
 
 /**
+ * runner가 decision ledger write를 위해 사용하는 최소 application port다.
+ *
+ * ledger write는 runner 종료 시점에 한 번 호출하며, 실패해도 broker/execution 재시도를 만들지 않는다.
+ * writer가 주입되지 않으면 runner는 ledger write를 건너뛰고 기존 runner result를 그대로 반환한다.
+ */
+export interface PaperDecisionLedgerWriterPort {
+  /**
+   * frame과 evidence 목록을 같은 원자적 write로 기록한다.
+   *
+   * frame만 저장되고 evidence가 누락된 `RECORDED` 상태가 `/status.why`에 노출되면 안 되므로,
+   * production 구현은 transaction으로 frame/evidence를 함께 append한다. duplicate frame이어도 기존 durable id로
+   * evidence append를 재시도할 수 있어야 한다.
+   *
+   * @param frame 기록할 decision ledger frame
+   * @param evidenceItems 기록할 evidence item 목록
+   * @returns frame/evidence batch append의 aggregate idempotency 결과
+   */
+  appendFrameWithEvidence(
+    frame: DecisionLedgerFrame,
+    evidenceItems: readonly DecisionEvidenceItem[],
+  ): Promise<{
+    frame: { inserted: boolean; durableFrameId: string };
+    evidence: { inserted: number; skipped: number };
+  }>;
+}
+
+/**
  * runner 조립에 필요한 application port 묶음이다.
  *
  * `strategies`는 주문 후보만 생성하고, `broker`는 execution side effect를 담당한다. 비용 모델과 RiskGate evaluator,
  * execution engine은 테스트와 runtime이 같은 순서를 재사용할 수 있게 주입 가능하지만 기본 구현도 제공된다.
+ * `decisionLedgerWriter`는 선택적이며, 주입되지 않으면 runner는 기존과 같이 ledger write 없이 완료된다.
  */
 export interface PaperDecisionRunnerPorts {
   source: PaperDecisionInputSource;
@@ -115,6 +144,8 @@ export interface PaperDecisionRunnerPorts {
   costModel?: Pick<CostModel, "evaluate">;
   evaluateRiskGate?: (context: RiskGateContext) => RiskGateResult;
   executionEngine?: Pick<ExecutionEngine, "submitOrder">;
+  /** runner 종료 시점에 frame/evidence를 append-only ledger에 기록하는 port. 미주입 시 ledger write를 건너뛴다. */
+  decisionLedgerWriter?: PaperDecisionLedgerWriterPort;
 }
 
 /**
@@ -205,15 +236,27 @@ export interface PaperDecisionRunnerTraceRecord {
 }
 
 /**
+ * runner 종료 시점의 ledger write 결과 상태다.
+ *
+ * writer가 주입되지 않으면 `NOT_CONFIGURED`, writer 호출이 성공하면 `RECORDED`,
+ * writer 실패 시 `UNAVAILABLE`로 표현한다. 이 상태는 broker retry를 유발하지 않으며,
+ * runner summary metric에만 영향을 준다.
+ */
+export type PaperDecisionLedgerWriteStatus = "NOT_CONFIGURED" | "RECORDED" | "PARTIAL" | "UNAVAILABLE";
+
+/**
  * paper decision runner의 단일 실행 결과다.
  *
  * `metrics`는 report 비교용 안정 shape이고, `trace`는 주문이 0건이어도 어떤 hold/discard/cost/risk 이유로
  * 중단됐는지 사람이 재구성할 수 있게 남긴다.
+ * `ledgerWriteStatus`는 runner 종료 시점의 decision ledger write 결과 상태를 보존한다.
  */
 export interface PaperDecisionRunnerResult {
   framesProcessed: number;
   metrics: PaperDecisionMetricSummary;
   trace: readonly PaperDecisionRunnerTraceRecord[];
+  /** runner 종료 시점의 ledger write 결과. writer 미주입 시 NOT_CONFIGURED. */
+  ledgerWriteStatus: PaperDecisionLedgerWriteStatus;
 }
 
 /**
