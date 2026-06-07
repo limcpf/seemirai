@@ -39,6 +39,7 @@ const btcPosition: ExitPositionSnapshot = {
   currentPrice: "128000000",
   unrealizedPnlBps: "2400",
   notionalKrw: "640000",
+  strategyId: "trend_following",
   observedAt,
 };
 
@@ -50,6 +51,7 @@ const lossPosition: ExitPositionSnapshot = {
   currentPrice: "125000000",
   unrealizedPnlBps: "-3846",
   notionalKrw: "625000",
+  strategyId: "trend_following",
   observedAt,
 };
 
@@ -99,13 +101,20 @@ function expectNoRawExitRuleIds(message: string): void {
   }
 }
 
-type ExitSizingTestOptions = Omit<Parameters<typeof evaluateExitSizing>[0], "requestedPrice"> & {
+type ExitSizingTestOptions = Omit<
+  Parameters<typeof evaluateExitSizing>[0],
+  "market" | "strategyId" | "requestedPrice"
+> & {
+  market?: string;
+  strategyId?: string;
   requestedPrice?: string;
 };
 
 function evaluateTestExitSizing(options: ExitSizingTestOptions) {
   return evaluateExitSizing({
     ...options,
+    market: options.market ?? options.positionScope.market,
+    strategyId: options.strategyId ?? options.positionScope.strategyId,
     requestedPrice: options.requestedPrice ?? options.currentPrice,
   });
 }
@@ -604,6 +613,7 @@ describe("exit rule engine", () => {
         exchangeId: "upbit_krw_spot",
         market: "KRW-BTC",
         strategyId: "trend_following",
+        reductionRatio: "0.4",
         reasonCode: "trend_reversal_partial",
         reason: "추세 반전 감지, 부분 축소",
         observedAt,
@@ -612,6 +622,27 @@ describe("exit rule engine", () => {
       expect(result).toMatchObject({
         status: "TRIGGERED",
         exitIntention: "REDUCE",
+        metadata: {
+          reduction_ratio: "0.4",
+        },
+      });
+    });
+
+    it("blocks REDUCE strategy signal when reduction ratio is invalid", async () => {
+      const signal: ExitStrategySignal = {
+        intention: "REDUCE",
+        exchangeId: "upbit_krw_spot",
+        market: "KRW-BTC",
+        strategyId: "trend_following",
+        reductionRatio: "1",
+        reasonCode: "trend_reversal_partial",
+        reason: "잘못된 부분 축소 비율",
+        observedAt,
+      };
+      const result = await evaluateRule(rule, createContext({ strategyExitSignal: signal }));
+      expect(result).toMatchObject({
+        status: "BLOCKED",
+        reasonCode: "strategy_exit_reduction_ratio_invalid",
       });
     });
 
@@ -990,6 +1021,33 @@ describe("exit decision aggregation", () => {
     expectNoRawExitRuleIds(decision.userMessage);
   });
 
+  it("returns BLOCK when position strategy scope is missing", async () => {
+    const rules = createDefaultExitRules({
+      stopLossBps: "2000",
+      takeProfitBps: "5000",
+      defaultTrailBps: "500",
+    });
+    const decision = await evaluateExitRules(
+      rules,
+      createContext({
+        position: { ...btcPosition, strategyId: "", unrealizedPnlBps: "-3000" },
+      }),
+    );
+    expect(decision).toMatchObject({
+      kind: "BLOCK",
+      reasonCode: "exit_blocked",
+    });
+    expect(decision.blockedRules).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          ruleId: "exit_position_scope",
+          status: "BLOCKED",
+          reasonCode: "exit_position_scope_mismatch",
+        }),
+      ]),
+    );
+  });
+
   it("returns BLOCK when position quantity cannot be parsed", async () => {
     const rules = createDefaultExitRules({
       stopLossBps: "2000",
@@ -1059,6 +1117,27 @@ describe("exit sizing", () => {
       dustQuantity: "0",
       exceedsPosition: false,
       belowMinOrderNotional: false,
+    });
+  });
+
+  it("blocks when requested sizing scope does not match position scope", () => {
+    const result = evaluateTestExitSizing({
+      market: "KRW-ETH",
+      strategyId: "trend_following",
+      requestedQuantity: "0.003",
+      positionScope: {
+        market: "KRW-BTC",
+        strategyId: "trend_following",
+        totalQuantity: "0.005",
+        observedAt,
+      },
+      policySnapshot: paperPolicy,
+      currentPrice: "128000000",
+    });
+
+    expect(result).toMatchObject({
+      valid: false,
+      rejectionReason: "exit_position_scope_mismatch",
     });
   });
 
@@ -1278,6 +1357,31 @@ describe("exit sizing", () => {
     expect(formatSizingUserMessage(result)).toContain("정책");
   });
 
+  it("blocks when tick size policy is zero or negative", () => {
+    for (const tickSize of ["0", "-1"]) {
+      const result = evaluateTestExitSizing({
+        requestedQuantity: "0.003",
+        positionScope: {
+          market: "KRW-BTC",
+          strategyId: "trend_following",
+          totalQuantity: "0.005",
+          observedAt,
+        },
+        policySnapshot: {
+          ...paperPolicy,
+          tickSize,
+        },
+        currentPrice: "128000000",
+      });
+
+      expect(result).toMatchObject({
+        valid: false,
+        rejectionReason: "exit_policy_invalid",
+      });
+      expect(formatSizingUserMessage(result)).toContain("호가 단위");
+    }
+  });
+
   it("blocks when current price is zero or negative", () => {
     for (const currentPrice of ["0", "-1"]) {
       const result = evaluateTestExitSizing({
@@ -1321,6 +1425,27 @@ describe("exit sizing", () => {
       });
       expect(formatSizingUserMessage(result)).toContain("가격");
     }
+  });
+
+  it("blocks when requested price does not match tick size", () => {
+    const result = evaluateTestExitSizing({
+      requestedQuantity: "0.003",
+      positionScope: {
+        market: "KRW-BTC",
+        strategyId: "trend_following",
+        totalQuantity: "0.005",
+        observedAt,
+      },
+      policySnapshot: paperPolicy,
+      currentPrice: "128000000",
+      requestedPrice: "128000001",
+    });
+
+    expect(result).toMatchObject({
+      valid: false,
+      rejectionReason: "exit_price_tick_mismatch",
+    });
+    expect(formatSizingUserMessage(result)).toContain("호가 단위");
   });
 
   it("provides Korean user messages for sizing failures", () => {
@@ -1463,6 +1588,41 @@ describe("exit sizing", () => {
     const remainingBelowMinMsg = formatSizingUserMessage(remainingBelowMin);
     expect(remainingBelowMinMsg).not.toContain("remaining_below_min_order_notional");
     expect(remainingBelowMinMsg).toContain("잔여 포지션");
+
+    const scopeMismatch = evaluateTestExitSizing({
+      market: "KRW-ETH",
+      strategyId: "trend_following",
+      requestedQuantity: "0.003",
+      positionScope: {
+        market: "KRW-BTC",
+        strategyId: "trend_following",
+        totalQuantity: "0.005",
+        observedAt,
+      },
+      policySnapshot: paperPolicy,
+      currentPrice: "128000000",
+    });
+    expect(scopeMismatch.rejectionReason).toBe("exit_position_scope_mismatch");
+    const scopeMismatchMsg = formatSizingUserMessage(scopeMismatch);
+    expect(scopeMismatchMsg).not.toContain("exit_position_scope_mismatch");
+    expect(scopeMismatchMsg).toContain("범위");
+
+    const tickMismatch = evaluateTestExitSizing({
+      requestedQuantity: "0.003",
+      positionScope: {
+        market: "KRW-BTC",
+        strategyId: "trend_following",
+        totalQuantity: "0.005",
+        observedAt,
+      },
+      policySnapshot: paperPolicy,
+      currentPrice: "128000000",
+      requestedPrice: "128000001",
+    });
+    expect(tickMismatch.rejectionReason).toBe("exit_price_tick_mismatch");
+    const tickMismatchMsg = formatSizingUserMessage(tickMismatch);
+    expect(tickMismatchMsg).not.toContain("exit_price_tick_mismatch");
+    expect(tickMismatchMsg).toContain("호가 단위");
   });
 });
 

@@ -6,6 +6,10 @@ import type { ExitPolicySnapshot, ExitPositionScope, ExitSizing } from "../../do
  * ExitSizing 옵션이다.
  */
 export interface ExitSizingOptions {
+  /** 청산 요청 대상 마켓 */
+  market: string;
+  /** 청산 요청 대상 전략 식별자 */
+  strategyId: string;
   /** 요청 청산 수량 */
   requestedQuantity: string;
   /** 현재 open position scope */
@@ -29,11 +33,32 @@ export function evaluateExitSizing(options: ExitSizingOptions): ExitSizing {
   const totalQty = parseDecimal(options.positionScope.totalQuantity);
   const dustThreshold = parseDecimal(options.policySnapshot.dustThreshold);
   const minOrderNotional = parseDecimal(options.policySnapshot.minOrderNotional);
+  const tickSize = parseDecimal(options.policySnapshot.tickSize);
   const currentPrice = parseDecimal(options.currentPrice);
   const requestedPrice = parseDecimal(options.requestedPrice);
 
+  // 요청 scope와 position scope가 다르면 다른 포지션 수량으로 SELL 검증을 통과할 수 있어 즉시 차단한다.
+  if (
+    options.market !== options.positionScope.market ||
+    options.strategyId !== options.positionScope.strategyId
+  ) {
+    return invalid(
+      "exit_position_scope_mismatch",
+      "청산 요청 범위와 포지션 범위가 일치하지 않습니다.",
+      options.requestedQuantity,
+    );
+  }
+
   // 파싱 실패 시 차단
-  if (requestedQty === undefined || totalQty === undefined || dustThreshold === undefined || minOrderNotional === undefined || currentPrice === undefined || requestedPrice === undefined) {
+  if (
+    requestedQty === undefined ||
+    totalQty === undefined ||
+    dustThreshold === undefined ||
+    minOrderNotional === undefined ||
+    tickSize === undefined ||
+    currentPrice === undefined ||
+    requestedPrice === undefined
+  ) {
     return invalid("exit_sizing_parse_error", "청산 수량 또는 정책 값을 파싱할 수 없습니다.", options.requestedQuantity);
   }
 
@@ -54,6 +79,14 @@ export function evaluateExitSizing(options: ExitSizingOptions): ExitSizing {
     );
   }
 
+  if (!tickSize.greaterThan(0)) {
+    return invalid(
+      "exit_policy_invalid",
+      "호가 단위 정책값이 유효하지 않습니다. 0보다 큰 값이어야 합니다.",
+      options.requestedQuantity,
+    );
+  }
+
   // 현재가가 0 이하이면 주문 금액 계산이 왜곡되므로 broker submit 후보로 넘기지 않는다.
   if (!currentPrice.greaterThan(0)) {
     return invalid(
@@ -68,6 +101,15 @@ export function evaluateExitSizing(options: ExitSizingOptions): ExitSizing {
     return invalid(
       "exit_price_invalid",
       "청산 요청 가격이 유효하지 않습니다. 0보다 큰 가격이어야 합니다.",
+      options.requestedQuantity,
+    );
+  }
+
+  // 지정가가 거래소 호가 단위와 맞지 않으면 broker submit 단계에서 거절되므로 사전 차단한다.
+  if (!requestedPrice.mod(tickSize).isZero()) {
+    return invalid(
+      "exit_price_tick_mismatch",
+      "청산 요청 가격이 호가 단위에 맞지 않습니다.",
       options.requestedQuantity,
     );
   }
@@ -215,8 +257,10 @@ export function formatSizingUserMessage(sizing: ExitSizing): string {
  */
 const REJECTION_MESSAGE_MAP: Record<string, string> = {
   exit_sizing_parse_error: "청산 수량 또는 정책 값을 파싱할 수 없습니다. 입력 값을 확인하세요.",
-  exit_policy_invalid: "청산 정책값이 유효하지 않습니다. 최소 주문금액과 dust threshold 설정을 확인하세요.",
+  exit_position_scope_mismatch: "청산 요청 범위와 포지션 범위가 일치하지 않아 주문 후보 생성을 차단했습니다.",
+  exit_policy_invalid: "청산 정책값이 유효하지 않습니다. 최소 주문금액, dust threshold, 호가 단위 설정을 확인하세요.",
   exit_price_invalid: "현재가가 유효하지 않습니다. 0보다 큰 가격으로 다시 평가해야 합니다.",
+  exit_price_tick_mismatch: "청산 요청 가격이 거래소 호가 단위에 맞지 않습니다. 가격을 호가 단위에 맞춰 다시 계산하세요.",
   dust_remainder: "청산 후 처리 불가 잔량이 남아 주문 후보 생성을 차단했습니다. 전체 청산 또는 요청 수량 재계산이 필요합니다.",
   remaining_below_min_order_notional: "청산 후 잔여 포지션 금액이 최소 주문금액 미만입니다. 전체 청산 또는 요청 수량 재계산이 필요합니다.",
   exit_no_position: "청산할 포지션이 없습니다. open position 수량이 0이거나 음수입니다.",

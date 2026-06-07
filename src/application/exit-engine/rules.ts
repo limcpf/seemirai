@@ -338,6 +338,24 @@ export function createStrategyExitSignalRule(): ExitRule {
         );
       }
 
+      if (signal.intention === "REDUCE") {
+        const reductionRatio = parseDecimal(signal.reductionRatio);
+        if (
+          reductionRatio === undefined ||
+          reductionRatio.lessThanOrEqualTo(0) ||
+          reductionRatio.greaterThanOrEqualTo(1)
+        ) {
+          return blocked(
+            "strategy_exit_signal",
+            "strategy_exit_reduction_ratio_invalid",
+            "전략 부분 축소 신호의 reductionRatio가 유효하지 않습니다. 0보다 크고 1보다 작은 숫자여야 합니다.",
+            {
+              reduction_ratio: signal.reductionRatio,
+            },
+          );
+        }
+      }
+
       return triggered(
         "strategy_exit_signal",
         signal.reasonCode,
@@ -348,6 +366,7 @@ export function createStrategyExitSignalRule(): ExitRule {
           signal_market: signal.market,
           signal_strategy_id: signal.strategyId,
           signal_intention: signal.intention,
+          ...(signal.intention === "REDUCE" ? { reduction_ratio: signal.reductionRatio } : {}),
           signal_observed_at: String(signal.observedAt),
         },
       );

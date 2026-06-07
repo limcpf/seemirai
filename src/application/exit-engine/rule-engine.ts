@@ -225,6 +225,17 @@ function evaluateExitPositionScope(context: ExitRuleContext): ExitRuleEvaluation
   const positionStrategyId = context.position.strategyId?.trim();
   if (
     contextStrategyId !== "" &&
+    (positionStrategyId === undefined || positionStrategyId === "")
+  ) {
+    return blockedPositionScope(
+      "exit_position_scope_mismatch",
+      "포지션 snapshot의 전략 scope가 없어 현재 청산 context와 일치하는지 검증할 수 없으므로 청산 주문 후보 생성을 차단합니다.",
+      context,
+    );
+  }
+
+  if (
+    contextStrategyId !== "" &&
     positionStrategyId !== undefined &&
     positionStrategyId !== "" &&
     contextStrategyId !== positionStrategyId

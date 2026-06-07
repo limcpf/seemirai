@@ -208,14 +208,13 @@ export interface ExitTrailingState {
 }
 
 /**
- * 전략이 생성한 exit signal.
+ * 전략이 생성한 exit signal의 공통 필드다.
  *
  * 기존 strategy decision flow와 충돌하지 않도록 별도 metadata로 표현하며
  * BUY entry signal과 동시 발생 시 exit 우선순위를 가진다.
+ * exchange/market/strategy scope는 현재 ExitRuleContext와 일치해야 한다.
  */
-export interface ExitStrategySignal {
-  /** exit 의도 (REDUCE | EXIT) */
-  intention: ExitIntention;
+export interface BaseExitStrategySignal {
   /** signal이 적용되는 거래소 식별자. 현재 ExitRuleContext.exchangeId와 일치해야 한다. */
   exchangeId: ExchangeId;
   /** signal이 적용되는 마켓. 현재 ExitRuleContext.market과 일치해야 한다. */
@@ -230,6 +229,34 @@ export interface ExitStrategySignal {
   observedAt: TimestampInput;
   metadata?: JsonRecord;
 }
+
+/**
+ * 전략이 생성한 부분 축소 exit signal이다.
+ *
+ * REDUCE는 후속 주문 수량 계산 근거가 필요하므로 현재 포지션 대비 축소 비율을 필수로 둔다.
+ */
+export interface ReduceExitStrategySignal extends BaseExitStrategySignal {
+  intention: "REDUCE";
+  /** 축소 비율 (현재 포지션 대비, 0보다 크고 1보다 작아야 한다) */
+  reductionRatio: NumericString;
+}
+
+/**
+ * 전략이 생성한 전량 청산 exit signal이다.
+ *
+ * EXIT는 전체 종료 의도이므로 별도 부분 축소 비율을 허용하지 않는다.
+ */
+export interface FullExitStrategySignal extends BaseExitStrategySignal {
+  intention: "EXIT";
+  reductionRatio?: never;
+}
+
+/**
+ * 전략이 생성한 exit signal.
+ *
+ * REDUCE/EXIT 의도별 discriminated union으로 부분 축소 수량 근거 누락을 타입 단계에서 막는다.
+ */
+export type ExitStrategySignal = ReduceExitStrategySignal | FullExitStrategySignal;
 
 /**
  * 시간 기반 청산 설정.
