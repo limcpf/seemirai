@@ -12,8 +12,10 @@ export interface ExitSizingOptions {
   positionScope: ExitPositionScope;
   /** exit 정책 snapshot */
   policySnapshot: ExitPolicySnapshot;
-  /** 현재 시장가 (notional 계산용) */
+  /** 현재 시장가 (잔여 포지션 평가용) */
   currentPrice: string;
+  /** 실제 제출 후보의 지정가 또는 요청 가격 (주문 최소금액 검증용) */
+  requestedPrice: string;
 }
 
 /**
@@ -28,9 +30,10 @@ export function evaluateExitSizing(options: ExitSizingOptions): ExitSizing {
   const dustThreshold = parseDecimal(options.policySnapshot.dustThreshold);
   const minOrderNotional = parseDecimal(options.policySnapshot.minOrderNotional);
   const currentPrice = parseDecimal(options.currentPrice);
+  const requestedPrice = parseDecimal(options.requestedPrice);
 
   // 파싱 실패 시 차단
-  if (requestedQty === undefined || totalQty === undefined || dustThreshold === undefined || minOrderNotional === undefined || currentPrice === undefined) {
+  if (requestedQty === undefined || totalQty === undefined || dustThreshold === undefined || minOrderNotional === undefined || currentPrice === undefined || requestedPrice === undefined) {
     return invalid("exit_sizing_parse_error", "청산 수량 또는 정책 값을 파싱할 수 없습니다.", options.requestedQuantity);
   }
 
@@ -56,6 +59,15 @@ export function evaluateExitSizing(options: ExitSizingOptions): ExitSizing {
     return invalid(
       "exit_price_invalid",
       "현재가가 유효하지 않습니다. 0보다 큰 가격이어야 합니다.",
+      options.requestedQuantity,
+    );
+  }
+
+  // 실제 주문 가격이 0 이하이면 거래소 최소 주문금액 검증이 무의미하므로 broker submit 후보로 넘기지 않는다.
+  if (!requestedPrice.greaterThan(0)) {
+    return invalid(
+      "exit_price_invalid",
+      "청산 요청 가격이 유효하지 않습니다. 0보다 큰 가격이어야 합니다.",
       options.requestedQuantity,
     );
   }
@@ -98,7 +110,7 @@ export function evaluateExitSizing(options: ExitSizingOptions): ExitSizing {
 
   // 최소 주문금액 검증: executableQuantity * currentPrice
   const executableQty = requestedQty;
-  const executableNotional = executableQty.mul(currentPrice);
+  const executableNotional = executableQty.mul(requestedPrice);
   const remainingNotional = remainingAfterSell.mul(currentPrice);
 
   if (executableNotional.lessThan(minOrderNotional)) {

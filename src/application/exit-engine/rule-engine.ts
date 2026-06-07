@@ -59,9 +59,7 @@ export class ExitRuleEngine {
     const scopedEvaluations =
       positionScopeBlock === undefined ? evaluations : [...evaluations, positionScopeBlock];
 
-    const triggeredRules = scopedEvaluations.filter(
-      (evaluation) => evaluation.status === "TRIGGERED",
-    );
+    const triggeredRules = scopedEvaluations.filter(isTriggeredEvaluation);
     const blockedRules = scopedEvaluations.filter(
       (evaluation) =>
         evaluation.status === "BLOCKED" || evaluation.status === "UNAVAILABLE",
@@ -205,7 +203,39 @@ function formatRuleLabels(evaluations: readonly ExitRuleEvaluation[]): string {
   return labels.length > 0 ? labels.join(", ") : "확인 필요 청산 판단 항목";
 }
 
+function isTriggeredEvaluation(
+  evaluation: ExitRuleEvaluation,
+): evaluation is Extract<ExitRuleEvaluation, { status: "TRIGGERED" }> {
+  return evaluation.status === "TRIGGERED";
+}
+
 function evaluateExitPositionScope(context: ExitRuleContext): ExitRuleEvaluation | undefined {
+  if (
+    context.position.exchangeId !== context.exchangeId ||
+    context.position.market !== context.market
+  ) {
+    return blockedPositionScope(
+      "exit_position_scope_mismatch",
+      "포지션 snapshot의 거래소 또는 마켓 scope가 현재 청산 context와 일치하지 않아 청산 주문 후보 생성을 차단합니다.",
+      context,
+    );
+  }
+
+  const contextStrategyId = context.strategyId.trim();
+  const positionStrategyId = context.position.strategyId?.trim();
+  if (
+    contextStrategyId !== "" &&
+    positionStrategyId !== undefined &&
+    positionStrategyId !== "" &&
+    contextStrategyId !== positionStrategyId
+  ) {
+    return blockedPositionScope(
+      "exit_position_scope_mismatch",
+      "포지션 snapshot의 전략 scope가 현재 청산 context와 일치하지 않아 청산 주문 후보 생성을 차단합니다.",
+      context,
+    );
+  }
+
   try {
     const quantity = parseFinancialDecimal(context.position.quantity);
     if (quantity.greaterThan(0)) {
@@ -214,13 +244,13 @@ function evaluateExitPositionScope(context: ExitRuleContext): ExitRuleEvaluation
     return blockedPositionScope(
       "exit_no_position",
       "청산할 open position 수량이 없어 청산 주문 후보 생성을 차단합니다.",
-      context.position.quantity,
+      context,
     );
   } catch {
     return blockedPositionScope(
       "exit_position_quantity_invalid",
       "open position 수량을 파싱할 수 없어 청산 주문 후보 생성을 차단합니다.",
-      context.position.quantity,
+      context,
     );
   }
 }
@@ -228,7 +258,7 @@ function evaluateExitPositionScope(context: ExitRuleContext): ExitRuleEvaluation
 function blockedPositionScope(
   reasonCode: string,
   message: string,
-  quantity: string,
+  context: ExitRuleContext,
 ): ExitRuleEvaluation {
   return {
     ruleId: "exit_position_scope",
@@ -236,7 +266,13 @@ function blockedPositionScope(
     reasonCode,
     message,
     metadata: {
-      position_quantity: quantity,
+      context_exchange_id: context.exchangeId,
+      context_market: context.market,
+      context_strategy_id: context.strategyId,
+      position_exchange_id: context.position.exchangeId,
+      position_market: context.position.market,
+      position_strategy_id: context.position.strategyId ?? "",
+      position_quantity: context.position.quantity,
     },
   };
 }

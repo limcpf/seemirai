@@ -2,6 +2,7 @@ import { Decimal } from "decimal.js";
 import { parseFinancialDecimal } from "../../shared/index.js";
 import type {
   ExitIntention,
+  ExitRiskReductionSignal,
   ExitRule,
   ExitRuleContext,
   ExitRuleEvaluation,
@@ -248,6 +249,15 @@ export function createTimeBasedExitRule(): ExitRule {
         return pass("time_based_exit", "time_based_not_configured", "시간 기반 청산 설정이 없어 평가를 건너뜁니다.");
       }
 
+      // deadline 문자열에 offset/Z가 함께 들어오면 timezone 필드와 기준이 섞이므로 fail-closed로 차단한다.
+      if (hasExplicitDeadlineOffset(context.timeBasedConfig.deadline)) {
+        return blocked(
+          "time_based_exit",
+          "time_based_deadline_timezone_mixed",
+          "시간 기반 청산 deadline은 timezone 필드 기준으로만 해석해야 합니다. deadline 문자열의 명시적 offset/Z를 제거하세요.",
+        );
+      }
+
       const deadline = parseDeadlineTimestamp(
         context.timeBasedConfig.deadline,
         context.timeBasedConfig.timezone,
@@ -366,6 +376,24 @@ export function createRiskReductionExitRule(): ExitRule {
       }
 
       const signal = context.riskReductionSignal;
+      // RiskGate signal도 포지션 scope를 벗어나면 잘못된 SELL 후보로 이어지므로 context/position과 대조한다.
+      if (!matchesRiskReductionSignalScope(signal, context)) {
+        return blocked(
+          "risk_reduction_exit",
+          "risk_reduction_scope_mismatch",
+          "리스크 축소 신호의 scope가 현재 포지션과 일치하지 않아 청산 판단을 차단합니다.",
+          {
+            signal_exchange_id: signal.exchangeId,
+            context_exchange_id: context.exchangeId,
+            signal_market: signal.market,
+            context_market: context.market,
+            signal_strategy_id: signal.strategyId,
+            context_strategy_id: context.strategyId,
+            position_strategy_id: context.position.strategyId ?? "",
+          },
+        );
+      }
+
       const reductionRatio = parseDecimal(signal.reductionRatio);
 
       // risk signal이 잘못된 축소 비율을 들고 오면 후속 sizing이 invalid SELL 수량을 만들 수 있어 여기서 차단한다.
@@ -402,6 +430,9 @@ export function createRiskReductionExitRule(): ExitRule {
         signal.reason,
         signal.intention,
         {
+          signal_exchange_id: signal.exchangeId,
+          signal_market: signal.market,
+          signal_strategy_id: signal.strategyId,
           reduction_ratio: reductionRatio.toFixed(),
           signal_intention: signal.intention,
           signal_observed_at: String(signal.observedAt),
@@ -473,10 +504,6 @@ function parseDeadlineTimestamp(
     return new Date(NaN);
   }
 
-  if (hasExplicitTimezone(trimmed)) {
-    return new Date(trimmed);
-  }
-
   const wallClock = parseWallClockIsoTimestamp(trimmed);
   if (wallClock === undefined) {
     return new Date(NaN);
@@ -488,6 +515,10 @@ function parseDeadlineTimestamp(
 
 function hasExplicitTimezone(value: string): boolean {
   return /(?:[zZ]|[+-]\d{2}:?\d{2})$/.test(value);
+}
+
+function hasExplicitDeadlineOffset(value: TimestampInput): boolean {
+  return typeof value === "string" && hasExplicitTimezone(value.trim());
 }
 
 function parseWallClockIsoTimestamp(value: string): { utcMilliseconds: number } | undefined {
@@ -549,11 +580,27 @@ function parseWallClockIsoTimestamp(value: string): { utcMilliseconds: number } 
 }
 
 function matchesCurrentSignalScope(signal: ExitStrategySignal, context: ExitRuleContext): boolean {
-  if (signal.exchangeId !== context.exchangeId || signal.market !== context.market) {
+  return matchesScopedSignal(signal.exchangeId, signal.market, signal.strategyId, context);
+}
+
+function matchesRiskReductionSignalScope(
+  signal: ExitRiskReductionSignal,
+  context: ExitRuleContext,
+): boolean {
+  return matchesScopedSignal(signal.exchangeId, signal.market, signal.strategyId, context);
+}
+
+function matchesScopedSignal(
+  signalExchangeId: string,
+  signalMarket: string,
+  signalStrategyId: string,
+  context: ExitRuleContext,
+): boolean {
+  if (signalExchangeId !== context.exchangeId || signalMarket !== context.market) {
     return false;
   }
 
-  const normalizedSignalStrategyId = signal.strategyId.trim();
+  const normalizedSignalStrategyId = signalStrategyId.trim();
   if (normalizedSignalStrategyId === "") {
     return false;
   }

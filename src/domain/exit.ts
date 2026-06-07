@@ -35,12 +35,12 @@ export type ExitIntention = "REDUCE" | "EXIT";
 // ---------------------------------------------------------------------------
 
 /**
- * 단일 exit rule의 평가 결과다.
+ * 단일 exit rule 평가 결과의 공통 필드다.
  *
  * exit rule은 외부 side effect 없이 ExitRuleContext만 평가해 이 결과를 반환한다.
- * trigger된 경우 어떤 exit 의도(부분/전체)인지 함께 선언한다.
+ * 내부 reason code와 metadata는 trace/debug 용도로만 쓰고 사용자-facing 문구와 분리한다.
  */
-export interface ExitRuleEvaluation {
+export interface BaseExitRuleEvaluation {
   /** exit rule의 고유 식별자 */
   ruleId: string;
   /** 평가 상태 */
@@ -49,11 +49,38 @@ export interface ExitRuleEvaluation {
   reasonCode: string;
   /** trace/debug용 한 줄 설명 */
   message: string;
-  /** TRIGGERED일 때만 의미를 가지는 exit 의도 */
-  exitIntention?: ExitIntention;
   /** 추적 정보 (threshold snapshot, 식별자 등) */
   metadata?: JsonRecord;
 }
+
+/**
+ * trigger된 exit rule 평가 결과다.
+ *
+ * TRIGGERED 상태는 후속 집계가 REDUCE/EXIT 중 하나로 수렴해야 하므로 exitIntention을 반드시 포함한다.
+ */
+export interface TriggeredExitRuleEvaluation extends BaseExitRuleEvaluation {
+  status: "TRIGGERED";
+  /** trigger된 exit 의도 */
+  exitIntention: ExitIntention;
+}
+
+/**
+ * trigger되지 않았거나 차단/평가 불가 상태인 exit rule 평가 결과다.
+ *
+ * PASS/BLOCKED/UNAVAILABLE은 주문 후보 의도를 만들지 않으므로 exitIntention을 가질 수 없다.
+ */
+export interface NonTriggeredExitRuleEvaluation extends BaseExitRuleEvaluation {
+  status: "PASS" | "BLOCKED" | "UNAVAILABLE";
+  exitIntention?: never;
+}
+
+/**
+ * 단일 exit rule의 평가 결과다.
+ *
+ * status별 discriminated union으로 TRIGGERED에는 exitIntention을 강제하고,
+ * 비-trigger 상태에서는 exitIntention 누락을 타입상 보장한다.
+ */
+export type ExitRuleEvaluation = TriggeredExitRuleEvaluation | NonTriggeredExitRuleEvaluation;
 
 /**
  * exit rule contract.
@@ -120,6 +147,10 @@ export interface ExitRuleContext {
  * quantity가 0이거나 position이 존재하지 않으면 exit intent를 만들지 않는다.
  */
 export interface ExitPositionSnapshot {
+  /** 포지션이 속한 거래소 식별자 */
+  exchangeId: ExchangeId;
+  /** 포지션이 속한 마켓 */
+  market: MarketCode;
   /** 보유 수량 (Decimal 문자열) */
   quantity: NumericString;
   /** 평균 매수가 */
@@ -219,6 +250,12 @@ export interface ExitTimeBasedConfig {
 export interface ExitRiskReductionSignal {
   /** 축소 의도 (REDUCE | EXIT) */
   intention: ExitIntention;
+  /** signal이 적용되는 거래소 식별자. 현재 ExitRuleContext.exchangeId와 일치해야 한다. */
+  exchangeId: ExchangeId;
+  /** signal이 적용되는 마켓. 현재 ExitRuleContext.market과 일치해야 한다. */
+  market: MarketCode;
+  /** signal이 적용되는 전략 식별자. 현재 context/position strategy와 일치해야 한다. */
+  strategyId: string;
   /** 축소 비율 (현재 포지션 대비, 0~1) */
   reductionRatio: NumericString;
   /** 축소 이유 code */

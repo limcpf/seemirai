@@ -32,6 +32,8 @@ import type {
 const observedAt = new Date("2026-06-07T09:00:00.000Z");
 
 const btcPosition: ExitPositionSnapshot = {
+  exchangeId: "upbit_krw_spot",
+  market: "KRW-BTC",
   quantity: "0.005",
   averageEntryPrice: "125000000",
   currentPrice: "128000000",
@@ -41,6 +43,8 @@ const btcPosition: ExitPositionSnapshot = {
 };
 
 const lossPosition: ExitPositionSnapshot = {
+  exchangeId: "upbit_krw_spot",
+  market: "KRW-BTC",
   quantity: "0.005",
   averageEntryPrice: "130000000",
   currentPrice: "125000000",
@@ -93,6 +97,33 @@ function expectNoRawExitRuleIds(message: string): void {
   for (const rawRuleId of rawExitRuleIds) {
     expect(message).not.toContain(rawRuleId);
   }
+}
+
+type ExitSizingTestOptions = Omit<Parameters<typeof evaluateExitSizing>[0], "requestedPrice"> & {
+  requestedPrice?: string;
+};
+
+function evaluateTestExitSizing(options: ExitSizingTestOptions) {
+  return evaluateExitSizing({
+    ...options,
+    requestedPrice: options.requestedPrice ?? options.currentPrice,
+  });
+}
+
+function createRiskReductionSignal(
+  overrides: Partial<ExitRiskReductionSignal> = {},
+): ExitRiskReductionSignal {
+  return {
+    intention: "REDUCE",
+    exchangeId: "upbit_krw_spot",
+    market: "KRW-BTC",
+    strategyId: "trend_following",
+    reductionRatio: "0.5",
+    reasonCode: "daily_loss_limit_approaching",
+    reason: "일간 손실 한도 접근, 포지션 축소",
+    observedAt,
+    ...overrides,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -507,6 +538,18 @@ describe("exit rule engine", () => {
       });
     });
 
+    it("blocks when deadline string mixes explicit offset with timezone field", async () => {
+      const timeConfig: ExitTimeBasedConfig = {
+        deadline: "2026-06-08T09:00:00Z",
+        timezone: "KST",
+      };
+      const result = await evaluateRule(rule, createContext({ timeBasedConfig: timeConfig }));
+      expect(result).toMatchObject({
+        status: "BLOCKED",
+        reasonCode: "time_based_deadline_timezone_mixed",
+      });
+    });
+
     it("blocks when observedAt is invalid", async () => {
       const timeConfig: ExitTimeBasedConfig = {
         deadline: new Date("2026-06-08T00:00:00.000Z"),
@@ -631,13 +674,10 @@ describe("exit rule engine", () => {
     });
 
     it("triggers REDUCE when risk signal requests reduction", async () => {
-      const signal: ExitRiskReductionSignal = {
-        intention: "REDUCE",
-        reductionRatio: "0.5",
+      const signal = createRiskReductionSignal({
         reasonCode: "daily_loss_limit_approaching",
         reason: "일간 손실 한도 접근, 포지션 50% 축소",
-        observedAt,
-      };
+      });
       const result = await evaluateRule(rule, createContext({ riskReductionSignal: signal }));
       expect(result).toMatchObject({
         status: "TRIGGERED",
@@ -650,13 +690,12 @@ describe("exit rule engine", () => {
     });
 
     it("triggers EXIT when risk signal requests exit", async () => {
-      const signal: ExitRiskReductionSignal = {
+      const signal = createRiskReductionSignal({
         intention: "EXIT",
         reductionRatio: "1",
         reasonCode: "drawdown_limit_exceeded",
         reason: "MDD 한도 초과, 전량 청산",
-        observedAt,
-      };
+      });
       const result = await evaluateRule(rule, createContext({ riskReductionSignal: signal }));
       expect(result).toMatchObject({
         status: "TRIGGERED",
@@ -666,13 +705,9 @@ describe("exit rule engine", () => {
 
     it("blocks when risk reduction ratio is invalid", async () => {
       for (const reductionRatio of ["not-a-ratio", "-0.5", "0", "2"]) {
-        const signal: ExitRiskReductionSignal = {
-          intention: "REDUCE",
+        const signal = createRiskReductionSignal({
           reductionRatio,
-          reasonCode: "daily_loss_limit_approaching",
-          reason: "일간 손실 한도 접근, 포지션 축소",
-          observedAt,
-        };
+        });
         const result = await evaluateRule(rule, createContext({ riskReductionSignal: signal }));
         expect(result).toMatchObject({
           status: "BLOCKED",
@@ -682,21 +717,34 @@ describe("exit rule engine", () => {
       }
     });
 
+    it("blocks when risk reduction signal scope does not match context", async () => {
+      const signal = createRiskReductionSignal({
+        market: "KRW-ETH",
+      });
+      const result = await evaluateRule(rule, createContext({ riskReductionSignal: signal }));
+      expect(result).toMatchObject({
+        status: "BLOCKED",
+        reasonCode: "risk_reduction_scope_mismatch",
+      });
+      expect(result.metadata).toMatchObject({
+        signal_market: "KRW-ETH",
+        context_market: "KRW-BTC",
+      });
+    });
+
     it("blocks when risk reduction intention conflicts with ratio semantics", async () => {
-      const exitWithPartialRatio: ExitRiskReductionSignal = {
+      const exitWithPartialRatio = createRiskReductionSignal({
         intention: "EXIT",
         reductionRatio: "0.5",
         reasonCode: "drawdown_limit_exceeded",
         reason: "전량 청산 의도와 부분 축소 비율 불일치",
-        observedAt,
-      };
-      const reduceWithFullRatio: ExitRiskReductionSignal = {
+      });
+      const reduceWithFullRatio = createRiskReductionSignal({
         intention: "REDUCE",
         reductionRatio: "1",
         reasonCode: "daily_loss_limit_approaching",
         reason: "부분 축소 의도와 전량 비율 불일치",
-        observedAt,
-      };
+      });
 
       for (const signal of [exitWithPartialRatio, reduceWithFullRatio]) {
         const result = await evaluateRule(rule, createContext({ riskReductionSignal: signal }));
@@ -794,13 +842,11 @@ describe("exit decision aggregation", () => {
       takeProfitBps: "5000",
       defaultTrailBps: "500",
     });
-    const signal: ExitRiskReductionSignal = {
-      intention: "REDUCE",
+    const signal = createRiskReductionSignal({
       reductionRatio: "0.3",
       reasonCode: "position_rebalance",
       reason: "포지션 리밸런싱",
-      observedAt,
-    };
+    });
     const decision = await evaluateExitRules(
       rules,
       createContext({ position: btcPosition, riskReductionSignal: signal }),
@@ -820,13 +866,11 @@ describe("exit decision aggregation", () => {
       takeProfitBps: "5000",
       defaultTrailBps: "500",
     });
-    const signal: ExitRiskReductionSignal = {
-      intention: "REDUCE",
+    const signal = createRiskReductionSignal({
       reductionRatio: "0.5",
       reasonCode: "risk_rebalance",
       reason: "리스크 축소",
-      observedAt,
-    };
+    });
     const decision = await evaluateExitRules(
       rules,
       createContext({
@@ -917,6 +961,35 @@ describe("exit decision aggregation", () => {
     expectNoRawExitRuleIds(decision.userMessage);
   });
 
+  it("returns BLOCK when position snapshot scope does not match context scope", async () => {
+    const rules = createDefaultExitRules({
+      stopLossBps: "2000",
+      takeProfitBps: "5000",
+      defaultTrailBps: "500",
+    });
+    const decision = await evaluateExitRules(
+      rules,
+      createContext({
+        position: { ...btcPosition, market: "KRW-ETH", unrealizedPnlBps: "-3000" },
+      }),
+    );
+    expect(decision).toMatchObject({
+      kind: "BLOCK",
+      reasonCode: "exit_blocked",
+    });
+    expect(decision.blockedRules).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          ruleId: "exit_position_scope",
+          status: "BLOCKED",
+          reasonCode: "exit_position_scope_mismatch",
+        }),
+      ]),
+    );
+    expect(decision.userMessage).toContain("보유 포지션 수량");
+    expectNoRawExitRuleIds(decision.userMessage);
+  });
+
   it("returns BLOCK when position quantity cannot be parsed", async () => {
     const rules = createDefaultExitRules({
       stopLossBps: "2000",
@@ -967,7 +1040,7 @@ describe("exit decision aggregation", () => {
 
 describe("exit sizing", () => {
   it("validates a normal exit request within position bounds", () => {
-    const result = evaluateExitSizing({
+    const result = evaluateTestExitSizing({
       requestedQuantity: "0.003",
       positionScope: {
         market: "KRW-BTC",
@@ -990,7 +1063,7 @@ describe("exit sizing", () => {
   });
 
   it("blocks dust residue so partial sell does not become a broker candidate", () => {
-    const result = evaluateExitSizing({
+    const result = evaluateTestExitSizing({
       requestedQuantity: "0.00495",
       positionScope: {
         market: "KRW-BTC",
@@ -1014,7 +1087,7 @@ describe("exit sizing", () => {
   });
 
   it("detects exact exit (no dust) when selling the full position", () => {
-    const result = evaluateExitSizing({
+    const result = evaluateTestExitSizing({
       requestedQuantity: "0.005",
       positionScope: {
         market: "KRW-BTC",
@@ -1034,7 +1107,7 @@ describe("exit sizing", () => {
   });
 
   it("blocks when requested quantity exceeds open position", () => {
-    const result = evaluateExitSizing({
+    const result = evaluateTestExitSizing({
       requestedQuantity: "0.01",
       positionScope: {
         market: "KRW-BTC",
@@ -1056,7 +1129,7 @@ describe("exit sizing", () => {
   });
 
   it("blocks when requested quantity is 0 or negative", () => {
-    const zeroResult = evaluateExitSizing({
+    const zeroResult = evaluateTestExitSizing({
       requestedQuantity: "0",
       positionScope: {
         market: "KRW-BTC",
@@ -1074,7 +1147,7 @@ describe("exit sizing", () => {
   });
 
   it("blocks when there is no open position", () => {
-    const result = evaluateExitSizing({
+    const result = evaluateTestExitSizing({
       requestedQuantity: "0.001",
       positionScope: {
         market: "KRW-BTC",
@@ -1093,7 +1166,7 @@ describe("exit sizing", () => {
   });
 
   it("blocks when executable notional is below min order amount", () => {
-    const result = evaluateExitSizing({
+    const result = evaluateTestExitSizing({
       requestedQuantity: "0.00001",
       positionScope: {
         market: "KRW-BTC",
@@ -1111,8 +1184,28 @@ describe("exit sizing", () => {
     });
   });
 
+  it("uses requested price rather than current price for min order amount", () => {
+    const result = evaluateTestExitSizing({
+      requestedQuantity: "0.001",
+      positionScope: {
+        market: "KRW-BTC",
+        strategyId: "trend_following",
+        totalQuantity: "0.005",
+        observedAt,
+      },
+      policySnapshot: paperPolicy,
+      currentPrice: "6000000",
+      requestedPrice: "4000000",
+    });
+    expect(result).toMatchObject({
+      valid: false,
+      belowMinOrderNotional: true,
+      rejectionReason: "below_min_order_notional",
+    });
+  });
+
   it("blocks when remaining position notional would be below min order amount", () => {
-    const result = evaluateExitSizing({
+    const result = evaluateTestExitSizing({
       requestedQuantity: "0.006",
       positionScope: {
         market: "KRW-BTC",
@@ -1139,7 +1232,7 @@ describe("exit sizing", () => {
 
   it("blocks when min order policy is zero or negative", () => {
     for (const minOrderNotional of ["0", "-1"]) {
-      const result = evaluateExitSizing({
+      const result = evaluateTestExitSizing({
         requestedQuantity: "0.003",
         positionScope: {
           market: "KRW-BTC",
@@ -1163,7 +1256,7 @@ describe("exit sizing", () => {
   });
 
   it("blocks when dust threshold policy is negative", () => {
-    const result = evaluateExitSizing({
+    const result = evaluateTestExitSizing({
       requestedQuantity: "0.003",
       positionScope: {
         market: "KRW-BTC",
@@ -1187,7 +1280,7 @@ describe("exit sizing", () => {
 
   it("blocks when current price is zero or negative", () => {
     for (const currentPrice of ["0", "-1"]) {
-      const result = evaluateExitSizing({
+      const result = evaluateTestExitSizing({
         requestedQuantity: "0.003",
         positionScope: {
           market: "KRW-BTC",
@@ -1207,8 +1300,31 @@ describe("exit sizing", () => {
     }
   });
 
+  it("blocks when requested price is zero or negative", () => {
+    for (const requestedPrice of ["0", "-1"]) {
+      const result = evaluateTestExitSizing({
+        requestedQuantity: "0.003",
+        positionScope: {
+          market: "KRW-BTC",
+          strategyId: "trend_following",
+          totalQuantity: "0.005",
+          observedAt,
+        },
+        policySnapshot: paperPolicy,
+        currentPrice: "128000000",
+        requestedPrice,
+      });
+
+      expect(result).toMatchObject({
+        valid: false,
+        rejectionReason: "exit_price_invalid",
+      });
+      expect(formatSizingUserMessage(result)).toContain("가격");
+    }
+  });
+
   it("provides Korean user messages for sizing failures", () => {
-    const result = evaluateExitSizing({
+    const result = evaluateTestExitSizing({
       requestedQuantity: "0.01",
       positionScope: {
         market: "KRW-BTC",
@@ -1227,7 +1343,7 @@ describe("exit sizing", () => {
 
   it("never exposes raw rejectionReason codes to users", () => {
     // exit_sizing_parse_error
-    const parseError = evaluateExitSizing({
+    const parseError = evaluateTestExitSizing({
       requestedQuantity: "not-a-number",
       positionScope: {
         market: "KRW-BTC",
@@ -1244,7 +1360,7 @@ describe("exit sizing", () => {
     expect(parseMsg).toContain("파싱");
 
     // exit_no_position
-    const noPos = evaluateExitSizing({
+    const noPos = evaluateTestExitSizing({
       requestedQuantity: "0.001",
       positionScope: {
         market: "KRW-BTC",
@@ -1261,7 +1377,7 @@ describe("exit sizing", () => {
     expect(noPosMsg).toContain("포지션");
 
     // exit_quantity_invalid
-    const qtyInvalid = evaluateExitSizing({
+    const qtyInvalid = evaluateTestExitSizing({
       requestedQuantity: "0",
       positionScope: {
         market: "KRW-BTC",
@@ -1277,7 +1393,7 @@ describe("exit sizing", () => {
     expect(qtyMsg).not.toContain("exit_quantity_invalid");
     expect(qtyMsg).toContain("0");
 
-    const policyInvalid = evaluateExitSizing({
+    const policyInvalid = evaluateTestExitSizing({
       requestedQuantity: "0.001",
       positionScope: {
         market: "KRW-BTC",
@@ -1296,7 +1412,7 @@ describe("exit sizing", () => {
     expect(policyMsg).not.toContain("exit_policy_invalid");
     expect(policyMsg).toContain("정책");
 
-    const priceInvalid = evaluateExitSizing({
+    const priceInvalid = evaluateTestExitSizing({
       requestedQuantity: "0.001",
       positionScope: {
         market: "KRW-BTC",
@@ -1312,7 +1428,7 @@ describe("exit sizing", () => {
     expect(priceMsg).not.toContain("exit_price_invalid");
     expect(priceMsg).toContain("현재가");
 
-    const dustRemainder = evaluateExitSizing({
+    const dustRemainder = evaluateTestExitSizing({
       requestedQuantity: "0.00495",
       positionScope: {
         market: "KRW-BTC",
@@ -1328,7 +1444,7 @@ describe("exit sizing", () => {
     expect(dustMsg).not.toContain("dust_remainder");
     expect(dustMsg).toContain("처리 불가 잔량");
 
-    const remainingBelowMin = evaluateExitSizing({
+    const remainingBelowMin = evaluateTestExitSizing({
       requestedQuantity: "0.006",
       positionScope: {
         market: "KRW-BTC",
