@@ -82,3 +82,12 @@ export type {
   WhyCashFrameProjection,
   WhyProjections,
 } from "./decision-ledger/why-summary.js";
+
+export {
+  generateLlmSummary,
+} from "./decision-ledger/llm-summary.js";
+export type {
+  LlmSummaryInput,
+  LlmSummaryResult,
+  LlmSummaryOptions,
+} from "./decision-ledger/llm-summary.js";

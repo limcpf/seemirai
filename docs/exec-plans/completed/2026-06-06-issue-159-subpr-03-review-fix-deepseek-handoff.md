@@ -28,7 +28,7 @@ producer, runner writer wiring, status unavailable handling, HTTP schema/test fi
 - `Dependencies`: Sub PR 01 public contract와 Sub PR 02 ledger persistence가 현재 branch에 반영되어 있어야 한다. 현재 worktree에는 Sub PR 03 초기 구현 변경이 있을 수 있으며, 먼저 `git status --short`와 `git diff`로 기존 변경을 읽고 그 위에 고친다.
 - `Parallel`: 불가. 같은 application contract, runner service, HTTP status schema/test를 동시에 수정하므로 병렬 작업이 충돌한다.
 - `Verification`: `corepack pnpm typecheck`, targeted vitest, live order API source scan이 통과해야 한다. DB integration은 로컬 DB가 없으면 guard skip 근거를 한국어로 보고한다.
-- `Handoff command`: `mkdir -p .local/transcripts && npx --yes reasonix run --effort high --budget 1.20 --transcript .local/transcripts/issue-159-subpr-03-review-fix.deepseek.jsonl "Read docs/exec-plans/active/2026-06-06-issue-159-subpr-03-review-fix-deepseek-handoff.md and implement all review fixes for Sub PR 03 only. Assume Sub PR 01 and Sub PR 02 are complete and current Sub PR 03 initial changes may already exist. Do not implement LLM boundary, Telegram inbound, live broker wiring, automatic commit, PR creation, merge, or unrelated changes. Report back in Korean."`
+- `Handoff command`: `mkdir -p .local/transcripts && npx --yes reasonix run --effort high --budget 1.20 --transcript .local/transcripts/issue-159-subpr-03-review-fix.deepseek.jsonl "Read docs/exec-plans/completed/2026-06-06-issue-159-subpr-03-review-fix-deepseek-handoff.md and implement all review fixes for Sub PR 03 only. Assume Sub PR 01 and Sub PR 02 are complete and current Sub PR 03 initial changes may already exist. Do not implement LLM boundary, Telegram inbound, live broker wiring, automatic commit, PR creation, merge, or unrelated changes. Report back in Korean."`
 
 ## Mandatory Implementation Rules
 
@@ -97,7 +97,7 @@ When your changes create orphans:
 - `docs/product-specs/upbit-live-autonomous-trading.md`
 - `docs/design-docs/2026-05-15-m1-database-schema.md`
 - `docs/design-docs/2026-05-20-typescript-module-structure.md`
-- `docs/exec-plans/active/2026-06-06-issue-159-m18-decision-ledger-reasonix-handoff.md`
+- `docs/exec-plans/completed/2026-06-06-issue-159-m18-decision-ledger-reasonix-handoff.md`
 - `docs/generated/2026-06-06-issue-159-m18-decision-ledger-reasonix-handoff.contract.json`
 - `src/application/paper-decision-runner/service.ts`
 - `src/application/paper-decision-runner/types.ts`
@@ -117,7 +117,7 @@ When your changes create orphans:
 2. `AGENTS.md`
 3. `ARCHITECTURE.md`
 4. `docs/FEATURE_REQUIREMENTS.md`
-5. `docs/exec-plans/active/2026-06-06-issue-159-m18-decision-ledger-reasonix-handoff.md`
+5. `docs/exec-plans/completed/2026-06-06-issue-159-m18-decision-ledger-reasonix-handoff.md`
 
 ## Current State
 
@@ -417,5 +417,5 @@ bun scripts/check-implementation-hygiene.mjs --contract docs/generated/2026-06-0
 ## Handoff Command
 
 ```sh
-mkdir -p .local/transcripts && npx --yes reasonix run --effort high --budget 1.20 --transcript .local/transcripts/issue-159-subpr-03-review-fix.deepseek.jsonl "Read docs/exec-plans/active/2026-06-06-issue-159-subpr-03-review-fix-deepseek-handoff.md and implement all review fixes for Sub PR 03 only. Assume Sub PR 01 and Sub PR 02 are complete and current Sub PR 03 initial changes may already exist. Do not implement LLM boundary, Telegram inbound, live broker wiring, automatic commit, PR creation, merge, or unrelated changes. Report back in Korean."
+mkdir -p .local/transcripts && npx --yes reasonix run --effort high --budget 1.20 --transcript .local/transcripts/issue-159-subpr-03-review-fix.deepseek.jsonl "Read docs/exec-plans/completed/2026-06-06-issue-159-subpr-03-review-fix-deepseek-handoff.md and implement all review fixes for Sub PR 03 only. Assume Sub PR 01 and Sub PR 02 are complete and current Sub PR 03 initial changes may already exist. Do not implement LLM boundary, Telegram inbound, live broker wiring, automatic commit, PR creation, merge, or unrelated changes. Report back in Korean."
 ```

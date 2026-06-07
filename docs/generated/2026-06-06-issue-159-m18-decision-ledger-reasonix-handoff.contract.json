@@ -3,7 +3,7 @@
   "milestone": "issue-159/M18",
   "title": "M18 판단 이유 ledger와 설명 API Reasonix handoff",
   "status": "ready-for-implementation",
-  "handoffMarkdownPath": "docs/exec-plans/active/2026-06-06-issue-159-m18-decision-ledger-reasonix-handoff.md",
+  "handoffMarkdownPath": "docs/exec-plans/completed/2026-06-06-issue-159-m18-decision-ledger-reasonix-handoff.md",
   "goal": "이미 생성된 strategy decision, order intent, discard reason, cost breakdown, risk decision, execution result, PnL/status context를 append-only decision ledger로 보존하고 /status 하위 why summary가 이를 한국어 사용자 문구와 추적 정보로 설명하게 만든다.",
   "readFirst": [
     "AGENTS.md",
@@ -52,7 +52,7 @@
   ],
   "expectedArtifacts": [
     {
-      "pathPattern": "docs/exec-plans/active/2026-06-06-issue-159-m18-decision-ledger-reasonix-handoff.md",
+      "pathPattern": "docs/exec-plans/completed/2026-06-06-issue-159-m18-decision-ledger-reasonix-handoff.md",
       "purpose": "Reasonix가 sub PR별 구현 범위와 검증 기준을 읽는 active handoff 문서",
       "mustExistAfter": true
     },
@@ -99,10 +99,10 @@
   ],
   "commands": {
     "handoff": [
-      "mkdir -p .local/transcripts && npx --yes reasonix run --effort high --budget 0.90 --transcript .local/transcripts/issue-159-subpr-01-plan-contract.reasonix.jsonl \"Read docs/exec-plans/active/2026-06-06-issue-159-m18-decision-ledger-reasonix-handoff.md and implement Sub PR 01 M18 Plan & Contract only. Do not implement persistence, producer status summary, LLM boundary, automatic commit, PR creation, merge, or unrelated changes. Report back in Korean.\"",
-      "mkdir -p .local/transcripts && npx --yes reasonix run --effort high --budget 1.10 --transcript .local/transcripts/issue-159-subpr-02-ledger-persistence.reasonix.jsonl \"Read docs/exec-plans/active/2026-06-06-issue-159-m18-decision-ledger-reasonix-handoff.md and implement Sub PR 02 Ledger Foundation & Persistence only. Assume Sub PR 01 is complete. Do not implement producer/status wiring, LLM boundary, automatic commit, PR creation, merge, or unrelated changes. Report back in Korean.\"",
-      "mkdir -p .local/transcripts && npx --yes reasonix run --effort high --budget 1.10 --transcript .local/transcripts/issue-159-subpr-03-producer-status.reasonix.jsonl \"Read docs/exec-plans/active/2026-06-06-issue-159-m18-decision-ledger-reasonix-handoff.md and implement Sub PR 03 Producer & Status Why Summary only. Assume Sub PR 01 and Sub PR 02 are complete. Do not implement LLM boundary, Telegram inbound, automatic commit, PR creation, merge, or unrelated changes. Report back in Korean.\"",
-      "mkdir -p .local/transcripts && npx --yes reasonix run --effort high --budget 1.00 --transcript .local/transcripts/issue-159-subpr-04-llm-closeout.reasonix.jsonl \"Read docs/exec-plans/active/2026-06-06-issue-159-m18-decision-ledger-reasonix-handoff.md and implement Sub PR 04 LLM Boundary, Verification & Closeout only. Assume Sub PR 01, 02, and 03 are complete. Do not implement M19 or later, Telegram inbound, automatic commit, PR creation, merge, or unrelated changes. Report back in Korean.\""
+      "mkdir -p .local/transcripts && npx --yes reasonix run --effort high --budget 0.90 --transcript .local/transcripts/issue-159-subpr-01-plan-contract.reasonix.jsonl \"Read docs/exec-plans/completed/2026-06-06-issue-159-m18-decision-ledger-reasonix-handoff.md and implement Sub PR 01 M18 Plan & Contract only. Do not implement persistence, producer status summary, LLM boundary, automatic commit, PR creation, merge, or unrelated changes. Report back in Korean.\"",
+      "mkdir -p .local/transcripts && npx --yes reasonix run --effort high --budget 1.10 --transcript .local/transcripts/issue-159-subpr-02-ledger-persistence.reasonix.jsonl \"Read docs/exec-plans/completed/2026-06-06-issue-159-m18-decision-ledger-reasonix-handoff.md and implement Sub PR 02 Ledger Foundation & Persistence only. Assume Sub PR 01 is complete. Do not implement producer/status wiring, LLM boundary, automatic commit, PR creation, merge, or unrelated changes. Report back in Korean.\"",
+      "mkdir -p .local/transcripts && npx --yes reasonix run --effort high --budget 1.10 --transcript .local/transcripts/issue-159-subpr-03-producer-status.reasonix.jsonl \"Read docs/exec-plans/completed/2026-06-06-issue-159-m18-decision-ledger-reasonix-handoff.md and implement Sub PR 03 Producer & Status Why Summary only. Assume Sub PR 01 and Sub PR 02 are complete. Do not implement LLM boundary, Telegram inbound, automatic commit, PR creation, merge, or unrelated changes. Report back in Korean.\"",
+      "mkdir -p .local/transcripts && npx --yes reasonix run --effort high --budget 1.00 --transcript .local/transcripts/issue-159-subpr-04-llm-closeout.reasonix.jsonl \"Read docs/exec-plans/completed/2026-06-06-issue-159-m18-decision-ledger-reasonix-handoff.md and implement Sub PR 04 LLM Boundary, Verification & Closeout only. Assume Sub PR 01, 02, and 03 are complete. Do not implement M19 or later, Telegram inbound, automatic commit, PR creation, merge, or unrelated changes. Report back in Korean.\""
     ],
     "verification": [
       "corepack pnpm typecheck",

@@ -27,10 +27,10 @@ writer port, producer grouping, DB-backed why provider, HTTP schema/test fixture
 - `Goal`: Codex review finding 전부를 고쳐 Sub PR 03 Producer & Status Why Summary가 runner write, producer correctness, `/status.why` unavailable semantics, typecheck, tests, verify 기준을 만족하게 한다.
 - `Owns`: `src/application/paper-decision-runner.ts`, `src/application/paper-decision-runner/**`, `src/application/decision-ledger.ts`, `src/application/decision-ledger/**`, `src/infrastructure/db/decision-ledger.ts`, `src/infrastructure/db/decision-ledger/**`, `src/interfaces/http-control.ts`, `src/interfaces/http-control/**`, `src/runtime/paper-decision-runner.ts` 또는 인접 조립부, `tests/unit/decision-ledger.test.ts`, `tests/unit/paper-decision-runner.test.ts`, `tests/unit/http-control.test.ts`, 필요 시 `tests/integration/decision-ledger.test.ts`.
 - `Excludes`: LLM boundary, Telegram inbound command, 별도 `/why` endpoint, live broker wiring, UpbitLiveBroker 연결, `POST /v1/orders`/`DELETE /v1/order` 신규 호출 경로, M19 이후 exit engine, 신규 runtime dependency, lockfile 변경, migration 변경, 자동 commit/PR/merge.
-- `Dependencies`: 현재 worktree의 Sub PR 01/02/03 변경과 `docs/exec-plans/active/2026-06-06-issue-159-subpr-03-review-fix-deepseek-handoff.md`가 선행 입력이다. 먼저 `git status --short`, `git diff`, `corepack pnpm typecheck` 실패를 확인하고 그 위에 최소 수정한다.
+- `Dependencies`: 현재 worktree의 Sub PR 01/02/03 변경과 `docs/exec-plans/completed/2026-06-06-issue-159-subpr-03-review-fix-deepseek-handoff.md`가 선행 입력이다. 먼저 `git status --short`, `git diff`, `corepack pnpm typecheck` 실패를 확인하고 그 위에 최소 수정한다.
 - `Parallel`: 불가. 같은 application contract, producer builder, HTTP schema, unit fixture를 동시에 수정하므로 병렬 작업은 충돌 위험이 높다.
 - `Verification`: `corepack pnpm typecheck`, targeted vitest, DB integration guard skip 또는 통과, `./scripts/verify docs`, `./scripts/verify`, live order API source scan이 통과해야 한다.
-- `Handoff command`: `mkdir -p .local/transcripts && npx --yes reasonix run --effort high --budget 1.20 --transcript .local/transcripts/issue-159-subpr-03-codex-review-repair.deepseek.jsonl "Read docs/exec-plans/active/2026-06-06-issue-159-subpr-03-codex-review-repair-deepseek-handoff.md and fix all Codex review findings for Issue #159 Sub PR 03 only. Work on the existing unstaged/untracked implementation. Do not implement LLM boundary, Telegram inbound, live broker wiring, live order API paths, migrations, lockfile changes, automatic commit, PR creation, or unrelated refactors. Report back in Korean."`
+- `Handoff command`: `mkdir -p .local/transcripts && npx --yes reasonix run --effort high --budget 1.20 --transcript .local/transcripts/issue-159-subpr-03-codex-review-repair.deepseek.jsonl "Read docs/exec-plans/completed/2026-06-06-issue-159-subpr-03-codex-review-repair-deepseek-handoff.md and fix all Codex review findings for Issue #159 Sub PR 03 only. Work on the existing unstaged/untracked implementation. Do not implement LLM boundary, Telegram inbound, live broker wiring, live order API paths, migrations, lockfile changes, automatic commit, PR creation, or unrelated refactors. Report back in Korean."`
 
 ## Mandatory Implementation Rules
 
@@ -95,9 +95,9 @@ The implementer must read these files before editing:
 8. `docs/PLANS.md`
 9. `docs/RELIABILITY.md`
 10. `docs/SECURITY.md`
-11. `docs/exec-plans/active/2026-06-06-issue-159-m18-decision-ledger-reasonix-handoff.md`
-12. `docs/exec-plans/active/2026-06-06-issue-159-subpr-03-review-fix-deepseek-handoff.md`
-13. `docs/exec-plans/active/2026-06-06-issue-159-subpr-03-codex-review-repair-deepseek-handoff.md`
+11. `docs/exec-plans/completed/2026-06-06-issue-159-m18-decision-ledger-reasonix-handoff.md`
+12. `docs/exec-plans/completed/2026-06-06-issue-159-subpr-03-review-fix-deepseek-handoff.md`
+13. `docs/exec-plans/completed/2026-06-06-issue-159-subpr-03-codex-review-repair-deepseek-handoff.md`
 14. `src/application/paper-decision-runner/service.ts`
 15. `src/application/paper-decision-runner/types.ts`
 16. `src/application/decision-ledger/frame-builder.ts`
@@ -116,8 +116,8 @@ If any instruction conflicts, follow this priority:
 1. This handoff document
 2. `AGENTS.md`
 3. `ARCHITECTURE.md`
-4. `docs/exec-plans/active/2026-06-06-issue-159-m18-decision-ledger-reasonix-handoff.md`
-5. `docs/exec-plans/active/2026-06-06-issue-159-subpr-03-review-fix-deepseek-handoff.md`
+4. `docs/exec-plans/completed/2026-06-06-issue-159-m18-decision-ledger-reasonix-handoff.md`
+5. `docs/exec-plans/completed/2026-06-06-issue-159-subpr-03-review-fix-deepseek-handoff.md`
 6. `docs/FEATURE_REQUIREMENTS.md`
 
 ## Current State
@@ -493,5 +493,5 @@ Final Hygiene Self-Check 뒤에는 acceptance criteria trace matrix를 다시 �
 ## Handoff Command
 
 ```sh
-mkdir -p .local/transcripts && npx --yes reasonix run --effort high --budget 1.20 --transcript .local/transcripts/issue-159-subpr-03-codex-review-repair.deepseek.jsonl "Read docs/exec-plans/active/2026-06-06-issue-159-subpr-03-codex-review-repair-deepseek-handoff.md and fix all Codex review findings for Issue #159 Sub PR 03 only. Work on the existing unstaged/untracked implementation. Do not implement LLM boundary, Telegram inbound, live broker wiring, live order API paths, migrations, lockfile changes, automatic commit, PR creation, or unrelated refactors. Report back in Korean."
+mkdir -p .local/transcripts && npx --yes reasonix run --effort high --budget 1.20 --transcript .local/transcripts/issue-159-subpr-03-codex-review-repair.deepseek.jsonl "Read docs/exec-plans/completed/2026-06-06-issue-159-subpr-03-codex-review-repair-deepseek-handoff.md and fix all Codex review findings for Issue #159 Sub PR 03 only. Work on the existing unstaged/untracked implementation. Do not implement LLM boundary, Telegram inbound, live broker wiring, live order API paths, migrations, lockfile changes, automatic commit, PR creation, or unrelated refactors. Report back in Korean."
 ```

@@ -27,7 +27,7 @@ M18은 시스템이 왜 샀는지, 왜 팔았는지, 왜 보유 중인지, 왜 �
 - `Dependencies`: 현재 branch `issue-159-mother`, GitHub Issue #159 본문, 이 handoff 문서. M17 PnL/status code가 main에 병합된 상태를 전제로 한다.
 - `Parallel`: 불가. 이후 모든 sub PR이 이 contract와 문서 결정에 의존한다.
 - `Verification`: `corepack pnpm exec vitest run tests/unit/decision-ledger.test.ts`, `corepack pnpm typecheck`, `./scripts/verify docs`가 통과해야 한다.
-- `Handoff command`: `mkdir -p .local/transcripts && npx --yes reasonix run --effort high --budget 0.90 --transcript .local/transcripts/issue-159-subpr-01-plan-contract.reasonix.jsonl "Read docs/exec-plans/active/2026-06-06-issue-159-m18-decision-ledger-reasonix-handoff.md and implement Sub PR 01 M18 Plan & Contract only. Do not implement persistence, producer status summary, LLM boundary, automatic commit, PR creation, merge, or unrelated changes. Report back in Korean."`
+- `Handoff command`: `mkdir -p .local/transcripts && npx --yes reasonix run --effort high --budget 0.90 --transcript .local/transcripts/issue-159-subpr-01-plan-contract.reasonix.jsonl "Read docs/exec-plans/completed/2026-06-06-issue-159-m18-decision-ledger-reasonix-handoff.md and implement Sub PR 01 M18 Plan & Contract only. Do not implement persistence, producer status summary, LLM boundary, automatic commit, PR creation, merge, or unrelated changes. Report back in Korean."`
 
 ### Sub PR 02: Ledger Foundation & Persistence
 
@@ -37,7 +37,7 @@ M18은 시스템이 왜 샀는지, 왜 팔았는지, 왜 보유 중인지, 왜 �
 - `Dependencies`: Sub PR 01 완료. latest migration은 `000012_live_reconcile_exchange_order_snapshot_dedupe.sql`이므로 새 migration이 필요하면 `000013_decision_ledger.sql`을 사용한다.
 - `Parallel`: 불가. Sub PR 03은 repository/provider output shape에 의존한다.
 - `Verification`: `corepack pnpm exec vitest run tests/unit/decision-ledger.test.ts tests/unit/decision-ledger-persistence.test.ts tests/integration/decision-ledger.test.ts tests/integration/migrations.test.ts`, `corepack pnpm typecheck`가 통과하거나 DB integration guard skip 근거를 한국어로 보고해야 한다.
-- `Handoff command`: `mkdir -p .local/transcripts && npx --yes reasonix run --effort high --budget 1.10 --transcript .local/transcripts/issue-159-subpr-02-ledger-persistence.reasonix.jsonl "Read docs/exec-plans/active/2026-06-06-issue-159-m18-decision-ledger-reasonix-handoff.md and implement Sub PR 02 Ledger Foundation & Persistence only. Assume Sub PR 01 is complete. Do not implement producer/status wiring, LLM boundary, automatic commit, PR creation, merge, or unrelated changes. Report back in Korean."`
+- `Handoff command`: `mkdir -p .local/transcripts && npx --yes reasonix run --effort high --budget 1.10 --transcript .local/transcripts/issue-159-subpr-02-ledger-persistence.reasonix.jsonl "Read docs/exec-plans/completed/2026-06-06-issue-159-m18-decision-ledger-reasonix-handoff.md and implement Sub PR 02 Ledger Foundation & Persistence only. Assume Sub PR 01 is complete. Do not implement producer/status wiring, LLM boundary, automatic commit, PR creation, merge, or unrelated changes. Report back in Korean."`
 
 ### Sub PR 03: Producer & Status Why Summary
 
@@ -47,7 +47,7 @@ M18은 시스템이 왜 샀는지, 왜 팔았는지, 왜 보유 중인지, 왜 �
 - `Dependencies`: Sub PR 01, 02 완료. repository write/read contract와 idempotency 결과가 확정되어 있어야 한다.
 - `Parallel`: 불가. Sub PR 04의 LLM summary는 deterministic why summary output에 의존한다.
 - `Verification`: `corepack pnpm exec vitest run tests/unit/paper-decision-runner.test.ts tests/unit/http-control.test.ts tests/unit/decision-ledger.test.ts`, `corepack pnpm typecheck`, live order API source scan이 통과해야 한다.
-- `Handoff command`: `mkdir -p .local/transcripts && npx --yes reasonix run --effort high --budget 1.10 --transcript .local/transcripts/issue-159-subpr-03-producer-status.reasonix.jsonl "Read docs/exec-plans/active/2026-06-06-issue-159-m18-decision-ledger-reasonix-handoff.md and implement Sub PR 03 Producer & Status Why Summary only. Assume Sub PR 01 and Sub PR 02 are complete. Do not implement LLM boundary, Telegram inbound, automatic commit, PR creation, merge, or unrelated changes. Report back in Korean."`
+- `Handoff command`: `mkdir -p .local/transcripts && npx --yes reasonix run --effort high --budget 1.10 --transcript .local/transcripts/issue-159-subpr-03-producer-status.reasonix.jsonl "Read docs/exec-plans/completed/2026-06-06-issue-159-m18-decision-ledger-reasonix-handoff.md and implement Sub PR 03 Producer & Status Why Summary only. Assume Sub PR 01 and Sub PR 02 are complete. Do not implement LLM boundary, Telegram inbound, automatic commit, PR creation, merge, or unrelated changes. Report back in Korean."`
 
 ### Sub PR 04: LLM Boundary, Verification & Closeout
 
@@ -57,7 +57,7 @@ M18은 시스템이 왜 샀는지, 왜 팔았는지, 왜 보유 중인지, 왜 �
 - `Dependencies`: Sub PR 01-03 완료. deterministic `/status.why` summary가 외부 LLM 없이 동작해야 한다.
 - `Parallel`: 불가. 마지막 검증과 closeout 단위다.
 - `Verification`: targeted LLM/why/status tests, `corepack pnpm typecheck`, `corepack pnpm test`, `./scripts/verify docs`, `./scripts/verify`, live order API source scan이 통과해야 한다.
-- `Handoff command`: `mkdir -p .local/transcripts && npx --yes reasonix run --effort high --budget 1.00 --transcript .local/transcripts/issue-159-subpr-04-llm-closeout.reasonix.jsonl "Read docs/exec-plans/active/2026-06-06-issue-159-m18-decision-ledger-reasonix-handoff.md and implement Sub PR 04 LLM Boundary, Verification & Closeout only. Assume Sub PR 01, 02, and 03 are complete. Do not implement M19 or later, Telegram inbound, automatic commit, PR creation, merge, or unrelated changes. Report back in Korean."`
+- `Handoff command`: `mkdir -p .local/transcripts && npx --yes reasonix run --effort high --budget 1.00 --transcript .local/transcripts/issue-159-subpr-04-llm-closeout.reasonix.jsonl "Read docs/exec-plans/completed/2026-06-06-issue-159-m18-decision-ledger-reasonix-handoff.md and implement Sub PR 04 LLM Boundary, Verification & Closeout only. Assume Sub PR 01, 02, and 03 are complete. Do not implement M19 or later, Telegram inbound, automatic commit, PR creation, merge, or unrelated changes. Report back in Korean."`
 
 ## Mandatory Implementation Rules
 
@@ -631,7 +631,7 @@ npx --yes reasonix run \
   --effort high \
   --budget 0.90 \
   --transcript .local/transcripts/issue-159-subpr-01-plan-contract.reasonix.jsonl \
-  "Read docs/exec-plans/active/2026-06-06-issue-159-m18-decision-ledger-reasonix-handoff.md and implement Sub PR 01 M18 Plan & Contract only. Do not implement persistence, producer status summary, LLM boundary, automatic commit, PR creation, merge, or unrelated changes. Report back in Korean."
+  "Read docs/exec-plans/completed/2026-06-06-issue-159-m18-decision-ledger-reasonix-handoff.md and implement Sub PR 01 M18 Plan & Contract only. Do not implement persistence, producer status summary, LLM boundary, automatic commit, PR creation, merge, or unrelated changes. Report back in Korean."
 ```
 
 ```sh
@@ -640,7 +640,7 @@ npx --yes reasonix run \
   --effort high \
   --budget 1.10 \
   --transcript .local/transcripts/issue-159-subpr-02-ledger-persistence.reasonix.jsonl \
-  "Read docs/exec-plans/active/2026-06-06-issue-159-m18-decision-ledger-reasonix-handoff.md and implement Sub PR 02 Ledger Foundation & Persistence only. Assume Sub PR 01 is complete. Do not implement producer/status wiring, LLM boundary, automatic commit, PR creation, merge, or unrelated changes. Report back in Korean."
+  "Read docs/exec-plans/completed/2026-06-06-issue-159-m18-decision-ledger-reasonix-handoff.md and implement Sub PR 02 Ledger Foundation & Persistence only. Assume Sub PR 01 is complete. Do not implement producer/status wiring, LLM boundary, automatic commit, PR creation, merge, or unrelated changes. Report back in Korean."
 ```
 
 ```sh
@@ -649,7 +649,7 @@ npx --yes reasonix run \
   --effort high \
   --budget 1.10 \
   --transcript .local/transcripts/issue-159-subpr-03-producer-status.reasonix.jsonl \
-  "Read docs/exec-plans/active/2026-06-06-issue-159-m18-decision-ledger-reasonix-handoff.md and implement Sub PR 03 Producer & Status Why Summary only. Assume Sub PR 01 and Sub PR 02 are complete. Do not implement LLM boundary, Telegram inbound, automatic commit, PR creation, merge, or unrelated changes. Report back in Korean."
+  "Read docs/exec-plans/completed/2026-06-06-issue-159-m18-decision-ledger-reasonix-handoff.md and implement Sub PR 03 Producer & Status Why Summary only. Assume Sub PR 01 and Sub PR 02 are complete. Do not implement LLM boundary, Telegram inbound, automatic commit, PR creation, merge, or unrelated changes. Report back in Korean."
 ```
 
 ```sh
@@ -658,7 +658,7 @@ npx --yes reasonix run \
   --effort high \
   --budget 1.00 \
   --transcript .local/transcripts/issue-159-subpr-04-llm-closeout.reasonix.jsonl \
-  "Read docs/exec-plans/active/2026-06-06-issue-159-m18-decision-ledger-reasonix-handoff.md and implement Sub PR 04 LLM Boundary, Verification & Closeout only. Assume Sub PR 01, 02, and 03 are complete. Do not implement M19 or later, Telegram inbound, automatic commit, PR creation, merge, or unrelated changes. Report back in Korean."
+  "Read docs/exec-plans/completed/2026-06-06-issue-159-m18-decision-ledger-reasonix-handoff.md and implement Sub PR 04 LLM Boundary, Verification & Closeout only. Assume Sub PR 01, 02, and 03 are complete. Do not implement M19 or later, Telegram inbound, automatic commit, PR creation, merge, or unrelated changes. Report back in Korean."
 ```
 
 한 구현 agent가 순차 처리하는 경우:
@@ -669,5 +669,5 @@ npx --yes reasonix run \
   --effort high \
   --budget 3.50 \
   --transcript .local/transcripts/issue-159-m18-decision-ledger.reasonix.jsonl \
-  "Read docs/exec-plans/active/2026-06-06-issue-159-m18-decision-ledger-reasonix-handoff.md and implement Sub PR 01, then 02, then 03, then 04 sequentially. Stop after each Sub PR verification and report before continuing. Do not implement M19 or later, automatic commit, PR creation, merge, or unrelated changes. Report back in Korean."
+  "Read docs/exec-plans/completed/2026-06-06-issue-159-m18-decision-ledger-reasonix-handoff.md and implement Sub PR 01, then 02, then 03, then 04 sequentially. Stop after each Sub PR verification and report before continuing. Do not implement M19 or later, automatic commit, PR creation, merge, or unrelated changes. Report back in Korean."
 ```
