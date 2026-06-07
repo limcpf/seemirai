@@ -352,6 +352,25 @@ describe("generateLlmSummary", () => {
       }
     });
 
+    it("대문자 자산 단위 수량 지정 output도 소문자 변환 후 차단된다", async () => {
+      const provider = createFakeSuccessProvider(
+        "현재 판단 근거는 보류에 가깝지만, 단기 대응으로 0.1 BTC 매수를 실행하면 됩니다.",
+      );
+
+      const result = await generateLlmSummary(provider, {
+        frame: createTestFrame(),
+        evidenceItems: createTestEvidenceItems(),
+      });
+
+      expect(result.status).toBe("failed");
+      if (result.status === "failed") {
+        expect(result.evidence.reasonCode).toBe("llm_summary_order_like_output_blocked");
+        expect(result.evidence.payload).toMatchObject({
+          blockedReason: "금액 지정 매매 추천",
+        });
+      }
+    });
+
     it("수익 보장 표현이 포함된 output은 차단된다", async () => {
       const provider = createFakeSuccessProvider(
         "이 전략을 따르면 확실한 수익을 얻을 수 있으며 손실은 나지 않습니다.",
@@ -475,6 +494,83 @@ describe("generateLlmSummary", () => {
       expect(capturedPrompt).toContain("비용 평가");
       expect(capturedPrompt).toContain("기대 수익");
       expect(capturedPrompt).toContain("매수/매도 추천은 절대 하지 마세요");
+    });
+
+    it("LLM 설명 evidence는 prompt 입력에서 제외된다", async () => {
+      let capturedPrompt = "";
+      let capturedMetadata: LlmRiskAssistantProviderRequest["input"]["metadata"];
+
+      const captureProvider: LlmRiskAssistantProviderPort = {
+        providerId: "noop" as const,
+        async generate(request: LlmRiskAssistantProviderRequest): Promise<LlmRiskAssistantProviderResponse> {
+          capturedPrompt = request.prompt;
+          capturedMetadata = request.input.metadata;
+          return createLlmProviderSuccess({
+            providerId: "noop",
+            completedAt: request.requested_at,
+            result: {
+              schema_version: LLM_RISK_ASSISTANT_SCHEMA_VERSION,
+              result_type: request.result_type,
+              source_ids: [request.input.source_id],
+              summary: "KRW-BTC에서 비용 평가와 전략 판단 근거를 기준으로 진입을 보류했습니다. LLM 보조 산출물은 판단 근거로 재사용하지 않았습니다.",
+              recommended_action: "NO_ACTION",
+              observed_at: request.input.observed_at,
+              reason_codes: ["llm_summary_test"],
+              requires_human_review: false,
+            },
+          });
+        },
+      };
+
+      const explanationEvidenceItems: DecisionEvidenceItem[] = [
+        {
+          evidenceKind: "EXPLANATION_SUMMARY",
+          category: "HOLD",
+          reasonCode: "llm_summary_generated",
+          userMessage: "이전 LLM 보조 설명입니다.",
+          impact: null,
+          action: null,
+          occurredAt: new Date("2026-06-06T00:00:02Z"),
+          source: "llm-summary:noop",
+          sourceId: "noop",
+          payload: { summary: "이전 LLM 요약" },
+          evidenceFingerprint: "fp-llm-summary-existing",
+          trace: { frameId: "frame-test-001" },
+        },
+        {
+          evidenceKind: "EXPLANATION_FAILURE",
+          category: "EXPLANATION_FAILED",
+          reasonCode: "llm_summary_provider_error",
+          userMessage: "이전 LLM provider 실패입니다.",
+          impact: "결정론적 why summary는 정상 동작합니다.",
+          action: "LLM provider 상태를 확인하세요.",
+          occurredAt: new Date("2026-06-06T00:00:03Z"),
+          source: "llm-summary",
+          sourceId: null,
+          payload: { failureClass: "provider_error" },
+          evidenceFingerprint: "fp-llm-fail-existing",
+          trace: { frameId: "frame-test-001" },
+        },
+      ];
+
+      await generateLlmSummary(captureProvider, {
+        frame: createTestFrame(),
+        evidenceItems: [
+          ...createTestEvidenceItems(),
+          ...explanationEvidenceItems,
+        ],
+      });
+
+      // LLM 보조 evidence가 다음 prompt에 들어가면 설명 실패/요약이 결정 근거처럼 순환한다.
+      expect(capturedPrompt).toContain("전략 판단");
+      expect(capturedPrompt).toContain("비용 평가");
+      expect(capturedPrompt).not.toContain("설명 요약");
+      expect(capturedPrompt).not.toContain("설명 실패");
+      expect(capturedPrompt).not.toContain("이전 LLM");
+      expect(capturedPrompt).not.toContain("llm_summary_provider_error");
+      expect(capturedMetadata).toMatchObject({
+        evidence_count: 2,
+      });
     });
   });
 

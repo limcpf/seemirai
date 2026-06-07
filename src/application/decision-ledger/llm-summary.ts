@@ -87,8 +87,9 @@ export async function generateLlmSummary(
 
   const { frame, evidenceItems } = input;
 
-  // 결정론적 evidence에서 prompt를 구성한다.
-  const prompt = buildLlmSummaryPrompt(frame, evidenceItems);
+  // 과거 LLM 설명 산출물은 다음 LLM 입력 근거가 되면 경계가 순환하므로 결정론적 evidence만 prompt에 넣는다.
+  const deterministicEvidenceItems = evidenceItems.filter(isDeterministicEvidenceItem);
+  const prompt = buildLlmSummaryPrompt(frame, deterministicEvidenceItems);
 
   let response: LlmRiskAssistantProviderResponse;
   try {
@@ -102,7 +103,7 @@ export async function generateLlmSummary(
         market: frame.market ?? undefined,
         metadata: {
           frame_id: frame.sourceFrameId,
-          evidence_count: evidenceItems.length,
+          evidence_count: deterministicEvidenceItems.length,
           category: frame.category,
         },
       },
@@ -201,6 +202,22 @@ export async function generateLlmSummary(
     evidence,
     summaryText: result.summary,
   };
+}
+
+/**
+ * LLM prompt 입력으로 사용할 수 있는 결정론적 evidence인지 판정한다.
+ *
+ * `EXPLANATION_SUMMARY`와 `EXPLANATION_FAILURE`는 LLM 보조 계층이 만든 산출물이므로
+ * 다음 prompt에 다시 투입하지 않는다. 이 함수는 순수 필터이며 외부 side effect가 없다.
+ */
+function isDeterministicEvidenceItem(item: DecisionEvidenceItem): boolean {
+  switch (item.evidenceKind) {
+    case "EXPLANATION_SUMMARY":
+    case "EXPLANATION_FAILURE":
+      return false;
+    default:
+      return true;
+  }
 }
 
 /**
@@ -390,7 +407,8 @@ function detectOrderLikeOutput(summaryText: string): string | null {
     { pattern: /position\s*size\s*[:：]?\s*[\d.]+/i, label: "영문 포지션 크기 제시" },
     // "30%로 배분", "30% 비중" 등 조사가 끼어든 패턴도 탐지
     { pattern: /[\d.]+\s*%.{0,5}(비중|배분|할당)/, label: "비중 배분 제시" },
-    { pattern: /[\d.]+\s*(BTC|ETH|KRW|원)\s*(매수|매도|사세요|파세요|구매)/, label: "금액 지정 매매 추천" },
+    // lowerText 기준으로 검사하므로 영문 자산 단위는 소문자와 한국어 조사 변형까지 함께 차단한다.
+    { pattern: /[\d.,]+\s*(btc|eth|krw|원)(?:\s*(?:어치|을|를))?(?:\s*(?:btc|eth|krw)(?:을|를)?)?\s*(매수|매도|사세요|파세요|구매)/, label: "금액 지정 매매 추천" },
   ];
 
   for (const { pattern, label } of positionPatterns) {

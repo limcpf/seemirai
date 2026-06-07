@@ -36,13 +36,13 @@ LLM 보조 summary 생성 모듈. 결정론적 ledger evidence를 읽어 LLM pro
 
 ### Tests
 
-- `tests/unit/decision-ledger-llm-summary.test.ts`: 21개 테스트
+- `tests/unit/decision-ledger-llm-summary.test.ts`: 23개 테스트
   - 성공 경로 (2): EXPLANATION_SUMMARY evidence 생성
   - Fail-closed provider 실패 (4): timeout, provider_error, invalid_json, provider throw
-  - Order-like output 차단 (6): 매수 추천, 매도 추천, 목표가, 포지션 크기, 금액 지정, 수익 보장
+  - Order-like output 차단 (7): 매수 추천, 매도 추천, 목표가, 포지션 크기, 금액 지정, 대문자 자산 단위 수량 지정, 수익 보장
   - Output 길이 검증 (2): 너무 짧음, 공백만
   - 결정론적 독립성 (2): LLM 실패가 결정론적 info를 변경하지 않음
-  - Prompt 구성 (1): frame/evidence 정보 포함
+  - Prompt 구성 (2): frame/evidence 정보 포함, LLM 설명 evidence 재투입 차단
   - Evidence fingerprint (2): 성공/실패 fingerprint format
   - Category invariant (2): EXPLANATION_SUMMARY→HOLD, EXPLANATION_FAILURE→EXPLANATION_FAILED
 
@@ -50,10 +50,10 @@ LLM 보조 summary 생성 모듈. 결정론적 ledger evidence를 읽어 LLM pro
 
 ```text
 ✅ corepack pnpm typecheck — 통과
-✅ corepack pnpm test (targeted) — 139 passed, 1 skipped
+✅ corepack pnpm test (targeted) — 141 passed, 1 skipped
    - tests/unit/decision-ledger.test.ts: 46 passed
    - tests/unit/decision-ledger-persistence.test.ts: 16 passed
-   - tests/unit/decision-ledger-llm-summary.test.ts: 21 passed
+   - tests/unit/decision-ledger-llm-summary.test.ts: 23 passed
    - tests/unit/http-control.test.ts: 38 passed
    - tests/unit/llm-risk-assistant-contract.test.ts: 6 passed
    - tests/unit/llm-risk-assistant-provider.test.ts: 12 passed, 1 skipped
