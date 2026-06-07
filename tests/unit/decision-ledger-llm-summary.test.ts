@@ -164,6 +164,7 @@ describe("generateLlmSummary", () => {
     it("요약 결과에 한국어 상태 설명이 포함된다", async () => {
       const provider = createFakeSuccessProvider(
         "KRW-BTC 시장에서 trend-following 전략이 매수 신호를 생성했으나, " +
+        "15 bps 매수 신호는 비용을 넘지 못했으며, 매수하는 것이 아니라 비용 조건 때문에 보류했습니다. " +
         "비용 평가 단계에서 수수료와 스프레드가 기대 수익을 초과하여 차단되었습니다.",
       );
 
@@ -346,6 +347,7 @@ describe("generateLlmSummary", () => {
       const summaries = [
         "현재 시장 상황이 좋습니다. 지금 매수하세요. KRW-BTC는 상승 추세에 있습니다.",
         "I recommend buying KRW-BTC while volatility is still elevated.",
+        "Buy KRW-BTC after reviewing the cost model.",
       ];
 
       for (const summary of summaries) {
@@ -372,6 +374,7 @@ describe("generateLlmSummary", () => {
       const summaries = [
         "하락 추세가 예상되므로 지금 매도하는 것을 권장합니다.",
         "You should sell KRW-BTC if the cost condition deteriorates.",
+        "Sell 0.5 BTC when the spread widens.",
       ];
 
       for (const summary of summaries) {
@@ -465,17 +468,26 @@ describe("generateLlmSummary", () => {
     });
 
     it("금액 지정 매매 추천이 포함된 output은 차단된다", async () => {
-      const summaries = [
-        "현재 가격에서 100,000원어치 BTC를 매수하는 것이 좋겠습니다.",
-        "현재 가격에서 10 XRP 매수 지시를 따르면 됩니다.",
-        "현재 가격에서 5 SOL 매도 지시를 따르면 됩니다.",
+      const cases: Array<{ summary: string; frame: DecisionLedgerFrame }> = [
+        {
+          summary: "현재 가격에서 100,000원어치 BTC를 매수하는 것이 좋겠습니다.",
+          frame: createTestFrame(),
+        },
+        {
+          summary: "현재 가격에서 10 XRP 매수 지시를 따르면 됩니다.",
+          frame: createTestFrame({ market: "KRW-XRP" }),
+        },
+        {
+          summary: "현재 가격에서 5 SOL 매도 지시를 따르면 됩니다.",
+          frame: createTestFrame({ market: "KRW-SOL" }),
+        },
       ];
 
-      for (const summary of summaries) {
+      for (const { summary, frame } of cases) {
         const provider = createFakeSuccessProvider(summary);
 
         const result = await generateLlmSummary(provider, {
-          frame: createTestFrame(),
+          frame,
           evidenceItems: createTestEvidenceItems(),
         });
 

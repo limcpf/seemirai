@@ -215,7 +215,7 @@ export async function generateLlmSummary(
   }
 
   // LLM output에 주문 지시나 order-like 출력이 있는지 검사한다.
-  const orderLikeIssue = detectOrderLikeOutput(result.summary);
+  const orderLikeIssue = detectOrderLikeOutput(result.summary, frame.market);
   if (orderLikeIssue !== null) {
     // 주문 지시가 포함된 LLM output은 요약 attachment에서 제외하고 fail-closed evidence로 남긴다.
     return buildExplanationFailureEvidence({
@@ -460,19 +460,22 @@ function buildExplanationFailureEvidence(options: {
  * 탐지되면 실패 이유 문자열을 반환하고, 없으면 null을 반환한다.
  * 이 함수는 순수 검사 함수이며 외부 side effect가 없다.
  */
-function detectOrderLikeOutput(summaryText: string): string | null {
+function detectOrderLikeOutput(summaryText: string, market: string | null): string | null {
   const lowerText = summaryText.toLowerCase();
+  const baseAsset = extractKrwMarketBaseAsset(market);
 
   // 1. 명시적 매수/매도 추천 문구
   const tradeRecommendPatterns: Array<{ pattern: RegExp; label: string }> = [
     { pattern: /매수(?:를|을)?\s*(하세|추천|권장|해야|하십시오|바랍니다|하면\s*됩니다)/, label: "매수 추천 문구" },
     { pattern: /매도(?:를|을)?\s*(하세|추천|권장|해야|하십시오|바랍니다|하면\s*됩니다)/, label: "매도 추천 문구" },
-    { pattern: /매수\s*하는\s*것(?:이|을)?(?:\s*(추천|권장|해야|하십시오|바랍니다))?/, label: "매수 추천 문구" },
-    { pattern: /매도\s*하는\s*것(?:이|을)?(?:\s*(추천|권장|해야|하십시오|바랍니다))?/, label: "매도 추천 문구" },
+    { pattern: /매수\s*하는\s*것(?:이|을)?\s*(추천|권장|해야|하십시오|바랍니다|좋겠|적절|유리)/, label: "매수 추천 문구" },
+    { pattern: /매도\s*하는\s*것(?:이|을)?\s*(추천|권장|해야|하십시오|바랍니다|좋겠|적절|유리)/, label: "매도 추천 문구" },
     { pattern: /buy\s*(now|immediately|recommend|should|must)/i, label: "영문 매수 추천" },
     { pattern: /sell\s*(now|immediately|recommend|should|must)/i, label: "영문 매도 추천" },
     { pattern: /(recommend|recommended|should|must|suggest|suggested)\s+(buy|buying)/i, label: "영문 매수 추천" },
     { pattern: /(recommend|recommended|should|must|suggest|suggested)\s+(sell|selling)/i, label: "영문 매도 추천" },
+    { pattern: /(?:^|[.!?\n]\s*)(?:please\s+)?buy\s+(?:krw-[a-z0-9]+|[\d.,]+\s*[a-z][a-z0-9-]{1,9})\b/i, label: "영문 직접 주문 지시" },
+    { pattern: /(?:^|[.!?\n]\s*)(?:please\s+)?sell\s+(?:krw-[a-z0-9]+|[\d.,]+\s*[a-z][a-z0-9-]{1,9})\b/i, label: "영문 직접 주문 지시" },
     { pattern: /지금\s*(사세요|팔|매수|매도)/, label: "즉시 주문 추천" },
   ];
 
@@ -483,6 +486,7 @@ function detectOrderLikeOutput(summaryText: string): string | null {
   }
 
   // 2. 목표가 / 포지션 크기 제안
+  const amountOrderPattern = buildAmountOrderPattern(baseAsset);
   const positionPatterns: Array<{ pattern: RegExp; label: string }> = [
     { pattern: /목표가(?:는|가|를|은)?\s*[:：]?\s*[\d,]+/, label: "목표가 제시" },
     { pattern: /목표\s*가격(?:은|는|이|가|을|를)?\s*[:：]?\s*[\d,]+/, label: "목표 가격 제시" },
@@ -491,8 +495,8 @@ function detectOrderLikeOutput(summaryText: string): string | null {
     { pattern: /position\s*size\s*(?:is|=|[:：])?\s*[\d.]+%?/i, label: "영문 포지션 크기 제시" },
     // "30%로 배분", "30% 비중" 등 조사가 끼어든 패턴도 탐지
     { pattern: /[\d.]+\s*%.{0,5}(비중|배분|할당)/, label: "비중 배분 제시" },
-    // lowerText 기준으로 검사하므로 특정 ticker 하드코딩 없이 일반 자산 단위 수량 주문을 차단한다.
-    { pattern: /[\d.,]+\s*(?:[a-z][a-z0-9]{1,9}|원)(?:\s*(?:어치|을|를))?(?:\s*(?:[a-z][a-z0-9]{1,9})(?:을|를)?)?\s*(매수|매도|사세요|파세요|구매)/, label: "금액 지정 매매 추천" },
+    // 설명 지표 단위(bps 등)를 자산 수량으로 오인하지 않도록 현재 frame 시장의 base asset과 KRW/원 단위만 주문 수량으로 본다.
+    { pattern: amountOrderPattern, label: "금액 지정 매매 추천" },
   ];
 
   for (const { pattern, label } of positionPatterns) {
@@ -519,6 +523,50 @@ function detectOrderLikeOutput(summaryText: string): string | null {
   }
 
   return null;
+}
+
+/**
+ * KRW 현물 market code에서 base asset을 추출한다.
+ *
+ * LLM 보조 설명 검증은 현재 frame의 시장 문맥 안에서만 자산 단위를 해석해야 한다.
+ * 외부 호출 없이 문자열만 검사하며, KRW spot 형식이 아니면 null을 반환한다.
+ */
+function extractKrwMarketBaseAsset(market: string | null): string | null {
+  if (market === null) {
+    return null;
+  }
+
+  const match = /^KRW-([A-Z0-9][A-Z0-9-]*)$/u.exec(market);
+  return match?.[1]?.toLowerCase() ?? null;
+}
+
+/**
+ * 현재 frame 시장에 맞는 금액/수량 주문 탐지 정규식을 만든다.
+ *
+ * 이 검사는 fail-closed guard이지만, 임의 영문 단어를 ticker처럼 처리하면 지표 설명까지
+ * 차단하므로 KRW/원과 frame base asset만 허용 단위로 고정한다.
+ */
+function buildAmountOrderPattern(baseAsset: string | null): RegExp {
+  const allowedUnits = ["krw", "원", ...(baseAsset === null ? [] : [baseAsset])];
+  const unitPattern = allowedUnits.map(escapeRegExp).join("|");
+  const optionalAssetObject = baseAsset === null
+    ? ""
+    : `(?:\\s*${escapeRegExp(baseAsset)}(?:을|를)?)?`;
+
+  return new RegExp(
+    `[\\d.,]+\\s*(?:${unitPattern})(?:\\s*(?:어치|을|를))?${optionalAssetObject}\\s*(?:매수|매도|사세요|파세요|구매)`,
+    "u",
+  );
+}
+
+/**
+ * 동적 정규식에 들어가는 시장 코드를 literal로 취급하도록 escape한다.
+ *
+ * market/base asset은 내부 frame 값이지만, guard 정규식 조립에서는 메타문자가 의미를
+ * 바꾸면 차단 범위가 흔들리므로 항상 literal escape를 적용한다.
+ */
+function escapeRegExp(input: string): string {
+  return input.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 /**
