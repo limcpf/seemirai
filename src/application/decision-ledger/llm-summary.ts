@@ -171,6 +171,25 @@ export async function generateLlmSummary(
 
   const result = response.result;
 
+  // provider success union도 현재 frame 설명 요청과 맞지 않으면 stale/mismatched 응답으로 닫는다.
+  if (result.result_type !== "event_explanation" || !result.source_ids.includes(frame.dedupeKey)) {
+    return buildExplanationFailureEvidence({
+      frameDedupeKey: frame.dedupeKey,
+      sourceFrameId: frame.sourceFrameId,
+      reasonCode: "llm_summary_response_mismatch",
+      userMessage: "LLM provider 응답이 요청한 판단 설명과 일치하지 않아 요약에서 제외했습니다.",
+      failureClass: "invalid_schema",
+      occurredAt: new Date(),
+      metadataPayload: {
+        providerId: response.provider_id,
+        expectedResultType: "event_explanation",
+        actualResultType: result.result_type,
+        expectedSourceId: frame.dedupeKey,
+        sourceIds: [...result.source_ids],
+      },
+    });
+  }
+
   // provider가 byte cap을 놓쳐도 append-only ledger에는 허용 크기를 넘는 LLM 본문을 저장하지 않는다.
   const summaryBytes = Buffer.byteLength(result.summary, "utf8");
   if (summaryBytes > maxOutputBytes) {
@@ -228,6 +247,7 @@ export async function generateLlmSummary(
   const evidence = buildExplanationSummaryEvidence({
     frameDedupeKey: frame.dedupeKey,
     sourceFrameId: frame.sourceFrameId,
+    category: frame.category,
     summaryText: result.summary,
     occurredAt: new Date(),
     sourceId: response.provider_id,
@@ -340,6 +360,7 @@ function evidenceKindToKorean(kind: string): string {
 function buildExplanationSummaryEvidence(options: {
   frameDedupeKey: string;
   sourceFrameId: string;
+  category: DecisionLedgerFrame["category"];
   summaryText: string;
   occurredAt: Date;
   sourceId: string;
@@ -349,7 +370,7 @@ function buildExplanationSummaryEvidence(options: {
 
   return {
     evidenceKind: "EXPLANATION_SUMMARY",
-    category: "HOLD", // 설명 요약 category는 판단을 대체하지 않고 중립 HOLD로 둔다.
+    category: options.category, // 설명 요약은 주문 판단을 대체하지 않고 원 frame category만 추적용으로 보존한다.
     reasonCode: "llm_summary_generated",
     userMessage: "LLM 보조 설명이 생성되었습니다.",
     impact: null,
@@ -442,8 +463,8 @@ function detectOrderLikeOutput(summaryText: string): string | null {
   const positionPatterns: Array<{ pattern: RegExp; label: string }> = [
     { pattern: /목표가(?:는|가|를|은)?\s*[:：]?\s*[\d,]+/, label: "목표가 제시" },
     { pattern: /target\s*price\s*(?:is|=|[:：])?\s*[\d,]+/i, label: "영문 목표가 제시" },
-    { pattern: /포지션\s*(크기|사이즈|비중)[:：]?\s*[\d.]+/, label: "포지션 크기 제시" },
-    { pattern: /position\s*size\s*[:：]?\s*[\d.]+/i, label: "영문 포지션 크기 제시" },
+    { pattern: /포지션\s*(크기|사이즈|비중)(?:은|는|이|가|을|를)?\s*(?:[:：]|=)?\s*[\d.]+%?/, label: "포지션 크기 제시" },
+    { pattern: /position\s*size\s*(?:is|=|[:：])?\s*[\d.]+%?/i, label: "영문 포지션 크기 제시" },
     // "30%로 배분", "30% 비중" 등 조사가 끼어든 패턴도 탐지
     { pattern: /[\d.]+\s*%.{0,5}(비중|배분|할당)/, label: "비중 배분 제시" },
     // lowerText 기준으로 검사하므로 영문 자산 단위는 소문자와 한국어 조사 변형까지 함께 차단한다.

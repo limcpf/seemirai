@@ -264,6 +264,62 @@ describe("generateLlmSummary", () => {
         expect(result.failureClass).toBe("provider_error");
       }
     });
+
+    it("provider success 응답이 요청 result_type/source_id와 다르면 실패 evidence로 닫힌다", async () => {
+      const mismatchProviders: LlmRiskAssistantProviderPort[] = [
+        {
+          providerId: "noop" as const,
+          async generate(request: LlmRiskAssistantProviderRequest): Promise<LlmRiskAssistantProviderResponse> {
+            return createLlmProviderSuccess({
+              providerId: "noop",
+              completedAt: request.requested_at,
+              result: {
+                schema_version: LLM_RISK_ASSISTANT_SCHEMA_VERSION,
+                result_type: "notice_summary",
+                source_ids: [request.input.source_id],
+                summary: "현재 요청한 event explanation과 다른 result type입니다.",
+                recommended_action: "NO_ACTION",
+                observed_at: request.input.observed_at,
+                reason_codes: ["llm_summary_test"],
+                requires_human_review: false,
+              },
+            });
+          },
+        },
+        {
+          providerId: "noop" as const,
+          async generate(request: LlmRiskAssistantProviderRequest): Promise<LlmRiskAssistantProviderResponse> {
+            return createLlmProviderSuccess({
+              providerId: "noop",
+              completedAt: request.requested_at,
+              result: {
+                schema_version: LLM_RISK_ASSISTANT_SCHEMA_VERSION,
+                result_type: request.result_type,
+                source_ids: ["different-frame"],
+                summary: "현재 frame과 다른 source id를 가진 설명입니다.",
+                recommended_action: "NO_ACTION",
+                observed_at: request.input.observed_at,
+                reason_codes: ["llm_summary_test"],
+                requires_human_review: false,
+              },
+            });
+          },
+        },
+      ];
+
+      for (const provider of mismatchProviders) {
+        const result = await generateLlmSummary(provider, {
+          frame: createTestFrame(),
+          evidenceItems: createTestEvidenceItems(),
+        });
+
+        expect(result.status).toBe("failed");
+        if (result.status === "failed") {
+          expect(result.evidence.reasonCode).toBe("llm_summary_response_mismatch");
+          expect(result.failureClass).toBe("invalid_schema");
+        }
+      }
+    });
   });
 
   describe("fail-closed — order-like output 차단", () => {
@@ -354,6 +410,27 @@ describe("generateLlmSummary", () => {
       expect(result.status).toBe("failed");
       if (result.status === "failed") {
         expect(result.evidence.reasonCode).toBe("llm_summary_order_like_output_blocked");
+      }
+    });
+
+    it("조사·서술형 포지션 크기 output도 차단된다", async () => {
+      const summaries = [
+        "현재 전략의 포지션 비중은 30%입니다. 시장 변동성은 계속 확인해야 합니다.",
+        "The position size is 30% while the current signal remains informational.",
+      ];
+
+      for (const summary of summaries) {
+        const provider = createFakeSuccessProvider(summary);
+
+        const result = await generateLlmSummary(provider, {
+          frame: createTestFrame(),
+          evidenceItems: createTestEvidenceItems(),
+        });
+
+        expect(result.status).toBe("failed");
+        if (result.status === "failed") {
+          expect(result.evidence.reasonCode).toBe("llm_summary_order_like_output_blocked");
+        }
       }
     });
 
@@ -728,7 +805,7 @@ describe("generateLlmSummary", () => {
   });
 
   describe("category invariant", () => {
-    it("EXPLANATION_SUMMARY evidence category는 주문 판단을 대체하지 않는다 (HOLD)", async () => {
+    it("EXPLANATION_SUMMARY evidence category는 원 frame category를 추적용으로 보존한다", async () => {
       const provider = createFakeSuccessProvider(
         "매수 신호가 있었지만 비용 평가를 통과하지 못해 진입하지 않았습니다.",
       );
@@ -743,8 +820,8 @@ describe("generateLlmSummary", () => {
         // 실패한 경우에도 EXPLANATION_FAILED + EXPLANATION_FAILURE 조합
         expect(result.evidence.category).toBe("EXPLANATION_FAILED");
       } else {
-        // 성공 시 category는 HOLD (판단을 대체하지 않음)
-        expect(result.evidence.category).toBe("HOLD");
+        // 성공 시 category는 원 frame category를 보존하되 주문 판단을 새로 만들지는 않는다.
+        expect(result.evidence.category).toBe("COST_REJECTED");
       }
     });
 
