@@ -1,12 +1,14 @@
 import { Buffer } from "node:buffer";
 import { createHash } from "node:crypto";
 import type { DecisionLedgerFrame, DecisionEvidenceItem, DecisionLedgerJsonRecord } from "./types.js";
-import type {
-  LlmRiskAssistantProviderPort,
-  LlmRiskAssistantProviderResponse,
+import {
+  LLM_RISK_ASSISTANT_SCHEMA_VERSION,
+  type LlmRiskAssistantProviderPort,
+  type LlmRiskAssistantProviderResponse,
 } from "../llm-risk-assistant/contracts.js";
 
 const LLM_SUMMARY_PROMPT_MAX_CHARS = 20_000;
+const LLM_SUMMARY_RESULT_TYPE = "event_explanation" as const;
 
 /**
  * LLM summary 생성에 필요한 결정론적 ledger context다.
@@ -126,7 +128,7 @@ export async function generateLlmSummary(
           category: frame.category,
         },
       },
-      result_type: "event_explanation",
+      result_type: LLM_SUMMARY_RESULT_TYPE,
       prompt,
       requested_at: new Date(),
       timeout_ms: timeoutMs,
@@ -172,7 +174,11 @@ export async function generateLlmSummary(
   const result = response.result;
 
   // provider success union도 현재 frame 설명 요청과 맞지 않으면 stale/mismatched 응답으로 닫는다.
-  if (result.result_type !== "event_explanation" || !result.source_ids.includes(frame.dedupeKey)) {
+  if (
+    result.result_type !== LLM_SUMMARY_RESULT_TYPE ||
+    result.source_ids.length !== 1 ||
+    result.source_ids[0] !== frame.dedupeKey
+  ) {
     return buildExplanationFailureEvidence({
       frameDedupeKey: frame.dedupeKey,
       sourceFrameId: frame.sourceFrameId,
@@ -182,7 +188,7 @@ export async function generateLlmSummary(
       occurredAt: new Date(),
       metadataPayload: {
         providerId: response.provider_id,
-        expectedResultType: "event_explanation",
+        expectedResultType: LLM_SUMMARY_RESULT_TYPE,
         actualResultType: result.result_type,
         expectedSourceId: frame.dedupeKey,
         sourceIds: [...result.source_ids],
@@ -327,8 +333,23 @@ function buildLlmSummaryPrompt(
   }
 
   lines.push("## 요청");
-  lines.push("위 evidence를 종합해, 왜 이 판단이 내려졌는지 한국어로 3-5문장으로 설명해주세요.");
+  lines.push("위 evidence를 종합해, 왜 이 판단이 내려졌는지 한국어로 3-5문장 summary를 작성하세요.");
   lines.push("상태, 원인, 영향, 필요 조치를 포함하고, 투자 자문이나 매수/매도 추천은 절대 하지 마세요.");
+  lines.push("");
+  lines.push("## 출력 형식");
+  lines.push("Markdown이나 자연어 본문 없이 JSON object 하나만 반환하세요.");
+  lines.push("JSON은 아래 필드를 정확히 포함해야 합니다.");
+  lines.push(`- schema_version: "${LLM_RISK_ASSISTANT_SCHEMA_VERSION}"`);
+  lines.push(`- result_type: "${LLM_SUMMARY_RESULT_TYPE}"`);
+  lines.push(`- source_ids: ["${frame.dedupeKey}"]`);
+  lines.push("- summary: 위 조건을 만족하는 한국어 3-5문장 설명");
+  lines.push('- recommended_action: "NO_ACTION"');
+  lines.push(`- observed_at: "${frame.decisionAt.toISOString()}"`);
+  if (frame.market !== null) {
+    lines.push(`- market: "${frame.market}"`);
+  }
+  lines.push('- reason_codes: ["llm_summary_generated"]');
+  lines.push("- requires_human_review: false");
 
   return lines.join("\n");
 }
@@ -462,6 +483,7 @@ function detectOrderLikeOutput(summaryText: string): string | null {
   // 2. 목표가 / 포지션 크기 제안
   const positionPatterns: Array<{ pattern: RegExp; label: string }> = [
     { pattern: /목표가(?:는|가|를|은)?\s*[:：]?\s*[\d,]+/, label: "목표가 제시" },
+    { pattern: /목표\s*가격(?:은|는|이|가|을|를)?\s*[:：]?\s*[\d,]+/, label: "목표 가격 제시" },
     { pattern: /target\s*price\s*(?:is|=|[:：])?\s*[\d,]+/i, label: "영문 목표가 제시" },
     { pattern: /포지션\s*(크기|사이즈|비중)(?:은|는|이|가|을|를)?\s*(?:[:：]|=)?\s*[\d.]+%?/, label: "포지션 크기 제시" },
     { pattern: /position\s*size\s*(?:is|=|[:：])?\s*[\d.]+%?/i, label: "영문 포지션 크기 제시" },

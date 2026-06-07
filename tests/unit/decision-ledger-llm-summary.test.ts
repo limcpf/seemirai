@@ -305,6 +305,25 @@ describe("generateLlmSummary", () => {
             });
           },
         },
+        {
+          providerId: "noop" as const,
+          async generate(request: LlmRiskAssistantProviderRequest): Promise<LlmRiskAssistantProviderResponse> {
+            return createLlmProviderSuccess({
+              providerId: "noop",
+              completedAt: request.requested_at,
+              result: {
+                schema_version: LLM_RISK_ASSISTANT_SCHEMA_VERSION,
+                result_type: request.result_type,
+                source_ids: [request.input.source_id, "different-frame"],
+                summary: "현재 frame과 다른 source id를 섞은 설명입니다.",
+                recommended_action: "NO_ACTION",
+                observed_at: request.input.observed_at,
+                reason_codes: ["llm_summary_test"],
+                requires_human_review: false,
+              },
+            });
+          },
+        },
       ];
 
       for (const provider of mismatchProviders) {
@@ -379,6 +398,7 @@ describe("generateLlmSummary", () => {
     it("조사·서술형 목표가 output도 차단된다", async () => {
       const summaries = [
         "현재 조건에서 목표가는 90,000,000원입니다. 변동성은 계속 확인해야 합니다.",
+        "현재 조건에서 목표 가격은 90,000,000원입니다. 변동성은 계속 확인해야 합니다.",
         "The target price is 90000 while the current signal remains informational.",
       ];
 
@@ -637,6 +657,12 @@ describe("generateLlmSummary", () => {
       expect(capturedPrompt).toContain("비용 평가");
       expect(capturedPrompt).toContain("기대 수익");
       expect(capturedPrompt).toContain("매수/매도 추천은 절대 하지 마세요");
+      expect(capturedPrompt).toContain("JSON object 하나만 반환하세요");
+      expect(capturedPrompt).toContain("schema_version");
+      expect(capturedPrompt).toContain("m10.llm_risk_assistant.v1");
+      expect(capturedPrompt).toContain('result_type: "event_explanation"');
+      expect(capturedPrompt).toContain(`source_ids: ["${createTestFrame().dedupeKey}"]`);
+      expect(capturedPrompt).toContain('recommended_action: "NO_ACTION"');
     });
 
     it("LLM 설명 evidence는 prompt 입력에서 제외된다", async () => {
