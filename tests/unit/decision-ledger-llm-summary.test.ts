@@ -343,39 +343,49 @@ describe("generateLlmSummary", () => {
 
   describe("fail-closed — order-like output 차단", () => {
     it("매수 추천 문구가 포함된 output은 차단된다", async () => {
-      const provider = createFakeSuccessProvider(
+      const summaries = [
         "현재 시장 상황이 좋습니다. 지금 매수하세요. KRW-BTC는 상승 추세에 있습니다.",
-      );
+        "I recommend buying KRW-BTC while volatility is still elevated.",
+      ];
 
-      const result = await generateLlmSummary(provider, {
-        frame: createTestFrame(),
-        evidenceItems: createTestEvidenceItems(),
-      });
+      for (const summary of summaries) {
+        const provider = createFakeSuccessProvider(summary);
 
-      expect(result.status).toBe("failed");
-      if (result.status === "failed") {
-        expect(result.evidence.evidenceKind).toBe("EXPLANATION_FAILURE");
-        expect(result.evidence.category).toBe("EXPLANATION_FAILED");
-        expect(result.evidence.reasonCode).toBe("llm_summary_order_like_output_blocked");
-        expect(result.evidence.userMessage).toContain("주문 지시");
-        expect(result.failureClass).toBe("invalid_schema");
-        expect(result.failureReason).toBe("llm_summary_order_like_output_blocked");
+        const result = await generateLlmSummary(provider, {
+          frame: createTestFrame(),
+          evidenceItems: createTestEvidenceItems(),
+        });
+
+        expect(result.status).toBe("failed");
+        if (result.status === "failed") {
+          expect(result.evidence.evidenceKind).toBe("EXPLANATION_FAILURE");
+          expect(result.evidence.category).toBe("EXPLANATION_FAILED");
+          expect(result.evidence.reasonCode).toBe("llm_summary_order_like_output_blocked");
+          expect(result.evidence.userMessage).toContain("주문 지시");
+          expect(result.failureClass).toBe("invalid_schema");
+          expect(result.failureReason).toBe("llm_summary_order_like_output_blocked");
+        }
       }
     });
 
     it("매도 추천 문구가 포함된 output은 차단된다", async () => {
-      const provider = createFakeSuccessProvider(
+      const summaries = [
         "하락 추세가 예상되므로 지금 매도하는 것을 권장합니다.",
-      );
+        "You should sell KRW-BTC if the cost condition deteriorates.",
+      ];
 
-      const result = await generateLlmSummary(provider, {
-        frame: createTestFrame(),
-        evidenceItems: createTestEvidenceItems(),
-      });
+      for (const summary of summaries) {
+        const provider = createFakeSuccessProvider(summary);
 
-      expect(result.status).toBe("failed");
-      if (result.status === "failed") {
-        expect(result.evidence.reasonCode).toBe("llm_summary_order_like_output_blocked");
+        const result = await generateLlmSummary(provider, {
+          frame: createTestFrame(),
+          evidenceItems: createTestEvidenceItems(),
+        });
+
+        expect(result.status).toBe("failed");
+        if (result.status === "failed") {
+          expect(result.evidence.reasonCode).toBe("llm_summary_order_like_output_blocked");
+        }
       }
     });
 
@@ -455,18 +465,24 @@ describe("generateLlmSummary", () => {
     });
 
     it("금액 지정 매매 추천이 포함된 output은 차단된다", async () => {
-      const provider = createFakeSuccessProvider(
+      const summaries = [
         "현재 가격에서 100,000원어치 BTC를 매수하는 것이 좋겠습니다.",
-      );
+        "현재 가격에서 10 XRP 매수 지시를 따르면 됩니다.",
+        "현재 가격에서 5 SOL 매도 지시를 따르면 됩니다.",
+      ];
 
-      const result = await generateLlmSummary(provider, {
-        frame: createTestFrame(),
-        evidenceItems: createTestEvidenceItems(),
-      });
+      for (const summary of summaries) {
+        const provider = createFakeSuccessProvider(summary);
 
-      expect(result.status).toBe("failed");
-      if (result.status === "failed") {
-        expect(result.evidence.reasonCode).toBe("llm_summary_order_like_output_blocked");
+        const result = await generateLlmSummary(provider, {
+          frame: createTestFrame(),
+          evidenceItems: createTestEvidenceItems(),
+        });
+
+        expect(result.status).toBe("failed");
+        if (result.status === "failed") {
+          expect(result.evidence.reasonCode).toBe("llm_summary_order_like_output_blocked");
+        }
       }
     });
 
@@ -493,6 +509,8 @@ describe("generateLlmSummary", () => {
       const summaries = [
         "KRW-BTC 매수를 권장합니다. 비용 조건은 별도로 확인해야 합니다.",
         "KRW-BTC를 매도하는 것을 권장합니다. 변동성 확대에 대비해야 합니다.",
+        "KRW-BTC는 매수하면 됩니다. 비용 조건은 별도로 확인해야 합니다.",
+        "비용 조건이 깨지면 매도하면 됩니다. 변동성 확대에 대비해야 합니다.",
       ];
 
       for (const summary of summaries) {
@@ -511,18 +529,23 @@ describe("generateLlmSummary", () => {
     });
 
     it("수익 보장 표현이 포함된 output은 차단된다", async () => {
-      const provider = createFakeSuccessProvider(
+      const summaries = [
         "이 전략을 따르면 확실한 수익을 얻을 수 있으며 손실은 나지 않습니다.",
-      );
+        "This setup guarantees profit with no downside under current conditions.",
+      ];
 
-      const result = await generateLlmSummary(provider, {
-        frame: createTestFrame(),
-        evidenceItems: createTestEvidenceItems(),
-      });
+      for (const summary of summaries) {
+        const provider = createFakeSuccessProvider(summary);
 
-      expect(result.status).toBe("failed");
-      if (result.status === "failed") {
-        expect(result.evidence.reasonCode).toBe("llm_summary_order_like_output_blocked");
+        const result = await generateLlmSummary(provider, {
+          frame: createTestFrame(),
+          evidenceItems: createTestEvidenceItems(),
+        });
+
+        expect(result.status).toBe("failed");
+        if (result.status === "failed") {
+          expect(result.evidence.reasonCode).toBe("llm_summary_order_like_output_blocked");
+        }
       }
     });
   });

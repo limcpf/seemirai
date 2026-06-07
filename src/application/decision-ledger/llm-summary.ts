@@ -465,12 +465,14 @@ function detectOrderLikeOutput(summaryText: string): string | null {
 
   // 1. 명시적 매수/매도 추천 문구
   const tradeRecommendPatterns: Array<{ pattern: RegExp; label: string }> = [
-    { pattern: /매수(?:를|을)?\s*(하세|추천|권장|해야|하십시오|바랍니다)/, label: "매수 추천 문구" },
-    { pattern: /매도(?:를|을)?\s*(하세|추천|권장|해야|하십시오|바랍니다)/, label: "매도 추천 문구" },
+    { pattern: /매수(?:를|을)?\s*(하세|추천|권장|해야|하십시오|바랍니다|하면\s*됩니다)/, label: "매수 추천 문구" },
+    { pattern: /매도(?:를|을)?\s*(하세|추천|권장|해야|하십시오|바랍니다|하면\s*됩니다)/, label: "매도 추천 문구" },
     { pattern: /매수\s*하는\s*것(?:이|을)?(?:\s*(추천|권장|해야|하십시오|바랍니다))?/, label: "매수 추천 문구" },
     { pattern: /매도\s*하는\s*것(?:이|을)?(?:\s*(추천|권장|해야|하십시오|바랍니다))?/, label: "매도 추천 문구" },
     { pattern: /buy\s*(now|immediately|recommend|should|must)/i, label: "영문 매수 추천" },
     { pattern: /sell\s*(now|immediately|recommend|should|must)/i, label: "영문 매도 추천" },
+    { pattern: /(recommend|recommended|should|must|suggest|suggested)\s+(buy|buying)/i, label: "영문 매수 추천" },
+    { pattern: /(recommend|recommended|should|must|suggest|suggested)\s+(sell|selling)/i, label: "영문 매도 추천" },
     { pattern: /지금\s*(사세요|팔|매수|매도)/, label: "즉시 주문 추천" },
   ];
 
@@ -489,8 +491,8 @@ function detectOrderLikeOutput(summaryText: string): string | null {
     { pattern: /position\s*size\s*(?:is|=|[:：])?\s*[\d.]+%?/i, label: "영문 포지션 크기 제시" },
     // "30%로 배분", "30% 비중" 등 조사가 끼어든 패턴도 탐지
     { pattern: /[\d.]+\s*%.{0,5}(비중|배분|할당)/, label: "비중 배분 제시" },
-    // lowerText 기준으로 검사하므로 영문 자산 단위는 소문자와 한국어 조사 변형까지 함께 차단한다.
-    { pattern: /[\d.,]+\s*(btc|eth|krw|원)(?:\s*(?:어치|을|를))?(?:\s*(?:btc|eth|krw)(?:을|를)?)?\s*(매수|매도|사세요|파세요|구매)/, label: "금액 지정 매매 추천" },
+    // lowerText 기준으로 검사하므로 특정 ticker 하드코딩 없이 일반 자산 단위 수량 주문을 차단한다.
+    { pattern: /[\d.,]+\s*(?:[a-z][a-z0-9]{1,9}|원)(?:\s*(?:어치|을|를))?(?:\s*(?:[a-z][a-z0-9]{1,9})(?:을|를)?)?\s*(매수|매도|사세요|파세요|구매)/, label: "금액 지정 매매 추천" },
   ];
 
   for (const { pattern, label } of positionPatterns) {
@@ -505,6 +507,9 @@ function detectOrderLikeOutput(summaryText: string): string | null {
     { pattern: /(확실|반드시|무조건|100%).{0,5}(수익|이익|오릅니다|상승)/, label: "수익 보장 표현" },
     // "손실은 나지 않습니다", "손실이 없습니다" 등
     { pattern: /손실.{0,3}(없|나지\s+않)/, label: "손실 부인 표현" },
+    { pattern: /(guarantee|guaranteed|guarantees).{0,12}(profit|return|gain)/i, label: "영문 수익 보장 표현" },
+    { pattern: /(no|without).{0,8}(downside|loss|risk)/i, label: "영문 손실 부인 표현" },
+    { pattern: /risk[-\s]?free/i, label: "영문 무위험 표현" },
   ];
 
   for (const { pattern, label } of guaranteePatterns) {
