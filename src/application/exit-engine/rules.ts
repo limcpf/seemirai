@@ -262,10 +262,20 @@ export function createTimeBasedExitRule(): ExitRule {
         context.timeBasedConfig.deadline,
         context.timeBasedConfig.timezone,
       );
-      const observedAt = new Date(context.observedAt);
+
+      const observedAtResult = parseObservedAtTimestamp(context.observedAt);
+
+      // offset 없는 wall-clock observedAt은 배포 TZ에 따라 달라지므로 절대시각만 허용한다.
+      if (observedAtResult.kind === "timezone_missing") {
+        return blocked(
+          "time_based_exit",
+          "time_based_observed_at_timezone_missing",
+          "시간 기반 청산 observedAt은 환경별 TZ 해석을 피하기 위해 Z 또는 offset이 있는 절대시각이어야 합니다.",
+        );
+      }
 
       // 관측 시각이 유효하지 않으면 deadline 비교 자체가 불가능하므로 BLOCKED로 차단한다.
-      if (isNaN(observedAt.getTime())) {
+      if (observedAtResult.kind === "invalid") {
         return blocked(
           "time_based_exit",
           "time_based_observed_at_invalid",
@@ -280,6 +290,8 @@ export function createTimeBasedExitRule(): ExitRule {
           "시간 기반 청산 deadline이 유효하지 않습니다.",
         );
       }
+
+      const { observedAt } = observedAtResult;
 
       if (observedAt >= deadline) {
         return triggered(
@@ -319,6 +331,18 @@ export function createStrategyExitSignalRule(): ExitRule {
       }
 
       const signal = context.strategyExitSignal;
+
+      // 타입을 우회한 외부 signal이 invalid intention으로 HOLD 오집계되는 것을 막는다.
+      if (!isExitIntention(signal.intention)) {
+        return blocked(
+          "strategy_exit_signal",
+          "strategy_exit_intention_invalid",
+          "전략 exit signal의 intention이 유효하지 않습니다. REDUCE 또는 EXIT만 허용됩니다.",
+          {
+            signal_intention: String(signal.intention),
+          },
+        );
+      }
 
       // 다른 exchange/market/strategy scope의 signal을 현재 포지션 exit로 승격하면 잘못된 SELL 후보가 만들어진다.
       if (!matchesCurrentSignalScope(signal, context)) {
@@ -395,6 +419,18 @@ export function createRiskReductionExitRule(): ExitRule {
       }
 
       const signal = context.riskReductionSignal;
+      // RiskGate/event 입력은 런타임 객체이므로 타입을 우회한 intention 값을 fail-closed로 닫는다.
+      if (!isExitIntention(signal.intention)) {
+        return blocked(
+          "risk_reduction_exit",
+          "risk_reduction_intention_invalid",
+          "리스크 축소 신호의 intention이 유효하지 않습니다. REDUCE 또는 EXIT만 허용됩니다.",
+          {
+            signal_intention: String(signal.intention),
+          },
+        );
+      }
+
       // RiskGate signal도 포지션 scope를 벗어나면 잘못된 SELL 후보로 이어지므로 context/position과 대조한다.
       if (!matchesRiskReductionSignalScope(signal, context)) {
         return blocked(
@@ -540,10 +576,57 @@ function hasExplicitDeadlineOffset(value: TimestampInput): boolean {
   return typeof value === "string" && hasExplicitTimezone(value.trim());
 }
 
+/**
+ * time-based rule의 observedAt 파싱 결과다.
+ *
+ * Date 객체 또는 offset 포함 문자열만 절대시각으로 인정하고, offset 없는 wall-clock 문자열은
+ * 배포 환경 TZ에 따라 판단이 달라질 수 있으므로 별도 차단 사유로 분리한다.
+ */
+type ObservedAtTimestampParseResult =
+  | { kind: "ok"; observedAt: Date }
+  | { kind: "timezone_missing" }
+  | { kind: "invalid" };
+
+/**
+ * time-based rule의 observedAt을 절대시각 Date로 변환한다.
+ *
+ * 외부 side effect 없이 입력 문자열의 timezone 명시 여부와 달력 유효성을 검증해,
+ * 후속 deadline 비교가 Node 프로세스 TZ나 Date 자동 정상화에 의존하지 않도록 한다.
+ */
+function parseObservedAtTimestamp(value: TimestampInput): ObservedAtTimestampParseResult {
+  if (value instanceof Date) {
+    return isNaN(value.getTime())
+      ? { kind: "invalid" }
+      : { kind: "ok", observedAt: new Date(value.getTime()) };
+  }
+
+  const trimmed = value.trim();
+  if (trimmed === "") {
+    return { kind: "invalid" };
+  }
+
+  if (!hasExplicitTimezone(trimmed)) {
+    return WALL_CLOCK_TIMESTAMP_PATTERN.test(trimmed)
+      ? { kind: "timezone_missing" }
+      : { kind: "invalid" };
+  }
+
+  const wallClockWithoutOffset = trimmed.replace(/(?:[zZ]|[+-]\d{2}:?\d{2})$/, "");
+  if (parseWallClockIsoTimestamp(wallClockWithoutOffset) === undefined) {
+    return { kind: "invalid" };
+  }
+
+  const observedAt = new Date(trimmed);
+  return isNaN(observedAt.getTime())
+    ? { kind: "invalid" }
+    : { kind: "ok", observedAt };
+}
+
+const WALL_CLOCK_TIMESTAMP_PATTERN =
+  /^(\d{4})-(\d{2})-(\d{2})(?:[T ](\d{2})(?::(\d{2})(?::(\d{2})(?:\.(\d{1,9}))?)?)?)?$/;
+
 function parseWallClockIsoTimestamp(value: string): { utcMilliseconds: number } | undefined {
-  const match = value.match(
-    /^(\d{4})-(\d{2})-(\d{2})(?:[T ](\d{2})(?::(\d{2})(?::(\d{2})(?:\.(\d{1,9}))?)?)?)?$/,
-  );
+  const match = value.match(WALL_CLOCK_TIMESTAMP_PATTERN);
   if (match === null) {
     return undefined;
   }
@@ -607,6 +690,16 @@ function matchesRiskReductionSignalScope(
   context: ExitRuleContext,
 ): boolean {
   return matchesScopedSignal(signal.exchangeId, signal.market, signal.strategyId, context);
+}
+
+/**
+ * 외부 입력 객체의 exit intention을 런타임에서 검증한다.
+ *
+ * TypeScript 타입을 우회한 저장 이벤트나 RiskGate 신호가 집계 단계에서 HOLD로 오분류되지 않도록
+ * REDUCE/EXIT 두 값만 후속 평가로 넘긴다.
+ */
+function isExitIntention(value: unknown): value is ExitIntention {
+  return value === "REDUCE" || value === "EXIT";
 }
 
 function matchesScopedSignal(

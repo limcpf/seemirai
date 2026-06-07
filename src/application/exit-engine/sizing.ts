@@ -168,6 +168,20 @@ export function evaluateExitSizing(options: ExitSizingOptions): ExitSizing {
     };
   }
 
+  // dust 잔량은 "실제 0"과 구분해야 하므로 잔여 최소 주문금액보다 먼저 evidence로 남긴다.
+  if (hasDust) {
+    return {
+      requestedQuantity: requestedQty.toFixed(),
+      executableQuantity: "0",
+      dustQuantity: remainingAfterSell.toFixed(),
+      dustReason: `청산 후 잔량(${remainingAfterSell.toFixed()})이 dust threshold(${dustThreshold.toFixed()}) 이하입니다. "실제 0"이 아닌 "처리 불가 잔량"으로 구분하고 주문 후보 생성을 차단합니다.`,
+      belowMinOrderNotional: false,
+      exceedsPosition: false,
+      valid: false,
+      rejectionReason: "dust_remainder",
+    };
+  }
+
   if (remainingAfterSell.greaterThan(0) && remainingNotional.lessThan(minOrderNotional)) {
     return {
       requestedQuantity: requestedQty.toFixed(),
@@ -179,19 +193,6 @@ export function evaluateExitSizing(options: ExitSizingOptions): ExitSizing {
       exceedsPosition: false,
       valid: false,
       rejectionReason: "remaining_below_min_order_notional",
-    };
-  }
-
-  if (hasDust) {
-    return {
-      requestedQuantity: requestedQty.toFixed(),
-      executableQuantity: "0",
-      dustQuantity: remainingAfterSell.toFixed(),
-      dustReason: `청산 후 잔량(${remainingAfterSell.toFixed()})이 dust threshold(${dustThreshold.toFixed()}) 이하입니다. "실제 0"이 아닌 "처리 불가 잔량"으로 구분하고 주문 후보 생성을 차단합니다.`,
-      belowMinOrderNotional: false,
-      exceedsPosition: false,
-      valid: false,
-      rejectionReason: "dust_remainder",
     };
   }
 

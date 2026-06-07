@@ -573,6 +573,36 @@ describe("exit rule engine", () => {
         reasonCode: "time_based_observed_at_invalid",
       });
     });
+
+    it("blocks when observedAt is an offset-less wall-clock string", async () => {
+      const timeConfig: ExitTimeBasedConfig = {
+        deadline: "2026-06-08T09:00:00",
+        timezone: "UTC",
+      };
+      const result = await evaluateRule(rule, createContext({
+        timeBasedConfig: timeConfig,
+        observedAt: "2026-06-08T09:00:00",
+      }));
+      expect(result).toMatchObject({
+        status: "BLOCKED",
+        reasonCode: "time_based_observed_at_timezone_missing",
+      });
+    });
+
+    it("blocks normalized observedAt calendar dates even with explicit offset", async () => {
+      const timeConfig: ExitTimeBasedConfig = {
+        deadline: "2026-06-08T09:00:00",
+        timezone: "UTC",
+      };
+      const result = await evaluateRule(rule, createContext({
+        timeBasedConfig: timeConfig,
+        observedAt: "2026-02-30T09:00:00.000Z",
+      }));
+      expect(result).toMatchObject({
+        status: "BLOCKED",
+        reasonCode: "time_based_observed_at_invalid",
+      });
+    });
   });
 
   describe("strategy exit signal rule", () => {
@@ -643,6 +673,26 @@ describe("exit rule engine", () => {
       expect(result).toMatchObject({
         status: "BLOCKED",
         reasonCode: "strategy_exit_reduction_ratio_invalid",
+      });
+    });
+
+    it("blocks strategy signal when runtime intention is invalid", async () => {
+      const signal = {
+        intention: "PARTIAL",
+        exchangeId: "upbit_krw_spot",
+        market: "KRW-BTC",
+        strategyId: "trend_following",
+        reasonCode: "partial_exit_signal",
+        reason: "잘못된 intention",
+        observedAt,
+      } as unknown as ExitStrategySignal;
+      const result = await evaluateRule(rule, createContext({ strategyExitSignal: signal }));
+      expect(result).toMatchObject({
+        status: "BLOCKED",
+        reasonCode: "strategy_exit_intention_invalid",
+      });
+      expect(result.metadata).toMatchObject({
+        signal_intention: "PARTIAL",
       });
     });
 
@@ -746,6 +796,21 @@ describe("exit rule engine", () => {
         });
         expect(result.metadata?.reduction_ratio).toBe(reductionRatio);
       }
+    });
+
+    it("blocks when risk reduction runtime intention is invalid", async () => {
+      const signal = createRiskReductionSignal({
+        intention: "PARTIAL" as ExitRiskReductionSignal["intention"],
+        reductionRatio: "0.5",
+      });
+      const result = await evaluateRule(rule, createContext({ riskReductionSignal: signal }));
+      expect(result).toMatchObject({
+        status: "BLOCKED",
+        reasonCode: "risk_reduction_intention_invalid",
+      });
+      expect(result.metadata).toMatchObject({
+        signal_intention: "PARTIAL",
+      });
     });
 
     it("blocks when risk reduction signal scope does not match context", async () => {
@@ -1163,6 +1228,29 @@ describe("exit sizing", () => {
     expect(result.dustReason).toBeDefined();
     expect(result.dustReason).toContain("처리 불가 잔량");
     expect(formatSizingUserMessage(result)).toContain("주문 후보 생성을 차단");
+  });
+
+  it("preserves dust evidence before remaining min-order checks", () => {
+    const result = evaluateTestExitSizing({
+      requestedQuantity: "0.00495",
+      positionScope: {
+        market: "KRW-BTC",
+        strategyId: "trend_following",
+        totalQuantity: "0.005",
+        observedAt,
+      },
+      policySnapshot: paperPolicy,
+      currentPrice: "2000000",
+    });
+
+    expect(result).toMatchObject({
+      valid: false,
+      executableQuantity: "0",
+      dustQuantity: "0.00005",
+      rejectionReason: "dust_remainder",
+    });
+    expect(result.remainingBelowMinOrderNotional).toBeUndefined();
+    expect(formatSizingUserMessage(result)).toContain("처리 불가 잔량");
   });
 
   it("detects exact exit (no dust) when selling the full position", () => {
