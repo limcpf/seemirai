@@ -320,6 +320,27 @@ describe("generateLlmSummary", () => {
       }
     });
 
+    it("조사·서술형 목표가 output도 차단된다", async () => {
+      const summaries = [
+        "현재 조건에서 목표가는 90,000,000원입니다. 변동성은 계속 확인해야 합니다.",
+        "The target price is 90000 while the current signal remains informational.",
+      ];
+
+      for (const summary of summaries) {
+        const provider = createFakeSuccessProvider(summary);
+
+        const result = await generateLlmSummary(provider, {
+          frame: createTestFrame(),
+          evidenceItems: createTestEvidenceItems(),
+        });
+
+        expect(result.status).toBe("failed");
+        if (result.status === "failed") {
+          expect(result.evidence.reasonCode).toBe("llm_summary_order_like_output_blocked");
+        }
+      }
+    });
+
     it("포지션 크기 제시가 포함된 output은 차단된다", async () => {
       const provider = createFakeSuccessProvider(
         "현재 포트폴리오에서 KRW-BTC 포지션 비중을 30%로 배분하는 것이 적절합니다.",

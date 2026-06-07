@@ -440,8 +440,8 @@ function detectOrderLikeOutput(summaryText: string): string | null {
 
   // 2. 목표가 / 포지션 크기 제안
   const positionPatterns: Array<{ pattern: RegExp; label: string }> = [
-    { pattern: /목표가\s*[:：]?\s*[\d,]+/, label: "목표가 제시" },
-    { pattern: /target\s*price\s*[:：]?\s*[\d,]+/i, label: "영문 목표가 제시" },
+    { pattern: /목표가(?:는|가|를|은)?\s*[:：]?\s*[\d,]+/, label: "목표가 제시" },
+    { pattern: /target\s*price\s*(?:is|=|[:：])?\s*[\d,]+/i, label: "영문 목표가 제시" },
     { pattern: /포지션\s*(크기|사이즈|비중)[:：]?\s*[\d.]+/, label: "포지션 크기 제시" },
     { pattern: /position\s*size\s*[:：]?\s*[\d.]+/i, label: "영문 포지션 크기 제시" },
     // "30%로 배분", "30% 비중" 등 조사가 끼어든 패턴도 탐지
