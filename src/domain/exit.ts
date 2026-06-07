@@ -185,6 +185,10 @@ export interface ExitTrailingState {
 export interface ExitStrategySignal {
   /** exit 의도 (REDUCE | EXIT) */
   intention: ExitIntention;
+  /** signal이 적용되는 거래소 식별자. 현재 ExitRuleContext.exchangeId와 일치해야 한다. */
+  exchangeId: ExchangeId;
+  /** signal이 적용되는 마켓. 현재 ExitRuleContext.market과 일치해야 한다. */
+  market: MarketCode;
   /** signal 생성 전략 식별자 */
   strategyId: string;
   /** signal reason code */

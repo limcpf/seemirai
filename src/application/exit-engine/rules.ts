@@ -5,6 +5,7 @@ import type {
   ExitRule,
   ExitRuleContext,
   ExitRuleEvaluation,
+  ExitStrategySignal,
   TimestampInput,
 } from "../../domain/index.js";
 
@@ -299,13 +300,17 @@ export function createStrategyExitSignalRule(): ExitRule {
 
       const signal = context.strategyExitSignal;
 
-      // 다른 strategy/position scope의 signal을 현재 포지션 exit로 승격하면 잘못된 SELL 후보가 만들어진다.
-      if (!matchesCurrentStrategyScope(signal.strategyId, context)) {
+      // 다른 exchange/market/strategy scope의 signal을 현재 포지션 exit로 승격하면 잘못된 SELL 후보가 만들어진다.
+      if (!matchesCurrentSignalScope(signal, context)) {
         return blocked(
           "strategy_exit_signal",
           "strategy_exit_scope_mismatch",
           "전략 exit signal의 scope가 현재 포지션과 일치하지 않아 청산 판단을 차단합니다.",
           {
+            signal_exchange_id: signal.exchangeId,
+            context_exchange_id: context.exchangeId,
+            signal_market: signal.market,
+            context_market: context.market,
             signal_strategy_id: signal.strategyId,
             context_strategy_id: context.strategyId,
             position_strategy_id: context.position.strategyId ?? "",
@@ -319,6 +324,8 @@ export function createStrategyExitSignalRule(): ExitRule {
         signal.reason,
         signal.intention,
         {
+          signal_exchange_id: signal.exchangeId,
+          signal_market: signal.market,
           signal_strategy_id: signal.strategyId,
           signal_intention: signal.intention,
           signal_observed_at: String(signal.observedAt),
@@ -363,6 +370,18 @@ export function createRiskReductionExitRule(): ExitRule {
           "리스크 축소 신호의 reductionRatio가 유효하지 않습니다. 0보다 크고 1 이하인 숫자여야 합니다.",
           {
             reduction_ratio: signal.reductionRatio,
+          },
+        );
+      }
+
+      if (!matchesReductionRatioWithIntention(reductionRatio, signal.intention)) {
+        return blocked(
+          "risk_reduction_exit",
+          "risk_reduction_ratio_intention_mismatch",
+          "리스크 축소 신호의 intention과 reductionRatio가 일치하지 않아 청산 판단을 차단합니다.",
+          {
+            reduction_ratio: reductionRatio.toFixed(),
+            signal_intention: signal.intention,
           },
         );
       }
@@ -519,8 +538,12 @@ function parseWallClockIsoTimestamp(value: string): { utcMilliseconds: number } 
   return { utcMilliseconds };
 }
 
-function matchesCurrentStrategyScope(signalStrategyId: string, context: ExitRuleContext): boolean {
-  const normalizedSignalStrategyId = signalStrategyId.trim();
+function matchesCurrentSignalScope(signal: ExitStrategySignal, context: ExitRuleContext): boolean {
+  if (signal.exchangeId !== context.exchangeId || signal.market !== context.market) {
+    return false;
+  }
+
+  const normalizedSignalStrategyId = signal.strategyId.trim();
   if (normalizedSignalStrategyId === "") {
     return false;
   }
@@ -540,6 +563,17 @@ function matchesCurrentStrategyScope(signalStrategyId: string, context: ExitRule
   }
 
   return contextStrategyId !== "" || (positionStrategyId !== undefined && positionStrategyId !== "");
+}
+
+function matchesReductionRatioWithIntention(
+  reductionRatio: Decimal,
+  intention: ExitIntention,
+): boolean {
+  if (intention === "EXIT") {
+    return reductionRatio.equals(1);
+  }
+
+  return reductionRatio.lessThan(1);
 }
 
 function pass(

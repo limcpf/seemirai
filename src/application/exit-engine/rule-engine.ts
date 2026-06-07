@@ -5,6 +5,7 @@ import type {
   ExitRuleContext,
   ExitRuleEvaluation,
 } from "../../domain/index.js";
+import { parseFinancialDecimal } from "../../shared/index.js";
 
 /**
  * exit rule engine의 집계 결과를 담는 중간 표현이다.
@@ -54,10 +55,14 @@ export class ExitRuleEngine {
     evaluations: readonly ExitRuleEvaluation[],
     context: ExitRuleContext,
   ): ExitDecision {
-    const triggeredRules = evaluations.filter(
+    const positionScopeBlock = evaluateExitPositionScope(context);
+    const scopedEvaluations =
+      positionScopeBlock === undefined ? evaluations : [...evaluations, positionScopeBlock];
+
+    const triggeredRules = scopedEvaluations.filter(
       (evaluation) => evaluation.status === "TRIGGERED",
     );
-    const blockedRules = evaluations.filter(
+    const blockedRules = scopedEvaluations.filter(
       (evaluation) =>
         evaluation.status === "BLOCKED" || evaluation.status === "UNAVAILABLE",
     );
@@ -65,7 +70,7 @@ export class ExitRuleEngine {
     const kind = resolveExitDecision(triggeredRules);
 
     // BLOCKED가 하나라도 있으면 exit 자체를 차단한다 — 추정이나 완화로 넘기지 않는다.
-    const blockedExists = evaluations.some(
+    const blockedExists = scopedEvaluations.some(
       (evaluation) => evaluation.status === "BLOCKED",
     );
     const finalKind: ExitDecisionKind = blockedExists ? "BLOCK" : kind;
@@ -74,7 +79,7 @@ export class ExitRuleEngine {
 
     return {
       kind: finalKind,
-      ruleEvaluations: evaluations,
+      ruleEvaluations: scopedEvaluations,
       triggeredRules,
       blockedRules,
       reasonCode,
@@ -178,6 +183,7 @@ function buildExitReason(
  * raw rule id는 ExitRuleEvaluation에 trace로 보존하고, 첫 화면 메시지에는 노출하지 않는다.
  */
 const EXIT_RULE_USER_LABELS: Readonly<Record<string, string>> = {
+  exit_position_scope: "보유 포지션 수량",
   stop_loss_exit: "손절 기준",
   take_profit_exit: "익절 기준",
   trailing_stop_exit: "추적 손절 기준",
@@ -197,4 +203,40 @@ function formatRuleLabels(evaluations: readonly ExitRuleEvaluation[]): string {
   ];
 
   return labels.length > 0 ? labels.join(", ") : "확인 필요 청산 판단 항목";
+}
+
+function evaluateExitPositionScope(context: ExitRuleContext): ExitRuleEvaluation | undefined {
+  try {
+    const quantity = parseFinancialDecimal(context.position.quantity);
+    if (quantity.greaterThan(0)) {
+      return undefined;
+    }
+    return blockedPositionScope(
+      "exit_no_position",
+      "청산할 open position 수량이 없어 청산 주문 후보 생성을 차단합니다.",
+      context.position.quantity,
+    );
+  } catch {
+    return blockedPositionScope(
+      "exit_position_quantity_invalid",
+      "open position 수량을 파싱할 수 없어 청산 주문 후보 생성을 차단합니다.",
+      context.position.quantity,
+    );
+  }
+}
+
+function blockedPositionScope(
+  reasonCode: string,
+  message: string,
+  quantity: string,
+): ExitRuleEvaluation {
+  return {
+    ruleId: "exit_position_scope",
+    status: "BLOCKED",
+    reasonCode,
+    message,
+    metadata: {
+      position_quantity: quantity,
+    },
+  };
 }

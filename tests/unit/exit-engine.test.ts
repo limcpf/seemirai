@@ -80,6 +80,7 @@ async function evaluateRule(
 }
 
 const rawExitRuleIds = [
+  "exit_position_scope",
   "stop_loss_exit",
   "take_profit_exit",
   "trailing_stop_exit",
@@ -506,6 +507,8 @@ describe("exit rule engine", () => {
     it("triggers EXIT when strategy signal has EXIT intention", async () => {
       const signal: ExitStrategySignal = {
         intention: "EXIT",
+        exchangeId: "upbit_krw_spot",
+        market: "KRW-BTC",
         strategyId: "trend_following",
         reasonCode: "mean_reversion_exit",
         reason: "평균 복귀 exit signal",
@@ -525,6 +528,8 @@ describe("exit rule engine", () => {
     it("triggers REDUCE when strategy signal has REDUCE intention", async () => {
       const signal: ExitStrategySignal = {
         intention: "REDUCE",
+        exchangeId: "upbit_krw_spot",
+        market: "KRW-BTC",
         strategyId: "trend_following",
         reasonCode: "trend_reversal_partial",
         reason: "추세 반전 감지, 부분 축소",
@@ -540,6 +545,8 @@ describe("exit rule engine", () => {
     it("blocks when strategy signal scope does not match current position scope", async () => {
       const signal: ExitStrategySignal = {
         intention: "EXIT",
+        exchangeId: "upbit_krw_spot",
+        market: "KRW-BTC",
         strategyId: "mean_reversion",
         reasonCode: "mean_reversion_exit",
         reason: "다른 전략의 exit signal",
@@ -557,6 +564,27 @@ describe("exit rule engine", () => {
         signal_strategy_id: "mean_reversion",
         context_strategy_id: "trend_following",
         position_strategy_id: "trend_following",
+      });
+    });
+
+    it("blocks when strategy signal market scope does not match context market", async () => {
+      const signal: ExitStrategySignal = {
+        intention: "EXIT",
+        exchangeId: "upbit_krw_spot",
+        market: "KRW-ETH",
+        strategyId: "trend_following",
+        reasonCode: "trend_exit_other_market",
+        reason: "다른 마켓의 exit signal",
+        observedAt,
+      };
+      const result = await evaluateRule(rule, createContext({ strategyExitSignal: signal }));
+      expect(result).toMatchObject({
+        status: "BLOCKED",
+        reasonCode: "strategy_exit_scope_mismatch",
+      });
+      expect(result.metadata).toMatchObject({
+        signal_market: "KRW-ETH",
+        context_market: "KRW-BTC",
       });
     });
   });
@@ -621,6 +649,35 @@ describe("exit rule engine", () => {
           reasonCode: "risk_reduction_ratio_invalid",
         });
         expect(result.metadata?.reduction_ratio).toBe(reductionRatio);
+      }
+    });
+
+    it("blocks when risk reduction intention conflicts with ratio semantics", async () => {
+      const exitWithPartialRatio: ExitRiskReductionSignal = {
+        intention: "EXIT",
+        reductionRatio: "0.5",
+        reasonCode: "drawdown_limit_exceeded",
+        reason: "전량 청산 의도와 부분 축소 비율 불일치",
+        observedAt,
+      };
+      const reduceWithFullRatio: ExitRiskReductionSignal = {
+        intention: "REDUCE",
+        reductionRatio: "1",
+        reasonCode: "daily_loss_limit_approaching",
+        reason: "부분 축소 의도와 전량 비율 불일치",
+        observedAt,
+      };
+
+      for (const signal of [exitWithPartialRatio, reduceWithFullRatio]) {
+        const result = await evaluateRule(rule, createContext({ riskReductionSignal: signal }));
+        expect(result).toMatchObject({
+          status: "BLOCKED",
+          reasonCode: "risk_reduction_ratio_intention_mismatch",
+        });
+        expect(result.metadata).toMatchObject({
+          reduction_ratio: signal.reductionRatio,
+          signal_intention: signal.intention,
+        });
       }
     });
   });
@@ -798,6 +855,65 @@ describe("exit decision aggregation", () => {
     expect(decision.userMessage).toContain("시간 기반 청산 기준");
     expectNoRawExitRuleIds(decision.userMessage);
     expect(decision.blockedRules.map((r) => r.ruleId)).toContain("time_based_exit");
+  });
+
+  it("returns BLOCK when position quantity is zero even if an exit rule triggers", async () => {
+    const rules = createDefaultExitRules({
+      stopLossBps: "2000",
+      takeProfitBps: "5000",
+      defaultTrailBps: "500",
+    });
+    const decision = await evaluateExitRules(
+      rules,
+      createContext({
+        position: { ...btcPosition, quantity: "0", unrealizedPnlBps: "-3000" },
+      }),
+    );
+    expect(decision).toMatchObject({
+      kind: "BLOCK",
+      reasonCode: "exit_blocked",
+    });
+    expect(decision.triggeredRules.map((r) => r.ruleId)).toContain("stop_loss_exit");
+    expect(decision.blockedRules).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          ruleId: "exit_position_scope",
+          status: "BLOCKED",
+          reasonCode: "exit_no_position",
+        }),
+      ]),
+    );
+    expect(decision.userMessage).toContain("보유 포지션 수량");
+    expectNoRawExitRuleIds(decision.userMessage);
+  });
+
+  it("returns BLOCK when position quantity cannot be parsed", async () => {
+    const rules = createDefaultExitRules({
+      stopLossBps: "2000",
+      takeProfitBps: "5000",
+      defaultTrailBps: "500",
+    });
+    const decision = await evaluateExitRules(
+      rules,
+      createContext({
+        position: { ...btcPosition, quantity: "not-a-quantity", unrealizedPnlBps: "-3000" },
+      }),
+    );
+    expect(decision).toMatchObject({
+      kind: "BLOCK",
+      reasonCode: "exit_blocked",
+    });
+    expect(decision.blockedRules).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          ruleId: "exit_position_scope",
+          status: "BLOCKED",
+          reasonCode: "exit_position_quantity_invalid",
+        }),
+      ]),
+    );
+    expect(decision.userMessage).toContain("보유 포지션 수량");
+    expectNoRawExitRuleIds(decision.userMessage);
   });
 
   it("contains user-facing message in Korean without raw internal codes", () => {
