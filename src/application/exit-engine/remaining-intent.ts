@@ -144,6 +144,13 @@ export function createRemainingExitIntent(
   if (requestedNotional === null) {
     return null;
   }
+  const positionScope =
+    originalIntent.metadata.position_effect === "EXIT"
+      ? {
+        ...originalIntent.metadata.position_scope,
+        totalQuantity: remainingQuantity,
+      }
+      : originalIntent.metadata.position_scope;
 
   const remainingIntent: ExitOrderIntent = {
     exchangeId: originalIntent.exchangeId,
@@ -159,6 +166,8 @@ export function createRemainingExitIntent(
     timeInForce: originalIntent.timeInForce ?? "GTC",
     metadata: {
       ...originalIntent.metadata,
+      // EXIT 재호가는 남은 미체결 수량이 새 전체 청산 대상이므로 scope도 잔량 기준으로 재고정한다.
+      position_scope: positionScope,
       exit_reason_code: `${originalIntent.metadata.exit_reason_code}_requote`,
       requote_parent_idempotency_key: originalIntent.idempotencyKey,
       requote_lineage_id: lineage,

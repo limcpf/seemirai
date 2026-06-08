@@ -479,25 +479,25 @@ function createPaperDecisionExecutionCostEvidence(
  * 수량 근거가 없으면 undefined를 반환해 plain SELL이 ExecutionEngine에서 fail-closed 되도록 한다.
  */
 function readExitPositionQuantity(frame: PaperDecisionInputFrame, intent: OrderIntent): string | undefined {
-  const featureQuantity =
-    readStringFeature(frame, "position_quantity") ??
-    readStringFeature(frame, "position_total_quantity") ??
-    readStringFeature(frame, "total_quantity");
-  if (featureQuantity !== undefined) {
-    return featureQuantity;
-  }
-
   const matchingPosition = frame.risk?.positions?.find((position) => {
     // 전략별 SELL이 계정 집계 포지션을 빌리면 다른 전략 물량까지 청산할 수 있어 exact scope만 인정한다.
     return position.market === intent.market && position.strategyId === intent.strategyId;
   });
   const metadata = matchingPosition?.metadata;
-  return (
+  const strategyQuantity =
     readStringRecordValue(metadata, "position_quantity") ??
     readStringRecordValue(metadata, "position_total_quantity") ??
     readStringRecordValue(metadata, "total_quantity") ??
     readStringRecordValue(metadata, "totalQuantity") ??
-    readStringRecordValue(metadata, "quantity")
+    readStringRecordValue(metadata, "quantity");
+  if (strategyQuantity !== undefined) {
+    return strategyQuantity;
+  }
+
+  return (
+    readStringFeature(frame, "position_quantity") ??
+    readStringFeature(frame, "position_total_quantity") ??
+    readStringFeature(frame, "total_quantity")
   );
 }
 

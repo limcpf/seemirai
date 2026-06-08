@@ -192,7 +192,9 @@ describe("M9 paper decision runner", () => {
       observedAt,
       exchangeId: "upbit_krw_spot",
       market: "KRW-BTC",
-      features: {},
+      features: {
+        position_quantity: "10",
+      },
       risk: {
         expectedLossBpsOfEquity: "10",
         thresholdSnapshot: createRiskThresholdSnapshot(

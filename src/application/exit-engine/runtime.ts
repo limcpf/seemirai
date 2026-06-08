@@ -84,6 +84,7 @@ export interface ExitPaperRuntimeInput {
   riskApproval: JsonRecord;
   idempotencyKey: string;
   submittedAt: TimestampInput;
+  /** RiskGate fingerprint의 expected loss 입력이다. 생략되면 riskApproval.order_intent에서 같은 값을 복원한다. */
   expectedLossBpsOfEquity?: string;
   ports: ExitPaperRuntimePorts;
 }
@@ -139,6 +140,8 @@ export async function runExitPaperRuntime(input: ExitPaperRuntimeInput): Promise
     };
   }
 
+  const expectedLossBpsOfEquity =
+    input.expectedLossBpsOfEquity ?? readRiskApprovalExpectedLossBps(input.riskApproval);
   const submissionResult = createExitSubmission({
     decision: input.decision,
     sizing: input.sizing,
@@ -148,7 +151,7 @@ export async function runExitPaperRuntime(input: ExitPaperRuntimeInput): Promise
     riskApproval: input.riskApproval,
     idempotencyKey: input.idempotencyKey,
     submittedAt: input.submittedAt,
-    ...(input.expectedLossBpsOfEquity === undefined ? {} : { expectedLossBpsOfEquity: input.expectedLossBpsOfEquity }),
+    ...(expectedLossBpsOfEquity === undefined ? {} : { expectedLossBpsOfEquity }),
   });
 
   if (submissionResult === null) {
@@ -693,6 +696,29 @@ function hasOpenRemainingQuantity(brokerOrder: BrokerOrder): boolean {
  */
 function isBrokerTerminalFailure(status: BrokerOrder["status"]): boolean {
   return status === "REJECTED" || status === "FAILED";
+}
+
+/**
+ * RiskGate approval fingerprint에 이미 고정된 expected loss를 submission boundary로 복원한다.
+ *
+ * runtime caller가 top-level 값을 생략해도 RiskGate evidence와 ExecutionEngine runtime fingerprint가 같은 입력을 보게 한다.
+ */
+function readRiskApprovalExpectedLossBps(riskApproval: JsonRecord): string | undefined {
+  return readStringRecordValue(readRecordValue(riskApproval, "order_intent"), "expected_loss_bps_of_equity");
+}
+
+function readRecordValue(record: JsonRecord | undefined, key: string): JsonRecord | undefined {
+  const value = record?.[key];
+  return isJsonRecord(value) ? value : undefined;
+}
+
+function readStringRecordValue(record: JsonRecord | undefined, key: string): string | undefined {
+  const value = record?.[key];
+  return typeof value === "string" ? value : undefined;
+}
+
+function isJsonRecord(value: unknown): value is JsonRecord {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function toDate(value: TimestampInput): Date {

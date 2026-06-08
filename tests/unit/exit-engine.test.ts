@@ -1990,11 +1990,57 @@ describe("exit submission and paper runtime integration", () => {
       requestedNotional: "51200",
       idempotencyKey: "exit-original-001-requote-paper-exit-order-1-1",
       metadata: {
+        position_scope: {
+          totalQuantity: "0.0004",
+        },
         requote_parent_idempotency_key: "exit-original-001",
         requote_lineage_id: "paper-exit-order-1",
         requote_sequence: 1,
       },
     });
+  });
+
+  it("restores expected loss from RiskGate approval when runtime input omits it", async () => {
+    const capturedSubmissions: OrderSubmission[] = [];
+    const executionEngine = {
+      submitOrder: vi.fn(async (submission: OrderSubmission) => {
+        capturedSubmissions.push(submission);
+        return {
+          status: "REJECTED" as const,
+          submission,
+          rejection: {
+            reasonCode: "risk_approval_mismatch" as const,
+            message: "captured by unit test",
+          },
+        };
+      }),
+    };
+    const broker = {
+      cancelOrder: vi.fn(),
+    };
+
+    await runExitPaperRuntime({
+      decision: await createTriggeredReduceDecision(),
+      sizing: createValidExitSizing(),
+      positionScope: createBtcPositionScope(),
+      policySnapshot: paperPolicy,
+      currentPrice: "128000000",
+      riskApproval: {
+        source: "risk_gate",
+        approved: true,
+        order_intent: {
+          expected_loss_bps_of_equity: "5",
+        },
+      },
+      idempotencyKey: "exit-original-001",
+      submittedAt: observedAt,
+      ports: {
+        executionEngine,
+        broker,
+      },
+    });
+
+    expect(capturedSubmissions[0]?.expectedLossBpsOfEquity).toBe("5");
   });
 
   it("submits exit order, cancels partial fill remainder, creates remaining intent, and appends evidence", async () => {
