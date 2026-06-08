@@ -66,6 +66,35 @@ export interface ExitRemainingDustEvidenceInput {
 }
 
 /**
+ * partial fill 이후 남은 잔량이 최소 주문금액 미만이라 재호가를 만들지 않은 evidence 입력이다.
+ *
+ * 잔량은 dust보다 크더라도 거래소 최소 주문금액을 만족하지 못하면 broker가 거부할 수 있으므로,
+ * 새 exit intent를 만들지 않은 이유와 수량/금액 기준을 별도 evidence로 보존한다.
+ */
+export interface ExitRemainingBelowMinNotionalEvidenceInput {
+  /** 실행 상관 식별자 (broker order id 등) */
+  correlationId: string;
+  /** 체결 수량 */
+  filledQuantity: string;
+  /** cancel 직전 잔량 */
+  remainingQuantity: string;
+  /** cancel 이후 broker snapshot의 잔량 */
+  brokerRemainingQuantityAfterCancel: string;
+  /** 잔량 평가금액 */
+  remainingNotional: string;
+  /** 정책 최소 주문금액 */
+  minOrderNotional: string;
+  /** exit 의도 */
+  exitIntention: ExitIntention;
+  /** 시장 식별자 */
+  market: string;
+  /** 전략 식별자 */
+  strategyId: string;
+  /** append-only ledger dedupe에 사용할 안정 evidence key */
+  evidenceKey?: string;
+}
+
+/**
  * exit 판단을 decision evidence item으로 변환한다.
  *
  * SELL/HOLD/BLOCK 판단을 STRATEGY_DECISION evidence로 남긴다.
@@ -205,6 +234,51 @@ export function createExitRemainingDustEvidence(
     sourceId: input.correlationId,
     payload,
     evidenceFingerprint: input.evidenceKey ?? `exit-dust-${input.correlationId}-${input.remainingQuantity}`,
+    trace: {
+      market: input.market,
+      strategyId: input.strategyId,
+      correlationId: input.correlationId,
+      exitIntention: input.exitIntention,
+    },
+  };
+}
+
+/**
+ * cancel된 잔량이 최소 주문금액 미만이라 재호가를 생략한 evidence를 생성한다.
+ *
+ * 이 evidence는 broker가 거부할 후속 주문 생성을 막은 정책적 종료이므로 EXECUTED category로 남기고,
+ * remaining_exit_intent_created=false를 명시해 후속 runner가 잔량 재호가 누락으로 오해하지 않게 한다.
+ */
+export function createExitRemainingBelowMinNotionalEvidence(
+  input: ExitRemainingBelowMinNotionalEvidenceInput,
+  occurredAt: Date = new Date(),
+): DecisionEvidenceItem {
+  const payload: DecisionLedgerJsonRecord = {
+    execution_status: "CANCELED",
+    exit_intention: input.exitIntention,
+    filled_quantity: input.filledQuantity,
+    remaining_quantity: input.remainingQuantity,
+    broker_remaining_quantity_after_cancel: input.brokerRemainingQuantityAfterCancel,
+    remaining_notional: input.remainingNotional,
+    min_order_notional: input.minOrderNotional,
+    remaining_exit_intent_created: false,
+    cancel_requote_status: "remaining_below_min_order_notional",
+    market: input.market,
+    strategy_id: input.strategyId,
+  };
+
+  return {
+    evidenceKind: "EXECUTION_RESULT",
+    category: "EXECUTED",
+    reasonCode: "exit_remaining_below_min_notional_closed",
+    userMessage: `${input.market} 청산 주문의 잔량 평가금액 ${input.remainingNotional} KRW이(가) 최소 주문금액 ${input.minOrderNotional} KRW 미만이라 취소 후 추가 주문을 만들지 않았습니다.`,
+    impact: "잔량 재호가 주문은 생성되지 않았고, broker 거부 가능성이 있는 소액 주문 제출을 차단했습니다.",
+    action: "포지션 잔량이 기대와 다르면 수동으로 확인하세요.",
+    occurredAt,
+    source: "exit-execution",
+    sourceId: input.correlationId,
+    payload,
+    evidenceFingerprint: input.evidenceKey ?? `exit-min-notional-${input.correlationId}-${input.remainingQuantity}`,
     trace: {
       market: input.market,
       strategyId: input.strategyId,

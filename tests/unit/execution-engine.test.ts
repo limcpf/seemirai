@@ -741,6 +741,56 @@ describe("M6 ExecutionEngine contract", () => {
       });
     });
 
+    it("rejects exit cost evidence when cost or slippage fields are invalid decimals", () => {
+      const intent = createSellLimitIntent({
+        metadata: {
+          position_effect: "REDUCE",
+          exit_reason_code: "stop_loss_exit",
+          exit_rule_id: "stop_loss",
+        },
+      });
+
+      expect(
+        validateExecutionSubmission(
+          createSubmission({
+            intent,
+            costSnapshot: {
+              ...createExitCostSnapshot(intent),
+              exit_cost_bps: "abc",
+            },
+          }),
+        ),
+      ).toMatchObject({
+        valid: false,
+        rejection: {
+          reasonCode: "exit_cost_evidence_invalid",
+          metadata: {
+            invalid_fields: ["exit_cost_bps"],
+          },
+        },
+      });
+
+      expect(
+        validateExecutionSubmission(
+          createSubmission({
+            intent,
+            costSnapshot: {
+              ...createExitCostSnapshot(intent),
+              exit_slippage_bps: "-1",
+            },
+          }),
+        ),
+      ).toMatchObject({
+        valid: false,
+        rejection: {
+          reasonCode: "exit_cost_evidence_invalid",
+          metadata: {
+            invalid_fields: ["exit_slippage_bps"],
+          },
+        },
+      });
+    });
+
     it("rejects exit cost evidence when position_scope mismatches intent", () => {
       const intent = createSellLimitIntent({
         metadata: {

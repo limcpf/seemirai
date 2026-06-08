@@ -2010,6 +2010,70 @@ describe("exit submission and paper runtime integration", () => {
     );
   });
 
+  it("treats broker-side rejected orders as unfilled execution failures", async () => {
+    const brokerOrder = createBrokerOrderFixture({
+      status: "REJECTED",
+      remainingQuantity: "0",
+    });
+    const executionEngine = {
+      submitOrder: vi.fn(async (submission: OrderSubmission) => ({
+        status: "SUBMITTED" as const,
+        submission,
+        brokerOrder,
+      })),
+    };
+    const broker = {
+      cancelOrder: vi.fn(),
+    };
+
+    const result = await runExitPaperRuntime({
+      decision: await createTriggeredExitDecision(),
+      sizing: createValidExitSizing(),
+      positionScope: createBtcPositionScope(),
+      policySnapshot: paperPolicy,
+      currentPrice: "128000000",
+      riskApproval: { source: "risk_gate", approved: true },
+      idempotencyKey: "exit-original-001",
+      submittedAt: observedAt,
+      ports: {
+        executionEngine,
+        broker,
+      },
+    });
+
+    expect(result.status).toBe("EXECUTION_REJECTED");
+    expect(result.executionPersistenceStatus).toBe("NOT_APPLICABLE");
+    expect(broker.cancelOrder).not.toHaveBeenCalled();
+    expect(result.evidenceItems).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          evidenceKind: "EXECUTION_RESULT",
+          payload: expect.objectContaining({
+            execution_status: "REJECTED",
+            filled_quantity: "0",
+            remaining_quantity: "0.001",
+            new_entry_block_required: true,
+            manual_review_required: true,
+          }),
+        }),
+        expect.objectContaining({
+          evidenceKind: "PNL_STATUS_CONTEXT",
+          payload: expect.objectContaining({
+            remaining_position_quantity: "0.005",
+            position_closed: false,
+          }),
+        }),
+        expect.objectContaining({
+          reasonCode: "exit_broker_order_terminal_failure",
+          payload: expect.objectContaining({
+            new_orders_blocked: true,
+            manual_review_required: true,
+          }),
+        }),
+      ]),
+    );
+  });
+
   it("cancels accepted but unfilled exit orders and creates remaining intent", async () => {
     const brokerOrder = createBrokerOrderFixture({
       status: "ACCEPTED",
@@ -2079,6 +2143,54 @@ describe("exit submission and paper runtime integration", () => {
     );
   });
 
+  it("normalizes canceled broker remaining quantity before deciding cancel failure", async () => {
+    const brokerOrder = createBrokerOrderFixture({
+      status: "PARTIALLY_FILLED",
+      remainingQuantity: "0.0004",
+    });
+    const executionEngine = {
+      submitOrder: vi.fn(async (submission: OrderSubmission) => ({
+        status: "SUBMITTED" as const,
+        submission,
+        brokerOrder,
+      })),
+    };
+    const broker = {
+      cancelOrder: vi.fn(async (orderId: string) => createBrokerOrderFixture({
+        brokerOrderId: orderId,
+        status: "CANCELED",
+        remainingQuantity: "0.00000000",
+      })),
+    };
+
+    const result = await runExitPaperRuntime({
+      decision: await createTriggeredExitDecision(),
+      sizing: createValidExitSizing(),
+      positionScope: createBtcPositionScope(),
+      policySnapshot: paperPolicy,
+      currentPrice: "128000000",
+      riskApproval: { source: "risk_gate", approved: true },
+      idempotencyKey: "exit-original-001",
+      submittedAt: observedAt,
+      ports: {
+        executionEngine,
+        broker,
+      },
+    });
+
+    expect(result.status).toBe("REMAINING_CANCEL_REQUOTE_CREATED");
+    expect(result.remainingIntent).toMatchObject({
+      requestedQuantity: "0.0004",
+    });
+    expect(result.evidenceItems).not.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          reasonCode: "exit_remaining_cancel_open",
+        }),
+      ]),
+    );
+  });
+
   it("uses policy dust threshold to close partial fill remainder without creating a new intent", async () => {
     const brokerOrder = createBrokerOrderFixture({
       status: "PARTIALLY_FILLED",
@@ -2141,6 +2253,112 @@ describe("exit submission and paper runtime integration", () => {
       expect.arrayContaining([
         expect.objectContaining({
           reasonCode: "exit_remaining_dust_closed",
+        }),
+      ]),
+    );
+  });
+
+  it("does not create remaining intent when requote notional is below minimum order notional", async () => {
+    const brokerOrder = createBrokerOrderFixture({
+      status: "PARTIALLY_FILLED",
+      remainingQuantity: "0.0004",
+      requestedPrice: "10000000",
+    });
+    const executionEngine = {
+      submitOrder: vi.fn(async (submission: OrderSubmission) => ({
+        status: "SUBMITTED" as const,
+        submission,
+        brokerOrder,
+      })),
+    };
+    const broker = {
+      cancelOrder: vi.fn(async (orderId: string) => createBrokerOrderFixture({
+        brokerOrderId: orderId,
+        status: "CANCELED",
+        remainingQuantity: "0",
+        requestedPrice: "10000000",
+      })),
+    };
+
+    const result = await runExitPaperRuntime({
+      decision: await createTriggeredExitDecision(),
+      sizing: createValidExitSizing(),
+      positionScope: createBtcPositionScope(),
+      policySnapshot: paperPolicy,
+      currentPrice: "10000000",
+      riskApproval: { source: "risk_gate", approved: true },
+      idempotencyKey: "exit-original-001",
+      submittedAt: observedAt,
+      ports: {
+        executionEngine,
+        broker,
+      },
+    });
+
+    expect(result.status).toBe("EXECUTION_SUBMITTED");
+    expect(result.remainingIntent).toBeUndefined();
+    expect(result.evidenceItems).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          reasonCode: "exit_remaining_below_min_notional_closed",
+          payload: expect.objectContaining({
+            remaining_quantity: "0.0004",
+            broker_remaining_quantity_after_cancel: "0",
+            remaining_notional: "4000",
+            min_order_notional: "5000",
+            remaining_exit_intent_created: false,
+            cancel_requote_status: "remaining_below_min_order_notional",
+          }),
+        }),
+      ]),
+    );
+  });
+
+  it("surfaces invalid exit sizing as manual review evidence instead of no-op exit", async () => {
+    const executionEngine = {
+      submitOrder: vi.fn(async () => {
+        throw new Error("submit must not be called for invalid sizing");
+      }),
+    };
+    const broker = {
+      cancelOrder: vi.fn(),
+    };
+    const invalidSizing: ExitSizing = {
+      ...createValidExitSizing(),
+      executableQuantity: "0",
+      belowMinOrderNotional: true,
+      belowMinOrderReason: "청산 주문 예상 금액이 최소 주문금액 미만입니다.",
+      valid: false,
+      rejectionReason: "below_min_order_notional",
+    };
+
+    const result = await runExitPaperRuntime({
+      decision: await createTriggeredExitDecision(),
+      sizing: invalidSizing,
+      positionScope: createBtcPositionScope(),
+      policySnapshot: paperPolicy,
+      currentPrice: "128000000",
+      riskApproval: { source: "risk_gate", approved: true },
+      idempotencyKey: "exit-original-001",
+      submittedAt: observedAt,
+      ports: {
+        executionEngine,
+        broker,
+      },
+    });
+
+    expect(result.status).toBe("EXECUTION_REJECTED");
+    expect(executionEngine.submitOrder).not.toHaveBeenCalled();
+    expect(broker.cancelOrder).not.toHaveBeenCalled();
+    expect(result.evidenceItems).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          category: "EXECUTION_REJECTED",
+          reasonCode: "below_min_order_notional",
+          payload: expect.objectContaining({
+            new_orders_blocked: true,
+            manual_review_required: true,
+          }),
         }),
       ]),
     );

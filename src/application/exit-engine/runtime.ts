@@ -18,6 +18,7 @@ import type { ExitSubmissionResult } from "./submission.js";
 import {
   createExitExecutionEvidence,
   createExitFailureManualReviewEvidence,
+  createExitRemainingBelowMinNotionalEvidence,
   createExitRemainingDustEvidence,
   createExitPnLStatusEvidence,
   createExitStrategyEvidence,
@@ -121,6 +122,22 @@ export async function runExitPaperRuntime(input: ExitPaperRuntimeInput): Promise
     createExitStrategyEvidence(input.decision, input.positionScope.market, input.positionScope.strategyId),
   ];
 
+  if (shouldSurfaceSizingFailure(input.decision, input.sizing)) {
+    // exit rule이 이미 발화한 뒤 sizing이 실패하면 무동작이 아니라 신규 진입 차단/manual review 사건으로 남긴다.
+    appendManualReviewEvidence(
+      evidenceItems,
+      "청산 주문 수량 산정이 유효하지 않아 broker 제출을 차단했습니다.",
+      input.sizing.rejectionReason ?? "exit_sizing_invalid",
+      input.positionScope,
+    );
+    return {
+      status: "EXECUTION_REJECTED",
+      evidenceItems,
+      executionPersistenceStatus: "NOT_APPLICABLE",
+      evidenceWriteStatus: await appendExitEvidenceSafely(input.ports.evidenceWriter, evidenceItems),
+    };
+  }
+
   const submissionResult = createExitSubmission({
     decision: input.decision,
     sizing: input.sizing,
@@ -157,6 +174,23 @@ export async function runExitPaperRuntime(input: ExitPaperRuntimeInput): Promise
 
   const brokerOrder = executionResult.brokerOrder;
   appendSubmittedExecutionEvidence(evidenceItems, input, submissionResult, brokerOrder);
+  if (isBrokerTerminalFailure(brokerOrder.status)) {
+    // broker가 거부/실패 snapshot을 돌려준 경우 remainingQuantity를 체결 근거로 추론하지 않고 즉시 review로 수렴한다.
+    appendManualReviewEvidence(
+      evidenceItems,
+      `청산 주문이 broker에서 거부되거나 실패했습니다. 상태: ${brokerOrder.status}`,
+      "exit_broker_order_terminal_failure",
+      input.positionScope,
+    );
+    return {
+      status: "EXECUTION_REJECTED",
+      submission: submissionResult.submission,
+      executionResult,
+      evidenceItems,
+      executionPersistenceStatus: "NOT_APPLICABLE",
+      evidenceWriteStatus: await appendExitEvidenceSafely(input.ports.evidenceWriter, evidenceItems),
+    };
+  }
 
   if (!hasOpenRemainingQuantity(brokerOrder)) {
     const executionPersistenceStatus = await persistExitExecutionSafely(
@@ -183,7 +217,7 @@ export async function runExitPaperRuntime(input: ExitPaperRuntimeInput): Promise
   try {
     // 미체결 또는 부분 체결 open 잔량은 그대로 두면 포지션/PnL evidence와 주문 상태가 갈라지므로 먼저 취소로 닫는다.
     const canceledOrder = await input.ports.broker.cancelOrder(brokerOrder.brokerOrderId);
-    if (canceledOrder.status !== "CANCELED" || canceledOrder.remainingQuantity !== "0") {
+    if (canceledOrder.status !== "CANCELED" || !isZeroQuantity(canceledOrder.remainingQuantity)) {
       appendManualReviewEvidence(
         evidenceItems,
         "청산 주문 잔량 취소 후에도 주문이 열려 있습니다.",
@@ -211,7 +245,25 @@ export async function runExitPaperRuntime(input: ExitPaperRuntimeInput): Promise
     if (remaining.isDust) {
       appendDustRemainingEvidence(evidenceItems, input, submissionResult, canceledOrder, remaining);
     }
-    const remainingIntent = remaining.requiresNewIntent
+    const remainingBelowMinOrderNotional = remaining.requiresNewIntent
+      ? evaluateRemainingBelowMinOrderNotional(
+        submissionResult.exitOrderIntent,
+        remaining.remainingQuantity,
+        input.policySnapshot,
+      )
+      : undefined;
+    if (remainingBelowMinOrderNotional?.belowMinOrderNotional === true) {
+      // dust보다 큰 잔량도 최소 주문금액 미만이면 broker 거부가 예상되므로 재호가 intent를 만들지 않는다.
+      appendRemainingBelowMinOrderNotionalEvidence(
+        evidenceItems,
+        input,
+        submissionResult,
+        canceledOrder,
+        remaining,
+        remainingBelowMinOrderNotional.remainingNotional,
+      );
+    }
+    const remainingIntent = remaining.requiresNewIntent && remainingBelowMinOrderNotional?.belowMinOrderNotional !== true
       ? createRemainingExitIntent(
         submissionResult.exitOrderIntent,
         remaining.remainingQuantity,
@@ -263,6 +315,15 @@ export async function runExitPaperRuntime(input: ExitPaperRuntimeInput): Promise
   }
 }
 
+/**
+ * exit/REDUCE 결정에서 sizing이 실패한 경우 broker 제출 없이 실패 evidence를 노출해야 하는지 판단한다.
+ *
+ * HOLD/BLOCK의 null submission은 정상 무동작이지만, 발화된 청산 결정의 invalid sizing은 청산 실패로 다뤄야 한다.
+ */
+function shouldSurfaceSizingFailure(decision: ExitDecision, sizing: ExitSizing): boolean {
+  return !sizing.valid && (decision.kind === "REDUCE" || decision.kind === "EXIT");
+}
+
 function appendRejectedExecutionEvidence(
   evidenceItems: DecisionEvidenceItem[],
   input: ExitPaperRuntimeInput,
@@ -302,6 +363,10 @@ function appendSubmittedExecutionEvidence(
   const executionStatus = mapBrokerOrderStatusToExitExecutionStatus(brokerOrder.status);
   const filledQuantity = calculateFilledQuantity(submissionResult.exitOrderIntent, brokerOrder);
   const remainingPositionQuantity = calculateRemainingPositionQuantity(input.positionScope, filledQuantity);
+  const remainingQuantity = readBrokerRemainingQuantityForExecutionEvidence(
+    submissionResult.exitOrderIntent,
+    brokerOrder,
+  );
   evidenceItems.push(
     createExitExecutionEvidence({
       decision: input.decision,
@@ -309,7 +374,7 @@ function appendSubmittedExecutionEvidence(
       correlationId: brokerOrder.brokerOrderId,
       executionStatus,
       filledQuantity,
-      remainingQuantity: brokerOrder.remainingQuantity,
+      remainingQuantity,
       exitIntention: submissionResult.exitOrderIntent.metadata.position_effect,
       market: input.positionScope.market,
       strategyId: input.positionScope.strategyId,
@@ -368,6 +433,30 @@ function appendDustRemainingEvidence(
       market: input.positionScope.market,
       strategyId: input.positionScope.strategyId,
       evidenceKey: `exit-dust-${canceledOrder.brokerOrderId}`,
+    }, toDate(canceledOrder.updatedAt)),
+  );
+}
+
+function appendRemainingBelowMinOrderNotionalEvidence(
+  evidenceItems: DecisionEvidenceItem[],
+  input: ExitPaperRuntimeInput,
+  submissionResult: ExitSubmissionResult,
+  canceledOrder: BrokerOrder,
+  remaining: ReturnType<typeof evaluatePartialFillRemaining>,
+  remainingNotional: string,
+): void {
+  evidenceItems.push(
+    createExitRemainingBelowMinNotionalEvidence({
+      correlationId: canceledOrder.brokerOrderId,
+      filledQuantity: remaining.filledQuantity,
+      remainingQuantity: remaining.remainingQuantity,
+      brokerRemainingQuantityAfterCancel: canceledOrder.remainingQuantity,
+      remainingNotional,
+      minOrderNotional: input.policySnapshot.minOrderNotional,
+      exitIntention: submissionResult.exitOrderIntent.metadata.position_effect,
+      market: input.positionScope.market,
+      strategyId: input.positionScope.strategyId,
+      evidenceKey: `exit-min-notional-${canceledOrder.brokerOrderId}`,
     }, toDate(canceledOrder.updatedAt)),
   );
 }
@@ -460,6 +549,10 @@ function mapBrokerOrderStatusToExitExecutionStatus(
 }
 
 function calculateFilledQuantity(intent: ExitOrderIntent, brokerOrder: BrokerOrder): string {
+  if (isBrokerTerminalFailure(brokerOrder.status)) {
+    return "0";
+  }
+
   try {
     return parseFinancialDecimal(intent.requestedQuantity)
       .minus(parseFinancialDecimal(brokerOrder.remainingQuantity))
@@ -467,6 +560,15 @@ function calculateFilledQuantity(intent: ExitOrderIntent, brokerOrder: BrokerOrd
   } catch {
     return "0";
   }
+}
+
+/**
+ * 실패 terminal broker snapshot의 잔량 표현은 거래소마다 다를 수 있어 evidence에는 요청 잔량을 보수적으로 남긴다.
+ *
+ * 이 함수는 `remainingQuantity: "0"`을 "전량 체결"로 오해하지 않도록 EXECUTION_RESULT payload를 보정한다.
+ */
+function readBrokerRemainingQuantityForExecutionEvidence(intent: ExitOrderIntent, brokerOrder: BrokerOrder): string {
+  return isBrokerTerminalFailure(brokerOrder.status) ? intent.requestedQuantity : brokerOrder.remainingQuantity;
 }
 
 function calculateRemainingPositionQuantity(scope: ExitPositionScope, filledQuantity: string): string {
@@ -481,6 +583,41 @@ function calculateRemainingPositionQuantity(scope: ExitPositionScope, filledQuan
   }
 }
 
+/**
+ * cancel 결과 잔량이 숫자상 0인지 확인한다.
+ *
+ * broker adapter가 `"0.00000000"`처럼 scale을 유지해 반환해도 open 주문으로 오판하지 않게 한다.
+ */
+function isZeroQuantity(value: string): boolean {
+  try {
+    return parseFinancialDecimal(value).isZero();
+  } catch {
+    return value === "0";
+  }
+}
+
+/**
+ * 부분 체결 후 남은 잔량이 최소 주문금액 이상인지 평가한다.
+ *
+ * parse 실패 시 여기서 임의로 통과/차단하지 않고 기존 재호가 생성 경로가 null로 수렴하게 둔다.
+ */
+function evaluateRemainingBelowMinOrderNotional(
+  intent: ExitOrderIntent,
+  remainingQuantity: string,
+  policySnapshot: ExitPolicySnapshot,
+): { belowMinOrderNotional: boolean; remainingNotional: string } | undefined {
+  try {
+    const remainingNotional = parseFinancialDecimal(intent.requestedPrice)
+      .mul(parseFinancialDecimal(remainingQuantity));
+    return {
+      belowMinOrderNotional: remainingNotional.lessThan(parseFinancialDecimal(policySnapshot.minOrderNotional)),
+      remainingNotional: remainingNotional.toFixed(),
+    };
+  } catch {
+    return undefined;
+  }
+}
+
 function hasOpenRemainingQuantity(brokerOrder: BrokerOrder): boolean {
   if (brokerOrder.status !== "SUBMITTED" && brokerOrder.status !== "ACCEPTED" && brokerOrder.status !== "PARTIALLY_FILLED") {
     return false;
@@ -491,6 +628,15 @@ function hasOpenRemainingQuantity(brokerOrder: BrokerOrder): boolean {
   } catch {
     return brokerOrder.remainingQuantity !== "0";
   }
+}
+
+/**
+ * broker가 주문을 받아 실행 중으로 둔 것이 아니라 최종 실패로 닫았는지 판단한다.
+ *
+ * terminal failure에서는 remainingQuantity 값을 체결 추론에 사용하지 않고 실패 evidence로만 처리한다.
+ */
+function isBrokerTerminalFailure(status: BrokerOrder["status"]): boolean {
+  return status === "REJECTED" || status === "FAILED";
 }
 
 function toDate(value: TimestampInput): Date {

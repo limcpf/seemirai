@@ -174,17 +174,21 @@ function validateCostSnapshot(
       );
     }
 
+    const invalidExitCostFields = collectInvalidExitCostFields(snapshot);
     if (
       snapshot.exit_cost_allowed !== true ||
       !isNonEmptyString(snapshot.exit_cost_reason_code) ||
-      !isNonEmptyString(snapshot.exit_cost_bps) ||
-      !isNonEmptyString(snapshot.exit_slippage_bps)
+      invalidExitCostFields.length > 0
     ) {
       // exit 비용 evidence는 exit_cost_allowed flag와 exit_cost_reason_code, 비용 추정치가 모두 존재해야 승인 근거로 삼는다.
-      return reject("exit_cost_evidence_invalid", "Exit cost evidence must have allowed flag with valid cost fields", {
+      const metadata: JsonRecord = {
         exit_cost_allowed: snapshot.exit_cost_allowed,
         exit_cost_reason_code: snapshot.exit_cost_reason_code,
-      });
+      };
+      if (invalidExitCostFields.length > 0) {
+        metadata.invalid_fields = invalidExitCostFields;
+      }
+      return reject("exit_cost_evidence_invalid", "Exit cost evidence must have allowed flag with valid cost fields", metadata);
     }
 
     // exit 비용 evidence의 position scope가 현재 intent와 같은 market/strategy scope인지 검증한다.
@@ -360,6 +364,37 @@ function appendInvalidPositiveDecimalField(
 ): void {
   try {
     if (!parseFinancialDecimal(value).greaterThan(0)) {
+      target.push(fieldName);
+    }
+  } catch {
+    target.push(fieldName);
+  }
+}
+
+/**
+ * exit_cost_model 전용 비용 필드가 broker 실행 승인 근거로 쓸 수 있는 0 이상 Decimal 문자열인지 수집한다.
+ *
+ * exit 수수료와 예상 슬리피지는 entry cost snapshot과 분리된 승인 근거이므로 비어 있거나 음수/비숫자이면 fail-closed 한다.
+ */
+function collectInvalidExitCostFields(snapshot: JsonRecord): string[] {
+  const invalidFields: string[] = [];
+  appendInvalidNonNegativeDecimalField(invalidFields, "exit_cost_bps", snapshot.exit_cost_bps);
+  appendInvalidNonNegativeDecimalField(invalidFields, "exit_slippage_bps", snapshot.exit_slippage_bps);
+  return invalidFields;
+}
+
+function appendInvalidNonNegativeDecimalField(
+  target: string[],
+  fieldName: string,
+  value: unknown,
+): void {
+  if (!isNonEmptyString(value)) {
+    target.push(fieldName);
+    return;
+  }
+
+  try {
+    if (parseFinancialDecimal(value).isNegative()) {
       target.push(fieldName);
     }
   } catch {
