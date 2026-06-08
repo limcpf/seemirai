@@ -137,6 +137,35 @@ describe("M9 paper decision runner", () => {
     });
   });
 
+  it("submits SELL fixture orders only when exit position quantity evidence is present", async () => {
+    const fixture = JSON.parse(await readFile(fixturePath, "utf8"));
+    fixture.initialBalances = [
+      { currency: "KRW", available: "1000000" },
+      { currency: "BTC", available: "1" },
+    ];
+    fixture.frames = [fixture.frames[3]];
+    fixture.frames[0].features.side = "SELL";
+    fixture.frames[0].features.limit_price = "99990000";
+    fixture.frames[0].features.requested_notional = "9999";
+    fixture.frames[0].features.position_quantity = "1";
+
+    const result = await runM9PaperDecisionFixtureSmoke({ fixture });
+
+    expect(result.metrics.paperOrderSubmittedCount).toBe(1);
+    expect(result.metrics.paperFillCount).toBe(1);
+    expect(result.trace).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          stage: "EXECUTION_RESULT",
+          status: "SUBMITTED",
+          metadata: expect.objectContaining({
+            intent_side: "SELL",
+          }),
+        }),
+      ]),
+    );
+  });
+
   it("uses phase 1.5 approved alt universe evidence for TOP_ALT safety buffer defaults", async () => {
     const fixture = JSON.parse(await readFile(fixturePath, "utf8"));
     const frame = fixture.frames[3];

@@ -1837,7 +1837,7 @@ describe("exit/entry cost separation", () => {
 
 describe("exit submission and paper runtime integration", () => {
   it("creates a stable SELL submission only for REDUCE/EXIT decisions with explicit scope and risk evidence", async () => {
-    const decision = await createTriggeredExitDecision();
+    const decision = await createTriggeredReduceDecision();
     const sizing = createValidExitSizing();
     const positionScope = createBtcPositionScope();
 
@@ -1859,13 +1859,84 @@ describe("exit submission and paper runtime integration", () => {
       requestedNotional: "128000",
       idempotencyKey: "exit-stable-001",
       metadata: {
-        position_effect: "EXIT",
+        position_effect: "REDUCE",
         position_scope: positionScope,
       },
     });
     expect(result?.submission).toMatchObject({
       riskApproval: { source: "risk_gate", approved: true },
       expectedLossBpsOfEquity: "5",
+    });
+  });
+
+  it("uses the validated sizing requestedPrice instead of raw currentPrice", async () => {
+    const decision = await createTriggeredReduceDecision();
+    const positionScope = createBtcPositionScope();
+    const sizing = evaluateTestExitSizing({
+      requestedQuantity: "0.001",
+      positionScope,
+      policySnapshot: paperPolicy,
+      currentPrice: "128000001",
+      requestedPrice: "128000000",
+    });
+
+    const result = createExitSubmission({
+      decision,
+      sizing,
+      positionScope,
+      policySnapshot: paperPolicy,
+      currentPrice: "128000001",
+      riskApproval: { source: "risk_gate", approved: true },
+      idempotencyKey: "exit-validated-price-001",
+      submittedAt: observedAt,
+    });
+
+    expect(result?.exitOrderIntent).toMatchObject({
+      requestedPrice: "128000000",
+      requestedNotional: "128000",
+    });
+  });
+
+  it("rejects EXIT submission when executable quantity is only a partial position", async () => {
+    const result = createExitSubmission({
+      decision: await createTriggeredExitDecision(),
+      sizing: createValidExitSizing(),
+      positionScope: createBtcPositionScope(),
+      policySnapshot: paperPolicy,
+      currentPrice: "128000000",
+      riskApproval: { source: "risk_gate", approved: true },
+      idempotencyKey: "exit-partial-exit-001",
+      submittedAt: observedAt,
+    });
+
+    expect(result).toBeNull();
+  });
+
+  it("creates EXIT submission when executable quantity closes the full position", async () => {
+    const positionScope = createBtcPositionScope();
+    const sizing = evaluateTestExitSizing({
+      requestedQuantity: positionScope.totalQuantity,
+      positionScope,
+      policySnapshot: paperPolicy,
+      currentPrice: "128000000",
+    });
+
+    const result = createExitSubmission({
+      decision: await createTriggeredExitDecision(),
+      sizing,
+      positionScope,
+      policySnapshot: paperPolicy,
+      currentPrice: "128000000",
+      riskApproval: { source: "risk_gate", approved: true },
+      idempotencyKey: "exit-full-exit-001",
+      submittedAt: observedAt,
+    });
+
+    expect(result?.exitOrderIntent).toMatchObject({
+      requestedQuantity: positionScope.totalQuantity,
+      metadata: {
+        position_effect: "EXIT",
+      },
     });
   });
 
@@ -1949,7 +2020,7 @@ describe("exit submission and paper runtime integration", () => {
     const persistPaperExecution = vi.fn(async () => undefined);
 
     const result = await runExitPaperRuntime({
-      decision: await createTriggeredExitDecision(),
+      decision: await createTriggeredReduceDecision(),
       sizing: createValidExitSizing(),
       positionScope: createBtcPositionScope(),
       policySnapshot: paperPolicy,
@@ -2028,8 +2099,13 @@ describe("exit submission and paper runtime integration", () => {
     const persistPaperExecution = vi.fn(async () => undefined);
 
     const result = await runExitPaperRuntime({
-      decision: await createTriggeredExitDecision(),
-      sizing: createValidExitSizing(),
+      decision: await createTriggeredReduceDecision(),
+      sizing: evaluateTestExitSizing({
+        requestedQuantity: "0.001",
+        positionScope: createBtcPositionScope(),
+        policySnapshot: paperPolicy,
+        currentPrice: "10000000",
+      }),
       positionScope: createBtcPositionScope(),
       policySnapshot: paperPolicy,
       currentPrice: "128000000",
@@ -2095,7 +2171,7 @@ describe("exit submission and paper runtime integration", () => {
     };
 
     const result = await runExitPaperRuntime({
-      decision: await createTriggeredExitDecision(),
+      decision: await createTriggeredReduceDecision(),
       sizing: createValidExitSizing(),
       positionScope: createBtcPositionScope(),
       policySnapshot: paperPolicy,
@@ -2138,7 +2214,7 @@ describe("exit submission and paper runtime integration", () => {
     const appendExitEvidence = vi.fn(async () => undefined);
 
     const result = await runExitPaperRuntime({
-      decision: await createTriggeredExitDecision(),
+      decision: await createTriggeredReduceDecision(),
       sizing: createValidExitSizing(),
       positionScope: createBtcPositionScope(),
       policySnapshot: paperPolicy,
@@ -2194,7 +2270,7 @@ describe("exit submission and paper runtime integration", () => {
     };
 
     const result = await runExitPaperRuntime({
-      decision: await createTriggeredExitDecision(),
+      decision: await createTriggeredReduceDecision(),
       sizing: createValidExitSizing(),
       positionScope: createBtcPositionScope(),
       policySnapshot: paperPolicy,
@@ -2263,7 +2339,7 @@ describe("exit submission and paper runtime integration", () => {
     };
 
     const result = await runExitPaperRuntime({
-      decision: await createTriggeredExitDecision(),
+      decision: await createTriggeredReduceDecision(),
       sizing: createValidExitSizing(),
       positionScope: createBtcPositionScope(),
       policySnapshot: paperPolicy,
@@ -2311,7 +2387,7 @@ describe("exit submission and paper runtime integration", () => {
       };
 
       return runExitPaperRuntime({
-        decision: await createTriggeredExitDecision(),
+        decision: await createTriggeredReduceDecision(),
         sizing: createValidExitSizing(),
         positionScope: createBtcPositionScope(),
         policySnapshot: paperPolicy,
@@ -2358,7 +2434,7 @@ describe("exit submission and paper runtime integration", () => {
     const appendExitEvidence = vi.fn(async () => undefined);
 
     const result = await runExitPaperRuntime({
-      decision: await createTriggeredExitDecision(),
+      decision: await createTriggeredReduceDecision(),
       sizing: createValidExitSizing(),
       positionScope: createBtcPositionScope(),
       policySnapshot: {
@@ -2426,8 +2502,13 @@ describe("exit submission and paper runtime integration", () => {
     };
 
     const result = await runExitPaperRuntime({
-      decision: await createTriggeredExitDecision(),
-      sizing: createValidExitSizing(),
+      decision: await createTriggeredReduceDecision(),
+      sizing: evaluateTestExitSizing({
+        requestedQuantity: "0.001",
+        positionScope: createBtcPositionScope(),
+        policySnapshot: paperPolicy,
+        currentPrice: "10000000",
+      }),
       positionScope: createBtcPositionScope(),
       policySnapshot: paperPolicy,
       currentPrice: "10000000",
@@ -2478,7 +2559,7 @@ describe("exit submission and paper runtime integration", () => {
     };
 
     const result = await runExitPaperRuntime({
-      decision: await createTriggeredExitDecision(),
+      decision: await createTriggeredReduceDecision(),
       sizing: invalidSizing,
       positionScope: createBtcPositionScope(),
       policySnapshot: paperPolicy,
@@ -2529,7 +2610,7 @@ describe("exit submission and paper runtime integration", () => {
     };
 
     const result = await runExitPaperRuntime({
-      decision: await createTriggeredExitDecision(),
+      decision: await createTriggeredReduceDecision(),
       sizing: createValidExitSizing(),
       positionScope: createBtcPositionScope(),
       policySnapshot: paperPolicy,
@@ -2575,7 +2656,7 @@ describe("exit submission and paper runtime integration", () => {
     });
 
     const result = await runExitPaperRuntime({
-      decision: await createTriggeredExitDecision(),
+      decision: await createTriggeredReduceDecision(),
       sizing: createValidExitSizing(),
       positionScope: createBtcPositionScope(),
       policySnapshot: paperPolicy,
@@ -2613,6 +2694,19 @@ async function createTriggeredExitDecision(): Promise<ExitDecision> {
   return evaluateExitRules(
     [createTakeProfitExitRule({ takeProfitBps: "2000" })],
     createContext({ position: btcPosition }),
+  );
+}
+
+async function createTriggeredReduceDecision(): Promise<ExitDecision> {
+  return evaluateExitRules(
+    [createRiskReductionExitRule()],
+    createContext({
+      position: btcPosition,
+      riskReductionSignal: createRiskReductionSignal({
+        intention: "REDUCE",
+        reductionRatio: "0.2",
+      }),
+    }),
   );
 }
 

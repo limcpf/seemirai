@@ -97,7 +97,7 @@ function validateMarketOrderSafety(
       "Entry market order execution is disabled by the MVP execution boundary",
       {
         order_type: intent.orderType,
-        position_effect: readStringMetadata(intent.metadata, "position_effect"),
+        position_effect: readOrderIntentPositionEffect(intent),
       },
     );
   }
@@ -136,7 +136,7 @@ function validateCostSnapshot(
   // exit_cost_model source를 가진 경우에만 exit 비용 evidence로 검증한다.
   // position_effect 만으로 exit intent 여부를 판단하지 않는다 — entry 의도로 REDUCE/EXIT metadata를 가질 수 있다.
   if (snapshot.source === "exit_cost_model") {
-    const positionEffect = readStringMetadata(submission.intent.metadata, "position_effect");
+    const positionEffect = readOrderIntentPositionEffect(submission.intent);
 
     // exit_cost_model source는 반드시 REDUCE|EXIT position_effect와 함께 사용되어야 한다.
     if (positionEffect !== "REDUCE" && positionEffect !== "EXIT") {
@@ -239,12 +239,12 @@ function validateCostSnapshot(
     return undefined;
   }
 
-  const positionEffect = readStringMetadata(submission.intent.metadata, "position_effect");
-  if ((positionEffect === "REDUCE" || positionEffect === "EXIT") && submission.intent.side === "SELL") {
-    // exit intent가 entry cost_model snapshot을 재사용하면 exit 비용/슬리피지와 포지션 scope 근거가 사라진다.
+  const positionEffect = readOrderIntentPositionEffect(submission.intent);
+  if (submission.intent.side === "SELL") {
+    // spot MVP에서 SELL은 포지션 축소/청산이므로 metadata가 없어도 entry cost_model 재사용을 fail-closed 한다.
     return reject(
       "exit_cost_evidence_invalid",
-      "Exit order intent requires exit_cost_model evidence instead of entry cost snapshot",
+      "SELL order intent requires exit_cost_model evidence instead of entry cost snapshot",
       {
         source: snapshot.source,
         side: submission.intent.side,
@@ -446,7 +446,7 @@ function isNonEmptyString(value: unknown): value is string {
 function validateExitCostEvidence(
   submission: OrderSubmission,
 ): ExecutionSubmissionValidationResult | undefined {
-  const positionEffect = readStringMetadata(submission.intent.metadata, "position_effect");
+  const positionEffect = readOrderIntentPositionEffect(submission.intent);
   const isExitIntent = positionEffect === "REDUCE" || positionEffect === "EXIT";
 
   if (isExitIntent && submission.intent.side !== "SELL") {
@@ -488,6 +488,19 @@ function validateExitCostEvidence(
   }
 
   return undefined;
+}
+
+/**
+ * OrderIntent metadata의 position effect를 snake_case/camelCase legacy 표기 모두에서 읽는다.
+ *
+ * 시장가 entry guard와 fingerprint가 두 표기를 이미 같은 의미로 해석하므로, execution validation도 같은 기준으로
+ * exit evidence 분리와 entry 오염 차단을 수행해야 한다.
+ */
+function readOrderIntentPositionEffect(intent: OrderIntent): string | undefined {
+  return (
+    readStringMetadata(intent.metadata, "position_effect") ??
+    readStringMetadata(intent.metadata, "positionEffect")
+  );
 }
 
 /**

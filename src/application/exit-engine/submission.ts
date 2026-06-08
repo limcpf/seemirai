@@ -34,7 +34,7 @@ export interface ExitSubmissionInput {
   positionScope: ExitPositionScope;
   /** exit 정책 snapshot */
   policySnapshot: ExitPolicySnapshot;
-  /** 현재가 (지정가 계산용) */
+  /** 현재 시장가. 제출 지정가는 검증된 `sizing.requestedPrice`를 사용하며, 이 값은 runtime 입력 호환성을 위해 유지한다. */
   currentPrice: string;
   /** RiskGate가 현재 exit intent를 승인한 evidence snapshot */
   riskApproval: JsonRecord;
@@ -77,6 +77,10 @@ export function createExitSubmission(input: ExitSubmissionInput): ExitSubmission
   }
 
   const exitIntention = resolveExitIntention(decision);
+  if (exitIntention === "EXIT" && !isFullExitQuantity(sizing, input.positionScope)) {
+    // 전체 청산 metadata와 부분 수량이 갈라지면 운영자가 포지션 종료로 오인하므로 broker 제출 전에 차단한다.
+    return null;
+  }
 
   const idempotencyKey = input.idempotencyKey.trim();
   if (idempotencyKey.length === 0) {
@@ -84,8 +88,8 @@ export function createExitSubmission(input: ExitSubmissionInput): ExitSubmission
     return null;
   }
 
-  // 지정가는 현재가 기반으로 산출한다. exit 비용(exitCostBps)을 고려해 보수적 가격을 설정한다.
-  const requestedPrice = input.currentPrice;
+  // 지정가는 sizing 단계에서 호가 단위와 최소 주문금액 기준을 통과한 가격만 사용한다.
+  const requestedPrice = sizing.requestedPrice;
 
   const positionScope = input.positionScope;
   const notionalEstimate = calculateExitNotional(requestedPrice, sizing.executableQuantity);
@@ -153,6 +157,14 @@ export function createExitSubmission(input: ExitSubmissionInput): ExitSubmission
 function resolveExitIntention(decision: ExitDecision): ExitIntention {
   if (decision.kind === "EXIT") return "EXIT";
   return "REDUCE";
+}
+
+function isFullExitQuantity(sizing: ExitSizing, positionScope: ExitPositionScope): boolean {
+  try {
+    return parseFinancialDecimal(sizing.executableQuantity).equals(parseFinancialDecimal(positionScope.totalQuantity));
+  } catch {
+    return false;
+  }
 }
 
 /**

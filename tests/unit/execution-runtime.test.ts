@@ -644,20 +644,20 @@ describe("disabled Upbit live broker", () => {
 
 function createExitDecisionFixture(): ExitDecision {
   const triggeredRule: ExitRuleEvaluation = {
-    ruleId: "take_profit_exit",
+    ruleId: "risk_reduction_exit",
     status: "TRIGGERED",
-    exitIntention: "EXIT",
-    reasonCode: "take_profit_triggered",
-    message: "익절 조건 충족",
+    exitIntention: "REDUCE",
+    reasonCode: "daily_loss_limit_approaching",
+    message: "일간 손실 한도 접근, 포지션 축소",
   };
 
   return {
-    kind: "EXIT",
+    kind: "REDUCE",
     ruleEvaluations: [triggeredRule],
     triggeredRules: [triggeredRule],
     blockedRules: [],
-    reasonCode: "take_profit_triggered",
-    userMessage: "익절 조건이 충족되어 포지션을 청산합니다.",
+    reasonCode: "daily_loss_limit_approaching",
+    userMessage: "일간 손실 한도에 접근하여 포지션을 일부 축소합니다.",
     observedAt,
   };
 }
@@ -665,6 +665,7 @@ function createExitDecisionFixture(): ExitDecision {
 function createExitSizingFixture(): ExitSizing {
   return {
     requestedQuantity: "0.001",
+    requestedPrice: "10000000",
     executableQuantity: "0.001",
     dustQuantity: "0",
     belowMinOrderNotional: false,

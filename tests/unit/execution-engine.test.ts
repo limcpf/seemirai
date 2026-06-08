@@ -637,6 +637,27 @@ describe("M6 ExecutionEngine contract", () => {
       expect(result.valid).toBe(true);
     });
 
+    it("accepts exit intent when REDUCE position effect uses camelCase metadata", () => {
+      const intent = createSellLimitIntent({
+        metadata: {
+          positionEffect: "REDUCE",
+          exit_reason_code: "stop_loss_exit",
+          exit_rule_id: "stop_loss",
+        },
+      });
+      const riskApproval = createRiskApprovalEvidence(intent);
+
+      const result = validateExecutionSubmission(
+        createSubmission({
+          intent,
+          costSnapshot: createExitCostSnapshot(intent),
+          riskApproval,
+        }),
+      );
+
+      expect(result.valid).toBe(true);
+    });
+
     it("rejects exit_cost_model source on entry intent without position_effect", () => {
       const intent = createLimitIntent();
 
@@ -887,12 +908,82 @@ describe("M6 ExecutionEngine contract", () => {
       });
     });
 
+    it("rejects plain SELL intent when it tries to reuse entry cost_model evidence", () => {
+      const intent = createSellLimitIntent();
+
+      expect(
+        validateExecutionSubmission(
+          createSubmission({
+            intent,
+            costSnapshot: createCostSnapshot(intent),
+            riskApproval: createRiskApprovalEvidence(intent),
+          }),
+        ),
+      ).toMatchObject({
+        valid: false,
+        rejection: {
+          reasonCode: "exit_cost_evidence_invalid",
+          metadata: {
+            source: "cost_model",
+            side: "SELL",
+          },
+        },
+      });
+    });
+
+    it("rejects camelCase exit intent metadata that reuses entry cost_model evidence", () => {
+      const intent = createSellLimitIntent({
+        metadata: {
+          positionEffect: "EXIT",
+          exit_reason_code: "take_profit_exit",
+          exit_rule_id: "take_profit",
+        },
+      });
+
+      expect(
+        validateExecutionSubmission(
+          createSubmission({
+            intent,
+            costSnapshot: createCostSnapshot(intent),
+            riskApproval: createRiskApprovalEvidence(intent),
+          }),
+        ),
+      ).toMatchObject({
+        valid: false,
+        rejection: {
+          reasonCode: "exit_cost_evidence_invalid",
+          metadata: {
+            source: "cost_model",
+            side: "SELL",
+            position_effect: "EXIT",
+          },
+        },
+      });
+    });
+
     it("rejects entry intent carrying exit-related metadata", () => {
       const intent = createLimitIntent({
         metadata: {
           exit_reason_code: "stop_loss_exit",
           exit_rule_id: "stop_loss",
           exit_cost_bps: "5",
+        },
+      });
+
+      expect(
+        validateExecutionSubmission(createSubmission({ intent })),
+      ).toMatchObject({
+        valid: false,
+        rejection: {
+          reasonCode: "exit_cost_evidence_on_entry",
+        },
+      });
+    });
+
+    it("rejects entry intent carrying camelCase positionEffect metadata", () => {
+      const intent = createLimitIntent({
+        metadata: {
+          positionEffect: "REDUCE",
         },
       });
 

@@ -356,6 +356,8 @@ export interface ExitPositionScope {
 export interface ExitSizing {
   /** 요청된 청산 수량 */
   requestedQuantity: NumericString;
+  /** sizing 단계에서 호가 단위와 최소 주문금액 기준으로 검증된 실제 제출 가격 */
+  requestedPrice: NumericString;
   /** sizing 후 실제 실행 가능한 청산 수량 */
   executableQuantity: NumericString;
   /**

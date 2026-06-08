@@ -46,6 +46,7 @@ export function evaluateExitSizing(options: ExitSizingOptions): ExitSizing {
       "exit_position_scope_mismatch",
       "청산 요청 범위와 포지션 범위가 일치하지 않습니다.",
       options.requestedQuantity,
+      options.requestedPrice,
     );
   }
 
@@ -59,7 +60,12 @@ export function evaluateExitSizing(options: ExitSizingOptions): ExitSizing {
     currentPrice === undefined ||
     requestedPrice === undefined
   ) {
-    return invalid("exit_sizing_parse_error", "청산 수량 또는 정책 값을 파싱할 수 없습니다.", options.requestedQuantity);
+    return invalid(
+      "exit_sizing_parse_error",
+      "청산 수량 또는 정책 값을 파싱할 수 없습니다.",
+      options.requestedQuantity,
+      options.requestedPrice,
+    );
   }
 
   // 정책 snapshot 값이 비정상이면 최소 주문금액/dust 판단을 신뢰할 수 없으므로 주문 후보 생성을 차단한다.
@@ -68,6 +74,7 @@ export function evaluateExitSizing(options: ExitSizingOptions): ExitSizing {
       "exit_policy_invalid",
       "최소 주문금액 정책값이 유효하지 않습니다. 0보다 큰 금액이어야 합니다.",
       options.requestedQuantity,
+      options.requestedPrice,
     );
   }
 
@@ -76,6 +83,7 @@ export function evaluateExitSizing(options: ExitSizingOptions): ExitSizing {
       "exit_policy_invalid",
       "dust threshold 정책값이 유효하지 않습니다. 0 이상이어야 합니다.",
       options.requestedQuantity,
+      options.requestedPrice,
     );
   }
 
@@ -84,6 +92,7 @@ export function evaluateExitSizing(options: ExitSizingOptions): ExitSizing {
       "exit_policy_invalid",
       "호가 단위 정책값이 유효하지 않습니다. 0보다 큰 값이어야 합니다.",
       options.requestedQuantity,
+      options.requestedPrice,
     );
   }
 
@@ -93,6 +102,7 @@ export function evaluateExitSizing(options: ExitSizingOptions): ExitSizing {
       "exit_price_invalid",
       "현재가가 유효하지 않습니다. 0보다 큰 가격이어야 합니다.",
       options.requestedQuantity,
+      options.requestedPrice,
     );
   }
 
@@ -102,6 +112,7 @@ export function evaluateExitSizing(options: ExitSizingOptions): ExitSizing {
       "exit_price_invalid",
       "청산 요청 가격이 유효하지 않습니다. 0보다 큰 가격이어야 합니다.",
       options.requestedQuantity,
+      options.requestedPrice,
     );
   }
 
@@ -111,6 +122,7 @@ export function evaluateExitSizing(options: ExitSizingOptions): ExitSizing {
       "exit_price_tick_mismatch",
       "청산 요청 가격이 호가 단위에 맞지 않습니다.",
       options.requestedQuantity,
+      options.requestedPrice,
     );
   }
 
@@ -120,6 +132,7 @@ export function evaluateExitSizing(options: ExitSizingOptions): ExitSizing {
       "exit_no_position",
       "청산할 포지션이 없습니다. open position 수량이 0이거나 음수입니다.",
       options.requestedQuantity,
+      requestedPrice.toFixed(),
     );
   }
 
@@ -129,6 +142,7 @@ export function evaluateExitSizing(options: ExitSizingOptions): ExitSizing {
       "exit_quantity_invalid",
       "청산 요청 수량이 0 이하입니다.",
       options.requestedQuantity,
+      requestedPrice.toFixed(),
     );
   }
 
@@ -136,6 +150,7 @@ export function evaluateExitSizing(options: ExitSizingOptions): ExitSizing {
   if (requestedQty.greaterThan(totalQty)) {
     return {
       requestedQuantity: requestedQty.toFixed(),
+      requestedPrice: requestedPrice.toFixed(),
       executableQuantity: "0",
       dustQuantity: "0",
       belowMinOrderNotional: false,
@@ -158,6 +173,7 @@ export function evaluateExitSizing(options: ExitSizingOptions): ExitSizing {
   if (executableNotional.lessThan(minOrderNotional)) {
     return {
       requestedQuantity: requestedQty.toFixed(),
+      requestedPrice: requestedPrice.toFixed(),
       executableQuantity: "0",
       dustQuantity: "0",
       belowMinOrderNotional: true,
@@ -172,6 +188,7 @@ export function evaluateExitSizing(options: ExitSizingOptions): ExitSizing {
   if (hasDust) {
     return {
       requestedQuantity: requestedQty.toFixed(),
+      requestedPrice: requestedPrice.toFixed(),
       executableQuantity: "0",
       dustQuantity: remainingAfterSell.toFixed(),
       dustReason: `청산 후 잔량(${remainingAfterSell.toFixed()})이 dust threshold(${dustThreshold.toFixed()}) 이하입니다. "실제 0"이 아닌 "처리 불가 잔량"으로 구분하고 주문 후보 생성을 차단합니다.`,
@@ -185,6 +202,7 @@ export function evaluateExitSizing(options: ExitSizingOptions): ExitSizing {
   if (remainingAfterSell.greaterThan(0) && remainingNotional.lessThan(minOrderNotional)) {
     return {
       requestedQuantity: requestedQty.toFixed(),
+      requestedPrice: requestedPrice.toFixed(),
       executableQuantity: "0",
       dustQuantity: "0",
       belowMinOrderNotional: false,
@@ -198,6 +216,7 @@ export function evaluateExitSizing(options: ExitSizingOptions): ExitSizing {
 
   const result: ExitSizing = {
     requestedQuantity: requestedQty.toFixed(),
+    requestedPrice: requestedPrice.toFixed(),
     executableQuantity: executableQty.toFixed(),
     dustQuantity: "0",
     belowMinOrderNotional: false,
@@ -282,9 +301,11 @@ function invalid(
   rejectionReason: string,
   message: string,
   requestedQuantity: string,
+  requestedPrice: string,
 ): ExitSizing {
   const result: ExitSizing = {
     requestedQuantity,
+    requestedPrice,
     executableQuantity: "0",
     dustQuantity: "0",
     belowMinOrderNotional: false,
