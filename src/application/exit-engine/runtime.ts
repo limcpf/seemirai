@@ -129,6 +129,7 @@ export async function runExitPaperRuntime(input: ExitPaperRuntimeInput): Promise
       "청산 주문 수량 산정이 유효하지 않아 broker 제출을 차단했습니다.",
       input.sizing.rejectionReason ?? "exit_sizing_invalid",
       input.positionScope,
+      createInputEventScope(input),
     );
     return {
       status: "EXECUTION_REJECTED",
@@ -151,6 +152,22 @@ export async function runExitPaperRuntime(input: ExitPaperRuntimeInput): Promise
   });
 
   if (submissionResult === null) {
+    if (isTriggeredExitDecision(input.decision)) {
+      appendManualReviewEvidence(
+        evidenceItems,
+        "청산 주문 제출 후보를 만들 수 없어 broker 제출을 차단했습니다.",
+        "exit_submission_construction_failed",
+        input.positionScope,
+        createInputEventScope(input),
+      );
+      return {
+        status: "EXECUTION_REJECTED",
+        evidenceItems,
+        executionPersistenceStatus: "NOT_APPLICABLE",
+        evidenceWriteStatus: await appendExitEvidenceSafely(input.ports.evidenceWriter, evidenceItems),
+      };
+    }
+
     return {
       status: "NO_EXIT_INTENT",
       evidenceItems,
@@ -159,7 +176,26 @@ export async function runExitPaperRuntime(input: ExitPaperRuntimeInput): Promise
     };
   }
 
-  const executionResult = await input.ports.executionEngine.submitOrder(submissionResult.submission);
+  let executionResult: ExecutionSubmitOrderResult;
+  try {
+    executionResult = await input.ports.executionEngine.submitOrder(submissionResult.submission);
+  } catch (error) {
+    // broker 제출 경계에서 예외가 발생해도 caller crash로 끝내지 않고 exit 실패 evidence를 append-only로 남긴다.
+    appendManualReviewEvidence(
+      evidenceItems,
+      `청산 주문 broker 제출에 실패했습니다: ${readErrorMessage(error)}`,
+      "exit_broker_submit_failed",
+      input.positionScope,
+      createInputEventScope(input),
+    );
+    return {
+      status: "EXECUTION_REJECTED",
+      submission: submissionResult.submission,
+      evidenceItems,
+      executionPersistenceStatus: "NOT_APPLICABLE",
+      evidenceWriteStatus: await appendExitEvidenceSafely(input.ports.evidenceWriter, evidenceItems),
+    };
+  }
   if (executionResult.status === "REJECTED") {
     appendRejectedExecutionEvidence(evidenceItems, input, submissionResult, executionResult.rejection.message);
     return {
@@ -181,13 +217,20 @@ export async function runExitPaperRuntime(input: ExitPaperRuntimeInput): Promise
       `청산 주문이 broker에서 거부되거나 실패했습니다. 상태: ${brokerOrder.status}`,
       "exit_broker_order_terminal_failure",
       input.positionScope,
+      brokerOrder.brokerOrderId,
+    );
+    const executionPersistenceStatus = await persistExitExecutionSafely(
+      input,
+      submissionResult.submission,
+      brokerOrder,
+      evidenceItems,
     );
     return {
       status: "EXECUTION_REJECTED",
       submission: submissionResult.submission,
       executionResult,
       evidenceItems,
-      executionPersistenceStatus: "NOT_APPLICABLE",
+      executionPersistenceStatus,
       evidenceWriteStatus: await appendExitEvidenceSafely(input.ports.evidenceWriter, evidenceItems),
     };
   }
@@ -223,6 +266,7 @@ export async function runExitPaperRuntime(input: ExitPaperRuntimeInput): Promise
         "청산 주문 잔량 취소 후에도 주문이 열려 있습니다.",
         "exit_remaining_cancel_open",
         input.positionScope,
+        canceledOrder.brokerOrderId,
       );
       const executionPersistenceStatus = await persistExitExecutionSafely(
         input,
@@ -297,6 +341,7 @@ export async function runExitPaperRuntime(input: ExitPaperRuntimeInput): Promise
       `청산 주문 잔량 취소에 실패했습니다: ${readErrorMessage(error)}`,
       "exit_remaining_cancel_failed",
       input.positionScope,
+      brokerOrder.brokerOrderId,
     );
     const executionPersistenceStatus = await persistExitExecutionSafely(
       input,
@@ -321,7 +366,16 @@ export async function runExitPaperRuntime(input: ExitPaperRuntimeInput): Promise
  * HOLD/BLOCK의 null submission은 정상 무동작이지만, 발화된 청산 결정의 invalid sizing은 청산 실패로 다뤄야 한다.
  */
 function shouldSurfaceSizingFailure(decision: ExitDecision, sizing: ExitSizing): boolean {
-  return !sizing.valid && (decision.kind === "REDUCE" || decision.kind === "EXIT");
+  return !sizing.valid && isTriggeredExitDecision(decision);
+}
+
+/**
+ * 실제 청산 side effect가 필요한 decision인지 판단한다.
+ *
+ * 이 predicate는 HOLD/BLOCK의 정상 무동작과 REDUCE/EXIT 실패를 런타임 evidence에서 분리하는 기준이다.
+ */
+function isTriggeredExitDecision(decision: ExitDecision): boolean {
+  return decision.kind === "REDUCE" || decision.kind === "EXIT";
 }
 
 function appendRejectedExecutionEvidence(
@@ -466,6 +520,7 @@ function appendManualReviewEvidence(
   reason: string,
   reasonCode: string,
   scope: ExitPositionScope,
+  eventScopeId: string,
 ): void {
   evidenceItems.push(
     createExitFailureManualReviewEvidence(
@@ -474,7 +529,7 @@ function appendManualReviewEvidence(
       scope.market,
       scope.strategyId,
       toDate(scope.observedAt),
-      `exit-failure-${reasonCode}-${scope.market}-${scope.strategyId}`,
+      `exit-failure-${reasonCode}-${scope.market}-${scope.strategyId}-${eventScopeId}`,
     ),
   );
 }
@@ -521,6 +576,7 @@ async function persistExitExecutionSafely(
       `청산 실행 결과 저장에 실패했습니다: ${readErrorMessage(error)}`,
       "exit_execution_persistence_unavailable",
       input.positionScope,
+      brokerOrder.brokerOrderId,
     );
     return "UNAVAILABLE";
   }
@@ -645,4 +701,15 @@ function toDate(value: TimestampInput): Date {
 
 function readErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : "알 수 없는 오류";
+}
+
+/**
+ * broker order id가 아직 없는 사전 실패 구간에서 사용할 사건 scope를 만든다.
+ *
+ * idempotency key가 비어 있는 construction 실패도 제출 시각을 함께 포함해 반복 실패 evidence가 같은 fingerprint로 합쳐지지 않게 한다.
+ */
+function createInputEventScope(input: ExitPaperRuntimeInput): string {
+  const idempotencyKey = input.idempotencyKey.trim();
+  const stableKey = idempotencyKey.length > 0 ? idempotencyKey : "missing-idempotency-key";
+  return `${stableKey}-${toDate(input.submittedAt).toISOString()}`;
 }

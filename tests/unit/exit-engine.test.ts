@@ -2025,6 +2025,7 @@ describe("exit submission and paper runtime integration", () => {
     const broker = {
       cancelOrder: vi.fn(),
     };
+    const persistPaperExecution = vi.fn(async () => undefined);
 
     const result = await runExitPaperRuntime({
       decision: await createTriggeredExitDecision(),
@@ -2038,12 +2039,21 @@ describe("exit submission and paper runtime integration", () => {
       ports: {
         executionEngine,
         broker,
+        executionPersistence: { persistPaperExecution },
       },
     });
 
     expect(result.status).toBe("EXECUTION_REJECTED");
-    expect(result.executionPersistenceStatus).toBe("NOT_APPLICABLE");
+    expect(result.executionPersistenceStatus).toBe("RECORDED");
     expect(broker.cancelOrder).not.toHaveBeenCalled();
+    expect(persistPaperExecution).toHaveBeenCalledWith({
+      submission: result.submission,
+      brokerOrder: expect.objectContaining({
+        brokerOrderId: "paper-exit-order-1",
+        status: "REJECTED",
+      }),
+      correlationId: "paper-exit-order-1",
+    });
     expect(result.evidenceItems).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
@@ -2072,6 +2082,95 @@ describe("exit submission and paper runtime integration", () => {
         }),
       ]),
     );
+  });
+
+  it("surfaces submission construction failures for triggered exits as manual review evidence", async () => {
+    const executionEngine = {
+      submitOrder: vi.fn(async () => {
+        throw new Error("submit must not be called without an exit submission");
+      }),
+    };
+    const broker = {
+      cancelOrder: vi.fn(),
+    };
+
+    const result = await runExitPaperRuntime({
+      decision: await createTriggeredExitDecision(),
+      sizing: createValidExitSizing(),
+      positionScope: createBtcPositionScope(),
+      policySnapshot: paperPolicy,
+      currentPrice: "128000000",
+      riskApproval: { source: "risk_gate", approved: true },
+      idempotencyKey: "   ",
+      submittedAt: observedAt,
+      ports: {
+        executionEngine,
+        broker,
+      },
+    });
+
+    expect(result.status).toBe("EXECUTION_REJECTED");
+    expect(executionEngine.submitOrder).not.toHaveBeenCalled();
+    expect(result.evidenceItems).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          category: "EXECUTION_REJECTED",
+          reasonCode: "exit_submission_construction_failed",
+          evidenceFingerprint: expect.stringContaining("missing-idempotency-key"),
+          payload: expect.objectContaining({
+            new_orders_blocked: true,
+            manual_review_required: true,
+          }),
+        }),
+      ]),
+    );
+  });
+
+  it("converts broker submit exceptions into exit failure evidence", async () => {
+    const executionEngine = {
+      submitOrder: vi.fn(async () => {
+        throw new Error("broker adapter unavailable");
+      }),
+    };
+    const broker = {
+      cancelOrder: vi.fn(),
+    };
+    const appendExitEvidence = vi.fn(async () => undefined);
+
+    const result = await runExitPaperRuntime({
+      decision: await createTriggeredExitDecision(),
+      sizing: createValidExitSizing(),
+      positionScope: createBtcPositionScope(),
+      policySnapshot: paperPolicy,
+      currentPrice: "128000000",
+      riskApproval: { source: "risk_gate", approved: true },
+      idempotencyKey: "exit-original-001",
+      submittedAt: observedAt,
+      ports: {
+        executionEngine,
+        broker,
+        evidenceWriter: { appendExitEvidence },
+      },
+    });
+
+    expect(result.status).toBe("EXECUTION_REJECTED");
+    expect(result.submission).toBeDefined();
+    expect(broker.cancelOrder).not.toHaveBeenCalled();
+    expect(result.evidenceWriteStatus).toBe("RECORDED");
+    expect(result.evidenceItems).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          category: "EXECUTION_REJECTED",
+          reasonCode: "exit_broker_submit_failed",
+          evidenceFingerprint: expect.stringContaining("exit-original-001"),
+          payload: expect.objectContaining({
+            new_orders_blocked: true,
+            manual_review_required: true,
+          }),
+        }),
+      ]),
+    );
+    expect(appendExitEvidence).toHaveBeenCalledWith(result.evidenceItems);
   });
 
   it("cancels accepted but unfilled exit orders and creates remaining intent", async () => {
@@ -2189,6 +2288,52 @@ describe("exit submission and paper runtime integration", () => {
         }),
       ]),
     );
+  });
+
+  it("scopes manual-review evidence fingerprints by broker event", async () => {
+    const runCancelFailure = async (brokerOrderId: string) => {
+      const brokerOrder = createBrokerOrderFixture({
+        brokerOrderId,
+        status: "PARTIALLY_FILLED",
+        remainingQuantity: "0.0004",
+      });
+      const executionEngine = {
+        submitOrder: vi.fn(async (submission: OrderSubmission) => ({
+          status: "SUBMITTED" as const,
+          submission,
+          brokerOrder,
+        })),
+      };
+      const broker = {
+        cancelOrder: vi.fn(async () => {
+          throw new Error("cancel unavailable");
+        }),
+      };
+
+      return runExitPaperRuntime({
+        decision: await createTriggeredExitDecision(),
+        sizing: createValidExitSizing(),
+        positionScope: createBtcPositionScope(),
+        policySnapshot: paperPolicy,
+        currentPrice: "128000000",
+        riskApproval: { source: "risk_gate", approved: true },
+        idempotencyKey: "exit-original-001",
+        submittedAt: observedAt,
+        ports: {
+          executionEngine,
+          broker,
+        },
+      });
+    };
+
+    const first = await runCancelFailure("paper-exit-order-1");
+    const second = await runCancelFailure("paper-exit-order-2");
+    const firstFailure = first.evidenceItems.find((item) => item.reasonCode === "exit_remaining_cancel_failed");
+    const secondFailure = second.evidenceItems.find((item) => item.reasonCode === "exit_remaining_cancel_failed");
+
+    expect(firstFailure?.evidenceFingerprint).toContain("paper-exit-order-1");
+    expect(secondFailure?.evidenceFingerprint).toContain("paper-exit-order-2");
+    expect(firstFailure?.evidenceFingerprint).not.toBe(secondFailure?.evidenceFingerprint);
   });
 
   it("uses policy dust threshold to close partial fill remainder without creating a new intent", async () => {
