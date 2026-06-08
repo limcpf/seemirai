@@ -235,6 +235,20 @@ function validateCostSnapshot(
     return undefined;
   }
 
+  const positionEffect = readStringMetadata(submission.intent.metadata, "position_effect");
+  if ((positionEffect === "REDUCE" || positionEffect === "EXIT") && submission.intent.side === "SELL") {
+    // exit intent가 entry cost_model snapshot을 재사용하면 exit 비용/슬리피지와 포지션 scope 근거가 사라진다.
+    return reject(
+      "exit_cost_evidence_invalid",
+      "Exit order intent requires exit_cost_model evidence instead of entry cost snapshot",
+      {
+        source: snapshot.source,
+        side: submission.intent.side,
+        position_effect: positionEffect,
+      },
+    );
+  }
+
   if (
     snapshot.source !== "cost_model" ||
     snapshot.trade_allowed !== true ||

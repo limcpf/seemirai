@@ -2079,6 +2079,73 @@ describe("exit submission and paper runtime integration", () => {
     );
   });
 
+  it("uses policy dust threshold to close partial fill remainder without creating a new intent", async () => {
+    const brokerOrder = createBrokerOrderFixture({
+      status: "PARTIALLY_FILLED",
+      remainingQuantity: "0.0004",
+    });
+    const executionEngine = {
+      submitOrder: vi.fn(async (submission: OrderSubmission) => ({
+        status: "SUBMITTED" as const,
+        submission,
+        brokerOrder,
+      })),
+    };
+    const broker = {
+      cancelOrder: vi.fn(async (orderId: string) => createBrokerOrderFixture({
+        brokerOrderId: orderId,
+        status: "CANCELED",
+        remainingQuantity: "0",
+      })),
+    };
+    const appendExitEvidence = vi.fn(async () => undefined);
+
+    const result = await runExitPaperRuntime({
+      decision: await createTriggeredExitDecision(),
+      sizing: createValidExitSizing(),
+      positionScope: createBtcPositionScope(),
+      policySnapshot: {
+        ...paperPolicy,
+        dustThreshold: "0.0005",
+      },
+      currentPrice: "128000000",
+      riskApproval: { source: "risk_gate", approved: true },
+      idempotencyKey: "exit-original-001",
+      submittedAt: observedAt,
+      ports: {
+        executionEngine,
+        broker,
+        evidenceWriter: { appendExitEvidence },
+      },
+    });
+
+    expect(result.status).toBe("EXECUTION_SUBMITTED");
+    expect(result.remainingIntent).toBeUndefined();
+    expect(broker.cancelOrder).toHaveBeenCalledWith("paper-exit-order-1");
+    expect(result.evidenceItems).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          reasonCode: "exit_remaining_dust_closed",
+          payload: expect.objectContaining({
+            remaining_quantity: "0.0004",
+            canceled_quantity: "0.0004",
+            broker_remaining_quantity_after_cancel: "0",
+            dust_threshold: "0.0005",
+            remaining_exit_intent_created: false,
+            cancel_requote_status: "dust_remaining_canceled",
+          }),
+        }),
+      ]),
+    );
+    expect(appendExitEvidence).toHaveBeenCalledWith(
+      expect.arrayContaining([
+        expect.objectContaining({
+          reasonCode: "exit_remaining_dust_closed",
+        }),
+      ]),
+    );
+  });
+
   it("converges remaining cancel failure to manual review evidence without retrying submit", async () => {
     const brokerOrder = createBrokerOrderFixture({
       status: "PARTIALLY_FILLED",

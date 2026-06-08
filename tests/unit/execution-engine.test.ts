@@ -488,6 +488,8 @@ describe("M6 ExecutionEngine contract", () => {
       side: "SELL",
       metadata: {
         position_effect: "REDUCE",
+        exit_reason_code: "stop_loss_exit",
+        exit_rule_id: "stop_loss",
       },
     });
 
@@ -495,7 +497,7 @@ describe("M6 ExecutionEngine contract", () => {
       validateExecutionSubmission(
         createSubmission({
           intent: reduceOnlyRuntimeIntent,
-          costSnapshot: createCostSnapshot(reduceOnlyRuntimeIntent),
+          costSnapshot: createExitCostSnapshot(reduceOnlyRuntimeIntent),
           riskApproval: createRiskApprovalEvidence(approvedEntryIntent),
         }),
         {
@@ -571,11 +573,16 @@ describe("M6 ExecutionEngine contract", () => {
       side: "SELL",
       metadata: {
         position_effect: "REDUCE",
+        exit_reason_code: "stop_loss_exit",
+        exit_rule_id: "stop_loss",
       },
     });
 
     expect(
-      validateExecutionSubmission(createSubmission({ intent }), {
+      validateExecutionSubmission(createSubmission({
+        intent,
+        costSnapshot: createExitCostSnapshot(intent),
+      }), {
         liveTradingEnabled: false,
         marketOrderEnabled: true,
         entryMarketOrderEnabled: false,
@@ -796,6 +803,36 @@ describe("M6 ExecutionEngine contract", () => {
         valid: false,
         rejection: {
           reasonCode: "exit_position_scope_mismatch",
+        },
+      });
+    });
+
+    it("rejects exit intent that reuses entry cost_model evidence", () => {
+      const intent = createSellLimitIntent({
+        metadata: {
+          position_effect: "EXIT",
+          exit_reason_code: "take_profit_exit",
+          exit_rule_id: "take_profit",
+        },
+      });
+
+      expect(
+        validateExecutionSubmission(
+          createSubmission({
+            intent,
+            costSnapshot: createCostSnapshot(intent),
+            riskApproval: createRiskApprovalEvidence(intent),
+          }),
+        ),
+      ).toMatchObject({
+        valid: false,
+        rejection: {
+          reasonCode: "exit_cost_evidence_invalid",
+          metadata: {
+            source: "cost_model",
+            side: "SELL",
+            position_effect: "EXIT",
+          },
         },
       });
     });

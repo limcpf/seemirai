@@ -18,6 +18,7 @@ import type { ExitSubmissionResult } from "./submission.js";
 import {
   createExitExecutionEvidence,
   createExitFailureManualReviewEvidence,
+  createExitRemainingDustEvidence,
   createExitPnLStatusEvidence,
   createExitStrategyEvidence,
 } from "./runtime-evidence.js";
@@ -174,7 +175,11 @@ export async function runExitPaperRuntime(input: ExitPaperRuntimeInput): Promise
     };
   }
 
-  const remaining = evaluatePartialFillRemaining(brokerOrder, submissionResult.exitOrderIntent);
+  const remaining = evaluatePartialFillRemaining(
+    brokerOrder,
+    submissionResult.exitOrderIntent,
+    { dustThreshold: input.policySnapshot.dustThreshold },
+  );
   try {
     // 미체결 또는 부분 체결 open 잔량은 그대로 두면 포지션/PnL evidence와 주문 상태가 갈라지므로 먼저 취소로 닫는다.
     const canceledOrder = await input.ports.broker.cancelOrder(brokerOrder.brokerOrderId);
@@ -203,6 +208,9 @@ export async function runExitPaperRuntime(input: ExitPaperRuntimeInput): Promise
     }
 
     appendCanceledExecutionEvidence(evidenceItems, input, submissionResult, canceledOrder, remaining.filledQuantity);
+    if (remaining.isDust) {
+      appendDustRemainingEvidence(evidenceItems, input, submissionResult, canceledOrder, remaining);
+    }
     const remainingIntent = remaining.requiresNewIntent
       ? createRemainingExitIntent(
         submissionResult.exitOrderIntent,
@@ -337,6 +345,29 @@ function appendCanceledExecutionEvidence(
       market: input.positionScope.market,
       strategyId: input.positionScope.strategyId,
       evidenceKey: `exit-execution-${canceledOrder.brokerOrderId}-CANCELED`,
+    }, toDate(canceledOrder.updatedAt)),
+  );
+}
+
+function appendDustRemainingEvidence(
+  evidenceItems: DecisionEvidenceItem[],
+  input: ExitPaperRuntimeInput,
+  submissionResult: ExitSubmissionResult,
+  canceledOrder: BrokerOrder,
+  remaining: ReturnType<typeof evaluatePartialFillRemaining>,
+): void {
+  evidenceItems.push(
+    createExitRemainingDustEvidence({
+      correlationId: canceledOrder.brokerOrderId,
+      filledQuantity: remaining.filledQuantity,
+      remainingQuantity: remaining.remainingQuantity,
+      canceledQuantity: remaining.remainingQuantity,
+      brokerRemainingQuantityAfterCancel: canceledOrder.remainingQuantity,
+      dustThreshold: input.policySnapshot.dustThreshold,
+      exitIntention: submissionResult.exitOrderIntent.metadata.position_effect,
+      market: input.positionScope.market,
+      strategyId: input.positionScope.strategyId,
+      evidenceKey: `exit-dust-${canceledOrder.brokerOrderId}`,
     }, toDate(canceledOrder.updatedAt)),
   );
 }

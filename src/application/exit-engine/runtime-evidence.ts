@@ -37,6 +37,35 @@ export interface ExitExecutionEvidenceInput {
 }
 
 /**
+ * partial fill 이후 dust 잔량을 취소로 닫았음을 남기는 evidence 입력이다.
+ *
+ * dust 잔량은 새 주문 후보를 만들지 않으므로, 원 broker 잔량과 취소된 수량을 별도 payload로 보존해
+ * 재호가 누락이 아니라 정책에 따른 종료임을 `/status.why`가 설명할 수 있게 한다.
+ */
+export interface ExitRemainingDustEvidenceInput {
+  /** 실행 상관 식별자 (broker order id 등) */
+  correlationId: string;
+  /** 체결 수량 */
+  filledQuantity: string;
+  /** cancel 직전 dust 잔량 */
+  remainingQuantity: string;
+  /** dust로 판단되어 취소된 수량 */
+  canceledQuantity: string;
+  /** cancel 이후 broker snapshot의 잔량 */
+  brokerRemainingQuantityAfterCancel: string;
+  /** 정책 처리 불가 잔량 기준값 */
+  dustThreshold: string;
+  /** exit 의도 */
+  exitIntention: ExitIntention;
+  /** 시장 식별자 */
+  market: string;
+  /** 전략 식별자 */
+  strategyId: string;
+  /** append-only ledger dedupe에 사용할 안정 evidence key */
+  evidenceKey?: string;
+}
+
+/**
  * exit 판단을 decision evidence item으로 변환한다.
  *
  * SELL/HOLD/BLOCK 판단을 STRATEGY_DECISION evidence로 남긴다.
@@ -135,6 +164,51 @@ export function createExitExecutionEvidence(
       market: input.market,
       strategyId: input.strategyId,
       correlationId: input.correlationId ?? null,
+      exitIntention: input.exitIntention,
+    },
+  };
+}
+
+/**
+ * partial fill dust 잔량을 cancel 후 재호가 없이 닫은 evidence를 생성한다.
+ *
+ * 이 evidence는 실패가 아니라 정책적 종료이므로 EXECUTED category로 남기고,
+ * remaining_exit_intent_created=false를 명시해 후속 runner가 잔량 재호가 누락으로 오해하지 않게 한다.
+ */
+export function createExitRemainingDustEvidence(
+  input: ExitRemainingDustEvidenceInput,
+  occurredAt: Date = new Date(),
+): DecisionEvidenceItem {
+  const payload: DecisionLedgerJsonRecord = {
+    execution_status: "CANCELED",
+    exit_intention: input.exitIntention,
+    filled_quantity: input.filledQuantity,
+    remaining_quantity: input.remainingQuantity,
+    canceled_quantity: input.canceledQuantity,
+    broker_remaining_quantity_after_cancel: input.brokerRemainingQuantityAfterCancel,
+    dust_threshold: input.dustThreshold,
+    remaining_exit_intent_created: false,
+    cancel_requote_status: "dust_remaining_canceled",
+    market: input.market,
+    strategy_id: input.strategyId,
+  };
+
+  return {
+    evidenceKind: "EXECUTION_RESULT",
+    category: "EXECUTED",
+    reasonCode: "exit_remaining_dust_closed",
+    userMessage: `${input.market} 청산 주문의 잔량 ${input.remainingQuantity}이(가) 처리 불가 잔량 기준값 ${input.dustThreshold} 이하라 취소 후 추가 주문을 만들지 않았습니다.`,
+    impact: "처리 불가 잔량은 정책에 따라 닫혔고, 잔량 재호가 주문은 생성되지 않았습니다.",
+    action: "포지션 잔량이 기대와 다르면 수동으로 확인하세요.",
+    occurredAt,
+    source: "exit-execution",
+    sourceId: input.correlationId,
+    payload,
+    evidenceFingerprint: input.evidenceKey ?? `exit-dust-${input.correlationId}-${input.remainingQuantity}`,
+    trace: {
+      market: input.market,
+      strategyId: input.strategyId,
+      correlationId: input.correlationId,
       exitIntention: input.exitIntention,
     },
   };
