@@ -1,6 +1,8 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   createDefaultExitRules,
+  createExitSubmission,
+  createRemainingExitIntent,
   createStopLossExitRule,
   createTakeProfitExitRule,
   createTrailingStopExitRule,
@@ -10,12 +12,16 @@ import {
   evaluateExitRules,
   evaluateExitSizing,
   formatSizingUserMessage,
+  runExitPaperRuntime,
 } from "../../src/application/index.js";
 import type {
+  BrokerOrder,
   ExitDecision,
   ExitRuleContext,
   ExitPositionSnapshot,
   ExitPolicySnapshot,
+  ExitPositionScope,
+  ExitSizing,
   ExitTrailingState,
   ExitStrategySignal,
   ExitTimeBasedConfig,
@@ -23,6 +29,7 @@ import type {
   ExitRuleEvaluation,
   ExitOrderIntent,
   ExitOrderIntentMetadata,
+  OrderSubmission,
 } from "../../src/domain/index.js";
 
 // ---------------------------------------------------------------------------
@@ -1827,3 +1834,411 @@ describe("exit/entry cost separation", () => {
     expect(policy).not.toHaveProperty("trade_allowed");
   });
 });
+
+describe("exit submission and paper runtime integration", () => {
+  it("creates a stable SELL submission only for REDUCE/EXIT decisions with explicit scope and risk evidence", async () => {
+    const decision = await createTriggeredExitDecision();
+    const sizing = createValidExitSizing();
+    const positionScope = createBtcPositionScope();
+
+    const result = createExitSubmission({
+      decision,
+      sizing,
+      positionScope,
+      policySnapshot: paperPolicy,
+      currentPrice: "128000000",
+      riskApproval: { source: "risk_gate", approved: true },
+      idempotencyKey: "exit-stable-001",
+      submittedAt: observedAt,
+      expectedLossBpsOfEquity: "5",
+    });
+
+    expect(result).not.toBeNull();
+    expect(result?.exitOrderIntent).toMatchObject({
+      side: "SELL",
+      requestedNotional: "128000",
+      idempotencyKey: "exit-stable-001",
+      metadata: {
+        position_effect: "EXIT",
+        position_scope: positionScope,
+      },
+    });
+    expect(result?.submission).toMatchObject({
+      riskApproval: { source: "risk_gate", approved: true },
+      expectedLossBpsOfEquity: "5",
+    });
+  });
+
+  it("does not convert HOLD decisions or empty idempotency keys into SELL intents", async () => {
+    const holdDecision = await evaluateExitRules([], createContext());
+    const sizing = createValidExitSizing();
+
+    expect(
+      createExitSubmission({
+        decision: holdDecision,
+        sizing,
+        positionScope: createBtcPositionScope(),
+        policySnapshot: paperPolicy,
+        currentPrice: "128000000",
+        riskApproval: { source: "risk_gate", approved: true },
+        idempotencyKey: "exit-hold-001",
+        submittedAt: observedAt,
+      }),
+    ).toBeNull();
+
+    const exitDecision = await createTriggeredExitDecision();
+    expect(
+      createExitSubmission({
+        decision: exitDecision,
+        sizing,
+        positionScope: createBtcPositionScope(),
+        policySnapshot: paperPolicy,
+        currentPrice: "128000000",
+        riskApproval: { source: "risk_gate", approved: true },
+        idempotencyKey: "   ",
+        submittedAt: observedAt,
+      }),
+    ).toBeNull();
+  });
+
+  it("creates deterministic remaining exit intents after cancel/requote", () => {
+    const originalIntent = createExitIntentFixture();
+
+    const first = createRemainingExitIntent(originalIntent, "0.0004", {
+      lineageId: "paper-exit-order-1",
+      requoteSequence: 1,
+    });
+    const second = createRemainingExitIntent(originalIntent, "0.0004", {
+      lineageId: "paper-exit-order-1",
+      requoteSequence: 1,
+    });
+
+    expect(first).toEqual(second);
+    expect(first).toMatchObject({
+      requestedQuantity: "0.0004",
+      requestedNotional: "51200",
+      idempotencyKey: "exit-original-001-requote-paper-exit-order-1-1",
+      metadata: {
+        requote_parent_idempotency_key: "exit-original-001",
+        requote_lineage_id: "paper-exit-order-1",
+        requote_sequence: 1,
+      },
+    });
+  });
+
+  it("submits exit order, cancels partial fill remainder, creates remaining intent, and appends evidence", async () => {
+    const brokerOrder = createBrokerOrderFixture({
+      status: "PARTIALLY_FILLED",
+      remainingQuantity: "0.0004",
+    });
+    const executionEngine = {
+      submitOrder: vi.fn(async (submission: OrderSubmission) => ({
+        status: "SUBMITTED" as const,
+        submission,
+        brokerOrder,
+      })),
+    };
+    const broker = {
+      cancelOrder: vi.fn(async (orderId: string) => createBrokerOrderFixture({
+        brokerOrderId: orderId,
+        status: "CANCELED",
+        remainingQuantity: "0",
+      })),
+    };
+    const appendExitEvidence = vi.fn(async () => undefined);
+    const persistPaperExecution = vi.fn(async () => undefined);
+
+    const result = await runExitPaperRuntime({
+      decision: await createTriggeredExitDecision(),
+      sizing: createValidExitSizing(),
+      positionScope: createBtcPositionScope(),
+      policySnapshot: paperPolicy,
+      currentPrice: "128000000",
+      riskApproval: { source: "risk_gate", approved: true },
+      idempotencyKey: "exit-original-001",
+      submittedAt: observedAt,
+      ports: {
+        executionEngine,
+        broker,
+        executionPersistence: { persistPaperExecution },
+        evidenceWriter: { appendExitEvidence },
+      },
+    });
+
+    expect(result.status).toBe("REMAINING_CANCEL_REQUOTE_CREATED");
+    expect(executionEngine.submitOrder).toHaveBeenCalledTimes(1);
+    expect(broker.cancelOrder).toHaveBeenCalledWith("paper-exit-order-1");
+    expect(result.remainingIntent).toMatchObject({
+      requestedQuantity: "0.0004",
+      idempotencyKey: "exit-original-001-requote-paper-exit-order-1-1",
+    });
+    expect(result.evidenceItems).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          evidenceKind: "PNL_STATUS_CONTEXT",
+          payload: expect.objectContaining({
+            remaining_position_quantity: "0.0044",
+            position_closed: false,
+          }),
+        }),
+        expect.objectContaining({
+          evidenceKind: "EXECUTION_RESULT",
+          payload: expect.objectContaining({
+            execution_status: "CANCELED",
+            cancel_requote_status: "open_remaining_canceled",
+          }),
+        }),
+      ]),
+    );
+    expect(result.executionPersistenceStatus).toBe("RECORDED");
+    expect(persistPaperExecution).toHaveBeenCalledWith({
+      submission: result.submission,
+      brokerOrder: expect.objectContaining({
+        brokerOrderId: "paper-exit-order-1",
+        status: "CANCELED",
+        remainingQuantity: "0",
+      }),
+      correlationId: "paper-exit-order-1",
+    });
+    expect(result.evidenceWriteStatus).toBe("RECORDED");
+    expect(appendExitEvidence).toHaveBeenCalledWith(
+      expect.arrayContaining([
+        expect.objectContaining({ evidenceKind: "STRATEGY_DECISION" }),
+        expect.objectContaining({ evidenceKind: "EXECUTION_RESULT" }),
+        expect.objectContaining({ evidenceKind: "PNL_STATUS_CONTEXT" }),
+      ]),
+    );
+  });
+
+  it("cancels accepted but unfilled exit orders and creates remaining intent", async () => {
+    const brokerOrder = createBrokerOrderFixture({
+      status: "ACCEPTED",
+      remainingQuantity: "0.001",
+    });
+    const executionEngine = {
+      submitOrder: vi.fn(async (submission: OrderSubmission) => ({
+        status: "SUBMITTED" as const,
+        submission,
+        brokerOrder,
+      })),
+    };
+    const broker = {
+      cancelOrder: vi.fn(async (orderId: string) => createBrokerOrderFixture({
+        brokerOrderId: orderId,
+        status: "CANCELED",
+        remainingQuantity: "0",
+      })),
+    };
+
+    const result = await runExitPaperRuntime({
+      decision: await createTriggeredExitDecision(),
+      sizing: createValidExitSizing(),
+      positionScope: createBtcPositionScope(),
+      policySnapshot: paperPolicy,
+      currentPrice: "128000000",
+      riskApproval: { source: "risk_gate", approved: true },
+      idempotencyKey: "exit-original-001",
+      submittedAt: observedAt,
+      ports: {
+        executionEngine,
+        broker,
+      },
+    });
+
+    expect(result.status).toBe("REMAINING_CANCEL_REQUOTE_CREATED");
+    expect(broker.cancelOrder).toHaveBeenCalledWith("paper-exit-order-1");
+    expect(result.remainingIntent).toMatchObject({
+      requestedQuantity: "0.001",
+      requestedNotional: "128000",
+      idempotencyKey: "exit-original-001-requote-paper-exit-order-1-1",
+    });
+    expect(result.evidenceItems).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          evidenceKind: "EXECUTION_RESULT",
+          payload: expect.objectContaining({
+            execution_status: "OPEN",
+            open_order_remaining_action: "cancel_or_requote_required",
+          }),
+        }),
+        expect.objectContaining({
+          evidenceKind: "PNL_STATUS_CONTEXT",
+          payload: expect.objectContaining({
+            remaining_position_quantity: "0.005",
+            position_closed: false,
+          }),
+        }),
+        expect.objectContaining({
+          evidenceKind: "EXECUTION_RESULT",
+          payload: expect.objectContaining({
+            execution_status: "CANCELED",
+            cancel_requote_status: "open_remaining_canceled",
+          }),
+        }),
+      ]),
+    );
+  });
+
+  it("converges remaining cancel failure to manual review evidence without retrying submit", async () => {
+    const brokerOrder = createBrokerOrderFixture({
+      status: "PARTIALLY_FILLED",
+      remainingQuantity: "0.0004",
+    });
+    const executionEngine = {
+      submitOrder: vi.fn(async (submission: OrderSubmission) => ({
+        status: "SUBMITTED" as const,
+        submission,
+        brokerOrder,
+      })),
+    };
+    const broker = {
+      cancelOrder: vi.fn(async () => createBrokerOrderFixture({
+        status: "PARTIALLY_FILLED",
+        remainingQuantity: "0.0004",
+      })),
+    };
+
+    const result = await runExitPaperRuntime({
+      decision: await createTriggeredExitDecision(),
+      sizing: createValidExitSizing(),
+      positionScope: createBtcPositionScope(),
+      policySnapshot: paperPolicy,
+      currentPrice: "128000000",
+      riskApproval: { source: "risk_gate", approved: true },
+      idempotencyKey: "exit-original-001",
+      submittedAt: observedAt,
+      ports: {
+        executionEngine,
+        broker,
+      },
+    });
+
+    expect(result.status).toBe("REMAINING_CANCEL_FAILED");
+    expect(executionEngine.submitOrder).toHaveBeenCalledTimes(1);
+    expect(result.evidenceItems).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          category: "EXECUTION_REJECTED",
+          payload: expect.objectContaining({
+            new_orders_blocked: true,
+            manual_review_required: true,
+          }),
+        }),
+      ]),
+    );
+  });
+
+  it("reports persistence failure as manual review evidence without retrying broker submit", async () => {
+    const brokerOrder = createBrokerOrderFixture();
+    const executionEngine = {
+      submitOrder: vi.fn(async (submission: OrderSubmission) => ({
+        status: "SUBMITTED" as const,
+        submission,
+        brokerOrder,
+      })),
+    };
+    const broker = {
+      cancelOrder: vi.fn(),
+    };
+    const persistPaperExecution = vi.fn(async () => {
+      throw new Error("db unavailable");
+    });
+
+    const result = await runExitPaperRuntime({
+      decision: await createTriggeredExitDecision(),
+      sizing: createValidExitSizing(),
+      positionScope: createBtcPositionScope(),
+      policySnapshot: paperPolicy,
+      currentPrice: "128000000",
+      riskApproval: { source: "risk_gate", approved: true },
+      idempotencyKey: "exit-original-001",
+      submittedAt: observedAt,
+      ports: {
+        executionEngine,
+        broker,
+        executionPersistence: { persistPaperExecution },
+      },
+    });
+
+    expect(result.status).toBe("EXECUTION_SUBMITTED");
+    expect(result.executionPersistenceStatus).toBe("UNAVAILABLE");
+    expect(executionEngine.submitOrder).toHaveBeenCalledTimes(1);
+    expect(broker.cancelOrder).not.toHaveBeenCalled();
+    expect(result.evidenceItems).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          category: "EXECUTION_REJECTED",
+          reasonCode: "exit_execution_persistence_unavailable",
+          payload: expect.objectContaining({
+            new_orders_blocked: true,
+            manual_review_required: true,
+          }),
+        }),
+      ]),
+    );
+  });
+});
+
+async function createTriggeredExitDecision(): Promise<ExitDecision> {
+  return evaluateExitRules(
+    [createTakeProfitExitRule({ takeProfitBps: "2000" })],
+    createContext({ position: btcPosition }),
+  );
+}
+
+function createBtcPositionScope(): ExitPositionScope {
+  return {
+    market: "KRW-BTC",
+    strategyId: "trend_following",
+    totalQuantity: "0.005",
+    observedAt,
+  };
+}
+
+function createValidExitSizing(): ExitSizing {
+  return evaluateTestExitSizing({
+    requestedQuantity: "0.001",
+    positionScope: createBtcPositionScope(),
+    policySnapshot: paperPolicy,
+    currentPrice: "128000000",
+  });
+}
+
+function createExitIntentFixture(): ExitOrderIntent {
+  return {
+    exchangeId: "upbit_krw_spot",
+    market: "KRW-BTC",
+    strategyId: "trend_following",
+    side: "SELL",
+    orderType: "LIMIT",
+    requestedQuantity: "0.001",
+    requestedNotional: "128000",
+    idempotencyKey: "exit-original-001",
+    reason: "익절 조건 충족",
+    requestedPrice: "128000000",
+    timeInForce: "GTC",
+    metadata: {
+      position_effect: "EXIT",
+      exit_reason_code: "take_profit_triggered",
+      exit_rule_id: "take_profit_exit",
+      position_scope: createBtcPositionScope(),
+    },
+  };
+}
+
+function createBrokerOrderFixture(overrides: Partial<BrokerOrder> = {}): BrokerOrder {
+  return {
+    brokerOrderId: "paper-exit-order-1",
+    idempotencyKey: "exit-original-001",
+    exchangeId: "upbit_krw_spot",
+    market: "KRW-BTC",
+    side: "SELL",
+    orderType: "LIMIT",
+    status: "FILLED",
+    requestedQuantity: "0.001",
+    remainingQuantity: "0",
+    requestedPrice: "128000000",
+    updatedAt: observedAt,
+    ...overrides,
+  };
+}

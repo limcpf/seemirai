@@ -38,7 +38,11 @@ export type ExecutionRejectionReasonCode =
   | "cost_snapshot_mismatch"
   | "risk_approval_missing"
   | "risk_approval_not_approved"
-  | "risk_approval_mismatch";
+  | "risk_approval_mismatch"
+  | "exit_cost_evidence_on_entry"
+  | "exit_cost_evidence_invalid"
+  | "exit_position_scope_mismatch"
+  | "exit_sell_quantity_exceeds_position";
 
 /**
  * broker 제출 전 validation 실패를 설명하는 결과 payload다.
@@ -155,4 +159,24 @@ export type ExecutionRiskApprovalEvidence = JsonRecord & {
   status: string;
   action: string;
   order_intent: ExecutionOrderIntentEvidence;
+};
+
+/**
+ * Exit 비용 evidence를 ExecutionEngine이 대조할 수 있는 snapshot payload다.
+ *
+ * `position_effect=REDUCE|EXIT`인 intent에만 exit cost evidence가 허용되며, entry intent에 exit cost evidence가
+ * 붙으면 broker 제출 전 fail-closed 한다. source=exit_cost_model로 기존 cost_margin_ok snapshot과 분리해
+ * entry 비용 승인 근거를 exit 의도로 재사용하는 경로를 막는다.
+ */
+export type ExecutionExitCostEvidence = JsonRecord & {
+  source: "exit_cost_model";
+  exit_cost_allowed: boolean;
+  exit_cost_reason_code: string;
+  exit_cost_bps: string;
+  exit_slippage_bps: string;
+  position_scope: JsonRecord & {
+    market: string;
+    strategy_id: string;
+    total_quantity: string;
+  };
 };

@@ -4,11 +4,26 @@ import path from "node:path";
 import type {
   BrokerBalanceSnapshot,
   BrokerOrder,
+  ExitDecision,
+  ExitPolicySnapshot,
+  ExitPositionScope,
+  ExitRuleEvaluation,
+  ExitSizing,
   OrderSubmission,
   Phase15AltApprovalEvidenceCondition,
   Phase15AltApprovalEvidenceSnapshot,
+  RiskGateContext,
 } from "../../src/domain/index.js";
+import {
+  createExecutionRiskApprovalEvidence,
+  createExitSubmission,
+  evaluateRiskGate,
+} from "../../src/application/index.js";
 import type { BrokerPort, HardStopRuntimeActionPlan } from "../../src/application/index.js";
+import {
+  createRiskThresholdSnapshot,
+  defaultRiskLimitThresholds,
+} from "../../src/domain/index.js";
 import {
   DisabledUpbitLiveBroker,
   UpbitLiveBrokerDisabledError,
@@ -35,6 +50,7 @@ import {
 import type { EnabledPilotRuntimeConfig } from "../../src/runtime/index.js";
 
 const observedAt = "2026-05-20T01:00:00.000Z";
+const thresholdSnapshot = createRiskThresholdSnapshot(defaultRiskLimitThresholds, observedAt);
 const defaultUpbitRateLimitStatus = {
   kind: "OK",
   remainingReq: {
@@ -104,6 +120,71 @@ describe("PAPER_NO_KEY execution runtime", () => {
 
     expect(runtime.markets).toEqual(["KRW-BTC", "KRW-ETH", "KRW-SOL"]);
     expect(runtime.universe.phase15ApprovedAltMarkets).toEqual(["KRW-SOL"]);
+  });
+
+  it("wires exit runtime to PaperBroker, execution persistence, and evidence writer ports", async () => {
+    const config = await loadDefaultRuntimeConfig();
+    const appendExitEvidence = vi.fn(async () => undefined);
+    const persistPaperExecution = vi.fn(async () => undefined);
+    const decision = createExitDecisionFixture();
+    const sizing = createExitSizingFixture();
+    const positionScope = createExitPositionScopeFixture();
+    const policySnapshot = createExitPolicySnapshotFixture();
+    const seedSubmission = createExitSubmission({
+      decision,
+      sizing,
+      positionScope,
+      policySnapshot,
+      currentPrice: "10000000",
+      riskApproval: {},
+      idempotencyKey: "exit-runtime-001",
+      expectedLossBpsOfEquity: "10",
+      submittedAt: observedAt,
+    });
+    expect(seedSubmission).not.toBeNull();
+    const riskContext = createExitRiskContext(seedSubmission!.exitOrderIntent, "10");
+    const runtime = createPaperNoKeyExecutionRuntime(config, {
+      initialBalances: [
+        {
+          currency: "BTC",
+          available: "0.005",
+        },
+      ],
+      brokerOrderIdPrefix: "exit-runtime-order",
+      clock: () => observedAt,
+      exitExecutionPersistence: { persistPaperExecution },
+      exitEvidenceWriter: { appendExitEvidence },
+    });
+
+    const result = await runtime.runExit({
+      decision,
+      sizing,
+      positionScope,
+      policySnapshot,
+      currentPrice: "10000000",
+      riskApproval: createExecutionRiskApprovalEvidence(evaluateRiskGate(riskContext), riskContext),
+      idempotencyKey: "exit-runtime-001",
+      expectedLossBpsOfEquity: "10",
+      submittedAt: observedAt,
+    });
+
+    expect(result.status).toBe("REMAINING_CANCEL_REQUOTE_CREATED");
+    expect(result.executionPersistenceStatus).toBe("RECORDED");
+    expect(persistPaperExecution).toHaveBeenCalledWith({
+      submission: result.submission,
+      brokerOrder: expect.objectContaining({
+        status: "CANCELED",
+        remainingQuantity: "0",
+      }),
+      correlationId: expect.stringMatching(/^exit-runtime-order-/u),
+    });
+    expect(appendExitEvidence).toHaveBeenCalledWith(
+      expect.arrayContaining([
+        expect.objectContaining({ evidenceKind: "STRATEGY_DECISION" }),
+        expect.objectContaining({ evidenceKind: "EXECUTION_RESULT" }),
+        expect.objectContaining({ evidenceKind: "PNL_STATUS_CONTEXT" }),
+      ]),
+    );
   });
 
   it("rejects API keys in the PAPER_NO_KEY execution runtime", () => {
@@ -560,6 +641,81 @@ describe("disabled Upbit live broker", () => {
     await expect(broker.getBalances()).rejects.toBeInstanceOf(UpbitLiveBrokerDisabledError);
   });
 });
+
+function createExitDecisionFixture(): ExitDecision {
+  const triggeredRule: ExitRuleEvaluation = {
+    ruleId: "take_profit_exit",
+    status: "TRIGGERED",
+    exitIntention: "EXIT",
+    reasonCode: "take_profit_triggered",
+    message: "익절 조건 충족",
+  };
+
+  return {
+    kind: "EXIT",
+    ruleEvaluations: [triggeredRule],
+    triggeredRules: [triggeredRule],
+    blockedRules: [],
+    reasonCode: "take_profit_triggered",
+    userMessage: "익절 조건이 충족되어 포지션을 청산합니다.",
+    observedAt,
+  };
+}
+
+function createExitSizingFixture(): ExitSizing {
+  return {
+    requestedQuantity: "0.001",
+    executableQuantity: "0.001",
+    dustQuantity: "0",
+    belowMinOrderNotional: false,
+    exceedsPosition: false,
+    valid: true,
+  };
+}
+
+function createExitPositionScopeFixture(): ExitPositionScope {
+  return {
+    market: "KRW-BTC",
+    strategyId: "trend_following",
+    totalQuantity: "0.005",
+    observedAt,
+  };
+}
+
+function createExitPolicySnapshotFixture(): ExitPolicySnapshot {
+  return {
+    minOrderNotional: "5000",
+    tickSize: "1000",
+    dustThreshold: "0.0001",
+    exitCostBps: "5",
+    exitSlippageBps: "2",
+    source: "execution-runtime.test",
+    capturedAt: observedAt,
+  };
+}
+
+function createExitRiskContext(orderIntent: OrderSubmission["intent"], expectedLossBpsOfEquity: string): RiskGateContext {
+  return {
+    orderIntent,
+    account: {
+      equityKrw: "1000000",
+      dailyRealizedPnlBps: "-10",
+      weeklyRealizedPnlBps: "-20",
+      maxDrawdownBps: "100",
+      capturedAt: observedAt,
+    },
+    positions: [],
+    strategy: {
+      strategyId: orderIntent.strategyId,
+      consecutiveLosses: 0,
+      capturedAt: observedAt,
+    },
+    infrastructureSignals: [],
+    thresholdSnapshot,
+    expectedLossBpsOfEquity,
+    observedAt,
+  };
+}
 
 function createBrokerPort(options: { openOrders?: readonly BrokerOrder[] } = {}) {
   const openOrders = options.openOrders ?? [];

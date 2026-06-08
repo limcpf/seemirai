@@ -481,8 +481,11 @@ describe("M6 ExecutionEngine contract", () => {
   });
 
   it("rejects RiskGate evidence when market position effect changed after approval", () => {
-    const approvedEntryIntent = createMarketIntent();
+    const approvedEntryIntent = createMarketIntent({
+      side: "SELL",
+    });
     const reduceOnlyRuntimeIntent = createMarketIntent({
+      side: "SELL",
       metadata: {
         position_effect: "REDUCE",
       },
@@ -565,6 +568,7 @@ describe("M6 ExecutionEngine contract", () => {
 
   it("allows reduce-only market simulation when entry market orders stay disabled", () => {
     const intent = createMarketIntent({
+      side: "SELL",
       metadata: {
         position_effect: "REDUCE",
       },
@@ -601,6 +605,259 @@ describe("M6 ExecutionEngine contract", () => {
       },
     });
     expect(submitOrder).not.toHaveBeenCalled();
+  });
+
+  describe("M19 exit cost evidence validation", () => {
+    it("accepts exit intent with exit_cost_model source and REDUCE position_effect", () => {
+      const intent = createSellLimitIntent({
+        metadata: {
+          position_effect: "REDUCE",
+          exit_reason_code: "stop_loss_exit",
+          exit_rule_id: "stop_loss",
+        },
+      });
+      const riskApproval = createRiskApprovalEvidence(intent);
+
+      const result = validateExecutionSubmission(
+        createSubmission({
+          intent,
+          costSnapshot: createExitCostSnapshot(intent),
+          riskApproval,
+        }),
+      );
+
+      // exit intent가 RiskGate 승인을 받고 exit cost evidence가 유효하면 broker 제출 전 검증을 통과해야 한다.
+      expect(result.valid).toBe(true);
+    });
+
+    it("rejects exit_cost_model source on entry intent without position_effect", () => {
+      const intent = createLimitIntent();
+
+      expect(
+        validateExecutionSubmission(
+          createSubmission({
+            intent,
+            costSnapshot: createExitCostSnapshot(intent),
+          }),
+        ),
+      ).toMatchObject({
+        valid: false,
+        rejection: {
+          reasonCode: "exit_cost_evidence_on_entry",
+        },
+      });
+    });
+
+    it("rejects BUY intent even when REDUCE position_effect is attached", () => {
+      const intent = createLimitIntent({
+        metadata: {
+          position_effect: "REDUCE",
+          exit_reason_code: "stop_loss_exit",
+          exit_rule_id: "stop_loss",
+        },
+      });
+
+      expect(
+        validateExecutionSubmission(
+          createSubmission({
+            intent,
+            costSnapshot: createExitCostSnapshot(intent),
+            riskApproval: createRiskApprovalEvidence(intent),
+          }),
+        ),
+      ).toMatchObject({
+        valid: false,
+        rejection: {
+          reasonCode: "exit_cost_evidence_on_entry",
+        },
+      });
+    });
+
+    it("rejects exit cost evidence without exit reason and rule metadata", () => {
+      const intent = createSellLimitIntent({
+        metadata: {
+          position_effect: "EXIT",
+        },
+      });
+
+      expect(
+        validateExecutionSubmission(
+          createSubmission({
+            intent,
+            costSnapshot: createExitCostSnapshot(intent),
+          }),
+        ),
+      ).toMatchObject({
+        valid: false,
+        rejection: {
+          reasonCode: "exit_cost_evidence_invalid",
+          metadata: {
+            missing_exit_reason_code: true,
+            missing_exit_rule_id: true,
+          },
+        },
+      });
+    });
+
+    it("rejects exit cost evidence when exit_cost_allowed is false", () => {
+      const intent = createSellLimitIntent({
+        metadata: {
+          position_effect: "REDUCE",
+          exit_reason_code: "stop_loss_exit",
+          exit_rule_id: "stop_loss",
+        },
+      });
+
+      expect(
+        validateExecutionSubmission(
+          createSubmission({
+            intent,
+            costSnapshot: {
+              source: "exit_cost_model",
+              exit_cost_allowed: false,
+              exit_cost_reason_code: "exit_cost_margin_insufficient",
+              exit_cost_bps: "5",
+              exit_slippage_bps: "2",
+              position_scope: {
+                market: "KRW-BTC",
+                strategy_id: "trend_following",
+                total_quantity: "0.01",
+              },
+            },
+          }),
+        ),
+      ).toMatchObject({
+        valid: false,
+        rejection: {
+          reasonCode: "exit_cost_evidence_invalid",
+        },
+      });
+    });
+
+    it("rejects exit cost evidence when position_scope mismatches intent", () => {
+      const intent = createSellLimitIntent({
+        metadata: {
+          position_effect: "REDUCE",
+          exit_reason_code: "stop_loss_exit",
+          exit_rule_id: "stop_loss",
+        },
+      });
+
+      expect(
+        validateExecutionSubmission(
+          createSubmission({
+            intent,
+            costSnapshot: {
+              source: "exit_cost_model",
+              exit_cost_allowed: true,
+              exit_cost_reason_code: "exit_cost_margin_ok",
+              exit_cost_bps: "5",
+              exit_slippage_bps: "2",
+              position_scope: {
+                market: "KRW-ETH",
+                strategy_id: "mean_reversion",
+                total_quantity: "0.01",
+              },
+            },
+          }),
+        ),
+      ).toMatchObject({
+        valid: false,
+        rejection: {
+          reasonCode: "exit_position_scope_mismatch",
+        },
+      });
+    });
+
+    it("rejects exit cost evidence when position_scope quantity is missing or non-positive", () => {
+      const intent = createSellLimitIntent({
+        metadata: {
+          position_effect: "REDUCE",
+          exit_reason_code: "stop_loss_exit",
+          exit_rule_id: "stop_loss",
+        },
+      });
+
+      expect(
+        validateExecutionSubmission(
+          createSubmission({
+            intent,
+            costSnapshot: {
+              ...createExitCostSnapshot(intent),
+              position_scope: {
+                market: "KRW-BTC",
+                strategy_id: "trend_following",
+                total_quantity: "0",
+              },
+            },
+          }),
+        ),
+      ).toMatchObject({
+        valid: false,
+        rejection: {
+          reasonCode: "exit_position_scope_mismatch",
+        },
+      });
+    });
+
+    it("rejects entry intent carrying exit-related metadata", () => {
+      const intent = createLimitIntent({
+        metadata: {
+          exit_reason_code: "stop_loss_exit",
+          exit_rule_id: "stop_loss",
+          exit_cost_bps: "5",
+        },
+      });
+
+      expect(
+        validateExecutionSubmission(createSubmission({ intent })),
+      ).toMatchObject({
+        valid: false,
+        rejection: {
+          reasonCode: "exit_cost_evidence_on_entry",
+        },
+      });
+    });
+
+    it("rejects SELL order when quantity exceeds open position", () => {
+      const intent = createSellLimitIntent({
+        requestedQuantity: "0.02",
+        metadata: {
+          position_effect: "EXIT",
+          exit_reason_code: "take_profit_exit",
+          exit_rule_id: "take_profit",
+        },
+      });
+
+      expect(
+        validateExecutionSubmission(
+          createSubmission({
+            intent,
+            costSnapshot: {
+              source: "exit_cost_model",
+              exit_cost_allowed: true,
+              exit_cost_reason_code: "exit_cost_margin_ok",
+              exit_cost_bps: "5",
+              exit_slippage_bps: "2",
+              position_scope: {
+                market: "KRW-BTC",
+                strategy_id: "trend_following",
+                total_quantity: "0.01",
+              },
+            },
+          }),
+        ),
+      ).toMatchObject({
+        valid: false,
+        rejection: {
+          reasonCode: "exit_sell_quantity_exceeds_position",
+          metadata: {
+            requested_quantity: "0.02",
+            open_position_quantity: "0.01",
+          },
+        },
+      });
+    });
   });
 
   it("does not import strategy, Upbit, runtime, or DB implementations", async () => {
@@ -788,5 +1045,39 @@ function createMarketIntent(overrides: Partial<MarketOrderIntent> = {}): MarketO
     idempotencyKey: "execution-market-candidate-1",
     reason: "unit-test-market",
     ...overrides,
+  };
+}
+
+function createSellLimitIntent(overrides: Partial<Extract<OrderIntent, { orderType: "LIMIT" }>> = {}): Extract<
+  OrderIntent,
+  { orderType: "LIMIT" }
+> {
+  return {
+    exchangeId: "upbit_krw_spot",
+    market: "KRW-BTC",
+    strategyId: "trend_following",
+    side: "SELL",
+    orderType: "LIMIT",
+    requestedPrice: "10000000",
+    requestedQuantity: "0.0005",
+    requestedNotional: "5000",
+    idempotencyKey: "exit-candidate-1",
+    reason: "unit-test-exit",
+    ...overrides,
+  };
+}
+
+function createExitCostSnapshot(intent: OrderIntent): OrderSubmission["costSnapshot"] {
+  return {
+    source: "exit_cost_model",
+    exit_cost_allowed: true,
+    exit_cost_reason_code: "exit_cost_margin_ok",
+    exit_cost_bps: "5",
+    exit_slippage_bps: "2",
+    position_scope: {
+      market: intent.market,
+      strategy_id: intent.strategyId,
+      total_quantity: "0.01",
+    },
   };
 }
