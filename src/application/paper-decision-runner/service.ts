@@ -487,10 +487,10 @@ function readExitPositionQuantity(frame: PaperDecisionInputFrame, intent: OrderI
     return featureQuantity;
   }
 
-  const matchingPosition = frame.risk?.positions?.find((position) =>
-    position.market === intent.market &&
-    (position.strategyId === undefined || position.strategyId === intent.strategyId)
-  );
+  const matchingPosition = frame.risk?.positions?.find((position) => {
+    // 전략별 SELL이 계정 집계 포지션을 빌리면 다른 전략 물량까지 청산할 수 있어 exact scope만 인정한다.
+    return position.market === intent.market && position.strategyId === intent.strategyId;
+  });
   const metadata = matchingPosition?.metadata;
   return (
     readStringRecordValue(metadata, "position_quantity") ??

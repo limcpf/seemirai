@@ -42,7 +42,8 @@ export type ExecutionRejectionReasonCode =
   | "exit_cost_evidence_on_entry"
   | "exit_cost_evidence_invalid"
   | "exit_position_scope_mismatch"
-  | "exit_sell_quantity_exceeds_position";
+  | "exit_sell_quantity_exceeds_position"
+  | "exit_sell_quantity_mismatch_position";
 
 /**
  * broker 제출 전 validation 실패를 설명하는 결과 payload다.

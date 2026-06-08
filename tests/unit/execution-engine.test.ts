@@ -658,6 +658,49 @@ describe("M6 ExecutionEngine contract", () => {
       expect(result.valid).toBe(true);
     });
 
+    it("rejects exit cost evidence when its order intent fingerprint is stale", () => {
+      const exitMetadata = {
+        position_effect: "REDUCE",
+        exit_reason_code: "stop_loss_exit",
+        exit_rule_id: "stop_loss",
+      };
+      const intent = createSellLimitIntent({
+        metadata: exitMetadata,
+      });
+      const staleIntent = createSellLimitIntent({
+        requestedQuantity: "0.0004",
+        requestedNotional: "4000",
+        idempotencyKey: "exit-candidate-stale",
+        metadata: exitMetadata,
+      });
+
+      expect(
+        validateExecutionSubmission(
+          createSubmission({
+            intent,
+            costSnapshot: {
+              ...createExitCostSnapshot(intent),
+              order_intent: createCostSnapshot(staleIntent).order_intent,
+            },
+            riskApproval: createRiskApprovalEvidence(intent),
+          }),
+        ),
+      ).toMatchObject({
+        valid: false,
+        rejection: {
+          reasonCode: "cost_snapshot_mismatch",
+          metadata: {
+            mismatches: expect.objectContaining({
+              idempotency_key_evidence: "exit-candidate-stale",
+              idempotency_key_runtime: "exit-candidate-1",
+              requested_quantity_evidence: "0.0004",
+              requested_quantity_runtime: "0.0005",
+            }),
+          },
+        },
+      });
+    });
+
     it("rejects exit_cost_model source on entry intent without position_effect", () => {
       const intent = createLimitIntent();
 
@@ -758,6 +801,37 @@ describe("M6 ExecutionEngine contract", () => {
         valid: false,
         rejection: {
           reasonCode: "exit_cost_evidence_invalid",
+        },
+      });
+    });
+
+    it("rejects allowed exit cost evidence when the reason code is not OK", () => {
+      const intent = createSellLimitIntent({
+        metadata: {
+          position_effect: "REDUCE",
+          exit_reason_code: "stop_loss_exit",
+          exit_rule_id: "stop_loss",
+        },
+      });
+
+      expect(
+        validateExecutionSubmission(
+          createSubmission({
+            intent,
+            costSnapshot: {
+              ...createExitCostSnapshot(intent),
+              exit_cost_reason_code: "exit_cost_margin_insufficient",
+            },
+          }),
+        ),
+      ).toMatchObject({
+        valid: false,
+        rejection: {
+          reasonCode: "exit_cost_evidence_invalid",
+          metadata: {
+            exit_cost_allowed: true,
+            exit_cost_reason_code: "exit_cost_margin_insufficient",
+          },
         },
       });
     });
@@ -1036,6 +1110,37 @@ describe("M6 ExecutionEngine contract", () => {
         },
       });
     });
+
+    it("rejects EXIT order when quantity is below the open position", () => {
+      const intent = createSellLimitIntent({
+        requestedQuantity: "0.005",
+        metadata: {
+          position_effect: "EXIT",
+          exit_reason_code: "take_profit_exit",
+          exit_rule_id: "take_profit",
+        },
+      });
+
+      expect(
+        validateExecutionSubmission(
+          createSubmission({
+            intent,
+            costSnapshot: createExitCostSnapshot(intent),
+            riskApproval: createRiskApprovalEvidence(intent),
+          }),
+        ),
+      ).toMatchObject({
+        valid: false,
+        rejection: {
+          reasonCode: "exit_sell_quantity_mismatch_position",
+          metadata: {
+            requested_quantity: "0.005",
+            open_position_quantity: "0.01",
+            position_effect: "EXIT",
+          },
+        },
+      });
+    });
   });
 
   it("does not import strategy, Upbit, runtime, or DB implementations", async () => {
@@ -1257,5 +1362,6 @@ function createExitCostSnapshot(intent: OrderIntent): OrderSubmission["costSnaps
       strategy_id: intent.strategyId,
       total_quantity: "0.01",
     },
+    order_intent: createCostSnapshot(intent).order_intent,
   };
 }

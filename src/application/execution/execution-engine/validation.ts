@@ -177,10 +177,10 @@ function validateCostSnapshot(
     const invalidExitCostFields = collectInvalidExitCostFields(snapshot);
     if (
       snapshot.exit_cost_allowed !== true ||
-      !isNonEmptyString(snapshot.exit_cost_reason_code) ||
+      snapshot.exit_cost_reason_code !== "exit_cost_margin_ok" ||
       invalidExitCostFields.length > 0
     ) {
-      // exit 비용 evidence는 exit_cost_allowed flag와 exit_cost_reason_code, 비용 추정치가 모두 존재해야 승인 근거로 삼는다.
+      // exit 비용 evidence는 allow flag만으로 승인하지 않고 OK reason과 비용 추정치까지 같은 판정으로 묶는다.
       const metadata: JsonRecord = {
         exit_cost_allowed: snapshot.exit_cost_allowed,
         exit_cost_reason_code: snapshot.exit_cost_reason_code,
@@ -234,6 +234,22 @@ function validateCostSnapshot(
           scope_total_quantity: scope.total_quantity,
         },
       );
+    }
+
+    const exitCostOrderIntent = snapshot.order_intent;
+    if (exitCostOrderIntent !== undefined) {
+      if (!isNonEmptyRecord(exitCostOrderIntent)) {
+        // fingerprint가 손상된 exit evidence는 같은 주문 후보를 평가했는지 재현할 수 없어 broker 제출 전에 차단한다.
+        return reject("cost_snapshot_mismatch", "Exit cost evidence order intent fingerprint must be an object");
+      }
+
+      const mismatches = compareCostSnapshotOrderIntent(submission, exitCostOrderIntent);
+      if (Object.keys(mismatches).length > 0) {
+        // paper-decision runner가 붙인 exit 비용 fingerprint도 entry 비용 snapshot과 같은 stale 재사용 위험을 갖는다.
+        return reject("cost_snapshot_mismatch", "Exit cost evidence does not match the execution order intent", {
+          mismatches,
+        });
+      }
     }
 
     return undefined;
@@ -523,6 +539,7 @@ function validateExitSellPositionScope(
     return undefined;
   }
 
+  const positionEffect = readOrderIntentPositionEffect(submission.intent);
   try {
     const requestedQty = parseFinancialDecimal(submission.intent.requestedQuantity);
     const openQty = parseFinancialDecimal(positionScope.total_quantity);
@@ -535,6 +552,19 @@ function validateExitSellPositionScope(
         {
           requested_quantity: submission.intent.requestedQuantity,
           open_position_quantity: positionScope.total_quantity,
+        },
+      );
+    }
+
+    if (positionEffect === "EXIT" && !requestedQty.equals(openQty)) {
+      // EXIT metadata는 포지션 종료를 의미하므로 부분 수량이면 REDUCE로 제출하게 하고 여기서는 차단한다.
+      return reject(
+        "exit_sell_quantity_mismatch_position",
+        "EXIT order quantity must match the full open position before broker submission",
+        {
+          requested_quantity: submission.intent.requestedQuantity,
+          open_position_quantity: positionScope.total_quantity,
+          position_effect: positionEffect,
         },
       );
     }
