@@ -249,22 +249,23 @@ export class PaperDecisionRunner {
     metrics: PaperDecisionMetricAccumulator;
     trace: PaperDecisionRunnerTraceRecord[];
   }): Promise<void> {
-    const costDecision = this.costModel.evaluate(createPaperDecisionCostInput(input.frame, input.intent));
-    recordCostDecision(input.frame, input.intent, costDecision, input.metrics, input.trace);
+    const intent = createPaperDecisionExecutionIntent(input.frame, input.intent);
+    const costDecision = this.costModel.evaluate(createPaperDecisionCostInput(input.frame, intent));
+    recordCostDecision(input.frame, intent, costDecision, input.metrics, input.trace);
     if (!costDecision.tradeAllowed) {
       return;
     }
 
-    const riskGateContext = createPaperDecisionRiskGateContext(input.frame, input.intent, costDecision);
+    const riskGateContext = createPaperDecisionRiskGateContext(input.frame, intent, costDecision);
     const riskGateResult = this.evaluateRiskGate(riskGateContext);
-    recordRiskDecision(input.frame, input.intent, riskGateResult, input.metrics, input.trace);
+    recordRiskDecision(input.frame, intent, riskGateResult, input.metrics, input.trace);
     if (!riskGateResult.approved) {
       return;
     }
 
-    const submission = createPaperDecisionSubmission(input.frame, input.intent, costDecision, riskGateContext, riskGateResult);
+    const submission = createPaperDecisionSubmission(input.frame, intent, costDecision, riskGateContext, riskGateResult);
     const executionResult = await this.executionEngine.submitOrder(submission);
-    recordExecutionResult(input.frame, input.intent, executionResult, input.metrics, input.trace);
+    recordExecutionResult(input.frame, intent, executionResult, input.metrics, input.trace);
   }
 }
 
@@ -377,9 +378,9 @@ export function createPaperDecisionSubmission(
 ): OrderSubmission {
   const submission: OrderSubmission = {
     intent,
-    costSnapshot: createExecutionCostSnapshotEvidence(
-      costDecision.snapshot,
+    costSnapshot: createPaperDecisionExecutionCostEvidence(
       intent,
+      costDecision,
       riskGateContext.expectedLossBpsOfEquity,
     ),
     riskApproval: createExecutionRiskApprovalEvidence(riskGateResult, riskGateContext),
@@ -391,6 +392,143 @@ export function createPaperDecisionSubmission(
   }
 
   return submission;
+}
+
+/**
+ * paper decision runner의 SELL 후보를 execution boundary가 요구하는 exit intent metadata로 보강한다.
+ *
+ * runner 전략은 아직 exit engine을 직접 호출하지 않지만, spot MVP에서 SELL은 포지션 축소/청산으로만 실행해야 한다.
+ * 따라서 cost/risk evidence fingerprint를 만들기 전에 frame-local position quantity가 있는 SELL 후보만 exit metadata를
+ * 부여하고, 수량 근거가 없으면 기존 plain SELL을 유지해 ExecutionEngine validation이 fail-closed 하게 둔다.
+ */
+function createPaperDecisionExecutionIntent(
+  frame: PaperDecisionInputFrame,
+  intent: OrderIntent,
+): OrderIntent {
+  if (intent.side !== "SELL") {
+    return intent;
+  }
+
+  const totalQuantity = readExitPositionQuantity(frame, intent);
+  if (totalQuantity === undefined) {
+    return intent;
+  }
+
+  const positionEffect = resolvePaperDecisionPositionEffect(intent.requestedQuantity, totalQuantity);
+  return {
+    ...intent,
+    metadata: {
+      ...(intent.metadata ?? {}),
+      position_effect: positionEffect,
+      exit_reason_code: readStringFeature(frame, "exit_reason_code") ?? "paper_decision_runner_sell_exit",
+      exit_rule_id: readStringFeature(frame, "exit_rule_id") ?? `paper_decision_runner:${intent.strategyId}`,
+      position_scope: {
+        market: intent.market,
+        strategyId: intent.strategyId,
+        totalQuantity,
+        observedAt: frame.observedAt,
+      },
+    },
+  };
+}
+
+/**
+ * paper decision submission의 비용 evidence를 execution validation contract에 맞게 만든다.
+ *
+ * BUY/entry 후보는 기존 `cost_model` fingerprint를 사용하고, exit metadata가 확정된 SELL 후보는 `exit_cost_model`
+ * snapshot으로 분리한다. 이 함수는 evidence 객체만 만들며 broker나 저장소 side effect는 수행하지 않는다.
+ */
+function createPaperDecisionExecutionCostEvidence(
+  intent: OrderIntent,
+  costDecision: CostDecision,
+  expectedLossBpsOfEquity?: string,
+): JsonRecord {
+  if (intent.side === "SELL" && isExitPositionEffect(readOrderIntentPositionEffect(intent))) {
+    const totalQuantity = readStringRecordValue(readRecordValue(intent.metadata, "position_scope"), "totalQuantity");
+    const orderIntentEvidence = createExecutionCostSnapshotEvidence(
+      costDecision.snapshot,
+      intent,
+      expectedLossBpsOfEquity,
+    ).order_intent;
+    return {
+      source: "exit_cost_model",
+      exit_cost_allowed: costDecision.tradeAllowed,
+      exit_cost_reason_code:
+        costDecision.reasonCode === "cost_margin_ok" ? "exit_cost_margin_ok" : costDecision.reasonCode,
+      exit_cost_bps:
+        readStringRecordValue(costDecision.snapshot, "cost_bps") ??
+        readStringRecordValue(costDecision.snapshot, "exit_fee_bps") ??
+        "0",
+      exit_slippage_bps: readStringRecordValue(costDecision.snapshot, "expected_slippage_bps_p95") ?? "0",
+      position_scope: {
+        market: intent.market,
+        strategy_id: intent.strategyId,
+        total_quantity: totalQuantity,
+      },
+      order_intent: orderIntentEvidence,
+    };
+  }
+
+  return createExecutionCostSnapshotEvidence(costDecision.snapshot, intent, expectedLossBpsOfEquity);
+}
+
+/**
+ * SELL 후보의 open position 수량 근거를 frame-local 입력에서 읽는다.
+ *
+ * runner는 broker balance를 조회하지 않으므로 feature 또는 risk position metadata에 명시된 수량만 신뢰한다.
+ * 수량 근거가 없으면 undefined를 반환해 plain SELL이 ExecutionEngine에서 fail-closed 되도록 한다.
+ */
+function readExitPositionQuantity(frame: PaperDecisionInputFrame, intent: OrderIntent): string | undefined {
+  const matchingPosition = frame.risk?.positions?.find((position) => {
+    // 전략별 SELL이 계정 집계 포지션을 빌리면 다른 전략 물량까지 청산할 수 있어 exact scope만 인정한다.
+    return position.market === intent.market && position.strategyId === intent.strategyId;
+  });
+  const metadata = matchingPosition?.metadata;
+  const strategyQuantity =
+    readStringRecordValue(metadata, "position_quantity") ??
+    readStringRecordValue(metadata, "position_total_quantity") ??
+    readStringRecordValue(metadata, "total_quantity") ??
+    readStringRecordValue(metadata, "totalQuantity") ??
+    readStringRecordValue(metadata, "quantity");
+  if (strategyQuantity !== undefined) {
+    return strategyQuantity;
+  }
+
+  return (
+    readStringFeature(frame, "position_quantity") ??
+    readStringFeature(frame, "position_total_quantity") ??
+    readStringFeature(frame, "total_quantity")
+  );
+}
+
+/**
+ * requested quantity가 position 전체와 같은지 비교해 REDUCE/EXIT metadata를 결정한다.
+ *
+ * Decimal 비교에 실패하면 전체 청산으로 승격하지 않고 REDUCE로 낮춰 운영 메시지가 과장되지 않게 한다.
+ */
+function resolvePaperDecisionPositionEffect(requestedQuantity: string, totalQuantity: string): "REDUCE" | "EXIT" {
+  try {
+    return parseFinancialDecimal(requestedQuantity).equals(parseFinancialDecimal(totalQuantity)) ? "EXIT" : "REDUCE";
+  } catch {
+    return "REDUCE";
+  }
+}
+
+/**
+ * OrderIntent metadata에서 position effect를 snake_case/camelCase 양쪽 표기로 읽는다.
+ *
+ * ExecutionEngine fingerprint와 같은 fallback 규칙을 써야 cost/risk evidence와 validation 결과가 같은 intent를 가리킨다.
+ */
+function readOrderIntentPositionEffect(intent: OrderIntent): string | undefined {
+  return (
+    readStringRecordValue(intent.metadata, "position_effect") ??
+    readStringRecordValue(intent.metadata, "positionEffect")
+  );
+}
+
+/** REDUCE/EXIT position effect만 exit evidence 대상으로 인정한다. */
+function isExitPositionEffect(value: string | undefined): value is "REDUCE" | "EXIT" {
+  return value === "REDUCE" || value === "EXIT";
 }
 
 function createPaperDecisionCostInput(
@@ -889,6 +1027,12 @@ function readStringRecordValue(record: JsonRecord | undefined, key: string): str
   const value = record?.[key];
 
   return typeof value === "string" ? value : undefined;
+}
+
+function readRecordValue(record: JsonRecord | undefined, key: string): JsonRecord | undefined {
+  const value = record?.[key];
+
+  return value !== null && typeof value === "object" && !Array.isArray(value) ? (value as JsonRecord) : undefined;
 }
 
 function increment(counts: MutableCounts, reasonCode: string): void {
