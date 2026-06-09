@@ -174,6 +174,44 @@ export interface TelegramInboundCommandDedupeStore {
 }
 
 /**
+ * Telegram inbound command 응답 전송 입력이다.
+ *
+ * `chatId`는 provider 호출에만 사용하고 audit/status payload로 복사하지 않아야 한다. `text`는 formatter가 만든 한국어
+ * 사용자-facing 메시지이며, caller는 Telegram 4096자 제한을 넘지 않게 adapter 또는 formatter 경계에서 잘라야 한다.
+ */
+export interface TelegramInboundReplyInput {
+  chatId: string;
+  text: string;
+  correlationId: string;
+  replyToMessageId?: number;
+}
+
+/**
+ * Telegram inbound command 응답 전송 결과다.
+ *
+ * provider 원문 body나 bot token은 포함하지 않고, 운영 추적에 필요한 message id와 정규화된 실패 reason만 보존한다.
+ */
+export type TelegramInboundReplyResult =
+  | {
+      delivered: true;
+      providerMessageId?: string;
+    }
+  | {
+      delivered: false;
+      skippedReason: string;
+    };
+
+/**
+ * Telegram inbound command handler가 의존하는 reply port다.
+ *
+ * application/runtime layer는 이 port만 호출하고, Telegram Bot API URL 구성과 fetch timeout 처리는 infrastructure adapter가
+ * 담당한다.
+ */
+export interface TelegramInboundReplyPort {
+  sendReply(input: TelegramInboundReplyInput): Promise<TelegramInboundReplyResult>;
+}
+
+/**
  * Telegram inbound audit event의 업무 결과 범주다.
  *
  * handler가 아직 연결되지 않은 Sub PR 01에서도 unauthorized, malformed, duplicate 같은 보안 경계 사건을 동일한 shape로 남긴다.

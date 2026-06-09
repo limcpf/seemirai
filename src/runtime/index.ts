@@ -164,6 +164,21 @@ export {
   createRuntimeAlertDispatchOptions,
 } from "./notification-runtime.js";
 export {
+  createInMemoryTelegramInboundControlConfirmationStore,
+  createTelegramInboundCommandRuntime,
+  createTelegramInboundPollingRuntime,
+  formatTelegramAuditFailureResponse,
+  formatTelegramCommandExecutionFailureResponse,
+  formatTelegramControlCommandResponse,
+  formatTelegramControlConfirmationRequiredResponse,
+  formatTelegramOrdersCommandResponse,
+  formatTelegramPnlCommandResponse,
+  formatTelegramPositionsCommandResponse,
+  formatTelegramRiskCommandResponse,
+  formatTelegramStatusCommandResponse,
+  formatTelegramWhyCommandResponse,
+} from "./telegram-inbound-runtime.js";
+export {
   NOTIFICATION_RETRY_FAILURE_DELAY_MS,
   PAPER_NO_KEY_NOTIFICATION_RETRY_WORKER_ID,
   createPaperNoKeyNotificationRetryRuntime,
@@ -201,6 +216,19 @@ export type {
   RuntimeTelegramInboundConfig,
 } from "./notification-config.js";
 export type { PaperNoKeyKillSwitchControlProviderOptions } from "./notification-runtime.js";
+export type {
+  TelegramInboundCommandHandleResult,
+  TelegramInboundCommandHandleStatus,
+  TelegramInboundCommandRuntime,
+  TelegramInboundCommandRuntimeOptions,
+  TelegramInboundControlConfirmationInput,
+  TelegramInboundControlConfirmationResult,
+  TelegramInboundControlConfirmationStore,
+  TelegramInboundControlStatusSnapshot,
+  TelegramInboundPollingRunOnceResult,
+  TelegramInboundPollingRuntime,
+  TelegramInboundPollingRuntimeOptions,
+} from "./telegram-inbound-runtime.js";
 export type {
   ClaimedNotificationRetryJobRunResult,
   NotificationRetryRuntimeDependencies,
