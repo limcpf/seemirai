@@ -9,6 +9,7 @@ import {
 import type {
   AuditEventReceipt,
   ParsedTelegramInboundCommand,
+  TelegramInboundCommandDedupeResult,
   TelegramInboundCommandMessage,
   TelegramInboundReplyResult,
 } from "../../application/index.js";
@@ -19,6 +20,7 @@ import {
   formatTelegramCommandExecutionFailureResponse,
   formatTelegramControlCommandResponse,
   formatTelegramControlConfirmationRequiredResponse,
+  formatTelegramDedupeFailureResponse,
   formatTelegramOrdersCommandResponse,
   formatTelegramPnlCommandResponse,
   formatTelegramPositionsCommandResponse,
@@ -121,21 +123,47 @@ export function createTelegramInboundCommandRuntime(
       });
       const authorization = evaluateTelegramInboundAuthorization(message, options.allowlist);
 
-      const dedupe = parseResult.status === "PARSED" && authorization.ok
-        ? await options.dedupeStore.record({
-            idempotencyKey: createTelegramInboundCommandIdempotencyKey({
-              message,
-              command: parseResult.command,
-            }),
-            occurredAt: message.receivedAt,
-            metadata: {
-              job_type: telegramInboundCommandJobType,
-              command: parseResult.command.name,
-              command_scope: parseResult.command.scope,
-              correlation_id: correlationId,
-            },
-          })
-        : undefined;
+      const dedupeResult = parseResult.status === "PARSED" && authorization.ok
+        ? await recordDedupeSafely(options, message, parseResult.command, correlationId)
+        : { ok: true as const };
+
+      if (!dedupeResult.ok) {
+        const audit = await appendInboundAuditEventSafely(options, {
+          message,
+          parseResult,
+          authorization,
+          correlationId,
+        });
+        if (!audit.ok) {
+          const reply = await sendReplySafely(options, message, correlationId, formatTelegramAuditFailureResponse(correlationId));
+          return createHandleResult({
+            status: reply.delivered ? "AUDIT_FAILED" : "REPLY_FAILED",
+            message,
+            correlationId,
+            executed: false,
+            parseStatus: parseResult.status,
+            authorization,
+            reply,
+            reasonCode: "telegram_inbound_audit_append_failed",
+          });
+        }
+
+        // dedupe가 실패하면 같은 control 명령 재전달을 막을 수 없으므로 provider 실행 전에 멈춘다.
+        const reply = await sendReplySafely(options, message, correlationId, formatTelegramDedupeFailureResponse(correlationId));
+        return createHandleResult({
+          status: reply.delivered ? "DEDUPE_FAILED" : "REPLY_FAILED",
+          message,
+          correlationId,
+          executed: false,
+          parseStatus: parseResult.status,
+          authorization,
+          auditReceipt: audit.receipt,
+          reply,
+          reasonCode: "telegram_inbound_dedupe_failed",
+        });
+      }
+
+      const dedupe = dedupeResult.dedupe;
 
       const audit = await appendInboundAuditEventSafely(options, {
         message,
@@ -426,6 +454,42 @@ async function appendInboundAuditEventSafely(
     return {
       ok: true,
       receipt: await options.auditLog.appendEvent(createTelegramInboundCommandAuditEvent(input)),
+    };
+  } catch {
+    return { ok: false };
+  }
+}
+
+async function recordDedupeSafely(
+  options: TelegramInboundCommandRuntimeOptions,
+  message: TelegramInboundCommandMessage,
+  command: ParsedTelegramInboundCommand,
+  correlationId: string,
+): Promise<
+  | {
+      ok: true;
+      dedupe?: TelegramInboundCommandDedupeResult;
+    }
+  | {
+      ok: false;
+    }
+> {
+  try {
+    return {
+      ok: true,
+      dedupe: await options.dedupeStore.record({
+        idempotencyKey: createTelegramInboundCommandIdempotencyKey({
+          message,
+          command,
+        }),
+        occurredAt: message.receivedAt,
+        metadata: {
+          job_type: telegramInboundCommandJobType,
+          command: command.name,
+          command_scope: command.scope,
+          correlation_id: correlationId,
+        },
+      }),
     };
   } catch {
     return { ok: false };

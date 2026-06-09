@@ -17,6 +17,7 @@ import {
   type AuditLogPort,
   type KillSwitchControlProvider,
   type KillSwitchControlResult,
+  type TelegramInboundCommandDedupeStore,
   type TelegramInboundCommandMessage,
   type TelegramInboundReplyInput,
   type TelegramInboundReplyPort,
@@ -95,6 +96,10 @@ describe("Telegram inbound command runtime", () => {
         },
       },
     });
+    expect(second.killSwitchResult?.transition.event.metadata).toMatchObject({
+      source: "http_control",
+      control_request_source: "telegram_inbound_command",
+    });
     expect(fixture.killSwitchProvider.requests[0]).toMatchObject({
       targetState: "NEW_ORDERS_BLOCKED",
       reasonCode: "operator_pause",
@@ -125,6 +130,29 @@ describe("Telegram inbound command runtime", () => {
     });
     expect(fixture.statusProvider.calls).toBe(1);
     expect(fixture.replyPort.replies).toHaveLength(1);
+  });
+
+  it("fails closed with audit and reply when dedupe storage is unavailable", async () => {
+    const fixture = createRuntimeFixture({
+      dedupeStore: {
+        async record() {
+          throw new Error("jobs unavailable");
+        },
+      },
+    });
+
+    const result = await fixture.runtime.handleMessage(createMessage({ updateId: 14, messageId: 24, text: "/kill" }));
+
+    expect(result).toMatchObject({
+      status: "DEDUPE_FAILED",
+      executed: false,
+      reasonCode: "telegram_inbound_dedupe_failed",
+    });
+    expect(fixture.statusProvider.calls).toBe(0);
+    expect(fixture.killSwitchProvider.requests).toHaveLength(0);
+    expect(fixture.auditLog.events).toHaveLength(1);
+    expect(fixture.replyPort.replies[0]?.text).toContain("중복 실행 보호 상태를 기록하지 못해");
+    expect(JSON.stringify(result)).not.toContain("jobs unavailable");
   });
 
   it("polls fake Telegram updates and returns a safe batch summary with advanced offset", async () => {
@@ -227,7 +255,7 @@ describe("Telegram inbound reply sender", () => {
   });
 });
 
-function createRuntimeFixture() {
+function createRuntimeFixture(options: { dedupeStore?: TelegramInboundCommandDedupeStore } = {}) {
   const statusProvider = new CapturingStatusProvider();
   const killSwitchProvider = new CapturingKillSwitchProvider();
   const auditLog = new CapturingAuditLog();
@@ -237,7 +265,7 @@ function createRuntimeFixture() {
       ownerChatIds: ["100"],
       ownerUserIds: ["300"],
     },
-    dedupeStore: createInMemoryTelegramInboundDedupeStore(() => new Date(now)),
+    dedupeStore: options.dedupeStore ?? createInMemoryTelegramInboundDedupeStore(() => new Date(now)),
     auditLog,
     replyPort,
     statusProvider,

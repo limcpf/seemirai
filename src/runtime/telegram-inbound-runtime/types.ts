@@ -89,6 +89,7 @@ export type TelegramInboundCommandHandleStatus =
   | "UNKNOWN"
   | "MALFORMED"
   | "DUPLICATE"
+  | "DEDUPE_FAILED"
   | "CONFIRMATION_REQUIRED"
   | "EXECUTED"
   | "EXECUTION_FAILED"

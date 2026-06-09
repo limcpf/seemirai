@@ -279,6 +279,25 @@ export function formatTelegramCommandExecutionFailureResponse(input: {
 }
 
 /**
+ * command dedupe 저장 실패 응답을 만든다.
+ *
+ * dedupe 저장소를 신뢰할 수 없으면 같은 Telegram update 재전달이 control provider를 중복 호출할 수 있으므로, 실행 전에
+ * fail-closed로 멈추고 운영자에게 DB/jobs 상태 확인을 안내한다.
+ */
+export function formatTelegramDedupeFailureResponse(correlationId: string): string {
+  return limitTelegramResponse([
+    "[명령 처리 보류]",
+    "상태: 중복 실행 보호 상태를 기록하지 못해 Telegram 명령을 실행하지 않았습니다.",
+    "영향: 조회와 제어 요청 모두 처리되지 않았습니다.",
+    "필요 조치: DB 연결, jobs table idempotency key 충돌, migration 적용 상태를 확인한 뒤 다시 시도하세요.",
+    "",
+    "추적 정보",
+    `요청 ID: ${correlationId}`,
+    "reason: telegram_inbound_dedupe_failed",
+  ]);
+}
+
+/**
  * audit 저장 실패 응답을 만든다.
  *
  * M20 control surface는 audit evidence 없이 command를 실행하면 안 되므로, audit 실패는 조회/제어 모두 fail-closed로 안내한다.

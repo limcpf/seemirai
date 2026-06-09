@@ -171,6 +171,7 @@ export {
   formatTelegramCommandExecutionFailureResponse,
   formatTelegramControlCommandResponse,
   formatTelegramControlConfirmationRequiredResponse,
+  formatTelegramDedupeFailureResponse,
   formatTelegramOrdersCommandResponse,
   formatTelegramPnlCommandResponse,
   formatTelegramPositionsCommandResponse,
