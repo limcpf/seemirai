@@ -55,7 +55,14 @@ describe("M8 paper soak script", () => {
         count: 0,
       },
     });
-    expect(getCheck(summary, "telegramInboundAbsent").status).toBe("ok");
+    expect(getCheck(summary, "telegramInboundGuarded")).toMatchObject({
+      status: "ok",
+      evidence: {
+        inboundEnabled: false,
+        ownerChatAllowlistCount: 0,
+        pollingTransportAllowed: true,
+      },
+    });
     expect(getCheck(summary, "dailyReportGenerated").status).toBe("skipped");
 
     const rawLog = await readFile(summary.artifacts.rawLogPath, "utf8");

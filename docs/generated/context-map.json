@@ -275,6 +275,13 @@
       "owner_scope": "docs/exec-plans/active"
     },
     {
+      "path": "docs/exec-plans/completed/2026-06-10-issue-170-m20-telegram-inbound-closeout.md",
+      "kind": "exec-plan",
+      "role": "✅ 완료 — Issue #170 M20 Telegram inbound closeout. getUpdates polling, owner allowlist, read-only command, control confirmation, durable dedupe/audit, source scan, 보안/신뢰성/runtime 문서 반영 확인",
+      "read_when": ["issue #170 closeout 확인", "M20 Telegram inbound 완료 증거", "Telegram control command 경계 확인", "Telegram inbound source scan 결과 확인"],
+      "owner_scope": "docs/exec-plans/completed"
+    },
+    {
       "path": "docs/exec-plans/completed/2026-06-07-issue-165-m19-subpr-03-verification-closeout.md",
       "kind": "exec-plan",
       "role": "✅ 완료 — Issue #165 M19 자동 매도와 포지션 축소 Sub PR 03 closeout. M19 exit pilot guard, existing small position evidence guard, guarded buy smoke fail-closed, 실제 guarded live broker smoke 성공 증적, PAPER_NO_KEY live order API 0회 source scan, hard stop 자동 청산 금지, 보안/신뢰성 문서 반영 확인",

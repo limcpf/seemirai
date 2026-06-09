@@ -274,14 +274,14 @@ async function readJsonFile(filePath) {
 async function runCommonChecks({ config, options }) {
   const [liveOrderApiCalls, telegramInbound, controlEndpoints] = await Promise.all([
     inspectLiveOrderApiGuard(),
-    inspectTelegramInboundAbsence(),
+    inspectTelegramInboundGuard(config),
     inspectControlEndpoints(options),
   ]);
 
   return {
     configSafety: inspectConfigSafety(config),
     liveOrderApiCalls,
-    telegramInboundAbsent: telegramInbound,
+    telegramInboundGuarded: telegramInbound,
     ...(controlEndpoints.readyzEndpoint === undefined ? {} : { readyzEndpoint: controlEndpoints.readyzEndpoint }),
     statusEndpoint: controlEndpoints.statusEndpoint,
     killSwitchEndpoint: controlEndpoints.killSwitchEndpoint,
@@ -371,25 +371,44 @@ async function inspectLiveOrderApiGuard() {
   });
 }
 
-async function inspectTelegramInboundAbsence() {
+async function inspectTelegramInboundGuard(config) {
   const sourcePaths = await listFiles(path.join(repoRoot, "src"));
   const telegramSources = sourcePaths.filter((sourcePath) => /telegram|notification|http-control/iu.test(sourcePath));
-  const inboundPattern = /getUpdates|setWebhook|deleteWebhook|server\.(?:get|post|route)\(\s*["'`]\/telegram/iu;
+  const webhookPattern = /setWebhook|deleteWebhook|server\.(?:get|post|route)\(\s*["'`]\/telegram/iu;
   const matches = [];
 
   for (const sourcePath of telegramSources) {
     const source = await readFile(sourcePath, "utf8");
-    if (inboundPattern.test(source)) {
+    if (webhookPattern.test(source)) {
       matches.push(path.relative(repoRoot, sourcePath));
     }
   }
 
-  if (matches.length > 0) {
-    return failCheck("Telegram inbound command/webhook 경로가 발견됐다.", { matches });
+  const inboundConfig = config.telegram?.inbound;
+  const violations = [];
+  if (inboundConfig?.enabled === true) {
+    violations.push("telegram.inbound.enabled=true");
+  }
+  if (Array.isArray(inboundConfig?.owner_chat_ids) && inboundConfig.owner_chat_ids.length > 0) {
+    violations.push("telegram.inbound.owner_chat_ids not empty");
+  }
+  if (Array.isArray(inboundConfig?.owner_user_ids) && inboundConfig.owner_user_ids.length > 0) {
+    violations.push("telegram.inbound.owner_user_ids not empty");
   }
 
-  return okCheck("Telegram은 outbound sendMessage 경로만 사용하고 inbound command 수신 경로가 없다.", {
+  if (matches.length > 0) {
+    return failCheck("Telegram public webhook route가 발견됐다.", { matches });
+  }
+
+  if (violations.length > 0) {
+    return failCheck("기본 paper profile에서 Telegram inbound guard가 닫혀 있지 않다.", { violations });
+  }
+
+  return okCheck("Telegram inbound는 기본 비활성이며 public webhook route가 없다.", {
     scannedFiles: telegramSources.length,
+    inboundEnabled: inboundConfig?.enabled ?? false,
+    ownerChatAllowlistCount: Array.isArray(inboundConfig?.owner_chat_ids) ? inboundConfig.owner_chat_ids.length : 0,
+    pollingTransportAllowed: true,
   });
 }
 

@@ -154,11 +154,32 @@ export {
   resolveRuntimeSafetyBufferMarketCategory,
   resolveRuntimeUniverse,
 } from "./universe.js";
-export { loadRuntimeNotificationConfig } from "./notification-config.js";
+export {
+  UnsafeTelegramInboundConfigError,
+  loadRuntimeNotificationConfig,
+  loadRuntimeTelegramInboundConfig,
+} from "./notification-config.js";
 export {
   createPaperNoKeyKillSwitchControlProvider,
   createRuntimeAlertDispatchOptions,
 } from "./notification-runtime.js";
+export {
+  createInMemoryTelegramInboundControlConfirmationStore,
+  createTelegramInboundCommandRuntime,
+  createTelegramInboundPollingRuntime,
+  formatTelegramAuditFailureResponse,
+  formatTelegramCommandExecutionFailureResponse,
+  formatTelegramControlCommandResponse,
+  formatTelegramControlConfirmationExpiredResponse,
+  formatTelegramControlConfirmationRequiredResponse,
+  formatTelegramDedupeFailureResponse,
+  formatTelegramOrdersCommandResponse,
+  formatTelegramPnlCommandResponse,
+  formatTelegramPositionsCommandResponse,
+  formatTelegramRiskCommandResponse,
+  formatTelegramStatusCommandResponse,
+  formatTelegramWhyCommandResponse,
+} from "./telegram-inbound-runtime.js";
 export {
   NOTIFICATION_RETRY_FAILURE_DELAY_MS,
   PAPER_NO_KEY_NOTIFICATION_RETRY_WORKER_ID,
@@ -192,8 +213,24 @@ export type {
   Phase15ManualAltApprovalRuntimeConfig,
 } from "./phase-1-5-config.js";
 export type { RuntimeUniverseResolution } from "./universe.js";
-export type { RuntimeNotificationConfig } from "./notification-config.js";
+export type {
+  RuntimeNotificationConfig,
+  RuntimeTelegramInboundConfig,
+} from "./notification-config.js";
 export type { PaperNoKeyKillSwitchControlProviderOptions } from "./notification-runtime.js";
+export type {
+  TelegramInboundCommandHandleResult,
+  TelegramInboundCommandHandleStatus,
+  TelegramInboundCommandRuntime,
+  TelegramInboundCommandRuntimeOptions,
+  TelegramInboundControlConfirmationInput,
+  TelegramInboundControlConfirmationResult,
+  TelegramInboundControlConfirmationStore,
+  TelegramInboundControlStatusSnapshot,
+  TelegramInboundPollingRunOnceResult,
+  TelegramInboundPollingRuntime,
+  TelegramInboundPollingRuntimeOptions,
+} from "./telegram-inbound-runtime.js";
 export type {
   ClaimedNotificationRetryJobRunResult,
   NotificationRetryRuntimeDependencies,

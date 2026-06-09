@@ -63,6 +63,33 @@
 - Telegram message text는 provider 제한인 4096자 안으로 잘라 보낸다. 긴 장애 문맥의 전체 원문은 Telegram provider 요청
   body나 audit metadata에 그대로 남기지 않는다.
 
+## M20 Telegram inbound 보안 기준
+
+- Telegram inbound는 public webhook endpoint를 만들지 않고 `getUpdates` polling을 우선 transport로 사용한다. Webhook, 외부
+  노출 endpoint, 서명 검증, 배포 도메인 의존성은 M20 범위에서 제외한다.
+- inbound polling은 기본 비활성이며, `SEEMIRAI_TELEGRAM_INBOUND_ENABLED=1` 또는 `telegram.inbound.enabled=true`가 없으면
+  시작하지 않는다.
+- inbound가 활성화된 상태에서 bot token 또는 owner chat id allowlist가 없으면 startup guard가 fail-closed 한다.
+- 허용되지 않은 chat/user의 명령은 parser 결과와 무관하게 실행하지 않고 `TELEGRAM_INBOUND_COMMAND` audit evidence만 남긴다.
+- Telegram token, raw update, raw provider body, raw header, raw message text는 log/audit/status/응답에 저장하지 않는다.
+- audit evidence에는 update id, message id, command name, command scope, command target, dedupe key, chat/user hash만 남긴다.
+- 그룹 chat command mention은 mention이 없거나 설정된 bot username과 일치할 때만 실행 후보로 인정한다. 다른 bot mention 또는
+  bot username 미설정 상태의 mention command는 control provider로 전달하지 않는다.
+- 같은 Telegram update/message/command 재전달은 기존 `jobs.idempotency_key` 기반 dedupe row로 차단한다. dedupe row payload에도
+  raw update나 raw message text를 넣지 않는다.
+- `/status`, `/positions`, `/pnl`, `/why <market|cash>`, `/orders`, `/risk`는 read-only 조회만 수행하며 주문 후보 승인, live broker
+  submit/cancel, Upbit order endpoint 호출로 연결하지 않는다.
+- `/pause`, `/resume`, `/kill`은 allowlist, durable dedupe, audit append 이후에도 같은 chat/user의 동일 명령 2단계 확인을
+  통과해야 kill switch control provider로 전달된다. 첫 번째 명령이나 확인 reply 전송 실패는 durable control side effect를 만들지
+  않는다.
+- 동일 명령 2단계 확인은 Telegram message 시각 기준 60초 TTL과 현재 처리 시각 freshness를 모두 통과해야 한다. 오래된 backlog
+  control 명령은 `telegram_inbound_control_confirmation_expired`로 보류하고 provider를 호출하지 않는다.
+- dedupe 저장 실패는 `DEDUPE_FAILED` audit outcome과 `telegram_inbound_dedupe_failed` reason으로 남기고 provider 실행 전에
+  차단한다. audit append 실패도 provider 실행 전에 차단하며, raw exception message는 Telegram reply나 audit metadata에 남기지
+  않는다.
+- M20은 `/approve`, `/reject`, order proposal approval workflow, 승인된 주문의 `UpbitLiveBroker` 제출, Telegram public webhook
+  endpoint를 만들지 않는다.
+
 ## Paper soak 보안 기준
 
 - `scripts/soak-paper-24h.mjs`는 Upbit public quotation WebSocket만 사용하며 Authorization header, Upbit API key, private

@@ -34,6 +34,30 @@ Codex-native 운영은 Codex, Git, GitHub, shell command, 문서 상태를 연�
 - 실패한 검증 로그는 다음 Codex prompt에 전달 가능한 수준으로 요약한다.
 - review finding은 어떤 commit으로 처리됐는지 추적 가능해야 한다.
 
+## M20 Telegram inbound 신뢰성 기준
+
+- inbound polling loop는 기본 비활성이며, enabled config/env와 owner allowlist guard를 모두 통과한 뒤에만 시작한다.
+- Telegram `getUpdates` response는 raw provider payload를 저장하지 않고 update id, message id, chat id, user id, text 같은 최소
+  command projection으로 줄인다. audit에는 text와 raw chat/user id를 남기지 않는다.
+- command parser는 `/status`, `/positions`, `/pnl`, `/why <market|cash>`, `/orders`, `/risk`, `/pause`, `/resume`, `/kill`만
+  인식한다. unknown/malformed command는 exception이 아니라 한국어 안내와 `TELEGRAM_INBOUND_COMMAND` audit evidence로 수렴한다.
+- owner chat allowlist가 비어 있거나 sender가 allowlist 밖이면 read-only 명령도 handler로 넘기지 않는다.
+- parser/auth를 통과한 command는 handler 실행 전에 `telegram.inbound.v1:*` idempotency key를 만들고 기존 `jobs` table unique
+  constraint로 한 번만 선점한다. duplicate이면 조회/control side effect 없이 duplicate audit evidence만 남긴다.
+- dedupe row는 실행할 worker job이 아니라 command receipt이므로 `job_type=telegram.inbound.command`, `status=COMPLETED`,
+  `max_attempts=1`로 남긴다. 일반 worker는 job type scope 없이 jobs table을 claim하면 안 된다.
+- dedupe 저장이 실패하면 같은 control 명령 재전달을 안전하게 막을 수 없으므로 provider 실행 전에 중단한다. 이 경우 audit
+  evidence는 `DEDUPE_FAILED`/`telegram_inbound_dedupe_failed`로 남기며, 사용자에게는 중복 실행 보호 상태를 기록하지 못해 명령을
+  보류했다는 한국어 reply를 보낸다.
+- audit append가 실패하면 운영자가 사후 추적할 evidence가 없으므로 read-only 조회와 control 명령 모두 provider 실행 전에
+  중단한다. 가능하면 Telegram reply로 감사 기록 실패와 필요한 조치를 안내한다.
+- `/pause`, `/resume`, `/kill`은 같은 chat/user가 같은 command를 60초 TTL 안에 한 번 더 보내야 실행된다. TTL은 Telegram
+  message 시각 기준으로 판정하고, 처리 시점에도 두 번째 메시지가 fresh해야 한다. 오래된 backlog control 명령은
+  `CONFIRMATION_EXPIRED`/`telegram_inbound_control_confirmation_expired`로 보류하며 provider 실행으로 이어지지 않는다.
+  pending confirmation은 process-local memory에만 있고 재시작 시 사라지므로, 재시작은 control 실행으로 이어지지 않는다.
+- polling runtime `start()` loop는 provider contract 밖 예외를 loop 경계에서 흡수하고 다음 tick을 예약한다. `runOnce()` 결과에는
+  raw update, raw text, raw chat id를 포함하지 않고 update count, next offset, handler result summary만 남긴다.
+
 ## RiskGate append-only 기준
 
 - `risk_ok`는 현재 `riskGateContext`를 평가한 실제 RiskGate 승인 결과가 있을 때만 PASS가 될 수 있다.

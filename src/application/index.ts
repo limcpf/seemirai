@@ -17,3 +17,4 @@ export * from "./registry.js";
 export * from "./risk/index.js";
 export * from "./rules/index.js";
 export * from "./strategies/index.js";
+export * from "./telegram-inbound.js";

@@ -394,9 +394,11 @@ function createControlTransitionMetadata(input: {
   recommendedTargetState: KillSwitchControlTargetState | undefined;
   metadata: JsonRecord | undefined;
 }): JsonRecord {
+  const controlRequestSource = readMetadataString(input.metadata?.source) ?? "http_control";
   const metadata: JsonRecord = {
     ...(input.metadata ?? {}),
     source: "http_control",
+    control_request_source: controlRequestSource,
     actor: input.actor,
     correlation_id: input.correlationId,
     requested_reason_code: input.requestedReasonCode,
@@ -415,6 +417,10 @@ function createControlTransitionMetadata(input: {
   }
 
   return metadata;
+}
+
+function readMetadataString(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim().length > 0 ? value : undefined;
 }
 
 /**

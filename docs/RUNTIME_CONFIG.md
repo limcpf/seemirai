@@ -36,7 +36,7 @@
 | `registry` | 정적 registry id 참조 | exchange, strategy, rule 활성화 조합 |
 | `strategyParameters` | strategy별 기본 threshold | 전략 후보 생성과 rule 평가에 쓰는 보수적 기준값 |
 | `risk` | M5 리스크 한도 threshold | RiskGate 평가와 상태 전이 audit에 쓰는 보수적 계정/노출/손실 한도 |
-| `telegram` | `provider_timeout_ms=5000`, optional `chat_id` | Telegram outbound notifier의 provider timeout과 chat id fallback |
+| `telegram` | `provider_timeout_ms=5000`, optional `chat_id`, `inbound.enabled=false` | Telegram outbound notifier와 M20 inbound polling guard 설정 |
 | `secrets` | 기본 `{}` | schema shape만 표현하며 실제 secret은 저장하지 않음 |
 
 ## 안전 invariant
@@ -411,6 +411,64 @@ provider 호출 직전에는 fingerprint 단위 delivery reservation을 먼저 �
 안에 있거나 기존 reservation이 만료되지 않았으면 provider 호출 없이 `ALERT_COOLDOWN` audit evidence만 남긴다. 이 경계는
 같은 장애가 동시에 들어와도 두 요청이 모두 Telegram provider를 호출하는 상황을 막기 위한 것이다. cooldown 기준 시각은
 alert 발생 시각이 아니라 reservation/전송 완료 시각을 사용해 지연 처리된 과거 alert가 보호 창을 짧게 만들지 못하게 한다.
+
+## M20 Telegram inbound polling guard
+
+구현 기준:
+
+- application contract: `src/application/telegram-inbound.ts`
+- polling adapter: `src/infrastructure/telegram/polling.ts`
+- reply adapter: `src/infrastructure/telegram/reply.ts`
+- command/polling runtime: `src/runtime/telegram-inbound-runtime.ts`
+- runtime config loader: `src/runtime/notification-config.ts`
+- durable dedupe store: `src/infrastructure/db/telegram-inbound-dedupe.ts`
+
+M20 inbound는 public webhook endpoint를 만들지 않고 Telegram `getUpdates` polling을 우선 transport로 사용한다. 기본
+`config/paper.json`은 `telegram.inbound.enabled=false`이며, config 또는 env에서 명시적으로 켜지 않으면 polling provider를
+시작하지 않는다.
+
+설정 경계:
+
+- enable flag: `telegram.inbound.enabled` 또는 `SEEMIRAI_TELEGRAM_INBOUND_ENABLED=1`
+- bot token 우선순위: `SEEMIRAI_TELEGRAM_BOT_TOKEN` env, legacy `TELEGRAM_BOT_TOKEN` env, `secrets.telegram_bot_token`
+- bot username: `SEEMIRAI_TELEGRAM_INBOUND_BOT_USERNAME` env, fallback `telegram.inbound.bot_username`
+- owner chat allowlist: `SEEMIRAI_TELEGRAM_INBOUND_OWNER_CHAT_IDS` env, fallback `telegram.inbound.owner_chat_ids`
+- optional owner user allowlist: `SEEMIRAI_TELEGRAM_INBOUND_OWNER_USER_IDS` env, fallback `telegram.inbound.owner_user_ids`
+- polling interval: `SEEMIRAI_TELEGRAM_INBOUND_POLLING_INTERVAL_MS`, fallback `telegram.inbound.polling_interval_ms`
+- provider long polling timeout: `SEEMIRAI_TELEGRAM_INBOUND_POLLING_TIMEOUT_SECONDS`, fallback `telegram.inbound.polling_timeout_seconds`
+- batch limit: `SEEMIRAI_TELEGRAM_INBOUND_MAX_UPDATES_PER_POLL`, fallback `telegram.inbound.max_updates_per_poll`
+
+활성화된 inbound는 bot token과 owner chat allowlist가 모두 있어야 startup guard를 통과한다. owner chat allowlist가 비어 있으면
+외부 입력 실행면이 열린 상태로 보므로 polling 시작 전에 fail-closed 한다.
+그룹 chat에서 bot mention이 붙은 command는 mention이 없거나 설정된 bot username과 일치할 때만 parser가 인식한다. bot username이
+설정되지 않은 상태에서 `/kill@SomeBot` 같은 mention command가 들어오면 다른 bot 대상일 수 있으므로 실행하지 않는다.
+
+Sub PR 01의 inbound foundation은 command parser, allowlist, audit event, jobs table 기반 dedupe store, polling provider
+projection을 제공했다. M20 runtime은 여기에 `createTelegramInboundCommandRuntime`과 `createTelegramInboundPollingRuntime`을
+더해 조회 명령과 control 명령을 실제 provider 경계에 연결한다.
+
+runtime 처리 기준:
+
+- `/status`, `/positions`, `/pnl`, `/why <market|cash>`, `/orders`, `/risk`는 기존 safe status snapshot을 읽는
+  read-only command다. 이 명령들은 `BrokerPort.submitOrder`, live broker submit/cancel, approval workflow로 연결하지 않는다.
+- `/pause`, `/resume`, `/kill`은 allowlist, parser, durable dedupe, audit append를 통과한 뒤에도 60초 TTL의 동일 명령
+  2단계 확인을 요구한다. TTL은 Telegram message 시각과 현재 처리 시각을 함께 기준으로 삼는다. 첫 번째 명령은 confirmation
+  안내만 보내고, 두 번째 동일 명령도 메시지 시각 기준 TTL 안에 있으며 처리 시점에도 fresh할 때만 kill switch control provider를
+  호출한다.
+- `/pause`는 `NEW_ORDERS_BLOCKED`와 `operator_pause`, `/resume`은 `NORMAL`과 `operator_resume`, `/kill`은
+  `HARD_STOP`과 `operator_kill`로만 매핑한다. `HARD_STOP -> NORMAL` 직접 복구 같은 불법 전이는 기존 kill switch state
+  machine이 계속 거부한다.
+- process-local confirmation pending store는 재시작 시 사라진다. 이 경우 명령은 실행되지 않고 운영자가 다시 확인 명령을 보내야
+  하므로 fail-closed 동작이다.
+- offset 없이 polling이 시작돼 오래된 backlog control 명령이 한 batch로 들어와도 메시지 시각 기준 확인 가능 시간이 지나 있으면
+  `telegram_inbound_control_confirmation_expired`로 보류하고 provider를 호출하지 않는다.
+- dedupe 저장소 장애나 audit append 장애가 발생하면 provider 실행 전에 멈추고, 가능한 경우 한국어 reply와
+  `TELEGRAM_INBOUND_COMMAND` audit evidence에 실패 reason을 남긴다. raw exception message, provider body, Telegram token은
+  결과 객체와 audit metadata에 싣지 않는다.
+- Telegram reply는 `sendMessage`만 사용하며 4096자 제한 안으로 잘라 보낸다. reply 결과에는 provider message id와 정규화된
+  실패 reason만 남기고 raw provider body는 보존하지 않는다.
+- M20은 `/approve`, `/reject`, order proposal approval, 승인된 주문의 live broker 제출, Telegram public webhook endpoint를 만들지
+  않는다. 이 경계는 M21 이후 별도 issue에서 다룬다.
 
 ## M9 Paper 매매 이벤트 Telegram 알림
 
