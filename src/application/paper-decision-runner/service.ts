@@ -475,13 +475,18 @@ function createPaperDecisionExecutionCostEvidence(
 /**
  * SELL 후보의 open position 수량 근거를 frame-local 입력에서 읽는다.
  *
- * runner는 broker balance를 조회하지 않으므로 feature 또는 risk position metadata에 명시된 수량만 신뢰한다.
- * 수량 근거가 없으면 undefined를 반환해 plain SELL이 ExecutionEngine에서 fail-closed 되도록 한다.
+ * runner는 broker balance를 조회하지 않으므로 거래소/전략이 일치하는 risk position metadata 수량만 신뢰한다.
+ * aggregate feature 수량이나 다른 거래소 snapshot은 undefined로 반환해 plain SELL이 ExecutionEngine에서 fail-closed 되도록 한다.
  */
 function readExitPositionQuantity(frame: PaperDecisionInputFrame, intent: OrderIntent): string | undefined {
   const matchingPosition = frame.risk?.positions?.find((position) => {
-    // 전략별 SELL이 계정 집계 포지션을 빌리면 다른 전략 물량까지 청산할 수 있어 exact scope만 인정한다.
-    return position.market === intent.market && position.strategyId === intent.strategyId;
+    // 거래소/전략 scope가 다르면 다른 venue나 aggregate 포지션을 빌린 SELL이 될 수 있어 exact scope만 인정한다.
+    return (
+      position.exchangeId === frame.exchangeId &&
+      position.exchangeId === intent.exchangeId &&
+      position.market === intent.market &&
+      position.strategyId === intent.strategyId
+    );
   });
   const metadata = matchingPosition?.metadata;
   const strategyQuantity =
@@ -494,11 +499,7 @@ function readExitPositionQuantity(frame: PaperDecisionInputFrame, intent: OrderI
     return strategyQuantity;
   }
 
-  return (
-    readStringFeature(frame, "position_quantity") ??
-    readStringFeature(frame, "position_total_quantity") ??
-    readStringFeature(frame, "total_quantity")
-  );
+  return undefined;
 }
 
 /**

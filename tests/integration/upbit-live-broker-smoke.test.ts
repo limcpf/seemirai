@@ -67,6 +67,16 @@ const runUpbitLiveBrokerSmoke =
 const describeUpbitLiveBrokerSmoke = runUpbitLiveBrokerSmoke ? describe : describe.skip;
 
 /**
+ * M19 guarded buy smoke guard를 기존 live broker smoke에 추가로 적용해야 하는지 판단한다.
+ *
+ * 일반 live broker smoke는 M14/M15 guard만으로 실행할 수 있어야 한다. M19 env가 명시된 경우에만 M19 추가 차단을 적용하고,
+ * guarded-buy marker만 켜진 오설정은 loader가 fail-closed 하게 그대로 넘긴다.
+ */
+function shouldApplyM19GuardedBuySmokeGuard(env: NodeJS.ProcessEnv): boolean {
+  return env.SEEMIRAI_RUN_M19_EXIT_PILOT === "1" || env.SEEMIRAI_RUN_M19_GUARDED_BUY_SMOKE === "1";
+}
+
+/**
  * 운영자가 실제 live broker smoke 직전에 확정해 전달하는 주문 입력이다.
  *
  * price/volume/identifier를 코드가 자동 산정하지 않고, M14 order-smoke guard와 M15 broker guard가 같은 값을 검증한다.
@@ -239,26 +249,27 @@ describeUpbitLiveBrokerSmoke("Upbit live broker real smoke integration", () => {
         },
       });
 
-      // M19 guarded buy smoke 검증 — loader 결과를 그대로 guard에 넘기고,
-      // FAILED_CLOSED면 API 호출 전에 차단한다. PASSED이면 M19 소액 한도를 추가 검증한다.
-      const m19Guard = loadM19ExitPilotGuardConfigFromEnv(process.env);
-      const m19Validation = validateM19GuardedBuySmokeGuard(m19Guard, "bid");
-      artifact.m19Validation = {
-        result: m19Validation.result,
-        reason: m19Validation.reason,
-        message: m19Validation.message,
-      };
-      if (!m19Validation.sideEffectPossible) {
-        // M19 guarded buy smoke 경계에서는 disabled/SKIPPED도 기존 live broker smoke 주문 생성으로 낮추지 않는다.
-        throw new UnsafePilotRuntimeConfigError([m19Validation.message]);
-      }
-      if (m19Validation.result === "PASSED" && m19Guard.enabled) {
-        // M19 소액 한도 검증 — M19_EXIT_PILOT_MAX_KRW와 UPBIT_ORDER_SMOKE_MAX_KRW 중 더 보수적인 상한 적용
-        const m19MaxKrw = parseFinancialDecimal(m19Guard.maxKrw);
-        if (parseFinancialDecimal(plan.notionalKrw).greaterThan(m19MaxKrw)) {
-          throw new UnsafePilotOrderSmokeRequestError([
-            `smoke 주문 총액이 M19 소액 한도(${m19Guard.maxKrw} KRW)를 초과합니다`,
-          ]);
+      if (shouldApplyM19GuardedBuySmokeGuard(process.env)) {
+        // M19 env가 명시된 경우에만 추가 guard를 적용해 기존 live broker smoke를 불필요하게 막지 않는다.
+        const m19Guard = loadM19ExitPilotGuardConfigFromEnv(process.env);
+        const m19Validation = validateM19GuardedBuySmokeGuard(m19Guard, "bid");
+        artifact.m19Validation = {
+          result: m19Validation.result,
+          reason: m19Validation.reason,
+          message: m19Validation.message,
+        };
+        if (!m19Validation.sideEffectPossible) {
+          // M19 guarded buy smoke 경계에서는 disabled/SKIPPED도 기존 live broker smoke 주문 생성으로 낮추지 않는다.
+          throw new UnsafePilotRuntimeConfigError([m19Validation.message]);
+        }
+        if (m19Validation.result === "PASSED" && m19Guard.enabled) {
+          // M19 소액 한도 검증 — M19_EXIT_PILOT_MAX_KRW와 UPBIT_ORDER_SMOKE_MAX_KRW 중 더 보수적인 상한 적용
+          const m19MaxKrw = parseFinancialDecimal(m19Guard.maxKrw);
+          if (parseFinancialDecimal(plan.notionalKrw).greaterThan(m19MaxKrw)) {
+            throw new UnsafePilotOrderSmokeRequestError([
+              `smoke 주문 총액이 M19 소액 한도(${m19Guard.maxKrw} KRW)를 초과합니다`,
+            ]);
+          }
         }
       }
 
