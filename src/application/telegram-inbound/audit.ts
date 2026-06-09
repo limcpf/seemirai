@@ -24,6 +24,8 @@ export interface CreateTelegramInboundCommandAuditEventInput {
   occurredAt?: string;
   correlationId?: string;
   dedupe?: TelegramInboundCommandDedupeResult;
+  /** dedupe 저장 경계가 실패해 provider 실행을 막은 경우, 정상 수락 audit로 오인되지 않게 남기는 안정 reason code다. */
+  dedupeFailureReasonCode?: string;
 }
 
 /**
@@ -33,10 +35,18 @@ export interface CreateTelegramInboundCommandAuditEventInput {
  * 사용자 안내와 audit evidence로 수렴한다.
  */
 export function inferTelegramInboundAuditOutcome(
-  input: Pick<CreateTelegramInboundCommandAuditEventInput, "parseResult" | "authorization" | "dedupe">,
+  input: Pick<
+    CreateTelegramInboundCommandAuditEventInput,
+    "parseResult" | "authorization" | "dedupe" | "dedupeFailureReasonCode"
+  >,
 ): TelegramInboundAuditOutcome {
   if (!input.authorization.ok) {
     return "UNAUTHORIZED";
+  }
+
+  if (input.dedupeFailureReasonCode !== undefined) {
+    // dedupe 저장 실패는 실행 차단 사건이므로 authorized command로 감사되면 운영자가 장애를 놓친다.
+    return "DEDUPE_FAILED";
   }
 
   if (input.dedupe?.duplicate) {
@@ -117,12 +127,17 @@ function createTelegramInboundAuditMetadata(
     metadata.dedupe_key = input.dedupe.idempotencyKey;
   }
 
+  if (input.dedupeFailureReasonCode !== undefined) {
+    metadata.dedupe_status = "failed";
+    metadata.dedupe_failure_reason = input.dedupeFailureReasonCode;
+  }
+
   return metadata;
 }
 
 function toAuditReasonCode(
   outcome: TelegramInboundAuditOutcome,
-  input: Pick<CreateTelegramInboundCommandAuditEventInput, "parseResult" | "authorization">,
+  input: Pick<CreateTelegramInboundCommandAuditEventInput, "parseResult" | "authorization" | "dedupeFailureReasonCode">,
 ): string {
   if (outcome === "UNAUTHORIZED") {
     return input.authorization.reasonCode;
@@ -138,6 +153,10 @@ function toAuditReasonCode(
     return "telegram_inbound_duplicate_command";
   }
 
+  if (outcome === "DEDUPE_FAILED") {
+    return input.dedupeFailureReasonCode ?? "telegram_inbound_dedupe_failed";
+  }
+
   return "telegram_inbound_command_accepted";
 }
 
@@ -146,6 +165,8 @@ function toAuditSeverity(outcome: TelegramInboundAuditOutcome): NonNullable<Audi
     case "AUTHORIZED":
     case "DUPLICATE":
       return "INFO";
+    case "DEDUPE_FAILED":
+      return "ERROR";
     case "UNKNOWN":
     case "MALFORMED":
     case "UNAUTHORIZED":

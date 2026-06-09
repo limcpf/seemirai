@@ -220,5 +220,6 @@ export type TelegramInboundAuditOutcome =
   | "AUTHORIZED"
   | "UNAUTHORIZED"
   | "DUPLICATE"
+  | "DEDUPE_FAILED"
   | "UNKNOWN"
   | "MALFORMED";

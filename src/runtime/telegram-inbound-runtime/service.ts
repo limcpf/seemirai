@@ -133,6 +133,7 @@ export function createTelegramInboundCommandRuntime(
           parseResult,
           authorization,
           correlationId,
+          dedupeFailureReasonCode: "telegram_inbound_dedupe_failed",
         });
         if (!audit.ok) {
           const reply = await sendReplySafely(options, message, correlationId, formatTelegramAuditFailureResponse(correlationId));

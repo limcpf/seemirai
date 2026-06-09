@@ -151,6 +151,15 @@ describe("Telegram inbound command runtime", () => {
     expect(fixture.statusProvider.calls).toBe(0);
     expect(fixture.killSwitchProvider.requests).toHaveLength(0);
     expect(fixture.auditLog.events).toHaveLength(1);
+    expect(fixture.auditLog.events[0]).toMatchObject({
+      severity: "ERROR",
+      reasonCode: "telegram_inbound_dedupe_failed",
+      metadata: {
+        outcome: "DEDUPE_FAILED",
+        dedupe_status: "failed",
+        dedupe_failure_reason: "telegram_inbound_dedupe_failed",
+      },
+    });
     expect(fixture.replyPort.replies[0]?.text).toContain("중복 실행 보호 상태를 기록하지 못해");
     expect(JSON.stringify(result)).not.toContain("jobs unavailable");
   });
