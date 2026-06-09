@@ -10,6 +10,7 @@ export type AuditEventType =
   | "PILOT_PRIVATE_API_EVIDENCE"
   | "RISK_REJECTION"
   | "STATE_TRANSITION"
+  | "TELEGRAM_INBOUND_COMMAND"
   | "REGISTRY_CONFIG_VALIDATION";
 
 export type AuditSeverity = "DEBUG" | "INFO" | "WARN" | "ERROR" | "CRITICAL";

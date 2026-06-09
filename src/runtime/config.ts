@@ -20,6 +20,23 @@ const defaultConfigUrl = new URL("../../config/paper.json", import.meta.url);
 const MarketCodeSchema = z.string().regex(/^KRW-[A-Z0-9]+$/u, "KRW market code is required");
 // 운영 알림 secret과 chat id는 공백-only 값을 부팅 시점에 차단해야 provider 실패 루프를 만들지 않는다.
 const TrimmedNonEmptyStringSchema = z.string().trim().min(1);
+const TelegramInboundConfigSchema = z
+  .object({
+    enabled: z.boolean().default(false),
+    owner_chat_ids: z.array(TrimmedNonEmptyStringSchema).default([]),
+    owner_user_ids: z.array(TrimmedNonEmptyStringSchema).default([]),
+    polling_interval_ms: z.number().int().positive().default(1_000),
+    polling_timeout_seconds: z.number().int().positive().max(50).default(20),
+    max_updates_per_poll: z.number().int().positive().max(100).default(50),
+  })
+  .default({
+    enabled: false,
+    owner_chat_ids: [],
+    owner_user_ids: [],
+    polling_interval_ms: 1_000,
+    polling_timeout_seconds: 20,
+    max_updates_per_poll: 50,
+  });
 
 export const RuntimeConfigSchema = z
   .object({
@@ -65,9 +82,18 @@ export const RuntimeConfigSchema = z
       .object({
         chat_id: TrimmedNonEmptyStringSchema.optional(),
         provider_timeout_ms: z.number().int().positive().default(5_000),
+        inbound: TelegramInboundConfigSchema,
       })
       .default({
         provider_timeout_ms: 5_000,
+        inbound: {
+          enabled: false,
+          owner_chat_ids: [],
+          owner_user_ids: [],
+          polling_interval_ms: 1_000,
+          polling_timeout_seconds: 20,
+          max_updates_per_poll: 50,
+        },
       }),
     secrets: z
       .object({

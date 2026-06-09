@@ -183,5 +183,16 @@
       "max_consecutive_strategy_losses": 3
     }
   },
+  "telegram": {
+    "provider_timeout_ms": 5000,
+    "inbound": {
+      "enabled": false,
+      "owner_chat_ids": [],
+      "owner_user_ids": [],
+      "polling_interval_ms": 1000,
+      "polling_timeout_seconds": 20,
+      "max_updates_per_poll": 50
+    }
+  },
   "secrets": {}
 }

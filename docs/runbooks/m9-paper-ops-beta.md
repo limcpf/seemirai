@@ -124,8 +124,8 @@ fixture에서 feature, strategy evaluation, order intent, cost/risk gate, PaperB
 `pnlSummary`는 운영자가 paper run의 손익 방향을 빠르게 판단하기 위한 관측 metric이며, threshold 자동 변경이나 실거래 전환
 근거로 단독 사용하지 않는다.
 
-fixture smoke가 실패하면 M9 운영을 시작하지 않는다. stale data 차단, audit 누락, live order API 0회, Telegram inbound 부재,
-control route wiring, controlled paper 주문 제출/체결 경로가 먼저 정상이어야 한다.
+fixture smoke가 실패하면 M9 운영을 시작하지 않는다. stale data 차단, audit 누락, live order API 0회, Telegram inbound 기본
+비활성 guard와 public webhook route 부재, control route wiring, controlled paper 주문 제출/체결 경로가 먼저 정상이어야 한다.
 
 ## 5. Paper 운영 실행
 
@@ -210,7 +210,8 @@ curl -sS http://127.0.0.1:8787/status
 
 ## 7. Telegram 매매 이벤트 정책
 
-M9의 Telegram 알림은 outbound 전송만 허용한다. inbound command, webhook, polling은 만들지 않는다.
+M9의 Telegram 알림 runner는 outbound 전송만 수행한다. M20 이후 inbound polling foundation이 있더라도 M9 paper 운영에서는 기본
+비활성 guard를 유지하고 command handler를 시작하지 않는다.
 현재 구현 경계는 `src/application/alerts/paper-trade-events.ts`의 alert 후보 mapper와
 `src/infrastructure/telegram/message-format.ts`의 Telegram formatter다. 주문/체결 commit 이후 후보를 만들고, provider 실패는
 주문/체결 상태를 되돌리지 않는다.
@@ -268,7 +269,7 @@ P0/P1 Telegram provider 실패는 `notification_retry` jobs row로 재시도한�
 - in-flight reservation 또는 reservation race skip은 완료하지 않고 provider 실패와 같은 재예약 경로로 보낸다.
 - provider 실패는 dispatch 처리 종료 시각과 claim 시각 중 더 늦은 시각 기준으로 `PENDING` 재예약되며, max attempts 소진 시 `FAILED`와
   `notification_retry_manual_review_required` audit evidence가 남는다.
-- retry worker는 Telegram outbound만 수행하고 inbound command, webhook, polling, Upbit private API를 열지 않는다.
+- retry worker는 Telegram outbound만 수행하고 inbound command handler, public webhook route, Upbit private API를 열지 않는다.
 
 대표 검증:
 
