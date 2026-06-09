@@ -275,6 +275,13 @@
       "owner_scope": "docs/exec-plans/active"
     },
     {
+      "path": "docs/exec-plans/completed/2026-06-07-issue-165-m19-subpr-03-verification-closeout.md",
+      "kind": "exec-plan",
+      "role": "✅ 완료 — Issue #165 M19 자동 매도와 포지션 축소 Sub PR 03 closeout. M19 exit pilot guard, existing small position evidence guard, guarded buy smoke fail-closed, 실제 guarded live broker smoke 성공 증적, PAPER_NO_KEY live order API 0회 source scan, hard stop 자동 청산 금지, 보안/신뢰성 문서 반영 확인",
+      "read_when": ["issue #165 Sub PR 03 closeout 확인", "M19 exit pilot guard 확인", "M19 existing small position evidence guard 확인", "M19 guarded buy smoke guard 확인", "source scan 결과 확인"],
+      "owner_scope": "docs/exec-plans/completed"
+    },
+    {
       "path": "docs/exec-plans/completed/2026-06-06-issue-159-m18-decision-ledger-reasonix-handoff.md",
       "kind": "exec-plan",
       "role": "✅ 완료 — Issue #159 M18 판단 이유 ledger와 설명 API Reasonix 구현 handoff (4개 sub PR 순차 실행 기준)",
@@ -531,6 +538,13 @@
       "kind": "reference",
       "role": "M18 decision ledger type contract 검증 테스트 — category 상수 완전성, frame/evidence/summary shape 확인",
       "read_when": ["decision ledger test 실행", "category 상수 검증", "type contract 회귀 확인"],
+      "owner_scope": "tests/unit"
+    },
+    {
+      "path": "tests/unit/m19-exit-pilot-guard.test.ts",
+      "kind": "reference",
+      "role": "M19 exit pilot guard 검증 테스트 — guard config 해석, existing small position evidence, guarded buy skip/fail-closed/pass 분기, safe summary redaction 테스트",
+      "read_when": ["M19 guard test 실행", "M19 exit pilot guard 검증", "existing small position evidence guard 회귀 확인", "guarded buy smoke guard 회귀 확인", "safe summary contract 확인"],
       "owner_scope": "tests/unit"
     },
     {

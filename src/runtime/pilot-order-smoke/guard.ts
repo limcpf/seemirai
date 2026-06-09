@@ -7,6 +7,8 @@ import {
 import type { PilotRuntimeConfig } from "../pilot-config.js";
 import type { Decimal } from "decimal.js";
 
+import type { M19ExitPilotGuardConfigResult } from "../pilot-config/types.js";
+
 /**
  * pilot order smoke가 허용하는 단일 지정가 주문 의도다.
  *
@@ -211,4 +213,94 @@ function readOrderSmokeMaxKrw(config: PilotRuntimeConfig, violations: string[]):
     violations.push("SEEMIRAI_UPBIT_ORDER_SMOKE_MAX_KRW 는 decimal 문자열이어야 합니다");
     return undefined;
   }
+}
+
+/**
+ * M19 guarded buy smoke가 별도 운영자 승인 evidence를 가졌는지 검증한다.
+ *
+ * M19 invariant: 신규 진입 포지션을 만드는 guarded buy smoke는 `SEEMIRAI_M19_GUARDED_BUY_APPROVAL_EVIDENCE_ID`가
+ * 없으면 API 호출 전에 fail-closed 한다. 이 가드는 주문 side effect를 만들지 않는 순수 검증 경계다.
+ *
+ * `loadM19ExitPilotGuardConfigFromEnv`의 반환값을 그대로 받으며, disabled config는 SKIPPED,
+ * approval evidence 누락은 FAILED_CLOSED, 승인 통과 시 PASSED를 반환한다.
+ */
+export function validateM19GuardedBuySmokeGuard(
+  m19Guard: M19ExitPilotGuardConfigResult,
+  side: "bid" | "ask",
+): M19GuardedBuySmokeValidation {
+  if (!m19Guard.enabled) {
+    // M19 guard가 없으면 신규 buy smoke 경로 자체를 열지 않고 skip evidence를 남긴다.
+    return {
+      result: "SKIPPED",
+      reason: "M19 guard 비활성",
+      message:
+        "M19 exit pilot guard가 꺼져 있어 guarded buy smoke 경로를 열지 않는다. paper fixture로만 exit 검증을 수행한다.",
+      action:
+        "신규 buy smoke가 필요한 경우 SEEMIRAI_RUN_M19_EXIT_PILOT=1, position source, 소액 한도, operator evidence id를 설정한다.",
+      sideEffectPossible: false,
+    };
+  }
+
+  if (side === "ask") {
+    // M19 exit pilot은 매도/축소 경로가 기본이다. 매도는 기존 보유 포지션을 줄이는 쪽이므로 guarded buy 승인 없이 허용한다.
+    // 단, 실제 포지션 존재 여부와 소액 한도는 smoke runner에서 추가 검증한다.
+    return {
+      result: "PASSED",
+      reason: "exit_side_allowed",
+      message: "M19 exit pilot guard 매도/축소 경로가 열려 있다.",
+      action:
+        "실행 전 기존 보유 포지션 존재 여부, 소액 한도, exit rule 조건을 확인한다.",
+      sideEffectPossible: true,
+    };
+  }
+
+  if (!m19Guard.guardedBuySmokeEnabled) {
+    // guarded buy smoke가 명시적으로 꺼져 있으면 buy 경로를 열지 않는다.
+    return {
+      result: "SKIPPED",
+      reason: "guarded_buy_not_enabled",
+      message:
+        "M19 guarded buy smoke가 꺼져 있어 신규 buy smoke 경로를 열지 않는다. 기존 포지션 exit 또는 paper fixture 검증을 우선한다.",
+      action:
+        "신규 buy smoke가 필요한 경우 SEEMIRAI_RUN_M19_GUARDED_BUY_SMOKE=1 과 SEEMIRAI_M19_GUARDED_BUY_APPROVAL_EVIDENCE_ID 를 설정한다.",
+      sideEffectPossible: false,
+    };
+  }
+
+  if (m19Guard.guardedBuyApprovalEvidenceId === undefined) {
+    // guarded buy smoke가 켜졌지만 approval evidence가 없으면 API 호출 전에 fail-closed 한다.
+    return {
+      result: "FAILED_CLOSED",
+      reason: "guarded_buy_approval_missing",
+      message:
+        "M19 guarded buy smoke가 켜졌지만 SEEMIRAI_M19_GUARDED_BUY_APPROVAL_EVIDENCE_ID 가 없어 fail-closed 됐다.",
+      action:
+        "운영자가 Upbit PC 웹에서 키 권한을 재확인하고 redacted evidence id를 제공한 뒤 다시 실행한다.",
+      sideEffectPossible: false,
+    };
+  }
+
+  return {
+    result: "PASSED",
+    reason: "guarded_buy_approved",
+    message: "M19 guarded buy smoke 승인 evidence가 확인됐다.",
+    action:
+      "실행 전 소액 한도, identifier, redacted artifact 조건을 다시 확인한다.",
+    sideEffectPossible: true,
+  };
+}
+
+/**
+ * M19 guarded buy smoke validation 결과다.
+ *
+ * `result`가 `SKIPPED`이면 실주문 side effect를 시도하지 않고 skip evidence를 남긴다.
+ * `FAILED_CLOSED`이면 approved 조건 미충족으로 API 호출 전에 차단한다.
+ * `PASSED`인 경우에만 `sideEffectPossible=true`이며 smoke runner가 추가 검증 후 주문할 수 있다.
+ */
+export interface M19GuardedBuySmokeValidation {
+  result: "SKIPPED" | "FAILED_CLOSED" | "PASSED";
+  reason: string;
+  message: string;
+  action: string;
+  sideEffectPossible: boolean;
 }

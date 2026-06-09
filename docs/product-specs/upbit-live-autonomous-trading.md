@@ -1,6 +1,6 @@
 # Upbit Live Autonomous Trading 로드맵
 
-- 상태: draft
+- 상태: M19 Sub PR 03 Verification & Guarded Pilot 완료 (2026-06-07)
 - 작성일: 2026-06-01
 - 관련 범위: M15 이후 post-MVP 실거래 자율 운용
 - 기준 문서: [`../PRD.md`](../PRD.md), [`../FEATURE_REQUIREMENTS.md`](../FEATURE_REQUIREMENTS.md), [`../../ARCHITECTURE.md`](../../ARCHITECTURE.md), [`./upbit-v0-2-pilot-private-api.md`](./upbit-v0-2-pilot-private-api.md), [`../RUNTIME_CONFIG.md`](../RUNTIME_CONFIG.md), [`../RELIABILITY.md`](../RELIABILITY.md), [`../SECURITY.md`](../SECURITY.md)
@@ -231,25 +231,35 @@ M14 이후에도 다음은 여전히 사실이어야 한다.
 - 주문 후보 0건 frame도 hold/discard reason count로 설명된다.
 - LLM 장애가 설명 생성 실패 evidence로만 남고 주문 판단을 바꾸지 않는다.
 
-### M19. 자동 매도와 포지션 축소
+### M19. 자동 매도와 포지션 축소 ✅ Sub PR 03 완료
 
 목표:
 
 - 자동매수 전에 포지션을 어떻게 줄이고 닫을지 안전하게 구현한다.
 
-범위:
+구현 상태 (3개 sub PR):
 
-- 손절, 익절, trailing stop, 시간 기반 청산, 전략 exit signal
-- exit order intent와 RiskGate 연동
-- 부분 체결 잔량 reconcile
-- exit 실패 시 신규 진입 중지
-- paper/live parity test
+- Sub PR 01: exit contract, config/policy guard, exit rule engine, position sizing, dust/min-order 차단 완료.
+- Sub PR 02: RiskGate, decision ledger, PnL/position context, ExecutionEngine/PaperBroker partial fill/cancel/requote, 신규 진입 중지 완료.
+- Sub PR 03 (이번): M19 exit pilot guard, guarded buy smoke 차단, 실제 guarded live broker smoke 성공 증적, hard stop open position 자동 청산 금지 회귀 확인, PAPER_NO_KEY live order API 0회 source scan, 문서 closeout 완료.
+
+M19 Sub PR 03 범위:
+
+- M19 exit pilot guard: `SEEMIRAI_RUN_M19_EXIT_PILOT=1`, position source, 소액 한도, operator evidence id
+- `EXISTING_SMALL_POSITION` source: M16 reconcile 또는 운영자 position evidence id가 없으면 fail-closed
+- guarded buy smoke: `SEEMIRAI_RUN_M19_GUARDED_BUY_SMOKE=1`, `SEEMIRAI_M19_GUARDED_BUY_APPROVAL_EVIDENCE_ID`
+- 매도/축소(side=ask) 우선, 신규 buy smoke는 별도 승인 없이 fail-closed
 
 완료 조건:
 
-- paper fixture에서 모든 exit rule이 검증된다.
-- live pilot에서 소액 포지션의 진입, 청산, 취소, 실패 복구가 evidence로 남는다.
-- 장애 상황의 무조건 시장가 청산은 여전히 비활성이다.
+- ✅ paper fixture에서 모든 exit rule이 검증된다.
+- ✅ live pilot guard가 명시 env, 소액 한도, 운영자 evidence 없이 열리지 않는다.
+- ✅ 기존 소액 포지션 source는 M16 reconcile 또는 운영자 position evidence 없이 열리지 않는다.
+- ✅ guarded buy smoke가 별도 approval evidence 없이 fail-closed 한다.
+- ✅ 운영자가 별도 env를 export한 실제 guarded live broker smoke에서 단일 `post_only` 지정가 주문 생성, 조회, 취소 경로가 통과했다.
+- ✅ 장애 상황의 무조건 시장가 청산은 여전히 비활성이다.
+- ✅ 기본 PAPER_NO_KEY runtime live order API 호출 0회가 유지된다.
+- ✅ `corepack pnpm typecheck`, `corepack pnpm test`, `./scripts/verify` 통과 (2026-06-09 Codex review findings 수정 세션에서 최종 확인: typecheck pass, 전체 verify 75 files passed/11 skipped, 1261 tests passed/113 skipped, verify docs/hooks/github pass, source scan live order API 0회)
 
 ### M20. Telegram 양방향 운영
 

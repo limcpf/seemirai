@@ -12,6 +12,7 @@
 
 ## 완료 계획
 
+- [`2026-06-07-issue-165-m19-subpr-03-verification-closeout.md`](./2026-06-07-issue-165-m19-subpr-03-verification-closeout.md): Issue #165 M19 자동 매도와 포지션 축소 Sub PR 03 closeout. M19 exit pilot guard(M19ExitPilotGuardConfig, loadM19ExitPilotGuardConfigFromEnv, createM19ExitPilotGuardSafeSummary), `EXISTING_SMALL_POSITION` evidence guard, guarded buy smoke fail-closed guard(validateM19GuardedBuySmokeGuard), 실제 guarded live broker smoke 성공 증적, PAPER_NO_KEY live order API 0회 source scan, hard stop 자동 청산 금지 회귀 확인, RUNTIME_CONFIG.md/upbit-live-autonomous-trading.md/SECURITY.md/RELIABILITY.md 갱신을 완료했다.
 - [`2026-06-06-issue-159-m18-decision-ledger-closeout.md`](./2026-06-06-issue-159-m18-decision-ledger-closeout.md): Issue #159 M18 판단 이유 Ledger와 설명 API. 4개 순차 sub PR(Plan & Contract → Ledger Foundation & Persistence → Producer & Status Why Summary → LLM Boundary, Verification & Closeout)에서 decision ledger frame/evidence contract, append-only DB persistence, `/status.why` read-only summary, LLM 보조 fail-closed summary를 완료했다.
 - [`2026-06-06-issue-159-m18-decision-ledger-reasonix-handoff.md`](./2026-06-06-issue-159-m18-decision-ledger-reasonix-handoff.md): Issue #159 M18 판단 이유 ledger와 설명 API Reasonix 구현 handoff. 4개 sub PR 순차 실행 기준과 acceptance criteria trace matrix를 보존한다.
 - [`2026-06-06-issue-159-subpr-03-review-fix-deepseek-handoff.md`](./2026-06-06-issue-159-subpr-03-review-fix-deepseek-handoff.md): Issue #159 Sub PR 03 Producer & Status Why Summary 리뷰 finding 수정 DeepSeek handoff.

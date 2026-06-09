@@ -128,16 +128,21 @@ export {
   loadRuntimeConfigFile,
 } from "./config.js";
 export {
+  M19_EXIT_PILOT_POSITION_SOURCES,
+  M19_EXIT_PILOT_SMOKE_RESULTS,
   UPBIT_PILOT_IDENTIFIER_MAX_LENGTH,
   UPBIT_PILOT_ORDER_SMOKE_MIN_KRW_LIMIT,
   UPBIT_PILOT_ORDER_SMOKE_MAX_KRW_LIMIT,
   UnsafePilotRuntimeConfigError,
+  createM19ExitPilotGuardSafeSummary,
   createPilotRuntimeSafeSummary,
+  loadM19ExitPilotGuardConfigFromEnv,
   loadPilotRuntimeConfigFromEnv,
 } from "./pilot-config.js";
 export {
   UnsafePilotOrderSmokeRequestError,
   createPilotOrderSmokeRequestPlan,
+  validateM19GuardedBuySmokeGuard,
 } from "./pilot-order-smoke.js";
 export {
   Phase15AltEligibilityThresholdConfigSchema,
@@ -162,15 +167,22 @@ export {
 } from "./notification-retry-runtime.js";
 export type { RuntimeConfig } from "./config.js";
 export type {
+  DisabledM19ExitPilotGuardConfig,
   DisabledPilotRuntimeConfig,
   EnabledPilotRuntimeConfig,
   CreatePilotRuntimeSafeSummaryOptions,
+  M19ExitPilotGuardConfig,
+  M19ExitPilotGuardConfigResult,
+  M19ExitPilotGuardSafeSummary,
+  M19ExitPilotPositionSource,
+  M19ExitPilotSmokeResult,
   PilotRuntimeConfig,
   PilotRuntimeProfile,
   PilotUpbitKeyScope,
 } from "./pilot-config.js";
 export type {
   CreatePilotOrderSmokeRequestPlanInput,
+  M19GuardedBuySmokeValidation,
   PilotOrderSmokeLimitOrderIntent,
   PilotOrderSmokeRequestPlan,
 } from "./pilot-order-smoke.js";

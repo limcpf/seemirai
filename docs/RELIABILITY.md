@@ -226,6 +226,23 @@ Codex-native 운영은 Codex, Git, GitHub, shell command, 문서 상태를 연�
 - PnL 계산은 M17 범위이므로 reconcile 단계에서는 `계산 불가/수동 검토 필요`로 남긴다. balance snapshot을 PnL 근거로
   사용하지 않는다.
 
+## M19 Exit Pilot 신뢰성 기준
+
+- M19 exit pilot 기본 검증은 실제 live side effect 없이 paper fixture, guard negative test, source scan으로 닫을 수 있다. 실제
+  smoke가 실행되지 않았으면 pass로 둔갑시키지 않고 skip/fail-closed 사유와 필요한 운영자 조치를 closeout과 PR 본문에 남긴다.
+- `PAPER_NO_KEY` live order API 0회는 source scan과 disabled live broker 경계를 함께 확인한다. `submitOrder`, `cancelOrder`,
+  `createLimitOrder` 후보가 발견되면 해당 호출이 M14/M15/M19 guard 뒤에 있는지 확인하고, 확인할 수 없으면 blocker로 취급한다.
+- M19 guarded buy smoke가 `SKIPPED` 또는 `FAILED_CLOSED`이면 일반 order smoke 성공 경로로 낮추지 않는다. M19 guard가 활성화된
+  bid smoke는 `PASSED`이고 side effect 가능성이 확인된 경우에만 추가 소액 한도 검증 뒤 주문 생성 경계로 넘어간다.
+- Upbit cancel 직후 조회가 일시적으로 open 상태를 반환할 수 있으므로, 실제 order/live-broker smoke는 같은 UUID 또는 identifier만
+  짧게 재조회해 terminal cancel을 확인한다. 제한 횟수 안에 `CANCELED` 또는 provider `cancel` 상태가 확인되지 않으면 성공으로
+  올리지 않고 `MANUAL_REVIEW_REQUIRED` 또는 실패 evidence로 남긴다.
+- `EXISTING_SMALL_POSITION` source는 M16 reconcile 또는 운영자 position evidence id가 있어도 실제 포지션 존재를 자동 추정하지
+  않는다. 실행 직전 운영자가 market, 수량, 소액 한도, 기존 포지션 상태를 확인해야 하며, 불확실하면 paper fixture 검증으로만
+  수렴한다.
+- `hard stop`은 M19 이후에도 open position 자동 청산을 만들지 않는다. M19 exit pilot 실패, cancel 미확인, reconcile mismatch는
+  신규 진입 중지와 manual review evidence로 수렴하며, 자동 시장가 청산으로 복구하지 않는다.
+
 ## M18 Decision Ledger 신뢰성 기준
 
 - decision ledger는 append-only 저장소다. frame과 evidence는 insert만 수행하며 update, delete는 구현하지 않는다.

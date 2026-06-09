@@ -141,6 +141,23 @@
 - closed order는 `start_time`/`end_time`을 지정해 7일 이하 구간으로 나눠 조회한다. 설정된 조회 horizon 밖이거나
   exchange identity/fingerprint를 확인할 수 없는 주문만 자동 복구하지 않고 manual review evidence로 남긴다.
 
+## M19 Exit Pilot 보안 기준
+
+- M19 exit pilot은 기존 `PILOT_ORDER_SMOKE` 위의 추가 guard로만 열린다. 기본 `PAPER_NO_KEY` runtime은 M19 guard 조회만으로
+  private client, live broker, 주문 생성/취소 API를 조립하지 않는다.
+- `SEEMIRAI_RUN_M19_EXIT_PILOT=1`이 없으면 M19 exit pilot은 paper fixture와 source scan evidence로만 검증한다. guarded buy marker만
+  켜진 오설정은 일반 order smoke로 낮추지 않고 API 호출 전에 fail-closed 한다.
+- `EXISTING_SMALL_POSITION` source는 M16 reconcile 또는 운영자 position evidence id 없이는 열지 않는다. evidence id는 저장소 밖
+  redacted 증거를 가리키는 식별자이며, API credential이나 raw 계정 snapshot을 대신 저장하지 않는다.
+- guarded buy smoke는 신규 진입 포지션을 만들 수 있으므로 `SEEMIRAI_RUN_M19_GUARDED_BUY_SMOKE=1`과
+  `SEEMIRAI_M19_GUARDED_BUY_APPROVAL_EVIDENCE_ID`가 함께 있을 때만 허용한다. approval evidence가 없으면 skip이 아니라
+  fail-closed로 기록하고 주문 API를 호출하지 않는다.
+- M19 smoke artifact, status, PR body, closeout 문서는 access key, secret key, JWT, Authorization header, raw provider payload,
+  raw balance/order detail을 포함하지 않는다. operator evidence id, position evidence id, guarded buy approval evidence id는 safe
+  summary에서 boolean 또는 redacted trace로만 노출한다.
+- M19 pilot은 출금, 입출금 자동화, 선물, 레버리지, 타인 계정, Telegram inbound 승인, M22 이전 무승인 자동 실거래로 확장하지
+  않는다. 이 경계를 바꾸려면 별도 milestone 보안 설계와 검증을 먼저 추가한다.
+
 ## M18 Decision Ledger 보안 기준
 
 - decision ledger의 `payload_json`과 `trace_json`에는 raw provider payload, raw order detail, secret 후보, Authorization header, JWT, API key, secret key, query hash 원문을 저장하지 않는다. 두 필드는 JSONB-safe value만 허용하며 Date, BigInt, function, class instance 같은 비 JSON 값은 저장 계약에서 제외한다.
