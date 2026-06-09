@@ -77,8 +77,16 @@
   bot username 미설정 상태의 mention command는 control provider로 전달하지 않는다.
 - 같은 Telegram update/message/command 재전달은 기존 `jobs.idempotency_key` 기반 dedupe row로 차단한다. dedupe row payload에도
   raw update나 raw message text를 넣지 않는다.
-- Sub PR 01은 command parser와 polling projection만 제공하며, `/pause`, `/resume`, `/kill` control provider 실행은 후속 Sub PR의
-  인증, 확인 절차, idempotency 연결을 통과하기 전까지 연결하지 않는다.
+- `/status`, `/positions`, `/pnl`, `/why <market|cash>`, `/orders`, `/risk`는 read-only 조회만 수행하며 주문 후보 승인, live broker
+  submit/cancel, Upbit order endpoint 호출로 연결하지 않는다.
+- `/pause`, `/resume`, `/kill`은 allowlist, durable dedupe, audit append 이후에도 같은 chat/user의 동일 명령 2단계 확인을
+  통과해야 kill switch control provider로 전달된다. 첫 번째 명령이나 확인 reply 전송 실패는 durable control side effect를 만들지
+  않는다.
+- dedupe 저장 실패는 `DEDUPE_FAILED` audit outcome과 `telegram_inbound_dedupe_failed` reason으로 남기고 provider 실행 전에
+  차단한다. audit append 실패도 provider 실행 전에 차단하며, raw exception message는 Telegram reply나 audit metadata에 남기지
+  않는다.
+- M20은 `/approve`, `/reject`, order proposal approval workflow, 승인된 주문의 `UpbitLiveBroker` 제출, Telegram public webhook
+  endpoint를 만들지 않는다.
 
 ## Paper soak 보안 기준
 

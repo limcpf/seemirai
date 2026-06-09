@@ -567,16 +567,22 @@ Acceptance Criteria:
 - [ ] Telegram inbound는 기본 비활성이고, 명시 config/env 없이는 polling을 시작하지 않는다.
 - [ ] 허용되지 않은 chat id/user id의 명령은 실행되지 않고 audit evidence만 남는다.
 - [ ] `/status`, `/positions`, `/pnl`, `/why <market|cash>`, `/orders`, `/risk`는 read-only scope로 분류된다.
+- [ ] read-only 명령은 주문 제출, 주문 취소, live broker 호출 같은 trading side effect를 만들지 않는다.
 - [ ] `/pause`, `/resume`, `/kill`은 control scope로 분류된다.
+- [ ] control 명령은 인증, durable dedupe, audit append, 동일 명령 2단계 확인을 통과한 경우에만 kill switch control provider로 전달된다.
 - [ ] unknown/malformed command는 한국어 안내와 audit evidence로 수렴한다.
 - [ ] 같은 Telegram update/message/command 재전달은 중복 control 실행을 만들지 않는다.
 - [ ] Telegram token, raw provider body, raw update 원문, raw message text는 log/audit/status/응답에 저장되지 않는다.
+- [ ] M20 완료 후에도 기본 `PAPER_NO_KEY` runtime에서 live order API 호출 0회가 유지된다.
+- [ ] `/approve`, `/reject`, approval workflow, 승인된 주문의 live broker 제출 경로가 생성되지 않았음을 source scan으로 확인한다.
 
 테스트 요구사항:
 
 - 단위 테스트: inbound config 기본 비활성, enabled guard, parser, allowlist, dedupe, audit redaction을 검증한다.
 - 단위 테스트: unauthorized/unknown/malformed command negative path가 handler dispatch 전에 닫히는지 확인한다.
 - 통합 테스트: fake Telegram polling provider와 durable dedupe store를 사용해 같은 update가 한 번만 처리되는지 확인한다.
+- 통합 테스트: fake polling batch에서 control confirmation, duplicate 차단, unauthorized audit-only, safe summary를 함께 검증한다.
+- source scan: M20 diff에서 webhook public endpoint, `/approve`/`/reject`, live broker submit/cancel 신규 경로가 없는지 확인한다.
 
 문서 요구사항:
 

@@ -125,10 +125,14 @@ M14 이후에도 다음은 여전히 사실이어야 한다.
 
 ### Telegram inbound 운영
 
-- 현재 보안 기준은 outbound 전송만 허용한다. Telegram command 수신은 별도 보안 설계와 문서 갱신 없이는 구현하지 않는다.
-- command 수신은 owner chat id allowlist, secret redaction, replay/중복 명령 방지, 권한별 확인 절차를 요구한다.
-- 조회 명령과 trading control 명령을 분리한다.
+- M20부터 Telegram command 수신은 public webhook endpoint 없이 `getUpdates` polling으로만 연다.
+- command 수신은 owner chat/user allowlist, secret redaction, replay/중복 명령 방지, 권한별 확인 절차를 요구한다.
+- 조회 명령과 trading control 명령을 분리한다. `/status`, `/positions`, `/pnl`, `/why <market|cash>`, `/orders`, `/risk`는
+  read-only이며 주문 side effect를 만들지 않는다.
+- `/pause`, `/resume`, `/kill`은 durable dedupe와 audit append 이후에도 60초 TTL의 동일 명령 2단계 확인을 통과해야 전역 kill
+  switch control provider로 전달된다.
 - 메시지는 Telegram provider 제한을 고려해 요약과 추적 정보를 분리하고, 긴 설명은 분할 또는 축약한다.
+- `/approve`, `/reject`, order proposal approval, 승인된 주문의 live broker 제출은 M21 이후 별도 범위다.
 
 ## 7. 마일스톤
 
@@ -261,27 +265,34 @@ M19 Sub PR 03 범위:
 - ✅ 기본 PAPER_NO_KEY runtime live order API 호출 0회가 유지된다.
 - ✅ `corepack pnpm typecheck`, `corepack pnpm test`, `./scripts/verify` 통과 (2026-06-09 Codex review findings 수정 세션에서 최종 확인: typecheck pass, 전체 verify 75 files passed/11 skipped, 1261 tests passed/113 skipped, verify docs/hooks/github pass, source scan live order API 0회)
 
-### M20. Telegram 양방향 운영
+### M20. Telegram 양방향 운영 ✅ Sub PR 03 완료
 
 목표:
 
 - 운영자가 Telegram으로 상태를 묻고, 제한된 제어 명령을 실행할 수 있게 한다.
 
+구현 상태 (3개 sub PR):
+
+- Sub PR 01: inbound config/env guard, polling provider, owner allowlist, parser/router, audit event, jobs table dedupe 완료.
+- Sub PR 02: read-only command runtime, `/pause`/`/resume`/`/kill` control confirmation, Telegram reply formatter, fail-closed review fixes 완료.
+- Sub PR 03: fake polling integration test, source scan, 보안/신뢰성/runtime 문서, closeout 문서 완료.
+
 범위:
 
-- Telegram webhook 또는 polling 방식 결정
+- Telegram `getUpdates` polling transport
 - owner chat id allowlist
-- `/status`, `/positions`, `/pnl`, `/why <market>`, `/orders`, `/risk`
+- `/status`, `/positions`, `/pnl`, `/why <market|cash>`, `/orders`, `/risk`
 - `/pause`, `/resume`, `/kill` 같은 control 명령의 확인 절차
 - inbound command audit
 - `SECURITY.md`, `RUNTIME_CONFIG.md`, `RELIABILITY.md` 갱신
 
 완료 조건:
 
-- 허용되지 않은 chat id의 명령은 무시되고 audit evidence만 남는다.
-- 조회 명령은 주문 side effect를 만들지 않는다.
-- control 명령은 인증, 확인, idempotency를 통과해야 한다.
-- Telegram token, raw header, raw provider body는 저장되지 않는다.
+- ✅ 허용되지 않은 chat id의 명령은 무시되고 audit evidence만 남는다.
+- ✅ 조회 명령은 주문 side effect를 만들지 않는다.
+- ✅ control 명령은 인증, 확인, idempotency를 통과해야 한다.
+- ✅ Telegram token, raw header, raw provider body는 저장되지 않는다.
+- ✅ 기본 `PAPER_NO_KEY` runtime은 M20 완료 후에도 live order API 호출 0회를 유지한다.
 
 ### M21. 수동 승인 live pilot
 

@@ -46,6 +46,15 @@ Codex-native 운영은 Codex, Git, GitHub, shell command, 문서 상태를 연�
   constraint로 한 번만 선점한다. duplicate이면 조회/control side effect 없이 duplicate audit evidence만 남긴다.
 - dedupe row는 실행할 worker job이 아니라 command receipt이므로 `job_type=telegram.inbound.command`, `status=COMPLETED`,
   `max_attempts=1`로 남긴다. 일반 worker는 job type scope 없이 jobs table을 claim하면 안 된다.
+- dedupe 저장이 실패하면 같은 control 명령 재전달을 안전하게 막을 수 없으므로 provider 실행 전에 중단한다. 이 경우 audit
+  evidence는 `DEDUPE_FAILED`/`telegram_inbound_dedupe_failed`로 남기며, 사용자에게는 중복 실행 보호 상태를 기록하지 못해 명령을
+  보류했다는 한국어 reply를 보낸다.
+- audit append가 실패하면 운영자가 사후 추적할 evidence가 없으므로 read-only 조회와 control 명령 모두 provider 실행 전에
+  중단한다. 가능하면 Telegram reply로 감사 기록 실패와 필요한 조치를 안내한다.
+- `/pause`, `/resume`, `/kill`은 같은 chat/user가 같은 command를 60초 TTL 안에 한 번 더 보내야 실행된다. pending confirmation은
+  process-local memory에만 있고 재시작 시 사라지므로, 재시작은 control 실행으로 이어지지 않는다.
+- polling runtime `start()` loop는 provider contract 밖 예외를 loop 경계에서 흡수하고 다음 tick을 예약한다. `runOnce()` 결과에는
+  raw update, raw text, raw chat id를 포함하지 않고 update count, next offset, handler result summary만 남긴다.
 
 ## RiskGate append-only 기준
 
