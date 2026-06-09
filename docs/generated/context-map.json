@@ -277,7 +277,7 @@
     {
       "path": "docs/exec-plans/completed/2026-06-07-issue-165-m19-subpr-03-verification-closeout.md",
       "kind": "exec-plan",
-      "role": "✅ 완료 — Issue #165 M19 자동 매도와 포지션 축소 Sub PR 03 closeout. M19 exit pilot guard, existing small position evidence guard, guarded buy smoke fail-closed, PAPER_NO_KEY live order API 0회 source scan, hard stop 자동 청산 금지, 보안/신뢰성 문서 반영 확인",
+      "role": "✅ 완료 — Issue #165 M19 자동 매도와 포지션 축소 Sub PR 03 closeout. M19 exit pilot guard, existing small position evidence guard, guarded buy smoke fail-closed, 실제 guarded live broker smoke 성공 증적, PAPER_NO_KEY live order API 0회 source scan, hard stop 자동 청산 금지, 보안/신뢰성 문서 반영 확인",
       "read_when": ["issue #165 Sub PR 03 closeout 확인", "M19 exit pilot guard 확인", "M19 existing small position evidence guard 확인", "M19 guarded buy smoke guard 확인", "source scan 결과 확인"],
       "owner_scope": "docs/exec-plans/completed"
     },

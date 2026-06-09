@@ -241,7 +241,7 @@ M14 이후에도 다음은 여전히 사실이어야 한다.
 
 - Sub PR 01: exit contract, config/policy guard, exit rule engine, position sizing, dust/min-order 차단 완료.
 - Sub PR 02: RiskGate, decision ledger, PnL/position context, ExecutionEngine/PaperBroker partial fill/cancel/requote, 신규 진입 중지 완료.
-- Sub PR 03 (이번): M19 exit pilot guard, guarded buy smoke 차단, hard stop open position 자동 청산 금지 회귀 확인, PAPER_NO_KEY live order API 0회 source scan, 문서 closeout 완료.
+- Sub PR 03 (이번): M19 exit pilot guard, guarded buy smoke 차단, 실제 guarded live broker smoke 성공 증적, hard stop open position 자동 청산 금지 회귀 확인, PAPER_NO_KEY live order API 0회 source scan, 문서 closeout 완료.
 
 M19 Sub PR 03 범위:
 
@@ -256,6 +256,7 @@ M19 Sub PR 03 범위:
 - ✅ live pilot guard가 명시 env, 소액 한도, 운영자 evidence 없이 열리지 않는다.
 - ✅ 기존 소액 포지션 source는 M16 reconcile 또는 운영자 position evidence 없이 열리지 않는다.
 - ✅ guarded buy smoke가 별도 approval evidence 없이 fail-closed 한다.
+- ✅ 운영자가 별도 env를 export한 실제 guarded live broker smoke에서 단일 `post_only` 지정가 주문 생성, 조회, 취소 경로가 통과했다.
 - ✅ 장애 상황의 무조건 시장가 청산은 여전히 비활성이다.
 - ✅ 기본 PAPER_NO_KEY runtime live order API 호출 0회가 유지된다.
 - ✅ `corepack pnpm typecheck`, `corepack pnpm test`, `./scripts/verify` 통과 (2026-06-09 Codex review findings 수정 세션에서 최종 확인: typecheck pass, 전체 verify 75 files passed/11 skipped, 1261 tests passed/113 skipped, verify docs/hooks/github pass, source scan live order API 0회)

@@ -130,7 +130,19 @@ M19 Sub PR 03은 Sub PR 01(exit contracts & rules)과 Sub PR 02(evidence & runti
 
 ### R1: Guarded buy smoke 실제 실행
 
-현재 Codex 세션의 secret-safe env 점검 결과, Upbit credential, private/order smoke guard, M19 exit pilot guard, guarded buy approval evidence env가 모두 미설정이었다. 따라서 실제 Upbit guarded buy smoke 1회 실행은 수행하지 않았다. 이 항목은 코드 수정으로 대체할 수 없는 운영 실행 evidence이며, operator env export 후 별도 세션에서만 완료할 수 있다.
+초기 Codex 세션의 secret-safe env 점검 결과, Upbit credential, private/order smoke guard, M19 exit pilot guard, guarded buy approval evidence env가 모두 미설정이었다. 따라서 당시에는 실제 Upbit guarded buy smoke 1회 실행을 수행하지 않았다. 이후 운영자가 별도 세션에서 env를 export한 뒤 실제 guarded live broker smoke를 실행해 성공 증적을 제공했다.
+
+운영자 제공 secret-safe 콘솔 증적:
+
+```sh
+pnpm exec vitest run tests/integration/upbit-live-broker-smoke.test.ts
+# 결과: 1 file passed, 4 tests passed
+# Upbit live broker real smoke integration > guarded UpbitLiveBroker로 단일 post_only 지정가 주문을 생성, 조회, 취소한다: passed
+# Start at: 2026-06-09 13:39:29 KST
+# Duration: 3.58s
+```
+
+이 증적은 access key, secret key, JWT, Authorization header, raw provider payload, 계정 원문을 포함하지 않는다. 실제 smoke는 단일 `post_only` 지정가 주문을 생성, 조회, 취소하는 경로가 완료됐음을 보여주며, 체결 내역 발생을 완료 조건으로 보지 않는다.
 
 추가 보강:
 
@@ -213,11 +225,11 @@ pnpm exec vitest run tests/unit/m19-exit-pilot-guard.test.ts --reporter=verbose
 
 ### 실제 guarded buy smoke
 
-**실행 불가**: 현재 Codex 세션에서 operator env가 미설정이다. 실제 smoke는 operator가 env를 export한 후 `tests/integration/upbit-live-broker-smoke.test.ts` real test를 별도 세션에서 실행해야 한다.
+**실행 완료**: 운영자가 env를 export한 별도 세션에서 `tests/integration/upbit-live-broker-smoke.test.ts` real smoke를 실행했고, 4개 테스트가 모두 통과했다. 실제 guarded live broker smoke는 단일 `post_only` 지정가 주문 생성, 조회, 취소 경로를 완료했다.
 
 ## 남은 운영 리스크
 
-- **Guarded buy smoke 실제 실행 미검증**: M19 guard contract와 negative path는 검증 완료됐지만, approval evidence가 있는 실제 guarded buy smoke 실행은 operator env가 필요하다. operator env export 후 `pnpm exec vitest run tests/integration/upbit-live-broker-smoke.test.ts`로 실행 가능.
+- 없음. M19 guard contract, negative path, `EXISTING_SMALL_POSITION` evidence guard, source scan, hard stop 자동 청산 금지, 실제 guarded live broker smoke 실행 증적을 확인했다.
 
 ## Closeout 문서 경로
 
