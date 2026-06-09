@@ -34,4 +34,7 @@ export type {
   TelegramInboundCommandScope,
   TelegramInboundParseResult,
   TelegramInboundParseStatus,
+  TelegramInboundReplyInput,
+  TelegramInboundReplyPort,
+  TelegramInboundReplyResult,
 } from "./types.js";
