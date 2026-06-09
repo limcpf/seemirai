@@ -108,7 +108,9 @@ SEEMIRAI_RESTORE_DATABASE_URL=postgres://seemirai:seemirai_local_password@127.0.
 
 ## 3. Telegram과 control token
 
-M8은 Telegram outbound만 지원한다. webhook, polling, command 수신은 만들지 않는다.
+M8 운영 runner는 Telegram outbound만 사용한다. M20 이후 코드베이스에 inbound polling foundation이 있더라도 기본
+`config/paper.json`에서는 `telegram.inbound.enabled=false`여야 하며, M8 paper 운영 중에는 polling loop나 command handler를
+시작하지 않는다.
 
 필요한 경우 shell 또는 process manager에서만 주입한다.
 
@@ -143,7 +145,7 @@ node scripts/soak-paper-24h.mjs --fixture-smoke --json
 - stale data 신규 주문 차단 evidence가 있다.
 - audit 누락이 0건이다.
 - live order API 호출이 0회다.
-- Telegram inbound route가 없다는 근거가 있다.
+- Telegram inbound가 기본 비활성이고 public webhook route가 없다는 근거가 있다.
 - `/status`, `/kill-switch` wiring 근거가 있다.
 
 fixture smoke가 실패하면 24시간 soak를 시작하지 않는다. stale data 차단이나 live API guard 회귀를 먼저 수정한다.

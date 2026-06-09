@@ -96,6 +96,10 @@ export {
   upsertOrderbookSnapshot,
 } from "./market-data.js";
 export {
+  PostgresTelegramInboundDedupeStore,
+  createPostgresTelegramInboundDedupeStore,
+} from "./telegram-inbound-dedupe.js";
+export {
   DuplicateMigrationVersionError,
   InvalidMigrationFilenameError,
   MigrationChecksumMismatchError,

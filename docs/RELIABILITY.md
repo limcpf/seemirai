@@ -34,6 +34,19 @@ Codex-native 운영은 Codex, Git, GitHub, shell command, 문서 상태를 연�
 - 실패한 검증 로그는 다음 Codex prompt에 전달 가능한 수준으로 요약한다.
 - review finding은 어떤 commit으로 처리됐는지 추적 가능해야 한다.
 
+## M20 Telegram inbound 신뢰성 기준
+
+- inbound polling loop는 기본 비활성이며, enabled config/env와 owner allowlist guard를 모두 통과한 뒤에만 시작한다.
+- Telegram `getUpdates` response는 raw provider payload를 저장하지 않고 update id, message id, chat id, user id, text 같은 최소
+  command projection으로 줄인다. audit에는 text와 raw chat/user id를 남기지 않는다.
+- command parser는 `/status`, `/positions`, `/pnl`, `/why <market|cash>`, `/orders`, `/risk`, `/pause`, `/resume`, `/kill`만
+  인식한다. unknown/malformed command는 exception이 아니라 한국어 안내와 `TELEGRAM_INBOUND_COMMAND` audit evidence로 수렴한다.
+- owner chat allowlist가 비어 있거나 sender가 allowlist 밖이면 read-only 명령도 handler로 넘기지 않는다.
+- parser/auth를 통과한 command는 handler 실행 전에 `telegram.inbound.v1:*` idempotency key를 만들고 기존 `jobs` table unique
+  constraint로 한 번만 선점한다. duplicate이면 조회/control side effect 없이 duplicate audit evidence만 남긴다.
+- dedupe row는 실행할 worker job이 아니라 command receipt이므로 `job_type=telegram.inbound.command`, `status=COMPLETED`,
+  `max_attempts=1`로 남긴다. 일반 worker는 job type scope 없이 jobs table을 claim하면 안 된다.
+
 ## RiskGate append-only 기준
 
 - `risk_ok`는 현재 `riskGateContext`를 평가한 실제 RiskGate 승인 결과가 있을 때만 PASS가 될 수 있다.

@@ -63,6 +63,23 @@
 - Telegram message text는 provider 제한인 4096자 안으로 잘라 보낸다. 긴 장애 문맥의 전체 원문은 Telegram provider 요청
   body나 audit metadata에 그대로 남기지 않는다.
 
+## M20 Telegram inbound 보안 기준
+
+- Telegram inbound는 public webhook endpoint를 만들지 않고 `getUpdates` polling을 우선 transport로 사용한다. Webhook, 외부
+  노출 endpoint, 서명 검증, 배포 도메인 의존성은 M20 범위에서 제외한다.
+- inbound polling은 기본 비활성이며, `SEEMIRAI_TELEGRAM_INBOUND_ENABLED=1` 또는 `telegram.inbound.enabled=true`가 없으면
+  시작하지 않는다.
+- inbound가 활성화된 상태에서 bot token 또는 owner chat id allowlist가 없으면 startup guard가 fail-closed 한다.
+- 허용되지 않은 chat/user의 명령은 parser 결과와 무관하게 실행하지 않고 `TELEGRAM_INBOUND_COMMAND` audit evidence만 남긴다.
+- Telegram token, raw update, raw provider body, raw header, raw message text는 log/audit/status/응답에 저장하지 않는다.
+- audit evidence에는 update id, message id, command name, command scope, command target, dedupe key, chat/user hash만 남긴다.
+- 그룹 chat command mention은 mention이 없거나 설정된 bot username과 일치할 때만 실행 후보로 인정한다. 다른 bot mention 또는
+  bot username 미설정 상태의 mention command는 control provider로 전달하지 않는다.
+- 같은 Telegram update/message/command 재전달은 기존 `jobs.idempotency_key` 기반 dedupe row로 차단한다. dedupe row payload에도
+  raw update나 raw message text를 넣지 않는다.
+- Sub PR 01은 command parser와 polling projection만 제공하며, `/pause`, `/resume`, `/kill` control provider 실행은 후속 Sub PR의
+  인증, 확인 절차, idempotency 연결을 통과하기 전까지 연결하지 않는다.
+
 ## Paper soak 보안 기준
 
 - `scripts/soak-paper-24h.mjs`는 Upbit public quotation WebSocket만 사용하며 Authorization header, Upbit API key, private

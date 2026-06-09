@@ -553,6 +553,40 @@ Acceptance Criteria:
 
 - MVP에서 고객용 투자 리포트나 유료 리포트 배포는 제외한다.
 
+### FR-OPS-001: Telegram inbound 명령은 기본 비활성과 owner allowlist를 기준으로 열어야 한다
+
+설명:
+
+- 운영자는 Telegram에서 현재 상태와 판단 이유를 조회하고 제한된 control 명령을 실행할 수 있어야 한다.
+- M20 inbound transport는 `getUpdates` polling을 우선 사용하며 public webhook endpoint는 만들지 않는다.
+- 조회 명령과 control 명령은 parser 단계에서 scope가 분리되어야 한다.
+- control 명령은 인증, 확인 절차, idempotency, audit evidence를 통과한 뒤에만 durable control provider로 전달되어야 한다.
+
+Acceptance Criteria:
+
+- [ ] Telegram inbound는 기본 비활성이고, 명시 config/env 없이는 polling을 시작하지 않는다.
+- [ ] 허용되지 않은 chat id/user id의 명령은 실행되지 않고 audit evidence만 남는다.
+- [ ] `/status`, `/positions`, `/pnl`, `/why <market|cash>`, `/orders`, `/risk`는 read-only scope로 분류된다.
+- [ ] `/pause`, `/resume`, `/kill`은 control scope로 분류된다.
+- [ ] unknown/malformed command는 한국어 안내와 audit evidence로 수렴한다.
+- [ ] 같은 Telegram update/message/command 재전달은 중복 control 실행을 만들지 않는다.
+- [ ] Telegram token, raw provider body, raw update 원문, raw message text는 log/audit/status/응답에 저장되지 않는다.
+
+테스트 요구사항:
+
+- 단위 테스트: inbound config 기본 비활성, enabled guard, parser, allowlist, dedupe, audit redaction을 검증한다.
+- 단위 테스트: unauthorized/unknown/malformed command negative path가 handler dispatch 전에 닫히는지 확인한다.
+- 통합 테스트: fake Telegram polling provider와 durable dedupe store를 사용해 같은 update가 한 번만 처리되는지 확인한다.
+
+문서 요구사항:
+
+- Telegram inbound guard, owner allowlist, raw provider payload 금지, dedupe 기준이 바뀌면 `docs/RUNTIME_CONFIG.md`,
+  `docs/SECURITY.md`, `docs/RELIABILITY.md`를 함께 갱신한다.
+
+제외 범위:
+
+- M20에서는 `/approve`, `/reject`, 주문 승인 workflow, 승인된 주문의 live broker 제출, Telegram webhook public endpoint를 제외한다.
+
 ### FR-LLM-001: LLM은 직접 매매 판단에 사용하지 않는다
 
 설명:
