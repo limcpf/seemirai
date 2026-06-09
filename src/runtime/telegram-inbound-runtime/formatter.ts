@@ -225,6 +225,33 @@ export function formatTelegramControlConfirmationRequiredResponse(input: {
 }
 
 /**
+ * 오래된 control 명령이 backlog로 처리됐을 때 실행 보류 메시지를 만든다.
+ *
+ * 메시지 시각 기준 확인 가능 시간이 이미 지나면 두 번째 동일 명령이어도 운영 의도가 현재 유효한지 알 수 없으므로 상태 전이를 막는다.
+ */
+export function formatTelegramControlConfirmationExpiredResponse(input: {
+  command: ParsedTelegramInboundCommand;
+  receivedAt: string;
+  expiredAt: string;
+  correlationId: string;
+}): string {
+  return limitTelegramResponse([
+    "[제어 명령 보류]",
+    `${labelControlCommand(input.command.name)} 요청은 실행하지 않았습니다.`,
+    "원인: Telegram 메시지 시각 기준 확인 가능 시간이 이미 지났습니다.",
+    "영향: 현재 거래 상태는 변경되지 않았습니다.",
+    "필요 조치: 지금 같은 명령을 다시 보내고 안내 시간 안에 한 번 더 보내세요.",
+    "",
+    "추적 정보",
+    `요청 ID: ${input.correlationId}`,
+    `명령: /${input.command.name}`,
+    `메시지 시각: ${input.receivedAt}`,
+    `만료 시각: ${input.expiredAt}`,
+    "reason: telegram_inbound_control_confirmation_expired",
+  ]);
+}
+
+/**
  * accepted/rejected kill switch provider 결과를 Telegram 응답으로 변환한다.
  *
  * provider가 거부한 전이는 운영 명령 충돌이므로 실패 stack 대신 상태 전이 거부 이유와 현재 영향만 보여준다.

@@ -51,8 +51,10 @@ Codex-native 운영은 Codex, Git, GitHub, shell command, 문서 상태를 연�
   보류했다는 한국어 reply를 보낸다.
 - audit append가 실패하면 운영자가 사후 추적할 evidence가 없으므로 read-only 조회와 control 명령 모두 provider 실행 전에
   중단한다. 가능하면 Telegram reply로 감사 기록 실패와 필요한 조치를 안내한다.
-- `/pause`, `/resume`, `/kill`은 같은 chat/user가 같은 command를 60초 TTL 안에 한 번 더 보내야 실행된다. pending confirmation은
-  process-local memory에만 있고 재시작 시 사라지므로, 재시작은 control 실행으로 이어지지 않는다.
+- `/pause`, `/resume`, `/kill`은 같은 chat/user가 같은 command를 60초 TTL 안에 한 번 더 보내야 실행된다. TTL은 Telegram
+  message 시각 기준으로 판정하고, 처리 시점에도 두 번째 메시지가 fresh해야 한다. 오래된 backlog control 명령은
+  `CONFIRMATION_EXPIRED`/`telegram_inbound_control_confirmation_expired`로 보류하며 provider 실행으로 이어지지 않는다.
+  pending confirmation은 process-local memory에만 있고 재시작 시 사라지므로, 재시작은 control 실행으로 이어지지 않는다.
 - polling runtime `start()` loop는 provider contract 밖 예외를 loop 경계에서 흡수하고 다음 tick을 예약한다. `runOnce()` 결과에는
   raw update, raw text, raw chat id를 포함하지 않고 update count, next offset, handler result summary만 남긴다.
 

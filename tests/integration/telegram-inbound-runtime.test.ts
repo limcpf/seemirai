@@ -173,4 +173,112 @@ describe("Telegram inbound fake polling integration", () => {
     expect(JSON.stringify(auditEvents)).not.toContain('"chatId":"100"');
     expect(JSON.stringify(auditEvents)).not.toContain('"chat_id":"100"');
   });
+
+  it("오래된 control backlog 두 건을 새 confirmation으로 승격하지 않는다", async () => {
+    const auditEvents: AuditEvent[] = [];
+    const replies: TelegramInboundReplyInput[] = [];
+    const controlRequests: Array<Parameters<KillSwitchControlProvider["apply"]>[0]> = [];
+    const runtime = createTelegramInboundCommandRuntime({
+      allowlist: {
+        ownerChatIds: ["100"],
+        ownerUserIds: ["300"],
+      },
+      dedupeStore: createInMemoryTelegramInboundDedupeStore(() => new Date(now)),
+      auditLog: {
+        async appendEvent(event) {
+          auditEvents.push(event);
+          return {
+            auditEventId: `audit-${auditEvents.length}`,
+            appendedAt: now,
+          };
+        },
+      } satisfies AuditLogPort,
+      replyPort: {
+        async sendReply(input) {
+          replies.push(input);
+          return {
+            delivered: true,
+            providerMessageId: `reply-${replies.length}`,
+          };
+        },
+      } satisfies TelegramInboundReplyPort,
+      statusProvider: {
+        async getStatus() {
+          throw new Error("status provider should not be called by this control-only batch");
+        },
+      },
+      killSwitchControlProvider: {
+        async apply(input) {
+          controlRequests.push(input);
+          return {
+            ...createKillSwitchControlDecision({
+              currentState: "NORMAL",
+              targetState: input.targetState,
+              reasonCode: input.reasonCode,
+              correlationId: input.correlationId,
+              occurredAt: now,
+            }),
+            auditEventId: "audit-control-1",
+            riskEventId: "risk-control-1",
+          };
+        },
+      },
+      clock: () => new Date(now),
+    });
+    const pollingRuntime = createTelegramInboundPollingRuntime({
+      pollingProvider: new FakeTelegramPollingProvider([
+        {
+          status: "ok",
+          nextOffset: 42,
+          updates: [
+            {
+              updateId: 40,
+              messageId: 50,
+              chatId: "100",
+              userId: "300",
+              text: "/kill",
+              receivedAt: "2026-06-09T21:00:00.000Z",
+            },
+            {
+              updateId: 41,
+              messageId: 51,
+              chatId: "100",
+              userId: "300",
+              text: "/kill",
+              receivedAt: "2026-06-09T21:00:30.000Z",
+            },
+          ],
+        },
+      ]),
+      commandRuntime: runtime,
+      pollingIntervalMs: 1_000,
+      pollingTimeoutSeconds: 20,
+      maxUpdatesPerPoll: 50,
+    });
+
+    const result = await pollingRuntime.runOnce();
+
+    expect(result).toMatchObject({
+      pollingStatus: "ok",
+      updateCount: 2,
+      handledMessages: [
+        {
+          status: "CONFIRMATION_EXPIRED",
+          executed: false,
+          reasonCode: "telegram_inbound_control_confirmation_expired",
+        },
+        {
+          status: "CONFIRMATION_EXPIRED",
+          executed: false,
+          reasonCode: "telegram_inbound_control_confirmation_expired",
+        },
+      ],
+    });
+    expect(controlRequests).toHaveLength(0);
+    expect(replies).toHaveLength(2);
+    expect(replies[0]?.text).toContain("확인 가능 시간이 이미 지났습니다");
+    expect(replies[1]?.text).toContain("확인 가능 시간이 이미 지났습니다");
+    expect(auditEvents.map((event) => event.metadata?.outcome)).toEqual(["AUTHORIZED", "AUTHORIZED"]);
+    expect(JSON.stringify(result)).not.toContain("/kill");
+  });
 });

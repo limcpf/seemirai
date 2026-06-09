@@ -452,13 +452,16 @@ runtime 처리 기준:
 - `/status`, `/positions`, `/pnl`, `/why <market|cash>`, `/orders`, `/risk`는 기존 safe status snapshot을 읽는
   read-only command다. 이 명령들은 `BrokerPort.submitOrder`, live broker submit/cancel, approval workflow로 연결하지 않는다.
 - `/pause`, `/resume`, `/kill`은 allowlist, parser, durable dedupe, audit append를 통과한 뒤에도 60초 TTL의 동일 명령
-  2단계 확인을 요구한다. 첫 번째 명령은 confirmation 안내만 보내고, 두 번째 동일 명령에서만 kill switch control provider를
+  2단계 확인을 요구한다. TTL은 Telegram message 시각과 현재 처리 시각을 함께 기준으로 삼는다. 첫 번째 명령은 confirmation
+  안내만 보내고, 두 번째 동일 명령도 메시지 시각 기준 TTL 안에 있으며 처리 시점에도 fresh할 때만 kill switch control provider를
   호출한다.
 - `/pause`는 `NEW_ORDERS_BLOCKED`와 `operator_pause`, `/resume`은 `NORMAL`과 `operator_resume`, `/kill`은
   `HARD_STOP`과 `operator_kill`로만 매핑한다. `HARD_STOP -> NORMAL` 직접 복구 같은 불법 전이는 기존 kill switch state
   machine이 계속 거부한다.
 - process-local confirmation pending store는 재시작 시 사라진다. 이 경우 명령은 실행되지 않고 운영자가 다시 확인 명령을 보내야
   하므로 fail-closed 동작이다.
+- offset 없이 polling이 시작돼 오래된 backlog control 명령이 한 batch로 들어와도 메시지 시각 기준 확인 가능 시간이 지나 있으면
+  `telegram_inbound_control_confirmation_expired`로 보류하고 provider를 호출하지 않는다.
 - dedupe 저장소 장애나 audit append 장애가 발생하면 provider 실행 전에 멈추고, 가능한 경우 한국어 reply와
   `TELEGRAM_INBOUND_COMMAND` audit evidence에 실패 reason을 남긴다. raw exception message, provider body, Telegram token은
   결과 객체와 audit metadata에 싣지 않는다.

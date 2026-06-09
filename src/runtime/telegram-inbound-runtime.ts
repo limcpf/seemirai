@@ -7,6 +7,7 @@ export {
   formatTelegramAuditFailureResponse,
   formatTelegramCommandExecutionFailureResponse,
   formatTelegramControlCommandResponse,
+  formatTelegramControlConfirmationExpiredResponse,
   formatTelegramControlConfirmationRequiredResponse,
   formatTelegramDedupeFailureResponse,
   formatTelegramOrdersCommandResponse,

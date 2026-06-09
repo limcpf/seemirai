@@ -19,6 +19,7 @@ import {
   formatTelegramAuditFailureResponse,
   formatTelegramCommandExecutionFailureResponse,
   formatTelegramControlCommandResponse,
+  formatTelegramControlConfirmationExpiredResponse,
   formatTelegramControlConfirmationRequiredResponse,
   formatTelegramDedupeFailureResponse,
   formatTelegramOrdersCommandResponse,
@@ -46,7 +47,8 @@ const defaultControlConfirmationTtlMs = 60_000;
  * process-local control confirmation store를 만든다.
  *
  * 재시작되면 pending 확인은 사라지며, 이 경우 control provider를 호출하지 않는 fail-closed 상태가 된다. 같은 chat/user가 같은
- * control command를 TTL 안에 다시 보낼 때만 `CONFIRMED`를 반환한다.
+ * control command를 Telegram message 시각 기준 TTL 안에 다시 보내고, 처리 시점에도 그 메시지가 아직 fresh할 때만
+ * `CONFIRMED`를 반환한다.
  */
 export function createInMemoryTelegramInboundControlConfirmationStore(
   options: {
@@ -62,26 +64,39 @@ export function createInMemoryTelegramInboundControlConfirmationStore(
     confirm(input: TelegramInboundControlConfirmationInput): TelegramInboundControlConfirmationResult {
       const now = clock();
       const nowMs = now.getTime();
+      const messageMs = readConfirmationMessageTimeMs(input.message.receivedAt, nowMs);
+      const messageExpiresAtMs = messageMs + ttlMs;
       removeExpiredConfirmations(pending, nowMs);
       const key = createConfirmationKey(input);
       const existing = pending.get(key);
 
       if (
         existing !== undefined &&
-        existing.expiresAtMs >= nowMs &&
+        existing.expiresAtMs >= messageMs &&
+        messageExpiresAtMs >= nowMs &&
         existing.commandText === input.command.normalizedText &&
         existing.messageId !== input.message.messageId
       ) {
-        // 두 번째 동일 명령만 durable control provider로 넘기고 pending confirmation은 즉시 소모한다.
+        // 두 번째 동일 명령도 메시지 시각과 처리 시각 TTL을 모두 통과해야 오래된 backlog가 제어 실행으로 승격되지 않는다.
         pending.delete(key);
         return {
           status: "CONFIRMED",
-          confirmedAt: now.toISOString(),
+          confirmedAt: new Date(messageMs).toISOString(),
           firstMessageId: existing.messageId,
         };
       }
 
-      const expiresAtMs = nowMs + ttlMs;
+      if (messageExpiresAtMs < nowMs) {
+        pending.delete(key);
+        return {
+          status: "EXPIRED",
+          receivedAt: new Date(messageMs).toISOString(),
+          expiredAt: new Date(messageExpiresAtMs).toISOString(),
+          reasonCode: "telegram_inbound_control_confirmation_expired",
+        };
+      }
+
+      const expiresAtMs = messageExpiresAtMs;
       // 첫 번째 control 명령은 상태를 바꾸지 않고 확인 대기 evidence만 memory에 남긴다.
       pending.set(key, {
         expiresAtMs,
@@ -277,6 +292,35 @@ export function createTelegramInboundCommandRuntime(
           });
         }
 
+        if (confirmation.status === "EXPIRED") {
+          const reply = await sendReplySafely(
+            options,
+            message,
+            correlationId,
+            formatTelegramControlConfirmationExpiredResponse({
+              command: parseResult.command,
+              receivedAt: confirmation.receivedAt,
+              expiredAt: confirmation.expiredAt,
+              correlationId,
+            }),
+          );
+
+          return createHandleResult({
+            status: reply.delivered ? "CONFIRMATION_EXPIRED" : "REPLY_FAILED",
+            message,
+            correlationId,
+            executed: false,
+            commandName: parseResult.command.name,
+            parseStatus: parseResult.status,
+            authorization,
+            dedupe,
+            auditReceipt: audit.receipt,
+            reply,
+            controlConfirmation: confirmation,
+            reasonCode: confirmation.reasonCode,
+          });
+        }
+
         const controlResult = await executeControlCommandSafely(options, message, parseResult.command, correlationId);
         const reply = await sendReplySafely(options, message, correlationId, controlResult.text);
         const killSwitchResult = controlResult.ok ? controlResult.result : undefined;
@@ -437,6 +481,11 @@ function removeExpiredConfirmations(
       pending.delete(key);
     }
   }
+}
+
+function readConfirmationMessageTimeMs(receivedAt: string, fallbackMs: number): number {
+  const parsed = Date.parse(receivedAt);
+  return Number.isFinite(parsed) ? parsed : fallbackMs;
 }
 
 async function appendInboundAuditEventSafely(

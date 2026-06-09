@@ -19,12 +19,12 @@ import type { TelegramPollingProvider } from "../../infrastructure/index.js";
 /**
  * Telegram inbound control 명령의 2단계 확인 저장소 입력이다.
  *
- * 확인 저장소는 같은 owner/chat/user가 같은 control 명령을 제한 시간 안에 한 번 더 보냈는지만 판단한다. DB write나
- * kill switch 전이는 이 경계에서 수행하지 않는다.
+ * 확인 저장소는 같은 owner/chat/user가 같은 control 명령을 제한 시간 안에 한 번 더 보냈는지만 판단한다. 확인 TTL은 처리 시각이
+ * 아니라 Telegram message 시각과 현재 처리 시각을 함께 봐야 한다. DB write나 kill switch 전이는 이 경계에서 수행하지 않는다.
  */
 export interface TelegramInboundControlConfirmationInput {
   command: ParsedTelegramInboundCommand;
-  message: Pick<TelegramInboundCommandMessage, "chatId" | "messageId" | "userId">;
+  message: Pick<TelegramInboundCommandMessage, "chatId" | "messageId" | "receivedAt" | "userId">;
   requestedAt: string;
 }
 
@@ -42,6 +42,12 @@ export type TelegramInboundControlConfirmationResult =
       status: "CONFIRMED";
       confirmedAt: string;
       firstMessageId: number;
+    }
+  | {
+      status: "EXPIRED";
+      receivedAt: string;
+      expiredAt: string;
+      reasonCode: "telegram_inbound_control_confirmation_expired";
     };
 
 /**
@@ -91,6 +97,7 @@ export type TelegramInboundCommandHandleStatus =
   | "DUPLICATE"
   | "DEDUPE_FAILED"
   | "CONFIRMATION_REQUIRED"
+  | "CONFIRMATION_EXPIRED"
   | "EXECUTED"
   | "EXECUTION_FAILED"
   | "AUDIT_FAILED"

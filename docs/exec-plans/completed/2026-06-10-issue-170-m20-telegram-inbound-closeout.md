@@ -28,6 +28,7 @@ Issue #170 M20은 운영자가 Telegram에서 현재 상태와 판단 이유를 
 - read-only command runtime: `/status`, `/positions`, `/pnl`, `/why <market|cash>`, `/orders`, `/risk`
 - control command runtime: `/pause`, `/resume`, `/kill`
 - 60초 TTL의 동일 명령 2단계 confirmation store
+- Telegram message 시각과 처리 시각 freshness를 함께 보는 backlog control 명령 만료 guard
 - kill switch control provider mapping
   - `/pause` -> `NEW_ORDERS_BLOCKED`, `operator_pause`
   - `/resume` -> `NORMAL`, `operator_resume`
@@ -51,7 +52,7 @@ Issue #170 M20은 운영자가 Telegram에서 현재 상태와 판단 이유를 
 | 기본 비활성 inbound | `loadRuntimeTelegramInboundConfig` guard와 config 기본값, `tests/unit/telegram-inbound.test.ts` |
 | owner allowlist | `evaluateTelegramInboundAuthorization`, unauthorized audit-only 테스트 |
 | read-only command 무부작용 | runtime handler가 status provider만 호출하고 kill switch/live broker를 호출하지 않는 테스트 |
-| control command 인증/확인/idempotency | `/pause` 2단계 confirmation, dedupe, kill switch provider mapping 테스트 |
+| control command 인증/확인/idempotency | `/pause` 2단계 confirmation, backlog control 명령 만료 guard, dedupe, kill switch provider mapping 테스트 |
 | `/pause` 전역 신규 주문 중단 | `NEW_ORDERS_BLOCKED`/`operator_pause` mapping 테스트 |
 | `/resume` state machine 준수 | 기존 kill switch control provider가 불법 전이를 거부하는 경계를 재사용 |
 | 중복 update/message/command 차단 | in-memory/durable dedupe 테스트와 fake polling integration test |
@@ -93,9 +94,9 @@ pnpm exec vitest run tests/integration/telegram-inbound-runtime.test.ts
 
 - `./scripts/verify docs`: 문서 63개, 매니페스트 80개, 링크 214개 확인
 - `pnpm typecheck`: 통과
-- 관련 Telegram inbound vitest: 3 files, 17 tests 통과
+- 관련 Telegram inbound vitest: 3 files, 18 tests 통과
 - fake polling integration 단독 실행: 1 file, 1 test 통과
-- `./scripts/verify`: 78 passed / 11 skipped test files, 1280 passed / 113 skipped tests
+- `./scripts/verify`: 78 passed / 11 skipped test files, 1281 passed / 113 skipped tests
 
 Sub PR 01/02에서 누적 확인한 검증:
 
@@ -119,6 +120,7 @@ pnpm exec vitest run tests/unit/telegram-inbound.test.ts tests/unit/telegram-inb
 - read-only 명령은 기존 safe status snapshot을 재사용하고 주문 side effect를 만들지 않는다.
 - control 명령은 Telegram 자체 승인 workflow가 아니라 기존 kill switch control provider로 제한한다.
 - confirmation pending store는 process-local memory다. 재시작 시 pending 확인이 사라지며, 이 경우 실행되지 않는 fail-closed 동작이다.
+- 오래된 Telegram backlog control 명령은 메시지 시각 기준 확인 TTL과 처리 시각 freshness를 통과하지 못하면 실행하지 않는다.
 - dedupe/audit 실패는 provider 실행 전에 중단한다. 운영자는 한국어 reply와 audit reason으로 원인을 확인한다.
 - `/approve`, `/reject`, order proposal approval, 승인된 live broker 제출은 M21로 분리한다.
 
