@@ -15,6 +15,14 @@ export const UPBIT_PILOT_IDENTIFIER_MAX_LENGTH = 32;
 export const UPBIT_PILOT_ORDER_SMOKE_MIN_KRW_LIMIT = 5_000;
 export const UPBIT_PILOT_ORDER_SMOKE_MAX_KRW_LIMIT = 50_000;
 
+/** M19 exit pilot position source — 실주문 검증에 사용할 포지션 기준을 결정한다. */
+export const M19_EXIT_PILOT_POSITION_SOURCES = ["EXISTING_SMALL_POSITION", "PAPER_FIXTURE"] as const;
+export type M19ExitPilotPositionSource = (typeof M19_EXIT_PILOT_POSITION_SOURCES)[number];
+
+/** M19 exit pilot smoke 결과 상태 — 실주문 실행 여부와 guard skip/fail-closed을 구분한다. */
+export const M19_EXIT_PILOT_SMOKE_RESULTS = ["SKIPPED", "FAILED_CLOSED", "PASSED"] as const;
+export type M19ExitPilotSmokeResult = (typeof M19_EXIT_PILOT_SMOKE_RESULTS)[number];
+
 /**
  * v0.2 pilot runner가 인식하는 실행 profile 식별자다.
  *
@@ -64,6 +72,36 @@ export interface EnabledPilotRuntimeConfig {
   lookupOrderUuid?: string;
   lookupOrderIdentifier?: string;
 }
+
+/**
+ * M19 exit pilot guard가 활성화된 상태를 표현한다.
+ *
+ * `PILOT_ORDER_SMOKE` profile 위에서 추가로 M19 exit 검증 경계를 열며, 기존 보유 소액 포지션 또는 paper fixture를
+ * 우선 사용하는 invariant를 유지한다. 기존 소액 포지션 source는 M16 reconcile 또는 운영자 position evidence가 있어야
+ * 열리며, guarded buy smoke는 별도 approval evidence 없이 실행되면 안 된다. 외부 side effect는 없고 env 해석 결과만
+ * 담는다.
+ */
+export interface M19ExitPilotGuardConfig {
+  enabled: true;
+  positionSource: M19ExitPilotPositionSource;
+  maxKrw: string;
+  operatorEvidenceId: string;
+  positionEvidenceId?: string;
+  guardedBuySmokeEnabled: boolean;
+  guardedBuyApprovalEvidenceId?: string;
+}
+
+/**
+ * M19 exit pilot guard가 비활성인 상태를 표현한다.
+ *
+ * `SEEMIRAI_RUN_M19_EXIT_PILOT=1`이 없거나 M19 guard 조건이 불충분한 경우다. 이 상태에서는 exit pilot smoke가
+ * skip/fail-closed evidence를 남기고 실주문 side effect를 만들지 않는다.
+ */
+export interface DisabledM19ExitPilotGuardConfig {
+  enabled: false;
+}
+
+export type M19ExitPilotGuardConfigResult = M19ExitPilotGuardConfig | DisabledM19ExitPilotGuardConfig;
 
 /**
  * pilot runtime env 해석 결과의 public contract다.

@@ -1,13 +1,23 @@
 import {
   ALLOWED_KEY_SCOPES,
   FORBIDDEN_KEY_SCOPES,
+  M19_EXIT_PILOT_POSITION_SOURCES,
   PILOT_PROFILES,
   UPBIT_PILOT_IDENTIFIER_MAX_LENGTH,
   UPBIT_PILOT_ORDER_SMOKE_MIN_KRW_LIMIT,
   UPBIT_PILOT_ORDER_SMOKE_MAX_KRW_LIMIT,
   UnsafePilotRuntimeConfigError,
 } from "./types.js";
-import type { EnabledPilotRuntimeConfig, PilotRuntimeConfig, PilotRuntimeProfile, PilotUpbitKeyScope } from "./types.js";
+import type {
+  DisabledM19ExitPilotGuardConfig,
+  EnabledPilotRuntimeConfig,
+  M19ExitPilotGuardConfig,
+  M19ExitPilotGuardConfigResult,
+  M19ExitPilotPositionSource,
+  PilotRuntimeConfig,
+  PilotRuntimeProfile,
+  PilotUpbitKeyScope,
+} from "./types.js";
 
 const KRW_MARKET_PATTERN = /^KRW-[A-Z0-9]+$/u;
 const POSITIVE_DECIMAL_PATTERN = /^(?:0|[1-9]\d*)(?:\.\d+)?$/u;
@@ -383,5 +393,122 @@ function createEnabledPilotRuntimeConfig(
 function assignIfDefined<T extends object, K extends keyof T>(target: T, key: K, value: T[K] | undefined): void {
   if (value !== undefined) {
     target[key] = value;
+  }
+}
+
+/**
+ * M19 exit pilot guard 설정을 env에서 읽고 검증한다.
+ *
+ * `SEEMIRAI_RUN_M19_EXIT_PILOT=1`이 없으면 비활성 상태를 반환한다. 활성화 시 position source, 소액 한도, 운영자
+ * evidence id를 모두 확인한다. `EXISTING_SMALL_POSITION`은 M16 reconcile 또는 운영자 position evidence id가 없으면
+ * 닫고, guarded buy smoke는 별도 approval evidence 없이는 fail-closed 조건을 강제한다. 이 함수는 env 해석만
+ * 수행하며 외부 API 호출이나 파일 접근 side effect를 만들지 않는다.
+ */
+export function loadM19ExitPilotGuardConfigFromEnv(
+  env: NodeJS.ProcessEnv = process.env,
+): M19ExitPilotGuardConfigResult {
+  const m19ExitPilot = readEnv(env, "SEEMIRAI_RUN_M19_EXIT_PILOT");
+  const guardedBuySmokeRaw = readEnv(env, "SEEMIRAI_RUN_M19_GUARDED_BUY_SMOKE");
+  if (m19ExitPilot !== "1") {
+    if (guardedBuySmokeRaw === "1") {
+      // M19 guarded buy marker만 켜진 상태를 SKIPPED로 낮추면 일반 order smoke가 신규 buy를 만들 수 있어 fail-closed 한다.
+      throw new UnsafePilotRuntimeConfigError([
+        "SEEMIRAI_RUN_M19_GUARDED_BUY_SMOKE=1 을 사용하려면 SEEMIRAI_RUN_M19_EXIT_PILOT=1 이 필요합니다",
+      ]);
+    }
+
+    return { enabled: false };
+  }
+
+  const violations: string[] = [];
+
+  const positionSource = parseM19PositionSource(
+    readEnv(env, "SEEMIRAI_M19_EXIT_PILOT_POSITION_SOURCE"),
+    violations,
+  );
+
+  const maxKrw = readEnv(env, "SEEMIRAI_M19_EXIT_PILOT_MAX_KRW");
+  if (maxKrw === undefined) {
+    violations.push("SEEMIRAI_M19_EXIT_PILOT_MAX_KRW 가 필요합니다");
+  } else {
+    validateM19MaxKrw(maxKrw, violations);
+  }
+
+  const operatorEvidenceId = readEnv(env, "SEEMIRAI_M19_EXIT_PILOT_OPERATOR_EVIDENCE_ID");
+  if (operatorEvidenceId === undefined) {
+    violations.push("SEEMIRAI_M19_EXIT_PILOT_OPERATOR_EVIDENCE_ID 가 필요합니다");
+  }
+
+  const positionEvidenceId = readEnv(env, "SEEMIRAI_M19_EXIT_PILOT_POSITION_EVIDENCE_ID");
+  if (positionSource === "EXISTING_SMALL_POSITION" && positionEvidenceId === undefined) {
+    // 기존 포지션 source는 실제 보유 상태가 전제이므로 M16 reconcile 또는 운영자 확인 evidence 없이 열지 않는다.
+    violations.push(
+      "EXISTING_SMALL_POSITION 을 사용하려면 SEEMIRAI_M19_EXIT_PILOT_POSITION_EVIDENCE_ID 가 필요합니다",
+    );
+  }
+
+  const guardedBuySmokeEnabled = guardedBuySmokeRaw === "1";
+  const guardedBuyApprovalEvidenceId = readEnv(env, "SEEMIRAI_M19_GUARDED_BUY_APPROVAL_EVIDENCE_ID");
+
+  // guarded buy smoke approval evidence 누락은 config load 예외가 아니라
+  // validateM19GuardedBuySmokeGuard가 FAILED_CLOSED로 판단한다. loader는 config만 반환한다.
+  if (violations.length > 0) {
+    throw new UnsafePilotRuntimeConfigError(violations);
+  }
+
+  const config: M19ExitPilotGuardConfig = {
+    enabled: true,
+    positionSource: positionSource!,
+    maxKrw: maxKrw!,
+    operatorEvidenceId: operatorEvidenceId!,
+    guardedBuySmokeEnabled,
+  };
+
+  if (positionEvidenceId !== undefined) {
+    config.positionEvidenceId = positionEvidenceId;
+  }
+
+  if (guardedBuyApprovalEvidenceId !== undefined) {
+    config.guardedBuyApprovalEvidenceId = guardedBuyApprovalEvidenceId;
+  }
+
+  return config;
+}
+
+function parseM19PositionSource(
+  raw: string | undefined,
+  violations: string[],
+): M19ExitPilotPositionSource | undefined {
+  if (raw === undefined) {
+    violations.push("SEEMIRAI_M19_EXIT_PILOT_POSITION_SOURCE 가 필요합니다");
+    return undefined;
+  }
+
+  if (!isM19PositionSource(raw)) {
+    violations.push(
+      `SEEMIRAI_M19_EXIT_PILOT_POSITION_SOURCE 는 ${M19_EXIT_PILOT_POSITION_SOURCES.join(" 또는 ")} 이어야 합니다`,
+    );
+    return undefined;
+  }
+
+  return raw;
+}
+
+function isM19PositionSource(value: string): value is M19ExitPilotPositionSource {
+  return M19_EXIT_PILOT_POSITION_SOURCES.includes(value as M19ExitPilotPositionSource);
+}
+
+function validateM19MaxKrw(maxKrw: string, violations: string[]): void {
+  if (!POSITIVE_DECIMAL_PATTERN.test(maxKrw) || Number(maxKrw) <= 0) {
+    violations.push("SEEMIRAI_M19_EXIT_PILOT_MAX_KRW 는 양수 KRW 금액이어야 합니다");
+    return;
+  }
+
+  if (Number(maxKrw) < UPBIT_PILOT_ORDER_SMOKE_MIN_KRW_LIMIT) {
+    violations.push("SEEMIRAI_M19_EXIT_PILOT_MAX_KRW 는 5000 KRW 이상이어야 합니다");
+  }
+
+  if (Number(maxKrw) > UPBIT_PILOT_ORDER_SMOKE_MAX_KRW_LIMIT) {
+    violations.push("SEEMIRAI_M19_EXIT_PILOT_MAX_KRW 는 50000 KRW 이하여야 합니다");
   }
 }

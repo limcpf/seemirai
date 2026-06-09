@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { setTimeout as sleep } from "node:timers/promises";
 import { describe, expect, it } from "vitest";
 import type {
   BrokerBalanceSnapshot,
@@ -18,7 +19,9 @@ import {
   UnsafePilotOrderSmokeRequestError,
   UnsafePilotRuntimeConfigError,
   createPilotOrderSmokeRequestPlan,
+  loadM19ExitPilotGuardConfigFromEnv,
   loadPilotRuntimeConfigFromEnv,
+  validateM19GuardedBuySmokeGuard,
 } from "../../src/runtime/index.js";
 import type {
   EnabledPilotRuntimeConfig,
@@ -33,6 +36,8 @@ import {
 const runUpbitOrderSmoke =
   process.env.SEEMIRAI_RUN_UPBIT_PRIVATE_SMOKE === "1" &&
   process.env.SEEMIRAI_RUN_UPBIT_ORDER_SMOKE === "1";
+const CANCEL_CONFIRMATION_ATTEMPTS = 8;
+const CANCEL_CONFIRMATION_DELAY_MS = 500;
 // 두 guard가 모두 없으면 실계좌 주문 side effect를 만들 수 있는 test body 자체를 실행하지 않는다.
 const describeUpbitOrderSmoke = runUpbitOrderSmoke ? describe : describe.skip;
 
@@ -84,6 +89,29 @@ describeUpbitOrderSmoke("Upbit order API smoke integration", () => {
         notionalKrw: plan.notionalKrw,
       };
 
+      // M19 guarded buy smoke 검증 — loader 결과를 그대로 guard에 넘기고,
+      // FAILED_CLOSED면 API 호출 전에 차단한다. PASSED이면 M19 소액 한도를 추가 검증한다.
+      const m19Guard = loadM19ExitPilotGuardConfigFromEnv(process.env);
+      const m19Validation = validateM19GuardedBuySmokeGuard(m19Guard, "bid");
+      artifact.m19Validation = {
+        result: m19Validation.result,
+        reason: m19Validation.reason,
+        message: m19Validation.message,
+      };
+      if (m19Guard.enabled && !m19Validation.sideEffectPossible) {
+        // M19 guard가 켜진 bid smoke는 PASSED 외 결과를 주문 생성으로 낮추지 않는다.
+        throw new UnsafePilotRuntimeConfigError([m19Validation.message]);
+      }
+      if (m19Validation.result === "PASSED" && m19Guard.enabled) {
+        // M19 소액 한도 검증 — M19_EXIT_PILOT_MAX_KRW와 UPBIT_ORDER_SMOKE_MAX_KRW 중 더 보수적인 상한 적용
+        const m19MaxKrw = parseFinancialDecimal(m19Guard.maxKrw);
+        if (parseFinancialDecimal(plan.notionalKrw).greaterThan(m19MaxKrw)) {
+          throw new UnsafePilotOrderSmokeRequestError([
+            `smoke 주문 총액이 M19 소액 한도(${m19Guard.maxKrw} KRW)를 초과합니다`,
+          ]);
+        }
+      }
+
       const client = createPrivateClient(config);
       const accountsResponse = await client.getAccounts();
       const balances = toBrokerBalanceSnapshot(accountsResponse.payload, { capturedAt: occurredAt });
@@ -123,8 +151,12 @@ describeUpbitOrderSmoke("Upbit order API smoke integration", () => {
       }
 
       try {
-        const lookupResponse = await client.getOrder(plan.lookupOrder);
-        assertLookupConfirmsCanceledOrder(lookupResponse.payload, plan.createOrder.identifier);
+        const lookupResponse = await waitForOrderSmokeCancelConfirmation({
+          client,
+          plan,
+          artifact,
+          correlationId,
+        });
         artifact.lookupOrder = summarizeProviderOrderPayload(lookupResponse.payload);
         artifact.lookupRateLimit = lookupResponse.rateLimitStatus;
         cancelFailure = undefined;
@@ -310,6 +342,54 @@ async function attemptOrderCleanupAfterAmbiguousCreateFailure(
   }
 
   artifact.cleanupError = toSafeOrderSmokeErrorSummary(cleanupFailure, correlationId);
+}
+
+/**
+ * Upbit cancel 직후 조회가 아직 wait/watch로 보일 수 있어 terminal cancel 상태를 짧게 polling한다.
+ *
+ * 이미 생성된 smoke identifier만 조회하므로 새 주문 side effect는 만들지 않는다. 제한 시간 안에 `cancel` 상태가 확인되지 않으면
+ * 기존 manual review 경로로 넘겨 열린 주문 가능성을 보수적으로 다룬다.
+ */
+async function waitForOrderSmokeCancelConfirmation(input: {
+  client: UpbitPrivateRestClient;
+  plan: PilotOrderSmokeRequestPlan;
+  artifact: JsonRecord;
+  correlationId: string;
+}): Promise<Awaited<ReturnType<UpbitPrivateRestClient["getOrder"]>>> {
+  const attempts: JsonRecord[] = [];
+  let lastResponse: Awaited<ReturnType<UpbitPrivateRestClient["getOrder"]>> | undefined;
+  let lastError: unknown;
+
+  for (let attempt = 1; attempt <= CANCEL_CONFIRMATION_ATTEMPTS; attempt += 1) {
+    if (attempt > 1) {
+      await sleep(CANCEL_CONFIRMATION_DELAY_MS);
+    }
+
+    try {
+      lastResponse = await input.client.getOrder(input.plan.lookupOrder);
+      const record = toProviderOrderRecord(lastResponse.payload);
+      attempts.push({
+        attempt,
+        state: record?.state ?? "응답 형식 확인 불가",
+      });
+      input.artifact.cancelConfirmationAttempts = attempts;
+      assertLookupConfirmsCanceledOrder(lastResponse.payload, input.plan.createOrder.identifier);
+      return lastResponse;
+    } catch (error) {
+      lastError = error;
+      attempts.push({
+        attempt,
+        state: "취소 미확인",
+      });
+      input.artifact.cancelConfirmationAttempts = attempts;
+    }
+  }
+
+  if (lastError !== undefined) {
+    throw lastError;
+  }
+
+  throw new UnsafePilotOrderSmokeRequestError(["취소 완료 조회를 확인하지 못해 수동 점검이 필요합니다"]);
 }
 
 /**
