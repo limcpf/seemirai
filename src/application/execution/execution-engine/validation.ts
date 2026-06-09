@@ -55,6 +55,16 @@ export function validateExecutionSubmission(
     return costSnapshotRejection;
   }
 
+  const exitCostEvidenceRejection = validateExitCostEvidence(submission);
+  if (exitCostEvidenceRejection !== undefined) {
+    return exitCostEvidenceRejection;
+  }
+
+  const exitPositionScopeRejection = validateExitSellPositionScope(submission);
+  if (exitPositionScopeRejection !== undefined) {
+    return exitPositionScopeRejection;
+  }
+
   const riskApprovalRejection = validateRiskApproval(submission);
   if (riskApprovalRejection !== undefined) {
     return riskApprovalRejection;
@@ -87,7 +97,7 @@ function validateMarketOrderSafety(
       "Entry market order execution is disabled by the MVP execution boundary",
       {
         order_type: intent.orderType,
-        position_effect: readStringMetadata(intent.metadata, "position_effect"),
+        position_effect: readOrderIntentPositionEffect(intent),
       },
     );
   }
@@ -121,6 +131,142 @@ function validateCostSnapshot(
   if (!isNonEmptyRecord(snapshot)) {
     // 비용 검증 없이 들어온 주문은 기대수익이 비용과 safety buffer를 넘는지 알 수 없으므로 broker에 넘기지 않는다.
     return reject("cost_snapshot_missing", "Execution submission requires a cost snapshot");
+  }
+
+  // exit_cost_model source를 가진 경우에만 exit 비용 evidence로 검증한다.
+  // position_effect 만으로 exit intent 여부를 판단하지 않는다 — entry 의도로 REDUCE/EXIT metadata를 가질 수 있다.
+  if (snapshot.source === "exit_cost_model") {
+    const positionEffect = readOrderIntentPositionEffect(submission.intent);
+
+    // exit_cost_model source는 반드시 REDUCE|EXIT position_effect와 함께 사용되어야 한다.
+    if (positionEffect !== "REDUCE" && positionEffect !== "EXIT") {
+      return reject(
+        "exit_cost_evidence_on_entry",
+        "Exit cost evidence must not be used for entry order intent",
+        { source: snapshot.source, position_effect: positionEffect },
+      );
+    }
+
+    if (submission.intent.side !== "SELL") {
+      // exit 비용 evidence는 포지션 축소/청산 SELL에만 유효하므로 BUY에 붙은 REDUCE/EXIT metadata도 entry 재사용으로 본다.
+      return reject(
+        "exit_cost_evidence_on_entry",
+        "Exit cost evidence must be attached only to SELL exit order intent",
+        {
+          source: snapshot.source,
+          side: submission.intent.side,
+          position_effect: positionEffect,
+        },
+      );
+    }
+
+    const exitReasonCode = readStringMetadata(submission.intent.metadata, "exit_reason_code");
+    const exitRuleId = readStringMetadata(submission.intent.metadata, "exit_rule_id");
+    if (exitReasonCode === undefined || exitRuleId === undefined) {
+      // 어떤 exit rule과 사유가 비용 evidence를 만들었는지 모르면 status/ledger에서 청산 판단을 재현할 수 없다.
+      return reject(
+        "exit_cost_evidence_invalid",
+        "Exit cost evidence requires exit reason and rule metadata",
+        {
+          missing_exit_reason_code: exitReasonCode === undefined,
+          missing_exit_rule_id: exitRuleId === undefined,
+        },
+      );
+    }
+
+    const invalidExitCostFields = collectInvalidExitCostFields(snapshot);
+    if (
+      snapshot.exit_cost_allowed !== true ||
+      snapshot.exit_cost_reason_code !== "exit_cost_margin_ok" ||
+      invalidExitCostFields.length > 0
+    ) {
+      // exit 비용 evidence는 allow flag만으로 승인하지 않고 OK reason과 비용 추정치까지 같은 판정으로 묶는다.
+      const metadata: JsonRecord = {
+        exit_cost_allowed: snapshot.exit_cost_allowed,
+        exit_cost_reason_code: snapshot.exit_cost_reason_code,
+      };
+      if (invalidExitCostFields.length > 0) {
+        metadata.invalid_fields = invalidExitCostFields;
+      }
+      return reject("exit_cost_evidence_invalid", "Exit cost evidence must have allowed flag with valid cost fields", metadata);
+    }
+
+    // exit 비용 evidence의 position scope가 현재 intent와 같은 market/strategy scope인지 검증한다.
+    const scope = snapshot.position_scope;
+    if (!isNonEmptyRecord(scope)) {
+      return reject("exit_cost_evidence_invalid", "Exit cost evidence requires position scope");
+    }
+
+    if (
+      scope.market !== submission.intent.market ||
+      scope.strategy_id !== submission.intent.strategyId ||
+      !isNonEmptyString(scope.total_quantity)
+    ) {
+      return reject(
+        "exit_position_scope_mismatch",
+        "Exit cost evidence position scope does not match the execution order intent",
+        {
+          scope_market: scope.market,
+          scope_strategy_id: scope.strategy_id,
+          scope_total_quantity: scope.total_quantity,
+          intent_market: submission.intent.market,
+          intent_strategy_id: submission.intent.strategyId,
+        },
+      );
+    }
+
+    try {
+      if (!parseFinancialDecimal(scope.total_quantity).greaterThan(0)) {
+        // open position 수량이 0 이하이면 청산 SELL 근거가 없으므로 broker 제출 전 차단한다.
+        return reject(
+          "exit_position_scope_mismatch",
+          "Exit cost evidence requires a positive open position quantity",
+          {
+            scope_total_quantity: scope.total_quantity,
+          },
+        );
+      }
+    } catch {
+      return reject(
+        "exit_position_scope_mismatch",
+        "Exit cost evidence position quantity must be a decimal string",
+        {
+          scope_total_quantity: scope.total_quantity,
+        },
+      );
+    }
+
+    const exitCostOrderIntent = snapshot.order_intent;
+    if (exitCostOrderIntent !== undefined) {
+      if (!isNonEmptyRecord(exitCostOrderIntent)) {
+        // fingerprint가 손상된 exit evidence는 같은 주문 후보를 평가했는지 재현할 수 없어 broker 제출 전에 차단한다.
+        return reject("cost_snapshot_mismatch", "Exit cost evidence order intent fingerprint must be an object");
+      }
+
+      const mismatches = compareCostSnapshotOrderIntent(submission, exitCostOrderIntent);
+      if (Object.keys(mismatches).length > 0) {
+        // paper-decision runner가 붙인 exit 비용 fingerprint도 entry 비용 snapshot과 같은 stale 재사용 위험을 갖는다.
+        return reject("cost_snapshot_mismatch", "Exit cost evidence does not match the execution order intent", {
+          mismatches,
+        });
+      }
+    }
+
+    return undefined;
+  }
+
+  const positionEffect = readOrderIntentPositionEffect(submission.intent);
+  if (submission.intent.side === "SELL") {
+    // spot MVP에서 SELL은 포지션 축소/청산이므로 metadata가 없어도 entry cost_model 재사용을 fail-closed 한다.
+    return reject(
+      "exit_cost_evidence_invalid",
+      "SELL order intent requires exit_cost_model evidence instead of entry cost snapshot",
+      {
+        source: snapshot.source,
+        side: submission.intent.side,
+        position_effect: positionEffect,
+      },
+    );
   }
 
   if (
@@ -241,6 +387,37 @@ function appendInvalidPositiveDecimalField(
   }
 }
 
+/**
+ * exit_cost_model 전용 비용 필드가 broker 실행 승인 근거로 쓸 수 있는 0 이상 Decimal 문자열인지 수집한다.
+ *
+ * exit 수수료와 예상 슬리피지는 entry cost snapshot과 분리된 승인 근거이므로 비어 있거나 음수/비숫자이면 fail-closed 한다.
+ */
+function collectInvalidExitCostFields(snapshot: JsonRecord): string[] {
+  const invalidFields: string[] = [];
+  appendInvalidNonNegativeDecimalField(invalidFields, "exit_cost_bps", snapshot.exit_cost_bps);
+  appendInvalidNonNegativeDecimalField(invalidFields, "exit_slippage_bps", snapshot.exit_slippage_bps);
+  return invalidFields;
+}
+
+function appendInvalidNonNegativeDecimalField(
+  target: string[],
+  fieldName: string,
+  value: unknown,
+): void {
+  if (!isNonEmptyString(value)) {
+    target.push(fieldName);
+    return;
+  }
+
+  try {
+    if (parseFinancialDecimal(value).isNegative()) {
+      target.push(fieldName);
+    }
+  } catch {
+    target.push(fieldName);
+  }
+}
+
 function appendStringMismatch(
   target: JsonRecord,
   fieldName: string,
@@ -269,6 +446,134 @@ function isNonEmptyRecord(value: unknown): value is JsonRecord {
     !Array.isArray(value) &&
     Object.keys(value).length > 0
   );
+}
+
+function isNonEmptyString(value: unknown): value is string {
+  return typeof value === "string" && value.length > 0;
+}
+
+/**
+ * exit 비용 evidence가 REDUCE|EXIT intent에만 허용되고 entry intent에 붙으면 fail-closed 한다.
+ *
+ * 이 검증은 costSnapshot이 아닌 exit 비용 전용 metadata를 순수하게 대조한다.
+ * exit intent에 exit 비용 evidence가 없으면 costSnapshot 단계에서 이미 차단되므로 여기서는
+ * entry intent에 exit evidence가 잘못 붙은 경우만 차단한다.
+ */
+function validateExitCostEvidence(
+  submission: OrderSubmission,
+): ExecutionSubmissionValidationResult | undefined {
+  const positionEffect = readOrderIntentPositionEffect(submission.intent);
+  const isExitIntent = positionEffect === "REDUCE" || positionEffect === "EXIT";
+
+  if (isExitIntent && submission.intent.side !== "SELL") {
+    // REDUCE/EXIT metadata는 신규 BUY 승인 완화 신호가 아니므로 entry 방향에 붙으면 항상 차단한다.
+    return reject(
+      "exit_cost_evidence_on_entry",
+      "Entry order intent must not carry REDUCE or EXIT position effect",
+      {
+        side: submission.intent.side,
+        position_effect: positionEffect,
+      },
+    );
+  }
+
+  // REDUCE|EXIT intent가 아닌데 exit 관련 metadata가 붙었으면 실수로 exit evidence를 entry에 붙인 것이다.
+  if (!isExitIntent) {
+    const exitMetadataKeys = [
+      "position_effect",
+      "exit_reason_code",
+      "exit_rule_id",
+      "exit_cost_bps",
+      "exit_slippage_bps",
+    ];
+    const hasExitMetadata = exitMetadataKeys.some(
+      (key) => readStringMetadata(submission.intent.metadata, key) !== undefined,
+    );
+
+    if (hasExitMetadata) {
+      return reject(
+        "exit_cost_evidence_on_entry",
+        "Entry order intent must not carry exit-related metadata or cost evidence",
+        {
+          found_exit_metadata: exitMetadataKeys.filter(
+            (key) => readStringMetadata(submission.intent.metadata, key) !== undefined,
+          ),
+        },
+      );
+    }
+  }
+
+  return undefined;
+}
+
+/**
+ * OrderIntent metadata의 position effect를 snake_case/camelCase legacy 표기 모두에서 읽는다.
+ *
+ * 시장가 entry guard와 fingerprint가 두 표기를 이미 같은 의미로 해석하므로, execution validation도 같은 기준으로
+ * exit evidence 분리와 entry 오염 차단을 수행해야 한다.
+ */
+function readOrderIntentPositionEffect(intent: OrderIntent): string | undefined {
+  return (
+    readStringMetadata(intent.metadata, "position_effect") ??
+    readStringMetadata(intent.metadata, "positionEffect")
+  );
+}
+
+/**
+ * SELL 주문의 수량이 open position 수량을 초과하지 않는지 검증한다.
+ *
+ * submission의 costSnapshot.position_scope에 total_quantity가 있으면 대조하고,
+ * 없으면 추정하지 않고 통과시킨다 (sizing 단계에서 이미 차단되었어야 한다).
+ */
+function validateExitSellPositionScope(
+  submission: OrderSubmission,
+): ExecutionSubmissionValidationResult | undefined {
+  if (submission.intent.side !== "SELL") {
+    return undefined;
+  }
+
+  const positionScope = submission.costSnapshot?.position_scope;
+  if (!isNonEmptyRecord(positionScope) || typeof positionScope.total_quantity !== "string") {
+    // position scope 정보가 없으면 추정하지 않고 통과시킨다.
+    // sizing 단계에서 이미 차단되었어야 하며, 여기서 잘못된 추정으로 정상 주문을 막지 않는다.
+    return undefined;
+  }
+
+  const positionEffect = readOrderIntentPositionEffect(submission.intent);
+  try {
+    const requestedQty = parseFinancialDecimal(submission.intent.requestedQuantity);
+    const openQty = parseFinancialDecimal(positionScope.total_quantity);
+
+    if (requestedQty.greaterThan(openQty)) {
+      // SELL 수량이 open position을 초과하면 broker 제출 전 차단한다.
+      return reject(
+        "exit_sell_quantity_exceeds_position",
+        "SELL order quantity exceeds open position — submit blocked before broker",
+        {
+          requested_quantity: submission.intent.requestedQuantity,
+          open_position_quantity: positionScope.total_quantity,
+        },
+      );
+    }
+
+    if (positionEffect === "EXIT" && !requestedQty.equals(openQty)) {
+      // EXIT metadata는 포지션 종료를 의미하므로 부분 수량이면 REDUCE로 제출하게 하고 여기서는 차단한다.
+      return reject(
+        "exit_sell_quantity_mismatch_position",
+        "EXIT order quantity must match the full open position before broker submission",
+        {
+          requested_quantity: submission.intent.requestedQuantity,
+          open_position_quantity: positionScope.total_quantity,
+          position_effect: positionEffect,
+        },
+      );
+    }
+  } catch {
+    // 파싱 실패 시 추정하지 않고 통과시킨다.
+    return undefined;
+  }
+
+  return undefined;
 }
 
 function reject(

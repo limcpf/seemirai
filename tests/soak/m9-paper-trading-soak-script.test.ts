@@ -257,7 +257,13 @@ describe("M9 paper trading soak script", () => {
       const sellFixturePath = path.join(artifactDir, "sell-fixture.json");
       const fixture = JSON.parse(await readFile(fixturePath, "utf8")) as {
         initialBalances: Array<{ currency: string; available: string }>;
-        frames: Array<{ features?: { paper_decision_signal?: string; side?: string } }>;
+        frames: Array<{
+          observedAt: string;
+          exchangeId: string;
+          market: string;
+          features?: { paper_decision_signal?: string; side?: string; position_quantity?: string };
+          risk?: { positions?: Array<Record<string, unknown>> };
+        }>;
       };
       fixture.initialBalances = [
         { currency: "KRW", available: "1000000" },
@@ -266,6 +272,23 @@ describe("M9 paper trading soak script", () => {
       for (const frame of fixture.frames) {
         if (frame.features?.paper_decision_signal === "ORDER") {
           frame.features.side = "SELL";
+          frame.risk = {
+            ...(frame.risk ?? {}),
+            positions: [
+              {
+                exchangeId: frame.exchangeId,
+                market: frame.market,
+                strategyId: "m9_fixture_boundary_strategy",
+                notionalKrw: "99990000",
+                notionalBpsOfEquity: "999",
+                unrealizedPnlBps: "0",
+                capturedAt: frame.observedAt,
+                metadata: {
+                  position_quantity: "1",
+                },
+              },
+            ],
+          };
         }
       }
       await writeFile(sellFixturePath, JSON.stringify(fixture), "utf8");

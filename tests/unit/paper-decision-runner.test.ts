@@ -6,6 +6,7 @@ import {
   StaticPaperDecisionInputSource,
 } from "../../src/application/index.js";
 import type {
+  ExecutionSubmitOrderResult,
   PaperDecisionInputFrame,
   PaperDecisionLedgerWriterPort,
 } from "../../src/application/index.js";
@@ -15,7 +16,18 @@ import {
 import {
   runM9PaperDecisionFixtureSmoke,
 } from "../../src/runtime/index.js";
-import type { Strategy } from "../../src/domain/index.js";
+import {
+  createRiskThresholdSnapshot,
+  defaultRiskLimitThresholds,
+} from "../../src/domain/index.js";
+import type {
+  CostDecision,
+  OrderIntent,
+  OrderSubmission,
+  RiskGateContext,
+  RiskGateResult,
+  Strategy,
+} from "../../src/domain/index.js";
 
 const fixturePath = path.join(process.cwd(), "tests", "fixtures", "m9", "paper-decision-runner.json");
 
@@ -134,6 +146,198 @@ describe("M9 paper decision runner", () => {
       totalPnlKrw: "0",
       submittedOrderCount: 1,
       filledOrderCount: 0,
+    });
+  });
+
+  it("submits SELL fixture orders only when exit position quantity evidence is present", async () => {
+    const fixture = JSON.parse(await readFile(fixturePath, "utf8"));
+    fixture.initialBalances = [
+      { currency: "KRW", available: "1000000" },
+      { currency: "BTC", available: "1" },
+    ];
+    fixture.frames = [fixture.frames[3]];
+    fixture.frames[0].features.side = "SELL";
+    fixture.frames[0].features.limit_price = "99990000";
+    fixture.frames[0].features.requested_notional = "9999";
+    fixture.frames[0].risk.positions = [
+      {
+        exchangeId: "upbit_krw_spot",
+        market: "KRW-BTC",
+        strategyId: "m9_fixture_boundary_strategy",
+        notionalKrw: "99990000",
+        notionalBpsOfEquity: "999",
+        unrealizedPnlBps: "0",
+        capturedAt: fixture.frames[0].observedAt,
+        metadata: {
+          position_quantity: "1",
+        },
+      },
+    ];
+
+    const result = await runM9PaperDecisionFixtureSmoke({ fixture });
+
+    expect(result.metrics.paperOrderSubmittedCount).toBe(1);
+    expect(result.metrics.paperFillCount).toBe(1);
+    expect(result.trace).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          stage: "EXECUTION_RESULT",
+          status: "SUBMITTED",
+          metadata: expect.objectContaining({
+            intent_side: "SELL",
+          }),
+        }),
+      ]),
+    );
+  });
+
+  it("uses strategy-specific risk position quantity before aggregate market quantity", async () => {
+    const observedAt = "2026-06-06T08:00:00.000Z";
+    const strategyId = "strategy.exit-position-scope";
+    const intent = createRunnerSellIntent({
+      strategyId,
+      requestedQuantity: "0.25",
+      requestedNotional: "25000000",
+      idempotencyKey: "paper-runner-exit-position-scope",
+    });
+    const frame: PaperDecisionInputFrame = {
+      id: "frame-exit-position-scope",
+      observedAt,
+      exchangeId: "upbit_krw_spot",
+      market: "KRW-BTC",
+      features: {
+        position_quantity: "10",
+      },
+      risk: {
+        expectedLossBpsOfEquity: "10",
+        thresholdSnapshot: createRiskThresholdSnapshot(
+          defaultRiskLimitThresholds,
+          observedAt,
+          "unit-test.thresholds",
+        ),
+        positions: [
+          {
+            exchangeId: "upbit_krw_spot",
+            market: "KRW-BTC",
+            notionalKrw: "1000000000",
+            notionalBpsOfEquity: "10000",
+            unrealizedPnlBps: "0",
+            capturedAt: observedAt,
+            metadata: {
+              total_quantity: "10",
+            },
+          },
+          {
+            exchangeId: "upbit_krw_spot",
+            market: "KRW-BTC",
+            strategyId,
+            notionalKrw: "25000000",
+            notionalBpsOfEquity: "250",
+            unrealizedPnlBps: "0",
+            capturedAt: observedAt,
+            metadata: {
+              total_quantity: "0.25",
+            },
+          },
+        ],
+      },
+    };
+    const capturedSubmissions: OrderSubmission[] = [];
+    const submitOrder = vi.fn(async (submission: OrderSubmission): Promise<ExecutionSubmitOrderResult> => {
+      capturedSubmissions.push(submission);
+      return {
+        status: "REJECTED",
+        submission,
+        rejection: {
+          reasonCode: "exit_position_scope_mismatch",
+          message: "captured by unit test",
+        },
+      };
+    });
+    const runner = new PaperDecisionRunner({
+      source: new StaticPaperDecisionInputSource([frame]),
+      strategies: [createOrderIntentStrategy(intent)],
+      broker: new PaperBroker({
+        exchangeId: "upbit_krw_spot",
+        initialBalances: [
+          {
+            currency: "KRW",
+            available: "1000000",
+          },
+        ],
+      }),
+      costModel: {
+        evaluate: () => createAllowedCostDecision(observedAt),
+      },
+      evaluateRiskGate: createApprovedRiskGateResult,
+      executionEngine: { submitOrder },
+    });
+
+    await runner.run();
+
+    expect(submitOrder).toHaveBeenCalledTimes(1);
+    expect(capturedSubmissions[0]?.intent.metadata).toMatchObject({
+      position_effect: "EXIT",
+      position_scope: {
+        strategyId,
+        totalQuantity: "0.25",
+      },
+    });
+    expect(capturedSubmissions[0]?.costSnapshot.position_scope).toMatchObject({
+      strategy_id: strategyId,
+      total_quantity: "0.25",
+    });
+  });
+
+  it("does not use risk position quantity from a different exchange", async () => {
+    const observedAt = "2026-06-06T08:00:00.000Z";
+    const strategyId = "strategy.exit-position-scope";
+    const intent = createRunnerSellIntent({
+      strategyId,
+      requestedQuantity: "0.25",
+      requestedNotional: "25000000",
+      idempotencyKey: "paper-runner-exit-exchange-scope",
+    });
+    const frame = createExitPositionScopeFrame({
+      observedAt,
+      strategyId,
+      positionExchangeId: "binance_spot",
+      positionQuantity: "0.25",
+    });
+    const capturedSubmissions = await runSingleSellIntentAndCaptureSubmissions(frame, intent, observedAt);
+
+    expect(capturedSubmissions[0]?.intent.metadata).not.toMatchObject({
+      position_effect: expect.any(String),
+      position_scope: expect.any(Object),
+    });
+    expect(capturedSubmissions[0]?.costSnapshot).toMatchObject({
+      source: "cost_model",
+    });
+  });
+
+  it("does not use aggregate frame position quantity without strategy-scoped risk evidence", async () => {
+    const observedAt = "2026-06-06T08:00:00.000Z";
+    const strategyId = "strategy.exit-position-scope";
+    const intent = createRunnerSellIntent({
+      strategyId,
+      requestedQuantity: "0.25",
+      requestedNotional: "25000000",
+      idempotencyKey: "paper-runner-exit-aggregate-fallback",
+    });
+    const frame = createExitPositionScopeFrame({
+      observedAt,
+      strategyId,
+      featurePositionQuantity: "10",
+      includePosition: false,
+    });
+    const capturedSubmissions = await runSingleSellIntentAndCaptureSubmissions(frame, intent, observedAt);
+
+    expect(capturedSubmissions[0]?.intent.metadata).not.toMatchObject({
+      position_effect: expect.any(String),
+      position_scope: expect.any(Object),
+    });
+    expect(capturedSubmissions[0]?.costSnapshot).toMatchObject({
+      source: "cost_model",
     });
   });
 
@@ -359,5 +563,165 @@ function createHoldStrategy(): Strategy {
         reason: "ledger_hold_reason",
       };
     },
+  };
+}
+
+function createOrderIntentStrategy(intent: OrderIntent): Strategy {
+  return {
+    id: intent.strategyId,
+    version: "test",
+    requiredFeatures: [],
+    evaluate() {
+      return {
+        kind: "ORDER_INTENT",
+        strategyId: intent.strategyId,
+        reason: "unit_test_exit_position_scope",
+        orderIntents: [intent],
+      };
+    },
+  };
+}
+
+function createExitPositionScopeFrame(input: {
+  observedAt: string;
+  strategyId: string;
+  positionExchangeId?: string;
+  positionQuantity?: string;
+  featurePositionQuantity?: string;
+  includePosition?: boolean;
+}): PaperDecisionInputFrame {
+  const features: Record<string, unknown> = {};
+  if (input.featurePositionQuantity !== undefined) {
+    features.position_quantity = input.featurePositionQuantity;
+  }
+
+  const frame: PaperDecisionInputFrame = {
+    id: `frame-${input.strategyId}`,
+    observedAt: input.observedAt,
+    exchangeId: "upbit_krw_spot",
+    market: "KRW-BTC",
+    features,
+    risk: {
+      expectedLossBpsOfEquity: "10",
+      thresholdSnapshot: createRiskThresholdSnapshot(
+        defaultRiskLimitThresholds,
+        input.observedAt,
+        "unit-test.thresholds",
+      ),
+    },
+  };
+
+  if (input.includePosition !== false) {
+    frame.risk = {
+      ...frame.risk,
+      positions: [
+        {
+          exchangeId: input.positionExchangeId ?? "upbit_krw_spot",
+          market: "KRW-BTC",
+          strategyId: input.strategyId,
+          notionalKrw: "25000000",
+          notionalBpsOfEquity: "250",
+          unrealizedPnlBps: "0",
+          capturedAt: input.observedAt,
+          metadata: {
+            total_quantity: input.positionQuantity ?? "0.25",
+          },
+        },
+      ],
+    };
+  }
+
+  return frame;
+}
+
+async function runSingleSellIntentAndCaptureSubmissions(
+  frame: PaperDecisionInputFrame,
+  intent: OrderIntent,
+  observedAt: string,
+): Promise<OrderSubmission[]> {
+  const capturedSubmissions: OrderSubmission[] = [];
+  const submitOrder = vi.fn(async (submission: OrderSubmission): Promise<ExecutionSubmitOrderResult> => {
+    capturedSubmissions.push(submission);
+    return {
+      status: "REJECTED",
+      submission,
+      rejection: {
+        reasonCode: "exit_position_scope_mismatch",
+        message: "captured by unit test",
+      },
+    };
+  });
+  const runner = new PaperDecisionRunner({
+    source: new StaticPaperDecisionInputSource([frame]),
+    strategies: [createOrderIntentStrategy(intent)],
+    broker: new PaperBroker({
+      exchangeId: "upbit_krw_spot",
+      initialBalances: [
+        {
+          currency: "KRW",
+          available: "1000000",
+        },
+      ],
+    }),
+    costModel: {
+      evaluate: () => createAllowedCostDecision(observedAt),
+    },
+    evaluateRiskGate: createApprovedRiskGateResult,
+    executionEngine: { submitOrder },
+  });
+
+  await runner.run();
+  return capturedSubmissions;
+}
+
+function createRunnerSellIntent(overrides: Partial<Extract<OrderIntent, { orderType: "LIMIT" }>> = {}): Extract<
+  OrderIntent,
+  { orderType: "LIMIT" }
+> {
+  return {
+    exchangeId: "upbit_krw_spot",
+    market: "KRW-BTC",
+    strategyId: "strategy.exit-position-scope",
+    side: "SELL",
+    orderType: "LIMIT",
+    requestedPrice: "100000000",
+    requestedQuantity: "0.0001",
+    requestedNotional: "10000",
+    idempotencyKey: "paper-runner-exit-position-scope",
+    reason: "unit-test-exit-position-scope",
+    ...overrides,
+  };
+}
+
+function createAllowedCostDecision(observedAt: string): CostDecision {
+  return {
+    kind: "ALLOW",
+    tradeAllowed: true,
+    reasonCode: "cost_margin_ok",
+    message: "unit test cost allowed",
+    snapshot: {
+      exchange_id: "upbit_krw_spot",
+      market: "KRW-BTC",
+      expected_return_bps: "30",
+      entry_fee_bps: "5",
+      exit_fee_bps: "5",
+      expected_slippage_bps_p95: "2",
+      cost_bps: "7",
+      trade_allowed: true,
+      reason_code: "cost_margin_ok",
+      evaluated_at: observedAt,
+    },
+  };
+}
+
+function createApprovedRiskGateResult(context: RiskGateContext): RiskGateResult {
+  return {
+    status: "PASS",
+    approved: true,
+    action: "ALLOW",
+    evaluations: [],
+    failedEvaluations: [],
+    warningEvaluations: [],
+    thresholdSnapshot: context.thresholdSnapshot,
   };
 }

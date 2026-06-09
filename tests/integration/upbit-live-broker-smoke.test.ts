@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { mkdtemp, readFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { setTimeout as sleep } from "node:timers/promises";
 import { describe, expect, it, vi } from "vitest";
 import type { BrokerPort } from "../../src/application/index.js";
 import type {
@@ -30,19 +31,24 @@ import {
   UnsafeUpbitLiveBrokerRuntimeError,
   createGuardedUpbitLiveBrokerRuntime,
   createPilotOrderSmokeRequestPlan,
+  loadM19ExitPilotGuardConfigFromEnv,
   loadPilotRuntimeConfigFromEnv,
+  validateM19GuardedBuySmokeGuard,
 } from "../../src/runtime/index.js";
 import type {
   EnabledPilotRuntimeConfig,
   PilotOrderSmokeRequestPlan,
   UpbitLiveBrokerRuntimeSafeSummary,
 } from "../../src/runtime/index.js";
+import { parseFinancialDecimal } from "../../src/shared/index.js";
 import {
   assertUpbitSmokeArtifactHasNoSecretText,
   writeUpbitSmokeArtifact,
 } from "../helpers/upbit-smoke-artifacts.js";
 
 const observedAt = "2026-06-02T00:00:00.000Z";
+const CANCEL_CONFIRMATION_ATTEMPTS = 8;
+const CANCEL_CONFIRMATION_DELAY_MS = 500;
 const defaultUpbitRateLimitStatus = {
   kind: "OK",
   remainingReq: {
@@ -59,6 +65,16 @@ const runUpbitLiveBrokerSmoke =
   process.env.SEEMIRAI_RUN_UPBIT_ORDER_SMOKE === "1";
 // live broker smoke는 주문 생성/취소 side effect가 가능하므로 세 guard가 모두 켜진 수동 실행에서만 열린다.
 const describeUpbitLiveBrokerSmoke = runUpbitLiveBrokerSmoke ? describe : describe.skip;
+
+/**
+ * M19 guarded buy smoke guard를 기존 live broker smoke에 추가로 적용해야 하는지 판단한다.
+ *
+ * 일반 live broker smoke는 M14/M15 guard만으로 실행할 수 있어야 한다. M19 env가 명시된 경우에만 M19 추가 차단을 적용하고,
+ * guarded-buy marker만 켜진 오설정은 loader가 fail-closed 하게 그대로 넘긴다.
+ */
+function shouldApplyM19GuardedBuySmokeGuard(env: NodeJS.ProcessEnv): boolean {
+  return env.SEEMIRAI_RUN_M19_EXIT_PILOT === "1" || env.SEEMIRAI_RUN_M19_GUARDED_BUY_SMOKE === "1";
+}
 
 /**
  * 운영자가 실제 live broker smoke 직전에 확정해 전달하는 주문 입력이다.
@@ -232,6 +248,31 @@ describeUpbitLiveBrokerSmoke("Upbit live broker real smoke integration", () => {
           timeInForce: "post_only",
         },
       });
+
+      if (shouldApplyM19GuardedBuySmokeGuard(process.env)) {
+        // M19 env가 명시된 경우에만 추가 guard를 적용해 기존 live broker smoke를 불필요하게 막지 않는다.
+        const m19Guard = loadM19ExitPilotGuardConfigFromEnv(process.env);
+        const m19Validation = validateM19GuardedBuySmokeGuard(m19Guard, "bid");
+        artifact.m19Validation = {
+          result: m19Validation.result,
+          reason: m19Validation.reason,
+          message: m19Validation.message,
+        };
+        if (!m19Validation.sideEffectPossible) {
+          // M19 guarded buy smoke 경계에서는 disabled/SKIPPED도 기존 live broker smoke 주문 생성으로 낮추지 않는다.
+          throw new UnsafePilotRuntimeConfigError([m19Validation.message]);
+        }
+        if (m19Validation.result === "PASSED" && m19Guard.enabled) {
+          // M19 소액 한도 검증 — M19_EXIT_PILOT_MAX_KRW와 UPBIT_ORDER_SMOKE_MAX_KRW 중 더 보수적인 상한 적용
+          const m19MaxKrw = parseFinancialDecimal(m19Guard.maxKrw);
+          if (parseFinancialDecimal(plan.notionalKrw).greaterThan(m19MaxKrw)) {
+            throw new UnsafePilotOrderSmokeRequestError([
+              `smoke 주문 총액이 M19 소액 한도(${m19Guard.maxKrw} KRW)를 초과합니다`,
+            ]);
+          }
+        }
+      }
+
       const runtime = createGuardedUpbitLiveBrokerRuntime({
         liveBrokerEnabled: true,
         pilotConfig: config,
@@ -259,7 +300,12 @@ describeUpbitLiveBrokerSmoke("Upbit live broker real smoke integration", () => {
       const canceledOrder = await runtimeBroker.cancelOrder(runtimeBrokerOrder.brokerOrderId);
       artifact.canceledOrder = summarizeBrokerOrder(canceledOrder);
 
-      const postCancelLookup = await runtimeBroker.getOrder(runtimeBrokerOrder.brokerOrderId);
+      const postCancelLookup = await waitForLiveBrokerCancelConfirmation({
+        runtimeBroker,
+        brokerOrderId: runtimeBrokerOrder.brokerOrderId,
+        canceledOrder,
+        artifact,
+      });
       artifact.postCancelLookupOrder = summarizeOptionalBrokerOrder(postCancelLookup);
       assertLiveBrokerSmokeCancelConfirmed({
         canceledOrder,
@@ -703,6 +749,59 @@ function assertLiveBrokerSmokeCancelConfirmed(input: {
       `취소 후 조회 상태: ${input.postCancelLookup?.status ?? "조회 결과 없음"}`,
     ].join("; "),
   ]);
+}
+
+/**
+ * Upbit cancel 직후 조회가 아직 open 상태일 수 있어 terminal cancel 상태를 짧게 polling한다.
+ *
+ * 취소 요청은 이미 같은 smoke UUID에 한정되어 있으므로 새 주문 side effect는 만들지 않는다. 거래소 반영 지연만 흡수하고, 제한
+ * 시간 안에 `CANCELED`가 확인되지 않으면 기존 manual review 경로로 넘긴다.
+ */
+async function waitForLiveBrokerCancelConfirmation(input: {
+  runtimeBroker: BrokerPort;
+  brokerOrderId: string;
+  canceledOrder: BrokerOrder;
+  artifact: JsonRecord;
+}): Promise<BrokerOrder | undefined> {
+  if (input.canceledOrder.status === "CANCELED") {
+    return input.canceledOrder;
+  }
+
+  const attempts: JsonRecord[] = [];
+  let lastLookup: BrokerOrder | undefined;
+  let lastError: unknown;
+
+  for (let attempt = 1; attempt <= CANCEL_CONFIRMATION_ATTEMPTS; attempt += 1) {
+    if (attempt > 1) {
+      await sleep(CANCEL_CONFIRMATION_DELAY_MS);
+    }
+
+    try {
+      lastLookup = await input.runtimeBroker.getOrder(input.brokerOrderId);
+      attempts.push({
+        attempt,
+        status: lastLookup?.status ?? "조회 결과 없음",
+      });
+      input.artifact.cancelConfirmationAttempts = attempts;
+
+      if (lastLookup?.status === "CANCELED") {
+        return lastLookup;
+      }
+    } catch (error) {
+      lastError = error;
+      attempts.push({
+        attempt,
+        status: "조회 실패",
+      });
+      input.artifact.cancelConfirmationAttempts = attempts;
+    }
+  }
+
+  if (lastLookup === undefined && lastError !== undefined) {
+    throw lastError;
+  }
+
+  return lastLookup;
 }
 
 function summarizeBrokerOrderList(orders: readonly BrokerOrder[]): readonly JsonRecord[] {

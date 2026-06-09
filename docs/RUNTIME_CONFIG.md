@@ -1081,6 +1081,68 @@ strategy 연속 손실 초과는 일간 손실이나 kill switch 같은 더 강�
 함께 남긴다. `STRATEGY_PAUSED` kill switch 상태는 strategy 평가 중지만 표현하고 전역 신규 주문 차단으로 사용하지
 않는다. PostgreSQL combined event store는 주문 전이, risk event, audit event를 하나의 transaction으로 저장한다.
 
+## M19 Exit Pilot guard
+
+구현 기준:
+
+- 실행 계획: [`exec-plans/active/2026-06-07-issue-165-subpr-03-verification-closeout-deepseek-handoff.md`](./exec-plans/active/2026-06-07-issue-165-subpr-03-verification-closeout-deepseek-handoff.md)
+- guard 구현: `src/runtime/pilot-config/types.ts`, `src/runtime/pilot-config/validation.ts`, `src/runtime/pilot-config/summary.ts`
+- guarded buy smoke: `src/runtime/pilot-order-smoke/guard.ts`
+- M19 guard test: `tests/unit/m19-exit-pilot-guard.test.ts`
+
+M19 exit pilot은 기존 `PILOT_ORDER_SMOKE` profile 위에서 추가 env guard를 통해 exit 검증 경계를 연다. 기본 `PAPER_NO_KEY` runtime은
+계속 live order API 0회를 유지하며, M19 guard가 없는 상태에서는 paper fixture로만 exit rule 검증을 수행한다.
+
+### M19 exit pilot guard env
+
+| guard | 의미 |
+| --- | --- |
+| `SEEMIRAI_RUN_M19_EXIT_PILOT=1` | M19 exit pilot guard 활성화 |
+| `SEEMIRAI_M19_EXIT_PILOT_POSITION_SOURCE` | `EXISTING_SMALL_POSITION` 또는 `PAPER_FIXTURE` |
+| `SEEMIRAI_M19_EXIT_PILOT_POSITION_EVIDENCE_ID` | `EXISTING_SMALL_POSITION` 선택 시 필수인 M16 reconcile 또는 운영자 position evidence |
+| `SEEMIRAI_M19_EXIT_PILOT_MAX_KRW` | 소액 한도, 5,000~50,000 KRW |
+| `SEEMIRAI_M19_EXIT_PILOT_OPERATOR_EVIDENCE_ID` | 저장소 밖 redacted 운영자 확인 증거 |
+
+### M19 guarded buy smoke guard
+
+| guard | 의미 |
+| --- | --- |
+| `SEEMIRAI_RUN_M19_GUARDED_BUY_SMOKE=1` | 신규 진입 guarded buy smoke 활성화 (기본 off) |
+| `SEEMIRAI_M19_GUARDED_BUY_APPROVAL_EVIDENCE_ID` | guarded buy smoke 실행 시 운영자 승인 evidence 필수 |
+
+### M19 guard invariant
+
+- 기본 `PAPER_NO_KEY` runtime은 M19 guard 조회만으로 live API를 호출하지 않는다.
+- M19 exit pilot은 명시 env guard 없이 열리지 않는다.
+- `EXISTING_SMALL_POSITION` source는 `SEEMIRAI_M19_EXIT_PILOT_POSITION_EVIDENCE_ID`가 없으면 열리지 않는다.
+- `SEEMIRAI_RUN_M19_GUARDED_BUY_SMOKE=1`만 켜진 오설정은 일반 order smoke로 낮추지 않고 fail-closed 한다.
+- M19 guard가 활성화된 bid smoke는 `sideEffectPossible=false` 결과를 일반 order smoke로 낮추지 않고 API 호출 전 차단한다.
+- guarded buy smoke는 `SEEMIRAI_M19_GUARDED_BUY_APPROVAL_EVIDENCE_ID`가 없으면 API 호출 전 fail-closed 한다.
+- 매도/축소(side=ask) 경로는 기존 보유 포지션 source를 우선하며, guarded buy 승인과 별도로 허용된다.
+- 실제 order/live-broker smoke는 취소 요청 직후 거래소 상태 반영 지연을 흡수하기 위해 같은 주문 UUID/identifier만 짧게
+  재조회하고, terminal cancel이 확인되지 않으면 성공으로 올리지 않고 수동 점검으로 남긴다.
+- `hard stop` open position 자동 청산은 여전히 금지된다.
+- smoke artifact는 access key, secret key, JWT, Authorization header, raw provider payload를 포함하지 않는다.
+- operator evidence id와 approval evidence id는 safe summary에서 boolean으로만 노출한다.
+- M19 guard 검증 실패는 한국어 violation 목록을 반환한다.
+
+### M19 safe summary
+
+`createM19ExitPilotGuardSafeSummary`는 다음 필드를 secret 없이 노출한다.
+
+| 필드 | 설명 |
+| --- | --- |
+| `enabled` | M19 guard 활성화 여부 |
+| `positionSource` | `EXISTING_SMALL_POSITION` 또는 `PAPER_FIXTURE` |
+| `maxKrw` | 소액 한도 KRW |
+| `operatorEvidenceConfigured` | 운영자 evidence 존재 여부 (boolean) |
+| `positionEvidenceConfigured` | 기존 소액 포지션 evidence 존재 여부 (boolean) |
+| `guardedBuySmokeEnabled` | guarded buy smoke 활성화 여부 |
+| `guardedBuyApprovalConfigured` | guarded buy 승인 evidence 존재 여부 (boolean) |
+| `statusLabel` | 한국어 상태 라벨 |
+| `message` / `action` | 한국어 상태 설명과 필요 조치 |
+| `trace` | 내부 reason code |
+
 ## 변경 절차
 
 설정 구조나 허용 id를 바꾸면 다음을 함께 확인한다.

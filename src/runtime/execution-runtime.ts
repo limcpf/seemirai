@@ -1,4 +1,12 @@
 import { ExecutionEngine, createExecutionSafetyConfig } from "../application/execution/index.js";
+import { runExitPaperRuntime } from "../application/exit-engine/index.js";
+import type {
+  ExitPaperRuntimeInput,
+  ExitPaperRuntimePorts,
+  ExitPaperRuntimeResult,
+  ExitRuntimeEvidenceWriterPort,
+  ExitRuntimeExecutionPersistencePort,
+} from "../application/exit-engine/index.js";
 import type { ExecutionSafetyConfig, HardStopRuntimeActionPlan } from "../application/index.js";
 import type { BrokerPort } from "../application/ports/index.js";
 import { PaperBroker } from "../infrastructure/paper/index.js";
@@ -34,6 +42,8 @@ export interface PaperNoKeyExecutionRuntimeOptions {
   fillOptions?: PaperBrokerFillOptions;
   brokerOrderIdPrefix?: string;
   phase15ApprovalEvidence?: readonly Phase15AltApprovalEvidenceSnapshot[];
+  exitExecutionPersistence?: ExitRuntimeExecutionPersistencePort;
+  exitEvidenceWriter?: ExitRuntimeEvidenceWriterPort;
   clock?: () => TimestampInput;
 }
 
@@ -57,7 +67,10 @@ export interface PaperNoKeyExecutionRuntime {
   disabledLiveBroker: DisabledUpbitLiveBroker;
   executionEngine: ExecutionEngine;
   executionSafetyConfig: ExecutionSafetyConfig;
+  runExit: (input: PaperNoKeyExitRuntimeInput) => Promise<ExitPaperRuntimeResult>;
 }
+
+export type PaperNoKeyExitRuntimeInput = Omit<ExitPaperRuntimeInput, "ports">;
 
 export type PendingPaperOrderCancelExecutionStatus = "CANCELED" | "ALREADY_CLOSED" | "FAILED";
 
@@ -111,9 +124,9 @@ export class UnsafeHardStopCancelPlanError extends Error {
 /**
  * 기본 paper profile을 주문 실행 runtime으로 조립한다.
  *
- * 이 조립기는 `ExecutionEngine -> PaperBroker`만 활성화한다. Upbit live broker는 같은 `BrokerPort` 모양의 disabled
- * stub으로만 노출해 future extension point는 유지하되, MVP `PAPER_NO_KEY` 실행 중 실거래 주문 API가 생성되거나
- * 호출되는 경로를 닫는다.
+ * 이 조립기는 `ExecutionEngine -> PaperBroker -> exit runtime persistence/evidence port`만 활성화한다.
+ * Upbit live broker는 같은 `BrokerPort` 모양의 disabled stub으로만 노출해 future extension point는 유지하되,
+ * MVP `PAPER_NO_KEY` 실행 중 실거래 주문 API가 생성되거나 호출되는 경로를 닫는다.
  */
 export function createPaperNoKeyExecutionRuntime(
   input: unknown,
@@ -157,6 +170,14 @@ export function createPaperNoKeyExecutionRuntime(
   const disabledLiveBroker = new DisabledUpbitLiveBroker({
     reason: "PAPER_NO_KEY execution runtime uses PaperBroker for all BrokerPort side effects",
   });
+  const exitRuntimePorts: ExitPaperRuntimePorts = {
+    executionEngine,
+    broker,
+    ...(options.exitExecutionPersistence === undefined
+      ? {}
+      : { executionPersistence: options.exitExecutionPersistence }),
+    ...(options.exitEvidenceWriter === undefined ? {} : { evidenceWriter: options.exitEvidenceWriter }),
+  };
 
   return {
     config,
@@ -168,6 +189,10 @@ export function createPaperNoKeyExecutionRuntime(
     disabledLiveBroker,
     executionEngine,
     executionSafetyConfig,
+    runExit: (exitInput) => runExitPaperRuntime({
+      ...exitInput,
+      ports: exitRuntimePorts,
+    }),
   };
 }
 
