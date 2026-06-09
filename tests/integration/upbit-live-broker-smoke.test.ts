@@ -248,8 +248,8 @@ describeUpbitLiveBrokerSmoke("Upbit live broker real smoke integration", () => {
         reason: m19Validation.reason,
         message: m19Validation.message,
       };
-      if (m19Guard.enabled && !m19Validation.sideEffectPossible) {
-        // M19 guard가 켜진 bid smoke는 PASSED 외 결과를 주문 생성으로 낮추지 않는다.
+      if (!m19Validation.sideEffectPossible) {
+        // M19 guarded buy smoke 경계에서는 disabled/SKIPPED도 기존 live broker smoke 주문 생성으로 낮추지 않는다.
         throw new UnsafePilotRuntimeConfigError([m19Validation.message]);
       }
       if (m19Validation.result === "PASSED" && m19Guard.enabled) {
