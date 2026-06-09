@@ -23,6 +23,7 @@ const TrimmedNonEmptyStringSchema = z.string().trim().min(1);
 const TelegramInboundConfigSchema = z
   .object({
     enabled: z.boolean().default(false),
+    bot_username: TrimmedNonEmptyStringSchema.optional(),
     owner_chat_ids: z.array(TrimmedNonEmptyStringSchema).default([]),
     owner_user_ids: z.array(TrimmedNonEmptyStringSchema).default([]),
     polling_interval_ms: z.number().int().positive().default(1_000),

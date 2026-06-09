@@ -429,6 +429,7 @@ M20 inbound는 public webhook endpoint를 만들지 않고 Telegram `getUpdates`
 
 - enable flag: `telegram.inbound.enabled` 또는 `SEEMIRAI_TELEGRAM_INBOUND_ENABLED=1`
 - bot token 우선순위: `SEEMIRAI_TELEGRAM_BOT_TOKEN` env, legacy `TELEGRAM_BOT_TOKEN` env, `secrets.telegram_bot_token`
+- bot username: `SEEMIRAI_TELEGRAM_INBOUND_BOT_USERNAME` env, fallback `telegram.inbound.bot_username`
 - owner chat allowlist: `SEEMIRAI_TELEGRAM_INBOUND_OWNER_CHAT_IDS` env, fallback `telegram.inbound.owner_chat_ids`
 - optional owner user allowlist: `SEEMIRAI_TELEGRAM_INBOUND_OWNER_USER_IDS` env, fallback `telegram.inbound.owner_user_ids`
 - polling interval: `SEEMIRAI_TELEGRAM_INBOUND_POLLING_INTERVAL_MS`, fallback `telegram.inbound.polling_interval_ms`
@@ -437,6 +438,8 @@ M20 inbound는 public webhook endpoint를 만들지 않고 Telegram `getUpdates`
 
 활성화된 inbound는 bot token과 owner chat allowlist가 모두 있어야 startup guard를 통과한다. owner chat allowlist가 비어 있으면
 외부 입력 실행면이 열린 상태로 보므로 polling 시작 전에 fail-closed 한다.
+그룹 chat에서 bot mention이 붙은 command는 mention이 없거나 설정된 bot username과 일치할 때만 parser가 인식한다. bot username이
+설정되지 않은 상태에서 `/kill@SomeBot` 같은 mention command가 들어오면 다른 bot 대상일 수 있으므로 실행하지 않는다.
 
 Sub PR 01의 inbound foundation은 command parser, allowlist, audit event, jobs table 기반 dedupe store, polling provider
 projection까지만 제공한다. `/status`, `/positions`, `/pnl`, `/why`, `/orders`, `/risk`, `/pause`, `/resume`, `/kill`의 실제

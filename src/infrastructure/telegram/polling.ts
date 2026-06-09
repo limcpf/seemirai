@@ -89,7 +89,9 @@ export class TelegramGetUpdatesPollingProvider implements TelegramPollingProvide
 
   public async getUpdates(input: TelegramPollingRequest): Promise<TelegramPollingResult> {
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), this.providerTimeoutMs);
+    // Telegram long polling이 정상 idle 응답을 기다릴 수 있도록 provider abort는 요청 timeout보다 길게 잡는다.
+    const effectiveTimeoutMs = Math.max(this.providerTimeoutMs, input.timeoutSeconds * 1_000 + 1_000);
+    const timeout = setTimeout(() => controller.abort(), effectiveTimeoutMs);
 
     try {
       const response = await this.fetchImpl(createTelegramGetUpdatesUrl(this.options.botToken), {

@@ -7,6 +7,7 @@ export {
   parseTelegramInboundCommand,
   toTelegramCommandUserMessage,
 } from "./parser.js";
+export type { TelegramInboundParserOptions } from "./parser.js";
 export {
   evaluateTelegramInboundAuthorization,
   hashTelegramInboundIdentifier,

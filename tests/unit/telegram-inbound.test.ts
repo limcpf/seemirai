@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   FakeTelegramPollingProvider,
   createTelegramGetUpdatesPollingProvider,
@@ -19,6 +19,10 @@ import {
 } from "../../src/application/index.js";
 
 describe("Telegram inbound foundation", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   it("keeps inbound polling disabled by default and requires explicit guards", () => {
     const config = loadRuntimeConfig({});
 
@@ -38,6 +42,7 @@ describe("Telegram inbound foundation", () => {
       loadRuntimeTelegramInboundConfig(config, {
         SEEMIRAI_TELEGRAM_INBOUND_ENABLED: "1",
         SEEMIRAI_TELEGRAM_BOT_TOKEN: "secret-token",
+        SEEMIRAI_TELEGRAM_INBOUND_BOT_USERNAME: "SeemiraiOpsBot",
         SEEMIRAI_TELEGRAM_INBOUND_OWNER_CHAT_IDS: "100, 200",
         SEEMIRAI_TELEGRAM_INBOUND_OWNER_USER_IDS: "300",
         SEEMIRAI_TELEGRAM_INBOUND_POLLING_INTERVAL_MS: "2500",
@@ -45,6 +50,7 @@ describe("Telegram inbound foundation", () => {
     ).toMatchObject({
       enabled: true,
       botToken: "secret-token",
+      botUsername: "SeemiraiOpsBot",
       ownerChatIds: ["100", "200"],
       ownerUserIds: ["300"],
       providerTimeoutMs: 5_000,
@@ -82,6 +88,23 @@ describe("Telegram inbound foundation", () => {
         scope: "CONTROL",
         normalizedText: "/kill",
       },
+    });
+    expect(parseTelegramInboundCommand("/status@SeemiraiOpsBot", { botUsername: "seemiraiopsbot" })).toEqual({
+      status: "PARSED",
+      command: {
+        name: "status",
+        scope: "READ_ONLY",
+        normalizedText: "/status",
+      },
+    });
+    expect(parseTelegramInboundCommand("/kill@OtherBot", { botUsername: "SeemiraiOpsBot" })).toMatchObject({
+      status: "UNKNOWN",
+      reasonCode: "telegram_command_bot_mention_mismatch",
+      userMessage: "다른 Telegram bot을 향한 명령이거나 bot username 확인이 없어 요청을 실행하지 않았습니다.",
+    });
+    expect(parseTelegramInboundCommand("/pause@SeemiraiOpsBot")).toMatchObject({
+      status: "UNKNOWN",
+      reasonCode: "telegram_command_bot_username_unconfigured",
     });
     expect(parseTelegramInboundCommand("/why")).toMatchObject({
       status: "MALFORMED",
@@ -293,6 +316,40 @@ describe("Telegram inbound foundation", () => {
     });
     expect(JSON.stringify(result)).not.toContain("raw_secret_like_field");
     expect(JSON.stringify(result)).not.toContain("secret-token");
+  });
+
+  it("keeps provider abort timeout longer than Telegram long polling timeout", async () => {
+    vi.useFakeTimers();
+    let capturedSignal: AbortSignal | undefined;
+    const provider = createTelegramGetUpdatesPollingProvider({
+      botToken: "secret-token",
+      providerTimeoutMs: 5_000,
+      async fetchImpl(_input, init) {
+        capturedSignal = init.signal as AbortSignal;
+        return new Promise<Response>((_resolve, reject) => {
+          capturedSignal?.addEventListener("abort", () => {
+            const error = new Error("aborted");
+            error.name = "AbortError";
+            reject(error);
+          });
+        });
+      },
+    });
+
+    const resultPromise = provider.getUpdates({
+      timeoutSeconds: 20,
+      limit: 50,
+    });
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(capturedSignal?.aborted).toBe(false);
+    await vi.advanceTimersByTimeAsync(15_999);
+    expect(capturedSignal?.aborted).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+
+    await expect(resultPromise).resolves.toEqual({
+      status: "failed",
+      reasonCode: "telegram_get_updates_timeout",
+    });
   });
 
   it("supports fake polling batches for integration wiring tests", async () => {

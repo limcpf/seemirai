@@ -19,6 +19,7 @@ export type RuntimeTelegramInboundConfig =
   | {
       enabled: true;
       botToken: string;
+      botUsername?: string;
       ownerChatIds: readonly string[];
       ownerUserIds: readonly string[];
       providerTimeoutMs: number;
@@ -101,6 +102,9 @@ export function loadRuntimeTelegramInboundConfig(
     readCsvEnv(env.SEEMIRAI_TELEGRAM_INBOUND_OWNER_CHAT_IDS) ?? inbound.owner_chat_ids;
   const ownerUserIds =
     readCsvEnv(env.SEEMIRAI_TELEGRAM_INBOUND_OWNER_USER_IDS) ?? inbound.owner_user_ids;
+  const botUsername =
+    nonEmptyEnvValue(env.SEEMIRAI_TELEGRAM_INBOUND_BOT_USERNAME) ??
+    nonEmptyEnvValue(inbound.bot_username);
   const violations: string[] = [];
 
   if (botToken === undefined) {
@@ -129,6 +133,7 @@ export function loadRuntimeTelegramInboundConfig(
   return {
     enabled: true,
     botToken,
+    ...(botUsername === undefined ? {} : { botUsername }),
     ownerChatIds,
     ownerUserIds,
     providerTimeoutMs: config.telegram.provider_timeout_ms,

@@ -9,8 +9,18 @@ import type {
   TelegramInboundParseResult,
 } from "./types.js";
 
-const commandPattern = /^\/(?<name>[A-Za-z0-9_]+)(?:@[A-Za-z0-9_]+)?(?:\s+(?<argument>.*))?$/u;
+const commandPattern = /^\/(?<name>[A-Za-z0-9_]+)(?:@(?<botUsername>[A-Za-z0-9_]+))?(?:\s+(?<argument>.*))?$/u;
 const krwMarketPattern = /^KRW-[A-Z0-9]+$/u;
+
+/**
+ * Telegram slash command mention 검증 옵션이다.
+ *
+ * 그룹 chat에서는 `/kill@OtherBot`처럼 다른 bot을 향한 command가 같은 update stream에 들어올 수 있다. parser는 mention이
+ * 없거나 여기 지정한 bot username과 정확히 일치할 때만 command로 인정해야 control 명령 오작동을 막을 수 있다.
+ */
+export interface TelegramInboundParserOptions {
+  botUsername?: string;
+}
 
 /**
  * Telegram text를 M20 inbound command contract로 정규화한다.
@@ -18,7 +28,10 @@ const krwMarketPattern = /^KRW-[A-Z0-9]+$/u;
  * 이 함수는 provider 호출이나 audit 저장을 하지 않는 순수 parser다. slash command 형식, command allowlist, `/why` 대상만
  * 통과시키고, 실패는 한국어 안내와 내부 reason code로 반환해 raw enum/code가 사용자 첫 화면을 대체하지 않게 한다.
  */
-export function parseTelegramInboundCommand(text: string): TelegramInboundParseResult {
+export function parseTelegramInboundCommand(
+  text: string,
+  options: TelegramInboundParserOptions = {},
+): TelegramInboundParseResult {
   const normalizedText = normalizeCommandText(text);
   const match = commandPattern.exec(normalizedText);
 
@@ -28,6 +41,19 @@ export function parseTelegramInboundCommand(text: string): TelegramInboundParseR
       "명령은 /status 처럼 슬래시로 시작해야 합니다.",
       normalizedText,
     );
+  }
+
+  const mentionedBotUsername = match.groups.botUsername;
+  if (mentionedBotUsername !== undefined && !isMentionForThisBot(mentionedBotUsername, options.botUsername)) {
+    return {
+      status: "UNKNOWN",
+      reasonCode:
+        normalizeBotUsername(options.botUsername) === undefined
+          ? "telegram_command_bot_username_unconfigured"
+          : "telegram_command_bot_mention_mismatch",
+      userMessage: "다른 Telegram bot을 향한 명령이거나 bot username 확인이 없어 요청을 실행하지 않았습니다.",
+      normalizedText,
+    };
   }
 
   const name = match.groups.name.toLowerCase();
@@ -142,6 +168,20 @@ function malformed(
 
 function normalizeCommandText(text: string): string {
   return text.trim().replace(/\s+/gu, " ");
+}
+
+function isMentionForThisBot(mentionedBotUsername: string, configuredBotUsername: string | undefined): boolean {
+  const configured = normalizeBotUsername(configuredBotUsername);
+  return configured !== undefined && normalizeBotUsername(mentionedBotUsername) === configured;
+}
+
+function normalizeBotUsername(value: string | undefined): string | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+
+  const trimmed = value.trim().replace(/^@/u, "");
+  return trimmed.length === 0 ? undefined : trimmed.toLowerCase();
 }
 
 function isTelegramInboundCommandName(value: string): value is TelegramInboundCommandName {

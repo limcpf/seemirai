@@ -73,6 +73,8 @@
 - 허용되지 않은 chat/user의 명령은 parser 결과와 무관하게 실행하지 않고 `TELEGRAM_INBOUND_COMMAND` audit evidence만 남긴다.
 - Telegram token, raw update, raw provider body, raw header, raw message text는 log/audit/status/응답에 저장하지 않는다.
 - audit evidence에는 update id, message id, command name, command scope, command target, dedupe key, chat/user hash만 남긴다.
+- 그룹 chat command mention은 mention이 없거나 설정된 bot username과 일치할 때만 실행 후보로 인정한다. 다른 bot mention 또는
+  bot username 미설정 상태의 mention command는 control provider로 전달하지 않는다.
 - 같은 Telegram update/message/command 재전달은 기존 `jobs.idempotency_key` 기반 dedupe row로 차단한다. dedupe row payload에도
   raw update나 raw message text를 넣지 않는다.
 - Sub PR 01은 command parser와 polling projection만 제공하며, `/pause`, `/resume`, `/kill` control provider 실행은 후속 Sub PR의
