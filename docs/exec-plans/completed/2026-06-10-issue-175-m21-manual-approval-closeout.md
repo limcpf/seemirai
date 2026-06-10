@@ -10,8 +10,9 @@ broker submission` evidence chain을 기계적으로 증명하는 것이 목표�
 - mother branch: `issue-175-mother`
 - Sub PR 01: https://github.com/limcpf/seemirai/pull/176
 - Sub PR 02: https://github.com/limcpf/seemirai/pull/177
-- Sub PR 03: verification/closeout branch
-- Final main PR: Sub PR 03 mother merge 이후 생성
+- Sub PR 03: https://github.com/limcpf/seemirai/pull/178
+- Final main PR: https://github.com/limcpf/seemirai/pull/179
+- Final main PR 상태: review drain 완료, `MERGEABLE`, GitHub `verify` pass, Codex `+1`, unresolved thread 0건
 
 ## 완료 범위
 
@@ -45,6 +46,14 @@ broker submission` evidence chain을 기계적으로 증명하는 것이 목표�
 - M21 acceptance criteria 완료 표시
 - `docs/product-specs/upbit-live-autonomous-trading.md`의 M21 구현 완료 조건과 M22 전환 gate 분리
 - M21 closeout 문서와 completed plan index/context map 갱신
+
+### Final main PR Review Drain
+
+- PR #179 head `c260b5b5c54360a962f9efc53b459d4780f293e5`에서 Codex review finding 3건 처리
+- `m21_order_notional_below_minimum`, `m21_daily_budget_usage_invalid`, `PROPOSAL_ALREADY_RESERVED` guard 보강
+- 기존 thread `PRRT_kwDOScdx1c6IWf5u`, `PRRT_kwDOScdx1c6IWf5w`, `PRRT_kwDOScdx1c6IWf5x` resolve
+- GitHub check `verify` pass, Codex clean signal `+1` 확인
+- final main PR은 issue-subpr-runner 규칙에 따라 merge하지 않았고, 사용자가 직접 merge하도록 남김
 
 ## Acceptance Criteria Trace
 
@@ -91,7 +100,7 @@ budget reservation, audit projection을 통과한 `live-order-approval-runtime`�
 
 ## 검증
 
-Sub PR 03 및 final PR review drain에서 직접 실행한 검증:
+Sub PR 03, final PR review drain, finish-readiness-audit에서 직접 실행한 검증:
 
 ```sh
 corepack pnpm install --frozen-lockfile
@@ -110,6 +119,10 @@ git diff --check
 - `./scripts/verify docs`: 문서 64개, 매니페스트 81개, 링크 215개 확인
 - `git diff --check`: 통과
 - `./scripts/verify`: 80 passed / 11 skipped test files, 1309 passed / 113 skipped tests
+- `finish-readiness-audit` 재검증 `./scripts/verify`: 80 passed / 11 skipped test files, 1309 passed / 113 skipped tests
+- PR #179 GitHub check `verify`: head `c260b5b5c54360a962f9efc53b459d4780f293e5`, pass, 1m23s
+- PR #179 Codex clean signal: reaction `+1`, 2026-06-10T03:54:47Z
+- PR #179 review thread: 3건 모두 resolved, unresolved thread 0건
 
 Sub PR 02 review drain 최종 검증:
 
@@ -140,4 +153,5 @@ Sub PR 02 review drain 최종 검증:
 
 - 실제 live pilot 운영 budget, API key allowlist, reconcile 관측 결과는 운영 실행 시점의 별도 evidence로 남겨야 한다.
 - Telegram inbound polling worker와 M21 approval runtime을 production deployment lifecycle에 붙이는 작업은 운영 wiring에서 확인한다.
-- Final main PR은 issue-subpr-runner workflow에 따라 review drain까지만 수행하고, merge는 사용자가 직접 결정한다.
+- Final main PR #179는 issue-subpr-runner workflow에 따라 review drain과 finish-readiness-audit까지 완료했고, merge는 사용자가 직접
+  결정한다.
