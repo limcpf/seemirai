@@ -327,20 +327,36 @@ async function approveAndSubmitProposal(
     });
   }
 
-  const submitted = await recordStatusTransition(options, {
-    proposal: approvedProposal,
-    input,
-    occurredAt,
-    toStatus: "SUBMITTED",
-    evidenceKind: "BROKER_SUBMISSION_RECORDED",
-    reasonCode: "m21_broker_submission_recorded",
-    brokerOrderId: brokerOrder.brokerOrderId,
-    metadata: {
-      correlation_id: input.correlationId,
-      broker_order_status: brokerOrder.status,
-      recheck_observed_at: recheck.observedAt,
-    },
-  });
+  let submitted: LiveOrderApprovalProposalTransitionResult;
+  try {
+    submitted = await recordStatusTransition(options, {
+      proposal: approvedProposal,
+      input,
+      occurredAt,
+      toStatus: "SUBMITTED",
+      evidenceKind: "BROKER_SUBMISSION_RECORDED",
+      reasonCode: "m21_broker_submission_recorded",
+      brokerOrderId: brokerOrder.brokerOrderId,
+      metadata: {
+        correlation_id: input.correlationId,
+        broker_order_status: brokerOrder.status,
+        recheck_observed_at: recheck.observedAt,
+      },
+    });
+  } catch {
+    return createResult({
+      status: "APPROVAL_SUBMISSION_FAILED",
+      proposalId: approvedProposal.proposalId,
+      brokerSubmitted: true,
+      stateChanged: true,
+      reasonCode: "m21_broker_submission_evidence_exception",
+      evidence: [approval.evidence, recheckEvidence],
+      brokerOrder,
+      trace: {
+        store_status: "exception",
+      },
+    });
+  }
 
   if (submitted.status !== "RECORDED") {
     return createResult({

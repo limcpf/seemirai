@@ -11,6 +11,7 @@ import {
 import type {
   BrokerBalanceSnapshot,
   BrokerOrder,
+  LiveOrderApprovalEvidenceSnapshot,
   LiveOrderProposalContract,
   OrderSubmission,
 } from "../../src/domain/index.js";
@@ -21,11 +22,16 @@ import {
   createTelegramInboundCommandRuntime,
   createTelegramInboundPollingRuntime,
   loadRuntimeConfig,
+  type LiveOrderApprovalProposalStore,
   type LiveOrderApprovalSubmissionRecheckProvider,
   type LiveOrderApprovalSubmissionRecheckSnapshot,
 } from "../../src/runtime/index.js";
 
 const now = "2026-06-10T00:00:00.000Z";
+
+type TestProposalStore = LiveOrderApprovalProposalStore & {
+  listEvidence(proposalId: string): readonly LiveOrderApprovalEvidenceSnapshot[];
+};
 
 describe("M21 Telegram live order approval runtime", () => {
   it("승인된 proposal만 fake broker로 제출하고 동일 Telegram update 재전달은 중복 주문을 만들지 않는다", async () => {
@@ -419,6 +425,68 @@ describe("M21 Telegram live order approval runtime", () => {
     expect(replies[0]?.text).toContain("최종 audit 기록을 완료하지 못했습니다");
   });
 
+  it("broker 제출 후 submission evidence 저장소 예외도 제출 실패 결과로 정규화한다", async () => {
+    const auditEvents: AuditEvent[] = [];
+    const replies: TelegramInboundReplyInput[] = [];
+    const proposalStore = createInMemoryLiveOrderApprovalProposalStore([
+      createProposal({
+        proposalId: "proposal-submitted-store-throw",
+        idempotencyKey: "m21-store-throw",
+      }),
+    ]);
+    const broker = new FakeBroker();
+    const runtime = createTelegramRuntime({
+      auditEvents,
+      replies,
+      proposalStore: createThrowingSubmittedTransitionStore(proposalStore),
+      broker,
+      recheckProvider: new FakeRecheckProvider(),
+    });
+    const pollingRuntime = createTelegramInboundPollingRuntime({
+      pollingProvider: new FakeTelegramPollingProvider([
+        {
+          status: "ok",
+          nextOffset: 42,
+          updates: [
+            {
+              updateId: 41,
+              messageId: 51,
+              chatId: "100",
+              userId: "300",
+              text: "/approve proposal-submitted-store-throw",
+              receivedAt: now,
+            },
+          ],
+        },
+      ]),
+      commandRuntime: runtime,
+      pollingIntervalMs: 1_000,
+      pollingTimeoutSeconds: 20,
+      maxUpdatesPerPoll: 50,
+    });
+
+    const result = await pollingRuntime.runOnce();
+
+    expect(result.handledMessages[0]).toMatchObject({
+      status: "EXECUTED",
+      executed: true,
+      liveOrderApprovalResult: {
+        status: "APPROVAL_SUBMISSION_FAILED",
+        brokerSubmitted: true,
+        reasonCode: "m21_broker_submission_evidence_exception",
+        brokerOrder: {
+          brokerOrderId: "broker-order-1",
+        },
+      },
+    });
+    expect(broker.submissions).toHaveLength(1);
+    expect(proposalStore.listEvidence("proposal-submitted-store-throw").map((event) => event.evidenceKind)).toEqual([
+      "APPROVAL_RECORDED",
+      "SUBMISSION_RECHECK_PASSED",
+    ]);
+    expect(replies[0]?.text).toContain("broker 제출 후 제출 evidence 기록을 완료하지 못했습니다");
+  });
+
   it("만료된 proposal 승인은 expiration evidence만 남기고 broker를 호출하지 않는다", async () => {
     const auditEvents: AuditEvent[] = [];
     const replies: TelegramInboundReplyInput[] = [];
@@ -588,7 +656,7 @@ describe("M21 Telegram live order approval runtime", () => {
 function createTelegramRuntime(options: {
   auditEvents: AuditEvent[];
   replies: TelegramInboundReplyInput[];
-  proposalStore: ReturnType<typeof createInMemoryLiveOrderApprovalProposalStore>;
+  proposalStore: TestProposalStore;
   broker: FakeBroker;
   recheckProvider: LiveOrderApprovalSubmissionRecheckProvider;
   failLiveApprovalAudit?: boolean | "broker_submission";
@@ -653,6 +721,19 @@ function createTelegramRuntime(options: {
     }),
     clock: () => new Date(options.processingNow ?? now),
   });
+}
+
+function createThrowingSubmittedTransitionStore(store: TestProposalStore): TestProposalStore {
+  return {
+    ...store,
+    async recordTransition(input) {
+      if (input.toStatus === "SUBMITTED") {
+        throw new Error("fake submitted transition store failure");
+      }
+
+      return store.recordTransition(input);
+    },
+  };
 }
 
 function readOperatorFacingText(text: string | undefined): string {

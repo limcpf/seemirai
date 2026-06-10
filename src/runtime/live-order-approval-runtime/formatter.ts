@@ -83,6 +83,12 @@ function causeLine(result: LiveOrderApprovalCommandRuntimeResult): string {
       if (result.reasonCode === "m21_broker_submission_audit_append_failed") {
         return "원인: broker 제출 후 최종 audit 기록을 완료하지 못했습니다.";
       }
+      if (
+        result.reasonCode === "m21_broker_submission_evidence_failed" ||
+        result.reasonCode === "m21_broker_submission_evidence_exception"
+      ) {
+        return "원인: broker 제출 후 제출 evidence 기록을 완료하지 못했습니다.";
+      }
       return "원인: broker 제출 또는 제출 실패 evidence 기록 중 오류가 발생했습니다.";
     default:
       return `원인: ${result.reasonCode}`;
