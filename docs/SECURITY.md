@@ -90,6 +90,26 @@
 - M20은 `/approve`, `/reject`, order proposal approval workflow, 승인된 주문의 `UpbitLiveBroker` 제출, Telegram public webhook
   endpoint를 만들지 않는다.
 
+## M21 수동 승인 live pilot 보안 기준
+
+- M21 approval workflow는 M20의 owner chat/user allowlist, bot mention guard, durable dedupe, audit append, reply redaction
+  invariant를 선행 조건으로 재사용한다.
+- 기본 `live_manual_approval.enabled=false`와 `PAPER_NO_KEY` runtime은 proposal 생성, approval submission, live broker 제출을
+  시작하지 않는다.
+- `/approve <proposal_id>`와 `/reject <proposal_id>`는 raw Telegram text, raw provider body, token, API key, JWT를 log/audit/status에
+  저장하지 않는다. audit에는 command/proposal id, hashed caller, dedupe key, proposal fingerprint 같은 safe projection만 남긴다.
+- approval runtime은 raw chat/user id 대신 M20 hash projection을 actor로 사용하며, 동일 Telegram update/message 재전달은 M20
+  dedupe key로 먼저 차단한다.
+- proposal 없이 `/approve`만 수신한 경우, unknown/stale/expired/rejected/submitted proposal인 경우, fingerprint가 다른 경우는
+  `UpbitLiveBroker.submitOrder` 호출 전에 fail-closed 한다.
+- 승인 TTL이 남아 있어도 제출 직전 risk gate, kill switch, reconcile freshness, budget, market allowlist, order type, price
+  deviation, idempotency key를 다시 확인한다.
+- `allowed_markets` 기본값은 `KRW-BTC`, `KRW-ETH`, `KRW-ETC`이며, ETC는 BTC/ETH보다 유동성 리스크가 크므로 cost/risk/liquidity
+  gate를 통과하지 못하면 proposal 또는 제출 직전 단계에서 차단한다.
+- 신규 진입 시장가, best order 기본 허용, 출금, 입출금 자동화, 레버리지, M22 무승인 자동 실거래는 M21 범위 밖이다.
+- 모든 승인 주문은 proposal, approval, risk decision, broker submission evidence를 append-only로 남겨야 한다. evidence가
+  누락되면 제출 성공으로 취급하지 않는다.
+
 ## Paper soak 보안 기준
 
 - `scripts/soak-paper-24h.mjs`는 Upbit public quotation WebSocket만 사용하며 Authorization header, Upbit API key, private

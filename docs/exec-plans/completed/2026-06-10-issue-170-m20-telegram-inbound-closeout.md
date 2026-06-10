@@ -9,7 +9,9 @@ Issue #170 M20은 운영자가 Telegram에서 현재 상태와 판단 이유를 
 - mother branch: `issue-170-mother`
 - Sub PR 01: https://github.com/limcpf/seemirai/pull/171
 - Sub PR 02: https://github.com/limcpf/seemirai/pull/172
-- Sub PR 03: `issue-170-subpr-03-verification-closeout`
+- Sub PR 03: https://github.com/limcpf/seemirai/pull/173
+- Final main PR: https://github.com/limcpf/seemirai/pull/174
+- Final main merge: 2026-06-10 08:25:22 KST, merge commit `35d266db2031195ab9a783fc4d9bb0056a431a63`
 
 ## 완료 범위
 
@@ -129,4 +131,4 @@ pnpm exec vitest run tests/unit/telegram-inbound.test.ts tests/unit/telegram-inb
 - Telegram inbound runtime 조립을 실제 long-running worker lifecycle에 붙이는 운영 wiring은 별도 deployment/config 작업에서 확인해야 한다.
 - process-local confirmation store는 단일 프로세스 MVP에는 충분하지만, 다중 프로세스 polling으로 확장하면 durable confirmation store가 필요하다.
 - M21에서 approval workflow를 열 때는 M20의 allowlist/dedupe/audit/reply redaction invariant를 그대로 재사용해야 한다.
-- 사용자가 main 대상 PR 생성 전 중단을 지시했으므로, issue #170 mother branch에서 main PR은 아직 만들지 않는다.
+- Issue #170 final main PR #174는 main에 merge 완료됐다. M21은 이 완료 상태를 선행 조건으로 삼는다.

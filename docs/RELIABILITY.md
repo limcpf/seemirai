@@ -58,6 +58,52 @@ Codex-native 운영은 Codex, Git, GitHub, shell command, 문서 상태를 연�
 - polling runtime `start()` loop는 provider contract 밖 예외를 loop 경계에서 흡수하고 다음 tick을 예약한다. `runOnce()` 결과에는
   raw update, raw text, raw chat id를 포함하지 않고 update count, next offset, handler result summary만 남긴다.
 
+## M21 수동 승인 live pilot 신뢰성 기준
+
+- proposal은 `PROPOSED`에서 시작하고 `APPROVED`, `REJECTED`, `EXPIRED`, `SUBMITTED`, `SUBMISSION_FAILED` 중 하나로만 전이한다.
+  `APPROVED`는 broker 제출 전 crash/restart에서 재개 가능한 중간 상태이고, `REJECTED`, `EXPIRED`, `SUBMITTED`,
+  `SUBMISSION_FAILED`는 닫힌 상태이며 재승인이나 재제출을 허용하지 않는다.
+- `APPROVED` 재개는 broker submit으로 바로 넘어가지 않는다. runtime은 approval audit projection을 먼저 보강하고, 이 보강이
+  실패하면 `SUBMISSION_FAILED`로 닫아 감사되지 않은 승인 상태에서 주문 side effect가 발생하지 않게 한다.
+- proposal fingerprint는 market, side, limit price, volume, expected notional, 예산 snapshot, decision ledger id, risk decision id,
+  cost snapshot, idempotency key, expires_at을 기준으로 만든다. expires_at은 같은 instant의 ISO 표기 차이가 fingerprint mismatch를
+  만들지 않도록 정규화하며, fingerprint mismatch는 stale approval로 보고 broker 호출 전에 차단한다.
+- 같은 proposal id 또는 idempotency key는 중복 live order를 만들 수 없다. Telegram update/message 재전달은 M20 dedupe를 먼저
+  통과해야 하며, proposal 상태 전이는 durable append-only evidence로 남긴 뒤 현재 상태와 일치할 때만 전진한다.
+- M21 startup guard는 `telegram.inbound.enabled` flag만 보지 않고, bot token과 owner allowlist까지 해결된 M20 inbound readiness를
+  입력으로 받아야 한다. M20 inbound readiness와 reconcile freshness는 config opt-out으로 낮출 수 없는 필수 guard다.
+- proposal TTL은 Telegram message 시각이 아니라 approval 처리 시각으로 판단한다. backlog에 쌓인 approval command가 처리 시점에
+  이미 만료됐으면 `EXPIRED` evidence로 수렴하고 제출하지 않는다.
+- 만료 상태 전이가 저장됐어도 `EXPIRATION_RECORDED` audit projection이 실패하면 만료 성공으로 응답하지 않는다. runtime은
+  `PROPOSAL_EXPIRATION_AUDIT_FAILED`와 `m21_expiration_audit_append_failed`를 반환해 audit/proposal store 점검을 요구한다.
+- approval evidence가 있어도 제출 직전 risk gate, kill switch, reconcile freshness, budget, market allowlist, order type, price
+  deviation을 재검증한다. budget guard는 broker에 넘길 `requestedPrice * requestedVolume`을 다시 계산해 proposal
+  `expectedNotionalKrw`와 일치하고 한도 이하인지 확인한다. broker 제출 금액은 Upbit KRW 최소 주문금액 5,000원 이상이어야 하며,
+  일일 승인 예산 사용액 snapshot은 음수가 아닌 유효한 숫자여야 한다. 재검증 실패는 `SUBMISSION_FAILED` evidence로 남기고 live
+  broker에 위임하지 않는다.
+- `SUBMISSION_RECHECK_PASSED` evidence가 proposal store와 audit projection에 append된 뒤에만 broker submit으로 넘어간다. Telegram
+  duplicate command는 M20 dedupe에서 닫고, proposal store는 expected status와 fingerprint를 비교해 stale approval race를 차단한다.
+- recheck pass evidence append는 expected status `APPROVED`와 fingerprint를 함께 비교해야 한다. fingerprint만 맞고 상태가 이미
+  닫힌 proposal에는 broker 직전 evidence를 추가하지 않는다.
+- daily budget은 recheck snapshot 확인만으로 끝내지 않고 broker 호출 직전 durable reservation으로 선점한다. store 구현체는
+  expected status/fingerprint 비교와 `dailyApprovedNotionalUsedKrw + 이미 선점된 금액 + 제출 금액 <= daily limit` 검사를 같은
+  원자 경계에서 처리해야 하며, reservation 실패 또는 예산 초과는 broker 호출 전 `SUBMISSION_FAILED`로 수렴한다.
+- 같은 proposal id의 reservation은 한 번만 허용한다. 같은 proposal reservation이 이미 있으면 다른 제출 경로가 broker 직전 gate를
+  선점한 상태로 보고, 두 번째 요청은 proposal 상태를 실패로 닫지 않은 채 추가 broker 호출만 차단해야 한다.
+- broker submission 결과는 proposal, approval, risk decision, broker submission evidence chain으로 추적 가능해야 한다. audit
+  append나 submission evidence 저장에 실패하면 주문 성공으로 취급하지 않는다.
+- broker submit 예외는 provider에 도달하지 않았다는 보장이 아니므로 `brokerSubmitted=false`로 기록하지 않는다. 이 경우
+  `m21_broker_submission_uncertain`과 `broker_submission_state=uncertain`을 남기고 같은 proposal 재승인을 막은 뒤 수동 reconcile로
+  실제 거래소 주문 존재 여부를 확인한다.
+- broker submit 예외 이후 `SUBMISSION_FAILURE_RECORDED` 저장까지 실패해도 Telegram handler까지 raw exception을 전파하지 않는다.
+  결과는 `APPROVAL_SUBMISSION_FAILED`, `brokerSubmitted=true`, `m21_broker_submission_uncertain_evidence_exception`으로 정규화해
+  운영자가 불확실 제출을 놓치지 않게 한다.
+- broker submit 예외 이후 `SUBMISSION_FAILURE_RECORDED` 저장은 성공했지만 audit projection이 실패해도 성공적 실패 처리로 숨기지
+  않는다. 결과는 `APPROVAL_SUBMISSION_FAILED`, `brokerSubmitted=true`,
+  `m21_broker_submission_uncertain_audit_append_failed`, `audit_status=append_failed`로 남긴다.
+- `/reject`는 broker side effect를 만들지 않지만 operator decision audit chain의 일부다. rejection 상태 전이 후 audit projection이
+  실패하면 `REJECTION_AUDIT_FAILED`로 응답하고 성공 거부로 숨기지 않는다.
+
 ## RiskGate append-only 기준
 
 - `risk_ok`는 현재 `riskGateContext`를 평가한 실제 RiskGate 승인 결과가 있을 때만 PASS가 될 수 있다.

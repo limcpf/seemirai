@@ -111,9 +111,36 @@ describe("Telegram inbound foundation", () => {
       reasonCode: "telegram_why_target_required",
       userMessage: "판단 이유를 보려면 /why KRW-BTC 또는 /why cash처럼 대상을 함께 입력해 주세요.",
     });
+    expect(parseTelegramInboundCommand("/approve proposal-001")).toEqual({
+      status: "PARSED",
+      command: {
+        name: "approve",
+        scope: "APPROVAL",
+        normalizedText: "/approve proposal-001",
+        argument: {
+          kind: "proposal",
+          proposalId: "proposal-001",
+        },
+      },
+    });
+    expect(parseTelegramInboundCommand("/reject proposal-001")).toMatchObject({
+      status: "PARSED",
+      command: {
+        name: "reject",
+        scope: "APPROVAL",
+        argument: {
+          kind: "proposal",
+          proposalId: "proposal-001",
+        },
+      },
+    });
     expect(parseTelegramInboundCommand("/approve")).toMatchObject({
-      status: "UNKNOWN",
-      reasonCode: "telegram_command_unknown",
+      status: "MALFORMED",
+      reasonCode: "telegram_approval_proposal_id_required",
+    });
+    expect(parseTelegramInboundCommand("/approve proposal-001 extra")).toMatchObject({
+      status: "MALFORMED",
+      reasonCode: "telegram_approval_proposal_id_invalid",
     });
   });
 

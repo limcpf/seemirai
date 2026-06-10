@@ -116,6 +116,9 @@ function createTelegramInboundAuditMetadata(
     if (argument?.kind === "market") {
       metadata.command_target = argument.market;
     }
+    if (argument?.kind === "proposal") {
+      metadata.proposal_id = argument.proposalId;
+    }
   } else {
     metadata.parse_status = input.parseResult.status;
     metadata.parse_reason = input.parseResult.reasonCode;

@@ -593,6 +593,53 @@ Acceptance Criteria:
 
 - M20에서는 `/approve`, `/reject`, 주문 승인 workflow, 승인된 주문의 live broker 제출, Telegram webhook public endpoint를 제외한다.
 
+### FR-OPS-002: M21 live 주문은 Telegram 수동 승인 proposal만 제출되어야 한다
+
+설명:
+
+- 자동 주문 후보는 proposal로 만들 수 있지만, live broker 제출은 운영자가 Telegram에서 명시 승인한 proposal에만 허용한다.
+- M21은 M22 무승인 자동매매 전 마지막 안전 단계이며, 승인 없는 live 주문 0건과 proposal부터 broker submission까지의 evidence
+  chain을 기계적으로 증명해야 한다.
+- 기본 runtime config는 비활성이며, M20 inbound와 최신 reconcile 상태가 준비되지 않으면 fail-closed 한다.
+
+Acceptance Criteria:
+
+- [x] M21 기본 config는 `live_manual_approval.enabled=false`이며 명시 설정 없이는 proposal 생성과 approval submission이 시작되지 않는다.
+- [x] 기본 허용 market은 `KRW-BTC`, `KRW-ETH`, `KRW-ETC`이고 config로 축소/확장 후보를 조정할 수 있다.
+- [x] 1회 주문 상한, 일일 승인 주문 예산, proposal TTL, price deviation guard가 config에서 조정 가능하다.
+- [x] proposal 없이 `/approve`만으로 live order가 생성되지 않는다.
+- [x] 승인되지 않은 proposal은 `UpbitLiveBroker.submitOrder`로 전달되지 않는다.
+- [x] expired/rejected/submitted proposal 재승인은 broker 호출 전에 fail-closed 한다.
+- [x] 같은 Telegram update/message/command 재전달은 중복 승인 또는 중복 주문을 만들지 않는다.
+- [x] 승인 직후 제출 전에 risk gate, kill switch, reconcile status, budget, order type, market allowlist, price deviation을 재검증한다.
+- [x] 제출 직전 주문 금액은 Upbit KRW 최소 주문금액 이상이어야 하며, 일일 승인 예산 사용액 snapshot은 음수가 아니어야 한다.
+- [x] 같은 proposal 제출이 이미 broker 직전 reservation을 선점한 경우 추가 broker 호출 없이 진행 중인 제출 확인으로 안내한다.
+- [x] M20 inbound readiness와 reconcile freshness는 필수 startup guard이며 config 값으로 비활성화할 수 없다.
+- [x] 모든 제출 주문은 proposal, approval, risk decision, broker submission evidence를 가진다.
+- [x] approval/reject audit에는 raw Telegram text, raw provider body, token, API key, JWT가 저장되지 않는다.
+- [x] 기본 `PAPER_NO_KEY` runtime은 live order API 호출 0회를 유지한다.
+- [x] M22 autonomous loop 또는 승인 없는 live order path가 없음을 source scan으로 확인한다.
+
+테스트 요구사항:
+
+- 단위 테스트: M21 config 기본 비활성, allowed market, 예산/TTL/price deviation guard를 검증한다.
+- 단위 테스트: proposal fingerprint와 상태 전이가 stale/duplicate approval을 차단하는지 확인한다.
+- 단위 테스트: approval/reject audit projection이 raw Telegram text와 secret-like metadata를 저장하지 않는지 확인한다.
+- 통합 테스트: fake Telegram approval runtime에서 duplicate/expired/rejected/submitted proposal이 broker 호출 전에 닫히고, recheck
+  통과 approval만 fake broker로 제출되는지 확인한다.
+- source scan: `/approve`, `/reject`, `submitOrder(`, `POST /v1/orders`, `DELETE /v1/order`, `LIVE_AUTONOMOUS` 경로가 M21 범위와
+  증거 chain 밖에서 열리지 않았는지 확인한다.
+
+문서 요구사항:
+
+- M21 guard, proposal/evidence contract, approval 보안 경계가 바뀌면 `docs/RUNTIME_CONFIG.md`, `docs/SECURITY.md`,
+  `docs/RELIABILITY.md`, `docs/product-specs/upbit-live-autonomous-trading.md`를 함께 갱신한다.
+
+제외 범위:
+
+- M22 무승인 자동 실거래, Telegram public webhook endpoint, 신규 진입 시장가, best order 기본 허용, 자동 budget 확대, 출금,
+  입출금 자동화, 선물, 레버리지, 마진은 제외한다.
+
 ### FR-LLM-001: LLM은 직접 매매 판단에 사용하지 않는다
 
 설명:

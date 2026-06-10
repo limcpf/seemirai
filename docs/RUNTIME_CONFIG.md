@@ -5,6 +5,7 @@
 구현 기준:
 
 - schema: `src/runtime/config.ts`
+- M21 수동 승인 schema: `src/runtime/live-manual-approval-config.ts`
 - registry 활성화 schema: `src/runtime/registry-config.ts`
 - risk threshold schema: `src/runtime/risk-config.ts`
 - 기본 profile: `config/paper.json`
@@ -36,6 +37,7 @@
 | `registry` | 정적 registry id 참조 | exchange, strategy, rule 활성화 조합 |
 | `strategyParameters` | strategy별 기본 threshold | 전략 후보 생성과 rule 평가에 쓰는 보수적 기준값 |
 | `risk` | M5 리스크 한도 threshold | RiskGate 평가와 상태 전이 audit에 쓰는 보수적 계정/노출/손실 한도 |
+| `live_manual_approval` | `enabled=false`, `LIVE_ARMED_MANUAL_APPROVAL` | M21 수동 승인 live pilot proposal/config guard |
 | `telegram` | `provider_timeout_ms=5000`, optional `chat_id`, `inbound.enabled=false` | Telegram outbound notifier와 M20 inbound polling guard 설정 |
 | `secrets` | 기본 `{}` | schema shape만 표현하며 실제 secret은 저장하지 않음 |
 
@@ -469,6 +471,85 @@ runtime 처리 기준:
   실패 reason만 남기고 raw provider body는 보존하지 않는다.
 - M20은 `/approve`, `/reject`, order proposal approval, 승인된 주문의 live broker 제출, Telegram public webhook endpoint를 만들지
   않는다. 이 경계는 M21 이후 별도 issue에서 다룬다.
+
+## M21 수동 승인 live pilot guard
+
+M21은 자동 주문 후보를 만들 수 있지만, 실제 live 주문 제출은 운영자가 Telegram에서 명시 승인한 proposal만 허용한다. 기본
+`config/paper.json`은 계속 `PAPER_NO_KEY` 안전 profile이며, `live_manual_approval.enabled=false`라서 proposal 생성과 approval
+submission runtime이 시작되지 않는다.
+
+기본 설정:
+
+```json
+{
+  "mode": "LIVE_ARMED_MANUAL_APPROVAL",
+  "enabled": false,
+  "allowed_markets": ["KRW-BTC", "KRW-ETH", "KRW-ETC"],
+  "max_order_krw": "10000",
+  "daily_approved_notional_limit_krw": "30000",
+  "proposal_ttl_seconds": 300,
+  "max_price_deviation_bps": "30",
+  "require_reconcile_freshness": true,
+  "require_m20_inbound_enabled": true
+}
+```
+
+설정 기준:
+
+- `live_manual_approval` 하위 알 수 없는 key는 load 단계에서 거부한다. 예산·guard key 오타가 기본값으로 조용히 보정되면
+  live pilot 안전 상한이 운영 의도와 달라질 수 있기 때문이다.
+- `allowed_markets`는 중복 없는 KRW market code 목록이어야 한다. 기본값은 `KRW-BTC`, `KRW-ETH`, `KRW-ETC`다.
+- `max_order_krw`는 Upbit KRW 최소 주문금액 이상이어야 하며 기본값은 `10000`이다.
+- `daily_approved_notional_limit_krw`는 `max_order_krw` 이상이어야 하며 기본값은 `30000`이다.
+- `proposal_ttl_seconds`는 양의 정수이며 기본값은 300초다.
+- `max_price_deviation_bps`는 음수가 아닌 Decimal 문자열이며 기본값은 `30` bps다.
+- `require_m20_inbound_enabled`와 `require_reconcile_freshness`는 반드시 `true`여야 한다. false 값은 load 단계에서 거부하며,
+  bot token/owner allowlist까지 해결된 M20 Telegram inbound readiness와 최신 reconcile 상태가 없으면 runtime guard가
+  fail-closed 한다. 단순 `telegram.inbound.enabled=true`만으로는 준비 완료로 보지 않는다.
+
+Proposal contract는 `proposalId`, market, side, price, volume, expected notional KRW, 예산 snapshot, decision ledger id,
+risk decision id, cost snapshot, idempotency key, operator-facing summary, `expiresAt`을 포함한다. approval evidence는 proposal
+fingerprint를 함께 남겨 stale proposal 재승인과 중복 주문을 broker 호출 전에 차단한다. `expiresAt`은 같은 instant의 다른 ISO
+표기가 같은 fingerprint를 만들도록 정규화한다.
+
+Telegram approval runtime 기준:
+
+- `/approve <proposal_id>`와 `/reject <proposal_id>`는 M20 parser/auth/dedupe/audit/reply 경계를 그대로 통과한 뒤 M21 proposal
+  store로 전달된다.
+- `/reject`는 `REJECTION_RECORDED` evidence만 남기고 broker를 호출하지 않는다. 단 rejection audit projection이 실패하면 성공 응답으로
+  숨기지 않고 `REJECTION_AUDIT_FAILED`로 운영자에게 audit/proposal store 점검을 요구한다.
+- 만료 상태 전이가 저장됐더라도 `EXPIRATION_RECORDED` audit projection이 실패하면 `PROPOSAL_EXPIRED` 성공으로 숨기지 않고
+  `PROPOSAL_EXPIRATION_AUDIT_FAILED`와 reason `m21_expiration_audit_append_failed`로 운영자 점검을 요구한다.
+- `/approve`는 `APPROVAL_RECORDED` evidence를 먼저 남긴 뒤 처리 시각 기준 TTL, risk decision, kill switch, reconcile freshness,
+  daily budget, market allowlist, order type, `requestedPrice * requestedVolume` 재계산 금액, idempotency key, price deviation을
+  재검증한다.
+- 제출 직전 재검증은 broker에 실제 전달될 금액이 Upbit KRW 최소 주문금액 5,000원 이상인지, 일일 승인 예산 사용액 snapshot이
+  음수가 아닌 유효한 숫자인지도 확인한다. 이 값이 깨져 있으면 예산 계산을 신뢰할 수 없으므로 broker 호출 전에 차단한다.
+- proposal이 이미 `APPROVED`이면 crash/restart 또는 audit 후 중단에서 복구 중인 상태로 보고 approval evidence를 proposal store에
+  중복 append하지 않는다. 대신 broker 제출 재개 전에 approval audit projection을 먼저 보강하고, 이 audit이 실패하면
+  `SUBMISSION_FAILURE_RECORDED`로 닫아 감사되지 않은 승인 상태에서 broker submit으로 넘어가지 않는다. `REJECTED`, `EXPIRED`,
+  `SUBMITTED`, `SUBMISSION_FAILED`는 재개 대상이 아니다.
+- 재검증이 통과하면 proposal store가 expected status `APPROVED`와 fingerprint를 다시 비교한 뒤
+  `SUBMISSION_RECHECK_PASSED` evidence를 기록한다. 이 append가 실패하면 broker 호출로 넘어가지 않는다.
+- broker 호출 직전에는 store가 expected status/fingerprint 비교와 일일 승인 예산 선점을 같은 원자 경계에서 처리해야 한다.
+  reservation이 실패하거나 예산 한도를 넘으면 `SUBMISSION_FAILURE_RECORDED`로 닫고 `BrokerPort.submitOrder`를 호출하지 않는다.
+- 같은 proposal id의 reservation이 이미 있으면 다른 제출 경로가 broker 직전 gate를 선점한 상태로 본다. 이 경우 두 번째 요청은
+  proposal을 `SUBMISSION_FAILED`로 닫지 않고, 추가 `BrokerPort.submitOrder` 호출만 막은 뒤 먼저 진행 중인 제출과 reconcile 상태
+  확인을 요구한다.
+- `SUBMISSION_RECHECK_PASSED` evidence, audit projection, daily budget reservation이 모두 끝난 뒤에만 `BrokerPort.submitOrder`를
+  호출하고, broker 성공 결과는 `BROKER_SUBMISSION_RECORDED` evidence로 남긴다.
+- approval 또는 재검증 통과 evidence의 audit projection이 실패하면 live broker 호출 전에 `SUBMISSION_FAILURE_RECORDED`로 닫는다.
+- broker 호출 자체가 예외를 던지면 거래소 도달 여부를 단정할 수 없으므로 미제출로 기록하지 않는다. 결과는
+  `brokerSubmitted=true`, reason `m21_broker_submission_uncertain`, `SUBMISSION_FAILURE_RECORDED` evidence로 남기고 운영자가 reconcile로
+  실제 주문 존재 여부를 확인해야 한다.
+- broker 불확실 상태를 `SUBMISSION_FAILURE_RECORDED`로 남기는 중 store 예외가 나도 Telegram wrapper까지 raw 예외를 흘리지 않는다.
+  이 경우도 `brokerSubmitted=true`, reason `m21_broker_submission_uncertain_evidence_exception`, `broker_submission_state=uncertain`으로
+  응답해 운영자가 주문 존재 가능성을 놓치지 않게 한다.
+- broker 불확실 상태의 `SUBMISSION_FAILURE_RECORDED` audit projection이 실패하면 원래 `m21_broker_submission_uncertain` 성공적 실패
+  처리로 숨기지 않고 reason `m21_broker_submission_uncertain_audit_append_failed`, `audit_status=append_failed`,
+  `broker_submission_state=uncertain`을 함께 반환한다.
+- 재검증 실패, 만료, 상태/fingerprint mismatch, reservation 실패, broker 불확실 결과는 성공 주문으로 처리하지 않으며, 가능한 경우
+  `EXPIRATION_RECORDED` 또는 `SUBMISSION_FAILURE_RECORDED` evidence로 수렴한다.
 
 ## M9 Paper 매매 이벤트 Telegram 알림
 
