@@ -36,6 +36,7 @@ function titleForStatus(status: LiveOrderApprovalCommandRuntimeResult["status"])
     case "APPROVAL_RECORD_FAILED":
     case "REJECTION_RECORD_FAILED":
     case "REJECTION_AUDIT_FAILED":
+    case "PROPOSAL_EXPIRATION_AUDIT_FAILED":
       return "[수동 승인 처리 보류]";
     case "PROPOSAL_EXPIRED":
       return "[수동 승인 만료]";
@@ -54,6 +55,8 @@ function statusLine(result: LiveOrderApprovalCommandRuntimeResult): string {
       return "상태: 운영자 거부를 기록했고 주문은 제출하지 않았습니다.";
     case "REJECTION_AUDIT_FAILED":
       return "상태: 운영자 거부 상태는 저장됐지만 감사 기록을 완료하지 못했습니다.";
+    case "PROPOSAL_EXPIRATION_AUDIT_FAILED":
+      return "상태: proposal 만료 상태는 저장됐지만 감사 기록을 완료하지 못했습니다.";
     case "PROPOSAL_EXPIRED":
       return "상태: proposal 승인 가능 시간이 지나 만료로 기록했습니다.";
     case "PROPOSAL_NOT_FOUND":
@@ -72,6 +75,9 @@ function statusLine(result: LiveOrderApprovalCommandRuntimeResult): string {
       }
       return "상태: 제출 직전 재검증이 실패해 live 주문을 제출하지 않았습니다.";
     case "APPROVAL_SUBMISSION_FAILED":
+      if (result.reasonCode === "m21_broker_submission_uncertain_audit_append_failed") {
+        return "상태: broker 제출 결과가 불확실해 성공 주문으로 처리하지 않았습니다.";
+      }
       if (result.reasonCode === "m21_broker_submission_uncertain") {
         return "상태: broker 제출 결과가 불확실해 성공 주문으로 처리하지 않았습니다.";
       }
@@ -94,7 +100,12 @@ function causeLine(result: LiveOrderApprovalCommandRuntimeResult): string {
       return "원인: 현재 proposal 상태 또는 fingerprint가 명령 처리 중 변경됐습니다.";
     case "REJECTION_AUDIT_FAILED":
       return "원인: 거부 evidence 감사 기록을 완료하지 못했습니다.";
+    case "PROPOSAL_EXPIRATION_AUDIT_FAILED":
+      return "원인: 만료 evidence 감사 기록을 완료하지 못했습니다.";
     case "APPROVAL_SUBMISSION_FAILED":
+      if (result.reasonCode === "m21_broker_submission_uncertain_audit_append_failed") {
+        return "원인: broker 제출 불확실 failure evidence 감사 기록을 완료하지 못했습니다.";
+      }
       if (result.reasonCode === "m21_broker_submission_uncertain") {
         return "원인: broker 호출 중 오류가 발생했고 거래소 도달 여부를 확인하지 못했습니다.";
       }
@@ -139,6 +150,7 @@ function actionLine(result: LiveOrderApprovalCommandRuntimeResult): string {
     case "APPROVAL_RECORD_FAILED":
     case "REJECTION_RECORD_FAILED":
     case "REJECTION_AUDIT_FAILED":
+    case "PROPOSAL_EXPIRATION_AUDIT_FAILED":
     case "APPROVAL_SUBMISSION_FAILED":
       return "필요 조치: audit/proposal store와 broker 상태를 확인하고 수동 점검 evidence를 남기세요.";
   }
@@ -196,6 +208,10 @@ function violationMessage(reasonCode: string): string {
       return "승인 재개 audit 기록을 완료하지 못했습니다.";
     case "m21_recheck_audit_append_failed":
       return "재검증 통과 evidence 감사 기록을 완료하지 못했습니다.";
+    case "m21_expiration_audit_append_failed":
+      return "만료 evidence 감사 기록을 완료하지 못했습니다.";
+    case "m21_broker_submission_uncertain_audit_append_failed":
+      return "broker 제출 불확실 failure evidence 감사 기록을 완료하지 못했습니다.";
     default:
       return "제출 직전 guard가 충족되지 않았습니다.";
   }

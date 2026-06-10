@@ -170,6 +170,7 @@ async function rejectProposal(
     return createWriteConflictResult("REJECTION_RECORD_FAILED", proposal, recorded);
   }
 
+  // 거부 상태는 저장됐어도 audit projection이 빠지면 운영자가 성공 거부로 오인하므로 별도 실패 상태로 드러낸다.
   if (!(await appendApprovalAuditSafely(options, recorded.evidence, input.correlationId))) {
     return createResult({
       status: "REJECTION_AUDIT_FAILED",
@@ -225,7 +226,20 @@ async function expireProposal(
     return createWriteConflictResult("APPROVAL_RECORD_FAILED", proposal, recorded);
   }
 
-  await appendApprovalAuditSafely(options, recorded.evidence, input.correlationId);
+  // 만료 상태는 저장됐어도 audit projection이 빠지면 운영자가 성공 만료로 오인하므로 별도 실패 상태로 드러낸다.
+  if (!(await appendApprovalAuditSafely(options, recorded.evidence, input.correlationId))) {
+    return createResult({
+      status: "PROPOSAL_EXPIRATION_AUDIT_FAILED",
+      proposalId: proposal.proposalId,
+      brokerSubmitted: false,
+      stateChanged: true,
+      reasonCode: "m21_expiration_audit_append_failed",
+      evidence: [recorded.evidence],
+      trace: {
+        audit_status: "append_failed",
+      },
+    });
+  }
   return createResult({
     status: "PROPOSAL_EXPIRED",
     proposalId: proposal.proposalId,
@@ -580,7 +594,23 @@ async function recordSubmissionFailure(
     });
   }
 
-  await appendApprovalAuditSafely(options, recorded.evidence, input.correlationId);
+  const failureAuditRecorded = await appendApprovalAuditSafely(options, recorded.evidence, input.correlationId);
+  // broker 도달 여부가 불확실한 실패 기록은 audit 누락 자체도 수동 reconcile 대상이므로 원래 실패 reason으로 숨기지 않는다.
+  if (!failureAuditRecorded && failure.brokerSubmissionUncertain === true) {
+    return createResult({
+      status: "APPROVAL_SUBMISSION_FAILED",
+      proposalId: proposal.proposalId,
+      brokerSubmitted: true,
+      stateChanged: true,
+      reasonCode: "m21_broker_submission_uncertain_audit_append_failed",
+      evidence: [...priorEvidence, recorded.evidence],
+      trace: {
+        audit_status: "append_failed",
+        broker_submission_state: "uncertain",
+        ...(failure.violations === undefined ? {} : { violations: [...failure.violations] }),
+      },
+    });
+  }
   return createResult({
     status: failure.brokerSubmissionUncertain === true ? "APPROVAL_SUBMISSION_FAILED" : "APPROVAL_SUBMISSION_BLOCKED",
     proposalId: proposal.proposalId,

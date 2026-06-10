@@ -518,6 +518,8 @@ Telegram approval runtime 기준:
   store로 전달된다.
 - `/reject`는 `REJECTION_RECORDED` evidence만 남기고 broker를 호출하지 않는다. 단 rejection audit projection이 실패하면 성공 응답으로
   숨기지 않고 `REJECTION_AUDIT_FAILED`로 운영자에게 audit/proposal store 점검을 요구한다.
+- 만료 상태 전이가 저장됐더라도 `EXPIRATION_RECORDED` audit projection이 실패하면 `PROPOSAL_EXPIRED` 성공으로 숨기지 않고
+  `PROPOSAL_EXPIRATION_AUDIT_FAILED`와 reason `m21_expiration_audit_append_failed`로 운영자 점검을 요구한다.
 - `/approve`는 `APPROVAL_RECORDED` evidence를 먼저 남긴 뒤 처리 시각 기준 TTL, risk decision, kill switch, reconcile freshness,
   daily budget, market allowlist, order type, `requestedPrice * requestedVolume` 재계산 금액, idempotency key, price deviation을
   재검증한다.
@@ -538,6 +540,9 @@ Telegram approval runtime 기준:
 - broker 불확실 상태를 `SUBMISSION_FAILURE_RECORDED`로 남기는 중 store 예외가 나도 Telegram wrapper까지 raw 예외를 흘리지 않는다.
   이 경우도 `brokerSubmitted=true`, reason `m21_broker_submission_uncertain_evidence_exception`, `broker_submission_state=uncertain`으로
   응답해 운영자가 주문 존재 가능성을 놓치지 않게 한다.
+- broker 불확실 상태의 `SUBMISSION_FAILURE_RECORDED` audit projection이 실패하면 원래 `m21_broker_submission_uncertain` 성공적 실패
+  처리로 숨기지 않고 reason `m21_broker_submission_uncertain_audit_append_failed`, `audit_status=append_failed`,
+  `broker_submission_state=uncertain`을 함께 반환한다.
 - 재검증 실패, 만료, 상태/fingerprint mismatch, reservation 실패, broker 불확실 결과는 성공 주문으로 처리하지 않으며, 가능한 경우
   `EXPIRATION_RECORDED` 또는 `SUBMISSION_FAILURE_RECORDED` evidence로 수렴한다.
 

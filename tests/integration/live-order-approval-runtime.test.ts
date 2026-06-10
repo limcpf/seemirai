@@ -675,6 +675,73 @@ describe("M21 Telegram live order approval runtime", () => {
     expect(replies[0]?.text).toContain("거래소 도달 여부를 확인하지 못했습니다");
   });
 
+  it("broker 불확실 제출 failure audit 실패도 성공 주문으로 숨기지 않는다", async () => {
+    const auditEvents: AuditEvent[] = [];
+    const replies: TelegramInboundReplyInput[] = [];
+    const proposalStore = createInMemoryLiveOrderApprovalProposalStore([
+      createProposal({
+        proposalId: "proposal-broker-uncertain-audit-fail",
+        idempotencyKey: "m21-uncertain-audit-fail",
+      }),
+    ]);
+    const broker = new UncertainSubmitBroker();
+    const runtime = createTelegramRuntime({
+      auditEvents,
+      replies,
+      proposalStore,
+      broker,
+      recheckProvider: new FakeRecheckProvider(),
+      failLiveApprovalAudit: "submission_failure",
+    });
+    const pollingRuntime = createTelegramInboundPollingRuntime({
+      pollingProvider: new FakeTelegramPollingProvider([
+        {
+          status: "ok",
+          nextOffset: 50,
+          updates: [
+            {
+              updateId: 49,
+              messageId: 59,
+              chatId: "100",
+              userId: "300",
+              text: "/approve proposal-broker-uncertain-audit-fail",
+              receivedAt: now,
+            },
+          ],
+        },
+      ]),
+      commandRuntime: runtime,
+      pollingIntervalMs: 1_000,
+      pollingTimeoutSeconds: 20,
+      maxUpdatesPerPoll: 50,
+    });
+
+    const result = await pollingRuntime.runOnce();
+
+    expect(result.handledMessages[0]).toMatchObject({
+      status: "EXECUTED",
+      executed: true,
+      liveOrderApprovalResult: {
+        status: "APPROVAL_SUBMISSION_FAILED",
+        brokerSubmitted: true,
+        reasonCode: "m21_broker_submission_uncertain_audit_append_failed",
+        trace: {
+          audit_status: "append_failed",
+          broker_submission_state: "uncertain",
+          violations: ["m21_broker_submission_uncertain"],
+        },
+      },
+    });
+    expect(broker.submissions).toHaveLength(1);
+    expect(proposalStore.listEvidence("proposal-broker-uncertain-audit-fail").map((event) => event.evidenceKind)).toEqual([
+      "APPROVAL_RECORDED",
+      "SUBMISSION_RECHECK_PASSED",
+      "SUBMISSION_FAILURE_RECORDED",
+    ]);
+    expect(auditEvents.filter((event) => event.eventType === "LIVE_ORDER_APPROVAL")).toHaveLength(2);
+    expect(replies[0]?.text).toContain("제출 불확실 failure evidence 감사 기록을 완료하지 못했습니다");
+  });
+
   it("broker 불확실 제출 failure evidence 저장소 예외도 Telegram 결과로 정규화한다", async () => {
     const auditEvents: AuditEvent[] = [];
     const replies: TelegramInboundReplyInput[] = [];
@@ -862,6 +929,70 @@ describe("M21 Telegram live order approval runtime", () => {
     expect(replies[0]?.text).toContain("만료로 기록");
   });
 
+  it("만료 evidence audit 실패는 만료 성공으로 숨기지 않는다", async () => {
+    const auditEvents: AuditEvent[] = [];
+    const replies: TelegramInboundReplyInput[] = [];
+    const proposalStore = createInMemoryLiveOrderApprovalProposalStore([
+      createProposal({
+        proposalId: "proposal-expiration-audit-fail",
+        idempotencyKey: "m21-exp-audit-fail",
+        expiresAt: "2026-06-09T23:59:00.000Z",
+      }),
+    ]);
+    const broker = new FakeBroker();
+    const runtime = createTelegramRuntime({
+      auditEvents,
+      replies,
+      proposalStore,
+      broker,
+      recheckProvider: new FakeRecheckProvider(),
+      failLiveApprovalAudit: "expiration",
+    });
+    const pollingRuntime = createTelegramInboundPollingRuntime({
+      pollingProvider: new FakeTelegramPollingProvider([
+        {
+          status: "ok",
+          nextOffset: 52,
+          updates: [
+            {
+              updateId: 51,
+              messageId: 61,
+              chatId: "100",
+              userId: "300",
+              text: "/approve proposal-expiration-audit-fail",
+              receivedAt: now,
+            },
+          ],
+        },
+      ]),
+      commandRuntime: runtime,
+      pollingIntervalMs: 1_000,
+      pollingTimeoutSeconds: 20,
+      maxUpdatesPerPoll: 50,
+    });
+
+    const result = await pollingRuntime.runOnce();
+
+    expect(result.handledMessages[0]).toMatchObject({
+      status: "EXECUTED",
+      executed: true,
+      liveOrderApprovalResult: {
+        status: "PROPOSAL_EXPIRATION_AUDIT_FAILED",
+        brokerSubmitted: false,
+        reasonCode: "m21_expiration_audit_append_failed",
+        trace: {
+          audit_status: "append_failed",
+        },
+      },
+    });
+    expect(broker.submissions).toHaveLength(0);
+    expect(proposalStore.listEvidence("proposal-expiration-audit-fail").map((event) => event.evidenceKind)).toEqual([
+      "EXPIRATION_RECORDED",
+    ]);
+    expect(auditEvents.filter((event) => event.eventType === "LIVE_ORDER_APPROVAL")).toHaveLength(0);
+    expect(replies[0]?.text).toContain("만료 evidence 감사 기록을 완료하지 못했습니다");
+  });
+
   it("이미 제출된 proposal 재승인은 상태를 바꾸지 않고 broker를 호출하지 않는다", async () => {
     const auditEvents: AuditEvent[] = [];
     const replies: TelegramInboundReplyInput[] = [];
@@ -1034,7 +1165,7 @@ function createTelegramRuntime(options: {
   proposalStore: TestProposalStore;
   broker: FakeBroker;
   recheckProvider: LiveOrderApprovalSubmissionRecheckProvider;
-  failLiveApprovalAudit?: boolean | "broker_submission";
+  failLiveApprovalAudit?: boolean | "broker_submission" | "submission_failure" | "expiration";
   processingNow?: string;
 }) {
   const auditLog = {
@@ -1043,7 +1174,9 @@ function createTelegramRuntime(options: {
       if (
         event.eventType === "LIVE_ORDER_APPROVAL" &&
         (options.failLiveApprovalAudit === true ||
-          (options.failLiveApprovalAudit === "broker_submission" && evidenceKind === "BROKER_SUBMISSION_RECORDED"))
+          (options.failLiveApprovalAudit === "broker_submission" && evidenceKind === "BROKER_SUBMISSION_RECORDED") ||
+          (options.failLiveApprovalAudit === "submission_failure" && evidenceKind === "SUBMISSION_FAILURE_RECORDED") ||
+          (options.failLiveApprovalAudit === "expiration" && evidenceKind === "EXPIRATION_RECORDED"))
       ) {
         throw new Error("fake live approval audit append failure");
       }

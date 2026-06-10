@@ -74,6 +74,8 @@ Codex-native 운영은 Codex, Git, GitHub, shell command, 문서 상태를 연�
   입력으로 받아야 한다. M20 inbound readiness와 reconcile freshness는 config opt-out으로 낮출 수 없는 필수 guard다.
 - proposal TTL은 Telegram message 시각이 아니라 approval 처리 시각으로 판단한다. backlog에 쌓인 approval command가 처리 시점에
   이미 만료됐으면 `EXPIRED` evidence로 수렴하고 제출하지 않는다.
+- 만료 상태 전이가 저장됐어도 `EXPIRATION_RECORDED` audit projection이 실패하면 만료 성공으로 응답하지 않는다. runtime은
+  `PROPOSAL_EXPIRATION_AUDIT_FAILED`와 `m21_expiration_audit_append_failed`를 반환해 audit/proposal store 점검을 요구한다.
 - approval evidence가 있어도 제출 직전 risk gate, kill switch, reconcile freshness, budget, market allowlist, order type, price
   deviation을 재검증한다. budget guard는 broker에 넘길 `requestedPrice * requestedVolume`을 다시 계산해 proposal
   `expectedNotionalKrw`와 일치하고 한도 이하인지 확인한다. 재검증 실패는 `SUBMISSION_FAILED` evidence로 남기고 live broker에
@@ -93,6 +95,9 @@ Codex-native 운영은 Codex, Git, GitHub, shell command, 문서 상태를 연�
 - broker submit 예외 이후 `SUBMISSION_FAILURE_RECORDED` 저장까지 실패해도 Telegram handler까지 raw exception을 전파하지 않는다.
   결과는 `APPROVAL_SUBMISSION_FAILED`, `brokerSubmitted=true`, `m21_broker_submission_uncertain_evidence_exception`으로 정규화해
   운영자가 불확실 제출을 놓치지 않게 한다.
+- broker submit 예외 이후 `SUBMISSION_FAILURE_RECORDED` 저장은 성공했지만 audit projection이 실패해도 성공적 실패 처리로 숨기지
+  않는다. 결과는 `APPROVAL_SUBMISSION_FAILED`, `brokerSubmitted=true`,
+  `m21_broker_submission_uncertain_audit_append_failed`, `audit_status=append_failed`로 남긴다.
 - `/reject`는 broker side effect를 만들지 않지만 operator decision audit chain의 일부다. rejection 상태 전이 후 audit projection이
   실패하면 `REJECTION_AUDIT_FAILED`로 응답하고 성공 거부로 숨기지 않는다.
 
