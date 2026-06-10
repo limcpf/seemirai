@@ -6,6 +6,7 @@
 
 - schema: `src/runtime/config.ts`
 - M21 수동 승인 schema: `src/runtime/live-manual-approval-config.ts`
+- M22 제한적 완전 자동매매 schema/guard: `src/runtime/live-autonomous-config.ts`
 - registry 활성화 schema: `src/runtime/registry-config.ts`
 - risk threshold schema: `src/runtime/risk-config.ts`
 - 기본 profile: `config/paper.json`
@@ -38,6 +39,7 @@
 | `strategyParameters` | strategy별 기본 threshold | 전략 후보 생성과 rule 평가에 쓰는 보수적 기준값 |
 | `risk` | M5 리스크 한도 threshold | RiskGate 평가와 상태 전이 audit에 쓰는 보수적 계정/노출/손실 한도 |
 | `live_manual_approval` | `enabled=false`, `LIVE_ARMED_MANUAL_APPROVAL` | M21 수동 승인 live pilot proposal/config guard |
+| `live_autonomous` | `enabled=false`, `LIVE_AUTONOMOUS_SMALL_BUDGET` | M22 제한적 완전 자동매매 config/startup guard |
 | `telegram` | `provider_timeout_ms=5000`, optional `chat_id`, `inbound.enabled=false` | Telegram outbound notifier와 M20 inbound polling guard 설정 |
 | `secrets` | 기본 `{}` | schema shape만 표현하며 실제 secret은 저장하지 않음 |
 
@@ -550,6 +552,99 @@ Telegram approval runtime 기준:
   `broker_submission_state=uncertain`을 함께 반환한다.
 - 재검증 실패, 만료, 상태/fingerprint mismatch, reservation 실패, broker 불확실 결과는 성공 주문으로 처리하지 않으며, 가능한 경우
   `EXPIRATION_RECORDED` 또는 `SUBMISSION_FAILURE_RECORDED` evidence로 수렴한다.
+
+## M22 제한적 완전 자동매매 guard
+
+M22는 운영자가 명시적으로 arm 한 소액 예산에서만 자동 entry와 exit를 허용한다. 기본 `config/paper.json`은 계속
+`PAPER_NO_KEY` 안전 profile이며, `live_autonomous.enabled=false`라서 private client, live broker, autonomous loop가 시작되지 않는다.
+
+기본 설정:
+
+```json
+{
+  "mode": "LIVE_AUTONOMOUS_SMALL_BUDGET",
+  "enabled": false,
+  "allowed_markets": ["KRW-BTC"],
+  "max_order_krw": "10000",
+  "daily_autonomous_notional_limit_krw": "30000",
+  "max_open_position_notional_krw": "30000",
+  "max_daily_loss_krw": "10000",
+  "max_weekly_loss_krw": "30000",
+  "max_price_deviation_bps": "30",
+  "require_m21_week_gate_evidence": true,
+  "require_m20_inbound_readiness": true,
+  "require_reconcile_freshness": true,
+  "require_pnl_status_ready": true,
+  "require_decision_ledger_ready": true,
+  "require_exit_engine_ready": true,
+  "require_operator_arm_evidence_id": true,
+  "require_budget_evidence_id": true,
+  "require_key_scope_evidence_id": true,
+  "identifier_prefix": "m22a-",
+  "identifier_max_length": 32
+}
+```
+
+설정 기준:
+
+- `live_autonomous` 하위 알 수 없는 key는 load 단계에서 거부한다. guard/evidence key 오타가 기본값으로 조용히 보정되면 live
+  side effect가 운영 의도와 달리 열릴 수 있기 때문이다.
+- `allowed_markets` 기본값은 `KRW-BTC` 단일이며 중복 없는 KRW market code 목록이어야 한다.
+- `max_order_krw`는 Upbit KRW 최소 주문금액 이상이어야 하며 기본값은 `10000`이다.
+- `max_order_krw`는 M22 소액 pilot에서 `10000`을 넘길 수 없다. 예산 확대는 M24 범위다.
+- `daily_autonomous_notional_limit_krw`는 `max_order_krw` 이상이어야 하며 기본값은 `30000`이다.
+- `daily_autonomous_notional_limit_krw`는 M22 소액 pilot에서 `30000`을 넘길 수 없다.
+- `max_open_position_notional_krw`는 `max_order_krw` 이상이어야 하며 기본값은 `30000`이다.
+- `max_open_position_notional_krw`는 M22 소액 pilot에서 `30000`을 넘길 수 없다.
+- `max_weekly_loss_krw`는 `max_daily_loss_krw` 이상이어야 한다.
+- `max_price_deviation_bps`는 음수가 아닌 Decimal 문자열이며 기본값은 `30` bps다.
+- 모든 `require_*` guard는 반드시 `true`여야 한다. M21 1주 gate, M20 inbound readiness, M16 reconcile freshness, M17 PnL status,
+  M18 decision ledger, M19 exit engine, operator arm, budget, key scope evidence 중 하나라도 준비되지 않으면 startup guard가
+  private client와 live broker 조립 전에 fail-closed 해야 한다.
+- Upbit 공식 주문 생성 문서는 identifier 최대 길이를 64자로 설명하지만 M22는 기존 운영 증거와 source scan 편의를 위해 32자
+  보수 제한을 유지한다. 기본 권장 패턴은 `m22a-<13 bytes random hex>`이며 총 31자다.
+- `LIMIT + post_only`만 자동 entry로 허용한다. 신규 진입 시장가(`ord_type=price`), 시장가 매도(`ord_type=market`), 최유리 주문
+  (`ord_type=best`)은 거래소 호출 전 fail-closed 한다.
+- Upbit 주문 생성 문서 기준 `post_only`는 `smp_type`과 함께 사용할 수 없으므로 이 조합은 provider 호출 전에 차단한다.
+- 기본 `PAPER_NO_KEY` runtime은 M22 config를 읽는 것만으로 live order API를 호출하지 않는다.
+
+Startup guard와 safe summary 기준:
+
+- 구현 경계는 `evaluateLiveAutonomousRuntimeGuard`, `assertLiveAutonomousRuntimeReady`,
+  `createLiveAutonomousRuntimeSafeSummary`다.
+- `enabled=true`라도 M21 1주 gate evidence, operator arm evidence, budget evidence, key scope evidence가 모두 있어야 한다.
+- M20 Telegram inbound readiness, M16 reconcile freshness, M17 PnL status readiness, M18 decision ledger readiness, M19 exit engine
+  readiness가 모두 true여야 한다.
+- safe summary는 evidence id 원문을 노출하지 않고 `m21WeekGateEvidenceConfigured`, `operatorArmEvidenceConfigured`,
+  `budgetEvidenceConfigured`, `keyScopeEvidenceConfigured` boolean으로만 표시한다.
+- guard 실패 결과는 한국어 message/action과 `trace.violations`를 남기지만, private client나 live broker factory를 만들지 않는다.
+
+Autonomous entry runtime 기준:
+
+- 구현 경계는 `LiveAutonomousEntryRuntime`이며, public entry는 `src/application/live-autonomous-entry-runtime.ts`다.
+- runtime은 random `identifier_prefix + 13 bytes hex` identifier를 생성해 Upbit `identifier`와 ExecutionEngine idempotency key로
+  같이 사용한다. timestamp-only 또는 단순 증가 identifier는 허용하지 않는다. 기존 attempt 재시도는 새 identifier를 만들지 않고
+  기존 identifier를 주입해 중복 live 주문을 막아야 한다.
+- 후보는 `BUY + LIMIT + post_only`만 허용하며 `MARKET`, `PRICE`, `BEST`, non-post-only 후보는 durable reservation 전에 차단한다.
+- `requested_notional`은 지정가 주문의 실제 `requested_quantity * requested_price`와 일치해야 하며, 예산/최소 주문 검증은 실제
+  지정가 notional을 기준으로 한다.
+- broker 제출 전 kill switch, reconcile freshness, price deviation, 단일 주문 예산, 일일 자동 notional 사용량, open position
+  notional, 일간/주간 KRW 손실 한도를 다시 확인한다.
+- 비용과 RiskGate evidence는 현재 identifier가 포함된 order intent fingerprint로 만든 뒤 ExecutionEngine이 다시 검증한다.
+- budget reservation은 비용/RiskGate 승인 뒤, broker 제출 직전에 주입된 durable port로만 수행한다. reservation 거부 시 broker
+  side effect는 만들지 않는다. reservation 저장 예외는 unhandled rejection으로 전파하지 않고 `MANUAL_REVIEW_REQUIRED` 결과로
+  정규화한다.
+- 기본 `PAPER_NO_KEY`와 application entry runtime module은 Upbit private client나 `/v1/orders` REST endpoint를 직접 만들지 않는다.
+
+2026-06-10 공식 문서 재확인:
+
+- Upbit 주문 생성 문서는 지정가 주문에서 `time_in_force=post_only`를 허용하고, `post_only`와 `smp_type` 동시 사용을 금지한다.
+- Upbit 주문 생성 문서는 시장가 매수 `ord_type=price`, 시장가 매도 `ord_type=market`, 최유리 지정가 `ord_type=best`를 별도 주문
+  유형으로 설명한다. M22에서는 이 주문 유형을 자동 entry/exit 기본 경로에 열지 않는다.
+- Upbit 주문 생성 문서는 identifier가 계정 전체 주문 기준 고유하고 최대 64자라고 설명한다. M22 runtime은 32자 보수 제한을 유지한다.
+- Upbit KRW market info 문서는 최소 주문 가능 금액을 5,000 KRW로 설명한다.
+- Upbit rate limit 문서는 Exchange default 그룹을 계정 단위 초당 최대 30회로 설명하고, `Remaining-Req` header의 `sec` 값을
+  잔여 요청 수로 보라고 설명한다.
 
 ## M9 Paper 매매 이벤트 Telegram 알림
 

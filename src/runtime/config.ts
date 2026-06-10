@@ -15,6 +15,7 @@ import {
   defaultPhase15AltUniverseConfig,
 } from "./phase-1-5-config.js";
 import { LiveManualApprovalConfigSchema } from "./live-manual-approval-config.js";
+import { LiveAutonomousConfigSchema } from "./live-autonomous-config.js";
 
 const defaultConfigUrl = new URL("../../config/paper.json", import.meta.url);
 
@@ -81,6 +82,7 @@ export const RuntimeConfigSchema = z
     strategyParameters: StrategyParametersConfigSchema.default(defaultStrategyParametersConfig),
     risk: RiskConfigSchema.default(defaultRiskConfig),
     live_manual_approval: LiveManualApprovalConfigSchema,
+    live_autonomous: LiveAutonomousConfigSchema,
     telegram: z
       .object({
         chat_id: TrimmedNonEmptyStringSchema.optional(),

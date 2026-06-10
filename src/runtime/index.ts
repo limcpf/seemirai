@@ -99,6 +99,26 @@ export type {
   LiveManualApprovalRuntimeGuardResult,
 } from "./live-manual-approval-config.js";
 export {
+  LIVE_AUTONOMOUS_IDENTIFIER_MAX_LENGTH,
+  LIVE_AUTONOMOUS_IDENTIFIER_RANDOM_HEX_LENGTH,
+  LIVE_AUTONOMOUS_DAILY_NOTIONAL_KRW_LIMIT,
+  LIVE_AUTONOMOUS_MAX_ORDER_KRW_LIMIT,
+  LIVE_AUTONOMOUS_OPEN_POSITION_NOTIONAL_KRW_LIMIT,
+  LiveAutonomousConfigSchema,
+  UnsafeLiveAutonomousRuntimeConfigError,
+  assertLiveAutonomousRuntimeReady,
+  createLiveAutonomousRuntimeSafeSummary,
+  defaultLiveAutonomousConfig,
+  evaluateLiveAutonomousRuntimeGuard,
+  liveAutonomousDefaultAllowedMarkets,
+} from "./live-autonomous-config.js";
+export type {
+  LiveAutonomousRuntimeConfig,
+  LiveAutonomousRuntimeGuardInput,
+  LiveAutonomousRuntimeGuardResult,
+  LiveAutonomousRuntimeSafeSummary,
+} from "./live-autonomous-config.js";
+export {
   createInMemoryLiveOrderApprovalProposalStore,
   createLiveOrderApprovalCommandRuntime,
   createOrderSubmissionFromLiveOrderProposal,

@@ -275,6 +275,13 @@
       "owner_scope": "docs/exec-plans/active"
     },
     {
+      "path": "docs/exec-plans/completed/2026-06-10-issue-180-m22-live-autonomous-small-budget-closeout.md",
+      "kind": "exec-plan",
+      "role": "✅ 완료 — Issue #180 M22 제한적 완전 자동매매 closeout. live_autonomous guard/config, readiness startup guard, entry/exit runtime, Telegram/status/report safe summary, source scan, pilot guard skip evidence 확인",
+      "read_when": ["issue #180 closeout 확인", "M22 제한적 완전 자동매매 완료 증거", "LIVE_AUTONOMOUS_SMALL_BUDGET guard 확인", "M22 source scan 결과 확인", "M22 pilot skip evidence 확인"],
+      "owner_scope": "docs/exec-plans/completed"
+    },
+    {
       "path": "docs/exec-plans/completed/2026-06-10-issue-175-m21-manual-approval-closeout.md",
       "kind": "exec-plan",
       "role": "✅ 완료 — Issue #175 M21 수동 승인 live pilot closeout. live_manual_approval 기본 비활성 guard, Telegram approval runtime, evidence chain, guarded submission, source scan, 보안/신뢰성/runtime/product 문서 반영 확인",

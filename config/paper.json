@@ -194,6 +194,28 @@
     "require_reconcile_freshness": true,
     "require_m20_inbound_enabled": true
   },
+  "live_autonomous": {
+    "mode": "LIVE_AUTONOMOUS_SMALL_BUDGET",
+    "enabled": false,
+    "allowed_markets": ["KRW-BTC"],
+    "max_order_krw": "10000",
+    "daily_autonomous_notional_limit_krw": "30000",
+    "max_open_position_notional_krw": "30000",
+    "max_daily_loss_krw": "10000",
+    "max_weekly_loss_krw": "30000",
+    "max_price_deviation_bps": "30",
+    "require_m21_week_gate_evidence": true,
+    "require_m20_inbound_readiness": true,
+    "require_reconcile_freshness": true,
+    "require_pnl_status_ready": true,
+    "require_decision_ledger_ready": true,
+    "require_exit_engine_ready": true,
+    "require_operator_arm_evidence_id": true,
+    "require_budget_evidence_id": true,
+    "require_key_scope_evidence_id": true,
+    "identifier_prefix": "m22a-",
+    "identifier_max_length": 32
+  },
   "telegram": {
     "provider_timeout_ms": 5000,
     "inbound": {

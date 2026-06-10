@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { runDailyReport } from "../../src/application/index.js";
+import { createLiveAutonomousExitStatusSummary, runDailyReport } from "../../src/application/index.js";
 import type {
   AuditEvent,
   AuditEventReceipt,
@@ -24,6 +24,20 @@ describe("daily report runner", () => {
       auditLog,
       trigger: "manual",
       generatedAt: "2026-05-21T15:01:00.000Z",
+      liveAutonomousExit: createLiveAutonomousExitStatusSummary({
+        enabled: true,
+        runtimeReady: true,
+        exitEngineReady: true,
+        observedAt: "2026-05-21T15:00:00.000Z",
+        reconcile: {
+          result: "SKIPPED",
+          mismatchCount: null,
+          openOrderCount: null,
+          balanceStatus: "UNAVAILABLE",
+          websocketStatus: "DISCONNECTED",
+          lastReconcileAt: null,
+        },
+      }),
       clock: () => new Date("2026-05-21T15:02:00.000Z"),
       correlationId: "daily-report-corr-1",
       job: {
@@ -36,6 +50,8 @@ describe("daily report runner", () => {
 
     expect(result.status).toBe("DELIVERED");
     expect(notifier.dailyReports).toHaveLength(1);
+    expect(notifier.dailyReports[0]?.summary).toContain("M22 자동매매/청산");
+    expect(notifier.dailyReports[0]?.summary).toContain("자동 청산 상태: reconcile 확인 필요");
     expect(auditLog.events).toHaveLength(2);
     expect(auditLog.events[0]).toMatchObject({
       eventType: "DAILY_REPORT",

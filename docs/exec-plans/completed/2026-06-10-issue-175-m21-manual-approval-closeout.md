@@ -12,7 +12,8 @@ broker submission` evidence chain을 기계적으로 증명하는 것이 목표�
 - Sub PR 02: https://github.com/limcpf/seemirai/pull/177
 - Sub PR 03: https://github.com/limcpf/seemirai/pull/178
 - Final main PR: https://github.com/limcpf/seemirai/pull/179
-- Final main PR 상태: review drain 완료, `MERGEABLE`, GitHub `verify` pass, Codex `+1`, unresolved thread 0건
+- Final main PR 상태: review drain 완료 후 2026-06-10 19:08:37 KST에 `main` merge 완료, merge commit
+  `99aca3f06953b6e5b7bb65db1024cc5b6e3c6996`
 
 ## 완료 범위
 
@@ -153,5 +154,5 @@ Sub PR 02 review drain 최종 검증:
 
 - 실제 live pilot 운영 budget, API key allowlist, reconcile 관측 결과는 운영 실행 시점의 별도 evidence로 남겨야 한다.
 - Telegram inbound polling worker와 M21 approval runtime을 production deployment lifecycle에 붙이는 작업은 운영 wiring에서 확인한다.
-- Final main PR #179는 issue-subpr-runner workflow에 따라 review drain과 finish-readiness-audit까지 완료했고, merge는 사용자가 직접
-  결정한다.
+- Final main PR #179는 issue-subpr-runner workflow에 따라 review drain과 finish-readiness-audit까지 완료한 뒤 2026-06-10
+  19:08:37 KST에 `main`으로 merge됐다.

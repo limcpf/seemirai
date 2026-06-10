@@ -6,6 +6,7 @@ import type {
   NotificationResult,
   NotifierPort,
 } from "../ports/index.js";
+import type { LiveAutonomousExitStatusSummary } from "../live-autonomous-exit-status.js";
 import { buildDailyReportNotification } from "./service.js";
 import type {
   DailyReportAggregate,
@@ -47,6 +48,13 @@ export interface RunDailyReportOptions {
   auditLog: AuditLogPort;
   trigger: DailyReportRunTrigger;
   generatedAt?: Date | string;
+  /**
+   * daily report notification 본문에 포함할 M22 live autonomous exit safe summary다.
+   *
+   * runner는 이 값을 그대로 formatter에 전달만 하며, 값이 없으면 기존 daily report 본문을 유지한다. summary는 caller가 이미
+   * trace 분리와 secret 제거를 끝낸 값이어야 한다.
+   */
+  liveAutonomousExit?: LiveAutonomousExitStatusSummary | null;
   clock?: () => Date;
   actor?: string;
   correlationId?: string;
@@ -89,6 +97,7 @@ export async function runDailyReport(options: RunDailyReportOptions): Promise<Ru
       reportDate: options.reportDate,
       dataProvider: options.dataProvider,
       ...(options.generatedAt === undefined ? {} : { generatedAt: options.generatedAt }),
+      ...(options.liveAutonomousExit === undefined ? {} : { liveAutonomousExit: options.liveAutonomousExit }),
     });
   } catch (error) {
     const errorMessage = toErrorMessage(error);

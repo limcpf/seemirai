@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   aggregateDailyReport,
   buildDailyReportNotification,
+  createLiveAutonomousExitStatusSummary,
   createDailyReportJobPlan,
   createDailyReportWindow,
   formatDailyReportSummary,
@@ -116,6 +117,31 @@ describe("daily report application", () => {
     expect(summary).toContain("실현 손익: unavailable");
     expect(summary).toContain("수수료: 0");
     expect(summary).toContain("주요 리스크 종류: 없음");
+  });
+
+  it("can append M22 live autonomous exit safe summary to the report body", () => {
+    const report = aggregateDailyReport(createDailyReportWindow("2026-05-21"), emptySourceData());
+    const summary = formatDailyReportSummary(report, {
+      liveAutonomousExit: createLiveAutonomousExitStatusSummary({
+        enabled: true,
+        runtimeReady: true,
+        exitEngineReady: true,
+        observedAt: "2026-05-21T14:00:00.000Z",
+        reconcile: {
+          result: "MISMATCH_DETECTED",
+          mismatchCount: 1,
+          openOrderCount: 2,
+          balanceStatus: "OK",
+          websocketStatus: "CONNECTED",
+          lastReconcileAt: "2026-05-21T13:59:00.000Z",
+        },
+      }),
+    });
+
+    expect(summary).toContain("M22 자동매매/청산");
+    expect(summary).toContain("자동 청산 상태: reconcile 확인 필요");
+    expect(summary).toContain("필요 조치: 불일치를 해소하고 reconcile을 다시 성공");
+    expect(summary).toContain("추적 정보: RECONCILE_REQUIRED");
   });
 
   it("selects tied PnL snapshots deterministically when captured_at is equal", () => {
@@ -333,6 +359,20 @@ describe("daily report application", () => {
       reportDate: "2026-05-21",
       dataProvider: provider,
       generatedAt: "2026-05-21T15:01:00.000Z",
+      liveAutonomousExit: createLiveAutonomousExitStatusSummary({
+        enabled: true,
+        runtimeReady: true,
+        exitEngineReady: true,
+        observedAt: "2026-05-21T14:59:00.000Z",
+        reconcile: {
+          result: "MISMATCH_DETECTED",
+          mismatchCount: 1,
+          openOrderCount: 2,
+          balanceStatus: "OK",
+          websocketStatus: "CONNECTED",
+          lastReconcileAt: "2026-05-21T14:58:00.000Z",
+        },
+      }),
     });
     const sent = await sendDailyReport({
       reportDate: "2026-05-21",
@@ -356,6 +396,8 @@ describe("daily report application", () => {
     });
     expect(built.notification.summary).toContain("거래 요약");
     expect(built.notification.summary).toContain("손익");
+    expect(built.notification.summary).toContain("M22 자동매매/청산");
+    expect(built.notification.summary).toContain("자동 청산 상태: reconcile 확인 필요");
     expect(sent.result).toEqual({ delivered: true, providerMessageId: "daily-report-1" });
     expect(notifier.dailyReports).toHaveLength(1);
     expect(notifier.dailyReports[0]?.summary).toContain("비용/체결 품질");

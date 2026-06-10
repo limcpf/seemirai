@@ -6,6 +6,7 @@ import type {
 } from "../../domain/index.js";
 import type {
   KillSwitchControlProvider,
+  LiveAutonomousExitStatusSummary,
   PnLAccountingStatusProvider,
   PnLAccountingStatusSummary,
 } from "../../application/index.js";
@@ -14,6 +15,7 @@ export type { WhySummary, WhySummaryProvider };
 import type { Database } from "../../infrastructure/db/index.js";
 import type {
   PilotRuntimeConfig,
+  LiveAutonomousRuntimeSafeSummary,
   ReconcileStatusProvider,
   ReconcileStatusSummary,
   RuntimeConfig,
@@ -112,6 +114,8 @@ export interface ControlStatusSnapshot {
     liveTradingEnabled: boolean;
     paperNoKey: boolean;
     pilot: PilotRuntimeSafeSummary;
+    /** M22 제한적 완전 자동매매 startup guard safe summary다. private client/raw evidence는 포함하지 않는다. */
+    liveAutonomous: LiveAutonomousRuntimeSafeSummary;
   };
   tradingState: {
     state: KillSwitchState;
@@ -152,6 +156,8 @@ export interface ControlStatusSnapshot {
   };
   /** M16 read-only reconcile 상태 summary다. reconcile worker가 비활성이면 SKIPPED/UNAVAILABLE로 표시한다. */
   reconcile: ReconcileStatusSummary;
+  /** M22 live autonomous exit 연결 상태 summary다. 부분 체결, cancel/requote, reconcile mismatch를 한국어 조치로 낮춘다. */
+  liveAutonomousExit: LiveAutonomousExitStatusSummary;
   /** M18 판단 이유 ledger 기반 `/status.why` safe summary다. 별도 write/control endpoint는 없다. */
   why: WhySummary | null;
 }
@@ -246,6 +252,18 @@ export interface CreateDatabaseControlStatusProviderOptions {
   phase15ApprovalEvidence?: readonly Phase15AltApprovalEvidenceSnapshot[];
   pilotConfig?: PilotRuntimeConfig;
   pilotEvidence?: PilotEvidenceSnapshot | null;
+  /**
+   * `/status.runtime.liveAutonomous`에 노출할 M22 startup guard safe summary다.
+   *
+   * 지정하지 않으면 현재 config와 보수적 readiness 기본값으로 fail-closed summary를 만든다.
+   */
+  liveAutonomousRuntime?: LiveAutonomousRuntimeSafeSummary;
+  /**
+   * `/status.liveAutonomousExit`에 노출할 M22 exit 연결 safe summary다.
+   *
+   * 실제 exit worker나 테스트 fixture가 최근 실행 결과를 이미 요약한 경우 이 값을 그대로 사용한다.
+   */
+  liveAutonomousExit?: LiveAutonomousExitStatusSummary;
   expectedMigrationVersion?: number;
   clock?: () => Date;
   marketData?: {

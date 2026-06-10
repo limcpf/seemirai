@@ -1,5 +1,6 @@
 import { sql } from "kysely";
 import {
+  createLiveAutonomousExitStatusSummary,
   dailyReportJobType,
 } from "../../application/index.js";
 import type { PnLAccountingStatusSummary, WhySummary } from "../../application/index.js";
@@ -12,6 +13,7 @@ import {
 import type { Database } from "../../infrastructure/db/index.js";
 import {
   createPilotRuntimeSafeSummary,
+  createLiveAutonomousRuntimeSafeSummary,
   createReconcileStatusSummary,
   resolveRuntimeUniverse,
 } from "../../runtime/index.js";
@@ -89,19 +91,29 @@ export function createDatabaseControlStatusProvider(
       const actionPlan = getKillSwitchActionPlan(killSwitch.state);
       const readiness = await statusReadinessProvider.check();
       const blockedReason = actionPlan.newOrdersBlocked ? killSwitch.reasonCode : null;
-      const [paper, alerts, dailyReport, pnl, phase15ApprovalEvidence, why] = await Promise.all([
+      const [paper, alerts, dailyReport, pnl, phase15ApprovalEvidence, why, reconcile] = await Promise.all([
         readPaperStatus(options.database),
         readAlertStatus(options),
         readDailyReportStatus(options),
         readPnlAccountingStatus(options),
         readPhase15ApprovalEvidence(options),
         readWhySummary(options),
+        toReconcileStatus(options),
       ]);
       const generatedAt = clock().toISOString();
+      const runtime = toSafeRuntimeSummary(
+        options.runtimeConfig,
+        generatedAt,
+        phase15ApprovalEvidence,
+        options,
+        reconcile,
+        pnl,
+        why,
+      );
       // kill switch action plan은 상태 문자열을 실제 주문 차단/수동 검토 신호로 변환하는 경계다.
       return {
         generatedAt,
-        runtime: toSafeRuntimeSummary(options.runtimeConfig, generatedAt, phase15ApprovalEvidence, options),
+        runtime,
         tradingState: {
           state: killSwitch.state,
           killSwitchState: killSwitch.state,
@@ -119,7 +131,21 @@ export function createDatabaseControlStatusProvider(
         alerts,
         dailyReport,
         pnl,
-        reconcile: await toReconcileStatus(options),
+        reconcile,
+        liveAutonomousExit: options.liveAutonomousExit ?? createLiveAutonomousExitStatusSummary({
+          enabled: runtime.liveAutonomous.enabled,
+          runtimeReady: runtime.liveAutonomous.ready,
+          exitEngineReady: runtime.liveAutonomous.exitEngineReady,
+          observedAt: generatedAt,
+          reconcile: {
+            result: reconcile.result,
+            mismatchCount: reconcile.mismatchCount,
+            openOrderCount: reconcile.openOrderCount,
+            balanceStatus: reconcile.balanceStatus,
+            websocketStatus: reconcile.websocketStatus,
+            lastReconcileAt: reconcile.lastReconcileAt,
+          },
+        }),
         why,
       };
     },
@@ -759,11 +785,23 @@ function toSafeRuntimeSummary(
   observedAt: string,
   phase15ApprovalEvidence: readonly Phase15AltApprovalEvidenceSnapshot[],
   options: CreateDatabaseControlStatusProviderOptions,
+  reconcile: ReconcileStatusSummary,
+  pnl: ControlStatusSnapshot["pnl"],
+  why: WhySummary | null,
 ): ControlStatusSnapshot["runtime"] {
   const universe = resolveRuntimeUniverse(config.universe, {
     observedAt,
     evidence: phase15ApprovalEvidence,
     exchangeId: config.registry.exchangeId,
+  });
+  const liveAutonomous = options.liveAutonomousRuntime ?? createLiveAutonomousRuntimeSafeSummary({
+    config,
+    observedAt,
+    telegramInboundReady: config.telegram.inbound.enabled,
+    reconcileFresh: reconcile.result === "SUCCESS" && reconcile.lastReconcileAt !== null,
+    pnlStatusReady: pnl.status === "ok",
+    decisionLedgerReady: why?.readStatus === "OK",
+    exitEngineReady: false,
   });
 
   return {
@@ -788,6 +826,7 @@ function toSafeRuntimeSummary(
       generatedAt: observedAt,
       lastEvidence: options.pilotEvidence ?? null,
     }),
+    liveAutonomous,
   };
 }
 
