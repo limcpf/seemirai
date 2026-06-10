@@ -247,13 +247,6 @@
       "owner_scope": "docs/exec-plans/active"
     },
     {
-      "path": "docs/exec-plans/active/2026-06-10-issue-180-m22-live-autonomous-small-budget.md",
-      "kind": "exec-plan",
-      "role": "Issue #180 M22 제한적 완전 자동매매 sub PR orchestration과 LIVE_AUTONOMOUS_SMALL_BUDGET guard/config/entry/exit/status/verification 계획",
-      "read_when": ["issue #180 구현 분할 확인", "M22 sub PR 계획 확인", "LIVE_AUTONOMOUS_SMALL_BUDGET 구현", "M22 live autonomous guard 확인"],
-      "owner_scope": "docs/exec-plans/active"
-    },
-    {
       "path": "docs/exec-plans/active/2026-06-07-issue-165-m19-subpr-orchestration.md",
       "kind": "exec-plan",
       "role": "Issue #165 M19 자동 매도와 포지션 축소 sub PR orchestration",
@@ -280,6 +273,13 @@
       "role": "Issue #165 Sub PR 03 verification, guarded pilot, closeout DeepSeek handoff",
       "read_when": ["issue #165 Sub PR 03 구현", "M19 guarded live pilot", "M19 closeout", "DeepSeek implementation handoff"],
       "owner_scope": "docs/exec-plans/active"
+    },
+    {
+      "path": "docs/exec-plans/completed/2026-06-10-issue-180-m22-live-autonomous-small-budget-closeout.md",
+      "kind": "exec-plan",
+      "role": "✅ 완료 — Issue #180 M22 제한적 완전 자동매매 closeout. live_autonomous guard/config, readiness startup guard, entry/exit runtime, Telegram/status/report safe summary, source scan, pilot guard skip evidence 확인",
+      "read_when": ["issue #180 closeout 확인", "M22 제한적 완전 자동매매 완료 증거", "LIVE_AUTONOMOUS_SMALL_BUDGET guard 확인", "M22 source scan 결과 확인", "M22 pilot skip evidence 확인"],
+      "owner_scope": "docs/exec-plans/completed"
     },
     {
       "path": "docs/exec-plans/completed/2026-06-10-issue-175-m21-manual-approval-closeout.md",
