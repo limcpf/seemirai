@@ -35,8 +35,10 @@ reconcile mismatch 0건을 기계적으로 증명하는 것이다. 기본 `PAPER
 
 ### Sub PR 01. Plan, FR, Config Contract
 
-- 상태: 진행 중
+- 상태: 완료
 - branch: `issue-180-subpr-01-plan-config`
+- PR: https://github.com/limcpf/seemirai/pull/181
+- merge: `3386aaabac19330c85ed289877b092f62d437f8d`
 - DnD:
   - `FR-OPS-003` 추가
   - M22 active exec plan 작성
@@ -48,7 +50,8 @@ reconcile mismatch 0건을 기계적으로 증명하는 것이다. 기본 `PAPER
 
 ### Sub PR 02. Readiness Guard & Safe Summary
 
-- 상태: 대기
+- 상태: 진행 중
+- branch: `issue-180-subpr-02-readiness-guard`
 - DnD:
   - M21 1주 gate evidence guard
   - operator arm/budget/key scope evidence guard
