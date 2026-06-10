@@ -313,6 +313,26 @@ Codex-native 운영은 Codex, Git, GitHub, shell command, 문서 상태를 연�
 - `hard stop`은 M19 이후에도 open position 자동 청산을 만들지 않는다. M19 exit pilot 실패, cancel 미확인, reconcile mismatch는
   신규 진입 중지와 manual review evidence로 수렴하며, 자동 시장가 청산으로 복구하지 않는다.
 
+## M22 제한적 완전 자동매매 신뢰성 기준
+
+- M22 startup guard는 config flag만 보지 않는다. operator arm, budget, key scope, M21 1주 gate evidence와 M20/M16/M17/M18/M19
+  readiness provider가 모두 통과해야 private client와 live broker 조립으로 넘어갈 수 있다.
+- autonomous order attempt는 `CANDIDATE_CREATED`, `COST_APPROVED`, `RISK_APPROVED`, `RESERVED`, `SUBMITTED`, `REJECTED`,
+  `BLOCKED`, `RECONCILE_REQUIRED`, `MANUAL_REVIEW_REQUIRED` 상태를 append-only evidence로 남긴다. 상태 전이 evidence가
+  저장되지 않으면 다음 단계로 전진하지 않는다.
+- broker 호출 전 durable reservation은 idempotency key와 order attempt id를 같은 원자 경계에서 선점해야 한다. 이미 선점된
+  attempt는 추가 broker 호출 없이 기존 제출/reconcile 상태 확인으로 안내한다.
+- 제출 직전 risk gate, kill switch, reconcile freshness, budget, market allowlist, order type, price deviation, Upbit KRW 최소
+  주문금액을 다시 검증한다. 후보 생성 시점의 pass 결과만으로 broker에 위임하지 않는다.
+- broker submit 예외는 거래소 도달 여부를 단정할 수 없으므로 미제출로 기록하지 않는다. 결과는 `RECONCILE_REQUIRED` 또는
+  `MANUAL_REVIEW_REQUIRED` evidence로 정규화하고, 같은 idempotency key 재시도는 중복 live order를 만들지 않아야 한다.
+- reconcile mismatch, duplicate order, untracked fill, persistence failure는 신규 entry 중지와 manual review evidence로 수렴한다.
+  hard stop 또는 mismatch 복구가 open position 자동 시장가 청산을 만들면 안 된다.
+- M19 exit engine을 M22에 연결할 때 exit intent는 현재 live position scope를 초과할 수 없다. partial fill, cancel/requote 실패,
+  cancel terminal state 미확인은 신규 entry 중지와 manual review로 수렴한다.
+- 24시간 live autonomous pilot closeout은 crash 0회, unhandled rejection 0회, risk gate 우회 주문 0건, reconcile mismatch 0건,
+  duplicate order 0건, untracked fill 0건을 source scan과 redacted artifact로 함께 확인해야 한다.
+
 ## M18 Decision Ledger 신뢰성 기준
 
 - decision ledger는 append-only 저장소다. frame과 evidence는 insert만 수행하며 update, delete는 구현하지 않는다.

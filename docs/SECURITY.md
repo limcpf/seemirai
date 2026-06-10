@@ -205,6 +205,24 @@
 - M19 pilot은 출금, 입출금 자동화, 선물, 레버리지, 타인 계정, Telegram inbound 승인, M22 이전 무승인 자동 실거래로 확장하지
   않는다. 이 경계를 바꾸려면 별도 milestone 보안 설계와 검증을 먼저 추가한다.
 
+## M22 제한적 완전 자동매매 보안 기준
+
+- M22 `LIVE_AUTONOMOUS_SMALL_BUDGET` runtime은 기본 `live_autonomous.enabled=false`와 `PAPER_NO_KEY` profile에서 private client,
+  live broker, autonomous loop를 시작하지 않는다.
+- M21 1주 gate evidence, operator arm evidence, budget evidence, key scope evidence는 저장소 밖 redacted 증거를 가리키는 안정
+  식별자만 사용한다. raw 계정 snapshot, API credential, Telegram token, JWT, Authorization header는 config, log, audit, status,
+  report, PR body에 남기지 않는다.
+- M20 inbound readiness, M16 reconcile freshness, M17 PnL status, M18 decision ledger, M19 exit engine readiness 중 하나라도
+  준비되지 않으면 startup guard는 private client와 live broker 조립 전에 fail-closed 해야 한다.
+- M22 자동 entry는 `KRW-BTC`, `LIMIT + post_only`, 소액 예산 안에서만 허용한다. 시장가 매수/매도, 최유리 주문, `post_only +
+  smp_type`, BTC 외 다중 market 기본 활성화, 자동 budget 확대는 provider 호출 전에 차단한다.
+- 같은 autonomous order attempt 또는 idempotency key는 broker 호출 전 durable reservation으로 먼저 선점해야 한다. reservation
+  실패, persistence failure, broker submit 불확실 결과는 중복 주문 재시도가 아니라 reconcile/manual review evidence로 수렴한다.
+- Telegram/status/report는 한국어 상태, 원인, 영향, 필요 조치를 먼저 보여주고 내부 id, reason code, evidence id는 `추적 정보`로
+  분리한다. raw provider payload와 raw order detail은 safe summary에 포함하지 않는다.
+- M22는 출금, 입출금 자동화, 선물, 레버리지, 마진, 타인 계정, 신호 판매, LLM 직접 매수/매도 판단으로 확장하지 않는다. 이 경계를
+  바꾸려면 별도 milestone 보안 설계와 source scan을 먼저 추가한다.
+
 ## M18 Decision Ledger 보안 기준
 
 - decision ledger의 `payload_json`과 `trace_json`에는 raw provider payload, raw order detail, secret 후보, Authorization header, JWT, API key, secret key, query hash 원문을 저장하지 않는다. 두 필드는 JSONB-safe value만 허용하며 Date, BigInt, function, class instance 같은 비 JSON 값은 저장 계약에서 제외한다.

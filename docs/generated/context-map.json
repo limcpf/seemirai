@@ -247,6 +247,13 @@
       "owner_scope": "docs/exec-plans/active"
     },
     {
+      "path": "docs/exec-plans/active/2026-06-10-issue-180-m22-live-autonomous-small-budget.md",
+      "kind": "exec-plan",
+      "role": "Issue #180 M22 제한적 완전 자동매매 sub PR orchestration과 LIVE_AUTONOMOUS_SMALL_BUDGET guard/config/entry/exit/status/verification 계획",
+      "read_when": ["issue #180 구현 분할 확인", "M22 sub PR 계획 확인", "LIVE_AUTONOMOUS_SMALL_BUDGET 구현", "M22 live autonomous guard 확인"],
+      "owner_scope": "docs/exec-plans/active"
+    },
+    {
       "path": "docs/exec-plans/active/2026-06-07-issue-165-m19-subpr-orchestration.md",
       "kind": "exec-plan",
       "role": "Issue #165 M19 자동 매도와 포지션 축소 sub PR orchestration",

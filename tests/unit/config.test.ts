@@ -117,6 +117,28 @@ describe("runtime config", () => {
       require_reconcile_freshness: true,
       require_m20_inbound_enabled: true,
     });
+    expect(config.live_autonomous).toEqual({
+      mode: "LIVE_AUTONOMOUS_SMALL_BUDGET",
+      enabled: false,
+      allowed_markets: ["KRW-BTC"],
+      max_order_krw: "10000",
+      daily_autonomous_notional_limit_krw: "30000",
+      max_open_position_notional_krw: "30000",
+      max_daily_loss_krw: "10000",
+      max_weekly_loss_krw: "30000",
+      max_price_deviation_bps: "30",
+      require_m21_week_gate_evidence: true,
+      require_m20_inbound_readiness: true,
+      require_reconcile_freshness: true,
+      require_pnl_status_ready: true,
+      require_decision_ledger_ready: true,
+      require_exit_engine_ready: true,
+      require_operator_arm_evidence_id: true,
+      require_budget_evidence_id: true,
+      require_key_scope_evidence_id: true,
+      identifier_prefix: "m22a-",
+      identifier_max_length: 32,
+    });
     expect(config.telegram.provider_timeout_ms).toBe(5000);
   });
 
@@ -329,6 +351,140 @@ describe("runtime config", () => {
         live_manual_approval: {
           enabled: true,
           require_reconcile_freshness: false,
+        },
+      }),
+    ).toThrow();
+  });
+
+  it("loads M22 live autonomous config with conservative defaults and rejects unsafe ranges", () => {
+    const config = loadRuntimeConfig({
+      live_autonomous: {
+        enabled: true,
+        allowed_markets: ["KRW-BTC"],
+        max_order_krw: "5000",
+        daily_autonomous_notional_limit_krw: "5000",
+        max_open_position_notional_krw: "5000",
+        max_daily_loss_krw: "1000",
+        max_weekly_loss_krw: "1000",
+        max_price_deviation_bps: "10",
+        identifier_prefix: "m22a-",
+      },
+    });
+
+    expect(config.live_autonomous).toMatchObject({
+      mode: "LIVE_AUTONOMOUS_SMALL_BUDGET",
+      enabled: true,
+      allowed_markets: ["KRW-BTC"],
+      max_order_krw: "5000",
+      daily_autonomous_notional_limit_krw: "5000",
+      max_open_position_notional_krw: "5000",
+      max_daily_loss_krw: "1000",
+      max_weekly_loss_krw: "1000",
+      max_price_deviation_bps: "10",
+      require_m21_week_gate_evidence: true,
+      require_m20_inbound_readiness: true,
+      require_reconcile_freshness: true,
+      require_pnl_status_ready: true,
+      require_decision_ledger_ready: true,
+      require_exit_engine_ready: true,
+      require_operator_arm_evidence_id: true,
+      require_budget_evidence_id: true,
+      require_key_scope_evidence_id: true,
+      identifier_prefix: "m22a-",
+      identifier_max_length: 32,
+    });
+
+    expect(() =>
+      loadRuntimeConfig({
+        live_autonomous: {
+          allowed_markets: ["KRW-BTC", "KRW-BTC"],
+        },
+      }),
+    ).toThrow("allowed_markets must not contain duplicates");
+    expect(() =>
+      loadRuntimeConfig({
+        live_autonomous: {
+          max_order_krw: "4999",
+        },
+      }),
+    ).toThrow("max_order_krw must be at least 5000");
+    expect(() =>
+      loadRuntimeConfig({
+        live_autonomous: {
+          max_order_krw: "10001",
+        },
+      }),
+    ).toThrow("max_order_krw must not exceed 10000 for M22");
+    expect(() =>
+      loadRuntimeConfig({
+        live_autonomous: {
+          max_order_krw: "10000",
+          daily_autonomous_notional_limit_krw: "9999",
+        },
+      }),
+    ).toThrow("daily_autonomous_notional_limit_krw must be greater than or equal to max_order_krw");
+    expect(() =>
+      loadRuntimeConfig({
+        live_autonomous: {
+          daily_autonomous_notional_limit_krw: "30001",
+        },
+      }),
+    ).toThrow("daily_autonomous_notional_limit_krw must not exceed 30000 for M22");
+    expect(() =>
+      loadRuntimeConfig({
+        live_autonomous: {
+          max_order_krw: "10000",
+          max_open_position_notional_krw: "9999",
+        },
+      }),
+    ).toThrow("max_open_position_notional_krw must be greater than or equal to max_order_krw");
+    expect(() =>
+      loadRuntimeConfig({
+        live_autonomous: {
+          max_open_position_notional_krw: "30001",
+        },
+      }),
+    ).toThrow("max_open_position_notional_krw must not exceed 30000 for M22");
+    expect(() =>
+      loadRuntimeConfig({
+        live_autonomous: {
+          max_daily_loss_krw: "30000",
+          max_weekly_loss_krw: "29999",
+        },
+      }),
+    ).toThrow("max_weekly_loss_krw must be greater than or equal to max_daily_loss_krw");
+    expect(() =>
+      loadRuntimeConfig({
+        live_autonomous: {
+          require_m21_week_gate_evidence: false,
+        },
+      }),
+    ).toThrow();
+    expect(() =>
+      loadRuntimeConfig({
+        live_autonomous: {
+          require_operator_arm_evidence_id: false,
+        },
+      }),
+    ).toThrow();
+    expect(() =>
+      loadRuntimeConfig({
+        live_autonomous: {
+          identifier_max_length: 64,
+        },
+      }),
+    ).toThrow("identifier_max_length must not exceed 32 for M22");
+    expect(() =>
+      loadRuntimeConfig({
+        live_autonomous: {
+          identifier_prefix: "m22-autonomous-too-long-",
+        },
+      }),
+    ).toThrow("identifier_prefix leaves no room for 13 random bytes hex suffix");
+    expect(() =>
+      loadRuntimeConfig({
+        live_autonomous: {
+          max_order_kwr: "5000",
         },
       }),
     ).toThrow();

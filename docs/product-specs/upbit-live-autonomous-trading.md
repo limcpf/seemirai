@@ -328,6 +328,8 @@ M19 Sub PR 03 범위:
 목표:
 
 - 운영자가 명시적으로 arm 한 소액 예산에서 자동 매수와 자동 매도를 허용한다.
+- 첫 M22 market 기본값은 `KRW-BTC` 단일로 둔다.
+- 첫 M22 예산은 M21 기본값을 유지한다. 1회 주문 상한은 `10000` KRW, 일일 자동 주문 notional 한도는 `30000` KRW다.
 
 범위:
 
@@ -336,6 +338,10 @@ M19 Sub PR 03 범위:
 - 자동 exit rule 활성화
 - stale data, API 오류, reconcile mismatch, 손실 한도 초과 시 신규 주문 중지
 - daily live report와 Telegram status
+- M21 1주 gate evidence, operator arm evidence, budget evidence, key scope evidence 기반 startup guard
+- M20 inbound, M16 reconcile, M17 PnL status, M18 decision ledger, M19 exit engine readiness 확인
+- `LIMIT + post_only` 주문만 자동 entry로 허용하고 시장가/최유리 주문과 `post_only + smp_type` 조합은 거래소 호출 전 차단
+- broker 호출 전 durable reservation과 32자 이하 랜덤 identifier/idempotency key 생성
 
 완료 조건:
 
@@ -419,17 +425,30 @@ M22 진입 전에는 다음을 모두 만족해야 한다.
 
 ## 10. Open Questions
 
-- 첫 `LIVE_AUTONOMOUS_SMALL_BUDGET` 대상 market을 BTC 단일로 할지 BTC/ETH로 할지 결정해야 한다.
-- 첫 live autonomous 총 예산과 1회 주문 한도를 운영자가 별도 승인해야 한다.
+- 첫 `LIVE_AUTONOMOUS_SMALL_BUDGET` 대상 market은 Issue #180에서 `KRW-BTC` 단일로 결정했다.
+- 첫 live autonomous 예산은 Issue #180에서 M21 기본값 유지로 결정했다. 1회 주문 상한은 `10000` KRW, 일일 자동 주문 notional
+  한도는 `30000` KRW다.
 - 초기 exit rule 조합을 손절/익절/시간 기반으로 시작할지 trailing stop까지 포함할지 결정해야 한다.
 - Telegram inbound는 webhook과 polling 중 하나를 선택해야 한다.
 - 배포 위치와 고정 IP, Upbit API key allowlist 운영 방식을 결정해야 한다.
 
 ## 11. 공식 문서 확인 기준
 
-2026-06-01 기준 다음 공식 문서를 전제로 한다. 구현 전에는 변경 여부를 다시 확인한다.
+2026-06-10 기준 다음 공식 문서를 다시 확인했다.
 
-- Upbit 요청 수 제한: https://docs.upbit.com/kr/kr/reference/rate-limits
-- Upbit 주문 생성: https://docs.upbit.com/kr/kr/reference/new-order
+- Upbit 요청 수 제한: https://docs.upbit.com/kr/reference/rate-limits
+- Upbit 주문 생성: https://docs.upbit.com/kr/reference/new-order
+- Upbit 주문 취소: https://docs.upbit.com/kr/reference/cancel-order
+- Upbit 체결 대기 주문 목록 조회: https://docs.upbit.com/kr/reference/list-open-orders
+- Upbit KRW 마켓 주문 가격 단위 / 최소 주문 가능 금액: https://docs.upbit.com/kr/docs/krw-market-info
 - Upbit WebSocket 기본 정보: https://docs.upbit.com/kr/v1.5.9/reference/general-info
 - Telegram Bot API: https://core.telegram.org/bots/api
+
+확인 결과:
+
+- Upbit 주문 생성 문서는 지정가 주문에서 `time_in_force=post_only`를 허용하고, `post_only`와 `smp_type` 동시 사용을 금지한다.
+- Upbit 주문 생성 문서는 identifier가 계정 전체 주문 기준 고유하고 최대 64자라고 설명한다. M22는 기존 코드/문서 결정에 따라
+  32자 보수 제한과 `m22a-<13 bytes random hex>` 권장 패턴을 유지한다.
+- Upbit KRW market info 문서는 최소 주문 가능 금액을 5,000 KRW로 설명한다.
+- Upbit rate limit 문서는 Exchange default 그룹을 계정 단위 초당 최대 30회로 설명하고 `Remaining-Req` header 기반 잔여 요청 수
+  확인을 요구한다.
