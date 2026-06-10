@@ -612,6 +612,8 @@ Acceptance Criteria:
 - [x] expired/rejected/submitted proposal 재승인은 broker 호출 전에 fail-closed 한다.
 - [x] 같은 Telegram update/message/command 재전달은 중복 승인 또는 중복 주문을 만들지 않는다.
 - [x] 승인 직후 제출 전에 risk gate, kill switch, reconcile status, budget, order type, market allowlist, price deviation을 재검증한다.
+- [x] 제출 직전 주문 금액은 Upbit KRW 최소 주문금액 이상이어야 하며, 일일 승인 예산 사용액 snapshot은 음수가 아니어야 한다.
+- [x] 같은 proposal 제출이 이미 broker 직전 reservation을 선점한 경우 추가 broker 호출 없이 진행 중인 제출 확인으로 안내한다.
 - [x] M20 inbound readiness와 reconcile freshness는 필수 startup guard이며 config 값으로 비활성화할 수 없다.
 - [x] 모든 제출 주문은 proposal, approval, risk decision, broker submission evidence를 가진다.
 - [x] approval/reject audit에는 raw Telegram text, raw provider body, token, API key, JWT가 저장되지 않는다.

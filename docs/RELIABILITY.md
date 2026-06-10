@@ -78,8 +78,9 @@ Codex-native 운영은 Codex, Git, GitHub, shell command, 문서 상태를 연�
   `PROPOSAL_EXPIRATION_AUDIT_FAILED`와 `m21_expiration_audit_append_failed`를 반환해 audit/proposal store 점검을 요구한다.
 - approval evidence가 있어도 제출 직전 risk gate, kill switch, reconcile freshness, budget, market allowlist, order type, price
   deviation을 재검증한다. budget guard는 broker에 넘길 `requestedPrice * requestedVolume`을 다시 계산해 proposal
-  `expectedNotionalKrw`와 일치하고 한도 이하인지 확인한다. 재검증 실패는 `SUBMISSION_FAILED` evidence로 남기고 live broker에
-  위임하지 않는다.
+  `expectedNotionalKrw`와 일치하고 한도 이하인지 확인한다. broker 제출 금액은 Upbit KRW 최소 주문금액 5,000원 이상이어야 하며,
+  일일 승인 예산 사용액 snapshot은 음수가 아닌 유효한 숫자여야 한다. 재검증 실패는 `SUBMISSION_FAILED` evidence로 남기고 live
+  broker에 위임하지 않는다.
 - `SUBMISSION_RECHECK_PASSED` evidence가 proposal store와 audit projection에 append된 뒤에만 broker submit으로 넘어간다. Telegram
   duplicate command는 M20 dedupe에서 닫고, proposal store는 expected status와 fingerprint를 비교해 stale approval race를 차단한다.
 - recheck pass evidence append는 expected status `APPROVED`와 fingerprint를 함께 비교해야 한다. fingerprint만 맞고 상태가 이미
@@ -87,6 +88,8 @@ Codex-native 운영은 Codex, Git, GitHub, shell command, 문서 상태를 연�
 - daily budget은 recheck snapshot 확인만으로 끝내지 않고 broker 호출 직전 durable reservation으로 선점한다. store 구현체는
   expected status/fingerprint 비교와 `dailyApprovedNotionalUsedKrw + 이미 선점된 금액 + 제출 금액 <= daily limit` 검사를 같은
   원자 경계에서 처리해야 하며, reservation 실패 또는 예산 초과는 broker 호출 전 `SUBMISSION_FAILED`로 수렴한다.
+- 같은 proposal id의 reservation은 한 번만 허용한다. 같은 proposal reservation이 이미 있으면 다른 제출 경로가 broker 직전 gate를
+  선점한 상태로 보고, 두 번째 요청은 proposal 상태를 실패로 닫지 않은 채 추가 broker 호출만 차단해야 한다.
 - broker submission 결과는 proposal, approval, risk decision, broker submission evidence chain으로 추적 가능해야 한다. audit
   append나 submission evidence 저장에 실패하면 주문 성공으로 취급하지 않는다.
 - broker submit 예외는 provider에 도달하지 않았다는 보장이 아니므로 `brokerSubmitted=false`로 기록하지 않는다. 이 경우

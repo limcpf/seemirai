@@ -134,11 +134,19 @@ export function createInMemoryLiveOrderApprovalProposalStore(
         };
       }
 
+      const alreadyReserved = dailyBudgetReservationMap.get(input.proposalId);
+      if (alreadyReserved !== undefined) {
+        // 같은 proposal reservation은 다른 승인 경로가 broker 직전 gate를 통과했다는 신호라 두 번째 호출은 선점만 차단한다.
+        return {
+          status: "PROPOSAL_ALREADY_RESERVED",
+          reservedNotionalKrw: alreadyReserved,
+        };
+      }
+
       const requestedReservation = parseMemoryDecimal(input.reserveNotionalKrw);
       const dailyUsed = parseMemoryDecimal(input.dailyApprovedNotionalUsedKrw);
       const dailyLimit = parseMemoryDecimal(input.dailyApprovedNotionalLimitKrw);
-      const alreadyReservedForProposal = parseMemoryDecimal(dailyBudgetReservationMap.get(input.proposalId) ?? "0");
-      const reservedByOthers = sumReservations(dailyBudgetReservationMap).minus(alreadyReservedForProposal);
+      const reservedByOthers = sumReservations(dailyBudgetReservationMap);
       const nextReserved = dailyUsed.plus(reservedByOthers).plus(requestedReservation);
 
       if (

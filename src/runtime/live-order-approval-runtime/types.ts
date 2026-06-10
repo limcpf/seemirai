@@ -168,12 +168,17 @@ export type LiveOrderApprovalProposalEvidenceAppendResult =
 /**
  * daily approval budget reservation 결과다.
  *
- * `RECORDED`가 아니면 caller는 broker 제출을 진행하면 안 된다.
+ * `RECORDED`가 아니면 caller는 broker 제출을 진행하면 안 된다. 같은 proposal reservation이 이미 있으면 다른 제출 경로가
+ * broker 직전 gate를 선점한 상태이므로 caller는 proposal을 닫지 말고 추가 broker 호출만 막아야 한다.
  */
 export type LiveOrderApprovalDailyBudgetReservationResult =
   | {
       status: "RECORDED";
       proposal: LiveOrderProposalContract;
+      reservedNotionalKrw: NumericString;
+    }
+  | {
+      status: "PROPOSAL_ALREADY_RESERVED";
       reservedNotionalKrw: NumericString;
     }
   | {
@@ -255,7 +260,9 @@ export type LiveOrderApprovalSubmissionRecheckViolation =
   | "m21_market_not_allowed"
   | "m21_order_type_not_supported"
   | "m21_order_notional_mismatch"
+  | "m21_order_notional_below_minimum"
   | "m21_order_notional_exceeds_limit"
+  | "m21_daily_budget_usage_invalid"
   | "m21_daily_budget_exceeded"
   | "m21_risk_not_approved"
   | "m21_risk_decision_mismatch"

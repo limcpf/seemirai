@@ -8,6 +8,7 @@ import type {
 } from "./types.js";
 
 const upbitIdentifierMaxLength = 32;
+const upbitKrwMinimumOrderNotional = new Decimal(5_000);
 
 /**
  * M21 approval submission 직전 guard를 평가한다.
@@ -60,9 +61,15 @@ export function evaluateLiveOrderApprovalSubmissionRecheck(
   ) {
     violations.push("m21_order_notional_exceeds_limit");
   }
+  if (submittedNotional.isFinite() && submittedNotional.gt(0) && submittedNotional.lt(upbitKrwMinimumOrderNotional)) {
+    violations.push("m21_order_notional_below_minimum");
+  }
 
   const dailyUsed = parseGuardDecimal(snapshot.dailyApprovedNotionalUsedKrw);
   const dailyLimit = parseGuardDecimal(config.daily_approved_notional_limit_krw);
+  if (!dailyUsed.isFinite() || dailyUsed.lt(0)) {
+    violations.push("m21_daily_budget_usage_invalid");
+  }
   if (
     !dailyUsed.isFinite() ||
     !dailyLimit.isFinite() ||

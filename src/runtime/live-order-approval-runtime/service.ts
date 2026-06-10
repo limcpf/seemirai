@@ -413,6 +413,21 @@ async function submitApprovedProposal(
       recheck,
     });
   }
+  if (budgetReservation.status === "PROPOSAL_ALREADY_RESERVED") {
+    // 같은 proposal 선점은 다른 제출 경로가 이미 broker 직전 gate를 통과했다는 뜻이므로 실패 상태로 닫지 않는다.
+    return createResult({
+      status: "APPROVAL_SUBMISSION_BLOCKED",
+      proposalId: approvedProposal.proposalId,
+      brokerSubmitted: false,
+      stateChanged: false,
+      reasonCode: "m21_proposal_submission_already_reserved",
+      evidence: [...priorEvidence, recheckEvidence],
+      trace: {
+        store_status: budgetReservation.status,
+        reserved_notional_krw: budgetReservation.reservedNotionalKrw,
+      },
+    });
+  }
   if (budgetReservation.status !== "RECORDED") {
     return recordSubmissionFailure(options, approvedProposal, input, occurredAt, [...priorEvidence, recheckEvidence], {
       reasonCode: "m21_daily_budget_reservation_failed",

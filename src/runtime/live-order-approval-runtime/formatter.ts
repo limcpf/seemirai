@@ -73,6 +73,9 @@ function statusLine(result: LiveOrderApprovalCommandRuntimeResult): string {
       ) {
         return "상태: broker 호출 전 필수 감사 기록을 완료하지 못해 live 주문을 제출하지 않았습니다.";
       }
+      if (result.reasonCode === "m21_proposal_submission_already_reserved") {
+        return "상태: 같은 proposal의 제출 처리가 이미 진행 중이라 추가 broker 호출을 막았습니다.";
+      }
       return "상태: 제출 직전 재검증이 실패해 live 주문을 제출하지 않았습니다.";
     case "APPROVAL_SUBMISSION_FAILED":
       if (result.reasonCode === "m21_broker_submission_uncertain_audit_append_failed") {
@@ -94,6 +97,9 @@ function statusLine(result: LiveOrderApprovalCommandRuntimeResult): string {
 function causeLine(result: LiveOrderApprovalCommandRuntimeResult): string {
   switch (result.status) {
     case "APPROVAL_SUBMISSION_BLOCKED":
+      if (result.reasonCode === "m21_proposal_submission_already_reserved") {
+        return "원인: 같은 proposal의 broker 제출 reservation이 이미 기록되어 있습니다.";
+      }
       return `원인: ${formatViolations(result.trace?.violations)}`;
     case "APPROVAL_RECORD_FAILED":
     case "REJECTION_RECORD_FAILED":
@@ -128,6 +134,10 @@ function causeLine(result: LiveOrderApprovalCommandRuntimeResult): string {
 }
 
 function impactLine(result: LiveOrderApprovalCommandRuntimeResult): string {
+  if (result.reasonCode === "m21_proposal_submission_already_reserved") {
+    return "영향: 이 요청은 추가 broker 호출을 만들지 않았지만, 먼저 시작된 제출은 진행 중일 수 있습니다.";
+  }
+
   return result.brokerSubmitted
     ? "영향: 중복 제출 방지를 위해 같은 proposal 재승인은 차단됩니다."
     : "영향: live broker 주문 side effect는 발생하지 않았습니다.";
@@ -140,6 +150,9 @@ function actionLine(result: LiveOrderApprovalCommandRuntimeResult): string {
     case "REJECTION_RECORDED":
       return "필요 조치: 새 주문 후보가 필요하면 strategy/risk 판단을 다시 생성하세요.";
     case "APPROVAL_SUBMISSION_BLOCKED":
+      if (result.reasonCode === "m21_proposal_submission_already_reserved") {
+        return "필요 조치: 먼저 진행 중인 승인 결과와 broker reconcile 상태를 확인하세요.";
+      }
       return "필요 조치: 표시된 차단 원인을 해소한 뒤 새 proposal을 생성하세요.";
     case "PROPOSAL_EXPIRED":
     case "PROPOSAL_NOT_APPROVABLE":
@@ -176,8 +189,12 @@ function violationMessage(reasonCode: string): string {
       return "현재 pilot은 지정가 주문만 허용합니다.";
     case "m21_order_notional_mismatch":
       return "proposal 금액과 실제 제출 가격·수량으로 계산한 금액이 일치하지 않습니다.";
+    case "m21_order_notional_below_minimum":
+      return "주문 금액이 Upbit KRW 최소 주문금액 5,000원보다 작습니다.";
     case "m21_order_notional_exceeds_limit":
       return "주문 금액이 단일 주문 한도를 초과했습니다.";
+    case "m21_daily_budget_usage_invalid":
+      return "일일 승인 예산 사용액 snapshot이 유효하지 않습니다.";
     case "m21_daily_budget_exceeded":
       return "일일 승인 예산 한도를 초과합니다.";
     case "m21_risk_not_approved":

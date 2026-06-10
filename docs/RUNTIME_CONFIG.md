@@ -523,6 +523,8 @@ Telegram approval runtime 기준:
 - `/approve`는 `APPROVAL_RECORDED` evidence를 먼저 남긴 뒤 처리 시각 기준 TTL, risk decision, kill switch, reconcile freshness,
   daily budget, market allowlist, order type, `requestedPrice * requestedVolume` 재계산 금액, idempotency key, price deviation을
   재검증한다.
+- 제출 직전 재검증은 broker에 실제 전달될 금액이 Upbit KRW 최소 주문금액 5,000원 이상인지, 일일 승인 예산 사용액 snapshot이
+  음수가 아닌 유효한 숫자인지도 확인한다. 이 값이 깨져 있으면 예산 계산을 신뢰할 수 없으므로 broker 호출 전에 차단한다.
 - proposal이 이미 `APPROVED`이면 crash/restart 또는 audit 후 중단에서 복구 중인 상태로 보고 approval evidence를 proposal store에
   중복 append하지 않는다. 대신 broker 제출 재개 전에 approval audit projection을 먼저 보강하고, 이 audit이 실패하면
   `SUBMISSION_FAILURE_RECORDED`로 닫아 감사되지 않은 승인 상태에서 broker submit으로 넘어가지 않는다. `REJECTED`, `EXPIRED`,
@@ -531,6 +533,9 @@ Telegram approval runtime 기준:
   `SUBMISSION_RECHECK_PASSED` evidence를 기록한다. 이 append가 실패하면 broker 호출로 넘어가지 않는다.
 - broker 호출 직전에는 store가 expected status/fingerprint 비교와 일일 승인 예산 선점을 같은 원자 경계에서 처리해야 한다.
   reservation이 실패하거나 예산 한도를 넘으면 `SUBMISSION_FAILURE_RECORDED`로 닫고 `BrokerPort.submitOrder`를 호출하지 않는다.
+- 같은 proposal id의 reservation이 이미 있으면 다른 제출 경로가 broker 직전 gate를 선점한 상태로 본다. 이 경우 두 번째 요청은
+  proposal을 `SUBMISSION_FAILED`로 닫지 않고, 추가 `BrokerPort.submitOrder` 호출만 막은 뒤 먼저 진행 중인 제출과 reconcile 상태
+  확인을 요구한다.
 - `SUBMISSION_RECHECK_PASSED` evidence, audit projection, daily budget reservation이 모두 끝난 뒤에만 `BrokerPort.submitOrder`를
   호출하고, broker 성공 결과는 `BROKER_SUBMISSION_RECORDED` evidence로 남긴다.
 - approval 또는 재검증 통과 evidence의 audit projection이 실패하면 live broker 호출 전에 `SUBMISSION_FAILURE_RECORDED`로 닫는다.

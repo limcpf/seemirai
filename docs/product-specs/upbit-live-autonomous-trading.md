@@ -311,6 +311,7 @@ M19 Sub PR 03 범위:
 - 승인 만료와 중복 승인 방지
 - M20 Telegram inbound readiness와 최신 reconcile 상태 필수 startup guard
 - 제출 직전 risk gate, kill switch, reconcile freshness, budget, market allowlist, order type, price deviation 재검증
+- Upbit KRW 최소 주문금액, 음수가 아닌 일일 예산 사용액 snapshot, 같은 proposal reservation 중복 차단
 
 완료 조건:
 
@@ -318,6 +319,7 @@ M19 Sub PR 03 범위:
 - ✅ 모든 승인 주문은 proposal, approval, risk decision, broker submission evidence를 가진다.
 - ✅ proposal 없이 `/approve`만으로 live order가 생성되지 않는다.
 - ✅ expired/rejected/submitted proposal 재승인은 broker 호출 전에 fail-closed 한다.
+- ✅ 최소 주문금액 미달, 음수 예산 snapshot, 같은 proposal 동시 제출은 broker 호출 전에 차단한다.
 - ✅ 기본 `PAPER_NO_KEY` runtime은 live order API 호출 0회를 유지한다.
 - M22 전환 gate: 최소 1주 운영 중 reconcile mismatch, duplicate order, untracked fill이 없어야 다음 단계로 넘어간다.
 

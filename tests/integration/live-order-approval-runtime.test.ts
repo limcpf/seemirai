@@ -365,6 +365,133 @@ describe("M21 Telegram live order approval runtime", () => {
     expect(readOperatorFacingText(replies[0]?.text)).not.toContain("m21_order_notional_mismatch");
   });
 
+  it("Upbit KRW 최소 주문금액 미달 proposal은 broker를 호출하지 않는다", async () => {
+    const auditEvents: AuditEvent[] = [];
+    const replies: TelegramInboundReplyInput[] = [];
+    const proposalStore = createInMemoryLiveOrderApprovalProposalStore([
+      createProposal({
+        proposalId: "proposal-below-min",
+        requestedVolume: "0.01",
+        expectedNotionalKrw: "1000",
+      }),
+    ]);
+    const broker = new FakeBroker();
+    const runtime = createTelegramRuntime({
+      auditEvents,
+      replies,
+      proposalStore,
+      broker,
+      recheckProvider: new FakeRecheckProvider(),
+    });
+    const pollingRuntime = createTelegramInboundPollingRuntime({
+      pollingProvider: new FakeTelegramPollingProvider([
+        {
+          status: "ok",
+          nextOffset: 64,
+          updates: [
+            {
+              updateId: 63,
+              messageId: 73,
+              chatId: "100",
+              userId: "300",
+              text: "/approve proposal-below-min",
+              receivedAt: now,
+            },
+          ],
+        },
+      ]),
+      commandRuntime: runtime,
+      pollingIntervalMs: 1_000,
+      pollingTimeoutSeconds: 20,
+      maxUpdatesPerPoll: 50,
+    });
+
+    const result = await pollingRuntime.runOnce();
+
+    expect(result.handledMessages[0]).toMatchObject({
+      status: "EXECUTED",
+      executed: true,
+      liveOrderApprovalResult: {
+        status: "APPROVAL_SUBMISSION_BLOCKED",
+        brokerSubmitted: false,
+        trace: {
+          violations: expect.arrayContaining(["m21_order_notional_below_minimum"]),
+        },
+      },
+    });
+    expect(broker.submissions).toHaveLength(0);
+    expect(proposalStore.listEvidence("proposal-below-min").map((event) => event.evidenceKind)).toEqual([
+      "APPROVAL_RECORDED",
+      "SUBMISSION_FAILURE_RECORDED",
+    ]);
+    expect(replies[0]?.text).toContain("최소 주문금액 5,000원");
+    expect(readOperatorFacingText(replies[0]?.text)).not.toContain("m21_order_notional_below_minimum");
+  });
+
+  it("음수 일일 승인 예산 사용액 snapshot은 broker를 호출하지 않는다", async () => {
+    const auditEvents: AuditEvent[] = [];
+    const replies: TelegramInboundReplyInput[] = [];
+    const proposalStore = createInMemoryLiveOrderApprovalProposalStore([
+      createProposal({
+        proposalId: "proposal-negative-daily",
+        idempotencyKey: "m21-negative-daily",
+      }),
+    ]);
+    const broker = new FakeBroker();
+    const runtime = createTelegramRuntime({
+      auditEvents,
+      replies,
+      proposalStore,
+      broker,
+      recheckProvider: new FakeRecheckProvider({
+        dailyApprovedNotionalUsedKrw: "-1",
+      }),
+    });
+    const pollingRuntime = createTelegramInboundPollingRuntime({
+      pollingProvider: new FakeTelegramPollingProvider([
+        {
+          status: "ok",
+          nextOffset: 66,
+          updates: [
+            {
+              updateId: 65,
+              messageId: 75,
+              chatId: "100",
+              userId: "300",
+              text: "/approve proposal-negative-daily",
+              receivedAt: now,
+            },
+          ],
+        },
+      ]),
+      commandRuntime: runtime,
+      pollingIntervalMs: 1_000,
+      pollingTimeoutSeconds: 20,
+      maxUpdatesPerPoll: 50,
+    });
+
+    const result = await pollingRuntime.runOnce();
+
+    expect(result.handledMessages[0]).toMatchObject({
+      status: "EXECUTED",
+      executed: true,
+      liveOrderApprovalResult: {
+        status: "APPROVAL_SUBMISSION_BLOCKED",
+        brokerSubmitted: false,
+        trace: {
+          violations: expect.arrayContaining(["m21_daily_budget_usage_invalid"]),
+        },
+      },
+    });
+    expect(broker.submissions).toHaveLength(0);
+    expect(proposalStore.listEvidence("proposal-negative-daily").map((event) => event.evidenceKind)).toEqual([
+      "APPROVAL_RECORDED",
+      "SUBMISSION_FAILURE_RECORDED",
+    ]);
+    expect(replies[0]?.text).toContain("일일 승인 예산 사용액 snapshot");
+    expect(readOperatorFacingText(replies[0]?.text)).not.toContain("m21_daily_budget_usage_invalid");
+  });
+
   it("최종 broker submission audit append가 실패하면 제출된 주문을 성공 상태로 숨기지 않는다", async () => {
     const auditEvents: AuditEvent[] = [];
     const replies: TelegramInboundReplyInput[] = [];
@@ -889,6 +1016,21 @@ describe("M21 Telegram live order approval runtime", () => {
 
     await expect(
       budgetStore.reserveDailyApprovalBudget({
+        proposalId: firstProposal.proposalId,
+        expectedStatus: "APPROVED",
+        expectedFingerprint: createLiveOrderProposalFingerprint(firstProposal),
+        reserveNotionalKrw: "10000",
+        dailyApprovedNotionalUsedKrw: "0",
+        dailyApprovedNotionalLimitKrw: "15000",
+        observedAt: now,
+      }),
+    ).resolves.toMatchObject({
+      status: "PROPOSAL_ALREADY_RESERVED",
+      reservedNotionalKrw: "10000",
+    });
+
+    await expect(
+      budgetStore.reserveDailyApprovalBudget({
         proposalId: secondProposal.proposalId,
         expectedStatus: "APPROVED",
         expectedFingerprint: createLiveOrderProposalFingerprint(secondProposal),
@@ -901,6 +1043,74 @@ describe("M21 Telegram live order approval runtime", () => {
       status: "DAILY_BUDGET_EXCEEDED",
       dailyApprovedNotionalLimitKrw: "15000",
     });
+  });
+
+  it("같은 APPROVED proposal 제출이 진행 중이면 두 번째 broker 호출 전에 차단한다", async () => {
+    const auditEvents: AuditEvent[] = [];
+    const proposal = createProposal({
+      proposalId: "proposal-concurrent-reserve",
+      status: "APPROVED",
+    });
+    const proposalStore = createInMemoryLiveOrderApprovalProposalStore([proposal]);
+    const broker = new BlockingBroker();
+    const approvalRuntime = createLiveOrderApprovalCommandRuntime({
+      config: loadRuntimeConfig({
+        live_manual_approval: {
+          enabled: true,
+        },
+      }).live_manual_approval,
+      proposalStore,
+      recheckProvider: new FakeRecheckProvider(),
+      broker,
+      auditLog: createAuditLog({ auditEvents }),
+      clock: () => new Date(now),
+    });
+    const command = {
+      name: "approve",
+      scope: "APPROVAL",
+      normalizedText: "/approve proposal-concurrent-reserve",
+      argument: {
+        kind: "proposal",
+        proposalId: "proposal-concurrent-reserve",
+      },
+    } as const;
+
+    const first = approvalRuntime.handleCommand({
+      command,
+      correlationId: "corr-concurrent-1",
+      occurredAt: now,
+    });
+    await broker.waitForSubmit();
+
+    const second = await approvalRuntime.handleCommand({
+      command,
+      correlationId: "corr-concurrent-2",
+      occurredAt: now,
+    });
+
+    expect(second).toMatchObject({
+      status: "APPROVAL_SUBMISSION_BLOCKED",
+      brokerSubmitted: false,
+      stateChanged: false,
+      reasonCode: "m21_proposal_submission_already_reserved",
+      trace: {
+        store_status: "PROPOSAL_ALREADY_RESERVED",
+        reserved_notional_krw: "10000",
+      },
+    });
+    expect(broker.submissions).toHaveLength(1);
+
+    broker.release();
+    await expect(first).resolves.toMatchObject({
+      status: "APPROVAL_SUBMITTED",
+      brokerSubmitted: true,
+    });
+    expect(broker.submissions).toHaveLength(1);
+    expect(proposalStore.listEvidence("proposal-concurrent-reserve").map((event) => event.evidenceKind)).toEqual([
+      "SUBMISSION_RECHECK_PASSED",
+      "SUBMISSION_RECHECK_PASSED",
+      "BROKER_SUBMISSION_RECORDED",
+    ]);
   });
 
   it("만료된 proposal 승인은 expiration evidence만 남기고 broker를 호출하지 않는다", async () => {
@@ -1256,26 +1466,12 @@ function createTelegramRuntime(options: {
   failLiveApprovalAudit?: boolean | "broker_submission" | "submission_failure" | "expiration";
   processingNow?: string;
 }) {
-  const auditLog = {
-    async appendEvent(event) {
-      const evidenceKind = event.metadata?.evidence_kind;
-      if (
-        event.eventType === "LIVE_ORDER_APPROVAL" &&
-        (options.failLiveApprovalAudit === true ||
-          (options.failLiveApprovalAudit === "broker_submission" && evidenceKind === "BROKER_SUBMISSION_RECORDED") ||
-          (options.failLiveApprovalAudit === "submission_failure" && evidenceKind === "SUBMISSION_FAILURE_RECORDED") ||
-          (options.failLiveApprovalAudit === "expiration" && evidenceKind === "EXPIRATION_RECORDED"))
-      ) {
-        throw new Error("fake live approval audit append failure");
-      }
-
-      options.auditEvents.push(event);
-      return {
-        auditEventId: `audit-${options.auditEvents.length}`,
-        appendedAt: now,
-      };
-    },
-  } satisfies AuditLogPort;
+  const auditLog = createAuditLog({
+    auditEvents: options.auditEvents,
+    ...(options.failLiveApprovalAudit === undefined
+      ? {}
+      : { failLiveApprovalAudit: options.failLiveApprovalAudit }),
+  });
 
   return createTelegramInboundCommandRuntime({
     allowlist: {
@@ -1317,6 +1513,32 @@ function createTelegramRuntime(options: {
     }),
     clock: () => new Date(options.processingNow ?? now),
   });
+}
+
+function createAuditLog(options: {
+  auditEvents: AuditEvent[];
+  failLiveApprovalAudit?: boolean | "broker_submission" | "submission_failure" | "expiration";
+}): AuditLogPort {
+  return {
+    async appendEvent(event) {
+      const evidenceKind = event.metadata?.evidence_kind;
+      if (
+        event.eventType === "LIVE_ORDER_APPROVAL" &&
+        (options.failLiveApprovalAudit === true ||
+          (options.failLiveApprovalAudit === "broker_submission" && evidenceKind === "BROKER_SUBMISSION_RECORDED") ||
+          (options.failLiveApprovalAudit === "submission_failure" && evidenceKind === "SUBMISSION_FAILURE_RECORDED") ||
+          (options.failLiveApprovalAudit === "expiration" && evidenceKind === "EXPIRATION_RECORDED"))
+      ) {
+        throw new Error("fake live approval audit append failure");
+      }
+
+      options.auditEvents.push(event);
+      return {
+        auditEventId: `audit-${options.auditEvents.length}`,
+        appendedAt: now,
+      };
+    },
+  } satisfies AuditLogPort;
 }
 
 function createThrowingSubmittedTransitionStore(store: TestProposalStore): TestProposalStore {
@@ -1379,6 +1601,10 @@ class FakeBroker implements BrokerPort {
 
   public async submitOrder(order: OrderSubmission): Promise<BrokerOrder> {
     this.submissions.push(order);
+    return this.createAcceptedOrder(order);
+  }
+
+  protected createAcceptedOrder(order: OrderSubmission): BrokerOrder {
     return {
       brokerOrderId: `broker-order-${this.submissions.length}`,
       idempotencyKey: order.intent.idempotencyKey,
@@ -1416,6 +1642,38 @@ class FakeBroker implements BrokerPort {
       balances: [],
       capturedAt: now,
     };
+  }
+}
+
+class BlockingBroker extends FakeBroker {
+  private readonly submittedPromise: Promise<void>;
+  private readonly releasePromise: Promise<void>;
+  private notifySubmitted: () => void = () => {};
+  private notifyRelease: () => void = () => {};
+
+  public constructor() {
+    super();
+    this.submittedPromise = new Promise((resolve) => {
+      this.notifySubmitted = resolve;
+    });
+    this.releasePromise = new Promise((resolve) => {
+      this.notifyRelease = resolve;
+    });
+  }
+
+  public waitForSubmit(): Promise<void> {
+    return this.submittedPromise;
+  }
+
+  public release(): void {
+    this.notifyRelease();
+  }
+
+  public override async submitOrder(order: OrderSubmission): Promise<BrokerOrder> {
+    this.submissions.push(order);
+    this.notifySubmitted();
+    await this.releasePromise;
+    return this.createAcceptedOrder(order);
   }
 }
 
