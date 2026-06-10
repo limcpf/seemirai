@@ -12,7 +12,6 @@ YYYY-MM-DD-topic.md
 
 ## 활성 계획
 
-- [`2026-06-10-issue-180-m22-live-autonomous-small-budget.md`](./2026-06-10-issue-180-m22-live-autonomous-small-budget.md): Issue #180 M22 제한적 완전 자동매매 sub PR orchestration.
 - [`2026-06-07-issue-165-m19-subpr-orchestration.md`](./2026-06-07-issue-165-m19-subpr-orchestration.md): Issue #165 M19 자동 매도와 포지션 축소 sub PR orchestration.
 - [`2026-06-07-issue-165-subpr-01-contracts-rules-deepseek-handoff.md`](./2026-06-07-issue-165-subpr-01-contracts-rules-deepseek-handoff.md): Issue #165 Sub PR 01 exit contract와 rule 구현 handoff.
 - [`2026-06-07-issue-165-subpr-02-evidence-runtime-deepseek-handoff.md`](./2026-06-07-issue-165-subpr-02-evidence-runtime-deepseek-handoff.md): Issue #165 Sub PR 02 evidence/runtime integration handoff.
