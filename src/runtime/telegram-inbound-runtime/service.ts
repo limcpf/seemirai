@@ -670,7 +670,9 @@ async function executeLiveOrderApprovalCommandSafely(
     const result = await options.liveOrderApprovalRuntime.handleCommand({
       command,
       correlationId,
-      occurredAt: message.receivedAt,
+      // approval TTL과 recheck는 Telegram backlog 시각이 아니라 실제 처리 시각으로 평가해야 stale 승인이 제출로 승격되지 않는다.
+      occurredAt: (options.clock ?? (() => new Date()))().toISOString(),
+      messageReceivedAt: message.receivedAt,
       actorHash: hashTelegramInboundIdentifier(message.userId ?? message.chatId),
       ...(dedupeKey === undefined ? {} : { dedupeKey }),
     });

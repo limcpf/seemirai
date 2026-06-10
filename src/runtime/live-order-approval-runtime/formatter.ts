@@ -62,6 +62,9 @@ function statusLine(result: LiveOrderApprovalCommandRuntimeResult): string {
     case "APPROVAL_SUBMISSION_BLOCKED":
       return "상태: 제출 직전 재검증이 실패해 live 주문을 제출하지 않았습니다.";
     case "APPROVAL_SUBMISSION_FAILED":
+      if (result.brokerSubmitted) {
+        return "상태: live 주문 제출 후 기록 검증이 실패해 성공 처리하지 않았습니다.";
+      }
       return "상태: live 주문 제출이 실패해 성공 주문으로 처리하지 않았습니다.";
     case "APPROVAL_RECORD_FAILED":
     case "REJECTION_RECORD_FAILED":
@@ -77,6 +80,9 @@ function causeLine(result: LiveOrderApprovalCommandRuntimeResult): string {
     case "REJECTION_RECORD_FAILED":
       return "원인: 현재 proposal 상태 또는 fingerprint가 명령 처리 중 변경됐습니다.";
     case "APPROVAL_SUBMISSION_FAILED":
+      if (result.reasonCode === "m21_broker_submission_audit_append_failed") {
+        return "원인: broker 제출 후 최종 audit 기록을 완료하지 못했습니다.";
+      }
       return "원인: broker 제출 또는 제출 실패 evidence 기록 중 오류가 발생했습니다.";
     default:
       return `원인: ${result.reasonCode}`;
@@ -128,6 +134,8 @@ function violationMessage(reasonCode: string): string {
       return "현재 허용된 market이 아닙니다.";
     case "m21_order_type_not_supported":
       return "현재 pilot은 지정가 주문만 허용합니다.";
+    case "m21_order_notional_mismatch":
+      return "proposal 금액과 실제 제출 가격·수량으로 계산한 금액이 일치하지 않습니다.";
     case "m21_order_notional_exceeds_limit":
       return "주문 금액이 단일 주문 한도를 초과했습니다.";
     case "m21_daily_budget_exceeded":

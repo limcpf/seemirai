@@ -279,6 +279,7 @@ async function approveAndSubmitProposal(
     reasonCode: "m21_submission_recheck_passed",
     metadata: {
       correlation_id: input.correlationId,
+      ...(input.messageReceivedAt === undefined ? {} : { telegram_message_received_at: input.messageReceivedAt }),
       recheck_observed_at: recheck.observedAt,
       reference_price: recheck.referencePrice,
       daily_approved_notional_used_krw: recheck.dailyApprovedNotionalUsedKrw,
@@ -354,7 +355,20 @@ async function approveAndSubmitProposal(
     });
   }
 
-  await appendApprovalAuditSafely(options, submitted.evidence, input.correlationId);
+  if (!(await appendApprovalAuditSafely(options, submitted.evidence, input.correlationId))) {
+    return createResult({
+      status: "APPROVAL_SUBMISSION_FAILED",
+      proposalId: approvedProposal.proposalId,
+      brokerSubmitted: true,
+      stateChanged: true,
+      reasonCode: "m21_broker_submission_audit_append_failed",
+      evidence: [approval.evidence, recheckEvidence, submitted.evidence],
+      brokerOrder,
+      trace: {
+        audit_status: "append_failed",
+      },
+    });
+  }
   return createResult({
     status: "APPROVAL_SUBMITTED",
     proposalId: approvedProposal.proposalId,
@@ -462,6 +476,9 @@ async function recordStatusTransition(
     metadata: {
       correlation_id: input.input.correlationId,
       ...(input.input.dedupeKey === undefined ? {} : { dedupe_key: input.input.dedupeKey }),
+      ...(input.input.messageReceivedAt === undefined
+        ? {}
+        : { telegram_message_received_at: input.input.messageReceivedAt }),
       ...(input.metadata ?? {}),
     },
   });

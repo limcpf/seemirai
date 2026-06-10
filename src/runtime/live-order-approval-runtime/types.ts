@@ -16,13 +16,15 @@ import type { LiveManualApprovalRuntimeConfig } from "../live-manual-approval-co
 /**
  * M21 approval command runtime 입력이다.
  *
- * Telegram runtime은 parser/auth/dedupe/audit을 먼저 통과한 뒤 이 구조를 넘긴다. actor는 raw chat/user id가 아니라 hash
- * projection이어야 하며, 이 입력 자체는 broker 호출 여부를 결정하지 않는다.
+ * Telegram runtime은 parser/auth/dedupe/audit을 먼저 통과한 뒤 이 구조를 넘긴다. `occurredAt`은 approval 처리 시각이어야
+ * stale backlog가 만료된 proposal을 제출하지 못하며, Telegram message 시각은 `messageReceivedAt` safe metadata로만 보존한다.
+ * actor는 raw chat/user id가 아니라 hash projection이어야 하며, 이 입력 자체는 broker 호출 여부를 결정하지 않는다.
  */
 export interface LiveOrderApprovalCommandRuntimeInput {
   command: ParsedTelegramInboundCommand;
   correlationId: string;
   occurredAt: string;
+  messageReceivedAt?: string;
   actorHash?: string;
   dedupeKey?: string;
 }
@@ -197,6 +199,7 @@ export type LiveOrderApprovalSubmissionRecheckViolation =
   | "m21_proposal_not_approved"
   | "m21_market_not_allowed"
   | "m21_order_type_not_supported"
+  | "m21_order_notional_mismatch"
   | "m21_order_notional_exceeds_limit"
   | "m21_daily_budget_exceeded"
   | "m21_risk_not_approved"

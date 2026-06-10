@@ -69,9 +69,12 @@ Codex-native 운영은 Codex, Git, GitHub, shell command, 문서 상태를 연�
   통과해야 하며, proposal 상태 전이는 durable append-only evidence로 남긴 뒤 현재 상태와 일치할 때만 전진한다.
 - M21 startup guard는 `telegram.inbound.enabled` flag만 보지 않고, bot token과 owner allowlist까지 해결된 M20 inbound readiness를
   입력으로 받아야 한다. M20 inbound readiness와 reconcile freshness는 config opt-out으로 낮출 수 없는 필수 guard다.
-- proposal TTL이 만료되면 approval command가 도착해도 `EXPIRED` evidence로 수렴하고 제출하지 않는다.
+- proposal TTL은 Telegram message 시각이 아니라 approval 처리 시각으로 판단한다. backlog에 쌓인 approval command가 처리 시점에
+  이미 만료됐으면 `EXPIRED` evidence로 수렴하고 제출하지 않는다.
 - approval evidence가 있어도 제출 직전 risk gate, kill switch, reconcile freshness, budget, market allowlist, order type, price
-  deviation을 재검증한다. 재검증 실패는 `SUBMISSION_FAILED` evidence로 남기고 live broker에 위임하지 않는다.
+  deviation을 재검증한다. budget guard는 broker에 넘길 `requestedPrice * requestedVolume`을 다시 계산해 proposal
+  `expectedNotionalKrw`와 일치하고 한도 이하인지 확인한다. 재검증 실패는 `SUBMISSION_FAILED` evidence로 남기고 live broker에
+  위임하지 않는다.
 - `SUBMISSION_RECHECK_PASSED` evidence가 proposal store와 audit projection에 append된 뒤에만 broker submit으로 넘어간다. Telegram
   duplicate command는 M20 dedupe에서 닫고, proposal store는 expected status와 fingerprint를 비교해 stale approval race를 차단한다.
 - broker submission 결과는 proposal, approval, risk decision, broker submission evidence chain으로 추적 가능해야 한다. audit

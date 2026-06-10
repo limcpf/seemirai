@@ -39,14 +39,35 @@ export function evaluateLiveOrderApprovalSubmissionRecheck(
   }
 
   const expectedNotional = parseGuardDecimal(proposal.expectedNotionalKrw);
+  const submittedNotional = calculateSubmittedNotional(proposal.requestedPrice, proposal.requestedVolume);
+  if (
+    !expectedNotional.isFinite() ||
+    !submittedNotional.isFinite() ||
+    submittedNotional.lte(0) ||
+    !submittedNotional.eq(expectedNotional)
+  ) {
+    violations.push("m21_order_notional_mismatch");
+  }
+
   const maxOrder = parseGuardDecimal(config.max_order_krw);
-  if (!expectedNotional.isFinite() || !maxOrder.isFinite() || expectedNotional.gt(maxOrder)) {
+  if (
+    !expectedNotional.isFinite() ||
+    !submittedNotional.isFinite() ||
+    !maxOrder.isFinite() ||
+    expectedNotional.gt(maxOrder) ||
+    submittedNotional.gt(maxOrder)
+  ) {
     violations.push("m21_order_notional_exceeds_limit");
   }
 
   const dailyUsed = parseGuardDecimal(snapshot.dailyApprovedNotionalUsedKrw);
   const dailyLimit = parseGuardDecimal(config.daily_approved_notional_limit_krw);
-  if (!dailyUsed.isFinite() || !dailyLimit.isFinite() || dailyUsed.plus(expectedNotional).gt(dailyLimit)) {
+  if (
+    !dailyUsed.isFinite() ||
+    !dailyLimit.isFinite() ||
+    !submittedNotional.isFinite() ||
+    dailyUsed.plus(submittedNotional).gt(dailyLimit)
+  ) {
     violations.push("m21_daily_budget_exceeded");
   }
 
@@ -93,6 +114,16 @@ function calculatePriceDeviationBps(requestedPrice: string, referencePrice: stri
   }
 
   return requested.minus(reference).abs().div(reference).mul(10_000);
+}
+
+function calculateSubmittedNotional(requestedPrice: string, requestedVolume: string): Decimal {
+  const price = parseGuardDecimal(requestedPrice);
+  const volume = parseGuardDecimal(requestedVolume);
+  if (!price.isFinite() || !volume.isFinite()) {
+    return new Decimal(Number.NaN);
+  }
+
+  return price.mul(volume);
 }
 
 function parseGuardDecimal(value: string): Decimal {
