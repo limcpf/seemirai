@@ -72,6 +72,8 @@ Codex-native 운영은 Codex, Git, GitHub, shell command, 문서 상태를 연�
 - proposal TTL이 만료되면 approval command가 도착해도 `EXPIRED` evidence로 수렴하고 제출하지 않는다.
 - approval evidence가 있어도 제출 직전 risk gate, kill switch, reconcile freshness, budget, market allowlist, order type, price
   deviation을 재검증한다. 재검증 실패는 `SUBMISSION_FAILED` evidence로 남기고 live broker에 위임하지 않는다.
+- `SUBMISSION_RECHECK_PASSED` evidence가 proposal store와 audit projection에 append된 뒤에만 broker submit으로 넘어간다. Telegram
+  duplicate command는 M20 dedupe에서 닫고, proposal store는 expected status와 fingerprint를 비교해 stale approval race를 차단한다.
 - broker submission 결과는 proposal, approval, risk decision, broker submission evidence chain으로 추적 가능해야 한다. audit
   append나 submission evidence 저장에 실패하면 주문 성공으로 취급하지 않는다.
 

@@ -1,4 +1,5 @@
 export {
+  telegramInboundApprovalCommands,
   telegramInboundControlCommands,
   telegramInboundReadOnlyCommands,
   telegramInboundCommandJobType,

@@ -623,7 +623,8 @@ Acceptance Criteria:
 - 단위 테스트: M21 config 기본 비활성, allowed market, 예산/TTL/price deviation guard를 검증한다.
 - 단위 테스트: proposal fingerprint와 상태 전이가 stale/duplicate approval을 차단하는지 확인한다.
 - 단위 테스트: approval/reject audit projection이 raw Telegram text와 secret-like metadata를 저장하지 않는지 확인한다.
-- 통합 테스트: fake Telegram approval runtime에서 duplicate/expired/rejected/submitted proposal이 broker 호출 전에 닫히는지 확인한다.
+- 통합 테스트: fake Telegram approval runtime에서 duplicate/expired/rejected/submitted proposal이 broker 호출 전에 닫히고, recheck
+  통과 approval만 fake broker로 제출되는지 확인한다.
 - source scan: `/approve`, `/reject`, `submitOrder(`, `POST /v1/orders`, `DELETE /v1/order`, `LIVE_AUTONOMOUS` 경로가 M21 범위와
   증거 chain 밖에서 열리지 않았는지 확인한다.
 

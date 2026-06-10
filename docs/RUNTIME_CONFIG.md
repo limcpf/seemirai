@@ -512,6 +512,19 @@ risk decision id, cost snapshot, idempotency key, operator-facing summary, `expi
 fingerprint를 함께 남겨 stale proposal 재승인과 중복 주문을 broker 호출 전에 차단한다. `expiresAt`은 같은 instant의 다른 ISO
 표기가 같은 fingerprint를 만들도록 정규화한다.
 
+Telegram approval runtime 기준:
+
+- `/approve <proposal_id>`와 `/reject <proposal_id>`는 M20 parser/auth/dedupe/audit/reply 경계를 그대로 통과한 뒤 M21 proposal
+  store로 전달된다.
+- `/reject`는 `REJECTION_RECORDED` evidence만 남기고 broker를 호출하지 않는다.
+- `/approve`는 `APPROVAL_RECORDED` evidence를 먼저 남긴 뒤 risk decision, kill switch, reconcile freshness, daily budget,
+  market allowlist, order type, idempotency key, price deviation을 재검증한다.
+- 재검증이 통과하면 `SUBMISSION_RECHECK_PASSED` evidence를 기록한 뒤에만 `BrokerPort.submitOrder`를 호출하고,
+  broker 성공 결과는 `BROKER_SUBMISSION_RECORDED` evidence로 남긴다.
+- approval 또는 재검증 통과 evidence의 audit projection이 실패하면 live broker 호출 전에 `SUBMISSION_FAILURE_RECORDED`로 닫는다.
+- 재검증 실패, 만료, 상태/fingerprint mismatch, broker 실패는 `UpbitLiveBroker.submitOrder` 호출 전 또는 성공 처리 전에
+  fail-closed 하며, 가능한 경우 `EXPIRATION_RECORDED` 또는 `SUBMISSION_FAILURE_RECORDED` evidence로 수렴한다.
+
 ## M9 Paper 매매 이벤트 Telegram 알림
 
 구현 기준:

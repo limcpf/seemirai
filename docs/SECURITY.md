@@ -98,6 +98,8 @@
   시작하지 않는다.
 - `/approve <proposal_id>`와 `/reject <proposal_id>`는 raw Telegram text, raw provider body, token, API key, JWT를 log/audit/status에
   저장하지 않는다. audit에는 command/proposal id, hashed caller, dedupe key, proposal fingerprint 같은 safe projection만 남긴다.
+- approval runtime은 raw chat/user id 대신 M20 hash projection을 actor로 사용하며, 동일 Telegram update/message 재전달은 M20
+  dedupe key로 먼저 차단한다.
 - proposal 없이 `/approve`만 수신한 경우, unknown/stale/expired/rejected/submitted proposal인 경우, fingerprint가 다른 경우는
   `UpbitLiveBroker.submitOrder` 호출 전에 fail-closed 한다.
 - 승인 TTL이 남아 있어도 제출 직전 risk gate, kill switch, reconcile freshness, budget, market allowlist, order type, price

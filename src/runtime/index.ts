@@ -99,6 +99,30 @@ export type {
   LiveManualApprovalRuntimeGuardResult,
 } from "./live-manual-approval-config.js";
 export {
+  createInMemoryLiveOrderApprovalProposalStore,
+  createLiveOrderApprovalCommandRuntime,
+  createOrderSubmissionFromLiveOrderProposal,
+  evaluateLiveOrderApprovalSubmissionRecheck,
+  formatLiveOrderApprovalCommandResponse,
+} from "./live-order-approval-runtime.js";
+export type {
+  CreateLiveOrderApprovalCommandRuntimeOptions,
+  LiveOrderApprovalCommandRuntime,
+  LiveOrderApprovalCommandRuntimeInput,
+  LiveOrderApprovalCommandRuntimeResult,
+  LiveOrderApprovalCommandStatus,
+  LiveOrderApprovalProposalEvidenceAppendResult,
+  LiveOrderApprovalProposalStore,
+  LiveOrderApprovalProposalStoreTransitionInput,
+  LiveOrderApprovalProposalTransitionResult,
+  LiveOrderApprovalSubmissionRecheckDecision,
+  LiveOrderApprovalSubmissionRecheckInput,
+  LiveOrderApprovalSubmissionRecheckProvider,
+  LiveOrderApprovalSubmissionRecheckSnapshot,
+  LiveOrderApprovalSubmissionRecheckViolation,
+  RecordLiveOrderApprovalEvidenceInput,
+} from "./live-order-approval-runtime.js";
+export {
   UnsafeLiveReconcileRuntimeError,
   ALLOWED_RECONCILE_KEY_SCOPES,
   FORBIDDEN_RECONCILE_KEY_SCOPES,
