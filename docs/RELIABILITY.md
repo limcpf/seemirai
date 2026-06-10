@@ -63,12 +63,12 @@ Codex-native 운영은 Codex, Git, GitHub, shell command, 문서 상태를 연�
 - proposal은 `PROPOSED`에서 시작하고 `APPROVED`, `REJECTED`, `EXPIRED`, `SUBMITTED`, `SUBMISSION_FAILED` 중 하나로만 전이한다.
   `REJECTED`, `EXPIRED`, `SUBMITTED`, `SUBMISSION_FAILED`는 닫힌 상태이며 재승인이나 재제출을 허용하지 않는다.
 - proposal fingerprint는 market, side, limit price, volume, expected notional, 예산 snapshot, decision ledger id, risk decision id,
-  cost snapshot, idempotency key, expires_at을 기준으로 만든다. fingerprint mismatch는 stale approval로 보고 broker 호출 전에
-  차단한다.
+  cost snapshot, idempotency key, expires_at을 기준으로 만든다. expires_at은 같은 instant의 ISO 표기 차이가 fingerprint mismatch를
+  만들지 않도록 정규화하며, fingerprint mismatch는 stale approval로 보고 broker 호출 전에 차단한다.
 - 같은 proposal id 또는 idempotency key는 중복 live order를 만들 수 없다. Telegram update/message 재전달은 M20 dedupe를 먼저
   통과해야 하며, proposal 상태 전이는 durable append-only evidence로 남긴 뒤 현재 상태와 일치할 때만 전진한다.
 - M21 startup guard는 `telegram.inbound.enabled` flag만 보지 않고, bot token과 owner allowlist까지 해결된 M20 inbound readiness를
-  입력으로 받아야 한다.
+  입력으로 받아야 한다. M20 inbound readiness와 reconcile freshness는 config opt-out으로 낮출 수 없는 필수 guard다.
 - proposal TTL이 만료되면 approval command가 도착해도 `EXPIRED` evidence로 수렴하고 제출하지 않는다.
 - approval evidence가 있어도 제출 직전 risk gate, kill switch, reconcile freshness, budget, market allowlist, order type, price
   deviation을 재검증한다. 재검증 실패는 `SUBMISSION_FAILED` evidence로 남기고 live broker에 위임하지 않는다.

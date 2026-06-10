@@ -309,6 +309,7 @@ M19 Sub PR 03 범위:
 - proposal TTL 기본값 300초와 price deviation guard 기본값 30 bps
 - 승인된 주문만 `UpbitLiveBroker` 제출
 - 승인 만료와 중복 승인 방지
+- M20 Telegram inbound readiness와 최신 reconcile 상태 필수 startup guard
 - 제출 직전 risk gate, kill switch, reconcile freshness, budget, market allowlist, order type, price deviation 재검증
 
 완료 조건:

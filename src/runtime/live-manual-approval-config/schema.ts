@@ -28,8 +28,8 @@ export const defaultLiveManualApprovalConfig: {
   daily_approved_notional_limit_krw: string;
   proposal_ttl_seconds: number;
   max_price_deviation_bps: string;
-  require_reconcile_freshness: boolean;
-  require_m20_inbound_enabled: boolean;
+  require_reconcile_freshness: true;
+  require_m20_inbound_enabled: true;
 } = {
   mode: LIVE_ARMED_MANUAL_APPROVAL_MODE,
   enabled: false,
@@ -61,9 +61,10 @@ export const LiveManualApprovalConfigSchema = z
     max_price_deviation_bps: NonNegativeDecimalStringSchema.default(
       defaultLiveManualApprovalConfig.max_price_deviation_bps,
     ),
-    require_reconcile_freshness: z.boolean().default(defaultLiveManualApprovalConfig.require_reconcile_freshness),
-    require_m20_inbound_enabled: z.boolean().default(defaultLiveManualApprovalConfig.require_m20_inbound_enabled),
+    require_reconcile_freshness: z.literal(true).default(defaultLiveManualApprovalConfig.require_reconcile_freshness),
+    require_m20_inbound_enabled: z.literal(true).default(defaultLiveManualApprovalConfig.require_m20_inbound_enabled),
   })
+  .strict()
   .default(defaultLiveManualApprovalConfig)
   .superRefine((config, context) => {
     validateUniqueMarkets(config.allowed_markets, context);

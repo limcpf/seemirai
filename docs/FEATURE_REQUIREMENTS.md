@@ -612,6 +612,7 @@ Acceptance Criteria:
 - [ ] expired/rejected/submitted proposal 재승인은 broker 호출 전에 fail-closed 한다.
 - [ ] 같은 Telegram update/message/command 재전달은 중복 승인 또는 중복 주문을 만들지 않는다.
 - [ ] 승인 직후 제출 전에 risk gate, kill switch, reconcile status, budget, order type, market allowlist, price deviation을 재검증한다.
+- [ ] M20 inbound readiness와 reconcile freshness는 필수 startup guard이며 config 값으로 비활성화할 수 없다.
 - [ ] 모든 제출 주문은 proposal, approval, risk decision, broker submission evidence를 가진다.
 - [ ] approval/reject audit에는 raw Telegram text, raw provider body, token, API key, JWT가 저장되지 않는다.
 - [ ] 기본 `PAPER_NO_KEY` runtime은 live order API 호출 0회를 유지한다.

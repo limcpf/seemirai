@@ -3,7 +3,7 @@ import type { AuditEvent } from "../ports/index.js";
 import type { JsonRecord } from "../../domain/index.js";
 
 const SENSITIVE_METADATA_KEY_PATTERN =
-  /(?:authorization|credential|jwt|secret|signature|token|access[_-]?key|upbitaccesskey|upbitsecretkey|raw[_-]?text|provider[_-]?body)/iu;
+  /(?:authorization|credential|jwt|secret|signature|token|api[_-]?key|access[_-]?key|upbitaccesskey|upbitsecretkey|raw[_-]?text|provider[_-]?body)/iu;
 
 /**
  * M21 approval evidence를 audit event로 변환할 때 필요한 입력이다.

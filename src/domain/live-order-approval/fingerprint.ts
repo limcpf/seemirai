@@ -81,7 +81,10 @@ function normalizeFinancialDecimalString(value: NumericString): NumericString {
 }
 
 function toTimestampString(timestamp: LiveOrderProposalContract["expiresAt"]): string {
-  return timestamp instanceof Date ? timestamp.toISOString() : timestamp;
+  const date = timestamp instanceof Date ? timestamp : new Date(timestamp);
+
+  // proposal은 저장/복원 경계를 지날 수 있으므로 같은 instant의 다른 ISO 표기가 stale approval로 오판되지 않게 정규화한다.
+  return Number.isNaN(date.getTime()) ? String(timestamp) : date.toISOString();
 }
 
 function stableStringify(input: unknown): string {

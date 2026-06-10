@@ -309,6 +309,29 @@ describe("runtime config", () => {
         },
       }),
     ).toThrow("daily_approved_notional_limit_krw must be greater than or equal to max_order_krw");
+    expect(() =>
+      loadRuntimeConfig({
+        live_manual_approval: {
+          max_order_kwr: "5000",
+        },
+      }),
+    ).toThrow();
+    expect(() =>
+      loadRuntimeConfig({
+        live_manual_approval: {
+          enabled: true,
+          require_m20_inbound_enabled: false,
+        },
+      }),
+    ).toThrow();
+    expect(() =>
+      loadRuntimeConfig({
+        live_manual_approval: {
+          enabled: true,
+          require_reconcile_freshness: false,
+        },
+      }),
+    ).toThrow();
   });
 
   it("loads phase 1.5 manual alt approvals while keeping the maximum approval invariant", () => {

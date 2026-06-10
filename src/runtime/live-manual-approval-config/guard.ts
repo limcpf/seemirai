@@ -112,12 +112,12 @@ function collectLiveManualApprovalRuntimeViolations(input: LiveManualApprovalRun
     return violations;
   }
 
-  if (approvalConfig.require_m20_inbound_enabled && !input.telegramInboundReady) {
+  if (!input.telegramInboundReady) {
     // approval command는 token과 owner allowlist까지 해결된 M20 inbound 경계를 재사용해야 하므로 단순 enabled flag만 믿지 않는다.
     violations.push("M21 수동 승인 live pilot에는 M20 Telegram inbound 활성화가 필요합니다");
   }
 
-  if (approvalConfig.require_reconcile_freshness && !input.reconcileFresh) {
+  if (!input.reconcileFresh) {
     // stale reconcile 상태에서 승인 TTL만 믿고 제출하면 잔고/미체결 불일치를 주문으로 확대할 수 있어 시작 전에 차단한다.
     violations.push("M21 수동 승인 live pilot에는 최신 reconcile 상태가 필요합니다");
   }

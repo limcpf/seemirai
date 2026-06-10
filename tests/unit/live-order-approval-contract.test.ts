@@ -35,6 +35,7 @@ describe("M21 live order approval contract", () => {
       requestedPrice: "100000",
       requestedVolume: "0.1",
       expectedNotionalKrw: "10000",
+      expiresAt: "2026-06-10T00:05:00Z",
       costSnapshot: {
         a: "1",
         b: "2",
@@ -101,6 +102,7 @@ describe("M21 live order approval contract", () => {
         raw_text: "/approve proposal-001",
         nested: {
           token: "secret-token",
+          apiKey: "secret-api-key",
         },
       },
     });
@@ -114,10 +116,12 @@ describe("M21 live order approval contract", () => {
       raw_text: "[REDACTED]",
       nested: {
         token: "[REDACTED]",
+        apiKey: "[REDACTED]",
       },
     });
     expect(JSON.stringify(evidence.metadata)).not.toContain("/approve proposal-001");
     expect(JSON.stringify(evidence.metadata)).not.toContain("secret-token");
+    expect(JSON.stringify(evidence.metadata)).not.toContain("secret-api-key");
     expect(auditEvent).toMatchObject({
       eventType: "LIVE_ORDER_APPROVAL",
       severity: "INFO",
@@ -133,12 +137,14 @@ describe("M21 live order approval contract", () => {
           raw_text: "[REDACTED]",
           nested: {
             token: "[REDACTED]",
+            apiKey: "[REDACTED]",
           },
         },
       },
     });
     expect(JSON.stringify(auditEvent.metadata)).not.toContain("/approve proposal-001");
     expect(JSON.stringify(auditEvent.metadata)).not.toContain("secret-token");
+    expect(JSON.stringify(auditEvent.metadata)).not.toContain("secret-api-key");
   });
 });
 

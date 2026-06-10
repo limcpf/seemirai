@@ -496,18 +496,21 @@ submission runtime이 시작되지 않는다.
 
 설정 기준:
 
+- `live_manual_approval` 하위 알 수 없는 key는 load 단계에서 거부한다. 예산·guard key 오타가 기본값으로 조용히 보정되면
+  live pilot 안전 상한이 운영 의도와 달라질 수 있기 때문이다.
 - `allowed_markets`는 중복 없는 KRW market code 목록이어야 한다. 기본값은 `KRW-BTC`, `KRW-ETH`, `KRW-ETC`다.
 - `max_order_krw`는 Upbit KRW 최소 주문금액 이상이어야 하며 기본값은 `10000`이다.
 - `daily_approved_notional_limit_krw`는 `max_order_krw` 이상이어야 하며 기본값은 `30000`이다.
 - `proposal_ttl_seconds`는 양의 정수이며 기본값은 300초다.
 - `max_price_deviation_bps`는 음수가 아닌 Decimal 문자열이며 기본값은 `30` bps다.
-- `require_m20_inbound_enabled=true`이면 bot token과 owner allowlist까지 해결된 M20 Telegram inbound readiness가 없을 때 M21
-  runtime guard가 fail-closed 한다. 단순 `telegram.inbound.enabled=true`만으로는 준비 완료로 보지 않는다.
-- `require_reconcile_freshness=true`이면 최신 reconcile 상태가 확인되지 않은 상태에서 M21 runtime guard가 fail-closed 한다.
+- `require_m20_inbound_enabled`와 `require_reconcile_freshness`는 반드시 `true`여야 한다. false 값은 load 단계에서 거부하며,
+  bot token/owner allowlist까지 해결된 M20 Telegram inbound readiness와 최신 reconcile 상태가 없으면 runtime guard가
+  fail-closed 한다. 단순 `telegram.inbound.enabled=true`만으로는 준비 완료로 보지 않는다.
 
 Proposal contract는 `proposalId`, market, side, price, volume, expected notional KRW, 예산 snapshot, decision ledger id,
 risk decision id, cost snapshot, idempotency key, operator-facing summary, `expiresAt`을 포함한다. approval evidence는 proposal
-fingerprint를 함께 남겨 stale proposal 재승인과 중복 주문을 broker 호출 전에 차단한다.
+fingerprint를 함께 남겨 stale proposal 재승인과 중복 주문을 broker 호출 전에 차단한다. `expiresAt`은 같은 instant의 다른 ISO
+표기가 같은 fingerprint를 만들도록 정규화한다.
 
 ## M9 Paper 매매 이벤트 Telegram 알림
 

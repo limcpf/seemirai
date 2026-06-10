@@ -8,7 +8,7 @@ import type {
 } from "./types.js";
 
 const SENSITIVE_EVIDENCE_METADATA_KEY_PATTERN =
-  /(?:authorization|credential|jwt|secret|signature|token|access[_-]?key|upbitaccesskey|upbitsecretkey|raw[_-]?text|provider[_-]?body)/iu;
+  /(?:authorization|credential|jwt|secret|signature|token|api[_-]?key|access[_-]?key|upbitaccesskey|upbitsecretkey|raw[_-]?text|provider[_-]?body)/iu;
 
 /**
  * M21 approval evidence 생성 입력이다.
