@@ -7,6 +7,7 @@ export * from "./daily-report/index.js";
 export * from "./exit-engine.js";
 export * from "./execution/index.js";
 export * from "./features.js";
+export * from "./live-autonomous-entry-runtime.js";
 export * from "./live-reconcile.js";
 export * from "./llm-risk-assistant.js";
 export * from "./paper-decision-runner.js";
