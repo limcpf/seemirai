@@ -183,6 +183,17 @@
       "max_consecutive_strategy_losses": 3
     }
   },
+  "live_manual_approval": {
+    "mode": "LIVE_ARMED_MANUAL_APPROVAL",
+    "enabled": false,
+    "allowed_markets": ["KRW-BTC", "KRW-ETH", "KRW-ETC"],
+    "max_order_krw": "10000",
+    "daily_approved_notional_limit_krw": "30000",
+    "proposal_ttl_seconds": 300,
+    "max_price_deviation_bps": "30",
+    "require_reconcile_freshness": true,
+    "require_m20_inbound_enabled": true
+  },
   "telegram": {
     "provider_timeout_ms": 5000,
     "inbound": {

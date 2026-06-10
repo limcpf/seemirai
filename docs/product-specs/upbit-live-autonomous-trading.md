@@ -304,14 +304,21 @@ M19 Sub PR 03 범위:
 
 - order proposal Telegram 알림
 - 승인/거부 command
-- 단일 market 또는 BTC/ETH 소액 budget
+- 첫 허용 market 기본값: `KRW-BTC`, `KRW-ETH`, `KRW-ETC`
+- 1회 주문 상한 기본값 `10000` KRW, 일일 승인 주문 예산 기본값 `30000` KRW
+- proposal TTL 기본값 300초와 price deviation guard 기본값 30 bps
 - 승인된 주문만 `UpbitLiveBroker` 제출
 - 승인 만료와 중복 승인 방지
+- M20 Telegram inbound readiness와 최신 reconcile 상태 필수 startup guard
+- 제출 직전 risk gate, kill switch, reconcile freshness, budget, market allowlist, order type, price deviation 재검증
 
 완료 조건:
 
 - 승인 없는 live 주문 0건
 - 모든 승인 주문은 proposal, approval, risk decision, broker submission evidence를 가진다.
+- proposal 없이 `/approve`만으로 live order가 생성되지 않는다.
+- expired/rejected/submitted proposal 재승인은 broker 호출 전에 fail-closed 한다.
+- 기본 `PAPER_NO_KEY` runtime은 live order API 호출 0회를 유지한다.
 - 최소 1주 운영 중 reconcile mismatch, duplicate order, untracked fill이 없어야 다음 단계로 넘어간다.
 
 ### M22. 제한적 완전 자동매매

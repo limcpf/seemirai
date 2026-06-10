@@ -5,6 +5,7 @@
 구현 기준:
 
 - schema: `src/runtime/config.ts`
+- M21 수동 승인 schema: `src/runtime/live-manual-approval-config.ts`
 - registry 활성화 schema: `src/runtime/registry-config.ts`
 - risk threshold schema: `src/runtime/risk-config.ts`
 - 기본 profile: `config/paper.json`
@@ -36,6 +37,7 @@
 | `registry` | 정적 registry id 참조 | exchange, strategy, rule 활성화 조합 |
 | `strategyParameters` | strategy별 기본 threshold | 전략 후보 생성과 rule 평가에 쓰는 보수적 기준값 |
 | `risk` | M5 리스크 한도 threshold | RiskGate 평가와 상태 전이 audit에 쓰는 보수적 계정/노출/손실 한도 |
+| `live_manual_approval` | `enabled=false`, `LIVE_ARMED_MANUAL_APPROVAL` | M21 수동 승인 live pilot proposal/config guard |
 | `telegram` | `provider_timeout_ms=5000`, optional `chat_id`, `inbound.enabled=false` | Telegram outbound notifier와 M20 inbound polling guard 설정 |
 | `secrets` | 기본 `{}` | schema shape만 표현하며 실제 secret은 저장하지 않음 |
 
@@ -469,6 +471,46 @@ runtime 처리 기준:
   실패 reason만 남기고 raw provider body는 보존하지 않는다.
 - M20은 `/approve`, `/reject`, order proposal approval, 승인된 주문의 live broker 제출, Telegram public webhook endpoint를 만들지
   않는다. 이 경계는 M21 이후 별도 issue에서 다룬다.
+
+## M21 수동 승인 live pilot guard
+
+M21은 자동 주문 후보를 만들 수 있지만, 실제 live 주문 제출은 운영자가 Telegram에서 명시 승인한 proposal만 허용한다. 기본
+`config/paper.json`은 계속 `PAPER_NO_KEY` 안전 profile이며, `live_manual_approval.enabled=false`라서 proposal 생성과 approval
+submission runtime이 시작되지 않는다.
+
+기본 설정:
+
+```json
+{
+  "mode": "LIVE_ARMED_MANUAL_APPROVAL",
+  "enabled": false,
+  "allowed_markets": ["KRW-BTC", "KRW-ETH", "KRW-ETC"],
+  "max_order_krw": "10000",
+  "daily_approved_notional_limit_krw": "30000",
+  "proposal_ttl_seconds": 300,
+  "max_price_deviation_bps": "30",
+  "require_reconcile_freshness": true,
+  "require_m20_inbound_enabled": true
+}
+```
+
+설정 기준:
+
+- `live_manual_approval` 하위 알 수 없는 key는 load 단계에서 거부한다. 예산·guard key 오타가 기본값으로 조용히 보정되면
+  live pilot 안전 상한이 운영 의도와 달라질 수 있기 때문이다.
+- `allowed_markets`는 중복 없는 KRW market code 목록이어야 한다. 기본값은 `KRW-BTC`, `KRW-ETH`, `KRW-ETC`다.
+- `max_order_krw`는 Upbit KRW 최소 주문금액 이상이어야 하며 기본값은 `10000`이다.
+- `daily_approved_notional_limit_krw`는 `max_order_krw` 이상이어야 하며 기본값은 `30000`이다.
+- `proposal_ttl_seconds`는 양의 정수이며 기본값은 300초다.
+- `max_price_deviation_bps`는 음수가 아닌 Decimal 문자열이며 기본값은 `30` bps다.
+- `require_m20_inbound_enabled`와 `require_reconcile_freshness`는 반드시 `true`여야 한다. false 값은 load 단계에서 거부하며,
+  bot token/owner allowlist까지 해결된 M20 Telegram inbound readiness와 최신 reconcile 상태가 없으면 runtime guard가
+  fail-closed 한다. 단순 `telegram.inbound.enabled=true`만으로는 준비 완료로 보지 않는다.
+
+Proposal contract는 `proposalId`, market, side, price, volume, expected notional KRW, 예산 snapshot, decision ledger id,
+risk decision id, cost snapshot, idempotency key, operator-facing summary, `expiresAt`을 포함한다. approval evidence는 proposal
+fingerprint를 함께 남겨 stale proposal 재승인과 중복 주문을 broker 호출 전에 차단한다. `expiresAt`은 같은 instant의 다른 ISO
+표기가 같은 fingerprint를 만들도록 정규화한다.
 
 ## M9 Paper 매매 이벤트 Telegram 알림
 
