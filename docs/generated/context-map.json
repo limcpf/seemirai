@@ -275,6 +275,13 @@
       "owner_scope": "docs/exec-plans/active"
     },
     {
+      "path": "docs/exec-plans/completed/2026-06-10-issue-175-m21-manual-approval-closeout.md",
+      "kind": "exec-plan",
+      "role": "✅ 완료 — Issue #175 M21 수동 승인 live pilot closeout. live_manual_approval 기본 비활성 guard, Telegram approval runtime, evidence chain, guarded submission, source scan, 보안/신뢰성/runtime/product 문서 반영 확인",
+      "read_when": ["issue #175 closeout 확인", "M21 수동 승인 live pilot 완료 증거", "Telegram approval runtime 경계 확인", "M21 source scan 결과 확인", "M22 전환 gate 확인"],
+      "owner_scope": "docs/exec-plans/completed"
+    },
+    {
       "path": "docs/exec-plans/completed/2026-06-10-issue-170-m20-telegram-inbound-closeout.md",
       "kind": "exec-plan",
       "role": "✅ 완료 — Issue #170 M20 Telegram inbound closeout. getUpdates polling, owner allowlist, read-only command, control confirmation, durable dedupe/audit, source scan, 보안/신뢰성/runtime 문서 반영 확인",
