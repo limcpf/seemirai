@@ -105,10 +105,19 @@ export {
   LIVE_AUTONOMOUS_MAX_ORDER_KRW_LIMIT,
   LIVE_AUTONOMOUS_OPEN_POSITION_NOTIONAL_KRW_LIMIT,
   LiveAutonomousConfigSchema,
+  UnsafeLiveAutonomousRuntimeConfigError,
+  assertLiveAutonomousRuntimeReady,
+  createLiveAutonomousRuntimeSafeSummary,
   defaultLiveAutonomousConfig,
+  evaluateLiveAutonomousRuntimeGuard,
   liveAutonomousDefaultAllowedMarkets,
 } from "./live-autonomous-config.js";
-export type { LiveAutonomousRuntimeConfig } from "./live-autonomous-config.js";
+export type {
+  LiveAutonomousRuntimeConfig,
+  LiveAutonomousRuntimeGuardInput,
+  LiveAutonomousRuntimeGuardResult,
+  LiveAutonomousRuntimeSafeSummary,
+} from "./live-autonomous-config.js";
 export {
   createInMemoryLiveOrderApprovalProposalStore,
   createLiveOrderApprovalCommandRuntime,

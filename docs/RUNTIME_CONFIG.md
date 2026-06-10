@@ -6,7 +6,7 @@
 
 - schema: `src/runtime/config.ts`
 - M21 수동 승인 schema: `src/runtime/live-manual-approval-config.ts`
-- M22 제한적 완전 자동매매 schema: `src/runtime/live-autonomous-config.ts`
+- M22 제한적 완전 자동매매 schema/guard: `src/runtime/live-autonomous-config.ts`
 - registry 활성화 schema: `src/runtime/registry-config.ts`
 - risk threshold schema: `src/runtime/risk-config.ts`
 - 기본 profile: `config/paper.json`
@@ -607,6 +607,17 @@ M22는 운영자가 명시적으로 arm 한 소액 예산에서만 자동 entry�
   (`ord_type=best`)은 거래소 호출 전 fail-closed 한다.
 - Upbit 주문 생성 문서 기준 `post_only`는 `smp_type`과 함께 사용할 수 없으므로 이 조합은 provider 호출 전에 차단한다.
 - 기본 `PAPER_NO_KEY` runtime은 M22 config를 읽는 것만으로 live order API를 호출하지 않는다.
+
+Startup guard와 safe summary 기준:
+
+- 구현 경계는 `evaluateLiveAutonomousRuntimeGuard`, `assertLiveAutonomousRuntimeReady`,
+  `createLiveAutonomousRuntimeSafeSummary`다.
+- `enabled=true`라도 M21 1주 gate evidence, operator arm evidence, budget evidence, key scope evidence가 모두 있어야 한다.
+- M20 Telegram inbound readiness, M16 reconcile freshness, M17 PnL status readiness, M18 decision ledger readiness, M19 exit engine
+  readiness가 모두 true여야 한다.
+- safe summary는 evidence id 원문을 노출하지 않고 `m21WeekGateEvidenceConfigured`, `operatorArmEvidenceConfigured`,
+  `budgetEvidenceConfigured`, `keyScopeEvidenceConfigured` boolean으로만 표시한다.
+- guard 실패 결과는 한국어 message/action과 `trace.violations`를 남기지만, private client나 live broker factory를 만들지 않는다.
 
 2026-06-10 공식 문서 재확인:
 

@@ -9,3 +9,14 @@ export {
   liveAutonomousDefaultAllowedMarkets,
 } from "./live-autonomous-config/schema.js";
 export type { LiveAutonomousRuntimeConfig } from "./live-autonomous-config/schema.js";
+export {
+  UnsafeLiveAutonomousRuntimeConfigError,
+  assertLiveAutonomousRuntimeReady,
+  evaluateLiveAutonomousRuntimeGuard,
+} from "./live-autonomous-config/guard.js";
+export type {
+  LiveAutonomousRuntimeGuardInput,
+  LiveAutonomousRuntimeGuardResult,
+} from "./live-autonomous-config/guard.js";
+export { createLiveAutonomousRuntimeSafeSummary } from "./live-autonomous-config/summary.js";
+export type { LiveAutonomousRuntimeSafeSummary } from "./live-autonomous-config/summary.js";
