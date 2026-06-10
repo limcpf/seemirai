@@ -19,13 +19,22 @@ export function formatTelegramStatusCommandResponse(
     `신규 주문: ${snapshot.tradingState.newOrdersBlocked ? "중단됨" : "가능"}`,
     `시장 데이터: ${snapshot.marketData.connectionStatus}, 지연 ${formatNullableNumber(snapshot.marketData.lagMs, "ms")}`,
     `DB 상태: ${snapshot.database.ready ? "준비됨" : "점검 필요"}`,
+    `M22 자동매매: ${snapshot.runtime.liveAutonomous.statusLabel}`,
+    `M22 자동 청산: ${snapshot.liveAutonomousExit.statusLabel} - ${snapshot.liveAutonomousExit.message}`,
     `PnL 상태: ${snapshot.pnl.statusLabel} - ${snapshot.pnl.message}`,
-    `필요 조치: ${firstAction([snapshot.pnl.action, snapshot.paper.action, snapshot.reconcile.actionRequired])}`,
+    `필요 조치: ${firstAction([
+      snapshot.liveAutonomousExit.action,
+      snapshot.runtime.liveAutonomous.action,
+      snapshot.pnl.action,
+      snapshot.paper.action,
+      snapshot.reconcile.actionRequired,
+    ])}`,
     "",
     "추적 정보",
     `요청 ID: ${correlationId}`,
     `생성 시각: ${snapshot.generatedAt}`,
     `kill switch: ${snapshot.tradingState.killSwitchState}`,
+    `M22 exit: ${snapshot.liveAutonomousExit.statusCode}`,
   ]);
 }
 
@@ -166,12 +175,15 @@ export function formatTelegramOrdersCommandResponse(
     `paper 대기 주문: ${formatNullableCount(snapshot.paper.pendingPaperOrderCount, "건")}`,
     `paper 보유 포지션: ${formatNullableCount(snapshot.paper.openPositionCount, "개")}`,
     `실계좌 미체결 주문: ${formatNullableCount(snapshot.reconcile.openOrderCount, "건")}`,
+    `M22 자동 청산: ${snapshot.liveAutonomousExit.statusLabel}`,
+    optionalLine("잔량", snapshot.liveAutonomousExit.remainingQuantity),
     `reconcile 상태: ${snapshot.reconcile.message}`,
-    `필요 조치: ${snapshot.reconcile.actionRequired}`,
+    `필요 조치: ${snapshot.liveAutonomousExit.action ?? snapshot.reconcile.actionRequired}`,
     "",
     "추적 정보",
     `요청 ID: ${correlationId}`,
     `reconcile 결과: ${snapshot.reconcile.result}`,
+    `M22 exit: ${snapshot.liveAutonomousExit.statusCode}`,
     `마지막 reconcile: ${snapshot.reconcile.lastReconcileAt ?? "기록 없음"}`,
   ]);
 }

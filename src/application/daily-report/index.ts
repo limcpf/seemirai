@@ -1,5 +1,6 @@
 export { aggregateDailyReport } from "./aggregator.js";
 export { formatDailyReportSummary } from "./formatter.js";
+export type { FormatDailyReportSummaryOptions } from "./formatter.js";
 export {
   createDailyReportJobPlan,
   dailyReportJobType,
