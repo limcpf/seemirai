@@ -1,3 +1,4 @@
+import { Decimal } from "decimal.js";
 import {
   createLiveOrderProposalFingerprint,
 } from "../../domain/index.js";
@@ -5,12 +6,15 @@ import type {
   LiveOrderApprovalEvidenceSnapshot,
   LiveOrderProposalContract,
 } from "../../domain/index.js";
+import { parseFinancialDecimal } from "../../shared/index.js";
 import type {
+  LiveOrderApprovalDailyBudgetReservationResult,
   LiveOrderApprovalProposalEvidenceAppendResult,
   LiveOrderApprovalProposalStore,
   LiveOrderApprovalProposalStoreTransitionInput,
   LiveOrderApprovalProposalTransitionResult,
   RecordLiveOrderApprovalEvidenceInput,
+  ReserveLiveOrderApprovalDailyBudgetInput,
 } from "./types.js";
 
 /**
@@ -26,6 +30,7 @@ export function createInMemoryLiveOrderApprovalProposalStore(
 } {
   const proposalMap = new Map<string, LiveOrderProposalContract>();
   const evidenceMap = new Map<string, LiveOrderApprovalEvidenceSnapshot[]>();
+  const dailyBudgetReservationMap = new Map<string, string>();
   for (const proposal of proposals) {
     proposalMap.set(proposal.proposalId, cloneProposal(proposal));
     evidenceMap.set(proposal.proposalId, []);
@@ -82,6 +87,14 @@ export function createInMemoryLiveOrderApprovalProposalStore(
         return { status: "NOT_FOUND" };
       }
 
+      if (proposal.status !== input.expectedStatus) {
+        // recheck pass evidence는 승인 상태에서만 broker 직전 증거가 될 수 있어 닫힌 상태에는 append하지 않는다.
+        return {
+          status: "STATUS_MISMATCH",
+          currentStatus: proposal.status,
+        };
+      }
+
       const currentFingerprint = createLiveOrderProposalFingerprint(proposal);
       if (currentFingerprint !== input.expectedFingerprint) {
         return {
@@ -95,6 +108,59 @@ export function createInMemoryLiveOrderApprovalProposalStore(
         status: "RECORDED",
         proposal: cloneProposal(proposal),
         evidence: input.evidence,
+      };
+    },
+    async reserveDailyApprovalBudget(
+      input: ReserveLiveOrderApprovalDailyBudgetInput,
+    ): Promise<LiveOrderApprovalDailyBudgetReservationResult> {
+      const proposal = proposalMap.get(input.proposalId);
+      if (proposal === undefined) {
+        return { status: "NOT_FOUND" };
+      }
+
+      if (proposal.status !== input.expectedStatus) {
+        // 예산 reservation은 broker 제출 직전 마지막 durable gate이므로 승인 상태가 아니면 선점하지 않는다.
+        return {
+          status: "STATUS_MISMATCH",
+          currentStatus: proposal.status,
+        };
+      }
+
+      const currentFingerprint = createLiveOrderProposalFingerprint(proposal);
+      if (currentFingerprint !== input.expectedFingerprint) {
+        return {
+          status: "FINGERPRINT_MISMATCH",
+          currentFingerprint,
+        };
+      }
+
+      const requestedReservation = parseMemoryDecimal(input.reserveNotionalKrw);
+      const dailyUsed = parseMemoryDecimal(input.dailyApprovedNotionalUsedKrw);
+      const dailyLimit = parseMemoryDecimal(input.dailyApprovedNotionalLimitKrw);
+      const alreadyReservedForProposal = parseMemoryDecimal(dailyBudgetReservationMap.get(input.proposalId) ?? "0");
+      const reservedByOthers = sumReservations(dailyBudgetReservationMap).minus(alreadyReservedForProposal);
+      const nextReserved = dailyUsed.plus(reservedByOthers).plus(requestedReservation);
+
+      if (
+        !requestedReservation.isFinite() ||
+        requestedReservation.lte(0) ||
+        !dailyUsed.isFinite() ||
+        !dailyLimit.isFinite() ||
+        !nextReserved.isFinite() ||
+        nextReserved.gt(dailyLimit)
+      ) {
+        return {
+          status: "DAILY_BUDGET_EXCEEDED",
+          reservedNotionalKrw: nextReserved.isFinite() ? nextReserved.toFixed() : "NaN",
+          dailyApprovedNotionalLimitKrw: input.dailyApprovedNotionalLimitKrw,
+        };
+      }
+
+      dailyBudgetReservationMap.set(input.proposalId, requestedReservation.toFixed());
+      return {
+        status: "RECORDED",
+        proposal: cloneProposal(proposal),
+        reservedNotionalKrw: requestedReservation.toFixed(),
       };
     },
     listEvidence(proposalId: string): readonly LiveOrderApprovalEvidenceSnapshot[] {
@@ -115,4 +181,20 @@ function appendEvidence(
 
 function cloneProposal(proposal: LiveOrderProposalContract): LiveOrderProposalContract {
   return JSON.parse(JSON.stringify(proposal)) as LiveOrderProposalContract;
+}
+
+function sumReservations(reservations: Map<string, string>): Decimal {
+  let total = new Decimal(0);
+  for (const value of reservations.values()) {
+    total = total.plus(parseMemoryDecimal(value));
+  }
+  return total;
+}
+
+function parseMemoryDecimal(value: string): Decimal {
+  try {
+    return parseFinancialDecimal(value);
+  } catch {
+    return new Decimal(Number.NaN);
+  }
 }

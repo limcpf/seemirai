@@ -8,12 +8,14 @@ import {
   type TelegramInboundReplyInput,
   type TelegramInboundReplyPort,
 } from "../../src/application/index.js";
-import type {
-  BrokerBalanceSnapshot,
-  BrokerOrder,
-  LiveOrderApprovalEvidenceSnapshot,
-  LiveOrderProposalContract,
-  OrderSubmission,
+import {
+  createLiveOrderApprovalEvidenceSnapshot,
+  createLiveOrderProposalFingerprint,
+  type BrokerBalanceSnapshot,
+  type BrokerOrder,
+  type LiveOrderApprovalEvidenceSnapshot,
+  type LiveOrderProposalContract,
+  type OrderSubmission,
 } from "../../src/domain/index.js";
 import { FakeTelegramPollingProvider } from "../../src/infrastructure/index.js";
 import {
@@ -487,6 +489,196 @@ describe("M21 Telegram live order approval runtime", () => {
     expect(replies[0]?.text).toContain("broker 제출 후 제출 evidence 기록을 완료하지 못했습니다");
   });
 
+  it("APPROVED 중간 상태에서 approve 재시도 시 guarded submission을 재개한다", async () => {
+    const auditEvents: AuditEvent[] = [];
+    const replies: TelegramInboundReplyInput[] = [];
+    const proposalStore = createInMemoryLiveOrderApprovalProposalStore([
+      createProposal({
+        proposalId: "proposal-approved-resume",
+        status: "APPROVED",
+      }),
+    ]);
+    const broker = new FakeBroker();
+    const runtime = createTelegramRuntime({
+      auditEvents,
+      replies,
+      proposalStore,
+      broker,
+      recheckProvider: new FakeRecheckProvider(),
+    });
+    const pollingRuntime = createTelegramInboundPollingRuntime({
+      pollingProvider: new FakeTelegramPollingProvider([
+        {
+          status: "ok",
+          nextOffset: 44,
+          updates: [
+            {
+              updateId: 43,
+              messageId: 53,
+              chatId: "100",
+              userId: "300",
+              text: "/approve proposal-approved-resume",
+              receivedAt: now,
+            },
+          ],
+        },
+      ]),
+      commandRuntime: runtime,
+      pollingIntervalMs: 1_000,
+      pollingTimeoutSeconds: 20,
+      maxUpdatesPerPoll: 50,
+    });
+
+    const result = await pollingRuntime.runOnce();
+
+    expect(result.handledMessages[0]).toMatchObject({
+      status: "EXECUTED",
+      executed: true,
+      liveOrderApprovalResult: {
+        status: "APPROVAL_SUBMITTED",
+        brokerSubmitted: true,
+      },
+    });
+    expect(broker.submissions).toHaveLength(1);
+    expect(proposalStore.listEvidence("proposal-approved-resume").map((event) => event.evidenceKind)).toEqual([
+      "SUBMISSION_RECHECK_PASSED",
+      "BROKER_SUBMISSION_RECORDED",
+    ]);
+    expect(auditEvents.filter((event) => event.eventType === "LIVE_ORDER_APPROVAL")).toHaveLength(2);
+    expect(replies[0]?.text).toContain("live 주문 제출까지 완료했습니다");
+  });
+
+  it("broker submit 예외는 제출 불확실 실패로 기록해 중복 재승인을 막는다", async () => {
+    const auditEvents: AuditEvent[] = [];
+    const replies: TelegramInboundReplyInput[] = [];
+    const proposalStore = createInMemoryLiveOrderApprovalProposalStore([
+      createProposal({
+        proposalId: "proposal-broker-uncertain",
+        idempotencyKey: "m21-broker-uncertain",
+      }),
+    ]);
+    const broker = new UncertainSubmitBroker();
+    const runtime = createTelegramRuntime({
+      auditEvents,
+      replies,
+      proposalStore,
+      broker,
+      recheckProvider: new FakeRecheckProvider(),
+    });
+    const pollingRuntime = createTelegramInboundPollingRuntime({
+      pollingProvider: new FakeTelegramPollingProvider([
+        {
+          status: "ok",
+          nextOffset: 46,
+          updates: [
+            {
+              updateId: 45,
+              messageId: 55,
+              chatId: "100",
+              userId: "300",
+              text: "/approve proposal-broker-uncertain",
+              receivedAt: now,
+            },
+          ],
+        },
+      ]),
+      commandRuntime: runtime,
+      pollingIntervalMs: 1_000,
+      pollingTimeoutSeconds: 20,
+      maxUpdatesPerPoll: 50,
+    });
+
+    const result = await pollingRuntime.runOnce();
+
+    expect(result.handledMessages[0]).toMatchObject({
+      status: "EXECUTED",
+      executed: true,
+      liveOrderApprovalResult: {
+        status: "APPROVAL_SUBMISSION_FAILED",
+        brokerSubmitted: true,
+        reasonCode: "m21_broker_submission_uncertain",
+        trace: {
+          broker_submission_state: "uncertain",
+          violations: ["m21_broker_submission_uncertain"],
+        },
+      },
+    });
+    expect(broker.submissions).toHaveLength(1);
+    expect(proposalStore.listEvidence("proposal-broker-uncertain").map((event) => event.evidenceKind)).toEqual([
+      "APPROVAL_RECORDED",
+      "SUBMISSION_RECHECK_PASSED",
+      "SUBMISSION_FAILURE_RECORDED",
+    ]);
+    expect(replies[0]?.text).toContain("거래소 도달 여부를 확인하지 못했습니다");
+  });
+
+  it("store는 recheck evidence append에서 expected status와 daily budget reservation을 원자적으로 확인한다", async () => {
+    const closedProposal = createProposal({
+      proposalId: "proposal-closed-append",
+      status: "SUBMISSION_FAILED",
+    });
+    const appendStore = createInMemoryLiveOrderApprovalProposalStore([closedProposal]);
+    const recheckEvidence = createLiveOrderApprovalEvidenceSnapshot({
+      proposal: closedProposal,
+      evidenceKind: "SUBMISSION_RECHECK_PASSED",
+      proposalStatus: "APPROVED",
+      occurredAt: now,
+      reasonCode: "m21_submission_recheck_passed",
+    });
+
+    await expect(
+      appendStore.appendEvidence({
+        proposalId: closedProposal.proposalId,
+        expectedStatus: "APPROVED",
+        expectedFingerprint: createLiveOrderProposalFingerprint(closedProposal),
+        evidence: recheckEvidence,
+      }),
+    ).resolves.toMatchObject({
+      status: "STATUS_MISMATCH",
+      currentStatus: "SUBMISSION_FAILED",
+    });
+
+    const firstProposal = createProposal({
+      proposalId: "proposal-budget-1",
+      status: "APPROVED",
+    });
+    const secondProposal = createProposal({
+      proposalId: "proposal-budget-2",
+      status: "APPROVED",
+    });
+    const budgetStore = createInMemoryLiveOrderApprovalProposalStore([firstProposal, secondProposal]);
+
+    await expect(
+      budgetStore.reserveDailyApprovalBudget({
+        proposalId: firstProposal.proposalId,
+        expectedStatus: "APPROVED",
+        expectedFingerprint: createLiveOrderProposalFingerprint(firstProposal),
+        reserveNotionalKrw: "10000",
+        dailyApprovedNotionalUsedKrw: "0",
+        dailyApprovedNotionalLimitKrw: "15000",
+        observedAt: now,
+      }),
+    ).resolves.toMatchObject({
+      status: "RECORDED",
+      reservedNotionalKrw: "10000",
+    });
+
+    await expect(
+      budgetStore.reserveDailyApprovalBudget({
+        proposalId: secondProposal.proposalId,
+        expectedStatus: "APPROVED",
+        expectedFingerprint: createLiveOrderProposalFingerprint(secondProposal),
+        reserveNotionalKrw: "10000",
+        dailyApprovedNotionalUsedKrw: "0",
+        dailyApprovedNotionalLimitKrw: "15000",
+        observedAt: now,
+      }),
+    ).resolves.toMatchObject({
+      status: "DAILY_BUDGET_EXCEEDED",
+      dailyApprovedNotionalLimitKrw: "15000",
+    });
+  });
+
   it("만료된 proposal 승인은 expiration evidence만 남기고 broker를 호출하지 않는다", async () => {
     const auditEvents: AuditEvent[] = [];
     const replies: TelegramInboundReplyInput[] = [];
@@ -809,6 +1001,13 @@ class FakeBroker implements BrokerPort {
       balances: [],
       capturedAt: now,
     };
+  }
+}
+
+class UncertainSubmitBroker extends FakeBroker {
+  public override async submitOrder(order: OrderSubmission): Promise<BrokerOrder> {
+    this.submissions.push(order);
+    throw new Error("fake uncertain broker submission");
   }
 }
 

@@ -520,11 +520,20 @@ Telegram approval runtime 기준:
 - `/approve`는 `APPROVAL_RECORDED` evidence를 먼저 남긴 뒤 처리 시각 기준 TTL, risk decision, kill switch, reconcile freshness,
   daily budget, market allowlist, order type, `requestedPrice * requestedVolume` 재계산 금액, idempotency key, price deviation을
   재검증한다.
-- 재검증이 통과하면 `SUBMISSION_RECHECK_PASSED` evidence를 기록한 뒤에만 `BrokerPort.submitOrder`를 호출하고,
-  broker 성공 결과는 `BROKER_SUBMISSION_RECORDED` evidence로 남긴다.
+- proposal이 이미 `APPROVED`이면 crash/restart 또는 audit 후 중단에서 복구 중인 상태로 보고 approval evidence를 중복 append하지
+  않고 제출 직전 재검증부터 재개한다. `REJECTED`, `EXPIRED`, `SUBMITTED`, `SUBMISSION_FAILED`는 재개 대상이 아니다.
+- 재검증이 통과하면 proposal store가 expected status `APPROVED`와 fingerprint를 다시 비교한 뒤
+  `SUBMISSION_RECHECK_PASSED` evidence를 기록한다. 이 append가 실패하면 broker 호출로 넘어가지 않는다.
+- broker 호출 직전에는 store가 expected status/fingerprint 비교와 일일 승인 예산 선점을 같은 원자 경계에서 처리해야 한다.
+  reservation이 실패하거나 예산 한도를 넘으면 `SUBMISSION_FAILURE_RECORDED`로 닫고 `BrokerPort.submitOrder`를 호출하지 않는다.
+- `SUBMISSION_RECHECK_PASSED` evidence, audit projection, daily budget reservation이 모두 끝난 뒤에만 `BrokerPort.submitOrder`를
+  호출하고, broker 성공 결과는 `BROKER_SUBMISSION_RECORDED` evidence로 남긴다.
 - approval 또는 재검증 통과 evidence의 audit projection이 실패하면 live broker 호출 전에 `SUBMISSION_FAILURE_RECORDED`로 닫는다.
-- 재검증 실패, 만료, 상태/fingerprint mismatch, broker 실패는 `UpbitLiveBroker.submitOrder` 호출 전 또는 성공 처리 전에
-  fail-closed 하며, 가능한 경우 `EXPIRATION_RECORDED` 또는 `SUBMISSION_FAILURE_RECORDED` evidence로 수렴한다.
+- broker 호출 자체가 예외를 던지면 거래소 도달 여부를 단정할 수 없으므로 미제출로 기록하지 않는다. 결과는
+  `brokerSubmitted=true`, reason `m21_broker_submission_uncertain`, `SUBMISSION_FAILURE_RECORDED` evidence로 남기고 운영자가 reconcile로
+  실제 주문 존재 여부를 확인해야 한다.
+- 재검증 실패, 만료, 상태/fingerprint mismatch, reservation 실패, broker 불확실 결과는 성공 주문으로 처리하지 않으며, 가능한 경우
+  `EXPIRATION_RECORDED` 또는 `SUBMISSION_FAILURE_RECORDED` evidence로 수렴한다.
 
 ## M9 Paper 매매 이벤트 Telegram 알림
 

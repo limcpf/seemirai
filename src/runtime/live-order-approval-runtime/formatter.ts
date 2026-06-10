@@ -62,6 +62,9 @@ function statusLine(result: LiveOrderApprovalCommandRuntimeResult): string {
     case "APPROVAL_SUBMISSION_BLOCKED":
       return "상태: 제출 직전 재검증이 실패해 live 주문을 제출하지 않았습니다.";
     case "APPROVAL_SUBMISSION_FAILED":
+      if (result.reasonCode === "m21_broker_submission_uncertain") {
+        return "상태: broker 제출 결과가 불확실해 성공 주문으로 처리하지 않았습니다.";
+      }
       if (result.brokerSubmitted) {
         return "상태: live 주문 제출 후 기록 검증이 실패해 성공 처리하지 않았습니다.";
       }
@@ -80,6 +83,9 @@ function causeLine(result: LiveOrderApprovalCommandRuntimeResult): string {
     case "REJECTION_RECORD_FAILED":
       return "원인: 현재 proposal 상태 또는 fingerprint가 명령 처리 중 변경됐습니다.";
     case "APPROVAL_SUBMISSION_FAILED":
+      if (result.reasonCode === "m21_broker_submission_uncertain") {
+        return "원인: broker 호출 중 오류가 발생했고 거래소 도달 여부를 확인하지 못했습니다.";
+      }
       if (result.reasonCode === "m21_broker_submission_audit_append_failed") {
         return "원인: broker 제출 후 최종 audit 기록을 완료하지 못했습니다.";
       }
@@ -160,6 +166,12 @@ function violationMessage(reasonCode: string): string {
       return "가격 편차를 계산할 기준 가격이 유효하지 않습니다.";
     case "m21_price_deviation_exceeded":
       return "proposal 가격과 최신 기준 가격의 편차가 허용 범위를 초과했습니다.";
+    case "m21_daily_budget_reservation_failed":
+      return "일일 승인 예산 선점이 현재 proposal 상태와 일치하지 않습니다.";
+    case "m21_daily_budget_reservation_unavailable":
+      return "일일 승인 예산 선점 저장소를 사용할 수 없습니다.";
+    case "m21_broker_submission_uncertain":
+      return "broker 호출 결과가 불확실해 수동 reconcile 확인이 필요합니다.";
     case "m21_submission_recheck_unavailable":
       return "제출 직전 재검증 snapshot을 읽지 못했습니다.";
     case "m21_approval_audit_append_failed":

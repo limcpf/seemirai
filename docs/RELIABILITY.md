@@ -61,7 +61,8 @@ Codex-native 운영은 Codex, Git, GitHub, shell command, 문서 상태를 연�
 ## M21 수동 승인 live pilot 신뢰성 기준
 
 - proposal은 `PROPOSED`에서 시작하고 `APPROVED`, `REJECTED`, `EXPIRED`, `SUBMITTED`, `SUBMISSION_FAILED` 중 하나로만 전이한다.
-  `REJECTED`, `EXPIRED`, `SUBMITTED`, `SUBMISSION_FAILED`는 닫힌 상태이며 재승인이나 재제출을 허용하지 않는다.
+  `APPROVED`는 broker 제출 전 crash/restart에서 재개 가능한 중간 상태이고, `REJECTED`, `EXPIRED`, `SUBMITTED`,
+  `SUBMISSION_FAILED`는 닫힌 상태이며 재승인이나 재제출을 허용하지 않는다.
 - proposal fingerprint는 market, side, limit price, volume, expected notional, 예산 snapshot, decision ledger id, risk decision id,
   cost snapshot, idempotency key, expires_at을 기준으로 만든다. expires_at은 같은 instant의 ISO 표기 차이가 fingerprint mismatch를
   만들지 않도록 정규화하며, fingerprint mismatch는 stale approval로 보고 broker 호출 전에 차단한다.
@@ -77,8 +78,16 @@ Codex-native 운영은 Codex, Git, GitHub, shell command, 문서 상태를 연�
   위임하지 않는다.
 - `SUBMISSION_RECHECK_PASSED` evidence가 proposal store와 audit projection에 append된 뒤에만 broker submit으로 넘어간다. Telegram
   duplicate command는 M20 dedupe에서 닫고, proposal store는 expected status와 fingerprint를 비교해 stale approval race를 차단한다.
+- recheck pass evidence append는 expected status `APPROVED`와 fingerprint를 함께 비교해야 한다. fingerprint만 맞고 상태가 이미
+  닫힌 proposal에는 broker 직전 evidence를 추가하지 않는다.
+- daily budget은 recheck snapshot 확인만으로 끝내지 않고 broker 호출 직전 durable reservation으로 선점한다. store 구현체는
+  expected status/fingerprint 비교와 `dailyApprovedNotionalUsedKrw + 이미 선점된 금액 + 제출 금액 <= daily limit` 검사를 같은
+  원자 경계에서 처리해야 하며, reservation 실패 또는 예산 초과는 broker 호출 전 `SUBMISSION_FAILED`로 수렴한다.
 - broker submission 결과는 proposal, approval, risk decision, broker submission evidence chain으로 추적 가능해야 한다. audit
   append나 submission evidence 저장에 실패하면 주문 성공으로 취급하지 않는다.
+- broker submit 예외는 provider에 도달하지 않았다는 보장이 아니므로 `brokerSubmitted=false`로 기록하지 않는다. 이 경우
+  `m21_broker_submission_uncertain`과 `broker_submission_state=uncertain`을 남기고 같은 proposal 재승인을 막은 뒤 수동 reconcile로
+  실제 거래소 주문 존재 여부를 확인한다.
 
 ## RiskGate append-only 기준
 

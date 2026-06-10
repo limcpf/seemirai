@@ -111,6 +111,7 @@ export type {
   LiveOrderApprovalCommandRuntimeInput,
   LiveOrderApprovalCommandRuntimeResult,
   LiveOrderApprovalCommandStatus,
+  LiveOrderApprovalDailyBudgetReservationResult,
   LiveOrderApprovalProposalEvidenceAppendResult,
   LiveOrderApprovalProposalStore,
   LiveOrderApprovalProposalStoreTransitionInput,
@@ -121,6 +122,7 @@ export type {
   LiveOrderApprovalSubmissionRecheckSnapshot,
   LiveOrderApprovalSubmissionRecheckViolation,
   RecordLiveOrderApprovalEvidenceInput,
+  ReserveLiveOrderApprovalDailyBudgetInput,
 } from "./live-order-approval-runtime.js";
 export {
   UnsafeLiveReconcileRuntimeError,

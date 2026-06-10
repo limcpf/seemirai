@@ -1,4 +1,5 @@
 import { Decimal } from "decimal.js";
+import type { LiveOrderProposalContract } from "../../domain/index.js";
 import { parseFinancialDecimal } from "../../shared/index.js";
 import type {
   LiveOrderApprovalSubmissionRecheckDecision,
@@ -104,6 +105,19 @@ export function evaluateLiveOrderApprovalSubmissionRecheck(
         accepted: false,
         violations,
       };
+}
+
+/**
+ * broker에 실제 전달될 지정가 price * volume 금액을 KRW 문자열로 계산한다.
+ *
+ * proposal의 expected notional은 저장된 projection일 수 있으므로, live broker side effect 직전 reservation/evidence 경계에서는 이
+ * helper로 실제 제출 금액을 다시 계산해야 한다. 유효하지 않은 숫자이면 `null`을 반환하며 외부 side effect는 없다.
+ */
+export function calculateLiveOrderApprovalSubmittedNotionalKrw(
+  proposal: Pick<LiveOrderProposalContract, "requestedPrice" | "requestedVolume">,
+): string | null {
+  const submittedNotional = calculateSubmittedNotional(proposal.requestedPrice, proposal.requestedVolume);
+  return submittedNotional.isFinite() && submittedNotional.gt(0) ? submittedNotional.toFixed() : null;
 }
 
 function calculatePriceDeviationBps(requestedPrice: string, referencePrice: string): Decimal | null {

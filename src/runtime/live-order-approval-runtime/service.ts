@@ -15,12 +15,16 @@ import type {
   LiveOrderProposalContract,
   OrderSubmission,
 } from "../../domain/index.js";
-import { evaluateLiveOrderApprovalSubmissionRecheck } from "./guard.js";
+import {
+  calculateLiveOrderApprovalSubmittedNotionalKrw,
+  evaluateLiveOrderApprovalSubmissionRecheck,
+} from "./guard.js";
 import type {
   CreateLiveOrderApprovalCommandRuntimeOptions,
   LiveOrderApprovalCommandRuntime,
   LiveOrderApprovalCommandRuntimeInput,
   LiveOrderApprovalCommandRuntimeResult,
+  LiveOrderApprovalDailyBudgetReservationResult,
   LiveOrderApprovalProposalTransitionResult,
   LiveOrderApprovalSubmissionRecheckSnapshot,
 } from "./types.js";
@@ -63,6 +67,11 @@ export function createLiveOrderApprovalCommandRuntime(
 
       if (isProposalExpired(proposal, occurredAt)) {
         return expireProposal(options, proposal, input, occurredAt);
+      }
+
+      if (proposal.status === "APPROVED" && input.command.name === "approve") {
+        // 승인 기록 후 crash/restart가 일어났을 수 있으므로 approval을 중복 기록하지 않고 제출 직전 guard부터 재개한다.
+        return submitApprovedProposal(options, proposal, input, occurredAt, []);
       }
 
       if (proposal.status !== "PROPOSED") {
@@ -178,7 +187,7 @@ async function expireProposal(
   input: LiveOrderApprovalCommandRuntimeInput,
   occurredAt: string,
 ): Promise<LiveOrderApprovalCommandRuntimeResult> {
-  if (proposal.status !== "PROPOSED") {
+  if (proposal.status !== "PROPOSED" && proposal.status !== "APPROVED") {
     return createResult({
       status: "PROPOSAL_NOT_APPROVABLE",
       proposalId: proposal.proposalId,
@@ -240,8 +249,16 @@ async function approveAndSubmitProposal(
       violations: ["m21_approval_audit_append_failed"],
     });
   }
-  const approvedProposal = approval.proposal;
+  return submitApprovedProposal(options, approval.proposal, input, occurredAt, [approval.evidence]);
+}
 
+async function submitApprovedProposal(
+  options: CreateLiveOrderApprovalCommandRuntimeOptions,
+  approvedProposal: LiveOrderProposalContract,
+  input: LiveOrderApprovalCommandRuntimeInput,
+  occurredAt: string,
+  priorEvidence: readonly LiveOrderApprovalEvidenceSnapshot[],
+): Promise<LiveOrderApprovalCommandRuntimeResult> {
   let recheck: LiveOrderApprovalSubmissionRecheckSnapshot;
   try {
     recheck = await options.recheckProvider.getSubmissionRecheckSnapshot({
@@ -250,7 +267,7 @@ async function approveAndSubmitProposal(
       observedAt: occurredAt,
     });
   } catch {
-    return recordSubmissionFailure(options, approvedProposal, input, occurredAt, [approval.evidence], {
+    return recordSubmissionFailure(options, approvedProposal, input, occurredAt, priorEvidence, {
       reasonCode: "m21_submission_recheck_unavailable",
       violations: ["m21_submission_recheck_unavailable"],
     });
@@ -263,7 +280,7 @@ async function approveAndSubmitProposal(
   });
 
   if (!recheckDecision.accepted) {
-    return recordSubmissionFailure(options, approvedProposal, input, occurredAt, [approval.evidence], {
+    return recordSubmissionFailure(options, approvedProposal, input, occurredAt, priorEvidence, {
       reasonCode: "m21_submission_recheck_failed",
       violations: [...recheckDecision.violations],
       recheck,
@@ -286,8 +303,10 @@ async function approveAndSubmitProposal(
       risk_decision_id: recheck.riskDecisionId,
     },
   });
+  // recheck 통과 evidence는 broker 직전 증거라서 상태와 fingerprint가 모두 그대로일 때만 durable append한다.
   const recheckAppend = await options.proposalStore.appendEvidence({
     proposalId: approvedProposal.proposalId,
+    expectedStatus: "APPROVED",
     expectedFingerprint: createLiveOrderProposalFingerprint(approvedProposal),
     evidence: recheckEvidence,
   });
@@ -298,14 +317,54 @@ async function approveAndSubmitProposal(
       brokerSubmitted: false,
       stateChanged: true,
       reasonCode: "m21_submission_recheck_evidence_failed",
-      evidence: [approval.evidence],
+      evidence: priorEvidence,
       trace: storeFailureTrace(recheckAppend),
     });
   }
   if (!(await appendApprovalAuditSafely(options, recheckEvidence, input.correlationId))) {
-    return recordSubmissionFailure(options, approvedProposal, input, occurredAt, [approval.evidence, recheckEvidence], {
+    return recordSubmissionFailure(options, approvedProposal, input, occurredAt, [...priorEvidence, recheckEvidence], {
       reasonCode: "m21_recheck_audit_append_failed",
       violations: ["m21_recheck_audit_append_failed"],
+      recheck,
+    });
+  }
+
+  const submittedNotionalKrw = calculateLiveOrderApprovalSubmittedNotionalKrw(approvedProposal);
+  if (submittedNotionalKrw === null) {
+    return recordSubmissionFailure(options, approvedProposal, input, occurredAt, [...priorEvidence, recheckEvidence], {
+      reasonCode: "m21_order_notional_mismatch",
+      violations: ["m21_order_notional_mismatch"],
+      recheck,
+    });
+  }
+
+  let budgetReservation: LiveOrderApprovalDailyBudgetReservationResult;
+  try {
+    // recheck snapshot 이후의 concurrent approval을 막기 위해 broker 호출 직전에 budget을 durable하게 선점한다.
+    budgetReservation = await options.proposalStore.reserveDailyApprovalBudget({
+      proposalId: approvedProposal.proposalId,
+      expectedStatus: "APPROVED",
+      expectedFingerprint: createLiveOrderProposalFingerprint(approvedProposal),
+      reserveNotionalKrw: submittedNotionalKrw,
+      dailyApprovedNotionalUsedKrw: recheck.dailyApprovedNotionalUsedKrw,
+      dailyApprovedNotionalLimitKrw: options.config.daily_approved_notional_limit_krw,
+      observedAt: occurredAt,
+    });
+  } catch {
+    return recordSubmissionFailure(options, approvedProposal, input, occurredAt, [...priorEvidence, recheckEvidence], {
+      reasonCode: "m21_daily_budget_reservation_unavailable",
+      violations: ["m21_daily_budget_reservation_unavailable"],
+      recheck,
+    });
+  }
+  if (budgetReservation.status !== "RECORDED") {
+    return recordSubmissionFailure(options, approvedProposal, input, occurredAt, [...priorEvidence, recheckEvidence], {
+      reasonCode: "m21_daily_budget_reservation_failed",
+      violations: [
+        budgetReservation.status === "DAILY_BUDGET_EXCEEDED"
+          ? "m21_daily_budget_exceeded"
+          : "m21_daily_budget_reservation_failed",
+      ],
       recheck,
     });
   }
@@ -321,9 +380,12 @@ async function approveAndSubmitProposal(
       }),
     );
   } catch {
-    return recordSubmissionFailure(options, approvedProposal, input, occurredAt, [approval.evidence, recheckEvidence], {
-      reasonCode: "m21_broker_submission_failed",
+    // provider 예외만으로 거래소 side effect 부재를 증명할 수 없으므로 불확실 제출로 닫아 중복 재승인을 막는다.
+    return recordSubmissionFailure(options, approvedProposal, input, occurredAt, [...priorEvidence, recheckEvidence], {
+      reasonCode: "m21_broker_submission_uncertain",
+      violations: ["m21_broker_submission_uncertain"],
       recheck,
+      brokerSubmissionUncertain: true,
     });
   }
 
@@ -350,7 +412,7 @@ async function approveAndSubmitProposal(
       brokerSubmitted: true,
       stateChanged: true,
       reasonCode: "m21_broker_submission_evidence_exception",
-      evidence: [approval.evidence, recheckEvidence],
+      evidence: [...priorEvidence, recheckEvidence],
       brokerOrder,
       trace: {
         store_status: "exception",
@@ -365,7 +427,7 @@ async function approveAndSubmitProposal(
       brokerSubmitted: true,
       stateChanged: true,
       reasonCode: "m21_broker_submission_evidence_failed",
-      evidence: [approval.evidence, recheckEvidence],
+      evidence: [...priorEvidence, recheckEvidence],
       brokerOrder,
       trace: storeFailureTrace(submitted),
     });
@@ -378,7 +440,7 @@ async function approveAndSubmitProposal(
       brokerSubmitted: true,
       stateChanged: true,
       reasonCode: "m21_broker_submission_audit_append_failed",
-      evidence: [approval.evidence, recheckEvidence, submitted.evidence],
+      evidence: [...priorEvidence, recheckEvidence, submitted.evidence],
       brokerOrder,
       trace: {
         audit_status: "append_failed",
@@ -391,7 +453,7 @@ async function approveAndSubmitProposal(
     brokerSubmitted: true,
     stateChanged: true,
     reasonCode: "m21_broker_submission_recorded",
-    evidence: [approval.evidence, recheckEvidence, submitted.evidence],
+    evidence: [...priorEvidence, recheckEvidence, submitted.evidence],
     brokerOrder,
   });
 }
@@ -406,6 +468,7 @@ async function recordSubmissionFailure(
     reasonCode: string;
     violations?: readonly string[];
     recheck?: LiveOrderApprovalSubmissionRecheckSnapshot;
+    brokerSubmissionUncertain?: boolean;
   },
 ): Promise<LiveOrderApprovalCommandRuntimeResult> {
   const recorded = await recordStatusTransition(options, {
@@ -418,6 +481,7 @@ async function recordSubmissionFailure(
     metadata: {
       correlation_id: input.correlationId,
       ...(failure.violations === undefined ? {} : { violations: [...failure.violations] }),
+      ...(failure.brokerSubmissionUncertain === true ? { broker_submission_state: "uncertain" } : {}),
       ...(failure.recheck === undefined
         ? {}
         : {
@@ -432,7 +496,7 @@ async function recordSubmissionFailure(
     return createResult({
       status: "APPROVAL_SUBMISSION_FAILED",
       proposalId: proposal.proposalId,
-      brokerSubmitted: false,
+      brokerSubmitted: failure.brokerSubmissionUncertain === true,
       stateChanged: true,
       reasonCode: "m21_submission_failure_evidence_failed",
       evidence: priorEvidence,
@@ -442,14 +506,16 @@ async function recordSubmissionFailure(
 
   await appendApprovalAuditSafely(options, recorded.evidence, input.correlationId);
   return createResult({
-    status: "APPROVAL_SUBMISSION_BLOCKED",
+    status: failure.brokerSubmissionUncertain === true ? "APPROVAL_SUBMISSION_FAILED" : "APPROVAL_SUBMISSION_BLOCKED",
     proposalId: proposal.proposalId,
-    brokerSubmitted: false,
+    // broker 예외 경로는 실제 도달 여부가 불확실하므로 운영자 reconcile 전까지 제출 가능성으로 보존한다.
+    brokerSubmitted: failure.brokerSubmissionUncertain === true,
     stateChanged: true,
     reasonCode: failure.reasonCode,
     evidence: [...priorEvidence, recorded.evidence],
     trace: {
       ...(failure.violations === undefined ? {} : { violations: [...failure.violations] }),
+      ...(failure.brokerSubmissionUncertain === true ? { broker_submission_state: "uncertain" } : {}),
     },
   });
 }

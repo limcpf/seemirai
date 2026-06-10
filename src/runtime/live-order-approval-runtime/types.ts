@@ -50,8 +50,8 @@ export type LiveOrderApprovalCommandStatus =
 /**
  * M21 approval command 처리 결과다.
  *
- * `brokerSubmitted=true`일 때만 live broker side effect가 발생했다. evidence는 runtime이 기록을 시도한 safe snapshot이며,
- * raw Telegram text나 provider body는 포함하지 않는다.
+ * `brokerSubmitted=true`는 live broker side effect가 발생했거나 거래소 도달 여부를 단정할 수 없는 상태를 뜻한다. evidence는
+ * runtime이 기록을 시도한 safe snapshot이며, raw Telegram text나 provider body는 포함하지 않는다.
  */
 export interface LiveOrderApprovalCommandRuntimeResult {
   status: LiveOrderApprovalCommandStatus;
@@ -90,13 +90,30 @@ export interface LiveOrderApprovalProposalStoreTransitionInput {
 /**
  * M21 approval evidence append 입력이다.
  *
- * 상태를 바꾸지 않는 recheck evidence도 fingerprint를 비교한 뒤에만 append해야, 다른 proposal snapshot의 evidence가 같은 id에
- * 섞이지 않는다.
+ * 상태를 바꾸지 않는 recheck evidence도 expected status와 fingerprint를 함께 비교한 뒤에만 append해야, 닫힌 proposal이나 다른
+ * proposal snapshot의 evidence가 같은 id에 섞이지 않는다.
  */
 export interface RecordLiveOrderApprovalEvidenceInput {
   proposalId: string;
+  expectedStatus: LiveOrderProposalStatus;
   expectedFingerprint: string;
   evidence: LiveOrderApprovalEvidenceSnapshot;
+}
+
+/**
+ * M21 daily approval budget reservation 입력이다.
+ *
+ * 제출 직전 recheck snapshot만으로는 concurrent approval을 막을 수 없으므로 store 구현체는 expected status/fingerprint 확인과
+ * 일일 승인 예산 증가를 같은 원자 경계에서 수행해야 한다.
+ */
+export interface ReserveLiveOrderApprovalDailyBudgetInput {
+  proposalId: string;
+  expectedStatus: LiveOrderProposalStatus;
+  expectedFingerprint: string;
+  reserveNotionalKrw: NumericString;
+  dailyApprovedNotionalUsedKrw: NumericString;
+  dailyApprovedNotionalLimitKrw: NumericString;
+  observedAt: string;
 }
 
 /**
@@ -138,15 +155,48 @@ export type LiveOrderApprovalProposalEvidenceAppendResult =
       status: "NOT_FOUND";
     }
   | {
+      status: "STATUS_MISMATCH";
+      currentStatus: LiveOrderProposalStatus;
+    }
+  | {
       status: "FINGERPRINT_MISMATCH";
       currentFingerprint: string;
+    };
+
+/**
+ * daily approval budget reservation 결과다.
+ *
+ * `RECORDED`가 아니면 caller는 broker 제출을 진행하면 안 된다.
+ */
+export type LiveOrderApprovalDailyBudgetReservationResult =
+  | {
+      status: "RECORDED";
+      proposal: LiveOrderProposalContract;
+      reservedNotionalKrw: NumericString;
+    }
+  | {
+      status: "NOT_FOUND";
+    }
+  | {
+      status: "STATUS_MISMATCH";
+      currentStatus: LiveOrderProposalStatus;
+    }
+  | {
+      status: "FINGERPRINT_MISMATCH";
+      currentFingerprint: string;
+    }
+  | {
+      status: "DAILY_BUDGET_EXCEEDED";
+      reservedNotionalKrw: NumericString;
+      dailyApprovedNotionalLimitKrw: NumericString;
     };
 
 /**
  * M21 approval proposal 저장소 port다.
  *
  * production 구현은 durable storage와 unique/idempotency constraint를 사용해야 한다. memory 구현은 테스트와 local fake 용도이며,
- * 재시작 후 중복 승인 방지를 보장하지 않는다.
+ * 재시작 후 중복 승인 방지를 보장하지 않는다. `reserveDailyApprovalBudget` production 구현은 compare-and-reserve를 같은 DB
+ * transaction 또는 동등한 원자 경계에서 수행해야 한다.
  */
 export interface LiveOrderApprovalProposalStore {
   findById(proposalId: string): Promise<LiveOrderProposalContract | undefined>;
@@ -154,6 +204,9 @@ export interface LiveOrderApprovalProposalStore {
     input: LiveOrderApprovalProposalStoreTransitionInput,
   ): Promise<LiveOrderApprovalProposalTransitionResult>;
   appendEvidence(input: RecordLiveOrderApprovalEvidenceInput): Promise<LiveOrderApprovalProposalEvidenceAppendResult>;
+  reserveDailyApprovalBudget(
+    input: ReserveLiveOrderApprovalDailyBudgetInput,
+  ): Promise<LiveOrderApprovalDailyBudgetReservationResult>;
 }
 
 /**
@@ -208,7 +261,10 @@ export type LiveOrderApprovalSubmissionRecheckViolation =
   | "m21_reconcile_not_fresh"
   | "m21_invalid_idempotency_key"
   | "m21_price_reference_invalid"
-  | "m21_price_deviation_exceeded";
+  | "m21_price_deviation_exceeded"
+  | "m21_daily_budget_reservation_failed"
+  | "m21_daily_budget_reservation_unavailable"
+  | "m21_broker_submission_uncertain";
 
 /**
  * M21 submission recheck 입력이다.
