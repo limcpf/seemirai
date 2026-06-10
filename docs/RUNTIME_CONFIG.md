@@ -619,6 +619,23 @@ Startup guard와 safe summary 기준:
   `budgetEvidenceConfigured`, `keyScopeEvidenceConfigured` boolean으로만 표시한다.
 - guard 실패 결과는 한국어 message/action과 `trace.violations`를 남기지만, private client나 live broker factory를 만들지 않는다.
 
+Autonomous entry runtime 기준:
+
+- 구현 경계는 `LiveAutonomousEntryRuntime`이며, public entry는 `src/application/live-autonomous-entry-runtime.ts`다.
+- runtime은 random `identifier_prefix + 13 bytes hex` identifier를 생성해 Upbit `identifier`와 ExecutionEngine idempotency key로
+  같이 사용한다. timestamp-only 또는 단순 증가 identifier는 허용하지 않는다. 기존 attempt 재시도는 새 identifier를 만들지 않고
+  기존 identifier를 주입해 중복 live 주문을 막아야 한다.
+- 후보는 `BUY + LIMIT + post_only`만 허용하며 `MARKET`, `PRICE`, `BEST`, non-post-only 후보는 durable reservation 전에 차단한다.
+- `requested_notional`은 지정가 주문의 실제 `requested_quantity * requested_price`와 일치해야 하며, 예산/최소 주문 검증은 실제
+  지정가 notional을 기준으로 한다.
+- broker 제출 전 kill switch, reconcile freshness, price deviation, 단일 주문 예산, 일일 자동 notional 사용량, open position
+  notional, 일간/주간 KRW 손실 한도를 다시 확인한다.
+- 비용과 RiskGate evidence는 현재 identifier가 포함된 order intent fingerprint로 만든 뒤 ExecutionEngine이 다시 검증한다.
+- budget reservation은 비용/RiskGate 승인 뒤, broker 제출 직전에 주입된 durable port로만 수행한다. reservation 거부 시 broker
+  side effect는 만들지 않는다. reservation 저장 예외는 unhandled rejection으로 전파하지 않고 `MANUAL_REVIEW_REQUIRED` 결과로
+  정규화한다.
+- 기본 `PAPER_NO_KEY`와 application entry runtime module은 Upbit private client나 `/v1/orders` REST endpoint를 직접 만들지 않는다.
+
 2026-06-10 공식 문서 재확인:
 
 - Upbit 주문 생성 문서는 지정가 주문에서 `time_in_force=post_only`를 허용하고, `post_only`와 `smp_type` 동시 사용을 금지한다.
