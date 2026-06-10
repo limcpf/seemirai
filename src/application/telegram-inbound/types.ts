@@ -22,6 +22,13 @@ export const telegramInboundReadOnlyCommands = [
 export const telegramInboundControlCommands = ["pause", "resume", "kill"] as const;
 
 /**
+ * Telegram inbound M21 approval 명령 목록이다.
+ *
+ * 이 명령들은 M20 인증·dedupe·audit 경계를 통과한 뒤에만 proposal 상태 전이와 guarded broker submission 후보가 될 수 있다.
+ */
+export const telegramInboundApprovalCommands = ["approve", "reject"] as const;
+
+/**
  * Telegram inbound dedupe가 기존 jobs table에 남기는 전용 job type이다.
  *
  * 다른 worker가 공용 jobs table에서 이 row를 claim하지 않도록 inbound dedupe 구현은 이 type을 고정하고 idempotency key prefix를
@@ -36,14 +43,15 @@ export const telegramInboundCommandJobType = "telegram.inbound.command";
  */
 export type TelegramInboundCommandName =
   | (typeof telegramInboundReadOnlyCommands)[number]
-  | (typeof telegramInboundControlCommands)[number];
+  | (typeof telegramInboundControlCommands)[number]
+  | (typeof telegramInboundApprovalCommands)[number];
 
 /**
  * Telegram command의 side effect 권한 범위다.
  *
  * `READ_ONLY`는 조회 surface만, `CONTROL`은 kill switch 계열 durable state transition 후보만 의미한다.
  */
-export type TelegramInboundCommandScope = "READ_ONLY" | "CONTROL";
+export type TelegramInboundCommandScope = "READ_ONLY" | "CONTROL" | "APPROVAL";
 
 /**
  * Telegram command parse 결과의 고정 상태 코드다.
@@ -64,6 +72,10 @@ export type TelegramInboundCommandArgument =
   | {
       kind: "market";
       market: string;
+    }
+  | {
+      kind: "proposal";
+      proposalId: string;
     };
 
 /**

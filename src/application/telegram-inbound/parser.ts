@@ -1,4 +1,5 @@
 import {
+  telegramInboundApprovalCommands,
   telegramInboundControlCommands,
   telegramInboundReadOnlyCommands,
 } from "./types.js";
@@ -11,6 +12,7 @@ import type {
 
 const commandPattern = /^\/(?<name>[A-Za-z0-9_]+)(?:@(?<botUsername>[A-Za-z0-9_]+))?(?:\s+(?<argument>.*))?$/u;
 const krwMarketPattern = /^KRW-[A-Z0-9]+$/u;
+const proposalIdPattern = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u;
 
 /**
  * Telegram slash command mention 검증 옵션이다.
@@ -73,6 +75,10 @@ export function parseTelegramInboundCommand(
     return parseWhyCommand(name, scope, argument, normalizedText);
   }
 
+  if (name === "approve" || name === "reject") {
+    return parseApprovalCommand(name, scope, argument, normalizedText);
+  }
+
   if (argument !== undefined && argument !== "") {
     return malformed(
       "telegram_command_unexpected_argument",
@@ -85,6 +91,41 @@ export function parseTelegramInboundCommand(
     name,
     scope,
     normalizedText: `/${name}`,
+  });
+}
+
+function parseApprovalCommand(
+  name: "approve" | "reject",
+  scope: TelegramInboundCommandScope,
+  argument: string | undefined,
+  normalizedText: string,
+): TelegramInboundParseResult {
+  if (argument === undefined || argument === "") {
+    return malformed(
+      "telegram_approval_proposal_id_required",
+      `/${name} 명령은 proposal id를 함께 입력해야 합니다.`,
+      normalizedText,
+    );
+  }
+
+  const tokens = argument.split(/\s+/u);
+  const proposalId = tokens[0];
+  if (tokens.length !== 1 || proposalId === undefined || !proposalIdPattern.test(proposalId)) {
+    return malformed(
+      "telegram_approval_proposal_id_invalid",
+      "proposal id는 공백 없이 1~128자의 영문, 숫자, 점, 밑줄, 콜론, 하이픈만 사용할 수 있습니다.",
+      normalizedText,
+    );
+  }
+
+  return parsed({
+    name,
+    scope,
+    normalizedText: `/${name} ${proposalId}`,
+    argument: {
+      kind: "proposal",
+      proposalId,
+    },
   });
 }
 
@@ -187,11 +228,16 @@ function normalizeBotUsername(value: string | undefined): string | undefined {
 function isTelegramInboundCommandName(value: string): value is TelegramInboundCommandName {
   return (
     (telegramInboundReadOnlyCommands as readonly string[]).includes(value) ||
-    (telegramInboundControlCommands as readonly string[]).includes(value)
+    (telegramInboundControlCommands as readonly string[]).includes(value) ||
+    (telegramInboundApprovalCommands as readonly string[]).includes(value)
   );
 }
 
 function resolveCommandScope(command: TelegramInboundCommandName): TelegramInboundCommandScope {
+  if ((telegramInboundApprovalCommands as readonly string[]).includes(command)) {
+    return "APPROVAL";
+  }
+
   return (telegramInboundControlCommands as readonly string[]).includes(command)
     ? "CONTROL"
     : "READ_ONLY";

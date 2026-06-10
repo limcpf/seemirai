@@ -15,6 +15,10 @@ import type {
 } from "../../application/index.js";
 import type { ControlStatusProvider, ControlStatusSnapshot } from "../../interfaces/http-control/types.js";
 import type { TelegramPollingProvider } from "../../infrastructure/index.js";
+import type {
+  LiveOrderApprovalCommandRuntime,
+  LiveOrderApprovalCommandRuntimeResult,
+} from "../live-order-approval-runtime.js";
 
 /**
  * Telegram inbound control 명령의 2단계 확인 저장소 입력이다.
@@ -75,6 +79,7 @@ export interface TelegramInboundCommandRuntimeOptions {
   replyPort: TelegramInboundReplyPort;
   statusProvider: ControlStatusProvider;
   killSwitchControlProvider: KillSwitchControlProvider;
+  liveOrderApprovalRuntime?: LiveOrderApprovalCommandRuntime;
   confirmationStore?: TelegramInboundControlConfirmationStore;
   botUsername?: string;
   actor?: string;
@@ -123,6 +128,7 @@ export interface TelegramInboundCommandHandleResult {
   reply?: TelegramInboundReplyResult;
   controlConfirmation?: TelegramInboundControlConfirmationResult;
   killSwitchResult?: KillSwitchControlResult;
+  liveOrderApprovalResult?: LiveOrderApprovalCommandRuntimeResult;
   reasonCode?: string;
 }
 

@@ -512,6 +512,40 @@ risk decision id, cost snapshot, idempotency key, operator-facing summary, `expi
 fingerprint를 함께 남겨 stale proposal 재승인과 중복 주문을 broker 호출 전에 차단한다. `expiresAt`은 같은 instant의 다른 ISO
 표기가 같은 fingerprint를 만들도록 정규화한다.
 
+Telegram approval runtime 기준:
+
+- `/approve <proposal_id>`와 `/reject <proposal_id>`는 M20 parser/auth/dedupe/audit/reply 경계를 그대로 통과한 뒤 M21 proposal
+  store로 전달된다.
+- `/reject`는 `REJECTION_RECORDED` evidence만 남기고 broker를 호출하지 않는다. 단 rejection audit projection이 실패하면 성공 응답으로
+  숨기지 않고 `REJECTION_AUDIT_FAILED`로 운영자에게 audit/proposal store 점검을 요구한다.
+- 만료 상태 전이가 저장됐더라도 `EXPIRATION_RECORDED` audit projection이 실패하면 `PROPOSAL_EXPIRED` 성공으로 숨기지 않고
+  `PROPOSAL_EXPIRATION_AUDIT_FAILED`와 reason `m21_expiration_audit_append_failed`로 운영자 점검을 요구한다.
+- `/approve`는 `APPROVAL_RECORDED` evidence를 먼저 남긴 뒤 처리 시각 기준 TTL, risk decision, kill switch, reconcile freshness,
+  daily budget, market allowlist, order type, `requestedPrice * requestedVolume` 재계산 금액, idempotency key, price deviation을
+  재검증한다.
+- proposal이 이미 `APPROVED`이면 crash/restart 또는 audit 후 중단에서 복구 중인 상태로 보고 approval evidence를 proposal store에
+  중복 append하지 않는다. 대신 broker 제출 재개 전에 approval audit projection을 먼저 보강하고, 이 audit이 실패하면
+  `SUBMISSION_FAILURE_RECORDED`로 닫아 감사되지 않은 승인 상태에서 broker submit으로 넘어가지 않는다. `REJECTED`, `EXPIRED`,
+  `SUBMITTED`, `SUBMISSION_FAILED`는 재개 대상이 아니다.
+- 재검증이 통과하면 proposal store가 expected status `APPROVED`와 fingerprint를 다시 비교한 뒤
+  `SUBMISSION_RECHECK_PASSED` evidence를 기록한다. 이 append가 실패하면 broker 호출로 넘어가지 않는다.
+- broker 호출 직전에는 store가 expected status/fingerprint 비교와 일일 승인 예산 선점을 같은 원자 경계에서 처리해야 한다.
+  reservation이 실패하거나 예산 한도를 넘으면 `SUBMISSION_FAILURE_RECORDED`로 닫고 `BrokerPort.submitOrder`를 호출하지 않는다.
+- `SUBMISSION_RECHECK_PASSED` evidence, audit projection, daily budget reservation이 모두 끝난 뒤에만 `BrokerPort.submitOrder`를
+  호출하고, broker 성공 결과는 `BROKER_SUBMISSION_RECORDED` evidence로 남긴다.
+- approval 또는 재검증 통과 evidence의 audit projection이 실패하면 live broker 호출 전에 `SUBMISSION_FAILURE_RECORDED`로 닫는다.
+- broker 호출 자체가 예외를 던지면 거래소 도달 여부를 단정할 수 없으므로 미제출로 기록하지 않는다. 결과는
+  `brokerSubmitted=true`, reason `m21_broker_submission_uncertain`, `SUBMISSION_FAILURE_RECORDED` evidence로 남기고 운영자가 reconcile로
+  실제 주문 존재 여부를 확인해야 한다.
+- broker 불확실 상태를 `SUBMISSION_FAILURE_RECORDED`로 남기는 중 store 예외가 나도 Telegram wrapper까지 raw 예외를 흘리지 않는다.
+  이 경우도 `brokerSubmitted=true`, reason `m21_broker_submission_uncertain_evidence_exception`, `broker_submission_state=uncertain`으로
+  응답해 운영자가 주문 존재 가능성을 놓치지 않게 한다.
+- broker 불확실 상태의 `SUBMISSION_FAILURE_RECORDED` audit projection이 실패하면 원래 `m21_broker_submission_uncertain` 성공적 실패
+  처리로 숨기지 않고 reason `m21_broker_submission_uncertain_audit_append_failed`, `audit_status=append_failed`,
+  `broker_submission_state=uncertain`을 함께 반환한다.
+- 재검증 실패, 만료, 상태/fingerprint mismatch, reservation 실패, broker 불확실 결과는 성공 주문으로 처리하지 않으며, 가능한 경우
+  `EXPIRATION_RECORDED` 또는 `SUBMISSION_FAILURE_RECORDED` evidence로 수렴한다.
+
 ## M9 Paper 매매 이벤트 Telegram 알림
 
 구현 기준:

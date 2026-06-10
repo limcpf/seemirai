@@ -29,6 +29,7 @@ import {
   formatTelegramStatusCommandResponse,
   formatTelegramWhyCommandResponse,
 } from "./formatter.js";
+import { formatLiveOrderApprovalCommandResponse } from "../live-order-approval-runtime.js";
 import type {
   TelegramInboundCommandHandleResult,
   TelegramInboundCommandRuntime,
@@ -341,6 +342,33 @@ export function createTelegramInboundCommandRuntime(
         });
       }
 
+      if (parseResult.command.scope === "APPROVAL") {
+        const approvalResult = await executeLiveOrderApprovalCommandSafely(
+          options,
+          message,
+          parseResult.command,
+          correlationId,
+          dedupe?.idempotencyKey,
+        );
+        const reply = await sendReplySafely(options, message, correlationId, approvalResult.text);
+        return createHandleResult({
+          status: approvalResult.ok ? (reply.delivered ? "EXECUTED" : "REPLY_FAILED") : "EXECUTION_FAILED",
+          message,
+          correlationId,
+          executed: approvalResult.ok
+            ? approvalResult.result.brokerSubmitted || approvalResult.result.stateChanged
+            : false,
+          commandName: parseResult.command.name,
+          parseStatus: parseResult.status,
+          authorization,
+          dedupe,
+          auditReceipt: audit.receipt,
+          reply,
+          ...(approvalResult.ok ? { liveOrderApprovalResult: approvalResult.result } : {}),
+          ...(approvalResult.ok ? {} : { reasonCode: "telegram_inbound_approval_runtime_unavailable" }),
+        });
+      }
+
       const readOnlyResult = await executeReadOnlyCommandSafely(options, parseResult.command, correlationId);
       const reply = await sendReplySafely(options, message, correlationId, readOnlyResult.text);
       return createHandleResult({
@@ -590,6 +618,8 @@ async function executeReadOnlyCommandSafely(
       case "pause":
       case "resume":
       case "kill":
+      case "approve":
+      case "reject":
         return {
           ok: false,
           text: formatTelegramCommandExecutionFailureResponse({
@@ -598,6 +628,60 @@ async function executeReadOnlyCommandSafely(
           }),
         };
     }
+  } catch {
+    return {
+      ok: false,
+      text: formatTelegramCommandExecutionFailureResponse({
+        commandName: command.name,
+        correlationId,
+      }),
+    };
+  }
+}
+
+async function executeLiveOrderApprovalCommandSafely(
+  options: TelegramInboundCommandRuntimeOptions,
+  message: TelegramInboundCommandMessage,
+  command: ParsedTelegramInboundCommand,
+  correlationId: string,
+  dedupeKey: string | undefined,
+): Promise<
+  | {
+      ok: true;
+      text: string;
+      result: NonNullable<TelegramInboundCommandHandleResult["liveOrderApprovalResult"]>;
+    }
+  | {
+      ok: false;
+      text: string;
+    }
+> {
+  if (options.liveOrderApprovalRuntime === undefined) {
+    return {
+      ok: false,
+      text: formatTelegramCommandExecutionFailureResponse({
+        commandName: command.name,
+        correlationId,
+      }),
+    };
+  }
+
+  try {
+    const result = await options.liveOrderApprovalRuntime.handleCommand({
+      command,
+      correlationId,
+      // approval TTL과 recheck는 Telegram backlog 시각이 아니라 실제 처리 시각으로 평가해야 stale 승인이 제출로 승격되지 않는다.
+      occurredAt: (options.clock ?? (() => new Date()))().toISOString(),
+      messageReceivedAt: message.receivedAt,
+      actorHash: hashTelegramInboundIdentifier(message.userId ?? message.chatId),
+      ...(dedupeKey === undefined ? {} : { dedupeKey }),
+    });
+
+    return {
+      ok: true,
+      text: formatLiveOrderApprovalCommandResponse(result, correlationId),
+      result,
+    };
   } catch {
     return {
       ok: false,
@@ -728,6 +812,7 @@ function createHandleResult(input: {
   reply?: TelegramInboundCommandHandleResult["reply"];
   controlConfirmation?: TelegramInboundCommandHandleResult["controlConfirmation"];
   killSwitchResult?: TelegramInboundCommandHandleResult["killSwitchResult"];
+  liveOrderApprovalResult?: TelegramInboundCommandHandleResult["liveOrderApprovalResult"];
   reasonCode?: string;
 }): TelegramInboundCommandHandleResult {
   return {
@@ -744,6 +829,7 @@ function createHandleResult(input: {
     ...(input.reply === undefined ? {} : { reply: input.reply }),
     ...(input.controlConfirmation === undefined ? {} : { controlConfirmation: input.controlConfirmation }),
     ...(input.killSwitchResult === undefined ? {} : { killSwitchResult: input.killSwitchResult }),
+    ...(input.liveOrderApprovalResult === undefined ? {} : { liveOrderApprovalResult: input.liveOrderApprovalResult }),
     ...(input.reasonCode === undefined ? {} : { reasonCode: input.reasonCode }),
   };
 }
