@@ -7,6 +7,9 @@ import type {
   LiveOrderProposalStatus,
 } from "./types.js";
 
+const SENSITIVE_EVIDENCE_METADATA_KEY_PATTERN =
+  /(?:authorization|credential|jwt|secret|signature|token|access[_-]?key|upbitaccesskey|upbitsecretkey|raw[_-]?text|provider[_-]?body)/iu;
+
 /**
  * M21 approval evidence 생성 입력이다.
  *
@@ -57,9 +60,40 @@ export function createLiveOrderApprovalEvidenceSnapshot(
 
   assignIfDefined(evidence, "actorHash", input.actorHash);
   assignIfDefined(evidence, "brokerOrderId", input.brokerOrderId);
-  assignIfDefined(evidence, "metadata", input.metadata);
+  assignIfDefined(evidence, "metadata", sanitizeLiveOrderApprovalEvidenceMetadata(input.metadata));
 
   return evidence;
+}
+
+function sanitizeLiveOrderApprovalEvidenceMetadata(metadata: JsonRecord | undefined): JsonRecord | undefined {
+  if (metadata === undefined) {
+    return undefined;
+  }
+
+  const sanitized: JsonRecord = {};
+  for (const [key, value] of Object.entries(metadata)) {
+    if (SENSITIVE_EVIDENCE_METADATA_KEY_PATTERN.test(key)) {
+      // evidence snapshot 자체가 append-only 저장소로 갈 수 있으므로 audit 변환 전 단계에서도 raw provider/secret 계열 값을 마스킹한다.
+      sanitized[key] = "[REDACTED]";
+      continue;
+    }
+
+    sanitized[key] = sanitizeLiveOrderApprovalEvidenceMetadataValue(value);
+  }
+
+  return sanitized;
+}
+
+function sanitizeLiveOrderApprovalEvidenceMetadataValue(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map(sanitizeLiveOrderApprovalEvidenceMetadataValue);
+  }
+
+  if (value !== null && typeof value === "object") {
+    return sanitizeLiveOrderApprovalEvidenceMetadata(value as JsonRecord);
+  }
+
+  return value;
 }
 
 function assignIfDefined<T extends object, K extends keyof T>(target: T, key: K, value: T[K] | undefined): void {

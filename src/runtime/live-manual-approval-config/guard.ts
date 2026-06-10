@@ -4,11 +4,13 @@ import type { LiveManualApprovalRuntimeConfig } from "./schema.js";
 /**
  * M21 수동 승인 runtime startup guard 입력이다.
  *
- * config shape는 이미 `RuntimeConfigSchema`가 확인했으며, 이 guard는 실행 시점에 M20 inbound 활성화와 reconcile freshness 같은
- * 외부 상태를 같이 확인한다. 이 입력 자체는 broker 호출이나 DB write side effect를 만들지 않는다.
+ * config shape는 이미 `RuntimeConfigSchema`가 확인했으며, caller는 `loadRuntimeTelegramInboundConfig(...).enabled`처럼 token과
+ * owner allowlist까지 해결된 M20 inbound readiness를 넘겨야 한다. 이 입력 자체는 broker 호출이나 DB write side effect를
+ * 만들지 않는다.
  */
 export interface LiveManualApprovalRuntimeGuardInput {
   config: RuntimeConfig;
+  telegramInboundReady: boolean;
   reconcileFresh: boolean;
   observedAt: string;
 }
@@ -55,7 +57,7 @@ export class UnsafeLiveManualApprovalRuntimeConfigError extends Error {
 /**
  * M21 수동 승인 live pilot이 실행 가능한지 평가한다.
  *
- * 기본 비활성 config, M20 inbound 비활성, stale reconcile은 모두 broker 호출 전 차단 조건이다. 이 함수는 순수 guard이며
+ * 기본 비활성 config, resolved M20 inbound 비활성, stale reconcile은 모두 broker 호출 전 차단 조건이다. 이 함수는 순수 guard이며
  * Telegram polling 시작, DB 조회, Upbit private API 호출 같은 side effect를 만들지 않는다.
  */
 export function evaluateLiveManualApprovalRuntimeGuard(
@@ -110,8 +112,8 @@ function collectLiveManualApprovalRuntimeViolations(input: LiveManualApprovalRun
     return violations;
   }
 
-  if (approvalConfig.require_m20_inbound_enabled && !input.config.telegram.inbound.enabled) {
-    // approval command는 M20 owner allowlist/dedupe/audit/redaction 경계를 재사용해야 하므로 inbound 비활성 상태에서는 닫는다.
+  if (approvalConfig.require_m20_inbound_enabled && !input.telegramInboundReady) {
+    // approval command는 token과 owner allowlist까지 해결된 M20 inbound 경계를 재사용해야 하므로 단순 enabled flag만 믿지 않는다.
     violations.push("M21 수동 승인 live pilot에는 M20 Telegram inbound 활성화가 필요합니다");
   }
 

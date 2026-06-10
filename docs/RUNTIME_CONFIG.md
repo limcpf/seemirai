@@ -501,7 +501,8 @@ submission runtime이 시작되지 않는다.
 - `daily_approved_notional_limit_krw`는 `max_order_krw` 이상이어야 하며 기본값은 `30000`이다.
 - `proposal_ttl_seconds`는 양의 정수이며 기본값은 300초다.
 - `max_price_deviation_bps`는 음수가 아닌 Decimal 문자열이며 기본값은 `30` bps다.
-- `require_m20_inbound_enabled=true`이면 M20 Telegram inbound가 활성화되지 않은 상태에서 M21 runtime guard가 fail-closed 한다.
+- `require_m20_inbound_enabled=true`이면 bot token과 owner allowlist까지 해결된 M20 Telegram inbound readiness가 없을 때 M21
+  runtime guard가 fail-closed 한다. 단순 `telegram.inbound.enabled=true`만으로는 준비 완료로 보지 않는다.
 - `require_reconcile_freshness=true`이면 최신 reconcile 상태가 확인되지 않은 상태에서 M21 runtime guard가 fail-closed 한다.
 
 Proposal contract는 `proposalId`, market, side, price, volume, expected notional KRW, 예산 snapshot, decision ledger id,

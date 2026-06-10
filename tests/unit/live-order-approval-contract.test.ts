@@ -109,6 +109,15 @@ describe("M21 live order approval contract", () => {
       correlationId: "approval-correlation-001",
     });
 
+    expect(evidence.metadata).toMatchObject({
+      safeReason: "operator confirmed",
+      raw_text: "[REDACTED]",
+      nested: {
+        token: "[REDACTED]",
+      },
+    });
+    expect(JSON.stringify(evidence.metadata)).not.toContain("/approve proposal-001");
+    expect(JSON.stringify(evidence.metadata)).not.toContain("secret-token");
     expect(auditEvent).toMatchObject({
       eventType: "LIVE_ORDER_APPROVAL",
       severity: "INFO",
@@ -137,6 +146,7 @@ describe("M21 live manual approval runtime guard", () => {
   it("fails closed when the config is disabled, M20 inbound is missing, or reconcile is stale", () => {
     const disabled = evaluateLiveManualApprovalRuntimeGuard({
       config: loadRuntimeConfig({}),
+      telegramInboundReady: false,
       reconcileFresh: true,
       observedAt,
     });
@@ -151,6 +161,7 @@ describe("M21 live manual approval runtime guard", () => {
           enabled: true,
         },
       }),
+      telegramInboundReady: false,
       reconcileFresh: true,
       observedAt,
     });
@@ -171,6 +182,7 @@ describe("M21 live manual approval runtime guard", () => {
           },
         },
       }),
+      telegramInboundReady: true,
       reconcileFresh: false,
       observedAt,
     });
@@ -197,6 +209,7 @@ describe("M21 live manual approval runtime guard", () => {
     expect(
       assertLiveManualApprovalRuntimeReady({
         config,
+        telegramInboundReady: true,
         reconcileFresh: true,
         observedAt,
       }),
@@ -208,6 +221,7 @@ describe("M21 live manual approval runtime guard", () => {
     expect(() =>
       assertLiveManualApprovalRuntimeReady({
         config: loadRuntimeConfig({}),
+        telegramInboundReady: false,
         reconcileFresh: true,
         observedAt,
       }),
