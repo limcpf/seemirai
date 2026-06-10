@@ -69,6 +69,8 @@ reconcile mismatch 0건을 기계적으로 증명하는 것이다. 기본 `PAPER
   - autonomous order attempt state machine
   - strategy/cost/risk/kill switch/reconcile/budget 재검증
   - durable reservation과 random idempotency key generation
+  - retry 시 기존 attempt identifier 재사용
+  - 수량×가격 기준 지정가 notional 검증과 KRW 손실 한도 preflight
   - `LIMIT + post_only` live broker submission 경계
   - fake broker integration test
 - 로컬 검증: 2026-06-10 `./scripts/verify` 통과, 82 passed / 11 skipped files, 1323 passed / 113 skipped tests

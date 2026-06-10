@@ -45,7 +45,7 @@ export function createLiveAutonomousIdentifier(
 ): string {
   const suffix = randomHex(LIVE_AUTONOMOUS_ENTRY_IDENTIFIER_RANDOM_BYTES);
   const identifier = `${config.identifier_prefix}${suffix}`;
-  const violations = collectIdentifierViolations(config, suffix, identifier);
+  const violations = validateLiveAutonomousIdentifier(config, identifier);
 
   if (violations.length > 0) {
     throw new UnsafeLiveAutonomousIdentifierError(violations);
@@ -54,12 +54,33 @@ export function createLiveAutonomousIdentifier(
   return identifier;
 }
 
+/**
+ * M22 autonomous entry identifier가 재사용 가능한 안전한 값인지 검증한다.
+ *
+ * retry caller가 기존 attempt identifier를 주입할 때도 생성기와 같은 prefix, 13 bytes lower hex suffix, 32자 한도를 요구해
+ * Upbit identifier와 ExecutionEngine idempotency key가 같은 정책을 유지하게 한다.
+ */
+export function validateLiveAutonomousIdentifier(
+  config: Pick<LiveAutonomousEntryRuntimeConfig, "identifier_prefix" | "identifier_max_length">,
+  identifier: string,
+): readonly string[] {
+  const suffix = identifier.startsWith(config.identifier_prefix)
+    ? identifier.slice(config.identifier_prefix.length)
+    : "";
+
+  return collectIdentifierViolations(config, suffix, identifier);
+}
+
 function collectIdentifierViolations(
   config: Pick<LiveAutonomousEntryRuntimeConfig, "identifier_prefix" | "identifier_max_length">,
   suffix: string,
   identifier: string,
 ): string[] {
   const violations: string[] = [];
+
+  if (!identifier.startsWith(config.identifier_prefix)) {
+    violations.push("M22 identifier는 runtime identifier_prefix로 시작해야 합니다");
+  }
 
   if (!/^[a-f0-9]{26}$/u.test(suffix)) {
     violations.push("M22 identifier suffix는 13 bytes lower hex여야 합니다");

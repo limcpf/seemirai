@@ -21,7 +21,11 @@ import {
   createExecutionRiskApprovalEvidence,
 } from "../execution/index.js";
 import { evaluateRiskGate as evaluateRiskGateDefault } from "../risk/index.js";
-import { createLiveAutonomousIdentifier } from "./identifier.js";
+import {
+  UnsafeLiveAutonomousIdentifierError,
+  createLiveAutonomousIdentifier,
+  validateLiveAutonomousIdentifier,
+} from "./identifier.js";
 import type {
   LiveAutonomousBudgetReservation,
   LiveAutonomousEntryAttemptResult,
@@ -80,7 +84,7 @@ export class LiveAutonomousEntryRuntime {
     request: LiveAutonomousEntryRuntimeRequest,
   ): Promise<LiveAutonomousEntryAttemptResult> {
     const observedAt = request.observedAt ?? this.clock();
-    const idempotencyKey = createLiveAutonomousIdentifier(request.config, this.randomHex);
+    const idempotencyKey = resolveEntryIdempotencyKey(request, this.randomHex);
     const events: LiveAutonomousOrderAttemptEvent[] = [];
     let currentStatus: LiveAutonomousOrderAttemptStatus | undefined;
 
@@ -228,18 +232,46 @@ export class LiveAutonomousEntryRuntime {
       },
     );
 
-    const reservationResult = await this.budgetReservation.reserve({
-      attemptId: idempotencyKey,
-      idempotencyKey,
-      market: intent.market,
-      strategyId: intent.strategyId,
-      requestedNotionalKrw: intent.requestedNotional,
-      budgetSnapshot: request.budgetSnapshot,
-      observedAt,
-      metadata: {
-        source: "live_autonomous_entry_runtime",
-      },
-    });
+    let reservationResult: Awaited<ReturnType<LiveAutonomousEntryRuntimePorts["budgetReservation"]["reserve"]>>;
+    try {
+      reservationResult = await this.budgetReservation.reserve({
+        attemptId: idempotencyKey,
+        idempotencyKey,
+        market: intent.market,
+        strategyId: intent.strategyId,
+        requestedNotionalKrw: intent.requestedNotional,
+        budgetSnapshot: request.budgetSnapshot,
+        observedAt,
+        metadata: {
+          source: "live_autonomous_entry_runtime",
+        },
+      });
+    } catch (error) {
+      appendEvent(
+        "MANUAL_REVIEW_REQUIRED",
+        "budget_reservation_unavailable",
+        "M22 자동매매 예산 선점 저장 결과를 확정할 수 없어 주문을 제출하지 않았습니다.",
+        "broker side effect는 없으므로 durable reservation store 상태를 복구한 뒤 새 후보 또는 기존 attempt를 점검합니다.",
+        {
+          error_message: error instanceof Error ? error.message : String(error),
+        },
+      );
+      return createResult({
+        request,
+        idempotencyKey,
+        status: "MANUAL_REVIEW_REQUIRED",
+        message: "M22 자동매매 예산 선점 저장 결과를 확정할 수 없어 주문을 제출하지 않았습니다.",
+        action: "broker side effect는 없으므로 durable reservation store 상태를 복구한 뒤 새 후보 또는 기존 attempt를 점검합니다.",
+        violations: [error instanceof Error ? error.message : String(error)],
+        events,
+        intent,
+        costDecision,
+        riskGateResult,
+        trace: {
+          reason: "budget_reservation_unavailable",
+        },
+      });
+    }
     if (!reservationResult.reserved) {
       appendEvent(
         "BLOCKED",
@@ -426,6 +458,7 @@ function collectPreflightViolations(
   }
 
   appendAmountAndBudgetViolations(violations, request, intent);
+  appendLossLimitViolations(violations, request);
   appendPriceDeviationViolations(violations, request);
 
   return violations;
@@ -443,6 +476,12 @@ function appendAmountAndBudgetViolations(
   intent: OrderIntent,
 ): void {
   const requestedNotional = parsePositiveDecimal(intent.requestedNotional, "requested_notional", violations);
+  const requestedQuantity = parsePositiveDecimal(intent.requestedQuantity, "requested_quantity", violations);
+  const requestedPrice = parsePositiveDecimal(
+    intent.orderType === "LIMIT" ? intent.requestedPrice : "",
+    "requested_price",
+    violations,
+  );
   const dailyUsed = parseNonNegativeDecimal(
     request.budgetSnapshot.dailyAutonomousNotionalUsedKrw,
     "daily_autonomous_notional_used_krw",
@@ -482,6 +521,8 @@ function appendAmountAndBudgetViolations(
 
   if (
     requestedNotional === undefined ||
+    requestedQuantity === undefined ||
+    requestedPrice === undefined ||
     dailyUsed === undefined ||
     maxOrder === undefined ||
     snapshotMaxOrder === undefined ||
@@ -495,24 +536,78 @@ function appendAmountAndBudgetViolations(
   }
 
   // snapshot limit이 config보다 완화되어 들어와도 소액 pilot 경계를 넓히지 않도록 더 낮은 한도를 적용한다.
+  const actualLimitNotional = requestedQuantity.mul(requestedPrice);
   const effectiveMaxOrder = Decimal.min(maxOrder, snapshotMaxOrder);
   const effectiveDailyLimit = Decimal.min(dailyLimit, snapshotDailyLimit);
   const effectiveMaxOpenPosition = Decimal.min(maxOpenPosition, snapshotMaxOpenPosition);
 
-  if (requestedNotional.lt(upbitKrwMinimumOrderNotional)) {
+  if (!actualLimitNotional.equals(requestedNotional)) {
+    violations.push(blocked("limit_notional_mismatch", "M22 자동매매 지정가 주문 금액이 수량×가격과 일치하지 않습니다.", {
+      requested_notional: requestedNotional.toString(),
+      actual_limit_notional: actualLimitNotional.toString(),
+    }));
+  }
+
+  if (actualLimitNotional.lt(upbitKrwMinimumOrderNotional)) {
     violations.push(blocked("order_notional_below_upbit_minimum", "M22 자동매매 주문 금액은 5000 KRW 이상이어야 합니다."));
   }
 
-  if (requestedNotional.gt(effectiveMaxOrder)) {
+  if (actualLimitNotional.gt(effectiveMaxOrder)) {
     violations.push(blocked("max_order_budget_exceeded", "M22 자동매매 단일 주문 예산을 초과해 후보를 제출하지 않습니다."));
   }
 
-  if (dailyUsed.plus(requestedNotional).gt(effectiveDailyLimit)) {
+  if (dailyUsed.plus(actualLimitNotional).gt(effectiveDailyLimit)) {
     violations.push(blocked("daily_budget_exceeded", "M22 자동매매 일일 예산을 초과해 후보를 제출하지 않습니다."));
   }
 
-  if (currentOpenPosition.plus(requestedNotional).gt(effectiveMaxOpenPosition)) {
+  if (currentOpenPosition.plus(actualLimitNotional).gt(effectiveMaxOpenPosition)) {
     violations.push(blocked("open_position_budget_exceeded", "M22 자동매매 open position 예산을 초과해 후보를 제출하지 않습니다."));
+  }
+}
+
+/**
+ * M22 entry 후보가 KRW 손실 한도를 초과했는지 검증한다.
+ *
+ * bps 기반 RiskGate가 아직 차단하지 않는 계정 상태라도, M22 소액 pilot의 절대 손실 한도를 넘으면 신규 entry를 열지 않는다.
+ */
+function appendLossLimitViolations(
+  violations: RuntimeViolation[],
+  request: LiveAutonomousEntryRuntimeRequest,
+): void {
+  const dailyLoss = parseNonNegativeDecimal(
+    request.lossSnapshot.dailyRealizedLossKrw,
+    "daily_realized_loss_krw",
+    violations,
+  );
+  const weeklyLoss = parseNonNegativeDecimal(
+    request.lossSnapshot.weeklyRealizedLossKrw,
+    "weekly_realized_loss_krw",
+    violations,
+  );
+  const maxDailyLoss = parsePositiveDecimal(request.config.max_daily_loss_krw, "max_daily_loss_krw", violations);
+  const maxWeeklyLoss = parsePositiveDecimal(request.config.max_weekly_loss_krw, "max_weekly_loss_krw", violations);
+
+  if (
+    dailyLoss === undefined ||
+    weeklyLoss === undefined ||
+    maxDailyLoss === undefined ||
+    maxWeeklyLoss === undefined
+  ) {
+    return;
+  }
+
+  if (dailyLoss.gt(maxDailyLoss)) {
+    violations.push(blocked("daily_loss_limit_exceeded", "M22 자동매매 일일 손실 한도를 초과해 후보를 제출하지 않습니다.", {
+      daily_realized_loss_krw: dailyLoss.toString(),
+      max_daily_loss_krw: maxDailyLoss.toString(),
+    }));
+  }
+
+  if (weeklyLoss.gt(maxWeeklyLoss)) {
+    violations.push(blocked("weekly_loss_limit_exceeded", "M22 자동매매 주간 손실 한도를 초과해 후보를 제출하지 않습니다.", {
+      weekly_realized_loss_krw: weeklyLoss.toString(),
+      max_weekly_loss_krw: maxWeeklyLoss.toString(),
+    }));
   }
 }
 
@@ -578,6 +673,28 @@ function createEntryIntent(candidate: LiveAutonomousEntryCandidate, idempotencyK
       requested_order_type: candidate.orderType ?? "LIMIT",
     },
   };
+}
+
+/**
+ * M22 entry attempt identifier를 결정한다.
+ *
+ * 기존 attempt retry는 같은 Upbit identifier를 재사용해야 중복 주문을 막을 수 있으므로 caller 제공값을 우선한다. 제공값이 없을
+ * 때만 새 random identifier를 만들고, 제공값도 생성기와 같은 identifier 정책으로 검증한다.
+ */
+function resolveEntryIdempotencyKey(
+  request: LiveAutonomousEntryRuntimeRequest,
+  randomHex: LiveAutonomousEntryRuntimePorts["randomHex"],
+): string {
+  if (request.idempotencyKey === undefined) {
+    return createLiveAutonomousIdentifier(request.config, randomHex);
+  }
+
+  const violations = validateLiveAutonomousIdentifier(request.config, request.idempotencyKey);
+  if (violations.length > 0) {
+    throw new UnsafeLiveAutonomousIdentifierError(violations);
+  }
+
+  return request.idempotencyKey;
 }
 
 /**

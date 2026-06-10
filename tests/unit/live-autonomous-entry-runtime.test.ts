@@ -22,6 +22,7 @@ import type {
   ExecutionSubmitOrderResult,
   LiveAutonomousBudgetReservationPort,
   LiveAutonomousEntryCandidate,
+  LiveAutonomousEntryLossSnapshot,
 } from "../../src/application/index.js";
 
 const observedAt = "2026-06-10T12:00:00.000Z";
@@ -138,6 +139,9 @@ describe("M22 live autonomous entry runtime", () => {
           dailyAutonomousNotionalUsedKrw: "25000",
           openPositionNotionalKrw: "25000",
         }),
+        lossSnapshot: createLossSnapshot({
+          dailyRealizedLossKrw: "10001",
+        }),
       }),
     );
 
@@ -148,7 +152,40 @@ describe("M22 live autonomous entry runtime", () => {
         "최신 reconcile 상태가 없어 M22 자동매매 주문 후보를 제출하지 않습니다.",
         "M22 자동매매 일일 예산을 초과해 후보를 제출하지 않습니다.",
         "M22 자동매매 open position 예산을 초과해 후보를 제출하지 않습니다.",
+        "M22 자동매매 일일 손실 한도를 초과해 후보를 제출하지 않습니다.",
         "M22 자동매매 가격 이탈 한도를 초과해 후보를 제출하지 않습니다.",
+      ]),
+    );
+    expect(reserve).not.toHaveBeenCalled();
+    expect(broker.submitOrder).not.toHaveBeenCalled();
+  });
+
+  it("requestedNotional이 수량과 가격으로 계산한 지정가 notional과 다르면 차단한다", async () => {
+    const reserve = vi.fn<LiveAutonomousBudgetReservationPort["reserve"]>();
+    const broker = createFakeBroker();
+    const runtime = createRuntime({
+      broker,
+      budgetReservation: {
+        reserve,
+      },
+    });
+
+    const result = await runtime.submitEntryCandidate(
+      createRequest({
+        candidate: {
+          ...createCandidate(),
+          requestedQuantity: "1",
+          requestedNotional: "10000",
+          requestedPrice: "100000000",
+        },
+      }),
+    );
+
+    expect(result.status).toBe("BLOCKED");
+    expect(result.violations).toEqual(
+      expect.arrayContaining([
+        "M22 자동매매 지정가 주문 금액이 수량×가격과 일치하지 않습니다.",
+        "M22 자동매매 단일 주문 예산을 초과해 후보를 제출하지 않습니다.",
       ]),
     );
     expect(reserve).not.toHaveBeenCalled();
@@ -182,6 +219,31 @@ describe("M22 live autonomous entry runtime", () => {
     expect(broker.submitOrder).not.toHaveBeenCalled();
   });
 
+  it("durable budget reservation 저장 예외를 manual review 결과로 정규화한다", async () => {
+    const broker = createFakeBroker();
+    const reserve = vi.fn<LiveAutonomousBudgetReservationPort["reserve"]>(async () => {
+      throw new Error("reservation store unavailable");
+    });
+    const runtime = createRuntime({
+      broker,
+      budgetReservation: {
+        reserve,
+      },
+    });
+
+    const result = await runtime.submitEntryCandidate(createRequest());
+
+    expect(result.status).toBe("MANUAL_REVIEW_REQUIRED");
+    expect(result.events.map((event) => event.toStatus)).toEqual([
+      "CANDIDATE_CREATED",
+      "COST_APPROVED",
+      "RISK_APPROVED",
+      "MANUAL_REVIEW_REQUIRED",
+    ]);
+    expect(result.violations).toContain("reservation store unavailable");
+    expect(broker.submitOrder).not.toHaveBeenCalled();
+  });
+
   it("ExecutionEngine이 broker 전 단계에서 거부하면 reservation을 release 한다", async () => {
     const release = vi.fn<NonNullable<LiveAutonomousBudgetReservationPort["release"]>>();
     const runtime = new LiveAutonomousEntryRuntime({
@@ -209,6 +271,32 @@ describe("M22 live autonomous entry runtime", () => {
       }),
       "risk_approval_mismatch",
     );
+  });
+
+  it("기존 attempt retry는 주입된 idempotency key를 재사용하고 새 random key를 만들지 않는다", async () => {
+    const submitted: OrderSubmission[] = [];
+    const randomHex = vi.fn(() => deterministicRandomHex);
+    const runtime = new LiveAutonomousEntryRuntime({
+      executionEngine: new ExecutionEngine({
+        broker: createFakeBroker({
+          submitOrder: async (submission) => {
+            submitted.push(submission);
+            return createBrokerOrder(submission);
+          },
+        }),
+      }),
+      budgetReservation: createBudgetReservation(),
+      randomHex,
+      clock: () => observedAt,
+    });
+    const retryKey = `m22a-${"b".repeat(26)}`;
+
+    const result = await runtime.submitEntryCandidate(createRequest({ idempotencyKey: retryKey }));
+
+    expect(result.status).toBe("SUBMITTED");
+    expect(result.idempotencyKey).toBe(retryKey);
+    expect(submitted[0]?.intent.idempotencyKey).toBe(retryKey);
+    expect(randomHex).not.toHaveBeenCalled();
   });
 
   it("entry runtime module은 Upbit private client나 REST 주문 endpoint를 직접 만들지 않는다", async () => {
@@ -249,6 +337,7 @@ function createRequest(
     }).live_autonomous,
     candidate: createCandidate(),
     budgetSnapshot: createBudgetSnapshot(),
+    lossSnapshot: createLossSnapshot(),
     killSwitchActive: false,
     reconcileFresh: true,
     observedAt,
@@ -297,6 +386,15 @@ function createCandidate(overrides: Partial<LiveAutonomousEntryCandidate> = {}):
         "live_autonomous_entry_runtime.test",
       ),
     },
+    ...overrides,
+  };
+}
+
+function createLossSnapshot(overrides: Partial<LiveAutonomousEntryLossSnapshot> = {}): LiveAutonomousEntryLossSnapshot {
+  return {
+    dailyRealizedLossKrw: "0",
+    weeklyRealizedLossKrw: "0",
+    capturedAt: observedAt,
     ...overrides,
   };
 }

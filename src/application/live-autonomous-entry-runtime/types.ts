@@ -32,6 +32,8 @@ export interface LiveAutonomousEntryRuntimeConfig {
   max_order_krw: NumericString;
   daily_autonomous_notional_limit_krw: NumericString;
   max_open_position_notional_krw: NumericString;
+  max_daily_loss_krw: NumericString;
+  max_weekly_loss_krw: NumericString;
   max_price_deviation_bps: NumericString;
   identifier_prefix: string;
   identifier_max_length: number;
@@ -63,6 +65,19 @@ export interface LiveAutonomousEntryRiskInput {
   strategy: StrategyRiskSnapshot;
   infrastructureSignals: readonly InfrastructureRiskSnapshot[];
   thresholdSnapshot: RiskThresholdSnapshot;
+  metadata?: JsonRecord;
+}
+
+/**
+ * M22 autonomous entry가 broker 제출 전에 확인해야 하는 KRW 손실 snapshot이다.
+ *
+ * RiskGate의 bps 손실 한도와 별도로 M22 config의 소액 KRW 손실 한도를 적용하기 위한 입력이다. caller는 최신 PnL status provider
+ * 결과를 이 구조로 낮춰 전달해야 하며, 이 타입 자체는 조회 side effect를 수행하지 않는다.
+ */
+export interface LiveAutonomousEntryLossSnapshot {
+  dailyRealizedLossKrw: NumericString;
+  weeklyRealizedLossKrw: NumericString;
+  capturedAt: TimestampInput;
   metadata?: JsonRecord;
 }
 
@@ -191,8 +206,15 @@ export interface LiveAutonomousEntryRuntimeRequest {
   config: LiveAutonomousEntryRuntimeConfig;
   candidate: LiveAutonomousEntryCandidate;
   budgetSnapshot: LiveAutonomousBudgetSnapshot;
+  lossSnapshot: LiveAutonomousEntryLossSnapshot;
   killSwitchActive: boolean;
   reconcileFresh: boolean;
+  /**
+   * 기존 attempt 재시도에 사용할 Upbit identifier/ExecutionEngine idempotency key다.
+   *
+   * 값이 없으면 runtime이 새 random identifier를 만들지만, broker 제출 결과가 불확실한 retry는 반드시 기존 값을 주입해야 한다.
+   */
+  idempotencyKey?: string;
   observedAt?: TimestampInput;
 }
 
