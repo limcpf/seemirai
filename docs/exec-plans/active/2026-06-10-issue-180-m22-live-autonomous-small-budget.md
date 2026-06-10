@@ -71,6 +71,7 @@ reconcile mismatch 0건을 기계적으로 증명하는 것이다. 기본 `PAPER
   - durable reservation과 random idempotency key generation
   - `LIMIT + post_only` live broker submission 경계
   - fake broker integration test
+- 로컬 검증: 2026-06-10 `./scripts/verify` 통과, 82 passed / 11 skipped files, 1323 passed / 113 skipped tests
 
 ### Sub PR 04. Exit, Telegram Status & Daily Report Integration
 
