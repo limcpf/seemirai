@@ -273,6 +273,35 @@ describe("M22 live autonomous entry runtime", () => {
     );
   });
 
+  it("ExecutionEngine 거부 이후 reservation release 실패는 broker 불확실이 아닌 reservation 복구로 안내한다", async () => {
+    const release = vi.fn<NonNullable<LiveAutonomousBudgetReservationPort["release"]>>(async () => {
+      throw new Error("release store unavailable");
+    });
+    const runtime = new LiveAutonomousEntryRuntime({
+      executionEngine: {
+        submitOrder: async (submission): Promise<ExecutionSubmitOrderResult> => ({
+          status: "REJECTED",
+          submission,
+          rejection: {
+            reasonCode: "risk_approval_mismatch",
+            message: "unit test forced rejection",
+          },
+        }),
+      },
+      budgetReservation: createBudgetReservation({ release }),
+      randomHex: () => deterministicRandomHex,
+      clock: () => observedAt,
+    });
+
+    const result = await runtime.submitEntryCandidate(createRequest());
+
+    expect(result.status).toBe("MANUAL_REVIEW_REQUIRED");
+    expect(result.trace.reason).toBe("budget_reservation_release_failed");
+    expect(result.message).toBe("ExecutionEngine은 broker 제출 전에 거부했지만 예산 선점 해제에 실패했습니다.");
+    expect(result.action).toContain("해제되지 않은 reservation");
+    expect(result.violations).toContain("release store unavailable");
+  });
+
   it("기존 attempt retry는 주입된 idempotency key를 재사용하고 새 random key를 만들지 않는다", async () => {
     const submitted: OrderSubmission[] = [];
     const randomHex = vi.fn(() => deterministicRandomHex);

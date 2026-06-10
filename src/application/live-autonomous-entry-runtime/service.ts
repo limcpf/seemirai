@@ -312,7 +312,41 @@ export class LiveAutonomousEntryRuntime {
     try {
       const executionResult = await this.executionEngine.submitOrder(submission);
       if (executionResult.status === "REJECTED") {
-        await this.releaseReservationAfterPreBrokerRejection(reservation, executionResult.rejection.reasonCode);
+        const releaseFailure = await this.releaseReservationAfterPreBrokerRejection(
+          reservation,
+          executionResult.rejection.reasonCode,
+        );
+        if (releaseFailure !== undefined) {
+          appendEvent(
+            "MANUAL_REVIEW_REQUIRED",
+            "budget_reservation_release_failed",
+            "ExecutionEngine은 broker 제출 전에 거부했지만 예산 선점 해제에 실패했습니다.",
+            "거래소 주문 reconcile이 아니라 durable reservation store의 해제되지 않은 reservation을 먼저 수동 해제합니다.",
+            {
+              reservation_id: reservation.reservationId,
+              execution_rejection_reason_code: executionResult.rejection.reasonCode,
+              error_message: releaseFailure,
+            },
+          );
+          return createResult({
+            request,
+            idempotencyKey,
+            status: "MANUAL_REVIEW_REQUIRED",
+            message: "ExecutionEngine은 broker 제출 전에 거부했지만 예산 선점 해제에 실패했습니다.",
+            action: "거래소 주문 reconcile이 아니라 durable reservation store의 해제되지 않은 reservation을 먼저 수동 해제합니다.",
+            violations: [releaseFailure],
+            events,
+            intent,
+            costDecision,
+            riskGateResult,
+            budgetReservation: reservation,
+            submission,
+            executionResult,
+            trace: {
+              reason: "budget_reservation_release_failed",
+            },
+          });
+        }
         appendEvent(
           "REJECTED",
           executionResult.rejection.reasonCode,
@@ -402,13 +436,19 @@ export class LiveAutonomousEntryRuntime {
   private async releaseReservationAfterPreBrokerRejection(
     reservation: LiveAutonomousBudgetReservation,
     reasonCode: string,
-  ): Promise<void> {
+  ): Promise<string | undefined> {
     if (this.budgetReservation.release === undefined) {
-      return;
+      return undefined;
     }
 
     // ExecutionEngine `REJECTED`는 broker side effect가 없다는 뜻이므로 이 경우에만 예산 선점을 해제한다.
-    await this.budgetReservation.release(reservation, reasonCode);
+    try {
+      await this.budgetReservation.release(reservation, reasonCode);
+      return undefined;
+    } catch (error) {
+      // release 실패는 거래소 제출 불확실성이 아니라 durable reservation 복구 문제로 분리해 운영자가 잘못 reconcile하지 않게 한다.
+      return error instanceof Error ? error.message : String(error);
+    }
   }
 }
 
