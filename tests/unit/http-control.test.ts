@@ -341,6 +341,20 @@ describe("HTTP control foundation", () => {
             },
           },
         },
+        liveAutonomous: {
+          enabled: false,
+          ready: false,
+          statusLabel: "M22 비활성",
+          allowedMarkets: ["KRW-BTC"],
+        },
+      },
+      liveAutonomousExit: {
+        status: "ok",
+        statusCode: "DISABLED",
+        statusLabel: "M22 자동 청산 비활성",
+        trace: {
+          source: "live_autonomous_exit_status",
+        },
       },
       marketData: {
         connectionStatus: "STALE",
@@ -1957,7 +1971,6 @@ function statusSnapshotProvider(input: {
           latestBrokerOrderStatus: null,
           filledQuantity: null,
           remainingQuantity: null,
-          requoteIntentIdempotencyKey: null,
           reconcile: {
             result: "SKIPPED",
             mismatchCount: null,

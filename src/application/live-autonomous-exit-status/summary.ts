@@ -132,6 +132,22 @@ function summarizeExitRuntimeResult(
   const remainingQuantity = readRemainingQuantity(result, brokerOrder);
   const baseTrace = createExitTrace(result, brokerOrder);
 
+  if (hasExitRecordingFailure(result)) {
+    return createSummary({
+      input,
+      result,
+      statusCode: "MANUAL_REVIEW_REQUIRED",
+      status: "unavailable",
+      statusLabel: "청산 기록 확인 필요",
+      message: "청산 주문 처리 후 persistence 또는 evidence 기록이 실패해 자동 청산 상태를 신뢰할 수 없습니다.",
+      impact: "주문 side effect와 로컬 DB/evidence가 갈라졌을 수 있으므로 신규 entry를 중단해야 합니다.",
+      action: "거래소 주문, 로컬 주문/체결/포지션 저장 상태, decision evidence를 직접 대조한 뒤 재개하세요.",
+      filledQuantity,
+      remainingQuantity,
+      trace: { ...baseTrace, reason: "live_autonomous_exit_recording_failed" },
+    });
+  }
+
   switch (result.status) {
     case "NO_EXIT_INTENT":
       return createSummary({
@@ -240,7 +256,6 @@ function createSummary(input: {
     latestBrokerOrderStatus: latestBrokerOrder?.status ?? null,
     filledQuantity: input.filledQuantity ?? null,
     remainingQuantity: input.remainingQuantity ?? latestBrokerOrder?.remainingQuantity ?? null,
-    requoteIntentIdempotencyKey: input.result?.remainingIntent?.idempotencyKey ?? null,
     reconcile: input.input.reconcile,
     trace: {
       source: "live_autonomous_exit_status",
@@ -303,6 +318,14 @@ function readLatestBrokerOrder(result: ExitPaperRuntimeResult): BrokerOrder | nu
   return null;
 }
 
+function readSubmittedBrokerOrder(result: ExitPaperRuntimeResult): BrokerOrder | null {
+  if (result.executionResult !== undefined && result.executionResult.status !== "REJECTED") {
+    return result.executionResult.brokerOrder;
+  }
+
+  return null;
+}
+
 function readMarket(submission: OrderSubmission | undefined, brokerOrder: BrokerOrder | null) {
   return submission?.intent.market ?? brokerOrder?.market ?? null;
 }
@@ -314,6 +337,11 @@ function readStrategyId(submission: OrderSubmission | undefined): string | null 
 function readRemainingQuantity(result: ExitPaperRuntimeResult, brokerOrder: BrokerOrder | null): string | null {
   if (result.remainingIntent !== undefined) {
     return result.remainingIntent.requestedQuantity;
+  }
+
+  const submittedBrokerOrder = readSubmittedBrokerOrder(result);
+  if (result.canceledOrder !== undefined && submittedBrokerOrder !== null) {
+    return submittedBrokerOrder.remainingQuantity;
   }
 
   return brokerOrder?.remainingQuantity ?? null;
@@ -330,12 +358,19 @@ function calculateFilledQuantity(
 
   try {
     const requested = parseFinancialDecimal(submission.intent.requestedQuantity);
-    const remainingQuantity = result.remainingIntent?.requestedQuantity ?? brokerOrder.remainingQuantity;
+    const remainingQuantity = readRemainingQuantity(result, brokerOrder);
+    if (remainingQuantity === null) {
+      return null;
+    }
     const remaining = parseFinancialDecimal(remainingQuantity);
     return requested.minus(remaining).toFixed();
   } catch {
     return null;
   }
+}
+
+function hasExitRecordingFailure(result: ExitPaperRuntimeResult): boolean {
+  return result.executionPersistenceStatus === "UNAVAILABLE" || result.evidenceWriteStatus === "UNAVAILABLE";
 }
 
 function createExitTrace(result: ExitPaperRuntimeResult, brokerOrder: BrokerOrder | null): JsonRecord {

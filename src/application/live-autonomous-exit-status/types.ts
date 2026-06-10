@@ -128,7 +128,6 @@ export interface LiveAutonomousExitStatusSummary {
   latestBrokerOrderStatus: OrderLifecycleStatus | null;
   filledQuantity: string | null;
   remainingQuantity: string | null;
-  requoteIntentIdempotencyKey: string | null;
   reconcile: LiveAutonomousExitReconcileSnapshot;
   trace: JsonRecord;
 }

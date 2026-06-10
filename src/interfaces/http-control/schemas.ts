@@ -109,6 +109,53 @@ const pilotRuntimeSafeSummarySchema = {
   additionalProperties: false,
 } as const;
 
+const liveAutonomousRuntimeSafeSummarySchema = {
+  type: "object",
+  required: [
+    "enabled",
+    "ready",
+    "allowedMarkets",
+    "maxOrderKrw",
+    "dailyAutonomousNotionalLimitKrw",
+    "maxOpenPositionNotionalKrw",
+    "m21WeekGateEvidenceConfigured",
+    "operatorArmEvidenceConfigured",
+    "budgetEvidenceConfigured",
+    "keyScopeEvidenceConfigured",
+    "telegramInboundReady",
+    "reconcileFresh",
+    "pnlStatusReady",
+    "decisionLedgerReady",
+    "exitEngineReady",
+    "statusLabel",
+    "message",
+    "action",
+    "trace",
+  ],
+  properties: {
+    enabled: { type: "boolean" },
+    ready: { type: "boolean" },
+    allowedMarkets: { type: "array", items: { type: "string" } },
+    maxOrderKrw: { type: "string" },
+    dailyAutonomousNotionalLimitKrw: { type: "string" },
+    maxOpenPositionNotionalKrw: { type: "string" },
+    m21WeekGateEvidenceConfigured: { type: "boolean" },
+    operatorArmEvidenceConfigured: { type: "boolean" },
+    budgetEvidenceConfigured: { type: "boolean" },
+    keyScopeEvidenceConfigured: { type: "boolean" },
+    telegramInboundReady: { type: "boolean" },
+    reconcileFresh: { type: "boolean" },
+    pnlStatusReady: { type: "boolean" },
+    decisionLedgerReady: { type: "boolean" },
+    exitEngineReady: { type: "boolean" },
+    statusLabel: { type: "string" },
+    message: { type: "string" },
+    action: { type: ["string", "null"] },
+    trace: { type: "object", additionalProperties: true },
+  },
+  additionalProperties: false,
+} as const;
+
 const reconcileStatusSummarySchema = {
   type: "object",
   required: [
@@ -131,6 +178,72 @@ const reconcileStatusSummarySchema = {
     websocketStatus: { enum: ["CONNECTED", "DISCONNECTED", "RECONNECTING", "DEGRADED"] },
     actionRequired: { type: "string" },
     message: { type: "string" },
+    trace: { type: "object", additionalProperties: true },
+  },
+  additionalProperties: false,
+} as const;
+
+const liveAutonomousExitReconcileSnapshotSchema = {
+  type: "object",
+  required: ["result", "mismatchCount", "openOrderCount", "balanceStatus", "websocketStatus", "lastReconcileAt"],
+  properties: {
+    result: { enum: ["SUCCESS", "MISMATCH_DETECTED", "FAILED", "SKIPPED", "UNAVAILABLE"] },
+    mismatchCount: { type: ["number", "null"] },
+    openOrderCount: { type: ["number", "null"] },
+    balanceStatus: { enum: ["OK", "STALE", "UNAVAILABLE"] },
+    websocketStatus: { enum: ["CONNECTED", "DISCONNECTED", "RECONNECTING", "DEGRADED"] },
+    lastReconcileAt: { type: ["string", "null"] },
+  },
+  additionalProperties: false,
+} as const;
+
+const liveAutonomousExitStatusSummarySchema = {
+  type: "object",
+  required: [
+    "enabled",
+    "runtimeReady",
+    "exitEngineReady",
+    "status",
+    "statusCode",
+    "statusLabel",
+    "message",
+    "impact",
+    "action",
+    "market",
+    "strategyId",
+    "latestBrokerOrderStatus",
+    "filledQuantity",
+    "remainingQuantity",
+    "reconcile",
+    "trace",
+  ],
+  properties: {
+    enabled: { type: "boolean" },
+    runtimeReady: { type: "boolean" },
+    exitEngineReady: { type: "boolean" },
+    status: { enum: ["ok", "warning", "unavailable"] },
+    statusCode: {
+      enum: [
+        "DISABLED",
+        "BLOCKED",
+        "READY",
+        "NO_EXIT_INTENT",
+        "EXIT_SUBMITTED",
+        "REQUOTE_INTENT_CREATED",
+        "RECONCILE_REQUIRED",
+        "MANUAL_REVIEW_REQUIRED",
+      ],
+    },
+    statusLabel: { type: "string" },
+    message: { type: "string" },
+    impact: { type: ["string", "null"] },
+    action: { type: ["string", "null"] },
+    market: { type: ["string", "null"] },
+    strategyId: { type: ["string", "null"] },
+    latestBrokerOrderStatus: { type: ["string", "null"] },
+    filledQuantity: { type: ["string", "null"] },
+    remainingQuantity: { type: ["string", "null"] },
+    reconcile: liveAutonomousExitReconcileSnapshotSchema,
     trace: { type: "object", additionalProperties: true },
   },
   additionalProperties: false,
@@ -319,6 +432,7 @@ export const statusRouteOptions: RouteShorthandOptions = {
           "dailyReport",
           "pnl",
           "reconcile",
+          "liveAutonomousExit",
           "why",
         ],
         properties: {
@@ -327,7 +441,16 @@ export const statusRouteOptions: RouteShorthandOptions = {
           generatedAt: { type: "string" },
           runtime: {
             type: "object",
-            required: ["exchange", "market", "mode", "universe", "liveTradingEnabled", "paperNoKey", "pilot"],
+            required: [
+              "exchange",
+              "market",
+              "mode",
+              "universe",
+              "liveTradingEnabled",
+              "paperNoKey",
+              "pilot",
+              "liveAutonomous",
+            ],
             properties: {
               exchange: { type: "string" },
               market: { type: "string" },
@@ -362,6 +485,7 @@ export const statusRouteOptions: RouteShorthandOptions = {
               liveTradingEnabled: { type: "boolean" },
               paperNoKey: { type: "boolean" },
               pilot: pilotRuntimeSafeSummarySchema,
+              liveAutonomous: liveAutonomousRuntimeSafeSummarySchema,
             },
           },
           tradingState: {
@@ -446,6 +570,7 @@ export const statusRouteOptions: RouteShorthandOptions = {
             },
           },
           reconcile: reconcileStatusSummarySchema,
+          liveAutonomousExit: liveAutonomousExitStatusSummarySchema,
           why: {
             anyOf: [
               { type: "null" },

@@ -359,6 +359,20 @@ describe("daily report application", () => {
       reportDate: "2026-05-21",
       dataProvider: provider,
       generatedAt: "2026-05-21T15:01:00.000Z",
+      liveAutonomousExit: createLiveAutonomousExitStatusSummary({
+        enabled: true,
+        runtimeReady: true,
+        exitEngineReady: true,
+        observedAt: "2026-05-21T14:59:00.000Z",
+        reconcile: {
+          result: "MISMATCH_DETECTED",
+          mismatchCount: 1,
+          openOrderCount: 2,
+          balanceStatus: "OK",
+          websocketStatus: "CONNECTED",
+          lastReconcileAt: "2026-05-21T14:58:00.000Z",
+        },
+      }),
     });
     const sent = await sendDailyReport({
       reportDate: "2026-05-21",
@@ -382,6 +396,8 @@ describe("daily report application", () => {
     });
     expect(built.notification.summary).toContain("거래 요약");
     expect(built.notification.summary).toContain("손익");
+    expect(built.notification.summary).toContain("M22 자동매매/청산");
+    expect(built.notification.summary).toContain("자동 청산 상태: reconcile 확인 필요");
     expect(sent.result).toEqual({ delivered: true, providerMessageId: "daily-report-1" });
     expect(notifier.dailyReports).toHaveLength(1);
     expect(notifier.dailyReports[0]?.summary).toContain("비용/체결 품질");

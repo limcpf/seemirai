@@ -23,8 +23,7 @@ export function formatTelegramStatusCommandResponse(
     `M22 자동 청산: ${snapshot.liveAutonomousExit.statusLabel} - ${snapshot.liveAutonomousExit.message}`,
     `PnL 상태: ${snapshot.pnl.statusLabel} - ${snapshot.pnl.message}`,
     `필요 조치: ${firstAction([
-      snapshot.liveAutonomousExit.action,
-      snapshot.runtime.liveAutonomous.action,
+      primaryLiveAutonomousAction(snapshot),
       snapshot.pnl.action,
       snapshot.paper.action,
       snapshot.reconcile.actionRequired,
@@ -178,7 +177,7 @@ export function formatTelegramOrdersCommandResponse(
     `M22 자동 청산: ${snapshot.liveAutonomousExit.statusLabel}`,
     optionalLine("잔량", snapshot.liveAutonomousExit.remainingQuantity),
     `reconcile 상태: ${snapshot.reconcile.message}`,
-    `필요 조치: ${snapshot.liveAutonomousExit.action ?? snapshot.reconcile.actionRequired}`,
+    `필요 조치: ${primaryLiveAutonomousAction(snapshot) ?? snapshot.reconcile.actionRequired}`,
     "",
     "추적 정보",
     `요청 ID: ${correlationId}`,
@@ -423,6 +422,14 @@ function recommendControlFollowUp(state: string): string {
 
 function firstAction(actions: ReadonlyArray<string | null>): string {
   return actions.find((action) => action !== null && action.trim().length > 0) ?? "추가 조치 없음";
+}
+
+function primaryLiveAutonomousAction(snapshot: StatusSnapshot): string | null {
+  if (!snapshot.runtime.liveAutonomous.enabled || snapshot.liveAutonomousExit.statusCode === "DISABLED") {
+    return null;
+  }
+
+  return snapshot.liveAutonomousExit.action ?? snapshot.runtime.liveAutonomous.action;
 }
 
 function optionalLine(label: string, value: string | undefined | null): string | undefined {

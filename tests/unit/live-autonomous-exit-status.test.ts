@@ -125,7 +125,6 @@ describe("M22 live autonomous exit status summary", () => {
       latestBrokerOrderStatus: "CANCELED",
       filledQuantity: "0.0046",
       remainingQuantity: "0.0004",
-      requoteIntentIdempotencyKey: "exit-original-001-requote-upbit-exit-1-1",
     });
     expect(summary.message).toContain("부분 체결");
     expect(summary.message).not.toContain("exit-original-001-requote");
@@ -164,6 +163,53 @@ describe("M22 live autonomous exit status summary", () => {
       remainingQuantity: "0.0004",
     });
     expect(summary.action).toContain("수동으로 잔량을 취소");
+  });
+
+  it("broker submit 이후 persistence 기록 실패를 정상 청산으로 표시하지 않는다", () => {
+    const summary = createLiveAutonomousExitStatusSummary({
+      enabled: true,
+      runtimeReady: true,
+      exitEngineReady: true,
+      observedAt,
+      reconcile: cleanReconcile(),
+      lastExitResult: {
+        ...exitSubmittedResult(),
+        executionPersistenceStatus: "UNAVAILABLE",
+      },
+    });
+
+    expect(summary).toMatchObject({
+      status: "unavailable",
+      statusCode: "MANUAL_REVIEW_REQUIRED",
+      statusLabel: "청산 기록 확인 필요",
+    });
+    expect(summary.action).toContain("로컬 주문/체결/포지션 저장 상태");
+    expect(summary.trace).toMatchObject({
+      reason: "live_autonomous_exit_recording_failed",
+      executionPersistenceStatus: "UNAVAILABLE",
+    });
+  });
+
+  it("cancel snapshot remaining=0 때문에 부분 체결 수량을 전체 체결로 부풀리지 않는다", () => {
+    const { remainingIntent: _remainingIntent, ...dustRemainingResult } = exitRequoteResult();
+    const summary = createLiveAutonomousExitStatusSummary({
+      enabled: true,
+      runtimeReady: true,
+      exitEngineReady: true,
+      observedAt,
+      reconcile: cleanReconcile(),
+      lastExitResult: {
+        ...dustRemainingResult,
+        status: "EXECUTION_SUBMITTED",
+      },
+    });
+
+    expect(summary).toMatchObject({
+      statusCode: "EXIT_SUBMITTED",
+      latestBrokerOrderStatus: "CANCELED",
+      filledQuantity: "0.0046",
+      remainingQuantity: "0.0004",
+    });
   });
 
   it("daily report section은 내부 code를 추적 정보 줄로 낮춘다", () => {

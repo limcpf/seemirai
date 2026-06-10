@@ -250,6 +250,22 @@ describe("Telegram inbound command runtime", () => {
     expect(ordersText).toContain("M22 자동 청산: 부분 체결 잔량 재호가 필요");
     expect(ordersText).toContain("잔량: 0.0004");
   });
+
+  it("does not let disabled M22 guidance hide current operational actions", () => {
+    const text = formatTelegramStatusCommandResponse(
+      createStatusSnapshot({
+        pnl: {
+          ...createStatusSnapshot().pnl,
+          status: "unavailable",
+          action: "PnL snapshot provider를 복구하세요.",
+        },
+      }),
+      "corr-disabled-m22",
+    );
+
+    expect(text).toContain("필요 조치: PnL snapshot provider를 복구하세요.");
+    expect(text).not.toContain("필요 조치: M22를 운영하려면");
+  });
 });
 
 describe("Telegram inbound reply sender", () => {
@@ -547,7 +563,6 @@ function createStatusSnapshot(overrides: Partial<ControlStatusSnapshot> = {}): C
       latestBrokerOrderStatus: null,
       filledQuantity: null,
       remainingQuantity: null,
-      requoteIntentIdempotencyKey: null,
       reconcile: {
         result: "SUCCESS",
         mismatchCount: 0,
