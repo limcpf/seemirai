@@ -58,6 +58,21 @@ Codex-native 운영은 Codex, Git, GitHub, shell command, 문서 상태를 연�
 - polling runtime `start()` loop는 provider contract 밖 예외를 loop 경계에서 흡수하고 다음 tick을 예약한다. `runOnce()` 결과에는
   raw update, raw text, raw chat id를 포함하지 않고 update count, next offset, handler result summary만 남긴다.
 
+## M21 수동 승인 live pilot 신뢰성 기준
+
+- proposal은 `PROPOSED`에서 시작하고 `APPROVED`, `REJECTED`, `EXPIRED`, `SUBMITTED`, `SUBMISSION_FAILED` 중 하나로만 전이한다.
+  `REJECTED`, `EXPIRED`, `SUBMITTED`, `SUBMISSION_FAILED`는 닫힌 상태이며 재승인이나 재제출을 허용하지 않는다.
+- proposal fingerprint는 market, side, limit price, volume, expected notional, 예산 snapshot, decision ledger id, risk decision id,
+  cost snapshot, idempotency key, expires_at을 기준으로 만든다. fingerprint mismatch는 stale approval로 보고 broker 호출 전에
+  차단한다.
+- 같은 proposal id 또는 idempotency key는 중복 live order를 만들 수 없다. Telegram update/message 재전달은 M20 dedupe를 먼저
+  통과해야 하며, proposal 상태 전이는 durable append-only evidence로 남긴 뒤 현재 상태와 일치할 때만 전진한다.
+- proposal TTL이 만료되면 approval command가 도착해도 `EXPIRED` evidence로 수렴하고 제출하지 않는다.
+- approval evidence가 있어도 제출 직전 risk gate, kill switch, reconcile freshness, budget, market allowlist, order type, price
+  deviation을 재검증한다. 재검증 실패는 `SUBMISSION_FAILED` evidence로 남기고 live broker에 위임하지 않는다.
+- broker submission 결과는 proposal, approval, risk decision, broker submission evidence chain으로 추적 가능해야 한다. audit
+  append나 submission evidence 저장에 실패하면 주문 성공으로 취급하지 않는다.
+
 ## RiskGate append-only 기준
 
 - `risk_ok`는 현재 `riskGateContext`를 평가한 실제 RiskGate 승인 결과가 있을 때만 PASS가 될 수 있다.

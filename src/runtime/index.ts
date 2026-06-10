@@ -86,6 +86,19 @@ export type {
   UpbitLiveBrokerRuntimeSafeSummary,
 } from "./upbit-live-broker-runtime.js";
 export {
+  LiveManualApprovalConfigSchema,
+  UnsafeLiveManualApprovalRuntimeConfigError,
+  assertLiveManualApprovalRuntimeReady,
+  defaultLiveManualApprovalConfig,
+  evaluateLiveManualApprovalRuntimeGuard,
+  liveManualApprovalDefaultAllowedMarkets,
+} from "./live-manual-approval-config.js";
+export type {
+  LiveManualApprovalRuntimeConfig,
+  LiveManualApprovalRuntimeGuardInput,
+  LiveManualApprovalRuntimeGuardResult,
+} from "./live-manual-approval-config.js";
+export {
   UnsafeLiveReconcileRuntimeError,
   ALLOWED_RECONCILE_KEY_SCOPES,
   FORBIDDEN_RECONCILE_KEY_SCOPES,

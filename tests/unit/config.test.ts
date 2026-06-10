@@ -106,6 +106,17 @@ describe("runtime config", () => {
       total_alt_max_position_bps_of_equity: "1500",
       max_consecutive_strategy_losses: 3,
     });
+    expect(config.live_manual_approval).toEqual({
+      mode: "LIVE_ARMED_MANUAL_APPROVAL",
+      enabled: false,
+      allowed_markets: ["KRW-BTC", "KRW-ETH", "KRW-ETC"],
+      max_order_krw: "10000",
+      daily_approved_notional_limit_krw: "30000",
+      proposal_ttl_seconds: 300,
+      max_price_deviation_bps: "30",
+      require_reconcile_freshness: true,
+      require_m20_inbound_enabled: true,
+    });
     expect(config.telegram.provider_timeout_ms).toBe(5000);
   });
 
@@ -250,6 +261,54 @@ describe("runtime config", () => {
         },
       }),
     ).toThrow("must be a non-negative decimal string");
+  });
+
+  it("loads M21 live manual approval config with conservative defaults and rejects unsafe ranges", () => {
+    const config = loadRuntimeConfig({
+      live_manual_approval: {
+        enabled: true,
+        allowed_markets: ["KRW-BTC"],
+        max_order_krw: "5000",
+        daily_approved_notional_limit_krw: "5000",
+        proposal_ttl_seconds: 60,
+        max_price_deviation_bps: "10",
+      },
+    });
+
+    expect(config.live_manual_approval).toMatchObject({
+      mode: "LIVE_ARMED_MANUAL_APPROVAL",
+      enabled: true,
+      allowed_markets: ["KRW-BTC"],
+      max_order_krw: "5000",
+      daily_approved_notional_limit_krw: "5000",
+      proposal_ttl_seconds: 60,
+      max_price_deviation_bps: "10",
+      require_reconcile_freshness: true,
+      require_m20_inbound_enabled: true,
+    });
+
+    expect(() =>
+      loadRuntimeConfig({
+        live_manual_approval: {
+          allowed_markets: ["KRW-BTC", "KRW-BTC"],
+        },
+      }),
+    ).toThrow("allowed_markets must not contain duplicates");
+    expect(() =>
+      loadRuntimeConfig({
+        live_manual_approval: {
+          max_order_krw: "4999",
+        },
+      }),
+    ).toThrow("max_order_krw must be at least 5000");
+    expect(() =>
+      loadRuntimeConfig({
+        live_manual_approval: {
+          max_order_krw: "10000",
+          daily_approved_notional_limit_krw: "9999",
+        },
+      }),
+    ).toThrow("daily_approved_notional_limit_krw must be greater than or equal to max_order_krw");
   });
 
   it("loads phase 1.5 manual alt approvals while keeping the maximum approval invariant", () => {
