@@ -640,6 +640,57 @@ Acceptance Criteria:
 - M22 무승인 자동 실거래, Telegram public webhook endpoint, 신규 진입 시장가, best order 기본 허용, 자동 budget 확대, 출금,
   입출금 자동화, 선물, 레버리지, 마진은 제외한다.
 
+### FR-OPS-003: M22 제한적 완전 자동매매는 명시 arm, 소액 budget, 모든 safety gate를 통과한 주문만 제출해야 한다
+
+설명:
+
+- M22는 `LIVE_AUTONOMOUS_SMALL_BUDGET` runtime에서 운영자가 명시적으로 arm 한 소액 예산 안에서만 자동 entry와 exit를 허용한다.
+- 목표는 수익 보장이 아니라 24시간 live autonomous pilot에서 crash, unhandled rejection, risk gate 우회 주문, reconcile mismatch가
+  0건임을 기계적으로 증명하는 것이다.
+- 기본 `PAPER_NO_KEY` runtime은 M22 구현 후에도 live order API 호출 0회를 유지해야 한다.
+
+Acceptance Criteria:
+
+- [ ] M22 기본 config는 `live_autonomous.enabled=false`이며 명시 설정 없이는 private client, live broker, autonomous loop가 시작되지 않는다.
+- [ ] M21 1주 gate evidence, operator arm evidence, budget evidence, key scope evidence 없이는 autonomous runtime이 fail-closed 한다.
+- [ ] M20 inbound readiness, M16 reconcile freshness, M17 PnL status, M18 decision ledger, M19 exit engine readiness가 startup guard로 확인된다.
+- [ ] 첫 활성 market 기본값은 `KRW-BTC` 단일이고, 첫 예산 기본값은 1회 `10000` KRW, 일일 `30000` KRW다.
+- [ ] Upbit identifier/idempotency key는 현재 32자 보수 제한을 유지하고, 권장 랜덤 생성 패턴은 32자를 넘지 않는다.
+- [ ] 자동 entry는 `LIMIT + post_only`만 허용하고 시장가/최유리 주문은 거래소 호출 전 fail-closed 한다.
+- [ ] `post_only + smp_type` 조합은 거래소 호출 전 fail-closed 한다.
+- [ ] 제출 직전 risk gate, kill switch, reconcile freshness, budget, market allowlist, order type, price deviation, Upbit KRW 최소 주문금액을 재검증한다.
+- [ ] 같은 idempotency key 또는 같은 order attempt 재시도는 중복 live order를 만들지 않는다.
+- [ ] 모든 제출 주문은 strategy decision, cost decision, risk decision, kill switch/reconcile/budget evidence, broker submission evidence를 가진다.
+- [ ] broker submit 예외 또는 불확실 결과는 duplicate 재시도 없이 reconcile/manual review로 수렴한다.
+- [ ] reconcile mismatch, duplicate order, untracked fill, persistence failure는 신규 주문 중지와 manual review evidence로 수렴한다.
+- [ ] M19 exit engine 기반 자동 매도/축소가 live position scope와 risk gate를 초과하지 않는다.
+- [ ] Telegram/status/report는 M22 상태와 필요한 조치를 한국어로 보여주고 secret/raw provider payload를 노출하지 않는다.
+- [ ] 24시간 live autonomous pilot에서 crash 0회, unhandled rejection 0회, risk gate 우회 주문 0건, reconcile mismatch 0건을 증명한다.
+- [ ] source scan으로 시장가/best 주문, 출금/입출금, 승인 없는 기존 submit path, raw secret 노출 경로가 열리지 않았음을 확인한다.
+
+테스트 요구사항:
+
+- 단위 테스트: M22 config 기본 비활성, KRW-BTC 단일 기본값, 예산 상한, readiness guard opt-out 차단, 32자 identifier 제한을 검증한다.
+- 단위 테스트: M21 1주 gate, operator arm, budget, key scope, M20/M16/M17/M18/M19 readiness 누락이 private client 조립 전에 닫히는지 확인한다.
+- 단위 테스트: autonomous order attempt 상태 전이, durable reservation, idempotency key 중복 차단, broker 불확실 결과 정규화를 검증한다.
+- 통합 테스트: fake broker와 fake status providers로 cost/risk/reconcile/budget/order type 재검증을 통과한 주문만 제출되는지 확인한다.
+- 통합 테스트: M19 exit engine이 live position scope를 초과하지 않고 partial fill, cancel/requote 실패, reconcile mismatch를 manual review로 수렴시키는지 확인한다.
+- source scan: `POST /v1/orders`, `DELETE /v1/order`, `submitOrder(`, `cancelOrder(`, `ord_type.*market`, `ord_type.*best`,
+  `withdraw`, `입금`, `출금`, secret/raw payload 후보가 M22 guard 밖에서 열리지 않았는지 확인한다.
+- gated pilot: 명시 env guard와 redacted evidence가 있을 때만 24시간 live autonomous pilot을 실행하고, 실행하지 못하면 guard skip evidence와 운영 blocker를 기록한다.
+
+문서 요구사항:
+
+- M22 guard, order attempt/evidence contract, Telegram/status/report safe summary, source scan, pilot 결과가 바뀌면
+  `docs/RUNTIME_CONFIG.md`, `docs/SECURITY.md`, `docs/RELIABILITY.md`, `docs/product-specs/upbit-live-autonomous-trading.md`,
+  active/completed exec plan을 함께 갱신한다.
+
+제외 범위:
+
+- M23 7일 운영 안정화, M24 strategy/universe/budget 확대, BTC 외 다중 market 기본 활성화, 자동 budget 확대, 시장가/최유리 주문 기본 허용,
+  hard stop 자동 시장가 청산, Telegram public webhook endpoint, 출금/입출금 자동화, 선물, 레버리지, 마진, 타인 계정, 신호 판매,
+  LLM 직접 매수/매도 판단은 제외한다.
+
 ### FR-LLM-001: LLM은 직접 매매 판단에 사용하지 않는다
 
 설명:
