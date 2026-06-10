@@ -63,6 +63,8 @@ Codex-native 운영은 Codex, Git, GitHub, shell command, 문서 상태를 연�
 - proposal은 `PROPOSED`에서 시작하고 `APPROVED`, `REJECTED`, `EXPIRED`, `SUBMITTED`, `SUBMISSION_FAILED` 중 하나로만 전이한다.
   `APPROVED`는 broker 제출 전 crash/restart에서 재개 가능한 중간 상태이고, `REJECTED`, `EXPIRED`, `SUBMITTED`,
   `SUBMISSION_FAILED`는 닫힌 상태이며 재승인이나 재제출을 허용하지 않는다.
+- `APPROVED` 재개는 broker submit으로 바로 넘어가지 않는다. runtime은 approval audit projection을 먼저 보강하고, 이 보강이
+  실패하면 `SUBMISSION_FAILED`로 닫아 감사되지 않은 승인 상태에서 주문 side effect가 발생하지 않게 한다.
 - proposal fingerprint는 market, side, limit price, volume, expected notional, 예산 snapshot, decision ledger id, risk decision id,
   cost snapshot, idempotency key, expires_at을 기준으로 만든다. expires_at은 같은 instant의 ISO 표기 차이가 fingerprint mismatch를
   만들지 않도록 정규화하며, fingerprint mismatch는 stale approval로 보고 broker 호출 전에 차단한다.
@@ -88,6 +90,11 @@ Codex-native 운영은 Codex, Git, GitHub, shell command, 문서 상태를 연�
 - broker submit 예외는 provider에 도달하지 않았다는 보장이 아니므로 `brokerSubmitted=false`로 기록하지 않는다. 이 경우
   `m21_broker_submission_uncertain`과 `broker_submission_state=uncertain`을 남기고 같은 proposal 재승인을 막은 뒤 수동 reconcile로
   실제 거래소 주문 존재 여부를 확인한다.
+- broker submit 예외 이후 `SUBMISSION_FAILURE_RECORDED` 저장까지 실패해도 Telegram handler까지 raw exception을 전파하지 않는다.
+  결과는 `APPROVAL_SUBMISSION_FAILED`, `brokerSubmitted=true`, `m21_broker_submission_uncertain_evidence_exception`으로 정규화해
+  운영자가 불확실 제출을 놓치지 않게 한다.
+- `/reject`는 broker side effect를 만들지 않지만 operator decision audit chain의 일부다. rejection 상태 전이 후 audit projection이
+  실패하면 `REJECTION_AUDIT_FAILED`로 응답하고 성공 거부로 숨기지 않는다.
 
 ## RiskGate append-only 기준
 

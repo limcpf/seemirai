@@ -71,7 +71,7 @@ export function createLiveOrderApprovalCommandRuntime(
 
       if (proposal.status === "APPROVED" && input.command.name === "approve") {
         // 승인 기록 후 crash/restart가 일어났을 수 있으므로 approval을 중복 기록하지 않고 제출 직전 guard부터 재개한다.
-        return submitApprovedProposal(options, proposal, input, occurredAt, []);
+        return resumeApprovedProposal(options, proposal, input, occurredAt);
       }
 
       if (proposal.status !== "PROPOSED") {
@@ -170,7 +170,19 @@ async function rejectProposal(
     return createWriteConflictResult("REJECTION_RECORD_FAILED", proposal, recorded);
   }
 
-  await appendApprovalAuditSafely(options, recorded.evidence, input.correlationId);
+  if (!(await appendApprovalAuditSafely(options, recorded.evidence, input.correlationId))) {
+    return createResult({
+      status: "REJECTION_AUDIT_FAILED",
+      proposalId: proposal.proposalId,
+      brokerSubmitted: false,
+      stateChanged: true,
+      reasonCode: "m21_rejection_audit_append_failed",
+      evidence: [recorded.evidence],
+      trace: {
+        audit_status: "append_failed",
+      },
+    });
+  }
   return createResult({
     status: "REJECTION_RECORDED",
     proposalId: proposal.proposalId,
@@ -250,6 +262,36 @@ async function approveAndSubmitProposal(
     });
   }
   return submitApprovedProposal(options, approval.proposal, input, occurredAt, [approval.evidence]);
+}
+
+async function resumeApprovedProposal(
+  options: CreateLiveOrderApprovalCommandRuntimeOptions,
+  approvedProposal: LiveOrderProposalContract,
+  input: LiveOrderApprovalCommandRuntimeInput,
+  occurredAt: string,
+): Promise<LiveOrderApprovalCommandRuntimeResult> {
+  const resumeApprovalEvidence = createEvidence({
+    proposal: approvedProposal,
+    input,
+    occurredAt,
+    evidenceKind: "APPROVAL_RECORDED",
+    proposalStatus: "APPROVED",
+    reasonCode: "m21_approval_resume_audit_recorded",
+    metadata: {
+      correlation_id: input.correlationId,
+      approval_resume: true,
+      ...(input.messageReceivedAt === undefined ? {} : { telegram_message_received_at: input.messageReceivedAt }),
+    },
+  });
+
+  if (!(await appendApprovalAuditSafely(options, resumeApprovalEvidence, input.correlationId))) {
+    return recordSubmissionFailure(options, approvedProposal, input, occurredAt, [resumeApprovalEvidence], {
+      reasonCode: "m21_approval_resume_audit_append_failed",
+      violations: ["m21_approval_resume_audit_append_failed"],
+    });
+  }
+
+  return submitApprovedProposal(options, approvedProposal, input, occurredAt, [resumeApprovalEvidence]);
 }
 
 async function submitApprovedProposal(
@@ -381,12 +423,14 @@ async function submitApprovedProposal(
     );
   } catch {
     // provider 예외만으로 거래소 side effect 부재를 증명할 수 없으므로 불확실 제출로 닫아 중복 재승인을 막는다.
-    return recordSubmissionFailure(options, approvedProposal, input, occurredAt, [...priorEvidence, recheckEvidence], {
-      reasonCode: "m21_broker_submission_uncertain",
-      violations: ["m21_broker_submission_uncertain"],
+    return recordBrokerSubmissionUncertainFailure(
+      options,
+      approvedProposal,
+      input,
+      occurredAt,
+      [...priorEvidence, recheckEvidence],
       recheck,
-      brokerSubmissionUncertain: true,
-    });
+    );
   }
 
   let submitted: LiveOrderApprovalProposalTransitionResult;
@@ -456,6 +500,38 @@ async function submitApprovedProposal(
     evidence: [...priorEvidence, recheckEvidence, submitted.evidence],
     brokerOrder,
   });
+}
+
+async function recordBrokerSubmissionUncertainFailure(
+  options: CreateLiveOrderApprovalCommandRuntimeOptions,
+  proposal: LiveOrderProposalContract,
+  input: LiveOrderApprovalCommandRuntimeInput,
+  occurredAt: string,
+  priorEvidence: readonly LiveOrderApprovalEvidenceSnapshot[],
+  recheck: LiveOrderApprovalSubmissionRecheckSnapshot,
+): Promise<LiveOrderApprovalCommandRuntimeResult> {
+  try {
+    return await recordSubmissionFailure(options, proposal, input, occurredAt, priorEvidence, {
+      reasonCode: "m21_broker_submission_uncertain",
+      violations: ["m21_broker_submission_uncertain"],
+      recheck,
+      brokerSubmissionUncertain: true,
+    });
+  } catch {
+    return createResult({
+      status: "APPROVAL_SUBMISSION_FAILED",
+      proposalId: proposal.proposalId,
+      brokerSubmitted: true,
+      stateChanged: true,
+      reasonCode: "m21_broker_submission_uncertain_evidence_exception",
+      evidence: priorEvidence,
+      trace: {
+        broker_submission_state: "uncertain",
+        store_status: "exception",
+        violations: ["m21_broker_submission_uncertain"],
+      },
+    });
+  }
 }
 
 async function recordSubmissionFailure(
