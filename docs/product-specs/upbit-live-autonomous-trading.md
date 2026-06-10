@@ -314,12 +314,12 @@ M19 Sub PR 03 범위:
 
 완료 조건:
 
-- 승인 없는 live 주문 0건
-- 모든 승인 주문은 proposal, approval, risk decision, broker submission evidence를 가진다.
-- proposal 없이 `/approve`만으로 live order가 생성되지 않는다.
-- expired/rejected/submitted proposal 재승인은 broker 호출 전에 fail-closed 한다.
-- 기본 `PAPER_NO_KEY` runtime은 live order API 호출 0회를 유지한다.
-- 최소 1주 운영 중 reconcile mismatch, duplicate order, untracked fill이 없어야 다음 단계로 넘어간다.
+- ✅ 승인 없는 live 주문 0건을 config guard, source scan, fake broker integration test로 확인했다.
+- ✅ 모든 승인 주문은 proposal, approval, risk decision, broker submission evidence를 가진다.
+- ✅ proposal 없이 `/approve`만으로 live order가 생성되지 않는다.
+- ✅ expired/rejected/submitted proposal 재승인은 broker 호출 전에 fail-closed 한다.
+- ✅ 기본 `PAPER_NO_KEY` runtime은 live order API 호출 0회를 유지한다.
+- M22 전환 gate: 최소 1주 운영 중 reconcile mismatch, duplicate order, untracked fill이 없어야 다음 단계로 넘어간다.
 
 ### M22. 제한적 완전 자동매매
 

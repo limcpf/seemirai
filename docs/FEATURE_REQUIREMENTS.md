@@ -604,19 +604,19 @@ Acceptance Criteria:
 
 Acceptance Criteria:
 
-- [ ] M21 기본 config는 `live_manual_approval.enabled=false`이며 명시 설정 없이는 proposal 생성과 approval submission이 시작되지 않는다.
-- [ ] 기본 허용 market은 `KRW-BTC`, `KRW-ETH`, `KRW-ETC`이고 config로 축소/확장 후보를 조정할 수 있다.
-- [ ] 1회 주문 상한, 일일 승인 주문 예산, proposal TTL, price deviation guard가 config에서 조정 가능하다.
-- [ ] proposal 없이 `/approve`만으로 live order가 생성되지 않는다.
-- [ ] 승인되지 않은 proposal은 `UpbitLiveBroker.submitOrder`로 전달되지 않는다.
-- [ ] expired/rejected/submitted proposal 재승인은 broker 호출 전에 fail-closed 한다.
-- [ ] 같은 Telegram update/message/command 재전달은 중복 승인 또는 중복 주문을 만들지 않는다.
-- [ ] 승인 직후 제출 전에 risk gate, kill switch, reconcile status, budget, order type, market allowlist, price deviation을 재검증한다.
-- [ ] M20 inbound readiness와 reconcile freshness는 필수 startup guard이며 config 값으로 비활성화할 수 없다.
-- [ ] 모든 제출 주문은 proposal, approval, risk decision, broker submission evidence를 가진다.
-- [ ] approval/reject audit에는 raw Telegram text, raw provider body, token, API key, JWT가 저장되지 않는다.
-- [ ] 기본 `PAPER_NO_KEY` runtime은 live order API 호출 0회를 유지한다.
-- [ ] M22 autonomous loop 또는 승인 없는 live order path가 없음을 source scan으로 확인한다.
+- [x] M21 기본 config는 `live_manual_approval.enabled=false`이며 명시 설정 없이는 proposal 생성과 approval submission이 시작되지 않는다.
+- [x] 기본 허용 market은 `KRW-BTC`, `KRW-ETH`, `KRW-ETC`이고 config로 축소/확장 후보를 조정할 수 있다.
+- [x] 1회 주문 상한, 일일 승인 주문 예산, proposal TTL, price deviation guard가 config에서 조정 가능하다.
+- [x] proposal 없이 `/approve`만으로 live order가 생성되지 않는다.
+- [x] 승인되지 않은 proposal은 `UpbitLiveBroker.submitOrder`로 전달되지 않는다.
+- [x] expired/rejected/submitted proposal 재승인은 broker 호출 전에 fail-closed 한다.
+- [x] 같은 Telegram update/message/command 재전달은 중복 승인 또는 중복 주문을 만들지 않는다.
+- [x] 승인 직후 제출 전에 risk gate, kill switch, reconcile status, budget, order type, market allowlist, price deviation을 재검증한다.
+- [x] M20 inbound readiness와 reconcile freshness는 필수 startup guard이며 config 값으로 비활성화할 수 없다.
+- [x] 모든 제출 주문은 proposal, approval, risk decision, broker submission evidence를 가진다.
+- [x] approval/reject audit에는 raw Telegram text, raw provider body, token, API key, JWT가 저장되지 않는다.
+- [x] 기본 `PAPER_NO_KEY` runtime은 live order API 호출 0회를 유지한다.
+- [x] M22 autonomous loop 또는 승인 없는 live order path가 없음을 source scan으로 확인한다.
 
 테스트 요구사항:
 

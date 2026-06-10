@@ -831,6 +831,37 @@ describe("M21 Telegram live order approval runtime", () => {
       currentStatus: "SUBMISSION_FAILED",
     });
 
+    const fingerprintProposal = createProposal({
+      proposalId: "proposal-fingerprint-mismatch",
+      status: "APPROVED",
+    });
+    const fingerprintStore = createInMemoryLiveOrderApprovalProposalStore([fingerprintProposal]);
+    const staleFingerprint = createLiveOrderProposalFingerprint(
+      createProposal({
+        proposalId: fingerprintProposal.proposalId,
+        status: "APPROVED",
+        requestedPrice: "100001",
+      }),
+    );
+    const staleEvidence = createLiveOrderApprovalEvidenceSnapshot({
+      proposal: fingerprintProposal,
+      evidenceKind: "SUBMISSION_RECHECK_PASSED",
+      proposalStatus: "APPROVED",
+      occurredAt: now,
+      reasonCode: "m21_submission_recheck_passed",
+    });
+
+    await expect(
+      fingerprintStore.appendEvidence({
+        proposalId: fingerprintProposal.proposalId,
+        expectedStatus: "APPROVED",
+        expectedFingerprint: staleFingerprint,
+        evidence: staleEvidence,
+      }),
+    ).resolves.toMatchObject({
+      status: "FINGERPRINT_MISMATCH",
+    });
+
     const firstProposal = createProposal({
       proposalId: "proposal-budget-1",
       status: "APPROVED",
@@ -1046,6 +1077,63 @@ describe("M21 Telegram live order approval runtime", () => {
     });
     expect(broker.submissions).toHaveLength(0);
     expect(proposalStore.listEvidence("proposal-submitted")).toHaveLength(0);
+    expect(replies[0]?.text).toContain("이미 닫힌 proposal");
+  });
+
+  it("이미 거부된 proposal 재승인은 상태를 바꾸지 않고 broker를 호출하지 않는다", async () => {
+    const auditEvents: AuditEvent[] = [];
+    const replies: TelegramInboundReplyInput[] = [];
+    const proposalStore = createInMemoryLiveOrderApprovalProposalStore([
+      createProposal({
+        proposalId: "proposal-rejected",
+        status: "REJECTED",
+      }),
+    ]);
+    const broker = new FakeBroker();
+    const runtime = createTelegramRuntime({
+      auditEvents,
+      replies,
+      proposalStore,
+      broker,
+      recheckProvider: new FakeRecheckProvider(),
+    });
+    const pollingRuntime = createTelegramInboundPollingRuntime({
+      pollingProvider: new FakeTelegramPollingProvider([
+        {
+          status: "ok",
+          nextOffset: 63,
+          updates: [
+            {
+              updateId: 62,
+              messageId: 72,
+              chatId: "100",
+              userId: "300",
+              text: "/approve proposal-rejected",
+              receivedAt: now,
+            },
+          ],
+        },
+      ]),
+      commandRuntime: runtime,
+      pollingIntervalMs: 1_000,
+      pollingTimeoutSeconds: 20,
+      maxUpdatesPerPoll: 50,
+    });
+
+    const result = await pollingRuntime.runOnce();
+
+    expect(result.handledMessages[0]).toMatchObject({
+      status: "EXECUTED",
+      executed: false,
+      liveOrderApprovalResult: {
+        status: "PROPOSAL_NOT_APPROVABLE",
+        brokerSubmitted: false,
+        stateChanged: false,
+      },
+    });
+    expect(broker.submissions).toHaveLength(0);
+    expect(proposalStore.listEvidence("proposal-rejected")).toHaveLength(0);
+    expect(auditEvents.filter((event) => event.eventType === "LIVE_ORDER_APPROVAL")).toHaveLength(0);
     expect(replies[0]?.text).toContain("이미 닫힌 proposal");
   });
 
