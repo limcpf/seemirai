@@ -1,4 +1,16 @@
 import type { DailyReportAggregate, DailyReportCountItem, DailyReportDecimalMetric } from "./types.js";
+import type { LiveAutonomousExitStatusSummary } from "../live-autonomous-exit-status.js";
+import { formatLiveAutonomousExitStatusReportSection } from "../live-autonomous-exit-status.js";
+
+/**
+ * daily report summary에 붙일 선택 runtime summary다.
+ *
+ * 리포트 본문은 DB fact 집계가 없어도 safe summary를 추가로 받을 수 있다. caller가 이미 secret-safe로 낮춘 값만 전달해야 하며,
+ * formatter는 외부 조회나 notification side effect 없이 문자열만 만든다.
+ */
+export interface FormatDailyReportSummaryOptions {
+  liveAutonomousExit?: LiveAutonomousExitStatusSummary | null;
+}
 
 /**
  * 집계된 일간 리포트를 Telegram 본문에 들어갈 한국어 요약으로 변환한다.
@@ -6,8 +18,11 @@ import type { DailyReportAggregate, DailyReportCountItem, DailyReportDecimalMetr
  * 이 formatter는 운영자가 먼저 봐야 하는 상태, 손익, 비용, 폐기/차단 원인을 한국어로 배치한다. 내부 code는 괄호나 metadata에만
  * 남기고, 데이터가 없는 metric은 `unavailable`을 명시해 실제 0과 수집 결측이 섞이지 않게 한다.
  */
-export function formatDailyReportSummary(report: DailyReportAggregate): string {
-  return [
+export function formatDailyReportSummary(
+  report: DailyReportAggregate,
+  options: FormatDailyReportSummaryOptions = {},
+): string {
+  const sections = [
     `운영 기준일: ${report.window.reportDate} (KST)`,
     `조회 범위: ${report.window.kstStartAt} ~ ${report.window.kstEndAt}`,
     `UTC 조회 범위: ${report.window.utcStartAt} ~ ${report.window.utcEndAt}`,
@@ -43,7 +58,13 @@ export function formatDailyReportSummary(report: DailyReportAggregate): string {
     `- pilot profile: ${formatCountItemsText(report.pilotEvidence.byProfile)}`,
     `- 리스크/차단 이벤트: ${report.riskEvents.total}건${formatCountItemsInline(report.riskEvents.byAction)}`,
     `- 주요 리스크 종류: ${formatCountItemsText(report.riskEvents.byRiskType)}`,
-  ].join("\n");
+  ];
+
+  if (options.liveAutonomousExit !== undefined && options.liveAutonomousExit !== null) {
+    sections.push("", formatLiveAutonomousExitStatusReportSection(options.liveAutonomousExit));
+  }
+
+  return sections.join("\n");
 }
 
 function formatMetric(metric: DailyReportDecimalMetric): string {

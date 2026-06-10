@@ -63,8 +63,10 @@ reconcile mismatch 0건을 기계적으로 증명하는 것이다. 기본 `PAPER
 
 ### Sub PR 03. Autonomous Entry Runtime
 
-- 상태: 진행 중
+- 상태: 완료
 - branch: `issue-180-subpr-03-autonomous-entry`
+- PR: https://github.com/limcpf/seemirai/pull/183
+- merge: `78167ba71c6ffb2bcf13061d8d7e7eee2fd2e211`
 - DnD:
   - autonomous order attempt state machine
   - strategy/cost/risk/kill switch/reconcile/budget 재검증
@@ -73,16 +75,23 @@ reconcile mismatch 0건을 기계적으로 증명하는 것이다. 기본 `PAPER
   - 수량×가격 기준 지정가 notional 검증과 KRW 손실 한도 preflight
   - `LIMIT + post_only` live broker submission 경계
   - fake broker integration test
-- 로컬 검증: 2026-06-10 `./scripts/verify` 통과, 82 passed / 11 skipped files, 1323 passed / 113 skipped tests
+- 로컬 검증: 2026-06-10 `./scripts/verify` 통과, 82 passed / 11 skipped files, 1327 passed / 113 skipped tests
 
 ### Sub PR 04. Exit, Telegram Status & Daily Report Integration
 
-- 상태: 대기
+- 상태: 진행 중
+- branch: `issue-180-subpr-04-exit-status-report`
 - DnD:
   - M19 exit engine live autonomous 연결
   - partial fill/cancel/requote/reconcile mismatch handling
   - Telegram/status/report safe summary
   - user-facing Korean formatter와 trace 분리
+- 진행:
+  - M22 guard/reconcile 통과 시에만 주입된 M19 exit runner를 호출하는 live autonomous exit orchestration 경계 추가
+  - M19 exit runtime 결과와 M16 reconcile summary를 M22 live autonomous exit safe summary로 낮추는 application 모듈 추가
+  - `/status.runtime.liveAutonomous`, `/status.liveAutonomousExit`, Telegram `/status`/`/orders`, daily report formatter 연결
+  - partial fill 후 cancel/requote, cancel 실패, reconcile mismatch를 한국어 조치와 trace code로 분리
+- 로컬 검증: 2026-06-10 `./scripts/verify` 통과, 83 passed / 11 skipped files, 1341 passed / 113 skipped tests
 
 ### Sub PR 05. Verification, Source Scan & 24h Pilot Closeout
 

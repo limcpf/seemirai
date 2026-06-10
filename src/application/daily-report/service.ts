@@ -3,6 +3,7 @@ import { aggregateDailyReport } from "./aggregator.js";
 import { formatDailyReportSummary } from "./formatter.js";
 import { createDailyReportWindow } from "./window.js";
 import type { DailyReportAggregate, DailyReportSourceData, DailyReportWindow } from "./types.js";
+import type { LiveAutonomousExitStatusSummary } from "../live-autonomous-exit-status.js";
 
 /**
  * 일간 리포트가 읽을 데이터 공급자 port다.
@@ -35,6 +36,13 @@ export interface BuildDailyReportNotificationOptions {
   reportDate: string;
   dataProvider: DailyReportDataProvider;
   generatedAt?: Date | string;
+  /**
+   * M22 live autonomous exit safe summary다.
+   *
+   * runtime/status 경계가 이미 secret-safe로 낮춘 summary만 전달해야 한다. 값이 있으면 실제 daily report notification 본문에
+   * M22 자동 청산 상태를 포함하며, 이 옵션 자체는 추가 DB 조회나 broker side effect를 만들지 않는다.
+   */
+  liveAutonomousExit?: LiveAutonomousExitStatusSummary | null;
 }
 
 /**
@@ -55,7 +63,7 @@ export async function buildDailyReportNotification(
     report,
     notification: {
       reportDate: options.reportDate,
-      summary: formatDailyReportSummary(report),
+      summary: formatDailyReportSummary(report, { liveAutonomousExit: options.liveAutonomousExit ?? null }),
       generatedAt,
       metadata: {
         source: "daily_report_aggregator",

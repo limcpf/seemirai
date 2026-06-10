@@ -3,6 +3,7 @@ import {
   createTelegramInboundCommandRuntime,
   createTelegramInboundPollingRuntime,
   formatTelegramStatusCommandResponse,
+  formatTelegramOrdersCommandResponse,
 } from "../../src/runtime/index.js";
 import {
   FakeTelegramPollingProvider,
@@ -212,6 +213,97 @@ describe("Telegram inbound command runtime", () => {
     expect(Array.from(text).length).toBeLessThanOrEqual(telegramMessageMaxLength);
     expect(text).toContain("[truncated]");
   });
+
+  it("includes M22 live autonomous exit summary in status and orders responses", () => {
+    const snapshot = createStatusSnapshot({
+      runtime: {
+        ...createStatusSnapshot().runtime,
+        liveAutonomous: {
+          ...createStatusSnapshot().runtime.liveAutonomous,
+          enabled: true,
+          ready: true,
+          statusLabel: "M22 자동매매 준비",
+          message: "M22 guard가 충족됐습니다.",
+          action: "제출 전 safety gate를 다시 확인하세요.",
+        },
+      },
+      liveAutonomousExit: {
+        ...createStatusSnapshot().liveAutonomousExit,
+        enabled: true,
+        runtimeReady: true,
+        exitEngineReady: true,
+        status: "warning",
+        statusCode: "REQUOTE_INTENT_CREATED",
+        statusLabel: "부분 체결 잔량 재호가 필요",
+        message: "청산 주문이 부분 체결되어 미체결 잔량을 취소했고, 남은 수량의 재호가 intent가 생성됐습니다.",
+        action: "재호가 intent를 별도 exit 실행 경계에서 제출하세요.",
+        remainingQuantity: "0.0004",
+      },
+    });
+
+    const statusText = formatTelegramStatusCommandResponse(snapshot, "corr-m22-status");
+    const ordersText = formatTelegramOrdersCommandResponse(snapshot, "corr-m22-orders");
+
+    expect(statusText).toContain("M22 자동매매: M22 자동매매 준비");
+    expect(statusText).toContain("M22 자동 청산: 부분 체결 잔량 재호가 필요");
+    expect(statusText).toContain("M22 exit: REQUOTE_INTENT_CREATED");
+    expect(ordersText).toContain("M22 자동 청산: 부분 체결 잔량 재호가 필요");
+    expect(ordersText).toContain("잔량: 0.0004");
+  });
+
+  it("does not let disabled M22 guidance hide current operational actions", () => {
+    const text = formatTelegramStatusCommandResponse(
+      createStatusSnapshot({
+        pnl: {
+          ...createStatusSnapshot().pnl,
+          status: "unavailable",
+          action: "PnL snapshot provider를 복구하세요.",
+        },
+      }),
+      "corr-disabled-m22",
+    );
+
+    expect(text).toContain("필요 조치: PnL snapshot provider를 복구하세요.");
+    expect(text).not.toContain("필요 조치: M22를 운영하려면");
+  });
+
+  it("does not let healthy M22 guidance hide current operational actions", () => {
+    const base = createStatusSnapshot();
+    const text = formatTelegramStatusCommandResponse(
+      createStatusSnapshot({
+        runtime: {
+          ...base.runtime,
+          liveAutonomous: {
+            ...base.runtime.liveAutonomous,
+            enabled: true,
+            ready: true,
+            statusLabel: "M22 자동매매 준비",
+            action: "제출 전 safety gate를 다시 확인하세요.",
+          },
+        },
+        liveAutonomousExit: {
+          ...base.liveAutonomousExit,
+          enabled: true,
+          runtimeReady: true,
+          exitEngineReady: true,
+          status: "ok",
+          statusCode: "READY",
+          statusLabel: "자동 청산 대기",
+          message: "M22 guard와 reconcile 상태가 충족됐고 최근 자동 청산 결과는 없습니다.",
+          action: "신규 entry 직전에도 safety gate를 다시 확인하세요.",
+        },
+        pnl: {
+          ...base.pnl,
+          status: "unavailable",
+          action: "PnL snapshot provider를 복구하세요.",
+        },
+      }),
+      "corr-healthy-m22",
+    );
+
+    expect(text).toContain("필요 조치: PnL snapshot provider를 복구하세요.");
+    expect(text).not.toContain("필요 조치: 신규 entry 직전");
+  });
 });
 
 describe("Telegram inbound reply sender", () => {
@@ -400,6 +492,27 @@ function createStatusSnapshot(overrides: Partial<ControlStatusSnapshot> = {}): C
         lastEvidence: null,
         trace: {},
       },
+      liveAutonomous: {
+        enabled: false,
+        ready: false,
+        allowedMarkets: ["KRW-BTC"],
+        maxOrderKrw: "10000",
+        dailyAutonomousNotionalLimitKrw: "30000",
+        maxOpenPositionNotionalKrw: "30000",
+        m21WeekGateEvidenceConfigured: false,
+        operatorArmEvidenceConfigured: false,
+        budgetEvidenceConfigured: false,
+        keyScopeEvidenceConfigured: false,
+        telegramInboundReady: false,
+        reconcileFresh: false,
+        pnlStatusReady: false,
+        decisionLedgerReady: false,
+        exitEngineReady: false,
+        statusLabel: "M22 비활성",
+        message: "M22 제한적 완전 자동매매가 비활성입니다.",
+        action: "필요 시 guard evidence를 갖춘 뒤 arm 절차를 진행하세요.",
+        trace: {},
+      },
     },
     tradingState: {
       state: "NORMAL",
@@ -471,6 +584,31 @@ function createStatusSnapshot(overrides: Partial<ControlStatusSnapshot> = {}): C
       websocketStatus: "CONNECTED",
       actionRequired: "정상",
       message: "거래소-로컬 상태 일치: 모든 미체결 주문과 잔고가 정상입니다.",
+      trace: {},
+    },
+    liveAutonomousExit: {
+      enabled: false,
+      runtimeReady: false,
+      exitEngineReady: false,
+      status: "ok",
+      statusCode: "DISABLED",
+      statusLabel: "M22 자동 청산 비활성",
+      message: "M22 자동매매가 비활성이라 live autonomous exit 연결도 실행하지 않습니다.",
+      impact: "실계좌 주문 side effect가 생성되지 않습니다.",
+      action: "M22를 운영하려면 guard evidence와 readiness를 갖춘 뒤 별도 arm 절차를 진행하세요.",
+      market: null,
+      strategyId: null,
+      latestBrokerOrderStatus: null,
+      filledQuantity: null,
+      remainingQuantity: null,
+      reconcile: {
+        result: "SUCCESS",
+        mismatchCount: 0,
+        openOrderCount: 1,
+        balanceStatus: "OK",
+        websocketStatus: "CONNECTED",
+        lastReconcileAt: now,
+      },
       trace: {},
     },
     why: {
