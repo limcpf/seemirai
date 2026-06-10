@@ -346,6 +346,8 @@ describe("HTTP control foundation", () => {
           ready: false,
           statusLabel: "M22 비활성",
           allowedMarkets: ["KRW-BTC"],
+          decisionLedgerReady: false,
+          exitEngineReady: false,
         },
       },
       liveAutonomousExit: {

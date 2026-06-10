@@ -108,6 +108,7 @@ export function createDatabaseControlStatusProvider(
         options,
         reconcile,
         pnl,
+        why,
       );
       // kill switch action plan은 상태 문자열을 실제 주문 차단/수동 검토 신호로 변환하는 경계다.
       return {
@@ -786,6 +787,7 @@ function toSafeRuntimeSummary(
   options: CreateDatabaseControlStatusProviderOptions,
   reconcile: ReconcileStatusSummary,
   pnl: ControlStatusSnapshot["pnl"],
+  why: WhySummary | null,
 ): ControlStatusSnapshot["runtime"] {
   const universe = resolveRuntimeUniverse(config.universe, {
     observedAt,
@@ -798,8 +800,8 @@ function toSafeRuntimeSummary(
     telegramInboundReady: config.telegram.inbound.enabled,
     reconcileFresh: reconcile.result === "SUCCESS" && reconcile.lastReconcileAt !== null,
     pnlStatusReady: pnl.status === "ok",
-    decisionLedgerReady: options.whySummaryProvider !== undefined,
-    exitEngineReady: true,
+    decisionLedgerReady: why?.readStatus === "OK",
+    exitEngineReady: false,
   });
 
   return {

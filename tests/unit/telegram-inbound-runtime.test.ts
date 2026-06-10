@@ -266,6 +266,44 @@ describe("Telegram inbound command runtime", () => {
     expect(text).toContain("필요 조치: PnL snapshot provider를 복구하세요.");
     expect(text).not.toContain("필요 조치: M22를 운영하려면");
   });
+
+  it("does not let healthy M22 guidance hide current operational actions", () => {
+    const base = createStatusSnapshot();
+    const text = formatTelegramStatusCommandResponse(
+      createStatusSnapshot({
+        runtime: {
+          ...base.runtime,
+          liveAutonomous: {
+            ...base.runtime.liveAutonomous,
+            enabled: true,
+            ready: true,
+            statusLabel: "M22 자동매매 준비",
+            action: "제출 전 safety gate를 다시 확인하세요.",
+          },
+        },
+        liveAutonomousExit: {
+          ...base.liveAutonomousExit,
+          enabled: true,
+          runtimeReady: true,
+          exitEngineReady: true,
+          status: "ok",
+          statusCode: "READY",
+          statusLabel: "자동 청산 대기",
+          message: "M22 guard와 reconcile 상태가 충족됐고 최근 자동 청산 결과는 없습니다.",
+          action: "신규 entry 직전에도 safety gate를 다시 확인하세요.",
+        },
+        pnl: {
+          ...base.pnl,
+          status: "unavailable",
+          action: "PnL snapshot provider를 복구하세요.",
+        },
+      }),
+      "corr-healthy-m22",
+    );
+
+    expect(text).toContain("필요 조치: PnL snapshot provider를 복구하세요.");
+    expect(text).not.toContain("필요 조치: 신규 entry 직전");
+  });
 });
 
 describe("Telegram inbound reply sender", () => {

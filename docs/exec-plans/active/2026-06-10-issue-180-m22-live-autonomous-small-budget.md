@@ -91,7 +91,7 @@ reconcile mismatch 0건을 기계적으로 증명하는 것이다. 기본 `PAPER
   - M19 exit runtime 결과와 M16 reconcile summary를 M22 live autonomous exit safe summary로 낮추는 application 모듈 추가
   - `/status.runtime.liveAutonomous`, `/status.liveAutonomousExit`, Telegram `/status`/`/orders`, daily report formatter 연결
   - partial fill 후 cancel/requote, cancel 실패, reconcile mismatch를 한국어 조치와 trace code로 분리
-- 로컬 검증: 2026-06-10 `./scripts/verify` 통과, 83 passed / 11 skipped files, 1339 passed / 113 skipped tests
+- 로컬 검증: 2026-06-10 `./scripts/verify` 통과, 83 passed / 11 skipped files, 1341 passed / 113 skipped tests
 
 ### Sub PR 05. Verification, Source Scan & 24h Pilot Closeout
 

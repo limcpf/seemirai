@@ -429,6 +429,10 @@ function primaryLiveAutonomousAction(snapshot: StatusSnapshot): string | null {
     return null;
   }
 
+  if (snapshot.liveAutonomousExit.status === "ok") {
+    return null;
+  }
+
   return snapshot.liveAutonomousExit.action ?? snapshot.runtime.liveAutonomous.action;
 }
 

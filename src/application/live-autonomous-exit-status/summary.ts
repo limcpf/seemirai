@@ -339,6 +339,10 @@ function readRemainingQuantity(result: ExitPaperRuntimeResult, brokerOrder: Brok
     return result.remainingIntent.requestedQuantity;
   }
 
+  if (result.status === "REMAINING_CANCEL_FAILED" && result.canceledOrder !== undefined) {
+    return result.canceledOrder.remainingQuantity;
+  }
+
   const submittedBrokerOrder = readSubmittedBrokerOrder(result);
   if (result.canceledOrder !== undefined && submittedBrokerOrder !== null) {
     return submittedBrokerOrder.remainingQuantity;

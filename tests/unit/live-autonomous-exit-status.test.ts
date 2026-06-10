@@ -165,6 +165,33 @@ describe("M22 live autonomous exit status summary", () => {
     expect(summary.action).toContain("수동으로 잔량을 취소");
   });
 
+  it("잔량 취소 실패에서는 취소 시도 후 최신 broker 잔량을 사용한다", () => {
+    const result = exitRequoteResult();
+    const { remainingIntent: _remainingIntent, ...failedResult } = result;
+    const summary = createLiveAutonomousExitStatusSummary({
+      enabled: true,
+      runtimeReady: true,
+      exitEngineReady: true,
+      observedAt,
+      reconcile: cleanReconcile(),
+      lastExitResult: {
+        ...failedResult,
+        status: "REMAINING_CANCEL_FAILED",
+        canceledOrder: {
+          ...result.canceledOrder!,
+          status: "PARTIALLY_FILLED",
+          remainingQuantity: "0.0002",
+        },
+      },
+    });
+
+    expect(summary).toMatchObject({
+      statusCode: "MANUAL_REVIEW_REQUIRED",
+      filledQuantity: "0.0048",
+      remainingQuantity: "0.0002",
+    });
+  });
+
   it("broker submit 이후 persistence 기록 실패를 정상 청산으로 표시하지 않는다", () => {
     const summary = createLiveAutonomousExitStatusSummary({
       enabled: true,
