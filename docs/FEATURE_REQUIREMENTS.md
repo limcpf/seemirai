@@ -665,11 +665,14 @@ Acceptance Criteria:
 - [x] reconcile mismatch, duplicate order, untracked fill, persistence failure는 신규 주문 중지와 manual review evidence로 수렴한다.
 - [x] M19 exit engine 기반 자동 매도/축소가 live position scope와 risk gate를 초과하지 않는다.
 - [x] Telegram/status/report는 M22 상태와 필요한 조치를 한국어로 보여주고 secret/raw provider payload를 노출하지 않는다.
-- [ ] 24시간 live autonomous pilot에서 crash 0회, unhandled rejection 0회, risk gate 우회 주문 0건, reconcile mismatch 0건을 증명한다.
+- [x] 24시간 live autonomous pilot에서 crash 0회, unhandled rejection 0회, risk gate 우회 주문 0건, reconcile mismatch 0건을 증명한다.
 - [x] source scan으로 시장가/best 주문, 출금/입출금, 승인 없는 기존 submit path, raw secret 노출 경로가 열리지 않았음을 확인한다.
 
-24시간 live autonomous pilot은 Sub PR 05에서 명시 env guard와 저장소 밖 redacted evidence가 없어 실행하지 않았다. 실제 crash,
-unhandled rejection, risk gate 우회 주문, reconcile mismatch 0건 판정은 운영 artifact 주입 후 별도 closeout evidence가 필요하다.
+24시간 live autonomous pilot은 저장소 밖 운영 env/evidence를 주입한 2026-06-10T23:30Z run에서 통과했다. 해당 run은 주문 후보 없는
+heartbeat-only pilot이며 crash, unhandled rejection, risk gate 우회 주문, reconcile mismatch, duplicate order, untracked fill이 모두
+0건이었다. 이후 2026-06-12T04:11Z dry-run candidate canary에서 `brokerSubmissionCount=1`, `orderSubmittedCount=1`,
+`DRY_RUN_SUBMITTED`를 확인했다. 2026-06-12T04:33Z 실제 live canary에서는 `--cancel-after-submit`으로 10,000 KRW post-only 주문
+제출 후 같은 uuid/identifier 취소를 요청했고, 2번째 조회에서 terminal `cancel` 상태와 open notional 0을 확인했다.
 
 테스트 요구사항:
 
@@ -680,7 +683,14 @@ unhandled rejection, risk gate 우회 주문, reconcile mismatch 0건 판정은 
 - 통합 테스트: M19 exit engine이 live position scope를 초과하지 않고 partial fill, cancel/requote 실패, reconcile mismatch를 manual review로 수렴시키는지 확인한다.
 - source scan: `POST /v1/orders`, `DELETE /v1/order`, `submitOrder(`, `cancelOrder(`, `ord_type.*market`, `ord_type.*best`,
   `withdraw`, `입금`, `출금`, secret/raw payload 후보가 M22 guard 밖에서 열리지 않았는지 확인한다.
-- gated pilot: 명시 env guard와 redacted evidence가 있을 때만 24시간 live autonomous pilot을 실행하고, 실행하지 못하면 guard skip evidence와 운영 blocker를 기록한다.
+- local file preparer: `scripts/prepare-m22-live-autonomous-local-files.mjs`는 저장소 밖에 env/key/config/evidence/wrapper 파일을 만들고,
+  기존 secret 파일을 기본적으로 덮어쓰지 않으며, 저장소 내부 생성은 명시 override 없이는 차단한다.
+- daemon: `scripts/run-m22-live-autonomous-daemon.mjs`는 candidate JSONL이 비어 있으면 주문 없이 heartbeat/daily report evidence만 남기고,
+  후보가 있으면 `KRW-BTC`, `BUY`, `LIMIT + post_only`, 1회 `10000` KRW, 일일/open `30000` KRW, key scope/readiness/evidence
+  guard를 통과한 경우에만 Upbit 주문 제출 경계로 전진한다. live canary에서는 `--cancel-after-submit`을 사용해 제출 직후 같은
+  uuid/identifier로 취소 요청과 terminal cancel 확인 event를 남긴다.
+- gated pilot: `scripts/run-m22-live-autonomous-pilot.mjs`는 명시 env guard와 redacted evidence가 있을 때만 운영자가 지정한 live
+  autonomous command를 실행하고, 실행하지 못하면 guard skip 또는 preflight failure artifact와 운영 blocker를 기록한다.
 
 문서 요구사항:
 

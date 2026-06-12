@@ -78,7 +78,9 @@ budget, key scope, M21 1주 gate, M20/M16/M17/M18/M19 readiness와 제출 직전
 | M19 exit engine live position scope 초과 방지 | 완료 | M19 exit runner 주입 경계와 M22 exit status tests |
 | Telegram/status/report safe summary | 완료 | `http-control`, `telegram-inbound-runtime`, `daily-report` tests |
 | source scan | 완료 | origin/main 기준 변경 파일 scan 결과 신규 unguarded POST/DELETE/cancel/secret 노출 경로 없음 |
-| 24시간 live autonomous pilot | 미실행 | Sub PR 05 환경에 명시 env guard와 redacted evidence가 없어 실행하지 않았다. 운영 artifact는 저장소 밖에서 별도 주입해야 한다. |
+| 24시간 live autonomous pilot | 완료 | 2026-06-10T23:30Z heartbeat-only run `fdad721f`: 24시간 유지, heartbeat 1439, closeout 위반 0건 |
+| dry-run candidate canary | 완료 | 2026-06-12T04:11Z run `94e7b691`: `brokerSubmissionCount=1`, `orderSubmittedCount=1`, `DRY_RUN_SUBMITTED`, closeout 위반 0건 |
+| live canary cleanup | 완료 | 2026-06-12T04:33Z run `cc93288f`: 실제 `POST /v1/orders` 1회, `DELETE /v1/order` 1회, terminal `cancel`, open notional 0, closeout 위반 0건 |
 
 ## Source Scan
 
@@ -93,14 +95,18 @@ rg -n "submitOrder\\(|cancelOrder\\(|POST /v1/orders|DELETE /v1/order|ord_type.*
 결과:
 
 - `src/application/live-autonomous-entry-runtime/service.ts`의 `ExecutionEngine.submitOrder` 주입 경계 1곳만 M22 entry side effect 후보로 남는다.
-- M22 변경 경로에는 직접 `POST /v1/orders`, `DELETE /v1/order`, `cancelOrder(` 호출이 없다.
+- M22 application/runtime 변경 경로에는 승인 없는 `POST /v1/orders`, `DELETE /v1/order`, `cancelOrder(` 호출이 없다.
+- `scripts/run-m22-live-autonomous-daemon.mjs`에는 live canary용 `POST /v1/orders`, `DELETE /v1/order`, `GET /v1/order` 호출이 있다.
+  이 경로는 `SEEMIRAI_RUN_M22_AUTONOMOUS_DAEMON=1`, private/order smoke guard, key scope, evidence/readiness guard, `KRW-BTC`
+  `LIMIT + post_only`, 10,000 KRW 상한, `--cancel-after-submit` cleanup 경계로 제한된다.
 - `ord_type=price|market|best` 매칭은 M22 자동 entry에서 금지한다는 타입/JSDoc/문서 설명과 기존 Upbit mapper fixture 문맥이다.
 - `withdraw`, `입금`, `출금` 매칭은 config/security/product 문서와 guard 주석의 금지 경계다. M22 runtime 신규 side effect 경로가 아니다.
 - secret/raw payload 후보 매칭은 문서 정책, config schema, logger/status redaction test, JSDoc invariant다. M22 safe summary는 raw provider payload,
   Authorization/JWT, access/secret key를 반환하지 않는다.
 
-판정: M22 변경은 승인 없는 기존 submit path를 새로 열지 않는다. live broker side effect는 startup guard, 제출 직전 gate, durable
-reservation, evidence 연결을 통과한 entry runtime의 injected `ExecutionEngine.submitOrder` 경계로 제한된다.
+판정: M22 변경은 승인 없는 기존 submit path를 새로 열지 않는다. product runtime의 live broker side effect는 startup guard, 제출 직전
+gate, durable reservation, evidence 연결을 통과한 entry runtime의 injected `ExecutionEngine.submitOrder` 경계로 제한된다. 저장소 밖
+운영 runner용 daemon은 명시 후보 JSONL과 live canary cleanup guard를 통과한 경우에만 직접 Upbit 주문 생성/취소 endpoint를 호출한다.
 
 ## Gated Pilot
 
@@ -122,8 +128,18 @@ Sub PR 05 환경 확인:
 }
 ```
 
-판정: 24시간 live autonomous pilot은 실행하지 않았다. 명시 env guard와 저장소 밖 redacted evidence가 없으므로, 실제 Upbit private API와
-live order API 호출은 수행하지 않는 것이 안전 경계에 맞다.
+판정: Sub PR 05 당시에는 실행하지 않았지만, 이후 운영자가 저장소 밖 env/evidence를 채운 뒤 24시간 heartbeat-only pilot과 dry-run
+candidate canary를 실행해 closeout 위반 0건을 확인했다. 실제 live order canary는 제출 후 자동 취소 확인이 필요하므로 M23/M24 운영
+검증으로 분리한다.
+
+운영 artifact:
+
+- 24시간 heartbeat-only pilot summary: `/home/lim/vaults/99_운영/seemirai-m22-live-autonomous/artifacts/m22-live-autonomous-2026-06-10T23-30-00-313Z-fdad721f-summary.json`
+- 24시간 heartbeat-only pilot report: `/home/lim/vaults/99_운영/seemirai-m22-live-autonomous/artifacts/m22-live-autonomous-2026-06-10T23-30-00-313Z-fdad721f-report.md`
+- dry-run candidate canary summary: `/home/lim/vaults/99_운영/seemirai-m22-live-autonomous/artifacts/m22-live-autonomous-2026-06-12T04-11-28-233Z-94e7b691-summary.json`
+- dry-run candidate canary report: `/home/lim/vaults/99_운영/seemirai-m22-live-autonomous/artifacts/m22-live-autonomous-2026-06-12T04-11-28-233Z-94e7b691-report.md`
+- live canary cleanup summary: `/home/lim/vaults/99_운영/seemirai-m22-live-autonomous/artifacts/m22-live-autonomous-2026-06-12T04-33-15-673Z-cc93288f-summary.json`
+- live canary cleanup report: `/home/lim/vaults/99_운영/seemirai-m22-live-autonomous/artifacts/m22-live-autonomous-2026-06-12T04-33-15-673Z-cc93288f-report.md`
 
 ## 검증
 
@@ -169,8 +185,27 @@ Sub PR 01-04에서 누적 확인한 검증:
 
 ## 남은 리스크와 후속 작업
 
-- 24시간 live autonomous pilot은 아직 실행하지 않았다. crash 0회, unhandled rejection 0회, risk gate 우회 주문 0건, reconcile mismatch
-  0건은 운영자가 저장소 밖 redacted evidence와 secret을 주입한 실제 run artifact로만 완료 판정할 수 있다.
+- live canary cleanup은 통과했지만 M23 완료 조건인 7일 연속 운영 안정화, restart/reconcile/status 복구, alert retry evidence는 아직
+  남아 있다.
 - M22 runtime은 코드상 연결됐지만 production deployment lifecycle에서 어떤 scheduler/worker가 autonomous candidate를 공급할지는 운영 wiring에서
   별도 확인해야 한다.
+- 기본 long-running daemon CLI는 `scripts/run-m22-live-autonomous-daemon.mjs`로 추가됐다. 다만 이 daemon은 임의 strategy signal을
+  생성하지 않고 `candidates/m22-candidates.jsonl`에 append된 명시 후보만 처리하므로, 실제 자동 주문 발생은 candidate source wiring과
+  운영 evidence가 채워진 뒤에만 가능하다.
 - M23 7일 24/7 운영 안정화, M24 universe/budget 확대, BTC 외 다중 market 기본 활성화는 후속 범위다.
+
+## 후속 보강
+
+- 2026-06-10 `M22-runbook`: `scripts/run-m22-live-autonomous-pilot.mjs`와
+  `docs/runbooks/m22-live-autonomous-pilot.md`를 추가해 24시간 pilot guard, 저장소 밖 evidence/readiness env, live command wrapper,
+  JSONL event log, closeout summary/report artifact 절차를 고정했다. 실제 24시간 live autonomous pilot은 여전히 운영 env/evidence와
+  live command 주입 후 별도 artifact로 판정해야 한다.
+- 2026-06-11 `M22-runbook`: `scripts/prepare-m22-live-autonomous-local-files.mjs`를 추가해 저장소 밖
+  `m22.env`, `m22.keys.env`, M22 config, redacted evidence template, candidate JSONL, no-live smoke wrapper, 24시간 실행 wrapper를 생성하게 했다.
+  `tests/soak/m22-live-autonomous-local-files-script.test.ts`는 파일 생성, 기존 secret 보존, 저장소 내부 생성 기본 차단을 검증한다.
+- 2026-06-11 `M22-daemon`: `scripts/run-m22-live-autonomous-daemon.mjs`를 추가해 `run-24h-pilot.sh` 인자 없는 실행이 기본 daemon을
+  runner 뒤에서 시작하게 했다. `tests/soak/m22-live-autonomous-daemon-script.test.ts`는 daemon guard, heartbeat/daily report,
+  dry-run 후보 제출 event, unsafe 후보 차단을 검증한다.
+- 2026-06-12 `M22-live-canary-cleanup`: daemon에 `--cancel-after-submit`을 추가해 live canary 주문 제출 후 같은 uuid/identifier 취소,
+  terminal cancel polling, cleanup failure closeout counter를 기록하게 했다. fake Upbit private API 기반 soak test로
+  `POST /v1/orders` → `DELETE /v1/order` → `GET /v1/order` 경계를 검증했다.

@@ -218,6 +218,8 @@
   smp_type`, BTC 외 다중 market 기본 활성화, 자동 budget 확대는 provider 호출 전에 차단한다.
 - 같은 autonomous order attempt 또는 idempotency key는 broker 호출 전 durable reservation으로 먼저 선점해야 한다. reservation
   실패, persistence failure, broker submit 불확실 결과는 중복 주문 재시도가 아니라 reconcile/manual review evidence로 수렴한다.
+- M22 live canary cleanup은 새 주문을 만들지 않고 방금 제출한 주문의 uuid 또는 identifier 중 하나로만 취소를 요청한다. 취소 실패나
+  terminal cancel 미확인은 성공 evidence로 올리지 않고 manual review와 closeout failure로 남긴다.
 - Telegram/status/report는 한국어 상태, 원인, 영향, 필요 조치를 먼저 보여주고 내부 id, reason code, evidence id는 `추적 정보`로
   분리한다. raw provider payload와 raw order detail은 safe summary에 포함하지 않는다.
 - M22는 출금, 입출금 자동화, 선물, 레버리지, 마진, 타인 계정, 신호 판매, LLM 직접 매수/매도 판단으로 확장하지 않는다. 이 경계를

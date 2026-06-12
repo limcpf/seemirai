@@ -330,8 +330,10 @@ Codex-native 운영은 Codex, Git, GitHub, shell command, 문서 상태를 연�
   hard stop 또는 mismatch 복구가 open position 자동 시장가 청산을 만들면 안 된다.
 - M19 exit engine을 M22에 연결할 때 exit intent는 현재 live position scope를 초과할 수 없다. partial fill, cancel/requote 실패,
   cancel terminal state 미확인은 신규 entry 중지와 manual review로 수렴한다.
+- M22 live canary는 제출 후 자동 cleanup이 없는 주문을 성공으로 보지 않는다. `--cancel-after-submit`으로 같은 uuid/identifier를 취소하고,
+  제한 횟수 안에 terminal cancel을 확인하지 못하면 `order_cancel_unconfirmed`와 manual review evidence를 남기며 runner closeout을 실패시킨다.
 - 24시간 live autonomous pilot closeout은 crash 0회, unhandled rejection 0회, risk gate 우회 주문 0건, reconcile mismatch 0건,
-  duplicate order 0건, untracked fill 0건을 source scan과 redacted artifact로 함께 확인해야 한다.
+  duplicate order 0건, untracked fill 0건, live order cleanup failure 0건을 source scan과 redacted artifact로 함께 확인해야 한다.
 
 ## M18 Decision Ledger 신뢰성 기준
 

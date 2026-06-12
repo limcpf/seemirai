@@ -1,6 +1,6 @@
 # Upbit Live Autonomous Trading 로드맵
 
-- 상태: M22 구현 closeout과 source scan 완료, 24시간 live autonomous pilot은 운영 env/evidence 미주입으로 guard skip (2026-06-10)
+- 상태: M22 구현 closeout, source scan, 24시간 heartbeat-only pilot, dry-run candidate canary, runner/runbook/local file preparer/기본 daemon 완료. M23/M24 운영 검증은 live canary cleanup과 7일 안정화 evidence부터 진행 (2026-06-12)
 - 작성일: 2026-06-01
 - 관련 범위: M15 이후 post-MVP 실거래 자율 운용
 - 기준 문서: [`../PRD.md`](../PRD.md), [`../FEATURE_REQUIREMENTS.md`](../FEATURE_REQUIREMENTS.md), [`../../ARCHITECTURE.md`](../../ARCHITECTURE.md), [`./upbit-v0-2-pilot-private-api.md`](./upbit-v0-2-pilot-private-api.md), [`../RUNTIME_CONFIG.md`](../RUNTIME_CONFIG.md), [`../RELIABILITY.md`](../RELIABILITY.md), [`../SECURITY.md`](../SECURITY.md)
@@ -342,12 +342,19 @@ M19 Sub PR 03 범위:
 - M20 inbound, M16 reconcile, M17 PnL status, M18 decision ledger, M19 exit engine readiness 확인
 - `LIMIT + post_only` 주문만 자동 entry로 허용하고 시장가/최유리 주문과 `post_only + smp_type` 조합은 거래소 호출 전 차단
 - broker 호출 전 durable reservation과 32자 이하 랜덤 identifier/idempotency key 생성
+- 24시간 pilot runner와 저장소 밖 artifact 기반 closeout 판정
 
 완료 조건:
 
-- 24시간 live autonomous pilot에서 crash 0회, unhandled rejection 0회, risk gate 우회 주문 0건, reconcile mismatch 0건을 증명한다.
-- 운영자가 Telegram으로 보유, 현금, PnL, 최근 판단 이유를 조회할 수 있다.
-- 실패 시 kill switch와 manual review로 수렴한다.
+- ✅ 24시간 live autonomous pilot에서 crash 0회, unhandled rejection 0회, risk gate 우회 주문 0건, reconcile mismatch 0건을 증명했다.
+- ✅ 운영자가 Telegram으로 보유, 현금, PnL, 최근 판단 이유를 조회할 수 있는 기반을 M20-M22 상태 요약과 report formatter에 연결했다.
+- ✅ 실패 시 kill switch와 manual review로 수렴하는 M19-M22 runtime 경계를 유지했다.
+
+운영 증거:
+
+- 24시간 heartbeat-only pilot: `/home/lim/vaults/99_운영/seemirai-m22-live-autonomous/artifacts/m22-live-autonomous-2026-06-10T23-30-00-313Z-fdad721f-summary.json`
+- dry-run candidate canary: `/home/lim/vaults/99_운영/seemirai-m22-live-autonomous/artifacts/m22-live-autonomous-2026-06-12T04-11-28-233Z-94e7b691-summary.json`
+- live canary cleanup: `/home/lim/vaults/99_운영/seemirai-m22-live-autonomous/artifacts/m22-live-autonomous-2026-06-12T04-33-15-673Z-cc93288f-summary.json`
 
 ### M23. 24/7 운영 안정화
 
@@ -391,6 +398,10 @@ M19 Sub PR 03 범위:
 - 종목 추가 전 paper/live shadow 비교가 통과한다.
 - 전략별 PnL과 손실 기여도가 report로 분해된다.
 - 예산 확대는 운영자 승인과 rollback plan을 가진다.
+
+초기 live test 손실 ceiling은 운영자가 50,000 KRW까지 허용했지만, 이는 자동 예산 확대 승인이 아니다. M23/M24 live canary는 첫 실행에서
+M22 단일 주문 상한 10,000 KRW를 유지했고 terminal cancel과 open notional 0을 확인했다. 이후에도 누적 realized loss와 미체결 노출
+합계가 50,000 KRW에 닿기 전에 중지해야 한다.
 
 ## 8. 자동 실거래 가능 판정
 

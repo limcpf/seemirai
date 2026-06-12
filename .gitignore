@@ -6,6 +6,7 @@
 .reasonix/
 .worktrees/
 .codex/tmp/
+seemirai-m22-live-autonomous/
 node_modules/
 .pnpm-store/
 dist/
