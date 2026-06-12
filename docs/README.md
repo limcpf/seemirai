@@ -14,7 +14,7 @@
 - Upbit 실거래 자율 운용 M15 이후 로드맵: [`product-specs/upbit-live-autonomous-trading.md`](./product-specs/upbit-live-autonomous-trading.md)
 - 로컬 개발 환경과 검증 절차: [`DEVELOPMENT.md`](./DEVELOPMENT.md)
 - 런타임 설정 구조, 허용값, 안전 invariant: [`RUNTIME_CONFIG.md`](./RUNTIME_CONFIG.md)
-- 운영자가 직접 실행하는 절차와 runbook: [`runbooks/README.md`](./runbooks/README.md), [`runbooks/m9-paper-ops-beta.md`](./runbooks/m9-paper-ops-beta.md)
+- 운영자가 직접 실행하는 절차와 runbook: [`runbooks/README.md`](./runbooks/README.md), [`runbooks/m9-paper-ops-beta.md`](./runbooks/m9-paper-ops-beta.md), [`runbooks/m22-live-autonomous-pilot.md`](./runbooks/m22-live-autonomous-pilot.md) (M22 local env/key/config preparer 포함)
 - 구조 변경, 경계 변경, 새 규칙 도입: [`DESIGN.md`](./DESIGN.md), [`design-docs/index.md`](./design-docs/index.md)
 - TypeScript 모듈 파일/폴더 구조 규칙: [`design-docs/2026-05-20-typescript-module-structure.md`](./design-docs/2026-05-20-typescript-module-structure.md)
 - M11 전략/피처 품질 보강 feature contract와 calibration 경계: [`design-docs/2026-05-25-feature-quality-calibration.md`](./design-docs/2026-05-25-feature-quality-calibration.md)

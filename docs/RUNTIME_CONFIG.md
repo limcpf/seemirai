@@ -619,6 +619,41 @@ Startup guard와 safe summary 기준:
   `budgetEvidenceConfigured`, `keyScopeEvidenceConfigured` boolean으로만 표시한다.
 - guard 실패 결과는 한국어 message/action과 `trace.violations`를 남기지만, private client나 live broker factory를 만들지 않는다.
 
+24시간 pilot runner 기준:
+
+- 실행 절차는 [`runbooks/m22-live-autonomous-pilot.md`](./runbooks/m22-live-autonomous-pilot.md)를 따른다.
+- runner는 `scripts/run-m22-live-autonomous-pilot.mjs`이며, `SEEMIRAI_RUN_M22_AUTONOMOUS_PILOT=1`이 없으면 live command를 시작하지
+  않고 skipped artifact만 남긴다.
+- local file preparer는 `scripts/prepare-m22-live-autonomous-local-files.mjs`이며 기본 위치
+  `~/vaults/99_운영/seemirai-m22-live-autonomous`에 `m22.env`, `m22.keys.env`, 저장소 밖 M22 config, evidence template,
+  candidate JSONL, no-live smoke wrapper, 24시간 실행 wrapper를 만든다. secret이 들어갈 수 있는 파일은 `0600`, 실행 wrapper는
+  `0700`으로 두며 기존 파일은 `--force` 없이는 덮어쓰지 않는다.
+- 생성된 `m22.env`의 live guard, private/order smoke guard, readiness 값은 기본 `0`이다. 실제 evidence와 readiness를 확인한 뒤에만
+  `1`로 바꿔야 하며, 단순 preflight 통과 목적의 값 변경은 M22 closeout evidence로 인정하지 않는다.
+- 기본 daemon은 `scripts/run-m22-live-autonomous-daemon.mjs`이며 `run-24h-pilot.sh`를 인자 없이 실행하면 runner 뒤에서 이 daemon을
+  시작한다. daemon은 `candidates/m22-candidates.jsonl`에 append된 명시 후보만 처리하며, 후보 파일이 비어 있으면 heartbeat와
+  daily report evidence만 남기고 주문을 만들지 않는다.
+- live canary는 daemon에 `--cancel-after-submit`을 추가해 주문 제출 직후 같은 uuid/identifier로 `DELETE /v1/order` 취소를 요청하고,
+  `GET /v1/order` polling으로 terminal cancel 상태를 확인해야 한다. `order_cancel_failed` 또는 `order_cancel_unconfirmed` event는
+  runner의 `liveOrderCleanupFailureCount`와 closeout failure로 집계한다.
+- daemon 후보 JSONL은 `KRW-BTC`, `BUY`, `LIMIT`, `postOnly=true`, `requestedPrice`, `requestedQuantity`,
+  `requestedNotional`, `referencePrice`를 포함해야 한다. daemon은 1회 `10000` KRW, 일일 `30000` KRW, open position `30000`
+  KRW, Upbit 최소 주문금액 `5000` KRW, 가격 이탈 `30` bps, 일간/주간 손실 상한을 다시 확인한 뒤에만 `POST /v1/orders`를 호출한다.
+- live 주문 제출에는 `SEEMIRAI_UPBIT_ACCESS_KEY`, `SEEMIRAI_UPBIT_SECRET_KEY`, `SEEMIRAI_UPBIT_KEY_SCOPE=자산조회,주문조회,주문하기`,
+  `SEEMIRAI_RUN_M22_AUTONOMOUS_DAEMON=1`이 추가로 필요하다. key scope에 출금, 입출금, 선물, 레버리지, 마진 권한이 보이면 daemon은
+  시작하지 않는다.
+- runner는 저장소 밖 runtime config에서 `live_autonomous.enabled=true`, `KRW-BTC` 단일 market, 1회 `10000` KRW, 일일 `30000`
+  KRW, open position `30000` KRW, identifier 32자 제한, 모든 `require_*` guard true를 확인한다.
+- 필수 evidence env는 `SEEMIRAI_M22_OPERATOR_ARM_EVIDENCE_ID`, `SEEMIRAI_M22_BUDGET_EVIDENCE_ID`,
+  `SEEMIRAI_M22_M21_WEEK_GATE_EVIDENCE_ID`, `SEEMIRAI_UPBIT_KEY_SCOPE_EVIDENCE_ID`다. 값 원문은 artifact에 남기지 않는다.
+- 필수 readiness env는 `SEEMIRAI_M22_TELEGRAM_INBOUND_READY`, `SEEMIRAI_M22_RECONCILE_FRESH`,
+  `SEEMIRAI_M22_PNL_STATUS_READY`, `SEEMIRAI_M22_DECISION_LEDGER_READY`, `SEEMIRAI_M22_EXIT_ENGINE_READY`이며 모두 `1`이어야 한다.
+- runner가 감싸는 live command는 `SEEMIRAI_M22_PILOT_EVENT_LOG` JSONL에 `m22_pilot_heartbeat`와 주문/reconcile/report evidence를
+  append해야 한다. `risk_gate_bypass`, `reconcile_mismatch`, `duplicate_order`, `untracked_fill`, `crash`,
+  `unhandled_rejection` event는 24시간 closeout 실패 조건이다.
+- process log는 runner가 redaction한 stdout/stderr 요약만 저장한다. live command는 raw credential, raw provider payload,
+  Authorization/JWT, Telegram token을 event log에 쓰면 안 된다.
+
 Autonomous entry runtime 기준:
 
 - 구현 경계는 `LiveAutonomousEntryRuntime`이며, public entry는 `src/application/live-autonomous-entry-runtime.ts`다.
