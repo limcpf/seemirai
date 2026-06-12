@@ -257,13 +257,17 @@ describe("M22 live autonomous entry runtime", () => {
         },
       },
     });
+    expect(alertRecorder.alerts[0]?.fingerprint).toContain(
+      ":live_order_risk_blocked:block%3arisk_blocked%3arisk_gate_blocked%3adaily_loss_limit_exceeded",
+    );
   });
 
-  it("반복 비용 차단 알림은 attempt id가 달라도 cooldown으로 묶는다", async () => {
+  it("반복 비용 차단 알림은 attempt id가 달라도 같은 reason cooldown으로 묶고 다른 reason은 분리한다", async () => {
     const alertRecorder = createAlertDispatchRecorder();
     const randomHex = vi.fn()
       .mockReturnValueOnce("a".repeat(26))
-      .mockReturnValueOnce("b".repeat(26));
+      .mockReturnValueOnce("b".repeat(26))
+      .mockReturnValueOnce("c".repeat(26));
     const runtime = new LiveAutonomousEntryRuntime({
       executionEngine: new ExecutionEngine({ broker: createFakeBroker() }),
       budgetReservation: createBudgetReservation(),
@@ -285,12 +289,21 @@ describe("M22 live autonomous entry runtime", () => {
 
     const first = await runtime.submitEntryCandidate(overBudgetRequest);
     const second = await runtime.submitEntryCandidate(overBudgetRequest);
+    const third = await runtime.submitEntryCandidate(createRequest({
+      budgetSnapshot: createBudgetSnapshot({
+        dailyAutonomousNotionalUsedKrw: "25000",
+      }),
+    }));
 
     expect(first.status).toBe("BLOCKED");
     expect(second.status).toBe("BLOCKED");
-    expect(alertRecorder.alerts).toHaveLength(1);
+    expect(third.status).toBe("BLOCKED");
+    expect(alertRecorder.alerts).toHaveLength(2);
     expect(alertRecorder.alerts[0]?.fingerprint).toBe(
-      "alert:prod:live_autonomous_small_budget:P2:live_ops_event:krw-btc:m22_autonomous_entry:live_order_cost_blocked",
+      "alert:prod:live_autonomous_small_budget:P2:live_ops_event:krw-btc:m22_autonomous_entry:live_order_cost_blocked:block%3acost_blocked%3amax_order_budget_exceeded",
+    );
+    expect(alertRecorder.alerts[1]?.fingerprint).toBe(
+      "alert:prod:live_autonomous_small_budget:P2:live_ops_event:krw-btc:m22_autonomous_entry:live_order_cost_blocked:block%3acost_blocked%3adaily_budget_exceeded",
     );
   });
 

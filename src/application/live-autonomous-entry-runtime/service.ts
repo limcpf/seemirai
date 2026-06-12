@@ -622,6 +622,7 @@ export class LiveAutonomousEntryRuntime {
       ...(input.safeDetails === undefined ? {} : { detail: input.safeDetails }),
     };
     const manualReviewEvidenceId = createManualReviewEvidenceId(input);
+    const blockEvidenceId = createBlockEvidenceId(input);
     const correlationId = input.eventKind === "ORDER_SUBMITTED" ? input.idempotencyKey : undefined;
     const scopedEvent = input.eventKind === "KILL_SWITCH_STOP"
       ? {}
@@ -647,6 +648,7 @@ export class LiveAutonomousEntryRuntime {
       safeDetails,
       ...(correlationId === undefined ? {} : { correlationId }),
       ...(manualReviewEvidenceId === undefined ? {} : { evidenceId: manualReviewEvidenceId }),
+      ...(blockEvidenceId === undefined ? {} : { evidenceId: blockEvidenceId }),
       ...(input.blockedReason === undefined ? {} : { blockedReason: input.blockedReason }),
       ...(input.brokerOrderId === undefined ? {} : { brokerOrderId: input.brokerOrderId }),
     };
@@ -731,6 +733,85 @@ function createManualReviewEvidenceId(input: EntryLiveOpsAlertContext): string |
   }
 
   return `manual_review:${input.reasonCode}`;
+}
+
+/**
+ * entry runtime 차단 event가 cooldown에서 구분해야 하는 안정 원인 key를 만든다.
+ *
+ * 같은 후보가 여러 attempt id로 반복되어도 같은 원인이면 하나의 cooldown으로 묶고, 비용/리스크/reconcile의 실제 원인이 다르면
+ * 같은 market/strategy 안에서도 별도 Telegram 알림이 나가야 한다. 따라서 broker 주문 id나 attempt id는 넣지 않고 event kind,
+ * runtime reason, safe detail의 안정 failure code만 사용한다. 이 함수는 문자열 evidence만 만들며 외부 side effect가 없다.
+ */
+function createBlockEvidenceId(input: EntryLiveOpsAlertContext): string | undefined {
+  if (!isBlockAlertKind(input.eventKind)) {
+    return undefined;
+  }
+
+  return ["block", input.eventKind, input.reasonCode, ...readStableBlockReasonFragments(input.safeDetails)]
+    .map(normalizeEvidenceKeyPart)
+    .join(":");
+}
+
+/**
+ * live ops block alert가 다루는 event 종류인지 판정한다.
+ *
+ * lifecycle/manual review와 주문 제출은 별도 dedupe 규칙을 사용하므로 여기서 제외한다. 이 predicate는 runtime event 분류만 수행하고
+ * alert dispatch side effect를 만들지 않는다.
+ */
+function isBlockAlertKind(eventKind: LiveOpsAlertEventKind): boolean {
+  return eventKind === "RISK_BLOCKED" || eventKind === "COST_BLOCKED" || eventKind === "RECONCILE_BLOCKED";
+}
+
+/**
+ * block safeDetails에서 cooldown key에 넣어도 되는 안정 failure code를 읽는다.
+ *
+ * 사용자 문구, error message, reservation id처럼 매 시도마다 달라질 수 있거나 민감해질 수 있는 값은 제외한다. 같은 reasonCode 아래
+ * 여러 RiskGate 실패 원인이 있을 때만 배열 code를 보강해 운영자가 다른 차단 원인을 놓치지 않게 한다.
+ */
+function readStableBlockReasonFragments(safeDetails: JsonRecord | undefined): string[] {
+  const fragments: string[] = [];
+  appendStringFragment(fragments, safeDetails, "cost_reason_code");
+  appendStringFragment(fragments, safeDetails, "execution_rejection_reason_code");
+  appendStringArrayFragments(fragments, safeDetails, "failed_reason_codes");
+  return fragments;
+}
+
+/**
+ * 문자열 detail을 evidence key fragment로 추가한다.
+ */
+function appendStringFragment(fragments: string[], record: JsonRecord | undefined, key: string): void {
+  const value = readStringDetail(record, key);
+  if (value !== undefined) {
+    fragments.push(value);
+  }
+}
+
+/**
+ * 문자열 배열 detail을 evidence key fragment로 추가한다.
+ */
+function appendStringArrayFragments(fragments: string[], record: JsonRecord | undefined, key: string): void {
+  const value = record?.[key];
+  if (!Array.isArray(value)) {
+    return;
+  }
+
+  const stringValues = value
+    .filter((item): item is string => typeof item === "string" && item.trim().length > 0)
+    .map((item) => item.trim());
+  if (stringValues.length > 0) {
+    fragments.push(stringValues.join("+"));
+  }
+}
+
+/**
+ * evidence key fragment를 fingerprint normalization 전에 안정적인 ASCII 문자열로 낮춘다.
+ *
+ * 실제 fingerprint escape는 alert 계층이 다시 수행하지만, 여기서 공백과 빈 값을 정리해 문서/테스트에서 같은 key를 재현할 수 있게
+ * 한다.
+ */
+function normalizeEvidenceKeyPart(value: string): string {
+  const normalized = value.trim().replace(/\s+/gu, "_");
+  return normalized.length > 0 ? normalized : "unknown";
 }
 
 /**

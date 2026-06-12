@@ -12,7 +12,15 @@ import {
   describeReconcileWebSocketStatus,
   loadLiveReconcileRuntimeConfigFromEnv,
 } from "../../src/runtime/live-reconcile-runtime.js";
+import { createInMemoryAlertCooldownStore } from "../../src/application/index.js";
 import type { KillSwitchControlProvider } from "../../src/application/index.js";
+import type {
+  AlertDispatchServiceOptions,
+  AlertNotification,
+  DailyReportNotification,
+  NotificationResult,
+  NotifierPort,
+} from "../../src/application/index.js";
 import type {
   CreateGuardedLiveReconcileRuntimeInput,
   CreateLiveReconcileRuntimeSafeSummaryInput,
@@ -730,6 +738,76 @@ describe("createLiveReconcileRuntimeWorker", () => {
         }),
       ],
     });
+  });
+
+  it("state advancement 체결 후보를 live ops Telegram alert로 전송한다", async () => {
+    const repository = fakeRepository();
+    const alertRecorder = createAlertDispatchRecorder();
+    const worker = createLiveReconcileRuntimeWorker({
+      snapshotProvider: stateAdvancementSnapshotProvider(),
+      repository,
+      killSwitchControlProvider: {
+        async apply(input) {
+          return {
+            transition: {
+              accepted: true,
+              fromState: "NORMAL",
+              toState: input.targetState,
+              reasonCode: input.reasonCode,
+              message: input.message ?? "accepted",
+              event: {
+                eventKind: "KILL_SWITCH_STATE_TRANSITION",
+                fromState: "NORMAL",
+                toState: input.targetState,
+                accepted: true,
+                reasonCode: input.reasonCode,
+                message: input.message ?? "accepted",
+                occurredAt: input.occurredAt ?? "2026-06-02T12:00:00.000Z",
+              },
+            },
+            actionPlan: {
+              newOrdersBlocked: true,
+              strategyEvaluationBlocked: false,
+              cancelPendingPaperOrders: false,
+              requiresManualReview: true,
+              autoLiquidateOpenPositions: false,
+            },
+            reasonMatchesTarget: true,
+          };
+        },
+      },
+      liveOpsAlerts: {
+        environment: "prod",
+        runMode: "live_autonomous_small_budget",
+        alertDispatch: alertRecorder.alertDispatch,
+      },
+      clock: () => new Date("2026-06-02T12:00:00.000Z"),
+    });
+
+    await worker.runOnce({ correlationId: "corr-state-advancement" });
+
+    expect(alertRecorder.alerts).toHaveLength(1);
+    expect(alertRecorder.alerts[0]).toMatchObject({
+      severity: "P1",
+      title: "M23 live 운영 알림: 전체 체결",
+      fingerprint: "alert:prod:live_autonomous_small_budget:P1:live_ops_event:krw-btc:global:live_order_filled:reconcile-advancement%3afill_candidate%3alocal-fill-candidate%3aexchange_done_fully_filled%3a0",
+      metadata: {
+        source: "live_ops_event",
+        event_kind: "ORDER_FILLED",
+        order_id: "local-fill-candidate",
+        broker_order_id: "uuid-fill-candidate",
+        idempotency_key: "ident-fill-candidate",
+        evidence_id: "reconcile-advancement:FILL_CANDIDATE:local-fill-candidate:exchange_done_fully_filled:0",
+        filled_quantity: "0.01",
+        remaining_quantity: "0",
+        safe_details: expect.objectContaining({
+          source: "live_reconcile_runtime",
+          advancement_type: "FILL_CANDIDATE",
+          live_reconcile_run_id: "run-001",
+        }),
+      },
+    });
+    expect(alertRecorder.alerts[0]?.body).toContain("상태: M23 live 주문이 전체 체결됐습니다.");
   });
 
   it("latest repository summary를 /status provider로 변환한다", async () => {
@@ -1668,6 +1746,38 @@ function stateAdvancementSnapshotProvider(): LiveReconcileSnapshotProvider {
           observedAt: "2026-06-02T12:00:00.000Z",
         },
       };
+    },
+  };
+}
+
+function createAlertDispatchRecorder(): {
+  alertDispatch: AlertDispatchServiceOptions;
+  alerts: AlertNotification[];
+} {
+  const alerts: AlertNotification[] = [];
+  const notifier: NotifierPort = {
+    async sendAlert(notification) {
+      alerts.push(notification);
+      return {
+        delivered: true,
+        providerMessageId: `telegram-${alerts.length}`,
+      };
+    },
+    async sendDailyReport(_notification: DailyReportNotification): Promise<NotificationResult> {
+      return {
+        delivered: true,
+        providerMessageId: "daily-report-1",
+      };
+    },
+  };
+
+  return {
+    alerts,
+    alertDispatch: {
+      notifier,
+      durableCooldownStore: createInMemoryAlertCooldownStore(),
+      memoryCooldownStore: createInMemoryAlertCooldownStore(),
+      clock: () => new Date("2026-06-02T12:00:00.000Z"),
     },
   };
 }

@@ -174,6 +174,7 @@ export type {
   LiveReconcileRuntimeRepository,
   LiveReconcileRuntimeRunResult,
   LiveReconcileRuntimeWorker,
+  LiveReconcileAlertDispatchOptions,
   ReconcileStatusProvider,
   ReconcileWebSocketStatus,
   ReconcileStatusSummary,

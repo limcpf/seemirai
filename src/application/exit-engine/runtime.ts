@@ -13,6 +13,8 @@ import { parseFinancialDecimal } from "../../shared/index.js";
 import type { BrokerPort } from "../ports/index.js";
 import type { ExecutionEngine, ExecutionSubmitOrderResult } from "../execution/index.js";
 import type { DecisionEvidenceItem } from "../decision-ledger/types.js";
+import { dispatchLiveOpsAlert } from "../alerts/index.js";
+import type { AlertDispatchServiceOptions, LiveOpsAlertEventKind, LiveOpsAlertInput } from "../alerts/index.js";
 import { createExitSubmission } from "./submission.js";
 import type { ExitSubmissionResult } from "./submission.js";
 import {
@@ -57,6 +59,18 @@ export interface ExitRuntimeEvidenceWriterPort {
 }
 
 /**
+ * exit runtime에서 확정된 주문/체결/취소 event를 M23 live ops alert로 전송하기 위한 옵션이다.
+ *
+ * application runtime은 alert provider, cooldown, retry, audit side effect를 이 옵션의 `alertDispatch` 경계에만 위임한다.
+ * 주문 제출과 잔량 취소는 이미 broker side effect를 만들 수 있으므로, alert 실패는 exit 결과를 되돌리거나 재제출을 유발하면 안 된다.
+ */
+export interface ExitLiveOpsAlertDispatchOptions {
+  environment: string;
+  runMode: string;
+  alertDispatch: AlertDispatchServiceOptions;
+}
+
+/**
  * exit paper runtime 실행에 필요한 side-effect port 묶음이다.
  *
  * `executionEngine`은 RiskGate/cost evidence 검증 이후 broker submit을 담당하고, `broker`는 미체결/open 잔량 취소만 담당한다.
@@ -67,6 +81,7 @@ export interface ExitPaperRuntimePorts {
   broker: Pick<BrokerPort, "cancelOrder">;
   executionPersistence?: ExitRuntimeExecutionPersistencePort;
   evidenceWriter?: ExitRuntimeEvidenceWriterPort;
+  liveOpsAlerts?: ExitLiveOpsAlertDispatchOptions;
 }
 
 /**
@@ -237,6 +252,24 @@ export async function runExitPaperRuntime(input: ExitPaperRuntimeInput): Promise
       evidenceWriteStatus: await appendExitEvidenceSafely(input.ports.evidenceWriter, evidenceItems),
     };
   }
+  await dispatchExitLiveOpsAlertSafely({
+    input,
+    submission: submissionResult.submission,
+    brokerOrder,
+    eventKind: "ORDER_SUBMITTED",
+    safeSummary: "exit runtime이 청산 주문을 broker 제출 경계로 전진했습니다.",
+    evidenceId: `exit-submitted:${brokerOrder.brokerOrderId}`,
+    safeDetails: {
+      exit_runtime_status: "EXECUTION_SUBMITTED",
+      broker_order_status: brokerOrder.status,
+    },
+  });
+  await dispatchExitFillLiveOpsAlertSafely({
+    input,
+    submission: submissionResult.submission,
+    brokerOrder,
+    filledQuantity: calculateFilledQuantity(submissionResult.exitOrderIntent, brokerOrder),
+  });
 
   if (!hasOpenRemainingQuantity(brokerOrder)) {
     const executionPersistenceStatus = await persistExitExecutionSafely(
@@ -263,6 +296,20 @@ export async function runExitPaperRuntime(input: ExitPaperRuntimeInput): Promise
   try {
     // 미체결 또는 부분 체결 open 잔량은 그대로 두면 포지션/PnL evidence와 주문 상태가 갈라지므로 먼저 취소로 닫는다.
     const canceledOrder = await input.ports.broker.cancelOrder(brokerOrder.brokerOrderId);
+    await dispatchExitLiveOpsAlertSafely({
+      input,
+      submission: submissionResult.submission,
+      brokerOrder: canceledOrder,
+      eventKind: "CANCEL_REQUESTED",
+      safeSummary: "exit runtime이 청산 주문의 미체결 잔량 취소를 요청했습니다.",
+      evidenceId: `exit-cancel-requested:${brokerOrder.brokerOrderId}`,
+      remainingQuantity: canceledOrder.remainingQuantity,
+      safeDetails: {
+        exit_runtime_status: "REMAINING_CANCEL_REQUESTED",
+        original_broker_order_id: brokerOrder.brokerOrderId,
+        cancel_result_status: canceledOrder.status,
+      },
+    });
     if (canceledOrder.status !== "CANCELED" || !isZeroQuantity(canceledOrder.remainingQuantity)) {
       appendManualReviewEvidence(
         evidenceItems,
@@ -360,6 +407,127 @@ export async function runExitPaperRuntime(input: ExitPaperRuntimeInput): Promise
       executionPersistenceStatus,
       evidenceWriteStatus: await appendExitEvidenceSafely(input.ports.evidenceWriter, evidenceItems),
     };
+  }
+}
+
+/**
+ * exit runtime의 broker snapshot을 live ops 체결 알림으로 낮춘다.
+ *
+ * 전체/부분 체결이 아닌 open 또는 cancel 상태는 알림을 만들지 않는다. 이 helper는 이미 확정된 brokerOrder를 읽어 best-effort
+ * alert만 보내며, provider/cooldown/audit 실패가 exit 상태 전이를 되돌리지 않게 내부에서 삼킨다.
+ */
+async function dispatchExitFillLiveOpsAlertSafely(input: {
+  input: ExitPaperRuntimeInput;
+  submission: OrderSubmission;
+  brokerOrder: BrokerOrder;
+  filledQuantity: string;
+}): Promise<void> {
+  const eventKind = toExitFillLiveOpsEventKind(input.brokerOrder);
+  if (eventKind === undefined) {
+    return;
+  }
+
+  await dispatchExitLiveOpsAlertSafely({
+    input: input.input,
+    submission: input.submission,
+    brokerOrder: input.brokerOrder,
+    eventKind,
+    safeSummary: eventKind === "ORDER_FILLED"
+      ? "exit runtime이 청산 주문의 전체 체결을 확인했습니다."
+      : "exit runtime이 청산 주문의 부분 체결을 확인했습니다.",
+    evidenceId: [
+      "exit-fill",
+      input.brokerOrder.brokerOrderId,
+      input.brokerOrder.status,
+      input.filledQuantity,
+      input.brokerOrder.remainingQuantity,
+    ].join(":"),
+    filledQuantity: input.filledQuantity,
+    remainingQuantity: input.brokerOrder.remainingQuantity,
+    safeDetails: {
+      exit_runtime_status: eventKind === "ORDER_FILLED" ? "EXIT_ORDER_FILLED" : "EXIT_ORDER_PARTIALLY_FILLED",
+      broker_order_status: input.brokerOrder.status,
+    },
+  });
+}
+
+/**
+ * broker order 상태를 live ops 체결 event kind로 변환한다.
+ *
+ * `FILLED`와 `PARTIALLY_FILLED`만 운영자가 즉시 봐야 하는 체결 사건으로 승격한다. open, cancel, reject 상태는 다른 알림 또는
+ * evidence path에서 다루므로 이 함수는 알림 side effect 없이 분류만 수행한다.
+ */
+function toExitFillLiveOpsEventKind(brokerOrder: BrokerOrder): LiveOpsAlertEventKind | undefined {
+  if (brokerOrder.status === "FILLED") {
+    return "ORDER_FILLED";
+  }
+
+  if (brokerOrder.status === "PARTIALLY_FILLED") {
+    return "ORDER_PARTIALLY_FILLED";
+  }
+
+  return undefined;
+}
+
+/**
+ * exit runtime의 주문/취소/체결 event를 M23 live ops alert로 best-effort 전송한다.
+ *
+ * alert dispatch는 provider 호출, cooldown 저장, retry/audit write side effect를 만들 수 있다. 이미 발생한 broker side effect를
+ * 알림 실패 때문에 재시도하면 중복 주문/취소 위험이 생기므로, 이 경계는 예외를 삼키고 exit 결과에는 영향을 주지 않는다.
+ */
+async function dispatchExitLiveOpsAlertSafely(input: {
+  input: ExitPaperRuntimeInput;
+  submission: OrderSubmission;
+  brokerOrder: BrokerOrder;
+  eventKind: LiveOpsAlertEventKind;
+  safeSummary: string;
+  evidenceId: string;
+  filledQuantity?: string;
+  remainingQuantity?: string;
+  safeDetails?: JsonRecord;
+}): Promise<void> {
+  const liveOpsAlerts = input.input.ports.liveOpsAlerts;
+  if (liveOpsAlerts === undefined) {
+    return;
+  }
+
+  const intent = input.submission.intent;
+  const requestedPrice = input.brokerOrder.requestedPrice ?? (intent.orderType === "LIMIT" ? intent.requestedPrice : undefined);
+  const remainingQuantity = input.remainingQuantity ?? input.brokerOrder.remainingQuantity;
+  const event: LiveOpsAlertInput = {
+    environment: liveOpsAlerts.environment,
+    runMode: liveOpsAlerts.runMode,
+    eventKind: input.eventKind,
+    occurredAt: input.brokerOrder.updatedAt,
+    market: input.brokerOrder.market,
+    strategyId: input.input.positionScope.strategyId,
+    operatingMode: "LIVE_AUTONOMOUS_SMALL_BUDGET",
+    side: input.brokerOrder.side,
+    quantity: input.brokerOrder.requestedQuantity,
+    notionalKrw: intent.requestedNotional,
+    orderId: intent.idempotencyKey,
+    brokerOrderId: input.brokerOrder.brokerOrderId,
+    idempotencyKey: intent.idempotencyKey,
+    correlationId: input.brokerOrder.brokerOrderId,
+    evidenceId: input.evidenceId,
+    safeSummary: input.safeSummary,
+    safeDetails: {
+      source: "exit_paper_runtime",
+      reason_code: input.eventKind,
+      ...(input.safeDetails ?? {}),
+    },
+    ...(requestedPrice === undefined ? {} : { requestedPrice }),
+    ...(input.filledQuantity === undefined ? {} : { filledQuantity: input.filledQuantity }),
+    ...(remainingQuantity === undefined ? {} : { remainingQuantity }),
+  };
+
+  try {
+    await dispatchLiveOpsAlert({
+      alertDispatch: liveOpsAlerts.alertDispatch,
+      event,
+    });
+  } catch {
+    // 알림 실패가 이미 발생한 broker submit/cancel side effect를 재시도하게 만들면 중복 주문/취소 위험이 더 커진다.
   }
 }
 
