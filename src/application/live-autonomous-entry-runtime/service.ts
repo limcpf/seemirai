@@ -16,6 +16,8 @@ import type {
   TimestampInput,
 } from "../../domain/index.js";
 import { parseFinancialDecimal } from "../../shared/index.js";
+import { dispatchLiveOpsAlert } from "../alerts/index.js";
+import type { LiveOpsAlertEventKind, LiveOpsAlertInput } from "../alerts/index.js";
 import {
   createExecutionCostSnapshotEvidence,
   createExecutionRiskApprovalEvidence,
@@ -48,7 +50,35 @@ interface RuntimeViolation {
   metadata?: JsonRecord;
 }
 
+/**
+ * entry runtime 전이에서 live ops alert로 낮출 때 필요한 문맥이다.
+ *
+ * 주문 후보와 attempt key는 runtime이 이미 확정한 값을 재사용해야 하며, alert event는 broker 제출이나 budget reservation 결과를
+ * 바꾸지 않는다. optional detail에는 Telegram token, raw provider body, credential을 넣지 않고 추적 가능한 안전 evidence만
+ * 보존한다.
+ */
+interface EntryLiveOpsAlertContext {
+  request: LiveAutonomousEntryRuntimeRequest;
+  observedAt: TimestampInput;
+  idempotencyKey: string;
+  eventKind: LiveOpsAlertEventKind;
+  attemptStatus: LiveAutonomousOrderAttemptStatus;
+  reasonCode: string;
+  safeSummary: string;
+  blockedReason?: string;
+  brokerOrderId?: string;
+  safeDetails?: JsonRecord;
+}
+
 const upbitKrwMinimumOrderNotional = new Decimal(5_000);
+const costLikePreflightReasonCodes = new Set<string>([
+  "limit_notional_mismatch",
+  "order_notional_below_upbit_minimum",
+  "max_order_budget_exceeded",
+  "daily_budget_exceeded",
+  "open_position_budget_exceeded",
+  "price_deviation_exceeded",
+]);
 
 /**
  * M22 제한적 완전 자동매매 entry runtime service다.
@@ -64,6 +94,7 @@ export class LiveAutonomousEntryRuntime {
   private readonly evaluateRiskGate: (context: RiskGateContext) => RiskGateResult;
   private readonly randomHex: LiveAutonomousEntryRuntimePorts["randomHex"];
   private readonly clock: () => TimestampInput;
+  private readonly liveOpsAlerts: LiveAutonomousEntryRuntimePorts["liveOpsAlerts"];
 
   public constructor(ports: LiveAutonomousEntryRuntimePorts) {
     this.executionEngine = ports.executionEngine;
@@ -72,6 +103,7 @@ export class LiveAutonomousEntryRuntime {
     this.evaluateRiskGate = ports.evaluateRiskGate ?? evaluateRiskGateDefault;
     this.randomHex = ports.randomHex;
     this.clock = ports.clock ?? (() => new Date().toISOString());
+    this.liveOpsAlerts = ports.liveOpsAlerts;
   }
 
   /**
@@ -130,6 +162,7 @@ export class LiveAutonomousEntryRuntime {
     const preflightViolations = collectPreflightViolations(request, intent);
     const preflightViolation = preflightViolations[0];
     if (preflightViolation !== undefined) {
+      const preflightAlertViolation = selectPreflightAlertViolation(preflightViolations);
       appendEvent(
         preflightViolation.status,
         preflightViolation.reasonCode,
@@ -137,6 +170,17 @@ export class LiveAutonomousEntryRuntime {
         preflightViolation.action,
         preflightViolation.metadata,
       );
+      await this.dispatchEntryLiveOpsAlert({
+        request,
+        observedAt,
+        idempotencyKey,
+        eventKind: toRuntimeViolationAlertKind(preflightAlertViolation),
+        attemptStatus: preflightAlertViolation.status,
+        reasonCode: preflightAlertViolation.reasonCode,
+        safeSummary: preflightAlertViolation.message,
+        blockedReason: preflightAlertViolation.message,
+        ...(preflightAlertViolation.metadata === undefined ? {} : { safeDetails: preflightAlertViolation.metadata }),
+      });
       return createResult({
         request,
         idempotencyKey,
@@ -164,6 +208,20 @@ export class LiveAutonomousEntryRuntime {
           cost_reason_code: costDecision.reasonCode,
         },
       );
+      await this.dispatchEntryLiveOpsAlert({
+        request,
+        observedAt,
+        idempotencyKey,
+        eventKind: "COST_BLOCKED",
+        attemptStatus: "BLOCKED",
+        reasonCode: costDecision.reasonCode,
+        safeSummary: "M22 자동매매 주문 후보가 비용 조건을 통과하지 못했습니다.",
+        blockedReason: "비용 조건을 통과하지 못해 신규 live 주문을 제출하지 않았습니다.",
+        safeDetails: {
+          cost_reason_code: costDecision.reasonCode,
+          cost_message: costDecision.message,
+        },
+      });
       return createResult({
         request,
         idempotencyKey,
@@ -203,6 +261,20 @@ export class LiveAutonomousEntryRuntime {
           failed_reason_codes: riskGateResult.failedEvaluations.map((evaluation) => evaluation.reasonCode),
         },
       );
+      await this.dispatchEntryLiveOpsAlert({
+        request,
+        observedAt,
+        idempotencyKey,
+        eventKind: "RISK_BLOCKED",
+        attemptStatus: "BLOCKED",
+        reasonCode: "risk_gate_blocked",
+        safeSummary: "M22 자동매매 주문 후보가 RiskGate를 통과하지 못했습니다.",
+        blockedReason: "RiskGate 결과가 신규 live 주문을 허용하지 않았습니다.",
+        safeDetails: {
+          risk_action: riskGateResult.action,
+          failed_reason_codes: riskGateResult.failedEvaluations.map((evaluation) => evaluation.reasonCode),
+        },
+      });
       return createResult({
         request,
         idempotencyKey,
@@ -256,6 +328,19 @@ export class LiveAutonomousEntryRuntime {
           error_message: error instanceof Error ? error.message : String(error),
         },
       );
+      await this.dispatchEntryLiveOpsAlert({
+        request,
+        observedAt,
+        idempotencyKey,
+        eventKind: "MANUAL_REVIEW_REQUIRED",
+        attemptStatus: "MANUAL_REVIEW_REQUIRED",
+        reasonCode: "budget_reservation_unavailable",
+        safeSummary: "M22 자동매매 예산 선점 저장 결과를 확정할 수 없어 주문을 제출하지 않았습니다.",
+        blockedReason: "예산 선점 저장 상태가 불확실해 운영자 확인 전까지 live 주문을 멈췄습니다.",
+        safeDetails: {
+          error_message: error instanceof Error ? error.message : String(error),
+        },
+      });
       return createResult({
         request,
         idempotencyKey,
@@ -280,6 +365,20 @@ export class LiveAutonomousEntryRuntime {
         "최신 예산 사용량과 open position notional을 확인합니다.",
         reservationResult.metadata,
       );
+      await this.dispatchEntryLiveOpsAlert({
+        request,
+        observedAt,
+        idempotencyKey,
+        eventKind: "COST_BLOCKED",
+        attemptStatus: "BLOCKED",
+        reasonCode: reservationResult.reasonCode,
+        safeSummary: "M22 자동매매 예산 선점이 거부되어 주문을 제출하지 않았습니다.",
+        blockedReason: "예산 선점이 거부되어 신규 live 주문을 제출하지 않았습니다.",
+        safeDetails: {
+          reservation_message: reservationResult.message,
+          ...(reservationResult.metadata ?? {}),
+        },
+      });
       return createResult({
         request,
         idempotencyKey,
@@ -328,6 +427,21 @@ export class LiveAutonomousEntryRuntime {
               error_message: releaseFailure,
             },
           );
+          await this.dispatchEntryLiveOpsAlert({
+            request,
+            observedAt,
+            idempotencyKey,
+            eventKind: "MANUAL_REVIEW_REQUIRED",
+            attemptStatus: "MANUAL_REVIEW_REQUIRED",
+            reasonCode: "budget_reservation_release_failed",
+            safeSummary: "ExecutionEngine은 broker 제출 전에 거부했지만 예산 선점 해제에 실패했습니다.",
+            blockedReason: "broker 제출 전 거부 이후 예산 선점 해제가 실패해 수동 복구가 필요합니다.",
+            safeDetails: {
+              reservation_id: reservation.reservationId,
+              execution_rejection_reason_code: executionResult.rejection.reasonCode,
+              error_message: releaseFailure,
+            },
+          });
           return createResult({
             request,
             idempotencyKey,
@@ -354,6 +468,17 @@ export class LiveAutonomousEntryRuntime {
           "거부 사유를 확인하고 같은 identifier를 재사용하지 않습니다.",
           executionResult.rejection.metadata,
         );
+        await this.dispatchEntryLiveOpsAlert({
+          request,
+          observedAt,
+          idempotencyKey,
+          eventKind: "RISK_BLOCKED",
+          attemptStatus: "REJECTED",
+          reasonCode: executionResult.rejection.reasonCode,
+          safeSummary: "ExecutionEngine이 broker 제출 전에 M22 자동매매 주문을 거부했습니다.",
+          blockedReason: "ExecutionEngine이 broker side effect 전에 주문을 거부했습니다.",
+          safeDetails: executionResult.rejection.metadata ?? {},
+        });
         return createResult({
           request,
           idempotencyKey,
@@ -384,6 +509,20 @@ export class LiveAutonomousEntryRuntime {
           execution_status: executionResult.status,
         },
       );
+      await this.dispatchEntryLiveOpsAlert({
+        request,
+        observedAt,
+        idempotencyKey,
+        eventKind: "ORDER_SUBMITTED",
+        attemptStatus: "SUBMITTED",
+        reasonCode: executionResult.status === "SUBMITTED" ? "broker_submitted" : "duplicate_suppressed",
+        safeSummary: "M22 자동매매 주문이 ExecutionEngine 경계를 통과했습니다.",
+        brokerOrderId: executionResult.brokerOrder.brokerOrderId,
+        safeDetails: {
+          execution_status: executionResult.status,
+          reservation_id: reservation.reservationId,
+        },
+      });
       return createResult({
         request,
         idempotencyKey,
@@ -413,6 +552,20 @@ export class LiveAutonomousEntryRuntime {
           reservation_id: reservation.reservationId,
         },
       );
+      await this.dispatchEntryLiveOpsAlert({
+        request,
+        observedAt,
+        idempotencyKey,
+        eventKind: "MANUAL_REVIEW_REQUIRED",
+        attemptStatus: "MANUAL_REVIEW_REQUIRED",
+        reasonCode: "broker_submission_uncertain",
+        safeSummary: "broker 제출 결과를 확정할 수 없어 M22 자동매매 주문을 수동 점검 상태로 남겼습니다.",
+        blockedReason: "broker 제출 side effect 여부가 불확실해 예산 선점을 유지하고 수동 reconcile이 필요합니다.",
+        safeDetails: {
+          error_message: error instanceof Error ? error.message : String(error),
+          reservation_id: reservation.reservationId,
+        },
+      });
       return createResult({
         request,
         idempotencyKey,
@@ -450,6 +603,240 @@ export class LiveAutonomousEntryRuntime {
       return error instanceof Error ? error.message : String(error);
     }
   }
+
+  /**
+   * entry runtime의 확정 전이를 M23 live ops Telegram alert 경계로 전달한다.
+   *
+   * alert dispatch는 provider/cooldown/audit side effect를 만들 수 있지만, 그 실패가 이미 확정된 주문 차단 또는 제출 결과를
+   * 되돌리면 운영자가 실제 broker 상태를 더 알기 어려워진다. 따라서 이 helper는 alert 옵션이 있을 때만 best-effort로 전송하고
+   * dispatch 계층 예외는 attempt 결과와 분리한다.
+   */
+  private async dispatchEntryLiveOpsAlert(input: EntryLiveOpsAlertContext): Promise<void> {
+    if (this.liveOpsAlerts === undefined) {
+      return;
+    }
+
+    const safeDetails: JsonRecord = {
+      source: "live_autonomous_entry_runtime",
+      attempt_status: input.attemptStatus,
+      reason_code: input.reasonCode,
+      ...(input.safeDetails === undefined ? {} : { detail: input.safeDetails }),
+    };
+    const manualReviewEvidenceId = createManualReviewEvidenceId(input);
+    const blockEvidenceId = createBlockEvidenceId(input);
+    const correlationId = input.eventKind === "ORDER_SUBMITTED" ? input.idempotencyKey : undefined;
+    const scopedEvent = input.eventKind === "KILL_SWITCH_STOP"
+      ? {}
+      : {
+          market: input.request.candidate.market,
+          strategyId: input.request.candidate.strategyId,
+        };
+    const event: LiveOpsAlertInput = {
+      environment: this.liveOpsAlerts.environment,
+      runMode: this.liveOpsAlerts.runMode,
+      eventKind: input.eventKind,
+      occurredAt: input.observedAt,
+      ...scopedEvent,
+      operatingMode: "LIVE_AUTONOMOUS_SMALL_BUDGET",
+      liveOrderCapable: isLiveOrderCapableForAlert(input),
+      side: "BUY",
+      quantity: input.request.candidate.requestedQuantity,
+      requestedPrice: input.request.candidate.requestedPrice,
+      notionalKrw: input.request.candidate.requestedNotional,
+      orderId: input.idempotencyKey,
+      idempotencyKey: input.idempotencyKey,
+      safeSummary: input.safeSummary,
+      safeDetails,
+      ...(correlationId === undefined ? {} : { correlationId }),
+      ...(manualReviewEvidenceId === undefined ? {} : { evidenceId: manualReviewEvidenceId }),
+      ...(blockEvidenceId === undefined ? {} : { evidenceId: blockEvidenceId }),
+      ...(input.blockedReason === undefined ? {} : { blockedReason: input.blockedReason }),
+      ...(input.brokerOrderId === undefined ? {} : { brokerOrderId: input.brokerOrderId }),
+    };
+
+    try {
+      await dispatchLiveOpsAlert({
+        alertDispatch: this.liveOpsAlerts.alertDispatch,
+        event,
+      });
+    } catch {
+      // 알림 side effect 실패가 주문 상태 machine을 되돌리면 broker/reconcile evidence와 application 결과가 어긋난다.
+    }
+  }
+}
+
+/**
+ * 여러 preflight 위반 중 Telegram live ops 알림으로 승격할 대표 위반을 선택한다.
+ *
+ * application 결과와 event log는 기존 collect 순서의 첫 위반을 유지하지만, Telegram 알림은 운영자가 즉시 멈춰야 할 전역
+ * kill switch와 reconcile 차단을 낮은 우선순위 설정 위반 뒤에 숨기면 안 된다. 이 함수는 입력 배열을 읽기만 하며, 상태 전이와
+ * 외부 side effect를 만들지 않는다.
+ */
+function selectPreflightAlertViolation(violations: RuntimeViolation[]): RuntimeViolation {
+  return violations.find((violation) => violation.reasonCode === "kill_switch_active")
+    ?? violations.find((violation) => violation.reasonCode === "reconcile_stale")
+    ?? (violations[0] as RuntimeViolation);
+}
+
+/**
+ * preflight violation을 live ops alert event 종류로 낮춘다.
+ *
+ * kill switch와 reconcile 차단은 운영자가 확인해야 할 경계가 다르므로 전용 event로 분리하고, 금액/손실/가격 계열은 비용 차단으로
+ * 묶는다. 내부 reason code는 safeDetails에 보존되며, 이 함수는 알림 전송이나 상태 변경 side effect를 만들지 않는다.
+ */
+function toRuntimeViolationAlertKind(violation: RuntimeViolation): LiveOpsAlertEventKind {
+  if (violation.reasonCode === "kill_switch_active") {
+    return "KILL_SWITCH_STOP";
+  }
+
+  if (violation.reasonCode === "reconcile_stale") {
+    return "RECONCILE_BLOCKED";
+  }
+
+  if (violation.status === "MANUAL_REVIEW_REQUIRED") {
+    return "MANUAL_REVIEW_REQUIRED";
+  }
+
+  if (costLikePreflightReasonCodes.has(violation.reasonCode)) {
+    return "COST_BLOCKED";
+  }
+
+  return "RISK_BLOCKED";
+}
+
+/**
+ * Telegram live ops 본문에 표시할 주문 가능 여부를 계산한다.
+ *
+ * 이 값은 "현재 runtime이 live 주문을 낼 수 있는가"라는 운영자 판단 신호이므로 kill switch/reconcile뿐 아니라 config enable과
+ * market allowlist도 함께 만족해야 한다. 수동 점검 event는 preflight가 통과했더라도 운영자 확인 전 주문 가능 상태가 아니므로
+ * false로 낮춘다. 알림 표시용 순수 판단이며 broker 제출이나 상태 전이 side effect를 만들지 않는다.
+ */
+function isLiveOrderCapableForAlert(input: EntryLiveOpsAlertContext): boolean {
+  if (input.eventKind === "MANUAL_REVIEW_REQUIRED") {
+    return false;
+  }
+
+  const request = input.request;
+  return (
+    request.config.enabled &&
+    request.config.allowed_markets.includes(request.candidate.market) &&
+    !request.killSwitchActive &&
+    request.reconcileFresh
+  );
+}
+
+/**
+ * entry runtime 수동 점검 event의 cooldown key에 넣을 evidence id를 만든다.
+ *
+ * broker 제출 불확실성이나 reservation release 실패처럼 주문별 수동 reconcile이 필요한 경우 reservation/attempt key까지 포함해
+ * 같은 reason의 다른 주문이 cooldown에 숨지 않게 한다. reservation이 없는 설정/저장소 계열 수동 점검은 reason 단위로 묶어
+ * provider 장애 폭주를 줄인다.
+ */
+function createManualReviewEvidenceId(input: EntryLiveOpsAlertContext): string | undefined {
+  if (input.eventKind !== "MANUAL_REVIEW_REQUIRED") {
+    return undefined;
+  }
+
+  const reservationId = readStringDetail(input.safeDetails, "reservation_id");
+  if (reservationId !== undefined) {
+    return `manual_review:${input.reasonCode}:${reservationId}`;
+  }
+
+  if (input.reasonCode === "broker_submission_uncertain" || input.reasonCode === "budget_reservation_release_failed") {
+    return `manual_review:${input.reasonCode}:${input.idempotencyKey}`;
+  }
+
+  return `manual_review:${input.reasonCode}`;
+}
+
+/**
+ * entry runtime 차단 event가 cooldown에서 구분해야 하는 안정 원인 key를 만든다.
+ *
+ * 같은 후보가 여러 attempt id로 반복되어도 같은 원인이면 하나의 cooldown으로 묶고, 비용/리스크/reconcile의 실제 원인이 다르면
+ * 같은 market/strategy 안에서도 별도 Telegram 알림이 나가야 한다. 따라서 broker 주문 id나 attempt id는 넣지 않고 event kind,
+ * runtime reason, safe detail의 안정 failure code만 사용한다. 이 함수는 문자열 evidence만 만들며 외부 side effect가 없다.
+ */
+function createBlockEvidenceId(input: EntryLiveOpsAlertContext): string | undefined {
+  if (!isBlockAlertKind(input.eventKind)) {
+    return undefined;
+  }
+
+  return ["block", input.eventKind, input.reasonCode, ...readStableBlockReasonFragments(input.safeDetails)]
+    .map(normalizeEvidenceKeyPart)
+    .join(":");
+}
+
+/**
+ * live ops block alert가 다루는 event 종류인지 판정한다.
+ *
+ * lifecycle/manual review와 주문 제출은 별도 dedupe 규칙을 사용하므로 여기서 제외한다. 이 predicate는 runtime event 분류만 수행하고
+ * alert dispatch side effect를 만들지 않는다.
+ */
+function isBlockAlertKind(eventKind: LiveOpsAlertEventKind): boolean {
+  return eventKind === "RISK_BLOCKED" || eventKind === "COST_BLOCKED" || eventKind === "RECONCILE_BLOCKED";
+}
+
+/**
+ * block safeDetails에서 cooldown key에 넣어도 되는 안정 failure code를 읽는다.
+ *
+ * 사용자 문구, error message, reservation id처럼 매 시도마다 달라질 수 있거나 민감해질 수 있는 값은 제외한다. 같은 reasonCode 아래
+ * 여러 RiskGate 실패 원인이 있을 때만 배열 code를 보강해 운영자가 다른 차단 원인을 놓치지 않게 한다.
+ */
+function readStableBlockReasonFragments(safeDetails: JsonRecord | undefined): string[] {
+  const fragments: string[] = [];
+  appendStringFragment(fragments, safeDetails, "cost_reason_code");
+  appendStringFragment(fragments, safeDetails, "execution_rejection_reason_code");
+  appendStringArrayFragments(fragments, safeDetails, "failed_reason_codes");
+  return fragments;
+}
+
+/**
+ * 문자열 detail을 evidence key fragment로 추가한다.
+ */
+function appendStringFragment(fragments: string[], record: JsonRecord | undefined, key: string): void {
+  const value = readStringDetail(record, key);
+  if (value !== undefined) {
+    fragments.push(value);
+  }
+}
+
+/**
+ * 문자열 배열 detail을 evidence key fragment로 추가한다.
+ */
+function appendStringArrayFragments(fragments: string[], record: JsonRecord | undefined, key: string): void {
+  const value = record?.[key];
+  if (!Array.isArray(value)) {
+    return;
+  }
+
+  const stringValues = value
+    .filter((item): item is string => typeof item === "string" && item.trim().length > 0)
+    .map((item) => item.trim());
+  if (stringValues.length > 0) {
+    fragments.push(stringValues.join("+"));
+  }
+}
+
+/**
+ * evidence key fragment를 fingerprint normalization 전에 안정적인 ASCII 문자열로 낮춘다.
+ *
+ * 실제 fingerprint escape는 alert 계층이 다시 수행하지만, 여기서 공백과 빈 값을 정리해 문서/테스트에서 같은 key를 재현할 수 있게
+ * 한다.
+ */
+function normalizeEvidenceKeyPart(value: string): string {
+  const normalized = value.trim().replace(/\s+/gu, "_");
+  return normalized.length > 0 ? normalized : "unknown";
+}
+
+/**
+ * 수동 점검 safeDetails에서 fingerprint에 써도 되는 문자열 evidence를 읽는다.
+ *
+ * safeDetails는 이미 secret-safe contract를 통과한 값만 담아야 하며, 이 helper는 빈 문자열과 비문자 값을 버려 cooldown key가
+ * `"undefined"` 같은 값으로 오염되지 않게 한다. 읽기 전용 helper라 외부 side effect는 없다.
+ */
+function readStringDetail(record: JsonRecord | undefined, key: string): string | undefined {
+  const value = record?.[key];
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
 }
 
 /**

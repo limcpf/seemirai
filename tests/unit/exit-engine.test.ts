@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import {
+  createInMemoryAlertCooldownStore,
   createDefaultExitRules,
   createExitSubmission,
   createRemainingExitIntent,
@@ -13,6 +14,13 @@ import {
   evaluateExitSizing,
   formatSizingUserMessage,
   runExitPaperRuntime,
+} from "../../src/application/index.js";
+import type {
+  AlertDispatchServiceOptions,
+  AlertNotification,
+  DailyReportNotification,
+  NotificationResult,
+  NotifierPort,
 } from "../../src/application/index.js";
 import type {
   BrokerOrder,
@@ -2127,6 +2135,89 @@ describe("exit submission and paper runtime integration", () => {
     );
   });
 
+  it("dispatches live ops alerts for exit submit, partial fill, cancel request, and cancel confirmation", async () => {
+    const brokerOrder = createBrokerOrderFixture({
+      status: "PARTIALLY_FILLED",
+      remainingQuantity: "0.0004",
+    });
+    const executionEngine = {
+      submitOrder: vi.fn(async (submission: OrderSubmission) => ({
+        status: "SUBMITTED" as const,
+        submission,
+        brokerOrder,
+      })),
+    };
+    const broker = {
+      cancelOrder: vi.fn(async (orderId: string) => createBrokerOrderFixture({
+        brokerOrderId: orderId,
+        status: "CANCELED",
+        remainingQuantity: "0",
+      })),
+    };
+    const alertRecorder = createAlertDispatchRecorder();
+
+    await runExitPaperRuntime({
+      decision: await createTriggeredReduceDecision(),
+      sizing: createValidExitSizing(),
+      positionScope: createBtcPositionScope(),
+      policySnapshot: paperPolicy,
+      currentPrice: "128000000",
+      riskApproval: { source: "risk_gate", approved: true },
+      idempotencyKey: "exit-original-001",
+      submittedAt: observedAt,
+      ports: {
+        executionEngine,
+        broker,
+        liveOpsAlerts: {
+          environment: "prod",
+          runMode: "live_autonomous_small_budget",
+          alertDispatch: alertRecorder.alertDispatch,
+        },
+      },
+    });
+
+    expect(alertRecorder.alerts.map((alert) => alert.metadata?.event_kind)).toEqual([
+      "ORDER_SUBMITTED",
+      "ORDER_PARTIALLY_FILLED",
+      "CANCEL_REQUESTED",
+      "CANCEL_CONFIRMED",
+    ]);
+    expect(alertRecorder.alerts[1]).toMatchObject({
+      title: "M23 live 운영 알림: 부분 체결",
+      metadata: {
+        event_kind: "ORDER_PARTIALLY_FILLED",
+        filled_quantity: "0.0006",
+        remaining_quantity: "0.0004",
+        evidence_id: "exit-fill:paper-exit-order-1:PARTIALLY_FILLED:0.0006:0.0004",
+      },
+    });
+    expect(alertRecorder.alerts[2]).toMatchObject({
+      title: "M23 live 운영 알림: 취소 요청",
+      metadata: {
+        event_kind: "CANCEL_REQUESTED",
+        broker_order_id: "paper-exit-order-1",
+        safe_details: expect.objectContaining({
+          source: "exit_paper_runtime",
+          original_broker_order_id: "paper-exit-order-1",
+        }),
+      },
+    });
+    expect(alertRecorder.alerts[3]).toMatchObject({
+      title: "M23 live 운영 알림: 취소 확인",
+      metadata: {
+        event_kind: "CANCEL_CONFIRMED",
+        broker_order_id: "paper-exit-order-1",
+        remaining_quantity: "0",
+        evidence_id: "exit-cancel-confirmed:paper-exit-order-1",
+        safe_details: expect.objectContaining({
+          source: "exit_paper_runtime",
+          original_broker_order_id: "paper-exit-order-1",
+          cancel_result_status: "CANCELED",
+        }),
+      },
+    });
+  });
+
   it("treats broker-side rejected orders as unfilled execution failures", async () => {
     const brokerOrder = createBrokerOrderFixture({
       status: "REJECTED",
@@ -2792,6 +2883,38 @@ function createExitIntentFixture(): ExitOrderIntent {
       exit_reason_code: "take_profit_triggered",
       exit_rule_id: "take_profit_exit",
       position_scope: createBtcPositionScope(),
+    },
+  };
+}
+
+function createAlertDispatchRecorder(): {
+  alertDispatch: AlertDispatchServiceOptions;
+  alerts: AlertNotification[];
+} {
+  const alerts: AlertNotification[] = [];
+  const notifier: NotifierPort = {
+    async sendAlert(notification) {
+      alerts.push(notification);
+      return {
+        delivered: true,
+        providerMessageId: `telegram-${alerts.length}`,
+      };
+    },
+    async sendDailyReport(_notification: DailyReportNotification): Promise<NotificationResult> {
+      return {
+        delivered: true,
+        providerMessageId: "daily-report-1",
+      };
+    },
+  };
+
+  return {
+    alerts,
+    alertDispatch: {
+      notifier,
+      durableCooldownStore: createInMemoryAlertCooldownStore(),
+      memoryCooldownStore: createInMemoryAlertCooldownStore(),
+      clock: () => observedAt,
     },
   };
 }

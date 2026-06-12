@@ -372,6 +372,7 @@ P0/P1 원인 mapping은 application layer의 `mapKillSwitchReasonToTargetState`�
 - durable cooldown repository: `src/infrastructure/db/alert-cooldown.ts`
 - runtime config loader: `src/runtime/notification-config.ts`
 - runtime control wiring: `src/runtime/notification-runtime.ts`
+- M23 lifecycle/trade mapper: `src/application/alerts/live-ops-events.ts`
 
 Telegram 알림은 outbound `sendMessage`만 사용한다. 이 단계는 Telegram webhook, polling, command 수신 route를 만들지
 않는다. message format은 Markdown/HTML parse mode 없는 plain text다.
@@ -387,8 +388,9 @@ Telegram 알림은 outbound `sendMessage`만 사용한다. 이 단계는 Telegra
 - provider timeout: `telegram.provider_timeout_ms`, 기본 `5000`
 
 alert fingerprint는 `environment + run_mode + severity + alert_type + market_or_global + strategy_id_or_global + reason_code`로
-만든다. severity가 key에 들어가므로 P1 cooldown 중에도 같은 원인의 P0 escalation은 막히지 않는다. 각 세그먼트 안의 `:`는
-`%3a`로 escape해 join 구분자와 충돌하지 않게 한다.
+만든다. 주문, 체결, 취소처럼 같은 reason이 짧은 시간 안에 반복될 수 있는 alert는 선택 `dedupe_key`를 끝에 붙여 event 단위
+전송을 보장한다. severity가 key에 들어가므로 P1 cooldown 중에도 같은 원인의 P0 escalation은 막히지 않는다. 각 세그먼트 안의
+`:`는 `%3a`로 escape해 join 구분자와 충돌하지 않게 한다.
 
 cooldown 기본값:
 
@@ -410,6 +412,35 @@ transaction이 commit된 뒤 Telegram/cooldown/audit 알림 경계로 넘어간�
 동작하지만, 알림 의존성 누락으로 kill switch state update가 차단되지는 않는다. post-commit alert dispatch 실패는
 `alert_dispatch_failed`로 결과 객체에 기록하고 control 전이 성공 자체를 실패로 바꾸지 않는다. 같은 runtime alert dispatch
 옵션 객체는 최신 notification failure state를 보존해 연속 실패 threshold가 실제 호출 간 누적되게 한다.
+
+M23 lifecycle/trade event는 `createLiveOpsAlertRequest`가 `live_ops_event` alert payload로 낮추고, runtime은
+`dispatchLiveOpsAlert` wrapper로 전송한다. Telegram 연결 성공과 live order capable 시작은 서로 다른 reason/fingerprint를
+사용한다. 주문 제출/취소/취소 확인 event는 idempotency key, local order id, broker order id, evidence id, correlation id 순서로
+`dedupe_key`를 고른다. 전체/부분 체결 event는 같은 주문 키를 공유할 수 있으므로 evidence id를 우선한다. risk/cost/reconcile
+차단 event는 주문 ID가 없거나 attempt id가 매번 달라질 수 있으므로, runtime은 event kind, stable reason code, 세부
+failure code로 만든 evidence id를 넣고 mapper는 evidence id, risk event id, audit event id, correlation id 순서로 고른다.
+같은 market/strategy에서 여러 live trade event가 5분 안에 발생해도 서로를 cooldown으로 숨기지 않는다. restart/crash/recovery는
+반복 자체가 운영 evidence라 restart id 또는 evidence id를 `dedupe_key`로 쓴다. 정상 종료, operator stop,
+kill switch, manual review, crash/restart/recovery, Telegram provider 장애 지속, 주문/차단 event는 첫 화면에 한국어 상태, 원인,
+영향, 필요 조치와 안전한 차단 사유를 배치하고,
+order id, idempotency key, audit/risk/evidence id, event kind, reason code는 `추적 정보`에만 둔다. P0/P1 live event provider
+failure는 기존 `notification_retry` job payload와 manual review failure threshold 경로를 그대로 사용하며, wrapper가 같은
+alert dispatch 옵션 객체에 `failureState`를 되돌려 저장해 연속 실패를 누적한다.
+
+`LiveAutonomousEntryRuntime`은 `liveOpsAlerts` 옵션이 주입되면 실제 entry 후보 처리 경로에서 `dispatchLiveOpsAlert`를 호출한다.
+비용/RiskGate/reconcile/budget 차단은 broker 제출 전 확정된 차단 event로, ExecutionEngine 제출 성공은 `ORDER_SUBMITTED`
+event로 전송한다. 반복 차단은 새 attempt id로 cooldown을 우회하지 않도록 주문 제출 event에만 correlation id를 dedupe 후보로
+넣고, 차단 event는 stable reason evidence id로 묶는다. 같은 비용 차단 reason은 반복 attempt가 달라도 cooldown으로 묶지만,
+예산 거부와 비용 모델 차단, 서로 다른 RiskGate 실패 reason은 별도 Telegram 알림으로 남는다. 수동 점검 event는 reason/evidence별로
+서로 다른 P1 cooldown key를 갖는다. broker 제출 불확실성이나 reservation release 실패처럼 주문별 수동 reconcile이 필요한 event는
+reservation/attempt evidence까지 cooldown key에 넣는다.
+
+`runExitPaperRuntime`은 `liveOpsAlerts` 옵션이 주입되면 exit broker 제출 성공을 `ORDER_SUBMITTED`, broker snapshot의 `FILLED`와
+`PARTIALLY_FILLED`를 각각 전체/부분 체결 event, open 잔량 취소 호출 성공을 `CANCEL_REQUESTED` event로 전송한다.
+`createLiveReconcileRuntimeWorker`는 state advancement 후보가 있으면 manual review 전이를 먼저 완료한 뒤 `FILL_CANDIDATE`,
+`PARTIALLY_FILLED_CANDIDATE`, `CANCEL_CANDIDATE`를 각각 `ORDER_FILLED`, `ORDER_PARTIALLY_FILLED`, `CANCEL_CONFIRMED` event로
+전송한다. 이 dispatch들은 주문 판단, broker submit/cancel, reconcile run 결과를 바꾸지 않는 best-effort 후속 side effect이며,
+alert 저장소나 provider 예외가 이미 확정된 차단/제출/취소/reconcile 결과를 rollback하지 않는다.
 
 provider 호출 직전에는 fingerprint 단위 delivery reservation을 먼저 기록한다. 이 atomic gate는 마지막 성공 전송이 cooldown
 안에 있거나 기존 reservation이 만료되지 않았으면 provider 호출 없이 `ALERT_COOLDOWN` audit evidence만 남긴다. 이 경계는

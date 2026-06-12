@@ -18,6 +18,7 @@ import type {
   StrategyRiskSnapshot,
   TimestampInput,
 } from "../../domain/index.js";
+import type { AlertDispatchServiceOptions } from "../alerts/index.js";
 import type { ExecutionEngine, ExecutionSubmitOrderResult } from "../execution/index.js";
 
 /**
@@ -183,6 +184,20 @@ export interface LiveAutonomousEntryCostModelPort {
 export type LiveAutonomousEntryRiskGateEvaluator = (context: RiskGateContext) => RiskGateResult;
 
 /**
+ * M22/M23 live autonomous entry runtime에서 발생한 trade event를 live ops alert로 전송하기 위한 옵션이다.
+ *
+ * `environment`와 `runMode`는 alert fingerprint와 Telegram 추적 정보의 상위 운영 차원이며, `alertDispatch`는 provider,
+ * cooldown, retry, audit side effect를 소유하는 application service 의존성이다. 이 옵션은 주문 판단 입력이나 broker 제출
+ * 결과를 바꾸지 않아야 하며, caller는 같은 runtime process 안에서 같은 객체를 재사용해 notification failure state가 누적되게
+ * 해야 한다.
+ */
+export interface LiveAutonomousEntryAlertDispatchOptions {
+  environment: string;
+  runMode: string;
+  alertDispatch: AlertDispatchServiceOptions;
+}
+
+/**
  * M22 autonomous entry runtime port 묶음이다.
  *
  * 실제 broker, durable budget store, CostModel/RiskGate implementation은 모두 주입받는다. 기본 구현을 쓰더라도 runtime service는
@@ -191,6 +206,7 @@ export type LiveAutonomousEntryRiskGateEvaluator = (context: RiskGateContext) =>
 export interface LiveAutonomousEntryRuntimePorts {
   executionEngine: Pick<ExecutionEngine, "submitOrder">;
   budgetReservation: LiveAutonomousBudgetReservationPort;
+  liveOpsAlerts?: LiveAutonomousEntryAlertDispatchOptions;
   costModel?: LiveAutonomousEntryCostModelPort;
   evaluateRiskGate?: LiveAutonomousEntryRiskGateEvaluator;
   randomHex?: (bytes: number) => string;

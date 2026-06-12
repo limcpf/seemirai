@@ -3,7 +3,11 @@ import type {
   ReconcileEngineInput,
   ReconcileEngineOutput,
 } from "../../domain/live-reconcile.js";
-import type { KillSwitchControlProvider, KillSwitchControlResult } from "../../application/index.js";
+import type {
+  AlertDispatchServiceOptions,
+  KillSwitchControlProvider,
+  KillSwitchControlResult,
+} from "../../application/index.js";
 import type {
   BeginLiveReconcileRunInput,
   CompleteLiveReconcileRunInput,
@@ -265,6 +269,19 @@ export interface LiveReconcileRuntimeRepository {
 }
 
 /**
+ * live reconcile state advancement event를 M23 live ops alert로 전송하기 위한 옵션이다.
+ *
+ * `environment`와 `runMode`는 Telegram/cooldown fingerprint의 상위 운영 차원이다. `alertDispatch`는 provider, cooldown, retry,
+ * audit side effect를 소유하며, reconcile worker는 이 옵션을 통해서만 알림 계층에 접근한다. 알림 실패는 이미 완료된 reconcile
+ * run이나 kill switch 전이를 rollback하지 않아야 한다.
+ */
+export interface LiveReconcileAlertDispatchOptions {
+  environment: string;
+  runMode: string;
+  alertDispatch: AlertDispatchServiceOptions;
+}
+
+/**
  * live reconcile worker 생성 입력이다.
  *
  * snapshotProvider는 읽기 전용 외부 조회를, repository는 append-only evidence 저장을, killSwitchControlProvider는
@@ -275,6 +292,7 @@ export interface CreateLiveReconcileRuntimeWorkerInput {
   snapshotProvider: LiveReconcileSnapshotProvider;
   repository: LiveReconcileRuntimeRepository;
   killSwitchControlProvider?: KillSwitchControlProvider;
+  liveOpsAlerts?: LiveReconcileAlertDispatchOptions;
   clock?: () => Date;
   actor?: string;
 }
