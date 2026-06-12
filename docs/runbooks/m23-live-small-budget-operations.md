@@ -75,6 +75,25 @@ SEEMIRAI_M22_EXIT_ENGINE_READY=1
 `604800000`ms runner로 실행하면 7일 연속 daily report evidence를 만들 수 없다. M23 closeout 전에는 supervisor, systemd timer,
 또는 운영 wrapper가 아래 24시간 segment를 7회 연속 실행하고 각 segment의 daily report marker와 summary artifact를 확인해야 한다.
 
+각 24시간 segment 시작 전에는 다음 handoff를 먼저 수행한다.
+
+1. candidate producer를 멈추고 더 이상 기존 JSONL에 append되지 않는지 확인한다.
+2. 이전 segment candidate file의 마지막 크기와 SHA-256을 artifact에 기록하고, 다음 segment는 새 JSONL 파일로 rotate한다.
+3. 새 candidate file은 비어 있는 상태로 daemon을 먼저 시작한 뒤 producer를 재개한다. daemon 시작 전에 후보를 미리 넣어야 하는
+   재현 작업만 `--candidate-start beginning`을 사용한다.
+4. M16 reconcile/status로 현재 open order, open exposure, realized loss를 확인하고 아래 env를 최신 safe summary 값으로 갱신한다.
+   값을 확인할 수 없으면 segment를 시작하지 않고 manual review로 전환한다.
+
+```text
+SEEMIRAI_M22_INITIAL_DAILY_AUTONOMOUS_NOTIONAL_USED_KRW=<latest-safe-daily-notional>
+SEEMIRAI_M22_INITIAL_OPEN_POSITION_NOTIONAL_KRW=<latest-safe-open-exposure>
+SEEMIRAI_M22_DAILY_REALIZED_LOSS_KRW=<latest-safe-daily-realized-loss>
+SEEMIRAI_M22_WEEKLY_REALIZED_LOSS_KRW=<latest-safe-weekly-realized-loss>
+```
+
+5. 누적 realized loss와 미체결 노출 합계가 50,000 KRW에 접근하면 다음 segment를 시작하지 않고 operator stop 또는 kill switch로
+   전환한다.
+
 ```sh
 node scripts/run-m22-live-autonomous-pilot.mjs \
   --config "$M22_HOME/m22-live-autonomous.config.json" \
@@ -85,7 +104,7 @@ node scripts/run-m22-live-autonomous-pilot.mjs \
   -- \
   scripts/run-m22-live-autonomous-daemon.mjs \
   --config "$M22_HOME/m22-live-autonomous.config.json" \
-  --candidate-file "$M22_HOME/candidates/m22-candidates.jsonl" \
+  --candidate-file "$M22_HOME/candidates/m23-segment-YYYY-MM-DD.jsonl" \
   --candidate-start end
 ```
 
