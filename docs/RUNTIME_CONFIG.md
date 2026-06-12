@@ -654,6 +654,22 @@ Startup guard와 safe summary 기준:
 - process log는 runner가 redaction한 stdout/stderr 요약만 저장한다. live command는 raw credential, raw provider payload,
   Authorization/JWT, Telegram token을 event log에 쓰면 안 된다.
 
+M23 live-armed 운영 기준:
+
+- Issue #188 M23 운영은 `LIVE_AUTONOMOUS_SMALL_BUDGET`의 기존 M22 소액 제한을 유지한다. `max_order_krw=10000`,
+  `daily_autonomous_notional_limit_krw=30000`, `max_open_position_notional_krw=30000`, `KRW-BTC` 단일 기본값은 M23에서 자동으로
+  높이지 않는다.
+- M23 7일 안정화는 dry-run이나 heartbeat-only가 아니라 실제 주문 API를 호출할 수 있는 설정으로 arm 되어야 한다. 단, 시장 조건이
+  gate를 통과하지 못하면 주문이 없어도 되며, 이 경우 후보 없음, gate 차단, 시장 조건 미충족 같은 이유가 daily report와 decision
+  evidence에 남아야 한다.
+- 운영자가 허용한 손실 ceiling은 누적 realized loss와 미체결 노출 합계 50,000 KRW 미만이다. 이 값은 자동 예산 확대 승인이 아니며,
+  ceiling 접근 시 operator stop 또는 kill switch/manual review로 수렴해야 한다.
+- status, CLI, Telegram, daily report safe summary는 현재 모드(dry-run, heartbeat-only, live armed, live order capable), live
+  enabled, key scope 안전성, readiness, latest heartbeat/reconcile/candidate/decision/order/fill/cancel, budget/exposure/PnL,
+  risk block, alert retry 상태를 secret 없이 보여줘야 한다.
+- M23 이후 universe, strategy, budget 확대는 M24 범위다. M23 config나 runbook은 BTC 외 market 기본 활성화, 자동 budget 확대,
+  market/best order 기본 허용을 열지 않는다.
+
 Autonomous entry runtime 기준:
 
 - 구현 경계는 `LiveAutonomousEntryRuntime`이며, public entry는 `src/application/live-autonomous-entry-runtime.ts`다.
