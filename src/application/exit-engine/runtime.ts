@@ -335,6 +335,22 @@ export async function runExitPaperRuntime(input: ExitPaperRuntimeInput): Promise
       };
     }
 
+    // broker가 terminal cancel을 이미 확인한 경우 이후 state advancement가 생략될 수 있어 요청과 확인 알림을 분리해 남긴다.
+    await dispatchExitLiveOpsAlertSafely({
+      input,
+      submission: submissionResult.submission,
+      brokerOrder: canceledOrder,
+      eventKind: "CANCEL_CONFIRMED",
+      safeSummary: "exit runtime이 청산 주문의 미체결 잔량 취소 완료를 확인했습니다.",
+      evidenceId: `exit-cancel-confirmed:${brokerOrder.brokerOrderId}`,
+      remainingQuantity: canceledOrder.remainingQuantity,
+      safeDetails: {
+        exit_runtime_status: "REMAINING_CANCEL_CONFIRMED",
+        original_broker_order_id: brokerOrder.brokerOrderId,
+        cancel_result_status: canceledOrder.status,
+      },
+    });
+
     appendCanceledExecutionEvidence(evidenceItems, input, submissionResult, canceledOrder, remaining.filledQuantity);
     if (remaining.isDust) {
       appendDustRemainingEvidence(evidenceItems, input, submissionResult, canceledOrder, remaining);

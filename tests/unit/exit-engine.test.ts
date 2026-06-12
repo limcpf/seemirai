@@ -2135,7 +2135,7 @@ describe("exit submission and paper runtime integration", () => {
     );
   });
 
-  it("dispatches live ops alerts for exit submit, partial fill, and cancel request", async () => {
+  it("dispatches live ops alerts for exit submit, partial fill, cancel request, and cancel confirmation", async () => {
     const brokerOrder = createBrokerOrderFixture({
       status: "PARTIALLY_FILLED",
       remainingQuantity: "0.0004",
@@ -2180,6 +2180,7 @@ describe("exit submission and paper runtime integration", () => {
       "ORDER_SUBMITTED",
       "ORDER_PARTIALLY_FILLED",
       "CANCEL_REQUESTED",
+      "CANCEL_CONFIRMED",
     ]);
     expect(alertRecorder.alerts[1]).toMatchObject({
       title: "M23 live 운영 알림: 부분 체결",
@@ -2198,6 +2199,20 @@ describe("exit submission and paper runtime integration", () => {
         safe_details: expect.objectContaining({
           source: "exit_paper_runtime",
           original_broker_order_id: "paper-exit-order-1",
+        }),
+      },
+    });
+    expect(alertRecorder.alerts[3]).toMatchObject({
+      title: "M23 live 운영 알림: 취소 확인",
+      metadata: {
+        event_kind: "CANCEL_CONFIRMED",
+        broker_order_id: "paper-exit-order-1",
+        remaining_quantity: "0",
+        evidence_id: "exit-cancel-confirmed:paper-exit-order-1",
+        safe_details: expect.objectContaining({
+          source: "exit_paper_runtime",
+          original_broker_order_id: "paper-exit-order-1",
+          cancel_result_status: "CANCELED",
         }),
       },
     });
