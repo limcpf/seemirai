@@ -62,6 +62,32 @@ describe("live ops status summary", () => {
     expect(summary.message).not.toContain("heartbeat_only");
   });
 
+  it("requires a connected and fresh heartbeat before reporting live order capable", () => {
+    const summary = createLiveOpsStatusSummary(liveOpsInput({
+      marketData: {
+        connectionStatus: "unknown",
+        lagMs: null,
+        updatedAt: null,
+      },
+      latestHeartbeat: null,
+    }));
+
+    expect(summary).toMatchObject({
+      status: "unavailable",
+      statusLabel: "실매매 상태 확인 불가",
+      mode: "live_armed",
+      liveOrderCapable: false,
+      latestHeartbeat: {
+        statusLabel: "heartbeat 미연결",
+      },
+      trace: {
+        reason: "heartbeat_unavailable",
+      },
+    });
+    expect(summary.message).toContain("최신 market data heartbeat");
+    expect(summary.action).toContain("market data heartbeat");
+  });
+
   it("keeps risk blocks and missing event evidence visible for closeout", () => {
     const summary = createLiveOpsStatusSummary(liveOpsInput({
       latestDecision: null,

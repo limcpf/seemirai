@@ -6,6 +6,8 @@ import type {
   LiveOpsStatusSummary,
 } from "./types.js";
 
+const maxLiveOpsHeartbeatAgeMs = 5 * 60 * 1000;
+
 /**
  * M23 live ops status summary를 생성한다.
  *
@@ -126,6 +128,7 @@ function isLiveOrderCapable(input: CreateLiveOpsStatusSummaryInput): boolean {
     input.liveAutonomous.ready &&
     input.liveTradingEnabled &&
     !input.paperNoKey &&
+    hasUsableHeartbeat(input) &&
     !input.tradingState.newOrdersBlocked &&
     !input.tradingState.requiresManualReview &&
     input.reconcile.result === "SUCCESS"
@@ -155,6 +158,9 @@ function resolveOperationalStatus(
   if (!input.liveAutonomous.enabled || !input.liveTradingEnabled || input.paperNoKey) {
     return "warning";
   }
+  if (!hasUsableHeartbeat(input)) {
+    return "unavailable";
+  }
   if (input.reconcile.result === "UNAVAILABLE" || input.pnl.statusLabel === "조회 불가") {
     return "unavailable";
   }
@@ -167,6 +173,7 @@ function resolveReason(input: CreateLiveOpsStatusSummaryInput, liveOrderCapable:
   if (!input.liveTradingEnabled) return "live_trading_disabled";
   if (input.paperNoKey) return "paper_no_key";
   if (!input.liveAutonomous.ready) return "live_autonomous_guard_blocked";
+  if (!hasUsableHeartbeat(input)) return "heartbeat_unavailable";
   if (input.tradingState.newOrdersBlocked) return "new_orders_blocked";
   if (input.tradingState.requiresManualReview) return "manual_review_required";
   if (input.reconcile.result !== "SUCCESS") return "reconcile_not_success";
@@ -199,6 +206,9 @@ function toMessage(
   }
   if (!input.liveAutonomous.ready) {
     return input.liveAutonomous.message;
+  }
+  if (!hasUsableHeartbeat(input)) {
+    return "최신 market data heartbeat가 확인되지 않아 M23 런타임을 실주문 가능 상태로 보지 않습니다.";
   }
   if (input.tradingState.newOrdersBlocked || input.tradingState.requiresManualReview) {
     return "kill switch 또는 manual review 상태 때문에 live order capable 상태가 아닙니다.";
@@ -243,6 +253,9 @@ function toAction(
   if (!input.liveAutonomous.ready) {
     return input.liveAutonomous.action;
   }
+  if (!hasUsableHeartbeat(input)) {
+    return "market data heartbeat와 websocket 수신 상태를 복구한 뒤 다시 확인하세요.";
+  }
   if (input.tradingState.newOrdersBlocked || input.tradingState.requiresManualReview) {
     return "kill switch reason과 manual review evidence를 확인하고 신규 entry를 재개하지 마세요.";
   }
@@ -272,6 +285,26 @@ function createMissingFact(
       generatedAt: observedAt,
     },
   };
+}
+
+function hasUsableHeartbeat(input: CreateLiveOpsStatusSummaryInput): boolean {
+  if (input.marketData.updatedAt === null || !isConnectedMarketData(input.marketData.connectionStatus)) {
+    return false;
+  }
+
+  const observedAtMs = Date.parse(input.observedAt);
+  const updatedAtMs = Date.parse(input.marketData.updatedAt);
+  if (!Number.isFinite(observedAtMs) || !Number.isFinite(updatedAtMs)) {
+    return false;
+  }
+
+  const ageMs = observedAtMs - updatedAtMs;
+  return ageMs >= 0 && ageMs <= maxLiveOpsHeartbeatAgeMs;
+}
+
+function isConnectedMarketData(connectionStatus: string): boolean {
+  const normalized = connectionStatus.toLowerCase();
+  return normalized === "connected" || normalized === "ok" || normalized === "healthy";
 }
 
 function labelOperatingMode(mode: LiveOpsOperatingMode): string {

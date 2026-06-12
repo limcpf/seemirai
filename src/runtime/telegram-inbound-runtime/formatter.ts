@@ -24,11 +24,12 @@ export function formatTelegramStatusCommandResponse(
     ...formatLiveOpsStatusLines(snapshot),
     `PnL 상태: ${snapshot.pnl.statusLabel} - ${snapshot.pnl.message}`,
     `필요 조치: ${firstAction([
-      snapshot.liveOps?.action ?? null,
-      primaryLiveAutonomousAction(snapshot),
       snapshot.pnl.action,
       snapshot.paper.action,
-      snapshot.reconcile.actionRequired,
+      primaryLiveOpsAction(snapshot),
+      primaryLiveAutonomousAction(snapshot),
+      actionableReconcileAction(snapshot.reconcile.actionRequired),
+      snapshot.liveOps?.action ?? null,
     ])}`,
     "",
     "추적 정보",
@@ -429,10 +430,6 @@ function firstAction(actions: ReadonlyArray<string | null>): string {
 }
 
 function primaryLiveAutonomousAction(snapshot: StatusSnapshot): string | null {
-  if (snapshot.liveOps !== undefined && snapshot.liveOps.status !== "ok" && snapshot.liveOps.action !== null) {
-    return snapshot.liveOps.action;
-  }
-
   if (!snapshot.runtime.liveAutonomous.enabled || snapshot.liveAutonomousExit.statusCode === "DISABLED") {
     return null;
   }
@@ -444,6 +441,23 @@ function primaryLiveAutonomousAction(snapshot: StatusSnapshot): string | null {
   return snapshot.liveAutonomousExit.action ?? snapshot.runtime.liveAutonomous.action;
 }
 
+function primaryLiveOpsAction(snapshot: StatusSnapshot): string | null {
+  if (snapshot.liveOps === undefined || snapshot.liveOps.action === null) {
+    return null;
+  }
+  if (snapshot.liveOps.status === "unavailable") {
+    return snapshot.liveOps.action;
+  }
+  if (!snapshot.liveOps.liveEnabled) {
+    return null;
+  }
+  if (snapshot.liveOps.status !== "ok") {
+    return snapshot.liveOps.action;
+  }
+
+  return null;
+}
+
 function formatLiveOpsStatusLines(snapshot: StatusSnapshot): string[] {
   if (snapshot.liveOps === undefined) {
     return [];
@@ -453,6 +467,10 @@ function formatLiveOpsStatusLines(snapshot: StatusSnapshot): string[] {
     `M23 실매매 운영: ${snapshot.liveOps.statusLabel} - ${snapshot.liveOps.message}`,
     `M23 주문 가능: ${snapshot.liveOps.liveOrderCapable ? "예" : "아니오"}`,
   ];
+}
+
+function actionableReconcileAction(action: string): string | null {
+  return action === "정상" ? null : action;
 }
 
 function optionalLine(label: string, value: string | undefined | null): string | undefined {

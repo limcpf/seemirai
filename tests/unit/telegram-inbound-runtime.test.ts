@@ -319,10 +319,45 @@ describe("Telegram inbound command runtime", () => {
   });
 
   it("does not let disabled M22 guidance hide current operational actions", () => {
+    const base = createStatusSnapshot();
     const text = formatTelegramStatusCommandResponse(
       createStatusSnapshot({
+        liveOps: createLiveOpsStatusSummary({
+          observedAt: now,
+          runtimeMode: "PAPER_TRADING",
+          paperNoKey: true,
+          liveTradingEnabled: false,
+          liveAutonomous: base.runtime.liveAutonomous,
+          marketData: base.marketData,
+          reconcile: {
+            result: base.reconcile.result,
+            mismatchCount: base.reconcile.mismatchCount,
+            openOrderCount: base.reconcile.openOrderCount,
+            lastReconcileAt: base.reconcile.lastReconcileAt,
+            actionRequired: base.reconcile.actionRequired,
+          },
+          pnl: {
+            statusLabel: base.pnl.statusLabel,
+            latestCapturedAt: base.pnl.latestCapturedAt,
+            latestEquityKrw: base.pnl.latestEquityKrw,
+            latestRealizedPnlKrw: base.pnl.latestRealizedPnlKrw,
+            latestUnrealizedPnlKrw: base.pnl.latestUnrealizedPnlKrw,
+          },
+          tradingState: {
+            killSwitchState: base.tradingState.killSwitchState,
+            newOrdersBlocked: base.tradingState.newOrdersBlocked,
+            requiresManualReview: base.tradingState.requiresManualReview,
+            blockedReason: base.tradingState.blockedReason,
+          },
+          alerts: {
+            statusLabel: base.alerts.statusLabel,
+            lastSentAt: base.alerts.lastSentAt,
+            lastSkippedAt: base.alerts.lastSkippedAt,
+            action: base.alerts.action,
+          },
+        }),
         pnl: {
-          ...createStatusSnapshot().pnl,
+          ...base.pnl,
           status: "unavailable",
           action: "PnL snapshot provider를 복구하세요.",
         },

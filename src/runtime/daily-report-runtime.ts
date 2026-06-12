@@ -6,6 +6,7 @@ export type {
   ClaimedDailyReportJobRunResult,
   DailyReportRuntimeDependencies,
   DailyReportRuntimeJobStatus,
+  DailyReportLiveOpsStatusProvider,
   PaperNoKeyDailyReportRuntime,
   RunDueDailyReportJobsOptions,
   RunManualDailyReportOptions,

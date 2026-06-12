@@ -14,6 +14,7 @@ export {
 } from "./daily-report-runtime.js";
 export type {
   ClaimedDailyReportJobRunResult,
+  DailyReportLiveOpsStatusProvider,
   DailyReportRuntimeDependencies,
   DailyReportRuntimeJobStatus,
   PaperNoKeyDailyReportRuntime,

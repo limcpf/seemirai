@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { createLiveAutonomousExitStatusSummary, runDailyReport } from "../../src/application/index.js";
+import {
+  createLiveAutonomousExitStatusSummary,
+  createLiveOpsStatusSummary,
+  runDailyReport,
+} from "../../src/application/index.js";
 import type {
   AuditEvent,
   AuditEventReceipt,
@@ -38,6 +42,7 @@ describe("daily report runner", () => {
           lastReconcileAt: null,
         },
       }),
+      liveOps: liveOpsSummary(),
       clock: () => new Date("2026-05-21T15:02:00.000Z"),
       correlationId: "daily-report-corr-1",
       job: {
@@ -52,6 +57,8 @@ describe("daily report runner", () => {
     expect(notifier.dailyReports).toHaveLength(1);
     expect(notifier.dailyReports[0]?.summary).toContain("M22 자동매매/청산");
     expect(notifier.dailyReports[0]?.summary).toContain("자동 청산 상태: reconcile 확인 필요");
+    expect(notifier.dailyReports[0]?.summary).toContain("M23 live 운영 상태");
+    expect(notifier.dailyReports[0]?.summary).toContain("상태: 실매매 가능");
     expect(auditLog.events).toHaveLength(2);
     expect(auditLog.events[0]).toMatchObject({
       eventType: "DAILY_REPORT",
@@ -214,4 +221,65 @@ function emptySourceData(): DailyReportSourceData {
     riskEvents: [],
     executionQuality: [],
   };
+}
+
+function liveOpsSummary() {
+  return createLiveOpsStatusSummary({
+    observedAt: "2026-05-21T15:00:00.000Z",
+    runtimeMode: "LIVE_AUTONOMOUS_SMALL_BUDGET",
+    paperNoKey: false,
+    liveTradingEnabled: true,
+    liveAutonomous: {
+      enabled: true,
+      ready: true,
+      allowedMarkets: ["KRW-BTC"],
+      maxOrderKrw: "10000",
+      dailyAutonomousNotionalLimitKrw: "30000",
+      maxOpenPositionNotionalKrw: "30000",
+      keyScopeEvidenceConfigured: true,
+      telegramInboundReady: true,
+      reconcileFresh: true,
+      pnlStatusReady: true,
+      decisionLedgerReady: true,
+      exitEngineReady: true,
+      statusLabel: "M23 guard 통과",
+      message: "M23 guard evidence가 모두 준비됐습니다.",
+      action: null,
+      trace: {
+        source: "live_autonomous_runtime_guard",
+        reason: "live_autonomous_guard_ready",
+      },
+    },
+    marketData: {
+      connectionStatus: "CONNECTED",
+      lagMs: 50,
+      updatedAt: "2026-05-21T14:59:30.000Z",
+    },
+    reconcile: {
+      result: "SUCCESS",
+      mismatchCount: 0,
+      openOrderCount: 0,
+      lastReconcileAt: "2026-05-21T14:59:00.000Z",
+      actionRequired: "정상",
+    },
+    pnl: {
+      statusLabel: "조회 가능",
+      latestCapturedAt: "2026-05-21T14:58:00.000Z",
+      latestEquityKrw: "1000000",
+      latestRealizedPnlKrw: "1200",
+      latestUnrealizedPnlKrw: "-300",
+    },
+    tradingState: {
+      killSwitchState: "NORMAL",
+      newOrdersBlocked: false,
+      requiresManualReview: false,
+      blockedReason: null,
+    },
+    alerts: {
+      statusLabel: "조회 가능",
+      lastSentAt: "2026-05-21T14:57:00.000Z",
+      lastSkippedAt: null,
+      action: null,
+    },
+  });
 }
