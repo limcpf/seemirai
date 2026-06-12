@@ -75,6 +75,11 @@ SEEMIRAI_M22_EXIT_ENGINE_READY=1
 `604800000`ms runner로 실행하면 7일 연속 daily report evidence를 만들 수 없다. M23 closeout 전에는 supervisor, systemd timer,
 또는 운영 wrapper가 아래 24시간 segment를 7회 연속 실행하고 각 segment의 daily report marker와 summary artifact를 확인해야 한다.
 
+systemd로 운영할 경우 [`deploy/systemd/seemirai-m23-live-small-budget.service.example`](../../deploy/systemd/seemirai-m23-live-small-budget.service.example)을
+운영 호스트에 복사한 뒤 `WorkingDirectory`, `EnvironmentFile`, `ReadWritePaths`를 실제 저장소/운영 artifact 경로로 맞춘다. 이
+템플릿은 secret 값을 직접 담지 않고 저장소 밖 env 파일만 참조하며, `SIGTERM` 정상 종료와 `Restart=always` 재시작 경계를 사용한다.
+재시작 후에는 아래 Restart Drill validator로 중복 주문, reconcile/status 복구, daily report marker를 확인한다.
+
 각 24시간 segment 시작 전에는 다음 handoff를 먼저 수행한다.
 
 1. candidate producer를 멈추고 더 이상 기존 JSONL에 append되지 않는지 확인한다.
@@ -169,6 +174,28 @@ restart drill은 다음 조건을 만족해야 한다.
 - 최신 heartbeat와 daily report가 재개된다.
 - Telegram에는 restart 감지와 복구 상태가 구분되어 표시된다.
 
+restart 전후 event log가 준비되면 다음 validator를 실행한다. 이 명령은 artifact를 읽는 검증 경계이며 Upbit/Telegram/DB API를
+직접 호출하지 않는다.
+
+```sh
+SEEMIRAI_RUN_M23_RECOVERY_DRILL=1 \
+node scripts/run-m23-recovery-drill.mjs \
+  --before-event-log "$M22_HOME/artifacts/m23-before-restart-events.jsonl" \
+  --after-event-log "$M22_HOME/artifacts/m23-after-restart-events.jsonl" \
+  --backup-restore-status blocked \
+  --backup-restore-evidence "restore-db-not-provisioned-YYYY-MM-DD" \
+  --artifact-dir "$SEEMIRAI_M22_ARTIFACT_DIR" \
+  --json
+```
+
+`--backup-restore-status`는 `passed` 또는 `blocked`만 closeout 준비 evidence로 인정한다. `blocked`를 사용할 때는 disposable
+restore DB가 없었던 이유, 필요한 권한, 재시도 계획을 `--backup-restore-evidence`가 가리키는 redacted 운영 기록에 남겨야 한다.
+CI와 PR 검증에서는 다음 fixture smoke만 실행해 validator contract가 live side effect 없이 동작하는지 확인한다.
+
+```sh
+node scripts/run-m23-recovery-drill.mjs --fixture-smoke --json
+```
+
 ## 장애 Drill
 
 다음 장애는 신규 entry fail-closed와 alert/manual review evidence로 수렴해야 한다.
@@ -180,6 +207,10 @@ restart drill은 다음 조건을 만족해야 한다.
 - Telegram provider 장애 지속
 - DB write 또는 audit append 실패
 - reconcile mismatch, duplicate order, untracked fill
+
+M23 recovery drill validator는 `upbit_maintenance`, `market_warning`, `stale_data` 세 scenario가 `ENTRY_BLOCKED`,
+`NEW_ORDERS_BLOCKED`, `MANUAL_REVIEW_REQUIRED` 중 하나로 수렴하고 alert evidence id를 남겼는지 확인한다. REST/API 오류,
+rate limit, Telegram provider 장애, DB write/audit 실패는 closeout에서 같은 형식의 별도 incident/drill evidence로 보강한다.
 
 ## DB Backup/Restore Smoke
 
