@@ -402,6 +402,35 @@ describe("alert cooldown and notification policy", () => {
     expect(createAlertFingerprint(budgetReview)).not.toBe(createAlertFingerprint(brokerReview));
   });
 
+  it("uses restart and crash evidence to separate M23 lifecycle cooldown keys", () => {
+    const firstRestart = createLiveOpsAlertRequest({
+      environment: "prod",
+      runMode: "live_autonomous_small_budget",
+      eventKind: "RESTART_DETECTED",
+      restartId: "restart-001",
+      occurredAt: "2026-06-13T00:07:00.000Z",
+    });
+    const secondRestart = createLiveOpsAlertRequest({
+      environment: "prod",
+      runMode: "live_autonomous_small_budget",
+      eventKind: "RESTART_DETECTED",
+      restartId: "restart-002",
+      occurredAt: "2026-06-13T00:08:00.000Z",
+    });
+    const crash = createLiveOpsAlertRequest({
+      environment: "prod",
+      runMode: "live_autonomous_small_budget",
+      eventKind: "CRASH_DETECTED",
+      evidenceId: "supervisor-crash-001",
+      occurredAt: "2026-06-13T00:09:00.000Z",
+    });
+
+    expect(firstRestart.dedupeKey).toBe("restart-001");
+    expect(secondRestart.dedupeKey).toBe("restart-002");
+    expect(crash.dedupeKey).toBe("supervisor-crash-001");
+    expect(createAlertFingerprint(firstRestart)).not.toBe(createAlertFingerprint(secondRestart));
+  });
+
   it("keeps P1 paper alert provider failures isolated and returns retry candidates", async () => {
     const notifier = new ThrowingNotifier();
     const cooldownStore = createInMemoryAlertCooldownStore();

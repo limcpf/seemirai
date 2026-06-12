@@ -358,6 +358,121 @@ describe("M22 live autonomous entry runtime", () => {
     });
   });
 
+  it("기준가 오류 preflight는 비용이 아니라 P1 risk 차단 알림으로 dispatch한다", async () => {
+    const alertRecorder = createAlertDispatchRecorder();
+    const runtime = createRuntime({
+      liveOpsAlerts: {
+        environment: "prod",
+        runMode: "live_autonomous_small_budget",
+        alertDispatch: alertRecorder.alertDispatch,
+      },
+    });
+
+    const result = await runtime.submitEntryCandidate(
+      createRequest({
+        candidate: {
+          ...createCandidate(),
+          referencePrice: "0",
+        },
+      }),
+    );
+
+    expect(result.status).toBe("BLOCKED");
+    expect(alertRecorder.alerts).toHaveLength(1);
+    expect(alertRecorder.alerts[0]).toMatchObject({
+      severity: "P1",
+      metadata: {
+        source: "live_ops_event",
+        event_kind: "RISK_BLOCKED",
+        blocked_reason: "M22 자동매매 숫자 입력은 0보다 커야 합니다.",
+      },
+    });
+  });
+
+  it("kill switch preflight 알림은 global scope cooldown key를 사용한다", async () => {
+    const alertRecorder = createAlertDispatchRecorder();
+    const runtime = createRuntime({
+      liveOpsAlerts: {
+        environment: "prod",
+        runMode: "live_autonomous_small_budget",
+        alertDispatch: alertRecorder.alertDispatch,
+      },
+    });
+
+    const result = await runtime.submitEntryCandidate(
+      createRequest({
+        killSwitchActive: true,
+      }),
+    );
+
+    expect(result.status).toBe("BLOCKED");
+    expect(alertRecorder.alerts).toHaveLength(1);
+    expect(alertRecorder.alerts[0]).toMatchObject({
+      severity: "P0",
+      fingerprint: "alert:prod:live_autonomous_small_budget:P0:live_ops_event:global:global:live_ops_kill_switch_stop",
+      metadata: {
+        source: "live_ops_event",
+        event_kind: "KILL_SWITCH_STOP",
+      },
+    });
+    expect(alertRecorder.alerts[0]?.metadata?.market).toBeUndefined();
+    expect(alertRecorder.alerts[0]?.metadata?.strategy_id).toBeUndefined();
+  });
+
+  it("주문별 수동 점검 알림은 reservation evidence로 cooldown key를 분리한다", async () => {
+    const alertRecorder = createAlertDispatchRecorder();
+    const randomHex = vi.fn()
+      .mockReturnValueOnce("a".repeat(26))
+      .mockReturnValueOnce("b".repeat(26));
+    const runtime = new LiveAutonomousEntryRuntime({
+      executionEngine: {
+        submitOrder: async () => {
+          throw new Error("broker timeout");
+        },
+      },
+      budgetReservation: {
+        reserve: async (request) => ({
+          reserved: true,
+          reservation: {
+            reservationId: `reservation-${request.idempotencyKey}`,
+            attemptId: request.attemptId,
+            idempotencyKey: request.idempotencyKey,
+            reservedNotionalKrw: request.requestedNotionalKrw,
+            budgetSnapshot: request.budgetSnapshot,
+            reservedAt: request.observedAt,
+          },
+        }),
+      },
+      liveOpsAlerts: {
+        environment: "prod",
+        runMode: "live_autonomous_small_budget",
+        alertDispatch: alertRecorder.alertDispatch,
+      },
+      randomHex,
+      clock: () => observedAt,
+    });
+
+    const first = await runtime.submitEntryCandidate(createRequest());
+    const second = await runtime.submitEntryCandidate(createRequest());
+
+    expect(first.status).toBe("MANUAL_REVIEW_REQUIRED");
+    expect(second.status).toBe("MANUAL_REVIEW_REQUIRED");
+    expect(alertRecorder.alerts).toHaveLength(2);
+    expect(alertRecorder.alerts[0]?.fingerprint).toContain(
+      ":live_ops_manual_review_required:manual_review%3abroker_submission_uncertain%3areservation-m22a-",
+    );
+    expect(alertRecorder.alerts[1]?.fingerprint).toContain(
+      ":live_ops_manual_review_required:manual_review%3abroker_submission_uncertain%3areservation-m22a-",
+    );
+    expect(alertRecorder.alerts[0]?.fingerprint).not.toBe(alertRecorder.alerts[1]?.fingerprint);
+    expect(alertRecorder.alerts[0]).toMatchObject({
+      metadata: {
+        event_kind: "MANUAL_REVIEW_REQUIRED",
+        live_order_capable: false,
+      },
+    });
+  });
+
   it("requestedNotional이 수량과 가격으로 계산한 지정가 notional과 다르면 차단한다", async () => {
     const reserve = vi.fn<LiveAutonomousBudgetReservationPort["reserve"]>();
     const broker = createFakeBroker();

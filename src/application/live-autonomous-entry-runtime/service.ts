@@ -78,7 +78,6 @@ const costLikePreflightReasonCodes = new Set<string>([
   "daily_budget_exceeded",
   "open_position_budget_exceeded",
   "price_deviation_exceeded",
-  "reference_price_invalid",
 ]);
 
 /**
@@ -622,19 +621,22 @@ export class LiveAutonomousEntryRuntime {
       reason_code: input.reasonCode,
       ...(input.safeDetails === undefined ? {} : { detail: input.safeDetails }),
     };
-    const manualReviewEvidenceId = input.eventKind === "MANUAL_REVIEW_REQUIRED"
-      ? `manual_review:${input.reasonCode}`
-      : undefined;
+    const manualReviewEvidenceId = createManualReviewEvidenceId(input);
     const correlationId = input.eventKind === "ORDER_SUBMITTED" ? input.idempotencyKey : undefined;
+    const scopedEvent = input.eventKind === "KILL_SWITCH_STOP"
+      ? {}
+      : {
+          market: input.request.candidate.market,
+          strategyId: input.request.candidate.strategyId,
+        };
     const event: LiveOpsAlertInput = {
       environment: this.liveOpsAlerts.environment,
       runMode: this.liveOpsAlerts.runMode,
       eventKind: input.eventKind,
       occurredAt: input.observedAt,
-      market: input.request.candidate.market,
-      strategyId: input.request.candidate.strategyId,
+      ...scopedEvent,
       operatingMode: "LIVE_AUTONOMOUS_SMALL_BUDGET",
-      liveOrderCapable: isLiveOrderCapableForAlert(input.request),
+      liveOrderCapable: isLiveOrderCapableForAlert(input),
       side: "BUY",
       quantity: input.request.candidate.requestedQuantity,
       requestedPrice: input.request.candidate.requestedPrice,
@@ -690,15 +692,56 @@ function toRuntimeViolationAlertKind(violation: RuntimeViolation): LiveOpsAlertE
  * Telegram live ops 본문에 표시할 주문 가능 여부를 계산한다.
  *
  * 이 값은 "현재 runtime이 live 주문을 낼 수 있는가"라는 운영자 판단 신호이므로 kill switch/reconcile뿐 아니라 config enable과
- * market allowlist도 함께 만족해야 한다. 알림 표시용 순수 판단이며 broker 제출이나 상태 전이 side effect를 만들지 않는다.
+ * market allowlist도 함께 만족해야 한다. 수동 점검 event는 preflight가 통과했더라도 운영자 확인 전 주문 가능 상태가 아니므로
+ * false로 낮춘다. 알림 표시용 순수 판단이며 broker 제출이나 상태 전이 side effect를 만들지 않는다.
  */
-function isLiveOrderCapableForAlert(request: LiveAutonomousEntryRuntimeRequest): boolean {
+function isLiveOrderCapableForAlert(input: EntryLiveOpsAlertContext): boolean {
+  if (input.eventKind === "MANUAL_REVIEW_REQUIRED") {
+    return false;
+  }
+
+  const request = input.request;
   return (
     request.config.enabled &&
     request.config.allowed_markets.includes(request.candidate.market) &&
     !request.killSwitchActive &&
     request.reconcileFresh
   );
+}
+
+/**
+ * entry runtime 수동 점검 event의 cooldown key에 넣을 evidence id를 만든다.
+ *
+ * broker 제출 불확실성이나 reservation release 실패처럼 주문별 수동 reconcile이 필요한 경우 reservation/attempt key까지 포함해
+ * 같은 reason의 다른 주문이 cooldown에 숨지 않게 한다. reservation이 없는 설정/저장소 계열 수동 점검은 reason 단위로 묶어
+ * provider 장애 폭주를 줄인다.
+ */
+function createManualReviewEvidenceId(input: EntryLiveOpsAlertContext): string | undefined {
+  if (input.eventKind !== "MANUAL_REVIEW_REQUIRED") {
+    return undefined;
+  }
+
+  const reservationId = readStringDetail(input.safeDetails, "reservation_id");
+  if (reservationId !== undefined) {
+    return `manual_review:${input.reasonCode}:${reservationId}`;
+  }
+
+  if (input.reasonCode === "broker_submission_uncertain" || input.reasonCode === "budget_reservation_release_failed") {
+    return `manual_review:${input.reasonCode}:${input.idempotencyKey}`;
+  }
+
+  return `manual_review:${input.reasonCode}`;
+}
+
+/**
+ * 수동 점검 safeDetails에서 fingerprint에 써도 되는 문자열 evidence를 읽는다.
+ *
+ * safeDetails는 이미 secret-safe contract를 통과한 값만 담아야 하며, 이 helper는 빈 문자열과 비문자 값을 버려 cooldown key가
+ * `"undefined"` 같은 값으로 오염되지 않게 한다. 읽기 전용 helper라 외부 side effect는 없다.
+ */
+function readStringDetail(record: JsonRecord | undefined, key: string): string | undefined {
+  const value = record?.[key];
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
 }
 
 /**
