@@ -162,6 +162,7 @@ export class LiveAutonomousEntryRuntime {
     const preflightViolations = collectPreflightViolations(request, intent);
     const preflightViolation = preflightViolations[0];
     if (preflightViolation !== undefined) {
+      const preflightAlertViolation = selectPreflightAlertViolation(preflightViolations);
       appendEvent(
         preflightViolation.status,
         preflightViolation.reasonCode,
@@ -173,12 +174,12 @@ export class LiveAutonomousEntryRuntime {
         request,
         observedAt,
         idempotencyKey,
-        eventKind: toRuntimeViolationAlertKind(preflightViolation),
-        attemptStatus: preflightViolation.status,
-        reasonCode: preflightViolation.reasonCode,
-        safeSummary: preflightViolation.message,
-        blockedReason: preflightViolation.message,
-        ...(preflightViolation.metadata === undefined ? {} : { safeDetails: preflightViolation.metadata }),
+        eventKind: toRuntimeViolationAlertKind(preflightAlertViolation),
+        attemptStatus: preflightAlertViolation.status,
+        reasonCode: preflightAlertViolation.reasonCode,
+        safeSummary: preflightAlertViolation.message,
+        blockedReason: preflightAlertViolation.message,
+        ...(preflightAlertViolation.metadata === undefined ? {} : { safeDetails: preflightAlertViolation.metadata }),
       });
       return createResult({
         request,
@@ -662,6 +663,19 @@ export class LiveAutonomousEntryRuntime {
       // 알림 side effect 실패가 주문 상태 machine을 되돌리면 broker/reconcile evidence와 application 결과가 어긋난다.
     }
   }
+}
+
+/**
+ * 여러 preflight 위반 중 Telegram live ops 알림으로 승격할 대표 위반을 선택한다.
+ *
+ * application 결과와 event log는 기존 collect 순서의 첫 위반을 유지하지만, Telegram 알림은 운영자가 즉시 멈춰야 할 전역
+ * kill switch와 reconcile 차단을 낮은 우선순위 설정 위반 뒤에 숨기면 안 된다. 이 함수는 입력 배열을 읽기만 하며, 상태 전이와
+ * 외부 side effect를 만들지 않는다.
+ */
+function selectPreflightAlertViolation(violations: RuntimeViolation[]): RuntimeViolation {
+  return violations.find((violation) => violation.reasonCode === "kill_switch_active")
+    ?? violations.find((violation) => violation.reasonCode === "reconcile_stale")
+    ?? (violations[0] as RuntimeViolation);
 }
 
 /**

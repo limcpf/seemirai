@@ -810,6 +810,65 @@ describe("createLiveReconcileRuntimeWorker", () => {
     expect(alertRecorder.alerts[0]?.body).toContain("상태: M23 live 주문이 전체 체결됐습니다.");
   });
 
+  it("state advancement 완전 체결 알림은 local 잔여 수량을 체결분으로 표시한다", async () => {
+    const repository = fakeRepository();
+    const alertRecorder = createAlertDispatchRecorder();
+    const worker = createLiveReconcileRuntimeWorker({
+      snapshotProvider: stateAdvancementSnapshotProvider({
+        localRemainingQuantity: "0.004",
+        localStatus: "PARTIALLY_FILLED",
+      }),
+      repository,
+      killSwitchControlProvider: {
+        async apply(input) {
+          return {
+            transition: {
+              accepted: true,
+              fromState: "NORMAL",
+              toState: input.targetState,
+              reasonCode: input.reasonCode,
+              message: input.message ?? "accepted",
+              event: {
+                eventKind: "KILL_SWITCH_STATE_TRANSITION",
+                fromState: "NORMAL",
+                toState: input.targetState,
+                accepted: true,
+                reasonCode: input.reasonCode,
+                message: input.message ?? "accepted",
+                occurredAt: input.occurredAt ?? "2026-06-02T12:00:00.000Z",
+              },
+            },
+            actionPlan: {
+              newOrdersBlocked: true,
+              strategyEvaluationBlocked: false,
+              cancelPendingPaperOrders: false,
+              requiresManualReview: true,
+              autoLiquidateOpenPositions: false,
+            },
+            reasonMatchesTarget: true,
+          };
+        },
+      },
+      liveOpsAlerts: {
+        environment: "prod",
+        runMode: "live_autonomous_small_budget",
+        alertDispatch: alertRecorder.alertDispatch,
+      },
+      clock: () => new Date("2026-06-02T12:00:00.000Z"),
+    });
+
+    await worker.runOnce({ correlationId: "corr-state-advancement-partial" });
+
+    expect(alertRecorder.alerts).toHaveLength(1);
+    expect(alertRecorder.alerts[0]).toMatchObject({
+      metadata: {
+        event_kind: "ORDER_FILLED",
+        filled_quantity: "0.004",
+        remaining_quantity: "0",
+      },
+    });
+  });
+
   it("latest repository summary를 /status provider로 변환한다", async () => {
     const repository = fakeRepository();
     repository.latestSummary = {
@@ -1678,7 +1737,10 @@ function throwingSnapshotProvider(): LiveReconcileSnapshotProvider {
   };
 }
 
-function stateAdvancementSnapshotProvider(): LiveReconcileSnapshotProvider {
+function stateAdvancementSnapshotProvider(options: {
+  localRemainingQuantity?: string;
+  localStatus?: "ACCEPTED" | "PARTIALLY_FILLED";
+} = {}): LiveReconcileSnapshotProvider {
   return {
     async loadSnapshot() {
       return {
@@ -1712,9 +1774,9 @@ function stateAdvancementSnapshotProvider(): LiveReconcileSnapshotProvider {
               market: "KRW-BTC",
               side: "BUY",
               orderType: "LIMIT",
-              status: "ACCEPTED",
+              status: options.localStatus ?? "ACCEPTED",
               requestedQuantity: "0.01",
-              remainingQuantity: "0.01",
+              remainingQuantity: options.localRemainingQuantity ?? "0.01",
               requestedPrice: "100000000",
               updatedAt: "2026-06-02T12:00:00.000Z",
             },

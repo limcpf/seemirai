@@ -432,6 +432,40 @@ describe("M22 live autonomous entry runtime", () => {
     expect(alertRecorder.alerts[0]?.metadata?.strategy_id).toBeUndefined();
   });
 
+  it("kill switch preflight 알림은 앞선 설정 위반보다 우선한다", async () => {
+    const alertRecorder = createAlertDispatchRecorder();
+    const runtime = createRuntime({
+      liveOpsAlerts: {
+        environment: "prod",
+        runMode: "live_autonomous_small_budget",
+        alertDispatch: alertRecorder.alertDispatch,
+      },
+    });
+    const request = createRequest();
+
+    const result = await runtime.submitEntryCandidate({
+      ...request,
+      config: {
+        ...request.config,
+        enabled: false,
+      },
+      killSwitchActive: true,
+    });
+
+    expect(result.status).toBe("BLOCKED");
+    expect(result.trace?.reason).toBe("live_autonomous_disabled");
+    expect(alertRecorder.alerts).toHaveLength(1);
+    expect(alertRecorder.alerts[0]).toMatchObject({
+      severity: "P0",
+      fingerprint: "alert:prod:live_autonomous_small_budget:P0:live_ops_event:global:global:live_ops_kill_switch_stop",
+      metadata: {
+        source: "live_ops_event",
+        event_kind: "KILL_SWITCH_STOP",
+        blocked_reason: "kill switch가 활성화되어 M22 자동매매 주문 후보를 제출하지 않습니다.",
+      },
+    });
+  });
+
   it("주문별 수동 점검 알림은 reservation evidence로 cooldown key를 분리한다", async () => {
     const alertRecorder = createAlertDispatchRecorder();
     const randomHex = vi.fn()

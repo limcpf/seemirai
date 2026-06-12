@@ -350,8 +350,8 @@ function resolveReconcileBrokerOrderId(
 /**
  * reconcile 후보에서 체결 수량을 계산한다.
  *
- * 완전 체결 후보는 local 요청 수량 전체를 사용하고, 부분 체결 후보는 local remaining과 거래소 remaining의 차이를 사용한다. 숫자
- * 파싱이 실패하면 임의 값을 만들지 않고 undefined로 내려 formatter가 추적 정보만 남기게 한다.
+ * 완전 체결 후보는 local에 아직 열려 있던 잔여 수량을 이번 체결분으로 사용하고, 부분 체결 후보는 local remaining과 거래소
+ * remaining의 차이를 사용한다. 숫자 파싱이 실패하면 임의 값을 만들지 않고 undefined로 내려 formatter가 추적 정보만 남기게 한다.
  */
 function calculateReconcileFilledQuantity(
   candidate: ReconcileStateAdvancementCandidate,
@@ -361,20 +361,21 @@ function calculateReconcileFilledQuantity(
     return undefined;
   }
 
-  if (candidate.advancementType === "FILL_CANDIDATE") {
-    return localOrder.requestedQuantity;
-  }
-
-  if (candidate.advancementType !== "PARTIALLY_FILLED_CANDIDATE") {
-    return undefined;
-  }
-
-  const exchangeRemainingQuantity = readStringTrace(candidate.trace, "exchangeRemainingQuantity");
-  if (exchangeRemainingQuantity === undefined) {
+  if (candidate.advancementType !== "FILL_CANDIDATE" && candidate.advancementType !== "PARTIALLY_FILLED_CANDIDATE") {
     return undefined;
   }
 
   try {
+    if (candidate.advancementType === "FILL_CANDIDATE") {
+      const filledQuantity = parseFinancialDecimal(localOrder.remainingQuantity);
+      return filledQuantity.gt(0) ? filledQuantity.toFixed() : undefined;
+    }
+
+    const exchangeRemainingQuantity = readStringTrace(candidate.trace, "exchangeRemainingQuantity");
+    if (exchangeRemainingQuantity === undefined) {
+      return undefined;
+    }
+
     const filledQuantity = parseFinancialDecimal(localOrder.remainingQuantity)
       .minus(parseFinancialDecimal(exchangeRemainingQuantity));
     return filledQuantity.gt(0) ? filledQuantity.toFixed() : undefined;
