@@ -358,6 +358,31 @@ describe("HTTP control foundation", () => {
           source: "live_autonomous_exit_status",
         },
       },
+      liveOps: {
+        status: "warning",
+        statusLabel: "모의 운영",
+        liveEnabled: false,
+        liveOrderCapable: false,
+        paperNoKey: true,
+        latestHeartbeat: {
+          statusLabel: "수신 상태 확인 필요",
+          observedAt: "2026-05-20T00:00:10.000Z",
+          trace: {
+            source: "market_data_status",
+            connectionStatus: "STALE",
+            lagMs: 12_345,
+          },
+        },
+        budget: {
+          maxOrderKrw: "10000",
+          dailyAutonomousNotionalLimitKrw: "30000",
+          maxOpenPositionNotionalKrw: "30000",
+        },
+        trace: {
+          source: "live_ops_status_summary",
+          reason: "live_autonomous_disabled",
+        },
+      },
       marketData: {
         connectionStatus: "STALE",
         lagMs: 12_345,

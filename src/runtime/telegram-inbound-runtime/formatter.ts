@@ -21,8 +21,10 @@ export function formatTelegramStatusCommandResponse(
     `DB 상태: ${snapshot.database.ready ? "준비됨" : "점검 필요"}`,
     `M22 자동매매: ${snapshot.runtime.liveAutonomous.statusLabel}`,
     `M22 자동 청산: ${snapshot.liveAutonomousExit.statusLabel} - ${snapshot.liveAutonomousExit.message}`,
+    ...formatLiveOpsStatusLines(snapshot),
     `PnL 상태: ${snapshot.pnl.statusLabel} - ${snapshot.pnl.message}`,
     `필요 조치: ${firstAction([
+      snapshot.liveOps?.action ?? null,
       primaryLiveAutonomousAction(snapshot),
       snapshot.pnl.action,
       snapshot.paper.action,
@@ -34,6 +36,8 @@ export function formatTelegramStatusCommandResponse(
     `생성 시각: ${snapshot.generatedAt}`,
     `kill switch: ${snapshot.tradingState.killSwitchState}`,
     `M22 exit: ${snapshot.liveAutonomousExit.statusCode}`,
+    optionalLine("M23 mode", snapshot.liveOps?.mode),
+    optionalLine("M23 status", snapshot.liveOps?.status),
   ]);
 }
 
@@ -425,6 +429,10 @@ function firstAction(actions: ReadonlyArray<string | null>): string {
 }
 
 function primaryLiveAutonomousAction(snapshot: StatusSnapshot): string | null {
+  if (snapshot.liveOps !== undefined && snapshot.liveOps.status !== "ok" && snapshot.liveOps.action !== null) {
+    return snapshot.liveOps.action;
+  }
+
   if (!snapshot.runtime.liveAutonomous.enabled || snapshot.liveAutonomousExit.statusCode === "DISABLED") {
     return null;
   }
@@ -434,6 +442,17 @@ function primaryLiveAutonomousAction(snapshot: StatusSnapshot): string | null {
   }
 
   return snapshot.liveAutonomousExit.action ?? snapshot.runtime.liveAutonomous.action;
+}
+
+function formatLiveOpsStatusLines(snapshot: StatusSnapshot): string[] {
+  if (snapshot.liveOps === undefined) {
+    return [];
+  }
+
+  return [
+    `M23 실매매 운영: ${snapshot.liveOps.statusLabel} - ${snapshot.liveOps.message}`,
+    `M23 주문 가능: ${snapshot.liveOps.liveOrderCapable ? "예" : "아니오"}`,
+  ];
 }
 
 function optionalLine(label: string, value: string | undefined | null): string | undefined {

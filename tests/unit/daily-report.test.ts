@@ -3,6 +3,7 @@ import {
   aggregateDailyReport,
   buildDailyReportNotification,
   createLiveAutonomousExitStatusSummary,
+  createLiveOpsStatusSummary,
   createDailyReportJobPlan,
   createDailyReportWindow,
   formatDailyReportSummary,
@@ -142,6 +143,76 @@ describe("daily report application", () => {
     expect(summary).toContain("자동 청산 상태: reconcile 확인 필요");
     expect(summary).toContain("필요 조치: 불일치를 해소하고 reconcile을 다시 성공");
     expect(summary).toContain("추적 정보: RECONCILE_REQUIRED");
+  });
+
+  it("can append M23 live ops safe summary to the report body", () => {
+    const report = aggregateDailyReport(createDailyReportWindow("2026-05-21"), emptySourceData());
+    const summary = formatDailyReportSummary(report, {
+      liveOps: createLiveOpsStatusSummary({
+        observedAt: "2026-05-21T14:00:00.000Z",
+        runtimeMode: "LIVE_AUTONOMOUS_SMALL_BUDGET",
+        paperNoKey: false,
+        liveTradingEnabled: true,
+        liveAutonomous: {
+          enabled: true,
+          ready: true,
+          allowedMarkets: ["KRW-BTC"],
+          maxOrderKrw: "10000",
+          dailyAutonomousNotionalLimitKrw: "30000",
+          maxOpenPositionNotionalKrw: "30000",
+          keyScopeEvidenceConfigured: true,
+          telegramInboundReady: true,
+          reconcileFresh: true,
+          pnlStatusReady: true,
+          decisionLedgerReady: true,
+          exitEngineReady: true,
+          statusLabel: "M23 guard 통과",
+          message: "M23 guard evidence가 모두 준비됐습니다.",
+          action: null,
+          trace: {
+            source: "live_autonomous_runtime_guard",
+            reason: "live_autonomous_guard_ready",
+          },
+        },
+        marketData: {
+          connectionStatus: "CONNECTED",
+          lagMs: 50,
+          updatedAt: "2026-05-21T14:00:00.000Z",
+        },
+        reconcile: {
+          result: "SUCCESS",
+          mismatchCount: 0,
+          openOrderCount: 1,
+          lastReconcileAt: "2026-05-21T13:59:00.000Z",
+          actionRequired: "정상",
+        },
+        pnl: {
+          statusLabel: "조회 가능",
+          latestCapturedAt: "2026-05-21T13:58:00.000Z",
+          latestEquityKrw: "1000000",
+          latestRealizedPnlKrw: "1200",
+          latestUnrealizedPnlKrw: "-300",
+        },
+        tradingState: {
+          killSwitchState: "NORMAL",
+          newOrdersBlocked: false,
+          requiresManualReview: false,
+          blockedReason: null,
+        },
+        alerts: {
+          statusLabel: "조회 가능",
+          lastSentAt: "2026-05-21T13:57:00.000Z",
+          lastSkippedAt: null,
+          action: null,
+        },
+      }),
+    });
+
+    expect(summary).toContain("M23 live 운영 상태");
+    expect(summary).toContain("상태: 실매매 가능");
+    expect(summary).toContain("매매 가능: 예");
+    expect(summary).toContain("예산: 1회 10000 KRW, 일일 30000 KRW, open 30000 KRW");
+    expect(summary).toContain("필요 조치: 후보 처리 전에도 budget");
   });
 
   it("selects tied PnL snapshots deterministically when captured_at is equal", () => {

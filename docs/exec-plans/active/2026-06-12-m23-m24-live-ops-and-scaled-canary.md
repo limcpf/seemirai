@@ -21,6 +21,7 @@ Issue #188은 이 계획 중 M23 24/7 live small-budget 운영 안정화와 실�
 - M23 live canary cleanup 통과: `cc93288f`, 10,000 KRW `LIMIT + post_only` 주문 제출 1회, 취소 요청 1회, terminal `cancel` 확인,
   `openPositionNotionalKrw=0`, `liveOrderCleanupFailureCount=0`.
 - Issue #188 Sub PR 01에서 `FR-OPS-004`와 M23 전용 runbook contract를 고정한다.
+- Issue #188 Sub PR 02에서 `/status.liveOps`, Telegram `/status`, daily report가 공유하는 M23 live ops safe summary 표면을 추가한다.
 
 ## 범위
 
