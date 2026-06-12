@@ -60,12 +60,24 @@ describe("M23 recovery drill script", () => {
     await writeEventLog(beforePath, [
       { type: "m22_pilot_heartbeat", observedAt: "2026-06-13T00:00:00.000Z" },
       { type: "broker_submission", observedAt: "2026-06-13T00:00:01.000Z", idempotencyKey: "m22a-duplicate" },
-      { type: "m23_restart_checkpoint", phase: "before_restart", restartId: "restart-dup" },
+      {
+        type: "m23_restart_checkpoint",
+        phase: "before_restart",
+        restartId: "restart-dup",
+        orderAttemptId: "m22a-duplicate",
+        reconcileRunId: "reconcile-restart-dup",
+      },
     ]);
     await writeEventLog(afterPath, [
-      { type: "m23_restart_checkpoint", phase: "after_restart", restartId: "restart-dup" },
+      {
+        type: "m23_restart_checkpoint",
+        phase: "after_restart",
+        restartId: "restart-dup",
+        orderAttemptId: "m22a-duplicate",
+        reconcileRunId: "reconcile-restart-dup",
+      },
       { type: "live_ops_event", eventKind: "RUNTIME_RESTART_DETECTED", restartId: "restart-dup" },
-      { type: "live_reconcile_completed", result: "SUCCESS", mismatchCount: 0 },
+      { type: "live_reconcile_completed", result: "SUCCESS", mismatchCount: 0, runId: "reconcile-restart-dup" },
       { type: "live_ops_status_summary", mode: "live_order_capable", liveOrderCapable: true },
       { type: "m22_pilot_heartbeat", observedAt: "2026-06-13T00:00:02.000Z" },
       { type: "live_ops_event", eventKind: "RUNTIME_RECOVERED", restartId: "restart-dup" },
@@ -136,6 +148,29 @@ describe("M23 recovery drill script", () => {
     });
   });
 
+  it("fails when restart checkpoint changes the durable reservation or reconcile snapshot id", async () => {
+    const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-m23-recovery-reuse-"));
+    const beforePath = path.join(artifactDir, "before.jsonl");
+    const afterPath = path.join(artifactDir, "after.jsonl");
+    await writeEventLog(beforePath, validBeforeRestartEvents("restart-reuse"));
+    await writeEventLog(afterPath, validAfterRestartEvents("restart-reuse").map((event) =>
+      event.type === "m23_restart_checkpoint"
+        ? { ...event, orderAttemptId: "m22a-new-attempt", reconcileRunId: "reconcile-new-snapshot" }
+        : event));
+
+    const summary = await runScriptExpectingFailure(validArtifactArgs(artifactDir, beforePath, afterPath));
+
+    expect(getCheck(summary, "restartEvidence")).toMatchObject({
+      status: "fail",
+      evidence: {
+        beforeOrderAttemptId: "m22a-restart-reuse",
+        afterOrderAttemptId: "m22a-new-attempt",
+        beforeReconcileRunId: "reconcile-restart-reuse",
+        afterReconcileRunId: "reconcile-new-snapshot",
+      },
+    });
+  });
+
   it("fails when heartbeat does not resume after restart", async () => {
     const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-m23-recovery-heartbeat-"));
     const beforePath = path.join(artifactDir, "before.jsonl");
@@ -168,6 +203,24 @@ describe("M23 recovery drill script", () => {
     expect(summary.metrics.reconcileMismatchCount).toBe(1);
   });
 
+  it("counts documented reconcile_mismatch events as closeout failures", async () => {
+    const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-m23-recovery-reconcile-event-"));
+    const beforePath = path.join(artifactDir, "before.jsonl");
+    const afterPath = path.join(artifactDir, "after.jsonl");
+    await writeEventLog(beforePath, validBeforeRestartEvents("restart-reconcile-event"));
+    await writeEventLog(afterPath, [
+      ...validAfterRestartEvents("restart-reconcile-event"),
+      { type: "reconcile_mismatch", observedAt: "2026-06-13T00:00:10.000Z" },
+    ]);
+
+    const summary = await runScriptExpectingFailure(validArtifactArgs(artifactDir, beforePath, afterPath));
+
+    expect(summary.metrics.reconcileMismatchCount).toBe(1);
+    expect(getCheck(summary, "closeoutZeroCounters")).toMatchObject({
+      status: "fail",
+    });
+  });
+
   it("uses the latest status summary so transient heartbeat-only recovery states do not fail a recovered run", async () => {
     const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-m23-recovery-status-"));
     const beforePath = path.join(artifactDir, "before.jsonl");
@@ -188,6 +241,29 @@ describe("M23 recovery drill script", () => {
     expect(getCheck(summary, "statusRecovery")).toMatchObject({
       status: "ok",
       evidence: { statusSummaryCount: 2 },
+    });
+  });
+
+  it("counts documented duplicate order and cancel failure events as closeout failures", async () => {
+    const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-m23-recovery-order-cleanup-"));
+    const beforePath = path.join(artifactDir, "before.jsonl");
+    const afterPath = path.join(artifactDir, "after.jsonl");
+    await writeEventLog(beforePath, validBeforeRestartEvents("restart-order-cleanup"));
+    await writeEventLog(afterPath, [
+      ...validAfterRestartEvents("restart-order-cleanup"),
+      { type: "duplicate_order", observedAt: "2026-06-13T00:00:10.000Z" },
+      { type: "order_cancel_failed", observedAt: "2026-06-13T00:00:11.000Z" },
+      { type: "order_cancel_unconfirmed", observedAt: "2026-06-13T00:00:12.000Z" },
+    ]);
+
+    const summary = await runScriptExpectingFailure(validArtifactArgs(artifactDir, beforePath, afterPath));
+
+    expect(summary.metrics).toMatchObject({
+      duplicateOrderCount: 1,
+      liveOrderCleanupFailureCount: 2,
+    });
+    expect(getCheck(summary, "closeoutZeroCounters")).toMatchObject({
+      status: "fail",
     });
   });
 
@@ -261,13 +337,25 @@ function validBeforeRestartEvents(restartId: string): Record<string, unknown>[] 
   return [
     { type: "m22_pilot_heartbeat", observedAt: "2026-06-13T00:00:00.000Z" },
     { type: "broker_submission", observedAt: "2026-06-13T00:00:01.000Z", idempotencyKey: `m22a-${restartId}` },
-    { type: "m23_restart_checkpoint", phase: "before_restart", restartId },
+    {
+      type: "m23_restart_checkpoint",
+      phase: "before_restart",
+      restartId,
+      orderAttemptId: `m22a-${restartId}`,
+      reconcileRunId: `reconcile-${restartId}`,
+    },
   ];
 }
 
 function validAfterRestartEvents(restartId: string): Record<string, unknown>[] {
   return [
-    { type: "m23_restart_checkpoint", phase: "after_restart", restartId },
+    {
+      type: "m23_restart_checkpoint",
+      phase: "after_restart",
+      restartId,
+      orderAttemptId: `m22a-${restartId}`,
+      reconcileRunId: `reconcile-${restartId}`,
+    },
     { type: "live_ops_event", eventKind: "RUNTIME_RESTART_DETECTED", restartId },
     { type: "live_reconcile_completed", result: "SUCCESS", mismatchCount: 0, runId: `reconcile-${restartId}` },
     { type: "m22_pilot_heartbeat", observedAt: "2026-06-13T00:00:02.000Z" },
@@ -310,6 +398,7 @@ interface M23RecoveryDrillSummary {
     riskGateBypassCount: number;
     crashCount: number;
     reconcileMismatchCount: number;
+    liveOrderCleanupFailureCount: number;
     failClosedDrillCount: number;
     dailyReportGeneratedCount: number;
   };

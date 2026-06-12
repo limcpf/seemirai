@@ -210,8 +210,32 @@ function createRestartEvidenceCheck(beforeEvents, afterEvents) {
     });
   }
 
-  return okCheck("restart 전후 감지와 복구 evidence가 같은 restart id로 연결됐다.", {
+  const recoveryReuseEvidence = {
+    beforeOrderAttemptId: readString(beforeCheckpoint.orderAttemptId),
+    afterOrderAttemptId: readString(afterCheckpoint.orderAttemptId),
+    beforeReconcileRunId: readString(beforeCheckpoint.reconcileRunId),
+    afterReconcileRunId: readString(afterCheckpoint.reconcileRunId),
+  };
+  const missingRecoveryFields = Object.entries(recoveryReuseEvidence)
+    .filter(([, value]) => value === undefined)
+    .map(([name]) => name);
+  if (missingRecoveryFields.length > 0) {
+    return failCheck("restart checkpoint마다 기존 order attempt와 reconcile snapshot id가 있어야 한다.", {
+      missingRecoveryFields,
+    });
+  }
+
+  if (recoveryReuseEvidence.beforeOrderAttemptId !== recoveryReuseEvidence.afterOrderAttemptId
+    || recoveryReuseEvidence.beforeReconcileRunId !== recoveryReuseEvidence.afterReconcileRunId) {
+    return failCheck("restart 전후 durable reservation/reconcile snapshot id가 같아야 한다.", {
+      ...recoveryReuseEvidence,
+    });
+  }
+
+  return okCheck("restart 전후 감지와 복구 evidence가 같은 restart id와 기존 reservation/snapshot으로 연결됐다.", {
     restartId: Array.from(restartIds)[0],
+    orderAttemptId: recoveryReuseEvidence.beforeOrderAttemptId,
+    reconcileRunId: recoveryReuseEvidence.beforeReconcileRunId,
   });
 }
 
@@ -402,14 +426,18 @@ function createMetrics(beforeLog, afterLog) {
     crashCount: events.filter((event) => event.type === "runtime_crash" || event.type === "crash").length,
     unhandledRejectionCount: events.filter((event) => event.type === "unhandled_rejection").length,
     riskGateBypassCount: events.filter((event) => event.type === "risk_gate_bypass").length,
-    reconcileMismatchCount: events.filter((event) => event.type === "live_reconcile_mismatch").length
+    reconcileMismatchCount: events.filter((event) => event.type === "live_reconcile_mismatch" || event.type === "reconcile_mismatch").length
       + events.filter((event) => event.type === "live_reconcile_completed").filter((event) => {
         const mismatchCount = Number(event.mismatchCount ?? 0);
         return !Number.isFinite(mismatchCount) || mismatchCount !== 0 || !["SUCCESS", "CLEAN"].includes(readString(event.result) ?? "");
       }).length,
-    duplicateOrderCount: duplicateOrderCheck.status === "fail" ? 1 : 0,
+    duplicateOrderCount: (duplicateOrderCheck.status === "fail" ? 1 : 0)
+      + events.filter((event) => event.type === "duplicate_order").length,
     untrackedFillCount: events.filter((event) => event.type === "untracked_fill").length,
-    liveOrderCleanupFailureCount: events.filter((event) => event.type === "live_order_cleanup_failure").length,
+    liveOrderCleanupFailureCount: events.filter((event) =>
+      event.type === "live_order_cleanup_failure"
+      || event.type === "order_cancel_failed"
+      || event.type === "order_cancel_unconfirmed").length,
     parseErrorCount: beforeLog.parseErrors.length + afterLog.parseErrors.length,
   };
 }
@@ -528,7 +556,7 @@ async function writeFixtureEventLogs(artifacts, startedAt) {
       phase: "before_restart",
       restartId,
       orderAttemptId: identifier,
-      reconcileRunId: "reconcile-before-restart",
+      reconcileRunId: "reconcile-snapshot-001",
     },
   ];
   const afterEvents = [
@@ -538,7 +566,7 @@ async function writeFixtureEventLogs(artifacts, startedAt) {
       phase: "after_restart",
       restartId,
       orderAttemptId: identifier,
-      reconcileRunId: "reconcile-after-restart",
+      reconcileRunId: "reconcile-snapshot-001",
     },
     {
       type: "live_ops_event",
@@ -552,7 +580,7 @@ async function writeFixtureEventLogs(artifacts, startedAt) {
       observedAt: addSeconds(startedAt, 7).toISOString(),
       result: "SUCCESS",
       mismatchCount: 0,
-      runId: "reconcile-after-restart",
+      runId: "reconcile-snapshot-001",
     },
     {
       type: "live_ops_status_summary",

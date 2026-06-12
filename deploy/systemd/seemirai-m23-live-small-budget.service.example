@@ -6,6 +6,9 @@ Wants=network-online.target
 
 [Service]
 Type=simple
+User=lim
+Group=lim
+UMask=0077
 WorkingDirectory=/home/lim/code/seemirai
 EnvironmentFile=%h/vaults/99_운영/seemirai-m22-live-autonomous/m22.env
 EnvironmentFile=%h/vaults/99_운영/seemirai-m22-live-autonomous/m22.keys.env

@@ -698,7 +698,8 @@ M23 live-armed 운영 기준:
 - status, CLI, Telegram, daily report safe summary는 현재 모드(dry-run, heartbeat-only, live armed, live order capable), live
   enabled, key scope 안전성, readiness, latest heartbeat/reconcile/candidate/decision/order/fill/cancel, budget/exposure/PnL,
   risk block, alert retry 상태를 secret 없이 보여줘야 한다.
-- process supervisor/systemd 운영은 저장소 밖 env/key 파일을 참조해야 하며, service unit에는 secret 값을 직접 쓰지 않는다.
+- process supervisor/systemd 운영은 root가 아닌 운영 사용자로 실행하고 저장소 밖 env/key 파일을 참조해야 하며, service unit에는 secret
+  값을 직접 쓰지 않는다.
   `scripts/run-m23-recovery-drill.mjs`는 restart 전후 event log artifact만 읽어 duplicate live order 방지, reconcile/status/daily
   report 복구, Upbit 장애/market warning/stale data fail-closed evidence, DB backup/restore 결과 또는 blocker 기록을 검증한다.
   이 validator는 기본 CI/PR 검증에서 live API, Telegram provider, DB restore를 직접 호출하지 않는다.
