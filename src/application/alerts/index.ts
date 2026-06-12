@@ -12,6 +12,7 @@ import type {
 import type { JsonRecord, TimestampInput } from "../../domain/index.js";
 
 export * from "./paper-trade-events.js";
+export * from "./live-ops-events.js";
 
 export const notificationRetryJobType = "notification_retry";
 export const defaultAlertDeliveryReservationMs = 60_000;

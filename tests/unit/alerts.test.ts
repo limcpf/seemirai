@@ -23,6 +23,7 @@ import {
   createKillSwitchControlDecision,
   createAlertFingerprint,
   createInMemoryAlertCooldownStore,
+  createLiveOpsAlertRequest,
   createNotificationRetryJobPlan,
   createPaperTradeAlertRequest,
   dispatchKillSwitchControlAlert,
@@ -197,6 +198,116 @@ describe("alert cooldown and notification policy", () => {
     });
   });
 
+  it("separates M23 Telegram connection and live order capable lifecycle alerts", () => {
+    const connection = createLiveOpsAlertRequest({
+      environment: "prod",
+      runMode: "live_autonomous_small_budget",
+      eventKind: "TELEGRAM_CONNECTION_READY",
+      operatingMode: "live_armed",
+      liveOrderCapable: false,
+      correlationId: "corr-live-connection",
+      occurredAt: "2026-06-13T00:00:00.000Z",
+    });
+    const liveOrderCapable = createLiveOpsAlertRequest({
+      environment: "prod",
+      runMode: "live_autonomous_small_budget",
+      eventKind: "LIVE_ORDER_CAPABLE_STARTED",
+      operatingMode: "live_order_capable",
+      liveOrderCapable: true,
+      market: "KRW-BTC",
+      strategyId: "m23-small-budget",
+      auditEventId: "audit-live-1",
+      evidenceId: "live-ops-status-1",
+      correlationId: "corr-live-capable",
+      occurredAt: "2026-06-13T00:01:00.000Z",
+    });
+
+    expect(connection).toMatchObject({
+      severity: "P2",
+      alertType: "live_ops_event",
+      reasonCode: "telegram_connection_ready",
+      title: "M23 live 운영 알림: Telegram 연결 확인",
+      metadata: {
+        source: "live_ops_event",
+        event_kind: "TELEGRAM_CONNECTION_READY",
+        delivery_policy: "cooldown",
+        operating_mode: "live_armed",
+        live_order_capable: false,
+      },
+    });
+    expect(liveOrderCapable).toMatchObject({
+      severity: "P1",
+      alertType: "live_ops_event",
+      reasonCode: "live_order_capable_started",
+      market: "KRW-BTC",
+      strategyId: "m23-small-budget",
+      metadata: {
+        source: "live_ops_event",
+        event_kind: "LIVE_ORDER_CAPABLE_STARTED",
+        delivery_policy: "immediate",
+        audit_event_id: "audit-live-1",
+        evidence_id: "live-ops-status-1",
+      },
+    });
+    expect(connection.body).toContain("상태: Telegram 운영 알림 채널이 연결됐습니다.");
+    expect(liveOrderCapable.body).toContain("필요 조치: 손실 ceiling");
+    expect(createAlertFingerprint(connection)).not.toBe(createAlertFingerprint(liveOrderCapable));
+  });
+
+  it("maps M23 live trade lifecycle events to safe alert payloads", () => {
+    const submitted = createLiveOpsAlertRequest({
+      environment: "prod",
+      runMode: "live_autonomous_small_budget",
+      eventKind: "ORDER_SUBMITTED",
+      market: "KRW-BTC",
+      strategyId: "m23-small-budget",
+      side: "BUY",
+      quantity: "0.0001",
+      requestedPrice: "100000000",
+      notionalKrw: "10000",
+      orderId: "local-order-1",
+      brokerOrderId: "upbit-order-1",
+      idempotencyKey: "idem-live-1",
+      correlationId: "corr-live-order",
+      occurredAt: "2026-06-13T00:02:00.000Z",
+    });
+    const blocked = createLiveOpsAlertRequest({
+      environment: "prod",
+      runMode: "live_autonomous_small_budget",
+      eventKind: "RECONCILE_BLOCKED",
+      market: "KRW-BTC",
+      strategyId: "m23-small-budget",
+      blockedReason: "open_order_count_nonzero",
+      riskEventId: "risk-live-1",
+      safeSummary: "미체결 주문이 남아 신규 entry를 보류했습니다.",
+      occurredAt: "2026-06-13T00:03:00.000Z",
+    });
+
+    expect(submitted).toMatchObject({
+      severity: "P1",
+      reasonCode: "live_order_submitted",
+      metadata: {
+        event_group: "trade",
+        order_id: "local-order-1",
+        broker_order_id: "upbit-order-1",
+        idempotency_key: "idem-live-1",
+      },
+    });
+    expect(submitted.body).toContain("주문: KRW-BTC 매수(BUY) 0.0001");
+    expect(submitted.body).toContain("비용: 명목 금액 10000 KRW");
+    expect(blocked).toMatchObject({
+      severity: "P1",
+      reasonCode: "live_order_reconcile_blocked",
+      metadata: {
+        blocked_reason: "open_order_count_nonzero",
+        risk_event_id: "risk-live-1",
+        safe_summary: "미체결 주문이 남아 신규 entry를 보류했습니다.",
+      },
+    });
+    expect(blocked.body).toContain("상태: M23 live 주문 후보가 reconcile 조건 때문에 차단됐습니다.");
+    expect(blocked.body).toContain("요약: 미체결 주문이 남아 신규 entry를 보류했습니다.");
+  });
+
   it("keeps P1 paper alert provider failures isolated and returns retry candidates", async () => {
     const notifier = new ThrowingNotifier();
     const cooldownStore = createInMemoryAlertCooldownStore();
@@ -233,6 +344,48 @@ describe("alert cooldown and notification policy", () => {
         metadata: {
           order_id: "paper-order-3",
           idempotency_key: "paper-idem-3",
+        },
+      },
+    });
+    expect(result.failureEvaluation.state.consecutiveFailures).toBe(1);
+  });
+
+  it("keeps M23 P0/P1 lifecycle alert failures on the notification retry path", async () => {
+    const notifier = new ThrowingNotifier();
+    const cooldownStore = createInMemoryAlertCooldownStore();
+    const request = createLiveOpsAlertRequest({
+      environment: "prod",
+      runMode: "live_autonomous_small_budget",
+      eventKind: "CRASH_DETECTED",
+      restartId: "restart-live-1",
+      evidenceId: "supervisor-crash-1",
+      correlationId: "corr-live-crash",
+      occurredAt: "2026-06-13T00:04:00.000Z",
+    });
+
+    const result = await dispatchAlertWithCooldown(
+      {
+        notifier,
+        durableCooldownStore: cooldownStore,
+      },
+      request,
+    );
+
+    expect(result.notification).toMatchObject({
+      delivered: false,
+      skippedReason: "notification_provider_exception",
+    });
+    expect(result.retryJobPlan).toMatchObject({
+      jobType: notificationRetryJobType,
+      payloadJson: {
+        severity: "P0",
+        alert_type: "live_ops_event",
+        correlation_id: "corr-live-crash",
+        metadata: {
+          source: "live_ops_event",
+          event_kind: "CRASH_DETECTED",
+          restart_id: "restart-live-1",
+          evidence_id: "supervisor-crash-1",
         },
       },
     });

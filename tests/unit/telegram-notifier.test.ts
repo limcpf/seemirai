@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   createAlertFingerprint,
+  createLiveOpsAlertRequest,
   createPaperTradeAlertRequest,
 } from "../../src/application/index.js";
 import {
@@ -156,6 +157,76 @@ describe("Telegram outbound notifier", () => {
         "요청 ID: corr-paper-1",
         "이벤트 코드: SLIPPAGE_THRESHOLD_EXCEEDED",
         "사유 코드: paper_slippage_threshold_exceeded",
+      ].join("\n"),
+    );
+  });
+
+  it("formats M23 live ops event alerts with tracking details separated", () => {
+    const request = createLiveOpsAlertRequest({
+      environment: "prod",
+      runMode: "live_autonomous_small_budget",
+      eventKind: "ORDER_FILLED",
+      operatingMode: "live_order_capable",
+      liveOrderCapable: true,
+      market: "KRW-BTC",
+      strategyId: "m23-small-budget",
+      side: "BUY",
+      quantity: "0.0001",
+      requestedPrice: "100000000",
+      fillPrice: "100010000",
+      filledQuantity: "0.0001",
+      notionalKrw: "10000",
+      feeAmount: "5",
+      feeCurrency: "KRW",
+      slippageBps: "1",
+      remainingQuantity: "0",
+      orderId: "local-order-1",
+      brokerOrderId: "upbit-order-1",
+      idempotencyKey: "idem-live-1",
+      auditEventId: "audit-live-1",
+      riskEventId: "risk-live-1",
+      evidenceId: "fill-live-1",
+      correlationId: "corr-live-fill",
+      occurredAt: "2026-06-13T00:05:00.000Z",
+    });
+
+    expect(
+      formatAlertMessage({
+        severity: request.severity,
+        title: request.title,
+        body: request.body,
+        fingerprint: createAlertFingerprint(request),
+        occurredAt: "2026-06-13T00:05:00.000Z",
+        metadata: request.metadata ?? {},
+      }),
+    ).toBe(
+      [
+        "[P1 중요] M23 live 운영 알림: 전체 체결",
+        "",
+        "상태: M23 live 주문이 전체 체결됐습니다.",
+        "원인: 거래소 체결 또는 reconcile이 주문 잔량 0 상태를 확인했습니다.",
+        "영향: 포지션, 수수료, realized/unrealized PnL이 daily report와 budget surface에 반영되어야 합니다.",
+        "필요 조치: 체결가, 수수료, open exposure, PnL snapshot이 기대 범위인지 확인해 주세요.",
+        "M23 상태: 실주문 가능 주문 가능 예",
+        "주문: KRW-BTC 매수(BUY) 0.0001",
+        "가격: 지정가 100000000 체결가 100010000 체결 수량 0.0001",
+        "비용: 명목 금액 10000 KRW 수수료 5 KRW 슬리피지 1 bps",
+        "잔량: 0",
+        "",
+        "추적 정보",
+        "알림 식별자: alert:prod:live_autonomous_small_budget:P1:live_ops_event:krw-btc:m23-small-budget:live_order_filled",
+        "발생 시각: 2026-06-13T00:05:00.000Z",
+        "마켓: KRW-BTC",
+        "전략: m23-small-budget",
+        "주문 ID: local-order-1",
+        "거래소 주문: upbit-order-1",
+        "주문 키: idem-live-1",
+        "요청 ID: corr-live-fill",
+        "감사 이벤트: audit-live-1",
+        "리스크 이벤트: risk-live-1",
+        "증거 ID: fill-live-1",
+        "이벤트 코드: ORDER_FILLED",
+        "사유 코드: live_order_filled",
       ].join("\n"),
     );
   });
