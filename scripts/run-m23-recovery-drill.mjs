@@ -161,6 +161,7 @@ function createRecoveryChecks(input) {
           afterParseErrors: input.afterLog.parseErrors,
         }),
     restartEvidence: createRestartEvidenceCheck(input.beforeLog.events, input.afterLog.events),
+    heartbeatRecovery: createHeartbeatRecoveryCheck(input.afterLog.events),
     duplicateLiveOrder: createDuplicateLiveOrderCheck(input.beforeLog.events, input.afterLog.events),
     reconcileRecovery: createReconcileRecoveryCheck(input.afterLog.events),
     statusRecovery: createStatusRecoveryCheck(input.afterLog.events),
@@ -177,12 +178,6 @@ function createRestartEvidenceCheck(beforeEvents, afterEvents) {
   const afterCheckpoint = afterEvents.find((event) => event.type === "m23_restart_checkpoint" && event.phase === "after_restart");
   const restartDetected = afterEvents.find((event) => event.type === "live_ops_event" && event.eventKind === "RUNTIME_RESTART_DETECTED");
   const recovered = afterEvents.find((event) => event.type === "live_ops_event" && event.eventKind === "RUNTIME_RECOVERED");
-  const restartIds = new Set([
-    readString(beforeCheckpoint?.restartId),
-    readString(afterCheckpoint?.restartId),
-    readString(restartDetected?.restartId),
-    readString(recovered?.restartId),
-  ].filter((value) => value !== undefined));
 
   if (beforeCheckpoint === undefined || afterCheckpoint === undefined || restartDetected === undefined || recovered === undefined) {
     return failCheck("restart 감지와 복구 Telegram/status evidence가 모두 필요하다.", {
@@ -193,6 +188,22 @@ function createRestartEvidenceCheck(beforeEvents, afterEvents) {
     });
   }
 
+  const restartEvidence = {
+    beforeCheckpoint: readString(beforeCheckpoint.restartId),
+    afterCheckpoint: readString(afterCheckpoint.restartId),
+    restartDetected: readString(restartDetected.restartId),
+    recovered: readString(recovered.restartId),
+  };
+  const missingRestartIds = Object.entries(restartEvidence)
+    .filter(([, restartId]) => restartId === undefined)
+    .map(([name]) => name);
+  if (missingRestartIds.length > 0) {
+    return failCheck("restart evidence마다 restart id가 있어야 한다.", {
+      missingRestartIds,
+    });
+  }
+
+  const restartIds = new Set(Object.values(restartEvidence));
   if (restartIds.size !== 1) {
     return failCheck("restart 전후 evidence는 같은 restart id로 묶여야 한다.", {
       restartIds: Array.from(restartIds),
@@ -202,6 +213,13 @@ function createRestartEvidenceCheck(beforeEvents, afterEvents) {
   return okCheck("restart 전후 감지와 복구 evidence가 같은 restart id로 연결됐다.", {
     restartId: Array.from(restartIds)[0],
   });
+}
+
+function createHeartbeatRecoveryCheck(afterEvents) {
+  const heartbeatCount = afterEvents.filter((event) => event.type === "m22_pilot_heartbeat").length;
+  return heartbeatCount > 0
+    ? okCheck("restart 후 heartbeat evidence가 재개됐다.", { heartbeatCount })
+    : failCheck("restart 후 heartbeat evidence가 없다.", { requiredEventType: "m22_pilot_heartbeat" });
 }
 
 function createDuplicateLiveOrderCheck(beforeEvents, afterEvents) {
@@ -227,30 +245,39 @@ function createDuplicateLiveOrderCheck(beforeEvents, afterEvents) {
 }
 
 function createReconcileRecoveryCheck(afterEvents) {
-  const event = afterEvents.find((candidate) =>
-    candidate.type === "live_reconcile_completed" && ["SUCCESS", "CLEAN"].includes(readString(candidate.result) ?? ""));
-  if (event === undefined) {
+  const events = afterEvents.filter((candidate) => candidate.type === "live_reconcile_completed");
+  if (events.length === 0) {
     return failCheck("restart 후 reconcile 성공 evidence가 없다.", {
       requiredEventType: "live_reconcile_completed",
       acceptedResults: ["SUCCESS", "CLEAN"],
     });
   }
 
-  const mismatchCount = Number(event.mismatchCount ?? 0);
-  if (!Number.isFinite(mismatchCount) || mismatchCount !== 0) {
-    return failCheck("restart 후 reconcile mismatch가 남아 있다.", {
-      mismatchCount: event.mismatchCount,
+  const failures = events.filter((event) => {
+    const result = readString(event.result);
+    const mismatchCount = Number(event.mismatchCount ?? 0);
+    return !["SUCCESS", "CLEAN"].includes(result ?? "") || !Number.isFinite(mismatchCount) || mismatchCount !== 0;
+  });
+  if (failures.length > 0) {
+    return failCheck("restart 후 reconcile 완료 evidence 중 실패 또는 mismatch가 남아 있다.", {
+      failureCount: failures.length,
+      failures: failures.map((event) => ({
+        result: event.result,
+        mismatchCount: event.mismatchCount,
+        runId: readString(event.runId),
+      })),
     });
   }
 
-  return okCheck("restart 후 reconcile이 mismatch 0건으로 복구됐다.", {
-    result: event.result,
-    runId: readString(event.runId),
+  return okCheck("restart 후 모든 reconcile 완료 evidence가 mismatch 0건으로 복구됐다.", {
+    completedCount: events.length,
+    latestRunId: readString(events.at(-1)?.runId),
   });
 }
 
 function createStatusRecoveryCheck(afterEvents) {
-  const event = afterEvents.find((candidate) => candidate.type === "live_ops_status_summary");
+  const events = afterEvents.filter((candidate) => candidate.type === "live_ops_status_summary");
+  const event = events.at(-1);
   if (event === undefined) {
     return failCheck("restart 후 live ops status summary evidence가 없다.", {
       requiredEventType: "live_ops_status_summary",
@@ -267,6 +294,7 @@ function createStatusRecoveryCheck(afterEvents) {
   return okCheck("restart 후 status summary가 live order capable 상태를 복구했다.", {
     mode: event.mode,
     liveOrderCapable: true,
+    statusSummaryCount: events.length,
   });
 }
 
@@ -325,6 +353,7 @@ function createCloseoutZeroCounterCheck(metrics) {
   const counters = {
     crashCount: metrics.crashCount,
     unhandledRejectionCount: metrics.unhandledRejectionCount,
+    riskGateBypassCount: metrics.riskGateBypassCount,
     reconcileMismatchCount: metrics.reconcileMismatchCount,
     duplicateOrderCount: metrics.duplicateOrderCount,
     untrackedFillCount: metrics.untrackedFillCount,
@@ -370,9 +399,14 @@ function createMetrics(beforeLog, afterLog) {
     statusSummaryCount: afterLog.events.filter((event) => event.type === "live_ops_status_summary").length,
     dailyReportGeneratedCount: afterLog.events.filter((event) => event.type === "daily_report_generated").length,
     failClosedDrillCount: afterLog.events.filter((event) => event.type === "fail_closed_drill").length,
-    crashCount: events.filter((event) => event.type === "runtime_crash").length,
+    crashCount: events.filter((event) => event.type === "runtime_crash" || event.type === "crash").length,
     unhandledRejectionCount: events.filter((event) => event.type === "unhandled_rejection").length,
-    reconcileMismatchCount: events.filter((event) => event.type === "live_reconcile_mismatch").length,
+    riskGateBypassCount: events.filter((event) => event.type === "risk_gate_bypass").length,
+    reconcileMismatchCount: events.filter((event) => event.type === "live_reconcile_mismatch").length
+      + events.filter((event) => event.type === "live_reconcile_completed").filter((event) => {
+        const mismatchCount = Number(event.mismatchCount ?? 0);
+        return !Number.isFinite(mismatchCount) || mismatchCount !== 0 || !["SUCCESS", "CLEAN"].includes(readString(event.result) ?? "");
+      }).length,
     duplicateOrderCount: duplicateOrderCheck.status === "fail" ? 1 : 0,
     untrackedFillCount: events.filter((event) => event.type === "untracked_fill").length,
     liveOrderCleanupFailureCount: events.filter((event) => event.type === "live_order_cleanup_failure").length,
@@ -391,6 +425,7 @@ function createEmptyMetrics() {
     failClosedDrillCount: 0,
     crashCount: 0,
     unhandledRejectionCount: 0,
+    riskGateBypassCount: 0,
     reconcileMismatchCount: 0,
     duplicateOrderCount: 0,
     untrackedFillCount: 0,
