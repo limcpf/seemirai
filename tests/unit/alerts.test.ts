@@ -377,6 +377,31 @@ describe("alert cooldown and notification policy", () => {
     expect(createAlertFingerprint(partialFill)).not.toBe(createAlertFingerprint(secondPartialFill));
   });
 
+  it("uses manual review evidence to separate M23 live ops cooldown keys", () => {
+    const budgetReview = createLiveOpsAlertRequest({
+      environment: "prod",
+      runMode: "live_autonomous_small_budget",
+      eventKind: "MANUAL_REVIEW_REQUIRED",
+      market: "KRW-BTC",
+      strategyId: "m22.autonomous.entry",
+      evidenceId: "manual_review:budget_reservation_unavailable",
+      safeSummary: "예산 선점 저장 결과를 확정할 수 없습니다.",
+    });
+    const brokerReview = createLiveOpsAlertRequest({
+      environment: "prod",
+      runMode: "live_autonomous_small_budget",
+      eventKind: "MANUAL_REVIEW_REQUIRED",
+      market: "KRW-BTC",
+      strategyId: "m22.autonomous.entry",
+      evidenceId: "manual_review:broker_submission_uncertain",
+      safeSummary: "broker 제출 결과를 확정할 수 없습니다.",
+    });
+
+    expect(budgetReview.dedupeKey).toBe("manual_review:budget_reservation_unavailable");
+    expect(brokerReview.dedupeKey).toBe("manual_review:broker_submission_uncertain");
+    expect(createAlertFingerprint(budgetReview)).not.toBe(createAlertFingerprint(brokerReview));
+  });
+
   it("keeps P1 paper alert provider failures isolated and returns retry candidates", async () => {
     const notifier = new ThrowingNotifier();
     const cooldownStore = createInMemoryAlertCooldownStore();

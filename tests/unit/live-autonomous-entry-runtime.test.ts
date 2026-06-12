@@ -259,6 +259,105 @@ describe("M22 live autonomous entry runtime", () => {
     });
   });
 
+  it("반복 비용 차단 알림은 attempt id가 달라도 cooldown으로 묶는다", async () => {
+    const alertRecorder = createAlertDispatchRecorder();
+    const randomHex = vi.fn()
+      .mockReturnValueOnce("a".repeat(26))
+      .mockReturnValueOnce("b".repeat(26));
+    const runtime = new LiveAutonomousEntryRuntime({
+      executionEngine: new ExecutionEngine({ broker: createFakeBroker() }),
+      budgetReservation: createBudgetReservation(),
+      liveOpsAlerts: {
+        environment: "prod",
+        runMode: "live_autonomous_small_budget",
+        alertDispatch: alertRecorder.alertDispatch,
+      },
+      randomHex,
+      clock: () => observedAt,
+    });
+    const overBudgetRequest = createRequest({
+      candidate: {
+        ...createCandidate(),
+        requestedQuantity: "0.0002",
+        requestedNotional: "20000",
+      },
+    });
+
+    const first = await runtime.submitEntryCandidate(overBudgetRequest);
+    const second = await runtime.submitEntryCandidate(overBudgetRequest);
+
+    expect(first.status).toBe("BLOCKED");
+    expect(second.status).toBe("BLOCKED");
+    expect(alertRecorder.alerts).toHaveLength(1);
+    expect(alertRecorder.alerts[0]?.fingerprint).toBe(
+      "alert:prod:live_autonomous_small_budget:P2:live_ops_event:krw-btc:m22_autonomous_entry:live_order_cost_blocked",
+    );
+  });
+
+  it("손실 한도 초과 preflight는 P1 risk 차단 알림으로 dispatch한다", async () => {
+    const alertRecorder = createAlertDispatchRecorder();
+    const runtime = createRuntime({
+      liveOpsAlerts: {
+        environment: "prod",
+        runMode: "live_autonomous_small_budget",
+        alertDispatch: alertRecorder.alertDispatch,
+      },
+    });
+
+    const result = await runtime.submitEntryCandidate(
+      createRequest({
+        lossSnapshot: createLossSnapshot({
+          dailyRealizedLossKrw: "10001",
+        }),
+      }),
+    );
+
+    expect(result.status).toBe("BLOCKED");
+    expect(alertRecorder.alerts).toHaveLength(1);
+    expect(alertRecorder.alerts[0]).toMatchObject({
+      severity: "P1",
+      metadata: {
+        source: "live_ops_event",
+        event_kind: "RISK_BLOCKED",
+        blocked_reason: "M22 자동매매 일일 손실 한도를 초과해 후보를 제출하지 않습니다.",
+      },
+    });
+  });
+
+  it("비활성 runtime preflight 알림은 주문 가능 상태를 false로 표시한다", async () => {
+    const alertRecorder = createAlertDispatchRecorder();
+    const runtime = createRuntime({
+      liveOpsAlerts: {
+        environment: "prod",
+        runMode: "live_autonomous_small_budget",
+        alertDispatch: alertRecorder.alertDispatch,
+      },
+    });
+
+    const result = await runtime.submitEntryCandidate(
+      createRequest({
+        config: {
+          ...loadRuntimeConfig({
+            live_autonomous: {
+              enabled: true,
+            },
+          }).live_autonomous,
+          enabled: false,
+        },
+      }),
+    );
+
+    expect(result.status).toBe("BLOCKED");
+    expect(alertRecorder.alerts).toHaveLength(1);
+    expect(alertRecorder.alerts[0]).toMatchObject({
+      metadata: {
+        source: "live_ops_event",
+        event_kind: "RISK_BLOCKED",
+        live_order_capable: false,
+      },
+    });
+  });
+
   it("requestedNotional이 수량과 가격으로 계산한 지정가 notional과 다르면 차단한다", async () => {
     const reserve = vi.fn<LiveAutonomousBudgetReservationPort["reserve"]>();
     const broker = createFakeBroker();

@@ -427,8 +427,9 @@ alert dispatch 옵션 객체에 `failureState`를 되돌려 저장해 연속 실
 
 `LiveAutonomousEntryRuntime`은 `liveOpsAlerts` 옵션이 주입되면 실제 entry 후보 처리 경로에서 `dispatchLiveOpsAlert`를 호출한다.
 비용/RiskGate/reconcile/budget 차단은 broker 제출 전 확정된 차단 event로, ExecutionEngine 제출 성공은 `ORDER_SUBMITTED`
-event로 전송한다. 이 dispatch는 주문 판단 결과를 바꾸지 않는 best-effort 후속 side effect이며, alert 저장소나 provider 예외가
-이미 확정된 차단/제출 결과를 rollback하지 않는다.
+event로 전송한다. 반복 차단은 새 attempt id로 cooldown을 우회하지 않도록 주문 제출 event에만 correlation id를 dedupe 후보로
+넣고, 수동 점검 event는 reason/evidence별로 서로 다른 P1 cooldown key를 갖는다. 이 dispatch는 주문 판단 결과를 바꾸지 않는
+best-effort 후속 side effect이며, alert 저장소나 provider 예외가 이미 확정된 차단/제출 결과를 rollback하지 않는다.
 
 provider 호출 직전에는 fingerprint 단위 delivery reservation을 먼저 기록한다. 이 atomic gate는 마지막 성공 전송이 cooldown
 안에 있거나 기존 reservation이 만료되지 않았으면 provider 호출 없이 `ALERT_COOLDOWN` audit evidence만 남긴다. 이 경계는

@@ -77,8 +77,6 @@ const costLikePreflightReasonCodes = new Set<string>([
   "max_order_budget_exceeded",
   "daily_budget_exceeded",
   "open_position_budget_exceeded",
-  "daily_loss_limit_exceeded",
-  "weekly_loss_limit_exceeded",
   "price_deviation_exceeded",
   "reference_price_invalid",
 ]);
@@ -624,16 +622,19 @@ export class LiveAutonomousEntryRuntime {
       reason_code: input.reasonCode,
       ...(input.safeDetails === undefined ? {} : { detail: input.safeDetails }),
     };
+    const manualReviewEvidenceId = input.eventKind === "MANUAL_REVIEW_REQUIRED"
+      ? `manual_review:${input.reasonCode}`
+      : undefined;
+    const correlationId = input.eventKind === "ORDER_SUBMITTED" ? input.idempotencyKey : undefined;
     const event: LiveOpsAlertInput = {
       environment: this.liveOpsAlerts.environment,
       runMode: this.liveOpsAlerts.runMode,
       eventKind: input.eventKind,
       occurredAt: input.observedAt,
-      correlationId: input.idempotencyKey,
       market: input.request.candidate.market,
       strategyId: input.request.candidate.strategyId,
       operatingMode: "LIVE_AUTONOMOUS_SMALL_BUDGET",
-      liveOrderCapable: !input.request.killSwitchActive && input.request.reconcileFresh,
+      liveOrderCapable: isLiveOrderCapableForAlert(input.request),
       side: "BUY",
       quantity: input.request.candidate.requestedQuantity,
       requestedPrice: input.request.candidate.requestedPrice,
@@ -642,6 +643,8 @@ export class LiveAutonomousEntryRuntime {
       idempotencyKey: input.idempotencyKey,
       safeSummary: input.safeSummary,
       safeDetails,
+      ...(correlationId === undefined ? {} : { correlationId }),
+      ...(manualReviewEvidenceId === undefined ? {} : { evidenceId: manualReviewEvidenceId }),
       ...(input.blockedReason === undefined ? {} : { blockedReason: input.blockedReason }),
       ...(input.brokerOrderId === undefined ? {} : { brokerOrderId: input.brokerOrderId }),
     };
@@ -681,6 +684,21 @@ function toRuntimeViolationAlertKind(violation: RuntimeViolation): LiveOpsAlertE
   }
 
   return "RISK_BLOCKED";
+}
+
+/**
+ * Telegram live ops 본문에 표시할 주문 가능 여부를 계산한다.
+ *
+ * 이 값은 "현재 runtime이 live 주문을 낼 수 있는가"라는 운영자 판단 신호이므로 kill switch/reconcile뿐 아니라 config enable과
+ * market allowlist도 함께 만족해야 한다. 알림 표시용 순수 판단이며 broker 제출이나 상태 전이 side effect를 만들지 않는다.
+ */
+function isLiveOrderCapableForAlert(request: LiveAutonomousEntryRuntimeRequest): boolean {
+  return (
+    request.config.enabled &&
+    request.config.allowed_markets.includes(request.candidate.market) &&
+    !request.killSwitchActive &&
+    request.reconcileFresh
+  );
 }
 
 /**

@@ -348,15 +348,23 @@ export function createLiveOpsAlertRequest(input: LiveOpsAlertInput): AlertDispat
 /**
  * M23 live trade alert가 실제 주문/체결/차단 evidence 단위로 dedupe되도록 업무 식별자를 고른다.
  *
- * lifecycle alert는 상태 변화 단위 cooldown을 유지해야 하므로 별도 key를 붙이지 않는다. trade alert는 같은 market/strategy에서
- * 5분 안에 여러 주문 또는 체결이 생겨도 서로 다른 Telegram 알림으로 남아야 한다. 부분/전체 체결은 같은 주문 키를 공유할 수
- * 있으므로 체결 evidence ID를 먼저 쓰고, 차단 이벤트는 주문 ID가 없을 수 있으므로 risk/audit evidence를 포함한다. 이 함수는
- * 순수 선택 로직이며 외부 side effect가 없다.
+ * lifecycle alert는 상태 변화 단위 cooldown을 유지해야 하므로 기본적으로 별도 key를 붙이지 않는다. 다만 수동 점검은 서로 다른
+ * 복구 지시가 같은 cooldown에 묶이면 위험하므로 caller가 evidence/correlation을 제공한 경우 그 값을 사용한다. trade alert는
+ * 같은 market/strategy에서 5분 안에 여러 주문 또는 체결이 생겨도 서로 다른 Telegram 알림으로 남아야 한다. 부분/전체 체결은
+ * 같은 주문 키를 공유할 수 있으므로 체결 evidence ID를 먼저 쓰고, 차단 이벤트는 주문 ID가 없을 수 있으므로 risk/audit evidence를
+ * 포함한다. 이 함수는 순수 선택 로직이며 외부 side effect가 없다.
  */
 function resolveLiveOpsAlertDedupeKey(
   input: LiveOpsAlertInput,
   policy: LiveOpsAlertPolicy,
 ): string | undefined {
+  if (input.eventKind === "MANUAL_REVIEW_REQUIRED") {
+    return input.evidenceId
+      ?? input.auditEventId
+      ?? input.riskEventId
+      ?? input.correlationId;
+  }
+
   if (policy.group !== "trade") {
     return undefined;
   }
