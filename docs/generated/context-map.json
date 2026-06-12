@@ -128,6 +128,13 @@
       "owner_scope": "docs/runbooks"
     },
     {
+      "path": "docs/runbooks/m23-live-small-budget-operations.md",
+      "kind": "reference",
+      "role": "M23 실제 주문 가능 live-armed 7일 운영 안정화, 상태 확인, 중지/복구, DB backup/restore smoke, closeout evidence 절차",
+      "read_when": ["issue #188 구현", "M23 live small-budget 운영", "M23 7일 안정화", "LIVE_AUTONOMOUS_SMALL_BUDGET live armed", "DB backup restore smoke", "M23 closeout evidence 확인"],
+      "owner_scope": "docs/runbooks"
+    },
+    {
       "path": "docs/DESIGN.md",
       "kind": "policy",
       "role": "구조 변경과 설계 기록 작성 기준",

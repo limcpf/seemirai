@@ -360,23 +360,37 @@ M19 Sub PR 03 범위:
 
 목표:
 
-- 자는 동안과 업무 중에도 운영 가능한 수준으로 배포와 복구를 강화한다.
+- 자는 동안과 업무 중에도 `LIVE_AUTONOMOUS_SMALL_BUDGET`가 실제 주문 API를 호출할 수 있는 live-armed 상태인지 운영자가 즉시 확인할 수 있게 한다.
+- 수익 검증이 아니라 live enabled, 주문 가능 여부, 최근 판단/차단/주문/취소/체결 evidence, 중지/복구 상태를 secret 없이 설명 가능한 운영 표면으로 고정한다.
+- Issue #188은 M23 운영 안정화만 다룬다. M24 universe/budget 확대는 M23 closeout PASS 이후 별도 issue로 분리한다.
 
 범위:
 
-- Docker Compose live profile
-- process supervisor 또는 systemd 재시작 정책
-- DB backup/restore drill
-- health/readiness/status
-- alert retry와 daily report
-- 장애 drill과 runbook
-- Upbit 장애, 점검, market warning 대응
+- 현재 모드 표시: dry-run, heartbeat-only, live armed, live order capable
+- health/readiness/status/CLI/Telegram/report safe summary
+- latest heartbeat, latest reconcile, latest candidate, latest decision, latest order attempt, latest fill/cancel, risk block, budget/exposure, PnL, alert retry 상태
+- Telegram 연결 성공 알림, live order capable 시작 알림, 정상 종료/operator stop/kill switch/manual review/crash/restart 알림
+- 주문 제출, 취소 요청, 취소 확인, 체결, 부분체결, risk/cost/reconcile 차단 이벤트 요약 알림
+- 7일 live-armed daily report와 "왜 주문이 없었는지" decision evidence
+- Docker Compose live profile 또는 systemd/process supervisor 재시작 정책
+- restart 후 reconcile/status/daily report/Telegram 상태 복구
+- DB backup/restore smoke drill
+- Upbit 장애, 점검, market warning, stale data, API 오류 fail-closed drill
+- 운영자가 직접 arm/stop/kill/manual review/Upbit 웹 확인을 수행할 수 있는 runbook
 
 완료 조건:
 
-- 7일 연속 live small-budget 운영 리포트가 생성된다.
+- 7일 연속 live small-budget 운영 리포트가 생성된다. 이 run은 dry-run이 아니라 live order API를 호출할 수 있는 설정으로 arm 되어야 한다.
+- 주문이 없었던 날도 후보 없음, gate 차단, 시장 조건 미충족, operator stop, kill switch 같은 이유가 daily report와 decision evidence에 남는다.
+- status 표면은 live enabled, key scope, readiness, latest reconcile, latest heartbeat, latest candidate, latest decision, latest order attempt, latest fill/cancel, budget used, open exposure, risk block, alert retry 상태를 secret 없이 보여준다.
+- Telegram 또는 CLI에서 "지금 돌고 있는가 / 매매 가능한가 / 최근 왜 주문했거나 안 했는가 / 현재 포지션과 현금은 어떤가"를 확인할 수 있다.
+- Telegram lifecycle와 trade event 알림은 한국어 상태, 원인, 영향, 필요 조치를 먼저 보여주고 내부 evidence id는 `추적 정보`에 분리한다.
 - process 재시작 후 reconcile과 status가 정상 복구된다.
 - Telegram P0/P1 알림 실패 retry와 manual review 수렴이 검증된다.
+- DB backup/restore smoke drill이 disposable restore DB에서 통과하거나, 실행 불가 시 blocker와 필요한 외부 조건이 closeout에 기록된다.
+- Upbit 장애, 점검, market warning, stale data, API 오류가 신규 entry fail-closed와 alert/manual review evidence로 수렴한다.
+- 7일 동안 crash 0회, unhandled rejection 0회, risk gate 우회 주문 0건, reconcile mismatch 0건, duplicate order 0건, untracked fill 0건, live order cleanup failure 0건을 증명한다.
+- live canary 1회 성공, dry-run, heartbeat-only만으로 M23 완료를 선언하지 않는다.
 
 ### M24. 전략 확장과 예산 확대
 
