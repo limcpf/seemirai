@@ -84,6 +84,12 @@ export interface LiveOpsAlertInput {
   riskEventId?: string;
   evidenceId?: string;
   restartId?: string;
+  /**
+   * 사용자에게 보여줄 안전한 차단 사유다.
+   *
+   * 내부 reason code가 아니라 운영자가 바로 이해할 수 있는 문장을 넣어야 하며, stable code는 `safeDetails`나 event evidence에
+   * 보존한다. formatter는 이 값을 첫 화면에 표시하므로 raw provider body나 credential을 넣지 않는다.
+   */
   blockedReason?: string;
   safeSummary?: string;
   safeDetails?: JsonRecord;
@@ -320,6 +326,7 @@ const liveOpsAlertPolicies: Record<LiveOpsAlertEventKind, LiveOpsAlertPolicy> = 
  */
 export function createLiveOpsAlertRequest(input: LiveOpsAlertInput): AlertDispatchRequest {
   const policy = liveOpsAlertPolicies[input.eventKind];
+  const dedupeKey = resolveLiveOpsAlertDedupeKey(input, policy);
 
   return {
     environment: input.environment,
@@ -329,12 +336,36 @@ export function createLiveOpsAlertRequest(input: LiveOpsAlertInput): AlertDispat
     ...(input.market === undefined ? {} : { market: input.market }),
     ...(input.strategyId === undefined ? {} : { strategyId: input.strategyId }),
     reasonCode: policy.reasonCode,
+    ...(dedupeKey === undefined ? {} : { dedupeKey }),
     title: `M23 live 운영 알림: ${policy.eventLabel}`,
     body: formatLiveOpsAlertBody(input, policy),
     ...(input.occurredAt === undefined ? {} : { occurredAt: input.occurredAt }),
     ...(input.correlationId === undefined ? {} : { correlationId: input.correlationId }),
     metadata: createLiveOpsAlertMetadata(input, policy),
   };
+}
+
+/**
+ * M23 live trade alert가 실제 주문/체결/차단 evidence 단위로 dedupe되도록 업무 식별자를 고른다.
+ *
+ * lifecycle alert는 상태 변화 단위 cooldown을 유지해야 하므로 별도 key를 붙이지 않는다. trade alert는 같은 market/strategy에서
+ * 5분 안에 여러 주문 또는 체결이 생겨도 서로 다른 Telegram 알림으로 남아야 하므로 주문 키, 로컬 주문 ID, 거래소 주문 ID,
+ * evidence ID, correlation ID 순서로 가장 안정적인 식별자를 fingerprint에 포함한다. 이 함수는 순수 선택 로직이며 외부 side
+ * effect가 없다.
+ */
+function resolveLiveOpsAlertDedupeKey(
+  input: LiveOpsAlertInput,
+  policy: LiveOpsAlertPolicy,
+): string | undefined {
+  if (policy.group !== "trade") {
+    return undefined;
+  }
+
+  return input.idempotencyKey
+    ?? input.orderId
+    ?? input.brokerOrderId
+    ?? input.evidenceId
+    ?? input.correlationId;
 }
 
 /**

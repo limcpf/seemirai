@@ -394,6 +394,7 @@ interface LiveOpsMessageFields {
   riskEventId?: string;
   evidenceId?: string;
   restartId?: string;
+  blockedReason?: string;
   safeSummary?: string;
   eventKind?: string;
   reasonCode?: string;
@@ -424,6 +425,7 @@ function formatLiveOpsAlertMessage(
     formatLiveOpsPriceLine(fields),
     formatLiveOpsCostLine(fields),
     optionalLine("잔량", fields.remainingQuantity),
+    optionalLine("차단 사유", fields.blockedReason),
     optionalLine("요약", fields.safeSummary),
     "",
     "추적 정보",
@@ -478,6 +480,7 @@ function readLiveOpsMessageFields(
     ...optionalStringProperty("riskEventId", readStringField(metadata, "risk_event_id")),
     ...optionalStringProperty("evidenceId", readStringField(metadata, "evidence_id")),
     ...optionalStringProperty("restartId", readStringField(metadata, "restart_id")),
+    ...optionalStringProperty("blockedReason", readStringField(metadata, "blocked_reason")),
     ...optionalStringProperty("safeSummary", readStringField(metadata, "safe_summary")),
     ...optionalStringProperty("eventKind", readStringField(metadata, "event_kind")),
     ...optionalStringProperty("reasonCode", readStringField(metadata, "reason_code") ?? parsedFingerprint.reasonCode),

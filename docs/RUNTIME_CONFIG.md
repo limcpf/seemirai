@@ -388,8 +388,9 @@ Telegram 알림은 outbound `sendMessage`만 사용한다. 이 단계는 Telegra
 - provider timeout: `telegram.provider_timeout_ms`, 기본 `5000`
 
 alert fingerprint는 `environment + run_mode + severity + alert_type + market_or_global + strategy_id_or_global + reason_code`로
-만든다. severity가 key에 들어가므로 P1 cooldown 중에도 같은 원인의 P0 escalation은 막히지 않는다. 각 세그먼트 안의 `:`는
-`%3a`로 escape해 join 구분자와 충돌하지 않게 한다.
+만든다. 주문, 체결, 취소처럼 같은 reason이 짧은 시간 안에 반복될 수 있는 alert는 선택 `dedupe_key`를 끝에 붙여 event 단위
+전송을 보장한다. severity가 key에 들어가므로 P1 cooldown 중에도 같은 원인의 P0 escalation은 막히지 않는다. 각 세그먼트 안의
+`:`는 `%3a`로 escape해 join 구분자와 충돌하지 않게 한다.
 
 cooldown 기본값:
 
@@ -412,12 +413,15 @@ transaction이 commit된 뒤 Telegram/cooldown/audit 알림 경계로 넘어간�
 `alert_dispatch_failed`로 결과 객체에 기록하고 control 전이 성공 자체를 실패로 바꾸지 않는다. 같은 runtime alert dispatch
 옵션 객체는 최신 notification failure state를 보존해 연속 실패 threshold가 실제 호출 간 누적되게 한다.
 
-M23 lifecycle/trade event는 `createLiveOpsAlertRequest`가 `live_ops_event` alert payload로 낮춘다. Telegram 연결 성공과
-live order capable 시작은 서로 다른 reason/fingerprint를 사용한다. 정상 종료, operator stop, kill switch, manual review,
-crash/restart/recovery, Telegram provider 장애 지속, 주문 제출/취소/취소 확인/체결/부분체결/risk/cost/reconcile 차단 event는
-첫 화면에 한국어 상태, 원인, 영향, 필요 조치를 배치하고, order id, idempotency key, audit/risk/evidence id, event kind,
-reason code는 `추적 정보`에만 둔다. P0/P1 live event provider failure는 기존 `notification_retry` job payload와 manual review
-failure threshold 경로를 그대로 사용한다.
+M23 lifecycle/trade event는 `createLiveOpsAlertRequest`가 `live_ops_event` alert payload로 낮추고, runtime은
+`dispatchLiveOpsAlert` wrapper로 전송한다. Telegram 연결 성공과 live order capable 시작은 서로 다른 reason/fingerprint를
+사용한다. 주문 제출/취소/취소 확인/체결/부분체결/risk/cost/reconcile 차단 event는 idempotency key, local order id,
+broker order id, evidence id, correlation id 순서로 `dedupe_key`를 골라 같은 market/strategy에서 여러 live trade event가
+5분 안에 발생해도 서로를 cooldown으로 숨기지 않는다. 정상 종료, operator stop, kill switch, manual review, crash/restart/recovery,
+Telegram provider 장애 지속, 주문/차단 event는 첫 화면에 한국어 상태, 원인, 영향, 필요 조치와 안전한 차단 사유를 배치하고,
+order id, idempotency key, audit/risk/evidence id, event kind, reason code는 `추적 정보`에만 둔다. P0/P1 live event provider
+failure는 기존 `notification_retry` job payload와 manual review failure threshold 경로를 그대로 사용하며, wrapper가 같은
+alert dispatch 옵션 객체에 `failureState`를 되돌려 저장해 연속 실패를 누적한다.
 
 provider 호출 직전에는 fingerprint 단위 delivery reservation을 먼저 기록한다. 이 atomic gate는 마지막 성공 전송이 cooldown
 안에 있거나 기존 reservation이 만료되지 않았으면 provider 호출 없이 `ALERT_COOLDOWN` audit evidence만 남긴다. 이 경계는

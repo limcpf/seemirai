@@ -214,7 +214,7 @@ describe("Telegram outbound notifier", () => {
         "잔량: 0",
         "",
         "추적 정보",
-        "알림 식별자: alert:prod:live_autonomous_small_budget:P1:live_ops_event:krw-btc:m23-small-budget:live_order_filled",
+        "알림 식별자: alert:prod:live_autonomous_small_budget:P1:live_ops_event:krw-btc:m23-small-budget:live_order_filled:idem-live-1",
         "발생 시각: 2026-06-13T00:05:00.000Z",
         "마켓: KRW-BTC",
         "전략: m23-small-budget",
@@ -229,6 +229,28 @@ describe("Telegram outbound notifier", () => {
         "사유 코드: live_order_filled",
       ].join("\n"),
     );
+
+    const blocked = createLiveOpsAlertRequest({
+      environment: "prod",
+      runMode: "live_autonomous_small_budget",
+      eventKind: "RECONCILE_BLOCKED",
+      market: "KRW-BTC",
+      strategyId: "m23-small-budget",
+      blockedReason: "미체결 주문이 남아 있습니다.",
+      evidenceId: "reconcile-block-1",
+      occurredAt: "2026-06-13T00:06:00.000Z",
+    });
+
+    expect(
+      formatAlertMessage({
+        severity: blocked.severity,
+        title: blocked.title,
+        body: blocked.body,
+        fingerprint: createAlertFingerprint(blocked),
+        occurredAt: "2026-06-13T00:06:00.000Z",
+        metadata: blocked.metadata ?? {},
+      }),
+    ).toContain("차단 사유: 미체결 주문이 남아 있습니다.");
   });
 
   it("sends Telegram sendMessage requests without adding inbound command behavior", async () => {

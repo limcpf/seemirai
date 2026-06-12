@@ -10,6 +10,8 @@ import type {
   KillSwitchControlResult,
 } from "../risk/index.js";
 import type { JsonRecord, TimestampInput } from "../../domain/index.js";
+import { createLiveOpsAlertRequest } from "./live-ops-events.js";
+import type { LiveOpsAlertInput } from "./live-ops-events.js";
 
 export * from "./paper-trade-events.js";
 export * from "./live-ops-events.js";
@@ -41,6 +43,7 @@ export interface AlertFingerprintInput {
   market?: string;
   strategyId?: string;
   reasonCode: string;
+  dedupeKey?: string;
 }
 
 /**
@@ -268,10 +271,11 @@ export interface KillSwitchAlertDispatchOptions extends AlertDispatchServiceOpti
  * alert fingerprint의 기본 구성 요소를 운영 정책에 맞춰 결합한다.
  *
  * 기본 구성은 `environment + run_mode + severity + alert_type + market_or_global + strategy_id_or_global + reason_code`다.
+ * 주문·체결처럼 같은 reason이 짧은 시간 안에 반복될 수 있는 alert는 선택 `dedupeKey`를 끝에 붙여 event 단위 전송을 보장한다.
  * 이 값이 cooldown key와 Telegram retry job key의 기준이므로, 공백과 대소문자 차이를 canonical form으로 줄인다.
  */
 export function createAlertFingerprint(input: AlertFingerprintInput): string {
-  return [
+  const parts = [
     "alert",
     normalizeFingerprintPart(input.environment),
     normalizeFingerprintPart(input.runMode),
@@ -280,7 +284,14 @@ export function createAlertFingerprint(input: AlertFingerprintInput): string {
     normalizeFingerprintPart(input.market ?? "global"),
     normalizeFingerprintPart(input.strategyId ?? "global"),
     normalizeFingerprintPart(input.reasonCode),
-  ].join(":");
+  ];
+
+  if (input.dedupeKey !== undefined) {
+    // 업무 식별자는 metadata에도 남지만 cooldown key에도 참여해야 실제 주문별 Telegram 알림이 서로를 억제하지 않는다.
+    parts.push(normalizeFingerprintPart(input.dedupeKey));
+  }
+
+  return parts.join(":");
 }
 
 /**
@@ -455,6 +466,30 @@ export async function dispatchKillSwitchControlAlert(input: {
 }
 
 /**
+ * M23 live ops lifecycle/trade event를 Telegram alert dispatch 경계로 전송한다.
+ *
+ * runtime은 `createLiveOpsAlertRequest`만 직접 dispatch하지 말고 이 wrapper를 사용해야 한다. 같은 alert dispatch 옵션 객체에
+ * provider failure state를 되돌려 저장해 연속 Telegram 장애가 P0/P1 retry와 manual review 후보로 수렴하게 한다. 실제 provider
+ * 호출, cooldown 저장, retry job enqueue, audit write는 `dispatchAlertWithCooldown`이 수행하며 이 함수는 그 결과의 상태 누적만
+ * 담당한다.
+ *
+ * @param input alert dispatch 의존성과 M23 event evidence
+ * @returns cooldown/retry dispatch 결과
+ */
+export async function dispatchLiveOpsAlert(input: {
+  alertDispatch: AlertDispatchServiceOptions;
+  event: LiveOpsAlertInput;
+}): Promise<AlertDispatchResult> {
+  const alertRequest = createLiveOpsAlertRequest(input.event);
+  return runWithFailureStateLock(input.alertDispatch, async () => {
+    const result = await dispatchAlertWithCooldown(input.alertDispatch, alertRequest);
+    // live ops 알림 실패도 kill switch와 같은 failure threshold를 타야 Telegram 장애 지속이 manual review 후보로 남는다.
+    input.alertDispatch.failureState = result.failureEvaluation.state;
+    return result;
+  });
+}
+
+/**
  * P0/P1 notification failure가 재시도될 수 있도록 jobs table에 넣을 계획을 만든다.
  *
  * 이 함수는 실제 insert를 하지 않는다. Sub PR 3은 retry 후보 payload와 idempotency boundary만 고정하고, worker 실행은 후속
@@ -482,6 +517,7 @@ export function createNotificationRetryJobPlan(input: {
       fingerprint: input.fingerprint,
       occurred_at: occurredAt,
       correlation_id: input.request.correlationId ?? null,
+      dedupe_key: input.request.dedupeKey ?? null,
       metadata: input.request.metadata ?? {},
     },
     runAfter: input.occurredAt,
@@ -505,6 +541,7 @@ export function createAlertDispatchRequestFromNotificationRetryPayload(
   }
 
   const correlationId = readOptionalStringField(payloadJson, "correlation_id");
+  const dedupeKey = readOptionalStringField(payloadJson, "dedupe_key");
   const market = readOptionalStringField(payloadJson, "market");
   const strategyId = readOptionalStringField(payloadJson, "strategy_id");
 
@@ -520,6 +557,7 @@ export function createAlertDispatchRequestFromNotificationRetryPayload(
     body: readRequiredStringField(payloadJson, "body"),
     occurredAt: readRequiredStringField(payloadJson, "occurred_at"),
     ...(correlationId === undefined ? {} : { correlationId }),
+    ...(dedupeKey === undefined ? {} : { dedupeKey }),
     metadata: readOptionalJsonRecordField(payloadJson, "metadata") ?? {},
   };
 }
@@ -749,12 +787,12 @@ export function createInMemoryAlertCooldownStore(): AlertCooldownStore {
  * 같은 runtime alert dispatch 옵션 객체에서 발생한 failureState 갱신을 순차 실행한다.
  *
  * `failureState`는 durable store가 아니라 런타임 조립 객체에 누적되는 provider 장애 상태다. 같은 프로세스에서 동시에
- * `/kill-switch` 요청이 들어오면 각 요청이 동일한 이전 상태를 읽고 서로의 증가분을 덮어쓸 수 있으므로, 호출자는 이 helper
- * 안에서 dispatch와 상태 반영을 하나의 임계 구역으로 실행해야 한다. 입력 옵션 객체 자체를 key로 사용하고 WeakMap에만
+ * `/kill-switch` 또는 live ops alert 요청이 들어오면 각 요청이 동일한 이전 상태를 읽고 서로의 증가분을 덮어쓸 수 있으므로,
+ * 호출자는 이 helper 안에서 dispatch와 상태 반영을 하나의 임계 구역으로 실행해야 한다. 입력 옵션 객체 자체를 key로 사용하고 WeakMap에만
  * 보관하므로 runtime 종료나 옵션 교체 외의 외부 side effect는 없다.
  */
 async function runWithFailureStateLock<T>(
-  alertDispatch: KillSwitchAlertDispatchOptions,
+  alertDispatch: AlertDispatchServiceOptions,
   task: () => Promise<T>,
 ): Promise<T> {
   const previous = alertDispatchFailureStateLocks.get(alertDispatch) ?? Promise.resolve();
@@ -954,6 +992,7 @@ function toCooldownRecordInput(
     payloadJson: {
       title: request.title,
       correlation_id: request.correlationId ?? null,
+      dedupe_key: request.dedupeKey ?? null,
       metadata: request.metadata ?? {},
     },
   };
@@ -1102,4 +1141,4 @@ function toErrorMessage(error: unknown): string {
 }
 
 const defaultMemoryAlertCooldownStore = createInMemoryAlertCooldownStore();
-const alertDispatchFailureStateLocks = new WeakMap<KillSwitchAlertDispatchOptions, Promise<void>>();
+const alertDispatchFailureStateLocks = new WeakMap<AlertDispatchServiceOptions, Promise<void>>();

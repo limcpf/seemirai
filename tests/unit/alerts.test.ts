@@ -6,6 +6,7 @@ import type {
   AlertCooldownReservationResult,
   AlertCooldownState,
   AlertCooldownStore,
+  AlertDispatchServiceOptions,
   AlertNotification,
   AuditEvent,
   AuditEventReceipt,
@@ -28,6 +29,7 @@ import {
   createPaperTradeAlertRequest,
   dispatchKillSwitchControlAlert,
   dispatchAlertWithCooldown,
+  dispatchLiveOpsAlert,
   dispatchNotificationRetryJob,
   evaluateNotificationFailure,
   getDefaultAlertCooldownMs,
@@ -277,15 +279,32 @@ describe("alert cooldown and notification policy", () => {
       eventKind: "RECONCILE_BLOCKED",
       market: "KRW-BTC",
       strategyId: "m23-small-budget",
-      blockedReason: "open_order_count_nonzero",
+      blockedReason: "미체결 주문이 남아 있습니다.",
       riskEventId: "risk-live-1",
       safeSummary: "미체결 주문이 남아 신규 entry를 보류했습니다.",
       occurredAt: "2026-06-13T00:03:00.000Z",
+    });
+    const secondSubmitted = createLiveOpsAlertRequest({
+      environment: "prod",
+      runMode: "live_autonomous_small_budget",
+      eventKind: "ORDER_SUBMITTED",
+      market: "KRW-BTC",
+      strategyId: "m23-small-budget",
+      side: "BUY",
+      quantity: "0.0001",
+      requestedPrice: "100000000",
+      notionalKrw: "10000",
+      idempotencyKey: "idem-live-2",
+      orderId: "local-order-2",
+      brokerOrderId: "upbit-order-2",
+      correlationId: "corr-live-order-2",
+      occurredAt: "2026-06-13T00:02:10.000Z",
     });
 
     expect(submitted).toMatchObject({
       severity: "P1",
       reasonCode: "live_order_submitted",
+      dedupeKey: "idem-live-1",
       metadata: {
         event_group: "trade",
         order_id: "local-order-1",
@@ -299,13 +318,16 @@ describe("alert cooldown and notification policy", () => {
       severity: "P1",
       reasonCode: "live_order_reconcile_blocked",
       metadata: {
-        blocked_reason: "open_order_count_nonzero",
+        blocked_reason: "미체결 주문이 남아 있습니다.",
         risk_event_id: "risk-live-1",
         safe_summary: "미체결 주문이 남아 신규 entry를 보류했습니다.",
       },
     });
     expect(blocked.body).toContain("상태: M23 live 주문 후보가 reconcile 조건 때문에 차단됐습니다.");
     expect(blocked.body).toContain("요약: 미체결 주문이 남아 신규 entry를 보류했습니다.");
+    expect(createAlertFingerprint(submitted)).toContain(":live_order_submitted:idem-live-1");
+    expect(createAlertFingerprint(secondSubmitted)).toContain(":live_order_submitted:idem-live-2");
+    expect(createAlertFingerprint(submitted)).not.toBe(createAlertFingerprint(secondSubmitted));
   });
 
   it("keeps P1 paper alert provider failures isolated and returns retry candidates", async () => {
@@ -353,7 +375,7 @@ describe("alert cooldown and notification policy", () => {
   it("keeps M23 P0/P1 lifecycle alert failures on the notification retry path", async () => {
     const notifier = new ThrowingNotifier();
     const cooldownStore = createInMemoryAlertCooldownStore();
-    const request = createLiveOpsAlertRequest({
+    const event = {
       environment: "prod",
       runMode: "live_autonomous_small_budget",
       eventKind: "CRASH_DETECTED",
@@ -361,15 +383,15 @@ describe("alert cooldown and notification policy", () => {
       evidenceId: "supervisor-crash-1",
       correlationId: "corr-live-crash",
       occurredAt: "2026-06-13T00:04:00.000Z",
-    });
+    } as const;
 
-    const result = await dispatchAlertWithCooldown(
-      {
+    const result = await dispatchLiveOpsAlert({
+      alertDispatch: {
         notifier,
         durableCooldownStore: cooldownStore,
       },
-      request,
-    );
+      event,
+    });
 
     expect(result.notification).toMatchObject({
       delivered: false,
@@ -390,6 +412,35 @@ describe("alert cooldown and notification policy", () => {
       },
     });
     expect(result.failureEvaluation.state.consecutiveFailures).toBe(1);
+  });
+
+  it("accumulates M23 live ops alert provider failures across wrapper calls", async () => {
+    const notifier = new ThrowingNotifier();
+    const alertDispatch: AlertDispatchServiceOptions = {
+      notifier,
+      durableCooldownStore: createInMemoryAlertCooldownStore(),
+    };
+    const event = {
+      environment: "prod",
+      runMode: "live_autonomous_small_budget",
+      eventKind: "TELEGRAM_PROVIDER_FAILURE_SUSTAINED" as const,
+      correlationId: "corr-live-telegram-failure",
+      occurredAt: "2026-06-13T00:06:00.000Z",
+    };
+
+    await dispatchLiveOpsAlert({ alertDispatch, event });
+    await dispatchLiveOpsAlert({ alertDispatch, event });
+    const third = await dispatchLiveOpsAlert({ alertDispatch, event });
+
+    expect(third.failureEvaluation).toMatchObject({
+      manualReviewReasonCode: "notification_consecutive_failure",
+      state: {
+        consecutiveFailures: 3,
+      },
+    });
+    expect(alertDispatch.failureState).toMatchObject({
+      consecutiveFailures: 3,
+    });
   });
 
   it("skips duplicate P0 alerts during durable cooldown and audits the skip", async () => {
