@@ -284,6 +284,46 @@ describe("alert cooldown and notification policy", () => {
       safeSummary: "미체결 주문이 남아 신규 entry를 보류했습니다.",
       occurredAt: "2026-06-13T00:03:00.000Z",
     });
+    const secondBlocked = createLiveOpsAlertRequest({
+      environment: "prod",
+      runMode: "live_autonomous_small_budget",
+      eventKind: "RECONCILE_BLOCKED",
+      market: "KRW-BTC",
+      strategyId: "m23-small-budget",
+      blockedReason: "새 reconcile 차단 근거가 감지됐습니다.",
+      riskEventId: "risk-live-2",
+      occurredAt: "2026-06-13T00:03:10.000Z",
+    });
+    const partialFill = createLiveOpsAlertRequest({
+      environment: "prod",
+      runMode: "live_autonomous_small_budget",
+      eventKind: "ORDER_PARTIALLY_FILLED",
+      market: "KRW-BTC",
+      strategyId: "m23-small-budget",
+      side: "BUY",
+      quantity: "0.0001",
+      filledQuantity: "0.00005",
+      remainingQuantity: "0.00005",
+      idempotencyKey: "idem-live-1",
+      orderId: "local-order-1",
+      evidenceId: "fill-evidence-1",
+      occurredAt: "2026-06-13T00:03:20.000Z",
+    });
+    const secondPartialFill = createLiveOpsAlertRequest({
+      environment: "prod",
+      runMode: "live_autonomous_small_budget",
+      eventKind: "ORDER_PARTIALLY_FILLED",
+      market: "KRW-BTC",
+      strategyId: "m23-small-budget",
+      side: "BUY",
+      quantity: "0.0001",
+      filledQuantity: "0.00002",
+      remainingQuantity: "0.00003",
+      idempotencyKey: "idem-live-1",
+      orderId: "local-order-1",
+      evidenceId: "fill-evidence-2",
+      occurredAt: "2026-06-13T00:03:30.000Z",
+    });
     const secondSubmitted = createLiveOpsAlertRequest({
       environment: "prod",
       runMode: "live_autonomous_small_budget",
@@ -317,6 +357,7 @@ describe("alert cooldown and notification policy", () => {
     expect(blocked).toMatchObject({
       severity: "P1",
       reasonCode: "live_order_reconcile_blocked",
+      dedupeKey: "risk-live-1",
       metadata: {
         blocked_reason: "미체결 주문이 남아 있습니다.",
         risk_event_id: "risk-live-1",
@@ -328,6 +369,12 @@ describe("alert cooldown and notification policy", () => {
     expect(createAlertFingerprint(submitted)).toContain(":live_order_submitted:idem-live-1");
     expect(createAlertFingerprint(secondSubmitted)).toContain(":live_order_submitted:idem-live-2");
     expect(createAlertFingerprint(submitted)).not.toBe(createAlertFingerprint(secondSubmitted));
+    expect(createAlertFingerprint(blocked)).toContain(":live_order_reconcile_blocked:risk-live-1");
+    expect(createAlertFingerprint(secondBlocked)).toContain(":live_order_reconcile_blocked:risk-live-2");
+    expect(createAlertFingerprint(blocked)).not.toBe(createAlertFingerprint(secondBlocked));
+    expect(createAlertFingerprint(partialFill)).toContain(":live_order_partially_filled:fill-evidence-1");
+    expect(createAlertFingerprint(secondPartialFill)).toContain(":live_order_partially_filled:fill-evidence-2");
+    expect(createAlertFingerprint(partialFill)).not.toBe(createAlertFingerprint(secondPartialFill));
   });
 
   it("keeps P1 paper alert provider failures isolated and returns retry candidates", async () => {

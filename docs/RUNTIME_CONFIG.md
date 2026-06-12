@@ -415,10 +415,12 @@ transaction이 commit된 뒤 Telegram/cooldown/audit 알림 경계로 넘어간�
 
 M23 lifecycle/trade event는 `createLiveOpsAlertRequest`가 `live_ops_event` alert payload로 낮추고, runtime은
 `dispatchLiveOpsAlert` wrapper로 전송한다. Telegram 연결 성공과 live order capable 시작은 서로 다른 reason/fingerprint를
-사용한다. 주문 제출/취소/취소 확인/체결/부분체결/risk/cost/reconcile 차단 event는 idempotency key, local order id,
-broker order id, evidence id, correlation id 순서로 `dedupe_key`를 골라 같은 market/strategy에서 여러 live trade event가
-5분 안에 발생해도 서로를 cooldown으로 숨기지 않는다. 정상 종료, operator stop, kill switch, manual review, crash/restart/recovery,
-Telegram provider 장애 지속, 주문/차단 event는 첫 화면에 한국어 상태, 원인, 영향, 필요 조치와 안전한 차단 사유를 배치하고,
+사용한다. 주문 제출/취소/취소 확인 event는 idempotency key, local order id, broker order id, evidence id, correlation id 순서로
+`dedupe_key`를 고른다. 전체/부분 체결 event는 같은 주문 키를 공유할 수 있으므로 evidence id를 우선하고, risk/cost/reconcile
+차단 event는 주문 ID가 없을 수 있으므로 evidence id, risk event id, audit event id, correlation id 순서로 고른다. 같은
+market/strategy에서 여러 live trade event가 5분 안에 발생해도 서로를 cooldown으로 숨기지 않는다. 정상 종료, operator stop,
+kill switch, manual review, crash/restart/recovery, Telegram provider 장애 지속, 주문/차단 event는 첫 화면에 한국어 상태, 원인,
+영향, 필요 조치와 안전한 차단 사유를 배치하고,
 order id, idempotency key, audit/risk/evidence id, event kind, reason code는 `추적 정보`에만 둔다. P0/P1 live event provider
 failure는 기존 `notification_retry` job payload와 manual review failure threshold 경로를 그대로 사용하며, wrapper가 같은
 alert dispatch 옵션 객체에 `failureState`를 되돌려 저장해 연속 실패를 누적한다.

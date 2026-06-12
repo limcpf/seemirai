@@ -214,7 +214,7 @@ describe("Telegram outbound notifier", () => {
         "잔량: 0",
         "",
         "추적 정보",
-        "알림 식별자: alert:prod:live_autonomous_small_budget:P1:live_ops_event:krw-btc:m23-small-budget:live_order_filled:idem-live-1",
+        "알림 식별자: alert:prod:live_autonomous_small_budget:P1:live_ops_event:krw-btc:m23-small-budget:live_order_filled:fill-live-1",
         "발생 시각: 2026-06-13T00:05:00.000Z",
         "마켓: KRW-BTC",
         "전략: m23-small-budget",
