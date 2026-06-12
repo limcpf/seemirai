@@ -2,6 +2,7 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import {
+  createInMemoryAlertCooldownStore,
   ExecutionEngine,
   LiveAutonomousEntryRuntime,
 } from "../../src/application/index.js";
@@ -18,11 +19,16 @@ import type {
   OrderSubmission,
 } from "../../src/domain/index.js";
 import type {
+  AlertDispatchServiceOptions,
+  AlertNotification,
   BrokerPort,
+  DailyReportNotification,
   ExecutionSubmitOrderResult,
   LiveAutonomousBudgetReservationPort,
   LiveAutonomousEntryCandidate,
   LiveAutonomousEntryLossSnapshot,
+  LiveAutonomousEntryRuntimePorts,
+  NotificationResult,
 } from "../../src/application/index.js";
 
 const observedAt = "2026-06-10T12:00:00.000Z";
@@ -80,6 +86,37 @@ describe("M22 live autonomous entry runtime", () => {
       source: "risk_gate",
       approved: true,
       action: "ALLOW",
+    });
+  });
+
+  it("실제 entry 제출 경로에서 M23 live ops 주문 제출 알림을 dispatch한다", async () => {
+    const alertRecorder = createAlertDispatchRecorder();
+    const runtime = createRuntime({
+      liveOpsAlerts: {
+        environment: "prod",
+        runMode: "live_autonomous_small_budget",
+        alertDispatch: alertRecorder.alertDispatch,
+      },
+    });
+
+    const result = await runtime.submitEntryCandidate(createRequest());
+
+    expect(result.status).toBe("SUBMITTED");
+    expect(alertRecorder.alerts).toHaveLength(1);
+    expect(alertRecorder.alerts[0]).toMatchObject({
+      severity: "P1",
+      fingerprint: `alert:prod:live_autonomous_small_budget:P1:live_ops_event:krw-btc:m22_autonomous_entry:live_order_submitted:m22a-${deterministicRandomHex}`,
+      metadata: {
+        source: "live_ops_event",
+        event_kind: "ORDER_SUBMITTED",
+        idempotency_key: `m22a-${deterministicRandomHex}`,
+        broker_order_id: "fake-live-order-001",
+        safe_details: {
+          source: "live_autonomous_entry_runtime",
+          attempt_status: "SUBMITTED",
+          reason_code: "broker_submitted",
+        },
+      },
     });
   });
 
@@ -158,6 +195,68 @@ describe("M22 live autonomous entry runtime", () => {
     );
     expect(reserve).not.toHaveBeenCalled();
     expect(broker.submitOrder).not.toHaveBeenCalled();
+  });
+
+  it("broker 제출 전 RiskGate 차단을 M23 live ops 리스크 차단 알림으로 dispatch한다", async () => {
+    const alertRecorder = createAlertDispatchRecorder();
+    const runtime = new LiveAutonomousEntryRuntime({
+      executionEngine: new ExecutionEngine({ broker: createFakeBroker() }),
+      budgetReservation: createBudgetReservation(),
+      evaluateRiskGate: () => ({
+        approved: false,
+        status: "FAIL",
+        action: "BLOCK_NEW_ORDER",
+        evaluations: [
+          {
+            status: "FAIL",
+            reasonCode: "daily_loss_limit_exceeded",
+            message: "일간 손실 한도를 초과했습니다.",
+            severity: "BLOCKING",
+            action: "BLOCK_NEW_ORDER",
+          },
+        ],
+        failedEvaluations: [
+          {
+            status: "FAIL",
+            reasonCode: "daily_loss_limit_exceeded",
+            message: "일간 손실 한도를 초과했습니다.",
+            severity: "BLOCKING",
+            action: "BLOCK_NEW_ORDER",
+          },
+        ],
+        warningEvaluations: [],
+        thresholdSnapshot: createRiskThresholdSnapshot(
+          defaultRiskLimitThresholds,
+          observedAt,
+          "live-autonomous-entry-runtime.test",
+        ),
+      }),
+      liveOpsAlerts: {
+        environment: "prod",
+        runMode: "live_autonomous_small_budget",
+        alertDispatch: alertRecorder.alertDispatch,
+      },
+      randomHex: () => deterministicRandomHex,
+      clock: () => observedAt,
+    });
+
+    const result = await runtime.submitEntryCandidate(createRequest());
+
+    expect(result.status).toBe("BLOCKED");
+    expect(alertRecorder.alerts).toHaveLength(1);
+    expect(alertRecorder.alerts[0]).toMatchObject({
+      severity: "P1",
+      metadata: {
+        source: "live_ops_event",
+        event_kind: "RISK_BLOCKED",
+        blocked_reason: "RiskGate 결과가 신규 live 주문을 허용하지 않았습니다.",
+        safe_details: {
+          source: "live_autonomous_entry_runtime",
+          attempt_status: "BLOCKED",
+          reason_code: "risk_gate_blocked",
+        },
+      },
+    });
   });
 
   it("requestedNotional이 수량과 가격으로 계산한 지정가 notional과 다르면 차단한다", async () => {
@@ -345,14 +444,40 @@ describe("M22 live autonomous entry runtime", () => {
 function createRuntime(input: {
   broker?: BrokerPort;
   budgetReservation?: LiveAutonomousBudgetReservationPort;
+  liveOpsAlerts?: LiveAutonomousEntryRuntimePorts["liveOpsAlerts"];
 } = {}): LiveAutonomousEntryRuntime {
   const broker = input.broker ?? createFakeBroker();
   return new LiveAutonomousEntryRuntime({
     executionEngine: new ExecutionEngine({ broker }),
     budgetReservation: input.budgetReservation ?? createBudgetReservation(),
+    ...(input.liveOpsAlerts === undefined ? {} : { liveOpsAlerts: input.liveOpsAlerts }),
     randomHex: () => deterministicRandomHex,
     clock: () => observedAt,
   });
+}
+
+function createAlertDispatchRecorder(): {
+  alertDispatch: AlertDispatchServiceOptions;
+  alerts: AlertNotification[];
+} {
+  const alerts: AlertNotification[] = [];
+  return {
+    alerts,
+    alertDispatch: {
+      notifier: {
+        sendAlert: async (notification: AlertNotification): Promise<NotificationResult> => {
+          alerts.push(notification);
+          return { delivered: true, providerMessageId: `message-${alerts.length}` };
+        },
+        sendDailyReport: async (_notification: DailyReportNotification): Promise<NotificationResult> => ({
+          delivered: true,
+        }),
+      },
+      durableCooldownStore: createInMemoryAlertCooldownStore(),
+      memoryCooldownStore: createInMemoryAlertCooldownStore(),
+      clock: () => new Date(observedAt),
+    },
+  };
 }
 
 function createRequest(

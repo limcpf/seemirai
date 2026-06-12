@@ -425,6 +425,11 @@ order id, idempotency key, audit/risk/evidence id, event kind, reason code는 `�
 failure는 기존 `notification_retry` job payload와 manual review failure threshold 경로를 그대로 사용하며, wrapper가 같은
 alert dispatch 옵션 객체에 `failureState`를 되돌려 저장해 연속 실패를 누적한다.
 
+`LiveAutonomousEntryRuntime`은 `liveOpsAlerts` 옵션이 주입되면 실제 entry 후보 처리 경로에서 `dispatchLiveOpsAlert`를 호출한다.
+비용/RiskGate/reconcile/budget 차단은 broker 제출 전 확정된 차단 event로, ExecutionEngine 제출 성공은 `ORDER_SUBMITTED`
+event로 전송한다. 이 dispatch는 주문 판단 결과를 바꾸지 않는 best-effort 후속 side effect이며, alert 저장소나 provider 예외가
+이미 확정된 차단/제출 결과를 rollback하지 않는다.
+
 provider 호출 직전에는 fingerprint 단위 delivery reservation을 먼저 기록한다. 이 atomic gate는 마지막 성공 전송이 cooldown
 안에 있거나 기존 reservation이 만료되지 않았으면 provider 호출 없이 `ALERT_COOLDOWN` audit evidence만 남긴다. 이 경계는
 같은 장애가 동시에 들어와도 두 요청이 모두 Telegram provider를 호출하는 상황을 막기 위한 것이다. cooldown 기준 시각은

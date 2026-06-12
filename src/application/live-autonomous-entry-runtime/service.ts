@@ -16,6 +16,8 @@ import type {
   TimestampInput,
 } from "../../domain/index.js";
 import { parseFinancialDecimal } from "../../shared/index.js";
+import { dispatchLiveOpsAlert } from "../alerts/index.js";
+import type { LiveOpsAlertEventKind, LiveOpsAlertInput } from "../alerts/index.js";
 import {
   createExecutionCostSnapshotEvidence,
   createExecutionRiskApprovalEvidence,
@@ -48,7 +50,38 @@ interface RuntimeViolation {
   metadata?: JsonRecord;
 }
 
+/**
+ * entry runtime 전이에서 live ops alert로 낮출 때 필요한 문맥이다.
+ *
+ * 주문 후보와 attempt key는 runtime이 이미 확정한 값을 재사용해야 하며, alert event는 broker 제출이나 budget reservation 결과를
+ * 바꾸지 않는다. optional detail에는 Telegram token, raw provider body, credential을 넣지 않고 추적 가능한 안전 evidence만
+ * 보존한다.
+ */
+interface EntryLiveOpsAlertContext {
+  request: LiveAutonomousEntryRuntimeRequest;
+  observedAt: TimestampInput;
+  idempotencyKey: string;
+  eventKind: LiveOpsAlertEventKind;
+  attemptStatus: LiveAutonomousOrderAttemptStatus;
+  reasonCode: string;
+  safeSummary: string;
+  blockedReason?: string;
+  brokerOrderId?: string;
+  safeDetails?: JsonRecord;
+}
+
 const upbitKrwMinimumOrderNotional = new Decimal(5_000);
+const costLikePreflightReasonCodes = new Set<string>([
+  "limit_notional_mismatch",
+  "order_notional_below_upbit_minimum",
+  "max_order_budget_exceeded",
+  "daily_budget_exceeded",
+  "open_position_budget_exceeded",
+  "daily_loss_limit_exceeded",
+  "weekly_loss_limit_exceeded",
+  "price_deviation_exceeded",
+  "reference_price_invalid",
+]);
 
 /**
  * M22 제한적 완전 자동매매 entry runtime service다.
@@ -64,6 +97,7 @@ export class LiveAutonomousEntryRuntime {
   private readonly evaluateRiskGate: (context: RiskGateContext) => RiskGateResult;
   private readonly randomHex: LiveAutonomousEntryRuntimePorts["randomHex"];
   private readonly clock: () => TimestampInput;
+  private readonly liveOpsAlerts: LiveAutonomousEntryRuntimePorts["liveOpsAlerts"];
 
   public constructor(ports: LiveAutonomousEntryRuntimePorts) {
     this.executionEngine = ports.executionEngine;
@@ -72,6 +106,7 @@ export class LiveAutonomousEntryRuntime {
     this.evaluateRiskGate = ports.evaluateRiskGate ?? evaluateRiskGateDefault;
     this.randomHex = ports.randomHex;
     this.clock = ports.clock ?? (() => new Date().toISOString());
+    this.liveOpsAlerts = ports.liveOpsAlerts;
   }
 
   /**
@@ -137,6 +172,17 @@ export class LiveAutonomousEntryRuntime {
         preflightViolation.action,
         preflightViolation.metadata,
       );
+      await this.dispatchEntryLiveOpsAlert({
+        request,
+        observedAt,
+        idempotencyKey,
+        eventKind: toRuntimeViolationAlertKind(preflightViolation),
+        attemptStatus: preflightViolation.status,
+        reasonCode: preflightViolation.reasonCode,
+        safeSummary: preflightViolation.message,
+        blockedReason: preflightViolation.message,
+        ...(preflightViolation.metadata === undefined ? {} : { safeDetails: preflightViolation.metadata }),
+      });
       return createResult({
         request,
         idempotencyKey,
@@ -164,6 +210,20 @@ export class LiveAutonomousEntryRuntime {
           cost_reason_code: costDecision.reasonCode,
         },
       );
+      await this.dispatchEntryLiveOpsAlert({
+        request,
+        observedAt,
+        idempotencyKey,
+        eventKind: "COST_BLOCKED",
+        attemptStatus: "BLOCKED",
+        reasonCode: costDecision.reasonCode,
+        safeSummary: "M22 자동매매 주문 후보가 비용 조건을 통과하지 못했습니다.",
+        blockedReason: "비용 조건을 통과하지 못해 신규 live 주문을 제출하지 않았습니다.",
+        safeDetails: {
+          cost_reason_code: costDecision.reasonCode,
+          cost_message: costDecision.message,
+        },
+      });
       return createResult({
         request,
         idempotencyKey,
@@ -203,6 +263,20 @@ export class LiveAutonomousEntryRuntime {
           failed_reason_codes: riskGateResult.failedEvaluations.map((evaluation) => evaluation.reasonCode),
         },
       );
+      await this.dispatchEntryLiveOpsAlert({
+        request,
+        observedAt,
+        idempotencyKey,
+        eventKind: "RISK_BLOCKED",
+        attemptStatus: "BLOCKED",
+        reasonCode: "risk_gate_blocked",
+        safeSummary: "M22 자동매매 주문 후보가 RiskGate를 통과하지 못했습니다.",
+        blockedReason: "RiskGate 결과가 신규 live 주문을 허용하지 않았습니다.",
+        safeDetails: {
+          risk_action: riskGateResult.action,
+          failed_reason_codes: riskGateResult.failedEvaluations.map((evaluation) => evaluation.reasonCode),
+        },
+      });
       return createResult({
         request,
         idempotencyKey,
@@ -256,6 +330,19 @@ export class LiveAutonomousEntryRuntime {
           error_message: error instanceof Error ? error.message : String(error),
         },
       );
+      await this.dispatchEntryLiveOpsAlert({
+        request,
+        observedAt,
+        idempotencyKey,
+        eventKind: "MANUAL_REVIEW_REQUIRED",
+        attemptStatus: "MANUAL_REVIEW_REQUIRED",
+        reasonCode: "budget_reservation_unavailable",
+        safeSummary: "M22 자동매매 예산 선점 저장 결과를 확정할 수 없어 주문을 제출하지 않았습니다.",
+        blockedReason: "예산 선점 저장 상태가 불확실해 운영자 확인 전까지 live 주문을 멈췄습니다.",
+        safeDetails: {
+          error_message: error instanceof Error ? error.message : String(error),
+        },
+      });
       return createResult({
         request,
         idempotencyKey,
@@ -280,6 +367,20 @@ export class LiveAutonomousEntryRuntime {
         "최신 예산 사용량과 open position notional을 확인합니다.",
         reservationResult.metadata,
       );
+      await this.dispatchEntryLiveOpsAlert({
+        request,
+        observedAt,
+        idempotencyKey,
+        eventKind: "COST_BLOCKED",
+        attemptStatus: "BLOCKED",
+        reasonCode: reservationResult.reasonCode,
+        safeSummary: "M22 자동매매 예산 선점이 거부되어 주문을 제출하지 않았습니다.",
+        blockedReason: "예산 선점이 거부되어 신규 live 주문을 제출하지 않았습니다.",
+        safeDetails: {
+          reservation_message: reservationResult.message,
+          ...(reservationResult.metadata ?? {}),
+        },
+      });
       return createResult({
         request,
         idempotencyKey,
@@ -328,6 +429,21 @@ export class LiveAutonomousEntryRuntime {
               error_message: releaseFailure,
             },
           );
+          await this.dispatchEntryLiveOpsAlert({
+            request,
+            observedAt,
+            idempotencyKey,
+            eventKind: "MANUAL_REVIEW_REQUIRED",
+            attemptStatus: "MANUAL_REVIEW_REQUIRED",
+            reasonCode: "budget_reservation_release_failed",
+            safeSummary: "ExecutionEngine은 broker 제출 전에 거부했지만 예산 선점 해제에 실패했습니다.",
+            blockedReason: "broker 제출 전 거부 이후 예산 선점 해제가 실패해 수동 복구가 필요합니다.",
+            safeDetails: {
+              reservation_id: reservation.reservationId,
+              execution_rejection_reason_code: executionResult.rejection.reasonCode,
+              error_message: releaseFailure,
+            },
+          });
           return createResult({
             request,
             idempotencyKey,
@@ -354,6 +470,17 @@ export class LiveAutonomousEntryRuntime {
           "거부 사유를 확인하고 같은 identifier를 재사용하지 않습니다.",
           executionResult.rejection.metadata,
         );
+        await this.dispatchEntryLiveOpsAlert({
+          request,
+          observedAt,
+          idempotencyKey,
+          eventKind: "RISK_BLOCKED",
+          attemptStatus: "REJECTED",
+          reasonCode: executionResult.rejection.reasonCode,
+          safeSummary: "ExecutionEngine이 broker 제출 전에 M22 자동매매 주문을 거부했습니다.",
+          blockedReason: "ExecutionEngine이 broker side effect 전에 주문을 거부했습니다.",
+          safeDetails: executionResult.rejection.metadata ?? {},
+        });
         return createResult({
           request,
           idempotencyKey,
@@ -384,6 +511,20 @@ export class LiveAutonomousEntryRuntime {
           execution_status: executionResult.status,
         },
       );
+      await this.dispatchEntryLiveOpsAlert({
+        request,
+        observedAt,
+        idempotencyKey,
+        eventKind: "ORDER_SUBMITTED",
+        attemptStatus: "SUBMITTED",
+        reasonCode: executionResult.status === "SUBMITTED" ? "broker_submitted" : "duplicate_suppressed",
+        safeSummary: "M22 자동매매 주문이 ExecutionEngine 경계를 통과했습니다.",
+        brokerOrderId: executionResult.brokerOrder.brokerOrderId,
+        safeDetails: {
+          execution_status: executionResult.status,
+          reservation_id: reservation.reservationId,
+        },
+      });
       return createResult({
         request,
         idempotencyKey,
@@ -413,6 +554,20 @@ export class LiveAutonomousEntryRuntime {
           reservation_id: reservation.reservationId,
         },
       );
+      await this.dispatchEntryLiveOpsAlert({
+        request,
+        observedAt,
+        idempotencyKey,
+        eventKind: "MANUAL_REVIEW_REQUIRED",
+        attemptStatus: "MANUAL_REVIEW_REQUIRED",
+        reasonCode: "broker_submission_uncertain",
+        safeSummary: "broker 제출 결과를 확정할 수 없어 M22 자동매매 주문을 수동 점검 상태로 남겼습니다.",
+        blockedReason: "broker 제출 side effect 여부가 불확실해 예산 선점을 유지하고 수동 reconcile이 필요합니다.",
+        safeDetails: {
+          error_message: error instanceof Error ? error.message : String(error),
+          reservation_id: reservation.reservationId,
+        },
+      });
       return createResult({
         request,
         idempotencyKey,
@@ -450,6 +605,82 @@ export class LiveAutonomousEntryRuntime {
       return error instanceof Error ? error.message : String(error);
     }
   }
+
+  /**
+   * entry runtime의 확정 전이를 M23 live ops Telegram alert 경계로 전달한다.
+   *
+   * alert dispatch는 provider/cooldown/audit side effect를 만들 수 있지만, 그 실패가 이미 확정된 주문 차단 또는 제출 결과를
+   * 되돌리면 운영자가 실제 broker 상태를 더 알기 어려워진다. 따라서 이 helper는 alert 옵션이 있을 때만 best-effort로 전송하고
+   * dispatch 계층 예외는 attempt 결과와 분리한다.
+   */
+  private async dispatchEntryLiveOpsAlert(input: EntryLiveOpsAlertContext): Promise<void> {
+    if (this.liveOpsAlerts === undefined) {
+      return;
+    }
+
+    const safeDetails: JsonRecord = {
+      source: "live_autonomous_entry_runtime",
+      attempt_status: input.attemptStatus,
+      reason_code: input.reasonCode,
+      ...(input.safeDetails === undefined ? {} : { detail: input.safeDetails }),
+    };
+    const event: LiveOpsAlertInput = {
+      environment: this.liveOpsAlerts.environment,
+      runMode: this.liveOpsAlerts.runMode,
+      eventKind: input.eventKind,
+      occurredAt: input.observedAt,
+      correlationId: input.idempotencyKey,
+      market: input.request.candidate.market,
+      strategyId: input.request.candidate.strategyId,
+      operatingMode: "LIVE_AUTONOMOUS_SMALL_BUDGET",
+      liveOrderCapable: !input.request.killSwitchActive && input.request.reconcileFresh,
+      side: "BUY",
+      quantity: input.request.candidate.requestedQuantity,
+      requestedPrice: input.request.candidate.requestedPrice,
+      notionalKrw: input.request.candidate.requestedNotional,
+      orderId: input.idempotencyKey,
+      idempotencyKey: input.idempotencyKey,
+      safeSummary: input.safeSummary,
+      safeDetails,
+      ...(input.blockedReason === undefined ? {} : { blockedReason: input.blockedReason }),
+      ...(input.brokerOrderId === undefined ? {} : { brokerOrderId: input.brokerOrderId }),
+    };
+
+    try {
+      await dispatchLiveOpsAlert({
+        alertDispatch: this.liveOpsAlerts.alertDispatch,
+        event,
+      });
+    } catch {
+      // 알림 side effect 실패가 주문 상태 machine을 되돌리면 broker/reconcile evidence와 application 결과가 어긋난다.
+    }
+  }
+}
+
+/**
+ * preflight violation을 live ops alert event 종류로 낮춘다.
+ *
+ * kill switch와 reconcile 차단은 운영자가 확인해야 할 경계가 다르므로 전용 event로 분리하고, 금액/손실/가격 계열은 비용 차단으로
+ * 묶는다. 내부 reason code는 safeDetails에 보존되며, 이 함수는 알림 전송이나 상태 변경 side effect를 만들지 않는다.
+ */
+function toRuntimeViolationAlertKind(violation: RuntimeViolation): LiveOpsAlertEventKind {
+  if (violation.reasonCode === "kill_switch_active") {
+    return "KILL_SWITCH_STOP";
+  }
+
+  if (violation.reasonCode === "reconcile_stale") {
+    return "RECONCILE_BLOCKED";
+  }
+
+  if (violation.status === "MANUAL_REVIEW_REQUIRED") {
+    return "MANUAL_REVIEW_REQUIRED";
+  }
+
+  if (costLikePreflightReasonCodes.has(violation.reasonCode)) {
+    return "COST_BLOCKED";
+  }
+
+  return "RISK_BLOCKED";
 }
 
 /**
