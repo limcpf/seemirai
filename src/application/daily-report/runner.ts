@@ -7,6 +7,7 @@ import type {
   NotifierPort,
 } from "../ports/index.js";
 import type { LiveAutonomousExitStatusSummary } from "../live-autonomous-exit-status.js";
+import type { LiveOpsStatusSummary } from "../live-ops-status.js";
 import { buildDailyReportNotification } from "./service.js";
 import type {
   DailyReportAggregate,
@@ -55,6 +56,13 @@ export interface RunDailyReportOptions {
    * trace 분리와 secret 제거를 끝낸 값이어야 한다.
    */
   liveAutonomousExit?: LiveAutonomousExitStatusSummary | null;
+  /**
+   * daily report notification 본문에 포함할 M23 live ops safe summary다.
+   *
+   * runner는 이 값을 formatter까지 전달만 한다. summary 생성과 검증은 호출 경계가 책임지며, 여기서는 추가 DB 조회나 broker
+   * 호출 없이 기존 report 생성/전송 흐름의 idempotency를 유지한다.
+   */
+  liveOps?: LiveOpsStatusSummary | null;
   clock?: () => Date;
   actor?: string;
   correlationId?: string;
@@ -98,6 +106,7 @@ export async function runDailyReport(options: RunDailyReportOptions): Promise<Ru
       dataProvider: options.dataProvider,
       ...(options.generatedAt === undefined ? {} : { generatedAt: options.generatedAt }),
       ...(options.liveAutonomousExit === undefined ? {} : { liveAutonomousExit: options.liveAutonomousExit }),
+      ...(options.liveOps === undefined ? {} : { liveOps: options.liveOps }),
     });
   } catch (error) {
     const errorMessage = toErrorMessage(error);

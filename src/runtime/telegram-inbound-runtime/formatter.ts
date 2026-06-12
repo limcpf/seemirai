@@ -21,12 +21,15 @@ export function formatTelegramStatusCommandResponse(
     `DB 상태: ${snapshot.database.ready ? "준비됨" : "점검 필요"}`,
     `M22 자동매매: ${snapshot.runtime.liveAutonomous.statusLabel}`,
     `M22 자동 청산: ${snapshot.liveAutonomousExit.statusLabel} - ${snapshot.liveAutonomousExit.message}`,
+    ...formatLiveOpsStatusLines(snapshot),
     `PnL 상태: ${snapshot.pnl.statusLabel} - ${snapshot.pnl.message}`,
     `필요 조치: ${firstAction([
-      primaryLiveAutonomousAction(snapshot),
       snapshot.pnl.action,
       snapshot.paper.action,
-      snapshot.reconcile.actionRequired,
+      primaryLiveOpsAction(snapshot),
+      primaryLiveAutonomousAction(snapshot),
+      actionableReconcileAction(snapshot.reconcile.actionRequired),
+      snapshot.liveOps?.action ?? null,
     ])}`,
     "",
     "추적 정보",
@@ -34,6 +37,8 @@ export function formatTelegramStatusCommandResponse(
     `생성 시각: ${snapshot.generatedAt}`,
     `kill switch: ${snapshot.tradingState.killSwitchState}`,
     `M22 exit: ${snapshot.liveAutonomousExit.statusCode}`,
+    optionalLine("M23 mode", snapshot.liveOps?.mode),
+    optionalLine("M23 status", snapshot.liveOps?.status),
   ]);
 }
 
@@ -434,6 +439,38 @@ function primaryLiveAutonomousAction(snapshot: StatusSnapshot): string | null {
   }
 
   return snapshot.liveAutonomousExit.action ?? snapshot.runtime.liveAutonomous.action;
+}
+
+function primaryLiveOpsAction(snapshot: StatusSnapshot): string | null {
+  if (snapshot.liveOps === undefined || snapshot.liveOps.action === null) {
+    return null;
+  }
+  if (snapshot.liveOps.status === "unavailable") {
+    return snapshot.liveOps.action;
+  }
+  if (!snapshot.liveOps.liveEnabled) {
+    return null;
+  }
+  if (snapshot.liveOps.status !== "ok") {
+    return snapshot.liveOps.action;
+  }
+
+  return null;
+}
+
+function formatLiveOpsStatusLines(snapshot: StatusSnapshot): string[] {
+  if (snapshot.liveOps === undefined) {
+    return [];
+  }
+
+  return [
+    `M23 실매매 운영: ${snapshot.liveOps.statusLabel} - ${snapshot.liveOps.message}`,
+    `M23 주문 가능: ${snapshot.liveOps.liveOrderCapable ? "예" : "아니오"}`,
+  ];
+}
+
+function actionableReconcileAction(action: string): string | null {
+  return action === "정상" ? null : action;
 }
 
 function optionalLine(label: string, value: string | undefined | null): string | undefined {

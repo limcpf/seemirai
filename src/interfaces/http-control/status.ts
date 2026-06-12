@@ -1,9 +1,10 @@
 import { sql } from "kysely";
 import {
   createLiveAutonomousExitStatusSummary,
+  createLiveOpsStatusSummary,
   dailyReportJobType,
 } from "../../application/index.js";
-import type { PnLAccountingStatusSummary, WhySummary } from "../../application/index.js";
+import type { LiveOpsStatusSummary, PnLAccountingStatusSummary, WhySummary } from "../../application/index.js";
 import type { KillSwitchState, Phase15AltApprovalEvidenceSnapshot } from "../../domain/index.js";
 import { getKillSwitchActionPlan } from "../../domain/index.js";
 import {
@@ -110,46 +111,122 @@ export function createDatabaseControlStatusProvider(
         pnl,
         why,
       );
+      const tradingState = {
+        state: killSwitch.state,
+        killSwitchState: killSwitch.state,
+        blockedReason,
+        newOrdersBlocked: actionPlan.newOrdersBlocked,
+        requiresManualReview: actionPlan.requiresManualReview,
+      };
+      const marketData = {
+        connectionStatus: options.marketData?.connectionStatus ?? "unknown",
+        lagMs: options.marketData?.lagMs ?? null,
+        updatedAt: options.marketData?.updatedAt ?? null,
+      };
+      const liveAutonomousExit = options.liveAutonomousExit ?? createLiveAutonomousExitStatusSummary({
+        enabled: runtime.liveAutonomous.enabled,
+        runtimeReady: runtime.liveAutonomous.ready,
+        exitEngineReady: runtime.liveAutonomous.exitEngineReady,
+        observedAt: generatedAt,
+        reconcile: {
+          result: reconcile.result,
+          mismatchCount: reconcile.mismatchCount,
+          openOrderCount: reconcile.openOrderCount,
+          balanceStatus: reconcile.balanceStatus,
+          websocketStatus: reconcile.websocketStatus,
+          lastReconcileAt: reconcile.lastReconcileAt,
+        },
+      });
+      const liveOps = toLiveOpsStatus({
+        options,
+        generatedAt,
+        runtime,
+        tradingState,
+        marketData,
+        reconcile,
+        pnl,
+        alerts,
+      });
       // kill switch action plan은 상태 문자열을 실제 주문 차단/수동 검토 신호로 변환하는 경계다.
       return {
         generatedAt,
         runtime,
-        tradingState: {
-          state: killSwitch.state,
-          killSwitchState: killSwitch.state,
-          blockedReason,
-          newOrdersBlocked: actionPlan.newOrdersBlocked,
-          requiresManualReview: actionPlan.requiresManualReview,
-        },
-        marketData: {
-          connectionStatus: options.marketData?.connectionStatus ?? "unknown",
-          lagMs: options.marketData?.lagMs ?? null,
-          updatedAt: options.marketData?.updatedAt ?? null,
-        },
+        tradingState,
+        marketData,
         paper,
         database: readiness,
         alerts,
         dailyReport,
         pnl,
         reconcile,
-        liveAutonomousExit: options.liveAutonomousExit ?? createLiveAutonomousExitStatusSummary({
-          enabled: runtime.liveAutonomous.enabled,
-          runtimeReady: runtime.liveAutonomous.ready,
-          exitEngineReady: runtime.liveAutonomous.exitEngineReady,
-          observedAt: generatedAt,
-          reconcile: {
-            result: reconcile.result,
-            mismatchCount: reconcile.mismatchCount,
-            openOrderCount: reconcile.openOrderCount,
-            balanceStatus: reconcile.balanceStatus,
-            websocketStatus: reconcile.websocketStatus,
-            lastReconcileAt: reconcile.lastReconcileAt,
-          },
-        }),
+        liveAutonomousExit,
+        liveOps,
         why,
       };
     },
   };
+}
+
+/**
+ * `/status.liveOps` summary를 현재 status snapshot의 safe field에서 생성한다.
+ *
+ * 이 경계는 DB-backed status provider가 이미 읽은 runtime/reconcile/PnL/alert 값을 재사용한다. 최신 후보, 판단, 주문,
+ * 체결 evidence는 아직 별도 collector가 주입하지 않으므로 결측 fact로 남기며, 추가 DB 조회나 broker side effect는 만들지 않는다.
+ */
+function toLiveOpsStatus(input: {
+  options: CreateDatabaseControlStatusProviderOptions;
+  generatedAt: string;
+  runtime: ControlStatusSnapshot["runtime"];
+  tradingState: ControlStatusSnapshot["tradingState"];
+  marketData: ControlStatusSnapshot["marketData"];
+  reconcile: ReconcileStatusSummary;
+  pnl: ControlStatusSnapshot["pnl"];
+  alerts: ControlStatusSnapshot["alerts"];
+}): LiveOpsStatusSummary {
+  return input.options.liveOpsStatus ?? createLiveOpsStatusSummary({
+    observedAt: input.generatedAt,
+    runtimeMode: input.options.runtimeConfig.mode,
+    paperNoKey: input.options.runtimeConfig.paper_no_key,
+    liveTradingEnabled: input.options.runtimeConfig.live_trading_enabled,
+    liveAutonomous: input.runtime.liveAutonomous,
+    marketData: input.marketData,
+    reconcile: {
+      result: input.reconcile.result,
+      mismatchCount: input.reconcile.mismatchCount,
+      openOrderCount: input.reconcile.openOrderCount,
+      lastReconcileAt: input.reconcile.lastReconcileAt,
+      actionRequired: input.reconcile.actionRequired,
+    },
+    pnl: {
+      statusLabel: input.pnl.statusLabel,
+      latestCapturedAt: input.pnl.latestCapturedAt,
+      latestEquityKrw: input.pnl.latestEquityKrw,
+      latestRealizedPnlKrw: input.pnl.latestRealizedPnlKrw,
+      latestUnrealizedPnlKrw: input.pnl.latestUnrealizedPnlKrw,
+    },
+    tradingState: input.tradingState,
+    alerts: {
+      statusLabel: input.alerts.statusLabel,
+      lastSentAt: input.alerts.lastSentAt,
+      lastSkippedAt: input.alerts.lastSkippedAt,
+      action: input.alerts.action,
+    },
+    latestHeartbeat: input.marketData.updatedAt === null
+      ? null
+      : {
+          statusLabel: input.marketData.connectionStatus === "CONNECTED" ? "수신 확인" : "수신 상태 확인 필요",
+          message: "시장 데이터 수신 시각을 M23 heartbeat 관측값으로 사용했습니다.",
+          observedAt: input.marketData.updatedAt,
+          action: input.marketData.connectionStatus === "CONNECTED"
+            ? null
+            : "market data 연결 상태와 websocket 재연결 로그를 확인하세요.",
+          trace: {
+            source: "market_data_status",
+            connectionStatus: input.marketData.connectionStatus,
+            lagMs: input.marketData.lagMs,
+          },
+        },
+  });
 }
 
 /**

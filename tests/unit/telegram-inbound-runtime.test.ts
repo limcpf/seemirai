@@ -13,6 +13,7 @@ import {
 import {
   createInMemoryTelegramInboundDedupeStore,
   createKillSwitchControlDecision,
+  createLiveOpsStatusSummary,
   type AuditEvent,
   type AuditEventReceipt,
   type AuditLogPort,
@@ -251,11 +252,112 @@ describe("Telegram inbound command runtime", () => {
     expect(ordersText).toContain("잔량: 0.0004");
   });
 
-  it("does not let disabled M22 guidance hide current operational actions", () => {
+  it("includes M23 live ops summary in /status without exposing raw mode as primary text", () => {
+    const base = createStatusSnapshot();
     const text = formatTelegramStatusCommandResponse(
       createStatusSnapshot({
+        liveOps: createLiveOpsStatusSummary({
+          observedAt: now,
+          runtimeMode: "LIVE_AUTONOMOUS_SMALL_BUDGET",
+          paperNoKey: false,
+          liveTradingEnabled: true,
+          liveAutonomous: {
+            ...base.runtime.liveAutonomous,
+            enabled: true,
+            ready: true,
+            keyScopeEvidenceConfigured: true,
+            telegramInboundReady: true,
+            reconcileFresh: true,
+            pnlStatusReady: true,
+            decisionLedgerReady: true,
+            exitEngineReady: true,
+            statusLabel: "M23 guard 통과",
+            message: "M23 guard evidence가 모두 준비됐습니다.",
+            action: null,
+            trace: {
+              source: "live_autonomous_runtime_guard",
+              reason: "live_autonomous_guard_ready",
+            },
+          },
+          marketData: base.marketData,
+          reconcile: {
+            result: base.reconcile.result,
+            mismatchCount: base.reconcile.mismatchCount,
+            openOrderCount: base.reconcile.openOrderCount,
+            lastReconcileAt: base.reconcile.lastReconcileAt,
+            actionRequired: base.reconcile.actionRequired,
+          },
+          pnl: {
+            statusLabel: base.pnl.statusLabel,
+            latestCapturedAt: base.pnl.latestCapturedAt,
+            latestEquityKrw: base.pnl.latestEquityKrw,
+            latestRealizedPnlKrw: base.pnl.latestRealizedPnlKrw,
+            latestUnrealizedPnlKrw: base.pnl.latestUnrealizedPnlKrw,
+          },
+          tradingState: {
+            killSwitchState: base.tradingState.killSwitchState,
+            newOrdersBlocked: base.tradingState.newOrdersBlocked,
+            requiresManualReview: base.tradingState.requiresManualReview,
+            blockedReason: base.tradingState.blockedReason,
+          },
+          alerts: {
+            statusLabel: base.alerts.statusLabel,
+            lastSentAt: base.alerts.lastSentAt,
+            lastSkippedAt: base.alerts.lastSkippedAt,
+            action: base.alerts.action,
+          },
+        }),
+      }),
+      "corr-m23-status",
+    );
+
+    expect(text).toContain("M23 실매매 운영: 실매매 가능");
+    expect(text).toContain("M23 주문 가능: 예");
+    expect(text).toContain("필요 조치: 후보 처리 전에도 budget");
+    expect(text).toContain("M23 mode: live_order_capable");
+    expect(text.split("추적 정보")[0]).not.toContain("live_order_capable");
+  });
+
+  it("does not let disabled M22 guidance hide current operational actions", () => {
+    const base = createStatusSnapshot();
+    const text = formatTelegramStatusCommandResponse(
+      createStatusSnapshot({
+        liveOps: createLiveOpsStatusSummary({
+          observedAt: now,
+          runtimeMode: "PAPER_TRADING",
+          paperNoKey: true,
+          liveTradingEnabled: false,
+          liveAutonomous: base.runtime.liveAutonomous,
+          marketData: base.marketData,
+          reconcile: {
+            result: base.reconcile.result,
+            mismatchCount: base.reconcile.mismatchCount,
+            openOrderCount: base.reconcile.openOrderCount,
+            lastReconcileAt: base.reconcile.lastReconcileAt,
+            actionRequired: base.reconcile.actionRequired,
+          },
+          pnl: {
+            statusLabel: base.pnl.statusLabel,
+            latestCapturedAt: base.pnl.latestCapturedAt,
+            latestEquityKrw: base.pnl.latestEquityKrw,
+            latestRealizedPnlKrw: base.pnl.latestRealizedPnlKrw,
+            latestUnrealizedPnlKrw: base.pnl.latestUnrealizedPnlKrw,
+          },
+          tradingState: {
+            killSwitchState: base.tradingState.killSwitchState,
+            newOrdersBlocked: base.tradingState.newOrdersBlocked,
+            requiresManualReview: base.tradingState.requiresManualReview,
+            blockedReason: base.tradingState.blockedReason,
+          },
+          alerts: {
+            statusLabel: base.alerts.statusLabel,
+            lastSentAt: base.alerts.lastSentAt,
+            lastSkippedAt: base.alerts.lastSkippedAt,
+            action: base.alerts.action,
+          },
+        }),
         pnl: {
-          ...createStatusSnapshot().pnl,
+          ...base.pnl,
           status: "unavailable",
           action: "PnL snapshot provider를 복구하세요.",
         },
