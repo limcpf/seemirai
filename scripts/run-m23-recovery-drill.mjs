@@ -251,25 +251,35 @@ function createHeartbeatRecoveryCheck(afterEvents) {
 }
 
 function createDuplicateLiveOrderCheck(beforeEvents, afterEvents) {
-  const beforeIds = collectSubmissionIds(beforeEvents);
-  const afterIds = collectSubmissionIds(afterEvents);
-  const allIds = [...beforeIds, ...afterIds];
-  const duplicateIds = [...new Set(allIds.filter((id, index) => allIds.indexOf(id) !== index))];
-  const repeatedAfterRestart = [...new Set(afterIds.filter((id) => beforeIds.includes(id)))];
+  const evidence = createDuplicateLiveOrderEvidence(beforeEvents, afterEvents);
 
-  if (duplicateIds.length > 0 || repeatedAfterRestart.length > 0) {
+  if (evidence.duplicateIds.length > 0) {
     return failCheck("restart 전후 같은 live order identifier가 다시 제출됐다.", {
-      duplicateIds,
-      repeatedAfterRestart,
-      beforeSubmissionCount: beforeIds.length,
-      afterSubmissionCount: afterIds.length,
+      ...evidence,
     });
   }
 
   return okCheck("restart 후 기존 order attempt가 duplicate live order로 재제출되지 않았다.", {
+    beforeSubmissionCount: evidence.beforeSubmissionCount,
+    afterSubmissionCount: evidence.afterSubmissionCount,
+  });
+}
+
+function createDuplicateLiveOrderEvidence(beforeEvents, afterEvents) {
+  const beforeIds = collectSubmissionIds(beforeEvents);
+  const afterIds = collectSubmissionIds(afterEvents);
+  // broker_submission/order_submitted 한 쌍은 같은 주문의 lifecycle evidence이므로 category별 반복 제출만 duplicate로 센다.
+  const duplicateAfterRestart = collectDuplicateSubmissionIds(afterEvents);
+  const repeatedAfterRestart = [...new Set(afterIds.filter((id) => beforeIds.includes(id)))];
+  const duplicateIds = [...new Set([...duplicateAfterRestart, ...repeatedAfterRestart])];
+
+  return {
+    duplicateIds,
+    duplicateAfterRestart,
+    repeatedAfterRestart,
     beforeSubmissionCount: beforeIds.length,
     afterSubmissionCount: afterIds.length,
-  });
+  };
 }
 
 function createReconcileRecoveryCheck(afterEvents) {
@@ -418,7 +428,7 @@ function createSecretScanCheck(beforeRaw, afterRaw) {
 
 function createMetrics(beforeLog, afterLog) {
   const events = [...beforeLog.events, ...afterLog.events];
-  const duplicateOrderCheck = createDuplicateLiveOrderCheck(beforeLog.events, afterLog.events);
+  const duplicateOrderEvidence = createDuplicateLiveOrderEvidence(beforeLog.events, afterLog.events);
   return {
     heartbeatCount: events.filter((event) => event.type === "m22_pilot_heartbeat").length,
     orderSubmissionCount: collectSubmissionIds(events).length,
@@ -428,14 +438,14 @@ function createMetrics(beforeLog, afterLog) {
     dailyReportGeneratedCount: afterLog.events.filter((event) => event.type === "daily_report_generated").length,
     failClosedDrillCount: afterLog.events.filter((event) => event.type === "fail_closed_drill").length,
     crashCount: events.filter((event) => event.type === "runtime_crash" || event.type === "crash").length,
-    unhandledRejectionCount: events.filter((event) => event.type === "unhandled_rejection").length,
+    unhandledRejectionCount: events.filter((event) => event.type === "unhandled_rejection" || event.unhandledRejection === true).length,
     riskGateBypassCount: events.filter((event) => event.type === "risk_gate_bypass").length,
     reconcileMismatchCount: events.filter((event) => event.type === "live_reconcile_mismatch" || event.type === "reconcile_mismatch").length
       + events.filter((event) => event.type === "live_reconcile_completed").filter((event) => {
         const mismatchCount = Number(event.mismatchCount ?? 0);
         return !Number.isFinite(mismatchCount) || mismatchCount !== 0 || !["SUCCESS", "CLEAN"].includes(readString(event.result) ?? "");
       }).length,
-    duplicateOrderCount: (duplicateOrderCheck.status === "fail" ? 1 : 0)
+    duplicateOrderCount: duplicateOrderEvidence.duplicateIds.length
       + events.filter((event) => event.type === "duplicate_order").length,
     untrackedFillCount: events.filter((event) => event.type === "untracked_fill").length,
     liveOrderCleanupFailureCount: events.filter((event) =>
@@ -477,6 +487,26 @@ function collectSubmissionIds(events) {
     .filter((value) => value !== undefined);
 
   return Array.from(new Set([...brokerSubmissionIds, ...orderSubmittedIds]));
+}
+
+function collectDuplicateSubmissionIds(events) {
+  const brokerSubmissionIds = events
+    .filter((event) => event.type === "broker_submission")
+    .map((event) => readString(event.idempotencyKey) ?? readString(event.identifier))
+    .filter((value) => value !== undefined);
+  const orderSubmittedIds = events
+    .filter((event) => event.type === "order_submitted")
+    .map((event) => readString(event.identifier) ?? readString(event.idempotencyKey))
+    .filter((value) => value !== undefined);
+
+  return [...new Set([
+    ...collectDuplicateValues(brokerSubmissionIds),
+    ...collectDuplicateValues(orderSubmittedIds),
+  ])];
+}
+
+function collectDuplicateValues(values) {
+  return values.filter((value, index) => values.indexOf(value) !== index);
 }
 
 async function readEventLog(filePath) {

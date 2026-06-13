@@ -16,7 +16,9 @@ describe("M23 recovery drill script", () => {
     expect(unit).toContain("User=lim");
     expect(unit).toContain("EnvironmentFile=/home/lim/vaults/99_운영/seemirai-m22-live-autonomous/m22.env");
     expect(unit).toContain("ExecStart=/home/lim/vaults/99_운영/seemirai-m22-live-autonomous/run-24h-pilot.sh");
+    expect(unit).toContain("Restart=on-failure");
     expect(unit).not.toContain("%h/");
+    expect(unit).not.toContain("Restart=always");
   });
 
   it("skips artifact validation unless the explicit M23 recovery guard is enabled", async () => {
@@ -136,6 +138,28 @@ describe("M23 recovery drill script", () => {
     expect(getCheck(summary, "duplicateLiveOrder")).toMatchObject({
       status: "fail",
       evidence: { repeatedAfterRestart: ["m22a-restart-mixed-duplicate"] },
+    });
+  });
+
+  it("fails when broker_submission repeats the same identifier after restart", async () => {
+    const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-m23-recovery-after-duplicate-"));
+    const beforePath = path.join(artifactDir, "before.jsonl");
+    const afterPath = path.join(artifactDir, "after.jsonl");
+    await writeEventLog(beforePath, validBeforeRestartEvents("restart-after-duplicate"));
+    await writeEventLog(afterPath, [
+      ...validAfterRestartEvents("restart-after-duplicate"),
+      { type: "broker_submission", observedAt: "2026-06-13T00:00:10.000Z", idempotencyKey: "m22a-after-restart-duplicate" },
+      { type: "broker_submission", observedAt: "2026-06-13T00:00:11.000Z", idempotencyKey: "m22a-after-restart-duplicate" },
+    ]);
+
+    const summary = await runScriptExpectingFailure(validArtifactArgs(artifactDir, beforePath, afterPath));
+
+    expect(summary.metrics.duplicateOrderCount).toBe(1);
+    expect(getCheck(summary, "duplicateLiveOrder")).toMatchObject({
+      status: "fail",
+      evidence: {
+        duplicateAfterRestart: ["m22a-after-restart-duplicate"],
+      },
     });
   });
 
@@ -363,6 +387,24 @@ describe("M23 recovery drill script", () => {
       status: "fail",
     });
   });
+
+  it("counts legacy unhandledRejection flags as closeout failures", async () => {
+    const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-m23-recovery-unhandled-flag-"));
+    const beforePath = path.join(artifactDir, "before.jsonl");
+    const afterPath = path.join(artifactDir, "after.jsonl");
+    await writeEventLog(beforePath, validBeforeRestartEvents("restart-unhandled-flag"));
+    await writeEventLog(afterPath, [
+      ...validAfterRestartEvents("restart-unhandled-flag"),
+      { type: "live_ops_event", observedAt: "2026-06-13T00:00:10.000Z", unhandledRejection: true },
+    ]);
+
+    const summary = await runScriptExpectingFailure(validArtifactArgs(artifactDir, beforePath, afterPath));
+
+    expect(summary.metrics.unhandledRejectionCount).toBe(1);
+    expect(getCheck(summary, "closeoutZeroCounters")).toMatchObject({
+      status: "fail",
+    });
+  });
 });
 
 async function runScript(args: readonly string[], env: Record<string, string> = {}) {
@@ -472,6 +514,7 @@ interface M23RecoveryDrillSummary {
     duplicateOrderCount: number;
     riskGateBypassCount: number;
     crashCount: number;
+    unhandledRejectionCount: number;
     reconcileMismatchCount: number;
     liveOrderCleanupFailureCount: number;
     failClosedDrillCount: number;

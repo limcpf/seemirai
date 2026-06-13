@@ -17,7 +17,8 @@ Environment=SEEMIRAI_RUN_M22_AUTONOMOUS_DAEMON=1
 ExecStart=/home/lim/vaults/99_운영/seemirai-m22-live-autonomous/run-24h-pilot.sh
 KillSignal=SIGTERM
 TimeoutStopSec=30
-Restart=always
+# 정상 24시간 완료는 candidate/env handoff 뒤 다음 segment를 시작해야 하므로 실패 종료만 즉시 복구한다.
+Restart=on-failure
 RestartSec=10
 NoNewPrivileges=true
 PrivateTmp=true
