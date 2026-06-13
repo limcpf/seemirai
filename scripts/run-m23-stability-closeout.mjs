@@ -31,8 +31,8 @@ const closeoutCounterNames = [
   "liveOrderCleanupFailureCount",
 ];
 const sensitivePatterns = [
-  { label: "access_key field", pattern: /"access_key"\s*:\s*"(?!<redacted>|redacted)[^"]{4,}"/i },
-  { label: "secret_key field", pattern: /"secret_key"\s*:\s*"(?!<redacted>|redacted)[^"]{4,}"/i },
+  { label: "access_key field", pattern: /"(?:upbit_)?access_key"\s*:\s*"(?!<redacted>|redacted)[^"]{4,}"/i },
+  { label: "secret_key field", pattern: /"(?:upbit_)?secret_key"\s*:\s*"(?!<redacted>|redacted)[^"]{4,}"/i },
   { label: "telegram token field", pattern: /"telegram_bot_token"\s*:\s*"(?!<redacted>|redacted)[^"]{4,}"/i },
   { label: "authorization bearer", pattern: /authorization:\s*bearer\s+(?!<redacted>|redacted)[^\s"']+/i },
   { label: "postgres credential url", pattern: /postgres(?:ql)?:\/\/[^:\s"']+:[^@\s"']+@/i },
@@ -239,17 +239,37 @@ function createSegmentCompletenessCheck(segments) {
     .filter((day) => day !== undefined);
   const uniqueDays = Array.from(new Set(days));
   const invalidDays = days.filter((day) => !/^\d{4}-\d{2}-\d{2}$/.test(day));
-  if (segments.length >= requiredSegmentCount && uniqueDays.length >= requiredSegmentCount && invalidDays.length === 0) {
-    return okCheck("7일 이상 segment manifest가 있고 day 값이 중복 없이 기록됐다.", {
+  const summaryPaths = segments.map((segment) => readString(segment.summaryPath)).filter((value) => value !== undefined);
+  const decisionEvidenceIds = segments.map((segment) => readString(segment.decisionEvidenceId)).filter((value) => value !== undefined);
+  const dailyReportEvidenceIds = segments.map((segment) => readString(segment.dailyReportEvidenceId)).filter((value) => value !== undefined);
+  const duplicateSummaryPaths = collectDuplicateValues(summaryPaths);
+  const duplicateDecisionEvidenceIds = collectDuplicateValues(decisionEvidenceIds);
+  const duplicateDailyReportEvidenceIds = collectDuplicateValues(dailyReportEvidenceIds);
+  const consecutiveDays = areConsecutiveDays(uniqueDays);
+  if (
+    segments.length >= requiredSegmentCount
+    && uniqueDays.length >= requiredSegmentCount
+    && invalidDays.length === 0
+    && duplicateSummaryPaths.length === 0
+    && duplicateDecisionEvidenceIds.length === 0
+    && duplicateDailyReportEvidenceIds.length === 0
+    && consecutiveDays
+  ) {
+    return okCheck("7일 이상 segment manifest가 있고 day, summary, evidence가 연속/고유하게 기록됐다.", {
       segmentCount: segments.length,
       uniqueDayCount: uniqueDays.length,
+      consecutiveDays,
     });
   }
 
-  return failCheck("M23 7일 closeout에는 서로 다른 7개 day segment가 필요하다.", {
+  return failCheck("M23 7일 closeout에는 연속된 7개 day와 고유한 segment summary/evidence가 필요하다.", {
     segmentCount: segments.length,
     uniqueDayCount: uniqueDays.length,
     invalidDays,
+    duplicateSummaryPaths,
+    duplicateDecisionEvidenceIds,
+    duplicateDailyReportEvidenceIds,
+    consecutiveDays,
     requiredSegmentCount,
   });
 }
@@ -276,10 +296,14 @@ function createSegmentDurationCheck(segmentFiles) {
   const invalid = parsedSegmentEntries(segmentFiles)
     .filter(({ summary }) => {
       const pilotProcess = isRecord(summary.metrics) && isRecord(summary.metrics.pilotProcess) ? summary.metrics.pilotProcess : {};
+      const requested = readFiniteNumber(pilotProcess.durationMsRequested);
+      const observed = readFiniteNumber(pilotProcess.durationMsObserved);
       return summary.status !== "passed"
         || pilotProcess.ranFullDuration !== true
-        || readFiniteNumber(pilotProcess.durationMsRequested) === undefined
-        || readFiniteNumber(pilotProcess.durationMsRequested) < oneDayMs;
+        || requested === undefined
+        || requested < oneDayMs
+        || observed === undefined
+        || observed < oneDayMs;
     })
     .map(({ index, file, summary }) => ({
       segment: index + 1,
@@ -290,6 +314,9 @@ function createSegmentDurationCheck(segmentFiles) {
         : undefined,
       durationMsRequested: isRecord(summary.metrics) && isRecord(summary.metrics.pilotProcess)
         ? summary.metrics.pilotProcess.durationMsRequested
+        : undefined,
+      durationMsObserved: isRecord(summary.metrics) && isRecord(summary.metrics.pilotProcess)
+        ? summary.metrics.pilotProcess.durationMsObserved
         : undefined,
     }));
   if (invalid.length === 0 && segmentFiles.length >= requiredSegmentCount) {
@@ -348,10 +375,16 @@ function createSegmentLiveArmedGuardCheck(segmentFiles) {
       || !hasOkCheck(summary, "evidenceEnv")
       || !hasOkCheck(summary, "pilotProfileEnv")
       || !hasOkCheck(summary, "readinessEnv")
-      || !hasExpectedConfigSafety(summary))
+      || !hasExpectedConfigSafety(summary)
+      || !hasLiveAutonomousInput(summary)
+      || hasExplicitNonM23Mode(summary)
+      || isExplicitDryRun(summary))
     .map(({ index, file, summary }) => ({
       segment: index + 1,
       filePath: file.filePath,
+      input: readString(summary.input) ?? null,
+      mode: readSegmentMode(summary) ?? null,
+      dryRun: readBoolean(summary.dryRun) ?? readBoolean(readMetrics(summary).dryRun) ?? null,
       configSafety: readCheckStatus(summary, "configSafety"),
       evidenceEnv: readCheckStatus(summary, "evidenceEnv"),
       pilotProfileEnv: readCheckStatus(summary, "pilotProfileEnv"),
@@ -564,6 +597,31 @@ function hasExpectedConfigSafety(summary) {
     && String(evidence.dailyAutonomousNotionalLimitKrw) === "30000";
 }
 
+function hasLiveAutonomousInput(summary) {
+  return readString(summary.input) === "live_autonomous_command";
+}
+
+function hasExplicitNonM23Mode(summary) {
+  const mode = readSegmentMode(summary);
+  return mode !== undefined && mode !== expectedMode;
+}
+
+function isExplicitDryRun(summary) {
+  return readBoolean(summary.dryRun) === true || readBoolean(readMetrics(summary).dryRun) === true;
+}
+
+function readSegmentMode(summary) {
+  const pilotProfileEvidence = isRecord(readCheck(summary, "pilotProfileEnv")?.evidence)
+    ? readCheck(summary, "pilotProfileEnv").evidence
+    : {};
+  return readString(summary.mode)
+    ?? readString(summary.profile)
+    ?? readString(summary.runtimeMode)
+    ?? readString(pilotProfileEvidence.mode)
+    ?? readString(pilotProfileEvidence.profile)
+    ?? readString(pilotProfileEvidence.pilotProfile);
+}
+
 function hasOkCheck(summary, checkName) {
   return readCheckStatus(summary, checkName) === "ok";
 }
@@ -583,6 +641,34 @@ function readMetrics(summary) {
 
 function sumMetric(summaries, name) {
   return summaries.reduce((sum, summary) => sum + (readFiniteNumber(readMetrics(summary)[name]) ?? 0), 0);
+}
+
+function collectDuplicateValues(values) {
+  return Array.from(new Set(values.filter((value, index) => values.indexOf(value) !== index)));
+}
+
+function areConsecutiveDays(days) {
+  if (days.length < requiredSegmentCount) {
+    return false;
+  }
+
+  const timestamps = days.map((day) => parseDayToUtcMs(day));
+  if (timestamps.some((timestamp) => timestamp === undefined)) {
+    return false;
+  }
+
+  const sorted = timestamps.toSorted((left, right) => left - right);
+  return sorted.every((timestamp, index) => index === 0 || timestamp - sorted[index - 1] === oneDayMs);
+}
+
+function parseDayToUtcMs(day) {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(day);
+  if (match === null) {
+    return undefined;
+  }
+
+  const timestamp = Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3]));
+  return new Date(timestamp).toISOString().slice(0, 10) === day ? timestamp : undefined;
 }
 
 async function readJsonFile(filePath, baseDir) {
@@ -661,6 +747,7 @@ function createFixtureSegmentSummary(index) {
   return {
     status: "passed",
     input: "live_autonomous_command",
+    mode: expectedMode,
     metrics: {
       heartbeatCount: 1440 + index,
       orderSubmittedCount: index === 0 ? 1 : 0,
@@ -918,6 +1005,24 @@ function readFiniteNumber(value) {
   if (typeof value === "string" && value.trim().length > 0) {
     const parsed = Number(value);
     return Number.isFinite(parsed) ? parsed : undefined;
+  }
+
+  return undefined;
+}
+
+function readBoolean(value) {
+  if (typeof value === "boolean") {
+    return value;
+  }
+
+  if (typeof value === "string") {
+    if (value === "true") {
+      return true;
+    }
+
+    if (value === "false") {
+      return false;
+    }
   }
 
   return undefined;
