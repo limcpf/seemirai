@@ -738,6 +738,8 @@ Acceptance Criteria:
 - 단위 테스트: user-facing formatter가 내부 enum/code만 노출하지 않고 한국어 상태, 원인, 영향, 필요 조치를 먼저 보여주며 내부 식별자는 `추적 정보`로 분리하는지 확인한다.
 - 단위 테스트: Telegram lifecycle/trade event mapper가 연결 성공, live order capable start, stop/manual review/crash/restart, 주문/취소/체결/차단 이벤트를 안전한 알림 payload로 낮추는지 확인한다.
 - 통합 테스트: restart 후 기존 order attempt/reconcile/status를 읽어 duplicate live order 없이 복구되는지 확인한다.
+- smoke/drill: `scripts/run-m23-recovery-drill.mjs --fixture-smoke`로 validator contract를 검증하고, 운영 closeout 전에는 restart 전후
+  redacted event log와 DB backup/restore 결과 또는 blocker evidence로 같은 validator를 실행한다.
 - smoke/drill: DB backup/restore를 disposable restore DB에서 실행하거나, 외부 DB 조건 미충족 시 blocker evidence를 남긴다.
 - source scan: live order API, market/best order, 출금/입금, raw secret 노출 후보가 M23 guard 밖에서 열리지 않았는지 확인한다.
 - gated 운영 검증: 저장소 밖 env/key/config/evidence가 준비된 환경에서 24시간 post-cleanup preflight와 7일 live-armed stability artifact를 생성한다.

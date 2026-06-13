@@ -34,6 +34,18 @@ Codex-native 운영은 Codex, Git, GitHub, shell command, 문서 상태를 연�
 - 실패한 검증 로그는 다음 Codex prompt에 전달 가능한 수준으로 요약한다.
 - review finding은 어떤 commit으로 처리됐는지 추적 가능해야 한다.
 
+## M23 restart/recovery drill 신뢰성 기준
+
+- M23 recovery drill은 restart 전후 event log를 같은 restart id로 묶어야 하며, 감지와 복구 Telegram/status evidence가 모두 있어야 한다.
+- restart 후 같은 idempotency key 또는 order attempt가 다시 `broker_submission`으로 기록되면 duplicate live order로 보고 closeout
+  실패로 처리한다.
+- recovery evidence에는 reconcile mismatch 0건, live ops status 복구, heartbeat 재개, daily report marker 재생성이 포함되어야 한다.
+- Upbit 점검/장애, market warning/caution, stale data/WebSocket gap drill은 신규 entry fail-closed와 alert/manual review evidence로
+  수렴해야 한다.
+- DB backup/restore smoke는 disposable restore DB에서 통과하거나, 실행 불가 blocker와 필요한 권한/재시도 계획을 남겨야 한다.
+- recovery drill validator는 artifact를 읽는 검증 경계이며, CI/PR 기본 검증에서 live order API, Telegram provider, DB restore를
+  직접 호출하지 않는다.
+
 ## M20 Telegram inbound 신뢰성 기준
 
 - inbound polling loop는 기본 비활성이며, enabled config/env와 owner allowlist guard를 모두 통과한 뒤에만 시작한다.

@@ -374,6 +374,7 @@ M19 Sub PR 03 범위:
 - 7일 live-armed daily report와 "왜 주문이 없었는지" decision evidence
 - Docker Compose live profile 또는 systemd/process supervisor 재시작 정책
 - restart 후 reconcile/status/daily report/Telegram 상태 복구
+- `scripts/run-m23-recovery-drill.mjs`로 restart 전후 event log 기반 duplicate order 방지와 복구 evidence 검증
 - DB backup/restore smoke drill
 - Upbit 장애, 점검, market warning, stale data, API 오류 fail-closed drill
 - 운영자가 직접 arm/stop/kill/manual review/Upbit 웹 확인을 수행할 수 있는 runbook

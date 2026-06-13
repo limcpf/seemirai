@@ -238,6 +238,11 @@
   idempotency key, evidence id, fingerprint는 `추적 정보`로 분리한다.
 - Telegram lifecycle/trade event 알림은 raw Telegram update, raw message text, raw provider body를 저장하지 않는다. 알림 실패
   evidence도 provider 원문 대신 실패 분류와 안전한 추적 정보만 남긴다.
+- M23 systemd/process supervisor template은 root가 아닌 운영 사용자로 live daemon을 실행하고 저장소 밖 env 파일을 참조해야 하며
+  service 파일 안에 Upbit key, Telegram token, database URL 같은 secret 값을 직접 넣지 않는다.
+- M23 restart/recovery drill artifact에는 access key, secret key, JWT, Authorization header, Telegram token, raw provider payload,
+  raw order detail, raw Telegram update를 남기지 않는다. validator fixture smoke는 live API, Telegram provider, DB restore를 직접
+  호출하지 않는 검증 경계로만 사용한다.
 - M23은 BTC 외 market 기본 활성화, 자동 budget 확대, market/best order 기본 허용, hard stop open position 자동 시장가 청산,
   Telegram public webhook endpoint, 출금/입출금 자동화로 확장하지 않는다. 해당 변경은 M24 또는 별도 보안 설계와 source scan이
   필요하다.

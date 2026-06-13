@@ -26,6 +26,9 @@ Issue #188은 이 계획 중 M23 24/7 live small-budget 운영 안정화와 실�
   entry 제출/차단, exit runtime의 제출/부분체결/취소 요청, live reconcile state advancement의 체결/취소 확인 경로를
   `dispatchLiveOpsAlert`에 연결해 연결 성공, live order capable 시작, 중지/수동 점검/crash/restart/recovery,
   주문/취소/체결/차단 event를 기존 cooldown/retry/manual review 경로에 연결한다.
+- Issue #188 Sub PR 04에서 systemd service 템플릿과 `scripts/run-m23-recovery-drill.mjs` artifact validator를 추가해 restart 전후
+  duplicate live order 방지, reconcile/status/daily report 복구, Upbit 장애/market warning/stale data fail-closed evidence,
+  DB backup/restore smoke 결과 또는 blocker 기록을 closeout 전 검증할 수 있게 한다.
 
 ## 범위
 
@@ -55,6 +58,8 @@ Issue #188은 이 계획 중 M23 24/7 live small-budget 운영 안정화와 실�
 3. M23 24시간 post-cleanup pilot
    - live canary cleanup 통과 후 candidate source를 비워 heartbeat/daily report 안정성을 다시 확인한다.
    - process restart 후 reconcile/status가 정상 복구되는지 확인한다.
+   - `scripts/run-m23-recovery-drill.mjs --fixture-smoke`는 CI용 contract 검증이고, 실제 closeout 전에는 restart 전후 redacted
+     event log와 DB backup/restore smoke 결과 또는 blocker evidence로 validator를 실행한다.
    - 이 단계는 preflight이며 M23 완료 근거가 아니다.
 
 4. M23 7일 운영 안정화

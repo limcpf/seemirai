@@ -412,6 +412,10 @@ set -eu
 
 REPO_ROOT=${shellSingleQuote(repoRoot)}
 M22_HOME=${shellSingleQuote(paths.homeDir)}
+systemd_segment_guard="\${SEEMIRAI_M23_SYSTEMD_SEGMENT:-}"
+systemd_segment_env="\${SEEMIRAI_M23_SEGMENT_ENV:-}"
+systemd_pilot_guard="\${SEEMIRAI_RUN_M22_AUTONOMOUS_PILOT:-}"
+systemd_daemon_guard="\${SEEMIRAI_RUN_M22_AUTONOMOUS_DAEMON:-}"
 
 # 운영 파일의 경로/scope 값을 기준으로 실행해 이전 셸의 override가 artifact나 key preflight를 흔들지 못하게 한다.
 unset SEEMIRAI_M22_ARTIFACT_DIR
@@ -428,12 +432,25 @@ unset UPBIT_SECRET_KEY
 
 . "$M22_HOME/m22.env"
 
+# systemd segment에서는 unit의 명시 guard와 segment handoff env가 m22.env 기본 0값에 묻히면 live segment가 fail-closed로만 종료된다.
+if [ "$systemd_segment_guard" = "1" ]; then
+  export SEEMIRAI_M23_SYSTEMD_SEGMENT="1"
+  export SEEMIRAI_RUN_M22_AUTONOMOUS_PILOT="\${systemd_pilot_guard:-1}"
+  export SEEMIRAI_RUN_M22_AUTONOMOUS_DAEMON="\${systemd_daemon_guard:-1}"
+  if [ -n "$systemd_segment_env" ]; then
+    . "$systemd_segment_env"
+  fi
+fi
+
 if [ "$#" -eq 0 ]; then
+  candidate_file="\${SEEMIRAI_M23_SEGMENT_CANDIDATE_FILE:-$M22_HOME/candidates/m22-candidates.jsonl}"
+  candidate_start="\${SEEMIRAI_M23_SEGMENT_CANDIDATE_START:-end}"
   pilot_command="node"
   set -- \\
     "$REPO_ROOT/scripts/run-m22-live-autonomous-daemon.mjs" \\
     --config "$M22_HOME/m22-live-autonomous.config.json" \\
-    --candidate-file "$M22_HOME/candidates/m22-candidates.jsonl"
+    --candidate-file "$candidate_file" \\
+    --candidate-start "$candidate_start"
 else
   pilot_command="$1"
   shift

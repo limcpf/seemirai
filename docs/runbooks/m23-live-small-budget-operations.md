@@ -75,13 +75,31 @@ SEEMIRAI_M22_EXIT_ENGINE_READY=1
 `604800000`ms runner로 실행하면 7일 연속 daily report evidence를 만들 수 없다. M23 closeout 전에는 supervisor, systemd timer,
 또는 운영 wrapper가 아래 24시간 segment를 7회 연속 실행하고 각 segment의 daily report marker와 summary artifact를 확인해야 한다.
 
+systemd로 운영할 경우 [`deploy/systemd/seemirai-m23-live-small-budget.service.example`](../../deploy/systemd/seemirai-m23-live-small-budget.service.example)을
+운영 호스트에 복사한 뒤 `User`, `Group`, `WorkingDirectory`, `Environment=SEEMIRAI_M23_SEGMENT_ENV`, `ReadWritePaths`를 실제 운영
+계정과 저장소/운영 artifact 경로로 맞춘다. 이 템플릿은 live daemon을 root가 아닌 운영 사용자로 실행하고, secret 값을 직접 담지
+않으며, `run-24h-pilot.sh` wrapper가 저장소 밖 shell-format `m22.env`, `m22.keys.env`, `m23-segment.env`를 source하게 한다.
+systemd `EnvironmentFile`은 `export`/조건문이 있는 shell env를 해석하지 못하므로 이 service에서는 사용하지 않는다. 정상 24시간
+완료는 새 candidate 파일 rotate와 daily/open exposure env 갱신 handoff 뒤 supervisor 또는 timer가 다음 segment를 시작해야 하므로
+`Restart=on-failure`로 실패 종료만 즉시 복구한다. system service에서는 `%h`가 운영 사용자 홈이 아니라 system manager 기준으로
+해석될 수 있으므로 `/home/<운영사용자>/...` 같은 명시 경로를 사용한다. 재시작 후에는 아래 Restart Drill validator로 중복 주문,
+reconcile/status 복구, daily report marker를 확인한다.
+
 각 24시간 segment 시작 전에는 다음 handoff를 먼저 수행한다.
 
 1. candidate producer를 멈추고 더 이상 기존 JSONL에 append되지 않는지 확인한다.
 2. 이전 segment candidate file의 마지막 크기와 SHA-256을 artifact에 기록하고, 다음 segment는 새 JSONL 파일로 rotate한다.
 3. 새 candidate file은 비어 있는 상태로 daemon을 먼저 시작한 뒤 producer를 재개한다. daemon 시작 전에 후보를 미리 넣어야 하는
    재현 작업만 `--candidate-start beginning`을 사용한다.
-4. M16 reconcile/status로 현재 open order, open exposure, realized loss를 확인하고 아래 env를 최신 safe summary 값으로 갱신한다.
+4. systemd service를 쓰면 `m23-segment.env`를 갱신해 `SEEMIRAI_M23_SEGMENT_CANDIDATE_FILE`이 이번 segment 전용 JSONL을 가리키게 한다.
+   이 파일은 systemd `EnvironmentFile` 형식이 아니라 wrapper가 source하는 shell 형식이다.
+
+```sh
+export SEEMIRAI_M23_SEGMENT_CANDIDATE_FILE="$M22_HOME/candidates/m23-segment-YYYY-MM-DD.jsonl"
+export SEEMIRAI_M23_SEGMENT_CANDIDATE_START="end"
+```
+
+5. M16 reconcile/status로 현재 open order, open exposure, realized loss를 확인하고 아래 env를 최신 safe summary 값으로 갱신한다.
    값을 확인할 수 없으면 segment를 시작하지 않고 manual review로 전환한다.
 
 ```text
@@ -91,7 +109,7 @@ SEEMIRAI_M22_DAILY_REALIZED_LOSS_KRW=<latest-safe-daily-realized-loss>
 SEEMIRAI_M22_WEEKLY_REALIZED_LOSS_KRW=<latest-safe-weekly-realized-loss>
 ```
 
-5. 누적 realized loss와 미체결 노출 합계가 50,000 KRW에 접근하면 다음 segment를 시작하지 않고 operator stop 또는 kill switch로
+6. 누적 realized loss와 미체결 노출 합계가 50,000 KRW에 접근하면 다음 segment를 시작하지 않고 operator stop 또는 kill switch로
    전환한다.
 
 ```sh
@@ -165,9 +183,31 @@ Kill switch/manual review:
 restart drill은 다음 조건을 만족해야 한다.
 
 - restart 전후 같은 idempotency key 또는 order attempt가 duplicate live order를 만들지 않는다.
-- durable reservation, reconcile snapshot, status summary가 재사용된다.
+- durable reservation, reconcile snapshot, stable status summary evidence id가 재사용된다.
 - 최신 heartbeat와 daily report가 재개된다.
 - Telegram에는 restart 감지와 복구 상태가 구분되어 표시된다.
+
+restart 전후 event log가 준비되면 다음 validator를 실행한다. 이 명령은 artifact를 읽는 검증 경계이며 Upbit/Telegram/DB API를
+직접 호출하지 않는다.
+
+```sh
+SEEMIRAI_RUN_M23_RECOVERY_DRILL=1 \
+node scripts/run-m23-recovery-drill.mjs \
+  --before-event-log "$M22_HOME/artifacts/m23-before-restart-events.jsonl" \
+  --after-event-log "$M22_HOME/artifacts/m23-after-restart-events.jsonl" \
+  --backup-restore-status blocked \
+  --backup-restore-evidence "restore-db-not-provisioned-YYYY-MM-DD" \
+  --artifact-dir "$SEEMIRAI_M22_ARTIFACT_DIR" \
+  --json
+```
+
+`--backup-restore-status`는 `passed` 또는 `blocked`만 closeout 준비 evidence로 인정한다. `blocked`를 사용할 때는 disposable
+restore DB가 없었던 이유, 필요한 권한, 재시도 계획을 `--backup-restore-evidence`가 가리키는 redacted 운영 기록에 남겨야 한다.
+CI와 PR 검증에서는 다음 fixture smoke만 실행해 validator contract가 live side effect 없이 동작하는지 확인한다.
+
+```sh
+node scripts/run-m23-recovery-drill.mjs --fixture-smoke --json
+```
 
 ## 장애 Drill
 
@@ -180,6 +220,10 @@ restart drill은 다음 조건을 만족해야 한다.
 - Telegram provider 장애 지속
 - DB write 또는 audit append 실패
 - reconcile mismatch, duplicate order, untracked fill
+
+M23 recovery drill validator는 `upbit_maintenance`, `market_warning`, `stale_data`, `api_error` 네 scenario가
+`ENTRY_BLOCKED`, `NEW_ORDERS_BLOCKED`, `MANUAL_REVIEW_REQUIRED` 중 하나로 수렴하고 alert evidence id를 남겼는지 확인한다.
+Telegram provider 장애, DB write/audit 실패는 closeout에서 같은 형식의 별도 incident/drill evidence로 보강한다.
 
 ## DB Backup/Restore Smoke
 
