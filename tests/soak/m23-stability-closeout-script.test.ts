@@ -36,6 +36,22 @@ describe("M23 stability closeout script", () => {
     expect(getCheck(summary, "sourceScan").status).toBe("ok");
   });
 
+  it("rejects fixture smoke manifests when guarded closeout validation is enabled", async () => {
+    const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-m23-stability-guarded-fixture-"));
+    const { stdout } = await runScript(["--fixture-smoke", "--json", "--artifact-dir", artifactDir]);
+    const fixtureSummary = JSON.parse(stdout) as M23StabilityCloseoutSummary & { artifacts: { manifestPath: string } };
+
+    const summary = await runScriptExpectingFailure(
+      ["--json", "--artifact-dir", artifactDir, "--manifest", fixtureSummary.artifacts.manifestPath],
+      createReadyEnv(),
+    );
+
+    expect(summary.status).toBe("failed");
+    expect(getCheck(summary, "guardedArtifactInput")).toMatchObject({
+      status: "fail",
+    });
+  });
+
   it("passes a complete seven day closeout manifest", async () => {
     const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-m23-stability-pass-"));
     const manifestPath = await writeCloseoutFixture(artifactDir);
@@ -140,6 +156,48 @@ describe("M23 stability closeout script", () => {
           },
         };
       },
+    });
+    const summary = await runScriptExpectingFailure(
+      ["--json", "--artifact-dir", artifactDir, "--manifest", manifestPath],
+      createReadyEnv(),
+    );
+
+    expect(summary.status).toBe("failed");
+    expect(getCheck(summary, "segmentCompleteness")).toMatchObject({
+      status: "fail",
+    });
+  });
+
+  it("fails when a segment omits daily report date evidence even if startedAt matches the manifest day", async () => {
+    const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-m23-stability-missing-report-date-"));
+    const manifestPath = await writeCloseoutFixture(artifactDir, {
+      segmentMutator: (summary, index) => {
+        if (index !== 2) {
+          return summary;
+        }
+
+        const clone = { ...summary };
+        delete clone.dailyReportDate;
+        return clone;
+      },
+    });
+    const summary = await runScriptExpectingFailure(
+      ["--json", "--artifact-dir", artifactDir, "--manifest", manifestPath],
+      createReadyEnv(),
+    );
+
+    expect(summary.status).toBe("failed");
+    expect(getCheck(summary, "segmentCompleteness")).toMatchObject({
+      status: "fail",
+    });
+  });
+
+  it("fails when a segment daily report date does not match the manifest day", async () => {
+    const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-m23-stability-stale-report-date-"));
+    const manifestPath = await writeCloseoutFixture(artifactDir, {
+      segmentMutator: (summary, index) => index === 5
+        ? { ...summary, dailyReportDate: "2026-06-13" }
+        : summary,
     });
     const summary = await runScriptExpectingFailure(
       ["--json", "--artifact-dir", artifactDir, "--manifest", manifestPath],
@@ -706,6 +764,7 @@ function createSegmentSummary(index: number): Record<string, unknown> {
     mode: "LIVE_AUTONOMOUS_SMALL_BUDGET",
     startedAt: startedAt.toISOString(),
     finishedAt: finishedAt.toISOString(),
+    dailyReportDate: startedAt.toISOString().slice(0, 10),
     metrics: {
       heartbeatCount: 1440 + index,
       orderSubmittedCount: index === 0 ? 1 : 0,
@@ -783,6 +842,9 @@ function getCheck(summary: M23StabilityCloseoutSummary, name: string): { status:
 interface M23StabilityCloseoutSummary {
   status: string;
   input: string;
+  artifacts: {
+    manifestPath: string;
+  };
   metrics: {
     segmentCount: number;
     dailyReportGeneratedCount: number;

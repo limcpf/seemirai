@@ -158,7 +158,9 @@ async function buildAndWriteSummary(input) {
 
   let metrics = createEmptyMetrics();
   if (manifestFile.error === undefined && isRecord(manifestFile.value)) {
-    const validation = await validateManifest(manifestFile.value, manifestFile.filePath, manifestFile.rawText);
+    const validation = await validateManifest(manifestFile.value, manifestFile.filePath, manifestFile.rawText, {
+      guarded: input.guarded,
+    });
     Object.assign(checks, validation.checks);
     metrics = validation.metrics;
   } else if (manifestFile.error === undefined) {
@@ -182,7 +184,7 @@ async function buildAndWriteSummary(input) {
   return summary;
 }
 
-async function validateManifest(manifest, manifestPath, manifestRawText) {
+async function validateManifest(manifest, manifestPath, manifestRawText, options) {
   const baseDir = path.dirname(manifestPath);
   const segmentRecords = Array.isArray(manifest.segments) ? manifest.segments.filter(isRecord) : [];
   const segmentFiles = await readSegmentSummaries(segmentRecords, baseDir);
@@ -195,6 +197,7 @@ async function validateManifest(manifest, manifestPath, manifestRawText) {
   const metrics = createMetrics(segmentSummaries, recoveryFile);
   const checks = {
     manifestShape: createManifestShapeCheck(manifest),
+    guardedArtifactInput: createGuardedArtifactInputCheck(manifest, manifestPath, segmentFiles, recoveryFile, options.guarded),
     liveArmedEvidence: createLiveArmedEvidenceCheck(manifest),
     segmentCompleteness: createSegmentCompletenessCheck(segmentRecords, segmentFiles),
     segmentSummariesParsed: createSegmentSummariesParsedCheck(segmentFiles, segmentRecords.length),
@@ -232,6 +235,59 @@ function createManifestShapeCheck(manifest) {
     expected: { issue: expectedIssue, mode: expectedMode, segments: "array" },
     actual,
   });
+}
+
+function createGuardedArtifactInputCheck(manifest, manifestPath, segmentFiles, recoveryFile, guarded) {
+  if (!guarded) {
+    return okCheck("fixture smoke는 guarded 운영 artifact 입력 검사를 열지 않는다.", { fixtureSmoke: true });
+  }
+
+  const fixtureMarkers = collectFixtureMarkers(manifest, manifestPath, segmentFiles, recoveryFile);
+  if (fixtureMarkers.length === 0) {
+    return okCheck("guarded closeout 입력이 fixture manifest/summary/evidence를 사용하지 않는다.", {
+      guarded: true,
+    });
+  }
+
+  return failCheck("guarded M23 closeout에서는 fixture manifest/summary/evidence를 사용할 수 없다.", {
+    fixtureMarkers,
+  });
+}
+
+function collectFixtureMarkers(manifest, manifestPath, segmentFiles, recoveryFile) {
+  const markers = [];
+  appendFixturePathMarker(markers, "manifestPath", manifestPath);
+  appendFixtureMarker(markers, "sourceScan.evidenceId", readString(isRecord(manifest.sourceScan) ? manifest.sourceScan.evidenceId : undefined));
+  appendFixtureMarker(markers, "backupRestore.evidenceId", readString(isRecord(manifest.backupRestore) ? manifest.backupRestore.evidenceId : undefined));
+  appendFixtureMarker(markers, "backupRestore.blockerReason", readString(isRecord(manifest.backupRestore) ? manifest.backupRestore.blockerReason : undefined));
+
+  for (const { file, index, summary } of parsedSegmentEntries(segmentFiles)) {
+    appendFixturePathMarker(markers, `segments[${index}].summaryPath`, file.filePath);
+    appendFixtureMarker(markers, `segments[${index}].input`, readString(summary.input));
+    appendFixtureMarker(markers, `segments[${index}].source`, readString(summary.source));
+  }
+
+  if (recoveryFile !== undefined) {
+    appendFixturePathMarker(markers, "recoveryDrillSummaryPath", recoveryFile.filePath);
+    if (isRecord(recoveryFile.value)) {
+      appendFixtureMarker(markers, "recovery.input", readString(recoveryFile.value.input));
+      appendFixtureMarker(markers, "recovery.source", readString(recoveryFile.value.source));
+    }
+  }
+
+  return markers;
+}
+
+function appendFixturePathMarker(markers, fieldPath, value) {
+  if (typeof value === "string" && path.basename(value).toLowerCase().includes(".fixture")) {
+    markers.push({ fieldPath, value });
+  }
+}
+
+function appendFixtureMarker(markers, fieldPath, value) {
+  if (typeof value === "string" && value.toLowerCase().includes("fixture")) {
+    markers.push({ fieldPath, value });
+  }
 }
 
 function createLiveArmedEvidenceCheck(manifest) {
@@ -786,27 +842,34 @@ function collectSegmentDayExecutionMismatches(segments, segmentFiles) {
         return false;
       }
 
-      return !readSegmentExecutionDays(file.value).includes(day);
+      const evidence = readSegmentDayEvidence(file.value);
+      return !evidence.executionDays.includes(day) || !evidence.dailyReportDays.includes(day);
     })
     .map(({ segment, index, file }) => ({
       segment: index + 1,
       day: readString(segment.day) ?? null,
       filePath: file?.filePath ?? readString(segment.summaryPath) ?? null,
-      executionDays: isRecord(file?.value) ? readSegmentExecutionDays(file.value) : [],
+      dayEvidence: isRecord(file?.value)
+        ? readSegmentDayEvidence(file.value)
+        : { executionDays: [], dailyReportDays: [] },
     }));
 }
 
-function readSegmentExecutionDays(summary) {
+function readSegmentDayEvidence(summary) {
   const metrics = readMetrics(summary);
   const pilotProcess = isRecord(metrics.pilotProcess) ? metrics.pilotProcess : {};
-  return Array.from(new Set([
-    readIsoDay(summary.reportDate),
-    readIsoDay(summary.dailyReportDate),
-    readIsoDay(metrics.reportDate),
-    readIsoDay(metrics.dailyReportDate),
-    readIsoDay(summary.startedAt),
-    readIsoDay(pilotProcess.startedAt),
-  ].filter((day) => day !== undefined)));
+  return {
+    executionDays: Array.from(new Set([
+      readIsoDay(summary.startedAt),
+      readIsoDay(pilotProcess.startedAt),
+    ].filter((day) => day !== undefined))),
+    dailyReportDays: Array.from(new Set([
+      readIsoDay(summary.reportDate),
+      readIsoDay(summary.dailyReportDate),
+      readIsoDay(metrics.reportDate),
+      readIsoDay(metrics.dailyReportDate),
+    ].filter((day) => day !== undefined))),
+  };
 }
 
 function readIsoDay(value) {
@@ -932,6 +995,7 @@ function createFixtureSegmentSummary(index, startedAt) {
     mode: expectedMode,
     startedAt: startedAt.toISOString(),
     finishedAt: finishedAt.toISOString(),
+    dailyReportDate: startedAt.toISOString().slice(0, 10),
     metrics: {
       heartbeatCount: 1440 + index,
       orderSubmittedCount: index === 0 ? 1 : 0,
