@@ -837,7 +837,9 @@ function summarizeLiveOrderCapability(events) {
 }
 
 function summarizeBudgetExposure(events, options = {}) {
-  let dailyRealizedLossKrw = 0;
+  let carriedDailyRealizedLossKrw = 0;
+  let dailyRealizedLossSnapshotKrw = 0;
+  let perEventRealizedLossKrw = 0;
   let dailyRealizedLossEvidenceCount = 0;
   let weeklyRealizedLossKrw;
   let weeklyRealizedLossEvidenceCount = 0;
@@ -849,7 +851,7 @@ function summarizeBudgetExposure(events, options = {}) {
     const carriedDailyLoss = readNonNegativeEnvNumber("SEEMIRAI_M22_DAILY_REALIZED_LOSS_KRW");
     if (carriedDailyLoss !== undefined) {
       // M23 segment는 시작 시점 carry-forward loss를 closeout ceiling에 포함해야 하므로 env evidence를 summary에 보존한다.
-      dailyRealizedLossKrw = Math.max(dailyRealizedLossKrw, carriedDailyLoss);
+      carriedDailyRealizedLossKrw = carriedDailyLoss;
       dailyRealizedLossEvidenceCount += 1;
     }
 
@@ -862,9 +864,16 @@ function summarizeBudgetExposure(events, options = {}) {
   }
 
   for (const event of events) {
-    const realizedLoss = readRealizedLossKrw(event);
-    if (realizedLoss !== undefined) {
-      dailyRealizedLossKrw = Math.max(dailyRealizedLossKrw, realizedLoss);
+    const realizedLossSnapshot = readDailyRealizedLossSnapshotKrw(event);
+    if (realizedLossSnapshot !== undefined) {
+      dailyRealizedLossSnapshotKrw = Math.max(dailyRealizedLossSnapshotKrw, realizedLossSnapshot);
+      dailyRealizedLossEvidenceCount += 1;
+    }
+
+    const perEventLoss = readPerEventRealizedLossKrw(event);
+    if (perEventLoss !== undefined) {
+      // fill별 손실은 누적 스냅샷이 아니므로 max로 축소하지 않고 segment 내 합계로 ceiling evidence에 반영한다.
+      perEventRealizedLossKrw += perEventLoss;
       dailyRealizedLossEvidenceCount += 1;
     }
 
@@ -882,6 +891,11 @@ function summarizeBudgetExposure(events, options = {}) {
     }
   }
 
+  const dailyRealizedLossKrw = Math.max(
+    carriedDailyRealizedLossKrw + perEventRealizedLossKrw,
+    dailyRealizedLossSnapshotKrw,
+  );
+
   return {
     dailyRealizedLossKrw,
     dailyRealizedLossEvidenceCount,
@@ -898,14 +912,16 @@ function readCumulativeRealizedLossKrw(event) {
     ?? readNonNegativeNumber(event.cumulativeRealizedLossKrw);
 }
 
-function readRealizedLossKrw(event) {
-  const directLoss = readNonNegativeNumber(event.dailyRealizedLossKrw)
-    ?? readNonNegativeNumber(event.realizedLossKrw)
-    ?? readNonNegativeNumber(event.lossKrw);
-  if (directLoss !== undefined) {
-    return directLoss;
-  }
+function readDailyRealizedLossSnapshotKrw(event) {
+  return readNonNegativeNumber(event.dailyRealizedLossKrw)
+    ?? readNonNegativeNumber(event.realizedLossKrw);
+}
 
+function readPerEventRealizedLossKrw(event) {
+  const explicitLoss = readNonNegativeNumber(event.lossKrw);
+  if (explicitLoss !== undefined) {
+    return explicitLoss;
+  }
   const realizedPnl = readFiniteNumber(event.realizedPnlKrw);
   return realizedPnl !== undefined && realizedPnl < 0 ? Math.abs(realizedPnl) : undefined;
 }

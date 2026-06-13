@@ -257,6 +257,52 @@ setInterval(() => {}, 1000);
     });
   });
 
+  it("sums per-fill realized losses instead of keeping only the largest loss event", async () => {
+    const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-m22-pilot-per-fill-loss-"));
+    const configPath = path.join(artifactDir, "m22-config.json");
+    const childPath = path.join(artifactDir, "pilot-per-fill-loss-child.mjs");
+    await writeFile(configPath, `${JSON.stringify(createEnabledM22Config(), null, 2)}\n`, "utf8");
+    await writeFile(
+      childPath,
+      `import { appendFile } from "node:fs/promises";
+const write = async (event) => appendFile(process.env.SEEMIRAI_M22_PILOT_EVENT_LOG, JSON.stringify(event) + "\\n", "utf8");
+await write({ type: "m22_pilot_heartbeat", observedAt: new Date().toISOString(), openPositionNotionalKrw: "0" });
+await write({ type: "fill", observedAt: new Date().toISOString(), realizedPnlKrw: "-30000" });
+await write({ type: "fill", observedAt: new Date().toISOString(), lossKrw: "30000" });
+setInterval(() => {}, 1000);
+`,
+      "utf8",
+    );
+
+    const { stdout } = await runScript(
+      [
+        "--json",
+        "--artifact-dir",
+        artifactDir,
+        "--config",
+        configPath,
+        "--duration-ms",
+        "1000",
+        "--termination-grace-ms",
+        "500",
+        "--pilot-command",
+        process.execPath,
+        "--",
+        childPath,
+      ],
+      createReadyEnv(),
+    );
+    const summary = JSON.parse(stdout) as M22PilotSummary;
+
+    expect(summary.status).toBe("passed");
+    expect(summary.metrics).toMatchObject({
+      dailyRealizedLossKrw: 60_000,
+      dailyRealizedLossEvidenceCount: 3,
+      openPositionNotionalKrw: 0,
+      openPositionNotionalEvidenceCount: 1,
+    });
+  });
+
   it("carries forward explicit segment realized loss env even when the child event log has no loss event", async () => {
     const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-m22-pilot-carried-loss-"));
     const configPath = path.join(artifactDir, "m22-config.json");
