@@ -35,12 +35,27 @@ describe("M22 live autonomous pilot runner script", () => {
     expect(summary.input).toBe("fixture_smoke");
     expect(summary.metrics).toMatchObject({
       heartbeatCount: 1,
+      dryRun: null,
+      liveOrderCapable: false,
       crashCount: 0,
       unhandledRejectionCount: 0,
+      dailyReportDateEvidenceCount: 1,
       riskGateBypassCount: 0,
       reconcileMismatchCount: 0,
       duplicateOrderCount: 0,
       untrackedFillCount: 0,
+      dailyRealizedLossKrw: 0,
+      dailyRealizedLossEvidenceCount: 0,
+      weeklyRealizedLossKrw: null,
+      weeklyRealizedLossEvidenceCount: 0,
+      openPositionNotionalKrw: 0,
+      openPositionNotionalEvidenceCount: 1,
+    });
+    expect(summary.dailyReportDate).toMatch(/^\d{4}-\d{2}-\d{2}$/u);
+    expect(summary.metrics.dailyReportDate).toBe(summary.dailyReportDate);
+    expect(getCheck(summary, "configSafety")).toMatchObject({
+      status: "ok",
+      evidence: { maxOpenPositionNotionalKrw: "30000" },
     });
     expect(getCheck(summary, "closeoutZeroCounters").status).toBe("ok");
     expect(events).toContain("m22_pilot_heartbeat");
@@ -98,7 +113,243 @@ setInterval(() => {}, 1000);
     expect(getCheck(summary, "pilotCommand").status).toBe("ok");
     expect(getCheck(summary, "heartbeat").status).toBe("ok");
     expect(getCheck(summary, "closeoutZeroCounters").status).toBe("ok");
+    expect(summary.metrics).toMatchObject({
+      dryRun: null,
+      liveOrderCapable: false,
+      explicitDryRunEventCount: 0,
+      explicitNonDryRunEventCount: 0,
+    });
     expect(summary.metrics.pilotProcess?.ranFullDuration).toBe(true);
+  });
+
+  it("preserves explicit non-dry-run live order capable evidence from the wrapped command event log", async () => {
+    const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-m22-pilot-live-mode-"));
+    const configPath = path.join(artifactDir, "m22-config.json");
+    const childPath = path.join(artifactDir, "pilot-live-mode-child.mjs");
+    await writeFile(configPath, `${JSON.stringify(createEnabledM22Config(), null, 2)}\n`, "utf8");
+    await writeFile(
+      childPath,
+      `import { appendFile } from "node:fs/promises";
+await appendFile(process.env.SEEMIRAI_M22_PILOT_EVENT_LOG, JSON.stringify({ type: "m22_pilot_heartbeat", observedAt: new Date().toISOString(), dryRun: false }) + "\\n", "utf8");
+setInterval(() => {}, 1000);
+`,
+      "utf8",
+    );
+
+    const { stdout } = await runScript(
+      [
+        "--json",
+        "--artifact-dir",
+        artifactDir,
+        "--config",
+        configPath,
+        "--duration-ms",
+        "1000",
+        "--termination-grace-ms",
+        "500",
+        "--pilot-command",
+        process.execPath,
+        "--",
+        childPath,
+      ],
+      createReadyEnv(),
+    );
+    const summary = JSON.parse(stdout) as M22PilotSummary;
+
+    expect(summary.status).toBe("passed");
+    expect(summary.metrics).toMatchObject({
+      dryRun: false,
+      liveOrderCapable: true,
+      explicitDryRunEventCount: 0,
+      explicitNonDryRunEventCount: 1,
+    });
+  });
+
+  it("preserves explicit dry-run evidence without marking the segment live order capable", async () => {
+    const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-m22-pilot-dry-run-mode-"));
+    const configPath = path.join(artifactDir, "m22-config.json");
+    const childPath = path.join(artifactDir, "pilot-dry-run-mode-child.mjs");
+    await writeFile(configPath, `${JSON.stringify(createEnabledM22Config(), null, 2)}\n`, "utf8");
+    await writeFile(
+      childPath,
+      `import { appendFile } from "node:fs/promises";
+await appendFile(process.env.SEEMIRAI_M22_PILOT_EVENT_LOG, JSON.stringify({ type: "m22_pilot_heartbeat", observedAt: new Date().toISOString(), dryRun: true }) + "\\n", "utf8");
+setInterval(() => {}, 1000);
+`,
+      "utf8",
+    );
+
+    const { stdout } = await runScript(
+      [
+        "--json",
+        "--artifact-dir",
+        artifactDir,
+        "--config",
+        configPath,
+        "--duration-ms",
+        "1000",
+        "--termination-grace-ms",
+        "500",
+        "--pilot-command",
+        process.execPath,
+        "--",
+        childPath,
+      ],
+      createReadyEnv(),
+    );
+    const summary = JSON.parse(stdout) as M22PilotSummary;
+
+    expect(summary.status).toBe("passed");
+    expect(summary.metrics).toMatchObject({
+      dryRun: true,
+      liveOrderCapable: false,
+      explicitDryRunEventCount: 1,
+      explicitNonDryRunEventCount: 0,
+    });
+  });
+
+  it("summarizes budget loss and exposure from the wrapped command event log", async () => {
+    const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-m22-pilot-budget-events-"));
+    const configPath = path.join(artifactDir, "m22-config.json");
+    const childPath = path.join(artifactDir, "pilot-budget-child.mjs");
+    await writeFile(configPath, `${JSON.stringify(createEnabledM22Config(), null, 2)}\n`, "utf8");
+    await writeFile(
+      childPath,
+      `import { appendFile } from "node:fs/promises";
+const write = async (event) => appendFile(process.env.SEEMIRAI_M22_PILOT_EVENT_LOG, JSON.stringify(event) + "\\n", "utf8");
+await write({ type: "m22_pilot_heartbeat", observedAt: new Date().toISOString(), openPositionNotionalKrw: "8000" });
+await write({ type: "daily_report_generated", observedAt: new Date().toISOString(), reportDate: "2026-06-13", openPositionNotionalKrw: "12000", dailyRealizedLossKrw: "3000" });
+await write({ type: "m22_pilot_heartbeat", observedAt: new Date().toISOString(), openPositionNotionalKrw: "7000", realizedPnlKrw: "-5000" });
+setInterval(() => {}, 1000);
+`,
+      "utf8",
+    );
+
+    const { stdout } = await runScript(
+      [
+        "--json",
+        "--artifact-dir",
+        artifactDir,
+        "--config",
+        configPath,
+        "--duration-ms",
+        "1000",
+        "--termination-grace-ms",
+        "500",
+        "--pilot-command",
+        process.execPath,
+        "--",
+        childPath,
+      ],
+      createReadyEnv(),
+    );
+    const summary = JSON.parse(stdout) as M22PilotSummary;
+
+    expect(summary.status).toBe("passed");
+    expect(summary.dailyReportDate).toBe("2026-06-13");
+    expect(summary.metrics).toMatchObject({
+      dailyReportDate: "2026-06-13",
+      dailyReportDateEvidenceCount: 1,
+      dailyRealizedLossKrw: 5000,
+      openPositionNotionalKrw: 12000,
+      latestOpenPositionNotionalKrw: 7000,
+      openPositionNotionalEvidenceCount: 3,
+    });
+  });
+
+  it("sums per-fill realized losses instead of keeping only the largest loss event", async () => {
+    const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-m22-pilot-per-fill-loss-"));
+    const configPath = path.join(artifactDir, "m22-config.json");
+    const childPath = path.join(artifactDir, "pilot-per-fill-loss-child.mjs");
+    await writeFile(configPath, `${JSON.stringify(createEnabledM22Config(), null, 2)}\n`, "utf8");
+    await writeFile(
+      childPath,
+      `import { appendFile } from "node:fs/promises";
+const write = async (event) => appendFile(process.env.SEEMIRAI_M22_PILOT_EVENT_LOG, JSON.stringify(event) + "\\n", "utf8");
+await write({ type: "m22_pilot_heartbeat", observedAt: new Date().toISOString(), openPositionNotionalKrw: "0" });
+await write({ type: "fill", observedAt: new Date().toISOString(), realizedPnlKrw: "-30000" });
+await write({ type: "fill", observedAt: new Date().toISOString(), lossKrw: "30000" });
+setInterval(() => {}, 1000);
+`,
+      "utf8",
+    );
+
+    const { stdout } = await runScript(
+      [
+        "--json",
+        "--artifact-dir",
+        artifactDir,
+        "--config",
+        configPath,
+        "--duration-ms",
+        "1000",
+        "--termination-grace-ms",
+        "500",
+        "--pilot-command",
+        process.execPath,
+        "--",
+        childPath,
+      ],
+      createReadyEnv(),
+    );
+    const summary = JSON.parse(stdout) as M22PilotSummary;
+
+    expect(summary.status).toBe("passed");
+    expect(summary.metrics).toMatchObject({
+      dailyRealizedLossKrw: 60_000,
+      dailyRealizedLossEvidenceCount: 3,
+      openPositionNotionalKrw: 0,
+      openPositionNotionalEvidenceCount: 1,
+    });
+  });
+
+  it("carries forward explicit segment realized loss env even when the child event log has no loss event", async () => {
+    const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-m22-pilot-carried-loss-"));
+    const configPath = path.join(artifactDir, "m22-config.json");
+    const childPath = path.join(artifactDir, "pilot-carried-loss-child.mjs");
+    await writeFile(configPath, `${JSON.stringify(createEnabledM22Config(), null, 2)}\n`, "utf8");
+    await writeFile(
+      childPath,
+      `import { appendFile } from "node:fs/promises";
+await appendFile(process.env.SEEMIRAI_M22_PILOT_EVENT_LOG, JSON.stringify({ type: "m22_pilot_heartbeat", observedAt: new Date().toISOString(), dryRun: false }) + "\\n", "utf8");
+setInterval(() => {}, 1000);
+`,
+      "utf8",
+    );
+
+    const { stdout } = await runScript(
+      [
+        "--json",
+        "--artifact-dir",
+        artifactDir,
+        "--config",
+        configPath,
+        "--duration-ms",
+        "1000",
+        "--termination-grace-ms",
+        "500",
+        "--pilot-command",
+        process.execPath,
+        "--",
+        childPath,
+      ],
+      {
+        ...createReadyEnv(),
+        SEEMIRAI_M22_DAILY_REALIZED_LOSS_KRW: "40000",
+        SEEMIRAI_M22_WEEKLY_REALIZED_LOSS_KRW: "49000",
+      },
+    );
+    const summary = JSON.parse(stdout) as M22PilotSummary;
+
+    expect(summary.status).toBe("passed");
+    expect(summary.metrics).toMatchObject({
+      dailyRealizedLossKrw: 40000,
+      dailyRealizedLossEvidenceCount: 1,
+      weeklyRealizedLossKrw: 49000,
+      weeklyRealizedLossEvidenceCount: 1,
+      openPositionNotionalKrw: null,
+      openPositionNotionalEvidenceCount: 0,
+    });
   });
 });
 
@@ -140,6 +391,7 @@ function createReadyEnv(): Record<string, string> {
     SEEMIRAI_M22_PNL_STATUS_READY: "1",
     SEEMIRAI_M22_DECISION_LEDGER_READY: "1",
     SEEMIRAI_M22_EXIT_ENGINE_READY: "1",
+    SEEMIRAI_M22_DAILY_REALIZED_LOSS_KRW: "0",
   };
 }
 
@@ -186,6 +438,7 @@ function createEnabledM22Config(): Record<string, unknown> {
 interface M22PilotSummary {
   status: string;
   input: string;
+  dailyReportDate: string | null;
   artifacts: {
     eventLogPath: string;
     reportPath: string;
@@ -193,12 +446,26 @@ interface M22PilotSummary {
   };
   metrics: {
     heartbeatCount: number;
+    dryRun: boolean | null;
+    liveOrderCapable: boolean;
+    explicitDryRunEventCount: number;
+    explicitNonDryRunEventCount: number;
+    liveOrderCapableEventCount: number;
+    dailyReportDate: string | null;
+    dailyReportDateEvidenceCount: number;
     crashCount: number;
     unhandledRejectionCount: number;
     riskGateBypassCount: number;
     reconcileMismatchCount: number;
     duplicateOrderCount: number;
     untrackedFillCount: number;
+    dailyRealizedLossKrw: number;
+    dailyRealizedLossEvidenceCount: number;
+    weeklyRealizedLossKrw: number | null;
+    weeklyRealizedLossEvidenceCount: number;
+    openPositionNotionalKrw: number | null;
+    latestOpenPositionNotionalKrw?: number | null;
+    openPositionNotionalEvidenceCount: number;
     pilotProcess: null | {
       ranFullDuration: boolean;
     };

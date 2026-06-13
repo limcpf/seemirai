@@ -243,7 +243,10 @@ SEEMIRAI_RESTORE_DATABASE_URL=<disposable-restore-db> \
 closeout에는 redacted artifact 기준으로 다음을 기록한다.
 
 - 7일 연속 daily report
+- 각 segment의 startedAt/reportDate와 manifest day 일치 evidence
+- 각 segment의 daemon heartbeat와 pilot command 정상 종료 evidence
 - live-armed 설정 evidence와 key scope evidence
+- 누적 realized loss와 미체결 노출 합계가 50,000 KRW 미만이라는 숫자 evidence
 - candidate 없음, gate 차단, 시장 조건 미충족 등 주문이 없었던 날의 이유 evidence
 - 주문 제출/취소/체결/부분체결/차단 event summary
 - restart/reconcile/status 복구 evidence
@@ -257,5 +260,62 @@ closeout에는 redacted artifact 기준으로 다음을 기록한다.
 - duplicate order 0건
 - untracked fill 0건
 - live order cleanup failure 0건
+
+7일 closeout은 저장소 밖 manifest로 집계한다. manifest는 raw secret이 아니라 redacted evidence id와 artifact 경로만 포함해야 한다.
+
+```json
+{
+  "issue": 188,
+  "mode": "LIVE_AUTONOMOUS_SMALL_BUDGET",
+  "liveArmedEvidenceId": "m23-live-armed-YYYY-MM-DD",
+  "keyScopeEvidenceId": "m23-key-scope-YYYY-MM-DD",
+  "operatorArmEvidenceId": "m23-operator-arm-YYYY-MM-DD",
+  "budgetEvidenceId": "m23-budget-YYYY-MM-DD",
+  "segments": [
+    {
+      "day": "YYYY-MM-DD",
+      "summaryPath": "m23-segment-YYYY-MM-DD-summary.json",
+      "decisionEvidenceId": "m23-decision-YYYY-MM-DD",
+      "dailyReportEvidenceId": "m23-daily-report-YYYY-MM-DD",
+      "alertEvidenceIds": ["m23-alert-lifecycle-YYYY-MM-DD", "m23-alert-trade-YYYY-MM-DD"]
+    }
+  ],
+  "recoveryDrillSummaryPath": "m23-recovery-summary.json",
+  "backupRestore": {
+    "status": "blocked",
+    "evidenceId": "m23-db-restore-blocker-YYYY-MM-DD",
+    "blockerReason": "disposable restore DB 미준비",
+    "requiredOperatorAction": "restore target DB와 권한 준비",
+    "retryPlanEvidenceId": "m23-db-restore-retry-plan-YYYY-MM-DD"
+  },
+  "sourceScan": {
+    "evidenceId": "m23-source-scan-YYYY-MM-DD",
+    "liveOrderApiGuarded": true,
+    "marketBestOrderDefaultOpened": false,
+    "withdrawalOrDepositPathOpened": false,
+    "rawSecretExposure": false
+  }
+}
+```
+
+manifest와 7개 segment summary, recovery drill summary가 준비되면 다음 validator를 실행한다.
+
+```sh
+SEEMIRAI_RUN_M23_STABILITY_CLOSEOUT=1 \
+node scripts/run-m23-stability-closeout.mjs \
+  --manifest "$M22_HOME/artifacts/m23-stability-closeout-manifest.json" \
+  --artifact-dir "$SEEMIRAI_M22_ARTIFACT_DIR" \
+  --json
+```
+
+CI와 PR 검증에서는 실제 7일 운영을 시작하지 않고 fixture smoke만 실행한다.
+
+```sh
+node scripts/run-m23-stability-closeout.mjs --fixture-smoke --json
+```
+
+`scripts/run-m23-stability-closeout.mjs`는 7개 이상의 서로 다른 day segment, 각 segment의 24시간 정상 종료, daily report,
+live-armed guard/readiness, decision evidence, closeout failure counter 명시적 0건, recovery drill, DB backup/restore 결과 또는
+blocker, source scan, raw secret 후보를 함께 확인한다. 7일 artifact가 없거나 manifest가 6일 이하이면 closeout은 실패다.
 
 live canary 1회 성공, dry-run, heartbeat-only만으로 M23 완료를 선언하지 않는다.
