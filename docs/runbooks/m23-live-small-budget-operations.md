@@ -243,7 +243,10 @@ SEEMIRAI_RESTORE_DATABASE_URL=<disposable-restore-db> \
 closeout에는 redacted artifact 기준으로 다음을 기록한다.
 
 - 7일 연속 daily report
+- 각 segment의 startedAt/reportDate와 manifest day 일치 evidence
+- 각 segment의 daemon heartbeat와 pilot command 정상 종료 evidence
 - live-armed 설정 evidence와 key scope evidence
+- 누적 realized loss와 미체결 노출 합계가 50,000 KRW 미만이라는 숫자 evidence
 - candidate 없음, gate 차단, 시장 조건 미충족 등 주문이 없었던 날의 이유 evidence
 - 주문 제출/취소/체결/부분체결/차단 event summary
 - restart/reconcile/status 복구 evidence

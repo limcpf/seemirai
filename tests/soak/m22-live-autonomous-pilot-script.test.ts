@@ -41,6 +41,8 @@ describe("M22 live autonomous pilot runner script", () => {
       reconcileMismatchCount: 0,
       duplicateOrderCount: 0,
       untrackedFillCount: 0,
+      dailyRealizedLossKrw: 0,
+      openPositionNotionalKrw: 0,
     });
     expect(getCheck(summary, "configSafety")).toMatchObject({
       status: "ok",

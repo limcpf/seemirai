@@ -227,6 +227,41 @@ describe("M23 stability closeout script", () => {
     });
   });
 
+  it("fails when a segment command was force killed after the requested duration", async () => {
+    const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-m23-stability-force-killed-"));
+    const manifestPath = await writeCloseoutFixture(artifactDir, {
+      segmentMutator: (summary, index) => {
+        if (index !== 1) {
+          return summary;
+        }
+
+        const metrics = summary.metrics as Record<string, unknown>;
+        const pilotProcess = metrics.pilotProcess as Record<string, unknown>;
+        const checks = summary.checks as Record<string, unknown>;
+        return {
+          ...summary,
+          metrics: {
+            ...metrics,
+            pilotProcess: { ...pilotProcess, forceKilled: true, signal: "SIGKILL" },
+          },
+          checks: {
+            ...checks,
+            pilotCommand: { status: "fail" },
+          },
+        };
+      },
+    });
+    const summary = await runScriptExpectingFailure(
+      ["--json", "--artifact-dir", artifactDir, "--manifest", manifestPath],
+      createReadyEnv(),
+    );
+
+    expect(summary.status).toBe("failed");
+    expect(getCheck(summary, "segmentDuration")).toMatchObject({
+      status: "fail",
+    });
+  });
+
   it("fails when a segment is not a live autonomous M23 execution", async () => {
     const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-m23-stability-mode-"));
     const manifestPath = await writeCloseoutFixture(artifactDir, {
@@ -326,6 +361,60 @@ describe("M23 stability closeout script", () => {
     });
   });
 
+  it("fails when heartbeat evidence is missing from a segment", async () => {
+    const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-m23-stability-heartbeat-"));
+    const manifestPath = await writeCloseoutFixture(artifactDir, {
+      segmentMutator: (summary, index) => {
+        if (index !== 0) {
+          return summary;
+        }
+
+        const metrics = summary.metrics as Record<string, unknown>;
+        const checks = summary.checks as Record<string, unknown>;
+        return {
+          ...summary,
+          metrics: { ...metrics, heartbeatCount: 0 },
+          checks: { ...checks, heartbeat: { status: "fail" } },
+        };
+      },
+    });
+    const summary = await runScriptExpectingFailure(
+      ["--json", "--artifact-dir", artifactDir, "--manifest", manifestPath],
+      createReadyEnv(),
+    );
+
+    expect(summary.status).toBe("failed");
+    expect(getCheck(summary, "segmentHeartbeat")).toMatchObject({
+      status: "fail",
+    });
+  });
+
+  it("fails when budget loss and open exposure reach the M23 ceiling", async () => {
+    const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-m23-stability-budget-ceiling-"));
+    const manifestPath = await writeCloseoutFixture(artifactDir, {
+      segmentMutator: (summary, index) => {
+        if (index !== 3) {
+          return summary;
+        }
+
+        const metrics = summary.metrics as Record<string, unknown>;
+        return {
+          ...summary,
+          metrics: { ...metrics, dailyRealizedLossKrw: 40_000, openPositionNotionalKrw: 10_000 },
+        };
+      },
+    });
+    const summary = await runScriptExpectingFailure(
+      ["--json", "--artifact-dir", artifactDir, "--manifest", manifestPath],
+      createReadyEnv(),
+    );
+
+    expect(summary.status).toBe("failed");
+    expect(getCheck(summary, "segmentBudgetCeiling")).toMatchObject({
+      status: "fail",
+    });
+  });
+
   it("fails when the closeout manifest contains raw secret fields", async () => {
     const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-m23-stability-secret-"));
     const manifestPath = await writeCloseoutFixture(artifactDir, {
@@ -337,6 +426,8 @@ describe("M23 stability closeout script", () => {
         upbit_secret_key: "raw-secret-key-value",
         accessKey: "raw-access-key-value",
         upbitSecretKey: "raw-secret-key-value",
+        telegram: { botToken: "raw-telegram-token-value" },
+        botToken: "raw-telegram-token-value",
       },
     });
     const summary = await runScriptExpectingFailure(
@@ -358,6 +449,7 @@ describe("M23 stability closeout script", () => {
         jwt: "[REDACTED]",
         accessKey: "[REDACTED]",
         upbitSecretKey: "[REDACTED]",
+        botToken: "[REDACTED]",
       },
     });
     const { stdout } = await runScript(
@@ -376,6 +468,25 @@ describe("M23 stability closeout script", () => {
     const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-m23-stability-recovery-fixture-"));
     const manifestPath = await writeCloseoutFixture(artifactDir, {
       recoveryMutator: (summary) => ({ ...summary, input: "fixture_smoke" }),
+    });
+    const summary = await runScriptExpectingFailure(
+      ["--json", "--artifact-dir", artifactDir, "--manifest", manifestPath],
+      createReadyEnv(),
+    );
+
+    expect(summary.status).toBe("failed");
+    expect(getCheck(summary, "recoveryDrill")).toMatchObject({
+      status: "fail",
+    });
+  });
+
+  it("fails when recovery drill summary omits required recovery checks", async () => {
+    const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-m23-stability-recovery-missing-check-"));
+    const manifestPath = await writeCloseoutFixture(artifactDir, {
+      recoveryMutator: (summary) => {
+        const checks = summary.checks as Record<string, unknown>;
+        return { ...summary, checks: { ...checks, heartbeatRecovery: { status: "fail" } } };
+      },
     });
     const summary = await runScriptExpectingFailure(
       ["--json", "--artifact-dir", artifactDir, "--manifest", manifestPath],
@@ -509,6 +620,8 @@ function createSegmentSummary(index: number): Record<string, unknown> {
       orderSubmittedCount: index === 0 ? 1 : 0,
       brokerSubmissionCount: index === 0 ? 1 : 0,
       dailyReportGeneratedCount: 1,
+      dailyRealizedLossKrw: 0,
+      openPositionNotionalKrw: 0,
       crashCount: 0,
       unhandledRejectionCount: 0,
       riskGateBypassCount: 0,
@@ -525,6 +638,8 @@ function createSegmentSummary(index: number): Record<string, unknown> {
       },
     },
     checks: {
+      pilotCommand: { status: "ok" },
+      heartbeat: { status: "ok" },
       configSafety: {
         status: "ok",
         evidence: {
@@ -545,13 +660,16 @@ function createSegmentSummary(index: number): Record<string, unknown> {
 
 function createRecoverySummary(): Record<string, unknown> {
   const required = [
+    "eventLogsParsed",
     "restartEvidence",
+    "heartbeatRecovery",
     "duplicateLiveOrder",
     "reconcileRecovery",
     "statusRecovery",
     "dailyReportRecovery",
     "failClosedDrills",
     "backupRestore",
+    "closeoutZeroCounters",
     "secretScan",
   ];
   return {

@@ -12,15 +12,19 @@ const oneDayMs = 86_400_000;
 const expectedIssue = 188;
 const expectedMode = "LIVE_AUTONOMOUS_SMALL_BUDGET";
 const requiredRecoveryChecks = [
+  "eventLogsParsed",
   "restartEvidence",
+  "heartbeatRecovery",
   "duplicateLiveOrder",
   "reconcileRecovery",
   "statusRecovery",
   "dailyReportRecovery",
   "failClosedDrills",
   "backupRestore",
+  "closeoutZeroCounters",
   "secretScan",
 ];
+const lossCeilingKrw = 50_000;
 const closeoutCounterNames = [
   "crashCount",
   "unhandledRejectionCount",
@@ -36,6 +40,7 @@ const sensitivePatterns = [
   { label: "secret_key field", pattern: /"(?:upbit_)?secret_key"\s*:\s*"(?!<redacted>|redacted|\[redacted\])[^"]{4,}"/i },
   { label: "secretKey field", pattern: /"(?:upbit)?secretKey"\s*:\s*"(?!<redacted>|redacted|\[redacted\])[^"]{4,}"/i },
   { label: "telegram token field", pattern: /"telegram_bot_token"\s*:\s*"(?!<redacted>|redacted|\[redacted\])[^"]{4,}"/i },
+  { label: "telegram botToken field", pattern: /"(?:telegram)?botToken"\s*:\s*"(?!<redacted>|redacted|\[redacted\])[^"]{4,}"/i },
   { label: "jwt field", pattern: /"jwt"\s*:\s*"(?!<redacted>|redacted|\[redacted\])[^"]{4,}"/i },
   { label: "authorization bearer", pattern: /authorization:\s*bearer\s+(?!<redacted>|redacted|\[redacted\])[^\s"']+/i },
   { label: "authorization json field", pattern: /"authorization"\s*:\s*"(?!bearer\s+(?:<redacted>|redacted|\[redacted\])"|(?:<redacted>|redacted|\[redacted\])")[^"]{4,}"/i },
@@ -194,9 +199,11 @@ async function validateManifest(manifest, manifestPath, manifestRawText) {
     segmentCompleteness: createSegmentCompletenessCheck(segmentRecords, segmentFiles),
     segmentSummariesParsed: createSegmentSummariesParsedCheck(segmentFiles, segmentRecords.length),
     segmentDuration: createSegmentDurationCheck(segmentFiles),
+    segmentHeartbeat: createSegmentHeartbeatCheck(segmentFiles),
     segmentDailyReports: createSegmentDailyReportsCheck(segmentFiles),
     segmentZeroCounters: createSegmentZeroCountersCheck(segmentFiles),
     segmentLiveArmedGuards: createSegmentLiveArmedGuardCheck(segmentFiles),
+    segmentBudgetCeiling: createSegmentBudgetCeilingCheck(segmentFiles),
     decisionEvidence: createDecisionEvidenceCheck(segmentRecords),
     recoveryDrill: createRecoveryDrillCheck(manifest, recoveryFile),
     backupRestore: createBackupRestoreCheck(manifest.backupRestore),
@@ -313,7 +320,10 @@ function createSegmentDurationCheck(segmentFiles) {
       const requested = readFiniteNumber(pilotProcess.durationMsRequested);
       const observed = readFiniteNumber(pilotProcess.durationMsObserved);
       return summary.status !== "passed"
+        || !hasOkCheck(summary, "pilotCommand")
         || pilotProcess.ranFullDuration !== true
+        || readBoolean(pilotProcess.forceKilled) === true
+        || readString(pilotProcess.signal) === "SIGKILL"
         || requested === undefined
         || requested < oneDayMs
         || observed === undefined
@@ -332,12 +342,35 @@ function createSegmentDurationCheck(segmentFiles) {
       durationMsObserved: isRecord(summary.metrics) && isRecord(summary.metrics.pilotProcess)
         ? summary.metrics.pilotProcess.durationMsObserved
         : undefined,
+      forceKilled: isRecord(summary.metrics) && isRecord(summary.metrics.pilotProcess)
+        ? summary.metrics.pilotProcess.forceKilled
+        : undefined,
+      signal: isRecord(summary.metrics) && isRecord(summary.metrics.pilotProcess)
+        ? summary.metrics.pilotProcess.signal
+        : undefined,
+      pilotCommand: readCheckStatus(summary, "pilotCommand") ?? null,
     }));
   if (invalid.length === 0 && segmentFiles.length >= requiredSegmentCount) {
     return okCheck("각 segment가 24시간 요청 duration과 정상 종료 evidence를 가진다.", { segmentCount: segmentFiles.length });
   }
 
   return failCheck("24시간을 채우지 못했거나 실패한 segment summary가 있다.", { invalid });
+}
+
+function createSegmentHeartbeatCheck(segmentFiles) {
+  const invalid = parsedSegmentEntries(segmentFiles)
+    .filter(({ summary }) => !hasOkCheck(summary, "heartbeat") || (readFiniteNumber(readMetrics(summary).heartbeatCount) ?? 0) <= 0)
+    .map(({ index, file, summary }) => ({
+      segment: index + 1,
+      filePath: file.filePath,
+      heartbeat: readCheckStatus(summary, "heartbeat") ?? null,
+      heartbeatCount: readFiniteNumber(readMetrics(summary).heartbeatCount) ?? null,
+    }));
+  if (invalid.length === 0 && segmentFiles.length >= requiredSegmentCount) {
+    return okCheck("모든 segment에 daemon heartbeat evidence가 있다.", { segmentCount: segmentFiles.length });
+  }
+
+  return failCheck("daemon heartbeat evidence가 없거나 실패한 segment가 있다.", { invalid });
 }
 
 function createSegmentDailyReportsCheck(segmentFiles) {
@@ -411,6 +444,46 @@ function createSegmentLiveArmedGuardCheck(segmentFiles) {
   }
 
   return failCheck("live-armed guard/readiness/config evidence가 부족한 segment가 있다.", { invalid });
+}
+
+function createSegmentBudgetCeilingCheck(segmentFiles) {
+  const invalid = parsedSegmentEntries(segmentFiles)
+    .map(({ index, file, summary }) => {
+      const metrics = readMetrics(summary);
+      const realizedLossKrw = readFiniteNumber(metrics.dailyRealizedLossKrw);
+      const openPositionNotionalKrw = readFiniteNumber(metrics.openPositionNotionalKrw);
+      const combinedExposureKrw = realizedLossKrw === undefined || openPositionNotionalKrw === undefined
+        ? undefined
+        : realizedLossKrw + openPositionNotionalKrw;
+      return {
+        segment: index + 1,
+        filePath: file.filePath,
+        realizedLossKrw,
+        openPositionNotionalKrw,
+        combinedExposureKrw,
+      };
+    })
+    .filter((entry) => entry.realizedLossKrw === undefined
+      || entry.openPositionNotionalKrw === undefined
+      || entry.realizedLossKrw < 0
+      || entry.openPositionNotionalKrw < 0
+      || entry.combinedExposureKrw === undefined
+      || entry.combinedExposureKrw >= lossCeilingKrw)
+    .map((entry) => ({
+      ...entry,
+      realizedLossKrw: entry.realizedLossKrw ?? null,
+      openPositionNotionalKrw: entry.openPositionNotionalKrw ?? null,
+      combinedExposureKrw: entry.combinedExposureKrw ?? null,
+      lossCeilingKrw,
+    }));
+  if (invalid.length === 0 && segmentFiles.length >= requiredSegmentCount) {
+    return okCheck("모든 segment가 50,000 KRW 손실/노출 ceiling 미만임을 숫자 evidence로 증명한다.", {
+      segmentCount: segmentFiles.length,
+      lossCeilingKrw,
+    });
+  }
+
+  return failCheck("손실/미체결 노출 ceiling evidence가 없거나 한도를 넘은 segment가 있다.", { invalid });
 }
 
 function createDecisionEvidenceCheck(segments) {
@@ -695,10 +768,12 @@ function readSegmentExecutionDays(summary) {
   const metrics = readMetrics(summary);
   const pilotProcess = isRecord(metrics.pilotProcess) ? metrics.pilotProcess : {};
   return Array.from(new Set([
+    readIsoDay(summary.reportDate),
+    readIsoDay(summary.dailyReportDate),
+    readIsoDay(metrics.reportDate),
+    readIsoDay(metrics.dailyReportDate),
     readIsoDay(summary.startedAt),
-    readIsoDay(summary.finishedAt),
     readIsoDay(pilotProcess.startedAt),
-    readIsoDay(pilotProcess.finishedAt),
   ].filter((day) => day !== undefined)));
 }
 
@@ -831,6 +906,8 @@ function createFixtureSegmentSummary(index, startedAt) {
       brokerSubmissionCount: index === 0 ? 1 : 0,
       manualReviewRequiredCount: 0,
       dailyReportGeneratedCount: 1,
+      dailyRealizedLossKrw: 0,
+      openPositionNotionalKrw: 0,
       crashCount: 0,
       unhandledRejectionCount: 0,
       riskGateBypassCount: 0,
@@ -849,6 +926,8 @@ function createFixtureSegmentSummary(index, startedAt) {
       },
     },
     checks: {
+      pilotCommand: { status: "ok" },
+      heartbeat: { status: "ok" },
       configSafety: {
         status: "ok",
         evidence: {
