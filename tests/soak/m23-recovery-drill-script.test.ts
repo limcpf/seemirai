@@ -405,6 +405,32 @@ describe("M23 recovery drill script", () => {
       status: "fail",
     });
   });
+
+  it("counts legacy eventType and boolean failure flags as closeout failures", async () => {
+    const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-m23-recovery-legacy-failures-"));
+    const beforePath = path.join(artifactDir, "before.jsonl");
+    const afterPath = path.join(artifactDir, "after.jsonl");
+    await writeEventLog(beforePath, validBeforeRestartEvents("restart-legacy-failures"));
+    await writeEventLog(afterPath, [
+      ...validAfterRestartEvents("restart-legacy-failures"),
+      { eventType: "crash", observedAt: "2026-06-13T00:00:10.000Z" },
+      { eventType: "duplicate_order", observedAt: "2026-06-13T00:00:11.000Z" },
+      { type: "live_ops_event", observedAt: "2026-06-13T00:00:12.000Z", riskGateBypass: true },
+      { type: "live_ops_event", observedAt: "2026-06-13T00:00:13.000Z", untrackedFill: true },
+    ]);
+
+    const summary = await runScriptExpectingFailure(validArtifactArgs(artifactDir, beforePath, afterPath));
+
+    expect(summary.metrics).toMatchObject({
+      crashCount: 1,
+      duplicateOrderCount: 1,
+      riskGateBypassCount: 1,
+      untrackedFillCount: 1,
+    });
+    expect(getCheck(summary, "closeoutZeroCounters")).toMatchObject({
+      status: "fail",
+    });
+  });
 });
 
 async function runScript(args: readonly string[], env: Record<string, string> = {}) {
@@ -516,6 +542,7 @@ interface M23RecoveryDrillSummary {
     crashCount: number;
     unhandledRejectionCount: number;
     reconcileMismatchCount: number;
+    untrackedFillCount: number;
     liveOrderCleanupFailureCount: number;
     failClosedDrillCount: number;
     dailyReportGeneratedCount: number;

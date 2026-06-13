@@ -437,21 +437,19 @@ function createMetrics(beforeLog, afterLog) {
     statusSummaryCount: afterLog.events.filter((event) => event.type === "live_ops_status_summary").length,
     dailyReportGeneratedCount: afterLog.events.filter((event) => event.type === "daily_report_generated").length,
     failClosedDrillCount: afterLog.events.filter((event) => event.type === "fail_closed_drill").length,
-    crashCount: events.filter((event) => event.type === "runtime_crash" || event.type === "crash").length,
-    unhandledRejectionCount: events.filter((event) => event.type === "unhandled_rejection" || event.unhandledRejection === true).length,
-    riskGateBypassCount: events.filter((event) => event.type === "risk_gate_bypass").length,
-    reconcileMismatchCount: events.filter((event) => event.type === "live_reconcile_mismatch" || event.type === "reconcile_mismatch").length
-      + events.filter((event) => event.type === "live_reconcile_completed").filter((event) => {
+    crashCount: events.filter((event) => hasEventType(event, ["runtime_crash", "crash"])).length,
+    unhandledRejectionCount: events.filter((event) => hasEventType(event, ["unhandled_rejection"]) || event.unhandledRejection === true).length,
+    riskGateBypassCount: events.filter((event) => hasEventType(event, ["risk_gate_bypass"]) || event.riskGateBypass === true).length,
+    reconcileMismatchCount: events.filter((event) => hasEventType(event, ["live_reconcile_mismatch", "reconcile_mismatch"])).length
+      + events.filter((event) => hasEventType(event, ["live_reconcile_completed"])).filter((event) => {
         const mismatchCount = Number(event.mismatchCount ?? 0);
         return !Number.isFinite(mismatchCount) || mismatchCount !== 0 || !["SUCCESS", "CLEAN"].includes(readString(event.result) ?? "");
       }).length,
     duplicateOrderCount: duplicateOrderEvidence.duplicateIds.length
-      + events.filter((event) => event.type === "duplicate_order").length,
-    untrackedFillCount: events.filter((event) => event.type === "untracked_fill").length,
+      + events.filter((event) => hasEventType(event, ["duplicate_order"])).length,
+    untrackedFillCount: events.filter((event) => hasEventType(event, ["untracked_fill"]) || event.untrackedFill === true).length,
     liveOrderCleanupFailureCount: events.filter((event) =>
-      event.type === "live_order_cleanup_failure"
-      || event.type === "order_cancel_failed"
-      || event.type === "order_cancel_unconfirmed").length,
+      hasEventType(event, ["live_order_cleanup_failure", "order_cancel_failed", "order_cancel_unconfirmed"])).length,
     parseErrorCount: beforeLog.parseErrors.length + afterLog.parseErrors.length,
   };
 }
@@ -507,6 +505,11 @@ function collectDuplicateSubmissionIds(events) {
 
 function collectDuplicateValues(values) {
   return values.filter((value, index) => values.indexOf(value) !== index);
+}
+
+function hasEventType(event, acceptedTypes) {
+  const eventType = readString(event.type) ?? readString(event.eventType);
+  return eventType !== undefined && acceptedTypes.includes(eventType);
 }
 
 async function readEventLog(filePath) {
