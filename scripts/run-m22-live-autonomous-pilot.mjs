@@ -677,6 +677,7 @@ function createMetrics(eventLog, pilotProcess, options = {}) {
     includeCarriedBudgetEnv: options.includeCarriedBudgetEnv !== false,
   });
   const liveMode = summarizeLiveOrderCapability(eventLog.events);
+  const dailyReport = summarizeDailyReportEvidence(eventLog.events);
   const childCrashCount =
     pilotProcess !== undefined && !pilotProcess.ranFullDuration && pilotProcess.exitCode !== 0 ? 1 : 0;
 
@@ -686,6 +687,8 @@ function createMetrics(eventLog, pilotProcess, options = {}) {
     brokerSubmissionCount: counts.brokerSubmission,
     manualReviewRequiredCount: counts.manualReviewRequired,
     dailyReportGeneratedCount: counts.dailyReportGenerated,
+    dailyReportDate: dailyReport.dailyReportDate ?? null,
+    dailyReportDateEvidenceCount: dailyReport.dailyReportDateEvidenceCount,
     dryRun: liveMode.dryRun,
     liveOrderCapable: liveMode.liveOrderCapable,
     explicitDryRunEventCount: liveMode.explicitDryRunEventCount,
@@ -714,6 +717,8 @@ function createEmptyMetrics() {
     brokerSubmissionCount: 0,
     manualReviewRequiredCount: 0,
     dailyReportGeneratedCount: 0,
+    dailyReportDate: null,
+    dailyReportDateEvidenceCount: 0,
     dryRun: null,
     liveOrderCapable: false,
     explicitDryRunEventCount: 0,
@@ -768,6 +773,27 @@ function countPilotEvents(events) {
   }
 
   return counts;
+}
+
+function summarizeDailyReportEvidence(events) {
+  let dailyReportDate;
+  let dailyReportDateEvidenceCount = 0;
+
+  for (const event of events) {
+    const type = String(event.type ?? event.eventType ?? "");
+    if (type !== "daily_report_generated") {
+      continue;
+    }
+
+    const eventDay = readIsoDay(event.reportDate) ?? readIsoDay(event.dailyReportDate);
+    if (eventDay !== undefined) {
+      // M23 closeout은 startedAt fallback 없이 daily report 기준일 자체를 검증해야 하므로 event date를 summary로 승격한다.
+      dailyReportDate = eventDay;
+      dailyReportDateEvidenceCount += 1;
+    }
+  }
+
+  return { dailyReportDate, dailyReportDateEvidenceCount };
 }
 
 function summarizeLiveOrderCapability(events) {
@@ -864,6 +890,24 @@ function readNonNegativeEnvNumber(name) {
   }
 
   return readNonNegativeNumber(process.env[name]);
+}
+
+function readIsoDay(value) {
+  const text = readString(value);
+  if (text === undefined) {
+    return undefined;
+  }
+
+  if (/^\d{4}-\d{2}-\d{2}$/u.test(text)) {
+    return text;
+  }
+
+  const timestamp = Date.parse(text);
+  return Number.isFinite(timestamp) ? new Date(timestamp).toISOString().slice(0, 10) : undefined;
+}
+
+function readString(value) {
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
 }
 
 function readBoolean(value) {
@@ -979,6 +1023,7 @@ function createSummary({ runId, startedAt, inputMode, options, git, artifacts, c
     durationMsObserved: finishedAt.getTime() - startedAt.getTime(),
     mode: "LIVE_AUTONOMOUS_SMALL_BUDGET",
     input: inputMode,
+    dailyReportDate: metrics.dailyReportDate ?? null,
     git,
     artifacts,
     metrics,

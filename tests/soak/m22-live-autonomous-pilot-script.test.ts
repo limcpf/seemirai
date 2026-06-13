@@ -39,6 +39,7 @@ describe("M22 live autonomous pilot runner script", () => {
       liveOrderCapable: false,
       crashCount: 0,
       unhandledRejectionCount: 0,
+      dailyReportDateEvidenceCount: 1,
       riskGateBypassCount: 0,
       reconcileMismatchCount: 0,
       duplicateOrderCount: 0,
@@ -47,6 +48,8 @@ describe("M22 live autonomous pilot runner script", () => {
       dailyRealizedLossEvidenceCount: 0,
       openPositionNotionalKrw: 0,
     });
+    expect(summary.dailyReportDate).toMatch(/^\d{4}-\d{2}-\d{2}$/u);
+    expect(summary.metrics.dailyReportDate).toBe(summary.dailyReportDate);
     expect(getCheck(summary, "configSafety")).toMatchObject({
       status: "ok",
       evidence: { maxOpenPositionNotionalKrw: "30000" },
@@ -212,7 +215,7 @@ setInterval(() => {}, 1000);
       `import { appendFile } from "node:fs/promises";
 const write = async (event) => appendFile(process.env.SEEMIRAI_M22_PILOT_EVENT_LOG, JSON.stringify(event) + "\\n", "utf8");
 await write({ type: "m22_pilot_heartbeat", observedAt: new Date().toISOString(), openPositionNotionalKrw: "8000" });
-await write({ type: "daily_report_generated", observedAt: new Date().toISOString(), openPositionNotionalKrw: "12000", dailyRealizedLossKrw: "3000" });
+await write({ type: "daily_report_generated", observedAt: new Date().toISOString(), reportDate: "2026-06-13", openPositionNotionalKrw: "12000", dailyRealizedLossKrw: "3000" });
 await write({ type: "m22_pilot_heartbeat", observedAt: new Date().toISOString(), openPositionNotionalKrw: "7000", realizedPnlKrw: "-5000" });
 setInterval(() => {}, 1000);
 `,
@@ -240,7 +243,10 @@ setInterval(() => {}, 1000);
     const summary = JSON.parse(stdout) as M22PilotSummary;
 
     expect(summary.status).toBe("passed");
+    expect(summary.dailyReportDate).toBe("2026-06-13");
     expect(summary.metrics).toMatchObject({
+      dailyReportDate: "2026-06-13",
+      dailyReportDateEvidenceCount: 1,
       dailyRealizedLossKrw: 5000,
       openPositionNotionalKrw: 12000,
       latestOpenPositionNotionalKrw: 7000,
@@ -374,6 +380,7 @@ function createEnabledM22Config(): Record<string, unknown> {
 interface M22PilotSummary {
   status: string;
   input: string;
+  dailyReportDate: string | null;
   artifacts: {
     eventLogPath: string;
     reportPath: string;
@@ -386,6 +393,8 @@ interface M22PilotSummary {
     explicitDryRunEventCount: number;
     explicitNonDryRunEventCount: number;
     liveOrderCapableEventCount: number;
+    dailyReportDate: string | null;
+    dailyReportDateEvidenceCount: number;
     crashCount: number;
     unhandledRejectionCount: number;
     riskGateBypassCount: number;
