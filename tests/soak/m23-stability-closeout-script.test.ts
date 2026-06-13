@@ -110,6 +110,44 @@ describe("M23 stability closeout script", () => {
     });
   });
 
+  it("fails when a segment manifest day does not match the summary execution window", async () => {
+    const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-m23-stability-day-summary-mismatch-"));
+    const manifestPath = await writeCloseoutFixture(artifactDir, {
+      segmentMutator: (summary, index) => {
+        if (index !== 4) {
+          return summary;
+        }
+
+        const staleStartedAt = "2026-06-13T00:00:00.000Z";
+        const staleFinishedAt = "2026-06-14T00:00:00.010Z";
+        const metrics = summary.metrics as Record<string, unknown>;
+        const pilotProcess = metrics.pilotProcess as Record<string, unknown>;
+        return {
+          ...summary,
+          startedAt: staleStartedAt,
+          finishedAt: staleFinishedAt,
+          metrics: {
+            ...metrics,
+            pilotProcess: {
+              ...pilotProcess,
+              startedAt: staleStartedAt,
+              finishedAt: staleFinishedAt,
+            },
+          },
+        };
+      },
+    });
+    const summary = await runScriptExpectingFailure(
+      ["--json", "--artifact-dir", artifactDir, "--manifest", manifestPath],
+      createReadyEnv(),
+    );
+
+    expect(summary.status).toBe("failed");
+    expect(getCheck(summary, "segmentCompleteness")).toMatchObject({
+      status: "fail",
+    });
+  });
+
   it("fails when source scan evidence records a newly opened unsafe boundary", async () => {
     const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-m23-stability-source-"));
     const manifestPath = await writeCloseoutFixture(artifactDir, {
@@ -297,6 +335,8 @@ describe("M23 stability closeout script", () => {
         rawProviderPayload: { status: "raw" },
         upbit_access_key: "raw-access-key-value",
         upbit_secret_key: "raw-secret-key-value",
+        accessKey: "raw-access-key-value",
+        upbitSecretKey: "raw-secret-key-value",
       },
     });
     const summary = await runScriptExpectingFailure(
@@ -307,6 +347,28 @@ describe("M23 stability closeout script", () => {
     expect(summary.status).toBe("failed");
     expect(getCheck(summary, "secretScan")).toMatchObject({
       status: "fail",
+    });
+  });
+
+  it("passes redacted authorization and credential placeholders", async () => {
+    const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-m23-stability-redacted-secret-"));
+    const manifestPath = await writeCloseoutFixture(artifactDir, {
+      manifestPatch: {
+        authorization: "Bearer [REDACTED]",
+        jwt: "[REDACTED]",
+        accessKey: "[REDACTED]",
+        upbitSecretKey: "[REDACTED]",
+      },
+    });
+    const { stdout } = await runScript(
+      ["--json", "--artifact-dir", artifactDir, "--manifest", manifestPath],
+      createReadyEnv(),
+    );
+    const summary = JSON.parse(stdout) as M23StabilityCloseoutSummary;
+
+    expect(summary.status).toBe("passed");
+    expect(getCheck(summary, "secretScan")).toMatchObject({
+      status: "ok",
     });
   });
 
@@ -434,10 +496,14 @@ async function writeCloseoutFixture(
 }
 
 function createSegmentSummary(index: number): Record<string, unknown> {
+  const startedAt = new Date(Date.UTC(2026, 5, 13 + index, 0, 0, 0));
+  const finishedAt = new Date(startedAt.getTime() + oneDayMs + 10);
   return {
     status: "passed",
     input: "live_autonomous_command",
     mode: "LIVE_AUTONOMOUS_SMALL_BUDGET",
+    startedAt: startedAt.toISOString(),
+    finishedAt: finishedAt.toISOString(),
     metrics: {
       heartbeatCount: 1440 + index,
       orderSubmittedCount: index === 0 ? 1 : 0,
@@ -451,6 +517,8 @@ function createSegmentSummary(index: number): Record<string, unknown> {
       untrackedFillCount: 0,
       liveOrderCleanupFailureCount: 0,
       pilotProcess: {
+        startedAt: startedAt.toISOString(),
+        finishedAt: finishedAt.toISOString(),
         durationMsRequested: oneDayMs,
         durationMsObserved: oneDayMs + 10,
         ranFullDuration: true,

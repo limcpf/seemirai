@@ -31,20 +31,25 @@ const closeoutCounterNames = [
   "liveOrderCleanupFailureCount",
 ];
 const sensitivePatterns = [
-  { label: "access_key field", pattern: /"(?:upbit_)?access_key"\s*:\s*"(?!<redacted>|redacted)[^"]{4,}"/i },
-  { label: "secret_key field", pattern: /"(?:upbit_)?secret_key"\s*:\s*"(?!<redacted>|redacted)[^"]{4,}"/i },
-  { label: "telegram token field", pattern: /"telegram_bot_token"\s*:\s*"(?!<redacted>|redacted)[^"]{4,}"/i },
-  { label: "jwt field", pattern: /"jwt"\s*:\s*"(?!<redacted>|redacted)[^"]{4,}"/i },
-  { label: "authorization bearer", pattern: /authorization:\s*bearer\s+(?!<redacted>|redacted)[^\s"']+/i },
-  { label: "authorization json field", pattern: /"authorization"\s*:\s*"(?!<redacted>|redacted)[^"]{4,}"/i },
+  { label: "access_key field", pattern: /"(?:upbit_)?access_key"\s*:\s*"(?!<redacted>|redacted|\[redacted\])[^"]{4,}"/i },
+  { label: "accessKey field", pattern: /"(?:upbit)?accessKey"\s*:\s*"(?!<redacted>|redacted|\[redacted\])[^"]{4,}"/i },
+  { label: "secret_key field", pattern: /"(?:upbit_)?secret_key"\s*:\s*"(?!<redacted>|redacted|\[redacted\])[^"]{4,}"/i },
+  { label: "secretKey field", pattern: /"(?:upbit)?secretKey"\s*:\s*"(?!<redacted>|redacted|\[redacted\])[^"]{4,}"/i },
+  { label: "telegram token field", pattern: /"telegram_bot_token"\s*:\s*"(?!<redacted>|redacted|\[redacted\])[^"]{4,}"/i },
+  { label: "jwt field", pattern: /"jwt"\s*:\s*"(?!<redacted>|redacted|\[redacted\])[^"]{4,}"/i },
+  { label: "authorization bearer", pattern: /authorization:\s*bearer\s+(?!<redacted>|redacted|\[redacted\])[^\s"']+/i },
+  { label: "authorization json field", pattern: /"authorization"\s*:\s*"(?!bearer\s+(?:<redacted>|redacted|\[redacted\])"|(?:<redacted>|redacted|\[redacted\])")[^"]{4,}"/i },
   { label: "postgres credential url", pattern: /postgres(?:ql)?:\/\/[^:\s"']+:[^@\s"']+@/i },
   { label: "raw provider field", pattern: /raw[_-]?provider\s*[:=]/i },
   { label: "raw provider json field", pattern: /"raw(?:_|-)?provider(?:payload)?"\s*:/i },
-  { label: "raw provider camel json field", pattern: /"rawProviderPayload"\s*:/i },
+  { label: "raw provider camel json field", pattern: /"rawProvider(?:Body|Payload)?"\s*:/i },
   { label: "raw order field", pattern: /raw[_-]?order\s*[:=]/i },
   { label: "raw order json field", pattern: /"raw(?:_|-)?order(?:detail|payload)?"\s*:/i },
+  { label: "raw order camel json field", pattern: /"rawOrder(?:Detail|Payload)?"\s*:/i },
   { label: "raw update field", pattern: /raw[_-]?update\s*[:=]/i },
   { label: "raw update json field", pattern: /"raw(?:_|-)?update"\s*:/i },
+  { label: "raw update camel json field", pattern: /"rawUpdate"\s*:/i },
+  { label: "raw message text field", pattern: /"rawMessageText"\s*:/i },
 ];
 
 try {
@@ -252,6 +257,7 @@ function createSegmentCompletenessCheck(segments, segmentFiles) {
   const duplicateDecisionEvidenceIds = collectDuplicateValues(decisionEvidenceIds);
   const duplicateDailyReportEvidenceIds = collectDuplicateValues(dailyReportEvidenceIds);
   const consecutiveDays = areConsecutiveDays(uniqueDays);
+  const dayExecutionMismatches = collectSegmentDayExecutionMismatches(segments, segmentFiles);
   if (
     segments.length >= requiredSegmentCount
     && uniqueDays.length >= requiredSegmentCount
@@ -259,6 +265,7 @@ function createSegmentCompletenessCheck(segments, segmentFiles) {
     && duplicateSummaryPaths.length === 0
     && duplicateDecisionEvidenceIds.length === 0
     && duplicateDailyReportEvidenceIds.length === 0
+    && dayExecutionMismatches.length === 0
     && consecutiveDays
   ) {
     return okCheck("7일 이상 segment manifest가 있고 day, summary, evidence가 연속/고유하게 기록됐다.", {
@@ -275,6 +282,7 @@ function createSegmentCompletenessCheck(segments, segmentFiles) {
     duplicateSummaryPaths,
     duplicateDecisionEvidenceIds,
     duplicateDailyReportEvidenceIds,
+    dayExecutionMismatches,
     consecutiveDays,
     requiredSegmentCount,
   });
@@ -664,6 +672,50 @@ function collectDuplicateValues(values) {
   return Array.from(new Set(values.filter((value, index) => values.indexOf(value) !== index)));
 }
 
+function collectSegmentDayExecutionMismatches(segments, segmentFiles) {
+  return segments
+    .map((segment, index) => ({ segment, index, file: segmentFiles[index] }))
+    .filter(({ segment, file }) => {
+      const day = readString(segment.day);
+      if (day === undefined || parseDayToUtcMs(day) === undefined || file?.error !== undefined || !isRecord(file?.value)) {
+        return false;
+      }
+
+      return !readSegmentExecutionDays(file.value).includes(day);
+    })
+    .map(({ segment, index, file }) => ({
+      segment: index + 1,
+      day: readString(segment.day) ?? null,
+      filePath: file?.filePath ?? readString(segment.summaryPath) ?? null,
+      executionDays: isRecord(file?.value) ? readSegmentExecutionDays(file.value) : [],
+    }));
+}
+
+function readSegmentExecutionDays(summary) {
+  const metrics = readMetrics(summary);
+  const pilotProcess = isRecord(metrics.pilotProcess) ? metrics.pilotProcess : {};
+  return Array.from(new Set([
+    readIsoDay(summary.startedAt),
+    readIsoDay(summary.finishedAt),
+    readIsoDay(pilotProcess.startedAt),
+    readIsoDay(pilotProcess.finishedAt),
+  ].filter((day) => day !== undefined)));
+}
+
+function readIsoDay(value) {
+  const text = readString(value);
+  if (text === undefined) {
+    return undefined;
+  }
+
+  const timestamp = Date.parse(text);
+  if (!Number.isFinite(timestamp)) {
+    return undefined;
+  }
+
+  return new Date(timestamp).toISOString().slice(0, 10);
+}
+
 function areConsecutiveDays(days) {
   if (days.length < requiredSegmentCount) {
     return false;
@@ -723,9 +775,10 @@ async function writeFixtureManifest(artifactDir, startedAt) {
   const recoveryPath = path.join(artifactDir, "m23-recovery-summary.fixture.json");
   const segments = [];
   for (let index = 0; index < requiredSegmentCount; index += 1) {
-    const day = new Date(startedAt.getTime() + index * oneDayMs).toISOString().slice(0, 10);
+    const segmentStartedAt = new Date(startedAt.getTime() + index * oneDayMs);
+    const day = segmentStartedAt.toISOString().slice(0, 10);
     const summaryPath = path.join(artifactDir, `m23-segment-${index + 1}-summary.fixture.json`);
-    await writeFile(summaryPath, `${JSON.stringify(createFixtureSegmentSummary(index), null, 2)}\n`, "utf8");
+    await writeFile(summaryPath, `${JSON.stringify(createFixtureSegmentSummary(index, segmentStartedAt), null, 2)}\n`, "utf8");
     segments.push({
       day,
       summaryPath: path.basename(summaryPath),
@@ -764,11 +817,14 @@ async function writeFixtureManifest(artifactDir, startedAt) {
   return { manifestPath };
 }
 
-function createFixtureSegmentSummary(index) {
+function createFixtureSegmentSummary(index, startedAt) {
+  const finishedAt = new Date(startedAt.getTime() + oneDayMs + 32);
   return {
     status: "passed",
     input: "live_autonomous_command",
     mode: expectedMode,
+    startedAt: startedAt.toISOString(),
+    finishedAt: finishedAt.toISOString(),
     metrics: {
       heartbeatCount: 1440 + index,
       orderSubmittedCount: index === 0 ? 1 : 0,
@@ -783,6 +839,8 @@ function createFixtureSegmentSummary(index) {
       untrackedFillCount: 0,
       liveOrderCleanupFailureCount: 0,
       pilotProcess: {
+        startedAt: startedAt.toISOString(),
+        finishedAt: finishedAt.toISOString(),
         durationMsRequested: oneDayMs,
         durationMsObserved: oneDayMs + 32,
         ranFullDuration: true,

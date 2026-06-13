@@ -273,7 +273,8 @@ closeout에는 redacted artifact 기준으로 다음을 기록한다.
       "day": "YYYY-MM-DD",
       "summaryPath": "m23-segment-YYYY-MM-DD-summary.json",
       "decisionEvidenceId": "m23-decision-YYYY-MM-DD",
-      "dailyReportEvidenceId": "m23-daily-report-YYYY-MM-DD"
+      "dailyReportEvidenceId": "m23-daily-report-YYYY-MM-DD",
+      "alertEvidenceIds": ["m23-alert-lifecycle-YYYY-MM-DD", "m23-alert-trade-YYYY-MM-DD"]
     }
   ],
   "recoveryDrillSummaryPath": "m23-recovery-summary.json",
