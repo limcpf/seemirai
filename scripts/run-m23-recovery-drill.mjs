@@ -169,7 +169,7 @@ function createRecoveryChecks(input) {
     heartbeatRecovery: createHeartbeatRecoveryCheck(input.afterLog.events),
     duplicateLiveOrder: createDuplicateLiveOrderCheck(input.beforeLog.events, input.afterLog.events),
     reconcileRecovery: createReconcileRecoveryCheck(input.afterLog.events),
-    statusRecovery: createStatusRecoveryCheck(input.afterLog.events),
+    statusRecovery: createStatusRecoveryCheck(input.beforeLog.events, input.afterLog.events),
     dailyReportRecovery: createDailyReportRecoveryCheck(input.afterLog.events),
     failClosedDrills: createFailClosedDrillCheck(input.afterLog.events),
     backupRestore: createBackupRestoreCheck(input.backupRestoreStatus, input.backupRestoreEvidence),
@@ -179,10 +179,17 @@ function createRecoveryChecks(input) {
 }
 
 function createRestartEvidenceCheck(beforeEvents, afterEvents) {
-  const beforeCheckpoint = beforeEvents.find((event) => event.type === "m23_restart_checkpoint" && event.phase === "before_restart");
-  const afterCheckpoint = afterEvents.find((event) => event.type === "m23_restart_checkpoint" && event.phase === "after_restart");
-  const restartDetected = afterEvents.find((event) => event.type === "live_ops_event" && event.eventKind === "RUNTIME_RESTART_DETECTED");
-  const recovered = afterEvents.find((event) => event.type === "live_ops_event" && event.eventKind === "RUNTIME_RECOVERED");
+  const beforeCheckpoints = beforeEvents.filter((event) => event.type === "m23_restart_checkpoint" && event.phase === "before_restart");
+  const afterCheckpoints = afterEvents.filter((event) => event.type === "m23_restart_checkpoint" && event.phase === "after_restart");
+  // 7일 closeout 로그에는 restart가 여러 번 남을 수 있으므로 가장 최근 after checkpoint만 pass 기준으로 삼는다.
+  const afterCheckpoint = afterCheckpoints.at(-1);
+  const latestRestartId = readString(afterCheckpoint?.restartId);
+  const afterCheckpointIndex = afterCheckpoint === undefined ? 0 : afterEvents.lastIndexOf(afterCheckpoint);
+  const beforeCheckpoint = latestRestartId === undefined
+    ? beforeCheckpoints.at(-1)
+    : beforeCheckpoints.filter((event) => readString(event.restartId) === latestRestartId).at(-1);
+  const restartDetected = findLatestRestartEvent(afterEvents, "RUNTIME_RESTART_DETECTED", latestRestartId, afterCheckpointIndex);
+  const recovered = findLatestRestartEvent(afterEvents, "RUNTIME_RECOVERED", latestRestartId, afterCheckpointIndex);
 
   if (beforeCheckpoint === undefined || afterCheckpoint === undefined || restartDetected === undefined || recovered === undefined) {
     return failCheck("restart 감지와 복구 Telegram/status evidence가 모두 필요하다.", {
@@ -242,6 +249,18 @@ function createRestartEvidenceCheck(beforeEvents, afterEvents) {
     orderAttemptId: recoveryReuseEvidence.beforeOrderAttemptId,
     reconcileRunId: recoveryReuseEvidence.beforeReconcileRunId,
   });
+}
+
+function findLatestRestartEvent(events, eventKind, restartId, startIndex) {
+  const candidates = events
+    .slice(Math.max(0, startIndex))
+    .filter((event) => event.type === "live_ops_event" && event.eventKind === eventKind);
+  if (restartId === undefined) {
+    return candidates.at(-1);
+  }
+
+  return candidates.filter((event) => readString(event.restartId) === restartId).at(-1)
+    ?? candidates.filter((event) => readString(event.restartId) === undefined).at(-1);
 }
 
 function createHeartbeatRecoveryCheck(afterEvents) {
@@ -314,27 +333,61 @@ function createReconcileRecoveryCheck(afterEvents) {
   });
 }
 
-function createStatusRecoveryCheck(afterEvents) {
-  const events = afterEvents.filter((candidate) => candidate.type === "live_ops_status_summary");
-  const event = events.at(-1);
-  if (event === undefined) {
-    return failCheck("restart 후 live ops status summary evidence가 없다.", {
+function createStatusRecoveryCheck(beforeEvents, afterEvents) {
+  const beforeStatusEvents = beforeEvents.filter((candidate) => candidate.type === "live_ops_status_summary");
+  const afterStatusEvents = afterEvents.filter((candidate) => candidate.type === "live_ops_status_summary");
+  const beforeEvent = beforeStatusEvents.at(-1);
+  const afterEvent = afterStatusEvents.at(-1);
+  if (beforeEvent === undefined || afterEvent === undefined) {
+    return failCheck("restart 전후 live ops status summary evidence가 모두 필요하다.", {
+      beforeStatusSummary: beforeEvent !== undefined,
+      afterStatusSummary: afterEvent !== undefined,
       requiredEventType: "live_ops_status_summary",
     });
   }
 
-  if (event.liveOrderCapable !== true || readString(event.mode) !== "live_order_capable") {
-    return failCheck("restart 후 status가 live order capable 복구 상태를 표시하지 않는다.", {
-      mode: event.mode,
-      liveOrderCapable: event.liveOrderCapable,
+  const statusSummaryEvidence = {
+    beforeStatusSummaryId: readStatusSummaryId(beforeEvent),
+    afterStatusSummaryId: readStatusSummaryId(afterEvent),
+  };
+  const missingStatusSummaryIds = Object.entries(statusSummaryEvidence)
+    .filter(([, value]) => value === undefined)
+    .map(([name]) => name);
+  if (missingStatusSummaryIds.length > 0) {
+    return failCheck("restart 전후 status summary마다 재사용 여부를 비교할 id가 있어야 한다.", {
+      missingStatusSummaryIds,
     });
   }
 
-  return okCheck("restart 후 status summary가 live order capable 상태를 복구했다.", {
-    mode: event.mode,
+  if (statusSummaryEvidence.beforeStatusSummaryId !== statusSummaryEvidence.afterStatusSummaryId) {
+    return failCheck("restart 후 status summary는 restart 전 summary evidence를 재사용해야 한다.", {
+      ...statusSummaryEvidence,
+    });
+  }
+
+  if (afterEvent.liveOrderCapable !== true || readString(afterEvent.mode) !== "live_order_capable") {
+    return failCheck("restart 후 status가 live order capable 복구 상태를 표시하지 않는다.", {
+      mode: afterEvent.mode,
+      liveOrderCapable: afterEvent.liveOrderCapable,
+      ...statusSummaryEvidence,
+    });
+  }
+
+  return okCheck("restart 후 status summary가 기존 evidence를 재사용하며 live order capable 상태를 복구했다.", {
+    mode: afterEvent.mode,
     liveOrderCapable: true,
-    statusSummaryCount: events.length,
+    statusSummaryId: statusSummaryEvidence.afterStatusSummaryId,
+    beforeStatusSummaryCount: beforeStatusEvents.length,
+    statusSummaryCount: afterStatusEvents.length,
   });
+}
+
+function readStatusSummaryId(event) {
+  if (event === undefined) {
+    return undefined;
+  }
+
+  return readString(event.statusSummaryId) ?? readString(event.summaryId) ?? readString(event.statusRunId);
 }
 
 function createDailyReportRecoveryCheck(afterEvents) {
@@ -346,6 +399,20 @@ function createDailyReportRecoveryCheck(afterEvents) {
 
 function createFailClosedDrillCheck(afterEvents) {
   const drillEvents = afterEvents.filter((event) => event.type === "fail_closed_drill");
+  const requiredScenarioSet = new Set(requiredFailClosedScenarios);
+  // 같은 scenario에 성공 evidence가 있더라도 실패 drill이 하나라도 남으면 fail-closed 보장을 통과시키지 않는다.
+  const invalidDrills = drillEvents
+    .filter((event) => {
+      const scenario = readString(event.scenario);
+      return scenario !== undefined
+        && requiredScenarioSet.has(scenario)
+        && (!allowedFailClosedResults.has(readString(event.result) ?? "") || !hasText(event.alertEvidenceId));
+    })
+    .map((event) => ({
+      scenario: readString(event.scenario),
+      result: readString(event.result) ?? null,
+      alertEvidenceId: readString(event.alertEvidenceId) ?? null,
+    }));
   const passedScenarios = new Set(
     drillEvents
       .filter((event) => allowedFailClosedResults.has(readString(event.result) ?? "") && hasText(event.alertEvidenceId))
@@ -354,9 +421,11 @@ function createFailClosedDrillCheck(afterEvents) {
   );
   const missing = requiredFailClosedScenarios.filter((scenario) => !passedScenarios.has(scenario));
 
-  if (missing.length > 0) {
-    return failCheck("Upbit 장애/market warning/stale data/API 오류 fail-closed drill evidence가 부족하다.", {
+  if (missing.length > 0 || invalidDrills.length > 0) {
+    return failCheck("Upbit 장애/market warning/stale data/API 오류 fail-closed drill evidence가 부족하거나 실패 이벤트가 남아 있다.", {
       missing,
+      invalidDrillCount: invalidDrills.length,
+      invalidDrills,
       required: requiredFailClosedScenarios,
     });
   }
@@ -442,13 +511,14 @@ function createMetrics(beforeLog, afterLog) {
     crashCount: events.filter((event) => hasEventType(event, ["runtime_crash", "crash"]) || event.crash === true).length,
     unhandledRejectionCount: events.filter((event) => hasEventType(event, ["unhandled_rejection"]) || event.unhandledRejection === true).length,
     riskGateBypassCount: events.filter((event) => hasEventType(event, ["risk_gate_bypass"]) || event.riskGateBypass === true).length,
-    reconcileMismatchCount: events.filter((event) => hasEventType(event, ["live_reconcile_mismatch", "reconcile_mismatch"])).length
+    reconcileMismatchCount: events.filter((event) => hasEventType(event, ["live_reconcile_mismatch", "reconcile_mismatch"])
+        || event.reconcileMismatch === true).length
       + events.filter((event) => hasEventType(event, ["live_reconcile_completed"])).filter((event) => {
         const mismatchCount = Number(event.mismatchCount ?? 0);
         return !Number.isFinite(mismatchCount) || mismatchCount !== 0 || !["SUCCESS", "CLEAN"].includes(readString(event.result) ?? "");
       }).length,
     duplicateOrderCount: duplicateOrderEvidence.duplicateIds.length
-      + events.filter((event) => hasEventType(event, ["duplicate_order"])).length,
+      + events.filter((event) => hasEventType(event, ["duplicate_order"]) || event.duplicateOrder === true).length,
     untrackedFillCount: events.filter((event) => hasEventType(event, ["untracked_fill"]) || event.untrackedFill === true).length,
     liveOrderCleanupFailureCount: events.filter((event) =>
       hasEventType(event, ["live_order_cleanup_failure", "order_cancel_failed", "order_cancel_unconfirmed"])).length,
@@ -597,6 +667,14 @@ async function writeFixtureEventLogs(artifacts, startedAt) {
       candidateId: "candidate-before-restart",
     },
     {
+      type: "live_ops_status_summary",
+      observedAt: startedAt.toISOString(),
+      statusSummaryId: "m23-status-summary-fixture-001",
+      mode: "live_order_capable",
+      liveOrderCapable: true,
+      latestHeartbeatAt: startedAt.toISOString(),
+    },
+    {
       type: "m23_restart_checkpoint",
       observedAt: startedAt.toISOString(),
       phase: "before_restart",
@@ -631,6 +709,7 @@ async function writeFixtureEventLogs(artifacts, startedAt) {
     {
       type: "live_ops_status_summary",
       observedAt: addSeconds(startedAt, 8).toISOString(),
+      statusSummaryId: "m23-status-summary-fixture-001",
       mode: "live_order_capable",
       liveOrderCapable: true,
       latestHeartbeatAt: addSeconds(startedAt, 8).toISOString(),

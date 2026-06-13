@@ -280,6 +280,28 @@ describe("M23 recovery drill script", () => {
     });
   });
 
+  it("fails when the latest restart is missing recovered evidence even if an earlier restart recovered", async () => {
+    const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-m23-recovery-latest-restart-"));
+    const beforePath = path.join(artifactDir, "before.jsonl");
+    const afterPath = path.join(artifactDir, "after.jsonl");
+    await writeEventLog(beforePath, [
+      ...validBeforeRestartEvents("restart-earlier"),
+      ...validBeforeRestartEvents("restart-latest"),
+    ]);
+    await writeEventLog(afterPath, [
+      ...validAfterRestartEvents("restart-earlier"),
+      ...validAfterRestartEvents("restart-latest").filter((event) =>
+        !(event.type === "live_ops_event" && event.eventKind === "RUNTIME_RECOVERED")),
+    ]);
+
+    const summary = await runScriptExpectingFailure(validArtifactArgs(artifactDir, beforePath, afterPath));
+
+    expect(getCheck(summary, "restartEvidence")).toMatchObject({
+      status: "fail",
+      evidence: { recovered: false },
+    });
+  });
+
   it("fails when restart checkpoint changes the durable reservation or reconcile snapshot id", async () => {
     const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-m23-recovery-reuse-"));
     const beforePath = path.join(artifactDir, "before.jsonl");
@@ -376,6 +398,52 @@ describe("M23 recovery drill script", () => {
     });
   });
 
+  it("fails when restart creates a new status summary instead of reusing the previous evidence", async () => {
+    const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-m23-recovery-status-reuse-"));
+    const beforePath = path.join(artifactDir, "before.jsonl");
+    const afterPath = path.join(artifactDir, "after.jsonl");
+    await writeEventLog(beforePath, validBeforeRestartEvents("restart-status-reuse"));
+    await writeEventLog(afterPath, validAfterRestartEvents("restart-status-reuse").map((event) =>
+      event.type === "live_ops_status_summary"
+        ? { ...event, statusSummaryId: "status-summary-new-after-restart" }
+        : event));
+
+    const summary = await runScriptExpectingFailure(validArtifactArgs(artifactDir, beforePath, afterPath));
+
+    expect(getCheck(summary, "statusRecovery")).toMatchObject({
+      status: "fail",
+      evidence: {
+        beforeStatusSummaryId: "status-restart-status-reuse",
+        afterStatusSummaryId: "status-summary-new-after-restart",
+      },
+    });
+  });
+
+  it("fails when any required fail-closed drill event has a bad result or missing alert evidence", async () => {
+    const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-m23-recovery-fail-closed-invalid-"));
+    const beforePath = path.join(artifactDir, "before.jsonl");
+    const afterPath = path.join(artifactDir, "after.jsonl");
+    await writeEventLog(beforePath, validBeforeRestartEvents("restart-fail-closed-invalid"));
+    await writeEventLog(afterPath, [
+      ...validAfterRestartEvents("restart-fail-closed-invalid"),
+      { type: "fail_closed_drill", scenario: "api_error", result: "ENTRY_ALLOWED", alertEvidenceId: "api-error-unblocked" },
+      { type: "fail_closed_drill", scenario: "stale_data", result: "NEW_ORDERS_BLOCKED" },
+    ]);
+
+    const summary = await runScriptExpectingFailure(validArtifactArgs(artifactDir, beforePath, afterPath));
+
+    expect(getCheck(summary, "failClosedDrills")).toMatchObject({
+      status: "fail",
+      evidence: {
+        invalidDrillCount: 2,
+        invalidDrills: [
+          { scenario: "api_error", result: "ENTRY_ALLOWED", alertEvidenceId: "api-error-unblocked" },
+          { scenario: "stale_data", result: "NEW_ORDERS_BLOCKED", alertEvidenceId: null },
+        ],
+      },
+    });
+  });
+
   it("counts documented duplicate order and cancel failure events as closeout failures", async () => {
     const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-m23-recovery-order-cleanup-"));
     const beforePath = path.join(artifactDir, "before.jsonl");
@@ -451,13 +519,16 @@ describe("M23 recovery drill script", () => {
       { type: "live_ops_event", observedAt: "2026-06-13T00:00:12.000Z", riskGateBypass: true },
       { type: "live_ops_event", observedAt: "2026-06-13T00:00:13.000Z", untrackedFill: true },
       { type: "live_ops_event", observedAt: "2026-06-13T00:00:14.000Z", crash: true },
+      { type: "live_ops_event", observedAt: "2026-06-13T00:00:15.000Z", reconcileMismatch: true },
+      { type: "live_ops_event", observedAt: "2026-06-13T00:00:16.000Z", duplicateOrder: true },
     ]);
 
     const summary = await runScriptExpectingFailure(validArtifactArgs(artifactDir, beforePath, afterPath));
 
     expect(summary.metrics).toMatchObject({
       crashCount: 2,
-      duplicateOrderCount: 1,
+      duplicateOrderCount: 2,
+      reconcileMismatchCount: 1,
       riskGateBypassCount: 1,
       untrackedFillCount: 1,
     });
@@ -515,6 +586,13 @@ function validBeforeRestartEvents(restartId: string): Record<string, unknown>[] 
     { type: "m22_pilot_heartbeat", observedAt: "2026-06-13T00:00:00.000Z" },
     { type: "broker_submission", observedAt: "2026-06-13T00:00:01.000Z", idempotencyKey: `m22a-${restartId}` },
     {
+      type: "live_ops_status_summary",
+      observedAt: "2026-06-13T00:00:01.500Z",
+      statusSummaryId: `status-${restartId}`,
+      mode: "live_order_capable",
+      liveOrderCapable: true,
+    },
+    {
       type: "m23_restart_checkpoint",
       phase: "before_restart",
       restartId,
@@ -536,7 +614,7 @@ function validAfterRestartEvents(restartId: string): Record<string, unknown>[] {
     { type: "live_ops_event", eventKind: "RUNTIME_RESTART_DETECTED", restartId },
     { type: "live_reconcile_completed", result: "SUCCESS", mismatchCount: 0, runId: `reconcile-${restartId}` },
     { type: "m22_pilot_heartbeat", observedAt: "2026-06-13T00:00:02.000Z" },
-    { type: "live_ops_status_summary", mode: "live_order_capable", liveOrderCapable: true },
+    { type: "live_ops_status_summary", statusSummaryId: `status-${restartId}`, mode: "live_order_capable", liveOrderCapable: true },
     { type: "live_ops_event", eventKind: "RUNTIME_RECOVERED", restartId },
     { type: "fail_closed_drill", scenario: "upbit_maintenance", result: "NEW_ORDERS_BLOCKED", alertEvidenceId: "upbit" },
     { type: "fail_closed_drill", scenario: "market_warning", result: "ENTRY_BLOCKED", alertEvidenceId: "market" },

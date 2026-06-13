@@ -213,9 +213,9 @@ node scripts/run-m23-recovery-drill.mjs --fixture-smoke --json
 - DB write 또는 audit append 실패
 - reconcile mismatch, duplicate order, untracked fill
 
-M23 recovery drill validator는 `upbit_maintenance`, `market_warning`, `stale_data` 세 scenario가 `ENTRY_BLOCKED`,
-`NEW_ORDERS_BLOCKED`, `MANUAL_REVIEW_REQUIRED` 중 하나로 수렴하고 alert evidence id를 남겼는지 확인한다. REST/API 오류,
-rate limit, Telegram provider 장애, DB write/audit 실패는 closeout에서 같은 형식의 별도 incident/drill evidence로 보강한다.
+M23 recovery drill validator는 `upbit_maintenance`, `market_warning`, `stale_data`, `api_error` 네 scenario가
+`ENTRY_BLOCKED`, `NEW_ORDERS_BLOCKED`, `MANUAL_REVIEW_REQUIRED` 중 하나로 수렴하고 alert evidence id를 남겼는지 확인한다.
+Telegram provider 장애, DB write/audit 실패는 closeout에서 같은 형식의 별도 incident/drill evidence로 보강한다.
 
 ## DB Backup/Restore Smoke
 
