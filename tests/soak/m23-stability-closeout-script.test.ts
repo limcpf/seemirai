@@ -172,19 +172,18 @@ describe("M23 stability closeout script", () => {
     const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-m23-stability-kst-day-"));
     const manifestPath = await writeCloseoutFixture(artifactDir, {
       segmentMutator: (summary, index) => {
-        if (index !== 0) {
-          return summary;
-        }
-
-        const startedAt = "2026-06-12T15:00:00.000Z";
-        const finishedAt = "2026-06-13T15:00:00.010Z";
+        const startedAtDate = new Date(Date.UTC(2026, 5, 12 + index, 15, 0, 0));
+        const finishedAtDate = new Date(startedAtDate.getTime() + oneDayMs + 10);
+        const startedAt = startedAtDate.toISOString();
+        const finishedAt = finishedAtDate.toISOString();
+        const dailyReportDate = new Date(finishedAtDate.getTime() + (9 * 60 * 60 * 1000)).toISOString().slice(0, 10);
         const metrics = summary.metrics as Record<string, unknown>;
         const pilotProcess = metrics.pilotProcess as Record<string, unknown>;
         return {
           ...summary,
           startedAt,
           finishedAt,
-          dailyReportDate: "2026-06-14",
+          dailyReportDate,
           metrics: {
             ...metrics,
             pilotProcess: {
@@ -205,6 +204,84 @@ describe("M23 stability closeout script", () => {
     expect(summary.status).toBe("passed");
     expect(getCheck(summary, "segmentCompleteness")).toMatchObject({
       status: "ok",
+    });
+  });
+
+  it("fails when segment execution windows overlap beyond the handoff tolerance", async () => {
+    const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-m23-stability-window-overlap-"));
+    const manifestPath = await writeCloseoutFixture(artifactDir, {
+      segmentMutator: (summary, index) => {
+        if (index !== 1) {
+          return summary;
+        }
+
+        const startedAt = "2026-06-13T23:30:00.000Z";
+        const finishedAt = "2026-06-14T23:30:00.010Z";
+        const metrics = summary.metrics as Record<string, unknown>;
+        const pilotProcess = metrics.pilotProcess as Record<string, unknown>;
+        return {
+          ...summary,
+          startedAt,
+          finishedAt,
+          dailyReportDate: "2026-06-15",
+          metrics: {
+            ...metrics,
+            pilotProcess: {
+              ...pilotProcess,
+              startedAt,
+              finishedAt,
+            },
+          },
+        };
+      },
+    });
+    const summary = await runScriptExpectingFailure(
+      ["--json", "--artifact-dir", artifactDir, "--manifest", manifestPath],
+      createReadyEnv(),
+    );
+
+    expect(summary.status).toBe("failed");
+    expect(getCheck(summary, "segmentCompleteness")).toMatchObject({
+      status: "fail",
+    });
+  });
+
+  it("fails when segment execution windows have a large gap", async () => {
+    const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-m23-stability-window-gap-"));
+    const manifestPath = await writeCloseoutFixture(artifactDir, {
+      segmentMutator: (summary, index) => {
+        if (index !== 1) {
+          return summary;
+        }
+
+        const startedAt = "2026-06-14T00:30:00.000Z";
+        const finishedAt = "2026-06-15T00:30:00.010Z";
+        const metrics = summary.metrics as Record<string, unknown>;
+        const pilotProcess = metrics.pilotProcess as Record<string, unknown>;
+        return {
+          ...summary,
+          startedAt,
+          finishedAt,
+          dailyReportDate: "2026-06-15",
+          metrics: {
+            ...metrics,
+            pilotProcess: {
+              ...pilotProcess,
+              startedAt,
+              finishedAt,
+            },
+          },
+        };
+      },
+    });
+    const summary = await runScriptExpectingFailure(
+      ["--json", "--artifact-dir", artifactDir, "--manifest", manifestPath],
+      createReadyEnv(),
+    );
+
+    expect(summary.status).toBe("failed");
+    expect(getCheck(summary, "segmentCompleteness")).toMatchObject({
+      status: "fail",
     });
   });
 
@@ -776,6 +853,7 @@ describe("M23 stability closeout script", () => {
           "SEEMIRAI_UPBIT_SECRET_KEY=raw-secret-key-value",
           "TELEGRAM_BOT_TOKEN=raw-telegram-token-value",
         ].join("\n"),
+        databaseUrl: "postgresql://seemirai:raw-password@localhost/seemirai",
         telegram: { botToken: "raw-telegram-token-value" },
         botToken: "raw-telegram-token-value",
       },
@@ -803,9 +881,10 @@ describe("M23 stability closeout script", () => {
         upbitSecretKey: "[REDACTED]",
         envDump: [
           "SEEMIRAI_UPBIT_ACCESS_KEY=[REDACTED]",
-          "SEEMIRAI_UPBIT_SECRET_KEY=[REDACTED]",
-          "TELEGRAM_BOT_TOKEN=[REDACTED]",
+          "SEEMIRAI_UPBIT_SECRET_KEY=\"[REDACTED]\"",
+          "TELEGRAM_BOT_TOKEN='[REDACTED]'",
         ].join("\n"),
+        databaseUrl: "postgresql://seemirai:[REDACTED]@localhost/seemirai",
         botToken: "[REDACTED]",
       },
     });

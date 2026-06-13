@@ -11,6 +11,7 @@ const requiredSegmentCount = 7;
 const oneDayMs = 86_400_000;
 const expectedIssue = 188;
 const expectedMode = "LIVE_AUTONOMOUS_SMALL_BUDGET";
+const maxSegmentBoundaryDriftMs = 5 * 60 * 1000;
 const requiredRecoveryChecks = [
   "eventLogsParsed",
   "restartEvidence",
@@ -39,15 +40,15 @@ const sensitivePatterns = [
   { label: "accessKey field", pattern: /"(?:upbit)?accessKey"\s*:\s*"(?!<redacted>|redacted|\[redacted\])[^"]{4,}"/i },
   { label: "secret_key field", pattern: /"(?:seemirai_)?(?:upbit_)?secret_key"\s*:\s*"(?!<redacted>|redacted|\[redacted\])[^"]{4,}"/i },
   { label: "secretKey field", pattern: /"(?:upbit)?secretKey"\s*:\s*"(?!<redacted>|redacted|\[redacted\])[^"]{4,}"/i },
-  { label: "access key env assignment", pattern: /\b(?:SEEMIRAI_)?(?:UPBIT_)?ACCESS_KEY\s*=\s*(?!<redacted>|redacted|\[redacted\])\S{4,}/i },
-  { label: "secret key env assignment", pattern: /\b(?:SEEMIRAI_)?(?:UPBIT_)?SECRET_KEY\s*=\s*(?!<redacted>|redacted|\[redacted\])\S{4,}/i },
+  { label: "access key env assignment", pattern: /\b(?:SEEMIRAI_)?(?:UPBIT_)?ACCESS_KEY\s*=\s*(?!(?:["']?(?:<redacted>|redacted|\[redacted\])["']?)(?:\\n|\s|$|["',]))\S{4,}/i },
+  { label: "secret key env assignment", pattern: /\b(?:SEEMIRAI_)?(?:UPBIT_)?SECRET_KEY\s*=\s*(?!(?:["']?(?:<redacted>|redacted|\[redacted\])["']?)(?:\\n|\s|$|["',]))\S{4,}/i },
   { label: "telegram token field", pattern: /"telegram_bot_token"\s*:\s*"(?!<redacted>|redacted|\[redacted\])[^"]{4,}"/i },
   { label: "telegram botToken field", pattern: /"(?:telegram)?botToken"\s*:\s*"(?!<redacted>|redacted|\[redacted\])[^"]{4,}"/i },
-  { label: "telegram token env assignment", pattern: /\b(?:SEEMIRAI_)?TELEGRAM_BOT_TOKEN\s*=\s*(?!<redacted>|redacted|\[redacted\])\S{4,}/i },
+  { label: "telegram token env assignment", pattern: /\b(?:SEEMIRAI_)?TELEGRAM_BOT_TOKEN\s*=\s*(?!(?:["']?(?:<redacted>|redacted|\[redacted\])["']?)(?:\\n|\s|$|["',]))\S{4,}/i },
   { label: "jwt field", pattern: /"jwt"\s*:\s*"(?!<redacted>|redacted|\[redacted\])[^"]{4,}"/i },
   { label: "authorization bearer", pattern: /authorization:\s*bearer\s+(?!<redacted>|redacted|\[redacted\])[^\s"']+/i },
   { label: "authorization json field", pattern: /"authorization"\s*:\s*"(?!bearer\s+(?:<redacted>|redacted|\[redacted\])"|(?:<redacted>|redacted|\[redacted\])")[^"]{4,}"/i },
-  { label: "postgres credential url", pattern: /postgres(?:ql)?:\/\/[^:\s"']+:[^@\s"']+@/i },
+  { label: "postgres credential url", pattern: /postgres(?:ql)?:\/\/[^:\s"']+:(?!(?:<redacted>|redacted|\[redacted\])@)[^@\s"']+@/i },
   { label: "raw provider field", pattern: /raw[_-]?provider\s*[:=]/i },
   { label: "raw provider json field", pattern: /"raw(?:_|-)?provider(?:payload)?"\s*:/i },
   { label: "raw provider camel json field", pattern: /"rawProvider(?:Body|Payload)?"\s*:/i },
@@ -328,6 +329,7 @@ function createSegmentCompletenessCheck(segments, segmentFiles) {
   const duplicateAlertEvidenceIds = collectDuplicateValues(alertEvidenceIds);
   const consecutiveDays = areConsecutiveDays(uniqueDays);
   const dayExecutionMismatches = collectSegmentDayExecutionMismatches(segments, segmentFiles);
+  const segmentWindowMismatches = collectSegmentWindowMismatches(segmentFiles);
   if (
     segments.length >= requiredSegmentCount
     && uniqueDays.length >= requiredSegmentCount
@@ -337,12 +339,14 @@ function createSegmentCompletenessCheck(segments, segmentFiles) {
     && duplicateDailyReportEvidenceIds.length === 0
     && duplicateAlertEvidenceIds.length === 0
     && dayExecutionMismatches.length === 0
+    && segmentWindowMismatches.length === 0
     && consecutiveDays
   ) {
     return okCheck("7일 이상 segment manifest가 있고 day, summary, evidence가 연속/고유하게 기록됐다.", {
       segmentCount: segments.length,
       uniqueDayCount: uniqueDays.length,
       consecutiveDays,
+      maxSegmentBoundaryDriftMs,
     });
   }
 
@@ -355,6 +359,8 @@ function createSegmentCompletenessCheck(segments, segmentFiles) {
     duplicateDailyReportEvidenceIds,
     duplicateAlertEvidenceIds,
     dayExecutionMismatches,
+    segmentWindowMismatches,
+    maxSegmentBoundaryDriftMs,
     consecutiveDays,
     requiredSegmentCount,
   });
@@ -911,6 +917,61 @@ function collectSegmentDayExecutionMismatches(segments, segmentFiles) {
     }));
 }
 
+function collectSegmentWindowMismatches(segmentFiles) {
+  const windows = parsedSegmentEntries(segmentFiles)
+    .map(({ index, file, summary }) => {
+      const metrics = readMetrics(summary);
+      const pilotProcess = isRecord(metrics.pilotProcess) ? metrics.pilotProcess : {};
+      const startedAtMs = readTimestampMs(pilotProcess.startedAt) ?? readTimestampMs(summary.startedAt);
+      const finishedAtMs = readTimestampMs(pilotProcess.finishedAt) ?? readTimestampMs(summary.finishedAt);
+      return {
+        segment: index + 1,
+        filePath: file.filePath,
+        startedAtMs,
+        finishedAtMs,
+        startedAt: readString(pilotProcess.startedAt) ?? readString(summary.startedAt) ?? null,
+        finishedAt: readString(pilotProcess.finishedAt) ?? readString(summary.finishedAt) ?? null,
+      };
+    });
+  const invalidWindows = windows
+    .filter((window) => window.startedAtMs === undefined
+      || window.finishedAtMs === undefined
+      || window.finishedAtMs <= window.startedAtMs)
+    .map(({ startedAtMs, finishedAtMs, ...window }) => ({
+      ...window,
+      startedAtMs: startedAtMs ?? null,
+      finishedAtMs: finishedAtMs ?? null,
+      reason: "invalid_window",
+    }));
+  const validWindows = windows
+    .filter((window) => window.startedAtMs !== undefined
+      && window.finishedAtMs !== undefined
+      && window.finishedAtMs > window.startedAtMs)
+    .toSorted((left, right) => left.startedAtMs - right.startedAtMs);
+  const boundaryMismatches = [];
+
+  for (let index = 1; index < validWindows.length; index += 1) {
+    const previous = validWindows[index - 1];
+    const current = validWindows[index];
+    const boundaryDeltaMs = current.startedAtMs - previous.finishedAtMs;
+    if (Math.abs(boundaryDeltaMs) <= maxSegmentBoundaryDriftMs) {
+      continue;
+    }
+
+    // 24시간 segment가 날짜만 연속이고 실제 실행 구간이 겹치거나 비어 있으면 7일 안정화 evidence로 볼 수 없다.
+    boundaryMismatches.push({
+      previousSegment: previous.segment,
+      currentSegment: current.segment,
+      previousFinishedAt: previous.finishedAt,
+      currentStartedAt: current.startedAt,
+      gapMs: boundaryDeltaMs > 0 ? boundaryDeltaMs : 0,
+      overlapMs: boundaryDeltaMs < 0 ? Math.abs(boundaryDeltaMs) : 0,
+    });
+  }
+
+  return [...invalidWindows, ...boundaryMismatches];
+}
+
 function readSegmentDayEvidence(summary) {
   const metrics = readMetrics(summary);
   const pilotProcess = isRecord(metrics.pilotProcess) ? metrics.pilotProcess : {};
@@ -930,6 +991,16 @@ function readSegmentDayEvidence(summary) {
       readKstDay(pilotProcess.finishedAt),
     ].filter((day) => day !== undefined))),
   };
+}
+
+function readTimestampMs(value) {
+  const text = readString(value);
+  if (text === undefined) {
+    return undefined;
+  }
+
+  const timestamp = Date.parse(text);
+  return Number.isFinite(timestamp) ? timestamp : undefined;
 }
 
 function readKstDay(value) {
