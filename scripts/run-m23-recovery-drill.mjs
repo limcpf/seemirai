@@ -9,6 +9,8 @@ const defaultArtifactDir = path.join(os.homedir(), "vaults", "99_운영", "seemi
 const runGuardEnv = "SEEMIRAI_RUN_M23_RECOVERY_DRILL";
 const requiredFailClosedScenarios = ["upbit_maintenance", "market_warning", "stale_data", "api_error"];
 const allowedFailClosedResults = new Set(["ENTRY_BLOCKED", "NEW_ORDERS_BLOCKED", "MANUAL_REVIEW_REQUIRED"]);
+const restartDetectedEventKinds = new Set(["RUNTIME_RESTART_DETECTED", "RESTART_DETECTED"]);
+const recoveryCompletedEventKinds = new Set(["RUNTIME_RECOVERED", "RECOVERY_COMPLETED"]);
 const sensitiveEvidenceReplacement = "[REDACTED_BY_M23_SECRET_SCAN]";
 const sensitivePatterns = [
   /access[_-]?key/i,
@@ -188,8 +190,8 @@ function createRestartEvidenceCheck(beforeEvents, afterEvents) {
   const beforeCheckpoint = latestRestartId === undefined
     ? beforeCheckpoints.at(-1)
     : beforeCheckpoints.filter((event) => readString(event.restartId) === latestRestartId).at(-1);
-  const restartDetected = findLatestRestartEvent(afterEvents, "RUNTIME_RESTART_DETECTED", latestRestartId, afterCheckpointIndex);
-  const recovered = findLatestRestartEvent(afterEvents, "RUNTIME_RECOVERED", latestRestartId, afterCheckpointIndex);
+  const restartDetected = findLatestRestartEvent(afterEvents, restartDetectedEventKinds, latestRestartId, afterCheckpointIndex);
+  const recovered = findLatestRestartEvent(afterEvents, recoveryCompletedEventKinds, latestRestartId, afterCheckpointIndex);
 
   if (beforeCheckpoint === undefined || afterCheckpoint === undefined || restartDetected === undefined || recovered === undefined) {
     return failCheck("restart 감지와 복구 Telegram/status evidence가 모두 필요하다.", {
@@ -251,10 +253,10 @@ function createRestartEvidenceCheck(beforeEvents, afterEvents) {
   });
 }
 
-function findLatestRestartEvent(events, eventKind, restartId, startIndex) {
+function findLatestRestartEvent(events, acceptedEventKinds, restartId, startIndex) {
   const candidates = events
     .slice(Math.max(0, startIndex))
-    .filter((event) => event.type === "live_ops_event" && event.eventKind === eventKind);
+    .filter((event) => event.type === "live_ops_event" && acceptedEventKinds.has(readEventKind(event) ?? ""));
   if (restartId === undefined) {
     return candidates.at(-1);
   }
@@ -347,19 +349,19 @@ function createStatusRecoveryCheck(beforeEvents, afterEvents) {
   }
 
   const statusSummaryEvidence = {
-    beforeStatusSummaryId: readStatusSummaryId(beforeEvent),
-    afterStatusSummaryId: readStatusSummaryId(afterEvent),
+    beforeStatusSummaryReuseKey: readStatusSummaryReuseKey(beforeEvent),
+    afterStatusSummaryReuseKey: readStatusSummaryReuseKey(afterEvent),
   };
-  const missingStatusSummaryIds = Object.entries(statusSummaryEvidence)
+  const missingStatusSummaryReuseKeys = Object.entries(statusSummaryEvidence)
     .filter(([, value]) => value === undefined)
     .map(([name]) => name);
-  if (missingStatusSummaryIds.length > 0) {
-    return failCheck("restart 전후 status summary마다 재사용 여부를 비교할 id가 있어야 한다.", {
-      missingStatusSummaryIds,
+  if (missingStatusSummaryReuseKeys.length > 0) {
+    return failCheck("restart 전후 status summary마다 재사용 여부를 비교할 trace/source 근거가 있어야 한다.", {
+      missingStatusSummaryReuseKeys,
     });
   }
 
-  if (statusSummaryEvidence.beforeStatusSummaryId !== statusSummaryEvidence.afterStatusSummaryId) {
+  if (statusSummaryEvidence.beforeStatusSummaryReuseKey !== statusSummaryEvidence.afterStatusSummaryReuseKey) {
     return failCheck("restart 후 status summary는 restart 전 summary evidence를 재사용해야 한다.", {
       ...statusSummaryEvidence,
     });
@@ -376,18 +378,35 @@ function createStatusRecoveryCheck(beforeEvents, afterEvents) {
   return okCheck("restart 후 status summary가 기존 evidence를 재사용하며 live order capable 상태를 복구했다.", {
     mode: afterEvent.mode,
     liveOrderCapable: true,
-    statusSummaryId: statusSummaryEvidence.afterStatusSummaryId,
+    statusSummaryReuseKey: statusSummaryEvidence.afterStatusSummaryReuseKey,
     beforeStatusSummaryCount: beforeStatusEvents.length,
     statusSummaryCount: afterStatusEvents.length,
   });
 }
 
-function readStatusSummaryId(event) {
+function readStatusSummaryReuseKey(event) {
   if (event === undefined) {
     return undefined;
   }
 
-  return readString(event.statusSummaryId) ?? readString(event.summaryId) ?? readString(event.statusRunId);
+  const trace = isRecord(event.trace) ? event.trace : {};
+  const explicitId = readString(event.statusSummaryId)
+    ?? readString(event.summaryId)
+    ?? readString(event.statusRunId)
+    ?? readString(trace.statusSummaryId)
+    ?? readString(trace.summaryId)
+    ?? readString(trace.statusRunId);
+  if (explicitId !== undefined) {
+    return explicitId;
+  }
+
+  const traceSource = readString(trace.source);
+  const traceReason = readString(trace.reason);
+  if (traceSource !== undefined && traceReason !== undefined) {
+    return `${traceSource}:${traceReason}`;
+  }
+
+  return undefined;
 }
 
 function createDailyReportRecoveryCheck(afterEvents) {
@@ -582,6 +601,14 @@ function collectDuplicateValues(values) {
 function hasEventType(event, acceptedTypes) {
   const eventType = readString(event.type) ?? readString(event.eventType);
   return eventType !== undefined && acceptedTypes.includes(eventType);
+}
+
+function readEventKind(event) {
+  const metadata = isRecord(event.metadata) ? event.metadata : {};
+  return readString(event.eventKind)
+    ?? readString(event.event_kind)
+    ?? readString(metadata.eventKind)
+    ?? readString(metadata.event_kind);
 }
 
 function redactSensitiveEvidence(evidence) {

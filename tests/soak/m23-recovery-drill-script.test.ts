@@ -14,12 +14,12 @@ describe("M23 recovery drill script", () => {
     const unit = await readFile(servicePath, "utf8");
 
     expect(unit).toContain("User=lim");
-    expect(unit).toContain("EnvironmentFile=/home/lim/vaults/99_운영/seemirai-m22-live-autonomous/m22.env");
     expect(unit).toContain("ExecStart=/home/lim/vaults/99_운영/seemirai-m22-live-autonomous/run-24h-pilot.sh");
-    expect(unit).toContain("EnvironmentFile=/home/lim/vaults/99_운영/seemirai-m22-live-autonomous/m23-segment.env");
-    expect(unit).toContain("--candidate-file ${SEEMIRAI_M23_SEGMENT_CANDIDATE_FILE}");
-    expect(unit).toContain("--candidate-start end");
+    expect(unit).toContain("Environment=SEEMIRAI_M23_SYSTEMD_SEGMENT=1");
+    expect(unit).toContain("Environment=SEEMIRAI_M23_SEGMENT_ENV=/home/lim/vaults/99_운영/seemirai-m22-live-autonomous/m23-segment.env");
     expect(unit).toContain("Restart=on-failure");
+    expect(unit).not.toContain("EnvironmentFile=");
+    expect(unit).not.toContain("--candidate-file ${SEEMIRAI_M23_SEGMENT_CANDIDATE_FILE}");
     expect(unit).not.toContain("%h/");
     expect(unit).not.toContain("Restart=always");
   });
@@ -302,6 +302,35 @@ describe("M23 recovery drill script", () => {
     });
   });
 
+  it("accepts live ops alert contract restart event names", async () => {
+    const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-m23-recovery-alert-names-"));
+    const beforePath = path.join(artifactDir, "before.jsonl");
+    const afterPath = path.join(artifactDir, "after.jsonl");
+    await writeEventLog(beforePath, validBeforeRestartEvents("restart-alert-names"));
+    await writeEventLog(afterPath, validAfterRestartEvents("restart-alert-names").map((event) => {
+      if (event.type !== "live_ops_event") {
+        return event;
+      }
+      if (event.eventKind === "RUNTIME_RESTART_DETECTED") {
+        return { ...event, eventKind: "RESTART_DETECTED" };
+      }
+      if (event.eventKind === "RUNTIME_RECOVERED") {
+        return { ...event, metadata: { event_kind: "RECOVERY_COMPLETED" }, eventKind: undefined };
+      }
+      return event;
+    }));
+
+    const { stdout } = await runScript(validArtifactArgs(artifactDir, beforePath, afterPath), {
+      SEEMIRAI_RUN_M23_RECOVERY_DRILL: "1",
+    });
+    const summary = JSON.parse(stdout) as M23RecoveryDrillSummary;
+
+    expect(summary.status).toBe("passed");
+    expect(getCheck(summary, "restartEvidence")).toMatchObject({
+      status: "ok",
+    });
+  });
+
   it("fails when restart checkpoint changes the durable reservation or reconcile snapshot id", async () => {
     const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-m23-recovery-reuse-"));
     const beforePath = path.join(artifactDir, "before.jsonl");
@@ -413,9 +442,34 @@ describe("M23 recovery drill script", () => {
     expect(getCheck(summary, "statusRecovery")).toMatchObject({
       status: "fail",
       evidence: {
-        beforeStatusSummaryId: "status-restart-status-reuse",
-        afterStatusSummaryId: "status-summary-new-after-restart",
+        beforeStatusSummaryReuseKey: "status-restart-status-reuse",
+        afterStatusSummaryReuseKey: "status-summary-new-after-restart",
       },
+    });
+  });
+
+  it("accepts actual status summary trace source and reason as reuse evidence", async () => {
+    const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-m23-recovery-status-trace-"));
+    const beforePath = path.join(artifactDir, "before.jsonl");
+    const afterPath = path.join(artifactDir, "after.jsonl");
+    await writeEventLog(beforePath, validBeforeRestartEvents("restart-status-trace").map((event) =>
+      event.type === "live_ops_status_summary"
+        ? withoutStatusSummaryId({ ...event, trace: { source: "live_ops_status_summary", reason: "live_order_capable" } })
+        : event));
+    await writeEventLog(afterPath, validAfterRestartEvents("restart-status-trace").map((event) =>
+      event.type === "live_ops_status_summary"
+        ? withoutStatusSummaryId({ ...event, trace: { source: "live_ops_status_summary", reason: "live_order_capable" } })
+        : event));
+
+    const { stdout } = await runScript(validArtifactArgs(artifactDir, beforePath, afterPath), {
+      SEEMIRAI_RUN_M23_RECOVERY_DRILL: "1",
+    });
+    const summary = JSON.parse(stdout) as M23RecoveryDrillSummary;
+
+    expect(summary.status).toBe("passed");
+    expect(getCheck(summary, "statusRecovery")).toMatchObject({
+      status: "ok",
+      evidence: { statusSummaryReuseKey: "live_ops_status_summary:live_order_capable" },
     });
   });
 
@@ -628,6 +682,10 @@ function omit(input: Record<string, unknown>, key: string): Record<string, unkno
   const clone = { ...input };
   delete clone[key];
   return clone;
+}
+
+function withoutStatusSummaryId(input: Record<string, unknown>): Record<string, unknown> {
+  return omit(input, "statusSummaryId");
 }
 
 function getCheck(summary: M23RecoveryDrillSummary, name: string): { status: string; evidence?: Record<string, unknown> } {

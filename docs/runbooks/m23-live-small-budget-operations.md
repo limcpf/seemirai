@@ -76,13 +76,14 @@ SEEMIRAI_M22_EXIT_ENGINE_READY=1
 또는 운영 wrapper가 아래 24시간 segment를 7회 연속 실행하고 각 segment의 daily report marker와 summary artifact를 확인해야 한다.
 
 systemd로 운영할 경우 [`deploy/systemd/seemirai-m23-live-small-budget.service.example`](../../deploy/systemd/seemirai-m23-live-small-budget.service.example)을
-운영 호스트에 복사한 뒤 `User`, `Group`, `WorkingDirectory`, `EnvironmentFile`, `ReadWritePaths`를 실제 운영 계정과 저장소/운영
-artifact 경로로 맞춘다. 이 템플릿은 live daemon을 root가 아닌 운영 사용자로 실행하고, secret 값을 직접 담지 않고 저장소 밖 env
-파일만 참조하며, `SIGTERM` 정상 종료와 `Restart=on-failure` 재시작 경계를 사용한다. 정상 24시간 완료는 새 candidate 파일 rotate와
-daily/open exposure env 갱신 handoff 뒤 supervisor 또는 timer가 다음 segment를 시작해야 하므로 즉시 자동 재시작하지 않는다.
-system service에서는 `%h`가 운영 사용자 홈이 아니라 system manager 기준으로 해석될 수 있으므로 `/home/<운영사용자>/...` 같은
-명시 경로를 사용한다. 재시작 후에는 아래 Restart Drill validator로 중복 주문, reconcile/status 복구, daily report marker를
-확인한다.
+운영 호스트에 복사한 뒤 `User`, `Group`, `WorkingDirectory`, `Environment=SEEMIRAI_M23_SEGMENT_ENV`, `ReadWritePaths`를 실제 운영
+계정과 저장소/운영 artifact 경로로 맞춘다. 이 템플릿은 live daemon을 root가 아닌 운영 사용자로 실행하고, secret 값을 직접 담지
+않으며, `run-24h-pilot.sh` wrapper가 저장소 밖 shell-format `m22.env`, `m22.keys.env`, `m23-segment.env`를 source하게 한다.
+systemd `EnvironmentFile`은 `export`/조건문이 있는 shell env를 해석하지 못하므로 이 service에서는 사용하지 않는다. 정상 24시간
+완료는 새 candidate 파일 rotate와 daily/open exposure env 갱신 handoff 뒤 supervisor 또는 timer가 다음 segment를 시작해야 하므로
+`Restart=on-failure`로 실패 종료만 즉시 복구한다. system service에서는 `%h`가 운영 사용자 홈이 아니라 system manager 기준으로
+해석될 수 있으므로 `/home/<운영사용자>/...` 같은 명시 경로를 사용한다. 재시작 후에는 아래 Restart Drill validator로 중복 주문,
+reconcile/status 복구, daily report marker를 확인한다.
 
 각 24시간 segment 시작 전에는 다음 handoff를 먼저 수행한다.
 
@@ -91,6 +92,13 @@ system service에서는 `%h`가 운영 사용자 홈이 아니라 system manager
 3. 새 candidate file은 비어 있는 상태로 daemon을 먼저 시작한 뒤 producer를 재개한다. daemon 시작 전에 후보를 미리 넣어야 하는
    재현 작업만 `--candidate-start beginning`을 사용한다.
 4. systemd service를 쓰면 `m23-segment.env`를 갱신해 `SEEMIRAI_M23_SEGMENT_CANDIDATE_FILE`이 이번 segment 전용 JSONL을 가리키게 한다.
+   이 파일은 systemd `EnvironmentFile` 형식이 아니라 wrapper가 source하는 shell 형식이다.
+
+```sh
+export SEEMIRAI_M23_SEGMENT_CANDIDATE_FILE="$M22_HOME/candidates/m23-segment-YYYY-MM-DD.jsonl"
+export SEEMIRAI_M23_SEGMENT_CANDIDATE_START="end"
+```
+
 5. M16 reconcile/status로 현재 open order, open exposure, realized loss를 확인하고 아래 env를 최신 safe summary 값으로 갱신한다.
    값을 확인할 수 없으면 segment를 시작하지 않고 manual review로 전환한다.
 

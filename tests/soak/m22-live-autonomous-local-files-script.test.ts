@@ -51,6 +51,11 @@ describe("M22 live autonomous local file preparer script", () => {
     const run24hScript = await readFile(summary.files.run24hScript.path, "utf8");
     expect(run24hScript).toContain("unset SEEMIRAI_M22_ARTIFACT_DIR");
     expect(run24hScript).toContain("unset SEEMIRAI_UPBIT_SECRET_KEY");
+    expect(run24hScript).toContain('systemd_segment_guard="${SEEMIRAI_M23_SYSTEMD_SEGMENT:-}"');
+    expect(run24hScript).toContain('export SEEMIRAI_RUN_M22_AUTONOMOUS_PILOT="${systemd_pilot_guard:-1}"');
+    expect(run24hScript).toContain('. "$systemd_segment_env"');
+    expect(run24hScript).toContain('candidate_file="${SEEMIRAI_M23_SEGMENT_CANDIDATE_FILE:-$M22_HOME/candidates/m22-candidates.jsonl}"');
+    expect(run24hScript).toContain('--candidate-start "$candidate_start"');
     expect(run24hScript).toContain("scripts/run-m22-live-autonomous-daemon.mjs");
     await execFileAsync("bash", ["-n", summary.files.fixtureSmokeScript.path]);
     await execFileAsync("bash", ["-n", summary.files.run24hScript.path]);
