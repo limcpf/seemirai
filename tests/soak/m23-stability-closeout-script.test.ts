@@ -168,6 +168,46 @@ describe("M23 stability closeout script", () => {
     });
   });
 
+  it("accepts KST segment days when startedAt is the previous UTC day", async () => {
+    const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-m23-stability-kst-day-"));
+    const manifestPath = await writeCloseoutFixture(artifactDir, {
+      segmentMutator: (summary, index) => {
+        if (index !== 0) {
+          return summary;
+        }
+
+        const startedAt = "2026-06-12T15:00:00.000Z";
+        const finishedAt = "2026-06-13T15:00:00.010Z";
+        const metrics = summary.metrics as Record<string, unknown>;
+        const pilotProcess = metrics.pilotProcess as Record<string, unknown>;
+        return {
+          ...summary,
+          startedAt,
+          finishedAt,
+          dailyReportDate: "2026-06-14",
+          metrics: {
+            ...metrics,
+            pilotProcess: {
+              ...pilotProcess,
+              startedAt,
+              finishedAt,
+            },
+          },
+        };
+      },
+    });
+    const { stdout } = await runScript(
+      ["--json", "--artifact-dir", artifactDir, "--manifest", manifestPath],
+      createReadyEnv(),
+    );
+    const summary = JSON.parse(stdout) as M23StabilityCloseoutSummary;
+
+    expect(summary.status).toBe("passed");
+    expect(getCheck(summary, "segmentCompleteness")).toMatchObject({
+      status: "ok",
+    });
+  });
+
   it("fails when a segment omits daily report date evidence even if startedAt matches the manifest day", async () => {
     const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-m23-stability-missing-report-date-"));
     const manifestPath = await writeCloseoutFixture(artifactDir, {
@@ -611,6 +651,54 @@ describe("M23 stability closeout script", () => {
     });
   });
 
+  it("fails when a segment omits weekly realized loss evidence", async () => {
+    const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-m23-stability-weekly-loss-evidence-"));
+    const manifestPath = await writeCloseoutFixture(artifactDir, {
+      segmentMutator: (summary, index) => {
+        if (index !== 4) {
+          return summary;
+        }
+
+        const metrics = { ...(summary.metrics as Record<string, unknown>) };
+        delete metrics.weeklyRealizedLossEvidenceCount;
+        return { ...summary, metrics };
+      },
+    });
+    const summary = await runScriptExpectingFailure(
+      ["--json", "--artifact-dir", artifactDir, "--manifest", manifestPath],
+      createReadyEnv(),
+    );
+
+    expect(summary.status).toBe("failed");
+    expect(getCheck(summary, "segmentBudgetCeiling")).toMatchObject({
+      status: "fail",
+    });
+  });
+
+  it("fails when a segment omits open exposure observation evidence", async () => {
+    const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-m23-stability-open-exposure-evidence-"));
+    const manifestPath = await writeCloseoutFixture(artifactDir, {
+      segmentMutator: (summary, index) => {
+        if (index !== 4) {
+          return summary;
+        }
+
+        const metrics = { ...(summary.metrics as Record<string, unknown>) };
+        delete metrics.openPositionNotionalEvidenceCount;
+        return { ...summary, metrics };
+      },
+    });
+    const summary = await runScriptExpectingFailure(
+      ["--json", "--artifact-dir", artifactDir, "--manifest", manifestPath],
+      createReadyEnv(),
+    );
+
+    expect(summary.status).toBe("failed");
+    expect(getCheck(summary, "segmentBudgetCeiling")).toMatchObject({
+      status: "fail",
+    });
+  });
+
   it("fails when seven day cumulative realized loss reaches the M23 ceiling", async () => {
     const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-m23-stability-cumulative-budget-"));
     const manifestPath = await writeCloseoutFixture(artifactDir, {
@@ -641,6 +729,32 @@ describe("M23 stability closeout script", () => {
           status: "fail",
         },
       },
+    });
+  });
+
+  it("fails when weekly carried realized loss reaches the M23 ceiling", async () => {
+    const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-m23-stability-weekly-budget-ceiling-"));
+    const manifestPath = await writeCloseoutFixture(artifactDir, {
+      segmentMutator: (summary, index) => {
+        if (index !== 2) {
+          return summary;
+        }
+
+        const metrics = summary.metrics as Record<string, unknown>;
+        return {
+          ...summary,
+          metrics: { ...metrics, weeklyRealizedLossKrw: 49_000, openPositionNotionalKrw: 1_000 },
+        };
+      },
+    });
+    const summary = await runScriptExpectingFailure(
+      ["--json", "--artifact-dir", artifactDir, "--manifest", manifestPath],
+      createReadyEnv(),
+    );
+
+    expect(summary.status).toBe("failed");
+    expect(getCheck(summary, "segmentBudgetCeiling")).toMatchObject({
+      status: "fail",
     });
   });
 
@@ -869,7 +983,10 @@ function createSegmentSummary(index: number): Record<string, unknown> {
       liveOrderCapable: true,
       dailyRealizedLossKrw: 0,
       dailyRealizedLossEvidenceCount: 1,
+      weeklyRealizedLossKrw: 0,
+      weeklyRealizedLossEvidenceCount: 1,
       openPositionNotionalKrw: 0,
+      openPositionNotionalEvidenceCount: 1,
       crashCount: 0,
       unhandledRejectionCount: 0,
       riskGateBypassCount: 0,

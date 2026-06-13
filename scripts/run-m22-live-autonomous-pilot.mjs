@@ -696,8 +696,11 @@ function createMetrics(eventLog, pilotProcess, options = {}) {
     liveOrderCapableEventCount: liveMode.liveOrderCapableEventCount,
     dailyRealizedLossKrw: budget.dailyRealizedLossKrw,
     dailyRealizedLossEvidenceCount: budget.dailyRealizedLossEvidenceCount,
-    openPositionNotionalKrw: budget.maxOpenPositionNotionalKrw,
-    latestOpenPositionNotionalKrw: budget.latestOpenPositionNotionalKrw,
+    weeklyRealizedLossKrw: budget.weeklyRealizedLossKrw,
+    weeklyRealizedLossEvidenceCount: budget.weeklyRealizedLossEvidenceCount,
+    openPositionNotionalKrw: budget.maxOpenPositionNotionalKrw ?? null,
+    latestOpenPositionNotionalKrw: budget.latestOpenPositionNotionalKrw ?? null,
+    openPositionNotionalEvidenceCount: budget.openPositionNotionalEvidenceCount,
     crashCount: runtimeCounters.uncaughtExceptions + counts.crash + childCrashCount,
     unhandledRejectionCount: runtimeCounters.unhandledRejections + counts.unhandledRejection,
     riskGateBypassCount: counts.riskGateBypass,
@@ -726,8 +729,11 @@ function createEmptyMetrics() {
     liveOrderCapableEventCount: 0,
     dailyRealizedLossKrw: 0,
     dailyRealizedLossEvidenceCount: 0,
-    openPositionNotionalKrw: 0,
-    latestOpenPositionNotionalKrw: 0,
+    weeklyRealizedLossKrw: null,
+    weeklyRealizedLossEvidenceCount: 0,
+    openPositionNotionalKrw: null,
+    latestOpenPositionNotionalKrw: null,
+    openPositionNotionalEvidenceCount: 0,
     crashCount: runtimeCounters.uncaughtExceptions,
     unhandledRejectionCount: runtimeCounters.unhandledRejections,
     riskGateBypassCount: 0,
@@ -833,8 +839,11 @@ function summarizeLiveOrderCapability(events) {
 function summarizeBudgetExposure(events, options = {}) {
   let dailyRealizedLossKrw = 0;
   let dailyRealizedLossEvidenceCount = 0;
-  let maxOpenPositionNotionalKrw = 0;
-  let latestOpenPositionNotionalKrw = 0;
+  let weeklyRealizedLossKrw;
+  let weeklyRealizedLossEvidenceCount = 0;
+  let maxOpenPositionNotionalKrw;
+  let latestOpenPositionNotionalKrw;
+  let openPositionNotionalEvidenceCount = 0;
 
   if (options.includeCarriedBudgetEnv !== false) {
     const carriedDailyLoss = readNonNegativeEnvNumber("SEEMIRAI_M22_DAILY_REALIZED_LOSS_KRW");
@@ -842,6 +851,13 @@ function summarizeBudgetExposure(events, options = {}) {
       // M23 segment는 시작 시점 carry-forward loss를 closeout ceiling에 포함해야 하므로 env evidence를 summary에 보존한다.
       dailyRealizedLossKrw = Math.max(dailyRealizedLossKrw, carriedDailyLoss);
       dailyRealizedLossEvidenceCount += 1;
+    }
+
+    const carriedWeeklyLoss = readNonNegativeEnvNumber("SEEMIRAI_M22_WEEKLY_REALIZED_LOSS_KRW");
+    if (carriedWeeklyLoss !== undefined) {
+      // 7일 closeout ceiling은 누적 손실 기준이므로 후보가 없는 날도 주간 carry-forward를 artifact로 남겨야 한다.
+      weeklyRealizedLossKrw = Math.max(weeklyRealizedLossKrw ?? 0, carriedWeeklyLoss);
+      weeklyRealizedLossEvidenceCount += 1;
     }
   }
 
@@ -852,19 +868,34 @@ function summarizeBudgetExposure(events, options = {}) {
       dailyRealizedLossEvidenceCount += 1;
     }
 
+    const cumulativeLoss = readCumulativeRealizedLossKrw(event);
+    if (cumulativeLoss !== undefined) {
+      weeklyRealizedLossKrw = Math.max(weeklyRealizedLossKrw ?? 0, cumulativeLoss);
+      weeklyRealizedLossEvidenceCount += 1;
+    }
+
     const openPosition = readNonNegativeNumber(event.openPositionNotionalKrw);
     if (openPosition !== undefined) {
       latestOpenPositionNotionalKrw = openPosition;
-      maxOpenPositionNotionalKrw = Math.max(maxOpenPositionNotionalKrw, openPosition);
+      maxOpenPositionNotionalKrw = Math.max(maxOpenPositionNotionalKrw ?? 0, openPosition);
+      openPositionNotionalEvidenceCount += 1;
     }
   }
 
   return {
     dailyRealizedLossKrw,
     dailyRealizedLossEvidenceCount,
+    weeklyRealizedLossKrw: weeklyRealizedLossKrw ?? null,
+    weeklyRealizedLossEvidenceCount,
     maxOpenPositionNotionalKrw,
     latestOpenPositionNotionalKrw,
+    openPositionNotionalEvidenceCount,
   };
+}
+
+function readCumulativeRealizedLossKrw(event) {
+  return readNonNegativeNumber(event.weeklyRealizedLossKrw)
+    ?? readNonNegativeNumber(event.cumulativeRealizedLossKrw);
 }
 
 function readRealizedLossKrw(event) {
@@ -988,6 +1019,7 @@ async function writeFixtureEvents(filePath, startedAt) {
       observedAt: startedAt.toISOString(),
       runtimeReady: true,
       market: "KRW-BTC",
+      openPositionNotionalKrw: "0",
       note: "fixture smoke heartbeat",
     },
     {

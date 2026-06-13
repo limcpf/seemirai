@@ -527,16 +527,28 @@ function createSegmentBudgetCeilingCheck(segmentFiles) {
       const metrics = readMetrics(summary);
       const realizedLossKrw = readFiniteNumber(metrics.dailyRealizedLossKrw);
       const realizedLossEvidenceCount = readFiniteNumber(metrics.dailyRealizedLossEvidenceCount);
+      const weeklyRealizedLossKrw = readFiniteNumber(metrics.weeklyRealizedLossKrw)
+        ?? readFiniteNumber(metrics.cumulativeRealizedLossKrw);
+      const weeklyRealizedLossEvidenceCount = readFiniteNumber(metrics.weeklyRealizedLossEvidenceCount)
+        ?? readFiniteNumber(metrics.cumulativeRealizedLossEvidenceCount);
       const openPositionNotionalKrw = readFiniteNumber(metrics.openPositionNotionalKrw);
-      const combinedExposureKrw = realizedLossKrw === undefined || openPositionNotionalKrw === undefined
+      const openPositionNotionalEvidenceCount = readFiniteNumber(metrics.openPositionNotionalEvidenceCount);
+      const ceilingRealizedLossKrw = realizedLossKrw === undefined || weeklyRealizedLossKrw === undefined
         ? undefined
-        : realizedLossKrw + openPositionNotionalKrw;
+        : Math.max(realizedLossKrw, weeklyRealizedLossKrw);
+      const combinedExposureKrw = ceilingRealizedLossKrw === undefined || openPositionNotionalKrw === undefined
+        ? undefined
+        : ceilingRealizedLossKrw + openPositionNotionalKrw;
       return {
         segment: index + 1,
         filePath: file.filePath,
         realizedLossKrw,
         realizedLossEvidenceCount,
+        weeklyRealizedLossKrw,
+        weeklyRealizedLossEvidenceCount,
         openPositionNotionalKrw,
+        openPositionNotionalEvidenceCount,
+        ceilingRealizedLossKrw,
         combinedExposureKrw,
       };
     });
@@ -544,20 +556,34 @@ function createSegmentBudgetCeilingCheck(segmentFiles) {
     .filter((entry) => entry.realizedLossKrw === undefined
       || entry.realizedLossEvidenceCount === undefined
       || entry.realizedLossEvidenceCount < 1
+      || entry.weeklyRealizedLossKrw === undefined
+      || entry.weeklyRealizedLossEvidenceCount === undefined
+      || entry.weeklyRealizedLossEvidenceCount < 1
       || entry.openPositionNotionalKrw === undefined
+      || entry.openPositionNotionalEvidenceCount === undefined
+      || entry.openPositionNotionalEvidenceCount < 1
       || entry.realizedLossKrw < 0
+      || entry.weeklyRealizedLossKrw < 0
       || entry.openPositionNotionalKrw < 0
+      || entry.ceilingRealizedLossKrw === undefined
       || entry.combinedExposureKrw === undefined
       || entry.combinedExposureKrw >= lossCeilingKrw)
     .map((entry) => ({
       ...entry,
       realizedLossKrw: entry.realizedLossKrw ?? null,
+      weeklyRealizedLossKrw: entry.weeklyRealizedLossKrw ?? null,
       openPositionNotionalKrw: entry.openPositionNotionalKrw ?? null,
+      ceilingRealizedLossKrw: entry.ceilingRealizedLossKrw ?? null,
       combinedExposureKrw: entry.combinedExposureKrw ?? null,
       lossCeilingKrw,
     }));
 
-  const cumulativeRealizedLossKrw = entries.reduce((sum, entry) => sum + (entry.realizedLossKrw ?? 0), 0);
+  const summedDailyRealizedLossKrw = entries.reduce((sum, entry) => sum + (entry.realizedLossKrw ?? 0), 0);
+  const maxWeeklyRealizedLossKrw = entries.reduce(
+    (max, entry) => Math.max(max, entry.weeklyRealizedLossKrw ?? 0),
+    0,
+  );
+  const cumulativeRealizedLossKrw = Math.max(summedDailyRealizedLossKrw, maxWeeklyRealizedLossKrw);
   const maxOpenPositionNotionalKrw = entries.reduce(
     (max, entry) => Math.max(max, entry.openPositionNotionalKrw ?? 0),
     0,
@@ -569,6 +595,8 @@ function createSegmentBudgetCeilingCheck(segmentFiles) {
     return okCheck("7일 누적 realized loss와 최대 open exposure가 50,000 KRW ceiling 미만임을 숫자 evidence로 증명한다.", {
       segmentCount: segmentFiles.length,
       lossCeilingKrw,
+      summedDailyRealizedLossKrw,
+      maxWeeklyRealizedLossKrw,
       cumulativeRealizedLossKrw,
       maxOpenPositionNotionalKrw,
       cumulativeExposureKrw,
@@ -578,6 +606,8 @@ function createSegmentBudgetCeilingCheck(segmentFiles) {
   return failCheck("손실/미체결 노출 ceiling evidence가 없거나 7일 누적 한도를 넘었다.", {
     invalid,
     cumulative: {
+      summedDailyRealizedLossKrw,
+      maxWeeklyRealizedLossKrw,
       cumulativeRealizedLossKrw,
       maxOpenPositionNotionalKrw,
       cumulativeExposureKrw,
@@ -886,8 +916,8 @@ function readSegmentDayEvidence(summary) {
   const pilotProcess = isRecord(metrics.pilotProcess) ? metrics.pilotProcess : {};
   return {
     executionDays: Array.from(new Set([
-      readIsoDay(summary.startedAt),
-      readIsoDay(pilotProcess.startedAt),
+      readKstDay(summary.startedAt),
+      readKstDay(pilotProcess.startedAt),
     ].filter((day) => day !== undefined))),
     dailyReportDays: Array.from(new Set([
       readIsoDay(summary.reportDate),
@@ -990,7 +1020,7 @@ async function writeFixtureManifest(artifactDir, startedAt) {
   const segments = [];
   for (let index = 0; index < requiredSegmentCount; index += 1) {
     const segmentStartedAt = new Date(startedAt.getTime() + index * oneDayMs);
-    const day = segmentStartedAt.toISOString().slice(0, 10);
+    const day = readKstDay(segmentStartedAt) ?? segmentStartedAt.toISOString().slice(0, 10);
     const summaryPath = path.join(artifactDir, `m23-segment-${index + 1}-summary.fixture.json`);
     await writeFile(summaryPath, `${JSON.stringify(createFixtureSegmentSummary(index, segmentStartedAt), null, 2)}\n`, "utf8");
     segments.push({
@@ -1051,7 +1081,10 @@ function createFixtureSegmentSummary(index, startedAt) {
       liveOrderCapable: true,
       dailyRealizedLossKrw: 0,
       dailyRealizedLossEvidenceCount: 1,
+      weeklyRealizedLossKrw: 0,
+      weeklyRealizedLossEvidenceCount: 1,
       openPositionNotionalKrw: 0,
+      openPositionNotionalEvidenceCount: 1,
       crashCount: 0,
       unhandledRejectionCount: 0,
       riskGateBypassCount: 0,

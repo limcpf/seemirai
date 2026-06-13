@@ -46,7 +46,10 @@ describe("M22 live autonomous pilot runner script", () => {
       untrackedFillCount: 0,
       dailyRealizedLossKrw: 0,
       dailyRealizedLossEvidenceCount: 0,
+      weeklyRealizedLossKrw: null,
+      weeklyRealizedLossEvidenceCount: 0,
       openPositionNotionalKrw: 0,
+      openPositionNotionalEvidenceCount: 1,
     });
     expect(summary.dailyReportDate).toMatch(/^\d{4}-\d{2}-\d{2}$/u);
     expect(summary.metrics.dailyReportDate).toBe(summary.dailyReportDate);
@@ -250,6 +253,7 @@ setInterval(() => {}, 1000);
       dailyRealizedLossKrw: 5000,
       openPositionNotionalKrw: 12000,
       latestOpenPositionNotionalKrw: 7000,
+      openPositionNotionalEvidenceCount: 3,
     });
   });
 
@@ -283,7 +287,11 @@ setInterval(() => {}, 1000);
         "--",
         childPath,
       ],
-      { ...createReadyEnv(), SEEMIRAI_M22_DAILY_REALIZED_LOSS_KRW: "40000" },
+      {
+        ...createReadyEnv(),
+        SEEMIRAI_M22_DAILY_REALIZED_LOSS_KRW: "40000",
+        SEEMIRAI_M22_WEEKLY_REALIZED_LOSS_KRW: "49000",
+      },
     );
     const summary = JSON.parse(stdout) as M22PilotSummary;
 
@@ -291,6 +299,10 @@ setInterval(() => {}, 1000);
     expect(summary.metrics).toMatchObject({
       dailyRealizedLossKrw: 40000,
       dailyRealizedLossEvidenceCount: 1,
+      weeklyRealizedLossKrw: 49000,
+      weeklyRealizedLossEvidenceCount: 1,
+      openPositionNotionalKrw: null,
+      openPositionNotionalEvidenceCount: 0,
     });
   });
 });
@@ -403,8 +415,11 @@ interface M22PilotSummary {
     untrackedFillCount: number;
     dailyRealizedLossKrw: number;
     dailyRealizedLossEvidenceCount: number;
-    openPositionNotionalKrw: number;
-    latestOpenPositionNotionalKrw?: number;
+    weeklyRealizedLossKrw: number | null;
+    weeklyRealizedLossEvidenceCount: number;
+    openPositionNotionalKrw: number | null;
+    latestOpenPositionNotionalKrw?: number | null;
+    openPositionNotionalEvidenceCount: number;
     pilotProcess: null | {
       ranFullDuration: boolean;
     };
