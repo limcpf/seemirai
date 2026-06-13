@@ -324,6 +324,41 @@ describe("M23 stability closeout script", () => {
     });
   });
 
+  it("fails when a segment exits non-zero after the requested duration", async () => {
+    const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-m23-stability-non-zero-exit-"));
+    const manifestPath = await writeCloseoutFixture(artifactDir, {
+      segmentMutator: (summary, index) => {
+        if (index !== 1) {
+          return summary;
+        }
+
+        const metrics = summary.metrics as Record<string, unknown>;
+        const pilotProcess = metrics.pilotProcess as Record<string, unknown>;
+        return {
+          ...summary,
+          metrics: {
+            ...metrics,
+            pilotProcess: {
+              ...pilotProcess,
+              exitCode: 1,
+              signal: null,
+              forceKilled: false,
+            },
+          },
+        };
+      },
+    });
+    const summary = await runScriptExpectingFailure(
+      ["--json", "--artifact-dir", artifactDir, "--manifest", manifestPath],
+      createReadyEnv(),
+    );
+
+    expect(summary.status).toBe("failed");
+    expect(getCheck(summary, "segmentDuration")).toMatchObject({
+      status: "fail",
+    });
+  });
+
   it("fails when a segment is not a live autonomous M23 execution", async () => {
     const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-m23-stability-mode-"));
     const manifestPath = await writeCloseoutFixture(artifactDir, {
@@ -597,8 +632,14 @@ describe("M23 stability closeout script", () => {
         rawProviderPayload: { status: "raw" },
         upbit_access_key: "raw-access-key-value",
         upbit_secret_key: "raw-secret-key-value",
+        SEEMIRAI_UPBIT_ACCESS_KEY: "raw-access-key-value",
+        SEEMIRAI_UPBIT_SECRET_KEY: "raw-secret-key-value",
         accessKey: "raw-access-key-value",
         upbitSecretKey: "raw-secret-key-value",
+        envDump: [
+          "SEEMIRAI_UPBIT_ACCESS_KEY=raw-access-key-value",
+          "SEEMIRAI_UPBIT_SECRET_KEY=raw-secret-key-value",
+        ].join("\n"),
         telegram: { botToken: "raw-telegram-token-value" },
         botToken: "raw-telegram-token-value",
       },
@@ -621,7 +662,13 @@ describe("M23 stability closeout script", () => {
         authorization: "Bearer [REDACTED]",
         jwt: "[REDACTED]",
         accessKey: "[REDACTED]",
+        SEEMIRAI_UPBIT_ACCESS_KEY: "[REDACTED]",
+        SEEMIRAI_UPBIT_SECRET_KEY: "[REDACTED]",
         upbitSecretKey: "[REDACTED]",
+        envDump: [
+          "SEEMIRAI_UPBIT_ACCESS_KEY=[REDACTED]",
+          "SEEMIRAI_UPBIT_SECRET_KEY=[REDACTED]",
+        ].join("\n"),
         botToken: "[REDACTED]",
       },
     });
@@ -812,6 +859,9 @@ function createSegmentSummary(index: number): Record<string, unknown> {
         durationMsRequested: oneDayMs,
         durationMsObserved: oneDayMs + 10,
         ranFullDuration: true,
+        exitCode: null,
+        signal: "SIGTERM",
+        forceKilled: false,
       },
     },
     checks: {

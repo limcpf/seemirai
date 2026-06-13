@@ -35,12 +35,15 @@ const closeoutCounterNames = [
   "liveOrderCleanupFailureCount",
 ];
 const sensitivePatterns = [
-  { label: "access_key field", pattern: /"(?:upbit_)?access_key"\s*:\s*"(?!<redacted>|redacted|\[redacted\])[^"]{4,}"/i },
+  { label: "access_key field", pattern: /"(?:seemirai_)?(?:upbit_)?access_key"\s*:\s*"(?!<redacted>|redacted|\[redacted\])[^"]{4,}"/i },
   { label: "accessKey field", pattern: /"(?:upbit)?accessKey"\s*:\s*"(?!<redacted>|redacted|\[redacted\])[^"]{4,}"/i },
-  { label: "secret_key field", pattern: /"(?:upbit_)?secret_key"\s*:\s*"(?!<redacted>|redacted|\[redacted\])[^"]{4,}"/i },
+  { label: "secret_key field", pattern: /"(?:seemirai_)?(?:upbit_)?secret_key"\s*:\s*"(?!<redacted>|redacted|\[redacted\])[^"]{4,}"/i },
   { label: "secretKey field", pattern: /"(?:upbit)?secretKey"\s*:\s*"(?!<redacted>|redacted|\[redacted\])[^"]{4,}"/i },
+  { label: "access key env assignment", pattern: /\b(?:SEEMIRAI_)?(?:UPBIT_)?ACCESS_KEY\s*=\s*(?!<redacted>|redacted|\[redacted\])\S{4,}/i },
+  { label: "secret key env assignment", pattern: /\b(?:SEEMIRAI_)?(?:UPBIT_)?SECRET_KEY\s*=\s*(?!<redacted>|redacted|\[redacted\])\S{4,}/i },
   { label: "telegram token field", pattern: /"telegram_bot_token"\s*:\s*"(?!<redacted>|redacted|\[redacted\])[^"]{4,}"/i },
   { label: "telegram botToken field", pattern: /"(?:telegram)?botToken"\s*:\s*"(?!<redacted>|redacted|\[redacted\])[^"]{4,}"/i },
+  { label: "telegram token env assignment", pattern: /\bSEEMIRAI_TELEGRAM_BOT_TOKEN\s*=\s*(?!<redacted>|redacted|\[redacted\])\S{4,}/i },
   { label: "jwt field", pattern: /"jwt"\s*:\s*"(?!<redacted>|redacted|\[redacted\])[^"]{4,}"/i },
   { label: "authorization bearer", pattern: /authorization:\s*bearer\s+(?!<redacted>|redacted|\[redacted\])[^\s"']+/i },
   { label: "authorization json field", pattern: /"authorization"\s*:\s*"(?!bearer\s+(?:<redacted>|redacted|\[redacted\])"|(?:<redacted>|redacted|\[redacted\])")[^"]{4,}"/i },
@@ -375,11 +378,16 @@ function createSegmentDurationCheck(segmentFiles) {
       const pilotProcess = isRecord(summary.metrics) && isRecord(summary.metrics.pilotProcess) ? summary.metrics.pilotProcess : {};
       const requested = readFiniteNumber(pilotProcess.durationMsRequested);
       const observed = readFiniteNumber(pilotProcess.durationMsObserved);
+      const exitCode = readFiniteNumber(pilotProcess.exitCode);
+      const signal = readString(pilotProcess.signal);
+      // M23 closeout은 24시간을 채운 뒤 cleanup/종료 실패가 숨어 있으면 안 되므로 정상 exit 또는 의도된 SIGTERM만 허용한다.
+      const expectedExit = exitCode === 0 || (exitCode === undefined && signal === "SIGTERM");
       return summary.status !== "passed"
         || !hasOkCheck(summary, "pilotCommand")
         || pilotProcess.ranFullDuration !== true
         || readBoolean(pilotProcess.forceKilled) === true
-        || readString(pilotProcess.signal) === "SIGKILL"
+        || signal === "SIGKILL"
+        || !expectedExit
         || requested === undefined
         || requested < oneDayMs
         || observed === undefined
@@ -400,6 +408,9 @@ function createSegmentDurationCheck(segmentFiles) {
         : undefined,
       forceKilled: isRecord(summary.metrics) && isRecord(summary.metrics.pilotProcess)
         ? summary.metrics.pilotProcess.forceKilled
+        : undefined,
+      exitCode: isRecord(summary.metrics) && isRecord(summary.metrics.pilotProcess)
+        ? summary.metrics.pilotProcess.exitCode
         : undefined,
       signal: isRecord(summary.metrics) && isRecord(summary.metrics.pilotProcess)
         ? summary.metrics.pilotProcess.signal
