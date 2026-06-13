@@ -157,6 +157,7 @@ async function buildAndWriteSummary(input) {
 }
 
 function createRecoveryChecks(input) {
+  const latestRestartAfterEvents = selectLatestRestartAfterEvents(input.afterLog.events);
   return {
     eventLogsParsed: input.beforeLog.parseErrors.length === 0 && input.afterLog.parseErrors.length === 0
       ? okCheck("restart 전후 event log를 모두 파싱했다.", {
@@ -168,11 +169,11 @@ function createRecoveryChecks(input) {
           afterParseErrors: input.afterLog.parseErrors,
         }),
     restartEvidence: createRestartEvidenceCheck(input.beforeLog.events, input.afterLog.events),
-    heartbeatRecovery: createHeartbeatRecoveryCheck(input.afterLog.events),
+    heartbeatRecovery: createHeartbeatRecoveryCheck(latestRestartAfterEvents),
     duplicateLiveOrder: createDuplicateLiveOrderCheck(input.beforeLog.events, input.afterLog.events),
-    reconcileRecovery: createReconcileRecoveryCheck(input.afterLog.events),
-    statusRecovery: createStatusRecoveryCheck(input.beforeLog.events, input.afterLog.events),
-    dailyReportRecovery: createDailyReportRecoveryCheck(input.afterLog.events),
+    reconcileRecovery: createReconcileRecoveryCheck(latestRestartAfterEvents),
+    statusRecovery: createStatusRecoveryCheck(input.beforeLog.events, latestRestartAfterEvents),
+    dailyReportRecovery: createDailyReportRecoveryCheck(latestRestartAfterEvents),
     failClosedDrills: createFailClosedDrillCheck(input.afterLog.events),
     backupRestore: createBackupRestoreCheck(input.backupRestoreStatus, input.backupRestoreEvidence),
     closeoutZeroCounters: createCloseoutZeroCounterCheck(input.metrics),
@@ -180,16 +181,27 @@ function createRecoveryChecks(input) {
   };
 }
 
+function selectLatestRestartAfterEvents(afterEvents) {
+  const afterCheckpoints = afterEvents.filter((event) => event.type === "m23_restart_checkpoint" && event.phase === "after_restart");
+  const afterCheckpoint = afterCheckpoints.at(-1);
+  if (afterCheckpoint === undefined) {
+    return afterEvents;
+  }
+
+  // 최신 restart 이후에 재개된 evidence만 closeout recovery pass 기준으로 삼아 이전 restart의 정상 evidence가 섞이지 않게 한다.
+  return afterEvents.slice(Math.max(0, afterEvents.lastIndexOf(afterCheckpoint)));
+}
+
 function createRestartEvidenceCheck(beforeEvents, afterEvents) {
   const beforeCheckpoints = beforeEvents.filter((event) => event.type === "m23_restart_checkpoint" && event.phase === "before_restart");
   const afterCheckpoints = afterEvents.filter((event) => event.type === "m23_restart_checkpoint" && event.phase === "after_restart");
   // 7일 closeout 로그에는 restart가 여러 번 남을 수 있으므로 가장 최근 after checkpoint만 pass 기준으로 삼는다.
   const afterCheckpoint = afterCheckpoints.at(-1);
-  const latestRestartId = readString(afterCheckpoint?.restartId);
+  const latestRestartId = readRestartId(afterCheckpoint);
   const afterCheckpointIndex = afterCheckpoint === undefined ? 0 : afterEvents.lastIndexOf(afterCheckpoint);
   const beforeCheckpoint = latestRestartId === undefined
     ? beforeCheckpoints.at(-1)
-    : beforeCheckpoints.filter((event) => readString(event.restartId) === latestRestartId).at(-1);
+    : beforeCheckpoints.filter((event) => readRestartId(event) === latestRestartId).at(-1);
   const restartDetected = findLatestRestartEvent(afterEvents, restartDetectedEventKinds, latestRestartId, afterCheckpointIndex);
   const recovered = findLatestRestartEvent(afterEvents, recoveryCompletedEventKinds, latestRestartId, afterCheckpointIndex);
 
@@ -203,10 +215,10 @@ function createRestartEvidenceCheck(beforeEvents, afterEvents) {
   }
 
   const restartEvidence = {
-    beforeCheckpoint: readString(beforeCheckpoint.restartId),
-    afterCheckpoint: readString(afterCheckpoint.restartId),
-    restartDetected: readString(restartDetected.restartId),
-    recovered: readString(recovered.restartId),
+    beforeCheckpoint: readRestartId(beforeCheckpoint),
+    afterCheckpoint: readRestartId(afterCheckpoint),
+    restartDetected: readRestartId(restartDetected),
+    recovered: readRestartId(recovered),
   };
   const missingRestartIds = Object.entries(restartEvidence)
     .filter(([, restartId]) => restartId === undefined)
@@ -221,6 +233,15 @@ function createRestartEvidenceCheck(beforeEvents, afterEvents) {
   if (restartIds.size !== 1) {
     return failCheck("restart 전후 evidence는 같은 restart id로 묶여야 한다.", {
       restartIds: Array.from(restartIds),
+    });
+  }
+
+  const restartDetectedIndex = afterEvents.lastIndexOf(restartDetected);
+  const recoveredIndex = afterEvents.lastIndexOf(recovered);
+  if (restartDetectedIndex < 0 || recoveredIndex < 0 || recoveredIndex <= restartDetectedIndex) {
+    return failCheck("restart 복구 완료 evidence는 restart 감지 evidence 뒤에 기록되어야 한다.", {
+      restartDetectedIndex,
+      recoveredIndex,
     });
   }
 
@@ -261,8 +282,8 @@ function findLatestRestartEvent(events, acceptedEventKinds, restartId, startInde
     return candidates.at(-1);
   }
 
-  return candidates.filter((event) => readString(event.restartId) === restartId).at(-1)
-    ?? candidates.filter((event) => readString(event.restartId) === undefined).at(-1);
+  return candidates.filter((event) => readRestartId(event) === restartId).at(-1)
+    ?? candidates.filter((event) => readRestartId(event) === undefined).at(-1);
 }
 
 function createHeartbeatRecoveryCheck(afterEvents) {
@@ -288,7 +309,7 @@ function createDuplicateLiveOrderCheck(beforeEvents, afterEvents) {
 }
 
 function createDuplicateLiveOrderEvidence(beforeEvents, afterEvents) {
-  const beforeIds = collectSubmissionIds(beforeEvents);
+  const beforeIds = [...new Set([...collectSubmissionIds(beforeEvents), ...collectCheckpointOrderAttemptIds(beforeEvents)])];
   const afterIds = collectSubmissionIds(afterEvents);
   // broker_submission/order_submitted 한 쌍은 같은 주문의 lifecycle evidence이므로 category별 반복 제출만 duplicate로 센다.
   const duplicateAfterRestart = collectDuplicateSubmissionIds(afterEvents);
@@ -315,8 +336,8 @@ function createReconcileRecoveryCheck(afterEvents) {
 
   const failures = events.filter((event) => {
     const result = readString(event.result);
-    const mismatchCount = Number(event.mismatchCount ?? 0);
-    return !["SUCCESS", "CLEAN"].includes(result ?? "") || !Number.isFinite(mismatchCount) || mismatchCount !== 0;
+    const mismatchCount = readFiniteNumber(event.mismatchCount);
+    return !["SUCCESS", "CLEAN"].includes(result ?? "") || mismatchCount !== 0;
   });
   if (failures.length > 0) {
     return failCheck("restart 후 reconcile 완료 evidence 중 실패 또는 mismatch가 남아 있다.", {
@@ -533,8 +554,8 @@ function createMetrics(beforeLog, afterLog) {
     reconcileMismatchCount: events.filter((event) => hasEventType(event, ["live_reconcile_mismatch", "reconcile_mismatch"])
         || event.reconcileMismatch === true).length
       + events.filter((event) => hasEventType(event, ["live_reconcile_completed"])).filter((event) => {
-        const mismatchCount = Number(event.mismatchCount ?? 0);
-        return !Number.isFinite(mismatchCount) || mismatchCount !== 0 || !["SUCCESS", "CLEAN"].includes(readString(event.result) ?? "");
+        const mismatchCount = readFiniteNumber(event.mismatchCount);
+        return mismatchCount !== 0 || !["SUCCESS", "CLEAN"].includes(readString(event.result) ?? "");
       }).length,
     duplicateOrderCount: duplicateOrderEvidence.duplicateIds.length
       + events.filter((event) => hasEventType(event, ["duplicate_order"]) || event.duplicateOrder === true).length,
@@ -578,6 +599,13 @@ function collectSubmissionIds(events) {
   return Array.from(new Set([...brokerSubmissionIds, ...orderSubmittedIds]));
 }
 
+function collectCheckpointOrderAttemptIds(events) {
+  return events
+    .filter((event) => event.type === "m23_restart_checkpoint" && event.phase === "before_restart")
+    .map((event) => readString(event.orderAttemptId))
+    .filter((value) => value !== undefined);
+}
+
 function collectDuplicateSubmissionIds(events) {
   const brokerSubmissionIds = events
     .filter((event) => event.type === "broker_submission")
@@ -609,6 +637,31 @@ function readEventKind(event) {
     ?? readString(event.event_kind)
     ?? readString(metadata.eventKind)
     ?? readString(metadata.event_kind);
+}
+
+function readRestartId(event) {
+  if (event === undefined) {
+    return undefined;
+  }
+
+  const metadata = isRecord(event.metadata) ? event.metadata : {};
+  return readString(event.restartId)
+    ?? readString(event.restart_id)
+    ?? readString(metadata.restartId)
+    ?? readString(metadata.restart_id);
+}
+
+function readFiniteNumber(value) {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value;
+  }
+
+  if (typeof value === "string" && value.trim().length > 0) {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : undefined;
+  }
+
+  return undefined;
 }
 
 function redactSensitiveEvidence(evidence) {

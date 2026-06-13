@@ -166,6 +166,24 @@ describe("M23 recovery drill script", () => {
     });
   });
 
+  it("fails when restart repeats the checkpoint order attempt without a pre-restart submission event", async () => {
+    const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-m23-recovery-checkpoint-duplicate-"));
+    const beforePath = path.join(artifactDir, "before.jsonl");
+    const afterPath = path.join(artifactDir, "after.jsonl");
+    await writeEventLog(beforePath, validBeforeRestartEvents("restart-checkpoint-duplicate").filter((event) => event.type !== "broker_submission"));
+    await writeEventLog(afterPath, [
+      ...validAfterRestartEvents("restart-checkpoint-duplicate"),
+      { type: "broker_submission", observedAt: "2026-06-13T00:00:10.000Z", idempotencyKey: "m22a-restart-checkpoint-duplicate" },
+    ]);
+
+    const summary = await runScriptExpectingFailure(validArtifactArgs(artifactDir, beforePath, afterPath));
+
+    expect(getCheck(summary, "duplicateLiveOrder")).toMatchObject({
+      status: "fail",
+      evidence: { repeatedAfterRestart: ["m22a-restart-checkpoint-duplicate"] },
+    });
+  });
+
   it("fails when backup/restore smoke result or blocker evidence is missing", async () => {
     const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-m23-recovery-backup-"));
     const { stdout: fixtureStdout } = await runScript(["--fixture-smoke", "--json", "--artifact-dir", artifactDir]);
@@ -302,6 +320,29 @@ describe("M23 recovery drill script", () => {
     });
   });
 
+  it("fails when recovery evidence only exists before the latest restart checkpoint", async () => {
+    const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-m23-recovery-latest-segment-"));
+    const beforePath = path.join(artifactDir, "before.jsonl");
+    const afterPath = path.join(artifactDir, "after.jsonl");
+    await writeEventLog(beforePath, [
+      ...validBeforeRestartEvents("restart-earlier-segment"),
+      ...validBeforeRestartEvents("restart-latest-segment"),
+    ]);
+    await writeEventLog(afterPath, [
+      ...validAfterRestartEvents("restart-earlier-segment"),
+      ...validAfterRestartEvents("restart-latest-segment").filter((event) =>
+        event.type === "m23_restart_checkpoint"
+        || (event.type === "live_ops_event" && ["RUNTIME_RESTART_DETECTED", "RUNTIME_RECOVERED"].includes(String(event.eventKind)))),
+    ]);
+
+    const summary = await runScriptExpectingFailure(validArtifactArgs(artifactDir, beforePath, afterPath));
+
+    expect(getCheck(summary, "heartbeatRecovery")).toMatchObject({ status: "fail" });
+    expect(getCheck(summary, "reconcileRecovery")).toMatchObject({ status: "fail" });
+    expect(getCheck(summary, "statusRecovery")).toMatchObject({ status: "fail" });
+    expect(getCheck(summary, "dailyReportRecovery")).toMatchObject({ status: "fail" });
+  });
+
   it("accepts live ops alert contract restart event names", async () => {
     const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-m23-recovery-alert-names-"));
     const beforePath = path.join(artifactDir, "before.jsonl");
@@ -312,10 +353,10 @@ describe("M23 recovery drill script", () => {
         return event;
       }
       if (event.eventKind === "RUNTIME_RESTART_DETECTED") {
-        return { ...event, eventKind: "RESTART_DETECTED" };
+        return omit({ ...event, eventKind: "RESTART_DETECTED", metadata: { restart_id: "restart-alert-names" } }, "restartId");
       }
       if (event.eventKind === "RUNTIME_RECOVERED") {
-        return { ...event, metadata: { event_kind: "RECOVERY_COMPLETED" }, eventKind: undefined };
+        return omit({ ...event, metadata: { event_kind: "RECOVERY_COMPLETED", restart_id: "restart-alert-names" }, eventKind: undefined }, "restartId");
       }
       return event;
     }));
@@ -328,6 +369,30 @@ describe("M23 recovery drill script", () => {
     expect(summary.status).toBe("passed");
     expect(getCheck(summary, "restartEvidence")).toMatchObject({
       status: "ok",
+    });
+  });
+
+  it("fails when recovery completed evidence is appended before restart detected evidence", async () => {
+    const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-m23-recovery-event-order-"));
+    const beforePath = path.join(artifactDir, "before.jsonl");
+    const afterPath = path.join(artifactDir, "after.jsonl");
+    const afterEvents = validAfterRestartEvents("restart-event-order");
+    const afterCheckpoint = afterEvents.find((event) => event.type === "m23_restart_checkpoint");
+    const restartDetected = afterEvents.find((event) => event.type === "live_ops_event" && event.eventKind === "RUNTIME_RESTART_DETECTED");
+    const recovered = afterEvents.find((event) => event.type === "live_ops_event" && event.eventKind === "RUNTIME_RECOVERED");
+    await writeEventLog(beforePath, validBeforeRestartEvents("restart-event-order"));
+    await writeEventLog(afterPath, [
+      afterCheckpoint,
+      recovered,
+      restartDetected,
+      ...afterEvents.filter((event) => event !== afterCheckpoint && event !== restartDetected && event !== recovered),
+    ].filter((event): event is Record<string, unknown> => event !== undefined));
+
+    const summary = await runScriptExpectingFailure(validArtifactArgs(artifactDir, beforePath, afterPath));
+
+    expect(getCheck(summary, "restartEvidence")).toMatchObject({
+      status: "fail",
+      evidence: { restartDetectedIndex: 2, recoveredIndex: 1 },
     });
   });
 
@@ -386,6 +451,24 @@ describe("M23 recovery drill script", () => {
     expect(summary.metrics.reconcileMismatchCount).toBe(1);
   });
 
+  it("fails when reconcile completion omits an explicit zero mismatch count", async () => {
+    const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-m23-recovery-reconcile-missing-count-"));
+    const beforePath = path.join(artifactDir, "before.jsonl");
+    const afterPath = path.join(artifactDir, "after.jsonl");
+    await writeEventLog(beforePath, validBeforeRestartEvents("restart-reconcile-missing-count"));
+    await writeEventLog(afterPath, validAfterRestartEvents("restart-reconcile-missing-count").map((event) =>
+      event.type === "live_reconcile_completed"
+        ? omit(event, "mismatchCount")
+        : event));
+
+    const summary = await runScriptExpectingFailure(validArtifactArgs(artifactDir, beforePath, afterPath));
+
+    expect(getCheck(summary, "reconcileRecovery")).toMatchObject({
+      status: "fail",
+    });
+    expect(summary.metrics.reconcileMismatchCount).toBe(1);
+  });
+
   it("counts documented reconcile_mismatch events as closeout failures", async () => {
     const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-m23-recovery-reconcile-event-"));
     const beforePath = path.join(artifactDir, "before.jsonl");
@@ -423,7 +506,7 @@ describe("M23 recovery drill script", () => {
     expect(summary.status).toBe("passed");
     expect(getCheck(summary, "statusRecovery")).toMatchObject({
       status: "ok",
-      evidence: { statusSummaryCount: 2 },
+      evidence: { statusSummaryCount: 1 },
     });
   });
 
