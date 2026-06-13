@@ -669,6 +669,7 @@ function createCloseoutZeroCounterCheck(metrics) {
 function createMetrics(eventLog, pilotProcess) {
   const counts = countPilotEvents(eventLog.events);
   const budget = summarizeBudgetExposure(eventLog.events);
+  const liveMode = summarizeLiveOrderCapability(eventLog.events);
   const childCrashCount =
     pilotProcess !== undefined && !pilotProcess.ranFullDuration && pilotProcess.exitCode !== 0 ? 1 : 0;
 
@@ -678,6 +679,11 @@ function createMetrics(eventLog, pilotProcess) {
     brokerSubmissionCount: counts.brokerSubmission,
     manualReviewRequiredCount: counts.manualReviewRequired,
     dailyReportGeneratedCount: counts.dailyReportGenerated,
+    dryRun: liveMode.dryRun,
+    liveOrderCapable: liveMode.liveOrderCapable,
+    explicitDryRunEventCount: liveMode.explicitDryRunEventCount,
+    explicitNonDryRunEventCount: liveMode.explicitNonDryRunEventCount,
+    liveOrderCapableEventCount: liveMode.liveOrderCapableEventCount,
     dailyRealizedLossKrw: budget.dailyRealizedLossKrw,
     openPositionNotionalKrw: budget.maxOpenPositionNotionalKrw,
     latestOpenPositionNotionalKrw: budget.latestOpenPositionNotionalKrw,
@@ -700,6 +706,11 @@ function createEmptyMetrics() {
     brokerSubmissionCount: 0,
     manualReviewRequiredCount: 0,
     dailyReportGeneratedCount: 0,
+    dryRun: null,
+    liveOrderCapable: false,
+    explicitDryRunEventCount: 0,
+    explicitNonDryRunEventCount: 0,
+    liveOrderCapableEventCount: 0,
     dailyRealizedLossKrw: 0,
     openPositionNotionalKrw: 0,
     latestOpenPositionNotionalKrw: 0,
@@ -750,6 +761,40 @@ function countPilotEvents(events) {
   return counts;
 }
 
+function summarizeLiveOrderCapability(events) {
+  let explicitDryRunEventCount = 0;
+  let explicitNonDryRunEventCount = 0;
+  let liveOrderCapableEventCount = 0;
+
+  for (const event of events) {
+    const dryRun = readBoolean(event.dryRun);
+    if (dryRun === true) {
+      explicitDryRunEventCount += 1;
+    }
+    if (dryRun === false) {
+      explicitNonDryRunEventCount += 1;
+    }
+    if (readBoolean(event.liveOrderCapable) === true) {
+      liveOrderCapableEventCount += 1;
+    }
+  }
+
+  const dryRun =
+    explicitDryRunEventCount > 0
+      ? true
+      : explicitNonDryRunEventCount > 0
+        ? false
+        : null;
+  return {
+    dryRun,
+    // M23 closeout은 dry-run 혼입을 막아야 하므로 명시적인 비 dry-run event를 live-order-capable evidence로 승격한다.
+    liveOrderCapable: dryRun === false || liveOrderCapableEventCount > 0,
+    explicitDryRunEventCount,
+    explicitNonDryRunEventCount,
+    liveOrderCapableEventCount,
+  };
+}
+
 function summarizeBudgetExposure(events) {
   let dailyRealizedLossKrw = 0;
   let maxOpenPositionNotionalKrw = 0;
@@ -786,6 +831,20 @@ function readRealizedLossKrw(event) {
 function readNonNegativeNumber(value) {
   const parsed = readFiniteNumber(value);
   return parsed !== undefined && parsed >= 0 ? parsed : undefined;
+}
+
+function readBoolean(value) {
+  if (typeof value === "boolean") {
+    return value;
+  }
+
+  if (typeof value === "string") {
+    const normalized = value.trim().toLowerCase();
+    if (normalized === "true") return true;
+    if (normalized === "false") return false;
+  }
+
+  return undefined;
 }
 
 function readFiniteNumber(value) {

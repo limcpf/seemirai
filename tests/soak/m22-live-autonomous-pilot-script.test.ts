@@ -35,6 +35,8 @@ describe("M22 live autonomous pilot runner script", () => {
     expect(summary.input).toBe("fixture_smoke");
     expect(summary.metrics).toMatchObject({
       heartbeatCount: 1,
+      dryRun: null,
+      liveOrderCapable: false,
       crashCount: 0,
       unhandledRejectionCount: 0,
       riskGateBypassCount: 0,
@@ -104,7 +106,99 @@ setInterval(() => {}, 1000);
     expect(getCheck(summary, "pilotCommand").status).toBe("ok");
     expect(getCheck(summary, "heartbeat").status).toBe("ok");
     expect(getCheck(summary, "closeoutZeroCounters").status).toBe("ok");
+    expect(summary.metrics).toMatchObject({
+      dryRun: null,
+      liveOrderCapable: false,
+      explicitDryRunEventCount: 0,
+      explicitNonDryRunEventCount: 0,
+    });
     expect(summary.metrics.pilotProcess?.ranFullDuration).toBe(true);
+  });
+
+  it("preserves explicit non-dry-run live order capable evidence from the wrapped command event log", async () => {
+    const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-m22-pilot-live-mode-"));
+    const configPath = path.join(artifactDir, "m22-config.json");
+    const childPath = path.join(artifactDir, "pilot-live-mode-child.mjs");
+    await writeFile(configPath, `${JSON.stringify(createEnabledM22Config(), null, 2)}\n`, "utf8");
+    await writeFile(
+      childPath,
+      `import { appendFile } from "node:fs/promises";
+await appendFile(process.env.SEEMIRAI_M22_PILOT_EVENT_LOG, JSON.stringify({ type: "m22_pilot_heartbeat", observedAt: new Date().toISOString(), dryRun: false }) + "\\n", "utf8");
+setInterval(() => {}, 1000);
+`,
+      "utf8",
+    );
+
+    const { stdout } = await runScript(
+      [
+        "--json",
+        "--artifact-dir",
+        artifactDir,
+        "--config",
+        configPath,
+        "--duration-ms",
+        "1000",
+        "--termination-grace-ms",
+        "500",
+        "--pilot-command",
+        process.execPath,
+        "--",
+        childPath,
+      ],
+      createReadyEnv(),
+    );
+    const summary = JSON.parse(stdout) as M22PilotSummary;
+
+    expect(summary.status).toBe("passed");
+    expect(summary.metrics).toMatchObject({
+      dryRun: false,
+      liveOrderCapable: true,
+      explicitDryRunEventCount: 0,
+      explicitNonDryRunEventCount: 1,
+    });
+  });
+
+  it("preserves explicit dry-run evidence without marking the segment live order capable", async () => {
+    const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-m22-pilot-dry-run-mode-"));
+    const configPath = path.join(artifactDir, "m22-config.json");
+    const childPath = path.join(artifactDir, "pilot-dry-run-mode-child.mjs");
+    await writeFile(configPath, `${JSON.stringify(createEnabledM22Config(), null, 2)}\n`, "utf8");
+    await writeFile(
+      childPath,
+      `import { appendFile } from "node:fs/promises";
+await appendFile(process.env.SEEMIRAI_M22_PILOT_EVENT_LOG, JSON.stringify({ type: "m22_pilot_heartbeat", observedAt: new Date().toISOString(), dryRun: true }) + "\\n", "utf8");
+setInterval(() => {}, 1000);
+`,
+      "utf8",
+    );
+
+    const { stdout } = await runScript(
+      [
+        "--json",
+        "--artifact-dir",
+        artifactDir,
+        "--config",
+        configPath,
+        "--duration-ms",
+        "1000",
+        "--termination-grace-ms",
+        "500",
+        "--pilot-command",
+        process.execPath,
+        "--",
+        childPath,
+      ],
+      createReadyEnv(),
+    );
+    const summary = JSON.parse(stdout) as M22PilotSummary;
+
+    expect(summary.status).toBe("passed");
+    expect(summary.metrics).toMatchObject({
+      dryRun: true,
+      liveOrderCapable: false,
+      explicitDryRunEventCount: 1,
+      explicitNonDryRunEventCount: 0,
+    });
   });
 
   it("summarizes budget loss and exposure from the wrapped command event log", async () => {
@@ -244,6 +338,11 @@ interface M22PilotSummary {
   };
   metrics: {
     heartbeatCount: number;
+    dryRun: boolean | null;
+    liveOrderCapable: boolean;
+    explicitDryRunEventCount: number;
+    explicitNonDryRunEventCount: number;
+    liveOrderCapableEventCount: number;
     crashCount: number;
     unhandledRejectionCount: number;
     riskGateBypassCount: number;

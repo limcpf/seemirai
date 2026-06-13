@@ -308,6 +308,60 @@ describe("M23 stability closeout script", () => {
     });
   });
 
+  it("fails when a segment does not provide explicit non-dry-run live-order-capable evidence", async () => {
+    const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-m23-stability-missing-live-capable-"));
+    const manifestPath = await writeCloseoutFixture(artifactDir, {
+      segmentMutator: (summary, index) => {
+        if (index !== 1) {
+          return summary;
+        }
+
+        const metrics = { ...(summary.metrics as Record<string, unknown>) };
+        delete metrics.dryRun;
+        delete metrics.liveOrderCapable;
+        return { ...summary, metrics };
+      },
+    });
+    const summary = await runScriptExpectingFailure(
+      ["--json", "--artifact-dir", artifactDir, "--manifest", manifestPath],
+      createReadyEnv(),
+    );
+
+    expect(summary.status).toBe("failed");
+    expect(getCheck(summary, "segmentLiveArmedGuards")).toMatchObject({
+      status: "fail",
+    });
+  });
+
+  it("fails when a segment declares dry-run evidence", async () => {
+    const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-m23-stability-dry-run-"));
+    const manifestPath = await writeCloseoutFixture(artifactDir, {
+      segmentMutator: (summary, index) => {
+        if (index !== 5) {
+          return summary;
+        }
+
+        return {
+          ...summary,
+          metrics: {
+            ...(summary.metrics as Record<string, unknown>),
+            dryRun: true,
+            liveOrderCapable: false,
+          },
+        };
+      },
+    });
+    const summary = await runScriptExpectingFailure(
+      ["--json", "--artifact-dir", artifactDir, "--manifest", manifestPath],
+      createReadyEnv(),
+    );
+
+    expect(summary.status).toBe("failed");
+    expect(getCheck(summary, "segmentLiveArmedGuards")).toMatchObject({
+      status: "fail",
+    });
+  });
+
   it("fails when open position notional guard evidence is missing", async () => {
     const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-m23-stability-open-exposure-"));
     const manifestPath = await writeCloseoutFixture(artifactDir, {
@@ -657,6 +711,8 @@ function createSegmentSummary(index: number): Record<string, unknown> {
       orderSubmittedCount: index === 0 ? 1 : 0,
       brokerSubmissionCount: index === 0 ? 1 : 0,
       dailyReportGeneratedCount: 1,
+      dryRun: false,
+      liveOrderCapable: true,
       dailyRealizedLossKrw: 0,
       openPositionNotionalKrw: 0,
       crashCount: 0,

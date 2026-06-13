@@ -426,6 +426,7 @@ function createSegmentLiveArmedGuardCheck(segmentFiles) {
       || !hasExpectedConfigSafety(summary)
       || !hasLiveAutonomousInput(summary)
       || !hasM23Mode(summary)
+      || !hasExplicitLiveOrderCapableEvidence(summary)
       || isExplicitDryRun(summary))
     .map(({ index, file, summary }) => ({
       segment: index + 1,
@@ -433,6 +434,7 @@ function createSegmentLiveArmedGuardCheck(segmentFiles) {
       input: readString(summary.input) ?? null,
       mode: readSegmentMode(summary) ?? null,
       dryRun: readBoolean(summary.dryRun) ?? readBoolean(readMetrics(summary).dryRun) ?? null,
+      liveOrderCapable: readBoolean(summary.liveOrderCapable) ?? readBoolean(readMetrics(summary).liveOrderCapable) ?? null,
       configSafety: readCheckStatus(summary, "configSafety"),
       evidenceEnv: readCheckStatus(summary, "evidenceEnv"),
       pilotProfileEnv: readCheckStatus(summary, "pilotProfileEnv"),
@@ -730,6 +732,14 @@ function isExplicitDryRun(summary) {
   return readBoolean(summary.dryRun) === true || readBoolean(readMetrics(summary).dryRun) === true;
 }
 
+function hasExplicitLiveOrderCapableEvidence(summary) {
+  const metrics = readMetrics(summary);
+  const explicitDryRun = readBoolean(summary.dryRun) ?? readBoolean(metrics.dryRun);
+  const liveOrderCapable = readBoolean(summary.liveOrderCapable) ?? readBoolean(metrics.liveOrderCapable);
+  // mode 이름만으로는 dry-run segment를 배제할 수 없으므로 segment summary가 non-dry-run/live-order-capable evidence를 직접 보존해야 한다.
+  return explicitDryRun === false && liveOrderCapable === true;
+}
+
 function readSegmentMode(summary) {
   const pilotProfileEvidence = isRecord(readCheck(summary, "pilotProfileEnv")?.evidence)
     ? readCheck(summary, "pilotProfileEnv").evidence
@@ -928,6 +938,8 @@ function createFixtureSegmentSummary(index, startedAt) {
       brokerSubmissionCount: index === 0 ? 1 : 0,
       manualReviewRequiredCount: 0,
       dailyReportGeneratedCount: 1,
+      dryRun: false,
+      liveOrderCapable: true,
       dailyRealizedLossKrw: 0,
       openPositionNotionalKrw: 0,
       crashCount: 0,
