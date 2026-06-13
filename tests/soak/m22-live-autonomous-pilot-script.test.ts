@@ -42,6 +42,10 @@ describe("M22 live autonomous pilot runner script", () => {
       duplicateOrderCount: 0,
       untrackedFillCount: 0,
     });
+    expect(getCheck(summary, "configSafety")).toMatchObject({
+      status: "ok",
+      evidence: { maxOpenPositionNotionalKrw: "30000" },
+    });
     expect(getCheck(summary, "closeoutZeroCounters").status).toBe("ok");
     expect(events).toContain("m22_pilot_heartbeat");
   });

@@ -34,12 +34,17 @@ const sensitivePatterns = [
   { label: "access_key field", pattern: /"(?:upbit_)?access_key"\s*:\s*"(?!<redacted>|redacted)[^"]{4,}"/i },
   { label: "secret_key field", pattern: /"(?:upbit_)?secret_key"\s*:\s*"(?!<redacted>|redacted)[^"]{4,}"/i },
   { label: "telegram token field", pattern: /"telegram_bot_token"\s*:\s*"(?!<redacted>|redacted)[^"]{4,}"/i },
+  { label: "jwt field", pattern: /"jwt"\s*:\s*"(?!<redacted>|redacted)[^"]{4,}"/i },
   { label: "authorization bearer", pattern: /authorization:\s*bearer\s+(?!<redacted>|redacted)[^\s"']+/i },
   { label: "authorization json field", pattern: /"authorization"\s*:\s*"(?!<redacted>|redacted)[^"]{4,}"/i },
   { label: "postgres credential url", pattern: /postgres(?:ql)?:\/\/[^:\s"']+:[^@\s"']+@/i },
   { label: "raw provider field", pattern: /raw[_-]?provider\s*[:=]/i },
+  { label: "raw provider json field", pattern: /"raw(?:_|-)?provider(?:payload)?"\s*:/i },
+  { label: "raw provider camel json field", pattern: /"rawProviderPayload"\s*:/i },
   { label: "raw order field", pattern: /raw[_-]?order\s*[:=]/i },
+  { label: "raw order json field", pattern: /"raw(?:_|-)?order(?:detail|payload)?"\s*:/i },
   { label: "raw update field", pattern: /raw[_-]?update\s*[:=]/i },
+  { label: "raw update json field", pattern: /"raw(?:_|-)?update"\s*:/i },
 ];
 
 try {
@@ -379,7 +384,7 @@ function createSegmentLiveArmedGuardCheck(segmentFiles) {
       || !hasOkCheck(summary, "readinessEnv")
       || !hasExpectedConfigSafety(summary)
       || !hasLiveAutonomousInput(summary)
-      || hasExplicitNonM23Mode(summary)
+      || !hasM23Mode(summary)
       || isExplicitDryRun(summary))
     .map(({ index, file, summary }) => ({
       segment: index + 1,
@@ -440,9 +445,10 @@ function createRecoveryDrillCheck(manifest, recoveryFile) {
   const missingOrFailedChecks = requiredRecoveryChecks
     .filter((checkName) => !hasOkCheck(summary, checkName))
     .map((checkName) => ({ checkName, status: readCheckStatus(summary, checkName) }));
-  if (summary.status === "passed" && missingOrFailedChecks.length === 0) {
+  if (summary.status === "passed" && summary.input === "recovery_artifacts" && missingOrFailedChecks.length === 0) {
     return okCheck("restart/recovery drill summary가 closeout 요구 check를 통과했다.", {
       recoveryDrillSummaryPath: recoveryFile.filePath,
+      input: summary.input,
       requiredChecks: requiredRecoveryChecks,
     });
   }
@@ -450,6 +456,7 @@ function createRecoveryDrillCheck(manifest, recoveryFile) {
   return failCheck("restart/recovery drill summary가 통과 상태가 아니거나 필수 check가 실패했다.", {
     recoveryDrillSummaryPath: recoveryFile.filePath,
     status: summary.status,
+    input: summary.input ?? null,
     missingOrFailedChecks,
   });
 }
@@ -612,9 +619,8 @@ function hasLiveAutonomousInput(summary) {
   return readString(summary.input) === "live_autonomous_command";
 }
 
-function hasExplicitNonM23Mode(summary) {
-  const mode = readSegmentMode(summary);
-  return mode !== undefined && mode !== expectedMode;
+function hasM23Mode(summary) {
+  return readSegmentMode(summary) === expectedMode;
 }
 
 function isExplicitDryRun(summary) {
@@ -808,6 +814,7 @@ function createFixtureSegmentSummary(index) {
 function createFixtureRecoverySummary() {
   return {
     status: "passed",
+    input: "recovery_artifacts",
     drill: "restart_recovery",
     checks: Object.fromEntries(requiredRecoveryChecks.map((checkName) => [checkName, { status: "ok" }])),
   };

@@ -207,6 +207,30 @@ describe("M23 stability closeout script", () => {
     });
   });
 
+  it("fails when a segment does not provide explicit M23 mode evidence", async () => {
+    const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-m23-stability-missing-mode-"));
+    const manifestPath = await writeCloseoutFixture(artifactDir, {
+      segmentMutator: (summary, index) => {
+        if (index !== 2) {
+          return summary;
+        }
+
+        const clone = { ...summary };
+        delete clone.mode;
+        return clone;
+      },
+    });
+    const summary = await runScriptExpectingFailure(
+      ["--json", "--artifact-dir", artifactDir, "--manifest", manifestPath],
+      createReadyEnv(),
+    );
+
+    expect(summary.status).toBe("failed");
+    expect(getCheck(summary, "segmentLiveArmedGuards")).toMatchObject({
+      status: "fail",
+    });
+  });
+
   it("fails when open position notional guard evidence is missing", async () => {
     const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-m23-stability-open-exposure-"));
     const manifestPath = await writeCloseoutFixture(artifactDir, {
@@ -269,6 +293,8 @@ describe("M23 stability closeout script", () => {
     const manifestPath = await writeCloseoutFixture(artifactDir, {
       manifestPatch: {
         authorization: "Bearer raw-token-value",
+        jwt: "raw-jwt-value",
+        rawProviderPayload: { status: "raw" },
         upbit_access_key: "raw-access-key-value",
         upbit_secret_key: "raw-secret-key-value",
       },
@@ -280,6 +306,22 @@ describe("M23 stability closeout script", () => {
 
     expect(summary.status).toBe("failed");
     expect(getCheck(summary, "secretScan")).toMatchObject({
+      status: "fail",
+    });
+  });
+
+  it("fails when recovery drill summary is fixture input instead of guarded artifact input", async () => {
+    const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-m23-stability-recovery-fixture-"));
+    const manifestPath = await writeCloseoutFixture(artifactDir, {
+      recoveryMutator: (summary) => ({ ...summary, input: "fixture_smoke" }),
+    });
+    const summary = await runScriptExpectingFailure(
+      ["--json", "--artifact-dir", artifactDir, "--manifest", manifestPath],
+      createReadyEnv(),
+    );
+
+    expect(summary.status).toBe("failed");
+    expect(getCheck(summary, "recoveryDrill")).toMatchObject({
       status: "fail",
     });
   });
@@ -320,6 +362,7 @@ async function writeCloseoutFixture(
     manifestPatch?: Partial<Record<string, unknown>>;
     segmentMutator?: (summary: Record<string, unknown>, index: number) => Record<string, unknown>;
     segmentManifestMutator?: (segment: Record<string, unknown>, index: number) => Record<string, unknown>;
+    recoveryMutator?: (summary: Record<string, unknown>) => Record<string, unknown>;
     duplicateSummaryPath?: boolean;
     normalizedDuplicateSummaryPath?: boolean;
     dayMutator?: (day: string, index: number) => string;
@@ -357,7 +400,8 @@ async function writeCloseoutFixture(
     segments.push(options.segmentManifestMutator?.(segment, index) ?? segment);
   }
 
-  await writeFile(recoveryPath, `${JSON.stringify(createRecoverySummary(), null, 2)}\n`, "utf8");
+  const recoverySummary = options.recoveryMutator?.(createRecoverySummary()) ?? createRecoverySummary();
+  await writeFile(recoveryPath, `${JSON.stringify(recoverySummary, null, 2)}\n`, "utf8");
   const manifest = {
     issue: 188,
     mode: "LIVE_AUTONOMOUS_SMALL_BUDGET",
@@ -444,6 +488,7 @@ function createRecoverySummary(): Record<string, unknown> {
   ];
   return {
     status: "passed",
+    input: "recovery_artifacts",
     checks: Object.fromEntries(required.map((checkName) => [checkName, { status: "ok" }])),
   };
 }

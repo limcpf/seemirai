@@ -570,6 +570,7 @@ function createConfigSafetyCheck(config) {
     allowedMarkets: ["KRW-BTC"],
     maxOrderKrw: liveAutonomous.max_order_krw,
     dailyAutonomousNotionalLimitKrw: liveAutonomous.daily_autonomous_notional_limit_krw,
+    maxOpenPositionNotionalKrw: liveAutonomous.max_open_position_notional_krw,
     identifierMaxLength: liveAutonomous.identifier_max_length,
   });
 }
@@ -811,6 +812,7 @@ function createFixtureConfigEvidence() {
     allowedMarkets: ["KRW-BTC"],
     maxOrderKrw: "10000",
     dailyAutonomousNotionalLimitKrw: "30000",
+    maxOpenPositionNotionalKrw: "30000",
     identifierMaxLength: 32,
   };
 }
