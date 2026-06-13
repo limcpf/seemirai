@@ -740,6 +740,9 @@ Acceptance Criteria:
 - 통합 테스트: restart 후 기존 order attempt/reconcile/status를 읽어 duplicate live order 없이 복구되는지 확인한다.
 - smoke/drill: `scripts/run-m23-recovery-drill.mjs --fixture-smoke`로 validator contract를 검증하고, 운영 closeout 전에는 restart 전후
   redacted event log와 DB backup/restore 결과 또는 blocker evidence로 같은 validator를 실행한다.
+- smoke/drill: `scripts/run-m23-stability-closeout.mjs --fixture-smoke`로 7일 closeout manifest contract를 검증하고, 운영 closeout 전에는
+  7개 이상 24시간 segment summary, recovery drill summary, DB backup/restore 결과 또는 blocker, source scan evidence를 같은
+  validator로 집계한다.
 - smoke/drill: DB backup/restore를 disposable restore DB에서 실행하거나, 외부 DB 조건 미충족 시 blocker evidence를 남긴다.
 - source scan: live order API, market/best order, 출금/입금, raw secret 노출 후보가 M23 guard 밖에서 열리지 않았는지 확인한다.
 - gated 운영 검증: 저장소 밖 env/key/config/evidence가 준비된 환경에서 24시간 post-cleanup preflight와 7일 live-armed stability artifact를 생성한다.

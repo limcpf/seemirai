@@ -29,6 +29,10 @@ Issue #188은 이 계획 중 M23 24/7 live small-budget 운영 안정화와 실�
 - Issue #188 Sub PR 04에서 systemd service 템플릿과 `scripts/run-m23-recovery-drill.mjs` artifact validator를 추가해 restart 전후
   duplicate live order 방지, reconcile/status/daily report 복구, Upbit 장애/market warning/stale data fail-closed evidence,
   DB backup/restore smoke 결과 또는 blocker 기록을 closeout 전 검증할 수 있게 한다.
+- Issue #188 Sub PR 05에서 `scripts/run-m23-stability-closeout.mjs` manifest validator를 추가해 7개 이상 24시간 segment summary,
+  live-armed/key/budget/operator evidence, decision/daily report evidence, restart/recovery drill summary, source scan,
+  DB backup/restore 결과 또는 blocker를 한 번에 집계한다. 현재 저장소 밖에는 M23 7일 live-armed 연속 artifact가 없으므로 M23
+  PASS closeout은 아직 선언하지 않는다.
 
 ## 범위
 
@@ -68,6 +72,8 @@ Issue #188은 이 계획 중 M23 24/7 live small-budget 운영 안정화와 실�
    - 7일 연속 daily report, Telegram lifecycle/trade event 알림, P0/P1 alert retry evidence를 모은다.
    - crash, unhandled rejection, risk gate 우회 주문, reconcile mismatch, duplicate order, untracked fill, cleanup failure가 모두 0건이어야 한다.
    - 누적 realized loss와 미체결 노출 합계가 50,000 KRW에 도달하기 전에 운영을 중지한다.
+   - closeout manifest가 준비되면 `SEEMIRAI_RUN_M23_STABILITY_CLOSEOUT=1 node scripts/run-m23-stability-closeout.mjs --manifest <path> --json`으로
+     7일 segment와 recovery/source scan/backup evidence를 검증한다.
 
 5. M24 shadow 비교와 확대 승인
    - 알트 최대 3개 수동 편입 전 paper/live shadow 비교를 먼저 통과시킨다.
@@ -79,6 +85,7 @@ Issue #188은 이 계획 중 M23 24/7 live small-budget 운영 안정화와 실�
 
 ```sh
 corepack pnpm exec vitest run tests/soak/m22-live-autonomous-daemon-script.test.ts tests/soak/m22-live-autonomous-pilot-script.test.ts --reporter=verbose
+corepack pnpm exec vitest run tests/soak/m23-recovery-drill-script.test.ts tests/soak/m23-stability-closeout-script.test.ts --reporter=verbose
 corepack pnpm typecheck
 ./scripts/verify docs
 ./scripts/verify

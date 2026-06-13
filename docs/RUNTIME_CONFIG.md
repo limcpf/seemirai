@@ -703,6 +703,9 @@ M23 live-armed 운영 기준:
   `scripts/run-m23-recovery-drill.mjs`는 restart 전후 event log artifact만 읽어 duplicate live order 방지, reconcile/status/daily
   report 복구, Upbit 장애/market warning/stale data fail-closed evidence, DB backup/restore 결과 또는 blocker 기록을 검증한다.
   이 validator는 기본 CI/PR 검증에서 live API, Telegram provider, DB restore를 직접 호출하지 않는다.
+- `scripts/run-m23-stability-closeout.mjs`는 7일 closeout manifest와 저장소 밖 summary artifact만 읽어 7개 이상 24시간 segment,
+  daily report, live-armed guard/readiness, decision evidence, recovery drill, source scan, DB backup/restore 결과 또는 blocker를
+  집계한다. 이 validator도 기본 CI/PR 검증에서는 fixture smoke만 실행하며 live API, Telegram provider, DB restore를 직접 호출하지 않는다.
 - M23 이후 universe, strategy, budget 확대는 M24 범위다. M23 config나 runbook은 BTC 외 market 기본 활성화, 자동 budget 확대,
   market/best order 기본 허용을 열지 않는다.
 

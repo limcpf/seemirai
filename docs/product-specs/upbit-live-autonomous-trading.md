@@ -372,6 +372,7 @@ M19 Sub PR 03 범위:
 - Telegram 연결 성공 알림, live order capable 시작 알림, 정상 종료/operator stop/kill switch/manual review/crash/restart 알림
 - 주문 제출, 취소 요청, 취소 확인, 체결, 부분체결, risk/cost/reconcile 차단 이벤트 요약 알림
 - 7일 live-armed daily report와 "왜 주문이 없었는지" decision evidence
+- 7일 closeout manifest validator로 segment summary, recovery drill, source scan, DB backup/restore 결과 또는 blocker 집계
 - Docker Compose live profile 또는 systemd/process supervisor 재시작 정책
 - restart 후 reconcile/status/daily report/Telegram 상태 복구
 - `scripts/run-m23-recovery-drill.mjs`로 restart 전후 event log 기반 duplicate order 방지와 복구 evidence 검증

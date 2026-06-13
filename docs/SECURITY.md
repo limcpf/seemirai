@@ -243,6 +243,9 @@
 - M23 restart/recovery drill artifact에는 access key, secret key, JWT, Authorization header, Telegram token, raw provider payload,
   raw order detail, raw Telegram update를 남기지 않는다. validator fixture smoke는 live API, Telegram provider, DB restore를 직접
   호출하지 않는 검증 경계로만 사용한다.
+- M23 7일 stability closeout manifest에는 redacted evidence id와 artifact 경로만 남긴다. `scripts/run-m23-stability-closeout.mjs`는
+  manifest와 summary artifact의 raw secret 후보를 검사하며, fixture smoke와 manifest 검증 모두 live API, Telegram provider,
+  DB restore를 직접 호출하지 않는다.
 - M23은 BTC 외 market 기본 활성화, 자동 budget 확대, market/best order 기본 허용, hard stop open position 자동 시장가 청산,
   Telegram public webhook endpoint, 출금/입출금 자동화로 확장하지 않는다. 해당 변경은 M24 또는 별도 보안 설계와 source scan이
   필요하다.
