@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { mkdtemp, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -80,6 +80,20 @@ describe("M23 stability closeout script", () => {
     });
   });
 
+  it("fails when seven manifest days reuse one summary through normalized path variants", async () => {
+    const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-m23-stability-normalized-summary-"));
+    const manifestPath = await writeCloseoutFixture(artifactDir, { normalizedDuplicateSummaryPath: true });
+    const summary = await runScriptExpectingFailure(
+      ["--json", "--artifact-dir", artifactDir, "--manifest", manifestPath],
+      createReadyEnv(),
+    );
+
+    expect(summary.status).toBe("failed");
+    expect(getCheck(summary, "segmentCompleteness")).toMatchObject({
+      status: "fail",
+    });
+  });
+
   it("fails when segment days are not consecutive", async () => {
     const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-m23-stability-nonconsecutive-"));
     const manifestPath = await writeCloseoutFixture(artifactDir, {
@@ -135,6 +149,22 @@ describe("M23 stability closeout script", () => {
     });
   });
 
+  it("fails when alert evidence is missing from a segment", async () => {
+    const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-m23-stability-alert-"));
+    const manifestPath = await writeCloseoutFixture(artifactDir, {
+      segmentManifestMutator: (segment, index) => index === 5 ? { ...segment, alertEvidenceIds: [] } : segment,
+    });
+    const summary = await runScriptExpectingFailure(
+      ["--json", "--artifact-dir", artifactDir, "--manifest", manifestPath],
+      createReadyEnv(),
+    );
+
+    expect(summary.status).toBe("failed");
+    expect(getCheck(summary, "decisionEvidence")).toMatchObject({
+      status: "fail",
+    });
+  });
+
   it("fails when a segment observed duration is shorter than 24 hours", async () => {
     const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-m23-stability-duration-"));
     const manifestPath = await writeCloseoutFixture(artifactDir, {
@@ -177,10 +207,71 @@ describe("M23 stability closeout script", () => {
     });
   });
 
+  it("fails when open position notional guard evidence is missing", async () => {
+    const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-m23-stability-open-exposure-"));
+    const manifestPath = await writeCloseoutFixture(artifactDir, {
+      segmentMutator: (summary, index) => {
+        if (index !== 3) {
+          return summary;
+        }
+
+        const checks = summary.checks as Record<string, Record<string, unknown>>;
+        const configSafety = checks.configSafety as Record<string, unknown>;
+        const evidence = configSafety.evidence as Record<string, unknown>;
+        return {
+          ...summary,
+          checks: {
+            ...checks,
+            configSafety: {
+              ...configSafety,
+              evidence: { ...evidence, maxOpenPositionNotionalKrw: "90000" },
+            },
+          },
+        };
+      },
+    });
+    const summary = await runScriptExpectingFailure(
+      ["--json", "--artifact-dir", artifactDir, "--manifest", manifestPath],
+      createReadyEnv(),
+    );
+
+    expect(summary.status).toBe("failed");
+    expect(getCheck(summary, "segmentLiveArmedGuards")).toMatchObject({
+      status: "fail",
+    });
+  });
+
+  it("fails when operational env evidence is missing from a segment", async () => {
+    const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-m23-stability-operational-env-"));
+    const manifestPath = await writeCloseoutFixture(artifactDir, {
+      segmentMutator: (summary, index) => {
+        if (index !== 6) {
+          return summary;
+        }
+
+        const checks = summary.checks as Record<string, unknown>;
+        return { ...summary, checks: { ...checks, operationalEnv: { status: "fail" } } };
+      },
+    });
+    const summary = await runScriptExpectingFailure(
+      ["--json", "--artifact-dir", artifactDir, "--manifest", manifestPath],
+      createReadyEnv(),
+    );
+
+    expect(summary.status).toBe("failed");
+    expect(getCheck(summary, "segmentLiveArmedGuards")).toMatchObject({
+      status: "fail",
+    });
+  });
+
   it("fails when the closeout manifest contains raw secret fields", async () => {
     const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-m23-stability-secret-"));
     const manifestPath = await writeCloseoutFixture(artifactDir, {
-      manifestPatch: { upbit_access_key: "raw-access-key-value", upbit_secret_key: "raw-secret-key-value" },
+      manifestPatch: {
+        authorization: "Bearer raw-token-value",
+        upbit_access_key: "raw-access-key-value",
+        upbit_secret_key: "raw-secret-key-value",
+      },
     });
     const summary = await runScriptExpectingFailure(
       ["--json", "--artifact-dir", artifactDir, "--manifest", manifestPath],
@@ -228,24 +319,42 @@ async function writeCloseoutFixture(
     sourceScan?: Partial<Record<string, unknown>>;
     manifestPatch?: Partial<Record<string, unknown>>;
     segmentMutator?: (summary: Record<string, unknown>, index: number) => Record<string, unknown>;
+    segmentManifestMutator?: (segment: Record<string, unknown>, index: number) => Record<string, unknown>;
     duplicateSummaryPath?: boolean;
+    normalizedDuplicateSummaryPath?: boolean;
     dayMutator?: (day: string, index: number) => string;
   } = {},
 ) {
   const segmentCount = options.segmentCount ?? 7;
   const recoveryPath = path.join(artifactDir, "recovery-summary.json");
+  await mkdir(path.join(artifactDir, "nested", "sub"), { recursive: true });
+  const normalizedDuplicatePaths = [
+    "segment-1-summary.json",
+    "./segment-1-summary.json",
+    "nested/../segment-1-summary.json",
+    "./nested/../segment-1-summary.json",
+    "nested/./../segment-1-summary.json",
+    "nested/sub/../../segment-1-summary.json",
+    "./nested/sub/../../segment-1-summary.json",
+  ];
   const segments: Record<string, unknown>[] = [];
   for (let index = 0; index < segmentCount; index += 1) {
     const summaryPath = path.join(artifactDir, `segment-${index + 1}-summary.json`);
     const segmentSummary = options.segmentMutator?.(createSegmentSummary(index), index) ?? createSegmentSummary(index);
     await writeFile(summaryPath, `${JSON.stringify(segmentSummary, null, 2)}\n`, "utf8");
     const defaultDay = `2026-06-${String(13 + index).padStart(2, "0")}`;
-    segments.push({
+    const segment = {
       day: options.dayMutator?.(defaultDay, index) ?? defaultDay,
-      summaryPath: options.duplicateSummaryPath ? "segment-1-summary.json" : path.basename(summaryPath),
+      summaryPath: options.normalizedDuplicateSummaryPath
+        ? (normalizedDuplicatePaths[index] ?? "segment-1-summary.json")
+        : options.duplicateSummaryPath
+          ? "segment-1-summary.json"
+          : path.basename(summaryPath),
       decisionEvidenceId: `decision-evidence-${index + 1}`,
       dailyReportEvidenceId: `daily-report-${index + 1}`,
-    });
+      alertEvidenceIds: [`alert-evidence-${index + 1}`],
+    };
+    segments.push(options.segmentManifestMutator?.(segment, index) ?? segment);
   }
 
   await writeFile(recoveryPath, `${JSON.stringify(createRecoverySummary(), null, 2)}\n`, "utf8");
@@ -311,10 +420,12 @@ function createSegmentSummary(index: number): Record<string, unknown> {
           allowedMarkets: ["KRW-BTC"],
           maxOrderKrw: "10000",
           dailyAutonomousNotionalLimitKrw: "30000",
+          maxOpenPositionNotionalKrw: "30000",
         },
       },
       evidenceEnv: { status: "ok" },
       pilotProfileEnv: { status: "ok" },
+      operationalEnv: { status: "ok" },
       readinessEnv: { status: "ok" },
     },
   };

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { randomUUID } from "node:crypto";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, realpath, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import process from "node:process";
@@ -35,6 +35,7 @@ const sensitivePatterns = [
   { label: "secret_key field", pattern: /"(?:upbit_)?secret_key"\s*:\s*"(?!<redacted>|redacted)[^"]{4,}"/i },
   { label: "telegram token field", pattern: /"telegram_bot_token"\s*:\s*"(?!<redacted>|redacted)[^"]{4,}"/i },
   { label: "authorization bearer", pattern: /authorization:\s*bearer\s+(?!<redacted>|redacted)[^\s"']+/i },
+  { label: "authorization json field", pattern: /"authorization"\s*:\s*"(?!<redacted>|redacted)[^"]{4,}"/i },
   { label: "postgres credential url", pattern: /postgres(?:ql)?:\/\/[^:\s"']+:[^@\s"']+@/i },
   { label: "raw provider field", pattern: /raw[_-]?provider\s*[:=]/i },
   { label: "raw order field", pattern: /raw[_-]?order\s*[:=]/i },
@@ -180,7 +181,7 @@ async function validateManifest(manifest, manifestPath, manifestRawText) {
   const checks = {
     manifestShape: createManifestShapeCheck(manifest),
     liveArmedEvidence: createLiveArmedEvidenceCheck(manifest),
-    segmentCompleteness: createSegmentCompletenessCheck(segmentRecords),
+    segmentCompleteness: createSegmentCompletenessCheck(segmentRecords, segmentFiles),
     segmentSummariesParsed: createSegmentSummariesParsedCheck(segmentFiles, segmentRecords.length),
     segmentDuration: createSegmentDurationCheck(segmentFiles),
     segmentDailyReports: createSegmentDailyReportsCheck(segmentFiles),
@@ -233,13 +234,13 @@ function createLiveArmedEvidenceCheck(manifest) {
   return failCheck("M23 7일 closeout에는 live-armed/key/budget/operator evidence id가 모두 필요하다.", { missing });
 }
 
-function createSegmentCompletenessCheck(segments) {
+function createSegmentCompletenessCheck(segments, segmentFiles) {
   const days = segments
     .map((segment) => readString(segment.day))
     .filter((day) => day !== undefined);
   const uniqueDays = Array.from(new Set(days));
   const invalidDays = days.filter((day) => !/^\d{4}-\d{2}-\d{2}$/.test(day));
-  const summaryPaths = segments.map((segment) => readString(segment.summaryPath)).filter((value) => value !== undefined);
+  const summaryPaths = segmentFiles.map((file) => file.realFilePath ?? file.filePath).filter((value) => value !== "");
   const decisionEvidenceIds = segments.map((segment) => readString(segment.decisionEvidenceId)).filter((value) => value !== undefined);
   const dailyReportEvidenceIds = segments.map((segment) => readString(segment.dailyReportEvidenceId)).filter((value) => value !== undefined);
   const duplicateSummaryPaths = collectDuplicateValues(summaryPaths);
@@ -374,6 +375,7 @@ function createSegmentLiveArmedGuardCheck(segmentFiles) {
     .filter(({ summary }) => !hasOkCheck(summary, "configSafety")
       || !hasOkCheck(summary, "evidenceEnv")
       || !hasOkCheck(summary, "pilotProfileEnv")
+      || !hasOkCheck(summary, "operationalEnv")
       || !hasOkCheck(summary, "readinessEnv")
       || !hasExpectedConfigSafety(summary)
       || !hasLiveAutonomousInput(summary)
@@ -388,6 +390,7 @@ function createSegmentLiveArmedGuardCheck(segmentFiles) {
       configSafety: readCheckStatus(summary, "configSafety"),
       evidenceEnv: readCheckStatus(summary, "evidenceEnv"),
       pilotProfileEnv: readCheckStatus(summary, "pilotProfileEnv"),
+      operationalEnv: readCheckStatus(summary, "operationalEnv"),
       readinessEnv: readCheckStatus(summary, "readinessEnv"),
     }));
   if (invalid.length === 0 && segmentFiles.length >= requiredSegmentCount) {
@@ -400,20 +403,23 @@ function createSegmentLiveArmedGuardCheck(segmentFiles) {
 function createDecisionEvidenceCheck(segments) {
   const invalid = segments
     .map((segment, index) => ({ segment, index }))
-    .filter(({ segment }) => !hasText(segment.decisionEvidenceId) || !hasText(segment.dailyReportEvidenceId))
+    .filter(({ segment }) => !hasText(segment.decisionEvidenceId)
+      || !hasText(segment.dailyReportEvidenceId)
+      || !hasEvidenceArray(segment.alertEvidenceIds))
     .map(({ segment, index }) => ({
       segment: index + 1,
       day: readString(segment.day) ?? null,
       decisionEvidenceId: readString(segment.decisionEvidenceId) ?? null,
       dailyReportEvidenceId: readString(segment.dailyReportEvidenceId) ?? null,
+      alertEvidenceIds: Array.isArray(segment.alertEvidenceIds) ? segment.alertEvidenceIds : null,
     }));
   if (invalid.length === 0 && segments.length >= requiredSegmentCount) {
-    return okCheck("주문이 없었던 날의 이유를 확인할 decision/daily report evidence id가 segment마다 있다.", {
+    return okCheck("decision, daily report, alert evidence id가 segment마다 있다.", {
       segmentCount: segments.length,
     });
   }
 
-  return failCheck("segment마다 decision evidence와 daily report evidence id가 필요하다.", { invalid });
+  return failCheck("segment마다 decision, daily report, alert evidence id가 필요하다.", { invalid });
 }
 
 function createRecoveryDrillCheck(manifest, recoveryFile) {
@@ -594,7 +600,12 @@ function hasExpectedConfigSafety(summary) {
     && allowedMarkets.length === 1
     && allowedMarkets[0] === "KRW-BTC"
     && String(evidence.maxOrderKrw) === "10000"
-    && String(evidence.dailyAutonomousNotionalLimitKrw) === "30000";
+    && String(evidence.dailyAutonomousNotionalLimitKrw) === "30000"
+    && String(evidence.maxOpenPositionNotionalKrw) === "30000";
+}
+
+function hasEvidenceArray(value) {
+  return Array.isArray(value) && value.some((item) => hasText(item));
 }
 
 function hasLiveAutonomousInput(summary) {
@@ -674,10 +685,13 @@ function parseDayToUtcMs(day) {
 async function readJsonFile(filePath, baseDir) {
   const resolved = resolveInputPath(filePath, baseDir);
   let rawText = "";
+  let realFilePath;
   try {
+    realFilePath = await realpath(resolved);
     rawText = await readFile(resolved, "utf8");
     return {
       filePath: resolved,
+      realFilePath,
       rawText,
       value: JSON.parse(rawText),
       error: undefined,
@@ -685,6 +699,7 @@ async function readJsonFile(filePath, baseDir) {
   } catch (error) {
     return {
       filePath: resolved,
+      realFilePath,
       rawText,
       value: undefined,
       error: toErrorMessage(error),
@@ -782,6 +797,7 @@ function createFixtureSegmentSummary(index) {
       },
       evidenceEnv: { status: "ok" },
       pilotProfileEnv: { status: "ok" },
+      operationalEnv: { status: "ok" },
       readinessEnv: { status: "ok" },
       dailyReportGenerated: { status: "ok" },
       closeoutZeroCounters: { status: "ok" },
