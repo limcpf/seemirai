@@ -16,6 +16,9 @@ describe("M23 recovery drill script", () => {
     expect(unit).toContain("User=lim");
     expect(unit).toContain("EnvironmentFile=/home/lim/vaults/99_운영/seemirai-m22-live-autonomous/m22.env");
     expect(unit).toContain("ExecStart=/home/lim/vaults/99_운영/seemirai-m22-live-autonomous/run-24h-pilot.sh");
+    expect(unit).toContain("EnvironmentFile=/home/lim/vaults/99_운영/seemirai-m22-live-autonomous/m23-segment.env");
+    expect(unit).toContain("--candidate-file ${SEEMIRAI_M23_SEGMENT_CANDIDATE_FILE}");
+    expect(unit).toContain("--candidate-start end");
     expect(unit).toContain("Restart=on-failure");
     expect(unit).not.toContain("%h/");
     expect(unit).not.toContain("Restart=always");
@@ -50,7 +53,7 @@ describe("M23 recovery drill script", () => {
       orderSubmissionCount: 1,
       duplicateOrderCount: 0,
       reconcileMismatchCount: 0,
-      failClosedDrillCount: 3,
+      failClosedDrillCount: 4,
       dailyReportGeneratedCount: 1,
     });
     expect(getCheck(summary, "restartEvidence").status).toBe("ok");
@@ -196,6 +199,36 @@ describe("M23 recovery drill script", () => {
 
     const summary = await runScriptExpectingFailure(validArtifactArgs(artifactDir, beforePath, afterPath));
 
+    expect(getCheck(summary, "secretScan")).toMatchObject({
+      status: "fail",
+    });
+  });
+
+  it("fails secret scan and redacts backup evidence when CLI evidence contains credentials", async () => {
+    const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-m23-recovery-secret-evidence-"));
+    const beforePath = path.join(artifactDir, "before.jsonl");
+    const afterPath = path.join(artifactDir, "after.jsonl");
+    await writeEventLog(beforePath, validBeforeRestartEvents("restart-evidence-secret"));
+    await writeEventLog(afterPath, validAfterRestartEvents("restart-evidence-secret"));
+
+    const summary = await runScriptExpectingFailure([
+      "--json",
+      "--artifact-dir",
+      artifactDir,
+      "--before-event-log",
+      beforePath,
+      "--after-event-log",
+      afterPath,
+      "--backup-restore-status",
+      "passed",
+      "--backup-restore-evidence",
+      "postgres://operator:password@localhost:5432/seemirai_restore",
+    ]);
+
+    expect(getCheck(summary, "backupRestore")).toMatchObject({
+      status: "ok",
+      evidence: { evidence: "[REDACTED_BY_M23_SECRET_SCAN]" },
+    });
     expect(getCheck(summary, "secretScan")).toMatchObject({
       status: "fail",
     });
@@ -417,12 +450,13 @@ describe("M23 recovery drill script", () => {
       { eventType: "duplicate_order", observedAt: "2026-06-13T00:00:11.000Z" },
       { type: "live_ops_event", observedAt: "2026-06-13T00:00:12.000Z", riskGateBypass: true },
       { type: "live_ops_event", observedAt: "2026-06-13T00:00:13.000Z", untrackedFill: true },
+      { type: "live_ops_event", observedAt: "2026-06-13T00:00:14.000Z", crash: true },
     ]);
 
     const summary = await runScriptExpectingFailure(validArtifactArgs(artifactDir, beforePath, afterPath));
 
     expect(summary.metrics).toMatchObject({
-      crashCount: 1,
+      crashCount: 2,
       duplicateOrderCount: 1,
       riskGateBypassCount: 1,
       untrackedFillCount: 1,
@@ -507,6 +541,7 @@ function validAfterRestartEvents(restartId: string): Record<string, unknown>[] {
     { type: "fail_closed_drill", scenario: "upbit_maintenance", result: "NEW_ORDERS_BLOCKED", alertEvidenceId: "upbit" },
     { type: "fail_closed_drill", scenario: "market_warning", result: "ENTRY_BLOCKED", alertEvidenceId: "market" },
     { type: "fail_closed_drill", scenario: "stale_data", result: "NEW_ORDERS_BLOCKED", alertEvidenceId: "stale" },
+    { type: "fail_closed_drill", scenario: "api_error", result: "MANUAL_REVIEW_REQUIRED", alertEvidenceId: "api-error" },
     { type: "daily_report_generated", observedAt: "2026-06-13T00:00:04.000Z" },
   ];
 }

@@ -90,7 +90,8 @@ system service에서는 `%h`가 운영 사용자 홈이 아니라 system manager
 2. 이전 segment candidate file의 마지막 크기와 SHA-256을 artifact에 기록하고, 다음 segment는 새 JSONL 파일로 rotate한다.
 3. 새 candidate file은 비어 있는 상태로 daemon을 먼저 시작한 뒤 producer를 재개한다. daemon 시작 전에 후보를 미리 넣어야 하는
    재현 작업만 `--candidate-start beginning`을 사용한다.
-4. M16 reconcile/status로 현재 open order, open exposure, realized loss를 확인하고 아래 env를 최신 safe summary 값으로 갱신한다.
+4. systemd service를 쓰면 `m23-segment.env`를 갱신해 `SEEMIRAI_M23_SEGMENT_CANDIDATE_FILE`이 이번 segment 전용 JSONL을 가리키게 한다.
+5. M16 reconcile/status로 현재 open order, open exposure, realized loss를 확인하고 아래 env를 최신 safe summary 값으로 갱신한다.
    값을 확인할 수 없으면 segment를 시작하지 않고 manual review로 전환한다.
 
 ```text
@@ -100,7 +101,7 @@ SEEMIRAI_M22_DAILY_REALIZED_LOSS_KRW=<latest-safe-daily-realized-loss>
 SEEMIRAI_M22_WEEKLY_REALIZED_LOSS_KRW=<latest-safe-weekly-realized-loss>
 ```
 
-5. 누적 realized loss와 미체결 노출 합계가 50,000 KRW에 접근하면 다음 segment를 시작하지 않고 operator stop 또는 kill switch로
+6. 누적 realized loss와 미체결 노출 합계가 50,000 KRW에 접근하면 다음 segment를 시작하지 않고 operator stop 또는 kill switch로
    전환한다.
 
 ```sh

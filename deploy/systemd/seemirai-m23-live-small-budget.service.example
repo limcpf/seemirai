@@ -12,9 +12,11 @@ UMask=0077
 WorkingDirectory=/home/lim/code/seemirai
 EnvironmentFile=/home/lim/vaults/99_운영/seemirai-m22-live-autonomous/m22.env
 EnvironmentFile=/home/lim/vaults/99_운영/seemirai-m22-live-autonomous/m22.keys.env
+EnvironmentFile=/home/lim/vaults/99_운영/seemirai-m22-live-autonomous/m23-segment.env
 Environment=SEEMIRAI_RUN_M22_AUTONOMOUS_PILOT=1
 Environment=SEEMIRAI_RUN_M22_AUTONOMOUS_DAEMON=1
-ExecStart=/home/lim/vaults/99_운영/seemirai-m22-live-autonomous/run-24h-pilot.sh
+# segment별 candidate 파일을 운영 handoff에서 주입해 7일 closeout이 같은 JSONL을 재사용하지 않게 한다.
+ExecStart=/home/lim/vaults/99_운영/seemirai-m22-live-autonomous/run-24h-pilot.sh node /home/lim/code/seemirai/scripts/run-m22-live-autonomous-daemon.mjs --config /home/lim/vaults/99_운영/seemirai-m22-live-autonomous/m22-live-autonomous.config.json --candidate-file ${SEEMIRAI_M23_SEGMENT_CANDIDATE_FILE} --candidate-start end
 KillSignal=SIGTERM
 TimeoutStopSec=30
 # 정상 24시간 완료는 candidate/env handoff 뒤 다음 segment를 시작해야 하므로 실패 종료만 즉시 복구한다.

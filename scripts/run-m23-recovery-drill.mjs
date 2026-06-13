@@ -7,8 +7,9 @@ import process from "node:process";
 
 const defaultArtifactDir = path.join(os.homedir(), "vaults", "99_운영", "seemirai-m23-recovery-drill");
 const runGuardEnv = "SEEMIRAI_RUN_M23_RECOVERY_DRILL";
-const requiredFailClosedScenarios = ["upbit_maintenance", "market_warning", "stale_data"];
+const requiredFailClosedScenarios = ["upbit_maintenance", "market_warning", "stale_data", "api_error"];
 const allowedFailClosedResults = new Set(["ENTRY_BLOCKED", "NEW_ORDERS_BLOCKED", "MANUAL_REVIEW_REQUIRED"]);
+const sensitiveEvidenceReplacement = "[REDACTED_BY_M23_SECRET_SCAN]";
 const sensitivePatterns = [
   /access[_-]?key/i,
   /secret[_-]?key/i,
@@ -173,7 +174,7 @@ function createRecoveryChecks(input) {
     failClosedDrills: createFailClosedDrillCheck(input.afterLog.events),
     backupRestore: createBackupRestoreCheck(input.backupRestoreStatus, input.backupRestoreEvidence),
     closeoutZeroCounters: createCloseoutZeroCounterCheck(input.metrics),
-    secretScan: createSecretScanCheck(input.beforeLog.rawText, input.afterLog.rawText),
+    secretScan: createSecretScanCheck(input.beforeLog.rawText, input.afterLog.rawText, input.backupRestoreEvidence),
   };
 }
 
@@ -354,35 +355,36 @@ function createFailClosedDrillCheck(afterEvents) {
   const missing = requiredFailClosedScenarios.filter((scenario) => !passedScenarios.has(scenario));
 
   if (missing.length > 0) {
-    return failCheck("Upbit 장애/market warning/stale data fail-closed drill evidence가 부족하다.", {
+    return failCheck("Upbit 장애/market warning/stale data/API 오류 fail-closed drill evidence가 부족하다.", {
       missing,
       required: requiredFailClosedScenarios,
     });
   }
 
-  return okCheck("Upbit 장애/market warning/stale data가 신규 entry 차단과 alert evidence로 수렴했다.", {
+  return okCheck("Upbit 장애/market warning/stale data/API 오류가 신규 entry 차단과 alert evidence로 수렴했다.", {
     scenarios: Array.from(passedScenarios),
   });
 }
 
 function createBackupRestoreCheck(status, evidence) {
+  const safeEvidence = redactSensitiveEvidence(evidence);
   if (status === "passed" && hasText(evidence)) {
     return okCheck("DB backup/restore smoke가 disposable restore DB에서 통과했다.", {
       status,
-      evidence,
+      evidence: safeEvidence,
     });
   }
 
   if (status === "blocked" && hasText(evidence)) {
     return okCheck("DB backup/restore smoke 실행 불가 blocker와 재시도 evidence를 기록했다.", {
       status,
-      evidence,
+      evidence: safeEvidence,
     });
   }
 
   return failCheck("DB backup/restore smoke 결과 또는 blocker evidence가 필요하다.", {
     status: status ?? null,
-    evidence: evidence ?? null,
+    evidence: safeEvidence ?? null,
     acceptedStatus: ["passed", "blocked"],
   });
 }
@@ -410,8 +412,8 @@ function createCloseoutZeroCounterCheck(metrics) {
   });
 }
 
-function createSecretScanCheck(beforeRaw, afterRaw) {
-  const rawText = `${beforeRaw}\n${afterRaw}`;
+function createSecretScanCheck(beforeRaw, afterRaw, operatorEvidence) {
+  const rawText = `${beforeRaw}\n${afterRaw}\n${operatorEvidence ?? ""}`;
   const matchedPatterns = sensitivePatterns
     .filter((pattern) => pattern.test(rawText))
     .map((pattern) => pattern.source);
@@ -437,7 +439,7 @@ function createMetrics(beforeLog, afterLog) {
     statusSummaryCount: afterLog.events.filter((event) => event.type === "live_ops_status_summary").length,
     dailyReportGeneratedCount: afterLog.events.filter((event) => event.type === "daily_report_generated").length,
     failClosedDrillCount: afterLog.events.filter((event) => event.type === "fail_closed_drill").length,
-    crashCount: events.filter((event) => hasEventType(event, ["runtime_crash", "crash"])).length,
+    crashCount: events.filter((event) => hasEventType(event, ["runtime_crash", "crash"]) || event.crash === true).length,
     unhandledRejectionCount: events.filter((event) => hasEventType(event, ["unhandled_rejection"]) || event.unhandledRejection === true).length,
     riskGateBypassCount: events.filter((event) => hasEventType(event, ["risk_gate_bypass"]) || event.riskGateBypass === true).length,
     reconcileMismatchCount: events.filter((event) => hasEventType(event, ["live_reconcile_mismatch", "reconcile_mismatch"])).length
@@ -510,6 +512,16 @@ function collectDuplicateValues(values) {
 function hasEventType(event, acceptedTypes) {
   const eventType = readString(event.type) ?? readString(event.eventType);
   return eventType !== undefined && acceptedTypes.includes(eventType);
+}
+
+function redactSensitiveEvidence(evidence) {
+  if (!hasText(evidence)) {
+    return evidence;
+  }
+
+  return sensitivePatterns.some((pattern) => pattern.test(evidence))
+    ? sensitiveEvidenceReplacement
+    : evidence;
 }
 
 async function readEventLog(filePath) {
@@ -662,6 +674,13 @@ async function writeFixtureEventLogs(artifacts, startedAt) {
       type: "daily_report_generated",
       observedAt: addSeconds(startedAt, 14).toISOString(),
       reportDate: toKstDate(addSeconds(startedAt, 14)),
+    },
+    {
+      type: "fail_closed_drill",
+      observedAt: addSeconds(startedAt, 15).toISOString(),
+      scenario: "api_error",
+      result: "MANUAL_REVIEW_REQUIRED",
+      alertEvidenceId: "m23-drill-api-error",
     },
   ];
 
