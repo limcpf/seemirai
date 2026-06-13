@@ -192,7 +192,7 @@ describe("M23 stability closeout script", () => {
     });
   });
 
-  it("fails when a segment daily report date does not match the manifest day", async () => {
+  it("fails when a segment daily report date does not match the segment completion day", async () => {
     const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-m23-stability-stale-report-date-"));
     const manifestPath = await writeCloseoutFixture(artifactDir, {
       segmentMutator: (summary, index) => index === 5
@@ -262,6 +262,27 @@ describe("M23 stability closeout script", () => {
     expect(summary.status).toBe("failed");
     expect(getCheck(summary, "decisionEvidence")).toMatchObject({
       status: "fail",
+    });
+  });
+
+  it("fails when alert evidence IDs are reused across segments", async () => {
+    const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-m23-stability-alert-duplicate-"));
+    const manifestPath = await writeCloseoutFixture(artifactDir, {
+      segmentManifestMutator: (segment, index) => index === 6
+        ? { ...segment, alertEvidenceIds: ["alert-evidence-1"] }
+        : segment,
+    });
+    const summary = await runScriptExpectingFailure(
+      ["--json", "--artifact-dir", artifactDir, "--manifest", manifestPath],
+      createReadyEnv(),
+    );
+
+    expect(summary.status).toBe("failed");
+    expect(getCheck(summary, "segmentCompleteness")).toMatchObject({
+      status: "fail",
+      evidence: {
+        duplicateAlertEvidenceIds: ["alert-evidence-1"],
+      },
     });
   });
 
@@ -639,6 +660,7 @@ describe("M23 stability closeout script", () => {
         envDump: [
           "SEEMIRAI_UPBIT_ACCESS_KEY=raw-access-key-value",
           "SEEMIRAI_UPBIT_SECRET_KEY=raw-secret-key-value",
+          "TELEGRAM_BOT_TOKEN=raw-telegram-token-value",
         ].join("\n"),
         telegram: { botToken: "raw-telegram-token-value" },
         botToken: "raw-telegram-token-value",
@@ -668,6 +690,7 @@ describe("M23 stability closeout script", () => {
         envDump: [
           "SEEMIRAI_UPBIT_ACCESS_KEY=[REDACTED]",
           "SEEMIRAI_UPBIT_SECRET_KEY=[REDACTED]",
+          "TELEGRAM_BOT_TOKEN=[REDACTED]",
         ].join("\n"),
         botToken: "[REDACTED]",
       },
@@ -829,13 +852,14 @@ async function writeCloseoutFixture(
 function createSegmentSummary(index: number): Record<string, unknown> {
   const startedAt = new Date(Date.UTC(2026, 5, 13 + index, 0, 0, 0));
   const finishedAt = new Date(startedAt.getTime() + oneDayMs + 10);
+  const dailyReportDate = new Date(finishedAt.getTime() + (9 * 60 * 60 * 1000)).toISOString().slice(0, 10);
   return {
     status: "passed",
     input: "live_autonomous_command",
     mode: "LIVE_AUTONOMOUS_SMALL_BUDGET",
     startedAt: startedAt.toISOString(),
     finishedAt: finishedAt.toISOString(),
-    dailyReportDate: startedAt.toISOString().slice(0, 10),
+    dailyReportDate,
     metrics: {
       heartbeatCount: 1440 + index,
       orderSubmittedCount: index === 0 ? 1 : 0,

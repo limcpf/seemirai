@@ -43,7 +43,7 @@ const sensitivePatterns = [
   { label: "secret key env assignment", pattern: /\b(?:SEEMIRAI_)?(?:UPBIT_)?SECRET_KEY\s*=\s*(?!<redacted>|redacted|\[redacted\])\S{4,}/i },
   { label: "telegram token field", pattern: /"telegram_bot_token"\s*:\s*"(?!<redacted>|redacted|\[redacted\])[^"]{4,}"/i },
   { label: "telegram botToken field", pattern: /"(?:telegram)?botToken"\s*:\s*"(?!<redacted>|redacted|\[redacted\])[^"]{4,}"/i },
-  { label: "telegram token env assignment", pattern: /\bSEEMIRAI_TELEGRAM_BOT_TOKEN\s*=\s*(?!<redacted>|redacted|\[redacted\])\S{4,}/i },
+  { label: "telegram token env assignment", pattern: /\b(?:SEEMIRAI_)?TELEGRAM_BOT_TOKEN\s*=\s*(?!<redacted>|redacted|\[redacted\])\S{4,}/i },
   { label: "jwt field", pattern: /"jwt"\s*:\s*"(?!<redacted>|redacted|\[redacted\])[^"]{4,}"/i },
   { label: "authorization bearer", pattern: /authorization:\s*bearer\s+(?!<redacted>|redacted|\[redacted\])[^\s"']+/i },
   { label: "authorization json field", pattern: /"authorization"\s*:\s*"(?!bearer\s+(?:<redacted>|redacted|\[redacted\])"|(?:<redacted>|redacted|\[redacted\])")[^"]{4,}"/i },
@@ -319,9 +319,13 @@ function createSegmentCompletenessCheck(segments, segmentFiles) {
   const summaryPaths = segmentFiles.map((file) => file.realFilePath ?? file.filePath).filter((value) => value !== "");
   const decisionEvidenceIds = segments.map((segment) => readString(segment.decisionEvidenceId)).filter((value) => value !== undefined);
   const dailyReportEvidenceIds = segments.map((segment) => readString(segment.dailyReportEvidenceId)).filter((value) => value !== undefined);
+  const alertEvidenceIds = segments.flatMap((segment) => Array.isArray(segment.alertEvidenceIds)
+    ? segment.alertEvidenceIds.map((value) => readString(value)).filter((value) => value !== undefined)
+    : []);
   const duplicateSummaryPaths = collectDuplicateValues(summaryPaths);
   const duplicateDecisionEvidenceIds = collectDuplicateValues(decisionEvidenceIds);
   const duplicateDailyReportEvidenceIds = collectDuplicateValues(dailyReportEvidenceIds);
+  const duplicateAlertEvidenceIds = collectDuplicateValues(alertEvidenceIds);
   const consecutiveDays = areConsecutiveDays(uniqueDays);
   const dayExecutionMismatches = collectSegmentDayExecutionMismatches(segments, segmentFiles);
   if (
@@ -331,6 +335,7 @@ function createSegmentCompletenessCheck(segments, segmentFiles) {
     && duplicateSummaryPaths.length === 0
     && duplicateDecisionEvidenceIds.length === 0
     && duplicateDailyReportEvidenceIds.length === 0
+    && duplicateAlertEvidenceIds.length === 0
     && dayExecutionMismatches.length === 0
     && consecutiveDays
   ) {
@@ -348,6 +353,7 @@ function createSegmentCompletenessCheck(segments, segmentFiles) {
     duplicateSummaryPaths,
     duplicateDecisionEvidenceIds,
     duplicateDailyReportEvidenceIds,
+    duplicateAlertEvidenceIds,
     dayExecutionMismatches,
     consecutiveDays,
     requiredSegmentCount,
@@ -858,7 +864,12 @@ function collectSegmentDayExecutionMismatches(segments, segmentFiles) {
       }
 
       const evidence = readSegmentDayEvidence(file.value);
-      return !evidence.executionDays.includes(day) || !evidence.dailyReportDays.includes(day);
+      // 24시간 segment의 daily report는 종료 시점 KST 기준일로 생성되므로 시작일 manifest와 같은 날짜를 강제하지 않는다.
+      const hasExecutionDay = evidence.executionDays.includes(day);
+      const hasDailyReportDate = evidence.dailyReportDays.length > 0;
+      const hasExpectedDailyReportDate = evidence.dailyReportDays
+        .some((dailyReportDay) => evidence.expectedDailyReportDays.includes(dailyReportDay));
+      return !hasExecutionDay || !hasDailyReportDate || !hasExpectedDailyReportDate;
     })
     .map(({ segment, index, file }) => ({
       segment: index + 1,
@@ -866,7 +877,7 @@ function collectSegmentDayExecutionMismatches(segments, segmentFiles) {
       filePath: file?.filePath ?? readString(segment.summaryPath) ?? null,
       dayEvidence: isRecord(file?.value)
         ? readSegmentDayEvidence(file.value)
-        : { executionDays: [], dailyReportDays: [] },
+        : { executionDays: [], dailyReportDays: [], expectedDailyReportDays: [] },
     }));
 }
 
@@ -884,7 +895,25 @@ function readSegmentDayEvidence(summary) {
       readIsoDay(metrics.reportDate),
       readIsoDay(metrics.dailyReportDate),
     ].filter((day) => day !== undefined))),
+    expectedDailyReportDays: Array.from(new Set([
+      readKstDay(summary.finishedAt),
+      readKstDay(pilotProcess.finishedAt),
+    ].filter((day) => day !== undefined))),
   };
+}
+
+function readKstDay(value) {
+  const text = readString(value);
+  if (text === undefined) {
+    return undefined;
+  }
+
+  const timestamp = Date.parse(text);
+  if (!Number.isFinite(timestamp)) {
+    return undefined;
+  }
+
+  return new Date(timestamp + (9 * 60 * 60 * 1000)).toISOString().slice(0, 10);
 }
 
 function readIsoDay(value) {
@@ -1004,13 +1033,14 @@ async function writeFixtureManifest(artifactDir, startedAt) {
 
 function createFixtureSegmentSummary(index, startedAt) {
   const finishedAt = new Date(startedAt.getTime() + oneDayMs + 32);
+  const dailyReportDate = readKstDay(finishedAt) ?? finishedAt.toISOString().slice(0, 10);
   return {
     status: "passed",
     input: "live_autonomous_command",
     mode: expectedMode,
     startedAt: startedAt.toISOString(),
     finishedAt: finishedAt.toISOString(),
-    dailyReportDate: startedAt.toISOString().slice(0, 10),
+    dailyReportDate,
     metrics: {
       heartbeatCount: 1440 + index,
       orderSubmittedCount: index === 0 ? 1 : 0,
