@@ -101,10 +101,13 @@ async function main() {
         evidenceEnv: skippedCheck("fixture smoke에서는 저장소 밖 evidence id를 요구하지 않는다."),
         readinessEnv: skippedCheck("fixture smoke에서는 외부 readiness provider를 조회하지 않는다."),
         pilotCommand: skippedCheck("fixture smoke에서는 live autonomous command를 실행하지 않는다."),
-        ...createEventChecks(eventLog, { requireDailyReport: options.requireDailyReport }),
+        ...createEventChecks(eventLog, {
+          requireDailyReport: options.requireDailyReport,
+          includeCarriedBudgetEnv: false,
+        }),
         runtimeExceptions: runtimeExceptionCheck(),
       },
-      metrics: createMetrics(eventLog, undefined),
+      metrics: createMetrics(eventLog, undefined, { includeCarriedBudgetEnv: false }),
     });
     await writeArtifacts({ summary, artifacts });
     printSummary(summary, options);
@@ -603,8 +606,10 @@ function createReadinessEnvCheck() {
   });
 }
 
-function createEventChecks(eventLog, options) {
-  const metrics = createMetrics(eventLog, undefined);
+function createEventChecks(eventLog, options = {}) {
+  const metrics = createMetrics(eventLog, undefined, {
+    includeCarriedBudgetEnv: options.includeCarriedBudgetEnv !== false,
+  });
   const checks = {
     eventLogParsed:
       eventLog.parseErrors.length === 0
@@ -666,9 +671,11 @@ function createCloseoutZeroCounterCheck(metrics) {
   });
 }
 
-function createMetrics(eventLog, pilotProcess) {
+function createMetrics(eventLog, pilotProcess, options = {}) {
   const counts = countPilotEvents(eventLog.events);
-  const budget = summarizeBudgetExposure(eventLog.events);
+  const budget = summarizeBudgetExposure(eventLog.events, {
+    includeCarriedBudgetEnv: options.includeCarriedBudgetEnv !== false,
+  });
   const liveMode = summarizeLiveOrderCapability(eventLog.events);
   const childCrashCount =
     pilotProcess !== undefined && !pilotProcess.ranFullDuration && pilotProcess.exitCode !== 0 ? 1 : 0;
@@ -685,6 +692,7 @@ function createMetrics(eventLog, pilotProcess) {
     explicitNonDryRunEventCount: liveMode.explicitNonDryRunEventCount,
     liveOrderCapableEventCount: liveMode.liveOrderCapableEventCount,
     dailyRealizedLossKrw: budget.dailyRealizedLossKrw,
+    dailyRealizedLossEvidenceCount: budget.dailyRealizedLossEvidenceCount,
     openPositionNotionalKrw: budget.maxOpenPositionNotionalKrw,
     latestOpenPositionNotionalKrw: budget.latestOpenPositionNotionalKrw,
     crashCount: runtimeCounters.uncaughtExceptions + counts.crash + childCrashCount,
@@ -712,6 +720,7 @@ function createEmptyMetrics() {
     explicitNonDryRunEventCount: 0,
     liveOrderCapableEventCount: 0,
     dailyRealizedLossKrw: 0,
+    dailyRealizedLossEvidenceCount: 0,
     openPositionNotionalKrw: 0,
     latestOpenPositionNotionalKrw: 0,
     crashCount: runtimeCounters.uncaughtExceptions,
@@ -795,15 +804,26 @@ function summarizeLiveOrderCapability(events) {
   };
 }
 
-function summarizeBudgetExposure(events) {
+function summarizeBudgetExposure(events, options = {}) {
   let dailyRealizedLossKrw = 0;
+  let dailyRealizedLossEvidenceCount = 0;
   let maxOpenPositionNotionalKrw = 0;
   let latestOpenPositionNotionalKrw = 0;
+
+  if (options.includeCarriedBudgetEnv !== false) {
+    const carriedDailyLoss = readNonNegativeEnvNumber("SEEMIRAI_M22_DAILY_REALIZED_LOSS_KRW");
+    if (carriedDailyLoss !== undefined) {
+      // M23 segment는 시작 시점 carry-forward loss를 closeout ceiling에 포함해야 하므로 env evidence를 summary에 보존한다.
+      dailyRealizedLossKrw = Math.max(dailyRealizedLossKrw, carriedDailyLoss);
+      dailyRealizedLossEvidenceCount += 1;
+    }
+  }
 
   for (const event of events) {
     const realizedLoss = readRealizedLossKrw(event);
     if (realizedLoss !== undefined) {
       dailyRealizedLossKrw = Math.max(dailyRealizedLossKrw, realizedLoss);
+      dailyRealizedLossEvidenceCount += 1;
     }
 
     const openPosition = readNonNegativeNumber(event.openPositionNotionalKrw);
@@ -813,7 +833,12 @@ function summarizeBudgetExposure(events) {
     }
   }
 
-  return { dailyRealizedLossKrw, maxOpenPositionNotionalKrw, latestOpenPositionNotionalKrw };
+  return {
+    dailyRealizedLossKrw,
+    dailyRealizedLossEvidenceCount,
+    maxOpenPositionNotionalKrw,
+    latestOpenPositionNotionalKrw,
+  };
 }
 
 function readRealizedLossKrw(event) {
@@ -831,6 +856,14 @@ function readRealizedLossKrw(event) {
 function readNonNegativeNumber(value) {
   const parsed = readFiniteNumber(value);
   return parsed !== undefined && parsed >= 0 ? parsed : undefined;
+}
+
+function readNonNegativeEnvNumber(name) {
+  if (!Object.prototype.hasOwnProperty.call(process.env, name)) {
+    return undefined;
+  }
+
+  return readNonNegativeNumber(process.env[name]);
 }
 
 function readBoolean(value) {

@@ -44,6 +44,7 @@ describe("M22 live autonomous pilot runner script", () => {
       duplicateOrderCount: 0,
       untrackedFillCount: 0,
       dailyRealizedLossKrw: 0,
+      dailyRealizedLossEvidenceCount: 0,
       openPositionNotionalKrw: 0,
     });
     expect(getCheck(summary, "configSafety")).toMatchObject({
@@ -245,6 +246,47 @@ setInterval(() => {}, 1000);
       latestOpenPositionNotionalKrw: 7000,
     });
   });
+
+  it("carries forward explicit segment realized loss env even when the child event log has no loss event", async () => {
+    const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-m22-pilot-carried-loss-"));
+    const configPath = path.join(artifactDir, "m22-config.json");
+    const childPath = path.join(artifactDir, "pilot-carried-loss-child.mjs");
+    await writeFile(configPath, `${JSON.stringify(createEnabledM22Config(), null, 2)}\n`, "utf8");
+    await writeFile(
+      childPath,
+      `import { appendFile } from "node:fs/promises";
+await appendFile(process.env.SEEMIRAI_M22_PILOT_EVENT_LOG, JSON.stringify({ type: "m22_pilot_heartbeat", observedAt: new Date().toISOString(), dryRun: false }) + "\\n", "utf8");
+setInterval(() => {}, 1000);
+`,
+      "utf8",
+    );
+
+    const { stdout } = await runScript(
+      [
+        "--json",
+        "--artifact-dir",
+        artifactDir,
+        "--config",
+        configPath,
+        "--duration-ms",
+        "1000",
+        "--termination-grace-ms",
+        "500",
+        "--pilot-command",
+        process.execPath,
+        "--",
+        childPath,
+      ],
+      { ...createReadyEnv(), SEEMIRAI_M22_DAILY_REALIZED_LOSS_KRW: "40000" },
+    );
+    const summary = JSON.parse(stdout) as M22PilotSummary;
+
+    expect(summary.status).toBe("passed");
+    expect(summary.metrics).toMatchObject({
+      dailyRealizedLossKrw: 40000,
+      dailyRealizedLossEvidenceCount: 1,
+    });
+  });
 });
 
 async function runScript(args: readonly string[], env: Record<string, string> = {}) {
@@ -285,6 +327,7 @@ function createReadyEnv(): Record<string, string> {
     SEEMIRAI_M22_PNL_STATUS_READY: "1",
     SEEMIRAI_M22_DECISION_LEDGER_READY: "1",
     SEEMIRAI_M22_EXIT_ENGINE_READY: "1",
+    SEEMIRAI_M22_DAILY_REALIZED_LOSS_KRW: "0",
   };
 }
 
@@ -350,6 +393,7 @@ interface M22PilotSummary {
     duplicateOrderCount: number;
     untrackedFillCount: number;
     dailyRealizedLossKrw: number;
+    dailyRealizedLossEvidenceCount: number;
     openPositionNotionalKrw: number;
     latestOpenPositionNotionalKrw?: number;
     pilotProcess: null | {

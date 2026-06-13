@@ -509,6 +509,7 @@ function createSegmentBudgetCeilingCheck(segmentFiles) {
     .map(({ index, file, summary }) => {
       const metrics = readMetrics(summary);
       const realizedLossKrw = readFiniteNumber(metrics.dailyRealizedLossKrw);
+      const realizedLossEvidenceCount = readFiniteNumber(metrics.dailyRealizedLossEvidenceCount);
       const openPositionNotionalKrw = readFiniteNumber(metrics.openPositionNotionalKrw);
       const combinedExposureKrw = realizedLossKrw === undefined || openPositionNotionalKrw === undefined
         ? undefined
@@ -517,12 +518,15 @@ function createSegmentBudgetCeilingCheck(segmentFiles) {
         segment: index + 1,
         filePath: file.filePath,
         realizedLossKrw,
+        realizedLossEvidenceCount,
         openPositionNotionalKrw,
         combinedExposureKrw,
       };
     });
   const invalid = entries
     .filter((entry) => entry.realizedLossKrw === undefined
+      || entry.realizedLossEvidenceCount === undefined
+      || entry.realizedLossEvidenceCount < 1
       || entry.openPositionNotionalKrw === undefined
       || entry.realizedLossKrw < 0
       || entry.openPositionNotionalKrw < 0
@@ -1005,6 +1009,7 @@ function createFixtureSegmentSummary(index, startedAt) {
       dryRun: false,
       liveOrderCapable: true,
       dailyRealizedLossKrw: 0,
+      dailyRealizedLossEvidenceCount: 1,
       openPositionNotionalKrw: 0,
       crashCount: 0,
       unhandledRejectionCount: 0,

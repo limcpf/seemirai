@@ -531,6 +531,30 @@ describe("M23 stability closeout script", () => {
     });
   });
 
+  it("fails when a segment omits carried realized loss evidence", async () => {
+    const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-m23-stability-loss-evidence-"));
+    const manifestPath = await writeCloseoutFixture(artifactDir, {
+      segmentMutator: (summary, index) => {
+        if (index !== 4) {
+          return summary;
+        }
+
+        const metrics = { ...(summary.metrics as Record<string, unknown>) };
+        delete metrics.dailyRealizedLossEvidenceCount;
+        return { ...summary, metrics };
+      },
+    });
+    const summary = await runScriptExpectingFailure(
+      ["--json", "--artifact-dir", artifactDir, "--manifest", manifestPath],
+      createReadyEnv(),
+    );
+
+    expect(summary.status).toBe("failed");
+    expect(getCheck(summary, "segmentBudgetCeiling")).toMatchObject({
+      status: "fail",
+    });
+  });
+
   it("fails when seven day cumulative realized loss reaches the M23 ceiling", async () => {
     const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-m23-stability-cumulative-budget-"));
     const manifestPath = await writeCloseoutFixture(artifactDir, {
@@ -773,6 +797,7 @@ function createSegmentSummary(index: number): Record<string, unknown> {
       dryRun: false,
       liveOrderCapable: true,
       dailyRealizedLossKrw: 0,
+      dailyRealizedLossEvidenceCount: 1,
       openPositionNotionalKrw: 0,
       crashCount: 0,
       unhandledRejectionCount: 0,
