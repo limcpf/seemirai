@@ -10,11 +10,11 @@ User=lim
 Group=lim
 UMask=0077
 WorkingDirectory=/home/lim/code/seemirai
-EnvironmentFile=%h/vaults/99_운영/seemirai-m22-live-autonomous/m22.env
-EnvironmentFile=%h/vaults/99_운영/seemirai-m22-live-autonomous/m22.keys.env
+EnvironmentFile=/home/lim/vaults/99_운영/seemirai-m22-live-autonomous/m22.env
+EnvironmentFile=/home/lim/vaults/99_운영/seemirai-m22-live-autonomous/m22.keys.env
 Environment=SEEMIRAI_RUN_M22_AUTONOMOUS_PILOT=1
 Environment=SEEMIRAI_RUN_M22_AUTONOMOUS_DAEMON=1
-ExecStart=%h/vaults/99_운영/seemirai-m22-live-autonomous/run-24h-pilot.sh
+ExecStart=/home/lim/vaults/99_운영/seemirai-m22-live-autonomous/run-24h-pilot.sh
 KillSignal=SIGTERM
 TimeoutStopSec=30
 Restart=always
@@ -23,7 +23,7 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=read-only
-ReadWritePaths=%h/vaults/99_운영/seemirai-m22-live-autonomous
+ReadWritePaths=/home/lim/vaults/99_운영/seemirai-m22-live-autonomous
 ReadWritePaths=/tmp
 
 [Install]

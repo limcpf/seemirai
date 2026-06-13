@@ -78,8 +78,9 @@ SEEMIRAI_M22_EXIT_ENGINE_READY=1
 systemd로 운영할 경우 [`deploy/systemd/seemirai-m23-live-small-budget.service.example`](../../deploy/systemd/seemirai-m23-live-small-budget.service.example)을
 운영 호스트에 복사한 뒤 `User`, `Group`, `WorkingDirectory`, `EnvironmentFile`, `ReadWritePaths`를 실제 운영 계정과 저장소/운영
 artifact 경로로 맞춘다. 이 템플릿은 live daemon을 root가 아닌 운영 사용자로 실행하고, secret 값을 직접 담지 않고 저장소 밖 env
-파일만 참조하며, `SIGTERM` 정상 종료와 `Restart=always` 재시작 경계를 사용한다. 재시작 후에는 아래 Restart Drill validator로
-중복 주문, reconcile/status 복구, daily report marker를 확인한다.
+파일만 참조하며, `SIGTERM` 정상 종료와 `Restart=always` 재시작 경계를 사용한다. system service에서는 `%h`가 운영 사용자 홈이
+아니라 system manager 기준으로 해석될 수 있으므로 `/home/<운영사용자>/...` 같은 명시 경로를 사용한다. 재시작 후에는 아래
+Restart Drill validator로 중복 주문, reconcile/status 복구, daily report marker를 확인한다.
 
 각 24시간 segment 시작 전에는 다음 handoff를 먼저 수행한다.
 

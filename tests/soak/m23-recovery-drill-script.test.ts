@@ -9,6 +9,16 @@ const execFileAsync = promisify(execFile);
 const scriptPath = path.join(process.cwd(), "scripts", "run-m23-recovery-drill.mjs");
 
 describe("M23 recovery drill script", () => {
+  it("uses explicit operator home paths in the systemd service template", async () => {
+    const servicePath = path.join(process.cwd(), "deploy", "systemd", "seemirai-m23-live-small-budget.service.example");
+    const unit = await readFile(servicePath, "utf8");
+
+    expect(unit).toContain("User=lim");
+    expect(unit).toContain("EnvironmentFile=/home/lim/vaults/99_운영/seemirai-m22-live-autonomous/m22.env");
+    expect(unit).toContain("ExecStart=/home/lim/vaults/99_운영/seemirai-m22-live-autonomous/run-24h-pilot.sh");
+    expect(unit).not.toContain("%h/");
+  });
+
   it("skips artifact validation unless the explicit M23 recovery guard is enabled", async () => {
     const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-m23-recovery-skip-"));
     const { stdout } = await runScript(["--json", "--artifact-dir", artifactDir], {
@@ -109,6 +119,26 @@ describe("M23 recovery drill script", () => {
     });
   });
 
+  it("fails when order_submitted repeats a pre-restart identifier even if broker_submission has a new id", async () => {
+    const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-m23-recovery-mixed-duplicate-"));
+    const beforePath = path.join(artifactDir, "before.jsonl");
+    const afterPath = path.join(artifactDir, "after.jsonl");
+    await writeEventLog(beforePath, validBeforeRestartEvents("restart-mixed-duplicate"));
+    await writeEventLog(afterPath, [
+      ...validAfterRestartEvents("restart-mixed-duplicate"),
+      { type: "broker_submission", observedAt: "2026-06-13T00:00:10.000Z", idempotencyKey: "m22a-new-after-restart" },
+      { type: "order_submitted", observedAt: "2026-06-13T00:00:11.000Z", identifier: "m22a-restart-mixed-duplicate" },
+    ]);
+
+    const summary = await runScriptExpectingFailure(validArtifactArgs(artifactDir, beforePath, afterPath));
+
+    expect(summary.metrics.duplicateOrderCount).toBe(1);
+    expect(getCheck(summary, "duplicateLiveOrder")).toMatchObject({
+      status: "fail",
+      evidence: { repeatedAfterRestart: ["m22a-restart-mixed-duplicate"] },
+    });
+  });
+
   it("fails when backup/restore smoke result or blocker evidence is missing", async () => {
     const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-m23-recovery-backup-"));
     const { stdout: fixtureStdout } = await runScript(["--fixture-smoke", "--json", "--artifact-dir", artifactDir]);
@@ -128,6 +158,51 @@ describe("M23 recovery drill script", () => {
     expect(getCheck(summary, "backupRestore")).toMatchObject({
       status: "fail",
     });
+  });
+
+  it("fails secret scan when database credentials are present in recovery artifacts", async () => {
+    const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-m23-recovery-secret-db-"));
+    const beforePath = path.join(artifactDir, "before.jsonl");
+    const afterPath = path.join(artifactDir, "after.jsonl");
+    await writeEventLog(beforePath, validBeforeRestartEvents("restart-db-secret"));
+    await writeEventLog(afterPath, [
+      ...validAfterRestartEvents("restart-db-secret"),
+      { type: "db_restore_attempt", databaseUrl: "postgres://operator:password@localhost:5432/seemirai_restore" },
+    ]);
+
+    const summary = await runScriptExpectingFailure(validArtifactArgs(artifactDir, beforePath, afterPath));
+
+    expect(getCheck(summary, "secretScan")).toMatchObject({
+      status: "fail",
+    });
+  });
+
+  it("preserves JSON output for argument parsing failures", async () => {
+    const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-m23-recovery-arg-error-"));
+
+    try {
+      await runScript([
+        "--json",
+        "--artifact-dir",
+        artifactDir,
+        "--backup-restore-status",
+        "invalid-status",
+      ]);
+    } catch (error) {
+      const executionError = error as Error & { code?: number; stdout?: string };
+      expect(executionError.code).toBe(1);
+      const summary = JSON.parse(executionError.stdout ?? "{}") as M23RecoveryDrillSummary;
+
+      expect(summary.status).toBe("failed");
+      expect(summary.input).toBe("runner_fatal");
+      expect(summary.artifacts.summaryPath).toContain(artifactDir);
+      expect(getCheck(summary, "fatalError")).toMatchObject({
+        status: "fail",
+      });
+      return;
+    }
+
+    throw new Error("script unexpectedly passed");
   });
 
   it("fails when restart lifecycle evidence is not tied to the restart id", async () => {

@@ -15,6 +15,10 @@ const sensitivePatterns = [
   /authorization/i,
   /\bjwt\b/i,
   /telegram[_-]?bot[_-]?token/i,
+  /database[_-]?url/i,
+  /postgres(?:ql)?:\/\/[^\s"']+/i,
+  /\bpassword\b/i,
+  /db[_-]?password/i,
   /raw[_-]?provider/i,
   /raw[_-]?order/i,
   /raw[_-]?update/i,
@@ -467,15 +471,12 @@ function collectSubmissionIds(events) {
     .filter((event) => event.type === "broker_submission")
     .map((event) => readString(event.idempotencyKey) ?? readString(event.identifier))
     .filter((value) => value !== undefined);
-
-  if (brokerSubmissionIds.length > 0) {
-    return brokerSubmissionIds;
-  }
-
-  return events
+  const orderSubmittedIds = events
     .filter((event) => event.type === "order_submitted")
     .map((event) => readString(event.identifier) ?? readString(event.idempotencyKey))
     .filter((value) => value !== undefined);
+
+  return Array.from(new Set([...brokerSubmissionIds, ...orderSubmittedIds]));
 }
 
 async function readEventLog(filePath) {
@@ -799,8 +800,21 @@ function parseArgsForFailure(argv) {
   try {
     return parseArgs(argv);
   } catch {
-    return { fixtureSmoke: false, json: false };
+    return parseFailureOutputOptions(argv);
   }
+}
+
+function parseFailureOutputOptions(argv) {
+  const options = {
+    fixtureSmoke: argv.includes("--fixture-smoke"),
+    json: argv.includes("--json"),
+  };
+  const artifactDirIndex = argv.indexOf("--artifact-dir");
+  const artifactDir = artifactDirIndex >= 0 ? argv[artifactDirIndex + 1] : undefined;
+  if (artifactDir !== undefined && !artifactDir.startsWith("--")) {
+    options.artifactDir = artifactDir;
+  }
+  return options;
 }
 
 function readValue(argv, index, flag) {
