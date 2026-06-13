@@ -377,7 +377,7 @@ function createStatusRecoveryCheck(beforeEvents, afterEvents) {
     .filter(([, value]) => value === undefined)
     .map(([name]) => name);
   if (missingStatusSummaryReuseKeys.length > 0) {
-    return failCheck("restart 전후 status summary마다 재사용 여부를 비교할 trace/source 근거가 있어야 한다.", {
+    return failCheck("restart 전후 status summary마다 재사용 여부를 비교할 stable evidence id가 있어야 한다.", {
       missingStatusSummaryReuseKeys,
     });
   }
@@ -412,21 +412,19 @@ function readStatusSummaryReuseKey(event) {
 
   const trace = isRecord(event.trace) ? event.trace : {};
   const explicitId = readString(event.statusSummaryId)
+    ?? readString(event.statusSummaryReuseKey)
     ?? readString(event.summaryId)
     ?? readString(event.statusRunId)
     ?? readString(trace.statusSummaryId)
+    ?? readString(trace.statusSummaryReuseKey)
+    ?? readString(trace.statusEvidenceId)
     ?? readString(trace.summaryId)
     ?? readString(trace.statusRunId);
   if (explicitId !== undefined) {
     return explicitId;
   }
 
-  const traceSource = readString(trace.source);
-  const traceReason = readString(trace.reason);
-  if (traceSource !== undefined && traceReason !== undefined) {
-    return `${traceSource}:${traceReason}`;
-  }
-
+  // trace source/reason은 상태 분류값이라 restart 전후 같은 summary 인스턴스 재사용 증거로 쓰지 않는다.
   return undefined;
 }
 

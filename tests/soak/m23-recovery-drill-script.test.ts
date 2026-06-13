@@ -531,17 +531,23 @@ describe("M23 recovery drill script", () => {
     });
   });
 
-  it("accepts actual status summary trace source and reason as reuse evidence", async () => {
+  it("accepts an explicit status summary id in trace as reuse evidence", async () => {
     const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-m23-recovery-status-trace-"));
     const beforePath = path.join(artifactDir, "before.jsonl");
     const afterPath = path.join(artifactDir, "after.jsonl");
     await writeEventLog(beforePath, validBeforeRestartEvents("restart-status-trace").map((event) =>
       event.type === "live_ops_status_summary"
-        ? withoutStatusSummaryId({ ...event, trace: { source: "live_ops_status_summary", reason: "live_order_capable" } })
+        ? withoutStatusSummaryId({
+            ...event,
+            trace: { source: "live_ops_status_summary", reason: "live_order_capable", statusSummaryId: "status-trace-reuse" },
+          })
         : event));
     await writeEventLog(afterPath, validAfterRestartEvents("restart-status-trace").map((event) =>
       event.type === "live_ops_status_summary"
-        ? withoutStatusSummaryId({ ...event, trace: { source: "live_ops_status_summary", reason: "live_order_capable" } })
+        ? withoutStatusSummaryId({
+            ...event,
+            trace: { source: "live_ops_status_summary", reason: "live_order_capable", statusSummaryId: "status-trace-reuse" },
+          })
         : event));
 
     const { stdout } = await runScript(validArtifactArgs(artifactDir, beforePath, afterPath), {
@@ -552,7 +558,30 @@ describe("M23 recovery drill script", () => {
     expect(summary.status).toBe("passed");
     expect(getCheck(summary, "statusRecovery")).toMatchObject({
       status: "ok",
-      evidence: { statusSummaryReuseKey: "live_ops_status_summary:live_order_capable" },
+      evidence: { statusSummaryReuseKey: "status-trace-reuse" },
+    });
+  });
+
+  it("fails when status summary trace only has source and reason without a stable reuse id", async () => {
+    const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-m23-recovery-status-trace-source-"));
+    const beforePath = path.join(artifactDir, "before.jsonl");
+    const afterPath = path.join(artifactDir, "after.jsonl");
+    await writeEventLog(beforePath, validBeforeRestartEvents("restart-status-trace-source").map((event) =>
+      event.type === "live_ops_status_summary"
+        ? withoutStatusSummaryId({ ...event, trace: { source: "live_ops_status_summary", reason: "live_order_capable" } })
+        : event));
+    await writeEventLog(afterPath, validAfterRestartEvents("restart-status-trace-source").map((event) =>
+      event.type === "live_ops_status_summary"
+        ? withoutStatusSummaryId({ ...event, trace: { source: "live_ops_status_summary", reason: "live_order_capable" } })
+        : event));
+
+    const summary = await runScriptExpectingFailure(validArtifactArgs(artifactDir, beforePath, afterPath));
+
+    expect(getCheck(summary, "statusRecovery")).toMatchObject({
+      status: "fail",
+      evidence: {
+        missingStatusSummaryReuseKeys: ["beforeStatusSummaryReuseKey", "afterStatusSummaryReuseKey"],
+      },
     });
   });
 

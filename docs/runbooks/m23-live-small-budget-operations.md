@@ -183,7 +183,7 @@ Kill switch/manual review:
 restart drill은 다음 조건을 만족해야 한다.
 
 - restart 전후 같은 idempotency key 또는 order attempt가 duplicate live order를 만들지 않는다.
-- durable reservation, reconcile snapshot, status summary가 재사용된다.
+- durable reservation, reconcile snapshot, stable status summary evidence id가 재사용된다.
 - 최신 heartbeat와 daily report가 재개된다.
 - Telegram에는 restart 감지와 복구 상태가 구분되어 표시된다.
 
