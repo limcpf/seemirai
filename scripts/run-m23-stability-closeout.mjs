@@ -447,7 +447,7 @@ function createSegmentLiveArmedGuardCheck(segmentFiles) {
 }
 
 function createSegmentBudgetCeilingCheck(segmentFiles) {
-  const invalid = parsedSegmentEntries(segmentFiles)
+  const entries = parsedSegmentEntries(segmentFiles)
     .map(({ index, file, summary }) => {
       const metrics = readMetrics(summary);
       const realizedLossKrw = readFiniteNumber(metrics.dailyRealizedLossKrw);
@@ -462,7 +462,8 @@ function createSegmentBudgetCeilingCheck(segmentFiles) {
         openPositionNotionalKrw,
         combinedExposureKrw,
       };
-    })
+    });
+  const invalid = entries
     .filter((entry) => entry.realizedLossKrw === undefined
       || entry.openPositionNotionalKrw === undefined
       || entry.realizedLossKrw < 0
@@ -476,14 +477,35 @@ function createSegmentBudgetCeilingCheck(segmentFiles) {
       combinedExposureKrw: entry.combinedExposureKrw ?? null,
       lossCeilingKrw,
     }));
-  if (invalid.length === 0 && segmentFiles.length >= requiredSegmentCount) {
-    return okCheck("모든 segment가 50,000 KRW 손실/노출 ceiling 미만임을 숫자 evidence로 증명한다.", {
+
+  const cumulativeRealizedLossKrw = entries.reduce((sum, entry) => sum + (entry.realizedLossKrw ?? 0), 0);
+  const maxOpenPositionNotionalKrw = entries.reduce(
+    (max, entry) => Math.max(max, entry.openPositionNotionalKrw ?? 0),
+    0,
+  );
+  const cumulativeExposureKrw = cumulativeRealizedLossKrw + maxOpenPositionNotionalKrw;
+  const cumulativeInvalid = entries.length >= requiredSegmentCount && cumulativeExposureKrw >= lossCeilingKrw;
+
+  if (invalid.length === 0 && !cumulativeInvalid && segmentFiles.length >= requiredSegmentCount) {
+    return okCheck("7일 누적 realized loss와 최대 open exposure가 50,000 KRW ceiling 미만임을 숫자 evidence로 증명한다.", {
       segmentCount: segmentFiles.length,
       lossCeilingKrw,
+      cumulativeRealizedLossKrw,
+      maxOpenPositionNotionalKrw,
+      cumulativeExposureKrw,
     });
   }
 
-  return failCheck("손실/미체결 노출 ceiling evidence가 없거나 한도를 넘은 segment가 있다.", { invalid });
+  return failCheck("손실/미체결 노출 ceiling evidence가 없거나 7일 누적 한도를 넘었다.", {
+    invalid,
+    cumulative: {
+      cumulativeRealizedLossKrw,
+      maxOpenPositionNotionalKrw,
+      cumulativeExposureKrw,
+      lossCeilingKrw,
+      status: cumulativeInvalid ? "fail" : "ok",
+    },
+  });
 }
 
 function createDecisionEvidenceCheck(segments) {

@@ -49,6 +49,10 @@ describe("M23 stability closeout script", () => {
     });
     expect(getCheck(summary, "recoveryDrill").status).toBe("ok");
     expect(getCheck(summary, "backupRestore").status).toBe("ok");
+    expect(getCheck(summary, "segmentBudgetCeiling")).toMatchObject({
+      status: "ok",
+      evidence: { cumulativeRealizedLossKrw: 0, maxOpenPositionNotionalKrw: 0, cumulativeExposureKrw: 0 },
+    });
   });
 
   it("fails when the manifest has fewer than seven unique day segments", async () => {
@@ -412,6 +416,39 @@ describe("M23 stability closeout script", () => {
     expect(summary.status).toBe("failed");
     expect(getCheck(summary, "segmentBudgetCeiling")).toMatchObject({
       status: "fail",
+    });
+  });
+
+  it("fails when seven day cumulative realized loss reaches the M23 ceiling", async () => {
+    const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-m23-stability-cumulative-budget-"));
+    const manifestPath = await writeCloseoutFixture(artifactDir, {
+      segmentMutator: (summary, index) => {
+        if (index > 2) {
+          return summary;
+        }
+
+        const metrics = summary.metrics as Record<string, unknown>;
+        return {
+          ...summary,
+          metrics: { ...metrics, dailyRealizedLossKrw: 20_000, openPositionNotionalKrw: 0 },
+        };
+      },
+    });
+    const summary = await runScriptExpectingFailure(
+      ["--json", "--artifact-dir", artifactDir, "--manifest", manifestPath],
+      createReadyEnv(),
+    );
+
+    expect(summary.status).toBe("failed");
+    expect(getCheck(summary, "segmentBudgetCeiling")).toMatchObject({
+      status: "fail",
+      evidence: {
+        cumulative: {
+          cumulativeRealizedLossKrw: 60_000,
+          cumulativeExposureKrw: 60_000,
+          status: "fail",
+        },
+      },
     });
   });
 

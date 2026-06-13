@@ -668,6 +668,7 @@ function createCloseoutZeroCounterCheck(metrics) {
 
 function createMetrics(eventLog, pilotProcess) {
   const counts = countPilotEvents(eventLog.events);
+  const budget = summarizeBudgetExposure(eventLog.events);
   const childCrashCount =
     pilotProcess !== undefined && !pilotProcess.ranFullDuration && pilotProcess.exitCode !== 0 ? 1 : 0;
 
@@ -677,8 +678,9 @@ function createMetrics(eventLog, pilotProcess) {
     brokerSubmissionCount: counts.brokerSubmission,
     manualReviewRequiredCount: counts.manualReviewRequired,
     dailyReportGeneratedCount: counts.dailyReportGenerated,
-    dailyRealizedLossKrw: 0,
-    openPositionNotionalKrw: 0,
+    dailyRealizedLossKrw: budget.dailyRealizedLossKrw,
+    openPositionNotionalKrw: budget.maxOpenPositionNotionalKrw,
+    latestOpenPositionNotionalKrw: budget.latestOpenPositionNotionalKrw,
     crashCount: runtimeCounters.uncaughtExceptions + counts.crash + childCrashCount,
     unhandledRejectionCount: runtimeCounters.unhandledRejections + counts.unhandledRejection,
     riskGateBypassCount: counts.riskGateBypass,
@@ -700,6 +702,7 @@ function createEmptyMetrics() {
     dailyReportGeneratedCount: 0,
     dailyRealizedLossKrw: 0,
     openPositionNotionalKrw: 0,
+    latestOpenPositionNotionalKrw: 0,
     crashCount: runtimeCounters.uncaughtExceptions,
     unhandledRejectionCount: runtimeCounters.unhandledRejections,
     riskGateBypassCount: 0,
@@ -745,6 +748,57 @@ function countPilotEvents(events) {
   }
 
   return counts;
+}
+
+function summarizeBudgetExposure(events) {
+  let dailyRealizedLossKrw = 0;
+  let maxOpenPositionNotionalKrw = 0;
+  let latestOpenPositionNotionalKrw = 0;
+
+  for (const event of events) {
+    const realizedLoss = readRealizedLossKrw(event);
+    if (realizedLoss !== undefined) {
+      dailyRealizedLossKrw = Math.max(dailyRealizedLossKrw, realizedLoss);
+    }
+
+    const openPosition = readNonNegativeNumber(event.openPositionNotionalKrw);
+    if (openPosition !== undefined) {
+      latestOpenPositionNotionalKrw = openPosition;
+      maxOpenPositionNotionalKrw = Math.max(maxOpenPositionNotionalKrw, openPosition);
+    }
+  }
+
+  return { dailyRealizedLossKrw, maxOpenPositionNotionalKrw, latestOpenPositionNotionalKrw };
+}
+
+function readRealizedLossKrw(event) {
+  const directLoss = readNonNegativeNumber(event.dailyRealizedLossKrw)
+    ?? readNonNegativeNumber(event.realizedLossKrw)
+    ?? readNonNegativeNumber(event.lossKrw);
+  if (directLoss !== undefined) {
+    return directLoss;
+  }
+
+  const realizedPnl = readFiniteNumber(event.realizedPnlKrw);
+  return realizedPnl !== undefined && realizedPnl < 0 ? Math.abs(realizedPnl) : undefined;
+}
+
+function readNonNegativeNumber(value) {
+  const parsed = readFiniteNumber(value);
+  return parsed !== undefined && parsed >= 0 ? parsed : undefined;
+}
+
+function readFiniteNumber(value) {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value;
+  }
+
+  if (typeof value === "string" && value.trim().length > 0) {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : undefined;
+  }
+
+  return undefined;
 }
 
 function runtimeExceptionCheck(metrics = createEmptyMetrics()) {

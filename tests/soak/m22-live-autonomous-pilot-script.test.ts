@@ -106,6 +106,51 @@ setInterval(() => {}, 1000);
     expect(getCheck(summary, "closeoutZeroCounters").status).toBe("ok");
     expect(summary.metrics.pilotProcess?.ranFullDuration).toBe(true);
   });
+
+  it("summarizes budget loss and exposure from the wrapped command event log", async () => {
+    const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-m22-pilot-budget-events-"));
+    const configPath = path.join(artifactDir, "m22-config.json");
+    const childPath = path.join(artifactDir, "pilot-budget-child.mjs");
+    await writeFile(configPath, `${JSON.stringify(createEnabledM22Config(), null, 2)}\n`, "utf8");
+    await writeFile(
+      childPath,
+      `import { appendFile } from "node:fs/promises";
+const write = async (event) => appendFile(process.env.SEEMIRAI_M22_PILOT_EVENT_LOG, JSON.stringify(event) + "\\n", "utf8");
+await write({ type: "m22_pilot_heartbeat", observedAt: new Date().toISOString(), openPositionNotionalKrw: "8000" });
+await write({ type: "daily_report_generated", observedAt: new Date().toISOString(), openPositionNotionalKrw: "12000", dailyRealizedLossKrw: "3000" });
+await write({ type: "m22_pilot_heartbeat", observedAt: new Date().toISOString(), openPositionNotionalKrw: "7000", realizedPnlKrw: "-5000" });
+setInterval(() => {}, 1000);
+`,
+      "utf8",
+    );
+
+    const { stdout } = await runScript(
+      [
+        "--json",
+        "--artifact-dir",
+        artifactDir,
+        "--config",
+        configPath,
+        "--duration-ms",
+        "1000",
+        "--termination-grace-ms",
+        "500",
+        "--pilot-command",
+        process.execPath,
+        "--",
+        childPath,
+      ],
+      createReadyEnv(),
+    );
+    const summary = JSON.parse(stdout) as M22PilotSummary;
+
+    expect(summary.status).toBe("passed");
+    expect(summary.metrics).toMatchObject({
+      dailyRealizedLossKrw: 5000,
+      openPositionNotionalKrw: 12000,
+      latestOpenPositionNotionalKrw: 7000,
+    });
+  });
 });
 
 async function runScript(args: readonly string[], env: Record<string, string> = {}) {
@@ -205,6 +250,9 @@ interface M22PilotSummary {
     reconcileMismatchCount: number;
     duplicateOrderCount: number;
     untrackedFillCount: number;
+    dailyRealizedLossKrw: number;
+    openPositionNotionalKrw: number;
+    latestOpenPositionNotionalKrw?: number;
     pilotProcess: null | {
       ranFullDuration: boolean;
     };
