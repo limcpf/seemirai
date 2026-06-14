@@ -48,6 +48,8 @@ Codex-native 운영은 Codex, Git, GitHub, shell command, 문서 상태를 연�
   정책은 후속 control lifecycle sub PR과 runbook에서 명시한다.
 - DB readiness guard는 `schema_migrations`를 생성하거나 migration을 자동 적용하지 않는다. pending migration, missing table,
   unknown applied migration, checksum drift는 운영자가 migration apply 또는 schema drift 확인을 끝낼 때까지 live boot를 차단한다.
+- market data collector는 허용 production market 밖 event를 DB write 전에 차단한다. stale/reconnect/disconnect status는 DB-backed
+  audit/risk evidence로 저장하되, analysis/decision 및 신규 실주문 lifecycle로 전진시키지 않는다.
 - fixture smoke는 외부 provider와 DB에 연결하지 않고, 디스크 migration 기준을 secret-safe summary로 노출한다. 후속 sub PR은 각 boot 단계별
   fixture smoke와 integration evidence를 추가해야 한다.
 

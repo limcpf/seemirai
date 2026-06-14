@@ -30,6 +30,8 @@ describe("production live ops script skeleton", () => {
     expect(result.stdout).toContain("운영 dashboard");
     expect(result.stdout).toContain("DB readiness: 통과");
     expect(result.stdout).toContain("Pending migration: 없음");
+    expect(result.stdout).toContain("시세 수집: DB-backed 저장 확인");
+    expect(result.stdout).toContain("Market data: 체결 1 / 호가 1 / 상태 1");
     expect(result.stdout).toContain("후속 provider 연결 전까지 신규 실주문은 제출되지 않습니다");
     expect(result.stdout).not.toContain("fake-upbit-secret-key");
     expect(result.stdout).not.toContain("LIVE_AUTONOMOUS_SMALL_BUDGET");
@@ -64,6 +66,10 @@ describe("production live ops script skeleton", () => {
         migration: { expectedLatestVersion: number | null; pendingVersions: number[] };
         checks: Array<{ code: string }>;
       };
+      marketData: {
+        ready: boolean;
+        persisted: { tradeCount: number; orderbookCount: number; statusCount: number };
+      };
     };
     expect(path.isAbsolute(summary.configPath)).toBe(true);
     expect(path.isAbsolute(summary.envFilePath)).toBe(true);
@@ -72,6 +78,12 @@ describe("production live ops script skeleton", () => {
     expect(summary.dbReadiness.migration.expectedLatestVersion).toBeGreaterThan(0);
     expect(summary.dbReadiness.migration.pendingVersions).toEqual([]);
     expect(summary.dbReadiness.checks.map((check) => check.code)).toContain("db_connection_fixture_skipped");
+    expect(summary.marketData.ready).toBe(true);
+    expect(summary.marketData.persisted).toMatchObject({
+      tradeCount: 1,
+      orderbookCount: 1,
+      statusCount: 1,
+    });
   });
 
   it("live:ops:tui attach는 같은 dashboard를 attach 대상으로 렌더링한다", () => {
@@ -99,6 +111,7 @@ describe("production live ops script skeleton", () => {
     expect(result.stdout).toContain("Seemirai Live Ops");
     expect(result.stdout).toContain("attach=fixture");
     expect(result.stdout).toMatch(/DB schema: 적용 v\d+ \/ 기준 v\d+/u);
+    expect(result.stdout).toContain("시세 수집: DB-backed 저장 확인");
     expect(result.stdout).not.toContain("fake-local-control-token");
   });
 

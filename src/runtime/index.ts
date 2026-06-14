@@ -231,6 +231,17 @@ export type {
   LiveOpsDbReadinessSummary,
 } from "./live-ops-db-readiness.js";
 export {
+  LiveOpsMarketDataCollectorError,
+  collectLiveOpsMarketData,
+} from "./live-ops-market-data.js";
+export type {
+  CollectLiveOpsMarketDataInput,
+  LiveOpsMarketDataCollectorCheck,
+  LiveOpsMarketDataCollectorStatus,
+  LiveOpsMarketDataCollectorSummary,
+  LiveOpsMarketDataSourceProfile,
+} from "./live-ops-market-data.js";
+export {
   M19_EXIT_PILOT_POSITION_SOURCES,
   M19_EXIT_PILOT_SMOKE_RESULTS,
   UPBIT_PILOT_IDENTIFIER_MAX_LENGTH,
