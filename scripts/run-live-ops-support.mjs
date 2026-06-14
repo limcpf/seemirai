@@ -132,12 +132,17 @@ export async function loadLiveOpsCliInputs(options) {
     config,
     fixtureSmoke: options.fixtureSmoke,
   });
+  const analysisDecision = evaluateLiveOpsCliAnalysisDecision({
+    config,
+    fixtureSmoke: options.fixtureSmoke,
+    marketData,
+  });
 
   if (!dbReadiness.ready) {
     throw new Error(formatCliDbReadinessFailureMessage(dbReadiness));
   }
 
-  return { configPath, envFilePath, config, env, dbReadiness, marketData };
+  return { configPath, envFilePath, config, env, dbReadiness, marketData, analysisDecision };
 }
 
 export function renderLiveOpsSummary(input) {
@@ -153,6 +158,7 @@ export function renderLiveOpsSummary(input) {
     fixtureSmoke: input.fixtureSmoke,
     dbReadiness: input.dbReadiness,
     marketData: input.marketData,
+    analysisDecision: input.analysisDecision,
     budget: {
       maxOrderKrw: input.config.budget?.max_order_krw ?? null,
       dailyAutonomousNotionalLimitKrw: input.config.budget?.daily_autonomous_notional_limit_krw ?? null,
@@ -176,6 +182,8 @@ export function renderLiveOpsTuiDashboard(summary) {
       ? (dbReadiness?.ready ? "준비" : "차단")
       : worker === "market_data"
         ? (summary.marketData?.ready ? "DB-backed 저장 확인" : "후속 연결 대기")
+      : worker === "analysis_decision"
+        ? (summary.analysisDecision?.ready ? `${formatDecisionCategory(summary.analysisDecision.decisionCategory)} 기록 확인` : "후속 연결 대기")
       : worker === "tui"
         ? "실행 중"
         : "후속 연결 대기";
@@ -209,7 +217,7 @@ export function renderLiveOpsTuiDashboard(summary) {
     "",
     "최근 관측",
     `  - Market data: ${formatMarketDataObservation(summary.marketData)}`,
-    "  - Analysis/decision: 후속 연결 대기",
+    `  - Analysis/decision: ${formatAnalysisDecisionObservation(summary.analysisDecision)}`,
     "  - Live execution: 후속 연결 대기",
     "  - Telegram alert: 후속 연결 대기",
     "",
@@ -480,6 +488,88 @@ function formatMarketDataObservation(marketData) {
     `상태 ${marketData.persisted.statusCount}`,
     `latest ${marketData.latestHeartbeatAt ?? "확인 필요"}`,
   ].join(" / ");
+}
+
+function formatAnalysisDecisionObservation(analysisDecision) {
+  if (analysisDecision?.ready !== true) {
+    return "후속 연결 대기";
+  }
+
+  return [
+    formatDecisionCategory(analysisDecision.decisionCategory),
+    `주문 후보 ${analysisDecision.orderIntentCount}`,
+    `전략 ${analysisDecision.evaluatedStrategyCount}`,
+    `latest ${analysisDecision.latestDecisionAt ?? "확인 필요"}`,
+  ].join(" / ");
+}
+
+function formatDecisionCategory(decisionCategory) {
+  if (decisionCategory === "ORDER_INTENT") {
+    return "주문 후보";
+  }
+  if (decisionCategory === "BLOCKED") {
+    return "차단";
+  }
+  return "보류";
+}
+
+function evaluateLiveOpsCliAnalysisDecision({ config, fixtureSmoke, marketData }) {
+  const market = config.universe?.default_market ?? "KRW-BTC";
+
+  if (!fixtureSmoke || marketData.ready !== true) {
+    return {
+      status: "pending",
+      ready: false,
+      market,
+      latestDecisionAt: null,
+      decisionCategory: "HOLD",
+      featureStatus: "not_run",
+      evaluatedStrategyCount: 0,
+      holdCount: 0,
+      blockCount: 0,
+      orderIntentCount: 0,
+      recordHoldDecision: false,
+      message: "analysis/decision pipeline은 market data lifecycle 이후 연결됩니다.",
+      checks: [
+        {
+          name: "market_data",
+          status: "blocked",
+          code: "live_ops_analysis_pending",
+          message: "analysis/decision pipeline이 후속 lifecycle에서 시작됩니다.",
+        },
+      ],
+    };
+  }
+
+  const latestDecisionAt = new Date().toISOString();
+  return {
+    status: "ready",
+    ready: true,
+    market,
+    latestDecisionAt,
+    decisionCategory: "HOLD",
+    featureStatus: "ok",
+    evaluatedStrategyCount: 1,
+    holdCount: 1,
+    blockCount: 0,
+    orderIntentCount: 0,
+    recordHoldDecision: config.analysis?.record_hold_decision === true,
+    message: "fixture analysis/decision pipeline이 HOLD를 기록했고 주문 후보는 없습니다.",
+    checks: [
+      {
+        name: "features",
+        status: "ok",
+        code: "live_ops_feature_snapshot_ok",
+        message: "fixture feature snapshot을 확인했습니다.",
+      },
+      {
+        name: "strategy_decision",
+        status: "ok",
+        code: "live_ops_strategy_decision_ok",
+        message: "fixture strategy decision HOLD를 확인했습니다.",
+      },
+    ],
+  };
 }
 
 function evaluateLiveOpsCliMarketData({ config, fixtureSmoke }) {

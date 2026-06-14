@@ -35,8 +35,9 @@ analysis/decision, live execution, reconcile/PnL/status, Telegram, TUI 운영 �
 - Sub PR 01 완료: `LiveOpsConfig` contract, secret env loader, legacy env detector, `live:ops`/`live:ops:tui` skeleton, safe fixture를 추가했다.
 - Sub PR 02 완료: DB readiness를 env boolean이 아니라 read-only DB connection probe와 `schema_migrations`/디스크 migration state로 계산한다.
 - Sub PR 03 완료: `live:ops -- --tui`와 `live:ops:tui -- --attach ...`가 같은 secret-safe TUI dashboard 첫 화면을 출력한다.
-- Sub PR 04 진행 중: production live ops market data collector가 DB-backed store contract로 trade/orderbook/status를 저장하고 TUI summary에
+- Sub PR 04 완료: production live ops market data collector가 DB-backed store contract로 trade/orderbook/status를 저장하고 TUI summary에
   저장 확인을 표시한다.
+- Sub PR 05 진행 중: analysis/decision pipeline이 market data/feature/strategy 평가를 묶고 HOLD/order intent summary를 TUI에 표시한다.
 - fixture smoke는 외부 DB/provider를 호출하지 않는다. 실제 실행은 pending migration, missing table, unknown applied migration, checksum drift에서
   fail-closed 한다.
 
@@ -78,6 +79,16 @@ corepack pnpm typecheck
 ./scripts/verify docs
 ```
 
+Sub PR 05:
+
+```sh
+corepack pnpm exec vitest run tests/unit/live-ops-analysis-decision.test.ts tests/unit/live-ops-scripts.test.ts --reporter=verbose
+corepack pnpm live:ops -- --config config/live-ops.example.json --env-file tests/fixtures/live-ops/fake.env --fixture-smoke --tui
+corepack pnpm live:ops:tui -- --config config/live-ops.example.json --env-file tests/fixtures/live-ops/fake.env --fixture-smoke --attach fixture
+corepack pnpm typecheck
+./scripts/verify docs
+```
+
 최종 closeout:
 
 ```sh
@@ -100,6 +111,8 @@ git diff --check
   노출하지 않는다.
 - 2026-06-14: market data collector는 KRW-BTC/upbit_krw_spot event만 DB-backed store로 통과시키고, stale/reconnect/disconnect는
   저장 후 신규 실주문 전진을 차단한다.
+- 2026-06-14: analysis/decision pipeline은 market data/feature 실패를 HOLD/차단 summary로 닫고, 성공 시 주입 strategy의 order intent
+  수만 live execution sub PR로 넘길 계약으로 고정한다.
 
 ## 남은 이슈
 
