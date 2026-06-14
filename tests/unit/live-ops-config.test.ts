@@ -74,11 +74,13 @@ describe("production live ops config/env contract", () => {
     const violations = detectLegacyLiveOpsEnv({
       SEEMIRAI_RUN_M22_AUTONOMOUS_DAEMON: "1",
       SEEMIRAI_M22_DECISION_LEDGER_READY: "1",
+      SEEMIRAI_RUN_UPBIT_LIVE_BROKER_SMOKE: "1",
     });
 
     expect(violations.map((violation) => violation.envName)).toEqual([
       "SEEMIRAI_M22_DECISION_LEDGER_READY",
       "SEEMIRAI_RUN_M22_AUTONOMOUS_DAEMON",
+      "SEEMIRAI_RUN_UPBIT_LIVE_BROKER_SMOKE",
     ]);
   });
 

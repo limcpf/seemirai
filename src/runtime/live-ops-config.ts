@@ -19,6 +19,7 @@ export type {
 export {
   LIVE_OPS_LEGACY_ENV_PATTERNS,
   LIVE_OPS_LEGACY_ENV_NAMES,
+  LIVE_OPS_LEGACY_SMOKE_ENV_PATTERNS,
   detectLegacyLiveOpsEnv,
 } from "./live-ops-config/legacy-env.js";
 export type { LiveOpsLegacyEnvViolation } from "./live-ops-config/legacy-env.js";

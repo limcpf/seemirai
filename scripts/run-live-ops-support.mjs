@@ -4,8 +4,6 @@ import path from "node:path";
 export const liveOpsLegacyEnvNames = [
   "SEEMIRAI_RUN_M22_AUTONOMOUS_PILOT",
   "SEEMIRAI_RUN_M22_AUTONOMOUS_DAEMON",
-  "SEEMIRAI_RUN_UPBIT_PRIVATE_SMOKE",
-  "SEEMIRAI_RUN_UPBIT_ORDER_SMOKE",
   "SEEMIRAI_PILOT_PROFILE",
   "PILOT_ORDER_SMOKE",
 ];
@@ -139,9 +137,50 @@ function validateLiveOpsConfig(config) {
   if (!Array.isArray(config.universe?.markets) || config.universe.markets.length !== 1 || config.universe.markets[0] !== "KRW-BTC") {
     errors.push("첫 production market은 KRW-BTC 단일이어야 합니다.");
   }
+  if (config.universe?.default_market !== "KRW-BTC") {
+    errors.push("default_market은 KRW-BTC여야 합니다.");
+  }
+  validateExpectedValues(errors, config.budget, "budget", {
+    max_order_krw: "10000",
+    daily_autonomous_notional_limit_krw: "30000",
+    max_open_position_notional_krw: "30000",
+    operations_stop_ceiling_krw: "49999",
+  });
+  validateExpectedValues(errors, config.workers, "workers", {
+    db_readiness: true,
+    market_data: true,
+    analysis_decision: true,
+    live_execution: true,
+    reconcile_pnl_status: true,
+    telegram: true,
+    tui: true,
+  });
+  validateExpectedValues(errors, config.market_data, "market_data", {
+    provider: "UPBIT_PUBLIC",
+    websocket_enabled: true,
+    rest_policy_snapshot_enabled: true,
+    stale_after_ms: 30000,
+  });
+  validateExpectedValues(errors, config.analysis, "analysis", {
+    candle_interval_seconds: 60,
+    feature_interval_seconds: 5,
+    decision_interval_seconds: 5,
+    record_hold_decision: true,
+  });
+  validateExpectedValues(errors, config.telegram, "telegram", {
+    startup_alert_enabled: true,
+    live_order_capable_alert_enabled: true,
+    trade_event_alerts_enabled: true,
+    provider_timeout_ms: 5000,
+  });
   if (config.tui?.foreground_enabled !== true || config.tui?.attach_enabled !== true) {
     errors.push("foreground/attach TUI skeleton은 모두 활성이어야 합니다.");
   }
+  validateExpectedValues(errors, config.tui, "tui", {
+    refresh_interval_ms: 1000,
+    control_requires_two_step_confirmation: true,
+    controls_enabled: true,
+  });
 
   if (errors.length > 0) {
     throw new Error(`live ops config 검증 실패: ${errors.join("; ")}`);
@@ -160,6 +199,9 @@ function validateLiveOpsEnv(env, processEnv) {
     if (/^SEEMIRAI_M22_.*_READY$/u.test(name) && hasMeaningfulValue(merged[name])) {
       errors.push(`${name}은 실제 readiness probe로 대체해야 합니다.`);
     }
+    if (/^SEEMIRAI_RUN_UPBIT_.*_SMOKE$/u.test(name) && hasMeaningfulValue(merged[name])) {
+      errors.push(`${name}은 production live ops smoke/readiness 입력으로 사용할 수 없습니다.`);
+    }
   }
   for (const name of [
     "SEEMIRAI_DATABASE_URL",
@@ -176,6 +218,19 @@ function validateLiveOpsEnv(env, processEnv) {
 
   if (errors.length > 0) {
     throw new Error(`live ops env 검증 실패: ${errors.join("; ")}`);
+  }
+}
+
+function validateExpectedValues(errors, target, prefix, expected) {
+  if (target === null || typeof target !== "object") {
+    errors.push(`${prefix} 설정이 필요합니다.`);
+    return;
+  }
+
+  for (const [key, expectedValue] of Object.entries(expected)) {
+    if (target[key] !== expectedValue) {
+      errors.push(`${prefix}.${key}는 ${String(expectedValue)}이어야 합니다.`);
+    }
   }
 }
 

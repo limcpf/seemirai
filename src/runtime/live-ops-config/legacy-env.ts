@@ -8,6 +8,7 @@ export const LIVE_OPS_LEGACY_ENV_NAMES = [
 ] as const;
 
 export const LIVE_OPS_LEGACY_ENV_PATTERNS = [/^SEEMIRAI_M22_.*_READY$/u] as const;
+export const LIVE_OPS_LEGACY_SMOKE_ENV_PATTERNS = [/^SEEMIRAI_RUN_UPBIT_.*_SMOKE$/u] as const;
 
 /**
  * production live ops path에서 금지하는 legacy milestone env 위반이다.
@@ -47,12 +48,33 @@ export function detectLegacyLiveOpsEnv(env: NodeJS.ProcessEnv): LiveOpsLegacyEnv
         message: `${envName}은 실제 DB/provider readiness probe로 대체해야 합니다.`,
       });
     }
+
+    if (LIVE_OPS_LEGACY_SMOKE_ENV_PATTERNS.some((pattern) => pattern.test(envName)) && hasEnvValue(env, envName)) {
+      // Upbit smoke guard는 owner-operated 검증 경계라 production boot readiness와 섞이면 provider side effect 의도가 불명확해진다.
+      violations.push({
+        envName,
+        message: `${envName}은 production live ops smoke/readiness 입력으로 사용할 수 없습니다.`,
+      });
+    }
   }
 
-  return violations.sort((left, right) => left.envName.localeCompare(right.envName));
+  return dedupeViolations(violations).sort((left, right) => left.envName.localeCompare(right.envName));
 }
 
 function hasEnvValue(env: NodeJS.ProcessEnv, envName: string): boolean {
   const value = env[envName];
   return value !== undefined && value.trim().length > 0 && value.trim() !== "0";
+}
+
+function dedupeViolations(violations: readonly LiveOpsLegacyEnvViolation[]): LiveOpsLegacyEnvViolation[] {
+  const seen = new Set<string>();
+  const deduped: LiveOpsLegacyEnvViolation[] = [];
+  for (const violation of violations) {
+    if (seen.has(violation.envName)) {
+      continue;
+    }
+    seen.add(violation.envName);
+    deduped.push(violation);
+  }
+  return deduped;
 }

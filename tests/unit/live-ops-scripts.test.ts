@@ -1,4 +1,6 @@
 import { spawnSync } from "node:child_process";
+import { mkdtemp, readFile, writeFile } from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 
@@ -73,6 +75,59 @@ describe("production live ops script skeleton", () => {
 
     expect(result.status).toBe(1);
     expect(result.stderr).toContain("실제 readiness probe로 대체해야 합니다");
+  });
+
+  it("예산 상한을 완화한 운영 JSON은 CLI contract에서도 fail-closed 한다", async () => {
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-live-ops-script-"));
+    const config = JSON.parse(await readFile(path.join(process.cwd(), "config", "live-ops.example.json"), "utf8"));
+    config.budget.max_order_krw = "100000000";
+    const configPath = path.join(tempDir, "unsafe-live-ops.json");
+    await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`, "utf8");
+
+    const result = spawnSync(
+      process.execPath,
+      [
+        "scripts/run-live-ops.mjs",
+        "--config",
+        configPath,
+        "--env-file",
+        "tests/fixtures/live-ops/fake.env",
+        "--fixture-smoke",
+      ],
+      {
+        cwd: process.cwd(),
+        encoding: "utf8",
+        env: minimalEnv(),
+      },
+    );
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("budget.max_order_krw");
+  });
+
+  it("모든 SEEMIRAI_RUN_UPBIT_*_SMOKE env가 production CLI에서 fail-closed 된다", () => {
+    const result = spawnSync(
+      process.execPath,
+      [
+        "scripts/run-live-ops.mjs",
+        "--config",
+        "config/live-ops.example.json",
+        "--env-file",
+        "tests/fixtures/live-ops/fake.env",
+        "--fixture-smoke",
+      ],
+      {
+        cwd: process.cwd(),
+        encoding: "utf8",
+        env: {
+          ...minimalEnv(),
+          SEEMIRAI_RUN_UPBIT_LIVE_RECONCILE_WS_SMOKE: "1",
+        },
+      },
+    );
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("production live ops smoke/readiness");
   });
 });
 
