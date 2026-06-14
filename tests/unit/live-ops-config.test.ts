@@ -84,6 +84,20 @@ describe("production live ops config/env contract", () => {
     ]);
   });
 
+  it("process env의 legacy flag는 env file override로 숨길 수 없다", () => {
+    const result = validateLiveOpsStartupContract({
+      configInput: loadLiveOpsConfig({}),
+      env: {
+        SEEMIRAI_RUN_UPBIT_LIVE_BROKER_SMOKE: "1",
+      },
+      envFileContent: `${fixtureEnv}\nSEEMIRAI_RUN_UPBIT_LIVE_BROKER_SMOKE=0`,
+    });
+
+    expect(result.ready).toBe(false);
+    if (result.ready) throw new Error("expected blocked contract");
+    expect(result.errors.join("\n")).toContain("SEEMIRAI_RUN_UPBIT_LIVE_BROKER_SMOKE");
+  });
+
   it("env file parser와 secret loader는 credential을 JSON config와 분리한다", () => {
     const parsed = parseLiveOpsEnvFileContent(`export SEEMIRAI_DATABASE_URL="postgres://example"\n${fixtureEnv}`);
     expect(parsed.errors).toEqual([]);

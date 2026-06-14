@@ -79,7 +79,10 @@ export function validateLiveOpsStartupContract(
       ? { values: {}, errors: [] as string[] }
       : parseLiveOpsEnvFileContent(input.envFileContent);
   const mergedEnv = { ...env, ...envFileResult.values };
-  const legacyEnvViolations = detectLegacyLiveOpsEnv(mergedEnv);
+  const legacyEnvViolations = mergeLegacyEnvViolations([
+    detectLegacyLiveOpsEnv(env),
+    detectLegacyLiveOpsEnv(envFileResult.values),
+  ]);
   const secretConfigPaths = findSecretLikeConfigPaths(input.configInput);
   const errors: string[] = [...envFileResult.errors];
 
@@ -159,6 +162,26 @@ export function assertLiveOpsStartupContract(input: LiveOpsStartupContractInput)
     config: result.config,
     secrets: loadLiveOpsSecretsFromEnv(mergedEnv, { requireTuiControlToken: result.config.tui.controls_enabled }),
   };
+}
+
+/**
+ * process env와 env file 양쪽의 legacy env 위반을 하나의 evidence 목록으로 합친다.
+ *
+ * production shell에 남아 있던 milestone flag가 env file override로 사라져 보이면 readiness 우회가 가능하므로 merge 전에 각
+ * 경계를 따로 검사한 뒤 env 이름 기준으로 중복만 제거한다.
+ */
+function mergeLegacyEnvViolations(
+  sources: readonly (readonly LiveOpsLegacyEnvViolation[])[],
+): LiveOpsLegacyEnvViolation[] {
+  const violationsByName = new Map<string, LiveOpsLegacyEnvViolation>();
+  for (const source of sources) {
+    for (const violation of source) {
+      if (!violationsByName.has(violation.envName)) {
+        violationsByName.set(violation.envName, violation);
+      }
+    }
+  }
+  return [...violationsByName.values()].sort((left, right) => left.envName.localeCompare(right.envName));
 }
 
 /**

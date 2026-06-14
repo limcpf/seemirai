@@ -8,6 +8,42 @@ export const liveOpsLegacyEnvNames = [
   "PILOT_ORDER_SMOKE",
 ];
 
+const liveOpsConfigAllowedKeys = {
+  $: [
+    "schema_version",
+    "mode",
+    "exchange",
+    "market",
+    "live_trading_enabled",
+    "paper_no_key",
+    "withdrawal_enabled",
+    "cross_exchange_arbitrage_enabled",
+    "futures_enabled",
+    "leverage_enabled",
+    "market_order_enabled",
+    "entry_market_order_enabled",
+    "universe",
+    "budget",
+    "workers",
+    "market_data",
+    "analysis",
+    "telegram",
+    "tui",
+  ],
+  universe: ["markets", "default_market"],
+  budget: [
+    "max_order_krw",
+    "daily_autonomous_notional_limit_krw",
+    "max_open_position_notional_krw",
+    "operations_stop_ceiling_krw",
+  ],
+  workers: ["db_readiness", "market_data", "analysis_decision", "live_execution", "reconcile_pnl_status", "telegram", "tui"],
+  market_data: ["provider", "websocket_enabled", "rest_policy_snapshot_enabled", "stale_after_ms"],
+  analysis: ["candle_interval_seconds", "feature_interval_seconds", "decision_interval_seconds", "record_hold_decision"],
+  telegram: ["startup_alert_enabled", "live_order_capable_alert_enabled", "trade_event_alerts_enabled", "provider_timeout_ms"],
+  tui: ["foreground_enabled", "attach_enabled", "refresh_interval_ms", "control_requires_two_step_confirmation", "controls_enabled"],
+};
+
 export function parseArgs(argv) {
   const options = {
     configPath: undefined,
@@ -116,12 +152,22 @@ Options:
 
 function validateLiveOpsConfig(config) {
   const errors = [];
+  validateAllowedKeys(errors, config, "$", liveOpsConfigAllowedKeys.$);
+  validateAllowedKeys(errors, config.universe, "universe", liveOpsConfigAllowedKeys.universe);
+  validateAllowedKeys(errors, config.budget, "budget", liveOpsConfigAllowedKeys.budget);
+  validateAllowedKeys(errors, config.workers, "workers", liveOpsConfigAllowedKeys.workers);
+  validateAllowedKeys(errors, config.market_data, "market_data", liveOpsConfigAllowedKeys.market_data);
+  validateAllowedKeys(errors, config.analysis, "analysis", liveOpsConfigAllowedKeys.analysis);
+  validateAllowedKeys(errors, config.telegram, "telegram", liveOpsConfigAllowedKeys.telegram);
+  validateAllowedKeys(errors, config.tui, "tui", liveOpsConfigAllowedKeys.tui);
   const secretPaths = findSecretLikeKeys(config);
   if (secretPaths.length > 0) {
     errors.push(`JSON config에 secret-like key가 있습니다: ${secretPaths.join(", ")}`);
   }
   if (config.schema_version !== 1) errors.push("schema_version=1 이 필요합니다.");
   if (config.mode !== "LIVE_AUTONOMOUS_SMALL_BUDGET") errors.push("mode는 LIVE_AUTONOMOUS_SMALL_BUDGET이어야 합니다.");
+  if (config.exchange !== "UPBIT") errors.push("exchange는 UPBIT이어야 합니다.");
+  if (config.market !== "KRW_SPOT") errors.push("market은 KRW_SPOT이어야 합니다.");
   if (config.live_trading_enabled !== true) errors.push("live_trading_enabled=true production contract가 필요합니다.");
   if (config.paper_no_key !== false) errors.push("paper_no_key=false production contract가 필요합니다.");
   for (const flag of [
@@ -188,21 +234,7 @@ function validateLiveOpsConfig(config) {
 }
 
 function validateLiveOpsEnv(env, processEnv) {
-  const merged = { ...processEnv, ...env };
-  const errors = [];
-  for (const name of liveOpsLegacyEnvNames) {
-    if (hasMeaningfulValue(merged[name])) {
-      errors.push(`${name}은 production live ops env로 사용할 수 없습니다.`);
-    }
-  }
-  for (const name of Object.keys(merged)) {
-    if (/^SEEMIRAI_M22_.*_READY$/u.test(name) && hasMeaningfulValue(merged[name])) {
-      errors.push(`${name}은 실제 readiness probe로 대체해야 합니다.`);
-    }
-    if (/^SEEMIRAI_RUN_UPBIT_.*_SMOKE$/u.test(name) && hasMeaningfulValue(merged[name])) {
-      errors.push(`${name}은 production live ops smoke/readiness 입력으로 사용할 수 없습니다.`);
-    }
-  }
+  const errors = dedupeStrings([...collectLegacyEnvErrors(processEnv), ...collectLegacyEnvErrors(env)]);
   for (const name of [
     "SEEMIRAI_DATABASE_URL",
     "SEEMIRAI_UPBIT_ACCESS_KEY",
@@ -221,6 +253,19 @@ function validateLiveOpsEnv(env, processEnv) {
   }
 }
 
+function validateAllowedKeys(errors, target, prefix, allowedKeys) {
+  if (target === null || typeof target !== "object" || Array.isArray(target)) {
+    return;
+  }
+
+  const allowed = new Set(allowedKeys);
+  for (const key of Object.keys(target)) {
+    if (!allowed.has(key)) {
+      errors.push(`${prefix}.${key}는 production live ops JSON config에서 허용하지 않습니다.`);
+    }
+  }
+}
+
 function validateExpectedValues(errors, target, prefix, expected) {
   if (target === null || typeof target !== "object") {
     errors.push(`${prefix} 설정이 필요합니다.`);
@@ -232,6 +277,28 @@ function validateExpectedValues(errors, target, prefix, expected) {
       errors.push(`${prefix}.${key}는 ${String(expectedValue)}이어야 합니다.`);
     }
   }
+}
+
+function collectLegacyEnvErrors(env) {
+  const errors = [];
+  for (const name of liveOpsLegacyEnvNames) {
+    if (hasMeaningfulValue(env[name])) {
+      errors.push(`${name}은 production live ops env로 사용할 수 없습니다.`);
+    }
+  }
+  for (const name of Object.keys(env)) {
+    if (/^SEEMIRAI_M22_.*_READY$/u.test(name) && hasMeaningfulValue(env[name])) {
+      errors.push(`${name}은 실제 readiness probe로 대체해야 합니다.`);
+    }
+    if (/^SEEMIRAI_RUN_UPBIT_.*_SMOKE$/u.test(name) && hasMeaningfulValue(env[name])) {
+      errors.push(`${name}은 production live ops smoke/readiness 입력으로 사용할 수 없습니다.`);
+    }
+  }
+  return errors;
+}
+
+function dedupeStrings(values) {
+  return [...new Set(values)];
 }
 
 function parseEnvFile(content) {
