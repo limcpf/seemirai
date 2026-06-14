@@ -242,6 +242,16 @@ export type {
   LiveOpsMarketDataSourceProfile,
 } from "./live-ops-market-data.js";
 export {
+  runLiveOpsAnalysisDecisionPipeline,
+} from "./live-ops-analysis-decision.js";
+export type {
+  LiveOpsAnalysisDecisionCheck,
+  LiveOpsAnalysisDecisionInput,
+  LiveOpsAnalysisDecisionStatus,
+  LiveOpsAnalysisDecisionSummary,
+  LiveOpsDecisionCategory,
+} from "./live-ops-analysis-decision.js";
+export {
   M19_EXIT_PILOT_POSITION_SOURCES,
   M19_EXIT_PILOT_SMOKE_RESULTS,
   UPBIT_PILOT_IDENTIFIER_MAX_LENGTH,

@@ -31,7 +31,9 @@ describe("production live ops script skeleton", () => {
     expect(result.stdout).toContain("DB readiness: 통과");
     expect(result.stdout).toContain("Pending migration: 없음");
     expect(result.stdout).toContain("시세 수집: DB-backed 저장 확인");
+    expect(result.stdout).toContain("분석/판단: 보류 기록 확인");
     expect(result.stdout).toContain("Market data: 체결 1 / 호가 1 / 상태 1");
+    expect(result.stdout).toContain("Analysis/decision: 보류 / 주문 후보 0");
     expect(result.stdout).toContain("후속 provider 연결 전까지 신규 실주문은 제출되지 않습니다");
     expect(result.stdout).not.toContain("fake-upbit-secret-key");
     expect(result.stdout).not.toContain("LIVE_AUTONOMOUS_SMALL_BUDGET");
@@ -70,6 +72,12 @@ describe("production live ops script skeleton", () => {
         ready: boolean;
         persisted: { tradeCount: number; orderbookCount: number; statusCount: number };
       };
+      analysisDecision: {
+        ready: boolean;
+        decisionCategory: string;
+        orderIntentCount: number;
+        recordHoldDecision: boolean;
+      };
     };
     expect(path.isAbsolute(summary.configPath)).toBe(true);
     expect(path.isAbsolute(summary.envFilePath)).toBe(true);
@@ -83,6 +91,12 @@ describe("production live ops script skeleton", () => {
       tradeCount: 1,
       orderbookCount: 1,
       statusCount: 1,
+    });
+    expect(summary.analysisDecision).toMatchObject({
+      ready: true,
+      decisionCategory: "HOLD",
+      orderIntentCount: 0,
+      recordHoldDecision: true,
     });
   });
 
@@ -112,6 +126,7 @@ describe("production live ops script skeleton", () => {
     expect(result.stdout).toContain("attach=fixture");
     expect(result.stdout).toMatch(/DB schema: 적용 v\d+ \/ 기준 v\d+/u);
     expect(result.stdout).toContain("시세 수집: DB-backed 저장 확인");
+    expect(result.stdout).toContain("분석/판단: 보류 기록 확인");
     expect(result.stdout).not.toContain("fake-local-control-token");
   });
 

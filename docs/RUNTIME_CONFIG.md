@@ -718,6 +718,7 @@ Issue #196은 M22/M23 pilot runner를 실운영 주경로로 쓰지 않고, `liv
 - config schema: `src/runtime/live-ops-config.ts`
 - DB readiness guard: `src/runtime/live-ops-db-readiness.ts`
 - market data collector: `src/runtime/live-ops-market-data.ts`
+- analysis/decision pipeline: `src/runtime/live-ops-analysis-decision.ts`
 - script skeleton: `scripts/run-live-ops.mjs`, `scripts/run-live-ops-tui.mjs`
 - 예시 JSON: `config/live-ops.example.json`
 - 예시 env: `config/live-ops.env.example`
@@ -770,8 +771,15 @@ collector는 config를 다시 `LiveOpsConfig`로 해석하고 KRW-BTC 단일 uni
 analysis/decision lifecycle로 전진시키지 않는다.
 
 fixture smoke dashboard는 외부 Upbit/DB 호출 없이 collector summary shape를 검증하고 `체결 1 / 호가 1 / 상태 1` 저장 확인을 표시한다.
-Upbit public/private probe, Telegram 실제 alert, TUI control lifecycle은 후속 sub PR에서 같은 config/env contract, DB readiness,
-market data collector 위에 연결한다.
+`LiveOpsAnalysisDecisionPipeline`은 market data collector summary, market event window, feature snapshot, strategy 목록을 같은
+runtime 경계에서 묶는다. market data가 준비되지 않았거나 feature snapshot이 실패하면 strategy를 평가하지 않고 HOLD/차단 summary로
+닫는다. feature가 통과하면 주입된 strategy들을 KRW-BTC/upbit_krw_spot context로 평가하고 order intent 수, HOLD/BLOCK count,
+`record_hold_decision` 여부를 secret-safe summary로 반환한다. 이 pipeline은 DB write, broker 호출, Upbit 호출, Telegram 전송을 하지
+않으며, live execution 연결은 다음 sub PR에서 별도로 처리한다.
+
+fixture smoke dashboard는 analysis/decision을 `보류 / 주문 후보 0 / 전략 1`로 표시한다. Upbit public/private probe, Telegram 실제 alert,
+TUI control lifecycle은 후속 sub PR에서 같은 config/env contract, DB readiness, market data collector, analysis/decision pipeline 위에
+연결한다.
 
 Autonomous entry runtime 기준:
 
