@@ -142,12 +142,17 @@ export async function loadLiveOpsCliInputs(options) {
     fixtureSmoke: options.fixtureSmoke,
     analysisDecision,
   });
+  const telegramAlert = evaluateLiveOpsCliTelegramAlert({
+    config,
+    fixtureSmoke: options.fixtureSmoke,
+    liveExecution,
+  });
 
   if (!dbReadiness.ready) {
     throw new Error(formatCliDbReadinessFailureMessage(dbReadiness));
   }
 
-  return { configPath, envFilePath, config, env, dbReadiness, marketData, analysisDecision, liveExecution };
+  return { configPath, envFilePath, config, env, dbReadiness, marketData, analysisDecision, liveExecution, telegramAlert };
 }
 
 export function renderLiveOpsSummary(input) {
@@ -165,6 +170,7 @@ export function renderLiveOpsSummary(input) {
     marketData: input.marketData,
     analysisDecision: input.analysisDecision,
     liveExecution: input.liveExecution,
+    telegramAlert: input.telegramAlert,
     budget: {
       maxOrderKrw: input.config.budget?.max_order_krw ?? null,
       dailyAutonomousNotionalLimitKrw: input.config.budget?.daily_autonomous_notional_limit_krw ?? null,
@@ -192,6 +198,8 @@ export function renderLiveOpsTuiDashboard(summary) {
         ? (summary.analysisDecision?.ready ? `${formatDecisionCategory(summary.analysisDecision.decisionCategory)} 기록 확인` : "후속 연결 대기")
       : worker === "live_execution"
         ? (summary.liveExecution?.ready ? "후보 없음 - broker 제출 없음" : "후속 연결 대기")
+      : worker === "telegram"
+        ? (summary.telegramAlert?.ready ? "fixture alert plan 확인" : "후속 연결 대기")
       : worker === "tui"
         ? "실행 중"
         : "후속 연결 대기";
@@ -227,7 +235,7 @@ export function renderLiveOpsTuiDashboard(summary) {
     `  - Market data: ${formatMarketDataObservation(summary.marketData)}`,
     `  - Analysis/decision: ${formatAnalysisDecisionObservation(summary.analysisDecision)}`,
     `  - Live execution: ${formatLiveExecutionObservation(summary.liveExecution)}`,
-    "  - Telegram alert: 후속 연결 대기",
+    `  - Telegram alert: ${formatTelegramAlertObservation(summary.telegramAlert)}`,
     "",
     `필요 조치: ${summary.liveOrderCapable ? "후보 처리 전 예산과 reconcile freshness를 재확인하세요." : "후속 provider 연결 전까지 신규 실주문은 제출되지 않습니다."}`,
     `추적 정보: config=${path.basename(summary.configPath)} attach=${summary.attach ?? "foreground"}`,
@@ -524,6 +532,19 @@ function formatLiveExecutionObservation(liveExecution) {
   ].join(" / ");
 }
 
+function formatTelegramAlertObservation(telegramAlert) {
+  if (telegramAlert?.ready !== true) {
+    return "후속 연결 대기";
+  }
+
+  return [
+    telegramAlert.statusLabel ?? "계획 확인",
+    `lifecycle ${telegramAlert.lifecycleAlertCount}`,
+    `trade ${telegramAlert.tradeAlertCount}`,
+    `provider 호출 ${telegramAlert.providerDispatchAttempted ? "있음" : "0"}`,
+  ].join(" / ");
+}
+
 function formatDecisionCategory(decisionCategory) {
   if (decisionCategory === "ORDER_INTENT") {
     return "주문 후보";
@@ -583,6 +604,61 @@ function evaluateLiveOpsCliLiveExecution({ config, fixtureSmoke, analysisDecisio
         status: "ok",
         code: "live_ops_broker_submit_skipped",
         message: "fixture smoke에서는 broker 제출 경계를 호출하지 않습니다.",
+      },
+    ],
+  };
+}
+
+function evaluateLiveOpsCliTelegramAlert({ config, fixtureSmoke, liveExecution }) {
+  const market = config.universe?.default_market ?? "KRW-BTC";
+
+  if (!fixtureSmoke || liveExecution.ready !== true) {
+    return {
+      status: "pending",
+      ready: false,
+      market,
+      liveOrderCapable: liveExecution.liveOrderCapable === true,
+      lifecycleAlertCount: 0,
+      tradeAlertCount: 0,
+      alertCount: 0,
+      providerDispatchAttempted: false,
+      statusLabel: "후속 연결 대기",
+      message: "Telegram alert mapper는 live execution lifecycle 이후 연결됩니다.",
+      checks: [
+        {
+          name: "live_execution",
+          status: "blocked",
+          code: "live_ops_telegram_pending",
+          message: "Telegram alert mapper가 후속 lifecycle에서 시작됩니다.",
+        },
+      ],
+    };
+  }
+
+  const lifecycleAlertCount = config.telegram?.startup_alert_enabled === true ? 1 : 0;
+  return {
+    status: "planned",
+    ready: true,
+    market,
+    liveOrderCapable: false,
+    lifecycleAlertCount,
+    tradeAlertCount: 0,
+    alertCount: lifecycleAlertCount,
+    providerDispatchAttempted: false,
+    statusLabel: "fixture plan",
+    message: "fixture Telegram alert mapper가 startup lifecycle alert 계획을 만들었고 provider 전송은 수행하지 않았습니다.",
+    checks: [
+      {
+        name: "telegram_connection",
+        status: "ok",
+        code: "live_ops_telegram_fixture_ready",
+        message: "fixture smoke에서는 Telegram provider를 호출하지 않고 alert plan shape만 확인합니다.",
+      },
+      {
+        name: "lifecycle_alert",
+        status: "ok",
+        code: "live_ops_lifecycle_alerts_planned",
+        message: "startup lifecycle alert 후보를 만들 수 있습니다.",
       },
     ],
   };
