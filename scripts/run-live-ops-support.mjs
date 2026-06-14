@@ -142,6 +142,11 @@ export async function loadLiveOpsCliInputs(options) {
     fixtureSmoke: options.fixtureSmoke,
     analysisDecision,
   });
+  const reconcilePnlStatus = evaluateLiveOpsCliReconcilePnlStatus({
+    config,
+    fixtureSmoke: options.fixtureSmoke,
+    liveExecution,
+  });
   const telegramAlert = evaluateLiveOpsCliTelegramAlert({
     config,
     fixtureSmoke: options.fixtureSmoke,
@@ -152,7 +157,18 @@ export async function loadLiveOpsCliInputs(options) {
     throw new Error(formatCliDbReadinessFailureMessage(dbReadiness));
   }
 
-  return { configPath, envFilePath, config, env, dbReadiness, marketData, analysisDecision, liveExecution, telegramAlert };
+  return {
+    configPath,
+    envFilePath,
+    config,
+    env,
+    dbReadiness,
+    marketData,
+    analysisDecision,
+    liveExecution,
+    reconcilePnlStatus,
+    telegramAlert,
+  };
 }
 
 export function renderLiveOpsSummary(input) {
@@ -170,6 +186,7 @@ export function renderLiveOpsSummary(input) {
     marketData: input.marketData,
     analysisDecision: input.analysisDecision,
     liveExecution: input.liveExecution,
+    reconcilePnlStatus: input.reconcilePnlStatus,
     telegramAlert: input.telegramAlert,
     budget: {
       maxOrderKrw: input.config.budget?.max_order_krw ?? null,
@@ -198,6 +215,8 @@ export function renderLiveOpsTuiDashboard(summary) {
         ? (summary.analysisDecision?.ready ? `${formatDecisionCategory(summary.analysisDecision.decisionCategory)} 기록 확인` : "후속 연결 대기")
       : worker === "live_execution"
         ? (summary.liveExecution?.ready ? "후보 없음 - broker 제출 없음" : "후속 연결 대기")
+      : worker === "reconcile_pnl_status"
+        ? (summary.reconcilePnlStatus?.ready ? "상태 요약 확인 - provider 호출 없음" : "후속 연결 대기")
       : worker === "telegram"
         ? (summary.telegramAlert?.ready ? "fixture alert plan 확인" : "후속 연결 대기")
       : worker === "tui"
@@ -235,6 +254,7 @@ export function renderLiveOpsTuiDashboard(summary) {
     `  - Market data: ${formatMarketDataObservation(summary.marketData)}`,
     `  - Analysis/decision: ${formatAnalysisDecisionObservation(summary.analysisDecision)}`,
     `  - Live execution: ${formatLiveExecutionObservation(summary.liveExecution)}`,
+    `  - Reconcile/PnL/status: ${formatReconcilePnlStatusObservation(summary.reconcilePnlStatus)}`,
     `  - Telegram alert: ${formatTelegramAlertObservation(summary.telegramAlert)}`,
     "",
     `필요 조치: ${summary.liveOrderCapable ? "후보 처리 전 예산과 reconcile freshness를 재확인하세요." : "후속 provider 연결 전까지 신규 실주문은 제출되지 않습니다."}`,
@@ -532,6 +552,20 @@ function formatLiveExecutionObservation(liveExecution) {
   ].join(" / ");
 }
 
+function formatReconcilePnlStatusObservation(reconcilePnlStatus) {
+  if (reconcilePnlStatus?.ready !== true) {
+    return "후속 연결 대기";
+  }
+
+  return [
+    reconcilePnlStatus.statusLabel ?? "상태 요약",
+    `대사 ${reconcilePnlStatus.reconcileStatusLabel}`,
+    `PnL ${reconcilePnlStatus.pnlStatusLabel}`,
+    `open 주문 ${reconcilePnlStatus.openOrderCount}`,
+    `provider 호출 ${reconcilePnlStatus.providerProbeAttempted ? "있음" : "0"}`,
+  ].join(" / ");
+}
+
 function formatTelegramAlertObservation(telegramAlert) {
   if (telegramAlert?.ready !== true) {
     return "후속 연결 대기";
@@ -604,6 +638,83 @@ function evaluateLiveOpsCliLiveExecution({ config, fixtureSmoke, analysisDecisio
         status: "ok",
         code: "live_ops_broker_submit_skipped",
         message: "fixture smoke에서는 broker 제출 경계를 호출하지 않습니다.",
+      },
+    ],
+  };
+}
+
+function evaluateLiveOpsCliReconcilePnlStatus({ config, fixtureSmoke, liveExecution }) {
+  const market = config.universe?.default_market ?? "KRW-BTC";
+
+  if (!fixtureSmoke || liveExecution.ready !== true) {
+    // live execution이 준비되지 않았으면 provider 조회로 보강하지 않고 lifecycle 순서를 보존한다.
+    return {
+      status: "pending",
+      ready: false,
+      market,
+      liveOrderCapable: liveExecution.liveOrderCapable === true,
+      latestReconcileAt: null,
+      latestPnlAt: null,
+      latestStatusAt: null,
+      reconcileStatus: "not_run",
+      reconcileStatusLabel: "후속 연결 대기",
+      pnlStatus: "not_run",
+      pnlStatusLabel: "후속 연결 대기",
+      openOrderCount: 0,
+      openExposureKrw: "0",
+      budgetUsedKrw: "0",
+      providerProbeAttempted: false,
+      statusLabel: "후속 연결 대기",
+      message: "reconcile/PnL/status summary는 live execution lifecycle 이후 연결됩니다.",
+      checks: [
+        {
+          name: "live_execution",
+          status: "blocked",
+          code: "live_ops_status_pending",
+          message: "reconcile/PnL/status summary가 후속 lifecycle에서 시작됩니다.",
+        },
+      ],
+    };
+  }
+
+  const latestStatusAt = new Date().toISOString();
+  // fixture smoke는 PnL 결측을 0으로 숨기지 않고 provider arm 전 상태를 명시한다.
+  return {
+    status: "ready",
+    ready: true,
+    market,
+    liveOrderCapable: false,
+    latestReconcileAt: null,
+    latestPnlAt: null,
+    latestStatusAt,
+    reconcileStatus: "fixture_clean",
+    reconcileStatusLabel: "정상",
+    pnlStatus: "fixture_observation_pending",
+    pnlStatusLabel: "관측 대기",
+    openOrderCount: 0,
+    openExposureKrw: "0",
+    budgetUsedKrw: "0",
+    providerProbeAttempted: false,
+    statusLabel: "fixture 요약",
+    message: "fixture reconcile/PnL/status summary가 open order 0건과 PnL 관측 대기 상태를 확인했고 provider 조회는 수행하지 않았습니다.",
+    checks: [
+      {
+        name: "reconcile_summary",
+        status: "ok",
+        code: "live_ops_reconcile_fixture_summary",
+        message: "fixture smoke에서는 private provider 조회 없이 reconcile summary shape를 확인합니다.",
+      },
+      {
+        name: "pnl_summary",
+        status: "ok",
+        code: "live_ops_pnl_fixture_pending",
+        message: "fixture smoke에서는 PnL 결측을 0으로 보정하지 않고 관측 대기 상태로 표시합니다.",
+      },
+      {
+        name: "status_surface",
+        status: "ok",
+        code: "live_ops_status_summary_ready",
+        message: "TUI/JSON safe summary에 open order와 예산/노출 placeholder를 secret 없이 노출합니다.",
       },
     ],
   };
