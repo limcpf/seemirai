@@ -32,8 +32,10 @@ describe("production live ops script skeleton", () => {
     expect(result.stdout).toContain("Pending migration: 없음");
     expect(result.stdout).toContain("시세 수집: DB-backed 저장 확인");
     expect(result.stdout).toContain("분석/판단: 보류 기록 확인");
+    expect(result.stdout).toContain("실주문 실행: 후보 없음 - broker 제출 없음");
     expect(result.stdout).toContain("Market data: 체결 1 / 호가 1 / 상태 1");
     expect(result.stdout).toContain("Analysis/decision: 보류 / 주문 후보 0");
+    expect(result.stdout).toContain("Live execution: 후보 없음 / 주문 후보 0 / broker 제출 0");
     expect(result.stdout).toContain("후속 provider 연결 전까지 신규 실주문은 제출되지 않습니다");
     expect(result.stdout).not.toContain("fake-upbit-secret-key");
     expect(result.stdout).not.toContain("LIVE_AUTONOMOUS_SMALL_BUDGET");
@@ -78,6 +80,14 @@ describe("production live ops script skeleton", () => {
         orderIntentCount: number;
         recordHoldDecision: boolean;
       };
+      liveExecution: {
+        ready: boolean;
+        status: string;
+        liveOrderCapable: boolean;
+        orderIntentCount: number;
+        attemptedOrderCount: number;
+        submittedOrderCount: number;
+      };
     };
     expect(path.isAbsolute(summary.configPath)).toBe(true);
     expect(path.isAbsolute(summary.envFilePath)).toBe(true);
@@ -97,6 +107,14 @@ describe("production live ops script skeleton", () => {
       decisionCategory: "HOLD",
       orderIntentCount: 0,
       recordHoldDecision: true,
+    });
+    expect(summary.liveExecution).toMatchObject({
+      ready: true,
+      status: "idle",
+      liveOrderCapable: false,
+      orderIntentCount: 0,
+      attemptedOrderCount: 0,
+      submittedOrderCount: 0,
     });
   });
 
@@ -127,6 +145,7 @@ describe("production live ops script skeleton", () => {
     expect(result.stdout).toMatch(/DB schema: 적용 v\d+ \/ 기준 v\d+/u);
     expect(result.stdout).toContain("시세 수집: DB-backed 저장 확인");
     expect(result.stdout).toContain("분석/판단: 보류 기록 확인");
+    expect(result.stdout).toContain("실주문 실행: 후보 없음 - broker 제출 없음");
     expect(result.stdout).not.toContain("fake-local-control-token");
   });
 

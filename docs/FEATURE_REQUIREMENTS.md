@@ -786,7 +786,7 @@ Acceptance Criteria:
 - [x] DB/migration readiness는 env boolean이 아니라 schema와 migration state로 계산된다.
 - [x] foreground TUI 첫 화면은 운영 dashboard이며 secret 원문과 raw provider payload를 노출하지 않는다.
 - [ ] market data, analysis/decision, live execution, reconcile/PnL/status, Telegram, TUI가 같은 lifecycle 안에서 시작된다.
-- [ ] 조건 통과 시 manual JSONL 없이 strategy/cost/risk/decision 결과가 live autonomous execution으로 연결된다.
+- [x] 조건 통과 시 manual JSONL 없이 strategy/cost/risk/decision 결과가 live autonomous execution adapter로 연결된다.
 
 테스트 요구사항:
 
@@ -797,11 +797,13 @@ Acceptance Criteria:
   신규 주문 차단 summary로 분류하는지 검증한다.
 - 단위 테스트: production live ops analysis/decision pipeline이 market data 미준비, feature 실패, HOLD, order intent 생성을
   secret-safe summary로 분류하는지 검증한다.
+- 단위 테스트: production live ops live execution adapter가 HOLD/analysis 차단/위험한 후보에서는 broker runtime 호출 0회를 유지하고,
+  단일 `LIMIT + post-only` 후보만 live autonomous entry runtime 요청으로 변환하는지 검증한다.
 - script smoke: `corepack pnpm live:ops -- --config config/live-ops.example.json --env-file tests/fixtures/live-ops/fake.env --fixture-smoke --tui`
   가 provider 호출 없이 TUI 운영 dashboard를 출력해야 한다.
 - script smoke: `corepack pnpm live:ops:tui -- --config config/live-ops.example.json --env-file tests/fixtures/live-ops/fake.env --fixture-smoke --attach fixture`
   가 attach 대상에 같은 TUI 운영 dashboard를 출력해야 한다.
-- 후속 sub PR에서는 live execution, fake Upbit/Telegram integration, source/security scan을 추가한다.
+- 후속 sub PR에서는 fake Upbit/Telegram integration, source/security scan을 추가한다.
 
 문서 요구사항:
 

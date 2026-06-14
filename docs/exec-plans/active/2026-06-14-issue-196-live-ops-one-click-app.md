@@ -37,7 +37,9 @@ analysis/decision, live execution, reconcile/PnL/status, Telegram, TUI 운영 �
 - Sub PR 03 완료: `live:ops -- --tui`와 `live:ops:tui -- --attach ...`가 같은 secret-safe TUI dashboard 첫 화면을 출력한다.
 - Sub PR 04 완료: production live ops market data collector가 DB-backed store contract로 trade/orderbook/status를 저장하고 TUI summary에
   저장 확인을 표시한다.
-- Sub PR 05 진행 중: analysis/decision pipeline이 market data/feature/strategy 평가를 묶고 HOLD/order intent summary를 TUI에 표시한다.
+- Sub PR 05 완료: analysis/decision pipeline이 market data/feature/strategy 평가를 묶고 HOLD/order intent summary를 TUI에 표시한다.
+- Sub PR 06 진행 중: live execution adapter가 단일 `BUY + LIMIT + post_only` 후보만 기존 live autonomous entry runtime 요청으로 낮추고,
+  HOLD/차단/복수 후보에서는 broker runtime 호출 0회를 유지한다.
 - fixture smoke는 외부 DB/provider를 호출하지 않는다. 실제 실행은 pending migration, missing table, unknown applied migration, checksum drift에서
   fail-closed 한다.
 
@@ -89,6 +91,16 @@ corepack pnpm typecheck
 ./scripts/verify docs
 ```
 
+Sub PR 06:
+
+```sh
+corepack pnpm exec vitest run tests/unit/live-ops-live-execution.test.ts tests/unit/live-ops-scripts.test.ts --reporter=verbose
+corepack pnpm live:ops -- --config config/live-ops.example.json --env-file tests/fixtures/live-ops/fake.env --fixture-smoke --tui
+corepack pnpm live:ops:tui -- --config config/live-ops.example.json --env-file tests/fixtures/live-ops/fake.env --fixture-smoke --attach fixture
+corepack pnpm typecheck
+./scripts/verify docs
+```
+
 최종 closeout:
 
 ```sh
@@ -113,11 +125,13 @@ git diff --check
   저장 후 신규 실주문 전진을 차단한다.
 - 2026-06-14: analysis/decision pipeline은 market data/feature 실패를 HOLD/차단 summary로 닫고, 성공 시 주입 strategy의 order intent
   수만 live execution sub PR로 넘길 계약으로 고정한다.
+- 2026-06-14: live execution adapter는 manual JSONL을 요구하지 않고 analysis order intent를 `LiveAutonomousEntryRuntime` 요청으로
+  변환한다. 단일 `BUY + LIMIT + post_only` 후보만 전진시키며, 후보 없음/차단/복수 후보는 broker runtime 호출 전에 닫는다.
 
 ## 남은 이슈
 
 - TUI control confirmation과 종료/attach lifecycle 정책.
 - market data DB freshness와 strategy/decision evidence 연결.
-- live execution path의 duplicate order 방지와 gated canary cleanup.
+- live execution path의 실제 provider 조립, duplicate order restart recovery evidence, gated canary cleanup.
 - Telegram 실제 startup/live order capable alert evidence.
 - production runbook과 closeout artifact 정리.
