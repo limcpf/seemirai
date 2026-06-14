@@ -4,7 +4,9 @@ import {
   parseArgs,
   printHelp,
   printJson,
+  printText,
   renderLiveOpsSummary,
+  renderLiveOpsTuiDashboard,
 } from "./run-live-ops-support.mjs";
 
 try {
@@ -14,9 +16,13 @@ try {
   } else {
     const inputs = await loadLiveOpsCliInputs(options);
     const summary = renderLiveOpsSummary({ ...options, ...inputs });
-    printJson(summary);
+    if (options.tui) {
+      printText(renderLiveOpsTuiDashboard(summary));
+    } else {
+      printJson(summary);
+    }
 
-    if (!options.fixtureSmoke) {
+    if (!options.fixtureSmoke && !options.tui) {
       process.stdout.write("DB readiness를 통과했습니다. provider/TUI lifecycle은 후속 sub PR에서 연결됩니다.\n");
     }
   }

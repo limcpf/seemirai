@@ -758,8 +758,13 @@ production live ops path에서 다음 legacy milestone/test env는 readiness 입
 디스크 migration 기준만 확인하며, 실제 실행에서는 `SEEMIRAI_DATABASE_URL`로 read-only 연결 probe와 `schema_migrations` 적용 이력을
 조회한다. pending migration, missing table, unknown applied migration, checksum drift는 live worker boot 전에 fail-closed 한다.
 
-Upbit public/private probe, Telegram 실제 alert, TUI nonblank/control lifecycle은 후속 sub PR에서 같은 config/env contract와 DB readiness
-위에 연결한다.
+`live:ops -- --tui`와 `live:ops:tui -- --attach ...`는 같은 secret-safe TUI dashboard renderer를 사용한다. 첫 화면은 모드, 시장,
+실주문 가능 여부, DB readiness/schema version, worker 상태, 예산, 최근 관측 상태, 필요 조치를 한국어로 표시하고, env file 경로,
+credential, raw provider payload, raw config enum은 노출하지 않는다. fixture smoke dashboard는 외부 DB/provider를 호출하지 않았음을
+표시하고, 후속 provider 연결 전에는 신규 실주문이 제출되지 않는 상태로 고정한다.
+
+Upbit public/private probe, Telegram 실제 alert, TUI control lifecycle은 후속 sub PR에서 같은 config/env contract와 DB readiness 위에
+연결한다.
 
 Autonomous entry runtime 기준:
 

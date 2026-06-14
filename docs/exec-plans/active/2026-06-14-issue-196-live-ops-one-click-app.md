@@ -33,7 +33,8 @@ analysis/decision, live execution, reconcile/PnL/status, Telegram, TUI 운영 �
 ## 현재 상태
 
 - Sub PR 01 완료: `LiveOpsConfig` contract, secret env loader, legacy env detector, `live:ops`/`live:ops:tui` skeleton, safe fixture를 추가했다.
-- Sub PR 02 진행 중: DB readiness를 env boolean이 아니라 read-only DB connection probe와 `schema_migrations`/디스크 migration state로 계산한다.
+- Sub PR 02 완료: DB readiness를 env boolean이 아니라 read-only DB connection probe와 `schema_migrations`/디스크 migration state로 계산한다.
+- Sub PR 03 진행 중: `live:ops -- --tui`와 `live:ops:tui -- --attach ...`가 같은 secret-safe TUI dashboard 첫 화면을 출력한다.
 - fixture smoke는 외부 DB/provider를 호출하지 않는다. 실제 실행은 pending migration, missing table, unknown applied migration, checksum drift에서
   fail-closed 한다.
 
@@ -51,6 +52,16 @@ Sub PR 02:
 
 ```sh
 corepack pnpm exec vitest run tests/unit/live-ops-db-readiness.test.ts tests/unit/live-ops-scripts.test.ts --reporter=verbose
+corepack pnpm typecheck
+./scripts/verify docs
+```
+
+Sub PR 03:
+
+```sh
+corepack pnpm exec vitest run tests/unit/live-ops-scripts.test.ts --reporter=verbose
+corepack pnpm live:ops -- --config config/live-ops.example.json --env-file tests/fixtures/live-ops/fake.env --fixture-smoke --tui
+corepack pnpm live:ops:tui -- --config config/live-ops.example.json --env-file tests/fixtures/live-ops/fake.env --fixture-smoke --attach fixture
 corepack pnpm typecheck
 ./scripts/verify docs
 ```
@@ -73,10 +84,12 @@ git diff --check
 - 2026-06-14: TUI는 필수 1차 백오피스이며 Web UI는 제외 범위다.
 - 2026-06-14: DB readiness는 migration table 생성/자동 apply를 하지 않는다. 실제 실행은 read-only schema state를 기준으로 차단하고,
   fixture smoke는 외부 DB 연결 없이 디스크 migration 기준만 확인한다.
+- 2026-06-14: foreground TUI와 attach TUI의 첫 화면은 같은 dashboard renderer를 사용하고, credential/raw provider payload/raw config enum을
+  노출하지 않는다.
 
 ## 남은 이슈
 
-- TUI foreground/attach lifecycle과 control confirmation.
+- TUI control confirmation과 종료/attach lifecycle 정책.
 - market data DB freshness와 strategy/decision evidence 연결.
 - live execution path의 duplicate order 방지와 gated canary cleanup.
 - Telegram 실제 startup/live order capable alert evidence.

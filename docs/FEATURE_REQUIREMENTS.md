@@ -784,7 +784,7 @@ Acceptance Criteria:
 - [x] secret-like key가 JSON config에 들어오면 validation이 실패한다.
 - [x] `PAPER_NO_KEY` raw code는 production user-facing 첫 화면 문구로 노출되지 않는다.
 - [x] DB/migration readiness는 env boolean이 아니라 schema와 migration state로 계산된다.
-- [ ] foreground TUI 첫 화면은 운영 dashboard이며 secret 원문과 raw provider payload를 노출하지 않는다.
+- [x] foreground TUI 첫 화면은 운영 dashboard이며 secret 원문과 raw provider payload를 노출하지 않는다.
 - [ ] market data, analysis/decision, live execution, reconcile/PnL/status, Telegram, TUI가 같은 lifecycle 안에서 시작된다.
 - [ ] 조건 통과 시 manual JSONL 없이 strategy/cost/risk/decision 결과가 live autonomous execution으로 연결된다.
 
@@ -794,10 +794,10 @@ Acceptance Criteria:
 - 단위 테스트: production live ops DB readiness가 `schema_migrations` 최신 version, pending migration, missing table, checksum drift,
   DB connection failure를 secret 없이 분류하는지 검증한다.
 - script smoke: `corepack pnpm live:ops -- --config config/live-ops.example.json --env-file tests/fixtures/live-ops/fake.env --fixture-smoke --tui`
-  가 provider 호출 없이 성공해야 한다.
+  가 provider 호출 없이 TUI 운영 dashboard를 출력해야 한다.
 - script smoke: `corepack pnpm live:ops:tui -- --config config/live-ops.example.json --env-file tests/fixtures/live-ops/fake.env --fixture-smoke --attach fixture`
-  가 attach skeleton을 검증해야 한다.
-- 후속 sub PR에서는 TUI fixture smoke/snapshot, fake Upbit/Telegram integration, source/security scan을 추가한다.
+  가 attach 대상에 같은 TUI 운영 dashboard를 출력해야 한다.
+- 후속 sub PR에서는 fake Upbit/Telegram integration, source/security scan을 추가한다.
 
 문서 요구사항:
 

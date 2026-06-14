@@ -3,8 +3,9 @@ import {
   loadLiveOpsCliInputs,
   parseArgs,
   printHelp,
-  printJson,
+  printText,
   renderLiveOpsSummary,
+  renderLiveOpsTuiDashboard,
 } from "./run-live-ops-support.mjs";
 
 try {
@@ -15,13 +16,12 @@ try {
     throw new Error("--attach <run-id|socket|status-source> 값이 필요합니다.");
   } else {
     const inputs = await loadLiveOpsCliInputs(options);
-    printJson(
-      renderLiveOpsSummary({
-        ...options,
-        ...inputs,
-        tui: true,
-      }),
-    );
+    const summary = renderLiveOpsSummary({
+      ...options,
+      ...inputs,
+      tui: true,
+    });
+    printText(renderLiveOpsTuiDashboard(summary));
   }
 } catch (error) {
   process.stderr.write(`live:ops:tui 실패: ${error instanceof Error ? error.message : String(error)}\n`);
