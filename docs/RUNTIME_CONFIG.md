@@ -709,6 +709,53 @@ M23 live-armed 운영 기준:
 - M23 이후 universe, strategy, budget 확대는 M24 범위다. M23 config나 runbook은 BTC 외 market 기본 활성화, 자동 budget 확대,
   market/best order 기본 허용을 열지 않는다.
 
+## Issue #196 production live ops config/env 기준
+
+Issue #196은 M22/M23 pilot runner를 실운영 주경로로 쓰지 않고, `live:ops`와 TUI-first 운영 콘솔을 production 경계로 분리한다.
+
+구현 기준:
+
+- config schema: `src/runtime/live-ops-config.ts`
+- script skeleton: `scripts/run-live-ops.mjs`, `scripts/run-live-ops-tui.mjs`
+- 예시 JSON: `config/live-ops.example.json`
+- 예시 env: `config/live-ops.env.example`
+- 실행 command:
+  `corepack pnpm live:ops -- --config <운영-json-path> --env-file <운영-env-path> --tui`
+- attach command:
+  `corepack pnpm live:ops:tui -- --config <운영-json-path> --env-file <운영-env-path> --attach <run-id|socket|status-source>`
+
+JSON config에는 다음처럼 secret이 아닌 운영 정책만 둔다.
+
+- `mode=LIVE_AUTONOMOUS_SMALL_BUDGET`
+- `live_trading_enabled=true`
+- `paper_no_key=false`
+- `withdrawal_enabled=false`, `futures_enabled=false`, `leverage_enabled=false`
+- `market_order_enabled=false`, `entry_market_order_enabled=false`
+- universe는 첫 production 단계에서 `KRW-BTC` 단일
+- 1회 주문 `10000` KRW, 일일 자동 주문 `30000` KRW, open position `30000` KRW, 운영 중지 ceiling `50000` KRW 미만
+- DB readiness, market data, analysis/decision, live execution, reconcile/PnL/status, Telegram, TUI worker는 모두 켜진 정책으로 둔다.
+
+env file에는 credential만 둔다.
+
+- `SEEMIRAI_DATABASE_URL`
+- `SEEMIRAI_UPBIT_ACCESS_KEY`
+- `SEEMIRAI_UPBIT_SECRET_KEY`
+- `SEEMIRAI_TELEGRAM_BOT_TOKEN`
+- `SEEMIRAI_TELEGRAM_CHAT_ID`
+- `SEEMIRAI_TUI_CONTROL_TOKEN`
+
+production live ops path에서 다음 legacy milestone/test env는 readiness 입력으로 사용하지 않는다.
+
+- `SEEMIRAI_RUN_M22_AUTONOMOUS_PILOT`
+- `SEEMIRAI_RUN_M22_AUTONOMOUS_DAEMON`
+- `SEEMIRAI_RUN_UPBIT_PRIVATE_SMOKE`
+- `SEEMIRAI_RUN_UPBIT_ORDER_SMOKE`
+- `SEEMIRAI_PILOT_PROFILE`
+- `SEEMIRAI_M22_*_READY`
+
+Sub PR 01의 `live:ops`/`live:ops:tui`는 config/env contract skeleton만 검증한다. DB migration readiness, Upbit public/private probe,
+Telegram 실제 alert, TUI nonblank/control lifecycle은 후속 sub PR에서 같은 config/env contract 위에 연결한다.
+
 Autonomous entry runtime 기준:
 
 - 구현 경계는 `LiveAutonomousEntryRuntime`이며, public entry는 `src/application/live-autonomous-entry-runtime.ts`다.

@@ -1,6 +1,6 @@
 # Upbit Live Autonomous Trading 로드맵
 
-- 상태: M22 구현 closeout, source scan, 24시간 heartbeat-only pilot, dry-run candidate canary, runner/runbook/local file preparer/기본 daemon 완료. M23/M24 운영 검증은 live canary cleanup과 7일 안정화 evidence부터 진행 (2026-06-12)
+- 상태: M22 구현 closeout, source scan, 24시간 heartbeat-only pilot, dry-run candidate canary, runner/runbook/local file preparer/기본 daemon 완료. Issue #196에서 production `live:ops`/TUI-first 운영 경로를 M22/M23 pilot과 분리하는 작업 진행 중. M23/M24 운영 검증은 live canary cleanup과 7일 안정화 evidence부터 진행 (2026-06-14)
 - 작성일: 2026-06-01
 - 관련 범위: M15 이후 post-MVP 실거래 자율 운용
 - 기준 문서: [`../PRD.md`](../PRD.md), [`../FEATURE_REQUIREMENTS.md`](../FEATURE_REQUIREMENTS.md), [`../../ARCHITECTURE.md`](../../ARCHITECTURE.md), [`./upbit-v0-2-pilot-private-api.md`](./upbit-v0-2-pilot-private-api.md), [`../RUNTIME_CONFIG.md`](../RUNTIME_CONFIG.md), [`../RELIABILITY.md`](../RELIABILITY.md), [`../SECURITY.md`](../SECURITY.md)
@@ -27,6 +27,11 @@ M14 이후에도 다음은 여전히 사실이어야 한다.
 - `UpbitLiveBroker`는 명시 live profile 없이 조립되지 않는다.
 - order smoke는 운영자가 지정한 가격, 수량, identifier로 한 번 주문하고 즉시 취소하는 검증일 뿐 자동 전략 실행이 아니다.
 - 출금, 입출금 자동화, 선물, 레버리지, 타인 계정, 신호 판매는 범위 밖이다.
+
+Issue #196 production live ops는 `live:ops`와 필수 TUI 운영 콘솔을 새로운 실운영 주경로로 둔다. 이 경로는 M22/M23 runner의
+candidate JSONL, smoke env, readiness boolean을 production readiness로 사용하지 않고, DB/migration readiness, market data freshness,
+decision evidence, live execution guard, Telegram, TUI 상태를 같은 lifecycle에서 확인해야 한다. Sub PR 01은 config/env contract와
+실행 skeleton만 고정하며, 실제 DB/provider/TUI lifecycle 연결은 후속 sub PR에서 닫는다.
 
 ## 3. 비목표
 

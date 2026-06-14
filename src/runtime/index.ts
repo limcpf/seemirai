@@ -189,6 +189,35 @@ export {
   loadRuntimeConfigFile,
 } from "./config.js";
 export {
+  LIVE_OPS_DEFAULT_MARKET,
+  LIVE_OPS_LEGACY_ENV_NAMES,
+  LIVE_OPS_LEGACY_ENV_PATTERNS,
+  LIVE_OPS_LEGACY_SMOKE_ENV_PATTERNS,
+  LIVE_OPS_PRODUCTION_MODE,
+  LIVE_OPS_REQUIRED_SECRET_ENV_NAMES,
+  LiveOpsConfigSchema,
+  UnsafeLiveOpsConfigError,
+  assertLiveOpsStartupContract,
+  defaultLiveOpsConfig,
+  detectLegacyLiveOpsEnv,
+  findSecretLikeConfigPaths,
+  formatLiveOpsModeForUser,
+  formatLiveOpsStartupFailureMessage,
+  loadLiveOpsConfig,
+  loadLiveOpsSecretsFromEnv,
+  parseLiveOpsEnvFileContent,
+  validateLiveOpsStartupContract,
+} from "./live-ops-config.js";
+export type {
+  LiveOpsConfig,
+  LiveOpsEnvFileParseResult,
+  LiveOpsLegacyEnvViolation,
+  LiveOpsSecrets,
+  LiveOpsStartupContractInput,
+  LiveOpsStartupContractValidationResult,
+  LoadLiveOpsSecretsOptions,
+} from "./live-ops-config.js";
+export {
   M19_EXIT_PILOT_POSITION_SOURCES,
   M19_EXIT_PILOT_SMOKE_RESULTS,
   UPBIT_PILOT_IDENTIFIER_MAX_LENGTH,

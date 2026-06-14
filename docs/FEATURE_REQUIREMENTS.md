@@ -763,6 +763,53 @@ Acceptance Criteria:
 - secret 원문을 issue, PR, log, artifact에 기록하는 작업.
 - 기본 `PAPER_NO_KEY` runtime의 실거래 profile 승격.
 
+### FR-OPS-005: Live Ops 원클릭 앱은 production 운영 경로와 TUI 필수 콘솔을 분리해 제공해야 한다
+
+설명:
+
+- Issue #196 production live ops는 M22/M23 pilot runner를 대체하는 운영 주경로다.
+- 운영자는 저장소 루트에서 `corepack pnpm live:ops -- --config <운영-json-path> --env-file <운영-env-path> --tui` 한 줄로 boot
+  sequence와 foreground TUI를 시작할 수 있어야 한다.
+- JSON config는 secret이 아닌 운영 정책만 담고, env file은 DB/Upbit/Telegram/TUI credential만 담는다.
+- production path는 `SEEMIRAI_RUN_M22_AUTONOMOUS_*`, `SEEMIRAI_RUN_UPBIT_*_SMOKE`, `SEEMIRAI_PILOT_PROFILE`,
+  `SEEMIRAI_M22_*_READY` 같은 milestone/test env를 readiness로 사용하지 않는다.
+- TUI는 이 issue의 1차 백오피스이며 Web UI나 HTTP dashboard만으로 완료를 대체할 수 없다.
+
+Acceptance Criteria:
+
+- [x] `package.json`에 `live:ops`와 `live:ops:tui` 실행 script skeleton이 있다.
+- [x] `LiveOpsConfig` 또는 동등 schema가 production live ops JSON 정책과 secret env를 분리한다.
+- [x] safe fixture env/config는 provider 호출 없이 contract 검증을 통과한다.
+- [x] legacy milestone env가 production live ops 실행 환경에 있으면 fail-closed 한다.
+- [x] secret-like key가 JSON config에 들어오면 validation이 실패한다.
+- [x] `PAPER_NO_KEY` raw code는 production user-facing 첫 화면 문구로 노출되지 않는다.
+- [ ] DB/migration readiness는 env boolean이 아니라 schema와 migration state로 계산된다.
+- [ ] foreground TUI 첫 화면은 운영 dashboard이며 secret 원문과 raw provider payload를 노출하지 않는다.
+- [ ] market data, analysis/decision, live execution, reconcile/PnL/status, Telegram, TUI가 같은 lifecycle 안에서 시작된다.
+- [ ] 조건 통과 시 manual JSONL 없이 strategy/cost/risk/decision 결과가 live autonomous execution으로 연결된다.
+
+테스트 요구사항:
+
+- 단위 테스트: production live ops config schema, secret env loader, legacy env detector, user-facing mode formatter를 검증한다.
+- script smoke: `corepack pnpm live:ops -- --config config/live-ops.example.json --env-file tests/fixtures/live-ops/fake.env --fixture-smoke --tui`
+  가 provider 호출 없이 성공해야 한다.
+- script smoke: `corepack pnpm live:ops:tui -- --config config/live-ops.example.json --env-file tests/fixtures/live-ops/fake.env --fixture-smoke --attach fixture`
+  가 attach skeleton을 검증해야 한다.
+- 후속 sub PR에서는 DB integration, TUI fixture smoke/snapshot, fake Upbit/Telegram integration, source/security scan을 추가한다.
+
+문서 요구사항:
+
+- config/env contract가 바뀌면 `docs/RUNTIME_CONFIG.md`, `docs/SECURITY.md`, `docs/RELIABILITY.md`,
+  `docs/product-specs/upbit-live-autonomous-trading.md`, active exec plan을 함께 갱신한다.
+- production live ops runbook을 추가하면 `docs/README.md`, `docs/runbooks/README.md`, `docs/generated/context-map.json`을 갱신한다.
+
+제외 범위:
+
+- Web 백오피스, hosted dashboard, multi-user RBAC, 모바일 앱.
+- BTC 외 market 기본 활성화, 자동 budget 확대, M24 scaled 운영.
+- 신규 진입 시장가, 시장가 매도, best order 기본 허용, hard stop open position 자동 시장가 청산.
+- 출금, 입출금 자동화, 선물, 레버리지, 마진, 타인 계정, 신호 판매.
+
 ### FR-LLM-001: LLM은 직접 매매 판단에 사용하지 않는다
 
 설명:

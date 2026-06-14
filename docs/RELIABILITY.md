@@ -34,6 +34,20 @@ Codex-native 운영은 Codex, Git, GitHub, shell command, 문서 상태를 연�
 - 실패한 검증 로그는 다음 Codex prompt에 전달 가능한 수준으로 요약한다.
 - review finding은 어떤 commit으로 처리됐는지 추적 가능해야 한다.
 
+## Issue #196 production live ops 신뢰성 기준
+
+- `live:ops` boot sequence는 env/config validation, redaction/logger, DB connection, migration/table readiness, TUI initial render,
+  Upbit public/private probe, Telegram startup alert, market data freshness, reconcile/PnL/decision/exit readiness,
+  live order capable 전환 순서로 진행한다.
+- production path는 `SEEMIRAI_M22_*_READY` 같은 boolean env를 readiness로 사용하지 않는다. readiness는 DB schema, migration state,
+  worker heartbeat, provider probe, market data freshness, reconcile/PnL/decision ledger 상태에서 계산한다.
+- boot sequence가 broker 조립 전 실패하면 private client와 live broker를 만들지 않고 한국어 상태/원인/영향/필요 조치를 출력한다.
+- broker 조립 이후 장애는 신규 주문 중지, reconcile/manual review, Telegram P0/P1, TUI 경고로 수렴한다.
+- foreground TUI와 attach TUI는 같은 secret-safe summary source를 읽어야 하며, TUI 종료 시 daemon 계속 실행/안전 종료/attach detach
+  정책을 runbook에 명시한다.
+- Sub PR 01 skeleton은 config/env contract만 검증하고 외부 provider를 호출하지 않는다. 후속 sub PR은 각 boot 단계별 fixture smoke와
+  integration evidence를 추가해야 한다.
+
 ## M23 restart/recovery drill 신뢰성 기준
 
 - M23 recovery drill은 restart 전후 event log를 같은 restart id로 묶어야 하며, 감지와 복구 Telegram/status evidence가 모두 있어야 한다.
