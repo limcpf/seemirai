@@ -799,11 +799,13 @@ Acceptance Criteria:
   secret-safe summary로 분류하는지 검증한다.
 - 단위 테스트: production live ops live execution adapter가 HOLD/analysis 차단/위험한 후보에서는 broker runtime 호출 0회를 유지하고,
   단일 `LIMIT + post-only` 후보만 live autonomous entry runtime 요청으로 변환하는지 검증한다.
+- 단위 테스트: production live ops Telegram alert mapper가 startup, live order capable, 주문 제출, 차단/manual review event를
+  `LiveOpsAlertInput`과 dispatch request로 낮추고 fake notifier dispatch 결과를 secret 없이 요약하는지 검증한다.
 - script smoke: `corepack pnpm live:ops -- --config config/live-ops.example.json --env-file tests/fixtures/live-ops/fake.env --fixture-smoke --tui`
   가 provider 호출 없이 TUI 운영 dashboard를 출력해야 한다.
 - script smoke: `corepack pnpm live:ops:tui -- --config config/live-ops.example.json --env-file tests/fixtures/live-ops/fake.env --fixture-smoke --attach fixture`
   가 attach 대상에 같은 TUI 운영 dashboard를 출력해야 한다.
-- 후속 sub PR에서는 fake Upbit/Telegram integration, source/security scan을 추가한다.
+- 후속 sub PR에서는 fake Upbit integration, source/security scan을 추가한다.
 
 문서 요구사항:
 

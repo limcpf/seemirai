@@ -262,6 +262,18 @@ export type {
   LiveOpsLiveExecutionSummary,
 } from "./live-ops-live-execution.js";
 export {
+  dispatchLiveOpsTelegramAlerts,
+  planLiveOpsTelegramAlerts,
+} from "./live-ops-telegram-alerts.js";
+export type {
+  DispatchLiveOpsTelegramAlertsInput,
+  DispatchLiveOpsTelegramAlertsSummary,
+  LiveOpsTelegramAlertCheck,
+  LiveOpsTelegramAlertPlan,
+  LiveOpsTelegramAlertPlanInput,
+  LiveOpsTelegramAlertPlanStatus,
+} from "./live-ops-telegram-alerts.js";
+export {
   M19_EXIT_PILOT_POSITION_SOURCES,
   M19_EXIT_PILOT_SMOKE_RESULTS,
   UPBIT_PILOT_IDENTIFIER_MAX_LENGTH,

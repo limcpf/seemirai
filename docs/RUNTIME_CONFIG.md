@@ -720,6 +720,7 @@ Issue #196은 M22/M23 pilot runner를 실운영 주경로로 쓰지 않고, `liv
 - market data collector: `src/runtime/live-ops-market-data.ts`
 - analysis/decision pipeline: `src/runtime/live-ops-analysis-decision.ts`
 - live execution adapter: `src/runtime/live-ops-live-execution.ts`
+- Telegram alert mapper: `src/runtime/live-ops-telegram-alerts.ts`
 - script skeleton: `scripts/run-live-ops.mjs`, `scripts/run-live-ops-tui.mjs`
 - 예시 JSON: `config/live-ops.example.json`
 - 예시 env: `config/live-ops.env.example`
@@ -786,8 +787,15 @@ idle/blocked summary로 닫는다. 주문 후보가 있더라도 첫 production 
 RiskGate 재검증, broker submit, alert dispatch side effect는 해당 하위 runtime 경계에서만 발생한다.
 
 fixture smoke dashboard는 analysis/decision을 `보류 / 주문 후보 0 / 전략 1`, live execution을 `후보 없음 / broker 제출 0`으로 표시한다.
-Upbit public/private probe, Telegram 실제 alert, TUI control lifecycle은 후속 sub PR에서 같은 config/env contract, DB readiness,
-market data collector, analysis/decision pipeline, live execution adapter 위에 연결한다.
+`LiveOpsTelegramAlerts`는 Telegram outbound readiness와 live execution summary를 기존 `LiveOpsAlertInput`/`AlertDispatchRequest`로
+낮추는 mapper다. startup alert, live order capable alert, order submitted, risk/reconcile block, manual review event를 같은
+application alert/cooldown/retry/Telegram formatter 경계에 연결한다. plan 생성은 provider를 호출하지 않으며, 실제 전송은
+`dispatchLiveOpsTelegramAlerts`가 `AlertDispatchServiceOptions`를 받은 경우에만 수행한다. provider 전송 실패는 주문/리스크 commit을
+되돌리지 않고 dispatch summary의 실패 count와 기존 retry 경계로 수렴한다.
+
+fixture smoke dashboard는 Telegram alert를 `fixture plan / lifecycle 1 / trade 0 / provider 호출 0`으로 표시한다. Upbit public/private
+probe, 실제 provider arm, TUI control lifecycle은 후속 sub PR에서 같은 config/env contract, DB readiness, market data collector,
+analysis/decision pipeline, live execution adapter, Telegram alert mapper 위에 연결한다.
 
 Autonomous entry runtime 기준:
 

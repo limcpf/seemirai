@@ -33,9 +33,11 @@ describe("production live ops script skeleton", () => {
     expect(result.stdout).toContain("시세 수집: DB-backed 저장 확인");
     expect(result.stdout).toContain("분석/판단: 보류 기록 확인");
     expect(result.stdout).toContain("실주문 실행: 후보 없음 - broker 제출 없음");
+    expect(result.stdout).toContain("Telegram 알림: fixture alert plan 확인");
     expect(result.stdout).toContain("Market data: 체결 1 / 호가 1 / 상태 1");
     expect(result.stdout).toContain("Analysis/decision: 보류 / 주문 후보 0");
     expect(result.stdout).toContain("Live execution: 후보 없음 / 주문 후보 0 / broker 제출 0");
+    expect(result.stdout).toContain("Telegram alert: fixture plan / lifecycle 1 / trade 0 / provider 호출 0");
     expect(result.stdout).toContain("후속 provider 연결 전까지 신규 실주문은 제출되지 않습니다");
     expect(result.stdout).not.toContain("fake-upbit-secret-key");
     expect(result.stdout).not.toContain("LIVE_AUTONOMOUS_SMALL_BUDGET");
@@ -88,6 +90,14 @@ describe("production live ops script skeleton", () => {
         attemptedOrderCount: number;
         submittedOrderCount: number;
       };
+      telegramAlert: {
+        ready: boolean;
+        status: string;
+        lifecycleAlertCount: number;
+        tradeAlertCount: number;
+        alertCount: number;
+        providerDispatchAttempted: boolean;
+      };
     };
     expect(path.isAbsolute(summary.configPath)).toBe(true);
     expect(path.isAbsolute(summary.envFilePath)).toBe(true);
@@ -115,6 +125,14 @@ describe("production live ops script skeleton", () => {
       orderIntentCount: 0,
       attemptedOrderCount: 0,
       submittedOrderCount: 0,
+    });
+    expect(summary.telegramAlert).toMatchObject({
+      ready: true,
+      status: "planned",
+      lifecycleAlertCount: 1,
+      tradeAlertCount: 0,
+      alertCount: 1,
+      providerDispatchAttempted: false,
     });
   });
 
@@ -146,6 +164,7 @@ describe("production live ops script skeleton", () => {
     expect(result.stdout).toContain("시세 수집: DB-backed 저장 확인");
     expect(result.stdout).toContain("분석/판단: 보류 기록 확인");
     expect(result.stdout).toContain("실주문 실행: 후보 없음 - broker 제출 없음");
+    expect(result.stdout).toContain("Telegram 알림: fixture alert plan 확인");
     expect(result.stdout).not.toContain("fake-local-control-token");
   });
 
