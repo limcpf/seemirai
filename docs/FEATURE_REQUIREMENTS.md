@@ -785,7 +785,7 @@ Acceptance Criteria:
 - [x] `PAPER_NO_KEY` raw code는 production user-facing 첫 화면 문구로 노출되지 않는다.
 - [x] DB/migration readiness는 env boolean이 아니라 schema와 migration state로 계산된다.
 - [x] foreground TUI 첫 화면은 운영 dashboard이며 secret 원문과 raw provider payload를 노출하지 않는다.
-- [ ] market data, analysis/decision, live execution, reconcile/PnL/status, Telegram, TUI가 같은 lifecycle 안에서 시작된다.
+- [x] market data, analysis/decision, live execution, reconcile/PnL/status, Telegram, TUI가 같은 lifecycle 안에서 시작된다.
 - [x] 조건 통과 시 manual JSONL 없이 strategy/cost/risk/decision 결과가 live autonomous execution adapter로 연결된다.
 
 테스트 요구사항:
@@ -801,11 +801,13 @@ Acceptance Criteria:
   단일 `LIMIT + post-only` 후보만 live autonomous entry runtime 요청으로 변환하는지 검증한다.
 - 단위 테스트: production live ops Telegram alert mapper가 startup, live order capable, 주문 제출, 차단/manual review event를
   `LiveOpsAlertInput`과 dispatch request로 낮추고 fake notifier dispatch 결과를 secret 없이 요약하는지 검증한다.
+- 단위 테스트: production live ops script/runtime source scan이 direct Upbit order API, raw Authorization/Bearer header, direct Telegram
+  provider 호출을 만들지 않는지 검증한다.
 - script smoke: `corepack pnpm live:ops -- --config config/live-ops.example.json --env-file tests/fixtures/live-ops/fake.env --fixture-smoke --tui`
   가 provider 호출 없이 TUI 운영 dashboard를 출력해야 한다.
 - script smoke: `corepack pnpm live:ops:tui -- --config config/live-ops.example.json --env-file tests/fixtures/live-ops/fake.env --fixture-smoke --attach fixture`
   가 attach 대상에 같은 TUI 운영 dashboard를 출력해야 한다.
-- 후속 sub PR에서는 fake Upbit integration, source/security scan을 추가한다.
+- 후속 provider arm 범위에서는 fake Upbit integration evidence를 별도 issue/PR에서 추가한다.
 
 문서 요구사항:
 

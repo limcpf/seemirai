@@ -56,6 +56,9 @@ Codex-native 운영은 Codex, Git, GitHub, shell command, 문서 상태를 연�
   단일 `BUY + LIMIT + post_only` 후보만 기존 `LiveAutonomousEntryRuntime` 요청으로 낮추며, budget reservation과 broker submit side
   effect는 하위 runtime이 반환한 attempt 결과로만 확정한다. 하위 runtime 예외는 제출 여부를 단정하지 않고 manual review summary로
   수렴한다.
+- reconcile/PnL/status summary는 live execution 이후 같은 lifecycle에서 계산하되, fixture smoke에서는 private provider 조회를 수행하지
+  않는다. open order, 예산 사용, 노출은 safe placeholder로 표시하고 PnL 결측은 0으로 보정하지 않고 `관측 대기`로 남겨 실제
+  reconcile/PnL evidence 연결 전까지 운영자가 상태 의미를 오해하지 않게 한다.
 - Telegram alert mapper는 startup, live order capable, 주문 제출, 차단, manual review event를 provider 호출 전 `LiveOpsAlertInput`으로
   낮춘다. fixture smoke는 alert plan만 만들고 provider 전송 0회를 유지하며, 실제 dispatch 실패는 주문/리스크 commit을 되돌리지 않고
   notification retry/manual review summary로 격리한다.

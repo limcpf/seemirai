@@ -721,6 +721,7 @@ Issue #196은 M22/M23 pilot runner를 실운영 주경로로 쓰지 않고, `liv
 - analysis/decision pipeline: `src/runtime/live-ops-analysis-decision.ts`
 - live execution adapter: `src/runtime/live-ops-live-execution.ts`
 - Telegram alert mapper: `src/runtime/live-ops-telegram-alerts.ts`
+- CLI/TUI reconcile/PnL/status summary: `scripts/run-live-ops-support.mjs`
 - script skeleton: `scripts/run-live-ops.mjs`, `scripts/run-live-ops-tui.mjs`
 - 예시 JSON: `config/live-ops.example.json`
 - 예시 env: `config/live-ops.env.example`
@@ -787,6 +788,11 @@ idle/blocked summary로 닫는다. 주문 후보가 있더라도 첫 production 
 RiskGate 재검증, broker submit, alert dispatch side effect는 해당 하위 runtime 경계에서만 발생한다.
 
 fixture smoke dashboard는 analysis/decision을 `보류 / 주문 후보 0 / 전략 1`, live execution을 `후보 없음 / broker 제출 0`으로 표시한다.
+reconcile/PnL/status summary는 같은 fixture lifecycle에서 open order, 예산 사용, 노출, PnL 관측 상태를 secret-safe shape로 묶는다.
+fixture smoke는 private provider 조회를 수행하지 않고 `대사 정상 / PnL 관측 대기 / open 주문 0 / provider 호출 0`을 TUI 최근 관측에
+표시한다. PnL 결측은 실제 0으로 보정하지 않고 `관측 대기`로 남겨 후속 provider arm에서 reconcile/PnL evidence가 연결될 때까지
+운영자가 상태 의미를 구분할 수 있게 한다.
+
 `LiveOpsTelegramAlerts`는 Telegram outbound readiness와 live execution summary를 기존 `LiveOpsAlertInput`/`AlertDispatchRequest`로
 낮추는 mapper다. startup alert, live order capable alert, order submitted, risk/reconcile block, manual review event를 같은
 application alert/cooldown/retry/Telegram formatter 경계에 연결한다. plan 생성은 provider를 호출하지 않으며, 실제 전송은
@@ -794,8 +800,8 @@ application alert/cooldown/retry/Telegram formatter 경계에 연결한다. plan
 되돌리지 않고 dispatch summary의 실패 count와 기존 retry 경계로 수렴한다.
 
 fixture smoke dashboard는 Telegram alert를 `fixture plan / lifecycle 1 / trade 0 / provider 호출 0`으로 표시한다. Upbit public/private
-probe, 실제 provider arm, TUI control lifecycle은 후속 sub PR에서 같은 config/env contract, DB readiness, market data collector,
-analysis/decision pipeline, live execution adapter, Telegram alert mapper 위에 연결한다.
+probe, 실제 provider arm, TUI control lifecycle은 후속 범위에서 같은 config/env contract, DB readiness, market data collector,
+analysis/decision pipeline, live execution adapter, reconcile/PnL/status summary, Telegram alert mapper 위에 연결한다.
 
 Autonomous entry runtime 기준:
 

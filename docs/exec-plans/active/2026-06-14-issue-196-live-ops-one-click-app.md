@@ -40,8 +40,10 @@ analysis/decision, live execution, reconcile/PnL/status, Telegram, TUI 운영 �
 - Sub PR 05 완료: analysis/decision pipeline이 market data/feature/strategy 평가를 묶고 HOLD/order intent summary를 TUI에 표시한다.
 - Sub PR 06 완료: live execution adapter가 단일 `BUY + LIMIT + post_only` 후보만 기존 live autonomous entry runtime 요청으로 낮추고,
   HOLD/차단/복수 후보에서는 broker runtime 호출 0회를 유지한다.
-- Sub PR 07 진행 중: Telegram alert mapper가 startup/live order capable/trade block/order submitted event를 기존 live ops alert
+- Sub PR 07 완료: Telegram alert mapper가 startup/live order capable/trade block/order submitted event를 기존 live ops alert
   dispatch request로 낮추고 fixture TUI에는 provider 호출 0회 plan을 표시한다.
+- Sub PR 08 완료: legacy cleanup/docs/closeout으로 reconcile/PnL/status fixture summary와 production live ops source/security scan을
+  추가해 TUI 첫 화면의 모든 필수 worker가 같은 fixture lifecycle 안에서 요약된다.
 - fixture smoke는 외부 DB/provider를 호출하지 않는다. 실제 실행은 pending migration, missing table, unknown applied migration, checksum drift에서
   fail-closed 한다.
 
@@ -113,6 +115,17 @@ corepack pnpm typecheck
 ./scripts/verify docs
 ```
 
+Sub PR 08:
+
+```sh
+corepack pnpm exec vitest run tests/unit/live-ops-scripts.test.ts --reporter=verbose
+corepack pnpm live:ops -- --config config/live-ops.example.json --env-file tests/fixtures/live-ops/fake.env --fixture-smoke --tui
+corepack pnpm live:ops:tui -- --config config/live-ops.example.json --env-file tests/fixtures/live-ops/fake.env --fixture-smoke --attach fixture
+corepack pnpm typecheck
+./scripts/verify docs
+git diff --check
+```
+
 최종 closeout:
 
 ```sh
@@ -141,6 +154,10 @@ git diff --check
   변환한다. 단일 `BUY + LIMIT + post_only` 후보만 전진시키며, 후보 없음/차단/복수 후보는 broker runtime 호출 전에 닫는다.
 - 2026-06-14: Telegram alert mapper는 provider 호출 전 startup/live order capable/trade event plan을 만들고, fake notifier dispatch로
   기존 `LiveOpsAlertInput`/cooldown/retry 경계와 연결되는지 검증한다.
+- 2026-06-14: reconcile/PnL/status fixture summary는 private provider 조회 없이 open order, 예산 사용, 노출, PnL 관측 상태를
+  TUI/JSON에 표시한다. PnL 결측은 0으로 보정하지 않고 `관측 대기`로 남긴다.
+- 2026-06-14: production live ops source/security scan은 issue #196 경로가 direct Upbit order API, raw Authorization/Bearer header,
+  direct Telegram provider 호출을 만들지 않는지 검증한다.
 
 ## 남은 이슈
 
@@ -148,4 +165,4 @@ git diff --check
 - market data DB freshness와 strategy/decision evidence 연결.
 - live execution path의 실제 provider 조립, duplicate order restart recovery evidence, gated canary cleanup.
 - Telegram 실제 startup/live order capable alert evidence.
-- production runbook과 closeout artifact 정리.
+- production runbook과 provider arm closeout artifact 정리.

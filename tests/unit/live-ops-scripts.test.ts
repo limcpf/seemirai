@@ -33,10 +33,12 @@ describe("production live ops script skeleton", () => {
     expect(result.stdout).toContain("시세 수집: DB-backed 저장 확인");
     expect(result.stdout).toContain("분석/판단: 보류 기록 확인");
     expect(result.stdout).toContain("실주문 실행: 후보 없음 - broker 제출 없음");
+    expect(result.stdout).toContain("Reconcile/PnL/status: 상태 요약 확인 - provider 호출 없음");
     expect(result.stdout).toContain("Telegram 알림: fixture alert plan 확인");
     expect(result.stdout).toContain("Market data: 체결 1 / 호가 1 / 상태 1");
     expect(result.stdout).toContain("Analysis/decision: 보류 / 주문 후보 0");
     expect(result.stdout).toContain("Live execution: 후보 없음 / 주문 후보 0 / broker 제출 0");
+    expect(result.stdout).toContain("Reconcile/PnL/status: fixture 요약 / 대사 정상 / PnL 관측 대기 / open 주문 0 / provider 호출 0");
     expect(result.stdout).toContain("Telegram alert: fixture plan / lifecycle 1 / trade 0 / provider 호출 0");
     expect(result.stdout).toContain("후속 provider 연결 전까지 신규 실주문은 제출되지 않습니다");
     expect(result.stdout).not.toContain("fake-upbit-secret-key");
@@ -90,6 +92,14 @@ describe("production live ops script skeleton", () => {
         attemptedOrderCount: number;
         submittedOrderCount: number;
       };
+      reconcilePnlStatus: {
+        ready: boolean;
+        status: string;
+        reconcileStatus: string;
+        pnlStatus: string;
+        openOrderCount: number;
+        providerProbeAttempted: boolean;
+      };
       telegramAlert: {
         ready: boolean;
         status: string;
@@ -125,6 +135,14 @@ describe("production live ops script skeleton", () => {
       orderIntentCount: 0,
       attemptedOrderCount: 0,
       submittedOrderCount: 0,
+    });
+    expect(summary.reconcilePnlStatus).toMatchObject({
+      ready: true,
+      status: "ready",
+      reconcileStatus: "fixture_clean",
+      pnlStatus: "fixture_observation_pending",
+      openOrderCount: 0,
+      providerProbeAttempted: false,
     });
     expect(summary.telegramAlert).toMatchObject({
       ready: true,
@@ -164,8 +182,42 @@ describe("production live ops script skeleton", () => {
     expect(result.stdout).toContain("시세 수집: DB-backed 저장 확인");
     expect(result.stdout).toContain("분석/판단: 보류 기록 확인");
     expect(result.stdout).toContain("실주문 실행: 후보 없음 - broker 제출 없음");
+    expect(result.stdout).toContain("Reconcile/PnL/status: 상태 요약 확인 - provider 호출 없음");
     expect(result.stdout).toContain("Telegram 알림: fixture alert plan 확인");
     expect(result.stdout).not.toContain("fake-local-control-token");
+  });
+
+  it("production live ops closeout source scan은 provider 직접 호출 경계가 없음을 확인한다", async () => {
+    const productionFiles = [
+      "scripts/run-live-ops-support.mjs",
+      "scripts/run-live-ops.mjs",
+      "scripts/run-live-ops-tui.mjs",
+      "src/runtime/live-ops-market-data.ts",
+      "src/runtime/live-ops-market-data/collector.ts",
+      "src/runtime/live-ops-analysis-decision.ts",
+      "src/runtime/live-ops-analysis-decision/pipeline.ts",
+      "src/runtime/live-ops-live-execution.ts",
+      "src/runtime/live-ops-live-execution/service.ts",
+      "src/runtime/live-ops-telegram-alerts.ts",
+      "src/runtime/live-ops-telegram-alerts/plan.ts",
+    ];
+    const forbiddenPatterns = [
+      /POST\s+\/v1\/orders/u,
+      /DELETE\s+\/v1\/order/u,
+      /Authorization/u,
+      /Bearer/u,
+      /UpbitPrivateRestClient/u,
+      /createGuardedUpbitLiveBrokerRuntime/u,
+      /sendMessage/u,
+      /fetch\s*\(/u,
+    ];
+
+    for (const filePath of productionFiles) {
+      const content = await readFile(path.join(process.cwd(), filePath), "utf8");
+      for (const forbiddenPattern of forbiddenPatterns) {
+        expect(content, `${filePath} must not match ${forbiddenPattern.source}`).not.toMatch(forbiddenPattern);
+      }
+    }
   });
 
   it("live:ops:tui attach skeleton은 attach 대상 없이는 실패한다", () => {
