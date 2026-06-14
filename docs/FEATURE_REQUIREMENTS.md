@@ -793,11 +793,13 @@ Acceptance Criteria:
 - 단위 테스트: production live ops config schema, secret env loader, legacy env detector, user-facing mode formatter를 검증한다.
 - 단위 테스트: production live ops DB readiness가 `schema_migrations` 최신 version, pending migration, missing table, checksum drift,
   DB connection failure를 secret 없이 분류하는지 검증한다.
+- 단위 테스트: production live ops market data collector가 KRW-BTC event만 DB-backed store 경계로 저장하고, stale/reconnect/disconnect를
+  신규 주문 차단 summary로 분류하는지 검증한다.
 - script smoke: `corepack pnpm live:ops -- --config config/live-ops.example.json --env-file tests/fixtures/live-ops/fake.env --fixture-smoke --tui`
   가 provider 호출 없이 TUI 운영 dashboard를 출력해야 한다.
 - script smoke: `corepack pnpm live:ops:tui -- --config config/live-ops.example.json --env-file tests/fixtures/live-ops/fake.env --fixture-smoke --attach fixture`
   가 attach 대상에 같은 TUI 운영 dashboard를 출력해야 한다.
-- 후속 sub PR에서는 fake Upbit/Telegram integration, source/security scan을 추가한다.
+- 후속 sub PR에서는 analysis/decision, live execution, fake Upbit/Telegram integration, source/security scan을 추가한다.
 
 문서 요구사항:
 

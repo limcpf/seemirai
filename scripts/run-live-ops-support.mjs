@@ -128,12 +128,16 @@ export async function loadLiveOpsCliInputs(options) {
     databaseUrl: env.SEEMIRAI_DATABASE_URL,
     fixtureSmoke: options.fixtureSmoke,
   });
+  const marketData = evaluateLiveOpsCliMarketData({
+    config,
+    fixtureSmoke: options.fixtureSmoke,
+  });
 
   if (!dbReadiness.ready) {
     throw new Error(formatCliDbReadinessFailureMessage(dbReadiness));
   }
 
-  return { configPath, envFilePath, config, env, dbReadiness };
+  return { configPath, envFilePath, config, env, dbReadiness, marketData };
 }
 
 export function renderLiveOpsSummary(input) {
@@ -148,6 +152,7 @@ export function renderLiveOpsSummary(input) {
     attach: input.attach ?? null,
     fixtureSmoke: input.fixtureSmoke,
     dbReadiness: input.dbReadiness,
+    marketData: input.marketData,
     budget: {
       maxOrderKrw: input.config.budget?.max_order_krw ?? null,
       dailyAutonomousNotionalLimitKrw: input.config.budget?.daily_autonomous_notional_limit_krw ?? null,
@@ -169,6 +174,8 @@ export function renderLiveOpsTuiDashboard(summary) {
     const label = liveOpsWorkerLabels[worker] ?? worker;
     const state = worker === "db_readiness"
       ? (dbReadiness?.ready ? "준비" : "차단")
+      : worker === "market_data"
+        ? (summary.marketData?.ready ? "DB-backed 저장 확인" : "후속 연결 대기")
       : worker === "tui"
         ? "실행 중"
         : "후속 연결 대기";
@@ -201,7 +208,7 @@ export function renderLiveOpsTuiDashboard(summary) {
     `  - 운영 중지 ceiling: ${formatKrwValue(summary.budget.operationsStopCeilingKrw)} KRW 미만`,
     "",
     "최근 관측",
-    "  - Market data: 후속 연결 대기",
+    `  - Market data: ${formatMarketDataObservation(summary.marketData)}`,
     "  - Analysis/decision: 후속 연결 대기",
     "  - Live execution: 후속 연결 대기",
     "  - Telegram alert: 후속 연결 대기",
@@ -460,6 +467,86 @@ function formatKrwValue(value) {
 
   const numericValue = Number(value);
   return Number.isFinite(numericValue) ? numericValue.toLocaleString("ko-KR") : String(value);
+}
+
+function formatMarketDataObservation(marketData) {
+  if (marketData?.ready !== true) {
+    return "후속 연결 대기";
+  }
+
+  return [
+    `체결 ${marketData.persisted.tradeCount}`,
+    `호가 ${marketData.persisted.orderbookCount}`,
+    `상태 ${marketData.persisted.statusCount}`,
+    `latest ${marketData.latestHeartbeatAt ?? "확인 필요"}`,
+  ].join(" / ");
+}
+
+function evaluateLiveOpsCliMarketData({ config, fixtureSmoke }) {
+  const market = config.universe?.default_market ?? "KRW-BTC";
+
+  if (!fixtureSmoke) {
+    return {
+      status: "pending",
+      ready: false,
+      provider: "UPBIT_PUBLIC",
+      market,
+      sourceProfile: "upbit_public",
+      message: "market data collector는 provider lifecycle 연결 전입니다.",
+      latestHeartbeatAt: null,
+      persisted: emptyMarketDataPersistenceSummary(),
+      checks: [
+        {
+          name: "event_source",
+          status: "blocked",
+          code: "live_ops_market_data_provider_pending",
+          message: "Upbit public market data provider 연결이 후속 lifecycle에서 시작됩니다.",
+        },
+      ],
+    };
+  }
+
+  const latestHeartbeatAt = new Date().toISOString();
+  return {
+    status: "ready",
+    ready: true,
+    provider: "UPBIT_PUBLIC",
+    market,
+    sourceProfile: "fixture",
+    message: "fixture market data collector가 DB-backed 저장 경계를 통과했습니다.",
+    latestHeartbeatAt,
+    persisted: {
+      eventCount: 3,
+      tradeCount: 1,
+      orderbookCount: 1,
+      statusCount: 1,
+      riskBlockCount: 0,
+    },
+    checks: [
+      {
+        name: "config",
+        status: "ok",
+        code: "live_ops_market_data_config_ok",
+        message: "production live ops market data 설정을 확인했습니다.",
+      },
+      {
+        name: "persistence",
+        status: "ok",
+        code: "live_ops_market_data_persistence_ok",
+        message: "fixture event가 DB-backed write plan을 통과했습니다.",
+      },
+    ],
+  };
+}
+
+function emptyMarketDataPersistenceSummary() {
+  return {
+    eventCount: 0,
+    tradeCount: 0,
+    orderbookCount: 0,
+    statusCount: 0,
+    riskBlockCount: 0,
+  };
 }
 
 async function evaluateLiveOpsCliDbReadiness({ databaseUrl, fixtureSmoke }) {

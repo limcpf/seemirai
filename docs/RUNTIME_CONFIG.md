@@ -717,6 +717,7 @@ Issue #196은 M22/M23 pilot runner를 실운영 주경로로 쓰지 않고, `liv
 
 - config schema: `src/runtime/live-ops-config.ts`
 - DB readiness guard: `src/runtime/live-ops-db-readiness.ts`
+- market data collector: `src/runtime/live-ops-market-data.ts`
 - script skeleton: `scripts/run-live-ops.mjs`, `scripts/run-live-ops-tui.mjs`
 - 예시 JSON: `config/live-ops.example.json`
 - 예시 env: `config/live-ops.env.example`
@@ -763,8 +764,14 @@ production live ops path에서 다음 legacy milestone/test env는 readiness 입
 credential, raw provider payload, raw config enum은 노출하지 않는다. fixture smoke dashboard는 외부 DB/provider를 호출하지 않았음을
 표시하고, 후속 provider 연결 전에는 신규 실주문이 제출되지 않는 상태로 고정한다.
 
-Upbit public/private probe, Telegram 실제 alert, TUI control lifecycle은 후속 sub PR에서 같은 config/env contract와 DB readiness 위에
-연결한다.
+`LiveOpsMarketDataCollector`는 `UPBIT_PUBLIC` production event source를 기존 DB-backed `MarketDataRuntimeEventStore`에 저장한다.
+collector는 config를 다시 `LiveOpsConfig`로 해석하고 KRW-BTC 단일 universe, `upbit_krw_spot` exchange, trade/orderbook/status event
+범위를 검증한다. 허용 market 밖 event는 DB write 전에 차단하고, stale/reconnect/disconnect status는 audit/risk evidence로 저장하되
+analysis/decision lifecycle로 전진시키지 않는다.
+
+fixture smoke dashboard는 외부 Upbit/DB 호출 없이 collector summary shape를 검증하고 `체결 1 / 호가 1 / 상태 1` 저장 확인을 표시한다.
+Upbit public/private probe, Telegram 실제 alert, TUI control lifecycle은 후속 sub PR에서 같은 config/env contract, DB readiness,
+market data collector 위에 연결한다.
 
 Autonomous entry runtime 기준:
 
