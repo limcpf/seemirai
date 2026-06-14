@@ -7,6 +7,7 @@ import type {
 import type {
   KillSwitchControlProvider,
   LiveAutonomousExitStatusSummary,
+  LiveOpsStatusSummary,
   PnLAccountingStatusProvider,
   PnLAccountingStatusSummary,
 } from "../../application/index.js";
@@ -158,6 +159,8 @@ export interface ControlStatusSnapshot {
   reconcile: ReconcileStatusSummary;
   /** M22 live autonomous exit 연결 상태 summary다. 부분 체결, cancel/requote, reconcile mismatch를 한국어 조치로 낮춘다. */
   liveAutonomousExit: LiveAutonomousExitStatusSummary;
+  /** M23 live small-budget 운영 상태 summary다. DB-backed provider는 항상 채우며 custom fixture provider는 생략할 수 있다. */
+  liveOps?: LiveOpsStatusSummary;
   /** M18 판단 이유 ledger 기반 `/status.why` safe summary다. 별도 write/control endpoint는 없다. */
   why: WhySummary | null;
 }
@@ -264,6 +267,13 @@ export interface CreateDatabaseControlStatusProviderOptions {
    * 실제 exit worker나 테스트 fixture가 최근 실행 결과를 이미 요약한 경우 이 값을 그대로 사용한다.
    */
   liveAutonomousExit?: LiveAutonomousExitStatusSummary;
+  /**
+   * `/status.liveOps`에 노출할 M23 live small-budget safe summary다.
+   *
+   * 실제 lifecycle/event collector가 이미 최신 후보, 판단, 주문, 체결 evidence를 secret-safe로 낮춘 경우 이 값을 주입한다.
+   * 생략하면 DB-backed provider가 현재 runtime/reconcile/PnL/alert 상태만으로 보수적 summary를 생성한다.
+   */
+  liveOpsStatus?: LiveOpsStatusSummary;
   expectedMigrationVersion?: number;
   clock?: () => Date;
   marketData?: {

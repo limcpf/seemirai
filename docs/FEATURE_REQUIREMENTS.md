@@ -704,6 +704,65 @@ heartbeat-only pilot이며 crash, unhandled rejection, risk gate 우회 주문, 
   hard stop 자동 시장가 청산, Telegram public webhook endpoint, 출금/입출금 자동화, 선물, 레버리지, 마진, 타인 계정, 신호 판매,
   LLM 직접 매수/매도 판단은 제외한다.
 
+### FR-OPS-004: M23 24/7 live small-budget 운영은 live-armed 상태와 실시간 가시성을 증명해야 한다
+
+설명:
+
+- M23은 `LIVE_AUTONOMOUS_SMALL_BUDGET`를 dry-run이나 heartbeat-only가 아니라 실제 주문 API를 호출할 수 있는 live-armed 상태로 24/7 운영 가능하게 만드는 단계다.
+- 완료 기준은 수익 검증이 아니라 운영자가 Telegram, CLI, status, report에서 현재 runtime이 살아 있는지, dry-run인지 live인지, 주문 가능한 상태인지, 최근 왜 주문했거나 하지 않았는지, 주문/취소/체결/차단이 있었는지를 secret 없이 확인할 수 있는지다.
+- 7일 안정화는 실제 주문 가능 설정으로 arm 한 상태에서 수행한다. 시장 조건이 gate를 통과하지 않아 주문이 없어도 되지만, 후보 없음, gate 차단, 시장 조건 미충족 같은 이유가 decision evidence와 daily report에 남아야 한다.
+- M24 전략 확장, universe 확대, budget 확대는 M23 closeout PASS 이후 별도 issue로 진행한다.
+
+Acceptance Criteria:
+
+- [ ] 운영자가 현재 runtime이 실제 주문 가능 `LIVE_AUTONOMOUS_SMALL_BUDGET` 상태인지 dry-run 또는 heartbeat-only 상태인지 즉시 확인할 수 있다.
+- [ ] status 표면은 live enabled, key scope, readiness, latest reconcile, latest heartbeat, latest candidate, latest decision, latest order attempt, latest fill/cancel, budget used, open exposure, risk block, alert retry 상태를 secret 없이 보여준다.
+- [ ] Telegram 또는 CLI에서 "지금 돌고 있는가 / 매매 가능한가 / 최근 왜 주문했거나 안 했는가 / 현재 포지션과 현금은 어떤가"를 확인할 수 있다.
+- [ ] Telegram 연결 성공 알림과 실제 주문 가능 상태 시작 알림은 분리되어 한국어 상태, 원인, 영향, 필요 조치를 먼저 보여준다.
+- [ ] 정상 종료, operator stop, kill switch, manual review, crash/restart 감지, Telegram 장애 지속은 종료/중지/주의 알림과 audit evidence로 남는다.
+- [ ] 주문 제출, 취소 요청, 취소 확인, 체결, 부분체결, risk/cost/reconcile 차단 이벤트는 운영자가 현재 매매 상태를 이해할 수 있게 요약된다.
+- [ ] Telegram 알림 실패는 P0/P1 retry evidence와 manual review 수렴 상태로 남긴다.
+- [ ] 7일 운영 runbook은 실제 매매 가능 상태 arm 절차, 사전 점검, 중지/kill switch, restart 복구, daily artifact 확인, 수동 점검 절차를 포함한다.
+- [ ] M23 7일 closeout은 dry-run이 아니라 live order API를 호출할 수 있는 설정으로 실행한 redacted evidence를 요구한다.
+- [ ] 실제 주문이 없었던 날도 후보 없음, gate 차단, 시장 조건 미충족, operator stop, kill switch 같은 이유가 daily report와 decision evidence에 남는다.
+- [ ] 7일 연속 live small-budget daily report가 생성된다.
+- [ ] process 재시작 후 reconcile과 status가 정상 복구된다.
+- [ ] DB backup/restore smoke drill이 disposable restore DB에서 통과하거나, 실행 불가 시 blocker와 필요한 외부 조건이 closeout에 기록된다.
+- [ ] Upbit 장애, 점검, market warning, stale data, API 오류는 신규 entry fail-closed와 alert/manual review evidence를 남긴다.
+- [ ] 7일 동안 crash 0회, unhandled rejection 0회, risk gate 우회 주문 0건, reconcile mismatch 0건, duplicate order 0건, untracked fill 0건, live order cleanup failure 0건을 증명한다.
+- [ ] live canary 1회 성공, dry-run, heartbeat-only만으로 M23 완료를 선언하지 않는다.
+
+테스트 요구사항:
+
+- 단위 테스트: live ops safe summary가 mode, live armed/order capable, readiness, latest heartbeat/reconcile/decision/order, budget/exposure, alert retry를 secret 없이 반환하는지 확인한다.
+- 단위 테스트: user-facing formatter가 내부 enum/code만 노출하지 않고 한국어 상태, 원인, 영향, 필요 조치를 먼저 보여주며 내부 식별자는 `추적 정보`로 분리하는지 확인한다.
+- 단위 테스트: Telegram lifecycle/trade event mapper가 연결 성공, live order capable start, stop/manual review/crash/restart, 주문/취소/체결/차단 이벤트를 안전한 알림 payload로 낮추는지 확인한다.
+- 통합 테스트: restart 후 기존 order attempt/reconcile/status를 읽어 duplicate live order 없이 복구되는지 확인한다.
+- smoke/drill: `scripts/run-m23-recovery-drill.mjs --fixture-smoke`로 validator contract를 검증하고, 운영 closeout 전에는 restart 전후
+  redacted event log와 DB backup/restore 결과 또는 blocker evidence로 같은 validator를 실행한다.
+- smoke/drill: `scripts/run-m23-stability-closeout.mjs --fixture-smoke`로 7일 closeout manifest contract를 검증하고, 운영 closeout 전에는
+  7개 이상 24시간 segment summary, recovery drill summary, DB backup/restore 결과 또는 blocker, source scan evidence를 같은
+  validator로 집계한다.
+- smoke/drill: DB backup/restore를 disposable restore DB에서 실행하거나, 외부 DB 조건 미충족 시 blocker evidence를 남긴다.
+- source scan: live order API, market/best order, 출금/입금, raw secret 노출 후보가 M23 guard 밖에서 열리지 않았는지 확인한다.
+- gated 운영 검증: 저장소 밖 env/key/config/evidence가 준비된 환경에서 24시간 post-cleanup preflight와 7일 live-armed stability artifact를 생성한다.
+
+문서 요구사항:
+
+- M23 guard, live ops status, lifecycle alert, restart/recovery drill, 7일 closeout 기준이 바뀌면 `docs/RUNTIME_CONFIG.md`, `docs/RELIABILITY.md`, `docs/SECURITY.md`, `docs/product-specs/upbit-live-autonomous-trading.md`, `docs/runbooks/m23-live-small-budget-operations.md`, active/completed exec plan을 함께 갱신한다.
+- M23 전용 runbook을 추가하거나 이동하면 `docs/README.md`, `docs/runbooks/README.md`, `docs/generated/context-map.json`을 함께 갱신한다.
+
+제외 범위:
+
+- M24 전략 확장과 예산 확대, BTC 외 market 기본 활성화, 자동 budget 확대.
+- 신규 진입 시장가, 시장가 매도, 최유리 주문 기본 허용.
+- hard stop 시 open position 자동 시장가 청산.
+- Telegram public webhook endpoint.
+- 출금, 입출금 자동화, 선물, 레버리지, 마진, 타인 계정, 신호 판매.
+- LLM 직접 매수/매도 판단.
+- secret 원문을 issue, PR, log, artifact에 기록하는 작업.
+- 기본 `PAPER_NO_KEY` runtime의 실거래 profile 승격.
+
 ### FR-LLM-001: LLM은 직접 매매 판단에 사용하지 않는다
 
 설명:

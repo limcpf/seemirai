@@ -1,0 +1,32 @@
+[Unit]
+Description=Seemirai M23 live small-budget autonomous segment
+Documentation=file:/home/lim/code/seemirai/docs/runbooks/m23-live-small-budget-operations.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=lim
+Group=lim
+UMask=0077
+WorkingDirectory=/home/lim/code/seemirai
+Environment=SEEMIRAI_M23_SYSTEMD_SEGMENT=1
+Environment=SEEMIRAI_M23_SEGMENT_ENV=/home/lim/vaults/99_운영/seemirai-m22-live-autonomous/m23-segment.env
+Environment=SEEMIRAI_RUN_M22_AUTONOMOUS_PILOT=1
+Environment=SEEMIRAI_RUN_M22_AUTONOMOUS_DAEMON=1
+# run-24h wrapper가 shell-format m22.env/m22.keys.env와 segment env를 source한 뒤 guard/candidate를 적용한다.
+ExecStart=/home/lim/vaults/99_운영/seemirai-m22-live-autonomous/run-24h-pilot.sh
+KillSignal=SIGTERM
+TimeoutStopSec=30
+# 정상 24시간 완료는 candidate/env handoff 뒤 다음 segment를 시작해야 하므로 실패 종료만 즉시 복구한다.
+Restart=on-failure
+RestartSec=10
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/home/lim/vaults/99_운영/seemirai-m22-live-autonomous
+ReadWritePaths=/tmp
+
+[Install]
+WantedBy=multi-user.target

@@ -14,6 +14,7 @@ export {
 } from "./daily-report-runtime.js";
 export type {
   ClaimedDailyReportJobRunResult,
+  DailyReportLiveOpsStatusProvider,
   DailyReportRuntimeDependencies,
   DailyReportRuntimeJobStatus,
   PaperNoKeyDailyReportRuntime,
@@ -173,6 +174,7 @@ export type {
   LiveReconcileRuntimeRepository,
   LiveReconcileRuntimeRunResult,
   LiveReconcileRuntimeWorker,
+  LiveReconcileAlertDispatchOptions,
   ReconcileStatusProvider,
   ReconcileWebSocketStatus,
   ReconcileStatusSummary,

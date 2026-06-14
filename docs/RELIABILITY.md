@@ -34,6 +34,18 @@ Codex-native 운영은 Codex, Git, GitHub, shell command, 문서 상태를 연�
 - 실패한 검증 로그는 다음 Codex prompt에 전달 가능한 수준으로 요약한다.
 - review finding은 어떤 commit으로 처리됐는지 추적 가능해야 한다.
 
+## M23 restart/recovery drill 신뢰성 기준
+
+- M23 recovery drill은 restart 전후 event log를 같은 restart id로 묶어야 하며, 감지와 복구 Telegram/status evidence가 모두 있어야 한다.
+- restart 후 같은 idempotency key 또는 order attempt가 다시 `broker_submission`으로 기록되면 duplicate live order로 보고 closeout
+  실패로 처리한다.
+- recovery evidence에는 reconcile mismatch 0건, live ops status 복구, heartbeat 재개, daily report marker 재생성이 포함되어야 한다.
+- Upbit 점검/장애, market warning/caution, stale data/WebSocket gap drill은 신규 entry fail-closed와 alert/manual review evidence로
+  수렴해야 한다.
+- DB backup/restore smoke는 disposable restore DB에서 통과하거나, 실행 불가 blocker와 필요한 권한/재시도 계획을 남겨야 한다.
+- recovery drill validator는 artifact를 읽는 검증 경계이며, CI/PR 기본 검증에서 live order API, Telegram provider, DB restore를
+  직접 호출하지 않는다.
+
 ## M20 Telegram inbound 신뢰성 기준
 
 - inbound polling loop는 기본 비활성이며, enabled config/env와 owner allowlist guard를 모두 통과한 뒤에만 시작한다.
@@ -334,6 +346,29 @@ Codex-native 운영은 Codex, Git, GitHub, shell command, 문서 상태를 연�
   제한 횟수 안에 terminal cancel을 확인하지 못하면 `order_cancel_unconfirmed`와 manual review evidence를 남기며 runner closeout을 실패시킨다.
 - 24시간 live autonomous pilot closeout은 crash 0회, unhandled rejection 0회, risk gate 우회 주문 0건, reconcile mismatch 0건,
   duplicate order 0건, untracked fill 0건, live order cleanup failure 0건을 source scan과 redacted artifact로 함께 확인해야 한다.
+
+## M23 24/7 live small-budget 운영 신뢰성 기준
+
+- M23 7일 안정화는 dry-run이나 heartbeat-only가 아니라 live order API를 호출할 수 있는 `LIVE_AUTONOMOUS_SMALL_BUDGET` 설정으로
+  arm 된 상태여야 한다. 주문이 없었던 날도 candidate 없음, gate 차단, 시장 조건 미충족, operator stop, kill switch 같은 이유를
+  decision evidence와 daily report에 남긴다.
+- live canary 1회 성공, 24시간 heartbeat-only, dry-run candidate canary는 M23 preflight 근거일 뿐 closeout 근거가 아니다. M23
+  closeout은 7일 연속 daily report와 live-armed 설정 evidence를 요구한다.
+- restart drill은 기존 order attempt, durable reservation, reconcile snapshot, status summary를 재사용해야 하며, 재시작 때문에
+  duplicate live order를 만들면 merge-blocking 실패로 본다.
+- Telegram lifecycle 알림은 연결 성공, live order capable 시작, 정상 종료, operator stop, kill switch, manual review, crash/restart를
+  구분한다. 알림 실패는 P0/P1 retry evidence와 manual review 수렴 상태로 남긴다.
+- 주문 제출, 취소 요청, 취소 확인, 체결, 부분체결, risk/cost/reconcile 차단 이벤트는 audit/risk/decision evidence 확정 이후
+  알림 후보가 되어야 한다. 알림 provider 실패가 이미 확정된 주문·취소·차단 상태를 rollback하면 안 된다.
+- 7일 stability closeout은 crash 0회, unhandled rejection 0회, risk gate 우회 주문 0건, reconcile mismatch 0건, duplicate order
+  0건, untracked fill 0건, live order cleanup failure 0건을 redacted artifact로 확인해야 한다.
+- 7일 stability closeout manifest는 `scripts/run-m23-stability-closeout.mjs`로 검증한다. 서로 다른 7개 day segment, 각 24시간
+  runner 정상 종료, daily report, live-armed guard/readiness, decision evidence, recovery drill, source scan, DB backup/restore 결과
+  또는 blocker가 없으면 closeout을 실패로 남긴다.
+- DB backup/restore smoke drill은 disposable restore DB에서 실행한다. 외부 DB 조건이 없어 실행할 수 없으면 closeout에 blocker와
+  필요한 운영자 조치를 남기고 pass로 둔갑시키지 않는다.
+- 누적 realized loss와 미체결 노출 합계가 50,000 KRW에 닿기 전에 operator stop 또는 kill switch/manual review로 수렴한다. 이
+  ceiling은 M24 예산 확대 승인이 아니다.
 
 ## M18 Decision Ledger 신뢰성 기준
 

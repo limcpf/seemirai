@@ -151,6 +151,10 @@ export function formatAlertMessage(notification: AlertNotification): string {
     // paper 매매 이벤트는 주문/체결 식별자를 추적 정보로 내리고 운영자가 볼 상태와 조치를 먼저 보여준다.
     return formatPaperTradeAlertMessage(notification, metadata);
   }
+  if (metadata !== undefined && readStringField(metadata, "source") === "live_ops_event") {
+    // M23 live event는 실제 주문 가능성과 주문/차단 상태를 먼저 보여주고 내부 evidence id는 추적 정보로 내린다.
+    return formatLiveOpsAlertMessage(notification, metadata);
+  }
 
   return formatGenericAlertMessage(notification, metadata);
 }
@@ -353,6 +357,224 @@ function formatPaperCostLine(
   }
 
   return joinMessageLines(["비용:", feeText, slippageText]).replaceAll("\n", " ");
+}
+
+/**
+ * M23 live lifecycle/trade alert metadata에서 Telegram 문구에 필요한 사용자 표시 필드를 읽어낸 값이다.
+ *
+ * mapper가 넘긴 metadata는 JSON 경계라 일부 필드가 누락될 수 있다. formatter는 확인된 safe 문자열과 boolean만 첫 화면에
+ * 배치하고, event code, reason code, 주문 키, evidence id는 하단 `추적 정보`에만 둔다. 이 구조는 provider 호출 없이 message
+ * text를 만드는 순수 presentation 경계다.
+ */
+interface LiveOpsMessageFields {
+  eventLabel: string;
+  statusText?: string;
+  causeText?: string;
+  impactText?: string;
+  operatorAction?: string;
+  operatingMode?: string;
+  liveOrderCapable?: boolean;
+  market?: string;
+  strategyId?: string;
+  side?: string;
+  quantity?: string;
+  requestedPrice?: string;
+  fillPrice?: string;
+  filledQuantity?: string;
+  remainingQuantity?: string;
+  notionalKrw?: string;
+  feeAmount?: string;
+  feeCurrency?: string;
+  slippageBps?: string;
+  orderId?: string;
+  brokerOrderId?: string;
+  idempotencyKey?: string;
+  correlationId?: string;
+  auditEventId?: string;
+  riskEventId?: string;
+  evidenceId?: string;
+  restartId?: string;
+  blockedReason?: string;
+  safeSummary?: string;
+  eventKind?: string;
+  reasonCode?: string;
+}
+
+/**
+ * M23 live lifecycle/trade alert를 한국어 운영 메시지로 재구성한다.
+ *
+ * 첫 화면에는 상태, 원인, 영향, 필요 조치, live 가능 여부, 주문 규모/가격/비용만 배치한다. 내부 식별자와 stable code는
+ * `추적 정보`로 분리해 운영자가 audit/reconcile evidence와 연결할 수 있게 한다. 이 함수는 formatter 전용 순수 함수이며
+ * Telegram provider 호출이나 alert cooldown 상태 변경 같은 외부 side effect를 만들지 않는다.
+ */
+function formatLiveOpsAlertMessage(
+  notification: AlertNotification,
+  metadata: Record<string, unknown>,
+): string {
+  const fields = readLiveOpsMessageFields(notification, metadata);
+
+  return joinMessageLines([
+    `[${labelSeverity(notification.severity)}] M23 live 운영 알림: ${fields.eventLabel}`,
+    "",
+    optionalLine("상태", fields.statusText),
+    optionalLine("원인", fields.causeText),
+    optionalLine("영향", fields.impactText),
+    optionalLine("필요 조치", fields.operatorAction),
+    formatLiveOpsModeLine(fields),
+    formatLiveOpsOrderLine(fields),
+    formatLiveOpsPriceLine(fields),
+    formatLiveOpsCostLine(fields),
+    optionalLine("잔량", fields.remainingQuantity),
+    optionalLine("차단 사유", fields.blockedReason),
+    optionalLine("요약", fields.safeSummary),
+    "",
+    "추적 정보",
+    `알림 식별자: ${notification.fingerprint}`,
+    `발생 시각: ${toIsoTimestamp(notification.occurredAt)}`,
+    optionalLine("마켓", fields.market),
+    optionalLine("전략", fields.strategyId),
+    optionalLine("주문 ID", fields.orderId),
+    optionalLine("거래소 주문", fields.brokerOrderId),
+    optionalLine("주문 키", fields.idempotencyKey),
+    optionalLine("요청 ID", fields.correlationId),
+    optionalLine("감사 이벤트", fields.auditEventId),
+    optionalLine("리스크 이벤트", fields.riskEventId),
+    optionalLine("증거 ID", fields.evidenceId),
+    optionalLine("재시작 ID", fields.restartId),
+    optionalLine("이벤트 코드", fields.eventKind),
+    optionalLine("사유 코드", fields.reasonCode),
+  ]);
+}
+
+function readLiveOpsMessageFields(
+  notification: AlertNotification,
+  metadata: Record<string, unknown>,
+): LiveOpsMessageFields {
+  const parsedFingerprint = parseAlertFingerprint(notification.fingerprint);
+
+  return {
+    eventLabel: readStringField(metadata, "event_label") ?? notification.title,
+    ...optionalStringProperty("statusText", readStringField(metadata, "status_text")),
+    ...optionalStringProperty("causeText", readStringField(metadata, "cause_text")),
+    ...optionalStringProperty("impactText", readStringField(metadata, "impact_text")),
+    ...optionalStringProperty("operatorAction", readStringField(metadata, "operator_action")),
+    ...optionalStringProperty("operatingMode", readStringField(metadata, "operating_mode")),
+    ...optionalBooleanProperty("liveOrderCapable", readBooleanField(metadata, "live_order_capable")),
+    ...optionalStringProperty("market", readStringField(metadata, "market") ?? parsedFingerprint.market),
+    ...optionalStringProperty("strategyId", readStringField(metadata, "strategy_id") ?? parsedFingerprint.strategyId),
+    ...optionalStringProperty("side", readStringField(metadata, "side")),
+    ...optionalStringProperty("quantity", readStringField(metadata, "quantity")),
+    ...optionalStringProperty("requestedPrice", readStringField(metadata, "requested_price")),
+    ...optionalStringProperty("fillPrice", readStringField(metadata, "fill_price")),
+    ...optionalStringProperty("filledQuantity", readStringField(metadata, "filled_quantity")),
+    ...optionalStringProperty("remainingQuantity", readStringField(metadata, "remaining_quantity")),
+    ...optionalStringProperty("notionalKrw", readStringField(metadata, "notional_krw")),
+    ...optionalStringProperty("feeAmount", readStringField(metadata, "fee_amount")),
+    ...optionalStringProperty("feeCurrency", readStringField(metadata, "fee_currency")),
+    ...optionalStringProperty("slippageBps", readStringField(metadata, "slippage_bps")),
+    ...optionalStringProperty("orderId", readStringField(metadata, "order_id")),
+    ...optionalStringProperty("brokerOrderId", readStringField(metadata, "broker_order_id")),
+    ...optionalStringProperty("idempotencyKey", readStringField(metadata, "idempotency_key")),
+    ...optionalStringProperty("correlationId", readStringField(metadata, "correlation_id")),
+    ...optionalStringProperty("auditEventId", readStringField(metadata, "audit_event_id")),
+    ...optionalStringProperty("riskEventId", readStringField(metadata, "risk_event_id")),
+    ...optionalStringProperty("evidenceId", readStringField(metadata, "evidence_id")),
+    ...optionalStringProperty("restartId", readStringField(metadata, "restart_id")),
+    ...optionalStringProperty("blockedReason", readStringField(metadata, "blocked_reason")),
+    ...optionalStringProperty("safeSummary", readStringField(metadata, "safe_summary")),
+    ...optionalStringProperty("eventKind", readStringField(metadata, "event_kind")),
+    ...optionalStringProperty("reasonCode", readStringField(metadata, "reason_code") ?? parsedFingerprint.reasonCode),
+  };
+}
+
+function formatLiveOpsModeLine(
+  fields: Pick<LiveOpsMessageFields, "operatingMode" | "liveOrderCapable">,
+): string | undefined {
+  if (fields.operatingMode === undefined && fields.liveOrderCapable === undefined) {
+    return undefined;
+  }
+
+  const capableText = fields.liveOrderCapable === undefined
+    ? undefined
+    : `주문 가능 ${fields.liveOrderCapable ? "예" : "아니오"}`;
+  return joinMessageLines([
+    "M23 상태:",
+    fields.operatingMode === undefined ? undefined : labelLiveOpsMode(fields.operatingMode),
+    capableText,
+  ]).replaceAll("\n", " ");
+}
+
+function formatLiveOpsOrderLine(
+  fields: Pick<LiveOpsMessageFields, "market" | "side" | "quantity">,
+): string | undefined {
+  if (fields.market === undefined || fields.side === undefined || fields.quantity === undefined) {
+    return undefined;
+  }
+
+  return `주문: ${fields.market} ${labelLiveOrderSide(fields.side)} ${fields.quantity}`;
+}
+
+function formatLiveOpsPriceLine(
+  fields: Pick<LiveOpsMessageFields, "requestedPrice" | "fillPrice" | "filledQuantity">,
+): string | undefined {
+  if (fields.requestedPrice === undefined && fields.fillPrice === undefined && fields.filledQuantity === undefined) {
+    return undefined;
+  }
+
+  return joinMessageLines([
+    "가격:",
+    fields.requestedPrice === undefined ? undefined : `지정가 ${fields.requestedPrice}`,
+    fields.fillPrice === undefined ? undefined : `체결가 ${fields.fillPrice}`,
+    fields.filledQuantity === undefined ? undefined : `체결 수량 ${fields.filledQuantity}`,
+  ]).replaceAll("\n", " ");
+}
+
+function formatLiveOpsCostLine(
+  fields: Pick<LiveOpsMessageFields, "notionalKrw" | "feeAmount" | "feeCurrency" | "slippageBps">,
+): string | undefined {
+  const notionalText = fields.notionalKrw === undefined ? undefined : `명목 금액 ${fields.notionalKrw} KRW`;
+  const feeText = fields.feeAmount === undefined
+    ? undefined
+    : `수수료 ${joinMessageLines([fields.feeAmount, fields.feeCurrency]).replaceAll("\n", " ")}`;
+  const slippageText = fields.slippageBps === undefined ? undefined : `슬리피지 ${fields.slippageBps} bps`;
+
+  if (notionalText === undefined && feeText === undefined && slippageText === undefined) {
+    return undefined;
+  }
+
+  return joinMessageLines(["비용:", notionalText, feeText, slippageText]).replaceAll("\n", " ");
+}
+
+function labelLiveOpsMode(mode: string): string {
+  switch (mode) {
+    case "live_order_capable":
+    case "LIVE_ORDER_CAPABLE":
+      return "실주문 가능";
+    case "live_armed":
+    case "LIVE_ARMED":
+    case "LIVE_AUTONOMOUS_SMALL_BUDGET":
+      return "실주문 준비";
+    case "heartbeat_only":
+    case "HEARTBEAT_ONLY":
+      return "상태 관측 전용";
+    case "dry_run":
+    case "DRY_RUN":
+    case "PAPER_NO_KEY":
+      return "모의 운영";
+    default:
+      return mode;
+  }
+}
+
+function labelLiveOrderSide(side: string): string {
+  switch (side) {
+    case "BUY":
+      return "매수(BUY)";
+    case "SELL":
+      return "매도(SELL)";
+    default:
+      return side;
+  }
 }
 
 /**

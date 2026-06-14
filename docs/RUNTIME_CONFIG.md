@@ -372,6 +372,7 @@ P0/P1 원인 mapping은 application layer의 `mapKillSwitchReasonToTargetState`�
 - durable cooldown repository: `src/infrastructure/db/alert-cooldown.ts`
 - runtime config loader: `src/runtime/notification-config.ts`
 - runtime control wiring: `src/runtime/notification-runtime.ts`
+- M23 lifecycle/trade mapper: `src/application/alerts/live-ops-events.ts`
 
 Telegram 알림은 outbound `sendMessage`만 사용한다. 이 단계는 Telegram webhook, polling, command 수신 route를 만들지
 않는다. message format은 Markdown/HTML parse mode 없는 plain text다.
@@ -387,8 +388,9 @@ Telegram 알림은 outbound `sendMessage`만 사용한다. 이 단계는 Telegra
 - provider timeout: `telegram.provider_timeout_ms`, 기본 `5000`
 
 alert fingerprint는 `environment + run_mode + severity + alert_type + market_or_global + strategy_id_or_global + reason_code`로
-만든다. severity가 key에 들어가므로 P1 cooldown 중에도 같은 원인의 P0 escalation은 막히지 않는다. 각 세그먼트 안의 `:`는
-`%3a`로 escape해 join 구분자와 충돌하지 않게 한다.
+만든다. 주문, 체결, 취소처럼 같은 reason이 짧은 시간 안에 반복될 수 있는 alert는 선택 `dedupe_key`를 끝에 붙여 event 단위
+전송을 보장한다. severity가 key에 들어가므로 P1 cooldown 중에도 같은 원인의 P0 escalation은 막히지 않는다. 각 세그먼트 안의
+`:`는 `%3a`로 escape해 join 구분자와 충돌하지 않게 한다.
 
 cooldown 기본값:
 
@@ -410,6 +412,35 @@ transaction이 commit된 뒤 Telegram/cooldown/audit 알림 경계로 넘어간�
 동작하지만, 알림 의존성 누락으로 kill switch state update가 차단되지는 않는다. post-commit alert dispatch 실패는
 `alert_dispatch_failed`로 결과 객체에 기록하고 control 전이 성공 자체를 실패로 바꾸지 않는다. 같은 runtime alert dispatch
 옵션 객체는 최신 notification failure state를 보존해 연속 실패 threshold가 실제 호출 간 누적되게 한다.
+
+M23 lifecycle/trade event는 `createLiveOpsAlertRequest`가 `live_ops_event` alert payload로 낮추고, runtime은
+`dispatchLiveOpsAlert` wrapper로 전송한다. Telegram 연결 성공과 live order capable 시작은 서로 다른 reason/fingerprint를
+사용한다. 주문 제출/취소/취소 확인 event는 idempotency key, local order id, broker order id, evidence id, correlation id 순서로
+`dedupe_key`를 고른다. 전체/부분 체결 event는 같은 주문 키를 공유할 수 있으므로 evidence id를 우선한다. risk/cost/reconcile
+차단 event는 주문 ID가 없거나 attempt id가 매번 달라질 수 있으므로, runtime은 event kind, stable reason code, 세부
+failure code로 만든 evidence id를 넣고 mapper는 evidence id, risk event id, audit event id, correlation id 순서로 고른다.
+같은 market/strategy에서 여러 live trade event가 5분 안에 발생해도 서로를 cooldown으로 숨기지 않는다. restart/crash/recovery는
+반복 자체가 운영 evidence라 restart id 또는 evidence id를 `dedupe_key`로 쓴다. 정상 종료, operator stop,
+kill switch, manual review, crash/restart/recovery, Telegram provider 장애 지속, 주문/차단 event는 첫 화면에 한국어 상태, 원인,
+영향, 필요 조치와 안전한 차단 사유를 배치하고,
+order id, idempotency key, audit/risk/evidence id, event kind, reason code는 `추적 정보`에만 둔다. P0/P1 live event provider
+failure는 기존 `notification_retry` job payload와 manual review failure threshold 경로를 그대로 사용하며, wrapper가 같은
+alert dispatch 옵션 객체에 `failureState`를 되돌려 저장해 연속 실패를 누적한다.
+
+`LiveAutonomousEntryRuntime`은 `liveOpsAlerts` 옵션이 주입되면 실제 entry 후보 처리 경로에서 `dispatchLiveOpsAlert`를 호출한다.
+비용/RiskGate/reconcile/budget 차단은 broker 제출 전 확정된 차단 event로, ExecutionEngine 제출 성공은 `ORDER_SUBMITTED`
+event로 전송한다. 반복 차단은 새 attempt id로 cooldown을 우회하지 않도록 주문 제출 event에만 correlation id를 dedupe 후보로
+넣고, 차단 event는 stable reason evidence id로 묶는다. 같은 비용 차단 reason은 반복 attempt가 달라도 cooldown으로 묶지만,
+예산 거부와 비용 모델 차단, 서로 다른 RiskGate 실패 reason은 별도 Telegram 알림으로 남는다. 수동 점검 event는 reason/evidence별로
+서로 다른 P1 cooldown key를 갖는다. broker 제출 불확실성이나 reservation release 실패처럼 주문별 수동 reconcile이 필요한 event는
+reservation/attempt evidence까지 cooldown key에 넣는다.
+
+`runExitPaperRuntime`은 `liveOpsAlerts` 옵션이 주입되면 exit broker 제출 성공을 `ORDER_SUBMITTED`, broker snapshot의 `FILLED`와
+`PARTIALLY_FILLED`를 각각 전체/부분 체결 event, open 잔량 취소 호출 성공을 `CANCEL_REQUESTED` event로 전송한다.
+`createLiveReconcileRuntimeWorker`는 state advancement 후보가 있으면 manual review 전이를 먼저 완료한 뒤 `FILL_CANDIDATE`,
+`PARTIALLY_FILLED_CANDIDATE`, `CANCEL_CANDIDATE`를 각각 `ORDER_FILLED`, `ORDER_PARTIALLY_FILLED`, `CANCEL_CONFIRMED` event로
+전송한다. 이 dispatch들은 주문 판단, broker submit/cancel, reconcile run 결과를 바꾸지 않는 best-effort 후속 side effect이며,
+alert 저장소나 provider 예외가 이미 확정된 차단/제출/취소/reconcile 결과를 rollback하지 않는다.
 
 provider 호출 직전에는 fingerprint 단위 delivery reservation을 먼저 기록한다. 이 atomic gate는 마지막 성공 전송이 cooldown
 안에 있거나 기존 reservation이 만료되지 않았으면 provider 호출 없이 `ALERT_COOLDOWN` audit evidence만 남긴다. 이 경계는
@@ -653,6 +684,30 @@ Startup guard와 safe summary 기준:
   `unhandled_rejection` event는 24시간 closeout 실패 조건이다.
 - process log는 runner가 redaction한 stdout/stderr 요약만 저장한다. live command는 raw credential, raw provider payload,
   Authorization/JWT, Telegram token을 event log에 쓰면 안 된다.
+
+M23 live-armed 운영 기준:
+
+- Issue #188 M23 운영은 `LIVE_AUTONOMOUS_SMALL_BUDGET`의 기존 M22 소액 제한을 유지한다. `max_order_krw=10000`,
+  `daily_autonomous_notional_limit_krw=30000`, `max_open_position_notional_krw=30000`, `KRW-BTC` 단일 기본값은 M23에서 자동으로
+  높이지 않는다.
+- M23 7일 안정화는 dry-run이나 heartbeat-only가 아니라 실제 주문 API를 호출할 수 있는 설정으로 arm 되어야 한다. 단, 시장 조건이
+  gate를 통과하지 못하면 주문이 없어도 되며, 이 경우 후보 없음, gate 차단, 시장 조건 미충족 같은 이유가 daily report와 decision
+  evidence에 남아야 한다.
+- 운영자가 허용한 손실 ceiling은 누적 realized loss와 미체결 노출 합계 50,000 KRW 미만이다. 이 값은 자동 예산 확대 승인이 아니며,
+  ceiling 접근 시 operator stop 또는 kill switch/manual review로 수렴해야 한다.
+- status, CLI, Telegram, daily report safe summary는 현재 모드(dry-run, heartbeat-only, live armed, live order capable), live
+  enabled, key scope 안전성, readiness, latest heartbeat/reconcile/candidate/decision/order/fill/cancel, budget/exposure/PnL,
+  risk block, alert retry 상태를 secret 없이 보여줘야 한다.
+- process supervisor/systemd 운영은 root가 아닌 운영 사용자로 실행하고 저장소 밖 env/key 파일을 참조해야 하며, service unit에는 secret
+  값을 직접 쓰지 않는다.
+  `scripts/run-m23-recovery-drill.mjs`는 restart 전후 event log artifact만 읽어 duplicate live order 방지, reconcile/status/daily
+  report 복구, Upbit 장애/market warning/stale data fail-closed evidence, DB backup/restore 결과 또는 blocker 기록을 검증한다.
+  이 validator는 기본 CI/PR 검증에서 live API, Telegram provider, DB restore를 직접 호출하지 않는다.
+- `scripts/run-m23-stability-closeout.mjs`는 7일 closeout manifest와 저장소 밖 summary artifact만 읽어 7개 이상 24시간 segment,
+  daily report, live-armed guard/readiness, decision evidence, recovery drill, source scan, DB backup/restore 결과 또는 blocker를
+  집계한다. 이 validator도 기본 CI/PR 검증에서는 fixture smoke만 실행하며 live API, Telegram provider, DB restore를 직접 호출하지 않는다.
+- M23 이후 universe, strategy, budget 확대는 M24 범위다. M23 config나 runbook은 BTC 외 market 기본 활성화, 자동 budget 확대,
+  market/best order 기본 허용을 열지 않는다.
 
 Autonomous entry runtime 기준:
 

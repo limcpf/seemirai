@@ -6,6 +6,9 @@ M22 제한적 자동매매 closeout 이후 M23 24/7 운영 안정화와 M24 전�
 첫 live test는 수익 검증이 아니라 주문 생성, 조회, 취소, reconcile/manual review 수렴이 모두 같은 uuid/identifier 경계에서 닫히는지
 확인하는 canary다.
 
+Issue #188은 이 계획 중 M23 24/7 live small-budget 운영 안정화와 실시간 상태 가시성을 구현한다. M24 universe, strategy, budget
+확대는 M23 closeout PASS 이후 별도 issue로 진행한다.
+
 운영자가 허용한 손실 ceiling은 50,000 KRW다. 이 값은 자동 예산 확대 승인이 아니며, realized loss와 미체결 노출 합계가 이 값에
 도달하기 전에 live test를 중지한다.
 
@@ -17,11 +20,26 @@ M22 제한적 자동매매 closeout 이후 M23 24/7 운영 안정화와 M24 전�
   terminal cancel 확인을 수행한다.
 - M23 live canary cleanup 통과: `cc93288f`, 10,000 KRW `LIMIT + post_only` 주문 제출 1회, 취소 요청 1회, terminal `cancel` 확인,
   `openPositionNotionalKrw=0`, `liveOrderCleanupFailureCount=0`.
+- Issue #188 Sub PR 01에서 `FR-OPS-004`와 M23 전용 runbook contract를 고정한다.
+- Issue #188 Sub PR 02에서 `/status.liveOps`, Telegram `/status`, daily report가 공유하는 M23 live ops safe summary 표면을 추가한다.
+- Issue #188 Sub PR 03에서 M23 Telegram lifecycle/trade alert mapper와 formatter를 추가하고 `LiveAutonomousEntryRuntime`
+  entry 제출/차단, exit runtime의 제출/부분체결/취소 요청, live reconcile state advancement의 체결/취소 확인 경로를
+  `dispatchLiveOpsAlert`에 연결해 연결 성공, live order capable 시작, 중지/수동 점검/crash/restart/recovery,
+  주문/취소/체결/차단 event를 기존 cooldown/retry/manual review 경로에 연결한다.
+- Issue #188 Sub PR 04에서 systemd service 템플릿과 `scripts/run-m23-recovery-drill.mjs` artifact validator를 추가해 restart 전후
+  duplicate live order 방지, reconcile/status/daily report 복구, Upbit 장애/market warning/stale data fail-closed evidence,
+  DB backup/restore smoke 결과 또는 blocker 기록을 closeout 전 검증할 수 있게 한다.
+- Issue #188 Sub PR 05에서 `scripts/run-m23-stability-closeout.mjs` manifest validator를 추가해 7개 이상 24시간 segment summary,
+  live-armed/key/budget/operator evidence, decision/daily report evidence, restart/recovery drill summary, source scan,
+  DB backup/restore 결과 또는 blocker를 한 번에 집계한다. 현재 저장소 밖에는 M23 7일 live-armed 연속 artifact가 없으므로 M23
+  PASS closeout은 아직 선언하지 않는다.
 
 ## 범위
 
-- M23: live canary cleanup, 24시간 post-cleanup pilot, process 재시작/reconcile/status 복구, alert/daily report evidence.
-- M24: paper/live shadow 비교, 전략별 PnL/손실 기여도 report, 운영자 승인 기반 universe/budget 확대 계획.
+- M23: live canary cleanup, 24시간 post-cleanup preflight, 실제 주문 가능 live-armed 7일 안정화, process 재시작/reconcile/status 복구,
+  Telegram lifecycle/trade event 알림, alert/daily report evidence.
+- M24: paper/live shadow 비교, 전략별 PnL/손실 기여도 report, 운영자 승인 기반 universe/budget 확대 계획. M23에서는 계획과 분리
+  결정만 남기고 구현하지 않는다.
 
 ## 제외 범위
 
@@ -44,20 +62,30 @@ M22 제한적 자동매매 closeout 이후 M23 24/7 운영 안정화와 M24 전�
 3. M23 24시간 post-cleanup pilot
    - live canary cleanup 통과 후 candidate source를 비워 heartbeat/daily report 안정성을 다시 확인한다.
    - process restart 후 reconcile/status가 정상 복구되는지 확인한다.
+   - `scripts/run-m23-recovery-drill.mjs --fixture-smoke`는 CI용 contract 검증이고, 실제 closeout 전에는 restart 전후 redacted
+     event log와 DB backup/restore smoke 결과 또는 blocker evidence로 validator를 실행한다.
+   - 이 단계는 preflight이며 M23 완료 근거가 아니다.
 
 4. M23 7일 운영 안정화
-   - 7일 연속 daily report와 P0/P1 alert retry evidence를 모은다.
-   - crash, unhandled rejection, reconcile mismatch, duplicate order, untracked fill, cleanup failure가 모두 0건이어야 한다.
+   - dry-run이 아니라 live order API를 호출할 수 있는 설정으로 `LIVE_AUTONOMOUS_SMALL_BUDGET`를 arm 한다.
+   - 실제 주문이 없어도 후보 없음, gate 차단, 시장 조건 미충족 같은 이유가 decision evidence와 daily report에 남아야 한다.
+   - 7일 연속 daily report, Telegram lifecycle/trade event 알림, P0/P1 alert retry evidence를 모은다.
+   - crash, unhandled rejection, risk gate 우회 주문, reconcile mismatch, duplicate order, untracked fill, cleanup failure가 모두 0건이어야 한다.
+   - 누적 realized loss와 미체결 노출 합계가 50,000 KRW에 도달하기 전에 운영을 중지한다.
+   - closeout manifest가 준비되면 `SEEMIRAI_RUN_M23_STABILITY_CLOSEOUT=1 node scripts/run-m23-stability-closeout.mjs --manifest <path> --json`으로
+     7일 segment와 recovery/source scan/backup evidence를 검증한다.
 
 5. M24 shadow 비교와 확대 승인
    - 알트 최대 3개 수동 편입 전 paper/live shadow 비교를 먼저 통과시킨다.
    - 전략별 PnL과 손실 기여도를 report로 분해한다.
    - universe 또는 budget 확대는 operator approval evidence와 rollback plan을 문서화한 뒤 별도 canary로 실행한다.
+   - 이 단계는 Issue #188 범위 밖이며 별도 issue에서 시작한다.
 
 ## 검증 명령
 
 ```sh
 corepack pnpm exec vitest run tests/soak/m22-live-autonomous-daemon-script.test.ts tests/soak/m22-live-autonomous-pilot-script.test.ts --reporter=verbose
+corepack pnpm exec vitest run tests/soak/m23-recovery-drill-script.test.ts tests/soak/m23-stability-closeout-script.test.ts --reporter=verbose
 corepack pnpm typecheck
 ./scripts/verify docs
 ./scripts/verify
@@ -89,6 +117,8 @@ node scripts/run-m22-live-autonomous-pilot.mjs \
 ## 완료 조건
 
 - M23는 7일 연속 live small-budget 운영 리포트, restart/reconcile/status 복구, alert retry/manual review 수렴 evidence가 있어야 완료다.
+- M23 closeout은 실제 주문 가능 live-armed 설정 evidence를 요구한다. live canary 1회 성공, dry-run, heartbeat-only만으로 완료를 선언하지 않는다.
+- 주문이 없었던 날도 candidate 없음, gate 차단, 시장 조건 미충족, operator stop, kill switch 같은 이유가 evidence로 남아야 한다.
 - M24는 paper/live shadow 비교, 전략별 PnL/손실 기여도 report, operator approval과 rollback plan이 있어야 완료다.
 - live canary 1회 성공만으로 M23/M24 완료를 선언하지 않는다.
 

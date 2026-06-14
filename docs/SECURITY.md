@@ -225,6 +225,31 @@
 - M22는 출금, 입출금 자동화, 선물, 레버리지, 마진, 타인 계정, 신호 판매, LLM 직접 매수/매도 판단으로 확장하지 않는다. 이 경계를
   바꾸려면 별도 milestone 보안 설계와 source scan을 먼저 추가한다.
 
+## M23 24/7 live small-budget 운영 보안 기준
+
+- M23은 M22 `LIVE_AUTONOMOUS_SMALL_BUDGET` guard 위에서 운영 안정성과 가시성을 강화한다. 기본 `PAPER_NO_KEY` runtime을 실거래
+  profile로 승격하지 않으며, 저장소 기본 검증은 Upbit private API나 live order API를 호출하지 않는다.
+- 7일 live-armed 운영 evidence는 저장소 밖 env/key/config/artifact를 사용하고, issue/PR/log/report에는 redacted 경로와 safe
+  summary만 남긴다. Upbit access key, secret key, JWT, Authorization header, Telegram token, raw provider payload, raw order
+  detail은 저장하지 않는다.
+- key scope에는 `자산조회`, `주문조회`, `주문하기`만 허용한다. 출금, 입출금, 선물, 레버리지, 마진, 타인 계정 관련 scope가
+  관찰되면 runtime은 주문 가능 상태로 시작하지 않는다.
+- status, CLI, Telegram, daily report는 live armed/order capable 여부와 필요한 조치를 한국어로 먼저 보여주고, 내부 identifier,
+  idempotency key, evidence id, fingerprint는 `추적 정보`로 분리한다.
+- Telegram lifecycle/trade event 알림은 raw Telegram update, raw message text, raw provider body를 저장하지 않는다. 알림 실패
+  evidence도 provider 원문 대신 실패 분류와 안전한 추적 정보만 남긴다.
+- M23 systemd/process supervisor template은 root가 아닌 운영 사용자로 live daemon을 실행하고 저장소 밖 env 파일을 참조해야 하며
+  service 파일 안에 Upbit key, Telegram token, database URL 같은 secret 값을 직접 넣지 않는다.
+- M23 restart/recovery drill artifact에는 access key, secret key, JWT, Authorization header, Telegram token, raw provider payload,
+  raw order detail, raw Telegram update를 남기지 않는다. validator fixture smoke는 live API, Telegram provider, DB restore를 직접
+  호출하지 않는 검증 경계로만 사용한다.
+- M23 7일 stability closeout manifest에는 redacted evidence id와 artifact 경로만 남긴다. `scripts/run-m23-stability-closeout.mjs`는
+  manifest와 summary artifact의 raw secret 후보를 검사하며, fixture smoke와 manifest 검증 모두 live API, Telegram provider,
+  DB restore를 직접 호출하지 않는다.
+- M23은 BTC 외 market 기본 활성화, 자동 budget 확대, market/best order 기본 허용, hard stop open position 자동 시장가 청산,
+  Telegram public webhook endpoint, 출금/입출금 자동화로 확장하지 않는다. 해당 변경은 M24 또는 별도 보안 설계와 source scan이
+  필요하다.
+
 ## M18 Decision Ledger 보안 기준
 
 - decision ledger의 `payload_json`과 `trace_json`에는 raw provider payload, raw order detail, secret 후보, Authorization header, JWT, API key, secret key, query hash 원문을 저장하지 않는다. 두 필드는 JSONB-safe value만 허용하며 Date, BigInt, function, class instance 같은 비 JSON 값은 저장 계약에서 제외한다.

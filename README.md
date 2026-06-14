@@ -2,7 +2,7 @@
 
 Seemirai는 암호화폐 자동매매에서 AI가 매수와 매도를 직접 지시하는 방식을 피하고, 수수료, 스프레드, 슬리피지, 펀딩비, 전송 비용을 먼저 차감한 뒤에도 기대값이 남는 거래만 통과시키는 비용 우선 거래 시스템이다.
 
-현재 저장소는 Upbit KRW 현물 paper trading MVP 구현과 M8-C 24시간 public WebSocket soak 검증을 완료했으며, `#68` 기준 `M9 paper 운영 베타` 3일 연속 run closeout 증거도 확보했다. M11 전략/피처 품질 보강은 #102 Sub PR 5까지 완료되어 닫혔고, `config/paper.json` 기본 threshold는 변경하지 않은 채 비활성 보수 후보만 남겼다. 실거래 주문 API는 여전히 비활성이며, threshold activation은 별도 calibration approval PR에서 판단하고 phase 1.5/v0.2 준비로 이어간다.
+현재 저장소는 Upbit KRW 현물 paper trading MVP, M9 paper 운영 베타, M11 전략/피처 품질 보강, M22 제한적 완전 자동매매 기반을 거쳐 M23 `LIVE_AUTONOMOUS_SMALL_BUDGET` 24/7 운영 안정화 단계에 있다. 기본 `config/paper.json`은 계속 API key 없는 안전 profile로 유지하며, 실거래 운영은 저장소 밖 env/key/config/evidence를 갖춘 운영자가 명시적으로 arm 한 소액 한도에서만 진행한다. M24 전략, universe, 예산 확대는 M23 7일 closeout PASS 이후 별도 issue로 분리한다.
 
 ## 핵심 원칙
 
@@ -43,12 +43,75 @@ MVP에서 반드시 검증해야 하는 조건은 다음과 같다.
 
 선물, 김치프리미엄을 이용한 실제 거래소 간 차익거래, 레버리지, 시장가 신규 진입, 출금/송금 자동화, 온체인/소셜/뉴스 기반 자동 주문, 완전 무인 운영은 MVP 범위가 아니다.
 
+## 현재 운영 단계
+
+M23 운영 목표는 수익 검증이 아니라 실제 주문 API를 호출할 수 있는 live-armed 상태에서 시스템이 7일 동안 사고 없이 관측, 차단, 중지, 복구, 보고 evidence를 남기는지 확인하는 것이다.
+
+운영 한도는 다음 값을 기본 ceiling으로 둔다.
+
+- 모드: `LIVE_AUTONOMOUS_SMALL_BUDGET`
+- 기본 market: `KRW-BTC`
+- 1회 주문 상한: `10000` KRW
+- 일일 자동 주문 notional 한도: `30000` KRW
+- open position notional 한도: `30000` KRW
+- 운영 중지 기준: 누적 realized loss와 미체결 노출 합계가 `50000` KRW에 도달하기 전 operator stop 또는 kill switch/manual review 전환
+- key scope: `자산조회,주문조회,주문하기`만 허용
+- 제외: BTC 외 market 기본 활성화, 자동 예산 확대, 신규 시장가 진입, 자동 시장가 청산, 출금/입출금 자동화, 선물/레버리지, LLM 직접 주문 판단
+
+## 운영 방법
+
+M23 24/7 실거래 안정화는 [M23 live small-budget 7일 운영 runbook](./docs/runbooks/m23-live-small-budget-operations.md)을 따른다. runbook의 핵심 순서는 다음과 같다.
+
+1. 저장소 밖 운영 디렉터리 `~/vaults/99_운영/seemirai-m22-live-autonomous` 또는 동등한 redacted artifact 경로를 준비한다.
+2. `m22.env`, `m22.keys.env`, M23 segment env, live autonomous config, candidate JSONL, artifact directory가 운영 호스트의 비공개 경로에 있는지 확인한다.
+3. operator arm evidence, budget evidence, M21 gate evidence, key scope evidence를 준비한다.
+4. M20 Telegram owner/read-only/control 경계, M16 reconcile freshness, M17 PnL/status, M18 decision ledger, M19 exit engine readiness가 모두 pass인지 확인한다.
+5. DB migration, primary DB 연결, backup/restore smoke 실행 환경 또는 실행 불가 blocker 기록 위치를 확인한다.
+6. candidate producer를 segment 단위로 rotate하고, 각 24시간 segment 시작 전 open order, open exposure, realized loss safe summary를 최신 값으로 갱신한다.
+7. `scripts/run-m22-live-autonomous-pilot.mjs`가 `scripts/run-m22-live-autonomous-daemon.mjs`를 24시간 실행하도록 시작한다.
+8. systemd를 쓰는 운영 호스트에서는 [M23 systemd service 예시](./deploy/systemd/seemirai-m23-live-small-budget.service.example)를 실제 사용자, 작업 디렉터리, env 경로, artifact 경로에 맞게 조정한다.
+9. 24시간 segment를 7회 연속 운영하고, 각 segment의 daily report marker, summary artifact, decision evidence, alert evidence를 확인한다.
+10. 정상 종료, operator stop, kill switch/manual review, crash/restart, Upbit 장애, market warning, stale data, API 오류는 모두 신규 entry fail-closed와 audit/report evidence로 수렴시킨다.
+11. restart drill과 DB backup/restore smoke 또는 blocker evidence를 남긴다.
+12. 7일 manifest를 작성한 뒤 `scripts/run-m23-stability-closeout.mjs`로 closeout을 검증한다.
+
+후보가 없거나 시장 조건이 맞지 않아 주문이 없었던 날도 완료 근거가 되려면 candidate 없음, gate 차단, 시장 조건 미충족, operator stop, kill switch 같은 이유가 daily report와 decision evidence에 남아야 한다.
+
+## 상태 확인과 보고
+
+운영자는 다음 표면으로 현재 상태를 확인한다.
+
+- HTTP `/status`: runtime, live enabled, key scope, readiness, heartbeat, reconcile, PnL, budget/exposure, risk block, alert retry, M23 `liveOps` safe summary를 secret 없이 확인한다.
+- Telegram `/status`: M23 실매매 운영 상태와 주문 가능 여부를 한국어 상태, 원인, 영향, 필요 조치 중심으로 확인한다.
+- Telegram `/positions`, `/pnl`, `/why`, `/orders`, `/risk`: 포지션, 손익, 최근 판단 이유, 주문/취소/체결, 리스크 차단 상태를 조회한다.
+- Telegram lifecycle/trade alert: 연결 확인, 실주문 가능 시작, 정상 종료, operator stop, kill switch, manual review, crash/restart/recovery, 주문 제출, 취소 요청/확인, 체결/부분체결, cost/risk/reconcile 차단을 받는다.
+- daily report: 기준일별 주문, 체결, 손익, 비용/체결 품질, 폐기/차단, M23 live 운영 상태를 받는다.
+- 운영 artifact: 24시간 segment summary, event log, daily report evidence, recovery drill summary, DB backup/restore 결과 또는 blocker, source scan 결과를 저장소 밖 redacted 경로에 남긴다.
+
+7일 closeout은 다음 조건을 모두 기계적으로 확인해야 한다.
+
+- 서로 다른 7개 이상 연속 day segment
+- 각 segment의 24시간 정상 종료와 daily report evidence
+- live-armed guard/readiness evidence
+- 주문이 없었던 날의 decision evidence
+- restart/reconcile/status/daily report 복구 evidence
+- Telegram lifecycle/trade alert와 retry/manual review evidence
+- DB backup/restore smoke 결과 또는 blocker와 재시도 계획
+- source scan 결과와 raw secret 노출 후보 없음
+- crash, unhandled rejection, risk gate 우회 주문, reconcile mismatch, duplicate order, untracked fill, live order cleanup failure가 모두 0건
+
 ## 문서
 
 - [아키텍처](./ARCHITECTURE.md)
 - [PRD](./docs/PRD.md)
 - [기능 요구사항](./docs/FEATURE_REQUIREMENTS.md)
 - [Upbit KRW Paper Trading MVP 업무 명세](./docs/product-specs/upbit-krw-paper-trading-mvp.md)
+- [Upbit 실거래 자율 운용 로드맵](./docs/product-specs/upbit-live-autonomous-trading.md)
+- [M23 live small-budget 7일 운영 runbook](./docs/runbooks/m23-live-small-budget-operations.md)
+- [M23 systemd service 예시](./deploy/systemd/seemirai-m23-live-small-budget.service.example)
+- [런타임 설정 기준](./docs/RUNTIME_CONFIG.md)
+- [신뢰성과 복구 기준](./docs/RELIABILITY.md)
+- [보안 기준](./docs/SECURITY.md)
 - [문서 시스템](./docs/README.md)
 
 ## 로컬 개발

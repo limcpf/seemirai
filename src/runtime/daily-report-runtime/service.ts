@@ -5,6 +5,7 @@ import {
 import type {
   AuditEventReceipt,
   AuditLogPort,
+  LiveOpsStatusSummary,
   NotifierPort,
   RunDailyReportResult,
 } from "../../application/index.js";
@@ -32,6 +33,16 @@ export type DailyReportRuntimeJobStatus =
   | "NOT_CLAIMABLE";
 
 /**
+ * daily report runtime이 M23 live ops 상태를 읽는 provider다.
+ *
+ * HTTP `/status.liveOps`와 같은 secret-safe summary를 반환해야 하며, provider 실패나 미구성은 report 생성 실패로 확대하지 않고
+ * 본문 섹션 생략으로 낮춘다. provider는 읽기 전용이어야 하고 DB write, broker 호출, notification side effect를 만들면 안 된다.
+ */
+export interface DailyReportLiveOpsStatusProvider {
+  getLiveOpsStatus(): Promise<LiveOpsStatusSummary | null>;
+}
+
+/**
  * daily report runtime 조립에 필요한 외부 의존성이다.
  *
  * database는 report facts, jobs lifecycle, audit evidence를 같은 PostgreSQL 경계에 남긴다. notifier는 Telegram 같은 외부
@@ -44,6 +55,13 @@ export interface DailyReportRuntimeDependencies {
   workerId?: string;
   clock?: () => Date;
   actor?: string;
+  /**
+   * M23 live ops safe summary provider다.
+   *
+   * 지정하면 manual/scheduler daily report가 같은 provider에서 최신 M23 상태를 읽어 본문에 포함한다. provider 장애는
+   * notification 중복이나 job retry로 번지지 않도록 report 생성 경계에서 null로 낮춘다.
+   */
+  liveOpsStatusProvider?: DailyReportLiveOpsStatusProvider;
 }
 
 /**
@@ -207,6 +225,9 @@ export function createPaperNoKeyDailyReportRuntime(
           ...(dependencies.clock === undefined ? {} : { clock: dependencies.clock }),
           ...(dependencies.actor === undefined ? {} : { actor: dependencies.actor }),
           ...(options.correlationId === undefined ? {} : { correlationId: options.correlationId }),
+          ...(dependencies.liveOpsStatusProvider === undefined
+            ? {}
+            : { liveOpsStatusProvider: dependencies.liveOpsStatusProvider }),
         }),
       };
     },
@@ -240,6 +261,9 @@ export function createPaperNoKeyDailyReportRuntime(
             trigger: "scheduler",
             ...(dependencies.clock === undefined ? {} : { clock: dependencies.clock }),
             ...(dependencies.actor === undefined ? {} : { actor: dependencies.actor }),
+            ...(dependencies.liveOpsStatusProvider === undefined
+              ? {}
+              : { liveOpsStatusProvider: dependencies.liveOpsStatusProvider }),
           }),
         );
       }
@@ -260,6 +284,7 @@ async function runClaimedDailyReportJob(input: {
   clock?: () => Date;
   actor?: string;
   correlationId?: string;
+  liveOpsStatusProvider?: DailyReportLiveOpsStatusProvider;
 }): Promise<ClaimedDailyReportJobRunResult> {
   const reportDate = readReportDate(input.job);
   if (reportDate === undefined) {
@@ -312,12 +337,14 @@ async function runClaimedDailyReportJob(input: {
 
   let result: RunDailyReportResult;
   try {
+    const liveOps = await readDailyReportLiveOpsStatus(input.liveOpsStatusProvider);
     result = await runDailyReport({
       reportDate,
       dataProvider: input.dataProvider,
       notifier: input.notifier,
       auditLog: input.auditLog,
       trigger: input.trigger,
+      ...(liveOps === null ? {} : { liveOps }),
       ...(input.clock === undefined ? {} : { clock: input.clock }),
       ...(input.actor === undefined ? {} : { actor: input.actor }),
       ...(input.correlationId === undefined ? {} : { correlationId: input.correlationId }),
@@ -371,6 +398,21 @@ async function runClaimedDailyReportJob(input: {
     result,
     finalJob,
   };
+}
+
+async function readDailyReportLiveOpsStatus(
+  provider: DailyReportLiveOpsStatusProvider | undefined,
+): Promise<LiveOpsStatusSummary | null> {
+  if (provider === undefined) {
+    return null;
+  }
+
+  try {
+    return await provider.getLiveOpsStatus();
+  } catch {
+    // status provider 장애는 이미 생성 가능한 daily report와 Telegram 전송을 막지 않도록 M23 섹션만 생략한다.
+    return null;
+  }
 }
 
 function readReportDate(job: JobRecord): string | undefined {

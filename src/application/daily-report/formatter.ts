@@ -1,6 +1,8 @@
 import type { DailyReportAggregate, DailyReportCountItem, DailyReportDecimalMetric } from "./types.js";
 import type { LiveAutonomousExitStatusSummary } from "../live-autonomous-exit-status.js";
 import { formatLiveAutonomousExitStatusReportSection } from "../live-autonomous-exit-status.js";
+import type { LiveOpsStatusSummary } from "../live-ops-status.js";
+import { formatLiveOpsStatusReportSection } from "../live-ops-status.js";
 
 /**
  * daily report summary에 붙일 선택 runtime summary다.
@@ -10,6 +12,13 @@ import { formatLiveAutonomousExitStatusReportSection } from "../live-autonomous-
  */
 export interface FormatDailyReportSummaryOptions {
   liveAutonomousExit?: LiveAutonomousExitStatusSummary | null;
+  /**
+   * M23 live small-budget 운영 상태 safe summary다.
+   *
+   * `/status`와 Telegram이 공유하는 summary를 report 본문에 붙이는 입력이다. formatter는 이 값을 그대로 문자열로만 변환하며,
+   * DB 조회, broker 호출, notification 전송 side effect를 만들지 않는다.
+   */
+  liveOps?: LiveOpsStatusSummary | null;
 }
 
 /**
@@ -62,6 +71,10 @@ export function formatDailyReportSummary(
 
   if (options.liveAutonomousExit !== undefined && options.liveAutonomousExit !== null) {
     sections.push("", formatLiveAutonomousExitStatusReportSection(options.liveAutonomousExit));
+  }
+
+  if (options.liveOps !== undefined && options.liveOps !== null) {
+    sections.push("", formatLiveOpsStatusReportSection(options.liveOps));
   }
 
   return sections.join("\n");

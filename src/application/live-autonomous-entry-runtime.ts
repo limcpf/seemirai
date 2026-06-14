@@ -11,6 +11,7 @@ export type {
   LiveAutonomousBudgetReservationPort,
   LiveAutonomousBudgetReservationRequest,
   LiveAutonomousBudgetReservationResult,
+  LiveAutonomousEntryAlertDispatchOptions,
   LiveAutonomousEntryAttemptResult,
   LiveAutonomousEntryCandidate,
   LiveAutonomousEntryCostInput,

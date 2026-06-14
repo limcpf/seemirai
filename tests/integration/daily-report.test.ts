@@ -3,8 +3,9 @@ import type { Pool } from "pg";
 import {
   aggregateDailyReport,
   createDailyReportWindow,
+  createLiveOpsStatusSummary,
 } from "../../src/application/index.js";
-import type { AuditLogPort, NotifierPort } from "../../src/application/index.js";
+import type { AuditLogPort, DailyReportNotification, NotifierPort } from "../../src/application/index.js";
 import {
   applyMigrations,
   claimJobByIdempotencyKey,
@@ -446,6 +447,35 @@ describeDb("daily report PostgreSQL integration", () => {
     });
   });
 
+  it("injects M23 live ops status into runtime daily report notifications", async () => {
+    const db = await getDatabase();
+    await withRollback(db, async (transaction) => {
+      const notifier = new CapturingDailyReportNotifier();
+      const runtime = createPaperNoKeyDailyReportRuntime({
+        database: transaction,
+        workerId: "daily-report-worker",
+        clock: () => new Date("2026-05-22T15:01:00.000Z"),
+        notifier,
+        liveOpsStatusProvider: {
+          async getLiveOpsStatus() {
+            return liveOpsSummary();
+          },
+        },
+      });
+
+      const result = await runtime.runManualDailyReport({
+        reportDate: "2026-05-22",
+        maxAttempts: 2,
+      });
+
+      expect(result.status).toBe("RUN");
+      expect(result.claimed?.result.status).toBe("DELIVERED");
+      expect(notifier.dailyReports).toHaveLength(1);
+      expect(notifier.dailyReports[0]?.summary).toContain("M23 live 운영 상태");
+      expect(notifier.dailyReports[0]?.summary).toContain("상태: 실매매 가능");
+    });
+  });
+
   it("does not reclaim the same failed scheduler job in one sweep", async () => {
     const db = await getDatabase();
     const keys = [
@@ -552,6 +582,19 @@ const deliveredNotifier: NotifierPort = {
   },
 };
 
+class CapturingDailyReportNotifier implements NotifierPort {
+  public readonly dailyReports: DailyReportNotification[] = [];
+
+  public async sendAlert() {
+    return { delivered: true, providerMessageId: "alert-fixture" };
+  }
+
+  public async sendDailyReport(notification: DailyReportNotification) {
+    this.dailyReports.push(notification);
+    return { delivered: true, providerMessageId: "daily-report-fixture" };
+  }
+}
+
 const throwingAuditLog: AuditLogPort = {
   async appendEvent() {
     throw new Error("audit append failed");
@@ -588,6 +631,67 @@ async function withRollback(db: Database, work: (transaction: Database) => Promi
 
 function createFixtureStrategyId(): string {
   return `daily_report_${Date.now()}_${Math.random().toString(16).slice(2)}`;
+}
+
+function liveOpsSummary() {
+  return createLiveOpsStatusSummary({
+    observedAt: "2026-05-22T15:00:00.000Z",
+    runtimeMode: "LIVE_AUTONOMOUS_SMALL_BUDGET",
+    paperNoKey: false,
+    liveTradingEnabled: true,
+    liveAutonomous: {
+      enabled: true,
+      ready: true,
+      allowedMarkets: ["KRW-BTC"],
+      maxOrderKrw: "10000",
+      dailyAutonomousNotionalLimitKrw: "30000",
+      maxOpenPositionNotionalKrw: "30000",
+      keyScopeEvidenceConfigured: true,
+      telegramInboundReady: true,
+      reconcileFresh: true,
+      pnlStatusReady: true,
+      decisionLedgerReady: true,
+      exitEngineReady: true,
+      statusLabel: "M23 guard 통과",
+      message: "M23 guard evidence가 모두 준비됐습니다.",
+      action: null,
+      trace: {
+        source: "live_autonomous_runtime_guard",
+        reason: "live_autonomous_guard_ready",
+      },
+    },
+    marketData: {
+      connectionStatus: "CONNECTED",
+      lagMs: 50,
+      updatedAt: "2026-05-22T14:59:30.000Z",
+    },
+    reconcile: {
+      result: "SUCCESS",
+      mismatchCount: 0,
+      openOrderCount: 0,
+      lastReconcileAt: "2026-05-22T14:59:00.000Z",
+      actionRequired: "정상",
+    },
+    pnl: {
+      statusLabel: "조회 가능",
+      latestCapturedAt: "2026-05-22T14:58:00.000Z",
+      latestEquityKrw: "1000000",
+      latestRealizedPnlKrw: "1200",
+      latestUnrealizedPnlKrw: "-300",
+    },
+    tradingState: {
+      killSwitchState: "NORMAL",
+      newOrdersBlocked: false,
+      requiresManualReview: false,
+      blockedReason: null,
+    },
+    alerts: {
+      statusLabel: "조회 가능",
+      lastSentAt: "2026-05-22T14:57:00.000Z",
+      lastSkippedAt: null,
+      action: null,
+    },
+  });
 }
 
 async function insertReportFixture(db: Database, strategyId: string): Promise<void> {

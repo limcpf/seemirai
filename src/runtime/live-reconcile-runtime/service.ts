@@ -1,5 +1,6 @@
 import {
   buildWebSocketOrderSnapshots,
+  dispatchLiveOpsAlert,
   runReconcileEngine,
 } from "../../application/index.js";
 import type {
@@ -7,11 +8,14 @@ import type {
   ReconcileEngineInput,
   ReconcileEngineOutput,
   ReconcileExchangeOrderSnapshot,
+  ReconcileLocalOrderSnapshot,
   ReconcileMismatchType,
   ReconcileMismatchEvidence,
+  ReconcileStateAdvancementCandidate,
   TimestampInput,
 } from "../../domain/index.js";
-import type { KillSwitchControlTargetState } from "../../application/index.js";
+import type { KillSwitchControlTargetState, LiveOpsAlertEventKind, LiveOpsAlertInput } from "../../application/index.js";
+import { parseFinancialDecimal } from "../../shared/decimal.js";
 import { UnsafeLiveReconcileRuntimeError } from "./types.js";
 import type {
   CreateGuardedLiveReconcileRuntimeInput,
@@ -151,6 +155,14 @@ export function createLiveReconcileRuntimeWorker(
           websocketStatus: resolveRuntimeWebSocketStatus(engineInput, engineOutput),
           stateAdvancementRequiresManualReview,
         });
+        await dispatchReconcileStateAdvancementAlertsSafely({
+          liveOpsAlerts: input.liveOpsAlerts,
+          engineInput,
+          engineOutput,
+          runId: completedRun.id,
+          correlationId,
+          observedAt,
+        });
 
         const result: LiveReconcileRuntimeRunResult = {
           run: completedRun,
@@ -176,6 +188,222 @@ export function createLiveReconcileRuntimeWorker(
       }
     },
   };
+}
+
+/**
+ * reconcile state advancement 후보를 M23 live ops 체결/취소 확인 알림으로 best-effort 전송한다.
+ *
+ * state advancement는 거래소 관측으로 주문 상태가 전진할 수 있다는 확정 evidence지만, 이 worker는 로컬 주문 DB write를 직접
+ * 수행하지 않는다. 따라서 manual review 전이를 먼저 완료한 뒤 알림을 보내며, 알림 실패가 완료된 reconcile run 또는 kill switch
+ * 상태를 되돌리지 않도록 개별 dispatch 예외를 삼킨다.
+ */
+async function dispatchReconcileStateAdvancementAlertsSafely(input: {
+  liveOpsAlerts: CreateLiveReconcileRuntimeWorkerInput["liveOpsAlerts"];
+  engineInput: ReconcileEngineInput;
+  engineOutput: ReconcileEngineOutput;
+  runId: string;
+  correlationId: string;
+  observedAt: TimestampInput;
+}): Promise<void> {
+  if (input.liveOpsAlerts === undefined || input.engineOutput.stateAdvancements.length === 0) {
+    return;
+  }
+
+  for (const candidate of input.engineOutput.stateAdvancements) {
+    const event = createReconcileStateAdvancementAlertEvent({
+      liveOpsAlerts: input.liveOpsAlerts,
+      engineInput: input.engineInput,
+      candidate,
+      runId: input.runId,
+      correlationId: input.correlationId,
+      observedAt: input.observedAt,
+    });
+    if (event === undefined) {
+      continue;
+    }
+
+    try {
+      await dispatchLiveOpsAlert({
+        alertDispatch: input.liveOpsAlerts.alertDispatch,
+        event,
+      });
+    } catch {
+      // Telegram side effect 실패가 이미 완료된 reconcile evidence와 fail-closed 상태를 되돌리면 운영 상태가 더 불명확해진다.
+    }
+  }
+}
+
+/**
+ * 단일 reconcile state advancement 후보를 live ops alert 입력으로 변환한다.
+ *
+ * 입력은 engine이 만든 secret-safe 후보와 local snapshot뿐이며, provider raw payload나 credential은 포함하지 않는다. 반환 event는
+ * Telegram 첫 화면 문구와 추적 정보를 분리한 application alert mapper로 전달된다.
+ */
+function createReconcileStateAdvancementAlertEvent(input: {
+  liveOpsAlerts: NonNullable<CreateLiveReconcileRuntimeWorkerInput["liveOpsAlerts"]>;
+  engineInput: ReconcileEngineInput;
+  candidate: ReconcileStateAdvancementCandidate;
+  runId: string;
+  correlationId: string;
+  observedAt: TimestampInput;
+}): LiveOpsAlertInput | undefined {
+  const eventKind = toReconcileLiveOpsEventKind(input.candidate);
+  if (eventKind === undefined) {
+    return undefined;
+  }
+
+  const localOrder = input.engineInput.localOpenOrders.find((order) => order.orderId === input.candidate.localOrderId);
+  const filledQuantity = calculateReconcileFilledQuantity(input.candidate, localOrder);
+  const remainingQuantity = resolveReconcileRemainingQuantity(input.candidate, localOrder);
+  const brokerOrderId = resolveReconcileBrokerOrderId(input.candidate, localOrder);
+  const requestedPrice = localOrder?.requestedPrice;
+  const event: LiveOpsAlertInput = {
+    environment: input.liveOpsAlerts.environment,
+    runMode: input.liveOpsAlerts.runMode,
+    eventKind,
+    occurredAt: input.observedAt,
+    operatingMode: "LIVE_AUTONOMOUS_SMALL_BUDGET",
+    liveOrderCapable: false,
+    orderId: input.candidate.localOrderId,
+    idempotencyKey: localOrder?.identifier ?? input.candidate.localOrderId,
+    correlationId: input.correlationId,
+    evidenceId: createReconcileAdvancementEvidenceId(input.candidate),
+    safeSummary: input.candidate.userMessage,
+    safeDetails: {
+      source: "live_reconcile_runtime",
+      live_reconcile_run_id: input.runId,
+      advancement_type: input.candidate.advancementType,
+      reason_code: input.candidate.reasonCode,
+      exchange_order_identity: input.candidate.exchangeOrderIdentity,
+      current_local_status: input.candidate.currentLocalStatus,
+      target_local_status: input.candidate.targetLocalStatus ?? null,
+      trace: input.candidate.trace,
+    },
+    ...(localOrder?.market === undefined ? {} : { market: localOrder.market }),
+    ...(localOrder?.side === undefined ? {} : { side: localOrder.side }),
+    ...(localOrder?.requestedQuantity === undefined ? {} : { quantity: localOrder.requestedQuantity }),
+    ...(brokerOrderId === undefined ? {} : { brokerOrderId }),
+    ...(requestedPrice === undefined ? {} : { requestedPrice }),
+    ...(filledQuantity === undefined ? {} : { filledQuantity }),
+    ...(remainingQuantity === undefined ? {} : { remainingQuantity }),
+  };
+
+  return event;
+}
+
+/**
+ * reconcile state advancement 종류를 live ops alert event kind로 낮춘다.
+ *
+ * identity가 확인된 체결/부분 체결/취소 확인 후보만 운영 알림으로 보낸다. 그 외 blocked 후보는 별도 mismatch/manual-review
+ * evidence로 이미 처리되므로 여기서 중복 알림을 만들지 않는다.
+ */
+function toReconcileLiveOpsEventKind(
+  candidate: ReconcileStateAdvancementCandidate,
+): LiveOpsAlertEventKind | undefined {
+  switch (candidate.advancementType) {
+    case "FILL_CANDIDATE":
+      return "ORDER_FILLED";
+    case "PARTIALLY_FILLED_CANDIDATE":
+      return "ORDER_PARTIALLY_FILLED";
+    case "CANCEL_CANDIDATE":
+      return "CANCEL_CONFIRMED";
+    default:
+      return undefined;
+  }
+}
+
+/**
+ * reconcile 후보에서 알림 dedupe에 사용할 안정 evidence id를 만든다.
+ *
+ * run id는 제외해 같은 주문 상태 후보가 scheduler 반복 실행 때마다 새 Telegram 알림을 만들지 않게 한다. 부분 체결은 남은 수량이
+ * 바뀐 경우 새 운영 사건으로 볼 수 있으므로 remaining quantity를 포함한다.
+ */
+function createReconcileAdvancementEvidenceId(candidate: ReconcileStateAdvancementCandidate): string {
+  return [
+    "reconcile-advancement",
+    candidate.advancementType,
+    candidate.localOrderId,
+    candidate.reasonCode,
+    readStringTrace(candidate.trace, "exchangeRemainingQuantity") ?? "terminal",
+  ].join(":");
+}
+
+/**
+ * reconcile local/exchange identity에서 broker 주문 id를 복원한다.
+ */
+function resolveReconcileBrokerOrderId(
+  candidate: ReconcileStateAdvancementCandidate,
+  localOrder: ReconcileLocalOrderSnapshot | undefined,
+): string | undefined {
+  if (localOrder?.exchangeOrderId !== undefined) {
+    return localOrder.exchangeOrderId;
+  }
+
+  const uuidPrefix = "uuid:";
+  if (candidate.exchangeOrderIdentity.startsWith(uuidPrefix)) {
+    return candidate.exchangeOrderIdentity.slice(uuidPrefix.length);
+  }
+
+  return undefined;
+}
+
+/**
+ * reconcile 후보에서 체결 수량을 계산한다.
+ *
+ * 완전 체결 후보는 local에 아직 열려 있던 잔여 수량을 이번 체결분으로 사용하고, 부분 체결 후보는 local remaining과 거래소
+ * remaining의 차이를 사용한다. 숫자 파싱이 실패하면 임의 값을 만들지 않고 undefined로 내려 formatter가 추적 정보만 남기게 한다.
+ */
+function calculateReconcileFilledQuantity(
+  candidate: ReconcileStateAdvancementCandidate,
+  localOrder: ReconcileLocalOrderSnapshot | undefined,
+): string | undefined {
+  if (localOrder === undefined) {
+    return undefined;
+  }
+
+  if (candidate.advancementType !== "FILL_CANDIDATE" && candidate.advancementType !== "PARTIALLY_FILLED_CANDIDATE") {
+    return undefined;
+  }
+
+  try {
+    if (candidate.advancementType === "FILL_CANDIDATE") {
+      const filledQuantity = parseFinancialDecimal(localOrder.remainingQuantity);
+      return filledQuantity.gt(0) ? filledQuantity.toFixed() : undefined;
+    }
+
+    const exchangeRemainingQuantity = readStringTrace(candidate.trace, "exchangeRemainingQuantity");
+    if (exchangeRemainingQuantity === undefined) {
+      return undefined;
+    }
+
+    const filledQuantity = parseFinancialDecimal(localOrder.remainingQuantity)
+      .minus(parseFinancialDecimal(exchangeRemainingQuantity));
+    return filledQuantity.gt(0) ? filledQuantity.toFixed() : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * reconcile 후보에서 알림에 표시할 남은 수량을 고른다.
+ */
+function resolveReconcileRemainingQuantity(
+  candidate: ReconcileStateAdvancementCandidate,
+  localOrder: ReconcileLocalOrderSnapshot | undefined,
+): string | undefined {
+  if (candidate.advancementType === "FILL_CANDIDATE" || candidate.advancementType === "CANCEL_CANDIDATE") {
+    return "0";
+  }
+
+  return readStringTrace(candidate.trace, "exchangeRemainingQuantity") ?? localOrder?.remainingQuantity;
+}
+
+/**
+ * candidate trace에서 문자열 진단 값을 읽는다.
+ */
+function readStringTrace(trace: Record<string, unknown>, key: string): string | undefined {
+  const value = trace[key];
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
 }
 
 async function loadSnapshotOrRecordFailure(input: {
