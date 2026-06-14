@@ -26,11 +26,25 @@ describe("production live ops script skeleton", () => {
 
     expect(result.status).toBe(0);
     expect(result.stderr).toBe("");
-    expect(result.stdout).toContain("production live ops config/env 계약을 통과했습니다");
+    expect(result.stdout).toContain("production live ops config/env 계약과 DB readiness를 통과했습니다");
     expect(result.stdout).not.toContain("fake-upbit-secret-key");
-    const summary = JSON.parse(result.stdout) as { configPath: string; envFilePath: string };
+    const summary = JSON.parse(result.stdout) as {
+      configPath: string;
+      envFilePath: string;
+      dbReadiness: {
+        ready: boolean;
+        fixtureSmoke: boolean;
+        migration: { expectedLatestVersion: number | null; pendingVersions: number[] };
+        checks: Array<{ code: string }>;
+      };
+    };
     expect(path.isAbsolute(summary.configPath)).toBe(true);
     expect(path.isAbsolute(summary.envFilePath)).toBe(true);
+    expect(summary.dbReadiness.ready).toBe(true);
+    expect(summary.dbReadiness.fixtureSmoke).toBe(true);
+    expect(summary.dbReadiness.migration.expectedLatestVersion).toBeGreaterThan(0);
+    expect(summary.dbReadiness.migration.pendingVersions).toEqual([]);
+    expect(summary.dbReadiness.checks.map((check) => check.code)).toContain("db_connection_fixture_skipped");
   });
 
   it("live:ops:tui attach skeleton은 attach 대상 없이는 실패한다", () => {

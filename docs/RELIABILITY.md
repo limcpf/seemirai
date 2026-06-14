@@ -45,8 +45,10 @@ Codex-native 운영은 Codex, Git, GitHub, shell command, 문서 상태를 연�
 - broker 조립 이후 장애는 신규 주문 중지, reconcile/manual review, Telegram P0/P1, TUI 경고로 수렴한다.
 - foreground TUI와 attach TUI는 같은 secret-safe summary source를 읽어야 하며, TUI 종료 시 daemon 계속 실행/안전 종료/attach detach
   정책을 runbook에 명시한다.
-- Sub PR 01 skeleton은 config/env contract만 검증하고 외부 provider를 호출하지 않는다. 후속 sub PR은 각 boot 단계별 fixture smoke와
-  integration evidence를 추가해야 한다.
+- DB readiness guard는 `schema_migrations`를 생성하거나 migration을 자동 적용하지 않는다. pending migration, missing table,
+  unknown applied migration, checksum drift는 운영자가 migration apply 또는 schema drift 확인을 끝낼 때까지 live boot를 차단한다.
+- fixture smoke는 외부 provider와 DB에 연결하지 않고, 디스크 migration 기준을 secret-safe summary로 노출한다. 후속 sub PR은 각 boot 단계별
+  fixture smoke와 integration evidence를 추가해야 한다.
 
 ## M23 restart/recovery drill 신뢰성 기준
 
