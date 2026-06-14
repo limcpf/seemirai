@@ -29,7 +29,6 @@ export function formatTelegramStatusCommandResponse(
       primaryLiveOpsAction(snapshot),
       primaryLiveAutonomousAction(snapshot),
       actionableReconcileAction(snapshot.reconcile.actionRequired),
-      snapshot.liveOps?.action ?? null,
     ])}`,
     "",
     "추적 정보",
@@ -450,6 +449,9 @@ function primaryLiveOpsAction(snapshot: StatusSnapshot): string | null {
   }
   if (!snapshot.liveOps.liveEnabled) {
     return null;
+  }
+  if (snapshot.liveOps.liveOrderCapable) {
+    return snapshot.liveOps.action;
   }
   if (snapshot.liveOps.status !== "ok") {
     return snapshot.liveOps.action;

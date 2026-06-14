@@ -546,7 +546,8 @@ function createMetrics(beforeLog, afterLog) {
     statusSummaryCount: afterLog.events.filter((event) => event.type === "live_ops_status_summary").length,
     dailyReportGeneratedCount: afterLog.events.filter((event) => event.type === "daily_report_generated").length,
     failClosedDrillCount: afterLog.events.filter((event) => event.type === "fail_closed_drill").length,
-    crashCount: events.filter((event) => hasEventType(event, ["runtime_crash", "crash"]) || event.crash === true).length,
+    crashCount: events.filter((event) =>
+      hasEventType(event, ["runtime_crash", "crash"]) || isLiveOpsEventKind(event, ["CRASH_DETECTED"]) || event.crash === true).length,
     unhandledRejectionCount: events.filter((event) => hasEventType(event, ["unhandled_rejection"]) || event.unhandledRejection === true).length,
     riskGateBypassCount: events.filter((event) => hasEventType(event, ["risk_gate_bypass"]) || event.riskGateBypass === true).length,
     reconcileMismatchCount: events.filter((event) => hasEventType(event, ["live_reconcile_mismatch", "reconcile_mismatch"])
@@ -593,8 +594,12 @@ function collectSubmissionIds(events) {
     .filter((event) => event.type === "order_submitted")
     .map((event) => readString(event.identifier) ?? readString(event.idempotencyKey))
     .filter((value) => value !== undefined);
+  const liveOpsOrderSubmittedIds = events
+    .filter((event) => isLiveOpsEventKind(event, ["ORDER_SUBMITTED"]))
+    .map((event) => readLiveOpsOrderSubmissionId(event))
+    .filter((value) => value !== undefined);
 
-  return Array.from(new Set([...brokerSubmissionIds, ...orderSubmittedIds]));
+  return Array.from(new Set([...brokerSubmissionIds, ...orderSubmittedIds, ...liveOpsOrderSubmittedIds]));
 }
 
 function collectCheckpointOrderAttemptIds(events) {
@@ -613,10 +618,15 @@ function collectDuplicateSubmissionIds(events) {
     .filter((event) => event.type === "order_submitted")
     .map((event) => readString(event.identifier) ?? readString(event.idempotencyKey))
     .filter((value) => value !== undefined);
+  const liveOpsOrderSubmittedIds = events
+    .filter((event) => isLiveOpsEventKind(event, ["ORDER_SUBMITTED"]))
+    .map((event) => readLiveOpsOrderSubmissionId(event))
+    .filter((value) => value !== undefined);
 
   return [...new Set([
     ...collectDuplicateValues(brokerSubmissionIds),
     ...collectDuplicateValues(orderSubmittedIds),
+    ...collectDuplicateValues(liveOpsOrderSubmittedIds),
   ])];
 }
 
@@ -629,12 +639,30 @@ function hasEventType(event, acceptedTypes) {
   return eventType !== undefined && acceptedTypes.includes(eventType);
 }
 
+function isLiveOpsEventKind(event, acceptedKinds) {
+  return hasEventType(event, ["live_ops_event"]) && acceptedKinds.includes(readEventKind(event) ?? "");
+}
+
 function readEventKind(event) {
   const metadata = isRecord(event.metadata) ? event.metadata : {};
   return readString(event.eventKind)
     ?? readString(event.event_kind)
     ?? readString(metadata.eventKind)
     ?? readString(metadata.event_kind);
+}
+
+function readLiveOpsOrderSubmissionId(event) {
+  const metadata = isRecord(event.metadata) ? event.metadata : {};
+  return readString(event.idempotencyKey)
+    ?? readString(event.idempotency_key)
+    ?? readString(event.identifier)
+    ?? readString(event.orderId)
+    ?? readString(event.order_id)
+    ?? readString(metadata.idempotencyKey)
+    ?? readString(metadata.idempotency_key)
+    ?? readString(metadata.identifier)
+    ?? readString(metadata.orderId)
+    ?? readString(metadata.order_id);
 }
 
 function readRestartId(event) {

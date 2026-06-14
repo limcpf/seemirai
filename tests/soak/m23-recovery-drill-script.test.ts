@@ -144,6 +144,33 @@ describe("M23 recovery drill script", () => {
     });
   });
 
+  it("fails when live ops order submitted repeats a pre-restart identifier", async () => {
+    const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-m23-recovery-live-ops-duplicate-"));
+    const beforePath = path.join(artifactDir, "before.jsonl");
+    const afterPath = path.join(artifactDir, "after.jsonl");
+    await writeEventLog(beforePath, validBeforeRestartEvents("restart-live-ops-duplicate"));
+    await writeEventLog(afterPath, [
+      ...validAfterRestartEvents("restart-live-ops-duplicate"),
+      {
+        type: "live_ops_event",
+        eventKind: "ORDER_SUBMITTED",
+        observedAt: "2026-06-13T00:00:10.000Z",
+        idempotency_key: "m22a-restart-live-ops-duplicate",
+      },
+    ]);
+
+    const summary = await runScriptExpectingFailure(validArtifactArgs(artifactDir, beforePath, afterPath));
+
+    expect(summary.metrics.duplicateOrderCount).toBe(1);
+    expect(getCheck(summary, "duplicateLiveOrder")).toMatchObject({
+      status: "fail",
+      evidence: {
+        afterSubmissionCount: 1,
+        repeatedAfterRestart: ["m22a-restart-live-ops-duplicate"],
+      },
+    });
+  });
+
   it("fails when broker_submission repeats the same identifier after restart", async () => {
     const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-m23-recovery-after-duplicate-"));
     const beforePath = path.join(artifactDir, "before.jsonl");
@@ -642,13 +669,14 @@ describe("M23 recovery drill script", () => {
       ...validAfterRestartEvents("restart-counters"),
       { type: "risk_gate_bypass", observedAt: "2026-06-13T00:00:10.000Z" },
       { type: "crash", observedAt: "2026-06-13T00:00:11.000Z" },
+      { type: "live_ops_event", metadata: { event_kind: "CRASH_DETECTED" }, observedAt: "2026-06-13T00:00:12.000Z" },
     ]);
 
     const summary = await runScriptExpectingFailure(validArtifactArgs(artifactDir, beforePath, afterPath));
 
     expect(summary.metrics).toMatchObject({
       riskGateBypassCount: 1,
-      crashCount: 1,
+      crashCount: 2,
     });
     expect(getCheck(summary, "closeoutZeroCounters")).toMatchObject({
       status: "fail",

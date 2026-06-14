@@ -369,6 +369,53 @@ describe("Telegram inbound command runtime", () => {
     expect(text).not.toContain("필요 조치: M22를 운영하려면");
   });
 
+  it("suppresses disabled M23 guidance when there is no current operational action", () => {
+    const base = createStatusSnapshot();
+    const text = formatTelegramStatusCommandResponse(
+      createStatusSnapshot({
+        liveOps: createLiveOpsStatusSummary({
+          observedAt: now,
+          runtimeMode: "PAPER_TRADING",
+          paperNoKey: true,
+          liveTradingEnabled: false,
+          liveAutonomous: base.runtime.liveAutonomous,
+          marketData: base.marketData,
+          reconcile: {
+            result: base.reconcile.result,
+            mismatchCount: base.reconcile.mismatchCount,
+            openOrderCount: base.reconcile.openOrderCount,
+            lastReconcileAt: base.reconcile.lastReconcileAt,
+            actionRequired: base.reconcile.actionRequired,
+          },
+          pnl: {
+            statusLabel: base.pnl.statusLabel,
+            latestCapturedAt: base.pnl.latestCapturedAt,
+            latestEquityKrw: base.pnl.latestEquityKrw,
+            latestRealizedPnlKrw: base.pnl.latestRealizedPnlKrw,
+            latestUnrealizedPnlKrw: base.pnl.latestUnrealizedPnlKrw,
+          },
+          tradingState: {
+            killSwitchState: base.tradingState.killSwitchState,
+            newOrdersBlocked: base.tradingState.newOrdersBlocked,
+            requiresManualReview: base.tradingState.requiresManualReview,
+            blockedReason: base.tradingState.blockedReason,
+          },
+          alerts: {
+            statusLabel: base.alerts.statusLabel,
+            lastSentAt: base.alerts.lastSentAt,
+            lastSkippedAt: base.alerts.lastSkippedAt,
+            action: base.alerts.action,
+          },
+        }),
+      }),
+      "corr-disabled-m23",
+    );
+
+    expect(text).toContain("M23 실매매 운영: 모의 운영");
+    expect(text).toContain("필요 조치: 추가 조치 없음");
+    expect(text).not.toContain("필요 조치: M23 live-armed 운영이 필요하면");
+  });
+
   it("does not let healthy M22 guidance hide current operational actions", () => {
     const base = createStatusSnapshot();
     const text = formatTelegramStatusCommandResponse(
