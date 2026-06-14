@@ -17,8 +17,8 @@ try {
     const inputs = await loadLiveOpsCliInputs(options);
     printJson(
       renderLiveOpsSummary({
-        ...inputs,
         ...options,
+        ...inputs,
         tui: true,
       }),
     );

@@ -13,7 +13,7 @@ try {
     printHelp("live:ops");
   } else {
     const inputs = await loadLiveOpsCliInputs(options);
-    const summary = renderLiveOpsSummary({ ...inputs, ...options });
+    const summary = renderLiveOpsSummary({ ...options, ...inputs });
     printJson(summary);
 
     if (!options.fixtureSmoke) {

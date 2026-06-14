@@ -28,6 +28,9 @@ describe("production live ops script skeleton", () => {
     expect(result.stderr).toBe("");
     expect(result.stdout).toContain("production live ops config/env 계약을 통과했습니다");
     expect(result.stdout).not.toContain("fake-upbit-secret-key");
+    const summary = JSON.parse(result.stdout) as { configPath: string; envFilePath: string };
+    expect(path.isAbsolute(summary.configPath)).toBe(true);
+    expect(path.isAbsolute(summary.envFilePath)).toBe(true);
   });
 
   it("live:ops:tui attach skeleton은 attach 대상 없이는 실패한다", () => {
@@ -103,6 +106,34 @@ describe("production live ops script skeleton", () => {
 
     expect(result.status).toBe(1);
     expect(result.stderr).toContain("budget.max_order_krw");
+  });
+
+  it("더 보수적인 운영 중지 ceiling은 CLI contract에서도 허용한다", async () => {
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-live-ops-script-"));
+    const config = JSON.parse(await readFile(path.join(process.cwd(), "config", "live-ops.example.json"), "utf8"));
+    config.budget.operations_stop_ceiling_krw = "40000";
+    const configPath = path.join(tempDir, "conservative-live-ops.json");
+    await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`, "utf8");
+
+    const result = spawnSync(
+      process.execPath,
+      [
+        "scripts/run-live-ops.mjs",
+        "--config",
+        configPath,
+        "--env-file",
+        "tests/fixtures/live-ops/fake.env",
+        "--fixture-smoke",
+      ],
+      {
+        cwd: process.cwd(),
+        encoding: "utf8",
+        env: minimalEnv(),
+      },
+    );
+
+    expect(result.status).toBe(0);
+    expect(result.stderr).toBe("");
   });
 
   it("strict runtime config와 다른 exchange/unknown key는 CLI contract에서도 fail-closed 한다", async () => {

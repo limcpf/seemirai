@@ -3,6 +3,7 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   UnsafeLiveOpsConfigError,
+  defaultLiveOpsConfig,
   detectLegacyLiveOpsEnv,
   findSecretLikeConfigPaths,
   formatLiveOpsModeForUser,
@@ -22,8 +23,8 @@ const fixtureEnv = [
 ].join("\n");
 
 describe("production live ops config/env contract", () => {
-  it("기본 production live ops config는 KRW-BTC 단일, 소액 예산, TUI 필수 계약을 가진다", () => {
-    const config = loadLiveOpsConfig({});
+  it("명시 production live ops config는 KRW-BTC 단일, 소액 예산, TUI 필수 계약을 가진다", () => {
+    const config = loadLiveOpsConfig(defaultLiveOpsConfig);
 
     expect(config).toMatchObject({
       mode: "LIVE_AUTONOMOUS_SMALL_BUDGET",
@@ -50,9 +51,22 @@ describe("production live ops config/env contract", () => {
     });
   });
 
+  it("live trading opt-in이 누락된 config는 secret env가 있어도 ready가 되지 않는다", () => {
+    const result = validateLiveOpsStartupContract({
+      configInput: {},
+      envFileContent: fixtureEnv,
+    });
+
+    expect(result.ready).toBe(false);
+    if (result.ready) throw new Error("expected blocked contract");
+    expect(result.errors.join("\n")).toContain("mode");
+    expect(result.errors.join("\n")).toContain("live_trading_enabled");
+    expect(result.errors.join("\n")).toContain("paper_no_key");
+  });
+
   it("secret-like key가 JSON config에 들어오면 startup contract에서 차단한다", () => {
     const configInput = {
-      ...loadLiveOpsConfig({}),
+      ...loadLiveOpsConfig(defaultLiveOpsConfig),
       secrets: {
         upbit_access_key: "do-not-store-in-json",
       },
@@ -86,7 +100,7 @@ describe("production live ops config/env contract", () => {
 
   it("process env의 legacy flag는 env file override로 숨길 수 없다", () => {
     const result = validateLiveOpsStartupContract({
-      configInput: loadLiveOpsConfig({}),
+      configInput: loadLiveOpsConfig(defaultLiveOpsConfig),
       env: {
         SEEMIRAI_RUN_UPBIT_LIVE_BROKER_SMOKE: "1",
       },

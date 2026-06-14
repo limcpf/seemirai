@@ -85,11 +85,11 @@ export const defaultLiveOpsConfig = {
 export const LiveOpsConfigSchema = z
   .object({
     schema_version: z.literal(1).default(defaultLiveOpsConfig.schema_version),
-    mode: z.literal(LIVE_OPS_PRODUCTION_MODE).default(defaultLiveOpsConfig.mode),
+    mode: z.literal(LIVE_OPS_PRODUCTION_MODE),
     exchange: z.literal("UPBIT").default(defaultLiveOpsConfig.exchange),
     market: z.literal("KRW_SPOT").default(defaultLiveOpsConfig.market),
-    live_trading_enabled: z.literal(true).default(defaultLiveOpsConfig.live_trading_enabled),
-    paper_no_key: z.literal(false).default(defaultLiveOpsConfig.paper_no_key),
+    live_trading_enabled: z.literal(true),
+    paper_no_key: z.literal(false),
     withdrawal_enabled: z.literal(false).default(defaultLiveOpsConfig.withdrawal_enabled),
     cross_exchange_arbitrage_enabled: z.literal(false).default(
       defaultLiveOpsConfig.cross_exchange_arbitrage_enabled,

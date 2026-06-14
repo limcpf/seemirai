@@ -190,8 +190,8 @@ function validateLiveOpsConfig(config) {
     max_order_krw: "10000",
     daily_autonomous_notional_limit_krw: "30000",
     max_open_position_notional_krw: "30000",
-    operations_stop_ceiling_krw: "49999",
   });
+  validateStopCeiling(errors, config.budget);
   validateExpectedValues(errors, config.workers, "workers", {
     db_readiness: true,
     market_data: true,
@@ -276,6 +276,17 @@ function validateExpectedValues(errors, target, prefix, expected) {
     if (target[key] !== expectedValue) {
       errors.push(`${prefix}.${key}는 ${String(expectedValue)}이어야 합니다.`);
     }
+  }
+}
+
+function validateStopCeiling(errors, budget) {
+  if (budget === null || typeof budget !== "object") {
+    return;
+  }
+
+  const ceiling = Number(budget.operations_stop_ceiling_krw);
+  if (!Number.isFinite(ceiling) || ceiling <= 0 || ceiling >= 50000) {
+    errors.push("budget.operations_stop_ceiling_krw는 50000 미만의 양수여야 합니다.");
   }
 }
 
