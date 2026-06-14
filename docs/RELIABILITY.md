@@ -34,6 +34,37 @@ Codex-native 운영은 Codex, Git, GitHub, shell command, 문서 상태를 연�
 - 실패한 검증 로그는 다음 Codex prompt에 전달 가능한 수준으로 요약한다.
 - review finding은 어떤 commit으로 처리됐는지 추적 가능해야 한다.
 
+## Issue #196 production live ops 신뢰성 기준
+
+- `live:ops` boot sequence는 env/config validation, redaction/logger, DB connection, migration/table readiness, TUI initial render,
+  Upbit public/private probe, Telegram startup alert, market data freshness, reconcile/PnL/decision/exit readiness,
+  live order capable 전환 순서로 진행한다.
+- production path는 `SEEMIRAI_M22_*_READY` 같은 boolean env를 readiness로 사용하지 않는다. readiness는 DB schema, migration state,
+  worker heartbeat, provider probe, market data freshness, reconcile/PnL/decision ledger 상태에서 계산한다.
+- boot sequence가 broker 조립 전 실패하면 private client와 live broker를 만들지 않고 한국어 상태/원인/영향/필요 조치를 출력한다.
+- broker 조립 이후 장애는 신규 주문 중지, reconcile/manual review, Telegram P0/P1, TUI 경고로 수렴한다.
+- foreground TUI와 attach TUI는 같은 secret-safe summary source를 읽어야 한다. 첫 화면은 DB readiness, worker 상태, 예산, 필요 조치를
+  보여주고 credential/raw provider payload/raw config enum을 표시하지 않는다. TUI 종료 시 daemon 계속 실행/안전 종료/attach detach
+  정책은 후속 control lifecycle sub PR과 runbook에서 명시한다.
+- DB readiness guard는 `schema_migrations`를 생성하거나 migration을 자동 적용하지 않는다. pending migration, missing table,
+  unknown applied migration, checksum drift는 운영자가 migration apply 또는 schema drift 확인을 끝낼 때까지 live boot를 차단한다.
+- market data collector는 허용 production market 밖 event를 DB write 전에 차단한다. stale/reconnect/disconnect status는 DB-backed
+  audit/risk evidence로 저장하되, analysis/decision 및 신규 실주문 lifecycle로 전진시키지 않는다.
+- analysis/decision pipeline은 market data 미준비와 feature 실패를 0값으로 보정하지 않는다. 해당 경우 strategy 평가를 열지 않고
+  HOLD/차단 summary를 남기며, order intent가 없으면 live execution으로 전진하지 않는다.
+- live execution adapter는 analysis summary와 order intent 수가 어긋나거나 복수 후보가 들어오면 broker runtime을 호출하지 않는다.
+  단일 `BUY + LIMIT + post_only` 후보만 기존 `LiveAutonomousEntryRuntime` 요청으로 낮추며, budget reservation과 broker submit side
+  effect는 하위 runtime이 반환한 attempt 결과로만 확정한다. 하위 runtime 예외는 제출 여부를 단정하지 않고 manual review summary로
+  수렴한다.
+- reconcile/PnL/status summary는 live execution 이후 같은 lifecycle에서 계산하되, fixture smoke에서는 private provider 조회를 수행하지
+  않는다. open order, 예산 사용, 노출은 safe placeholder로 표시하고 PnL 결측은 0으로 보정하지 않고 `관측 대기`로 남겨 실제
+  reconcile/PnL evidence 연결 전까지 운영자가 상태 의미를 오해하지 않게 한다.
+- Telegram alert mapper는 startup, live order capable, 주문 제출, 차단, manual review event를 provider 호출 전 `LiveOpsAlertInput`으로
+  낮춘다. fixture smoke는 alert plan만 만들고 provider 전송 0회를 유지하며, 실제 dispatch 실패는 주문/리스크 commit을 되돌리지 않고
+  notification retry/manual review summary로 격리한다.
+- fixture smoke는 외부 provider와 DB에 연결하지 않고, 디스크 migration 기준을 secret-safe summary로 노출한다. 후속 sub PR은 각 boot 단계별
+  fixture smoke와 integration evidence를 추가해야 한다.
+
 ## M23 restart/recovery drill 신뢰성 기준
 
 - M23 recovery drill은 restart 전후 event log를 같은 restart id로 묶어야 하며, 감지와 복구 Telegram/status evidence가 모두 있어야 한다.

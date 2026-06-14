@@ -709,6 +709,100 @@ M23 live-armed 운영 기준:
 - M23 이후 universe, strategy, budget 확대는 M24 범위다. M23 config나 runbook은 BTC 외 market 기본 활성화, 자동 budget 확대,
   market/best order 기본 허용을 열지 않는다.
 
+## Issue #196 production live ops config/env 기준
+
+Issue #196은 M22/M23 pilot runner를 실운영 주경로로 쓰지 않고, `live:ops`와 TUI-first 운영 콘솔을 production 경계로 분리한다.
+
+구현 기준:
+
+- config schema: `src/runtime/live-ops-config.ts`
+- DB readiness guard: `src/runtime/live-ops-db-readiness.ts`
+- market data collector: `src/runtime/live-ops-market-data.ts`
+- analysis/decision pipeline: `src/runtime/live-ops-analysis-decision.ts`
+- live execution adapter: `src/runtime/live-ops-live-execution.ts`
+- Telegram alert mapper: `src/runtime/live-ops-telegram-alerts.ts`
+- CLI/TUI reconcile/PnL/status summary: `scripts/run-live-ops-support.mjs`
+- script skeleton: `scripts/run-live-ops.mjs`, `scripts/run-live-ops-tui.mjs`
+- 예시 JSON: `config/live-ops.example.json`
+- 예시 env: `config/live-ops.env.example`
+- 실행 command:
+  `corepack pnpm live:ops -- --config <운영-json-path> --env-file <운영-env-path> --tui`
+- attach command:
+  `corepack pnpm live:ops:tui -- --config <운영-json-path> --env-file <운영-env-path> --attach <run-id|socket|status-source>`
+
+JSON config에는 다음처럼 secret이 아닌 운영 정책만 둔다.
+
+- `mode=LIVE_AUTONOMOUS_SMALL_BUDGET`
+- `live_trading_enabled=true`
+- `paper_no_key=false`
+- `withdrawal_enabled=false`, `futures_enabled=false`, `leverage_enabled=false`
+- `market_order_enabled=false`, `entry_market_order_enabled=false`
+- universe는 첫 production 단계에서 `KRW-BTC` 단일
+- 1회 주문 `10000` KRW, 일일 자동 주문 `30000` KRW, open position `30000` KRW, 운영 중지 ceiling `50000` KRW 미만
+- DB readiness, market data, analysis/decision, live execution, reconcile/PnL/status, Telegram, TUI worker는 모두 켜진 정책으로 둔다.
+
+env file에는 credential만 둔다.
+
+- `SEEMIRAI_DATABASE_URL`
+- `SEEMIRAI_UPBIT_ACCESS_KEY`
+- `SEEMIRAI_UPBIT_SECRET_KEY`
+- `SEEMIRAI_TELEGRAM_BOT_TOKEN`
+- `SEEMIRAI_TELEGRAM_CHAT_ID`
+- `SEEMIRAI_TUI_CONTROL_TOKEN`
+
+production live ops path에서 다음 legacy milestone/test env는 readiness 입력으로 사용하지 않는다.
+
+- `SEEMIRAI_RUN_M22_AUTONOMOUS_PILOT`
+- `SEEMIRAI_RUN_M22_AUTONOMOUS_DAEMON`
+- `SEEMIRAI_RUN_UPBIT_PRIVATE_SMOKE`
+- `SEEMIRAI_RUN_UPBIT_ORDER_SMOKE`
+- `SEEMIRAI_PILOT_PROFILE`
+- `SEEMIRAI_M22_*_READY`
+
+`live:ops`/`live:ops:tui`는 config/env contract 검증 이후 DB readiness를 먼저 계산한다. fixture smoke에서는 외부 DB에 연결하지 않고
+디스크 migration 기준만 확인하며, 실제 실행에서는 `SEEMIRAI_DATABASE_URL`로 read-only 연결 probe와 `schema_migrations` 적용 이력을
+조회한다. pending migration, missing table, unknown applied migration, checksum drift는 live worker boot 전에 fail-closed 한다.
+
+`live:ops -- --tui`와 `live:ops:tui -- --attach ...`는 같은 secret-safe TUI dashboard renderer를 사용한다. 첫 화면은 모드, 시장,
+실주문 가능 여부, DB readiness/schema version, worker 상태, 예산, 최근 관측 상태, 필요 조치를 한국어로 표시하고, env file 경로,
+credential, raw provider payload, raw config enum은 노출하지 않는다. fixture smoke dashboard는 외부 DB/provider를 호출하지 않았음을
+표시하고, 후속 provider 연결 전에는 신규 실주문이 제출되지 않는 상태로 고정한다.
+
+`LiveOpsMarketDataCollector`는 `UPBIT_PUBLIC` production event source를 기존 DB-backed `MarketDataRuntimeEventStore`에 저장한다.
+collector는 config를 다시 `LiveOpsConfig`로 해석하고 KRW-BTC 단일 universe, `upbit_krw_spot` exchange, trade/orderbook/status event
+범위를 검증한다. 허용 market 밖 event는 DB write 전에 차단하고, stale/reconnect/disconnect status는 audit/risk evidence로 저장하되
+analysis/decision lifecycle로 전진시키지 않는다.
+
+fixture smoke dashboard는 외부 Upbit/DB 호출 없이 collector summary shape를 검증하고 `체결 1 / 호가 1 / 상태 1` 저장 확인을 표시한다.
+`LiveOpsAnalysisDecisionPipeline`은 market data collector summary, market event window, feature snapshot, strategy 목록을 같은
+runtime 경계에서 묶는다. market data가 준비되지 않았거나 feature snapshot이 실패하면 strategy를 평가하지 않고 HOLD/차단 summary로
+닫는다. feature가 통과하면 주입된 strategy들을 KRW-BTC/upbit_krw_spot context로 평가하고 order intent 수, HOLD/BLOCK count,
+`record_hold_decision` 여부를 secret-safe summary로 반환한다. 이 pipeline은 DB write, broker 호출, Upbit 호출, Telegram 전송을 하지
+않는다.
+
+`LiveOpsLiveExecution`은 analysis/decision summary와 order intent, 최신 budget/loss/cost/risk/reconcile snapshot을 기존
+`LiveAutonomousEntryRuntime` 요청으로 낮추는 adapter다. analysis가 blocked이거나 HOLD로 주문 후보가 0개이면 하위 runtime 호출 없이
+idle/blocked summary로 닫는다. 주문 후보가 있더라도 첫 production 경계에서는 한 tick에 단일 `BUY + LIMIT + post_only` 후보만
+허용하고, market allowlist, `upbit_krw_spot`, strategy/risk scope가 맞지 않으면 live autonomous runtime 호출 전에 fail-closed 한다.
+조건을 통과한 후보는 manual JSONL 없이 `LiveAutonomousEntryRuntime.submitEntryCandidate`로 전달되며, durable budget reservation,
+RiskGate 재검증, broker submit, alert dispatch side effect는 해당 하위 runtime 경계에서만 발생한다.
+
+fixture smoke dashboard는 analysis/decision을 `보류 / 주문 후보 0 / 전략 1`, live execution을 `후보 없음 / broker 제출 0`으로 표시한다.
+reconcile/PnL/status summary는 같은 fixture lifecycle에서 open order, 예산 사용, 노출, PnL 관측 상태를 secret-safe shape로 묶는다.
+fixture smoke는 private provider 조회를 수행하지 않고 `대사 정상 / PnL 관측 대기 / open 주문 0 / provider 호출 0`을 TUI 최근 관측에
+표시한다. PnL 결측은 실제 0으로 보정하지 않고 `관측 대기`로 남겨 후속 provider arm에서 reconcile/PnL evidence가 연결될 때까지
+운영자가 상태 의미를 구분할 수 있게 한다.
+
+`LiveOpsTelegramAlerts`는 Telegram outbound readiness와 live execution summary를 기존 `LiveOpsAlertInput`/`AlertDispatchRequest`로
+낮추는 mapper다. startup alert, live order capable alert, order submitted, risk/reconcile block, manual review event를 같은
+application alert/cooldown/retry/Telegram formatter 경계에 연결한다. plan 생성은 provider를 호출하지 않으며, 실제 전송은
+`dispatchLiveOpsTelegramAlerts`가 `AlertDispatchServiceOptions`를 받은 경우에만 수행한다. provider 전송 실패는 주문/리스크 commit을
+되돌리지 않고 dispatch summary의 실패 count와 기존 retry 경계로 수렴한다.
+
+fixture smoke dashboard는 Telegram alert를 `fixture plan / lifecycle 1 / trade 0 / provider 호출 0`으로 표시한다. Upbit public/private
+probe, 실제 provider arm, TUI control lifecycle은 후속 범위에서 같은 config/env contract, DB readiness, market data collector,
+analysis/decision pipeline, live execution adapter, reconcile/PnL/status summary, Telegram alert mapper 위에 연결한다.
+
 Autonomous entry runtime 기준:
 
 - 구현 경계는 `LiveAutonomousEntryRuntime`이며, public entry는 `src/application/live-autonomous-entry-runtime.ts`다.

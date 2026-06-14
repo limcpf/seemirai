@@ -189,6 +189,91 @@ export {
   loadRuntimeConfigFile,
 } from "./config.js";
 export {
+  LIVE_OPS_DEFAULT_MARKET,
+  LIVE_OPS_LEGACY_ENV_NAMES,
+  LIVE_OPS_LEGACY_ENV_PATTERNS,
+  LIVE_OPS_LEGACY_SMOKE_ENV_PATTERNS,
+  LIVE_OPS_PRODUCTION_MODE,
+  LIVE_OPS_REQUIRED_SECRET_ENV_NAMES,
+  LiveOpsConfigSchema,
+  UnsafeLiveOpsConfigError,
+  assertLiveOpsStartupContract,
+  defaultLiveOpsConfig,
+  detectLegacyLiveOpsEnv,
+  findSecretLikeConfigPaths,
+  formatLiveOpsModeForUser,
+  formatLiveOpsStartupFailureMessage,
+  loadLiveOpsConfig,
+  loadLiveOpsSecretsFromEnv,
+  parseLiveOpsEnvFileContent,
+  validateLiveOpsStartupContract,
+} from "./live-ops-config.js";
+export type {
+  LiveOpsConfig,
+  LiveOpsEnvFileParseResult,
+  LiveOpsLegacyEnvViolation,
+  LiveOpsSecrets,
+  LiveOpsStartupContractInput,
+  LiveOpsStartupContractValidationResult,
+  LoadLiveOpsSecretsOptions,
+} from "./live-ops-config.js";
+export {
+  evaluateLiveOpsDbReadiness,
+  formatLiveOpsDbReadinessFailureMessage,
+} from "./live-ops-db-readiness.js";
+export type {
+  LiveOpsDbReadinessCheck,
+  LiveOpsDbReadinessCheckName,
+  LiveOpsDbReadinessCheckStatus,
+  LiveOpsDbReadinessInput,
+  LiveOpsDbReadinessMigrationSummary,
+  LiveOpsDbReadinessStatus,
+  LiveOpsDbReadinessSummary,
+} from "./live-ops-db-readiness.js";
+export {
+  LiveOpsMarketDataCollectorError,
+  collectLiveOpsMarketData,
+} from "./live-ops-market-data.js";
+export type {
+  CollectLiveOpsMarketDataInput,
+  LiveOpsMarketDataCollectorCheck,
+  LiveOpsMarketDataCollectorStatus,
+  LiveOpsMarketDataCollectorSummary,
+  LiveOpsMarketDataSourceProfile,
+} from "./live-ops-market-data.js";
+export {
+  runLiveOpsAnalysisDecisionPipeline,
+} from "./live-ops-analysis-decision.js";
+export type {
+  LiveOpsAnalysisDecisionCheck,
+  LiveOpsAnalysisDecisionInput,
+  LiveOpsAnalysisDecisionStatus,
+  LiveOpsAnalysisDecisionSummary,
+  LiveOpsDecisionCategory,
+} from "./live-ops-analysis-decision.js";
+export {
+  runLiveOpsLiveExecution,
+} from "./live-ops-live-execution.js";
+export type {
+  LiveOpsLiveExecutionCheck,
+  LiveOpsLiveExecutionEntryRuntime,
+  LiveOpsLiveExecutionInput,
+  LiveOpsLiveExecutionStatus,
+  LiveOpsLiveExecutionSummary,
+} from "./live-ops-live-execution.js";
+export {
+  dispatchLiveOpsTelegramAlerts,
+  planLiveOpsTelegramAlerts,
+} from "./live-ops-telegram-alerts.js";
+export type {
+  DispatchLiveOpsTelegramAlertsInput,
+  DispatchLiveOpsTelegramAlertsSummary,
+  LiveOpsTelegramAlertCheck,
+  LiveOpsTelegramAlertPlan,
+  LiveOpsTelegramAlertPlanInput,
+  LiveOpsTelegramAlertPlanStatus,
+} from "./live-ops-telegram-alerts.js";
+export {
   M19_EXIT_PILOT_POSITION_SOURCES,
   M19_EXIT_PILOT_SMOKE_RESULTS,
   UPBIT_PILOT_IDENTIFIER_MAX_LENGTH,

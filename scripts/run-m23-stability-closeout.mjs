@@ -12,6 +12,7 @@ const oneDayMs = 86_400_000;
 const expectedIssue = 188;
 const expectedMode = "LIVE_AUTONOMOUS_SMALL_BUDGET";
 const maxSegmentBoundaryDriftMs = 5 * 60 * 1000;
+const fixtureSegmentBaseStartedAtMs = Date.UTC(2026, 5, 13, 0, 0, 0);
 const requiredRecoveryChecks = [
   "eventLogsParsed",
   "restartEvidence",
@@ -83,7 +84,7 @@ async function main() {
   await mkdir(artifactDir, { recursive: true });
 
   if (options.fixtureSmoke) {
-    const fixture = await writeFixtureManifest(artifactDir, startedAt);
+    const fixture = await writeFixtureManifest(artifactDir);
     const summary = await buildAndWriteSummary({
       runId,
       startedAt,
@@ -1085,12 +1086,13 @@ function resolveInputPath(filePath, baseDir) {
   return path.isAbsolute(expanded) ? path.resolve(expanded) : path.resolve(baseDir, expanded);
 }
 
-async function writeFixtureManifest(artifactDir, startedAt) {
+async function writeFixtureManifest(artifactDir) {
   const manifestPath = path.join(artifactDir, "m23-stability-closeout-manifest.fixture.json");
   const recoveryPath = path.join(artifactDir, "m23-recovery-summary.fixture.json");
   const segments = [];
   for (let index = 0; index < requiredSegmentCount; index += 1) {
-    const segmentStartedAt = new Date(startedAt.getTime() + index * oneDayMs);
+    // fixture smoke는 실행 시각이 KST 자정 경계를 지나도 같은 7일 evidence를 생성해야 한다.
+    const segmentStartedAt = new Date(fixtureSegmentBaseStartedAtMs + index * oneDayMs);
     const day = readKstDay(segmentStartedAt) ?? segmentStartedAt.toISOString().slice(0, 10);
     const summaryPath = path.join(artifactDir, `m23-segment-${index + 1}-summary.fixture.json`);
     await writeFile(summaryPath, `${JSON.stringify(createFixtureSegmentSummary(index, segmentStartedAt), null, 2)}\n`, "utf8");
