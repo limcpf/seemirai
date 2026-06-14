@@ -250,6 +250,21 @@
   Telegram public webhook endpoint, 출금/입출금 자동화로 확장하지 않는다. 해당 변경은 M24 또는 별도 보안 설계와 source scan이
   필요하다.
 
+## Issue #196 production live ops 보안 기준
+
+- production live ops JSON config에는 secret, token, password, access key, secret key, database URL, Authorization/JWT 계열 key를
+  넣지 않는다. `src/runtime/live-ops-config.ts`는 secret-like key를 발견하면 startup contract를 fail-closed 한다.
+- production live ops env file은 DB/Upbit/Telegram/TUI credential만 담는다. M22/M23 milestone runner의 smoke/readiness env는
+  production readiness로 쓰지 않는다.
+- `live:ops`와 `live:ops:tui`는 Sub PR 01 skeleton 단계에서 provider를 호출하지 않으며, 실제 Upbit private client, live broker,
+  Telegram provider, TUI control side effect는 후속 readiness와 control confirmation 경계가 붙은 뒤에만 열린다.
+- TUI와 CLI 첫 화면은 `PAPER_NO_KEY`, 내부 enum, reason code를 주요 문구로 노출하지 않고 한국어 상태/원인/영향/필요 조치를 먼저
+  보여준다. 내부 식별자는 추적 정보 영역에만 둔다.
+- `SEEMIRAI_TUI_CONTROL_TOKEN`은 env 또는 외부 secret 주입으로만 전달한다. pause/resume/kill control이 켜진 TUI에서 token이 없으면
+  startup contract가 실패해야 한다.
+- source/security scan은 production live ops path가 시장가/best order, 출금/입출금, 선물/레버리지, raw secret 노출 경로를 새로
+  열지 않았음을 확인해야 한다.
+
 ## M18 Decision Ledger 보안 기준
 
 - decision ledger의 `payload_json`과 `trace_json`에는 raw provider payload, raw order detail, secret 후보, Authorization header, JWT, API key, secret key, query hash 원문을 저장하지 않는다. 두 필드는 JSONB-safe value만 허용하며 Date, BigInt, function, class instance 같은 비 JSON 값은 저장 계약에서 제외한다.

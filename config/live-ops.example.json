@@ -1,0 +1,58 @@
+{
+  "schema_version": 1,
+  "mode": "LIVE_AUTONOMOUS_SMALL_BUDGET",
+  "exchange": "UPBIT",
+  "market": "KRW_SPOT",
+  "live_trading_enabled": true,
+  "paper_no_key": false,
+  "withdrawal_enabled": false,
+  "cross_exchange_arbitrage_enabled": false,
+  "futures_enabled": false,
+  "leverage_enabled": false,
+  "market_order_enabled": false,
+  "entry_market_order_enabled": false,
+  "universe": {
+    "markets": ["KRW-BTC"],
+    "default_market": "KRW-BTC"
+  },
+  "budget": {
+    "max_order_krw": "10000",
+    "daily_autonomous_notional_limit_krw": "30000",
+    "max_open_position_notional_krw": "30000",
+    "operations_stop_ceiling_krw": "49999"
+  },
+  "workers": {
+    "db_readiness": true,
+    "market_data": true,
+    "analysis_decision": true,
+    "live_execution": true,
+    "reconcile_pnl_status": true,
+    "telegram": true,
+    "tui": true
+  },
+  "market_data": {
+    "provider": "UPBIT_PUBLIC",
+    "websocket_enabled": true,
+    "rest_policy_snapshot_enabled": true,
+    "stale_after_ms": 30000
+  },
+  "analysis": {
+    "candle_interval_seconds": 60,
+    "feature_interval_seconds": 5,
+    "decision_interval_seconds": 5,
+    "record_hold_decision": true
+  },
+  "telegram": {
+    "startup_alert_enabled": true,
+    "live_order_capable_alert_enabled": true,
+    "trade_event_alerts_enabled": true,
+    "provider_timeout_ms": 5000
+  },
+  "tui": {
+    "foreground_enabled": true,
+    "attach_enabled": true,
+    "refresh_interval_ms": 1000,
+    "control_requires_two_step_confirmation": true,
+    "controls_enabled": true
+  }
+}

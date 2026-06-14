@@ -12,6 +12,7 @@
 - Upbit KRW paper trading MVP 업무 명세: [`product-specs/upbit-krw-paper-trading-mvp.md`](./product-specs/upbit-krw-paper-trading-mvp.md)
 - Upbit v0.2 pilot private API와 소액 주문 smoke 업무 명세: [`product-specs/upbit-v0-2-pilot-private-api.md`](./product-specs/upbit-v0-2-pilot-private-api.md)
 - Upbit 실거래 자율 운용 M15 이후 로드맵: [`product-specs/upbit-live-autonomous-trading.md`](./product-specs/upbit-live-autonomous-trading.md)
+- Issue #196 Live Ops 원클릭 앱/TUI 실행 계획: [`exec-plans/active/2026-06-14-issue-196-live-ops-one-click-app.md`](./exec-plans/active/2026-06-14-issue-196-live-ops-one-click-app.md)
 - 로컬 개발 환경과 검증 절차: [`DEVELOPMENT.md`](./DEVELOPMENT.md)
 - 런타임 설정 구조, 허용값, 안전 invariant: [`RUNTIME_CONFIG.md`](./RUNTIME_CONFIG.md)
 - 운영자가 직접 실행하는 절차와 runbook: [`runbooks/README.md`](./runbooks/README.md), [`runbooks/m9-paper-ops-beta.md`](./runbooks/m9-paper-ops-beta.md), [`runbooks/m22-live-autonomous-pilot.md`](./runbooks/m22-live-autonomous-pilot.md) (M22 local env/key/config preparer 포함), [`runbooks/m23-live-small-budget-operations.md`](./runbooks/m23-live-small-budget-operations.md)

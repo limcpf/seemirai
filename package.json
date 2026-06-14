@@ -8,6 +8,8 @@
     "node": ">=24 <25"
   },
   "scripts": {
+    "live:ops": "node scripts/run-live-ops.mjs",
+    "live:ops:tui": "node scripts/run-live-ops-tui.mjs",
     "typecheck": "tsc --noEmit",
     "test": "vitest run"
   },
