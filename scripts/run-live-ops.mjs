@@ -17,7 +17,7 @@ try {
     printJson(summary);
 
     if (!options.fixtureSmoke) {
-      process.stdout.write("Sub PR 01 skeleton은 boot contract만 검증합니다. DB/provider/TUI lifecycle은 후속 sub PR에서 연결됩니다.\n");
+      process.stdout.write("DB readiness를 통과했습니다. provider/TUI lifecycle은 후속 sub PR에서 연결됩니다.\n");
     }
   }
 } catch (error) {

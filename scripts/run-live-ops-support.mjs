@@ -1,5 +1,12 @@
-import { readFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { readdir, readFile } from "node:fs/promises";
 import path from "node:path";
+import pg from "pg";
+
+const { Pool: PgPool } = pg;
+const migrationFilePattern = /^(\d{6})_[a-z0-9_]+\.sql$/u;
+const defaultMigrationsDirectory = path.resolve("migrations");
+const dbReadinessConnectionTimeoutMs = 5000;
 
 export const liveOpsLegacyEnvNames = [
   "SEEMIRAI_RUN_M22_AUTONOMOUS_PILOT",
@@ -108,14 +115,22 @@ export async function loadLiveOpsCliInputs(options) {
   const env = parseEnvFile(await readFile(envFilePath, "utf8"));
   validateLiveOpsConfig(config);
   validateLiveOpsEnv(env, process.env);
+  const dbReadiness = await evaluateLiveOpsCliDbReadiness({
+    databaseUrl: env.SEEMIRAI_DATABASE_URL,
+    fixtureSmoke: options.fixtureSmoke,
+  });
 
-  return { configPath, envFilePath, config, env };
+  if (!dbReadiness.ready) {
+    throw new Error(formatCliDbReadinessFailureMessage(dbReadiness));
+  }
+
+  return { configPath, envFilePath, config, env, dbReadiness };
 }
 
 export function renderLiveOpsSummary(input) {
   return {
     status: "ready",
-    message: "production live ops config/env 계약을 통과했습니다. Sub PR 01 skeleton은 외부 provider를 호출하지 않습니다.",
+    message: "production live ops config/env 계약과 DB readiness를 통과했습니다. 현재 단계는 외부 거래 provider를 호출하지 않습니다.",
     configPath: input.configPath,
     envFilePath: input.envFilePath,
     mode: "소액 실운영",
@@ -123,6 +138,7 @@ export function renderLiveOpsSummary(input) {
     tui: input.tui,
     attach: input.attach ?? null,
     fixtureSmoke: input.fixtureSmoke,
+    dbReadiness: input.dbReadiness,
     trace: {
       rawMode: input.config.mode,
       defaultMarket: input.config.universe?.default_market,
@@ -356,6 +372,327 @@ function findSecretLikeKeys(value, currentPath = "$") {
 
 function hasMeaningfulValue(value) {
   return value !== undefined && String(value).trim().length > 0 && String(value).trim() !== "0";
+}
+
+async function evaluateLiveOpsCliDbReadiness({ databaseUrl, fixtureSmoke }) {
+  const checkedAt = new Date().toISOString();
+  const checks = [];
+  const migrationFiles = await loadCliMigrationFilesForReadiness(checks);
+
+  if (migrationFiles === undefined) {
+    return buildCliDbReadinessSummary(checkedAt, checks, emptyCliMigrationSummary(false), fixtureSmoke);
+  }
+
+  if (fixtureSmoke) {
+    checks.push(okCliCheck("db_connection", "fixture smoke에서는 외부 DB에 연결하지 않습니다.", "db_connection_fixture_skipped"));
+    checks.push(okCliCheck("schema_migrations_table", "fixture smoke에서는 schema_migrations를 디스크 기준으로 대체했습니다.", "schema_migrations_fixture"));
+    checks.push(okCliCheck("migration_state", "fixture smoke migration 기준을 통과했습니다.", "migration_state_fixture_ok", {
+      expectedLatestVersion: latestCliMigrationVersion(migrationFiles),
+      pendingCount: 0,
+    }));
+    return buildCliDbReadinessSummary(
+      checkedAt,
+      checks,
+      {
+        expectedLatestVersion: latestCliMigrationVersion(migrationFiles),
+        appliedLatestVersion: latestCliMigrationVersion(migrationFiles),
+        pendingVersions: [],
+        appliedVersions: migrationFiles.map((migration) => migration.version),
+        tableExists: true,
+      },
+      true,
+    );
+  }
+
+  const pool = new PgPool({
+    connectionString: databaseUrl,
+    connectionTimeoutMillis: dbReadinessConnectionTimeoutMs,
+    max: 1,
+    idleTimeoutMillis: 1000,
+    allowExitOnIdle: true,
+  });
+  let connectionOk = false;
+
+  try {
+    await pool.query("SELECT 1::int AS ok");
+    connectionOk = true;
+    checks.push(okCliCheck("db_connection", "DB 연결 probe를 통과했습니다.", "db_connection_ok"));
+
+    const migrationSummary = await evaluateCliMigrationState(pool, migrationFiles, checks);
+    return buildCliDbReadinessSummary(checkedAt, checks, migrationSummary, false);
+  } catch (error) {
+    if (!connectionOk) {
+      // DB 연결이 불확실하면 credential을 출력하지 않고 운영자가 점검할 행동만 남긴다.
+      checks.push(blockedCliCheck(
+        "db_connection",
+        "DB에 연결할 수 없습니다. env file의 SEEMIRAI_DATABASE_URL과 네트워크 접근성을 확인하세요.",
+        "db_connection_failed",
+        { reason: safeErrorName(error) },
+      ));
+    } else {
+      // schema 조회 실패는 연결 실패와 분리해야 운영자가 migration 권한/테이블 상태를 정확히 점검할 수 있다.
+      checks.push(blockedCliCheck(
+        "migration_state",
+        "DB migration 상태를 읽을 수 없습니다. schema_migrations 조회 권한과 테이블 상태를 확인하세요.",
+        "migration_state_query_failed",
+        { reason: safeErrorName(error) },
+      ));
+    }
+    return buildCliDbReadinessSummary(checkedAt, checks, buildCliMigrationSummary(migrationFiles, [], false), false);
+  } finally {
+    await pool.end().catch(() => undefined);
+  }
+}
+
+async function loadCliMigrationFilesForReadiness(checks) {
+  try {
+    const migrations = await loadCliMigrationFiles(defaultMigrationsDirectory);
+    if (migrations.length === 0) {
+      // 적용 기준 파일이 없으면 DB가 최신인지 판단할 수 없어 live boot를 멈춘다.
+      checks.push(blockedCliCheck(
+        "migration_files",
+        "migration 파일을 찾지 못했습니다. 운영 스키마 기준을 확인하세요.",
+        "migration_files_missing",
+      ));
+      return undefined;
+    }
+
+    checks.push(okCliCheck("migration_files", "migration 파일 기준을 읽었습니다.", "migration_files_ok", {
+      expectedLatestVersion: latestCliMigrationVersion(migrations),
+      migrationCount: migrations.length,
+    }));
+    return migrations;
+  } catch (error) {
+    checks.push(blockedCliCheck(
+      "migration_files",
+      "migration 파일을 읽거나 검증할 수 없습니다. 파일명/version/checksum 기준을 확인하세요.",
+      "migration_files_invalid",
+      { reason: safeErrorName(error) },
+    ));
+    return undefined;
+  }
+}
+
+async function evaluateCliMigrationState(pool, migrationFiles, checks) {
+  const tableResult = await pool.query("SELECT to_regclass('public.schema_migrations')::text AS table_name");
+  const tableExists = tableResult.rows[0]?.table_name !== null && tableResult.rows[0]?.table_name !== undefined;
+
+  if (!tableExists) {
+    const pendingVersions = migrationFiles.map((migration) => migration.version);
+    checks.push(blockedCliCheck(
+      "schema_migrations_table",
+      "schema_migrations 테이블이 없습니다. 운영 DB migration bootstrap을 먼저 실행하세요.",
+      "schema_migrations_table_missing",
+    ));
+    // schema_migrations가 없으면 적용 이력을 증명할 수 없어 모든 migration을 pending으로 보고 차단한다.
+    checks.push(blockedCliCheck(
+      "migration_state",
+      "DB migration 이력이 없습니다. migration을 먼저 적용한 뒤 live ops를 시작하세요.",
+      "schema_migrations_missing",
+      {
+        expectedLatestVersion: latestCliMigrationVersion(migrationFiles),
+        pendingCount: pendingVersions.length,
+      },
+    ));
+    return {
+      expectedLatestVersion: latestCliMigrationVersion(migrationFiles),
+      appliedLatestVersion: null,
+      pendingVersions,
+      appliedVersions: [],
+      tableExists: false,
+    };
+  }
+
+  const recordsResult = await pool.query(`
+    SELECT version, filename, checksum, applied_at
+    FROM schema_migrations
+    ORDER BY version ASC
+  `);
+  const appliedRecords = recordsResult.rows.map((record) => ({
+    version: Number(record.version),
+    filename: String(record.filename),
+    checksum: String(record.checksum),
+    applied_at: record.applied_at,
+  }));
+  checks.push(okCliCheck("schema_migrations_table", "schema_migrations 적용 이력을 읽었습니다.", "schema_migrations_table_ok", {
+    appliedCount: appliedRecords.length,
+  }));
+
+  const migrationSummary = buildCliMigrationSummary(migrationFiles, appliedRecords, true);
+  try {
+    const plan = createCliMigrationPlan(migrationFiles, appliedRecords);
+    if (plan.applied.length > 0) {
+      // pending migration은 live worker가 시작된 뒤 DB 계약이 바뀌는 것을 막기 위해 boot 전에 차단한다.
+      checks.push(blockedCliCheck(
+        "migration_state",
+        "적용되지 않은 migration이 있습니다. migration apply를 먼저 완료하세요.",
+        "pending_migrations",
+        {
+          expectedLatestVersion: migrationSummary.expectedLatestVersion,
+          appliedLatestVersion: migrationSummary.appliedLatestVersion,
+          pendingCount: plan.applied.length,
+        },
+      ));
+      return migrationSummary;
+    }
+
+    checks.push(okCliCheck("migration_state", "DB migration 상태가 디스크 기준과 일치합니다.", "migration_state_ok", {
+      expectedLatestVersion: migrationSummary.expectedLatestVersion,
+      appliedLatestVersion: migrationSummary.appliedLatestVersion,
+    }));
+    return migrationSummary;
+  } catch (error) {
+    // 적용 이력과 디스크 파일이 어긋나면 자동 복구가 위험하므로 사람이 schema drift를 확인해야 한다.
+    checks.push(blockedCliCheck(
+      "migration_state",
+      "DB migration 이력이 현재 코드의 migration 파일과 일치하지 않습니다. schema drift를 확인하세요.",
+      safeErrorName(error) === "UnknownAppliedMigrationError"
+        ? "unknown_applied_migration"
+        : safeErrorName(error) === "MigrationChecksumMismatchError"
+          ? "migration_checksum_mismatch"
+          : "migration_state_invalid",
+      { reason: safeErrorName(error) },
+    ));
+    return migrationSummary;
+  }
+}
+
+async function loadCliMigrationFiles(migrationsDirectory) {
+  const entries = await readdir(migrationsDirectory, { withFileTypes: true });
+  const migrations = [];
+
+  for (const entry of entries) {
+    if (!entry.isFile() || !entry.name.endsWith(".sql")) {
+      continue;
+    }
+
+    const match = migrationFilePattern.exec(entry.name);
+    if (match === null) {
+      throw new Error(`InvalidMigrationFilenameError:${entry.name}`);
+    }
+
+    const sql = await readFile(path.join(migrationsDirectory, entry.name), "utf8");
+    migrations.push({
+      version: Number(match[1]),
+      filename: entry.name,
+      checksum: createHash("sha256").update(sql, "utf8").digest("hex"),
+    });
+  }
+
+  return sortAndValidateCliMigrations(migrations);
+}
+
+function createCliMigrationPlan(migrations, appliedRecords) {
+  const migrationsByVersion = new Map(migrations.map((migration) => [migration.version, migration]));
+  const appliedVersions = new Set();
+
+  for (const record of appliedRecords) {
+    const migration = migrationsByVersion.get(record.version);
+    if (migration === undefined) {
+      throw Object.assign(new Error("Applied migration is missing from disk"), {
+        name: "UnknownAppliedMigrationError",
+      });
+    }
+
+    if (record.filename !== migration.filename || record.checksum !== migration.checksum) {
+      throw Object.assign(new Error("Applied migration checksum mismatch"), {
+        name: "MigrationChecksumMismatchError",
+      });
+    }
+
+    appliedVersions.add(record.version);
+  }
+
+  return {
+    applied: migrations.filter((migration) => !appliedVersions.has(migration.version)),
+    skipped: migrations.filter((migration) => appliedVersions.has(migration.version)),
+  };
+}
+
+function sortAndValidateCliMigrations(migrations) {
+  const versions = new Set();
+  for (const migration of migrations) {
+    if (versions.has(migration.version)) {
+      throw new Error(`DuplicateMigrationVersionError:${migration.version}`);
+    }
+    versions.add(migration.version);
+  }
+  return migrations.toSorted((left, right) => left.version - right.version);
+}
+
+function buildCliDbReadinessSummary(checkedAt, checks, migration, fixtureSmoke) {
+  const ready = checks.every((check) => check.status === "ok");
+  return {
+    status: ready ? "ready" : "blocked",
+    ready,
+    checkedAt,
+    fixtureSmoke,
+    message: ready
+      ? "DB readiness를 통과했습니다."
+      : "DB readiness를 통과하지 못해 live ops boot를 중단합니다.",
+    migration,
+    checks,
+  };
+}
+
+function buildCliMigrationSummary(migrations, appliedRecords, tableExists) {
+  const appliedVersions = appliedRecords.map((record) => Number(record.version)).toSorted((left, right) => left - right);
+  const appliedVersionSet = new Set(appliedVersions);
+  return {
+    expectedLatestVersion: latestCliMigrationVersion(migrations),
+    appliedLatestVersion: appliedVersions.at(-1) ?? null,
+    pendingVersions: migrations
+      .map((migration) => migration.version)
+      .filter((version) => !appliedVersionSet.has(version)),
+    appliedVersions,
+    tableExists,
+  };
+}
+
+function emptyCliMigrationSummary(tableExists) {
+  return {
+    expectedLatestVersion: null,
+    appliedLatestVersion: null,
+    pendingVersions: [],
+    appliedVersions: [],
+    tableExists,
+  };
+}
+
+function latestCliMigrationVersion(migrations) {
+  return migrations.at(-1)?.version ?? null;
+}
+
+function okCliCheck(name, message, code, details) {
+  return {
+    name,
+    status: "ok",
+    message,
+    code,
+    details,
+  };
+}
+
+function blockedCliCheck(name, message, code, details) {
+  return {
+    name,
+    status: "blocked",
+    message,
+    code,
+    details,
+  };
+}
+
+function formatCliDbReadinessFailureMessage(summary) {
+  const failures = summary.checks
+    .filter((check) => check.status === "blocked")
+    .map((check) => check.message)
+    .join(" ");
+  return `DB readiness를 통과하지 못해 live ops boot를 중단합니다. ${failures}`;
+}
+
+function safeErrorName(error) {
+  return error instanceof Error ? error.name : "UnknownError";
 }
 
 function readValue(argv, index, arg) {

@@ -716,6 +716,7 @@ Issue #196은 M22/M23 pilot runner를 실운영 주경로로 쓰지 않고, `liv
 구현 기준:
 
 - config schema: `src/runtime/live-ops-config.ts`
+- DB readiness guard: `src/runtime/live-ops-db-readiness.ts`
 - script skeleton: `scripts/run-live-ops.mjs`, `scripts/run-live-ops-tui.mjs`
 - 예시 JSON: `config/live-ops.example.json`
 - 예시 env: `config/live-ops.env.example`
@@ -753,8 +754,12 @@ production live ops path에서 다음 legacy milestone/test env는 readiness 입
 - `SEEMIRAI_PILOT_PROFILE`
 - `SEEMIRAI_M22_*_READY`
 
-Sub PR 01의 `live:ops`/`live:ops:tui`는 config/env contract skeleton만 검증한다. DB migration readiness, Upbit public/private probe,
-Telegram 실제 alert, TUI nonblank/control lifecycle은 후속 sub PR에서 같은 config/env contract 위에 연결한다.
+`live:ops`/`live:ops:tui`는 config/env contract 검증 이후 DB readiness를 먼저 계산한다. fixture smoke에서는 외부 DB에 연결하지 않고
+디스크 migration 기준만 확인하며, 실제 실행에서는 `SEEMIRAI_DATABASE_URL`로 read-only 연결 probe와 `schema_migrations` 적용 이력을
+조회한다. pending migration, missing table, unknown applied migration, checksum drift는 live worker boot 전에 fail-closed 한다.
+
+Upbit public/private probe, Telegram 실제 alert, TUI nonblank/control lifecycle은 후속 sub PR에서 같은 config/env contract와 DB readiness
+위에 연결한다.
 
 Autonomous entry runtime 기준:
 

@@ -32,9 +32,10 @@ analysis/decision, live execution, reconcile/PnL/status, Telegram, TUI 운영 �
 
 ## 현재 상태
 
-- Sub PR 01 진행 중.
-- `LiveOpsConfig` contract, secret env loader, legacy env detector, `live:ops`/`live:ops:tui` skeleton, safe fixture를 추가한다.
-- Sub PR 01은 외부 provider를 호출하지 않는다. DB/provider/TUI lifecycle은 후속 sub PR에서 닫는다.
+- Sub PR 01 완료: `LiveOpsConfig` contract, secret env loader, legacy env detector, `live:ops`/`live:ops:tui` skeleton, safe fixture를 추가했다.
+- Sub PR 02 진행 중: DB readiness를 env boolean이 아니라 read-only DB connection probe와 `schema_migrations`/디스크 migration state로 계산한다.
+- fixture smoke는 외부 DB/provider를 호출하지 않는다. 실제 실행은 pending migration, missing table, unknown applied migration, checksum drift에서
+  fail-closed 한다.
 
 ## 검증 방법
 
@@ -42,6 +43,14 @@ Sub PR 01:
 
 ```sh
 corepack pnpm exec vitest run tests/unit/live-ops-config.test.ts tests/unit/live-ops-scripts.test.ts --reporter=verbose
+corepack pnpm typecheck
+./scripts/verify docs
+```
+
+Sub PR 02:
+
+```sh
+corepack pnpm exec vitest run tests/unit/live-ops-db-readiness.test.ts tests/unit/live-ops-scripts.test.ts --reporter=verbose
 corepack pnpm typecheck
 ./scripts/verify docs
 ```
@@ -62,10 +71,11 @@ git diff --check
 - 2026-06-14: M22/M23 milestone smoke/readiness env는 production readiness로 사용하지 않는다.
 - 2026-06-14: 첫 production market은 `KRW-BTC` 단일, 1회 `10000` KRW, 일일/open `30000` KRW, 운영 중지 ceiling `50000` KRW 미만으로 고정한다.
 - 2026-06-14: TUI는 필수 1차 백오피스이며 Web UI는 제외 범위다.
+- 2026-06-14: DB readiness는 migration table 생성/자동 apply를 하지 않는다. 실제 실행은 read-only schema state를 기준으로 차단하고,
+  fixture smoke는 외부 DB 연결 없이 디스크 migration 기준만 확인한다.
 
 ## 남은 이슈
 
-- DB readiness probe와 migration apply mode 연결.
 - TUI foreground/attach lifecycle과 control confirmation.
 - market data DB freshness와 strategy/decision evidence 연결.
 - live execution path의 duplicate order 방지와 gated canary cleanup.
