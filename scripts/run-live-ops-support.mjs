@@ -7,6 +7,15 @@ const { Pool: PgPool } = pg;
 const migrationFilePattern = /^(\d{6})_[a-z0-9_]+\.sql$/u;
 const defaultMigrationsDirectory = path.resolve("migrations");
 const dbReadinessConnectionTimeoutMs = 5000;
+const liveOpsWorkerLabels = {
+  db_readiness: "DB readiness",
+  market_data: "시세 수집",
+  analysis_decision: "분석/판단",
+  live_execution: "실주문 실행",
+  reconcile_pnl_status: "Reconcile/PnL/status",
+  telegram: "Telegram 알림",
+  tui: "TUI 콘솔",
+};
 
 export const liveOpsLegacyEnvNames = [
   "SEEMIRAI_RUN_M22_AUTONOMOUS_PILOT",
@@ -139,6 +148,12 @@ export function renderLiveOpsSummary(input) {
     attach: input.attach ?? null,
     fixtureSmoke: input.fixtureSmoke,
     dbReadiness: input.dbReadiness,
+    budget: {
+      maxOrderKrw: input.config.budget?.max_order_krw ?? null,
+      dailyAutonomousNotionalLimitKrw: input.config.budget?.daily_autonomous_notional_limit_krw ?? null,
+      maxOpenPositionNotionalKrw: input.config.budget?.max_open_position_notional_krw ?? null,
+      operationsStopCeilingKrw: input.config.budget?.operations_stop_ceiling_krw ?? null,
+    },
     trace: {
       rawMode: input.config.mode,
       defaultMarket: input.config.universe?.default_market,
@@ -147,8 +162,61 @@ export function renderLiveOpsSummary(input) {
   };
 }
 
+export function renderLiveOpsTuiDashboard(summary) {
+  const dbReadiness = summary.dbReadiness;
+  const migration = dbReadiness?.migration ?? {};
+  const workerLines = (summary.trace.workers ?? []).map((worker) => {
+    const label = liveOpsWorkerLabels[worker] ?? worker;
+    const state = worker === "db_readiness"
+      ? (dbReadiness?.ready ? "준비" : "차단")
+      : worker === "tui"
+        ? "실행 중"
+        : "후속 연결 대기";
+    return `  - ${label}: ${state}`;
+  });
+
+  return [
+    "Seemirai Live Ops",
+    "운영 dashboard",
+    "",
+    `상태: ${summary.status === "ready" ? "부팅 준비" : "확인 필요"}`,
+    `모드: ${summary.mode}`,
+    `시장: ${summary.trace.defaultMarket ?? "확인 필요"}`,
+    `실주문 가능: ${summary.liveOrderCapable ? "예" : "아니오"}`,
+    `실행 형태: ${summary.fixtureSmoke ? "fixture smoke - 외부 DB/provider 호출 없음" : summary.attach === null ? "foreground" : "attach"}`,
+    "",
+    "Readiness",
+    `  - Config/env 계약: 통과`,
+    `  - DB readiness: ${dbReadiness?.ready ? "통과" : "차단"}`,
+    `  - DB schema: 적용 ${formatSchemaVersion(migration.appliedLatestVersion)} / 기준 ${formatSchemaVersion(migration.expectedLatestVersion)}`,
+    `  - Pending migration: ${formatPendingMigrationCount(migration.pendingVersions)}`,
+    "",
+    "Workers",
+    ...workerLines,
+    "",
+    "예산",
+    `  - 1회 주문: ${formatKrwValue(summary.budget.maxOrderKrw)} KRW`,
+    `  - 일일 자동 주문: ${formatKrwValue(summary.budget.dailyAutonomousNotionalLimitKrw)} KRW`,
+    `  - Open position: ${formatKrwValue(summary.budget.maxOpenPositionNotionalKrw)} KRW`,
+    `  - 운영 중지 ceiling: ${formatKrwValue(summary.budget.operationsStopCeilingKrw)} KRW 미만`,
+    "",
+    "최근 관측",
+    "  - Market data: 후속 연결 대기",
+    "  - Analysis/decision: 후속 연결 대기",
+    "  - Live execution: 후속 연결 대기",
+    "  - Telegram alert: 후속 연결 대기",
+    "",
+    `필요 조치: ${summary.liveOrderCapable ? "후보 처리 전 예산과 reconcile freshness를 재확인하세요." : "후속 provider 연결 전까지 신규 실주문은 제출되지 않습니다."}`,
+    `추적 정보: config=${path.basename(summary.configPath)} attach=${summary.attach ?? "foreground"}`,
+  ].join("\n");
+}
+
 export function printJson(value) {
   process.stdout.write(`${JSON.stringify(value, null, 2)}\n`);
+}
+
+export function printText(value) {
+  process.stdout.write(value.endsWith("\n") ? value : `${value}\n`);
 }
 
 export function printHelp(commandName) {
@@ -160,8 +228,8 @@ Usage:
 Options:
   --config <path>      Secret 없는 production live ops JSON config
   --env-file <path>    DB/Upbit/Telegram/TUI credential 전용 env file
-  --tui                foreground TUI skeleton render
-  --fixture-smoke      외부 provider 호출 없이 config/env contract만 검증
+  --tui                foreground TUI 운영 dashboard render
+  --fixture-smoke      외부 DB/provider 호출 없이 config/env/DB readiness contract만 검증
   --attach <id>        live:ops:tui attach 대상
 `);
 }
@@ -372,6 +440,26 @@ function findSecretLikeKeys(value, currentPath = "$") {
 
 function hasMeaningfulValue(value) {
   return value !== undefined && String(value).trim().length > 0 && String(value).trim() !== "0";
+}
+
+function formatSchemaVersion(version) {
+  return version === null || version === undefined ? "확인 필요" : `v${version}`;
+}
+
+function formatPendingMigrationCount(pendingVersions) {
+  if (!Array.isArray(pendingVersions)) {
+    return "확인 필요";
+  }
+  return pendingVersions.length === 0 ? "없음" : `${pendingVersions.length}개`;
+}
+
+function formatKrwValue(value) {
+  if (value === null || value === undefined) {
+    return "확인 필요";
+  }
+
+  const numericValue = Number(value);
+  return Number.isFinite(numericValue) ? numericValue.toLocaleString("ko-KR") : String(value);
 }
 
 async function evaluateLiveOpsCliDbReadiness({ databaseUrl, fixtureSmoke }) {
