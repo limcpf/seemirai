@@ -719,6 +719,7 @@ Issue #196은 M22/M23 pilot runner를 실운영 주경로로 쓰지 않고, `liv
 - DB readiness guard: `src/runtime/live-ops-db-readiness.ts`
 - market data collector: `src/runtime/live-ops-market-data.ts`
 - analysis/decision pipeline: `src/runtime/live-ops-analysis-decision.ts`
+- live execution adapter: `src/runtime/live-ops-live-execution.ts`
 - script skeleton: `scripts/run-live-ops.mjs`, `scripts/run-live-ops-tui.mjs`
 - 예시 JSON: `config/live-ops.example.json`
 - 예시 env: `config/live-ops.env.example`
@@ -775,11 +776,18 @@ fixture smoke dashboard는 외부 Upbit/DB 호출 없이 collector summary shape
 runtime 경계에서 묶는다. market data가 준비되지 않았거나 feature snapshot이 실패하면 strategy를 평가하지 않고 HOLD/차단 summary로
 닫는다. feature가 통과하면 주입된 strategy들을 KRW-BTC/upbit_krw_spot context로 평가하고 order intent 수, HOLD/BLOCK count,
 `record_hold_decision` 여부를 secret-safe summary로 반환한다. 이 pipeline은 DB write, broker 호출, Upbit 호출, Telegram 전송을 하지
-않으며, live execution 연결은 다음 sub PR에서 별도로 처리한다.
+않는다.
 
-fixture smoke dashboard는 analysis/decision을 `보류 / 주문 후보 0 / 전략 1`로 표시한다. Upbit public/private probe, Telegram 실제 alert,
-TUI control lifecycle은 후속 sub PR에서 같은 config/env contract, DB readiness, market data collector, analysis/decision pipeline 위에
-연결한다.
+`LiveOpsLiveExecution`은 analysis/decision summary와 order intent, 최신 budget/loss/cost/risk/reconcile snapshot을 기존
+`LiveAutonomousEntryRuntime` 요청으로 낮추는 adapter다. analysis가 blocked이거나 HOLD로 주문 후보가 0개이면 하위 runtime 호출 없이
+idle/blocked summary로 닫는다. 주문 후보가 있더라도 첫 production 경계에서는 한 tick에 단일 `BUY + LIMIT + post_only` 후보만
+허용하고, market allowlist, `upbit_krw_spot`, strategy/risk scope가 맞지 않으면 live autonomous runtime 호출 전에 fail-closed 한다.
+조건을 통과한 후보는 manual JSONL 없이 `LiveAutonomousEntryRuntime.submitEntryCandidate`로 전달되며, durable budget reservation,
+RiskGate 재검증, broker submit, alert dispatch side effect는 해당 하위 runtime 경계에서만 발생한다.
+
+fixture smoke dashboard는 analysis/decision을 `보류 / 주문 후보 0 / 전략 1`, live execution을 `후보 없음 / broker 제출 0`으로 표시한다.
+Upbit public/private probe, Telegram 실제 alert, TUI control lifecycle은 후속 sub PR에서 같은 config/env contract, DB readiness,
+market data collector, analysis/decision pipeline, live execution adapter 위에 연결한다.
 
 Autonomous entry runtime 기준:
 

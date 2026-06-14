@@ -137,12 +137,17 @@ export async function loadLiveOpsCliInputs(options) {
     fixtureSmoke: options.fixtureSmoke,
     marketData,
   });
+  const liveExecution = evaluateLiveOpsCliLiveExecution({
+    config,
+    fixtureSmoke: options.fixtureSmoke,
+    analysisDecision,
+  });
 
   if (!dbReadiness.ready) {
     throw new Error(formatCliDbReadinessFailureMessage(dbReadiness));
   }
 
-  return { configPath, envFilePath, config, env, dbReadiness, marketData, analysisDecision };
+  return { configPath, envFilePath, config, env, dbReadiness, marketData, analysisDecision, liveExecution };
 }
 
 export function renderLiveOpsSummary(input) {
@@ -152,13 +157,14 @@ export function renderLiveOpsSummary(input) {
     configPath: input.configPath,
     envFilePath: input.envFilePath,
     mode: "소액 실운영",
-    liveOrderCapable: false,
+    liveOrderCapable: input.liveExecution.liveOrderCapable,
     tui: input.tui,
     attach: input.attach ?? null,
     fixtureSmoke: input.fixtureSmoke,
     dbReadiness: input.dbReadiness,
     marketData: input.marketData,
     analysisDecision: input.analysisDecision,
+    liveExecution: input.liveExecution,
     budget: {
       maxOrderKrw: input.config.budget?.max_order_krw ?? null,
       dailyAutonomousNotionalLimitKrw: input.config.budget?.daily_autonomous_notional_limit_krw ?? null,
@@ -184,6 +190,8 @@ export function renderLiveOpsTuiDashboard(summary) {
         ? (summary.marketData?.ready ? "DB-backed 저장 확인" : "후속 연결 대기")
       : worker === "analysis_decision"
         ? (summary.analysisDecision?.ready ? `${formatDecisionCategory(summary.analysisDecision.decisionCategory)} 기록 확인` : "후속 연결 대기")
+      : worker === "live_execution"
+        ? (summary.liveExecution?.ready ? "후보 없음 - broker 제출 없음" : "후속 연결 대기")
       : worker === "tui"
         ? "실행 중"
         : "후속 연결 대기";
@@ -218,7 +226,7 @@ export function renderLiveOpsTuiDashboard(summary) {
     "최근 관측",
     `  - Market data: ${formatMarketDataObservation(summary.marketData)}`,
     `  - Analysis/decision: ${formatAnalysisDecisionObservation(summary.analysisDecision)}`,
-    "  - Live execution: 후속 연결 대기",
+    `  - Live execution: ${formatLiveExecutionObservation(summary.liveExecution)}`,
     "  - Telegram alert: 후속 연결 대기",
     "",
     `필요 조치: ${summary.liveOrderCapable ? "후보 처리 전 예산과 reconcile freshness를 재확인하세요." : "후속 provider 연결 전까지 신규 실주문은 제출되지 않습니다."}`,
@@ -503,6 +511,19 @@ function formatAnalysisDecisionObservation(analysisDecision) {
   ].join(" / ");
 }
 
+function formatLiveExecutionObservation(liveExecution) {
+  if (liveExecution?.ready !== true) {
+    return "후속 연결 대기";
+  }
+
+  return [
+    liveExecution.statusLabel ?? "대기",
+    `주문 후보 ${liveExecution.orderIntentCount}`,
+    `broker 제출 ${liveExecution.submittedOrderCount}`,
+    `latest ${liveExecution.latestExecutionAt ?? "없음"}`,
+  ].join(" / ");
+}
+
 function formatDecisionCategory(decisionCategory) {
   if (decisionCategory === "ORDER_INTENT") {
     return "주문 후보";
@@ -511,6 +532,60 @@ function formatDecisionCategory(decisionCategory) {
     return "차단";
   }
   return "보류";
+}
+
+function evaluateLiveOpsCliLiveExecution({ config, fixtureSmoke, analysisDecision }) {
+  const market = config.universe?.default_market ?? "KRW-BTC";
+
+  if (!fixtureSmoke || analysisDecision.ready !== true) {
+    return {
+      status: "pending",
+      ready: false,
+      liveOrderCapable: false,
+      market,
+      latestExecutionAt: null,
+      orderIntentCount: analysisDecision.orderIntentCount ?? 0,
+      attemptedOrderCount: 0,
+      submittedOrderCount: 0,
+      statusLabel: "후속 연결 대기",
+      message: "live execution worker는 analysis/decision lifecycle 이후 연결됩니다.",
+      checks: [
+        {
+          name: "analysis_decision",
+          status: "blocked",
+          code: "live_ops_execution_pending",
+          message: "live execution worker가 후속 lifecycle에서 시작됩니다.",
+        },
+      ],
+    };
+  }
+
+  return {
+    status: "idle",
+    ready: true,
+    liveOrderCapable: false,
+    market,
+    latestExecutionAt: null,
+    orderIntentCount: analysisDecision.orderIntentCount,
+    attemptedOrderCount: 0,
+    submittedOrderCount: 0,
+    statusLabel: "후보 없음",
+    message: "fixture live execution worker가 주문 후보 없음 상태를 확인했고 broker 제출은 발생하지 않았습니다.",
+    checks: [
+      {
+        name: "order_intent",
+        status: "ok",
+        code: "live_ops_no_order_intent",
+        message: "fixture decision tick에는 live execution으로 넘길 주문 후보가 없습니다.",
+      },
+      {
+        name: "broker_submit",
+        status: "ok",
+        code: "live_ops_broker_submit_skipped",
+        message: "fixture smoke에서는 broker 제출 경계를 호출하지 않습니다.",
+      },
+    ],
+  };
 }
 
 function evaluateLiveOpsCliAnalysisDecision({ config, fixtureSmoke, marketData }) {

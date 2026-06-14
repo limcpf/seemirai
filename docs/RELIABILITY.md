@@ -52,6 +52,10 @@ Codex-native 운영은 Codex, Git, GitHub, shell command, 문서 상태를 연�
   audit/risk evidence로 저장하되, analysis/decision 및 신규 실주문 lifecycle로 전진시키지 않는다.
 - analysis/decision pipeline은 market data 미준비와 feature 실패를 0값으로 보정하지 않는다. 해당 경우 strategy 평가를 열지 않고
   HOLD/차단 summary를 남기며, order intent가 없으면 live execution으로 전진하지 않는다.
+- live execution adapter는 analysis summary와 order intent 수가 어긋나거나 복수 후보가 들어오면 broker runtime을 호출하지 않는다.
+  단일 `BUY + LIMIT + post_only` 후보만 기존 `LiveAutonomousEntryRuntime` 요청으로 낮추며, budget reservation과 broker submit side
+  effect는 하위 runtime이 반환한 attempt 결과로만 확정한다. 하위 runtime 예외는 제출 여부를 단정하지 않고 manual review summary로
+  수렴한다.
 - fixture smoke는 외부 provider와 DB에 연결하지 않고, 디스크 migration 기준을 secret-safe summary로 노출한다. 후속 sub PR은 각 boot 단계별
   fixture smoke와 integration evidence를 추가해야 한다.
 

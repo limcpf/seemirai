@@ -252,6 +252,16 @@ export type {
   LiveOpsDecisionCategory,
 } from "./live-ops-analysis-decision.js";
 export {
+  runLiveOpsLiveExecution,
+} from "./live-ops-live-execution.js";
+export type {
+  LiveOpsLiveExecutionCheck,
+  LiveOpsLiveExecutionEntryRuntime,
+  LiveOpsLiveExecutionInput,
+  LiveOpsLiveExecutionStatus,
+  LiveOpsLiveExecutionSummary,
+} from "./live-ops-live-execution.js";
+export {
   M19_EXIT_PILOT_POSITION_SOURCES,
   M19_EXIT_PILOT_SMOKE_RESULTS,
   UPBIT_PILOT_IDENTIFIER_MAX_LENGTH,
