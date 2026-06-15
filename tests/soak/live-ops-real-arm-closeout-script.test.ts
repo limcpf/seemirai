@@ -78,6 +78,55 @@ describe("Issue 206 live:ops real-arm closeout script", () => {
     expect(getCheck(summary, "orderPolicy").status).toBe("fail");
   });
 
+  it("fails when the command is not the actual live:ops foreground execution", async () => {
+    const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-issue-206-closeout-command-"));
+    const manifestPath = await writeCloseoutManifest(artifactDir, {
+      manifestMutator: (manifest) => ({ ...manifest, command: "echo live:ops fixture" }),
+    });
+    const summary = await runScriptExpectingFailure(
+      ["--json", "--artifact-dir", artifactDir, "--manifest", manifestPath],
+      createReadyEnv(),
+    );
+
+    expect(summary.status).toBe("failed");
+    expect(getCheck(summary, "manifestShape")).toMatchObject({ status: "fail" });
+  });
+
+  it("fails when run and reconcile exposure evidence conflict", async () => {
+    const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-issue-206-closeout-exposure-conflict-"));
+    const manifestPath = await writeCloseoutManifest(artifactDir, {
+      runMutator: (run) => ({ ...run, openExposureKrw: 100 }),
+    });
+    const summary = await runScriptExpectingFailure(
+      ["--json", "--artifact-dir", artifactDir, "--manifest", manifestPath],
+      createReadyEnv(),
+    );
+
+    expect(summary.status).toBe("failed");
+    expect(getCheck(summary, "reconcileCloseout")).toMatchObject({ status: "fail" });
+  });
+
+  it("fails when submit and cancel evidence do not share a direct identifier or broker id", async () => {
+    const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-issue-206-closeout-chain-"));
+    const manifestPath = await writeCloseoutManifest(artifactDir, {
+      runMutator: (run) => ({
+        ...run,
+        chainEvidenceId: "operator-note-only",
+        identifierSuffix: "submitted-identifier",
+        cancelIdentifierSuffix: "different-cancel-identifier",
+        brokerOrderIdSuffix: "submitted-order",
+        cancelBrokerOrderIdSuffix: "different-cancel-order",
+      }),
+    });
+    const summary = await runScriptExpectingFailure(
+      ["--json", "--artifact-dir", artifactDir, "--manifest", manifestPath],
+      createReadyEnv(),
+    );
+
+    expect(summary.status).toBe("failed");
+    expect(getCheck(summary, "orderLifecycle")).toMatchObject({ status: "fail" });
+  });
+
   it("fails when redacted artifacts contain raw secret candidates", async () => {
     const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-issue-206-closeout-secret-"));
     const manifestPath = await writeCloseoutManifest(artifactDir, {
@@ -115,6 +164,7 @@ async function writeCloseoutManifest(
   artifactDir: string,
   options: {
     artifactText?: string;
+    manifestMutator?: (manifest: Record<string, unknown>) => Record<string, unknown>;
     runMutator?: (run: Record<string, unknown>) => Record<string, unknown>;
   } = {},
 ) {
@@ -131,7 +181,7 @@ async function writeCloseoutManifest(
     "utf8",
   );
   const run = options.runMutator?.(createRunFixture()) ?? createRunFixture();
-  const manifest = {
+  const baseManifest = {
     issue: 206,
     mode: "LIVE_AUTONOMOUS_SMALL_BUDGET",
     command: `corepack pnpm live:ops -- --config ${configPath} --env-file ${envFilePath} --tui`,
@@ -180,6 +230,7 @@ async function writeCloseoutManifest(
       evidenceId: "finish-readiness-audit-issue-206",
     },
   };
+  const manifest = options.manifestMutator?.(baseManifest) ?? baseManifest;
   await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
   return manifestPath;
 }

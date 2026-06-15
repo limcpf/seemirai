@@ -199,13 +199,16 @@ async function validateManifest(manifest, manifestPath, manifestRawText, options
 }
 
 function createManifestShapeCheck(manifest) {
+  const command = readString(manifest.command);
+  const configPath = readString(manifest.configPath);
+  const envFilePath = readString(manifest.envFilePath);
   const actual = {
     issue: manifest.issue,
     mode: manifest.mode,
-    command: readString(manifest.command),
+    command,
+    commandValid: isLiveOpsCommand(command, configPath, envFilePath),
   };
-  const command = readString(manifest.command);
-  if (manifest.issue === expectedIssue && manifest.mode === expectedMode && command?.includes("live:ops") === true) {
+  if (manifest.issue === expectedIssue && manifest.mode === expectedMode && actual.commandValid) {
     return okCheck("Issue #206 closeout manifest가 issue/mode/command contract를 만족한다.", actual);
   }
 
@@ -350,11 +353,16 @@ function createOrderLifecycleCheck(run) {
 function createReconcileCloseoutCheck(manifest, run) {
   const reconcile = readRecord(manifest.reconcile);
   const values = {
-    openExposureKrw: readNumber(reconcile.openExposureKrw ?? run.openExposureKrw),
-    openOrderCount: readNumber(reconcile.openOrderCount ?? run.openOrderCount),
-    mismatchCount: readNumber(reconcile.mismatchCount ?? run.reconcileMismatchCount),
-    untrackedFillCount: readNumber(reconcile.untrackedFillCount ?? run.untrackedFillCount),
-    manualReviewCount: readNumber(reconcile.manualReviewCount ?? run.manualReviewCount),
+    "run.openExposureKrw": readNumber(run.openExposureKrw),
+    "run.openOrderCount": readNumber(run.openOrderCount),
+    "run.reconcileMismatchCount": readNumber(run.reconcileMismatchCount),
+    "run.untrackedFillCount": readNumber(run.untrackedFillCount),
+    "run.manualReviewCount": readNumber(run.manualReviewCount),
+    "reconcile.openExposureKrw": readNumber(reconcile.openExposureKrw),
+    "reconcile.openOrderCount": readNumber(reconcile.openOrderCount),
+    "reconcile.mismatchCount": readNumber(reconcile.mismatchCount),
+    "reconcile.untrackedFillCount": readNumber(reconcile.untrackedFillCount),
+    "reconcile.manualReviewCount": readNumber(reconcile.manualReviewCount),
   };
   const ok = Object.values(values).every((value) => value === 0);
 
@@ -783,10 +791,6 @@ function skippedCheck(message, evidence = {}) {
 }
 
 function hasSameOrderChain(run) {
-  const chainEvidenceId = readString(run.chainEvidenceId);
-  if (hasText(chainEvidenceId)) {
-    return true;
-  }
   const identifier = readString(run.identifierSuffix);
   const cancelIdentifier = readString(run.cancelIdentifierSuffix);
   if (hasText(identifier) && identifier === cancelIdentifier) {
@@ -795,6 +799,24 @@ function hasSameOrderChain(run) {
   const brokerOrderId = readString(run.brokerOrderIdSuffix);
   const cancelBrokerOrderId = readString(run.cancelBrokerOrderIdSuffix);
   return hasText(brokerOrderId) && brokerOrderId === cancelBrokerOrderId;
+}
+
+function isLiveOpsCommand(command, configPath, envFilePath) {
+  if (!hasText(command) || !hasText(configPath) || !hasText(envFilePath)) {
+    return false;
+  }
+  const tokens = command.trim().split(/\s+/u);
+  const separatorIndex = tokens.indexOf("--");
+  if (tokens[0] !== "corepack" || tokens[1] !== "pnpm" || tokens[2] !== "live:ops" || separatorIndex !== 3) {
+    return false;
+  }
+  const configIndex = tokens.indexOf("--config");
+  const envFileIndex = tokens.indexOf("--env-file");
+  return configIndex > separatorIndex
+    && envFileIndex > separatorIndex
+    && tokens[configIndex + 1] === configPath
+    && tokens[envFileIndex + 1] === envFilePath
+    && tokens.includes("--tui");
 }
 
 function normalizeTerminalState(value) {
