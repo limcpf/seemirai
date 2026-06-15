@@ -181,10 +181,8 @@ export async function loadLiveOpsCliInputs(options) {
 }
 
 export function renderLiveOpsSummary(input) {
-  const postSubmitReady = input.liveExecution.status === "submitted"
-    ? input.reconcilePnlStatus.ready === true && input.telegramAlert.ready === true
-    : true;
-  const status = input.dbReadiness.ready && input.marketData.ready && input.analysisDecision.ready && input.liveExecution.ready && postSubmitReady
+  const postExecutionReady = input.reconcilePnlStatus.ready === true && input.telegramAlert.ready === true;
+  const status = input.dbReadiness.ready && input.marketData.ready && input.analysisDecision.ready && input.liveExecution.ready && postExecutionReady
     ? "ready"
     : "blocked";
   return {
@@ -874,6 +872,24 @@ export function createLiveOpsCliEntryRuntime({ broker, budgetReservation } = {})
         };
       }
 
+      const guardViolations = collectLiveOpsCliEntryRuntimeGuardViolations(request);
+      if (guardViolations.length > 0) {
+        // exported wrapper는 상위 adapter 없이도 live ops 소액·단일시장 invariant를 broker 앞에서 다시 고정한다.
+        return {
+          status: "BLOCKED",
+          attemptId: request.idempotencyKey,
+          idempotencyKey: request.idempotencyKey,
+          message: "live ops execution guard가 제출 조건을 통과하지 못해 broker 제출을 중단했습니다.",
+          action: "KRW-BTC, 10000 KRW 상한, ops identifier, LIMIT post-only 조건을 확인하세요.",
+          violations: ["execution_runtime_guard_blocked"],
+          events: [],
+          trace: {
+            reason: "execution_runtime_guard_blocked",
+            violations: guardViolations,
+          },
+        };
+      }
+
       if (!isLiveOpsCliEntryRuntimeRequestEvidenceReady(request)) {
         // wrapper를 직접 조립해도 비용/RiskGate evidence가 없으면 broker side effect를 만들지 않는다.
         return {
@@ -1152,8 +1168,11 @@ function collectLiveOpsCliOrderIntentViolations({ config, marketData, intent }) 
   if (intent?.orderType !== "LIMIT") {
     violations.push("production live ops 신규 진입은 LIMIT 주문만 허용합니다");
   }
-  if (intent?.postOnly !== true || intent?.timeInForce !== "POST_ONLY") {
+  if (!isLiveOpsCliPostOnlyLimitIntent(intent)) {
     violations.push("production live ops 신규 진입은 post-only LIMIT 주문만 허용합니다");
+  }
+  if (!hasMeaningfulValue(intent?.strategyId)) {
+    violations.push("주문 후보에는 strategyId가 필요합니다");
   }
   for (const [key, label] of [
     ["requestedPrice", "가격"],
@@ -1177,11 +1196,17 @@ function collectLiveOpsCliOrderIntentViolations({ config, marketData, intent }) 
       violations.push("단일 주문 예산 상한을 초과했습니다");
     }
   }
-  if (!hasMeaningfulValue(intent?.idempotencyKey) || String(intent.idempotencyKey).length > 32 || !String(intent.idempotencyKey).startsWith("ops-")) {
-    violations.push("idempotency key는 ops- prefix와 32자 이하 조건을 만족해야 합니다");
+  if (!hasMeaningfulValue(intent?.idempotencyKey)) {
+    violations.push("주문 후보에는 decision idempotency key가 필요합니다");
   }
   if (!hasMeaningfulValue(intent?.metadata?.expected_loss_bps_of_equity)) {
     violations.push("주문 후보에는 RiskGate expected loss 입력이 필요합니다");
+  }
+  if (!isLiveOpsCliCostInput(intent?.costInput)) {
+    violations.push("주문 후보에는 live autonomous entry runtime costInput이 필요합니다");
+  }
+  if (!isLiveOpsCliRiskInput(intent?.risk, intent)) {
+    violations.push("주문 후보에는 live autonomous entry runtime risk snapshot이 필요합니다");
   }
   if (!isLiveOpsCliCostSnapshotEvidence(intent?.costSnapshot, intent)) {
     violations.push("주문 후보에는 현재 intent와 일치하는 CostModel evidence가 필요합니다");
@@ -1228,6 +1253,39 @@ function isLiveOpsCliRiskApprovalEvidence(approval, intent) {
   return isLiveOpsCliOrderIntentEvidenceMatch(approval.order_intent, intent);
 }
 
+function isLiveOpsCliPostOnlyLimitIntent(intent) {
+  return (
+    intent?.orderType === "LIMIT" &&
+    intent?.postOnly === true &&
+    (intent.timeInForce === undefined || intent.timeInForce === "GTC" || intent.timeInForce === "POST_ONLY")
+  );
+}
+
+function isLiveOpsCliCostInput(value) {
+  if (!isNonEmptyRecord(value)) {
+    return false;
+  }
+  return [
+    "expectedReturnBps",
+    "entryFeeBps",
+    "exitFeeBps",
+    "spreadCostBpsP75",
+    "expectedSlippageBpsP95",
+    "cancelRequotePenaltyBps",
+    "safetyBufferBps",
+  ].every((key) => hasMeaningfulValue(value[key]));
+}
+
+function isLiveOpsCliRiskInput(value, intent) {
+  if (!isNonEmptyRecord(value) || !isNonEmptyRecord(value.account) || !isNonEmptyRecord(value.strategy) || !isNonEmptyRecord(value.thresholdSnapshot)) {
+    return false;
+  }
+  if (!Array.isArray(value.positions) || !Array.isArray(value.infrastructureSignals)) {
+    return false;
+  }
+  return value.strategy.strategyId === intent?.strategyId;
+}
+
 function isLiveOpsCliOrderIntentEvidenceMatch(evidence, intent) {
   if (!isNonEmptyRecord(evidence) || intent === undefined || intent === null) {
     return false;
@@ -1240,7 +1298,7 @@ function isLiveOpsCliOrderIntentEvidenceMatch(evidence, intent) {
     side: intent.side,
     order_type: intent.orderType,
     post_only: intent.postOnly,
-    time_in_force: intent.timeInForce,
+    time_in_force: readLiveOpsCliEvidenceTimeInForce(intent),
     requested_quantity: intent.requestedQuantity,
     requested_notional: intent.requestedNotional,
     requested_price: intent.requestedPrice,
@@ -1248,7 +1306,14 @@ function isLiveOpsCliOrderIntentEvidenceMatch(evidence, intent) {
     expected_loss_bps_of_equity: expectedLossBps,
   };
 
-  return Object.entries(expected).every(([key, value]) => value === undefined || evidence[key] === value);
+  return Object.entries(expected).every(([key, value]) => value !== undefined && evidence[key] === value);
+}
+
+function readLiveOpsCliEvidenceTimeInForce(intent) {
+  if (intent.timeInForce === undefined && intent.postOnly === true && intent.orderType === "LIMIT") {
+    return "GTC";
+  }
+  return intent.timeInForce;
 }
 
 function hasProblemFieldList(value) {
@@ -1260,6 +1325,7 @@ function isNonEmptyRecord(value) {
 }
 
 function createLiveOpsCliEntryRuntimeRequest({ config, marketData, intent, observedAt, executionStatus }) {
+  const liveAttemptId = createLiveOpsCliAttemptId(intent.idempotencyKey);
   return {
     config: {
       enabled: config.live_trading_enabled === true,
@@ -1267,6 +1333,8 @@ function createLiveOpsCliEntryRuntimeRequest({ config, marketData, intent, obser
       max_order_krw: config.budget?.max_order_krw ?? "10000",
       daily_autonomous_notional_limit_krw: config.budget?.daily_autonomous_notional_limit_krw ?? "30000",
       max_open_position_notional_krw: config.budget?.max_open_position_notional_krw ?? "30000",
+      max_daily_loss_krw: config.budget?.max_order_krw ?? "10000",
+      max_weekly_loss_krw: config.budget?.daily_autonomous_notional_limit_krw ?? "30000",
       max_price_deviation_bps: "30",
       identifier_prefix: "ops-",
       identifier_max_length: 32,
@@ -1281,9 +1349,11 @@ function createLiveOpsCliEntryRuntimeRequest({ config, marketData, intent, obser
       referencePrice: intent.referencePrice ?? intent.requestedPrice,
       reason: intent.reason,
       expectedLossBpsOfEquity: intent.metadata.expected_loss_bps_of_equity,
+      costInput: intent.costInput,
+      risk: intent.risk,
       orderType: "LIMIT",
       postOnly: true,
-      timeInForce: "POST_ONLY",
+      timeInForce: readLiveOpsCliEvidenceTimeInForce(intent),
       costSnapshot: intent.costSnapshot,
       riskApproval: intent.riskApproval,
       metadata: {
@@ -1307,7 +1377,7 @@ function createLiveOpsCliEntryRuntimeRequest({ config, marketData, intent, obser
     },
     killSwitchActive: executionStatus.killSwitchActive,
     reconcileFresh: executionStatus.reconcileFresh,
-    idempotencyKey: intent.idempotencyKey,
+    idempotencyKey: liveAttemptId,
     observedAt,
   };
 }
@@ -1346,6 +1416,41 @@ function collectLiveOpsCliEntryRuntimeStatusViolations(request) {
   return violations;
 }
 
+function collectLiveOpsCliEntryRuntimeGuardViolations(request) {
+  const violations = [];
+  const candidate = request?.candidate;
+  const config = request?.config;
+  if (config?.enabled !== true) {
+    violations.push("live trading config가 활성 상태여야 합니다");
+  }
+  if (!Array.isArray(config?.allowed_markets) || !config.allowed_markets.includes("KRW-BTC") || candidate?.market !== "KRW-BTC") {
+    violations.push("live ops wrapper는 KRW-BTC 단일 market만 제출할 수 있습니다");
+  }
+  if (candidate?.exchangeId !== "upbit_krw_spot") {
+    violations.push("live ops wrapper exchange는 upbit_krw_spot이어야 합니다");
+  }
+  if (!hasMeaningfulValue(candidate?.strategyId)) {
+    violations.push("live ops wrapper candidate에는 strategyId가 필요합니다");
+  }
+  if (config?.max_order_krw !== "10000") {
+    violations.push("live ops wrapper 단일 주문 상한은 10000 KRW여야 합니다");
+  }
+  if (isPositiveDecimalString(candidate?.requestedNotional) && new Decimal(candidate.requestedNotional).gt(new Decimal(config?.max_order_krw ?? "0"))) {
+    violations.push("live ops wrapper 후보가 단일 주문 상한을 초과했습니다");
+  }
+  if (!isLiveOpsCliPostOnlyLimitIntent({
+    orderType: candidate?.orderType,
+    postOnly: candidate?.postOnly,
+    timeInForce: candidate?.timeInForce,
+  })) {
+    violations.push("live ops wrapper 후보는 LIMIT + post_only 조건이어야 합니다");
+  }
+  if (!isLiveOpsCliLiveAttemptId(request?.idempotencyKey, config)) {
+    violations.push("live ops wrapper idempotency key는 ops- prefix와 13 bytes hex suffix 조건을 만족해야 합니다");
+  }
+  return violations;
+}
+
 function isLiveOpsCliBudgetReservationEvidence(result, request) {
   if (result?.reserved !== true || !isNonEmptyRecord(result.reservation)) {
     return false;
@@ -1359,6 +1464,22 @@ function isLiveOpsCliBudgetReservationEvidence(result, request) {
     isNonEmptyRecord(reservation.budgetSnapshot) &&
     hasMeaningfulValue(reservation.reservedAt)
   );
+}
+
+function isLiveOpsCliLiveAttemptId(value, config = {}) {
+  return (
+    typeof value === "string" &&
+    value.length <= (config.identifier_max_length ?? 32) &&
+    /^ops-[a-f0-9]{26}$/u.test(value)
+  );
+}
+
+function createLiveOpsCliAttemptId(decisionIdempotencyKey) {
+  if (isLiveOpsCliLiveAttemptId(decisionIdempotencyKey)) {
+    return decisionIdempotencyKey;
+  }
+  const source = hasMeaningfulValue(decisionIdempotencyKey) ? String(decisionIdempotencyKey) : "missing-decision-key";
+  return `ops-${createHash("sha256").update(source).digest("hex").slice(0, 26)}`;
 }
 
 function createLiveOpsCliOrderSubmission(request) {

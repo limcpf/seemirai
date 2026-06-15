@@ -451,6 +451,7 @@ const analysisDecision = {
   orderIntentCount: 1,
   orderIntents: [],
 };
+const observedAt = "2026-06-15T00:00:00.000Z";
 function orderIntentEvidence(intent) {
   return {
     exchange_id: intent.exchangeId,
@@ -467,6 +468,50 @@ function orderIntentEvidence(intent) {
     expected_loss_bps_of_equity: intent.metadata.expected_loss_bps_of_equity,
   };
 }
+function createCostInput() {
+  return {
+    expectedReturnBps: "40",
+    entryFeeBps: "5",
+    exitFeeBps: "5",
+    spreadCostBpsP75: "2",
+    expectedSlippageBpsP95: "2",
+    cancelRequotePenaltyBps: "1",
+    safetyBufferBps: "10",
+  };
+}
+function createRiskInput(strategyId) {
+  return {
+    account: {
+      equityKrw: "1000000",
+      dailyRealizedPnlBps: "0",
+      weeklyRealizedPnlBps: "0",
+      maxDrawdownBps: "0",
+      capturedAt: observedAt,
+    },
+    positions: [],
+    strategy: {
+      strategyId,
+      consecutiveLosses: 0,
+      capturedAt: observedAt,
+    },
+    infrastructureSignals: [],
+    thresholdSnapshot: {
+      thresholds: {
+        dailyLossLimitBps: "100",
+        weeklyLossLimitBps: "300",
+        maxDrawdownBps: "500",
+        maxOrderNotionalBpsOfEquity: "100",
+        maxExpectedLossBpsOfEquity: "20",
+        btcEthMaxPositionBpsOfEquity: "2000",
+        altMaxPositionBpsOfEquity: "500",
+        totalAltMaxPositionBpsOfEquity: "1500",
+        maxConsecutiveStrategyLosses: 3,
+      },
+      capturedAt: observedAt,
+      source: "live-ops-scripts.test",
+    },
+  };
+}
 const intent = {
   exchangeId: "upbit_krw_spot",
   market: "KRW-BTC",
@@ -476,7 +521,7 @@ const intent = {
   requestedPrice: "100000000",
   requestedQuantity: "0.0001",
   requestedNotional: "10000",
-  idempotencyKey: "ops-aaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  idempotencyKey: "ops-aaaaaaaaaaaaaaaaaaaaaaaaaa",
   reason: "test order intent",
   postOnly: true,
   timeInForce: "POST_ONLY",
@@ -484,6 +529,8 @@ const intent = {
     expected_loss_bps_of_equity: "5",
   },
 };
+intent.costInput = createCostInput();
+intent.risk = createRiskInput(intent.strategyId);
 intent.costSnapshot = {
   source: "cost_model",
   exchange_id: intent.exchangeId,
@@ -712,6 +759,8 @@ function createRuntimeRequest(overrides = {}) {
       max_order_krw: "10000",
       daily_autonomous_notional_limit_krw: "30000",
       max_open_position_notional_krw: "30000",
+      max_daily_loss_krw: "10000",
+      max_weekly_loss_krw: "30000",
       max_price_deviation_bps: "30",
       identifier_prefix: "ops-",
       identifier_max_length: 32,
@@ -729,6 +778,8 @@ function createRuntimeRequest(overrides = {}) {
       orderType: "LIMIT",
       postOnly: true,
       timeInForce: "POST_ONLY",
+      costInput: intent.costInput,
+      risk: intent.risk,
       costSnapshot: intent.costSnapshot,
       riskApproval: intent.riskApproval,
       metadata: intent.metadata,
@@ -765,6 +816,79 @@ const directKillSwitchResult = await createLiveOpsCliEntryRuntime({
   },
   budgetReservation,
 }).submitEntryCandidate(createRuntimeRequest({ killSwitchActive: true }));
+const directInvalidMarketRequest = createRuntimeRequest();
+directInvalidMarketRequest.candidate = {
+  ...directInvalidMarketRequest.candidate,
+  market: "KRW-ETH",
+};
+const submittedWithInvalidMarket = [];
+const directInvalidMarketResult = await createLiveOpsCliEntryRuntime({
+  broker: {
+    async submitOrder(submission) {
+      submittedWithInvalidMarket.push(submission);
+      return {
+        brokerOrderId: "unexpected-invalid-market-order",
+      };
+    },
+  },
+  budgetReservation,
+}).submitEntryCandidate(directInvalidMarketRequest);
+const strategyDecisionKey = "live_ops_fixture_strategy:upbit_krw_spot:KRW-BTC:BUY:2026-06-15T00:00:00.000Z";
+const strategyKeyIntent = {
+  ...intent,
+  idempotencyKey: strategyDecisionKey,
+  timeInForce: "GTC",
+};
+strategyKeyIntent.costSnapshot = {
+  ...intent.costSnapshot,
+  order_intent: orderIntentEvidence(strategyKeyIntent),
+};
+strategyKeyIntent.riskApproval = {
+  ...intent.riskApproval,
+  order_intent: orderIntentEvidence(strategyKeyIntent),
+};
+const runtimeRequests = [];
+const strategyKeySummary = await evaluateLiveOpsCliLiveExecution({
+  config,
+  fixtureSmoke: false,
+  analysisDecision,
+  marketData: {
+    ready: true,
+    latestHeartbeatAt: observedAt,
+  },
+  env: {
+    SEEMIRAI_UPBIT_ACCESS_KEY: "fake-access-key",
+    SEEMIRAI_UPBIT_SECRET_KEY: "fake-secret-key",
+    SEEMIRAI_UPBIT_KEY_SCOPE: "자산조회,주문조회,주문하기",
+    SEEMIRAI_UPBIT_KEY_SCOPE_EVIDENCE_ID: "scope-evidence",
+  },
+  orderIntents: [strategyKeyIntent],
+  entryRuntime: {
+    async submitEntryCandidate(request) {
+      runtimeRequests.push(request);
+      return {
+        status: "SUBMITTED",
+        attemptId: request.idempotencyKey,
+        idempotencyKey: request.idempotencyKey,
+        brokerOrderId: "strategy-key-live-order-001",
+        message: "strategy key fixture submitted",
+        action: "fixture action",
+        violations: [],
+        events: [],
+        trace: {
+          reason: "broker_submitted",
+        },
+        executionResult: {
+          brokerOrder: {
+            brokerOrderId: "strategy-key-live-order-001",
+          },
+        },
+      };
+    },
+  },
+  executionStatus,
+  postSubmitReadiness,
+});
 const topLevelSubmittedBlocked = renderLiveOpsSummary({
   configPath: "config/live-ops.example.json",
   envFilePath: "tests/fixtures/live-ops/fake.env",
@@ -777,6 +901,19 @@ const topLevelSubmittedBlocked = renderLiveOpsSummary({
   liveExecution: summary,
   reconcilePnlStatus: { ready: false, status: "blocked" },
   telegramAlert: { ready: false, status: "blocked" },
+});
+const topLevelIdleBlocked = renderLiveOpsSummary({
+  configPath: "config/live-ops.example.json",
+  envFilePath: "tests/fixtures/live-ops/fake.env",
+  config,
+  env: {},
+  fixtureSmoke: false,
+  dbReadiness: { ready: true },
+  marketData: { ready: true },
+  analysisDecision: { ready: true },
+  liveExecution: { status: "idle", ready: true, liveOrderCapable: false },
+  reconcilePnlStatus: { ready: false, status: "pending" },
+  telegramAlert: { ready: false, status: "pending" },
 });
 console.log(JSON.stringify({
   summary,
@@ -794,7 +931,12 @@ console.log(JSON.stringify({
   submittedWithStaleEvidence,
   directKillSwitchResult,
   submittedWithDirectKillSwitch,
+  directInvalidMarketResult,
+  submittedWithInvalidMarket,
+  strategyKeySummary,
+  runtimeRequests,
   topLevelSubmittedBlocked,
+  topLevelIdleBlocked,
 }));
         `,
       ],
@@ -873,7 +1015,35 @@ console.log(JSON.stringify({
         violations: string[];
       };
       submittedWithDirectKillSwitch: unknown[];
+      directInvalidMarketResult: {
+        status: string;
+        violations: string[];
+      };
+      submittedWithInvalidMarket: unknown[];
+      strategyKeySummary: {
+        status: string;
+        attemptId: string;
+        idempotencyKey: string;
+      };
+      runtimeRequests: Array<{
+        idempotencyKey: string;
+        config: {
+          max_daily_loss_krw: string;
+          max_weekly_loss_krw: string;
+        };
+        candidate: {
+          costInput: Record<string, unknown>;
+          risk: Record<string, unknown>;
+          metadata: {
+            decision_idempotency_key: string;
+          };
+        };
+      }>;
       topLevelSubmittedBlocked: {
+        status: string;
+        liveOrderCapable: boolean;
+      };
+      topLevelIdleBlocked: {
         status: string;
         liveOrderCapable: boolean;
       };
@@ -887,8 +1057,8 @@ console.log(JSON.stringify({
     expect(output.summary.checks.map((check) => check.code)).toContain("live_ops_execution_submitted");
     expect(output.reservations).toEqual([
       {
-        attemptId: "ops-aaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-        idempotencyKey: "ops-aaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        attemptId: "ops-aaaaaaaaaaaaaaaaaaaaaaaaaa",
+        idempotencyKey: "ops-aaaaaaaaaaaaaaaaaaaaaaaaaa",
         market: "KRW-BTC",
         strategyId: "live_ops_fixture_strategy",
         requestedNotionalKrw: "10000",
@@ -902,7 +1072,7 @@ console.log(JSON.stringify({
       orderType: "LIMIT",
       postOnly: true,
       timeInForce: "POST_ONLY",
-      idempotencyKey: "ops-aaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      idempotencyKey: "ops-aaaaaaaaaaaaaaaaaaaaaaaaaa",
     });
     expect(output.submitted[0]).toMatchObject({
       costSnapshot: {
@@ -955,9 +1125,41 @@ console.log(JSON.stringify({
       violations: ["execution_runtime_status_blocked"],
     });
     expect(output.submittedWithDirectKillSwitch).toHaveLength(0);
+    expect(output.directInvalidMarketResult).toMatchObject({
+      status: "BLOCKED",
+      violations: ["execution_runtime_guard_blocked"],
+    });
+    expect(output.submittedWithInvalidMarket).toHaveLength(0);
+    expect(output.strategyKeySummary).toMatchObject({
+      status: "submitted",
+    });
+    expect(output.strategyKeySummary.idempotencyKey).toMatch(/^ops-[a-f0-9]{26}$/u);
+    expect(output.strategyKeySummary.idempotencyKey).not.toContain("live_ops_fixture_strategy");
+    expect(output.runtimeRequests).toHaveLength(1);
+    expect(output.runtimeRequests[0]?.idempotencyKey).toBe(output.strategyKeySummary.idempotencyKey);
+    expect(output.runtimeRequests[0]?.config).toMatchObject({
+      max_daily_loss_krw: "10000",
+      max_weekly_loss_krw: "30000",
+    });
+    expect(output.runtimeRequests[0]?.candidate.costInput).toMatchObject({
+      expectedReturnBps: "40",
+      safetyBufferBps: "10",
+    });
+    expect(output.runtimeRequests[0]?.candidate.risk).toMatchObject({
+      strategy: {
+        strategyId: "live_ops_fixture_strategy",
+      },
+    });
+    expect(output.runtimeRequests[0]?.candidate.metadata).toMatchObject({
+      decision_idempotency_key: "live_ops_fixture_strategy:upbit_krw_spot:KRW-BTC:BUY:2026-06-15T00:00:00.000Z",
+    });
     expect(output.topLevelSubmittedBlocked).toMatchObject({
       status: "blocked",
       liveOrderCapable: true,
+    });
+    expect(output.topLevelIdleBlocked).toMatchObject({
+      status: "blocked",
+      liveOrderCapable: false,
     });
     expect(result.stdout).not.toContain("fake-secret-key");
   });
