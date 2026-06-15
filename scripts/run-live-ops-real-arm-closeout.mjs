@@ -16,6 +16,7 @@ const expectedOrderType = "LIMIT";
 const expectedTimeInForce = "POST_ONLY";
 const minRequestedNotionalKrw = 5_000;
 const maxRequestedNotionalKrw = 10_000;
+const maxArtifactEvidenceDepth = 8;
 const invocationCwd = process.cwd();
 const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const requiredKeyScopes = ["자산조회", "주문조회", "주문하기"];
@@ -109,7 +110,7 @@ const sensitivePatterns = [
   { label: "telegram botToken json field", pattern: /"(?:telegram)?botToken"\s*:\s*"(?!\s*(?:<redacted>|redacted|\[redacted\])\s*")[^"]{8,}"/i },
   { label: "tui control token json field", pattern: /"(?:tuiControlToken|tui_control_token|seemirai_tui_control_token)"\s*:\s*"(?!\s*(?:<redacted>|redacted|\[redacted\])\s*")[^"]{8,}"/i },
   { label: "telegram bot token url", pattern: /https:\/\/api\.telegram\.org\/bot(?!<redacted>|redacted|\[redacted\])[^/\s"']{8,}\/[A-Za-z]+/i },
-  { label: "database password json field", pattern: /"(?:databasePassword|dbPassword|pgPassword|password)"\s*:\s*"(?!\s*(?:<redacted>|redacted|\[redacted\])\s*")[^"]{8,}"/i },
+  { label: "database password json field", pattern: /"(?:databasePassword|database_password|dbPassword|db_password|pgPassword|pg_password|password)"\s*:\s*"(?!\s*(?:<redacted>|redacted|\[redacted\])\s*")[^"]{8,}"/i },
   { label: "access key env assignment", pattern: /\b(?:SEEMIRAI_)?(?:UPBIT_)?ACCESS_KEY\s*=\s*(?!(?:["']?(?:<redacted>|redacted|\[redacted\])["']?)(?:$|[\r\n,}]))[^\r\n,}]{8,}/i },
   { label: "secret key env assignment", pattern: /\b(?:SEEMIRAI_)?(?:UPBIT_)?SECRET_KEY\s*=\s*(?!(?:["']?(?:<redacted>|redacted|\[redacted\])["']?)(?:$|[\r\n,}]))[^\r\n,}]{8,}/i },
   { label: "telegram token env assignment", pattern: /\b(?:SEEMIRAI_)?TELEGRAM_BOT_TOKEN\s*=\s*(?!(?:["']?(?:<redacted>|redacted|\[redacted\])["']?)(?:$|[\r\n,}]))[^\r\n,}]{8,}/i },
@@ -125,6 +126,8 @@ const sensitivePatterns = [
   { label: "raw order camelCase field", pattern: /"rawOrder(?:Detail|Payload)?"\s*:/ },
   { label: "raw provider field", pattern: /"raw(?:_|-)?provider(?:(?:_|-)?(?:payload|body))?"\s*:/i },
   { label: "raw order field", pattern: /"raw(?:_|-)?order(?:(?:_|-)?(?:detail|payload))?"\s*:/i },
+  { label: "raw provider string payload", pattern: /\b(?:rawProvider(?:Payload|Body)?|raw(?:_|-)?provider(?:(?:_|-)?(?:payload|body))?)\s*[:=]\s*(?!(?:<redacted>|redacted|\[redacted\])(?:\s|$))(?:\{|\[|[A-Za-z0-9_-]{4,})/i },
+  { label: "raw order string payload", pattern: /\b(?:rawOrder(?:Detail|Payload)?|raw(?:_|-)?order(?:(?:_|-)?(?:detail|payload))?)\s*[:=]\s*(?!(?:<redacted>|redacted|\[redacted\])(?:\s|$))(?:\{|\[|[A-Za-z0-9_-]{4,})/i },
   { label: "raw update field", pattern: /"raw(?:_|-)?update"\s*:/i },
 ];
 
@@ -1341,21 +1344,23 @@ function createSourceScanCommandEvidence(commands) {
   const commandChecks = commands.map((command) => {
     const tokens = splitCommandTokens(command);
     const operands = collectRipgrepPathOperands(tokens);
+    const searchPatterns = collectRipgrepSearchPatterns(tokens);
     const usesRipgrep = tokens[0] === "rg";
     const hasLineNumber = /(?:^|\s)(?:-n|--line-number)(?:\s|$)/u.test(command);
     const scansExpectedPaths = requiredSourceScanPaths.every((scanPath) => operands.includes(scanPath));
     const excludedSourceGlobs = collectExcludedSourceGlobs(tokens);
     const coveredUnsafePatterns = requiredUnsafeSourceScanPatterns
-      .filter((requirement) => requirement.pattern.test(command))
+      .filter((requirement) => searchPatterns.some((pattern) => requirement.pattern.test(pattern)))
       .map((requirement) => requirement.label);
     const coveredSecretPatterns = requiredSecretSourceScanPatterns
-      .filter((requirement) => requirement.pattern.test(command))
+      .filter((requirement) => searchPatterns.some((pattern) => requirement.pattern.test(pattern)))
       .map((requirement) => requirement.label);
     return {
       command,
       usesRipgrep,
       hasLineNumber,
       scansExpectedPaths,
+      searchPatterns,
       operands,
       excludedSourceGlobs,
       coveredUnsafePatterns,
@@ -1440,6 +1445,45 @@ function collectRipgrepPathOperands(tokens) {
     operands.push(token);
   }
   return operands;
+}
+
+function collectRipgrepSearchPatterns(tokens) {
+  const patterns = [];
+  let positionalPatternSeen = false;
+  for (let index = 1; index < tokens.length; index += 1) {
+    const token = tokens[index];
+    if ((token === "-g" || token === "--glob") && tokens[index + 1] !== undefined) {
+      index += 1;
+      continue;
+    }
+    if ((token === "-e" || token === "--regexp") && tokens[index + 1] !== undefined) {
+      patterns.push(tokens[index + 1]);
+      positionalPatternSeen = true;
+      index += 1;
+      continue;
+    }
+    if (token.startsWith("--regexp=")) {
+      patterns.push(token.slice("--regexp=".length));
+      positionalPatternSeen = true;
+      continue;
+    }
+    if (token.startsWith("-e") && token.length > 2) {
+      patterns.push(token.slice(2));
+      positionalPatternSeen = true;
+      continue;
+    }
+    if (token.startsWith("--glob=") || token.startsWith("-g") || token === "-n" || token === "--line-number") {
+      continue;
+    }
+    if (token.startsWith("-")) {
+      continue;
+    }
+    if (!positionalPatternSeen) {
+      patterns.push(token);
+      positionalPatternSeen = true;
+    }
+  }
+  return patterns;
 }
 
 function excludesSourcePath(glob, scanPath) {
@@ -1670,7 +1714,8 @@ function artifactFieldAliases(field) {
 }
 
 function collectArtifactEvidenceRecords(value, prefix = "$", depth = 0) {
-  if (depth > 4) {
+  // 실제 운영 artifact safe summary는 wrapper별 nesting이 달라져도 실패 closeout evidence를 놓치면 안 된다.
+  if (depth > maxArtifactEvidenceDepth) {
     return [];
   }
   if (Array.isArray(value)) {

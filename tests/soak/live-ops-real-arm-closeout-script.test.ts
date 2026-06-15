@@ -348,6 +348,31 @@ describe("Issue 206 live:ops real-arm closeout script", () => {
     expect(getCheck(summary, "sourceSecurityScan")).toMatchObject({ status: "fail" });
   });
 
+  it("fails when required forbidden patterns only appear as path operands", async () => {
+    const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-issue-206-closeout-source-scan-pattern-operands-"));
+    const manifestPath = await writeCloseoutManifest(artifactDir, {
+      manifestMutator: (manifest) => ({
+        ...manifest,
+        sourceScan: {
+          status: "passed",
+          commands: [
+            "rg -n withdraw src scripts config docs ord_type market best deposit leverage futures margin",
+            "rg -n access_key src scripts config docs secret_key Authorization Bearer JWT telegram_bot_token botToken raw_provider rawProvider raw_order rawOrder",
+          ],
+          unsafeMatches: [],
+          secretMatches: [],
+        },
+      }),
+    });
+    const summary = await runScriptExpectingFailure(
+      ["--json", "--artifact-dir", artifactDir, "--manifest", manifestPath],
+      createReadyEnv(),
+    );
+
+    expect(summary.status).toBe("failed");
+    expect(getCheck(summary, "sourceSecurityScan")).toMatchObject({ status: "fail" });
+  });
+
   it("fails when source scan commands exclude the required source paths by glob", async () => {
     const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-issue-206-closeout-source-scan-exclude-"));
     const manifestPath = await writeCloseoutManifest(artifactDir, {
@@ -888,6 +913,35 @@ describe("Issue 206 live:ops real-arm closeout script", () => {
     expect(getCheck(summary, "artifactFiles")).toMatchObject({ status: "fail" });
   });
 
+  it("fails when deeply nested artifact safe summaries conflict with manifest closeout values", async () => {
+    const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-issue-206-closeout-deep-artifact-conflict-"));
+    const manifestPath = await writeCloseoutManifest(artifactDir, {
+      artifactText: JSON.stringify({
+        ...createArtifactFixture(),
+        artifact: {
+          safeSummary: {
+            checks: {
+              order: {
+                closeout: {
+                  status: "FAILED",
+                  terminalState: "wait",
+                  openExposureKrw: 999999,
+                },
+              },
+            },
+          },
+        },
+      }),
+    });
+    const summary = await runScriptExpectingFailure(
+      ["--json", "--artifact-dir", artifactDir, "--manifest", manifestPath],
+      createReadyEnv(),
+    );
+
+    expect(summary.status).toBe("failed");
+    expect(getCheck(summary, "artifactFiles")).toMatchObject({ status: "fail" });
+  });
+
   it("fails when redacted artifacts contain raw secret candidates", async () => {
     const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-issue-206-closeout-secret-"));
     const manifestPath = await writeCloseoutManifest(artifactDir, {
@@ -907,6 +961,38 @@ describe("Issue 206 live:ops real-arm closeout script", () => {
     const manifestPath = await writeCloseoutManifest(artifactDir, {
       artifactText: JSON.stringify(createArtifactFixture({
         note: "SEEMIRAI_UPBIT_SECRET_KEY=<redacted> raw-secret-value",
+      })),
+    });
+    const summary = await runScriptExpectingFailure(
+      ["--json", "--artifact-dir", artifactDir, "--manifest", manifestPath],
+      createReadyEnv(),
+    );
+
+    expect(summary.status).toBe("failed");
+    expect(getCheck(summary, "redactionScan")).toMatchObject({ status: "fail" });
+  });
+
+  it("fails when redacted artifacts contain raw database password snake_case fields", async () => {
+    const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-issue-206-closeout-db-password-snake-"));
+    const manifestPath = await writeCloseoutManifest(artifactDir, {
+      artifactText: JSON.stringify(createArtifactFixture({
+        db_password: "raw-database-password-value",
+      })),
+    });
+    const summary = await runScriptExpectingFailure(
+      ["--json", "--artifact-dir", artifactDir, "--manifest", manifestPath],
+      createReadyEnv(),
+    );
+
+    expect(summary.status).toBe("failed");
+    expect(getCheck(summary, "redactionScan")).toMatchObject({ status: "fail" });
+  });
+
+  it("fails when redacted artifacts contain raw payload strings", async () => {
+    const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-issue-206-closeout-raw-payload-string-"));
+    const manifestPath = await writeCloseoutManifest(artifactDir, {
+      artifactText: JSON.stringify(createArtifactFixture({
+        note: "raw_provider_payload={\"uuid\":\"raw-provider-payload\"}",
       })),
     });
     const summary = await runScriptExpectingFailure(
