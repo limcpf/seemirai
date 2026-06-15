@@ -67,7 +67,7 @@ export interface LiveOpsTelegramAlertPlanInput {
   readonly telegramReady: boolean;
   readonly liveExecution: LiveOpsLiveExecutionSummary;
   /**
-   * live execution summary만으로 표현되지 않는 cancel/fill/block event를 후속 reconcile/exit 경계가 명시할 때 사용한다.
+   * live execution summary만으로 표현되지 않는 cancel/block event를 후속 reconcile/exit 경계가 명시할 때 사용한다.
    *
    * caller는 이미 주문/취소/reconcile evidence가 확정된 뒤에만 이 값을 넘겨야 하며, mapper는 provider 호출 없이 alert event로만
    * 낮춘다. 이 필드는 Telegram provider side effect를 만들지 않는다.
@@ -77,8 +77,6 @@ export interface LiveOpsTelegramAlertPlanInput {
     | "ORDER_SUBMITTED"
     | "CANCEL_REQUESTED"
     | "CANCEL_CONFIRMED"
-    | "ORDER_FILLED"
-    | "ORDER_PARTIALLY_FILLED"
     | "RISK_BLOCKED"
     | "COST_BLOCKED"
     | "RECONCILE_BLOCKED"
@@ -429,7 +427,7 @@ function createBlockedTradeEvent(
 
 function createOrderProgressEvent(
   input: LiveOpsTelegramAlertPlanInput,
-  eventKind: Extract<LiveOpsAlertEventKind, "CANCEL_REQUESTED" | "CANCEL_CONFIRMED" | "ORDER_FILLED" | "ORDER_PARTIALLY_FILLED">,
+  eventKind: Extract<LiveOpsAlertEventKind, "CANCEL_REQUESTED" | "CANCEL_CONFIRMED">,
 ): LiveOpsAlertInput {
   const intent = input.orderIntent;
   const event = createBaseEvent(input, eventKind);

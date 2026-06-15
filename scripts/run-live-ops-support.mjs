@@ -592,7 +592,11 @@ function formatLiveExecutionObservation(liveExecution) {
 }
 
 function formatReconcilePnlStatusObservation(reconcilePnlStatus) {
-  if (reconcilePnlStatus?.ready !== true) {
+  if (
+    reconcilePnlStatus?.ready !== true &&
+    reconcilePnlStatus?.providerProbeAttempted !== true &&
+    reconcilePnlStatus?.manualReviewRequired !== true
+  ) {
     return "후속 연결 대기";
   }
 
@@ -2347,7 +2351,19 @@ async function collectLiveOpsCliPrivateReadStatusSummary({
     };
   }
 
-  const orders = Array.isArray(openOrders) ? openOrders : [];
+  const malformedPrivateRead = validateLiveOpsCliPrivateReadPayload({ openOrders, balanceSnapshot });
+  if (malformedPrivateRead !== undefined) {
+    return createLiveOpsCliPrivateReadFailureSummary({
+      market,
+      liveExecution,
+      observedAt,
+      code: malformedPrivateRead.code,
+      message: malformedPrivateRead.message,
+      reason: malformedPrivateRead.reason,
+    });
+  }
+
+  const orders = openOrders;
   const openExposureKrw = sumLiveOpsCliOpenExposureKrw(orders);
   const resolvedReconcileStatus = normalizeLiveOpsCliReconcileStatus(reconcileStatus, {
     observedAt,
@@ -2425,6 +2441,44 @@ async function collectLiveOpsCliPrivateReadStatusSummary({
   };
 }
 
+function createLiveOpsCliPrivateReadFailureSummary({ market, liveExecution, observedAt, code, message, reason }) {
+  return {
+    status: "manual_review_required",
+    ready: false,
+    market,
+    liveOrderCapable: liveExecution.liveOrderCapable === true,
+    latestReconcileAt: null,
+    latestPnlAt: null,
+    latestStatusAt: observedAt,
+    reconcileStatus: "private_read_failed",
+    reconcileStatusLabel: "수동 확인 필요",
+    pnlStatus: "unknown",
+    pnlStatusLabel: "확인 필요",
+    openOrderCount: 0,
+    openExposureKrw: "0",
+    budgetUsedKrw: "0",
+    realizedPnlKrw: null,
+    unrealizedPnlKrw: null,
+    mismatchCount: null,
+    manualReviewRequired: true,
+    providerProbeAttempted: true,
+    statusLabel: "private read 실패",
+    message,
+    action: "Upbit read-only 권한, DB status provider, provider rate-limit 상태를 확인한 뒤 같은 attempt를 재조회하세요.",
+    checks: [
+      {
+        name: "private_read",
+        status: "blocked",
+        code,
+        message: "private read 실패는 PnL/open exposure를 0으로 보정하지 않고 수동 점검으로 격상합니다.",
+        details: {
+          reason,
+        },
+      },
+    ],
+  };
+}
+
 function shouldProbeLiveOpsCliPrivateRead(liveExecution) {
   return (
     liveExecution.status === "submitted" ||
@@ -2442,6 +2496,24 @@ function isLiveOpsCliPrivateReadProvider(provider) {
     typeof provider.listOpenOrders === "function" &&
     typeof provider.getBalances === "function"
   );
+}
+
+function validateLiveOpsCliPrivateReadPayload({ openOrders, balanceSnapshot }) {
+  if (!Array.isArray(openOrders)) {
+    return {
+      code: "live_ops_private_read_orders_malformed",
+      reason: "open_orders_not_array",
+      message: "private read provider가 미체결 주문 목록을 배열로 반환하지 않아 수동 점검 상태로 전환했습니다.",
+    };
+  }
+  if (balanceSnapshot === undefined || balanceSnapshot === null || !Array.isArray(balanceSnapshot.balances)) {
+    return {
+      code: "live_ops_private_read_balances_malformed",
+      reason: "balances_not_array",
+      message: "private read provider가 계정 잔고 snapshot을 안전한 balances 배열로 반환하지 않아 수동 점검 상태로 전환했습니다.",
+    };
+  }
+  return undefined;
 }
 
 async function readLiveOpsCliReconcileStatus(provider) {
@@ -2560,7 +2632,7 @@ export async function evaluateLiveOpsCliTelegramAlert({
 }) {
   const market = config.universe?.default_market ?? "KRW-BTC";
 
-  if (!fixtureSmoke && liveExecution.ready === true && telegramDispatcher !== undefined) {
+  if (!fixtureSmoke && shouldDispatchLiveOpsCliTelegramAlert(liveExecution) && telegramDispatcher !== undefined) {
     return dispatchLiveOpsCliTelegramAlertSummary({
       config,
       market,
@@ -2669,6 +2741,20 @@ export async function evaluateLiveOpsCliTelegramAlert({
       },
     ],
   };
+}
+
+function shouldDispatchLiveOpsCliTelegramAlert(liveExecution) {
+  return (
+    liveExecution.ready === true ||
+    liveExecution.status === "submitted" ||
+    liveExecution.status === "blocked" ||
+    liveExecution.status === "rejected" ||
+    liveExecution.status === "cost_blocked" ||
+    liveExecution.status === "reconcile_required" ||
+    liveExecution.status === "manual_review_required" ||
+    liveExecution.status === "cancel_requested" ||
+    liveExecution.status === "cancel_confirmed"
+  );
 }
 
 async function dispatchLiveOpsCliTelegramAlertSummary({

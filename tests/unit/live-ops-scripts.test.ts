@@ -183,6 +183,7 @@ describe("production live ops script skeleton", () => {
         `
 import {
   evaluateLiveOpsCliReconcilePnlStatus,
+  renderLiveOpsTuiDashboard,
 } from "./scripts/run-live-ops-support.mjs";
 
 const observedAt = "2026-06-15T01:00:00.000Z";
@@ -265,7 +266,112 @@ const summary = await evaluateLiveOpsCliReconcilePnlStatus({
   },
   observedAt,
 });
-console.log(JSON.stringify({ summary, calls }));
+const malformed = await evaluateLiveOpsCliReconcilePnlStatus({
+  config: {
+    universe: { default_market: "KRW-BTC" },
+  },
+  fixtureSmoke: false,
+  liveExecution: {
+    status: "submitted",
+    ready: true,
+    liveOrderCapable: true,
+  },
+  privateReadProvider: {
+    async listOpenOrders() {
+      return { malformed: true };
+    },
+    async getBalances() {
+      return {
+        exchangeId: "upbit_krw_spot",
+        capturedAt: observedAt,
+        balances: [],
+      };
+    },
+  },
+  pnlStatusProvider: {
+    async getStatus() {
+      return { readStatus: "OK", latestCapturedAt: observedAt, latestRealizedPnlKrw: "0", latestUnrealizedPnlKrw: "0" };
+    },
+  },
+  observedAt,
+});
+const manualReview = await evaluateLiveOpsCliReconcilePnlStatus({
+  config: {
+    universe: { default_market: "KRW-BTC" },
+  },
+  fixtureSmoke: false,
+  liveExecution: {
+    status: "submitted",
+    ready: true,
+    liveOrderCapable: true,
+  },
+  privateReadProvider: {
+    async listOpenOrders() {
+      return [];
+    },
+    async getBalances() {
+      return {
+        exchangeId: "upbit_krw_spot",
+        capturedAt: observedAt,
+        balances: [
+          { currency: "KRW", available: "100000", locked: "0", total: "100000", updatedAt: observedAt },
+        ],
+      };
+    },
+  },
+  reconcileStatusProvider: {
+    async getReconcileStatus() {
+      return {
+        lastReconcileAt: observedAt,
+        result: "MISMATCH_DETECTED",
+        mismatchCount: 2,
+        openOrderCount: 0,
+        balanceStatus: "OK",
+        websocketStatus: "DEGRADED",
+        actionRequired: "수동 검토 필요",
+        message: "실계좌 상태 대조에서 불일치가 발견되었습니다.",
+        trace: { source: "test" },
+      };
+    },
+  },
+  pnlStatusProvider: {
+    async getStatus() {
+      return {
+        readStatus: "NOT_FOUND",
+        latestCapturedAt: null,
+        latestRealizedPnlKrw: null,
+        latestUnrealizedPnlKrw: null,
+        snapshotCount: 0,
+        reason: "pnl_snapshot_not_found",
+      };
+    },
+  },
+  observedAt,
+});
+const manualTui = renderLiveOpsTuiDashboard({
+  status: "blocked",
+  mode: "소액 실운영",
+  configPath: "/tmp/live-ops.json",
+  envFilePath: "/tmp/live-ops.env",
+  liveOrderCapable: false,
+  tui: true,
+  attach: null,
+  fixtureSmoke: false,
+  dbReadiness: { ready: true, migration: { appliedLatestVersion: 13, expectedLatestVersion: 13, pendingVersions: [] } },
+  marketData: { ready: true, persisted: { tradeCount: 0, orderbookCount: 0, statusCount: 0 }, latestHeartbeatAt: observedAt },
+  analysisDecision: { ready: true, decisionCategory: "HOLD", orderIntentCount: 0, evaluatedStrategyCount: 1, latestDecisionAt: observedAt },
+  liveExecution: { ready: false, status: "manual_review_required", liveOrderCapable: false, orderIntentCount: 0, submittedOrderCount: 0, latestExecutionAt: null },
+  reconcilePnlStatus: manualReview,
+  telegramAlert: { ready: true, statusLabel: "owner chat 대기", lifecycleAlertCount: 0, tradeAlertCount: 0, providerDispatchAttempted: false },
+  budget: {
+    maxOrderKrw: "10000",
+    dailyAutonomousNotionalLimitKrw: "30000",
+    maxOpenPositionNotionalKrw: "30000",
+    operationsStopCeilingKrw: "49999",
+  },
+  trace: { workers: ["reconcile_pnl_status"], defaultMarket: "KRW-BTC" },
+});
+console.log(JSON.stringify({ summary, malformed, manualReview, manualTui, calls }));
         `,
       ],
       {
@@ -291,6 +397,9 @@ console.log(JSON.stringify({ summary, calls }));
         manualReviewRequired: boolean;
         privateRead: { balanceCurrencyCount: number; krwAvailable: string; krwLocked: string };
       };
+      malformed: { status: string; ready: boolean; manualReviewRequired: boolean; checks: Array<{ code: string }> };
+      manualReview: { ready: boolean; manualReviewRequired: boolean; mismatchCount: number };
+      manualTui: string;
       calls: { openOrders: number; balances: number };
     };
 
@@ -311,6 +420,20 @@ console.log(JSON.stringify({ summary, calls }));
         krwLocked: "7000",
       },
     });
+    expect(output.malformed).toMatchObject({
+      status: "manual_review_required",
+      ready: false,
+      manualReviewRequired: true,
+    });
+    expect(output.malformed.checks.map((check) => check.code)).toContain("live_ops_private_read_orders_malformed");
+    expect(output.manualReview).toMatchObject({
+      ready: false,
+      manualReviewRequired: true,
+      mismatchCount: 2,
+    });
+    expect(output.manualTui).toContain("mismatch 2");
+    expect(output.manualTui).toContain("manual review 필요");
+    expect(output.manualTui).toContain("realized PnL 확인 필요 KRW");
     expect(output.calls).toEqual({ openOrders: 1, balances: 1 });
     expect(result.stdout).not.toContain("fake-upbit-secret-key");
     expect(result.stdout).not.toContain("Authorization");
@@ -358,6 +481,7 @@ const orderIntent = {
 };
 const observedAt = "2026-06-15T01:00:00.000Z";
 const dispatches = [];
+const manualDispatches = [];
 const sent = await evaluateLiveOpsCliTelegramAlert({
   config,
   fixtureSmoke: false,
@@ -367,6 +491,33 @@ const sent = await evaluateLiveOpsCliTelegramAlert({
   telegramDispatcher: {
     async dispatch(payload) {
       dispatches.push(payload);
+      return {
+        status: "sent",
+        attemptedCount: payload.events.length,
+        deliveredCount: payload.events.length,
+        cooldownHitCount: 0,
+        retryPlannedCount: 0,
+        failureCount: 0,
+      };
+    },
+  },
+});
+const manualReview = await evaluateLiveOpsCliTelegramAlert({
+  config,
+  fixtureSmoke: false,
+  liveExecution: {
+    ...liveExecution,
+    status: "manual_review_required",
+    ready: false,
+    liveOrderCapable: false,
+    attemptStatus: "MANUAL_REVIEW_REQUIRED",
+    message: "실주문 실행 결과를 확정할 수 없어 수동 점검 상태로 전환했습니다.",
+  },
+  orderIntent,
+  observedAt,
+  telegramDispatcher: {
+    async dispatch(payload) {
+      manualDispatches.push(payload);
       return {
         status: "sent",
         attemptedCount: payload.events.length,
@@ -399,8 +550,10 @@ const failed = await evaluateLiveOpsCliTelegramAlert({
 });
 console.log(JSON.stringify({
   sent,
+  manualReview,
   failed,
   eventKinds: dispatches[0].events.map((event) => event.eventKind),
+  manualEventKinds: manualDispatches[0].events.map((event) => event.eventKind),
   dispatchedMarket: dispatches[0].market,
 }));
         `,
@@ -416,8 +569,10 @@ console.log(JSON.stringify({
     expect(result.stderr).toBe("");
     const output = JSON.parse(result.stdout) as {
       sent: { ready: boolean; providerDispatchAttempted: boolean; alertCount: number; deliveredCount: number };
+      manualReview: { ready: boolean; providerDispatchAttempted: boolean; alertCount: number; deliveredCount: number };
       failed: { ready: boolean; status: string; retryPlannedCount: number; failureCount: number; action: string };
       eventKinds: string[];
+      manualEventKinds: string[];
       dispatchedMarket: string;
     };
 
@@ -431,6 +586,16 @@ console.log(JSON.stringify({
       "TELEGRAM_CONNECTION_READY",
       "LIVE_ORDER_CAPABLE_STARTED",
       "ORDER_SUBMITTED",
+    ]);
+    expect(output.manualReview).toMatchObject({
+      ready: true,
+      providerDispatchAttempted: true,
+      alertCount: 2,
+      deliveredCount: 2,
+    });
+    expect(output.manualEventKinds).toEqual([
+      "TELEGRAM_CONNECTION_READY",
+      "MANUAL_REVIEW_REQUIRED",
     ]);
     expect(output.dispatchedMarket).toBe("KRW-BTC");
     expect(output.failed).toMatchObject({
