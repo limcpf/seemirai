@@ -416,8 +416,11 @@ const broker = {
 const budgetReservation = {
   async reserve(request) {
     reservations.push({
+      attemptId: request.attemptId,
       idempotencyKey: request.idempotencyKey,
-      requestedNotional: request.candidate.requestedNotional,
+      market: request.market,
+      strategyId: request.strategyId,
+      requestedNotionalKrw: request.requestedNotionalKrw,
     });
     return {
       reserved: true,
@@ -440,6 +443,20 @@ const analysisDecision = {
   orderIntentCount: 1,
   orderIntents: [],
 };
+function orderIntentEvidence(intent) {
+  return {
+    exchange_id: intent.exchangeId,
+    market: intent.market,
+    strategy_id: intent.strategyId,
+    side: intent.side,
+    order_type: intent.orderType,
+    requested_quantity: intent.requestedQuantity,
+    requested_notional: intent.requestedNotional,
+    requested_price: intent.requestedPrice,
+    idempotency_key: intent.idempotencyKey,
+    expected_loss_bps_of_equity: intent.metadata.expected_loss_bps_of_equity,
+  };
+}
 const intent = {
   exchangeId: "upbit_krw_spot",
   market: "KRW-BTC",
@@ -457,6 +474,32 @@ const intent = {
     expected_loss_bps_of_equity: "5",
   },
 };
+intent.costSnapshot = {
+  source: "cost_model",
+  exchange_id: intent.exchangeId,
+  market: intent.market,
+  trade_allowed: true,
+  reason_code: "cost_margin_ok",
+  order_intent: orderIntentEvidence(intent),
+};
+intent.riskApproval = {
+  source: "risk_gate",
+  approved: true,
+  action: "ALLOW",
+  status: "PASS",
+  failed_evaluation_reason_codes: [],
+  order_intent: orderIntentEvidence(intent),
+};
+const executionStatus = {
+  killSwitchActive: false,
+  reconcileFresh: true,
+  evidenceId: "execution-status-evidence",
+};
+const postSubmitReadiness = {
+  reconcileReady: true,
+  telegramReady: true,
+  evidenceId: "post-submit-readiness-evidence",
+};
 const summary = await evaluateLiveOpsCliLiveExecution({
   config,
   fixtureSmoke: false,
@@ -473,6 +516,8 @@ const summary = await evaluateLiveOpsCliLiveExecution({
   },
   orderIntents: [intent],
   entryRuntime: createLiveOpsCliEntryRuntime({ broker, budgetReservation }),
+  executionStatus,
+  postSubmitReadiness,
 });
 const submittedWithoutReservation = [];
 const blockedSummary = await evaluateLiveOpsCliLiveExecution({
@@ -500,8 +545,73 @@ const blockedSummary = await evaluateLiveOpsCliLiveExecution({
       },
     },
   }),
+  executionStatus,
+  postSubmitReadiness,
 });
-console.log(JSON.stringify({ summary, submitted, reservations, blockedSummary, submittedWithoutReservation }));
+const submittedWithoutRisk = [];
+const riskBlockedSummary = await evaluateLiveOpsCliLiveExecution({
+  config,
+  fixtureSmoke: false,
+  analysisDecision,
+  marketData: {
+    ready: true,
+    latestHeartbeatAt: "2026-06-15T00:00:00.000Z",
+  },
+  env: {
+    SEEMIRAI_UPBIT_ACCESS_KEY: "fake-access-key",
+    SEEMIRAI_UPBIT_SECRET_KEY: "fake-secret-key",
+    SEEMIRAI_UPBIT_KEY_SCOPE: "자산조회,주문조회,주문하기",
+    SEEMIRAI_UPBIT_KEY_SCOPE_EVIDENCE_ID: "scope-evidence",
+  },
+  orderIntents: [
+    {
+      ...intent,
+      riskApproval: undefined,
+    },
+  ],
+  entryRuntime: createLiveOpsCliEntryRuntime({
+    broker: {
+      async submitOrder(submission) {
+        submittedWithoutRisk.push(submission);
+        return {
+          brokerOrderId: "unexpected-riskless-order",
+        };
+      },
+    },
+    budgetReservation,
+  }),
+  executionStatus,
+  postSubmitReadiness,
+});
+const submittedWithoutStatus = [];
+const statusBlockedSummary = await evaluateLiveOpsCliLiveExecution({
+  config,
+  fixtureSmoke: false,
+  analysisDecision,
+  marketData: {
+    ready: true,
+    latestHeartbeatAt: "2026-06-15T00:00:00.000Z",
+  },
+  env: {
+    SEEMIRAI_UPBIT_ACCESS_KEY: "fake-access-key",
+    SEEMIRAI_UPBIT_SECRET_KEY: "fake-secret-key",
+    SEEMIRAI_UPBIT_KEY_SCOPE: "자산조회,주문조회,주문하기",
+    SEEMIRAI_UPBIT_KEY_SCOPE_EVIDENCE_ID: "scope-evidence",
+  },
+  orderIntents: [intent],
+  entryRuntime: createLiveOpsCliEntryRuntime({
+    broker: {
+      async submitOrder(submission) {
+        submittedWithoutStatus.push(submission);
+        return {
+          brokerOrderId: "unexpected-statusless-order",
+        };
+      },
+    },
+    budgetReservation,
+  }),
+});
+console.log(JSON.stringify({ summary, submitted, reservations, blockedSummary, submittedWithoutReservation, riskBlockedSummary, submittedWithoutRisk, statusBlockedSummary, submittedWithoutStatus }));
         `,
       ],
       {
@@ -533,8 +643,11 @@ console.log(JSON.stringify({ summary, submitted, reservations, blockedSummary, s
         };
       }>;
       reservations: Array<{
+        attemptId: string;
         idempotencyKey: string;
-        requestedNotional: string;
+        market: string;
+        strategyId: string;
+        requestedNotionalKrw: string;
       }>;
       blockedSummary: {
         status: string;
@@ -543,6 +656,20 @@ console.log(JSON.stringify({ summary, submitted, reservations, blockedSummary, s
         checks: Array<{ code: string }>;
       };
       submittedWithoutReservation: unknown[];
+      riskBlockedSummary: {
+        status: string;
+        liveOrderCapable: boolean;
+        submittedOrderCount: number;
+        checks: Array<{ code: string }>;
+      };
+      submittedWithoutRisk: unknown[];
+      statusBlockedSummary: {
+        status: string;
+        liveOrderCapable: boolean;
+        submittedOrderCount: number;
+        checks: Array<{ code: string }>;
+      };
+      submittedWithoutStatus: unknown[];
     };
     expect(output.summary).toMatchObject({
       status: "submitted",
@@ -553,8 +680,11 @@ console.log(JSON.stringify({ summary, submitted, reservations, blockedSummary, s
     expect(output.summary.checks.map((check) => check.code)).toContain("live_ops_execution_submitted");
     expect(output.reservations).toEqual([
       {
+        attemptId: "ops-aaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         idempotencyKey: "ops-aaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-        requestedNotional: "10000",
+        market: "KRW-BTC",
+        strategyId: "live_ops_fixture_strategy",
+        requestedNotionalKrw: "10000",
       },
     ]);
     expect(output.submitted).toHaveLength(1);
@@ -567,6 +697,17 @@ console.log(JSON.stringify({ summary, submitted, reservations, blockedSummary, s
       timeInForce: "POST_ONLY",
       idempotencyKey: "ops-aaaaaaaaaaaaaaaaaaaaaaaaaaaa",
     });
+    expect(output.submitted[0]).toMatchObject({
+      costSnapshot: {
+        source: "cost_model",
+        trade_allowed: true,
+      },
+      riskApproval: {
+        source: "risk_gate",
+        approved: true,
+        action: "ALLOW",
+      },
+    });
     expect(output.blockedSummary).toMatchObject({
       status: "blocked",
       liveOrderCapable: false,
@@ -574,6 +715,20 @@ console.log(JSON.stringify({ summary, submitted, reservations, blockedSummary, s
     });
     expect(output.blockedSummary.checks.map((check) => check.code)).toContain("live_ops_execution_blocked");
     expect(output.submittedWithoutReservation).toHaveLength(0);
+    expect(output.riskBlockedSummary).toMatchObject({
+      status: "blocked",
+      liveOrderCapable: false,
+      submittedOrderCount: 0,
+    });
+    expect(output.riskBlockedSummary.checks.map((check) => check.code)).toContain("live_ops_order_intent_blocked");
+    expect(output.submittedWithoutRisk).toHaveLength(0);
+    expect(output.statusBlockedSummary).toMatchObject({
+      status: "blocked",
+      liveOrderCapable: false,
+      submittedOrderCount: 0,
+    });
+    expect(output.statusBlockedSummary.checks.map((check) => check.code)).toContain("live_ops_execution_status_blocked");
+    expect(output.submittedWithoutStatus).toHaveLength(0);
     expect(result.stdout).not.toContain("fake-secret-key");
   });
 
