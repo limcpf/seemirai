@@ -231,6 +231,12 @@ export function assertLiveOpsCliLiveExecutionReady(summary, { fixtureSmoke }) {
   }
 }
 
+export function assertLiveOpsCliSummaryReady(summary, { fixtureSmoke }) {
+  if (!fixtureSmoke && summary?.status !== "ready") {
+    throw new Error(formatCliSummaryFailureMessage(summary));
+  }
+}
+
 export function renderLiveOpsTuiDashboard(summary) {
   const dbReadiness = summary.dbReadiness;
   const migration = dbReadiness?.migration ?? {};
@@ -947,7 +953,25 @@ export function createLiveOpsCliEntryRuntime({ broker, budgetReservation } = {})
         };
       }
 
-      const reservation = await budgetReservation.reserve(createLiveOpsCliBudgetReservationRequest(request));
+      let reservation;
+      try {
+        reservation = await budgetReservation.reserve(createLiveOpsCliBudgetReservationRequest(request));
+      } catch (error) {
+        // reservation 실패는 broker 호출 전 상태가 확정되므로 거래소 주문 불확실성이 아니라 예산 선점 경계 차단으로 닫는다.
+        return {
+          status: "BLOCKED",
+          attemptId: request.idempotencyKey,
+          idempotencyKey: request.idempotencyKey,
+          message: "durable budget reservation을 확인할 수 없어 broker 제출을 중단했습니다.",
+          action: "reservation 저장소 상태를 복구한 뒤 같은 idempotency key로 다시 평가하세요.",
+          violations: ["budget_reservation_unavailable"],
+          events: [],
+          trace: {
+            reason: "budget_reservation_unavailable",
+            error: safeErrorName(error),
+          },
+        };
+      }
       if (reservation?.reserved === false) {
         // durable reservation 실패는 broker 호출 전에 닫아 중복 주문과 예산 초과를 막는다.
         return {
@@ -980,7 +1004,29 @@ export function createLiveOpsCliEntryRuntime({ broker, budgetReservation } = {})
       }
 
       const submission = createLiveOpsCliOrderSubmission(request);
-      const brokerOrder = await broker.submitOrder(submission);
+      let brokerOrder;
+      try {
+        brokerOrder = await broker.submitOrder(submission);
+      } catch (error) {
+        // reservation 뒤 broker 결과가 불확실하면 수동 점검에 필요한 reservation/submission 식별자를 잃지 않는다.
+        return {
+          status: "MANUAL_REVIEW_REQUIRED",
+          attemptId: request.idempotencyKey,
+          idempotencyKey: request.idempotencyKey,
+          message: "broker 제출 결과를 확정할 수 없어 수동 점검 상태로 전환했습니다.",
+          action: "reservation id와 idempotency key로 durable reservation과 거래소 주문 상태를 함께 확인하세요.",
+          violations: ["broker_submission_uncertain"],
+          events: [],
+          trace: {
+            reason: "broker_submission_uncertain",
+            error: safeErrorName(error),
+            reservation: reservation.reservation,
+            submission,
+          },
+          submission,
+          reservation: reservation.reservation,
+        };
+      }
       return {
         status: "SUBMITTED",
         attemptId: request.idempotencyKey,
@@ -1304,7 +1350,7 @@ function isLiveOpsCliCostInput(value) {
     "spreadCostBpsP75",
     "expectedSlippageBpsP95",
     "cancelRequotePenaltyBps",
-  ].every((key) => hasMeaningfulValue(value[key]));
+  ].every((key) => hasDecimalComparableValue(value[key]));
 }
 
 function isLiveOpsCliRiskInput(value, intent) {
@@ -1427,7 +1473,7 @@ function createLiveOpsCliEntryRuntimeRequest({ config, marketData, intent, obser
       requestedQuantity: intent.requestedQuantity,
       requestedNotional: intent.requestedNotional,
       requestedPrice: intent.requestedPrice,
-      referencePrice: intent.referencePrice ?? intent.requestedPrice,
+      referencePrice: intent.referencePrice,
       reason: intent.reason,
       expectedLossBpsOfEquity: readLiveOpsCliExpectedLossBps(intent),
       costInput: intent.costInput,
@@ -1519,6 +1565,7 @@ function collectLiveOpsCliEntryRuntimeGuardViolations(request) {
     if (actualNotional.gt(new Decimal(config?.max_order_krw ?? "0"))) {
       violations.push("live ops wrapper 후보 실제 주문 금액이 단일 주문 상한을 초과했습니다");
     }
+    appendLiveOpsCliEntryRuntimeBudgetGuardViolations(violations, request, actualNotional);
   }
   // wrapper를 직접 호출해도 실제 entry runtime의 손실/가격 preflight를 우회하지 못하게 같은 snapshot으로 재검증한다.
   appendLiveOpsCliEntryRuntimeLossGuardViolations(violations, request);
@@ -1534,6 +1581,36 @@ function collectLiveOpsCliEntryRuntimeGuardViolations(request) {
     violations.push("live ops wrapper idempotency key는 ops- prefix와 13 bytes hex suffix 조건을 만족해야 합니다");
   }
   return violations;
+}
+
+function appendLiveOpsCliEntryRuntimeBudgetGuardViolations(violations, request, actualNotional) {
+  const budgetSnapshot = request?.budgetSnapshot;
+  const config = request?.config;
+  if (!isLiveOpsCliBudgetSnapshot(budgetSnapshot)) {
+    violations.push("live ops wrapper에는 budget snapshot이 필요합니다");
+    return;
+  }
+  if (!isPositiveDecimalString(config?.daily_autonomous_notional_limit_krw) || !isPositiveDecimalString(config?.max_open_position_notional_krw)) {
+    violations.push("live ops wrapper 일일/open position 예산 한도 config가 필요합니다");
+    return;
+  }
+
+  const dailyUsed = new Decimal(budgetSnapshot.dailyAutonomousNotionalUsedKrw);
+  const openPosition = new Decimal(budgetSnapshot.openPositionNotionalKrw);
+  const effectiveDailyLimit = Decimal.min(
+    new Decimal(config.daily_autonomous_notional_limit_krw),
+    new Decimal(budgetSnapshot.dailyAutonomousNotionalLimitKrw),
+  );
+  const effectiveOpenPositionLimit = Decimal.min(
+    new Decimal(config.max_open_position_notional_krw),
+    new Decimal(budgetSnapshot.maxOpenPositionNotionalKrw),
+  );
+  if (dailyUsed.plus(actualNotional).gt(effectiveDailyLimit)) {
+    violations.push("live ops wrapper 일일 자동 주문 예산을 초과했습니다");
+  }
+  if (openPosition.plus(actualNotional).gt(effectiveOpenPositionLimit)) {
+    violations.push("live ops wrapper open position 예산을 초과했습니다");
+  }
 }
 
 function appendLiveOpsCliEntryRuntimeLossGuardViolations(violations, request) {
@@ -2928,6 +3005,11 @@ function formatCliLiveExecutionFailureMessage(summary) {
     .map((check) => check.message)
     .join(" ");
   return `live execution guard를 통과하지 못해 live ops boot를 중단합니다. ${failures}`;
+}
+
+function formatCliSummaryFailureMessage(summary) {
+  const message = hasMeaningfulValue(summary?.message) ? summary.message : "최종 readiness summary가 ready가 아닙니다.";
+  return `live ops 최종 readiness를 통과하지 못해 boot를 중단합니다. ${message}`;
 }
 
 function safeErrorName(error) {
