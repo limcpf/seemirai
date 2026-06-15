@@ -167,6 +167,9 @@ SEEMIRAI_RUN_LIVE_OPS_REAL_ARM_CLOSEOUT=1 \
   colon-form secret log, fixtureSmoke false 오탐, snake_case order id placeholder도 검증한다.
 - 2026-06-15: closeout validator는 붙여 쓴 `-m0`/`-m=0`, `-t`/`--type`, `--iglob`, `-F`/`--fixed-strings`처럼 source/security
   scan의 검색 범위나 패턴 의미를 줄이는 ripgrep 옵션도 차단한다.
+- 2026-06-15: closeout validator는 `-f`/`--file`, `-v`/`--invert-match`, `--max-depth`, `--max-filesize` source scan,
+  punctuation tail secret leak, Telegram base token URL, fixture-only artifact marker, hyphen/camelCase order id placeholder,
+  failure status code variant, source scan raw match 원문 재노출도 차단한다.
 
 ## 남은 이슈
 

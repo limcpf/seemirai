@@ -94,11 +94,15 @@ const requiredSecretSourceScanPatterns = [
   { label: "raw order payload", pattern: /raw_order|rawOrder/u },
 ];
 const disallowedRipgrepLongOptions = new Set([
+  "--file",
   "--files-with-matches",
   "--files-without-match",
   "--fixed-strings",
   "--ignore-file",
   "--iglob",
+  "--invert-match",
+  "--max-depth",
+  "--max-filesize",
   "--max-count",
   "--pre",
   "--pre-glob",
@@ -106,7 +110,7 @@ const disallowedRipgrepLongOptions = new Set([
   "--type",
   "--type-not",
 ]);
-const disallowedRipgrepShortOptions = new Set(["F", "L", "T", "l", "m", "q", "t"]);
+const disallowedRipgrepShortOptions = new Set(["F", "L", "T", "f", "l", "m", "q", "t", "v"]);
 const withdrawalScopeMarkers = ["출금", "withdraw"];
 const forbiddenKeyScopeMarkers = ["출금", "입금", "withdraw", "deposit", "futures", "leverage", "margin"];
 const requiredCounterNames = [
@@ -125,13 +129,14 @@ const sensitivePatterns = [
   { label: "telegram token json field", pattern: /"telegram_bot_token"\s*:\s*"(?!\s*(?:<redacted>|redacted|\[redacted\])\s*")[^"]{8,}"/i },
   { label: "telegram botToken json field", pattern: /"(?:telegram)?botToken"\s*:\s*"(?!\s*(?:<redacted>|redacted|\[redacted\])\s*")[^"]{8,}"/i },
   { label: "tui control token json field", pattern: /"(?:tuiControlToken|tui_control_token|seemirai_tui_control_token)"\s*:\s*"(?!\s*(?:<redacted>|redacted|\[redacted\])\s*")[^"]{8,}"/i },
-  { label: "telegram bot token url", pattern: /https:\/\/api\.telegram\.org\/bot(?!<redacted>|redacted|\[redacted\])[^/\s"']{8,}\/[A-Za-z]+/i },
+  { label: "telegram bot token url", pattern: /https:\/\/api\.telegram\.org\/bot(?!<redacted>|redacted|\[redacted\])[^/\s"']{8,}(?:\/[A-Za-z]+)?/i },
   { label: "database password json field", pattern: /"(?:databasePassword|database_password|dbPassword|db_password|pgPassword|pg_password|password)"\s*:\s*"(?!\s*(?:<redacted>|redacted|\[redacted\])\s*")[^"]{8,}"/i },
   { label: "access key env assignment", pattern: /\b(?:SEEMIRAI_)?(?:UPBIT_)?ACCESS_KEY\s*[:=]\s*(?!(?:["']?(?:<redacted>|redacted|\[redacted\])["']?)(?:$|[\r\n,}]))[^\r\n,}]{8,}/i },
   { label: "secret key env assignment", pattern: /\b(?:SEEMIRAI_)?(?:UPBIT_)?SECRET_KEY\s*[:=]\s*(?!(?:["']?(?:<redacted>|redacted|\[redacted\])["']?)(?:$|[\r\n,}]))[^\r\n,}]{8,}/i },
   { label: "telegram token env assignment", pattern: /\b(?:SEEMIRAI_)?TELEGRAM_BOT_TOKEN\s*[:=]\s*(?!(?:["']?(?:<redacted>|redacted|\[redacted\])["']?)(?:$|[\r\n,}]))[^\r\n,}]{8,}/i },
   { label: "tui control token env assignment", pattern: /\b(?:SEEMIRAI_)?TUI_CONTROL_TOKEN\s*[:=]\s*(?!(?:["']?(?:<redacted>|redacted|\[redacted\])["']?)(?:$|[\r\n,}]))[^\r\n,}]{8,}/i },
   { label: "database password env assignment", pattern: /\b(?:SEEMIRAI_)?(?:DATABASE_PASSWORD|DB_PASSWORD|PGPASSWORD)\s*[:=]\s*(?!(?:["']?(?:<redacted>|redacted|\[redacted\])["']?)(?:$|[\r\n,}]))[^\r\n,}]{8,}/i },
+  { label: "credential env placeholder tail", pattern: /\b(?:SEEMIRAI_)?(?:(?:UPBIT_)?(?:ACCESS_KEY|SECRET_KEY)|TELEGRAM_BOT_TOKEN|TUI_CONTROL_TOKEN|DATABASE_PASSWORD|DB_PASSWORD|PGPASSWORD)\s*[:=]\s*["']?(?:<redacted>|redacted|\[redacted\])["']?[,;:\[{]\s*[^"'\s,;}\]]{4,}/i },
   { label: "raw authorization bearer", pattern: /authorization:\s*bearer\s+(?!<redacted>|redacted|\[redacted\])[^\s"']+/i },
   { label: "standalone bearer token", pattern: /\bBearer\s+(?!(?:<redacted>|redacted|\[redacted\])(?:\s|$))[^\s"']{16,}/ },
   { label: "bearer placeholder tail", pattern: /\bBearer\s+(?:<redacted>|redacted|\[redacted\])\s+[^\s"']+/i },
@@ -361,7 +366,9 @@ function createGuardedArtifactInputCheck(manifest, manifestPath, artifactFiles, 
     ...artifactFiles
       .filter((file) => file.filePath.includes(".fixture")
         || /"(?:fixture|fixtureSmoke|fixture_smoke)"\s*:\s*true/i.test(file.rawText)
-        || /\bfixture_smoke\b/i.test(file.rawText))
+        || /"kind"\s*:\s*"[^"]*FIXTURE[^"]*"/i.test(file.rawText)
+        || /\bfixture_smoke\b/i.test(file.rawText)
+        || /\bfixture smoke\b/i.test(file.rawText))
       .map((file) => file.filePath),
   ].filter(hasText);
 
@@ -620,9 +627,25 @@ function createSourceSecurityScanCheck(sourceScan, options) {
     evidenceShapeOk,
     commandEvidence,
     locationEvidence,
-    unsafeMatches,
-    secretMatches,
+    unsafeMatches: summarizeSourceScanMatches(unsafeMatches),
+    secretMatches: summarizeSourceScanMatches(secretMatches),
   });
+}
+
+function summarizeSourceScanMatches(matches) {
+  return {
+    count: matches.length,
+    entries: matches.map((match) => {
+      if (!isRecord(match)) {
+        return { type: typeof match };
+      }
+      return {
+        path: readString(match.path) ?? readString(match.filePath) ?? readString(match.file) ?? null,
+        line: readNumber(match.line) ?? readNumber(match.lineNumber) ?? null,
+        label: readString(match.label) ?? readString(match.kind) ?? readString(match.patternLabel) ?? null,
+      };
+    }),
+  };
 }
 
 function createSourceScanLocationEvidence(sourceScan, options) {
@@ -1475,6 +1498,10 @@ function collectDisallowedRipgrepOptions(tokens) {
       options.push(token);
       continue;
     }
+    if (/^-f(?:=|\S)/u.test(token)) {
+      options.push(token);
+      continue;
+    }
     if (/^-t(?:=|\S)/u.test(token)) {
       options.push(token);
       continue;
@@ -1675,7 +1702,7 @@ function createArtifactManifestConflicts(artifactFiles, manifest, run, counters)
 }
 
 function isFailureArtifactStatus(value) {
-  return /^(?:blocked|error|fail|failed|failure|partial|skipped)$/iu.test(value);
+  return /^(?:blocked|error|fail|failed|failure|partial|skipped)(?:$|[_:-])/iu.test(value);
 }
 
 function isCompleteArtifactCloseoutEvidence(record, run) {
@@ -1827,9 +1854,13 @@ function isUsableOrderEvidenceSuffix(value) {
   const text = value.trim();
   const normalized = text.toLowerCase().replace(/[\s"'`]/gu, "");
   const bracketless = normalized.replace(/[<>\[\](){}]/gu, "");
+  const compact = bracketless.replace(/[-_]/gu, "");
   const placeholderWords = new Set([
+    "broker-order-id",
     "broker_order_id",
+    "brokerorderid",
     "identifier",
+    "order-id",
     "order_id",
     "orderid",
     "redacted",
@@ -1844,6 +1875,7 @@ function isUsableOrderEvidenceSuffix(value) {
   return text.length >= 6
     && alnumCount >= 4
     && !placeholderWords.has(bracketless)
+    && !placeholderWords.has(compact)
     && !/^(?:x+|\*+|-+|_+|\.+)$/u.test(normalized);
 }
 
