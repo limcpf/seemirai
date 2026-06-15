@@ -1,6 +1,6 @@
 # Upbit Live Autonomous Trading 로드맵
 
-- 상태: M22 구현 closeout, source scan, 24시간 heartbeat-only pilot, dry-run candidate canary, runner/runbook/local file preparer/기본 daemon 완료. Issue #196에서 production `live:ops`/TUI-first 운영 경로를 M22/M23 pilot과 분리하는 작업 진행 중. M23/M24 운영 검증은 live canary cleanup과 7일 안정화 evidence부터 진행 (2026-06-14)
+- 상태: M22 구현 closeout, source scan, 24시간 heartbeat-only pilot, dry-run candidate canary, runner/runbook/local file preparer/기본 daemon 완료. Issue #196에서 production `live:ops`/TUI-first 운영 skeleton이 완료됐고, Issue #206에서 실제 DB/provider arm과 소액 submit/cancel cleanup evidence를 붙이는 작업 진행 중. M23/M24 운영 검증은 live canary cleanup과 7일 안정화 evidence부터 진행 (2026-06-15)
 - 작성일: 2026-06-01
 - 관련 범위: M15 이후 post-MVP 실거래 자율 운용
 - 기준 문서: [`../PRD.md`](../PRD.md), [`../FEATURE_REQUIREMENTS.md`](../FEATURE_REQUIREMENTS.md), [`../../ARCHITECTURE.md`](../../ARCHITECTURE.md), [`./upbit-v0-2-pilot-private-api.md`](./upbit-v0-2-pilot-private-api.md), [`../RUNTIME_CONFIG.md`](../RUNTIME_CONFIG.md), [`../RELIABILITY.md`](../RELIABILITY.md), [`../SECURITY.md`](../SECURITY.md)
@@ -32,6 +32,10 @@ Issue #196 production live ops는 `live:ops`와 필수 TUI 운영 콘솔을 새�
 candidate JSONL, smoke env, readiness boolean을 production readiness로 사용하지 않고, DB/migration readiness, market data freshness,
 decision evidence, live execution guard, Telegram, TUI 상태를 같은 lifecycle에서 확인해야 한다. Sub PR 01은 config/env contract와
 실행 skeleton만 고정하며, 실제 DB/provider/TUI lifecycle 연결은 후속 sub PR에서 닫는다.
+
+Issue #206 production live ops real arm은 #196 skeleton 위에서 실제 DB, Upbit public/private provider, Telegram owner chat, TUI를 같은
+lifecycle로 조립한다. 완료 근거는 fixture smoke나 dashboard readiness가 아니라 단일 `KRW-BTC` 소액 `BUY + LIMIT + post_only` 주문의
+submit/cancel terminal evidence다. cleanup 절차와 redaction 기준은 [`../runbooks/live-ops-real-arm-cleanup.md`](../runbooks/live-ops-real-arm-cleanup.md)를 따른다.
 
 ## 3. 비목표
 

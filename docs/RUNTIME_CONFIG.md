@@ -803,6 +803,30 @@ fixture smoke dashboard는 Telegram alert를 `fixture plan / lifecycle 1 / trade
 probe, 실제 provider arm, TUI control lifecycle은 후속 범위에서 같은 config/env contract, DB readiness, market data collector,
 analysis/decision pipeline, live execution adapter, reconcile/PnL/status summary, Telegram alert mapper 위에 연결한다.
 
+## Issue #206 production live ops 실제 arm 기준
+
+Issue #206은 #196의 fixture-safe production skeleton을 실제 주문 가능한 운영 lifecycle로 전환한다. `--fixture-smoke`는 계속 외부
+provider 호출 0회의 contract 검증 경로이고, 운영 실행은 실제 DB와 실제 provider readiness를 계산해야 한다.
+
+실제 arm boot sequence는 다음 순서를 지킨다.
+
+1. config/env validation과 secret redaction logger 준비
+2. DB connection, migration/table readiness, schema drift 확인
+3. Upbit public market data connection과 `KRW-BTC` freshness 확인
+4. Upbit private key/order capability probe와 key scope 확인
+5. Telegram startup alert
+6. reconcile/PnL/status readiness
+7. decision pipeline readiness와 HOLD/order intent evidence
+8. live execution arm과 live order capable 전환
+
+broker 조립 전 실패는 private client와 broker를 만들지 않고 fail-closed 한다. broker 조립 이후 장애는 신규 주문 중지,
+reconcile/manual review, Telegram/TUI 경고로 수렴한다. 실제 order side effect는 단일 `BUY + LIMIT + post_only` 후보가 market
+allowlist, key scope, budget, market data freshness, reconcile freshness, PnL/status, decision ledger, kill switch, Upbit policy,
+price deviation guard를 모두 통과한 뒤에만 열린다.
+
+실거래 cleanup closeout은 [`runbooks/live-ops-real-arm-cleanup.md`](./runbooks/live-ops-real-arm-cleanup.md)를 따른다. 이 closeout은
+`submit -> cancel requested -> terminal cancel 확인 -> open exposure 0` evidence가 없으면 PASS가 아니다.
+
 Autonomous entry runtime 기준:
 
 - 구현 경계는 `LiveAutonomousEntryRuntime`이며, public entry는 `src/application/live-autonomous-entry-runtime.ts`다.

@@ -1,0 +1,87 @@
+# Live Ops 실거래 arm cleanup runbook
+
+이 runbook은 Issue #206의 production `live:ops` 경로를 실제 Upbit 주문 가능 상태로 검증하고, 단일 소액 주문을 제출한 뒤 같은
+identifier 또는 uuid로 취소해 terminal cancel evidence로 닫는 절차다.
+
+## 사용 조건
+
+- 대상 command: `corepack pnpm live:ops -- --config <운영-json-path> --env-file <운영-env-path> --tui`
+- 대상 mode: `LIVE_AUTONOMOUS_SMALL_BUDGET`
+- 대상 market: `KRW-BTC`
+- 허용 주문: `BUY + LIMIT + post_only`
+- 첫 주문 상한: 10,000 KRW
+- evidence 위치: 저장소 밖 redacted 운영 경로
+
+## 금지 조건
+
+- 신규 진입 시장가, 시장가 매도, best order
+- BTC 외 market 기본 활성화
+- 자동 budget 확대
+- hard stop open position 자동 시장가 청산
+- 출금, 입출금, 선물, 레버리지, 마진, 타인 계정, 신호 판매
+- secret 원문, raw Authorization/JWT, raw provider payload, raw order detail 저장
+
+## 사전 점검
+
+다음 조건이 하나라도 빠지면 cleanup run을 시작하지 않는다.
+
+| 항목 | 기준 |
+| --- | --- |
+| 운영자 arm evidence | 저장소 밖 redacted evidence id가 있고, 오늘 실행할 config/env 경로와 연결되어 있다 |
+| key scope | `자산조회`, `주문조회`, `주문하기`만 허용되고 금지 scope가 없다 |
+| DB readiness | migration pending, unknown applied migration, checksum drift, missing table이 없다 |
+| Upbit public feed | `KRW-BTC` 체결/호가/status가 DB-backed store에 저장되고 stale 상태가 아니다 |
+| private read | account/order/balance 조회가 가능하고 raw payload 없이 safe summary로 낮아진다 |
+| reconcile | mismatch 0건, untracked fill 0건, open order와 open exposure가 설명 가능하다 |
+| PnL/status | 결측은 0으로 보정하지 않고 원인과 필요한 조치를 표시한다 |
+| Telegram | startup/live order capable/order/cancel/manual review alert를 owner chat으로 보낼 수 있다 |
+| TUI | live armed/order capable, 최신 decision/order/cancel/reconcile/PnL 상태를 secret 없이 보여준다 |
+
+## 실행 절차
+
+1. 저장소 밖 운영 env와 key 파일을 source하지 말고, `--env-file` 경로로만 전달한다.
+2. fixture smoke가 아니라 실제 운영 config/env로 foreground TUI를 시작한다.
+
+```sh
+corepack pnpm live:ops -- --config <운영-json-path> --env-file <운영-env-path> --tui
+```
+
+3. TUI와 Telegram에서 startup alert와 live order capable 전환을 분리해 확인한다.
+4. 단일 `KRW-BTC` 후보가 생성되면 cost/risk/reconcile/budget/kill switch guard evidence가 모두 통과했는지 확인한다.
+5. 주문이 제출되면 artifact에 다음 safe summary만 남긴다.
+
+```text
+submitted_at=<ISO timestamp>
+market=KRW-BTC
+side=BUY
+order_type=LIMIT
+time_in_force=POST_ONLY
+requested_notional_krw<=10000
+identifier=<redacted/stable suffix only>
+broker_order_id=<redacted/stable suffix only>
+```
+
+6. 같은 Upbit `identifier` 또는 uuid로 취소 요청을 보낸다.
+7. terminal cancel 상태, open exposure 0, duplicate order 0, reconcile mismatch 0, manual review 0을 확인한다.
+8. source/security scan과 artifact redaction 검증을 실행한 뒤 PR/closeout에 결과를 기록한다.
+
+## Closeout 판정
+
+PASS:
+
+- submit -> cancel requested -> terminal cancel 확인이 같은 attempt/identifier chain으로 이어진다.
+- open exposure 0, duplicate order 0, reconcile mismatch 0, untracked fill 0, live order cleanup failure 0이 증명된다.
+- Telegram/TUI/status가 한국어 상태, 원인, 영향, 필요 조치와 추적 정보를 분리해 표시한다.
+- secret/raw provider payload 후보가 source scan과 artifact redaction 검사에서 발견되지 않는다.
+
+BLOCKED:
+
+- 운영 credential, key scope evidence, DB, Telegram owner chat, redacted artifact 경로 중 하나가 없다.
+- Upbit provider가 주문 결과를 확정하지 못해 manual review가 필요하다.
+- cancel terminal 상태를 확인하지 못했다.
+- source/security scan에서 secret 또는 금지 주문 경계가 발견됐다.
+
+## 기록 형식
+
+PR과 issue에는 저장소 밖 artifact의 redacted 경로와 safe summary만 남긴다. access key, secret key, JWT, Authorization header,
+Telegram token, raw provider payload, raw order detail은 기록하지 않는다.
