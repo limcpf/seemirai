@@ -295,6 +295,46 @@ const malformed = await evaluateLiveOpsCliReconcilePnlStatus({
   },
   observedAt,
 });
+const malformedOrder = await evaluateLiveOpsCliReconcilePnlStatus({
+  config: {
+    universe: { default_market: "KRW-BTC" },
+  },
+  fixtureSmoke: false,
+  liveExecution: {
+    status: "submitted",
+    ready: true,
+    liveOrderCapable: true,
+  },
+  privateReadProvider: {
+    async listOpenOrders() {
+      return [
+        {
+          market: "KRW-BTC",
+          side: "BUY",
+          requestedQuantity: "0.0001",
+          remainingQuantity: undefined,
+          requestedPrice: "100000000",
+        },
+      ];
+    },
+    async getBalances() {
+      return {
+        exchangeId: "upbit_krw_spot",
+        capturedAt: observedAt,
+        balances: [],
+      };
+    },
+  },
+  pnlStatusProvider: {
+    async getStatus() {
+      return { readStatus: "OK", latestCapturedAt: observedAt, latestRealizedPnlKrw: "0", latestUnrealizedPnlKrw: "0" };
+    },
+  },
+  budgetSnapshot: {
+    dailyAutonomousNotionalUsedKrw: "7000",
+  },
+  observedAt,
+});
 const manualReview = await evaluateLiveOpsCliReconcilePnlStatus({
   config: {
     universe: { default_market: "KRW-BTC" },
@@ -371,7 +411,7 @@ const manualTui = renderLiveOpsTuiDashboard({
   },
   trace: { workers: ["reconcile_pnl_status"], defaultMarket: "KRW-BTC" },
 });
-console.log(JSON.stringify({ summary, malformed, manualReview, manualTui, calls }));
+console.log(JSON.stringify({ summary, malformed, malformedOrder, manualReview, manualTui, calls }));
         `,
       ],
       {
@@ -398,6 +438,7 @@ console.log(JSON.stringify({ summary, malformed, manualReview, manualTui, calls 
         privateRead: { balanceCurrencyCount: number; krwAvailable: string; krwLocked: string };
       };
       malformed: { status: string; ready: boolean; manualReviewRequired: boolean; checks: Array<{ code: string }> };
+      malformedOrder: { status: string; ready: boolean; manualReviewRequired: boolean; checks: Array<{ code: string }> };
       manualReview: { ready: boolean; manualReviewRequired: boolean; mismatchCount: number };
       manualTui: string;
       calls: { openOrders: number; balances: number };
@@ -426,6 +467,12 @@ console.log(JSON.stringify({ summary, malformed, manualReview, manualTui, calls 
       manualReviewRequired: true,
     });
     expect(output.malformed.checks.map((check) => check.code)).toContain("live_ops_private_read_orders_malformed");
+    expect(output.malformedOrder).toMatchObject({
+      status: "manual_review_required",
+      ready: false,
+      manualReviewRequired: true,
+    });
+    expect(output.malformedOrder.checks.map((check) => check.code)).toContain("live_ops_private_read_open_exposure_malformed");
     expect(output.manualReview).toMatchObject({
       ready: false,
       manualReviewRequired: true,

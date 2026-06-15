@@ -2351,7 +2351,7 @@ async function collectLiveOpsCliPrivateReadStatusSummary({
     };
   }
 
-  const malformedPrivateRead = validateLiveOpsCliPrivateReadPayload({ openOrders, balanceSnapshot });
+  const malformedPrivateRead = validateLiveOpsCliPrivateReadPayload({ openOrders, balanceSnapshot, budgetSnapshot });
   if (malformedPrivateRead !== undefined) {
     return createLiveOpsCliPrivateReadFailureSummary({
       market,
@@ -2498,7 +2498,7 @@ function isLiveOpsCliPrivateReadProvider(provider) {
   );
 }
 
-function validateLiveOpsCliPrivateReadPayload({ openOrders, balanceSnapshot }) {
+function validateLiveOpsCliPrivateReadPayload({ openOrders, balanceSnapshot, budgetSnapshot }) {
   if (!Array.isArray(openOrders)) {
     return {
       code: "live_ops_private_read_orders_malformed",
@@ -2512,6 +2512,29 @@ function validateLiveOpsCliPrivateReadPayload({ openOrders, balanceSnapshot }) {
       reason: "balances_not_array",
       message: "private read provider가 계정 잔고 snapshot을 안전한 balances 배열로 반환하지 않아 수동 점검 상태로 전환했습니다.",
     };
+  }
+  for (const [index, order] of openOrders.entries()) {
+    if (!isPositiveDecimalString(order?.remainingQuantity)) {
+      return {
+        code: "live_ops_private_read_open_exposure_malformed",
+        reason: `open_orders.${index}.remaining_quantity_invalid`,
+        message: "private read provider가 미체결 주문 잔량을 양수 decimal 문자열로 반환하지 않아 수동 점검 상태로 전환했습니다.",
+      };
+    }
+    if (!isPositiveDecimalString(order?.requestedPrice)) {
+      return {
+        code: "live_ops_private_read_open_exposure_malformed",
+        reason: `open_orders.${index}.requested_price_invalid`,
+        message: "private read provider가 미체결 주문 지정가를 양수 decimal 문자열로 반환하지 않아 수동 점검 상태로 전환했습니다.",
+      };
+    }
+    if (!isNonNegativeDecimalString(budgetSnapshot?.dailyAutonomousNotionalUsedKrw) && !isPositiveDecimalString(order?.requestedQuantity)) {
+      return {
+        code: "live_ops_private_read_budget_used_malformed",
+        reason: `open_orders.${index}.requested_quantity_invalid`,
+        message: "budget snapshot이 없고 private read provider가 주문 수량을 양수 decimal 문자열로 반환하지 않아 수동 점검 상태로 전환했습니다.",
+      };
+    }
   }
   return undefined;
 }
@@ -2590,9 +2613,6 @@ function normalizeLiveOpsCliPnlStatus(summary) {
 
 function sumLiveOpsCliOpenExposureKrw(openOrders) {
   return sumDecimalStrings(openOrders.map((order) => {
-    if (!isPositiveDecimalString(order?.remainingQuantity) || !isPositiveDecimalString(order?.requestedPrice)) {
-      return "0";
-    }
     return new Decimal(order.remainingQuantity).mul(order.requestedPrice).toFixed();
   }));
 }
@@ -2603,9 +2623,6 @@ function resolveLiveOpsCliBudgetUsedKrw({ budgetSnapshot, openOrders }) {
   }
 
   return sumDecimalStrings(openOrders.map((order) => {
-    if (!isPositiveDecimalString(order?.requestedQuantity) || !isPositiveDecimalString(order?.requestedPrice)) {
-      return "0";
-    }
     return new Decimal(order.requestedQuantity).mul(order.requestedPrice).toFixed();
   }));
 }
