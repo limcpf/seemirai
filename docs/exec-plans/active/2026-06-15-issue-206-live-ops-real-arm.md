@@ -161,6 +161,8 @@ SEEMIRAI_RUN_LIVE_OPS_REAL_ARM_CLOSEOUT=1 \
   문자열 raw provider/order payload, 깊게 중첩된 artifact closeout 충돌도 차단한다.
 - 2026-06-15: closeout validator는 출력 억제/파일 목록/without-match/preprocessor ripgrep 옵션, 모든 exclude glob,
   Bearer placeholder 뒤 raw token tail도 차단한다.
+- 2026-06-15: closeout validator는 source scan의 repository root 실행 위치와 대문자 `ACCESS_KEY`/`SECRET_KEY` 검색,
+  ripgrep type/ignore 제외 옵션, raw payload placeholder tail, artifact `ord_type` 충돌도 차단한다.
 
 ## 남은 이슈
 

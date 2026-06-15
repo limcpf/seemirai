@@ -348,6 +348,33 @@ describe("Issue 206 live:ops real-arm closeout script", () => {
     expect(getCheck(summary, "sourceSecurityScan")).toMatchObject({ status: "fail" });
   });
 
+  it("fails when source scan commands omit uppercase secret env names", async () => {
+    const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-issue-206-closeout-source-scan-uppercase-"));
+    const manifestPath = await writeCloseoutManifest(artifactDir, {
+      manifestMutator: (manifest) => ({
+        ...manifest,
+        sourceScan: {
+          status: "passed",
+          cwd: process.cwd(),
+          repositoryRoot: process.cwd(),
+          commands: [
+            "rg -n \"ord_type|market|best|withdraw|deposit|leverage|futures|margin\" src scripts config docs",
+            "rg -n \"access_key|accessKey|secret_key|secretKey|Authorization|Bearer|JWT|telegram_bot_token|botToken|raw_provider|rawProvider|raw_order|rawOrder\" src scripts config docs",
+          ],
+          unsafeMatches: [],
+          secretMatches: [],
+        },
+      }),
+    });
+    const summary = await runScriptExpectingFailure(
+      ["--json", "--artifact-dir", artifactDir, "--manifest", manifestPath],
+      createReadyEnv(),
+    );
+
+    expect(summary.status).toBe("failed");
+    expect(getCheck(summary, "sourceSecurityScan")).toMatchObject({ status: "fail" });
+  });
+
   it("fails when required forbidden patterns only appear as path operands", async () => {
     const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-issue-206-closeout-source-scan-pattern-operands-"));
     const manifestPath = await writeCloseoutManifest(artifactDir, {
@@ -358,6 +385,31 @@ describe("Issue 206 live:ops real-arm closeout script", () => {
           commands: [
             "rg -n withdraw src scripts config docs ord_type market best deposit leverage futures margin",
             "rg -n access_key src scripts config docs secret_key Authorization Bearer JWT telegram_bot_token botToken raw_provider rawProvider raw_order rawOrder",
+          ],
+          unsafeMatches: [],
+          secretMatches: [],
+        },
+      }),
+    });
+    const summary = await runScriptExpectingFailure(
+      ["--json", "--artifact-dir", artifactDir, "--manifest", manifestPath],
+      createReadyEnv(),
+    );
+
+    expect(summary.status).toBe("failed");
+    expect(getCheck(summary, "sourceSecurityScan")).toMatchObject({ status: "fail" });
+  });
+
+  it("fails when source scan evidence omits repository working directory", async () => {
+    const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-issue-206-closeout-source-scan-cwd-"));
+    const manifestPath = await writeCloseoutManifest(artifactDir, {
+      manifestMutator: (manifest) => ({
+        ...manifest,
+        sourceScan: {
+          status: "passed",
+          commands: [
+            "rg -n \"ord_type|market|best|withdraw|deposit|leverage|futures|margin\" src scripts config docs",
+            "rg -n \"access_key|accessKey|ACCESS_KEY|secret_key|secretKey|SECRET_KEY|Authorization|Bearer|JWT|telegram_bot_token|botToken|TELEGRAM_BOT_TOKEN|raw_provider|rawProvider|raw_order|rawOrder\" src scripts config docs",
           ],
           unsafeMatches: [],
           secretMatches: [],
@@ -508,6 +560,35 @@ describe("Issue 206 live:ops real-arm closeout script", () => {
           commands: [
             "rg -n \"ord_type|market|best|withdraw|deposit|leverage|futures|margin\" src scripts config docs -g '!*.ts' -g '!*.mjs'",
             "rg -n \"access_key|secret_key|Authorization|Bearer|JWT|telegram_bot_token|botToken|raw_provider|rawProvider|raw_order|rawOrder\" src scripts config docs -g '!*.json' -g '!*.md'",
+          ],
+          unsafeMatches: [],
+          secretMatches: [],
+        },
+      }),
+    });
+    const summary = await runScriptExpectingFailure(
+      ["--json", "--artifact-dir", artifactDir, "--manifest", manifestPath],
+      createReadyEnv(),
+    );
+
+    expect(summary.status).toBe("failed");
+    expect(getCheck(summary, "sourceSecurityScan")).toMatchObject({ status: "fail" });
+  });
+
+  it("fails when source scan commands use ripgrep type or ignore exclusions", async () => {
+    const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-issue-206-closeout-source-scan-type-exclude-"));
+    const ignorePath = path.join(artifactDir, "scan.ignore");
+    await writeFile(ignorePath, "*.ts\n", "utf8");
+    const manifestPath = await writeCloseoutManifest(artifactDir, {
+      manifestMutator: (manifest) => ({
+        ...manifest,
+        sourceScan: {
+          status: "passed",
+          cwd: process.cwd(),
+          repositoryRoot: process.cwd(),
+          commands: [
+            "rg -n --type-not=ts \"ord_type|market|best|withdraw|deposit|leverage|futures|margin\" src scripts config docs",
+            `rg -n --ignore-file=${ignorePath} "access_key|accessKey|ACCESS_KEY|secret_key|secretKey|SECRET_KEY|Authorization|Bearer|JWT|telegram_bot_token|botToken|TELEGRAM_BOT_TOKEN|raw_provider|rawProvider|raw_order|rawOrder" src scripts config docs`,
           ],
           unsafeMatches: [],
           secretMatches: [],
@@ -934,6 +1015,22 @@ describe("Issue 206 live:ops real-arm closeout script", () => {
     expect(getCheck(summary, "artifactFiles")).toMatchObject({ status: "fail" });
   });
 
+  it("fails when artifact safe summary conflicts through Upbit ord_type", async () => {
+    const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-issue-206-closeout-artifact-ord-type-"));
+    const manifestPath = await writeCloseoutManifest(artifactDir, {
+      artifactText: JSON.stringify(createArtifactFixture({
+        ord_type: "market",
+      })),
+    });
+    const summary = await runScriptExpectingFailure(
+      ["--json", "--artifact-dir", artifactDir, "--manifest", manifestPath],
+      createReadyEnv(),
+    );
+
+    expect(summary.status).toBe("failed");
+    expect(getCheck(summary, "artifactFiles")).toMatchObject({ status: "fail" });
+  });
+
   it("fails when artifact lifecycle timestamps conflict with the manifest", async () => {
     const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-issue-206-closeout-artifact-lifecycle-"));
     const manifestPath = await writeCloseoutManifest(artifactDir, {
@@ -1068,6 +1165,22 @@ describe("Issue 206 live:ops real-arm closeout script", () => {
     const manifestPath = await writeCloseoutManifest(artifactDir, {
       artifactText: JSON.stringify(createArtifactFixture({
         note: "raw_provider_payload={\"uuid\":\"raw-provider-payload\"}",
+      })),
+    });
+    const summary = await runScriptExpectingFailure(
+      ["--json", "--artifact-dir", artifactDir, "--manifest", manifestPath],
+      createReadyEnv(),
+    );
+
+    expect(summary.status).toBe("failed");
+    expect(getCheck(summary, "redactionScan")).toMatchObject({ status: "fail" });
+  });
+
+  it("fails when raw payload placeholders keep a raw tail", async () => {
+    const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-issue-206-closeout-raw-payload-placeholder-tail-"));
+    const manifestPath = await writeCloseoutManifest(artifactDir, {
+      artifactText: JSON.stringify(createArtifactFixture({
+        note: "raw_order_detail=<redacted> [{\"uuid\":\"raw-order-payload\"}]",
       })),
     });
     const summary = await runScriptExpectingFailure(
@@ -1305,9 +1418,11 @@ async function writeCloseoutManifest(
     tui: { evidenceId: "tui-live-ops-status" },
     sourceScan: {
       status: "passed",
+      cwd: process.cwd(),
+      repositoryRoot: process.cwd(),
       commands: [
         "rg -n \"ord_type|market|시장가|best|withdraw|출금|deposit|입금|leverage|futures|margin\" src scripts config docs",
-        "rg -n \"access_key|accessKey|secret_key|secretKey|Authorization|Bearer|JWT|jwt|telegram_bot_token|botToken|TELEGRAM_BOT_TOKEN|raw_provider|rawProvider|raw_order|rawOrder\" src scripts config docs",
+        "rg -n \"access_key|accessKey|ACCESS_KEY|secret_key|secretKey|SECRET_KEY|Authorization|Bearer|JWT|jwt|telegram_bot_token|botToken|TELEGRAM_BOT_TOKEN|raw_provider|rawProvider|raw_order|rawOrder\" src scripts config docs",
       ],
       unsafeMatches: [],
       secretMatches: [],

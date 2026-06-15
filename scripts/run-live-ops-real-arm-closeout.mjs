@@ -84,7 +84,9 @@ const requiredUnsafeSourceScanPatterns = [
 ];
 const requiredSecretSourceScanPatterns = [
   { label: "access key", pattern: /access_key|accessKey/u },
+  { label: "uppercase access key env", pattern: /ACCESS_KEY/u },
   { label: "secret key", pattern: /secret_key|secretKey/u },
+  { label: "uppercase secret key env", pattern: /SECRET_KEY/u },
   { label: "authorization bearer", pattern: /Authorization|Bearer/u },
   { label: "jwt", pattern: /JWT|jwt/u },
   { label: "telegram token", pattern: /telegram_bot_token|botToken|TELEGRAM_BOT_TOKEN/u },
@@ -94,11 +96,13 @@ const requiredSecretSourceScanPatterns = [
 const disallowedRipgrepLongOptions = new Set([
   "--files-with-matches",
   "--files-without-match",
+  "--ignore-file",
   "--pre",
   "--pre-glob",
   "--quiet",
+  "--type-not",
 ]);
-const disallowedRipgrepShortOptions = new Set(["L", "l", "q"]);
+const disallowedRipgrepShortOptions = new Set(["L", "T", "l", "q"]);
 const withdrawalScopeMarkers = ["출금", "withdraw"];
 const forbiddenKeyScopeMarkers = ["출금", "입금", "withdraw", "deposit", "futures", "leverage", "margin"];
 const requiredCounterNames = [
@@ -137,6 +141,8 @@ const sensitivePatterns = [
   { label: "raw order field", pattern: /"raw(?:_|-)?order(?:(?:_|-)?(?:detail|payload))?"\s*:/i },
   { label: "raw provider string payload", pattern: /\b(?:rawProvider(?:Payload|Body)?|raw(?:_|-)?provider(?:(?:_|-)?(?:payload|body))?)\s*[:=]\s*(?!(?:<redacted>|redacted|\[redacted\])(?:\s|$))(?:\{|\[|[A-Za-z0-9_-]{4,})/i },
   { label: "raw order string payload", pattern: /\b(?:rawOrder(?:Detail|Payload)?|raw(?:_|-)?order(?:(?:_|-)?(?:detail|payload))?)\s*[:=]\s*(?!(?:<redacted>|redacted|\[redacted\])(?:\s|$))(?:\{|\[|[A-Za-z0-9_-]{4,})/i },
+  { label: "raw provider placeholder tail", pattern: /\b(?:rawProvider(?:Payload|Body)?|raw(?:_|-)?provider(?:(?:_|-)?(?:payload|body))?)\s*[:=]\s*(?:<redacted>|redacted|\[redacted\])\s+(?:\{|\[|[^\s"']+)/i },
+  { label: "raw order placeholder tail", pattern: /\b(?:rawOrder(?:Detail|Payload)?|raw(?:_|-)?order(?:(?:_|-)?(?:detail|payload))?)\s*[:=]\s*(?:<redacted>|redacted|\[redacted\])\s+(?:\{|\[|[^\s"']+)/i },
   { label: "raw update field", pattern: /"raw(?:_|-)?update"\s*:/i },
 ];
 
@@ -579,6 +585,7 @@ function createSourceSecurityScanCheck(sourceScan, options) {
   const secretMatches = readArray(sourceScan.secretMatches);
   const commands = readStringArray(sourceScan.commands);
   const status = readString(sourceScan.status);
+  const locationEvidence = createSourceScanLocationEvidence(sourceScan, options);
   const evidenceShapeOk = commands.length > 0
     && Array.isArray(sourceScan.unsafeMatches)
     && Array.isArray(sourceScan.secretMatches);
@@ -588,6 +595,7 @@ function createSourceSecurityScanCheck(sourceScan, options) {
   const ok = status === "passed"
     && evidenceShapeOk
     && commandEvidence.ok
+    && locationEvidence.ok
     && unsafeMatches.length === 0
     && secretMatches.length === 0;
 
@@ -596,6 +604,7 @@ function createSourceSecurityScanCheck(sourceScan, options) {
       status,
       commandCount: commands.length,
       commandEvidence,
+      locationEvidence,
     });
   }
 
@@ -604,9 +613,27 @@ function createSourceSecurityScanCheck(sourceScan, options) {
     commandCount: commands.length,
     evidenceShapeOk,
     commandEvidence,
+    locationEvidence,
     unsafeMatches,
     secretMatches,
   });
+}
+
+function createSourceScanLocationEvidence(sourceScan, options) {
+  if (!options.guarded) {
+    return { ok: true, fixtureSmoke: true };
+  }
+  const cwd = readString(sourceScan.cwd) ?? readString(sourceScan.workingDirectory);
+  const declaredRepositoryRoot = readString(sourceScan.repositoryRoot);
+  const acceptedPaths = [cwd, declaredRepositoryRoot]
+    .filter(hasText)
+    .map((value) => path.resolve(value));
+  return {
+    ok: acceptedPaths.includes(repositoryRoot),
+    cwd: cwd ?? null,
+    repositoryRoot: declaredRepositoryRoot ?? null,
+    expectedRepositoryRoot: repositoryRoot,
+  };
 }
 
 function createRedactionScanCheck(inputs) {
@@ -818,6 +845,8 @@ async function writeFixtureManifest(artifactDir) {
     },
     sourceScan: {
       status: "passed",
+      cwd: repositoryRoot,
+      repositoryRoot,
       commands: ["fixture source scan"],
       unsafeMatches: [],
       secretMatches: [],
@@ -1653,6 +1682,7 @@ function isCloseoutEvidenceRecord(record) {
     "terminal_state",
     "orderType",
     "order_type",
+    "ord_type",
     "timeInForce",
     "time_in_force",
     "requestedNotionalKrw",
@@ -1725,7 +1755,7 @@ function artifactFieldAliases(field) {
     market: ["market"],
     side: ["side"],
     terminalState: ["terminalState", "terminal_state"],
-    orderType: ["orderType", "order_type"],
+    orderType: ["orderType", "order_type", "ord_type"],
     timeInForce: ["timeInForce", "time_in_force"],
     submittedAt: ["submittedAt", "submitted_at"],
     cancelRequestedAt: ["cancelRequestedAt", "cancel_requested_at"],
