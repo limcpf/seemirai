@@ -370,6 +370,18 @@ describe("Issue 206 live:ops real-arm closeout script", () => {
     expect(getCheck(summary, "manifestInput")).toMatchObject({ status: "fail" });
   });
 
+  it("fails when guarded manifest is inside the repository while running from a subdirectory", async () => {
+    const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-issue-206-closeout-subdir-manifest-"));
+    const summary = await runScriptExpectingFailure(
+      ["--json", "--artifact-dir", artifactDir, "--manifest", "../package.json"],
+      createReadyEnv(),
+      { cwd: path.join(process.cwd(), "scripts") },
+    );
+
+    expect(summary.status).toBe("failed");
+    expect(getCheck(summary, "manifestInput")).toMatchObject({ status: "fail" });
+  });
+
   it("fails when artifact realpath points back into the repository", async () => {
     const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-issue-206-closeout-artifact-symlink-"));
     const repoArtifactTarget = path.join(process.cwd(), "scripts", "run-live-ops-real-arm-closeout.mjs");
@@ -391,6 +403,34 @@ describe("Issue 206 live:ops real-arm closeout script", () => {
     const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-issue-206-closeout-nested-artifact-conflict-"));
     const manifestPath = await writeCloseoutManifest(artifactDir, {
       artifactText: JSON.stringify({ result: { status: "FAILED", terminalState: "wait" }, metrics: { openExposureKrw: 999999 } }),
+    });
+    const summary = await runScriptExpectingFailure(
+      ["--json", "--artifact-dir", artifactDir, "--manifest", manifestPath],
+      createReadyEnv(),
+    );
+
+    expect(summary.status).toBe("failed");
+    expect(getCheck(summary, "artifactFiles")).toMatchObject({ status: "fail" });
+  });
+
+  it("fails when array artifact records conflict with manifest closeout values", async () => {
+    const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-issue-206-closeout-array-artifact-conflict-"));
+    const manifestPath = await writeCloseoutManifest(artifactDir, {
+      artifactText: JSON.stringify({ events: [{ status: "FAILED", terminalState: "wait", openExposureKrw: 999999 }] }),
+    });
+    const summary = await runScriptExpectingFailure(
+      ["--json", "--artifact-dir", artifactDir, "--manifest", manifestPath],
+      createReadyEnv(),
+    );
+
+    expect(summary.status).toBe("failed");
+    expect(getCheck(summary, "artifactFiles")).toMatchObject({ status: "fail" });
+  });
+
+  it("fails when artifact safe summary is skipped or blocked", async () => {
+    const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-issue-206-closeout-blocked-artifact-"));
+    const manifestPath = await writeCloseoutManifest(artifactDir, {
+      artifactText: JSON.stringify({ status: "BLOCKED", terminalState: "cancel", openExposureKrw: 0 }),
     });
     const summary = await runScriptExpectingFailure(
       ["--json", "--artifact-dir", artifactDir, "--manifest", manifestPath],
@@ -471,6 +511,20 @@ describe("Issue 206 live:ops real-arm closeout script", () => {
     expect(getCheck(summary, "redactionScan")).toMatchObject({ status: "fail" });
   });
 
+  it("fails when redacted JSON credential fields keep raw text after a placeholder", async () => {
+    const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-issue-206-closeout-redacted-prefix-"));
+    const manifestPath = await writeCloseoutManifest(artifactDir, {
+      artifactText: JSON.stringify({ secret_key: "<redacted> raw-secret-value" }),
+    });
+    const summary = await runScriptExpectingFailure(
+      ["--json", "--artifact-dir", artifactDir, "--manifest", manifestPath],
+      createReadyEnv(),
+    );
+
+    expect(summary.status).toBe("failed");
+    expect(getCheck(summary, "redactionScan")).toMatchObject({ status: "fail" });
+  });
+
   it("fails when redacted artifacts contain raw JSON credential fields", async () => {
     const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-issue-206-closeout-json-secret-"));
     const manifestPath = await writeCloseoutManifest(artifactDir, {
@@ -486,16 +540,17 @@ describe("Issue 206 live:ops real-arm closeout script", () => {
   });
 });
 
-async function runScript(args: string[], env: NodeJS.ProcessEnv = {}) {
+async function runScript(args: string[], env: NodeJS.ProcessEnv = {}, options: { cwd?: string } = {}) {
   return execFileAsync(process.execPath, [scriptPath, ...args], {
+    cwd: options.cwd,
     env: { ...process.env, ...env },
     maxBuffer: 1024 * 1024,
   });
 }
 
-async function runScriptExpectingFailure(args: string[], env: NodeJS.ProcessEnv) {
+async function runScriptExpectingFailure(args: string[], env: NodeJS.ProcessEnv, options: { cwd?: string } = {}) {
   try {
-    const { stdout } = await runScript(args, env);
+    const { stdout } = await runScript(args, env, options);
     throw new Error(`script unexpectedly passed: ${stdout}`);
   } catch (error) {
     const failed = error as { stdout?: string };

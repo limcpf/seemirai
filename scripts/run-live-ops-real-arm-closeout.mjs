@@ -4,6 +4,7 @@ import { mkdir, readFile, realpath, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import process from "node:process";
+import { fileURLToPath } from "node:url";
 
 const defaultArtifactDir = path.join(os.homedir(), "vaults", "99_운영", "seemirai-live-ops-real-arm-closeout");
 const runGuardEnv = "SEEMIRAI_RUN_LIVE_OPS_REAL_ARM_CLOSEOUT";
@@ -15,7 +16,8 @@ const expectedOrderType = "LIMIT";
 const expectedTimeInForce = "POST_ONLY";
 const minRequestedNotionalKrw = 5_000;
 const maxRequestedNotionalKrw = 10_000;
-const repositoryRoot = process.cwd();
+const invocationCwd = process.cwd();
+const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const requiredKeyScopes = ["자산조회", "주문조회", "주문하기"];
 const requiredSourceScanPaths = ["src", "scripts", "config", "docs"];
 const withdrawalScopeMarkers = ["출금", "withdraw"];
@@ -29,21 +31,21 @@ const requiredCounterNames = [
   "liveOrderCleanupFailureCount",
 ];
 const sensitivePatterns = [
-  { label: "access_key json field", pattern: /"(?:seemirai_)?(?:upbit_)?access_key"\s*:\s*"(?!<redacted>|redacted|\[redacted\])[^"]{8,}"/i },
-  { label: "accessKey json field", pattern: /"(?:upbit)?accessKey"\s*:\s*"(?!<redacted>|redacted|\[redacted\])[^"]{8,}"/i },
-  { label: "secret_key json field", pattern: /"(?:seemirai_)?(?:upbit_)?secret_key"\s*:\s*"(?!<redacted>|redacted|\[redacted\])[^"]{8,}"/i },
-  { label: "secretKey json field", pattern: /"(?:upbit)?secretKey"\s*:\s*"(?!<redacted>|redacted|\[redacted\])[^"]{8,}"/i },
-  { label: "telegram token json field", pattern: /"telegram_bot_token"\s*:\s*"(?!<redacted>|redacted|\[redacted\])[^"]{8,}"/i },
-  { label: "telegram botToken json field", pattern: /"(?:telegram)?botToken"\s*:\s*"(?!<redacted>|redacted|\[redacted\])[^"]{8,}"/i },
+  { label: "access_key json field", pattern: /"(?:seemirai_)?(?:upbit_)?access_key"\s*:\s*"(?!\s*(?:<redacted>|redacted|\[redacted\])\s*")[^"]{8,}"/i },
+  { label: "accessKey json field", pattern: /"(?:upbit)?accessKey"\s*:\s*"(?!\s*(?:<redacted>|redacted|\[redacted\])\s*")[^"]{8,}"/i },
+  { label: "secret_key json field", pattern: /"(?:seemirai_)?(?:upbit_)?secret_key"\s*:\s*"(?!\s*(?:<redacted>|redacted|\[redacted\])\s*")[^"]{8,}"/i },
+  { label: "secretKey json field", pattern: /"(?:upbit)?secretKey"\s*:\s*"(?!\s*(?:<redacted>|redacted|\[redacted\])\s*")[^"]{8,}"/i },
+  { label: "telegram token json field", pattern: /"telegram_bot_token"\s*:\s*"(?!\s*(?:<redacted>|redacted|\[redacted\])\s*")[^"]{8,}"/i },
+  { label: "telegram botToken json field", pattern: /"(?:telegram)?botToken"\s*:\s*"(?!\s*(?:<redacted>|redacted|\[redacted\])\s*")[^"]{8,}"/i },
   { label: "telegram bot token url", pattern: /https:\/\/api\.telegram\.org\/bot(?!<redacted>|redacted|\[redacted\])[^/\s"']{8,}\/[A-Za-z]+/i },
-  { label: "database password json field", pattern: /"(?:databasePassword|dbPassword|pgPassword|password)"\s*:\s*"(?!<redacted>|redacted|\[redacted\])[^"]{8,}"/i },
+  { label: "database password json field", pattern: /"(?:databasePassword|dbPassword|pgPassword|password)"\s*:\s*"(?!\s*(?:<redacted>|redacted|\[redacted\])\s*")[^"]{8,}"/i },
   { label: "access key env assignment", pattern: /\b(?:SEEMIRAI_)?(?:UPBIT_)?ACCESS_KEY\s*=\s*(?!(?:["']?(?:<redacted>|redacted|\[redacted\])["']?)(?:\s|$|["',]))\S{8,}/i },
   { label: "secret key env assignment", pattern: /\b(?:SEEMIRAI_)?(?:UPBIT_)?SECRET_KEY\s*=\s*(?!(?:["']?(?:<redacted>|redacted|\[redacted\])["']?)(?:\s|$|["',]))\S{8,}/i },
   { label: "telegram token env assignment", pattern: /\b(?:SEEMIRAI_)?TELEGRAM_BOT_TOKEN\s*=\s*(?!(?:["']?(?:<redacted>|redacted|\[redacted\])["']?)(?:\s|$|["',]))\S{8,}/i },
   { label: "database password env assignment", pattern: /\b(?:SEEMIRAI_)?(?:DATABASE_PASSWORD|DB_PASSWORD|PGPASSWORD)\s*=\s*(?!(?:["']?(?:<redacted>|redacted|\[redacted\])["']?)(?:\s|$|["',]))\S{8,}/i },
   { label: "raw authorization bearer", pattern: /authorization:\s*bearer\s+(?!<redacted>|redacted|\[redacted\])[^\s"']+/i },
   { label: "authorization json field", pattern: /"authorization"\s*:\s*"(?!bearer\s+(?:<redacted>|redacted|\[redacted\])"|(?:<redacted>|redacted|\[redacted\])")[^"]{8,}"/i },
-  { label: "jwt json field", pattern: /"jwt"\s*:\s*"(?!<redacted>|redacted|\[redacted\])[^"]{8,}"/i },
+  { label: "jwt json field", pattern: /"jwt"\s*:\s*"(?!\s*(?:<redacted>|redacted|\[redacted\])\s*")[^"]{8,}"/i },
   { label: "postgres credential url", pattern: /postgres(?:ql)?:\/\/[^:\s"']+:(?!(?:<redacted>|redacted|\[redacted\])@)[^@\s"']+@/i },
   { label: "raw provider field", pattern: /"raw(?:_|-)?provider(?:(?:_|-)?(?:payload|body))?"\s*:/i },
   { label: "raw order field", pattern: /"raw(?:_|-)?order(?:(?:_|-)?(?:detail|payload))?"\s*:/i },
@@ -147,7 +149,7 @@ async function buildAndWriteSummary(input) {
     return summary;
   }
 
-  const manifestFile = await readJsonFile(input.manifestPath, repositoryRoot);
+  const manifestFile = await readJsonFile(input.manifestPath, invocationCwd);
   checks.manifestInput = createManifestInputCheck(manifestFile, input.guarded);
 
   let metrics = createEmptyMetrics();
@@ -1016,8 +1018,8 @@ function createArtifactManifestConflicts(artifactFiles, manifest, run, counters)
   for (const file of artifactFiles) {
     for (const item of collectArtifactEvidenceRecords(file.value)) {
       const status = readString(item.record.status);
-      if (status !== undefined && /^(?:failed|fail|error|rejected)$/iu.test(status)) {
-        conflicts.push({ filePath: file.filePath, field: `${item.path}.status`, expected: "not failed", actual: status });
+      if (status !== undefined && !/^(?:passed|pass|success|succeeded|ok|completed)$/iu.test(status)) {
+        conflicts.push({ filePath: file.filePath, field: `${item.path}.status`, expected: "explicit success status", actual: status });
       }
       const terminalState = normalizeTerminalState(readString(item.record.terminalState));
       if (terminalState !== undefined && terminalState !== "CANCEL") {
@@ -1036,12 +1038,18 @@ function createArtifactManifestConflicts(artifactFiles, manifest, run, counters)
 }
 
 function collectArtifactEvidenceRecords(value, prefix = "$", depth = 0) {
-  if (!isRecord(value) || depth > 4) {
+  if (depth > 4) {
+    return [];
+  }
+  if (Array.isArray(value)) {
+    return value.flatMap((item, index) => collectArtifactEvidenceRecords(item, `${prefix}[${index}]`, depth + 1));
+  }
+  if (!isRecord(value)) {
     return [];
   }
   const records = [{ path: prefix, record: value }];
   for (const [key, nested] of Object.entries(value)) {
-    if (isRecord(nested)) {
+    if (isRecord(nested) || Array.isArray(nested)) {
       records.push(...collectArtifactEvidenceRecords(nested, `${prefix}.${key}`, depth + 1));
     }
   }

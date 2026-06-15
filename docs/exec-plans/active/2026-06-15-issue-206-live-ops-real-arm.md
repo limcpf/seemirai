@@ -147,6 +147,8 @@ SEEMIRAI_RUN_LIVE_OPS_REAL_ARM_CLOSEOUT=1 \
   artifact safe summary와 manifest closeout 값의 일치, database password redaction도 검증한다.
 - 2026-06-15: guarded manifest 파일 자체도 저장소 밖이어야 하며, source/security scan은 `src scripts config docs` 전체 범위의 실제
   `rg -n` 실행 증거여야 한다. 중첩 artifact summary와 `raw_provider_payload`/`raw_order_detail` 필드도 차단한다.
+- 2026-06-15: repository root 기준 저장소 경계, 배열 안 artifact record, `skipped`/`blocked` artifact status, redaction placeholder 뒤 원문
+  secret도 closeout validator 차단 대상이다.
 
 ## 남은 이슈
 

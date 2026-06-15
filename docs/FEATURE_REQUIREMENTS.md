@@ -873,6 +873,8 @@ Acceptance Criteria:
   보고하면 manifest 값과 충돌하므로 실패해야 한다.
 - closeout validator: guarded manifest 파일 자체도 realpath 기준 저장소 밖이어야 하며, source/security scan 명령은 `src scripts config docs`
   전체 범위를 실제 `rg -n`으로 스캔해야 한다. 중첩 artifact 값과 `raw_provider_payload`/`raw_order_detail` 형태도 검증 대상이다.
+- closeout validator: 저장소 경계는 validator 실행 위치가 아니라 repository root 기준이며, 배열 안 artifact record와 `skipped`/`blocked`
+  status도 closeout 충돌로 본다. JSON redaction placeholder 뒤에 원문이 붙은 값은 secret leak으로 실패해야 한다.
 - source/security scan: 시장가/best order, 출금/입금, 선물/레버리지, raw secret, raw provider payload 후보가 production 경로에서
   열리지 않았는지 확인한다.
 
