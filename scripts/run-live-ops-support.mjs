@@ -1,12 +1,15 @@
 import { createHash } from "node:crypto";
 import { readdir, readFile } from "node:fs/promises";
 import path from "node:path";
+import { Decimal } from "decimal.js";
 import pg from "pg";
 
 const { Pool: PgPool } = pg;
 const migrationFilePattern = /^(\d{6})_[a-z0-9_]+\.sql$/u;
 const defaultMigrationsDirectory = path.resolve("migrations");
 const dbReadinessConnectionTimeoutMs = 5000;
+const liveOpsUpbitWebSocketUrl = "wss://api.upbit.com/websocket/v1";
+const liveOpsMarketDataConsumerId = "live-ops-market-data";
 const liveOpsWorkerLabels = {
   db_readiness: "DB readiness",
   market_data: "시세 수집",
@@ -128,10 +131,17 @@ export async function loadLiveOpsCliInputs(options) {
     databaseUrl: env.SEEMIRAI_DATABASE_URL,
     fixtureSmoke: options.fixtureSmoke,
   });
-  const marketData = evaluateLiveOpsCliMarketData({
+  if (!dbReadiness.ready) {
+    throw new Error(formatCliDbReadinessFailureMessage(dbReadiness));
+  }
+
+  const marketData = await evaluateLiveOpsCliMarketData({
     config,
     fixtureSmoke: options.fixtureSmoke,
+    databaseUrl: env.SEEMIRAI_DATABASE_URL,
   });
+  assertLiveOpsCliMarketDataReady(marketData, { fixtureSmoke: options.fixtureSmoke });
+
   const analysisDecision = evaluateLiveOpsCliAnalysisDecision({
     config,
     fixtureSmoke: options.fixtureSmoke,
@@ -153,10 +163,6 @@ export async function loadLiveOpsCliInputs(options) {
     liveExecution,
   });
 
-  if (!dbReadiness.ready) {
-    throw new Error(formatCliDbReadinessFailureMessage(dbReadiness));
-  }
-
   return {
     configPath,
     envFilePath,
@@ -172,9 +178,14 @@ export async function loadLiveOpsCliInputs(options) {
 }
 
 export function renderLiveOpsSummary(input) {
+  const status = input.dbReadiness.ready && input.marketData.ready ? "ready" : "blocked";
   return {
-    status: "ready",
-    message: "production live ops config/env 계약과 DB readiness를 통과했습니다. 현재 단계는 외부 거래 provider를 호출하지 않습니다.",
+    status,
+    message: status === "ready"
+      ? (input.fixtureSmoke
+        ? "production live ops config/env 계약과 DB readiness를 통과했습니다. fixture smoke는 외부 provider를 호출하지 않습니다."
+        : "production live ops config/env, DB readiness, Upbit public market data provider boot를 통과했습니다.")
+      : "production live ops boot가 fail-closed 됐습니다. 차단된 readiness 항목을 먼저 복구하세요.",
     configPath: input.configPath,
     envFilePath: input.envFilePath,
     mode: "소액 실운영",
@@ -200,6 +211,12 @@ export function renderLiveOpsSummary(input) {
       workers: Object.keys(input.config.workers ?? {}).filter((key) => input.config.workers[key] === true),
     },
   };
+}
+
+export function assertLiveOpsCliMarketDataReady(summary, { fixtureSmoke }) {
+  if (!fixtureSmoke && !summary.ready) {
+    throw new Error(formatCliMarketDataFailureMessage(summary));
+  }
 }
 
 export function renderLiveOpsTuiDashboard(summary) {
@@ -834,28 +851,15 @@ function evaluateLiveOpsCliAnalysisDecision({ config, fixtureSmoke, marketData }
   };
 }
 
-function evaluateLiveOpsCliMarketData({ config, fixtureSmoke }) {
+async function evaluateLiveOpsCliMarketData({ config, fixtureSmoke, databaseUrl }) {
   const market = config.universe?.default_market ?? "KRW-BTC";
 
   if (!fixtureSmoke) {
-    return {
-      status: "pending",
-      ready: false,
-      provider: "UPBIT_PUBLIC",
+    return collectLiveOpsCliUpbitMarketData({
+      config,
+      databaseUrl,
       market,
-      sourceProfile: "upbit_public",
-      message: "market data collector는 provider lifecycle 연결 전입니다.",
-      latestHeartbeatAt: null,
-      persisted: emptyMarketDataPersistenceSummary(),
-      checks: [
-        {
-          name: "event_source",
-          status: "blocked",
-          code: "live_ops_market_data_provider_pending",
-          message: "Upbit public market data provider 연결이 후속 lifecycle에서 시작됩니다.",
-        },
-      ],
-    };
+    });
   }
 
   const latestHeartbeatAt = new Date().toISOString();
@@ -889,6 +893,584 @@ function evaluateLiveOpsCliMarketData({ config, fixtureSmoke }) {
       },
     ],
   };
+}
+
+async function collectLiveOpsCliUpbitMarketData({ config, databaseUrl, market }) {
+  const checks = [
+    {
+      name: "config",
+      status: "ok",
+      code: "live_ops_market_data_config_ok",
+      message: "production live ops market data 설정을 확인했습니다.",
+      details: {
+        provider: config.market_data?.provider ?? "UPBIT_PUBLIC",
+        market,
+      },
+    },
+  ];
+  const persisted = emptyMarketDataPersistenceSummary();
+  const state = {
+    latestHeartbeatAt: null,
+    hasTrade: false,
+    hasOrderbook: false,
+    riskBlockCount: 0,
+  };
+  const pool = new PgPool({
+    connectionString: databaseUrl,
+    connectionTimeoutMillis: dbReadinessConnectionTimeoutMs,
+    max: 1,
+    idleTimeoutMillis: 1000,
+    allowExitOnIdle: true,
+  });
+
+  try {
+    await collectLiveOpsUpbitPublicEvents({
+      market,
+      staleAfterMs: config.market_data?.stale_after_ms ?? 30_000,
+      timeoutMs: config.market_data?.stale_after_ms ?? 30_000,
+      onEvent: async (event) => {
+        await persistLiveOpsCliMarketDataEvent(pool, event, {
+          workerId: liveOpsMarketDataConsumerId,
+          persisted,
+          state,
+        });
+      },
+    });
+    checks.push({
+      name: "event_source",
+      status: "ok",
+      code: "live_ops_market_data_source_ok",
+      message: "Upbit public WebSocket에서 production market event를 수신했습니다.",
+      details: {
+        market,
+        eventCount: persisted.eventCount,
+      },
+    });
+    checks.push({
+      name: "persistence",
+      status: "ok",
+      code: "live_ops_market_data_persistence_ok",
+      message: "market data event를 DB-backed store 경계로 저장했습니다.",
+      details: {
+        tradeCount: persisted.tradeCount,
+        orderbookCount: persisted.orderbookCount,
+        statusCount: persisted.statusCount,
+      },
+    });
+
+    if (!state.hasTrade || !state.hasOrderbook) {
+      checks.push({
+        name: "freshness",
+        status: "blocked",
+        code: "live_ops_market_data_event_missing",
+        message: "체결 또는 호가 event가 아직 저장되지 않아 live execution으로 전진하지 않습니다.",
+      });
+    } else if (state.riskBlockCount > 0) {
+      checks.push({
+        name: "freshness",
+        status: "blocked",
+        code: "live_ops_market_data_risk_block",
+        message: "시세 지연 또는 연결 장애가 감지되어 신규 실주문으로 진행하지 않습니다.",
+        details: {
+          riskBlockCount: state.riskBlockCount,
+        },
+      });
+    } else {
+      checks.push({
+        name: "freshness",
+        status: "ok",
+        code: "live_ops_market_data_fresh",
+        message: "체결/호가 event가 저장됐고 차단 상태가 없습니다.",
+      });
+    }
+  } catch (error) {
+    const observedAt = new Date().toISOString();
+    const statusEvent = createLiveOpsMarketDataStatusEvent({
+      market,
+      status: "DISCONNECTED",
+      observedAt,
+      reasonCode: "live_ops_upbit_public_boot_failed",
+      metadata: {
+        errorName: safeErrorName(error),
+      },
+    });
+
+    await persistLiveOpsCliMarketDataEvent(pool, statusEvent, {
+      workerId: liveOpsMarketDataConsumerId,
+      persisted,
+      state,
+    }).catch(() => undefined);
+    checks.push({
+      name: "event_source",
+      status: "blocked",
+      code: "live_ops_market_data_source_invalid",
+      message: "Upbit public market data provider boot를 완료하지 못했습니다.",
+      details: {
+        reason: safeErrorName(error),
+      },
+    });
+  } finally {
+    await pool.end().catch(() => undefined);
+  }
+
+  const ready = checks.every((check) => check.status === "ok");
+  return {
+    status: ready ? "ready" : "blocked",
+    ready,
+    provider: "UPBIT_PUBLIC",
+    market,
+    sourceProfile: "upbit_public",
+    message: ready
+      ? "Upbit public market data provider가 DB-backed 저장 경계를 통과했습니다."
+      : "market data collector가 live ops 다음 단계로 진행할 수 없습니다.",
+    latestHeartbeatAt: state.latestHeartbeatAt,
+    persisted,
+    checks,
+  };
+}
+
+async function collectLiveOpsUpbitPublicEvents({ market, staleAfterMs, timeoutMs, onEvent }) {
+  const WebSocketConstructor = globalThis.WebSocket;
+  if (WebSocketConstructor === undefined) {
+    throw new Error("WebSocketUnavailable");
+  }
+
+  await new Promise((resolve, reject) => {
+    const websocket = new WebSocketConstructor(liveOpsUpbitWebSocketUrl);
+    let settled = false;
+    let hasTrade = false;
+    let hasOrderbook = false;
+    const timeout = setTimeout(() => {
+      finish(reject, new Error("LiveOpsUpbitPublicMarketDataTimeout"));
+    }, timeoutMs);
+
+    const finish = (settle, value) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      try {
+        websocket.close();
+      } catch {
+        // 종료 시점 close 실패는 provider boot 결과를 바꾸지 않으므로 무시한다.
+      }
+      settle(value);
+    };
+
+    websocket.addEventListener("open", () => {
+      const observedAt = new Date().toISOString();
+      void onEvent(createLiveOpsMarketDataStatusEvent({
+        market,
+        status: "CONNECTED",
+        observedAt,
+        reasonCode: "live_ops_upbit_public_connected",
+      })).then(() => {
+        websocket.send(createLiveOpsUpbitSubscriptionMessage({ market }));
+      }).catch((error) => {
+        finish(reject, error);
+      });
+    }, { once: true });
+
+    websocket.addEventListener("message", (message) => {
+      void (async () => {
+        const receivedAt = new Date().toISOString();
+        const data = await normalizeLiveOpsAsyncWebSocketData(message.data);
+        for (const payload of parseLiveOpsUpbitWebSocketMessage(data)) {
+          const event = mapLiveOpsUpbitPayloadToEvent(payload, {
+            market,
+            receivedAt,
+            observedAt: receivedAt,
+            staleAfterMs,
+          });
+          if (event === undefined) {
+            continue;
+          }
+
+          await onEvent(event);
+          if (event.type === "TRADE") {
+            hasTrade = true;
+          } else if (event.type === "ORDERBOOK") {
+            hasOrderbook = true;
+          }
+
+          if (hasTrade && hasOrderbook) {
+            finish(resolve);
+            return;
+          }
+        }
+      })().catch((error) => {
+        finish(reject, error);
+      });
+    });
+
+    websocket.addEventListener("error", () => {
+      finish(reject, new Error("LiveOpsUpbitPublicWebSocketError"));
+    }, { once: true });
+
+    websocket.addEventListener("close", () => {
+      if (!settled && (!hasTrade || !hasOrderbook)) {
+        finish(reject, new Error("LiveOpsUpbitPublicWebSocketClosed"));
+      }
+    }, { once: true });
+  });
+}
+
+export function createLiveOpsUpbitSubscriptionMessage({ market }) {
+  return JSON.stringify([
+    { ticket: liveOpsMarketDataConsumerId },
+    { type: "trade", codes: [market], is_only_realtime: true },
+    { type: "orderbook", codes: [market], is_only_realtime: true },
+    { format: "DEFAULT" },
+  ]);
+}
+
+export function parseLiveOpsUpbitWebSocketMessage(data) {
+  const text = normalizeLiveOpsWebSocketData(data);
+  const parsed = JSON.parse(protectLiveOpsUpbitLargeSequentialIds(text));
+  return Array.isArray(parsed) ? parsed : [parsed];
+}
+
+export function protectLiveOpsUpbitLargeSequentialIds(text) {
+  return text.replace(/("sequential_id"\s*:\s*)(\d{16,})(?=\s*[,}\]])/gu, '$1"$2"');
+}
+
+export function mapLiveOpsUpbitPayloadToEvent(payload, { market, receivedAt, observedAt, staleAfterMs }) {
+  if (payload?.status === "UP") {
+    return createLiveOpsMarketDataStatusEvent({
+      market,
+      status: "CONNECTED",
+      observedAt,
+      reasonCode: "upbit_websocket_up",
+      metadata: {
+        upbitStatus: payload.status,
+      },
+    });
+  }
+
+  if (payload?.error !== undefined) {
+    return createLiveOpsMarketDataStatusEvent({
+      market,
+      status: "DISCONNECTED",
+      observedAt,
+      reasonCode: `upbit_websocket_error:${String(payload.error.name ?? "unknown")}`,
+      metadata: {
+        errorName: String(payload.error.name ?? "unknown"),
+      },
+    });
+  }
+
+  if (payload?.code !== market) {
+    // 허용 market 밖 event는 잘못된 주문 판단 입력이 될 수 있어 DB write 전에 차단한다.
+    throw new Error("LiveOpsMarketDataOutsideUniverse");
+  }
+
+  if (payload?.type === "trade") {
+    const event = {
+      type: "TRADE",
+      exchangeId: "upbit_krw_spot",
+      market: payload.code,
+      tradeId: String(payload.sequential_id),
+      price: toDecimalString(payload.trade_price),
+      quantity: toDecimalString(payload.trade_volume),
+      side: payload.ask_bid === "BID" ? "BID" : "ASK",
+      exchangeTimestamp: timestampFromMilliseconds(payload.trade_timestamp),
+      receivedAt,
+      raw: payload,
+    };
+    return maybeCreateStaleStatus(event, observedAt, staleAfterMs) ?? event;
+  }
+
+  if (payload?.type === "orderbook") {
+    const event = {
+      type: "ORDERBOOK",
+      exchangeId: "upbit_krw_spot",
+      market: payload.code,
+      asks: payload.orderbook_units.map((unit) => ({
+        price: toDecimalString(unit.ask_price),
+        size: toDecimalString(unit.ask_size),
+      })),
+      bids: payload.orderbook_units.map((unit) => ({
+        price: toDecimalString(unit.bid_price),
+        size: toDecimalString(unit.bid_size),
+      })),
+      exchangeTimestamp: timestampFromMilliseconds(payload.timestamp),
+      receivedAt,
+      raw: payload,
+    };
+    return maybeCreateStaleStatus(event, observedAt, staleAfterMs) ?? event;
+  }
+
+  return undefined;
+}
+
+function maybeCreateStaleStatus(event, observedAt, staleAfterMs) {
+  const websocketLagMs = Date.parse(observedAt) - Date.parse(event.exchangeTimestamp);
+  if (!Number.isFinite(websocketLagMs) || websocketLagMs < 0 || websocketLagMs < staleAfterMs) {
+    return undefined;
+  }
+
+  return createLiveOpsMarketDataStatusEvent({
+    market: event.market,
+    status: "STALE",
+    observedAt,
+    reasonCode: "live_ops_upbit_public_lag_exceeded",
+    websocketLagMs,
+  });
+}
+
+function createLiveOpsMarketDataStatusEvent({ market, status, observedAt, reasonCode, websocketLagMs, metadata }) {
+  return {
+    type: "STATUS",
+    exchangeId: "upbit_krw_spot",
+    market,
+    status,
+    observedAt,
+    reasonCode,
+    ...(websocketLagMs === undefined ? {} : { websocketLagMs }),
+    reconnectCount: 0,
+    ...(metadata === undefined ? {} : { metadata }),
+  };
+}
+
+async function persistLiveOpsCliMarketDataEvent(pool, event, { workerId, persisted, state }) {
+  persisted.eventCount += 1;
+
+  if (event.type === "TRADE") {
+    await persistLiveOpsCliTrade(pool, event);
+    persisted.tradeCount += 1;
+    state.hasTrade = true;
+    state.latestHeartbeatAt = event.receivedAt;
+    return;
+  }
+
+  if (event.type === "ORDERBOOK") {
+    await persistLiveOpsCliOrderbook(pool, event);
+    persisted.orderbookCount += 1;
+    state.hasOrderbook = true;
+    state.latestHeartbeatAt = event.receivedAt;
+    return;
+  }
+
+  await persistLiveOpsCliStatus(pool, event, workerId);
+  persisted.statusCount += 1;
+  state.latestHeartbeatAt = event.observedAt;
+  if (liveOpsMarketDataStatusBlocksNewOrders(event.status)) {
+    persisted.riskBlockCount += 1;
+    state.riskBlockCount += 1;
+  }
+}
+
+async function persistLiveOpsCliTrade(pool, event) {
+  await pool.query(
+    `INSERT INTO trades (exchange, market, trade_id, side, price, volume, exchange_timestamp, received_at, raw_payload_json)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb)
+     ON CONFLICT (exchange, market, trade_id, exchange_timestamp) DO NOTHING`,
+    [
+      event.exchangeId,
+      event.market,
+      event.tradeId,
+      event.side === "BID" ? "BUY" : "SELL",
+      event.price,
+      event.quantity,
+      event.exchangeTimestamp,
+      event.receivedAt,
+      JSON.stringify(event.raw ?? {}),
+    ],
+  );
+}
+
+async function persistLiveOpsCliOrderbook(pool, event) {
+  const metric = toLiveOpsOrderbookMetric(event);
+  const snapshot = {
+    bids_json: JSON.stringify({ levels: event.bids }),
+    asks_json: JSON.stringify({ levels: event.asks }),
+    raw_payload_json: JSON.stringify(event.raw ?? {}),
+  };
+
+  await pool.query(
+    `INSERT INTO orderbook_metrics (
+       exchange, market, bucket_at, best_bid_price, best_ask_price, spread_bps,
+       bid_depth_1, ask_depth_1, bid_depth_5, ask_depth_5, bid_depth_15, ask_depth_15,
+       imbalance_5, imbalance_15, websocket_lag_ms, reconnect_count
+     )
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+     ON CONFLICT (exchange, market, bucket_at) DO UPDATE SET
+       best_bid_price = EXCLUDED.best_bid_price,
+       best_ask_price = EXCLUDED.best_ask_price,
+       spread_bps = EXCLUDED.spread_bps,
+       bid_depth_1 = EXCLUDED.bid_depth_1,
+       ask_depth_1 = EXCLUDED.ask_depth_1,
+       bid_depth_5 = EXCLUDED.bid_depth_5,
+       ask_depth_5 = EXCLUDED.ask_depth_5,
+       bid_depth_15 = EXCLUDED.bid_depth_15,
+       ask_depth_15 = EXCLUDED.ask_depth_15,
+       imbalance_5 = EXCLUDED.imbalance_5,
+       imbalance_15 = EXCLUDED.imbalance_15,
+       websocket_lag_ms = EXCLUDED.websocket_lag_ms,
+       reconnect_count = EXCLUDED.reconnect_count`,
+    [
+      event.exchangeId,
+      event.market,
+      metric.bucketAt,
+      metric.bestBidPrice,
+      metric.bestAskPrice,
+      metric.spreadBps,
+      metric.bidDepth1,
+      metric.askDepth1,
+      metric.bidDepth5,
+      metric.askDepth5,
+      metric.bidDepth15,
+      metric.askDepth15,
+      metric.imbalance5,
+      metric.imbalance15,
+      metric.websocketLagMs,
+      0,
+    ],
+  );
+  await pool.query(
+    `INSERT INTO orderbook_snapshots (exchange, market, captured_at, bids_json, asks_json, raw_payload_json)
+     VALUES ($1, $2, $3, $4::jsonb, $5::jsonb, $6::jsonb)
+     ON CONFLICT (exchange, market, captured_at) DO UPDATE SET
+       bids_json = EXCLUDED.bids_json,
+       asks_json = EXCLUDED.asks_json,
+       raw_payload_json = EXCLUDED.raw_payload_json`,
+    [
+      event.exchangeId,
+      event.market,
+      floorIsoTimestamp(event.exchangeTimestamp, 5_000),
+      snapshot.bids_json,
+      snapshot.asks_json,
+      snapshot.raw_payload_json,
+    ],
+  );
+}
+
+async function persistLiveOpsCliStatus(pool, event, workerId) {
+  const payload = {
+    kind: "market_data_status",
+    exchangeId: event.exchangeId,
+    market: event.market,
+    status: event.status,
+    blockNewOrders: liveOpsMarketDataStatusBlocksNewOrders(event.status),
+    workerId,
+    ...(event.reasonCode === undefined ? {} : { reasonCode: event.reasonCode }),
+    ...(event.websocketLagMs === undefined ? {} : { websocketLagMs: event.websocketLagMs }),
+    ...(event.reconnectCount === undefined ? {} : { reconnectCount: event.reconnectCount }),
+    ...(event.metadata === undefined ? {} : { metadata: event.metadata }),
+  };
+  await pool.query(
+    `INSERT INTO audit_events (event_type, severity, order_id, correlation_id, payload_json, occurred_at)
+     VALUES ($1, $2, NULL, $3, $4::jsonb, $5)`,
+    [
+      "MARKET_DATA_STATUS",
+      toLiveOpsAuditSeverity(event.status),
+      ["market-data", event.exchangeId, event.market ?? "global", event.status, event.observedAt].join(":"),
+      JSON.stringify(payload),
+      event.observedAt,
+    ],
+  );
+
+  if (!liveOpsMarketDataStatusBlocksNewOrders(event.status)) {
+    return;
+  }
+
+  // 장애성 status는 다음 lifecycle이 broker로 전진하지 못하게 risk evidence로도 남긴다.
+  await pool.query(
+    `INSERT INTO risk_events (risk_type, severity, market, strategy_id, order_id, action, payload_json, occurred_at)
+     VALUES ($1, $2, $3, NULL, NULL, $4, $5::jsonb, $6)`,
+    [
+      toLiveOpsRiskType(event.status),
+      event.status === "DISCONNECTED" ? "ERROR" : "WARN",
+      event.market ?? null,
+      "BLOCK_NEW_ORDERS",
+      JSON.stringify(payload),
+      event.observedAt,
+    ],
+  );
+}
+
+function toLiveOpsOrderbookMetric(event) {
+  const bestBidPrice = event.bids[0].price;
+  const bestAskPrice = event.asks[0].price;
+  const bidDepth1 = sumLiveOpsDepth(event.bids, 1);
+  const askDepth1 = sumLiveOpsDepth(event.asks, 1);
+  const bidDepth5 = sumLiveOpsDepth(event.bids, 5);
+  const askDepth5 = sumLiveOpsDepth(event.asks, 5);
+  const bidDepth15 = sumLiveOpsDepth(event.bids, 15);
+  const askDepth15 = sumLiveOpsDepth(event.asks, 15);
+
+  return {
+    bucketAt: floorIsoTimestamp(event.exchangeTimestamp, 1_000),
+    bestBidPrice,
+    bestAskPrice,
+    spreadBps: new Decimal(bestAskPrice).minus(bestBidPrice).div(new Decimal(bestAskPrice).plus(bestBidPrice).div(2)).mul(10_000).toFixed(6),
+    bidDepth1,
+    askDepth1,
+    bidDepth5,
+    askDepth5,
+    bidDepth15,
+    askDepth15,
+    imbalance5: calculateLiveOpsImbalance(bidDepth5, askDepth5),
+    imbalance15: calculateLiveOpsImbalance(bidDepth15, askDepth15),
+    websocketLagMs: Math.max(0, Date.parse(event.receivedAt) - Date.parse(event.exchangeTimestamp)),
+  };
+}
+
+function sumLiveOpsDepth(levels, count) {
+  return levels.slice(0, count).reduce((sum, level) => sum.plus(level.size), new Decimal(0)).toFixed();
+}
+
+function calculateLiveOpsImbalance(bidDepth, askDepth) {
+  const bid = new Decimal(bidDepth);
+  const ask = new Decimal(askDepth);
+  const total = bid.plus(ask);
+  return total.eq(0) ? "0" : bid.minus(ask).div(total).toFixed(8);
+}
+
+function liveOpsMarketDataStatusBlocksNewOrders(status) {
+  return status === "STALE" || status === "RECONNECTING" || status === "DISCONNECTED";
+}
+
+function toLiveOpsAuditSeverity(status) {
+  if (status === "DISCONNECTED") return "ERROR";
+  if (status === "STALE" || status === "RECONNECTING") return "WARN";
+  return "INFO";
+}
+
+function toLiveOpsRiskType(status) {
+  if (status === "STALE") return "stale_market_data";
+  if (status === "RECONNECTING") return "market_data_reconnecting";
+  return "market_data_disconnected";
+}
+
+function normalizeLiveOpsWebSocketData(data) {
+  if (typeof data === "string") return data;
+  if (data instanceof ArrayBuffer) return Buffer.from(data).toString("utf8");
+  if (ArrayBuffer.isView(data)) return Buffer.from(data.buffer, data.byteOffset, data.byteLength).toString("utf8");
+  if (typeof Blob !== "undefined" && data instanceof Blob) {
+    throw new Error("LiveOpsBlobWebSocketMessageUnsupported");
+  }
+  return String(data);
+}
+
+async function normalizeLiveOpsAsyncWebSocketData(data) {
+  if (typeof Blob !== "undefined" && data instanceof Blob) {
+    return data.text();
+  }
+
+  return normalizeLiveOpsWebSocketData(data);
+}
+
+function timestampFromMilliseconds(timestamp) {
+  return new Date(Number(timestamp)).toISOString();
+}
+
+function floorIsoTimestamp(timestamp, bucketMs) {
+  const value = Date.parse(timestamp);
+  return new Date(Math.floor(value / bucketMs) * bucketMs).toISOString();
+}
+
+function toDecimalString(value) {
+  return new Decimal(value).toFixed();
 }
 
 function emptyMarketDataPersistenceSummary() {
@@ -1216,6 +1798,14 @@ function formatCliDbReadinessFailureMessage(summary) {
     .map((check) => check.message)
     .join(" ");
   return `DB readiness를 통과하지 못해 live ops boot를 중단합니다. ${failures}`;
+}
+
+function formatCliMarketDataFailureMessage(summary) {
+  const failures = summary.checks
+    .filter((check) => check.status === "blocked")
+    .map((check) => check.message)
+    .join(" ");
+  return `market data provider boot를 통과하지 못해 live ops boot를 중단합니다. ${failures}`;
 }
 
 function safeErrorName(error) {
