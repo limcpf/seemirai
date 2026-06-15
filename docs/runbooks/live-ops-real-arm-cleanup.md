@@ -112,7 +112,8 @@ root 기준으로 판정한다.
 secret/raw payload 후보 전체(access/secret key, Authorization/Bearer, JWT, Telegram token, raw provider/order payload)를 스캔한 증거를
 포함해야 한다. `src scripts config docs`는 검색 패턴 문자열이 아니라 `rg` argv의 실제 path operand로 들어가야 하며, `true`,
 `echo rg ...`, 일부 토큰만 확인한 명령, 검색어가 아닌 path operand에 금지 패턴 단어를 붙인 명령,
-`-g '!src/**'`, `-g'!src/**'`, `-g'!{src,scripts,config,docs}/**'`처럼 필수 범위를 제외하는 glob은 인정하지 않는다.
+`-q`/`--quiet`, `-l`/`--files-without-match`, `--pre`/`--pre-glob`, `-g '!src/**'`, `-g'!src/**'`,
+`-g'!{src,scripts,config,docs}/**'`, `-g '!*.ts'`처럼 출력, 입력, 필수 범위를 줄이는 옵션은 인정하지 않는다.
 주문 lifecycle timestamp는 validator 실행 시각보다 미래일 수 없고, 같은 주문 chain
 증거는 `<redacted>` 같은 일반 placeholder가 아니라 identifier 또는 uuid의 안정적인 suffix로 비교할 수 있어야 한다. artifact safe summary의
 중첩 객체와 배열 안의 `status`, `terminalState`/`terminal_state`, 주문 정책 필드(`market`, `side`, `orderType`/`order_type`, `timeInForce`/`time_in_force`,
@@ -130,6 +131,7 @@ database password 원문, `database_password`/`db_password`/`pg_password`, `raw_
 JSON credential 값은 `<redacted>`, `redacted`, `[redacted]` 같은 placeholder와 정확히 일치해야 하며, placeholder 뒤에 원문 일부를
 덧붙이면 secret leak으로 본다. env assignment 형태도 placeholder 뒤에 원문이 붙으면 secret leak으로 본다. TUI control token도
 `SEEMIRAI_TUI_CONTROL_TOKEN` env assignment와 `tuiControlToken`/`tui_control_token` JSON field 모두 secret 후보로 차단한다.
+Bearer/JWT도 placeholder 뒤에 토큰 일부가 이어지면 redacted 값으로 보지 않는다.
 
 ## Closeout 판정
 

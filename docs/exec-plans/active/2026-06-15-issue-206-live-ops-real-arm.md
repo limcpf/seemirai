@@ -159,6 +159,8 @@ SEEMIRAI_RUN_LIVE_OPS_REAL_ARM_CLOSEOUT=1 \
   `terminal_state` alias 충돌, 직접 `identifier`/`broker_order_id` artifact alias, TUI control token redaction까지 검증한다.
 - 2026-06-15: closeout validator는 source scan coverage를 실제 검색 패턴 기준으로 판정하고, snake_case DB password,
   문자열 raw provider/order payload, 깊게 중첩된 artifact closeout 충돌도 차단한다.
+- 2026-06-15: closeout validator는 출력 억제/파일 목록/without-match/preprocessor ripgrep 옵션, 모든 exclude glob,
+  Bearer placeholder 뒤 raw token tail도 차단한다.
 
 ## 남은 이슈
 

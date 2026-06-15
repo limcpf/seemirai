@@ -91,6 +91,14 @@ const requiredSecretSourceScanPatterns = [
   { label: "raw provider payload", pattern: /raw_provider|rawProvider/u },
   { label: "raw order payload", pattern: /raw_order|rawOrder/u },
 ];
+const disallowedRipgrepLongOptions = new Set([
+  "--files-with-matches",
+  "--files-without-match",
+  "--pre",
+  "--pre-glob",
+  "--quiet",
+]);
+const disallowedRipgrepShortOptions = new Set(["L", "l", "q"]);
 const withdrawalScopeMarkers = ["출금", "withdraw"];
 const forbiddenKeyScopeMarkers = ["출금", "입금", "withdraw", "deposit", "futures", "leverage", "margin"];
 const requiredCounterNames = [
@@ -118,6 +126,7 @@ const sensitivePatterns = [
   { label: "database password env assignment", pattern: /\b(?:SEEMIRAI_)?(?:DATABASE_PASSWORD|DB_PASSWORD|PGPASSWORD)\s*=\s*(?!(?:["']?(?:<redacted>|redacted|\[redacted\])["']?)(?:$|[\r\n,}]))[^\r\n,}]{8,}/i },
   { label: "raw authorization bearer", pattern: /authorization:\s*bearer\s+(?!<redacted>|redacted|\[redacted\])[^\s"']+/i },
   { label: "standalone bearer token", pattern: /\bBearer\s+(?!(?:<redacted>|redacted|\[redacted\])(?:\s|$))[^\s"']{16,}/ },
+  { label: "bearer placeholder tail", pattern: /\bBearer\s+(?:<redacted>|redacted|\[redacted\])\s+[^\s"']+/i },
   { label: "jwt env assignment", pattern: /\bJWT\s*=\s*(?!(?:["']?(?:<redacted>|redacted|\[redacted\])["']?)(?:\s|$|["',]))[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/ },
   { label: "authorization json field", pattern: /"authorization"\s*:\s*"(?!bearer\s+(?:<redacted>|redacted|\[redacted\])"|(?:<redacted>|redacted|\[redacted\])")[^"]{8,}"/i },
   { label: "jwt json field", pattern: /"jwt"\s*:\s*"(?!\s*(?:<redacted>|redacted|\[redacted\])\s*")[^"]{8,}"/i },
@@ -1349,6 +1358,7 @@ function createSourceScanCommandEvidence(commands) {
     const hasLineNumber = /(?:^|\s)(?:-n|--line-number)(?:\s|$)/u.test(command);
     const scansExpectedPaths = requiredSourceScanPaths.every((scanPath) => operands.includes(scanPath));
     const excludedSourceGlobs = collectExcludedSourceGlobs(tokens);
+    const disallowedOptions = collectDisallowedRipgrepOptions(tokens);
     const coveredUnsafePatterns = requiredUnsafeSourceScanPatterns
       .filter((requirement) => searchPatterns.some((pattern) => requirement.pattern.test(pattern)))
       .map((requirement) => requirement.label);
@@ -1363,6 +1373,7 @@ function createSourceScanCommandEvidence(commands) {
       searchPatterns,
       operands,
       excludedSourceGlobs,
+      disallowedOptions,
       coveredUnsafePatterns,
       coveredSecretPatterns,
     };
@@ -1370,7 +1381,8 @@ function createSourceScanCommandEvidence(commands) {
   const validCommandChecks = commandChecks.filter((check) => check.usesRipgrep
     && check.hasLineNumber
     && check.scansExpectedPaths
-    && check.excludedSourceGlobs.length === 0);
+    && check.excludedSourceGlobs.length === 0
+    && check.disallowedOptions.length === 0);
   const unsafePatternsCovered = collectUnique(validCommandChecks.flatMap((check) => check.coveredUnsafePatterns));
   const secretPatternsCovered = collectUnique(validCommandChecks.flatMap((check) => check.coveredSecretPatterns));
   const missingUnsafePatterns = requiredUnsafeSourceScanPatterns
@@ -1410,8 +1422,27 @@ function collectExcludedSourceGlobs(tokens) {
     }
   }
   return globs
-    .filter((glob) => glob.startsWith("!"))
-    .filter((glob) => requiredSourceScanPaths.some((scanPath) => excludesSourcePath(glob, scanPath)));
+    .map(stripShellQuotes)
+    .filter((glob) => glob.startsWith("!"));
+}
+
+function collectDisallowedRipgrepOptions(tokens) {
+  const options = [];
+  for (let index = 1; index < tokens.length; index += 1) {
+    const token = tokens[index];
+    if (disallowedRipgrepLongOptions.has(token)) {
+      options.push(token);
+      continue;
+    }
+    if ([...disallowedRipgrepLongOptions].some((option) => token.startsWith(`${option}=`))) {
+      options.push(token);
+      continue;
+    }
+    if (/^-[A-Za-z]+$/u.test(token) && [...token.slice(1)].some((flag) => disallowedRipgrepShortOptions.has(flag))) {
+      options.push(token);
+    }
+  }
+  return options;
 }
 
 function collectRipgrepPathOperands(tokens) {
