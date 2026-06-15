@@ -154,30 +154,45 @@ export async function loadLiveOpsCliInputs(options) {
     marketData,
     env,
   });
-  assertLiveOpsCliLiveExecutionReady(liveExecution, { fixtureSmoke: options.fixtureSmoke });
-  const reconcilePnlStatus = await evaluateLiveOpsCliReconcilePnlStatus({
-    config,
-    fixtureSmoke: options.fixtureSmoke,
-    liveExecution,
-  });
-  const telegramAlert = await evaluateLiveOpsCliTelegramAlert({
-    config,
-    fixtureSmoke: options.fixtureSmoke,
-    liveExecution,
-  });
+  let productionProviders;
+  try {
+    productionProviders = options.fixtureSmoke
+      ? undefined
+      : createLiveOpsCliProductionProviders({
+          config,
+          env,
+          market: config.universe?.default_market ?? "KRW-BTC",
+        });
+    const reconcilePnlStatus = await evaluateLiveOpsCliReconcilePnlStatus({
+      config,
+      fixtureSmoke: options.fixtureSmoke,
+      liveExecution,
+      privateReadProvider: productionProviders?.privateReadProvider,
+      reconcileStatusProvider: productionProviders?.reconcileStatusProvider,
+      pnlStatusProvider: productionProviders?.pnlStatusProvider,
+    });
+    const telegramAlert = await evaluateLiveOpsCliTelegramAlert({
+      config,
+      fixtureSmoke: options.fixtureSmoke,
+      liveExecution,
+      telegramDispatcher: productionProviders?.telegramDispatcher,
+    });
 
-  return {
-    configPath,
-    envFilePath,
-    config,
-    env,
-    dbReadiness,
-    marketData,
-    analysisDecision,
-    liveExecution,
-    reconcilePnlStatus,
-    telegramAlert,
-  };
+    return {
+      configPath,
+      envFilePath,
+      config,
+      env,
+      dbReadiness,
+      marketData,
+      analysisDecision,
+      liveExecution,
+      reconcilePnlStatus,
+      telegramAlert,
+    };
+  } finally {
+    await productionProviders?.close?.();
+  }
 }
 
 export function renderLiveOpsSummary(input) {
@@ -510,6 +525,405 @@ function parseEnvValue(rawValue) {
   }
   const commentIndex = rawValue.indexOf(" #");
   return commentIndex >= 0 ? rawValue.slice(0, commentIndex).trim() : rawValue;
+}
+
+export function createLiveOpsCliProductionProviders({ config, env, market, fetchImpl }) {
+  // production closeout은 같은 DB evidence를 한 tick에서 읽어 reconcile/PnL/private read의 기준 시점을 맞춘다.
+  const pool = createLiveOpsCliPostgresPool(env.SEEMIRAI_DATABASE_URL);
+  return {
+    privateReadProvider: createLiveOpsCliDatabasePrivateReadProvider(pool),
+    reconcileStatusProvider: createLiveOpsCliDatabaseReconcileStatusProvider(pool),
+    pnlStatusProvider: createLiveOpsCliDatabasePnlStatusProvider(pool, market),
+    telegramDispatcher: createLiveOpsCliTelegramDispatcher({ config, env, fetchImpl }),
+    async close() {
+      await pool.end().catch(() => undefined);
+    },
+  };
+}
+
+function createLiveOpsCliPostgresPool(databaseUrl) {
+  return new PgPool({
+    connectionString: databaseUrl,
+    connectionTimeoutMillis: dbReadinessConnectionTimeoutMs,
+    max: 2,
+    idleTimeoutMillis: 1000,
+    allowExitOnIdle: true,
+  });
+}
+
+export function createLiveOpsCliDatabasePrivateReadProvider(pool) {
+  return {
+    async listOpenOrders(market) {
+      const result = await pool.query(`
+        WITH latest_run AS (
+          SELECT id
+          FROM live_reconcile_runs
+          ORDER BY started_at DESC
+          LIMIT 1
+        )
+        SELECT
+          exchange_order_id,
+          identifier,
+          market,
+          side,
+          status,
+          requested_quantity,
+          remaining_quantity,
+          requested_price,
+          captured_at
+        FROM live_reconcile_exchange_order_snapshots
+        WHERE run_id = (SELECT id FROM latest_run)
+          AND market = $1
+          AND upper(status) IN ('OPEN', 'ACCEPTED', 'WAIT', 'WATCH')
+          AND remaining_quantity IS NOT NULL
+          AND remaining_quantity > 0
+        ORDER BY captured_at DESC
+      `, [market]);
+      return result.rows.map((row) => ({
+        brokerOrderId: row.exchange_order_id ?? null,
+        idempotencyKey: row.identifier ?? null,
+        exchangeId: "upbit_krw_spot",
+        market: row.market,
+        side: row.side,
+        orderType: "LIMIT",
+        status: row.status,
+        requestedQuantity: decimalRowValue(row.requested_quantity),
+        remainingQuantity: decimalRowValue(row.remaining_quantity),
+        requestedPrice: decimalRowValue(row.requested_price),
+        updatedAt: toIsoString(row.captured_at),
+      }));
+    },
+    async getBalances() {
+      const result = await pool.query(`
+        WITH latest_run AS (
+          SELECT id
+          FROM live_reconcile_runs
+          ORDER BY started_at DESC
+          LIMIT 1
+        )
+        SELECT currency, available, locked, total, captured_at
+        FROM live_reconcile_balance_snapshots
+        WHERE run_id = (SELECT id FROM latest_run)
+        ORDER BY currency ASC, captured_at DESC
+      `);
+      const capturedAt = result.rows.reduce((latest, row) => {
+        const current = toIsoString(row.captured_at);
+        return latest === null || (current !== null && current > latest) ? current : latest;
+      }, null);
+      return {
+        exchangeId: "upbit_krw_spot",
+        capturedAt,
+        balances: result.rows.map((row) => ({
+          currency: row.currency,
+          available: decimalRowValue(row.available),
+          locked: decimalRowValue(row.locked),
+          total: decimalRowValue(row.total),
+          updatedAt: toIsoString(row.captured_at),
+        })),
+      };
+    },
+  };
+}
+
+export function createLiveOpsCliDatabaseReconcileStatusProvider(pool) {
+  return {
+    async getReconcileStatus() {
+      const result = await pool.query(`
+        WITH latest_run AS (
+          SELECT id, status, started_at, finished_at, correlation_id
+          FROM live_reconcile_runs
+          ORDER BY started_at DESC
+          LIMIT 1
+        ),
+        counts AS (
+          SELECT
+            (SELECT count(*)::int FROM live_reconcile_balance_snapshots WHERE run_id = latest_run.id) AS balance_snapshot_count,
+            (SELECT count(*)::int FROM live_reconcile_exchange_order_snapshots WHERE run_id = latest_run.id) AS exchange_order_snapshot_count,
+            (
+              SELECT count(*)::int
+              FROM live_reconcile_exchange_order_snapshots
+              WHERE run_id = latest_run.id
+                AND upper(status) IN ('OPEN', 'ACCEPTED', 'WAIT', 'WATCH')
+                AND remaining_quantity IS NOT NULL
+                AND remaining_quantity > 0
+            ) AS open_order_count,
+            (SELECT count(*)::int FROM live_reconcile_mismatch_evidence WHERE run_id = latest_run.id) AS mismatch_count,
+            (
+              SELECT array_remove(array_agg(DISTINCT mismatch_type), NULL)
+              FROM live_reconcile_mismatch_evidence
+              WHERE run_id = latest_run.id
+            ) AS mismatch_types
+          FROM latest_run
+        )
+        SELECT latest_run.*, counts.*
+        FROM latest_run
+        CROSS JOIN counts
+      `);
+      const row = result.rows[0];
+      if (row === undefined) {
+        return {
+          lastReconcileAt: null,
+          result: "SKIPPED",
+          mismatchCount: null,
+          openOrderCount: null,
+          balanceStatus: "UNAVAILABLE",
+          websocketStatus: "DISCONNECTED",
+          actionRequired: "reconcile 실행 필요",
+          message: "아직 완료된 실계좌 reconcile evidence가 없어 신규 주문 전 수동 확인이 필요합니다.",
+          trace: { source: "live_ops_cli_database_reconcile", reason: "reconcile_not_run" },
+        };
+      }
+
+      const mismatchTypes = Array.isArray(row.mismatch_types) ? row.mismatch_types : [];
+      const mismatchCount = numberRowValue(row.mismatch_count);
+      const reconcileResult = mapLiveOpsCliReconcileResult(row.status, mismatchCount);
+      const actionRequired = reconcileResult === "SUCCESS"
+        ? "없음"
+        : (mismatchCount > 0
+          ? "저장된 reconcile mismatch evidence를 확인하고 수동 검토를 닫으세요."
+          : "최신 reconcile run 상태와 worker 로그를 확인한 뒤 신규 주문 전 재대사를 완료하세요.");
+      const message = reconcileResult === "SUCCESS"
+        ? "최신 실계좌 reconcile evidence를 읽었습니다."
+        : (mismatchCount > 0
+          ? "실계좌 상태 대조에서 불일치가 발견되었습니다."
+          : "최신 실계좌 reconcile evidence가 정상 완료 상태가 아닙니다.");
+      return {
+        lastReconcileAt: toIsoString(row.finished_at ?? row.started_at),
+        result: reconcileResult,
+        mismatchCount,
+        openOrderCount: numberRowValue(row.open_order_count),
+        balanceStatus: mapLiveOpsCliBalanceStatus(numberRowValue(row.balance_snapshot_count), mismatchTypes),
+        websocketStatus: mismatchTypes.includes("WEBSOCKET_GAP_MANUAL_REVIEW") ? "DEGRADED" : "CONNECTED",
+        actionRequired,
+        message,
+        trace: {
+          source: "live_ops_cli_database_reconcile",
+          runId: row.id,
+          ...(row.correlation_id === null ? {} : { correlationId: row.correlation_id }),
+        },
+      };
+    },
+  };
+}
+
+export function createLiveOpsCliDatabasePnlStatusProvider(pool, market) {
+  return {
+    async getStatus() {
+      try {
+        const [latestResult, countResult] = await Promise.all([
+          pool.query(`
+            SELECT
+              strategy_id,
+              market,
+              captured_at,
+              equity,
+              realized_pnl,
+              unrealized_pnl,
+              drawdown_bps,
+              payload_json ->> 'sourceFingerprint' AS source_fingerprint,
+              payload_json ->> 'status' AS payload_status
+            FROM pnl_snapshots
+            WHERE market = $1 OR market IS NULL
+            ORDER BY (market = $1) DESC, captured_at DESC
+            LIMIT 1
+          `, [market]),
+          pool.query(`
+            SELECT count(*)::int AS count
+            FROM pnl_snapshots
+            WHERE market = $1 OR market IS NULL
+          `, [market]),
+        ]);
+        const latest = latestResult.rows[0];
+        const snapshotCount = numberRowValue(countResult.rows[0]?.count);
+        if (latest === undefined) {
+          return createLiveOpsCliEmptyPnlStatus("NOT_FOUND", "pnl_snapshot_not_found");
+        }
+        return {
+          readStatus: "OK",
+          latestCapturedAt: toIsoString(latest.captured_at),
+          latestEquityKrw: decimalRowValue(latest.equity),
+          latestRealizedPnlKrw: decimalRowValue(latest.realized_pnl),
+          latestUnrealizedPnlKrw: decimalRowValue(latest.unrealized_pnl),
+          latestDrawdownBps: decimalRowValue(latest.drawdown_bps),
+          latestSource: hasMeaningfulValue(latest.source_fingerprint) ? "pnl_snapshots" : null,
+          latestStatus: latest.payload_status ?? null,
+          snapshotCount,
+          reason: "pnl_snapshot_latest_read",
+        };
+      } catch {
+        // PnL 조회 실패는 private read 전체 예외로 키우지 않고 PnL status 축에서 수동 점검으로 표시한다.
+        return createLiveOpsCliEmptyPnlStatus("UNAVAILABLE", "pnl_snapshot_query_failed");
+      }
+    },
+  };
+}
+
+function createLiveOpsCliEmptyPnlStatus(readStatus, reason) {
+  return {
+    readStatus,
+    latestCapturedAt: null,
+    latestEquityKrw: null,
+    latestRealizedPnlKrw: null,
+    latestUnrealizedPnlKrw: null,
+    latestDrawdownBps: null,
+    latestSource: null,
+    latestStatus: null,
+    snapshotCount: 0,
+    reason,
+  };
+}
+
+export function createLiveOpsCliTelegramDispatcher({ config, env, fetchImpl = fetch }) {
+  const botToken = env.SEEMIRAI_TELEGRAM_BOT_TOKEN ?? env.TELEGRAM_BOT_TOKEN;
+  const chatId = env.SEEMIRAI_TELEGRAM_CHAT_ID ?? env.TELEGRAM_CHAT_ID;
+  if (!hasMeaningfulValue(botToken) || !hasMeaningfulValue(chatId)) {
+    return undefined;
+  }
+  const providerTimeoutMs = Number(config.telegram?.provider_timeout_ms ?? 5000);
+  return {
+    async dispatch(payload) {
+      let deliveredCount = 0;
+      for (const event of payload.events) {
+        // owner chat 전송은 주문/리스크 commit 이후 side effect라 실패를 누적하되 원 실행 결과는 되돌리지 않는다.
+        const delivered = await sendLiveOpsCliTelegramEvent({
+          botToken,
+          chatId,
+          event,
+          market: payload.market,
+          observedAt: payload.observedAt,
+          providerTimeoutMs,
+          fetchImpl,
+        });
+        if (delivered) {
+          deliveredCount += 1;
+        }
+      }
+      const failureCount = payload.events.length - deliveredCount;
+      return {
+        status: failureCount > 0 ? "partial_failure" : "sent",
+        attemptedCount: payload.events.length,
+        deliveredCount,
+        cooldownHitCount: 0,
+        retryPlannedCount: failureCount,
+        failureCount,
+      };
+    },
+  };
+}
+
+async function sendLiveOpsCliTelegramEvent({ botToken, chatId, event, market, observedAt, providerTimeoutMs, fetchImpl }) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), providerTimeoutMs);
+  try {
+    const response = await fetchImpl(`https://api.telegram.org/bot${botToken}/sendMessage`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        chat_id: chatId,
+        text: truncateTelegramText(formatLiveOpsCliTelegramEventMessage({ event, market, observedAt })),
+        disable_web_page_preview: true,
+      }),
+      signal: controller.signal,
+    });
+    if (!response.ok) {
+      return false;
+    }
+    const body = await response.json().catch(() => undefined);
+    return body !== undefined && body !== null && body.ok === true;
+  } catch {
+    return false;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+function formatLiveOpsCliTelegramEventMessage({ event, market, observedAt }) {
+  return [
+    "M23 live 운영 알림",
+    `상태: ${formatLiveOpsCliTelegramEventKind(event.eventKind)}`,
+    `마켓: ${event.market ?? market}`,
+    `시각: ${event.occurredAt ?? observedAt}`,
+    `요약: ${event.safeSummary ?? "상태 evidence를 확인하세요."}`,
+    "추적 정보:",
+    `- event_kind: ${event.eventKind}`,
+    ...(event.evidenceId === undefined ? [] : [`- evidence_id: ${event.evidenceId}`]),
+    ...(event.orderId === undefined ? [] : [`- order_id: ${event.orderId}`]),
+    ...(event.brokerOrderId === undefined ? [] : [`- broker_order_id: ${event.brokerOrderId}`]),
+    ...(event.idempotencyKey === undefined ? [] : [`- idempotency_key: ${event.idempotencyKey}`]),
+  ].join("\n");
+}
+
+function formatLiveOpsCliTelegramEventKind(eventKind) {
+  switch (eventKind) {
+    case "TELEGRAM_CONNECTION_READY":
+      return "Telegram 알림 채널 준비";
+    case "LIVE_ORDER_CAPABLE_STARTED":
+      return "실주문 가능 경계 진입";
+    case "ORDER_SUBMITTED":
+      return "주문 제출";
+    case "CANCEL_REQUESTED":
+      return "취소 요청";
+    case "CANCEL_CONFIRMED":
+      return "취소 확인";
+    case "RISK_BLOCKED":
+    case "COST_BLOCKED":
+      return "주문 차단";
+    case "RECONCILE_BLOCKED":
+      return "대사 차단";
+    case "MANUAL_REVIEW_REQUIRED":
+      return "수동 점검 필요";
+    default:
+      return "운영 상태 변경";
+  }
+}
+
+function truncateTelegramText(value) {
+  const characters = Array.from(value);
+  if (characters.length <= 4096) {
+    return value;
+  }
+  return `${characters.slice(0, 4080).join("")}\n... [truncated]`;
+}
+
+function mapLiveOpsCliReconcileResult(status, mismatchCount) {
+  switch (status) {
+    case "COMPLETED":
+      return mismatchCount > 0 ? "MISMATCH_DETECTED" : "SUCCESS";
+    case "FAILED":
+      return "FAILED";
+    case "RUNNING":
+      return "UNAVAILABLE";
+    case "MANUAL_REVIEW_REQUIRED":
+      return "MISMATCH_DETECTED";
+    default:
+      return "UNAVAILABLE";
+  }
+}
+
+function mapLiveOpsCliBalanceStatus(balanceSnapshotCount, mismatchTypes) {
+  if (mismatchTypes.includes("BALANCE_LOCK_MISMATCH")) {
+    return "STALE";
+  }
+  return balanceSnapshotCount > 0 ? "OK" : "UNAVAILABLE";
+}
+
+function decimalRowValue(value) {
+  if (value === null || value === undefined) {
+    return null;
+  }
+  return String(value);
+}
+
+function numberRowValue(value) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function toIsoString(value) {
+  if (value === null || value === undefined) {
+    return null;
+  }
+  return value instanceof Date ? value.toISOString() : new Date(value).toISOString();
 }
 
 function findSecretLikeKeys(value, currentPath = "$") {

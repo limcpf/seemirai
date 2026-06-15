@@ -1052,6 +1052,223 @@ console.log(JSON.stringify({
     expect(output.failedTui).not.toContain("Telegram alert: 후속 연결 대기");
   });
 
+  it("production provider wiring은 DB reconcile/private read와 Telegram dispatcher를 실제 경계에 연결한다", () => {
+    const result = spawnSync(
+      process.execPath,
+      [
+        "--input-type=module",
+        "--eval",
+        `
+import {
+  createLiveOpsCliDatabasePrivateReadProvider,
+  createLiveOpsCliDatabasePnlStatusProvider,
+  createLiveOpsCliDatabaseReconcileStatusProvider,
+  createLiveOpsCliTelegramDispatcher,
+} from "./scripts/run-live-ops-support.mjs";
+
+const observedAt = "2026-06-15T01:00:00.000Z";
+const queries = [];
+const pool = {
+  async query(sql, params = []) {
+    const text = sql.replace(/\\s+/gu, " ").trim();
+    queries.push({ text, params });
+    if (text.includes("FROM live_reconcile_exchange_order_snapshots") && text.includes("exchange_order_id")) {
+      return {
+        rows: [{
+          exchange_order_id: "upbit-order-1",
+          identifier: "ops-idem-1",
+          market: params[0],
+          side: "BUY",
+          status: "OPEN",
+          requested_quantity: "0.0001",
+          remaining_quantity: "0.00005",
+          requested_price: "100000000",
+          captured_at: observedAt,
+        }],
+      };
+    }
+    if (text.includes("FROM live_reconcile_balance_snapshots") && text.includes("SELECT currency")) {
+      return {
+        rows: [{
+          currency: "KRW",
+          available: "93000",
+          locked: "7000",
+          total: "100000",
+          captured_at: observedAt,
+        }],
+      };
+    }
+    if (text.includes("FROM live_reconcile_runs") && text.includes("mismatch_count")) {
+      return {
+        rows: [{
+          id: "run-1",
+          status: "COMPLETED",
+          started_at: observedAt,
+          finished_at: observedAt,
+          correlation_id: "corr-1",
+          balance_snapshot_count: 1,
+          exchange_order_snapshot_count: 1,
+          open_order_count: 1,
+          mismatch_count: 0,
+          mismatch_types: [],
+        }],
+      };
+    }
+    if (text.includes("FROM pnl_snapshots") && text.includes("LIMIT 1")) {
+      return {
+        rows: [{
+          strategy_id: "live_ops",
+          market: params[0],
+          captured_at: observedAt,
+          equity: "100000",
+          realized_pnl: "1200",
+          unrealized_pnl: "-300",
+          drawdown_bps: "5",
+          source_fingerprint: "pnl-snapshot-1",
+          payload_status: "COMPLETE",
+        }],
+      };
+    }
+    if (text.includes("count(*)::int AS count") && text.includes("FROM pnl_snapshots")) {
+      return { rows: [{ count: 3 }] };
+    }
+    throw new Error(\`unexpected query: \${text}\`);
+  },
+};
+
+const privateReadProvider = createLiveOpsCliDatabasePrivateReadProvider(pool);
+const reconcileStatusProvider = createLiveOpsCliDatabaseReconcileStatusProvider(pool);
+const pnlStatusProvider = createLiveOpsCliDatabasePnlStatusProvider(pool, "KRW-BTC");
+const openOrders = await privateReadProvider.listOpenOrders("KRW-BTC");
+const balances = await privateReadProvider.getBalances();
+const reconcile = await reconcileStatusProvider.getReconcileStatus();
+const pnl = await pnlStatusProvider.getStatus();
+
+const fetchCalls = [];
+const telegramDispatcher = createLiveOpsCliTelegramDispatcher({
+  config: { telegram: { provider_timeout_ms: 1000 } },
+  env: {
+    SEEMIRAI_TELEGRAM_BOT_TOKEN: "fake-telegram-token",
+    SEEMIRAI_TELEGRAM_CHAT_ID: "owner-chat-1",
+  },
+  async fetchImpl(url, options) {
+    fetchCalls.push({
+      urlIncludesToken: String(url).includes("fake-telegram-token"),
+      method: options.method,
+      body: JSON.parse(options.body),
+    });
+    return {
+      ok: true,
+      async json() {
+        return { ok: true };
+      },
+    };
+  },
+});
+const telegram = await telegramDispatcher.dispatch({
+  market: "KRW-BTC",
+  observedAt,
+  events: [{
+    eventKind: "ORDER_SUBMITTED",
+    market: "KRW-BTC",
+    occurredAt: observedAt,
+    safeSummary: "주문 제출 evidence가 확정되었습니다.",
+    orderId: "ops-attempt-1",
+    brokerOrderId: "upbit-order-1",
+    idempotencyKey: "ops-idem-1",
+  }],
+});
+const missingTelegramDispatcher = createLiveOpsCliTelegramDispatcher({
+  config: {},
+  env: {},
+  async fetchImpl() {
+    throw new Error("unexpected-fetch");
+  },
+});
+
+console.log(JSON.stringify({
+  openOrders,
+  balances,
+  reconcile,
+  pnl,
+  telegram,
+  missingTelegramDispatcher: missingTelegramDispatcher === undefined,
+  fetchCall: fetchCalls[0],
+  queryCount: queries.length,
+}));
+        `,
+      ],
+      {
+        cwd: process.cwd(),
+        encoding: "utf8",
+        env: minimalEnv(),
+      },
+    );
+
+    expect(result.status).toBe(0);
+    expect(result.stderr).toBe("");
+    const output = JSON.parse(result.stdout) as {
+      openOrders: Array<{
+        brokerOrderId: string;
+        idempotencyKey: string;
+        exchangeId: string;
+        market: string;
+        remainingQuantity: string;
+      }>;
+      balances: { exchangeId: string; capturedAt: string; balances: Array<{ currency: string; total: string }> };
+      reconcile: { result: string; mismatchCount: number; openOrderCount: number; balanceStatus: string; actionRequired: string };
+      pnl: { readStatus: string; latestRealizedPnlKrw: string; latestUnrealizedPnlKrw: string; snapshotCount: number };
+      telegram: { status: string; attemptedCount: number; deliveredCount: number; failureCount: number };
+      missingTelegramDispatcher: boolean;
+      fetchCall: { urlIncludesToken: boolean; method: string; body: { chat_id: string; text: string } };
+      queryCount: number;
+    };
+
+    expect(output.openOrders).toEqual([expect.objectContaining({
+      brokerOrderId: "upbit-order-1",
+      idempotencyKey: "ops-idem-1",
+      exchangeId: "upbit_krw_spot",
+      market: "KRW-BTC",
+      remainingQuantity: "0.00005",
+    })]);
+    expect(output.balances).toMatchObject({
+      exchangeId: "upbit_krw_spot",
+      capturedAt: "2026-06-15T01:00:00.000Z",
+      balances: [expect.objectContaining({ currency: "KRW", total: "100000" })],
+    });
+    expect(output.reconcile).toMatchObject({
+      result: "SUCCESS",
+      mismatchCount: 0,
+      openOrderCount: 1,
+      balanceStatus: "OK",
+      actionRequired: "없음",
+    });
+    expect(output.pnl).toMatchObject({
+      readStatus: "OK",
+      latestRealizedPnlKrw: "1200",
+      latestUnrealizedPnlKrw: "-300",
+      snapshotCount: 3,
+    });
+    expect(output.telegram).toMatchObject({
+      status: "sent",
+      attemptedCount: 1,
+      deliveredCount: 1,
+      failureCount: 0,
+    });
+    expect(output.fetchCall).toMatchObject({
+      urlIncludesToken: true,
+      method: "POST",
+      body: expect.objectContaining({
+        chat_id: "owner-chat-1",
+      }),
+    });
+    expect(output.fetchCall.body.text).toContain("주문 제출");
+    expect(output.fetchCall.body.text).toContain("추적 정보");
+    expect(output.missingTelegramDispatcher).toBe(true);
+    expect(output.queryCount).toBeGreaterThanOrEqual(5);
+    expect(result.stdout).not.toContain("fake-telegram-token");
+  });
+
   it("live:ops:tui attach는 같은 dashboard를 attach 대상으로 렌더링한다", () => {
     const result = spawnSync(
       process.execPath,
@@ -1085,7 +1302,7 @@ console.log(JSON.stringify({
     expect(result.stdout).not.toContain("fake-local-control-token");
   });
 
-  it("production live ops closeout source scan은 private order/Telegram 직접 호출 경계가 없음을 확인한다", async () => {
+  it("production live ops closeout source scan은 private order 직접 호출과 Telegram dispatcher 위치를 확인한다", async () => {
     const productionFiles = [
       "scripts/run-live-ops-support.mjs",
       "scripts/run-live-ops.mjs",
@@ -1099,23 +1316,27 @@ console.log(JSON.stringify({
       "src/runtime/live-ops-telegram-alerts.ts",
       "src/runtime/live-ops-telegram-alerts/plan.ts",
     ];
-    const forbiddenPatterns = [
+    const forbiddenPrivateOrderPatterns = [
       /POST\s+\/v1\/orders/u,
       /DELETE\s+\/v1\/order/u,
       /Authorization/u,
       /Bearer/u,
       /UpbitPrivateRestClient/u,
       /createGuardedUpbitLiveBrokerRuntime/u,
-      /sendMessage/u,
-      /fetch\s*\(/u,
     ];
 
     for (const filePath of productionFiles) {
       const content = await readFile(path.join(process.cwd(), filePath), "utf8");
-      for (const forbiddenPattern of forbiddenPatterns) {
+      for (const forbiddenPattern of forbiddenPrivateOrderPatterns) {
         expect(content, `${filePath} must not match ${forbiddenPattern.source}`).not.toMatch(forbiddenPattern);
       }
+      if (filePath !== "scripts/run-live-ops-support.mjs") {
+        expect(content, `${filePath} must not dispatch Telegram directly`).not.toMatch(/sendMessage/u);
+      }
     }
+    const supportContent = await readFile(path.join(process.cwd(), "scripts/run-live-ops-support.mjs"), "utf8");
+    expect(supportContent).toContain("createLiveOpsCliTelegramDispatcher");
+    expect(supportContent).toContain("sendMessage");
   });
 
   it("Upbit public provider boot helper는 공개 구독과 universe/stale guard를 검증한다", () => {
