@@ -833,6 +833,25 @@ const directInvalidMarketResult = await createLiveOpsCliEntryRuntime({
   },
   budgetReservation,
 }).submitEntryCandidate(directInvalidMarketRequest);
+const directMismatchNotionalRequest = createRuntimeRequest();
+directMismatchNotionalRequest.candidate = {
+  ...directMismatchNotionalRequest.candidate,
+  requestedPrice: "200000000",
+  requestedQuantity: "0.0001",
+  requestedNotional: "10000",
+};
+const submittedWithMismatchNotional = [];
+const directMismatchNotionalResult = await createLiveOpsCliEntryRuntime({
+  broker: {
+    async submitOrder(submission) {
+      submittedWithMismatchNotional.push(submission);
+      return {
+        brokerOrderId: "unexpected-mismatch-notional-order",
+      };
+    },
+  },
+  budgetReservation,
+}).submitEntryCandidate(directMismatchNotionalRequest);
 const strategyDecisionKey = "live_ops_fixture_strategy:upbit_krw_spot:KRW-BTC:BUY:2026-06-15T00:00:00.000Z";
 const strategyKeyIntent = {
   ...intent,
@@ -847,6 +866,52 @@ strategyKeyIntent.riskApproval = {
   ...intent.riskApproval,
   order_intent: orderIntentEvidence(strategyKeyIntent),
 };
+const submittedWithStrategyWrapper = [];
+const strategyWrapperReservations = [];
+const strategyKeyWrapperSummary = await evaluateLiveOpsCliLiveExecution({
+  config,
+  fixtureSmoke: false,
+  analysisDecision,
+  marketData: {
+    ready: true,
+    latestHeartbeatAt: observedAt,
+  },
+  env: {
+    SEEMIRAI_UPBIT_ACCESS_KEY: "fake-access-key",
+    SEEMIRAI_UPBIT_SECRET_KEY: "fake-secret-key",
+    SEEMIRAI_UPBIT_KEY_SCOPE: "자산조회,주문조회,주문하기",
+    SEEMIRAI_UPBIT_KEY_SCOPE_EVIDENCE_ID: "scope-evidence",
+  },
+  orderIntents: [strategyKeyIntent],
+  entryRuntime: createLiveOpsCliEntryRuntime({
+    broker: {
+      async submitOrder(submission) {
+        submittedWithStrategyWrapper.push(submission);
+        return {
+          brokerOrderId: "strategy-wrapper-live-order-001",
+        };
+      },
+    },
+    budgetReservation: {
+      async reserve(request) {
+        strategyWrapperReservations.push(request);
+        return {
+          reserved: true,
+          reservation: {
+            reservationId: "strategy-wrapper-reservation-001",
+            attemptId: request.attemptId,
+            idempotencyKey: request.idempotencyKey,
+            reservedNotionalKrw: request.requestedNotionalKrw,
+            budgetSnapshot: request.budgetSnapshot,
+            reservedAt: observedAt,
+          },
+        };
+      },
+    },
+  }),
+  executionStatus,
+  postSubmitReadiness,
+});
 const runtimeRequests = [];
 const strategyKeySummary = await evaluateLiveOpsCliLiveExecution({
   config,
@@ -886,6 +951,24 @@ const strategyKeySummary = await evaluateLiveOpsCliLiveExecution({
       };
     },
   },
+  executionStatus,
+  postSubmitReadiness,
+});
+const missingRuntimeSummary = await evaluateLiveOpsCliLiveExecution({
+  config,
+  fixtureSmoke: false,
+  analysisDecision,
+  marketData: {
+    ready: true,
+    latestHeartbeatAt: observedAt,
+  },
+  env: {
+    SEEMIRAI_UPBIT_ACCESS_KEY: "fake-access-key",
+    SEEMIRAI_UPBIT_SECRET_KEY: "fake-secret-key",
+    SEEMIRAI_UPBIT_KEY_SCOPE: "자산조회,주문조회,주문하기",
+    SEEMIRAI_UPBIT_KEY_SCOPE_EVIDENCE_ID: "scope-evidence",
+  },
+  orderIntents: [intent],
   executionStatus,
   postSubmitReadiness,
 });
@@ -933,8 +1016,14 @@ console.log(JSON.stringify({
   submittedWithDirectKillSwitch,
   directInvalidMarketResult,
   submittedWithInvalidMarket,
+  directMismatchNotionalResult,
+  submittedWithMismatchNotional,
+  strategyKeyWrapperSummary,
+  submittedWithStrategyWrapper,
+  strategyWrapperReservations,
   strategyKeySummary,
   runtimeRequests,
+  missingRuntimeSummary,
   topLevelSubmittedBlocked,
   topLevelIdleBlocked,
 }));
@@ -1020,6 +1109,24 @@ console.log(JSON.stringify({
         violations: string[];
       };
       submittedWithInvalidMarket: unknown[];
+      directMismatchNotionalResult: {
+        status: string;
+        violations: string[];
+      };
+      submittedWithMismatchNotional: unknown[];
+      strategyKeyWrapperSummary: {
+        status: string;
+        idempotencyKey: string;
+        submittedOrderCount: number;
+      };
+      submittedWithStrategyWrapper: Array<{
+        intent: {
+          idempotencyKey: string;
+        };
+      }>;
+      strategyWrapperReservations: Array<{
+        idempotencyKey: string;
+      }>;
       strategyKeySummary: {
         status: string;
         attemptId: string;
@@ -1039,6 +1146,12 @@ console.log(JSON.stringify({
           };
         };
       }>;
+      missingRuntimeSummary: {
+        status: string;
+        attemptedOrderCount: number;
+        submittedOrderCount: number;
+        checks: Array<{ code: string }>;
+      };
       topLevelSubmittedBlocked: {
         status: string;
         liveOrderCapable: boolean;
@@ -1130,6 +1243,20 @@ console.log(JSON.stringify({
       violations: ["execution_runtime_guard_blocked"],
     });
     expect(output.submittedWithInvalidMarket).toHaveLength(0);
+    expect(output.directMismatchNotionalResult).toMatchObject({
+      status: "BLOCKED",
+      violations: ["execution_runtime_guard_blocked"],
+    });
+    expect(output.submittedWithMismatchNotional).toHaveLength(0);
+    expect(output.strategyKeyWrapperSummary).toMatchObject({
+      status: "submitted",
+      submittedOrderCount: 1,
+    });
+    expect(output.strategyKeyWrapperSummary.idempotencyKey).toMatch(/^ops-[a-f0-9]{26}$/u);
+    expect(output.submittedWithStrategyWrapper).toHaveLength(1);
+    expect(output.submittedWithStrategyWrapper[0]?.intent.idempotencyKey).toBe(output.strategyKeyWrapperSummary.idempotencyKey);
+    expect(output.strategyWrapperReservations).toHaveLength(1);
+    expect(output.strategyWrapperReservations[0]?.idempotencyKey).toBe(output.strategyKeyWrapperSummary.idempotencyKey);
     expect(output.strategyKeySummary).toMatchObject({
       status: "submitted",
     });
@@ -1153,6 +1280,12 @@ console.log(JSON.stringify({
     expect(output.runtimeRequests[0]?.candidate.metadata).toMatchObject({
       decision_idempotency_key: "live_ops_fixture_strategy:upbit_krw_spot:KRW-BTC:BUY:2026-06-15T00:00:00.000Z",
     });
+    expect(output.missingRuntimeSummary).toMatchObject({
+      status: "blocked",
+      attemptedOrderCount: 0,
+      submittedOrderCount: 0,
+    });
+    expect(output.missingRuntimeSummary.checks.map((check) => check.code)).toContain("live_ops_entry_runtime_missing");
     expect(output.topLevelSubmittedBlocked).toMatchObject({
       status: "blocked",
       liveOrderCapable: true,

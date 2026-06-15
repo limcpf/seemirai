@@ -782,7 +782,30 @@ export async function evaluateLiveOpsCliLiveExecution({
   }
 
   const request = createLiveOpsCliEntryRuntimeRequest({ config, marketData, intent, observedAt, executionStatus });
-  const runtime = entryRuntime ?? createLiveOpsCliMissingEntryRuntime();
+  if (entryRuntime === undefined) {
+    // runtime wiring이 없으면 reservation/broker side effect가 없으므로 불확실 제출이 아니라 설정 차단으로 닫는다.
+    return buildLiveOpsCliLiveExecutionSummary({
+      status: "blocked",
+      ready: false,
+      liveOrderCapable: false,
+      market,
+      observedAt,
+      orderIntentCount: intents.length,
+      attemptedOrderCount: 0,
+      submittedOrderCount: 0,
+      brokerGuard,
+      statusLabel: "runtime 미연결",
+      message: "live autonomous entry runtime이 연결되지 않아 주문 후보를 제출하지 않았습니다.",
+      action: "budget reservation과 broker runtime wiring을 연결한 뒤 다시 실행하세요.",
+      checks: [
+        okLiveExecutionCheck("analysis_decision", "analysis/decision summary를 확인했습니다.", "live_ops_analysis_ready"),
+        okLiveExecutionCheck("order_intent", "단일 LIMIT + post-only 주문 후보를 확인했습니다.", "live_ops_order_intent_ready"),
+        blockedLiveExecutionCheck("entry_runtime", "live autonomous entry runtime이 연결되지 않았습니다.", "live_ops_entry_runtime_missing"),
+      ],
+    });
+  }
+
+  const runtime = entryRuntime;
   let attempt;
   try {
     // 이 호출이 예산 reservation과 UpbitLiveBroker 제출로 이어질 수 있는 유일한 경계다.
@@ -991,7 +1014,7 @@ function isLiveOpsCliEntryRuntimeRequestEvidenceReady(request) {
     requestedQuantity: request.candidate?.requestedQuantity,
     requestedNotional: request.candidate?.requestedNotional,
     requestedPrice: request.candidate?.requestedPrice,
-    idempotencyKey: request.idempotencyKey,
+    idempotencyKey: request.candidate?.metadata?.decision_idempotency_key ?? request.idempotencyKey,
     metadata: {
       expected_loss_bps_of_equity: request.candidate?.expectedLossBpsOfEquity,
     },
@@ -1435,8 +1458,17 @@ function collectLiveOpsCliEntryRuntimeGuardViolations(request) {
   if (config?.max_order_krw !== "10000") {
     violations.push("live ops wrapper 단일 주문 상한은 10000 KRW여야 합니다");
   }
-  if (isPositiveDecimalString(candidate?.requestedNotional) && new Decimal(candidate.requestedNotional).gt(new Decimal(config?.max_order_krw ?? "0"))) {
-    violations.push("live ops wrapper 후보가 단일 주문 상한을 초과했습니다");
+  if (!isPositiveDecimalString(candidate?.requestedPrice) || !isPositiveDecimalString(candidate?.requestedQuantity) || !isPositiveDecimalString(candidate?.requestedNotional)) {
+    violations.push("live ops wrapper 후보 가격, 수량, 주문 금액은 양수 decimal이어야 합니다");
+  } else {
+    const actualNotional = new Decimal(candidate.requestedPrice).mul(candidate.requestedQuantity);
+    const requestedNotional = new Decimal(candidate.requestedNotional);
+    if (!actualNotional.equals(requestedNotional)) {
+      violations.push("live ops wrapper 후보 requestedNotional은 가격 * 수량과 같아야 합니다");
+    }
+    if (actualNotional.gt(new Decimal(config?.max_order_krw ?? "0"))) {
+      violations.push("live ops wrapper 후보 실제 주문 금액이 단일 주문 상한을 초과했습니다");
+    }
   }
   if (!isLiveOpsCliPostOnlyLimitIntent({
     orderType: candidate?.orderType,
