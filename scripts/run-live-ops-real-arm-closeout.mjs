@@ -16,7 +16,7 @@ const expectedOrderType = "LIMIT";
 const expectedTimeInForce = "POST_ONLY";
 const minRequestedNotionalKrw = 5_000;
 const maxRequestedNotionalKrw = 10_000;
-const maxArtifactEvidenceDepth = 8;
+const maxArtifactEvidenceDepth = 32;
 const invocationCwd = process.cwd();
 const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const requiredKeyScopes = ["자산조회", "주문조회", "주문하기"];
@@ -119,6 +119,8 @@ const disallowedRipgrepLongOptions = new Set([
   "--files-with-matches",
   "--files-without-match",
   "--fixed-strings",
+  "--count",
+  "--count-matches",
   "--engine",
   "--ignore",
   "--ignore-file",
@@ -143,7 +145,7 @@ const disallowedRipgrepLongOptions = new Set([
   "--type-not",
   "--word-regexp",
 ]);
-const disallowedRipgrepShortOptions = new Set(["F", "I", "L", "M", "N", "P", "T", "d", "f", "l", "m", "q", "r", "t", "v", "w", "x"]);
+const disallowedRipgrepShortOptions = new Set(["F", "I", "L", "M", "N", "P", "T", "c", "d", "f", "l", "m", "q", "r", "t", "v", "w", "x"]);
 const ripgrepOptionsWithNextValue = new Set([
   "--engine",
   "--file",
@@ -184,7 +186,9 @@ const sensitivePatterns = [
   { label: "generic token json field", pattern: /"token"\s*:\s*"(?!\s*(?:<redacted>|redacted|\[redacted\])\s*")[^"]{8,}"/i },
   { label: "telegram bot token url", pattern: /https:\/\/api\.telegram\.org\/bot(?!<redacted>|redacted|\[redacted\])[^/\s"']{8,}(?:\/[A-Za-z]+)?/i },
   { label: "telegram bot token url placeholder tail", pattern: /https:\/\/api\.telegram\.org\/bot(?:<redacted>|redacted|\[redacted\])(?=[^/\s"'])[^/\s"']*/i },
+  { label: "database url json field", pattern: /"(?:databaseUrl|database_url|seemirai_database_url)"\s*:\s*"(?!\s*(?:<redacted>|redacted|\[redacted\])\s*")[^"]{8,}"/i },
   { label: "database password json field", pattern: /"(?:databasePassword|database_password|dbPassword|db_password|pgPassword|pg_password|password)"\s*:\s*"(?!\s*(?:<redacted>|redacted|\[redacted\])\s*")[^"]{8,}"/i },
+  { label: "credential decoded field", pattern: /\b(?:access_key|accessKey|secret_key|secretKey|telegram_bot_token|botToken|tuiControlToken|tui_control_token|seemirai(?:Upbit)?(?:AccessKey|SecretKey|TelegramBotToken|TuiControlToken)|databaseUrl|database_url|databasePassword|database_password|dbPassword|db_password|pgPassword|pg_password|password)\s*:\s*(?!["']?(?:<redacted>|redacted|\[redacted\])["']?(?:\s|$|[,}\]]))[^\r\n]{8,}/i },
   { label: "access key env assignment", pattern: /\b(?:SEEMIRAI_)?(?:UPBIT_)?ACCESS_KEY\s*[:=]\s*(?!(?:["']?(?:<redacted>|redacted|\[redacted\])["']?)(?:$|[\r\n,}]))[^\r\n,}]{8,}/i },
   { label: "secret key env assignment", pattern: /\b(?:SEEMIRAI_)?(?:UPBIT_)?SECRET_KEY\s*[:=]\s*(?!(?:["']?(?:<redacted>|redacted|\[redacted\])["']?)(?:$|[\r\n,}]))[^\r\n,}]{8,}/i },
   { label: "telegram token env assignment", pattern: /\b(?:SEEMIRAI_)?TELEGRAM_BOT_TOKEN\s*[:=]\s*(?!(?:["']?(?:<redacted>|redacted|\[redacted\])["']?)(?:$|[\r\n,}]))[^\r\n,}]{8,}/i },
@@ -1574,13 +1578,13 @@ function createSourceScanCommandEvidence(commands) {
     const escapedAlternationPatterns = searchPatterns.filter((pattern) => pattern.includes("\\|"));
     const unsupportedRegexPatterns = searchPatterns.filter(hasUnsupportedRipgrepRegex);
     const coveredUnsafePatterns = requiredUnsafeSourceScanPatterns
-      .filter((requirement) => searchPatterns.some((pattern) => requirement.pattern.test(pattern)))
+      .filter((requirement) => searchPatterns.some((pattern) => searchPatternCoversRequiredPattern(pattern, requirement)))
       .map((requirement) => requirement.label);
     const coveredSecretPatterns = requiredSecretSourceScanPatterns
-      .filter((requirement) => searchPatterns.some((pattern) => requirement.pattern.test(pattern)))
+      .filter((requirement) => searchPatterns.some((pattern) => searchPatternCoversRequiredPattern(pattern, requirement)))
       .map((requirement) => requirement.label);
     return {
-      command,
+      tokenCount: tokens.length,
       usesRipgrep,
       hasLineNumber,
       hasNoConfig,
@@ -1624,8 +1628,43 @@ function createSourceScanCommandEvidence(commands) {
     hasSecretBoundaryScan,
     missingUnsafePatterns,
     missingSecretPatterns,
-    commandChecks,
+    commandChecks: commandChecks.map(summarizeSourceScanCommandCheck),
   };
+}
+
+function searchPatternCoversRequiredPattern(searchPattern, requirement) {
+  const requiredTerm = requirement.pattern.source;
+  return new RegExp(`(?:^|[^\\p{L}\\p{N}_])${escapeRegExp(requiredTerm)}(?:$|[^\\p{L}\\p{N}_])`, "u").test(searchPattern);
+}
+
+function summarizeSourceScanCommandCheck(check) {
+  return {
+    command: "[redacted-command]",
+    tokenCount: check.tokenCount,
+    usesRipgrep: check.usesRipgrep,
+    hasLineNumber: check.hasLineNumber,
+    hasNoConfig: check.hasNoConfig,
+    hasFullTraversal: check.hasFullTraversal,
+    shellOperators: check.shellOperators,
+    scansExpectedPaths: check.scansExpectedPaths,
+    missingSourcePaths: requiredSourceScanPaths.filter((scanPath) => !check.operands.includes(scanPath)),
+    searchPatternCount: check.searchPatterns.length,
+    operandCount: check.operands.length,
+    excludedSourceGlobCount: check.excludedSourceGlobs.length,
+    disallowedOptionNames: collectUnique(check.disallowedOptions.map(summarizeRipgrepOptionName)),
+    escapedAlternationPatternCount: check.escapedAlternationPatterns.length,
+    unsupportedRegexPatternCount: check.unsupportedRegexPatterns.length,
+    coveredUnsafePatterns: check.coveredUnsafePatterns,
+    coveredSecretPatterns: check.coveredSecretPatterns,
+  };
+}
+
+function summarizeRipgrepOptionName(option) {
+  if (option.startsWith("--")) {
+    return option.split("=")[0];
+  }
+  const disallowedFlag = [...option.slice(1)].find((flag) => disallowedRipgrepShortOptions.has(flag));
+  return disallowedFlag === undefined ? "[redacted-option]" : `-${disallowedFlag}`;
 }
 
 function collectExcludedSourceGlobs(tokens) {
@@ -1971,7 +2010,8 @@ function createArtifactManifestConflicts(artifactFiles, manifest, run, counters)
 
 function isFailureArtifactStatus(value) {
   return /^(?:blocked|error|fail|failed|failure|partial|skipped)(?:$|[_:-])/iu.test(value)
-    || /manual[_:-]?review/iu.test(value);
+    || /manual[_:-]?review/iu.test(value)
+    || /timeout/iu.test(value);
 }
 
 function isCompleteArtifactCloseoutEvidence(record, run) {
@@ -2078,7 +2118,7 @@ function artifactFieldAliases(field) {
 function collectArtifactEvidenceRecords(value, prefix = "$", depth = 0) {
   // 실제 운영 artifact safe summary는 wrapper별 nesting이 달라져도 실패 closeout evidence를 놓치면 안 된다.
   if (depth > maxArtifactEvidenceDepth) {
-    return [];
+    return [{ path: prefix, record: { status: "ERROR_DEPTH_LIMIT_EXCEEDED" } }];
   }
   if (Array.isArray(value)) {
     return value.flatMap((item, index) => collectArtifactEvidenceRecords(item, `${prefix}[${index}]`, depth + 1));
@@ -2266,6 +2306,10 @@ function hasMeaningfulEnvValue(value) {
 
 function collectUnique(values) {
   return [...new Set(values)];
+}
+
+function escapeRegExp(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
 }
 
 function splitCommandTokens(command) {

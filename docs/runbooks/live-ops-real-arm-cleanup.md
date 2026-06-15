@@ -111,11 +111,13 @@ root 기준으로 판정한다.
 명령으로 repository root에서 `src scripts config docs` 전체 범위의 금지 주문 경계 전체(`ord_type`, market/best 주문, 출금/입금,
 leverage/futures/margin)와 secret/raw payload 후보 전체(access/secret key, 대문자 `ACCESS_KEY`/`SECRET_KEY`,
 Authorization/Bearer, JWT, Telegram token, TUI control token, DB URL/password, raw provider/order payload)를 스캔한 증거를 포함해야 한다.
-`withdraw`/`출금`, `deposit`/`입금`, `access_key`/`accessKey`처럼 대체 표기가 있는 검색어는 각 표기를 개별로 포함해야 한다. source/security scan 명령은
+`withdraw`/`출금`, `deposit`/`입금`, `access_key`/`accessKey`처럼 대체 표기가 있는 검색어는 각 표기를 개별로 포함해야 하며,
+`xaccess_key`처럼 검색어 앞뒤에 식별자 문자를 붙인 fake term은 coverage로 인정하지 않는다. source/security scan 명령은
 shell의 `RIPGREP_CONFIG_PATH`, `.gitignore`, hidden 기본 필터 영향을 받지 않도록 `--no-config`와 `-uuu` 또는 `--hidden --no-ignore`를 포함해야 한다. `src scripts config docs`는 검색 패턴 문자열이 아니라 `rg` argv의 실제 path operand로 들어가야 하며, `true`,
 `echo rg ...`, 일부 토큰만 확인한 명령, 검색어가 아닌 path operand에 금지 패턴 단어를 붙인 명령,
 `-q`/`--quiet`, `-l`/`--files-without-match`, `--files`, `-F`/`--fixed-strings`, `-f`/`--file`,
-`-P`/`--pcre2`/`--engine=pcre2`, `-w`/`--word-regexp`, `-x`/`--line-regexp`, `-v`/`--invert-match`, `-m`/`--max-count`, `-M`/`--max-columns`,
+`-P`/`--pcre2`/`--engine=pcre2`, `-w`/`--word-regexp`, `-x`/`--line-regexp`, `-v`/`--invert-match`, `-c`/`--count`/`--count-matches`,
+`-m`/`--max-count`, `-M`/`--max-columns`,
 `-d`/`--max-depth`, `-I`/`--no-filename`, `--stop-on-nonmatch`, `--ignore`, `--no-hidden`, `-N`/`--no-line-number`, `-r`/`--replace`, `--type-list`, `--pcre2-version`, `-t`/`--type`, `--type-not`,
 `--iglob`, `--ignore-file`, `--max-filesize`, `--pre`/`--pre-glob`, `-g`/`--glob`
 처럼 출력, 입력, 필수 범위, 정규식 의미를 줄이는 옵션은 인정하지 않는다. source/security scan command에 shell pipe,
@@ -135,11 +137,12 @@ timestamp, 같은 주문 suffix, open exposure 0 evidence가 최소 한 closeout
 `brokerOrderId`/`broker_order_id`, `cancelBrokerOrderId`/`cancel_broker_order_id` alias도 허용한다. 제공된 identifier pair와 broker order id pair는
 각각 누락 없이 같은 suffix로 일치해야 하며, 한 pair가 맞더라도 다른 pair가 충돌하면 같은 주문 chain 증거가 아니다. closeout record의 artifact status는
 `passed`, `success`, `ok`, `completed` 같은 명시적 성공 상태만 허용하며 `skipped`, `blocked`, `partial`은 closeout PASS 증거가 아니다.
-`ERROR_TIMEOUT`, `BLOCKED_BY_RISK`, `MANUAL_REVIEW_REQUIRED`처럼 실패/manual-review prefix에 원인 suffix가 붙은 wrapper status도 artifact-level failure로 본다.
+`TIMEOUT`, `ERROR_TIMEOUT`, `BLOCKED_BY_RISK`, `MANUAL_REVIEW_REQUIRED`처럼 timeout/failure/manual-review status와 prefix에 원인 suffix가 붙은 wrapper status도 artifact-level failure로 본다.
+validator가 안전하게 검사할 수 있는 중첩 depth를 넘은 artifact branch도 조용히 무시하지 않고 실패 evidence로 본다.
 주문 closeout이 아닌 provider/market/Telegram safe summary의 일반 `status` 값은 closeout status로 해석하지 않는다.
 
 `artifactPaths`는 symlink를 따라간 실제 경로도 저장소 밖이어야 하며, secret 원문, raw Authorization/Bearer/JWT, Telegram token URL,
-database password 원문, `database_password`/`db_password`/`pg_password`, `raw_provider_payload`/`rawProviderPayload`/
+database URL/password 원문, `databaseUrl`/`database_url`, `database_password`/`db_password`/`pg_password`, `raw_provider_payload`/`rawProviderPayload`/
 `raw_order_detail`/`rawOrderDetail` 같은 raw payload 필드 또는 문자열 로그 없이 redacted safe summary만 가리켜야 한다.
 JSON credential 값은 `<redacted>`, `redacted`, `[redacted]` 같은 placeholder와 정확히 일치해야 하며, placeholder 뒤에 원문 일부를
 공백, 쉼표, 세미콜론, JSON 조각 형태로 덧붙이면 secret leak으로 본다. env assignment 형태도 placeholder 뒤에 원문이 붙으면 secret leak으로 본다. TUI control token도
@@ -153,8 +156,8 @@ token tail이 붙은 URL도 redacted 값으로 보지 않는다. Bearer/JWT와 r
 evidence가 아니다. `SEEMIRAI_TELEGRAM_BOT_TOKEN` 같은 env 이름 그대로의 JSON field도 secret 후보로 본다. lowercase `bearer`
 token과 `eyJ...` 형태의 prefix 없는 compact JWT도 raw secret 후보로 차단한다. `seemiraiUpbitSecretKey`, `seemiraiTelegramBotToken`처럼
 SEEMIRAI prefix를 camelCase로 쓴 credential JSON field, `upbit-secret-key` 같은 hyphenated credential JSON field, generic `token` JSON field도 raw secret 후보로 차단한다.
-source/security scan이 secret match를 찾은 경우 validator summary에는 match 원문을 다시 쓰지 않고 count, path, line, label 같은
-축약 정보만 남겨야 한다.
+source/security scan command나 match에 secret 후보가 섞인 경우 validator summary에는 command/pattern/match 원문을 다시 쓰지 않고 count, path, line, label 같은
+축약 정보와 redacted marker만 남겨야 한다.
 
 ## Closeout 판정
 
