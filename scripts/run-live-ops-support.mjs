@@ -1520,6 +1520,9 @@ function collectLiveOpsCliEntryRuntimeGuardViolations(request) {
       violations.push("live ops wrapper 후보 실제 주문 금액이 단일 주문 상한을 초과했습니다");
     }
   }
+  // wrapper를 직접 호출해도 실제 entry runtime의 손실/가격 preflight를 우회하지 못하게 같은 snapshot으로 재검증한다.
+  appendLiveOpsCliEntryRuntimeLossGuardViolations(violations, request);
+  appendLiveOpsCliEntryRuntimePriceDeviationGuardViolations(violations, request);
   if (!isLiveOpsCliPostOnlyLimitIntent({
     orderType: candidate?.orderType,
     postOnly: candidate?.postOnly,
@@ -1533,6 +1536,45 @@ function collectLiveOpsCliEntryRuntimeGuardViolations(request) {
   return violations;
 }
 
+function appendLiveOpsCliEntryRuntimeLossGuardViolations(violations, request) {
+  const lossSnapshot = request?.lossSnapshot;
+  const config = request?.config;
+  if (!isLiveOpsCliLossSnapshot(lossSnapshot)) {
+    violations.push("live ops wrapper에는 realized loss snapshot이 필요합니다");
+    return;
+  }
+  if (!isPositiveDecimalString(config?.max_daily_loss_krw) || !isPositiveDecimalString(config?.max_weekly_loss_krw)) {
+    violations.push("live ops wrapper 손실 한도 config가 필요합니다");
+    return;
+  }
+
+  const dailyLoss = new Decimal(lossSnapshot.dailyRealizedLossKrw);
+  const weeklyLoss = new Decimal(lossSnapshot.weeklyRealizedLossKrw);
+  if (dailyLoss.gt(new Decimal(config.max_daily_loss_krw))) {
+    violations.push("live ops wrapper 일일 손실 한도를 초과했습니다");
+  }
+  if (weeklyLoss.gt(new Decimal(config.max_weekly_loss_krw))) {
+    violations.push("live ops wrapper 주간 손실 한도를 초과했습니다");
+  }
+}
+
+function appendLiveOpsCliEntryRuntimePriceDeviationGuardViolations(violations, request) {
+  const candidate = request?.candidate;
+  const config = request?.config;
+  if (!isPositiveDecimalString(candidate?.requestedPrice) || !isPositiveDecimalString(candidate?.referencePrice) || !isNonNegativeDecimalString(config?.max_price_deviation_bps)) {
+    violations.push("live ops wrapper 기준가와 가격 이탈 한도 config가 필요합니다");
+    return;
+  }
+
+  const requestedPrice = new Decimal(candidate.requestedPrice);
+  const referencePrice = new Decimal(candidate.referencePrice);
+  const maxDeviationBps = new Decimal(config.max_price_deviation_bps);
+  const deviationBps = requestedPrice.minus(referencePrice).abs().div(referencePrice).mul(10_000);
+  if (deviationBps.gt(maxDeviationBps)) {
+    violations.push("live ops wrapper 후보 가격 이탈이 허용 bps를 초과했습니다");
+  }
+}
+
 function isLiveOpsCliBudgetReservationEvidence(result, request) {
   if (result?.reserved !== true || !isNonEmptyRecord(result.reservation)) {
     return false;
@@ -1542,7 +1584,7 @@ function isLiveOpsCliBudgetReservationEvidence(result, request) {
     hasMeaningfulValue(reservation.reservationId) &&
     reservation.attemptId === request.idempotencyKey &&
     reservation.idempotencyKey === request.idempotencyKey &&
-    reservation.reservedNotionalKrw === request.candidate?.requestedNotional &&
+    isDecimalEqual(reservation.reservedNotionalKrw, request.candidate?.requestedNotional) &&
     isNonEmptyRecord(reservation.budgetSnapshot) &&
     hasMeaningfulValue(reservation.reservedAt)
   );

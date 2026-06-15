@@ -896,6 +896,45 @@ const directBelowMinimumNotionalResult = await createLiveOpsCliEntryRuntime({
   },
   budgetReservation,
 }).submitEntryCandidate(directBelowMinimumNotionalRequest);
+const directLossLimitRequest = createRuntimeRequest({
+  lossSnapshot: {
+    dailyRealizedLossKrw: "10001",
+    weeklyRealizedLossKrw: "0",
+    capturedAt: observedAt,
+  },
+});
+const submittedWithLossLimit = [];
+const directLossLimitResult = await createLiveOpsCliEntryRuntime({
+  broker: {
+    async submitOrder(submission) {
+      submittedWithLossLimit.push(submission);
+      return {
+        brokerOrderId: "unexpected-loss-limit-order",
+      };
+    },
+  },
+  budgetReservation,
+}).submitEntryCandidate(directLossLimitRequest);
+const directPriceDeviationRequest = createRuntimeRequest();
+directPriceDeviationRequest.candidate = {
+  ...directPriceDeviationRequest.candidate,
+  requestedPrice: "99000000",
+  referencePrice: "100000000",
+  requestedQuantity: "0.0001",
+  requestedNotional: "9900",
+};
+const submittedWithPriceDeviation = [];
+const directPriceDeviationResult = await createLiveOpsCliEntryRuntime({
+  broker: {
+    async submitOrder(submission) {
+      submittedWithPriceDeviation.push(submission);
+      return {
+        brokerOrderId: "unexpected-price-deviation-order",
+      };
+    },
+  },
+  budgetReservation,
+}).submitEntryCandidate(directPriceDeviationRequest);
 const strategyDecisionKey = "live_ops_fixture_strategy:upbit_krw_spot:KRW-BTC:BUY:2026-06-15T00:00:00.000Z";
 const strategyKeyIntent = {
   ...intent,
@@ -1042,6 +1081,7 @@ decimalIntent.riskApproval = {
   },
 };
 const submittedWithDecimalEvidence = [];
+const normalizedDecimalReservations = [];
 const decimalEvidenceSummary = await evaluateLiveOpsCliLiveExecution({
   config,
   fixtureSmoke: false,
@@ -1066,7 +1106,22 @@ const decimalEvidenceSummary = await evaluateLiveOpsCliLiveExecution({
         };
       },
     },
-    budgetReservation,
+    budgetReservation: {
+      async reserve(request) {
+        normalizedDecimalReservations.push(request);
+        return {
+          reserved: true,
+          reservation: {
+            reservationId: "decimal-reservation-001",
+            attemptId: request.attemptId,
+            idempotencyKey: request.idempotencyKey,
+            reservedNotionalKrw: "10000",
+            budgetSnapshot: request.budgetSnapshot,
+            reservedAt: observedAt,
+          },
+        };
+      },
+    },
   }),
   executionStatus,
   postSubmitReadiness,
@@ -1204,6 +1259,10 @@ console.log(JSON.stringify({
   submittedWithMismatchNotional,
   directBelowMinimumNotionalResult,
   submittedWithBelowMinimumNotional,
+  directLossLimitResult,
+  submittedWithLossLimit,
+  directPriceDeviationResult,
+  submittedWithPriceDeviation,
   strategyKeyWrapperSummary,
   submittedWithStrategyWrapper,
   strategyWrapperReservations,
@@ -1213,6 +1272,7 @@ console.log(JSON.stringify({
   usedLossSnapshot,
   decimalEvidenceSummary,
   submittedWithDecimalEvidence,
+  normalizedDecimalReservations,
   camelExpectedLossSummary,
   camelRuntimeRequests,
   missingRuntimeSummary,
@@ -1311,6 +1371,22 @@ console.log(JSON.stringify({
         violations: string[];
       };
       submittedWithBelowMinimumNotional: unknown[];
+      directLossLimitResult: {
+        status: string;
+        violations: string[];
+        trace: {
+          violations: string[];
+        };
+      };
+      submittedWithLossLimit: unknown[];
+      directPriceDeviationResult: {
+        status: string;
+        violations: string[];
+        trace: {
+          violations: string[];
+        };
+      };
+      submittedWithPriceDeviation: unknown[];
       strategyKeyWrapperSummary: {
         status: string;
         idempotencyKey: string;
@@ -1353,6 +1429,9 @@ console.log(JSON.stringify({
         submittedOrderCount: number;
       };
       submittedWithDecimalEvidence: unknown[];
+      normalizedDecimalReservations: Array<{
+        requestedNotionalKrw: string;
+      }>;
       camelExpectedLossSummary: {
         status: string;
         submittedOrderCount: number;
@@ -1468,6 +1547,22 @@ console.log(JSON.stringify({
       violations: ["execution_runtime_guard_blocked"],
     });
     expect(output.submittedWithBelowMinimumNotional).toHaveLength(0);
+    expect(output.directLossLimitResult).toMatchObject({
+      status: "BLOCKED",
+      violations: ["execution_runtime_guard_blocked"],
+      trace: {
+        violations: expect.arrayContaining(["live ops wrapper 일일 손실 한도를 초과했습니다"]),
+      },
+    });
+    expect(output.submittedWithLossLimit).toHaveLength(0);
+    expect(output.directPriceDeviationResult).toMatchObject({
+      status: "BLOCKED",
+      violations: ["execution_runtime_guard_blocked"],
+      trace: {
+        violations: expect.arrayContaining(["live ops wrapper 후보 가격 이탈이 허용 bps를 초과했습니다"]),
+      },
+    });
+    expect(output.submittedWithPriceDeviation).toHaveLength(0);
     expect(output.strategyKeyWrapperSummary).toMatchObject({
       status: "submitted",
       submittedOrderCount: 1,
@@ -1508,6 +1603,8 @@ console.log(JSON.stringify({
       submittedOrderCount: 1,
     });
     expect(output.submittedWithDecimalEvidence).toHaveLength(1);
+    expect(output.normalizedDecimalReservations).toHaveLength(1);
+    expect(output.normalizedDecimalReservations[0]?.requestedNotionalKrw).toBe("10000.0");
     expect(output.camelExpectedLossSummary).toMatchObject({
       status: "submitted",
       submittedOrderCount: 1,
