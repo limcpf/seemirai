@@ -183,6 +183,8 @@ SEEMIRAI_RUN_LIVE_OPS_REAL_ARM_CLOSEOUT=1 \
   date-only lifecycle timestamp, 충돌하는 주문 suffix pair, `time_in_force` alias 충돌, parse 실패 정규식 source scan도 차단한다.
 - 2026-06-15: closeout validator는 source scan shell comment/newline, traversal override(`--ignore`, `--no-hidden`),
   replacement option, metadata-only rg mode, `-N`/`--no-line-number` line evidence 제거도 차단한다.
+- 2026-06-15: closeout validator는 quoted pattern 속 line-number 가짜 증거, hyphenated/generic token JSON credential field,
+  `MANUAL_REVIEW_REQUIRED` artifact status, JSON escape로 숨긴 fixture marker도 차단한다.
 
 ## 남은 이슈
 

@@ -156,10 +156,12 @@ const sensitivePatterns = [
   { label: "accessKey json field", pattern: /"(?:upbit)?accessKey"\s*:\s*"(?!\s*(?:<redacted>|redacted|\[redacted\])\s*")[^"]{8,}"/i },
   { label: "secret_key json field", pattern: /"(?:seemirai_)?(?:upbit_)?secret_key"\s*:\s*"(?!\s*(?:<redacted>|redacted|\[redacted\])\s*")[^"]{8,}"/i },
   { label: "secretKey json field", pattern: /"(?:upbit)?secretKey"\s*:\s*"(?!\s*(?:<redacted>|redacted|\[redacted\])\s*")[^"]{8,}"/i },
+  { label: "hyphenated credential json field", pattern: /"(?:seemirai-)?(?:upbit-)?(?:access-key|secret-key|telegram-bot-token|tui-control-token)"\s*:\s*"(?!\s*(?:<redacted>|redacted|\[redacted\])\s*")[^"]{8,}"/i },
   { label: "seemirai camelCase credential json field", pattern: /"seemirai(?:Upbit)?(?:AccessKey|SecretKey|TelegramBotToken|TuiControlToken)"\s*:\s*"(?!\s*(?:<redacted>|redacted|\[redacted\])\s*")[^"]{8,}"/i },
   { label: "telegram token json field", pattern: /"(?:seemirai_)?telegram_bot_token"\s*:\s*"(?!\s*(?:<redacted>|redacted|\[redacted\])\s*")[^"]{8,}"/i },
   { label: "telegram botToken json field", pattern: /"(?:telegram)?botToken"\s*:\s*"(?!\s*(?:<redacted>|redacted|\[redacted\])\s*")[^"]{8,}"/i },
   { label: "tui control token json field", pattern: /"(?:tuiControlToken|tui_control_token|seemirai_tui_control_token)"\s*:\s*"(?!\s*(?:<redacted>|redacted|\[redacted\])\s*")[^"]{8,}"/i },
+  { label: "generic token json field", pattern: /"token"\s*:\s*"(?!\s*(?:<redacted>|redacted|\[redacted\])\s*")[^"]{8,}"/i },
   { label: "telegram bot token url", pattern: /https:\/\/api\.telegram\.org\/bot(?!<redacted>|redacted|\[redacted\])[^/\s"']{8,}(?:\/[A-Za-z]+)?/i },
   { label: "telegram bot token url placeholder tail", pattern: /https:\/\/api\.telegram\.org\/bot(?:<redacted>|redacted|\[redacted\])(?=[^/\s"'])[^/\s"']*/i },
   { label: "database password json field", pattern: /"(?:databasePassword|database_password|dbPassword|db_password|pgPassword|pg_password|password)"\s*:\s*"(?!\s*(?:<redacted>|redacted|\[redacted\])\s*")[^"]{8,}"/i },
@@ -401,7 +403,9 @@ function createGuardedArtifactInputCheck(manifest, manifestPath, artifactFiles, 
         || /"(?:fixture|fixtureSmoke|fixture_smoke)"\s*:\s*true/i.test(file.rawText)
         || /"kind"\s*:\s*"[^"]*FIXTURE[^"]*"/i.test(file.rawText)
         || /\bfixture_smoke\b/i.test(file.rawText)
-        || /\bfixture smoke\b/i.test(file.rawText))
+        || /\bfixture smoke\b/i.test(file.rawText)
+        // JSON escape로 숨긴 fixture marker도 guarded 실거래 evidence로 인정하지 않는다.
+        || /(?:^|[^A-Za-z0-9])FIXTURE(?:$|[^A-Za-z0-9])/i.test(collectJsonStringText(file.value)))
       .map((file) => file.filePath),
   ].filter(hasText);
 
@@ -1497,7 +1501,7 @@ function createSourceScanCommandEvidence(commands) {
     const operands = collectRipgrepPathOperands(tokens);
     const searchPatterns = collectRipgrepSearchPatterns(tokens);
     const usesRipgrep = tokens[0] === "rg";
-    const hasLineNumber = /(?:^|\s)(?:-n|--line-number)(?:\s|$)/u.test(command);
+    const hasLineNumber = hasRipgrepLineNumber(tokens);
     // 운영자 shell의 ripgrep config가 검색 범위를 몰래 줄이지 못하게 source scan 증거는 config 비활성화를 요구한다.
     const hasNoConfig = tokens.includes("--no-config");
     // hidden/ignore 기본 필터가 운영 source scan 범위를 줄이지 못하게 unrestricted traversal을 요구한다.
@@ -1688,6 +1692,12 @@ function hasRipgrepFullTraversal(tokens) {
   const tokenSet = new Set(tokens);
   return tokens.some((token) => /^-u{2,3}$/u.test(token))
     || (tokenSet.has("--hidden") && tokenSet.has("--no-ignore"));
+}
+
+function hasRipgrepLineNumber(tokens) {
+  return tokens.some((token) => token === "--line-number"
+    || token === "-n"
+    || (/^-[A-Za-z]+$/u.test(token) && token.includes("n") && !token.includes("N")));
 }
 
 function hasUnsupportedRipgrepRegex(pattern) {
@@ -1901,7 +1911,8 @@ function createArtifactManifestConflicts(artifactFiles, manifest, run, counters)
 }
 
 function isFailureArtifactStatus(value) {
-  return /^(?:blocked|error|fail|failed|failure|partial|skipped)(?:$|[_:-])/iu.test(value);
+  return /^(?:blocked|error|fail|failed|failure|partial|skipped)(?:$|[_:-])/iu.test(value)
+    || /manual[_:-]?review/iu.test(value);
 }
 
 function isCompleteArtifactCloseoutEvidence(record, run) {
