@@ -182,7 +182,8 @@ export async function loadLiveOpsCliInputs(options) {
 
 export function renderLiveOpsSummary(input) {
   const postExecutionReady = input.reconcilePnlStatus.ready === true && input.telegramAlert.ready === true;
-  const status = input.dbReadiness.ready && input.marketData.ready && input.analysisDecision.ready && input.liveExecution.ready && postExecutionReady
+  const analysisBootReady = input.analysisDecision.ready === true || input.analysisDecision.decisionSourceConnected === false;
+  const status = input.dbReadiness.ready && input.marketData.ready && analysisBootReady && input.liveExecution.ready && postExecutionReady
     ? "ready"
     : "blocked";
   return {
@@ -190,7 +191,9 @@ export function renderLiveOpsSummary(input) {
     message: status === "ready"
       ? (input.fixtureSmoke
         ? "production live ops config/env 계약과 DB readiness를 통과했습니다. fixture smoke는 외부 provider를 호출하지 않습니다."
-        : "production live ops config/env, DB readiness, Upbit public market data, analysis/decision, live execution guard를 통과했습니다.")
+        : input.analysisDecision.decisionSourceConnected === false
+          ? "production live ops boot를 통과했습니다. decision source 연결 전까지 신규 실주문은 제출되지 않습니다."
+          : "production live ops config/env, DB readiness, Upbit public market data, analysis/decision, live execution guard를 통과했습니다.")
       : "production live ops boot가 fail-closed 됐습니다. 차단된 readiness 항목을 먼저 복구하세요.",
     configPath: input.configPath,
     envFilePath: input.envFilePath,
@@ -647,6 +650,32 @@ export async function evaluateLiveOpsCliLiveExecution({
   const brokerGuard = evaluateLiveOpsCliBrokerGuard({ config, env, fixtureSmoke });
 
   if (analysisDecision.ready !== true) {
+    if (analysisDecision.decisionSourceConnected === false) {
+      return buildLiveOpsCliLiveExecutionSummary({
+        status: brokerGuard.ready ? "idle" : "blocked",
+        ready: brokerGuard.ready,
+        liveOrderCapable: false,
+        market,
+        observedAt,
+        orderIntentCount: 0,
+        attemptedOrderCount: 0,
+        submittedOrderCount: 0,
+        brokerGuard,
+        statusLabel: "decision source 대기",
+        message: "production decision source가 아직 연결되지 않아 live execution은 broker 제출 없이 대기합니다.",
+        action: "durable decision source가 연결되면 같은 market data tick에서 후보를 다시 평가하세요.",
+        checks: [
+          okLiveExecutionCheck("analysis_decision", "analysis/decision source 미연결 상태를 boot 범위와 분리했습니다.", "live_ops_decision_source_pending"),
+          brokerGuard.ready
+            ? okLiveExecutionCheck("broker_guard", "Upbit live broker guard를 확인했습니다.", "live_ops_broker_guard_ready")
+            : blockedLiveExecutionCheck("broker_guard", "Upbit live broker guard가 차단됐습니다.", "live_ops_broker_guard_blocked", {
+                violations: brokerGuard.violations,
+              }),
+          okLiveExecutionCheck("broker_submit", "decision source 미연결 상태에서는 broker 제출을 생략합니다.", "live_ops_broker_submit_skipped"),
+        ],
+      });
+    }
+
     return {
       status: "blocked",
       ready: false,
@@ -1743,18 +1772,19 @@ function appendLiveOpsCliEntryRuntimePriceDeviationGuardViolations(violations, r
 
 function collectLiveOpsCliEntryRuntimeCostRiskViolations(request) {
   const violations = [];
-  appendLiveOpsCliEntryRuntimeCostModelViolations(violations, request?.candidate?.costInput);
+  appendLiveOpsCliEntryRuntimeCostModelViolations(violations, request);
   appendLiveOpsCliEntryRuntimeRiskGateViolations(violations, request);
   return violations;
 }
 
-function appendLiveOpsCliEntryRuntimeCostModelViolations(violations, costInput) {
+function appendLiveOpsCliEntryRuntimeCostModelViolations(violations, request) {
+  const costInput = request?.candidate?.costInput;
   if (!isLiveOpsCliCostInput(costInput)) {
     violations.push("live ops wrapper CostModel 현재 입력이 필요합니다");
     return;
   }
 
-  const optionalSafetyBuffer = costInput.safetyBufferBps ?? "0";
+  const optionalSafetyBuffer = costInput.safetyBufferBps ?? resolveLiveOpsCliDefaultSafetyBufferBps(request?.candidate?.market, costInput.safetyBufferMarketCategory);
   if (!isNonNegativeDecimalString(optionalSafetyBuffer)) {
     violations.push("live ops wrapper CostModel safety buffer는 non-negative decimal이어야 합니다");
     return;
@@ -1771,6 +1801,16 @@ function appendLiveOpsCliEntryRuntimeCostModelViolations(violations, costInput) 
   }
 }
 
+function resolveLiveOpsCliDefaultSafetyBufferBps(market, marketCategory) {
+  if (market === "KRW-BTC" || market === "KRW-ETH" || marketCategory === "BTC_ETH") {
+    return "10";
+  }
+  if (marketCategory === "TOP_ALT") {
+    return "20";
+  }
+  return undefined;
+}
+
 function appendLiveOpsCliEntryRuntimeRiskGateViolations(violations, request) {
   const candidate = request?.candidate;
   const risk = candidate?.risk;
@@ -1781,6 +1821,7 @@ function appendLiveOpsCliEntryRuntimeRiskGateViolations(violations, request) {
 
   const expectedLossBps = candidate?.expectedLossBpsOfEquity ?? candidate?.metadata?.expected_loss_bps_of_equity ?? candidate?.metadata?.expectedLossBpsOfEquity;
   const thresholds = risk.thresholdSnapshot?.thresholds;
+  appendLiveOpsCliRiskGateAccountViolations(violations, risk, thresholds);
   if (!isNonNegativeDecimalString(expectedLossBps)) {
     violations.push("live ops wrapper RiskGate expected loss 입력이 필요합니다");
   }
@@ -1803,6 +1844,107 @@ function appendLiveOpsCliEntryRuntimeRiskGateViolations(violations, request) {
   if (orderNotionalBps.gt(new Decimal(maxOrderNotionalBps))) {
     violations.push("live ops wrapper RiskGate 현재 주문 금액이 계정 한도를 초과했습니다");
   }
+  appendLiveOpsCliRiskGatePositionViolations(violations, request, orderNotionalBps);
+  appendLiveOpsCliRiskGateStrategyViolations(violations, risk, thresholds);
+  appendLiveOpsCliRiskGateInfrastructureViolations(violations, risk.infrastructureSignals);
+}
+
+function appendLiveOpsCliRiskGateAccountViolations(violations, risk, thresholds) {
+  if (!isDecimalString(risk.account?.dailyRealizedPnlBps) || !isDecimalString(risk.account?.weeklyRealizedPnlBps) || !isNonNegativeDecimalString(risk.account?.maxDrawdownBps)) {
+    violations.push("live ops wrapper RiskGate 계정 손실 snapshot이 필요합니다");
+    return;
+  }
+  if (!isNonNegativeDecimalString(thresholds?.dailyLossLimitBps) || !isNonNegativeDecimalString(thresholds?.weeklyLossLimitBps) || !isNonNegativeDecimalString(thresholds?.maxDrawdownBps)) {
+    violations.push("live ops wrapper RiskGate 손실 한도 snapshot이 필요합니다");
+    return;
+  }
+
+  if (new Decimal(risk.account.dailyRealizedPnlBps).lte(new Decimal(thresholds.dailyLossLimitBps).negated())) {
+    violations.push("live ops wrapper RiskGate 현재 일일 손실 한도를 초과했습니다");
+  }
+  if (new Decimal(risk.account.weeklyRealizedPnlBps).lte(new Decimal(thresholds.weeklyLossLimitBps).negated())) {
+    violations.push("live ops wrapper RiskGate 현재 주간 손실 한도를 초과했습니다");
+  }
+  if (new Decimal(risk.account.maxDrawdownBps).gte(new Decimal(thresholds.maxDrawdownBps))) {
+    violations.push("live ops wrapper RiskGate 현재 MDD 한도를 초과했습니다");
+  }
+}
+
+function appendLiveOpsCliRiskGatePositionViolations(violations, request, orderNotionalBps) {
+  const candidate = request?.candidate;
+  const risk = candidate?.risk;
+  const thresholds = risk?.thresholdSnapshot?.thresholds;
+  if (
+    !isNonNegativeDecimalString(thresholds?.btcEthMaxPositionBpsOfEquity) ||
+    !isNonNegativeDecimalString(thresholds?.altMaxPositionBpsOfEquity) ||
+    !isNonNegativeDecimalString(thresholds?.totalAltMaxPositionBpsOfEquity)
+  ) {
+    violations.push("live ops wrapper RiskGate 포지션 한도 snapshot이 필요합니다");
+    return;
+  }
+
+  const projectedExposures = new Map();
+  for (const position of risk.positions) {
+    if (!hasMeaningfulValue(position?.market) || !isNonNegativeDecimalString(position?.notionalBpsOfEquity)) {
+      violations.push("live ops wrapper RiskGate position snapshot이 필요합니다");
+      return;
+    }
+    const current = projectedExposures.get(position.market) ?? new Decimal(0);
+    projectedExposures.set(position.market, current.plus(position.notionalBpsOfEquity));
+  }
+  const currentTarget = projectedExposures.get(candidate.market) ?? new Decimal(0);
+  projectedExposures.set(candidate.market, currentTarget.plus(orderNotionalBps));
+
+  let totalAltExposure = new Decimal(0);
+  for (const [market, exposureBps] of projectedExposures.entries()) {
+    if (isLiveOpsCliBtcEthMarket(market)) {
+      if (exposureBps.gt(new Decimal(thresholds.btcEthMaxPositionBpsOfEquity))) {
+        violations.push("live ops wrapper RiskGate 현재 BTC/ETH 포지션 한도를 초과했습니다");
+      }
+    } else {
+      totalAltExposure = totalAltExposure.plus(exposureBps);
+      if (exposureBps.gt(new Decimal(thresholds.altMaxPositionBpsOfEquity))) {
+        violations.push("live ops wrapper RiskGate 현재 alt 포지션 한도를 초과했습니다");
+      }
+    }
+  }
+  if (totalAltExposure.gt(new Decimal(thresholds.totalAltMaxPositionBpsOfEquity))) {
+    violations.push("live ops wrapper RiskGate 현재 전체 alt 포지션 한도를 초과했습니다");
+  }
+}
+
+function appendLiveOpsCliRiskGateStrategyViolations(violations, risk, thresholds) {
+  if (!Number.isSafeInteger(risk.strategy?.consecutiveLosses) || risk.strategy.consecutiveLosses < 0 || !Number.isSafeInteger(thresholds?.maxConsecutiveStrategyLosses)) {
+    violations.push("live ops wrapper RiskGate strategy loss snapshot이 필요합니다");
+    return;
+  }
+  if (risk.strategy.consecutiveLosses >= thresholds.maxConsecutiveStrategyLosses) {
+    violations.push("live ops wrapper RiskGate 현재 전략 연속 손실 한도를 초과했습니다");
+  }
+}
+
+function appendLiveOpsCliRiskGateInfrastructureViolations(violations, infrastructureSignals) {
+  for (const signal of infrastructureSignals) {
+    switch (signal?.signal) {
+      case "NOTIFICATION_FAILURE":
+        break;
+      case "STALE_MARKET_DATA":
+      case "WEBSOCKET_DISCONNECTED":
+      case "WEBSOCKET_RECONNECTING":
+      case "DB_WRITE_FAILURE":
+      case "DUPLICATE_ORDER_IDEMPOTENCY_KEY":
+      case "BALANCE_POSITION_MISMATCH":
+        violations.push(`live ops wrapper RiskGate 현재 인프라 차단 신호가 활성화됐습니다: ${signal.signal}`);
+        break;
+      default:
+        violations.push("live ops wrapper RiskGate 알 수 없는 인프라 신호가 있습니다");
+        break;
+    }
+  }
+}
+
+function isLiveOpsCliBtcEthMarket(market) {
+  return market === "KRW-BTC" || market === "KRW-ETH";
 }
 
 function isLiveOpsCliBudgetReservationEvidence(result, request) {
@@ -1821,7 +1963,7 @@ function isLiveOpsCliBudgetReservationEvidence(result, request) {
 }
 
 function validateLiveOpsCliBrokerOrderEvidence(brokerOrder, submission) {
-  if (!isNonEmptyRecord(brokerOrder) || !hasMeaningfulValue(brokerOrder.brokerOrderId)) {
+  if (!isNonEmptyRecord(brokerOrder) || !hasMeaningfulValue(brokerOrder.brokerOrderId) || !hasMeaningfulValue(brokerOrder.status)) {
     return {
       reason: "broker_result_evidence_missing",
       message: "broker 제출 응답의 주문 식별 증거가 부족해 수동 점검 상태로 전환했습니다.",
@@ -1936,6 +2078,18 @@ function isNonNegativeDecimalString(value) {
   return new Decimal(value).gte(0);
 }
 
+function isDecimalString(value) {
+  if (!hasDecimalComparableValue(value)) {
+    return false;
+  }
+  try {
+    new Decimal(value);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function hasDecimalComparableValue(value) {
   return value !== undefined && value !== null && String(value).trim().length > 0;
 }
@@ -1968,6 +2122,36 @@ function evaluateLiveOpsCliReconcilePnlStatus({ config, fixtureSmoke, liveExecut
           status: "blocked",
           code: "live_ops_reconcile_boundary_missing",
           message: "실제 주문 제출 후 open order/exposure를 확인할 reconcile provider가 필요합니다.",
+        },
+      ],
+    };
+  }
+
+  if (!fixtureSmoke && liveExecution.ready === true && liveExecution.liveOrderCapable !== true) {
+    return {
+      status: "idle",
+      ready: true,
+      market,
+      liveOrderCapable: false,
+      latestReconcileAt: null,
+      latestPnlAt: null,
+      latestStatusAt: null,
+      reconcileStatus: "not_required",
+      reconcileStatusLabel: "대기",
+      pnlStatus: "not_required",
+      pnlStatusLabel: "대기",
+      openOrderCount: 0,
+      openExposureKrw: "0",
+      budgetUsedKrw: "0",
+      providerProbeAttempted: false,
+      statusLabel: "주문 없음",
+      message: "broker 제출이 없어 reconcile/PnL/status provider 조회를 시작하지 않았습니다.",
+      checks: [
+        {
+          name: "live_execution",
+          status: "ok",
+          code: "live_ops_reconcile_not_required",
+          message: "실주문 제출 전에는 private reconcile provider를 열지 않습니다.",
         },
       ],
     };
@@ -2073,6 +2257,29 @@ function evaluateLiveOpsCliTelegramAlert({ config, fixtureSmoke, liveExecution }
     };
   }
 
+  if (!fixtureSmoke && liveExecution.ready === true && liveExecution.liveOrderCapable !== true) {
+    return {
+      status: "idle",
+      ready: true,
+      market,
+      liveOrderCapable: false,
+      lifecycleAlertCount: 0,
+      tradeAlertCount: 0,
+      alertCount: 0,
+      providerDispatchAttempted: false,
+      statusLabel: "주문 없음",
+      message: "broker 제출이 없어 Telegram trade alert provider 전송을 시작하지 않았습니다.",
+      checks: [
+        {
+          name: "live_execution",
+          status: "ok",
+          code: "live_ops_telegram_not_required",
+          message: "실주문 제출 전에는 trade alert provider를 열지 않습니다.",
+        },
+      ],
+    };
+  }
+
   if (!fixtureSmoke || liveExecution.ready !== true) {
     return {
       status: "pending",
@@ -2158,7 +2365,7 @@ function evaluateLiveOpsCliAnalysisDecision({ config, fixtureSmoke, marketData }
   const latestDecisionAt = new Date().toISOString();
   if (!fixtureSmoke) {
     return {
-      status: "blocked",
+      status: "pending",
       ready: false,
       market,
       observedAt: latestDecisionAt,
@@ -2171,6 +2378,7 @@ function evaluateLiveOpsCliAnalysisDecision({ config, fixtureSmoke, marketData }
       orderIntentCount: 0,
       recordHoldDecision: false,
       orderIntents: [],
+      decisionSourceConnected: false,
       message: "production decision source가 아직 연결되지 않아 주문 후보 없음으로 확정하지 않습니다.",
       checks: [
         {
@@ -2186,7 +2394,7 @@ function evaluateLiveOpsCliAnalysisDecision({ config, fixtureSmoke, marketData }
         },
         {
           name: "strategy_decision",
-          status: "blocked",
+          status: "pending",
           code: "live_ops_strategy_decision_source_missing",
           message: "실제 strategy/decision 결과를 읽기 전까지 HOLD ready로 표시하지 않습니다.",
         },

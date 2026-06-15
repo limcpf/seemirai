@@ -1062,6 +1062,16 @@ const directBrokerEvidenceMissingResult = await createLiveOpsCliEntryRuntime({
   },
   budgetReservation,
 }).submitEntryCandidate(createRuntimeRequest());
+const directBrokerStatusMissingResult = await createLiveOpsCliEntryRuntime({
+  broker: {
+    async submitOrder() {
+      return {
+        brokerOrderId: "status-missing-live-order-001",
+      };
+    },
+  },
+  budgetReservation,
+}).submitEntryCandidate(createRuntimeRequest());
 const directBrokerRejectedResult = await createLiveOpsCliEntryRuntime({
   broker: {
     async submitOrder(submission) {
@@ -1124,6 +1134,52 @@ const directRiskRegressionResult = await createLiveOpsCliEntryRuntime({
   },
   budgetReservation,
 }).submitEntryCandidate(directRiskRegressionRequest);
+const directDefaultSafetyBufferRequest = createRuntimeRequest();
+directDefaultSafetyBufferRequest.candidate = {
+  ...directDefaultSafetyBufferRequest.candidate,
+  costInput: {
+    ...createCostInput(),
+    expectedReturnBps: "20",
+  },
+};
+delete directDefaultSafetyBufferRequest.candidate.costInput.safetyBufferBps;
+const submittedWithDefaultSafetyBufferGap = [];
+const directDefaultSafetyBufferResult = await createLiveOpsCliEntryRuntime({
+  broker: {
+    async submitOrder(submission) {
+      submittedWithDefaultSafetyBufferGap.push(submission);
+      return {
+        brokerOrderId: "unexpected-default-safety-buffer-order",
+      };
+    },
+  },
+  budgetReservation,
+}).submitEntryCandidate(directDefaultSafetyBufferRequest);
+const directInfrastructureRiskRequest = createRuntimeRequest();
+directInfrastructureRiskRequest.candidate = {
+  ...directInfrastructureRiskRequest.candidate,
+  risk: {
+    ...directInfrastructureRiskRequest.candidate.risk,
+    infrastructureSignals: [
+      {
+        signal: "DB_WRITE_FAILURE",
+        observedAt,
+      },
+    ],
+  },
+};
+const submittedWithInfrastructureRisk = [];
+const directInfrastructureRiskResult = await createLiveOpsCliEntryRuntime({
+  broker: {
+    async submitOrder(submission) {
+      submittedWithInfrastructureRisk.push(submission);
+      return {
+        brokerOrderId: "unexpected-infrastructure-risk-order",
+      };
+    },
+  },
+  budgetReservation,
+}).submitEntryCandidate(directInfrastructureRiskRequest);
 const strategyDecisionKey = "live_ops_fixture_strategy:upbit_krw_spot:KRW-BTC:BUY:2026-06-15T00:00:00.000Z";
 const strategyKeyIntent = {
   ...intent,
@@ -1161,6 +1217,7 @@ const strategyKeyWrapperSummary = await evaluateLiveOpsCliLiveExecution({
         submittedWithStrategyWrapper.push(submission);
         return {
           brokerOrderId: "strategy-wrapper-live-order-001",
+          status: "ACCEPTED",
         };
       },
     },
@@ -1292,6 +1349,7 @@ const decimalEvidenceSummary = await evaluateLiveOpsCliLiveExecution({
         submittedWithDecimalEvidence.push(submission);
         return {
           brokerOrderId: "decimal-evidence-live-order-001",
+          status: "ACCEPTED",
         };
       },
     },
@@ -1641,6 +1699,19 @@ const topLevelIdleBlocked = renderLiveOpsSummary({
   reconcilePnlStatus: { ready: false, status: "pending" },
   telegramAlert: { ready: false, status: "pending" },
 });
+const topLevelDecisionSourcePendingReady = renderLiveOpsSummary({
+  configPath: "config/live-ops.example.json",
+  envFilePath: "tests/fixtures/live-ops/fake.env",
+  config,
+  env: {},
+  fixtureSmoke: false,
+  dbReadiness: { ready: true },
+  marketData: { ready: true },
+  analysisDecision: { status: "pending", ready: false, decisionSourceConnected: false },
+  liveExecution: { status: "idle", ready: true, liveOrderCapable: false },
+  reconcilePnlStatus: { ready: true, status: "idle" },
+  telegramAlert: { ready: true, status: "idle" },
+});
 console.log(JSON.stringify({
   summary,
   submitted,
@@ -1680,12 +1751,17 @@ console.log(JSON.stringify({
   directReservationExceptionResult,
   directBrokerExceptionResult,
   directBrokerEvidenceMissingResult,
+  directBrokerStatusMissingResult,
   directBrokerRejectedResult,
   directBrokerPortMissingResult,
   directCostRegressionResult,
   submittedWithCostRegression,
   directRiskRegressionResult,
   submittedWithRiskRegression,
+  directDefaultSafetyBufferResult,
+  submittedWithDefaultSafetyBufferGap,
+  directInfrastructureRiskResult,
+  submittedWithInfrastructureRisk,
   strategyKeyWrapperSummary,
   submittedWithStrategyWrapper,
   strategyWrapperReservations,
@@ -1709,6 +1785,7 @@ console.log(JSON.stringify({
   missingRuntimeSummary,
   topLevelSubmittedBlocked,
   topLevelIdleBlocked,
+  topLevelDecisionSourcePendingReady,
 }));
         `,
       ],
@@ -1898,6 +1975,16 @@ console.log(JSON.stringify({
           brokerOrder: Record<string, unknown>;
         };
       };
+      directBrokerStatusMissingResult: {
+        status: string;
+        violations: string[];
+        trace: {
+          reason: string;
+          brokerOrder: {
+            brokerOrderId: string;
+          };
+        };
+      };
       directBrokerRejectedResult: {
         status: string;
         violations: string[];
@@ -1931,6 +2018,22 @@ console.log(JSON.stringify({
         };
       };
       submittedWithRiskRegression: unknown[];
+      directDefaultSafetyBufferResult: {
+        status: string;
+        violations: string[];
+        trace: {
+          violations: string[];
+        };
+      };
+      submittedWithDefaultSafetyBufferGap: unknown[];
+      directInfrastructureRiskResult: {
+        status: string;
+        violations: string[];
+        trace: {
+          violations: string[];
+        };
+      };
+      submittedWithInfrastructureRisk: unknown[];
       strategyKeyWrapperSummary: {
         status: string;
         idempotencyKey: string;
@@ -2032,6 +2135,11 @@ console.log(JSON.stringify({
       };
       topLevelIdleBlocked: {
         status: string;
+        liveOrderCapable: boolean;
+      };
+      topLevelDecisionSourcePendingReady: {
+        status: string;
+        message: string;
         liveOrderCapable: boolean;
       };
     };
@@ -2219,6 +2327,16 @@ console.log(JSON.stringify({
       },
     });
     expect(output.directBrokerEvidenceMissingResult.trace.submission.intent.idempotencyKey).toBe("ops-aaaaaaaaaaaaaaaaaaaaaaaaaa");
+    expect(output.directBrokerStatusMissingResult).toMatchObject({
+      status: "MANUAL_REVIEW_REQUIRED",
+      violations: ["broker_result_evidence_missing"],
+      trace: {
+        reason: "broker_result_evidence_missing",
+        brokerOrder: {
+          brokerOrderId: "status-missing-live-order-001",
+        },
+      },
+    });
     expect(output.directBrokerRejectedResult).toMatchObject({
       status: "MANUAL_REVIEW_REQUIRED",
       violations: ["broker_result_not_accepted"],
@@ -2252,6 +2370,22 @@ console.log(JSON.stringify({
       },
     });
     expect(output.submittedWithRiskRegression).toHaveLength(0);
+    expect(output.directDefaultSafetyBufferResult).toMatchObject({
+      status: "BLOCKED",
+      violations: ["execution_runtime_cost_risk_blocked"],
+      trace: {
+        violations: expect.arrayContaining(["live ops wrapper CostModel 현재 입력이 비용 여유 조건을 통과하지 못했습니다"]),
+      },
+    });
+    expect(output.submittedWithDefaultSafetyBufferGap).toHaveLength(0);
+    expect(output.directInfrastructureRiskResult).toMatchObject({
+      status: "BLOCKED",
+      violations: ["execution_runtime_cost_risk_blocked"],
+      trace: {
+        violations: expect.arrayContaining(["live ops wrapper RiskGate 현재 인프라 차단 신호가 활성화됐습니다: DB_WRITE_FAILURE"]),
+      },
+    });
+    expect(output.submittedWithInfrastructureRisk).toHaveLength(0);
     expect(output.strategyKeyWrapperSummary).toMatchObject({
       status: "submitted",
       submittedOrderCount: 1,
@@ -2344,6 +2478,11 @@ console.log(JSON.stringify({
       status: "blocked",
       liveOrderCapable: false,
     });
+    expect(output.topLevelDecisionSourcePendingReady).toMatchObject({
+      status: "ready",
+      liveOrderCapable: false,
+    });
+    expect(output.topLevelDecisionSourcePendingReady.message).toContain("decision source 연결 전까지 신규 실주문은 제출되지 않습니다");
     expect(result.stdout).not.toContain("fake-secret-key");
   });
 
