@@ -949,6 +949,24 @@ export function createLiveOpsCliEntryRuntime({ broker, budgetReservation } = {})
         };
       }
 
+      const costRiskViolations = collectLiveOpsCliEntryRuntimeCostRiskViolations(request);
+      if (costRiskViolations.length > 0) {
+        // stale approval evidence가 붙어 있어도 현재 Cost/Risk 입력이 fail이면 broker 앞에서 다시 닫는다.
+        return {
+          status: "BLOCKED",
+          attemptId: request.idempotencyKey,
+          idempotencyKey: request.idempotencyKey,
+          message: "현재 CostModel/RiskGate 입력이 제출 조건을 통과하지 못해 broker 제출을 중단했습니다.",
+          action: "costInput, risk snapshot, threshold snapshot을 현재 후보 기준으로 다시 계산한 뒤 approval evidence를 갱신하세요.",
+          violations: ["execution_runtime_cost_risk_blocked"],
+          events: [],
+          trace: {
+            reason: "execution_runtime_cost_risk_blocked",
+            violations: costRiskViolations,
+          },
+        };
+      }
+
       if (budgetReservation === undefined || typeof budgetReservation.reserve !== "function") {
         // durable reservation port 없이는 중복 주문과 예산 초과를 증명할 수 없으므로 broker 호출 전에 닫는다.
         return {
@@ -1039,18 +1057,19 @@ export function createLiveOpsCliEntryRuntime({ broker, budgetReservation } = {})
           reservation: reservation.reservation,
         };
       }
-      if (!isLiveOpsCliBrokerOrderEvidence(brokerOrder, submission)) {
-        // broker 응답에 reconcile이 붙잡을 주문 식별자가 없으면 제출 성공으로 확정하지 않고 수동 점검에 필요한 맥락을 보존한다.
+      const brokerOrderViolation = validateLiveOpsCliBrokerOrderEvidence(brokerOrder, submission);
+      if (brokerOrderViolation !== undefined) {
+        // broker 응답이 접수 상태가 아니면 제출 성공으로 확정하지 않고 수동 점검에 필요한 맥락을 보존한다.
         return {
           status: "MANUAL_REVIEW_REQUIRED",
           attemptId: request.idempotencyKey,
           idempotencyKey: request.idempotencyKey,
-          message: "broker 제출 응답의 주문 식별 증거가 부족해 수동 점검 상태로 전환했습니다.",
-          action: "reservation id와 idempotency key로 거래소 주문 상태를 확인한 뒤 reconcile evidence를 보강하세요.",
-          violations: ["broker_result_evidence_missing"],
+          message: brokerOrderViolation.message,
+          action: brokerOrderViolation.action,
+          violations: [brokerOrderViolation.reason],
           events: [],
           trace: {
-            reason: "broker_result_evidence_missing",
+            reason: brokerOrderViolation.reason,
             reservation: reservation.reservation,
             submission,
             brokerOrder,
@@ -1722,6 +1741,70 @@ function appendLiveOpsCliEntryRuntimePriceDeviationGuardViolations(violations, r
   }
 }
 
+function collectLiveOpsCliEntryRuntimeCostRiskViolations(request) {
+  const violations = [];
+  appendLiveOpsCliEntryRuntimeCostModelViolations(violations, request?.candidate?.costInput);
+  appendLiveOpsCliEntryRuntimeRiskGateViolations(violations, request);
+  return violations;
+}
+
+function appendLiveOpsCliEntryRuntimeCostModelViolations(violations, costInput) {
+  if (!isLiveOpsCliCostInput(costInput)) {
+    violations.push("live ops wrapper CostModel 현재 입력이 필요합니다");
+    return;
+  }
+
+  const optionalSafetyBuffer = costInput.safetyBufferBps ?? "0";
+  if (!isNonNegativeDecimalString(optionalSafetyBuffer)) {
+    violations.push("live ops wrapper CostModel safety buffer는 non-negative decimal이어야 합니다");
+    return;
+  }
+
+  const requiredReturnBps = new Decimal(costInput.entryFeeBps)
+    .plus(costInput.exitFeeBps)
+    .plus(costInput.spreadCostBpsP75)
+    .plus(costInput.expectedSlippageBpsP95)
+    .plus(costInput.cancelRequotePenaltyBps)
+    .plus(optionalSafetyBuffer);
+  if (new Decimal(costInput.expectedReturnBps).lt(requiredReturnBps)) {
+    violations.push("live ops wrapper CostModel 현재 입력이 비용 여유 조건을 통과하지 못했습니다");
+  }
+}
+
+function appendLiveOpsCliEntryRuntimeRiskGateViolations(violations, request) {
+  const candidate = request?.candidate;
+  const risk = candidate?.risk;
+  if (!isLiveOpsCliRiskInput(risk, { strategyId: candidate?.strategyId })) {
+    violations.push("live ops wrapper RiskGate 현재 risk snapshot이 필요합니다");
+    return;
+  }
+
+  const expectedLossBps = candidate?.expectedLossBpsOfEquity ?? candidate?.metadata?.expected_loss_bps_of_equity ?? candidate?.metadata?.expectedLossBpsOfEquity;
+  const thresholds = risk.thresholdSnapshot?.thresholds;
+  if (!isNonNegativeDecimalString(expectedLossBps)) {
+    violations.push("live ops wrapper RiskGate expected loss 입력이 필요합니다");
+  }
+  if (!isNonNegativeDecimalString(thresholds?.maxExpectedLossBpsOfEquity)) {
+    violations.push("live ops wrapper RiskGate expected loss 한도 snapshot이 필요합니다");
+  }
+  if (isNonNegativeDecimalString(expectedLossBps) && isNonNegativeDecimalString(thresholds?.maxExpectedLossBpsOfEquity)) {
+    if (new Decimal(expectedLossBps).gt(new Decimal(thresholds.maxExpectedLossBpsOfEquity))) {
+      violations.push("live ops wrapper RiskGate 현재 예상 손실이 한도를 초과했습니다");
+    }
+  }
+
+  const equityKrw = risk.account?.equityKrw;
+  const maxOrderNotionalBps = thresholds?.maxOrderNotionalBpsOfEquity;
+  if (!isPositiveDecimalString(equityKrw) || !isNonNegativeDecimalString(maxOrderNotionalBps) || !isPositiveDecimalString(candidate?.requestedNotional)) {
+    violations.push("live ops wrapper RiskGate 주문 한도 평가 입력이 필요합니다");
+    return;
+  }
+  const orderNotionalBps = new Decimal(candidate.requestedNotional).div(equityKrw).mul(10_000);
+  if (orderNotionalBps.gt(new Decimal(maxOrderNotionalBps))) {
+    violations.push("live ops wrapper RiskGate 현재 주문 금액이 계정 한도를 초과했습니다");
+  }
+}
+
 function isLiveOpsCliBudgetReservationEvidence(result, request) {
   if (result?.reserved !== true || !isNonEmptyRecord(result.reservation)) {
     return false;
@@ -1737,17 +1820,40 @@ function isLiveOpsCliBudgetReservationEvidence(result, request) {
   );
 }
 
-function isLiveOpsCliBrokerOrderEvidence(brokerOrder, submission) {
+function validateLiveOpsCliBrokerOrderEvidence(brokerOrder, submission) {
   if (!isNonEmptyRecord(brokerOrder) || !hasMeaningfulValue(brokerOrder.brokerOrderId)) {
-    return false;
+    return {
+      reason: "broker_result_evidence_missing",
+      message: "broker 제출 응답의 주문 식별 증거가 부족해 수동 점검 상태로 전환했습니다.",
+      action: "reservation id와 idempotency key로 거래소 주문 상태를 확인한 뒤 reconcile evidence를 보강하세요.",
+    };
   }
   if (hasMeaningfulValue(brokerOrder.idempotencyKey) && brokerOrder.idempotencyKey !== submission.intent.idempotencyKey) {
-    return false;
+    return {
+      reason: "broker_result_evidence_missing",
+      message: "broker 제출 응답의 idempotency key가 요청과 달라 수동 점검 상태로 전환했습니다.",
+      action: "reservation id와 idempotency key로 거래소 주문 상태를 확인한 뒤 중복 주문 여부를 점검하세요.",
+    };
   }
   if (hasMeaningfulValue(brokerOrder.market) && brokerOrder.market !== submission.intent.market) {
-    return false;
+    return {
+      reason: "broker_result_evidence_missing",
+      message: "broker 제출 응답의 market이 요청과 달라 수동 점검 상태로 전환했습니다.",
+      action: "reservation id와 idempotency key로 거래소 주문 상태를 확인한 뒤 잘못된 market 제출 여부를 점검하세요.",
+    };
   }
-  return true;
+  if (hasMeaningfulValue(brokerOrder.status) && !isLiveOpsCliBrokerAcceptedStatus(brokerOrder.status)) {
+    return {
+      reason: "broker_result_not_accepted",
+      message: "broker 제출 응답이 접수/미체결 계열 상태가 아니어서 수동 점검 상태로 전환했습니다.",
+      action: "거래소 주문 상태와 durable reservation을 확인하고 rejected/failed/canceled/filled 결과를 reconcile evidence로 남기세요.",
+    };
+  }
+  return undefined;
+}
+
+function isLiveOpsCliBrokerAcceptedStatus(status) {
+  return ["SUBMITTED", "ACCEPTED", "OPEN", "PARTIALLY_FILLED"].includes(String(status).toUpperCase());
 }
 
 function isLiveOpsCliLiveAttemptId(value, config = {}) {

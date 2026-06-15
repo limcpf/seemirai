@@ -1062,9 +1062,68 @@ const directBrokerEvidenceMissingResult = await createLiveOpsCliEntryRuntime({
   },
   budgetReservation,
 }).submitEntryCandidate(createRuntimeRequest());
+const directBrokerRejectedResult = await createLiveOpsCliEntryRuntime({
+  broker: {
+    async submitOrder(submission) {
+      return {
+        brokerOrderId: "rejected-live-order-001",
+        idempotencyKey: submission.intent.idempotencyKey,
+        market: submission.intent.market,
+        status: "REJECTED",
+      };
+    },
+  },
+  budgetReservation,
+}).submitEntryCandidate(createRuntimeRequest());
 const directBrokerPortMissingResult = await createLiveOpsCliEntryRuntime({
   budgetReservation,
 }).submitEntryCandidate(createRuntimeRequest());
+const directCostRegressionRequest = createRuntimeRequest();
+directCostRegressionRequest.candidate = {
+  ...directCostRegressionRequest.candidate,
+  costInput: {
+    ...createCostInput(),
+    expectedReturnBps: "10",
+  },
+};
+const submittedWithCostRegression = [];
+const directCostRegressionResult = await createLiveOpsCliEntryRuntime({
+  broker: {
+    async submitOrder(submission) {
+      submittedWithCostRegression.push(submission);
+      return {
+        brokerOrderId: "unexpected-cost-regression-order",
+      };
+    },
+  },
+  budgetReservation,
+}).submitEntryCandidate(directCostRegressionRequest);
+const directRiskRegressionRequest = createRuntimeRequest();
+directRiskRegressionRequest.candidate = {
+  ...directRiskRegressionRequest.candidate,
+  risk: {
+    ...directRiskRegressionRequest.candidate.risk,
+    thresholdSnapshot: {
+      ...directRiskRegressionRequest.candidate.risk.thresholdSnapshot,
+      thresholds: {
+        ...directRiskRegressionRequest.candidate.risk.thresholdSnapshot.thresholds,
+        maxExpectedLossBpsOfEquity: "4",
+      },
+    },
+  },
+};
+const submittedWithRiskRegression = [];
+const directRiskRegressionResult = await createLiveOpsCliEntryRuntime({
+  broker: {
+    async submitOrder(submission) {
+      submittedWithRiskRegression.push(submission);
+      return {
+        brokerOrderId: "unexpected-risk-regression-order",
+      };
+    },
+  },
+  budgetReservation,
+}).submitEntryCandidate(directRiskRegressionRequest);
 const strategyDecisionKey = "live_ops_fixture_strategy:upbit_krw_spot:KRW-BTC:BUY:2026-06-15T00:00:00.000Z";
 const strategyKeyIntent = {
   ...intent,
@@ -1621,7 +1680,12 @@ console.log(JSON.stringify({
   directReservationExceptionResult,
   directBrokerExceptionResult,
   directBrokerEvidenceMissingResult,
+  directBrokerRejectedResult,
   directBrokerPortMissingResult,
+  directCostRegressionResult,
+  submittedWithCostRegression,
+  directRiskRegressionResult,
+  submittedWithRiskRegression,
   strategyKeyWrapperSummary,
   submittedWithStrategyWrapper,
   strategyWrapperReservations,
@@ -1834,6 +1898,16 @@ console.log(JSON.stringify({
           brokerOrder: Record<string, unknown>;
         };
       };
+      directBrokerRejectedResult: {
+        status: string;
+        violations: string[];
+        trace: {
+          reason: string;
+          brokerOrder: {
+            status: string;
+          };
+        };
+      };
       directBrokerPortMissingResult: {
         status: string;
         violations: string[];
@@ -1841,6 +1915,22 @@ console.log(JSON.stringify({
           reason: string;
         };
       };
+      directCostRegressionResult: {
+        status: string;
+        violations: string[];
+        trace: {
+          violations: string[];
+        };
+      };
+      submittedWithCostRegression: unknown[];
+      directRiskRegressionResult: {
+        status: string;
+        violations: string[];
+        trace: {
+          violations: string[];
+        };
+      };
+      submittedWithRiskRegression: unknown[];
       strategyKeyWrapperSummary: {
         status: string;
         idempotencyKey: string;
@@ -2129,6 +2219,16 @@ console.log(JSON.stringify({
       },
     });
     expect(output.directBrokerEvidenceMissingResult.trace.submission.intent.idempotencyKey).toBe("ops-aaaaaaaaaaaaaaaaaaaaaaaaaa");
+    expect(output.directBrokerRejectedResult).toMatchObject({
+      status: "MANUAL_REVIEW_REQUIRED",
+      violations: ["broker_result_not_accepted"],
+      trace: {
+        reason: "broker_result_not_accepted",
+        brokerOrder: {
+          status: "REJECTED",
+        },
+      },
+    });
     expect(output.directBrokerPortMissingResult).toMatchObject({
       status: "BLOCKED",
       violations: ["broker_port_missing"],
@@ -2136,6 +2236,22 @@ console.log(JSON.stringify({
         reason: "broker_port_missing",
       },
     });
+    expect(output.directCostRegressionResult).toMatchObject({
+      status: "BLOCKED",
+      violations: ["execution_runtime_cost_risk_blocked"],
+      trace: {
+        violations: expect.arrayContaining(["live ops wrapper CostModel 현재 입력이 비용 여유 조건을 통과하지 못했습니다"]),
+      },
+    });
+    expect(output.submittedWithCostRegression).toHaveLength(0);
+    expect(output.directRiskRegressionResult).toMatchObject({
+      status: "BLOCKED",
+      violations: ["execution_runtime_cost_risk_blocked"],
+      trace: {
+        violations: expect.arrayContaining(["live ops wrapper RiskGate 현재 예상 손실이 한도를 초과했습니다"]),
+      },
+    });
+    expect(output.submittedWithRiskRegression).toHaveLength(0);
     expect(output.strategyKeyWrapperSummary).toMatchObject({
       status: "submitted",
       submittedOrderCount: 1,
