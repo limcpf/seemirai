@@ -92,9 +92,20 @@ SEEMIRAI_RUN_LIVE_OPS_REAL_ARM_CLOSEOUT=1 \
   --json
 ```
 
-manifest에는 저장소 밖 `configPath`, `envFilePath`, `operatorArmEvidenceId`, `keyScopeEvidenceId`, `artifactPaths`, 주문 lifecycle,
-reconcile closeout, zero counter, Telegram/TUI evidence, source/security scan, `finish-readiness-audit` PASS evidence를 포함한다.
-`artifactPaths`는 secret 원문, raw Authorization/JWT, raw provider payload, raw order detail 없이 redacted safe summary만 가리켜야 한다.
+manifest에는 저장소 밖 `configPath`, `envFilePath`, `operatorArmEvidenceId`, `keyScopeEvidenceId`, `keyScope`, `artifactPaths`, 주문
+lifecycle, reconcile closeout, zero counter, Telegram/TUI evidence, source/security scan, `finish-readiness-audit` PASS evidence를
+포함한다. `command`는 실제 foreground 실행인 `corepack pnpm live:ops -- --config <path> --env-file <path> --tui`만 허용하며
+`--help`, `--fixture-smoke`, `--dry-run`, attach 명령은 closeout 증거가 아니다. `configPath`와 `envFilePath`는 저장소 밖에 실제 파일로
+존재해야 한다.
+
+`keyScope`는 `grantedScopes: ["자산조회", "주문조회", "주문하기"]`, `forbiddenScopesAbsent: ["출금하기"]`,
+`withdrawalEnabled: false`처럼 허용 scope와 출금 권한 부재를 redacted safe summary로 기록한다. source/security scan은 실제 `rg -n`
+명령으로 금지 주문 경계와 secret/raw payload 후보를 각각 스캔한 증거를 포함해야 하며, `true` 같은 placeholder 명령은 인정하지 않는다.
+주문 lifecycle timestamp는 validator 실행 시각보다 미래일 수 없고, 같은 주문 chain 증거는 `<redacted>` 같은 일반 placeholder가 아니라
+identifier 또는 uuid의 안정적인 suffix로 비교할 수 있어야 한다.
+
+`artifactPaths`는 secret 원문, raw Authorization/JWT, Telegram token URL, raw provider payload, raw order detail 없이 redacted safe
+summary만 가리켜야 한다.
 
 ## Closeout 판정
 
@@ -102,6 +113,7 @@ PASS:
 
 - submit -> cancel requested -> terminal cancel 확인이 같은 attempt/identifier chain으로 이어진다.
 - open exposure 0, duplicate order 0, reconcile mismatch 0, untracked fill 0, live order cleanup failure 0이 증명된다.
+- 운영 config/env 파일과 key scope safe summary가 존재하고, 출금/입금/선물/레버리지 권한이 없음이 증명된다.
 - Telegram/TUI/status가 한국어 상태, 원인, 영향, 필요 조치와 추적 정보를 분리해 표시한다.
 - secret/raw provider payload 후보가 source scan과 artifact redaction 검사에서 발견되지 않는다.
 

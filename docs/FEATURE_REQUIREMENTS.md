@@ -865,6 +865,9 @@ Acceptance Criteria:
   terminal artifact를 생성한다.
 - closeout validator: `node scripts/run-live-ops-real-arm-closeout.mjs --fixture-smoke --json`은 live/API side effect 없이 contract를
   검증하고, 운영 guard 없는 실행은 credential/evidence 부재 blocker를 skipped summary로 남긴다.
+- closeout validator: guarded manifest는 실제 존재하는 저장소 밖 config/env 파일, `자산조회`/`주문조회`/`주문하기`만 허용된 key scope
+  safe summary, `rg -n` 기반 금지 주문/secret scan 명령, 미래가 아닌 submit/cancel timestamp, placeholder가 아닌 같은 주문 suffix
+  evidence를 요구한다.
 - source/security scan: 시장가/best order, 출금/입금, 선물/레버리지, raw secret, raw provider payload 후보가 production 경로에서
   열리지 않았는지 확인한다.
 

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { randomUUID } from "node:crypto";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import process from "node:process";
@@ -16,6 +16,9 @@ const expectedTimeInForce = "POST_ONLY";
 const minRequestedNotionalKrw = 5_000;
 const maxRequestedNotionalKrw = 10_000;
 const repositoryRoot = process.cwd();
+const requiredKeyScopes = ["자산조회", "주문조회", "주문하기"];
+const withdrawalScopeMarkers = ["출금", "withdraw"];
+const forbiddenKeyScopeMarkers = ["출금", "입금", "withdraw", "deposit", "futures", "leverage", "margin"];
 const requiredCounterNames = [
   "crashCount",
   "unhandledRejectionCount",
@@ -31,6 +34,7 @@ const sensitivePatterns = [
   { label: "secretKey json field", pattern: /"(?:upbit)?secretKey"\s*:\s*"(?!<redacted>|redacted|\[redacted\])[^"]{8,}"/i },
   { label: "telegram token json field", pattern: /"telegram_bot_token"\s*:\s*"(?!<redacted>|redacted|\[redacted\])[^"]{8,}"/i },
   { label: "telegram botToken json field", pattern: /"(?:telegram)?botToken"\s*:\s*"(?!<redacted>|redacted|\[redacted\])[^"]{8,}"/i },
+  { label: "telegram bot token url", pattern: /https:\/\/api\.telegram\.org\/bot(?!<redacted>|redacted|\[redacted\])[^/\s"']{8,}\/[A-Za-z]+/i },
   { label: "access key env assignment", pattern: /\b(?:SEEMIRAI_)?(?:UPBIT_)?ACCESS_KEY\s*=\s*(?!(?:["']?(?:<redacted>|redacted|\[redacted\])["']?)(?:\s|$|["',]))\S{8,}/i },
   { label: "secret key env assignment", pattern: /\b(?:SEEMIRAI_)?(?:UPBIT_)?SECRET_KEY\s*=\s*(?!(?:["']?(?:<redacted>|redacted|\[redacted\])["']?)(?:\s|$|["',]))\S{8,}/i },
   { label: "telegram token env assignment", pattern: /\b(?:SEEMIRAI_)?TELEGRAM_BOT_TOKEN\s*=\s*(?!(?:["']?(?:<redacted>|redacted|\[redacted\])["']?)(?:\s|$|["',]))\S{8,}/i },
@@ -188,14 +192,14 @@ async function validateManifest(manifest, manifestPath, manifestRawText, options
     checks: {
       manifestShape: createManifestShapeCheck(manifest),
       guardedArtifactInput: createGuardedArtifactInputCheck(manifest, manifestPath, artifactFiles, options.guarded),
-      operatorInputs: createOperatorInputsCheck(manifest),
+      operatorInputs: await createOperatorInputsCheck(manifest, path.dirname(manifestPath), options.guarded),
       artifactFiles: createArtifactFilesCheck(artifactFiles),
       orderPolicy: createOrderPolicyCheck(run),
       orderLifecycle: createOrderLifecycleCheck(run),
       reconcileCloseout: createReconcileCloseoutCheck(manifest, run),
       closeoutZeroCounters: createZeroCounterCheck(counters),
       telegramTuiEvidence: createTelegramTuiEvidenceCheck(manifest),
-      sourceSecurityScan: createSourceSecurityScanCheck(sourceScan),
+      sourceSecurityScan: createSourceSecurityScanCheck(sourceScan, { guarded: options.guarded }),
       redactionScan: createRedactionScanCheck([
         { label: "manifest", rawText: manifestRawText },
         ...artifactFiles.map((file, index) => ({ label: `artifact-${index + 1}`, rawText: file.rawText })),
@@ -245,10 +249,19 @@ function createGuardedArtifactInputCheck(manifest, manifestPath, artifactFiles, 
   return failCheck("guarded Issue #206 closeout에서는 fixture manifest/artifact를 사용할 수 없다.", { fixtureMarkers });
 }
 
-function createOperatorInputsCheck(manifest) {
+async function createOperatorInputsCheck(manifest, baseDir, guarded) {
+  if (!guarded) {
+    return okCheck("fixture smoke는 실제 운영 config/env/key scope 입력 검사를 열지 않는다.", { fixtureSmoke: true });
+  }
+
   const configPath = readString(manifest.configPath);
   const envFilePath = readString(manifest.envFilePath);
   const artifactPaths = readStringArray(manifest.artifactPaths);
+  const keyScopeEvidence = createKeyScopeEvidence(manifest);
+  const fileStatuses = await Promise.all([
+    createFileStatus("configPath", configPath, baseDir),
+    createFileStatus("envFilePath", envFilePath, baseDir),
+  ]);
   const missing = [
     ["configPath", configPath],
     ["envFilePath", envFilePath],
@@ -260,18 +273,26 @@ function createOperatorInputsCheck(manifest) {
     ["envFilePath", envFilePath],
     ...artifactPaths.map((artifactPath, index) => [`artifactPaths[${index}]`, artifactPath]),
   ].filter(([, value]) => hasText(value) && !isOutsideRepositoryPath(value)).map(([name, value]) => ({ name, value }));
+  const missingFiles = fileStatuses.filter((file) => !file.exists || !file.isFile);
 
-  if (missing.length === 0 && artifactPaths.length > 0 && pathViolations.length === 0) {
+  if (missing.length === 0
+    && artifactPaths.length > 0
+    && pathViolations.length === 0
+    && missingFiles.length === 0
+    && keyScopeEvidence.ok) {
     return okCheck("운영자가 지정한 저장소 밖 config/env/evidence 경로가 closeout manifest에 연결됐다.", {
       configPath,
       envFilePath,
       artifactCount: artifactPaths.length,
+      keyScope: keyScopeEvidence.evidence,
     });
   }
 
   return failCheck("운영 config/env/evidence 입력이 부족하거나 저장소 내부 경로를 가리킨다.", {
     missing: artifactPaths.length === 0 ? [...missing, "artifactPaths"] : missing,
     pathViolations,
+    missingFiles,
+    keyScope: keyScopeEvidence.evidence,
   });
 }
 
@@ -331,11 +352,15 @@ function createOrderLifecycleCheck(run) {
   const terminalCancelConfirmedAtMs = readTimestampMs(run.terminalCancelConfirmedAt);
   const terminalState = normalizeTerminalState(readString(run.terminalState));
   const sameChain = hasSameOrderChain(run);
+  const nowMs = Date.now();
+  const timestampsNotFuture = [submittedAtMs, cancelRequestedAtMs, terminalCancelConfirmedAtMs]
+    .every((timestampMs) => timestampMs !== undefined && timestampMs <= nowMs);
   const ok = submittedAtMs !== undefined
     && cancelRequestedAtMs !== undefined
     && terminalCancelConfirmedAtMs !== undefined
     && submittedAtMs <= cancelRequestedAtMs
     && cancelRequestedAtMs <= terminalCancelConfirmedAtMs
+    && timestampsNotFuture
     && terminalState === "CANCEL"
     && sameChain;
 
@@ -346,6 +371,7 @@ function createOrderLifecycleCheck(run) {
       terminalCancelConfirmedAt: run.terminalCancelConfirmedAt,
       terminalState,
       sameChain,
+      timestampsNotFuture,
     });
   }
 
@@ -355,6 +381,7 @@ function createOrderLifecycleCheck(run) {
     terminalCancelConfirmedAt: run.terminalCancelConfirmedAt ?? null,
     terminalState,
     sameChain,
+    timestampsNotFuture,
   });
 }
 
@@ -415,7 +442,7 @@ function createTelegramTuiEvidenceCheck(manifest) {
   });
 }
 
-function createSourceSecurityScanCheck(sourceScan) {
+function createSourceSecurityScanCheck(sourceScan, options) {
   const unsafeMatches = readArray(sourceScan.unsafeMatches);
   const secretMatches = readArray(sourceScan.secretMatches);
   const commands = readStringArray(sourceScan.commands);
@@ -423,12 +450,20 @@ function createSourceSecurityScanCheck(sourceScan) {
   const evidenceShapeOk = commands.length > 0
     && Array.isArray(sourceScan.unsafeMatches)
     && Array.isArray(sourceScan.secretMatches);
-  const ok = status === "passed" && evidenceShapeOk && unsafeMatches.length === 0 && secretMatches.length === 0;
+  const commandEvidence = options.guarded
+    ? createSourceScanCommandEvidence(commands)
+    : { ok: true, fixtureSmoke: true };
+  const ok = status === "passed"
+    && evidenceShapeOk
+    && commandEvidence.ok
+    && unsafeMatches.length === 0
+    && secretMatches.length === 0;
 
   if (ok) {
     return okCheck("source/security scan이 금지 주문 경계와 secret/raw payload 후보를 새로 열지 않았다고 기록했다.", {
       status,
       commandCount: commands.length,
+      commandEvidence,
     });
   }
 
@@ -436,6 +471,7 @@ function createSourceSecurityScanCheck(sourceScan) {
     status: status ?? null,
     commandCount: commands.length,
     evidenceShapeOk,
+    commandEvidence,
     unsafeMatches,
     secretMatches,
   });
@@ -569,6 +605,11 @@ async function writeFixtureManifest(artifactDir) {
     envFilePath: "/tmp/issue-206-live-ops.fixture.env",
     operatorArmEvidenceId: "issue-206-operator-arm-fixture",
     keyScopeEvidenceId: "issue-206-key-scope-fixture",
+    keyScope: {
+      grantedScopes: requiredKeyScopes,
+      forbiddenScopesAbsent: ["출금하기"],
+      withdrawalEnabled: false,
+    },
     artifactPaths: [artifactPath],
     run: {
       market: expectedMarket,
@@ -807,12 +848,12 @@ function skippedCheck(message, evidence = {}) {
 function hasSameOrderChain(run) {
   const identifier = readString(run.identifierSuffix);
   const cancelIdentifier = readString(run.cancelIdentifierSuffix);
-  if (hasText(identifier) && identifier === cancelIdentifier) {
+  if (isUsableOrderEvidenceSuffix(identifier) && identifier === cancelIdentifier) {
     return true;
   }
   const brokerOrderId = readString(run.brokerOrderIdSuffix);
   const cancelBrokerOrderId = readString(run.cancelBrokerOrderIdSuffix);
-  return hasText(brokerOrderId) && brokerOrderId === cancelBrokerOrderId;
+  return isUsableOrderEvidenceSuffix(brokerOrderId) && brokerOrderId === cancelBrokerOrderId;
 }
 
 function isLiveOpsCommand(command, configPath, envFilePath) {
@@ -824,7 +865,11 @@ function isLiveOpsCommand(command, configPath, envFilePath) {
   if (tokens[0] !== "corepack" || tokens[1] !== "pnpm" || tokens[2] !== "live:ops" || separatorIndex !== 3) {
     return false;
   }
-  if (tokens.includes("--fixture-smoke") || tokens.includes("--dry-run") || tokens.includes("--attach")) {
+  if (tokens.includes("--fixture-smoke")
+    || tokens.includes("--dry-run")
+    || tokens.includes("--attach")
+    || tokens.includes("--help")
+    || tokens.includes("-h")) {
     return false;
   }
   const configIndex = tokens.indexOf("--config");
@@ -834,6 +879,107 @@ function isLiveOpsCommand(command, configPath, envFilePath) {
     && tokens[configIndex + 1] === configPath
     && tokens[envFileIndex + 1] === envFilePath
     && tokens.includes("--tui");
+}
+
+async function createFileStatus(name, value, baseDir) {
+  if (!hasText(value)) {
+    return { name, value: value ?? null, exists: false, isFile: false, error: "missing" };
+  }
+
+  const filePath = resolveInputPath(value, baseDir);
+  try {
+    const stats = await stat(filePath);
+    return { name, value: filePath, exists: true, isFile: stats.isFile() };
+  } catch (error) {
+    return { name, value: filePath, exists: false, isFile: false, error: toErrorMessage(error) };
+  }
+}
+
+function createKeyScopeEvidence(manifest) {
+  const keyScope = readRecord(manifest.keyScope);
+  const grantedScopes = readStringArray(keyScope.grantedScopes ?? keyScope.allowedScopes);
+  const forbiddenScopesAbsent = readStringArray(keyScope.forbiddenScopesAbsent);
+  const withdrawalEnabled = keyScope.withdrawalEnabled;
+  const missingRequiredScopes = requiredKeyScopes.filter((scope) => !grantedScopes.includes(scope));
+  const extraGrantedScopes = grantedScopes.filter((scope) => !requiredKeyScopes.includes(scope));
+  const forbiddenGrantedScopes = grantedScopes.filter(isForbiddenKeyScope);
+  const withdrawalAbsenceRecorded = withdrawalEnabled === false || forbiddenScopesAbsent.some(isWithdrawalScope);
+  const ok = grantedScopes.length > 0
+    && missingRequiredScopes.length === 0
+    && extraGrantedScopes.length === 0
+    && forbiddenGrantedScopes.length === 0
+    && withdrawalAbsenceRecorded;
+
+  return {
+    ok,
+    evidence: {
+      grantedScopes,
+      forbiddenScopesAbsent,
+      withdrawalEnabled: typeof withdrawalEnabled === "boolean" ? withdrawalEnabled : null,
+      missingRequiredScopes,
+      extraGrantedScopes,
+      forbiddenGrantedScopes,
+      withdrawalAbsenceRecorded,
+    },
+  };
+}
+
+function createSourceScanCommandEvidence(commands) {
+  const commandChecks = commands.map((command) => {
+    const usesRipgrep = /\brg\b/u.test(command);
+    const hasLineNumber = /(?:^|\s)(?:-n|--line-number)(?:\s|$)/u.test(command);
+    const scansExpectedPaths = /\b(?:src|scripts)\b/u.test(command) && /\b(?:docs|config|scripts|src)\b/u.test(command);
+    const checksUnsafeOrderBoundary = /ord_type|withdraw|출금|deposit|입금|leverage|futures|margin|시장가|best/u.test(command);
+    const checksSecretBoundary = /access_key|secret_key|Authorization|JWT|telegram_bot_token|raw_provider|raw_order|botToken/u.test(command);
+    return {
+      command,
+      usesRipgrep,
+      hasLineNumber,
+      scansExpectedPaths,
+      checksUnsafeOrderBoundary,
+      checksSecretBoundary,
+    };
+  });
+  const hasUnsafeBoundaryScan = commandChecks.some((check) => check.usesRipgrep
+    && check.hasLineNumber
+    && check.scansExpectedPaths
+    && check.checksUnsafeOrderBoundary);
+  const hasSecretBoundaryScan = commandChecks.some((check) => check.usesRipgrep
+    && check.hasLineNumber
+    && check.scansExpectedPaths
+    && check.checksSecretBoundary);
+
+  return {
+    ok: hasUnsafeBoundaryScan && hasSecretBoundaryScan,
+    hasUnsafeBoundaryScan,
+    hasSecretBoundaryScan,
+    commandChecks,
+  };
+}
+
+function isUsableOrderEvidenceSuffix(value) {
+  if (!hasText(value)) {
+    return false;
+  }
+  const text = value.trim();
+  const normalized = text.toLowerCase().replace(/[\s"'`]/gu, "");
+  const bracketless = normalized.replace(/[<>\[\](){}]/gu, "");
+  const placeholderWords = new Set(["redacted", "masked", "hidden", "removed", "secret", "token", "identifier", "uuid", "orderid"]);
+  const alnumCount = (text.match(/[a-z0-9]/giu) ?? []).length;
+  return text.length >= 6
+    && alnumCount >= 4
+    && !placeholderWords.has(bracketless)
+    && !/^(?:x+|\*+|-+|_+|\.+)$/u.test(normalized);
+}
+
+function isForbiddenKeyScope(scope) {
+  const normalized = scope.trim().toLowerCase();
+  return forbiddenKeyScopeMarkers.some((marker) => normalized.includes(marker.toLowerCase()));
+}
+
+function isWithdrawalScope(scope) {
+  const normalized = scope.trim().toLowerCase();
+  return withdrawalScopeMarkers.some((marker) => normalized.includes(marker.toLowerCase()));
 }
 
 function normalizeTerminalState(value) {
