@@ -119,6 +119,81 @@ describe("production live ops Telegram alert mapper", () => {
     expect(JSON.stringify(plan)).not.toContain("fake-upbit-secret-key");
   });
 
+  it("후속 cancel 상태는 cancel requested/confirmed Telegram dispatch request로 낮춘다", () => {
+    const cancelRequested = planLiveOpsTelegramAlerts(createPlanInput({
+      liveExecution: liveExecutionSummary({
+        status: "submitted",
+        ready: true,
+        liveOrderCapable: false,
+        attemptedOrderCount: 1,
+        submittedOrderCount: 1,
+        attemptStatus: "CANCEL_REQUESTED",
+        attemptId: "ops-attempt-1",
+        idempotencyKey: "ops-idem-1",
+        brokerOrderId: "upbit-order-1",
+        message: "운영 cleanup이 미체결 주문 취소를 요청했습니다.",
+      }),
+      orderIntent: createOrderIntent(),
+      tradeEventKind: "CANCEL_REQUESTED",
+      tradeEvidenceId: "cancel-requested-evidence-1",
+    }));
+    const cancelConfirmed = planLiveOpsTelegramAlerts(createPlanInput({
+      liveExecution: liveExecutionSummary({
+        status: "submitted",
+        ready: true,
+        liveOrderCapable: false,
+        attemptedOrderCount: 1,
+        submittedOrderCount: 1,
+        attemptStatus: "CANCEL_CONFIRMED",
+        attemptId: "ops-attempt-1",
+        idempotencyKey: "ops-idem-1",
+        brokerOrderId: "upbit-order-1",
+        message: "reconcile이 주문 취소 terminal 상태를 확인했습니다.",
+      }),
+      orderIntent: createOrderIntent(),
+      tradeEventKind: "CANCEL_CONFIRMED",
+      tradeEvidenceId: "cancel-confirmed-evidence-1",
+    }));
+
+    expect(cancelRequested.events.map((event) => event.eventKind)).toEqual([
+      "TELEGRAM_CONNECTION_READY",
+      "CANCEL_REQUESTED",
+    ]);
+    expect(cancelRequested.requests.map((request) => request.reasonCode)).toEqual([
+      "telegram_connection_ready",
+      "live_order_cancel_requested",
+    ]);
+    expect(cancelRequested.requests[1]).toMatchObject({
+      market: "KRW-BTC",
+      strategyId: "fixture_order_strategy",
+      dedupeKey: "ops-idem-1",
+      metadata: {
+        event_kind: "CANCEL_REQUESTED",
+        evidence_id: "cancel-requested-evidence-1",
+      },
+    });
+    expect(cancelRequested.requests[1]?.body).toContain("취소 요청");
+
+    expect(cancelConfirmed.events.map((event) => event.eventKind)).toEqual([
+      "TELEGRAM_CONNECTION_READY",
+      "CANCEL_CONFIRMED",
+    ]);
+    expect(cancelConfirmed.requests.map((request) => request.reasonCode)).toEqual([
+      "telegram_connection_ready",
+      "live_order_cancel_confirmed",
+    ]);
+    expect(cancelConfirmed.requests[1]).toMatchObject({
+      market: "KRW-BTC",
+      strategyId: "fixture_order_strategy",
+      dedupeKey: "ops-idem-1",
+      metadata: {
+        event_kind: "CANCEL_CONFIRMED",
+        evidence_id: "cancel-confirmed-evidence-1",
+      },
+    });
+    expect(cancelConfirmed.requests[1]?.body).toContain("취소 완료 상태");
+  });
+
   it("fake notifier로 planned alert를 dispatch하고 provider 결과를 요약한다", async () => {
     const notifier = new RecordingNotifier();
     const plan = planLiveOpsTelegramAlerts(createPlanInput({

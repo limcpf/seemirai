@@ -66,6 +66,23 @@ export interface LiveOpsTelegramAlertPlanInput {
   readonly observedAt: string;
   readonly telegramReady: boolean;
   readonly liveExecution: LiveOpsLiveExecutionSummary;
+  /**
+   * live execution summary만으로 표현되지 않는 cancel/fill/block event를 후속 reconcile/exit 경계가 명시할 때 사용한다.
+   *
+   * caller는 이미 주문/취소/reconcile evidence가 확정된 뒤에만 이 값을 넘겨야 하며, mapper는 provider 호출 없이 alert event로만
+   * 낮춘다. 이 필드는 Telegram provider side effect를 만들지 않는다.
+   */
+  readonly tradeEventKind?: Extract<
+    LiveOpsAlertEventKind,
+    | "ORDER_SUBMITTED"
+    | "CANCEL_REQUESTED"
+    | "CANCEL_CONFIRMED"
+    | "ORDER_FILLED"
+    | "ORDER_PARTIALLY_FILLED"
+    | "RISK_BLOCKED"
+    | "COST_BLOCKED"
+    | "RECONCILE_BLOCKED"
+  >;
   readonly orderIntent?: OrderIntent;
   readonly correlationId?: string;
   readonly telegramConnectionEvidenceId?: string;
@@ -315,6 +332,10 @@ function createTradeEvents(
 }
 
 function mapLiveExecutionToTradeEvent(input: LiveOpsTelegramAlertPlanInput): LiveOpsAlertInput | undefined {
+  if (input.tradeEventKind !== undefined) {
+    return createExplicitTradeEvent(input, input.tradeEventKind);
+  }
+
   const liveExecution = input.liveExecution;
   if (liveExecution.status === "idle" || liveExecution.attemptedOrderCount === 0) {
     return undefined;
@@ -343,6 +364,21 @@ function mapLiveExecutionToTradeEvent(input: LiveOpsTelegramAlertPlanInput): Liv
   }
 
   return createBlockedTradeEvent(input, "RISK_BLOCKED");
+}
+
+function createExplicitTradeEvent(
+  input: LiveOpsTelegramAlertPlanInput,
+  eventKind: NonNullable<LiveOpsTelegramAlertPlanInput["tradeEventKind"]>,
+): LiveOpsAlertInput {
+  if (eventKind === "ORDER_SUBMITTED") {
+    return createOrderSubmittedEvent(input);
+  }
+
+  if (eventKind === "RISK_BLOCKED" || eventKind === "COST_BLOCKED" || eventKind === "RECONCILE_BLOCKED") {
+    return createBlockedTradeEvent(input, eventKind);
+  }
+
+  return createOrderProgressEvent(input, eventKind);
 }
 
 function createOrderSubmittedEvent(input: LiveOpsTelegramAlertPlanInput): LiveOpsAlertInput {
@@ -375,7 +411,7 @@ function createOrderSubmittedEvent(input: LiveOpsTelegramAlertPlanInput): LiveOp
 
 function createBlockedTradeEvent(
   input: LiveOpsTelegramAlertPlanInput,
-  eventKind: Extract<LiveOpsAlertEventKind, "RISK_BLOCKED" | "RECONCILE_BLOCKED">,
+  eventKind: Extract<LiveOpsAlertEventKind, "RISK_BLOCKED" | "COST_BLOCKED" | "RECONCILE_BLOCKED">,
 ): LiveOpsAlertInput {
   const event = createBaseEvent(input, eventKind);
   event.market = input.liveExecution.market;
@@ -388,6 +424,37 @@ function createBlockedTradeEvent(
   };
   assignIfDefined(event, "strategyId", input.orderIntent?.strategyId);
   assignIfDefined(event, "evidenceId", input.tradeEvidenceId ?? input.liveExecution.attemptId ?? undefined);
+  return event;
+}
+
+function createOrderProgressEvent(
+  input: LiveOpsTelegramAlertPlanInput,
+  eventKind: Extract<LiveOpsAlertEventKind, "CANCEL_REQUESTED" | "CANCEL_CONFIRMED" | "ORDER_FILLED" | "ORDER_PARTIALLY_FILLED">,
+): LiveOpsAlertInput {
+  const intent = input.orderIntent;
+  const event = createBaseEvent(input, eventKind);
+  event.market = input.liveExecution.market;
+  event.liveOrderCapable = false;
+  event.safeSummary = input.liveExecution.message;
+  event.safeDetails = {
+    execution_status: input.liveExecution.status,
+    attempt_status: input.liveExecution.attemptStatus,
+  };
+  assignIfDefined(event, "strategyId", intent?.strategyId);
+  assignIfDefined(event, "orderId", input.liveExecution.attemptId ?? undefined);
+  assignIfDefined(event, "brokerOrderId", input.liveExecution.brokerOrderId ?? undefined);
+  assignIfDefined(event, "idempotencyKey", input.liveExecution.idempotencyKey ?? undefined);
+  assignIfDefined(event, "evidenceId", input.tradeEvidenceId ?? input.liveExecution.attemptId ?? undefined);
+
+  if (intent !== undefined) {
+    assignIfDefined(event, "side", intent.side);
+    assignIfDefined(event, "quantity", intent.requestedQuantity);
+    assignIfDefined(event, "notionalKrw", intent.requestedNotional);
+    if (intent.orderType === "LIMIT") {
+      assignIfDefined(event, "requestedPrice", intent.requestedPrice);
+    }
+  }
+
   return event;
 }
 

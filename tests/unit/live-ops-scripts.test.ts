@@ -39,6 +39,12 @@ describe("production live ops script skeleton", () => {
     expect(result.stdout).toContain("Analysis/decision: 보류 / 주문 후보 0");
     expect(result.stdout).toContain("Live execution: 후보 없음 / 주문 후보 0 / broker 제출 0");
     expect(result.stdout).toContain("Reconcile/PnL/status: fixture 요약 / 대사 정상 / PnL 관측 대기 / open 주문 0 / provider 호출 0");
+    expect(result.stdout).toContain("open exposure 0 KRW");
+    expect(result.stdout).toContain("budget used 0 KRW");
+    expect(result.stdout).toContain("realized PnL 확인 필요 KRW");
+    expect(result.stdout).toContain("latest reconcile 없음");
+    expect(result.stdout).toContain("mismatch 0");
+    expect(result.stdout).toContain("manual review 아니오");
     expect(result.stdout).toContain("Telegram alert: fixture plan / lifecycle 1 / trade 0 / provider 호출 0");
     expect(result.stdout).toContain("후속 provider 연결 전까지 신규 실주문은 제출되지 않습니다");
     expect(result.stdout).not.toContain("fake-upbit-secret-key");
@@ -166,6 +172,274 @@ describe("production live ops script skeleton", () => {
       alertCount: 1,
       providerDispatchAttempted: false,
     });
+  });
+
+  it("reconcile/PnL/status helper는 private read provider 결과를 secret-safe summary로 낮춘다", () => {
+    const result = spawnSync(
+      process.execPath,
+      [
+        "--input-type=module",
+        "--eval",
+        `
+import {
+  evaluateLiveOpsCliReconcilePnlStatus,
+} from "./scripts/run-live-ops-support.mjs";
+
+const observedAt = "2026-06-15T01:00:00.000Z";
+const calls = { openOrders: 0, balances: 0 };
+const summary = await evaluateLiveOpsCliReconcilePnlStatus({
+  config: {
+    universe: { default_market: "KRW-BTC" },
+  },
+  fixtureSmoke: false,
+  liveExecution: {
+    status: "submitted",
+    ready: true,
+    liveOrderCapable: true,
+    attemptId: "ops-attempt-1",
+  },
+  privateReadProvider: {
+    async listOpenOrders(market) {
+      calls.openOrders += 1;
+      return [{
+        brokerOrderId: "upbit-order-1",
+        idempotencyKey: "ops-idem-1",
+        exchangeId: "upbit_krw_spot",
+        market,
+        side: "BUY",
+        orderType: "LIMIT",
+        status: "ACCEPTED",
+        requestedQuantity: "0.0001",
+        remainingQuantity: "0.00005",
+        requestedPrice: "100000000",
+        updatedAt: observedAt,
+        metadata: { raw_provider_payload: "fake-upbit-secret-key" },
+      }];
+    },
+    async getBalances() {
+      calls.balances += 1;
+      return {
+        exchangeId: "upbit_krw_spot",
+        capturedAt: observedAt,
+        balances: [
+          { currency: "KRW", available: "93000", locked: "7000", total: "100000", updatedAt: observedAt, metadata: { secret_key: "fake-upbit-secret-key" } },
+          { currency: "BTC", available: "0.001", locked: "0", total: "0.001", updatedAt: observedAt },
+        ],
+        metadata: { authorization: "Bearer fake-upbit-secret-key" },
+      };
+    },
+  },
+  reconcileStatusProvider: {
+    async getReconcileStatus() {
+      return {
+        lastReconcileAt: observedAt,
+        result: "SUCCESS",
+        mismatchCount: 0,
+        openOrderCount: 1,
+        balanceStatus: "OK",
+        websocketStatus: "CONNECTED",
+        actionRequired: "없음",
+        message: "실계좌 상태 대조가 정상입니다.",
+        trace: { source: "test" },
+      };
+    },
+  },
+  pnlStatusProvider: {
+    async getStatus() {
+      return {
+        readStatus: "OK",
+        latestCapturedAt: observedAt,
+        latestEquityKrw: "100000",
+        latestRealizedPnlKrw: "1200",
+        latestUnrealizedPnlKrw: "-300",
+        latestDrawdownBps: "5",
+        latestSource: "pnl_snapshots",
+        latestStatus: "COMPLETE",
+        snapshotCount: 1,
+        reason: "pnl_snapshot_latest_read",
+      };
+    },
+  },
+  budgetSnapshot: {
+    dailyAutonomousNotionalUsedKrw: "7000",
+  },
+  observedAt,
+});
+console.log(JSON.stringify({ summary, calls }));
+        `,
+      ],
+      {
+        cwd: process.cwd(),
+        encoding: "utf8",
+        env: minimalEnv(),
+      },
+    );
+
+    expect(result.status).toBe(0);
+    expect(result.stderr).toBe("");
+    const output = JSON.parse(result.stdout) as {
+      summary: {
+        ready: boolean;
+        providerProbeAttempted: boolean;
+        openOrderCount: number;
+        openExposureKrw: string;
+        budgetUsedKrw: string;
+        realizedPnlKrw: string;
+        unrealizedPnlKrw: string;
+        latestReconcileAt: string;
+        mismatchCount: number;
+        manualReviewRequired: boolean;
+        privateRead: { balanceCurrencyCount: number; krwAvailable: string; krwLocked: string };
+      };
+      calls: { openOrders: number; balances: number };
+    };
+
+    expect(output.summary).toMatchObject({
+      ready: true,
+      providerProbeAttempted: true,
+      openOrderCount: 1,
+      openExposureKrw: "5000",
+      budgetUsedKrw: "7000",
+      realizedPnlKrw: "1200",
+      unrealizedPnlKrw: "-300",
+      latestReconcileAt: "2026-06-15T01:00:00.000Z",
+      mismatchCount: 0,
+      manualReviewRequired: false,
+      privateRead: {
+        balanceCurrencyCount: 2,
+        krwAvailable: "93000",
+        krwLocked: "7000",
+      },
+    });
+    expect(output.calls).toEqual({ openOrders: 1, balances: 1 });
+    expect(result.stdout).not.toContain("fake-upbit-secret-key");
+    expect(result.stdout).not.toContain("Authorization");
+  });
+
+  it("Telegram helper는 owner chat dispatch port를 호출하고 실패를 retry/manual review summary로 격리한다", () => {
+    const result = spawnSync(
+      process.execPath,
+      [
+        "--input-type=module",
+        "--eval",
+        `
+import {
+  evaluateLiveOpsCliTelegramAlert,
+} from "./scripts/run-live-ops-support.mjs";
+
+const config = {
+  universe: { default_market: "KRW-BTC" },
+  telegram: {
+    startup_alert_enabled: true,
+    live_order_capable_alert_enabled: true,
+    trade_event_alerts_enabled: true,
+  },
+};
+const liveExecution = {
+  status: "submitted",
+  ready: true,
+  liveOrderCapable: true,
+  attemptedOrderCount: 1,
+  submittedOrderCount: 1,
+  attemptStatus: "SUBMITTED",
+  attemptId: "ops-attempt-1",
+  idempotencyKey: "ops-idem-1",
+  brokerOrderId: "upbit-order-1",
+  message: "실주문 실행 경계가 주문 후보를 broker 제출까지 전진시켰습니다.",
+};
+const orderIntent = {
+  market: "KRW-BTC",
+  strategyId: "live_ops_fixture_strategy",
+  side: "BUY",
+  orderType: "LIMIT",
+  requestedQuantity: "0.0001",
+  requestedNotional: "10000",
+  requestedPrice: "100000000",
+};
+const observedAt = "2026-06-15T01:00:00.000Z";
+const dispatches = [];
+const sent = await evaluateLiveOpsCliTelegramAlert({
+  config,
+  fixtureSmoke: false,
+  liveExecution,
+  orderIntent,
+  observedAt,
+  telegramDispatcher: {
+    async dispatch(payload) {
+      dispatches.push(payload);
+      return {
+        status: "sent",
+        attemptedCount: payload.events.length,
+        deliveredCount: payload.events.length,
+        cooldownHitCount: 0,
+        retryPlannedCount: 0,
+        failureCount: 0,
+      };
+    },
+  },
+});
+const failed = await evaluateLiveOpsCliTelegramAlert({
+  config,
+  fixtureSmoke: false,
+  liveExecution,
+  orderIntent,
+  observedAt,
+  telegramDispatcher: {
+    async dispatch(payload) {
+      return {
+        status: "partial_failure",
+        attemptedCount: payload.events.length,
+        deliveredCount: payload.events.length - 1,
+        cooldownHitCount: 0,
+        retryPlannedCount: 1,
+        failureCount: 1,
+      };
+    },
+  },
+});
+console.log(JSON.stringify({
+  sent,
+  failed,
+  eventKinds: dispatches[0].events.map((event) => event.eventKind),
+  dispatchedMarket: dispatches[0].market,
+}));
+        `,
+      ],
+      {
+        cwd: process.cwd(),
+        encoding: "utf8",
+        env: minimalEnv(),
+      },
+    );
+
+    expect(result.status).toBe(0);
+    expect(result.stderr).toBe("");
+    const output = JSON.parse(result.stdout) as {
+      sent: { ready: boolean; providerDispatchAttempted: boolean; alertCount: number; deliveredCount: number };
+      failed: { ready: boolean; status: string; retryPlannedCount: number; failureCount: number; action: string };
+      eventKinds: string[];
+      dispatchedMarket: string;
+    };
+
+    expect(output.sent).toMatchObject({
+      ready: true,
+      providerDispatchAttempted: true,
+      alertCount: 3,
+      deliveredCount: 3,
+    });
+    expect(output.eventKinds).toEqual([
+      "TELEGRAM_CONNECTION_READY",
+      "LIVE_ORDER_CAPABLE_STARTED",
+      "ORDER_SUBMITTED",
+    ]);
+    expect(output.dispatchedMarket).toBe("KRW-BTC");
+    expect(output.failed).toMatchObject({
+      ready: false,
+      status: "manual_review_required",
+      retryPlannedCount: 1,
+      failureCount: 1,
+    });
+    expect(output.failed.action).toContain("되돌리지 않습니다");
   });
 
   it("live:ops:tui attach는 같은 dashboard를 attach 대상으로 렌더링한다", () => {

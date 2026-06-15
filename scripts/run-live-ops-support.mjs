@@ -155,12 +155,12 @@ export async function loadLiveOpsCliInputs(options) {
     env,
   });
   assertLiveOpsCliLiveExecutionReady(liveExecution, { fixtureSmoke: options.fixtureSmoke });
-  const reconcilePnlStatus = evaluateLiveOpsCliReconcilePnlStatus({
+  const reconcilePnlStatus = await evaluateLiveOpsCliReconcilePnlStatus({
     config,
     fixtureSmoke: options.fixtureSmoke,
     liveExecution,
   });
-  const telegramAlert = evaluateLiveOpsCliTelegramAlert({
+  const telegramAlert = await evaluateLiveOpsCliTelegramAlert({
     config,
     fixtureSmoke: options.fixtureSmoke,
     liveExecution,
@@ -602,6 +602,13 @@ function formatReconcilePnlStatusObservation(reconcilePnlStatus) {
     `PnL ${reconcilePnlStatus.pnlStatusLabel}`,
     `open 주문 ${reconcilePnlStatus.openOrderCount}`,
     `provider 호출 ${reconcilePnlStatus.providerProbeAttempted ? "있음" : "0"}`,
+    `open exposure ${formatKrwValue(reconcilePnlStatus.openExposureKrw)} KRW`,
+    `budget used ${formatKrwValue(reconcilePnlStatus.budgetUsedKrw)} KRW`,
+    `realized PnL ${formatKrwValue(reconcilePnlStatus.realizedPnlKrw)} KRW`,
+    `unrealized PnL ${formatKrwValue(reconcilePnlStatus.unrealizedPnlKrw)} KRW`,
+    `latest reconcile ${reconcilePnlStatus.latestReconcileAt ?? "없음"}`,
+    `mismatch ${reconcilePnlStatus.mismatchCount ?? "확인 필요"}`,
+    `manual review ${reconcilePnlStatus.manualReviewRequired ? "필요" : "아니오"}`,
   ].join(" / ");
 }
 
@@ -2091,37 +2098,42 @@ function hasDecimalComparableValue(value) {
   return typeof value === "string" && value.trim().length > 0;
 }
 
-function evaluateLiveOpsCliReconcilePnlStatus({ config, fixtureSmoke, liveExecution }) {
+export async function evaluateLiveOpsCliReconcilePnlStatus({
+  config,
+  fixtureSmoke,
+  liveExecution,
+  privateReadProvider,
+  reconcileStatusProvider,
+  pnlStatusProvider,
+  budgetSnapshot,
+  observedAt,
+}) {
   const market = config.universe?.default_market ?? "KRW-BTC";
 
-  if (!fixtureSmoke && liveExecution.status === "submitted") {
-    return {
-      status: "blocked",
-      ready: false,
+  if (!fixtureSmoke && shouldProbeLiveOpsCliPrivateRead(liveExecution)) {
+    if (!isLiveOpsCliPrivateReadProvider(privateReadProvider)) {
+      return createLiveOpsCliReconcileBoundaryMissingSummary({
+        market,
+        liveExecution,
+      });
+    }
+
+    return collectLiveOpsCliPrivateReadStatusSummary({
       market,
-      liveOrderCapable: true,
-      latestReconcileAt: null,
-      latestPnlAt: null,
-      latestStatusAt: null,
-      reconcileStatus: "provider_boundary_missing",
-      reconcileStatusLabel: "수동 확인 필요",
-      pnlStatus: "provider_boundary_missing",
-      pnlStatusLabel: "수동 확인 필요",
-      openOrderCount: 0,
-      openExposureKrw: "0",
-      budgetUsedKrw: "0",
-      providerProbeAttempted: false,
-      statusLabel: "후속 경계 차단",
-      message: "실주문 제출 후 reconcile/PnL/status provider 경계가 없어 상태 확정을 중단했습니다.",
-      checks: [
-        {
-          name: "reconcile_summary",
-          status: "blocked",
-          code: "live_ops_reconcile_boundary_missing",
-          message: "실제 주문 제출 후 open order/exposure를 확인할 reconcile provider가 필요합니다.",
-        },
-      ],
-    };
+      privateReadProvider,
+      reconcileStatusProvider,
+      pnlStatusProvider,
+      budgetSnapshot,
+      observedAt: observedAt ?? new Date().toISOString(),
+      liveExecution,
+    });
+  }
+
+  if (!fixtureSmoke && liveExecution.status === "submitted") {
+    return createLiveOpsCliReconcileBoundaryMissingSummary({
+      market,
+      liveExecution,
+    });
   }
 
   if (!fixtureSmoke && liveExecution.ready === true && liveExecution.liveOrderCapable !== true) {
@@ -2140,6 +2152,10 @@ function evaluateLiveOpsCliReconcilePnlStatus({ config, fixtureSmoke, liveExecut
       openOrderCount: 0,
       openExposureKrw: "0",
       budgetUsedKrw: "0",
+      realizedPnlKrw: null,
+      unrealizedPnlKrw: null,
+      mismatchCount: null,
+      manualReviewRequired: false,
       providerProbeAttempted: false,
       statusLabel: "주문 없음",
       message: "broker 제출이 없어 reconcile/PnL/status provider 조회를 시작하지 않았습니다.",
@@ -2171,6 +2187,10 @@ function evaluateLiveOpsCliReconcilePnlStatus({ config, fixtureSmoke, liveExecut
       openOrderCount: 0,
       openExposureKrw: "0",
       budgetUsedKrw: "0",
+      realizedPnlKrw: null,
+      unrealizedPnlKrw: null,
+      mismatchCount: null,
+      manualReviewRequired: false,
       providerProbeAttempted: false,
       statusLabel: "후속 연결 대기",
       message: "reconcile/PnL/status summary는 live execution lifecycle 이후 연결됩니다.",
@@ -2202,6 +2222,10 @@ function evaluateLiveOpsCliReconcilePnlStatus({ config, fixtureSmoke, liveExecut
     openOrderCount: 0,
     openExposureKrw: "0",
     budgetUsedKrw: "0",
+    realizedPnlKrw: null,
+    unrealizedPnlKrw: null,
+    mismatchCount: 0,
+    manualReviewRequired: false,
     providerProbeAttempted: false,
     statusLabel: "fixture 요약",
     message: "fixture reconcile/PnL/status summary가 open order 0건과 PnL 관측 대기 상태를 확인했고 provider 조회는 수행하지 않았습니다.",
@@ -2228,8 +2252,325 @@ function evaluateLiveOpsCliReconcilePnlStatus({ config, fixtureSmoke, liveExecut
   };
 }
 
-function evaluateLiveOpsCliTelegramAlert({ config, fixtureSmoke, liveExecution }) {
+function createLiveOpsCliReconcileBoundaryMissingSummary({ market, liveExecution }) {
+  return {
+    status: "blocked",
+    ready: false,
+    market,
+    liveOrderCapable: liveExecution.liveOrderCapable === true,
+    latestReconcileAt: null,
+    latestPnlAt: null,
+    latestStatusAt: null,
+    reconcileStatus: "provider_boundary_missing",
+    reconcileStatusLabel: "수동 확인 필요",
+    pnlStatus: "provider_boundary_missing",
+    pnlStatusLabel: "수동 확인 필요",
+    openOrderCount: 0,
+    openExposureKrw: "0",
+    budgetUsedKrw: "0",
+    realizedPnlKrw: null,
+    unrealizedPnlKrw: null,
+    mismatchCount: null,
+    manualReviewRequired: true,
+    providerProbeAttempted: false,
+    statusLabel: "후속 경계 차단",
+    message: "실주문 제출 후 reconcile/PnL/status provider 경계가 없어 상태 확정을 중단했습니다.",
+    action: "account/order/balance private read provider와 PnL/reconcile status provider를 연결한 뒤 같은 attempt를 재확인하세요.",
+    checks: [
+      {
+        name: "reconcile_summary",
+        status: "blocked",
+        code: "live_ops_reconcile_boundary_missing",
+        message: "실제 주문 제출 후 open order/exposure를 확인할 reconcile provider가 필요합니다.",
+      },
+    ],
+  };
+}
+
+async function collectLiveOpsCliPrivateReadStatusSummary({
+  market,
+  privateReadProvider,
+  reconcileStatusProvider,
+  pnlStatusProvider,
+  budgetSnapshot,
+  observedAt,
+  liveExecution,
+}) {
+  let openOrders;
+  let balanceSnapshot;
+  let reconcileStatus;
+  let pnlStatus;
+
+  try {
+    // 실계좌 조회는 주문 side effect가 없는 private read 경계지만, 실패하면 신규 주문 가능 상태를 확정하지 않는다.
+    [openOrders, balanceSnapshot, reconcileStatus, pnlStatus] = await Promise.all([
+      privateReadProvider.listOpenOrders(market),
+      privateReadProvider.getBalances(),
+      readLiveOpsCliReconcileStatus(reconcileStatusProvider),
+      readLiveOpsCliPnlStatus(pnlStatusProvider),
+    ]);
+  } catch (error) {
+    return {
+      status: "manual_review_required",
+      ready: false,
+      market,
+      liveOrderCapable: liveExecution.liveOrderCapable === true,
+      latestReconcileAt: null,
+      latestPnlAt: null,
+      latestStatusAt: observedAt,
+      reconcileStatus: "private_read_failed",
+      reconcileStatusLabel: "수동 확인 필요",
+      pnlStatus: "unknown",
+      pnlStatusLabel: "확인 필요",
+      openOrderCount: 0,
+      openExposureKrw: "0",
+      budgetUsedKrw: "0",
+      realizedPnlKrw: null,
+      unrealizedPnlKrw: null,
+      mismatchCount: null,
+      manualReviewRequired: true,
+      providerProbeAttempted: true,
+      statusLabel: "private read 실패",
+      message: "account/order/balance 상태를 private read provider에서 확인하지 못해 수동 점검 상태로 전환했습니다.",
+      action: "Upbit read-only 권한, DB status provider, provider rate-limit 상태를 확인한 뒤 같은 attempt를 재조회하세요.",
+      checks: [
+        {
+          name: "private_read",
+          status: "blocked",
+          code: "live_ops_private_read_failed",
+          message: "private read 실패는 PnL/open exposure를 0으로 보정하지 않고 수동 점검으로 격상합니다.",
+          details: {
+            reason: safeErrorName(error),
+          },
+        },
+      ],
+    };
+  }
+
+  const orders = Array.isArray(openOrders) ? openOrders : [];
+  const openExposureKrw = sumLiveOpsCliOpenExposureKrw(orders);
+  const resolvedReconcileStatus = normalizeLiveOpsCliReconcileStatus(reconcileStatus, {
+    observedAt,
+    openOrderCount: orders.length,
+  });
+  const resolvedPnlStatus = normalizeLiveOpsCliPnlStatus(pnlStatus);
+  const manualReviewRequired = resolvedReconcileStatus.manualReviewRequired || resolvedPnlStatus.manualReviewRequired;
+  const budgetUsedKrw = resolveLiveOpsCliBudgetUsedKrw({
+    budgetSnapshot,
+    openOrders: orders,
+  });
+  const krwBalance = findLiveOpsCliBalance(balanceSnapshot, "KRW");
+
+  return {
+    status: manualReviewRequired ? "manual_review_required" : "ready",
+    ready: !manualReviewRequired,
+    market,
+    liveOrderCapable: liveExecution.liveOrderCapable === true && !manualReviewRequired,
+    latestReconcileAt: resolvedReconcileStatus.lastReconcileAt ?? observedAt,
+    latestPnlAt: resolvedPnlStatus.latestCapturedAt,
+    latestStatusAt: observedAt,
+    reconcileStatus: resolvedReconcileStatus.result,
+    reconcileStatusLabel: resolvedReconcileStatus.statusLabel,
+    pnlStatus: resolvedPnlStatus.status,
+    pnlStatusLabel: resolvedPnlStatus.statusLabel,
+    openOrderCount: orders.length,
+    openExposureKrw,
+    budgetUsedKrw,
+    realizedPnlKrw: resolvedPnlStatus.realizedPnlKrw,
+    unrealizedPnlKrw: resolvedPnlStatus.unrealizedPnlKrw,
+    mismatchCount: resolvedReconcileStatus.mismatchCount,
+    manualReviewRequired,
+    providerProbeAttempted: true,
+    statusLabel: manualReviewRequired ? "수동 확인 필요" : "private read 확인",
+    message: manualReviewRequired
+      ? "private read가 account/order/balance를 읽었지만 reconcile 또는 PnL 상태가 수동 확인을 요구합니다."
+      : "private read가 account/order/balance 상태를 secret-safe summary로 낮췄습니다.",
+    action: manualReviewRequired
+      ? "open order, mismatch, PnL 결측 원인을 확인하고 신규 주문 전 manual review를 닫으세요."
+      : "TUI/JSON/status에서 open exposure, budget used, PnL, latest reconcile 값을 계속 감시하세요.",
+    privateRead: {
+      accountStatus: "read",
+      balanceStatus: balanceSnapshot === null || balanceSnapshot === undefined ? "unknown" : "read",
+      balanceCurrencyCount: Array.isArray(balanceSnapshot?.balances) ? balanceSnapshot.balances.length : 0,
+      balanceCapturedAt: balanceSnapshot?.capturedAt ?? null,
+      krwAvailable: krwBalance?.available ?? null,
+      krwLocked: krwBalance?.locked ?? null,
+      orderStatus: "read",
+    },
+    checks: [
+      {
+        name: "reconcile_summary",
+        status: "ok",
+        code: "live_ops_private_read_summary_ready",
+        message: "account/order/balance private read 결과를 secret-safe status summary로 낮췄습니다.",
+        details: {
+          openOrderCount: orders.length,
+          openExposureKrw,
+          mismatchCount: resolvedReconcileStatus.mismatchCount,
+        },
+      },
+      {
+        name: "pnl_summary",
+        status: resolvedPnlStatus.manualReviewRequired ? "blocked" : "ok",
+        code: resolvedPnlStatus.manualReviewRequired ? "live_ops_pnl_status_requires_review" : "live_ops_pnl_status_ready",
+        message: resolvedPnlStatus.message,
+      },
+      {
+        name: "status_surface",
+        status: "ok",
+        code: "live_ops_status_summary_ready",
+        message: "TUI/JSON safe summary에 open order, open exposure, budget used, realized/unrealized PnL을 secret 없이 노출합니다.",
+      },
+    ],
+  };
+}
+
+function shouldProbeLiveOpsCliPrivateRead(liveExecution) {
+  return (
+    liveExecution.status === "submitted" ||
+    liveExecution.status === "manual_review_required" ||
+    liveExecution.status === "reconcile_required" ||
+    liveExecution.status === "cancel_requested" ||
+    liveExecution.status === "cancel_confirmed"
+  );
+}
+
+function isLiveOpsCliPrivateReadProvider(provider) {
+  return (
+    provider !== undefined &&
+    provider !== null &&
+    typeof provider.listOpenOrders === "function" &&
+    typeof provider.getBalances === "function"
+  );
+}
+
+async function readLiveOpsCliReconcileStatus(provider) {
+  if (provider === undefined || provider === null || typeof provider.getReconcileStatus !== "function") {
+    return undefined;
+  }
+  return provider.getReconcileStatus();
+}
+
+async function readLiveOpsCliPnlStatus(provider) {
+  if (provider === undefined || provider === null || typeof provider.getStatus !== "function") {
+    return undefined;
+  }
+  return provider.getStatus();
+}
+
+function normalizeLiveOpsCliReconcileStatus(summary, { observedAt, openOrderCount }) {
+  if (summary === undefined) {
+    return {
+      result: "private_read_observed",
+      statusLabel: "private read 확인",
+      lastReconcileAt: observedAt,
+      mismatchCount: null,
+      manualReviewRequired: false,
+    };
+  }
+
+  const result = String(summary.result ?? "UNAVAILABLE");
+  const mismatchCount = Number.isFinite(Number(summary.mismatchCount)) ? Number(summary.mismatchCount) : null;
+  const manualReviewRequired = (
+    result === "MISMATCH_DETECTED" ||
+    result === "FAILED" ||
+    result === "UNAVAILABLE" ||
+    (mismatchCount !== null && mismatchCount > 0)
+  );
+
+  return {
+    result,
+    statusLabel: manualReviewRequired ? "수동 확인 필요" : "정상",
+    lastReconcileAt: summary.lastReconcileAt ?? observedAt,
+    mismatchCount,
+    openOrderCount: summary.openOrderCount ?? openOrderCount,
+    manualReviewRequired,
+  };
+}
+
+function normalizeLiveOpsCliPnlStatus(summary) {
+  if (summary === undefined) {
+    return {
+      status: "provider_not_connected",
+      statusLabel: "관측 대기",
+      latestCapturedAt: null,
+      realizedPnlKrw: null,
+      unrealizedPnlKrw: null,
+      manualReviewRequired: true,
+      message: "PnL status provider가 없어 손익 결측을 0으로 보정하지 않고 수동 확인 대상으로 표시합니다.",
+    };
+  }
+
+  const readStatus = String(summary.readStatus ?? "UNAVAILABLE");
+  const manualReviewRequired = readStatus !== "OK";
+  return {
+    status: readStatus.toLowerCase(),
+    statusLabel: readStatus === "OK" ? "정상" : (readStatus === "NOT_FOUND" ? "관측 없음" : "확인 필요"),
+    latestCapturedAt: summary.latestCapturedAt ?? null,
+    realizedPnlKrw: summary.latestRealizedPnlKrw ?? null,
+    unrealizedPnlKrw: summary.latestUnrealizedPnlKrw ?? null,
+    manualReviewRequired,
+    message: readStatus === "OK"
+      ? "최신 PnL snapshot에서 realized/unrealized PnL을 읽었습니다."
+      : "PnL snapshot 상태가 준비되지 않아 손익을 0으로 보정하지 않습니다.",
+  };
+}
+
+function sumLiveOpsCliOpenExposureKrw(openOrders) {
+  return sumDecimalStrings(openOrders.map((order) => {
+    if (!isPositiveDecimalString(order?.remainingQuantity) || !isPositiveDecimalString(order?.requestedPrice)) {
+      return "0";
+    }
+    return new Decimal(order.remainingQuantity).mul(order.requestedPrice).toFixed();
+  }));
+}
+
+function resolveLiveOpsCliBudgetUsedKrw({ budgetSnapshot, openOrders }) {
+  if (isNonNegativeDecimalString(budgetSnapshot?.dailyAutonomousNotionalUsedKrw)) {
+    return budgetSnapshot.dailyAutonomousNotionalUsedKrw;
+  }
+
+  return sumDecimalStrings(openOrders.map((order) => {
+    if (!isPositiveDecimalString(order?.requestedQuantity) || !isPositiveDecimalString(order?.requestedPrice)) {
+      return "0";
+    }
+    return new Decimal(order.requestedQuantity).mul(order.requestedPrice).toFixed();
+  }));
+}
+
+function sumDecimalStrings(values) {
+  return values.reduce((total, value) => total.plus(isDecimalString(value) ? value : "0"), new Decimal(0)).toFixed();
+}
+
+function findLiveOpsCliBalance(balanceSnapshot, currency) {
+  if (!Array.isArray(balanceSnapshot?.balances)) {
+    return undefined;
+  }
+  return balanceSnapshot.balances.find((balance) => balance?.currency === currency);
+}
+
+export async function evaluateLiveOpsCliTelegramAlert({
+  config,
+  fixtureSmoke,
+  liveExecution,
+  orderIntent,
+  telegramDispatcher,
+  observedAt,
+  correlationId,
+}) {
   const market = config.universe?.default_market ?? "KRW-BTC";
+
+  if (!fixtureSmoke && liveExecution.ready === true && telegramDispatcher !== undefined) {
+    return dispatchLiveOpsCliTelegramAlertSummary({
+      config,
+      market,
+      liveExecution,
+      orderIntent,
+      telegramDispatcher,
+      observedAt: observedAt ?? new Date().toISOString(),
+      correlationId,
+    });
+  }
 
   if (!fixtureSmoke && liveExecution.status === "submitted") {
     return {
@@ -2243,6 +2584,7 @@ function evaluateLiveOpsCliTelegramAlert({ config, fixtureSmoke, liveExecution }
       providerDispatchAttempted: false,
       statusLabel: "후속 경계 차단",
       message: "실주문 제출 후 Telegram trade alert provider 경계가 없어 알림 전송을 확정하지 않았습니다.",
+      action: "owner chat으로 전송 가능한 Telegram dispatch port를 연결한 뒤 주문 제출 alert를 재전송하세요.",
       checks: [
         {
           name: "telegram_connection",
@@ -2327,6 +2669,322 @@ function evaluateLiveOpsCliTelegramAlert({ config, fixtureSmoke, liveExecution }
       },
     ],
   };
+}
+
+async function dispatchLiveOpsCliTelegramAlertSummary({
+  config,
+  market,
+  liveExecution,
+  orderIntent,
+  telegramDispatcher,
+  observedAt,
+  correlationId,
+}) {
+  const events = createLiveOpsCliTelegramEvents({
+    config,
+    market,
+    liveExecution,
+    orderIntent,
+    observedAt,
+    correlationId,
+  });
+
+  if (events.length === 0) {
+    return {
+      status: "skipped",
+      ready: true,
+      market,
+      liveOrderCapable: liveExecution.liveOrderCapable === true,
+      lifecycleAlertCount: 0,
+      tradeAlertCount: 0,
+      alertCount: 0,
+      providerDispatchAttempted: false,
+      statusLabel: "전송 없음",
+      message: "이번 tick에서 owner chat으로 보낼 Telegram lifecycle/trade alert가 없습니다.",
+      action: "다음 lifecycle 또는 trade event가 확정되면 같은 dispatch 경계를 사용합니다.",
+      checks: [
+        {
+          name: "trade_alert",
+          status: "skipped",
+          code: "live_ops_telegram_alerts_skipped",
+          message: "Telegram event 후보가 없어 provider 호출을 생략했습니다.",
+        },
+      ],
+    };
+  }
+
+  let dispatchResult;
+  try {
+    // Telegram 실패가 이미 확정된 주문/리스크 evidence를 되돌리지 않도록 dispatch 결과를 별도 summary로만 격리한다.
+    dispatchResult = await callLiveOpsCliTelegramDispatcher(telegramDispatcher, {
+      market,
+      observedAt,
+      events,
+      liveExecution,
+    });
+  } catch (error) {
+    return createLiveOpsCliTelegramFailureSummary({
+      market,
+      liveExecution,
+      events,
+      reason: safeErrorName(error),
+    });
+  }
+
+  const normalized = normalizeLiveOpsCliTelegramDispatchResult(dispatchResult, events);
+  const failed = normalized.failureCount > 0 || normalized.status === "partial_failure";
+
+  return {
+    status: failed ? "manual_review_required" : normalized.status,
+    ready: !failed,
+    market,
+    liveOrderCapable: liveExecution.liveOrderCapable === true && !failed,
+    lifecycleAlertCount: events.filter((event) => isLiveOpsCliLifecycleAlert(event.eventKind)).length,
+    tradeAlertCount: events.filter((event) => !isLiveOpsCliLifecycleAlert(event.eventKind)).length,
+    alertCount: events.length,
+    providerDispatchAttempted: true,
+    attemptedCount: normalized.attemptedCount,
+    deliveredCount: normalized.deliveredCount,
+    cooldownHitCount: normalized.cooldownHitCount,
+    retryPlannedCount: normalized.retryPlannedCount,
+    failureCount: normalized.failureCount,
+    statusLabel: failed ? "전송 재시도 필요" : "owner chat 전송",
+    message: failed
+      ? "Telegram alert dispatch 일부가 실패해 retry/manual review summary로 수렴했습니다."
+      : "Telegram lifecycle/trade alert를 owner chat dispatch 경계로 전송했습니다.",
+    action: failed
+      ? "notification retry job과 Telegram provider 상태를 확인하되, 이미 확정된 주문/리스크 evidence는 되돌리지 않습니다."
+      : "owner chat 수신 시각과 alert metadata를 status/audit evidence와 대조하세요.",
+    events: events.map((event) => ({
+      eventKind: event.eventKind,
+      market: event.market ?? null,
+      evidenceId: event.evidenceId ?? null,
+      idempotencyKey: event.idempotencyKey ?? null,
+    })),
+    checks: [
+      {
+        name: "telegram_connection",
+        status: "ok",
+        code: "live_ops_telegram_owner_dispatch_ready",
+        message: "Telegram owner chat dispatch port를 호출했습니다.",
+        details: {
+          attemptedCount: normalized.attemptedCount,
+          deliveredCount: normalized.deliveredCount,
+          retryPlannedCount: normalized.retryPlannedCount,
+        },
+      },
+      {
+        name: "trade_alert",
+        status: failed ? "blocked" : "ok",
+        code: failed ? "live_ops_telegram_retry_or_manual_review" : "live_ops_telegram_alerts_sent",
+        message: failed
+          ? "Telegram 실패는 주문/리스크 commit을 되돌리지 않고 retry/manual review summary로 격리됐습니다."
+          : "startup/live capable/trade alert 후보가 provider dispatch 경계를 통과했습니다.",
+      },
+    ],
+  };
+}
+
+function createLiveOpsCliTelegramFailureSummary({ market, liveExecution, events, reason }) {
+  return {
+    status: "manual_review_required",
+    ready: false,
+    market,
+    liveOrderCapable: false,
+    lifecycleAlertCount: events.filter((event) => isLiveOpsCliLifecycleAlert(event.eventKind)).length,
+    tradeAlertCount: events.filter((event) => !isLiveOpsCliLifecycleAlert(event.eventKind)).length,
+    alertCount: events.length,
+    providerDispatchAttempted: true,
+    attemptedCount: events.length,
+    deliveredCount: 0,
+    cooldownHitCount: 0,
+    retryPlannedCount: 0,
+    failureCount: events.length,
+    statusLabel: "전송 실패",
+    message: "Telegram alert dispatch 결과를 확정하지 못해 수동 점검 상태로 전환했습니다.",
+    action: "주문/리스크 commit은 유지하고 provider 설정, retry queue, owner chat 접근 권한을 확인하세요.",
+    checks: [
+      {
+        name: "telegram_connection",
+        status: "blocked",
+        code: "live_ops_telegram_dispatch_failed",
+        message: "Telegram dispatch 실패는 주문/리스크 commit을 되돌리지 않습니다.",
+        details: {
+          reason,
+          liveExecutionStatus: liveExecution.status,
+        },
+      },
+    ],
+  };
+}
+
+function createLiveOpsCliTelegramEvents({ config, market, liveExecution, orderIntent, observedAt, correlationId }) {
+  const events = [];
+  if (config.telegram?.startup_alert_enabled === true) {
+    events.push(createLiveOpsCliTelegramBaseEvent({
+      eventKind: "TELEGRAM_CONNECTION_READY",
+      market,
+      liveExecution,
+      observedAt,
+      correlationId,
+      safeSummary: "production live ops Telegram 알림 채널 readiness가 확인됐습니다.",
+    }));
+  }
+  if (config.telegram?.live_order_capable_alert_enabled === true && liveExecution.liveOrderCapable === true) {
+    events.push(createLiveOpsCliTelegramBaseEvent({
+      eventKind: "LIVE_ORDER_CAPABLE_STARTED",
+      market,
+      liveExecution,
+      orderIntent,
+      observedAt,
+      correlationId,
+      evidenceId: liveExecution.attemptId ?? undefined,
+      safeSummary: "production live ops가 실주문 가능 실행 경계까지 전진했습니다.",
+    }));
+  }
+  if (config.telegram?.trade_event_alerts_enabled === true) {
+    const tradeEvent = createLiveOpsCliTradeTelegramEvent({
+      market,
+      liveExecution,
+      orderIntent,
+      observedAt,
+      correlationId,
+    });
+    if (tradeEvent !== undefined) {
+      events.push(tradeEvent);
+    }
+  }
+  return events;
+}
+
+function createLiveOpsCliTradeTelegramEvent({ market, liveExecution, orderIntent, observedAt, correlationId }) {
+  const eventKind = mapLiveOpsCliTelegramTradeEventKind(liveExecution.status);
+  if (eventKind === undefined) {
+    return undefined;
+  }
+
+  return createLiveOpsCliTelegramBaseEvent({
+    eventKind,
+    market,
+    liveExecution,
+    orderIntent,
+    observedAt,
+    correlationId,
+    evidenceId: liveExecution.attemptId ?? undefined,
+    safeSummary: liveExecution.message ?? "production live ops trade event가 확정됐습니다.",
+  });
+}
+
+function mapLiveOpsCliTelegramTradeEventKind(status) {
+  switch (status) {
+    case "submitted":
+      return "ORDER_SUBMITTED";
+    case "cancel_requested":
+      return "CANCEL_REQUESTED";
+    case "cancel_confirmed":
+      return "CANCEL_CONFIRMED";
+    case "reconcile_required":
+      return "RECONCILE_BLOCKED";
+    case "manual_review_required":
+      return "MANUAL_REVIEW_REQUIRED";
+    case "cost_blocked":
+      return "COST_BLOCKED";
+    case "blocked":
+    case "rejected":
+      return "RISK_BLOCKED";
+    default:
+      return undefined;
+  }
+}
+
+function createLiveOpsCliTelegramBaseEvent({
+  eventKind,
+  market,
+  liveExecution,
+  orderIntent,
+  observedAt,
+  correlationId,
+  evidenceId,
+  safeSummary,
+}) {
+  return {
+    environment: "production",
+    runMode: "live_autonomous_small_budget",
+    eventKind,
+    occurredAt: observedAt,
+    ...(correlationId === undefined ? {} : { correlationId }),
+    market,
+    operatingMode: liveExecution.liveOrderCapable === true ? "live_order_capable" : "live_armed",
+    liveOrderCapable: liveExecution.liveOrderCapable === true,
+    ...(orderIntent?.strategyId === undefined ? {} : { strategyId: orderIntent.strategyId }),
+    ...(orderIntent?.side === undefined ? {} : { side: orderIntent.side }),
+    ...(orderIntent?.requestedQuantity === undefined ? {} : { quantity: orderIntent.requestedQuantity }),
+    ...(orderIntent?.requestedPrice === undefined ? {} : { requestedPrice: orderIntent.requestedPrice }),
+    ...(orderIntent?.requestedNotional === undefined ? {} : { notionalKrw: orderIntent.requestedNotional }),
+    ...(liveExecution.attemptId === null || liveExecution.attemptId === undefined ? {} : { orderId: liveExecution.attemptId }),
+    ...(liveExecution.brokerOrderId === null || liveExecution.brokerOrderId === undefined ? {} : { brokerOrderId: liveExecution.brokerOrderId }),
+    ...(liveExecution.idempotencyKey === null || liveExecution.idempotencyKey === undefined ? {} : { idempotencyKey: liveExecution.idempotencyKey }),
+    ...(evidenceId === undefined ? {} : { evidenceId }),
+    safeSummary,
+    safeDetails: {
+      execution_status: liveExecution.status,
+      attempt_status: liveExecution.attemptStatus ?? null,
+    },
+  };
+}
+
+async function callLiveOpsCliTelegramDispatcher(dispatcher, payload) {
+  if (typeof dispatcher === "function") {
+    return dispatcher(payload);
+  }
+  if (dispatcher !== undefined && dispatcher !== null && typeof dispatcher.dispatchLiveOpsAlerts === "function") {
+    return dispatcher.dispatchLiveOpsAlerts(payload);
+  }
+  if (dispatcher !== undefined && dispatcher !== null && typeof dispatcher.dispatch === "function") {
+    return dispatcher.dispatch(payload);
+  }
+  throw new Error("LiveOpsCliTelegramDispatcherMissing");
+}
+
+function normalizeLiveOpsCliTelegramDispatchResult(result, events) {
+  const results = Array.isArray(result?.results) ? result.results : [];
+  const attemptedCount = Number.isFinite(Number(result?.attemptedCount)) ? Number(result.attemptedCount) : (results.length || events.length);
+  const deliveredCount = Number.isFinite(Number(result?.deliveredCount))
+    ? Number(result.deliveredCount)
+    : results.filter((item) => item?.notification?.delivered === true).length;
+  const cooldownHitCount = Number.isFinite(Number(result?.cooldownHitCount))
+    ? Number(result.cooldownHitCount)
+    : results.filter((item) => item?.cooldownHit === true).length;
+  const retryPlannedCount = Number.isFinite(Number(result?.retryPlannedCount))
+    ? Number(result.retryPlannedCount)
+    : results.filter((item) => item?.retryJobPlan !== undefined).length;
+  const failureCount = Number.isFinite(Number(result?.failureCount))
+    ? Number(result.failureCount)
+    : Math.max(0, attemptedCount - deliveredCount - cooldownHitCount);
+
+  return {
+    status: typeof result?.status === "string" ? result.status : (failureCount > 0 ? "partial_failure" : "sent"),
+    attemptedCount,
+    deliveredCount,
+    cooldownHitCount,
+    retryPlannedCount,
+    failureCount,
+  };
+}
+
+function isLiveOpsCliLifecycleAlert(eventKind) {
+  return [
+    "TELEGRAM_CONNECTION_READY",
+    "LIVE_ORDER_CAPABLE_STARTED",
+    "NORMAL_SHUTDOWN",
+    "OPERATOR_STOP",
+    "KILL_SWITCH_STOP",
+    "MANUAL_REVIEW_REQUIRED",
+    "CRASH_DETECTED",
+    "RESTART_DETECTED",
+    "RECOVERY_COMPLETED",
+    "TELEGRAM_PROVIDER_FAILURE_SUSTAINED",
+  ].includes(eventKind);
 }
 
 function evaluateLiveOpsCliAnalysisDecision({ config, fixtureSmoke, marketData }) {
