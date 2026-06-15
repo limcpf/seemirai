@@ -114,22 +114,25 @@ Authorization/Bearer, JWT, Telegram token, raw provider/order payload)를 스캔
 shell의 `RIPGREP_CONFIG_PATH`, `.gitignore`, hidden 기본 필터 영향을 받지 않도록 `--no-config`와 `-uuu` 또는 `--hidden --no-ignore`를 포함해야 한다. `src scripts config docs`는 검색 패턴 문자열이 아니라 `rg` argv의 실제 path operand로 들어가야 하며, `true`,
 `echo rg ...`, 일부 토큰만 확인한 명령, 검색어가 아닌 path operand에 금지 패턴 단어를 붙인 명령,
 `-q`/`--quiet`, `-l`/`--files-without-match`, `--files`, `-F`/`--fixed-strings`, `-f`/`--file`,
-`-P`/`--pcre2`/`--engine=pcre2`, `-w`/`--word-regexp`, `-x`/`--line-regexp`, `-v`/`--invert-match`, `-m`/`--max-count`, `-t`/`--type`, `--type-not`,
+`-P`/`--pcre2`/`--engine=pcre2`, `-w`/`--word-regexp`, `-x`/`--line-regexp`, `-v`/`--invert-match`, `-m`/`--max-count`, `-M`/`--max-columns`,
+`--stop-on-nonmatch`, `-t`/`--type`, `--type-not`,
 `--iglob`, `--ignore-file`, `--max-depth`, `--max-filesize`, `--pre`/`--pre-glob`, `-g`/`--glob`
 처럼 출력, 입력, 필수 범위, 정규식 의미를 줄이는 옵션은 인정하지 않는다. source/security scan command에 shell pipe,
 redirect, command separator, command substitution, shell parameter expansion이 있거나 검색 패턴에서 alternation을 `\|`로 escape해 실제 다중 후보 검색을 하지 않는 경우도
-검증 증거로 인정하지 않는다.
+검증 증거로 인정하지 않는다. lookaround처럼 `rg`가 parse하지 못해 검색 자체가 실패하는 정규식 패턴도 source coverage 증거가 아니다.
 주문 lifecycle timestamp는 validator 실행 시각보다 미래일 수 없고, 같은 주문 chain
-증거는 `<redacted>`, `<order-id>`, `<brokerOrderId>` 같은 일반 placeholder가 아니라 identifier 또는 uuid의 안정적인 suffix로 비교할 수 있어야 한다. artifact safe summary의
+증거는 `<redacted>`, `<order-id>`, `<brokerOrderId>` 같은 일반 placeholder가 아니라 identifier 또는 uuid의 안정적인 suffix로 비교할 수 있어야 한다. timestamp는
+`2026-06-15T00:00:00.000Z`처럼 시간 성분을 포함해야 하며 날짜만 있는 값은 lifecycle 증거가 아니다. artifact safe summary의
 중첩 객체와 배열 안의 `status`, `terminalState`/`terminal_state`, 주문 정책 필드(`market`, `side`, `orderType`/`order_type`/`ord_type`, `timeInForce`/`time_in_force`,
 `requestedNotionalKrw`/`requested_notional_krw`), lifecycle timestamp, exposure/counter 값은 manifest의 closeout 값과 충돌하면 안 된다.
 manifest `run`에 `orderType`, `order_type`, `ord_type` alias가 함께 있으면 모든 값이 `LIMIT`로 일치해야 하며, alias 간 충돌은
-운영 주문 정책 증거 실패로 본다.
+운영 주문 정책 증거 실패로 본다. `timeInForce`, `time_in_force` alias도 모두 `POST_ONLY`로 일치해야 한다.
 artifact는 parse 가능한 JSON safe summary여야 하며, fixture-only marker(`kind`의 `FIXTURE`, `fixture smoke` 문구)는 guarded closeout
 증거로 쓸 수 없다. 각 artifact마다 성공 status, terminal cancel, 주문 정책, submit/cancel/terminal
 timestamp, 같은 주문 suffix, open exposure 0 evidence가 최소 한 closeout record에 있어야 한다. 주문 suffix는 `identifierSuffix`,
 `cancelIdentifierSuffix`, `brokerOrderIdSuffix`, `cancelBrokerOrderIdSuffix`뿐 아니라 `identifier`, `cancel_identifier`,
-`brokerOrderId`/`broker_order_id`, `cancelBrokerOrderId`/`cancel_broker_order_id` alias도 허용한다. closeout record의 artifact status는
+`brokerOrderId`/`broker_order_id`, `cancelBrokerOrderId`/`cancel_broker_order_id` alias도 허용한다. 제공된 identifier pair와 broker order id pair는
+각각 누락 없이 같은 suffix로 일치해야 하며, 한 pair가 맞더라도 다른 pair가 충돌하면 같은 주문 chain 증거가 아니다. closeout record의 artifact status는
 `passed`, `success`, `ok`, `completed` 같은 명시적 성공 상태만 허용하며 `skipped`, `blocked`, `partial`은 closeout PASS 증거가 아니다.
 `ERROR_TIMEOUT`, `BLOCKED_BY_RISK`처럼 실패 prefix에 원인 suffix가 붙은 wrapper status도 artifact-level failure로 본다.
 주문 closeout이 아닌 provider/market/Telegram safe summary의 일반 `status` 값은 closeout status로 해석하지 않는다.
@@ -147,7 +150,8 @@ token tail이 붙은 URL도 redacted 값으로 보지 않는다. Bearer/JWT와 r
 일부가 공백이나 punctuation으로 이어지면 redacted 값으로 보지 않는다. quote로 감싼 `<redacted>` 뒤에 raw payload tail을 붙인
 문자열도 redacted 값으로 보지 않는다. 운영 env 값 내부에 `<redacted>`/`redacted`/`[redacted]` 조각이 남아 있으면 실제 credential
 evidence가 아니다. `SEEMIRAI_TELEGRAM_BOT_TOKEN` 같은 env 이름 그대로의 JSON field도 secret 후보로 본다. lowercase `bearer`
-token과 `eyJ...` 형태의 prefix 없는 compact JWT도 raw secret 후보로 차단한다.
+token과 `eyJ...` 형태의 prefix 없는 compact JWT도 raw secret 후보로 차단한다. `seemiraiUpbitSecretKey`, `seemiraiTelegramBotToken`처럼
+SEEMIRAI prefix를 camelCase로 쓴 credential JSON field도 raw secret 후보로 차단한다.
 source/security scan이 secret match를 찾은 경우 validator summary에는 match 원문을 다시 쓰지 않고 count, path, line, label 같은
 축약 정보만 남겨야 한다.
 

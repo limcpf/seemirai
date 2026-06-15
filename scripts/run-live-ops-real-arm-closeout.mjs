@@ -106,16 +106,18 @@ const disallowedRipgrepLongOptions = new Set([
   "--invert-match",
   "--max-depth",
   "--max-filesize",
+  "--max-columns",
   "--max-count",
   "--pcre2",
   "--pre",
   "--pre-glob",
   "--quiet",
+  "--stop-on-nonmatch",
   "--type",
   "--type-not",
   "--word-regexp",
 ]);
-const disallowedRipgrepShortOptions = new Set(["F", "L", "P", "T", "f", "l", "m", "q", "t", "v", "w", "x"]);
+const disallowedRipgrepShortOptions = new Set(["F", "L", "M", "P", "T", "f", "l", "m", "q", "t", "v", "w", "x"]);
 const withdrawalScopeMarkers = ["출금", "withdraw"];
 const forbiddenKeyScopeMarkers = ["출금", "입금", "withdraw", "deposit", "futures", "leverage", "margin"];
 const requiredCounterNames = [
@@ -131,6 +133,7 @@ const sensitivePatterns = [
   { label: "accessKey json field", pattern: /"(?:upbit)?accessKey"\s*:\s*"(?!\s*(?:<redacted>|redacted|\[redacted\])\s*")[^"]{8,}"/i },
   { label: "secret_key json field", pattern: /"(?:seemirai_)?(?:upbit_)?secret_key"\s*:\s*"(?!\s*(?:<redacted>|redacted|\[redacted\])\s*")[^"]{8,}"/i },
   { label: "secretKey json field", pattern: /"(?:upbit)?secretKey"\s*:\s*"(?!\s*(?:<redacted>|redacted|\[redacted\])\s*")[^"]{8,}"/i },
+  { label: "seemirai camelCase credential json field", pattern: /"seemirai(?:Upbit)?(?:AccessKey|SecretKey|TelegramBotToken|TuiControlToken)"\s*:\s*"(?!\s*(?:<redacted>|redacted|\[redacted\])\s*")[^"]{8,}"/i },
   { label: "telegram token json field", pattern: /"(?:seemirai_)?telegram_bot_token"\s*:\s*"(?!\s*(?:<redacted>|redacted|\[redacted\])\s*")[^"]{8,}"/i },
   { label: "telegram botToken json field", pattern: /"(?:telegram)?botToken"\s*:\s*"(?!\s*(?:<redacted>|redacted|\[redacted\])\s*")[^"]{8,}"/i },
   { label: "tui control token json field", pattern: /"(?:tuiControlToken|tui_control_token|seemirai_tui_control_token)"\s*:\s*"(?!\s*(?:<redacted>|redacted|\[redacted\])\s*")[^"]{8,}"/i },
@@ -472,16 +475,20 @@ function createArtifactFilesCheck(artifactFiles, manifest, run, counters) {
 
 function createOrderPolicyCheck(run) {
   const requestedNotionalKrw = Number(readStringOrNumber(run.requestedNotionalKrw));
-  // 운영 manifest의 alias 충돌은 실제 주문 타입을 모호하게 만들므로 모든 주문 타입 표기를 같은 정책 값으로 검증한다.
+  // 운영 manifest의 alias 충돌은 실제 주문 정책을 모호하게 만들므로 모든 표기를 같은 정책 값으로 검증한다.
   const orderTypeValues = readStringAliasValues(run, ["orderType", "order_type", "ord_type"])
     .map((actual) => ({ alias: actual.alias, value: actual.value.toUpperCase() }));
   const invalidOrderTypeValues = orderTypeValues.filter((actual) => actual.value !== expectedOrderType);
+  const timeInForceValues = readStringAliasValues(run, ["timeInForce", "time_in_force"])
+    .map((actual) => ({ alias: actual.alias, value: normalizeTimeInForce(actual.value) }));
+  const invalidTimeInForceValues = timeInForceValues.filter((actual) => actual.value !== expectedTimeInForce);
   const actual = {
     market: readString(run.market),
     side: readString(run.side),
     orderType: readString(run.orderType),
     orderTypeValues,
     timeInForce: normalizeTimeInForce(readString(run.timeInForce)),
+    timeInForceValues,
     requestedNotionalKrw,
   };
   const ok = actual.market === expectedMarket
@@ -489,6 +496,8 @@ function createOrderPolicyCheck(run) {
     && actual.orderType === expectedOrderType
     && orderTypeValues.length > 0
     && invalidOrderTypeValues.length === 0
+    && timeInForceValues.length > 0
+    && invalidTimeInForceValues.length === 0
     && actual.timeInForce === expectedTimeInForce
     && Number.isFinite(requestedNotionalKrw)
     && requestedNotionalKrw >= minRequestedNotionalKrw
@@ -507,7 +516,7 @@ function createOrderPolicyCheck(run) {
       minRequestedNotionalKrw,
       maxRequestedNotionalKrw,
     },
-    actual: { ...actual, invalidOrderTypeValues },
+    actual: { ...actual, invalidOrderTypeValues, invalidTimeInForceValues },
   });
 }
 
@@ -1100,11 +1109,27 @@ function skippedCheck(message, evidence = {}) {
 function hasSameOrderChain(run) {
   const identifier = readString(run.identifierSuffix);
   const cancelIdentifier = readString(run.cancelIdentifierSuffix);
+  const brokerOrderId = readString(run.brokerOrderIdSuffix);
+  const cancelBrokerOrderId = readString(run.cancelBrokerOrderIdSuffix);
+  const pairs = [
+    [identifier, cancelIdentifier],
+    [brokerOrderId, cancelBrokerOrderId],
+  ];
+  // 제출/취소 suffix 중 하나라도 충돌하면 다른 pair가 맞아도 같은 주문 closeout 증거로 보지 않는다.
+  const consistentPairs = pairs.every(([submitted, cancelled]) => {
+    if (submitted === undefined && cancelled === undefined) {
+      return true;
+    }
+    return isUsableOrderEvidenceSuffix(submitted)
+      && isUsableOrderEvidenceSuffix(cancelled)
+      && submitted === cancelled;
+  });
+  if (!consistentPairs) {
+    return false;
+  }
   if (isUsableOrderEvidenceSuffix(identifier) && identifier === cancelIdentifier) {
     return true;
   }
-  const brokerOrderId = readString(run.brokerOrderIdSuffix);
-  const cancelBrokerOrderId = readString(run.cancelBrokerOrderIdSuffix);
   return isUsableOrderEvidenceSuffix(brokerOrderId) && brokerOrderId === cancelBrokerOrderId;
 }
 
@@ -1461,6 +1486,7 @@ function createSourceScanCommandEvidence(commands) {
     const disallowedOptions = collectDisallowedRipgrepOptions(tokens);
     // escaped alternation은 다중 secret/order 후보 검색을 하지 않는 패턴이라 coverage 증거로 인정하지 않는다.
     const escapedAlternationPatterns = searchPatterns.filter((pattern) => pattern.includes("\\|"));
+    const unsupportedRegexPatterns = searchPatterns.filter(hasUnsupportedRipgrepRegex);
     const coveredUnsafePatterns = requiredUnsafeSourceScanPatterns
       .filter((requirement) => searchPatterns.some((pattern) => requirement.pattern.test(pattern)))
       .map((requirement) => requirement.label);
@@ -1480,6 +1506,7 @@ function createSourceScanCommandEvidence(commands) {
       excludedSourceGlobs,
       disallowedOptions,
       escapedAlternationPatterns,
+      unsupportedRegexPatterns,
       coveredUnsafePatterns,
       coveredSecretPatterns,
     };
@@ -1492,7 +1519,8 @@ function createSourceScanCommandEvidence(commands) {
     && check.shellOperators.length === 0
     && check.excludedSourceGlobs.length === 0
     && check.disallowedOptions.length === 0
-    && check.escapedAlternationPatterns.length === 0);
+    && check.escapedAlternationPatterns.length === 0
+    && check.unsupportedRegexPatterns.length === 0);
   const unsafePatternsCovered = collectUnique(validCommandChecks.flatMap((check) => check.coveredUnsafePatterns));
   const secretPatternsCovered = collectUnique(validCommandChecks.flatMap((check) => check.coveredSecretPatterns));
   const missingUnsafePatterns = requiredUnsafeSourceScanPatterns
@@ -1632,6 +1660,11 @@ function hasRipgrepFullTraversal(tokens) {
   const tokenSet = new Set(tokens);
   return tokens.some((token) => /^-u{2,3}$/u.test(token))
     || (tokenSet.has("--hidden") && tokenSet.has("--no-ignore"));
+}
+
+function hasUnsupportedRipgrepRegex(pattern) {
+  // ripgrep가 parse하지 못하는 lookaround류 패턴은 실제 source coverage 증거로 인정하지 않는다.
+  return /\(\?(?:[!=<]|P|#|[a-zA-Z-]+:)/u.test(pattern);
 }
 
 function collectRipgrepPathOperands(tokens) {
@@ -2016,6 +2049,10 @@ function normalizeTimeInForce(value) {
 function readTimestampMs(value) {
   const text = readString(value);
   if (text === undefined) {
+    return undefined;
+  }
+  // 날짜만 있는 값은 submit/cancel 순서의 실제 시각을 증명하지 못하므로 시간 성분을 요구한다.
+  if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/u.test(text)) {
     return undefined;
   }
   const timestamp = Date.parse(text);
