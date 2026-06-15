@@ -194,6 +194,35 @@ describe("production live ops Telegram alert mapper", () => {
     expect(cancelConfirmed.requests[1]?.body).toContain("취소 완료 상태");
   });
 
+  it("generic blocked execution은 RiskGate alert로 추정하지 않는다", () => {
+    const plan = planLiveOpsTelegramAlerts(createPlanInput({
+      liveExecution: liveExecutionSummary({
+        status: "blocked",
+        ready: false,
+        liveOrderCapable: false,
+        attemptedOrderCount: 1,
+        submittedOrderCount: 0,
+        attemptStatus: "BLOCKED",
+        message: "live broker port가 연결되지 않아 broker 제출을 중단했습니다.",
+      }),
+      orderIntent: createOrderIntent(),
+    }));
+
+    expect(plan).toMatchObject({
+      status: "ready",
+      lifecycleAlertCount: 1,
+      tradeAlertCount: 0,
+      alertCount: 1,
+    });
+    expect(plan.events.map((event) => event.eventKind)).toEqual([
+      "TELEGRAM_CONNECTION_READY",
+    ]);
+    expect(plan.requests.map((request) => request.reasonCode)).toEqual([
+      "telegram_connection_ready",
+    ]);
+    expect(JSON.stringify(plan)).not.toContain("RISK_BLOCKED");
+  });
+
   it("fake notifier로 planned alert를 dispatch하고 provider 결과를 요약한다", async () => {
     const notifier = new RecordingNotifier();
     const plan = planLiveOpsTelegramAlerts(createPlanInput({

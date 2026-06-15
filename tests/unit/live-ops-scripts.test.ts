@@ -482,6 +482,7 @@ const orderIntent = {
 const observedAt = "2026-06-15T01:00:00.000Z";
 const dispatches = [];
 const manualDispatches = [];
+const blockedDispatches = [];
 const sent = await evaluateLiveOpsCliTelegramAlert({
   config,
   fixtureSmoke: false,
@@ -529,6 +530,33 @@ const manualReview = await evaluateLiveOpsCliTelegramAlert({
     },
   },
 });
+const blocked = await evaluateLiveOpsCliTelegramAlert({
+  config,
+  fixtureSmoke: false,
+  liveExecution: {
+    ...liveExecution,
+    status: "blocked",
+    ready: false,
+    liveOrderCapable: false,
+    attemptStatus: "BLOCKED",
+    message: "live broker port가 연결되지 않아 broker 제출을 중단했습니다.",
+  },
+  orderIntent,
+  observedAt,
+  telegramDispatcher: {
+    async dispatch(payload) {
+      blockedDispatches.push(payload);
+      return {
+        status: "sent",
+        attemptedCount: payload.events.length,
+        deliveredCount: payload.events.length,
+        cooldownHitCount: 0,
+        retryPlannedCount: 0,
+        failureCount: 0,
+      };
+    },
+  },
+});
 const failed = await evaluateLiveOpsCliTelegramAlert({
   config,
   fixtureSmoke: false,
@@ -551,9 +579,11 @@ const failed = await evaluateLiveOpsCliTelegramAlert({
 console.log(JSON.stringify({
   sent,
   manualReview,
+  blocked,
   failed,
   eventKinds: dispatches[0].events.map((event) => event.eventKind),
   manualEventKinds: manualDispatches[0].events.map((event) => event.eventKind),
+  blockedDispatchCount: blockedDispatches.length,
   dispatchedMarket: dispatches[0].market,
 }));
         `,
@@ -570,9 +600,11 @@ console.log(JSON.stringify({
     const output = JSON.parse(result.stdout) as {
       sent: { ready: boolean; providerDispatchAttempted: boolean; alertCount: number; deliveredCount: number };
       manualReview: { ready: boolean; providerDispatchAttempted: boolean; alertCount: number; deliveredCount: number };
+      blocked: { ready: boolean; providerDispatchAttempted: boolean; alertCount: number; status: string };
       failed: { ready: boolean; status: string; retryPlannedCount: number; failureCount: number; action: string };
       eventKinds: string[];
       manualEventKinds: string[];
+      blockedDispatchCount: number;
       dispatchedMarket: string;
     };
 
@@ -597,6 +629,13 @@ console.log(JSON.stringify({
       "TELEGRAM_CONNECTION_READY",
       "MANUAL_REVIEW_REQUIRED",
     ]);
+    expect(output.blocked).toMatchObject({
+      ready: false,
+      providerDispatchAttempted: false,
+      alertCount: 0,
+      status: "pending",
+    });
+    expect(output.blockedDispatchCount).toBe(0);
     expect(output.dispatchedMarket).toBe("KRW-BTC");
     expect(output.failed).toMatchObject({
       ready: false,

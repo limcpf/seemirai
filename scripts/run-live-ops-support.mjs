@@ -2747,7 +2747,6 @@ function shouldDispatchLiveOpsCliTelegramAlert(liveExecution) {
   return (
     liveExecution.ready === true ||
     liveExecution.status === "submitted" ||
-    liveExecution.status === "blocked" ||
     liveExecution.status === "rejected" ||
     liveExecution.status === "cost_blocked" ||
     liveExecution.status === "reconcile_required" ||
@@ -2975,9 +2974,11 @@ function mapLiveOpsCliTelegramTradeEventKind(status) {
       return "MANUAL_REVIEW_REQUIRED";
     case "cost_blocked":
       return "COST_BLOCKED";
-    case "blocked":
     case "rejected":
       return "RISK_BLOCKED";
+    case "blocked":
+      // generic blocked는 wiring/readiness 차단도 포함하므로 RiskGate evidence 없이 risk alert로 추정하지 않는다.
+      return undefined;
     default:
       return undefined;
   }
