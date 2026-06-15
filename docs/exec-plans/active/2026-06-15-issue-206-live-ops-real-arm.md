@@ -143,6 +143,8 @@ SEEMIRAI_RUN_LIVE_OPS_REAL_ARM_CLOSEOUT=1 \
   검증한다. guard가 없으면 skipped/blocker summary만 남긴다.
 - 2026-06-15: guarded closeout manifest는 실제 존재하는 저장소 밖 config/env 파일, 출금 권한이 없는 key scope safe summary, 실제
   `rg -n` source/security scan 명령, 미래가 아닌 주문 lifecycle timestamp, placeholder가 아닌 같은 주문 identifier/uuid suffix를 요구한다.
+- 2026-06-15: closeout validator는 추가/중복 인자 없는 정확한 `live:ops` command, symlink realpath 기준 저장소 밖 config/env/artifact,
+  artifact safe summary와 manifest closeout 값의 일치, database password redaction도 검증한다.
 
 ## 남은 이슈
 

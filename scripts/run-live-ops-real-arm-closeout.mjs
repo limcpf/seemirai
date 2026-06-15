@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { randomUUID } from "node:crypto";
-import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
+import { mkdir, readFile, realpath, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import process from "node:process";
@@ -35,9 +35,11 @@ const sensitivePatterns = [
   { label: "telegram token json field", pattern: /"telegram_bot_token"\s*:\s*"(?!<redacted>|redacted|\[redacted\])[^"]{8,}"/i },
   { label: "telegram botToken json field", pattern: /"(?:telegram)?botToken"\s*:\s*"(?!<redacted>|redacted|\[redacted\])[^"]{8,}"/i },
   { label: "telegram bot token url", pattern: /https:\/\/api\.telegram\.org\/bot(?!<redacted>|redacted|\[redacted\])[^/\s"']{8,}\/[A-Za-z]+/i },
+  { label: "database password json field", pattern: /"(?:databasePassword|dbPassword|pgPassword|password)"\s*:\s*"(?!<redacted>|redacted|\[redacted\])[^"]{8,}"/i },
   { label: "access key env assignment", pattern: /\b(?:SEEMIRAI_)?(?:UPBIT_)?ACCESS_KEY\s*=\s*(?!(?:["']?(?:<redacted>|redacted|\[redacted\])["']?)(?:\s|$|["',]))\S{8,}/i },
   { label: "secret key env assignment", pattern: /\b(?:SEEMIRAI_)?(?:UPBIT_)?SECRET_KEY\s*=\s*(?!(?:["']?(?:<redacted>|redacted|\[redacted\])["']?)(?:\s|$|["',]))\S{8,}/i },
   { label: "telegram token env assignment", pattern: /\b(?:SEEMIRAI_)?TELEGRAM_BOT_TOKEN\s*=\s*(?!(?:["']?(?:<redacted>|redacted|\[redacted\])["']?)(?:\s|$|["',]))\S{8,}/i },
+  { label: "database password env assignment", pattern: /\b(?:SEEMIRAI_)?(?:DATABASE_PASSWORD|DB_PASSWORD|PGPASSWORD)\s*=\s*(?!(?:["']?(?:<redacted>|redacted|\[redacted\])["']?)(?:\s|$|["',]))\S{8,}/i },
   { label: "raw authorization bearer", pattern: /authorization:\s*bearer\s+(?!<redacted>|redacted|\[redacted\])[^\s"']+/i },
   { label: "authorization json field", pattern: /"authorization"\s*:\s*"(?!bearer\s+(?:<redacted>|redacted|\[redacted\])"|(?:<redacted>|redacted|\[redacted\])")[^"]{8,}"/i },
   { label: "jwt json field", pattern: /"jwt"\s*:\s*"(?!<redacted>|redacted|\[redacted\])[^"]{8,}"/i },
@@ -193,7 +195,7 @@ async function validateManifest(manifest, manifestPath, manifestRawText, options
       manifestShape: createManifestShapeCheck(manifest),
       guardedArtifactInput: createGuardedArtifactInputCheck(manifest, manifestPath, artifactFiles, options.guarded),
       operatorInputs: await createOperatorInputsCheck(manifest, path.dirname(manifestPath), options.guarded),
-      artifactFiles: createArtifactFilesCheck(artifactFiles),
+      artifactFiles: createArtifactFilesCheck(artifactFiles, manifest, run, counters),
       orderPolicy: createOrderPolicyCheck(run),
       orderLifecycle: createOrderLifecycleCheck(run),
       reconcileCloseout: createReconcileCloseoutCheck(manifest, run),
@@ -268,11 +270,9 @@ async function createOperatorInputsCheck(manifest, baseDir, guarded) {
     ["operatorArmEvidenceId", readString(manifest.operatorArmEvidenceId)],
     ["keyScopeEvidenceId", readString(manifest.keyScopeEvidenceId)],
   ].filter(([, value]) => !hasText(value)).map(([name]) => name);
-  const pathViolations = [
-    ["configPath", configPath],
-    ["envFilePath", envFilePath],
-    ...artifactPaths.map((artifactPath, index) => [`artifactPaths[${index}]`, artifactPath]),
-  ].filter(([, value]) => hasText(value) && !isOutsideRepositoryPath(value)).map(([name, value]) => ({ name, value }));
+  const pathViolations = fileStatuses
+    .filter((file) => file.exists && !file.outsideRepository)
+    .map((file) => ({ name: file.name, value: file.value, realPath: file.realPath }));
   const missingFiles = fileStatuses.filter((file) => !file.exists || !file.isFile);
 
   if (missing.length === 0
@@ -284,6 +284,7 @@ async function createOperatorInputsCheck(manifest, baseDir, guarded) {
       configPath,
       envFilePath,
       artifactCount: artifactPaths.length,
+      files: fileStatuses,
       keyScope: keyScopeEvidence.evidence,
     });
   }
@@ -296,19 +297,27 @@ async function createOperatorInputsCheck(manifest, baseDir, guarded) {
   });
 }
 
-function createArtifactFilesCheck(artifactFiles) {
+function createArtifactFilesCheck(artifactFiles, manifest, run, counters) {
   const unreadable = artifactFiles
     .filter((file) => file.error !== undefined)
     .map((file) => ({ filePath: file.filePath, error: file.error }));
-  if (artifactFiles.length > 0 && unreadable.length === 0) {
+  const pathViolations = artifactFiles
+    .filter((file) => file.error === undefined && !file.outsideRepository)
+    .map((file) => ({ filePath: file.filePath, realPath: file.realPath }));
+  const artifactConflicts = createArtifactManifestConflicts(artifactFiles, manifest, run, counters);
+
+  if (artifactFiles.length > 0 && unreadable.length === 0 && pathViolations.length === 0 && artifactConflicts.length === 0) {
     return okCheck("closeout manifest가 가리키는 redacted artifact 파일을 모두 읽었다.", {
       artifactCount: artifactFiles.length,
+      realPathChecked: true,
     });
   }
 
   return failCheck("closeout manifest의 redacted artifact 파일을 읽지 못했다.", {
     artifactCount: artifactFiles.length,
     unreadable,
+    pathViolations,
+    artifactConflicts,
   });
 }
 
@@ -544,11 +553,22 @@ async function readArtifactFiles(artifactPaths, baseDir) {
   for (const artifactPath of artifactPaths) {
     const resolved = resolveInputPath(artifactPath, baseDir);
     try {
-      files.push({ filePath: resolved, rawText: await readFile(resolved, "utf8") });
+      const realPath = await realpath(resolved);
+      const rawText = await readFile(realPath, "utf8");
+      files.push({
+        filePath: resolved,
+        realPath,
+        rawText,
+        value: readJsonValue(rawText),
+        outsideRepository: isOutsideRepositoryResolvedPath(realPath),
+      });
     } catch (error) {
       files.push({
         filePath: resolved,
+        realPath: undefined,
         rawText: JSON.stringify({ artifact_read_error: toErrorMessage(error) }),
+        value: undefined,
+        outsideRepository: false,
         error: toErrorMessage(error),
       });
     }
@@ -865,33 +885,33 @@ function isLiveOpsCommand(command, configPath, envFilePath) {
   if (tokens[0] !== "corepack" || tokens[1] !== "pnpm" || tokens[2] !== "live:ops" || separatorIndex !== 3) {
     return false;
   }
-  if (tokens.includes("--fixture-smoke")
-    || tokens.includes("--dry-run")
-    || tokens.includes("--attach")
-    || tokens.includes("--help")
-    || tokens.includes("-h")) {
+  const args = tokens.slice(separatorIndex + 1);
+  const exactArgs = ["--config", configPath, "--env-file", envFilePath, "--tui"];
+  if (args.length !== exactArgs.length) {
     return false;
   }
-  const configIndex = tokens.indexOf("--config");
-  const envFileIndex = tokens.indexOf("--env-file");
-  return configIndex > separatorIndex
-    && envFileIndex > separatorIndex
-    && tokens[configIndex + 1] === configPath
-    && tokens[envFileIndex + 1] === envFilePath
-    && tokens.includes("--tui");
+  return args.every((arg, index) => arg === exactArgs[index]);
 }
 
 async function createFileStatus(name, value, baseDir) {
   if (!hasText(value)) {
-    return { name, value: value ?? null, exists: false, isFile: false, error: "missing" };
+    return { name, value: value ?? null, realPath: null, exists: false, isFile: false, outsideRepository: false, error: "missing" };
   }
 
   const filePath = resolveInputPath(value, baseDir);
   try {
-    const stats = await stat(filePath);
-    return { name, value: filePath, exists: true, isFile: stats.isFile() };
+    const realPathValue = await realpath(filePath);
+    const stats = await stat(realPathValue);
+    return {
+      name,
+      value: filePath,
+      realPath: realPathValue,
+      exists: true,
+      isFile: stats.isFile(),
+      outsideRepository: isOutsideRepositoryResolvedPath(realPathValue),
+    };
   } catch (error) {
-    return { name, value: filePath, exists: false, isFile: false, error: toErrorMessage(error) };
+    return { name, value: filePath, realPath: null, exists: false, isFile: false, outsideRepository: false, error: toErrorMessage(error) };
   }
 }
 
@@ -903,7 +923,7 @@ function createKeyScopeEvidence(manifest) {
   const missingRequiredScopes = requiredKeyScopes.filter((scope) => !grantedScopes.includes(scope));
   const extraGrantedScopes = grantedScopes.filter((scope) => !requiredKeyScopes.includes(scope));
   const forbiddenGrantedScopes = grantedScopes.filter(isForbiddenKeyScope);
-  const withdrawalAbsenceRecorded = withdrawalEnabled === false || forbiddenScopesAbsent.some(isWithdrawalScope);
+  const withdrawalAbsenceRecorded = withdrawalEnabled === false && forbiddenScopesAbsent.some(isWithdrawalScope);
   const ok = grantedScopes.length > 0
     && missingRequiredScopes.length === 0
     && extraGrantedScopes.length === 0
@@ -926,7 +946,8 @@ function createKeyScopeEvidence(manifest) {
 
 function createSourceScanCommandEvidence(commands) {
   const commandChecks = commands.map((command) => {
-    const usesRipgrep = /\brg\b/u.test(command);
+    const tokens = command.trim().split(/\s+/u);
+    const usesRipgrep = tokens[0] === "rg";
     const hasLineNumber = /(?:^|\s)(?:-n|--line-number)(?:\s|$)/u.test(command);
     const scansExpectedPaths = /\b(?:src|scripts)\b/u.test(command) && /\b(?:docs|config|scripts|src)\b/u.test(command);
     const checksUnsafeOrderBoundary = /ord_type|withdraw|출금|deposit|입금|leverage|futures|margin|시장가|best/u.test(command);
@@ -955,6 +976,50 @@ function createSourceScanCommandEvidence(commands) {
     hasSecretBoundaryScan,
     commandChecks,
   };
+}
+
+function createArtifactManifestConflicts(artifactFiles, manifest, run, counters) {
+  const reconcile = readRecord(manifest.reconcile);
+  const expectedZeroFields = {
+    openExposureKrw: readNumber(run.openExposureKrw),
+    openOrderCount: readNumber(run.openOrderCount),
+    reconcileMismatchCount: readNumber(run.reconcileMismatchCount),
+    untrackedFillCount: readNumber(run.untrackedFillCount),
+    manualReviewCount: readNumber(run.manualReviewCount),
+    mismatchCount: readNumber(reconcile.mismatchCount),
+    ...Object.fromEntries(requiredCounterNames.map((name) => [name, readNumber(counters[name])])),
+  };
+  const conflicts = [];
+
+  for (const file of artifactFiles) {
+    if (!isRecord(file.value)) {
+      continue;
+    }
+    const status = readString(file.value.status);
+    if (status !== undefined && /^(?:failed|fail|error|rejected)$/iu.test(status)) {
+      conflicts.push({ filePath: file.filePath, field: "status", expected: "not failed", actual: status });
+    }
+    const terminalState = normalizeTerminalState(readString(file.value.terminalState));
+    if (terminalState !== undefined && terminalState !== "CANCEL") {
+      conflicts.push({ filePath: file.filePath, field: "terminalState", expected: "CANCEL", actual: terminalState });
+    }
+    for (const [field, expected] of Object.entries(expectedZeroFields)) {
+      const actual = readNumber(file.value[field]);
+      if (actual !== undefined && expected !== undefined && actual !== expected) {
+        conflicts.push({ filePath: file.filePath, field, expected, actual });
+      }
+    }
+  }
+
+  return conflicts;
+}
+
+function readJsonValue(rawText) {
+  try {
+    return JSON.parse(rawText);
+  } catch {
+    return undefined;
+  }
 }
 
 function isUsableOrderEvidenceSuffix(value) {
@@ -1039,12 +1104,8 @@ function hasText(value) {
   return typeof value === "string" && value.trim().length > 0;
 }
 
-function isOutsideRepositoryPath(value) {
-  const expanded = expandHome(value);
-  if (!path.isAbsolute(expanded)) {
-    return false;
-  }
-  const resolved = path.resolve(expanded);
+function isOutsideRepositoryResolvedPath(resolvedPath) {
+  const resolved = path.resolve(resolvedPath);
   const relative = path.relative(repositoryRoot, resolved);
   return relative.startsWith("..") || path.isAbsolute(relative);
 }
