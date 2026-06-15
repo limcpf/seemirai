@@ -173,6 +173,9 @@ SEEMIRAI_RUN_LIVE_OPS_REAL_ARM_CLOSEOUT=1 \
 - 2026-06-15: closeout validator는 manifest `run.ord_type` alias 충돌, Telegram placeholder tail, JSON string escape로 숨긴
   secret assignment, prefix 없는 compact JWT/lowercase bearer, PCRE2 no-match scan, shell redirection/pipe, fake env credential,
   escaped alternation pattern, `--files` source scan도 차단한다.
+- 2026-06-15: closeout validator는 `rg --no-config` 없는 source scan, `-x`/`--line-regexp`, command substitution,
+  JSON escape로 숨긴 secret/raw payload key, `SEEMIRAI_TELEGRAM_BOT_TOKEN` JSON field, raw payload placeholder punctuation tail도
+  차단한다.
 
 ## 남은 이슈
 

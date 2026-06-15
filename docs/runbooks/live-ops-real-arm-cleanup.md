@@ -110,13 +110,14 @@ root 기준으로 판정한다.
 `withdrawalEnabled: false`처럼 허용 scope와 출금 권한 부재를 redacted safe summary로 기록한다. source/security scan은 실제 `rg -n`
 명령으로 repository root에서 `src scripts config docs` 전체 범위의 금지 주문 경계 전체(`ord_type`, market/best 주문, 출금/입금,
 leverage/futures/margin)와 secret/raw payload 후보 전체(access/secret key, 대문자 `ACCESS_KEY`/`SECRET_KEY`,
-Authorization/Bearer, JWT, Telegram token, raw provider/order payload)를 스캔한 증거를 포함해야 한다. `src scripts config docs`는 검색 패턴 문자열이 아니라 `rg` argv의 실제 path operand로 들어가야 하며, `true`,
+Authorization/Bearer, JWT, Telegram token, raw provider/order payload)를 스캔한 증거를 포함해야 한다. source/security scan 명령은
+shell의 `RIPGREP_CONFIG_PATH` 영향을 받지 않도록 `--no-config`를 포함해야 한다. `src scripts config docs`는 검색 패턴 문자열이 아니라 `rg` argv의 실제 path operand로 들어가야 하며, `true`,
 `echo rg ...`, 일부 토큰만 확인한 명령, 검색어가 아닌 path operand에 금지 패턴 단어를 붙인 명령,
 `-q`/`--quiet`, `-l`/`--files-without-match`, `--files`, `-F`/`--fixed-strings`, `-f`/`--file`,
-`-P`/`--pcre2`/`--engine=pcre2`, `-v`/`--invert-match`, `-m`/`--max-count`, `-t`/`--type`, `--type-not`,
+`-P`/`--pcre2`/`--engine=pcre2`, `-x`/`--line-regexp`, `-v`/`--invert-match`, `-m`/`--max-count`, `-t`/`--type`, `--type-not`,
 `--iglob`, `--ignore-file`, `--max-depth`, `--max-filesize`, `--pre`/`--pre-glob`, `-g`/`--glob`
 처럼 출력, 입력, 필수 범위, 정규식 의미를 줄이는 옵션은 인정하지 않는다. source/security scan command에 shell pipe,
-redirect, command separator가 있거나 검색 패턴에서 alternation을 `\|`로 escape해 실제 다중 후보 검색을 하지 않는 경우도
+redirect, command separator, command substitution이 있거나 검색 패턴에서 alternation을 `\|`로 escape해 실제 다중 후보 검색을 하지 않는 경우도
 검증 증거로 인정하지 않는다.
 주문 lifecycle timestamp는 validator 실행 시각보다 미래일 수 없고, 같은 주문 chain
 증거는 `<redacted>`, `<order-id>`, `<brokerOrderId>` 같은 일반 placeholder가 아니라 identifier 또는 uuid의 안정적인 suffix로 비교할 수 있어야 한다. artifact safe summary의
@@ -139,12 +140,12 @@ database password 원문, `database_password`/`db_password`/`pg_password`, `raw_
 JSON credential 값은 `<redacted>`, `redacted`, `[redacted]` 같은 placeholder와 정확히 일치해야 하며, placeholder 뒤에 원문 일부를
 공백, 쉼표, 세미콜론, JSON 조각 형태로 덧붙이면 secret leak으로 본다. env assignment 형태도 placeholder 뒤에 원문이 붙으면 secret leak으로 본다. TUI control token도
 `SEEMIRAI_TUI_CONTROL_TOKEN` env assignment와 `tuiControlToken`/`tui_control_token` JSON field 모두 secret 후보로 차단한다.
-`KEY: value` 형태의 로그도 env assignment와 같은 secret 후보로 본다. raw text뿐 아니라 JSON string escape를 decode한 값도 같은
-redaction 기준으로 스캔하므로 `\u003d` 같은 escape로 env assignment를 숨길 수 없다.
+`KEY: value` 형태의 로그도 env assignment와 같은 secret 후보로 본다. raw text뿐 아니라 JSON string escape를 decode한 key/value도
+같은 redaction 기준으로 스캔하므로 `\u003d`, `\u005f` 같은 escape로 env assignment나 raw payload key를 숨길 수 없다.
 Telegram URL은 method path가 없어도 `https://api.telegram.org/bot...` 뒤 원문 token이 있으면 실패하며, `<redacted>` 뒤에 raw
 token tail이 붙은 URL도 redacted 값으로 보지 않는다. Bearer/JWT와 raw provider/order payload도 placeholder 뒤에 토큰이나 payload
-일부가 이어지면 redacted 값으로 보지 않는다. lowercase `bearer` token과 `eyJ...` 형태의 prefix 없는 compact JWT도 raw secret
-후보로 차단한다.
+일부가 공백이나 punctuation으로 이어지면 redacted 값으로 보지 않는다. `SEEMIRAI_TELEGRAM_BOT_TOKEN` 같은 env 이름 그대로의
+JSON field도 secret 후보로 본다. lowercase `bearer` token과 `eyJ...` 형태의 prefix 없는 compact JWT도 raw secret 후보로 차단한다.
 source/security scan이 secret match를 찾은 경우 validator summary에는 match 원문을 다시 쓰지 않고 count, path, line, label 같은
 축약 정보만 남겨야 한다.
 

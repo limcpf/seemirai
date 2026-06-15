@@ -94,6 +94,7 @@ const requiredSecretSourceScanPatterns = [
   { label: "raw order payload", pattern: /raw_order|rawOrder/u },
 ];
 const disallowedRipgrepLongOptions = new Set([
+  "--line-regexp",
   "--file",
   "--files",
   "--files-with-matches",
@@ -113,7 +114,7 @@ const disallowedRipgrepLongOptions = new Set([
   "--type",
   "--type-not",
 ]);
-const disallowedRipgrepShortOptions = new Set(["F", "L", "P", "T", "f", "l", "m", "q", "t", "v"]);
+const disallowedRipgrepShortOptions = new Set(["F", "L", "P", "T", "f", "l", "m", "q", "t", "v", "x"]);
 const withdrawalScopeMarkers = ["출금", "withdraw"];
 const forbiddenKeyScopeMarkers = ["출금", "입금", "withdraw", "deposit", "futures", "leverage", "margin"];
 const requiredCounterNames = [
@@ -129,7 +130,7 @@ const sensitivePatterns = [
   { label: "accessKey json field", pattern: /"(?:upbit)?accessKey"\s*:\s*"(?!\s*(?:<redacted>|redacted|\[redacted\])\s*")[^"]{8,}"/i },
   { label: "secret_key json field", pattern: /"(?:seemirai_)?(?:upbit_)?secret_key"\s*:\s*"(?!\s*(?:<redacted>|redacted|\[redacted\])\s*")[^"]{8,}"/i },
   { label: "secretKey json field", pattern: /"(?:upbit)?secretKey"\s*:\s*"(?!\s*(?:<redacted>|redacted|\[redacted\])\s*")[^"]{8,}"/i },
-  { label: "telegram token json field", pattern: /"telegram_bot_token"\s*:\s*"(?!\s*(?:<redacted>|redacted|\[redacted\])\s*")[^"]{8,}"/i },
+  { label: "telegram token json field", pattern: /"(?:seemirai_)?telegram_bot_token"\s*:\s*"(?!\s*(?:<redacted>|redacted|\[redacted\])\s*")[^"]{8,}"/i },
   { label: "telegram botToken json field", pattern: /"(?:telegram)?botToken"\s*:\s*"(?!\s*(?:<redacted>|redacted|\[redacted\])\s*")[^"]{8,}"/i },
   { label: "tui control token json field", pattern: /"(?:tuiControlToken|tui_control_token|seemirai_tui_control_token)"\s*:\s*"(?!\s*(?:<redacted>|redacted|\[redacted\])\s*")[^"]{8,}"/i },
   { label: "telegram bot token url", pattern: /https:\/\/api\.telegram\.org\/bot(?!<redacted>|redacted|\[redacted\])[^/\s"']{8,}(?:\/[A-Za-z]+)?/i },
@@ -155,8 +156,8 @@ const sensitivePatterns = [
   { label: "raw order field", pattern: /"raw(?:_|-)?order(?:(?:_|-)?(?:detail|payload))?"\s*:/i },
   { label: "raw provider string payload", pattern: /\b(?:rawProvider(?:Payload|Body)?|raw(?:_|-)?provider(?:(?:_|-)?(?:payload|body))?)\s*[:=]\s*(?!(?:<redacted>|redacted|\[redacted\])(?:\s|$))(?:\{|\[|[A-Za-z0-9_-]{4,})/i },
   { label: "raw order string payload", pattern: /\b(?:rawOrder(?:Detail|Payload)?|raw(?:_|-)?order(?:(?:_|-)?(?:detail|payload))?)\s*[:=]\s*(?!(?:<redacted>|redacted|\[redacted\])(?:\s|$))(?:\{|\[|[A-Za-z0-9_-]{4,})/i },
-  { label: "raw provider placeholder tail", pattern: /\b(?:rawProvider(?:Payload|Body)?|raw(?:_|-)?provider(?:(?:_|-)?(?:payload|body))?)\s*[:=]\s*(?:<redacted>|redacted|\[redacted\])\s+(?:\{|\[|[^\s"']+)/i },
-  { label: "raw order placeholder tail", pattern: /\b(?:rawOrder(?:Detail|Payload)?|raw(?:_|-)?order(?:(?:_|-)?(?:detail|payload))?)\s*[:=]\s*(?:<redacted>|redacted|\[redacted\])\s+(?:\{|\[|[^\s"']+)/i },
+  { label: "raw provider placeholder tail", pattern: /\b(?:rawProvider(?:Payload|Body)?|raw(?:_|-)?provider(?:(?:_|-)?(?:payload|body))?)\s*[:=]\s*(?:<redacted>|redacted|\[redacted\])(?:\s+|[,;:\[{])\s*(?:\{|\[|[^\s"']+)/i },
+  { label: "raw order placeholder tail", pattern: /\b(?:rawOrder(?:Detail|Payload)?|raw(?:_|-)?order(?:(?:_|-)?(?:detail|payload))?)\s*[:=]\s*(?:<redacted>|redacted|\[redacted\])(?:\s+|[,;:\[{])\s*(?:\{|\[|[^\s"']+)/i },
   { label: "raw update field", pattern: /"raw(?:_|-)?update"\s*:/i },
 ];
 
@@ -708,7 +709,13 @@ function collectJsonStringText(value, depth = 0) {
     return value.map((item) => collectJsonStringText(item, depth + 1)).filter(hasText).join("\n");
   }
   if (isRecord(value)) {
-    return Object.values(value).map((item) => collectJsonStringText(item, depth + 1)).filter(hasText).join("\n");
+    return Object.entries(value)
+      .map(([key, item]) => {
+        const nested = collectJsonStringText(item, depth + 1);
+        return hasText(nested) ? `${key}: ${nested}` : `${key}:`;
+      })
+      .filter(hasText)
+      .join("\n");
   }
   return "";
 }
@@ -1442,6 +1449,8 @@ function createSourceScanCommandEvidence(commands) {
     const searchPatterns = collectRipgrepSearchPatterns(tokens);
     const usesRipgrep = tokens[0] === "rg";
     const hasLineNumber = /(?:^|\s)(?:-n|--line-number)(?:\s|$)/u.test(command);
+    // 운영자 shell의 ripgrep config가 검색 범위를 몰래 줄이지 못하게 source scan 증거는 config 비활성화를 요구한다.
+    const hasNoConfig = tokens.includes("--no-config");
     // redirect/pipe가 있으면 실제 검색 결과가 reviewer에게 보이지 않을 수 있어 closeout source scan 증거에서 제외한다.
     const shellOperators = collectUnquotedShellOperators(command);
     const scansExpectedPaths = requiredSourceScanPaths.every((scanPath) => operands.includes(scanPath));
@@ -1459,6 +1468,7 @@ function createSourceScanCommandEvidence(commands) {
       command,
       usesRipgrep,
       hasLineNumber,
+      hasNoConfig,
       shellOperators,
       scansExpectedPaths,
       searchPatterns,
@@ -1472,6 +1482,7 @@ function createSourceScanCommandEvidence(commands) {
   });
   const validCommandChecks = commandChecks.filter((check) => check.usesRipgrep
     && check.hasLineNumber
+    && check.hasNoConfig
     && check.scansExpectedPaths
     && check.shellOperators.length === 0
     && check.excludedSourceGlobs.length === 0
@@ -1553,15 +1564,41 @@ function collectDisallowedRipgrepOptions(tokens) {
 function collectUnquotedShellOperators(command) {
   const operators = [];
   let quote = undefined;
-  for (const char of command) {
-    if (quote !== undefined) {
+  for (let index = 0; index < command.length; index += 1) {
+    const char = command[index];
+    const nextChar = command[index + 1];
+    if (quote === "'") {
       if (char === quote) {
         quote = undefined;
       }
       continue;
     }
+    if (quote === "\"") {
+      if (char === quote) {
+        quote = undefined;
+        continue;
+      }
+      if (char === "`") {
+        operators.push("`");
+        continue;
+      }
+      if (char === "$" && nextChar === "(") {
+        operators.push("$(");
+        index += 1;
+      }
+      continue;
+    }
     if (char === "'" || char === '"') {
       quote = char;
+      continue;
+    }
+    if (char === "`") {
+      operators.push("`");
+      continue;
+    }
+    if (char === "$" && nextChar === "(") {
+      operators.push("$(");
+      index += 1;
       continue;
     }
     if ("|><;&".includes(char)) {
