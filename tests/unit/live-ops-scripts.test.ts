@@ -187,7 +187,7 @@ describe("production live ops script skeleton", () => {
     expect(result.stdout).not.toContain("fake-local-control-token");
   });
 
-  it("production live ops closeout source scan은 provider 직접 호출 경계가 없음을 확인한다", async () => {
+  it("production live ops closeout source scan은 private order/Telegram 직접 호출 경계가 없음을 확인한다", async () => {
     const productionFiles = [
       "scripts/run-live-ops-support.mjs",
       "scripts/run-live-ops.mjs",
@@ -218,6 +218,137 @@ describe("production live ops script skeleton", () => {
         expect(content, `${filePath} must not match ${forbiddenPattern.source}`).not.toMatch(forbiddenPattern);
       }
     }
+  });
+
+  it("Upbit public provider boot helper는 공개 구독과 universe/stale guard를 검증한다", () => {
+    const result = spawnSync(
+      process.execPath,
+      [
+        "--input-type=module",
+        "--eval",
+        `
+import {
+  createLiveOpsUpbitSubscriptionMessage,
+  mapLiveOpsUpbitPayloadToEvent,
+  parseLiveOpsUpbitWebSocketMessage,
+} from "./scripts/run-live-ops-support.mjs";
+
+const tradePayload = {
+  type: "trade",
+  code: "KRW-BTC",
+  trade_price: 100000000,
+  trade_volume: 0.001,
+  ask_bid: "BID",
+  trade_timestamp: Date.parse("2026-06-15T00:00:00.000Z"),
+  timestamp: Date.parse("2026-06-15T00:00:00.000Z"),
+  sequential_id: "9007199254740993",
+  stream_type: "REALTIME",
+};
+const orderbookPayload = {
+  type: "orderbook",
+  code: "KRW-BTC",
+  total_ask_size: 0.2,
+  total_bid_size: 0.3,
+  orderbook_units: [{
+    ask_price: 100001000,
+    ask_size: 0.2,
+    bid_price: 100000000,
+    bid_size: 0.3,
+  }],
+  timestamp: Date.parse("2026-06-15T00:00:00.000Z"),
+  level: 0,
+  stream_type: "REALTIME",
+};
+const receivedAt = "2026-06-15T00:00:01.000Z";
+const subscription = createLiveOpsUpbitSubscriptionMessage({ market: "KRW-BTC" });
+const trade = mapLiveOpsUpbitPayloadToEvent(tradePayload, {
+  market: "KRW-BTC",
+  receivedAt,
+  observedAt: receivedAt,
+  staleAfterMs: 30000,
+});
+const orderbook = mapLiveOpsUpbitPayloadToEvent(orderbookPayload, {
+  market: "KRW-BTC",
+  receivedAt,
+  observedAt: receivedAt,
+  staleAfterMs: 30000,
+});
+const stale = mapLiveOpsUpbitPayloadToEvent(tradePayload, {
+  market: "KRW-BTC",
+  receivedAt: "2026-06-15T00:01:00.000Z",
+  observedAt: "2026-06-15T00:01:00.000Z",
+  staleAfterMs: 30000,
+});
+let outsideUniverse = "not-thrown";
+try {
+  mapLiveOpsUpbitPayloadToEvent({ ...tradePayload, code: "KRW-ETH" }, {
+    market: "KRW-BTC",
+    receivedAt,
+    observedAt: receivedAt,
+    staleAfterMs: 30000,
+  });
+} catch (error) {
+  outsideUniverse = error instanceof Error ? error.message : String(error);
+}
+console.log(JSON.stringify({
+  subscription: JSON.parse(subscription),
+  subscriptionText: subscription,
+  trade,
+  orderbook,
+  stale,
+  outsideUniverse,
+  parsedCount: parseLiveOpsUpbitWebSocketMessage(JSON.stringify([tradePayload])).length,
+}));
+        `,
+      ],
+      {
+        cwd: process.cwd(),
+        encoding: "utf8",
+        env: minimalEnv(),
+      },
+    );
+
+    expect(result.status).toBe(0);
+    expect(result.stderr).toBe("");
+    const output = JSON.parse(result.stdout) as {
+      subscription: unknown;
+      subscriptionText: string;
+      trade: { type: string; market: string; tradeId: string; price: string; quantity: string; side: string };
+      orderbook: { type: string; market: string; asks: Array<{ price: string; size: string }>; bids: Array<{ price: string; size: string }> };
+      stale: { type: string; status: string; reasonCode: string };
+      outsideUniverse: string;
+      parsedCount: number;
+    };
+
+    expect(output.subscription).toEqual([
+      { ticket: "live-ops-market-data" },
+      { type: "trade", codes: ["KRW-BTC"], is_only_realtime: true },
+      { type: "orderbook", codes: ["KRW-BTC"], is_only_realtime: true },
+      { format: "DEFAULT" },
+    ]);
+    expect(output.subscriptionText).not.toMatch(/authorization|bearer|myOrder|myAsset|\/v1\/orders/iu);
+    expect(output.trade).toMatchObject({
+      type: "TRADE",
+      market: "KRW-BTC",
+      tradeId: "9007199254740993",
+      price: "100000000",
+      quantity: "0.001",
+      side: "BID",
+    });
+    expect(output.orderbook).toMatchObject({
+      type: "ORDERBOOK",
+      market: "KRW-BTC",
+      asks: [{ price: "100001000", size: "0.2" }],
+      bids: [{ price: "100000000", size: "0.3" }],
+    });
+    expect(output.stale).toMatchObject({
+      type: "STATUS",
+      status: "STALE",
+      reasonCode: "live_ops_upbit_public_lag_exceeded",
+    });
+    expect(output.outsideUniverse).toBe("LiveOpsMarketDataOutsideUniverse");
+    expect(output.parsedCount).toBe(1);
+    expect(result.stdout).not.toContain("fake-upbit-secret-key");
   });
 
   it("live:ops:tui attach skeleton은 attach 대상 없이는 실패한다", () => {
