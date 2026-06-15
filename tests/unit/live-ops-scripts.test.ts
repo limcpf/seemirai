@@ -1395,6 +1395,100 @@ const zeroExpectedLossSummary = await evaluateLiveOpsCliLiveExecution({
   budgetSnapshot: runtimeBudgetSnapshot,
   lossSnapshot: runtimeLossSnapshot,
 });
+const marketReferenceIntent = {
+  ...intent,
+};
+delete marketReferenceIntent.referencePrice;
+marketReferenceIntent.costSnapshot = {
+  ...intent.costSnapshot,
+  order_intent: orderIntentEvidence(marketReferenceIntent),
+};
+marketReferenceIntent.riskApproval = {
+  ...intent.riskApproval,
+  order_intent: orderIntentEvidence(marketReferenceIntent),
+};
+const marketReferenceRuntimeRequests = [];
+const marketReferenceSummary = await evaluateLiveOpsCliLiveExecution({
+  config,
+  fixtureSmoke: false,
+  analysisDecision,
+  marketData: {
+    ready: true,
+    latestHeartbeatAt: observedAt,
+    referencePrice: "100000000",
+    referencePriceSource: "fixture_trade",
+  },
+  env: {
+    SEEMIRAI_UPBIT_ACCESS_KEY: "fake-access-key",
+    SEEMIRAI_UPBIT_SECRET_KEY: "fake-secret-key",
+    SEEMIRAI_UPBIT_KEY_SCOPE: "자산조회,주문조회,주문하기",
+    SEEMIRAI_UPBIT_KEY_SCOPE_EVIDENCE_ID: "scope-evidence",
+  },
+  orderIntents: [marketReferenceIntent],
+  entryRuntime: {
+    async submitEntryCandidate(request) {
+      marketReferenceRuntimeRequests.push(request);
+      return {
+        status: "SUBMITTED",
+        attemptId: request.idempotencyKey,
+        idempotencyKey: request.idempotencyKey,
+        brokerOrderId: "market-reference-live-order-001",
+        message: "market reference fixture submitted",
+        action: "fixture action",
+        violations: [],
+        events: [],
+        trace: {
+          reason: "broker_submitted",
+        },
+        executionResult: {
+          brokerOrder: {
+            brokerOrderId: "market-reference-live-order-001",
+          },
+        },
+      };
+    },
+  },
+  executionStatus,
+  postSubmitReadiness,
+  budgetSnapshot: runtimeBudgetSnapshot,
+  lossSnapshot: runtimeLossSnapshot,
+});
+const submittedWithoutReferencePrice = [];
+const missingReferencePriceSummary = await evaluateLiveOpsCliLiveExecution({
+  config,
+  fixtureSmoke: false,
+  analysisDecision,
+  marketData: {
+    ready: true,
+    latestHeartbeatAt: observedAt,
+  },
+  env: {
+    SEEMIRAI_UPBIT_ACCESS_KEY: "fake-access-key",
+    SEEMIRAI_UPBIT_SECRET_KEY: "fake-secret-key",
+    SEEMIRAI_UPBIT_KEY_SCOPE: "자산조회,주문조회,주문하기",
+    SEEMIRAI_UPBIT_KEY_SCOPE_EVIDENCE_ID: "scope-evidence",
+  },
+  orderIntents: [marketReferenceIntent],
+  entryRuntime: {
+    async submitEntryCandidate(request) {
+      submittedWithoutReferencePrice.push(request);
+      return {
+        status: "SUBMITTED",
+        attemptId: request.idempotencyKey,
+        idempotencyKey: request.idempotencyKey,
+        brokerOrderId: "unexpected-missing-reference-price-order",
+        message: "unexpected missing reference price submit",
+        action: "fixture action",
+        violations: [],
+        events: [],
+      };
+    },
+  },
+  executionStatus,
+  postSubmitReadiness,
+  budgetSnapshot: runtimeBudgetSnapshot,
+  lossSnapshot: runtimeLossSnapshot,
+});
 const missingRuntimeSummary = await evaluateLiveOpsCliLiveExecution({
   config,
   fixtureSmoke: false,
@@ -1492,6 +1586,10 @@ console.log(JSON.stringify({
   zeroCostRuntimeRequests,
   zeroExpectedLossSummary,
   zeroExpectedLossRuntimeRequests,
+  marketReferenceSummary,
+  marketReferenceRuntimeRequests,
+  missingReferencePriceSummary,
+  submittedWithoutReferencePrice,
   missingRuntimeSummary,
   topLevelSubmittedBlocked,
   topLevelIdleBlocked,
@@ -1732,6 +1830,22 @@ console.log(JSON.stringify({
           expectedLossBpsOfEquity: string;
         };
       }>;
+      marketReferenceSummary: {
+        status: string;
+        submittedOrderCount: number;
+      };
+      marketReferenceRuntimeRequests: Array<{
+        candidate: {
+          referencePrice: string;
+        };
+      }>;
+      missingReferencePriceSummary: {
+        status: string;
+        attemptedOrderCount: number;
+        submittedOrderCount: number;
+        checks: Array<{ code: string }>;
+      };
+      submittedWithoutReferencePrice: unknown[];
       missingRuntimeSummary: {
         status: string;
         attemptedOrderCount: number;
@@ -1972,6 +2086,19 @@ console.log(JSON.stringify({
     });
     expect(output.zeroExpectedLossRuntimeRequests).toHaveLength(1);
     expect(output.zeroExpectedLossRuntimeRequests[0]?.candidate.expectedLossBpsOfEquity).toBe("0");
+    expect(output.marketReferenceSummary).toMatchObject({
+      status: "submitted",
+      submittedOrderCount: 1,
+    });
+    expect(output.marketReferenceRuntimeRequests).toHaveLength(1);
+    expect(output.marketReferenceRuntimeRequests[0]?.candidate.referencePrice).toBe("100000000");
+    expect(output.missingReferencePriceSummary).toMatchObject({
+      status: "blocked",
+      attemptedOrderCount: 0,
+      submittedOrderCount: 0,
+    });
+    expect(output.missingReferencePriceSummary.checks.map((check) => check.code)).toContain("live_ops_order_intent_blocked");
+    expect(output.submittedWithoutReferencePrice).toHaveLength(0);
     expect(output.missingRuntimeSummary).toMatchObject({
       status: "blocked",
       attemptedOrderCount: 0,

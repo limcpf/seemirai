@@ -1261,6 +1261,9 @@ function collectLiveOpsCliOrderIntentViolations({ config, marketData, intent }) 
   if (!isLiveOpsCliPostOnlyLimitIntent(intent)) {
     violations.push("production live ops 신규 진입은 post-only LIMIT 주문만 허용합니다");
   }
+  if (!isPositiveDecimalString(intent?.referencePrice) && !isPositiveDecimalString(readLiveOpsCliMarketReferencePrice(marketData))) {
+    violations.push("주문 후보 가격 이탈 검증에 사용할 실제 market reference price가 필요합니다");
+  }
   if (!hasMeaningfulValue(intent?.strategyId)) {
     violations.push("주문 후보에는 strategyId가 필요합니다");
   }
@@ -1434,6 +1437,19 @@ function readLiveOpsCliExpectedLossBps(intent) {
   return intent?.metadata?.expected_loss_bps_of_equity ?? intent?.metadata?.expectedLossBpsOfEquity;
 }
 
+function readLiveOpsCliMarketReferencePrice(marketData) {
+  if (isPositiveDecimalString(marketData?.referencePrice)) {
+    return marketData.referencePrice;
+  }
+  if (isPositiveDecimalString(marketData?.latestTradePrice)) {
+    return marketData.latestTradePrice;
+  }
+  if (isPositiveDecimalString(marketData?.bestBidPrice) && isPositiveDecimalString(marketData?.bestAskPrice)) {
+    return new Decimal(marketData.bestBidPrice).plus(marketData.bestAskPrice).div(2).toFixed();
+  }
+  return undefined;
+}
+
 function isLiveOpsCliEvidenceValueMatch(key, evidenceValue, expectedValue) {
   if (expectedValue === undefined) {
     return false;
@@ -1485,7 +1501,7 @@ function createLiveOpsCliEntryRuntimeRequest({ config, marketData, intent, obser
       requestedQuantity: intent.requestedQuantity,
       requestedNotional: intent.requestedNotional,
       requestedPrice: intent.requestedPrice,
-      referencePrice: intent.referencePrice,
+      referencePrice: intent.referencePrice ?? readLiveOpsCliMarketReferencePrice(marketData),
       reason: intent.reason,
       expectedLossBpsOfEquity: readLiveOpsCliExpectedLossBps(intent),
       costInput: intent.costInput,
@@ -2081,6 +2097,8 @@ async function evaluateLiveOpsCliMarketData({ config, fixtureSmoke, databaseUrl 
     sourceProfile: "fixture",
     message: "fixture market data collector가 DB-backed 저장 경계를 통과했습니다.",
     latestHeartbeatAt,
+    referencePrice: "100000000",
+    referencePriceSource: "fixture_trade",
     persisted: {
       eventCount: 3,
       tradeCount: 1,
@@ -2121,6 +2139,8 @@ async function collectLiveOpsCliUpbitMarketData({ config, databaseUrl, market })
   const persisted = emptyMarketDataPersistenceSummary();
   const state = {
     latestHeartbeatAt: null,
+    referencePrice: null,
+    referencePriceSource: null,
     hasTrade: false,
     hasOrderbook: false,
     riskBlockCount: 0,
@@ -2234,6 +2254,8 @@ async function collectLiveOpsCliUpbitMarketData({ config, databaseUrl, market })
       ? "Upbit public market data provider가 DB-backed 저장 경계를 통과했습니다."
       : "market data collector가 live ops 다음 단계로 진행할 수 없습니다.",
     latestHeartbeatAt: state.latestHeartbeatAt,
+    referencePrice: state.referencePrice,
+    referencePriceSource: state.referencePriceSource,
     persisted,
     checks,
   };
@@ -2449,6 +2471,8 @@ async function persistLiveOpsCliMarketDataEvent(pool, event, { workerId, persist
     persisted.tradeCount += 1;
     state.hasTrade = true;
     state.latestHeartbeatAt = event.receivedAt;
+    state.referencePrice = event.price;
+    state.referencePriceSource = "trade";
     return;
   }
 
@@ -2457,6 +2481,8 @@ async function persistLiveOpsCliMarketDataEvent(pool, event, { workerId, persist
     persisted.orderbookCount += 1;
     state.hasOrderbook = true;
     state.latestHeartbeatAt = event.receivedAt;
+    state.referencePrice = new Decimal(event.bids[0].price).plus(event.asks[0].price).div(2).toFixed();
+    state.referencePriceSource = "orderbook_mid";
     return;
   }
 
