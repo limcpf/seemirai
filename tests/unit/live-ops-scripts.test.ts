@@ -390,6 +390,7 @@ console.log(JSON.stringify({
 import {
   createLiveOpsCliEntryRuntime,
   evaluateLiveOpsCliLiveExecution,
+  renderLiveOpsSummary,
 } from "./scripts/run-live-ops-support.mjs";
 
 const submitted = [];
@@ -424,7 +425,14 @@ const budgetReservation = {
     });
     return {
       reserved: true,
-      reservationId: "reservation-001",
+      reservation: {
+        reservationId: "reservation-001",
+        attemptId: request.attemptId,
+        idempotencyKey: request.idempotencyKey,
+        reservedNotionalKrw: request.requestedNotionalKrw,
+        budgetSnapshot: request.budgetSnapshot,
+        reservedAt: "2026-06-15T00:00:00.000Z",
+      },
     };
   },
 };
@@ -450,6 +458,8 @@ function orderIntentEvidence(intent) {
     strategy_id: intent.strategyId,
     side: intent.side,
     order_type: intent.orderType,
+    post_only: intent.postOnly,
+    time_in_force: intent.timeInForce,
     requested_quantity: intent.requestedQuantity,
     requested_notional: intent.requestedNotional,
     requested_price: intent.requestedPrice,
@@ -611,7 +621,181 @@ const statusBlockedSummary = await evaluateLiveOpsCliLiveExecution({
     budgetReservation,
   }),
 });
-console.log(JSON.stringify({ summary, submitted, reservations, blockedSummary, submittedWithoutReservation, riskBlockedSummary, submittedWithoutRisk, statusBlockedSummary, submittedWithoutStatus }));
+const submittedWithoutReservationEvidence = [];
+const reservationEvidenceBlockedSummary = await evaluateLiveOpsCliLiveExecution({
+  config,
+  fixtureSmoke: false,
+  analysisDecision,
+  marketData: {
+    ready: true,
+    latestHeartbeatAt: "2026-06-15T00:00:00.000Z",
+  },
+  env: {
+    SEEMIRAI_UPBIT_ACCESS_KEY: "fake-access-key",
+    SEEMIRAI_UPBIT_SECRET_KEY: "fake-secret-key",
+    SEEMIRAI_UPBIT_KEY_SCOPE: "자산조회,주문조회,주문하기",
+    SEEMIRAI_UPBIT_KEY_SCOPE_EVIDENCE_ID: "scope-evidence",
+  },
+  orderIntents: [intent],
+  entryRuntime: createLiveOpsCliEntryRuntime({
+    broker: {
+      async submitOrder(submission) {
+        submittedWithoutReservationEvidence.push(submission);
+        return {
+          brokerOrderId: "unexpected-reservationless-order",
+        };
+      },
+    },
+    budgetReservation: {
+      async reserve() {
+        return {
+          reserved: true,
+        };
+      },
+    },
+  }),
+  executionStatus,
+  postSubmitReadiness,
+});
+const staleEvidence = {
+  ...orderIntentEvidence(intent),
+  post_only: false,
+  time_in_force: "GTC",
+};
+const submittedWithStaleEvidence = [];
+const staleEvidenceSummary = await evaluateLiveOpsCliLiveExecution({
+  config,
+  fixtureSmoke: false,
+  analysisDecision,
+  marketData: {
+    ready: true,
+    latestHeartbeatAt: "2026-06-15T00:00:00.000Z",
+  },
+  env: {
+    SEEMIRAI_UPBIT_ACCESS_KEY: "fake-access-key",
+    SEEMIRAI_UPBIT_SECRET_KEY: "fake-secret-key",
+    SEEMIRAI_UPBIT_KEY_SCOPE: "자산조회,주문조회,주문하기",
+    SEEMIRAI_UPBIT_KEY_SCOPE_EVIDENCE_ID: "scope-evidence",
+  },
+  orderIntents: [
+    {
+      ...intent,
+      costSnapshot: {
+        ...intent.costSnapshot,
+        order_intent: staleEvidence,
+      },
+      riskApproval: {
+        ...intent.riskApproval,
+        order_intent: staleEvidence,
+      },
+    },
+  ],
+  entryRuntime: createLiveOpsCliEntryRuntime({
+    broker: {
+      async submitOrder(submission) {
+        submittedWithStaleEvidence.push(submission);
+        return {
+          brokerOrderId: "unexpected-stale-evidence-order",
+        };
+      },
+    },
+    budgetReservation,
+  }),
+  executionStatus,
+  postSubmitReadiness,
+});
+function createRuntimeRequest(overrides = {}) {
+  return {
+    config: {
+      enabled: true,
+      allowed_markets: ["KRW-BTC"],
+      max_order_krw: "10000",
+      daily_autonomous_notional_limit_krw: "30000",
+      max_open_position_notional_krw: "30000",
+      max_price_deviation_bps: "30",
+      identifier_prefix: "ops-",
+      identifier_max_length: 32,
+    },
+    candidate: {
+      exchangeId: intent.exchangeId,
+      market: intent.market,
+      strategyId: intent.strategyId,
+      requestedQuantity: intent.requestedQuantity,
+      requestedNotional: intent.requestedNotional,
+      requestedPrice: intent.requestedPrice,
+      referencePrice: intent.requestedPrice,
+      reason: intent.reason,
+      expectedLossBpsOfEquity: intent.metadata.expected_loss_bps_of_equity,
+      orderType: "LIMIT",
+      postOnly: true,
+      timeInForce: "POST_ONLY",
+      costSnapshot: intent.costSnapshot,
+      riskApproval: intent.riskApproval,
+      metadata: intent.metadata,
+    },
+    budgetSnapshot: {
+      maxOrderKrw: "10000",
+      dailyAutonomousNotionalLimitKrw: "30000",
+      dailyAutonomousNotionalUsedKrw: "0",
+      openPositionNotionalKrw: "0",
+      maxOpenPositionNotionalKrw: "30000",
+      capturedAt: "2026-06-15T00:00:00.000Z",
+    },
+    lossSnapshot: {
+      dailyRealizedLossKrw: "0",
+      weeklyRealizedLossKrw: "0",
+      capturedAt: "2026-06-15T00:00:00.000Z",
+    },
+    killSwitchActive: false,
+    reconcileFresh: true,
+    idempotencyKey: intent.idempotencyKey,
+    observedAt: "2026-06-15T00:00:00.000Z",
+    ...overrides,
+  };
+}
+const submittedWithDirectKillSwitch = [];
+const directKillSwitchResult = await createLiveOpsCliEntryRuntime({
+  broker: {
+    async submitOrder(submission) {
+      submittedWithDirectKillSwitch.push(submission);
+      return {
+        brokerOrderId: "unexpected-kill-switch-order",
+      };
+    },
+  },
+  budgetReservation,
+}).submitEntryCandidate(createRuntimeRequest({ killSwitchActive: true }));
+const topLevelSubmittedBlocked = renderLiveOpsSummary({
+  configPath: "config/live-ops.example.json",
+  envFilePath: "tests/fixtures/live-ops/fake.env",
+  config,
+  env: {},
+  fixtureSmoke: false,
+  dbReadiness: { ready: true },
+  marketData: { ready: true },
+  analysisDecision: { ready: true },
+  liveExecution: summary,
+  reconcilePnlStatus: { ready: false, status: "blocked" },
+  telegramAlert: { ready: false, status: "blocked" },
+});
+console.log(JSON.stringify({
+  summary,
+  submitted,
+  reservations,
+  blockedSummary,
+  submittedWithoutReservation,
+  riskBlockedSummary,
+  submittedWithoutRisk,
+  statusBlockedSummary,
+  submittedWithoutStatus,
+  reservationEvidenceBlockedSummary,
+  submittedWithoutReservationEvidence,
+  staleEvidenceSummary,
+  submittedWithStaleEvidence,
+  directKillSwitchResult,
+  submittedWithDirectKillSwitch,
+  topLevelSubmittedBlocked,
+}));
         `,
       ],
       {
@@ -670,6 +854,29 @@ console.log(JSON.stringify({ summary, submitted, reservations, blockedSummary, s
         checks: Array<{ code: string }>;
       };
       submittedWithoutStatus: unknown[];
+      reservationEvidenceBlockedSummary: {
+        status: string;
+        liveOrderCapable: boolean;
+        submittedOrderCount: number;
+        checks: Array<{ code: string }>;
+      };
+      submittedWithoutReservationEvidence: unknown[];
+      staleEvidenceSummary: {
+        status: string;
+        liveOrderCapable: boolean;
+        submittedOrderCount: number;
+        checks: Array<{ code: string }>;
+      };
+      submittedWithStaleEvidence: unknown[];
+      directKillSwitchResult: {
+        status: string;
+        violations: string[];
+      };
+      submittedWithDirectKillSwitch: unknown[];
+      topLevelSubmittedBlocked: {
+        status: string;
+        liveOrderCapable: boolean;
+      };
     };
     expect(output.summary).toMatchObject({
       status: "submitted",
@@ -729,6 +936,29 @@ console.log(JSON.stringify({ summary, submitted, reservations, blockedSummary, s
     });
     expect(output.statusBlockedSummary.checks.map((check) => check.code)).toContain("live_ops_execution_status_blocked");
     expect(output.submittedWithoutStatus).toHaveLength(0);
+    expect(output.reservationEvidenceBlockedSummary).toMatchObject({
+      status: "blocked",
+      liveOrderCapable: false,
+      submittedOrderCount: 0,
+    });
+    expect(output.reservationEvidenceBlockedSummary.checks.map((check) => check.code)).toContain("live_ops_execution_blocked");
+    expect(output.submittedWithoutReservationEvidence).toHaveLength(0);
+    expect(output.staleEvidenceSummary).toMatchObject({
+      status: "blocked",
+      liveOrderCapable: false,
+      submittedOrderCount: 0,
+    });
+    expect(output.staleEvidenceSummary.checks.map((check) => check.code)).toContain("live_ops_order_intent_blocked");
+    expect(output.submittedWithStaleEvidence).toHaveLength(0);
+    expect(output.directKillSwitchResult).toMatchObject({
+      status: "BLOCKED",
+      violations: ["execution_runtime_status_blocked"],
+    });
+    expect(output.submittedWithDirectKillSwitch).toHaveLength(0);
+    expect(output.topLevelSubmittedBlocked).toMatchObject({
+      status: "blocked",
+      liveOrderCapable: true,
+    });
     expect(result.stdout).not.toContain("fake-secret-key");
   });
 
