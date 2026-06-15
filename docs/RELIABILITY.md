@@ -65,6 +65,21 @@ Codex-native 운영은 Codex, Git, GitHub, shell command, 문서 상태를 연�
 - fixture smoke는 외부 provider와 DB에 연결하지 않고, 디스크 migration 기준을 secret-safe summary로 노출한다. 후속 sub PR은 각 boot 단계별
   fixture smoke와 integration evidence를 추가해야 한다.
 
+## Issue #206 production live ops 실제 arm 신뢰성 기준
+
+- `live:ops` 실제 arm은 config/env validation, DB readiness, Upbit public market data, Upbit private capability probe, Telegram startup,
+  reconcile/PnL/status, decision readiness, live execution arm 순서로 전진한다.
+- boot sequence가 broker 조립 전에 실패하면 private client와 live broker를 만들지 않는다. 이 실패는 한국어 상태/원인/영향/필요 조치로
+  TUI/CLI에 표시해야 한다.
+- market data freshness, reconcile freshness, PnL/status, decision ledger, kill switch 중 하나라도 최신 evidence가 아니면 broker 제출로
+  전진하지 않는다.
+- 같은 order attempt나 idempotency key로 재시작하는 경우 새 Upbit identifier를 만들지 않는다. broker submit 결과가 불확실하면 재주문하지
+  않고 reconcile/manual review로 수렴한다.
+- submit 이후 cancel requested와 terminal cancel 확인은 같은 attempt/identifier chain으로 연결되어야 하며, open exposure 0,
+  duplicate order 0건, reconcile mismatch 0건, untracked fill 0건이 closeout evidence에 포함되어야 한다.
+- Telegram 전송 실패는 주문/리스크 commit을 되돌리지 않고 retry/manual review summary로 격리한다.
+- 실제 cleanup run은 저장소 밖 redacted artifact에만 기록하고, issue/PR에는 safe summary와 artifact 경로만 남긴다.
+
 ## M23 restart/recovery drill 신뢰성 기준
 
 - M23 recovery drill은 restart 전후 event log를 같은 restart id로 묶어야 하며, 감지와 복구 Telegram/status evidence가 모두 있어야 한다.

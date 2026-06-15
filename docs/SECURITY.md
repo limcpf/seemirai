@@ -265,6 +265,19 @@
 - source/security scan은 production live ops path가 시장가/best order, 출금/입출금, 선물/레버리지, raw secret 노출 경로를 새로
   열지 않았음을 확인해야 한다.
 
+## Issue #206 production live ops 실제 arm 보안 기준
+
+- 실제 arm config JSON에는 secret, token, password, access key, secret key, database URL, Authorization/JWT 계열 key를 넣지 않는다.
+- 실제 arm env file에는 DB/Upbit/Telegram/TUI credential만 담고, issue/PR/log/artifact/TUI/Telegram/status에는 원문 값을 남기지 않는다.
+- Upbit key scope는 `자산조회`, `주문조회`, `주문하기`만 허용한다. 출금, 입출금, 선물, 레버리지, 마진, 타인 계정 관련 scope가
+  관찰되면 runtime은 주문 가능 상태로 시작하지 않는다.
+- 주문 side effect는 단일 `KRW-BTC` `BUY + LIMIT + post_only` 후보만 허용하며, 시장가/best order/시장가 매도/자동 budget 확대는
+  provider 호출 전에 차단한다.
+- 실거래 cleanup artifact에는 stable suffix나 redacted id만 남긴다. access key, secret key, JWT, Authorization header, Telegram token,
+  raw provider payload, raw order detail은 저장하지 않는다.
+- source/security scan은 production live ops path가 금지 주문 유형, 출금/입금, 선물/레버리지, raw secret, raw provider payload 경로를
+  열지 않았음을 PR/closeout에 기록해야 한다.
+
 ## M18 Decision Ledger 보안 기준
 
 - decision ledger의 `payload_json`과 `trace_json`에는 raw provider payload, raw order detail, secret 후보, Authorization header, JWT, API key, secret key, query hash 원문을 저장하지 않는다. 두 필드는 JSONB-safe value만 허용하며 Date, BigInt, function, class instance 같은 비 JSON 값은 저장 계약에서 제외한다.

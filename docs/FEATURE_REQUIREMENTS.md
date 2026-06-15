@@ -822,6 +822,67 @@ Acceptance Criteria:
 - 신규 진입 시장가, 시장가 매도, best order 기본 허용, hard stop open position 자동 시장가 청산.
 - 출금, 입출금 자동화, 선물, 레버리지, 마진, 타인 계정, 신호 판매.
 
+### FR-OPS-006: Live Ops production 경로는 실제 주문 가능한 provider arm과 cleanup evidence로 닫혀야 한다
+
+설명:
+
+- Issue #206은 #196에서 만든 production `live:ops`/TUI 경로를 실제 DB, 실제 Upbit public/private API, 실제 Telegram과 같은
+  lifecycle로 조립하는 단계다.
+- 완료 상태는 fixture smoke, heartbeat-only, dashboard readiness, 가짜 provider summary가 아니라 실제 `KRW-BTC` 소액 주문
+  submit/cancel terminal evidence다.
+- production path는 조건을 통과한 단일 `BUY + LIMIT + post_only` 후보만 `LiveAutonomousEntryRuntime`과 `UpbitLiveBroker` 경계로
+  전진시킨다.
+- 주문이 없거나 차단되는 날도 후보 없음, market data stale, cost/risk/reconcile/budget/kill switch 차단 이유가 DB/TUI/Telegram/status에
+  secret 없이 남아야 한다.
+
+Acceptance Criteria:
+
+- [ ] `live:ops` 운영 실행이 실제 DB와 실제 Upbit/Telegram provider lifecycle을 시작한다.
+- [ ] 운영 실행에서 fixture provider summary나 주문 없는 dashboard 출력만으로 ready를 표시하지 않는다.
+- [ ] Upbit public market data가 DB에 지속 적재되고 TUI에 freshness가 표시된다.
+- [ ] decision pipeline이 실제 market frame을 읽고 HOLD 또는 order intent evidence를 남긴다.
+- [ ] order intent가 조건을 통과하면 `LiveAutonomousEntryRuntime`을 거쳐 `UpbitLiveBroker.submitOrder` 경계까지 도달한다.
+- [ ] `BUY + LIMIT + post_only` 외 주문은 provider 호출 전에 fail-closed 된다.
+- [ ] 같은 order attempt/idempotency key 재시작은 duplicate live order를 만들지 않는다.
+- [ ] broker submit 불확실 결과는 재주문이 아니라 reconcile/manual review로 수렴한다.
+- [ ] private read reconcile이 account/order/balance 상태를 읽고 status/TUI/Telegram에 secret 없이 표시한다.
+- [ ] Telegram startup/live order capable/order submitted/cancel confirmed/manual review 알림이 실제 owner chat으로 전송된다.
+- [ ] TUI가 실제 live armed/order capable 상태와 주문/취소/차단 상태를 secret 없이 보여준다.
+- [ ] 실제 KRW-BTC 소액 실거래 cleanup run이 `submit -> cancel requested -> terminal cancel 확인 -> open exposure 0`으로 닫힌다.
+- [ ] crash 0회, unhandled rejection 0회, duplicate order 0건, reconcile mismatch 0건, untracked fill 0건, live order cleanup failure 0건을
+  증명한다.
+- [ ] dry-run, heartbeat-only, fixture-only, 주문 없는 dashboard 출력만으로 완료 선언하지 않는다.
+
+테스트 요구사항:
+
+- 단위 테스트: production boot sequence가 실제 provider arm에서 config/env validation, DB readiness, public market data, private probe,
+  Telegram startup, reconcile/PnL/status readiness, decision, live execution 순서를 지키는지 확인한다.
+- 단위 테스트: 단일 `BUY + LIMIT + post_only` 후보만 live autonomous runtime으로 전달되고 나머지 주문 유형은 fail-closed 되는지 확인한다.
+- 통합 테스트: fake Upbit public/private provider와 fake Telegram dispatch로 submit/cancel/reconcile summary contract를 검증한다.
+- script smoke: fixture smoke는 외부 DB/provider 호출 0회를 유지하고, 실제 provider arm flag 없이는 live order side effect를 만들지
+  않는지 확인한다.
+- 실제 운영 검증: 저장소 밖 credential/evidence가 준비된 환경에서 `docs/runbooks/live-ops-real-arm-cleanup.md` 절차로 submit/cancel
+  terminal artifact를 생성한다.
+- source/security scan: 시장가/best order, 출금/입금, 선물/레버리지, raw secret, raw provider payload 후보가 production 경로에서
+  열리지 않았는지 확인한다.
+
+문서 요구사항:
+
+- `docs/exec-plans/active/2026-06-15-issue-206-live-ops-real-arm.md`가 sub PR 순서, DnD, 검증 방법, closeout 기준을 추적한다.
+- 실제 cleanup 절차는 `docs/runbooks/live-ops-real-arm-cleanup.md`를 따른다.
+- provider arm, Telegram, reconcile, cleanup 기준이 바뀌면 `docs/RUNTIME_CONFIG.md`, `docs/RELIABILITY.md`, `docs/SECURITY.md`,
+  `docs/product-specs/upbit-live-autonomous-trading.md`, 관련 runbook과 active/completed exec plan을 함께 갱신한다.
+
+제외 범위:
+
+- BTC 외 market 기본 활성화, 자동 budget 확대, M24 scaled 운영.
+- 신규 진입 시장가, 시장가 매도, best order 기본 허용.
+- hard stop 시 open position 자동 시장가 청산.
+- 출금, 입출금 자동화, 선물, 레버리지, 마진, 타인 계정, 신호 판매.
+- Web 백오피스와 Telegram public webhook endpoint.
+- LLM 직접 매수/매도 판단.
+- secret 원문이나 raw provider payload를 issue, PR, log, artifact에 기록하는 작업.
+
 ### FR-LLM-001: LLM은 직접 매매 판단에 사용하지 않는다
 
 설명:
