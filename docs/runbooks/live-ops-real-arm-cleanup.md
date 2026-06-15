@@ -96,7 +96,7 @@ manifest에는 저장소 밖 절대 경로인 `configPath`, `envFilePath`, `oper
 `artifactPaths`, 주문 lifecycle, reconcile closeout, zero counter, Telegram/TUI evidence, source/security scan,
 `finish-readiness-audit` PASS evidence를 포함한다. `command`는 실제 foreground 실행인
 `corepack pnpm live:ops -- --config <절대-path> --env-file <절대-path> --tui`만 허용하며 `--help`, `--fixture-smoke`, `--dry-run`,
-attach 명령, 추가/중복 인자, 상대 `config/env` 경로가 붙은 명령은 closeout 증거가 아니다. `configPath`와 `envFilePath`, manifest 파일
+attach 명령, 추가/중복 인자, shell separator, 상대 `config/env` 경로가 붙은 명령은 closeout 증거가 아니다. `configPath`와 `envFilePath`, manifest 파일
 자체는 저장소 밖에 실제 파일로 존재해야 하며 symlink를 따라간 실제 경로도 저장소 밖이어야 한다. config JSON은 실제 foreground wrapper와
 같은 허용 key set만 사용할 수 있고, production
 `LIVE_AUTONOMOUS_SMALL_BUDGET` contract와 `KRW-BTC` 단일 universe, live trading on, paper/no-risk flags off, small-budget/TUI/Telegram
@@ -104,7 +104,7 @@ attach 명령, 추가/중복 인자, 상대 `config/env` 경로가 붙은 명령
 `자산조회`, `주문조회`, `주문하기` 외 추가 권한이 없어야 한다. env의 `SEEMIRAI_UPBIT_KEY_SCOPE_EVIDENCE_ID`는 manifest의
 `keyScopeEvidenceId`와 같아야 한다. M22/M23 smoke guard나 placeholder 값으로 대체할 수 없고, foreground 실행 당시 shell에 남아 있던
 M22/smoke legacy env도 production contract 위반으로 본다. 이 저장소 경계는 validator를 어느 작업 디렉터리에서 실행하더라도 repository
-root 기준으로 판정한다.
+root 기준으로 판정한다. `fixture-*` 같은 fixture credential 값도 fake/dummy/example credential과 동일하게 production evidence로 인정하지 않는다.
 
 `keyScope`는 `grantedScopes: ["자산조회", "주문조회", "주문하기"]`, `forbiddenScopesAbsent: ["출금하기"]`,
 `withdrawalEnabled: false`처럼 허용 scope와 출금 권한 부재를 redacted safe summary로 기록한다. source/security scan은 실제 `rg -n`
@@ -122,10 +122,12 @@ shell의 `RIPGREP_CONFIG_PATH`, `.gitignore`, hidden 기본 필터 영향을 받
 `--iglob`, `--ignore-file`, `--max-filesize`, `--pre`/`--pre-glob`, `-g`/`--glob`
 처럼 출력, 입력, 필수 범위, 정규식 의미를 줄이는 옵션은 인정하지 않는다. source/security scan command에 shell pipe,
 redirect, command separator, shell comment(`#`), newline separator, command substitution, shell parameter expansion이 있거나 검색 패턴에서 alternation을 `\|`로 escape해 실제 다중 후보 검색을 하지 않는 경우도
-검증 증거로 인정하지 않는다. `-n`/`--line-number`는 quoted 검색 패턴 내부 문자열이 아니라 실제 `rg` argv 옵션이어야 한다. lookaround처럼 `rg`가 parse하지 못해 검색 자체가 실패하는 정규식 패턴도 source coverage 증거가 아니다.
+검증 증거로 인정하지 않는다. `-g`가 `-ng'!src/**'`처럼 short-option cluster에 붙어도 exclude glob으로 판정해야 하며,
+`--field-match-separator` 같은 값 있는 출력 옵션의 값에 검색어를 넣은 command는 coverage가 아니다. `--` 뒤 토큰은 더 이상 `rg` option으로 세지 않는다.
+`-n`/`--line-number`는 quoted 검색 패턴 내부 문자열이 아니라 실제 `rg` argv 옵션이어야 한다. lookaround처럼 `rg`가 parse하지 못해 검색 자체가 실패하는 정규식 패턴도 source coverage 증거가 아니다.
 주문 lifecycle timestamp는 validator 실행 시각보다 미래일 수 없고, 같은 주문 chain
 증거는 `<redacted>`, `<order-id>`, `<brokerOrderId>` 같은 일반 placeholder가 아니라 identifier 또는 uuid의 안정적인 suffix로 비교할 수 있어야 한다. timestamp는
-`2026-06-15T00:00:00.000Z`처럼 시간 성분을 포함해야 하며 날짜만 있는 값은 lifecycle 증거가 아니다. artifact safe summary의
+`2026-06-15T00:00:00.000Z`처럼 시간 성분을 포함해야 하며 날짜만 있는 값이나 `2026-02-30T...`처럼 정규화되는 불가능한 calendar date는 lifecycle 증거가 아니다. artifact safe summary의
 중첩 객체와 배열 안의 `status`, `terminalState`/`terminal_state`, 주문 정책 필드(`market`, `side`, `orderType`/`order_type`/`ord_type`, `timeInForce`/`time_in_force`,
 `requestedNotionalKrw`/`requested_notional_krw`), lifecycle timestamp, exposure/counter 값은 manifest의 closeout 값과 충돌하면 안 된다.
 manifest `run`에 `orderType`, `order_type`, `ord_type` alias가 함께 있으면 모든 값이 `LIMIT`로 일치해야 하며, alias 간 충돌은
@@ -137,7 +139,7 @@ timestamp, 같은 주문 suffix, open exposure 0 evidence가 최소 한 closeout
 `brokerOrderId`/`broker_order_id`, `cancelBrokerOrderId`/`cancel_broker_order_id` alias도 허용한다. 제공된 identifier pair와 broker order id pair는
 각각 누락 없이 같은 suffix로 일치해야 하며, 한 pair가 맞더라도 다른 pair가 충돌하면 같은 주문 chain 증거가 아니다. closeout record의 artifact status는
 `passed`, `success`, `ok`, `completed` 같은 명시적 성공 상태만 허용하며 `skipped`, `blocked`, `partial`은 closeout PASS 증거가 아니다.
-`TIMEOUT`, `ERROR_TIMEOUT`, `BLOCKED_BY_RISK`, `MANUAL_REVIEW_REQUIRED`처럼 timeout/failure/manual-review status와 prefix에 원인 suffix가 붙은 wrapper status도 artifact-level failure로 본다.
+`TIMEOUT`, `ERROR_TIMEOUT`, `BLOCKED_BY_RISK`, `RISK_BLOCKED`, `MANUAL_REVIEW_REQUIRED`처럼 timeout/failure/manual-review status와 prefix/suffix에 원인 코드가 붙은 wrapper status도 artifact-level failure로 본다.
 validator가 안전하게 검사할 수 있는 중첩 depth를 넘은 artifact branch도 조용히 무시하지 않고 실패 evidence로 본다.
 주문 closeout이 아닌 provider/market/Telegram safe summary의 일반 `status` 값은 closeout status로 해석하지 않는다.
 
@@ -145,7 +147,8 @@ validator가 안전하게 검사할 수 있는 중첩 depth를 넘은 artifact b
 database URL/password 원문, `databaseUrl`/`database_url`, `database_password`/`db_password`/`pg_password`, `raw_provider_payload`/`rawProviderPayload`/
 `raw_order_detail`/`rawOrderDetail` 같은 raw payload 필드 또는 문자열 로그 없이 redacted safe summary만 가리켜야 한다.
 JSON credential 값은 `<redacted>`, `redacted`, `[redacted]` 같은 placeholder와 정확히 일치해야 하며, placeholder 뒤에 원문 일부를
-공백, 쉼표, 세미콜론, JSON 조각 형태로 덧붙이면 secret leak으로 본다. env assignment 형태도 placeholder 뒤에 원문이 붙으면 secret leak으로 본다. TUI control token도
+공백, 쉼표, 세미콜론, JSON 조각 형태로 덧붙이면 secret leak으로 본다. env assignment 형태도 placeholder 뒤에 원문이 붙으면 secret leak으로 본다.
+`DATABASE_URL` env assignment도 password 포함 여부와 무관하게 DB URL 원문이면 secret leak으로 본다. TUI control token도
 `SEEMIRAI_TUI_CONTROL_TOKEN` env assignment와 `tuiControlToken`/`tui_control_token` JSON field 모두 secret 후보로 차단한다.
 `KEY: value` 형태의 로그도 env assignment와 같은 secret 후보로 본다. raw text뿐 아니라 JSON string escape를 decode한 key/value도
 같은 redaction 기준으로 스캔하므로 `\u003d`, `\u005f` 같은 escape로 env assignment나 raw payload key를 숨길 수 없다.
@@ -156,6 +159,7 @@ token tail이 붙은 URL도 redacted 값으로 보지 않는다. Bearer/JWT와 r
 evidence가 아니다. `SEEMIRAI_TELEGRAM_BOT_TOKEN` 같은 env 이름 그대로의 JSON field도 secret 후보로 본다. lowercase `bearer`
 token과 `eyJ...` 형태의 prefix 없는 compact JWT도 raw secret 후보로 차단한다. `seemiraiUpbitSecretKey`, `seemiraiTelegramBotToken`처럼
 SEEMIRAI prefix를 camelCase로 쓴 credential JSON field, `upbit-secret-key` 같은 hyphenated credential JSON field, generic `token` JSON field도 raw secret 후보로 차단한다.
+JSON escape를 decode한 뒤 보이는 `raw_provider_payload`/`rawProviderPayload` 같은 raw payload key는 값이 비어 있어도 safe summary에 둘 수 없다.
 source/security scan command나 match에 secret 후보가 섞인 경우 validator summary에는 command/pattern/match 원문을 다시 쓰지 않고 count, path, line, label 같은
 축약 정보와 redacted marker만 남겨야 한다.
 

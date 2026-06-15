@@ -149,6 +149,8 @@ const disallowedRipgrepShortOptions = new Set(["F", "I", "L", "M", "N", "P", "T"
 const ripgrepOptionsWithNextValue = new Set([
   "--engine",
   "--file",
+  "--field-context-separator",
+  "--field-match-separator",
   "--glob",
   "--ignore-file",
   "--iglob",
@@ -189,10 +191,12 @@ const sensitivePatterns = [
   { label: "database url json field", pattern: /"(?:databaseUrl|database_url|seemirai_database_url)"\s*:\s*"(?!\s*(?:<redacted>|redacted|\[redacted\])\s*")[^"]{8,}"/i },
   { label: "database password json field", pattern: /"(?:databasePassword|database_password|dbPassword|db_password|pgPassword|pg_password|password)"\s*:\s*"(?!\s*(?:<redacted>|redacted|\[redacted\])\s*")[^"]{8,}"/i },
   { label: "credential decoded field", pattern: /\b(?:access_key|accessKey|secret_key|secretKey|telegram_bot_token|botToken|tuiControlToken|tui_control_token|seemirai(?:Upbit)?(?:AccessKey|SecretKey|TelegramBotToken|TuiControlToken)|databaseUrl|database_url|databasePassword|database_password|dbPassword|db_password|pgPassword|pg_password|password)\s*:\s*(?!["']?(?:<redacted>|redacted|\[redacted\])["']?(?:\s|$|[,}\]]))[^\r\n]{8,}/i },
+  { label: "raw payload decoded field", pattern: /\b(?:rawProvider(?:Payload|Body)?|rawOrder(?:Detail|Payload)?|raw(?:_|-)?provider(?:(?:_|-)?(?:payload|body))?|raw(?:_|-)?order(?:(?:_|-)?(?:detail|payload))?)\s*:/i },
   { label: "access key env assignment", pattern: /\b(?:SEEMIRAI_)?(?:UPBIT_)?ACCESS_KEY\s*[:=]\s*(?!(?:["']?(?:<redacted>|redacted|\[redacted\])["']?)(?:$|[\r\n,}]))[^\r\n,}]{8,}/i },
   { label: "secret key env assignment", pattern: /\b(?:SEEMIRAI_)?(?:UPBIT_)?SECRET_KEY\s*[:=]\s*(?!(?:["']?(?:<redacted>|redacted|\[redacted\])["']?)(?:$|[\r\n,}]))[^\r\n,}]{8,}/i },
   { label: "telegram token env assignment", pattern: /\b(?:SEEMIRAI_)?TELEGRAM_BOT_TOKEN\s*[:=]\s*(?!(?:["']?(?:<redacted>|redacted|\[redacted\])["']?)(?:$|[\r\n,}]))[^\r\n,}]{8,}/i },
   { label: "tui control token env assignment", pattern: /\b(?:SEEMIRAI_)?TUI_CONTROL_TOKEN\s*[:=]\s*(?!(?:["']?(?:<redacted>|redacted|\[redacted\])["']?)(?:$|[\r\n,}]))[^\r\n,}]{8,}/i },
+  { label: "database url env assignment", pattern: /\b(?:SEEMIRAI_)?DATABASE_URL\s*[:=]\s*(?!(?:["']?(?:<redacted>|redacted|\[redacted\])["']?)(?:$|[\r\n,}]))[^\r\n,}]{8,}/i },
   { label: "database password env assignment", pattern: /\b(?:SEEMIRAI_)?(?:DATABASE_PASSWORD|DB_PASSWORD|PGPASSWORD)\s*[:=]\s*(?!(?:["']?(?:<redacted>|redacted|\[redacted\])["']?)(?:$|[\r\n,}]))[^\r\n,}]{8,}/i },
   { label: "credential env placeholder tail", pattern: /\b(?:SEEMIRAI_)?(?:(?:UPBIT_)?(?:ACCESS_KEY|SECRET_KEY)|TELEGRAM_BOT_TOKEN|TUI_CONTROL_TOKEN|DATABASE_PASSWORD|DB_PASSWORD|PGPASSWORD)\s*[:=]\s*["']?(?:<redacted>|redacted|\[redacted\])["']?[,;:\[{]\s*[^"'\s,;}\]]{4,}/i },
   { label: "credential env placeholder json tail", pattern: /\b(?:SEEMIRAI_)?(?:(?:UPBIT_)?(?:ACCESS_KEY|SECRET_KEY)|TELEGRAM_BOT_TOKEN|TUI_CONTROL_TOKEN|DATABASE_PASSWORD|DB_PASSWORD|PGPASSWORD)\s*[:=]\s*["']?(?:<redacted>|redacted|\[redacted\])["']?\s*[,;]\s*(?:\{|\[)/i },
@@ -1230,7 +1234,10 @@ function isLiveOpsCommand(command, configPath, envFilePath) {
   if (!path.isAbsolute(configPath) || !path.isAbsolute(envFilePath)) {
     return false;
   }
-  const tokens = command.trim().split(/\s+/u);
+  if (collectUnquotedShellOperators(command).length > 0) {
+    return false;
+  }
+  const tokens = splitCommandTokens(command);
   const separatorIndex = tokens.indexOf("--");
   if (tokens[0] !== "corepack" || tokens[1] !== "pnpm" || tokens[2] !== "live:ops" || separatorIndex !== 3) {
     return false;
@@ -1561,19 +1568,20 @@ function createKeyScopeEvidence(manifest) {
 function createSourceScanCommandEvidence(commands) {
   const commandChecks = commands.map((command) => {
     const tokens = splitCommandTokens(command);
+    const optionTokens = collectTokensBeforeOptionTerminator(tokens);
     const operands = collectRipgrepPathOperands(tokens);
     const searchPatterns = collectRipgrepSearchPatterns(tokens);
     const usesRipgrep = tokens[0] === "rg";
-    const hasLineNumber = hasRipgrepLineNumber(tokens);
+    const hasLineNumber = hasRipgrepLineNumber(optionTokens);
     // 운영자 shell의 ripgrep config가 검색 범위를 몰래 줄이지 못하게 source scan 증거는 config 비활성화를 요구한다.
-    const hasNoConfig = tokens.includes("--no-config");
+    const hasNoConfig = optionTokens.includes("--no-config");
     // hidden/ignore 기본 필터가 운영 source scan 범위를 줄이지 못하게 unrestricted traversal을 요구한다.
-    const hasFullTraversal = hasRipgrepFullTraversal(tokens);
+    const hasFullTraversal = hasRipgrepFullTraversal(optionTokens);
     // redirect/pipe가 있으면 실제 검색 결과가 reviewer에게 보이지 않을 수 있어 closeout source scan 증거에서 제외한다.
     const shellOperators = collectUnquotedShellOperators(command);
     const scansExpectedPaths = requiredSourceScanPaths.every((scanPath) => operands.includes(scanPath));
-    const excludedSourceGlobs = collectExcludedSourceGlobs(tokens);
-    const disallowedOptions = collectDisallowedRipgrepOptions(tokens);
+    const excludedSourceGlobs = collectExcludedSourceGlobs(optionTokens);
+    const disallowedOptions = collectDisallowedRipgrepOptions(optionTokens);
     // escaped alternation은 다중 secret/order 후보 검색을 하지 않는 패턴이라 coverage 증거로 인정하지 않는다.
     const escapedAlternationPatterns = searchPatterns.filter((pattern) => pattern.includes("\\|"));
     const unsupportedRegexPatterns = searchPatterns.filter(hasUnsupportedRipgrepRegex);
@@ -1678,6 +1686,11 @@ function collectExcludedSourceGlobs(tokens) {
     }
     if (token.startsWith("-g") && token.length > 2) {
       globs.push(stripShellQuotes(token.slice(2)));
+      continue;
+    }
+    const clusteredShortGlob = readClusteredShortOptionValue(token, "g");
+    if (clusteredShortGlob !== undefined) {
+      globs.push(stripShellQuotes(clusteredShortGlob));
       continue;
     }
     if (token.startsWith("--glob=")) {
@@ -1786,6 +1799,11 @@ function isShellParameterExpansionStart(char, nextChar) {
   return char === "$" && (nextChar === "{" || /[A-Za-z_]/u.test(nextChar ?? ""));
 }
 
+function collectTokensBeforeOptionTerminator(tokens) {
+  const terminatorIndex = tokens.indexOf("--");
+  return terminatorIndex >= 0 ? tokens.slice(0, terminatorIndex) : tokens;
+}
+
 function hasRipgrepFullTraversal(tokens) {
   const tokenSet = new Set(tokens);
   return tokens.some((token) => /^-u{2,3}$/u.test(token))
@@ -1808,6 +1826,13 @@ function collectRipgrepPathOperands(tokens) {
   let patternSeen = false;
   for (let index = 1; index < tokens.length; index += 1) {
     const token = tokens[index];
+    if (token === "--") {
+      if (!patternSeen && tokens[index + 1] !== undefined) {
+        patternSeen = true;
+        index += 1;
+      }
+      continue;
+    }
     if (token === "-g" || token === "--glob") {
       index += 1;
       continue;
@@ -1845,6 +1870,14 @@ function collectRipgrepSearchPatterns(tokens) {
   let positionalPatternSeen = false;
   for (let index = 1; index < tokens.length; index += 1) {
     const token = tokens[index];
+    if (token === "--") {
+      if (!positionalPatternSeen && tokens[index + 1] !== undefined) {
+        patterns.push(tokens[index + 1]);
+        positionalPatternSeen = true;
+        index += 1;
+      }
+      continue;
+    }
     if ((token === "-g" || token === "--glob") && tokens[index + 1] !== undefined) {
       index += 1;
       continue;
@@ -1888,6 +1921,18 @@ function isRipgrepOptionWithNextValue(token) {
     return true;
   }
   return /^-[A-Za-z]$/u.test(token) && ripgrepShortOptionsWithNextValue.has(token[1]);
+}
+
+function readClusteredShortOptionValue(token, flag) {
+  if (!/^-[A-Za-z][\s\S]+/u.test(token) || token.startsWith("--")) {
+    return undefined;
+  }
+  const body = token.slice(1);
+  const flagIndex = body.indexOf(flag);
+  if (flagIndex < 0 || flagIndex >= body.length - 1) {
+    return undefined;
+  }
+  return body.slice(flagIndex + 1);
 }
 
 function excludesSourcePath(glob, scanPath) {
@@ -2009,7 +2054,7 @@ function createArtifactManifestConflicts(artifactFiles, manifest, run, counters)
 }
 
 function isFailureArtifactStatus(value) {
-  return /^(?:blocked|error|fail|failed|failure|partial|skipped)(?:$|[_:-])/iu.test(value)
+  return /(?:^|[_:-])(?:blocked|error|fail|failed|failure|partial|skipped)(?:$|[_:-])/iu.test(value)
     || /manual[_:-]?review/iu.test(value)
     || /timeout/iu.test(value);
 }
@@ -2207,7 +2252,22 @@ function readTimestampMs(value) {
     return undefined;
   }
   const timestamp = Date.parse(text);
-  return Number.isFinite(timestamp) ? timestamp : undefined;
+  if (!Number.isFinite(timestamp)) {
+    return undefined;
+  }
+  const normalizedText = normalizeIsoTimestampText(text);
+  if (normalizedText === undefined || new Date(timestamp).toISOString() !== normalizedText) {
+    return undefined;
+  }
+  return timestamp;
+}
+
+function normalizeIsoTimestampText(value) {
+  const match = /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(?:\.(\d{3}))?Z$/u.exec(value);
+  if (match === null) {
+    return undefined;
+  }
+  return `${match[1]}.${match[2] ?? "000"}Z`;
 }
 
 function readTimestampMsFromAliases(record, aliases) {
@@ -2301,7 +2361,7 @@ function hasMeaningfulEnvValue(value) {
   // fake/example 계열 값은 파일이 존재해도 production credential evidence가 아니므로 operator input으로 인정하지 않는다.
   return normalized !== "0"
     && !/(?:<[^>]+>|redacted|\[redacted\])/iu.test(normalized)
-    && !/(?:^|[-_\s:])(fake|dummy|example|changeme|placeholder|test)(?:$|[-_\s:])/iu.test(normalized);
+    && !/(?:^|[-_\s:])(fake|dummy|example|changeme|placeholder|test|fixture)(?:$|[-_\s:])/iu.test(normalized);
 }
 
 function collectUnique(values) {
