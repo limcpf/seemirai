@@ -131,11 +131,17 @@ export async function loadLiveOpsCliInputs(options) {
     databaseUrl: env.SEEMIRAI_DATABASE_URL,
     fixtureSmoke: options.fixtureSmoke,
   });
+  if (!dbReadiness.ready) {
+    throw new Error(formatCliDbReadinessFailureMessage(dbReadiness));
+  }
+
   const marketData = await evaluateLiveOpsCliMarketData({
     config,
     fixtureSmoke: options.fixtureSmoke,
     databaseUrl: env.SEEMIRAI_DATABASE_URL,
   });
+  assertLiveOpsCliMarketDataReady(marketData, { fixtureSmoke: options.fixtureSmoke });
+
   const analysisDecision = evaluateLiveOpsCliAnalysisDecision({
     config,
     fixtureSmoke: options.fixtureSmoke,
@@ -156,10 +162,6 @@ export async function loadLiveOpsCliInputs(options) {
     fixtureSmoke: options.fixtureSmoke,
     liveExecution,
   });
-
-  if (!dbReadiness.ready) {
-    throw new Error(formatCliDbReadinessFailureMessage(dbReadiness));
-  }
 
   return {
     configPath,
@@ -209,6 +211,12 @@ export function renderLiveOpsSummary(input) {
       workers: Object.keys(input.config.workers ?? {}).filter((key) => input.config.workers[key] === true),
     },
   };
+}
+
+export function assertLiveOpsCliMarketDataReady(summary, { fixtureSmoke }) {
+  if (!fixtureSmoke && !summary.ready) {
+    throw new Error(formatCliMarketDataFailureMessage(summary));
+  }
 }
 
 export function renderLiveOpsTuiDashboard(summary) {
@@ -1117,8 +1125,12 @@ export function createLiveOpsUpbitSubscriptionMessage({ market }) {
 
 export function parseLiveOpsUpbitWebSocketMessage(data) {
   const text = normalizeLiveOpsWebSocketData(data);
-  const parsed = JSON.parse(text);
+  const parsed = JSON.parse(protectLiveOpsUpbitLargeSequentialIds(text));
   return Array.isArray(parsed) ? parsed : [parsed];
+}
+
+export function protectLiveOpsUpbitLargeSequentialIds(text) {
+  return text.replace(/("sequential_id"\s*:\s*)(\d{16,})(?=\s*[,}\]])/gu, '$1"$2"');
 }
 
 export function mapLiveOpsUpbitPayloadToEvent(payload, { market, receivedAt, observedAt, staleAfterMs }) {
@@ -1786,6 +1798,14 @@ function formatCliDbReadinessFailureMessage(summary) {
     .map((check) => check.message)
     .join(" ");
   return `DB readiness를 통과하지 못해 live ops boot를 중단합니다. ${failures}`;
+}
+
+function formatCliMarketDataFailureMessage(summary) {
+  const failures = summary.checks
+    .filter((check) => check.status === "blocked")
+    .map((check) => check.message)
+    .join(" ");
+  return `market data provider boot를 통과하지 못해 live ops boot를 중단합니다. ${failures}`;
 }
 
 function safeErrorName(error) {

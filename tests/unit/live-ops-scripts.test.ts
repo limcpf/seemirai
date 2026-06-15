@@ -261,6 +261,15 @@ const orderbookPayload = {
 };
 const receivedAt = "2026-06-15T00:00:01.000Z";
 const subscription = createLiveOpsUpbitSubscriptionMessage({ market: "KRW-BTC" });
+const [parsedLargeTrade] = parseLiveOpsUpbitWebSocketMessage(
+  '{"type":"trade","code":"KRW-BTC","trade_price":100000000,"trade_volume":0.001,"ask_bid":"BID","trade_timestamp":1781481600000,"timestamp":1781481600000,"sequential_id":17303368620470000123,"stream_type":"REALTIME"}',
+);
+const largeTrade = mapLiveOpsUpbitPayloadToEvent(parsedLargeTrade, {
+  market: "KRW-BTC",
+  receivedAt,
+  observedAt: receivedAt,
+  staleAfterMs: 30000,
+});
 const trade = mapLiveOpsUpbitPayloadToEvent(tradePayload, {
   market: "KRW-BTC",
   receivedAt,
@@ -293,6 +302,7 @@ try {
 console.log(JSON.stringify({
   subscription: JSON.parse(subscription),
   subscriptionText: subscription,
+  largeTrade,
   trade,
   orderbook,
   stale,
@@ -313,6 +323,7 @@ console.log(JSON.stringify({
     const output = JSON.parse(result.stdout) as {
       subscription: unknown;
       subscriptionText: string;
+      largeTrade: { type: string; tradeId: string };
       trade: { type: string; market: string; tradeId: string; price: string; quantity: string; side: string };
       orderbook: { type: string; market: string; asks: Array<{ price: string; size: string }>; bids: Array<{ price: string; size: string }> };
       stale: { type: string; status: string; reasonCode: string };
@@ -327,6 +338,10 @@ console.log(JSON.stringify({
       { format: "DEFAULT" },
     ]);
     expect(output.subscriptionText).not.toMatch(/authorization|bearer|myOrder|myAsset|\/v1\/orders/iu);
+    expect(output.largeTrade).toMatchObject({
+      type: "TRADE",
+      tradeId: "17303368620470000123",
+    });
     expect(output.trade).toMatchObject({
       type: "TRADE",
       market: "KRW-BTC",
@@ -349,6 +364,110 @@ console.log(JSON.stringify({
     expect(output.outsideUniverse).toBe("LiveOpsMarketDataOutsideUniverse");
     expect(output.parsedCount).toBe(1);
     expect(result.stdout).not.toContain("fake-upbit-secret-key");
+  });
+
+  it("DB readiness 차단 시 provider를 열기 전에 production boot를 중단한다", async () => {
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-live-ops-db-block-"));
+    const fixtureEnv = await readFile(path.join(process.cwd(), "tests", "fixtures", "live-ops", "fake.env"), "utf8");
+    const envFilePath = path.join(tempDir, "blocked-db.env");
+    await writeFile(
+      envFilePath,
+      fixtureEnv.replace(
+        /^SEEMIRAI_DATABASE_URL=.*$/mu,
+        "SEEMIRAI_DATABASE_URL=postgres://seemirai:fake-password@127.0.0.1:1/seemirai",
+      ),
+      "utf8",
+    );
+
+    const result = spawnSync(
+      process.execPath,
+      [
+        "--input-type=module",
+        "--eval",
+        `
+import { loadLiveOpsCliInputs } from "./scripts/run-live-ops-support.mjs";
+
+let providerOpened = false;
+globalThis.WebSocket = class {
+  constructor() {
+    providerOpened = true;
+    throw new Error("ProviderShouldNotOpen");
+  }
+};
+
+try {
+  await loadLiveOpsCliInputs({
+    configPath: "config/live-ops.example.json",
+    envFilePath: ${JSON.stringify(envFilePath)},
+    fixtureSmoke: false,
+  });
+  console.log(JSON.stringify({ status: "unexpected-ready", providerOpened }));
+} catch (error) {
+  console.log(JSON.stringify({
+    status: "blocked",
+    providerOpened,
+    message: error instanceof Error ? error.message : String(error),
+  }));
+}
+        `,
+      ],
+      {
+        cwd: process.cwd(),
+        encoding: "utf8",
+        env: minimalEnv(),
+      },
+    );
+
+    expect(result.status).toBe(0);
+    expect(result.stderr).toBe("");
+    const output = JSON.parse(result.stdout) as {
+      status: string;
+      providerOpened: boolean;
+      message: string;
+    };
+    expect(output.status).toBe("blocked");
+    expect(output.providerOpened).toBe(false);
+    expect(output.message).toContain("DB readiness를 통과하지 못해 live ops boot를 중단합니다");
+  });
+
+  it("provider boot blocked summary는 non-fixture 명령 성공으로 흐르지 않는다", () => {
+    const result = spawnSync(
+      process.execPath,
+      [
+        "--input-type=module",
+        "--eval",
+        `
+import { assertLiveOpsCliMarketDataReady } from "./scripts/run-live-ops-support.mjs";
+
+try {
+  assertLiveOpsCliMarketDataReady({
+    ready: false,
+    checks: [{
+      status: "blocked",
+      message: "Upbit public market data provider boot를 완료하지 못했습니다.",
+    }],
+  }, { fixtureSmoke: false });
+  console.log(JSON.stringify({ status: "unexpected-ready" }));
+} catch (error) {
+  console.log(JSON.stringify({
+    status: "blocked",
+    message: error instanceof Error ? error.message : String(error),
+  }));
+}
+        `,
+      ],
+      {
+        cwd: process.cwd(),
+        encoding: "utf8",
+        env: minimalEnv(),
+      },
+    );
+
+    expect(result.status).toBe(0);
+    expect(result.stderr).toBe("");
+    const output = JSON.parse(result.stdout) as { status: string; message: string };
+    expect(output.status).toBe("blocked");
+    expect(output.message).toContain("market data provider boot를 통과하지 못해 live ops boot를 중단합니다");
   });
 
   it("live:ops:tui attach skeleton은 attach 대상 없이는 실패한다", () => {
