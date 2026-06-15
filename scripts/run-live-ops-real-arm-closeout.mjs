@@ -95,22 +95,25 @@ const requiredSecretSourceScanPatterns = [
 ];
 const disallowedRipgrepLongOptions = new Set([
   "--file",
+  "--files",
   "--files-with-matches",
   "--files-without-match",
   "--fixed-strings",
+  "--engine",
   "--ignore-file",
   "--iglob",
   "--invert-match",
   "--max-depth",
   "--max-filesize",
   "--max-count",
+  "--pcre2",
   "--pre",
   "--pre-glob",
   "--quiet",
   "--type",
   "--type-not",
 ]);
-const disallowedRipgrepShortOptions = new Set(["F", "L", "T", "f", "l", "m", "q", "t", "v"]);
+const disallowedRipgrepShortOptions = new Set(["F", "L", "P", "T", "f", "l", "m", "q", "t", "v"]);
 const withdrawalScopeMarkers = ["출금", "withdraw"];
 const forbiddenKeyScopeMarkers = ["출금", "입금", "withdraw", "deposit", "futures", "leverage", "margin"];
 const requiredCounterNames = [
@@ -130,6 +133,7 @@ const sensitivePatterns = [
   { label: "telegram botToken json field", pattern: /"(?:telegram)?botToken"\s*:\s*"(?!\s*(?:<redacted>|redacted|\[redacted\])\s*")[^"]{8,}"/i },
   { label: "tui control token json field", pattern: /"(?:tuiControlToken|tui_control_token|seemirai_tui_control_token)"\s*:\s*"(?!\s*(?:<redacted>|redacted|\[redacted\])\s*")[^"]{8,}"/i },
   { label: "telegram bot token url", pattern: /https:\/\/api\.telegram\.org\/bot(?!<redacted>|redacted|\[redacted\])[^/\s"']{8,}(?:\/[A-Za-z]+)?/i },
+  { label: "telegram bot token url placeholder tail", pattern: /https:\/\/api\.telegram\.org\/bot(?:<redacted>|redacted|\[redacted\])(?=[^/\s"'])[^/\s"']*/i },
   { label: "database password json field", pattern: /"(?:databasePassword|database_password|dbPassword|db_password|pgPassword|pg_password|password)"\s*:\s*"(?!\s*(?:<redacted>|redacted|\[redacted\])\s*")[^"]{8,}"/i },
   { label: "access key env assignment", pattern: /\b(?:SEEMIRAI_)?(?:UPBIT_)?ACCESS_KEY\s*[:=]\s*(?!(?:["']?(?:<redacted>|redacted|\[redacted\])["']?)(?:$|[\r\n,}]))[^\r\n,}]{8,}/i },
   { label: "secret key env assignment", pattern: /\b(?:SEEMIRAI_)?(?:UPBIT_)?SECRET_KEY\s*[:=]\s*(?!(?:["']?(?:<redacted>|redacted|\[redacted\])["']?)(?:$|[\r\n,}]))[^\r\n,}]{8,}/i },
@@ -138,9 +142,10 @@ const sensitivePatterns = [
   { label: "database password env assignment", pattern: /\b(?:SEEMIRAI_)?(?:DATABASE_PASSWORD|DB_PASSWORD|PGPASSWORD)\s*[:=]\s*(?!(?:["']?(?:<redacted>|redacted|\[redacted\])["']?)(?:$|[\r\n,}]))[^\r\n,}]{8,}/i },
   { label: "credential env placeholder tail", pattern: /\b(?:SEEMIRAI_)?(?:(?:UPBIT_)?(?:ACCESS_KEY|SECRET_KEY)|TELEGRAM_BOT_TOKEN|TUI_CONTROL_TOKEN|DATABASE_PASSWORD|DB_PASSWORD|PGPASSWORD)\s*[:=]\s*["']?(?:<redacted>|redacted|\[redacted\])["']?[,;:\[{]\s*[^"'\s,;}\]]{4,}/i },
   { label: "raw authorization bearer", pattern: /authorization:\s*bearer\s+(?!<redacted>|redacted|\[redacted\])[^\s"']+/i },
-  { label: "standalone bearer token", pattern: /\bBearer\s+(?!(?:<redacted>|redacted|\[redacted\])(?:\s|$))[^\s"']{16,}/ },
+  { label: "standalone bearer token", pattern: /\bBearer\s+(?!(?:<redacted>|redacted|\[redacted\])(?:\s|$))[^\s"']{16,}/i },
   { label: "bearer placeholder tail", pattern: /\bBearer\s+(?:<redacted>|redacted|\[redacted\])\s+[^\s"']+/i },
   { label: "jwt env assignment", pattern: /\bJWT\s*=\s*(?!(?:["']?(?:<redacted>|redacted|\[redacted\])["']?)(?:\s|$|["',]))[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/ },
+  { label: "raw jwt compact token", pattern: /\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b/i },
   { label: "authorization json field", pattern: /"authorization"\s*:\s*"(?!bearer\s+(?:<redacted>|redacted|\[redacted\])"|(?:<redacted>|redacted|\[redacted\])")[^"]{8,}"/i },
   { label: "jwt json field", pattern: /"jwt"\s*:\s*"(?!\s*(?:<redacted>|redacted|\[redacted\])\s*")[^"]{8,}"/i },
   { label: "postgres credential url", pattern: /postgres(?:ql)?:\/\/[^:\s"']+:(?!(?:<redacted>|redacted|\[redacted\])@)[^@\s"']+@/i },
@@ -304,8 +309,8 @@ async function validateManifest(manifest, manifestPath, manifestRawText, options
       telegramTuiEvidence: createTelegramTuiEvidenceCheck(manifest),
       sourceSecurityScan: createSourceSecurityScanCheck(sourceScan, { guarded: options.guarded }),
       redactionScan: createRedactionScanCheck([
-        { label: "manifest", rawText: manifestRawText },
-        ...artifactFiles.map((file, index) => ({ label: `artifact-${index + 1}`, rawText: file.rawText })),
+        { label: "manifest", rawText: manifestRawText, decodedText: collectJsonStringText(manifest) },
+        ...artifactFiles.map((file, index) => ({ label: `artifact-${index + 1}`, rawText: file.rawText, decodedText: collectJsonStringText(file.value) })),
       ]),
       readinessAudit: createReadinessAuditCheck(manifest),
     },
@@ -465,16 +470,23 @@ function createArtifactFilesCheck(artifactFiles, manifest, run, counters) {
 
 function createOrderPolicyCheck(run) {
   const requestedNotionalKrw = Number(readStringOrNumber(run.requestedNotionalKrw));
+  // 운영 manifest의 alias 충돌은 실제 주문 타입을 모호하게 만들므로 모든 주문 타입 표기를 같은 정책 값으로 검증한다.
+  const orderTypeValues = readStringAliasValues(run, ["orderType", "order_type", "ord_type"])
+    .map((actual) => ({ alias: actual.alias, value: actual.value.toUpperCase() }));
+  const invalidOrderTypeValues = orderTypeValues.filter((actual) => actual.value !== expectedOrderType);
   const actual = {
     market: readString(run.market),
     side: readString(run.side),
     orderType: readString(run.orderType),
+    orderTypeValues,
     timeInForce: normalizeTimeInForce(readString(run.timeInForce)),
     requestedNotionalKrw,
   };
   const ok = actual.market === expectedMarket
     && actual.side === expectedSide
     && actual.orderType === expectedOrderType
+    && orderTypeValues.length > 0
+    && invalidOrderTypeValues.length === 0
     && actual.timeInForce === expectedTimeInForce
     && Number.isFinite(requestedNotionalKrw)
     && requestedNotionalKrw >= minRequestedNotionalKrw
@@ -493,7 +505,7 @@ function createOrderPolicyCheck(run) {
       minRequestedNotionalKrw,
       maxRequestedNotionalKrw,
     },
-    actual,
+    actual: { ...actual, invalidOrderTypeValues },
   });
 }
 
@@ -668,7 +680,8 @@ function createRedactionScanCheck(inputs) {
   const findings = [];
   let scannedBytes = 0;
   for (const input of inputs) {
-    const rawText = input.rawText ?? "";
+    // JSON escape로 raw secret을 숨기는 artifact도 closeout 증거로 쓰지 못하게 raw/decoded 문자열을 함께 검사한다.
+    const rawText = [input.rawText, input.decodedText].filter(hasText).join("\n");
     scannedBytes += Buffer.byteLength(rawText, "utf8");
     for (const { label, pattern } of sensitivePatterns) {
       if (pattern.test(rawText)) {
@@ -682,6 +695,22 @@ function createRedactionScanCheck(inputs) {
   }
 
   return failCheck("manifest 또는 artifact에 secret/raw provider 후보 문자열이 있다.", { findings, scannedBytes });
+}
+
+function collectJsonStringText(value, depth = 0) {
+  if (depth > maxArtifactEvidenceDepth || value === undefined) {
+    return "";
+  }
+  if (typeof value === "string") {
+    return value;
+  }
+  if (Array.isArray(value)) {
+    return value.map((item) => collectJsonStringText(item, depth + 1)).filter(hasText).join("\n");
+  }
+  if (isRecord(value)) {
+    return Object.values(value).map((item) => collectJsonStringText(item, depth + 1)).filter(hasText).join("\n");
+  }
+  return "";
 }
 
 function createReadinessAuditCheck(manifest) {
@@ -1413,9 +1442,13 @@ function createSourceScanCommandEvidence(commands) {
     const searchPatterns = collectRipgrepSearchPatterns(tokens);
     const usesRipgrep = tokens[0] === "rg";
     const hasLineNumber = /(?:^|\s)(?:-n|--line-number)(?:\s|$)/u.test(command);
+    // redirect/pipe가 있으면 실제 검색 결과가 reviewer에게 보이지 않을 수 있어 closeout source scan 증거에서 제외한다.
+    const shellOperators = collectUnquotedShellOperators(command);
     const scansExpectedPaths = requiredSourceScanPaths.every((scanPath) => operands.includes(scanPath));
     const excludedSourceGlobs = collectExcludedSourceGlobs(tokens);
     const disallowedOptions = collectDisallowedRipgrepOptions(tokens);
+    // escaped alternation은 다중 secret/order 후보 검색을 하지 않는 패턴이라 coverage 증거로 인정하지 않는다.
+    const escapedAlternationPatterns = searchPatterns.filter((pattern) => pattern.includes("\\|"));
     const coveredUnsafePatterns = requiredUnsafeSourceScanPatterns
       .filter((requirement) => searchPatterns.some((pattern) => requirement.pattern.test(pattern)))
       .map((requirement) => requirement.label);
@@ -1426,11 +1459,13 @@ function createSourceScanCommandEvidence(commands) {
       command,
       usesRipgrep,
       hasLineNumber,
+      shellOperators,
       scansExpectedPaths,
       searchPatterns,
       operands,
       excludedSourceGlobs,
       disallowedOptions,
+      escapedAlternationPatterns,
       coveredUnsafePatterns,
       coveredSecretPatterns,
     };
@@ -1438,8 +1473,10 @@ function createSourceScanCommandEvidence(commands) {
   const validCommandChecks = commandChecks.filter((check) => check.usesRipgrep
     && check.hasLineNumber
     && check.scansExpectedPaths
+    && check.shellOperators.length === 0
     && check.excludedSourceGlobs.length === 0
-    && check.disallowedOptions.length === 0);
+    && check.disallowedOptions.length === 0
+    && check.escapedAlternationPatterns.length === 0);
   const unsafePatternsCovered = collectUnique(validCommandChecks.flatMap((check) => check.coveredUnsafePatterns));
   const secretPatternsCovered = collectUnique(validCommandChecks.flatMap((check) => check.coveredSecretPatterns));
   const missingUnsafePatterns = requiredUnsafeSourceScanPatterns
@@ -1511,6 +1548,27 @@ function collectDisallowedRipgrepOptions(tokens) {
     }
   }
   return options;
+}
+
+function collectUnquotedShellOperators(command) {
+  const operators = [];
+  let quote = undefined;
+  for (const char of command) {
+    if (quote !== undefined) {
+      if (char === quote) {
+        quote = undefined;
+      }
+      continue;
+    }
+    if (char === "'" || char === '"') {
+      quote = char;
+      continue;
+    }
+    if ("|><;&".includes(char)) {
+      operators.push(char);
+    }
+  }
+  return collectUnique(operators);
 }
 
 function collectRipgrepPathOperands(tokens) {
@@ -1998,7 +2056,10 @@ function hasMeaningfulEnvValue(value) {
     return false;
   }
   const normalized = value.trim();
-  return normalized !== "0" && !/^(?:<[^>]+>|redacted|\[redacted\])$/iu.test(normalized);
+  // fake/example 계열 값은 파일이 존재해도 production credential evidence가 아니므로 operator input으로 인정하지 않는다.
+  return normalized !== "0"
+    && !/^(?:<[^>]+>|redacted|\[redacted\])$/iu.test(normalized)
+    && !/(?:^|[-_\s:])(fake|dummy|example|changeme|placeholder|test)(?:$|[-_\s:])/iu.test(normalized);
 }
 
 function collectUnique(values) {
