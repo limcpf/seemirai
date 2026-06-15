@@ -74,24 +74,43 @@ const liveOpsConfigAllowedKeys = {
 };
 const requiredUnsafeSourceScanPatterns = [
   { label: "ord_type", pattern: /ord_type/u },
-  { label: "market order", pattern: /market|시장가/u },
+  { label: "market order", pattern: /market/u },
+  { label: "korean market order", pattern: /시장가/u },
   { label: "best order", pattern: /best/u },
-  { label: "withdrawal", pattern: /withdraw|출금/u },
-  { label: "deposit", pattern: /deposit|입금/u },
+  { label: "withdrawal", pattern: /withdraw/u },
+  { label: "korean withdrawal", pattern: /출금/u },
+  { label: "deposit", pattern: /deposit/u },
+  { label: "korean deposit", pattern: /입금/u },
   { label: "leverage", pattern: /leverage/u },
   { label: "futures", pattern: /futures/u },
   { label: "margin", pattern: /margin/u },
 ];
 const requiredSecretSourceScanPatterns = [
-  { label: "access key", pattern: /access_key|accessKey/u },
+  { label: "access key", pattern: /access_key/u },
+  { label: "camelCase access key", pattern: /accessKey/u },
   { label: "uppercase access key env", pattern: /ACCESS_KEY/u },
-  { label: "secret key", pattern: /secret_key|secretKey/u },
+  { label: "secret key", pattern: /secret_key/u },
+  { label: "camelCase secret key", pattern: /secretKey/u },
   { label: "uppercase secret key env", pattern: /SECRET_KEY/u },
-  { label: "authorization bearer", pattern: /Authorization|Bearer/u },
-  { label: "jwt", pattern: /JWT|jwt/u },
-  { label: "telegram token", pattern: /telegram_bot_token|botToken|TELEGRAM_BOT_TOKEN/u },
-  { label: "raw provider payload", pattern: /raw_provider|rawProvider/u },
-  { label: "raw order payload", pattern: /raw_order|rawOrder/u },
+  { label: "authorization header", pattern: /Authorization/u },
+  { label: "bearer token", pattern: /Bearer/u },
+  { label: "uppercase jwt", pattern: /JWT/u },
+  { label: "lowercase jwt", pattern: /jwt/u },
+  { label: "telegram token", pattern: /telegram_bot_token/u },
+  { label: "telegram botToken", pattern: /botToken/u },
+  { label: "uppercase telegram token env", pattern: /TELEGRAM_BOT_TOKEN/u },
+  { label: "tui control token env", pattern: /SEEMIRAI_TUI_CONTROL_TOKEN/u },
+  { label: "tui control token camelCase", pattern: /tuiControlToken/u },
+  { label: "tui control token snake_case", pattern: /tui_control_token/u },
+  { label: "database url env", pattern: /DATABASE_URL/u },
+  { label: "database password camelCase", pattern: /databasePassword/u },
+  { label: "database password snake_case", pattern: /database_password/u },
+  { label: "db password", pattern: /db_password/u },
+  { label: "pg password", pattern: /pg_password/u },
+  { label: "raw provider payload", pattern: /raw_provider/u },
+  { label: "raw provider payload camelCase", pattern: /rawProvider/u },
+  { label: "raw order payload", pattern: /raw_order/u },
+  { label: "raw order payload camelCase", pattern: /rawOrder/u },
 ];
 const disallowedRipgrepLongOptions = new Set([
   "--line-regexp",
@@ -110,6 +129,7 @@ const disallowedRipgrepLongOptions = new Set([
   "--max-columns",
   "--max-count",
   "--no-hidden",
+  "--no-filename",
   "--no-line-number",
   "--pcre2",
   "--pcre2-version",
@@ -123,7 +143,7 @@ const disallowedRipgrepLongOptions = new Set([
   "--type-not",
   "--word-regexp",
 ]);
-const disallowedRipgrepShortOptions = new Set(["F", "L", "M", "N", "P", "T", "f", "l", "m", "q", "r", "t", "v", "w", "x"]);
+const disallowedRipgrepShortOptions = new Set(["F", "I", "L", "M", "N", "P", "T", "d", "f", "l", "m", "q", "r", "t", "v", "w", "x"]);
 const ripgrepOptionsWithNextValue = new Set([
   "--engine",
   "--file",
@@ -140,7 +160,7 @@ const ripgrepOptionsWithNextValue = new Set([
   "--type",
   "--type-not",
 ]);
-const ripgrepShortOptionsWithNextValue = new Set(["M", "f", "g", "m", "r", "t"]);
+const ripgrepShortOptionsWithNextValue = new Set(["M", "d", "f", "g", "m", "r", "t"]);
 const withdrawalScopeMarkers = ["출금", "withdraw"];
 const forbiddenKeyScopeMarkers = ["출금", "입금", "withdraw", "deposit", "futures", "leverage", "margin"];
 const requiredCounterNames = [
@@ -171,6 +191,7 @@ const sensitivePatterns = [
   { label: "tui control token env assignment", pattern: /\b(?:SEEMIRAI_)?TUI_CONTROL_TOKEN\s*[:=]\s*(?!(?:["']?(?:<redacted>|redacted|\[redacted\])["']?)(?:$|[\r\n,}]))[^\r\n,}]{8,}/i },
   { label: "database password env assignment", pattern: /\b(?:SEEMIRAI_)?(?:DATABASE_PASSWORD|DB_PASSWORD|PGPASSWORD)\s*[:=]\s*(?!(?:["']?(?:<redacted>|redacted|\[redacted\])["']?)(?:$|[\r\n,}]))[^\r\n,}]{8,}/i },
   { label: "credential env placeholder tail", pattern: /\b(?:SEEMIRAI_)?(?:(?:UPBIT_)?(?:ACCESS_KEY|SECRET_KEY)|TELEGRAM_BOT_TOKEN|TUI_CONTROL_TOKEN|DATABASE_PASSWORD|DB_PASSWORD|PGPASSWORD)\s*[:=]\s*["']?(?:<redacted>|redacted|\[redacted\])["']?[,;:\[{]\s*[^"'\s,;}\]]{4,}/i },
+  { label: "credential env placeholder json tail", pattern: /\b(?:SEEMIRAI_)?(?:(?:UPBIT_)?(?:ACCESS_KEY|SECRET_KEY)|TELEGRAM_BOT_TOKEN|TUI_CONTROL_TOKEN|DATABASE_PASSWORD|DB_PASSWORD|PGPASSWORD)\s*[:=]\s*["']?(?:<redacted>|redacted|\[redacted\])["']?\s*[,;]\s*(?:\{|\[)/i },
   { label: "raw authorization bearer", pattern: /authorization:\s*bearer\s+(?!<redacted>|redacted|\[redacted\])[^\s"']+/i },
   { label: "standalone bearer token", pattern: /\bBearer\s+(?!(?:<redacted>|redacted|\[redacted\])(?:\s|$))[^\s"']{16,}/i },
   { label: "bearer placeholder tail", pattern: /\bBearer\s+(?:<redacted>|redacted|\[redacted\])\s+[^\s"']+/i },
@@ -329,7 +350,7 @@ async function validateManifest(manifest, manifestPath, manifestRawText, options
     metrics,
     checks: {
       manifestShape: createManifestShapeCheck(manifest),
-      guardedArtifactInput: createGuardedArtifactInputCheck(manifest, manifestPath, artifactFiles, options.guarded),
+      guardedArtifactInput: createGuardedArtifactInputCheck(manifest, manifestRawText, manifestPath, artifactFiles, options.guarded),
       operatorInputs: await createOperatorInputsCheck(manifest, path.dirname(manifestPath), options.guarded),
       artifactFiles: createArtifactFilesCheck(artifactFiles, manifest, run, counters),
       orderPolicy: createOrderPolicyCheck(run),
@@ -390,7 +411,7 @@ function createManifestShapeCheck(manifest) {
   });
 }
 
-function createGuardedArtifactInputCheck(manifest, manifestPath, artifactFiles, guarded) {
+function createGuardedArtifactInputCheck(manifest, manifestRawText, manifestPath, artifactFiles, guarded) {
   if (!guarded) {
     return okCheck("fixture smoke는 guarded 운영 artifact 입력 검사를 열지 않는다.", { fixtureSmoke: true });
   }
@@ -398,14 +419,11 @@ function createGuardedArtifactInputCheck(manifest, manifestPath, artifactFiles, 
   const fixtureMarkers = [
     manifest.fixture === true ? "manifest.fixture" : undefined,
     manifestPath.includes(".fixture") ? "manifest path" : undefined,
+    hasRawFixtureMarkerText(manifestRawText) || hasDecodedFixtureMarkerValue(manifest) ? "manifest marker" : undefined,
     ...artifactFiles
       .filter((file) => file.filePath.includes(".fixture")
-        || /"(?:fixture|fixtureSmoke|fixture_smoke)"\s*:\s*true/i.test(file.rawText)
-        || /"kind"\s*:\s*"[^"]*FIXTURE[^"]*"/i.test(file.rawText)
-        || /\bfixture_smoke\b/i.test(file.rawText)
-        || /\bfixture smoke\b/i.test(file.rawText)
-        // JSON escape로 숨긴 fixture marker도 guarded 실거래 evidence로 인정하지 않는다.
-        || /(?:^|[^A-Za-z0-9])FIXTURE(?:$|[^A-Za-z0-9])/i.test(collectJsonStringText(file.value)))
+        || hasRawFixtureMarkerText(file.rawText)
+        || hasDecodedFixtureMarkerValue(file.value))
       .map((file) => file.filePath),
   ].filter(hasText);
 
@@ -414,6 +432,36 @@ function createGuardedArtifactInputCheck(manifest, manifestPath, artifactFiles, 
   }
 
   return failCheck("guarded Issue #206 closeout에서는 fixture manifest/artifact를 사용할 수 없다.", { fixtureMarkers });
+}
+
+function hasRawFixtureMarkerText(value) {
+  return /"(?:fixture|fixtureSmoke|fixture_smoke)"\s*:\s*true/i.test(value)
+    || /"kind"\s*:\s*"[^"]*FIXTURE[^"]*"/i.test(value)
+    || /\bfixture_smoke\b/i.test(value)
+    || /\bfixture smoke\b/i.test(value);
+}
+
+function hasDecodedFixtureMarkerValue(value) {
+  if (typeof value === "string") {
+    return /\bfixture_smoke\b/i.test(value) || /\bfixture smoke\b/i.test(value);
+  }
+  if (Array.isArray(value)) {
+    return value.some((item) => hasDecodedFixtureMarkerValue(item));
+  }
+  if (!isRecord(value)) {
+    return false;
+  }
+
+  return Object.entries(value).some(([key, child]) => {
+    if (/^(?:fixture|fixtureSmoke|fixture_smoke)$/u.test(key)) {
+      return child === true;
+    }
+    if (key === "kind" && typeof child === "string") {
+      return /(?:^|[^A-Za-z0-9])FIXTURE(?:$|[^A-Za-z0-9])/i.test(child);
+    }
+    // fixture라는 단어가 경로에 포함될 수 있어, 운영 차단은 명시적 smoke marker나 kind 필드로 한정한다.
+    return hasDecodedFixtureMarkerValue(child);
+  });
 }
 
 async function createOperatorInputsCheck(manifest, baseDir, guarded) {
@@ -692,10 +740,21 @@ function summarizeSourceScanMatches(matches) {
       return {
         path: readString(match.path) ?? readString(match.filePath) ?? readString(match.file) ?? null,
         line: readNumber(match.line) ?? readNumber(match.lineNumber) ?? null,
-        label: readString(match.label) ?? readString(match.kind) ?? readString(match.patternLabel) ?? null,
+        label: sanitizeSourceScanMatchLabel(readString(match.label) ?? readString(match.kind) ?? readString(match.patternLabel)),
       };
     }),
   };
+}
+
+function sanitizeSourceScanMatchLabel(label) {
+  if (!hasText(label)) {
+    return null;
+  }
+  const allowedLabels = new Set([
+    ...requiredUnsafeSourceScanPatterns.map((requirement) => requirement.label),
+    ...requiredSecretSourceScanPatterns.map((requirement) => requirement.label),
+  ]);
+  return allowedLabels.has(label) ? label : "[redacted-label]";
 }
 
 function createSourceScanLocationEvidence(sourceScan, options) {
@@ -1944,8 +2003,6 @@ function isCloseoutEvidenceRecord(record) {
     "requested_notional_krw",
     "openExposureKrw",
     "open_exposure_krw",
-    "submittedAt",
-    "submitted_at",
   ].some((field) => record[field] !== undefined);
 }
 

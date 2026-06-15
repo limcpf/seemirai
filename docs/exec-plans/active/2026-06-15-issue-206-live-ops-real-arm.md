@@ -185,6 +185,8 @@ SEEMIRAI_RUN_LIVE_OPS_REAL_ARM_CLOSEOUT=1 \
   replacement option, metadata-only rg mode, `-N`/`--no-line-number` line evidence 제거도 차단한다.
 - 2026-06-15: closeout validator는 quoted pattern 속 line-number 가짜 증거, hyphenated/generic token JSON credential field,
   `MANUAL_REVIEW_REQUIRED` artifact status, JSON escape로 숨긴 fixture marker도 차단한다.
+- 2026-06-15: closeout validator는 `-d`/`-I` rg 옵션, source scan raw label 재노출, manifest fixture marker,
+  placeholder 뒤 JSON tail, timestamp-only non-order artifact 오탐, source scan 대체 표기와 TUI/DB credential coverage 누락도 검증한다.
 
 ## 남은 이슈
 

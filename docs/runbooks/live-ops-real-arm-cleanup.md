@@ -110,13 +110,14 @@ root 기준으로 판정한다.
 `withdrawalEnabled: false`처럼 허용 scope와 출금 권한 부재를 redacted safe summary로 기록한다. source/security scan은 실제 `rg -n`
 명령으로 repository root에서 `src scripts config docs` 전체 범위의 금지 주문 경계 전체(`ord_type`, market/best 주문, 출금/입금,
 leverage/futures/margin)와 secret/raw payload 후보 전체(access/secret key, 대문자 `ACCESS_KEY`/`SECRET_KEY`,
-Authorization/Bearer, JWT, Telegram token, raw provider/order payload)를 스캔한 증거를 포함해야 한다. source/security scan 명령은
+Authorization/Bearer, JWT, Telegram token, TUI control token, DB URL/password, raw provider/order payload)를 스캔한 증거를 포함해야 한다.
+`withdraw`/`출금`, `deposit`/`입금`, `access_key`/`accessKey`처럼 대체 표기가 있는 검색어는 각 표기를 개별로 포함해야 한다. source/security scan 명령은
 shell의 `RIPGREP_CONFIG_PATH`, `.gitignore`, hidden 기본 필터 영향을 받지 않도록 `--no-config`와 `-uuu` 또는 `--hidden --no-ignore`를 포함해야 한다. `src scripts config docs`는 검색 패턴 문자열이 아니라 `rg` argv의 실제 path operand로 들어가야 하며, `true`,
 `echo rg ...`, 일부 토큰만 확인한 명령, 검색어가 아닌 path operand에 금지 패턴 단어를 붙인 명령,
 `-q`/`--quiet`, `-l`/`--files-without-match`, `--files`, `-F`/`--fixed-strings`, `-f`/`--file`,
 `-P`/`--pcre2`/`--engine=pcre2`, `-w`/`--word-regexp`, `-x`/`--line-regexp`, `-v`/`--invert-match`, `-m`/`--max-count`, `-M`/`--max-columns`,
-`--stop-on-nonmatch`, `--ignore`, `--no-hidden`, `-N`/`--no-line-number`, `-r`/`--replace`, `--type-list`, `--pcre2-version`, `-t`/`--type`, `--type-not`,
-`--iglob`, `--ignore-file`, `--max-depth`, `--max-filesize`, `--pre`/`--pre-glob`, `-g`/`--glob`
+`-d`/`--max-depth`, `-I`/`--no-filename`, `--stop-on-nonmatch`, `--ignore`, `--no-hidden`, `-N`/`--no-line-number`, `-r`/`--replace`, `--type-list`, `--pcre2-version`, `-t`/`--type`, `--type-not`,
+`--iglob`, `--ignore-file`, `--max-filesize`, `--pre`/`--pre-glob`, `-g`/`--glob`
 처럼 출력, 입력, 필수 범위, 정규식 의미를 줄이는 옵션은 인정하지 않는다. source/security scan command에 shell pipe,
 redirect, command separator, shell comment(`#`), newline separator, command substitution, shell parameter expansion이 있거나 검색 패턴에서 alternation을 `\|`로 escape해 실제 다중 후보 검색을 하지 않는 경우도
 검증 증거로 인정하지 않는다. `-n`/`--line-number`는 quoted 검색 패턴 내부 문자열이 아니라 실제 `rg` argv 옵션이어야 한다. lookaround처럼 `rg`가 parse하지 못해 검색 자체가 실패하는 정규식 패턴도 source coverage 증거가 아니다.
@@ -127,7 +128,7 @@ redirect, command separator, shell comment(`#`), newline separator, command subs
 `requestedNotionalKrw`/`requested_notional_krw`), lifecycle timestamp, exposure/counter 값은 manifest의 closeout 값과 충돌하면 안 된다.
 manifest `run`에 `orderType`, `order_type`, `ord_type` alias가 함께 있으면 모든 값이 `LIMIT`로 일치해야 하며, alias 간 충돌은
 운영 주문 정책 증거 실패로 본다. `timeInForce`, `time_in_force` alias도 모두 `POST_ONLY`로 일치해야 한다.
-artifact는 parse 가능한 JSON safe summary여야 하며, fixture-only marker(`kind`의 `FIXTURE`, `fixture smoke` 문구)는 JSON escape를 decode한 뒤에도 guarded closeout
+manifest와 artifact는 fixture-only marker(`kind`의 `FIXTURE`, `fixture smoke` 문구)를 포함하면 안 된다. artifact는 parse 가능한 JSON safe summary여야 하며, fixture-only marker는 JSON escape를 decode한 뒤에도 guarded closeout
 증거로 쓸 수 없다. 각 artifact마다 성공 status, terminal cancel, 주문 정책, submit/cancel/terminal
 timestamp, 같은 주문 suffix, open exposure 0 evidence가 최소 한 closeout record에 있어야 한다. 주문 suffix는 `identifierSuffix`,
 `cancelIdentifierSuffix`, `brokerOrderIdSuffix`, `cancelBrokerOrderIdSuffix`뿐 아니라 `identifier`, `cancel_identifier`,
