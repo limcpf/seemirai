@@ -112,7 +112,8 @@ root 기준으로 판정한다.
 leverage/futures/margin)와 secret/raw payload 후보 전체(access/secret key, 대문자 `ACCESS_KEY`/`SECRET_KEY`,
 Authorization/Bearer, JWT, Telegram token, raw provider/order payload)를 스캔한 증거를 포함해야 한다. `src scripts config docs`는 검색 패턴 문자열이 아니라 `rg` argv의 실제 path operand로 들어가야 하며, `true`,
 `echo rg ...`, 일부 토큰만 확인한 명령, 검색어가 아닌 path operand에 금지 패턴 단어를 붙인 명령,
-`-q`/`--quiet`, `-l`/`--files-without-match`, `--max-count`, `--type-not`, `--ignore-file`, `--pre`/`--pre-glob`, `-g`/`--glob`
+`-q`/`--quiet`, `-l`/`--files-without-match`, `-F`/`--fixed-strings`, `-m`/`--max-count`, `-t`/`--type`,
+`--type-not`, `--iglob`, `--ignore-file`, `--pre`/`--pre-glob`, `-g`/`--glob`
 처럼 출력, 입력, 필수 범위를 줄이는 옵션은 인정하지 않는다.
 주문 lifecycle timestamp는 validator 실행 시각보다 미래일 수 없고, 같은 주문 chain
 증거는 `<redacted>` 같은 일반 placeholder가 아니라 identifier 또는 uuid의 안정적인 suffix로 비교할 수 있어야 한다. artifact safe summary의

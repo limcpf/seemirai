@@ -165,6 +165,8 @@ SEEMIRAI_RUN_LIVE_OPS_REAL_ARM_CLOSEOUT=1 \
   ripgrep type/ignore 제외 옵션, raw payload placeholder tail, artifact `ord_type` 충돌도 차단한다.
 - 2026-06-15: closeout validator는 `--max-count`와 include glob으로 검색을 줄인 source scan, artifact wrapper failure status,
   colon-form secret log, fixtureSmoke false 오탐, snake_case order id placeholder도 검증한다.
+- 2026-06-15: closeout validator는 붙여 쓴 `-m0`/`-m=0`, `-t`/`--type`, `--iglob`, `-F`/`--fixed-strings`처럼 source/security
+  scan의 검색 범위나 패턴 의미를 줄이는 ripgrep 옵션도 차단한다.
 
 ## 남은 이슈
 

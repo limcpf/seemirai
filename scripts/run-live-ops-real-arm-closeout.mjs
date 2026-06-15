@@ -96,14 +96,17 @@ const requiredSecretSourceScanPatterns = [
 const disallowedRipgrepLongOptions = new Set([
   "--files-with-matches",
   "--files-without-match",
+  "--fixed-strings",
   "--ignore-file",
+  "--iglob",
   "--max-count",
   "--pre",
   "--pre-glob",
   "--quiet",
+  "--type",
   "--type-not",
 ]);
-const disallowedRipgrepShortOptions = new Set(["L", "T", "l", "m", "q"]);
+const disallowedRipgrepShortOptions = new Set(["F", "L", "T", "l", "m", "q", "t"]);
 const withdrawalScopeMarkers = ["출금", "withdraw"];
 const forbiddenKeyScopeMarkers = ["출금", "입금", "withdraw", "deposit", "futures", "leverage", "margin"];
 const requiredCounterNames = [
@@ -1465,6 +1468,14 @@ function collectDisallowedRipgrepOptions(tokens) {
       continue;
     }
     if ([...disallowedRipgrepLongOptions].some((option) => token.startsWith(`${option}=`))) {
+      options.push(token);
+      continue;
+    }
+    if (/^-m=?\d+/u.test(token)) {
+      options.push(token);
+      continue;
+    }
+    if (/^-t(?:=|\S)/u.test(token)) {
       options.push(token);
       continue;
     }
