@@ -2380,7 +2380,6 @@ async function collectLiveOpsCliPrivateReadStatusSummary({
   const orders = openOrders;
   const openExposureKrw = sumLiveOpsCliOpenExposureKrw(orders);
   const resolvedReconcileStatus = normalizeLiveOpsCliReconcileStatus(reconcileStatus, {
-    observedAt,
     openOrderCount: orders.length,
   });
   const resolvedPnlStatus = normalizeLiveOpsCliPnlStatus(pnlStatus);
@@ -2396,7 +2395,7 @@ async function collectLiveOpsCliPrivateReadStatusSummary({
     ready: !manualReviewRequired,
     market,
     liveOrderCapable: liveExecution.liveOrderCapable === true && !manualReviewRequired,
-    latestReconcileAt: resolvedReconcileStatus.lastReconcileAt ?? observedAt,
+    latestReconcileAt: resolvedReconcileStatus.lastReconcileAt,
     latestPnlAt: resolvedPnlStatus.latestCapturedAt,
     latestStatusAt: observedAt,
     reconcileStatus: resolvedReconcileStatus.result,
@@ -2430,10 +2429,16 @@ async function collectLiveOpsCliPrivateReadStatusSummary({
     checks: [
       {
         name: "reconcile_summary",
-        status: "ok",
-        code: "live_ops_private_read_summary_ready",
-        message: "account/order/balance private read 결과를 secret-safe status summary로 낮췄습니다.",
+        status: resolvedReconcileStatus.manualReviewRequired ? "blocked" : "ok",
+        code: resolvedReconcileStatus.manualReviewRequired
+          ? "live_ops_reconcile_status_requires_review"
+          : "live_ops_private_read_summary_ready",
+        message: resolvedReconcileStatus.manualReviewRequired
+          ? resolvedReconcileStatus.message
+          : "account/order/balance private read 결과를 secret-safe status summary로 낮췄습니다.",
         details: {
+          result: resolvedReconcileStatus.result,
+          balanceStatus: resolvedReconcileStatus.balanceStatus,
           openOrderCount: orders.length,
           openExposureKrw,
           mismatchCount: resolvedReconcileStatus.mismatchCount,
@@ -2567,33 +2572,40 @@ async function readLiveOpsCliPnlStatus(provider) {
   return provider.getStatus();
 }
 
-function normalizeLiveOpsCliReconcileStatus(summary, { observedAt, openOrderCount }) {
+function normalizeLiveOpsCliReconcileStatus(summary, { openOrderCount }) {
   if (summary === undefined) {
     return {
-      result: "private_read_observed",
-      statusLabel: "private read 확인",
-      lastReconcileAt: observedAt,
+      result: "SKIPPED",
+      statusLabel: "수동 확인 필요",
+      lastReconcileAt: null,
       mismatchCount: null,
-      manualReviewRequired: false,
+      openOrderCount,
+      balanceStatus: "UNAVAILABLE",
+      manualReviewRequired: true,
+      message: "reconcile status provider가 최신 실행 결과를 반환하지 않아 정상 상태로 확정하지 않습니다.",
     };
   }
 
   const result = String(summary.result ?? "UNAVAILABLE");
   const mismatchCount = Number.isFinite(Number(summary.mismatchCount)) ? Number(summary.mismatchCount) : null;
-  const manualReviewRequired = (
-    result === "MISMATCH_DETECTED" ||
-    result === "FAILED" ||
-    result === "UNAVAILABLE" ||
-    (mismatchCount !== null && mismatchCount > 0)
-  );
+  const balanceStatus = String(summary.balanceStatus ?? "UNAVAILABLE");
+  // 실주문 이후 reconcile은 확정 성공 조건이 모두 맞을 때만 신규 주문 가능 상태로 연결한다.
+  const reconcileClean = result === "SUCCESS" && mismatchCount === 0 && balanceStatus === "OK";
+  const manualReviewRequired = !reconcileClean;
 
   return {
     result,
     statusLabel: manualReviewRequired ? "수동 확인 필요" : "정상",
-    lastReconcileAt: summary.lastReconcileAt ?? observedAt,
+    lastReconcileAt: summary.lastReconcileAt ?? null,
     mismatchCount,
     openOrderCount: summary.openOrderCount ?? openOrderCount,
+    balanceStatus,
     manualReviewRequired,
+    message: summary.message ?? (
+      manualReviewRequired
+        ? "reconcile 상태가 확정 정상 조건을 충족하지 않아 수동 확인이 필요합니다."
+        : "reconcile 상태가 정상입니다."
+    ),
   };
 }
 

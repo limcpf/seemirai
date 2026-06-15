@@ -188,6 +188,36 @@ import {
 
 const observedAt = "2026-06-15T01:00:00.000Z";
 const calls = { openOrders: 0, balances: 0 };
+function createCleanPrivateReadProvider() {
+  return {
+    async listOpenOrders() {
+      return [];
+    },
+    async getBalances() {
+      return {
+        exchangeId: "upbit_krw_spot",
+        capturedAt: observedAt,
+        balances: [
+          { currency: "KRW", available: "100000", locked: "0", total: "100000", updatedAt: observedAt },
+        ],
+      };
+    },
+  };
+}
+function createOkPnlStatusProvider() {
+  return {
+    async getStatus() {
+      return {
+        readStatus: "OK",
+        latestCapturedAt: observedAt,
+        latestRealizedPnlKrw: "0",
+        latestUnrealizedPnlKrw: "0",
+        snapshotCount: 1,
+        reason: "pnl_snapshot_latest_read",
+      };
+    },
+  };
+}
 const summary = await evaluateLiveOpsCliReconcilePnlStatus({
   config: {
     universe: { default_market: "KRW-BTC" },
@@ -388,6 +418,78 @@ const manualReview = await evaluateLiveOpsCliReconcilePnlStatus({
   },
   observedAt,
 });
+const skippedReconcile = await evaluateLiveOpsCliReconcilePnlStatus({
+  config: {
+    universe: { default_market: "KRW-BTC" },
+  },
+  fixtureSmoke: false,
+  liveExecution: {
+    status: "submitted",
+    ready: true,
+    liveOrderCapable: true,
+  },
+  privateReadProvider: createCleanPrivateReadProvider(),
+  reconcileStatusProvider: {
+    async getReconcileStatus() {
+      return {
+        lastReconcileAt: null,
+        result: "SKIPPED",
+        mismatchCount: null,
+        openOrderCount: null,
+        balanceStatus: "UNAVAILABLE",
+        websocketStatus: "DISCONNECTED",
+        actionRequired: "reconcile 실행 필요",
+        message: "reconcile worker가 아직 실행되지 않았습니다.",
+        trace: { source: "test" },
+      };
+    },
+  },
+  pnlStatusProvider: createOkPnlStatusProvider(),
+  observedAt,
+});
+const staleBalanceReconcile = await evaluateLiveOpsCliReconcilePnlStatus({
+  config: {
+    universe: { default_market: "KRW-BTC" },
+  },
+  fixtureSmoke: false,
+  liveExecution: {
+    status: "submitted",
+    ready: true,
+    liveOrderCapable: true,
+  },
+  privateReadProvider: createCleanPrivateReadProvider(),
+  reconcileStatusProvider: {
+    async getReconcileStatus() {
+      return {
+        lastReconcileAt: observedAt,
+        result: "SUCCESS",
+        mismatchCount: 0,
+        openOrderCount: 0,
+        balanceStatus: "STALE",
+        websocketStatus: "CONNECTED",
+        actionRequired: "잔고 snapshot 최신화 필요",
+        message: "reconcile 결과는 성공이지만 잔고 snapshot이 stale입니다.",
+        trace: { source: "test" },
+      };
+    },
+  },
+  pnlStatusProvider: createOkPnlStatusProvider(),
+  observedAt,
+});
+const missingReconcile = await evaluateLiveOpsCliReconcilePnlStatus({
+  config: {
+    universe: { default_market: "KRW-BTC" },
+  },
+  fixtureSmoke: false,
+  liveExecution: {
+    status: "submitted",
+    ready: true,
+    liveOrderCapable: true,
+  },
+  privateReadProvider: createCleanPrivateReadProvider(),
+  pnlStatusProvider: createOkPnlStatusProvider(),
+  observedAt,
+});
 const manualTui = renderLiveOpsTuiDashboard({
   status: "blocked",
   mode: "소액 실운영",
@@ -411,7 +513,17 @@ const manualTui = renderLiveOpsTuiDashboard({
   },
   trace: { workers: ["reconcile_pnl_status"], defaultMarket: "KRW-BTC" },
 });
-console.log(JSON.stringify({ summary, malformed, malformedOrder, manualReview, manualTui, calls }));
+console.log(JSON.stringify({
+  summary,
+  malformed,
+  malformedOrder,
+  manualReview,
+  skippedReconcile,
+  staleBalanceReconcile,
+  missingReconcile,
+  manualTui,
+  calls,
+}));
         `,
       ],
       {
@@ -440,6 +552,29 @@ console.log(JSON.stringify({ summary, malformed, malformedOrder, manualReview, m
       malformed: { status: string; ready: boolean; manualReviewRequired: boolean; checks: Array<{ code: string }> };
       malformedOrder: { status: string; ready: boolean; manualReviewRequired: boolean; checks: Array<{ code: string }> };
       manualReview: { ready: boolean; manualReviewRequired: boolean; mismatchCount: number };
+      skippedReconcile: {
+        status: string;
+        ready: boolean;
+        liveOrderCapable: boolean;
+        manualReviewRequired: boolean;
+        latestReconcileAt: string | null;
+        checks: Array<{ code: string; status: string }>;
+      };
+      staleBalanceReconcile: {
+        status: string;
+        ready: boolean;
+        liveOrderCapable: boolean;
+        manualReviewRequired: boolean;
+        checks: Array<{ code: string; status: string; details?: { balanceStatus?: string } }>;
+      };
+      missingReconcile: {
+        status: string;
+        ready: boolean;
+        liveOrderCapable: boolean;
+        manualReviewRequired: boolean;
+        latestReconcileAt: string | null;
+        checks: Array<{ code: string; status: string }>;
+      };
       manualTui: string;
       calls: { openOrders: number; balances: number };
     };
@@ -478,6 +613,39 @@ console.log(JSON.stringify({ summary, malformed, malformedOrder, manualReview, m
       manualReviewRequired: true,
       mismatchCount: 2,
     });
+    expect(output.skippedReconcile).toMatchObject({
+      status: "manual_review_required",
+      ready: false,
+      liveOrderCapable: false,
+      manualReviewRequired: true,
+      latestReconcileAt: null,
+    });
+    expect(output.skippedReconcile.checks).toContainEqual(expect.objectContaining({
+      code: "live_ops_reconcile_status_requires_review",
+      status: "blocked",
+    }));
+    expect(output.staleBalanceReconcile).toMatchObject({
+      status: "manual_review_required",
+      ready: false,
+      liveOrderCapable: false,
+      manualReviewRequired: true,
+    });
+    expect(output.staleBalanceReconcile.checks).toContainEqual(expect.objectContaining({
+      code: "live_ops_reconcile_status_requires_review",
+      status: "blocked",
+      details: expect.objectContaining({ balanceStatus: "STALE" }),
+    }));
+    expect(output.missingReconcile).toMatchObject({
+      status: "manual_review_required",
+      ready: false,
+      liveOrderCapable: false,
+      manualReviewRequired: true,
+      latestReconcileAt: null,
+    });
+    expect(output.missingReconcile.checks).toContainEqual(expect.objectContaining({
+      code: "live_ops_reconcile_status_requires_review",
+      status: "blocked",
+    }));
     expect(output.manualTui).toContain("mismatch 2");
     expect(output.manualTui).toContain("manual review 필요");
     expect(output.manualTui).toContain("realized PnL 확인 필요 KRW");
