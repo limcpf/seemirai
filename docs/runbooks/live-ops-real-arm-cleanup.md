@@ -96,17 +96,17 @@ manifest에는 저장소 밖 `configPath`, `envFilePath`, `operatorArmEvidenceId
 lifecycle, reconcile closeout, zero counter, Telegram/TUI evidence, source/security scan, `finish-readiness-audit` PASS evidence를
 포함한다. `command`는 실제 foreground 실행인 `corepack pnpm live:ops -- --config <path> --env-file <path> --tui`만 허용하며
 `--help`, `--fixture-smoke`, `--dry-run`, attach 명령, 추가/중복 인자가 붙은 명령은 closeout 증거가 아니다. `configPath`와
-`envFilePath`는 저장소 밖에 실제 파일로 존재해야 하며 symlink를 따라간 실제 경로도 저장소 밖이어야 한다.
+`envFilePath`, manifest 파일 자체는 저장소 밖에 실제 파일로 존재해야 하며 symlink를 따라간 실제 경로도 저장소 밖이어야 한다.
 
 `keyScope`는 `grantedScopes: ["자산조회", "주문조회", "주문하기"]`, `forbiddenScopesAbsent: ["출금하기"]`,
 `withdrawalEnabled: false`처럼 허용 scope와 출금 권한 부재를 redacted safe summary로 기록한다. source/security scan은 실제 `rg -n`
-명령으로 금지 주문 경계와 secret/raw payload 후보를 각각 스캔한 증거를 포함해야 하며, `true` 같은 placeholder 명령은 인정하지 않는다.
-주문 lifecycle timestamp는 validator 실행 시각보다 미래일 수 없고, 같은 주문 chain 증거는 `<redacted>` 같은 일반 placeholder가 아니라
-identifier 또는 uuid의 안정적인 suffix로 비교할 수 있어야 한다. artifact safe summary의 `status`, `terminalState`, exposure/counter 값은
-manifest의 closeout 값과 충돌하면 안 된다.
+명령으로 `src scripts config docs` 전체 범위의 금지 주문 경계와 secret/raw payload 후보를 각각 스캔한 증거를 포함해야 하며, `true`나
+`echo rg ...` 같은 placeholder 명령은 인정하지 않는다. 주문 lifecycle timestamp는 validator 실행 시각보다 미래일 수 없고, 같은 주문 chain
+증거는 `<redacted>` 같은 일반 placeholder가 아니라 identifier 또는 uuid의 안정적인 suffix로 비교할 수 있어야 한다. artifact safe summary의
+중첩 `status`, `terminalState`, exposure/counter 값은 manifest의 closeout 값과 충돌하면 안 된다.
 
 `artifactPaths`는 symlink를 따라간 실제 경로도 저장소 밖이어야 하며, secret 원문, raw Authorization/JWT, Telegram token URL,
-database password 원문, raw provider payload, raw order detail 없이 redacted safe summary만 가리켜야 한다.
+database password 원문, `raw_provider_payload`/`raw_order_detail` 같은 raw payload 필드 없이 redacted safe summary만 가리켜야 한다.
 
 ## Closeout 판정
 

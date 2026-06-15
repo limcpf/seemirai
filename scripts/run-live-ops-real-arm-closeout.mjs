@@ -17,6 +17,7 @@ const minRequestedNotionalKrw = 5_000;
 const maxRequestedNotionalKrw = 10_000;
 const repositoryRoot = process.cwd();
 const requiredKeyScopes = ["자산조회", "주문조회", "주문하기"];
+const requiredSourceScanPaths = ["src", "scripts", "config", "docs"];
 const withdrawalScopeMarkers = ["출금", "withdraw"];
 const forbiddenKeyScopeMarkers = ["출금", "입금", "withdraw", "deposit", "futures", "leverage", "margin"];
 const requiredCounterNames = [
@@ -44,8 +45,8 @@ const sensitivePatterns = [
   { label: "authorization json field", pattern: /"authorization"\s*:\s*"(?!bearer\s+(?:<redacted>|redacted|\[redacted\])"|(?:<redacted>|redacted|\[redacted\])")[^"]{8,}"/i },
   { label: "jwt json field", pattern: /"jwt"\s*:\s*"(?!<redacted>|redacted|\[redacted\])[^"]{8,}"/i },
   { label: "postgres credential url", pattern: /postgres(?:ql)?:\/\/[^:\s"']+:(?!(?:<redacted>|redacted|\[redacted\])@)[^@\s"']+@/i },
-  { label: "raw provider field", pattern: /"raw(?:_|-)?provider(?:payload|body)?"\s*:/i },
-  { label: "raw order field", pattern: /"raw(?:_|-)?order(?:detail|payload)?"\s*:/i },
+  { label: "raw provider field", pattern: /"raw(?:_|-)?provider(?:(?:_|-)?(?:payload|body))?"\s*:/i },
+  { label: "raw order field", pattern: /"raw(?:_|-)?order(?:(?:_|-)?(?:detail|payload))?"\s*:/i },
   { label: "raw update field", pattern: /"raw(?:_|-)?update"\s*:/i },
 ];
 
@@ -147,12 +148,7 @@ async function buildAndWriteSummary(input) {
   }
 
   const manifestFile = await readJsonFile(input.manifestPath, repositoryRoot);
-  checks.manifestInput = manifestFile.error === undefined
-    ? okCheck("Issue #206 closeout manifest를 파싱했다.", { manifestPath: manifestFile.filePath })
-    : failCheck("Issue #206 closeout manifest를 파싱하지 못했다.", {
-        manifestPath: manifestFile.filePath,
-        error: manifestFile.error,
-      });
+  checks.manifestInput = createManifestInputCheck(manifestFile, input.guarded);
 
   let metrics = createEmptyMetrics();
   if (manifestFile.error === undefined && isRecord(manifestFile.value)) {
@@ -209,6 +205,27 @@ async function validateManifest(manifest, manifestPath, manifestRawText, options
       readinessAudit: createReadinessAuditCheck(manifest),
     },
   };
+}
+
+function createManifestInputCheck(manifestFile, guarded) {
+  if (manifestFile.error !== undefined) {
+    return failCheck("Issue #206 closeout manifest를 파싱하지 못했다.", {
+      manifestPath: manifestFile.filePath,
+      realPath: manifestFile.realPath ?? null,
+      error: manifestFile.error,
+    });
+  }
+  if (guarded && !manifestFile.outsideRepository) {
+    return failCheck("guarded Issue #206 closeout manifest는 realpath 기준 저장소 밖에 있어야 한다.", {
+      manifestPath: manifestFile.filePath,
+      realPath: manifestFile.realPath,
+    });
+  }
+  return okCheck("Issue #206 closeout manifest를 파싱했다.", {
+    manifestPath: manifestFile.filePath,
+    realPath: manifestFile.realPath,
+    outsideRepository: manifestFile.outsideRepository,
+  });
 }
 
 function createManifestShapeCheck(manifest) {
@@ -580,18 +597,23 @@ async function readJsonFile(filePath, baseDir) {
   const resolved = resolveInputPath(filePath, baseDir);
   let rawText = "";
   try {
-    rawText = await readFile(resolved, "utf8");
+    const realPathValue = await realpath(resolved);
+    rawText = await readFile(realPathValue, "utf8");
     return {
       filePath: resolved,
+      realPath: realPathValue,
       rawText,
       value: JSON.parse(rawText),
+      outsideRepository: isOutsideRepositoryResolvedPath(realPathValue),
       error: undefined,
     };
   } catch (error) {
     return {
       filePath: resolved,
+      realPath: undefined,
       rawText,
       value: undefined,
+      outsideRepository: false,
       error: toErrorMessage(error),
     };
   }
@@ -949,7 +971,7 @@ function createSourceScanCommandEvidence(commands) {
     const tokens = command.trim().split(/\s+/u);
     const usesRipgrep = tokens[0] === "rg";
     const hasLineNumber = /(?:^|\s)(?:-n|--line-number)(?:\s|$)/u.test(command);
-    const scansExpectedPaths = /\b(?:src|scripts)\b/u.test(command) && /\b(?:docs|config|scripts|src)\b/u.test(command);
+    const scansExpectedPaths = requiredSourceScanPaths.every((scanPath) => new RegExp(`(?:^|\\s)${scanPath}(?:\\s|$)`, "u").test(command));
     const checksUnsafeOrderBoundary = /ord_type|withdraw|출금|deposit|입금|leverage|futures|margin|시장가|best/u.test(command);
     const checksSecretBoundary = /access_key|secret_key|Authorization|JWT|telegram_bot_token|raw_provider|raw_order|botToken/u.test(command);
     return {
@@ -992,26 +1014,38 @@ function createArtifactManifestConflicts(artifactFiles, manifest, run, counters)
   const conflicts = [];
 
   for (const file of artifactFiles) {
-    if (!isRecord(file.value)) {
-      continue;
-    }
-    const status = readString(file.value.status);
-    if (status !== undefined && /^(?:failed|fail|error|rejected)$/iu.test(status)) {
-      conflicts.push({ filePath: file.filePath, field: "status", expected: "not failed", actual: status });
-    }
-    const terminalState = normalizeTerminalState(readString(file.value.terminalState));
-    if (terminalState !== undefined && terminalState !== "CANCEL") {
-      conflicts.push({ filePath: file.filePath, field: "terminalState", expected: "CANCEL", actual: terminalState });
-    }
-    for (const [field, expected] of Object.entries(expectedZeroFields)) {
-      const actual = readNumber(file.value[field]);
-      if (actual !== undefined && expected !== undefined && actual !== expected) {
-        conflicts.push({ filePath: file.filePath, field, expected, actual });
+    for (const item of collectArtifactEvidenceRecords(file.value)) {
+      const status = readString(item.record.status);
+      if (status !== undefined && /^(?:failed|fail|error|rejected)$/iu.test(status)) {
+        conflicts.push({ filePath: file.filePath, field: `${item.path}.status`, expected: "not failed", actual: status });
+      }
+      const terminalState = normalizeTerminalState(readString(item.record.terminalState));
+      if (terminalState !== undefined && terminalState !== "CANCEL") {
+        conflicts.push({ filePath: file.filePath, field: `${item.path}.terminalState`, expected: "CANCEL", actual: terminalState });
+      }
+      for (const [field, expected] of Object.entries(expectedZeroFields)) {
+        const actual = readNumber(item.record[field]);
+        if (actual !== undefined && expected !== undefined && actual !== expected) {
+          conflicts.push({ filePath: file.filePath, field: `${item.path}.${field}`, expected, actual });
+        }
       }
     }
   }
 
   return conflicts;
+}
+
+function collectArtifactEvidenceRecords(value, prefix = "$", depth = 0) {
+  if (!isRecord(value) || depth > 4) {
+    return [];
+  }
+  const records = [{ path: prefix, record: value }];
+  for (const [key, nested] of Object.entries(value)) {
+    if (isRecord(nested)) {
+      records.push(...collectArtifactEvidenceRecords(nested, `${prefix}.${key}`, depth + 1));
+    }
+  }
+  return records;
 }
 
 function readJsonValue(rawText) {

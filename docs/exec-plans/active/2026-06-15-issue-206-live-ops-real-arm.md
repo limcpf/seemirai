@@ -145,6 +145,8 @@ SEEMIRAI_RUN_LIVE_OPS_REAL_ARM_CLOSEOUT=1 \
   `rg -n` source/security scan 명령, 미래가 아닌 주문 lifecycle timestamp, placeholder가 아닌 같은 주문 identifier/uuid suffix를 요구한다.
 - 2026-06-15: closeout validator는 추가/중복 인자 없는 정확한 `live:ops` command, symlink realpath 기준 저장소 밖 config/env/artifact,
   artifact safe summary와 manifest closeout 값의 일치, database password redaction도 검증한다.
+- 2026-06-15: guarded manifest 파일 자체도 저장소 밖이어야 하며, source/security scan은 `src scripts config docs` 전체 범위의 실제
+  `rg -n` 실행 증거여야 한다. 중첩 artifact summary와 `raw_provider_payload`/`raw_order_detail` 필드도 차단한다.
 
 ## 남은 이슈
 

@@ -871,6 +871,8 @@ Acceptance Criteria:
 - closeout validator: guarded manifest의 command는 추가/중복 인자 없는 정확한 foreground 실행이어야 하며, config/env/artifact는
   symlink를 따라간 실제 경로도 저장소 밖이어야 한다. artifact safe summary가 실패 상태, 미취소 terminal state, 남은 exposure/counter를
   보고하면 manifest 값과 충돌하므로 실패해야 한다.
+- closeout validator: guarded manifest 파일 자체도 realpath 기준 저장소 밖이어야 하며, source/security scan 명령은 `src scripts config docs`
+  전체 범위를 실제 `rg -n`으로 스캔해야 한다. 중첩 artifact 값과 `raw_provider_payload`/`raw_order_detail` 형태도 검증 대상이다.
 - source/security scan: 시장가/best order, 출금/입금, 선물/레버리지, raw secret, raw provider payload 후보가 production 경로에서
   열리지 않았는지 확인한다.
 
