@@ -111,13 +111,13 @@ root 기준으로 판정한다.
 명령으로 repository root에서 `src scripts config docs` 전체 범위의 금지 주문 경계 전체(`ord_type`, market/best 주문, 출금/입금,
 leverage/futures/margin)와 secret/raw payload 후보 전체(access/secret key, 대문자 `ACCESS_KEY`/`SECRET_KEY`,
 Authorization/Bearer, JWT, Telegram token, raw provider/order payload)를 스캔한 증거를 포함해야 한다. source/security scan 명령은
-shell의 `RIPGREP_CONFIG_PATH` 영향을 받지 않도록 `--no-config`를 포함해야 한다. `src scripts config docs`는 검색 패턴 문자열이 아니라 `rg` argv의 실제 path operand로 들어가야 하며, `true`,
+shell의 `RIPGREP_CONFIG_PATH`, `.gitignore`, hidden 기본 필터 영향을 받지 않도록 `--no-config`와 `-uuu` 또는 `--hidden --no-ignore`를 포함해야 한다. `src scripts config docs`는 검색 패턴 문자열이 아니라 `rg` argv의 실제 path operand로 들어가야 하며, `true`,
 `echo rg ...`, 일부 토큰만 확인한 명령, 검색어가 아닌 path operand에 금지 패턴 단어를 붙인 명령,
 `-q`/`--quiet`, `-l`/`--files-without-match`, `--files`, `-F`/`--fixed-strings`, `-f`/`--file`,
-`-P`/`--pcre2`/`--engine=pcre2`, `-x`/`--line-regexp`, `-v`/`--invert-match`, `-m`/`--max-count`, `-t`/`--type`, `--type-not`,
+`-P`/`--pcre2`/`--engine=pcre2`, `-w`/`--word-regexp`, `-x`/`--line-regexp`, `-v`/`--invert-match`, `-m`/`--max-count`, `-t`/`--type`, `--type-not`,
 `--iglob`, `--ignore-file`, `--max-depth`, `--max-filesize`, `--pre`/`--pre-glob`, `-g`/`--glob`
 처럼 출력, 입력, 필수 범위, 정규식 의미를 줄이는 옵션은 인정하지 않는다. source/security scan command에 shell pipe,
-redirect, command separator, command substitution이 있거나 검색 패턴에서 alternation을 `\|`로 escape해 실제 다중 후보 검색을 하지 않는 경우도
+redirect, command separator, command substitution, shell parameter expansion이 있거나 검색 패턴에서 alternation을 `\|`로 escape해 실제 다중 후보 검색을 하지 않는 경우도
 검증 증거로 인정하지 않는다.
 주문 lifecycle timestamp는 validator 실행 시각보다 미래일 수 없고, 같은 주문 chain
 증거는 `<redacted>`, `<order-id>`, `<brokerOrderId>` 같은 일반 placeholder가 아니라 identifier 또는 uuid의 안정적인 suffix로 비교할 수 있어야 한다. artifact safe summary의
@@ -144,8 +144,10 @@ JSON credential 값은 `<redacted>`, `redacted`, `[redacted]` 같은 placeholder
 같은 redaction 기준으로 스캔하므로 `\u003d`, `\u005f` 같은 escape로 env assignment나 raw payload key를 숨길 수 없다.
 Telegram URL은 method path가 없어도 `https://api.telegram.org/bot...` 뒤 원문 token이 있으면 실패하며, `<redacted>` 뒤에 raw
 token tail이 붙은 URL도 redacted 값으로 보지 않는다. Bearer/JWT와 raw provider/order payload도 placeholder 뒤에 토큰이나 payload
-일부가 공백이나 punctuation으로 이어지면 redacted 값으로 보지 않는다. `SEEMIRAI_TELEGRAM_BOT_TOKEN` 같은 env 이름 그대로의
-JSON field도 secret 후보로 본다. lowercase `bearer` token과 `eyJ...` 형태의 prefix 없는 compact JWT도 raw secret 후보로 차단한다.
+일부가 공백이나 punctuation으로 이어지면 redacted 값으로 보지 않는다. quote로 감싼 `<redacted>` 뒤에 raw payload tail을 붙인
+문자열도 redacted 값으로 보지 않는다. 운영 env 값 내부에 `<redacted>`/`redacted`/`[redacted]` 조각이 남아 있으면 실제 credential
+evidence가 아니다. `SEEMIRAI_TELEGRAM_BOT_TOKEN` 같은 env 이름 그대로의 JSON field도 secret 후보로 본다. lowercase `bearer`
+token과 `eyJ...` 형태의 prefix 없는 compact JWT도 raw secret 후보로 차단한다.
 source/security scan이 secret match를 찾은 경우 validator summary에는 match 원문을 다시 쓰지 않고 count, path, line, label 같은
 축약 정보만 남겨야 한다.
 

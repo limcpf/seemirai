@@ -176,6 +176,9 @@ SEEMIRAI_RUN_LIVE_OPS_REAL_ARM_CLOSEOUT=1 \
 - 2026-06-15: closeout validator는 `rg --no-config` 없는 source scan, `-x`/`--line-regexp`, command substitution,
   JSON escape로 숨긴 secret/raw payload key, `SEEMIRAI_TELEGRAM_BOT_TOKEN` JSON field, raw payload placeholder punctuation tail도
   차단한다.
+- 2026-06-15: closeout validator는 hidden/ignored source를 보지 않는 scan, `-w`/`--word-regexp`, shell parameter expansion,
+  quoted raw payload placeholder tail, redacted placeholder 조각이 섞인 env 값, 깊게 중첩된 decoded JSON secret도 차단하고,
+  주문 closeout field가 없는 provider/Telegram identifier는 주문 record로 오인하지 않는다.
 
 ## 남은 이슈
 

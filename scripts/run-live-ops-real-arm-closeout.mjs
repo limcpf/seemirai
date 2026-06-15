@@ -113,8 +113,9 @@ const disallowedRipgrepLongOptions = new Set([
   "--quiet",
   "--type",
   "--type-not",
+  "--word-regexp",
 ]);
-const disallowedRipgrepShortOptions = new Set(["F", "L", "P", "T", "f", "l", "m", "q", "t", "v", "x"]);
+const disallowedRipgrepShortOptions = new Set(["F", "L", "P", "T", "f", "l", "m", "q", "t", "v", "w", "x"]);
 const withdrawalScopeMarkers = ["출금", "withdraw"];
 const forbiddenKeyScopeMarkers = ["출금", "입금", "withdraw", "deposit", "futures", "leverage", "margin"];
 const requiredCounterNames = [
@@ -156,8 +157,8 @@ const sensitivePatterns = [
   { label: "raw order field", pattern: /"raw(?:_|-)?order(?:(?:_|-)?(?:detail|payload))?"\s*:/i },
   { label: "raw provider string payload", pattern: /\b(?:rawProvider(?:Payload|Body)?|raw(?:_|-)?provider(?:(?:_|-)?(?:payload|body))?)\s*[:=]\s*(?!(?:<redacted>|redacted|\[redacted\])(?:\s|$))(?:\{|\[|[A-Za-z0-9_-]{4,})/i },
   { label: "raw order string payload", pattern: /\b(?:rawOrder(?:Detail|Payload)?|raw(?:_|-)?order(?:(?:_|-)?(?:detail|payload))?)\s*[:=]\s*(?!(?:<redacted>|redacted|\[redacted\])(?:\s|$))(?:\{|\[|[A-Za-z0-9_-]{4,})/i },
-  { label: "raw provider placeholder tail", pattern: /\b(?:rawProvider(?:Payload|Body)?|raw(?:_|-)?provider(?:(?:_|-)?(?:payload|body))?)\s*[:=]\s*(?:<redacted>|redacted|\[redacted\])(?:\s+|[,;:\[{])\s*(?:\{|\[|[^\s"']+)/i },
-  { label: "raw order placeholder tail", pattern: /\b(?:rawOrder(?:Detail|Payload)?|raw(?:_|-)?order(?:(?:_|-)?(?:detail|payload))?)\s*[:=]\s*(?:<redacted>|redacted|\[redacted\])(?:\s+|[,;:\[{])\s*(?:\{|\[|[^\s"']+)/i },
+  { label: "raw provider placeholder tail", pattern: /\b(?:rawProvider(?:Payload|Body)?|raw(?:_|-)?provider(?:(?:_|-)?(?:payload|body))?)\s*[:=]\s*["']?(?:<redacted>|redacted|\[redacted\])["']?(?:\s+|[,;:\[{])\s*(?:\{|\[|[^\s"']+)/i },
+  { label: "raw order placeholder tail", pattern: /\b(?:rawOrder(?:Detail|Payload)?|raw(?:_|-)?order(?:(?:_|-)?(?:detail|payload))?)\s*[:=]\s*["']?(?:<redacted>|redacted|\[redacted\])["']?(?:\s+|[,;:\[{])\s*(?:\{|\[|[^\s"']+)/i },
   { label: "raw update field", pattern: /"raw(?:_|-)?update"\s*:/i },
 ];
 
@@ -699,7 +700,7 @@ function createRedactionScanCheck(inputs) {
 }
 
 function collectJsonStringText(value, depth = 0) {
-  if (depth > maxArtifactEvidenceDepth || value === undefined) {
+  if (value === undefined) {
     return "";
   }
   if (typeof value === "string") {
@@ -1451,6 +1452,8 @@ function createSourceScanCommandEvidence(commands) {
     const hasLineNumber = /(?:^|\s)(?:-n|--line-number)(?:\s|$)/u.test(command);
     // 운영자 shell의 ripgrep config가 검색 범위를 몰래 줄이지 못하게 source scan 증거는 config 비활성화를 요구한다.
     const hasNoConfig = tokens.includes("--no-config");
+    // hidden/ignore 기본 필터가 운영 source scan 범위를 줄이지 못하게 unrestricted traversal을 요구한다.
+    const hasFullTraversal = hasRipgrepFullTraversal(tokens);
     // redirect/pipe가 있으면 실제 검색 결과가 reviewer에게 보이지 않을 수 있어 closeout source scan 증거에서 제외한다.
     const shellOperators = collectUnquotedShellOperators(command);
     const scansExpectedPaths = requiredSourceScanPaths.every((scanPath) => operands.includes(scanPath));
@@ -1469,6 +1472,7 @@ function createSourceScanCommandEvidence(commands) {
       usesRipgrep,
       hasLineNumber,
       hasNoConfig,
+      hasFullTraversal,
       shellOperators,
       scansExpectedPaths,
       searchPatterns,
@@ -1483,6 +1487,7 @@ function createSourceScanCommandEvidence(commands) {
   const validCommandChecks = commandChecks.filter((check) => check.usesRipgrep
     && check.hasLineNumber
     && check.hasNoConfig
+    && check.hasFullTraversal
     && check.scansExpectedPaths
     && check.shellOperators.length === 0
     && check.excludedSourceGlobs.length === 0
@@ -1585,6 +1590,10 @@ function collectUnquotedShellOperators(command) {
       if (char === "$" && nextChar === "(") {
         operators.push("$(");
         index += 1;
+        continue;
+      }
+      if (isShellParameterExpansionStart(char, nextChar)) {
+        operators.push(nextChar === "{" ? "${" : "$VAR");
       }
       continue;
     }
@@ -1601,11 +1610,28 @@ function collectUnquotedShellOperators(command) {
       index += 1;
       continue;
     }
+    if (isShellParameterExpansionStart(char, nextChar)) {
+      operators.push(nextChar === "{" ? "${" : "$VAR");
+      if (nextChar === "{") {
+        index += 1;
+      }
+      continue;
+    }
     if ("|><;&".includes(char)) {
       operators.push(char);
     }
   }
   return collectUnique(operators);
+}
+
+function isShellParameterExpansionStart(char, nextChar) {
+  return char === "$" && (nextChar === "{" || /[A-Za-z_]/u.test(nextChar ?? ""));
+}
+
+function hasRipgrepFullTraversal(tokens) {
+  const tokenSet = new Set(tokens);
+  return tokens.some((token) => /^-u{2,3}$/u.test(token))
+    || (tokenSet.has("--hidden") && tokenSet.has("--no-ignore"));
 }
 
 function collectRipgrepPathOperands(tokens) {
@@ -1783,10 +1809,12 @@ function createArtifactManifestConflicts(artifactFiles, manifest, run, counters)
           }
         }
       }
-      for (const expected of createExpectedArtifactOrderSuffixes(run)) {
-        for (const actual of readStringAliasValues(item.record, expected.aliases)) {
-          if (actual.value !== expected.value) {
-            conflicts.push({ filePath: file.filePath, field: `${item.path}.${actual.alias}`, expected: expected.value, actual: actual.value });
+      if (closeoutRecord) {
+        for (const expected of createExpectedArtifactOrderSuffixes(run)) {
+          for (const actual of readStringAliasValues(item.record, expected.aliases)) {
+            if (actual.value !== expected.value) {
+              conflicts.push({ filePath: file.filePath, field: `${item.path}.${actual.alias}`, expected: expected.value, actual: actual.value });
+            }
           }
         }
       }
@@ -1829,17 +1857,6 @@ function isCloseoutEvidenceRecord(record) {
     "requested_notional_krw",
     "openExposureKrw",
     "open_exposure_krw",
-    "identifierSuffix",
-    "identifier_suffix",
-    "identifier",
-    "cancelIdentifier",
-    "cancel_identifier",
-    "brokerOrderIdSuffix",
-    "broker_order_id_suffix",
-    "brokerOrderId",
-    "broker_order_id",
-    "cancelBrokerOrderId",
-    "cancel_broker_order_id",
     "submittedAt",
     "submitted_at",
   ].some((field) => record[field] !== undefined);
@@ -2095,7 +2112,7 @@ function hasMeaningfulEnvValue(value) {
   const normalized = value.trim();
   // fake/example 계열 값은 파일이 존재해도 production credential evidence가 아니므로 operator input으로 인정하지 않는다.
   return normalized !== "0"
-    && !/^(?:<[^>]+>|redacted|\[redacted\])$/iu.test(normalized)
+    && !/(?:<[^>]+>|redacted|\[redacted\])/iu.test(normalized)
     && !/(?:^|[-_\s:])(fake|dummy|example|changeme|placeholder|test)(?:$|[-_\s:])/iu.test(normalized);
 }
 
