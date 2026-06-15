@@ -85,13 +85,16 @@ Telegram, TUI를 같은 lifecycle로 조립하고, 조건을 통과한 단일 `K
 
 - 목표: 실제 `KRW-BTC` 소액 주문 제출/취소/terminal cancel evidence로 issue #206을 닫을 수 있게 한다.
 - 제외 범위: final main PR merge.
+- 현재 상태: Sub PR 01-04는 `issue-206-mother`에 merge됐다. Sub PR 05에서는 closeout validator와 blocker 기록을 추가한다.
+  현재 세션과 issue 댓글에는 운영자가 명시한 저장소 밖 config/env/evidence 경로가 없어 실제 주문 제출/취소 cleanup은 시작하지 않는다.
 - DnD:
   - [ ] 운영자가 명시한 저장소 밖 config/env/evidence 경로로 단일 cleanup run이 실행된다.
   - [ ] submit -> cancel requested -> terminal cancel 확인 -> open exposure 0 순서가 redacted artifact에 남는다.
   - [ ] crash 0회, unhandled rejection 0회, duplicate order 0건, reconcile mismatch 0건, untracked fill 0건, live order cleanup failure 0건이
         증명된다.
-  - [ ] source/security scan 결과와 artifact redaction 검증 결과가 PR/closeout에 기록된다.
-  - [ ] active plan은 completed closeout으로 이동되거나, 외부 credential/evidence 부재 시 blocker와 필요한 운영자 조치를 명시한다.
+  - [x] source/security scan 결과와 artifact redaction 검증 결과가 PR/closeout에 기록될 수 있도록
+        `scripts/run-live-ops-real-arm-closeout.mjs` validator를 추가한다.
+  - [x] active plan은 completed closeout으로 이동되거나, 외부 credential/evidence 부재 시 blocker와 필요한 운영자 조치를 명시한다.
   - [ ] `finish-readiness-audit` 기준 PASS 또는 명시적 PARTIAL/FAIL 근거를 남긴다.
 
 ## 검증 방법
@@ -120,6 +123,14 @@ corepack pnpm live:ops:tui -- --config config/live-ops.example.json --env-file t
 ```
 
 실거래 cleanup 검증은 `docs/runbooks/live-ops-real-arm-cleanup.md`의 redaction/credential 조건을 충족한 운영 환경에서만 실행한다.
+redacted closeout manifest 검증은 다음 명령으로 수행한다.
+
+```sh
+SEEMIRAI_RUN_LIVE_OPS_REAL_ARM_CLOSEOUT=1 \
+  node scripts/run-live-ops-real-arm-closeout.mjs \
+  --manifest <저장소-밖-redacted-manifest-json> \
+  --json
+```
 
 ## 결정 로그
 
@@ -128,8 +139,13 @@ corepack pnpm live:ops:tui -- --config config/live-ops.example.json --env-file t
 - 2026-06-15: 신규 진입은 `BUY + LIMIT + post_only`만 허용한다.
 - 2026-06-15: secret 원문, raw Authorization/JWT, raw provider payload, raw order detail은 저장소와 PR/issue 표면에 남기지 않는다.
 - 2026-06-15: final main PR은 생성/갱신과 review drain까지만 수행하고 merge하지 않는다.
+- 2026-06-15: Sub PR 05 closeout validator는 실제 주문 API를 호출하지 않고, 운영자가 저장소 밖에서 만든 redacted manifest/artifact만
+  검증한다. guard가 없으면 skipped/blocker summary만 남긴다.
 
 ## 남은 이슈
 
 - 실제 운영 credential과 redacted artifact 위치는 저장소 밖에서 준비되어야 한다.
 - 실제 주문 제출/취소는 Sub PR 05에서 운영자 arm evidence가 확인된 뒤에만 실행한다.
+- 현재 세션에는 `SEEMIRAI_*`, `UPBIT_*`, `TELEGRAM_*` 운영 env 값이 없고 issue #206 댓글에도 운영 config/env/evidence 경로가 없다.
+  운영자는 저장소 밖 config/env, key scope evidence, operator arm evidence, redacted artifact 경로를 준비한 뒤 closeout manifest 검증을
+  다시 실행해야 한다.

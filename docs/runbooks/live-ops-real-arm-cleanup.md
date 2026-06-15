@@ -65,6 +65,37 @@ broker_order_id=<redacted/stable suffix only>
 7. terminal cancel 상태, open exposure 0, duplicate order 0, reconcile mismatch 0, manual review 0을 확인한다.
 8. source/security scan과 artifact redaction 검증을 실행한 뒤 PR/closeout에 결과를 기록한다.
 
+## Closeout manifest 검증
+
+`scripts/run-live-ops-real-arm-closeout.mjs`는 실제 주문을 제출하지 않는다. 이 스크립트는 운영자가 저장소 밖에서 이미 생성한
+redacted manifest와 artifact를 읽어 Issue #206 closeout 기준을 검증한다. 운영 guard가 없으면 실거래 evidence 검증을 건너뛰고
+blocker summary만 만든다.
+
+CI/로컬 contract smoke:
+
+```sh
+node scripts/run-live-ops-real-arm-closeout.mjs --fixture-smoke --json
+```
+
+운영 credential/evidence 부재 blocker 기록:
+
+```sh
+node scripts/run-live-ops-real-arm-closeout.mjs --json
+```
+
+실제 redacted manifest 검증:
+
+```sh
+SEEMIRAI_RUN_LIVE_OPS_REAL_ARM_CLOSEOUT=1 \
+  node scripts/run-live-ops-real-arm-closeout.mjs \
+  --manifest <저장소-밖-redacted-manifest-json> \
+  --json
+```
+
+manifest에는 저장소 밖 `configPath`, `envFilePath`, `operatorArmEvidenceId`, `keyScopeEvidenceId`, `artifactPaths`, 주문 lifecycle,
+reconcile closeout, zero counter, Telegram/TUI evidence, source/security scan, `finish-readiness-audit` PASS evidence를 포함한다.
+`artifactPaths`는 secret 원문, raw Authorization/JWT, raw provider payload, raw order detail 없이 redacted safe summary만 가리켜야 한다.
+
 ## Closeout 판정
 
 PASS:
@@ -80,6 +111,7 @@ BLOCKED:
 - Upbit provider가 주문 결과를 확정하지 못해 manual review가 필요하다.
 - cancel terminal 상태를 확인하지 못했다.
 - source/security scan에서 secret 또는 금지 주문 경계가 발견됐다.
+- closeout validator가 guard skipped 또는 manifest 검증 실패 상태를 반환했다.
 
 ## 기록 형식
 

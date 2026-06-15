@@ -863,6 +863,8 @@ Acceptance Criteria:
   않는지 확인한다.
 - 실제 운영 검증: 저장소 밖 credential/evidence가 준비된 환경에서 `docs/runbooks/live-ops-real-arm-cleanup.md` 절차로 submit/cancel
   terminal artifact를 생성한다.
+- closeout validator: `node scripts/run-live-ops-real-arm-closeout.mjs --fixture-smoke --json`은 live/API side effect 없이 contract를
+  검증하고, 운영 guard 없는 실행은 credential/evidence 부재 blocker를 skipped summary로 남긴다.
 - source/security scan: 시장가/best order, 출금/입금, 선물/레버리지, raw secret, raw provider payload 후보가 production 경로에서
   열리지 않았는지 확인한다.
 
