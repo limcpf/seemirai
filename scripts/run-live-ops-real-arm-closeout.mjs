@@ -13,6 +13,7 @@ const expectedMarket = "KRW-BTC";
 const expectedSide = "BUY";
 const expectedOrderType = "LIMIT";
 const expectedTimeInForce = "POST_ONLY";
+const minRequestedNotionalKrw = 5_000;
 const maxRequestedNotionalKrw = 10_000;
 const repositoryRoot = process.cwd();
 const requiredCounterNames = [
@@ -24,6 +25,12 @@ const requiredCounterNames = [
   "liveOrderCleanupFailureCount",
 ];
 const sensitivePatterns = [
+  { label: "access_key json field", pattern: /"(?:seemirai_)?(?:upbit_)?access_key"\s*:\s*"(?!<redacted>|redacted|\[redacted\])[^"]{8,}"/i },
+  { label: "accessKey json field", pattern: /"(?:upbit)?accessKey"\s*:\s*"(?!<redacted>|redacted|\[redacted\])[^"]{8,}"/i },
+  { label: "secret_key json field", pattern: /"(?:seemirai_)?(?:upbit_)?secret_key"\s*:\s*"(?!<redacted>|redacted|\[redacted\])[^"]{8,}"/i },
+  { label: "secretKey json field", pattern: /"(?:upbit)?secretKey"\s*:\s*"(?!<redacted>|redacted|\[redacted\])[^"]{8,}"/i },
+  { label: "telegram token json field", pattern: /"telegram_bot_token"\s*:\s*"(?!<redacted>|redacted|\[redacted\])[^"]{8,}"/i },
+  { label: "telegram botToken json field", pattern: /"(?:telegram)?botToken"\s*:\s*"(?!<redacted>|redacted|\[redacted\])[^"]{8,}"/i },
   { label: "access key env assignment", pattern: /\b(?:SEEMIRAI_)?(?:UPBIT_)?ACCESS_KEY\s*=\s*(?!(?:["']?(?:<redacted>|redacted|\[redacted\])["']?)(?:\s|$|["',]))\S{8,}/i },
   { label: "secret key env assignment", pattern: /\b(?:SEEMIRAI_)?(?:UPBIT_)?SECRET_KEY\s*=\s*(?!(?:["']?(?:<redacted>|redacted|\[redacted\])["']?)(?:\s|$|["',]))\S{8,}/i },
   { label: "telegram token env assignment", pattern: /\b(?:SEEMIRAI_)?TELEGRAM_BOT_TOKEN\s*=\s*(?!(?:["']?(?:<redacted>|redacted|\[redacted\])["']?)(?:\s|$|["',]))\S{8,}/i },
@@ -298,7 +305,7 @@ function createOrderPolicyCheck(run) {
     && actual.orderType === expectedOrderType
     && actual.timeInForce === expectedTimeInForce
     && Number.isFinite(requestedNotionalKrw)
-    && requestedNotionalKrw > 0
+    && requestedNotionalKrw >= minRequestedNotionalKrw
     && requestedNotionalKrw <= maxRequestedNotionalKrw;
 
   if (ok) {
@@ -311,6 +318,7 @@ function createOrderPolicyCheck(run) {
       side: expectedSide,
       orderType: expectedOrderType,
       timeInForce: expectedTimeInForce,
+      minRequestedNotionalKrw,
       maxRequestedNotionalKrw,
     },
     actual,
@@ -410,18 +418,24 @@ function createTelegramTuiEvidenceCheck(manifest) {
 function createSourceSecurityScanCheck(sourceScan) {
   const unsafeMatches = readArray(sourceScan.unsafeMatches);
   const secretMatches = readArray(sourceScan.secretMatches);
+  const commands = readStringArray(sourceScan.commands);
   const status = readString(sourceScan.status);
-  const ok = status === "passed" && unsafeMatches.length === 0 && secretMatches.length === 0;
+  const evidenceShapeOk = commands.length > 0
+    && Array.isArray(sourceScan.unsafeMatches)
+    && Array.isArray(sourceScan.secretMatches);
+  const ok = status === "passed" && evidenceShapeOk && unsafeMatches.length === 0 && secretMatches.length === 0;
 
   if (ok) {
     return okCheck("source/security scan이 금지 주문 경계와 secret/raw payload 후보를 새로 열지 않았다고 기록했다.", {
       status,
-      commandCount: readStringArray(sourceScan.commands).length,
+      commandCount: commands.length,
     });
   }
 
   return failCheck("source/security scan 결과가 없거나 금지 후보가 남아 있다.", {
     status: status ?? null,
+    commandCount: commands.length,
+    evidenceShapeOk,
     unsafeMatches,
     secretMatches,
   });
@@ -808,6 +822,9 @@ function isLiveOpsCommand(command, configPath, envFilePath) {
   const tokens = command.trim().split(/\s+/u);
   const separatorIndex = tokens.indexOf("--");
   if (tokens[0] !== "corepack" || tokens[1] !== "pnpm" || tokens[2] !== "live:ops" || separatorIndex !== 3) {
+    return false;
+  }
+  if (tokens.includes("--fixture-smoke") || tokens.includes("--dry-run") || tokens.includes("--attach")) {
     return false;
   }
   const configIndex = tokens.indexOf("--config");
