@@ -155,6 +155,8 @@ SEEMIRAI_RUN_LIVE_OPS_REAL_ARM_CLOSEOUT=1 \
   빈 artifact, snake_case artifact 정책 필드, artifact lifecycle timestamp 충돌도 차단 대상으로 본다.
 - 2026-06-15: closeout validator는 env assignment redaction tail, 붙여 쓴 source scan 제외 glob, artifact 주문 suffix/alias 충돌,
   env extra key scope/evidence id mismatch를 차단하고, non-closeout provider status는 오탐으로 실패시키지 않는다.
+- 2026-06-15: closeout validator는 source scan 필수 경로를 실제 `rg` argv operand로 판정하고 brace exclude glob,
+  `terminal_state` alias 충돌, 직접 `identifier`/`broker_order_id` artifact alias, TUI control token redaction까지 검증한다.
 
 ## 남은 이슈
 

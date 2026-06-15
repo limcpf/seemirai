@@ -107,11 +107,13 @@ const sensitivePatterns = [
   { label: "secretKey json field", pattern: /"(?:upbit)?secretKey"\s*:\s*"(?!\s*(?:<redacted>|redacted|\[redacted\])\s*")[^"]{8,}"/i },
   { label: "telegram token json field", pattern: /"telegram_bot_token"\s*:\s*"(?!\s*(?:<redacted>|redacted|\[redacted\])\s*")[^"]{8,}"/i },
   { label: "telegram botToken json field", pattern: /"(?:telegram)?botToken"\s*:\s*"(?!\s*(?:<redacted>|redacted|\[redacted\])\s*")[^"]{8,}"/i },
+  { label: "tui control token json field", pattern: /"(?:tuiControlToken|tui_control_token|seemirai_tui_control_token)"\s*:\s*"(?!\s*(?:<redacted>|redacted|\[redacted\])\s*")[^"]{8,}"/i },
   { label: "telegram bot token url", pattern: /https:\/\/api\.telegram\.org\/bot(?!<redacted>|redacted|\[redacted\])[^/\s"']{8,}\/[A-Za-z]+/i },
   { label: "database password json field", pattern: /"(?:databasePassword|dbPassword|pgPassword|password)"\s*:\s*"(?!\s*(?:<redacted>|redacted|\[redacted\])\s*")[^"]{8,}"/i },
   { label: "access key env assignment", pattern: /\b(?:SEEMIRAI_)?(?:UPBIT_)?ACCESS_KEY\s*=\s*(?!(?:["']?(?:<redacted>|redacted|\[redacted\])["']?)(?:$|[\r\n,}]))[^\r\n,}]{8,}/i },
   { label: "secret key env assignment", pattern: /\b(?:SEEMIRAI_)?(?:UPBIT_)?SECRET_KEY\s*=\s*(?!(?:["']?(?:<redacted>|redacted|\[redacted\])["']?)(?:$|[\r\n,}]))[^\r\n,}]{8,}/i },
   { label: "telegram token env assignment", pattern: /\b(?:SEEMIRAI_)?TELEGRAM_BOT_TOKEN\s*=\s*(?!(?:["']?(?:<redacted>|redacted|\[redacted\])["']?)(?:$|[\r\n,}]))[^\r\n,}]{8,}/i },
+  { label: "tui control token env assignment", pattern: /\b(?:SEEMIRAI_)?TUI_CONTROL_TOKEN\s*=\s*(?!(?:["']?(?:<redacted>|redacted|\[redacted\])["']?)(?:$|[\r\n,}]))[^\r\n,}]{8,}/i },
   { label: "database password env assignment", pattern: /\b(?:SEEMIRAI_)?(?:DATABASE_PASSWORD|DB_PASSWORD|PGPASSWORD)\s*=\s*(?!(?:["']?(?:<redacted>|redacted|\[redacted\])["']?)(?:$|[\r\n,}]))[^\r\n,}]{8,}/i },
   { label: "raw authorization bearer", pattern: /authorization:\s*bearer\s+(?!<redacted>|redacted|\[redacted\])[^\s"']+/i },
   { label: "standalone bearer token", pattern: /\bBearer\s+(?!(?:<redacted>|redacted|\[redacted\])(?:\s|$))[^\s"']{16,}/ },
@@ -1337,10 +1339,11 @@ function createKeyScopeEvidence(manifest) {
 
 function createSourceScanCommandEvidence(commands) {
   const commandChecks = commands.map((command) => {
-    const tokens = command.trim().split(/\s+/u).map(stripShellQuotes);
+    const tokens = splitCommandTokens(command);
+    const operands = collectRipgrepPathOperands(tokens);
     const usesRipgrep = tokens[0] === "rg";
     const hasLineNumber = /(?:^|\s)(?:-n|--line-number)(?:\s|$)/u.test(command);
-    const scansExpectedPaths = requiredSourceScanPaths.every((scanPath) => new RegExp(`(?:^|\\s)${scanPath}(?:\\s|$)`, "u").test(command));
+    const scansExpectedPaths = requiredSourceScanPaths.every((scanPath) => operands.includes(scanPath));
     const excludedSourceGlobs = collectExcludedSourceGlobs(tokens);
     const coveredUnsafePatterns = requiredUnsafeSourceScanPatterns
       .filter((requirement) => requirement.pattern.test(command))
@@ -1353,6 +1356,7 @@ function createSourceScanCommandEvidence(commands) {
       usesRipgrep,
       hasLineNumber,
       scansExpectedPaths,
+      operands,
       excludedSourceGlobs,
       coveredUnsafePatterns,
       coveredSecretPatterns,
@@ -1405,8 +1409,48 @@ function collectExcludedSourceGlobs(tokens) {
     .filter((glob) => requiredSourceScanPaths.some((scanPath) => excludesSourcePath(glob, scanPath)));
 }
 
+function collectRipgrepPathOperands(tokens) {
+  const operands = [];
+  let patternSeen = false;
+  for (let index = 1; index < tokens.length; index += 1) {
+    const token = tokens[index];
+    if (token === "-g" || token === "--glob") {
+      index += 1;
+      continue;
+    }
+    if (token === "-e" || token === "--regexp") {
+      patternSeen = true;
+      index += 1;
+      continue;
+    }
+    if (token.startsWith("--regexp=") || token.startsWith("-e")) {
+      patternSeen = true;
+      continue;
+    }
+    if (token.startsWith("--glob=") || token.startsWith("-g") || token === "-n" || token === "--line-number") {
+      continue;
+    }
+    if (token.startsWith("-")) {
+      continue;
+    }
+    if (!patternSeen) {
+      patternSeen = true;
+      continue;
+    }
+    operands.push(token);
+  }
+  return operands;
+}
+
 function excludesSourcePath(glob, scanPath) {
   const normalized = glob.slice(1).replace(/^\.?\//u, "");
+  if (normalized.startsWith("{")) {
+    const closeIndex = normalized.indexOf("}");
+    if (closeIndex > 1) {
+      const suffix = normalized.slice(closeIndex + 1);
+      return normalized.slice(1, closeIndex).split(",").some((entry) => excludesSourcePath(`!${entry}${suffix}`, scanPath));
+    }
+  }
   return normalized === "*"
     || normalized === "**"
     || normalized === scanPath
@@ -1463,9 +1507,10 @@ function createArtifactManifestConflicts(artifactFiles, manifest, run, counters)
       if (closeoutRecord && status !== undefined && !/^(?:passed|pass|success|succeeded|ok|completed)$/iu.test(status)) {
         conflicts.push({ filePath: file.filePath, field: `${item.path}.status`, expected: "explicit success status", actual: status });
       }
-      const terminalState = normalizeTerminalState(readString(item.record.terminalState));
-      if (closeoutRecord && terminalState !== undefined && terminalState !== "CANCEL") {
-        conflicts.push({ filePath: file.filePath, field: `${item.path}.terminalState`, expected: "CANCEL", actual: terminalState });
+      for (const actual of readTerminalStateAliasValues(item.record)) {
+        if (closeoutRecord && actual.value !== "CANCEL") {
+          conflicts.push({ filePath: file.filePath, field: `${item.path}.${actual.alias}`, expected: "CANCEL", actual: actual.value });
+        }
       }
       for (const [field, expected] of Object.entries(expectedPolicyFields)) {
         for (const actual of readArtifactPolicyFieldValues(item.record, field)) {
@@ -1514,7 +1559,7 @@ function createArtifactManifestConflicts(artifactFiles, manifest, run, counters)
 function isCompleteArtifactCloseoutEvidence(record, run) {
   const expectedRequestedNotionalKrw = readNumber(run.requestedNotionalKrw);
   return /^(?:passed|pass|success|succeeded|ok|completed)$/iu.test(readString(record.status) ?? "")
-    && normalizeTerminalState(readString(record.terminalState)) === "CANCEL"
+    && readTerminalStateFromAliases(record) === "CANCEL"
     && readArtifactPolicyField(record, "market") === expectedMarket
     && readArtifactPolicyField(record, "side") === expectedSide
     && readArtifactPolicyField(record, "orderType") === expectedOrderType
@@ -1530,6 +1575,7 @@ function isCompleteArtifactCloseoutEvidence(record, run) {
 function isCloseoutEvidenceRecord(record) {
   return [
     "terminalState",
+    "terminal_state",
     "orderType",
     "order_type",
     "timeInForce",
@@ -1540,8 +1586,15 @@ function isCloseoutEvidenceRecord(record) {
     "open_exposure_krw",
     "identifierSuffix",
     "identifier_suffix",
+    "identifier",
+    "cancelIdentifier",
+    "cancel_identifier",
     "brokerOrderIdSuffix",
     "broker_order_id_suffix",
+    "brokerOrderId",
+    "broker_order_id",
+    "cancelBrokerOrderId",
+    "cancel_broker_order_id",
     "submittedAt",
     "submitted_at",
   ].some((field) => record[field] !== undefined);
@@ -1562,12 +1615,25 @@ function readArtifactPolicyFieldValues(record, field) {
   })).filter((actual) => actual.value !== undefined);
 }
 
+function readTerminalStateFromAliases(record) {
+  return normalizeTerminalState(readStringFromAliases(record, artifactFieldAliases("terminalState")));
+}
+
+function readTerminalStateAliasValues(record) {
+  return readStringAliasValues(record, artifactFieldAliases("terminalState"))
+    .map((actual) => ({ alias: actual.alias, value: normalizeTerminalState(actual.value) }))
+    .filter((actual) => actual.value !== undefined);
+}
+
 function createExpectedArtifactOrderSuffixes(run) {
   return [
-    { value: readString(run.identifierSuffix), aliases: ["identifierSuffix", "identifier_suffix"] },
-    { value: readString(run.cancelIdentifierSuffix), aliases: ["cancelIdentifierSuffix", "cancel_identifier_suffix"] },
-    { value: readString(run.brokerOrderIdSuffix), aliases: ["brokerOrderIdSuffix", "broker_order_id_suffix"] },
-    { value: readString(run.cancelBrokerOrderIdSuffix), aliases: ["cancelBrokerOrderIdSuffix", "cancel_broker_order_id_suffix"] },
+    { value: readString(run.identifierSuffix), aliases: ["identifierSuffix", "identifier_suffix", "identifier"] },
+    { value: readString(run.cancelIdentifierSuffix), aliases: ["cancelIdentifierSuffix", "cancel_identifier_suffix", "cancelIdentifier", "cancel_identifier"] },
+    { value: readString(run.brokerOrderIdSuffix), aliases: ["brokerOrderIdSuffix", "broker_order_id_suffix", "brokerOrderId", "broker_order_id"] },
+    {
+      value: readString(run.cancelBrokerOrderIdSuffix),
+      aliases: ["cancelBrokerOrderIdSuffix", "cancel_broker_order_id_suffix", "cancelBrokerOrderId", "cancel_broker_order_id"],
+    },
   ].filter((item) => isUsableOrderEvidenceSuffix(item.value));
 }
 
@@ -1583,6 +1649,7 @@ function artifactFieldAliases(field) {
   const aliases = {
     market: ["market"],
     side: ["side"],
+    terminalState: ["terminalState", "terminal_state"],
     orderType: ["orderType", "order_type"],
     timeInForce: ["timeInForce", "time_in_force"],
     submittedAt: ["submittedAt", "submitted_at"],
@@ -1768,6 +1835,38 @@ function hasMeaningfulEnvValue(value) {
 
 function collectUnique(values) {
   return [...new Set(values)];
+}
+
+function splitCommandTokens(command) {
+  const tokens = [];
+  let current = "";
+  let quote = undefined;
+  for (const char of command.trim()) {
+    if (quote !== undefined) {
+      if (char === quote) {
+        quote = undefined;
+      } else {
+        current += char;
+      }
+      continue;
+    }
+    if (char === "'" || char === '"') {
+      quote = char;
+      continue;
+    }
+    if (/\s/u.test(char)) {
+      if (current.length > 0) {
+        tokens.push(current);
+        current = "";
+      }
+      continue;
+    }
+    current += char;
+  }
+  if (current.length > 0) {
+    tokens.push(current);
+  }
+  return tokens;
 }
 
 function stripShellQuotes(value) {
