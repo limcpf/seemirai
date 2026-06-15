@@ -1365,7 +1365,7 @@ function isLiveOpsCliCostInput(value) {
     "spreadCostBpsP75",
     "expectedSlippageBpsP95",
     "cancelRequotePenaltyBps",
-  ].every((key) => hasDecimalComparableValue(value[key]));
+  ].every((key) => isNonNegativeDecimalString(value[key]));
 }
 
 function isLiveOpsCliRiskInput(value, intent) {
@@ -1591,6 +1591,9 @@ function collectLiveOpsCliEntryRuntimeGuardViolations(request) {
   }
   if (!hasMeaningfulValue(candidate?.strategyId)) {
     violations.push("live ops wrapper candidate에는 strategyId가 필요합니다");
+  }
+  if (!isLiveOpsCliCostInput(candidate?.costInput)) {
+    violations.push("live ops wrapper candidate costInput은 non-negative decimal이어야 합니다");
   }
   if (config?.max_order_krw !== "10000") {
     violations.push("live ops wrapper 단일 주문 상한은 10000 KRW여야 합니다");

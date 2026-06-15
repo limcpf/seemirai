@@ -873,6 +873,27 @@ const directMissingPostSubmitReadinessResult = await createLiveOpsCliEntryRuntim
   postSubmitTelegramReady: false,
   postSubmitReadinessEvidenceId: undefined,
 }));
+const directInvalidCostInputRequest = createRuntimeRequest();
+directInvalidCostInputRequest.candidate = {
+  ...directInvalidCostInputRequest.candidate,
+  costInput: {
+    ...createCostInput(),
+    entryFeeBps: "-10",
+    expectedSlippageBpsP95: "abc",
+  },
+};
+const submittedWithInvalidCostInput = [];
+const directInvalidCostInputResult = await createLiveOpsCliEntryRuntime({
+  broker: {
+    async submitOrder(submission) {
+      submittedWithInvalidCostInput.push(submission);
+      return {
+        brokerOrderId: "unexpected-invalid-cost-input-order",
+      };
+    },
+  },
+  budgetReservation,
+}).submitEntryCandidate(directInvalidCostInputRequest);
 const directInvalidMarketRequest = createRuntimeRequest();
 directInvalidMarketRequest.candidate = {
   ...directInvalidMarketRequest.candidate,
@@ -1573,6 +1594,8 @@ console.log(JSON.stringify({
   submittedWithMissingStatusEvidence,
   directMissingPostSubmitReadinessResult,
   submittedWithMissingPostSubmitReadiness,
+  directInvalidCostInputResult,
+  submittedWithInvalidCostInput,
   directInvalidMarketResult,
   submittedWithInvalidMarket,
   directMismatchNotionalResult,
@@ -1707,6 +1730,14 @@ console.log(JSON.stringify({
         };
       };
       submittedWithMissingPostSubmitReadiness: unknown[];
+      directInvalidCostInputResult: {
+        status: string;
+        violations: string[];
+        trace: {
+          violations: string[];
+        };
+      };
+      submittedWithInvalidCostInput: unknown[];
       directInvalidMarketResult: {
         status: string;
         violations: string[];
@@ -1983,6 +2014,14 @@ console.log(JSON.stringify({
       },
     });
     expect(output.submittedWithMissingPostSubmitReadiness).toHaveLength(0);
+    expect(output.directInvalidCostInputResult).toMatchObject({
+      status: "BLOCKED",
+      violations: ["execution_runtime_guard_blocked"],
+      trace: {
+        violations: expect.arrayContaining(["live ops wrapper candidate costInput은 non-negative decimal이어야 합니다"]),
+      },
+    });
+    expect(output.submittedWithInvalidCostInput).toHaveLength(0);
     expect(output.directInvalidMarketResult).toMatchObject({
       status: "BLOCKED",
       violations: ["execution_runtime_guard_blocked"],
