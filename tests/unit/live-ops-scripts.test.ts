@@ -1054,6 +1054,14 @@ const directBrokerExceptionResult = await createLiveOpsCliEntryRuntime({
   },
   budgetReservation,
 }).submitEntryCandidate(createRuntimeRequest());
+const directBrokerEvidenceMissingResult = await createLiveOpsCliEntryRuntime({
+  broker: {
+    async submitOrder() {
+      return {};
+    },
+  },
+  budgetReservation,
+}).submitEntryCandidate(createRuntimeRequest());
 const directBrokerPortMissingResult = await createLiveOpsCliEntryRuntime({
   budgetReservation,
 }).submitEntryCandidate(createRuntimeRequest());
@@ -1612,6 +1620,7 @@ console.log(JSON.stringify({
   submittedWithSnapshotMaxOrderLimit,
   directReservationExceptionResult,
   directBrokerExceptionResult,
+  directBrokerEvidenceMissingResult,
   directBrokerPortMissingResult,
   strategyKeyWrapperSummary,
   submittedWithStrategyWrapper,
@@ -1807,6 +1816,22 @@ console.log(JSON.stringify({
               idempotencyKey: string;
             };
           };
+        };
+      };
+      directBrokerEvidenceMissingResult: {
+        status: string;
+        violations: string[];
+        trace: {
+          reason: string;
+          reservation: {
+            reservationId: string;
+          };
+          submission: {
+            intent: {
+              idempotencyKey: string;
+            };
+          };
+          brokerOrder: Record<string, unknown>;
         };
       };
       directBrokerPortMissingResult: {
@@ -2092,6 +2117,18 @@ console.log(JSON.stringify({
       },
     });
     expect(output.directBrokerExceptionResult.trace.submission.intent.idempotencyKey).toBe("ops-aaaaaaaaaaaaaaaaaaaaaaaaaa");
+    expect(output.directBrokerEvidenceMissingResult).toMatchObject({
+      status: "MANUAL_REVIEW_REQUIRED",
+      violations: ["broker_result_evidence_missing"],
+      trace: {
+        reason: "broker_result_evidence_missing",
+        reservation: {
+          reservationId: "reservation-001",
+        },
+        brokerOrder: {},
+      },
+    });
+    expect(output.directBrokerEvidenceMissingResult.trace.submission.intent.idempotencyKey).toBe("ops-aaaaaaaaaaaaaaaaaaaaaaaaaa");
     expect(output.directBrokerPortMissingResult).toMatchObject({
       status: "BLOCKED",
       violations: ["broker_port_missing"],

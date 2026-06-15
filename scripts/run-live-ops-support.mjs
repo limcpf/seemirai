@@ -1039,6 +1039,26 @@ export function createLiveOpsCliEntryRuntime({ broker, budgetReservation } = {})
           reservation: reservation.reservation,
         };
       }
+      if (!isLiveOpsCliBrokerOrderEvidence(brokerOrder, submission)) {
+        // broker 응답에 reconcile이 붙잡을 주문 식별자가 없으면 제출 성공으로 확정하지 않고 수동 점검에 필요한 맥락을 보존한다.
+        return {
+          status: "MANUAL_REVIEW_REQUIRED",
+          attemptId: request.idempotencyKey,
+          idempotencyKey: request.idempotencyKey,
+          message: "broker 제출 응답의 주문 식별 증거가 부족해 수동 점검 상태로 전환했습니다.",
+          action: "reservation id와 idempotency key로 거래소 주문 상태를 확인한 뒤 reconcile evidence를 보강하세요.",
+          violations: ["broker_result_evidence_missing"],
+          events: [],
+          trace: {
+            reason: "broker_result_evidence_missing",
+            reservation: reservation.reservation,
+            submission,
+            brokerOrder,
+          },
+          submission,
+          reservation: reservation.reservation,
+        };
+      }
       return {
         status: "SUBMITTED",
         attemptId: request.idempotencyKey,
@@ -1715,6 +1735,19 @@ function isLiveOpsCliBudgetReservationEvidence(result, request) {
     isNonEmptyRecord(reservation.budgetSnapshot) &&
     hasMeaningfulValue(reservation.reservedAt)
   );
+}
+
+function isLiveOpsCliBrokerOrderEvidence(brokerOrder, submission) {
+  if (!isNonEmptyRecord(brokerOrder) || !hasMeaningfulValue(brokerOrder.brokerOrderId)) {
+    return false;
+  }
+  if (hasMeaningfulValue(brokerOrder.idempotencyKey) && brokerOrder.idempotencyKey !== submission.intent.idempotencyKey) {
+    return false;
+  }
+  if (hasMeaningfulValue(brokerOrder.market) && brokerOrder.market !== submission.intent.market) {
+    return false;
+  }
+  return true;
 }
 
 function isLiveOpsCliLiveAttemptId(value, config = {}) {
