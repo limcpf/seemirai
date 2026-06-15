@@ -562,24 +562,24 @@ export function createLiveOpsCliDatabasePrivateReadProvider(pool) {
           LIMIT 1
         )
         SELECT
+          id,
           exchange_order_id,
           identifier,
+          identity_fingerprint,
           market,
           side,
           status,
           requested_quantity,
           remaining_quantity,
           requested_price,
+          source,
           captured_at
         FROM live_reconcile_exchange_order_snapshots
         WHERE run_id = (SELECT id FROM latest_run)
           AND market = $1
-          AND upper(status) IN ('OPEN', 'ACCEPTED', 'WAIT', 'WATCH')
-          AND remaining_quantity IS NOT NULL
-          AND remaining_quantity > 0
-        ORDER BY captured_at DESC
+        ORDER BY captured_at DESC, id DESC
       `, [market]);
-      return result.rows.map((row) => ({
+      return filterLiveOpsCliCanonicalOpenOrderRows(result.rows).map((row) => ({
         brokerOrderId: row.exchange_order_id ?? null,
         idempotencyKey: row.identifier ?? null,
         exchangeId: "upbit_krw_spot",
@@ -623,6 +623,124 @@ export function createLiveOpsCliDatabasePrivateReadProvider(pool) {
       };
     },
   };
+}
+
+function filterLiveOpsCliCanonicalOpenOrderRows(rows) {
+  const findCanonicalIdentity = createLiveOpsCliExchangeOrderIdentityResolver(rows);
+  const seenCanonicalIdentities = new Set();
+  const openRows = [];
+
+  for (const row of rows) {
+    const identityKeys = getLiveOpsCliCanonicalExchangeOrderIdentityKeys(row, findCanonicalIdentity);
+    const alreadySeen = identityKeys.some((identityKey) => seenCanonicalIdentities.has(identityKey));
+    if (isLiveOpsCliTerminalExchangeOrderRow(row)) {
+      // 최신 terminal evidence가 있으면 같은 uuid/identifier bridge의 이전 open snapshot을 노출에서 제거한다.
+      addLiveOpsCliIdentityKeys(seenCanonicalIdentities, identityKeys);
+      continue;
+    }
+
+    if (!isLiveOpsCliOpenExchangeOrderRow(row)) {
+      if (alreadySeen) {
+        addLiveOpsCliIdentityKeys(seenCanonicalIdentities, identityKeys);
+      }
+      continue;
+    }
+
+    if (alreadySeen) {
+      // bridge row가 늦게 나타나도 연결된 다른 identity를 닫아 뒤쪽 split snapshot 중복 집계를 막는다.
+      addLiveOpsCliIdentityKeys(seenCanonicalIdentities, identityKeys);
+      continue;
+    }
+
+    addLiveOpsCliIdentityKeys(seenCanonicalIdentities, identityKeys);
+    openRows.push(row);
+  }
+
+  return openRows;
+}
+
+function createLiveOpsCliExchangeOrderIdentityResolver(rows) {
+  const parents = new Map();
+
+  function find(identityKey) {
+    const parent = parents.get(identityKey);
+    if (parent === undefined) {
+      parents.set(identityKey, identityKey);
+      return identityKey;
+    }
+    if (parent === identityKey) {
+      return identityKey;
+    }
+    const canonical = find(parent);
+    parents.set(identityKey, canonical);
+    return canonical;
+  }
+
+  function union(left, right) {
+    const leftRoot = find(left);
+    const rightRoot = find(right);
+    if (leftRoot !== rightRoot) {
+      parents.set(rightRoot, leftRoot);
+    }
+  }
+
+  for (const row of rows) {
+    const identityKeys = getLiveOpsCliRawExchangeOrderIdentityKeys(row);
+    if (identityKeys.length === 0) {
+      continue;
+    }
+    find(identityKeys[0]);
+    for (const identityKey of identityKeys.slice(1)) {
+      union(identityKeys[0], identityKey);
+    }
+  }
+
+  return find;
+}
+
+function getLiveOpsCliCanonicalExchangeOrderIdentityKeys(row, findCanonicalIdentity) {
+  return Array.from(new Set(
+    getLiveOpsCliRawExchangeOrderIdentityKeys(row).map((identityKey) => findCanonicalIdentity(identityKey)),
+  ));
+}
+
+function getLiveOpsCliRawExchangeOrderIdentityKeys(row) {
+  const identityKeys = [];
+  if (hasMeaningfulValue(row.exchange_order_id)) {
+    identityKeys.push(`uuid:${row.exchange_order_id}`);
+  }
+  if (hasMeaningfulValue(row.identifier)) {
+    identityKeys.push(`identifier:${row.identifier}`);
+  }
+  return identityKeys;
+}
+
+function addLiveOpsCliIdentityKeys(target, identityKeys) {
+  for (const identityKey of identityKeys) {
+    target.add(identityKey);
+  }
+}
+
+function isLiveOpsCliOpenExchangeOrderRow(row) {
+  const source = String(row.source ?? "").toLowerCase();
+  const status = String(row.status ?? "").toUpperCase();
+  return (
+    (source === "open" || source === "lookup" || source === "ws") &&
+    (status === "OPEN" || status === "ACCEPTED" || status === "WAIT" || status === "WATCH") &&
+    isPositiveDecimalString(decimalRowValue(row.remaining_quantity))
+  );
+}
+
+function isLiveOpsCliTerminalExchangeOrderRow(row) {
+  const status = String(row.status ?? "").toUpperCase();
+  return (
+    status === "DONE" ||
+    status === "CANCEL" ||
+    status === "CANCELED" ||
+    status === "CANCELLED" ||
+    status === "FILLED" ||
+    status === "CLOSED"
+  );
 }
 
 export function createLiveOpsCliDatabaseReconcileStatusProvider(pool) {
