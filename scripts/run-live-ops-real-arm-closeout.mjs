@@ -109,10 +109,10 @@ const sensitivePatterns = [
   { label: "telegram botToken json field", pattern: /"(?:telegram)?botToken"\s*:\s*"(?!\s*(?:<redacted>|redacted|\[redacted\])\s*")[^"]{8,}"/i },
   { label: "telegram bot token url", pattern: /https:\/\/api\.telegram\.org\/bot(?!<redacted>|redacted|\[redacted\])[^/\s"']{8,}\/[A-Za-z]+/i },
   { label: "database password json field", pattern: /"(?:databasePassword|dbPassword|pgPassword|password)"\s*:\s*"(?!\s*(?:<redacted>|redacted|\[redacted\])\s*")[^"]{8,}"/i },
-  { label: "access key env assignment", pattern: /\b(?:SEEMIRAI_)?(?:UPBIT_)?ACCESS_KEY\s*=\s*(?!(?:["']?(?:<redacted>|redacted|\[redacted\])["']?)(?:\s|$|["',]))\S{8,}/i },
-  { label: "secret key env assignment", pattern: /\b(?:SEEMIRAI_)?(?:UPBIT_)?SECRET_KEY\s*=\s*(?!(?:["']?(?:<redacted>|redacted|\[redacted\])["']?)(?:\s|$|["',]))\S{8,}/i },
-  { label: "telegram token env assignment", pattern: /\b(?:SEEMIRAI_)?TELEGRAM_BOT_TOKEN\s*=\s*(?!(?:["']?(?:<redacted>|redacted|\[redacted\])["']?)(?:\s|$|["',]))\S{8,}/i },
-  { label: "database password env assignment", pattern: /\b(?:SEEMIRAI_)?(?:DATABASE_PASSWORD|DB_PASSWORD|PGPASSWORD)\s*=\s*(?!(?:["']?(?:<redacted>|redacted|\[redacted\])["']?)(?:\s|$|["',]))\S{8,}/i },
+  { label: "access key env assignment", pattern: /\b(?:SEEMIRAI_)?(?:UPBIT_)?ACCESS_KEY\s*=\s*(?!(?:["']?(?:<redacted>|redacted|\[redacted\])["']?)(?:$|[\r\n,}]))[^\r\n,}]{8,}/i },
+  { label: "secret key env assignment", pattern: /\b(?:SEEMIRAI_)?(?:UPBIT_)?SECRET_KEY\s*=\s*(?!(?:["']?(?:<redacted>|redacted|\[redacted\])["']?)(?:$|[\r\n,}]))[^\r\n,}]{8,}/i },
+  { label: "telegram token env assignment", pattern: /\b(?:SEEMIRAI_)?TELEGRAM_BOT_TOKEN\s*=\s*(?!(?:["']?(?:<redacted>|redacted|\[redacted\])["']?)(?:$|[\r\n,}]))[^\r\n,}]{8,}/i },
+  { label: "database password env assignment", pattern: /\b(?:SEEMIRAI_)?(?:DATABASE_PASSWORD|DB_PASSWORD|PGPASSWORD)\s*=\s*(?!(?:["']?(?:<redacted>|redacted|\[redacted\])["']?)(?:$|[\r\n,}]))[^\r\n,}]{8,}/i },
   { label: "raw authorization bearer", pattern: /authorization:\s*bearer\s+(?!<redacted>|redacted|\[redacted\])[^\s"']+/i },
   { label: "standalone bearer token", pattern: /\bBearer\s+(?!(?:<redacted>|redacted|\[redacted\])(?:\s|$))[^\s"']{16,}/ },
   { label: "jwt env assignment", pattern: /\bJWT\s*=\s*(?!(?:["']?(?:<redacted>|redacted|\[redacted\])["']?)(?:\s|$|["',]))[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/ },
@@ -361,7 +361,7 @@ async function createOperatorInputsCheck(manifest, baseDir, guarded) {
   ]);
   const configStatus = fileStatuses.find((file) => file.name === "configPath");
   const envFileStatus = fileStatuses.find((file) => file.name === "envFilePath");
-  const productionContract = await createProductionInputContract(configStatus, envFileStatus);
+  const productionContract = await createProductionInputContract(configStatus, envFileStatus, readString(manifest.keyScopeEvidenceId));
   const missing = [
     ["configPath", configPath],
     ["envFilePath", envFilePath],
@@ -731,6 +731,10 @@ async function writeFixtureManifest(artifactDir) {
     cancelRequestedAt,
     terminalCancelConfirmedAt,
     terminalState: "cancel",
+    identifierSuffix: "fixture-identifier",
+    cancelIdentifierSuffix: "fixture-identifier",
+    brokerOrderIdSuffix: "fixture-order",
+    cancelBrokerOrderIdSuffix: "fixture-order",
     openExposureKrw: 0,
     note: "fixture smoke artifact - no live API side effect",
   };
@@ -1016,9 +1020,9 @@ function isLiveOpsCommand(command, configPath, envFilePath) {
   return args.every((arg, index) => arg === exactArgs[index]);
 }
 
-async function createProductionInputContract(configStatus, envFileStatus) {
+async function createProductionInputContract(configStatus, envFileStatus, expectedKeyScopeEvidenceId) {
   const config = await createConfigContractEvidence(configStatus);
-  const env = await createEnvContractEvidence(envFileStatus);
+  const env = await createEnvContractEvidence(envFileStatus, expectedKeyScopeEvidenceId);
   return {
     ok: config.ok && env.ok,
     evidence: { config, env },
@@ -1159,7 +1163,7 @@ function validateExpectedConfigValues(errors, target, prefix, expected) {
   }
 }
 
-async function createEnvContractEvidence(fileStatus) {
+async function createEnvContractEvidence(fileStatus, expectedKeyScopeEvidenceId) {
   if (fileStatus === undefined || !fileStatus.exists || !fileStatus.isFile || !fileStatus.outsideRepository || fileStatus.realPath === null) {
     return { ok: false, errors: ["env file is not readable outside repository"] };
   }
@@ -1167,20 +1171,22 @@ async function createEnvContractEvidence(fileStatus) {
   try {
     const rawText = await readFile(fileStatus.realPath, "utf8");
     const env = parseEnvContent(rawText);
-    const errors = createLiveOpsEnvContractErrors(env, process.env);
+    const errors = createLiveOpsEnvContractErrors(env, process.env, expectedKeyScopeEvidenceId);
+    const keyScopeEvidenceId = readString(env.SEEMIRAI_UPBIT_KEY_SCOPE_EVIDENCE_ID);
     return {
       ok: errors.length === 0,
       errors,
       requiredKeysPresent: requiredLiveOpsEnvNames.filter((name) => hasMeaningfulEnvValue(env[name])),
       ambientLegacyEnvNamesPresent: collectLegacyEnvNames(process.env),
       keyScope: createEnvKeyScopeEvidence(env.SEEMIRAI_UPBIT_KEY_SCOPE),
+      keyScopeEvidenceIdMatches: hasText(expectedKeyScopeEvidenceId) && keyScopeEvidenceId === expectedKeyScopeEvidenceId,
     };
   } catch (error) {
     return { ok: false, errors: [`env parse/read failure: ${toErrorMessage(error)}`] };
   }
 }
 
-function createLiveOpsEnvContractErrors(env, ambientEnv = {}) {
+function createLiveOpsEnvContractErrors(env, ambientEnv = {}, expectedKeyScopeEvidenceId) {
   const errors = [];
   for (const name of requiredLiveOpsEnvNames) {
     if (!hasMeaningfulEnvValue(env[name])) {
@@ -1191,6 +1197,10 @@ function createLiveOpsEnvContractErrors(env, ambientEnv = {}) {
   errors.push(...collectLegacyEnvNames(ambientEnv).map((name) => `${name} must not be set in ambient production live ops environment`));
   const keyScopeEvidence = createEnvKeyScopeEvidence(env.SEEMIRAI_UPBIT_KEY_SCOPE);
   errors.push(...keyScopeEvidence.errors);
+  const keyScopeEvidenceId = readString(env.SEEMIRAI_UPBIT_KEY_SCOPE_EVIDENCE_ID);
+  if (hasText(expectedKeyScopeEvidenceId) && keyScopeEvidenceId !== expectedKeyScopeEvidenceId) {
+    errors.push("SEEMIRAI_UPBIT_KEY_SCOPE_EVIDENCE_ID must match manifest keyScopeEvidenceId");
+  }
   return errors;
 }
 
@@ -1215,15 +1225,19 @@ function collectLegacyEnvNames(env) {
 function createEnvKeyScopeEvidence(value) {
   const scopes = readCsvString(value);
   const missingRequiredScopes = requiredKeyScopes.filter((scope) => !scopes.includes(scope));
+  const extraScopes = scopes.filter((scope) => !requiredKeyScopes.includes(scope));
   const forbiddenScopes = scopes.filter(isForbiddenKeyScope);
   const errors = [];
   if (missingRequiredScopes.length > 0) {
     errors.push(`SEEMIRAI_UPBIT_KEY_SCOPE missing required scopes: ${missingRequiredScopes.join(", ")}`);
   }
+  if (extraScopes.length > 0) {
+    errors.push(`SEEMIRAI_UPBIT_KEY_SCOPE includes extra scopes: ${extraScopes.join(", ")}`);
+  }
   if (forbiddenScopes.length > 0) {
     errors.push(`SEEMIRAI_UPBIT_KEY_SCOPE includes forbidden scopes: ${forbiddenScopes.join(", ")}`);
   }
-  return { scopes, missingRequiredScopes, forbiddenScopes, errors };
+  return { scopes, missingRequiredScopes, extraScopes, forbiddenScopes, errors };
 }
 
 function parseEnvContent(content) {
@@ -1378,6 +1392,10 @@ function collectExcludedSourceGlobs(tokens) {
       index += 1;
       continue;
     }
+    if (token.startsWith("-g") && token.length > 2) {
+      globs.push(stripShellQuotes(token.slice(2)));
+      continue;
+    }
     if (token.startsWith("--glob=")) {
       globs.push(token.slice("--glob=".length));
     }
@@ -1440,41 +1458,51 @@ function createArtifactManifestConflicts(artifactFiles, manifest, run, counters)
       });
     }
     for (const item of records) {
+      const closeoutRecord = isCloseoutEvidenceRecord(item.record);
       const status = readString(item.record.status);
-      if (status !== undefined && !/^(?:passed|pass|success|succeeded|ok|completed)$/iu.test(status)) {
+      if (closeoutRecord && status !== undefined && !/^(?:passed|pass|success|succeeded|ok|completed)$/iu.test(status)) {
         conflicts.push({ filePath: file.filePath, field: `${item.path}.status`, expected: "explicit success status", actual: status });
       }
       const terminalState = normalizeTerminalState(readString(item.record.terminalState));
-      if (terminalState !== undefined && terminalState !== "CANCEL") {
+      if (closeoutRecord && terminalState !== undefined && terminalState !== "CANCEL") {
         conflicts.push({ filePath: file.filePath, field: `${item.path}.terminalState`, expected: "CANCEL", actual: terminalState });
       }
       for (const [field, expected] of Object.entries(expectedPolicyFields)) {
-        const actual = readArtifactPolicyField(item.record, field);
-        if (actual !== undefined && actual !== expected) {
-          conflicts.push({ filePath: file.filePath, field: `${item.path}.${field}`, expected, actual });
+        for (const actual of readArtifactPolicyFieldValues(item.record, field)) {
+          if (actual.value !== expected) {
+            conflicts.push({ filePath: file.filePath, field: `${item.path}.${actual.alias}`, expected, actual: actual.value });
+          }
         }
       }
-      const actualRequestedNotionalKrw = readNumberFromAliases(item.record, ["requestedNotionalKrw", "requested_notional_krw"]);
-      if (actualRequestedNotionalKrw !== undefined
-        && expectedRequestedNotionalKrw !== undefined
-        && actualRequestedNotionalKrw !== expectedRequestedNotionalKrw) {
-        conflicts.push({
-          filePath: file.filePath,
-          field: `${item.path}.requestedNotionalKrw`,
-          expected: expectedRequestedNotionalKrw,
-          actual: actualRequestedNotionalKrw,
-        });
+      for (const actual of readNumberAliasValues(item.record, ["requestedNotionalKrw", "requested_notional_krw"])) {
+        if (expectedRequestedNotionalKrw !== undefined && actual.value !== expectedRequestedNotionalKrw) {
+          conflicts.push({
+            filePath: file.filePath,
+            field: `${item.path}.${actual.alias}`,
+            expected: expectedRequestedNotionalKrw,
+            actual: actual.value,
+          });
+        }
       }
       for (const [field, expected] of Object.entries(expectedLifecycleTimestamps)) {
-        const actual = readTimestampMsFromAliases(item.record, artifactFieldAliases(field));
-        if (actual !== undefined && expected !== undefined && actual !== expected) {
-          conflicts.push({ filePath: file.filePath, field: `${item.path}.${field}`, expected, actual });
+        for (const actual of readTimestampMsAliasValues(item.record, artifactFieldAliases(field))) {
+          if (expected !== undefined && actual.value !== expected) {
+            conflicts.push({ filePath: file.filePath, field: `${item.path}.${actual.alias}`, expected, actual: actual.value });
+          }
         }
       }
       for (const [field, expected] of Object.entries(expectedZeroFields)) {
-        const actual = readNumberFromAliases(item.record, artifactFieldAliases(field));
-        if (actual !== undefined && expected !== undefined && actual !== expected) {
-          conflicts.push({ filePath: file.filePath, field: `${item.path}.${field}`, expected, actual });
+        for (const actual of readNumberAliasValues(item.record, artifactFieldAliases(field))) {
+          if (expected !== undefined && actual.value !== expected) {
+            conflicts.push({ filePath: file.filePath, field: `${item.path}.${actual.alias}`, expected, actual: actual.value });
+          }
+        }
+      }
+      for (const expected of createExpectedArtifactOrderSuffixes(run)) {
+        for (const actual of readStringAliasValues(item.record, expected.aliases)) {
+          if (actual.value !== expected.value) {
+            conflicts.push({ filePath: file.filePath, field: `${item.path}.${actual.alias}`, expected: expected.value, actual: actual.value });
+          }
         }
       }
     }
@@ -1495,7 +1523,28 @@ function isCompleteArtifactCloseoutEvidence(record, run) {
     && readTimestampMsFromAliases(record, ["submittedAt", "submitted_at"]) === readTimestampMs(run.submittedAt)
     && readTimestampMsFromAliases(record, ["cancelRequestedAt", "cancel_requested_at"]) === readTimestampMs(run.cancelRequestedAt)
     && readTimestampMsFromAliases(record, ["terminalCancelConfirmedAt", "terminal_cancel_confirmed_at"]) === readTimestampMs(run.terminalCancelConfirmedAt)
-    && readNumberFromAliases(record, ["openExposureKrw", "open_exposure_krw"]) === readNumber(run.openExposureKrw);
+    && readNumberFromAliases(record, ["openExposureKrw", "open_exposure_krw"]) === readNumber(run.openExposureKrw)
+    && hasMatchingArtifactOrderSuffix(record, run);
+}
+
+function isCloseoutEvidenceRecord(record) {
+  return [
+    "terminalState",
+    "orderType",
+    "order_type",
+    "timeInForce",
+    "time_in_force",
+    "requestedNotionalKrw",
+    "requested_notional_krw",
+    "openExposureKrw",
+    "open_exposure_krw",
+    "identifierSuffix",
+    "identifier_suffix",
+    "brokerOrderIdSuffix",
+    "broker_order_id_suffix",
+    "submittedAt",
+    "submitted_at",
+  ].some((field) => record[field] !== undefined);
 }
 
 function readArtifactPolicyField(record, field) {
@@ -1504,6 +1553,30 @@ function readArtifactPolicyField(record, field) {
     return normalizeTimeInForce(value);
   }
   return value?.toUpperCase();
+}
+
+function readArtifactPolicyFieldValues(record, field) {
+  return readStringAliasValues(record, artifactFieldAliases(field)).map((actual) => ({
+    alias: actual.alias,
+    value: field === "timeInForce" ? normalizeTimeInForce(actual.value) : actual.value.toUpperCase(),
+  })).filter((actual) => actual.value !== undefined);
+}
+
+function createExpectedArtifactOrderSuffixes(run) {
+  return [
+    { value: readString(run.identifierSuffix), aliases: ["identifierSuffix", "identifier_suffix"] },
+    { value: readString(run.cancelIdentifierSuffix), aliases: ["cancelIdentifierSuffix", "cancel_identifier_suffix"] },
+    { value: readString(run.brokerOrderIdSuffix), aliases: ["brokerOrderIdSuffix", "broker_order_id_suffix"] },
+    { value: readString(run.cancelBrokerOrderIdSuffix), aliases: ["cancelBrokerOrderIdSuffix", "cancel_broker_order_id_suffix"] },
+  ].filter((item) => isUsableOrderEvidenceSuffix(item.value));
+}
+
+function hasMatchingArtifactOrderSuffix(record, run) {
+  const expected = createExpectedArtifactOrderSuffixes(run);
+  if (expected.length === 0) {
+    return false;
+  }
+  return expected.some((item) => readStringFromAliases(record, item.aliases) === item.value);
 }
 
 function artifactFieldAliases(field) {
@@ -1607,6 +1680,12 @@ function readTimestampMsFromAliases(record, aliases) {
   return value === undefined ? undefined : readTimestampMs(value);
 }
 
+function readTimestampMsAliasValues(record, aliases) {
+  return readStringAliasValues(record, aliases)
+    .map((actual) => ({ alias: actual.alias, value: readTimestampMs(actual.value) }))
+    .filter((actual) => actual.value !== undefined);
+}
+
 function readNumber(value) {
   const number = Number(readStringOrNumber(value));
   return Number.isFinite(number) ? number : undefined;
@@ -1622,6 +1701,12 @@ function readNumberFromAliases(record, aliases) {
   return undefined;
 }
 
+function readNumberAliasValues(record, aliases) {
+  return aliases
+    .map((alias) => ({ alias, value: readNumber(record[alias]) }))
+    .filter((actual) => actual.value !== undefined);
+}
+
 function readString(value) {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
 }
@@ -1634,6 +1719,12 @@ function readStringFromAliases(record, aliases) {
     }
   }
   return undefined;
+}
+
+function readStringAliasValues(record, aliases) {
+  return aliases
+    .map((alias) => ({ alias, value: readString(record[alias]) }))
+    .filter((actual) => actual.value !== undefined);
 }
 
 function readStringOrNumber(value) {

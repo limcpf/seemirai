@@ -100,26 +100,29 @@ attach 명령, 추가/중복 인자, 상대 `config/env` 경로가 붙은 명령
 자체는 저장소 밖에 실제 파일로 존재해야 하며 symlink를 따라간 실제 경로도 저장소 밖이어야 한다. config JSON은 실제 foreground wrapper와
 같은 허용 key set만 사용할 수 있고, production
 `LIVE_AUTONOMOUS_SMALL_BUDGET` contract와 `KRW-BTC` 단일 universe, live trading on, paper/no-risk flags off, small-budget/TUI/Telegram
-설정을 만족해야 한다. env 파일은 DB, Upbit key, key scope evidence, Telegram, TUI control token 값이 실제로 있어야 하며 M22/M23 smoke
-guard나 placeholder 값으로 대체할 수 없다. foreground 실행 당시 shell에 남아 있던 M22/smoke legacy env도 production contract 위반으로
-본다. 이 저장소 경계는 validator를 어느 작업 디렉터리에서 실행하더라도 repository root 기준으로 판정한다.
+설정을 만족해야 한다. env 파일은 DB, Upbit key, key scope evidence, Telegram, TUI control token 값이 실제로 있어야 하며, key scope는
+`자산조회`, `주문조회`, `주문하기` 외 추가 권한이 없어야 한다. env의 `SEEMIRAI_UPBIT_KEY_SCOPE_EVIDENCE_ID`는 manifest의
+`keyScopeEvidenceId`와 같아야 한다. M22/M23 smoke guard나 placeholder 값으로 대체할 수 없고, foreground 실행 당시 shell에 남아 있던
+M22/smoke legacy env도 production contract 위반으로 본다. 이 저장소 경계는 validator를 어느 작업 디렉터리에서 실행하더라도 repository
+root 기준으로 판정한다.
 
 `keyScope`는 `grantedScopes: ["자산조회", "주문조회", "주문하기"]`, `forbiddenScopesAbsent: ["출금하기"]`,
 `withdrawalEnabled: false`처럼 허용 scope와 출금 권한 부재를 redacted safe summary로 기록한다. source/security scan은 실제 `rg -n`
 명령으로 `src scripts config docs` 전체 범위의 금지 주문 경계 전체(`ord_type`, market/best 주문, 출금/입금, leverage/futures/margin)와
 secret/raw payload 후보 전체(access/secret key, Authorization/Bearer, JWT, Telegram token, raw provider/order payload)를 스캔한 증거를
-포함해야 하며, `true`, `echo rg ...`, 일부 토큰만 확인한 명령, `-g '!src/**'`처럼 필수 범위를 제외하는 glob은 인정하지 않는다. 주문 lifecycle timestamp는 validator 실행 시각보다 미래일 수 없고, 같은 주문 chain
+포함해야 하며, `true`, `echo rg ...`, 일부 토큰만 확인한 명령, `-g '!src/**'` 또는 `-g'!src/**'`처럼 필수 범위를 제외하는 glob은 인정하지 않는다. 주문 lifecycle timestamp는 validator 실행 시각보다 미래일 수 없고, 같은 주문 chain
 증거는 `<redacted>` 같은 일반 placeholder가 아니라 identifier 또는 uuid의 안정적인 suffix로 비교할 수 있어야 한다. artifact safe summary의
 중첩 객체와 배열 안의 `status`, `terminalState`, 주문 정책 필드(`market`, `side`, `orderType`/`order_type`, `timeInForce`/`time_in_force`,
 `requestedNotionalKrw`/`requested_notional_krw`), lifecycle timestamp, exposure/counter 값은 manifest의 closeout 값과 충돌하면 안 된다.
 artifact는 parse 가능한 JSON safe summary여야 하며, 각 artifact마다 성공 status, terminal cancel, 주문 정책, submit/cancel/terminal
-timestamp, open exposure 0 evidence가 최소 한 record에 있어야 한다. artifact status는 `passed`, `success`, `ok`, `completed` 같은 명시적
-성공 상태만 허용하며 `skipped`, `blocked`, `partial`은 closeout PASS 증거가 아니다.
+timestamp, 같은 주문 suffix, open exposure 0 evidence가 최소 한 closeout record에 있어야 한다. closeout record의 artifact status는
+`passed`, `success`, `ok`, `completed` 같은 명시적 성공 상태만 허용하며 `skipped`, `blocked`, `partial`은 closeout PASS 증거가 아니다.
+주문 closeout이 아닌 provider/market/Telegram safe summary의 일반 `status` 값은 closeout status로 해석하지 않는다.
 
 `artifactPaths`는 symlink를 따라간 실제 경로도 저장소 밖이어야 하며, secret 원문, raw Authorization/Bearer/JWT, Telegram token URL,
 database password 원문, `raw_provider_payload`/`rawProviderPayload`/`raw_order_detail`/`rawOrderDetail` 같은 raw payload 필드 없이 redacted safe summary만 가리켜야 한다.
 JSON credential 값은 `<redacted>`, `redacted`, `[redacted]` 같은 placeholder와 정확히 일치해야 하며, placeholder 뒤에 원문 일부를
-덧붙이면 secret leak으로 본다.
+덧붙이면 secret leak으로 본다. env assignment 형태도 placeholder 뒤에 원문이 붙으면 secret leak으로 본다.
 
 ## Closeout 판정
 
