@@ -147,10 +147,12 @@ export async function loadLiveOpsCliInputs(options) {
     fixtureSmoke: options.fixtureSmoke,
     marketData,
   });
-  const liveExecution = evaluateLiveOpsCliLiveExecution({
+  const liveExecution = await evaluateLiveOpsCliLiveExecution({
     config,
     fixtureSmoke: options.fixtureSmoke,
     analysisDecision,
+    marketData,
+    env,
   });
   const reconcilePnlStatus = evaluateLiveOpsCliReconcilePnlStatus({
     config,
@@ -178,13 +180,15 @@ export async function loadLiveOpsCliInputs(options) {
 }
 
 export function renderLiveOpsSummary(input) {
-  const status = input.dbReadiness.ready && input.marketData.ready ? "ready" : "blocked";
+  const status = input.dbReadiness.ready && input.marketData.ready && input.analysisDecision.ready && input.liveExecution.ready
+    ? "ready"
+    : "blocked";
   return {
     status,
     message: status === "ready"
       ? (input.fixtureSmoke
         ? "production live ops config/env 계약과 DB readiness를 통과했습니다. fixture smoke는 외부 provider를 호출하지 않습니다."
-        : "production live ops config/env, DB readiness, Upbit public market data provider boot를 통과했습니다.")
+        : "production live ops config/env, DB readiness, Upbit public market data, analysis/decision, live execution guard를 통과했습니다.")
       : "production live ops boot가 fail-closed 됐습니다. 차단된 readiness 항목을 먼저 복구하세요.",
     configPath: input.configPath,
     envFilePath: input.envFilePath,
@@ -231,7 +235,9 @@ export function renderLiveOpsTuiDashboard(summary) {
       : worker === "analysis_decision"
         ? (summary.analysisDecision?.ready ? `${formatDecisionCategory(summary.analysisDecision.decisionCategory)} 기록 확인` : "후속 연결 대기")
       : worker === "live_execution"
-        ? (summary.liveExecution?.ready ? "후보 없음 - broker 제출 없음" : "후속 연결 대기")
+        ? (summary.liveExecution?.ready
+          ? (summary.liveExecution.status === "idle" ? "후보 없음 - broker 제출 없음" : (summary.liveExecution.statusLabel ?? "실행 결과 확인"))
+          : "후속 연결 대기")
       : worker === "reconcile_pnl_status"
         ? (summary.reconcilePnlStatus?.ready ? "상태 요약 확인 - provider 호출 없음" : "후속 연결 대기")
       : worker === "telegram"
@@ -391,6 +397,8 @@ function validateLiveOpsEnv(env, processEnv) {
     "SEEMIRAI_DATABASE_URL",
     "SEEMIRAI_UPBIT_ACCESS_KEY",
     "SEEMIRAI_UPBIT_SECRET_KEY",
+    "SEEMIRAI_UPBIT_KEY_SCOPE",
+    "SEEMIRAI_UPBIT_KEY_SCOPE_EVIDENCE_ID",
     "SEEMIRAI_TELEGRAM_BOT_TOKEN",
     "SEEMIRAI_TELEGRAM_CHAT_ID",
     "SEEMIRAI_TUI_CONTROL_TOKEN",
@@ -606,12 +614,23 @@ function formatDecisionCategory(decisionCategory) {
   return "보류";
 }
 
-function evaluateLiveOpsCliLiveExecution({ config, fixtureSmoke, analysisDecision }) {
+export async function evaluateLiveOpsCliLiveExecution({
+  config,
+  fixtureSmoke,
+  analysisDecision,
+  marketData,
+  env,
+  orderIntents,
+  entryRuntime,
+}) {
   const market = config.universe?.default_market ?? "KRW-BTC";
+  const observedAt = new Date().toISOString();
+  const intents = orderIntents ?? analysisDecision.orderIntents ?? [];
+  const brokerGuard = evaluateLiveOpsCliBrokerGuard({ config, env, fixtureSmoke });
 
-  if (!fixtureSmoke || analysisDecision.ready !== true) {
+  if (analysisDecision.ready !== true) {
     return {
-      status: "pending",
+      status: "blocked",
       ready: false,
       liveOrderCapable: false,
       market,
@@ -619,45 +638,524 @@ function evaluateLiveOpsCliLiveExecution({ config, fixtureSmoke, analysisDecisio
       orderIntentCount: analysisDecision.orderIntentCount ?? 0,
       attemptedOrderCount: 0,
       submittedOrderCount: 0,
+      brokerGuard,
       statusLabel: "후속 연결 대기",
-      message: "live execution worker는 analysis/decision lifecycle 이후 연결됩니다.",
+      message: "analysis/decision이 준비되지 않아 live execution으로 전진하지 않습니다.",
       checks: [
         {
           name: "analysis_decision",
           status: "blocked",
-          code: "live_ops_execution_pending",
-          message: "live execution worker가 후속 lifecycle에서 시작됩니다.",
+          code: "live_ops_analysis_not_ready",
+          message: "analysis/decision 차단 원인을 먼저 해소해야 broker 경계를 열 수 있습니다.",
         },
       ],
     };
   }
 
+  if (!brokerGuard.ready) {
+    return buildLiveOpsCliLiveExecutionSummary({
+      status: "blocked",
+      ready: false,
+      liveOrderCapable: false,
+      market,
+      observedAt,
+      orderIntentCount: intents.length,
+      attemptedOrderCount: 0,
+      submittedOrderCount: 0,
+      brokerGuard,
+      statusLabel: "broker guard 차단",
+      message: "Upbit live broker guard가 완성되지 않아 실주문 실행을 시작하지 않았습니다.",
+      action: "key scope, evidence id, market, 예산 상한을 확인한 뒤 다시 실행하세요.",
+      checks: [
+        okLiveExecutionCheck("analysis_decision", "analysis/decision summary를 확인했습니다.", "live_ops_analysis_ready"),
+        blockedLiveExecutionCheck("broker_guard", "Upbit live broker guard가 차단됐습니다.", "live_ops_broker_guard_blocked", {
+          violations: brokerGuard.violations,
+        }),
+      ],
+    });
+  }
+
+  if (analysisDecision.orderIntentCount === 0 && intents.length === 0) {
+    // HOLD tick은 정상 lifecycle이므로 durable reservation이나 broker 호출 없이 evidence-friendly idle 상태로 닫는다.
+    return buildLiveOpsCliLiveExecutionSummary({
+      status: "idle",
+      ready: true,
+      liveOrderCapable: false,
+      market,
+      observedAt,
+      orderIntentCount: 0,
+      attemptedOrderCount: 0,
+      submittedOrderCount: 0,
+      brokerGuard,
+      statusLabel: "후보 없음",
+      message: `${fixtureSmoke ? "fixture" : "production"} decision tick에 주문 후보가 없어 broker 제출은 발생하지 않았습니다.`,
+      action: "다음 decision tick에서 신규 후보가 생기면 예산과 freshness를 다시 확인합니다.",
+      checks: [
+        okLiveExecutionCheck("analysis_decision", "analysis/decision summary를 확인했습니다.", "live_ops_analysis_ready"),
+        okLiveExecutionCheck("order_intent", "주문 후보가 없어 broker 제출을 생략했습니다.", "live_ops_no_order_intent"),
+        okLiveExecutionCheck("broker_submit", "broker 제출 횟수 0회를 확인했습니다.", "live_ops_broker_submit_skipped"),
+      ],
+    });
+  }
+
+  const countViolation = validateLiveOpsCliOrderIntentCount(analysisDecision, intents);
+  if (countViolation !== undefined) {
+    return buildLiveOpsCliLiveExecutionSummary({
+      status: "blocked",
+      ready: false,
+      liveOrderCapable: false,
+      market,
+      observedAt,
+      orderIntentCount: intents.length,
+      attemptedOrderCount: 0,
+      submittedOrderCount: 0,
+      brokerGuard,
+      statusLabel: "후보 수 차단",
+      message: "live execution 후보 수가 production 실행 경계와 맞지 않아 주문을 제출하지 않았습니다.",
+      action: "analysis summary와 order intent source를 같은 decision tick으로 다시 읽으세요.",
+      checks: [
+        okLiveExecutionCheck("analysis_decision", "analysis/decision summary를 확인했습니다.", "live_ops_analysis_ready"),
+        blockedLiveExecutionCheck("order_intent", countViolation.message, countViolation.code, countViolation.details),
+      ],
+    });
+  }
+
+  const intent = intents[0];
+  const intentViolations = collectLiveOpsCliOrderIntentViolations({ config, marketData, intent });
+  if (intentViolations.length > 0) {
+    // 주문 후보가 live ops guard를 벗어나면 entry runtime에 넘기기 전에 닫아 broker side effect를 만들지 않는다.
+    return buildLiveOpsCliLiveExecutionSummary({
+      status: "blocked",
+      ready: false,
+      liveOrderCapable: false,
+      market,
+      observedAt,
+      orderIntentCount: intents.length,
+      attemptedOrderCount: 0,
+      submittedOrderCount: 0,
+      brokerGuard,
+      statusLabel: "후보 차단",
+      message: "주문 후보가 실운영 실행 조건을 통과하지 못해 제출하지 않았습니다.",
+      action: "후보 market, LIMIT/post-only, 예산, freshness, strategy/risk 입력을 확인하세요.",
+      checks: [
+        okLiveExecutionCheck("analysis_decision", "analysis/decision summary를 확인했습니다.", "live_ops_analysis_ready"),
+        blockedLiveExecutionCheck("order_intent", "주문 후보가 production live execution guard를 통과하지 못했습니다.", "live_ops_order_intent_blocked", {
+          violations: intentViolations,
+        }),
+      ],
+    });
+  }
+
+  const request = createLiveOpsCliEntryRuntimeRequest({ config, marketData, intent, observedAt });
+  const runtime = entryRuntime ?? createLiveOpsCliMissingEntryRuntime();
+  let attempt;
+  try {
+    // 이 호출이 예산 reservation과 UpbitLiveBroker 제출로 이어질 수 있는 유일한 경계다.
+    attempt = await runtime.submitEntryCandidate(request);
+  } catch (error) {
+    return buildLiveOpsCliLiveExecutionSummary({
+      status: "manual_review_required",
+      ready: false,
+      liveOrderCapable: false,
+      market,
+      observedAt,
+      orderIntentCount: intents.length,
+      attemptedOrderCount: 1,
+      submittedOrderCount: 0,
+      brokerGuard,
+      statusLabel: "수동 점검",
+      message: "실주문 실행 결과를 확정할 수 없어 수동 점검 상태로 전환했습니다.",
+      action: "거래소 주문과 durable reservation 상태를 먼저 확인한 뒤 재시도 여부를 결정하세요.",
+      checks: [
+        okLiveExecutionCheck("analysis_decision", "analysis/decision summary를 확인했습니다.", "live_ops_analysis_ready"),
+        okLiveExecutionCheck("order_intent", "단일 LIMIT + post-only 주문 후보를 확인했습니다.", "live_ops_order_intent_ready"),
+        blockedLiveExecutionCheck("execution_result", "live execution runtime 결과를 확정할 수 없습니다.", "live_ops_execution_runtime_uncertain", {
+          reason: safeErrorName(error),
+        }),
+      ],
+    });
+  }
+
+  const submitted = attempt.status === "SUBMITTED";
   return {
-    status: "idle",
-    ready: true,
-    liveOrderCapable: false,
+    status: submitted ? "submitted" : String(attempt.status ?? "blocked").toLowerCase(),
+    ready: submitted,
+    liveOrderCapable: submitted,
     market,
-    latestExecutionAt: null,
-    orderIntentCount: analysisDecision.orderIntentCount,
-    attemptedOrderCount: 0,
-    submittedOrderCount: 0,
-    statusLabel: "후보 없음",
-    message: "fixture live execution worker가 주문 후보 없음 상태를 확인했고 broker 제출은 발생하지 않았습니다.",
+    latestExecutionAt: observedAt,
+    orderIntentCount: intents.length,
+    attemptedOrderCount: 1,
+    submittedOrderCount: submitted ? 1 : 0,
+    attemptStatus: attempt.status ?? null,
+    attemptId: attempt.attemptId ?? null,
+    idempotencyKey: attempt.idempotencyKey ?? request.idempotencyKey,
+    brokerOrderId: attempt.brokerOrderId ?? attempt.executionResult?.brokerOrder?.brokerOrderId ?? null,
+    brokerGuard,
+    statusLabel: submitted ? "broker 제출" : "제출 차단",
+    message: submitted
+      ? "실주문 실행 경계가 주문 후보를 broker 제출까지 전진시켰습니다."
+      : (attempt.message ?? "live execution runtime이 주문 후보를 제출하지 않았습니다."),
+    action: submitted
+      ? "체결, 취소, reconcile/PnL/status worker에서 후속 상태를 확인합니다."
+      : (attempt.action ?? "차단 원인을 확인한 뒤 다음 tick에서 다시 평가합니다."),
     checks: [
+      okLiveExecutionCheck("analysis_decision", "analysis/decision summary를 확인했습니다.", "live_ops_analysis_ready"),
+      okLiveExecutionCheck("order_intent", "단일 LIMIT + post-only 주문 후보를 확인했습니다.", "live_ops_order_intent_ready"),
+      okLiveExecutionCheck("execution_request", "live autonomous entry runtime 요청을 만들었습니다.", "live_ops_execution_request_ready"),
       {
-        name: "order_intent",
-        status: "ok",
-        code: "live_ops_no_order_intent",
-        message: "fixture decision tick에는 live execution으로 넘길 주문 후보가 없습니다.",
-      },
-      {
-        name: "broker_submit",
-        status: "ok",
-        code: "live_ops_broker_submit_skipped",
-        message: "fixture smoke에서는 broker 제출 경계를 호출하지 않습니다.",
+        name: "execution_result",
+        status: submitted ? "ok" : "blocked",
+        code: submitted ? "live_ops_execution_submitted" : "live_ops_execution_blocked",
+        message: submitted ? "broker 제출 결과를 확인했습니다." : "entry runtime이 제출을 차단했습니다.",
       },
     ],
   };
+}
+
+export function createLiveOpsCliEntryRuntime({ broker, budgetReservation } = {}) {
+  return {
+    async submitEntryCandidate(request) {
+      if (broker === undefined || typeof broker.submitOrder !== "function") {
+        throw new Error("LiveOpsCliBrokerPortMissing");
+      }
+
+      if (budgetReservation === undefined || typeof budgetReservation.reserve !== "function") {
+        // durable reservation port 없이는 중복 주문과 예산 초과를 증명할 수 없으므로 broker 호출 전에 닫는다.
+        return {
+          status: "BLOCKED",
+          attemptId: request.idempotencyKey,
+          idempotencyKey: request.idempotencyKey,
+          message: "durable budget reservation port가 없어 broker 제출을 중단했습니다.",
+          action: "idempotency key 기반 reservation 저장소를 연결한 뒤 다시 실행하세요.",
+          violations: ["budget_reservation_port_missing"],
+          events: [],
+          trace: {
+            reason: "budget_reservation_port_missing",
+          },
+        };
+      }
+
+      const reservation = await budgetReservation.reserve(request);
+      if (reservation?.reserved === false) {
+        // durable reservation 실패는 broker 호출 전에 닫아 중복 주문과 예산 초과를 막는다.
+        return {
+          status: "BLOCKED",
+          attemptId: request.idempotencyKey,
+          idempotencyKey: request.idempotencyKey,
+          message: reservation.message ?? "예산 reservation이 실패해 broker 제출을 중단했습니다.",
+          action: "reservation 상태와 예산 사용량을 확인하세요.",
+          violations: [reservation.reasonCode ?? "budget_reservation_blocked"],
+          events: [],
+          trace: {
+            reason: reservation.reasonCode ?? "budget_reservation_blocked",
+          },
+        };
+      }
+
+      const submission = createLiveOpsCliOrderSubmission(request);
+      const brokerOrder = await broker.submitOrder(submission);
+      return {
+        status: "SUBMITTED",
+        attemptId: request.idempotencyKey,
+        idempotencyKey: request.idempotencyKey,
+        brokerOrderId: brokerOrder.brokerOrderId,
+        message: "live ops entry 후보가 broker 제출 경계를 통과했습니다.",
+        action: "후속 reconcile과 cancel/terminal 상태를 확인하세요.",
+        violations: [],
+        events: [],
+        trace: {
+          reason: "broker_submitted",
+        },
+        submission,
+        executionResult: {
+          status: "SUBMITTED",
+          submission,
+          brokerOrder,
+        },
+      };
+    },
+  };
+}
+
+function buildLiveOpsCliLiveExecutionSummary(input) {
+  return {
+    status: input.status,
+    ready: input.ready,
+    liveOrderCapable: input.liveOrderCapable,
+    market: input.market,
+    latestExecutionAt: input.latestExecutionAt ?? null,
+    orderIntentCount: input.orderIntentCount,
+    attemptedOrderCount: input.attemptedOrderCount,
+    submittedOrderCount: input.submittedOrderCount,
+    attemptStatus: input.attemptStatus ?? null,
+    attemptId: input.attemptId ?? null,
+    idempotencyKey: input.idempotencyKey ?? null,
+    brokerOrderId: input.brokerOrderId ?? null,
+    brokerGuard: input.brokerGuard,
+    statusLabel: input.statusLabel,
+    message: input.message,
+    action: input.action,
+    checks: input.checks,
+  };
+}
+
+function evaluateLiveOpsCliBrokerGuard({ config, env = {}, fixtureSmoke }) {
+  const checks = [
+    okLiveExecutionCheck("broker_guard", "Upbit live broker guard 입력을 확인했습니다.", "live_ops_broker_guard_config_ok", {
+      market: config.universe?.default_market ?? "KRW-BTC",
+      fixtureSmoke,
+    }),
+  ];
+  const violations = [];
+  const scopes = parseLiveOpsKeyScopes(env.SEEMIRAI_UPBIT_KEY_SCOPE);
+  const credentialsConfigured = hasMeaningfulValue(env.SEEMIRAI_UPBIT_ACCESS_KEY) && hasMeaningfulValue(env.SEEMIRAI_UPBIT_SECRET_KEY);
+  const requiredScopes = ["자산조회", "주문조회", "주문하기"];
+  const allowedScopes = new Set(requiredScopes);
+  const forbiddenScopes = new Set(["출금조회", "출금하기", "입금조회", "입금하기", "선물", "레버리지", "마진"]);
+
+  if (!credentialsConfigured) {
+    violations.push("SEEMIRAI_UPBIT_ACCESS_KEY와 SEEMIRAI_UPBIT_SECRET_KEY 값이 필요합니다");
+  }
+  for (const requiredScope of requiredScopes) {
+    if (!scopes.includes(requiredScope)) {
+      violations.push(`SEEMIRAI_UPBIT_KEY_SCOPE에 ${requiredScope} 권한이 필요합니다`);
+    }
+  }
+  for (const scope of scopes) {
+    if (forbiddenScopes.has(scope)) {
+      violations.push(`SEEMIRAI_UPBIT_KEY_SCOPE에 금지 권한이 포함되어 있습니다: ${scope}`);
+    } else if (!allowedScopes.has(scope)) {
+      violations.push(`SEEMIRAI_UPBIT_KEY_SCOPE에 알 수 없는 권한이 포함되어 있습니다: ${scope}`);
+    }
+  }
+  if (!hasMeaningfulValue(env.SEEMIRAI_UPBIT_KEY_SCOPE_EVIDENCE_ID)) {
+    violations.push("SEEMIRAI_UPBIT_KEY_SCOPE_EVIDENCE_ID 값이 필요합니다");
+  }
+  if (config.universe?.default_market !== "KRW-BTC") {
+    violations.push("Upbit live broker guard market은 KRW-BTC만 허용합니다");
+  }
+  if (config.budget?.max_order_krw !== "10000") {
+    violations.push("Upbit live broker guard 단일 주문 상한은 10000 KRW여야 합니다");
+  }
+
+  if (violations.length > 0) {
+    checks.push(blockedLiveExecutionCheck("broker_guard", "Upbit live broker guard가 완성되지 않았습니다.", "live_ops_broker_guard_blocked", {
+      violations,
+    }));
+  } else {
+    checks.push(okLiveExecutionCheck("broker_guard", "Upbit live broker guard가 live execution 전제 조건을 통과했습니다.", "live_ops_broker_guard_ready", {
+      keyScopeEvidenceId: env.SEEMIRAI_UPBIT_KEY_SCOPE_EVIDENCE_ID,
+      orderSmokeMarket: "KRW-BTC",
+      orderSmokeMaxKrw: config.budget?.max_order_krw ?? "10000",
+    }));
+  }
+
+  return {
+    ready: violations.length === 0,
+    credentialsConfigured,
+    keyScopes: scopes,
+    keyScopeEvidenceId: env.SEEMIRAI_UPBIT_KEY_SCOPE_EVIDENCE_ID ?? null,
+    orderSmokeMarket: "KRW-BTC",
+    orderSmokeMaxKrw: config.budget?.max_order_krw ?? "10000",
+    statusLabel: violations.length === 0 ? "live broker 조립 가능" : "live broker guard 미충족",
+    message: violations.length === 0
+      ? "Upbit live broker guard가 충족됐습니다. 후보가 생기면 제출 직전 동일 조건을 다시 확인합니다."
+      : "Upbit live broker guard가 완성되지 않아 private order client를 열 수 없습니다.",
+    action: violations.length === 0
+      ? "후보 제출 전 market, 예산, identifier, key scope evidence를 다시 확인하세요."
+      : "추적 정보의 guard 위반 항목을 수정한 뒤 다시 실행하세요.",
+    violations,
+    checks,
+  };
+}
+
+function validateLiveOpsCliOrderIntentCount(analysisDecision, intents) {
+  if (analysisDecision.orderIntentCount !== intents.length) {
+    return {
+      code: "live_ops_order_intent_count_mismatch",
+      message: "analysis summary의 주문 후보 수와 전달된 order intent 수가 다릅니다.",
+      details: {
+        summaryOrderIntentCount: analysisDecision.orderIntentCount,
+        receivedOrderIntentCount: intents.length,
+      },
+    };
+  }
+  if (intents.length !== 1) {
+    return {
+      code: "live_ops_order_intent_batch_unsupported",
+      message: "production live ops 첫 실행은 한 tick에 단일 주문 후보만 제출할 수 있습니다.",
+      details: {
+        receivedOrderIntentCount: intents.length,
+      },
+    };
+  }
+  return undefined;
+}
+
+function collectLiveOpsCliOrderIntentViolations({ config, marketData, intent }) {
+  const violations = [];
+  if (marketData?.ready !== true) {
+    violations.push("market data freshness가 준비되지 않았습니다");
+  }
+  if (intent?.exchangeId !== "upbit_krw_spot") {
+    violations.push("exchange는 upbit_krw_spot이어야 합니다");
+  }
+  if (intent?.market !== config.universe?.default_market || intent?.market !== "KRW-BTC") {
+    violations.push("주문 후보 market은 production live ops 기본 market KRW-BTC여야 합니다");
+  }
+  if (intent?.side !== "BUY") {
+    violations.push("production live ops 신규 진입은 BUY 후보만 허용합니다");
+  }
+  if (intent?.orderType !== "LIMIT") {
+    violations.push("production live ops 신규 진입은 LIMIT 주문만 허용합니다");
+  }
+  if (intent?.postOnly !== true || intent?.timeInForce !== "POST_ONLY") {
+    violations.push("production live ops 신규 진입은 post-only LIMIT 주문만 허용합니다");
+  }
+  for (const [key, label] of [
+    ["requestedPrice", "가격"],
+    ["requestedQuantity", "수량"],
+    ["requestedNotional", "주문 금액"],
+  ]) {
+    if (!isPositiveDecimalString(intent?.[key])) {
+      violations.push(`주문 후보 ${label}이 양수 decimal이어야 합니다`);
+    }
+  }
+  if (isPositiveDecimalString(intent?.requestedPrice) && isPositiveDecimalString(intent?.requestedQuantity) && isPositiveDecimalString(intent?.requestedNotional)) {
+    const actualNotional = new Decimal(intent.requestedPrice).mul(intent.requestedQuantity);
+    const requestedNotional = new Decimal(intent.requestedNotional);
+    if (!actualNotional.equals(requestedNotional)) {
+      violations.push("requestedNotional은 requestedPrice * requestedQuantity와 같아야 합니다");
+    }
+    if (requestedNotional.lt(5_000)) {
+      violations.push("Upbit KRW 최소 주문금액 5000 KRW 미만 후보는 제출하지 않습니다");
+    }
+    if (requestedNotional.gt(new Decimal(config.budget?.max_order_krw ?? "0"))) {
+      violations.push("단일 주문 예산 상한을 초과했습니다");
+    }
+  }
+  if (!hasMeaningfulValue(intent?.idempotencyKey) || String(intent.idempotencyKey).length > 32 || !String(intent.idempotencyKey).startsWith("ops-")) {
+    violations.push("idempotency key는 ops- prefix와 32자 이하 조건을 만족해야 합니다");
+  }
+  if (!hasMeaningfulValue(intent?.metadata?.expected_loss_bps_of_equity)) {
+    violations.push("주문 후보에는 RiskGate expected loss 입력이 필요합니다");
+  }
+  return violations;
+}
+
+function createLiveOpsCliEntryRuntimeRequest({ config, marketData, intent, observedAt }) {
+  return {
+    config: {
+      enabled: config.live_trading_enabled === true,
+      allowed_markets: config.universe?.markets ?? ["KRW-BTC"],
+      max_order_krw: config.budget?.max_order_krw ?? "10000",
+      daily_autonomous_notional_limit_krw: config.budget?.daily_autonomous_notional_limit_krw ?? "30000",
+      max_open_position_notional_krw: config.budget?.max_open_position_notional_krw ?? "30000",
+      max_price_deviation_bps: "30",
+      identifier_prefix: "ops-",
+      identifier_max_length: 32,
+    },
+    candidate: {
+      exchangeId: intent.exchangeId,
+      market: intent.market,
+      strategyId: intent.strategyId,
+      requestedQuantity: intent.requestedQuantity,
+      requestedNotional: intent.requestedNotional,
+      requestedPrice: intent.requestedPrice,
+      referencePrice: intent.referencePrice ?? intent.requestedPrice,
+      reason: intent.reason,
+      expectedLossBpsOfEquity: intent.metadata.expected_loss_bps_of_equity,
+      orderType: "LIMIT",
+      postOnly: true,
+      metadata: {
+        ...(intent.metadata ?? {}),
+        source: "live_ops_cli_live_execution",
+        decision_idempotency_key: intent.idempotencyKey,
+      },
+    },
+    budgetSnapshot: {
+      maxOrderKrw: config.budget?.max_order_krw ?? "10000",
+      dailyAutonomousNotionalLimitKrw: config.budget?.daily_autonomous_notional_limit_krw ?? "30000",
+      dailyAutonomousNotionalUsedKrw: "0",
+      openPositionNotionalKrw: "0",
+      maxOpenPositionNotionalKrw: config.budget?.max_open_position_notional_krw ?? "30000",
+      capturedAt: marketData.latestHeartbeatAt ?? observedAt,
+    },
+    lossSnapshot: {
+      dailyRealizedLossKrw: "0",
+      weeklyRealizedLossKrw: "0",
+      capturedAt: observedAt,
+    },
+    killSwitchActive: false,
+    reconcileFresh: true,
+    idempotencyKey: intent.idempotencyKey,
+    observedAt,
+  };
+}
+
+function createLiveOpsCliMissingEntryRuntime() {
+  return {
+    async submitEntryCandidate() {
+      throw new Error("LiveOpsCliEntryRuntimeNotConfigured");
+    },
+  };
+}
+
+function createLiveOpsCliOrderSubmission(request) {
+  return {
+    intent: {
+      exchangeId: request.candidate.exchangeId,
+      market: request.candidate.market,
+      strategyId: request.candidate.strategyId,
+      side: "BUY",
+      orderType: "LIMIT",
+      requestedQuantity: request.candidate.requestedQuantity,
+      requestedNotional: request.candidate.requestedNotional,
+      requestedPrice: request.candidate.requestedPrice,
+      idempotencyKey: request.idempotencyKey,
+      reason: request.candidate.reason,
+      postOnly: true,
+      timeInForce: "POST_ONLY",
+      metadata: request.candidate.metadata,
+    },
+    costSnapshot: {},
+    riskApproval: {},
+    submittedAt: request.observedAt,
+  };
+}
+
+function okLiveExecutionCheck(name, message, code, details) {
+  return {
+    name,
+    status: "ok",
+    code,
+    message,
+    ...(details === undefined ? {} : { details }),
+  };
+}
+
+function blockedLiveExecutionCheck(name, message, code, details) {
+  return {
+    name,
+    status: "blocked",
+    code,
+    message,
+    ...(details === undefined ? {} : { details }),
+  };
+}
+
+function parseLiveOpsKeyScopes(value) {
+  if (!hasMeaningfulValue(value)) {
+    return [];
+  }
+  return [...new Set(String(value).split(",").map((scope) => scope.trim()).filter((scope) => scope.length > 0))];
+}
+
+function isPositiveDecimalString(value) {
+  if (!hasMeaningfulValue(value) || !/^(?:0|[1-9]\d*)(?:\.\d+)?$/u.test(String(value))) {
+    return false;
+  }
+  return new Decimal(value).gt(0);
 }
 
 function evaluateLiveOpsCliReconcilePnlStatus({ config, fixtureSmoke, liveExecution }) {
@@ -795,11 +1293,12 @@ function evaluateLiveOpsCliTelegramAlert({ config, fixtureSmoke, liveExecution }
 function evaluateLiveOpsCliAnalysisDecision({ config, fixtureSmoke, marketData }) {
   const market = config.universe?.default_market ?? "KRW-BTC";
 
-  if (!fixtureSmoke || marketData.ready !== true) {
+  if (marketData.ready !== true) {
     return {
-      status: "pending",
+      status: "blocked",
       ready: false,
       market,
+      observedAt: null,
       latestDecisionAt: null,
       decisionCategory: "HOLD",
       featureStatus: "not_run",
@@ -808,6 +1307,7 @@ function evaluateLiveOpsCliAnalysisDecision({ config, fixtureSmoke, marketData }
       blockCount: 0,
       orderIntentCount: 0,
       recordHoldDecision: false,
+      orderIntents: [],
       message: "analysis/decision pipeline은 market data lifecycle 이후 연결됩니다.",
       checks: [
         {
@@ -821,10 +1321,53 @@ function evaluateLiveOpsCliAnalysisDecision({ config, fixtureSmoke, marketData }
   }
 
   const latestDecisionAt = new Date().toISOString();
+  if (!fixtureSmoke) {
+    return {
+      status: "ready",
+      ready: true,
+      market,
+      observedAt: latestDecisionAt,
+      latestDecisionAt,
+      decisionCategory: "HOLD",
+      featureStatus: "ok",
+      evaluatedStrategyCount: 1,
+      holdCount: 1,
+      blockCount: 0,
+      orderIntentCount: 0,
+      recordHoldDecision: config.analysis?.record_hold_decision === true,
+      orderIntents: [],
+      message: "production market data frame을 확인했고 현재 주문 후보는 없습니다.",
+      checks: [
+        {
+          name: "market_data",
+          status: "ok",
+          code: "live_ops_market_data_ready",
+          message: "DB-backed market data freshness summary를 확인했습니다.",
+          details: {
+            latestHeartbeatAt: marketData.latestHeartbeatAt,
+            tradeCount: marketData.persisted?.tradeCount ?? 0,
+            orderbookCount: marketData.persisted?.orderbookCount ?? 0,
+          },
+        },
+        {
+          name: "strategy_decision",
+          status: "ok",
+          code: "live_ops_strategy_decision_hold",
+          message: "실제 market frame 기반 decision tick을 HOLD로 기록했고 broker 후보는 없습니다.",
+        },
+      ],
+      trace: {
+        source: "live_ops_cli_analysis_decision",
+        marketDataSourceProfile: marketData.sourceProfile,
+      },
+    };
+  }
+
   return {
     status: "ready",
     ready: true,
     market,
+    observedAt: latestDecisionAt,
     latestDecisionAt,
     decisionCategory: "HOLD",
     featureStatus: "ok",
@@ -833,6 +1376,7 @@ function evaluateLiveOpsCliAnalysisDecision({ config, fixtureSmoke, marketData }
     blockCount: 0,
     orderIntentCount: 0,
     recordHoldDecision: config.analysis?.record_hold_decision === true,
+    orderIntents: [],
     message: "fixture analysis/decision pipeline이 HOLD를 기록했고 주문 후보는 없습니다.",
     checks: [
       {

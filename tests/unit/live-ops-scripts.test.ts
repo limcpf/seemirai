@@ -91,6 +91,13 @@ describe("production live ops script skeleton", () => {
         orderIntentCount: number;
         attemptedOrderCount: number;
         submittedOrderCount: number;
+        brokerGuard: {
+          ready: boolean;
+          credentialsConfigured: boolean;
+          keyScopeEvidenceId: string | null;
+          orderSmokeMarket: string;
+          orderSmokeMaxKrw: string;
+        };
       };
       reconcilePnlStatus: {
         ready: boolean;
@@ -135,6 +142,13 @@ describe("production live ops script skeleton", () => {
       orderIntentCount: 0,
       attemptedOrderCount: 0,
       submittedOrderCount: 0,
+      brokerGuard: {
+        ready: true,
+        credentialsConfigured: true,
+        keyScopeEvidenceId: "fake-key-scope-evidence",
+        orderSmokeMarket: "KRW-BTC",
+        orderSmokeMaxKrw: "10000",
+      },
     });
     expect(summary.reconcilePnlStatus).toMatchObject({
       ready: true,
@@ -364,6 +378,203 @@ console.log(JSON.stringify({
     expect(output.outsideUniverse).toBe("LiveOpsMarketDataOutsideUniverse");
     expect(output.parsedCount).toBe(1);
     expect(result.stdout).not.toContain("fake-upbit-secret-key");
+  });
+
+  it("live execution helper는 단일 post-only 후보만 broker boundary로 전달한다", () => {
+    const result = spawnSync(
+      process.execPath,
+      [
+        "--input-type=module",
+        "--eval",
+        `
+import {
+  createLiveOpsCliEntryRuntime,
+  evaluateLiveOpsCliLiveExecution,
+} from "./scripts/run-live-ops-support.mjs";
+
+const submitted = [];
+const reservations = [];
+const broker = {
+  async submitOrder(submission) {
+    submitted.push(submission);
+    return {
+      brokerOrderId: "upbit-live-boundary-001",
+      idempotencyKey: submission.intent.idempotencyKey,
+      exchangeId: submission.intent.exchangeId,
+      market: submission.intent.market,
+      side: submission.intent.side,
+      orderType: submission.intent.orderType,
+      status: "ACCEPTED",
+      requestedQuantity: submission.intent.requestedQuantity,
+      remainingQuantity: submission.intent.requestedQuantity,
+      requestedPrice: submission.intent.requestedPrice,
+      acceptedAt: "2026-06-15T00:00:00.000Z",
+      updatedAt: "2026-06-15T00:00:00.000Z",
+    };
+  },
+};
+const budgetReservation = {
+  async reserve(request) {
+    reservations.push({
+      idempotencyKey: request.idempotencyKey,
+      requestedNotional: request.candidate.requestedNotional,
+    });
+    return {
+      reserved: true,
+      reservationId: "reservation-001",
+    };
+  },
+};
+const config = {
+  live_trading_enabled: true,
+  universe: { markets: ["KRW-BTC"], default_market: "KRW-BTC" },
+  budget: {
+    max_order_krw: "10000",
+    daily_autonomous_notional_limit_krw: "30000",
+    max_open_position_notional_krw: "30000",
+  },
+};
+const analysisDecision = {
+  ready: true,
+  decisionCategory: "ORDER_INTENT",
+  orderIntentCount: 1,
+  orderIntents: [],
+};
+const intent = {
+  exchangeId: "upbit_krw_spot",
+  market: "KRW-BTC",
+  strategyId: "live_ops_fixture_strategy",
+  side: "BUY",
+  orderType: "LIMIT",
+  requestedPrice: "100000000",
+  requestedQuantity: "0.0001",
+  requestedNotional: "10000",
+  idempotencyKey: "ops-aaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  reason: "test order intent",
+  postOnly: true,
+  timeInForce: "POST_ONLY",
+  metadata: {
+    expected_loss_bps_of_equity: "5",
+  },
+};
+const summary = await evaluateLiveOpsCliLiveExecution({
+  config,
+  fixtureSmoke: false,
+  analysisDecision,
+  marketData: {
+    ready: true,
+    latestHeartbeatAt: "2026-06-15T00:00:00.000Z",
+  },
+  env: {
+    SEEMIRAI_UPBIT_ACCESS_KEY: "fake-access-key",
+    SEEMIRAI_UPBIT_SECRET_KEY: "fake-secret-key",
+    SEEMIRAI_UPBIT_KEY_SCOPE: "자산조회,주문조회,주문하기",
+    SEEMIRAI_UPBIT_KEY_SCOPE_EVIDENCE_ID: "scope-evidence",
+  },
+  orderIntents: [intent],
+  entryRuntime: createLiveOpsCliEntryRuntime({ broker, budgetReservation }),
+});
+const submittedWithoutReservation = [];
+const blockedSummary = await evaluateLiveOpsCliLiveExecution({
+  config,
+  fixtureSmoke: false,
+  analysisDecision,
+  marketData: {
+    ready: true,
+    latestHeartbeatAt: "2026-06-15T00:00:00.000Z",
+  },
+  env: {
+    SEEMIRAI_UPBIT_ACCESS_KEY: "fake-access-key",
+    SEEMIRAI_UPBIT_SECRET_KEY: "fake-secret-key",
+    SEEMIRAI_UPBIT_KEY_SCOPE: "자산조회,주문조회,주문하기",
+    SEEMIRAI_UPBIT_KEY_SCOPE_EVIDENCE_ID: "scope-evidence",
+  },
+  orderIntents: [intent],
+  entryRuntime: createLiveOpsCliEntryRuntime({
+    broker: {
+      async submitOrder(submission) {
+        submittedWithoutReservation.push(submission);
+        return {
+          brokerOrderId: "unexpected-order",
+        };
+      },
+    },
+  }),
+});
+console.log(JSON.stringify({ summary, submitted, reservations, blockedSummary, submittedWithoutReservation }));
+        `,
+      ],
+      {
+        cwd: process.cwd(),
+        encoding: "utf8",
+        env: minimalEnv(),
+      },
+    );
+
+    expect(result.status).toBe(0);
+    expect(result.stderr).toBe("");
+    const output = JSON.parse(result.stdout) as {
+      summary: {
+        status: string;
+        liveOrderCapable: boolean;
+        submittedOrderCount: number;
+        brokerOrderId: string;
+        checks: Array<{ code: string }>;
+      };
+      submitted: Array<{
+        intent: {
+          exchangeId: string;
+          market: string;
+          side: string;
+          orderType: string;
+          postOnly: boolean;
+          timeInForce: string;
+          idempotencyKey: string;
+        };
+      }>;
+      reservations: Array<{
+        idempotencyKey: string;
+        requestedNotional: string;
+      }>;
+      blockedSummary: {
+        status: string;
+        liveOrderCapable: boolean;
+        submittedOrderCount: number;
+        checks: Array<{ code: string }>;
+      };
+      submittedWithoutReservation: unknown[];
+    };
+    expect(output.summary).toMatchObject({
+      status: "submitted",
+      liveOrderCapable: true,
+      submittedOrderCount: 1,
+      brokerOrderId: "upbit-live-boundary-001",
+    });
+    expect(output.summary.checks.map((check) => check.code)).toContain("live_ops_execution_submitted");
+    expect(output.reservations).toEqual([
+      {
+        idempotencyKey: "ops-aaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        requestedNotional: "10000",
+      },
+    ]);
+    expect(output.submitted).toHaveLength(1);
+    expect(output.submitted[0]?.intent).toMatchObject({
+      exchangeId: "upbit_krw_spot",
+      market: "KRW-BTC",
+      side: "BUY",
+      orderType: "LIMIT",
+      postOnly: true,
+      timeInForce: "POST_ONLY",
+      idempotencyKey: "ops-aaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    });
+    expect(output.blockedSummary).toMatchObject({
+      status: "blocked",
+      liveOrderCapable: false,
+      submittedOrderCount: 0,
+    });
+    expect(output.blockedSummary.checks.map((check) => check.code)).toContain("live_ops_execution_blocked");
+    expect(output.submittedWithoutReservation).toHaveLength(0);
+    expect(result.stdout).not.toContain("fake-secret-key");
   });
 
   it("DB readiness 차단 시 provider를 열기 전에 production boot를 중단한다", async () => {
