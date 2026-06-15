@@ -163,6 +163,8 @@ SEEMIRAI_RUN_LIVE_OPS_REAL_ARM_CLOSEOUT=1 \
   Bearer placeholder 뒤 raw token tail도 차단한다.
 - 2026-06-15: closeout validator는 source scan의 repository root 실행 위치와 대문자 `ACCESS_KEY`/`SECRET_KEY` 검색,
   ripgrep type/ignore 제외 옵션, raw payload placeholder tail, artifact `ord_type` 충돌도 차단한다.
+- 2026-06-15: closeout validator는 `--max-count`와 include glob으로 검색을 줄인 source scan, artifact wrapper failure status,
+  colon-form secret log, fixtureSmoke false 오탐, snake_case order id placeholder도 검증한다.
 
 ## 남은 이슈
 

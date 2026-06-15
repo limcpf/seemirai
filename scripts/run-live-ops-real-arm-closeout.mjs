@@ -97,12 +97,13 @@ const disallowedRipgrepLongOptions = new Set([
   "--files-with-matches",
   "--files-without-match",
   "--ignore-file",
+  "--max-count",
   "--pre",
   "--pre-glob",
   "--quiet",
   "--type-not",
 ]);
-const disallowedRipgrepShortOptions = new Set(["L", "T", "l", "q"]);
+const disallowedRipgrepShortOptions = new Set(["L", "T", "l", "m", "q"]);
 const withdrawalScopeMarkers = ["출금", "withdraw"];
 const forbiddenKeyScopeMarkers = ["출금", "입금", "withdraw", "deposit", "futures", "leverage", "margin"];
 const requiredCounterNames = [
@@ -123,11 +124,11 @@ const sensitivePatterns = [
   { label: "tui control token json field", pattern: /"(?:tuiControlToken|tui_control_token|seemirai_tui_control_token)"\s*:\s*"(?!\s*(?:<redacted>|redacted|\[redacted\])\s*")[^"]{8,}"/i },
   { label: "telegram bot token url", pattern: /https:\/\/api\.telegram\.org\/bot(?!<redacted>|redacted|\[redacted\])[^/\s"']{8,}\/[A-Za-z]+/i },
   { label: "database password json field", pattern: /"(?:databasePassword|database_password|dbPassword|db_password|pgPassword|pg_password|password)"\s*:\s*"(?!\s*(?:<redacted>|redacted|\[redacted\])\s*")[^"]{8,}"/i },
-  { label: "access key env assignment", pattern: /\b(?:SEEMIRAI_)?(?:UPBIT_)?ACCESS_KEY\s*=\s*(?!(?:["']?(?:<redacted>|redacted|\[redacted\])["']?)(?:$|[\r\n,}]))[^\r\n,}]{8,}/i },
-  { label: "secret key env assignment", pattern: /\b(?:SEEMIRAI_)?(?:UPBIT_)?SECRET_KEY\s*=\s*(?!(?:["']?(?:<redacted>|redacted|\[redacted\])["']?)(?:$|[\r\n,}]))[^\r\n,}]{8,}/i },
-  { label: "telegram token env assignment", pattern: /\b(?:SEEMIRAI_)?TELEGRAM_BOT_TOKEN\s*=\s*(?!(?:["']?(?:<redacted>|redacted|\[redacted\])["']?)(?:$|[\r\n,}]))[^\r\n,}]{8,}/i },
-  { label: "tui control token env assignment", pattern: /\b(?:SEEMIRAI_)?TUI_CONTROL_TOKEN\s*=\s*(?!(?:["']?(?:<redacted>|redacted|\[redacted\])["']?)(?:$|[\r\n,}]))[^\r\n,}]{8,}/i },
-  { label: "database password env assignment", pattern: /\b(?:SEEMIRAI_)?(?:DATABASE_PASSWORD|DB_PASSWORD|PGPASSWORD)\s*=\s*(?!(?:["']?(?:<redacted>|redacted|\[redacted\])["']?)(?:$|[\r\n,}]))[^\r\n,}]{8,}/i },
+  { label: "access key env assignment", pattern: /\b(?:SEEMIRAI_)?(?:UPBIT_)?ACCESS_KEY\s*[:=]\s*(?!(?:["']?(?:<redacted>|redacted|\[redacted\])["']?)(?:$|[\r\n,}]))[^\r\n,}]{8,}/i },
+  { label: "secret key env assignment", pattern: /\b(?:SEEMIRAI_)?(?:UPBIT_)?SECRET_KEY\s*[:=]\s*(?!(?:["']?(?:<redacted>|redacted|\[redacted\])["']?)(?:$|[\r\n,}]))[^\r\n,}]{8,}/i },
+  { label: "telegram token env assignment", pattern: /\b(?:SEEMIRAI_)?TELEGRAM_BOT_TOKEN\s*[:=]\s*(?!(?:["']?(?:<redacted>|redacted|\[redacted\])["']?)(?:$|[\r\n,}]))[^\r\n,}]{8,}/i },
+  { label: "tui control token env assignment", pattern: /\b(?:SEEMIRAI_)?TUI_CONTROL_TOKEN\s*[:=]\s*(?!(?:["']?(?:<redacted>|redacted|\[redacted\])["']?)(?:$|[\r\n,}]))[^\r\n,}]{8,}/i },
+  { label: "database password env assignment", pattern: /\b(?:SEEMIRAI_)?(?:DATABASE_PASSWORD|DB_PASSWORD|PGPASSWORD)\s*[:=]\s*(?!(?:["']?(?:<redacted>|redacted|\[redacted\])["']?)(?:$|[\r\n,}]))[^\r\n,}]{8,}/i },
   { label: "raw authorization bearer", pattern: /authorization:\s*bearer\s+(?!<redacted>|redacted|\[redacted\])[^\s"']+/i },
   { label: "standalone bearer token", pattern: /\bBearer\s+(?!(?:<redacted>|redacted|\[redacted\])(?:\s|$))[^\s"']{16,}/ },
   { label: "bearer placeholder tail", pattern: /\bBearer\s+(?:<redacted>|redacted|\[redacted\])\s+[^\s"']+/i },
@@ -355,7 +356,9 @@ function createGuardedArtifactInputCheck(manifest, manifestPath, artifactFiles, 
     manifest.fixture === true ? "manifest.fixture" : undefined,
     manifestPath.includes(".fixture") ? "manifest path" : undefined,
     ...artifactFiles
-      .filter((file) => file.filePath.includes(".fixture") || /fixture/i.test(file.rawText))
+      .filter((file) => file.filePath.includes(".fixture")
+        || /"(?:fixture|fixtureSmoke|fixture_smoke)"\s*:\s*true/i.test(file.rawText)
+        || /\bfixture_smoke\b/i.test(file.rawText))
       .map((file) => file.filePath),
   ].filter(hasText);
 
@@ -625,11 +628,10 @@ function createSourceScanLocationEvidence(sourceScan, options) {
   }
   const cwd = readString(sourceScan.cwd) ?? readString(sourceScan.workingDirectory);
   const declaredRepositoryRoot = readString(sourceScan.repositoryRoot);
-  const acceptedPaths = [cwd, declaredRepositoryRoot]
-    .filter(hasText)
-    .map((value) => path.resolve(value));
+  const cwdMatches = hasText(cwd) && path.resolve(cwd) === repositoryRoot;
+  const repositoryRootMatches = !hasText(declaredRepositoryRoot) || path.resolve(declaredRepositoryRoot) === repositoryRoot;
   return {
-    ok: acceptedPaths.includes(repositoryRoot),
+    ok: cwdMatches && repositoryRootMatches,
     cwd: cwd ?? null,
     repositoryRoot: declaredRepositoryRoot ?? null,
     expectedRepositoryRoot: repositoryRoot,
@@ -1451,8 +1453,7 @@ function collectExcludedSourceGlobs(tokens) {
     }
   }
   return globs
-    .map(stripShellQuotes)
-    .filter((glob) => glob.startsWith("!"));
+    .map(stripShellQuotes);
 }
 
 function collectDisallowedRipgrepOptions(tokens) {
@@ -1608,7 +1609,9 @@ function createArtifactManifestConflicts(artifactFiles, manifest, run, counters)
     for (const item of records) {
       const closeoutRecord = isCloseoutEvidenceRecord(item.record);
       const status = readString(item.record.status);
-      if (closeoutRecord && status !== undefined && !/^(?:passed|pass|success|succeeded|ok|completed)$/iu.test(status)) {
+      if (status !== undefined && isFailureArtifactStatus(status)) {
+        conflicts.push({ filePath: file.filePath, field: `${item.path}.status`, expected: "no artifact-level failure status", actual: status });
+      } else if (closeoutRecord && status !== undefined && !/^(?:passed|pass|success|succeeded|ok|completed)$/iu.test(status)) {
         conflicts.push({ filePath: file.filePath, field: `${item.path}.status`, expected: "explicit success status", actual: status });
       }
       for (const actual of readTerminalStateAliasValues(item.record)) {
@@ -1658,6 +1661,10 @@ function createArtifactManifestConflicts(artifactFiles, manifest, run, counters)
   }
 
   return conflicts;
+}
+
+function isFailureArtifactStatus(value) {
+  return /^(?:blocked|error|fail|failed|failure|partial|skipped)$/iu.test(value);
 }
 
 function isCompleteArtifactCloseoutEvidence(record, run) {
@@ -1809,7 +1816,19 @@ function isUsableOrderEvidenceSuffix(value) {
   const text = value.trim();
   const normalized = text.toLowerCase().replace(/[\s"'`]/gu, "");
   const bracketless = normalized.replace(/[<>\[\](){}]/gu, "");
-  const placeholderWords = new Set(["redacted", "masked", "hidden", "removed", "secret", "token", "identifier", "uuid", "orderid"]);
+  const placeholderWords = new Set([
+    "broker_order_id",
+    "identifier",
+    "order_id",
+    "orderid",
+    "redacted",
+    "masked",
+    "hidden",
+    "removed",
+    "secret",
+    "token",
+    "uuid",
+  ]);
   const alnumCount = (text.match(/[a-z0-9]/giu) ?? []).length;
   return text.length >= 6
     && alnumCount >= 4
