@@ -365,8 +365,17 @@ function mapLiveExecutionToTradeEvent(input: LiveOpsTelegramAlertPlanInput): Liv
     return createBlockedTradeEvent(input, "RISK_BLOCKED");
   }
 
+  if (isLiveOpsBlockedAttempt(liveExecution)) {
+    // 실제 entry runtime attempt가 차단된 경우만 owner chat block alert로 낮추고 wiring blocked와 분리한다.
+    return createBlockedTradeEvent(input, "RISK_BLOCKED");
+  }
+
   // generic blocked summary는 wiring/readiness 차단도 포함하므로 명시적 evidence 없이 RiskGate alert로 낮추지 않는다.
   return undefined;
+}
+
+function isLiveOpsBlockedAttempt(liveExecution: LiveOpsLiveExecutionSummary): boolean {
+  return liveExecution.status === "blocked" && liveExecution.attemptStatus === "BLOCKED" && liveExecution.attemptedOrderCount > 0;
 }
 
 function createExplicitTradeEvent(

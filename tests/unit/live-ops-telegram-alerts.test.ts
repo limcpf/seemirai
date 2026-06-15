@@ -200,9 +200,9 @@ describe("production live ops Telegram alert mapper", () => {
         status: "blocked",
         ready: false,
         liveOrderCapable: false,
-        attemptedOrderCount: 1,
+        attemptedOrderCount: 0,
         submittedOrderCount: 0,
-        attemptStatus: "BLOCKED",
+        attemptStatus: null,
         message: "live broker port가 연결되지 않아 broker 제출을 중단했습니다.",
       }),
       orderIntent: createOrderIntent(),
@@ -221,6 +221,37 @@ describe("production live ops Telegram alert mapper", () => {
       "telegram_connection_ready",
     ]);
     expect(JSON.stringify(plan)).not.toContain("RISK_BLOCKED");
+  });
+
+  it("runtime BLOCKED attempt는 실제 차단 alert로 낮춘다", () => {
+    const plan = planLiveOpsTelegramAlerts(createPlanInput({
+      liveExecution: liveExecutionSummary({
+        status: "blocked",
+        ready: false,
+        liveOrderCapable: false,
+        attemptedOrderCount: 1,
+        submittedOrderCount: 0,
+        attemptStatus: "BLOCKED",
+        message: "현재 CostModel/RiskGate 입력이 제출 조건을 통과하지 못해 broker 제출을 중단했습니다.",
+      }),
+      orderIntent: createOrderIntent(),
+      tradeEvidenceId: "blocked-attempt-evidence-1",
+    }));
+
+    expect(plan).toMatchObject({
+      status: "ready",
+      lifecycleAlertCount: 1,
+      tradeAlertCount: 1,
+      alertCount: 2,
+    });
+    expect(plan.events.map((event) => event.eventKind)).toEqual([
+      "TELEGRAM_CONNECTION_READY",
+      "RISK_BLOCKED",
+    ]);
+    expect(plan.requests.map((request) => request.reasonCode)).toEqual([
+      "telegram_connection_ready",
+      "live_order_risk_blocked",
+    ]);
   });
 
   it("rejected execution은 명시적인 RiskGate 차단 alert로 낮춘다", () => {

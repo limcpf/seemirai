@@ -2675,7 +2675,7 @@ export async function evaluateLiveOpsCliTelegramAlert({
 }) {
   const market = config.universe?.default_market ?? "KRW-BTC";
 
-  if (!fixtureSmoke && shouldDispatchLiveOpsCliTelegramAlert(liveExecution) && telegramDispatcher !== undefined) {
+  if (!fixtureSmoke && shouldDispatchLiveOpsCliTelegramAlert(config, liveExecution) && telegramDispatcher !== undefined) {
     return dispatchLiveOpsCliTelegramAlertSummary({
       config,
       market,
@@ -2687,7 +2687,7 @@ export async function evaluateLiveOpsCliTelegramAlert({
     });
   }
 
-  if (!fixtureSmoke && shouldDispatchLiveOpsCliTelegramAlert(liveExecution)) {
+  if (!fixtureSmoke && shouldRequireLiveOpsCliTelegramBoundary(liveExecution)) {
     return createLiveOpsCliTelegramBoundaryMissingSummary({ market, liveExecution });
   }
 
@@ -2766,15 +2766,33 @@ export async function evaluateLiveOpsCliTelegramAlert({
   };
 }
 
-function shouldDispatchLiveOpsCliTelegramAlert(liveExecution) {
+function shouldDispatchLiveOpsCliTelegramAlert(config, liveExecution) {
   return (
-    liveExecution.status === "submitted" ||
-    liveExecution.status === "rejected" ||
-    liveExecution.status === "cost_blocked" ||
-    liveExecution.status === "reconcile_required" ||
-    liveExecution.status === "manual_review_required" ||
-    liveExecution.status === "cancel_requested" ||
-    liveExecution.status === "cancel_confirmed"
+    shouldDispatchLiveOpsCliTelegramStartupAlert(config, liveExecution) ||
+    shouldRequireLiveOpsCliTelegramBoundary(liveExecution)
+  );
+}
+
+function shouldDispatchLiveOpsCliTelegramStartupAlert(config, liveExecution) {
+  return config.telegram?.startup_alert_enabled === true && liveExecution.status === "idle" && liveExecution.ready === true;
+}
+
+function shouldRequireLiveOpsCliTelegramBoundary(liveExecution) {
+  return mapLiveOpsCliTelegramTradeEventKind(liveExecution) !== undefined;
+}
+
+function isLiveOpsCliBlockedAttempt(liveExecution) {
+  return liveExecution.attemptStatus === "BLOCKED" && Number(liveExecution.attemptedOrderCount ?? 0) > 0;
+}
+
+function isLiveOpsCliCostBlockedStatus(status) {
+  return status === "cost_blocked";
+}
+
+function isLiveOpsCliRiskBlockedStatus(status) {
+  return (
+    status === "rejected" ||
+    status === "risk_blocked"
   );
 }
 
@@ -2993,7 +3011,7 @@ function createLiveOpsCliTelegramEvents({ config, market, liveExecution, orderIn
 }
 
 function createLiveOpsCliTradeTelegramEvent({ market, liveExecution, orderIntent, observedAt, correlationId }) {
-  const eventKind = mapLiveOpsCliTelegramTradeEventKind(liveExecution.status);
+  const eventKind = mapLiveOpsCliTelegramTradeEventKind(liveExecution);
   if (eventKind === undefined) {
     return undefined;
   }
@@ -3010,8 +3028,8 @@ function createLiveOpsCliTradeTelegramEvent({ market, liveExecution, orderIntent
   });
 }
 
-function mapLiveOpsCliTelegramTradeEventKind(status) {
-  switch (status) {
+function mapLiveOpsCliTelegramTradeEventKind(liveExecution) {
+  switch (liveExecution.status) {
     case "submitted":
       return "ORDER_SUBMITTED";
     case "cancel_requested":
@@ -3024,12 +3042,22 @@ function mapLiveOpsCliTelegramTradeEventKind(status) {
       return "MANUAL_REVIEW_REQUIRED";
     case "cost_blocked":
       return "COST_BLOCKED";
+    case "risk_blocked":
     case "rejected":
       return "RISK_BLOCKED";
     case "blocked":
-      // generic blocked는 wiring/readiness 차단도 포함하므로 RiskGate evidence 없이 risk alert로 추정하지 않는다.
+      if (isLiveOpsCliBlockedAttempt(liveExecution)) {
+        return "RISK_BLOCKED";
+      }
+      // generic blocked는 wiring/readiness 차단도 포함하므로 실제 attempt evidence 없이 risk alert로 추정하지 않는다.
       return undefined;
     default:
+      if (isLiveOpsCliCostBlockedStatus(liveExecution.status)) {
+        return "COST_BLOCKED";
+      }
+      if (isLiveOpsCliRiskBlockedStatus(liveExecution.status)) {
+        return "RISK_BLOCKED";
+      }
       return undefined;
   }
 }

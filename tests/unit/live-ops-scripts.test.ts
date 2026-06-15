@@ -698,6 +698,8 @@ const orderIntent = {
 const observedAt = "2026-06-15T01:00:00.000Z";
 const dispatches = [];
 const manualDispatches = [];
+const idleDispatches = [];
+const genericBlockedDispatches = [];
 const blockedDispatches = [];
 const sent = await evaluateLiveOpsCliTelegramAlert({
   config,
@@ -776,6 +778,64 @@ const idleWithoutDispatcher = await evaluateLiveOpsCliTelegramAlert({
   orderIntent: undefined,
   observedAt,
 });
+const idleWithDispatcher = await evaluateLiveOpsCliTelegramAlert({
+  config,
+  fixtureSmoke: false,
+  liveExecution: {
+    ...liveExecution,
+    status: "idle",
+    ready: true,
+    liveOrderCapable: false,
+    attemptedOrderCount: 0,
+    submittedOrderCount: 0,
+    attemptStatus: null,
+    message: "production decision tick에 주문 후보가 없어 broker 제출은 발생하지 않았습니다.",
+  },
+  orderIntent: undefined,
+  observedAt,
+  telegramDispatcher: {
+    async dispatch(payload) {
+      idleDispatches.push(payload);
+      return {
+        status: "sent",
+        attemptedCount: payload.events.length,
+        deliveredCount: payload.events.length,
+        cooldownHitCount: 0,
+        retryPlannedCount: 0,
+        failureCount: 0,
+      };
+    },
+  },
+});
+const genericBlocked = await evaluateLiveOpsCliTelegramAlert({
+  config,
+  fixtureSmoke: false,
+  liveExecution: {
+    ...liveExecution,
+    status: "blocked",
+    ready: false,
+    liveOrderCapable: false,
+    attemptedOrderCount: 0,
+    submittedOrderCount: 0,
+    attemptStatus: null,
+    message: "live broker port가 연결되지 않아 broker 제출을 중단했습니다.",
+  },
+  orderIntent,
+  observedAt,
+  telegramDispatcher: {
+    async dispatch(payload) {
+      genericBlockedDispatches.push(payload);
+      return {
+        status: "sent",
+        attemptedCount: payload.events.length,
+        deliveredCount: payload.events.length,
+        cooldownHitCount: 0,
+        retryPlannedCount: 0,
+        failureCount: 0,
+      };
+    },
+  },
+});
 const blocked = await evaluateLiveOpsCliTelegramAlert({
   config,
   fixtureSmoke: false,
@@ -784,8 +844,10 @@ const blocked = await evaluateLiveOpsCliTelegramAlert({
     status: "blocked",
     ready: false,
     liveOrderCapable: false,
+    attemptedOrderCount: 1,
+    submittedOrderCount: 0,
     attemptStatus: "BLOCKED",
-    message: "live broker port가 연결되지 않아 broker 제출을 중단했습니다.",
+    message: "현재 CostModel/RiskGate 입력이 제출 조건을 통과하지 못해 broker 제출을 중단했습니다.",
   },
   orderIntent,
   observedAt,
@@ -864,11 +926,16 @@ console.log(JSON.stringify({
   manualReview,
   manualReviewWithoutDispatcher,
   idleWithoutDispatcher,
+  idleWithDispatcher,
+  genericBlocked,
   blocked,
   failed,
   eventKinds: dispatches[0].events.map((event) => event.eventKind),
   submittedEvent: dispatches[0].events.find((event) => event.eventKind === "ORDER_SUBMITTED"),
   manualEventKinds: manualDispatches[0].events.map((event) => event.eventKind),
+  idleEventKinds: idleDispatches[0].events.map((event) => event.eventKind),
+  genericBlockedDispatchCount: genericBlockedDispatches.length,
+  blockedEventKinds: blockedDispatches[0].events.map((event) => event.eventKind),
   blockedDispatchCount: blockedDispatches.length,
   dispatchedMarket: dispatches[0].market,
   failedTui,
@@ -889,11 +956,16 @@ console.log(JSON.stringify({
       manualReview: { ready: boolean; providerDispatchAttempted: boolean; alertCount: number; deliveredCount: number };
       manualReviewWithoutDispatcher: { ready: boolean; providerDispatchAttempted: boolean; status: string; checks: { code: string }[] };
       idleWithoutDispatcher: { ready: boolean; providerDispatchAttempted: boolean; status: string; checks: { code: string }[] };
-      blocked: { ready: boolean; providerDispatchAttempted: boolean; alertCount: number; status: string };
+      idleWithDispatcher: { ready: boolean; providerDispatchAttempted: boolean; alertCount: number; deliveredCount: number; status: string };
+      genericBlocked: { ready: boolean; providerDispatchAttempted: boolean; alertCount: number; status: string };
+      blocked: { ready: boolean; providerDispatchAttempted: boolean; alertCount: number; deliveredCount: number; status: string };
       failed: { ready: boolean; status: string; retryPlannedCount: number; failureCount: number; action: string };
       eventKinds: string[];
       submittedEvent: { orderId?: string; brokerOrderId?: string; idempotencyKey?: string };
       manualEventKinds: string[];
+      idleEventKinds: string[];
+      genericBlockedDispatchCount: number;
+      blockedEventKinds: string[];
       blockedDispatchCount: number;
       dispatchedMarket: string;
       failedTui: string;
@@ -937,13 +1009,35 @@ console.log(JSON.stringify({
       status: "idle",
     });
     expect(output.idleWithoutDispatcher.checks.map((check) => check.code)).toContain("live_ops_telegram_not_required");
-    expect(output.blocked).toMatchObject({
+    expect(output.idleWithDispatcher).toMatchObject({
+      ready: true,
+      providerDispatchAttempted: true,
+      alertCount: 1,
+      deliveredCount: 1,
+      status: "sent",
+    });
+    expect(output.idleEventKinds).toEqual([
+      "TELEGRAM_CONNECTION_READY",
+    ]);
+    expect(output.genericBlocked).toMatchObject({
       ready: false,
       providerDispatchAttempted: false,
       alertCount: 0,
       status: "pending",
     });
-    expect(output.blockedDispatchCount).toBe(0);
+    expect(output.genericBlockedDispatchCount).toBe(0);
+    expect(output.blocked).toMatchObject({
+      ready: true,
+      providerDispatchAttempted: true,
+      alertCount: 2,
+      deliveredCount: 2,
+      status: "sent",
+    });
+    expect(output.blockedEventKinds).toEqual([
+      "TELEGRAM_CONNECTION_READY",
+      "RISK_BLOCKED",
+    ]);
+    expect(output.blockedDispatchCount).toBe(1);
     expect(output.dispatchedMarket).toBe("KRW-BTC");
     expect(output.failed).toMatchObject({
       ready: false,
