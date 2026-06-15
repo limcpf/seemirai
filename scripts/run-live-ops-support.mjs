@@ -2644,28 +2644,8 @@ export async function evaluateLiveOpsCliTelegramAlert({
     });
   }
 
-  if (!fixtureSmoke && liveExecution.status === "submitted") {
-    return {
-      status: "blocked",
-      ready: false,
-      market,
-      liveOrderCapable: true,
-      lifecycleAlertCount: 0,
-      tradeAlertCount: 0,
-      alertCount: 0,
-      providerDispatchAttempted: false,
-      statusLabel: "후속 경계 차단",
-      message: "실주문 제출 후 Telegram trade alert provider 경계가 없어 알림 전송을 확정하지 않았습니다.",
-      action: "owner chat으로 전송 가능한 Telegram dispatch port를 연결한 뒤 주문 제출 alert를 재전송하세요.",
-      checks: [
-        {
-          name: "telegram_connection",
-          status: "blocked",
-          code: "live_ops_telegram_boundary_missing",
-          message: "실제 주문 제출 후 trade alert를 보낼 Telegram provider 경계가 필요합니다.",
-        },
-      ],
-    };
+  if (!fixtureSmoke && shouldDispatchLiveOpsCliTelegramAlert(liveExecution)) {
+    return createLiveOpsCliTelegramBoundaryMissingSummary({ market, liveExecution });
   }
 
   if (!fixtureSmoke && liveExecution.ready === true && liveExecution.liveOrderCapable !== true) {
@@ -2754,6 +2734,34 @@ function shouldDispatchLiveOpsCliTelegramAlert(liveExecution) {
     liveExecution.status === "cancel_requested" ||
     liveExecution.status === "cancel_confirmed"
   );
+}
+
+function createLiveOpsCliTelegramBoundaryMissingSummary({ market, liveExecution }) {
+  return {
+    status: "blocked",
+    ready: false,
+    market,
+    liveOrderCapable: liveExecution.liveOrderCapable === true,
+    lifecycleAlertCount: 0,
+    tradeAlertCount: 0,
+    alertCount: 0,
+    providerDispatchAttempted: false,
+    statusLabel: "후속 경계 차단",
+    message: "확정된 live execution lifecycle/trade event가 있지만 Telegram dispatch provider 경계가 없어 알림 전송을 확정하지 않았습니다.",
+    action: "owner chat으로 전송 가능한 Telegram dispatch port를 연결한 뒤 같은 execution event alert를 재전송하세요.",
+    checks: [
+      {
+        name: "telegram_connection",
+        status: "blocked",
+        code: "live_ops_telegram_boundary_missing",
+        message: "전송 대상 live execution 상태에서는 Telegram provider 경계를 연결해야 알림 누락을 pending으로 숨기지 않습니다.",
+        details: {
+          liveExecutionStatus: liveExecution.status,
+          attemptStatus: liveExecution.attemptStatus ?? null,
+        },
+      },
+    ],
+  };
 }
 
 async function dispatchLiveOpsCliTelegramAlertSummary({

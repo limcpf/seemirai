@@ -530,6 +530,20 @@ const manualReview = await evaluateLiveOpsCliTelegramAlert({
     },
   },
 });
+const manualReviewWithoutDispatcher = await evaluateLiveOpsCliTelegramAlert({
+  config,
+  fixtureSmoke: false,
+  liveExecution: {
+    ...liveExecution,
+    status: "manual_review_required",
+    ready: false,
+    liveOrderCapable: false,
+    attemptStatus: "MANUAL_REVIEW_REQUIRED",
+    message: "실주문 실행 결과를 확정할 수 없어 수동 점검 상태로 전환했습니다.",
+  },
+  orderIntent,
+  observedAt,
+});
 const blocked = await evaluateLiveOpsCliTelegramAlert({
   config,
   fixtureSmoke: false,
@@ -579,6 +593,7 @@ const failed = await evaluateLiveOpsCliTelegramAlert({
 console.log(JSON.stringify({
   sent,
   manualReview,
+  manualReviewWithoutDispatcher,
   blocked,
   failed,
   eventKinds: dispatches[0].events.map((event) => event.eventKind),
@@ -600,6 +615,7 @@ console.log(JSON.stringify({
     const output = JSON.parse(result.stdout) as {
       sent: { ready: boolean; providerDispatchAttempted: boolean; alertCount: number; deliveredCount: number };
       manualReview: { ready: boolean; providerDispatchAttempted: boolean; alertCount: number; deliveredCount: number };
+      manualReviewWithoutDispatcher: { ready: boolean; providerDispatchAttempted: boolean; status: string; checks: { code: string }[] };
       blocked: { ready: boolean; providerDispatchAttempted: boolean; alertCount: number; status: string };
       failed: { ready: boolean; status: string; retryPlannedCount: number; failureCount: number; action: string };
       eventKinds: string[];
@@ -629,6 +645,12 @@ console.log(JSON.stringify({
       "TELEGRAM_CONNECTION_READY",
       "MANUAL_REVIEW_REQUIRED",
     ]);
+    expect(output.manualReviewWithoutDispatcher).toMatchObject({
+      ready: false,
+      providerDispatchAttempted: false,
+      status: "blocked",
+    });
+    expect(output.manualReviewWithoutDispatcher.checks.map((check) => check.code)).toContain("live_ops_telegram_boundary_missing");
     expect(output.blocked).toMatchObject({
       ready: false,
       providerDispatchAttempted: false,
