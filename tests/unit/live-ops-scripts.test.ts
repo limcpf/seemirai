@@ -826,6 +826,9 @@ function createRuntimeRequest(overrides = {}) {
     killSwitchActive: false,
     reconcileFresh: true,
     executionStatusEvidenceId: "execution-status-evidence",
+    postSubmitReconcileReady: true,
+    postSubmitTelegramReady: true,
+    postSubmitReadinessEvidenceId: "post-submit-readiness-evidence",
     idempotencyKey: intent.idempotencyKey,
     observedAt: "2026-06-15T00:00:00.000Z",
     ...overrides,
@@ -855,6 +858,21 @@ const directMissingStatusEvidenceResult = await createLiveOpsCliEntryRuntime({
   },
   budgetReservation,
 }).submitEntryCandidate(createRuntimeRequest({ executionStatusEvidenceId: undefined }));
+const submittedWithMissingPostSubmitReadiness = [];
+const directMissingPostSubmitReadinessResult = await createLiveOpsCliEntryRuntime({
+  broker: {
+    async submitOrder(submission) {
+      submittedWithMissingPostSubmitReadiness.push(submission);
+      return {
+        brokerOrderId: "unexpected-missing-post-submit-readiness-order",
+      };
+    },
+  },
+  budgetReservation,
+}).submitEntryCandidate(createRuntimeRequest({
+  postSubmitTelegramReady: false,
+  postSubmitReadinessEvidenceId: undefined,
+}));
 const directInvalidMarketRequest = createRuntimeRequest();
 directInvalidMarketRequest.candidate = {
   ...directInvalidMarketRequest.candidate,
@@ -1553,6 +1571,8 @@ console.log(JSON.stringify({
   submittedWithDirectKillSwitch,
   directMissingStatusEvidenceResult,
   submittedWithMissingStatusEvidence,
+  directMissingPostSubmitReadinessResult,
+  submittedWithMissingPostSubmitReadiness,
   directInvalidMarketResult,
   submittedWithInvalidMarket,
   directMismatchNotionalResult,
@@ -1679,6 +1699,14 @@ console.log(JSON.stringify({
         };
       };
       submittedWithMissingStatusEvidence: unknown[];
+      directMissingPostSubmitReadinessResult: {
+        status: string;
+        violations: string[];
+        trace: {
+          violations: string[];
+        };
+      };
+      submittedWithMissingPostSubmitReadiness: unknown[];
       directInvalidMarketResult: {
         status: string;
         violations: string[];
@@ -1944,6 +1972,17 @@ console.log(JSON.stringify({
       },
     });
     expect(output.submittedWithMissingStatusEvidence).toHaveLength(0);
+    expect(output.directMissingPostSubmitReadinessResult).toMatchObject({
+      status: "BLOCKED",
+      violations: ["execution_runtime_status_blocked"],
+      trace: {
+        violations: expect.arrayContaining([
+          "제출 후 Telegram trade alert 경계가 wrapper 경계에서도 준비되어야 합니다",
+          "post-submit readiness evidence id가 wrapper 경계에서도 필요합니다",
+        ]),
+      },
+    });
+    expect(output.submittedWithMissingPostSubmitReadiness).toHaveLength(0);
     expect(output.directInvalidMarketResult).toMatchObject({
       status: "BLOCKED",
       violations: ["execution_runtime_guard_blocked"],

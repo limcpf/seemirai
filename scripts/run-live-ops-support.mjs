@@ -789,7 +789,7 @@ export async function evaluateLiveOpsCliLiveExecution({
     });
   }
 
-  const request = createLiveOpsCliEntryRuntimeRequest({ config, marketData, intent, observedAt, executionStatus, budgetSnapshot, lossSnapshot });
+  const request = createLiveOpsCliEntryRuntimeRequest({ config, marketData, intent, observedAt, executionStatus, postSubmitReadiness, budgetSnapshot, lossSnapshot });
   if (entryRuntime === undefined) {
     // runtime wiring이 없으면 reservation/broker side effect가 없으므로 불확실 제출이 아니라 설정 차단으로 닫는다.
     return buildLiveOpsCliLiveExecutionSummary({
@@ -1479,7 +1479,7 @@ function isNonEmptyRecord(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value) && Object.keys(value).length > 0;
 }
 
-function createLiveOpsCliEntryRuntimeRequest({ config, marketData, intent, observedAt, executionStatus, budgetSnapshot, lossSnapshot }) {
+function createLiveOpsCliEntryRuntimeRequest({ config, marketData, intent, observedAt, executionStatus, postSubmitReadiness, budgetSnapshot, lossSnapshot }) {
   const liveAttemptId = createLiveOpsCliAttemptId(intent.idempotencyKey);
   return {
     config: {
@@ -1522,6 +1522,9 @@ function createLiveOpsCliEntryRuntimeRequest({ config, marketData, intent, obser
     killSwitchActive: executionStatus.killSwitchActive,
     reconcileFresh: executionStatus.reconcileFresh,
     executionStatusEvidenceId: executionStatus.evidenceId,
+    postSubmitReconcileReady: postSubmitReadiness.reconcileReady,
+    postSubmitTelegramReady: postSubmitReadiness.telegramReady,
+    postSubmitReadinessEvidenceId: postSubmitReadiness.evidenceId,
     idempotencyKey: liveAttemptId,
     observedAt,
   };
@@ -1560,6 +1563,15 @@ function collectLiveOpsCliEntryRuntimeStatusViolations(request) {
   }
   if (!hasMeaningfulValue(request?.executionStatusEvidenceId)) {
     violations.push("execution status evidence id가 wrapper 경계에서도 필요합니다");
+  }
+  if (request?.postSubmitReconcileReady !== true) {
+    violations.push("제출 후 reconcile/PnL/status 경계가 wrapper 경계에서도 준비되어야 합니다");
+  }
+  if (request?.postSubmitTelegramReady !== true) {
+    violations.push("제출 후 Telegram trade alert 경계가 wrapper 경계에서도 준비되어야 합니다");
+  }
+  if (!hasMeaningfulValue(request?.postSubmitReadinessEvidenceId)) {
+    violations.push("post-submit readiness evidence id가 wrapper 경계에서도 필요합니다");
   }
   return violations;
 }
