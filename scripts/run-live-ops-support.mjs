@@ -2742,7 +2742,6 @@ export async function evaluateLiveOpsCliTelegramAlert({
 
 function shouldDispatchLiveOpsCliTelegramAlert(liveExecution) {
   return (
-    liveExecution.ready === true ||
     liveExecution.status === "submitted" ||
     liveExecution.status === "rejected" ||
     liveExecution.status === "cost_blocked" ||

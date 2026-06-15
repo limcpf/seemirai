@@ -591,6 +591,22 @@ const manualReviewWithoutDispatcher = await evaluateLiveOpsCliTelegramAlert({
   orderIntent,
   observedAt,
 });
+const idleWithoutDispatcher = await evaluateLiveOpsCliTelegramAlert({
+  config,
+  fixtureSmoke: false,
+  liveExecution: {
+    ...liveExecution,
+    status: "idle",
+    ready: true,
+    liveOrderCapable: false,
+    attemptedOrderCount: 0,
+    submittedOrderCount: 0,
+    attemptStatus: null,
+    message: "production decision tick에 주문 후보가 없어 broker 제출은 발생하지 않았습니다.",
+  },
+  orderIntent: undefined,
+  observedAt,
+});
 const blocked = await evaluateLiveOpsCliTelegramAlert({
   config,
   fixtureSmoke: false,
@@ -641,6 +657,7 @@ console.log(JSON.stringify({
   sent,
   manualReview,
   manualReviewWithoutDispatcher,
+  idleWithoutDispatcher,
   blocked,
   failed,
   eventKinds: dispatches[0].events.map((event) => event.eventKind),
@@ -663,6 +680,7 @@ console.log(JSON.stringify({
       sent: { ready: boolean; providerDispatchAttempted: boolean; alertCount: number; deliveredCount: number };
       manualReview: { ready: boolean; providerDispatchAttempted: boolean; alertCount: number; deliveredCount: number };
       manualReviewWithoutDispatcher: { ready: boolean; providerDispatchAttempted: boolean; status: string; checks: { code: string }[] };
+      idleWithoutDispatcher: { ready: boolean; providerDispatchAttempted: boolean; status: string; checks: { code: string }[] };
       blocked: { ready: boolean; providerDispatchAttempted: boolean; alertCount: number; status: string };
       failed: { ready: boolean; status: string; retryPlannedCount: number; failureCount: number; action: string };
       eventKinds: string[];
@@ -698,6 +716,12 @@ console.log(JSON.stringify({
       status: "blocked",
     });
     expect(output.manualReviewWithoutDispatcher.checks.map((check) => check.code)).toContain("live_ops_telegram_boundary_missing");
+    expect(output.idleWithoutDispatcher).toMatchObject({
+      ready: true,
+      providerDispatchAttempted: false,
+      status: "idle",
+    });
+    expect(output.idleWithoutDispatcher.checks.map((check) => check.code)).toContain("live_ops_telegram_not_required");
     expect(output.blocked).toMatchObject({
       ready: false,
       providerDispatchAttempted: false,

@@ -361,6 +361,10 @@ function mapLiveExecutionToTradeEvent(input: LiveOpsTelegramAlertPlanInput): Liv
     return event;
   }
 
+  if (liveExecution.status === "rejected") {
+    return createBlockedTradeEvent(input, "RISK_BLOCKED");
+  }
+
   // generic blocked summary는 wiring/readiness 차단도 포함하므로 명시적 evidence 없이 RiskGate alert로 낮추지 않는다.
   return undefined;
 }
