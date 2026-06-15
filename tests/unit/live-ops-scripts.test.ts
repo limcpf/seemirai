@@ -980,6 +980,9 @@ const directBrokerExceptionResult = await createLiveOpsCliEntryRuntime({
   },
   budgetReservation,
 }).submitEntryCandidate(createRuntimeRequest());
+const directBrokerPortMissingResult = await createLiveOpsCliEntryRuntime({
+  budgetReservation,
+}).submitEntryCandidate(createRuntimeRequest());
 const strategyDecisionKey = "live_ops_fixture_strategy:upbit_krw_spot:KRW-BTC:BUY:2026-06-15T00:00:00.000Z";
 const strategyKeyIntent = {
   ...intent,
@@ -1298,6 +1301,65 @@ const zeroCostInputSummary = await evaluateLiveOpsCliLiveExecution({
   budgetSnapshot: runtimeBudgetSnapshot,
   lossSnapshot: runtimeLossSnapshot,
 });
+const zeroExpectedLossIntent = {
+  ...intent,
+  metadata: {
+    expected_loss_bps_of_equity: "0",
+  },
+};
+zeroExpectedLossIntent.risk = createRiskInput(zeroExpectedLossIntent.strategyId);
+zeroExpectedLossIntent.costSnapshot = {
+  ...intent.costSnapshot,
+  order_intent: orderIntentEvidence(zeroExpectedLossIntent),
+};
+zeroExpectedLossIntent.riskApproval = {
+  ...intent.riskApproval,
+  order_intent: orderIntentEvidence(zeroExpectedLossIntent),
+};
+const zeroExpectedLossRuntimeRequests = [];
+const zeroExpectedLossSummary = await evaluateLiveOpsCliLiveExecution({
+  config,
+  fixtureSmoke: false,
+  analysisDecision,
+  marketData: {
+    ready: true,
+    latestHeartbeatAt: observedAt,
+  },
+  env: {
+    SEEMIRAI_UPBIT_ACCESS_KEY: "fake-access-key",
+    SEEMIRAI_UPBIT_SECRET_KEY: "fake-secret-key",
+    SEEMIRAI_UPBIT_KEY_SCOPE: "자산조회,주문조회,주문하기",
+    SEEMIRAI_UPBIT_KEY_SCOPE_EVIDENCE_ID: "scope-evidence",
+  },
+  orderIntents: [zeroExpectedLossIntent],
+  entryRuntime: {
+    async submitEntryCandidate(request) {
+      zeroExpectedLossRuntimeRequests.push(request);
+      return {
+        status: "SUBMITTED",
+        attemptId: request.idempotencyKey,
+        idempotencyKey: request.idempotencyKey,
+        brokerOrderId: "zero-expected-loss-live-order-001",
+        message: "zero expected loss fixture submitted",
+        action: "fixture action",
+        violations: [],
+        events: [],
+        trace: {
+          reason: "broker_submitted",
+        },
+        executionResult: {
+          brokerOrder: {
+            brokerOrderId: "zero-expected-loss-live-order-001",
+          },
+        },
+      };
+    },
+  },
+  executionStatus,
+  postSubmitReadiness,
+  budgetSnapshot: runtimeBudgetSnapshot,
+  lossSnapshot: runtimeLossSnapshot,
+});
 const missingRuntimeSummary = await evaluateLiveOpsCliLiveExecution({
   config,
   fixtureSmoke: false,
@@ -1374,6 +1436,7 @@ console.log(JSON.stringify({
   submittedWithBudgetLimit,
   directReservationExceptionResult,
   directBrokerExceptionResult,
+  directBrokerPortMissingResult,
   strategyKeyWrapperSummary,
   submittedWithStrategyWrapper,
   strategyWrapperReservations,
@@ -1388,6 +1451,8 @@ console.log(JSON.stringify({
   camelRuntimeRequests,
   zeroCostInputSummary,
   zeroCostRuntimeRequests,
+  zeroExpectedLossSummary,
+  zeroExpectedLossRuntimeRequests,
   missingRuntimeSummary,
   topLevelSubmittedBlocked,
   topLevelIdleBlocked,
@@ -1532,6 +1597,13 @@ console.log(JSON.stringify({
           };
         };
       };
+      directBrokerPortMissingResult: {
+        status: string;
+        violations: string[];
+        trace: {
+          reason: string;
+        };
+      };
       strategyKeyWrapperSummary: {
         status: string;
         idempotencyKey: string;
@@ -1594,6 +1666,15 @@ console.log(JSON.stringify({
       zeroCostRuntimeRequests: Array<{
         candidate: {
           costInput: Record<string, unknown>;
+        };
+      }>;
+      zeroExpectedLossSummary: {
+        status: string;
+        submittedOrderCount: number;
+      };
+      zeroExpectedLossRuntimeRequests: Array<{
+        candidate: {
+          expectedLossBpsOfEquity: string;
         };
       }>;
       missingRuntimeSummary: {
@@ -1748,6 +1829,13 @@ console.log(JSON.stringify({
       },
     });
     expect(output.directBrokerExceptionResult.trace.submission.intent.idempotencyKey).toBe("ops-aaaaaaaaaaaaaaaaaaaaaaaaaa");
+    expect(output.directBrokerPortMissingResult).toMatchObject({
+      status: "BLOCKED",
+      violations: ["broker_port_missing"],
+      trace: {
+        reason: "broker_port_missing",
+      },
+    });
     expect(output.strategyKeyWrapperSummary).toMatchObject({
       status: "submitted",
       submittedOrderCount: 1,
@@ -1807,6 +1895,12 @@ console.log(JSON.stringify({
       expectedSlippageBpsP95: "0",
       cancelRequotePenaltyBps: "0",
     });
+    expect(output.zeroExpectedLossSummary).toMatchObject({
+      status: "submitted",
+      submittedOrderCount: 1,
+    });
+    expect(output.zeroExpectedLossRuntimeRequests).toHaveLength(1);
+    expect(output.zeroExpectedLossRuntimeRequests[0]?.candidate.expectedLossBpsOfEquity).toBe("0");
     expect(output.missingRuntimeSummary).toMatchObject({
       status: "blocked",
       attemptedOrderCount: 0,

@@ -882,7 +882,19 @@ export function createLiveOpsCliEntryRuntime({ broker, budgetReservation } = {})
   return {
     async submitEntryCandidate(request) {
       if (broker === undefined || typeof broker.submitOrder !== "function") {
-        throw new Error("LiveOpsCliBrokerPortMissing");
+        // broker port 미연결은 거래소 주문 불확실성이 없으므로 수동 점검이 아니라 wiring 차단으로 닫는다.
+        return {
+          status: "BLOCKED",
+          attemptId: request.idempotencyKey,
+          idempotencyKey: request.idempotencyKey,
+          message: "live broker port가 연결되지 않아 broker 제출을 중단했습니다.",
+          action: "Upbit live broker port wiring을 연결한 뒤 같은 후보를 다시 평가하세요.",
+          violations: ["broker_port_missing"],
+          events: [],
+          trace: {
+            reason: "broker_port_missing",
+          },
+        };
       }
 
       const statusViolations = collectLiveOpsCliEntryRuntimeStatusViolations(request);
@@ -1277,7 +1289,7 @@ function collectLiveOpsCliOrderIntentViolations({ config, marketData, intent }) 
   if (!hasMeaningfulValue(intent?.idempotencyKey)) {
     violations.push("주문 후보에는 decision idempotency key가 필요합니다");
   }
-  if (!hasMeaningfulValue(readLiveOpsCliExpectedLossBps(intent))) {
+  if (!isNonNegativeDecimalString(readLiveOpsCliExpectedLossBps(intent))) {
     violations.push("주문 후보에는 RiskGate expected loss 입력이 필요합니다");
   }
   if (!isLiveOpsCliCostInput(intent?.costInput)) {
