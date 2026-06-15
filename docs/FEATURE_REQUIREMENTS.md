@@ -856,7 +856,7 @@ Acceptance Criteria:
 테스트 요구사항:
 
 - 단위 테스트: production boot sequence가 실제 provider arm에서 config/env validation, DB readiness, public market data, private probe,
-  Telegram startup, decision, live execution, reconcile/PnL/status 순서를 지키는지 확인한다.
+  Telegram startup, reconcile/PnL/status readiness, decision, live execution 순서를 지키는지 확인한다.
 - 단위 테스트: 단일 `BUY + LIMIT + post_only` 후보만 live autonomous runtime으로 전달되고 나머지 주문 유형은 fail-closed 되는지 확인한다.
 - 통합 테스트: fake Upbit public/private provider와 fake Telegram dispatch로 submit/cancel/reconcile summary contract를 검증한다.
 - script smoke: fixture smoke는 외부 DB/provider 호출 0회를 유지하고, 실제 provider arm flag 없이는 live order side effect를 만들지
