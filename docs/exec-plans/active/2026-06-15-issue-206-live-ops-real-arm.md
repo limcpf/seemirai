@@ -181,6 +181,8 @@ SEEMIRAI_RUN_LIVE_OPS_REAL_ARM_CLOSEOUT=1 \
   주문 closeout field가 없는 provider/Telegram identifier는 주문 record로 오인하지 않는다.
 - 2026-06-15: closeout validator는 SEEMIRAI camelCase credential JSON field, `-M`/`--max-columns`, `--stop-on-nonmatch`,
   date-only lifecycle timestamp, 충돌하는 주문 suffix pair, `time_in_force` alias 충돌, parse 실패 정규식 source scan도 차단한다.
+- 2026-06-15: closeout validator는 source scan shell comment/newline, traversal override(`--ignore`, `--no-hidden`),
+  replacement option, metadata-only rg mode, `-N`/`--no-line-number` line evidence 제거도 차단한다.
 
 ## 남은 이슈
 

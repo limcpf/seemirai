@@ -115,10 +115,10 @@ shell의 `RIPGREP_CONFIG_PATH`, `.gitignore`, hidden 기본 필터 영향을 받
 `echo rg ...`, 일부 토큰만 확인한 명령, 검색어가 아닌 path operand에 금지 패턴 단어를 붙인 명령,
 `-q`/`--quiet`, `-l`/`--files-without-match`, `--files`, `-F`/`--fixed-strings`, `-f`/`--file`,
 `-P`/`--pcre2`/`--engine=pcre2`, `-w`/`--word-regexp`, `-x`/`--line-regexp`, `-v`/`--invert-match`, `-m`/`--max-count`, `-M`/`--max-columns`,
-`--stop-on-nonmatch`, `-t`/`--type`, `--type-not`,
+`--stop-on-nonmatch`, `--ignore`, `--no-hidden`, `-N`/`--no-line-number`, `-r`/`--replace`, `--type-list`, `--pcre2-version`, `-t`/`--type`, `--type-not`,
 `--iglob`, `--ignore-file`, `--max-depth`, `--max-filesize`, `--pre`/`--pre-glob`, `-g`/`--glob`
 처럼 출력, 입력, 필수 범위, 정규식 의미를 줄이는 옵션은 인정하지 않는다. source/security scan command에 shell pipe,
-redirect, command separator, command substitution, shell parameter expansion이 있거나 검색 패턴에서 alternation을 `\|`로 escape해 실제 다중 후보 검색을 하지 않는 경우도
+redirect, command separator, shell comment(`#`), newline separator, command substitution, shell parameter expansion이 있거나 검색 패턴에서 alternation을 `\|`로 escape해 실제 다중 후보 검색을 하지 않는 경우도
 검증 증거로 인정하지 않는다. lookaround처럼 `rg`가 parse하지 못해 검색 자체가 실패하는 정규식 패턴도 source coverage 증거가 아니다.
 주문 lifecycle timestamp는 validator 실행 시각보다 미래일 수 없고, 같은 주문 chain
 증거는 `<redacted>`, `<order-id>`, `<brokerOrderId>` 같은 일반 placeholder가 아니라 identifier 또는 uuid의 안정적인 suffix로 비교할 수 있어야 한다. timestamp는

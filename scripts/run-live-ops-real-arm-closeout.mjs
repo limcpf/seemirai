@@ -101,6 +101,7 @@ const disallowedRipgrepLongOptions = new Set([
   "--files-without-match",
   "--fixed-strings",
   "--engine",
+  "--ignore",
   "--ignore-file",
   "--iglob",
   "--invert-match",
@@ -108,16 +109,38 @@ const disallowedRipgrepLongOptions = new Set([
   "--max-filesize",
   "--max-columns",
   "--max-count",
+  "--no-hidden",
+  "--no-line-number",
   "--pcre2",
+  "--pcre2-version",
   "--pre",
   "--pre-glob",
   "--quiet",
+  "--replace",
   "--stop-on-nonmatch",
   "--type",
+  "--type-list",
   "--type-not",
   "--word-regexp",
 ]);
-const disallowedRipgrepShortOptions = new Set(["F", "L", "M", "P", "T", "f", "l", "m", "q", "t", "v", "w", "x"]);
+const disallowedRipgrepShortOptions = new Set(["F", "L", "M", "N", "P", "T", "f", "l", "m", "q", "r", "t", "v", "w", "x"]);
+const ripgrepOptionsWithNextValue = new Set([
+  "--engine",
+  "--file",
+  "--glob",
+  "--ignore-file",
+  "--iglob",
+  "--max-columns",
+  "--max-count",
+  "--max-depth",
+  "--max-filesize",
+  "--pre",
+  "--pre-glob",
+  "--replace",
+  "--type",
+  "--type-not",
+]);
+const ripgrepShortOptionsWithNextValue = new Set(["M", "f", "g", "m", "r", "t"]);
 const withdrawalScopeMarkers = ["출금", "withdraw"];
 const forbiddenKeyScopeMarkers = ["출금", "입금", "withdraw", "deposit", "futures", "leverage", "margin"];
 const requiredCounterNames = [
@@ -1645,6 +1668,11 @@ function collectUnquotedShellOperators(command) {
       }
       continue;
     }
+    // shell comment와 newline은 뒤쪽 path 토큰을 실제 검색에서 제외할 수 있으므로 command separator로 취급한다.
+    if (char === "#" || char === "\n" || char === "\r") {
+      operators.push(char === "#" ? "#" : "newline");
+      continue;
+    }
     if ("|><;&".includes(char)) {
       operators.push(char);
     }
@@ -1683,6 +1711,10 @@ function collectRipgrepPathOperands(tokens) {
     }
     if (token.startsWith("--regexp=") || token.startsWith("-e")) {
       patternSeen = true;
+      continue;
+    }
+    if (isRipgrepOptionWithNextValue(token)) {
+      index += 1;
       continue;
     }
     if (token.startsWith("--glob=") || token.startsWith("-g") || token === "-n" || token === "--line-number") {
@@ -1725,6 +1757,10 @@ function collectRipgrepSearchPatterns(tokens) {
       positionalPatternSeen = true;
       continue;
     }
+    if (isRipgrepOptionWithNextValue(token)) {
+      index += 1;
+      continue;
+    }
     if (token.startsWith("--glob=") || token.startsWith("-g") || token === "-n" || token === "--line-number") {
       continue;
     }
@@ -1737,6 +1773,13 @@ function collectRipgrepSearchPatterns(tokens) {
     }
   }
   return patterns;
+}
+
+function isRipgrepOptionWithNextValue(token) {
+  if (ripgrepOptionsWithNextValue.has(token)) {
+    return true;
+  }
+  return /^-[A-Za-z]$/u.test(token) && ripgrepShortOptionsWithNextValue.has(token[1]);
 }
 
 function excludesSourcePath(glob, scanPath) {
