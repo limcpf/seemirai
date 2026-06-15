@@ -149,6 +149,8 @@ SEEMIRAI_RUN_LIVE_OPS_REAL_ARM_CLOSEOUT=1 \
   `rg -n` 실행 증거여야 한다. 중첩 artifact summary와 `raw_provider_payload`/`raw_order_detail` 필드도 차단한다.
 - 2026-06-15: repository root 기준 저장소 경계, 배열 안 artifact record, `skipped`/`blocked` artifact status, redaction placeholder 뒤 원문
   secret도 closeout validator 차단 대상이다.
+- 2026-06-15: closeout validator는 production config/env contract, 절대 config/env command 경로, parse 가능한 JSON artifact,
+  artifact 주문 정책 필드, Bearer/JWT 독립 노출, camelCase raw payload, source scan 필수 패턴 전체도 차단 대상으로 본다.
 
 ## 남은 이슈
 

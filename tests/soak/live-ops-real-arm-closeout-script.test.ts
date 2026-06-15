@@ -298,6 +298,31 @@ describe("Issue 206 live:ops real-arm closeout script", () => {
     expect(getCheck(summary, "sourceSecurityScan")).toMatchObject({ status: "fail" });
   });
 
+  it("fails when source scan commands omit required forbidden pattern families", async () => {
+    const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-issue-206-closeout-source-scan-patterns-"));
+    const manifestPath = await writeCloseoutManifest(artifactDir, {
+      manifestMutator: (manifest) => ({
+        ...manifest,
+        sourceScan: {
+          status: "passed",
+          commands: [
+            "rg -n withdraw src scripts config docs",
+            "rg -n access_key src scripts config docs",
+          ],
+          unsafeMatches: [],
+          secretMatches: [],
+        },
+      }),
+    });
+    const summary = await runScriptExpectingFailure(
+      ["--json", "--artifact-dir", artifactDir, "--manifest", manifestPath],
+      createReadyEnv(),
+    );
+
+    expect(summary.status).toBe("failed");
+    expect(getCheck(summary, "sourceSecurityScan")).toMatchObject({ status: "fail" });
+  });
+
   it("fails when key scope evidence includes forbidden withdrawal permission", async () => {
     const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-issue-206-closeout-key-scope-"));
     const manifestPath = await writeCloseoutManifest(artifactDir, {
@@ -337,6 +362,49 @@ describe("Issue 206 live:ops real-arm closeout script", () => {
     );
 
     expect(summary.status).toBe("failed");
+    expect(getCheck(summary, "operatorInputs")).toMatchObject({ status: "fail" });
+  });
+
+  it("fails when config or env file does not satisfy the production live ops contract", async () => {
+    const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-issue-206-closeout-input-contract-"));
+    const configPath = path.join(artifactDir, "empty-live-ops.json");
+    const envFilePath = path.join(artifactDir, "incomplete-live-ops.env");
+    await writeFile(configPath, "{}\n", "utf8");
+    await writeFile(envFilePath, "SEEMIRAI_UPBIT_ACCESS_KEY=fake-upbit-access-key\n", "utf8");
+    const manifestPath = await writeCloseoutManifest(artifactDir, {
+      manifestMutator: (manifest) => ({
+        ...manifest,
+        configPath,
+        envFilePath,
+        command: `corepack pnpm live:ops -- --config ${configPath} --env-file ${envFilePath} --tui`,
+      }),
+    });
+    const summary = await runScriptExpectingFailure(
+      ["--json", "--artifact-dir", artifactDir, "--manifest", manifestPath],
+      createReadyEnv(),
+    );
+
+    expect(summary.status).toBe("failed");
+    expect(getCheck(summary, "operatorInputs")).toMatchObject({ status: "fail" });
+  });
+
+  it("fails when config or env command paths are relative", async () => {
+    const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-issue-206-closeout-relative-input-"));
+    const manifestPath = await writeCloseoutManifest(artifactDir, {
+      manifestMutator: (manifest) => ({
+        ...manifest,
+        configPath: "live-ops.real-arm.json",
+        envFilePath: "live-ops.real-arm.env",
+        command: "corepack pnpm live:ops -- --config live-ops.real-arm.json --env-file live-ops.real-arm.env --tui",
+      }),
+    });
+    const summary = await runScriptExpectingFailure(
+      ["--json", "--artifact-dir", artifactDir, "--manifest", manifestPath],
+      createReadyEnv(),
+    );
+
+    expect(summary.status).toBe("failed");
+    expect(getCheck(summary, "manifestShape")).toMatchObject({ status: "fail" });
     expect(getCheck(summary, "operatorInputs")).toMatchObject({ status: "fail" });
   });
 
@@ -427,6 +495,42 @@ describe("Issue 206 live:ops real-arm closeout script", () => {
     expect(getCheck(summary, "artifactFiles")).toMatchObject({ status: "fail" });
   });
 
+  it("fails when artifact safe summary is not parseable JSON", async () => {
+    const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-issue-206-closeout-artifact-json-"));
+    const manifestPath = await writeCloseoutManifest(artifactDir, {
+      artifactText: "{\"status\":\"PASSED\"",
+    });
+    const summary = await runScriptExpectingFailure(
+      ["--json", "--artifact-dir", artifactDir, "--manifest", manifestPath],
+      createReadyEnv(),
+    );
+
+    expect(summary.status).toBe("failed");
+    expect(getCheck(summary, "artifactFiles")).toMatchObject({ status: "fail" });
+  });
+
+  it("fails when artifact safe summary conflicts with order policy fields", async () => {
+    const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-issue-206-closeout-artifact-policy-"));
+    const manifestPath = await writeCloseoutManifest(artifactDir, {
+      artifactText: JSON.stringify({
+        status: "PASSED",
+        terminalState: "cancel",
+        openExposureKrw: 0,
+        market: "KRW-ETH",
+        side: "SELL",
+        orderType: "MARKET",
+        requestedNotionalKrw: 1_000_000,
+      }),
+    });
+    const summary = await runScriptExpectingFailure(
+      ["--json", "--artifact-dir", artifactDir, "--manifest", manifestPath],
+      createReadyEnv(),
+    );
+
+    expect(summary.status).toBe("failed");
+    expect(getCheck(summary, "artifactFiles")).toMatchObject({ status: "fail" });
+  });
+
   it("fails when artifact safe summary is skipped or blocked", async () => {
     const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-issue-206-closeout-blocked-artifact-"));
     const manifestPath = await writeCloseoutManifest(artifactDir, {
@@ -473,6 +577,37 @@ describe("Issue 206 live:ops real-arm closeout script", () => {
     const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-issue-206-closeout-raw-provider-field-"));
     const manifestPath = await writeCloseoutManifest(artifactDir, {
       artifactText: JSON.stringify({ raw_provider_payload: { uuid: "raw-provider-payload" } }),
+    });
+    const summary = await runScriptExpectingFailure(
+      ["--json", "--artifact-dir", artifactDir, "--manifest", manifestPath],
+      createReadyEnv(),
+    );
+
+    expect(summary.status).toBe("failed");
+    expect(getCheck(summary, "redactionScan")).toMatchObject({ status: "fail" });
+  });
+
+  it("fails when redacted artifacts contain camelCase raw provider payload fields", async () => {
+    const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-issue-206-closeout-raw-provider-camel-"));
+    const manifestPath = await writeCloseoutManifest(artifactDir, {
+      artifactText: JSON.stringify({ rawProviderPayload: { uuid: "raw-provider-payload" } }),
+    });
+    const summary = await runScriptExpectingFailure(
+      ["--json", "--artifact-dir", artifactDir, "--manifest", manifestPath],
+      createReadyEnv(),
+    );
+
+    expect(summary.status).toBe("failed");
+    expect(getCheck(summary, "redactionScan")).toMatchObject({ status: "fail" });
+  });
+
+  it("fails when redacted artifacts contain standalone bearer or JWT tokens", async () => {
+    const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-issue-206-closeout-bearer-jwt-"));
+    const manifestPath = await writeCloseoutManifest(artifactDir, {
+      artifactText: [
+        "provider trace: Bearer eyJhbGciOiJIUzI1NiJ9.rawPayload.rawSignature",
+        "JWT=eyJhbGciOiJIUzI1NiJ9.rawPayload.rawSignature",
+      ].join("\n"),
     });
     const summary = await runScriptExpectingFailure(
       ["--json", "--artifact-dir", artifactDir, "--manifest", manifestPath],
@@ -572,8 +707,18 @@ async function writeCloseoutManifest(
   const envFilePath = path.join(artifactDir, "live-ops.real-arm.env");
   const artifactPath = path.join(artifactDir, "issue-206-live-ops-real-arm-artifact.json");
   const manifestPath = path.join(artifactDir, "issue-206-live-ops-real-arm-manifest.json");
-  await writeFile(configPath, JSON.stringify({ redacted: true }), "utf8");
-  await writeFile(envFilePath, "SEEMIRAI_UPBIT_ACCESS_KEY=<redacted>\n", "utf8");
+  await writeFile(configPath, `${JSON.stringify(createLiveOpsConfigFixture(), null, 2)}\n`, "utf8");
+  await writeFile(envFilePath, [
+    "SEEMIRAI_DATABASE_URL=postgres://seemirai:fake-db-password@127.0.0.1:55432/seemirai",
+    "SEEMIRAI_UPBIT_ACCESS_KEY=fake-upbit-access-key",
+    "SEEMIRAI_UPBIT_SECRET_KEY=fake-upbit-secret-key",
+    "SEEMIRAI_UPBIT_KEY_SCOPE=자산조회,주문조회,주문하기",
+    "SEEMIRAI_UPBIT_KEY_SCOPE_EVIDENCE_ID=fake-key-scope-evidence",
+    "SEEMIRAI_TELEGRAM_BOT_TOKEN=fake-telegram-token",
+    "SEEMIRAI_TELEGRAM_CHAT_ID=fake-telegram-chat-id",
+    "SEEMIRAI_TUI_CONTROL_TOKEN=fake-local-control-token",
+    "",
+  ].join("\n"), "utf8");
   await writeFile(
     artifactPath,
     options.artifactText ?? JSON.stringify({ status: "PASSED", terminalState: "cancel", openExposureKrw: 0 }),
@@ -623,8 +768,8 @@ async function writeCloseoutManifest(
     sourceScan: {
       status: "passed",
       commands: [
-        "rg -n \"ord_type.*market|ord_type.*best|withdraw|출금|deposit|입금|leverage|futures\" src scripts config docs",
-        "rg -n \"access_key|secret_key|Authorization|JWT|telegram_bot_token|raw_provider|raw_order\" src scripts config docs",
+        "rg -n \"ord_type|market|시장가|best|withdraw|출금|deposit|입금|leverage|futures|margin\" src scripts config docs",
+        "rg -n \"access_key|accessKey|secret_key|secretKey|Authorization|Bearer|JWT|jwt|telegram_bot_token|botToken|TELEGRAM_BOT_TOKEN|raw_provider|rawProvider|raw_order|rawOrder\" src scripts config docs",
       ],
       unsafeMatches: [],
       secretMatches: [],
@@ -659,6 +804,67 @@ function createRunFixture() {
     reconcileMismatchCount: 0,
     untrackedFillCount: 0,
     manualReviewCount: 0,
+  };
+}
+
+function createLiveOpsConfigFixture() {
+  return {
+    schema_version: 1,
+    mode: "LIVE_AUTONOMOUS_SMALL_BUDGET",
+    exchange: "UPBIT",
+    market: "KRW_SPOT",
+    live_trading_enabled: true,
+    paper_no_key: false,
+    withdrawal_enabled: false,
+    cross_exchange_arbitrage_enabled: false,
+    futures_enabled: false,
+    leverage_enabled: false,
+    market_order_enabled: false,
+    entry_market_order_enabled: false,
+    universe: {
+      markets: ["KRW-BTC"],
+      default_market: "KRW-BTC",
+    },
+    budget: {
+      max_order_krw: "10000",
+      daily_autonomous_notional_limit_krw: "30000",
+      max_open_position_notional_krw: "30000",
+      operations_stop_ceiling_krw: "49999",
+    },
+    workers: {
+      db_readiness: true,
+      market_data: true,
+      analysis_decision: true,
+      live_execution: true,
+      reconcile_pnl_status: true,
+      telegram: true,
+      tui: true,
+    },
+    market_data: {
+      provider: "UPBIT_PUBLIC",
+      websocket_enabled: true,
+      rest_policy_snapshot_enabled: true,
+      stale_after_ms: 30000,
+    },
+    analysis: {
+      candle_interval_seconds: 60,
+      feature_interval_seconds: 5,
+      decision_interval_seconds: 5,
+      record_hold_decision: true,
+    },
+    telegram: {
+      startup_alert_enabled: true,
+      live_order_capable_alert_enabled: true,
+      trade_event_alerts_enabled: true,
+      provider_timeout_ms: 5000,
+    },
+    tui: {
+      foreground_enabled: true,
+      attach_enabled: true,
+      refresh_interval_ms: 1000,
+      control_requires_two_step_confirmation: true,
+      controls_enabled: true,
+    },
   };
 }
 

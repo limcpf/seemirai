@@ -20,6 +20,41 @@ const invocationCwd = process.cwd();
 const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const requiredKeyScopes = ["자산조회", "주문조회", "주문하기"];
 const requiredSourceScanPaths = ["src", "scripts", "config", "docs"];
+const requiredLiveOpsEnvNames = [
+  "SEEMIRAI_DATABASE_URL",
+  "SEEMIRAI_UPBIT_ACCESS_KEY",
+  "SEEMIRAI_UPBIT_SECRET_KEY",
+  "SEEMIRAI_UPBIT_KEY_SCOPE",
+  "SEEMIRAI_UPBIT_KEY_SCOPE_EVIDENCE_ID",
+  "SEEMIRAI_TELEGRAM_BOT_TOKEN",
+  "SEEMIRAI_TELEGRAM_CHAT_ID",
+  "SEEMIRAI_TUI_CONTROL_TOKEN",
+];
+const liveOpsLegacyEnvNames = [
+  "SEEMIRAI_RUN_M22_AUTONOMOUS_PILOT",
+  "SEEMIRAI_RUN_M22_AUTONOMOUS_DAEMON",
+  "SEEMIRAI_PILOT_PROFILE",
+  "PILOT_ORDER_SMOKE",
+];
+const requiredUnsafeSourceScanPatterns = [
+  { label: "ord_type", pattern: /ord_type/u },
+  { label: "market order", pattern: /market|시장가/u },
+  { label: "best order", pattern: /best/u },
+  { label: "withdrawal", pattern: /withdraw|출금/u },
+  { label: "deposit", pattern: /deposit|입금/u },
+  { label: "leverage", pattern: /leverage/u },
+  { label: "futures", pattern: /futures/u },
+  { label: "margin", pattern: /margin/u },
+];
+const requiredSecretSourceScanPatterns = [
+  { label: "access key", pattern: /access_key|accessKey/u },
+  { label: "secret key", pattern: /secret_key|secretKey/u },
+  { label: "authorization bearer", pattern: /Authorization|Bearer/u },
+  { label: "jwt", pattern: /JWT|jwt/u },
+  { label: "telegram token", pattern: /telegram_bot_token|botToken|TELEGRAM_BOT_TOKEN/u },
+  { label: "raw provider payload", pattern: /raw_provider|rawProvider/u },
+  { label: "raw order payload", pattern: /raw_order|rawOrder/u },
+];
 const withdrawalScopeMarkers = ["출금", "withdraw"];
 const forbiddenKeyScopeMarkers = ["출금", "입금", "withdraw", "deposit", "futures", "leverage", "margin"];
 const requiredCounterNames = [
@@ -44,9 +79,13 @@ const sensitivePatterns = [
   { label: "telegram token env assignment", pattern: /\b(?:SEEMIRAI_)?TELEGRAM_BOT_TOKEN\s*=\s*(?!(?:["']?(?:<redacted>|redacted|\[redacted\])["']?)(?:\s|$|["',]))\S{8,}/i },
   { label: "database password env assignment", pattern: /\b(?:SEEMIRAI_)?(?:DATABASE_PASSWORD|DB_PASSWORD|PGPASSWORD)\s*=\s*(?!(?:["']?(?:<redacted>|redacted|\[redacted\])["']?)(?:\s|$|["',]))\S{8,}/i },
   { label: "raw authorization bearer", pattern: /authorization:\s*bearer\s+(?!<redacted>|redacted|\[redacted\])[^\s"']+/i },
+  { label: "standalone bearer token", pattern: /\bBearer\s+(?!(?:<redacted>|redacted|\[redacted\])(?:\s|$))[^\s"']{16,}/ },
+  { label: "jwt env assignment", pattern: /\bJWT\s*=\s*(?!(?:["']?(?:<redacted>|redacted|\[redacted\])["']?)(?:\s|$|["',]))[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/ },
   { label: "authorization json field", pattern: /"authorization"\s*:\s*"(?!bearer\s+(?:<redacted>|redacted|\[redacted\])"|(?:<redacted>|redacted|\[redacted\])")[^"]{8,}"/i },
   { label: "jwt json field", pattern: /"jwt"\s*:\s*"(?!\s*(?:<redacted>|redacted|\[redacted\])\s*")[^"]{8,}"/i },
   { label: "postgres credential url", pattern: /postgres(?:ql)?:\/\/[^:\s"']+:(?!(?:<redacted>|redacted|\[redacted\])@)[^@\s"']+@/i },
+  { label: "raw provider camelCase field", pattern: /"rawProvider(?:Payload|Body)?"\s*:/ },
+  { label: "raw order camelCase field", pattern: /"rawOrder(?:Detail|Payload)?"\s*:/ },
   { label: "raw provider field", pattern: /"raw(?:_|-)?provider(?:(?:_|-)?(?:payload|body))?"\s*:/i },
   { label: "raw order field", pattern: /"raw(?:_|-)?order(?:(?:_|-)?(?:detail|payload))?"\s*:/i },
   { label: "raw update field", pattern: /"raw(?:_|-)?update"\s*:/i },
@@ -238,6 +277,8 @@ function createManifestShapeCheck(manifest) {
     issue: manifest.issue,
     mode: manifest.mode,
     command,
+    configPathAbsolute: hasText(configPath) ? path.isAbsolute(configPath) : false,
+    envFilePathAbsolute: hasText(envFilePath) ? path.isAbsolute(envFilePath) : false,
     commandValid: isLiveOpsCommand(command, configPath, envFilePath),
   };
   if (manifest.issue === expectedIssue && manifest.mode === expectedMode && actual.commandValid) {
@@ -283,12 +324,21 @@ async function createOperatorInputsCheck(manifest, baseDir, guarded) {
     createFileStatus("configPath", configPath, baseDir),
     createFileStatus("envFilePath", envFilePath, baseDir),
   ]);
+  const configStatus = fileStatuses.find((file) => file.name === "configPath");
+  const envFileStatus = fileStatuses.find((file) => file.name === "envFilePath");
+  const productionContract = await createProductionInputContract(configStatus, envFileStatus);
   const missing = [
     ["configPath", configPath],
     ["envFilePath", envFilePath],
     ["operatorArmEvidenceId", readString(manifest.operatorArmEvidenceId)],
     ["keyScopeEvidenceId", readString(manifest.keyScopeEvidenceId)],
   ].filter(([, value]) => !hasText(value)).map(([name]) => name);
+  const pathShapeViolations = [
+    ["configPath", configPath],
+    ["envFilePath", envFilePath],
+  ]
+    .filter(([, value]) => hasText(value) && !path.isAbsolute(value))
+    .map(([name, value]) => ({ name, value, expected: "absolute path recorded in live:ops command" }));
   const pathViolations = fileStatuses
     .filter((file) => file.exists && !file.outsideRepository)
     .map((file) => ({ name: file.name, value: file.value, realPath: file.realPath }));
@@ -296,23 +346,28 @@ async function createOperatorInputsCheck(manifest, baseDir, guarded) {
 
   if (missing.length === 0
     && artifactPaths.length > 0
+    && pathShapeViolations.length === 0
     && pathViolations.length === 0
     && missingFiles.length === 0
-    && keyScopeEvidence.ok) {
+    && keyScopeEvidence.ok
+    && productionContract.ok) {
     return okCheck("운영자가 지정한 저장소 밖 config/env/evidence 경로가 closeout manifest에 연결됐다.", {
       configPath,
       envFilePath,
       artifactCount: artifactPaths.length,
       files: fileStatuses,
       keyScope: keyScopeEvidence.evidence,
+      productionContract: productionContract.evidence,
     });
   }
 
   return failCheck("운영 config/env/evidence 입력이 부족하거나 저장소 내부 경로를 가리킨다.", {
     missing: artifactPaths.length === 0 ? [...missing, "artifactPaths"] : missing,
+    pathShapeViolations,
     pathViolations,
     missingFiles,
     keyScope: keyScopeEvidence.evidence,
+    productionContract: productionContract.evidence,
   });
 }
 
@@ -574,12 +629,14 @@ async function readArtifactFiles(artifactPaths, baseDir) {
     try {
       const realPath = await realpath(resolved);
       const rawText = await readFile(realPath, "utf8");
+      const json = parseJsonValue(rawText);
       files.push({
         filePath: resolved,
         realPath,
         rawText,
-        value: readJsonValue(rawText),
+        value: json.value,
         outsideRepository: isOutsideRepositoryResolvedPath(realPath),
+        error: json.error,
       });
     } catch (error) {
       files.push({
@@ -904,6 +961,9 @@ function isLiveOpsCommand(command, configPath, envFilePath) {
   if (!hasText(command) || !hasText(configPath) || !hasText(envFilePath)) {
     return false;
   }
+  if (!path.isAbsolute(configPath) || !path.isAbsolute(envFilePath)) {
+    return false;
+  }
   const tokens = command.trim().split(/\s+/u);
   const separatorIndex = tokens.indexOf("--");
   if (tokens[0] !== "corepack" || tokens[1] !== "pnpm" || tokens[2] !== "live:ops" || separatorIndex !== 3) {
@@ -915,6 +975,232 @@ function isLiveOpsCommand(command, configPath, envFilePath) {
     return false;
   }
   return args.every((arg, index) => arg === exactArgs[index]);
+}
+
+async function createProductionInputContract(configStatus, envFileStatus) {
+  const config = await createConfigContractEvidence(configStatus);
+  const env = await createEnvContractEvidence(envFileStatus);
+  return {
+    ok: config.ok && env.ok,
+    evidence: { config, env },
+  };
+}
+
+async function createConfigContractEvidence(fileStatus) {
+  if (fileStatus === undefined || !fileStatus.exists || !fileStatus.isFile || !fileStatus.outsideRepository || fileStatus.realPath === null) {
+    return { ok: false, errors: ["config file is not readable outside repository"] };
+  }
+
+  try {
+    const rawText = await readFile(fileStatus.realPath, "utf8");
+    const config = JSON.parse(rawText);
+    if (!isRecord(config)) {
+      return { ok: false, errors: ["config JSON must be an object"] };
+    }
+    const errors = createLiveOpsConfigContractErrors(config);
+    return {
+      ok: errors.length === 0,
+      errors,
+      checked: {
+        mode: config.mode ?? null,
+        defaultMarket: readRecord(config.universe).default_market ?? null,
+        liveTradingEnabled: config.live_trading_enabled === true,
+        paperNoKey: config.paper_no_key === false,
+      },
+    };
+  } catch (error) {
+    return { ok: false, errors: [`config parse/read failure: ${toErrorMessage(error)}`] };
+  }
+}
+
+function createLiveOpsConfigContractErrors(config) {
+  const errors = [];
+  const secretPaths = findSecretLikeKeys(config);
+  if (secretPaths.length > 0) {
+    errors.push(`JSON config contains secret-like keys: ${secretPaths.join(", ")}`);
+  }
+  if (config.schema_version !== 1) errors.push("schema_version=1 is required");
+  if (config.mode !== expectedMode) errors.push(`mode=${expectedMode} is required`);
+  if (config.exchange !== "UPBIT") errors.push("exchange=UPBIT is required");
+  if (config.market !== "KRW_SPOT") errors.push("market=KRW_SPOT is required");
+  if (config.live_trading_enabled !== true) errors.push("live_trading_enabled=true is required");
+  if (config.paper_no_key !== false) errors.push("paper_no_key=false is required");
+  for (const flag of [
+    "withdrawal_enabled",
+    "cross_exchange_arbitrage_enabled",
+    "futures_enabled",
+    "leverage_enabled",
+    "market_order_enabled",
+    "entry_market_order_enabled",
+  ]) {
+    if (config[flag] !== false) errors.push(`${flag}=false is required`);
+  }
+  const universe = readRecord(config.universe);
+  if (!Array.isArray(universe.markets) || universe.markets.length !== 1 || universe.markets[0] !== expectedMarket) {
+    errors.push(`universe.markets must contain only ${expectedMarket}`);
+  }
+  if (universe.default_market !== expectedMarket) {
+    errors.push(`universe.default_market=${expectedMarket} is required`);
+  }
+  validateExpectedConfigValues(errors, readRecord(config.budget), "budget", {
+    max_order_krw: "10000",
+    daily_autonomous_notional_limit_krw: "30000",
+    max_open_position_notional_krw: "30000",
+  });
+  const stopCeilingKrw = Number(readRecord(config.budget).operations_stop_ceiling_krw);
+  if (!Number.isFinite(stopCeilingKrw) || stopCeilingKrw <= 0 || stopCeilingKrw >= 50_000) {
+    errors.push("budget.operations_stop_ceiling_krw must be positive and below 50000");
+  }
+  validateExpectedConfigValues(errors, readRecord(config.workers), "workers", {
+    db_readiness: true,
+    market_data: true,
+    analysis_decision: true,
+    live_execution: true,
+    reconcile_pnl_status: true,
+    telegram: true,
+    tui: true,
+  });
+  validateExpectedConfigValues(errors, readRecord(config.market_data), "market_data", {
+    provider: "UPBIT_PUBLIC",
+    websocket_enabled: true,
+    rest_policy_snapshot_enabled: true,
+    stale_after_ms: 30000,
+  });
+  validateExpectedConfigValues(errors, readRecord(config.analysis), "analysis", {
+    candle_interval_seconds: 60,
+    feature_interval_seconds: 5,
+    decision_interval_seconds: 5,
+    record_hold_decision: true,
+  });
+  validateExpectedConfigValues(errors, readRecord(config.telegram), "telegram", {
+    startup_alert_enabled: true,
+    live_order_capable_alert_enabled: true,
+    trade_event_alerts_enabled: true,
+    provider_timeout_ms: 5000,
+  });
+  validateExpectedConfigValues(errors, readRecord(config.tui), "tui", {
+    foreground_enabled: true,
+    attach_enabled: true,
+    refresh_interval_ms: 1000,
+    control_requires_two_step_confirmation: true,
+    controls_enabled: true,
+  });
+  return errors;
+}
+
+function validateExpectedConfigValues(errors, target, prefix, expected) {
+  if (!isRecord(target)) {
+    errors.push(`${prefix} config section is required`);
+    return;
+  }
+  for (const [key, expectedValue] of Object.entries(expected)) {
+    if (target[key] !== expectedValue) {
+      errors.push(`${prefix}.${key} must be ${String(expectedValue)}`);
+    }
+  }
+}
+
+async function createEnvContractEvidence(fileStatus) {
+  if (fileStatus === undefined || !fileStatus.exists || !fileStatus.isFile || !fileStatus.outsideRepository || fileStatus.realPath === null) {
+    return { ok: false, errors: ["env file is not readable outside repository"] };
+  }
+
+  try {
+    const rawText = await readFile(fileStatus.realPath, "utf8");
+    const env = parseEnvContent(rawText);
+    const errors = createLiveOpsEnvContractErrors(env);
+    return {
+      ok: errors.length === 0,
+      errors,
+      requiredKeysPresent: requiredLiveOpsEnvNames.filter((name) => hasMeaningfulEnvValue(env[name])),
+      keyScope: createEnvKeyScopeEvidence(env.SEEMIRAI_UPBIT_KEY_SCOPE),
+    };
+  } catch (error) {
+    return { ok: false, errors: [`env parse/read failure: ${toErrorMessage(error)}`] };
+  }
+}
+
+function createLiveOpsEnvContractErrors(env) {
+  const errors = [];
+  for (const name of requiredLiveOpsEnvNames) {
+    if (!hasMeaningfulEnvValue(env[name])) {
+      errors.push(`${name} value is required`);
+    }
+  }
+  for (const name of liveOpsLegacyEnvNames) {
+    if (hasMeaningfulEnvValue(env[name])) {
+      errors.push(`${name} must not be used for production live ops`);
+    }
+  }
+  for (const name of Object.keys(env)) {
+    if (/^SEEMIRAI_M22_.*_READY$/u.test(name) && hasMeaningfulEnvValue(env[name])) {
+      errors.push(`${name} must be replaced with real readiness evidence`);
+    }
+    if (/^SEEMIRAI_RUN_UPBIT_.*_SMOKE$/u.test(name) && hasMeaningfulEnvValue(env[name])) {
+      errors.push(`${name} must not be used as production live ops readiness input`);
+    }
+  }
+  const keyScopeEvidence = createEnvKeyScopeEvidence(env.SEEMIRAI_UPBIT_KEY_SCOPE);
+  errors.push(...keyScopeEvidence.errors);
+  return errors;
+}
+
+function createEnvKeyScopeEvidence(value) {
+  const scopes = readCsvString(value);
+  const missingRequiredScopes = requiredKeyScopes.filter((scope) => !scopes.includes(scope));
+  const forbiddenScopes = scopes.filter(isForbiddenKeyScope);
+  const errors = [];
+  if (missingRequiredScopes.length > 0) {
+    errors.push(`SEEMIRAI_UPBIT_KEY_SCOPE missing required scopes: ${missingRequiredScopes.join(", ")}`);
+  }
+  if (forbiddenScopes.length > 0) {
+    errors.push(`SEEMIRAI_UPBIT_KEY_SCOPE includes forbidden scopes: ${forbiddenScopes.join(", ")}`);
+  }
+  return { scopes, missingRequiredScopes, forbiddenScopes, errors };
+}
+
+function parseEnvContent(content) {
+  const values = {};
+  const lines = content.split(/\r?\n/u);
+  lines.forEach((line, index) => {
+    const trimmed = line.trim();
+    if (trimmed.length === 0 || trimmed.startsWith("#")) {
+      return;
+    }
+    const normalized = trimmed.startsWith("export ") ? trimmed.slice("export ".length).trim() : trimmed;
+    const separatorIndex = normalized.indexOf("=");
+    if (separatorIndex <= 0) {
+      throw new Error(`${index + 1}번 줄은 KEY=value 형식이어야 합니다.`);
+    }
+    const key = normalized.slice(0, separatorIndex).trim();
+    const rawValue = normalized.slice(separatorIndex + 1).trim();
+    values[key] = parseEnvValue(rawValue);
+  });
+  return values;
+}
+
+function parseEnvValue(rawValue) {
+  if ((rawValue.startsWith('"') && rawValue.endsWith('"')) || (rawValue.startsWith("'") && rawValue.endsWith("'"))) {
+    return rawValue.slice(1, -1);
+  }
+  const commentIndex = rawValue.indexOf(" #");
+  return commentIndex >= 0 ? rawValue.slice(0, commentIndex).trim() : rawValue;
+}
+
+function findSecretLikeKeys(value, currentPath = "$") {
+  if (Array.isArray(value)) {
+    return value.flatMap((item, index) => findSecretLikeKeys(item, `${currentPath}[${index}]`));
+  }
+  if (!isRecord(value)) {
+    return [];
+  }
+  return Object.entries(value).flatMap(([key, child]) => {
+    const nextPath = `${currentPath}.${key}`;
+    if (/(?:secret|token|password|access[_-]?key|secret[_-]?key|database[_-]?url|authorization|jwt)/iu.test(key)) {
+      return [nextPath];
+    }
+    return findSecretLikeKeys(child, nextPath);
+  });
 }
 
 async function createFileStatus(name, value, baseDir) {
@@ -974,30 +1260,39 @@ function createSourceScanCommandEvidence(commands) {
     const usesRipgrep = tokens[0] === "rg";
     const hasLineNumber = /(?:^|\s)(?:-n|--line-number)(?:\s|$)/u.test(command);
     const scansExpectedPaths = requiredSourceScanPaths.every((scanPath) => new RegExp(`(?:^|\\s)${scanPath}(?:\\s|$)`, "u").test(command));
-    const checksUnsafeOrderBoundary = /ord_type|withdraw|출금|deposit|입금|leverage|futures|margin|시장가|best/u.test(command);
-    const checksSecretBoundary = /access_key|secret_key|Authorization|JWT|telegram_bot_token|raw_provider|raw_order|botToken/u.test(command);
+    const coveredUnsafePatterns = requiredUnsafeSourceScanPatterns
+      .filter((requirement) => requirement.pattern.test(command))
+      .map((requirement) => requirement.label);
+    const coveredSecretPatterns = requiredSecretSourceScanPatterns
+      .filter((requirement) => requirement.pattern.test(command))
+      .map((requirement) => requirement.label);
     return {
       command,
       usesRipgrep,
       hasLineNumber,
       scansExpectedPaths,
-      checksUnsafeOrderBoundary,
-      checksSecretBoundary,
+      coveredUnsafePatterns,
+      coveredSecretPatterns,
     };
   });
-  const hasUnsafeBoundaryScan = commandChecks.some((check) => check.usesRipgrep
-    && check.hasLineNumber
-    && check.scansExpectedPaths
-    && check.checksUnsafeOrderBoundary);
-  const hasSecretBoundaryScan = commandChecks.some((check) => check.usesRipgrep
-    && check.hasLineNumber
-    && check.scansExpectedPaths
-    && check.checksSecretBoundary);
+  const validCommandChecks = commandChecks.filter((check) => check.usesRipgrep && check.hasLineNumber && check.scansExpectedPaths);
+  const unsafePatternsCovered = collectUnique(validCommandChecks.flatMap((check) => check.coveredUnsafePatterns));
+  const secretPatternsCovered = collectUnique(validCommandChecks.flatMap((check) => check.coveredSecretPatterns));
+  const missingUnsafePatterns = requiredUnsafeSourceScanPatterns
+    .map((requirement) => requirement.label)
+    .filter((label) => !unsafePatternsCovered.includes(label));
+  const missingSecretPatterns = requiredSecretSourceScanPatterns
+    .map((requirement) => requirement.label)
+    .filter((label) => !secretPatternsCovered.includes(label));
+  const hasUnsafeBoundaryScan = missingUnsafePatterns.length === 0;
+  const hasSecretBoundaryScan = missingSecretPatterns.length === 0;
 
   return {
     ok: hasUnsafeBoundaryScan && hasSecretBoundaryScan,
     hasUnsafeBoundaryScan,
     hasSecretBoundaryScan,
+    missingUnsafePatterns,
+    missingSecretPatterns,
     commandChecks,
   };
 }
@@ -1013,9 +1308,24 @@ function createArtifactManifestConflicts(artifactFiles, manifest, run, counters)
     mismatchCount: readNumber(reconcile.mismatchCount),
     ...Object.fromEntries(requiredCounterNames.map((name) => [name, readNumber(counters[name])])),
   };
+  const expectedPolicyFields = {
+    market: expectedMarket,
+    side: expectedSide,
+    orderType: expectedOrderType,
+    timeInForce: expectedTimeInForce,
+  };
+  const expectedRequestedNotionalKrw = readNumber(run.requestedNotionalKrw);
   const conflicts = [];
 
   for (const file of artifactFiles) {
+    if (file.error !== undefined) {
+      continue;
+    }
+    // artifact가 JSON safe summary가 아니면 manifest 값과 기계적으로 대조할 수 없어 closeout 증거로 쓰지 않는다.
+    if (file.value === undefined) {
+      conflicts.push({ filePath: file.filePath, field: "$", expected: "parseable JSON safe summary", actual: "unparseable" });
+      continue;
+    }
     for (const item of collectArtifactEvidenceRecords(file.value)) {
       const status = readString(item.record.status);
       if (status !== undefined && !/^(?:passed|pass|success|succeeded|ok|completed)$/iu.test(status)) {
@@ -1024,6 +1334,25 @@ function createArtifactManifestConflicts(artifactFiles, manifest, run, counters)
       const terminalState = normalizeTerminalState(readString(item.record.terminalState));
       if (terminalState !== undefined && terminalState !== "CANCEL") {
         conflicts.push({ filePath: file.filePath, field: `${item.path}.terminalState`, expected: "CANCEL", actual: terminalState });
+      }
+      for (const [field, expected] of Object.entries(expectedPolicyFields)) {
+        const actual = field === "timeInForce"
+          ? normalizeTimeInForce(readString(item.record[field]))
+          : readString(item.record[field])?.toUpperCase();
+        if (actual !== undefined && actual !== expected) {
+          conflicts.push({ filePath: file.filePath, field: `${item.path}.${field}`, expected, actual });
+        }
+      }
+      const actualRequestedNotionalKrw = readNumber(item.record.requestedNotionalKrw);
+      if (actualRequestedNotionalKrw !== undefined
+        && expectedRequestedNotionalKrw !== undefined
+        && actualRequestedNotionalKrw !== expectedRequestedNotionalKrw) {
+        conflicts.push({
+          filePath: file.filePath,
+          field: `${item.path}.requestedNotionalKrw`,
+          expected: expectedRequestedNotionalKrw,
+          actual: actualRequestedNotionalKrw,
+        });
       }
       for (const [field, expected] of Object.entries(expectedZeroFields)) {
         const actual = readNumber(item.record[field]);
@@ -1056,11 +1385,11 @@ function collectArtifactEvidenceRecords(value, prefix = "$", depth = 0) {
   return records;
 }
 
-function readJsonValue(rawText) {
+function parseJsonValue(rawText) {
   try {
-    return JSON.parse(rawText);
-  } catch {
-    return undefined;
+    return { value: JSON.parse(rawText), error: undefined };
+  } catch (error) {
+    return { value: undefined, error: `JSON parse error: ${toErrorMessage(error)}` };
   }
 }
 
@@ -1138,12 +1467,28 @@ function readStringArray(value) {
   return Array.isArray(value) ? value.filter((item) => typeof item === "string" && item.trim().length > 0).map((item) => item.trim()) : [];
 }
 
+function readCsvString(value) {
+  return hasText(value) ? value.split(",").map((item) => item.trim()).filter(hasText) : [];
+}
+
 function isRecord(value) {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
 function hasText(value) {
   return typeof value === "string" && value.trim().length > 0;
+}
+
+function hasMeaningfulEnvValue(value) {
+  if (!hasText(value)) {
+    return false;
+  }
+  const normalized = value.trim();
+  return normalized !== "0" && !/^(?:<[^>]+>|redacted|\[redacted\])$/iu.test(normalized);
+}
+
+function collectUnique(values) {
+  return [...new Set(values)];
 }
 
 function isOutsideRepositoryResolvedPath(resolvedPath) {
