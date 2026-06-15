@@ -632,6 +632,8 @@ export async function evaluateLiveOpsCliLiveExecution({
   entryRuntime,
   executionStatus,
   postSubmitReadiness,
+  budgetSnapshot,
+  lossSnapshot,
 }) {
   const market = config.universe?.default_market ?? "KRW-BTC";
   const observedAt = new Date().toISOString();
@@ -730,7 +732,7 @@ export async function evaluateLiveOpsCliLiveExecution({
     });
   }
 
-  const executionStatusViolations = collectLiveOpsCliExecutionStatusViolations(executionStatus, postSubmitReadiness);
+  const executionStatusViolations = collectLiveOpsCliExecutionStatusViolations(executionStatus, postSubmitReadiness, budgetSnapshot, lossSnapshot);
   if (executionStatusViolations.length > 0) {
     // kill switch, reconcile freshness, post-submit 후속 경계가 불명확하면 후보가 유효해도 broker runtime을 열지 않는다.
     return buildLiveOpsCliLiveExecutionSummary({
@@ -781,7 +783,7 @@ export async function evaluateLiveOpsCliLiveExecution({
     });
   }
 
-  const request = createLiveOpsCliEntryRuntimeRequest({ config, marketData, intent, observedAt, executionStatus });
+  const request = createLiveOpsCliEntryRuntimeRequest({ config, marketData, intent, observedAt, executionStatus, budgetSnapshot, lossSnapshot });
   if (entryRuntime === undefined) {
     // runtime wiring이 없으면 reservation/broker side effect가 없으므로 불확실 제출이 아니라 설정 차단으로 닫는다.
     return buildLiveOpsCliLiveExecutionSummary({
@@ -1141,7 +1143,7 @@ function validateLiveOpsCliOrderIntentCount(analysisDecision, intents) {
   return undefined;
 }
 
-function collectLiveOpsCliExecutionStatusViolations(executionStatus, postSubmitReadiness) {
+function collectLiveOpsCliExecutionStatusViolations(executionStatus, postSubmitReadiness, budgetSnapshot, lossSnapshot) {
   const violations = [];
   if (executionStatus === undefined || typeof executionStatus !== "object" || executionStatus === null) {
     violations.push("kill switch와 reconcile freshness snapshot이 필요합니다");
@@ -1169,6 +1171,13 @@ function collectLiveOpsCliExecutionStatusViolations(executionStatus, postSubmitR
     if (!hasMeaningfulValue(postSubmitReadiness.evidenceId)) {
       violations.push("post-submit readiness evidence id가 필요합니다");
     }
+  }
+
+  if (!isLiveOpsCliBudgetSnapshot(budgetSnapshot)) {
+    violations.push("실제 budget snapshot이 필요합니다");
+  }
+  if (!isLiveOpsCliLossSnapshot(lossSnapshot)) {
+    violations.push("실제 realized loss snapshot이 필요합니다");
   }
 
   return violations;
@@ -1222,7 +1231,7 @@ function collectLiveOpsCliOrderIntentViolations({ config, marketData, intent }) 
   if (!hasMeaningfulValue(intent?.idempotencyKey)) {
     violations.push("주문 후보에는 decision idempotency key가 필요합니다");
   }
-  if (!hasMeaningfulValue(intent?.metadata?.expected_loss_bps_of_equity)) {
+  if (!hasMeaningfulValue(readLiveOpsCliExpectedLossBps(intent))) {
     violations.push("주문 후보에는 RiskGate expected loss 입력이 필요합니다");
   }
   if (!isLiveOpsCliCostInput(intent?.costInput)) {
@@ -1295,7 +1304,6 @@ function isLiveOpsCliCostInput(value) {
     "spreadCostBpsP75",
     "expectedSlippageBpsP95",
     "cancelRequotePenaltyBps",
-    "safetyBufferBps",
   ].every((key) => hasMeaningfulValue(value[key]));
 }
 
@@ -1309,11 +1317,36 @@ function isLiveOpsCliRiskInput(value, intent) {
   return value.strategy.strategyId === intent?.strategyId;
 }
 
+function isLiveOpsCliBudgetSnapshot(value) {
+  if (!isNonEmptyRecord(value)) {
+    return false;
+  }
+  return (
+    isPositiveDecimalString(value.maxOrderKrw) &&
+    isPositiveDecimalString(value.dailyAutonomousNotionalLimitKrw) &&
+    isNonNegativeDecimalString(value.dailyAutonomousNotionalUsedKrw) &&
+    isNonNegativeDecimalString(value.openPositionNotionalKrw) &&
+    isPositiveDecimalString(value.maxOpenPositionNotionalKrw) &&
+    hasMeaningfulValue(value.capturedAt)
+  );
+}
+
+function isLiveOpsCliLossSnapshot(value) {
+  if (!isNonEmptyRecord(value)) {
+    return false;
+  }
+  return (
+    isNonNegativeDecimalString(value.dailyRealizedLossKrw) &&
+    isNonNegativeDecimalString(value.weeklyRealizedLossKrw) &&
+    hasMeaningfulValue(value.capturedAt)
+  );
+}
+
 function isLiveOpsCliOrderIntentEvidenceMatch(evidence, intent) {
   if (!isNonEmptyRecord(evidence) || intent === undefined || intent === null) {
     return false;
   }
-  const expectedLossBps = intent.metadata?.expected_loss_bps_of_equity;
+  const expectedLossBps = readLiveOpsCliExpectedLossBps(intent);
   const expected = {
     exchange_id: intent.exchangeId,
     market: intent.market,
@@ -1329,7 +1362,7 @@ function isLiveOpsCliOrderIntentEvidenceMatch(evidence, intent) {
     expected_loss_bps_of_equity: expectedLossBps,
   };
 
-  return Object.entries(expected).every(([key, value]) => value !== undefined && evidence[key] === value);
+  return Object.entries(expected).every(([key, value]) => isLiveOpsCliEvidenceValueMatch(key, evidence[key], value));
 }
 
 function readLiveOpsCliEvidenceTimeInForce(intent) {
@@ -1337,6 +1370,31 @@ function readLiveOpsCliEvidenceTimeInForce(intent) {
     return "GTC";
   }
   return intent.timeInForce;
+}
+
+function readLiveOpsCliExpectedLossBps(intent) {
+  return intent?.metadata?.expected_loss_bps_of_equity ?? intent?.metadata?.expectedLossBpsOfEquity;
+}
+
+function isLiveOpsCliEvidenceValueMatch(key, evidenceValue, expectedValue) {
+  if (expectedValue === undefined) {
+    return false;
+  }
+  if (["requested_quantity", "requested_notional", "requested_price", "expected_loss_bps_of_equity"].includes(key)) {
+    return isDecimalEqual(evidenceValue, expectedValue);
+  }
+  return evidenceValue === expectedValue;
+}
+
+function isDecimalEqual(left, right) {
+  if (!hasDecimalComparableValue(left) || !hasDecimalComparableValue(right)) {
+    return false;
+  }
+  try {
+    return new Decimal(left).equals(new Decimal(right));
+  } catch {
+    return false;
+  }
 }
 
 function hasProblemFieldList(value) {
@@ -1347,7 +1405,7 @@ function isNonEmptyRecord(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value) && Object.keys(value).length > 0;
 }
 
-function createLiveOpsCliEntryRuntimeRequest({ config, marketData, intent, observedAt, executionStatus }) {
+function createLiveOpsCliEntryRuntimeRequest({ config, marketData, intent, observedAt, executionStatus, budgetSnapshot, lossSnapshot }) {
   const liveAttemptId = createLiveOpsCliAttemptId(intent.idempotencyKey);
   return {
     config: {
@@ -1371,7 +1429,7 @@ function createLiveOpsCliEntryRuntimeRequest({ config, marketData, intent, obser
       requestedPrice: intent.requestedPrice,
       referencePrice: intent.referencePrice ?? intent.requestedPrice,
       reason: intent.reason,
-      expectedLossBpsOfEquity: intent.metadata.expected_loss_bps_of_equity,
+      expectedLossBpsOfEquity: readLiveOpsCliExpectedLossBps(intent),
       costInput: intent.costInput,
       risk: intent.risk,
       orderType: "LIMIT",
@@ -1385,19 +1443,8 @@ function createLiveOpsCliEntryRuntimeRequest({ config, marketData, intent, obser
         decision_idempotency_key: intent.idempotencyKey,
       },
     },
-    budgetSnapshot: {
-      maxOrderKrw: config.budget?.max_order_krw ?? "10000",
-      dailyAutonomousNotionalLimitKrw: config.budget?.daily_autonomous_notional_limit_krw ?? "30000",
-      dailyAutonomousNotionalUsedKrw: "0",
-      openPositionNotionalKrw: "0",
-      maxOpenPositionNotionalKrw: config.budget?.max_open_position_notional_krw ?? "30000",
-      capturedAt: marketData.latestHeartbeatAt ?? observedAt,
-    },
-    lossSnapshot: {
-      dailyRealizedLossKrw: "0",
-      weeklyRealizedLossKrw: "0",
-      capturedAt: observedAt,
-    },
+    budgetSnapshot,
+    lossSnapshot,
     killSwitchActive: executionStatus.killSwitchActive,
     reconcileFresh: executionStatus.reconcileFresh,
     idempotencyKey: liveAttemptId,
@@ -1466,6 +1513,9 @@ function collectLiveOpsCliEntryRuntimeGuardViolations(request) {
     if (!actualNotional.equals(requestedNotional)) {
       violations.push("live ops wrapper 후보 requestedNotional은 가격 * 수량과 같아야 합니다");
     }
+    if (actualNotional.lt(5_000)) {
+      violations.push("live ops wrapper 후보는 Upbit KRW 최소 주문금액 이상이어야 합니다");
+    }
     if (actualNotional.gt(new Decimal(config?.max_order_krw ?? "0"))) {
       violations.push("live ops wrapper 후보 실제 주문 금액이 단일 주문 상한을 초과했습니다");
     }
@@ -1528,7 +1578,7 @@ function createLiveOpsCliOrderSubmission(request) {
       idempotencyKey: request.idempotencyKey,
       reason: request.candidate.reason,
       postOnly: true,
-      timeInForce: "POST_ONLY",
+      timeInForce: request.candidate.timeInForce ?? "GTC",
       metadata: request.candidate.metadata,
     },
     costSnapshot: request.candidate.costSnapshot,
@@ -1569,6 +1619,17 @@ function isPositiveDecimalString(value) {
     return false;
   }
   return new Decimal(value).gt(0);
+}
+
+function isNonNegativeDecimalString(value) {
+  if (!hasDecimalComparableValue(value) || !/^(?:0|[1-9]\d*)(?:\.\d+)?$/u.test(String(value))) {
+    return false;
+  }
+  return new Decimal(value).gte(0);
+}
+
+function hasDecimalComparableValue(value) {
+  return value !== undefined && value !== null && String(value).trim().length > 0;
 }
 
 function evaluateLiveOpsCliReconcilePnlStatus({ config, fixtureSmoke, liveExecution }) {

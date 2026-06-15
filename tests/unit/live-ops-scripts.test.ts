@@ -465,7 +465,7 @@ function orderIntentEvidence(intent) {
     requested_notional: intent.requestedNotional,
     requested_price: intent.requestedPrice,
     idempotency_key: intent.idempotencyKey,
-    expected_loss_bps_of_equity: intent.metadata.expected_loss_bps_of_equity,
+    expected_loss_bps_of_equity: intent.metadata.expected_loss_bps_of_equity ?? intent.metadata.expectedLossBpsOfEquity,
   };
 }
 function createCostInput() {
@@ -557,6 +557,19 @@ const postSubmitReadiness = {
   telegramReady: true,
   evidenceId: "post-submit-readiness-evidence",
 };
+const runtimeBudgetSnapshot = {
+  maxOrderKrw: "10000",
+  dailyAutonomousNotionalLimitKrw: "30000",
+  dailyAutonomousNotionalUsedKrw: "0",
+  openPositionNotionalKrw: "0",
+  maxOpenPositionNotionalKrw: "30000",
+  capturedAt: observedAt,
+};
+const runtimeLossSnapshot = {
+  dailyRealizedLossKrw: "0",
+  weeklyRealizedLossKrw: "0",
+  capturedAt: observedAt,
+};
 const summary = await evaluateLiveOpsCliLiveExecution({
   config,
   fixtureSmoke: false,
@@ -575,6 +588,8 @@ const summary = await evaluateLiveOpsCliLiveExecution({
   entryRuntime: createLiveOpsCliEntryRuntime({ broker, budgetReservation }),
   executionStatus,
   postSubmitReadiness,
+  budgetSnapshot: runtimeBudgetSnapshot,
+  lossSnapshot: runtimeLossSnapshot,
 });
 const submittedWithoutReservation = [];
 const blockedSummary = await evaluateLiveOpsCliLiveExecution({
@@ -604,6 +619,8 @@ const blockedSummary = await evaluateLiveOpsCliLiveExecution({
   }),
   executionStatus,
   postSubmitReadiness,
+  budgetSnapshot: runtimeBudgetSnapshot,
+  lossSnapshot: runtimeLossSnapshot,
 });
 const submittedWithoutRisk = [];
 const riskBlockedSummary = await evaluateLiveOpsCliLiveExecution({
@@ -639,6 +656,8 @@ const riskBlockedSummary = await evaluateLiveOpsCliLiveExecution({
   }),
   executionStatus,
   postSubmitReadiness,
+  budgetSnapshot: runtimeBudgetSnapshot,
+  lossSnapshot: runtimeLossSnapshot,
 });
 const submittedWithoutStatus = [];
 const statusBlockedSummary = await evaluateLiveOpsCliLiveExecution({
@@ -667,6 +686,8 @@ const statusBlockedSummary = await evaluateLiveOpsCliLiveExecution({
     },
     budgetReservation,
   }),
+  budgetSnapshot: runtimeBudgetSnapshot,
+  lossSnapshot: runtimeLossSnapshot,
 });
 const submittedWithoutReservationEvidence = [];
 const reservationEvidenceBlockedSummary = await evaluateLiveOpsCliLiveExecution({
@@ -703,6 +724,8 @@ const reservationEvidenceBlockedSummary = await evaluateLiveOpsCliLiveExecution(
   }),
   executionStatus,
   postSubmitReadiness,
+  budgetSnapshot: runtimeBudgetSnapshot,
+  lossSnapshot: runtimeLossSnapshot,
 });
 const staleEvidence = {
   ...orderIntentEvidence(intent),
@@ -750,6 +773,8 @@ const staleEvidenceSummary = await evaluateLiveOpsCliLiveExecution({
   }),
   executionStatus,
   postSubmitReadiness,
+  budgetSnapshot: runtimeBudgetSnapshot,
+  lossSnapshot: runtimeLossSnapshot,
 });
 function createRuntimeRequest(overrides = {}) {
   return {
@@ -852,6 +877,25 @@ const directMismatchNotionalResult = await createLiveOpsCliEntryRuntime({
   },
   budgetReservation,
 }).submitEntryCandidate(directMismatchNotionalRequest);
+const directBelowMinimumNotionalRequest = createRuntimeRequest();
+directBelowMinimumNotionalRequest.candidate = {
+  ...directBelowMinimumNotionalRequest.candidate,
+  requestedPrice: "40000000",
+  requestedQuantity: "0.0001",
+  requestedNotional: "4000",
+};
+const submittedWithBelowMinimumNotional = [];
+const directBelowMinimumNotionalResult = await createLiveOpsCliEntryRuntime({
+  broker: {
+    async submitOrder(submission) {
+      submittedWithBelowMinimumNotional.push(submission);
+      return {
+        brokerOrderId: "unexpected-below-minimum-notional-order",
+      };
+    },
+  },
+  budgetReservation,
+}).submitEntryCandidate(directBelowMinimumNotionalRequest);
 const strategyDecisionKey = "live_ops_fixture_strategy:upbit_krw_spot:KRW-BTC:BUY:2026-06-15T00:00:00.000Z";
 const strategyKeyIntent = {
   ...intent,
@@ -911,8 +955,23 @@ const strategyKeyWrapperSummary = await evaluateLiveOpsCliLiveExecution({
   }),
   executionStatus,
   postSubmitReadiness,
+  budgetSnapshot: runtimeBudgetSnapshot,
+  lossSnapshot: runtimeLossSnapshot,
 });
 const runtimeRequests = [];
+const usedBudgetSnapshot = {
+  maxOrderKrw: "10000",
+  dailyAutonomousNotionalLimitKrw: "30000",
+  dailyAutonomousNotionalUsedKrw: "1234.5",
+  openPositionNotionalKrw: "5678.9",
+  maxOpenPositionNotionalKrw: "30000",
+  capturedAt: observedAt,
+};
+const usedLossSnapshot = {
+  dailyRealizedLossKrw: "111.1",
+  weeklyRealizedLossKrw: "222.2",
+  capturedAt: observedAt,
+};
 const strategyKeySummary = await evaluateLiveOpsCliLiveExecution({
   config,
   fixtureSmoke: false,
@@ -953,6 +1012,129 @@ const strategyKeySummary = await evaluateLiveOpsCliLiveExecution({
   },
   executionStatus,
   postSubmitReadiness,
+  budgetSnapshot: usedBudgetSnapshot,
+  lossSnapshot: usedLossSnapshot,
+});
+const decimalIntent = {
+  ...intent,
+  requestedNotional: "10000.0",
+  requestedPrice: "100000000.0",
+  requestedQuantity: "0.00010000",
+};
+decimalIntent.costInput = createCostInput();
+decimalIntent.risk = createRiskInput(decimalIntent.strategyId);
+decimalIntent.costSnapshot = {
+  ...intent.costSnapshot,
+  order_intent: {
+    ...orderIntentEvidence(decimalIntent),
+    requested_price: "100000000",
+    requested_quantity: "0.0001",
+    requested_notional: "10000",
+  },
+};
+decimalIntent.riskApproval = {
+  ...intent.riskApproval,
+  order_intent: {
+    ...orderIntentEvidence(decimalIntent),
+    requested_price: "100000000",
+    requested_quantity: "0.0001",
+    requested_notional: "10000",
+  },
+};
+const submittedWithDecimalEvidence = [];
+const decimalEvidenceSummary = await evaluateLiveOpsCliLiveExecution({
+  config,
+  fixtureSmoke: false,
+  analysisDecision,
+  marketData: {
+    ready: true,
+    latestHeartbeatAt: observedAt,
+  },
+  env: {
+    SEEMIRAI_UPBIT_ACCESS_KEY: "fake-access-key",
+    SEEMIRAI_UPBIT_SECRET_KEY: "fake-secret-key",
+    SEEMIRAI_UPBIT_KEY_SCOPE: "자산조회,주문조회,주문하기",
+    SEEMIRAI_UPBIT_KEY_SCOPE_EVIDENCE_ID: "scope-evidence",
+  },
+  orderIntents: [decimalIntent],
+  entryRuntime: createLiveOpsCliEntryRuntime({
+    broker: {
+      async submitOrder(submission) {
+        submittedWithDecimalEvidence.push(submission);
+        return {
+          brokerOrderId: "decimal-evidence-live-order-001",
+        };
+      },
+    },
+    budgetReservation,
+  }),
+  executionStatus,
+  postSubmitReadiness,
+  budgetSnapshot: runtimeBudgetSnapshot,
+  lossSnapshot: runtimeLossSnapshot,
+});
+const camelExpectedLossIntent = {
+  ...intent,
+  metadata: {
+    expectedLossBpsOfEquity: "5",
+  },
+  costInput: {
+    ...createCostInput(),
+  },
+};
+delete camelExpectedLossIntent.costInput.safetyBufferBps;
+camelExpectedLossIntent.risk = createRiskInput(camelExpectedLossIntent.strategyId);
+camelExpectedLossIntent.costSnapshot = {
+  ...intent.costSnapshot,
+  order_intent: orderIntentEvidence(camelExpectedLossIntent),
+};
+camelExpectedLossIntent.riskApproval = {
+  ...intent.riskApproval,
+  order_intent: orderIntentEvidence(camelExpectedLossIntent),
+};
+const camelRuntimeRequests = [];
+const camelExpectedLossSummary = await evaluateLiveOpsCliLiveExecution({
+  config,
+  fixtureSmoke: false,
+  analysisDecision,
+  marketData: {
+    ready: true,
+    latestHeartbeatAt: observedAt,
+  },
+  env: {
+    SEEMIRAI_UPBIT_ACCESS_KEY: "fake-access-key",
+    SEEMIRAI_UPBIT_SECRET_KEY: "fake-secret-key",
+    SEEMIRAI_UPBIT_KEY_SCOPE: "자산조회,주문조회,주문하기",
+    SEEMIRAI_UPBIT_KEY_SCOPE_EVIDENCE_ID: "scope-evidence",
+  },
+  orderIntents: [camelExpectedLossIntent],
+  entryRuntime: {
+    async submitEntryCandidate(request) {
+      camelRuntimeRequests.push(request);
+      return {
+        status: "SUBMITTED",
+        attemptId: request.idempotencyKey,
+        idempotencyKey: request.idempotencyKey,
+        brokerOrderId: "camel-expected-loss-live-order-001",
+        message: "camel expected loss fixture submitted",
+        action: "fixture action",
+        violations: [],
+        events: [],
+        trace: {
+          reason: "broker_submitted",
+        },
+        executionResult: {
+          brokerOrder: {
+            brokerOrderId: "camel-expected-loss-live-order-001",
+          },
+        },
+      };
+    },
+  },
+  executionStatus,
+  postSubmitReadiness,
+  budgetSnapshot: runtimeBudgetSnapshot,
+  lossSnapshot: runtimeLossSnapshot,
 });
 const missingRuntimeSummary = await evaluateLiveOpsCliLiveExecution({
   config,
@@ -971,6 +1153,8 @@ const missingRuntimeSummary = await evaluateLiveOpsCliLiveExecution({
   orderIntents: [intent],
   executionStatus,
   postSubmitReadiness,
+  budgetSnapshot: runtimeBudgetSnapshot,
+  lossSnapshot: runtimeLossSnapshot,
 });
 const topLevelSubmittedBlocked = renderLiveOpsSummary({
   configPath: "config/live-ops.example.json",
@@ -1018,11 +1202,19 @@ console.log(JSON.stringify({
   submittedWithInvalidMarket,
   directMismatchNotionalResult,
   submittedWithMismatchNotional,
+  directBelowMinimumNotionalResult,
+  submittedWithBelowMinimumNotional,
   strategyKeyWrapperSummary,
   submittedWithStrategyWrapper,
   strategyWrapperReservations,
   strategyKeySummary,
   runtimeRequests,
+  usedBudgetSnapshot,
+  usedLossSnapshot,
+  decimalEvidenceSummary,
+  submittedWithDecimalEvidence,
+  camelExpectedLossSummary,
+  camelRuntimeRequests,
   missingRuntimeSummary,
   topLevelSubmittedBlocked,
   topLevelIdleBlocked,
@@ -1114,6 +1306,11 @@ console.log(JSON.stringify({
         violations: string[];
       };
       submittedWithMismatchNotional: unknown[];
+      directBelowMinimumNotionalResult: {
+        status: string;
+        violations: string[];
+      };
+      submittedWithBelowMinimumNotional: unknown[];
       strategyKeyWrapperSummary: {
         status: string;
         idempotencyKey: string;
@@ -1122,6 +1319,7 @@ console.log(JSON.stringify({
       submittedWithStrategyWrapper: Array<{
         intent: {
           idempotencyKey: string;
+          timeInForce: string;
         };
       }>;
       strategyWrapperReservations: Array<{
@@ -1144,6 +1342,25 @@ console.log(JSON.stringify({
           metadata: {
             decision_idempotency_key: string;
           };
+        };
+        budgetSnapshot: Record<string, string>;
+        lossSnapshot: Record<string, string>;
+      }>;
+      usedBudgetSnapshot: Record<string, string>;
+      usedLossSnapshot: Record<string, string>;
+      decimalEvidenceSummary: {
+        status: string;
+        submittedOrderCount: number;
+      };
+      submittedWithDecimalEvidence: unknown[];
+      camelExpectedLossSummary: {
+        status: string;
+        submittedOrderCount: number;
+      };
+      camelRuntimeRequests: Array<{
+        candidate: {
+          expectedLossBpsOfEquity: string;
+          costInput: Record<string, unknown>;
         };
       }>;
       missingRuntimeSummary: {
@@ -1168,15 +1385,13 @@ console.log(JSON.stringify({
       brokerOrderId: "upbit-live-boundary-001",
     });
     expect(output.summary.checks.map((check) => check.code)).toContain("live_ops_execution_submitted");
-    expect(output.reservations).toEqual([
-      {
-        attemptId: "ops-aaaaaaaaaaaaaaaaaaaaaaaaaa",
-        idempotencyKey: "ops-aaaaaaaaaaaaaaaaaaaaaaaaaa",
-        market: "KRW-BTC",
-        strategyId: "live_ops_fixture_strategy",
-        requestedNotionalKrw: "10000",
-      },
-    ]);
+    expect(output.reservations).toContainEqual({
+      attemptId: "ops-aaaaaaaaaaaaaaaaaaaaaaaaaa",
+      idempotencyKey: "ops-aaaaaaaaaaaaaaaaaaaaaaaaaa",
+      market: "KRW-BTC",
+      strategyId: "live_ops_fixture_strategy",
+      requestedNotionalKrw: "10000",
+    });
     expect(output.submitted).toHaveLength(1);
     expect(output.submitted[0]?.intent).toMatchObject({
       exchangeId: "upbit_krw_spot",
@@ -1248,6 +1463,11 @@ console.log(JSON.stringify({
       violations: ["execution_runtime_guard_blocked"],
     });
     expect(output.submittedWithMismatchNotional).toHaveLength(0);
+    expect(output.directBelowMinimumNotionalResult).toMatchObject({
+      status: "BLOCKED",
+      violations: ["execution_runtime_guard_blocked"],
+    });
+    expect(output.submittedWithBelowMinimumNotional).toHaveLength(0);
     expect(output.strategyKeyWrapperSummary).toMatchObject({
       status: "submitted",
       submittedOrderCount: 1,
@@ -1255,6 +1475,7 @@ console.log(JSON.stringify({
     expect(output.strategyKeyWrapperSummary.idempotencyKey).toMatch(/^ops-[a-f0-9]{26}$/u);
     expect(output.submittedWithStrategyWrapper).toHaveLength(1);
     expect(output.submittedWithStrategyWrapper[0]?.intent.idempotencyKey).toBe(output.strategyKeyWrapperSummary.idempotencyKey);
+    expect(output.submittedWithStrategyWrapper[0]?.intent.timeInForce).toBe("GTC");
     expect(output.strategyWrapperReservations).toHaveLength(1);
     expect(output.strategyWrapperReservations[0]?.idempotencyKey).toBe(output.strategyKeyWrapperSummary.idempotencyKey);
     expect(output.strategyKeySummary).toMatchObject({
@@ -1268,6 +1489,8 @@ console.log(JSON.stringify({
       max_daily_loss_krw: "10000",
       max_weekly_loss_krw: "30000",
     });
+    expect(output.runtimeRequests[0]?.budgetSnapshot).toEqual(output.usedBudgetSnapshot);
+    expect(output.runtimeRequests[0]?.lossSnapshot).toEqual(output.usedLossSnapshot);
     expect(output.runtimeRequests[0]?.candidate.costInput).toMatchObject({
       expectedReturnBps: "40",
       safetyBufferBps: "10",
@@ -1280,6 +1503,18 @@ console.log(JSON.stringify({
     expect(output.runtimeRequests[0]?.candidate.metadata).toMatchObject({
       decision_idempotency_key: "live_ops_fixture_strategy:upbit_krw_spot:KRW-BTC:BUY:2026-06-15T00:00:00.000Z",
     });
+    expect(output.decimalEvidenceSummary).toMatchObject({
+      status: "submitted",
+      submittedOrderCount: 1,
+    });
+    expect(output.submittedWithDecimalEvidence).toHaveLength(1);
+    expect(output.camelExpectedLossSummary).toMatchObject({
+      status: "submitted",
+      submittedOrderCount: 1,
+    });
+    expect(output.camelRuntimeRequests).toHaveLength(1);
+    expect(output.camelRuntimeRequests[0]?.candidate.expectedLossBpsOfEquity).toBe("5");
+    expect(output.camelRuntimeRequests[0]?.candidate.costInput).not.toHaveProperty("safetyBufferBps");
     expect(output.missingRuntimeSummary).toMatchObject({
       status: "blocked",
       attemptedOrderCount: 0,
