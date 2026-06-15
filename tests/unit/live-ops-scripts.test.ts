@@ -1180,11 +1180,28 @@ const directInfrastructureRiskResult = await createLiveOpsCliEntryRuntime({
   },
   budgetReservation,
 }).submitEntryCandidate(directInfrastructureRiskRequest);
+const directNumericDecimalRequest = createRuntimeRequest();
+directNumericDecimalRequest.candidate = {
+  ...directNumericDecimalRequest.candidate,
+  requestedPrice: 100000000,
+};
+const submittedWithNumericDecimal = [];
+const directNumericDecimalResult = await createLiveOpsCliEntryRuntime({
+  broker: {
+    async submitOrder(submission) {
+      submittedWithNumericDecimal.push(submission);
+      return {
+        brokerOrderId: "unexpected-numeric-decimal-order",
+      };
+    },
+  },
+  budgetReservation,
+}).submitEntryCandidate(directNumericDecimalRequest);
 const strategyDecisionKey = "live_ops_fixture_strategy:upbit_krw_spot:KRW-BTC:BUY:2026-06-15T00:00:00.000Z";
 const strategyKeyIntent = {
   ...intent,
   idempotencyKey: strategyDecisionKey,
-  timeInForce: "GTC",
+  timeInForce: "POST_ONLY",
 };
 strategyKeyIntent.costSnapshot = {
   ...intent.costSnapshot,
@@ -1762,6 +1779,8 @@ console.log(JSON.stringify({
   submittedWithDefaultSafetyBufferGap,
   directInfrastructureRiskResult,
   submittedWithInfrastructureRisk,
+  directNumericDecimalResult,
+  submittedWithNumericDecimal,
   strategyKeyWrapperSummary,
   submittedWithStrategyWrapper,
   strategyWrapperReservations,
@@ -2034,6 +2053,14 @@ console.log(JSON.stringify({
         };
       };
       submittedWithInfrastructureRisk: unknown[];
+      directNumericDecimalResult: {
+        status: string;
+        violations: string[];
+        trace: {
+          violations: string[];
+        };
+      };
+      submittedWithNumericDecimal: unknown[];
       strategyKeyWrapperSummary: {
         status: string;
         idempotencyKey: string;
@@ -2386,6 +2413,14 @@ console.log(JSON.stringify({
       },
     });
     expect(output.submittedWithInfrastructureRisk).toHaveLength(0);
+    expect(output.directNumericDecimalResult).toMatchObject({
+      status: "BLOCKED",
+      violations: ["execution_runtime_guard_blocked"],
+      trace: {
+        violations: expect.arrayContaining(["live ops wrapper 후보 가격, 수량, 주문 금액은 양수 decimal이어야 합니다"]),
+      },
+    });
+    expect(output.submittedWithNumericDecimal).toHaveLength(0);
     expect(output.strategyKeyWrapperSummary).toMatchObject({
       status: "submitted",
       submittedOrderCount: 1,
@@ -2393,7 +2428,7 @@ console.log(JSON.stringify({
     expect(output.strategyKeyWrapperSummary.idempotencyKey).toMatch(/^ops-[a-f0-9]{26}$/u);
     expect(output.submittedWithStrategyWrapper).toHaveLength(1);
     expect(output.submittedWithStrategyWrapper[0]?.intent.idempotencyKey).toBe(output.strategyKeyWrapperSummary.idempotencyKey);
-    expect(output.submittedWithStrategyWrapper[0]?.intent.timeInForce).toBe("GTC");
+    expect(output.submittedWithStrategyWrapper[0]?.intent.timeInForce).toBe("POST_ONLY");
     expect(output.strategyWrapperReservations).toHaveLength(1);
     expect(output.strategyWrapperReservations[0]?.idempotencyKey).toBe(output.strategyKeyWrapperSummary.idempotencyKey);
     expect(output.strategyKeySummary).toMatchObject({
@@ -2479,10 +2514,10 @@ console.log(JSON.stringify({
       liveOrderCapable: false,
     });
     expect(output.topLevelDecisionSourcePendingReady).toMatchObject({
-      status: "ready",
+      status: "blocked",
       liveOrderCapable: false,
     });
-    expect(output.topLevelDecisionSourcePendingReady.message).toContain("decision source 연결 전까지 신규 실주문은 제출되지 않습니다");
+    expect(output.topLevelDecisionSourcePendingReady.message).toContain("production live ops boot가 fail-closed");
     expect(result.stdout).not.toContain("fake-secret-key");
   });
 

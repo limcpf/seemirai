@@ -182,8 +182,7 @@ export async function loadLiveOpsCliInputs(options) {
 
 export function renderLiveOpsSummary(input) {
   const postExecutionReady = input.reconcilePnlStatus.ready === true && input.telegramAlert.ready === true;
-  const analysisBootReady = input.analysisDecision.ready === true || input.analysisDecision.decisionSourceConnected === false;
-  const status = input.dbReadiness.ready && input.marketData.ready && analysisBootReady && input.liveExecution.ready && postExecutionReady
+  const status = input.dbReadiness.ready && input.marketData.ready && input.analysisDecision.ready && input.liveExecution.ready && postExecutionReady
     ? "ready"
     : "blocked";
   return {
@@ -191,9 +190,7 @@ export function renderLiveOpsSummary(input) {
     message: status === "ready"
       ? (input.fixtureSmoke
         ? "production live ops config/env 계약과 DB readiness를 통과했습니다. fixture smoke는 외부 provider를 호출하지 않습니다."
-        : input.analysisDecision.decisionSourceConnected === false
-          ? "production live ops boot를 통과했습니다. decision source 연결 전까지 신규 실주문은 제출되지 않습니다."
-          : "production live ops config/env, DB readiness, Upbit public market data, analysis/decision, live execution guard를 통과했습니다.")
+        : "production live ops config/env, DB readiness, Upbit public market data, analysis/decision, live execution guard를 통과했습니다.")
       : "production live ops boot가 fail-closed 됐습니다. 차단된 readiness 항목을 먼저 복구하세요.",
     configPath: input.configPath,
     envFilePath: input.envFilePath,
@@ -652,8 +649,8 @@ export async function evaluateLiveOpsCliLiveExecution({
   if (analysisDecision.ready !== true) {
     if (analysisDecision.decisionSourceConnected === false) {
       return buildLiveOpsCliLiveExecutionSummary({
-        status: brokerGuard.ready ? "idle" : "blocked",
-        ready: brokerGuard.ready,
+        status: "pending",
+        ready: false,
         liveOrderCapable: false,
         market,
         observedAt,
@@ -1418,7 +1415,7 @@ function isLiveOpsCliPostOnlyLimitIntent(intent) {
   return (
     intent?.orderType === "LIMIT" &&
     intent?.postOnly === true &&
-    (intent.timeInForce === undefined || intent.timeInForce === "GTC" || intent.timeInForce === "POST_ONLY")
+    intent.timeInForce === "POST_ONLY"
   );
 }
 
@@ -2065,7 +2062,7 @@ function parseLiveOpsKeyScopes(value) {
 }
 
 function isPositiveDecimalString(value) {
-  if (!hasMeaningfulValue(value) || !/^(?:0|[1-9]\d*)(?:\.\d+)?$/u.test(String(value))) {
+  if (!hasDecimalComparableValue(value) || !/^(?:0|[1-9]\d*)(?:\.\d+)?$/u.test(String(value))) {
     return false;
   }
   return new Decimal(value).gt(0);
@@ -2091,7 +2088,7 @@ function isDecimalString(value) {
 }
 
 function hasDecimalComparableValue(value) {
-  return value !== undefined && value !== null && String(value).trim().length > 0;
+  return typeof value === "string" && value.trim().length > 0;
 }
 
 function evaluateLiveOpsCliReconcilePnlStatus({ config, fixtureSmoke, liveExecution }) {
