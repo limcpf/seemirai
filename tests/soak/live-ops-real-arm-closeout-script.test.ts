@@ -323,6 +323,31 @@ describe("Issue 206 live:ops real-arm closeout script", () => {
     expect(getCheck(summary, "sourceSecurityScan")).toMatchObject({ status: "fail" });
   });
 
+  it("fails when source scan commands exclude the required source paths by glob", async () => {
+    const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-issue-206-closeout-source-scan-exclude-"));
+    const manifestPath = await writeCloseoutManifest(artifactDir, {
+      manifestMutator: (manifest) => ({
+        ...manifest,
+        sourceScan: {
+          status: "passed",
+          commands: [
+            "rg -n \"ord_type|market|best|withdraw|deposit|leverage|futures|margin\" src scripts config docs -g '!src/**' -g '!scripts/**' -g '!config/**' -g '!docs/**'",
+            "rg -n \"access_key|secret_key|Authorization|Bearer|JWT|telegram_bot_token|botToken|raw_provider|rawProvider|raw_order|rawOrder\" src scripts config docs -g '!src/**'",
+          ],
+          unsafeMatches: [],
+          secretMatches: [],
+        },
+      }),
+    });
+    const summary = await runScriptExpectingFailure(
+      ["--json", "--artifact-dir", artifactDir, "--manifest", manifestPath],
+      createReadyEnv(),
+    );
+
+    expect(summary.status).toBe("failed");
+    expect(getCheck(summary, "sourceSecurityScan")).toMatchObject({ status: "fail" });
+  });
+
   it("fails when key scope evidence includes forbidden withdrawal permission", async () => {
     const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-issue-206-closeout-key-scope-"));
     const manifestPath = await writeCloseoutManifest(artifactDir, {
@@ -359,6 +384,38 @@ describe("Issue 206 live:ops real-arm closeout script", () => {
     const summary = await runScriptExpectingFailure(
       ["--json", "--artifact-dir", artifactDir, "--manifest", manifestPath],
       createReadyEnv(),
+    );
+
+    expect(summary.status).toBe("failed");
+    expect(getCheck(summary, "operatorInputs")).toMatchObject({ status: "fail" });
+  });
+
+  it("fails when config contains keys rejected by the foreground live ops wrapper", async () => {
+    const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-issue-206-closeout-config-keys-"));
+    const configPath = path.join(artifactDir, "live-ops-extra-key.json");
+    await writeFile(configPath, `${JSON.stringify({ ...createLiveOpsConfigFixture(), unexpected_live_ops_key: true }, null, 2)}\n`, "utf8");
+    const manifestPath = await writeCloseoutManifest(artifactDir, {
+      manifestMutator: (manifest) => ({
+        ...manifest,
+        configPath,
+        command: `corepack pnpm live:ops -- --config ${configPath} --env-file ${String(manifest.envFilePath)} --tui`,
+      }),
+    });
+    const summary = await runScriptExpectingFailure(
+      ["--json", "--artifact-dir", artifactDir, "--manifest", manifestPath],
+      createReadyEnv(),
+    );
+
+    expect(summary.status).toBe("failed");
+    expect(getCheck(summary, "operatorInputs")).toMatchObject({ status: "fail" });
+  });
+
+  it("fails when ambient legacy live ops env is set", async () => {
+    const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-issue-206-closeout-ambient-env-"));
+    const manifestPath = await writeCloseoutManifest(artifactDir);
+    const summary = await runScriptExpectingFailure(
+      ["--json", "--artifact-dir", artifactDir, "--manifest", manifestPath],
+      { ...createReadyEnv(), SEEMIRAI_RUN_M22_AUTONOMOUS_PILOT: "1" },
     );
 
     expect(summary.status).toBe("failed");
@@ -495,6 +552,20 @@ describe("Issue 206 live:ops real-arm closeout script", () => {
     expect(getCheck(summary, "artifactFiles")).toMatchObject({ status: "fail" });
   });
 
+  it("fails when artifact safe summary omits required closeout evidence fields", async () => {
+    const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-issue-206-closeout-empty-artifact-"));
+    const manifestPath = await writeCloseoutManifest(artifactDir, {
+      artifactText: JSON.stringify({ note: "redacted" }),
+    });
+    const summary = await runScriptExpectingFailure(
+      ["--json", "--artifact-dir", artifactDir, "--manifest", manifestPath],
+      createReadyEnv(),
+    );
+
+    expect(summary.status).toBe("failed");
+    expect(getCheck(summary, "artifactFiles")).toMatchObject({ status: "fail" });
+  });
+
   it("fails when artifact safe summary is not parseable JSON", async () => {
     const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-issue-206-closeout-artifact-json-"));
     const manifestPath = await writeCloseoutManifest(artifactDir, {
@@ -520,6 +591,58 @@ describe("Issue 206 live:ops real-arm closeout script", () => {
         side: "SELL",
         orderType: "MARKET",
         requestedNotionalKrw: 1_000_000,
+      }),
+    });
+    const summary = await runScriptExpectingFailure(
+      ["--json", "--artifact-dir", artifactDir, "--manifest", manifestPath],
+      createReadyEnv(),
+    );
+
+    expect(summary.status).toBe("failed");
+    expect(getCheck(summary, "artifactFiles")).toMatchObject({ status: "fail" });
+  });
+
+  it("fails when artifact safe summary conflicts through snake_case order policy fields", async () => {
+    const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-issue-206-closeout-artifact-policy-snake-"));
+    const manifestPath = await writeCloseoutManifest(artifactDir, {
+      artifactText: JSON.stringify({
+        status: "PASSED",
+        market: "KRW-BTC",
+        side: "BUY",
+        order_type: "MARKET",
+        time_in_force: "IOC",
+        requested_notional_krw: 1_000_000,
+        submitted_at: "2026-06-15T00:00:00.000Z",
+        cancel_requested_at: "2026-06-15T00:00:05.000Z",
+        terminal_cancel_confirmed_at: "2026-06-15T00:00:10.000Z",
+        terminalState: "cancel",
+        open_exposure_krw: 0,
+      }),
+    });
+    const summary = await runScriptExpectingFailure(
+      ["--json", "--artifact-dir", artifactDir, "--manifest", manifestPath],
+      createReadyEnv(),
+    );
+
+    expect(summary.status).toBe("failed");
+    expect(getCheck(summary, "artifactFiles")).toMatchObject({ status: "fail" });
+  });
+
+  it("fails when artifact lifecycle timestamps conflict with the manifest", async () => {
+    const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-issue-206-closeout-artifact-lifecycle-"));
+    const manifestPath = await writeCloseoutManifest(artifactDir, {
+      artifactText: JSON.stringify({
+        status: "PASSED",
+        market: "KRW-BTC",
+        side: "BUY",
+        orderType: "LIMIT",
+        timeInForce: "post_only",
+        requestedNotionalKrw: 5000,
+        submittedAt: "2099-06-15T00:00:00.000Z",
+        cancelRequestedAt: "2099-06-15T00:00:05.000Z",
+        terminalCancelConfirmedAt: "2099-06-15T00:00:10.000Z",
+        terminalState: "cancel",
+        openExposureKrw: 0,
       }),
     });
     const summary = await runScriptExpectingFailure(
@@ -721,7 +844,19 @@ async function writeCloseoutManifest(
   ].join("\n"), "utf8");
   await writeFile(
     artifactPath,
-    options.artifactText ?? JSON.stringify({ status: "PASSED", terminalState: "cancel", openExposureKrw: 0 }),
+    options.artifactText ?? JSON.stringify({
+      status: "PASSED",
+      market: "KRW-BTC",
+      side: "BUY",
+      orderType: "LIMIT",
+      timeInForce: "post_only",
+      requestedNotionalKrw: 5000,
+      submittedAt: "2026-06-15T00:00:00.000Z",
+      cancelRequestedAt: "2026-06-15T00:00:05.000Z",
+      terminalCancelConfirmedAt: "2026-06-15T00:00:10.000Z",
+      terminalState: "cancel",
+      openExposureKrw: 0,
+    }),
     "utf8",
   );
   const run = options.runMutator?.(createRunFixture()) ?? createRunFixture();

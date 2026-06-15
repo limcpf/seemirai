@@ -151,6 +151,8 @@ SEEMIRAI_RUN_LIVE_OPS_REAL_ARM_CLOSEOUT=1 \
   secret도 closeout validator 차단 대상이다.
 - 2026-06-15: closeout validator는 production config/env contract, 절대 config/env command 경로, parse 가능한 JSON artifact,
   artifact 주문 정책 필드, Bearer/JWT 독립 노출, camelCase raw payload, source scan 필수 패턴 전체도 차단 대상으로 본다.
+- 2026-06-15: closeout validator는 foreground wrapper의 config allowed-key contract, ambient legacy env, source scan 제외 glob,
+  빈 artifact, snake_case artifact 정책 필드, artifact lifecycle timestamp 충돌도 차단 대상으로 본다.
 
 ## 남은 이슈
 

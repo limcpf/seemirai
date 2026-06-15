@@ -36,6 +36,41 @@ const liveOpsLegacyEnvNames = [
   "SEEMIRAI_PILOT_PROFILE",
   "PILOT_ORDER_SMOKE",
 ];
+const liveOpsConfigAllowedKeys = {
+  $: [
+    "schema_version",
+    "mode",
+    "exchange",
+    "market",
+    "live_trading_enabled",
+    "paper_no_key",
+    "withdrawal_enabled",
+    "cross_exchange_arbitrage_enabled",
+    "futures_enabled",
+    "leverage_enabled",
+    "market_order_enabled",
+    "entry_market_order_enabled",
+    "universe",
+    "budget",
+    "workers",
+    "market_data",
+    "analysis",
+    "telegram",
+    "tui",
+  ],
+  universe: ["markets", "default_market"],
+  budget: [
+    "max_order_krw",
+    "daily_autonomous_notional_limit_krw",
+    "max_open_position_notional_krw",
+    "operations_stop_ceiling_krw",
+  ],
+  workers: ["db_readiness", "market_data", "analysis_decision", "live_execution", "reconcile_pnl_status", "telegram", "tui"],
+  market_data: ["provider", "websocket_enabled", "rest_policy_snapshot_enabled", "stale_after_ms"],
+  analysis: ["candle_interval_seconds", "feature_interval_seconds", "decision_interval_seconds", "record_hold_decision"],
+  telegram: ["startup_alert_enabled", "live_order_capable_alert_enabled", "trade_event_alerts_enabled", "provider_timeout_ms"],
+  tui: ["foreground_enabled", "attach_enabled", "refresh_interval_ms", "control_requires_two_step_confirmation", "controls_enabled"],
+};
 const requiredUnsafeSourceScanPatterns = [
   { label: "ord_type", pattern: /ord_type/u },
   { label: "market order", pattern: /market|시장가/u },
@@ -688,6 +723,10 @@ async function writeFixtureManifest(artifactDir) {
     kind: "ISSUE_206_LIVE_OPS_REAL_ARM_FIXTURE",
     status: "PASSED",
     market: expectedMarket,
+    side: expectedSide,
+    orderType: expectedOrderType,
+    timeInForce: "post_only",
+    requestedNotionalKrw: 5_000,
     submittedAt: startedAt,
     cancelRequestedAt,
     terminalCancelConfirmedAt,
@@ -1015,6 +1054,14 @@ async function createConfigContractEvidence(fileStatus) {
 
 function createLiveOpsConfigContractErrors(config) {
   const errors = [];
+  validateAllowedConfigKeys(errors, config, "$", liveOpsConfigAllowedKeys.$);
+  validateAllowedConfigKeys(errors, config.universe, "universe", liveOpsConfigAllowedKeys.universe);
+  validateAllowedConfigKeys(errors, config.budget, "budget", liveOpsConfigAllowedKeys.budget);
+  validateAllowedConfigKeys(errors, config.workers, "workers", liveOpsConfigAllowedKeys.workers);
+  validateAllowedConfigKeys(errors, config.market_data, "market_data", liveOpsConfigAllowedKeys.market_data);
+  validateAllowedConfigKeys(errors, config.analysis, "analysis", liveOpsConfigAllowedKeys.analysis);
+  validateAllowedConfigKeys(errors, config.telegram, "telegram", liveOpsConfigAllowedKeys.telegram);
+  validateAllowedConfigKeys(errors, config.tui, "tui", liveOpsConfigAllowedKeys.tui);
   const secretPaths = findSecretLikeKeys(config);
   if (secretPaths.length > 0) {
     errors.push(`JSON config contains secret-like keys: ${secretPaths.join(", ")}`);
@@ -1088,6 +1135,18 @@ function createLiveOpsConfigContractErrors(config) {
   return errors;
 }
 
+function validateAllowedConfigKeys(errors, target, prefix, allowedKeys) {
+  if (!isRecord(target)) {
+    return;
+  }
+  const allowed = new Set(allowedKeys);
+  for (const key of Object.keys(target)) {
+    if (!allowed.has(key)) {
+      errors.push(`${prefix}.${key} is not allowed in production live ops config`);
+    }
+  }
+}
+
 function validateExpectedConfigValues(errors, target, prefix, expected) {
   if (!isRecord(target)) {
     errors.push(`${prefix} config section is required`);
@@ -1108,11 +1167,12 @@ async function createEnvContractEvidence(fileStatus) {
   try {
     const rawText = await readFile(fileStatus.realPath, "utf8");
     const env = parseEnvContent(rawText);
-    const errors = createLiveOpsEnvContractErrors(env);
+    const errors = createLiveOpsEnvContractErrors(env, process.env);
     return {
       ok: errors.length === 0,
       errors,
       requiredKeysPresent: requiredLiveOpsEnvNames.filter((name) => hasMeaningfulEnvValue(env[name])),
+      ambientLegacyEnvNamesPresent: collectLegacyEnvNames(process.env),
       keyScope: createEnvKeyScopeEvidence(env.SEEMIRAI_UPBIT_KEY_SCOPE),
     };
   } catch (error) {
@@ -1120,29 +1180,36 @@ async function createEnvContractEvidence(fileStatus) {
   }
 }
 
-function createLiveOpsEnvContractErrors(env) {
+function createLiveOpsEnvContractErrors(env, ambientEnv = {}) {
   const errors = [];
   for (const name of requiredLiveOpsEnvNames) {
     if (!hasMeaningfulEnvValue(env[name])) {
       errors.push(`${name} value is required`);
     }
   }
+  errors.push(...collectLegacyEnvNames(env).map((name) => `${name} must not be used for production live ops env file`));
+  errors.push(...collectLegacyEnvNames(ambientEnv).map((name) => `${name} must not be set in ambient production live ops environment`));
+  const keyScopeEvidence = createEnvKeyScopeEvidence(env.SEEMIRAI_UPBIT_KEY_SCOPE);
+  errors.push(...keyScopeEvidence.errors);
+  return errors;
+}
+
+function collectLegacyEnvNames(env) {
+  const names = [];
   for (const name of liveOpsLegacyEnvNames) {
     if (hasMeaningfulEnvValue(env[name])) {
-      errors.push(`${name} must not be used for production live ops`);
+      names.push(name);
     }
   }
   for (const name of Object.keys(env)) {
     if (/^SEEMIRAI_M22_.*_READY$/u.test(name) && hasMeaningfulEnvValue(env[name])) {
-      errors.push(`${name} must be replaced with real readiness evidence`);
+      names.push(name);
     }
     if (/^SEEMIRAI_RUN_UPBIT_.*_SMOKE$/u.test(name) && hasMeaningfulEnvValue(env[name])) {
-      errors.push(`${name} must not be used as production live ops readiness input`);
+      names.push(name);
     }
   }
-  const keyScopeEvidence = createEnvKeyScopeEvidence(env.SEEMIRAI_UPBIT_KEY_SCOPE);
-  errors.push(...keyScopeEvidence.errors);
-  return errors;
+  return collectUnique(names);
 }
 
 function createEnvKeyScopeEvidence(value) {
@@ -1256,10 +1323,11 @@ function createKeyScopeEvidence(manifest) {
 
 function createSourceScanCommandEvidence(commands) {
   const commandChecks = commands.map((command) => {
-    const tokens = command.trim().split(/\s+/u);
+    const tokens = command.trim().split(/\s+/u).map(stripShellQuotes);
     const usesRipgrep = tokens[0] === "rg";
     const hasLineNumber = /(?:^|\s)(?:-n|--line-number)(?:\s|$)/u.test(command);
     const scansExpectedPaths = requiredSourceScanPaths.every((scanPath) => new RegExp(`(?:^|\\s)${scanPath}(?:\\s|$)`, "u").test(command));
+    const excludedSourceGlobs = collectExcludedSourceGlobs(tokens);
     const coveredUnsafePatterns = requiredUnsafeSourceScanPatterns
       .filter((requirement) => requirement.pattern.test(command))
       .map((requirement) => requirement.label);
@@ -1271,11 +1339,15 @@ function createSourceScanCommandEvidence(commands) {
       usesRipgrep,
       hasLineNumber,
       scansExpectedPaths,
+      excludedSourceGlobs,
       coveredUnsafePatterns,
       coveredSecretPatterns,
     };
   });
-  const validCommandChecks = commandChecks.filter((check) => check.usesRipgrep && check.hasLineNumber && check.scansExpectedPaths);
+  const validCommandChecks = commandChecks.filter((check) => check.usesRipgrep
+    && check.hasLineNumber
+    && check.scansExpectedPaths
+    && check.excludedSourceGlobs.length === 0);
   const unsafePatternsCovered = collectUnique(validCommandChecks.flatMap((check) => check.coveredUnsafePatterns));
   const secretPatternsCovered = collectUnique(validCommandChecks.flatMap((check) => check.coveredSecretPatterns));
   const missingUnsafePatterns = requiredUnsafeSourceScanPatterns
@@ -1297,6 +1369,33 @@ function createSourceScanCommandEvidence(commands) {
   };
 }
 
+function collectExcludedSourceGlobs(tokens) {
+  const globs = [];
+  for (let index = 0; index < tokens.length; index += 1) {
+    const token = tokens[index];
+    if ((token === "-g" || token === "--glob") && tokens[index + 1] !== undefined) {
+      globs.push(tokens[index + 1]);
+      index += 1;
+      continue;
+    }
+    if (token.startsWith("--glob=")) {
+      globs.push(token.slice("--glob=".length));
+    }
+  }
+  return globs
+    .filter((glob) => glob.startsWith("!"))
+    .filter((glob) => requiredSourceScanPaths.some((scanPath) => excludesSourcePath(glob, scanPath)));
+}
+
+function excludesSourcePath(glob, scanPath) {
+  const normalized = glob.slice(1).replace(/^\.?\//u, "");
+  return normalized === "*"
+    || normalized === "**"
+    || normalized === scanPath
+    || normalized.startsWith(`${scanPath}/`)
+    || normalized.startsWith(`${scanPath}/**`);
+}
+
 function createArtifactManifestConflicts(artifactFiles, manifest, run, counters) {
   const reconcile = readRecord(manifest.reconcile);
   const expectedZeroFields = {
@@ -1315,6 +1414,11 @@ function createArtifactManifestConflicts(artifactFiles, manifest, run, counters)
     timeInForce: expectedTimeInForce,
   };
   const expectedRequestedNotionalKrw = readNumber(run.requestedNotionalKrw);
+  const expectedLifecycleTimestamps = {
+    submittedAt: readTimestampMs(run.submittedAt),
+    cancelRequestedAt: readTimestampMs(run.cancelRequestedAt),
+    terminalCancelConfirmedAt: readTimestampMs(run.terminalCancelConfirmedAt),
+  };
   const conflicts = [];
 
   for (const file of artifactFiles) {
@@ -1326,7 +1430,16 @@ function createArtifactManifestConflicts(artifactFiles, manifest, run, counters)
       conflicts.push({ filePath: file.filePath, field: "$", expected: "parseable JSON safe summary", actual: "unparseable" });
       continue;
     }
-    for (const item of collectArtifactEvidenceRecords(file.value)) {
+    const records = collectArtifactEvidenceRecords(file.value);
+    if (!records.some((item) => isCompleteArtifactCloseoutEvidence(item.record, run))) {
+      conflicts.push({
+        filePath: file.filePath,
+        field: "$",
+        expected: "artifact evidence with success status, terminal cancel, order policy, lifecycle timestamps, and zero exposure",
+        actual: "missing required closeout evidence fields",
+      });
+    }
+    for (const item of records) {
       const status = readString(item.record.status);
       if (status !== undefined && !/^(?:passed|pass|success|succeeded|ok|completed)$/iu.test(status)) {
         conflicts.push({ filePath: file.filePath, field: `${item.path}.status`, expected: "explicit success status", actual: status });
@@ -1336,14 +1449,12 @@ function createArtifactManifestConflicts(artifactFiles, manifest, run, counters)
         conflicts.push({ filePath: file.filePath, field: `${item.path}.terminalState`, expected: "CANCEL", actual: terminalState });
       }
       for (const [field, expected] of Object.entries(expectedPolicyFields)) {
-        const actual = field === "timeInForce"
-          ? normalizeTimeInForce(readString(item.record[field]))
-          : readString(item.record[field])?.toUpperCase();
+        const actual = readArtifactPolicyField(item.record, field);
         if (actual !== undefined && actual !== expected) {
           conflicts.push({ filePath: file.filePath, field: `${item.path}.${field}`, expected, actual });
         }
       }
-      const actualRequestedNotionalKrw = readNumber(item.record.requestedNotionalKrw);
+      const actualRequestedNotionalKrw = readNumberFromAliases(item.record, ["requestedNotionalKrw", "requested_notional_krw"]);
       if (actualRequestedNotionalKrw !== undefined
         && expectedRequestedNotionalKrw !== undefined
         && actualRequestedNotionalKrw !== expectedRequestedNotionalKrw) {
@@ -1354,8 +1465,14 @@ function createArtifactManifestConflicts(artifactFiles, manifest, run, counters)
           actual: actualRequestedNotionalKrw,
         });
       }
+      for (const [field, expected] of Object.entries(expectedLifecycleTimestamps)) {
+        const actual = readTimestampMsFromAliases(item.record, artifactFieldAliases(field));
+        if (actual !== undefined && expected !== undefined && actual !== expected) {
+          conflicts.push({ filePath: file.filePath, field: `${item.path}.${field}`, expected, actual });
+        }
+      }
       for (const [field, expected] of Object.entries(expectedZeroFields)) {
-        const actual = readNumber(item.record[field]);
+        const actual = readNumberFromAliases(item.record, artifactFieldAliases(field));
         if (actual !== undefined && expected !== undefined && actual !== expected) {
           conflicts.push({ filePath: file.filePath, field: `${item.path}.${field}`, expected, actual });
         }
@@ -1364,6 +1481,52 @@ function createArtifactManifestConflicts(artifactFiles, manifest, run, counters)
   }
 
   return conflicts;
+}
+
+function isCompleteArtifactCloseoutEvidence(record, run) {
+  const expectedRequestedNotionalKrw = readNumber(run.requestedNotionalKrw);
+  return /^(?:passed|pass|success|succeeded|ok|completed)$/iu.test(readString(record.status) ?? "")
+    && normalizeTerminalState(readString(record.terminalState)) === "CANCEL"
+    && readArtifactPolicyField(record, "market") === expectedMarket
+    && readArtifactPolicyField(record, "side") === expectedSide
+    && readArtifactPolicyField(record, "orderType") === expectedOrderType
+    && readArtifactPolicyField(record, "timeInForce") === expectedTimeInForce
+    && readNumberFromAliases(record, ["requestedNotionalKrw", "requested_notional_krw"]) === expectedRequestedNotionalKrw
+    && readTimestampMsFromAliases(record, ["submittedAt", "submitted_at"]) === readTimestampMs(run.submittedAt)
+    && readTimestampMsFromAliases(record, ["cancelRequestedAt", "cancel_requested_at"]) === readTimestampMs(run.cancelRequestedAt)
+    && readTimestampMsFromAliases(record, ["terminalCancelConfirmedAt", "terminal_cancel_confirmed_at"]) === readTimestampMs(run.terminalCancelConfirmedAt)
+    && readNumberFromAliases(record, ["openExposureKrw", "open_exposure_krw"]) === readNumber(run.openExposureKrw);
+}
+
+function readArtifactPolicyField(record, field) {
+  const value = readStringFromAliases(record, artifactFieldAliases(field));
+  if (field === "timeInForce") {
+    return normalizeTimeInForce(value);
+  }
+  return value?.toUpperCase();
+}
+
+function artifactFieldAliases(field) {
+  const aliases = {
+    market: ["market"],
+    side: ["side"],
+    orderType: ["orderType", "order_type"],
+    timeInForce: ["timeInForce", "time_in_force"],
+    submittedAt: ["submittedAt", "submitted_at"],
+    cancelRequestedAt: ["cancelRequestedAt", "cancel_requested_at"],
+    terminalCancelConfirmedAt: ["terminalCancelConfirmedAt", "terminal_cancel_confirmed_at"],
+    openExposureKrw: ["openExposureKrw", "open_exposure_krw"],
+    openOrderCount: ["openOrderCount", "open_order_count"],
+    reconcileMismatchCount: ["reconcileMismatchCount", "reconcile_mismatch_count"],
+    untrackedFillCount: ["untrackedFillCount", "untracked_fill_count"],
+    manualReviewCount: ["manualReviewCount", "manual_review_count"],
+    mismatchCount: ["mismatchCount", "mismatch_count"],
+    crashCount: ["crashCount", "crash_count"],
+    unhandledRejectionCount: ["unhandledRejectionCount", "unhandled_rejection_count"],
+    duplicateOrderCount: ["duplicateOrderCount", "duplicate_order_count"],
+    liveOrderCleanupFailureCount: ["liveOrderCleanupFailureCount", "live_order_cleanup_failure_count"],
+  };
+  return aliases[field] ?? [field];
 }
 
 function collectArtifactEvidenceRecords(value, prefix = "$", depth = 0) {
@@ -1439,13 +1602,38 @@ function readTimestampMs(value) {
   return Number.isFinite(timestamp) ? timestamp : undefined;
 }
 
+function readTimestampMsFromAliases(record, aliases) {
+  const value = readStringFromAliases(record, aliases);
+  return value === undefined ? undefined : readTimestampMs(value);
+}
+
 function readNumber(value) {
   const number = Number(readStringOrNumber(value));
   return Number.isFinite(number) ? number : undefined;
 }
 
+function readNumberFromAliases(record, aliases) {
+  for (const alias of aliases) {
+    const value = readNumber(record[alias]);
+    if (value !== undefined) {
+      return value;
+    }
+  }
+  return undefined;
+}
+
 function readString(value) {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
+}
+
+function readStringFromAliases(record, aliases) {
+  for (const alias of aliases) {
+    const value = readString(record[alias]);
+    if (value !== undefined) {
+      return value;
+    }
+  }
+  return undefined;
 }
 
 function readStringOrNumber(value) {
@@ -1489,6 +1677,13 @@ function hasMeaningfulEnvValue(value) {
 
 function collectUnique(values) {
   return [...new Set(values)];
+}
+
+function stripShellQuotes(value) {
+  if ((value.startsWith("'") && value.endsWith("'")) || (value.startsWith('"') && value.endsWith('"'))) {
+    return value.slice(1, -1);
+  }
+  return value;
 }
 
 function isOutsideRepositoryResolvedPath(resolvedPath) {
