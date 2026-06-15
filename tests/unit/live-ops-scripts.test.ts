@@ -91,6 +91,13 @@ describe("production live ops script skeleton", () => {
         orderIntentCount: number;
         attemptedOrderCount: number;
         submittedOrderCount: number;
+        brokerGuard: {
+          ready: boolean;
+          credentialsConfigured: boolean;
+          keyScopeEvidenceId: string | null;
+          orderSmokeMarket: string;
+          orderSmokeMaxKrw: string;
+        };
       };
       reconcilePnlStatus: {
         ready: boolean;
@@ -135,6 +142,13 @@ describe("production live ops script skeleton", () => {
       orderIntentCount: 0,
       attemptedOrderCount: 0,
       submittedOrderCount: 0,
+      brokerGuard: {
+        ready: true,
+        credentialsConfigured: true,
+        keyScopeEvidenceId: "fake-key-scope-evidence",
+        orderSmokeMarket: "KRW-BTC",
+        orderSmokeMaxKrw: "10000",
+      },
     });
     expect(summary.reconcilePnlStatus).toMatchObject({
       ready: true,
@@ -366,6 +380,2147 @@ console.log(JSON.stringify({
     expect(result.stdout).not.toContain("fake-upbit-secret-key");
   });
 
+  it("live execution helper는 단일 post-only 후보만 broker boundary로 전달한다", () => {
+    const result = spawnSync(
+      process.execPath,
+      [
+        "--input-type=module",
+        "--eval",
+        `
+import {
+  createLiveOpsCliEntryRuntime,
+  evaluateLiveOpsCliLiveExecution,
+  renderLiveOpsSummary,
+} from "./scripts/run-live-ops-support.mjs";
+
+const submitted = [];
+const reservations = [];
+const broker = {
+  async submitOrder(submission) {
+    submitted.push(submission);
+    return {
+      brokerOrderId: "upbit-live-boundary-001",
+      idempotencyKey: submission.intent.idempotencyKey,
+      exchangeId: submission.intent.exchangeId,
+      market: submission.intent.market,
+      side: submission.intent.side,
+      orderType: submission.intent.orderType,
+      status: "ACCEPTED",
+      requestedQuantity: submission.intent.requestedQuantity,
+      remainingQuantity: submission.intent.requestedQuantity,
+      requestedPrice: submission.intent.requestedPrice,
+      acceptedAt: "2026-06-15T00:00:00.000Z",
+      updatedAt: "2026-06-15T00:00:00.000Z",
+    };
+  },
+};
+const budgetReservation = {
+  async reserve(request) {
+    reservations.push({
+      attemptId: request.attemptId,
+      idempotencyKey: request.idempotencyKey,
+      market: request.market,
+      strategyId: request.strategyId,
+      requestedNotionalKrw: request.requestedNotionalKrw,
+    });
+    return {
+      reserved: true,
+      reservation: {
+        reservationId: "reservation-001",
+        attemptId: request.attemptId,
+        idempotencyKey: request.idempotencyKey,
+        reservedNotionalKrw: request.requestedNotionalKrw,
+        budgetSnapshot: request.budgetSnapshot,
+        reservedAt: "2026-06-15T00:00:00.000Z",
+      },
+    };
+  },
+};
+const config = {
+  live_trading_enabled: true,
+  universe: { markets: ["KRW-BTC"], default_market: "KRW-BTC" },
+  budget: {
+    max_order_krw: "10000",
+    daily_autonomous_notional_limit_krw: "30000",
+    max_open_position_notional_krw: "30000",
+  },
+};
+const analysisDecision = {
+  ready: true,
+  decisionCategory: "ORDER_INTENT",
+  orderIntentCount: 1,
+  orderIntents: [],
+};
+const observedAt = "2026-06-15T00:00:00.000Z";
+function orderIntentEvidence(intent) {
+  return {
+    exchange_id: intent.exchangeId,
+    market: intent.market,
+    strategy_id: intent.strategyId,
+    side: intent.side,
+    order_type: intent.orderType,
+    post_only: intent.postOnly,
+    time_in_force: intent.timeInForce,
+    requested_quantity: intent.requestedQuantity,
+    requested_notional: intent.requestedNotional,
+    requested_price: intent.requestedPrice,
+    idempotency_key: intent.idempotencyKey,
+    expected_loss_bps_of_equity: intent.metadata.expected_loss_bps_of_equity ?? intent.metadata.expectedLossBpsOfEquity,
+  };
+}
+function createCostInput() {
+  return {
+    expectedReturnBps: "40",
+    entryFeeBps: "5",
+    exitFeeBps: "5",
+    spreadCostBpsP75: "2",
+    expectedSlippageBpsP95: "2",
+    cancelRequotePenaltyBps: "1",
+    safetyBufferBps: "10",
+  };
+}
+function createRiskInput(strategyId) {
+  return {
+    account: {
+      equityKrw: "1000000",
+      dailyRealizedPnlBps: "0",
+      weeklyRealizedPnlBps: "0",
+      maxDrawdownBps: "0",
+      capturedAt: observedAt,
+    },
+    positions: [],
+    strategy: {
+      strategyId,
+      consecutiveLosses: 0,
+      capturedAt: observedAt,
+    },
+    infrastructureSignals: [],
+    thresholdSnapshot: {
+      thresholds: {
+        dailyLossLimitBps: "100",
+        weeklyLossLimitBps: "300",
+        maxDrawdownBps: "500",
+        maxOrderNotionalBpsOfEquity: "100",
+        maxExpectedLossBpsOfEquity: "20",
+        btcEthMaxPositionBpsOfEquity: "2000",
+        altMaxPositionBpsOfEquity: "500",
+        totalAltMaxPositionBpsOfEquity: "1500",
+        maxConsecutiveStrategyLosses: 3,
+      },
+      capturedAt: observedAt,
+      source: "live-ops-scripts.test",
+    },
+  };
+}
+const intent = {
+  exchangeId: "upbit_krw_spot",
+  market: "KRW-BTC",
+  strategyId: "live_ops_fixture_strategy",
+  side: "BUY",
+  orderType: "LIMIT",
+  requestedPrice: "100000000",
+  referencePrice: "100000000",
+  requestedQuantity: "0.0001",
+  requestedNotional: "10000",
+  idempotencyKey: "ops-aaaaaaaaaaaaaaaaaaaaaaaaaa",
+  reason: "test order intent",
+  postOnly: true,
+  timeInForce: "POST_ONLY",
+  metadata: {
+    expected_loss_bps_of_equity: "5",
+  },
+};
+intent.costInput = createCostInput();
+intent.risk = createRiskInput(intent.strategyId);
+intent.costSnapshot = {
+  source: "cost_model",
+  exchange_id: intent.exchangeId,
+  market: intent.market,
+  trade_allowed: true,
+  reason_code: "cost_margin_ok",
+  order_intent: orderIntentEvidence(intent),
+};
+intent.riskApproval = {
+  source: "risk_gate",
+  approved: true,
+  action: "ALLOW",
+  status: "PASS",
+  failed_evaluation_reason_codes: [],
+  order_intent: orderIntentEvidence(intent),
+};
+const executionStatus = {
+  killSwitchActive: false,
+  reconcileFresh: true,
+  evidenceId: "execution-status-evidence",
+};
+const postSubmitReadiness = {
+  reconcileReady: true,
+  telegramReady: true,
+  evidenceId: "post-submit-readiness-evidence",
+};
+const runtimeBudgetSnapshot = {
+  maxOrderKrw: "10000",
+  dailyAutonomousNotionalLimitKrw: "30000",
+  dailyAutonomousNotionalUsedKrw: "0",
+  openPositionNotionalKrw: "0",
+  maxOpenPositionNotionalKrw: "30000",
+  capturedAt: observedAt,
+};
+const runtimeLossSnapshot = {
+  dailyRealizedLossKrw: "0",
+  weeklyRealizedLossKrw: "0",
+  capturedAt: observedAt,
+};
+const summary = await evaluateLiveOpsCliLiveExecution({
+  config,
+  fixtureSmoke: false,
+  analysisDecision,
+  marketData: {
+    ready: true,
+    latestHeartbeatAt: "2026-06-15T00:00:00.000Z",
+  },
+  env: {
+    SEEMIRAI_UPBIT_ACCESS_KEY: "fake-access-key",
+    SEEMIRAI_UPBIT_SECRET_KEY: "fake-secret-key",
+    SEEMIRAI_UPBIT_KEY_SCOPE: "자산조회,주문조회,주문하기",
+    SEEMIRAI_UPBIT_KEY_SCOPE_EVIDENCE_ID: "scope-evidence",
+  },
+  orderIntents: [intent],
+  entryRuntime: createLiveOpsCliEntryRuntime({ broker, budgetReservation }),
+  executionStatus,
+  postSubmitReadiness,
+  budgetSnapshot: runtimeBudgetSnapshot,
+  lossSnapshot: runtimeLossSnapshot,
+});
+const submittedWithoutReservation = [];
+const blockedSummary = await evaluateLiveOpsCliLiveExecution({
+  config,
+  fixtureSmoke: false,
+  analysisDecision,
+  marketData: {
+    ready: true,
+    latestHeartbeatAt: "2026-06-15T00:00:00.000Z",
+  },
+  env: {
+    SEEMIRAI_UPBIT_ACCESS_KEY: "fake-access-key",
+    SEEMIRAI_UPBIT_SECRET_KEY: "fake-secret-key",
+    SEEMIRAI_UPBIT_KEY_SCOPE: "자산조회,주문조회,주문하기",
+    SEEMIRAI_UPBIT_KEY_SCOPE_EVIDENCE_ID: "scope-evidence",
+  },
+  orderIntents: [intent],
+  entryRuntime: createLiveOpsCliEntryRuntime({
+    broker: {
+      async submitOrder(submission) {
+        submittedWithoutReservation.push(submission);
+        return {
+          brokerOrderId: "unexpected-order",
+        };
+      },
+    },
+  }),
+  executionStatus,
+  postSubmitReadiness,
+  budgetSnapshot: runtimeBudgetSnapshot,
+  lossSnapshot: runtimeLossSnapshot,
+});
+const submittedWithoutRisk = [];
+const riskBlockedSummary = await evaluateLiveOpsCliLiveExecution({
+  config,
+  fixtureSmoke: false,
+  analysisDecision,
+  marketData: {
+    ready: true,
+    latestHeartbeatAt: "2026-06-15T00:00:00.000Z",
+  },
+  env: {
+    SEEMIRAI_UPBIT_ACCESS_KEY: "fake-access-key",
+    SEEMIRAI_UPBIT_SECRET_KEY: "fake-secret-key",
+    SEEMIRAI_UPBIT_KEY_SCOPE: "자산조회,주문조회,주문하기",
+    SEEMIRAI_UPBIT_KEY_SCOPE_EVIDENCE_ID: "scope-evidence",
+  },
+  orderIntents: [
+    {
+      ...intent,
+      riskApproval: undefined,
+    },
+  ],
+  entryRuntime: createLiveOpsCliEntryRuntime({
+    broker: {
+      async submitOrder(submission) {
+        submittedWithoutRisk.push(submission);
+        return {
+          brokerOrderId: "unexpected-riskless-order",
+        };
+      },
+    },
+    budgetReservation,
+  }),
+  executionStatus,
+  postSubmitReadiness,
+  budgetSnapshot: runtimeBudgetSnapshot,
+  lossSnapshot: runtimeLossSnapshot,
+});
+const submittedWithoutStatus = [];
+const statusBlockedSummary = await evaluateLiveOpsCliLiveExecution({
+  config,
+  fixtureSmoke: false,
+  analysisDecision,
+  marketData: {
+    ready: true,
+    latestHeartbeatAt: "2026-06-15T00:00:00.000Z",
+  },
+  env: {
+    SEEMIRAI_UPBIT_ACCESS_KEY: "fake-access-key",
+    SEEMIRAI_UPBIT_SECRET_KEY: "fake-secret-key",
+    SEEMIRAI_UPBIT_KEY_SCOPE: "자산조회,주문조회,주문하기",
+    SEEMIRAI_UPBIT_KEY_SCOPE_EVIDENCE_ID: "scope-evidence",
+  },
+  orderIntents: [intent],
+  entryRuntime: createLiveOpsCliEntryRuntime({
+    broker: {
+      async submitOrder(submission) {
+        submittedWithoutStatus.push(submission);
+        return {
+          brokerOrderId: "unexpected-statusless-order",
+        };
+      },
+    },
+    budgetReservation,
+  }),
+  budgetSnapshot: runtimeBudgetSnapshot,
+  lossSnapshot: runtimeLossSnapshot,
+});
+const submittedWithoutReservationEvidence = [];
+const reservationEvidenceBlockedSummary = await evaluateLiveOpsCliLiveExecution({
+  config,
+  fixtureSmoke: false,
+  analysisDecision,
+  marketData: {
+    ready: true,
+    latestHeartbeatAt: "2026-06-15T00:00:00.000Z",
+  },
+  env: {
+    SEEMIRAI_UPBIT_ACCESS_KEY: "fake-access-key",
+    SEEMIRAI_UPBIT_SECRET_KEY: "fake-secret-key",
+    SEEMIRAI_UPBIT_KEY_SCOPE: "자산조회,주문조회,주문하기",
+    SEEMIRAI_UPBIT_KEY_SCOPE_EVIDENCE_ID: "scope-evidence",
+  },
+  orderIntents: [intent],
+  entryRuntime: createLiveOpsCliEntryRuntime({
+    broker: {
+      async submitOrder(submission) {
+        submittedWithoutReservationEvidence.push(submission);
+        return {
+          brokerOrderId: "unexpected-reservationless-order",
+        };
+      },
+    },
+    budgetReservation: {
+      async reserve() {
+        return {
+          reserved: true,
+        };
+      },
+    },
+  }),
+  executionStatus,
+  postSubmitReadiness,
+  budgetSnapshot: runtimeBudgetSnapshot,
+  lossSnapshot: runtimeLossSnapshot,
+});
+const staleEvidence = {
+  ...orderIntentEvidence(intent),
+  post_only: false,
+  time_in_force: "GTC",
+};
+const submittedWithStaleEvidence = [];
+const staleEvidenceSummary = await evaluateLiveOpsCliLiveExecution({
+  config,
+  fixtureSmoke: false,
+  analysisDecision,
+  marketData: {
+    ready: true,
+    latestHeartbeatAt: "2026-06-15T00:00:00.000Z",
+  },
+  env: {
+    SEEMIRAI_UPBIT_ACCESS_KEY: "fake-access-key",
+    SEEMIRAI_UPBIT_SECRET_KEY: "fake-secret-key",
+    SEEMIRAI_UPBIT_KEY_SCOPE: "자산조회,주문조회,주문하기",
+    SEEMIRAI_UPBIT_KEY_SCOPE_EVIDENCE_ID: "scope-evidence",
+  },
+  orderIntents: [
+    {
+      ...intent,
+      costSnapshot: {
+        ...intent.costSnapshot,
+        order_intent: staleEvidence,
+      },
+      riskApproval: {
+        ...intent.riskApproval,
+        order_intent: staleEvidence,
+      },
+    },
+  ],
+  entryRuntime: createLiveOpsCliEntryRuntime({
+    broker: {
+      async submitOrder(submission) {
+        submittedWithStaleEvidence.push(submission);
+        return {
+          brokerOrderId: "unexpected-stale-evidence-order",
+        };
+      },
+    },
+    budgetReservation,
+  }),
+  executionStatus,
+  postSubmitReadiness,
+  budgetSnapshot: runtimeBudgetSnapshot,
+  lossSnapshot: runtimeLossSnapshot,
+});
+function createRuntimeRequest(overrides = {}) {
+  return {
+    config: {
+      enabled: true,
+      allowed_markets: ["KRW-BTC"],
+      max_order_krw: "10000",
+      daily_autonomous_notional_limit_krw: "30000",
+      max_open_position_notional_krw: "30000",
+      max_daily_loss_krw: "10000",
+      max_weekly_loss_krw: "30000",
+      max_price_deviation_bps: "30",
+      identifier_prefix: "ops-",
+      identifier_max_length: 32,
+    },
+    candidate: {
+      exchangeId: intent.exchangeId,
+      market: intent.market,
+      strategyId: intent.strategyId,
+      requestedQuantity: intent.requestedQuantity,
+      requestedNotional: intent.requestedNotional,
+      requestedPrice: intent.requestedPrice,
+      referencePrice: intent.referencePrice,
+      reason: intent.reason,
+      expectedLossBpsOfEquity: intent.metadata.expected_loss_bps_of_equity,
+      orderType: "LIMIT",
+      postOnly: true,
+      timeInForce: "POST_ONLY",
+      costInput: intent.costInput,
+      risk: intent.risk,
+      costSnapshot: intent.costSnapshot,
+      riskApproval: intent.riskApproval,
+      metadata: intent.metadata,
+    },
+    budgetSnapshot: {
+      maxOrderKrw: "10000",
+      dailyAutonomousNotionalLimitKrw: "30000",
+      dailyAutonomousNotionalUsedKrw: "0",
+      openPositionNotionalKrw: "0",
+      maxOpenPositionNotionalKrw: "30000",
+      capturedAt: "2026-06-15T00:00:00.000Z",
+    },
+    lossSnapshot: {
+      dailyRealizedLossKrw: "0",
+      weeklyRealizedLossKrw: "0",
+      capturedAt: "2026-06-15T00:00:00.000Z",
+    },
+    killSwitchActive: false,
+    reconcileFresh: true,
+    executionStatusEvidenceId: "execution-status-evidence",
+    postSubmitReconcileReady: true,
+    postSubmitTelegramReady: true,
+    postSubmitReadinessEvidenceId: "post-submit-readiness-evidence",
+    idempotencyKey: intent.idempotencyKey,
+    observedAt: "2026-06-15T00:00:00.000Z",
+    ...overrides,
+  };
+}
+const submittedWithDirectKillSwitch = [];
+const directKillSwitchResult = await createLiveOpsCliEntryRuntime({
+  broker: {
+    async submitOrder(submission) {
+      submittedWithDirectKillSwitch.push(submission);
+      return {
+        brokerOrderId: "unexpected-kill-switch-order",
+      };
+    },
+  },
+  budgetReservation,
+}).submitEntryCandidate(createRuntimeRequest({ killSwitchActive: true }));
+const submittedWithMissingStatusEvidence = [];
+const directMissingStatusEvidenceResult = await createLiveOpsCliEntryRuntime({
+  broker: {
+    async submitOrder(submission) {
+      submittedWithMissingStatusEvidence.push(submission);
+      return {
+        brokerOrderId: "unexpected-missing-status-evidence-order",
+      };
+    },
+  },
+  budgetReservation,
+}).submitEntryCandidate(createRuntimeRequest({ executionStatusEvidenceId: undefined }));
+const submittedWithMissingPostSubmitReadiness = [];
+const directMissingPostSubmitReadinessResult = await createLiveOpsCliEntryRuntime({
+  broker: {
+    async submitOrder(submission) {
+      submittedWithMissingPostSubmitReadiness.push(submission);
+      return {
+        brokerOrderId: "unexpected-missing-post-submit-readiness-order",
+      };
+    },
+  },
+  budgetReservation,
+}).submitEntryCandidate(createRuntimeRequest({
+  postSubmitTelegramReady: false,
+  postSubmitReadinessEvidenceId: undefined,
+}));
+const directInvalidCostInputRequest = createRuntimeRequest();
+directInvalidCostInputRequest.candidate = {
+  ...directInvalidCostInputRequest.candidate,
+  costInput: {
+    ...createCostInput(),
+    entryFeeBps: "-10",
+    expectedSlippageBpsP95: "abc",
+  },
+};
+const submittedWithInvalidCostInput = [];
+const directInvalidCostInputResult = await createLiveOpsCliEntryRuntime({
+  broker: {
+    async submitOrder(submission) {
+      submittedWithInvalidCostInput.push(submission);
+      return {
+        brokerOrderId: "unexpected-invalid-cost-input-order",
+      };
+    },
+  },
+  budgetReservation,
+}).submitEntryCandidate(directInvalidCostInputRequest);
+const directInvalidMarketRequest = createRuntimeRequest();
+directInvalidMarketRequest.candidate = {
+  ...directInvalidMarketRequest.candidate,
+  market: "KRW-ETH",
+};
+const submittedWithInvalidMarket = [];
+const directInvalidMarketResult = await createLiveOpsCliEntryRuntime({
+  broker: {
+    async submitOrder(submission) {
+      submittedWithInvalidMarket.push(submission);
+      return {
+        brokerOrderId: "unexpected-invalid-market-order",
+      };
+    },
+  },
+  budgetReservation,
+}).submitEntryCandidate(directInvalidMarketRequest);
+const directMismatchNotionalRequest = createRuntimeRequest();
+directMismatchNotionalRequest.candidate = {
+  ...directMismatchNotionalRequest.candidate,
+  requestedPrice: "200000000",
+  requestedQuantity: "0.0001",
+  requestedNotional: "10000",
+};
+const submittedWithMismatchNotional = [];
+const directMismatchNotionalResult = await createLiveOpsCliEntryRuntime({
+  broker: {
+    async submitOrder(submission) {
+      submittedWithMismatchNotional.push(submission);
+      return {
+        brokerOrderId: "unexpected-mismatch-notional-order",
+      };
+    },
+  },
+  budgetReservation,
+}).submitEntryCandidate(directMismatchNotionalRequest);
+const directBelowMinimumNotionalRequest = createRuntimeRequest();
+directBelowMinimumNotionalRequest.candidate = {
+  ...directBelowMinimumNotionalRequest.candidate,
+  requestedPrice: "40000000",
+  requestedQuantity: "0.0001",
+  requestedNotional: "4000",
+};
+const submittedWithBelowMinimumNotional = [];
+const directBelowMinimumNotionalResult = await createLiveOpsCliEntryRuntime({
+  broker: {
+    async submitOrder(submission) {
+      submittedWithBelowMinimumNotional.push(submission);
+      return {
+        brokerOrderId: "unexpected-below-minimum-notional-order",
+      };
+    },
+  },
+  budgetReservation,
+}).submitEntryCandidate(directBelowMinimumNotionalRequest);
+const directLossLimitRequest = createRuntimeRequest({
+  lossSnapshot: {
+    dailyRealizedLossKrw: "10001",
+    weeklyRealizedLossKrw: "0",
+    capturedAt: observedAt,
+  },
+});
+const submittedWithLossLimit = [];
+const directLossLimitResult = await createLiveOpsCliEntryRuntime({
+  broker: {
+    async submitOrder(submission) {
+      submittedWithLossLimit.push(submission);
+      return {
+        brokerOrderId: "unexpected-loss-limit-order",
+      };
+    },
+  },
+  budgetReservation,
+}).submitEntryCandidate(directLossLimitRequest);
+const directPriceDeviationRequest = createRuntimeRequest();
+directPriceDeviationRequest.candidate = {
+  ...directPriceDeviationRequest.candidate,
+  requestedPrice: "99000000",
+  referencePrice: "100000000",
+  requestedQuantity: "0.0001",
+  requestedNotional: "9900",
+};
+const submittedWithPriceDeviation = [];
+const directPriceDeviationResult = await createLiveOpsCliEntryRuntime({
+  broker: {
+    async submitOrder(submission) {
+      submittedWithPriceDeviation.push(submission);
+      return {
+        brokerOrderId: "unexpected-price-deviation-order",
+      };
+    },
+  },
+  budgetReservation,
+}).submitEntryCandidate(directPriceDeviationRequest);
+const directBudgetLimitRequest = createRuntimeRequest({
+  budgetSnapshot: {
+    maxOrderKrw: "10000",
+    dailyAutonomousNotionalLimitKrw: "30000",
+    dailyAutonomousNotionalUsedKrw: "25000",
+    openPositionNotionalKrw: "25000",
+    maxOpenPositionNotionalKrw: "30000",
+    capturedAt: observedAt,
+  },
+});
+const submittedWithBudgetLimit = [];
+const directBudgetLimitResult = await createLiveOpsCliEntryRuntime({
+  broker: {
+    async submitOrder(submission) {
+      submittedWithBudgetLimit.push(submission);
+      return {
+        brokerOrderId: "unexpected-budget-limit-order",
+      };
+    },
+  },
+  budgetReservation,
+}).submitEntryCandidate(directBudgetLimitRequest);
+const directSnapshotMaxOrderLimitRequest = createRuntimeRequest({
+  budgetSnapshot: {
+    maxOrderKrw: "5000",
+    dailyAutonomousNotionalLimitKrw: "30000",
+    dailyAutonomousNotionalUsedKrw: "0",
+    openPositionNotionalKrw: "0",
+    maxOpenPositionNotionalKrw: "30000",
+    capturedAt: observedAt,
+  },
+});
+const submittedWithSnapshotMaxOrderLimit = [];
+const directSnapshotMaxOrderLimitResult = await createLiveOpsCliEntryRuntime({
+  broker: {
+    async submitOrder(submission) {
+      submittedWithSnapshotMaxOrderLimit.push(submission);
+      return {
+        brokerOrderId: "unexpected-snapshot-max-order-limit-order",
+      };
+    },
+  },
+  budgetReservation,
+}).submitEntryCandidate(directSnapshotMaxOrderLimitRequest);
+const directReservationExceptionResult = await createLiveOpsCliEntryRuntime({
+  broker: {
+    async submitOrder() {
+      return {
+        brokerOrderId: "unexpected-reservation-exception-order",
+      };
+    },
+  },
+  budgetReservation: {
+    async reserve() {
+      throw new Error("ReservationUnavailable");
+    },
+  },
+}).submitEntryCandidate(createRuntimeRequest());
+const directBrokerExceptionResult = await createLiveOpsCliEntryRuntime({
+  broker: {
+    async submitOrder() {
+      throw new Error("BrokerTimeout");
+    },
+  },
+  budgetReservation,
+}).submitEntryCandidate(createRuntimeRequest());
+const directBrokerEvidenceMissingResult = await createLiveOpsCliEntryRuntime({
+  broker: {
+    async submitOrder() {
+      return {};
+    },
+  },
+  budgetReservation,
+}).submitEntryCandidate(createRuntimeRequest());
+const directBrokerStatusMissingResult = await createLiveOpsCliEntryRuntime({
+  broker: {
+    async submitOrder() {
+      return {
+        brokerOrderId: "status-missing-live-order-001",
+      };
+    },
+  },
+  budgetReservation,
+}).submitEntryCandidate(createRuntimeRequest());
+const directBrokerRejectedResult = await createLiveOpsCliEntryRuntime({
+  broker: {
+    async submitOrder(submission) {
+      return {
+        brokerOrderId: "rejected-live-order-001",
+        idempotencyKey: submission.intent.idempotencyKey,
+        market: submission.intent.market,
+        status: "REJECTED",
+      };
+    },
+  },
+  budgetReservation,
+}).submitEntryCandidate(createRuntimeRequest());
+const directBrokerPortMissingResult = await createLiveOpsCliEntryRuntime({
+  budgetReservation,
+}).submitEntryCandidate(createRuntimeRequest());
+const directCostRegressionRequest = createRuntimeRequest();
+directCostRegressionRequest.candidate = {
+  ...directCostRegressionRequest.candidate,
+  costInput: {
+    ...createCostInput(),
+    expectedReturnBps: "10",
+  },
+};
+const submittedWithCostRegression = [];
+const directCostRegressionResult = await createLiveOpsCliEntryRuntime({
+  broker: {
+    async submitOrder(submission) {
+      submittedWithCostRegression.push(submission);
+      return {
+        brokerOrderId: "unexpected-cost-regression-order",
+      };
+    },
+  },
+  budgetReservation,
+}).submitEntryCandidate(directCostRegressionRequest);
+const directRiskRegressionRequest = createRuntimeRequest();
+directRiskRegressionRequest.candidate = {
+  ...directRiskRegressionRequest.candidate,
+  risk: {
+    ...directRiskRegressionRequest.candidate.risk,
+    thresholdSnapshot: {
+      ...directRiskRegressionRequest.candidate.risk.thresholdSnapshot,
+      thresholds: {
+        ...directRiskRegressionRequest.candidate.risk.thresholdSnapshot.thresholds,
+        maxExpectedLossBpsOfEquity: "4",
+      },
+    },
+  },
+};
+const submittedWithRiskRegression = [];
+const directRiskRegressionResult = await createLiveOpsCliEntryRuntime({
+  broker: {
+    async submitOrder(submission) {
+      submittedWithRiskRegression.push(submission);
+      return {
+        brokerOrderId: "unexpected-risk-regression-order",
+      };
+    },
+  },
+  budgetReservation,
+}).submitEntryCandidate(directRiskRegressionRequest);
+const directDefaultSafetyBufferRequest = createRuntimeRequest();
+directDefaultSafetyBufferRequest.candidate = {
+  ...directDefaultSafetyBufferRequest.candidate,
+  costInput: {
+    ...createCostInput(),
+    expectedReturnBps: "20",
+  },
+};
+delete directDefaultSafetyBufferRequest.candidate.costInput.safetyBufferBps;
+const submittedWithDefaultSafetyBufferGap = [];
+const directDefaultSafetyBufferResult = await createLiveOpsCliEntryRuntime({
+  broker: {
+    async submitOrder(submission) {
+      submittedWithDefaultSafetyBufferGap.push(submission);
+      return {
+        brokerOrderId: "unexpected-default-safety-buffer-order",
+      };
+    },
+  },
+  budgetReservation,
+}).submitEntryCandidate(directDefaultSafetyBufferRequest);
+const directInfrastructureRiskRequest = createRuntimeRequest();
+directInfrastructureRiskRequest.candidate = {
+  ...directInfrastructureRiskRequest.candidate,
+  risk: {
+    ...directInfrastructureRiskRequest.candidate.risk,
+    infrastructureSignals: [
+      {
+        signal: "DB_WRITE_FAILURE",
+        observedAt,
+      },
+    ],
+  },
+};
+const submittedWithInfrastructureRisk = [];
+const directInfrastructureRiskResult = await createLiveOpsCliEntryRuntime({
+  broker: {
+    async submitOrder(submission) {
+      submittedWithInfrastructureRisk.push(submission);
+      return {
+        brokerOrderId: "unexpected-infrastructure-risk-order",
+      };
+    },
+  },
+  budgetReservation,
+}).submitEntryCandidate(directInfrastructureRiskRequest);
+const directNumericDecimalRequest = createRuntimeRequest();
+directNumericDecimalRequest.candidate = {
+  ...directNumericDecimalRequest.candidate,
+  requestedPrice: 100000000,
+};
+const submittedWithNumericDecimal = [];
+const directNumericDecimalResult = await createLiveOpsCliEntryRuntime({
+  broker: {
+    async submitOrder(submission) {
+      submittedWithNumericDecimal.push(submission);
+      return {
+        brokerOrderId: "unexpected-numeric-decimal-order",
+      };
+    },
+  },
+  budgetReservation,
+}).submitEntryCandidate(directNumericDecimalRequest);
+const strategyDecisionKey = "live_ops_fixture_strategy:upbit_krw_spot:KRW-BTC:BUY:2026-06-15T00:00:00.000Z";
+const strategyKeyIntent = {
+  ...intent,
+  idempotencyKey: strategyDecisionKey,
+  timeInForce: "POST_ONLY",
+};
+strategyKeyIntent.costSnapshot = {
+  ...intent.costSnapshot,
+  order_intent: orderIntentEvidence(strategyKeyIntent),
+};
+strategyKeyIntent.riskApproval = {
+  ...intent.riskApproval,
+  order_intent: orderIntentEvidence(strategyKeyIntent),
+};
+const submittedWithStrategyWrapper = [];
+const strategyWrapperReservations = [];
+const strategyKeyWrapperSummary = await evaluateLiveOpsCliLiveExecution({
+  config,
+  fixtureSmoke: false,
+  analysisDecision,
+  marketData: {
+    ready: true,
+    latestHeartbeatAt: observedAt,
+  },
+  env: {
+    SEEMIRAI_UPBIT_ACCESS_KEY: "fake-access-key",
+    SEEMIRAI_UPBIT_SECRET_KEY: "fake-secret-key",
+    SEEMIRAI_UPBIT_KEY_SCOPE: "자산조회,주문조회,주문하기",
+    SEEMIRAI_UPBIT_KEY_SCOPE_EVIDENCE_ID: "scope-evidence",
+  },
+  orderIntents: [strategyKeyIntent],
+  entryRuntime: createLiveOpsCliEntryRuntime({
+    broker: {
+      async submitOrder(submission) {
+        submittedWithStrategyWrapper.push(submission);
+        return {
+          brokerOrderId: "strategy-wrapper-live-order-001",
+          status: "ACCEPTED",
+        };
+      },
+    },
+    budgetReservation: {
+      async reserve(request) {
+        strategyWrapperReservations.push(request);
+        return {
+          reserved: true,
+          reservation: {
+            reservationId: "strategy-wrapper-reservation-001",
+            attemptId: request.attemptId,
+            idempotencyKey: request.idempotencyKey,
+            reservedNotionalKrw: request.requestedNotionalKrw,
+            budgetSnapshot: request.budgetSnapshot,
+            reservedAt: observedAt,
+          },
+        };
+      },
+    },
+  }),
+  executionStatus,
+  postSubmitReadiness,
+  budgetSnapshot: runtimeBudgetSnapshot,
+  lossSnapshot: runtimeLossSnapshot,
+});
+const runtimeRequests = [];
+const usedBudgetSnapshot = {
+  maxOrderKrw: "10000",
+  dailyAutonomousNotionalLimitKrw: "30000",
+  dailyAutonomousNotionalUsedKrw: "1234.5",
+  openPositionNotionalKrw: "5678.9",
+  maxOpenPositionNotionalKrw: "30000",
+  capturedAt: observedAt,
+};
+const usedLossSnapshot = {
+  dailyRealizedLossKrw: "111.1",
+  weeklyRealizedLossKrw: "222.2",
+  capturedAt: observedAt,
+};
+const strategyKeySummary = await evaluateLiveOpsCliLiveExecution({
+  config,
+  fixtureSmoke: false,
+  analysisDecision,
+  marketData: {
+    ready: true,
+    latestHeartbeatAt: observedAt,
+  },
+  env: {
+    SEEMIRAI_UPBIT_ACCESS_KEY: "fake-access-key",
+    SEEMIRAI_UPBIT_SECRET_KEY: "fake-secret-key",
+    SEEMIRAI_UPBIT_KEY_SCOPE: "자산조회,주문조회,주문하기",
+    SEEMIRAI_UPBIT_KEY_SCOPE_EVIDENCE_ID: "scope-evidence",
+  },
+  orderIntents: [strategyKeyIntent],
+  entryRuntime: {
+    async submitEntryCandidate(request) {
+      runtimeRequests.push(request);
+      return {
+        status: "SUBMITTED",
+        attemptId: request.idempotencyKey,
+        idempotencyKey: request.idempotencyKey,
+        brokerOrderId: "strategy-key-live-order-001",
+        message: "strategy key fixture submitted",
+        action: "fixture action",
+        violations: [],
+        events: [],
+        trace: {
+          reason: "broker_submitted",
+        },
+        executionResult: {
+          brokerOrder: {
+            brokerOrderId: "strategy-key-live-order-001",
+          },
+        },
+      };
+    },
+  },
+  executionStatus,
+  postSubmitReadiness,
+  budgetSnapshot: usedBudgetSnapshot,
+  lossSnapshot: usedLossSnapshot,
+});
+const decimalIntent = {
+  ...intent,
+  requestedNotional: "10000.0",
+  requestedPrice: "100000000.0",
+  requestedQuantity: "0.00010000",
+};
+decimalIntent.costInput = createCostInput();
+decimalIntent.risk = createRiskInput(decimalIntent.strategyId);
+decimalIntent.costSnapshot = {
+  ...intent.costSnapshot,
+  order_intent: {
+    ...orderIntentEvidence(decimalIntent),
+    requested_price: "100000000",
+    requested_quantity: "0.0001",
+    requested_notional: "10000",
+  },
+};
+decimalIntent.riskApproval = {
+  ...intent.riskApproval,
+  order_intent: {
+    ...orderIntentEvidence(decimalIntent),
+    requested_price: "100000000",
+    requested_quantity: "0.0001",
+    requested_notional: "10000",
+  },
+};
+const submittedWithDecimalEvidence = [];
+const normalizedDecimalReservations = [];
+const decimalEvidenceSummary = await evaluateLiveOpsCliLiveExecution({
+  config,
+  fixtureSmoke: false,
+  analysisDecision,
+  marketData: {
+    ready: true,
+    latestHeartbeatAt: observedAt,
+  },
+  env: {
+    SEEMIRAI_UPBIT_ACCESS_KEY: "fake-access-key",
+    SEEMIRAI_UPBIT_SECRET_KEY: "fake-secret-key",
+    SEEMIRAI_UPBIT_KEY_SCOPE: "자산조회,주문조회,주문하기",
+    SEEMIRAI_UPBIT_KEY_SCOPE_EVIDENCE_ID: "scope-evidence",
+  },
+  orderIntents: [decimalIntent],
+  entryRuntime: createLiveOpsCliEntryRuntime({
+    broker: {
+      async submitOrder(submission) {
+        submittedWithDecimalEvidence.push(submission);
+        return {
+          brokerOrderId: "decimal-evidence-live-order-001",
+          status: "ACCEPTED",
+        };
+      },
+    },
+    budgetReservation: {
+      async reserve(request) {
+        normalizedDecimalReservations.push(request);
+        return {
+          reserved: true,
+          reservation: {
+            reservationId: "decimal-reservation-001",
+            attemptId: request.attemptId,
+            idempotencyKey: request.idempotencyKey,
+            reservedNotionalKrw: "10000",
+            budgetSnapshot: request.budgetSnapshot,
+            reservedAt: observedAt,
+          },
+        };
+      },
+    },
+  }),
+  executionStatus,
+  postSubmitReadiness,
+  budgetSnapshot: runtimeBudgetSnapshot,
+  lossSnapshot: runtimeLossSnapshot,
+});
+const camelExpectedLossIntent = {
+  ...intent,
+  metadata: {
+    expectedLossBpsOfEquity: "5",
+  },
+  costInput: {
+    ...createCostInput(),
+  },
+};
+delete camelExpectedLossIntent.costInput.safetyBufferBps;
+camelExpectedLossIntent.risk = createRiskInput(camelExpectedLossIntent.strategyId);
+camelExpectedLossIntent.costSnapshot = {
+  ...intent.costSnapshot,
+  order_intent: orderIntentEvidence(camelExpectedLossIntent),
+};
+camelExpectedLossIntent.riskApproval = {
+  ...intent.riskApproval,
+  order_intent: orderIntentEvidence(camelExpectedLossIntent),
+};
+const camelRuntimeRequests = [];
+const camelExpectedLossSummary = await evaluateLiveOpsCliLiveExecution({
+  config,
+  fixtureSmoke: false,
+  analysisDecision,
+  marketData: {
+    ready: true,
+    latestHeartbeatAt: observedAt,
+  },
+  env: {
+    SEEMIRAI_UPBIT_ACCESS_KEY: "fake-access-key",
+    SEEMIRAI_UPBIT_SECRET_KEY: "fake-secret-key",
+    SEEMIRAI_UPBIT_KEY_SCOPE: "자산조회,주문조회,주문하기",
+    SEEMIRAI_UPBIT_KEY_SCOPE_EVIDENCE_ID: "scope-evidence",
+  },
+  orderIntents: [camelExpectedLossIntent],
+  entryRuntime: {
+    async submitEntryCandidate(request) {
+      camelRuntimeRequests.push(request);
+      return {
+        status: "SUBMITTED",
+        attemptId: request.idempotencyKey,
+        idempotencyKey: request.idempotencyKey,
+        brokerOrderId: "camel-expected-loss-live-order-001",
+        message: "camel expected loss fixture submitted",
+        action: "fixture action",
+        violations: [],
+        events: [],
+        trace: {
+          reason: "broker_submitted",
+        },
+        executionResult: {
+          brokerOrder: {
+            brokerOrderId: "camel-expected-loss-live-order-001",
+          },
+        },
+      };
+    },
+  },
+  executionStatus,
+  postSubmitReadiness,
+  budgetSnapshot: runtimeBudgetSnapshot,
+  lossSnapshot: runtimeLossSnapshot,
+});
+const zeroCostInputIntent = {
+  ...intent,
+  costInput: {
+    ...createCostInput(),
+    spreadCostBpsP75: "0",
+    expectedSlippageBpsP95: "0",
+    cancelRequotePenaltyBps: "0",
+  },
+};
+zeroCostInputIntent.risk = createRiskInput(zeroCostInputIntent.strategyId);
+zeroCostInputIntent.costSnapshot = {
+  ...intent.costSnapshot,
+  order_intent: orderIntentEvidence(zeroCostInputIntent),
+};
+zeroCostInputIntent.riskApproval = {
+  ...intent.riskApproval,
+  order_intent: orderIntentEvidence(zeroCostInputIntent),
+};
+const zeroCostRuntimeRequests = [];
+const zeroCostInputSummary = await evaluateLiveOpsCliLiveExecution({
+  config,
+  fixtureSmoke: false,
+  analysisDecision,
+  marketData: {
+    ready: true,
+    latestHeartbeatAt: observedAt,
+  },
+  env: {
+    SEEMIRAI_UPBIT_ACCESS_KEY: "fake-access-key",
+    SEEMIRAI_UPBIT_SECRET_KEY: "fake-secret-key",
+    SEEMIRAI_UPBIT_KEY_SCOPE: "자산조회,주문조회,주문하기",
+    SEEMIRAI_UPBIT_KEY_SCOPE_EVIDENCE_ID: "scope-evidence",
+  },
+  orderIntents: [zeroCostInputIntent],
+  entryRuntime: {
+    async submitEntryCandidate(request) {
+      zeroCostRuntimeRequests.push(request);
+      return {
+        status: "SUBMITTED",
+        attemptId: request.idempotencyKey,
+        idempotencyKey: request.idempotencyKey,
+        brokerOrderId: "zero-cost-input-live-order-001",
+        message: "zero cost input fixture submitted",
+        action: "fixture action",
+        violations: [],
+        events: [],
+        trace: {
+          reason: "broker_submitted",
+        },
+        executionResult: {
+          brokerOrder: {
+            brokerOrderId: "zero-cost-input-live-order-001",
+          },
+        },
+      };
+    },
+  },
+  executionStatus,
+  postSubmitReadiness,
+  budgetSnapshot: runtimeBudgetSnapshot,
+  lossSnapshot: runtimeLossSnapshot,
+});
+const zeroExpectedLossIntent = {
+  ...intent,
+  metadata: {
+    expected_loss_bps_of_equity: "0",
+  },
+};
+zeroExpectedLossIntent.risk = createRiskInput(zeroExpectedLossIntent.strategyId);
+zeroExpectedLossIntent.costSnapshot = {
+  ...intent.costSnapshot,
+  order_intent: orderIntentEvidence(zeroExpectedLossIntent),
+};
+zeroExpectedLossIntent.riskApproval = {
+  ...intent.riskApproval,
+  order_intent: orderIntentEvidence(zeroExpectedLossIntent),
+};
+const zeroExpectedLossRuntimeRequests = [];
+const zeroExpectedLossSummary = await evaluateLiveOpsCliLiveExecution({
+  config,
+  fixtureSmoke: false,
+  analysisDecision,
+  marketData: {
+    ready: true,
+    latestHeartbeatAt: observedAt,
+  },
+  env: {
+    SEEMIRAI_UPBIT_ACCESS_KEY: "fake-access-key",
+    SEEMIRAI_UPBIT_SECRET_KEY: "fake-secret-key",
+    SEEMIRAI_UPBIT_KEY_SCOPE: "자산조회,주문조회,주문하기",
+    SEEMIRAI_UPBIT_KEY_SCOPE_EVIDENCE_ID: "scope-evidence",
+  },
+  orderIntents: [zeroExpectedLossIntent],
+  entryRuntime: {
+    async submitEntryCandidate(request) {
+      zeroExpectedLossRuntimeRequests.push(request);
+      return {
+        status: "SUBMITTED",
+        attemptId: request.idempotencyKey,
+        idempotencyKey: request.idempotencyKey,
+        brokerOrderId: "zero-expected-loss-live-order-001",
+        message: "zero expected loss fixture submitted",
+        action: "fixture action",
+        violations: [],
+        events: [],
+        trace: {
+          reason: "broker_submitted",
+        },
+        executionResult: {
+          brokerOrder: {
+            brokerOrderId: "zero-expected-loss-live-order-001",
+          },
+        },
+      };
+    },
+  },
+  executionStatus,
+  postSubmitReadiness,
+  budgetSnapshot: runtimeBudgetSnapshot,
+  lossSnapshot: runtimeLossSnapshot,
+});
+const marketReferenceIntent = {
+  ...intent,
+};
+delete marketReferenceIntent.referencePrice;
+marketReferenceIntent.costSnapshot = {
+  ...intent.costSnapshot,
+  order_intent: orderIntentEvidence(marketReferenceIntent),
+};
+marketReferenceIntent.riskApproval = {
+  ...intent.riskApproval,
+  order_intent: orderIntentEvidence(marketReferenceIntent),
+};
+const marketReferenceRuntimeRequests = [];
+const marketReferenceSummary = await evaluateLiveOpsCliLiveExecution({
+  config,
+  fixtureSmoke: false,
+  analysisDecision,
+  marketData: {
+    ready: true,
+    latestHeartbeatAt: observedAt,
+    referencePrice: "100000000",
+    referencePriceSource: "fixture_trade",
+  },
+  env: {
+    SEEMIRAI_UPBIT_ACCESS_KEY: "fake-access-key",
+    SEEMIRAI_UPBIT_SECRET_KEY: "fake-secret-key",
+    SEEMIRAI_UPBIT_KEY_SCOPE: "자산조회,주문조회,주문하기",
+    SEEMIRAI_UPBIT_KEY_SCOPE_EVIDENCE_ID: "scope-evidence",
+  },
+  orderIntents: [marketReferenceIntent],
+  entryRuntime: {
+    async submitEntryCandidate(request) {
+      marketReferenceRuntimeRequests.push(request);
+      return {
+        status: "SUBMITTED",
+        attemptId: request.idempotencyKey,
+        idempotencyKey: request.idempotencyKey,
+        brokerOrderId: "market-reference-live-order-001",
+        message: "market reference fixture submitted",
+        action: "fixture action",
+        violations: [],
+        events: [],
+        trace: {
+          reason: "broker_submitted",
+        },
+        executionResult: {
+          brokerOrder: {
+            brokerOrderId: "market-reference-live-order-001",
+          },
+        },
+      };
+    },
+  },
+  executionStatus,
+  postSubmitReadiness,
+  budgetSnapshot: runtimeBudgetSnapshot,
+  lossSnapshot: runtimeLossSnapshot,
+});
+const submittedWithoutReferencePrice = [];
+const missingReferencePriceSummary = await evaluateLiveOpsCliLiveExecution({
+  config,
+  fixtureSmoke: false,
+  analysisDecision,
+  marketData: {
+    ready: true,
+    latestHeartbeatAt: observedAt,
+  },
+  env: {
+    SEEMIRAI_UPBIT_ACCESS_KEY: "fake-access-key",
+    SEEMIRAI_UPBIT_SECRET_KEY: "fake-secret-key",
+    SEEMIRAI_UPBIT_KEY_SCOPE: "자산조회,주문조회,주문하기",
+    SEEMIRAI_UPBIT_KEY_SCOPE_EVIDENCE_ID: "scope-evidence",
+  },
+  orderIntents: [marketReferenceIntent],
+  entryRuntime: {
+    async submitEntryCandidate(request) {
+      submittedWithoutReferencePrice.push(request);
+      return {
+        status: "SUBMITTED",
+        attemptId: request.idempotencyKey,
+        idempotencyKey: request.idempotencyKey,
+        brokerOrderId: "unexpected-missing-reference-price-order",
+        message: "unexpected missing reference price submit",
+        action: "fixture action",
+        violations: [],
+        events: [],
+      };
+    },
+  },
+  executionStatus,
+  postSubmitReadiness,
+  budgetSnapshot: runtimeBudgetSnapshot,
+  lossSnapshot: runtimeLossSnapshot,
+});
+const missingRuntimeSummary = await evaluateLiveOpsCliLiveExecution({
+  config,
+  fixtureSmoke: false,
+  analysisDecision,
+  marketData: {
+    ready: true,
+    latestHeartbeatAt: observedAt,
+  },
+  env: {
+    SEEMIRAI_UPBIT_ACCESS_KEY: "fake-access-key",
+    SEEMIRAI_UPBIT_SECRET_KEY: "fake-secret-key",
+    SEEMIRAI_UPBIT_KEY_SCOPE: "자산조회,주문조회,주문하기",
+    SEEMIRAI_UPBIT_KEY_SCOPE_EVIDENCE_ID: "scope-evidence",
+  },
+  orderIntents: [intent],
+  executionStatus,
+  postSubmitReadiness,
+  budgetSnapshot: runtimeBudgetSnapshot,
+  lossSnapshot: runtimeLossSnapshot,
+});
+const topLevelSubmittedBlocked = renderLiveOpsSummary({
+  configPath: "config/live-ops.example.json",
+  envFilePath: "tests/fixtures/live-ops/fake.env",
+  config,
+  env: {},
+  fixtureSmoke: false,
+  dbReadiness: { ready: true },
+  marketData: { ready: true },
+  analysisDecision: { ready: true },
+  liveExecution: summary,
+  reconcilePnlStatus: { ready: false, status: "blocked" },
+  telegramAlert: { ready: false, status: "blocked" },
+});
+const topLevelIdleBlocked = renderLiveOpsSummary({
+  configPath: "config/live-ops.example.json",
+  envFilePath: "tests/fixtures/live-ops/fake.env",
+  config,
+  env: {},
+  fixtureSmoke: false,
+  dbReadiness: { ready: true },
+  marketData: { ready: true },
+  analysisDecision: { ready: true },
+  liveExecution: { status: "idle", ready: true, liveOrderCapable: false },
+  reconcilePnlStatus: { ready: false, status: "pending" },
+  telegramAlert: { ready: false, status: "pending" },
+});
+const topLevelDecisionSourcePendingReady = renderLiveOpsSummary({
+  configPath: "config/live-ops.example.json",
+  envFilePath: "tests/fixtures/live-ops/fake.env",
+  config,
+  env: {},
+  fixtureSmoke: false,
+  dbReadiness: { ready: true },
+  marketData: { ready: true },
+  analysisDecision: { status: "pending", ready: false, decisionSourceConnected: false },
+  liveExecution: { status: "idle", ready: true, liveOrderCapable: false },
+  reconcilePnlStatus: { ready: true, status: "idle" },
+  telegramAlert: { ready: true, status: "idle" },
+});
+console.log(JSON.stringify({
+  summary,
+  submitted,
+  reservations,
+  blockedSummary,
+  submittedWithoutReservation,
+  riskBlockedSummary,
+  submittedWithoutRisk,
+  statusBlockedSummary,
+  submittedWithoutStatus,
+  reservationEvidenceBlockedSummary,
+  submittedWithoutReservationEvidence,
+  staleEvidenceSummary,
+  submittedWithStaleEvidence,
+  directKillSwitchResult,
+  submittedWithDirectKillSwitch,
+  directMissingStatusEvidenceResult,
+  submittedWithMissingStatusEvidence,
+  directMissingPostSubmitReadinessResult,
+  submittedWithMissingPostSubmitReadiness,
+  directInvalidCostInputResult,
+  submittedWithInvalidCostInput,
+  directInvalidMarketResult,
+  submittedWithInvalidMarket,
+  directMismatchNotionalResult,
+  submittedWithMismatchNotional,
+  directBelowMinimumNotionalResult,
+  submittedWithBelowMinimumNotional,
+  directLossLimitResult,
+  submittedWithLossLimit,
+  directPriceDeviationResult,
+  submittedWithPriceDeviation,
+  directBudgetLimitResult,
+  submittedWithBudgetLimit,
+  directSnapshotMaxOrderLimitResult,
+  submittedWithSnapshotMaxOrderLimit,
+  directReservationExceptionResult,
+  directBrokerExceptionResult,
+  directBrokerEvidenceMissingResult,
+  directBrokerStatusMissingResult,
+  directBrokerRejectedResult,
+  directBrokerPortMissingResult,
+  directCostRegressionResult,
+  submittedWithCostRegression,
+  directRiskRegressionResult,
+  submittedWithRiskRegression,
+  directDefaultSafetyBufferResult,
+  submittedWithDefaultSafetyBufferGap,
+  directInfrastructureRiskResult,
+  submittedWithInfrastructureRisk,
+  directNumericDecimalResult,
+  submittedWithNumericDecimal,
+  strategyKeyWrapperSummary,
+  submittedWithStrategyWrapper,
+  strategyWrapperReservations,
+  strategyKeySummary,
+  runtimeRequests,
+  usedBudgetSnapshot,
+  usedLossSnapshot,
+  decimalEvidenceSummary,
+  submittedWithDecimalEvidence,
+  normalizedDecimalReservations,
+  camelExpectedLossSummary,
+  camelRuntimeRequests,
+  zeroCostInputSummary,
+  zeroCostRuntimeRequests,
+  zeroExpectedLossSummary,
+  zeroExpectedLossRuntimeRequests,
+  marketReferenceSummary,
+  marketReferenceRuntimeRequests,
+  missingReferencePriceSummary,
+  submittedWithoutReferencePrice,
+  missingRuntimeSummary,
+  topLevelSubmittedBlocked,
+  topLevelIdleBlocked,
+  topLevelDecisionSourcePendingReady,
+}));
+        `,
+      ],
+      {
+        cwd: process.cwd(),
+        encoding: "utf8",
+        env: minimalEnv(),
+      },
+    );
+
+    expect(result.status).toBe(0);
+    expect(result.stderr).toBe("");
+    const output = JSON.parse(result.stdout) as {
+      summary: {
+        status: string;
+        liveOrderCapable: boolean;
+        submittedOrderCount: number;
+        brokerOrderId: string;
+        checks: Array<{ code: string }>;
+      };
+      submitted: Array<{
+        intent: {
+          exchangeId: string;
+          market: string;
+          side: string;
+          orderType: string;
+          postOnly: boolean;
+          timeInForce: string;
+          idempotencyKey: string;
+        };
+      }>;
+      reservations: Array<{
+        attemptId: string;
+        idempotencyKey: string;
+        market: string;
+        strategyId: string;
+        requestedNotionalKrw: string;
+      }>;
+      blockedSummary: {
+        status: string;
+        liveOrderCapable: boolean;
+        submittedOrderCount: number;
+        checks: Array<{ code: string }>;
+      };
+      submittedWithoutReservation: unknown[];
+      riskBlockedSummary: {
+        status: string;
+        liveOrderCapable: boolean;
+        submittedOrderCount: number;
+        checks: Array<{ code: string }>;
+      };
+      submittedWithoutRisk: unknown[];
+      statusBlockedSummary: {
+        status: string;
+        liveOrderCapable: boolean;
+        submittedOrderCount: number;
+        checks: Array<{ code: string }>;
+      };
+      submittedWithoutStatus: unknown[];
+      reservationEvidenceBlockedSummary: {
+        status: string;
+        liveOrderCapable: boolean;
+        submittedOrderCount: number;
+        checks: Array<{ code: string }>;
+      };
+      submittedWithoutReservationEvidence: unknown[];
+      staleEvidenceSummary: {
+        status: string;
+        liveOrderCapable: boolean;
+        submittedOrderCount: number;
+        checks: Array<{ code: string }>;
+      };
+      submittedWithStaleEvidence: unknown[];
+      directKillSwitchResult: {
+        status: string;
+        violations: string[];
+      };
+      submittedWithDirectKillSwitch: unknown[];
+      directMissingStatusEvidenceResult: {
+        status: string;
+        violations: string[];
+        trace: {
+          violations: string[];
+        };
+      };
+      submittedWithMissingStatusEvidence: unknown[];
+      directMissingPostSubmitReadinessResult: {
+        status: string;
+        violations: string[];
+        trace: {
+          violations: string[];
+        };
+      };
+      submittedWithMissingPostSubmitReadiness: unknown[];
+      directInvalidCostInputResult: {
+        status: string;
+        violations: string[];
+        trace: {
+          violations: string[];
+        };
+      };
+      submittedWithInvalidCostInput: unknown[];
+      directInvalidMarketResult: {
+        status: string;
+        violations: string[];
+      };
+      submittedWithInvalidMarket: unknown[];
+      directMismatchNotionalResult: {
+        status: string;
+        violations: string[];
+      };
+      submittedWithMismatchNotional: unknown[];
+      directBelowMinimumNotionalResult: {
+        status: string;
+        violations: string[];
+      };
+      submittedWithBelowMinimumNotional: unknown[];
+      directLossLimitResult: {
+        status: string;
+        violations: string[];
+        trace: {
+          violations: string[];
+        };
+      };
+      submittedWithLossLimit: unknown[];
+      directPriceDeviationResult: {
+        status: string;
+        violations: string[];
+        trace: {
+          violations: string[];
+        };
+      };
+      submittedWithPriceDeviation: unknown[];
+      directBudgetLimitResult: {
+        status: string;
+        violations: string[];
+        trace: {
+          violations: string[];
+        };
+      };
+      submittedWithBudgetLimit: unknown[];
+      directSnapshotMaxOrderLimitResult: {
+        status: string;
+        violations: string[];
+        trace: {
+          violations: string[];
+        };
+      };
+      submittedWithSnapshotMaxOrderLimit: unknown[];
+      directReservationExceptionResult: {
+        status: string;
+        violations: string[];
+        trace: {
+          reason: string;
+          error: string;
+        };
+      };
+      directBrokerExceptionResult: {
+        status: string;
+        violations: string[];
+        trace: {
+          reason: string;
+          error: string;
+          reservation: {
+            reservationId: string;
+          };
+          submission: {
+            intent: {
+              idempotencyKey: string;
+            };
+          };
+        };
+      };
+      directBrokerEvidenceMissingResult: {
+        status: string;
+        violations: string[];
+        trace: {
+          reason: string;
+          reservation: {
+            reservationId: string;
+          };
+          submission: {
+            intent: {
+              idempotencyKey: string;
+            };
+          };
+          brokerOrder: Record<string, unknown>;
+        };
+      };
+      directBrokerStatusMissingResult: {
+        status: string;
+        violations: string[];
+        trace: {
+          reason: string;
+          brokerOrder: {
+            brokerOrderId: string;
+          };
+        };
+      };
+      directBrokerRejectedResult: {
+        status: string;
+        violations: string[];
+        trace: {
+          reason: string;
+          brokerOrder: {
+            status: string;
+          };
+        };
+      };
+      directBrokerPortMissingResult: {
+        status: string;
+        violations: string[];
+        trace: {
+          reason: string;
+        };
+      };
+      directCostRegressionResult: {
+        status: string;
+        violations: string[];
+        trace: {
+          violations: string[];
+        };
+      };
+      submittedWithCostRegression: unknown[];
+      directRiskRegressionResult: {
+        status: string;
+        violations: string[];
+        trace: {
+          violations: string[];
+        };
+      };
+      submittedWithRiskRegression: unknown[];
+      directDefaultSafetyBufferResult: {
+        status: string;
+        violations: string[];
+        trace: {
+          violations: string[];
+        };
+      };
+      submittedWithDefaultSafetyBufferGap: unknown[];
+      directInfrastructureRiskResult: {
+        status: string;
+        violations: string[];
+        trace: {
+          violations: string[];
+        };
+      };
+      submittedWithInfrastructureRisk: unknown[];
+      directNumericDecimalResult: {
+        status: string;
+        violations: string[];
+        trace: {
+          violations: string[];
+        };
+      };
+      submittedWithNumericDecimal: unknown[];
+      strategyKeyWrapperSummary: {
+        status: string;
+        idempotencyKey: string;
+        submittedOrderCount: number;
+      };
+      submittedWithStrategyWrapper: Array<{
+        intent: {
+          idempotencyKey: string;
+          timeInForce: string;
+        };
+      }>;
+      strategyWrapperReservations: Array<{
+        idempotencyKey: string;
+      }>;
+      strategyKeySummary: {
+        status: string;
+        attemptId: string;
+        idempotencyKey: string;
+      };
+      runtimeRequests: Array<{
+        idempotencyKey: string;
+        config: {
+          max_daily_loss_krw: string;
+          max_weekly_loss_krw: string;
+        };
+        candidate: {
+          costInput: Record<string, unknown>;
+          risk: Record<string, unknown>;
+          metadata: {
+            decision_idempotency_key: string;
+          };
+        };
+        budgetSnapshot: Record<string, string>;
+        lossSnapshot: Record<string, string>;
+      }>;
+      usedBudgetSnapshot: Record<string, string>;
+      usedLossSnapshot: Record<string, string>;
+      decimalEvidenceSummary: {
+        status: string;
+        submittedOrderCount: number;
+      };
+      submittedWithDecimalEvidence: unknown[];
+      normalizedDecimalReservations: Array<{
+        requestedNotionalKrw: string;
+      }>;
+      camelExpectedLossSummary: {
+        status: string;
+        submittedOrderCount: number;
+      };
+      camelRuntimeRequests: Array<{
+        candidate: {
+          expectedLossBpsOfEquity: string;
+          costInput: Record<string, unknown>;
+        };
+      }>;
+      zeroCostInputSummary: {
+        status: string;
+        submittedOrderCount: number;
+      };
+      zeroCostRuntimeRequests: Array<{
+        candidate: {
+          costInput: Record<string, unknown>;
+        };
+      }>;
+      zeroExpectedLossSummary: {
+        status: string;
+        submittedOrderCount: number;
+      };
+      zeroExpectedLossRuntimeRequests: Array<{
+        candidate: {
+          expectedLossBpsOfEquity: string;
+        };
+      }>;
+      marketReferenceSummary: {
+        status: string;
+        submittedOrderCount: number;
+      };
+      marketReferenceRuntimeRequests: Array<{
+        candidate: {
+          referencePrice: string;
+        };
+      }>;
+      missingReferencePriceSummary: {
+        status: string;
+        attemptedOrderCount: number;
+        submittedOrderCount: number;
+        checks: Array<{ code: string }>;
+      };
+      submittedWithoutReferencePrice: unknown[];
+      missingRuntimeSummary: {
+        status: string;
+        attemptedOrderCount: number;
+        submittedOrderCount: number;
+        checks: Array<{ code: string }>;
+      };
+      topLevelSubmittedBlocked: {
+        status: string;
+        liveOrderCapable: boolean;
+      };
+      topLevelIdleBlocked: {
+        status: string;
+        liveOrderCapable: boolean;
+      };
+      topLevelDecisionSourcePendingReady: {
+        status: string;
+        message: string;
+        liveOrderCapable: boolean;
+      };
+    };
+    expect(output.summary).toMatchObject({
+      status: "submitted",
+      liveOrderCapable: true,
+      submittedOrderCount: 1,
+      brokerOrderId: "upbit-live-boundary-001",
+    });
+    expect(output.summary.checks.map((check) => check.code)).toContain("live_ops_execution_submitted");
+    expect(output.reservations).toContainEqual({
+      attemptId: "ops-aaaaaaaaaaaaaaaaaaaaaaaaaa",
+      idempotencyKey: "ops-aaaaaaaaaaaaaaaaaaaaaaaaaa",
+      market: "KRW-BTC",
+      strategyId: "live_ops_fixture_strategy",
+      requestedNotionalKrw: "10000",
+    });
+    expect(output.submitted).toHaveLength(1);
+    expect(output.submitted[0]?.intent).toMatchObject({
+      exchangeId: "upbit_krw_spot",
+      market: "KRW-BTC",
+      side: "BUY",
+      orderType: "LIMIT",
+      postOnly: true,
+      timeInForce: "POST_ONLY",
+      idempotencyKey: "ops-aaaaaaaaaaaaaaaaaaaaaaaaaa",
+    });
+    expect(output.submitted[0]).toMatchObject({
+      costSnapshot: {
+        source: "cost_model",
+        trade_allowed: true,
+      },
+      riskApproval: {
+        source: "risk_gate",
+        approved: true,
+        action: "ALLOW",
+      },
+    });
+    expect(output.blockedSummary).toMatchObject({
+      status: "blocked",
+      liveOrderCapable: false,
+      submittedOrderCount: 0,
+    });
+    expect(output.blockedSummary.checks.map((check) => check.code)).toContain("live_ops_execution_blocked");
+    expect(output.submittedWithoutReservation).toHaveLength(0);
+    expect(output.riskBlockedSummary).toMatchObject({
+      status: "blocked",
+      liveOrderCapable: false,
+      submittedOrderCount: 0,
+    });
+    expect(output.riskBlockedSummary.checks.map((check) => check.code)).toContain("live_ops_order_intent_blocked");
+    expect(output.submittedWithoutRisk).toHaveLength(0);
+    expect(output.statusBlockedSummary).toMatchObject({
+      status: "blocked",
+      liveOrderCapable: false,
+      submittedOrderCount: 0,
+    });
+    expect(output.statusBlockedSummary.checks.map((check) => check.code)).toContain("live_ops_execution_status_blocked");
+    expect(output.submittedWithoutStatus).toHaveLength(0);
+    expect(output.reservationEvidenceBlockedSummary).toMatchObject({
+      status: "blocked",
+      liveOrderCapable: false,
+      submittedOrderCount: 0,
+    });
+    expect(output.reservationEvidenceBlockedSummary.checks.map((check) => check.code)).toContain("live_ops_execution_blocked");
+    expect(output.submittedWithoutReservationEvidence).toHaveLength(0);
+    expect(output.staleEvidenceSummary).toMatchObject({
+      status: "blocked",
+      liveOrderCapable: false,
+      submittedOrderCount: 0,
+    });
+    expect(output.staleEvidenceSummary.checks.map((check) => check.code)).toContain("live_ops_order_intent_blocked");
+    expect(output.submittedWithStaleEvidence).toHaveLength(0);
+    expect(output.directKillSwitchResult).toMatchObject({
+      status: "BLOCKED",
+      violations: ["execution_runtime_status_blocked"],
+    });
+    expect(output.submittedWithDirectKillSwitch).toHaveLength(0);
+    expect(output.directMissingStatusEvidenceResult).toMatchObject({
+      status: "BLOCKED",
+      violations: ["execution_runtime_status_blocked"],
+      trace: {
+        violations: expect.arrayContaining(["execution status evidence id가 wrapper 경계에서도 필요합니다"]),
+      },
+    });
+    expect(output.submittedWithMissingStatusEvidence).toHaveLength(0);
+    expect(output.directMissingPostSubmitReadinessResult).toMatchObject({
+      status: "BLOCKED",
+      violations: ["execution_runtime_status_blocked"],
+      trace: {
+        violations: expect.arrayContaining([
+          "제출 후 Telegram trade alert 경계가 wrapper 경계에서도 준비되어야 합니다",
+          "post-submit readiness evidence id가 wrapper 경계에서도 필요합니다",
+        ]),
+      },
+    });
+    expect(output.submittedWithMissingPostSubmitReadiness).toHaveLength(0);
+    expect(output.directInvalidCostInputResult).toMatchObject({
+      status: "BLOCKED",
+      violations: ["execution_runtime_guard_blocked"],
+      trace: {
+        violations: expect.arrayContaining(["live ops wrapper candidate costInput은 non-negative decimal이어야 합니다"]),
+      },
+    });
+    expect(output.submittedWithInvalidCostInput).toHaveLength(0);
+    expect(output.directInvalidMarketResult).toMatchObject({
+      status: "BLOCKED",
+      violations: ["execution_runtime_guard_blocked"],
+    });
+    expect(output.submittedWithInvalidMarket).toHaveLength(0);
+    expect(output.directMismatchNotionalResult).toMatchObject({
+      status: "BLOCKED",
+      violations: ["execution_runtime_guard_blocked"],
+    });
+    expect(output.submittedWithMismatchNotional).toHaveLength(0);
+    expect(output.directBelowMinimumNotionalResult).toMatchObject({
+      status: "BLOCKED",
+      violations: ["execution_runtime_guard_blocked"],
+    });
+    expect(output.submittedWithBelowMinimumNotional).toHaveLength(0);
+    expect(output.directLossLimitResult).toMatchObject({
+      status: "BLOCKED",
+      violations: ["execution_runtime_guard_blocked"],
+      trace: {
+        violations: expect.arrayContaining(["live ops wrapper 일일 손실 한도를 초과했습니다"]),
+      },
+    });
+    expect(output.submittedWithLossLimit).toHaveLength(0);
+    expect(output.directPriceDeviationResult).toMatchObject({
+      status: "BLOCKED",
+      violations: ["execution_runtime_guard_blocked"],
+      trace: {
+        violations: expect.arrayContaining(["live ops wrapper 후보 가격 이탈이 허용 bps를 초과했습니다"]),
+      },
+    });
+    expect(output.submittedWithPriceDeviation).toHaveLength(0);
+    expect(output.directBudgetLimitResult).toMatchObject({
+      status: "BLOCKED",
+      violations: ["execution_runtime_guard_blocked"],
+      trace: {
+        violations: expect.arrayContaining([
+          "live ops wrapper 일일 자동 주문 예산을 초과했습니다",
+          "live ops wrapper open position 예산을 초과했습니다",
+        ]),
+      },
+    });
+    expect(output.submittedWithBudgetLimit).toHaveLength(0);
+    expect(output.directSnapshotMaxOrderLimitResult).toMatchObject({
+      status: "BLOCKED",
+      violations: ["execution_runtime_guard_blocked"],
+      trace: {
+        violations: expect.arrayContaining(["live ops wrapper 후보 실제 주문 금액이 budget snapshot 단일 주문 한도를 초과했습니다"]),
+      },
+    });
+    expect(output.submittedWithSnapshotMaxOrderLimit).toHaveLength(0);
+    expect(output.directReservationExceptionResult).toMatchObject({
+      status: "BLOCKED",
+      violations: ["budget_reservation_unavailable"],
+      trace: {
+        reason: "budget_reservation_unavailable",
+        error: "Error",
+      },
+    });
+    expect(output.directBrokerExceptionResult).toMatchObject({
+      status: "MANUAL_REVIEW_REQUIRED",
+      violations: ["broker_submission_uncertain"],
+      trace: {
+        reason: "broker_submission_uncertain",
+        error: "Error",
+        reservation: {
+          reservationId: "reservation-001",
+        },
+      },
+    });
+    expect(output.directBrokerExceptionResult.trace.submission.intent.idempotencyKey).toBe("ops-aaaaaaaaaaaaaaaaaaaaaaaaaa");
+    expect(output.directBrokerEvidenceMissingResult).toMatchObject({
+      status: "MANUAL_REVIEW_REQUIRED",
+      violations: ["broker_result_evidence_missing"],
+      trace: {
+        reason: "broker_result_evidence_missing",
+        reservation: {
+          reservationId: "reservation-001",
+        },
+        brokerOrder: {},
+      },
+    });
+    expect(output.directBrokerEvidenceMissingResult.trace.submission.intent.idempotencyKey).toBe("ops-aaaaaaaaaaaaaaaaaaaaaaaaaa");
+    expect(output.directBrokerStatusMissingResult).toMatchObject({
+      status: "MANUAL_REVIEW_REQUIRED",
+      violations: ["broker_result_evidence_missing"],
+      trace: {
+        reason: "broker_result_evidence_missing",
+        brokerOrder: {
+          brokerOrderId: "status-missing-live-order-001",
+        },
+      },
+    });
+    expect(output.directBrokerRejectedResult).toMatchObject({
+      status: "MANUAL_REVIEW_REQUIRED",
+      violations: ["broker_result_not_accepted"],
+      trace: {
+        reason: "broker_result_not_accepted",
+        brokerOrder: {
+          status: "REJECTED",
+        },
+      },
+    });
+    expect(output.directBrokerPortMissingResult).toMatchObject({
+      status: "BLOCKED",
+      violations: ["broker_port_missing"],
+      trace: {
+        reason: "broker_port_missing",
+      },
+    });
+    expect(output.directCostRegressionResult).toMatchObject({
+      status: "BLOCKED",
+      violations: ["execution_runtime_cost_risk_blocked"],
+      trace: {
+        violations: expect.arrayContaining(["live ops wrapper CostModel 현재 입력이 비용 여유 조건을 통과하지 못했습니다"]),
+      },
+    });
+    expect(output.submittedWithCostRegression).toHaveLength(0);
+    expect(output.directRiskRegressionResult).toMatchObject({
+      status: "BLOCKED",
+      violations: ["execution_runtime_cost_risk_blocked"],
+      trace: {
+        violations: expect.arrayContaining(["live ops wrapper RiskGate 현재 예상 손실이 한도를 초과했습니다"]),
+      },
+    });
+    expect(output.submittedWithRiskRegression).toHaveLength(0);
+    expect(output.directDefaultSafetyBufferResult).toMatchObject({
+      status: "BLOCKED",
+      violations: ["execution_runtime_cost_risk_blocked"],
+      trace: {
+        violations: expect.arrayContaining(["live ops wrapper CostModel 현재 입력이 비용 여유 조건을 통과하지 못했습니다"]),
+      },
+    });
+    expect(output.submittedWithDefaultSafetyBufferGap).toHaveLength(0);
+    expect(output.directInfrastructureRiskResult).toMatchObject({
+      status: "BLOCKED",
+      violations: ["execution_runtime_cost_risk_blocked"],
+      trace: {
+        violations: expect.arrayContaining(["live ops wrapper RiskGate 현재 인프라 차단 신호가 활성화됐습니다: DB_WRITE_FAILURE"]),
+      },
+    });
+    expect(output.submittedWithInfrastructureRisk).toHaveLength(0);
+    expect(output.directNumericDecimalResult).toMatchObject({
+      status: "BLOCKED",
+      violations: ["execution_runtime_guard_blocked"],
+      trace: {
+        violations: expect.arrayContaining(["live ops wrapper 후보 가격, 수량, 주문 금액은 양수 decimal이어야 합니다"]),
+      },
+    });
+    expect(output.submittedWithNumericDecimal).toHaveLength(0);
+    expect(output.strategyKeyWrapperSummary).toMatchObject({
+      status: "submitted",
+      submittedOrderCount: 1,
+    });
+    expect(output.strategyKeyWrapperSummary.idempotencyKey).toMatch(/^ops-[a-f0-9]{26}$/u);
+    expect(output.submittedWithStrategyWrapper).toHaveLength(1);
+    expect(output.submittedWithStrategyWrapper[0]?.intent.idempotencyKey).toBe(output.strategyKeyWrapperSummary.idempotencyKey);
+    expect(output.submittedWithStrategyWrapper[0]?.intent.timeInForce).toBe("POST_ONLY");
+    expect(output.strategyWrapperReservations).toHaveLength(1);
+    expect(output.strategyWrapperReservations[0]?.idempotencyKey).toBe(output.strategyKeyWrapperSummary.idempotencyKey);
+    expect(output.strategyKeySummary).toMatchObject({
+      status: "submitted",
+    });
+    expect(output.strategyKeySummary.idempotencyKey).toMatch(/^ops-[a-f0-9]{26}$/u);
+    expect(output.strategyKeySummary.idempotencyKey).not.toContain("live_ops_fixture_strategy");
+    expect(output.runtimeRequests).toHaveLength(1);
+    expect(output.runtimeRequests[0]?.idempotencyKey).toBe(output.strategyKeySummary.idempotencyKey);
+    expect(output.runtimeRequests[0]?.config).toMatchObject({
+      max_daily_loss_krw: "10000",
+      max_weekly_loss_krw: "30000",
+    });
+    expect(output.runtimeRequests[0]?.budgetSnapshot).toEqual(output.usedBudgetSnapshot);
+    expect(output.runtimeRequests[0]?.lossSnapshot).toEqual(output.usedLossSnapshot);
+    expect(output.runtimeRequests[0]?.candidate.costInput).toMatchObject({
+      expectedReturnBps: "40",
+      safetyBufferBps: "10",
+    });
+    expect(output.runtimeRequests[0]?.candidate.risk).toMatchObject({
+      strategy: {
+        strategyId: "live_ops_fixture_strategy",
+      },
+    });
+    expect(output.runtimeRequests[0]?.candidate.metadata).toMatchObject({
+      decision_idempotency_key: "live_ops_fixture_strategy:upbit_krw_spot:KRW-BTC:BUY:2026-06-15T00:00:00.000Z",
+    });
+    expect(output.decimalEvidenceSummary).toMatchObject({
+      status: "submitted",
+      submittedOrderCount: 1,
+    });
+    expect(output.submittedWithDecimalEvidence).toHaveLength(1);
+    expect(output.normalizedDecimalReservations).toHaveLength(1);
+    expect(output.normalizedDecimalReservations[0]?.requestedNotionalKrw).toBe("10000.0");
+    expect(output.camelExpectedLossSummary).toMatchObject({
+      status: "submitted",
+      submittedOrderCount: 1,
+    });
+    expect(output.camelRuntimeRequests).toHaveLength(1);
+    expect(output.camelRuntimeRequests[0]?.candidate.expectedLossBpsOfEquity).toBe("5");
+    expect(output.camelRuntimeRequests[0]?.candidate.costInput).not.toHaveProperty("safetyBufferBps");
+    expect(output.zeroCostInputSummary).toMatchObject({
+      status: "submitted",
+      submittedOrderCount: 1,
+    });
+    expect(output.zeroCostRuntimeRequests).toHaveLength(1);
+    expect(output.zeroCostRuntimeRequests[0]?.candidate.costInput).toMatchObject({
+      spreadCostBpsP75: "0",
+      expectedSlippageBpsP95: "0",
+      cancelRequotePenaltyBps: "0",
+    });
+    expect(output.zeroExpectedLossSummary).toMatchObject({
+      status: "submitted",
+      submittedOrderCount: 1,
+    });
+    expect(output.zeroExpectedLossRuntimeRequests).toHaveLength(1);
+    expect(output.zeroExpectedLossRuntimeRequests[0]?.candidate.expectedLossBpsOfEquity).toBe("0");
+    expect(output.marketReferenceSummary).toMatchObject({
+      status: "submitted",
+      submittedOrderCount: 1,
+    });
+    expect(output.marketReferenceRuntimeRequests).toHaveLength(1);
+    expect(output.marketReferenceRuntimeRequests[0]?.candidate.referencePrice).toBe("100000000");
+    expect(output.missingReferencePriceSummary).toMatchObject({
+      status: "blocked",
+      attemptedOrderCount: 0,
+      submittedOrderCount: 0,
+    });
+    expect(output.missingReferencePriceSummary.checks.map((check) => check.code)).toContain("live_ops_order_intent_blocked");
+    expect(output.submittedWithoutReferencePrice).toHaveLength(0);
+    expect(output.missingRuntimeSummary).toMatchObject({
+      status: "blocked",
+      attemptedOrderCount: 0,
+      submittedOrderCount: 0,
+    });
+    expect(output.missingRuntimeSummary.checks.map((check) => check.code)).toContain("live_ops_entry_runtime_missing");
+    expect(output.topLevelSubmittedBlocked).toMatchObject({
+      status: "blocked",
+      liveOrderCapable: true,
+    });
+    expect(output.topLevelIdleBlocked).toMatchObject({
+      status: "blocked",
+      liveOrderCapable: false,
+    });
+    expect(output.topLevelDecisionSourcePendingReady).toMatchObject({
+      status: "blocked",
+      liveOrderCapable: false,
+    });
+    expect(output.topLevelDecisionSourcePendingReady.message).toContain("production live ops boot가 fail-closed");
+    expect(result.stdout).not.toContain("fake-secret-key");
+  });
+
   it("DB readiness 차단 시 provider를 열기 전에 production boot를 중단한다", async () => {
     const tempDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-live-ops-db-block-"));
     const fixtureEnv = await readFile(path.join(process.cwd(), "tests", "fixtures", "live-ops", "fake.env"), "utf8");
@@ -468,6 +2623,43 @@ try {
     const output = JSON.parse(result.stdout) as { status: string; message: string };
     expect(output.status).toBe("blocked");
     expect(output.message).toContain("market data provider boot를 통과하지 못해 live ops boot를 중단합니다");
+  });
+
+  it("최종 blocked summary는 non-fixture live:ops 성공으로 남기지 않는다", () => {
+    const result = spawnSync(
+      process.execPath,
+      [
+        "--input-type=module",
+        "--eval",
+        `
+import { assertLiveOpsCliSummaryReady } from "./scripts/run-live-ops-support.mjs";
+
+try {
+  assertLiveOpsCliSummaryReady({
+    status: "blocked",
+    message: "production live ops boot가 fail-closed 됐습니다.",
+  }, { fixtureSmoke: false });
+  console.log(JSON.stringify({ status: "unexpected-ready" }));
+} catch (error) {
+  console.log(JSON.stringify({
+    status: "blocked",
+    message: error instanceof Error ? error.message : String(error),
+  }));
+}
+        `,
+      ],
+      {
+        cwd: process.cwd(),
+        encoding: "utf8",
+        env: minimalEnv(),
+      },
+    );
+
+    expect(result.status).toBe(0);
+    expect(result.stderr).toBe("");
+    const output = JSON.parse(result.stdout) as { status: string; message: string };
+    expect(output.status).toBe("blocked");
+    expect(output.message).toContain("live ops 최종 readiness를 통과하지 못해 boot를 중단합니다");
   });
 
   it("live:ops:tui attach skeleton은 attach 대상 없이는 실패한다", () => {

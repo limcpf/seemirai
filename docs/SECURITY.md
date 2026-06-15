@@ -254,8 +254,8 @@
 
 - production live ops JSON config에는 secret, token, password, access key, secret key, database URL, Authorization/JWT 계열 key를
   넣지 않는다. `src/runtime/live-ops-config.ts`는 secret-like key를 발견하면 startup contract를 fail-closed 한다.
-- production live ops env file은 DB/Upbit/Telegram/TUI credential만 담는다. M22/M23 milestone runner의 smoke/readiness env는
-  production readiness로 쓰지 않는다.
+- production live ops env file은 DB/Upbit/Telegram/TUI credential과 Upbit key scope 확인값, 저장소 밖 evidence id만 담는다.
+  M22/M23 milestone runner의 smoke/readiness env는 production readiness로 쓰지 않는다.
 - `live:ops`와 `live:ops:tui`는 Sub PR 01 skeleton 단계에서 provider를 호출하지 않으며, 실제 Upbit private client, live broker,
   Telegram provider, TUI control side effect는 후속 readiness와 control confirmation 경계가 붙은 뒤에만 열린다.
 - TUI와 CLI 첫 화면은 `PAPER_NO_KEY`, 내부 enum, reason code를 주요 문구로 노출하지 않고 한국어 상태/원인/영향/필요 조치를 먼저

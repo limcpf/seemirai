@@ -147,11 +147,14 @@ export async function loadLiveOpsCliInputs(options) {
     fixtureSmoke: options.fixtureSmoke,
     marketData,
   });
-  const liveExecution = evaluateLiveOpsCliLiveExecution({
+  const liveExecution = await evaluateLiveOpsCliLiveExecution({
     config,
     fixtureSmoke: options.fixtureSmoke,
     analysisDecision,
+    marketData,
+    env,
   });
+  assertLiveOpsCliLiveExecutionReady(liveExecution, { fixtureSmoke: options.fixtureSmoke });
   const reconcilePnlStatus = evaluateLiveOpsCliReconcilePnlStatus({
     config,
     fixtureSmoke: options.fixtureSmoke,
@@ -178,13 +181,16 @@ export async function loadLiveOpsCliInputs(options) {
 }
 
 export function renderLiveOpsSummary(input) {
-  const status = input.dbReadiness.ready && input.marketData.ready ? "ready" : "blocked";
+  const postExecutionReady = input.reconcilePnlStatus.ready === true && input.telegramAlert.ready === true;
+  const status = input.dbReadiness.ready && input.marketData.ready && input.analysisDecision.ready && input.liveExecution.ready && postExecutionReady
+    ? "ready"
+    : "blocked";
   return {
     status,
     message: status === "ready"
       ? (input.fixtureSmoke
         ? "production live ops config/env 계약과 DB readiness를 통과했습니다. fixture smoke는 외부 provider를 호출하지 않습니다."
-        : "production live ops config/env, DB readiness, Upbit public market data provider boot를 통과했습니다.")
+        : "production live ops config/env, DB readiness, Upbit public market data, analysis/decision, live execution guard를 통과했습니다.")
       : "production live ops boot가 fail-closed 됐습니다. 차단된 readiness 항목을 먼저 복구하세요.",
     configPath: input.configPath,
     envFilePath: input.envFilePath,
@@ -219,6 +225,18 @@ export function assertLiveOpsCliMarketDataReady(summary, { fixtureSmoke }) {
   }
 }
 
+export function assertLiveOpsCliLiveExecutionReady(summary, { fixtureSmoke }) {
+  if (!fixtureSmoke && !summary.ready) {
+    throw new Error(formatCliLiveExecutionFailureMessage(summary));
+  }
+}
+
+export function assertLiveOpsCliSummaryReady(summary, { fixtureSmoke }) {
+  if (!fixtureSmoke && summary?.status !== "ready") {
+    throw new Error(formatCliSummaryFailureMessage(summary));
+  }
+}
+
 export function renderLiveOpsTuiDashboard(summary) {
   const dbReadiness = summary.dbReadiness;
   const migration = dbReadiness?.migration ?? {};
@@ -231,7 +249,9 @@ export function renderLiveOpsTuiDashboard(summary) {
       : worker === "analysis_decision"
         ? (summary.analysisDecision?.ready ? `${formatDecisionCategory(summary.analysisDecision.decisionCategory)} 기록 확인` : "후속 연결 대기")
       : worker === "live_execution"
-        ? (summary.liveExecution?.ready ? "후보 없음 - broker 제출 없음" : "후속 연결 대기")
+        ? (summary.liveExecution?.ready
+          ? (summary.liveExecution.status === "idle" ? "후보 없음 - broker 제출 없음" : (summary.liveExecution.statusLabel ?? "실행 결과 확인"))
+          : "후속 연결 대기")
       : worker === "reconcile_pnl_status"
         ? (summary.reconcilePnlStatus?.ready ? "상태 요약 확인 - provider 호출 없음" : "후속 연결 대기")
       : worker === "telegram"
@@ -391,6 +411,8 @@ function validateLiveOpsEnv(env, processEnv) {
     "SEEMIRAI_DATABASE_URL",
     "SEEMIRAI_UPBIT_ACCESS_KEY",
     "SEEMIRAI_UPBIT_SECRET_KEY",
+    "SEEMIRAI_UPBIT_KEY_SCOPE",
+    "SEEMIRAI_UPBIT_KEY_SCOPE_EVIDENCE_ID",
     "SEEMIRAI_TELEGRAM_BOT_TOKEN",
     "SEEMIRAI_TELEGRAM_CHAT_ID",
     "SEEMIRAI_TUI_CONTROL_TOKEN",
@@ -606,12 +628,53 @@ function formatDecisionCategory(decisionCategory) {
   return "보류";
 }
 
-function evaluateLiveOpsCliLiveExecution({ config, fixtureSmoke, analysisDecision }) {
+export async function evaluateLiveOpsCliLiveExecution({
+  config,
+  fixtureSmoke,
+  analysisDecision,
+  marketData,
+  env,
+  orderIntents,
+  entryRuntime,
+  executionStatus,
+  postSubmitReadiness,
+  budgetSnapshot,
+  lossSnapshot,
+}) {
   const market = config.universe?.default_market ?? "KRW-BTC";
+  const observedAt = new Date().toISOString();
+  const intents = orderIntents ?? analysisDecision.orderIntents ?? [];
+  const brokerGuard = evaluateLiveOpsCliBrokerGuard({ config, env, fixtureSmoke });
 
-  if (!fixtureSmoke || analysisDecision.ready !== true) {
+  if (analysisDecision.ready !== true) {
+    if (analysisDecision.decisionSourceConnected === false) {
+      return buildLiveOpsCliLiveExecutionSummary({
+        status: "pending",
+        ready: false,
+        liveOrderCapable: false,
+        market,
+        observedAt,
+        orderIntentCount: 0,
+        attemptedOrderCount: 0,
+        submittedOrderCount: 0,
+        brokerGuard,
+        statusLabel: "decision source 대기",
+        message: "production decision source가 아직 연결되지 않아 live execution은 broker 제출 없이 대기합니다.",
+        action: "durable decision source가 연결되면 같은 market data tick에서 후보를 다시 평가하세요.",
+        checks: [
+          okLiveExecutionCheck("analysis_decision", "analysis/decision source 미연결 상태를 boot 범위와 분리했습니다.", "live_ops_decision_source_pending"),
+          brokerGuard.ready
+            ? okLiveExecutionCheck("broker_guard", "Upbit live broker guard를 확인했습니다.", "live_ops_broker_guard_ready")
+            : blockedLiveExecutionCheck("broker_guard", "Upbit live broker guard가 차단됐습니다.", "live_ops_broker_guard_blocked", {
+                violations: brokerGuard.violations,
+              }),
+          okLiveExecutionCheck("broker_submit", "decision source 미연결 상태에서는 broker 제출을 생략합니다.", "live_ops_broker_submit_skipped"),
+        ],
+      });
+    }
+
     return {
-      status: "pending",
+      status: "blocked",
       ready: false,
       liveOrderCapable: false,
       market,
@@ -619,49 +682,1477 @@ function evaluateLiveOpsCliLiveExecution({ config, fixtureSmoke, analysisDecisio
       orderIntentCount: analysisDecision.orderIntentCount ?? 0,
       attemptedOrderCount: 0,
       submittedOrderCount: 0,
+      brokerGuard,
       statusLabel: "후속 연결 대기",
-      message: "live execution worker는 analysis/decision lifecycle 이후 연결됩니다.",
+      message: "analysis/decision이 준비되지 않아 live execution으로 전진하지 않습니다.",
       checks: [
         {
           name: "analysis_decision",
           status: "blocked",
-          code: "live_ops_execution_pending",
-          message: "live execution worker가 후속 lifecycle에서 시작됩니다.",
+          code: "live_ops_analysis_not_ready",
+          message: "analysis/decision 차단 원인을 먼저 해소해야 broker 경계를 열 수 있습니다.",
         },
       ],
     };
   }
 
+  if (!brokerGuard.ready) {
+    return buildLiveOpsCliLiveExecutionSummary({
+      status: "blocked",
+      ready: false,
+      liveOrderCapable: false,
+      market,
+      observedAt,
+      orderIntentCount: intents.length,
+      attemptedOrderCount: 0,
+      submittedOrderCount: 0,
+      brokerGuard,
+      statusLabel: "broker guard 차단",
+      message: "Upbit live broker guard가 완성되지 않아 실주문 실행을 시작하지 않았습니다.",
+      action: "key scope, evidence id, market, 예산 상한을 확인한 뒤 다시 실행하세요.",
+      checks: [
+        okLiveExecutionCheck("analysis_decision", "analysis/decision summary를 확인했습니다.", "live_ops_analysis_ready"),
+        blockedLiveExecutionCheck("broker_guard", "Upbit live broker guard가 차단됐습니다.", "live_ops_broker_guard_blocked", {
+          violations: brokerGuard.violations,
+        }),
+      ],
+    });
+  }
+
+  if (analysisDecision.orderIntentCount === 0 && intents.length === 0) {
+    // HOLD tick은 정상 lifecycle이므로 durable reservation이나 broker 호출 없이 evidence-friendly idle 상태로 닫는다.
+    return buildLiveOpsCliLiveExecutionSummary({
+      status: "idle",
+      ready: true,
+      liveOrderCapable: false,
+      market,
+      observedAt,
+      orderIntentCount: 0,
+      attemptedOrderCount: 0,
+      submittedOrderCount: 0,
+      brokerGuard,
+      statusLabel: "후보 없음",
+      message: `${fixtureSmoke ? "fixture" : "production"} decision tick에 주문 후보가 없어 broker 제출은 발생하지 않았습니다.`,
+      action: "다음 decision tick에서 신규 후보가 생기면 예산과 freshness를 다시 확인합니다.",
+      checks: [
+        okLiveExecutionCheck("analysis_decision", "analysis/decision summary를 확인했습니다.", "live_ops_analysis_ready"),
+        okLiveExecutionCheck("order_intent", "주문 후보가 없어 broker 제출을 생략했습니다.", "live_ops_no_order_intent"),
+        okLiveExecutionCheck("broker_submit", "broker 제출 횟수 0회를 확인했습니다.", "live_ops_broker_submit_skipped"),
+      ],
+    });
+  }
+
+  const countViolation = validateLiveOpsCliOrderIntentCount(analysisDecision, intents);
+  if (countViolation !== undefined) {
+    return buildLiveOpsCliLiveExecutionSummary({
+      status: "blocked",
+      ready: false,
+      liveOrderCapable: false,
+      market,
+      observedAt,
+      orderIntentCount: intents.length,
+      attemptedOrderCount: 0,
+      submittedOrderCount: 0,
+      brokerGuard,
+      statusLabel: "후보 수 차단",
+      message: "live execution 후보 수가 production 실행 경계와 맞지 않아 주문을 제출하지 않았습니다.",
+      action: "analysis summary와 order intent source를 같은 decision tick으로 다시 읽으세요.",
+      checks: [
+        okLiveExecutionCheck("analysis_decision", "analysis/decision summary를 확인했습니다.", "live_ops_analysis_ready"),
+        blockedLiveExecutionCheck("order_intent", countViolation.message, countViolation.code, countViolation.details),
+      ],
+    });
+  }
+
+  const executionStatusViolations = collectLiveOpsCliExecutionStatusViolations(executionStatus, postSubmitReadiness, budgetSnapshot, lossSnapshot);
+  if (executionStatusViolations.length > 0) {
+    // kill switch, reconcile freshness, post-submit 후속 경계가 불명확하면 후보가 유효해도 broker runtime을 열지 않는다.
+    return buildLiveOpsCliLiveExecutionSummary({
+      status: "blocked",
+      ready: false,
+      liveOrderCapable: false,
+      market,
+      observedAt,
+      orderIntentCount: intents.length,
+      attemptedOrderCount: 0,
+      submittedOrderCount: 0,
+      brokerGuard,
+      statusLabel: "운영 상태 차단",
+      message: "live execution 운영 상태 증거가 부족해 주문 후보를 제출하지 않았습니다.",
+      action: "kill switch, reconcile freshness, 제출 후 reconcile/alert 경계 증거를 확인하세요.",
+      checks: [
+        okLiveExecutionCheck("analysis_decision", "analysis/decision summary를 확인했습니다.", "live_ops_analysis_ready"),
+        blockedLiveExecutionCheck("execution_status", "live execution 운영 상태 snapshot이 production 제출 조건을 통과하지 못했습니다.", "live_ops_execution_status_blocked", {
+          violations: executionStatusViolations,
+        }),
+      ],
+    });
+  }
+
+  const intent = intents[0];
+  const intentViolations = collectLiveOpsCliOrderIntentViolations({ config, marketData, intent });
+  if (intentViolations.length > 0) {
+    // 주문 후보가 live ops guard를 벗어나면 entry runtime에 넘기기 전에 닫아 broker side effect를 만들지 않는다.
+    return buildLiveOpsCliLiveExecutionSummary({
+      status: "blocked",
+      ready: false,
+      liveOrderCapable: false,
+      market,
+      observedAt,
+      orderIntentCount: intents.length,
+      attemptedOrderCount: 0,
+      submittedOrderCount: 0,
+      brokerGuard,
+      statusLabel: "후보 차단",
+      message: "주문 후보가 실운영 실행 조건을 통과하지 못해 제출하지 않았습니다.",
+      action: "후보 market, LIMIT/post-only, 예산, freshness, strategy/risk 입력을 확인하세요.",
+      checks: [
+        okLiveExecutionCheck("analysis_decision", "analysis/decision summary를 확인했습니다.", "live_ops_analysis_ready"),
+        blockedLiveExecutionCheck("order_intent", "주문 후보가 production live execution guard를 통과하지 못했습니다.", "live_ops_order_intent_blocked", {
+          violations: intentViolations,
+        }),
+      ],
+    });
+  }
+
+  const request = createLiveOpsCliEntryRuntimeRequest({ config, marketData, intent, observedAt, executionStatus, postSubmitReadiness, budgetSnapshot, lossSnapshot });
+  if (entryRuntime === undefined) {
+    // runtime wiring이 없으면 reservation/broker side effect가 없으므로 불확실 제출이 아니라 설정 차단으로 닫는다.
+    return buildLiveOpsCliLiveExecutionSummary({
+      status: "blocked",
+      ready: false,
+      liveOrderCapable: false,
+      market,
+      observedAt,
+      orderIntentCount: intents.length,
+      attemptedOrderCount: 0,
+      submittedOrderCount: 0,
+      brokerGuard,
+      statusLabel: "runtime 미연결",
+      message: "live autonomous entry runtime이 연결되지 않아 주문 후보를 제출하지 않았습니다.",
+      action: "budget reservation과 broker runtime wiring을 연결한 뒤 다시 실행하세요.",
+      checks: [
+        okLiveExecutionCheck("analysis_decision", "analysis/decision summary를 확인했습니다.", "live_ops_analysis_ready"),
+        okLiveExecutionCheck("order_intent", "단일 LIMIT + post-only 주문 후보를 확인했습니다.", "live_ops_order_intent_ready"),
+        blockedLiveExecutionCheck("entry_runtime", "live autonomous entry runtime이 연결되지 않았습니다.", "live_ops_entry_runtime_missing"),
+      ],
+    });
+  }
+
+  const runtime = entryRuntime;
+  let attempt;
+  try {
+    // 이 호출이 예산 reservation과 UpbitLiveBroker 제출로 이어질 수 있는 유일한 경계다.
+    attempt = await runtime.submitEntryCandidate(request);
+  } catch (error) {
+    return buildLiveOpsCliLiveExecutionSummary({
+      status: "manual_review_required",
+      ready: false,
+      liveOrderCapable: false,
+      market,
+      observedAt,
+      orderIntentCount: intents.length,
+      attemptedOrderCount: 1,
+      submittedOrderCount: 0,
+      brokerGuard,
+      statusLabel: "수동 점검",
+      message: "실주문 실행 결과를 확정할 수 없어 수동 점검 상태로 전환했습니다.",
+      action: "거래소 주문과 durable reservation 상태를 먼저 확인한 뒤 재시도 여부를 결정하세요.",
+      checks: [
+        okLiveExecutionCheck("analysis_decision", "analysis/decision summary를 확인했습니다.", "live_ops_analysis_ready"),
+        okLiveExecutionCheck("order_intent", "단일 LIMIT + post-only 주문 후보를 확인했습니다.", "live_ops_order_intent_ready"),
+        blockedLiveExecutionCheck("execution_result", "live execution runtime 결과를 확정할 수 없습니다.", "live_ops_execution_runtime_uncertain", {
+          reason: safeErrorName(error),
+        }),
+      ],
+    });
+  }
+
+  const submitted = attempt.status === "SUBMITTED";
   return {
-    status: "idle",
-    ready: true,
-    liveOrderCapable: false,
+    status: submitted ? "submitted" : String(attempt.status ?? "blocked").toLowerCase(),
+    ready: submitted,
+    liveOrderCapable: submitted,
     market,
-    latestExecutionAt: null,
-    orderIntentCount: analysisDecision.orderIntentCount,
-    attemptedOrderCount: 0,
-    submittedOrderCount: 0,
-    statusLabel: "후보 없음",
-    message: "fixture live execution worker가 주문 후보 없음 상태를 확인했고 broker 제출은 발생하지 않았습니다.",
+    latestExecutionAt: observedAt,
+    orderIntentCount: intents.length,
+    attemptedOrderCount: 1,
+    submittedOrderCount: submitted ? 1 : 0,
+    attemptStatus: attempt.status ?? null,
+    attemptId: attempt.attemptId ?? null,
+    idempotencyKey: attempt.idempotencyKey ?? request.idempotencyKey,
+    brokerOrderId: attempt.brokerOrderId ?? attempt.executionResult?.brokerOrder?.brokerOrderId ?? null,
+    brokerGuard,
+    statusLabel: submitted ? "broker 제출" : "제출 차단",
+    message: submitted
+      ? "실주문 실행 경계가 주문 후보를 broker 제출까지 전진시켰습니다."
+      : (attempt.message ?? "live execution runtime이 주문 후보를 제출하지 않았습니다."),
+    action: submitted
+      ? "체결, 취소, reconcile/PnL/status worker에서 후속 상태를 확인합니다."
+      : (attempt.action ?? "차단 원인을 확인한 뒤 다음 tick에서 다시 평가합니다."),
     checks: [
+      okLiveExecutionCheck("analysis_decision", "analysis/decision summary를 확인했습니다.", "live_ops_analysis_ready"),
+      okLiveExecutionCheck("order_intent", "단일 LIMIT + post-only 주문 후보를 확인했습니다.", "live_ops_order_intent_ready"),
+      okLiveExecutionCheck("execution_request", "live autonomous entry runtime 요청을 만들었습니다.", "live_ops_execution_request_ready"),
       {
-        name: "order_intent",
-        status: "ok",
-        code: "live_ops_no_order_intent",
-        message: "fixture decision tick에는 live execution으로 넘길 주문 후보가 없습니다.",
-      },
-      {
-        name: "broker_submit",
-        status: "ok",
-        code: "live_ops_broker_submit_skipped",
-        message: "fixture smoke에서는 broker 제출 경계를 호출하지 않습니다.",
+        name: "execution_result",
+        status: submitted ? "ok" : "blocked",
+        code: submitted ? "live_ops_execution_submitted" : "live_ops_execution_blocked",
+        message: submitted ? "broker 제출 결과를 확인했습니다." : "entry runtime이 제출을 차단했습니다.",
       },
     ],
   };
 }
 
+export function createLiveOpsCliEntryRuntime({ broker, budgetReservation } = {}) {
+  return {
+    async submitEntryCandidate(request) {
+      if (broker === undefined || typeof broker.submitOrder !== "function") {
+        // broker port 미연결은 거래소 주문 불확실성이 없으므로 수동 점검이 아니라 wiring 차단으로 닫는다.
+        return {
+          status: "BLOCKED",
+          attemptId: request.idempotencyKey,
+          idempotencyKey: request.idempotencyKey,
+          message: "live broker port가 연결되지 않아 broker 제출을 중단했습니다.",
+          action: "Upbit live broker port wiring을 연결한 뒤 같은 후보를 다시 평가하세요.",
+          violations: ["broker_port_missing"],
+          events: [],
+          trace: {
+            reason: "broker_port_missing",
+          },
+        };
+      }
+
+      const statusViolations = collectLiveOpsCliEntryRuntimeStatusViolations(request);
+      if (statusViolations.length > 0) {
+        // wrapper를 직접 호출해도 kill switch와 reconcile 상태가 불명확하면 private broker로 넘어가지 않는다.
+        return {
+          status: "BLOCKED",
+          attemptId: request.idempotencyKey,
+          idempotencyKey: request.idempotencyKey,
+          message: "live execution 운영 상태가 제출 조건을 통과하지 못해 broker 제출을 중단했습니다.",
+          action: "kill switch 해제와 reconcile freshness evidence를 확인한 뒤 다시 실행하세요.",
+          violations: ["execution_runtime_status_blocked"],
+          events: [],
+          trace: {
+            reason: "execution_runtime_status_blocked",
+            violations: statusViolations,
+          },
+        };
+      }
+
+      const guardViolations = collectLiveOpsCliEntryRuntimeGuardViolations(request);
+      if (guardViolations.length > 0) {
+        // exported wrapper는 상위 adapter 없이도 live ops 소액·단일시장 invariant를 broker 앞에서 다시 고정한다.
+        return {
+          status: "BLOCKED",
+          attemptId: request.idempotencyKey,
+          idempotencyKey: request.idempotencyKey,
+          message: "live ops execution guard가 제출 조건을 통과하지 못해 broker 제출을 중단했습니다.",
+          action: "KRW-BTC, 10000 KRW 상한, ops identifier, LIMIT post-only 조건을 확인하세요.",
+          violations: ["execution_runtime_guard_blocked"],
+          events: [],
+          trace: {
+            reason: "execution_runtime_guard_blocked",
+            violations: guardViolations,
+          },
+        };
+      }
+
+      if (!isLiveOpsCliEntryRuntimeRequestEvidenceReady(request)) {
+        // wrapper를 직접 조립해도 비용/RiskGate evidence가 없으면 broker side effect를 만들지 않는다.
+        return {
+          status: "BLOCKED",
+          attemptId: request.idempotencyKey,
+          idempotencyKey: request.idempotencyKey,
+          message: "CostModel/RiskGate approval evidence가 없어 broker 제출을 중단했습니다.",
+          action: "현재 주문 후보와 일치하는 costSnapshot, riskApproval evidence를 연결한 뒤 다시 실행하세요.",
+          violations: ["execution_evidence_missing"],
+          events: [],
+          trace: {
+            reason: "execution_evidence_missing",
+          },
+        };
+      }
+
+      const costRiskViolations = collectLiveOpsCliEntryRuntimeCostRiskViolations(request);
+      if (costRiskViolations.length > 0) {
+        // stale approval evidence가 붙어 있어도 현재 Cost/Risk 입력이 fail이면 broker 앞에서 다시 닫는다.
+        return {
+          status: "BLOCKED",
+          attemptId: request.idempotencyKey,
+          idempotencyKey: request.idempotencyKey,
+          message: "현재 CostModel/RiskGate 입력이 제출 조건을 통과하지 못해 broker 제출을 중단했습니다.",
+          action: "costInput, risk snapshot, threshold snapshot을 현재 후보 기준으로 다시 계산한 뒤 approval evidence를 갱신하세요.",
+          violations: ["execution_runtime_cost_risk_blocked"],
+          events: [],
+          trace: {
+            reason: "execution_runtime_cost_risk_blocked",
+            violations: costRiskViolations,
+          },
+        };
+      }
+
+      if (budgetReservation === undefined || typeof budgetReservation.reserve !== "function") {
+        // durable reservation port 없이는 중복 주문과 예산 초과를 증명할 수 없으므로 broker 호출 전에 닫는다.
+        return {
+          status: "BLOCKED",
+          attemptId: request.idempotencyKey,
+          idempotencyKey: request.idempotencyKey,
+          message: "durable budget reservation port가 없어 broker 제출을 중단했습니다.",
+          action: "idempotency key 기반 reservation 저장소를 연결한 뒤 다시 실행하세요.",
+          violations: ["budget_reservation_port_missing"],
+          events: [],
+          trace: {
+            reason: "budget_reservation_port_missing",
+          },
+        };
+      }
+
+      let reservation;
+      try {
+        reservation = await budgetReservation.reserve(createLiveOpsCliBudgetReservationRequest(request));
+      } catch (error) {
+        // reservation 실패는 broker 호출 전 상태가 확정되므로 거래소 주문 불확실성이 아니라 예산 선점 경계 차단으로 닫는다.
+        return {
+          status: "BLOCKED",
+          attemptId: request.idempotencyKey,
+          idempotencyKey: request.idempotencyKey,
+          message: "durable budget reservation을 확인할 수 없어 broker 제출을 중단했습니다.",
+          action: "reservation 저장소 상태를 복구한 뒤 같은 idempotency key로 다시 평가하세요.",
+          violations: ["budget_reservation_unavailable"],
+          events: [],
+          trace: {
+            reason: "budget_reservation_unavailable",
+            error: safeErrorName(error),
+          },
+        };
+      }
+      if (reservation?.reserved === false) {
+        // durable reservation 실패는 broker 호출 전에 닫아 중복 주문과 예산 초과를 막는다.
+        return {
+          status: "BLOCKED",
+          attemptId: request.idempotencyKey,
+          idempotencyKey: request.idempotencyKey,
+          message: reservation.message ?? "예산 reservation이 실패해 broker 제출을 중단했습니다.",
+          action: "reservation 상태와 예산 사용량을 확인하세요.",
+          violations: [reservation.reasonCode ?? "budget_reservation_blocked"],
+          events: [],
+          trace: {
+            reason: reservation.reasonCode ?? "budget_reservation_blocked",
+          },
+        };
+      }
+      if (!isLiveOpsCliBudgetReservationEvidence(reservation, request)) {
+        // durable reservation 성공 evidence가 없으면 예산 선점과 주문을 연결할 수 없어 broker 호출을 차단한다.
+        return {
+          status: "BLOCKED",
+          attemptId: request.idempotencyKey,
+          idempotencyKey: request.idempotencyKey,
+          message: "durable budget reservation 성공 evidence가 없어 broker 제출을 중단했습니다.",
+          action: "reservationId와 요청 식별자가 포함된 durable reservation 결과를 확인하세요.",
+          violations: ["budget_reservation_evidence_missing"],
+          events: [],
+          trace: {
+            reason: "budget_reservation_evidence_missing",
+          },
+        };
+      }
+
+      const submission = createLiveOpsCliOrderSubmission(request);
+      let brokerOrder;
+      try {
+        brokerOrder = await broker.submitOrder(submission);
+      } catch (error) {
+        // reservation 뒤 broker 결과가 불확실하면 수동 점검에 필요한 reservation/submission 식별자를 잃지 않는다.
+        return {
+          status: "MANUAL_REVIEW_REQUIRED",
+          attemptId: request.idempotencyKey,
+          idempotencyKey: request.idempotencyKey,
+          message: "broker 제출 결과를 확정할 수 없어 수동 점검 상태로 전환했습니다.",
+          action: "reservation id와 idempotency key로 durable reservation과 거래소 주문 상태를 함께 확인하세요.",
+          violations: ["broker_submission_uncertain"],
+          events: [],
+          trace: {
+            reason: "broker_submission_uncertain",
+            error: safeErrorName(error),
+            reservation: reservation.reservation,
+            submission,
+          },
+          submission,
+          reservation: reservation.reservation,
+        };
+      }
+      const brokerOrderViolation = validateLiveOpsCliBrokerOrderEvidence(brokerOrder, submission);
+      if (brokerOrderViolation !== undefined) {
+        // broker 응답이 접수 상태가 아니면 제출 성공으로 확정하지 않고 수동 점검에 필요한 맥락을 보존한다.
+        return {
+          status: "MANUAL_REVIEW_REQUIRED",
+          attemptId: request.idempotencyKey,
+          idempotencyKey: request.idempotencyKey,
+          message: brokerOrderViolation.message,
+          action: brokerOrderViolation.action,
+          violations: [brokerOrderViolation.reason],
+          events: [],
+          trace: {
+            reason: brokerOrderViolation.reason,
+            reservation: reservation.reservation,
+            submission,
+            brokerOrder,
+          },
+          submission,
+          reservation: reservation.reservation,
+        };
+      }
+      return {
+        status: "SUBMITTED",
+        attemptId: request.idempotencyKey,
+        idempotencyKey: request.idempotencyKey,
+        brokerOrderId: brokerOrder.brokerOrderId,
+        message: "live ops entry 후보가 broker 제출 경계를 통과했습니다.",
+        action: "후속 reconcile과 cancel/terminal 상태를 확인하세요.",
+        violations: [],
+        events: [],
+        trace: {
+          reason: "broker_submitted",
+        },
+        submission,
+        executionResult: {
+          status: "SUBMITTED",
+          submission,
+          brokerOrder,
+        },
+      };
+    },
+  };
+}
+
+function isLiveOpsCliEntryRuntimeRequestEvidenceReady(request) {
+  const intent = {
+    exchangeId: request.candidate?.exchangeId,
+    market: request.candidate?.market,
+    strategyId: request.candidate?.strategyId,
+    side: "BUY",
+    orderType: "LIMIT",
+    postOnly: request.candidate?.postOnly,
+    timeInForce: request.candidate?.timeInForce,
+    requestedQuantity: request.candidate?.requestedQuantity,
+    requestedNotional: request.candidate?.requestedNotional,
+    requestedPrice: request.candidate?.requestedPrice,
+    idempotencyKey: request.candidate?.metadata?.decision_idempotency_key ?? request.idempotencyKey,
+    metadata: {
+      expected_loss_bps_of_equity: request.candidate?.expectedLossBpsOfEquity,
+    },
+  };
+
+  return (
+    isLiveOpsCliCostSnapshotEvidence(request.candidate?.costSnapshot, intent) &&
+    isLiveOpsCliRiskApprovalEvidence(request.candidate?.riskApproval, intent)
+  );
+}
+
+function buildLiveOpsCliLiveExecutionSummary(input) {
+  return {
+    status: input.status,
+    ready: input.ready,
+    liveOrderCapable: input.liveOrderCapable,
+    market: input.market,
+    latestExecutionAt: input.latestExecutionAt ?? null,
+    orderIntentCount: input.orderIntentCount,
+    attemptedOrderCount: input.attemptedOrderCount,
+    submittedOrderCount: input.submittedOrderCount,
+    attemptStatus: input.attemptStatus ?? null,
+    attemptId: input.attemptId ?? null,
+    idempotencyKey: input.idempotencyKey ?? null,
+    brokerOrderId: input.brokerOrderId ?? null,
+    brokerGuard: input.brokerGuard,
+    statusLabel: input.statusLabel,
+    message: input.message,
+    action: input.action,
+    checks: input.checks,
+  };
+}
+
+function evaluateLiveOpsCliBrokerGuard({ config, env = {}, fixtureSmoke }) {
+  const checks = [
+    okLiveExecutionCheck("broker_guard", "Upbit live broker guard 입력을 확인했습니다.", "live_ops_broker_guard_config_ok", {
+      market: config.universe?.default_market ?? "KRW-BTC",
+      fixtureSmoke,
+    }),
+  ];
+  const violations = [];
+  const scopes = parseLiveOpsKeyScopes(env.SEEMIRAI_UPBIT_KEY_SCOPE);
+  const credentialsConfigured = hasMeaningfulValue(env.SEEMIRAI_UPBIT_ACCESS_KEY) && hasMeaningfulValue(env.SEEMIRAI_UPBIT_SECRET_KEY);
+  const requiredScopes = ["자산조회", "주문조회", "주문하기"];
+  const allowedScopes = new Set(requiredScopes);
+  const forbiddenScopes = new Set(["출금조회", "출금하기", "입금조회", "입금하기", "선물", "레버리지", "마진"]);
+
+  if (!credentialsConfigured) {
+    violations.push("SEEMIRAI_UPBIT_ACCESS_KEY와 SEEMIRAI_UPBIT_SECRET_KEY 값이 필요합니다");
+  }
+  for (const requiredScope of requiredScopes) {
+    if (!scopes.includes(requiredScope)) {
+      violations.push(`SEEMIRAI_UPBIT_KEY_SCOPE에 ${requiredScope} 권한이 필요합니다`);
+    }
+  }
+  for (const scope of scopes) {
+    if (forbiddenScopes.has(scope)) {
+      violations.push(`SEEMIRAI_UPBIT_KEY_SCOPE에 금지 권한이 포함되어 있습니다: ${scope}`);
+    } else if (!allowedScopes.has(scope)) {
+      violations.push(`SEEMIRAI_UPBIT_KEY_SCOPE에 알 수 없는 권한이 포함되어 있습니다: ${scope}`);
+    }
+  }
+  if (!hasMeaningfulValue(env.SEEMIRAI_UPBIT_KEY_SCOPE_EVIDENCE_ID)) {
+    violations.push("SEEMIRAI_UPBIT_KEY_SCOPE_EVIDENCE_ID 값이 필요합니다");
+  }
+  if (config.universe?.default_market !== "KRW-BTC") {
+    violations.push("Upbit live broker guard market은 KRW-BTC만 허용합니다");
+  }
+  if (config.budget?.max_order_krw !== "10000") {
+    violations.push("Upbit live broker guard 단일 주문 상한은 10000 KRW여야 합니다");
+  }
+
+  if (violations.length > 0) {
+    checks.push(blockedLiveExecutionCheck("broker_guard", "Upbit live broker guard가 완성되지 않았습니다.", "live_ops_broker_guard_blocked", {
+      violations,
+    }));
+  } else {
+    checks.push(okLiveExecutionCheck("broker_guard", "Upbit live broker guard가 live execution 전제 조건을 통과했습니다.", "live_ops_broker_guard_ready", {
+      keyScopeEvidenceId: env.SEEMIRAI_UPBIT_KEY_SCOPE_EVIDENCE_ID,
+      orderSmokeMarket: "KRW-BTC",
+      orderSmokeMaxKrw: config.budget?.max_order_krw ?? "10000",
+    }));
+  }
+
+  return {
+    ready: violations.length === 0,
+    credentialsConfigured,
+    keyScopes: scopes,
+    keyScopeEvidenceId: env.SEEMIRAI_UPBIT_KEY_SCOPE_EVIDENCE_ID ?? null,
+    orderSmokeMarket: "KRW-BTC",
+    orderSmokeMaxKrw: config.budget?.max_order_krw ?? "10000",
+    statusLabel: violations.length === 0 ? "live broker 조립 가능" : "live broker guard 미충족",
+    message: violations.length === 0
+      ? "Upbit live broker guard가 충족됐습니다. 후보가 생기면 제출 직전 동일 조건을 다시 확인합니다."
+      : "Upbit live broker guard가 완성되지 않아 private order client를 열 수 없습니다.",
+    action: violations.length === 0
+      ? "후보 제출 전 market, 예산, identifier, key scope evidence를 다시 확인하세요."
+      : "추적 정보의 guard 위반 항목을 수정한 뒤 다시 실행하세요.",
+    violations,
+    checks,
+  };
+}
+
+function validateLiveOpsCliOrderIntentCount(analysisDecision, intents) {
+  if (analysisDecision.orderIntentCount !== intents.length) {
+    return {
+      code: "live_ops_order_intent_count_mismatch",
+      message: "analysis summary의 주문 후보 수와 전달된 order intent 수가 다릅니다.",
+      details: {
+        summaryOrderIntentCount: analysisDecision.orderIntentCount,
+        receivedOrderIntentCount: intents.length,
+      },
+    };
+  }
+  if (intents.length !== 1) {
+    return {
+      code: "live_ops_order_intent_batch_unsupported",
+      message: "production live ops 첫 실행은 한 tick에 단일 주문 후보만 제출할 수 있습니다.",
+      details: {
+        receivedOrderIntentCount: intents.length,
+      },
+    };
+  }
+  return undefined;
+}
+
+function collectLiveOpsCliExecutionStatusViolations(executionStatus, postSubmitReadiness, budgetSnapshot, lossSnapshot) {
+  const violations = [];
+  if (executionStatus === undefined || typeof executionStatus !== "object" || executionStatus === null) {
+    violations.push("kill switch와 reconcile freshness snapshot이 필요합니다");
+  } else {
+    if (executionStatus.killSwitchActive !== false) {
+      violations.push("kill switch가 꺼진 상태임을 확인해야 합니다");
+    }
+    if (executionStatus.reconcileFresh !== true) {
+      violations.push("reconcile freshness가 최신 상태임을 확인해야 합니다");
+    }
+    if (!hasMeaningfulValue(executionStatus.evidenceId)) {
+      violations.push("execution status evidence id가 필요합니다");
+    }
+  }
+
+  if (postSubmitReadiness === undefined || typeof postSubmitReadiness !== "object" || postSubmitReadiness === null) {
+    violations.push("제출 후 reconcile/alert 경계 readiness 증거가 필요합니다");
+  } else {
+    if (postSubmitReadiness.reconcileReady !== true) {
+      violations.push("제출 후 reconcile/PnL/status 경계가 준비되어야 합니다");
+    }
+    if (postSubmitReadiness.telegramReady !== true) {
+      violations.push("제출 후 Telegram trade alert 경계가 준비되어야 합니다");
+    }
+    if (!hasMeaningfulValue(postSubmitReadiness.evidenceId)) {
+      violations.push("post-submit readiness evidence id가 필요합니다");
+    }
+  }
+
+  if (!isLiveOpsCliBudgetSnapshot(budgetSnapshot)) {
+    violations.push("실제 budget snapshot이 필요합니다");
+  }
+  if (!isLiveOpsCliLossSnapshot(lossSnapshot)) {
+    violations.push("실제 realized loss snapshot이 필요합니다");
+  }
+
+  return violations;
+}
+
+function collectLiveOpsCliOrderIntentViolations({ config, marketData, intent }) {
+  const violations = [];
+  if (marketData?.ready !== true) {
+    violations.push("market data freshness가 준비되지 않았습니다");
+  }
+  if (intent?.exchangeId !== "upbit_krw_spot") {
+    violations.push("exchange는 upbit_krw_spot이어야 합니다");
+  }
+  if (intent?.market !== config.universe?.default_market || intent?.market !== "KRW-BTC") {
+    violations.push("주문 후보 market은 production live ops 기본 market KRW-BTC여야 합니다");
+  }
+  if (intent?.side !== "BUY") {
+    violations.push("production live ops 신규 진입은 BUY 후보만 허용합니다");
+  }
+  if (intent?.orderType !== "LIMIT") {
+    violations.push("production live ops 신규 진입은 LIMIT 주문만 허용합니다");
+  }
+  if (!isLiveOpsCliPostOnlyLimitIntent(intent)) {
+    violations.push("production live ops 신규 진입은 post-only LIMIT 주문만 허용합니다");
+  }
+  if (!isPositiveDecimalString(intent?.referencePrice) && !isPositiveDecimalString(readLiveOpsCliMarketReferencePrice(marketData))) {
+    violations.push("주문 후보 가격 이탈 검증에 사용할 실제 market reference price가 필요합니다");
+  }
+  if (!hasMeaningfulValue(intent?.strategyId)) {
+    violations.push("주문 후보에는 strategyId가 필요합니다");
+  }
+  for (const [key, label] of [
+    ["requestedPrice", "가격"],
+    ["requestedQuantity", "수량"],
+    ["requestedNotional", "주문 금액"],
+  ]) {
+    if (!isPositiveDecimalString(intent?.[key])) {
+      violations.push(`주문 후보 ${label}이 양수 decimal이어야 합니다`);
+    }
+  }
+  if (isPositiveDecimalString(intent?.requestedPrice) && isPositiveDecimalString(intent?.requestedQuantity) && isPositiveDecimalString(intent?.requestedNotional)) {
+    const actualNotional = new Decimal(intent.requestedPrice).mul(intent.requestedQuantity);
+    const requestedNotional = new Decimal(intent.requestedNotional);
+    if (!actualNotional.equals(requestedNotional)) {
+      violations.push("requestedNotional은 requestedPrice * requestedQuantity와 같아야 합니다");
+    }
+    if (requestedNotional.lt(5_000)) {
+      violations.push("Upbit KRW 최소 주문금액 5000 KRW 미만 후보는 제출하지 않습니다");
+    }
+    if (requestedNotional.gt(new Decimal(config.budget?.max_order_krw ?? "0"))) {
+      violations.push("단일 주문 예산 상한을 초과했습니다");
+    }
+  }
+  if (!hasMeaningfulValue(intent?.idempotencyKey)) {
+    violations.push("주문 후보에는 decision idempotency key가 필요합니다");
+  }
+  if (!isNonNegativeDecimalString(readLiveOpsCliExpectedLossBps(intent))) {
+    violations.push("주문 후보에는 RiskGate expected loss 입력이 필요합니다");
+  }
+  if (!isLiveOpsCliCostInput(intent?.costInput)) {
+    violations.push("주문 후보에는 live autonomous entry runtime costInput이 필요합니다");
+  }
+  if (!isLiveOpsCliRiskInput(intent?.risk, intent)) {
+    violations.push("주문 후보에는 live autonomous entry runtime risk snapshot이 필요합니다");
+  }
+  if (!isLiveOpsCliCostSnapshotEvidence(intent?.costSnapshot, intent)) {
+    violations.push("주문 후보에는 현재 intent와 일치하는 CostModel evidence가 필요합니다");
+  }
+  if (!isLiveOpsCliRiskApprovalEvidence(intent?.riskApproval, intent)) {
+    violations.push("주문 후보에는 현재 intent와 일치하는 RiskGate approval evidence가 필요합니다");
+  }
+  return violations;
+}
+
+function isLiveOpsCliCostSnapshotEvidence(snapshot, intent) {
+  if (!isNonEmptyRecord(snapshot)) {
+    return false;
+  }
+  if (
+    snapshot.source !== "cost_model" ||
+    snapshot.trade_allowed !== true ||
+    snapshot.reason_code !== "cost_margin_ok" ||
+    hasProblemFieldList(snapshot.missing_fields) ||
+    hasProblemFieldList(snapshot.invalid_fields) ||
+    snapshot.exchange_id !== intent?.exchangeId ||
+    snapshot.market !== intent?.market
+  ) {
+    return false;
+  }
+
+  return isLiveOpsCliOrderIntentEvidenceMatch(snapshot.order_intent, intent);
+}
+
+function isLiveOpsCliRiskApprovalEvidence(approval, intent) {
+  if (!isNonEmptyRecord(approval)) {
+    return false;
+  }
+  if (
+    approval.source !== "risk_gate" ||
+    approval.approved !== true ||
+    approval.action !== "ALLOW" ||
+    (approval.status !== "PASS" && approval.status !== "WARN") ||
+    hasProblemFieldList(approval.failed_evaluation_reason_codes)
+  ) {
+    return false;
+  }
+
+  return isLiveOpsCliOrderIntentEvidenceMatch(approval.order_intent, intent);
+}
+
+function isLiveOpsCliPostOnlyLimitIntent(intent) {
+  return (
+    intent?.orderType === "LIMIT" &&
+    intent?.postOnly === true &&
+    intent.timeInForce === "POST_ONLY"
+  );
+}
+
+function isLiveOpsCliCostInput(value) {
+  if (!isNonEmptyRecord(value)) {
+    return false;
+  }
+  return [
+    "expectedReturnBps",
+    "entryFeeBps",
+    "exitFeeBps",
+    "spreadCostBpsP75",
+    "expectedSlippageBpsP95",
+    "cancelRequotePenaltyBps",
+  ].every((key) => isNonNegativeDecimalString(value[key]));
+}
+
+function isLiveOpsCliRiskInput(value, intent) {
+  if (!isNonEmptyRecord(value) || !isNonEmptyRecord(value.account) || !isNonEmptyRecord(value.strategy) || !isNonEmptyRecord(value.thresholdSnapshot)) {
+    return false;
+  }
+  if (!Array.isArray(value.positions) || !Array.isArray(value.infrastructureSignals)) {
+    return false;
+  }
+  return value.strategy.strategyId === intent?.strategyId;
+}
+
+function isLiveOpsCliBudgetSnapshot(value) {
+  if (!isNonEmptyRecord(value)) {
+    return false;
+  }
+  return (
+    isPositiveDecimalString(value.maxOrderKrw) &&
+    isPositiveDecimalString(value.dailyAutonomousNotionalLimitKrw) &&
+    isNonNegativeDecimalString(value.dailyAutonomousNotionalUsedKrw) &&
+    isNonNegativeDecimalString(value.openPositionNotionalKrw) &&
+    isPositiveDecimalString(value.maxOpenPositionNotionalKrw) &&
+    hasMeaningfulValue(value.capturedAt)
+  );
+}
+
+function isLiveOpsCliLossSnapshot(value) {
+  if (!isNonEmptyRecord(value)) {
+    return false;
+  }
+  return (
+    isNonNegativeDecimalString(value.dailyRealizedLossKrw) &&
+    isNonNegativeDecimalString(value.weeklyRealizedLossKrw) &&
+    hasMeaningfulValue(value.capturedAt)
+  );
+}
+
+function isLiveOpsCliOrderIntentEvidenceMatch(evidence, intent) {
+  if (!isNonEmptyRecord(evidence) || intent === undefined || intent === null) {
+    return false;
+  }
+  const expectedLossBps = readLiveOpsCliExpectedLossBps(intent);
+  const expected = {
+    exchange_id: intent.exchangeId,
+    market: intent.market,
+    strategy_id: intent.strategyId,
+    side: intent.side,
+    order_type: intent.orderType,
+    post_only: intent.postOnly,
+    time_in_force: readLiveOpsCliEvidenceTimeInForce(intent),
+    requested_quantity: intent.requestedQuantity,
+    requested_notional: intent.requestedNotional,
+    requested_price: intent.requestedPrice,
+    idempotency_key: intent.idempotencyKey,
+    expected_loss_bps_of_equity: expectedLossBps,
+  };
+
+  return Object.entries(expected).every(([key, value]) => isLiveOpsCliEvidenceValueMatch(key, evidence[key], value));
+}
+
+function readLiveOpsCliEvidenceTimeInForce(intent) {
+  if (intent.timeInForce === undefined && intent.postOnly === true && intent.orderType === "LIMIT") {
+    return "GTC";
+  }
+  return intent.timeInForce;
+}
+
+function readLiveOpsCliExpectedLossBps(intent) {
+  return intent?.metadata?.expected_loss_bps_of_equity ?? intent?.metadata?.expectedLossBpsOfEquity;
+}
+
+function readLiveOpsCliMarketReferencePrice(marketData) {
+  if (isPositiveDecimalString(marketData?.referencePrice)) {
+    return marketData.referencePrice;
+  }
+  if (isPositiveDecimalString(marketData?.latestTradePrice)) {
+    return marketData.latestTradePrice;
+  }
+  if (isPositiveDecimalString(marketData?.bestBidPrice) && isPositiveDecimalString(marketData?.bestAskPrice)) {
+    return new Decimal(marketData.bestBidPrice).plus(marketData.bestAskPrice).div(2).toFixed();
+  }
+  return undefined;
+}
+
+function isLiveOpsCliEvidenceValueMatch(key, evidenceValue, expectedValue) {
+  if (expectedValue === undefined) {
+    return false;
+  }
+  if (["requested_quantity", "requested_notional", "requested_price", "expected_loss_bps_of_equity"].includes(key)) {
+    return isDecimalEqual(evidenceValue, expectedValue);
+  }
+  return evidenceValue === expectedValue;
+}
+
+function isDecimalEqual(left, right) {
+  if (!hasDecimalComparableValue(left) || !hasDecimalComparableValue(right)) {
+    return false;
+  }
+  try {
+    return new Decimal(left).equals(new Decimal(right));
+  } catch {
+    return false;
+  }
+}
+
+function hasProblemFieldList(value) {
+  return value !== undefined && (!Array.isArray(value) || value.length > 0);
+}
+
+function isNonEmptyRecord(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value) && Object.keys(value).length > 0;
+}
+
+function createLiveOpsCliEntryRuntimeRequest({ config, marketData, intent, observedAt, executionStatus, postSubmitReadiness, budgetSnapshot, lossSnapshot }) {
+  const liveAttemptId = createLiveOpsCliAttemptId(intent.idempotencyKey);
+  return {
+    config: {
+      enabled: config.live_trading_enabled === true,
+      allowed_markets: config.universe?.markets ?? ["KRW-BTC"],
+      max_order_krw: config.budget?.max_order_krw ?? "10000",
+      daily_autonomous_notional_limit_krw: config.budget?.daily_autonomous_notional_limit_krw ?? "30000",
+      max_open_position_notional_krw: config.budget?.max_open_position_notional_krw ?? "30000",
+      max_daily_loss_krw: config.budget?.max_order_krw ?? "10000",
+      max_weekly_loss_krw: config.budget?.daily_autonomous_notional_limit_krw ?? "30000",
+      max_price_deviation_bps: "30",
+      identifier_prefix: "ops-",
+      identifier_max_length: 32,
+    },
+    candidate: {
+      exchangeId: intent.exchangeId,
+      market: intent.market,
+      strategyId: intent.strategyId,
+      requestedQuantity: intent.requestedQuantity,
+      requestedNotional: intent.requestedNotional,
+      requestedPrice: intent.requestedPrice,
+      referencePrice: intent.referencePrice ?? readLiveOpsCliMarketReferencePrice(marketData),
+      reason: intent.reason,
+      expectedLossBpsOfEquity: readLiveOpsCliExpectedLossBps(intent),
+      costInput: intent.costInput,
+      risk: intent.risk,
+      orderType: "LIMIT",
+      postOnly: true,
+      timeInForce: readLiveOpsCliEvidenceTimeInForce(intent),
+      costSnapshot: intent.costSnapshot,
+      riskApproval: intent.riskApproval,
+      metadata: {
+        ...(intent.metadata ?? {}),
+        source: "live_ops_cli_live_execution",
+        decision_idempotency_key: intent.idempotencyKey,
+      },
+    },
+    budgetSnapshot,
+    lossSnapshot,
+    killSwitchActive: executionStatus.killSwitchActive,
+    reconcileFresh: executionStatus.reconcileFresh,
+    executionStatusEvidenceId: executionStatus.evidenceId,
+    postSubmitReconcileReady: postSubmitReadiness.reconcileReady,
+    postSubmitTelegramReady: postSubmitReadiness.telegramReady,
+    postSubmitReadinessEvidenceId: postSubmitReadiness.evidenceId,
+    idempotencyKey: liveAttemptId,
+    observedAt,
+  };
+}
+
+function createLiveOpsCliMissingEntryRuntime() {
+  return {
+    async submitEntryCandidate() {
+      throw new Error("LiveOpsCliEntryRuntimeNotConfigured");
+    },
+  };
+}
+
+function createLiveOpsCliBudgetReservationRequest(request) {
+  return {
+    attemptId: request.idempotencyKey,
+    idempotencyKey: request.idempotencyKey,
+    market: request.candidate.market,
+    strategyId: request.candidate.strategyId,
+    requestedNotionalKrw: request.candidate.requestedNotional,
+    budgetSnapshot: request.budgetSnapshot,
+    observedAt: request.observedAt,
+    metadata: {
+      source: "live_ops_cli_entry_runtime",
+    },
+  };
+}
+
+function collectLiveOpsCliEntryRuntimeStatusViolations(request) {
+  const violations = [];
+  if (request?.killSwitchActive !== false) {
+    violations.push("kill switch가 꺼진 상태임을 wrapper 경계에서도 확인해야 합니다");
+  }
+  if (request?.reconcileFresh !== true) {
+    violations.push("reconcile freshness가 최신 상태임을 wrapper 경계에서도 확인해야 합니다");
+  }
+  if (!hasMeaningfulValue(request?.executionStatusEvidenceId)) {
+    violations.push("execution status evidence id가 wrapper 경계에서도 필요합니다");
+  }
+  if (request?.postSubmitReconcileReady !== true) {
+    violations.push("제출 후 reconcile/PnL/status 경계가 wrapper 경계에서도 준비되어야 합니다");
+  }
+  if (request?.postSubmitTelegramReady !== true) {
+    violations.push("제출 후 Telegram trade alert 경계가 wrapper 경계에서도 준비되어야 합니다");
+  }
+  if (!hasMeaningfulValue(request?.postSubmitReadinessEvidenceId)) {
+    violations.push("post-submit readiness evidence id가 wrapper 경계에서도 필요합니다");
+  }
+  return violations;
+}
+
+function collectLiveOpsCliEntryRuntimeGuardViolations(request) {
+  const violations = [];
+  const candidate = request?.candidate;
+  const config = request?.config;
+  if (config?.enabled !== true) {
+    violations.push("live trading config가 활성 상태여야 합니다");
+  }
+  if (!Array.isArray(config?.allowed_markets) || !config.allowed_markets.includes("KRW-BTC") || candidate?.market !== "KRW-BTC") {
+    violations.push("live ops wrapper는 KRW-BTC 단일 market만 제출할 수 있습니다");
+  }
+  if (candidate?.exchangeId !== "upbit_krw_spot") {
+    violations.push("live ops wrapper exchange는 upbit_krw_spot이어야 합니다");
+  }
+  if (!hasMeaningfulValue(candidate?.strategyId)) {
+    violations.push("live ops wrapper candidate에는 strategyId가 필요합니다");
+  }
+  if (!isLiveOpsCliCostInput(candidate?.costInput)) {
+    violations.push("live ops wrapper candidate costInput은 non-negative decimal이어야 합니다");
+  }
+  if (config?.max_order_krw !== "10000") {
+    violations.push("live ops wrapper 단일 주문 상한은 10000 KRW여야 합니다");
+  }
+  if (!isPositiveDecimalString(candidate?.requestedPrice) || !isPositiveDecimalString(candidate?.requestedQuantity) || !isPositiveDecimalString(candidate?.requestedNotional)) {
+    violations.push("live ops wrapper 후보 가격, 수량, 주문 금액은 양수 decimal이어야 합니다");
+  } else {
+    const actualNotional = new Decimal(candidate.requestedPrice).mul(candidate.requestedQuantity);
+    const requestedNotional = new Decimal(candidate.requestedNotional);
+    if (!actualNotional.equals(requestedNotional)) {
+      violations.push("live ops wrapper 후보 requestedNotional은 가격 * 수량과 같아야 합니다");
+    }
+    if (actualNotional.lt(5_000)) {
+      violations.push("live ops wrapper 후보는 Upbit KRW 최소 주문금액 이상이어야 합니다");
+    }
+    if (actualNotional.gt(new Decimal(config?.max_order_krw ?? "0"))) {
+      violations.push("live ops wrapper 후보 실제 주문 금액이 단일 주문 상한을 초과했습니다");
+    }
+    if (isLiveOpsCliBudgetSnapshot(request?.budgetSnapshot) && actualNotional.gt(new Decimal(request.budgetSnapshot.maxOrderKrw))) {
+      violations.push("live ops wrapper 후보 실제 주문 금액이 budget snapshot 단일 주문 한도를 초과했습니다");
+    }
+    appendLiveOpsCliEntryRuntimeBudgetGuardViolations(violations, request, actualNotional);
+  }
+  // wrapper를 직접 호출해도 실제 entry runtime의 손실/가격 preflight를 우회하지 못하게 같은 snapshot으로 재검증한다.
+  appendLiveOpsCliEntryRuntimeLossGuardViolations(violations, request);
+  appendLiveOpsCliEntryRuntimePriceDeviationGuardViolations(violations, request);
+  if (!isLiveOpsCliPostOnlyLimitIntent({
+    orderType: candidate?.orderType,
+    postOnly: candidate?.postOnly,
+    timeInForce: candidate?.timeInForce,
+  })) {
+    violations.push("live ops wrapper 후보는 LIMIT + post_only 조건이어야 합니다");
+  }
+  if (!isLiveOpsCliLiveAttemptId(request?.idempotencyKey, config)) {
+    violations.push("live ops wrapper idempotency key는 ops- prefix와 13 bytes hex suffix 조건을 만족해야 합니다");
+  }
+  return violations;
+}
+
+function appendLiveOpsCliEntryRuntimeBudgetGuardViolations(violations, request, actualNotional) {
+  const budgetSnapshot = request?.budgetSnapshot;
+  const config = request?.config;
+  if (!isLiveOpsCliBudgetSnapshot(budgetSnapshot)) {
+    violations.push("live ops wrapper에는 budget snapshot이 필요합니다");
+    return;
+  }
+  if (!isPositiveDecimalString(config?.daily_autonomous_notional_limit_krw) || !isPositiveDecimalString(config?.max_open_position_notional_krw)) {
+    violations.push("live ops wrapper 일일/open position 예산 한도 config가 필요합니다");
+    return;
+  }
+
+  const dailyUsed = new Decimal(budgetSnapshot.dailyAutonomousNotionalUsedKrw);
+  const openPosition = new Decimal(budgetSnapshot.openPositionNotionalKrw);
+  const effectiveDailyLimit = Decimal.min(
+    new Decimal(config.daily_autonomous_notional_limit_krw),
+    new Decimal(budgetSnapshot.dailyAutonomousNotionalLimitKrw),
+  );
+  const effectiveOpenPositionLimit = Decimal.min(
+    new Decimal(config.max_open_position_notional_krw),
+    new Decimal(budgetSnapshot.maxOpenPositionNotionalKrw),
+  );
+  if (dailyUsed.plus(actualNotional).gt(effectiveDailyLimit)) {
+    violations.push("live ops wrapper 일일 자동 주문 예산을 초과했습니다");
+  }
+  if (openPosition.plus(actualNotional).gt(effectiveOpenPositionLimit)) {
+    violations.push("live ops wrapper open position 예산을 초과했습니다");
+  }
+}
+
+function appendLiveOpsCliEntryRuntimeLossGuardViolations(violations, request) {
+  const lossSnapshot = request?.lossSnapshot;
+  const config = request?.config;
+  if (!isLiveOpsCliLossSnapshot(lossSnapshot)) {
+    violations.push("live ops wrapper에는 realized loss snapshot이 필요합니다");
+    return;
+  }
+  if (!isPositiveDecimalString(config?.max_daily_loss_krw) || !isPositiveDecimalString(config?.max_weekly_loss_krw)) {
+    violations.push("live ops wrapper 손실 한도 config가 필요합니다");
+    return;
+  }
+
+  const dailyLoss = new Decimal(lossSnapshot.dailyRealizedLossKrw);
+  const weeklyLoss = new Decimal(lossSnapshot.weeklyRealizedLossKrw);
+  if (dailyLoss.gt(new Decimal(config.max_daily_loss_krw))) {
+    violations.push("live ops wrapper 일일 손실 한도를 초과했습니다");
+  }
+  if (weeklyLoss.gt(new Decimal(config.max_weekly_loss_krw))) {
+    violations.push("live ops wrapper 주간 손실 한도를 초과했습니다");
+  }
+}
+
+function appendLiveOpsCliEntryRuntimePriceDeviationGuardViolations(violations, request) {
+  const candidate = request?.candidate;
+  const config = request?.config;
+  if (!isPositiveDecimalString(candidate?.requestedPrice) || !isPositiveDecimalString(candidate?.referencePrice) || !isNonNegativeDecimalString(config?.max_price_deviation_bps)) {
+    violations.push("live ops wrapper 기준가와 가격 이탈 한도 config가 필요합니다");
+    return;
+  }
+
+  const requestedPrice = new Decimal(candidate.requestedPrice);
+  const referencePrice = new Decimal(candidate.referencePrice);
+  const maxDeviationBps = new Decimal(config.max_price_deviation_bps);
+  const deviationBps = requestedPrice.minus(referencePrice).abs().div(referencePrice).mul(10_000);
+  if (deviationBps.gt(maxDeviationBps)) {
+    violations.push("live ops wrapper 후보 가격 이탈이 허용 bps를 초과했습니다");
+  }
+}
+
+function collectLiveOpsCliEntryRuntimeCostRiskViolations(request) {
+  const violations = [];
+  appendLiveOpsCliEntryRuntimeCostModelViolations(violations, request);
+  appendLiveOpsCliEntryRuntimeRiskGateViolations(violations, request);
+  return violations;
+}
+
+function appendLiveOpsCliEntryRuntimeCostModelViolations(violations, request) {
+  const costInput = request?.candidate?.costInput;
+  if (!isLiveOpsCliCostInput(costInput)) {
+    violations.push("live ops wrapper CostModel 현재 입력이 필요합니다");
+    return;
+  }
+
+  const optionalSafetyBuffer = costInput.safetyBufferBps ?? resolveLiveOpsCliDefaultSafetyBufferBps(request?.candidate?.market, costInput.safetyBufferMarketCategory);
+  if (!isNonNegativeDecimalString(optionalSafetyBuffer)) {
+    violations.push("live ops wrapper CostModel safety buffer는 non-negative decimal이어야 합니다");
+    return;
+  }
+
+  const requiredReturnBps = new Decimal(costInput.entryFeeBps)
+    .plus(costInput.exitFeeBps)
+    .plus(costInput.spreadCostBpsP75)
+    .plus(costInput.expectedSlippageBpsP95)
+    .plus(costInput.cancelRequotePenaltyBps)
+    .plus(optionalSafetyBuffer);
+  if (new Decimal(costInput.expectedReturnBps).lt(requiredReturnBps)) {
+    violations.push("live ops wrapper CostModel 현재 입력이 비용 여유 조건을 통과하지 못했습니다");
+  }
+}
+
+function resolveLiveOpsCliDefaultSafetyBufferBps(market, marketCategory) {
+  if (market === "KRW-BTC" || market === "KRW-ETH" || marketCategory === "BTC_ETH") {
+    return "10";
+  }
+  if (marketCategory === "TOP_ALT") {
+    return "20";
+  }
+  return undefined;
+}
+
+function appendLiveOpsCliEntryRuntimeRiskGateViolations(violations, request) {
+  const candidate = request?.candidate;
+  const risk = candidate?.risk;
+  if (!isLiveOpsCliRiskInput(risk, { strategyId: candidate?.strategyId })) {
+    violations.push("live ops wrapper RiskGate 현재 risk snapshot이 필요합니다");
+    return;
+  }
+
+  const expectedLossBps = candidate?.expectedLossBpsOfEquity ?? candidate?.metadata?.expected_loss_bps_of_equity ?? candidate?.metadata?.expectedLossBpsOfEquity;
+  const thresholds = risk.thresholdSnapshot?.thresholds;
+  appendLiveOpsCliRiskGateAccountViolations(violations, risk, thresholds);
+  if (!isNonNegativeDecimalString(expectedLossBps)) {
+    violations.push("live ops wrapper RiskGate expected loss 입력이 필요합니다");
+  }
+  if (!isNonNegativeDecimalString(thresholds?.maxExpectedLossBpsOfEquity)) {
+    violations.push("live ops wrapper RiskGate expected loss 한도 snapshot이 필요합니다");
+  }
+  if (isNonNegativeDecimalString(expectedLossBps) && isNonNegativeDecimalString(thresholds?.maxExpectedLossBpsOfEquity)) {
+    if (new Decimal(expectedLossBps).gt(new Decimal(thresholds.maxExpectedLossBpsOfEquity))) {
+      violations.push("live ops wrapper RiskGate 현재 예상 손실이 한도를 초과했습니다");
+    }
+  }
+
+  const equityKrw = risk.account?.equityKrw;
+  const maxOrderNotionalBps = thresholds?.maxOrderNotionalBpsOfEquity;
+  if (!isPositiveDecimalString(equityKrw) || !isNonNegativeDecimalString(maxOrderNotionalBps) || !isPositiveDecimalString(candidate?.requestedNotional)) {
+    violations.push("live ops wrapper RiskGate 주문 한도 평가 입력이 필요합니다");
+    return;
+  }
+  const orderNotionalBps = new Decimal(candidate.requestedNotional).div(equityKrw).mul(10_000);
+  if (orderNotionalBps.gt(new Decimal(maxOrderNotionalBps))) {
+    violations.push("live ops wrapper RiskGate 현재 주문 금액이 계정 한도를 초과했습니다");
+  }
+  appendLiveOpsCliRiskGatePositionViolations(violations, request, orderNotionalBps);
+  appendLiveOpsCliRiskGateStrategyViolations(violations, risk, thresholds);
+  appendLiveOpsCliRiskGateInfrastructureViolations(violations, risk.infrastructureSignals);
+}
+
+function appendLiveOpsCliRiskGateAccountViolations(violations, risk, thresholds) {
+  if (!isDecimalString(risk.account?.dailyRealizedPnlBps) || !isDecimalString(risk.account?.weeklyRealizedPnlBps) || !isNonNegativeDecimalString(risk.account?.maxDrawdownBps)) {
+    violations.push("live ops wrapper RiskGate 계정 손실 snapshot이 필요합니다");
+    return;
+  }
+  if (!isNonNegativeDecimalString(thresholds?.dailyLossLimitBps) || !isNonNegativeDecimalString(thresholds?.weeklyLossLimitBps) || !isNonNegativeDecimalString(thresholds?.maxDrawdownBps)) {
+    violations.push("live ops wrapper RiskGate 손실 한도 snapshot이 필요합니다");
+    return;
+  }
+
+  if (new Decimal(risk.account.dailyRealizedPnlBps).lte(new Decimal(thresholds.dailyLossLimitBps).negated())) {
+    violations.push("live ops wrapper RiskGate 현재 일일 손실 한도를 초과했습니다");
+  }
+  if (new Decimal(risk.account.weeklyRealizedPnlBps).lte(new Decimal(thresholds.weeklyLossLimitBps).negated())) {
+    violations.push("live ops wrapper RiskGate 현재 주간 손실 한도를 초과했습니다");
+  }
+  if (new Decimal(risk.account.maxDrawdownBps).gte(new Decimal(thresholds.maxDrawdownBps))) {
+    violations.push("live ops wrapper RiskGate 현재 MDD 한도를 초과했습니다");
+  }
+}
+
+function appendLiveOpsCliRiskGatePositionViolations(violations, request, orderNotionalBps) {
+  const candidate = request?.candidate;
+  const risk = candidate?.risk;
+  const thresholds = risk?.thresholdSnapshot?.thresholds;
+  if (
+    !isNonNegativeDecimalString(thresholds?.btcEthMaxPositionBpsOfEquity) ||
+    !isNonNegativeDecimalString(thresholds?.altMaxPositionBpsOfEquity) ||
+    !isNonNegativeDecimalString(thresholds?.totalAltMaxPositionBpsOfEquity)
+  ) {
+    violations.push("live ops wrapper RiskGate 포지션 한도 snapshot이 필요합니다");
+    return;
+  }
+
+  const projectedExposures = new Map();
+  for (const position of risk.positions) {
+    if (!hasMeaningfulValue(position?.market) || !isNonNegativeDecimalString(position?.notionalBpsOfEquity)) {
+      violations.push("live ops wrapper RiskGate position snapshot이 필요합니다");
+      return;
+    }
+    const current = projectedExposures.get(position.market) ?? new Decimal(0);
+    projectedExposures.set(position.market, current.plus(position.notionalBpsOfEquity));
+  }
+  const currentTarget = projectedExposures.get(candidate.market) ?? new Decimal(0);
+  projectedExposures.set(candidate.market, currentTarget.plus(orderNotionalBps));
+
+  let totalAltExposure = new Decimal(0);
+  for (const [market, exposureBps] of projectedExposures.entries()) {
+    if (isLiveOpsCliBtcEthMarket(market)) {
+      if (exposureBps.gt(new Decimal(thresholds.btcEthMaxPositionBpsOfEquity))) {
+        violations.push("live ops wrapper RiskGate 현재 BTC/ETH 포지션 한도를 초과했습니다");
+      }
+    } else {
+      totalAltExposure = totalAltExposure.plus(exposureBps);
+      if (exposureBps.gt(new Decimal(thresholds.altMaxPositionBpsOfEquity))) {
+        violations.push("live ops wrapper RiskGate 현재 alt 포지션 한도를 초과했습니다");
+      }
+    }
+  }
+  if (totalAltExposure.gt(new Decimal(thresholds.totalAltMaxPositionBpsOfEquity))) {
+    violations.push("live ops wrapper RiskGate 현재 전체 alt 포지션 한도를 초과했습니다");
+  }
+}
+
+function appendLiveOpsCliRiskGateStrategyViolations(violations, risk, thresholds) {
+  if (!Number.isSafeInteger(risk.strategy?.consecutiveLosses) || risk.strategy.consecutiveLosses < 0 || !Number.isSafeInteger(thresholds?.maxConsecutiveStrategyLosses)) {
+    violations.push("live ops wrapper RiskGate strategy loss snapshot이 필요합니다");
+    return;
+  }
+  if (risk.strategy.consecutiveLosses >= thresholds.maxConsecutiveStrategyLosses) {
+    violations.push("live ops wrapper RiskGate 현재 전략 연속 손실 한도를 초과했습니다");
+  }
+}
+
+function appendLiveOpsCliRiskGateInfrastructureViolations(violations, infrastructureSignals) {
+  for (const signal of infrastructureSignals) {
+    switch (signal?.signal) {
+      case "NOTIFICATION_FAILURE":
+        break;
+      case "STALE_MARKET_DATA":
+      case "WEBSOCKET_DISCONNECTED":
+      case "WEBSOCKET_RECONNECTING":
+      case "DB_WRITE_FAILURE":
+      case "DUPLICATE_ORDER_IDEMPOTENCY_KEY":
+      case "BALANCE_POSITION_MISMATCH":
+        violations.push(`live ops wrapper RiskGate 현재 인프라 차단 신호가 활성화됐습니다: ${signal.signal}`);
+        break;
+      default:
+        violations.push("live ops wrapper RiskGate 알 수 없는 인프라 신호가 있습니다");
+        break;
+    }
+  }
+}
+
+function isLiveOpsCliBtcEthMarket(market) {
+  return market === "KRW-BTC" || market === "KRW-ETH";
+}
+
+function isLiveOpsCliBudgetReservationEvidence(result, request) {
+  if (result?.reserved !== true || !isNonEmptyRecord(result.reservation)) {
+    return false;
+  }
+  const reservation = result.reservation;
+  return (
+    hasMeaningfulValue(reservation.reservationId) &&
+    reservation.attemptId === request.idempotencyKey &&
+    reservation.idempotencyKey === request.idempotencyKey &&
+    isDecimalEqual(reservation.reservedNotionalKrw, request.candidate?.requestedNotional) &&
+    isNonEmptyRecord(reservation.budgetSnapshot) &&
+    hasMeaningfulValue(reservation.reservedAt)
+  );
+}
+
+function validateLiveOpsCliBrokerOrderEvidence(brokerOrder, submission) {
+  if (!isNonEmptyRecord(brokerOrder) || !hasMeaningfulValue(brokerOrder.brokerOrderId) || !hasMeaningfulValue(brokerOrder.status)) {
+    return {
+      reason: "broker_result_evidence_missing",
+      message: "broker 제출 응답의 주문 식별 증거가 부족해 수동 점검 상태로 전환했습니다.",
+      action: "reservation id와 idempotency key로 거래소 주문 상태를 확인한 뒤 reconcile evidence를 보강하세요.",
+    };
+  }
+  if (hasMeaningfulValue(brokerOrder.idempotencyKey) && brokerOrder.idempotencyKey !== submission.intent.idempotencyKey) {
+    return {
+      reason: "broker_result_evidence_missing",
+      message: "broker 제출 응답의 idempotency key가 요청과 달라 수동 점검 상태로 전환했습니다.",
+      action: "reservation id와 idempotency key로 거래소 주문 상태를 확인한 뒤 중복 주문 여부를 점검하세요.",
+    };
+  }
+  if (hasMeaningfulValue(brokerOrder.market) && brokerOrder.market !== submission.intent.market) {
+    return {
+      reason: "broker_result_evidence_missing",
+      message: "broker 제출 응답의 market이 요청과 달라 수동 점검 상태로 전환했습니다.",
+      action: "reservation id와 idempotency key로 거래소 주문 상태를 확인한 뒤 잘못된 market 제출 여부를 점검하세요.",
+    };
+  }
+  if (hasMeaningfulValue(brokerOrder.status) && !isLiveOpsCliBrokerAcceptedStatus(brokerOrder.status)) {
+    return {
+      reason: "broker_result_not_accepted",
+      message: "broker 제출 응답이 접수/미체결 계열 상태가 아니어서 수동 점검 상태로 전환했습니다.",
+      action: "거래소 주문 상태와 durable reservation을 확인하고 rejected/failed/canceled/filled 결과를 reconcile evidence로 남기세요.",
+    };
+  }
+  return undefined;
+}
+
+function isLiveOpsCliBrokerAcceptedStatus(status) {
+  return ["SUBMITTED", "ACCEPTED", "OPEN", "PARTIALLY_FILLED"].includes(String(status).toUpperCase());
+}
+
+function isLiveOpsCliLiveAttemptId(value, config = {}) {
+  return (
+    typeof value === "string" &&
+    value.length <= (config.identifier_max_length ?? 32) &&
+    /^ops-[a-f0-9]{26}$/u.test(value)
+  );
+}
+
+function createLiveOpsCliAttemptId(decisionIdempotencyKey) {
+  if (isLiveOpsCliLiveAttemptId(decisionIdempotencyKey)) {
+    return decisionIdempotencyKey;
+  }
+  const source = hasMeaningfulValue(decisionIdempotencyKey) ? String(decisionIdempotencyKey) : "missing-decision-key";
+  return `ops-${createHash("sha256").update(source).digest("hex").slice(0, 26)}`;
+}
+
+function createLiveOpsCliOrderSubmission(request) {
+  return {
+    intent: {
+      exchangeId: request.candidate.exchangeId,
+      market: request.candidate.market,
+      strategyId: request.candidate.strategyId,
+      side: "BUY",
+      orderType: "LIMIT",
+      requestedQuantity: request.candidate.requestedQuantity,
+      requestedNotional: request.candidate.requestedNotional,
+      requestedPrice: request.candidate.requestedPrice,
+      idempotencyKey: request.idempotencyKey,
+      reason: request.candidate.reason,
+      postOnly: true,
+      timeInForce: request.candidate.timeInForce ?? "GTC",
+      metadata: request.candidate.metadata,
+    },
+    costSnapshot: request.candidate.costSnapshot,
+    riskApproval: request.candidate.riskApproval,
+    submittedAt: request.observedAt,
+  };
+}
+
+function okLiveExecutionCheck(name, message, code, details) {
+  return {
+    name,
+    status: "ok",
+    code,
+    message,
+    ...(details === undefined ? {} : { details }),
+  };
+}
+
+function blockedLiveExecutionCheck(name, message, code, details) {
+  return {
+    name,
+    status: "blocked",
+    code,
+    message,
+    ...(details === undefined ? {} : { details }),
+  };
+}
+
+function parseLiveOpsKeyScopes(value) {
+  if (!hasMeaningfulValue(value)) {
+    return [];
+  }
+  return [...new Set(String(value).split(",").map((scope) => scope.trim()).filter((scope) => scope.length > 0))];
+}
+
+function isPositiveDecimalString(value) {
+  if (!hasDecimalComparableValue(value) || !/^(?:0|[1-9]\d*)(?:\.\d+)?$/u.test(String(value))) {
+    return false;
+  }
+  return new Decimal(value).gt(0);
+}
+
+function isNonNegativeDecimalString(value) {
+  if (!hasDecimalComparableValue(value) || !/^(?:0|[1-9]\d*)(?:\.\d+)?$/u.test(String(value))) {
+    return false;
+  }
+  return new Decimal(value).gte(0);
+}
+
+function isDecimalString(value) {
+  if (!hasDecimalComparableValue(value)) {
+    return false;
+  }
+  try {
+    new Decimal(value);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function hasDecimalComparableValue(value) {
+  return typeof value === "string" && value.trim().length > 0;
+}
+
 function evaluateLiveOpsCliReconcilePnlStatus({ config, fixtureSmoke, liveExecution }) {
   const market = config.universe?.default_market ?? "KRW-BTC";
+
+  if (!fixtureSmoke && liveExecution.status === "submitted") {
+    return {
+      status: "blocked",
+      ready: false,
+      market,
+      liveOrderCapable: true,
+      latestReconcileAt: null,
+      latestPnlAt: null,
+      latestStatusAt: null,
+      reconcileStatus: "provider_boundary_missing",
+      reconcileStatusLabel: "수동 확인 필요",
+      pnlStatus: "provider_boundary_missing",
+      pnlStatusLabel: "수동 확인 필요",
+      openOrderCount: 0,
+      openExposureKrw: "0",
+      budgetUsedKrw: "0",
+      providerProbeAttempted: false,
+      statusLabel: "후속 경계 차단",
+      message: "실주문 제출 후 reconcile/PnL/status provider 경계가 없어 상태 확정을 중단했습니다.",
+      checks: [
+        {
+          name: "reconcile_summary",
+          status: "blocked",
+          code: "live_ops_reconcile_boundary_missing",
+          message: "실제 주문 제출 후 open order/exposure를 확인할 reconcile provider가 필요합니다.",
+        },
+      ],
+    };
+  }
+
+  if (!fixtureSmoke && liveExecution.ready === true && liveExecution.liveOrderCapable !== true) {
+    return {
+      status: "idle",
+      ready: true,
+      market,
+      liveOrderCapable: false,
+      latestReconcileAt: null,
+      latestPnlAt: null,
+      latestStatusAt: null,
+      reconcileStatus: "not_required",
+      reconcileStatusLabel: "대기",
+      pnlStatus: "not_required",
+      pnlStatusLabel: "대기",
+      openOrderCount: 0,
+      openExposureKrw: "0",
+      budgetUsedKrw: "0",
+      providerProbeAttempted: false,
+      statusLabel: "주문 없음",
+      message: "broker 제출이 없어 reconcile/PnL/status provider 조회를 시작하지 않았습니다.",
+      checks: [
+        {
+          name: "live_execution",
+          status: "ok",
+          code: "live_ops_reconcile_not_required",
+          message: "실주문 제출 전에는 private reconcile provider를 열지 않습니다.",
+        },
+      ],
+    };
+  }
 
   if (!fixtureSmoke || liveExecution.ready !== true) {
     // live execution이 준비되지 않았으면 provider 조회로 보강하지 않고 lifecycle 순서를 보존한다.
@@ -740,6 +2231,52 @@ function evaluateLiveOpsCliReconcilePnlStatus({ config, fixtureSmoke, liveExecut
 function evaluateLiveOpsCliTelegramAlert({ config, fixtureSmoke, liveExecution }) {
   const market = config.universe?.default_market ?? "KRW-BTC";
 
+  if (!fixtureSmoke && liveExecution.status === "submitted") {
+    return {
+      status: "blocked",
+      ready: false,
+      market,
+      liveOrderCapable: true,
+      lifecycleAlertCount: 0,
+      tradeAlertCount: 0,
+      alertCount: 0,
+      providerDispatchAttempted: false,
+      statusLabel: "후속 경계 차단",
+      message: "실주문 제출 후 Telegram trade alert provider 경계가 없어 알림 전송을 확정하지 않았습니다.",
+      checks: [
+        {
+          name: "telegram_connection",
+          status: "blocked",
+          code: "live_ops_telegram_boundary_missing",
+          message: "실제 주문 제출 후 trade alert를 보낼 Telegram provider 경계가 필요합니다.",
+        },
+      ],
+    };
+  }
+
+  if (!fixtureSmoke && liveExecution.ready === true && liveExecution.liveOrderCapable !== true) {
+    return {
+      status: "idle",
+      ready: true,
+      market,
+      liveOrderCapable: false,
+      lifecycleAlertCount: 0,
+      tradeAlertCount: 0,
+      alertCount: 0,
+      providerDispatchAttempted: false,
+      statusLabel: "주문 없음",
+      message: "broker 제출이 없어 Telegram trade alert provider 전송을 시작하지 않았습니다.",
+      checks: [
+        {
+          name: "live_execution",
+          status: "ok",
+          code: "live_ops_telegram_not_required",
+          message: "실주문 제출 전에는 trade alert provider를 열지 않습니다.",
+        },
+      ],
+    };
+  }
+
   if (!fixtureSmoke || liveExecution.ready !== true) {
     return {
       status: "pending",
@@ -795,11 +2332,12 @@ function evaluateLiveOpsCliTelegramAlert({ config, fixtureSmoke, liveExecution }
 function evaluateLiveOpsCliAnalysisDecision({ config, fixtureSmoke, marketData }) {
   const market = config.universe?.default_market ?? "KRW-BTC";
 
-  if (!fixtureSmoke || marketData.ready !== true) {
+  if (marketData.ready !== true) {
     return {
-      status: "pending",
+      status: "blocked",
       ready: false,
       market,
+      observedAt: null,
       latestDecisionAt: null,
       decisionCategory: "HOLD",
       featureStatus: "not_run",
@@ -808,6 +2346,7 @@ function evaluateLiveOpsCliAnalysisDecision({ config, fixtureSmoke, marketData }
       blockCount: 0,
       orderIntentCount: 0,
       recordHoldDecision: false,
+      orderIntents: [],
       message: "analysis/decision pipeline은 market data lifecycle 이후 연결됩니다.",
       checks: [
         {
@@ -821,10 +2360,55 @@ function evaluateLiveOpsCliAnalysisDecision({ config, fixtureSmoke, marketData }
   }
 
   const latestDecisionAt = new Date().toISOString();
+  if (!fixtureSmoke) {
+    return {
+      status: "pending",
+      ready: false,
+      market,
+      observedAt: latestDecisionAt,
+      latestDecisionAt: null,
+      decisionCategory: "HOLD",
+      featureStatus: "not_run",
+      evaluatedStrategyCount: 0,
+      holdCount: 0,
+      blockCount: 1,
+      orderIntentCount: 0,
+      recordHoldDecision: false,
+      orderIntents: [],
+      decisionSourceConnected: false,
+      message: "production decision source가 아직 연결되지 않아 주문 후보 없음으로 확정하지 않습니다.",
+      checks: [
+        {
+          name: "market_data",
+          status: "ok",
+          code: "live_ops_market_data_ready",
+          message: "DB-backed market data freshness summary를 확인했습니다.",
+          details: {
+            latestHeartbeatAt: marketData.latestHeartbeatAt,
+            tradeCount: marketData.persisted?.tradeCount ?? 0,
+            orderbookCount: marketData.persisted?.orderbookCount ?? 0,
+          },
+        },
+        {
+          name: "strategy_decision",
+          status: "pending",
+          code: "live_ops_strategy_decision_source_missing",
+          message: "실제 strategy/decision 결과를 읽기 전까지 HOLD ready로 표시하지 않습니다.",
+        },
+      ],
+      trace: {
+        source: "live_ops_cli_analysis_decision",
+        marketDataSourceProfile: marketData.sourceProfile,
+        decisionSourceConnected: false,
+      },
+    };
+  }
+
   return {
     status: "ready",
     ready: true,
     market,
+    observedAt: latestDecisionAt,
     latestDecisionAt,
     decisionCategory: "HOLD",
     featureStatus: "ok",
@@ -833,6 +2417,7 @@ function evaluateLiveOpsCliAnalysisDecision({ config, fixtureSmoke, marketData }
     blockCount: 0,
     orderIntentCount: 0,
     recordHoldDecision: config.analysis?.record_hold_decision === true,
+    orderIntents: [],
     message: "fixture analysis/decision pipeline이 HOLD를 기록했고 주문 후보는 없습니다.",
     checks: [
       {
@@ -871,6 +2456,8 @@ async function evaluateLiveOpsCliMarketData({ config, fixtureSmoke, databaseUrl 
     sourceProfile: "fixture",
     message: "fixture market data collector가 DB-backed 저장 경계를 통과했습니다.",
     latestHeartbeatAt,
+    referencePrice: "100000000",
+    referencePriceSource: "fixture_trade",
     persisted: {
       eventCount: 3,
       tradeCount: 1,
@@ -911,6 +2498,8 @@ async function collectLiveOpsCliUpbitMarketData({ config, databaseUrl, market })
   const persisted = emptyMarketDataPersistenceSummary();
   const state = {
     latestHeartbeatAt: null,
+    referencePrice: null,
+    referencePriceSource: null,
     hasTrade: false,
     hasOrderbook: false,
     riskBlockCount: 0,
@@ -1024,6 +2613,8 @@ async function collectLiveOpsCliUpbitMarketData({ config, databaseUrl, market })
       ? "Upbit public market data provider가 DB-backed 저장 경계를 통과했습니다."
       : "market data collector가 live ops 다음 단계로 진행할 수 없습니다.",
     latestHeartbeatAt: state.latestHeartbeatAt,
+    referencePrice: state.referencePrice,
+    referencePriceSource: state.referencePriceSource,
     persisted,
     checks,
   };
@@ -1239,6 +2830,8 @@ async function persistLiveOpsCliMarketDataEvent(pool, event, { workerId, persist
     persisted.tradeCount += 1;
     state.hasTrade = true;
     state.latestHeartbeatAt = event.receivedAt;
+    state.referencePrice = event.price;
+    state.referencePriceSource = "trade";
     return;
   }
 
@@ -1247,6 +2840,8 @@ async function persistLiveOpsCliMarketDataEvent(pool, event, { workerId, persist
     persisted.orderbookCount += 1;
     state.hasOrderbook = true;
     state.latestHeartbeatAt = event.receivedAt;
+    state.referencePrice = new Decimal(event.bids[0].price).plus(event.asks[0].price).div(2).toFixed();
+    state.referencePriceSource = "orderbook_mid";
     return;
   }
 
@@ -1806,6 +3401,19 @@ function formatCliMarketDataFailureMessage(summary) {
     .map((check) => check.message)
     .join(" ");
   return `market data provider boot를 통과하지 못해 live ops boot를 중단합니다. ${failures}`;
+}
+
+function formatCliLiveExecutionFailureMessage(summary) {
+  const failures = summary.checks
+    .filter((check) => check.status === "blocked")
+    .map((check) => check.message)
+    .join(" ");
+  return `live execution guard를 통과하지 못해 live ops boot를 중단합니다. ${failures}`;
+}
+
+function formatCliSummaryFailureMessage(summary) {
+  const message = hasMeaningfulValue(summary?.message) ? summary.message : "최종 readiness summary가 ready가 아닙니다.";
+  return `live ops 최종 readiness를 통과하지 못해 boot를 중단합니다. ${message}`;
 }
 
 function safeErrorName(error) {
