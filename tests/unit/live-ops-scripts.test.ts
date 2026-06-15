@@ -495,6 +495,7 @@ console.log(JSON.stringify({ summary, malformed, malformedOrder, manualReview, m
         `
 import {
   evaluateLiveOpsCliTelegramAlert,
+  renderLiveOpsTuiDashboard,
 } from "./scripts/run-live-ops-support.mjs";
 
 const config = {
@@ -653,6 +654,43 @@ const failed = await evaluateLiveOpsCliTelegramAlert({
     },
   },
 });
+const failedTui = renderLiveOpsTuiDashboard({
+  status: "blocked",
+  mode: "소액 실운영",
+  configPath: "/tmp/live-ops.json",
+  envFilePath: "/tmp/live-ops.env",
+  liveOrderCapable: false,
+  tui: true,
+  attach: null,
+  fixtureSmoke: false,
+  dbReadiness: { ready: true, migration: { appliedLatestVersion: 13, expectedLatestVersion: 13, pendingVersions: [] } },
+  marketData: { ready: true, persisted: { tradeCount: 1, orderbookCount: 1, statusCount: 1 }, latestHeartbeatAt: observedAt },
+  analysisDecision: { ready: true, decisionCategory: "ORDER_INTENT", orderIntentCount: 1, evaluatedStrategyCount: 1, latestDecisionAt: observedAt },
+  liveExecution,
+  reconcilePnlStatus: {
+    ready: true,
+    statusLabel: "private read 확인",
+    reconcileStatusLabel: "정상",
+    pnlStatusLabel: "정상",
+    openOrderCount: 0,
+    providerProbeAttempted: true,
+    openExposureKrw: "0",
+    budgetUsedKrw: "0",
+    realizedPnlKrw: "0",
+    unrealizedPnlKrw: "0",
+    latestReconcileAt: observedAt,
+    mismatchCount: 0,
+    manualReviewRequired: false,
+  },
+  telegramAlert: failed,
+  budget: {
+    maxOrderKrw: "10000",
+    dailyAutonomousNotionalLimitKrw: "30000",
+    maxOpenPositionNotionalKrw: "30000",
+    operationsStopCeilingKrw: "49999",
+  },
+  trace: { workers: ["telegram_alert"], defaultMarket: "KRW-BTC" },
+});
 console.log(JSON.stringify({
   sent,
   manualReview,
@@ -661,9 +699,11 @@ console.log(JSON.stringify({
   blocked,
   failed,
   eventKinds: dispatches[0].events.map((event) => event.eventKind),
+  submittedEvent: dispatches[0].events.find((event) => event.eventKind === "ORDER_SUBMITTED"),
   manualEventKinds: manualDispatches[0].events.map((event) => event.eventKind),
   blockedDispatchCount: blockedDispatches.length,
   dispatchedMarket: dispatches[0].market,
+  failedTui,
 }));
         `,
       ],
@@ -684,9 +724,11 @@ console.log(JSON.stringify({
       blocked: { ready: boolean; providerDispatchAttempted: boolean; alertCount: number; status: string };
       failed: { ready: boolean; status: string; retryPlannedCount: number; failureCount: number; action: string };
       eventKinds: string[];
+      submittedEvent: { orderId?: string; brokerOrderId?: string; idempotencyKey?: string };
       manualEventKinds: string[];
       blockedDispatchCount: number;
       dispatchedMarket: string;
+      failedTui: string;
     };
 
     expect(output.sent).toMatchObject({
@@ -700,6 +742,11 @@ console.log(JSON.stringify({
       "LIVE_ORDER_CAPABLE_STARTED",
       "ORDER_SUBMITTED",
     ]);
+    expect(output.submittedEvent).toMatchObject({
+      orderId: "ops-attempt-1",
+      brokerOrderId: "upbit-order-1",
+      idempotencyKey: "ops-idem-1",
+    });
     expect(output.manualReview).toMatchObject({
       ready: true,
       providerDispatchAttempted: true,
@@ -737,6 +784,10 @@ console.log(JSON.stringify({
       failureCount: 1,
     });
     expect(output.failed.action).toContain("되돌리지 않습니다");
+    expect(output.failedTui).toContain("Telegram alert: 전송 재시도 필요");
+    expect(output.failedTui).toContain("retry 1");
+    expect(output.failedTui).toContain("failure 1");
+    expect(output.failedTui).not.toContain("Telegram alert: 후속 연결 대기");
   });
 
   it("live:ops:tui attach는 같은 dashboard를 attach 대상으로 렌더링한다", () => {

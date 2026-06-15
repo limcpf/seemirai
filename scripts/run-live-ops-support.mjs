@@ -617,7 +617,11 @@ function formatReconcilePnlStatusObservation(reconcilePnlStatus) {
 }
 
 function formatTelegramAlertObservation(telegramAlert) {
-  if (telegramAlert?.ready !== true) {
+  if (
+    telegramAlert?.ready !== true &&
+    telegramAlert?.providerDispatchAttempted !== true &&
+    !hasMeaningfulTelegramFailureSummary(telegramAlert)
+  ) {
     return "후속 연결 대기";
   }
 
@@ -626,7 +630,17 @@ function formatTelegramAlertObservation(telegramAlert) {
     `lifecycle ${telegramAlert.lifecycleAlertCount}`,
     `trade ${telegramAlert.tradeAlertCount}`,
     `provider 호출 ${telegramAlert.providerDispatchAttempted ? "있음" : "0"}`,
+    `retry ${telegramAlert.retryPlannedCount ?? 0}`,
+    `failure ${telegramAlert.failureCount ?? 0}`,
   ].join(" / ");
+}
+
+function hasMeaningfulTelegramFailureSummary(telegramAlert) {
+  return (
+    Number(telegramAlert?.failureCount ?? 0) > 0 ||
+    Number(telegramAlert?.retryPlannedCount ?? 0) > 0 ||
+    telegramAlert?.status === "manual_review_required"
+  );
 }
 
 function formatDecisionCategory(decisionCategory) {
@@ -3018,7 +3032,7 @@ function createLiveOpsCliTelegramBaseEvent({
   evidenceId,
   safeSummary,
 }) {
-  return {
+  const event = {
     environment: "production",
     runMode: "live_autonomous_small_budget",
     eventKind,
@@ -3032,9 +3046,6 @@ function createLiveOpsCliTelegramBaseEvent({
     ...(orderIntent?.requestedQuantity === undefined ? {} : { quantity: orderIntent.requestedQuantity }),
     ...(orderIntent?.requestedPrice === undefined ? {} : { requestedPrice: orderIntent.requestedPrice }),
     ...(orderIntent?.requestedNotional === undefined ? {} : { notionalKrw: orderIntent.requestedNotional }),
-    ...(liveExecution.attemptId === null || liveExecution.attemptId === undefined ? {} : { orderId: liveExecution.attemptId }),
-    ...(liveExecution.brokerOrderId === null || liveExecution.brokerOrderId === undefined ? {} : { brokerOrderId: liveExecution.brokerOrderId }),
-    ...(liveExecution.idempotencyKey === null || liveExecution.idempotencyKey === undefined ? {} : { idempotencyKey: liveExecution.idempotencyKey }),
     ...(evidenceId === undefined ? {} : { evidenceId }),
     safeSummary,
     safeDetails: {
@@ -3042,6 +3053,16 @@ function createLiveOpsCliTelegramBaseEvent({
       attempt_status: liveExecution.attemptStatus ?? null,
     },
   };
+  assignLiveOpsCliTelegramIdentifier(event, "orderId", liveExecution.attemptId);
+  assignLiveOpsCliTelegramIdentifier(event, "brokerOrderId", liveExecution.brokerOrderId);
+  assignLiveOpsCliTelegramIdentifier(event, "idempotencyKey", liveExecution.idempotencyKey);
+  return event;
+}
+
+function assignLiveOpsCliTelegramIdentifier(event, key, value) {
+  if (hasMeaningfulValue(value)) {
+    event[key] = String(value);
+  }
 }
 
 async function callLiveOpsCliTelegramDispatcher(dispatcher, payload) {
