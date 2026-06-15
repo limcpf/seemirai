@@ -825,6 +825,7 @@ function createRuntimeRequest(overrides = {}) {
     },
     killSwitchActive: false,
     reconcileFresh: true,
+    executionStatusEvidenceId: "execution-status-evidence",
     idempotencyKey: intent.idempotencyKey,
     observedAt: "2026-06-15T00:00:00.000Z",
     ...overrides,
@@ -842,6 +843,18 @@ const directKillSwitchResult = await createLiveOpsCliEntryRuntime({
   },
   budgetReservation,
 }).submitEntryCandidate(createRuntimeRequest({ killSwitchActive: true }));
+const submittedWithMissingStatusEvidence = [];
+const directMissingStatusEvidenceResult = await createLiveOpsCliEntryRuntime({
+  broker: {
+    async submitOrder(submission) {
+      submittedWithMissingStatusEvidence.push(submission);
+      return {
+        brokerOrderId: "unexpected-missing-status-evidence-order",
+      };
+    },
+  },
+  budgetReservation,
+}).submitEntryCandidate(createRuntimeRequest({ executionStatusEvidenceId: undefined }));
 const directInvalidMarketRequest = createRuntimeRequest();
 directInvalidMarketRequest.candidate = {
   ...directInvalidMarketRequest.candidate,
@@ -958,6 +971,28 @@ const directBudgetLimitResult = await createLiveOpsCliEntryRuntime({
   },
   budgetReservation,
 }).submitEntryCandidate(directBudgetLimitRequest);
+const directSnapshotMaxOrderLimitRequest = createRuntimeRequest({
+  budgetSnapshot: {
+    maxOrderKrw: "5000",
+    dailyAutonomousNotionalLimitKrw: "30000",
+    dailyAutonomousNotionalUsedKrw: "0",
+    openPositionNotionalKrw: "0",
+    maxOpenPositionNotionalKrw: "30000",
+    capturedAt: observedAt,
+  },
+});
+const submittedWithSnapshotMaxOrderLimit = [];
+const directSnapshotMaxOrderLimitResult = await createLiveOpsCliEntryRuntime({
+  broker: {
+    async submitOrder(submission) {
+      submittedWithSnapshotMaxOrderLimit.push(submission);
+      return {
+        brokerOrderId: "unexpected-snapshot-max-order-limit-order",
+      };
+    },
+  },
+  budgetReservation,
+}).submitEntryCandidate(directSnapshotMaxOrderLimitRequest);
 const directReservationExceptionResult = await createLiveOpsCliEntryRuntime({
   broker: {
     async submitOrder() {
@@ -1422,6 +1457,8 @@ console.log(JSON.stringify({
   submittedWithStaleEvidence,
   directKillSwitchResult,
   submittedWithDirectKillSwitch,
+  directMissingStatusEvidenceResult,
+  submittedWithMissingStatusEvidence,
   directInvalidMarketResult,
   submittedWithInvalidMarket,
   directMismatchNotionalResult,
@@ -1434,6 +1471,8 @@ console.log(JSON.stringify({
   submittedWithPriceDeviation,
   directBudgetLimitResult,
   submittedWithBudgetLimit,
+  directSnapshotMaxOrderLimitResult,
+  submittedWithSnapshotMaxOrderLimit,
   directReservationExceptionResult,
   directBrokerExceptionResult,
   directBrokerPortMissingResult,
@@ -1534,6 +1573,14 @@ console.log(JSON.stringify({
         violations: string[];
       };
       submittedWithDirectKillSwitch: unknown[];
+      directMissingStatusEvidenceResult: {
+        status: string;
+        violations: string[];
+        trace: {
+          violations: string[];
+        };
+      };
+      submittedWithMissingStatusEvidence: unknown[];
       directInvalidMarketResult: {
         status: string;
         violations: string[];
@@ -1573,6 +1620,14 @@ console.log(JSON.stringify({
         };
       };
       submittedWithBudgetLimit: unknown[];
+      directSnapshotMaxOrderLimitResult: {
+        status: string;
+        violations: string[];
+        trace: {
+          violations: string[];
+        };
+      };
+      submittedWithSnapshotMaxOrderLimit: unknown[];
       directReservationExceptionResult: {
         status: string;
         violations: string[];
@@ -1767,6 +1822,14 @@ console.log(JSON.stringify({
       violations: ["execution_runtime_status_blocked"],
     });
     expect(output.submittedWithDirectKillSwitch).toHaveLength(0);
+    expect(output.directMissingStatusEvidenceResult).toMatchObject({
+      status: "BLOCKED",
+      violations: ["execution_runtime_status_blocked"],
+      trace: {
+        violations: expect.arrayContaining(["execution status evidence id가 wrapper 경계에서도 필요합니다"]),
+      },
+    });
+    expect(output.submittedWithMissingStatusEvidence).toHaveLength(0);
     expect(output.directInvalidMarketResult).toMatchObject({
       status: "BLOCKED",
       violations: ["execution_runtime_guard_blocked"],
@@ -1809,6 +1872,14 @@ console.log(JSON.stringify({
       },
     });
     expect(output.submittedWithBudgetLimit).toHaveLength(0);
+    expect(output.directSnapshotMaxOrderLimitResult).toMatchObject({
+      status: "BLOCKED",
+      violations: ["execution_runtime_guard_blocked"],
+      trace: {
+        violations: expect.arrayContaining(["live ops wrapper 후보 실제 주문 금액이 budget snapshot 단일 주문 한도를 초과했습니다"]),
+      },
+    });
+    expect(output.submittedWithSnapshotMaxOrderLimit).toHaveLength(0);
     expect(output.directReservationExceptionResult).toMatchObject({
       status: "BLOCKED",
       violations: ["budget_reservation_unavailable"],

@@ -1505,6 +1505,7 @@ function createLiveOpsCliEntryRuntimeRequest({ config, marketData, intent, obser
     lossSnapshot,
     killSwitchActive: executionStatus.killSwitchActive,
     reconcileFresh: executionStatus.reconcileFresh,
+    executionStatusEvidenceId: executionStatus.evidenceId,
     idempotencyKey: liveAttemptId,
     observedAt,
   };
@@ -1541,6 +1542,9 @@ function collectLiveOpsCliEntryRuntimeStatusViolations(request) {
   if (request?.reconcileFresh !== true) {
     violations.push("reconcile freshness가 최신 상태임을 wrapper 경계에서도 확인해야 합니다");
   }
+  if (!hasMeaningfulValue(request?.executionStatusEvidenceId)) {
+    violations.push("execution status evidence id가 wrapper 경계에서도 필요합니다");
+  }
   return violations;
 }
 
@@ -1576,6 +1580,9 @@ function collectLiveOpsCliEntryRuntimeGuardViolations(request) {
     }
     if (actualNotional.gt(new Decimal(config?.max_order_krw ?? "0"))) {
       violations.push("live ops wrapper 후보 실제 주문 금액이 단일 주문 상한을 초과했습니다");
+    }
+    if (isLiveOpsCliBudgetSnapshot(request?.budgetSnapshot) && actualNotional.gt(new Decimal(request.budgetSnapshot.maxOrderKrw))) {
+      violations.push("live ops wrapper 후보 실제 주문 금액이 budget snapshot 단일 주문 한도를 초과했습니다");
     }
     appendLiveOpsCliEntryRuntimeBudgetGuardViolations(violations, request, actualNotional);
   }
