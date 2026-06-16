@@ -149,6 +149,8 @@ const disallowedRipgrepLongOptions = new Set([
 ]);
 const disallowedRipgrepShortOptions = new Set(["F", "I", "L", "M", "N", "P", "T", "c", "d", "f", "l", "m", "q", "r", "t", "v", "w", "x"]);
 const ripgrepOptionsWithNextValue = new Set([
+  "--color",
+  "--colors",
   "--engine",
   "--context-separator",
   "--file",
@@ -195,7 +197,8 @@ const sensitivePatterns = [
   { label: "telegram bot token url placeholder tail", pattern: /https:\/\/api\.telegram\.org\/bot(?:<redacted>|redacted|\[redacted\])(?=[^/\s"'])[^/\s"']*/i },
   { label: "database url json field", pattern: /"(?:databaseUrl|database_url|seemirai_database_url)"\s*:\s*"(?!\s*(?:<redacted>|redacted|\[redacted\])\s*")[^"]{8,}"/i },
   { label: "database password json field", pattern: /"(?:databasePassword|database_password|dbPassword|db_password|pgPassword|pg_password|password)"\s*:\s*"(?!\s*(?:<redacted>|redacted|\[redacted\])\s*")[^"]{8,}"/i },
-  { label: "credential decoded field", pattern: /\b(?:access_key|accessKey|access-key|secret_key|secretKey|secret-key|telegram_bot_token|telegram-bot-token|botToken|tuiControlToken|tui_control_token|tui-control-token|seemirai(?:Upbit)?(?:AccessKey|SecretKey|TelegramBotToken|TuiControlToken)|databaseUrl|database_url|database-url|databasePassword|database_password|database-password|dbPassword|db_password|db-password|pgPassword|pg_password|pg-password|password)\s*:\s*(?!["']?(?:<redacted>|redacted|\[redacted\])["']?(?:\s|$|[,}\]]))[^\r\n]{8,}/i },
+  { label: "query hash json field", pattern: /"(?:queryHash|query_hash)"\s*:\s*"(?!\s*(?:<redacted>|redacted|\[redacted\])\s*")[^"]{8,}"/i },
+  { label: "credential decoded field", pattern: /\b(?:access_key|accessKey|access-key|secret_key|secretKey|secret-key|telegram_bot_token|telegram-bot-token|botToken|tuiControlToken|tui_control_token|tui-control-token|seemirai(?:Upbit)?(?:AccessKey|SecretKey|TelegramBotToken|TuiControlToken)|databaseUrl|database_url|database-url|databasePassword|database_password|database-password|dbPassword|db_password|db-password|pgPassword|pg_password|pg-password|password|token|authorization|jwt|queryHash|query_hash)\s*:\s*(?!["']?(?:<redacted>|redacted|\[redacted\])["']?(?:\s|$|[,}\]]))[^\r\n]{8,}/i },
   { label: "raw payload decoded field", pattern: /\b(?:rawProvider(?:Payload|Body)?|rawOrder(?:Detail|Payload)?|rawUpdate(?:Payload|Body)?|raw(?:_|-)?provider(?:(?:_|-)?(?:payload|body))?|raw(?:_|-)?order(?:(?:_|-)?(?:detail|payload))?|raw(?:_|-)?update(?:(?:_|-)?(?:payload|body))?)\s*:/i },
   { label: "access key env assignment", pattern: /\b(?:SEEMIRAI_)?(?:UPBIT_)?ACCESS_KEY\s*[:=]\s*(?!(?:["']?(?:<redacted>|redacted|\[redacted\])["']?)(?:$|[\r\n,}]))[^\r\n,}]{8,}/i },
   { label: "secret key env assignment", pattern: /\b(?:SEEMIRAI_)?(?:UPBIT_)?SECRET_KEY\s*[:=]\s*(?!(?:["']?(?:<redacted>|redacted|\[redacted\])["']?)(?:$|[\r\n,}]))[^\r\n,}]{8,}/i },
@@ -207,11 +210,12 @@ const sensitivePatterns = [
   { label: "credential env placeholder json tail", pattern: /\b(?:SEEMIRAI_)?(?:(?:UPBIT_)?(?:ACCESS_KEY|SECRET_KEY)|TELEGRAM_BOT_TOKEN|TUI_CONTROL_TOKEN|DATABASE_URL|DATABASE_PASSWORD|POSTGRES_PASSWORD|DB_PASSWORD|PGPASSWORD)\s*[:=]\s*["']?(?:<redacted>|redacted|\[redacted\])["']?\s*[,;]\s*(?:\{|\[)/i },
   { label: "raw authorization bearer", pattern: /authorization:\s*bearer\s+(?!<redacted>|redacted|\[redacted\])[^\s"']+/i },
   { label: "standalone bearer token", pattern: /\bBearer\s+(?!(?:<redacted>|redacted|\[redacted\])(?:\s|$))[^\s"']{16,}/i },
-  { label: "bearer placeholder tail", pattern: /\bBearer\s+(?:<redacted>|redacted|\[redacted\])\s+[^\s"']+/i },
+  { label: "bearer placeholder tail", pattern: /\bBearer\s+(?:<redacted>|redacted|\[redacted\])(?:\s+|[,;:\[{])\s*[^\s"']+/i },
   { label: "jwt env assignment", pattern: /\bJWT\s*=\s*(?!(?:["']?(?:<redacted>|redacted|\[redacted\])["']?)(?:\s|$|["',]))[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/ },
   { label: "raw jwt compact token", pattern: /\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b/i },
   { label: "authorization json field", pattern: /"authorization"\s*:\s*"(?!bearer\s+(?:<redacted>|redacted|\[redacted\])"|(?:<redacted>|redacted|\[redacted\])")[^"]{8,}"/i },
   { label: "jwt json field", pattern: /"jwt"\s*:\s*"(?!\s*(?:<redacted>|redacted|\[redacted\])\s*")[^"]{8,}"/i },
+  { label: "postgres url", pattern: /postgres(?:ql)?:\/\/(?!(?:<redacted>|redacted|\[redacted\])(?:$|[\/\s"']))[^\s"']+/i },
   { label: "postgres credential url", pattern: /postgres(?:ql)?:\/\/[^:\s"']+:(?!(?:<redacted>|redacted|\[redacted\])@)[^@\s"']+@/i },
   { label: "raw provider camelCase field", pattern: /"rawProvider(?:Payload|Body)?"\s*:/ },
   { label: "raw order camelCase field", pattern: /"rawOrder(?:Detail|Payload)?"\s*:/ },
@@ -2091,7 +2095,8 @@ function createArtifactManifestConflicts(artifactFiles, manifest, run, counters)
 function isFailureArtifactStatus(value) {
   return /(?:^|[_:-])(?:blocked|error|fail|failed|failure|partial|skipped)(?:$|[_:-])/iu.test(value)
     || /manual[_:-]?review/iu.test(value)
-    || /timeout/iu.test(value);
+    || /timeout/iu.test(value)
+    || /(?:^|[_:-])(?:unknown|uncertain)(?:$|[_:-])/iu.test(value);
 }
 
 function isCompleteArtifactCloseoutEvidence(record, run) {
