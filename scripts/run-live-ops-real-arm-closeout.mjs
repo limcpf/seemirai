@@ -68,7 +68,15 @@ const liveOpsConfigAllowedKeys = {
   ],
   workers: ["db_readiness", "market_data", "analysis_decision", "live_execution", "reconcile_pnl_status", "telegram", "tui"],
   market_data: ["provider", "websocket_enabled", "rest_policy_snapshot_enabled", "stale_after_ms"],
-  analysis: ["candle_interval_seconds", "feature_interval_seconds", "decision_interval_seconds", "record_hold_decision"],
+  analysis: ["candle_interval_seconds", "feature_interval_seconds", "decision_interval_seconds", "record_hold_decision", "decision_policy"],
+  analysis_decision_policy: ["id", "cleanup_probe"],
+  analysis_decision_policy_cleanup_probe: [
+    "max_notional_krw",
+    "tick_size_krw",
+    "price_offset_ticks",
+    "quantity_scale",
+    "expected_loss_bps_of_equity",
+  ],
   telegram: ["startup_alert_enabled", "live_order_capable_alert_enabled", "trade_event_alerts_enabled", "provider_timeout_ms"],
   tui: ["foreground_enabled", "attach_enabled", "refresh_interval_ms", "control_requires_two_step_confirmation", "controls_enabled"],
 };
@@ -1323,6 +1331,13 @@ function createLiveOpsConfigContractErrors(config) {
   validateAllowedConfigKeys(errors, config.workers, "workers", liveOpsConfigAllowedKeys.workers);
   validateAllowedConfigKeys(errors, config.market_data, "market_data", liveOpsConfigAllowedKeys.market_data);
   validateAllowedConfigKeys(errors, config.analysis, "analysis", liveOpsConfigAllowedKeys.analysis);
+  validateAllowedConfigKeys(errors, config.analysis?.decision_policy, "analysis.decision_policy", liveOpsConfigAllowedKeys.analysis_decision_policy);
+  validateAllowedConfigKeys(
+    errors,
+    config.analysis?.decision_policy?.cleanup_probe,
+    "analysis.decision_policy.cleanup_probe",
+    liveOpsConfigAllowedKeys.analysis_decision_policy_cleanup_probe,
+  );
   validateAllowedConfigKeys(errors, config.telegram, "telegram", liveOpsConfigAllowedKeys.telegram);
   validateAllowedConfigKeys(errors, config.tui, "tui", liveOpsConfigAllowedKeys.tui);
   const secretPaths = findSecretLikeKeys(config);
@@ -1381,6 +1396,17 @@ function createLiveOpsConfigContractErrors(config) {
     feature_interval_seconds: 5,
     decision_interval_seconds: 5,
     record_hold_decision: true,
+  });
+  const decisionPolicy = readRecord(readRecord(config.analysis).decision_policy);
+  validateExpectedConfigValues(errors, decisionPolicy, "analysis.decision_policy", {
+    id: "cleanup_probe",
+  });
+  validateExpectedConfigValues(errors, readRecord(decisionPolicy.cleanup_probe), "analysis.decision_policy.cleanup_probe", {
+    max_notional_krw: "10000",
+    tick_size_krw: "1000",
+    price_offset_ticks: 1,
+    quantity_scale: 8,
+    expected_loss_bps_of_equity: "5",
   });
   validateExpectedConfigValues(errors, readRecord(config.telegram), "telegram", {
     startup_alert_enabled: true,

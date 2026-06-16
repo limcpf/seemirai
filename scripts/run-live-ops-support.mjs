@@ -10,6 +10,7 @@ const defaultMigrationsDirectory = path.resolve("migrations");
 const dbReadinessConnectionTimeoutMs = 5000;
 const liveOpsUpbitWebSocketUrl = "wss://api.upbit.com/websocket/v1";
 const liveOpsMarketDataConsumerId = "live-ops-market-data";
+const liveOpsCliAnalysisOrderIntentsSymbol = Symbol("liveOpsCliAnalysisOrderIntents");
 const liveOpsWorkerLabels = {
   db_readiness: "DB readiness",
   market_data: "시세 수집",
@@ -58,7 +59,15 @@ const liveOpsConfigAllowedKeys = {
   ],
   workers: ["db_readiness", "market_data", "analysis_decision", "live_execution", "reconcile_pnl_status", "telegram", "tui"],
   market_data: ["provider", "websocket_enabled", "rest_policy_snapshot_enabled", "stale_after_ms"],
-  analysis: ["candle_interval_seconds", "feature_interval_seconds", "decision_interval_seconds", "record_hold_decision"],
+  analysis: ["candle_interval_seconds", "feature_interval_seconds", "decision_interval_seconds", "record_hold_decision", "decision_policy"],
+  analysis_decision_policy: ["id", "cleanup_probe"],
+  analysis_decision_policy_cleanup_probe: [
+    "max_notional_krw",
+    "tick_size_krw",
+    "price_offset_ticks",
+    "quantity_scale",
+    "expected_loss_bps_of_equity",
+  ],
   telegram: ["startup_alert_enabled", "live_order_capable_alert_enabled", "trade_event_alerts_enabled", "provider_timeout_ms"],
   tui: ["foreground_enabled", "attach_enabled", "refresh_interval_ms", "control_requires_two_step_confirmation", "controls_enabled"],
 };
@@ -142,7 +151,7 @@ export async function loadLiveOpsCliInputs(options) {
   });
   assertLiveOpsCliMarketDataReady(marketData, { fixtureSmoke: options.fixtureSmoke });
 
-  const analysisDecision = evaluateLiveOpsCliAnalysisDecision({
+  const analysisDecision = await evaluateLiveOpsCliAnalysisDecision({
     config,
     fixtureSmoke: options.fixtureSmoke,
     marketData,
@@ -153,6 +162,7 @@ export async function loadLiveOpsCliInputs(options) {
     analysisDecision,
     marketData,
     env,
+    orderIntents: getLiveOpsCliAnalysisOrderIntents(analysisDecision),
   });
   let productionProviders;
   try {
@@ -345,6 +355,13 @@ function validateLiveOpsConfig(config) {
   validateAllowedKeys(errors, config.workers, "workers", liveOpsConfigAllowedKeys.workers);
   validateAllowedKeys(errors, config.market_data, "market_data", liveOpsConfigAllowedKeys.market_data);
   validateAllowedKeys(errors, config.analysis, "analysis", liveOpsConfigAllowedKeys.analysis);
+  validateAllowedKeys(errors, config.analysis?.decision_policy, "analysis.decision_policy", liveOpsConfigAllowedKeys.analysis_decision_policy);
+  validateAllowedKeys(
+    errors,
+    config.analysis?.decision_policy?.cleanup_probe,
+    "analysis.decision_policy.cleanup_probe",
+    liveOpsConfigAllowedKeys.analysis_decision_policy_cleanup_probe,
+  );
   validateAllowedKeys(errors, config.telegram, "telegram", liveOpsConfigAllowedKeys.telegram);
   validateAllowedKeys(errors, config.tui, "tui", liveOpsConfigAllowedKeys.tui);
   const secretPaths = findSecretLikeKeys(config);
@@ -400,6 +417,7 @@ function validateLiveOpsConfig(config) {
     decision_interval_seconds: 5,
     record_hold_decision: true,
   });
+  validateLiveOpsDecisionPolicyConfig(errors, config.analysis?.decision_policy);
   validateExpectedValues(errors, config.telegram, "telegram", {
     startup_alert_enabled: true,
     live_order_capable_alert_enabled: true,
@@ -418,6 +436,30 @@ function validateLiveOpsConfig(config) {
   if (errors.length > 0) {
     throw new Error(`live ops config 검증 실패: ${errors.join("; ")}`);
   }
+}
+
+function validateLiveOpsDecisionPolicyConfig(errors, decisionPolicy) {
+  if (decisionPolicy === null || typeof decisionPolicy !== "object" || Array.isArray(decisionPolicy)) {
+    errors.push("analysis.decision_policy 설정이 필요합니다.");
+    return;
+  }
+  if (decisionPolicy.id !== "cleanup_probe") {
+    errors.push("analysis.decision_policy.id는 cleanup_probe여야 합니다.");
+  }
+
+  const cleanupProbe = decisionPolicy.cleanup_probe;
+  if (cleanupProbe === null || typeof cleanupProbe !== "object" || Array.isArray(cleanupProbe)) {
+    errors.push("analysis.decision_policy.cleanup_probe 설정이 필요합니다.");
+    return;
+  }
+
+  validateExpectedValues(errors, cleanupProbe, "analysis.decision_policy.cleanup_probe", {
+    max_notional_krw: "10000",
+    tick_size_krw: "1000",
+    price_offset_ticks: 1,
+    quantity_scale: 8,
+    expected_loss_bps_of_equity: "5",
+  });
 }
 
 function validateLiveOpsEnv(env, processEnv) {
@@ -1200,7 +1242,7 @@ export async function evaluateLiveOpsCliLiveExecution({
 }) {
   const market = config.universe?.default_market ?? "KRW-BTC";
   const observedAt = new Date().toISOString();
-  const intents = orderIntents ?? analysisDecision.orderIntents ?? [];
+  const intents = orderIntents ?? getLiveOpsCliAnalysisOrderIntents(analysisDecision);
   const brokerGuard = evaluateLiveOpsCliBrokerGuard({ config, env, fixtureSmoke });
 
   if (analysisDecision.ready !== true) {
@@ -1321,6 +1363,28 @@ export async function evaluateLiveOpsCliLiveExecution({
     });
   }
 
+  if (entryRuntime === undefined) {
+    // runtime wiring이 없으면 실제 execution/cost/risk evidence를 합성하지 않고 제출 경계 미연결로 닫는다.
+    return buildLiveOpsCliLiveExecutionSummary({
+      status: "blocked",
+      ready: false,
+      liveOrderCapable: false,
+      market,
+      observedAt,
+      orderIntentCount: intents.length,
+      attemptedOrderCount: 0,
+      submittedOrderCount: 0,
+      brokerGuard,
+      statusLabel: "runtime 미연결",
+      message: "live autonomous entry runtime이 연결되지 않아 주문 후보를 제출하지 않았습니다.",
+      action: "budget reservation, 실제 execution status, cost/risk, post-submit readiness evidence와 broker runtime을 연결한 뒤 다시 실행하세요.",
+      checks: [
+        okLiveExecutionCheck("analysis_decision", "analysis/decision summary를 확인했습니다.", "live_ops_analysis_ready"),
+        blockedLiveExecutionCheck("entry_runtime", "live autonomous entry runtime이 연결되지 않았습니다.", "live_ops_entry_runtime_missing"),
+      ],
+    });
+  }
+
   const executionStatusViolations = collectLiveOpsCliExecutionStatusViolations(executionStatus, postSubmitReadiness, budgetSnapshot, lossSnapshot);
   if (executionStatusViolations.length > 0) {
     // kill switch, reconcile freshness, post-submit 후속 경계가 불명확하면 후보가 유효해도 broker runtime을 열지 않는다.
@@ -1373,29 +1437,6 @@ export async function evaluateLiveOpsCliLiveExecution({
   }
 
   const request = createLiveOpsCliEntryRuntimeRequest({ config, marketData, intent, observedAt, executionStatus, postSubmitReadiness, budgetSnapshot, lossSnapshot });
-  if (entryRuntime === undefined) {
-    // runtime wiring이 없으면 reservation/broker side effect가 없으므로 불확실 제출이 아니라 설정 차단으로 닫는다.
-    return buildLiveOpsCliLiveExecutionSummary({
-      status: "blocked",
-      ready: false,
-      liveOrderCapable: false,
-      market,
-      observedAt,
-      orderIntentCount: intents.length,
-      attemptedOrderCount: 0,
-      submittedOrderCount: 0,
-      brokerGuard,
-      statusLabel: "runtime 미연결",
-      message: "live autonomous entry runtime이 연결되지 않아 주문 후보를 제출하지 않았습니다.",
-      action: "budget reservation과 broker runtime wiring을 연결한 뒤 다시 실행하세요.",
-      checks: [
-        okLiveExecutionCheck("analysis_decision", "analysis/decision summary를 확인했습니다.", "live_ops_analysis_ready"),
-        okLiveExecutionCheck("order_intent", "단일 LIMIT + post-only 주문 후보를 확인했습니다.", "live_ops_order_intent_ready"),
-        blockedLiveExecutionCheck("entry_runtime", "live autonomous entry runtime이 연결되지 않았습니다.", "live_ops_entry_runtime_missing"),
-      ],
-    });
-  }
-
   const runtime = entryRuntime;
   let attempt;
   try {
@@ -3691,11 +3732,11 @@ function isLiveOpsCliLifecycleAlert(eventKind) {
   ].includes(eventKind);
 }
 
-function evaluateLiveOpsCliAnalysisDecision({ config, fixtureSmoke, marketData }) {
+export async function evaluateLiveOpsCliAnalysisDecision({ config, fixtureSmoke, marketData }) {
   const market = config.universe?.default_market ?? "KRW-BTC";
 
   if (marketData.ready !== true) {
-    return {
+    return attachLiveOpsCliAnalysisOrderIntents({
       status: "blocked",
       ready: false,
       market,
@@ -3708,7 +3749,6 @@ function evaluateLiveOpsCliAnalysisDecision({ config, fixtureSmoke, marketData }
       blockCount: 0,
       orderIntentCount: 0,
       recordHoldDecision: false,
-      orderIntents: [],
       message: "analysis/decision pipeline은 market data lifecycle 이후 연결됩니다.",
       checks: [
         {
@@ -3718,55 +3758,19 @@ function evaluateLiveOpsCliAnalysisDecision({ config, fixtureSmoke, marketData }
           message: "analysis/decision pipeline이 후속 lifecycle에서 시작됩니다.",
         },
       ],
-    };
+    }, []);
   }
 
   const latestDecisionAt = new Date().toISOString();
   if (!fixtureSmoke) {
-    return {
-      status: "pending",
-      ready: false,
-      market,
+    return evaluateLiveOpsCliCleanupProbeAnalysisDecision({
+      config,
+      marketData,
       observedAt: latestDecisionAt,
-      latestDecisionAt: null,
-      decisionCategory: "HOLD",
-      featureStatus: "not_run",
-      evaluatedStrategyCount: 0,
-      holdCount: 0,
-      blockCount: 1,
-      orderIntentCount: 0,
-      recordHoldDecision: false,
-      orderIntents: [],
-      decisionSourceConnected: false,
-      message: "production decision source가 아직 연결되지 않아 주문 후보 없음으로 확정하지 않습니다.",
-      checks: [
-        {
-          name: "market_data",
-          status: "ok",
-          code: "live_ops_market_data_ready",
-          message: "DB-backed market data freshness summary를 확인했습니다.",
-          details: {
-            latestHeartbeatAt: marketData.latestHeartbeatAt,
-            tradeCount: marketData.persisted?.tradeCount ?? 0,
-            orderbookCount: marketData.persisted?.orderbookCount ?? 0,
-          },
-        },
-        {
-          name: "strategy_decision",
-          status: "pending",
-          code: "live_ops_strategy_decision_source_missing",
-          message: "실제 strategy/decision 결과를 읽기 전까지 HOLD ready로 표시하지 않습니다.",
-        },
-      ],
-      trace: {
-        source: "live_ops_cli_analysis_decision",
-        marketDataSourceProfile: marketData.sourceProfile,
-        decisionSourceConnected: false,
-      },
-    };
+    });
   }
 
-  return {
+  return attachLiveOpsCliAnalysisOrderIntents({
     status: "ready",
     ready: true,
     market,
@@ -3779,7 +3783,7 @@ function evaluateLiveOpsCliAnalysisDecision({ config, fixtureSmoke, marketData }
     blockCount: 0,
     orderIntentCount: 0,
     recordHoldDecision: config.analysis?.record_hold_decision === true,
-    orderIntents: [],
+    decisionSourceConnected: true,
     message: "fixture analysis/decision pipeline이 HOLD를 기록했고 주문 후보는 없습니다.",
     checks: [
       {
@@ -3795,7 +3799,322 @@ function evaluateLiveOpsCliAnalysisDecision({ config, fixtureSmoke, marketData }
         message: "fixture strategy decision HOLD를 확인했습니다.",
       },
     ],
+  }, []);
+}
+
+function evaluateLiveOpsCliCleanupProbeAnalysisDecision({ config, marketData, observedAt }) {
+  const market = config.universe?.default_market ?? "KRW-BTC";
+  const policy = config.analysis?.decision_policy;
+  const policyEvidence = readLiveOpsCliDecisionPolicyEvidence(policy);
+  const decision = evaluateLiveOpsCliCleanupProbeStrategy({
+    config,
+    marketData,
+    observedAt,
+    policy,
+  });
+  const orderIntents = decision.kind === "ORDER_INTENT" ? decision.orderIntents : [];
+  const decisionCategory = decision.kind === "ORDER_INTENT"
+    ? "ORDER_INTENT"
+    : decision.kind === "BLOCK"
+      ? "BLOCKED"
+      : "HOLD";
+  const ready = decision.kind !== "BLOCK";
+
+  return attachLiveOpsCliAnalysisOrderIntents({
+    status: ready ? "ready" : "blocked",
+    ready,
+    market,
+    observedAt,
+    latestDecisionAt: observedAt,
+    decisionCategory,
+    featureStatus: "ok",
+    evaluatedStrategyCount: 1,
+    holdCount: decision.kind === "HOLD" ? 1 : 0,
+    blockCount: decision.kind === "BLOCK" ? 1 : 0,
+    orderIntentCount: orderIntents.length,
+    recordHoldDecision: config.analysis?.record_hold_decision === true && orderIntents.length === 0,
+    decisionSourceConnected: true,
+    message: toLiveOpsCliAnalysisDecisionMessage(decisionCategory, orderIntents.length),
+    checks: [
+      {
+        name: "market_data",
+        status: "ok",
+        code: "live_ops_market_data_ready",
+        message: "DB-backed market data freshness summary를 확인했습니다.",
+        details: {
+          latestHeartbeatAt: marketData.latestHeartbeatAt,
+          tradeCount: marketData.persisted?.tradeCount ?? 0,
+          orderbookCount: marketData.persisted?.orderbookCount ?? 0,
+        },
+      },
+      {
+        name: "decision_policy",
+        status: "ok",
+        code: "live_ops_decision_policy_resolved",
+        message: "cleanup probe decision policy를 정적 strategy로 조립했습니다.",
+        details: policyEvidence,
+      },
+      {
+        name: "strategy_decision",
+        status: ready ? "ok" : "blocked",
+        code: ready ? "live_ops_strategy_decision_ok" : "live_ops_strategy_decision_blocked",
+        message: ready ? "production strategy decision 평가를 완료했습니다." : "cleanup probe strategy decision이 후보 생성을 차단했습니다.",
+        details: {
+          strategyId: "live_ops_cleanup_probe",
+          decisionKind: decision.kind,
+          orderIntentCount: orderIntents.length,
+          reason: decision.reason,
+        },
+      },
+    ],
+    trace: {
+      source: "live_ops_cli_analysis_decision",
+      marketDataSourceProfile: marketData.sourceProfile,
+      decisionSourceConnected: true,
+      policyId: policy?.id ?? null,
+      dynamicCodeLoading: false,
+    },
+  }, orderIntents);
+}
+
+function readLiveOpsCliDecisionPolicyEvidence(policy) {
+  return {
+    policyId: policy?.id ?? "unknown",
+    strategyIds: policy?.id === "cleanup_probe" ? ["live_ops_cleanup_probe"] : [],
+    dynamicCodeLoading: false,
   };
+}
+
+function evaluateLiveOpsCliCleanupProbeStrategy({ config, marketData, observedAt, policy }) {
+  if (policy?.id !== "cleanup_probe") {
+    // config validation이 깨진 경우에도 임의 policy 실행으로 넘어가지 않고 strategy 단계에서 닫는다.
+    return {
+      kind: "BLOCK",
+      strategyId: "live_ops_cleanup_probe",
+      reason: "cleanup_probe_policy_unsupported",
+      reasonCode: "cleanup_probe_policy_unsupported",
+      metadata: {
+        policyId: policy?.id ?? null,
+      },
+    };
+  }
+
+  const orderbook = readLiveOpsCliLatestOrderbook(marketData);
+  if (orderbook === undefined) {
+    // post-only 가격은 최신 호가 기준으로만 재현할 수 있으므로 orderbook 없는 tick은 HOLD evidence로 닫는다.
+    return {
+      kind: "HOLD",
+      strategyId: "live_ops_cleanup_probe",
+      reason: "cleanup_probe_orderbook_missing",
+      metadata: {
+        market: config.universe?.default_market ?? "KRW-BTC",
+      },
+    };
+  }
+
+  const sizing = createLiveOpsCliCleanupProbeSizing({
+    policy: policy.cleanup_probe,
+    orderbook,
+  });
+  if (sizing.kind === "blocked") {
+    return {
+      kind: "BLOCK",
+      strategyId: "live_ops_cleanup_probe",
+      reason: sizing.reasonCode,
+      reasonCode: sizing.reasonCode,
+      metadata: sizing.metadata,
+    };
+  }
+
+  const market = config.universe?.default_market ?? "KRW-BTC";
+  const intent = {
+    exchangeId: "upbit_krw_spot",
+    market,
+    strategyId: "live_ops_cleanup_probe",
+    side: "BUY",
+    orderType: "LIMIT",
+    requestedPrice: sizing.requestedPrice,
+    requestedQuantity: sizing.requestedQuantity,
+    requestedNotional: sizing.requestedNotional,
+    referencePrice: marketData.referencePrice ?? calculateLiveOpsCliOrderbookMid(orderbook),
+    idempotencyKey: createLiveOpsCliCleanupProbeDecisionKey({ market, sizing }),
+    reason: "issue_206_cleanup_probe",
+    postOnly: true,
+    timeInForce: "POST_ONLY",
+    metadata: {
+      source: "live_ops_cleanup_probe",
+      issue: "206",
+      expected_loss_bps_of_equity: policy.cleanup_probe.expected_loss_bps_of_equity,
+      best_bid_price: sizing.bestBidPrice,
+      tick_size_krw: policy.cleanup_probe.tick_size_krw,
+      price_offset_ticks: policy.cleanup_probe.price_offset_ticks,
+      policy_id: "cleanup_probe",
+    },
+  };
+
+  return {
+    kind: "ORDER_INTENT",
+    strategyId: "live_ops_cleanup_probe",
+    reason: "issue_206_cleanup_probe",
+    orderIntents: [intent],
+    metadata: {
+      intent_count: 1,
+      requested_notional_krw: sizing.requestedNotional,
+    },
+  };
+}
+
+function createLiveOpsCliCleanupProbeDecisionKey({ market, sizing }) {
+  return [
+    "live_ops_cleanup_probe",
+    "upbit_krw_spot",
+    market,
+    "BUY",
+    sizing.requestedPrice,
+    sizing.requestedQuantity,
+    sizing.requestedNotional,
+  ].join(":");
+}
+
+function attachLiveOpsCliAnalysisOrderIntents(summary, orderIntents) {
+  Object.defineProperty(summary, liveOpsCliAnalysisOrderIntentsSymbol, {
+    value: Object.freeze([...orderIntents]),
+    enumerable: false,
+    configurable: false,
+    writable: false,
+  });
+  return summary;
+}
+
+export function getLiveOpsCliAnalysisOrderIntents(summary) {
+  const value = summary?.[liveOpsCliAnalysisOrderIntentsSymbol];
+  return Array.isArray(value) ? [...value] : [];
+}
+
+function readLiveOpsCliLatestOrderbook(marketData) {
+  const events = Array.isArray(marketData?.marketEvents) ? marketData.marketEvents : [];
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const event = events[index];
+    if (event?.type === "ORDERBOOK" && event.exchangeId === "upbit_krw_spot" && event.market === marketData.market) {
+      return event;
+    }
+  }
+
+  if (isPositiveDecimalString(marketData?.bestBidPrice) && isPositiveDecimalString(marketData?.bestAskPrice)) {
+    return {
+      type: "ORDERBOOK",
+      exchangeId: "upbit_krw_spot",
+      market: marketData.market ?? "KRW-BTC",
+      bids: [{ price: marketData.bestBidPrice, size: "0" }],
+      asks: [{ price: marketData.bestAskPrice, size: "0" }],
+      exchangeTimestamp: marketData.latestHeartbeatAt ?? new Date().toISOString(),
+      receivedAt: marketData.latestHeartbeatAt ?? new Date().toISOString(),
+    };
+  }
+
+  return undefined;
+}
+
+function createLiveOpsCliCleanupProbeSizing({ policy, orderbook }) {
+  const bestBid = readLiveOpsCliBestBid(orderbook);
+  if (bestBid === undefined) {
+    return {
+      kind: "blocked",
+      reasonCode: "cleanup_probe_best_bid_missing",
+      metadata: { bidLevelCount: orderbook.bids?.length ?? 0 },
+    };
+  }
+
+  const tickSize = new Decimal(policy.tick_size_krw);
+  const requestedPrice = bestBid.minus(tickSize.mul(policy.price_offset_ticks));
+  if (!requestedPrice.gt(0) || !requestedPrice.mod(tickSize).isZero()) {
+    return {
+      kind: "blocked",
+      reasonCode: "cleanup_probe_requested_price_invalid",
+      metadata: {
+        bestBidPrice: bestBid.toFixed(),
+        tickSizeKrw: tickSize.toFixed(),
+        priceOffsetTicks: policy.price_offset_ticks,
+      },
+    };
+  }
+
+  const maxNotional = new Decimal(policy.max_notional_krw);
+  const requestedQuantity = maxNotional
+    .div(requestedPrice)
+    .toDecimalPlaces(policy.quantity_scale, Decimal.ROUND_DOWN);
+  const requestedNotional = requestedPrice.mul(requestedQuantity);
+  if (!requestedQuantity.gt(0) || requestedNotional.lt(5_000)) {
+    return {
+      kind: "blocked",
+      reasonCode: "cleanup_probe_notional_below_minimum",
+      metadata: {
+        requestedNotionalKrw: requestedNotional.toFixed(),
+      },
+    };
+  }
+  if (requestedNotional.gt(maxNotional)) {
+    return {
+      kind: "blocked",
+      reasonCode: "cleanup_probe_notional_above_budget",
+      metadata: {
+        requestedNotionalKrw: requestedNotional.toFixed(),
+        maxNotionalKrw: maxNotional.toFixed(),
+      },
+    };
+  }
+
+  return {
+    kind: "ok",
+    bestBidPrice: bestBid.toFixed(),
+    requestedPrice: requestedPrice.toFixed(),
+    requestedQuantity: requestedQuantity.toFixed(),
+    requestedNotional: requestedNotional.toFixed(),
+  };
+}
+
+function readLiveOpsCliBestBid(orderbook) {
+  const bids = Array.isArray(orderbook?.bids) ? orderbook.bids : [];
+  const prices = bids
+    .map((level) => {
+      try {
+        return new Decimal(level.price);
+      } catch {
+        return undefined;
+      }
+    })
+    .filter((price) => price !== undefined && price.isFinite())
+    .toSorted((left, right) => right.comparedTo(left));
+  return prices[0];
+}
+
+function calculateLiveOpsCliOrderbookMid(orderbook) {
+  const bestBid = readLiveOpsCliBestBid(orderbook);
+  const asks = Array.isArray(orderbook?.asks) ? orderbook.asks : [];
+  const bestAsk = asks
+    .map((level) => {
+      try {
+        return new Decimal(level.price);
+      } catch {
+        return undefined;
+      }
+    })
+    .filter((price) => price !== undefined && price.isFinite())
+    .toSorted((left, right) => left.comparedTo(right))[0];
+  if (bestBid === undefined || bestAsk === undefined) {
+    return undefined;
+  }
+  return bestBid.plus(bestAsk).div(2).toFixed();
+}
+
+function toLiveOpsCliAnalysisDecisionMessage(decisionCategory, orderIntentCount) {
+  if (decisionCategory === "ORDER_INTENT") {
+    return `production decision policy가 주문 후보 ${orderIntentCount}개를 만들었습니다.`;
+  }
+  if (decisionCategory === "BLOCKED") {
+    return "production decision policy가 주문 후보 생성을 차단했습니다.";
+  }
+  return "production decision policy가 HOLD로 기록됐고 주문 후보는 없습니다.";
 }
 
 async function evaluateLiveOpsCliMarketData({ config, fixtureSmoke, databaseUrl }) {
@@ -3820,6 +4139,40 @@ async function evaluateLiveOpsCliMarketData({ config, fixtureSmoke, databaseUrl 
     latestHeartbeatAt,
     referencePrice: "100000000",
     referencePriceSource: "fixture_trade",
+    latestTradePrice: "100000000",
+    bestBidPrice: "100000000",
+    bestAskPrice: "100001000",
+    marketEvents: [
+      {
+        type: "TRADE",
+        exchangeId: "upbit_krw_spot",
+        market,
+        tradeId: "fixture-live-ops-trade",
+        price: "100000000",
+        quantity: "0.0001",
+        side: "BID",
+        exchangeTimestamp: latestHeartbeatAt,
+        receivedAt: latestHeartbeatAt,
+      },
+      {
+        type: "ORDERBOOK",
+        exchangeId: "upbit_krw_spot",
+        market,
+        asks: [{ price: "100001000", size: "0.5" }],
+        bids: [{ price: "100000000", size: "0.5" }],
+        exchangeTimestamp: latestHeartbeatAt,
+        receivedAt: latestHeartbeatAt,
+      },
+      {
+        type: "STATUS",
+        exchangeId: "upbit_krw_spot",
+        market,
+        status: "CONNECTED",
+        observedAt: latestHeartbeatAt,
+        reasonCode: "fixture_live_ops_market_data_connected",
+        reconnectCount: 0,
+      },
+    ],
     persisted: {
       eventCount: 3,
       tradeCount: 1,
@@ -3862,9 +4215,13 @@ async function collectLiveOpsCliUpbitMarketData({ config, databaseUrl, market })
     latestHeartbeatAt: null,
     referencePrice: null,
     referencePriceSource: null,
+    latestTradePrice: null,
+    bestBidPrice: null,
+    bestAskPrice: null,
     hasTrade: false,
     hasOrderbook: false,
     riskBlockCount: 0,
+    marketEvents: [],
   };
   const pool = new PgPool({
     connectionString: databaseUrl,
@@ -3977,6 +4334,10 @@ async function collectLiveOpsCliUpbitMarketData({ config, databaseUrl, market })
     latestHeartbeatAt: state.latestHeartbeatAt,
     referencePrice: state.referencePrice,
     referencePriceSource: state.referencePriceSource,
+    latestTradePrice: state.latestTradePrice,
+    bestBidPrice: state.bestBidPrice,
+    bestAskPrice: state.bestAskPrice,
+    marketEvents: state.marketEvents,
     persisted,
     checks,
   };
@@ -4194,6 +4555,8 @@ async function persistLiveOpsCliMarketDataEvent(pool, event, { workerId, persist
     state.latestHeartbeatAt = event.receivedAt;
     state.referencePrice = event.price;
     state.referencePriceSource = "trade";
+    state.latestTradePrice = event.price;
+    appendLiveOpsCliMarketFrameEvent(state, event);
     return;
   }
 
@@ -4204,16 +4567,75 @@ async function persistLiveOpsCliMarketDataEvent(pool, event, { workerId, persist
     state.latestHeartbeatAt = event.receivedAt;
     state.referencePrice = new Decimal(event.bids[0].price).plus(event.asks[0].price).div(2).toFixed();
     state.referencePriceSource = "orderbook_mid";
+    state.bestBidPrice = event.bids[0].price;
+    state.bestAskPrice = event.asks[0].price;
+    appendLiveOpsCliMarketFrameEvent(state, event);
     return;
   }
 
   await persistLiveOpsCliStatus(pool, event, workerId);
   persisted.statusCount += 1;
   state.latestHeartbeatAt = event.observedAt;
+  appendLiveOpsCliMarketFrameEvent(state, event);
   if (liveOpsMarketDataStatusBlocksNewOrders(event.status)) {
     persisted.riskBlockCount += 1;
     state.riskBlockCount += 1;
   }
+}
+
+function appendLiveOpsCliMarketFrameEvent(state, event) {
+  const safeEvent = toLiveOpsCliSafeMarketFrameEvent(event);
+  if (safeEvent === undefined) {
+    return;
+  }
+
+  state.marketEvents.push(safeEvent);
+  if (state.marketEvents.length > 10) {
+    state.marketEvents.splice(0, state.marketEvents.length - 10);
+  }
+}
+
+function toLiveOpsCliSafeMarketFrameEvent(event) {
+  if (event.type === "TRADE") {
+    return {
+      type: "TRADE",
+      exchangeId: event.exchangeId,
+      market: event.market,
+      tradeId: event.tradeId,
+      price: event.price,
+      quantity: event.quantity,
+      side: event.side,
+      exchangeTimestamp: event.exchangeTimestamp,
+      receivedAt: event.receivedAt,
+    };
+  }
+
+  if (event.type === "ORDERBOOK") {
+    return {
+      type: "ORDERBOOK",
+      exchangeId: event.exchangeId,
+      market: event.market,
+      asks: event.asks,
+      bids: event.bids,
+      exchangeTimestamp: event.exchangeTimestamp,
+      receivedAt: event.receivedAt,
+    };
+  }
+
+  if (event.type === "STATUS") {
+    return {
+      type: "STATUS",
+      exchangeId: event.exchangeId,
+      market: event.market,
+      status: event.status,
+      observedAt: event.observedAt,
+      reasonCode: event.reasonCode,
+      websocketLagMs: event.websocketLagMs,
+      reconnectCount: event.reconnectCount,
+    };
+  }
+
+  return undefined;
 }
 
 async function persistLiveOpsCliTrade(pool, event) {

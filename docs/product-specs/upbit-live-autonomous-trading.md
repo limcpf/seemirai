@@ -35,7 +35,9 @@ decision evidence, live execution guard, Telegram, TUI 상태를 같은 lifecycl
 
 Issue #206 production live ops real arm은 #196 skeleton 위에서 실제 DB, Upbit public/private provider, Telegram owner chat, TUI를 같은
 lifecycle로 조립한다. 완료 근거는 fixture smoke나 dashboard readiness가 아니라 단일 `KRW-BTC` 소액 `BUY + LIMIT + post_only` 주문의
-submit/cancel terminal evidence다. cleanup 절차와 redaction 기준은 [`../runbooks/live-ops-real-arm-cleanup.md`](../runbooks/live-ops-real-arm-cleanup.md)를 따른다.
+submit/cancel terminal evidence다. production decision은 임의 코드 로딩이 아니라 정적 allowlist `analysis.decision_policy`로 strategy를
+조립하며, issue #206 closeout 후보는 `cleanup_probe` policy가 만든다. cleanup 절차와 redaction 기준은
+[`../runbooks/live-ops-real-arm-cleanup.md`](../runbooks/live-ops-real-arm-cleanup.md)를 따른다.
 
 ## 3. 비목표
 

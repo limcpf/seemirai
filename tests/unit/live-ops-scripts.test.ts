@@ -174,6 +174,230 @@ describe("production live ops script skeleton", () => {
     });
   });
 
+  it("production analysis decision은 cleanup_probe policy로 단일 order intent를 만든다", async () => {
+    const config = JSON.parse(await readFile(path.join(process.cwd(), "config", "live-ops.example.json"), "utf8"));
+    const result = spawnSync(
+      process.execPath,
+      [
+        "--input-type=module",
+        "--eval",
+        `
+import {
+  evaluateLiveOpsCliAnalysisDecision,
+  getLiveOpsCliAnalysisOrderIntents,
+} from "./scripts/run-live-ops-support.mjs";
+
+const observedAt = "2026-06-16T00:00:00.000Z";
+const config = ${JSON.stringify(config)};
+const summary = await evaluateLiveOpsCliAnalysisDecision({
+  config,
+  fixtureSmoke: false,
+  marketData: {
+    ready: true,
+    market: "KRW-BTC",
+    sourceProfile: "unit",
+    latestHeartbeatAt: observedAt,
+    referencePrice: "100000500",
+    persisted: { tradeCount: 1, orderbookCount: 1, statusCount: 1 },
+    marketEvents: [{
+      type: "ORDERBOOK",
+      exchangeId: "upbit_krw_spot",
+      market: "KRW-BTC",
+      asks: [{ price: "100001000", size: "0.5" }],
+      bids: [{ price: "100000000", size: "0.5" }],
+      exchangeTimestamp: observedAt,
+      receivedAt: observedAt,
+    }],
+  },
+});
+console.log(JSON.stringify({
+  summary,
+  orderIntents: getLiveOpsCliAnalysisOrderIntents(summary),
+}));
+`,
+      ],
+      {
+        cwd: process.cwd(),
+        encoding: "utf8",
+        env: minimalEnv(),
+      },
+    );
+
+    expect(result.status).toBe(0);
+    expect(result.stderr).toBe("");
+    const output = JSON.parse(result.stdout);
+    const { summary, orderIntents } = output;
+    expect(summary).toMatchObject({
+      status: "ready",
+      ready: true,
+      decisionSourceConnected: true,
+      decisionCategory: "ORDER_INTENT",
+      orderIntentCount: 1,
+      trace: {
+        policyId: "cleanup_probe",
+        dynamicCodeLoading: false,
+      },
+    });
+    expect(summary.checks.map((check: { code: string }) => check.code)).toContain("live_ops_decision_policy_resolved");
+    expect(summary.checks.map((check: { code: string }) => check.code)).not.toContain("live_ops_strategy_decision_source_missing");
+    expect(summary.orderIntents).toBeUndefined();
+    expect(JSON.stringify(summary)).not.toContain("idempotencyKey");
+    expect(orderIntents[0]).toMatchObject({
+      exchangeId: "upbit_krw_spot",
+      market: "KRW-BTC",
+      side: "BUY",
+      orderType: "LIMIT",
+      requestedPrice: "99999000",
+      requestedQuantity: "0.0001",
+      requestedNotional: "9999.9",
+      idempotencyKey: "live_ops_cleanup_probe:upbit_krw_spot:KRW-BTC:BUY:99999000:0.0001:9999.9",
+      postOnly: true,
+      timeInForce: "POST_ONLY",
+    });
+    expect(JSON.stringify(summary)).not.toContain("raw_provider_payload");
+  });
+
+  it("cleanup_probe BLOCK decision은 live execution idle로 낮추지 않도록 blocked summary로 닫는다", async () => {
+    const config = JSON.parse(await readFile(path.join(process.cwd(), "config", "live-ops.example.json"), "utf8"));
+    config.analysis.decision_policy.cleanup_probe.tick_size_krw = "7";
+    const result = spawnSync(
+      process.execPath,
+      [
+        "--input-type=module",
+        "--eval",
+        `
+import {
+  evaluateLiveOpsCliAnalysisDecision,
+  getLiveOpsCliAnalysisOrderIntents,
+} from "./scripts/run-live-ops-support.mjs";
+
+const observedAt = "2026-06-16T00:00:00.000Z";
+const config = ${JSON.stringify(config)};
+const summary = await evaluateLiveOpsCliAnalysisDecision({
+  config,
+  fixtureSmoke: false,
+  marketData: {
+    ready: true,
+    market: "KRW-BTC",
+    sourceProfile: "unit",
+    latestHeartbeatAt: observedAt,
+    referencePrice: "100000500",
+    persisted: { tradeCount: 1, orderbookCount: 1, statusCount: 1 },
+    marketEvents: [{
+      type: "ORDERBOOK",
+      exchangeId: "upbit_krw_spot",
+      market: "KRW-BTC",
+      asks: [{ price: "100001000", size: "0.5" }],
+      bids: [{ price: "100000000", size: "0.5" }],
+      exchangeTimestamp: observedAt,
+      receivedAt: observedAt,
+    }],
+  },
+});
+console.log(JSON.stringify({
+  summary,
+  orderIntentCount: getLiveOpsCliAnalysisOrderIntents(summary).length,
+}));
+`,
+      ],
+      {
+        cwd: process.cwd(),
+        encoding: "utf8",
+        env: minimalEnv(),
+      },
+    );
+
+    expect(result.status).toBe(0);
+    expect(result.stderr).toBe("");
+    const output = JSON.parse(result.stdout);
+    expect(output.orderIntentCount).toBe(0);
+    expect(output.summary).toMatchObject({
+      status: "blocked",
+      ready: false,
+      decisionCategory: "BLOCKED",
+      blockCount: 1,
+      orderIntentCount: 0,
+    });
+    expect(output.summary.checks.map((check: { code: string }) => check.code)).toContain("live_ops_strategy_decision_blocked");
+  });
+
+  it("cleanup_probe는 entry runtime 미연결 시 synthetic evidence 없이 fail-closed 한다", async () => {
+    const config = JSON.parse(await readFile(path.join(process.cwd(), "config", "live-ops.example.json"), "utf8"));
+    const result = spawnSync(
+      process.execPath,
+      [
+        "--input-type=module",
+        "--eval",
+        `
+import {
+  evaluateLiveOpsCliAnalysisDecision,
+  evaluateLiveOpsCliLiveExecution,
+  getLiveOpsCliAnalysisOrderIntents,
+} from "./scripts/run-live-ops-support.mjs";
+
+const observedAt = "2026-06-16T00:00:00.000Z";
+const config = ${JSON.stringify(config)};
+const marketData = {
+  ready: true,
+  market: "KRW-BTC",
+  sourceProfile: "unit",
+  latestHeartbeatAt: observedAt,
+  referencePrice: "100000500",
+  persisted: { tradeCount: 1, orderbookCount: 1, statusCount: 1 },
+  marketEvents: [{
+    type: "ORDERBOOK",
+    exchangeId: "upbit_krw_spot",
+    market: "KRW-BTC",
+    asks: [{ price: "100001000", size: "0.5" }],
+    bids: [{ price: "100000000", size: "0.5" }],
+    exchangeTimestamp: observedAt,
+    receivedAt: observedAt,
+  }],
+};
+const analysisDecision = await evaluateLiveOpsCliAnalysisDecision({
+  config,
+  fixtureSmoke: false,
+  marketData,
+});
+const summary = await evaluateLiveOpsCliLiveExecution({
+  config,
+  fixtureSmoke: false,
+  analysisDecision,
+  marketData,
+  orderIntents: getLiveOpsCliAnalysisOrderIntents(analysisDecision),
+  env: {
+    SEEMIRAI_UPBIT_ACCESS_KEY: "fake-access-key",
+    SEEMIRAI_UPBIT_SECRET_KEY: "fake-secret-key",
+    SEEMIRAI_UPBIT_KEY_SCOPE: "자산조회,주문조회,주문하기",
+    SEEMIRAI_UPBIT_KEY_SCOPE_EVIDENCE_ID: "scope-evidence",
+  },
+});
+console.log(JSON.stringify(summary));
+`,
+      ],
+      {
+        cwd: process.cwd(),
+        encoding: "utf8",
+        env: minimalEnv(),
+      },
+    );
+
+    expect(result.status).toBe(0);
+    expect(result.stderr).toBe("");
+    const summary = JSON.parse(result.stdout);
+    expect(summary).toMatchObject({
+      status: "blocked",
+      liveOrderCapable: false,
+      orderIntentCount: 1,
+      attemptedOrderCount: 0,
+      submittedOrderCount: 0,
+    });
+    const codes = summary.checks.map((check: { code: string }) => check.code);
+    expect(codes).toContain("live_ops_entry_runtime_missing");
+    expect(codes).not.toContain("live_ops_execution_status_blocked");
+    expect(codes).not.toContain("live_ops_order_intent_blocked");
+  });
+
   it("reconcile/PnL/status helper는 private read provider 결과를 secret-safe summary로 낮춘다", () => {
     const result = spawnSync(
       process.execPath,
@@ -1358,6 +1582,9 @@ console.log(JSON.stringify({
       "src/runtime/live-ops-market-data/collector.ts",
       "src/runtime/live-ops-analysis-decision.ts",
       "src/runtime/live-ops-analysis-decision/pipeline.ts",
+      "src/runtime/live-ops-decision-policy.ts",
+      "src/runtime/live-ops-decision-policy/cleanup-probe.ts",
+      "src/runtime/live-ops-decision-policy/resolver.ts",
       "src/runtime/live-ops-live-execution.ts",
       "src/runtime/live-ops-live-execution/service.ts",
       "src/runtime/live-ops-telegram-alerts.ts",

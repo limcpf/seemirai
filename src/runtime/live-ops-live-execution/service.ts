@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type {
   LiveAutonomousEntryAttemptResult,
   LiveAutonomousEntryCostInput,
@@ -371,14 +372,39 @@ function createLiveAutonomousEntryRequest(
     lossSnapshot: input.lossSnapshot,
     killSwitchActive: input.killSwitchActive,
     reconcileFresh: input.reconcileFresh,
+    // decision key를 그대로 live broker identifier로 쓰지 않고 Upbit 허용 길이의 stable attempt id로 낮춰 재시작 중복 제출을 막는다.
+    idempotencyKey: createStableLiveOpsAttemptId(input, intent),
     observedAt: input.observedAt,
   };
 
-  if (input.idempotencyKey !== undefined) {
-    request.idempotencyKey = input.idempotencyKey;
+  return request;
+}
+
+/**
+ * live execution adapter가 사용할 Upbit-safe attempt id를 결정한다.
+ *
+ * 책임:
+ * - caller가 명시한 `ops-` identifier는 그대로 보존한다.
+ * - strategy가 만든 긴 decision key는 deterministic hash로 낮춰 같은 후보가 재평가되어도 같은 runtime attempt id를 쓰게 한다.
+ *
+ * side effect:
+ * - 없음. 순수 문자열 정규화이며 DB, broker, Telegram을 호출하지 않는다.
+ */
+function createStableLiveOpsAttemptId(
+  input: LiveOpsLiveExecutionInput,
+  intent: OrderIntent,
+): string {
+  const candidate = input.idempotencyKey ?? intent.idempotencyKey;
+  if (isLiveOpsAttemptId(candidate)) {
+    return candidate;
   }
 
-  return request;
+  const source = candidate.trim().length > 0 ? candidate : "missing-live-ops-decision-key";
+  return `ops-${createHash("sha256").update(source).digest("hex").slice(0, 26)}`;
+}
+
+function isLiveOpsAttemptId(value: string): boolean {
+  return /^ops-[a-f0-9]{26}$/u.test(value);
 }
 
 function createEntryRuntimeConfig(config: LiveOpsConfig): LiveAutonomousEntryRuntimeConfig {

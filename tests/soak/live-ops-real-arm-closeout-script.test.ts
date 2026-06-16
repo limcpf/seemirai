@@ -2327,6 +2327,28 @@ describe("Issue 206 live:ops real-arm closeout script", () => {
     expect(getCheck(summary, "operatorInputs")).toMatchObject({ status: "fail" });
   });
 
+  it("fails when decision policy contains an arbitrary strategy path", async () => {
+    const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-issue-206-closeout-policy-key-"));
+    const configPath = path.join(artifactDir, "live-ops-policy-extra-key.json");
+    const config = createLiveOpsConfigFixture();
+    (config.analysis.decision_policy.cleanup_probe as Record<string, unknown>).script_path = "./unsafe-strategy.js";
+    await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`, "utf8");
+    const manifestPath = await writeCloseoutManifest(artifactDir, {
+      manifestMutator: (manifest) => ({
+        ...manifest,
+        configPath,
+        command: `corepack pnpm live:ops -- --config ${configPath} --env-file ${String(manifest.envFilePath)} --tui`,
+      }),
+    });
+    const summary = await runScriptExpectingFailure(
+      ["--json", "--artifact-dir", artifactDir, "--manifest", manifestPath],
+      createReadyEnv(),
+    );
+
+    expect(summary.status).toBe("failed");
+    expect(getCheck(summary, "operatorInputs")).toMatchObject({ status: "fail" });
+  });
+
   it("fails when ambient legacy live ops env is set", async () => {
     const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-issue-206-closeout-ambient-env-"));
     const manifestPath = await writeCloseoutManifest(artifactDir);
@@ -4093,6 +4115,16 @@ function createLiveOpsConfigFixture() {
       feature_interval_seconds: 5,
       decision_interval_seconds: 5,
       record_hold_decision: true,
+      decision_policy: {
+        id: "cleanup_probe",
+        cleanup_probe: {
+          max_notional_krw: "10000",
+          tick_size_krw: "1000",
+          price_offset_ticks: 1,
+          quantity_scale: 8,
+          expected_loss_bps_of_equity: "5",
+        },
+      },
     },
     telegram: {
       startup_alert_enabled: true,

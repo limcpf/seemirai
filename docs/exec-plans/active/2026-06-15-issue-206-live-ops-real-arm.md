@@ -97,6 +97,55 @@ Telegram, TUI를 같은 lifecycle로 조립하고, 조건을 통과한 단일 `K
   - [x] active plan은 completed closeout으로 이동되거나, 외부 credential/evidence 부재 시 blocker와 필요한 운영자 조치를 명시한다.
   - [ ] `finish-readiness-audit` 기준 PASS 또는 명시적 PARTIAL/FAIL 근거를 남긴다.
 
+### Sub PR 06: config-driven decision policy와 cleanup probe 전략
+
+- 목표: production `live:ops`에서 strategy/decision source가 비어 있어 readiness가 `live_ops_strategy_decision_source_missing`으로 멈추는
+  gap을 닫는다. 장기적으로는 live ops JSON이 허용된 decision policy를 선택하고 runtime이 그 policy를 검증된 `Strategy` 구현체로
+  조립하는 구조를 만든다. 동시에 issue #206 closeout을 위한 전용 `cleanup_probe` 전략을 추가해 단일 `BUY + LIMIT + post_only`
+  order intent를 만들 수 있게 한다.
+- 제외 범위:
+  - 실제 Upbit cleanup 주문 제출/취소 실행과 redacted artifact 생성.
+  - 수익 목적의 신규 alpha/ML 전략, 자동 budget 확대, BTC 외 market 활성화.
+  - 임의 JS/TS 파일 경로, 동적 import, 원격 plugin, 저장소 밖 strategy 코드를 config로 실행하는 기능.
+  - 시장가/best order, 시장가 매도, 출금/입출금/선물/레버리지/마진 권한.
+- DnD:
+  - [x] `config/live-ops.example.json`과 `LiveOpsConfigSchema`가 secret이 아닌 `decision_policy` 선택값을 가진다.
+        허용 policy는 정적 allowlist로 제한하고, 알 수 없는 policy나 임의 코드 경로는 config validation 단계에서 fail-closed 한다.
+  - [x] runtime에 `LiveOpsDecisionPolicyResolver` 같은 조립 경계를 추가한다. 이 경계는 config를 읽어 검증된 `Strategy[]`와 policy
+        evidence를 반환하며 DB write, broker 호출, Upbit 호출, Telegram 전송 side effect를 만들지 않는다.
+  - [x] `cleanup_probe` 전략은 issue #206 closeout 전용 deterministic policy로 구현한다. 최신 DB-backed market frame/orderbook과
+        config budget을 사용해 단일 `KRW-BTC` `BUY + LIMIT + POST_ONLY` 후보만 만들고, 계산 불확실성, stale frame, 호가/수량/명목금액
+        불일치, budget 초과, market mismatch는 `HOLD` 또는 `BLOCK`으로 닫는다.
+  - [x] `cleanup_probe` order intent는 `upbit_krw_spot`, `KRW-BTC`, `BUY`, `LIMIT`, `postOnly=true`, `timeInForce=POST_ONLY`,
+        `requestedNotional <= 10000`, `expected_loss_bps_of_equity` metadata, stable idempotency key를 포함한다.
+  - [x] production CLI의 non-fixture analysis/decision 경로가 placeholder `live_ops_strategy_decision_source_missing` 대신
+        `cleanup_probe` decision policy contract를 실행한다. summary에는 후보 count만 남기고, 같은 decision tick의 raw order intent는
+        live execution 내부 입력으로만 전달한다. public pipeline도 summary 밖 non-enumerable result channel로 같은 tick의 raw order
+        intent를 반환한다. 후보 0개 HOLD는 broker 호출 없이 idle evidence로 닫고, BLOCK decision은 idle이 아니라 blocked analysis로
+        fail-closed 한다.
+  - [x] `cleanup_probe`는 `requiredFeatures=[]` orderbook-only policy로 동작한다. feature snapshot이 실패해도 0으로 보정하지 않고
+        `live_ops_feature_snapshot_not_required` evidence와 함께 평가할 수 있으며, feature 의존 strategy는 feature 실패 시 계속 차단된다.
+  - [x] `cleanup_probe` 후보는 summary에 raw intent를 직렬화하지 않고 live execution 내부 입력으로만 전달한다. 실제 CostModel/RiskGate,
+        execution/budget/loss/post-submit readiness snapshot이 연결되지 않은 상태에서는 synthetic evidence를 만들지 않고
+        `live_ops_entry_runtime_missing`으로 fail-closed 한다.
+  - [x] public live execution adapter와 CLI adapter는 긴 strategy decision key를 stable `ops-` attempt id로 낮춘다. 같은 cleanup 후보를
+        재평가해도 random identifier를 새로 만들지 않는다.
+  - [x] issue #206 closeout validator는 `analysis.decision_policy.cleanup_probe` 표준 키와 값을 허용하고, 임의 strategy path 같은
+        추가 키는 계속 차단한다.
+  - [x] user-facing CLI/TUI/status 문구는 한국어 상태/원인/영향/필요 조치를 먼저 보여주고, policy id, reason code, idempotency key는
+        추적 정보에 분리한다.
+  - [x] 새 TypeScript public type/interface/class/function은 한국어 JSDoc을 가진다. 상태 전이, 리스크 차단, idempotency, order intent
+        생성, policy fail-closed 분기에는 한국어 한 줄 주석을 남긴다.
+  - [x] 관련 문서(`docs/RUNTIME_CONFIG.md`, `docs/RELIABILITY.md`, `docs/SECURITY.md`,
+        `docs/runbooks/live-ops-real-arm-cleanup.md`, 이 active plan)를 config-driven decision policy와 cleanup probe 기준으로 갱신한다.
+  - [x] 관련 unit/script tests, `corepack pnpm typecheck`, `./scripts/verify`, `git diff --check`가 통과한다.
+  - [x] source/security scan에서 시장가/best order, 출금/입금, 선물/레버리지, raw secret, raw provider payload 경로가 새로 열리지 않았음을
+        기록한다.
+        - 금지 주문/권한 scan은 문서의 금지 경계 설명과 기존 guard/validator 코드에서만 매칭됐다.
+        - secret/raw payload scan은 redaction 문서, 기존 credential loader/validator, private provider 구현 경계에서만 매칭됐다.
+        - 신규 `src/runtime/live-ops-decision-policy/**` 경로는 private order API, Authorization/Bearer/JWT, raw provider/order payload,
+          market/best/withdraw/deposit/futures/leverage side effect를 열지 않는다.
+
 ## 검증 방법
 
 공통 검증:
@@ -191,11 +240,19 @@ SEEMIRAI_RUN_LIVE_OPS_REAL_ARM_CLOSEOUT=1 \
   깊은 artifact record 누락, `TIMEOUT` wrapper status, decoded camelCase credential key, password 없는 DB URL 원문도 차단한다.
 - 2026-06-15: closeout validator는 값 있는 `rg` 출력 옵션, clustered `-g` exclude glob, `--` 뒤 traversal 가짜 증거,
   live:ops command shell separator, fixture credential, 불가능한 calendar date, decoded raw payload key, suffix형 blocked status도 차단한다.
+- 2026-06-16: Sub PR 06은 실제 실거래 cleanup artifact 부재만 남은 상태로 간주하지 않는다. production `live:ops` readiness가
+  `live_ops_strategy_decision_source_missing`으로 멈춘 원인을 first-class gap으로 보고, config-driven decision policy resolver와
+  `cleanup_probe` strategy를 추가해 decision source를 명시적으로 연결한다.
+- 2026-06-16: decision policy config는 허용된 정적 policy id만 고른다. config가 임의 파일 경로, 동적 import, 원격 plugin, 저장소 밖
+  strategy 코드를 실행하게 만드는 구조는 보안/재현성 문제로 제외한다.
+- 2026-06-16: `cleanup_probe`는 수익 전략이 아니라 issue #206 closeout lifecycle을 증명하기 위한 deterministic one-shot probe다.
+  주문 후보 생성은 `BUY + LIMIT + post_only`, small budget, fresh market frame, same-tick order intent 전달 조건 안에서만 허용한다.
 
 ## 남은 이슈
 
+- production decision source 연결은 Sub PR 06에서 구현한다.
 - 실제 운영 credential과 redacted artifact 위치는 저장소 밖에서 준비되어야 한다.
-- 실제 주문 제출/취소는 Sub PR 05에서 운영자 arm evidence가 확인된 뒤에만 실행한다.
+- 실제 주문 제출/취소는 Sub PR 06 이후 readiness가 decision/live execution 경계를 통과하고, 운영자 arm evidence가 확인된 뒤에만 실행한다.
 - 현재 세션에는 `SEEMIRAI_*`, `UPBIT_*`, `TELEGRAM_*` 운영 env 값이 없고 issue #206 댓글에도 운영 config/env/evidence 경로가 없다.
   운영자는 저장소 밖 config/env, key scope evidence, operator arm evidence, redacted artifact 경로를 준비한 뒤 closeout manifest 검증을
   다시 실행해야 한다.

@@ -273,6 +273,8 @@
   관찰되면 runtime은 주문 가능 상태로 시작하지 않는다.
 - 주문 side effect는 단일 `KRW-BTC` `BUY + LIMIT + post_only` 후보만 허용하며, 시장가/best order/시장가 매도/자동 budget 확대는
   provider 호출 전에 차단한다.
+- decision policy config는 `cleanup_probe` 같은 정적 allowlist id만 허용한다. JSON config나 env로 임의 JS/TS 파일 경로, 동적 import,
+  원격 plugin, 저장소 밖 strategy 코드를 실행하게 만들지 않는다.
 - 실거래 cleanup artifact에는 stable suffix나 redacted id만 남긴다. access key, secret key, JWT, Authorization header, Telegram token,
   raw provider payload, raw order detail은 저장하지 않는다.
 - source/security scan은 production live ops path가 금지 주문 유형, 출금/입금, 선물/레버리지, raw secret, raw provider payload 경로를

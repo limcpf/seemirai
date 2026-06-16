@@ -31,6 +31,7 @@ identifier 또는 uuid로 취소해 terminal cancel evidence로 닫는 절차다
 | key scope | `자산조회`, `주문조회`, `주문하기`만 허용되고 금지 scope가 없다 |
 | DB readiness | migration pending, unknown applied migration, checksum drift, missing table이 없다 |
 | Upbit public feed | `KRW-BTC` 체결/호가/status가 DB-backed store에 저장되고 stale 상태가 아니다 |
+| decision policy | `analysis.decision_policy.id=cleanup_probe`이고 정적 allowlist resolver가 `live_ops_cleanup_probe` strategy를 조립한다 |
 | private read | account/order/balance 조회가 가능하고 raw payload 없이 safe summary로 낮아진다 |
 | reconcile | mismatch 0건, untracked fill 0건, open order와 open exposure가 설명 가능하다 |
 | PnL/status | 결측은 0으로 보정하지 않고 원인과 필요한 조치를 표시한다 |
@@ -47,8 +48,10 @@ corepack pnpm live:ops -- --config <운영-json-path> --env-file <운영-env-pat
 ```
 
 3. TUI와 Telegram에서 startup alert와 live order capable 전환을 분리해 확인한다.
-4. 단일 `KRW-BTC` 후보가 생성되면 cost/risk/reconcile/budget/kill switch guard evidence가 모두 통과했는지 확인한다.
-5. 주문이 제출되면 artifact에 다음 safe summary만 남긴다.
+4. `cleanup_probe` decision policy가 최신 orderbook에서 단일 `KRW-BTC` `BUY + LIMIT + POST_ONLY` 후보를 만들었는지 확인한다.
+   주문 후보가 없으면 TUI/JSON의 HOLD/BLOCK reason을 먼저 확인하고 broker 제출로 전진하지 않는다.
+5. 단일 `KRW-BTC` 후보가 생성되면 cost/risk/reconcile/budget/kill switch guard evidence가 모두 통과했는지 확인한다.
+6. 주문이 제출되면 artifact에 다음 safe summary만 남긴다.
 
 ```text
 submitted_at=<ISO timestamp>
@@ -61,9 +64,9 @@ identifier=<redacted/stable suffix only>
 broker_order_id=<redacted/stable suffix only>
 ```
 
-6. 같은 Upbit `identifier` 또는 uuid로 취소 요청을 보낸다.
-7. terminal cancel 상태, open exposure 0, duplicate order 0, reconcile mismatch 0, manual review 0을 확인한다.
-8. source/security scan과 artifact redaction 검증을 실행한 뒤 PR/closeout에 결과를 기록한다.
+7. 같은 Upbit `identifier` 또는 uuid로 취소 요청을 보낸다.
+8. terminal cancel 상태, open exposure 0, duplicate order 0, reconcile mismatch 0, manual review 0을 확인한다.
+9. source/security scan과 artifact redaction 검증을 실행한 뒤 PR/closeout에 결과를 기록한다.
 
 ## Closeout manifest 검증
 
@@ -100,7 +103,8 @@ attach 명령, 추가/중복 인자, shell separator, 상대 `config/env` 경로
 자체는 저장소 밖에 실제 파일로 존재해야 하며 symlink를 따라간 실제 경로도 저장소 밖이어야 한다. config JSON은 실제 foreground wrapper와
 같은 허용 key set만 사용할 수 있고, production
 `LIVE_AUTONOMOUS_SMALL_BUDGET` contract와 `KRW-BTC` 단일 universe, live trading on, paper/no-risk flags off, small-budget/TUI/Telegram
-설정을 만족해야 한다. env 파일은 DB, Upbit key, key scope evidence, Telegram, TUI control token 값이 실제로 있어야 하며, key scope는
+설정, 정적 `cleanup_probe` decision policy를 만족해야 한다. decision policy config는 임의 파일 경로, 동적 import, 원격 plugin,
+저장소 밖 strategy 코드를 실행하게 만들 수 없다. env 파일은 DB, Upbit key, key scope evidence, Telegram, TUI control token 값이 실제로 있어야 하며, key scope는
 `자산조회`, `주문조회`, `주문하기` 외 추가 권한이 없어야 한다. env의 `SEEMIRAI_UPBIT_KEY_SCOPE_EVIDENCE_ID`는 manifest의
 `keyScopeEvidenceId`와 같아야 한다. M22/M23 smoke guard나 placeholder 값으로 대체할 수 없고, foreground 실행 당시 shell에 남아 있던
 M22/smoke legacy env도 production contract 위반으로 본다. 이 저장소 경계는 validator를 어느 작업 디렉터리에서 실행하더라도 repository

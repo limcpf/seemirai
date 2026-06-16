@@ -4,6 +4,7 @@ export {
 export type {
   LiveOpsAnalysisDecisionCheck,
   LiveOpsAnalysisDecisionInput,
+  LiveOpsAnalysisDecisionResult,
   LiveOpsAnalysisDecisionStatus,
   LiveOpsAnalysisDecisionSummary,
   LiveOpsDecisionCategory,
