@@ -777,8 +777,8 @@ fixture smoke dashboard는 외부 Upbit/DB 호출 없이 collector summary shape
 `LiveOpsAnalysisDecisionPipeline`은 market data collector summary, market event window, feature snapshot, strategy 목록을 같은
 runtime 경계에서 묶는다. market data가 준비되지 않았거나 feature snapshot이 실패하면 strategy를 평가하지 않고 HOLD/차단 summary로
 닫는다. feature가 통과하면 주입된 strategy들을 KRW-BTC/upbit_krw_spot context로 평가하고 order intent 수, HOLD/BLOCK count,
-`record_hold_decision` 여부와 같은 decision tick의 `orderIntents`를 secret-safe summary로 반환한다. 이 pipeline은 DB write, broker 호출,
-Upbit 호출, Telegram 전송을 하지 않는다.
+`record_hold_decision` 여부를 secret-safe summary로 반환한다. raw `OrderIntent`는 status/TUI/JSON summary에 직렬화하지 않고 같은
+decision tick의 live execution 내부 입력으로만 전달한다. 이 pipeline은 DB write, broker 호출, Upbit 호출, Telegram 전송을 하지 않는다.
 
 Sub PR 06부터 production `analysis.decision_policy`는 정적 allowlist policy id만 허용한다. 기본 policy는 `cleanup_probe`이며,
 config JSON에는 다음 non-secret 값만 둔다.
@@ -798,7 +798,7 @@ policy resolver 구현 경계는 `src/runtime/live-ops-decision-policy.ts`다. r
 orderbook에서 best bid를 읽고, configured tick offset만큼 낮춘 `BUY + LIMIT + POST_ONLY` 후보를 만든다. orderbook이 없거나 가격/수량/
 명목금액이 최소 주문금액, 예산, 호가 단위, `KRW-BTC` 단일 universe 조건을 만족하지 못하면 주문 후보 없이 HOLD/BLOCK evidence로 닫는다.
 
-`LiveOpsLiveExecution`은 analysis/decision summary와 order intent, 최신 budget/loss/cost/risk/reconcile snapshot을 기존
+`LiveOpsLiveExecution`은 analysis/decision safe summary와 내부 order intent 입력, 최신 budget/loss/cost/risk/reconcile snapshot을 기존
 `LiveAutonomousEntryRuntime` 요청으로 낮추는 adapter다. analysis가 blocked이거나 HOLD로 주문 후보가 0개이면 하위 runtime 호출 없이
 idle/blocked summary로 닫는다. 주문 후보가 있더라도 첫 production 경계에서는 한 tick에 단일 `BUY + LIMIT + post_only` 후보만
 허용하고, market allowlist, `upbit_krw_spot`, strategy/risk scope가 맞지 않으면 live autonomous runtime 호출 전에 fail-closed 한다.

@@ -182,7 +182,10 @@ describe("production live ops script skeleton", () => {
         "--input-type=module",
         "--eval",
         `
-import { evaluateLiveOpsCliAnalysisDecision } from "./scripts/run-live-ops-support.mjs";
+import {
+  evaluateLiveOpsCliAnalysisDecision,
+  getLiveOpsCliAnalysisOrderIntents,
+} from "./scripts/run-live-ops-support.mjs";
 
 const observedAt = "2026-06-16T00:00:00.000Z";
 const config = ${JSON.stringify(config)};
@@ -207,7 +210,10 @@ const summary = await evaluateLiveOpsCliAnalysisDecision({
     }],
   },
 });
-console.log(JSON.stringify(summary));
+console.log(JSON.stringify({
+  summary,
+  orderIntents: getLiveOpsCliAnalysisOrderIntents(summary),
+}));
 `,
       ],
       {
@@ -219,7 +225,8 @@ console.log(JSON.stringify(summary));
 
     expect(result.status).toBe(0);
     expect(result.stderr).toBe("");
-    const summary = JSON.parse(result.stdout);
+    const output = JSON.parse(result.stdout);
+    const { summary, orderIntents } = output;
     expect(summary).toMatchObject({
       status: "ready",
       ready: true,
@@ -233,7 +240,9 @@ console.log(JSON.stringify(summary));
     });
     expect(summary.checks.map((check: { code: string }) => check.code)).toContain("live_ops_decision_policy_resolved");
     expect(summary.checks.map((check: { code: string }) => check.code)).not.toContain("live_ops_strategy_decision_source_missing");
-    expect(summary.orderIntents[0]).toMatchObject({
+    expect(summary.orderIntents).toBeUndefined();
+    expect(JSON.stringify(summary)).not.toContain("idempotencyKey");
+    expect(orderIntents[0]).toMatchObject({
       exchangeId: "upbit_krw_spot",
       market: "KRW-BTC",
       side: "BUY",
@@ -244,32 +253,11 @@ console.log(JSON.stringify(summary));
       idempotencyKey: "live_ops_cleanup_probe:upbit_krw_spot:KRW-BTC:BUY:99999000:0.0001:9999.9",
       postOnly: true,
       timeInForce: "POST_ONLY",
-      costInput: {
-        expectedReturnBps: "20",
-        safetyBufferBps: "10",
-      },
-      risk: {
-        strategy: {
-          strategyId: "live_ops_cleanup_probe",
-        },
-      },
-      costSnapshot: {
-        source: "cost_model",
-        trade_allowed: true,
-        reason_code: "cost_margin_ok",
-      },
-      riskApproval: {
-        source: "risk_gate",
-        approved: true,
-        action: "ALLOW",
-      },
     });
-    expect(summary.orderIntents[0].costSnapshot.order_intent.idempotency_key).toBe(summary.orderIntents[0].idempotencyKey);
-    expect(summary.orderIntents[0].riskApproval.order_intent.idempotency_key).toBe(summary.orderIntents[0].idempotencyKey);
     expect(JSON.stringify(summary)).not.toContain("raw_provider_payload");
   });
 
-  it("cleanup_probe pre-submit evidence는 live execution guard를 entry runtime 경계까지 전진시킨다", async () => {
+  it("cleanup_probe는 entry runtime 미연결 시 synthetic evidence 없이 fail-closed 한다", async () => {
     const config = JSON.parse(await readFile(path.join(process.cwd(), "config", "live-ops.example.json"), "utf8"));
     const result = spawnSync(
       process.execPath,
@@ -278,9 +266,9 @@ console.log(JSON.stringify(summary));
         "--eval",
         `
 import {
-  createLiveOpsCliCleanupProbePreSubmitEvidence,
   evaluateLiveOpsCliAnalysisDecision,
   evaluateLiveOpsCliLiveExecution,
+  getLiveOpsCliAnalysisOrderIntents,
 } from "./scripts/run-live-ops-support.mjs";
 
 const observedAt = "2026-06-16T00:00:00.000Z";
@@ -307,24 +295,18 @@ const analysisDecision = await evaluateLiveOpsCliAnalysisDecision({
   fixtureSmoke: false,
   marketData,
 });
-const evidence = createLiveOpsCliCleanupProbePreSubmitEvidence({
-  config,
-  fixtureSmoke: false,
-  analysisDecision,
-  marketData,
-});
 const summary = await evaluateLiveOpsCliLiveExecution({
   config,
   fixtureSmoke: false,
   analysisDecision,
   marketData,
+  orderIntents: getLiveOpsCliAnalysisOrderIntents(analysisDecision),
   env: {
     SEEMIRAI_UPBIT_ACCESS_KEY: "fake-access-key",
     SEEMIRAI_UPBIT_SECRET_KEY: "fake-secret-key",
     SEEMIRAI_UPBIT_KEY_SCOPE: "자산조회,주문조회,주문하기",
     SEEMIRAI_UPBIT_KEY_SCOPE_EVIDENCE_ID: "scope-evidence",
   },
-  ...evidence,
 });
 console.log(JSON.stringify(summary));
 `,
@@ -347,7 +329,6 @@ console.log(JSON.stringify(summary));
       submittedOrderCount: 0,
     });
     const codes = summary.checks.map((check: { code: string }) => check.code);
-    expect(codes).toContain("live_ops_order_intent_ready");
     expect(codes).toContain("live_ops_entry_runtime_missing");
     expect(codes).not.toContain("live_ops_execution_status_blocked");
     expect(codes).not.toContain("live_ops_order_intent_blocked");

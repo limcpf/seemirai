@@ -83,8 +83,11 @@ export interface LiveOpsAnalysisDecisionCheck {
  * live ops analysis/decision pipeline의 secret-safe 요약이다.
  *
  * 책임:
- * - feature 계산과 strategy 평가가 live execution으로 넘길 order intent를 만들었는지 표현한다.
+ * - feature 계산과 strategy 평가가 live execution으로 넘길 order intent를 만들었는지 count와 상태만 표현한다.
  * - HOLD도 `recordHoldDecision=true`이면 운영 evidence로 남길 수 있음을 표시하지만, 이 summary 자체는 저장 side effect를 만들지 않는다.
+ *
+ * invariant:
+ * - raw `OrderIntent`는 secret-safe status/TUI/JSON 경계에 직렬화하지 않고 live execution의 별도 입력으로만 전달한다.
  */
 export interface LiveOpsAnalysisDecisionSummary {
   readonly status: LiveOpsAnalysisDecisionStatus;
@@ -98,7 +101,6 @@ export interface LiveOpsAnalysisDecisionSummary {
   readonly holdCount: number;
   readonly blockCount: number;
   readonly orderIntentCount: number;
-  readonly orderIntents: readonly OrderIntent[];
   readonly recordHoldDecision: boolean;
   readonly message: string;
   readonly checks: readonly LiveOpsAnalysisDecisionCheck[];
@@ -269,8 +271,7 @@ function buildSummary(
   const ready = result.readyOverride ?? checks.every((check) => check.status === "ok");
   const holdCount = result.decisions.filter((decision) => decision.kind === "HOLD").length;
   const blockCount = result.decisions.filter((decision) => decision.kind === "BLOCK").length;
-  const orderIntents = collectOrderIntents(result.decisions);
-  const orderIntentCount = orderIntents.length;
+  const orderIntentCount = countOrderIntents(result.decisions);
 
   return {
     status: ready ? "ready" : "blocked",
@@ -284,7 +285,6 @@ function buildSummary(
     holdCount,
     blockCount,
     orderIntentCount,
-    orderIntents,
     recordHoldDecision: config.analysis.record_hold_decision && orderIntentCount === 0,
     message: toSummaryMessage(result.decisionCategory, orderIntentCount, ready),
     checks,

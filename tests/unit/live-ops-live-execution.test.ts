@@ -248,7 +248,6 @@ function analysisSummary(
     holdCount: orderIntentCount > 0 ? 0 : 1,
     blockCount: 0,
     orderIntentCount,
-    orderIntents: orderIntentCount > 0 ? [createOrderIntent()] : [],
     recordHoldDecision: orderIntentCount === 0,
     message: "analysis fixture",
     checks: [],

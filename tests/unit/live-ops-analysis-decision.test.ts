@@ -83,8 +83,6 @@ describe("production live ops analysis/decision pipeline", () => {
       orderIntentCount: 1,
       recordHoldDecision: false,
     });
-    expect(summary.orderIntents).toHaveLength(1);
-    expect(summary.orderIntents[0]?.idempotencyKey).toBe("fixture-order-intent");
     expect(capturedContexts[0]).toMatchObject({
       exchangeId: "upbit_krw_spot",
       market: "KRW-BTC",

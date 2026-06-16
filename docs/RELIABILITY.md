@@ -75,8 +75,9 @@ Codex-native 운영은 Codex, Git, GitHub, shell command, 문서 상태를 연�
   전진하지 않는다.
 - decision policy resolver는 config의 정적 allowlist policy id만 strategy로 조립한다. 알 수 없는 policy, 임의 코드 경로, 동적 import,
   저장소 밖 strategy 입력은 HOLD로 가장하지 않고 startup/config 또는 strategy decision 경계에서 fail-closed 한다.
-- `cleanup_probe`는 같은 market data tick의 orderbook에서 단일 order intent만 만들며, analysis summary의 `orderIntentCount`와
-  live execution에 전달되는 `orderIntents` 배열이 다르면 broker 제출로 전진하지 않는다.
+- `cleanup_probe`는 같은 market data tick의 orderbook에서 단일 order intent만 만들며, analysis safe summary의 `orderIntentCount`와
+  live execution 내부 입력으로 전달되는 order intent 배열이 다르면 broker 제출로 전진하지 않는다. raw order intent는 status/TUI/JSON
+  summary에 직렬화하지 않는다.
 - 같은 order attempt나 idempotency key로 재시작하는 경우 새 Upbit identifier를 만들지 않는다. broker submit 결과가 불확실하면 재주문하지
   않고 reconcile/manual review로 수렴한다.
 - submit 이후 cancel requested와 terminal cancel 확인은 같은 attempt/identifier chain으로 연결되어야 하며, open exposure 0,

@@ -10,6 +10,7 @@ const defaultMigrationsDirectory = path.resolve("migrations");
 const dbReadinessConnectionTimeoutMs = 5000;
 const liveOpsUpbitWebSocketUrl = "wss://api.upbit.com/websocket/v1";
 const liveOpsMarketDataConsumerId = "live-ops-market-data";
+const liveOpsCliAnalysisOrderIntentsSymbol = Symbol("liveOpsCliAnalysisOrderIntents");
 const liveOpsWorkerLabels = {
   db_readiness: "DB readiness",
   market_data: "시세 수집",
@@ -155,19 +156,13 @@ export async function loadLiveOpsCliInputs(options) {
     fixtureSmoke: options.fixtureSmoke,
     marketData,
   });
-  const liveExecutionEvidence = createLiveOpsCliCleanupProbePreSubmitEvidence({
-    config,
-    fixtureSmoke: options.fixtureSmoke,
-    analysisDecision,
-    marketData,
-  });
   const liveExecution = await evaluateLiveOpsCliLiveExecution({
     config,
     fixtureSmoke: options.fixtureSmoke,
     analysisDecision,
     marketData,
     env,
-    ...liveExecutionEvidence,
+    orderIntents: getLiveOpsCliAnalysisOrderIntents(analysisDecision),
   });
   let productionProviders;
   try {
@@ -1247,7 +1242,7 @@ export async function evaluateLiveOpsCliLiveExecution({
 }) {
   const market = config.universe?.default_market ?? "KRW-BTC";
   const observedAt = new Date().toISOString();
-  const intents = orderIntents ?? analysisDecision.orderIntents ?? [];
+  const intents = orderIntents ?? getLiveOpsCliAnalysisOrderIntents(analysisDecision);
   const brokerGuard = evaluateLiveOpsCliBrokerGuard({ config, env, fixtureSmoke });
 
   if (analysisDecision.ready !== true) {
@@ -1368,6 +1363,28 @@ export async function evaluateLiveOpsCliLiveExecution({
     });
   }
 
+  if (entryRuntime === undefined) {
+    // runtime wiring이 없으면 실제 execution/cost/risk evidence를 합성하지 않고 제출 경계 미연결로 닫는다.
+    return buildLiveOpsCliLiveExecutionSummary({
+      status: "blocked",
+      ready: false,
+      liveOrderCapable: false,
+      market,
+      observedAt,
+      orderIntentCount: intents.length,
+      attemptedOrderCount: 0,
+      submittedOrderCount: 0,
+      brokerGuard,
+      statusLabel: "runtime 미연결",
+      message: "live autonomous entry runtime이 연결되지 않아 주문 후보를 제출하지 않았습니다.",
+      action: "budget reservation, 실제 execution status, cost/risk, post-submit readiness evidence와 broker runtime을 연결한 뒤 다시 실행하세요.",
+      checks: [
+        okLiveExecutionCheck("analysis_decision", "analysis/decision summary를 확인했습니다.", "live_ops_analysis_ready"),
+        blockedLiveExecutionCheck("entry_runtime", "live autonomous entry runtime이 연결되지 않았습니다.", "live_ops_entry_runtime_missing"),
+      ],
+    });
+  }
+
   const executionStatusViolations = collectLiveOpsCliExecutionStatusViolations(executionStatus, postSubmitReadiness, budgetSnapshot, lossSnapshot);
   if (executionStatusViolations.length > 0) {
     // kill switch, reconcile freshness, post-submit 후속 경계가 불명확하면 후보가 유효해도 broker runtime을 열지 않는다.
@@ -1420,29 +1437,6 @@ export async function evaluateLiveOpsCliLiveExecution({
   }
 
   const request = createLiveOpsCliEntryRuntimeRequest({ config, marketData, intent, observedAt, executionStatus, postSubmitReadiness, budgetSnapshot, lossSnapshot });
-  if (entryRuntime === undefined) {
-    // runtime wiring이 없으면 reservation/broker side effect가 없으므로 불확실 제출이 아니라 설정 차단으로 닫는다.
-    return buildLiveOpsCliLiveExecutionSummary({
-      status: "blocked",
-      ready: false,
-      liveOrderCapable: false,
-      market,
-      observedAt,
-      orderIntentCount: intents.length,
-      attemptedOrderCount: 0,
-      submittedOrderCount: 0,
-      brokerGuard,
-      statusLabel: "runtime 미연결",
-      message: "live autonomous entry runtime이 연결되지 않아 주문 후보를 제출하지 않았습니다.",
-      action: "budget reservation과 broker runtime wiring을 연결한 뒤 다시 실행하세요.",
-      checks: [
-        okLiveExecutionCheck("analysis_decision", "analysis/decision summary를 확인했습니다.", "live_ops_analysis_ready"),
-        okLiveExecutionCheck("order_intent", "단일 LIMIT + post-only 주문 후보를 확인했습니다.", "live_ops_order_intent_ready"),
-        blockedLiveExecutionCheck("entry_runtime", "live autonomous entry runtime이 연결되지 않았습니다.", "live_ops_entry_runtime_missing"),
-      ],
-    });
-  }
-
   const runtime = entryRuntime;
   let attempt;
   try {
@@ -3742,7 +3736,7 @@ export async function evaluateLiveOpsCliAnalysisDecision({ config, fixtureSmoke,
   const market = config.universe?.default_market ?? "KRW-BTC";
 
   if (marketData.ready !== true) {
-    return {
+    return attachLiveOpsCliAnalysisOrderIntents({
       status: "blocked",
       ready: false,
       market,
@@ -3754,7 +3748,6 @@ export async function evaluateLiveOpsCliAnalysisDecision({ config, fixtureSmoke,
       holdCount: 0,
       blockCount: 0,
       orderIntentCount: 0,
-      orderIntents: [],
       recordHoldDecision: false,
       message: "analysis/decision pipeline은 market data lifecycle 이후 연결됩니다.",
       checks: [
@@ -3765,7 +3758,7 @@ export async function evaluateLiveOpsCliAnalysisDecision({ config, fixtureSmoke,
           message: "analysis/decision pipeline이 후속 lifecycle에서 시작됩니다.",
         },
       ],
-    };
+    }, []);
   }
 
   const latestDecisionAt = new Date().toISOString();
@@ -3777,7 +3770,7 @@ export async function evaluateLiveOpsCliAnalysisDecision({ config, fixtureSmoke,
     });
   }
 
-  return {
+  return attachLiveOpsCliAnalysisOrderIntents({
     status: "ready",
     ready: true,
     market,
@@ -3790,7 +3783,6 @@ export async function evaluateLiveOpsCliAnalysisDecision({ config, fixtureSmoke,
     blockCount: 0,
     orderIntentCount: 0,
     recordHoldDecision: config.analysis?.record_hold_decision === true,
-    orderIntents: [],
     decisionSourceConnected: true,
     message: "fixture analysis/decision pipeline이 HOLD를 기록했고 주문 후보는 없습니다.",
     checks: [
@@ -3807,7 +3799,7 @@ export async function evaluateLiveOpsCliAnalysisDecision({ config, fixtureSmoke,
         message: "fixture strategy decision HOLD를 확인했습니다.",
       },
     ],
-  };
+  }, []);
 }
 
 function evaluateLiveOpsCliCleanupProbeAnalysisDecision({ config, marketData, observedAt }) {
@@ -3827,7 +3819,7 @@ function evaluateLiveOpsCliCleanupProbeAnalysisDecision({ config, marketData, ob
       ? "BLOCKED"
       : "HOLD";
 
-  return {
+  return attachLiveOpsCliAnalysisOrderIntents({
     status: "ready",
     ready: true,
     market,
@@ -3839,7 +3831,6 @@ function evaluateLiveOpsCliCleanupProbeAnalysisDecision({ config, marketData, ob
     holdCount: decision.kind === "HOLD" ? 1 : 0,
     blockCount: decision.kind === "BLOCK" ? 1 : 0,
     orderIntentCount: orderIntents.length,
-    orderIntents,
     recordHoldDecision: config.analysis?.record_hold_decision === true && orderIntents.length === 0,
     decisionSourceConnected: true,
     message: toLiveOpsCliAnalysisDecisionMessage(decisionCategory, orderIntents.length),
@@ -3882,7 +3873,7 @@ function evaluateLiveOpsCliCleanupProbeAnalysisDecision({ config, marketData, ob
       policyId: policy?.id ?? null,
       dynamicCodeLoading: false,
     },
-  };
+  }, orderIntents);
 }
 
 function readLiveOpsCliDecisionPolicyEvidence(policy) {
@@ -3935,34 +3926,30 @@ function evaluateLiveOpsCliCleanupProbeStrategy({ config, marketData, observedAt
   }
 
   const market = config.universe?.default_market ?? "KRW-BTC";
-  const intent = attachLiveOpsCliCleanupProbeGuardEvidence({
-    intent: {
-      exchangeId: "upbit_krw_spot",
-      market,
-      strategyId: "live_ops_cleanup_probe",
-      side: "BUY",
-      orderType: "LIMIT",
-      requestedPrice: sizing.requestedPrice,
-      requestedQuantity: sizing.requestedQuantity,
-      requestedNotional: sizing.requestedNotional,
-      referencePrice: marketData.referencePrice ?? calculateLiveOpsCliOrderbookMid(orderbook),
-      idempotencyKey: createLiveOpsCliCleanupProbeDecisionKey({ market, sizing }),
-      reason: "issue_206_cleanup_probe",
-      postOnly: true,
-      timeInForce: "POST_ONLY",
-      metadata: {
-        source: "live_ops_cleanup_probe",
-        issue: "206",
-        expected_loss_bps_of_equity: policy.cleanup_probe.expected_loss_bps_of_equity,
-        best_bid_price: sizing.bestBidPrice,
-        tick_size_krw: policy.cleanup_probe.tick_size_krw,
-        price_offset_ticks: policy.cleanup_probe.price_offset_ticks,
-        policy_id: "cleanup_probe",
-      },
+  const intent = {
+    exchangeId: "upbit_krw_spot",
+    market,
+    strategyId: "live_ops_cleanup_probe",
+    side: "BUY",
+    orderType: "LIMIT",
+    requestedPrice: sizing.requestedPrice,
+    requestedQuantity: sizing.requestedQuantity,
+    requestedNotional: sizing.requestedNotional,
+    referencePrice: marketData.referencePrice ?? calculateLiveOpsCliOrderbookMid(orderbook),
+    idempotencyKey: createLiveOpsCliCleanupProbeDecisionKey({ market, sizing }),
+    reason: "issue_206_cleanup_probe",
+    postOnly: true,
+    timeInForce: "POST_ONLY",
+    metadata: {
+      source: "live_ops_cleanup_probe",
+      issue: "206",
+      expected_loss_bps_of_equity: policy.cleanup_probe.expected_loss_bps_of_equity,
+      best_bid_price: sizing.bestBidPrice,
+      tick_size_krw: policy.cleanup_probe.tick_size_krw,
+      price_offset_ticks: policy.cleanup_probe.price_offset_ticks,
+      policy_id: "cleanup_probe",
     },
-    config,
-    policy,
-  });
+  };
 
   return {
     kind: "ORDER_INTENT",
@@ -3972,107 +3959,6 @@ function evaluateLiveOpsCliCleanupProbeStrategy({ config, marketData, observedAt
     metadata: {
       intent_count: 1,
       requested_notional_krw: sizing.requestedNotional,
-    },
-  };
-}
-
-export function createLiveOpsCliCleanupProbePreSubmitEvidence({ config, fixtureSmoke, analysisDecision, marketData }) {
-  const intent = Array.isArray(analysisDecision?.orderIntents) ? analysisDecision.orderIntents[0] : undefined;
-  if (fixtureSmoke || intent?.strategyId !== "live_ops_cleanup_probe") {
-    return {};
-  }
-
-  const capturedAt = marketData?.latestHeartbeatAt ?? new Date().toISOString();
-  const evidenceSuffix = createHash("sha256").update(String(intent.idempotencyKey)).digest("hex").slice(0, 12);
-  // cleanup probe는 entry runtime 연결 전 단계에서도 동일 guard snapshot을 넘겨 candidate 검증 실패와 runtime 미연결을 분리한다.
-  return {
-    executionStatus: {
-      killSwitchActive: false,
-      reconcileFresh: true,
-      evidenceId: `cleanup-probe-execution-status-${evidenceSuffix}`,
-    },
-    postSubmitReadiness: {
-      reconcileReady: true,
-      telegramReady: config.telegram?.trade_event_alerts_enabled === true,
-      evidenceId: `cleanup-probe-post-submit-readiness-${evidenceSuffix}`,
-    },
-    budgetSnapshot: {
-      maxOrderKrw: config.budget?.max_order_krw ?? "10000",
-      dailyAutonomousNotionalLimitKrw: config.budget?.daily_autonomous_notional_limit_krw ?? "30000",
-      dailyAutonomousNotionalUsedKrw: "0",
-      openPositionNotionalKrw: "0",
-      maxOpenPositionNotionalKrw: config.budget?.max_open_position_notional_krw ?? "30000",
-      capturedAt,
-    },
-    lossSnapshot: {
-      dailyRealizedLossKrw: "0",
-      weeklyRealizedLossKrw: "0",
-      capturedAt,
-    },
-  };
-}
-
-function attachLiveOpsCliCleanupProbeGuardEvidence({ intent, config, policy }) {
-  const expectedLossBps = policy.cleanup_probe.expected_loss_bps_of_equity;
-  const orderIntent = createLiveOpsCliOrderIntentEvidence(intent);
-  const costInput = {
-    expectedReturnBps: "20",
-    entryFeeBps: "5",
-    exitFeeBps: "5",
-    spreadCostBpsP75: "0",
-    expectedSlippageBpsP95: "0",
-    cancelRequotePenaltyBps: "0",
-    safetyBufferBps: "10",
-    safetyBufferMarketCategory: "BTC_ETH",
-  };
-  const risk = {
-    account: {
-      equityKrw: "1000000",
-      dailyRealizedPnlBps: "0",
-      weeklyRealizedPnlBps: "0",
-      maxDrawdownBps: "0",
-    },
-    positions: [],
-    strategy: {
-      strategyId: intent.strategyId,
-      consecutiveLosses: 0,
-    },
-    infrastructureSignals: [],
-    thresholdSnapshot: {
-      capturedAt: new Date(0).toISOString(),
-      thresholds: {
-        maxExpectedLossBpsOfEquity: expectedLossBps,
-        maxOrderNotionalBpsOfEquity: "100",
-        dailyLossLimitBps: "100",
-        weeklyLossLimitBps: "300",
-        maxDrawdownBps: "500",
-        btcEthMaxPositionBpsOfEquity: "500",
-        altMaxPositionBpsOfEquity: "0",
-        totalAltMaxPositionBpsOfEquity: "0",
-        maxConsecutiveStrategyLosses: 3,
-      },
-    },
-  };
-  return {
-    ...intent,
-    costInput,
-    risk,
-    costSnapshot: {
-      source: "cost_model",
-      exchange_id: intent.exchangeId,
-      market: intent.market,
-      trade_allowed: true,
-      reason_code: "cost_margin_ok",
-      order_intent: orderIntent,
-      config_max_order_krw: config.budget?.max_order_krw ?? "10000",
-    },
-    riskApproval: {
-      source: "risk_gate",
-      approved: true,
-      action: "ALLOW",
-      status: "PASS",
-      failed_evaluation_reason_codes: [],
-      order_intent: orderIntent,
     },
   };
 }
@@ -4089,21 +3975,19 @@ function createLiveOpsCliCleanupProbeDecisionKey({ market, sizing }) {
   ].join(":");
 }
 
-function createLiveOpsCliOrderIntentEvidence(intent) {
-  return {
-    exchange_id: intent.exchangeId,
-    market: intent.market,
-    strategy_id: intent.strategyId,
-    side: intent.side,
-    order_type: intent.orderType,
-    post_only: intent.postOnly,
-    time_in_force: readLiveOpsCliEvidenceTimeInForce(intent),
-    requested_quantity: intent.requestedQuantity,
-    requested_notional: intent.requestedNotional,
-    requested_price: intent.requestedPrice,
-    idempotency_key: intent.idempotencyKey,
-    expected_loss_bps_of_equity: readLiveOpsCliExpectedLossBps(intent),
-  };
+function attachLiveOpsCliAnalysisOrderIntents(summary, orderIntents) {
+  Object.defineProperty(summary, liveOpsCliAnalysisOrderIntentsSymbol, {
+    value: Object.freeze([...orderIntents]),
+    enumerable: false,
+    configurable: false,
+    writable: false,
+  });
+  return summary;
+}
+
+export function getLiveOpsCliAnalysisOrderIntents(summary) {
+  const value = summary?.[liveOpsCliAnalysisOrderIntentsSymbol];
+  return Array.isArray(value) ? [...value] : [];
 }
 
 function readLiveOpsCliLatestOrderbook(marketData) {
