@@ -3818,10 +3818,11 @@ function evaluateLiveOpsCliCleanupProbeAnalysisDecision({ config, marketData, ob
     : decision.kind === "BLOCK"
       ? "BLOCKED"
       : "HOLD";
+  const ready = decision.kind !== "BLOCK";
 
   return attachLiveOpsCliAnalysisOrderIntents({
-    status: "ready",
-    ready: true,
+    status: ready ? "ready" : "blocked",
+    ready,
     market,
     observedAt,
     latestDecisionAt: observedAt,
@@ -3855,9 +3856,9 @@ function evaluateLiveOpsCliCleanupProbeAnalysisDecision({ config, marketData, ob
       },
       {
         name: "strategy_decision",
-        status: "ok",
-        code: "live_ops_strategy_decision_ok",
-        message: "production strategy decision 평가를 완료했습니다.",
+        status: ready ? "ok" : "blocked",
+        code: ready ? "live_ops_strategy_decision_ok" : "live_ops_strategy_decision_blocked",
+        message: ready ? "production strategy decision 평가를 완료했습니다." : "cleanup probe strategy decision이 후보 생성을 차단했습니다.",
         details: {
           strategyId: "live_ops_cleanup_probe",
           decisionKind: decision.kind,

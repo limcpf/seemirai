@@ -3,11 +3,13 @@ import type {
   FeatureCalculationResult,
 } from "../../src/application/index.js";
 import type {
+  MarketDataEvent,
   OrderIntent,
   Strategy,
   StrategyContext,
 } from "../../src/domain/index.js";
 import {
+  resolveLiveOpsDecisionPolicy,
   defaultLiveOpsConfig,
   runLiveOpsAnalysisDecisionPipeline,
 } from "../../src/runtime/index.js";
@@ -21,13 +23,14 @@ describe("production live ops analysis/decision pipeline", () => {
   it("does not evaluate strategies when market data collector is not ready", async () => {
     const strategy = createThrowingStrategy();
 
-    const summary = await runLiveOpsAnalysisDecisionPipeline({
+    const result = await runLiveOpsAnalysisDecisionPipeline({
       config: defaultLiveOpsConfig,
       marketData: marketDataSummary({ ready: false }),
       observedAt,
       marketEvents: [],
       strategies: [strategy],
     });
+    const { summary } = result;
 
     expect(summary).toMatchObject({
       status: "blocked",
@@ -41,7 +44,7 @@ describe("production live ops analysis/decision pipeline", () => {
   });
 
   it("records a HOLD boundary when feature snapshot fails", async () => {
-    const summary = await runLiveOpsAnalysisDecisionPipeline({
+    const result = await runLiveOpsAnalysisDecisionPipeline({
       config: defaultLiveOpsConfig,
       marketData: marketDataSummary(),
       observedAt,
@@ -49,6 +52,7 @@ describe("production live ops analysis/decision pipeline", () => {
       strategies: [createThrowingStrategy()],
       featureSnapshot: failedFeatureSnapshot(),
     });
+    const { summary } = result;
 
     expect(summary).toMatchObject({
       status: "blocked",
@@ -65,7 +69,7 @@ describe("production live ops analysis/decision pipeline", () => {
     const capturedContexts: StrategyContext[] = [];
     const strategy = createOrderIntentStrategy(capturedContexts);
 
-    const summary = await runLiveOpsAnalysisDecisionPipeline({
+    const result = await runLiveOpsAnalysisDecisionPipeline({
       config: defaultLiveOpsConfig,
       marketData: marketDataSummary(),
       observedAt,
@@ -73,6 +77,7 @@ describe("production live ops analysis/decision pipeline", () => {
       strategies: [strategy],
       featureSnapshot: okFeatureSnapshot(),
     });
+    const { summary } = result;
 
     expect(summary).toMatchObject({
       status: "ready",
@@ -83,6 +88,9 @@ describe("production live ops analysis/decision pipeline", () => {
       orderIntentCount: 1,
       recordHoldDecision: false,
     });
+    expect(result.orderIntents).toHaveLength(1);
+    expect(result.orderIntents[0]?.idempotencyKey).toBe("fixture-order-intent");
+    expect(JSON.stringify(result)).not.toContain("fixture-order-intent");
     expect(capturedContexts[0]).toMatchObject({
       exchangeId: "upbit_krw_spot",
       market: "KRW-BTC",
@@ -95,7 +103,7 @@ describe("production live ops analysis/decision pipeline", () => {
   });
 
   it("keeps all-HOLD strategy results as recorded HOLD with zero order intents", async () => {
-    const summary = await runLiveOpsAnalysisDecisionPipeline({
+    const result = await runLiveOpsAnalysisDecisionPipeline({
       config: defaultLiveOpsConfig,
       marketData: marketDataSummary(),
       observedAt,
@@ -103,6 +111,7 @@ describe("production live ops analysis/decision pipeline", () => {
       strategies: [createHoldStrategy()],
       featureSnapshot: okFeatureSnapshot(),
     });
+    const { summary } = result;
 
     expect(summary).toMatchObject({
       status: "ready",
@@ -114,6 +123,54 @@ describe("production live ops analysis/decision pipeline", () => {
       recordHoldDecision: true,
     });
     expect(summary.message).toContain("HOLD");
+  });
+
+  it("required feature가 없는 cleanup probe는 feature snapshot 실패와 독립적으로 같은 tick order intent를 반환한다", async () => {
+    const [strategy] = resolveLiveOpsDecisionPolicy({ config: defaultLiveOpsConfig }).strategies;
+    if (strategy === undefined) throw new Error("expected cleanup strategy");
+
+    const result = await runLiveOpsAnalysisDecisionPipeline({
+      config: defaultLiveOpsConfig,
+      marketData: marketDataSummary(),
+      observedAt,
+      marketEvents: [orderbookEvent()],
+      strategies: [strategy],
+      featureSnapshot: failedFeatureSnapshot(),
+    });
+
+    expect(result.summary).toMatchObject({
+      status: "ready",
+      ready: true,
+      decisionCategory: "ORDER_INTENT",
+      featureStatus: "failed",
+      orderIntentCount: 1,
+    });
+    expect(result.summary.checks.map((check) => check.code)).toContain("live_ops_feature_snapshot_not_required");
+    expect(result.orderIntents).toHaveLength(1);
+    expect(result.orderIntents[0]?.strategyId).toBe("live_ops_cleanup_probe");
+    expect(JSON.stringify(result.summary)).not.toContain("idempotencyKey");
+    expect(JSON.stringify(result)).not.toContain("live_ops_cleanup_probe:upbit_krw_spot");
+  });
+
+  it("BLOCK strategy result는 idle이 아니라 blocked analysis로 닫는다", async () => {
+    const result = await runLiveOpsAnalysisDecisionPipeline({
+      config: defaultLiveOpsConfig,
+      marketData: marketDataSummary(),
+      observedAt,
+      marketEvents: [],
+      strategies: [createBlockStrategy()],
+      featureSnapshot: okFeatureSnapshot(),
+    });
+
+    expect(result.summary).toMatchObject({
+      status: "blocked",
+      ready: false,
+      decisionCategory: "BLOCKED",
+      blockCount: 1,
+      orderIntentCount: 0,
+    });
+    expect(result.summary.checks.map((check) => check.code)).toContain("live_ops_strategy_decision_blocked");
+    expect(result.orderIntents).toHaveLength(0);
   });
 });
 
@@ -185,6 +242,20 @@ function createHoldStrategy(): Strategy {
   };
 }
 
+function createBlockStrategy(): Strategy {
+  return {
+    id: "fixture_block_strategy",
+    version: "1",
+    requiredFeatures: [],
+    evaluate: () => ({
+      kind: "BLOCK",
+      strategyId: "fixture_block_strategy",
+      reason: "fixture_block",
+      reasonCode: "fixture_block",
+    }),
+  };
+}
+
 function createOrderIntentStrategy(capturedContexts: StrategyContext[]): Strategy {
   return {
     id: "fixture_order_strategy",
@@ -206,7 +277,7 @@ function createThrowingStrategy(): Strategy {
   return {
     id: "throwing_strategy",
     version: "1",
-    requiredFeatures: [],
+    requiredFeatures: ["cost_adjusted_margin_bps"],
     evaluate: () => {
       throw new Error("strategy should not be evaluated");
     },
@@ -227,5 +298,17 @@ function createOrderIntent(): OrderIntent {
     reason: "fixture_order",
     postOnly: true,
     timeInForce: "POST_ONLY",
+  };
+}
+
+function orderbookEvent(): MarketDataEvent {
+  return {
+    type: "ORDERBOOK",
+    exchangeId: "upbit_krw_spot",
+    market: "KRW-BTC",
+    asks: [{ price: "100001000", size: "0.5" }],
+    bids: [{ price: "100000000", size: "0.5" }],
+    exchangeTimestamp: observedAt,
+    receivedAt: observedAt,
   };
 }

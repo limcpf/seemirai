@@ -129,6 +129,24 @@ describe("production live ops live execution adapter", () => {
     expect(JSON.stringify(summary)).not.toContain("fake-upbit-secret-key");
   });
 
+  it("명시 id가 없어도 decision key를 stable ops attempt id로 낮춘다", async () => {
+    const entryRuntime = createEntryRuntimeRecorder();
+    const intent = createOrderIntent();
+
+    const summary = await runLiveOpsLiveExecution(createInput({
+      analysisDecision: analysisSummary({ orderIntentCount: 1, decisionCategory: "ORDER_INTENT" }),
+      orderIntents: [intent],
+      entryRuntime,
+    }));
+
+    expect(summary.status).toBe("submitted");
+    expect(summary.attemptId).toMatch(/^ops-[a-f0-9]{26}$/u);
+    expect(summary.attemptId).not.toBe(intent.idempotencyKey);
+    const request = entryRuntime.submitEntryCandidate.mock.calls[0]?.[0];
+    expect(request?.idempotencyKey).toBe(summary.attemptId);
+    expect(request?.candidate.metadata?.decision_idempotency_key).toBe(intent.idempotencyKey);
+  });
+
   it("시장가나 post-only가 아닌 후보는 하위 runtime 호출 전에 fail-closed 한다", async () => {
     const entryRuntime = createEntryRuntimeRecorder();
 

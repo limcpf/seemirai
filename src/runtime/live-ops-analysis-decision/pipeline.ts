@@ -108,6 +108,21 @@ export interface LiveOpsAnalysisDecisionSummary {
 }
 
 /**
+ * live ops analysis/decision pipeline의 전체 실행 결과다.
+ *
+ * 책임:
+ * - `summary`는 TUI/JSON/status에 노출 가능한 count-only 요약으로 유지한다.
+ * - `orderIntents`는 같은 decision tick에서 live execution으로 넘길 원본 후보를 별도 채널로 전달한다.
+ *
+ * invariant:
+ * - `orderIntents` property는 runtime 객체에서는 읽을 수 있지만 enumerable이 아니므로 JSON 직렬화 표면에 나타나지 않아야 한다.
+ */
+export interface LiveOpsAnalysisDecisionResult {
+  readonly summary: LiveOpsAnalysisDecisionSummary;
+  readonly orderIntents: readonly OrderIntent[];
+}
+
+/**
  * live ops analysis/decision pipeline을 실행한다.
  *
  * @param input production live ops config, market data summary, event window, strategy 목록
@@ -115,7 +130,7 @@ export interface LiveOpsAnalysisDecisionSummary {
  */
 export async function runLiveOpsAnalysisDecisionPipeline(
   input: LiveOpsAnalysisDecisionInput,
-): Promise<LiveOpsAnalysisDecisionSummary> {
+): Promise<LiveOpsAnalysisDecisionResult> {
   const config = loadLiveOpsConfig(input.config);
   const checks: LiveOpsAnalysisDecisionCheck[] = [
     okCheck("config", "production live ops analysis 설정을 확인했습니다.", "live_ops_analysis_config_ok", {
@@ -131,13 +146,13 @@ export async function runLiveOpsAnalysisDecisionPipeline(
       "market data collector가 준비되지 않아 analysis/decision을 시작하지 않습니다.",
       "live_ops_market_data_not_ready",
     ));
-    return buildSummary(config, input, checks, {
+    return buildResult(buildSummary(config, input, checks, {
       featureStatus: "not_run",
       decisions: [],
       decisionCategory: "HOLD",
       latestDecisionAt: null,
       readyOverride: false,
-    });
+    }), []);
   }
 
   checks.push(okCheck("market_data", "market data collector summary를 확인했습니다.", "live_ops_market_data_ready", {
@@ -150,19 +165,40 @@ export async function runLiveOpsAnalysisDecisionPipeline(
   );
 
   if (featureSnapshot.status !== "ok") {
-    // feature 실패를 0으로 보정하면 후보가 열릴 수 있으므로 HOLD evidence로 남기고 live execution 전진을 막는다.
-    checks.push(blockedCheck(
+    const featurelessStrategies = input.strategies.filter((strategy) => strategy.requiredFeatures.length === 0);
+
+    if (featurelessStrategies.length === 0 || featurelessStrategies.length !== input.strategies.length) {
+      // feature 실패를 0으로 보정하면 후보가 열릴 수 있으므로 feature 의존 strategy는 live execution 전진을 막는다.
+      checks.push(blockedCheck(
+        "features",
+        "feature snapshot이 실패해 strategy 후보 생성을 보류합니다.",
+        "live_ops_feature_snapshot_failed",
+        { failureCount: featureSnapshot.failureReasons.length },
+      ));
+      return buildResult(buildSummary(config, input, checks, {
+        featureStatus: featureSnapshot.status,
+        decisions: [],
+        decisionCategory: "HOLD",
+        latestDecisionAt: input.observedAt,
+        readyOverride: false,
+      }), []);
+    }
+
+    // cleanup_probe처럼 required feature가 없는 strategy는 fresh orderbook만으로 평가해야 하므로 feature 실패를 보정하지 않고 우회 사유를 남긴다.
+    checks.push(okCheck(
       "features",
-      "feature snapshot이 실패해 strategy 후보 생성을 보류합니다.",
-      "live_ops_feature_snapshot_failed",
-      { failureCount: featureSnapshot.failureReasons.length },
+      "추가 feature가 필요 없는 strategy만 있어 feature snapshot 실패와 독립적으로 평가합니다.",
+      "live_ops_feature_snapshot_not_required",
+      { failureCount: featureSnapshot.failureReasons.length, strategyCount: featurelessStrategies.length },
     ));
-    return buildSummary(config, input, checks, {
+
+    return evaluateStrategyResults({
+      config,
+      input,
+      checks,
       featureStatus: featureSnapshot.status,
-      decisions: [],
-      decisionCategory: "HOLD",
-      latestDecisionAt: input.observedAt,
-      readyOverride: false,
+      features: {},
+      strategies: featurelessStrategies,
     });
   }
 
@@ -170,9 +206,27 @@ export async function runLiveOpsAnalysisDecisionPipeline(
     featureCount: Object.keys(featureSnapshot.features).length,
   }));
 
-  const decisions = await evaluateStrategies(input, config, featureSnapshot).catch((error) => {
+  return evaluateStrategyResults({
+    config,
+    input,
+    checks,
+    featureStatus: featureSnapshot.status,
+    features: featureSnapshot.features,
+    strategies: input.strategies,
+  });
+}
+
+async function evaluateStrategyResults(input: {
+  readonly config: LiveOpsConfig;
+  readonly input: LiveOpsAnalysisDecisionInput;
+  readonly checks: LiveOpsAnalysisDecisionCheck[];
+  readonly featureStatus: LiveOpsAnalysisDecisionSummary["featureStatus"];
+  readonly features: JsonRecord;
+  readonly strategies: readonly Strategy[];
+}): Promise<LiveOpsAnalysisDecisionResult> {
+  const decisions = await evaluateStrategies(input.input, input.config, input.strategies, input.features).catch((error) => {
     // strategy 예외는 후보 없음으로 숨기지 않고 pipeline 차단 사유로 남긴다.
-    checks.push(blockedCheck(
+    input.checks.push(blockedCheck(
       "strategy_decision",
       "strategy decision 평가 중 오류가 발생해 live execution으로 전진하지 않습니다.",
       "live_ops_strategy_decision_failed",
@@ -182,44 +236,53 @@ export async function runLiveOpsAnalysisDecisionPipeline(
   });
 
   if (decisions === undefined) {
-    return buildSummary(config, input, checks, {
-      featureStatus: featureSnapshot.status,
+    return buildResult(buildSummary(input.config, input.input, input.checks, {
+      featureStatus: input.featureStatus,
       decisions: [],
       decisionCategory: "BLOCKED",
-      latestDecisionAt: input.observedAt,
+      latestDecisionAt: input.input.observedAt,
       readyOverride: false,
-    });
+    }), []);
   }
 
   const decisionCategory = resolveDecisionCategory(decisions);
-  checks.push(okCheck("strategy_decision", "strategy decision 평가를 완료했습니다.", "live_ops_strategy_decision_ok", {
-    evaluatedStrategyCount: decisions.length,
-    orderIntentCount: countOrderIntents(decisions),
-  }));
+  if (decisionCategory === "BLOCKED") {
+    // BLOCK decision은 후보 없음과 다르므로 idle로 낮추지 않고 live execution 앞에서 fail-closed 한다.
+    input.checks.push(blockedCheck("strategy_decision", "strategy decision이 후보 생성을 차단했습니다.", "live_ops_strategy_decision_blocked", {
+      evaluatedStrategyCount: decisions.length,
+      blockCount: decisions.filter((decision) => decision.kind === "BLOCK").length,
+    }));
+  } else {
+    input.checks.push(okCheck("strategy_decision", "strategy decision 평가를 완료했습니다.", "live_ops_strategy_decision_ok", {
+      evaluatedStrategyCount: decisions.length,
+      orderIntentCount: countOrderIntents(decisions),
+    }));
+  }
 
-  return buildSummary(config, input, checks, {
-    featureStatus: featureSnapshot.status,
+  return buildResult(buildSummary(input.config, input.input, input.checks, {
+    featureStatus: input.featureStatus,
     decisions,
     decisionCategory,
-    latestDecisionAt: input.observedAt,
-  });
+    latestDecisionAt: input.input.observedAt,
+  }), collectOrderIntents(decisions));
 }
 
 async function evaluateStrategies(
   input: LiveOpsAnalysisDecisionInput,
   config: LiveOpsConfig,
-  featureSnapshot: FeatureCalculationResult,
+  strategies: readonly Strategy[],
+  features: JsonRecord,
 ): Promise<readonly StrategyDecision[]> {
   const decisions: StrategyDecision[] = [];
 
-  for (const strategy of input.strategies) {
+  for (const strategy of strategies) {
     const decision = await strategy.evaluate({
       strategyId: strategy.id,
       exchangeId: "upbit_krw_spot",
       market: config.universe.default_market,
       observedAt: input.observedAt,
       marketEvents: input.marketEvents,
-      features: featureSnapshot.features,
+      features,
       metadata: {
         source: "live_ops_analysis_decision",
       },
@@ -296,6 +359,20 @@ function buildSummary(
       ...(input.trace ?? {}),
     },
   };
+}
+
+function buildResult(
+  summary: LiveOpsAnalysisDecisionSummary,
+  orderIntents: readonly OrderIntent[],
+): LiveOpsAnalysisDecisionResult {
+  const result = { summary } as LiveOpsAnalysisDecisionResult;
+  Object.defineProperty(result, "orderIntents", {
+    value: Object.freeze([...orderIntents]),
+    enumerable: false,
+    configurable: false,
+    writable: false,
+  });
+  return result;
 }
 
 function resolveDecisionCategory(decisions: readonly StrategyDecision[]): LiveOpsDecisionCategory {

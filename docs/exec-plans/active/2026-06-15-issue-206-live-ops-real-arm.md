@@ -120,10 +120,16 @@ Telegram, TUI를 같은 lifecycle로 조립하고, 조건을 통과한 단일 `K
         `requestedNotional <= 10000`, `expected_loss_bps_of_equity` metadata, stable idempotency key를 포함한다.
   - [x] production CLI의 non-fixture analysis/decision 경로가 placeholder `live_ops_strategy_decision_source_missing` 대신
         `cleanup_probe` decision policy contract를 실행한다. summary에는 후보 count만 남기고, 같은 decision tick의 raw order intent는
-        live execution 내부 입력으로만 전달한다. 후보 0개는 broker 호출 없이 HOLD evidence로 닫는다.
+        live execution 내부 입력으로만 전달한다. public pipeline도 summary 밖 non-enumerable result channel로 같은 tick의 raw order
+        intent를 반환한다. 후보 0개 HOLD는 broker 호출 없이 idle evidence로 닫고, BLOCK decision은 idle이 아니라 blocked analysis로
+        fail-closed 한다.
+  - [x] `cleanup_probe`는 `requiredFeatures=[]` orderbook-only policy로 동작한다. feature snapshot이 실패해도 0으로 보정하지 않고
+        `live_ops_feature_snapshot_not_required` evidence와 함께 평가할 수 있으며, feature 의존 strategy는 feature 실패 시 계속 차단된다.
   - [x] `cleanup_probe` 후보는 summary에 raw intent를 직렬화하지 않고 live execution 내부 입력으로만 전달한다. 실제 CostModel/RiskGate,
         execution/budget/loss/post-submit readiness snapshot이 연결되지 않은 상태에서는 synthetic evidence를 만들지 않고
         `live_ops_entry_runtime_missing`으로 fail-closed 한다.
+  - [x] public live execution adapter와 CLI adapter는 긴 strategy decision key를 stable `ops-` attempt id로 낮춘다. 같은 cleanup 후보를
+        재평가해도 random identifier를 새로 만들지 않는다.
   - [x] issue #206 closeout validator는 `analysis.decision_policy.cleanup_probe` 표준 키와 값을 허용하고, 임의 strategy path 같은
         추가 키는 계속 차단한다.
   - [x] user-facing CLI/TUI/status 문구는 한국어 상태/원인/영향/필요 조치를 먼저 보여주고, policy id, reason code, idempotency key는

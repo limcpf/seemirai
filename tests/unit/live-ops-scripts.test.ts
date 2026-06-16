@@ -257,6 +257,70 @@ console.log(JSON.stringify({
     expect(JSON.stringify(summary)).not.toContain("raw_provider_payload");
   });
 
+  it("cleanup_probe BLOCK decision은 live execution idle로 낮추지 않도록 blocked summary로 닫는다", async () => {
+    const config = JSON.parse(await readFile(path.join(process.cwd(), "config", "live-ops.example.json"), "utf8"));
+    config.analysis.decision_policy.cleanup_probe.tick_size_krw = "7";
+    const result = spawnSync(
+      process.execPath,
+      [
+        "--input-type=module",
+        "--eval",
+        `
+import {
+  evaluateLiveOpsCliAnalysisDecision,
+  getLiveOpsCliAnalysisOrderIntents,
+} from "./scripts/run-live-ops-support.mjs";
+
+const observedAt = "2026-06-16T00:00:00.000Z";
+const config = ${JSON.stringify(config)};
+const summary = await evaluateLiveOpsCliAnalysisDecision({
+  config,
+  fixtureSmoke: false,
+  marketData: {
+    ready: true,
+    market: "KRW-BTC",
+    sourceProfile: "unit",
+    latestHeartbeatAt: observedAt,
+    referencePrice: "100000500",
+    persisted: { tradeCount: 1, orderbookCount: 1, statusCount: 1 },
+    marketEvents: [{
+      type: "ORDERBOOK",
+      exchangeId: "upbit_krw_spot",
+      market: "KRW-BTC",
+      asks: [{ price: "100001000", size: "0.5" }],
+      bids: [{ price: "100000000", size: "0.5" }],
+      exchangeTimestamp: observedAt,
+      receivedAt: observedAt,
+    }],
+  },
+});
+console.log(JSON.stringify({
+  summary,
+  orderIntentCount: getLiveOpsCliAnalysisOrderIntents(summary).length,
+}));
+`,
+      ],
+      {
+        cwd: process.cwd(),
+        encoding: "utf8",
+        env: minimalEnv(),
+      },
+    );
+
+    expect(result.status).toBe(0);
+    expect(result.stderr).toBe("");
+    const output = JSON.parse(result.stdout);
+    expect(output.orderIntentCount).toBe(0);
+    expect(output.summary).toMatchObject({
+      status: "blocked",
+      ready: false,
+      decisionCategory: "BLOCKED",
+      blockCount: 1,
+      orderIntentCount: 0,
+    });
+    expect(output.summary.checks.map((check: { code: string }) => check.code)).toContain("live_ops_strategy_decision_blocked");
+  });
+
   it("cleanup_probe는 entry runtime 미연결 시 synthetic evidence 없이 fail-closed 한다", async () => {
     const config = JSON.parse(await readFile(path.join(process.cwd(), "config", "live-ops.example.json"), "utf8"));
     const result = spawnSync(

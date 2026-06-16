@@ -775,10 +775,13 @@ analysis/decision lifecycle로 전진시키지 않는다.
 
 fixture smoke dashboard는 외부 Upbit/DB 호출 없이 collector summary shape를 검증하고 `체결 1 / 호가 1 / 상태 1` 저장 확인을 표시한다.
 `LiveOpsAnalysisDecisionPipeline`은 market data collector summary, market event window, feature snapshot, strategy 목록을 같은
-runtime 경계에서 묶는다. market data가 준비되지 않았거나 feature snapshot이 실패하면 strategy를 평가하지 않고 HOLD/차단 summary로
-닫는다. feature가 통과하면 주입된 strategy들을 KRW-BTC/upbit_krw_spot context로 평가하고 order intent 수, HOLD/BLOCK count,
-`record_hold_decision` 여부를 secret-safe summary로 반환한다. raw `OrderIntent`는 status/TUI/JSON summary에 직렬화하지 않고 같은
-decision tick의 live execution 내부 입력으로만 전달한다. 이 pipeline은 DB write, broker 호출, Upbit 호출, Telegram 전송을 하지 않는다.
+runtime 경계에서 묶는다. market data가 준비되지 않았거나 feature 의존 strategy의 feature snapshot이 실패하면 strategy를 평가하지
+않고 HOLD/차단 summary로 닫는다. `cleanup_probe`처럼 `requiredFeatures=[]`인 policy는 fresh orderbook만으로 후보를 만들 수 있어야
+하므로 feature snapshot 실패를 0으로 보정하지 않고 `live_ops_feature_snapshot_not_required` evidence와 함께 strategy를 평가한다.
+feature가 통과하거나 featureless policy 우회 조건이 충족되면 주입된 strategy들을 KRW-BTC/upbit_krw_spot context로 평가하고 order
+intent 수, HOLD/BLOCK count, `record_hold_decision` 여부를 secret-safe summary로 반환한다. raw `OrderIntent`는 status/TUI/JSON
+summary에 직렬화하지 않고, pipeline 결과 객체의 non-enumerable `orderIntents` 채널 또는 CLI 내부 symbol 채널로 같은 decision tick의
+live execution 입력에만 전달한다. 이 pipeline은 DB write, broker 호출, Upbit 호출, Telegram 전송을 하지 않는다.
 
 Sub PR 06부터 production `analysis.decision_policy`는 정적 allowlist policy id만 허용한다. 기본 policy는 `cleanup_probe`이며,
 config JSON에는 다음 non-secret 값만 둔다.
@@ -799,9 +802,11 @@ orderbook에서 best bid를 읽고, configured tick offset만큼 낮춘 `BUY + L
 명목금액이 최소 주문금액, 예산, 호가 단위, `KRW-BTC` 단일 universe 조건을 만족하지 못하면 주문 후보 없이 HOLD/BLOCK evidence로 닫는다.
 
 `LiveOpsLiveExecution`은 analysis/decision safe summary와 내부 order intent 입력, 최신 budget/loss/cost/risk/reconcile snapshot을 기존
-`LiveAutonomousEntryRuntime` 요청으로 낮추는 adapter다. analysis가 blocked이거나 HOLD로 주문 후보가 0개이면 하위 runtime 호출 없이
-idle/blocked summary로 닫는다. 주문 후보가 있더라도 첫 production 경계에서는 한 tick에 단일 `BUY + LIMIT + post_only` 후보만
-허용하고, market allowlist, `upbit_krw_spot`, strategy/risk scope가 맞지 않으면 live autonomous runtime 호출 전에 fail-closed 한다.
+`LiveAutonomousEntryRuntime` 요청으로 낮추는 adapter다. analysis가 blocked이거나 BLOCK decision이면 하위 runtime 호출 없이 blocked
+summary로 닫고, HOLD로 주문 후보가 0개이면 idle summary로 닫는다. 주문 후보가 있더라도 첫 production 경계에서는 한 tick에 단일
+`BUY + LIMIT + post_only` 후보만 허용하고, market allowlist, `upbit_krw_spot`, strategy/risk scope가 맞지 않으면 live autonomous
+runtime 호출 전에 fail-closed 한다. public adapter는 strategy의 긴 decision idempotency key를 Upbit identifier 길이에 맞는 stable
+`ops-<sha256-prefix>` attempt id로 낮춰 재시작 후 같은 cleanup 후보가 새 random identifier를 만들지 않게 한다.
 조건을 통과한 후보는 manual JSONL 없이 `LiveAutonomousEntryRuntime.submitEntryCandidate`로 전달되며, durable budget reservation,
 RiskGate 재검증, broker submit, alert dispatch side effect는 해당 하위 runtime 경계에서만 발생한다.
 

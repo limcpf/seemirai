@@ -77,9 +77,13 @@ Codex-native 운영은 Codex, Git, GitHub, shell command, 문서 상태를 연�
   저장소 밖 strategy 입력은 HOLD로 가장하지 않고 startup/config 또는 strategy decision 경계에서 fail-closed 한다.
 - `cleanup_probe`는 같은 market data tick의 orderbook에서 단일 order intent만 만들며, analysis safe summary의 `orderIntentCount`와
   live execution 내부 입력으로 전달되는 order intent 배열이 다르면 broker 제출로 전진하지 않는다. raw order intent는 status/TUI/JSON
-  summary에 직렬화하지 않는다.
+  summary에 직렬화하지 않고, public pipeline도 non-enumerable result channel로만 같은 tick 후보를 전달한다.
+- `cleanup_probe`처럼 `requiredFeatures=[]`인 policy는 fresh orderbook만 요구하므로 feature snapshot 실패를 0으로 보정하지 않고
+  `live_ops_feature_snapshot_not_required` evidence와 함께 평가할 수 있다. feature 의존 strategy는 feature 실패 시 계속 fail-closed 한다.
+- strategy가 `BLOCK`을 반환하면 주문 후보 없음 idle이 아니라 analysis blocked로 수렴해야 하며, live execution은 broker runtime을 호출하지 않는다.
 - 같은 order attempt나 idempotency key로 재시작하는 경우 새 Upbit identifier를 만들지 않는다. broker submit 결과가 불확실하면 재주문하지
-  않고 reconcile/manual review로 수렴한다.
+  않고 reconcile/manual review로 수렴한다. public live execution adapter는 긴 decision key를 stable `ops-` attempt id로 낮춰 같은 cleanup
+  후보가 재평가되어도 동일 identifier chain을 유지한다.
 - submit 이후 cancel requested와 terminal cancel 확인은 같은 attempt/identifier chain으로 연결되어야 하며, open exposure 0,
   duplicate order 0건, reconcile mismatch 0건, untracked fill 0건이 closeout evidence에 포함되어야 한다.
 - Telegram 전송 실패는 주문/리스크 commit을 되돌리지 않고 retry/manual review summary로 격리한다.
