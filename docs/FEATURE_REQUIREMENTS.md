@@ -863,6 +863,18 @@ Acceptance Criteria:
   않는지 확인한다.
 - 실제 운영 검증: 저장소 밖 credential/evidence가 준비된 환경에서 `docs/runbooks/live-ops-real-arm-cleanup.md` 절차로 submit/cancel
   terminal artifact를 생성한다.
+- closeout validator: `node scripts/run-live-ops-real-arm-closeout.mjs --fixture-smoke --json`은 live/API side effect 없이 contract를
+  검증하고, 운영 guard 없는 실행은 credential/evidence 부재 blocker를 skipped summary로 남긴다.
+- closeout validator: guarded manifest는 실제 존재하는 저장소 밖 config/env 파일, `자산조회`/`주문조회`/`주문하기`만 허용된 key scope
+  safe summary, `rg -n` 기반 금지 주문/secret scan 명령, 미래가 아닌 submit/cancel timestamp, placeholder가 아닌 같은 주문 suffix
+  evidence를 요구한다.
+- closeout validator: guarded manifest의 command는 추가/중복 인자 없는 정확한 foreground 실행이어야 하며, config/env/artifact는
+  symlink를 따라간 실제 경로도 저장소 밖이어야 한다. artifact safe summary가 실패 상태, 미취소 terminal state, 남은 exposure/counter를
+  보고하면 manifest 값과 충돌하므로 실패해야 한다.
+- closeout validator: guarded manifest 파일 자체도 realpath 기준 저장소 밖이어야 하며, source/security scan 명령은 `src scripts config docs`
+  전체 범위를 실제 `rg -n`으로 스캔해야 한다. 중첩 artifact 값과 `raw_provider_payload`/`raw_order_detail` 형태도 검증 대상이다.
+- closeout validator: 저장소 경계는 validator 실행 위치가 아니라 repository root 기준이며, 배열 안 artifact record와 `skipped`/`blocked`
+  status도 closeout 충돌로 본다. JSON redaction placeholder 뒤에 원문이 붙은 값은 secret leak으로 실패해야 한다.
 - source/security scan: 시장가/best order, 출금/입금, 선물/레버리지, raw secret, raw provider payload 후보가 production 경로에서
   열리지 않았는지 확인한다.
 

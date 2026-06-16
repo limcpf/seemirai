@@ -85,13 +85,16 @@ Telegram, TUI를 같은 lifecycle로 조립하고, 조건을 통과한 단일 `K
 
 - 목표: 실제 `KRW-BTC` 소액 주문 제출/취소/terminal cancel evidence로 issue #206을 닫을 수 있게 한다.
 - 제외 범위: final main PR merge.
+- 현재 상태: Sub PR 01-04는 `issue-206-mother`에 merge됐다. Sub PR 05에서는 closeout validator와 blocker 기록을 추가한다.
+  현재 세션과 issue 댓글에는 운영자가 명시한 저장소 밖 config/env/evidence 경로가 없어 실제 주문 제출/취소 cleanup은 시작하지 않는다.
 - DnD:
   - [ ] 운영자가 명시한 저장소 밖 config/env/evidence 경로로 단일 cleanup run이 실행된다.
   - [ ] submit -> cancel requested -> terminal cancel 확인 -> open exposure 0 순서가 redacted artifact에 남는다.
   - [ ] crash 0회, unhandled rejection 0회, duplicate order 0건, reconcile mismatch 0건, untracked fill 0건, live order cleanup failure 0건이
         증명된다.
-  - [ ] source/security scan 결과와 artifact redaction 검증 결과가 PR/closeout에 기록된다.
-  - [ ] active plan은 completed closeout으로 이동되거나, 외부 credential/evidence 부재 시 blocker와 필요한 운영자 조치를 명시한다.
+  - [x] source/security scan 결과와 artifact redaction 검증 결과가 PR/closeout에 기록될 수 있도록
+        `scripts/run-live-ops-real-arm-closeout.mjs` validator를 추가한다.
+  - [x] active plan은 completed closeout으로 이동되거나, 외부 credential/evidence 부재 시 blocker와 필요한 운영자 조치를 명시한다.
   - [ ] `finish-readiness-audit` 기준 PASS 또는 명시적 PARTIAL/FAIL 근거를 남긴다.
 
 ## 검증 방법
@@ -120,6 +123,14 @@ corepack pnpm live:ops:tui -- --config config/live-ops.example.json --env-file t
 ```
 
 실거래 cleanup 검증은 `docs/runbooks/live-ops-real-arm-cleanup.md`의 redaction/credential 조건을 충족한 운영 환경에서만 실행한다.
+redacted closeout manifest 검증은 다음 명령으로 수행한다.
+
+```sh
+SEEMIRAI_RUN_LIVE_OPS_REAL_ARM_CLOSEOUT=1 \
+  node scripts/run-live-ops-real-arm-closeout.mjs \
+  --manifest <저장소-밖-redacted-manifest-json> \
+  --json
+```
 
 ## 결정 로그
 
@@ -128,8 +139,63 @@ corepack pnpm live:ops:tui -- --config config/live-ops.example.json --env-file t
 - 2026-06-15: 신규 진입은 `BUY + LIMIT + post_only`만 허용한다.
 - 2026-06-15: secret 원문, raw Authorization/JWT, raw provider payload, raw order detail은 저장소와 PR/issue 표면에 남기지 않는다.
 - 2026-06-15: final main PR은 생성/갱신과 review drain까지만 수행하고 merge하지 않는다.
+- 2026-06-15: Sub PR 05 closeout validator는 실제 주문 API를 호출하지 않고, 운영자가 저장소 밖에서 만든 redacted manifest/artifact만
+  검증한다. guard가 없으면 skipped/blocker summary만 남긴다.
+- 2026-06-15: guarded closeout manifest는 실제 존재하는 저장소 밖 config/env 파일, 출금 권한이 없는 key scope safe summary, 실제
+  `rg -n` source/security scan 명령, 미래가 아닌 주문 lifecycle timestamp, placeholder가 아닌 같은 주문 identifier/uuid suffix를 요구한다.
+- 2026-06-15: closeout validator는 추가/중복 인자 없는 정확한 `live:ops` command, symlink realpath 기준 저장소 밖 config/env/artifact,
+  artifact safe summary와 manifest closeout 값의 일치, database password redaction도 검증한다.
+- 2026-06-15: guarded manifest 파일 자체도 저장소 밖이어야 하며, source/security scan은 `src scripts config docs` 전체 범위의 실제
+  `rg -n` 실행 증거여야 한다. 중첩 artifact summary와 `raw_provider_payload`/`raw_order_detail` 필드도 차단한다.
+- 2026-06-15: repository root 기준 저장소 경계, 배열 안 artifact record, `skipped`/`blocked` artifact status, redaction placeholder 뒤 원문
+  secret도 closeout validator 차단 대상이다.
+- 2026-06-15: closeout validator는 production config/env contract, 절대 config/env command 경로, parse 가능한 JSON artifact,
+  artifact 주문 정책 필드, Bearer/JWT 독립 노출, camelCase raw payload, source scan 필수 패턴 전체도 차단 대상으로 본다.
+- 2026-06-15: closeout validator는 foreground wrapper의 config allowed-key contract, ambient legacy env, source scan 제외 glob,
+  빈 artifact, snake_case artifact 정책 필드, artifact lifecycle timestamp 충돌도 차단 대상으로 본다.
+- 2026-06-15: closeout validator는 env assignment redaction tail, 붙여 쓴 source scan 제외 glob, artifact 주문 suffix/alias 충돌,
+  env extra key scope/evidence id mismatch를 차단하고, non-closeout provider status는 오탐으로 실패시키지 않는다.
+- 2026-06-15: closeout validator는 source scan 필수 경로를 실제 `rg` argv operand로 판정하고 brace exclude glob,
+  `terminal_state` alias 충돌, 직접 `identifier`/`broker_order_id` artifact alias, TUI control token redaction까지 검증한다.
+- 2026-06-15: closeout validator는 source scan coverage를 실제 검색 패턴 기준으로 판정하고, snake_case DB password,
+  문자열 raw provider/order payload, 깊게 중첩된 artifact closeout 충돌도 차단한다.
+- 2026-06-15: closeout validator는 출력 억제/파일 목록/without-match/preprocessor ripgrep 옵션, 모든 exclude glob,
+  Bearer placeholder 뒤 raw token tail도 차단한다.
+- 2026-06-15: closeout validator는 source scan의 repository root 실행 위치와 대문자 `ACCESS_KEY`/`SECRET_KEY` 검색,
+  ripgrep type/ignore 제외 옵션, raw payload placeholder tail, artifact `ord_type` 충돌도 차단한다.
+- 2026-06-15: closeout validator는 `--max-count`와 include glob으로 검색을 줄인 source scan, artifact wrapper failure status,
+  colon-form secret log, fixtureSmoke false 오탐, snake_case order id placeholder도 검증한다.
+- 2026-06-15: closeout validator는 붙여 쓴 `-m0`/`-m=0`, `-t`/`--type`, `--iglob`, `-F`/`--fixed-strings`처럼 source/security
+  scan의 검색 범위나 패턴 의미를 줄이는 ripgrep 옵션도 차단한다.
+- 2026-06-15: closeout validator는 `-f`/`--file`, `-v`/`--invert-match`, `--max-depth`, `--max-filesize` source scan,
+  punctuation tail secret leak, Telegram base token URL, fixture-only artifact marker, hyphen/camelCase order id placeholder,
+  failure status code variant, source scan raw match 원문 재노출도 차단한다.
+- 2026-06-15: closeout validator는 manifest `run.ord_type` alias 충돌, Telegram placeholder tail, JSON string escape로 숨긴
+  secret assignment, prefix 없는 compact JWT/lowercase bearer, PCRE2 no-match scan, shell redirection/pipe, fake env credential,
+  escaped alternation pattern, `--files` source scan도 차단한다.
+- 2026-06-15: closeout validator는 `rg --no-config` 없는 source scan, `-x`/`--line-regexp`, command substitution,
+  JSON escape로 숨긴 secret/raw payload key, `SEEMIRAI_TELEGRAM_BOT_TOKEN` JSON field, raw payload placeholder punctuation tail도
+  차단한다.
+- 2026-06-15: closeout validator는 hidden/ignored source를 보지 않는 scan, `-w`/`--word-regexp`, shell parameter expansion,
+  quoted raw payload placeholder tail, redacted placeholder 조각이 섞인 env 값, 깊게 중첩된 decoded JSON secret도 차단하고,
+  주문 closeout field가 없는 provider/Telegram identifier는 주문 record로 오인하지 않는다.
+- 2026-06-15: closeout validator는 SEEMIRAI camelCase credential JSON field, `-M`/`--max-columns`, `--stop-on-nonmatch`,
+  date-only lifecycle timestamp, 충돌하는 주문 suffix pair, `time_in_force` alias 충돌, parse 실패 정규식 source scan도 차단한다.
+- 2026-06-15: closeout validator는 source scan shell comment/newline, traversal override(`--ignore`, `--no-hidden`),
+  replacement option, metadata-only rg mode, `-N`/`--no-line-number` line evidence 제거도 차단한다.
+- 2026-06-15: closeout validator는 quoted pattern 속 line-number 가짜 증거, hyphenated/generic token JSON credential field,
+  `MANUAL_REVIEW_REQUIRED` artifact status, JSON escape로 숨긴 fixture marker도 차단한다.
+- 2026-06-15: closeout validator는 `-d`/`-I` rg 옵션, source scan raw label 재노출, manifest fixture marker,
+  placeholder 뒤 JSON tail, timestamp-only non-order artifact 오탐, source scan 대체 표기와 TUI/DB credential coverage 누락도 검증한다.
+- 2026-06-15: closeout validator는 count-only source scan, prefixed fake search term, source scan command 원문 재노출,
+  깊은 artifact record 누락, `TIMEOUT` wrapper status, decoded camelCase credential key, password 없는 DB URL 원문도 차단한다.
+- 2026-06-15: closeout validator는 값 있는 `rg` 출력 옵션, clustered `-g` exclude glob, `--` 뒤 traversal 가짜 증거,
+  live:ops command shell separator, fixture credential, 불가능한 calendar date, decoded raw payload key, suffix형 blocked status도 차단한다.
 
 ## 남은 이슈
 
 - 실제 운영 credential과 redacted artifact 위치는 저장소 밖에서 준비되어야 한다.
 - 실제 주문 제출/취소는 Sub PR 05에서 운영자 arm evidence가 확인된 뒤에만 실행한다.
+- 현재 세션에는 `SEEMIRAI_*`, `UPBIT_*`, `TELEGRAM_*` 운영 env 값이 없고 issue #206 댓글에도 운영 config/env/evidence 경로가 없다.
+  운영자는 저장소 밖 config/env, key scope evidence, operator arm evidence, redacted artifact 경로를 준비한 뒤 closeout manifest 검증을
+  다시 실행해야 한다.
