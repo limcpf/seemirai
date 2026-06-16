@@ -111,6 +111,8 @@ const requiredSecretSourceScanPatterns = [
   { label: "raw provider payload camelCase", pattern: /rawProvider/u },
   { label: "raw order payload", pattern: /raw_order/u },
   { label: "raw order payload camelCase", pattern: /rawOrder/u },
+  { label: "raw update payload", pattern: /raw_update/u },
+  { label: "raw update payload camelCase", pattern: /rawUpdate/u },
 ];
 const disallowedRipgrepLongOptions = new Set([
   "--line-regexp",
@@ -162,6 +164,8 @@ const ripgrepOptionsWithNextValue = new Set([
   "--pre",
   "--pre-glob",
   "--replace",
+  "--sort",
+  "--sortr",
   "--type",
   "--type-not",
 ]);
@@ -198,9 +202,9 @@ const sensitivePatterns = [
   { label: "telegram token env assignment", pattern: /\b(?:SEEMIRAI_)?TELEGRAM_BOT_TOKEN\s*[:=]\s*(?!(?:["']?(?:<redacted>|redacted|\[redacted\])["']?)(?:$|[\r\n,}]))[^\r\n,}]{8,}/i },
   { label: "tui control token env assignment", pattern: /\b(?:SEEMIRAI_)?TUI_CONTROL_TOKEN\s*[:=]\s*(?!(?:["']?(?:<redacted>|redacted|\[redacted\])["']?)(?:$|[\r\n,}]))[^\r\n,}]{8,}/i },
   { label: "database url env assignment", pattern: /\b(?:SEEMIRAI_)?DATABASE_URL\s*[:=]\s*(?!(?:["']?(?:<redacted>|redacted|\[redacted\])["']?)(?:$|[\r\n,}]))[^\r\n,}]{8,}/i },
-  { label: "database password env assignment", pattern: /\b(?:SEEMIRAI_)?(?:DATABASE_PASSWORD|DB_PASSWORD|PGPASSWORD)\s*[:=]\s*(?!(?:["']?(?:<redacted>|redacted|\[redacted\])["']?)(?:$|[\r\n,}]))[^\r\n,}]{8,}/i },
-  { label: "credential env placeholder tail", pattern: /\b(?:SEEMIRAI_)?(?:(?:UPBIT_)?(?:ACCESS_KEY|SECRET_KEY)|TELEGRAM_BOT_TOKEN|TUI_CONTROL_TOKEN|DATABASE_PASSWORD|DB_PASSWORD|PGPASSWORD)\s*[:=]\s*["']?(?:<redacted>|redacted|\[redacted\])["']?[,;:\[{]\s*[^"'\s,;}\]]{4,}/i },
-  { label: "credential env placeholder json tail", pattern: /\b(?:SEEMIRAI_)?(?:(?:UPBIT_)?(?:ACCESS_KEY|SECRET_KEY)|TELEGRAM_BOT_TOKEN|TUI_CONTROL_TOKEN|DATABASE_PASSWORD|DB_PASSWORD|PGPASSWORD)\s*[:=]\s*["']?(?:<redacted>|redacted|\[redacted\])["']?\s*[,;]\s*(?:\{|\[)/i },
+  { label: "database password env assignment", pattern: /\b(?:SEEMIRAI_)?(?:DATABASE_PASSWORD|POSTGRES_PASSWORD|DB_PASSWORD|PGPASSWORD)\s*[:=]\s*(?!(?:["']?(?:<redacted>|redacted|\[redacted\])["']?)(?:$|[\r\n,}]))[^\r\n,}]{8,}/i },
+  { label: "credential env placeholder tail", pattern: /\b(?:SEEMIRAI_)?(?:(?:UPBIT_)?(?:ACCESS_KEY|SECRET_KEY)|TELEGRAM_BOT_TOKEN|TUI_CONTROL_TOKEN|DATABASE_URL|DATABASE_PASSWORD|POSTGRES_PASSWORD|DB_PASSWORD|PGPASSWORD)\s*[:=]\s*["']?(?:<redacted>|redacted|\[redacted\])["']?[,;:\[{]\s*[^"'\s,;}\]]{4,}/i },
+  { label: "credential env placeholder json tail", pattern: /\b(?:SEEMIRAI_)?(?:(?:UPBIT_)?(?:ACCESS_KEY|SECRET_KEY)|TELEGRAM_BOT_TOKEN|TUI_CONTROL_TOKEN|DATABASE_URL|DATABASE_PASSWORD|POSTGRES_PASSWORD|DB_PASSWORD|PGPASSWORD)\s*[:=]\s*["']?(?:<redacted>|redacted|\[redacted\])["']?\s*[,;]\s*(?:\{|\[)/i },
   { label: "raw authorization bearer", pattern: /authorization:\s*bearer\s+(?!<redacted>|redacted|\[redacted\])[^\s"']+/i },
   { label: "standalone bearer token", pattern: /\bBearer\s+(?!(?:<redacted>|redacted|\[redacted\])(?:\s|$))[^\s"']{16,}/i },
   { label: "bearer placeholder tail", pattern: /\bBearer\s+(?:<redacted>|redacted|\[redacted\])\s+[^\s"']+/i },
@@ -1643,7 +1647,13 @@ function createSourceScanCommandEvidence(commands) {
 
 function searchPatternCoversRequiredPattern(searchPattern, requirement) {
   const requiredTerm = requirement.pattern.source;
-  return new RegExp(`(?:^|[^\\p{L}\\p{N}_])${escapeRegExp(requiredTerm)}(?:$|[^\\p{L}\\p{N}_])`, "u").test(searchPattern);
+  const coveragePattern = new RegExp(`(^|[^\\p{L}\\p{N}_])${escapeRegExp(requiredTerm)}($|[^\\p{L}\\p{N}_])`, "gu");
+  return [...searchPattern.matchAll(coveragePattern)]
+    .some((match) => !isRegexCoverageSuffixMutation(match[2] ?? ""));
+}
+
+function isRegexCoverageSuffixMutation(suffix) {
+  return ["{", "[", "(", "?", "+", "*", "."].includes(suffix);
 }
 
 function summarizeSourceScanCommandCheck(check) {
@@ -1832,8 +1842,15 @@ function hasRipgrepLineNumber(tokens) {
 
 function hasUnsupportedRipgrepRegex(pattern) {
   // ripgrep가 parse하지 못하는 lookaround류 패턴은 실제 source coverage 증거로 인정하지 않는다.
-  return /\(\?(?:[!=<]|P|#|[a-zA-Z-]+:)/u.test(pattern)
-    || /\$\^/u.test(pattern);
+  if (/\(\?(?:[!=<]|P|#|[a-zA-Z-]+:)/u.test(pattern) || /\$\^/u.test(pattern)) {
+    return true;
+  }
+  try {
+    new RegExp(pattern, "u");
+    return false;
+  } catch {
+    return true;
+  }
 }
 
 function collectRipgrepPathOperands(tokens) {
@@ -2151,7 +2168,8 @@ function hasMatchingArtifactOrderSuffix(record, run) {
   if (expected.length === 0) {
     return false;
   }
-  return expected.some((item) => readStringFromAliases(record, item.aliases) === item.value);
+  // manifest가 제공한 submit/cancel suffix는 artifact safe summary에도 누락 없이 남아야 같은 주문 chain으로 대조할 수 있다.
+  return expected.every((item) => readStringFromAliases(record, item.aliases) === item.value);
 }
 
 function artifactFieldAliases(field) {
