@@ -163,6 +163,7 @@ const ripgrepOptionsWithNextValue = new Set([
   "--max-count",
   "--max-depth",
   "--max-filesize",
+  "--path-separator",
   "--pre",
   "--pre-glob",
   "--replace",
@@ -199,6 +200,7 @@ const sensitivePatterns = [
   { label: "database password json field", pattern: /"(?:databasePassword|database_password|dbPassword|db_password|pgPassword|pg_password|password)"\s*:\s*"(?!\s*(?:<redacted>|redacted|\[redacted\])\s*")[^"]{8,}"/i },
   { label: "query hash json field", pattern: /"(?:queryHash|query_hash)"\s*:\s*"(?!\s*(?:<redacted>|redacted|\[redacted\])\s*")[^"]{8,}"/i },
   { label: "credential decoded field", pattern: /\b(?:access_key|accessKey|access-key|secret_key|secretKey|secret-key|telegram_bot_token|telegram-bot-token|botToken|tuiControlToken|tui_control_token|tui-control-token|seemirai(?:Upbit)?(?:AccessKey|SecretKey|TelegramBotToken|TuiControlToken)|databaseUrl|database_url|database-url|databasePassword|database_password|database-password|dbPassword|db_password|db-password|pgPassword|pg_password|pg-password|password|token|authorization|jwt|queryHash|query_hash)\s*:\s*(?!["']?(?:<redacted>|redacted|\[redacted\])["']?(?:\s|$|[,}\]]))[^\r\n]{8,}/i },
+  { label: "credential decoded placeholder tail", pattern: /\b(?:access_key|accessKey|access-key|secret_key|secretKey|secret-key|telegram_bot_token|telegram-bot-token|botToken|tuiControlToken|tui_control_token|tui-control-token|seemirai(?:Upbit)?(?:AccessKey|SecretKey|TelegramBotToken|TuiControlToken)|databaseUrl|database_url|database-url|databasePassword|database_password|database-password|dbPassword|db_password|db-password|pgPassword|pg_password|pg-password|password|token|authorization|jwt|queryHash|query_hash)\s*:\s*["']?(?:<redacted>|redacted|\[redacted\])["']?(?:\s+|[,;:\[{])\s*[^\s"',;}\]]{4,}/i },
   { label: "raw payload decoded field", pattern: /\b(?:rawProvider(?:Payload|Body)?|rawOrder(?:Detail|Payload)?|rawUpdate(?:Payload|Body)?|raw(?:_|-)?provider(?:(?:_|-)?(?:payload|body))?|raw(?:_|-)?order(?:(?:_|-)?(?:detail|payload))?|raw(?:_|-)?update(?:(?:_|-)?(?:payload|body))?)\s*:/i },
   { label: "access key env assignment", pattern: /\b(?:SEEMIRAI_)?(?:UPBIT_)?ACCESS_KEY\s*[:=]\s*(?!(?:["']?(?:<redacted>|redacted|\[redacted\])["']?)(?:$|[\r\n,}]))[^\r\n,}]{8,}/i },
   { label: "secret key env assignment", pattern: /\b(?:SEEMIRAI_)?(?:UPBIT_)?SECRET_KEY\s*[:=]\s*(?!(?:["']?(?:<redacted>|redacted|\[redacted\])["']?)(?:$|[\r\n,}]))[^\r\n,}]{8,}/i },
@@ -223,8 +225,10 @@ const sensitivePatterns = [
   { label: "raw order field", pattern: /"raw(?:_|-)?order(?:(?:_|-)?(?:detail|payload))?"\s*:/i },
   { label: "raw provider string payload", pattern: /\b(?:rawProvider(?:Payload|Body)?|raw(?:_|-)?provider(?:(?:_|-)?(?:payload|body))?)\s*[:=]\s*(?!(?:<redacted>|redacted|\[redacted\])(?:\s|$))(?:\{|\[|[A-Za-z0-9_-]{4,})/i },
   { label: "raw order string payload", pattern: /\b(?:rawOrder(?:Detail|Payload)?|raw(?:_|-)?order(?:(?:_|-)?(?:detail|payload))?)\s*[:=]\s*(?!(?:<redacted>|redacted|\[redacted\])(?:\s|$))(?:\{|\[|[A-Za-z0-9_-]{4,})/i },
+  { label: "raw update string payload", pattern: /\b(?:rawUpdate(?:Payload|Body)?|raw(?:_|-)?update(?:(?:_|-)?(?:payload|body))?)\s*[:=]\s*(?!(?:<redacted>|redacted|\[redacted\])(?:\s|$))(?:\{|\[|[A-Za-z0-9_-]{4,})/i },
   { label: "raw provider placeholder tail", pattern: /\b(?:rawProvider(?:Payload|Body)?|raw(?:_|-)?provider(?:(?:_|-)?(?:payload|body))?)\s*[:=]\s*["']?(?:<redacted>|redacted|\[redacted\])["']?(?:\s+|[,;:\[{])\s*(?:\{|\[|[^\s"']+)/i },
   { label: "raw order placeholder tail", pattern: /\b(?:rawOrder(?:Detail|Payload)?|raw(?:_|-)?order(?:(?:_|-)?(?:detail|payload))?)\s*[:=]\s*["']?(?:<redacted>|redacted|\[redacted\])["']?(?:\s+|[,;:\[{])\s*(?:\{|\[|[^\s"']+)/i },
+  { label: "raw update placeholder tail", pattern: /\b(?:rawUpdate(?:Payload|Body)?|raw(?:_|-)?update(?:(?:_|-)?(?:payload|body))?)\s*[:=]\s*["']?(?:<redacted>|redacted|\[redacted\])["']?(?:\s+|[,;:\[{])\s*(?:\{|\[|[^\s"']+)/i },
   { label: "raw update field", pattern: /"raw(?:_|-)?update"\s*:/i },
 ];
 
@@ -2033,7 +2037,8 @@ function createArtifactManifestConflicts(artifactFiles, manifest, run, counters)
     for (const item of records) {
       const closeoutRecord = isCloseoutEvidenceRecord(item.record);
       const status = readString(item.record.status);
-      if (status !== undefined && isFailureArtifactStatus(status)) {
+      const closeoutRelevantStatus = item.path === "$" || closeoutRecord;
+      if (closeoutRelevantStatus && status !== undefined && isFailureArtifactStatus(status)) {
         conflicts.push({ filePath: file.filePath, field: `${item.path}.status`, expected: "no artifact-level failure status", actual: status });
       } else if (closeoutRecord && status !== undefined && !/^(?:passed|pass|success|succeeded|ok|completed)$/iu.test(status)) {
         conflicts.push({ filePath: file.filePath, field: `${item.path}.status`, expected: "explicit success status", actual: status });
@@ -2093,7 +2098,7 @@ function createArtifactManifestConflicts(artifactFiles, manifest, run, counters)
 }
 
 function isFailureArtifactStatus(value) {
-  return /(?:^|[_:-])(?:blocked|error|fail|failed|failure|partial|skipped)(?:$|[_:-])/iu.test(value)
+  return /(?:^|[_:-])(?:blocked|error|fail|failed|failure|partial|reject|rejected|skipped)(?:$|[_:-])/iu.test(value)
     || /manual[_:-]?review/iu.test(value)
     || /timeout/iu.test(value)
     || /(?:^|[_:-])(?:unknown|uncertain)(?:$|[_:-])/iu.test(value);
