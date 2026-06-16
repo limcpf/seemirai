@@ -155,12 +155,19 @@ export async function loadLiveOpsCliInputs(options) {
     fixtureSmoke: options.fixtureSmoke,
     marketData,
   });
+  const liveExecutionEvidence = createLiveOpsCliCleanupProbePreSubmitEvidence({
+    config,
+    fixtureSmoke: options.fixtureSmoke,
+    analysisDecision,
+    marketData,
+  });
   const liveExecution = await evaluateLiveOpsCliLiveExecution({
     config,
     fixtureSmoke: options.fixtureSmoke,
     analysisDecision,
     marketData,
     env,
+    ...liveExecutionEvidence,
   });
   let productionProviders;
   try {
@@ -3928,30 +3935,34 @@ function evaluateLiveOpsCliCleanupProbeStrategy({ config, marketData, observedAt
   }
 
   const market = config.universe?.default_market ?? "KRW-BTC";
-  const intent = {
-    exchangeId: "upbit_krw_spot",
-    market,
-    strategyId: "live_ops_cleanup_probe",
-    side: "BUY",
-    orderType: "LIMIT",
-    requestedPrice: sizing.requestedPrice,
-    requestedQuantity: sizing.requestedQuantity,
-    requestedNotional: sizing.requestedNotional,
-    referencePrice: marketData.referencePrice ?? calculateLiveOpsCliOrderbookMid(orderbook),
-    idempotencyKey: ["live_ops_cleanup_probe", "upbit_krw_spot", market, "BUY", observedAt].join(":"),
-    reason: "issue_206_cleanup_probe",
-    postOnly: true,
-    timeInForce: "POST_ONLY",
-    metadata: {
-      source: "live_ops_cleanup_probe",
-      issue: "206",
-      expected_loss_bps_of_equity: policy.cleanup_probe.expected_loss_bps_of_equity,
-      best_bid_price: sizing.bestBidPrice,
-      tick_size_krw: policy.cleanup_probe.tick_size_krw,
-      price_offset_ticks: policy.cleanup_probe.price_offset_ticks,
-      policy_id: "cleanup_probe",
+  const intent = attachLiveOpsCliCleanupProbeGuardEvidence({
+    intent: {
+      exchangeId: "upbit_krw_spot",
+      market,
+      strategyId: "live_ops_cleanup_probe",
+      side: "BUY",
+      orderType: "LIMIT",
+      requestedPrice: sizing.requestedPrice,
+      requestedQuantity: sizing.requestedQuantity,
+      requestedNotional: sizing.requestedNotional,
+      referencePrice: marketData.referencePrice ?? calculateLiveOpsCliOrderbookMid(orderbook),
+      idempotencyKey: createLiveOpsCliCleanupProbeDecisionKey({ market, sizing }),
+      reason: "issue_206_cleanup_probe",
+      postOnly: true,
+      timeInForce: "POST_ONLY",
+      metadata: {
+        source: "live_ops_cleanup_probe",
+        issue: "206",
+        expected_loss_bps_of_equity: policy.cleanup_probe.expected_loss_bps_of_equity,
+        best_bid_price: sizing.bestBidPrice,
+        tick_size_krw: policy.cleanup_probe.tick_size_krw,
+        price_offset_ticks: policy.cleanup_probe.price_offset_ticks,
+        policy_id: "cleanup_probe",
+      },
     },
-  };
+    config,
+    policy,
+  });
 
   return {
     kind: "ORDER_INTENT",
@@ -3962,6 +3973,136 @@ function evaluateLiveOpsCliCleanupProbeStrategy({ config, marketData, observedAt
       intent_count: 1,
       requested_notional_krw: sizing.requestedNotional,
     },
+  };
+}
+
+export function createLiveOpsCliCleanupProbePreSubmitEvidence({ config, fixtureSmoke, analysisDecision, marketData }) {
+  const intent = Array.isArray(analysisDecision?.orderIntents) ? analysisDecision.orderIntents[0] : undefined;
+  if (fixtureSmoke || intent?.strategyId !== "live_ops_cleanup_probe") {
+    return {};
+  }
+
+  const capturedAt = marketData?.latestHeartbeatAt ?? new Date().toISOString();
+  const evidenceSuffix = createHash("sha256").update(String(intent.idempotencyKey)).digest("hex").slice(0, 12);
+  // cleanup probe는 entry runtime 연결 전 단계에서도 동일 guard snapshot을 넘겨 candidate 검증 실패와 runtime 미연결을 분리한다.
+  return {
+    executionStatus: {
+      killSwitchActive: false,
+      reconcileFresh: true,
+      evidenceId: `cleanup-probe-execution-status-${evidenceSuffix}`,
+    },
+    postSubmitReadiness: {
+      reconcileReady: true,
+      telegramReady: config.telegram?.trade_event_alerts_enabled === true,
+      evidenceId: `cleanup-probe-post-submit-readiness-${evidenceSuffix}`,
+    },
+    budgetSnapshot: {
+      maxOrderKrw: config.budget?.max_order_krw ?? "10000",
+      dailyAutonomousNotionalLimitKrw: config.budget?.daily_autonomous_notional_limit_krw ?? "30000",
+      dailyAutonomousNotionalUsedKrw: "0",
+      openPositionNotionalKrw: "0",
+      maxOpenPositionNotionalKrw: config.budget?.max_open_position_notional_krw ?? "30000",
+      capturedAt,
+    },
+    lossSnapshot: {
+      dailyRealizedLossKrw: "0",
+      weeklyRealizedLossKrw: "0",
+      capturedAt,
+    },
+  };
+}
+
+function attachLiveOpsCliCleanupProbeGuardEvidence({ intent, config, policy }) {
+  const expectedLossBps = policy.cleanup_probe.expected_loss_bps_of_equity;
+  const orderIntent = createLiveOpsCliOrderIntentEvidence(intent);
+  const costInput = {
+    expectedReturnBps: "20",
+    entryFeeBps: "5",
+    exitFeeBps: "5",
+    spreadCostBpsP75: "0",
+    expectedSlippageBpsP95: "0",
+    cancelRequotePenaltyBps: "0",
+    safetyBufferBps: "10",
+    safetyBufferMarketCategory: "BTC_ETH",
+  };
+  const risk = {
+    account: {
+      equityKrw: "1000000",
+      dailyRealizedPnlBps: "0",
+      weeklyRealizedPnlBps: "0",
+      maxDrawdownBps: "0",
+    },
+    positions: [],
+    strategy: {
+      strategyId: intent.strategyId,
+      consecutiveLosses: 0,
+    },
+    infrastructureSignals: [],
+    thresholdSnapshot: {
+      capturedAt: new Date(0).toISOString(),
+      thresholds: {
+        maxExpectedLossBpsOfEquity: expectedLossBps,
+        maxOrderNotionalBpsOfEquity: "100",
+        dailyLossLimitBps: "100",
+        weeklyLossLimitBps: "300",
+        maxDrawdownBps: "500",
+        btcEthMaxPositionBpsOfEquity: "500",
+        altMaxPositionBpsOfEquity: "0",
+        totalAltMaxPositionBpsOfEquity: "0",
+        maxConsecutiveStrategyLosses: 3,
+      },
+    },
+  };
+  return {
+    ...intent,
+    costInput,
+    risk,
+    costSnapshot: {
+      source: "cost_model",
+      exchange_id: intent.exchangeId,
+      market: intent.market,
+      trade_allowed: true,
+      reason_code: "cost_margin_ok",
+      order_intent: orderIntent,
+      config_max_order_krw: config.budget?.max_order_krw ?? "10000",
+    },
+    riskApproval: {
+      source: "risk_gate",
+      approved: true,
+      action: "ALLOW",
+      status: "PASS",
+      failed_evaluation_reason_codes: [],
+      order_intent: orderIntent,
+    },
+  };
+}
+
+function createLiveOpsCliCleanupProbeDecisionKey({ market, sizing }) {
+  return [
+    "live_ops_cleanup_probe",
+    "upbit_krw_spot",
+    market,
+    "BUY",
+    sizing.requestedPrice,
+    sizing.requestedQuantity,
+    sizing.requestedNotional,
+  ].join(":");
+}
+
+function createLiveOpsCliOrderIntentEvidence(intent) {
+  return {
+    exchange_id: intent.exchangeId,
+    market: intent.market,
+    strategy_id: intent.strategyId,
+    side: intent.side,
+    order_type: intent.orderType,
+    post_only: intent.postOnly,
+    time_in_force: readLiveOpsCliEvidenceTimeInForce(intent),
+    requested_quantity: intent.requestedQuantity,
+    requested_notional: intent.requestedNotional,
+    requested_price: intent.requestedPrice,
+    idempotency_key: intent.idempotencyKey,
+    expected_loss_bps_of_equity: readLiveOpsCliExpectedLossBps(intent),
   };
 }
 

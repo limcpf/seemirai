@@ -241,10 +241,116 @@ console.log(JSON.stringify(summary));
       requestedPrice: "99999000",
       requestedQuantity: "0.0001",
       requestedNotional: "9999.9",
+      idempotencyKey: "live_ops_cleanup_probe:upbit_krw_spot:KRW-BTC:BUY:99999000:0.0001:9999.9",
       postOnly: true,
       timeInForce: "POST_ONLY",
+      costInput: {
+        expectedReturnBps: "20",
+        safetyBufferBps: "10",
+      },
+      risk: {
+        strategy: {
+          strategyId: "live_ops_cleanup_probe",
+        },
+      },
+      costSnapshot: {
+        source: "cost_model",
+        trade_allowed: true,
+        reason_code: "cost_margin_ok",
+      },
+      riskApproval: {
+        source: "risk_gate",
+        approved: true,
+        action: "ALLOW",
+      },
     });
+    expect(summary.orderIntents[0].costSnapshot.order_intent.idempotency_key).toBe(summary.orderIntents[0].idempotencyKey);
+    expect(summary.orderIntents[0].riskApproval.order_intent.idempotency_key).toBe(summary.orderIntents[0].idempotencyKey);
     expect(JSON.stringify(summary)).not.toContain("raw_provider_payload");
+  });
+
+  it("cleanup_probe pre-submit evidence는 live execution guard를 entry runtime 경계까지 전진시킨다", async () => {
+    const config = JSON.parse(await readFile(path.join(process.cwd(), "config", "live-ops.example.json"), "utf8"));
+    const result = spawnSync(
+      process.execPath,
+      [
+        "--input-type=module",
+        "--eval",
+        `
+import {
+  createLiveOpsCliCleanupProbePreSubmitEvidence,
+  evaluateLiveOpsCliAnalysisDecision,
+  evaluateLiveOpsCliLiveExecution,
+} from "./scripts/run-live-ops-support.mjs";
+
+const observedAt = "2026-06-16T00:00:00.000Z";
+const config = ${JSON.stringify(config)};
+const marketData = {
+  ready: true,
+  market: "KRW-BTC",
+  sourceProfile: "unit",
+  latestHeartbeatAt: observedAt,
+  referencePrice: "100000500",
+  persisted: { tradeCount: 1, orderbookCount: 1, statusCount: 1 },
+  marketEvents: [{
+    type: "ORDERBOOK",
+    exchangeId: "upbit_krw_spot",
+    market: "KRW-BTC",
+    asks: [{ price: "100001000", size: "0.5" }],
+    bids: [{ price: "100000000", size: "0.5" }],
+    exchangeTimestamp: observedAt,
+    receivedAt: observedAt,
+  }],
+};
+const analysisDecision = await evaluateLiveOpsCliAnalysisDecision({
+  config,
+  fixtureSmoke: false,
+  marketData,
+});
+const evidence = createLiveOpsCliCleanupProbePreSubmitEvidence({
+  config,
+  fixtureSmoke: false,
+  analysisDecision,
+  marketData,
+});
+const summary = await evaluateLiveOpsCliLiveExecution({
+  config,
+  fixtureSmoke: false,
+  analysisDecision,
+  marketData,
+  env: {
+    SEEMIRAI_UPBIT_ACCESS_KEY: "fake-access-key",
+    SEEMIRAI_UPBIT_SECRET_KEY: "fake-secret-key",
+    SEEMIRAI_UPBIT_KEY_SCOPE: "자산조회,주문조회,주문하기",
+    SEEMIRAI_UPBIT_KEY_SCOPE_EVIDENCE_ID: "scope-evidence",
+  },
+  ...evidence,
+});
+console.log(JSON.stringify(summary));
+`,
+      ],
+      {
+        cwd: process.cwd(),
+        encoding: "utf8",
+        env: minimalEnv(),
+      },
+    );
+
+    expect(result.status).toBe(0);
+    expect(result.stderr).toBe("");
+    const summary = JSON.parse(result.stdout);
+    expect(summary).toMatchObject({
+      status: "blocked",
+      liveOrderCapable: false,
+      orderIntentCount: 1,
+      attemptedOrderCount: 0,
+      submittedOrderCount: 0,
+    });
+    const codes = summary.checks.map((check: { code: string }) => check.code);
+    expect(codes).toContain("live_ops_order_intent_ready");
+    expect(codes).toContain("live_ops_entry_runtime_missing");
+    expect(codes).not.toContain("live_ops_execution_status_blocked");
+    expect(codes).not.toContain("live_ops_order_intent_blocked");
   });
 
   it("reconcile/PnL/status helper는 private read provider 결과를 secret-safe summary로 낮춘다", () => {

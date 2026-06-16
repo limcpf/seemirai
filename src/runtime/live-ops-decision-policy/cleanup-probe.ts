@@ -90,7 +90,11 @@ function evaluateCleanupProbe(
     requestedPrice: sizing.requestedPrice,
     requestedQuantity: sizing.requestedQuantity,
     requestedNotional: sizing.requestedNotional,
-    idempotencyKey: createCleanupProbeIdempotencyKey(context),
+    idempotencyKey: createCleanupProbeIdempotencyKey({
+      requestedPrice: sizing.requestedPrice,
+      requestedQuantity: sizing.requestedQuantity,
+      requestedNotional: sizing.requestedNotional,
+    }),
     reason: "issue_206_cleanup_probe",
     postOnly: true,
     timeInForce: "POST_ONLY",
@@ -231,13 +235,19 @@ function readBestBid(orderbook: OrderbookEvent): Decimal | undefined {
   return bids[0];
 }
 
-function createCleanupProbeIdempotencyKey(context: StrategyContext): string {
+function createCleanupProbeIdempotencyKey(input: {
+  readonly requestedPrice: NumericString;
+  readonly requestedQuantity: NumericString;
+  readonly requestedNotional: NumericString;
+}): string {
   return [
     LIVE_OPS_CLEANUP_PROBE_STRATEGY_ID,
     "upbit_krw_spot",
     "KRW-BTC",
     "BUY",
-    normalizeObservedAt(context.observedAt),
+    input.requestedPrice,
+    input.requestedQuantity,
+    input.requestedNotional,
   ].join(":");
 }
 
@@ -290,9 +300,4 @@ function toOptionalDecimal(value: unknown): Decimal | undefined {
   } catch {
     return undefined;
   }
-}
-
-function normalizeObservedAt(input: StrategyContext["observedAt"]): string {
-  const date = input instanceof Date ? input : new Date(input);
-  return Number.isNaN(date.getTime()) ? String(input) : date.toISOString();
 }

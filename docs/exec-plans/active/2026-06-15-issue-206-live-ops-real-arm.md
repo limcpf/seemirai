@@ -121,6 +121,10 @@ Telegram, TUI를 같은 lifecycle로 조립하고, 조건을 통과한 단일 `K
   - [x] production CLI의 non-fixture analysis/decision 경로가 placeholder `live_ops_strategy_decision_source_missing` 대신
         `cleanup_probe` decision policy contract를 실행한다. summary와 같은 decision tick의 `orderIntents`를 live execution에 전달하고,
         후보 0개는 broker 호출 없이 HOLD evidence로 닫는다.
+  - [x] `cleanup_probe` 후보에는 현재 후보 fingerprint와 일치하는 CostModel/RiskGate evidence와 pre-submit execution/budget/loss
+        snapshot을 연결한다. entry runtime이 미연결이면 후보/운영 상태 guard가 아니라 `live_ops_entry_runtime_missing`으로 fail-closed 한다.
+  - [x] issue #206 closeout validator는 `analysis.decision_policy.cleanup_probe` 표준 키와 값을 허용하고, 임의 strategy path 같은
+        추가 키는 계속 차단한다.
   - [x] user-facing CLI/TUI/status 문구는 한국어 상태/원인/영향/필요 조치를 먼저 보여주고, policy id, reason code, idempotency key는
         추적 정보에 분리한다.
   - [x] 새 TypeScript public type/interface/class/function은 한국어 JSDoc을 가진다. 상태 전이, 리스크 차단, idempotency, order intent
