@@ -338,6 +338,32 @@ describe("Issue 206 live:ops real-arm closeout script", () => {
     expect(getCheck(summary, "orderLifecycle")).toMatchObject({ status: "fail" });
   });
 
+  it("fails when order chain suffixes use fixture placeholders", async () => {
+    const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-issue-206-closeout-chain-fixture-suffix-"));
+    const manifestPath = await writeCloseoutManifest(artifactDir, {
+      runMutator: (run) => ({
+        ...run,
+        identifierSuffix: "fixture-identifier",
+        cancelIdentifierSuffix: "fixture-identifier",
+        brokerOrderIdSuffix: "fixture-order",
+        cancelBrokerOrderIdSuffix: "fixture-order",
+      }),
+      artifactText: JSON.stringify(createArtifactFixture({
+        identifierSuffix: "fixture-identifier",
+        cancelIdentifierSuffix: "fixture-identifier",
+        brokerOrderIdSuffix: "fixture-order",
+        cancelBrokerOrderIdSuffix: "fixture-order",
+      })),
+    });
+    const summary = await runScriptExpectingFailure(
+      ["--json", "--artifact-dir", artifactDir, "--manifest", manifestPath],
+      createReadyEnv(),
+    );
+
+    expect(summary.status).toBe("failed");
+    expect(getCheck(summary, "orderLifecycle")).toMatchObject({ status: "fail" });
+  });
+
   it("fails when lifecycle timestamps are in the future", async () => {
     const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-issue-206-closeout-future-lifecycle-"));
     const submittedAt = new Date(Date.now() + 86_400_000).toISOString();
@@ -1018,6 +1044,34 @@ describe("Issue 206 live:ops real-arm closeout script", () => {
     expect(getCheck(summary, "sourceSecurityScan")).toMatchObject({ status: "fail" });
   });
 
+  it("fails when source scan commands hide coverage terms in context count values", async () => {
+    const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-issue-206-closeout-source-scan-context-value-"));
+    const manifestPath = await writeCloseoutManifest(artifactDir, {
+      manifestMutator: (manifest) => ({
+        ...manifest,
+        sourceScan: {
+          status: "passed",
+          cwd: process.cwd(),
+          repositoryRoot: process.cwd(),
+          commands: [
+            "rg --no-config -uuu -n --after-context \"ord_type|market|시장가|best|withdraw|출금|deposit|입금|leverage|futures|margin\" \"a^\" src scripts config docs",
+            "rg --no-config -uuu -n --before-context \"access_key|accessKey|ACCESS_KEY|secret_key|secretKey|SECRET_KEY|Authorization|authorization|Bearer|bearer|JWT|jwt|telegram_bot_token|botToken|TELEGRAM_BOT_TOKEN|SEEMIRAI_TUI_CONTROL_TOKEN|tuiControlToken|tui_control_token|DATABASE_URL|databasePassword|database_password|db_password|pg_password|raw_provider|rawProvider|raw_order|rawOrder|raw_update|rawUpdate\" \"a^\" src scripts config docs",
+            "rg --no-config -uuu -n -C \"raw_update|rawUpdate\" \"a^\" src scripts config docs",
+          ],
+          unsafeMatches: [],
+          secretMatches: [],
+        },
+      }),
+    });
+    const summary = await runScriptExpectingFailure(
+      ["--json", "--artifact-dir", artifactDir, "--manifest", manifestPath],
+      createReadyEnv(),
+    );
+
+    expect(summary.status).toBe("failed");
+    expect(getCheck(summary, "sourceSecurityScan")).toMatchObject({ status: "fail" });
+  });
+
   it("fails when source scan commands use type or iglob narrowing", async () => {
     const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-issue-206-closeout-source-scan-type-iglob-"));
     const manifestPath = await writeCloseoutManifest(artifactDir, {
@@ -1532,6 +1586,60 @@ describe("Issue 206 live:ops real-arm closeout script", () => {
     expect(getCheck(summary, "sourceSecurityScan")).toMatchObject({ status: "fail" });
   });
 
+  it("fails when source scan commands use regex backreferences", async () => {
+    const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-issue-206-closeout-source-scan-backreference-regex-"));
+    const manifestPath = await writeCloseoutManifest(artifactDir, {
+      manifestMutator: (manifest) => ({
+        ...manifest,
+        sourceScan: {
+          status: "passed",
+          cwd: process.cwd(),
+          repositoryRoot: process.cwd(),
+          commands: [
+            "rg --no-config -uuu -n \"(ord_type)\\1|market|시장가|best|withdraw|출금|deposit|입금|leverage|futures|margin\" src scripts config docs",
+            "rg --no-config -uuu -n \"(access_key)\\1|accessKey|ACCESS_KEY|secret_key|secretKey|SECRET_KEY|Authorization|authorization|Bearer|bearer|JWT|jwt|telegram_bot_token|botToken|TELEGRAM_BOT_TOKEN|SEEMIRAI_TUI_CONTROL_TOKEN|tuiControlToken|tui_control_token|DATABASE_URL|databasePassword|database_password|db_password|pg_password|raw_provider|rawProvider|raw_order|rawOrder|raw_update|rawUpdate\" src scripts config docs",
+          ],
+          unsafeMatches: [],
+          secretMatches: [],
+        },
+      }),
+    });
+    const summary = await runScriptExpectingFailure(
+      ["--json", "--artifact-dir", artifactDir, "--manifest", manifestPath],
+      createReadyEnv(),
+    );
+
+    expect(summary.status).toBe("failed");
+    expect(getCheck(summary, "sourceSecurityScan")).toMatchObject({ status: "fail" });
+  });
+
+  it("fails when source scan commands anchor required terms", async () => {
+    const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-issue-206-closeout-source-scan-anchored-regex-"));
+    const manifestPath = await writeCloseoutManifest(artifactDir, {
+      manifestMutator: (manifest) => ({
+        ...manifest,
+        sourceScan: {
+          status: "passed",
+          cwd: process.cwd(),
+          repositoryRoot: process.cwd(),
+          commands: [
+            "rg --no-config -uuu -n \"^ord_type|^market|^시장가|^best|^withdraw|^출금|^deposit|^입금|^leverage|^futures|^margin\" src scripts config docs",
+            "rg --no-config -uuu -n \"^access_key|^accessKey|^ACCESS_KEY|^secret_key|^secretKey|^SECRET_KEY|^Authorization|^authorization|^Bearer|^bearer|^JWT|^jwt|^telegram_bot_token|^botToken|^TELEGRAM_BOT_TOKEN|^SEEMIRAI_TUI_CONTROL_TOKEN|^tuiControlToken|^tui_control_token|^DATABASE_URL|^databasePassword|^database_password|^db_password|^pg_password|^raw_provider|^rawProvider|^raw_order|^rawOrder|^raw_update|^rawUpdate\" src scripts config docs",
+          ],
+          unsafeMatches: [],
+          secretMatches: [],
+        },
+      }),
+    });
+    const summary = await runScriptExpectingFailure(
+      ["--json", "--artifact-dir", artifactDir, "--manifest", manifestPath],
+      createReadyEnv(),
+    );
+
+    expect(summary.status).toBe("failed");
+    expect(getCheck(summary, "sourceSecurityScan")).toMatchObject({ status: "fail" });
+  });
+
   it("fails when source scan commands hide required paths behind shell comments or newlines", async () => {
     const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-issue-206-closeout-source-scan-shell-comment-"));
     const manifestPath = await writeCloseoutManifest(artifactDir, {
@@ -1962,6 +2070,33 @@ describe("Issue 206 live:ops real-arm closeout script", () => {
           commands: [
             "rg --no-config -uuu -n \"ord_type|market|시장가|best|withdraw|출금|deposit|입금|leverage|futures|margin\" src scripts config docs",
             "rg --no-config -uuu -n \"access_key|accessKey|ACCESS_KEY|secret_key|secretKey|SECRET_KEY|Authorization|Bearer|JWT|jwt|telegram_bot_token|botToken|TELEGRAM_BOT_TOKEN|SEEMIRAI_TUI_CONTROL_TOKEN|tuiControlToken|tui_control_token|DATABASE_URL|databasePassword|database_password|db_password|pg_password|raw_provider|rawProvider|raw_order|rawOrder\" src scripts config docs",
+          ],
+          unsafeMatches: [],
+          secretMatches: [],
+        },
+      }),
+    });
+    const summary = await runScriptExpectingFailure(
+      ["--json", "--artifact-dir", artifactDir, "--manifest", manifestPath],
+      createReadyEnv(),
+    );
+
+    expect(summary.status).toBe("failed");
+    expect(getCheck(summary, "sourceSecurityScan")).toMatchObject({ status: "fail" });
+  });
+
+  it("fails when source scan commands omit lowercase auth header patterns", async () => {
+    const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-issue-206-closeout-source-scan-lowercase-auth-"));
+    const manifestPath = await writeCloseoutManifest(artifactDir, {
+      manifestMutator: (manifest) => ({
+        ...manifest,
+        sourceScan: {
+          status: "passed",
+          cwd: process.cwd(),
+          repositoryRoot: process.cwd(),
+          commands: [
+            "rg --no-config -uuu -n \"ord_type|market|시장가|best|withdraw|출금|deposit|입금|leverage|futures|margin\" src scripts config docs",
+            "rg --no-config -uuu -n \"access_key|accessKey|ACCESS_KEY|secret_key|secretKey|SECRET_KEY|Authorization|Bearer|JWT|jwt|telegram_bot_token|botToken|TELEGRAM_BOT_TOKEN|SEEMIRAI_TUI_CONTROL_TOKEN|tuiControlToken|tui_control_token|DATABASE_URL|databasePassword|database_password|db_password|pg_password|raw_provider|rawProvider|raw_order|rawOrder|raw_update|rawUpdate\" src scripts config docs",
           ],
           unsafeMatches: [],
           secretMatches: [],
@@ -2742,6 +2877,27 @@ describe("Issue 206 live:ops real-arm closeout script", () => {
     expect(getCheck(summary, "artifactFiles")).toMatchObject({ status: "fail" });
   });
 
+  it("fails when order lifecycle attempt status is failed next to nested success evidence", async () => {
+    const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-issue-206-closeout-artifact-lifecycle-failed-"));
+    const manifestPath = await writeCloseoutManifest(artifactDir, {
+      artifactText: JSON.stringify({
+        orderAttempt: {
+          status: "FAILED",
+          submittedAt: "2026-06-15T00:00:00.000Z",
+          identifierSuffix: "closeout-identifier",
+        },
+        result: createArtifactFixture(),
+      }),
+    });
+    const summary = await runScriptExpectingFailure(
+      ["--json", "--artifact-dir", artifactDir, "--manifest", manifestPath],
+      createReadyEnv(),
+    );
+
+    expect(summary.status).toBe("failed");
+    expect(getCheck(summary, "artifactFiles")).toMatchObject({ status: "fail" });
+  });
+
   it("fails when artifact-level status uses blocked suffix variants", async () => {
     const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-issue-206-closeout-artifact-wrapper-blocked-suffix-"));
     const manifestPath = await writeCloseoutManifest(artifactDir, {
@@ -2764,6 +2920,23 @@ describe("Issue 206 live:ops real-arm closeout script", () => {
     const manifestPath = await writeCloseoutManifest(artifactDir, {
       artifactText: JSON.stringify({
         status: "MANUAL_REVIEW_REQUIRED",
+        result: createArtifactFixture(),
+      }),
+    });
+    const summary = await runScriptExpectingFailure(
+      ["--json", "--artifact-dir", artifactDir, "--manifest", manifestPath],
+      createReadyEnv(),
+    );
+
+    expect(summary.status).toBe("failed");
+    expect(getCheck(summary, "artifactFiles")).toMatchObject({ status: "fail" });
+  });
+
+  it("fails when artifact-level status uses space-separated manual review text", async () => {
+    const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-issue-206-closeout-artifact-wrapper-manual-review-text-"));
+    const manifestPath = await writeCloseoutManifest(artifactDir, {
+      artifactText: JSON.stringify({
+        status: "Manual Review Required",
         result: createArtifactFixture(),
       }),
     });
@@ -3709,7 +3882,7 @@ async function writeCloseoutManifest(
       repositoryRoot: process.cwd(),
       commands: [
         "rg --no-config -uuu -n \"ord_type|market|시장가|best|withdraw|출금|deposit|입금|leverage|futures|margin\" src scripts config docs",
-        "rg --no-config -uuu -n \"access_key|accessKey|ACCESS_KEY|secret_key|secretKey|SECRET_KEY|Authorization|Bearer|JWT|jwt|telegram_bot_token|botToken|TELEGRAM_BOT_TOKEN|SEEMIRAI_TUI_CONTROL_TOKEN|tuiControlToken|tui_control_token|DATABASE_URL|databasePassword|database_password|db_password|pg_password|raw_provider|rawProvider|raw_order|rawOrder|raw_update|rawUpdate\" src scripts config docs",
+        "rg --no-config -uuu -n \"access_key|accessKey|ACCESS_KEY|secret_key|secretKey|SECRET_KEY|Authorization|authorization|Bearer|bearer|JWT|jwt|telegram_bot_token|botToken|TELEGRAM_BOT_TOKEN|SEEMIRAI_TUI_CONTROL_TOKEN|tuiControlToken|tui_control_token|DATABASE_URL|databasePassword|database_password|db_password|pg_password|raw_provider|rawProvider|raw_order|rawOrder|raw_update|rawUpdate\" src scripts config docs",
       ],
       unsafeMatches: [],
       secretMatches: [],

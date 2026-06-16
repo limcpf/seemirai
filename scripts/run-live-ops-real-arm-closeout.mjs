@@ -93,7 +93,9 @@ const requiredSecretSourceScanPatterns = [
   { label: "camelCase secret key", pattern: /secretKey/u },
   { label: "uppercase secret key env", pattern: /SECRET_KEY/u },
   { label: "authorization header", pattern: /Authorization/u },
+  { label: "lowercase authorization header", pattern: /authorization/u },
   { label: "bearer token", pattern: /Bearer/u },
+  { label: "lowercase bearer token", pattern: /bearer/u },
   { label: "uppercase jwt", pattern: /JWT/u },
   { label: "lowercase jwt", pattern: /jwt/u },
   { label: "telegram token", pattern: /telegram_bot_token/u },
@@ -149,8 +151,11 @@ const disallowedRipgrepLongOptions = new Set([
 ]);
 const disallowedRipgrepShortOptions = new Set(["F", "I", "L", "M", "N", "P", "T", "c", "d", "f", "l", "m", "q", "r", "t", "v", "w", "x"]);
 const ripgrepOptionsWithNextValue = new Set([
+  "--after-context",
+  "--before-context",
   "--color",
   "--colors",
+  "--context",
   "--engine",
   "--context-separator",
   "--file",
@@ -172,7 +177,7 @@ const ripgrepOptionsWithNextValue = new Set([
   "--type",
   "--type-not",
 ]);
-const ripgrepShortOptionsWithNextValue = new Set(["M", "d", "f", "g", "m", "r", "t"]);
+const ripgrepShortOptionsWithNextValue = new Set(["A", "B", "C", "M", "d", "f", "g", "m", "r", "t"]);
 const withdrawalScopeMarkers = ["출금", "withdraw"];
 const forbiddenKeyScopeMarkers = ["출금", "입금", "withdraw", "deposit", "futures", "leverage", "margin"];
 const requiredCounterNames = [
@@ -953,10 +958,10 @@ async function writeFixtureManifest(artifactDir) {
     cancelRequestedAt,
     terminalCancelConfirmedAt,
     terminalState: "cancel",
-    identifierSuffix: "fixture-identifier",
-    cancelIdentifierSuffix: "fixture-identifier",
-    brokerOrderIdSuffix: "fixture-order",
-    cancelBrokerOrderIdSuffix: "fixture-order",
+    identifierSuffix: "closeout-identifier",
+    cancelIdentifierSuffix: "closeout-identifier",
+    brokerOrderIdSuffix: "closeout-order",
+    cancelBrokerOrderIdSuffix: "closeout-order",
     openExposureKrw: 0,
     note: "fixture smoke artifact - no live API side effect",
   };
@@ -987,10 +992,10 @@ async function writeFixtureManifest(artifactDir) {
       cancelRequestedAt,
       terminalCancelConfirmedAt,
       terminalState: "cancel",
-      identifierSuffix: "fixture-identifier",
-      cancelIdentifierSuffix: "fixture-identifier",
-      brokerOrderIdSuffix: "fixture-order",
-      cancelBrokerOrderIdSuffix: "fixture-order",
+      identifierSuffix: "closeout-identifier",
+      cancelIdentifierSuffix: "closeout-identifier",
+      brokerOrderIdSuffix: "closeout-order",
+      cancelBrokerOrderIdSuffix: "closeout-order",
       openExposureKrw: 0,
       openOrderCount: 0,
       reconcileMismatchCount: 0,
@@ -1657,7 +1662,11 @@ function searchPatternCoversRequiredPattern(searchPattern, requirement) {
   const requiredTerm = requirement.pattern.source;
   const coveragePattern = new RegExp(`(^|[^\\p{L}\\p{N}_])${escapeRegExp(requiredTerm)}($|[^\\p{L}\\p{N}_])`, "gu");
   return [...searchPattern.matchAll(coveragePattern)]
-    .some((match) => !isRegexCoverageSuffixMutation(match[2] ?? ""));
+    .some((match) => !isRegexCoveragePrefixMutation(match[1] ?? "") && !isRegexCoverageSuffixMutation(match[2] ?? ""));
+}
+
+function isRegexCoveragePrefixMutation(prefix) {
+  return prefix === "^";
 }
 
 function isRegexCoverageSuffixMutation(suffix) {
@@ -1853,6 +1862,9 @@ function hasUnsupportedRipgrepRegex(pattern) {
   if (/\(\?(?:[!=<]|P|#|[a-zA-Z-]+:)/u.test(pattern) || /\$\^/u.test(pattern)) {
     return true;
   }
+  if (/\\(?:[1-9]|k<[^>]+>)/u.test(pattern)) {
+    return true;
+  }
   try {
     new RegExp(pattern, "u");
     return false;
@@ -2037,7 +2049,7 @@ function createArtifactManifestConflicts(artifactFiles, manifest, run, counters)
     for (const item of records) {
       const closeoutRecord = isCloseoutEvidenceRecord(item.record);
       const status = readString(item.record.status);
-      const closeoutRelevantStatus = item.path === "$" || closeoutRecord;
+      const closeoutRelevantStatus = item.path === "$" || closeoutRecord || isOrderLifecycleEvidenceRecord(item.record);
       if (closeoutRelevantStatus && status !== undefined && isFailureArtifactStatus(status)) {
         conflicts.push({ filePath: file.filePath, field: `${item.path}.status`, expected: "no artifact-level failure status", actual: status });
       } else if (closeoutRecord && status !== undefined && !/^(?:passed|pass|success|succeeded|ok|completed)$/iu.test(status)) {
@@ -2099,7 +2111,7 @@ function createArtifactManifestConflicts(artifactFiles, manifest, run, counters)
 
 function isFailureArtifactStatus(value) {
   return /(?:^|[_:-])(?:blocked|error|fail|failed|failure|partial|reject|rejected|skipped)(?:$|[_:-])/iu.test(value)
-    || /manual[_:-]?review/iu.test(value)
+    || /manual(?:[_:\-\s]+)?review/iu.test(value)
     || /timeout/iu.test(value)
     || /(?:^|[_:-])(?:unknown|uncertain)(?:$|[_:-])/iu.test(value);
 }
@@ -2134,6 +2146,26 @@ function isCloseoutEvidenceRecord(record) {
     "openExposureKrw",
     "open_exposure_krw",
   ].some((field) => record[field] !== undefined);
+}
+
+function isOrderLifecycleEvidenceRecord(record) {
+  const hasLifecycleTimestamp = ["submittedAt", "submitted_at", "cancelRequestedAt", "cancel_requested_at", "terminalCancelConfirmedAt", "terminal_cancel_confirmed_at"]
+    .some((field) => record[field] !== undefined);
+  const hasOrderChainIdentifier = [
+    "identifierSuffix",
+    "identifier_suffix",
+    "cancelIdentifierSuffix",
+    "cancel_identifier_suffix",
+    "brokerOrderIdSuffix",
+    "broker_order_id_suffix",
+    "cancelBrokerOrderIdSuffix",
+    "cancel_broker_order_id_suffix",
+    "brokerOrderId",
+    "broker_order_id",
+    "cancelBrokerOrderId",
+    "cancel_broker_order_id",
+  ].some((field) => record[field] !== undefined);
+  return hasLifecycleTimestamp && hasOrderChainIdentifier;
 }
 
 function readArtifactPolicyField(record, field) {
@@ -2265,6 +2297,13 @@ function isUsableOrderEvidenceSuffix(value) {
     "redacted",
     "masked",
     "hidden",
+    "fixture",
+    "fixture-identifier",
+    "fixture_identifier",
+    "fixtureidentifier",
+    "fixture-order",
+    "fixture_order",
+    "fixtureorder",
     "removed",
     "secret",
     "token",
