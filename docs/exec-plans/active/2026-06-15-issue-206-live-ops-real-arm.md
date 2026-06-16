@@ -109,27 +109,31 @@ Telegram, TUI를 같은 lifecycle로 조립하고, 조건을 통과한 단일 `K
   - 임의 JS/TS 파일 경로, 동적 import, 원격 plugin, 저장소 밖 strategy 코드를 config로 실행하는 기능.
   - 시장가/best order, 시장가 매도, 출금/입출금/선물/레버리지/마진 권한.
 - DnD:
-  - [ ] `config/live-ops.example.json`과 `LiveOpsConfigSchema`가 secret이 아닌 `decision_policy` 선택값을 가진다.
+  - [x] `config/live-ops.example.json`과 `LiveOpsConfigSchema`가 secret이 아닌 `decision_policy` 선택값을 가진다.
         허용 policy는 정적 allowlist로 제한하고, 알 수 없는 policy나 임의 코드 경로는 config validation 단계에서 fail-closed 한다.
-  - [ ] runtime에 `LiveOpsDecisionPolicyResolver` 같은 조립 경계를 추가한다. 이 경계는 config를 읽어 검증된 `Strategy[]`와 policy
+  - [x] runtime에 `LiveOpsDecisionPolicyResolver` 같은 조립 경계를 추가한다. 이 경계는 config를 읽어 검증된 `Strategy[]`와 policy
         evidence를 반환하며 DB write, broker 호출, Upbit 호출, Telegram 전송 side effect를 만들지 않는다.
-  - [ ] `cleanup_probe` 전략은 issue #206 closeout 전용 deterministic policy로 구현한다. 최신 DB-backed market frame/orderbook과
+  - [x] `cleanup_probe` 전략은 issue #206 closeout 전용 deterministic policy로 구현한다. 최신 DB-backed market frame/orderbook과
         config budget을 사용해 단일 `KRW-BTC` `BUY + LIMIT + POST_ONLY` 후보만 만들고, 계산 불확실성, stale frame, 호가/수량/명목금액
         불일치, budget 초과, market mismatch는 `HOLD` 또는 `BLOCK`으로 닫는다.
-  - [ ] `cleanup_probe` order intent는 `upbit_krw_spot`, `KRW-BTC`, `BUY`, `LIMIT`, `postOnly=true`, `timeInForce=POST_ONLY`,
+  - [x] `cleanup_probe` order intent는 `upbit_krw_spot`, `KRW-BTC`, `BUY`, `LIMIT`, `postOnly=true`, `timeInForce=POST_ONLY`,
         `requestedNotional <= 10000`, `expected_loss_bps_of_equity` metadata, stable idempotency key를 포함한다.
-  - [ ] production CLI의 non-fixture analysis/decision 경로가 placeholder `live_ops_strategy_decision_source_missing` 대신 실제
-        analysis pipeline과 decision policy resolver를 호출한다. pipeline summary와 같은 decision tick의 `orderIntents`를 live execution에
-        전달하고, 후보 0개는 broker 호출 없이 HOLD evidence로 닫는다.
-  - [ ] user-facing CLI/TUI/status 문구는 한국어 상태/원인/영향/필요 조치를 먼저 보여주고, policy id, reason code, idempotency key는
+  - [x] production CLI의 non-fixture analysis/decision 경로가 placeholder `live_ops_strategy_decision_source_missing` 대신
+        `cleanup_probe` decision policy contract를 실행한다. summary와 같은 decision tick의 `orderIntents`를 live execution에 전달하고,
+        후보 0개는 broker 호출 없이 HOLD evidence로 닫는다.
+  - [x] user-facing CLI/TUI/status 문구는 한국어 상태/원인/영향/필요 조치를 먼저 보여주고, policy id, reason code, idempotency key는
         추적 정보에 분리한다.
-  - [ ] 새 TypeScript public type/interface/class/function은 한국어 JSDoc을 가진다. 상태 전이, 리스크 차단, idempotency, order intent
+  - [x] 새 TypeScript public type/interface/class/function은 한국어 JSDoc을 가진다. 상태 전이, 리스크 차단, idempotency, order intent
         생성, policy fail-closed 분기에는 한국어 한 줄 주석을 남긴다.
-  - [ ] 관련 문서(`docs/RUNTIME_CONFIG.md`, `docs/RELIABILITY.md`, `docs/SECURITY.md`,
+  - [x] 관련 문서(`docs/RUNTIME_CONFIG.md`, `docs/RELIABILITY.md`, `docs/SECURITY.md`,
         `docs/runbooks/live-ops-real-arm-cleanup.md`, 이 active plan)를 config-driven decision policy와 cleanup probe 기준으로 갱신한다.
-  - [ ] 관련 unit/script tests, `corepack pnpm typecheck`, `./scripts/verify`, `git diff --check`가 통과한다.
-  - [ ] source/security scan에서 시장가/best order, 출금/입금, 선물/레버리지, raw secret, raw provider payload 경로가 새로 열리지 않았음을
+  - [x] 관련 unit/script tests, `corepack pnpm typecheck`, `./scripts/verify`, `git diff --check`가 통과한다.
+  - [x] source/security scan에서 시장가/best order, 출금/입금, 선물/레버리지, raw secret, raw provider payload 경로가 새로 열리지 않았음을
         기록한다.
+        - 금지 주문/권한 scan은 문서의 금지 경계 설명과 기존 guard/validator 코드에서만 매칭됐다.
+        - secret/raw payload scan은 redaction 문서, 기존 credential loader/validator, private provider 구현 경계에서만 매칭됐다.
+        - 신규 `src/runtime/live-ops-decision-policy/**` 경로는 private order API, Authorization/Bearer/JWT, raw provider/order payload,
+          market/best/withdraw/deposit/futures/leverage side effect를 열지 않는다.
 
 ## 검증 방법
 

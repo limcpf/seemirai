@@ -841,6 +841,8 @@ Acceptance Criteria:
 - [ ] 운영 실행에서 fixture provider summary나 주문 없는 dashboard 출력만으로 ready를 표시하지 않는다.
 - [ ] Upbit public market data가 DB에 지속 적재되고 TUI에 freshness가 표시된다.
 - [ ] decision pipeline이 실제 market frame을 읽고 HOLD 또는 order intent evidence를 남긴다.
+- [ ] production `analysis.decision_policy`는 정적 allowlist policy id만 허용하고, `cleanup_probe` policy가 검증된 strategy 구현체로
+  조립된다.
 - [ ] order intent가 조건을 통과하면 `LiveAutonomousEntryRuntime`을 거쳐 `UpbitLiveBroker.submitOrder` 경계까지 도달한다.
 - [ ] `BUY + LIMIT + post_only` 외 주문은 provider 호출 전에 fail-closed 된다.
 - [ ] 같은 order attempt/idempotency key 재시작은 duplicate live order를 만들지 않는다.
@@ -857,6 +859,8 @@ Acceptance Criteria:
 
 - 단위 테스트: production boot sequence가 실제 provider arm에서 config/env validation, DB readiness, public market data, private probe,
   Telegram startup, reconcile/PnL/status readiness, decision, live execution 순서를 지키는지 확인한다.
+- 단위 테스트: decision policy resolver가 임의 code path 없이 `cleanup_probe`를 정적 strategy로 조립하고, 최신 orderbook에서 단일
+  `BUY + LIMIT + POST_ONLY` order intent 또는 HOLD/BLOCK evidence를 만든다.
 - 단위 테스트: 단일 `BUY + LIMIT + post_only` 후보만 live autonomous runtime으로 전달되고 나머지 주문 유형은 fail-closed 되는지 확인한다.
 - 통합 테스트: fake Upbit public/private provider와 fake Telegram dispatch로 submit/cancel/reconcile summary contract를 검증한다.
 - script smoke: fixture smoke는 외부 DB/provider 호출 0회를 유지하고, 실제 provider arm flag 없이는 live order side effect를 만들지
@@ -882,7 +886,7 @@ Acceptance Criteria:
 
 - `docs/exec-plans/active/2026-06-15-issue-206-live-ops-real-arm.md`가 sub PR 순서, DnD, 검증 방법, closeout 기준을 추적한다.
 - 실제 cleanup 절차는 `docs/runbooks/live-ops-real-arm-cleanup.md`를 따른다.
-- provider arm, Telegram, reconcile, cleanup 기준이 바뀌면 `docs/RUNTIME_CONFIG.md`, `docs/RELIABILITY.md`, `docs/SECURITY.md`,
+- provider arm, decision policy, Telegram, reconcile, cleanup 기준이 바뀌면 `docs/RUNTIME_CONFIG.md`, `docs/RELIABILITY.md`, `docs/SECURITY.md`,
   `docs/product-specs/upbit-live-autonomous-trading.md`, 관련 runbook과 active/completed exec plan을 함께 갱신한다.
 
 제외 범위:

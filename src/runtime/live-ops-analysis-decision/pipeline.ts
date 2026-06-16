@@ -10,6 +10,7 @@ import type {
 import type {
   JsonRecord,
   MarketDataEvent,
+  OrderIntent,
   Strategy,
   StrategyDecision,
 } from "../../domain/index.js";
@@ -97,6 +98,7 @@ export interface LiveOpsAnalysisDecisionSummary {
   readonly holdCount: number;
   readonly blockCount: number;
   readonly orderIntentCount: number;
+  readonly orderIntents: readonly OrderIntent[];
   readonly recordHoldDecision: boolean;
   readonly message: string;
   readonly checks: readonly LiveOpsAnalysisDecisionCheck[];
@@ -267,7 +269,8 @@ function buildSummary(
   const ready = result.readyOverride ?? checks.every((check) => check.status === "ok");
   const holdCount = result.decisions.filter((decision) => decision.kind === "HOLD").length;
   const blockCount = result.decisions.filter((decision) => decision.kind === "BLOCK").length;
-  const orderIntentCount = countOrderIntents(result.decisions);
+  const orderIntents = collectOrderIntents(result.decisions);
+  const orderIntentCount = orderIntents.length;
 
   return {
     status: ready ? "ready" : "blocked",
@@ -281,6 +284,7 @@ function buildSummary(
     holdCount,
     blockCount,
     orderIntentCount,
+    orderIntents,
     recordHoldDecision: config.analysis.record_hold_decision && orderIntentCount === 0,
     message: toSummaryMessage(result.decisionCategory, orderIntentCount, ready),
     checks,
@@ -307,10 +311,11 @@ function resolveDecisionCategory(decisions: readonly StrategyDecision[]): LiveOp
 }
 
 function countOrderIntents(decisions: readonly StrategyDecision[]): number {
-  return decisions.reduce(
-    (count, decision) => count + (decision.kind === "ORDER_INTENT" ? decision.orderIntents.length : 0),
-    0,
-  );
+  return collectOrderIntents(decisions).length;
+}
+
+function collectOrderIntents(decisions: readonly StrategyDecision[]): readonly OrderIntent[] {
+  return decisions.flatMap((decision) => decision.kind === "ORDER_INTENT" ? [...decision.orderIntents] : []);
 }
 
 function toSummaryMessage(

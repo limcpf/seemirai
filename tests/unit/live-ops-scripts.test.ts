@@ -174,6 +174,79 @@ describe("production live ops script skeleton", () => {
     });
   });
 
+  it("production analysis decision은 cleanup_probe policy로 단일 order intent를 만든다", async () => {
+    const config = JSON.parse(await readFile(path.join(process.cwd(), "config", "live-ops.example.json"), "utf8"));
+    const result = spawnSync(
+      process.execPath,
+      [
+        "--input-type=module",
+        "--eval",
+        `
+import { evaluateLiveOpsCliAnalysisDecision } from "./scripts/run-live-ops-support.mjs";
+
+const observedAt = "2026-06-16T00:00:00.000Z";
+const config = ${JSON.stringify(config)};
+const summary = await evaluateLiveOpsCliAnalysisDecision({
+  config,
+  fixtureSmoke: false,
+  marketData: {
+    ready: true,
+    market: "KRW-BTC",
+    sourceProfile: "unit",
+    latestHeartbeatAt: observedAt,
+    referencePrice: "100000500",
+    persisted: { tradeCount: 1, orderbookCount: 1, statusCount: 1 },
+    marketEvents: [{
+      type: "ORDERBOOK",
+      exchangeId: "upbit_krw_spot",
+      market: "KRW-BTC",
+      asks: [{ price: "100001000", size: "0.5" }],
+      bids: [{ price: "100000000", size: "0.5" }],
+      exchangeTimestamp: observedAt,
+      receivedAt: observedAt,
+    }],
+  },
+});
+console.log(JSON.stringify(summary));
+`,
+      ],
+      {
+        cwd: process.cwd(),
+        encoding: "utf8",
+        env: minimalEnv(),
+      },
+    );
+
+    expect(result.status).toBe(0);
+    expect(result.stderr).toBe("");
+    const summary = JSON.parse(result.stdout);
+    expect(summary).toMatchObject({
+      status: "ready",
+      ready: true,
+      decisionSourceConnected: true,
+      decisionCategory: "ORDER_INTENT",
+      orderIntentCount: 1,
+      trace: {
+        policyId: "cleanup_probe",
+        dynamicCodeLoading: false,
+      },
+    });
+    expect(summary.checks.map((check: { code: string }) => check.code)).toContain("live_ops_decision_policy_resolved");
+    expect(summary.checks.map((check: { code: string }) => check.code)).not.toContain("live_ops_strategy_decision_source_missing");
+    expect(summary.orderIntents[0]).toMatchObject({
+      exchangeId: "upbit_krw_spot",
+      market: "KRW-BTC",
+      side: "BUY",
+      orderType: "LIMIT",
+      requestedPrice: "99999000",
+      requestedQuantity: "0.0001",
+      requestedNotional: "9999.9",
+      postOnly: true,
+      timeInForce: "POST_ONLY",
+    });
+    expect(JSON.stringify(summary)).not.toContain("raw_provider_payload");
+  });
+
   it("reconcile/PnL/status helper는 private read provider 결과를 secret-safe summary로 낮춘다", () => {
     const result = spawnSync(
       process.execPath,
@@ -1358,6 +1431,9 @@ console.log(JSON.stringify({
       "src/runtime/live-ops-market-data/collector.ts",
       "src/runtime/live-ops-analysis-decision.ts",
       "src/runtime/live-ops-analysis-decision/pipeline.ts",
+      "src/runtime/live-ops-decision-policy.ts",
+      "src/runtime/live-ops-decision-policy/cleanup-probe.ts",
+      "src/runtime/live-ops-decision-policy/resolver.ts",
       "src/runtime/live-ops-live-execution.ts",
       "src/runtime/live-ops-live-execution/service.ts",
       "src/runtime/live-ops-telegram-alerts.ts",

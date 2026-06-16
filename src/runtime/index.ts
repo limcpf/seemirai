@@ -189,6 +189,7 @@ export {
   loadRuntimeConfigFile,
 } from "./config.js";
 export {
+  LIVE_OPS_CLEANUP_PROBE_DECISION_POLICY_ID,
   LIVE_OPS_DEFAULT_MARKET,
   LIVE_OPS_LEGACY_ENV_NAMES,
   LIVE_OPS_LEGACY_ENV_PATTERNS,
@@ -217,6 +218,17 @@ export type {
   LiveOpsStartupContractValidationResult,
   LoadLiveOpsSecretsOptions,
 } from "./live-ops-config.js";
+export {
+  LIVE_OPS_CLEANUP_PROBE_STRATEGY_ID,
+  createLiveOpsCleanupProbeStrategy,
+  resolveLiveOpsDecisionPolicy,
+} from "./live-ops-decision-policy.js";
+export type {
+  LiveOpsCleanupProbeStrategyOptions,
+  LiveOpsDecisionPolicyEvidence,
+  LiveOpsDecisionPolicyResolution,
+  ResolveLiveOpsDecisionPolicyInput,
+} from "./live-ops-decision-policy.js";
 export {
   evaluateLiveOpsDbReadiness,
   formatLiveOpsDbReadinessFailureMessage,

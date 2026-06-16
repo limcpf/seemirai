@@ -777,8 +777,26 @@ fixture smoke dashboard는 외부 Upbit/DB 호출 없이 collector summary shape
 `LiveOpsAnalysisDecisionPipeline`은 market data collector summary, market event window, feature snapshot, strategy 목록을 같은
 runtime 경계에서 묶는다. market data가 준비되지 않았거나 feature snapshot이 실패하면 strategy를 평가하지 않고 HOLD/차단 summary로
 닫는다. feature가 통과하면 주입된 strategy들을 KRW-BTC/upbit_krw_spot context로 평가하고 order intent 수, HOLD/BLOCK count,
-`record_hold_decision` 여부를 secret-safe summary로 반환한다. 이 pipeline은 DB write, broker 호출, Upbit 호출, Telegram 전송을 하지
-않는다.
+`record_hold_decision` 여부와 같은 decision tick의 `orderIntents`를 secret-safe summary로 반환한다. 이 pipeline은 DB write, broker 호출,
+Upbit 호출, Telegram 전송을 하지 않는다.
+
+Sub PR 06부터 production `analysis.decision_policy`는 정적 allowlist policy id만 허용한다. 기본 policy는 `cleanup_probe`이며,
+config JSON에는 다음 non-secret 값만 둔다.
+
+- `analysis.decision_policy.id=cleanup_probe`
+- `analysis.decision_policy.cleanup_probe.max_notional_krw=10000`
+- `analysis.decision_policy.cleanup_probe.tick_size_krw=1000`
+- `analysis.decision_policy.cleanup_probe.price_offset_ticks=1`
+- `analysis.decision_policy.cleanup_probe.quantity_scale=8`
+- `analysis.decision_policy.cleanup_probe.expected_loss_bps_of_equity=5`
+
+policy resolver 구현 경계는 `src/runtime/live-ops-decision-policy.ts`다. resolver는 config를 `LiveOpsConfig`로 다시 검증하고,
+`cleanup_probe` 같은 허용 policy를 정적 `Strategy[]`로 조립한다. 임의 파일 경로, 동적 import, 원격 plugin, 저장소 밖 strategy 코드는
+허용하지 않는다. resolver와 strategy 평가는 DB write, broker 호출, Upbit 호출, Telegram 전송 side effect를 만들지 않는다.
+
+`cleanup_probe`는 수익 전략이 아니라 Issue #206 closeout lifecycle을 증명하기 위한 one-shot probe다. 최신 DB-backed market frame의
+orderbook에서 best bid를 읽고, configured tick offset만큼 낮춘 `BUY + LIMIT + POST_ONLY` 후보를 만든다. orderbook이 없거나 가격/수량/
+명목금액이 최소 주문금액, 예산, 호가 단위, `KRW-BTC` 단일 universe 조건을 만족하지 못하면 주문 후보 없이 HOLD/BLOCK evidence로 닫는다.
 
 `LiveOpsLiveExecution`은 analysis/decision summary와 order intent, 최신 budget/loss/cost/risk/reconcile snapshot을 기존
 `LiveAutonomousEntryRuntime` 요청으로 낮추는 adapter다. analysis가 blocked이거나 HOLD로 주문 후보가 0개이면 하위 runtime 호출 없이
