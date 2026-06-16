@@ -148,6 +148,7 @@ const disallowedRipgrepLongOptions = new Set([
 const disallowedRipgrepShortOptions = new Set(["F", "I", "L", "M", "N", "P", "T", "c", "d", "f", "l", "m", "q", "r", "t", "v", "w", "x"]);
 const ripgrepOptionsWithNextValue = new Set([
   "--engine",
+  "--context-separator",
   "--file",
   "--field-context-separator",
   "--field-match-separator",
@@ -190,8 +191,8 @@ const sensitivePatterns = [
   { label: "telegram bot token url placeholder tail", pattern: /https:\/\/api\.telegram\.org\/bot(?:<redacted>|redacted|\[redacted\])(?=[^/\s"'])[^/\s"']*/i },
   { label: "database url json field", pattern: /"(?:databaseUrl|database_url|seemirai_database_url)"\s*:\s*"(?!\s*(?:<redacted>|redacted|\[redacted\])\s*")[^"]{8,}"/i },
   { label: "database password json field", pattern: /"(?:databasePassword|database_password|dbPassword|db_password|pgPassword|pg_password|password)"\s*:\s*"(?!\s*(?:<redacted>|redacted|\[redacted\])\s*")[^"]{8,}"/i },
-  { label: "credential decoded field", pattern: /\b(?:access_key|accessKey|secret_key|secretKey|telegram_bot_token|botToken|tuiControlToken|tui_control_token|seemirai(?:Upbit)?(?:AccessKey|SecretKey|TelegramBotToken|TuiControlToken)|databaseUrl|database_url|databasePassword|database_password|dbPassword|db_password|pgPassword|pg_password|password)\s*:\s*(?!["']?(?:<redacted>|redacted|\[redacted\])["']?(?:\s|$|[,}\]]))[^\r\n]{8,}/i },
-  { label: "raw payload decoded field", pattern: /\b(?:rawProvider(?:Payload|Body)?|rawOrder(?:Detail|Payload)?|raw(?:_|-)?provider(?:(?:_|-)?(?:payload|body))?|raw(?:_|-)?order(?:(?:_|-)?(?:detail|payload))?)\s*:/i },
+  { label: "credential decoded field", pattern: /\b(?:access_key|accessKey|access-key|secret_key|secretKey|secret-key|telegram_bot_token|telegram-bot-token|botToken|tuiControlToken|tui_control_token|tui-control-token|seemirai(?:Upbit)?(?:AccessKey|SecretKey|TelegramBotToken|TuiControlToken)|databaseUrl|database_url|database-url|databasePassword|database_password|database-password|dbPassword|db_password|db-password|pgPassword|pg_password|pg-password|password)\s*:\s*(?!["']?(?:<redacted>|redacted|\[redacted\])["']?(?:\s|$|[,}\]]))[^\r\n]{8,}/i },
+  { label: "raw payload decoded field", pattern: /\b(?:rawProvider(?:Payload|Body)?|rawOrder(?:Detail|Payload)?|rawUpdate(?:Payload|Body)?|raw(?:_|-)?provider(?:(?:_|-)?(?:payload|body))?|raw(?:_|-)?order(?:(?:_|-)?(?:detail|payload))?|raw(?:_|-)?update(?:(?:_|-)?(?:payload|body))?)\s*:/i },
   { label: "access key env assignment", pattern: /\b(?:SEEMIRAI_)?(?:UPBIT_)?ACCESS_KEY\s*[:=]\s*(?!(?:["']?(?:<redacted>|redacted|\[redacted\])["']?)(?:$|[\r\n,}]))[^\r\n,}]{8,}/i },
   { label: "secret key env assignment", pattern: /\b(?:SEEMIRAI_)?(?:UPBIT_)?SECRET_KEY\s*[:=]\s*(?!(?:["']?(?:<redacted>|redacted|\[redacted\])["']?)(?:$|[\r\n,}]))[^\r\n,}]{8,}/i },
   { label: "telegram token env assignment", pattern: /\b(?:SEEMIRAI_)?TELEGRAM_BOT_TOKEN\s*[:=]\s*(?!(?:["']?(?:<redacted>|redacted|\[redacted\])["']?)(?:$|[\r\n,}]))[^\r\n,}]{8,}/i },
@@ -1725,6 +1726,16 @@ function collectDisallowedRipgrepOptions(tokens) {
       options.push(token);
       continue;
     }
+    if (/^-[^-]\S+/u.test(token)) {
+      const shortText = token.slice(1);
+      const attachedDisallowedOption = [...shortText].some((flag, flagIndex) => disallowedRipgrepShortOptions.has(flag)
+        && shortText[flagIndex + 1] !== undefined
+        && /[^A-Za-z]/u.test(shortText[flagIndex + 1]));
+      if (attachedDisallowedOption) {
+        options.push(token);
+        continue;
+      }
+    }
     if (/^-[A-Za-z]+$/u.test(token) && [...token.slice(1)].some((flag) => disallowedRipgrepShortOptions.has(flag))) {
       options.push(token);
     }
@@ -1792,6 +1803,9 @@ function collectUnquotedShellOperators(command) {
       operators.push(char);
     }
   }
+  if (quote !== undefined) {
+    operators.push(quote === "'" ? "unclosed-single-quote" : "unclosed-double-quote");
+  }
   return collectUnique(operators);
 }
 
@@ -1818,7 +1832,8 @@ function hasRipgrepLineNumber(tokens) {
 
 function hasUnsupportedRipgrepRegex(pattern) {
   // ripgrep가 parse하지 못하는 lookaround류 패턴은 실제 source coverage 증거로 인정하지 않는다.
-  return /\(\?(?:[!=<]|P|#|[a-zA-Z-]+:)/u.test(pattern);
+  return /\(\?(?:[!=<]|P|#|[a-zA-Z-]+:)/u.test(pattern)
+    || /\$\^/u.test(pattern);
 }
 
 function collectRipgrepPathOperands(tokens) {
@@ -2007,27 +2022,30 @@ function createArtifactManifestConflicts(artifactFiles, manifest, run, counters)
           conflicts.push({ filePath: file.filePath, field: `${item.path}.${actual.alias}`, expected: "CANCEL", actual: actual.value });
         }
       }
-      for (const [field, expected] of Object.entries(expectedPolicyFields)) {
-        for (const actual of readArtifactPolicyFieldValues(item.record, field)) {
-          if (actual.value !== expected) {
-            conflicts.push({ filePath: file.filePath, field: `${item.path}.${actual.alias}`, expected, actual: actual.value });
+      if (closeoutRecord) {
+        // provider summary와 같은 부가 artifact는 주문 closeout 증거가 아니므로 주문 정책 대조에서 제외한다.
+        for (const [field, expected] of Object.entries(expectedPolicyFields)) {
+          for (const actual of readArtifactPolicyFieldValues(item.record, field)) {
+            if (actual.value !== expected) {
+              conflicts.push({ filePath: file.filePath, field: `${item.path}.${actual.alias}`, expected, actual: actual.value });
+            }
           }
         }
-      }
-      for (const actual of readNumberAliasValues(item.record, ["requestedNotionalKrw", "requested_notional_krw"])) {
-        if (expectedRequestedNotionalKrw !== undefined && actual.value !== expectedRequestedNotionalKrw) {
-          conflicts.push({
-            filePath: file.filePath,
-            field: `${item.path}.${actual.alias}`,
-            expected: expectedRequestedNotionalKrw,
-            actual: actual.value,
-          });
+        for (const actual of readNumberAliasValues(item.record, ["requestedNotionalKrw", "requested_notional_krw"])) {
+          if (expectedRequestedNotionalKrw !== undefined && actual.value !== expectedRequestedNotionalKrw) {
+            conflicts.push({
+              filePath: file.filePath,
+              field: `${item.path}.${actual.alias}`,
+              expected: expectedRequestedNotionalKrw,
+              actual: actual.value,
+            });
+          }
         }
-      }
-      for (const [field, expected] of Object.entries(expectedLifecycleTimestamps)) {
-        for (const actual of readTimestampMsAliasValues(item.record, artifactFieldAliases(field))) {
-          if (expected !== undefined && actual.value !== expected) {
-            conflicts.push({ filePath: file.filePath, field: `${item.path}.${actual.alias}`, expected, actual: actual.value });
+        for (const [field, expected] of Object.entries(expectedLifecycleTimestamps)) {
+          for (const actual of readTimestampMsAliasValues(item.record, artifactFieldAliases(field))) {
+            if (expected !== undefined && actual.value !== expected) {
+              conflicts.push({ filePath: file.filePath, field: `${item.path}.${actual.alias}`, expected, actual: actual.value });
+            }
           }
         }
       }
@@ -2198,12 +2216,24 @@ function isUsableOrderEvidenceSuffix(value) {
   const compact = bracketless.replace(/[-_]/gu, "");
   const placeholderWords = new Set([
     "broker-order-id",
+    "broker-order-id-suffix",
     "broker_order_id",
+    "broker_order_id_suffix",
     "brokerorderid",
+    "brokerorderidsuffix",
     "identifier",
+    "identifier-suffix",
+    "identifier_suffix",
+    "identifiersuffix",
     "order-id",
     "order_id",
     "orderid",
+    "order-suffix",
+    "order_suffix",
+    "orderid-suffix",
+    "order_id_suffix",
+    "orderidsuffix",
+    "ordersuffix",
     "redacted",
     "masked",
     "hidden",
@@ -2211,6 +2241,9 @@ function isUsableOrderEvidenceSuffix(value) {
     "secret",
     "token",
     "uuid",
+    "uuid-suffix",
+    "uuid_suffix",
+    "uuidsuffix",
   ]);
   const alnumCount = (text.match(/[a-z0-9]/giu) ?? []).length;
   return text.length >= 6
