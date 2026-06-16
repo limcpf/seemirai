@@ -89,9 +89,15 @@ const requiredSecretSourceScanPatterns = [
   { label: "access key", pattern: /access_key/u },
   { label: "camelCase access key", pattern: /accessKey/u },
   { label: "uppercase access key env", pattern: /ACCESS_KEY/u },
+  { label: "api key", pattern: /api_key/u },
+  { label: "camelCase api key", pattern: /apiKey/u },
+  { label: "uppercase api key env", pattern: /API_KEY/u },
   { label: "secret key", pattern: /secret_key/u },
   { label: "camelCase secret key", pattern: /secretKey/u },
   { label: "uppercase secret key env", pattern: /SECRET_KEY/u },
+  { label: "api secret", pattern: /api_secret/u },
+  { label: "camelCase api secret", pattern: /apiSecret/u },
+  { label: "uppercase api secret env", pattern: /API_SECRET/u },
   { label: "authorization header", pattern: /Authorization/u },
   { label: "lowercase authorization header", pattern: /authorization/u },
   { label: "bearer token", pattern: /Bearer/u },
@@ -107,6 +113,9 @@ const requiredSecretSourceScanPatterns = [
   { label: "database url env", pattern: /DATABASE_URL/u },
   { label: "database password camelCase", pattern: /databasePassword/u },
   { label: "database password snake_case", pattern: /database_password/u },
+  { label: "postgres password camelCase", pattern: /postgresPassword/u },
+  { label: "postgres password snake_case", pattern: /postgres_password/u },
+  { label: "postgres password env", pattern: /POSTGRES_PASSWORD/u },
   { label: "db password", pattern: /db_password/u },
   { label: "pg password", pattern: /pg_password/u },
   { label: "raw provider payload", pattern: /raw_provider/u },
@@ -176,8 +185,9 @@ const ripgrepOptionsWithNextValue = new Set([
   "--sortr",
   "--type",
   "--type-not",
+  "--threads",
 ]);
-const ripgrepShortOptionsWithNextValue = new Set(["A", "B", "C", "M", "d", "f", "g", "m", "r", "t"]);
+const ripgrepShortOptionsWithNextValue = new Set(["A", "B", "C", "M", "d", "f", "g", "j", "m", "r", "t"]);
 const withdrawalScopeMarkers = ["출금", "withdraw"];
 const forbiddenKeyScopeMarkers = ["출금", "입금", "withdraw", "deposit", "futures", "leverage", "margin"];
 const requiredCounterNames = [
@@ -191,6 +201,7 @@ const requiredCounterNames = [
 const sensitivePatterns = [
   { label: "access_key json field", pattern: /"(?:seemirai_)?(?:upbit_)?access_key"\s*:\s*"(?!\s*(?:<redacted>|redacted|\[redacted\])\s*")[^"]{8,}"/i },
   { label: "accessKey json field", pattern: /"(?:upbit)?accessKey"\s*:\s*"(?!\s*(?:<redacted>|redacted|\[redacted\])\s*")[^"]{8,}"/i },
+  { label: "api credential json field", pattern: /"(?:apiKey|api_key|apiSecret|api_secret)"\s*:\s*"(?!\s*(?:<redacted>|redacted|\[redacted\])\s*")[^"]{8,}"/i },
   { label: "secret_key json field", pattern: /"(?:seemirai_)?(?:upbit_)?secret_key"\s*:\s*"(?!\s*(?:<redacted>|redacted|\[redacted\])\s*")[^"]{8,}"/i },
   { label: "secretKey json field", pattern: /"(?:upbit)?secretKey"\s*:\s*"(?!\s*(?:<redacted>|redacted|\[redacted\])\s*")[^"]{8,}"/i },
   { label: "hyphenated credential json field", pattern: /"(?:seemirai-)?(?:upbit-)?(?:access-key|secret-key|telegram-bot-token|tui-control-token)"\s*:\s*"(?!\s*(?:<redacted>|redacted|\[redacted\])\s*")[^"]{8,}"/i },
@@ -202,10 +213,10 @@ const sensitivePatterns = [
   { label: "telegram bot token url", pattern: /https:\/\/api\.telegram\.org\/bot(?!<redacted>|redacted|\[redacted\])[^/\s"']{8,}(?:\/[A-Za-z]+)?/i },
   { label: "telegram bot token url placeholder tail", pattern: /https:\/\/api\.telegram\.org\/bot(?:<redacted>|redacted|\[redacted\])(?=[^/\s"'])[^/\s"']*/i },
   { label: "database url json field", pattern: /"(?:databaseUrl|database_url|seemirai_database_url)"\s*:\s*"(?!\s*(?:<redacted>|redacted|\[redacted\])\s*")[^"]{8,}"/i },
-  { label: "database password json field", pattern: /"(?:databasePassword|database_password|dbPassword|db_password|pgPassword|pg_password|password)"\s*:\s*"(?!\s*(?:<redacted>|redacted|\[redacted\])\s*")[^"]{8,}"/i },
+  { label: "database password json field", pattern: /"(?:databasePassword|database_password|postgresPassword|postgres_password|dbPassword|db_password|pgPassword|pg_password|password)"\s*:\s*"(?!\s*(?:<redacted>|redacted|\[redacted\])\s*")[^"]{8,}"/i },
   { label: "query hash json field", pattern: /"(?:queryHash|query_hash)"\s*:\s*"(?!\s*(?:<redacted>|redacted|\[redacted\])\s*")[^"]{8,}"/i },
-  { label: "credential decoded field", pattern: /\b(?:access_key|accessKey|access-key|secret_key|secretKey|secret-key|telegram_bot_token|telegram-bot-token|botToken|tuiControlToken|tui_control_token|tui-control-token|seemirai(?:Upbit)?(?:AccessKey|SecretKey|TelegramBotToken|TuiControlToken)|databaseUrl|database_url|database-url|databasePassword|database_password|database-password|dbPassword|db_password|db-password|pgPassword|pg_password|pg-password|password|token|authorization|jwt|queryHash|query_hash)\s*:\s*(?!["']?(?:<redacted>|redacted|\[redacted\])["']?(?:\s|$|[,}\]]))[^\r\n]{8,}/i },
-  { label: "credential decoded placeholder tail", pattern: /\b(?:access_key|accessKey|access-key|secret_key|secretKey|secret-key|telegram_bot_token|telegram-bot-token|botToken|tuiControlToken|tui_control_token|tui-control-token|seemirai(?:Upbit)?(?:AccessKey|SecretKey|TelegramBotToken|TuiControlToken)|databaseUrl|database_url|database-url|databasePassword|database_password|database-password|dbPassword|db_password|db-password|pgPassword|pg_password|pg-password|password|token|authorization|jwt|queryHash|query_hash)\s*:\s*["']?(?:<redacted>|redacted|\[redacted\])["']?(?:\s+|[,;:\[{])\s*[^\s"',;}\]]{4,}/i },
+  { label: "credential decoded field", pattern: /\b(?:access_key|accessKey|access-key|api_key|apiKey|api-key|api_secret|apiSecret|api-secret|secret_key|secretKey|secret-key|telegram_bot_token|telegram-bot-token|botToken|tuiControlToken|tui_control_token|tui-control-token|seemirai(?:Upbit)?(?:AccessKey|SecretKey|TelegramBotToken|TuiControlToken)|databaseUrl|database_url|database-url|databasePassword|database_password|database-password|postgresPassword|postgres_password|postgres-password|dbPassword|db_password|db-password|pgPassword|pg_password|pg-password|password|token|authorization|jwt|queryHash|query_hash)\s*:\s*(?!["']?(?:<redacted>|redacted|\[redacted\])["']?(?:\s|$|[,}\]]))[^\r\n]{8,}/i },
+  { label: "credential decoded placeholder tail", pattern: /\b(?:access_key|accessKey|access-key|api_key|apiKey|api-key|api_secret|apiSecret|api-secret|secret_key|secretKey|secret-key|telegram_bot_token|telegram-bot-token|botToken|tuiControlToken|tui_control_token|tui-control-token|seemirai(?:Upbit)?(?:AccessKey|SecretKey|TelegramBotToken|TuiControlToken)|databaseUrl|database_url|database-url|databasePassword|database_password|database-password|postgresPassword|postgres_password|postgres-password|dbPassword|db_password|db-password|pgPassword|pg_password|pg-password|password|token|authorization|jwt|queryHash|query_hash)\s*:\s*["']?(?:<redacted>|redacted|\[redacted\])["']?(?:\s+|[,;:\[{])\s*[^\s"',;}\]]{4,}/i },
   { label: "raw payload decoded field", pattern: /\b(?:rawProvider(?:Payload|Body)?|rawOrder(?:Detail|Payload)?|rawUpdate(?:Payload|Body)?|raw(?:_|-)?provider(?:(?:_|-)?(?:payload|body))?|raw(?:_|-)?order(?:(?:_|-)?(?:detail|payload))?|raw(?:_|-)?update(?:(?:_|-)?(?:payload|body))?)\s*:/i },
   { label: "access key env assignment", pattern: /\b(?:SEEMIRAI_)?(?:UPBIT_)?ACCESS_KEY\s*[:=]\s*(?!(?:["']?(?:<redacted>|redacted|\[redacted\])["']?)(?:$|[\r\n,}]))[^\r\n,}]{8,}/i },
   { label: "secret key env assignment", pattern: /\b(?:SEEMIRAI_)?(?:UPBIT_)?SECRET_KEY\s*[:=]\s*(?!(?:["']?(?:<redacted>|redacted|\[redacted\])["']?)(?:$|[\r\n,}]))[^\r\n,}]{8,}/i },
@@ -231,9 +242,9 @@ const sensitivePatterns = [
   { label: "raw provider string payload", pattern: /\b(?:rawProvider(?:Payload|Body)?|raw(?:_|-)?provider(?:(?:_|-)?(?:payload|body))?)\s*[:=]\s*(?!(?:<redacted>|redacted|\[redacted\])(?:\s|$))(?:\{|\[|[A-Za-z0-9_-]{4,})/i },
   { label: "raw order string payload", pattern: /\b(?:rawOrder(?:Detail|Payload)?|raw(?:_|-)?order(?:(?:_|-)?(?:detail|payload))?)\s*[:=]\s*(?!(?:<redacted>|redacted|\[redacted\])(?:\s|$))(?:\{|\[|[A-Za-z0-9_-]{4,})/i },
   { label: "raw update string payload", pattern: /\b(?:rawUpdate(?:Payload|Body)?|raw(?:_|-)?update(?:(?:_|-)?(?:payload|body))?)\s*[:=]\s*(?!(?:<redacted>|redacted|\[redacted\])(?:\s|$))(?:\{|\[|[A-Za-z0-9_-]{4,})/i },
-  { label: "raw provider placeholder tail", pattern: /\b(?:rawProvider(?:Payload|Body)?|raw(?:_|-)?provider(?:(?:_|-)?(?:payload|body))?)\s*[:=]\s*["']?(?:<redacted>|redacted|\[redacted\])["']?(?:\s+|[,;:\[{])\s*(?:\{|\[|[^\s"']+)/i },
-  { label: "raw order placeholder tail", pattern: /\b(?:rawOrder(?:Detail|Payload)?|raw(?:_|-)?order(?:(?:_|-)?(?:detail|payload))?)\s*[:=]\s*["']?(?:<redacted>|redacted|\[redacted\])["']?(?:\s+|[,;:\[{])\s*(?:\{|\[|[^\s"']+)/i },
-  { label: "raw update placeholder tail", pattern: /\b(?:rawUpdate(?:Payload|Body)?|raw(?:_|-)?update(?:(?:_|-)?(?:payload|body))?)\s*[:=]\s*["']?(?:<redacted>|redacted|\[redacted\])["']?(?:\s+|[,;:\[{])\s*(?:\{|\[|[^\s"']+)/i },
+  { label: "raw provider placeholder tail", pattern: /\b(?:rawProvider(?:Payload|Body)?|raw(?:_|-)?provider(?:(?:_|-)?(?:payload|body))?)\s*[:=]\s*["']?(?:<redacted>|redacted|\[redacted\])["']?(?:\s+|[^\s"'<>\]}A-Za-z0-9])\s*(?:\{|\[|[^\s"']+)/i },
+  { label: "raw order placeholder tail", pattern: /\b(?:rawOrder(?:Detail|Payload)?|raw(?:_|-)?order(?:(?:_|-)?(?:detail|payload))?)\s*[:=]\s*["']?(?:<redacted>|redacted|\[redacted\])["']?(?:\s+|[^\s"'<>\]}A-Za-z0-9])\s*(?:\{|\[|[^\s"']+)/i },
+  { label: "raw update placeholder tail", pattern: /\b(?:rawUpdate(?:Payload|Body)?|raw(?:_|-)?update(?:(?:_|-)?(?:payload|body))?)\s*[:=]\s*["']?(?:<redacted>|redacted|\[redacted\])["']?(?:\s+|[^\s"'<>\]}A-Za-z0-9])\s*(?:\{|\[|[^\s"']+)/i },
   { label: "raw update field", pattern: /"raw(?:_|-)?update"\s*:/i },
 ];
 
