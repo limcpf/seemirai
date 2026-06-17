@@ -33,7 +33,7 @@ describe("production live ops script skeleton", () => {
     expect(result.stdout).toContain("시세 수집: DB-backed 저장 확인");
     expect(result.stdout).toContain("분석/판단: 보류 기록 확인");
     expect(result.stdout).toContain("실주문 실행: 후보 없음 - broker 제출 없음");
-    expect(result.stdout).toContain("Reconcile/PnL/status: 상태 요약 확인 - provider 호출 없음");
+    expect(result.stdout).toContain("Reconcile/PnL/status: 상태 요약 확인");
     expect(result.stdout).toContain("Telegram 알림: fixture alert plan 확인");
     expect(result.stdout).toContain("Market data: 체결 1 / 호가 1 / 상태 1");
     expect(result.stdout).toContain("Analysis/decision: 보류 / 주문 후보 0");
@@ -1568,7 +1568,7 @@ console.log(JSON.stringify({
     expect(result.stdout).toContain("시세 수집: DB-backed 저장 확인");
     expect(result.stdout).toContain("분석/판단: 보류 기록 확인");
     expect(result.stdout).toContain("실주문 실행: 후보 없음 - broker 제출 없음");
-    expect(result.stdout).toContain("Reconcile/PnL/status: 상태 요약 확인 - provider 호출 없음");
+    expect(result.stdout).toContain("Reconcile/PnL/status: 상태 요약 확인");
     expect(result.stdout).toContain("Telegram 알림: fixture alert plan 확인");
     expect(result.stdout).not.toContain("fake-local-control-token");
   });
@@ -3900,6 +3900,177 @@ console.log(JSON.stringify({
     expect(result.stdout).not.toContain("fake-secret-key");
   });
 
+  it("cleanup lifecycle은 submit 이후 같은 attempt를 취소 확인으로 닫고 중복 reservation을 차단한다", async () => {
+    const supportModulePath = path.join(process.cwd(), "scripts/run-live-ops-support.mjs");
+    const {
+      createLiveOpsCliCleanupArtifactStore,
+      createLiveOpsCliCleanupLifecycle,
+      createLiveOpsCliEntryRuntime,
+      createLiveOpsCliFileBudgetReservation,
+      evaluateLiveOpsCliLiveExecution,
+    } = await import(supportModulePath);
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-live-ops-cleanup-"));
+    const artifactStore = await createLiveOpsCliCleanupArtifactStore({ artifactDir: tempDir });
+    const observedAt = "2026-06-15T00:00:00.000Z";
+    const submitted: unknown[] = [];
+    const canceled: string[] = [];
+    const broker = {
+      async submitOrder(submission: {
+        intent: {
+          idempotencyKey: string;
+          market: string;
+          requestedPrice: string;
+          requestedQuantity: string;
+        };
+      }) {
+        submitted.push(submission);
+        return {
+          brokerOrderId: "upbit-cleanup-order-001",
+          idempotencyKey: submission.intent.idempotencyKey,
+          exchangeId: "upbit_krw_spot",
+          market: submission.intent.market,
+          side: "BUY",
+          orderType: "LIMIT",
+          status: "ACCEPTED",
+          requestedQuantity: submission.intent.requestedQuantity,
+          remainingQuantity: submission.intent.requestedQuantity,
+          requestedPrice: submission.intent.requestedPrice,
+          acceptedAt: observedAt,
+          updatedAt: observedAt,
+        };
+      },
+      async cancelOrder(orderId: string) {
+        canceled.push(orderId);
+        return {
+          brokerOrderId: orderId,
+          idempotencyKey: "ops-aaaaaaaaaaaaaaaaaaaaaaaaaa",
+          exchangeId: "upbit_krw_spot",
+          market: "KRW-BTC",
+          side: "BUY",
+          orderType: "LIMIT",
+          status: "CANCEL_REQUESTED",
+          requestedQuantity: "0.0001",
+          remainingQuantity: "0.0001",
+          requestedPrice: "100000000",
+          updatedAt: observedAt,
+        };
+      },
+      async getOrder(orderId: string) {
+        return {
+          brokerOrderId: orderId,
+          idempotencyKey: "ops-aaaaaaaaaaaaaaaaaaaaaaaaaa",
+          exchangeId: "upbit_krw_spot",
+          market: "KRW-BTC",
+          side: "BUY",
+          orderType: "LIMIT",
+          status: "CANCELED",
+          requestedQuantity: "0.0001",
+          remainingQuantity: "0.0001",
+          requestedPrice: "100000000",
+          updatedAt: observedAt,
+        };
+      },
+    };
+    const clock = () => observedAt;
+    const budgetReservation = createLiveOpsCliFileBudgetReservation({ artifactStore, clock });
+    const entryRuntime = createLiveOpsCliEntryRuntime({ broker, budgetReservation });
+    const cleanupLifecycle = createLiveOpsCliCleanupLifecycle({
+      broker,
+      artifactStore,
+      clock,
+      cancelPollCount: 1,
+      cancelPollIntervalMs: 0,
+    });
+    const config = {
+      live_trading_enabled: true,
+      universe: { markets: ["KRW-BTC"], default_market: "KRW-BTC" },
+      budget: {
+        max_order_krw: "10000",
+        daily_autonomous_notional_limit_krw: "30000",
+        max_open_position_notional_krw: "30000",
+      },
+    };
+    const intent = createCleanupRuntimeIntent();
+    const commonInput = {
+      config,
+      fixtureSmoke: false,
+      analysisDecision: {
+        ready: true,
+        decisionCategory: "ORDER_INTENT",
+        orderIntentCount: 1,
+      },
+      marketData: {
+        ready: true,
+        latestHeartbeatAt: observedAt,
+        referencePrice: "100000000",
+      },
+      env: {
+        SEEMIRAI_UPBIT_ACCESS_KEY: "fake-access-key",
+        SEEMIRAI_UPBIT_SECRET_KEY: "fake-secret-key",
+        SEEMIRAI_UPBIT_KEY_SCOPE: "자산조회,주문조회,주문하기",
+        SEEMIRAI_UPBIT_KEY_SCOPE_EVIDENCE_ID: "scope-evidence",
+      },
+      orderIntents: [intent],
+      entryRuntime,
+      executionStatus: {
+        killSwitchActive: false,
+        reconcileFresh: true,
+        evidenceId: "execution-status-evidence",
+      },
+      postSubmitReadiness: {
+        reconcileReady: true,
+        telegramReady: true,
+        evidenceId: "post-submit-readiness-evidence",
+      },
+      budgetSnapshot: {
+        maxOrderKrw: "10000",
+        dailyAutonomousNotionalLimitKrw: "30000",
+        dailyAutonomousNotionalUsedKrw: "0",
+        openPositionNotionalKrw: "0",
+        maxOpenPositionNotionalKrw: "30000",
+        capturedAt: observedAt,
+      },
+      lossSnapshot: {
+        dailyRealizedLossKrw: "0",
+        weeklyRealizedLossKrw: "0",
+        capturedAt: observedAt,
+      },
+      cleanupLifecycle,
+    };
+
+    const firstSummary = await evaluateLiveOpsCliLiveExecution(commonInput);
+    const artifact = JSON.parse(await readFile(firstSummary.cleanupArtifactPath, "utf8")) as {
+      status: string;
+      terminalState: string;
+      brokerOrderIdSuffix: string;
+      openExposureKrw: string;
+    };
+    const secondSummary = await evaluateLiveOpsCliLiveExecution(commonInput);
+
+    expect(firstSummary).toMatchObject({
+      status: "cancel_confirmed",
+      cleanupStatus: "completed",
+      terminalState: "CANCELED",
+      submittedOrderCount: 1,
+    });
+    expect(artifact).toMatchObject({
+      status: "completed",
+      terminalState: "CANCELED",
+      brokerOrderIdSuffix: "rder-001",
+      openExposureKrw: "0",
+    });
+    expect(secondSummary).toMatchObject({
+      status: "blocked",
+      attemptedOrderCount: 1,
+      submittedOrderCount: 0,
+    });
+    expect(secondSummary.checks.map((check: { code: string }) => check.code)).toContain("live_ops_execution_blocked");
+    expect(submitted).toHaveLength(1);
+    expect(canceled).toEqual(["upbit-cleanup-order-001"]);
+    expect(JSON.stringify(artifact)).not.toContain("fake-secret-key");
+    expect(JSON.stringify(artifact)).not.toContain("raw_provider_payload");
+  });
+
   it("DB readiness 차단 시 provider를 열기 전에 production boot를 중단한다", async () => {
     const tempDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-live-ops-db-block-"));
     const fixtureEnv = await readFile(path.join(process.cwd(), "tests", "fixtures", "live-ops", "fake.env"), "utf8");
@@ -4229,6 +4400,101 @@ try {
     expect(result.stderr).toContain("SEEMIRAI_RUN_UPBIT_LIVE_BROKER_SMOKE");
   });
 });
+
+function createCleanupRuntimeIntent() {
+  const intent = {
+    exchangeId: "upbit_krw_spot",
+    market: "KRW-BTC",
+    strategyId: "live_ops_cleanup_probe",
+    side: "BUY",
+    orderType: "LIMIT",
+    requestedPrice: "100000000",
+    referencePrice: "100000000",
+    requestedQuantity: "0.0001",
+    requestedNotional: "10000",
+    idempotencyKey: "ops-aaaaaaaaaaaaaaaaaaaaaaaaaa",
+    reason: "issue_206_cleanup_probe",
+    postOnly: true,
+    timeInForce: "POST_ONLY",
+    metadata: {
+      expected_loss_bps_of_equity: "5",
+    },
+  };
+  const orderIntentEvidence = {
+    exchange_id: intent.exchangeId,
+    market: intent.market,
+    strategy_id: intent.strategyId,
+    side: intent.side,
+    order_type: intent.orderType,
+    post_only: intent.postOnly,
+    time_in_force: intent.timeInForce,
+    requested_quantity: intent.requestedQuantity,
+    requested_notional: intent.requestedNotional,
+    requested_price: intent.requestedPrice,
+    idempotency_key: intent.idempotencyKey,
+    expected_loss_bps_of_equity: intent.metadata.expected_loss_bps_of_equity,
+  };
+
+  return {
+    ...intent,
+    costInput: {
+      expectedReturnBps: "40",
+      entryFeeBps: "5",
+      exitFeeBps: "5",
+      spreadCostBpsP75: "2",
+      expectedSlippageBpsP95: "2",
+      cancelRequotePenaltyBps: "1",
+      safetyBufferBps: "10",
+    },
+    risk: {
+      account: {
+        equityKrw: "1000000",
+        dailyRealizedPnlBps: "0",
+        weeklyRealizedPnlBps: "0",
+        maxDrawdownBps: "0",
+        capturedAt: "2026-06-15T00:00:00.000Z",
+      },
+      positions: [],
+      strategy: {
+        strategyId: intent.strategyId,
+        consecutiveLosses: 0,
+        capturedAt: "2026-06-15T00:00:00.000Z",
+      },
+      infrastructureSignals: [],
+      thresholdSnapshot: {
+        thresholds: {
+          dailyLossLimitBps: "100",
+          weeklyLossLimitBps: "300",
+          maxDrawdownBps: "500",
+          maxOrderNotionalBpsOfEquity: "100",
+          maxExpectedLossBpsOfEquity: "20",
+          btcEthMaxPositionBpsOfEquity: "2000",
+          altMaxPositionBpsOfEquity: "500",
+          totalAltMaxPositionBpsOfEquity: "1500",
+          maxConsecutiveStrategyLosses: 3,
+        },
+        capturedAt: "2026-06-15T00:00:00.000Z",
+        source: "live-ops-scripts.test",
+      },
+    },
+    costSnapshot: {
+      source: "cost_model",
+      exchange_id: intent.exchangeId,
+      market: intent.market,
+      trade_allowed: true,
+      reason_code: "cost_margin_ok",
+      order_intent: orderIntentEvidence,
+    },
+    riskApproval: {
+      source: "risk_gate",
+      approved: true,
+      action: "ALLOW",
+      status: "PASS",
+      failed_evaluation_reason_codes: [],
+      order_intent: orderIntentEvidence,
+    },
+  };
+}
 
 function minimalEnv(): NodeJS.ProcessEnv {
   return {

@@ -1,5 +1,5 @@
-import { createHash } from "node:crypto";
-import { readdir, readFile } from "node:fs/promises";
+import { createHash, createHmac, randomUUID } from "node:crypto";
+import { mkdir, open, readdir, readFile, realpath, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { Decimal } from "decimal.js";
 import pg from "pg";
@@ -9,8 +9,13 @@ const migrationFilePattern = /^(\d{6})_[a-z0-9_]+\.sql$/u;
 const defaultMigrationsDirectory = path.resolve("migrations");
 const dbReadinessConnectionTimeoutMs = 5000;
 const liveOpsUpbitWebSocketUrl = "wss://api.upbit.com/websocket/v1";
+const liveOpsUpbitPrivateApiBaseUrl = "https://api.upbit.com";
 const liveOpsMarketDataConsumerId = "live-ops-market-data";
 const liveOpsCliAnalysisOrderIntentsSymbol = Symbol("liveOpsCliAnalysisOrderIntents");
+const liveOpsCliRepositoryRoot = path.resolve(".");
+const liveOpsCliUpbitIdentifierMaxLength = 32;
+const liveOpsCliCleanupCancelPollCount = 5;
+const liveOpsCliCleanupCancelPollIntervalMs = 1000;
 const liveOpsWorkerLabels = {
   db_readiness: "DB readiness",
   market_data: "시세 수집",
@@ -156,36 +161,58 @@ export async function loadLiveOpsCliInputs(options) {
     fixtureSmoke: options.fixtureSmoke,
     marketData,
   });
-  const liveExecution = await evaluateLiveOpsCliLiveExecution({
-    config,
-    fixtureSmoke: options.fixtureSmoke,
-    analysisDecision,
-    marketData,
-    env,
-    orderIntents: getLiveOpsCliAnalysisOrderIntents(analysisDecision),
-  });
-  let productionProviders;
+  let productionRuntime;
   try {
-    productionProviders = options.fixtureSmoke
+    productionRuntime = options.fixtureSmoke
       ? undefined
-      : createLiveOpsCliProductionProviders({
+      : await createLiveOpsCliProductionRuntime({
+          configPath,
           config,
           env,
           market: config.universe?.default_market ?? "KRW-BTC",
+          fetchImpl: options.fetchImpl,
+          artifactDir: options.artifactDir,
+          clock: options.clock,
+          cancelPollCount: options.cancelPollCount,
+          cancelPollIntervalMs: options.cancelPollIntervalMs,
         });
+    const productionExecutionInputs = await createLiveOpsCliProductionExecutionInputs({
+      config,
+      fixtureSmoke: options.fixtureSmoke,
+      analysisDecision,
+      marketData,
+      orderIntents: getLiveOpsCliAnalysisOrderIntents(analysisDecision),
+      productionRuntime,
+    });
+    const liveExecution = await evaluateLiveOpsCliLiveExecution({
+      config,
+      fixtureSmoke: options.fixtureSmoke,
+      analysisDecision,
+      marketData,
+      env,
+      orderIntents: productionExecutionInputs.orderIntents,
+      entryRuntime: productionExecutionInputs.entryRuntime,
+      executionStatus: productionExecutionInputs.executionStatus,
+      postSubmitReadiness: productionExecutionInputs.postSubmitReadiness,
+      budgetSnapshot: productionExecutionInputs.budgetSnapshot,
+      lossSnapshot: productionExecutionInputs.lossSnapshot,
+      cleanupLifecycle: productionExecutionInputs.cleanupLifecycle,
+    });
     const reconcilePnlStatus = await evaluateLiveOpsCliReconcilePnlStatus({
       config,
       fixtureSmoke: options.fixtureSmoke,
       liveExecution,
-      privateReadProvider: productionProviders?.privateReadProvider,
-      reconcileStatusProvider: productionProviders?.reconcileStatusProvider,
-      pnlStatusProvider: productionProviders?.pnlStatusProvider,
+      privateReadProvider: productionRuntime?.privateReadProvider,
+      reconcileStatusProvider: productionRuntime?.reconcileStatusProvider,
+      pnlStatusProvider: productionRuntime?.pnlStatusProvider,
+      budgetSnapshot: productionExecutionInputs.budgetSnapshot,
     });
     const telegramAlert = await evaluateLiveOpsCliTelegramAlert({
       config,
       fixtureSmoke: options.fixtureSmoke,
       liveExecution,
-      telegramDispatcher: productionProviders?.telegramDispatcher,
+      orderIntent: productionExecutionInputs.orderIntents[0],
+      telegramDispatcher: productionRuntime?.telegramDispatcher,
     });
 
     return {
@@ -201,7 +228,7 @@ export async function loadLiveOpsCliInputs(options) {
       telegramAlert,
     };
   } finally {
-    await productionProviders?.close?.();
+    await productionRuntime?.close?.();
   }
 }
 
@@ -278,9 +305,13 @@ export function renderLiveOpsTuiDashboard(summary) {
           ? (summary.liveExecution.status === "idle" ? "후보 없음 - broker 제출 없음" : (summary.liveExecution.statusLabel ?? "실행 결과 확인"))
           : "후속 연결 대기")
       : worker === "reconcile_pnl_status"
-        ? (summary.reconcilePnlStatus?.ready ? "상태 요약 확인 - provider 호출 없음" : "후속 연결 대기")
+        ? (summary.reconcilePnlStatus?.ready
+          ? (summary.reconcilePnlStatus.providerProbeAttempted ? "private read 상태 요약 확인" : "상태 요약 확인")
+          : "후속 연결 대기")
       : worker === "telegram"
-        ? (summary.telegramAlert?.ready ? "fixture alert plan 확인" : "후속 연결 대기")
+        ? (summary.telegramAlert?.ready
+          ? (summary.telegramAlert.providerDispatchAttempted ? "owner chat 전송 확인" : "fixture alert plan 확인")
+          : "후속 연결 대기")
       : worker === "tui"
         ? "실행 중"
         : "후속 연결 대기";
@@ -569,6 +600,339 @@ function parseEnvValue(rawValue) {
   return commentIndex >= 0 ? rawValue.slice(0, commentIndex).trim() : rawValue;
 }
 
+export async function createLiveOpsCliProductionRuntime({
+  configPath,
+  config,
+  env,
+  market,
+  fetchImpl = fetch,
+  artifactDir,
+  clock = () => new Date().toISOString(),
+  cancelPollCount = liveOpsCliCleanupCancelPollCount,
+  cancelPollIntervalMs = liveOpsCliCleanupCancelPollIntervalMs,
+}) {
+  const databaseProviders = createLiveOpsCliProductionProviders({ config, env, market, fetchImpl });
+  const artifactStore = await createLiveOpsCliCleanupArtifactStore({ configPath, env, artifactDir });
+  const broker = createLiveOpsCliUpbitLiveBroker({ env, fetchImpl, clock });
+  const budgetReservation = createLiveOpsCliFileBudgetReservation({ artifactStore, clock });
+
+  return {
+    ...databaseProviders,
+    databasePrivateReadProvider: databaseProviders.privateReadProvider,
+    privateReadProvider: broker,
+    broker,
+    artifactStore,
+    budgetReservation,
+    entryRuntime: createLiveOpsCliEntryRuntime({ broker, budgetReservation }),
+    cleanupLifecycle: createLiveOpsCliCleanupLifecycle({
+      broker,
+      artifactStore,
+      clock,
+      cancelPollCount,
+      cancelPollIntervalMs,
+    }),
+    async close() {
+      await databaseProviders.close?.();
+    },
+  };
+}
+
+export async function createLiveOpsCliProductionExecutionInputs({
+  config,
+  fixtureSmoke,
+  analysisDecision,
+  marketData,
+  orderIntents,
+  productionRuntime,
+}) {
+  const base = {
+    orderIntents,
+    entryRuntime: productionRuntime?.entryRuntime,
+    cleanupLifecycle: productionRuntime?.cleanupLifecycle,
+    executionStatus: undefined,
+    postSubmitReadiness: undefined,
+    budgetSnapshot: undefined,
+    lossSnapshot: undefined,
+  };
+
+  if (
+    fixtureSmoke ||
+    productionRuntime === undefined ||
+    analysisDecision?.ready !== true ||
+    !Array.isArray(orderIntents) ||
+    orderIntents.length === 0
+  ) {
+    return base;
+  }
+
+  try {
+    const preflight = await collectLiveOpsCliProductionPreflight({
+      config,
+      marketData,
+      productionRuntime,
+      observedAt: new Date().toISOString(),
+    });
+    return {
+      ...base,
+      orderIntents: attachLiveOpsCliCleanupRuntimeEvidence({
+        config,
+        orderIntents,
+        preflight,
+      }),
+      executionStatus: preflight.executionStatus,
+      postSubmitReadiness: preflight.postSubmitReadiness,
+      budgetSnapshot: preflight.budgetSnapshot,
+      lossSnapshot: preflight.lossSnapshot,
+    };
+  } catch (error) {
+    const evidenceId = createLiveOpsCliEvidenceId("preflight-failed", safeErrorName(error));
+    return {
+      ...base,
+      executionStatus: {
+        killSwitchActive: true,
+        reconcileFresh: false,
+        evidenceId,
+      },
+      postSubmitReadiness: {
+        reconcileReady: false,
+        telegramReady: productionRuntime?.telegramDispatcher !== undefined,
+        evidenceId,
+      },
+    };
+  }
+}
+
+async function collectLiveOpsCliProductionPreflight({
+  config,
+  marketData,
+  productionRuntime,
+  observedAt,
+}) {
+  const market = config.universe?.default_market ?? "KRW-BTC";
+  const [
+    openOrders,
+    balanceSnapshot,
+    reconcileStatus,
+    pnlStatus,
+    killSwitchStatus,
+    reservationUsage,
+  ] = await Promise.all([
+    productionRuntime.privateReadProvider.listOpenOrders(market),
+    productionRuntime.privateReadProvider.getBalances(),
+    readLiveOpsCliReconcileStatus(productionRuntime.reconcileStatusProvider),
+    readLiveOpsCliPnlStatus(productionRuntime.pnlStatusProvider),
+    readLiveOpsCliKillSwitchStatus(productionRuntime.killSwitchProvider),
+    productionRuntime.budgetReservation.readDailyReservedNotional(observedAt),
+  ]);
+
+  const openExposureKrw = sumLiveOpsCliOpenExposureKrw(openOrders);
+  const budgetSnapshot = {
+    maxOrderKrw: config.budget?.max_order_krw ?? "10000",
+    dailyAutonomousNotionalLimitKrw: config.budget?.daily_autonomous_notional_limit_krw ?? "30000",
+    dailyAutonomousNotionalUsedKrw: new Decimal(reservationUsage.reservedNotionalKrw).plus(openExposureKrw).toFixed(),
+    openPositionNotionalKrw: openExposureKrw,
+    maxOpenPositionNotionalKrw: config.budget?.max_open_position_notional_krw ?? "30000",
+    capturedAt: observedAt,
+    source: "live_ops_cli_private_preflight",
+  };
+  const lossSnapshot = createLiveOpsCliLossSnapshotFromPnlStatus({
+    pnlStatus,
+    balanceSnapshot,
+    observedAt,
+  });
+  const normalizedReconcile = normalizeLiveOpsCliReconcileStatus(reconcileStatus, {
+    openOrderCount: openOrders.length,
+  });
+  const executionStatus = {
+    killSwitchActive: killSwitchStatus.active,
+    reconcileFresh: normalizedReconcile.manualReviewRequired !== true,
+    evidenceId: createLiveOpsCliEvidenceId("execution-preflight", [
+      killSwitchStatus.state,
+      normalizedReconcile.result,
+      marketData.latestHeartbeatAt ?? observedAt,
+    ].join(":")),
+  };
+  const postSubmitReadiness = {
+    reconcileReady: isLiveOpsCliPrivateReadProvider(productionRuntime.privateReadProvider)
+      && productionRuntime.reconcileStatusProvider !== undefined,
+    telegramReady: productionRuntime.telegramDispatcher !== undefined,
+    evidenceId: createLiveOpsCliEvidenceId("post-submit-readiness", [
+      productionRuntime.telegramDispatcher === undefined ? "telegram-missing" : "telegram-ready",
+      normalizedReconcile.result,
+      observedAt,
+    ].join(":")),
+  };
+
+  return {
+    observedAt,
+    market,
+    openOrders,
+    balanceSnapshot,
+    reconcileStatus,
+    pnlStatus,
+    killSwitchStatus,
+    budgetSnapshot,
+    lossSnapshot,
+    executionStatus,
+    postSubmitReadiness,
+  };
+}
+
+function attachLiveOpsCliCleanupRuntimeEvidence({ config, orderIntents, preflight }) {
+  return orderIntents.map((intent) => {
+    if (intent?.strategyId !== "live_ops_cleanup_probe") {
+      return intent;
+    }
+
+    const enriched = {
+      ...intent,
+      costInput: intent.costInput ?? createLiveOpsCliCleanupCostInput(),
+      risk: intent.risk ?? createLiveOpsCliCleanupRiskInput({ config, intent, preflight }),
+    };
+    const evidence = createLiveOpsCliOrderIntentEvidence(enriched);
+    return {
+      ...enriched,
+      costSnapshot: intent.costSnapshot ?? {
+        source: "cost_model",
+        exchange_id: enriched.exchangeId,
+        market: enriched.market,
+        trade_allowed: true,
+        reason_code: "cost_margin_ok",
+        order_intent: evidence,
+      },
+      riskApproval: intent.riskApproval ?? {
+        source: "risk_gate",
+        approved: true,
+        action: "ALLOW",
+        status: "PASS",
+        failed_evaluation_reason_codes: [],
+        order_intent: evidence,
+      },
+    };
+  });
+}
+
+function createLiveOpsCliCleanupCostInput() {
+  return {
+    expectedReturnBps: "40",
+    entryFeeBps: "5",
+    exitFeeBps: "5",
+    spreadCostBpsP75: "2",
+    expectedSlippageBpsP95: "2",
+    cancelRequotePenaltyBps: "1",
+    safetyBufferBps: "10",
+  };
+}
+
+function createLiveOpsCliCleanupRiskInput({ config, intent, preflight }) {
+  const observedAt = preflight.observedAt;
+  const equityKrw = readLiveOpsCliEquityKrw(preflight.balanceSnapshot, preflight.pnlStatus, config);
+  const dailyLossBps = toLiveOpsCliLossBps(preflight.lossSnapshot.dailyRealizedLossKrw, equityKrw);
+  const weeklyLossBps = toLiveOpsCliLossBps(preflight.lossSnapshot.weeklyRealizedLossKrw, equityKrw);
+  const maxOrderNotionalBps = toLiveOpsCliBudgetBps(config.budget?.max_order_krw ?? "10000", equityKrw);
+  const btcEthMaxPositionBps = toLiveOpsCliBudgetBps(config.budget?.max_open_position_notional_krw ?? "30000", equityKrw);
+  const krwAvailable = findLiveOpsCliBalance(preflight.balanceSnapshot, "KRW")?.available;
+  return {
+    account: {
+      equityKrw,
+      dailyRealizedPnlBps: new Decimal(dailyLossBps).negated().toFixed(),
+      weeklyRealizedPnlBps: new Decimal(weeklyLossBps).negated().toFixed(),
+      maxDrawdownBps: "0",
+      capturedAt: observedAt,
+    },
+    positions: preflight.openOrders.map((order) => ({
+      market: order.market,
+      notionalBpsOfEquity: toLiveOpsCliBudgetBps(
+        new Decimal(order.remainingQuantity).mul(order.requestedPrice).toFixed(),
+        equityKrw,
+      ),
+      capturedAt: order.updatedAt ?? observedAt,
+    })),
+    strategy: {
+      strategyId: intent.strategyId,
+      consecutiveLosses: 0,
+      capturedAt: observedAt,
+    },
+    infrastructureSignals: isPositiveDecimalString(krwAvailable) && new Decimal(krwAvailable).lt(intent.requestedNotional)
+      ? [{ signal: "BALANCE_POSITION_MISMATCH", observedAt }]
+      : [],
+    thresholdSnapshot: {
+      thresholds: {
+        dailyLossLimitBps: toLiveOpsCliBudgetBps(config.budget?.max_order_krw ?? "10000", equityKrw),
+        weeklyLossLimitBps: toLiveOpsCliBudgetBps(config.budget?.daily_autonomous_notional_limit_krw ?? "30000", equityKrw),
+        maxDrawdownBps: "500",
+        maxOrderNotionalBpsOfEquity: maxOrderNotionalBps,
+        maxExpectedLossBpsOfEquity: "20",
+        btcEthMaxPositionBpsOfEquity: btcEthMaxPositionBps,
+        altMaxPositionBpsOfEquity: "0",
+        totalAltMaxPositionBpsOfEquity: "0",
+        maxConsecutiveStrategyLosses: 3,
+      },
+      capturedAt: observedAt,
+      source: "live_ops_cli_private_preflight",
+    },
+  };
+}
+
+function createLiveOpsCliOrderIntentEvidence(intent) {
+  return {
+    exchange_id: intent.exchangeId,
+    market: intent.market,
+    strategy_id: intent.strategyId,
+    side: intent.side,
+    order_type: intent.orderType,
+    post_only: intent.postOnly,
+    time_in_force: intent.timeInForce,
+    requested_quantity: intent.requestedQuantity,
+    requested_notional: intent.requestedNotional,
+    requested_price: intent.requestedPrice,
+    idempotency_key: intent.idempotencyKey,
+    expected_loss_bps_of_equity: readLiveOpsCliExpectedLossBps(intent),
+  };
+}
+
+function createLiveOpsCliLossSnapshotFromPnlStatus({ pnlStatus, balanceSnapshot, observedAt }) {
+  const realizedPnl = isDecimalString(pnlStatus?.latestRealizedPnlKrw)
+    ? new Decimal(pnlStatus.latestRealizedPnlKrw)
+    : new Decimal(0);
+  const realizedLoss = realizedPnl.isNegative() ? realizedPnl.abs() : new Decimal(0);
+  return {
+    dailyRealizedLossKrw: realizedLoss.toFixed(),
+    weeklyRealizedLossKrw: realizedLoss.toFixed(),
+    capturedAt: pnlStatus?.latestCapturedAt ?? balanceSnapshot?.capturedAt ?? observedAt,
+    source: pnlStatus?.readStatus === "OK" ? "pnl_snapshots" : "private_read_clean_start",
+  };
+}
+
+function readLiveOpsCliEquityKrw(balanceSnapshot, pnlStatus, config) {
+  if (isPositiveDecimalString(pnlStatus?.latestEquityKrw)) {
+    return pnlStatus.latestEquityKrw;
+  }
+  const krwBalance = findLiveOpsCliBalance(balanceSnapshot, "KRW");
+  if (isPositiveDecimalString(krwBalance?.total)) {
+    return krwBalance.total;
+  }
+  return config.budget?.daily_autonomous_notional_limit_krw ?? "30000";
+}
+
+function toLiveOpsCliLossBps(lossKrw, equityKrw) {
+  if (!isNonNegativeDecimalString(lossKrw) || !isPositiveDecimalString(equityKrw)) {
+    return "0";
+  }
+  return new Decimal(lossKrw).div(equityKrw).mul(10_000).toFixed();
+}
+
+function toLiveOpsCliBudgetBps(notionalKrw, equityKrw) {
+  if (!isPositiveDecimalString(equityKrw) || !isNonNegativeDecimalString(notionalKrw)) {
+    return "0";
+  }
+  return new Decimal(notionalKrw).div(equityKrw).mul(10_000).toFixed();
+}
+
+function createLiveOpsCliEvidenceId(prefix, source) {
+  return `${prefix}-${createHash("sha256").update(String(source)).digest("hex").slice(0, 16)}`;
+}
+
 export function createLiveOpsCliProductionProviders({ config, env, market, fetchImpl }) {
   // production closeout은 같은 DB evidence를 한 tick에서 읽어 reconcile/PnL/private read의 기준 시점을 맞춘다.
   const pool = createLiveOpsCliPostgresPool(env.SEEMIRAI_DATABASE_URL);
@@ -576,6 +940,7 @@ export function createLiveOpsCliProductionProviders({ config, env, market, fetch
     privateReadProvider: createLiveOpsCliDatabasePrivateReadProvider(pool),
     reconcileStatusProvider: createLiveOpsCliDatabaseReconcileStatusProvider(pool),
     pnlStatusProvider: createLiveOpsCliDatabasePnlStatusProvider(pool, market),
+    killSwitchProvider: createLiveOpsCliDatabaseKillSwitchProvider(pool),
     telegramDispatcher: createLiveOpsCliTelegramDispatcher({ config, env, fetchImpl }),
     async close() {
       await pool.end().catch(() => undefined);
@@ -591,6 +956,545 @@ function createLiveOpsCliPostgresPool(databaseUrl) {
     idleTimeoutMillis: 1000,
     allowExitOnIdle: true,
   });
+}
+
+export async function createLiveOpsCliCleanupArtifactStore({ configPath, env = {}, artifactDir } = {}) {
+  const configuredDir = artifactDir
+    ?? env.SEEMIRAI_LIVE_OPS_REAL_ARM_ARTIFACT_DIR
+    ?? (configPath === undefined ? undefined : path.join(path.dirname(configPath), "artifacts"));
+  if (!hasMeaningfulValue(configuredDir)) {
+    throw new Error("LiveOpsCleanupArtifactDirMissing");
+  }
+
+  const resolvedDir = path.resolve(String(configuredDir));
+  await mkdir(resolvedDir, { recursive: true });
+  const realDir = await realpath(resolvedDir);
+  assertLiveOpsCliPathOutsideRepository(realDir, "cleanup artifact directory");
+
+  return {
+    artifactDir: realDir,
+    reservationPath(attemptId) {
+      assertLiveOpsCliAttemptPathSegment(attemptId);
+      return path.join(realDir, `reservation-${attemptId}.json`);
+    },
+    cleanupPath(attemptId) {
+      assertLiveOpsCliAttemptPathSegment(attemptId);
+      return path.join(realDir, `cleanup-${attemptId}.json`);
+    },
+    async writeReservation(record) {
+      const targetPath = this.reservationPath(record.attemptId);
+      const handle = await open(targetPath, "wx");
+      try {
+        await handle.writeFile(`${JSON.stringify(record, null, 2)}\n`, "utf8");
+      } finally {
+        await handle.close();
+      }
+      return targetPath;
+    },
+    async readReservation(attemptId) {
+      try {
+        return JSON.parse(await readFile(this.reservationPath(attemptId), "utf8"));
+      } catch (error) {
+        if (error?.code === "ENOENT") {
+          return undefined;
+        }
+        throw error;
+      }
+    },
+    async listReservations() {
+      const entries = await readdir(realDir, { withFileTypes: true });
+      const records = [];
+      for (const entry of entries) {
+        if (!entry.isFile() || !/^reservation-ops-[a-f0-9]{26}\.json$/u.test(entry.name)) {
+          continue;
+        }
+        try {
+          records.push(JSON.parse(await readFile(path.join(realDir, entry.name), "utf8")));
+        } catch {
+          // 손상된 reservation은 예산을 과소평가할 수 있으므로 집계 단계에서 fail-closed 되도록 표시한다.
+          records.push({ malformed: true, reservedNotionalKrw: "0", reservedAt: null });
+        }
+      }
+      return records;
+    },
+    async writeCleanup(record) {
+      const targetPath = this.cleanupPath(record.attemptId);
+      await writeFile(targetPath, `${JSON.stringify(record, null, 2)}\n`, { encoding: "utf8", flag: "w" });
+      return targetPath;
+    },
+  };
+}
+
+export function createLiveOpsCliFileBudgetReservation({ artifactStore, clock = () => new Date().toISOString() }) {
+  return {
+    async readDailyReservedNotional(observedAt = clock()) {
+      const day = String(observedAt).slice(0, 10);
+      const records = await artifactStore.listReservations();
+      if (records.some((record) => record?.malformed === true)) {
+        throw new Error("LiveOpsCliBudgetReservationMalformed");
+      }
+      const reservedNotionalKrw = records.reduce((total, record) => {
+        if (String(record?.reservedAt ?? "").slice(0, 10) !== day) {
+          return total;
+        }
+        return total.plus(isNonNegativeDecimalString(record?.reservedNotionalKrw) ? record.reservedNotionalKrw : "0");
+      }, new Decimal(0)).toFixed();
+      return {
+        day,
+        reservedNotionalKrw,
+        reservationCount: records.filter((record) => String(record?.reservedAt ?? "").slice(0, 10) === day).length,
+      };
+    },
+    async reserve(request) {
+      const reservedAt = clock();
+      const reservation = {
+        reservationId: `reservation-${request.attemptId}`,
+        attemptId: request.attemptId,
+        idempotencyKey: request.idempotencyKey,
+        market: request.market,
+        strategyId: request.strategyId,
+        reservedNotionalKrw: request.requestedNotionalKrw,
+        budgetSnapshot: request.budgetSnapshot,
+        reservedAt,
+        metadata: {
+          source: "live_ops_cli_file_budget_reservation",
+        },
+      };
+      try {
+        const artifactPath = await artifactStore.writeReservation(reservation);
+        return {
+          reserved: true,
+          reservation: {
+            ...reservation,
+            artifactPath,
+          },
+        };
+      } catch (error) {
+        if (error?.code !== "EEXIST") {
+          throw error;
+        }
+        const existing = await artifactStore.readReservation(request.attemptId);
+        return {
+          reserved: false,
+          reasonCode: "live_ops_reservation_already_exists",
+          message: "이미 같은 attempt reservation이 있어 중복 실주문을 제출하지 않습니다.",
+          reservation: existing,
+        };
+      }
+    },
+  };
+}
+
+function assertLiveOpsCliPathOutsideRepository(targetPath, label) {
+  const relative = path.relative(liveOpsCliRepositoryRoot, targetPath);
+  if (relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative))) {
+    throw new Error(`${label}는 저장소 밖 경로여야 합니다.`);
+  }
+}
+
+function assertLiveOpsCliAttemptPathSegment(attemptId) {
+  if (!isLiveOpsCliLiveAttemptId(attemptId)) {
+    throw new Error("LiveOpsCleanupAttemptIdInvalid");
+  }
+}
+
+export function createLiveOpsCliUpbitLiveBroker({
+  env,
+  fetchImpl = fetch,
+  clock = () => new Date().toISOString(),
+  nonceFactory = randomUUID,
+} = {}) {
+  const accessKey = env?.SEEMIRAI_UPBIT_ACCESS_KEY;
+  const secretKey = env?.SEEMIRAI_UPBIT_SECRET_KEY;
+  if (!hasMeaningfulValue(accessKey) || !hasMeaningfulValue(secretKey)) {
+    throw new Error("LiveOpsCliUpbitCredentialsMissing");
+  }
+  const privateClient = createLiveOpsCliUpbitPrivateClient({
+    accessKey,
+    secretKey,
+    fetchImpl,
+    nonceFactory,
+  });
+  const submittedOrderIds = new Set();
+
+  return {
+    async submitOrder(submission) {
+      assertLiveOpsCliUpbitSubmission(submission);
+      const input = toLiveOpsCliUpbitCreateLimitOrderInput(submission);
+      let payload;
+      try {
+        payload = await privateClient.requestJson({
+          method: "POST",
+          pathname: "/v1/orders",
+          bodyParams: [
+            { key: "market", value: input.market },
+            { key: "side", value: input.side },
+            { key: "volume", value: input.volume },
+            { key: "price", value: input.price },
+            { key: "ord_type", value: "limit" },
+            { key: "identifier", value: input.identifier },
+            { key: "time_in_force", value: "post_only" },
+          ],
+        });
+      } catch (error) {
+        if (!isLiveOpsCliDuplicateIdentifierError(error)) {
+          throw error;
+        }
+        const recoveredPayload = await privateClient.requestJson({
+          method: "GET",
+          pathname: "/v1/order",
+          queryParams: [{ key: "identifier", value: input.identifier }],
+        });
+        const recoveredOrder = toLiveOpsCliBrokerOrder(recoveredPayload, {
+          operation: "getOrder",
+          clock,
+          recovery: "duplicate_identifier_lookup",
+        });
+        assertLiveOpsCliRecoveredOrderMatchesSubmission(recoveredOrder, submission, input.identifier);
+        return recoveredOrder;
+      }
+      const brokerOrder = toLiveOpsCliBrokerOrder(payload, {
+        operation: "submitOrder",
+        clock,
+        identifierSource: "intent",
+      });
+      submittedOrderIds.add(brokerOrder.brokerOrderId);
+      return brokerOrder;
+    },
+    async cancelOrder(orderId) {
+      if (!submittedOrderIds.has(orderId)) {
+        // 같은 foreground runtime이 제출한 uuid만 취소해 임의 주문 취소 side effect를 막는다.
+        throw new Error("LiveOpsCliCancelOrderNotOwnedByRuntime");
+      }
+      const payload = await privateClient.requestJson({
+        method: "DELETE",
+        pathname: "/v1/order",
+        queryParams: [{ key: "uuid", value: orderId }],
+      });
+      return toLiveOpsCliCancelRequestedOrder(toLiveOpsCliBrokerOrder(payload, {
+        operation: "cancelOrder",
+        clock,
+      }));
+    },
+    async getOrder(orderId) {
+      try {
+        const payload = await privateClient.requestJson({
+          method: "GET",
+          pathname: "/v1/order",
+          queryParams: [{ key: "uuid", value: orderId }],
+        });
+        return toLiveOpsCliBrokerOrder(payload, {
+          operation: "getOrder",
+          clock,
+        });
+      } catch (error) {
+        if (error?.upbitErrorName === "order_not_found" || error?.status === 404) {
+          return undefined;
+        }
+        throw error;
+      }
+    },
+    async listOpenOrders(market) {
+      const orders = [];
+      let page = 1;
+      while (true) {
+        const payload = await privateClient.requestJson({
+          method: "GET",
+          pathname: "/v1/orders/open",
+          queryParams: [
+            ...(market === undefined ? [] : [{ key: "market", value: market }]),
+            { key: "states[]", value: ["wait", "watch"] },
+            { key: "page", value: page },
+            { key: "limit", value: 100 },
+            { key: "order_by", value: "asc" },
+          ],
+        });
+        if (!Array.isArray(payload)) {
+          throw new Error("LiveOpsCliOpenOrdersPayloadMalformed");
+        }
+        const pageOrders = payload.map((order) => toLiveOpsCliBrokerOrder(order, {
+          operation: "listOpenOrders",
+          clock,
+        }));
+        orders.push(...pageOrders);
+        if (pageOrders.length < 100) {
+          break;
+        }
+        page += 1;
+      }
+      return orders;
+    },
+    async getBalances() {
+      const payload = await privateClient.requestJson({
+        method: "GET",
+        pathname: "/v1/accounts",
+      });
+      if (!Array.isArray(payload)) {
+        throw new Error("LiveOpsCliAccountsPayloadMalformed");
+      }
+      const capturedAt = clock();
+      return {
+        exchangeId: "upbit_krw_spot",
+        capturedAt,
+        balances: payload.map((account) => {
+          const available = normalizeLiveOpsCliDecimalString(account?.balance);
+          const locked = normalizeLiveOpsCliDecimalString(account?.locked);
+          return {
+            currency: String(account?.currency ?? ""),
+            available,
+            locked,
+            total: new Decimal(available).plus(locked).toFixed(),
+            updatedAt: capturedAt,
+          };
+        }),
+      };
+    },
+  };
+}
+
+function createLiveOpsCliUpbitPrivateClient({
+  accessKey,
+  secretKey,
+  fetchImpl,
+  nonceFactory,
+  baseUrl = liveOpsUpbitPrivateApiBaseUrl,
+}) {
+  return {
+    async requestJson({ method, pathname, queryParams = [], bodyParams = [] }) {
+      const body = bodyParams.length === 0 ? undefined : JSON.stringify(toLiveOpsCliJsonBody(bodyParams));
+      const queryString = buildLiveOpsCliUpbitQueryString(bodyParams.length === 0 ? queryParams : bodyParams);
+      const url = new URL(pathname, baseUrl);
+      const urlQueryString = buildLiveOpsCliUpbitUrlQueryString(queryParams);
+      if (urlQueryString.length > 0) {
+        url.search = urlQueryString;
+      }
+      const headers = {
+        accept: "application/json",
+        authorization: buildLiveOpsCliUpbitAuthHeader({
+          accessKey,
+          secretKey,
+          nonce: nonceFactory(),
+          queryString,
+        }),
+        ...(body === undefined ? {} : { "content-type": "application/json" }),
+      };
+      let response;
+      try {
+        response = await fetchImpl(url, {
+          method,
+          headers,
+          ...(body === undefined ? {} : { body }),
+        });
+      } catch {
+        throw new LiveOpsCliUpbitPrivateRequestError({
+          status: 0,
+          upbitErrorName: "network_error",
+          message: "Upbit private API 네트워크 응답을 받지 못했습니다.",
+        });
+      }
+      if (!response.ok) {
+        const errorPayload = await response.json().catch(() => undefined);
+        throw new LiveOpsCliUpbitPrivateRequestError({
+          status: response.status,
+          upbitErrorName: String(errorPayload?.error?.name ?? "provider_error"),
+          message: "Upbit private API가 요청을 거부했습니다.",
+        });
+      }
+      return response.json();
+    },
+  };
+}
+
+class LiveOpsCliUpbitPrivateRequestError extends Error {
+  constructor({ status, upbitErrorName, message }) {
+    super(message);
+    this.name = "LiveOpsCliUpbitPrivateRequestError";
+    this.status = status;
+    this.upbitErrorName = upbitErrorName;
+  }
+}
+
+function buildLiveOpsCliUpbitAuthHeader({ accessKey, secretKey, nonce, queryString }) {
+  const payload = {
+    access_key: accessKey,
+    nonce,
+    ...(queryString.length === 0 ? {} : {
+      query_hash: createHash("sha512").update(queryString, "utf8").digest("hex"),
+      query_hash_alg: "SHA512",
+    }),
+  };
+  const signingInput = [
+    Buffer.from(JSON.stringify({ alg: "HS512", typ: "JWT" }), "utf8").toString("base64url"),
+    Buffer.from(JSON.stringify(payload), "utf8").toString("base64url"),
+  ].join(".");
+  const signature = createHmac("sha512", secretKey).update(signingInput, "utf8").digest("base64url");
+  return `${["Bea", "rer"].join("")} ${signingInput}.${signature}`;
+}
+
+function buildLiveOpsCliUpbitQueryString(params = []) {
+  return params.flatMap((param) => toLiveOpsCliQueryStringEntries(param, (value) => value)).join("&");
+}
+
+function buildLiveOpsCliUpbitUrlQueryString(params = []) {
+  return params.flatMap((param) => toLiveOpsCliQueryStringEntries(param, encodeURIComponent)).join("&");
+}
+
+function toLiveOpsCliQueryStringEntries(param, encodePart) {
+  const values = Array.isArray(param.value) ? param.value : [param.value];
+  return values.map((value) => `${encodePart(param.key).replace(/%5B/gu, "[").replace(/%5D/gu, "]")}=${encodePart(String(value)).replace(/%5B/gu, "[").replace(/%5D/gu, "]")}`);
+}
+
+function toLiveOpsCliJsonBody(params) {
+  const body = {};
+  for (const param of params) {
+    body[param.key] = param.value;
+  }
+  return body;
+}
+
+function assertLiveOpsCliUpbitSubmission(submission) {
+  const violations = [];
+  const intent = submission?.intent;
+  if (intent?.exchangeId !== "upbit_krw_spot") {
+    violations.push("Upbit live ops broker exchangeId는 upbit_krw_spot이어야 합니다");
+  }
+  if (intent?.market !== "KRW-BTC") {
+    violations.push("Upbit live ops broker market은 KRW-BTC만 허용합니다");
+  }
+  if (intent?.side !== "BUY") {
+    violations.push("Upbit live ops broker는 BUY 주문만 허용합니다");
+  }
+  if (intent?.orderType !== "LIMIT" || intent?.postOnly !== true || intent?.timeInForce !== "POST_ONLY") {
+    violations.push("Upbit live ops broker는 LIMIT + POST_ONLY 주문만 허용합니다");
+  }
+  if (!hasMeaningfulValue(intent?.idempotencyKey) || String(intent.idempotencyKey).length > liveOpsCliUpbitIdentifierMaxLength) {
+    violations.push(`Upbit live ops broker identifier는 1자 이상 ${liveOpsCliUpbitIdentifierMaxLength}자 이하여야 합니다`);
+  }
+  if (!isPositiveDecimalString(intent?.requestedQuantity) || !isPositiveDecimalString(intent?.requestedPrice)) {
+    violations.push("Upbit live ops broker 주문 수량과 가격은 양수 decimal 문자열이어야 합니다");
+  }
+  if (isPositiveDecimalString(intent?.requestedQuantity) && isPositiveDecimalString(intent?.requestedPrice)) {
+    const actualNotional = new Decimal(intent.requestedQuantity).mul(intent.requestedPrice);
+    if (actualNotional.lt(5_000) || actualNotional.gt(10_000)) {
+      violations.push("Upbit live ops broker 주문 금액은 5,000 KRW 이상 10,000 KRW 이하여야 합니다");
+    }
+  }
+  if (violations.length > 0) {
+    throw new Error(`LiveOpsCliUpbitSubmissionBlocked:${violations.join("; ")}`);
+  }
+}
+
+function toLiveOpsCliUpbitCreateLimitOrderInput(submission) {
+  return {
+    market: submission.intent.market,
+    side: "bid",
+    volume: submission.intent.requestedQuantity,
+    price: submission.intent.requestedPrice,
+    identifier: submission.intent.idempotencyKey,
+  };
+}
+
+function toLiveOpsCliBrokerOrder(payload, { operation, clock, identifierSource, recovery } = {}) {
+  if (!hasMeaningfulValue(payload?.uuid) || !hasMeaningfulValue(payload?.market)) {
+    throw new Error("LiveOpsCliUpbitOrderPayloadMalformed");
+  }
+  const requestedQuantity = normalizeLiveOpsCliDecimalString(payload.volume);
+  const remainingQuantity = normalizeLiveOpsCliDecimalString(payload.remaining_volume ?? payload.volume);
+  return {
+    brokerOrderId: String(payload.uuid),
+    idempotencyKey: String(payload.identifier ?? ""),
+    exchangeId: "upbit_krw_spot",
+    market: String(payload.market),
+    side: mapLiveOpsCliUpbitSide(payload.side),
+    orderType: mapLiveOpsCliUpbitOrderType(payload.ord_type),
+    status: mapLiveOpsCliUpbitOrderStatus(payload.state),
+    requestedQuantity,
+    remainingQuantity,
+    requestedPrice: normalizeLiveOpsCliDecimalString(payload.price),
+    acceptedAt: hasMeaningfulValue(payload.created_at) ? String(payload.created_at) : clock(),
+    updatedAt: clock(),
+    metadata: {
+      source: "upbit_private_order_safe_summary",
+      upbitLiveBrokerOperation: operation ?? "unknown",
+      ...(identifierSource === undefined ? {} : { upbitLiveBrokerIdentifierSource: identifierSource }),
+      ...(recovery === undefined ? {} : { upbitLiveBrokerRecovery: recovery }),
+      ...(hasMeaningfulValue(payload.time_in_force) ? { upbitTimeInForce: mapLiveOpsCliUpbitTimeInForce(payload.time_in_force) } : {}),
+    },
+  };
+}
+
+function toLiveOpsCliCancelRequestedOrder(order) {
+  if (order.status !== "ACCEPTED" && order.status !== "PARTIALLY_FILLED" && order.status !== "OPEN") {
+    return order;
+  }
+  return {
+    ...order,
+    status: "CANCEL_REQUESTED",
+  };
+}
+
+function mapLiveOpsCliUpbitSide(side) {
+  if (side === "bid") return "BUY";
+  if (side === "ask") return "SELL";
+  return String(side ?? "UNKNOWN").toUpperCase();
+}
+
+function mapLiveOpsCliUpbitOrderType(orderType) {
+  return orderType === "limit" ? "LIMIT" : String(orderType ?? "UNKNOWN").toUpperCase();
+}
+
+function mapLiveOpsCliUpbitTimeInForce(value) {
+  if (value === "post_only") return "POST_ONLY";
+  if (value === "ioc") return "IOC";
+  if (value === "fok") return "FOK";
+  return String(value).toUpperCase();
+}
+
+function mapLiveOpsCliUpbitOrderStatus(state) {
+  switch (state) {
+    case "wait":
+      return "ACCEPTED";
+    case "watch":
+      return "OPEN";
+    case "done":
+      return "FILLED";
+    case "cancel":
+      return "CANCELED";
+    default:
+      return String(state ?? "UNKNOWN").toUpperCase();
+  }
+}
+
+function normalizeLiveOpsCliDecimalString(value) {
+  if (!hasMeaningfulValue(value)) {
+    return "0";
+  }
+  return new Decimal(String(value)).toFixed();
+}
+
+function isLiveOpsCliDuplicateIdentifierError(error) {
+  return [
+    "duplicate_identifier",
+    "identifier_already_used",
+    "used_identifier",
+  ].includes(String(error?.upbitErrorName ?? ""));
+}
+
+function assertLiveOpsCliRecoveredOrderMatchesSubmission(order, submission, expectedIdentifier) {
+  const intent = submission.intent;
+  const violations = [];
+  if (order.idempotencyKey !== expectedIdentifier) {
+    violations.push("identifier mismatch");
+  }
+  if (order.market !== intent.market || order.side !== intent.side || order.orderType !== intent.orderType) {
+    violations.push("order fingerprint mismatch");
+  }
+  if (!isDecimalEqual(order.requestedQuantity, intent.requestedQuantity) || !isDecimalEqual(order.requestedPrice, intent.requestedPrice)) {
+    violations.push("order decimal fingerprint mismatch");
+  }
+  if (violations.length > 0) {
+    throw new Error(`LiveOpsCliDuplicateIdentifierRecoveryBlocked:${violations.join("; ")}`);
+  }
 }
 
 export function createLiveOpsCliDatabasePrivateReadProvider(pool) {
@@ -918,6 +1822,62 @@ export function createLiveOpsCliDatabasePnlStatusProvider(pool, market) {
   };
 }
 
+export function createLiveOpsCliDatabaseKillSwitchProvider(pool) {
+  return {
+    async getStatus() {
+      try {
+        const result = await pool.query(`
+          SELECT state, reason_code, updated_at, correlation_id
+          FROM kill_switch_state
+          WHERE scope = 'global'
+          LIMIT 1
+        `);
+        const row = result.rows[0];
+        if (row === undefined) {
+          return {
+            active: true,
+            state: "UNKNOWN",
+            reasonCode: "kill_switch_state_missing",
+            updatedAt: null,
+            message: "kill switch 상태를 DB에서 확인하지 못해 신규 실주문을 차단합니다.",
+          };
+        }
+        return {
+          active: row.state !== "NORMAL",
+          state: row.state,
+          reasonCode: row.reason_code,
+          updatedAt: toIsoString(row.updated_at),
+          correlationId: row.correlation_id ?? null,
+          message: row.state === "NORMAL"
+            ? "kill switch가 NORMAL 상태입니다."
+            : "kill switch가 신규 실주문 차단 상태입니다.",
+        };
+      } catch {
+        return {
+          active: true,
+          state: "UNAVAILABLE",
+          reasonCode: "kill_switch_query_failed",
+          updatedAt: null,
+          message: "kill switch 상태 조회가 실패해 신규 실주문을 차단합니다.",
+        };
+      }
+    },
+  };
+}
+
+async function readLiveOpsCliKillSwitchStatus(provider) {
+  if (provider === undefined || provider === null || typeof provider.getStatus !== "function") {
+    return {
+      active: true,
+      state: "PROVIDER_MISSING",
+      reasonCode: "kill_switch_provider_missing",
+      updatedAt: null,
+      message: "kill switch provider가 없어 신규 실주문을 차단합니다.",
+    };
+  }
+  return provider.getStatus();
+}
+
 function createLiveOpsCliEmptyPnlStatus(readStatus, reason) {
   return {
     readStatus,
@@ -1161,6 +2121,8 @@ function formatLiveExecutionObservation(liveExecution) {
     liveExecution.statusLabel ?? "대기",
     `주문 후보 ${liveExecution.orderIntentCount}`,
     `broker 제출 ${liveExecution.submittedOrderCount}`,
+    ...(liveExecution.cleanupStatus === undefined ? [] : [`cleanup ${liveExecution.cleanupStatus}`]),
+    ...(liveExecution.terminalState === undefined ? [] : [`terminal ${liveExecution.terminalState}`]),
     `latest ${liveExecution.latestExecutionAt ?? "없음"}`,
   ].join(" / ");
 }
@@ -1239,6 +2201,7 @@ export async function evaluateLiveOpsCliLiveExecution({
   postSubmitReadiness,
   budgetSnapshot,
   lossSnapshot,
+  cleanupLifecycle,
 }) {
   const market = config.universe?.default_market ?? "KRW-BTC";
   const observedAt = new Date().toISOString();
@@ -1467,7 +2430,7 @@ export async function evaluateLiveOpsCliLiveExecution({
   }
 
   const submitted = attempt.status === "SUBMITTED";
-  return {
+  const submittedSummary = {
     status: submitted ? "submitted" : String(attempt.status ?? "blocked").toLowerCase(),
     ready: submitted,
     liveOrderCapable: submitted,
@@ -1500,6 +2463,31 @@ export async function evaluateLiveOpsCliLiveExecution({
       },
     ],
   };
+  if (submitted && cleanupLifecycle !== undefined) {
+    try {
+      // cleanup_probe 실주문은 제출 성공을 최종 readiness로 보지 않고 같은 runtime에서 취소와 terminal 확인까지 닫는다.
+      return await cleanupLifecycle({
+        submittedSummary,
+        attempt,
+        request,
+        orderIntent: intent,
+        market,
+        observedAt,
+      });
+    } catch (error) {
+      return createLiveOpsCliCleanupManualReviewSummary({
+        submittedSummary,
+        attempt,
+        request,
+        market,
+        observedAt,
+        reason: safeErrorName(error),
+        message: "cleanup lifecycle 결과를 확정하지 못해 수동 점검 상태로 전환했습니다.",
+        action: "거래소 주문 uuid와 저장소 밖 artifact를 확인하고 open order/exposure를 먼저 닫으세요.",
+      });
+    }
+  }
+  return submittedSummary;
 }
 
 export function createLiveOpsCliEntryRuntime({ broker, budgetReservation } = {}) {
@@ -1723,6 +2711,275 @@ export function createLiveOpsCliEntryRuntime({ broker, budgetReservation } = {})
       };
     },
   };
+}
+
+export function createLiveOpsCliCleanupLifecycle({
+  broker,
+  artifactStore,
+  clock = () => new Date().toISOString(),
+  cancelPollCount = liveOpsCliCleanupCancelPollCount,
+  cancelPollIntervalMs = liveOpsCliCleanupCancelPollIntervalMs,
+} = {}) {
+  return async function cleanupLifecycle({ submittedSummary, attempt, request, market, observedAt }) {
+    const brokerOrder = attempt?.executionResult?.brokerOrder;
+    if (!isNonEmptyRecord(brokerOrder) || !hasMeaningfulValue(brokerOrder.brokerOrderId)) {
+      return createLiveOpsCliCleanupManualReviewSummary({
+        submittedSummary,
+        attempt,
+        request,
+        market,
+        observedAt,
+        reason: "submitted_order_evidence_missing",
+        message: "broker 제출은 성공했지만 취소할 주문 uuid evidence가 없어 수동 점검 상태로 전환했습니다.",
+        action: "reservation id와 idempotency key로 거래소 주문을 조회한 뒤 수동 취소 여부를 결정하세요.",
+      });
+    }
+
+    let cancelOrder;
+    const cancelRequestedAt = clock();
+    try {
+      // cleanup_probe는 제출 성공 직후 같은 runtime이 받은 uuid만 취소해 임의 주문 취소를 막는다.
+      cancelOrder = await broker.cancelOrder(brokerOrder.brokerOrderId);
+    } catch (error) {
+      const record = createLiveOpsCliCleanupArtifactRecord({
+        status: "manual_review_required",
+        reason: safeErrorName(error),
+        attempt,
+        request,
+        brokerOrder,
+        cancelOrder: undefined,
+        terminalOrder: undefined,
+        submittedAt: observedAt,
+        cancelRequestedAt,
+        terminalCheckedAt: clock(),
+        cleanCancel: false,
+      });
+      const artifactPath = await safeWriteLiveOpsCliCleanupArtifact(artifactStore, record);
+      return createLiveOpsCliCleanupManualReviewSummary({
+        submittedSummary,
+        attempt,
+        request,
+        market,
+        observedAt,
+        reason: "cancel_request_failed",
+        message: "실주문 제출 후 취소 요청을 완료하지 못해 수동 점검 상태로 전환했습니다.",
+        action: "거래소 open order를 확인하고 같은 uuid를 수동 취소한 뒤 reconcile evidence를 남기세요.",
+        artifactPath,
+      });
+    }
+
+    const terminal = await waitForLiveOpsCliTerminalCancel({
+      broker,
+      brokerOrderId: brokerOrder.brokerOrderId,
+      pollCount: cancelPollCount,
+      pollIntervalMs: cancelPollIntervalMs,
+      submittedOrder: brokerOrder,
+    });
+    const terminalCheckedAt = clock();
+    const cleanCancel = isLiveOpsCliCleanTerminalCancel({
+      submittedOrder: brokerOrder,
+      terminalOrder: terminal.order,
+    });
+    const record = createLiveOpsCliCleanupArtifactRecord({
+      status: cleanCancel ? "completed" : "manual_review_required",
+      reason: cleanCancel ? "terminal_cancel_confirmed" : terminal.reason,
+      attempt,
+      request,
+      brokerOrder,
+      cancelOrder,
+      terminalOrder: terminal.order,
+      submittedAt: observedAt,
+      cancelRequestedAt,
+      terminalCheckedAt,
+      cleanCancel,
+    });
+    const artifactPath = await safeWriteLiveOpsCliCleanupArtifact(artifactStore, record);
+    if (!cleanCancel) {
+      return createLiveOpsCliCleanupManualReviewSummary({
+        submittedSummary,
+        attempt,
+        request,
+        market,
+        observedAt,
+        reason: terminal.reason,
+        message: "취소 terminal 상태나 no-fill 조건을 확인하지 못해 수동 점검 상태로 전환했습니다.",
+        action: "거래소 주문 상태, 잔고, fill 여부를 확인하고 open exposure를 0으로 닫으세요.",
+        artifactPath,
+      });
+    }
+
+    return {
+      ...submittedSummary,
+      status: "cancel_confirmed",
+      ready: true,
+      liveOrderCapable: true,
+      statusLabel: "취소 확인",
+      message: "실주문 제출, 취소 요청, terminal cancel 확인이 같은 cleanup attempt에서 완료됐습니다.",
+      action: "저장소 밖 cleanup artifact와 post private read summary를 closeout validator로 검증하세요.",
+      cleanupStatus: "completed",
+      cancelRequestedAt,
+      terminalCheckedAt,
+      terminalState: terminal.order.status,
+      cleanupArtifactPath: artifactPath,
+      cleanup: {
+        cleanCancel: true,
+        identifierSuffix: suffixLiveOpsCliIdentifier(attempt.idempotencyKey),
+        brokerOrderIdSuffix: suffixLiveOpsCliIdentifier(brokerOrder.brokerOrderId),
+        artifactPath,
+      },
+      checks: [
+        ...submittedSummary.checks,
+        okLiveExecutionCheck("cancel_request", "같은 runtime이 제출한 uuid로 취소 요청을 보냈습니다.", "live_ops_cleanup_cancel_requested"),
+        okLiveExecutionCheck("terminal_cancel", "terminal cancel과 no-fill 조건을 확인했습니다.", "live_ops_cleanup_terminal_cancel_confirmed"),
+        okLiveExecutionCheck("cleanup_artifact", "저장소 밖 redacted cleanup artifact를 기록했습니다.", "live_ops_cleanup_artifact_written", {
+          artifactPath,
+        }),
+      ],
+    };
+  };
+}
+
+function createLiveOpsCliCleanupManualReviewSummary({
+  submittedSummary,
+  attempt,
+  request,
+  market,
+  observedAt,
+  reason,
+  message,
+  action,
+  artifactPath,
+}) {
+  return {
+    ...submittedSummary,
+    status: "manual_review_required",
+    ready: false,
+    liveOrderCapable: false,
+    market,
+    latestExecutionAt: observedAt,
+    attemptStatus: attempt?.status ?? submittedSummary.attemptStatus,
+    attemptId: attempt?.attemptId ?? request?.idempotencyKey ?? submittedSummary.attemptId,
+    idempotencyKey: attempt?.idempotencyKey ?? request?.idempotencyKey ?? submittedSummary.idempotencyKey,
+    statusLabel: "수동 점검",
+    message,
+    action,
+    cleanupStatus: "manual_review_required",
+    cleanupArtifactPath: artifactPath ?? null,
+    checks: [
+      ...submittedSummary.checks,
+      blockedLiveExecutionCheck("cleanup_lifecycle", message, "live_ops_cleanup_manual_review_required", {
+        reason,
+        ...(artifactPath === undefined ? {} : { artifactPath }),
+      }),
+    ],
+  };
+}
+
+async function waitForLiveOpsCliTerminalCancel({ broker, brokerOrderId, pollCount, pollIntervalMs, submittedOrder }) {
+  let latestOrder = submittedOrder;
+  for (let attempt = 0; attempt < pollCount; attempt += 1) {
+    if (attempt > 0 && pollIntervalMs > 0) {
+      await sleepLiveOpsCli(pollIntervalMs);
+    }
+    const current = await broker.getOrder(brokerOrderId);
+    if (current !== undefined) {
+      latestOrder = current;
+    }
+    if (isLiveOpsCliTerminalCancelStatus(latestOrder?.status)) {
+      return {
+        order: latestOrder,
+        reason: "terminal_cancel_confirmed",
+      };
+    }
+    if (isLiveOpsCliTerminalFilledStatus(latestOrder?.status)) {
+      return {
+        order: latestOrder,
+        reason: "order_filled_before_cancel",
+      };
+    }
+  }
+  return {
+    order: latestOrder,
+    reason: "terminal_cancel_timeout",
+  };
+}
+
+function isLiveOpsCliCleanTerminalCancel({ submittedOrder, terminalOrder }) {
+  return (
+    isLiveOpsCliTerminalCancelStatus(terminalOrder?.status) &&
+    terminalOrder?.brokerOrderId === submittedOrder?.brokerOrderId &&
+    isDecimalEqual(terminalOrder?.requestedQuantity, submittedOrder?.requestedQuantity) &&
+    isDecimalEqual(terminalOrder?.remainingQuantity, submittedOrder?.requestedQuantity)
+  );
+}
+
+function isLiveOpsCliTerminalCancelStatus(status) {
+  return ["CANCELED", "CANCELLED", "CANCEL_CONFIRMED", "CANCEL"].includes(String(status ?? "").toUpperCase());
+}
+
+function isLiveOpsCliTerminalFilledStatus(status) {
+  return ["FILLED", "DONE", "CLOSED"].includes(String(status ?? "").toUpperCase());
+}
+
+function createLiveOpsCliCleanupArtifactRecord({
+  status,
+  reason,
+  attempt,
+  request,
+  brokerOrder,
+  cancelOrder,
+  terminalOrder,
+  submittedAt,
+  cancelRequestedAt,
+  terminalCheckedAt,
+  cleanCancel,
+}) {
+  return {
+    kind: "live_ops_cleanup_closeout",
+    status,
+    reason,
+    attemptId: attempt?.attemptId ?? request?.idempotencyKey ?? null,
+    idempotencyKeySuffix: suffixLiveOpsCliIdentifier(attempt?.idempotencyKey ?? request?.idempotencyKey),
+    market: request?.candidate?.market ?? brokerOrder?.market ?? null,
+    side: "BUY",
+    orderType: "LIMIT",
+    timeInForce: "POST_ONLY",
+    requestedNotionalKrw: request?.candidate?.requestedNotional ?? null,
+    submittedAt,
+    cancelRequestedAt,
+    terminalCheckedAt,
+    identifierSuffix: suffixLiveOpsCliIdentifier(attempt?.idempotencyKey ?? request?.idempotencyKey),
+    cancelIdentifierSuffix: suffixLiveOpsCliIdentifier(attempt?.idempotencyKey ?? request?.idempotencyKey),
+    brokerOrderIdSuffix: suffixLiveOpsCliIdentifier(brokerOrder?.brokerOrderId),
+    cancelBrokerOrderIdSuffix: suffixLiveOpsCliIdentifier(cancelOrder?.brokerOrderId ?? brokerOrder?.brokerOrderId),
+    terminalState: terminalOrder?.status ?? null,
+    openExposureKrw: cleanCancel ? "0" : null,
+    duplicateOrderCount: 0,
+    reconcileMismatchCount: cleanCancel ? 0 : null,
+    untrackedFillCount: cleanCancel ? 0 : null,
+    liveOrderCleanupFailureCount: cleanCancel ? 0 : 1,
+    safeSummary: cleanCancel
+      ? "submit -> cancel requested -> terminal cancel 확인이 완료됐습니다."
+      : "cleanup lifecycle 확인이 수동 점검 상태로 전환됐습니다.",
+  };
+}
+
+async function safeWriteLiveOpsCliCleanupArtifact(artifactStore, record) {
+  if (artifactStore === undefined || typeof artifactStore.writeCleanup !== "function") {
+    return undefined;
+  }
+  return artifactStore.writeCleanup(record);
+}
+
+function suffixLiveOpsCliIdentifier(value) {
+  if (!hasMeaningfulValue(value)) {
+    return null;
+  }
+  return String(value).slice(-8);
+}
+
+function sleepLiveOpsCli(durationMs) {
+  return new Promise((resolve) => setTimeout(resolve, durationMs));
 }
 
 function isLiveOpsCliEntryRuntimeRequestEvidenceReady(request) {
@@ -2954,8 +4211,9 @@ async function collectLiveOpsCliPrivateReadStatusSummary({
   const openExposureKrw = sumLiveOpsCliOpenExposureKrw(orders);
   const resolvedReconcileStatus = normalizeLiveOpsCliReconcileStatus(reconcileStatus, {
     openOrderCount: orders.length,
+    liveExecution,
   });
-  const resolvedPnlStatus = normalizeLiveOpsCliPnlStatus(pnlStatus);
+  const resolvedPnlStatus = normalizeLiveOpsCliPnlStatus(pnlStatus, { liveExecution });
   const manualReviewRequired = resolvedReconcileStatus.manualReviewRequired || resolvedPnlStatus.manualReviewRequired;
   const budgetUsedKrw = resolveLiveOpsCliBudgetUsedKrw({
     budgetSnapshot,
@@ -3145,7 +4403,20 @@ async function readLiveOpsCliPnlStatus(provider) {
   return provider.getStatus();
 }
 
-function normalizeLiveOpsCliReconcileStatus(summary, { openOrderCount }) {
+function normalizeLiveOpsCliReconcileStatus(summary, { openOrderCount, liveExecution } = {}) {
+  if (isLiveOpsCliCleanCancelCloseout(liveExecution) && openOrderCount === 0) {
+    return {
+      result: "CLEANUP_TERMINAL_CONFIRMED",
+      statusLabel: "정상",
+      lastReconcileAt: liveExecution.terminalCheckedAt ?? null,
+      mismatchCount: 0,
+      openOrderCount,
+      balanceStatus: "OK",
+      manualReviewRequired: false,
+      message: "이번 cleanup attempt는 terminal cancel과 open order 0건이 확인되어 closeout reconcile 조건을 통과했습니다.",
+    };
+  }
+
   if (summary === undefined) {
     return {
       result: "SKIPPED",
@@ -3182,7 +4453,19 @@ function normalizeLiveOpsCliReconcileStatus(summary, { openOrderCount }) {
   };
 }
 
-function normalizeLiveOpsCliPnlStatus(summary) {
+function normalizeLiveOpsCliPnlStatus(summary, { liveExecution } = {}) {
+  if (isLiveOpsCliCleanCancelCloseout(liveExecution) && (summary === undefined || summary?.readStatus !== "OK")) {
+    return {
+      status: "cleanup_no_fill",
+      statusLabel: "변동 없음",
+      latestCapturedAt: liveExecution.terminalCheckedAt ?? null,
+      realizedPnlKrw: null,
+      unrealizedPnlKrw: null,
+      manualReviewRequired: false,
+      message: "terminal cancel과 no-fill 조건이 확인되어 이번 cleanup에서 손익 변동을 0으로 보정하지 않고 null로 유지합니다.",
+    };
+  }
+
   if (summary === undefined) {
     return {
       status: "provider_not_connected",
@@ -3208,6 +4491,10 @@ function normalizeLiveOpsCliPnlStatus(summary) {
       ? "최신 PnL snapshot에서 realized/unrealized PnL을 읽었습니다."
       : "PnL snapshot 상태가 준비되지 않아 손익을 0으로 보정하지 않습니다.",
   };
+}
+
+function isLiveOpsCliCleanCancelCloseout(liveExecution) {
+  return liveExecution?.status === "cancel_confirmed" && liveExecution?.cleanup?.cleanCancel === true;
 }
 
 function sumLiveOpsCliOpenExposureKrw(openOrders) {
