@@ -10,7 +10,8 @@ identifier 또는 uuid로 취소해 terminal cancel evidence로 닫는 절차다
 - 대상 market: `KRW-BTC`
 - 허용 주문: `BUY + LIMIT + post_only`
 - 첫 주문 상한: 10,000 KRW
-- evidence 위치: 저장소 밖 redacted 운영 경로
+- artifact/evidence 위치: 저장소 밖 redacted 운영 경로. 기본값은 운영 config 파일과 같은 디렉터리의 `artifacts/`이며,
+  `SEEMIRAI_LIVE_OPS_REAL_ARM_ARTIFACT_DIR`가 있으면 그 저장소 밖 절대 경로를 우선한다.
 
 ## 금지 조건
 
@@ -37,6 +38,7 @@ identifier 또는 uuid로 취소해 terminal cancel evidence로 닫는 절차다
 | PnL/status | 결측은 0으로 보정하지 않고 원인과 필요한 조치를 표시한다 |
 | Telegram | startup/live order capable/order/cancel/manual review alert를 owner chat으로 보낼 수 있다 |
 | TUI | live armed/order capable, 최신 decision/order/cancel/reconcile/PnL 상태를 secret 없이 보여준다 |
+| artifact 경로 | symlink 기준 실제 경로가 저장소 밖이고 secret/raw payload 검사를 통과한다 |
 
 ## 실행 절차
 
@@ -50,11 +52,18 @@ corepack pnpm live:ops -- --config <운영-json-path> --env-file <운영-env-pat
 3. TUI와 Telegram에서 startup alert와 live order capable 전환을 분리해 확인한다.
 4. `cleanup_probe` decision policy가 최신 orderbook에서 단일 `KRW-BTC` `BUY + LIMIT + POST_ONLY` 후보를 만들었는지 확인한다.
    주문 후보가 없으면 TUI/JSON의 HOLD/BLOCK reason을 먼저 확인하고 broker 제출로 전진하지 않는다.
-5. 단일 `KRW-BTC` 후보가 생성되면 cost/risk/reconcile/budget/kill switch guard evidence가 모두 통과했는지 확인한다.
-6. 주문이 제출되면 artifact에 다음 safe summary만 남긴다.
+5. 단일 `KRW-BTC` 후보가 생성되면 CLI가 private read/reconcile/PnL preflight, cost/risk/reconcile/budget/kill switch guard,
+   deterministic budget reservation을 순서대로 통과시킨다. 이 단계가 하나라도 실패하면 broker 호출 전에 fail-closed 된다.
+6. 주문이 제출되면 CLI가 같은 runtime에서 받은 Upbit uuid로 즉시 취소 요청을 보낸다. 같은 runtime이 만든 uuid가 아니면 취소를
+   시도하지 않고 manual review로 격상한다.
+7. CLI가 제한된 polling으로 terminal cancel/done 상태를 확인한다. terminal cancel을 확인하지 못하면 open exposure를 0으로 보정하지 않고
+   manual review 상태와 필요한 조치를 표시한다.
+8. CLI는 저장소 밖 artifact에 다음 safe summary만 남긴다.
 
 ```text
 submitted_at=<ISO timestamp>
+cancel_requested_at=<ISO timestamp>
+terminal_checked_at=<ISO timestamp>
 market=KRW-BTC
 side=BUY
 order_type=LIMIT
@@ -62,11 +71,22 @@ time_in_force=POST_ONLY
 requested_notional_krw<=10000
 identifier=<redacted/stable suffix only>
 broker_order_id=<redacted/stable suffix only>
+terminal_state=CANCEL_CONFIRMED
+open_exposure_krw=0
 ```
 
-7. 같은 Upbit `identifier` 또는 uuid로 취소 요청을 보낸다.
-8. terminal cancel 상태, open exposure 0, duplicate order 0, reconcile mismatch 0, manual review 0을 확인한다.
-9. source/security scan과 artifact redaction 검증을 실행한 뒤 PR/closeout에 결과를 기록한다.
+9. source/security scan과 artifact redaction 검증을 실행한 뒤 PR/closeout에 결과를 기록한다. 운영자는 secret 원문이나 raw provider
+   payload를 별도로 복사하지 않는다.
+
+## CLI가 자동으로 남기는 evidence
+
+`live:ops` production 실행은 cleanup 후보를 실제 broker에 넘기기 전에 같은 attempt id로 reservation artifact를 만든다. reservation은
+`ops-` attempt id, market, strategy id, requested notional, budget snapshot, captured timestamp만 포함한다. 같은 attempt id의 reservation이
+이미 있으면 중복 실주문을 만들지 않고 broker 호출 전에 차단한다.
+
+submit/cancel lifecycle artifact는 terminal cancel 확인 뒤에만 success status가 된다. artifact에는 full access key, secret key, JWT,
+Authorization header, Telegram token, DB URL/password, TUI control token, raw provider payload, raw order detail을 쓰지 않는다. uuid와
+identifier는 suffix만 남기며, PR/issue에는 이 저장소 밖 artifact 경로와 safe summary만 기록한다.
 
 ## Closeout manifest 검증
 

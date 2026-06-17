@@ -146,6 +146,37 @@ Telegram, TUI를 같은 lifecycle로 조립하고, 조건을 통과한 단일 `K
         - 신규 `src/runtime/live-ops-decision-policy/**` 경로는 private order API, Authorization/Bearer/JWT, raw provider/order payload,
           market/best/withdraw/deposit/futures/leverage side effect를 열지 않는다.
 
+### Sub PR 07: production entry runtime과 cleanup submit/cancel 연결
+
+- 목표: 현재 production `live:ops`가 `cleanup_probe` order intent 생성 뒤 `live_ops_entry_runtime_missing`으로 멈추는 gap을 닫는다.
+  foreground command 한 번으로 읽기 전용 상태 확인, deterministic budget reservation, Upbit 소액 `BUY + LIMIT + POST_ONLY` 제출, 같은
+  주문 uuid 취소 요청, terminal cancel 확인, redacted artifact 기록까지 이어지는 cleanup lifecycle을 조립한다.
+- 제외 범위:
+  - BTC 외 market 활성화, 자동 budget 확대, 수익 목적 신규 alpha 전략.
+  - 시장가/best order, 시장가 매도, hard-stop open position 자동 청산.
+  - 출금/입금, 선물/레버리지/마진, raw provider payload 저장, secret 원문 artifact 저장.
+  - final main PR merge. final main PR은 review drain까지만 수행한다.
+- DnD:
+  - [x] production boot sequence가 DB readiness -> Upbit public market data -> cleanup_probe decision -> private read/reconcile/PnL preflight
+        -> live execution submit -> same-order cancel -> terminal cancel verification -> post private read/status/Telegram 순서를 지킨다.
+  - [x] production live execution이 `entryRuntime`, broker port, durable budget reservation, execution status, post-submit readiness,
+        budget/loss snapshot을 synthetic evidence 없이 실제 config/env/DB/private read 기반으로 조립한다.
+  - [x] durable reservation은 stable `ops-` attempt id와 requested notional을 저장소 밖 artifact 경로에 기록하고, 같은 attempt 재실행에서
+        duplicate live order를 만들지 않고 fail-closed 한다.
+  - [x] Upbit private broker는 `SEEMIRAI_UPBIT_ACCESS_KEY`/`SEEMIRAI_UPBIT_SECRET_KEY`로 JWT를 생성하되 Authorization/JWT/raw payload를
+        summary, Telegram, artifact, error trace에 남기지 않는다.
+  - [x] broker 제출은 `KRW-BTC`, `BUY`, `LIMIT`, `POST_ONLY`, `requested_notional <= 10000`, `identifier <= 32` guard를 통과한 단일
+        cleanup 후보만 허용한다.
+  - [x] submit 성공 뒤 같은 runtime이 받은 Upbit uuid만 취소할 수 있고, terminal cancel/done 상태를 제한된 polling으로 확인하지 못하면
+        manual review로 격상한다.
+  - [x] JSON/TUI/Telegram safe summary는 한국어 상태/원인/영향/필요 조치를 먼저 보여주고, attempt id, redacted uuid/identifier suffix,
+        artifact path는 추적 정보로 분리한다.
+  - [x] cleanup artifact는 저장소 밖 JSON safe summary로만 남기며 secret-like key, raw provider payload, raw order detail, Authorization,
+        Bearer/JWT, DB URL/password, Telegram token, TUI control token을 포함하지 않는다.
+  - [x] `docs/runbooks/live-ops-real-arm-cleanup.md`가 “운영자가 수동 artifact를 만드는 절차”가 아니라 production CLI가 자동 생성하는
+        cleanup artifact와 closeout manifest 검증 절차를 설명한다.
+  - [x] 관련 unit/script tests, `corepack pnpm typecheck`, `./scripts/verify`, `git diff --check`가 통과한다.
+
 ## 검증 방법
 
 공통 검증:
