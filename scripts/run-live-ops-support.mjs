@@ -1,5 +1,5 @@
 import { createHash, createHmac, randomUUID } from "node:crypto";
-import { mkdir, open, readdir, readFile, realpath, writeFile } from "node:fs/promises";
+import { mkdir, open, readdir, readFile, realpath, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { Decimal } from "decimal.js";
 import pg from "pg";
@@ -141,6 +141,19 @@ export async function loadLiveOpsCliInputs(options) {
   const env = parseEnvFile(await readFile(envFilePath, "utf8"));
   validateLiveOpsConfig(config);
   validateLiveOpsEnv(env, process.env);
+  if (options.attach !== undefined && options.attachReadonly !== true) {
+    throw new Error("--attach는 live:ops:tui 명령에서만 사용할 수 있습니다.");
+  }
+  if (!options.fixtureSmoke && options.attach !== undefined) {
+    // attach TUI는 기존 실행 상태를 읽는 화면이므로 production provider/broker lifecycle을 새로 열지 않는다.
+    return loadLiveOpsCliAttachReadonlyInputs({
+      configPath,
+      envFilePath,
+      config,
+      env,
+      attach: options.attach,
+    });
+  }
   const dbReadiness = await evaluateLiveOpsCliDbReadiness({
     databaseUrl: env.SEEMIRAI_DATABASE_URL,
     fixtureSmoke: options.fixtureSmoke,
@@ -232,14 +245,59 @@ export async function loadLiveOpsCliInputs(options) {
   }
 }
 
+async function loadLiveOpsCliAttachReadonlyInputs({ configPath, envFilePath, config, env, attach }) {
+  const statusSourcePath = path.resolve(String(attach));
+  let source;
+  try {
+    source = JSON.parse(await readFile(statusSourcePath, "utf8"));
+  } catch (error) {
+    throw new Error(`attach status source를 읽지 못해 TUI attach를 중단합니다: ${safeErrorName(error)}`);
+  }
+  const summary = source?.summary ?? source;
+  assertLiveOpsCliAttachStatusSource(summary);
+  return {
+    configPath,
+    envFilePath,
+    config,
+    env,
+    dbReadiness: summary.dbReadiness,
+    marketData: summary.marketData,
+    analysisDecision: summary.analysisDecision,
+    liveExecution: {
+      ...summary.liveExecution,
+      liveOrderCapable: false,
+    },
+    reconcilePnlStatus: summary.reconcilePnlStatus,
+    telegramAlert: summary.telegramAlert,
+    attachStatusSourcePath: statusSourcePath,
+  };
+}
+
+function assertLiveOpsCliAttachStatusSource(summary) {
+  const missing = [
+    "dbReadiness",
+    "marketData",
+    "analysisDecision",
+    "liveExecution",
+    "reconcilePnlStatus",
+    "telegramAlert",
+  ].filter((key) => !isNonEmptyRecord(summary?.[key]));
+  if (missing.length > 0) {
+    throw new Error(`attach status source에 필요한 summary 항목이 없습니다: ${missing.join(", ")}`);
+  }
+}
+
 export function renderLiveOpsSummary(input) {
+  const attachReadonly = input.attach !== undefined && input.fixtureSmoke !== true;
   const postExecutionReady = input.reconcilePnlStatus.ready === true && input.telegramAlert.ready === true;
   const status = input.dbReadiness.ready && input.marketData.ready && input.analysisDecision.ready && input.liveExecution.ready && postExecutionReady
     ? "ready"
     : "blocked";
   return {
     status,
-    message: status === "ready"
+    message: attachReadonly
+      ? "TUI attach가 status source를 읽었습니다. provider, broker, Telegram side effect를 새로 시작하지 않습니다."
+      : status === "ready"
       ? (input.fixtureSmoke
         ? "production live ops config/env 계약과 DB readiness를 통과했습니다. fixture smoke는 외부 provider를 호출하지 않습니다."
         : "production live ops config/env, DB readiness, Upbit public market data, analysis/decision, live execution guard를 통과했습니다.")
@@ -290,6 +348,7 @@ export function assertLiveOpsCliSummaryReady(summary, { fixtureSmoke }) {
 }
 
 export function renderLiveOpsTuiDashboard(summary) {
+  const attachReadonly = summary.attach !== null && summary.fixtureSmoke !== true;
   const dbReadiness = summary.dbReadiness;
   const migration = dbReadiness?.migration ?? {};
   const workerLines = (summary.trace.workers ?? []).map((worker) => {
@@ -322,11 +381,11 @@ export function renderLiveOpsTuiDashboard(summary) {
     "Seemirai Live Ops",
     "운영 dashboard",
     "",
-    `상태: ${summary.status === "ready" ? "부팅 준비" : "확인 필요"}`,
+    `상태: ${attachReadonly ? "읽기 전용" : summary.status === "ready" ? "부팅 준비" : "확인 필요"}`,
     `모드: ${summary.mode}`,
     `시장: ${summary.trace.defaultMarket ?? "확인 필요"}`,
     `실주문 가능: ${summary.liveOrderCapable ? "예" : "아니오"}`,
-    `실행 형태: ${summary.fixtureSmoke ? "fixture smoke - 외부 DB/provider 호출 없음" : summary.attach === null ? "foreground" : "attach"}`,
+    `실행 형태: ${summary.fixtureSmoke ? "fixture smoke - 외부 DB/provider 호출 없음" : summary.attach === null ? "foreground" : attachReadonly ? "attach - 읽기 전용" : "attach"}`,
     "",
     "Readiness",
     `  - Config/env 계약: 통과`,
@@ -350,7 +409,7 @@ export function renderLiveOpsTuiDashboard(summary) {
     `  - Reconcile/PnL/status: ${formatReconcilePnlStatusObservation(summary.reconcilePnlStatus)}`,
     `  - Telegram alert: ${formatTelegramAlertObservation(summary.telegramAlert)}`,
     "",
-    `필요 조치: ${summary.liveOrderCapable ? "후보 처리 전 예산과 reconcile freshness를 재확인하세요." : "후속 provider 연결 전까지 신규 실주문은 제출되지 않습니다."}`,
+    `필요 조치: ${attachReadonly ? "status source의 차단 항목을 확인하세요. attach 화면은 신규 실주문을 제출하지 않습니다." : summary.liveOrderCapable ? "후보 처리 전 예산과 reconcile freshness를 재확인하세요." : "후속 provider 연결 전까지 신규 실주문은 제출되지 않습니다."}`,
     `추적 정보: config=${path.basename(summary.configPath)} attach=${summary.attach ?? "foreground"}`,
   ].join("\n");
 }
@@ -846,6 +905,7 @@ function createLiveOpsCliCleanupRiskInput({ config, intent, preflight }) {
   const maxOrderNotionalBps = toLiveOpsCliBudgetBps(config.budget?.max_order_krw ?? "10000", equityKrw);
   const btcEthMaxPositionBps = toLiveOpsCliBudgetBps(config.budget?.max_open_position_notional_krw ?? "30000", equityKrw);
   const krwAvailable = findLiveOpsCliBalance(preflight.balanceSnapshot, "KRW")?.available;
+  const krwAvailableBlocksSubmit = !isPositiveDecimalString(krwAvailable) || new Decimal(krwAvailable).lt(intent.requestedNotional);
   return {
     account: {
       equityKrw,
@@ -867,8 +927,13 @@ function createLiveOpsCliCleanupRiskInput({ config, intent, preflight }) {
       consecutiveLosses: 0,
       capturedAt: observedAt,
     },
-    infrastructureSignals: isPositiveDecimalString(krwAvailable) && new Decimal(krwAvailable).lt(intent.requestedNotional)
-      ? [{ signal: "BALANCE_POSITION_MISMATCH", observedAt }]
+    infrastructureSignals: krwAvailableBlocksSubmit
+      ? [{
+          signal: "BALANCE_POSITION_MISMATCH",
+          observedAt,
+          // KRW 잔고 행이 없거나 0원이면 Upbit reject 전에 risk gate에서 신규 주문을 닫는다.
+          reason: isPositiveDecimalString(krwAvailable) ? "krw_available_below_request" : "krw_available_missing_or_non_positive",
+        }]
       : [],
     thresholdSnapshot: {
       thresholds: {
@@ -996,6 +1061,26 @@ export async function createLiveOpsCliCleanupArtifactStore({ configPath, env = {
       assertLiveOpsCliAttemptPathSegment(attemptId);
       return path.join(realDir, `cleanup-${attemptId}.json`);
     },
+    dailyReservationLockPath(day) {
+      assertLiveOpsCliReservationDay(day);
+      return path.join(realDir, `reservation-daily-${day}.lock`);
+    },
+    async acquireDailyReservationLock(day) {
+      const targetPath = this.dailyReservationLockPath(day);
+      const handle = await open(targetPath, "wx");
+      let released = false;
+      return {
+        path: targetPath,
+        async release() {
+          if (released) {
+            return;
+          }
+          released = true;
+          await handle.close();
+          await unlink(targetPath).catch(() => undefined);
+        },
+      };
+    },
     async writeReservation(record) {
       const targetPath = this.reservationPath(record.attemptId);
       const handle = await open(targetPath, "wx");
@@ -1041,27 +1126,30 @@ export async function createLiveOpsCliCleanupArtifactStore({ configPath, env = {
 }
 
 export function createLiveOpsCliFileBudgetReservation({ artifactStore, clock = () => new Date().toISOString() }) {
+  async function readDailyReservedNotionalForDay(day) {
+    const records = await artifactStore.listReservations();
+    if (records.some((record) => record?.malformed === true)) {
+      throw new Error("LiveOpsCliBudgetReservationMalformed");
+    }
+    const dayRecords = records.filter((record) => String(record?.reservedAt ?? "").slice(0, 10) === day);
+    const reservedNotionalKrw = dayRecords.reduce((total, record) => {
+      return total.plus(isNonNegativeDecimalString(record?.reservedNotionalKrw) ? record.reservedNotionalKrw : "0");
+    }, new Decimal(0)).toFixed();
+    return {
+      day,
+      reservedNotionalKrw,
+      reservationCount: dayRecords.length,
+    };
+  }
+
   return {
     async readDailyReservedNotional(observedAt = clock()) {
       const day = String(observedAt).slice(0, 10);
-      const records = await artifactStore.listReservations();
-      if (records.some((record) => record?.malformed === true)) {
-        throw new Error("LiveOpsCliBudgetReservationMalformed");
-      }
-      const reservedNotionalKrw = records.reduce((total, record) => {
-        if (String(record?.reservedAt ?? "").slice(0, 10) !== day) {
-          return total;
-        }
-        return total.plus(isNonNegativeDecimalString(record?.reservedNotionalKrw) ? record.reservedNotionalKrw : "0");
-      }, new Decimal(0)).toFixed();
-      return {
-        day,
-        reservedNotionalKrw,
-        reservationCount: records.filter((record) => String(record?.reservedAt ?? "").slice(0, 10) === day).length,
-      };
+      return readDailyReservedNotionalForDay(day);
     },
     async reserve(request) {
       const reservedAt = clock();
+      const day = String(reservedAt).slice(0, 10);
       const reservation = {
         reservationId: `reservation-${request.attemptId}`,
         attemptId: request.attemptId,
@@ -1075,7 +1163,44 @@ export function createLiveOpsCliFileBudgetReservation({ artifactStore, clock = (
           source: "live_ops_cli_file_budget_reservation",
         },
       };
+      const existing = await artifactStore.readReservation(request.attemptId);
+      if (existing !== undefined) {
+        return {
+          reserved: false,
+          reasonCode: "live_ops_reservation_already_exists",
+          message: "이미 같은 attempt reservation이 있어 중복 실주문을 제출하지 않습니다.",
+          reservation: existing,
+        };
+      }
+      if (typeof artifactStore.acquireDailyReservationLock !== "function") {
+        return {
+          reserved: false,
+          reasonCode: "live_ops_daily_budget_lock_missing",
+          message: "일일 예산 reservation lock이 없어 broker 제출을 중단했습니다.",
+        };
+      }
+      let lock;
       try {
+        lock = await artifactStore.acquireDailyReservationLock(day);
+      } catch (error) {
+        if (error?.code !== "EEXIST") {
+          throw error;
+        }
+        return {
+          reserved: false,
+          reasonCode: "live_ops_daily_budget_lock_busy",
+          message: "다른 live ops 실행이 일일 예산을 선점 중이라 신규 실주문을 제출하지 않습니다.",
+        };
+      }
+      try {
+        const dailyBudgetCheck = await evaluateLiveOpsCliDailyBudgetReservation({
+          request,
+          dailyUsage: await readDailyReservedNotionalForDay(day),
+        });
+        if (dailyBudgetCheck.reserved === false) {
+          return dailyBudgetCheck;
+        }
+        // 일일 예산 집계와 attempt 파일 생성을 같은 lock 안에서 수행해 동시 실행의 예산 초과 제출을 막는다.
         const artifactPath = await artifactStore.writeReservation(reservation);
         return {
           reserved: true,
@@ -1095,9 +1220,63 @@ export function createLiveOpsCliFileBudgetReservation({ artifactStore, clock = (
           message: "이미 같은 attempt reservation이 있어 중복 실주문을 제출하지 않습니다.",
           reservation: existing,
         };
+      } finally {
+        await lock?.release?.();
       }
     },
   };
+}
+
+async function evaluateLiveOpsCliDailyBudgetReservation({ request, dailyUsage }) {
+  if (!isPositiveDecimalString(request?.requestedNotionalKrw)) {
+    return {
+      reserved: false,
+      reasonCode: "live_ops_daily_budget_request_malformed",
+      message: "reservation 요청 금액이 올바르지 않아 broker 제출을 중단했습니다.",
+    };
+  }
+  if (!isPositiveDecimalString(request?.budgetSnapshot?.dailyAutonomousNotionalLimitKrw)) {
+    return {
+      reserved: false,
+      reasonCode: "live_ops_daily_budget_limit_missing",
+      message: "일일 자동 주문 예산 한도 evidence가 없어 broker 제출을 중단했습니다.",
+    };
+  }
+  if (!isNonNegativeDecimalString(request?.budgetSnapshot?.openPositionNotionalKrw)) {
+    return {
+      reserved: false,
+      reasonCode: "live_ops_daily_budget_open_position_missing",
+      message: "open position 예산 사용 evidence가 없어 broker 제출을 중단했습니다.",
+    };
+  }
+
+  const reservedNotional = new Decimal(dailyUsage.reservedNotionalKrw);
+  const openPositionNotional = new Decimal(request.budgetSnapshot.openPositionNotionalKrw);
+  const snapshotUsed = isNonNegativeDecimalString(request.budgetSnapshot.dailyAutonomousNotionalUsedKrw)
+    ? new Decimal(request.budgetSnapshot.dailyAutonomousNotionalUsedKrw)
+    : undefined;
+  const currentUsed = snapshotUsed === undefined
+    ? reservedNotional.plus(openPositionNotional)
+    : Decimal.max(snapshotUsed, reservedNotional.plus(openPositionNotional));
+  const requestedNotional = new Decimal(request.requestedNotionalKrw);
+  const limit = new Decimal(request.budgetSnapshot.dailyAutonomousNotionalLimitKrw);
+
+  if (currentUsed.plus(requestedNotional).gt(limit)) {
+    return {
+      reserved: false,
+      reasonCode: "live_ops_daily_budget_exceeded",
+      message: "일일 자동 주문 예산을 초과해 broker 제출을 중단했습니다.",
+      budgetUsage: {
+        day: dailyUsage.day,
+        reservedNotionalKrw: reservedNotional.toFixed(),
+        currentUsedKrw: currentUsed.toFixed(),
+        requestedNotionalKrw: requestedNotional.toFixed(),
+        dailyAutonomousNotionalLimitKrw: limit.toFixed(),
+      },
+    };
+  }
+
+  return { reserved: true };
 }
 
 function assertLiveOpsCliPathOutsideRepository(targetPath, label) {
@@ -1110,6 +1289,12 @@ function assertLiveOpsCliPathOutsideRepository(targetPath, label) {
 function assertLiveOpsCliAttemptPathSegment(attemptId) {
   if (!isLiveOpsCliLiveAttemptId(attemptId)) {
     throw new Error("LiveOpsCleanupAttemptIdInvalid");
+  }
+}
+
+function assertLiveOpsCliReservationDay(day) {
+  if (!/^\d{4}-\d{2}-\d{2}$/u.test(String(day))) {
+    throw new Error("LiveOpsReservationDayInvalid");
   }
 }
 
@@ -3646,6 +3831,9 @@ function collectLiveOpsCliOrderIntentViolations({ config, marketData, intent }) 
   }
   if (!isLiveOpsCliRiskInput(intent?.risk, intent)) {
     violations.push("주문 후보에는 live autonomous entry runtime risk snapshot이 필요합니다");
+  } else {
+    // preflight risk signal이 이미 차단 상태면 entryRuntime 구현에 맡기지 않고 adapter 경계에서 side effect를 닫는다.
+    appendLiveOpsCliRiskGateInfrastructureViolations(violations, intent.risk.infrastructureSignals);
   }
   if (!isLiveOpsCliCostSnapshotEvidence(intent?.costSnapshot, intent)) {
     violations.push("주문 후보에는 현재 intent와 일치하는 CostModel evidence가 필요합니다");
