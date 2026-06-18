@@ -727,7 +727,7 @@ async function collectLiveOpsCliProductionPreflight({
   ]);
   let resolvedReconcileStatus = reconcileStatus;
   let preflightReconcileEvidence;
-  if (shouldCreateLiveOpsCliPrivateReadPreflightReconcile(reconcileStatus, productionRuntime)) {
+  if (shouldCreateLiveOpsCliPrivateReadPreflightReconcile(reconcileStatus, productionRuntime, openOrders)) {
     preflightReconcileEvidence = await productionRuntime.preflightReconcileRecorder.recordPreflight({
       market,
       openOrders,
@@ -857,7 +857,7 @@ function createLiveOpsCliCleanupRiskInput({ config, intent, preflight }) {
     positions: preflight.openOrders.map((order) => ({
       market: order.market,
       notionalBpsOfEquity: toLiveOpsCliBudgetBps(
-        new Decimal(order.remainingQuantity).mul(order.requestedPrice).toFixed(),
+        readLiveOpsCliOpenOrderExposureKrw(order) ?? "0",
         equityKrw,
       ),
       capturedAt: order.updatedAt ?? observedAt,
@@ -1425,7 +1425,7 @@ function toLiveOpsCliBrokerOrder(payload, { operation, clock, identifierSource, 
     status: mapLiveOpsCliUpbitOrderStatus(payload.state),
     requestedQuantity,
     remainingQuantity,
-    requestedPrice: normalizeLiveOpsCliDecimalString(payload.price),
+    requestedPrice: normalizeLiveOpsCliOptionalDecimalString(payload.price),
     acceptedAt: hasMeaningfulValue(payload.created_at) ? String(payload.created_at) : clock(),
     updatedAt: clock(),
     metadata: {
@@ -1483,6 +1483,13 @@ function mapLiveOpsCliUpbitOrderStatus(state) {
 function normalizeLiveOpsCliDecimalString(value) {
   if (!hasMeaningfulValue(value)) {
     return "0";
+  }
+  return new Decimal(String(value)).toFixed();
+}
+
+function normalizeLiveOpsCliOptionalDecimalString(value) {
+  if (!hasMeaningfulValue(value)) {
+    return null;
   }
   return new Decimal(String(value)).toFixed();
 }
@@ -1963,6 +1970,7 @@ export function createLiveOpsCliDatabasePreflightReconcileRecorder(pool) {
           balanceSnapshotCount: balances.length,
           exchangeOrderSnapshotCount: orderSnapshots.length,
           mismatchCount: mismatchEvidence.length,
+          mismatchTypes: mismatchEvidence.length > 0 ? ["UNTRACKED_EXCHANGE_OPEN_ORDER"] : [],
           recordedAt: observedAt,
           source: "live_ops_cli_private_read_preflight",
         };
@@ -1976,12 +1984,23 @@ export function createLiveOpsCliDatabasePreflightReconcileRecorder(pool) {
   };
 }
 
-function shouldCreateLiveOpsCliPrivateReadPreflightReconcile(reconcileStatus, productionRuntime) {
+function shouldCreateLiveOpsCliPrivateReadPreflightReconcile(reconcileStatus, productionRuntime, openOrders) {
   if (productionRuntime?.preflightReconcileRecorder === undefined) {
     return false;
   }
   const reason = reconcileStatus?.trace?.reason;
-  return reconcileStatus?.result === "SKIPPED" && reason === "reconcile_not_run";
+  if (reconcileStatus?.result === "SKIPPED" && reason === "reconcile_not_run") {
+    return true;
+  }
+  // 최신 DB evidence가 clean이어도 현재 private read에 open order가 있으면 새 manual-review evidence로 신규 제출을 닫는다.
+  return Array.isArray(openOrders) && openOrders.length > 0 && isLiveOpsCliCleanReconcileStatus(reconcileStatus);
+}
+
+function isLiveOpsCliCleanReconcileStatus(reconcileStatus) {
+  const mismatchCount = Number.isFinite(Number(reconcileStatus?.mismatchCount))
+    ? Number(reconcileStatus.mismatchCount)
+    : null;
+  return reconcileStatus?.result === "SUCCESS" && mismatchCount === 0 && reconcileStatus?.balanceStatus === "OK";
 }
 
 function normalizeLiveOpsCliPreflightBalanceSnapshots(balanceSnapshot, observedAt) {
@@ -2483,11 +2502,13 @@ function formatLiveExecutionObservation(liveExecution) {
     const blockedCheck = Array.isArray(liveExecution?.checks)
       ? liveExecution.checks.find((check) => check?.status === "blocked")
       : undefined;
+    const preflightEvidence = liveExecution?.preflightReconcileEvidence ?? blockedCheck?.details?.preflightReconcileEvidence;
     return [
       liveExecution?.statusLabel ?? "후속 연결 대기",
       `주문 후보 ${liveExecution?.orderIntentCount ?? 0}`,
       `broker 제출 ${liveExecution?.submittedOrderCount ?? 0}`,
       ...(blockedCheck?.code === undefined ? [] : [`차단 ${blockedCheck.code}`]),
+      ...(preflightEvidence?.runId === undefined ? [] : [`preflight ${preflightEvidence.status ?? "확인 필요"} ${preflightEvidence.runId}`]),
       `latest ${liveExecution?.latestExecutionAt ?? "없음"}`,
     ].join(" / ");
   }
@@ -2725,6 +2746,8 @@ export async function evaluateLiveOpsCliLiveExecution({
 
   const executionStatusViolations = collectLiveOpsCliExecutionStatusViolations(executionStatus, postSubmitReadiness, budgetSnapshot, lossSnapshot);
   if (executionStatusViolations.length > 0) {
+    const preflightEvidenceDetails = createLiveOpsCliPreflightEvidenceDetails(executionStatus?.preflightReconcileEvidence);
+    const preflightManualReview = executionStatus?.preflightReconcileEvidence?.status === "MANUAL_REVIEW_REQUIRED";
     // kill switch, reconcile freshness, post-submit 후속 경계가 불명확하면 후보가 유효해도 broker runtime을 열지 않는다.
     return buildLiveOpsCliLiveExecutionSummary({
       status: "blocked",
@@ -2737,12 +2760,18 @@ export async function evaluateLiveOpsCliLiveExecution({
       submittedOrderCount: 0,
       brokerGuard,
       statusLabel: "운영 상태 차단",
-      message: "live execution 운영 상태 증거가 부족해 주문 후보를 제출하지 않았습니다.",
-      action: "kill switch, reconcile freshness, 제출 후 reconcile/alert 경계 증거를 확인하세요.",
+      message: preflightManualReview
+        ? "preflight private read에서 기존 미체결 주문이 확인되어 주문 후보를 제출하지 않았습니다."
+        : "live execution 운영 상태 증거가 부족해 주문 후보를 제출하지 않았습니다.",
+      action: preflightManualReview
+        ? "preflight reconcile run과 UNTRACKED_EXCHANGE_OPEN_ORDER evidence를 확인하고 거래소 미체결 주문을 정리한 뒤 다시 실행하세요."
+        : "kill switch, reconcile freshness, 제출 후 reconcile/alert 경계 증거를 확인하세요.",
+      preflightReconcileEvidence: executionStatus?.preflightReconcileEvidence,
       checks: [
         okLiveExecutionCheck("analysis_decision", "analysis/decision summary를 확인했습니다.", "live_ops_analysis_ready"),
         blockedLiveExecutionCheck("execution_status", "live execution 운영 상태 snapshot이 production 제출 조건을 통과하지 못했습니다.", "live_ops_execution_status_blocked", {
           violations: executionStatusViolations,
+          ...preflightEvidenceDetails,
         }),
       ],
     });
@@ -3399,6 +3428,7 @@ function buildLiveOpsCliLiveExecutionSummary(input) {
     statusLabel: input.statusLabel,
     message: input.message,
     action: input.action,
+    ...(input.preflightReconcileEvidence === undefined ? {} : { preflightReconcileEvidence: input.preflightReconcileEvidence }),
     checks: input.checks,
   };
 }
@@ -3534,6 +3564,18 @@ function collectLiveOpsCliExecutionStatusViolations(executionStatus, postSubmitR
   }
 
   return violations;
+}
+
+function createLiveOpsCliPreflightEvidenceDetails(preflightReconcileEvidence) {
+  if (preflightReconcileEvidence === undefined) {
+    return {};
+  }
+  return {
+    preflightReconcileEvidence,
+    ...(Number(preflightReconcileEvidence.mismatchCount ?? 0) > 0
+      ? { mismatchTypes: ["UNTRACKED_EXCHANGE_OPEN_ORDER"] }
+      : {}),
+  };
 }
 
 function collectLiveOpsCliOrderIntentViolations({ config, marketData, intent }) {
@@ -4393,6 +4435,14 @@ export async function evaluateLiveOpsCliReconcilePnlStatus({
     };
   }
 
+  if (!fixtureSmoke && liveExecution.ready !== true && liveExecution.preflightReconcileEvidence?.status === "MANUAL_REVIEW_REQUIRED") {
+    return createLiveOpsCliPreflightManualReviewStatusSummary({
+      market,
+      liveExecution,
+      observedAt: observedAt ?? new Date().toISOString(),
+    });
+  }
+
   if (!fixtureSmoke || liveExecution.ready !== true) {
     // live execution이 준비되지 않았으면 provider 조회로 보강하지 않고 lifecycle 순서를 보존한다.
     return {
@@ -4510,6 +4560,44 @@ function createLiveOpsCliReconcileBoundaryMissingSummary({ market, liveExecution
   };
 }
 
+function createLiveOpsCliPreflightManualReviewStatusSummary({ market, liveExecution, observedAt }) {
+  const evidence = liveExecution.preflightReconcileEvidence;
+  return {
+    status: "manual_review_required",
+    ready: false,
+    market,
+    liveOrderCapable: false,
+    latestReconcileAt: evidence.recordedAt ?? observedAt,
+    latestPnlAt: null,
+    latestStatusAt: observedAt,
+    reconcileStatus: "preflight_manual_review_required",
+    reconcileStatusLabel: "수동 확인 필요",
+    pnlStatus: "not_run",
+    pnlStatusLabel: "확인 필요",
+    openOrderCount: Number.isFinite(Number(evidence.exchangeOrderSnapshotCount)) ? Number(evidence.exchangeOrderSnapshotCount) : 0,
+    openExposureKrw: "0",
+    budgetUsedKrw: "0",
+    realizedPnlKrw: null,
+    unrealizedPnlKrw: null,
+    mismatchCount: Number.isFinite(Number(evidence.mismatchCount)) ? Number(evidence.mismatchCount) : null,
+    manualReviewRequired: true,
+    providerProbeAttempted: true,
+    statusLabel: "preflight 수동 확인",
+    message: "preflight private read가 계정 미체결 주문을 DB evidence로 기록해 신규 주문을 차단했습니다.",
+    action: "preflight reconcile run과 UNTRACKED_EXCHANGE_OPEN_ORDER evidence를 확인하고 거래소 미체결 주문을 정리한 뒤 다시 실행하세요.",
+    preflightReconcileEvidence: evidence,
+    checks: [
+      {
+        name: "reconcile_summary",
+        status: "blocked",
+        code: "live_ops_preflight_reconcile_manual_review",
+        message: "preflight reconcile evidence가 수동 확인을 요구합니다.",
+        details: createLiveOpsCliPreflightEvidenceDetails(evidence),
+      },
+    ],
+  };
+}
+
 async function collectLiveOpsCliPrivateReadStatusSummary({
   market,
   privateReadProvider,
@@ -4527,7 +4615,8 @@ async function collectLiveOpsCliPrivateReadStatusSummary({
   try {
     // 실계좌 조회는 주문 side effect가 없는 private read 경계지만, 실패하면 신규 주문 가능 상태를 확정하지 않는다.
     [openOrders, balanceSnapshot, reconcileStatus, pnlStatus] = await Promise.all([
-      privateReadProvider.listOpenOrders(market),
+      // 실행 후 상태 요약도 계정 전체 미체결 주문을 기준으로 해야 다른 마켓 잔여 주문을 숨기지 않는다.
+      privateReadProvider.listOpenOrders(),
       privateReadProvider.getBalances(),
       readLiveOpsCliReconcileStatus(reconcileStatusProvider),
       readLiveOpsCliPnlStatus(pnlStatusProvider),
@@ -4746,7 +4835,7 @@ function validateLiveOpsCliPrivateReadPayload({ openOrders, balanceSnapshot, bud
         message: "private read provider가 미체결 주문 잔량을 양수 decimal 문자열로 반환하지 않아 수동 점검 상태로 전환했습니다.",
       };
     }
-    if (!isPositiveDecimalString(order?.requestedPrice)) {
+    if (order?.requestedPrice !== null && order?.requestedPrice !== undefined && !isPositiveDecimalString(order?.requestedPrice)) {
       return {
         code: "live_ops_private_read_open_exposure_malformed",
         reason: `open_orders.${index}.requested_price_invalid`,
@@ -4808,8 +4897,14 @@ function normalizeLiveOpsCliReconcileStatus(summary, { openOrderCount, liveExecu
   const result = String(summary.result ?? "UNAVAILABLE");
   const mismatchCount = Number.isFinite(Number(summary.mismatchCount)) ? Number(summary.mismatchCount) : null;
   const balanceStatus = String(summary.balanceStatus ?? "UNAVAILABLE");
+  const actualOpenOrderCount = Number.isFinite(Number(openOrderCount))
+    ? Number(openOrderCount)
+    : (Number.isFinite(Number(summary.openOrderCount)) ? Number(summary.openOrderCount) : null);
+  const openOrdersPresent = actualOpenOrderCount !== null
+    && actualOpenOrderCount > 0
+    && !isLiveOpsCliTrackedExecutionOpenOrderAllowed(liveExecution);
   // 실주문 이후 reconcile은 확정 성공 조건이 모두 맞을 때만 신규 주문 가능 상태로 연결한다.
-  const reconcileClean = result === "SUCCESS" && mismatchCount === 0 && balanceStatus === "OK";
+  const reconcileClean = result === "SUCCESS" && mismatchCount === 0 && balanceStatus === "OK" && !openOrdersPresent;
   const manualReviewRequired = !reconcileClean;
 
   return {
@@ -4817,15 +4912,21 @@ function normalizeLiveOpsCliReconcileStatus(summary, { openOrderCount, liveExecu
     statusLabel: manualReviewRequired ? "수동 확인 필요" : "정상",
     lastReconcileAt: summary.lastReconcileAt ?? null,
     mismatchCount,
-    openOrderCount: summary.openOrderCount ?? openOrderCount,
+    openOrderCount: actualOpenOrderCount,
     balanceStatus,
     manualReviewRequired,
-    message: summary.message ?? (
+    message: openOrdersPresent
+      ? "private read에서 현재 미체결 주문이 확인되어 신규 주문 전 수동 확인이 필요합니다."
+      : (summary.message ?? (
       manualReviewRequired
         ? "reconcile 상태가 확정 정상 조건을 충족하지 않아 수동 확인이 필요합니다."
         : "reconcile 상태가 정상입니다."
-    ),
+    )),
   };
+}
+
+function isLiveOpsCliTrackedExecutionOpenOrderAllowed(liveExecution) {
+  return liveExecution?.status === "submitted" || liveExecution?.status === "cancel_requested";
 }
 
 function normalizeLiveOpsCliPnlStatus(summary, { liveExecution } = {}) {
@@ -4874,7 +4975,7 @@ function isLiveOpsCliCleanCancelCloseout(liveExecution) {
 
 function sumLiveOpsCliOpenExposureKrw(openOrders) {
   return sumDecimalStrings(openOrders.map((order) => {
-    return new Decimal(order.remainingQuantity).mul(order.requestedPrice).toFixed();
+    return readLiveOpsCliOpenOrderExposureKrw(order);
   }));
 }
 
@@ -4884,8 +4985,22 @@ function resolveLiveOpsCliBudgetUsedKrw({ budgetSnapshot, openOrders }) {
   }
 
   return sumDecimalStrings(openOrders.map((order) => {
-    return new Decimal(order.requestedQuantity).mul(order.requestedPrice).toFixed();
+    return readLiveOpsCliOpenOrderRequestedNotionalKrw(order);
   }));
+}
+
+function readLiveOpsCliOpenOrderExposureKrw(order) {
+  if (!isPositiveDecimalString(order?.remainingQuantity) || !isPositiveDecimalString(order?.requestedPrice)) {
+    return null;
+  }
+  return new Decimal(order.remainingQuantity).mul(order.requestedPrice).toFixed();
+}
+
+function readLiveOpsCliOpenOrderRequestedNotionalKrw(order) {
+  if (!isPositiveDecimalString(order?.requestedQuantity) || !isPositiveDecimalString(order?.requestedPrice)) {
+    return null;
+  }
+  return new Decimal(order.requestedQuantity).mul(order.requestedPrice).toFixed();
 }
 
 function sumDecimalStrings(values) {

@@ -850,6 +850,8 @@ Acceptance Criteria:
 - [ ] private read reconcile이 account/order/balance 상태를 읽고 status/TUI/Telegram에 secret 없이 표시한다.
 - [ ] clean-start DB에 완료된 reconcile run이 없으면 production `live:ops`가 계정 전체 미체결 주문과 actual private read 결과를
   `LIVE_OPS_PRIVATE_READ_PREFLIGHT` DB evidence로 저장하고, 기존 mismatch/manual review 상태는 덮어쓰지 않는다.
+- [ ] 기존 clean reconcile 뒤 현재 private read에서 계정 전체 미체결 주문이 발견되면 가격 없는 주문까지 manual-review evidence로 저장하고
+  신규 cleanup 주문을 차단한다.
 - [ ] Telegram startup/live order capable/order submitted/cancel confirmed/manual review 알림이 실제 owner chat으로 전송된다.
 - [ ] TUI가 실제 live armed/order capable 상태와 주문/취소/차단 상태, preflight/reconcile 차단 사유를 secret 없이 보여준다.
 - [ ] 실제 KRW-BTC 소액 실거래 cleanup run이 `submit -> cancel requested -> terminal cancel 확인 -> open exposure 0`으로 닫힌다.

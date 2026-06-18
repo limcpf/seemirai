@@ -1739,6 +1739,49 @@ console.log(JSON.stringify({
     expect(state.orderRows).toHaveLength(0);
     expect(state.mismatchRows).toHaveLength(0);
     expect(JSON.stringify(queries)).not.toContain("raw_provider_payload");
+
+    delete state.run;
+    state.balanceRows = [];
+    state.orderRows = [];
+    state.mismatchRows = [];
+    const manualReviewEvidence = await recorder.recordPreflight({
+      market: "KRW-BTC",
+      openOrders: [{
+        brokerOrderId: "xrp-open-order-1",
+        idempotencyKey: "xrp-open-identifier-1",
+        exchangeId: "upbit_krw_spot",
+        market: "KRW-XRP",
+        side: "BUY",
+        orderType: "MARKET",
+        status: "OPEN",
+        requestedQuantity: "10",
+        remainingQuantity: "10",
+        requestedPrice: null,
+        updatedAt: observedAt,
+      }],
+      balanceSnapshot: {
+        exchangeId: "upbit_krw_spot",
+        capturedAt: observedAt,
+        balances: [{
+          currency: "KRW",
+          available: "50000.9836425",
+          locked: "0",
+          total: "50000.9836425",
+        }],
+      },
+      observedAt,
+    });
+
+    expect(manualReviewEvidence).toMatchObject({
+      created: true,
+      status: "MANUAL_REVIEW_REQUIRED",
+      exchangeOrderSnapshotCount: 1,
+      mismatchCount: 1,
+      mismatchTypes: ["UNTRACKED_EXCHANGE_OPEN_ORDER"],
+    });
+    expect(state.orderRows).toHaveLength(1);
+    expect(state.orderRows[0]).toEqual(expect.arrayContaining(["KRW-XRP", null]));
+    expect(state.mismatchRows).toHaveLength(1);
   });
 
   it("production preflight는 reconcile 미실행 DB에 private read evidence를 먼저 기록한다", async () => {
@@ -1873,7 +1916,7 @@ console.log(JSON.stringify({
     });
   });
 
-  it("production preflight는 다른 마켓 미체결 주문도 manual review evidence로 넘긴다", async () => {
+  it("production preflight는 기존 clean DB 뒤 다른 마켓 미체결 주문도 manual review evidence로 넘긴다", async () => {
     const supportModulePath = path.join(process.cwd(), "scripts/run-live-ops-support.mjs");
     const {
       createLiveOpsCliProductionExecutionInputs,
@@ -1908,6 +1951,19 @@ console.log(JSON.stringify({
             requestedPrice: "2500000",
             acceptedAt: "2026-06-18T13:33:00.000Z",
             updatedAt: "2026-06-18T13:33:27.000Z",
+          }, {
+            brokerOrderId: "xrp-open-order-1",
+            idempotencyKey: "xrp-open-identifier-1",
+            exchangeId: "upbit_krw_spot",
+            market: "KRW-XRP",
+            side: "BUY",
+            orderType: "MARKET",
+            status: "OPEN",
+            requestedQuantity: "10",
+            remainingQuantity: "10",
+            requestedPrice: null,
+            acceptedAt: "2026-06-18T13:33:00.000Z",
+            updatedAt: "2026-06-18T13:33:27.000Z",
           }];
         },
         async getBalances() {
@@ -1928,15 +1984,15 @@ console.log(JSON.stringify({
           reconcileReadCount += 1;
           if (reconcileReadCount === 1) {
             return {
-              lastReconcileAt: null,
-              result: "SKIPPED",
-              mismatchCount: null,
-              openOrderCount: null,
-              balanceStatus: "UNAVAILABLE",
-              websocketStatus: "DISCONNECTED",
-              actionRequired: "reconcile 실행 필요",
-              message: "아직 완료된 실계좌 reconcile evidence가 없습니다.",
-              trace: { source: "live_ops_cli_database_reconcile", reason: "reconcile_not_run" },
+              lastReconcileAt: "2026-06-18T13:00:00.000Z",
+              result: "SUCCESS",
+              mismatchCount: 0,
+              openOrderCount: 0,
+              balanceStatus: "OK",
+              websocketStatus: "CONNECTED",
+              actionRequired: "없음",
+              message: "기존 preflight reconcile evidence는 정상입니다.",
+              trace: { source: "live_ops_cli_database_reconcile", runId: "previous-clean-run" },
             };
           }
           return {
@@ -2006,6 +2062,9 @@ console.log(JSON.stringify({
     expect(recorded[0]?.openOrders).toEqual([expect.objectContaining({
       brokerOrderId: "eth-open-order-1",
       market: "KRW-ETH",
+    }), expect.objectContaining({
+      brokerOrderId: "xrp-open-order-1",
+      market: "KRW-XRP",
     })]);
     expect(reconcileReadCount).toBe(2);
     expect(result.executionStatus).toMatchObject({
@@ -2020,6 +2079,142 @@ console.log(JSON.stringify({
       openPositionNotionalKrw: "5000",
       dailyAutonomousNotionalUsedKrw: "5000",
     });
+  });
+
+  it("preflight manual review evidence는 live execution과 status summary에 남는다", async () => {
+    const supportModulePath = path.join(process.cwd(), "scripts/run-live-ops-support.mjs");
+    const {
+      evaluateLiveOpsCliLiveExecution,
+      evaluateLiveOpsCliReconcilePnlStatus,
+      renderLiveOpsSummary,
+      renderLiveOpsTuiDashboard,
+    } = await import(supportModulePath);
+    const observedAt = "2026-06-18T13:33:27.000Z";
+    const preflightReconcileEvidence = {
+      created: true,
+      runId: "preflight-run-open-order",
+      idempotencyKey: "live-ops-preflight:openorder",
+      correlationId: "preflight-reconcile-openorder",
+      status: "MANUAL_REVIEW_REQUIRED",
+      balanceSnapshotCount: 1,
+      exchangeOrderSnapshotCount: 1,
+      mismatchCount: 1,
+      mismatchTypes: ["UNTRACKED_EXCHANGE_OPEN_ORDER"],
+      recordedAt: observedAt,
+      source: "live_ops_cli_private_read_preflight",
+    };
+    const config = {
+      universe: { markets: ["KRW-BTC"], default_market: "KRW-BTC" },
+      budget: {
+        max_order_krw: "10000",
+        daily_autonomous_notional_limit_krw: "30000",
+        max_open_position_notional_krw: "30000",
+      },
+    };
+    const executionStatus = {
+      killSwitchActive: false,
+      reconcileFresh: false,
+      evidenceId: "execution-preflight-open-order",
+      preflightReconcileEvidence,
+    };
+    const liveExecution = await evaluateLiveOpsCliLiveExecution({
+      config,
+      fixtureSmoke: false,
+      analysisDecision: {
+        ready: true,
+        decisionCategory: "ORDER_INTENT",
+        orderIntentCount: 1,
+      },
+      marketData: {
+        ready: true,
+        latestHeartbeatAt: observedAt,
+        referencePrice: "100000000",
+      },
+      env: {
+        SEEMIRAI_UPBIT_ACCESS_KEY: "fake-access-key",
+        SEEMIRAI_UPBIT_SECRET_KEY: "fake-secret-key",
+        SEEMIRAI_UPBIT_KEY_SCOPE: "자산조회,주문조회,주문하기",
+        SEEMIRAI_UPBIT_KEY_SCOPE_EVIDENCE_ID: "scope-evidence",
+      },
+      orderIntents: [createCleanupRuntimeIntent()],
+      entryRuntime: {
+        async submitEntryCandidate() {
+          throw new Error("unexpected-submit");
+        },
+      },
+      executionStatus,
+      postSubmitReadiness: {
+        reconcileReady: true,
+        telegramReady: true,
+        evidenceId: "post-submit-ready",
+      },
+      budgetSnapshot: {
+        maxOrderKrw: "10000",
+        dailyAutonomousNotionalLimitKrw: "30000",
+        dailyAutonomousNotionalUsedKrw: "0",
+        openPositionNotionalKrw: "0",
+        maxOpenPositionNotionalKrw: "30000",
+        capturedAt: observedAt,
+      },
+      lossSnapshot: {
+        dailyRealizedLossKrw: "0",
+        weeklyRealizedLossKrw: "0",
+        capturedAt: observedAt,
+      },
+    });
+    const reconcilePnlStatus = await evaluateLiveOpsCliReconcilePnlStatus({
+      config,
+      fixtureSmoke: false,
+      liveExecution,
+      observedAt,
+    });
+    const dashboard = renderLiveOpsTuiDashboard(renderLiveOpsSummary({
+      configPath: "config/live-ops.example.json",
+      envFilePath: "tests/fixtures/live-ops/fake.env",
+      config,
+      env: {},
+      fixtureSmoke: false,
+      dbReadiness: { ready: true },
+      marketData: {
+        ready: true,
+        persisted: {
+          tradeCount: 1,
+          orderbookCount: 1,
+          statusCount: 1,
+        },
+      },
+      analysisDecision: { ready: true },
+      liveExecution,
+      reconcilePnlStatus,
+      telegramAlert: { ready: false, status: "pending" },
+    }));
+
+    expect(liveExecution).toMatchObject({
+      status: "blocked",
+      ready: false,
+      preflightReconcileEvidence: expect.objectContaining({
+        runId: "preflight-run-open-order",
+        status: "MANUAL_REVIEW_REQUIRED",
+      }),
+    });
+    expect(liveExecution.checks).toContainEqual(expect.objectContaining({
+      code: "live_ops_execution_status_blocked",
+      details: expect.objectContaining({
+        mismatchTypes: ["UNTRACKED_EXCHANGE_OPEN_ORDER"],
+        preflightReconcileEvidence: expect.objectContaining({ runId: "preflight-run-open-order" }),
+      }),
+    }));
+    expect(reconcilePnlStatus).toMatchObject({
+      status: "manual_review_required",
+      reconcileStatus: "preflight_manual_review_required",
+      openOrderCount: 1,
+      mismatchCount: 1,
+      preflightReconcileEvidence: expect.objectContaining({ runId: "preflight-run-open-order" }),
+    });
+    expect(reconcilePnlStatus.checks).toContainEqual(expect.objectContaining({
+      code: "live_ops_preflight_reconcile_manual_review",
+    }));
+    expect(dashboard).toContain("preflight MANUAL_REVIEW_REQUIRED preflight-run-open-order");
   });
 
   it("live:ops:tui attach는 같은 dashboard를 attach 대상으로 렌더링한다", () => {
