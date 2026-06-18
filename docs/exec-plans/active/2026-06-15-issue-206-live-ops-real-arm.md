@@ -197,10 +197,14 @@ Telegram, TUI를 같은 lifecycle로 조립하고, 조건을 통과한 단일 `K
   - [ ] 기존 DB reconcile이 clean이어도 현재 private read에서 계정 전체 open order가 발견되면 새 preflight manual-review evidence를
         append하고 신규 cleanup 주문을 제출하지 않는다.
   - [ ] 가격이 없는 `market`/`best` 계열 open order도 preflight evidence로 저장하며, notional 계산 실패로 `preflight-failed`에만 머물지 않는다.
+  - [ ] preflight manual-review summary는 계산 가능한 open exposure/budget used를 0으로 숨기지 않고 TUI/JSON에 보존한다.
+  - [ ] submitted/cancel_requested 상태의 계정 전체 open order는 현재 liveExecution의 broker order id 또는 idempotency key와 일치하는 1건만
+        tracked로 인정하고, 다른 open order가 함께 있으면 manual review로 차단한다.
   - [ ] 기존 DB reconcile mismatch, failed, running, manual review 상태는 새 preflight clean evidence로 덮지 않고 그대로 차단한다.
   - [ ] 저장된 preflight run을 다시 읽은 뒤에만 `reconcileFresh=true`와 post-submit reconcile readiness가 열릴 수 있다.
   - [ ] TUI/JSON은 live execution blocked 상태를 `후속 연결 대기`로 숨기지 않고 한국어 차단 사유, stable check code, preflight run id와
         `UNTRACKED_EXCHANGE_OPEN_ORDER` evidence type을 보여준다.
+  - [ ] preflight `MANUAL_REVIEW_REQUIRED`는 owner Telegram trade alert 경계로도 전송된다.
   - [ ] 관련 unit/script tests, `corepack pnpm typecheck`, `./scripts/verify`, `git diff --check`가 통과한다.
 
 ## 검증 방법

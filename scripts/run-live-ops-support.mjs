@@ -2750,7 +2750,7 @@ export async function evaluateLiveOpsCliLiveExecution({
     const preflightManualReview = executionStatus?.preflightReconcileEvidence?.status === "MANUAL_REVIEW_REQUIRED";
     // kill switch, reconcile freshness, post-submit 후속 경계가 불명확하면 후보가 유효해도 broker runtime을 열지 않는다.
     return buildLiveOpsCliLiveExecutionSummary({
-      status: "blocked",
+      status: preflightManualReview ? "manual_review_required" : "blocked",
       ready: false,
       liveOrderCapable: false,
       market,
@@ -2758,8 +2758,9 @@ export async function evaluateLiveOpsCliLiveExecution({
       orderIntentCount: intents.length,
       attemptedOrderCount: 0,
       submittedOrderCount: 0,
+      attemptStatus: preflightManualReview ? "BLOCKED" : undefined,
       brokerGuard,
-      statusLabel: "운영 상태 차단",
+      statusLabel: preflightManualReview ? "수동 점검" : "운영 상태 차단",
       message: preflightManualReview
         ? "preflight private read에서 기존 미체결 주문이 확인되어 주문 후보를 제출하지 않았습니다."
         : "live execution 운영 상태 증거가 부족해 주문 후보를 제출하지 않았습니다.",
@@ -4375,6 +4376,15 @@ export async function evaluateLiveOpsCliReconcilePnlStatus({
 }) {
   const market = config.universe?.default_market ?? "KRW-BTC";
 
+  if (!fixtureSmoke && liveExecution.ready !== true && liveExecution.preflightReconcileEvidence?.status === "MANUAL_REVIEW_REQUIRED") {
+    return createLiveOpsCliPreflightManualReviewStatusSummary({
+      market,
+      liveExecution,
+      budgetSnapshot,
+      observedAt: observedAt ?? new Date().toISOString(),
+    });
+  }
+
   if (!fixtureSmoke && shouldProbeLiveOpsCliPrivateRead(liveExecution)) {
     if (!isLiveOpsCliPrivateReadProvider(privateReadProvider)) {
       return createLiveOpsCliReconcileBoundaryMissingSummary({
@@ -4433,14 +4443,6 @@ export async function evaluateLiveOpsCliReconcilePnlStatus({
         },
       ],
     };
-  }
-
-  if (!fixtureSmoke && liveExecution.ready !== true && liveExecution.preflightReconcileEvidence?.status === "MANUAL_REVIEW_REQUIRED") {
-    return createLiveOpsCliPreflightManualReviewStatusSummary({
-      market,
-      liveExecution,
-      observedAt: observedAt ?? new Date().toISOString(),
-    });
   }
 
   if (!fixtureSmoke || liveExecution.ready !== true) {
@@ -4560,8 +4562,14 @@ function createLiveOpsCliReconcileBoundaryMissingSummary({ market, liveExecution
   };
 }
 
-function createLiveOpsCliPreflightManualReviewStatusSummary({ market, liveExecution, observedAt }) {
+function createLiveOpsCliPreflightManualReviewStatusSummary({ market, liveExecution, budgetSnapshot, observedAt }) {
   const evidence = liveExecution.preflightReconcileEvidence;
+  const openExposureKrw = isNonNegativeDecimalString(budgetSnapshot?.openPositionNotionalKrw)
+    ? budgetSnapshot.openPositionNotionalKrw
+    : "0";
+  const budgetUsedKrw = isNonNegativeDecimalString(budgetSnapshot?.dailyAutonomousNotionalUsedKrw)
+    ? budgetSnapshot.dailyAutonomousNotionalUsedKrw
+    : openExposureKrw;
   return {
     status: "manual_review_required",
     ready: false,
@@ -4575,8 +4583,8 @@ function createLiveOpsCliPreflightManualReviewStatusSummary({ market, liveExecut
     pnlStatus: "not_run",
     pnlStatusLabel: "확인 필요",
     openOrderCount: Number.isFinite(Number(evidence.exchangeOrderSnapshotCount)) ? Number(evidence.exchangeOrderSnapshotCount) : 0,
-    openExposureKrw: "0",
-    budgetUsedKrw: "0",
+    openExposureKrw,
+    budgetUsedKrw,
     realizedPnlKrw: null,
     unrealizedPnlKrw: null,
     mismatchCount: Number.isFinite(Number(evidence.mismatchCount)) ? Number(evidence.mismatchCount) : null,
@@ -4675,6 +4683,7 @@ async function collectLiveOpsCliPrivateReadStatusSummary({
   const openExposureKrw = sumLiveOpsCliOpenExposureKrw(orders);
   const resolvedReconcileStatus = normalizeLiveOpsCliReconcileStatus(reconcileStatus, {
     openOrderCount: orders.length,
+    openOrders: orders,
     liveExecution,
   });
   const resolvedPnlStatus = normalizeLiveOpsCliPnlStatus(pnlStatus, { liveExecution });
@@ -4867,7 +4876,7 @@ async function readLiveOpsCliPnlStatus(provider) {
   return provider.getStatus();
 }
 
-function normalizeLiveOpsCliReconcileStatus(summary, { openOrderCount, liveExecution } = {}) {
+function normalizeLiveOpsCliReconcileStatus(summary, { openOrderCount, openOrders, liveExecution } = {}) {
   if (isLiveOpsCliCleanCancelCloseout(liveExecution) && openOrderCount === 0) {
     return {
       result: "CLEANUP_TERMINAL_CONFIRMED",
@@ -4902,7 +4911,7 @@ function normalizeLiveOpsCliReconcileStatus(summary, { openOrderCount, liveExecu
     : (Number.isFinite(Number(summary.openOrderCount)) ? Number(summary.openOrderCount) : null);
   const openOrdersPresent = actualOpenOrderCount !== null
     && actualOpenOrderCount > 0
-    && !isLiveOpsCliTrackedExecutionOpenOrderAllowed(liveExecution);
+    && !hasOnlyLiveOpsCliTrackedExecutionOpenOrders(openOrders, liveExecution);
   // 실주문 이후 reconcile은 확정 성공 조건이 모두 맞을 때만 신규 주문 가능 상태로 연결한다.
   const reconcileClean = result === "SUCCESS" && mismatchCount === 0 && balanceStatus === "OK" && !openOrdersPresent;
   const manualReviewRequired = !reconcileClean;
@@ -4925,8 +4934,19 @@ function normalizeLiveOpsCliReconcileStatus(summary, { openOrderCount, liveExecu
   };
 }
 
-function isLiveOpsCliTrackedExecutionOpenOrderAllowed(liveExecution) {
-  return liveExecution?.status === "submitted" || liveExecution?.status === "cancel_requested";
+function hasOnlyLiveOpsCliTrackedExecutionOpenOrders(openOrders, liveExecution) {
+  if (liveExecution?.status !== "submitted" && liveExecution?.status !== "cancel_requested") {
+    return false;
+  }
+  if (!Array.isArray(openOrders) || openOrders.length !== 1) {
+    return false;
+  }
+  const [order] = openOrders;
+  const brokerOrderMatches = hasMeaningfulValue(liveExecution.brokerOrderId)
+    && order?.brokerOrderId === liveExecution.brokerOrderId;
+  const idempotencyKeyMatches = hasMeaningfulValue(liveExecution.idempotencyKey)
+    && order?.idempotencyKey === liveExecution.idempotencyKey;
+  return brokerOrderMatches || idempotencyKeyMatches;
 }
 
 function normalizeLiveOpsCliPnlStatus(summary, { liveExecution } = {}) {

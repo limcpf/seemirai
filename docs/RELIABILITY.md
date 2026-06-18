@@ -91,7 +91,9 @@ Codex-native 운영은 Codex, Git, GitHub, shell command, 문서 상태를 연�
   reconcile freshness를 판단한다. 기존 mismatch/manual review/failed/running 상태는 preflight clean evidence로 덮지 않으며, preflight
   시점에 설정 마켓 밖의 다른 KRW 마켓을 포함한 계정 전체 미체결 주문이 있으면 `UNTRACKED_EXCHANGE_OPEN_ORDER` mismatch와
   `MANUAL_REVIEW_REQUIRED`로 닫아 신규 cleanup 주문을 차단한다. 기존 DB evidence가 clean이어도 현재 private read에서 계정 전체 open order가
-  확인되면 새 manual-review preflight run을 append하고, 가격이 없는 `market`/`best` 계열 open order도 evidence로 남겨 차단한다.
+  확인되면 새 manual-review preflight run을 append하고, 가격이 없는 `market`/`best` 계열 open order도 evidence로 남겨 차단한다. submitted 또는
+  cancel requested lifecycle의 계정 전체 open order는 현재 live execution identity와 일치하는 1건만 tracked로 인정하며, preflight manual-review
+  summary는 계산 가능한 노출 금액과 owner Telegram manual-review alert를 보존한다.
 - Telegram 전송 실패는 주문/리스크 commit을 되돌리지 않고 retry/manual review summary로 격리한다.
 - 실제 cleanup run은 저장소 밖 redacted artifact에만 기록하고, issue/PR에는 safe summary와 artifact 경로만 남긴다.
 
