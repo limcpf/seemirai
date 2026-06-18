@@ -1166,6 +1166,8 @@ export function createLiveOpsCliUpbitLiveBroker({
           recovery: "duplicate_identifier_lookup",
         });
         assertLiveOpsCliRecoveredOrderMatchesSubmission(recoveredOrder, submission, input.identifier);
+        // duplicate_identifier 복구 주문도 같은 runtime의 제출 결과이므로 즉시 cleanup 취소할 수 있게 소유권을 기록한다.
+        submittedOrderIds.add(recoveredOrder.brokerOrderId);
         return recoveredOrder;
       }
       const brokerOrder = toLiveOpsCliBrokerOrder(payload, {
@@ -3358,6 +3360,7 @@ function createLiveOpsCliCleanupArtifactRecord({
     submittedAt,
     cancelRequestedAt,
     terminalCheckedAt,
+    ...(cleanCancel ? { terminalCancelConfirmedAt: terminalCheckedAt } : {}),
     identifierSuffix: suffixLiveOpsCliIdentifier(attempt?.idempotencyKey ?? request?.idempotencyKey),
     cancelIdentifierSuffix: suffixLiveOpsCliIdentifier(attempt?.idempotencyKey ?? request?.idempotencyKey),
     brokerOrderIdSuffix: suffixLiveOpsCliIdentifier(brokerOrder?.brokerOrderId),
@@ -5371,27 +5374,51 @@ function createLiveOpsCliTelegramEvents({ config, market, liveExecution, orderIn
     }));
   }
   if (config.telegram?.trade_event_alerts_enabled === true) {
-    const tradeEvent = createLiveOpsCliTradeTelegramEvent({
+    const tradeEvents = createLiveOpsCliTradeTelegramEvents({
       market,
       liveExecution,
       orderIntent,
       observedAt,
       correlationId,
     });
-    if (tradeEvent !== undefined) {
-      events.push(tradeEvent);
-    }
+    events.push(...tradeEvents);
   }
   return events;
 }
 
-function createLiveOpsCliTradeTelegramEvent({ market, liveExecution, orderIntent, observedAt, correlationId }) {
-  const eventKind = mapLiveOpsCliTelegramTradeEventKind(liveExecution);
-  if (eventKind === undefined) {
-    return undefined;
+function createLiveOpsCliTradeTelegramEvents({ market, liveExecution, orderIntent, observedAt, correlationId }) {
+  if (isLiveOpsCliCleanCancelCloseout(liveExecution)) {
+    // closeout validator가 제출/취소요청/취소확인을 독립 evidence로 대조하므로 최종 상태 하나로 축약하지 않는다.
+    return [
+      {
+        eventKind: "ORDER_SUBMITTED",
+        safeSummary: "cleanup probe 실주문 제출 evidence가 확정되었습니다.",
+      },
+      {
+        eventKind: "CANCEL_REQUESTED",
+        safeSummary: "cleanup probe 취소 요청 evidence가 확정되었습니다.",
+      },
+      {
+        eventKind: "CANCEL_CONFIRMED",
+        safeSummary: "cleanup probe terminal cancel 확인 evidence가 확정되었습니다.",
+      },
+    ].map((event) => createLiveOpsCliTelegramBaseEvent({
+      ...event,
+      market,
+      liveExecution,
+      orderIntent,
+      observedAt,
+      correlationId,
+      evidenceId: liveExecution.attemptId ?? undefined,
+    }));
   }
 
-  return createLiveOpsCliTelegramBaseEvent({
+  const eventKind = mapLiveOpsCliTelegramTradeEventKind(liveExecution);
+  if (eventKind === undefined) {
+    return [];
+  }
+
+  return [createLiveOpsCliTelegramBaseEvent({
     eventKind,
     market,
     liveExecution,
@@ -5400,7 +5427,7 @@ function createLiveOpsCliTradeTelegramEvent({ market, liveExecution, orderIntent
     correlationId,
     evidenceId: liveExecution.attemptId ?? undefined,
     safeSummary: liveExecution.message ?? "production live ops trade event가 확정됐습니다.",
-  });
+  })];
 }
 
 function mapLiveOpsCliTelegramTradeEventKind(liveExecution) {

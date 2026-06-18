@@ -992,6 +992,7 @@ const orderIntent = {
 const observedAt = "2026-06-15T01:00:00.000Z";
 const dispatches = [];
 const manualDispatches = [];
+const cleanupDispatches = [];
 const idleDispatches = [];
 const genericBlockedDispatches = [];
 const blockedDispatches = [];
@@ -1055,6 +1056,37 @@ const manualReviewWithoutDispatcher = await evaluateLiveOpsCliTelegramAlert({
   },
   orderIntent,
   observedAt,
+});
+const cleanupCompleted = await evaluateLiveOpsCliTelegramAlert({
+  config,
+  fixtureSmoke: false,
+  liveExecution: {
+    ...liveExecution,
+    status: "cancel_confirmed",
+    ready: true,
+    liveOrderCapable: true,
+    attemptStatus: "CANCEL_CONFIRMED",
+    cleanupStatus: "completed",
+    cancelRequestedAt: observedAt,
+    terminalCheckedAt: observedAt,
+    cleanup: { cleanCancel: true },
+    message: "실주문 제출, 취소 요청, terminal cancel 확인이 같은 cleanup attempt에서 완료됐습니다.",
+  },
+  orderIntent,
+  observedAt,
+  telegramDispatcher: {
+    async dispatch(payload) {
+      cleanupDispatches.push(payload);
+      return {
+        status: "sent",
+        attemptedCount: payload.events.length,
+        deliveredCount: payload.events.length,
+        cooldownHitCount: 0,
+        retryPlannedCount: 0,
+        failureCount: 0,
+      };
+    },
+  },
 });
 const idleWithoutDispatcher = await evaluateLiveOpsCliTelegramAlert({
   config,
@@ -1219,6 +1251,7 @@ console.log(JSON.stringify({
   sent,
   manualReview,
   manualReviewWithoutDispatcher,
+  cleanupCompleted,
   idleWithoutDispatcher,
   idleWithDispatcher,
   genericBlocked,
@@ -1227,6 +1260,7 @@ console.log(JSON.stringify({
   eventKinds: dispatches[0].events.map((event) => event.eventKind),
   submittedEvent: dispatches[0].events.find((event) => event.eventKind === "ORDER_SUBMITTED"),
   manualEventKinds: manualDispatches[0].events.map((event) => event.eventKind),
+  cleanupEventKinds: cleanupDispatches[0].events.map((event) => event.eventKind),
   idleEventKinds: idleDispatches[0].events.map((event) => event.eventKind),
   genericBlockedDispatchCount: genericBlockedDispatches.length,
   blockedEventKinds: blockedDispatches[0].events.map((event) => event.eventKind),
@@ -1249,6 +1283,7 @@ console.log(JSON.stringify({
       sent: { ready: boolean; providerDispatchAttempted: boolean; alertCount: number; deliveredCount: number };
       manualReview: { ready: boolean; providerDispatchAttempted: boolean; alertCount: number; deliveredCount: number };
       manualReviewWithoutDispatcher: { ready: boolean; providerDispatchAttempted: boolean; status: string; checks: { code: string }[] };
+      cleanupCompleted: { ready: boolean; providerDispatchAttempted: boolean; alertCount: number; deliveredCount: number; status: string };
       idleWithoutDispatcher: { ready: boolean; providerDispatchAttempted: boolean; status: string; checks: { code: string }[] };
       idleWithDispatcher: { ready: boolean; providerDispatchAttempted: boolean; alertCount: number; deliveredCount: number; status: string };
       genericBlocked: { ready: boolean; providerDispatchAttempted: boolean; alertCount: number; status: string };
@@ -1257,6 +1292,7 @@ console.log(JSON.stringify({
       eventKinds: string[];
       submittedEvent: { orderId?: string; brokerOrderId?: string; idempotencyKey?: string };
       manualEventKinds: string[];
+      cleanupEventKinds: string[];
       idleEventKinds: string[];
       genericBlockedDispatchCount: number;
       blockedEventKinds: string[];
@@ -1297,6 +1333,20 @@ console.log(JSON.stringify({
       status: "blocked",
     });
     expect(output.manualReviewWithoutDispatcher.checks.map((check) => check.code)).toContain("live_ops_telegram_boundary_missing");
+    expect(output.cleanupCompleted).toMatchObject({
+      ready: true,
+      providerDispatchAttempted: true,
+      alertCount: 5,
+      deliveredCount: 5,
+      status: "sent",
+    });
+    expect(output.cleanupEventKinds).toEqual([
+      "TELEGRAM_CONNECTION_READY",
+      "LIVE_ORDER_CAPABLE_STARTED",
+      "ORDER_SUBMITTED",
+      "CANCEL_REQUESTED",
+      "CANCEL_CONFIRMED",
+    ]);
     expect(output.idleWithoutDispatcher).toMatchObject({
       ready: true,
       providerDispatchAttempted: false,
@@ -4905,6 +4955,7 @@ console.log(JSON.stringify({
     const artifact = JSON.parse(await readFile(firstSummary.cleanupArtifactPath, "utf8")) as {
       status: string;
       terminalState: string;
+      terminalCancelConfirmedAt: string;
       brokerOrderIdSuffix: string;
       openExposureKrw: string;
     };
@@ -4919,6 +4970,7 @@ console.log(JSON.stringify({
     expect(artifact).toMatchObject({
       status: "completed",
       terminalState: "CANCELED",
+      terminalCancelConfirmedAt: observedAt,
       brokerOrderIdSuffix: "rder-001",
       openExposureKrw: "0",
     });
@@ -4932,6 +4984,171 @@ console.log(JSON.stringify({
     expect(canceled).toEqual(["upbit-cleanup-order-001"]);
     expect(JSON.stringify(artifact)).not.toContain("fake-secret-key");
     expect(JSON.stringify(artifact)).not.toContain("raw_provider_payload");
+  });
+
+  it("cleanup lifecycle은 실패 artifact에 terminal cancel confirmed alias를 남기지 않는다", async () => {
+    const supportModulePath = path.join(process.cwd(), "scripts/run-live-ops-support.mjs");
+    const {
+      createLiveOpsCliCleanupArtifactStore,
+      createLiveOpsCliCleanupLifecycle,
+    } = await import(supportModulePath);
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-live-ops-cleanup-failed-"));
+    const artifactStore = await createLiveOpsCliCleanupArtifactStore({ artifactDir: tempDir });
+    const observedAt = "2026-06-15T00:00:00.000Z";
+    const brokerOrder = {
+      brokerOrderId: "upbit-cleanup-order-pending",
+      idempotencyKey: "ops-pending-id",
+      exchangeId: "upbit_krw_spot",
+      market: "KRW-BTC",
+      side: "BUY",
+      orderType: "LIMIT",
+      status: "ACCEPTED",
+      requestedQuantity: "0.0001",
+      remainingQuantity: "0.0001",
+      requestedPrice: "100000000",
+      updatedAt: observedAt,
+    };
+    const cleanupLifecycle = createLiveOpsCliCleanupLifecycle({
+      artifactStore,
+      clock: () => observedAt,
+      cancelPollCount: 1,
+      cancelPollIntervalMs: 0,
+      broker: {
+        async cancelOrder() {
+          return { ...brokerOrder, status: "CANCEL_REQUESTED" };
+        },
+        async getOrder() {
+          return brokerOrder;
+        },
+      },
+    });
+
+    const summary = await cleanupLifecycle({
+      submittedSummary: {
+        status: "submitted",
+        ready: true,
+        liveOrderCapable: true,
+        checks: [],
+      },
+      attempt: {
+        attemptId: "ops-aaaaaaaaaaaaaaaaaaaaaaaaaa",
+        idempotencyKey: "ops-aaaaaaaaaaaaaaaaaaaaaaaaaa",
+        status: "SUBMITTED",
+        executionResult: { brokerOrder },
+      },
+      request: {
+        idempotencyKey: "ops-aaaaaaaaaaaaaaaaaaaaaaaaaa",
+        candidate: {
+          market: "KRW-BTC",
+          requestedNotional: "10000",
+        },
+      },
+      market: "KRW-BTC",
+      observedAt,
+    });
+    const artifact = JSON.parse(await readFile(summary.cleanupArtifactPath, "utf8")) as {
+      status: string;
+      terminalCheckedAt: string;
+      terminalCancelConfirmedAt?: string;
+    };
+
+    expect(summary).toMatchObject({
+      status: "manual_review_required",
+      cleanupStatus: "manual_review_required",
+    });
+    expect(artifact).toMatchObject({
+      status: "manual_review_required",
+      terminalCheckedAt: observedAt,
+    });
+    expect(artifact.terminalCancelConfirmedAt).toBeUndefined();
+  });
+
+  it("Upbit live broker는 duplicate_identifier 복구 주문도 cleanup 취소 대상으로 소유권을 기록한다", async () => {
+    const supportModulePath = path.join(process.cwd(), "scripts/run-live-ops-support.mjs");
+    const { createLiveOpsCliUpbitLiveBroker } = await import(supportModulePath);
+    const observedAt = "2026-06-15T00:00:00.000Z";
+    const calls: Array<{ method: string; url: string; body: unknown }> = [];
+    const recoveredPayload = {
+      uuid: "upbit-recovered-cleanup-order",
+      identifier: "ops-duplicate-id",
+      market: "KRW-BTC",
+      side: "bid",
+      ord_type: "limit",
+      state: "wait",
+      volume: "0.0001",
+      remaining_volume: "0.0001",
+      price: "100000000",
+      time_in_force: "post_only",
+      created_at: observedAt,
+    };
+    const broker = createLiveOpsCliUpbitLiveBroker({
+      env: {
+        SEEMIRAI_UPBIT_ACCESS_KEY: "fake-access-key",
+        SEEMIRAI_UPBIT_SECRET_KEY: "fake-secret-key",
+      },
+      clock: () => observedAt,
+      nonceFactory: () => "fixed-nonce",
+      async fetchImpl(url: URL, options: { method: string; body?: string }) {
+        calls.push({
+          method: options.method,
+          url: String(url),
+          body: options.body === undefined ? null : JSON.parse(options.body),
+        });
+        if (options.method === "POST") {
+          return {
+            ok: false,
+            status: 400,
+            async json() {
+              return { error: { name: "duplicate_identifier" } };
+            },
+          };
+        }
+        if (options.method === "GET") {
+          return {
+            ok: true,
+            async json() {
+              return recoveredPayload;
+            },
+          };
+        }
+        if (options.method === "DELETE") {
+          return {
+            ok: true,
+            async json() {
+              return { ...recoveredPayload, state: "cancel" };
+            },
+          };
+        }
+        throw new Error(`unexpected method ${options.method}`);
+      },
+    });
+
+    const recoveredOrder = await broker.submitOrder({
+      intent: {
+        exchangeId: "upbit_krw_spot",
+        market: "KRW-BTC",
+        side: "BUY",
+        orderType: "LIMIT",
+        postOnly: true,
+        timeInForce: "POST_ONLY",
+        idempotencyKey: "ops-duplicate-id",
+        requestedQuantity: "0.0001",
+        requestedPrice: "100000000",
+      },
+    });
+    const cancelOrder = await broker.cancelOrder(recoveredOrder.brokerOrderId);
+
+    expect(recoveredOrder).toMatchObject({
+      brokerOrderId: "upbit-recovered-cleanup-order",
+      idempotencyKey: "ops-duplicate-id",
+      status: "ACCEPTED",
+    });
+    expect(cancelOrder).toMatchObject({
+      brokerOrderId: "upbit-recovered-cleanup-order",
+      status: "CANCELED",
+    });
+    expect(calls.map((call) => call.method)).toEqual(["POST", "GET", "DELETE"]);
+    expect(calls[2]?.url).toContain("uuid=upbit-recovered-cleanup-order");
   });
 
   it("DB readiness 차단 시 provider를 열기 전에 production boot를 중단한다", async () => {
