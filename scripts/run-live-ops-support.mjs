@@ -717,7 +717,8 @@ async function collectLiveOpsCliProductionPreflight({
     killSwitchStatus,
     reservationUsage,
   ] = await Promise.all([
-    productionRuntime.privateReadProvider.listOpenOrders(market),
+    // clean-start evidence는 계정 전체 미체결 주문을 기준으로 해야 다른 KRW 마켓 잔여 주문이 신규 제출을 열지 못한다.
+    productionRuntime.privateReadProvider.listOpenOrders(),
     productionRuntime.privateReadProvider.getBalances(),
     readLiveOpsCliReconcileStatus(productionRuntime.reconcileStatusProvider),
     readLiveOpsCliPnlStatus(productionRuntime.pnlStatusProvider),

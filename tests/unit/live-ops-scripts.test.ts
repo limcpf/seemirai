@@ -1747,6 +1747,7 @@ console.log(JSON.stringify({
       createLiveOpsCliProductionExecutionInputs,
     } = await import(supportModulePath);
     const recorded: unknown[] = [];
+    const listedOpenOrderMarkets: unknown[] = [];
     let reconcileReadCount = 0;
     const config = {
       universe: { markets: ["KRW-BTC"], default_market: "KRW-BTC" },
@@ -1760,7 +1761,8 @@ console.log(JSON.stringify({
       entryRuntime: {},
       cleanupLifecycle: {},
       privateReadProvider: {
-        async listOpenOrders() {
+        async listOpenOrders(market?: unknown) {
+          listedOpenOrderMarkets.push(market);
           return [];
         },
         async getBalances() {
@@ -1855,6 +1857,7 @@ console.log(JSON.stringify({
     });
 
     expect(recorded).toHaveLength(1);
+    expect(listedOpenOrderMarkets).toEqual([undefined]);
     expect(reconcileReadCount).toBe(2);
     expect(result.executionStatus).toMatchObject({
       killSwitchActive: false,
@@ -1867,6 +1870,155 @@ console.log(JSON.stringify({
     expect(result.postSubmitReadiness).toMatchObject({
       reconcileReady: true,
       telegramReady: true,
+    });
+  });
+
+  it("production preflight는 다른 마켓 미체결 주문도 manual review evidence로 넘긴다", async () => {
+    const supportModulePath = path.join(process.cwd(), "scripts/run-live-ops-support.mjs");
+    const {
+      createLiveOpsCliProductionExecutionInputs,
+    } = await import(supportModulePath);
+    const recorded: Array<{ openOrders?: Array<{ market?: string; brokerOrderId?: string }> }> = [];
+    const listedOpenOrderMarkets: unknown[] = [];
+    let reconcileReadCount = 0;
+    const config = {
+      universe: { markets: ["KRW-BTC"], default_market: "KRW-BTC" },
+      budget: {
+        max_order_krw: "10000",
+        daily_autonomous_notional_limit_krw: "30000",
+        max_open_position_notional_krw: "30000",
+      },
+    };
+    const productionRuntime = {
+      entryRuntime: {},
+      cleanupLifecycle: {},
+      privateReadProvider: {
+        async listOpenOrders(market?: unknown) {
+          listedOpenOrderMarkets.push(market);
+          return [{
+            brokerOrderId: "eth-open-order-1",
+            idempotencyKey: "eth-open-identifier-1",
+            exchangeId: "upbit_krw_spot",
+            market: "KRW-ETH",
+            side: "BID",
+            orderType: "LIMIT",
+            status: "OPEN",
+            requestedQuantity: "0.002",
+            remainingQuantity: "0.002",
+            requestedPrice: "2500000",
+            acceptedAt: "2026-06-18T13:33:00.000Z",
+            updatedAt: "2026-06-18T13:33:27.000Z",
+          }];
+        },
+        async getBalances() {
+          return {
+            exchangeId: "upbit_krw_spot",
+            capturedAt: "2026-06-18T13:33:27.000Z",
+            balances: [{
+              currency: "KRW",
+              available: "50000",
+              locked: "0",
+              total: "50000",
+            }],
+          };
+        },
+      },
+      reconcileStatusProvider: {
+        async getReconcileStatus() {
+          reconcileReadCount += 1;
+          if (reconcileReadCount === 1) {
+            return {
+              lastReconcileAt: null,
+              result: "SKIPPED",
+              mismatchCount: null,
+              openOrderCount: null,
+              balanceStatus: "UNAVAILABLE",
+              websocketStatus: "DISCONNECTED",
+              actionRequired: "reconcile 실행 필요",
+              message: "아직 완료된 실계좌 reconcile evidence가 없습니다.",
+              trace: { source: "live_ops_cli_database_reconcile", reason: "reconcile_not_run" },
+            };
+          }
+          return {
+            lastReconcileAt: "2026-06-18T13:33:27.000Z",
+            result: "MANUAL_REVIEW_REQUIRED",
+            mismatchCount: 1,
+            openOrderCount: 1,
+            balanceStatus: "ORDER_MISMATCH",
+            websocketStatus: "CONNECTED",
+            actionRequired: "거래소 미체결 주문을 확인하세요.",
+            message: "실계좌 상태 대조에서 불일치가 발견되었습니다.",
+            trace: { source: "live_ops_cli_database_reconcile", runId: "preflight-run-eth" },
+          };
+        },
+      },
+      pnlStatusProvider: {
+        async getStatus() {
+          return { readStatus: "NOT_FOUND", reason: "pnl_snapshot_not_found" };
+        },
+      },
+      killSwitchProvider: {
+        async getStatus() {
+          return {
+            active: false,
+            state: "NORMAL",
+            reasonCode: "initial_state",
+            updatedAt: "2026-06-18T13:33:27.000Z",
+          };
+        },
+      },
+      budgetReservation: {
+        async readDailyReservedNotional() {
+          return { reservedNotionalKrw: "0", reservationCount: 0 };
+        },
+      },
+      preflightReconcileRecorder: {
+        async recordPreflight(input: { openOrders?: Array<{ market?: string; brokerOrderId?: string }> }) {
+          recorded.push(input);
+          return {
+            created: true,
+            runId: "preflight-run-eth",
+            status: "MANUAL_REVIEW_REQUIRED",
+            source: "live_ops_cli_private_read_preflight",
+          };
+        },
+      },
+      telegramDispatcher: {},
+    };
+    const result = await createLiveOpsCliProductionExecutionInputs({
+      config,
+      fixtureSmoke: false,
+      analysisDecision: {
+        ready: true,
+        decisionCategory: "ORDER_INTENT",
+        orderIntentCount: 1,
+      },
+      marketData: {
+        ready: true,
+        latestHeartbeatAt: "2026-06-18T13:33:27.000Z",
+      },
+      orderIntents: [createCleanupRuntimeIntent()],
+      productionRuntime,
+    });
+
+    expect(listedOpenOrderMarkets).toEqual([undefined]);
+    expect(recorded).toHaveLength(1);
+    expect(recorded[0]?.openOrders).toEqual([expect.objectContaining({
+      brokerOrderId: "eth-open-order-1",
+      market: "KRW-ETH",
+    })]);
+    expect(reconcileReadCount).toBe(2);
+    expect(result.executionStatus).toMatchObject({
+      killSwitchActive: false,
+      reconcileFresh: false,
+      preflightReconcileEvidence: {
+        runId: "preflight-run-eth",
+        status: "MANUAL_REVIEW_REQUIRED",
+      },
+    });
+    expect(result.budgetSnapshot).toMatchObject({
+      openPositionNotionalKrw: "5000",
+      dailyAutonomousNotionalUsedKrw: "5000",
     });
   });
 

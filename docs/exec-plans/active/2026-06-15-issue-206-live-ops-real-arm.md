@@ -192,8 +192,8 @@ Telegram, TUI를 같은 lifecycle로 조립하고, 조건을 통과한 단일 `K
   - [ ] production preflight가 DB reconcile status `SKIPPED` + `reconcile_not_run`일 때만 actual private read 결과를
         `LIVE_OPS_PRIVATE_READ_PREFLIGHT` run으로 저장한다.
   - [ ] balance snapshot은 `live_reconcile_balance_snapshots`에 REST source로 저장하고, 저장 실패 시 broker 제출 전 fail-closed 한다.
-  - [ ] preflight 시점에 open order가 있으면 `MANUAL_REVIEW_REQUIRED` run과 `UNTRACKED_EXCHANGE_OPEN_ORDER` mismatch evidence로 닫고
-        신규 cleanup 주문을 제출하지 않는다.
+  - [ ] preflight 시점에 설정 마켓 밖의 다른 KRW 마켓까지 포함한 계정 전체 open order가 있으면 `MANUAL_REVIEW_REQUIRED` run과
+        `UNTRACKED_EXCHANGE_OPEN_ORDER` mismatch evidence로 닫고 신규 cleanup 주문을 제출하지 않는다.
   - [ ] 기존 DB reconcile mismatch, failed, running, manual review 상태는 새 preflight clean evidence로 덮지 않고 그대로 차단한다.
   - [ ] 저장된 preflight run을 다시 읽은 뒤에만 `reconcileFresh=true`와 post-submit reconcile readiness가 열릴 수 있다.
   - [ ] TUI/JSON은 live execution blocked 상태를 `후속 연결 대기`로 숨기지 않고 한국어 차단 사유와 stable check code를 보여준다.

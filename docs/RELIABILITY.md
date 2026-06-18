@@ -89,7 +89,8 @@ Codex-native 운영은 Codex, Git, GitHub, shell command, 문서 상태를 연�
 - production `live:ops` clean-start DB에 완료된 reconcile run이 없으면, broker 제출 전 actual Upbit private read 결과를
   `LIVE_OPS_PRIVATE_READ_PREFLIGHT` run으로 `live_reconcile_*` 테이블에 append-only 저장한 뒤 같은 DB provider로 다시 읽어
   reconcile freshness를 판단한다. 기존 mismatch/manual review/failed/running 상태는 preflight clean evidence로 덮지 않으며, preflight
-  시점에 미체결 주문이 있으면 `UNTRACKED_EXCHANGE_OPEN_ORDER` mismatch와 `MANUAL_REVIEW_REQUIRED`로 닫아 신규 cleanup 주문을 차단한다.
+  시점에 설정 마켓 밖의 다른 KRW 마켓을 포함한 계정 전체 미체결 주문이 있으면 `UNTRACKED_EXCHANGE_OPEN_ORDER` mismatch와
+  `MANUAL_REVIEW_REQUIRED`로 닫아 신규 cleanup 주문을 차단한다.
 - Telegram 전송 실패는 주문/리스크 commit을 되돌리지 않고 retry/manual review summary로 격리한다.
 - 실제 cleanup run은 저장소 밖 redacted artifact에만 기록하고, issue/PR에는 safe summary와 artifact 경로만 남긴다.
 
