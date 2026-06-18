@@ -208,6 +208,40 @@ Telegram, TUI를 같은 lifecycle로 조립하고, 조건을 통과한 단일 `K
   - [ ] preflight `MANUAL_REVIEW_REQUIRED`는 owner Telegram trade alert 경계로도 전송된다.
   - [ ] 관련 unit/script tests, `corepack pnpm typecheck`, `./scripts/verify`, `git diff --check`가 통과한다.
 
+### Sub PR 09: cleanup closeout evidence gap 보강
+
+- 목표: final PR review에서 발견된 cleanup closeout evidence gap을 닫는다. closeout validator timestamp alias, cleanup Telegram lifecycle
+  event, duplicate identifier recovery 주문 cleanup 소유권을 보강한다.
+- 제외 범위:
+  - 새로운 전략, budget 확대, BTC 외 market 활성화.
+  - 실제 운영 credential 노출 또는 저장소 안 artifact 생성.
+  - final main PR merge.
+- DnD:
+  - [x] closeout validator가 `terminalCancelConfirmedAt` 성공 evidence를 허용하되 실패/manual review artifact에는 cancel confirmed alias를
+        남기지 않는다.
+  - [x] cleanup Telegram event가 submit, cancel requested, cancel confirmed lifecycle을 순서대로 표현한다.
+  - [x] duplicate identifier로 복구한 주문도 현재 runtime의 submitted order id로 기록해 같은 주문을 즉시 취소/terminal 확인할 수 있다.
+  - [x] 관련 unit tests, `corepack pnpm typecheck`, `./scripts/verify`, `git diff --check`가 통과한다.
+
+### Sub PR 10: attach read-only와 pre-submit budget/balance guard
+
+- 목표: final PR review에서 발견된 attach side effect와 pre-submit guard gap을 닫는다. `live:ops:tui -- --attach`는 read-only viewer로 고정하고,
+  KRW 가용잔고 누락/0원은 broker 제출 전 risk gate에서 차단하며, file budget reservation은 일일 예산 집계를 atomic lock 안에서 선점한다.
+- 제외 범위:
+  - foreground cleanup submit/cancel lifecycle 변경.
+  - 새로운 TUI control daemon/socket protocol.
+  - budget 상한 확대, BTC 외 market 활성화, 시장가/best order 허용.
+  - final main PR merge.
+- DnD:
+  - [x] non-fixture attach TUI가 production runtime, Upbit public/private provider, broker, cleanup lifecycle, Telegram dispatch를 새로 열지
+        않는다.
+  - [x] KRW balance row 누락, 0원, 요청금액 미만은 pre-submit risk infrastructure signal로 fail-closed 되고 entryRuntime/broker 호출 0회를
+        유지한다.
+  - [x] durable file reservation은 같은 날짜 lock 안에서 current reservation aggregate와 open position snapshot을 재합산하고, 일일 예산 초과나
+        lock busy 상태면 attempt 파일 생성 없이 broker 제출 전 차단한다.
+  - [x] 관련 운영 문서가 attach read-only와 daily budget reservation invariant를 설명한다.
+  - [x] 관련 unit tests, `corepack pnpm typecheck`, `./scripts/verify docs`, `./scripts/verify`, `git diff --check`가 통과한다.
+
 ## 검증 방법
 
 공통 검증:
@@ -311,10 +345,14 @@ SEEMIRAI_RUN_LIVE_OPS_REAL_ARM_CLOSEOUT=1 \
   주문 후보 생성은 `BUY + LIMIT + post_only`, small budget, fresh market frame, same-tick order intent 전달 조건 안에서만 허용한다.
 - 2026-06-18: production `live:ops`는 기존 DB reconcile run이 없을 때 actual Upbit private read 결과를 preflight reconcile evidence로
   먼저 저장한다. 단, 기존 mismatch/manual review/failed/running 상태는 preflight clean evidence로 덮지 않는다.
+- 2026-06-18: `live:ops:tui -- --attach ...`는 read-only viewer다. attach 명령은 foreground boot sequence나 Upbit provider, broker,
+  cleanup lifecycle, Telegram dispatch를 새로 시작하지 않는다.
+- 2026-06-18: cleanup budget reservation은 attempt id 파일 생성 전에 같은 날짜 lock을 잡고, lock 안에서 reservation aggregate와 open
+  position snapshot을 다시 합산해 일일 자동 주문 예산을 선점한다.
 
 ## 남은 이슈
 
-- Sub PR 08 완료 후 실제 운영 command는 DB reconcile run이 없는 clean-start DB에서도 private read preflight evidence를 자동 생성해야 한다.
+- Sub PR 10 완료 후 final main PR #218의 새 review findings를 다시 drain해야 한다.
 - 실제 운영 credential, key scope evidence, operator arm evidence, redacted artifact 경로는 저장소 밖 운영 vault에 있어야 한다.
 - 실제 주문 제출/취소 closeout은 저장소 밖 운영 config/env로 foreground `live:ops`를 실행한 뒤 자동 생성 artifact와 closeout manifest로
   검증한다.

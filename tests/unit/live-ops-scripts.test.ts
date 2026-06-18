@@ -2014,6 +2014,200 @@ console.log(JSON.stringify({
     });
   });
 
+  it("production preflight는 KRW 가용잔고 누락이나 0원을 broker 제출 전에 차단한다", async () => {
+    const supportModulePath = path.join(process.cwd(), "scripts/run-live-ops-support.mjs");
+    const {
+      createLiveOpsCliEntryRuntime,
+      createLiveOpsCliProductionExecutionInputs,
+      evaluateLiveOpsCliLiveExecution,
+    } = await import(supportModulePath);
+    const config = {
+      live_trading_enabled: true,
+      universe: { markets: ["KRW-BTC"], default_market: "KRW-BTC" },
+      budget: {
+        max_order_krw: "10000",
+        daily_autonomous_notional_limit_krw: "30000",
+        max_open_position_notional_krw: "30000",
+      },
+    };
+    const cases = [{
+      name: "missing-krw",
+      balances: [{ currency: "BTC", available: "0.001", locked: "0", total: "0.001" }],
+      reason: "krw_available_missing_or_non_positive",
+    }, {
+      name: "zero-krw",
+      balances: [{ currency: "KRW", available: "0", locked: "0", total: "0" }],
+      reason: "krw_available_missing_or_non_positive",
+    }];
+
+    for (const testCase of cases) {
+      const submitted: unknown[] = [];
+      const reservations: unknown[] = [];
+      const rawIntent = { ...createCleanupRuntimeIntent() } as Record<string, unknown>;
+      delete rawIntent.costInput;
+      delete rawIntent.risk;
+      delete rawIntent.costSnapshot;
+      delete rawIntent.riskApproval;
+      const entryRuntime = createLiveOpsCliEntryRuntime({
+        broker: {
+          async submitOrder(request: unknown) {
+            submitted.push(request);
+            return {
+              brokerOrderId: `unexpected-${testCase.name}`,
+              idempotencyKey: "ops-aaaaaaaaaaaaaaaaaaaaaaaaaa",
+              exchangeId: "upbit_krw_spot",
+              market: "KRW-BTC",
+              side: "BUY",
+              orderType: "LIMIT",
+              status: "ACCEPTED",
+              requestedQuantity: "0.0001",
+              remainingQuantity: "0.0001",
+              requestedPrice: "100000000",
+              acceptedAt: "2026-06-18T13:33:27.000Z",
+              updatedAt: "2026-06-18T13:33:27.000Z",
+            };
+          },
+        },
+        budgetReservation: {
+          async reserve(request: {
+            attemptId: string;
+            idempotencyKey: string;
+            requestedNotionalKrw: string;
+            budgetSnapshot: unknown;
+          }) {
+            reservations.push(request);
+            return {
+              reserved: true,
+              reservation: {
+                reservationId: `reservation-${request.attemptId}`,
+                attemptId: request.attemptId,
+                idempotencyKey: request.idempotencyKey,
+                reservedNotionalKrw: request.requestedNotionalKrw,
+                budgetSnapshot: request.budgetSnapshot,
+                reservedAt: "2026-06-18T13:33:27.000Z",
+              },
+            };
+          },
+        },
+      });
+      const productionRuntime = {
+        entryRuntime,
+        cleanupLifecycle: undefined,
+        privateReadProvider: {
+          async listOpenOrders() {
+            return [];
+          },
+          async getBalances() {
+            return {
+              exchangeId: "upbit_krw_spot",
+              capturedAt: "2026-06-18T13:33:27.000Z",
+              balances: testCase.balances,
+            };
+          },
+        },
+        reconcileStatusProvider: {
+          async getReconcileStatus() {
+            return {
+              lastReconcileAt: "2026-06-18T13:00:00.000Z",
+              result: "SUCCESS",
+              mismatchCount: 0,
+              openOrderCount: 0,
+              balanceStatus: "OK",
+              websocketStatus: "CONNECTED",
+              actionRequired: "없음",
+              message: "기존 preflight reconcile evidence는 정상입니다.",
+              trace: { source: "live_ops_cli_database_reconcile", runId: `clean-${testCase.name}` },
+            };
+          },
+        },
+        pnlStatusProvider: {
+          async getStatus() {
+            return { readStatus: "NOT_FOUND", reason: "pnl_snapshot_not_found" };
+          },
+        },
+        killSwitchProvider: {
+          async getStatus() {
+            return {
+              active: false,
+              state: "NORMAL",
+              reasonCode: "initial_state",
+              updatedAt: "2026-06-18T13:33:27.000Z",
+            };
+          },
+        },
+        budgetReservation: {
+          async readDailyReservedNotional() {
+            return { reservedNotionalKrw: "0", reservationCount: 0 };
+          },
+        },
+        preflightReconcileRecorder: {
+          async recordPreflight() {
+            throw new Error("PreflightRecorderShouldNotRun");
+          },
+        },
+        telegramDispatcher: {},
+      };
+      const executionInputs = await createLiveOpsCliProductionExecutionInputs({
+        config,
+        fixtureSmoke: false,
+        analysisDecision: {
+          ready: true,
+          decisionCategory: "ORDER_INTENT",
+          orderIntentCount: 1,
+        },
+        marketData: {
+          ready: true,
+          latestHeartbeatAt: "2026-06-18T13:33:27.000Z",
+          referencePrice: "100000000",
+        },
+        orderIntents: [rawIntent],
+        productionRuntime,
+      });
+      const enrichedIntent = executionInputs.orderIntents[0] as {
+        risk?: { infrastructureSignals?: Array<{ signal?: string; reason?: string }> };
+      };
+      const summary = await evaluateLiveOpsCliLiveExecution({
+        config,
+        fixtureSmoke: false,
+        analysisDecision: {
+          ready: true,
+          decisionCategory: "ORDER_INTENT",
+          orderIntentCount: 1,
+        },
+        marketData: {
+          ready: true,
+          latestHeartbeatAt: "2026-06-18T13:33:27.000Z",
+          referencePrice: "100000000",
+        },
+        env: {
+          SEEMIRAI_UPBIT_ACCESS_KEY: "fake-access-key",
+          SEEMIRAI_UPBIT_SECRET_KEY: "fake-secret-key",
+          SEEMIRAI_UPBIT_KEY_SCOPE: "자산조회,주문조회,주문하기",
+          SEEMIRAI_UPBIT_KEY_SCOPE_EVIDENCE_ID: "scope-evidence",
+        },
+        orderIntents: executionInputs.orderIntents,
+        entryRuntime: executionInputs.entryRuntime,
+        executionStatus: executionInputs.executionStatus,
+        postSubmitReadiness: executionInputs.postSubmitReadiness,
+        budgetSnapshot: executionInputs.budgetSnapshot,
+        lossSnapshot: executionInputs.lossSnapshot,
+        cleanupLifecycle: executionInputs.cleanupLifecycle,
+      });
+
+      expect(enrichedIntent.risk?.infrastructureSignals).toContainEqual(expect.objectContaining({
+        signal: "BALANCE_POSITION_MISMATCH",
+        reason: testCase.reason,
+      }));
+      expect(summary).toMatchObject({
+        status: "blocked",
+        submittedOrderCount: 0,
+      });
+      expect(summary.checks.map((check: { code: string }) => check.code)).toContain("live_ops_execution_blocked");
+      expect(submitted).toHaveLength(0);
+      expect(reservations).toHaveLength(0);
+    }
+  });
+
   it("production preflight는 기존 clean DB 뒤 다른 마켓 미체결 주문도 manual review evidence로 넘긴다", async () => {
     const supportModulePath = path.join(process.cwd(), "scripts/run-live-ops-support.mjs");
     const {
@@ -2484,6 +2678,84 @@ console.log(JSON.stringify({
     expect(result.stdout).toContain("Reconcile/PnL/status: 상태 요약 확인");
     expect(result.stdout).toContain("Telegram 알림: fixture alert plan 확인");
     expect(result.stdout).not.toContain("fake-local-control-token");
+  });
+
+  it("non-fixture live:ops:tui attach는 production runtime과 provider를 새로 열지 않는다", () => {
+    const result = spawnSync(
+      process.execPath,
+      [
+        "--input-type=module",
+        "--eval",
+        `
+import { loadLiveOpsCliInputs, renderLiveOpsSummary } from "./scripts/run-live-ops-support.mjs";
+
+let websocketOpened = false;
+let fetchCalled = false;
+globalThis.WebSocket = class {
+  constructor() {
+    websocketOpened = true;
+    throw new Error("AttachShouldNotOpenProvider");
+  }
+};
+
+const inputs = await loadLiveOpsCliInputs({
+  configPath: "config/live-ops.example.json",
+  envFilePath: "tests/fixtures/live-ops/fake.env",
+  fixtureSmoke: false,
+  attach: "existing-status-source",
+  fetchImpl: async () => {
+    fetchCalled = true;
+    throw new Error("AttachShouldNotFetch");
+  },
+});
+const summary = renderLiveOpsSummary({
+  ...inputs,
+  fixtureSmoke: false,
+  tui: true,
+  attach: "existing-status-source",
+});
+
+console.log(JSON.stringify({
+  status: summary.status,
+  message: summary.message,
+  liveOrderCapable: summary.liveOrderCapable,
+  websocketOpened,
+  fetchCalled,
+  liveExecutionStatusLabel: summary.liveExecution.statusLabel,
+  providerProbeAttempted: summary.reconcilePnlStatus.providerProbeAttempted,
+  telegramDispatchAttempted: summary.telegramAlert.providerDispatchAttempted,
+}));
+        `,
+      ],
+      {
+        cwd: process.cwd(),
+        encoding: "utf8",
+        env: minimalEnv(),
+      },
+    );
+
+    expect(result.status).toBe(0);
+    expect(result.stderr).toBe("");
+    const output = JSON.parse(result.stdout) as {
+      status: string;
+      message: string;
+      liveOrderCapable: boolean;
+      websocketOpened: boolean;
+      fetchCalled: boolean;
+      liveExecutionStatusLabel: string;
+      providerProbeAttempted: boolean;
+      telegramDispatchAttempted: boolean;
+    };
+    expect(output).toMatchObject({
+      status: "ready",
+      liveOrderCapable: false,
+      websocketOpened: false,
+      fetchCalled: false,
+      liveExecutionStatusLabel: "attach 읽기 전용",
+      providerProbeAttempted: false,
+      telegramDispatchAttempted: false,
+    });
+    expect(output.message).toContain("읽기 전용");
   });
 
   it("production live ops closeout source scan은 private order 직접 호출과 Telegram dispatcher 위치를 확인한다", async () => {
@@ -4984,6 +5256,75 @@ console.log(JSON.stringify({
     expect(canceled).toEqual(["upbit-cleanup-order-001"]);
     expect(JSON.stringify(artifact)).not.toContain("fake-secret-key");
     expect(JSON.stringify(artifact)).not.toContain("raw_provider_payload");
+  });
+
+  it("file budget reservation은 일일 예산 집계를 lock 안에서 선점한다", async () => {
+    const supportModulePath = path.join(process.cwd(), "scripts/run-live-ops-support.mjs");
+    const {
+      createLiveOpsCliCleanupArtifactStore,
+      createLiveOpsCliFileBudgetReservation,
+    } = await import(supportModulePath);
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-live-ops-budget-lock-"));
+    const artifactStore = await createLiveOpsCliCleanupArtifactStore({ artifactDir: tempDir });
+    const observedAt = "2026-06-15T00:00:00.000Z";
+    const budgetReservation = createLiveOpsCliFileBudgetReservation({
+      artifactStore,
+      clock: () => observedAt,
+    });
+    const createRequest = (attemptId: string, requestedNotionalKrw: string) => ({
+      attemptId,
+      idempotencyKey: attemptId,
+      market: "KRW-BTC",
+      strategyId: "live_ops_cleanup_probe",
+      requestedNotionalKrw,
+      budgetSnapshot: {
+        dailyAutonomousNotionalLimitKrw: "30000",
+        dailyAutonomousNotionalUsedKrw: "0",
+        openPositionNotionalKrw: "0",
+      },
+      observedAt,
+    });
+
+    const first = await budgetReservation.reserve(createRequest("ops-aaaaaaaaaaaaaaaaaaaaaaaaaa", "20000"));
+    const second = await budgetReservation.reserve(createRequest("ops-bbbbbbbbbbbbbbbbbbbbbbbbbb", "15000"));
+    const dailyUsage = await budgetReservation.readDailyReservedNotional(observedAt);
+    const lock = await artifactStore.acquireDailyReservationLock("2026-06-15");
+    let busy;
+    try {
+      busy = await budgetReservation.reserve(createRequest("ops-cccccccccccccccccccccccccc", "10000"));
+    } finally {
+      await lock.release();
+    }
+
+    expect(first).toMatchObject({
+      reserved: true,
+      reservation: {
+        attemptId: "ops-aaaaaaaaaaaaaaaaaaaaaaaaaa",
+        reservedNotionalKrw: "20000",
+      },
+    });
+    expect(second).toMatchObject({
+      reserved: false,
+      reasonCode: "live_ops_daily_budget_exceeded",
+      budgetUsage: {
+        day: "2026-06-15",
+        reservedNotionalKrw: "20000",
+        currentUsedKrw: "20000",
+        requestedNotionalKrw: "15000",
+        dailyAutonomousNotionalLimitKrw: "30000",
+      },
+    });
+    expect(await artifactStore.readReservation("ops-bbbbbbbbbbbbbbbbbbbbbbbbbb")).toBeUndefined();
+    expect(dailyUsage).toMatchObject({
+      day: "2026-06-15",
+      reservedNotionalKrw: "20000",
+      reservationCount: 1,
+    });
+    expect(busy).toMatchObject({
+      reserved: false,
+      reasonCode: "live_ops_daily_budget_lock_busy",
+    });
+    expect(await artifactStore.readReservation("ops-cccccccccccccccccccccccccc")).toBeUndefined();
   });
 
   it("cleanup lifecycle은 실패 artifact에 terminal cancel confirmed alias를 남기지 않는다", async () => {

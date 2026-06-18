@@ -43,9 +43,10 @@ Codex-native 운영은 Codex, Git, GitHub, shell command, 문서 상태를 연�
   worker heartbeat, provider probe, market data freshness, reconcile/PnL/decision ledger 상태에서 계산한다.
 - boot sequence가 broker 조립 전 실패하면 private client와 live broker를 만들지 않고 한국어 상태/원인/영향/필요 조치를 출력한다.
 - broker 조립 이후 장애는 신규 주문 중지, reconcile/manual review, Telegram P0/P1, TUI 경고로 수렴한다.
-- foreground TUI와 attach TUI는 같은 secret-safe summary source를 읽어야 한다. 첫 화면은 DB readiness, worker 상태, 예산, 필요 조치를
-  보여주고 credential/raw provider payload/raw config enum을 표시하지 않는다. TUI 종료 시 daemon 계속 실행/안전 종료/attach detach
-  정책은 후속 control lifecycle sub PR과 runbook에서 명시한다.
+- foreground TUI와 attach TUI는 같은 secret-safe summary renderer를 사용하되, attach TUI는 기존 status source를 읽는 read-only 경로로
+  남긴다. attach 명령은 foreground boot sequence, Upbit public/private provider, live broker, cleanup lifecycle, Telegram dispatch를
+  새로 시작하지 않는다. 첫 화면은 DB readiness, worker 상태, 예산, 필요 조치를 보여주고 credential/raw provider payload/raw config
+  enum을 표시하지 않는다. TUI 종료 시 daemon 계속 실행/안전 종료/attach detach 정책은 후속 control lifecycle sub PR과 runbook에서 명시한다.
 - DB readiness guard는 `schema_migrations`를 생성하거나 migration을 자동 적용하지 않는다. pending migration, missing table,
   unknown applied migration, checksum drift는 운영자가 migration apply 또는 schema drift 확인을 끝낼 때까지 live boot를 차단한다.
 - market data collector는 허용 production market 밖 event를 DB write 전에 차단한다. stale/reconnect/disconnect status는 DB-backed
@@ -56,6 +57,9 @@ Codex-native 운영은 Codex, Git, GitHub, shell command, 문서 상태를 연�
   단일 `BUY + LIMIT + post_only` 후보만 기존 `LiveAutonomousEntryRuntime` 요청으로 낮추며, budget reservation과 broker submit side
   effect는 하위 runtime이 반환한 attempt 결과로만 확정한다. 하위 runtime 예외는 제출 여부를 단정하지 않고 manual review summary로
   수렴한다.
+- budget reservation은 attempt id 파일만으로 완료하지 않는다. 같은 날짜 reservation lock을 먼저 잡고, lock 안에서 현재 reservation
+  집계와 open position snapshot을 합산해 일일 자동 주문 예산을 다시 확인한 뒤 attempt 파일을 만든다. lock이 busy이거나 예산 초과가
+  확인되면 broker 호출 전 fail-closed 한다.
 - reconcile/PnL/status summary는 live execution 이후 같은 lifecycle에서 계산하되, fixture smoke에서는 private provider 조회를 수행하지
   않는다. open order, 예산 사용, 노출은 safe placeholder로 표시하고 PnL 결측은 0으로 보정하지 않고 `관측 대기`로 남겨 실제
   reconcile/PnL evidence 연결 전까지 운영자가 상태 의미를 오해하지 않게 한다.

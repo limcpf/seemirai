@@ -763,10 +763,12 @@ production live ops path에서 다음 legacy milestone/test env는 readiness 입
 디스크 migration 기준만 확인하며, 실제 실행에서는 `SEEMIRAI_DATABASE_URL`로 read-only 연결 probe와 `schema_migrations` 적용 이력을
 조회한다. pending migration, missing table, unknown applied migration, checksum drift는 live worker boot 전에 fail-closed 한다.
 
-`live:ops -- --tui`와 `live:ops:tui -- --attach ...`는 같은 secret-safe TUI dashboard renderer를 사용한다. 첫 화면은 모드, 시장,
-실주문 가능 여부, DB readiness/schema version, worker 상태, 예산, 최근 관측 상태, 필요 조치를 한국어로 표시하고, env file 경로,
-credential, raw provider payload, raw config enum은 노출하지 않는다. fixture smoke dashboard는 외부 DB/provider를 호출하지 않았음을
-표시하고, 후속 provider 연결 전에는 신규 실주문이 제출되지 않는 상태로 고정한다.
+`live:ops -- --tui`와 `live:ops:tui -- --attach ...`는 같은 secret-safe TUI dashboard renderer를 사용한다. 단, attach TUI는 기존 실행
+상태를 읽는 화면이므로 non-fixture에서도 foreground boot sequence, Upbit public/private provider, live broker, cleanup lifecycle,
+Telegram dispatch를 새로 시작하지 않는다. 첫 화면은 모드, 시장, 실주문 가능 여부, DB readiness/schema version, worker 상태, 예산,
+최근 관측 상태, 필요 조치를 한국어로 표시하고, env file 경로, credential, raw provider payload, raw config enum은 노출하지 않는다.
+fixture smoke dashboard는 외부 DB/provider를 호출하지 않았음을 표시하고, 후속 provider 연결 전에는 신규 실주문이 제출되지 않는 상태로
+고정한다.
 
 `LiveOpsMarketDataCollector`는 `UPBIT_PUBLIC` production event source를 기존 DB-backed `MarketDataRuntimeEventStore`에 저장한다.
 collector는 config를 다시 `LiveOpsConfig`로 해석하고 KRW-BTC 단일 universe, `upbit_krw_spot` exchange, trade/orderbook/status event
@@ -782,6 +784,11 @@ feature가 통과하거나 featureless policy 우회 조건이 충족되면 주�
 intent 수, HOLD/BLOCK count, `record_hold_decision` 여부를 secret-safe summary로 반환한다. raw `OrderIntent`는 status/TUI/JSON
 summary에 직렬화하지 않고, pipeline 결과 객체의 non-enumerable `orderIntents` 채널 또는 CLI 내부 symbol 채널로 같은 decision tick의
 live execution 입력에만 전달한다. 이 pipeline은 DB write, broker 호출, Upbit 호출, Telegram 전송을 하지 않는다.
+
+production cleanup reservation은 저장소 밖 artifact 디렉터리에 attempt 파일을 남기기 전, 같은 날짜의 `reservation-daily-YYYY-MM-DD.lock`
+파일을 원자적으로 선점한다. lock 안에서 현재 reservation 파일 집계, open position snapshot, 요청 금액을 다시 합산해 일일 자동 주문 예산을
+넘으면 attempt reservation을 만들지 않고 broker 제출 전 fail-closed 한다. lock이 이미 잡혀 있으면 다른 live ops 실행이 예산을 선점 중인
+상태로 보고 신규 실주문을 제출하지 않는다.
 
 Sub PR 06부터 production `analysis.decision_policy`는 정적 allowlist policy id만 허용한다. 기본 policy는 `cleanup_probe`이며,
 config JSON에는 다음 non-secret 값만 둔다.

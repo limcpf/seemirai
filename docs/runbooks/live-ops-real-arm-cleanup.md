@@ -143,6 +143,10 @@ attach 명령, 추가/중복 인자, shell separator, 상대 `config/env` 경로
 M22/smoke legacy env도 production contract 위반으로 본다. 이 저장소 경계는 validator를 어느 작업 디렉터리에서 실행하더라도 repository
 root 기준으로 판정한다. `fixture-*` 같은 fixture credential 값도 fake/dummy/example credential과 동일하게 production evidence로 인정하지 않는다.
 
+`live:ops:tui -- --attach ...`는 기존 실행 상태를 읽는 read-only 화면이다. attach 출력은 운영 중 상태 확인에는 쓸 수 있지만, foreground
+boot, Upbit provider arm, broker submit/cancel, Telegram dispatch, cleanup artifact 생성을 새로 수행하지 않으므로 실거래 closeout
+evidence로 인정하지 않는다.
+
 `keyScope`는 `grantedScopes: ["자산조회", "주문조회", "주문하기"]`, `forbiddenScopesAbsent: ["출금하기"]`,
 `withdrawalEnabled: false`처럼 허용 scope와 출금 권한 부재를 redacted safe summary로 기록한다. source/security scan은 실제 `rg -n`
 명령으로 repository root에서 `src scripts config docs` 전체 범위의 금지 주문 경계 전체(`ord_type`, market/best 주문, 출금/입금,
