@@ -243,6 +243,21 @@ Telegram, TUI를 같은 lifecycle로 조립하고, 조건을 통과한 단일 `K
   - [x] 관련 운영 문서가 attach read-only와 daily budget reservation invariant를 설명한다.
   - [x] 관련 unit tests, `corepack pnpm typecheck`, `./scripts/verify docs`, `./scripts/verify`, `git diff --check`가 통과한다.
 
+### Sub PR 11: daily budget lock lease recovery
+
+- 목표: final PR review에서 발견된 stale daily reservation lock gap을 닫는다. live ops process가 lock 획득 뒤 crash/SIGKILL/reboot로
+  종료되어도 같은 날짜 운영이 `live_ops_daily_budget_lock_busy`에 영구 고착되지 않도록 lock lease metadata와 stale recovery를 추가한다.
+- 제외 범위:
+  - DB/advisory lock 도입, 별도 daemon/socket lifecycle.
+  - budget 상한 확대, BTC 외 market 활성화, market/best order 허용.
+  - final main PR merge.
+- DnD:
+  - [x] daily reservation lock 파일에 `acquiredAt`, `expiresAt`, `pid`, source metadata를 기록한다.
+  - [x] fresh lock은 기존처럼 busy로 fail-closed 하고 broker 호출 전 차단한다.
+  - [x] 만료된 stale lock만 회수한 뒤 같은 날짜 reservation을 재획득할 수 있다.
+  - [x] 관련 운영 문서가 lease TTL과 stale lock recovery invariant를 설명한다.
+  - [x] 관련 unit tests, `corepack pnpm typecheck`, `./scripts/verify docs`, `./scripts/verify`, `git diff --check`가 통과한다.
+
 ## 검증 방법
 
 공통 검증:
@@ -351,10 +366,12 @@ SEEMIRAI_RUN_LIVE_OPS_REAL_ARM_CLOSEOUT=1 \
   시작하지 않는다. foreground `live:ops` 명령의 `--attach`는 성공 처리하지 않는다.
 - 2026-06-18: cleanup budget reservation은 attempt id 파일 생성 전에 같은 날짜 lock을 잡고, lock 안에서 reservation aggregate와 open
   position snapshot을 다시 합산해 일일 자동 주문 예산을 선점한다.
+- 2026-06-18: daily reservation lock은 `acquiredAt`/`expiresAt` lease metadata를 기록한다. fresh lock은 동시 실행 보호로 유지하고,
+  만료된 stale lock만 회수해 crash/reboot 이후 같은 날짜 운영이 영구 차단되지 않게 한다.
 
 ## 남은 이슈
 
-- Sub PR 10 완료 후 final main PR #218의 새 review findings를 다시 drain해야 한다.
+- Sub PR 11 완료 후 final main PR #218의 stale lock review finding을 다시 drain해야 한다.
 - 실제 운영 credential, key scope evidence, operator arm evidence, redacted artifact 경로는 저장소 밖 운영 vault에 있어야 한다.
 - 실제 주문 제출/취소 closeout은 저장소 밖 운영 config/env로 foreground `live:ops`를 실행한 뒤 자동 생성 artifact와 closeout manifest로
   검증한다.

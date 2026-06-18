@@ -5423,6 +5423,16 @@ console.log(JSON.stringify({
     } finally {
       await lock.release();
     }
+    const staleLockPath = artifactStore.dailyReservationLockPath("2026-06-15");
+    await writeFile(staleLockPath, JSON.stringify({
+      source: "live_ops_cli_daily_budget_reservation_lock",
+      day: "2026-06-15",
+      acquiredAt: "2026-06-14T23:50:00.000Z",
+      expiresAt: "2026-06-14T23:55:00.000Z",
+      pid: 999999,
+    }, null, 2), "utf8");
+    const recovered = await budgetReservation.reserve(createRequest("ops-dddddddddddddddddddddddddd", "10000"));
+    const finalDailyUsage = await budgetReservation.readDailyReservedNotional(observedAt);
 
     expect(first).toMatchObject({
       reserved: true,
@@ -5453,6 +5463,19 @@ console.log(JSON.stringify({
       reasonCode: "live_ops_daily_budget_lock_busy",
     });
     expect(await artifactStore.readReservation("ops-cccccccccccccccccccccccccc")).toBeUndefined();
+    expect(recovered).toMatchObject({
+      reserved: true,
+      reservation: {
+        attemptId: "ops-dddddddddddddddddddddddddd",
+        reservedNotionalKrw: "10000",
+      },
+    });
+    await expect(readFile(staleLockPath, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+    expect(finalDailyUsage).toMatchObject({
+      day: "2026-06-15",
+      reservedNotionalKrw: "30000",
+      reservationCount: 2,
+    });
   });
 
   it("cleanup lifecycle은 실패 artifact에 terminal cancel confirmed alias를 남기지 않는다", async () => {
