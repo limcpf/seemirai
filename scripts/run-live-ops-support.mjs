@@ -141,9 +141,12 @@ export async function loadLiveOpsCliInputs(options) {
   const env = parseEnvFile(await readFile(envFilePath, "utf8"));
   validateLiveOpsConfig(config);
   validateLiveOpsEnv(env, process.env);
+  if (options.attach !== undefined && options.attachReadonly !== true) {
+    throw new Error("--attach는 live:ops:tui 명령에서만 사용할 수 있습니다.");
+  }
   if (!options.fixtureSmoke && options.attach !== undefined) {
     // attach TUI는 기존 실행 상태를 읽는 화면이므로 production provider/broker lifecycle을 새로 열지 않는다.
-    return createLiveOpsCliAttachReadonlyInputs({
+    return loadLiveOpsCliAttachReadonlyInputs({
       configPath,
       envFilePath,
       config,
@@ -242,131 +245,50 @@ export async function loadLiveOpsCliInputs(options) {
   }
 }
 
-function createLiveOpsCliAttachReadonlyInputs({ configPath, envFilePath, config, env, attach }) {
-  const market = config.universe?.default_market ?? "KRW-BTC";
-  const observedAt = new Date().toISOString();
-  const readonlyCheck = {
-    name: "attach_readonly",
-    status: "ok",
-    code: "live_ops_tui_attach_readonly",
-    message: "attach TUI는 기존 status source를 읽기만 하며 provider, broker, Telegram side effect를 시작하지 않습니다.",
-    details: {
-      attach,
-    },
-  };
-
+async function loadLiveOpsCliAttachReadonlyInputs({ configPath, envFilePath, config, env, attach }) {
+  const statusSourcePath = path.resolve(String(attach));
+  let source;
+  try {
+    source = JSON.parse(await readFile(statusSourcePath, "utf8"));
+  } catch (error) {
+    throw new Error(`attach status source를 읽지 못해 TUI attach를 중단합니다: ${safeErrorName(error)}`);
+  }
+  const summary = source?.summary ?? source;
+  assertLiveOpsCliAttachStatusSource(summary);
   return {
     configPath,
     envFilePath,
     config,
     env,
-    dbReadiness: {
-      status: "attach_readonly",
-      ready: true,
-      fixtureSmoke: false,
-      databaseUrlConfigured: hasMeaningfulValue(env.SEEMIRAI_DATABASE_URL),
-      migration: {
-        appliedLatestVersion: null,
-        expectedLatestVersion: null,
-        pendingVersions: [],
-      },
-      checks: [readonlyCheck],
-      message: "attach TUI는 foreground boot를 시작하지 않고 기존 실행 상태 조회 화면만 준비했습니다.",
-    },
-    marketData: {
-      status: "attach_readonly",
-      ready: true,
-      provider: "ATTACH_STATUS_SOURCE",
-      market,
-      sourceProfile: "attach_readonly",
-      message: "attach TUI에서는 신규 Upbit public market data 수집을 시작하지 않습니다.",
-      latestHeartbeatAt: null,
-      referencePrice: null,
-      referencePriceSource: null,
-      latestTradePrice: null,
-      bestBidPrice: null,
-      bestAskPrice: null,
-      marketEvents: [],
-      persisted: emptyMarketDataPersistenceSummary(),
-      checks: [readonlyCheck],
-    },
-    analysisDecision: {
-      status: "attach_readonly",
-      ready: true,
-      decisionCategory: "HOLD",
-      orderIntentCount: 0,
-      evaluatedStrategyCount: 0,
-      latestDecisionAt: observedAt,
-      message: "attach TUI에서는 신규 decision tick을 평가하지 않고 기존 상태 표시만 수행합니다.",
-      checks: [readonlyCheck],
-    },
-    liveExecution: buildLiveOpsCliLiveExecutionSummary({
-      status: "idle",
-      ready: true,
+    dbReadiness: summary.dbReadiness,
+    marketData: summary.marketData,
+    analysisDecision: summary.analysisDecision,
+    liveExecution: {
+      ...summary.liveExecution,
       liveOrderCapable: false,
-      market,
-      observedAt,
-      orderIntentCount: 0,
-      attemptedOrderCount: 0,
-      submittedOrderCount: 0,
-      brokerGuard: {
-        ready: false,
-        credentialsConfigured: false,
-        keyScopes: [],
-        keyScopeEvidenceId: null,
-        orderSmokeMarket: "KRW-BTC",
-        orderSmokeMaxKrw: config.budget?.max_order_krw ?? "10000",
-        statusLabel: "attach read-only",
-        message: "attach TUI는 broker guard를 평가하지 않습니다.",
-      },
-      statusLabel: "attach 읽기 전용",
-      message: "attach TUI는 production runtime을 새로 열지 않아 실주문 제출이 발생하지 않습니다.",
-      action: "실제 주문 lifecycle은 foreground live:ops 실행에서만 시작하세요.",
-      checks: [okLiveExecutionCheck("attach_readonly", "attach TUI에서는 broker 제출을 생략합니다.", "live_ops_tui_attach_readonly")],
-    }),
-    reconcilePnlStatus: {
-      status: "attach_readonly",
-      ready: true,
-      market,
-      liveOrderCapable: false,
-      latestReconcileAt: null,
-      latestPnlAt: null,
-      latestStatusAt: observedAt,
-      reconcileStatus: "attach_readonly",
-      reconcileStatusLabel: "읽기 전용",
-      pnlStatus: "attach_readonly",
-      pnlStatusLabel: "읽기 전용",
-      openOrderCount: 0,
-      openExposureKrw: "0",
-      budgetUsedKrw: "0",
-      realizedPnlKrw: null,
-      unrealizedPnlKrw: null,
-      mismatchCount: null,
-      manualReviewRequired: false,
-      providerProbeAttempted: false,
-      statusLabel: "attach 읽기 전용",
-      message: "attach TUI에서는 신규 private read provider 조회를 시작하지 않습니다.",
-      action: "foreground 실행의 status source나 artifact를 기준으로 상태를 확인하세요.",
-      checks: [readonlyCheck],
     },
-    telegramAlert: {
-      status: "attach_readonly",
-      ready: true,
-      market,
-      liveOrderCapable: false,
-      lifecycleAlertCount: 0,
-      tradeAlertCount: 0,
-      alertCount: 0,
-      providerDispatchAttempted: false,
-      statusLabel: "attach 읽기 전용",
-      message: "attach TUI에서는 Telegram provider 전송을 시작하지 않습니다.",
-      checks: [readonlyCheck],
-    },
+    reconcilePnlStatus: summary.reconcilePnlStatus,
+    telegramAlert: summary.telegramAlert,
+    attachStatusSourcePath: statusSourcePath,
   };
 }
 
+function assertLiveOpsCliAttachStatusSource(summary) {
+  const missing = [
+    "dbReadiness",
+    "marketData",
+    "analysisDecision",
+    "liveExecution",
+    "reconcilePnlStatus",
+    "telegramAlert",
+  ].filter((key) => !isNonEmptyRecord(summary?.[key]));
+  if (missing.length > 0) {
+    throw new Error(`attach status source에 필요한 summary 항목이 없습니다: ${missing.join(", ")}`);
+  }
+}
+
 export function renderLiveOpsSummary(input) {
-  const attachReadonly = input.attach !== undefined && input.fixtureSmoke !== true && input.liveExecution?.statusLabel === "attach 읽기 전용";
+  const attachReadonly = input.attach !== undefined && input.fixtureSmoke !== true;
   const postExecutionReady = input.reconcilePnlStatus.ready === true && input.telegramAlert.ready === true;
   const status = input.dbReadiness.ready && input.marketData.ready && input.analysisDecision.ready && input.liveExecution.ready && postExecutionReady
     ? "ready"
@@ -374,7 +296,7 @@ export function renderLiveOpsSummary(input) {
   return {
     status,
     message: attachReadonly
-      ? "TUI attach가 읽기 전용으로 준비됐습니다. provider, broker, Telegram side effect를 새로 시작하지 않습니다."
+      ? "TUI attach가 status source를 읽었습니다. provider, broker, Telegram side effect를 새로 시작하지 않습니다."
       : status === "ready"
       ? (input.fixtureSmoke
         ? "production live ops config/env 계약과 DB readiness를 통과했습니다. fixture smoke는 외부 provider를 호출하지 않습니다."
@@ -426,27 +348,27 @@ export function assertLiveOpsCliSummaryReady(summary, { fixtureSmoke }) {
 }
 
 export function renderLiveOpsTuiDashboard(summary) {
-  const attachReadonly = summary.attach !== null && summary.fixtureSmoke !== true && summary.liveExecution?.statusLabel === "attach 읽기 전용";
+  const attachReadonly = summary.attach !== null && summary.fixtureSmoke !== true;
   const dbReadiness = summary.dbReadiness;
   const migration = dbReadiness?.migration ?? {};
   const workerLines = (summary.trace.workers ?? []).map((worker) => {
     const label = liveOpsWorkerLabels[worker] ?? worker;
     const state = worker === "db_readiness"
-      ? (attachReadonly ? "읽기 전용" : dbReadiness?.ready ? "준비" : "차단")
+      ? (dbReadiness?.ready ? "준비" : "차단")
       : worker === "market_data"
-        ? (attachReadonly ? "읽기 전용" : summary.marketData?.ready ? "DB-backed 저장 확인" : "후속 연결 대기")
+        ? (summary.marketData?.ready ? "DB-backed 저장 확인" : "후속 연결 대기")
       : worker === "analysis_decision"
-        ? (attachReadonly ? "읽기 전용" : summary.analysisDecision?.ready ? `${formatDecisionCategory(summary.analysisDecision.decisionCategory)} 기록 확인` : "후속 연결 대기")
+        ? (summary.analysisDecision?.ready ? `${formatDecisionCategory(summary.analysisDecision.decisionCategory)} 기록 확인` : "후속 연결 대기")
       : worker === "live_execution"
-        ? (attachReadonly ? "읽기 전용" : summary.liveExecution?.ready
+        ? (summary.liveExecution?.ready
           ? (summary.liveExecution.status === "idle" ? "후보 없음 - broker 제출 없음" : (summary.liveExecution.statusLabel ?? "실행 결과 확인"))
           : (summary.liveExecution?.statusLabel ?? "후속 연결 대기"))
       : worker === "reconcile_pnl_status"
-        ? (attachReadonly ? "읽기 전용" : summary.reconcilePnlStatus?.ready
+        ? (summary.reconcilePnlStatus?.ready
           ? (summary.reconcilePnlStatus.providerProbeAttempted ? "private read 상태 요약 확인" : "상태 요약 확인")
           : "후속 연결 대기")
       : worker === "telegram"
-        ? (attachReadonly ? "읽기 전용" : summary.telegramAlert?.ready
+        ? (summary.telegramAlert?.ready
           ? (summary.telegramAlert.providerDispatchAttempted ? "owner chat 전송 확인" : "fixture alert plan 확인")
           : "후속 연결 대기")
       : worker === "tui"
@@ -487,7 +409,7 @@ export function renderLiveOpsTuiDashboard(summary) {
     `  - Reconcile/PnL/status: ${formatReconcilePnlStatusObservation(summary.reconcilePnlStatus)}`,
     `  - Telegram alert: ${formatTelegramAlertObservation(summary.telegramAlert)}`,
     "",
-    `필요 조치: ${attachReadonly ? "foreground 실행 상태 source를 확인하세요. attach 화면은 신규 실주문을 제출하지 않습니다." : summary.liveOrderCapable ? "후보 처리 전 예산과 reconcile freshness를 재확인하세요." : "후속 provider 연결 전까지 신규 실주문은 제출되지 않습니다."}`,
+    `필요 조치: ${attachReadonly ? "status source의 차단 항목을 확인하세요. attach 화면은 신규 실주문을 제출하지 않습니다." : summary.liveOrderCapable ? "후보 처리 전 예산과 reconcile freshness를 재확인하세요." : "후속 provider 연결 전까지 신규 실주문은 제출되지 않습니다."}`,
     `추적 정보: config=${path.basename(summary.configPath)} attach=${summary.attach ?? "foreground"}`,
   ].join("\n");
 }
@@ -3909,6 +3831,9 @@ function collectLiveOpsCliOrderIntentViolations({ config, marketData, intent }) 
   }
   if (!isLiveOpsCliRiskInput(intent?.risk, intent)) {
     violations.push("주문 후보에는 live autonomous entry runtime risk snapshot이 필요합니다");
+  } else {
+    // preflight risk signal이 이미 차단 상태면 entryRuntime 구현에 맡기지 않고 adapter 경계에서 side effect를 닫는다.
+    appendLiveOpsCliRiskGateInfrastructureViolations(violations, intent.risk.infrastructureSignals);
   }
   if (!isLiveOpsCliCostSnapshotEvidence(intent?.costSnapshot, intent)) {
     violations.push("주문 후보에는 현재 intent와 일치하는 CostModel evidence가 필요합니다");

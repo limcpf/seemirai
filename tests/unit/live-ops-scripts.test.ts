@@ -2202,7 +2202,7 @@ console.log(JSON.stringify({
         status: "blocked",
         submittedOrderCount: 0,
       });
-      expect(summary.checks.map((check: { code: string }) => check.code)).toContain("live_ops_execution_blocked");
+      expect(summary.checks.map((check: { code: string }) => check.code)).toContain("live_ops_order_intent_blocked");
       expect(submitted).toHaveLength(0);
       expect(reservations).toHaveLength(0);
     }
@@ -2680,7 +2680,76 @@ console.log(JSON.stringify({
     expect(result.stdout).not.toContain("fake-local-control-token");
   });
 
-  it("non-fixture live:ops:tui attach는 production runtime과 provider를 새로 열지 않는다", () => {
+  it("non-fixture live:ops:tui attach는 status source를 읽고 production runtime과 provider를 새로 열지 않는다", async () => {
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-live-ops-attach-"));
+    const statusSourcePath = path.join(tempDir, "status-source.json");
+    await writeFile(statusSourcePath, JSON.stringify({
+      summary: {
+        dbReadiness: {
+          ready: true,
+          migration: {
+            appliedLatestVersion: 13,
+            expectedLatestVersion: 13,
+            pendingVersions: [],
+          },
+        },
+        marketData: {
+          ready: true,
+          persisted: {
+            tradeCount: 2,
+            orderbookCount: 4,
+            statusCount: 1,
+          },
+          latestHeartbeatAt: "2026-06-18T13:33:27.000Z",
+        },
+        analysisDecision: {
+          ready: true,
+          decisionCategory: "ORDER_INTENT",
+          orderIntentCount: 1,
+          evaluatedStrategyCount: 1,
+          latestDecisionAt: "2026-06-18T13:33:27.000Z",
+        },
+        liveExecution: {
+          status: "manual_review_required",
+          ready: false,
+          liveOrderCapable: true,
+          statusLabel: "수동 점검",
+          latestExecutionAt: "2026-06-18T13:33:28.000Z",
+          orderIntentCount: 1,
+          attemptedOrderCount: 1,
+          submittedOrderCount: 0,
+          checks: [{
+            status: "blocked",
+            code: "live_ops_preflight_reconcile_manual_review",
+          }],
+        },
+        reconcilePnlStatus: {
+          status: "manual_review_required",
+          ready: false,
+          providerProbeAttempted: true,
+          manualReviewRequired: true,
+          statusLabel: "수동 확인 필요",
+          reconcileStatusLabel: "수동 확인",
+          pnlStatusLabel: "관측 대기",
+          openOrderCount: 2,
+          openExposureKrw: "12000",
+          budgetUsedKrw: "12000",
+          realizedPnlKrw: null,
+          unrealizedPnlKrw: null,
+          latestReconcileAt: "2026-06-18T13:33:27.000Z",
+          mismatchCount: 1,
+        },
+        telegramAlert: {
+          status: "idle",
+          ready: true,
+          lifecycleAlertCount: 1,
+          tradeAlertCount: 0,
+          alertCount: 1,
+          providerDispatchAttempted: false,
+          statusLabel: "대기",
+        },
+      },
+    }), "utf8");
     const result = spawnSync(
       process.execPath,
       [
@@ -2702,7 +2771,8 @@ const inputs = await loadLiveOpsCliInputs({
   configPath: "config/live-ops.example.json",
   envFilePath: "tests/fixtures/live-ops/fake.env",
   fixtureSmoke: false,
-  attach: "existing-status-source",
+  attach: ${JSON.stringify(statusSourcePath)},
+  attachReadonly: true,
   fetchImpl: async () => {
     fetchCalled = true;
     throw new Error("AttachShouldNotFetch");
@@ -2712,13 +2782,16 @@ const summary = renderLiveOpsSummary({
   ...inputs,
   fixtureSmoke: false,
   tui: true,
-  attach: "existing-status-source",
+  attach: ${JSON.stringify(statusSourcePath)},
 });
 
 console.log(JSON.stringify({
   status: summary.status,
   message: summary.message,
   liveOrderCapable: summary.liveOrderCapable,
+  openOrderCount: summary.reconcilePnlStatus.openOrderCount,
+  budgetUsedKrw: summary.reconcilePnlStatus.budgetUsedKrw,
+  manualReviewRequired: summary.reconcilePnlStatus.manualReviewRequired,
   websocketOpened,
   fetchCalled,
   liveExecutionStatusLabel: summary.liveExecution.statusLabel,
@@ -2740,6 +2813,9 @@ console.log(JSON.stringify({
       status: string;
       message: string;
       liveOrderCapable: boolean;
+      openOrderCount: number;
+      budgetUsedKrw: string;
+      manualReviewRequired: boolean;
       websocketOpened: boolean;
       fetchCalled: boolean;
       liveExecutionStatusLabel: string;
@@ -2747,15 +2823,67 @@ console.log(JSON.stringify({
       telegramDispatchAttempted: boolean;
     };
     expect(output).toMatchObject({
-      status: "ready",
+      status: "blocked",
       liveOrderCapable: false,
+      openOrderCount: 2,
+      budgetUsedKrw: "12000",
+      manualReviewRequired: true,
       websocketOpened: false,
       fetchCalled: false,
-      liveExecutionStatusLabel: "attach 읽기 전용",
-      providerProbeAttempted: false,
+      liveExecutionStatusLabel: "수동 점검",
+      providerProbeAttempted: true,
       telegramDispatchAttempted: false,
     });
-    expect(output.message).toContain("읽기 전용");
+    expect(output.message).toContain("status source");
+  });
+
+  it("non-fixture live:ops:tui attach는 status source를 읽지 못하면 실패한다", () => {
+    const result = spawnSync(
+      process.execPath,
+      [
+        "scripts/run-live-ops-tui.mjs",
+        "--config",
+        "config/live-ops.example.json",
+        "--env-file",
+        "tests/fixtures/live-ops/fake.env",
+        "--attach",
+        path.join(os.tmpdir(), "seemirai-missing-status-source.json"),
+      ],
+      {
+        cwd: process.cwd(),
+        encoding: "utf8",
+        env: minimalEnv(),
+      },
+    );
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("attach status source");
+  });
+
+  it("live:ops foreground 명령은 --attach를 성공 처리하지 않는다", async () => {
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-live-ops-foreground-attach-"));
+    const statusSourcePath = path.join(tempDir, "status-source.json");
+    await writeFile(statusSourcePath, JSON.stringify({ summary: {} }), "utf8");
+    const result = spawnSync(
+      process.execPath,
+      [
+        "scripts/run-live-ops.mjs",
+        "--config",
+        "config/live-ops.example.json",
+        "--env-file",
+        "tests/fixtures/live-ops/fake.env",
+        "--attach",
+        statusSourcePath,
+      ],
+      {
+        cwd: process.cwd(),
+        encoding: "utf8",
+        env: minimalEnv(),
+      },
+    );
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("--attach는 live:ops:tui");
   });
 
   it("production live ops closeout source scan은 private order 직접 호출과 Telegram dispatcher 위치를 확인한다", async () => {

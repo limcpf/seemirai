@@ -45,8 +45,10 @@ Codex-native 운영은 Codex, Git, GitHub, shell command, 문서 상태를 연�
 - broker 조립 이후 장애는 신규 주문 중지, reconcile/manual review, Telegram P0/P1, TUI 경고로 수렴한다.
 - foreground TUI와 attach TUI는 같은 secret-safe summary renderer를 사용하되, attach TUI는 기존 status source를 읽는 read-only 경로로
   남긴다. attach 명령은 foreground boot sequence, Upbit public/private provider, live broker, cleanup lifecycle, Telegram dispatch를
-  새로 시작하지 않는다. 첫 화면은 DB readiness, worker 상태, 예산, 필요 조치를 보여주고 credential/raw provider payload/raw config
-  enum을 표시하지 않는다. TUI 종료 시 daemon 계속 실행/안전 종료/attach detach 정책은 후속 control lifecycle sub PR과 runbook에서 명시한다.
+  새로 시작하지 않는다. non-fixture attach source를 읽지 못하거나 필수 status summary 항목이 없으면 정상 dashboard를 합성하지 않고
+  fail-closed 하며, foreground `live:ops` 명령의 `--attach` 인자는 성공 처리하지 않는다. 첫 화면은 DB readiness, worker 상태, 예산,
+  필요 조치를 보여주고 credential/raw provider payload/raw config enum을 표시하지 않는다. TUI 종료 시 daemon 계속 실행/안전 종료/attach
+  detach 정책은 후속 control lifecycle sub PR과 runbook에서 명시한다.
 - DB readiness guard는 `schema_migrations`를 생성하거나 migration을 자동 적용하지 않는다. pending migration, missing table,
   unknown applied migration, checksum drift는 운영자가 migration apply 또는 schema drift 확인을 끝낼 때까지 live boot를 차단한다.
 - market data collector는 허용 production market 밖 event를 DB write 전에 차단한다. stale/reconnect/disconnect status는 DB-backed

@@ -233,10 +233,11 @@ Telegram, TUI를 같은 lifecycle로 조립하고, 조건을 통과한 단일 `K
   - budget 상한 확대, BTC 외 market 활성화, 시장가/best order 허용.
   - final main PR merge.
 - DnD:
-  - [x] non-fixture attach TUI가 production runtime, Upbit public/private provider, broker, cleanup lifecycle, Telegram dispatch를 새로 열지
-        않는다.
-  - [x] KRW balance row 누락, 0원, 요청금액 미만은 pre-submit risk infrastructure signal로 fail-closed 되고 entryRuntime/broker 호출 0회를
-        유지한다.
+  - [x] non-fixture attach TUI가 실제 JSON status source를 읽고, source 부재나 필수 summary 누락은 fail-closed 하며, production runtime,
+        Upbit public/private provider, broker, cleanup lifecycle, Telegram dispatch를 새로 열지 않는다.
+  - [x] foreground `live:ops` 명령은 `--attach`를 production boot 성공으로 처리하지 않는다.
+  - [x] KRW balance row 누락, 0원, 요청금액 미만은 adapter pre-submit risk infrastructure signal로 fail-closed 되고 entryRuntime/broker 호출
+        0회를 유지한다.
   - [x] durable file reservation은 같은 날짜 lock 안에서 current reservation aggregate와 open position snapshot을 재합산하고, 일일 예산 초과나
         lock busy 상태면 attempt 파일 생성 없이 broker 제출 전 차단한다.
   - [x] 관련 운영 문서가 attach read-only와 daily budget reservation invariant를 설명한다.
@@ -345,8 +346,9 @@ SEEMIRAI_RUN_LIVE_OPS_REAL_ARM_CLOSEOUT=1 \
   주문 후보 생성은 `BUY + LIMIT + post_only`, small budget, fresh market frame, same-tick order intent 전달 조건 안에서만 허용한다.
 - 2026-06-18: production `live:ops`는 기존 DB reconcile run이 없을 때 actual Upbit private read 결과를 preflight reconcile evidence로
   먼저 저장한다. 단, 기존 mismatch/manual review/failed/running 상태는 preflight clean evidence로 덮지 않는다.
-- 2026-06-18: `live:ops:tui -- --attach ...`는 read-only viewer다. attach 명령은 foreground boot sequence나 Upbit provider, broker,
-  cleanup lifecycle, Telegram dispatch를 새로 시작하지 않는다.
+- 2026-06-18: `live:ops:tui -- --attach ...`는 read-only viewer다. attach 명령은 기존 JSON status source를 읽어야 하고, source를 읽지
+  못하면 fail-closed 한다. attach 경로는 foreground boot sequence나 Upbit provider, broker, cleanup lifecycle, Telegram dispatch를 새로
+  시작하지 않는다. foreground `live:ops` 명령의 `--attach`는 성공 처리하지 않는다.
 - 2026-06-18: cleanup budget reservation은 attempt id 파일 생성 전에 같은 날짜 lock을 잡고, lock 안에서 reservation aggregate와 open
   position snapshot을 다시 합산해 일일 자동 주문 예산을 선점한다.
 

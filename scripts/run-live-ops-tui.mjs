@@ -15,7 +15,7 @@ try {
   } else if (options.attach === undefined) {
     throw new Error("--attach <run-id|socket|status-source> 값이 필요합니다.");
   } else {
-    const inputs = await loadLiveOpsCliInputs(options);
+    const inputs = await loadLiveOpsCliInputs({ ...options, attachReadonly: true });
     const summary = renderLiveOpsSummary({
       ...options,
       ...inputs,
