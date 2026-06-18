@@ -790,9 +790,10 @@ live execution 입력에만 전달한다. 이 pipeline은 DB write, broker 호�
 production cleanup reservation은 저장소 밖 artifact 디렉터리에 attempt 파일을 남기기 전, 같은 날짜의 `reservation-daily-YYYY-MM-DD.lock`
 파일을 원자적으로 선점한다. lock 안에서 현재 reservation 파일 집계, open position snapshot, 요청 금액을 다시 합산해 일일 자동 주문 예산을
 넘으면 attempt reservation을 만들지 않고 broker 제출 전 fail-closed 한다. lock이 이미 잡혀 있으면 다른 live ops 실행이 예산을 선점 중인
-상태로 보고 신규 실주문을 제출하지 않는다. lock 파일에는 `leaseId`, `acquiredAt`, `expiresAt`, `pid` lease metadata를 기록한다. 기본 lease
-TTL은 5분이며, 후속 실행은 owner PID가 더 이상 살아 있지 않은 만료 lock만 recovery guard 안에서 회수해 같은 날짜 운영이 crash로 영구 차단되지
-않게 한다. recovery guard 자체도 같은 lease metadata를 사용하며, owner가 살아 있으면 만료 시각을 지나도 신규 recovery를 시작하지 않는다.
+상태로 보고 신규 실주문을 제출하지 않는다. lock 파일에는 `leaseId`, `acquiredAt`, `expiresAt`, `pid`, owner boot id, process start time
+lease metadata를 기록한다. 기본 lease TTL은 5분이며, 후속 실행은 owner process fingerprint가 더 이상 살아 있지 않은 만료 lock만 quarantine
+rename/CAS 절차로 회수해 같은 날짜 운영이 crash로 영구 차단되지 않게 한다. JSON write 전 crash로 생긴 malformed lock은 파일 mtime 기준 TTL을
+지난 뒤에만 같은 CAS 절차로 회수한다.
 
 Sub PR 06부터 production `analysis.decision_policy`는 정적 allowlist policy id만 허용한다. 기본 policy는 `cleanup_probe`이며,
 config JSON에는 다음 non-secret 값만 둔다.

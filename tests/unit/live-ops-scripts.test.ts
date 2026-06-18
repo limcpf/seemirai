@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, utimes, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
@@ -5425,7 +5425,6 @@ console.log(JSON.stringify({
       await lock.release();
     }
     const staleLockPath = artifactStore.dailyReservationLockPath("2026-06-15");
-    const recoveryLockPath = artifactStore.dailyReservationRecoveryLockPath("2026-06-15");
     await writeFile(staleLockPath, JSON.stringify({
       source: "live_ops_cli_daily_budget_reservation_lock",
       day: "2026-06-15",
@@ -5433,33 +5432,26 @@ console.log(JSON.stringify({
       acquiredAt: "2026-06-14T23:50:00.000Z",
       expiresAt: "2026-06-14T23:55:00.000Z",
       pid: process.pid,
+      owner: lockLease.owner,
     }, null, 2), "utf8");
     const activeOwnerBusy = await budgetReservation.reserve(createRequest("ops-eeeeeeeeeeeeeeeeeeeeeeeeee", "10000"));
     const activeOwnerLockAfterBusy = JSON.parse(await readFile(staleLockPath, "utf8"));
     await writeFile(staleLockPath, JSON.stringify({
       source: "live_ops_cli_daily_budget_reservation_lock",
       day: "2026-06-15",
-      leaseId: "stale-main-lock",
+      leaseId: "pid-reused-main-lock",
       acquiredAt: "2026-06-14T23:50:00.000Z",
       expiresAt: "2026-06-14T23:55:00.000Z",
-      pid: 999999,
+      pid: process.pid,
+      owner: {
+        ...lockLease.owner,
+        processStartTime: "stale-process-start",
+      },
     }, null, 2), "utf8");
-    const recoveryLock = await artifactStore.acquireDailyReservationRecoveryLock("2026-06-15");
-    let recoveryGuardBusy;
-    try {
-      recoveryGuardBusy = await budgetReservation.reserve(createRequest("ops-ffffffffffffffffffffffffff", "10000"));
-    } finally {
-      await recoveryLock.release();
-    }
-    const staleLockAfterRecoveryGuard = JSON.parse(await readFile(staleLockPath, "utf8"));
-    await writeFile(recoveryLockPath, JSON.stringify({
-      source: "live_ops_cli_daily_budget_reservation_recovery_lock",
-      day: "2026-06-15",
-      leaseId: "stale-recovery-lock",
-      acquiredAt: "2026-06-14T23:50:00.000Z",
-      expiresAt: "2026-06-14T23:55:00.000Z",
-      pid: 999999,
-    }, null, 2), "utf8");
+    const pidReusedLock = await artifactStore.acquireDailyReservationLock("2026-06-15", { acquiredAt: observedAt });
+    await pidReusedLock.release();
+    await writeFile(staleLockPath, "{", "utf8");
+    await utimes(staleLockPath, new Date("2026-06-14T23:50:00.000Z"), new Date("2026-06-14T23:50:00.000Z"));
     const recovered = await budgetReservation.reserve(createRequest("ops-dddddddddddddddddddddddddd", "10000"));
     const finalDailyUsage = await budgetReservation.readDailyReservedNotional(observedAt);
 
@@ -5507,18 +5499,9 @@ console.log(JSON.stringify({
       day: "2026-06-15",
       leaseId: "active-expired-main-lock",
       pid: process.pid,
+      owner: lockLease.owner,
     });
     expect(await artifactStore.readReservation("ops-eeeeeeeeeeeeeeeeeeeeeeeeee")).toBeUndefined();
-    expect(recoveryGuardBusy).toMatchObject({
-      reserved: false,
-      reasonCode: "live_ops_daily_budget_lock_busy",
-    });
-    expect(staleLockAfterRecoveryGuard).toMatchObject({
-      source: "live_ops_cli_daily_budget_reservation_lock",
-      day: "2026-06-15",
-      leaseId: "stale-main-lock",
-    });
-    expect(await artifactStore.readReservation("ops-ffffffffffffffffffffffffff")).toBeUndefined();
     expect(recovered).toMatchObject({
       reserved: true,
       reservation: {
@@ -5527,7 +5510,6 @@ console.log(JSON.stringify({
       },
     });
     await expect(readFile(staleLockPath, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
-    await expect(readFile(recoveryLockPath, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
     expect(finalDailyUsage).toMatchObject({
       day: "2026-06-15",
       reservedNotionalKrw: "30000",
