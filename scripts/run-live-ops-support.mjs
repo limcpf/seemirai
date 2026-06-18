@@ -1413,8 +1413,8 @@ function toLiveOpsCliBrokerOrder(payload, { operation, clock, identifierSource, 
   if (!hasMeaningfulValue(payload?.uuid) || !hasMeaningfulValue(payload?.market)) {
     throw new Error("LiveOpsCliUpbitOrderPayloadMalformed");
   }
-  const requestedQuantity = normalizeLiveOpsCliDecimalString(payload.volume);
   const remainingQuantity = normalizeLiveOpsCliDecimalString(payload.remaining_volume ?? payload.volume);
+  const requestedQuantity = normalizeLiveOpsCliOptionalDecimalString(payload.volume) ?? remainingQuantity;
   return {
     brokerOrderId: String(payload.uuid),
     idempotencyKey: String(payload.identifier ?? ""),
@@ -1433,6 +1433,7 @@ function toLiveOpsCliBrokerOrder(payload, { operation, clock, identifierSource, 
       upbitLiveBrokerOperation: operation ?? "unknown",
       ...(identifierSource === undefined ? {} : { upbitLiveBrokerIdentifierSource: identifierSource }),
       ...(recovery === undefined ? {} : { upbitLiveBrokerRecovery: recovery }),
+      ...(!hasMeaningfulValue(payload.volume) && hasMeaningfulValue(payload.remaining_volume) ? { upbitVolumeSource: "remaining_volume_fallback" } : {}),
       ...(hasMeaningfulValue(payload.time_in_force) ? { upbitTimeInForce: mapLiveOpsCliUpbitTimeInForce(payload.time_in_force) } : {}),
     },
   };
@@ -2034,9 +2035,10 @@ function normalizeLiveOpsCliPreflightOrderSnapshots(openOrders, market, observed
 
   return openOrders.map((order) => {
     const side = normalizeLiveOpsCliPreflightOrderSide(order?.side);
-    const requestedQuantity = normalizeLiveOpsCliPositiveDecimal(order?.requestedQuantity, "LiveOpsCliPreflightOrderQuantityMalformed");
+    const requestedQuantitySource = order?.requestedQuantity ?? order?.remainingQuantity;
+    const requestedQuantity = normalizeLiveOpsCliPositiveDecimal(requestedQuantitySource, "LiveOpsCliPreflightOrderQuantityMalformed");
     const remainingQuantity = normalizeLiveOpsCliNonNegativeDecimal(
-      order?.remainingQuantity ?? order?.requestedQuantity,
+      order?.remainingQuantity ?? requestedQuantity,
       "LiveOpsCliPreflightOrderRemainingMalformed",
     );
     const requestedPrice = normalizeLiveOpsCliOptionalPositiveDecimal(order?.requestedPrice);
@@ -2063,6 +2065,7 @@ function normalizeLiveOpsCliPreflightOrderSnapshots(openOrders, market, observed
       capturedAt: order?.updatedAt ?? order?.acceptedAt ?? observedAt,
       metadata: {
         source: "live_ops_cli_private_read_preflight",
+        ...(order?.requestedQuantity === null || order?.requestedQuantity === undefined ? { requestedQuantitySource: "remaining_quantity_fallback" } : {}),
       },
     };
   });

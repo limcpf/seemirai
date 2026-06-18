@@ -91,8 +91,8 @@ DB에 `live_reconcile_runs` 완료 기록이 없는 clean-start 운영 DB에서�
 이 run은 기존 M16 장기 reconcile worker를 대체하지 않고, cleanup 주문 제출 직전 계정 잔고와 계정 전체 미체결 주문 상태를 DB-backed evidence로 남기는
 부팅 전용 증거다. 기존 DB에 mismatch, failed, running, manual review 상태가 있으면 preflight clean evidence로 덮지 않고 그대로 신규 주문을
 차단한다. 기존 clean evidence 뒤에 새 미체결 주문이 생겼거나, preflight 시점에 설정 마켓이 아닌 다른 KRW 마켓의 미체결 주문이 있어도
-`MANUAL_REVIEW_REQUIRED`와 `UNTRACKED_EXCHANGE_OPEN_ORDER` evidence로 닫고 신규 cleanup 주문을 제출하지 않는다. 가격이 없는
-`market`/`best` 계열 미체결 주문도 preflight evidence에 포함되며, TUI/JSON은 preflight run id와 evidence type을 보여줘 운영자가
+`MANUAL_REVIEW_REQUIRED`와 `UNTRACKED_EXCHANGE_OPEN_ORDER` evidence로 닫고 신규 cleanup 주문을 제출하지 않는다. 가격 또는 원 주문 수량이 없는
+`market`/`best` 계열 미체결 주문도 `remaining_volume` 기반 preflight evidence에 포함되며, TUI/JSON은 preflight run id와 evidence type을 보여줘 운영자가
 정리할 DB run을 바로 찾을 수 있어야 한다. 이때 계산 가능한 open exposure와 budget used를 0으로 숨기지 않고, owner Telegram manual-review
 alert도 전송되어야 한다. submit 이후 상태 조회에서는 현재 live execution의 broker order id 또는 idempotency key와 일치하는 1건만 tracked
 open order로 인정한다.
