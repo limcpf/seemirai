@@ -848,8 +848,14 @@ Acceptance Criteria:
 - [ ] 같은 order attempt/idempotency key 재시작은 duplicate live order를 만들지 않는다.
 - [ ] broker submit 불확실 결과는 재주문이 아니라 reconcile/manual review로 수렴한다.
 - [ ] private read reconcile이 account/order/balance 상태를 읽고 status/TUI/Telegram에 secret 없이 표시한다.
+- [ ] clean-start DB에 완료된 reconcile run이 없으면 production `live:ops`가 계정 전체 미체결 주문과 actual private read 결과를
+  `LIVE_OPS_PRIVATE_READ_PREFLIGHT` DB evidence로 저장하고, 기존 mismatch/manual review 상태는 덮어쓰지 않는다.
+- [ ] 기존 clean reconcile 뒤 현재 private read에서 계정 전체 미체결 주문이 발견되면 가격 또는 원 주문 수량이 없는 주문까지
+  `remaining_volume` 기반 manual-review evidence로 저장하고 신규 cleanup 주문을 차단한다.
+- [ ] submitted/cancel_requested 상태의 open order는 현재 live execution identity와 일치하는 1건만 tracked로 인정하며, preflight
+  manual-review 차단은 노출 금액과 Telegram owner alert를 보존한다.
 - [ ] Telegram startup/live order capable/order submitted/cancel confirmed/manual review 알림이 실제 owner chat으로 전송된다.
-- [ ] TUI가 실제 live armed/order capable 상태와 주문/취소/차단 상태를 secret 없이 보여준다.
+- [ ] TUI가 실제 live armed/order capable 상태와 주문/취소/차단 상태, preflight/reconcile 차단 사유를 secret 없이 보여준다.
 - [ ] 실제 KRW-BTC 소액 실거래 cleanup run이 `submit -> cancel requested -> terminal cancel 확인 -> open exposure 0`으로 닫힌다.
 - [ ] crash 0회, unhandled rejection 0회, duplicate order 0건, reconcile mismatch 0건, untracked fill 0건, live order cleanup failure 0건을
   증명한다.

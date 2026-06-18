@@ -177,6 +177,37 @@ Telegram, TUI를 같은 lifecycle로 조립하고, 조건을 통과한 단일 `K
         cleanup artifact와 closeout manifest 검증 절차를 설명한다.
   - [x] 관련 unit/script tests, `corepack pnpm typecheck`, `./scripts/verify`, `git diff --check`가 통과한다.
 
+### Sub PR 08: preflight private read reconcile evidence
+
+- 목표: 실제 운영 DB에 `live_reconcile_runs` 완료 기록이 없으면 production `live:ops`가 Upbit private read를 성공해도
+  `reconcile_not_run`으로 fail-closed 되는 gap을 닫는다. 운영 command 한 번이 잔고/미체결 주문 private read 결과를 기존
+  `live_reconcile_*` 테이블에 preflight reconcile evidence로 append-only 저장하고, 그 evidence를 다시 읽어 broker 제출 전
+  readiness를 판단하게 한다.
+- 제외 범위:
+  - 기존 M16 장기 reconcile worker 대체.
+  - mismatch/manual review가 이미 있는 DB 상태를 preflight clean evidence로 덮어쓰기.
+  - raw provider payload, secret, Authorization/JWT, Telegram token, DB URL 원문 저장.
+  - BTC 외 market, 시장가/best order, 출금/입금/선물/레버리지/마진 권한.
+- DnD:
+  - [ ] production preflight가 DB reconcile status `SKIPPED` + `reconcile_not_run`일 때만 actual private read 결과를
+        `LIVE_OPS_PRIVATE_READ_PREFLIGHT` run으로 저장한다.
+  - [ ] balance snapshot은 `live_reconcile_balance_snapshots`에 REST source로 저장하고, 저장 실패 시 broker 제출 전 fail-closed 한다.
+  - [ ] preflight 시점에 설정 마켓 밖의 다른 KRW 마켓까지 포함한 계정 전체 open order가 있으면 `MANUAL_REVIEW_REQUIRED` run과
+        `UNTRACKED_EXCHANGE_OPEN_ORDER` mismatch evidence로 닫고 신규 cleanup 주문을 제출하지 않는다.
+  - [ ] 기존 DB reconcile이 clean이어도 현재 private read에서 계정 전체 open order가 발견되면 새 preflight manual-review evidence를
+        append하고 신규 cleanup 주문을 제출하지 않는다.
+  - [ ] 가격 또는 원 주문 수량이 없는 `market`/`best` 계열 open order도 `remaining_volume` 기반 preflight evidence로 저장하며,
+        notional 계산 실패로 `preflight-failed`에만 머물지 않는다.
+  - [ ] preflight manual-review summary는 계산 가능한 open exposure/budget used를 0으로 숨기지 않고 TUI/JSON에 보존한다.
+  - [ ] submitted/cancel_requested 상태의 계정 전체 open order는 현재 liveExecution의 broker order id 또는 idempotency key와 일치하는 1건만
+        tracked로 인정하고, 다른 open order가 함께 있으면 manual review로 차단한다.
+  - [ ] 기존 DB reconcile mismatch, failed, running, manual review 상태는 새 preflight clean evidence로 덮지 않고 그대로 차단한다.
+  - [ ] 저장된 preflight run을 다시 읽은 뒤에만 `reconcileFresh=true`와 post-submit reconcile readiness가 열릴 수 있다.
+  - [ ] TUI/JSON은 live execution blocked 상태를 `후속 연결 대기`로 숨기지 않고 한국어 차단 사유, stable check code, preflight run id와
+        `UNTRACKED_EXCHANGE_OPEN_ORDER` evidence type을 보여준다.
+  - [ ] preflight `MANUAL_REVIEW_REQUIRED`는 owner Telegram trade alert 경계로도 전송된다.
+  - [ ] 관련 unit/script tests, `corepack pnpm typecheck`, `./scripts/verify`, `git diff --check`가 통과한다.
+
 ## 검증 방법
 
 공통 검증:
@@ -278,12 +309,12 @@ SEEMIRAI_RUN_LIVE_OPS_REAL_ARM_CLOSEOUT=1 \
   strategy 코드를 실행하게 만드는 구조는 보안/재현성 문제로 제외한다.
 - 2026-06-16: `cleanup_probe`는 수익 전략이 아니라 issue #206 closeout lifecycle을 증명하기 위한 deterministic one-shot probe다.
   주문 후보 생성은 `BUY + LIMIT + post_only`, small budget, fresh market frame, same-tick order intent 전달 조건 안에서만 허용한다.
+- 2026-06-18: production `live:ops`는 기존 DB reconcile run이 없을 때 actual Upbit private read 결과를 preflight reconcile evidence로
+  먼저 저장한다. 단, 기존 mismatch/manual review/failed/running 상태는 preflight clean evidence로 덮지 않는다.
 
 ## 남은 이슈
 
-- production decision source 연결은 Sub PR 06에서 구현한다.
-- 실제 운영 credential과 redacted artifact 위치는 저장소 밖에서 준비되어야 한다.
-- 실제 주문 제출/취소는 Sub PR 06 이후 readiness가 decision/live execution 경계를 통과하고, 운영자 arm evidence가 확인된 뒤에만 실행한다.
-- 현재 세션에는 `SEEMIRAI_*`, `UPBIT_*`, `TELEGRAM_*` 운영 env 값이 없고 issue #206 댓글에도 운영 config/env/evidence 경로가 없다.
-  운영자는 저장소 밖 config/env, key scope evidence, operator arm evidence, redacted artifact 경로를 준비한 뒤 closeout manifest 검증을
-  다시 실행해야 한다.
+- Sub PR 08 완료 후 실제 운영 command는 DB reconcile run이 없는 clean-start DB에서도 private read preflight evidence를 자동 생성해야 한다.
+- 실제 운영 credential, key scope evidence, operator arm evidence, redacted artifact 경로는 저장소 밖 운영 vault에 있어야 한다.
+- 실제 주문 제출/취소 closeout은 저장소 밖 운영 config/env로 foreground `live:ops`를 실행한 뒤 자동 생성 artifact와 closeout manifest로
+  검증한다.
