@@ -1523,6 +1523,8 @@ function assertLiveOpsCliRecoveredOrderMatchesSubmission(order, submission, expe
 export function createLiveOpsCliDatabasePrivateReadProvider(pool) {
   return {
     async listOpenOrders(market) {
+      const marketFilter = market === undefined ? "" : "AND market = $1";
+      const params = market === undefined ? [] : [market];
       const result = await pool.query(`
         WITH latest_run AS (
           SELECT id
@@ -1545,9 +1547,9 @@ export function createLiveOpsCliDatabasePrivateReadProvider(pool) {
           captured_at
         FROM live_reconcile_exchange_order_snapshots
         WHERE run_id = (SELECT id FROM latest_run)
-          AND market = $1
+          ${marketFilter}
         ORDER BY captured_at DESC, id DESC
-      `, [market]);
+      `, params);
       return filterLiveOpsCliCanonicalOpenOrderRows(result.rows).map((row) => ({
         brokerOrderId: row.exchange_order_id ?? null,
         idempotencyKey: row.identifier ?? null,

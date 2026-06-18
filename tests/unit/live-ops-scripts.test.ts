@@ -1367,65 +1367,81 @@ const pool = {
     const text = sql.replace(/\\s+/gu, " ").trim();
     queries.push({ text, params });
     if (text.includes("FROM live_reconcile_exchange_order_snapshots") && text.includes("exchange_order_id")) {
+      const marketFilter = params[0];
+      const rows = [
+        {
+          id: "row-terminal",
+          exchange_order_id: null,
+          identifier: "ops-idem-closed",
+          identity_fingerprint: null,
+          market: "KRW-BTC",
+          side: "BUY",
+          status: "CANCEL",
+          requested_quantity: "0.0002",
+          remaining_quantity: "0",
+          requested_price: "100000000",
+          source: "closed",
+          captured_at: "2026-06-15T01:02:00.000Z",
+        },
+        {
+          id: "row-open",
+          exchange_order_id: "upbit-order-1",
+          identifier: "ops-idem-1",
+          identity_fingerprint: null,
+          market: "KRW-BTC",
+          side: "BUY",
+          status: "WAIT",
+          requested_quantity: "0.0001",
+          remaining_quantity: "0.00005",
+          requested_price: "100000000",
+          source: "open",
+          captured_at: observedAt,
+        },
+        {
+          id: "row-eth-open",
+          exchange_order_id: "eth-open-order-1",
+          identifier: "eth-open-identifier-1",
+          identity_fingerprint: null,
+          market: "KRW-ETH",
+          side: "BUY",
+          status: "WAIT",
+          requested_quantity: "0.002",
+          remaining_quantity: "0.002",
+          requested_price: "2500000",
+          source: "open",
+          captured_at: observedAt,
+        },
+        {
+          id: "row-bridge",
+          exchange_order_id: "upbit-closed-order",
+          identifier: "ops-idem-closed",
+          identity_fingerprint: null,
+          market: "KRW-BTC",
+          side: "BUY",
+          status: "WAIT",
+          requested_quantity: "0.0002",
+          remaining_quantity: "0.0001",
+          requested_price: "100000000",
+          source: "lookup",
+          captured_at: "2026-06-15T01:00:30.000Z",
+        },
+        {
+          id: "row-stale-open",
+          exchange_order_id: "upbit-closed-order",
+          identifier: null,
+          identity_fingerprint: null,
+          market: "KRW-BTC",
+          side: "BUY",
+          status: "WAIT",
+          requested_quantity: "0.0002",
+          remaining_quantity: "0.0001",
+          requested_price: "100000000",
+          source: "open",
+          captured_at: "2026-06-15T01:00:00.000Z",
+        },
+      ];
       return {
-        rows: [
-          {
-            id: "row-terminal",
-            exchange_order_id: null,
-            identifier: "ops-idem-closed",
-            identity_fingerprint: null,
-            market: params[0],
-            side: "BUY",
-            status: "CANCEL",
-            requested_quantity: "0.0002",
-            remaining_quantity: "0",
-            requested_price: "100000000",
-            source: "closed",
-            captured_at: "2026-06-15T01:02:00.000Z",
-          },
-          {
-            id: "row-open",
-            exchange_order_id: "upbit-order-1",
-            identifier: "ops-idem-1",
-            identity_fingerprint: null,
-            market: params[0],
-            side: "BUY",
-            status: "WAIT",
-            requested_quantity: "0.0001",
-            remaining_quantity: "0.00005",
-            requested_price: "100000000",
-            source: "open",
-            captured_at: observedAt,
-          },
-          {
-            id: "row-bridge",
-            exchange_order_id: "upbit-closed-order",
-            identifier: "ops-idem-closed",
-            identity_fingerprint: null,
-            market: params[0],
-            side: "BUY",
-            status: "WAIT",
-            requested_quantity: "0.0002",
-            remaining_quantity: "0.0001",
-            requested_price: "100000000",
-            source: "lookup",
-            captured_at: "2026-06-15T01:00:30.000Z",
-          },
-          {
-            id: "row-stale-open",
-            exchange_order_id: "upbit-closed-order",
-            identifier: null,
-            identity_fingerprint: null,
-            market: params[0],
-            side: "BUY",
-            status: "WAIT",
-            requested_quantity: "0.0002",
-            remaining_quantity: "0.0001",
-            requested_price: "100000000",
-            source: "open",
-            captured_at: "2026-06-15T01:00:00.000Z",
-          },
-        ],
+        rows: marketFilter === undefined ? rows : rows.filter((row) => row.market === marketFilter),
       };
     }
     if (text.includes("FROM live_reconcile_balance_snapshots") && text.includes("SELECT currency")) {
@@ -1481,6 +1497,7 @@ const privateReadProvider = createLiveOpsCliDatabasePrivateReadProvider(pool);
 const reconcileStatusProvider = createLiveOpsCliDatabaseReconcileStatusProvider(pool);
 const pnlStatusProvider = createLiveOpsCliDatabasePnlStatusProvider(pool, "KRW-BTC");
 const openOrders = await privateReadProvider.listOpenOrders("KRW-BTC");
+const accountOpenOrders = await privateReadProvider.listOpenOrders();
 const balances = await privateReadProvider.getBalances();
 const reconcile = await reconcileStatusProvider.getReconcileStatus();
 const pnl = await pnlStatusProvider.getStatus();
@@ -1529,12 +1546,19 @@ const missingTelegramDispatcher = createLiveOpsCliTelegramDispatcher({
 
 console.log(JSON.stringify({
   openOrders,
+  accountOpenOrders,
   balances,
   reconcile,
   pnl,
   telegram,
   missingTelegramDispatcher: missingTelegramDispatcher === undefined,
   fetchCall: fetchCalls[0],
+  openOrderQueries: queries
+    .filter((query) => query.text.includes("FROM live_reconcile_exchange_order_snapshots"))
+    .map((query) => ({
+      params: query.params,
+      hasMarketFilter: query.text.includes("AND market = $1"),
+    })),
   queryCount: queries.length,
 }));
         `,
@@ -1556,12 +1580,20 @@ console.log(JSON.stringify({
         market: string;
         remainingQuantity: string;
       }>;
+      accountOpenOrders: Array<{
+        brokerOrderId: string;
+        idempotencyKey: string;
+        exchangeId: string;
+        market: string;
+        remainingQuantity: string;
+      }>;
       balances: { exchangeId: string; capturedAt: string; balances: Array<{ currency: string; total: string }> };
       reconcile: { result: string; mismatchCount: number; openOrderCount: number; balanceStatus: string; actionRequired: string };
       pnl: { readStatus: string; latestRealizedPnlKrw: string; latestUnrealizedPnlKrw: string; snapshotCount: number };
       telegram: { status: string; attemptedCount: number; deliveredCount: number; failureCount: number };
       missingTelegramDispatcher: boolean;
       fetchCall: { urlIncludesToken: boolean; method: string; body: { chat_id: string; text: string } };
+      openOrderQueries: Array<{ params: unknown[]; hasMarketFilter: boolean }>;
       queryCount: number;
     };
 
@@ -1572,6 +1604,20 @@ console.log(JSON.stringify({
       market: "KRW-BTC",
       remainingQuantity: "0.00005",
     })]);
+    expect(output.accountOpenOrders).toEqual([
+      expect.objectContaining({
+        brokerOrderId: "upbit-order-1",
+        market: "KRW-BTC",
+      }),
+      expect.objectContaining({
+        brokerOrderId: "eth-open-order-1",
+        market: "KRW-ETH",
+      }),
+    ]);
+    expect(output.openOrderQueries).toEqual(expect.arrayContaining([
+      { params: ["KRW-BTC"], hasMarketFilter: true },
+      { params: [], hasMarketFilter: false },
+    ]));
     expect(output.balances).toMatchObject({
       exchangeId: "upbit_krw_spot",
       capturedAt: "2026-06-15T01:00:00.000Z",
