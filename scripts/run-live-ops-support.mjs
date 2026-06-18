@@ -1066,15 +1066,53 @@ export async function createLiveOpsCliCleanupArtifactStore({ configPath, env = {
       assertLiveOpsCliReservationDay(day);
       return path.join(realDir, `reservation-daily-${day}.lock`);
     },
+    dailyReservationRecoveryLockPath(day) {
+      assertLiveOpsCliReservationDay(day);
+      return path.join(realDir, `reservation-daily-${day}.recovery.lock`);
+    },
+    async acquireDailyReservationRecoveryLock(day, { acquiredAt = new Date().toISOString(), ttlMs = liveOpsCliDailyReservationLockLeaseMs } = {}) {
+      const targetPath = this.dailyReservationRecoveryLockPath(day);
+      const leaseId = randomUUID();
+      const handle = await open(targetPath, "wx");
+      try {
+        await handle.writeFile(`${JSON.stringify(createLiveOpsCliDailyReservationLockLease({
+          day,
+          acquiredAt,
+          ttlMs,
+          leaseId,
+          source: "live_ops_cli_daily_budget_reservation_recovery_lock",
+        }), null, 2)}\n`, "utf8");
+      } catch (error) {
+        await handle.close().catch(() => undefined);
+        await unlink(targetPath).catch(() => undefined);
+        throw error;
+      }
+      let released = false;
+      return {
+        path: targetPath,
+        leaseId,
+        async release() {
+          if (released) {
+            return;
+          }
+          released = true;
+          await handle.close();
+          await unlink(targetPath).catch(() => undefined);
+        },
+      };
+    },
     async acquireDailyReservationLock(day, { acquiredAt = new Date().toISOString(), ttlMs = liveOpsCliDailyReservationLockLeaseMs } = {}) {
       const targetPath = this.dailyReservationLockPath(day);
+      const artifactStore = this;
       const acquire = async () => {
+        const leaseId = randomUUID();
         const handle = await open(targetPath, "wx");
         try {
           await handle.writeFile(`${JSON.stringify(createLiveOpsCliDailyReservationLockLease({
             day,
             acquiredAt,
             ttlMs,
+            leaseId,
           }), null, 2)}\n`, "utf8");
         } catch (error) {
           await handle.close().catch(() => undefined);
@@ -1084,13 +1122,24 @@ export async function createLiveOpsCliCleanupArtifactStore({ configPath, env = {
         let released = false;
         return {
           path: targetPath,
+          leaseId,
           async release() {
             if (released) {
               return;
             }
             released = true;
             await handle.close();
-            await unlink(targetPath).catch(() => undefined);
+            let recoveryLock;
+            try {
+              recoveryLock = await artifactStore.acquireDailyReservationRecoveryLock(day, { acquiredAt: new Date().toISOString(), ttlMs });
+              await releaseLiveOpsCliDailyReservationLockIfOwned(targetPath, leaseId);
+            } catch (error) {
+              if (error?.code !== "EEXIST") {
+                throw error;
+              }
+            } finally {
+              await recoveryLock?.release?.();
+            }
           },
         };
       };
@@ -1104,13 +1153,27 @@ export async function createLiveOpsCliCleanupArtifactStore({ configPath, env = {
         if (!(await isLiveOpsCliDailyReservationLockExpired(targetPath, acquiredAt, ttlMs))) {
           throw error;
         }
-        // 프로세스 crash 등으로 lease가 만료된 lock만 회수하고, fresh lock은 동시 실행 보호를 유지한다.
-        await unlink(targetPath).catch((unlinkError) => {
-          if (unlinkError?.code !== "ENOENT") {
-            throw unlinkError;
+        let recoveryLock;
+        try {
+          recoveryLock = await artifactStore.acquireDailyReservationRecoveryLock(day, { acquiredAt, ttlMs });
+          if (!(await isLiveOpsCliDailyReservationLockExpired(targetPath, acquiredAt, ttlMs))) {
+            throw error;
           }
-        });
-        return acquire();
+          // stale 회수는 별도 guard 안에서만 수행해 다른 프로세스가 방금 만든 fresh lock을 지우지 않는다.
+          await unlink(targetPath).catch((unlinkError) => {
+            if (unlinkError?.code !== "ENOENT") {
+              throw unlinkError;
+            }
+          });
+          return await acquire();
+        } catch (recoveryError) {
+          if (recoveryError?.code === "EEXIST") {
+            throw error;
+          }
+          throw recoveryError;
+        } finally {
+          await recoveryLock?.release?.();
+        }
       }
     },
     async writeReservation(record) {
@@ -1314,16 +1377,43 @@ async function evaluateLiveOpsCliDailyBudgetReservation({ request, dailyUsage })
   return { reserved: true };
 }
 
-function createLiveOpsCliDailyReservationLockLease({ day, acquiredAt, ttlMs }) {
+function createLiveOpsCliDailyReservationLockLease({
+  day,
+  acquiredAt,
+  ttlMs,
+  leaseId = randomUUID(),
+  source = "live_ops_cli_daily_budget_reservation_lock",
+}) {
   const acquiredAtMs = Date.parse(acquiredAt);
   const resolvedAcquiredAt = Number.isFinite(acquiredAtMs) ? new Date(acquiredAtMs) : new Date();
   return {
-    source: "live_ops_cli_daily_budget_reservation_lock",
+    source,
     day,
+    leaseId,
     acquiredAt: resolvedAcquiredAt.toISOString(),
     expiresAt: new Date(resolvedAcquiredAt.getTime() + ttlMs).toISOString(),
     pid: process.pid,
   };
+}
+
+async function releaseLiveOpsCliDailyReservationLockIfOwned(targetPath, leaseId) {
+  let lease;
+  try {
+    lease = JSON.parse(await readFile(targetPath, "utf8"));
+  } catch (error) {
+    if (error?.code === "ENOENT") {
+      return;
+    }
+    throw error;
+  }
+  if (lease?.leaseId !== leaseId) {
+    return;
+  }
+  await unlink(targetPath).catch((error) => {
+    if (error?.code !== "ENOENT") {
+      throw error;
+    }
+  });
 }
 
 async function isLiveOpsCliDailyReservationLockExpired(targetPath, now, ttlMs) {

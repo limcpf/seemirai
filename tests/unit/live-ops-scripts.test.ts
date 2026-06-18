@@ -5417,6 +5417,7 @@ console.log(JSON.stringify({
     const second = await budgetReservation.reserve(createRequest("ops-bbbbbbbbbbbbbbbbbbbbbbbbbb", "15000"));
     const dailyUsage = await budgetReservation.readDailyReservedNotional(observedAt);
     const lock = await artifactStore.acquireDailyReservationLock("2026-06-15");
+    const lockLease = JSON.parse(await readFile(lock.path, "utf8"));
     let busy;
     try {
       busy = await budgetReservation.reserve(createRequest("ops-cccccccccccccccccccccccccc", "10000"));
@@ -5427,10 +5428,19 @@ console.log(JSON.stringify({
     await writeFile(staleLockPath, JSON.stringify({
       source: "live_ops_cli_daily_budget_reservation_lock",
       day: "2026-06-15",
+      leaseId: "stale-main-lock",
       acquiredAt: "2026-06-14T23:50:00.000Z",
       expiresAt: "2026-06-14T23:55:00.000Z",
       pid: 999999,
     }, null, 2), "utf8");
+    const recoveryLock = await artifactStore.acquireDailyReservationRecoveryLock("2026-06-15");
+    let recoveryGuardBusy;
+    try {
+      recoveryGuardBusy = await budgetReservation.reserve(createRequest("ops-eeeeeeeeeeeeeeeeeeeeeeeeee", "10000"));
+    } finally {
+      await recoveryLock.release();
+    }
+    const staleLockAfterRecoveryGuard = JSON.parse(await readFile(staleLockPath, "utf8"));
     const recovered = await budgetReservation.reserve(createRequest("ops-dddddddddddddddddddddddddd", "10000"));
     const finalDailyUsage = await budgetReservation.readDailyReservedNotional(observedAt);
 
@@ -5462,7 +5472,23 @@ console.log(JSON.stringify({
       reserved: false,
       reasonCode: "live_ops_daily_budget_lock_busy",
     });
+    expect(lockLease).toMatchObject({
+      source: "live_ops_cli_daily_budget_reservation_lock",
+      day: "2026-06-15",
+      leaseId: expect.any(String),
+      pid: expect.any(Number),
+    });
     expect(await artifactStore.readReservation("ops-cccccccccccccccccccccccccc")).toBeUndefined();
+    expect(recoveryGuardBusy).toMatchObject({
+      reserved: false,
+      reasonCode: "live_ops_daily_budget_lock_busy",
+    });
+    expect(staleLockAfterRecoveryGuard).toMatchObject({
+      source: "live_ops_cli_daily_budget_reservation_lock",
+      day: "2026-06-15",
+      leaseId: "stale-main-lock",
+    });
+    expect(await artifactStore.readReservation("ops-eeeeeeeeeeeeeeeeeeeeeeeeee")).toBeUndefined();
     expect(recovered).toMatchObject({
       reserved: true,
       reservation: {

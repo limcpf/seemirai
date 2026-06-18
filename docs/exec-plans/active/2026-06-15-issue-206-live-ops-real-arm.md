@@ -252,10 +252,10 @@ Telegram, TUI를 같은 lifecycle로 조립하고, 조건을 통과한 단일 `K
   - budget 상한 확대, BTC 외 market 활성화, market/best order 허용.
   - final main PR merge.
 - DnD:
-  - [x] daily reservation lock 파일에 `acquiredAt`, `expiresAt`, `pid`, source metadata를 기록한다.
+  - [x] daily reservation lock 파일에 `leaseId`, `acquiredAt`, `expiresAt`, `pid`, source metadata를 기록한다.
   - [x] fresh lock은 기존처럼 busy로 fail-closed 하고 broker 호출 전 차단한다.
-  - [x] 만료된 stale lock만 회수한 뒤 같은 날짜 reservation을 재획득할 수 있다.
-  - [x] 관련 운영 문서가 lease TTL과 stale lock recovery invariant를 설명한다.
+  - [x] 만료된 stale lock만 recovery guard 안에서 회수한 뒤 같은 날짜 reservation을 재획득할 수 있다.
+  - [x] 관련 운영 문서가 lease TTL, recovery guard, stale lock recovery invariant를 설명한다.
   - [x] 관련 unit tests, `corepack pnpm typecheck`, `./scripts/verify docs`, `./scripts/verify`, `git diff --check`가 통과한다.
 
 ## 검증 방법
@@ -366,8 +366,8 @@ SEEMIRAI_RUN_LIVE_OPS_REAL_ARM_CLOSEOUT=1 \
   시작하지 않는다. foreground `live:ops` 명령의 `--attach`는 성공 처리하지 않는다.
 - 2026-06-18: cleanup budget reservation은 attempt id 파일 생성 전에 같은 날짜 lock을 잡고, lock 안에서 reservation aggregate와 open
   position snapshot을 다시 합산해 일일 자동 주문 예산을 선점한다.
-- 2026-06-18: daily reservation lock은 `acquiredAt`/`expiresAt` lease metadata를 기록한다. fresh lock은 동시 실행 보호로 유지하고,
-  만료된 stale lock만 회수해 crash/reboot 이후 같은 날짜 운영이 영구 차단되지 않게 한다.
+- 2026-06-18: daily reservation lock은 `leaseId`/`acquiredAt`/`expiresAt` lease metadata를 기록한다. fresh lock은 동시 실행 보호로
+  유지하고, 만료된 stale lock만 recovery guard 안에서 회수해 crash/reboot 이후 같은 날짜 운영이 영구 차단되지 않게 한다.
 
 ## 남은 이슈
 
