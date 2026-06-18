@@ -303,7 +303,7 @@ export function renderLiveOpsTuiDashboard(summary) {
       : worker === "live_execution"
         ? (summary.liveExecution?.ready
           ? (summary.liveExecution.status === "idle" ? "후보 없음 - broker 제출 없음" : (summary.liveExecution.statusLabel ?? "실행 결과 확인"))
-          : "후속 연결 대기")
+          : (summary.liveExecution?.statusLabel ?? "후속 연결 대기"))
       : worker === "reconcile_pnl_status"
         ? (summary.reconcilePnlStatus?.ready
           ? (summary.reconcilePnlStatus.providerProbeAttempted ? "private read 상태 요약 확인" : "상태 요약 확인")
@@ -724,6 +724,17 @@ async function collectLiveOpsCliProductionPreflight({
     readLiveOpsCliKillSwitchStatus(productionRuntime.killSwitchProvider),
     productionRuntime.budgetReservation.readDailyReservedNotional(observedAt),
   ]);
+  let resolvedReconcileStatus = reconcileStatus;
+  let preflightReconcileEvidence;
+  if (shouldCreateLiveOpsCliPrivateReadPreflightReconcile(reconcileStatus, productionRuntime)) {
+    preflightReconcileEvidence = await productionRuntime.preflightReconcileRecorder.recordPreflight({
+      market,
+      openOrders,
+      balanceSnapshot,
+      observedAt,
+    });
+    resolvedReconcileStatus = await readLiveOpsCliReconcileStatus(productionRuntime.reconcileStatusProvider);
+  }
 
   const openExposureKrw = sumLiveOpsCliOpenExposureKrw(openOrders);
   const budgetSnapshot = {
@@ -740,7 +751,7 @@ async function collectLiveOpsCliProductionPreflight({
     balanceSnapshot,
     observedAt,
   });
-  const normalizedReconcile = normalizeLiveOpsCliReconcileStatus(reconcileStatus, {
+  const normalizedReconcile = normalizeLiveOpsCliReconcileStatus(resolvedReconcileStatus, {
     openOrderCount: openOrders.length,
   });
   const executionStatus = {
@@ -751,6 +762,7 @@ async function collectLiveOpsCliProductionPreflight({
       normalizedReconcile.result,
       marketData.latestHeartbeatAt ?? observedAt,
     ].join(":")),
+    ...(preflightReconcileEvidence === undefined ? {} : { preflightReconcileEvidence }),
   };
   const postSubmitReadiness = {
     reconcileReady: isLiveOpsCliPrivateReadProvider(productionRuntime.privateReadProvider)
@@ -768,9 +780,10 @@ async function collectLiveOpsCliProductionPreflight({
     market,
     openOrders,
     balanceSnapshot,
-    reconcileStatus,
+    reconcileStatus: resolvedReconcileStatus,
     pnlStatus,
     killSwitchStatus,
+    preflightReconcileEvidence,
     budgetSnapshot,
     lossSnapshot,
     executionStatus,
@@ -939,6 +952,7 @@ export function createLiveOpsCliProductionProviders({ config, env, market, fetch
   return {
     privateReadProvider: createLiveOpsCliDatabasePrivateReadProvider(pool),
     reconcileStatusProvider: createLiveOpsCliDatabaseReconcileStatusProvider(pool),
+    preflightReconcileRecorder: createLiveOpsCliDatabasePreflightReconcileRecorder(pool),
     pnlStatusProvider: createLiveOpsCliDatabasePnlStatusProvider(pool, market),
     killSwitchProvider: createLiveOpsCliDatabaseKillSwitchProvider(pool),
     telegramDispatcher: createLiveOpsCliTelegramDispatcher({ config, env, fetchImpl }),
@@ -1770,6 +1784,357 @@ export function createLiveOpsCliDatabaseReconcileStatusProvider(pool) {
   };
 }
 
+export function createLiveOpsCliDatabasePreflightReconcileRecorder(pool) {
+  return {
+    async recordPreflight({ market, openOrders, balanceSnapshot, observedAt }) {
+      const balances = normalizeLiveOpsCliPreflightBalanceSnapshots(balanceSnapshot, observedAt);
+      const orderSnapshots = normalizeLiveOpsCliPreflightOrderSnapshots(openOrders, market, observedAt);
+      const mismatchEvidence = createLiveOpsCliPreflightMismatchEvidence(orderSnapshots, observedAt);
+      const status = mismatchEvidence.length > 0 ? "MANUAL_REVIEW_REQUIRED" : "COMPLETED";
+      const idempotencyKey = createLiveOpsCliPreflightReconcileIdempotencyKey({
+        market,
+        balances,
+        orderSnapshots,
+        observedAt,
+      });
+      const correlationId = createLiveOpsCliEvidenceId("preflight-reconcile", `${market}:${observedAt}`);
+      const client = await pool.connect();
+
+      try {
+        await client.query("BEGIN");
+        const metadata = {
+          source: "live_ops_cli_private_read_preflight",
+          market,
+          open_order_count: orderSnapshots.length,
+          balance_snapshot_count: balances.length,
+        };
+        const insertedRun = await client.query(`
+          INSERT INTO live_reconcile_runs (
+            idempotency_key,
+            status,
+            started_at,
+            guard_profile,
+            source_summary,
+            correlation_id,
+            metadata_json
+          )
+          VALUES (
+            $1,
+            'RUNNING',
+            $2,
+            'LIVE_OPS_PRIVATE_READ_PREFLIGHT',
+            'live:ops private read preflight reconcile',
+            $3,
+            $4::jsonb
+          )
+          ON CONFLICT (idempotency_key) DO NOTHING
+          RETURNING id, status, started_at, finished_at
+        `, [idempotencyKey, observedAt, correlationId, JSON.stringify(metadata)]);
+        const existingRun = insertedRun.rows[0] === undefined
+          ? await client.query(`
+              SELECT id, status, started_at, finished_at
+              FROM live_reconcile_runs
+              WHERE idempotency_key = $1
+              LIMIT 1
+            `, [idempotencyKey])
+          : { rows: [] };
+        const run = insertedRun.rows[0] ?? existingRun.rows[0];
+        if (run === undefined) {
+          throw new Error("LiveOpsCliPreflightReconcileRunMissing");
+        }
+        const created = insertedRun.rows[0] !== undefined;
+
+        if (created) {
+          for (const balance of balances) {
+            await client.query(`
+              INSERT INTO live_reconcile_balance_snapshots (
+                run_id,
+                currency,
+                available,
+                locked,
+                total,
+                captured_at,
+                source,
+                metadata_json
+              )
+              VALUES ($1, $2, $3, $4, $5, $6, 'REST', $7::jsonb)
+              ON CONFLICT DO NOTHING
+            `, [
+              run.id,
+              balance.currency,
+              balance.available,
+              balance.locked,
+              balance.total,
+              balance.capturedAt,
+              JSON.stringify(balance.metadata),
+            ]);
+          }
+
+          for (const order of orderSnapshots) {
+            await client.query(`
+              INSERT INTO live_reconcile_exchange_order_snapshots (
+                run_id,
+                exchange_order_id,
+                identifier,
+                identity_fingerprint,
+                market,
+                side,
+                status,
+                requested_quantity,
+                remaining_quantity,
+                requested_price,
+                source,
+                captured_at,
+                metadata_json
+              )
+              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'open', $11, $12::jsonb)
+              ON CONFLICT DO NOTHING
+            `, [
+              run.id,
+              order.exchangeOrderId,
+              order.identifier,
+              order.identityFingerprint,
+              order.market,
+              order.side,
+              order.status,
+              order.requestedQuantity,
+              order.remainingQuantity,
+              order.requestedPrice,
+              order.capturedAt,
+              JSON.stringify(order.metadata),
+            ]);
+          }
+
+          for (const evidence of mismatchEvidence) {
+            await client.query(`
+              INSERT INTO live_reconcile_mismatch_evidence (
+                run_id,
+                mismatch_type,
+                severity,
+                market,
+                order_identity,
+                message,
+                action,
+                evidence_fingerprint,
+                trace_json,
+                occurred_at
+              )
+              VALUES ($1, 'UNTRACKED_EXCHANGE_OPEN_ORDER', 'ERROR', $2, $3, $4, $5, $6, $7::jsonb, $8)
+              ON CONFLICT DO NOTHING
+            `, [
+              run.id,
+              evidence.market,
+              evidence.orderIdentity,
+              evidence.message,
+              evidence.action,
+              evidence.evidenceFingerprint,
+              JSON.stringify(evidence.trace),
+              evidence.occurredAt,
+            ]);
+          }
+
+          // preflight DB write가 완료되어야만 같은 tick의 broker 제출 guard가 reconcileFresh로 전진할 수 있다.
+          await client.query(`
+            UPDATE live_reconcile_runs
+            SET status = $2,
+                finished_at = $3,
+                metadata_json = metadata_json || $4::jsonb
+            WHERE id = $1
+              AND status = 'RUNNING'
+          `, [
+            run.id,
+            status,
+            observedAt,
+            JSON.stringify({
+              final_status: status,
+              mismatch_evidence_count: mismatchEvidence.length,
+            }),
+          ]);
+        }
+
+        await client.query("COMMIT");
+        return {
+          created,
+          runId: run.id,
+          idempotencyKey,
+          correlationId,
+          status: created ? status : run.status,
+          balanceSnapshotCount: balances.length,
+          exchangeOrderSnapshotCount: orderSnapshots.length,
+          mismatchCount: mismatchEvidence.length,
+          recordedAt: observedAt,
+          source: "live_ops_cli_private_read_preflight",
+        };
+      } catch (error) {
+        await client.query("ROLLBACK").catch(() => undefined);
+        throw error;
+      } finally {
+        client.release();
+      }
+    },
+  };
+}
+
+function shouldCreateLiveOpsCliPrivateReadPreflightReconcile(reconcileStatus, productionRuntime) {
+  if (productionRuntime?.preflightReconcileRecorder === undefined) {
+    return false;
+  }
+  const reason = reconcileStatus?.trace?.reason;
+  return reconcileStatus?.result === "SKIPPED" && reason === "reconcile_not_run";
+}
+
+function normalizeLiveOpsCliPreflightBalanceSnapshots(balanceSnapshot, observedAt) {
+  if (!Array.isArray(balanceSnapshot?.balances) || balanceSnapshot.balances.length === 0) {
+    throw new Error("LiveOpsCliPreflightBalanceSnapshotMissing");
+  }
+
+  return balanceSnapshot.balances.map((balance) => {
+    if (!hasMeaningfulValue(balance?.currency) || !isNonNegativeDecimalString(balance?.available) || !isNonNegativeDecimalString(balance?.locked)) {
+      throw new Error("LiveOpsCliPreflightBalanceSnapshotMalformed");
+    }
+    const available = new Decimal(balance.available).toFixed();
+    const locked = new Decimal(balance.locked).toFixed();
+    return {
+      currency: String(balance.currency),
+      available,
+      locked,
+      total: new Decimal(available).plus(locked).toFixed(),
+      capturedAt: balance.updatedAt ?? balanceSnapshot.capturedAt ?? observedAt,
+      metadata: {
+        source: "live_ops_cli_private_read_preflight",
+      },
+    };
+  });
+}
+
+function normalizeLiveOpsCliPreflightOrderSnapshots(openOrders, market, observedAt) {
+  if (!Array.isArray(openOrders)) {
+    throw new Error("LiveOpsCliPreflightOpenOrdersMalformed");
+  }
+
+  return openOrders.map((order) => {
+    const side = normalizeLiveOpsCliPreflightOrderSide(order?.side);
+    const requestedQuantity = normalizeLiveOpsCliPositiveDecimal(order?.requestedQuantity, "LiveOpsCliPreflightOrderQuantityMalformed");
+    const remainingQuantity = normalizeLiveOpsCliNonNegativeDecimal(
+      order?.remainingQuantity ?? order?.requestedQuantity,
+      "LiveOpsCliPreflightOrderRemainingMalformed",
+    );
+    const requestedPrice = normalizeLiveOpsCliOptionalPositiveDecimal(order?.requestedPrice);
+    const identityFingerprint = createLiveOpsCliPreflightOrderIdentityFingerprint({
+      market: order?.market ?? market,
+      side,
+      requestedQuantity,
+      requestedPrice,
+    });
+    if (!hasMeaningfulValue(order?.brokerOrderId) && !hasMeaningfulValue(order?.idempotencyKey) && !hasMeaningfulValue(identityFingerprint)) {
+      throw new Error("LiveOpsCliPreflightOrderIdentityMissing");
+    }
+
+    return {
+      exchangeOrderId: hasMeaningfulValue(order?.brokerOrderId) ? String(order.brokerOrderId) : null,
+      identifier: hasMeaningfulValue(order?.idempotencyKey) ? String(order.idempotencyKey) : null,
+      identityFingerprint,
+      market: String(order?.market ?? market),
+      side,
+      status: normalizeLiveOpsCliPreflightOrderStatus(order?.status),
+      requestedQuantity,
+      remainingQuantity,
+      requestedPrice,
+      capturedAt: order?.updatedAt ?? order?.acceptedAt ?? observedAt,
+      metadata: {
+        source: "live_ops_cli_private_read_preflight",
+      },
+    };
+  });
+}
+
+function createLiveOpsCliPreflightMismatchEvidence(orderSnapshots, observedAt) {
+  return orderSnapshots.map((order) => ({
+    market: order.market,
+    orderIdentity: order.exchangeOrderId ?? order.identifier ?? order.identityFingerprint,
+    message: "실계좌 private read에서 기존 미체결 주문이 확인되어 신규 cleanup 주문을 제출하지 않습니다.",
+    action: "거래소 미체결 주문을 취소하거나 상태를 reconcile한 뒤 live:ops를 다시 실행하세요.",
+    evidenceFingerprint: createHash("sha256")
+      .update([
+        "live_ops_cli_preflight_open_order",
+        order.market,
+        order.exchangeOrderId ?? "",
+        order.identifier ?? "",
+        order.identityFingerprint,
+        order.status,
+        observedAt,
+      ].join(":"))
+      .digest("hex"),
+    trace: {
+      source: "live_ops_cli_private_read_preflight",
+      reason: "open_order_before_cleanup_submit",
+    },
+    occurredAt: observedAt,
+  }));
+}
+
+function createLiveOpsCliPreflightReconcileIdempotencyKey({ market, balances, orderSnapshots, observedAt }) {
+  const fingerprint = createHash("sha256")
+    .update(JSON.stringify({
+      market,
+      observedAt,
+      balances: balances.map((balance) => [balance.currency, balance.available, balance.locked, balance.total]),
+      orderSnapshots: orderSnapshots.map((order) => [
+        order.exchangeOrderId,
+        order.identifier,
+        order.identityFingerprint,
+        order.status,
+        order.remainingQuantity,
+      ]),
+    }))
+    .digest("hex")
+    .slice(0, 24);
+  return `live-ops-preflight:${fingerprint}`;
+}
+
+function createLiveOpsCliPreflightOrderIdentityFingerprint({ market, side, requestedQuantity, requestedPrice }) {
+  return [
+    market,
+    side,
+    new Decimal(requestedQuantity).toFixed(),
+    requestedPrice === null ? "" : new Decimal(requestedPrice).toFixed(),
+  ].join("|");
+}
+
+function normalizeLiveOpsCliPreflightOrderSide(side) {
+  const normalized = String(side ?? "").toUpperCase();
+  if (normalized !== "BUY" && normalized !== "SELL") {
+    throw new Error("LiveOpsCliPreflightOrderSideMalformed");
+  }
+  return normalized;
+}
+
+function normalizeLiveOpsCliPreflightOrderStatus(status) {
+  const normalized = String(status ?? "OPEN").toUpperCase();
+  return normalized.length === 0 ? "OPEN" : normalized;
+}
+
+function normalizeLiveOpsCliPositiveDecimal(value, errorName) {
+  if (!isPositiveDecimalString(value)) {
+    throw new Error(errorName);
+  }
+  return new Decimal(value).toFixed();
+}
+
+function normalizeLiveOpsCliNonNegativeDecimal(value, errorName) {
+  if (!isNonNegativeDecimalString(value)) {
+    throw new Error(errorName);
+  }
+  return new Decimal(value).toFixed();
+}
+
+function normalizeLiveOpsCliOptionalPositiveDecimal(value) {
+  if (value === null || value === undefined) {
+    return null;
+  }
+  return normalizeLiveOpsCliPositiveDecimal(value, "LiveOpsCliPreflightOrderPriceMalformed");
+}
+
 export function createLiveOpsCliDatabasePnlStatusProvider(pool, market) {
   return {
     async getStatus() {
@@ -2114,7 +2479,16 @@ function formatAnalysisDecisionObservation(analysisDecision) {
 
 function formatLiveExecutionObservation(liveExecution) {
   if (liveExecution?.ready !== true) {
-    return "후속 연결 대기";
+    const blockedCheck = Array.isArray(liveExecution?.checks)
+      ? liveExecution.checks.find((check) => check?.status === "blocked")
+      : undefined;
+    return [
+      liveExecution?.statusLabel ?? "후속 연결 대기",
+      `주문 후보 ${liveExecution?.orderIntentCount ?? 0}`,
+      `broker 제출 ${liveExecution?.submittedOrderCount ?? 0}`,
+      ...(blockedCheck?.code === undefined ? [] : [`차단 ${blockedCheck.code}`]),
+      `latest ${liveExecution?.latestExecutionAt ?? "없음"}`,
+    ].join(" / ");
   }
 
   return [

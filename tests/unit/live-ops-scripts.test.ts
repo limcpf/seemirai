@@ -174,6 +174,74 @@ describe("production live ops script skeleton", () => {
     });
   });
 
+  it("TUI는 live execution 차단 사유를 후속 연결 대기로 숨기지 않는다", async () => {
+    const supportModulePath = path.join(process.cwd(), "scripts/run-live-ops-support.mjs");
+    const { renderLiveOpsTuiDashboard } = await import(supportModulePath);
+    const output = renderLiveOpsTuiDashboard({
+      status: "blocked",
+      mode: "소액 실운영",
+      market: "KRW-BTC",
+      liveOrderCapable: false,
+      fixtureSmoke: false,
+      attach: "foreground",
+      configPath: "/tmp/live-ops.production.json",
+      dbReadiness: {
+        ready: true,
+        migration: {
+          appliedLatestVersion: 13,
+          expectedLatestVersion: 13,
+          pendingVersions: [],
+        },
+      },
+      marketData: {
+        ready: true,
+        persisted: { tradeCount: 1, orderbookCount: 1, statusCount: 1 },
+        latestHeartbeatAt: "2026-06-18T13:33:27.000Z",
+      },
+      analysisDecision: {
+        ready: true,
+        decisionCategory: "ORDER_INTENT",
+        orderIntentCount: 1,
+        evaluatedStrategyCount: 1,
+        latestDecisionAt: "2026-06-18T13:33:27.000Z",
+      },
+      liveExecution: {
+        ready: false,
+        status: "blocked",
+        statusLabel: "운영 상태 차단",
+        orderIntentCount: 1,
+        submittedOrderCount: 0,
+        latestExecutionAt: null,
+        checks: [{
+          status: "blocked",
+          code: "live_ops_execution_status_blocked",
+        }],
+      },
+      reconcilePnlStatus: {
+        ready: false,
+        providerProbeAttempted: false,
+      },
+      telegramAlert: {
+        ready: false,
+        providerDispatchAttempted: false,
+      },
+      budget: {
+        maxOrderKrw: "10000",
+        dailyAutonomousNotionalLimitKrw: "30000",
+        maxOpenPositionNotionalKrw: "30000",
+        operationsStopCeilingKrw: "49999",
+      },
+      trace: {
+        workers: ["db_readiness", "market_data", "analysis_decision", "live_execution"],
+        configFile: "live-ops.production.json",
+      },
+    });
+
+    expect(output).toContain("실주문 실행: 운영 상태 차단");
+    expect(output).toContain("Live execution: 운영 상태 차단 / 주문 후보 1 / broker 제출 0 / 차단 live_ops_execution_status_blocked");
+    expect(output).not.toContain("Live execution: 후속 연결 대기");
+  });
+
   it("production analysis decision은 cleanup_probe policy로 단일 order intent를 만든다", async () => {
     const config = JSON.parse(await readFile(path.join(process.cwd(), "config", "live-ops.example.json"), "utf8"));
     const result = spawnSync(
@@ -1538,6 +1606,268 @@ console.log(JSON.stringify({
     expect(output.missingTelegramDispatcher).toBe(true);
     expect(output.queryCount).toBeGreaterThanOrEqual(5);
     expect(result.stdout).not.toContain("fake-telegram-token");
+  });
+
+  it("preflight recorder는 private read 결과를 DB reconcile evidence로 남긴다", async () => {
+    const supportModulePath = path.join(process.cwd(), "scripts/run-live-ops-support.mjs");
+    const {
+      createLiveOpsCliDatabasePreflightReconcileRecorder,
+      createLiveOpsCliDatabaseReconcileStatusProvider,
+    } = await import(supportModulePath);
+    const observedAt = "2026-06-18T13:33:27.000Z";
+    const queries: Array<{ text: string; params: unknown[] }> = [];
+    const state: {
+      run?: {
+        id: string;
+        status: string;
+        started_at: string;
+        finished_at: string | null;
+        correlation_id: string;
+      };
+      balanceRows: unknown[];
+      orderRows: unknown[];
+      mismatchRows: unknown[];
+    } = {
+      balanceRows: [],
+      orderRows: [],
+      mismatchRows: [],
+    };
+    const client = {
+      async query(sql: string, params: unknown[] = []) {
+        const text = sql.replace(/\s+/gu, " ").trim();
+        queries.push({ text, params });
+        if (text === "BEGIN" || text === "COMMIT" || text === "ROLLBACK") {
+          return { rows: [] };
+        }
+        if (text.startsWith("INSERT INTO live_reconcile_runs")) {
+          state.run = {
+            id: "preflight-run-1",
+            status: "RUNNING",
+            started_at: params[1] as string,
+            finished_at: null,
+            correlation_id: params[2] as string,
+          };
+          return { rows: [state.run] };
+        }
+        if (text.includes("FROM live_reconcile_runs") && text.includes("WHERE idempotency_key")) {
+          return { rows: state.run === undefined ? [] : [state.run] };
+        }
+        if (text.startsWith("INSERT INTO live_reconcile_balance_snapshots")) {
+          state.balanceRows.push(params);
+          return { rows: [] };
+        }
+        if (text.startsWith("INSERT INTO live_reconcile_exchange_order_snapshots")) {
+          state.orderRows.push(params);
+          return { rows: [] };
+        }
+        if (text.startsWith("INSERT INTO live_reconcile_mismatch_evidence")) {
+          state.mismatchRows.push(params);
+          return { rows: [] };
+        }
+        if (text.startsWith("UPDATE live_reconcile_runs")) {
+          state.run = {
+            ...state.run!,
+            status: params[1] as string,
+            finished_at: params[2] as string,
+          };
+          return { rows: [] };
+        }
+        throw new Error(`unexpected client query: ${text}`);
+      },
+      release() {},
+    };
+    const pool = {
+      async connect() {
+        return client;
+      },
+      async query(sql: string) {
+        const text = sql.replace(/\s+/gu, " ").trim();
+        if (text.includes("FROM live_reconcile_runs") && text.includes("mismatch_count")) {
+          if (state.run === undefined) {
+            return { rows: [] };
+          }
+          return {
+            rows: [{
+              ...state.run,
+              balance_snapshot_count: state.balanceRows.length,
+              exchange_order_snapshot_count: state.orderRows.length,
+              open_order_count: state.orderRows.length,
+              mismatch_count: state.mismatchRows.length,
+              mismatch_types: state.mismatchRows.length > 0 ? ["UNTRACKED_EXCHANGE_OPEN_ORDER"] : [],
+            }],
+          };
+        }
+        throw new Error(`unexpected pool query: ${text}`);
+      },
+    };
+    const recorder = createLiveOpsCliDatabasePreflightReconcileRecorder(pool);
+    const reconcileStatusProvider = createLiveOpsCliDatabaseReconcileStatusProvider(pool);
+
+    const cleanEvidence = await recorder.recordPreflight({
+      market: "KRW-BTC",
+      openOrders: [],
+      balanceSnapshot: {
+        exchangeId: "upbit_krw_spot",
+        capturedAt: observedAt,
+        balances: [{
+          currency: "KRW",
+          available: "50000.9836425",
+          locked: "0",
+          total: "50000.9836425",
+        }],
+      },
+      observedAt,
+    });
+    const cleanReconcile = await reconcileStatusProvider.getReconcileStatus();
+
+    expect(cleanEvidence).toMatchObject({
+      created: true,
+      runId: "preflight-run-1",
+      status: "COMPLETED",
+      balanceSnapshotCount: 1,
+      exchangeOrderSnapshotCount: 0,
+      mismatchCount: 0,
+      source: "live_ops_cli_private_read_preflight",
+    });
+    expect(cleanReconcile).toMatchObject({
+      result: "SUCCESS",
+      balanceStatus: "OK",
+      mismatchCount: 0,
+      openOrderCount: 0,
+    });
+    expect(state.balanceRows).toHaveLength(1);
+    expect(state.orderRows).toHaveLength(0);
+    expect(state.mismatchRows).toHaveLength(0);
+    expect(JSON.stringify(queries)).not.toContain("raw_provider_payload");
+  });
+
+  it("production preflight는 reconcile 미실행 DB에 private read evidence를 먼저 기록한다", async () => {
+    const supportModulePath = path.join(process.cwd(), "scripts/run-live-ops-support.mjs");
+    const {
+      createLiveOpsCliProductionExecutionInputs,
+    } = await import(supportModulePath);
+    const recorded: unknown[] = [];
+    let reconcileReadCount = 0;
+    const config = {
+      universe: { markets: ["KRW-BTC"], default_market: "KRW-BTC" },
+      budget: {
+        max_order_krw: "10000",
+        daily_autonomous_notional_limit_krw: "30000",
+        max_open_position_notional_krw: "30000",
+      },
+    };
+    const productionRuntime = {
+      entryRuntime: {},
+      cleanupLifecycle: {},
+      privateReadProvider: {
+        async listOpenOrders() {
+          return [];
+        },
+        async getBalances() {
+          return {
+            exchangeId: "upbit_krw_spot",
+            capturedAt: "2026-06-18T13:33:27.000Z",
+            balances: [{
+              currency: "KRW",
+              available: "50000",
+              locked: "0",
+              total: "50000",
+            }],
+          };
+        },
+      },
+      reconcileStatusProvider: {
+        async getReconcileStatus() {
+          reconcileReadCount += 1;
+          if (reconcileReadCount === 1) {
+            return {
+              lastReconcileAt: null,
+              result: "SKIPPED",
+              mismatchCount: null,
+              openOrderCount: null,
+              balanceStatus: "UNAVAILABLE",
+              websocketStatus: "DISCONNECTED",
+              actionRequired: "reconcile 실행 필요",
+              message: "아직 완료된 실계좌 reconcile evidence가 없습니다.",
+              trace: { source: "live_ops_cli_database_reconcile", reason: "reconcile_not_run" },
+            };
+          }
+          return {
+            lastReconcileAt: "2026-06-18T13:33:27.000Z",
+            result: "SUCCESS",
+            mismatchCount: 0,
+            openOrderCount: 0,
+            balanceStatus: "OK",
+            websocketStatus: "CONNECTED",
+            actionRequired: "없음",
+            message: "preflight private read reconcile evidence를 읽었습니다.",
+            trace: { source: "live_ops_cli_database_reconcile", runId: "preflight-run-1" },
+          };
+        },
+      },
+      pnlStatusProvider: {
+        async getStatus() {
+          return { readStatus: "NOT_FOUND", reason: "pnl_snapshot_not_found" };
+        },
+      },
+      killSwitchProvider: {
+        async getStatus() {
+          return {
+            active: false,
+            state: "NORMAL",
+            reasonCode: "initial_state",
+            updatedAt: "2026-06-18T13:33:27.000Z",
+          };
+        },
+      },
+      budgetReservation: {
+        async readDailyReservedNotional() {
+          return { reservedNotionalKrw: "0", reservationCount: 0 };
+        },
+      },
+      preflightReconcileRecorder: {
+        async recordPreflight(input: unknown) {
+          recorded.push(input);
+          return {
+            created: true,
+            runId: "preflight-run-1",
+            status: "COMPLETED",
+            source: "live_ops_cli_private_read_preflight",
+          };
+        },
+      },
+      telegramDispatcher: {},
+    };
+    const result = await createLiveOpsCliProductionExecutionInputs({
+      config,
+      fixtureSmoke: false,
+      analysisDecision: {
+        ready: true,
+        decisionCategory: "ORDER_INTENT",
+        orderIntentCount: 1,
+      },
+      marketData: {
+        ready: true,
+        latestHeartbeatAt: "2026-06-18T13:33:27.000Z",
+      },
+      orderIntents: [createCleanupRuntimeIntent()],
+      productionRuntime,
+    });
+
+    expect(recorded).toHaveLength(1);
+    expect(reconcileReadCount).toBe(2);
+    expect(result.executionStatus).toMatchObject({
+      killSwitchActive: false,
+      reconcileFresh: true,
+      preflightReconcileEvidence: {
+        runId: "preflight-run-1",
+        status: "COMPLETED",
+      },
+    });
+    expect(result.postSubmitReadiness).toMatchObject({
+      reconcileReady: true,
+      telegramReady: true,
+    });
   });
 
   it("live:ops:tui attach는 같은 dashboard를 attach 대상으로 렌더링한다", () => {

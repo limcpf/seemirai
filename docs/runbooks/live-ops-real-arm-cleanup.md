@@ -34,7 +34,7 @@ identifier 또는 uuid로 취소해 terminal cancel evidence로 닫는 절차다
 | Upbit public feed | `KRW-BTC` 체결/호가/status가 DB-backed store에 저장되고 stale 상태가 아니다 |
 | decision policy | `analysis.decision_policy.id=cleanup_probe`이고 정적 allowlist resolver가 `live_ops_cleanup_probe` strategy를 조립한다 |
 | private read | account/order/balance 조회가 가능하고 raw payload 없이 safe summary로 낮아진다 |
-| reconcile | mismatch 0건, untracked fill 0건, open order와 open exposure가 설명 가능하다 |
+| reconcile | 기존 mismatch/manual review가 없고, DB run이 없으면 CLI가 private read preflight evidence를 자동 생성한다 |
 | PnL/status | 결측은 0으로 보정하지 않고 원인과 필요한 조치를 표시한다 |
 | Telegram | startup/live order capable/order/cancel/manual review alert를 owner chat으로 보낼 수 있다 |
 | TUI | live armed/order capable, 최신 decision/order/cancel/reconcile/PnL 상태를 secret 없이 보여준다 |
@@ -53,7 +53,10 @@ corepack pnpm live:ops -- --config <운영-json-path> --env-file <운영-env-pat
 4. `cleanup_probe` decision policy가 최신 orderbook에서 단일 `KRW-BTC` `BUY + LIMIT + POST_ONLY` 후보를 만들었는지 확인한다.
    주문 후보가 없으면 TUI/JSON의 HOLD/BLOCK reason을 먼저 확인하고 broker 제출로 전진하지 않는다.
 5. 단일 `KRW-BTC` 후보가 생성되면 CLI가 private read/reconcile/PnL preflight, cost/risk/reconcile/budget/kill switch guard,
-   deterministic budget reservation을 순서대로 통과시킨다. 이 단계가 하나라도 실패하면 broker 호출 전에 fail-closed 된다.
+   deterministic budget reservation을 순서대로 통과시킨다. DB에 완료된 reconcile run이 아직 없고 기존 mismatch/manual review도 없으면,
+   CLI는 방금 읽은 Upbit private 잔고/미체결 주문 결과를 `live_reconcile_*` 테이블에
+   `LIVE_OPS_PRIVATE_READ_PREFLIGHT` evidence로 저장한 뒤 그 row를 다시 읽어 readiness를 판단한다. 이 단계가 하나라도 실패하면
+   broker 호출 전에 fail-closed 된다.
 6. 주문이 제출되면 CLI가 같은 runtime에서 받은 Upbit uuid로 즉시 취소 요청을 보낸다. 같은 runtime이 만든 uuid가 아니면 취소를
    시도하지 않고 manual review로 격상한다.
 7. CLI가 제한된 polling으로 terminal cancel/done 상태를 확인한다. terminal cancel을 확인하지 못하면 open exposure를 0으로 보정하지 않고
@@ -83,6 +86,12 @@ open_exposure_krw=0
 `live:ops` production 실행은 cleanup 후보를 실제 broker에 넘기기 전에 같은 attempt id로 reservation artifact를 만든다. reservation은
 `ops-` attempt id, market, strategy id, requested notional, budget snapshot, captured timestamp만 포함한다. 같은 attempt id의 reservation이
 이미 있으면 중복 실주문을 만들지 않고 broker 호출 전에 차단한다.
+
+DB에 `live_reconcile_runs` 완료 기록이 없는 clean-start 운영 DB에서는 CLI가 actual private read 결과로 preflight reconcile run을 자동 생성한다.
+이 run은 기존 M16 장기 reconcile worker를 대체하지 않고, cleanup 주문 제출 직전 계정 잔고와 미체결 주문 상태를 DB-backed evidence로 남기는
+부팅 전용 증거다. 기존 DB에 mismatch, failed, running, manual review 상태가 있으면 preflight clean evidence로 덮지 않고 그대로 신규 주문을
+차단한다. preflight 시점에 미체결 주문이 있으면 `MANUAL_REVIEW_REQUIRED`와 `UNTRACKED_EXCHANGE_OPEN_ORDER` evidence로 닫고 신규 cleanup 주문을
+제출하지 않는다.
 
 submit/cancel lifecycle artifact는 terminal cancel 확인 뒤에만 success status가 된다. artifact에는 full access key, secret key, JWT,
 Authorization header, Telegram token, DB URL/password, TUI control token, raw provider payload, raw order detail을 쓰지 않는다. uuid와

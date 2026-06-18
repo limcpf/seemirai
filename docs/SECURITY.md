@@ -275,6 +275,9 @@
   provider 호출 전에 차단한다.
 - decision policy config는 `cleanup_probe` 같은 정적 allowlist id만 허용한다. JSON config나 env로 임의 JS/TS 파일 경로, 동적 import,
   원격 plugin, 저장소 밖 strategy 코드를 실행하게 만들지 않는다.
+- live:ops preflight reconcile DB evidence에는 잔고 숫자, 미체결 주문 safe identity, 상태, 시각, source summary만 저장한다.
+  access key, secret key, JWT, Authorization header, REST query hash, raw provider payload, raw order detail, Telegram token, DB URL 원문은
+  `live_reconcile_*` table의 metadata/trace에도 저장하지 않는다.
 - 실거래 cleanup artifact에는 stable suffix나 redacted id만 남긴다. access key, secret key, JWT, Authorization header, Telegram token,
   raw provider payload, raw order detail은 저장하지 않는다.
 - source/security scan은 production live ops path가 금지 주문 유형, 출금/입금, 선물/레버리지, raw secret, raw provider payload 경로를
