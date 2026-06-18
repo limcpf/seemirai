@@ -1,5 +1,5 @@
 import { createHash, createHmac, randomUUID } from "node:crypto";
-import { mkdir, open, readdir, readFile, realpath, stat, unlink, writeFile } from "node:fs/promises";
+import { mkdir, open, readdir, readFile, realpath, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { Decimal } from "decimal.js";
 import pg from "pg";
@@ -1072,34 +1072,50 @@ export async function createLiveOpsCliCleanupArtifactStore({ configPath, env = {
     },
     async acquireDailyReservationRecoveryLock(day, { acquiredAt = new Date().toISOString(), ttlMs = liveOpsCliDailyReservationLockLeaseMs } = {}) {
       const targetPath = this.dailyReservationRecoveryLockPath(day);
-      const leaseId = randomUUID();
-      const handle = await open(targetPath, "wx");
-      try {
-        await handle.writeFile(`${JSON.stringify(createLiveOpsCliDailyReservationLockLease({
-          day,
-          acquiredAt,
-          ttlMs,
-          leaseId,
-          source: "live_ops_cli_daily_budget_reservation_recovery_lock",
-        }), null, 2)}\n`, "utf8");
-      } catch (error) {
-        await handle.close().catch(() => undefined);
-        await unlink(targetPath).catch(() => undefined);
-        throw error;
-      }
-      let released = false;
-      return {
-        path: targetPath,
-        leaseId,
-        async release() {
-          if (released) {
-            return;
-          }
-          released = true;
-          await handle.close();
+      const acquire = async () => {
+        const leaseId = randomUUID();
+        const handle = await open(targetPath, "wx");
+        try {
+          await handle.writeFile(`${JSON.stringify(createLiveOpsCliDailyReservationLockLease({
+            day,
+            acquiredAt,
+            ttlMs,
+            leaseId,
+            source: "live_ops_cli_daily_budget_reservation_recovery_lock",
+          }), null, 2)}\n`, "utf8");
+        } catch (error) {
+          await handle.close().catch(() => undefined);
           await unlink(targetPath).catch(() => undefined);
-        },
+          throw error;
+        }
+        let released = false;
+        return {
+          path: targetPath,
+          leaseId,
+          async release() {
+            if (released) {
+              return;
+            }
+            released = true;
+            await handle.close();
+            await releaseLiveOpsCliDailyReservationLockIfOwned(targetPath, leaseId);
+          },
+        };
       };
+
+      try {
+        return await acquire();
+      } catch (error) {
+        if (error?.code !== "EEXIST") {
+          throw error;
+        }
+        if (!(await isLiveOpsCliDailyReservationLockRecoverable(targetPath, acquiredAt))) {
+          throw error;
+        }
+        // 복구 가드 자체도 owner가 사라진 만료 lease일 때만 제거해 crash 이후 영구 busy를 피한다.
+        await releaseLiveOpsCliRecoverableDailyReservationLock(targetPath, acquiredAt);
+        return acquire();
+      }
     },
     async acquireDailyReservationLock(day, { acquiredAt = new Date().toISOString(), ttlMs = liveOpsCliDailyReservationLockLeaseMs } = {}) {
       const targetPath = this.dailyReservationLockPath(day);
@@ -1150,21 +1166,17 @@ export async function createLiveOpsCliCleanupArtifactStore({ configPath, env = {
         if (error?.code !== "EEXIST") {
           throw error;
         }
-        if (!(await isLiveOpsCliDailyReservationLockExpired(targetPath, acquiredAt, ttlMs))) {
+        if (!(await isLiveOpsCliDailyReservationLockRecoverable(targetPath, acquiredAt))) {
           throw error;
         }
         let recoveryLock;
         try {
           recoveryLock = await artifactStore.acquireDailyReservationRecoveryLock(day, { acquiredAt, ttlMs });
-          if (!(await isLiveOpsCliDailyReservationLockExpired(targetPath, acquiredAt, ttlMs))) {
+          if (!(await isLiveOpsCliDailyReservationLockRecoverable(targetPath, acquiredAt))) {
             throw error;
           }
-          // stale 회수는 별도 guard 안에서만 수행해 다른 프로세스가 방금 만든 fresh lock을 지우지 않는다.
-          await unlink(targetPath).catch((unlinkError) => {
-            if (unlinkError?.code !== "ENOENT") {
-              throw unlinkError;
-            }
-          });
+          // stale 회수는 owner가 사라진 lease만 대상으로 해 중단된 프로세스의 예산 임계 구간과 겹치지 않게 한다.
+          await releaseLiveOpsCliRecoverableDailyReservationLock(targetPath, acquiredAt);
           return await acquire();
         } catch (recoveryError) {
           if (recoveryError?.code === "EEXIST") {
@@ -1416,29 +1428,54 @@ async function releaseLiveOpsCliDailyReservationLockIfOwned(targetPath, leaseId)
   });
 }
 
-async function isLiveOpsCliDailyReservationLockExpired(targetPath, now, ttlMs) {
+async function releaseLiveOpsCliRecoverableDailyReservationLock(targetPath, now) {
+  if (!(await isLiveOpsCliDailyReservationLockRecoverable(targetPath, now))) {
+    const error = new Error("LiveOpsCliDailyReservationLockNotRecoverable");
+    error.code = "EEXIST";
+    throw error;
+  }
+  await unlink(targetPath).catch((error) => {
+    if (error?.code !== "ENOENT") {
+      throw error;
+    }
+  });
+}
+
+async function isLiveOpsCliDailyReservationLockRecoverable(targetPath, now) {
   const nowMs = Date.parse(now);
   const resolvedNowMs = Number.isFinite(nowMs) ? nowMs : Date.now();
+  let lease;
   try {
-    const lease = JSON.parse(await readFile(targetPath, "utf8"));
-    const expiresAtMs = Date.parse(lease?.expiresAt);
-    if (Number.isFinite(expiresAtMs)) {
-      return expiresAtMs <= resolvedNowMs;
-    }
+    lease = JSON.parse(await readFile(targetPath, "utf8"));
   } catch (error) {
     if (error?.code === "ENOENT") {
       return false;
     }
+    return false;
   }
 
+  const expiresAtMs = Date.parse(lease?.expiresAt);
+  if (!Number.isFinite(expiresAtMs) || expiresAtMs > resolvedNowMs) {
+    return false;
+  }
+  if (isLiveOpsCliLockOwnerActive(lease?.pid)) {
+    return false;
+  }
+  return true;
+}
+
+function isLiveOpsCliLockOwnerActive(pid) {
+  if (!Number.isInteger(pid) || pid <= 0) {
+    return true;
+  }
   try {
-    const metadata = await stat(targetPath);
-    return metadata.mtimeMs + ttlMs <= resolvedNowMs;
+    process.kill(pid, 0);
+    return true;
   } catch (error) {
-    if (error?.code === "ENOENT") {
+    if (error?.code === "ESRCH") {
       return false;
     }
-    throw error;
+    return true;
   }
 }
 
