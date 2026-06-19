@@ -2134,6 +2134,24 @@ console.log(JSON.stringify({
     }));
   });
 
+  it("production boot는 broker guard를 runtime 생성 조건으로 먼저 평가한다", async () => {
+    const supportSource = await readFile(
+      path.join(process.cwd(), "scripts", "run-live-ops-support.mjs"),
+      "utf8",
+    );
+    const loadInputsStart = supportSource.indexOf("export async function loadLiveOpsCliInputs");
+    const runtimeCallIndex = supportSource.indexOf("await createLiveOpsCliProductionRuntime", loadInputsStart);
+    const brokerGuardIndex = supportSource.indexOf("evaluateLiveOpsCliBrokerGuard", loadInputsStart);
+    const runtimeGateSource = supportSource.slice(brokerGuardIndex, runtimeCallIndex);
+
+    expect(loadInputsStart).toBeGreaterThanOrEqual(0);
+    expect(brokerGuardIndex).toBeGreaterThan(loadInputsStart);
+    expect(runtimeCallIndex).toBeGreaterThan(loadInputsStart);
+    expect(brokerGuardIndex).toBeLessThan(runtimeCallIndex);
+    expect(runtimeGateSource).toContain("productionBrokerGuard");
+    expect(runtimeGateSource).toContain("!productionBrokerGuard.ready");
+  });
+
   it("production preflight는 KRW 가용잔고 누락이나 0원을 broker 제출 전에 차단한다", async () => {
     const supportModulePath = path.join(process.cwd(), "scripts/run-live-ops-support.mjs");
     const {
@@ -2852,6 +2870,104 @@ console.log(JSON.stringify({
       openExposureKrw: "0",
       budgetUsedKrw: "10000",
     });
+  });
+
+  it("private read 실패와 변형 응답도 현재 reservation notional을 budget used 하한으로 보존한다", async () => {
+    const supportModulePath = path.join(process.cwd(), "scripts/run-live-ops-support.mjs");
+    const {
+      evaluateLiveOpsCliReconcilePnlStatus,
+    } = await import(supportModulePath);
+    const observedAt = "2026-06-18T13:33:27.000Z";
+    const liveExecution = {
+      status: "cancel_confirmed",
+      ready: true,
+      liveOrderCapable: true,
+      attemptId: "ops-attempt-1",
+      brokerOrderId: "upbit-order-1",
+      idempotencyKey: "ops-idem-1",
+      reservedNotionalKrw: "10000",
+      budgetUsageAfterReservationKrw: "15000",
+      cleanup: {
+        cleanCancel: true,
+      },
+    };
+    const commonInput = {
+      config: {
+        universe: { default_market: "KRW-BTC" },
+      },
+      fixtureSmoke: false,
+      liveExecution,
+      budgetSnapshot: {
+        dailyAutonomousNotionalUsedKrw: "0",
+      },
+      observedAt,
+    };
+
+    const failedSummary = await evaluateLiveOpsCliReconcilePnlStatus({
+      ...commonInput,
+      privateReadProvider: {
+        async listOpenOrders() {
+          throw new Error("RateLimitedDuringPrivateRead");
+        },
+        async getBalances() {
+          return {
+            exchangeId: "upbit_krw_spot",
+            capturedAt: observedAt,
+            balances: [{ currency: "KRW", available: "40000", locked: "0", total: "40000" }],
+          };
+        },
+      },
+      reconcileStatusProvider: {
+        async getReconcileStatus() {
+          return { result: "SUCCESS", mismatchCount: 0, openOrderCount: 0 };
+        },
+      },
+      pnlStatusProvider: {
+        async getStatus() {
+          return { readStatus: "OK" };
+        },
+      },
+    });
+    const malformedSummary = await evaluateLiveOpsCliReconcilePnlStatus({
+      ...commonInput,
+      privateReadProvider: {
+        async listOpenOrders() {
+          return "malformed-open-orders";
+        },
+        async getBalances() {
+          return {
+            exchangeId: "upbit_krw_spot",
+            capturedAt: observedAt,
+            balances: [{ currency: "KRW", available: "40000", locked: "0", total: "40000" }],
+          };
+        },
+      },
+      reconcileStatusProvider: {
+        async getReconcileStatus() {
+          return { result: "SUCCESS", mismatchCount: 0, openOrderCount: 0 };
+        },
+      },
+      pnlStatusProvider: {
+        async getStatus() {
+          return { readStatus: "OK" };
+        },
+      },
+    });
+
+    expect(failedSummary).toMatchObject({
+      status: "manual_review_required",
+      budgetUsedKrw: "15000",
+    });
+    expect(failedSummary.checks).toContainEqual(expect.objectContaining({
+      code: "live_ops_private_read_failed",
+    }));
+    expect(malformedSummary).toMatchObject({
+      status: "manual_review_required",
+      budgetUsedKrw: "15000",
+    });
+    expect(malformedSummary.checks).toContainEqual(expect.objectContaining({
+      code: "live_ops_private_read_orders_malformed",
+    }));
   });
 
   it("live:ops:tui attach는 같은 dashboard를 attach 대상으로 렌더링한다", () => {
@@ -5690,6 +5806,7 @@ console.log(JSON.stringify({
       reservation: {
         attemptId: "ops-aaaaaaaaaaaaaaaaaaaaaaaaaa",
         reservedNotionalKrw: "20000",
+        budgetUsageAfterReservationKrw: "20000",
       },
     });
     expect(second).toMatchObject({
@@ -5744,6 +5861,7 @@ console.log(JSON.stringify({
       reservation: {
         attemptId: "ops-dddddddddddddddddddddddddd",
         reservedNotionalKrw: "10000",
+        budgetUsageAfterReservationKrw: "30000",
       },
     });
     await expect(readFile(staleLockPath, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
@@ -5863,7 +5981,10 @@ console.log(JSON.stringify({
           return { ...brokerOrder, status: "CANCEL_REQUESTED" };
         },
         async getOrder() {
-          throw new Error("RateLimitedDuringPoll");
+          throw Object.assign(new Error("RateLimitedDuringPoll"), {
+            status: 429,
+            upbitErrorName: "too_many_requests",
+          });
         },
       },
     });
@@ -5898,6 +6019,11 @@ console.log(JSON.stringify({
       terminalCheckedAt: string;
       cancelBrokerOrderIdSuffix: string;
       terminalState: string | null;
+      failure: {
+        errorName: string;
+        status: number;
+        upbitErrorName: string;
+      };
     };
 
     expect(summary).toMatchObject({
@@ -5912,6 +6038,11 @@ console.log(JSON.stringify({
       terminalCheckedAt: observedAt,
       cancelBrokerOrderIdSuffix: "l-failed",
       terminalState: null,
+      failure: {
+        errorName: "Error",
+        status: 429,
+        upbitErrorName: "too_many_requests",
+      },
     });
   });
 

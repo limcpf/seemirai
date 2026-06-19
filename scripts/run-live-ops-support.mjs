@@ -177,9 +177,15 @@ export async function loadLiveOpsCliInputs(options) {
     fixtureSmoke: options.fixtureSmoke,
     marketData,
   });
+  const productionBrokerGuard = evaluateLiveOpsCliBrokerGuard({
+    config,
+    env,
+    fixtureSmoke: options.fixtureSmoke,
+  });
   let productionRuntime;
   try {
-    productionRuntime = options.fixtureSmoke
+    // broker guard가 막힌 key는 private read와 broker runtime 생성 전 단계에서 닫아 side effect 없는 계좌 조회도 열지 않는다.
+    productionRuntime = options.fixtureSmoke || !productionBrokerGuard.ready
       ? undefined
       : await createLiveOpsCliProductionRuntime({
           configPath,
@@ -1236,19 +1242,26 @@ export function createLiveOpsCliFileBudgetReservation({ artifactStore, clock = (
         };
       }
       try {
+        const dailyUsage = await readDailyReservedNotionalForDay(day);
         const dailyBudgetCheck = await evaluateLiveOpsCliDailyBudgetReservation({
           request,
-          dailyUsage: await readDailyReservedNotionalForDay(day),
+          dailyUsage,
         });
         if (dailyBudgetCheck.reserved === false) {
           return dailyBudgetCheck;
         }
         // 일일 예산 집계와 attempt 파일 생성을 같은 lock 안에서 수행해 동시 실행의 예산 초과 제출을 막는다.
-        const artifactPath = await artifactStore.writeReservation(reservation);
+        const reservedReservation = {
+          ...reservation,
+          budgetUsageAfterReservationKrw: new Decimal(dailyUsage.reservedNotionalKrw)
+            .plus(request.requestedNotionalKrw)
+            .toFixed(),
+        };
+        const artifactPath = await artifactStore.writeReservation(reservedReservation);
         return {
           reserved: true,
           reservation: {
-            ...reservation,
+            ...reservedReservation,
             artifactPath,
           },
         };
@@ -3343,7 +3356,7 @@ export async function evaluateLiveOpsCliLiveExecution({
   }
 
   const submitted = attempt.status === "SUBMITTED";
-  const budgetUsageAfterReservationKrw = createLiveOpsCliBudgetUsageAfterReservation({ attempt, request });
+  const budgetUsageAfterReservationKrw = createLiveOpsCliBudgetUsageAfterReservation({ attempt });
   const submittedSummary = {
     status: submitted ? "submitted" : String(attempt.status ?? "blocked").toLowerCase(),
     ready: submitted,
@@ -3661,6 +3674,7 @@ export function createLiveOpsCliCleanupLifecycle({
       const record = createLiveOpsCliCleanupArtifactRecord({
         status: "manual_review_required",
         reason: safeErrorName(error),
+        failure: error,
         attempt,
         request,
         brokerOrder,
@@ -3699,6 +3713,7 @@ export function createLiveOpsCliCleanupLifecycle({
       const record = createLiveOpsCliCleanupArtifactRecord({
         status: "manual_review_required",
         reason: safeErrorName(error),
+        failure: error,
         attempt,
         request,
         brokerOrder,
@@ -3872,6 +3887,7 @@ function isLiveOpsCliTerminalFilledStatus(status) {
 function createLiveOpsCliCleanupArtifactRecord({
   status,
   reason,
+  failure,
   attempt,
   request,
   brokerOrder,
@@ -3902,6 +3918,7 @@ function createLiveOpsCliCleanupArtifactRecord({
     brokerOrderIdSuffix: suffixLiveOpsCliIdentifier(brokerOrder?.brokerOrderId),
     cancelBrokerOrderIdSuffix: suffixLiveOpsCliIdentifier(cancelOrder?.brokerOrderId ?? brokerOrder?.brokerOrderId),
     terminalState: terminalOrder?.status ?? null,
+    ...(failure === undefined ? {} : { failure: createLiveOpsCliCleanupFailureSummary(failure) }),
     openExposureKrw: cleanCancel ? "0" : null,
     duplicateOrderCount: 0,
     reconcileMismatchCount: cleanCancel ? 0 : null,
@@ -3911,6 +3928,19 @@ function createLiveOpsCliCleanupArtifactRecord({
       ? "submit -> cancel requested -> terminal cancel 확인이 완료됐습니다."
       : "cleanup lifecycle 확인이 수동 점검 상태로 전환됐습니다.",
   };
+}
+
+function createLiveOpsCliCleanupFailureSummary(error) {
+  const summary = {
+    errorName: safeErrorName(error),
+  };
+  if (Number.isInteger(error?.status)) {
+    summary.status = error.status;
+  }
+  if (hasMeaningfulValue(error?.upbitErrorName)) {
+    summary.upbitErrorName = String(error.upbitErrorName);
+  }
+  return summary;
 }
 
 async function safeWriteLiveOpsCliCleanupArtifact(artifactStore, record) {
@@ -4443,15 +4473,16 @@ function readLiveOpsCliAttemptReservedNotionalKrw(attempt) {
   return isNonNegativeDecimalString(value) ? value : null;
 }
 
-function createLiveOpsCliBudgetUsageAfterReservation({ attempt, request }) {
+function createLiveOpsCliBudgetUsageAfterReservation({ attempt }) {
+  const persistedBudgetUsageKrw = attempt?.reservation?.budgetUsageAfterReservationKrw;
+  if (isNonNegativeDecimalString(persistedBudgetUsageKrw)) {
+    return persistedBudgetUsageKrw;
+  }
   const reservedNotionalKrw = readLiveOpsCliAttemptReservedNotionalKrw(attempt);
   if (!isNonNegativeDecimalString(reservedNotionalKrw)) {
     return null;
   }
-  const previousUsedKrw = request?.budgetSnapshot?.dailyAutonomousNotionalUsedKrw;
-  if (isNonNegativeDecimalString(previousUsedKrw)) {
-    return new Decimal(previousUsedKrw).plus(reservedNotionalKrw).toFixed();
-  }
+  // 구버전 reservation에는 post-reservation 총액이 없으므로 최소한 이번 reservation 금액만 하한으로 보존한다.
   return reservedNotionalKrw;
 }
 
@@ -5194,6 +5225,11 @@ async function collectLiveOpsCliPrivateReadStatusSummary({
       readLiveOpsCliPnlStatus(pnlStatusProvider),
     ]);
   } catch (error) {
+    const budgetUsedKrw = resolveLiveOpsCliBudgetUsedKrw({
+      budgetSnapshot,
+      openOrders: [],
+      liveExecution,
+    });
     return {
       status: "manual_review_required",
       ready: false,
@@ -5208,7 +5244,7 @@ async function collectLiveOpsCliPrivateReadStatusSummary({
       pnlStatusLabel: "확인 필요",
       openOrderCount: 0,
       openExposureKrw: "0",
-      budgetUsedKrw: "0",
+      budgetUsedKrw,
       realizedPnlKrw: null,
       unrealizedPnlKrw: null,
       mismatchCount: null,
@@ -5236,6 +5272,7 @@ async function collectLiveOpsCliPrivateReadStatusSummary({
     return createLiveOpsCliPrivateReadFailureSummary({
       market,
       liveExecution,
+      budgetSnapshot,
       observedAt,
       code: malformedPrivateRead.code,
       message: malformedPrivateRead.message,
@@ -5329,7 +5366,12 @@ async function collectLiveOpsCliPrivateReadStatusSummary({
   };
 }
 
-function createLiveOpsCliPrivateReadFailureSummary({ market, liveExecution, observedAt, code, message, reason }) {
+function createLiveOpsCliPrivateReadFailureSummary({ market, liveExecution, budgetSnapshot, observedAt, code, message, reason }) {
+  const budgetUsedKrw = resolveLiveOpsCliBudgetUsedKrw({
+    budgetSnapshot,
+    openOrders: [],
+    liveExecution,
+  });
   return {
     status: "manual_review_required",
     ready: false,
@@ -5344,7 +5386,7 @@ function createLiveOpsCliPrivateReadFailureSummary({ market, liveExecution, obse
     pnlStatusLabel: "확인 필요",
     openOrderCount: 0,
     openExposureKrw: "0",
-    budgetUsedKrw: "0",
+    budgetUsedKrw,
     realizedPnlKrw: null,
     unrealizedPnlKrw: null,
     mismatchCount: null,
