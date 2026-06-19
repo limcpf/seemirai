@@ -1389,7 +1389,11 @@ async function claimAndRemoveLiveOpsCliDailyReservationLock(targetPath, expected
 
 async function isLiveOpsCliDailyReservationLockClaimStillTarget(targetPath, claimPath) {
   try {
-    const [targetMetadata, claimMetadata] = await Promise.all([stat(targetPath), stat(claimPath)]);
+    let [targetMetadata, claimMetadata] = await Promise.all([stat(targetPath), stat(claimPath)]);
+    if (targetMetadata.dev === claimMetadata.dev && targetMetadata.ino === claimMetadata.ino && claimMetadata.nlink > 2) {
+      await removeLiveOpsCliOrphanDailyReservationLockClaims(targetPath, claimPath, targetMetadata);
+      [targetMetadata, claimMetadata] = await Promise.all([stat(targetPath), stat(claimPath)]);
+    }
     // 같은 inode의 target+claim 두 link만 있을 때만 target을 제거해 다른 fresh lock이나 경쟁 claim을 건드리지 않는다.
     return targetMetadata.dev === claimMetadata.dev
       && targetMetadata.ino === claimMetadata.ino
@@ -1399,6 +1403,32 @@ async function isLiveOpsCliDailyReservationLockClaimStillTarget(targetPath, clai
       return false;
     }
     throw error;
+  }
+}
+
+async function removeLiveOpsCliOrphanDailyReservationLockClaims(targetPath, claimPath, targetMetadata) {
+  const directory = path.dirname(targetPath);
+  const claimPrefix = `${path.basename(targetPath)}.claimed-`;
+  const entries = await readdir(directory, { withFileTypes: true });
+  for (const entry of entries) {
+    if (!entry.isFile() || !entry.name.startsWith(claimPrefix)) {
+      continue;
+    }
+    const candidatePath = path.join(directory, entry.name);
+    if (candidatePath === claimPath) {
+      continue;
+    }
+    try {
+      const candidateMetadata = await stat(candidatePath);
+      if (candidateMetadata.dev === targetMetadata.dev && candidateMetadata.ino === targetMetadata.ino) {
+        // crash로 남은 같은 inode claim은 target CAS 전에 제거해야 nlink 고착으로 인한 영구 busy를 막는다.
+        await unlink(candidatePath);
+      }
+    } catch (error) {
+      if (error?.code !== "ENOENT") {
+        throw error;
+      }
+    }
   }
 }
 
@@ -1485,7 +1515,11 @@ function isLiveOpsCliLockOwnerActive(lease) {
   if (!hasMeaningfulValue(expectedOwner?.bootId) || !hasMeaningfulValue(expectedOwner?.processStartTime)) {
     return true;
   }
-  if (expectedOwner.bootId !== readLiveOpsCliBootId()) {
+  const actualBootId = readLiveOpsCliBootId();
+  if (!hasMeaningfulValue(actualBootId)) {
+    return true;
+  }
+  if (expectedOwner.bootId !== actualBootId) {
     return false;
   }
   const actualStartTime = readLiveOpsCliProcessStartTime(pid);
