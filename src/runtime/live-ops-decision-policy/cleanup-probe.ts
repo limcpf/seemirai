@@ -12,6 +12,7 @@ import type {
 
 export const LIVE_OPS_CLEANUP_PROBE_STRATEGY_ID = "live_ops_cleanup_probe";
 const minimumUpbitKrwOrderNotional = new Decimal(5_000);
+const runtimePreflightDateScope = "runtime_preflight_day";
 
 /**
  * issue #206 cleanup probe strategy가 사용하는 non-secret sizing 정책이다.
@@ -81,14 +82,6 @@ function evaluateCleanupProbe(
     return block(sizing.reasonCode, sizing.metadata);
   }
 
-  const idempotencyDateScope = createCleanupProbeIdempotencyDateScope(context.observedAt);
-  if (idempotencyDateScope === undefined) {
-    // 날짜 scope를 만들 수 없으면 재시작/익일 실행의 idempotency 경계가 깨지므로 후보 생성 전에 닫는다.
-    return block("cleanup_probe_observed_at_invalid", {
-      observed_at: String(context.observedAt),
-    });
-  }
-
   const intent: OrderIntent = {
     exchangeId: "upbit_krw_spot",
     market: "KRW-BTC",
@@ -99,7 +92,7 @@ function evaluateCleanupProbe(
     requestedQuantity: sizing.requestedQuantity,
     requestedNotional: sizing.requestedNotional,
     idempotencyKey: createCleanupProbeIdempotencyKey({
-      dateScope: idempotencyDateScope,
+      dateScope: runtimePreflightDateScope,
       requestedPrice: sizing.requestedPrice,
       requestedQuantity: sizing.requestedQuantity,
       requestedNotional: sizing.requestedNotional,
@@ -112,7 +105,9 @@ function evaluateCleanupProbe(
       issue: "206",
       expected_loss_bps_of_equity: options.expectedLossBpsOfEquity.toFixed(),
       best_bid_price: sizing.bestBidPrice,
-      idempotency_date_scope: idempotencyDateScope,
+      idempotency_date_scope: runtimePreflightDateScope,
+      idempotency_date_source: "live_ops_runtime_preflight",
+      strategy_observed_at: String(context.observedAt),
       tick_size_krw: options.tickSizeKrw.toFixed(),
       price_offset_ticks: options.priceOffsetTicks,
       policy_id: "cleanup_probe",
@@ -261,14 +256,6 @@ function createCleanupProbeIdempotencyKey(input: {
     input.requestedQuantity,
     input.requestedNotional,
   ].join(":");
-}
-
-function createCleanupProbeIdempotencyDateScope(observedAt: StrategyContext["observedAt"]): string | undefined {
-  const date = observedAt instanceof Date ? observedAt : new Date(observedAt);
-  if (Number.isNaN(date.getTime())) {
-    return undefined;
-  }
-  return date.toISOString().slice(0, 10);
 }
 
 function hold(reason: string, metadata: JsonRecord): StrategyDecision {

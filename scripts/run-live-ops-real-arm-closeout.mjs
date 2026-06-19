@@ -81,11 +81,10 @@ const liveOpsConfigAllowedKeys = {
   tui: ["foreground_enabled", "attach_enabled", "refresh_interval_ms", "control_requires_two_step_confirmation", "controls_enabled"],
 };
 const requiredUnsafeSourceScanPatterns = [
-  { label: "ord_type", pattern: /ord_type/u },
-  { label: "orderType market order", pattern: /orderType.*MARKET/u },
-  { label: "order_type market order", pattern: /order_type.*MARKET/u },
+  { label: "ord_type market order payload", pattern: /ord_type\s*:.*market/u },
+  { label: "ord_type best order payload", pattern: /ord_type\s*:.*best/u },
+  { label: "snake_case market order artifact", pattern: /order_type\s*:\s*"MARKET/u },
   { label: "korean market order", pattern: /시장가/u },
-  { label: "best order", pattern: /best/u },
   { label: "withdrawal", pattern: /withdraw/u },
   { label: "korean withdrawal", pattern: /출금/u },
   { label: "deposit", pattern: /deposit/u },

@@ -895,10 +895,27 @@ function attachLiveOpsCliCleanupRuntimeEvidence({ config, orderIntents, prefligh
       return intent;
     }
 
+    const runtimeIdempotencyKey = createLiveOpsCliCleanupProbeRuntimeDecisionKey({
+      intent,
+      observedAt: preflight.observedAt,
+    });
+    const runtimeIntent = runtimeIdempotencyKey === undefined
+      ? intent
+      : {
+        ...intent,
+        idempotencyKey: runtimeIdempotencyKey,
+        metadata: {
+          ...(intent.metadata ?? {}),
+          // 자정 경계에서 중복 reservation이 열리지 않도록 실제 제출 직전 운영일로 idempotency scope를 확정한다.
+          analysis_idempotency_key: intent.idempotencyKey,
+          idempotency_date_scope: String(preflight.observedAt).slice(0, 10),
+          idempotency_date_source: "live_ops_runtime_preflight",
+        },
+      };
     const enriched = {
-      ...intent,
-      costInput: intent.costInput ?? createLiveOpsCliCleanupCostInput(),
-      risk: intent.risk ?? createLiveOpsCliCleanupRiskInput({ config, intent, preflight }),
+      ...runtimeIntent,
+      costInput: runtimeIntent.costInput ?? createLiveOpsCliCleanupCostInput(),
+      risk: runtimeIntent.risk ?? createLiveOpsCliCleanupRiskInput({ config, intent: runtimeIntent, preflight }),
     };
     const evidence = createLiveOpsCliOrderIntentEvidence(enriched);
     return {
@@ -920,6 +937,27 @@ function attachLiveOpsCliCleanupRuntimeEvidence({ config, orderIntents, prefligh
         order_intent: evidence,
       },
     };
+  });
+}
+
+function createLiveOpsCliCleanupProbeRuntimeDecisionKey({ intent, observedAt }) {
+  if (
+    !hasMeaningfulValue(intent?.market) ||
+    !hasMeaningfulValue(intent?.requestedPrice) ||
+    !hasMeaningfulValue(intent?.requestedQuantity) ||
+    !hasMeaningfulValue(intent?.requestedNotional) ||
+    !hasMeaningfulValue(observedAt)
+  ) {
+    return undefined;
+  }
+  return createLiveOpsCliCleanupProbeDecisionKey({
+    market: String(intent.market),
+    sizing: {
+      requestedPrice: String(intent.requestedPrice),
+      requestedQuantity: String(intent.requestedQuantity),
+      requestedNotional: String(intent.requestedNotional),
+    },
+    observedAt,
   });
 }
 
@@ -2850,7 +2888,7 @@ export function createLiveOpsCliDatabasePnlStatusProvider(pool, market) {
     async getStatus() {
       try {
         const [latestResult, countResult] = await Promise.all([
-          // 오래된 market row가 최신 aggregate PnL을 가리면 손실 증거가 stale로 닫히므로 계산 완료 최신 row를 먼저 고른다.
+          // 손실 guard는 같은 live ops strategy의 최신 PnL 상태를 봐야 하며, 최신 not-ready row를 오래된 계산 완료 row로 숨기지 않는다.
           pool.query(`
             SELECT
               strategy_id,
@@ -2863,9 +2901,9 @@ export function createLiveOpsCliDatabasePnlStatusProvider(pool, market) {
               payload_json ->> 'sourceFingerprint' AS source_fingerprint,
               payload_json ->> 'status' AS payload_status
             FROM pnl_snapshots
-            WHERE market = $1 OR market IS NULL
+            WHERE (market = $1 OR market IS NULL)
+              AND strategy_id = 'live_ops'
             ORDER BY
-              CASE WHEN payload_json ->> 'status' = 'CALCULATED' THEN 0 ELSE 1 END,
               captured_at DESC,
               (market = $1) DESC
             LIMIT 1
@@ -2873,7 +2911,8 @@ export function createLiveOpsCliDatabasePnlStatusProvider(pool, market) {
           pool.query(`
             SELECT count(*)::int AS count
             FROM pnl_snapshots
-            WHERE market = $1 OR market IS NULL
+            WHERE (market = $1 OR market IS NULL)
+              AND strategy_id = 'live_ops'
           `, [market]),
         ]);
         const latest = latestResult.rows[0];
@@ -6545,8 +6584,8 @@ function evaluateLiveOpsCliCleanupProbeStrategy({ config, marketData, observedAt
     idempotencyKey: createLiveOpsCliCleanupProbeDecisionKey({
       market,
       sizing,
-      // attempt 중복 차단은 운영일 기준이므로 자정 경계에서 heartbeat 대신 decision 실행 시각을 사용한다.
-      observedAt,
+      // 실제 reservation day는 production preflight wall clock에서 확정되므로 분석 후보 key에는 날짜 placeholder만 남긴다.
+      observedAt: "runtime_preflight_day",
     }),
     reason: "issue_206_cleanup_probe",
     postOnly: true,
@@ -6556,6 +6595,9 @@ function evaluateLiveOpsCliCleanupProbeStrategy({ config, marketData, observedAt
       issue: "206",
       expected_loss_bps_of_equity: policy.cleanup_probe.expected_loss_bps_of_equity,
       best_bid_price: sizing.bestBidPrice,
+      idempotency_date_scope: "runtime_preflight_day",
+      idempotency_date_source: "live_ops_runtime_preflight",
+      strategy_observed_at: observedAt,
       tick_size_krw: policy.cleanup_probe.tick_size_krw,
       price_offset_ticks: policy.cleanup_probe.price_offset_ticks,
       policy_id: "cleanup_probe",
@@ -6575,7 +6617,10 @@ function evaluateLiveOpsCliCleanupProbeStrategy({ config, marketData, observedAt
 }
 
 function createLiveOpsCliCleanupProbeDecisionKey({ market, sizing, observedAt }) {
-  const dayScope = hasMeaningfulValue(observedAt) ? String(observedAt).slice(0, 10) : "unknown-day";
+  const observedAtText = hasMeaningfulValue(observedAt) ? String(observedAt) : "";
+  const dayScope = /^\d{4}-\d{2}-\d{2}/u.test(observedAtText)
+    ? observedAtText.slice(0, 10)
+    : (observedAtText || "unknown-day");
   return [
     "live_ops_cleanup_probe",
     dayScope,

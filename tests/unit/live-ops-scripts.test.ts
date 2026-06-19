@@ -344,14 +344,14 @@ try {
       requestedPrice: "99999000",
       requestedQuantity: "0.0001",
       requestedNotional: "9999.9",
-      idempotencyKey: "live_ops_cleanup_probe:2026-06-16:upbit_krw_spot:KRW-BTC:BUY:99999000:0.0001:9999.9",
+      idempotencyKey: "live_ops_cleanup_probe:runtime_preflight_day:upbit_krw_spot:KRW-BTC:BUY:99999000:0.0001:9999.9",
       postOnly: true,
       timeInForce: "POST_ONLY",
     });
     expect(JSON.stringify(summary)).not.toContain("raw_provider_payload");
   });
 
-  it("cleanup_probe decision key는 heartbeat가 전날이어도 실행일 기준으로 scope를 자른다", async () => {
+  it("cleanup_probe analysis key는 heartbeat가 전날이어도 preflight 날짜 placeholder를 유지한다", async () => {
     const config = JSON.parse(await readFile(path.join(process.cwd(), "config", "live-ops.example.json"), "utf8"));
     const {
       evaluateLiveOpsCliAnalysisDecision,
@@ -398,7 +398,7 @@ try {
 
     expect(output.summary.observedAt).toBe(executionAt);
     expect(output.orderIntents[0]?.idempotencyKey).toBe(
-      "live_ops_cleanup_probe:2026-06-16:upbit_krw_spot:KRW-BTC:BUY:99999000:0.0001:9999.9",
+      "live_ops_cleanup_probe:runtime_preflight_day:upbit_krw_spot:KRW-BTC:BUY:99999000:0.0001:9999.9",
     );
   });
 
@@ -1784,7 +1784,7 @@ console.log(JSON.stringify({
     expect(result.stdout).not.toContain("fake-telegram-token");
   });
 
-  it("database PnL status provider는 오래된 market row보다 최신 CALCULATED aggregate row를 우선한다", async () => {
+  it("database PnL status provider는 같은 strategy 최신 row를 기준으로 aggregate fallback과 not-ready 차단을 보존한다", async () => {
     const supportModulePath = path.join(process.cwd(), "scripts/run-live-ops-support.mjs");
     const {
       createLiveOpsCliDatabasePnlStatusProvider,
@@ -1801,6 +1801,17 @@ console.log(JSON.stringify({
       source_fingerprint: "stale-market",
       payload_status: "CALCULATED",
     };
+    const freshOtherStrategyAggregateRow = {
+      strategy_id: "other_strategy",
+      market: null,
+      captured_at: "2026-06-18T13:33:28.000Z",
+      equity: "999999",
+      realized_pnl: "-9999",
+      unrealized_pnl: "9999",
+      drawdown_bps: "99",
+      source_fingerprint: "other-strategy-aggregate",
+      payload_status: "CALCULATED",
+    };
     const freshAggregateRow = {
       strategy_id: "live_ops",
       market: null,
@@ -1812,22 +1823,39 @@ console.log(JSON.stringify({
       source_fingerprint: "fresh-aggregate",
       payload_status: "CALCULATED",
     };
+    const freshestNotReadyRow = {
+      strategy_id: "live_ops",
+      market: "KRW-BTC",
+      captured_at: "2026-06-18T13:33:29.000Z",
+      equity: "100000",
+      realized_pnl: "0",
+      unrealized_pnl: "0",
+      drawdown_bps: "0",
+      source_fingerprint: "fresh-not-ready",
+      payload_status: "PARTIAL",
+    };
+    let rows = [freshOtherStrategyAggregateRow, freshestNotReadyRow, freshAggregateRow, staleMarketRow];
     const pool = {
       async query(sql: string, params: unknown[] = []) {
         const text = sql.replace(/\s+/gu, " ").trim();
         queries.push({ text, params });
         if (text.includes("FROM pnl_snapshots") && text.includes("LIMIT 1")) {
           const orderBy = text.slice(text.indexOf("ORDER BY"));
-          const calculatedBeforeCaptured = orderBy.indexOf("payload_json ->> 'status'") >= 0
-            && orderBy.indexOf("payload_json ->> 'status'") < orderBy.indexOf("captured_at DESC");
           const capturedBeforeMarketPreference = orderBy.indexOf("captured_at DESC") >= 0
             && orderBy.indexOf("captured_at DESC") < orderBy.indexOf("(market = $1) DESC");
+          const filtersLiveOpsStrategy = text.includes("strategy_id = 'live_ops'");
           return {
-            rows: [calculatedBeforeCaptured && capturedBeforeMarketPreference ? freshAggregateRow : staleMarketRow],
+            rows: [capturedBeforeMarketPreference && filtersLiveOpsStrategy
+              ? rows.filter((row) => row.strategy_id === "live_ops").sort((left, right) => (
+                String(right.captured_at).localeCompare(String(left.captured_at))
+              ))[0]
+              : staleMarketRow],
           };
         }
         if (text.includes("count(*)::int AS count") && text.includes("FROM pnl_snapshots")) {
-          return { rows: [{ count: 2 }] };
+          return { rows: [{ count: text.includes("strategy_id = 'live_ops'")
+            ? rows.filter((row) => row.strategy_id === "live_ops").length
+            : rows.length }] };
         }
         throw new Error(`unexpected query: ${text}`);
       },
@@ -1837,13 +1865,26 @@ console.log(JSON.stringify({
 
     expect(status).toMatchObject({
       readStatus: "OK",
+      latestCapturedAt: "2026-06-18T13:33:29.000Z",
+      latestRealizedPnlKrw: "0",
+      latestUnrealizedPnlKrw: "0",
+      latestStatus: "PARTIAL",
+      snapshotCount: 3,
+    });
+    expect(queries[0]?.params).toEqual(["KRW-BTC"]);
+    expect(queries[0]?.text).toContain("strategy_id = 'live_ops'");
+
+    rows = [freshOtherStrategyAggregateRow, freshAggregateRow, staleMarketRow];
+    const aggregateFallbackStatus = await createLiveOpsCliDatabasePnlStatusProvider(pool, "KRW-BTC").getStatus();
+
+    expect(aggregateFallbackStatus).toMatchObject({
+      readStatus: "OK",
       latestCapturedAt: "2026-06-18T13:33:27.000Z",
       latestRealizedPnlKrw: "-120",
       latestUnrealizedPnlKrw: "30",
       latestStatus: "CALCULATED",
       snapshotCount: 2,
     });
-    expect(queries[0]?.params).toEqual(["KRW-BTC"]);
   });
 
   it("preflight recorder는 private read 결과를 DB reconcile evidence로 남긴다", async () => {
@@ -2299,6 +2340,14 @@ console.log(JSON.stringify({
       weeklyRealizedLossKrw: "0",
       capturedAt: latestPnlCapturedAt,
       source: "pnl_snapshots",
+    });
+    expect(result.orderIntents[0]).toMatchObject({
+      idempotencyKey: "live_ops_cleanup_probe:2026-06-19:upbit_krw_spot:KRW-BTC:BUY:100000000:0.0001:10000",
+      metadata: {
+        analysis_idempotency_key: "ops-aaaaaaaaaaaaaaaaaaaaaaaaaa",
+        idempotency_date_scope: "2026-06-19",
+        idempotency_date_source: "live_ops_runtime_preflight",
+      },
     });
   });
 

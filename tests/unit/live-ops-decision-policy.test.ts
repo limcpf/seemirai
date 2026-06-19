@@ -50,18 +50,20 @@ describe("production live ops decision policy resolver", () => {
       requestedPrice: "99999000",
       requestedQuantity: "0.0001",
       requestedNotional: "9999.9",
-      idempotencyKey: "live_ops_cleanup_probe:2026-06-16:upbit_krw_spot:KRW-BTC:BUY:99999000:0.0001:9999.9",
+      idempotencyKey: "live_ops_cleanup_probe:runtime_preflight_day:upbit_krw_spot:KRW-BTC:BUY:99999000:0.0001:9999.9",
       postOnly: true,
       timeInForce: "POST_ONLY",
       metadata: {
         expected_loss_bps_of_equity: "5",
-        idempotency_date_scope: "2026-06-16",
+        idempotency_date_scope: "runtime_preflight_day",
+        idempotency_date_source: "live_ops_runtime_preflight",
+        strategy_observed_at: observedAt,
         policy_id: "cleanup_probe",
       },
     });
   });
 
-  it("cleanup_probe strategy는 같은 후보라도 observedAt 날짜가 다르면 idempotency key를 분리한다", async () => {
+  it("cleanup_probe strategy는 observedAt 날짜가 달라도 runtime preflight 날짜 placeholder를 유지한다", async () => {
     const [strategy] = resolveLiveOpsDecisionPolicy({ config: defaultLiveOpsConfig }).strategies;
     if (strategy === undefined) throw new Error("expected cleanup strategy");
 
@@ -87,9 +89,9 @@ describe("production live ops decision policy resolver", () => {
     if (firstDecision.kind !== "ORDER_INTENT" || nextDecision.kind !== "ORDER_INTENT") {
       throw new Error("expected order intent");
     }
-    expect(firstDecision.orderIntents[0]?.idempotencyKey).toContain(":2026-06-16:");
-    expect(nextDecision.orderIntents[0]?.idempotencyKey).toContain(":2026-06-17:");
-    expect(firstDecision.orderIntents[0]?.idempotencyKey).not.toBe(nextDecision.orderIntents[0]?.idempotencyKey);
+    expect(firstDecision.orderIntents[0]?.idempotencyKey).toContain(":runtime_preflight_day:");
+    expect(nextDecision.orderIntents[0]?.idempotencyKey).toContain(":runtime_preflight_day:");
+    expect(firstDecision.orderIntents[0]?.idempotencyKey).toBe(nextDecision.orderIntents[0]?.idempotencyKey);
   });
 
   it("cleanup_probe strategy는 orderbook이 없으면 주문 후보 없이 HOLD로 닫는다", async () => {
