@@ -99,6 +99,7 @@ const requiredUnsafeSourceScanPatterns = [
   { label: "ord_type market order payload", pattern: /[\x27"]?ord_type[\x27"]?\s*[:=]\s*[\x27"]?market/u },
   { label: "ord_type best order payload", pattern: /[\x27"]?ord_type[\x27"]?\s*[:=]\s*[\x27"]?best/u },
   { label: "ord_type key/value order payload", pattern: /[\x27"]?key[\x27"]?\s*:\s*[\x27"]ord_type[\x27"][^\r\n{}]*,[^\r\n{}]*[\x27"]?value[\x27"]?\s*:\s*[\x27"]?(price|market|best)/u },
+  { label: "Korean market order allowance text", pattern: /시장가[^\r\n]*(허용|활성|enabled|true)/u },
   { label: "snake_case market order artifact", pattern: /[\x27"]?order_type[\x27"]?\s*[:=]\s*[\x27"]?(market|MARKET)/u },
   { label: "camelCase market order artifact", pattern: /[\x27"]?orderType[\x27"]?\s*[:=]\s*[\x27"]?(market|MARKET)/u },
   { label: "withdrawal enabled true", pattern: /[\x27"]?withdrawal_enabled[\x27"]?\s*[:=]\s*true/u },

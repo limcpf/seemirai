@@ -328,6 +328,8 @@ Telegram, TUI를 같은 lifecycle로 조립하고, 조건을 통과한 단일 `K
         `TELEGRAM_BOT_TOKEN=123:...` raw token literal도 필수 coverage로 요구한다.
   - [x] closeout source scan은 Upbit private client의 `{ key: "ord_type", value: "..." }` 주문 payload 표현도
         `price|market|best` 금지 후보로 요구한다.
+  - [x] closeout source scan은 한국어 user-facing/source 문자열에서 `시장가 ... 허용/활성/enabled/true` 형태의 위험 문구도
+        금지 후보로 요구하되, mapper의 정상 차단 메시지는 오탐하지 않는다.
   - [x] 관련 운영 문서와 unit/soak tests가 위 invariant를 설명하고 검증한다.
 
 ## 검증 방법
@@ -480,6 +482,8 @@ SEEMIRAI_RUN_LIVE_OPS_REAL_ARM_CLOSEOUT=1 \
   raw token source scan 필수 coverage로 본다.
 - 2026-06-19: Sub PR 14 review drain 5차 보강으로 Upbit private client의 query/body param 배열 표현
   `{ key: "ord_type", value: "price|market|best" }`도 금지 주문 payload source scan 필수 coverage로 본다.
+- 2026-06-19: Sub PR 14 review drain 6차 보강으로 한국어 `시장가` coverage를 복원하되, 정상 차단/수동검토 문구를
+  빈 출력 위반으로 만들지 않도록 `시장가[^\r\n]*(허용|활성|enabled|true)` 위험 문구 패턴으로 제한한다.
 
 ## 남은 이슈
 
