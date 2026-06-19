@@ -14,13 +14,27 @@ const closeoutSourceScanPaths = [
   "src/runtime/live-ops-analysis-decision",
   "src/application/live-autonomous-entry-runtime/service.ts",
   "src/infrastructure/upbit/private-client/client.ts",
+  "src/infrastructure/upbit/live-broker/service.ts",
   "scripts/run-live-ops.mjs",
   "scripts/run-live-ops-support.mjs",
-  "config",
+  "config/live-ops.example.json",
+  "config/live-ops.env.example",
 ].join(" ");
-const closeoutUnsafeSourceScanCommand = "rg --no-config -uuu -n '\"?ord_type\"?\\s*[:=]\\s*\"?price|\"?ord_type\"?\\s*[:=]\\s*\"?market|\"?ord_type\"?\\s*[:=]\\s*\"?best|\"?order_type\"?\\s*[:=]\\s*\"?(market|MARKET)|\"?orderType\"?\\s*[:=]\\s*\"?(market|MARKET)|\"?withdrawal_enabled\"?\\s*[:=]\\s*true|\"?deposit_enabled\"?\\s*[:=]\\s*true|\\/v1\\/deposits|\"?futures_enabled\"?\\s*[:=]\\s*true|\"?leverage_enabled\"?\\s*[:=]\\s*true|\"?market_order_enabled\"?\\s*[:=]\\s*true|\"?entry_market_order_enabled\"?\\s*[:=]\\s*true' "
+const closeoutSourceScanPathsWithoutLiveBroker = [
+  "src/runtime/live-ops-config",
+  "src/runtime/live-ops-decision-policy",
+  "src/runtime/live-ops-live-execution",
+  "src/runtime/live-ops-analysis-decision",
+  "src/application/live-autonomous-entry-runtime/service.ts",
+  "src/infrastructure/upbit/private-client/client.ts",
+  "scripts/run-live-ops.mjs",
+  "scripts/run-live-ops-support.mjs",
+  "config/live-ops.example.json",
+  "config/live-ops.env.example",
+].join(" ");
+const closeoutUnsafeSourceScanCommand = "rg --no-config -uuu -n '[\\x27\"]?ord_type[\\x27\"]?\\s*[:=]\\s*[\\x27\"]?price|[\\x27\"]?ord_type[\\x27\"]?\\s*[:=]\\s*[\\x27\"]?market|[\\x27\"]?ord_type[\\x27\"]?\\s*[:=]\\s*[\\x27\"]?best|[\\x27\"]?order_type[\\x27\"]?\\s*[:=]\\s*[\\x27\"]?(market|MARKET)|[\\x27\"]?orderType[\\x27\"]?\\s*[:=]\\s*[\\x27\"]?(market|MARKET)|[\\x27\"]?withdrawal_enabled[\\x27\"]?\\s*[:=]\\s*true|[\\x27\"]?deposit_enabled[\\x27\"]?\\s*[:=]\\s*true|\\/v1\\/deposits|\\/v1\\/withdraws|[\\x27\"]?futures_enabled[\\x27\"]?\\s*[:=]\\s*true|[\\x27\"]?leverage_enabled[\\x27\"]?\\s*[:=]\\s*true|[\\x27\"]?market_order_enabled[\\x27\"]?\\s*[:=]\\s*true|[\\x27\"]?entry_market_order_enabled[\\x27\"]?\\s*[:=]\\s*true' "
   + closeoutSourceScanPaths;
-const closeoutSecretSourceScanCommand = "rg --no-config -uuu -n 'SEEMIRAI_DATABASE_URL\\s*=\\s*postgres:\\/\\/[^\\s<:]+:[^\\s<@]+@|SEEMIRAI_UPBIT_ACCESS_KEY\\s*=\\s*[^<\\s]+|SEEMIRAI_UPBIT_SECRET_KEY\\s*=\\s*[^<\\s]+|SEEMIRAI_TELEGRAM_BOT_TOKEN\\s*=\\s*[0-9]+:[A-Za-z0-9_-]+|SEEMIRAI_TUI_CONTROL_TOKEN\\s*=\\s*[^<\\s]+|Authorization\\s*[:=]\\s*\"?(Bearer|bearer)\\s+[A-Za-z0-9._-]+|authorization\\s*[:=]\\s*\"?(Bearer|bearer)\\s+[A-Za-z0-9._-]+|raw_provider_payload|rawProviderPayload|raw_order_detail|rawOrderDetail' "
+const closeoutSecretSourceScanCommand = "rg --no-config -uuu -n 'SEEMIRAI_DATABASE_URL\\s*=\\s*postgres:\\/\\/[^\\s<:]+:[^\\s<@]+@|postgres(?:ql)?:\\/\\/[^:<\\s\"\\x27]+:[^@<\\s\"\\x27]+@|SEEMIRAI_UPBIT_ACCESS_KEY\\s*=\\s*[^<\\s]+|SEEMIRAI_UPBIT_SECRET_KEY\\s*=\\s*[^<\\s]+|SEEMIRAI_TELEGRAM_BOT_TOKEN\\s*=\\s*[0-9]+:[A-Za-z0-9_-]+|SEEMIRAI_TUI_CONTROL_TOKEN\\s*=\\s*[^<\\s]+|Authorization\\s*[:=]\\s*\"?(Bearer|bearer)\\s+[A-Za-z0-9._-]+|authorization\\s*[:=]\\s*\"?(Bearer|bearer)\\s+[A-Za-z0-9._-]+|raw_provider_payload|rawProviderPayload|raw_order_detail|rawOrderDetail' "
   + closeoutSourceScanPaths;
 
 describe("Issue 206 live:ops real-arm closeout script", () => {
@@ -172,6 +186,30 @@ describe("Issue 206 live:ops real-arm closeout script", () => {
     expect(getCheck(summary, "sourceSecurityScan")).toMatchObject({ status: "fail" });
   });
 
+  it("fails when source scan commands omit single-quoted order payload coverage", async () => {
+    const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-issue-206-closeout-source-scan-single-quote-order-"));
+    const manifestPath = await writeCloseoutManifest(artifactDir, {
+      manifestMutator: (manifest) => ({
+        ...manifest,
+        sourceScan: {
+          ...(manifest.sourceScan as Record<string, unknown>),
+          commands: [
+            "rg --no-config -uuu -n '\"?ord_type\"?\\s*[:=]\\s*\"?price|\"?ord_type\"?\\s*[:=]\\s*\"?market|\"?ord_type\"?\\s*[:=]\\s*\"?best|\"?order_type\"?\\s*[:=]\\s*\"?(market|MARKET)|\"?orderType\"?\\s*[:=]\\s*\"?(market|MARKET)|\"?withdrawal_enabled\"?\\s*[:=]\\s*true|\"?deposit_enabled\"?\\s*[:=]\\s*true|\\/v1\\/deposits|\\/v1\\/withdraws|\"?futures_enabled\"?\\s*[:=]\\s*true|\"?leverage_enabled\"?\\s*[:=]\\s*true|\"?market_order_enabled\"?\\s*[:=]\\s*true|\"?entry_market_order_enabled\"?\\s*[:=]\\s*true' "
+              + closeoutSourceScanPaths,
+            closeoutSecretSourceScanCommand,
+          ],
+        },
+      }),
+    });
+    const summary = await runScriptExpectingFailure(
+      ["--json", "--artifact-dir", artifactDir, "--manifest", manifestPath],
+      createReadyEnv(),
+    );
+
+    expect(summary.status).toBe("failed");
+    expect(getCheck(summary, "sourceSecurityScan")).toMatchObject({ status: "fail" });
+  });
+
   it("fails when source scan commands omit deposit path coverage", async () => {
     const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-issue-206-closeout-source-scan-deposit-"));
     const manifestPath = await writeCloseoutManifest(artifactDir, {
@@ -181,6 +219,30 @@ describe("Issue 206 live:ops real-arm closeout script", () => {
           ...(manifest.sourceScan as Record<string, unknown>),
           commands: [
             "rg --no-config -uuu -n '\"?ord_type\"?\\s*[:=]\\s*\"?price|\"?ord_type\"?\\s*[:=]\\s*\"?market|\"?ord_type\"?\\s*[:=]\\s*\"?best|\"?order_type\"?\\s*[:=]\\s*\"?(market|MARKET)|\"?orderType\"?\\s*[:=]\\s*\"?(market|MARKET)|\"?withdrawal_enabled\"?\\s*[:=]\\s*true|\"?futures_enabled\"?\\s*[:=]\\s*true|\"?leverage_enabled\"?\\s*[:=]\\s*true|\"?market_order_enabled\"?\\s*[:=]\\s*true|\"?entry_market_order_enabled\"?\\s*[:=]\\s*true' "
+              + closeoutSourceScanPaths,
+            closeoutSecretSourceScanCommand,
+          ],
+        },
+      }),
+    });
+    const summary = await runScriptExpectingFailure(
+      ["--json", "--artifact-dir", artifactDir, "--manifest", manifestPath],
+      createReadyEnv(),
+    );
+
+    expect(summary.status).toBe("failed");
+    expect(getCheck(summary, "sourceSecurityScan")).toMatchObject({ status: "fail" });
+  });
+
+  it("fails when source scan commands omit withdrawal API path coverage", async () => {
+    const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-issue-206-closeout-source-scan-withdraw-path-"));
+    const manifestPath = await writeCloseoutManifest(artifactDir, {
+      manifestMutator: (manifest) => ({
+        ...manifest,
+        sourceScan: {
+          ...(manifest.sourceScan as Record<string, unknown>),
+          commands: [
+            "rg --no-config -uuu -n '[\\x27\"]?ord_type[\\x27\"]?\\s*[:=]\\s*[\\x27\"]?price|[\\x27\"]?ord_type[\\x27\"]?\\s*[:=]\\s*[\\x27\"]?market|[\\x27\"]?ord_type[\\x27\"]?\\s*[:=]\\s*[\\x27\"]?best|[\\x27\"]?order_type[\\x27\"]?\\s*[:=]\\s*[\\x27\"]?(market|MARKET)|[\\x27\"]?orderType[\\x27\"]?\\s*[:=]\\s*[\\x27\"]?(market|MARKET)|[\\x27\"]?withdrawal_enabled[\\x27\"]?\\s*[:=]\\s*true|[\\x27\"]?deposit_enabled[\\x27\"]?\\s*[:=]\\s*true|\\/v1\\/deposits|[\\x27\"]?futures_enabled[\\x27\"]?\\s*[:=]\\s*true|[\\x27\"]?leverage_enabled[\\x27\"]?\\s*[:=]\\s*true|[\\x27\"]?market_order_enabled[\\x27\"]?\\s*[:=]\\s*true|[\\x27\"]?entry_market_order_enabled[\\x27\"]?\\s*[:=]\\s*true' "
               + closeoutSourceScanPaths,
             closeoutSecretSourceScanCommand,
           ],
@@ -207,6 +269,55 @@ describe("Issue 206 live:ops real-arm closeout script", () => {
             closeoutUnsafeSourceScanCommand,
             "rg --no-config -uuu -n 'SEEMIRAI_DATABASE_URL\\s*=\\s*postgres:\\/\\/[^\\s<:]+:[^\\s<@]+@|SEEMIRAI_UPBIT_ACCESS_KEY\\s*=\\s*[^<\\s]+|SEEMIRAI_UPBIT_SECRET_KEY\\s*=\\s*[^<\\s]+|SEEMIRAI_TELEGRAM_BOT_TOKEN\\s*=\\s*[0-9]+:[A-Za-z0-9_-]+|SEEMIRAI_TUI_CONTROL_TOKEN\\s*=\\s*[^<\\s]+|Authorization\\s*[:=]\\s*\"?(Bearer|bearer)\\s+[A-Za-z0-9._-]+|authorization\\s*[:=]\\s*\"?(Bearer|bearer)\\s+[A-Za-z0-9._-]+|raw_provider_payload|raw_order_detail' "
               + closeoutSourceScanPaths,
+          ],
+        },
+      }),
+    });
+    const summary = await runScriptExpectingFailure(
+      ["--json", "--artifact-dir", artifactDir, "--manifest", manifestPath],
+      createReadyEnv(),
+    );
+
+    expect(summary.status).toBe("failed");
+    expect(getCheck(summary, "sourceSecurityScan")).toMatchObject({ status: "fail" });
+  });
+
+  it("fails when source scan commands omit raw Postgres credential URL coverage", async () => {
+    const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-issue-206-closeout-source-scan-postgres-url-"));
+    const manifestPath = await writeCloseoutManifest(artifactDir, {
+      manifestMutator: (manifest) => ({
+        ...manifest,
+        sourceScan: {
+          ...(manifest.sourceScan as Record<string, unknown>),
+          commands: [
+            closeoutUnsafeSourceScanCommand,
+            "rg --no-config -uuu -n 'SEEMIRAI_DATABASE_URL\\s*=\\s*postgres:\\/\\/[^\\s<:]+:[^\\s<@]+@|SEEMIRAI_UPBIT_ACCESS_KEY\\s*=\\s*[^<\\s]+|SEEMIRAI_UPBIT_SECRET_KEY\\s*=\\s*[^<\\s]+|SEEMIRAI_TELEGRAM_BOT_TOKEN\\s*=\\s*[0-9]+:[A-Za-z0-9_-]+|SEEMIRAI_TUI_CONTROL_TOKEN\\s*=\\s*[^<\\s]+|Authorization\\s*[:=]\\s*\"?(Bearer|bearer)\\s+[A-Za-z0-9._-]+|authorization\\s*[:=]\\s*\"?(Bearer|bearer)\\s+[A-Za-z0-9._-]+|raw_provider_payload|rawProviderPayload|raw_order_detail|rawOrderDetail' "
+              + closeoutSourceScanPaths,
+          ],
+        },
+      }),
+    });
+    const summary = await runScriptExpectingFailure(
+      ["--json", "--artifact-dir", artifactDir, "--manifest", manifestPath],
+      createReadyEnv(),
+    );
+
+    expect(summary.status).toBe("failed");
+    expect(getCheck(summary, "sourceSecurityScan")).toMatchObject({ status: "fail" });
+  });
+
+  it("fails when source scan commands omit the Upbit live broker adapter path", async () => {
+    const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-issue-206-closeout-source-scan-live-broker-path-"));
+    const manifestPath = await writeCloseoutManifest(artifactDir, {
+      manifestMutator: (manifest) => ({
+        ...manifest,
+        sourceScan: {
+          ...(manifest.sourceScan as Record<string, unknown>),
+          commands: [
+            "rg --no-config -uuu -n '[\\x27\"]?ord_type[\\x27\"]?\\s*[:=]\\s*[\\x27\"]?price|[\\x27\"]?ord_type[\\x27\"]?\\s*[:=]\\s*[\\x27\"]?market|[\\x27\"]?ord_type[\\x27\"]?\\s*[:=]\\s*[\\x27\"]?best|[\\x27\"]?order_type[\\x27\"]?\\s*[:=]\\s*[\\x27\"]?(market|MARKET)|[\\x27\"]?orderType[\\x27\"]?\\s*[:=]\\s*[\\x27\"]?(market|MARKET)|[\\x27\"]?withdrawal_enabled[\\x27\"]?\\s*[:=]\\s*true|[\\x27\"]?deposit_enabled[\\x27\"]?\\s*[:=]\\s*true|\\/v1\\/deposits|\\/v1\\/withdraws|[\\x27\"]?futures_enabled[\\x27\"]?\\s*[:=]\\s*true|[\\x27\"]?leverage_enabled[\\x27\"]?\\s*[:=]\\s*true|[\\x27\"]?market_order_enabled[\\x27\"]?\\s*[:=]\\s*true|[\\x27\"]?entry_market_order_enabled[\\x27\"]?\\s*[:=]\\s*true' "
+              + closeoutSourceScanPathsWithoutLiveBroker,
+            "rg --no-config -uuu -n 'SEEMIRAI_DATABASE_URL\\s*=\\s*postgres:\\/\\/[^\\s<:]+:[^\\s<@]+@|postgres(?:ql)?:\\/\\/[^:<\\s\"\\x27]+:[^@<\\s\"\\x27]+@|SEEMIRAI_UPBIT_ACCESS_KEY\\s*=\\s*[^<\\s]+|SEEMIRAI_UPBIT_SECRET_KEY\\s*=\\s*[^<\\s]+|SEEMIRAI_TELEGRAM_BOT_TOKEN\\s*=\\s*[0-9]+:[A-Za-z0-9_-]+|SEEMIRAI_TUI_CONTROL_TOKEN\\s*=\\s*[^<\\s]+|Authorization\\s*[:=]\\s*\"?(Bearer|bearer)\\s+[A-Za-z0-9._-]+|authorization\\s*[:=]\\s*\"?(Bearer|bearer)\\s+[A-Za-z0-9._-]+|raw_provider_payload|rawProviderPayload|raw_order_detail|rawOrderDetail' "
+              + closeoutSourceScanPathsWithoutLiveBroker,
           ],
         },
       }),

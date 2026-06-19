@@ -152,17 +152,20 @@ closeout evidence로 인정하지 않는다.
 `withdrawalEnabled: false`처럼 허용 scope와 출금 권한 부재를 redacted safe summary로 기록한다. source/security scan은 실제 `rg -n`
 명령으로 repository root에서 runtime source path인 `src/runtime/live-ops-config src/runtime/live-ops-decision-policy
 src/runtime/live-ops-live-execution src/runtime/live-ops-analysis-decision src/application/live-autonomous-entry-runtime/service.ts
-src/infrastructure/upbit/private-client/client.ts scripts/run-live-ops.mjs scripts/run-live-ops-support.mjs config`
-전체 범위의 금지 주문 경계 전체(`"?ord_type"?\s*[:=]\s*"?price`, `"?ord_type"?\s*[:=]\s*"?market`,
-`"?ord_type"?\s*[:=]\s*"?best`, `"?order_type"?\s*[:=]\s*"?(market|MARKET)`,
-`"?orderType"?\s*[:=]\s*"?(market|MARKET)`, `"?withdrawal_enabled"?\s*[:=]\s*true`,
-`"?deposit_enabled"?\s*[:=]\s*true`, `\/v1\/deposits`,
-`"?futures_enabled"?\s*[:=]\s*true`, `"?leverage_enabled"?\s*[:=]\s*true`,
-`"?market_order_enabled"?\s*[:=]\s*true`, `"?entry_market_order_enabled"?\s*[:=]\s*true`)와
-secret/raw payload 후보 전체(`SEEMIRAI_DATABASE_URL=postgres://...:<password>@...`, Upbit access/secret key literal,
-Telegram bot token literal, TUI control token literal, `Authorization: Bearer ...`, `authorization: bearer ...`,
-`raw_provider_payload`, `rawProviderPayload`, `raw_order_detail`, `rawOrderDetail`)를
-스캔한 증거를 포함해야 한다.
+src/infrastructure/upbit/private-client/client.ts src/infrastructure/upbit/live-broker/service.ts scripts/run-live-ops.mjs
+scripts/run-live-ops-support.mjs config`
+전체 범위의 금지 주문 경계 전체(`[\x27"]?ord_type[\x27"]?\s*[:=]\s*[\x27"]?price`,
+`[\x27"]?ord_type[\x27"]?\s*[:=]\s*[\x27"]?market`, `[\x27"]?ord_type[\x27"]?\s*[:=]\s*[\x27"]?best`,
+`[\x27"]?order_type[\x27"]?\s*[:=]\s*[\x27"]?(market|MARKET)`,
+`[\x27"]?orderType[\x27"]?\s*[:=]\s*[\x27"]?(market|MARKET)`,
+`[\x27"]?withdrawal_enabled[\x27"]?\s*[:=]\s*true`, `[\x27"]?deposit_enabled[\x27"]?\s*[:=]\s*true`,
+`\/v1\/deposits`, `\/v1\/withdraws`, `[\x27"]?futures_enabled[\x27"]?\s*[:=]\s*true`,
+`[\x27"]?leverage_enabled[\x27"]?\s*[:=]\s*true`, `[\x27"]?market_order_enabled[\x27"]?\s*[:=]\s*true`,
+`[\x27"]?entry_market_order_enabled[\x27"]?\s*[:=]\s*true`)와
+secret/raw payload 후보 전체(`SEEMIRAI_DATABASE_URL=postgres://...:<password>@...`,
+`postgres://...:<password>@...` 또는 `postgresql://...:<password>@...`, Upbit access/secret key literal, Telegram bot token literal,
+TUI control token literal, `Authorization: Bearer ...`, `authorization: bearer ...`, `raw_provider_payload`, `rawProviderPayload`,
+`raw_order_detail`, `rawOrderDetail`)를 스캔한 증거를 포함해야 한다.
 일반 영어 단어 `market`은 정상 market 설정/문서에도 반복되므로 empty-match가 필요한 금지 주문 scan term으로 쓰지 않고,
 정상 차단 설정에 반복되는 `market_order` 단독 term도 필수 empty-match scan으로 쓰지 않는다. 금지 scope, 시장가, futures/leverage 같은
 도메인 단어도 guard와 문서에 정상적으로 등장하므로, source scan은 단어 자체가 아니라 운영 runtime에서 위험 toggle이 `true`로 열리는

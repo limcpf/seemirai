@@ -556,6 +556,20 @@ import {
 } from "./scripts/run-live-ops-support.mjs";
 
 const observedAt = "2026-06-15T01:00:00.000Z";
+const NativeDate = Date;
+globalThis.Date = class FixedDate extends NativeDate {
+  constructor(...args) {
+    if (args.length === 0) {
+      super(observedAt);
+      return;
+    }
+    super(...args);
+  }
+
+  static now() {
+    return new NativeDate(observedAt).getTime();
+  }
+};
 const calls = { openOrders: 0, balances: 0 };
 function createCleanPrivateReadProvider() {
   return {
@@ -2773,6 +2787,110 @@ console.log(JSON.stringify({
     expect(submittedRequests).toHaveLength(0);
   });
 
+  it("cleanup_probe runtime evidence 보강은 다른 후보의 stale CostModel order_intent를 현재 후보로 다시 쓰지 않는다", async () => {
+    const supportModulePath = path.join(process.cwd(), "scripts/run-live-ops-support.mjs");
+    const {
+      evaluateLiveOpsCliLiveExecution,
+    } = await import(supportModulePath);
+    const executionAt = "2026-06-15T00:00:01.000Z";
+    const runtimeDecisionKey = "live_ops_cleanup_probe:2026-06-15:upbit_krw_spot:KRW-BTC:BUY:100000000:0.0001:10000";
+    const staleEvidenceIntent = createCleanupRuntimeIntentWithKey(runtimeDecisionKey, "2026-06-15") as Record<string, any>;
+    staleEvidenceIntent.costSnapshot = {
+      ...staleEvidenceIntent.costSnapshot,
+      trade_allowed: true,
+      reason_code: "cost_margin_ok",
+      order_intent: {
+        ...staleEvidenceIntent.costSnapshot.order_intent,
+        requested_price: "99000000",
+        requested_notional: "9900",
+      },
+    };
+    const submittedRequests: Array<Record<string, any>> = [];
+
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(executionAt));
+    try {
+      const summary = await evaluateLiveOpsCliLiveExecution({
+        config: {
+          live_trading_enabled: true,
+          universe: { markets: ["KRW-BTC"], default_market: "KRW-BTC" },
+          budget: {
+            max_order_krw: "10000",
+            daily_autonomous_notional_limit_krw: "30000",
+            max_open_position_notional_krw: "30000",
+          },
+        },
+        fixtureSmoke: false,
+        analysisDecision: {
+          ready: true,
+          decisionCategory: "ORDER_INTENT",
+          orderIntentCount: 1,
+        },
+        marketData: {
+          ready: true,
+          latestHeartbeatAt: executionAt,
+          referencePrice: "100000000",
+        },
+        env: {
+          SEEMIRAI_UPBIT_ACCESS_KEY: "fake-access-key",
+          SEEMIRAI_UPBIT_SECRET_KEY: "fake-secret-key",
+          SEEMIRAI_UPBIT_KEY_SCOPE: "자산조회,주문조회,주문하기",
+          SEEMIRAI_UPBIT_KEY_SCOPE_EVIDENCE_ID: "scope-evidence",
+        },
+        orderIntents: [staleEvidenceIntent],
+        entryRuntime: {
+          async submitEntryCandidate(request: Record<string, any>) {
+            submittedRequests.push(request);
+            return {
+              status: "SUBMITTED",
+              attemptId: request.idempotencyKey,
+              idempotencyKey: request.idempotencyKey,
+              brokerOrderId: "unexpected-stale-cost-evidence-order",
+              message: "unexpected submit",
+              action: "none",
+              events: [],
+            };
+          },
+        },
+        executionStatus: {
+          killSwitchActive: false,
+          reconcileFresh: true,
+          evidenceId: "execution-status-evidence",
+        },
+        postSubmitReadiness: {
+          reconcileReady: true,
+          telegramReady: true,
+          evidenceId: "post-submit-readiness-evidence",
+        },
+        budgetSnapshot: {
+          maxOrderKrw: "10000",
+          dailyAutonomousNotionalLimitKrw: "30000",
+          dailyAutonomousNotionalUsedKrw: "0",
+          openPositionNotionalKrw: "0",
+          maxOpenPositionNotionalKrw: "30000",
+          capturedAt: executionAt,
+        },
+        lossSnapshot: {
+          dailyRealizedLossKrw: "0",
+          weeklyRealizedLossKrw: "0",
+          capturedAt: executionAt,
+        },
+      });
+
+      expect(summary).toMatchObject({
+        status: "blocked",
+        submittedOrderCount: 0,
+      });
+      expect(summary.checks).toContainEqual(expect.objectContaining({
+        code: "live_ops_order_intent_blocked",
+      }));
+    } finally {
+      vi.useRealTimers();
+    }
+
+    expect(submittedRequests).toHaveLength(0);
+  });
+
   it("production preflight는 오래된 clean reconcile도 같은 tick evidence로 갱신한다", async () => {
     const supportModulePath = path.join(process.cwd(), "scripts/run-live-ops-support.mjs");
     const {
@@ -4237,6 +4355,87 @@ console.log(JSON.stringify({
     expect(summary.checks).toContainEqual(expect.objectContaining({
       code: "live_ops_pnl_status_requires_review",
     }));
+  });
+
+  it("post-submit PnL summary는 provider read 완료 후 stale해진 snapshot을 ready로 낮추지 않는다", async () => {
+    const supportModulePath = path.join(process.cwd(), "scripts/run-live-ops-support.mjs");
+    const {
+      evaluateLiveOpsCliReconcilePnlStatus,
+    } = await import(supportModulePath);
+    const observedAt = "2026-06-18T13:33:27.000Z";
+
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-06-18T13:34:05.000Z"));
+    try {
+      const summary = await evaluateLiveOpsCliReconcilePnlStatus({
+        config: {
+          universe: { default_market: "KRW-BTC" },
+        },
+        fixtureSmoke: false,
+        liveExecution: {
+          status: "cancel_confirmed",
+          ready: true,
+          liveOrderCapable: true,
+          attemptId: "ops-attempt-1",
+          brokerOrderId: "upbit-order-1",
+          idempotencyKey: "ops-idem-1",
+          reservedNotionalKrw: "10000",
+          budgetUsageAfterReservationKrw: "10000",
+        },
+        privateReadProvider: {
+          async listOpenOrders() {
+            return [];
+          },
+          async getBalances() {
+            return {
+              exchangeId: "upbit_krw_spot",
+              capturedAt: observedAt,
+              balances: [{ currency: "KRW", available: "40000", locked: "0", total: "40000" }],
+            };
+          },
+        },
+        reconcileStatusProvider: {
+          async getReconcileStatus() {
+            return {
+              lastReconcileAt: observedAt,
+              result: "SUCCESS",
+              mismatchCount: 0,
+              openOrderCount: 0,
+              balanceStatus: "OK",
+              websocketStatus: "CONNECTED",
+              actionRequired: "없음",
+              message: "cleanup 뒤 계정 상태가 정상입니다.",
+            };
+          },
+        },
+        pnlStatusProvider: {
+          async getStatus() {
+            return {
+              readStatus: "OK",
+              latestCapturedAt: observedAt,
+              latestRealizedPnlKrw: "0",
+              latestUnrealizedPnlKrw: "0",
+              latestStatus: "CALCULATED",
+              snapshotCount: 1,
+            };
+          },
+        },
+        budgetSnapshot: {
+          dailyAutonomousNotionalUsedKrw: "0",
+        },
+        observedAt,
+      });
+
+      expect(summary).toMatchObject({
+        status: "manual_review_required",
+        ready: false,
+        manualReviewRequired: true,
+        pnlStatus: "pnl_snapshot_stale",
+        budgetUsedKrw: "10000",
+      });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("terminal cancel no-fill은 stale CALCULATED PnL row를 수동 점검으로 올리지 않는다", async () => {

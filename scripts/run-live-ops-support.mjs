@@ -943,6 +943,16 @@ function attachLiveOpsCliCleanupRuntimeApprovalEvidence(intent) {
   const evidence = createLiveOpsCliOrderIntentEvidence(intent);
   const costSnapshot = intent.costSnapshot ?? {};
   const riskApproval = intent.riskApproval ?? {};
+  const costOrderIntentEvidence = resolveLiveOpsCliCleanupRuntimeApprovalOrderIntentEvidence({
+    existingEvidence: costSnapshot.order_intent,
+    intent,
+    runtimeEvidence: evidence,
+  });
+  const riskOrderIntentEvidence = resolveLiveOpsCliCleanupRuntimeApprovalOrderIntentEvidence({
+    existingEvidence: riskApproval.order_intent,
+    intent,
+    runtimeEvidence: evidence,
+  });
   return {
     ...intent,
     costSnapshot: {
@@ -953,7 +963,7 @@ function attachLiveOpsCliCleanupRuntimeApprovalEvidence(intent) {
       // CostModel이 이미 차단한 후보는 날짜 scope 보정 중 승인 evidence로 바꾸지 않는다.
       trade_allowed: costSnapshot.trade_allowed ?? true,
       reason_code: costSnapshot.reason_code ?? "cost_margin_ok",
-      order_intent: evidence,
+      order_intent: costOrderIntentEvidence,
     },
     riskApproval: {
       ...riskApproval,
@@ -964,9 +974,35 @@ function attachLiveOpsCliCleanupRuntimeApprovalEvidence(intent) {
       failed_evaluation_reason_codes: Array.isArray(riskApproval.failed_evaluation_reason_codes)
         ? riskApproval.failed_evaluation_reason_codes
         : [],
-      order_intent: evidence,
+      order_intent: riskOrderIntentEvidence,
     },
   };
+}
+
+function resolveLiveOpsCliCleanupRuntimeApprovalOrderIntentEvidence({ existingEvidence, intent, runtimeEvidence }) {
+  if (!isNonEmptyRecord(existingEvidence)) {
+    return runtimeEvidence;
+  }
+  if (isLiveOpsCliCleanupRuntimeApprovalOrderIntentEvidenceRefreshable(existingEvidence, intent)) {
+    // 같은 후보의 분석일 key만 runtime preflight 날짜 key로 좁혀야 하므로 다른 가격/수량 evidence는 보존해 guard에서 차단한다.
+    return runtimeEvidence;
+  }
+  return existingEvidence;
+}
+
+function isLiveOpsCliCleanupRuntimeApprovalOrderIntentEvidenceRefreshable(evidence, intent) {
+  if (isLiveOpsCliOrderIntentEvidenceMatch(evidence, intent)) {
+    return true;
+  }
+
+  const analysisIdempotencyKey = intent?.metadata?.analysis_idempotency_key;
+  if (!hasMeaningfulValue(analysisIdempotencyKey)) {
+    return false;
+  }
+  return isLiveOpsCliOrderIntentEvidenceMatch(evidence, {
+    ...intent,
+    idempotencyKey: analysisIdempotencyKey,
+  });
 }
 
 function createLiveOpsCliCleanupProbeRuntimeDecisionKey({ intent, observedAt }) {
@@ -5533,6 +5569,7 @@ async function collectLiveOpsCliPrivateReadStatusSummary({
     });
   }
 
+  const postReadObservedAt = new Date().toISOString();
   const orders = openOrders;
   const openExposureKrw = sumLiveOpsCliOpenExposureKrw(orders);
   const resolvedReconcileStatus = normalizeLiveOpsCliReconcileStatus(reconcileStatus, {
@@ -5540,7 +5577,7 @@ async function collectLiveOpsCliPrivateReadStatusSummary({
     openOrders: orders,
     liveExecution,
   });
-  const resolvedPnlStatus = normalizeLiveOpsCliPnlStatus(pnlStatus, { liveExecution, observedAt });
+  const resolvedPnlStatus = normalizeLiveOpsCliPnlStatus(pnlStatus, { liveExecution, observedAt: postReadObservedAt });
   const manualReviewRequired = resolvedReconcileStatus.manualReviewRequired || resolvedPnlStatus.manualReviewRequired;
   const budgetUsedKrw = resolveLiveOpsCliBudgetUsedKrw({
     budgetSnapshot,
@@ -5556,7 +5593,7 @@ async function collectLiveOpsCliPrivateReadStatusSummary({
     liveOrderCapable: liveExecution.liveOrderCapable === true && !manualReviewRequired,
     latestReconcileAt: resolvedReconcileStatus.lastReconcileAt,
     latestPnlAt: resolvedPnlStatus.latestCapturedAt,
-    latestStatusAt: observedAt,
+    latestStatusAt: postReadObservedAt,
     reconcileStatus: resolvedReconcileStatus.result,
     reconcileStatusLabel: resolvedReconcileStatus.statusLabel,
     pnlStatus: resolvedPnlStatus.status,

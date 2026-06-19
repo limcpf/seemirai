@@ -318,11 +318,12 @@ Telegram, TUI를 같은 lifecycle로 조립하고, 조건을 통과한 단일 `K
   - [x] TypeScript `cleanup_probe` strategy는 날짜 placeholder key만 만들고, production preflight가 실제 reservation wall-clock 날짜로
         `strategy:date:exchange:market:side:price:qty:notional` key를 확정해 자정 경계 중복 주문을 막는다.
   - [x] runtime 날짜 scope 보정은 기존 `costSnapshot.trade_allowed=false`나 `riskApproval.approved=false` 같은 명시 차단 evidence를
-        승인 evidence로 덮어쓰지 않는다.
+        승인 evidence로 덮어쓰지 않는다. 같은 주문 후보의 날짜 key만 runtime preflight key로 갱신하고, 가격/수량/마켓이 다른 stale
+        `order_intent` evidence는 보존해 broker guard에서 차단한다.
   - [x] terminal cancel/no-fill cleanup은 새 체결이 없다는 closeout evidence가 있으므로 stale `CALCULATED` PnL row만으로
         manual review를 열지 않는다. 단, `PARTIAL`/manual-review snapshot status는 계속 수동 확인 대상으로 둔다.
-  - [x] closeout source/security scan은 입금 toggle/Upbit deposit endpoint와 camelCase raw provider/order payload field도 필수
-        coverage로 요구한다.
+  - [x] closeout source/security scan은 단일따옴표 주문 payload, Upbit live broker adapter 경로, 입출금 endpoint/toggle,
+        raw Postgres credential URL, camelCase raw provider/order payload field도 필수 coverage로 요구한다.
   - [x] 관련 운영 문서와 unit/soak tests가 위 invariant를 설명하고 검증한다.
 
 ## 검증 방법
@@ -460,7 +461,11 @@ SEEMIRAI_RUN_LIVE_OPS_REAL_ARM_CLOSEOUT=1 \
   시작 직후 쓰인 PnL row를 위해 1초 이내 future skew만 허용하고, cleanup probe의 실제 key 날짜는 runtime preflight wall clock에서 확정한다.
 - 2026-06-19: Sub PR 14 review drain 보강으로 cleanup runtime evidence 보정은 기존 cost/risk 차단값을 보존한다. terminal cancel/no-fill
   closeout은 stale `CALCULATED` PnL row를 수동 점검으로 승격하지 않지만, 계산 미완료 PnL status는 정상 closeout으로 낮추지 않는다.
-  closeout source/security scan은 `deposit_enabled=true`, `/v1/deposits`, `rawProviderPayload`, `rawOrderDetail`도 필수 coverage로 본다.
+- 2026-06-19: Sub PR 14 review drain 2차 보강으로 cleanup runtime evidence 보정은 같은 후보의 분석일 key를 runtime 날짜 key로
+  바꾸는 경우에만 `order_intent`를 갱신한다. 다른 가격/수량/마켓 stale approval은 현재 후보 approval로 재작성하지 않고
+  broker guard가 차단하게 둔다. PnL freshness는 provider read 완료 후 시각을 기준으로 판단한다. closeout source/security scan은
+  단일따옴표 주문 payload, `/v1/withdraws`, raw `postgres://user:pass@...`/`postgresql://user:pass@...` credential URL,
+  `src/infrastructure/upbit/live-broker/service.ts`도 필수 coverage로 본다.
 
 ## 남은 이슈
 
