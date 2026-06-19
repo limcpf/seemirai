@@ -64,6 +64,27 @@ describe("Issue 206 live:ops real-arm closeout script", () => {
     expect(getCheck(summary, "readinessAudit").status).toBe("ok");
   });
 
+  it("passes when source scan omits generic market text and keeps explicit order-risk terms", async () => {
+    const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-issue-206-closeout-source-scan-no-generic-market-"));
+    const manifestPath = await writeCloseoutManifest(artifactDir, {
+      manifestMutator: (manifest) => ({
+        ...manifest,
+        sourceScan: {
+          ...(manifest.sourceScan as Record<string, unknown>),
+          commands: [
+            "rg --no-config -uuu -n \"ord_type|시장가|best|withdraw|출금|deposit|입금|leverage|futures|margin\" src scripts config docs",
+            "rg --no-config -uuu -n \"access_key|accessKey|ACCESS_KEY|api_key|apiKey|API_KEY|secret_key|secretKey|SECRET_KEY|api_secret|apiSecret|API_SECRET|Authorization|authorization|Bearer|bearer|JWT|jwt|telegram_bot_token|botToken|TELEGRAM_BOT_TOKEN|SEEMIRAI_TUI_CONTROL_TOKEN|tuiControlToken|tui_control_token|DATABASE_URL|databasePassword|database_password|postgresPassword|postgres_password|POSTGRES_PASSWORD|db_password|pg_password|raw_provider|rawProvider|raw_order|rawOrder|raw_update|rawUpdate\" src scripts config docs",
+          ],
+        },
+      }),
+    });
+    const { stdout } = await runScript(["--json", "--artifact-dir", artifactDir, "--manifest", manifestPath], createReadyEnv());
+    const summary = JSON.parse(stdout) as LiveOpsRealArmCloseoutSummary;
+
+    expect(summary.status).toBe("passed");
+    expect(getCheck(summary, "sourceSecurityScan").status).toBe("ok");
+  });
+
   it("fails when the closeout order is not BUY LIMIT post_only KRW-BTC", async () => {
     const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-issue-206-closeout-policy-"));
     const manifestPath = await writeCloseoutManifest(artifactDir, {
@@ -4011,7 +4032,7 @@ async function writeCloseoutManifest(
       cwd: process.cwd(),
       repositoryRoot: process.cwd(),
       commands: [
-        "rg --no-config -uuu -n \"ord_type|market|시장가|best|withdraw|출금|deposit|입금|leverage|futures|margin\" src scripts config docs",
+        "rg --no-config -uuu -n \"ord_type|시장가|best|withdraw|출금|deposit|입금|leverage|futures|margin\" src scripts config docs",
         "rg --no-config -uuu -n \"access_key|accessKey|ACCESS_KEY|api_key|apiKey|API_KEY|secret_key|secretKey|SECRET_KEY|api_secret|apiSecret|API_SECRET|Authorization|authorization|Bearer|bearer|JWT|jwt|telegram_bot_token|botToken|TELEGRAM_BOT_TOKEN|SEEMIRAI_TUI_CONTROL_TOKEN|tuiControlToken|tui_control_token|DATABASE_URL|databasePassword|database_password|postgresPassword|postgres_password|POSTGRES_PASSWORD|db_password|pg_password|raw_provider|rawProvider|raw_order|rawOrder|raw_update|rawUpdate\" src scripts config docs",
       ],
       unsafeMatches: [],

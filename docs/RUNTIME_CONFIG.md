@@ -324,7 +324,8 @@ endpoint가 공통으로 사용할 인증 guard만 고정한다.
 - daily report: `jobs`의 `report.daily` 최신 row에서 읽은 last status, report date, next run time, updated time,
   조회 상태의 한국어 label/message/action
 - PnL: `pnl_snapshots`의 최신 safe summary에서 평가자산, 실현/미실현 손익, drawdown, snapshot count,
-  조회 상태의 한국어 label/message/action
+  조회 상태의 한국어 label/message/action. production 실주문 preflight의 손실 증거로 쓰려면 `readStatus=OK`뿐 아니라
+  완료 계열 snapshot status와 30초 freshness를 함께 만족해야 하며, `PARTIAL`/manual-review/unavailable snapshot은 0 손실로 보정하지 않는다.
 
 `/status`는 `secrets`, local control token, Telegram token, raw headers, raw order detail, raw position detail을 반환하지 않는다.
 kill switch가 `NEW_ORDERS_BLOCKED` 또는 `HARD_STOP` 같은 active 상태여도 `/readyz` 실패로 표현하지 않고
@@ -821,8 +822,8 @@ policy resolver 구현 경계는 `src/runtime/live-ops-decision-policy.ts`다. r
 orderbook에서 best bid를 읽고, configured tick offset만큼 낮춘 `BUY + LIMIT + POST_ONLY` 후보를 만든다. orderbook이 없거나 가격/수량/
 명목금액이 최소 주문금액, 예산, 호가 단위, `KRW-BTC` 단일 universe 조건을 만족하지 못하면 주문 후보 없이 HOLD/BLOCK evidence로 닫는다.
 cleanup probe decision key는 같은 날짜 안의 재시작 멱등성을 유지하되, 날짜 scope를 포함해 전날 reservation 파일이 다음 날 신규 cleanup
-attempt를 영구 차단하지 않게 한다. 이 날짜 scope는 최신 market heartbeat가 아니라 decision 실행 wall clock에서 계산해 자정 직후
-전날 heartbeat가 남아 있어도 새 운영일 attempt를 전날 reservation과 분리한다.
+attempt를 영구 차단하지 않게 한다. production CLI helper는 최신 market heartbeat가 아니라 제출 직전 wall clock에서 날짜 scope를
+계산하고, TypeScript `cleanup_probe` strategy는 `StrategyContext.observedAt` 날짜 scope를 key와 metadata에 포함한다.
 
 `LiveOpsLiveExecution`은 analysis/decision safe summary와 내부 order intent 입력, 최신 budget/loss/cost/risk/reconcile snapshot을 기존
 `LiveAutonomousEntryRuntime` 요청으로 낮추는 adapter다. analysis가 blocked이거나 BLOCK decision이면 하위 runtime 호출 없이 blocked

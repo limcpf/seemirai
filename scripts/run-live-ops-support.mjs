@@ -19,6 +19,7 @@ const liveOpsCliCleanupCancelPollCount = 5;
 const liveOpsCliCleanupCancelPollIntervalMs = 1000;
 const liveOpsCliDailyReservationLockLeaseMs = 5 * 60 * 1000;
 const liveOpsCliPreflightReconcileFreshnessMs = 30_000;
+const liveOpsCliPreflightPnlFreshnessMs = 30_000;
 const liveOpsCliProcessOwner = createLiveOpsCliProcessOwnerSnapshot(process.pid);
 const liveOpsWorkerLabels = {
   db_readiness: "DB readiness",
@@ -1074,14 +1075,30 @@ function readLiveOpsCliMarketBaseCurrency(market) {
 function createLiveOpsCliLossSnapshotFromPnlStatus({ pnlStatus, balanceSnapshot, observedAt }) {
   if (pnlStatus?.readStatus !== "OK" || !isDecimalString(pnlStatus?.latestRealizedPnlKrw)) {
     // PnL worker가 OK snapshot을 쓰기 전에는 손실을 0으로 보정하지 않고 submit 전 loss guard에서 닫는다.
-    return {
-      dailyRealizedLossKrw: null,
-      weeklyRealizedLossKrw: null,
-      capturedAt: pnlStatus?.latestCapturedAt ?? balanceSnapshot?.capturedAt ?? observedAt,
-      source: "pnl_status_not_ready",
-      ready: false,
+    return createLiveOpsCliUnavailableLossSnapshot({
+      pnlStatus,
+      balanceSnapshot,
+      observedAt,
       reasonCode: pnlStatus?.reason ?? "pnl_status_not_ok",
-    };
+    });
+  }
+  if (!isLiveOpsCliReadyPnlSnapshotStatus(pnlStatus.latestStatus)) {
+    // PARTIAL/manual-review PnL row는 DB 조회가 성공했어도 손실 한도 증거로 쓰면 신규 주문이 잘못 열린다.
+    return createLiveOpsCliUnavailableLossSnapshot({
+      pnlStatus,
+      balanceSnapshot,
+      observedAt,
+      reasonCode: "pnl_snapshot_status_not_ready",
+    });
+  }
+  if (!isLiveOpsCliFreshPnlStatus(pnlStatus, observedAt)) {
+    // 오래된 PnL row는 현재 preflight tick의 realized loss 증거가 아니므로 submit 전 loss guard에서 닫는다.
+    return createLiveOpsCliUnavailableLossSnapshot({
+      pnlStatus,
+      balanceSnapshot,
+      observedAt,
+      reasonCode: "pnl_snapshot_stale",
+    });
   }
   const realizedPnl = isDecimalString(pnlStatus?.latestRealizedPnlKrw)
     ? new Decimal(pnlStatus.latestRealizedPnlKrw)
@@ -1093,6 +1110,37 @@ function createLiveOpsCliLossSnapshotFromPnlStatus({ pnlStatus, balanceSnapshot,
     capturedAt: pnlStatus?.latestCapturedAt ?? balanceSnapshot?.capturedAt ?? observedAt,
     source: pnlStatus?.readStatus === "OK" ? "pnl_snapshots" : "private_read_clean_start",
   };
+}
+
+function createLiveOpsCliUnavailableLossSnapshot({ pnlStatus, balanceSnapshot, observedAt, reasonCode }) {
+  return {
+    dailyRealizedLossKrw: null,
+    weeklyRealizedLossKrw: null,
+    capturedAt: pnlStatus?.latestCapturedAt ?? balanceSnapshot?.capturedAt ?? observedAt,
+    source: "pnl_status_not_ready",
+    ready: false,
+    reasonCode,
+  };
+}
+
+function isLiveOpsCliReadyPnlSnapshotStatus(status) {
+  if (!hasMeaningfulValue(status)) {
+    return true;
+  }
+  return ["OK", "SUCCESS", "COMPLETE", "COMPLETED", "CALCULATED"].includes(String(status).toUpperCase());
+}
+
+function isLiveOpsCliFreshPnlStatus(pnlStatus, observedAt, maxAgeMs = liveOpsCliPreflightPnlFreshnessMs) {
+  if (!hasMeaningfulValue(pnlStatus?.latestCapturedAt)) {
+    return false;
+  }
+  const observedTime = Date.parse(String(observedAt));
+  const capturedTime = Date.parse(String(pnlStatus.latestCapturedAt));
+  if (!Number.isFinite(observedTime) || !Number.isFinite(capturedTime)) {
+    return false;
+  }
+  const ageMs = observedTime - capturedTime;
+  return ageMs >= 0 && ageMs <= maxAgeMs;
 }
 
 function readLiveOpsCliEquityKrw(balanceSnapshot, pnlStatus, config) {

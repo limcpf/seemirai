@@ -299,6 +299,24 @@ Telegram, TUI를 같은 lifecycle로 조립하고, 조건을 통과한 단일 `K
   - [x] cleanup probe decision key는 실행 wall clock 날짜 scope를 포함해 전날 reservation 파일이 다음 날 attempt를 영구 차단하지 않게 한다.
   - [x] 관련 운영 문서와 unit tests가 위 invariant를 설명하고 검증한다.
 
+### Sub PR 14: PnL/source scan/cleanup key final guard 보강
+
+- 목표: final PR review에서 발견된 PnL snapshot 정책과 closeout source scan 오탐, TypeScript cleanup probe idempotency scope gap을 닫는다.
+- 제외 범위:
+  - 신규 전략, budget 확대, BTC 외 market 활성화.
+  - 시장가/best order, 출금/입금/선물/레버리지/마진 권한 허용.
+  - final main PR merge.
+- DnD:
+  - [x] closeout validator의 필수 unsafe source scan family에서 일반 영어 단어 `market`을 제거하고, `ord_type`/`시장가`/`best`처럼
+        금지 주문 의미가 분명한 term만 empty-match coverage로 요구한다.
+  - [x] production preflight PnL loss snapshot은 `readStatus=OK`와 숫자 realized PnL만으로 열리지 않고, 완료 계열 snapshot status와
+        30초 freshness를 함께 요구한다.
+  - [x] `PARTIAL`, `MANUAL_REVIEW_REQUIRED`, `UNAVAILABLE` 같은 PnL snapshot status는 손실 증거로 쓰지 않고 `ready=false`로 낮춰
+        broker 제출 전 loss guard에서 차단한다.
+  - [x] TypeScript `cleanup_probe` strategy idempotency key도 `StrategyContext.observedAt` 날짜 scope를 포함해 익일 같은 후보가 전날
+        key와 충돌하지 않는다.
+  - [x] 관련 운영 문서와 unit/soak tests가 위 invariant를 설명하고 검증한다.
+
 ## 검증 방법
 
 공통 검증:
@@ -418,10 +436,14 @@ SEEMIRAI_RUN_LIVE_OPS_REAL_ARM_CLOSEOUT=1 \
   redacted cleanup artifact로 남기고, post-cleanup status summary의 budget used는 현재 durable reservation 반영값을 하한으로 사용한다.
 - 2026-06-19: Sub PR 13의 reconcile freshness, daily budget day, cleanup probe 날짜 scope는 market heartbeat가 아니라 실행 wall clock을
   기준으로 계산한다. heartbeat는 market data 관측 evidence로 보존하되 자정 경계의 attempt id와 preflight readiness 판단을 대신하지 않는다.
+- 2026-06-19: Sub PR 14는 closeout source/security scan의 empty-match 필수 term에서 generic `market`을 제외한다. 운영 source scan은
+  정상 market config/doc 문자열 때문에 실패하지 않도록 `ord_type`, `시장가`, `best` 같은 금지 주문 의미가 분명한 term을 사용한다.
+- 2026-06-19: production preflight PnL loss snapshot은 OK row라도 완료 status와 30초 freshness를 통과해야 손실 증거로 쓰며,
+  TypeScript cleanup probe key도 observedAt 날짜 scope를 포함한다.
 
 ## 남은 이슈
 
-- Sub PR 13 완료 후 final main PR #218의 신규 review finding을 다시 drain해야 한다.
+- Sub PR 14 완료 후 final main PR #218의 신규 review finding을 다시 drain해야 한다.
 - 실제 운영 credential, key scope evidence, operator arm evidence, redacted artifact 경로는 저장소 밖 운영 vault에 있어야 한다.
 - 실제 주문 제출/취소 closeout은 저장소 밖 운영 config/env로 foreground `live:ops`를 실행한 뒤 자동 생성 artifact와 closeout manifest로
   검증한다.
