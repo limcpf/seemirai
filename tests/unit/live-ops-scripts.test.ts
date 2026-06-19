@@ -2240,6 +2240,121 @@ console.log(JSON.stringify({
     });
   });
 
+  it("production preflight는 provider read 지연 뒤 stale해진 PnL snapshot을 손실 증거로 쓰지 않는다", async () => {
+    const supportModulePath = path.join(process.cwd(), "scripts/run-live-ops-support.mjs");
+    const {
+      createLiveOpsCliProductionExecutionInputs,
+    } = await import(supportModulePath);
+    const executionAt = "2026-06-19T00:00:30.000Z";
+    const latestPnlCapturedAt = "2026-06-19T00:00:01.000Z";
+    const config = {
+      universe: { markets: ["KRW-BTC"], default_market: "KRW-BTC" },
+      budget: {
+        max_order_krw: "10000",
+        daily_autonomous_notional_limit_krw: "30000",
+        max_open_position_notional_krw: "30000",
+      },
+    };
+    const productionRuntime = {
+      entryRuntime: {},
+      cleanupLifecycle: {},
+      privateReadProvider: {
+        async listOpenOrders() {
+          return [];
+        },
+        async getBalances() {
+          return {
+            exchangeId: "upbit_krw_spot",
+            capturedAt: executionAt,
+            balances: [{
+              currency: "KRW",
+              available: "50000",
+              locked: "0",
+              total: "50000",
+              updatedAt: executionAt,
+            }],
+          };
+        },
+      },
+      reconcileStatusProvider: {
+        async getReconcileStatus() {
+          return {
+            lastReconcileAt: executionAt,
+            result: "SUCCESS",
+            mismatchCount: 0,
+            openOrderCount: 0,
+            balanceStatus: "OK",
+          };
+        },
+      },
+      pnlStatusProvider: {
+        async getStatus() {
+          await new Promise((resolve) => setTimeout(resolve, 2_100));
+          return {
+            readStatus: "OK",
+            latestCapturedAt: latestPnlCapturedAt,
+            latestRealizedPnlKrw: "0",
+            latestUnrealizedPnlKrw: "0",
+            latestStatus: "CALCULATED",
+          };
+        },
+      },
+      killSwitchProvider: {
+        async getStatus() {
+          return { active: false, state: "NORMAL" };
+        },
+      },
+      budgetReservation: {
+        async readDailyReservedNotional() {
+          return { reservedNotionalKrw: "0", reservationCount: 0 };
+        },
+      },
+      preflightReconcileRecorder: {
+        async recordPreflight() {
+          throw new Error("FreshCleanReconcileShouldNotRecord");
+        },
+      },
+      telegramDispatcher: {},
+    };
+
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(executionAt));
+    let result: Awaited<ReturnType<typeof createLiveOpsCliProductionExecutionInputs>>;
+    try {
+      const pending = createLiveOpsCliProductionExecutionInputs({
+        config,
+        env: {
+          SEEMIRAI_UPBIT_ACCESS_KEY: "fake-access-key",
+          SEEMIRAI_UPBIT_SECRET_KEY: "fake-secret-key",
+          SEEMIRAI_UPBIT_KEY_SCOPE: "자산조회,주문조회,주문하기",
+          SEEMIRAI_UPBIT_KEY_SCOPE_EVIDENCE_ID: "scope-evidence",
+        },
+        fixtureSmoke: false,
+        analysisDecision: {
+          ready: true,
+          decisionCategory: "ORDER_INTENT",
+          orderIntentCount: 1,
+        },
+        marketData: {
+          ready: true,
+          latestHeartbeatAt: executionAt,
+          referencePrice: "100000000",
+        },
+        orderIntents: [createCleanupRuntimeIntent()],
+        productionRuntime,
+      });
+      await vi.advanceTimersByTimeAsync(2_100);
+      result = await pending;
+    } finally {
+      vi.useRealTimers();
+    }
+
+    expect(result.lossSnapshot).toMatchObject({
+      ready: false,
+      reasonCode: "pnl_snapshot_stale",
+    });
+  });
+
   it("production preflight는 금지 scope key로 private read를 열기 전에 fail-closed 한다", async () => {
     const supportModulePath = path.join(process.cwd(), "scripts/run-live-ops-support.mjs");
     const {
@@ -2746,6 +2861,17 @@ console.log(JSON.stringify({
         latestCapturedAt: "2026-06-18T13:33:27.000Z",
         latestRealizedPnlKrw: "0",
         latestUnrealizedPnlKrw: "0",
+      },
+      reasonCode: "pnl_snapshot_status_not_ready",
+    },
+    {
+      name: "readStatus가 복사된 OK PnL snapshot",
+      pnlStatus: {
+        readStatus: "OK",
+        latestCapturedAt: "2026-06-18T13:33:27.000Z",
+        latestRealizedPnlKrw: "0",
+        latestUnrealizedPnlKrw: "0",
+        latestStatus: "OK",
       },
       reasonCode: "pnl_snapshot_status_not_ready",
     },

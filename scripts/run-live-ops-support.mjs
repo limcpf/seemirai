@@ -838,10 +838,12 @@ async function collectLiveOpsCliProductionPreflight({
     capturedAt: observedAt,
     source: "live_ops_cli_private_preflight",
   };
+  // 손실 snapshot freshness는 provider read 지연까지 포함한 제출 직전 시각으로 닫아야 stale PnL이 주문 후보를 열지 못한다.
+  const lossSnapshotObservedAt = new Date().toISOString();
   const lossSnapshot = createLiveOpsCliLossSnapshotFromPnlStatus({
     pnlStatus,
     balanceSnapshot,
-    observedAt,
+    observedAt: lossSnapshotObservedAt,
   });
   const normalizedReconcile = normalizeLiveOpsCliReconcileStatus(resolvedReconcileStatus, {
     openOrderCount: openOrders.length,
@@ -1128,7 +1130,7 @@ function isLiveOpsCliReadyPnlSnapshotStatus(status) {
   if (!hasMeaningfulValue(status)) {
     return false;
   }
-  return ["OK", "SUCCESS", "COMPLETE", "COMPLETED", "CALCULATED"].includes(String(status).toUpperCase());
+  return ["SUCCESS", "COMPLETE", "COMPLETED", "CALCULATED"].includes(String(status).toUpperCase());
 }
 
 function isLiveOpsCliFreshPnlStatus(
