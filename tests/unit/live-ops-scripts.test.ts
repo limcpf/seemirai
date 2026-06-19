@@ -2,7 +2,7 @@ import { spawnSync } from "node:child_process";
 import { link, mkdtemp, readFile, utimes, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 describe("production live ops script skeleton", () => {
   it("live:ops --tui는 fixture smoke에서 provider 호출 없이 운영 dashboard 첫 화면을 출력한다", () => {
@@ -257,32 +257,58 @@ import {
 
 const observedAt = "2026-06-16T00:00:00.000Z";
 const config = ${JSON.stringify(config)};
-const summary = await evaluateLiveOpsCliAnalysisDecision({
-  config,
-  fixtureSmoke: false,
-  marketData: {
-    ready: true,
-    market: "KRW-BTC",
-    sourceProfile: "unit",
-    latestHeartbeatAt: observedAt,
-    referencePrice: "100000500",
-    persisted: { tradeCount: 1, orderbookCount: 1, statusCount: 1 },
-    marketEvents: [{
-      type: "ORDERBOOK",
-      exchangeId: "upbit_krw_spot",
+const OriginalDate = Date;
+globalThis.Date = class FixedDate extends OriginalDate {
+  constructor(...args) {
+    if (args.length === 0) {
+      super(observedAt);
+      return;
+    }
+    super(...args);
+  }
+
+  static now() {
+    return new OriginalDate(observedAt).getTime();
+  }
+
+  static parse(value) {
+    return OriginalDate.parse(value);
+  }
+
+  static UTC(...args) {
+    return OriginalDate.UTC(...args);
+  }
+};
+try {
+  const summary = await evaluateLiveOpsCliAnalysisDecision({
+    config,
+    fixtureSmoke: false,
+    marketData: {
+      ready: true,
       market: "KRW-BTC",
-      asks: [{ price: "100001000", size: "0.5" }],
-      bids: [{ price: "100000000", size: "0.5" }],
-      exchangeTimestamp: observedAt,
-      receivedAt: observedAt,
-    }],
-  },
-});
-console.log(JSON.stringify({
-  summary,
-  orderIntents: getLiveOpsCliAnalysisOrderIntents(summary),
-}));
-`,
+      sourceProfile: "unit",
+      latestHeartbeatAt: observedAt,
+      referencePrice: "100000500",
+      persisted: { tradeCount: 1, orderbookCount: 1, statusCount: 1 },
+      marketEvents: [{
+        type: "ORDERBOOK",
+        exchangeId: "upbit_krw_spot",
+        market: "KRW-BTC",
+        asks: [{ price: "100001000", size: "0.5" }],
+        bids: [{ price: "100000000", size: "0.5" }],
+        exchangeTimestamp: observedAt,
+        receivedAt: observedAt,
+      }],
+    },
+  });
+  console.log(JSON.stringify({
+    summary,
+    orderIntents: getLiveOpsCliAnalysisOrderIntents(summary),
+  }));
+} finally {
+  globalThis.Date = OriginalDate;
+}
+	`,
       ],
       {
         cwd: process.cwd(),
@@ -323,6 +349,57 @@ console.log(JSON.stringify({
       timeInForce: "POST_ONLY",
     });
     expect(JSON.stringify(summary)).not.toContain("raw_provider_payload");
+  });
+
+  it("cleanup_probe decision key는 heartbeat가 전날이어도 실행일 기준으로 scope를 자른다", async () => {
+    const config = JSON.parse(await readFile(path.join(process.cwd(), "config", "live-ops.example.json"), "utf8"));
+    const {
+      evaluateLiveOpsCliAnalysisDecision,
+      getLiveOpsCliAnalysisOrderIntents,
+    } = await import(path.join(process.cwd(), "scripts/run-live-ops-support.mjs"));
+    const executionAt = "2026-06-16T00:00:10.000Z";
+    const latestHeartbeatAt = "2026-06-15T23:59:50.000Z";
+
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(executionAt));
+    let output: {
+      summary: { observedAt: string };
+      orderIntents: Array<{ idempotencyKey: string }>;
+    };
+    try {
+      const summary = await evaluateLiveOpsCliAnalysisDecision({
+        config,
+        fixtureSmoke: false,
+        marketData: {
+          ready: true,
+          market: "KRW-BTC",
+          sourceProfile: "unit",
+          latestHeartbeatAt,
+          referencePrice: "100000500",
+          persisted: { tradeCount: 1, orderbookCount: 1, statusCount: 1 },
+          marketEvents: [{
+            type: "ORDERBOOK",
+            exchangeId: "upbit_krw_spot",
+            market: "KRW-BTC",
+            asks: [{ price: "100001000", size: "0.5" }],
+            bids: [{ price: "100000000", size: "0.5" }],
+            exchangeTimestamp: latestHeartbeatAt,
+            receivedAt: latestHeartbeatAt,
+          }],
+        },
+      });
+      output = {
+        summary,
+        orderIntents: getLiveOpsCliAnalysisOrderIntents(summary),
+      };
+    } finally {
+      vi.useRealTimers();
+    }
+
+    expect(output.summary.observedAt).toBe(executionAt);
+    expect(output.orderIntents[0]?.idempotencyKey).toBe(
+      "live_ops_cleanup_probe:2026-06-16:upbit_krw_spot:KRW-BTC:BUY:99999000:0.0001:9999.9",
+    );
   });
 
   it("cleanup_probe BLOCK decision은 live execution idle로 낮추지 않도록 blocked summary로 닫는다", async () => {
@@ -1981,7 +2058,7 @@ console.log(JSON.stringify({
       },
       telegramDispatcher: {},
     };
-    const result = await createLiveOpsCliProductionExecutionInputs({
+    const result = await withFakeSystemTime("2026-06-18T13:33:27.000Z", () => createLiveOpsCliProductionExecutionInputs({
       config,
       env: {
         SEEMIRAI_UPBIT_ACCESS_KEY: "fake-access-key",
@@ -2001,7 +2078,7 @@ console.log(JSON.stringify({
       },
       orderIntents: [createCleanupRuntimeIntent()],
       productionRuntime,
-    });
+    }));
 
     expect(recorded).toHaveLength(1);
     expect(listedOpenOrderMarkets).toEqual([undefined]);
@@ -2017,6 +2094,141 @@ console.log(JSON.stringify({
     expect(result.postSubmitReadiness).toMatchObject({
       reconcileReady: true,
       telegramReady: true,
+    });
+  });
+
+  it("production preflight는 freshness와 daily budget day를 실행 wall clock 기준으로 판정한다", async () => {
+    const supportModulePath = path.join(process.cwd(), "scripts/run-live-ops-support.mjs");
+    const {
+      createLiveOpsCliProductionExecutionInputs,
+    } = await import(supportModulePath);
+    const executionAt = "2026-06-19T00:00:10.000Z";
+    const latestHeartbeatAt = "2026-06-18T23:59:45.000Z";
+    const staleReconcileAt = "2026-06-18T23:59:30.000Z";
+    const recorded: unknown[] = [];
+    const dailyReadObservedAt: unknown[] = [];
+    let reconcileReadCount = 0;
+    const config = {
+      universe: { markets: ["KRW-BTC"], default_market: "KRW-BTC" },
+      budget: {
+        max_order_krw: "10000",
+        daily_autonomous_notional_limit_krw: "30000",
+        max_open_position_notional_krw: "30000",
+      },
+    };
+    const productionRuntime = {
+      entryRuntime: {},
+      cleanupLifecycle: {},
+      privateReadProvider: {
+        async listOpenOrders() {
+          return [];
+        },
+        async getBalances() {
+          return {
+            exchangeId: "upbit_krw_spot",
+            capturedAt: executionAt,
+            balances: [{
+              currency: "KRW",
+              available: "50000",
+              locked: "0",
+              total: "50000",
+              updatedAt: executionAt,
+            }],
+          };
+        },
+      },
+      reconcileStatusProvider: {
+        async getReconcileStatus() {
+          reconcileReadCount += 1;
+          return {
+            lastReconcileAt: reconcileReadCount === 1 ? staleReconcileAt : executionAt,
+            result: "SUCCESS",
+            mismatchCount: 0,
+            openOrderCount: 0,
+            balanceStatus: "OK",
+            websocketStatus: "CONNECTED",
+            actionRequired: "없음",
+            message: "clean reconcile fixture",
+            trace: { source: "live_ops_cli_database_reconcile" },
+          };
+        },
+      },
+      pnlStatusProvider: {
+        async getStatus() {
+          return { readStatus: "OK", latestCapturedAt: executionAt, latestRealizedPnlKrw: "0", latestUnrealizedPnlKrw: "0" };
+        },
+      },
+      killSwitchProvider: {
+        async getStatus() {
+          return {
+            active: false,
+            state: "NORMAL",
+            reasonCode: "normal",
+            updatedAt: executionAt,
+          };
+        },
+      },
+      budgetReservation: {
+        async readDailyReservedNotional(observedAt: unknown) {
+          dailyReadObservedAt.push(observedAt);
+          return { reservedNotionalKrw: "0", reservationCount: 0 };
+        },
+      },
+      preflightReconcileRecorder: {
+        async recordPreflight(input: unknown) {
+          recorded.push(input);
+          return {
+            created: true,
+            runId: "preflight-run-wall-clock",
+            status: "COMPLETED",
+            source: "live_ops_cli_private_read_preflight",
+            recordedAt: executionAt,
+          };
+        },
+      },
+      telegramDispatcher: {},
+    };
+
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(executionAt));
+    let result: Awaited<ReturnType<typeof createLiveOpsCliProductionExecutionInputs>>;
+    try {
+      result = await createLiveOpsCliProductionExecutionInputs({
+        config,
+        env: {
+          SEEMIRAI_UPBIT_ACCESS_KEY: "fake-access-key",
+          SEEMIRAI_UPBIT_SECRET_KEY: "fake-secret-key",
+          SEEMIRAI_UPBIT_KEY_SCOPE: "자산조회,주문조회,주문하기",
+          SEEMIRAI_UPBIT_KEY_SCOPE_EVIDENCE_ID: "scope-evidence",
+        },
+        fixtureSmoke: false,
+        analysisDecision: {
+          ready: true,
+          decisionCategory: "ORDER_INTENT",
+          orderIntentCount: 1,
+        },
+        marketData: {
+          ready: true,
+          latestHeartbeatAt,
+          referencePrice: "100000000",
+        },
+        orderIntents: [createCleanupRuntimeIntent()],
+        productionRuntime,
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+
+    expect(dailyReadObservedAt).toEqual([executionAt]);
+    expect(recorded).toEqual([expect.objectContaining({ observedAt: executionAt })]);
+    expect(reconcileReadCount).toBe(2);
+    expect(result.executionStatus).toMatchObject({
+      killSwitchActive: false,
+      reconcileFresh: true,
+      preflightReconcileEvidence: {
+        runId: "preflight-run-wall-clock",
+        status: "COMPLETED",
+      },
     });
   });
 
@@ -2204,7 +2416,7 @@ console.log(JSON.stringify({
       telegramDispatcher: {},
     };
 
-    const result = await createLiveOpsCliProductionExecutionInputs({
+    const result = await withFakeSystemTime(observedAt, () => createLiveOpsCliProductionExecutionInputs({
       config: {
         universe: { markets: ["KRW-BTC"], default_market: "KRW-BTC" },
         budget: {
@@ -2224,7 +2436,7 @@ console.log(JSON.stringify({
       marketData: { ready: true, latestHeartbeatAt: observedAt, referencePrice: "100000000" },
       orderIntents: [createCleanupRuntimeIntent()],
       productionRuntime,
-    });
+    }));
 
     expect(recorded).toHaveLength(1);
     expect(reconcileReadCount).toBe(2);
@@ -2305,7 +2517,7 @@ console.log(JSON.stringify({
       },
       telegramDispatcher: {},
     };
-    const executionInputs = await createLiveOpsCliProductionExecutionInputs({
+    const executionInputs = await withFakeSystemTime(observedAt, () => createLiveOpsCliProductionExecutionInputs({
       config,
       env: {
         SEEMIRAI_UPBIT_ACCESS_KEY: "fake-access-key",
@@ -2318,7 +2530,7 @@ console.log(JSON.stringify({
       marketData: { ready: true, latestHeartbeatAt: observedAt, referencePrice: "100000000" },
       orderIntents: [rawIntent],
       productionRuntime,
-    });
+    }));
     const liveExecution = await evaluateLiveOpsCliLiveExecution({
       config,
       fixtureSmoke: false,
@@ -2433,7 +2645,7 @@ console.log(JSON.stringify({
       },
       telegramDispatcher: {},
     };
-    const executionInputs = await createLiveOpsCliProductionExecutionInputs({
+    const executionInputs = await withFakeSystemTime(observedAt, () => createLiveOpsCliProductionExecutionInputs({
       config,
       env: {
         SEEMIRAI_UPBIT_ACCESS_KEY: "fake-access-key",
@@ -2446,7 +2658,7 @@ console.log(JSON.stringify({
       marketData: { ready: true, latestHeartbeatAt: observedAt, referencePrice: "100000000" },
       orderIntents: [rawIntent],
       productionRuntime,
-    });
+    }));
     const liveExecution = await evaluateLiveOpsCliLiveExecution({
       config,
       fixtureSmoke: false,
@@ -2652,7 +2864,7 @@ console.log(JSON.stringify({
         },
         telegramDispatcher: {},
       };
-      const executionInputs = await createLiveOpsCliProductionExecutionInputs({
+      const executionInputs = await withFakeSystemTime("2026-06-18T13:33:27.000Z", () => createLiveOpsCliProductionExecutionInputs({
         config,
         env: {
           SEEMIRAI_UPBIT_ACCESS_KEY: "fake-access-key",
@@ -2673,7 +2885,7 @@ console.log(JSON.stringify({
         },
         orderIntents: [rawIntent],
         productionRuntime,
-      });
+      }));
       const enrichedIntent = executionInputs.orderIntents[0] as {
         risk?: { infrastructureSignals?: Array<{ signal?: string; reason?: string }> };
       };
@@ -2844,7 +3056,7 @@ console.log(JSON.stringify({
       },
       telegramDispatcher: {},
     };
-    const result = await createLiveOpsCliProductionExecutionInputs({
+    const result = await withFakeSystemTime("2026-06-18T13:33:27.000Z", () => createLiveOpsCliProductionExecutionInputs({
       config,
       env: {
         SEEMIRAI_UPBIT_ACCESS_KEY: "fake-access-key",
@@ -2864,7 +3076,7 @@ console.log(JSON.stringify({
       },
       orderIntents: [createCleanupRuntimeIntent()],
       productionRuntime,
-    });
+    }));
 
     expect(listedOpenOrderMarkets).toEqual([undefined]);
     expect(recorded).toHaveLength(1);
@@ -6932,4 +7144,14 @@ function minimalEnv(): NodeJS.ProcessEnv {
     HOME: process.env.HOME,
     TMPDIR: process.env.TMPDIR ?? path.join(process.cwd(), "test-results"),
   };
+}
+
+async function withFakeSystemTime(isoTimestamp: string, action: () => Promise<any>): Promise<any> {
+  vi.useFakeTimers();
+  vi.setSystemTime(new Date(isoTimestamp));
+  try {
+    return await action();
+  } finally {
+    vi.useRealTimers();
+  }
 }

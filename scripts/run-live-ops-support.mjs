@@ -743,11 +743,13 @@ export async function createLiveOpsCliProductionExecutionInputs({
   }
 
   try {
+    // freshness와 일일 예산 기준일은 시장 이벤트 시각이 아니라 실제 제출 직전 wall clock으로 닫아야 한다.
+    const preflightObservedAt = new Date().toISOString();
     const preflight = await collectLiveOpsCliProductionPreflight({
       config,
       marketData,
       productionRuntime,
-      observedAt: marketData.latestHeartbeatAt ?? new Date().toISOString(),
+      observedAt: preflightObservedAt,
     });
     return {
       ...base,
@@ -6482,7 +6484,8 @@ function evaluateLiveOpsCliCleanupProbeStrategy({ config, marketData, observedAt
     idempotencyKey: createLiveOpsCliCleanupProbeDecisionKey({
       market,
       sizing,
-      observedAt: marketData.latestHeartbeatAt ?? observedAt,
+      // attempt 중복 차단은 운영일 기준이므로 자정 경계에서 heartbeat 대신 decision 실행 시각을 사용한다.
+      observedAt,
     }),
     reason: "issue_206_cleanup_probe",
     postOnly: true,

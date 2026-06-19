@@ -295,8 +295,8 @@ Telegram, TUI를 같은 lifecycle로 조립하고, 조건을 통과한 단일 `K
   - [x] `KRW-BTC` 보유 잔고가 있으면 reference price로 평가해 `openPositionNotionalKrw`와 RiskGate `positions`에 포함한다.
   - [x] 보유 포지션 평가 기준가가 없으면 open position 과소평가를 막기 위해 broker 제출 전 fail-closed 한다.
   - [x] PnL/status provider가 `OK` snapshot을 주지 않으면 realized loss를 0으로 보정하지 않고 loss snapshot 결측으로 차단한다.
-  - [x] clean reconcile evidence도 preflight 기준 30초 freshness를 넘으면 stale로 보고 같은 tick의 private read preflight evidence를 기록한다.
-  - [x] cleanup probe decision key는 날짜 scope를 포함해 전날 reservation 파일이 다음 날 attempt를 영구 차단하지 않게 한다.
+  - [x] clean reconcile evidence도 preflight 실행 wall clock 기준 30초 freshness를 넘으면 stale로 보고 같은 tick의 private read preflight evidence를 기록한다.
+  - [x] cleanup probe decision key는 실행 wall clock 날짜 scope를 포함해 전날 reservation 파일이 다음 날 attempt를 영구 차단하지 않게 한다.
   - [x] 관련 운영 문서와 unit tests가 위 invariant를 설명하고 검증한다.
 
 ## 검증 방법
@@ -416,10 +416,12 @@ SEEMIRAI_RUN_LIVE_OPS_REAL_ARM_CLOSEOUT=1 \
   불확실하면 active owner로 fail-closed 하고, zombie 상태가 확인되면 stale owner로 본다.
 - 2026-06-19: final review guard 보강은 key scope guard를 preflight private read 앞에 둔다. cancel 요청 이후 terminal poll 실패도
   redacted cleanup artifact로 남기고, post-cleanup status summary의 budget used는 현재 durable reservation 반영값을 하한으로 사용한다.
+- 2026-06-19: Sub PR 13의 reconcile freshness, daily budget day, cleanup probe 날짜 scope는 market heartbeat가 아니라 실행 wall clock을
+  기준으로 계산한다. heartbeat는 market data 관측 evidence로 보존하되 자정 경계의 attempt id와 preflight readiness 판단을 대신하지 않는다.
 
 ## 남은 이슈
 
-- Sub PR 12 완료 후 final main PR #218의 신규 review finding을 다시 drain해야 한다.
+- Sub PR 13 완료 후 final main PR #218의 신규 review finding을 다시 drain해야 한다.
 - 실제 운영 credential, key scope evidence, operator arm evidence, redacted artifact 경로는 저장소 밖 운영 vault에 있어야 한다.
 - 실제 주문 제출/취소 closeout은 저장소 밖 운영 config/env로 foreground `live:ops`를 실행한 뒤 자동 생성 artifact와 closeout manifest로
   검증한다.
