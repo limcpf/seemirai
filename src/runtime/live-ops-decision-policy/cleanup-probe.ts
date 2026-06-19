@@ -253,10 +253,10 @@ function createCleanupProbeIdempotencyKey(input: {
 }): string {
   return [
     LIVE_OPS_CLEANUP_PROBE_STRATEGY_ID,
+    input.dateScope,
     "upbit_krw_spot",
     "KRW-BTC",
     "BUY",
-    input.dateScope,
     input.requestedPrice,
     input.requestedQuantity,
     input.requestedNotional,

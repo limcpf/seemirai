@@ -50,7 +50,7 @@ describe("production live ops decision policy resolver", () => {
       requestedPrice: "99999000",
       requestedQuantity: "0.0001",
       requestedNotional: "9999.9",
-      idempotencyKey: "live_ops_cleanup_probe:upbit_krw_spot:KRW-BTC:BUY:2026-06-16:99999000:0.0001:9999.9",
+      idempotencyKey: "live_ops_cleanup_probe:2026-06-16:upbit_krw_spot:KRW-BTC:BUY:99999000:0.0001:9999.9",
       postOnly: true,
       timeInForce: "POST_ONLY",
       metadata: {

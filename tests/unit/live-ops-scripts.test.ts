@@ -2875,6 +2875,39 @@ console.log(JSON.stringify({
       },
       reasonCode: "pnl_snapshot_status_not_ready",
     },
+    {
+      name: "reconcile 계층 SUCCESS가 복사된 PnL snapshot",
+      pnlStatus: {
+        readStatus: "OK",
+        latestCapturedAt: "2026-06-18T13:33:27.000Z",
+        latestRealizedPnlKrw: "0",
+        latestUnrealizedPnlKrw: "0",
+        latestStatus: "SUCCESS",
+      },
+      reasonCode: "pnl_snapshot_status_not_ready",
+    },
+    {
+      name: "job 계층 COMPLETE가 복사된 PnL snapshot",
+      pnlStatus: {
+        readStatus: "OK",
+        latestCapturedAt: "2026-06-18T13:33:27.000Z",
+        latestRealizedPnlKrw: "0",
+        latestUnrealizedPnlKrw: "0",
+        latestStatus: "COMPLETE",
+      },
+      reasonCode: "pnl_snapshot_status_not_ready",
+    },
+    {
+      name: "job 계층 COMPLETED가 복사된 PnL snapshot",
+      pnlStatus: {
+        readStatus: "OK",
+        latestCapturedAt: "2026-06-18T13:33:27.000Z",
+        latestRealizedPnlKrw: "0",
+        latestUnrealizedPnlKrw: "0",
+        latestStatus: "COMPLETED",
+      },
+      reasonCode: "pnl_snapshot_status_not_ready",
+    },
   ])("production preflight는 $name을 손실 증거로 쓰지 않고 제출 전 차단한다", async ({ pnlStatus, reasonCode }) => {
     const supportModulePath = path.join(process.cwd(), "scripts/run-live-ops-support.mjs");
     const {

@@ -1130,7 +1130,7 @@ function isLiveOpsCliReadyPnlSnapshotStatus(status) {
   if (!hasMeaningfulValue(status)) {
     return false;
   }
-  return ["SUCCESS", "COMPLETE", "COMPLETED", "CALCULATED"].includes(String(status).toUpperCase());
+  return String(status).toUpperCase() === "CALCULATED";
 }
 
 function isLiveOpsCliFreshPnlStatus(
