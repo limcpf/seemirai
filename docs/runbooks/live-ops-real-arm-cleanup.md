@@ -153,7 +153,7 @@ closeout evidence로 인정하지 않는다.
 명령으로 repository root에서 runtime source path인 `src/runtime/live-ops-config src/runtime/live-ops-decision-policy
 src/runtime/live-ops-live-execution src/runtime/live-ops-analysis-decision src/application/live-autonomous-entry-runtime/service.ts
 src/infrastructure/upbit/private-client/client.ts src/infrastructure/upbit/live-broker/service.ts scripts/run-live-ops.mjs
-scripts/run-live-ops-support.mjs config`
+scripts/run-live-ops-support.mjs config/live-ops.example.json config/live-ops.env.example`
 전체 범위의 금지 주문 경계 전체(`[\x27"]?ord_type[\x27"]?\s*[:=]\s*[\x27"]?price`,
 `[\x27"]?ord_type[\x27"]?\s*[:=]\s*[\x27"]?market`, `[\x27"]?ord_type[\x27"]?\s*[:=]\s*[\x27"]?best`,
 `[\x27"]?order_type[\x27"]?\s*[:=]\s*[\x27"]?(market|MARKET)`,
@@ -164,7 +164,8 @@ scripts/run-live-ops-support.mjs config`
 `[\x27"]?entry_market_order_enabled[\x27"]?\s*[:=]\s*true`)와
 secret/raw payload 후보 전체(`SEEMIRAI_DATABASE_URL=postgres://...:<password>@...`,
 `postgres://...:<password>@...` 또는 `postgresql://...:<password>@...`, Upbit access/secret key literal, Telegram bot token literal,
-TUI control token literal, `Authorization: Bearer ...`, `authorization: bearer ...`, `raw_provider_payload`, `rawProviderPayload`,
+TUI control token literal, `[\x27"]?Authorization[\x27"]?\s*[:=]\s*[\x27"]?(Bearer|bearer) ...`,
+`[\x27"]?authorization[\x27"]?\s*[:=]\s*[\x27"]?(Bearer|bearer) ...`, `raw_provider_payload`, `rawProviderPayload`,
 `raw_order_detail`, `rawOrderDetail`)를 스캔한 증거를 포함해야 한다.
 일반 영어 단어 `market`은 정상 market 설정/문서에도 반복되므로 empty-match가 필요한 금지 주문 scan term으로 쓰지 않고,
 정상 차단 설정에 반복되는 `market_order` 단독 term도 필수 empty-match scan으로 쓰지 않는다. 금지 scope, 시장가, futures/leverage 같은

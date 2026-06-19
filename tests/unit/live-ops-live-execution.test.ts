@@ -196,6 +196,43 @@ describe("production live ops live execution adapter", () => {
     expect(firstSummary.attemptId).not.toBe(nextSummary.attemptId);
   });
 
+  it("cleanup_probe runtime 날짜 정규화는 이미 보존된 원본 analysis key를 덮어쓰지 않는다", async () => {
+    const entryRuntime = createEntryRuntimeRecorder();
+    const originalAnalysisKey = "live_ops_cleanup_probe:runtime_preflight_day:upbit_krw_spot:KRW-BTC:BUY:100000000:0.0001:10000";
+    const runtimeKey = "live_ops_cleanup_probe:2026-06-15:upbit_krw_spot:KRW-BTC:BUY:100000000:0.0001:10000";
+    const intent = {
+      ...createCleanupProbeOrderIntent(),
+      idempotencyKey: runtimeKey,
+      metadata: {
+        expected_loss_bps_of_equity: "5",
+        analysis_idempotency_key: originalAnalysisKey,
+        idempotency_date_scope: "2026-06-15",
+        idempotency_date_source: "live_ops_runtime_preflight",
+      },
+    };
+    const input = createInput({
+      observedAt: "2026-06-15T00:00:01.000Z",
+      orderIntents: [intent],
+      entryRuntime,
+    });
+
+    await runLiveOpsLiveExecution({
+      ...input,
+      risk: {
+        ...input.risk,
+        strategy: { ...input.risk.strategy, strategyId: "live_ops_cleanup_probe" },
+      },
+    });
+
+    const request = entryRuntime.submitEntryCandidate.mock.calls[0]?.[0];
+    expect(request?.candidate.metadata).toMatchObject({
+      decision_idempotency_key: runtimeKey,
+      analysis_idempotency_key: originalAnalysisKey,
+      idempotency_date_scope: "2026-06-15",
+      idempotency_date_source: "live_ops_runtime_preflight",
+    });
+  });
+
   it("시장가나 post-only가 아닌 후보는 하위 runtime 호출 전에 fail-closed 한다", async () => {
     const entryRuntime = createEntryRuntimeRecorder();
 

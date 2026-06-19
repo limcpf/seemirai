@@ -2688,6 +2688,101 @@ console.log(JSON.stringify({
     expect(request?.candidate.riskApproval.order_intent.idempotency_key).toBe(runtimeDecisionKey);
   });
 
+  it("cleanup_probe runtime evidence 보강은 이미 보존된 원본 analysis key를 덮어쓰지 않는다", async () => {
+    const supportModulePath = path.join(process.cwd(), "scripts/run-live-ops-support.mjs");
+    const {
+      evaluateLiveOpsCliLiveExecution,
+    } = await import(supportModulePath);
+    const executionAt = "2026-06-15T00:00:01.000Z";
+    const originalAnalysisKey = "live_ops_cleanup_probe:runtime_preflight_day:upbit_krw_spot:KRW-BTC:BUY:100000000:0.0001:10000";
+    const runtimeDecisionKey = "live_ops_cleanup_probe:2026-06-15:upbit_krw_spot:KRW-BTC:BUY:100000000:0.0001:10000";
+    const alreadyNormalizedIntent = createCleanupRuntimeIntentWithKey(runtimeDecisionKey, "2026-06-15") as Record<string, any>;
+    alreadyNormalizedIntent.metadata = {
+      ...alreadyNormalizedIntent.metadata,
+      analysis_idempotency_key: originalAnalysisKey,
+    };
+    const submittedRequests: Array<Record<string, any>> = [];
+
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(executionAt));
+    try {
+      await evaluateLiveOpsCliLiveExecution({
+        config: {
+          live_trading_enabled: true,
+          universe: { markets: ["KRW-BTC"], default_market: "KRW-BTC" },
+          budget: {
+            max_order_krw: "10000",
+            daily_autonomous_notional_limit_krw: "30000",
+            max_open_position_notional_krw: "30000",
+          },
+        },
+        fixtureSmoke: false,
+        analysisDecision: {
+          ready: true,
+          decisionCategory: "ORDER_INTENT",
+          orderIntentCount: 1,
+        },
+        marketData: {
+          ready: true,
+          latestHeartbeatAt: executionAt,
+          referencePrice: "100000000",
+        },
+        env: {
+          SEEMIRAI_UPBIT_ACCESS_KEY: "fake-access-key",
+          SEEMIRAI_UPBIT_SECRET_KEY: "fake-secret-key",
+          SEEMIRAI_UPBIT_KEY_SCOPE: "자산조회,주문조회,주문하기",
+          SEEMIRAI_UPBIT_KEY_SCOPE_EVIDENCE_ID: "scope-evidence",
+        },
+        orderIntents: [alreadyNormalizedIntent],
+        entryRuntime: {
+          async submitEntryCandidate(request: Record<string, any>) {
+            submittedRequests.push(request);
+            return {
+              status: "BLOCKED",
+              attemptId: request.idempotencyKey,
+              idempotencyKey: request.idempotencyKey,
+              message: "unit blocked after request capture",
+              action: "none",
+              events: [],
+            };
+          },
+        },
+        executionStatus: {
+          killSwitchActive: false,
+          reconcileFresh: true,
+          evidenceId: "execution-status-evidence",
+        },
+        postSubmitReadiness: {
+          reconcileReady: true,
+          telegramReady: true,
+          evidenceId: "post-submit-readiness-evidence",
+        },
+        budgetSnapshot: {
+          maxOrderKrw: "10000",
+          dailyAutonomousNotionalLimitKrw: "30000",
+          dailyAutonomousNotionalUsedKrw: "0",
+          openPositionNotionalKrw: "0",
+          maxOpenPositionNotionalKrw: "30000",
+          capturedAt: executionAt,
+        },
+        lossSnapshot: {
+          dailyRealizedLossKrw: "0",
+          weeklyRealizedLossKrw: "0",
+          capturedAt: executionAt,
+        },
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+
+    expect(submittedRequests[0]?.candidate.metadata).toMatchObject({
+      decision_idempotency_key: runtimeDecisionKey,
+      analysis_idempotency_key: originalAnalysisKey,
+      idempotency_date_scope: "2026-06-15",
+      idempotency_date_source: "live_ops_runtime_preflight",
+    });
+  });
+
   it("cleanup_probe runtime evidence 보강은 명시적인 CostModel 차단을 승인으로 덮지 않는다", async () => {
     const supportModulePath = path.join(process.cwd(), "scripts/run-live-ops-support.mjs");
     const {
@@ -3076,7 +3171,7 @@ console.log(JSON.stringify({
       orderIntents: [rawIntent],
       productionRuntime,
     }));
-    const liveExecution = await evaluateLiveOpsCliLiveExecution({
+    const liveExecution = await withFakeSystemTime(observedAt, () => evaluateLiveOpsCliLiveExecution({
       config,
       fixtureSmoke: false,
       analysisDecision: { ready: true, decisionCategory: "ORDER_INTENT", orderIntentCount: 1 },
@@ -3107,7 +3202,7 @@ console.log(JSON.stringify({
       budgetSnapshot: executionInputs.budgetSnapshot,
       lossSnapshot: executionInputs.lossSnapshot,
       cleanupLifecycle: executionInputs.cleanupLifecycle,
-    });
+    }));
 
     expect(executionInputs.budgetSnapshot).toMatchObject({
       openPositionNotionalKrw: "25000",

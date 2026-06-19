@@ -928,7 +928,9 @@ function createLiveOpsCliCleanupRuntimeIntent({ intent, observedAt }) {
     metadata: {
       ...(intent.metadata ?? {}),
       // 자정 경계에서 중복 reservation이 열리지 않도록 실제 제출 직전 운영일로 idempotency scope를 확정한다.
-      analysis_idempotency_key: intent.idempotencyKey,
+      analysis_idempotency_key: hasMeaningfulValue(intent.metadata?.analysis_idempotency_key)
+        ? intent.metadata.analysis_idempotency_key
+        : intent.idempotencyKey,
       idempotency_date_scope: dateScope,
       idempotency_date_source: "live_ops_runtime_preflight",
     },

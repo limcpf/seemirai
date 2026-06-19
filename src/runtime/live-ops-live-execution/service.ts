@@ -375,11 +375,29 @@ function normalizeLiveOpsCleanupProbeRuntimeIntent(intent: OrderIntent, observed
     metadata: {
       ...(intent.metadata ?? {}),
       // runtime adapter도 CLI preflight와 같은 운영일 key를 사용해야 자정 경계 중복 reservation을 막을 수 있다.
-      analysis_idempotency_key: intent.idempotencyKey,
+      analysis_idempotency_key: readLiveOpsOriginalAnalysisIdempotencyKey(intent),
       idempotency_date_scope: dateScope,
       idempotency_date_source: "live_ops_runtime_preflight",
     },
   };
+}
+
+/**
+ * cleanup probe runtime 정규화 이전의 analysis idempotency key를 복구한다.
+ *
+ * 책임:
+ * - 이미 production preflight가 원본 analysis key를 보존한 intent를 다시 정규화할 때 audit 추적 키를 덮어쓰지 않는다.
+ *
+ * invariant:
+ * - `metadata.analysis_idempotency_key`가 비어 있지 않으면 그 값을 원본으로 유지한다.
+ * - 값이 없을 때만 현재 intent key를 analysis key로 사용한다.
+ *
+ * side effect:
+ * - 없음. metadata 값을 읽어 문자열 하나만 반환한다.
+ */
+function readLiveOpsOriginalAnalysisIdempotencyKey(intent: OrderIntent): string {
+  const existing = intent.metadata?.analysis_idempotency_key;
+  return typeof existing === "string" && existing.length > 0 ? existing : intent.idempotencyKey;
 }
 
 function createLiveOpsCleanupProbeRuntimeDecisionKey(intent: OrderIntent, observedAt: string): string | undefined {

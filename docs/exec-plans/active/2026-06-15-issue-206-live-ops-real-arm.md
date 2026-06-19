@@ -323,7 +323,7 @@ Telegram, TUI를 같은 lifecycle로 조립하고, 조건을 통과한 단일 `K
   - [x] terminal cancel/no-fill cleanup은 새 체결이 없다는 closeout evidence가 있으므로 stale `CALCULATED` PnL row만으로
         manual review를 열지 않는다. 단, `PARTIAL`/manual-review snapshot status는 계속 수동 확인 대상으로 둔다.
   - [x] closeout source/security scan은 단일따옴표 주문 payload, Upbit live broker adapter 경로, 입출금 endpoint/toggle,
-        raw Postgres credential URL, camelCase raw provider/order payload field도 필수 coverage로 요구한다.
+        raw Postgres credential URL, quoted Authorization bearer literal, camelCase raw provider/order payload field도 필수 coverage로 요구한다.
   - [x] 관련 운영 문서와 unit/soak tests가 위 invariant를 설명하고 검증한다.
 
 ## 검증 방법
@@ -466,6 +466,10 @@ SEEMIRAI_RUN_LIVE_OPS_REAL_ARM_CLOSEOUT=1 \
   broker guard가 차단하게 둔다. PnL freshness는 provider read 완료 후 시각을 기준으로 판단한다. closeout source/security scan은
   단일따옴표 주문 payload, `/v1/withdraws`, raw `postgres://user:pass@...`/`postgresql://user:pass@...` credential URL,
   `src/infrastructure/upbit/live-broker/service.ts`도 필수 coverage로 본다.
+- 2026-06-19: Sub PR 14 review drain 3차 보강으로 runtime 날짜 정규화가 이미 보존된 `metadata.analysis_idempotency_key`를
+  다시 runtime key로 덮어쓰지 않게 한다. closeout source/security scan은 `"authorization": "Bearer ..."`와
+  `authorization: 'Bearer ...'`처럼 key/value에 따옴표가 붙은 raw bearer literal도 필수 coverage로 본다. runbook의 source scan
+  path operand는 validator의 `config/live-ops.example.json`, `config/live-ops.env.example` 요구값과 정확히 맞춘다.
 
 ## 남은 이슈
 

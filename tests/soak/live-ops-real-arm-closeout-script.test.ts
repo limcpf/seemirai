@@ -34,7 +34,7 @@ const closeoutSourceScanPathsWithoutLiveBroker = [
 ].join(" ");
 const closeoutUnsafeSourceScanCommand = "rg --no-config -uuu -n '[\\x27\"]?ord_type[\\x27\"]?\\s*[:=]\\s*[\\x27\"]?price|[\\x27\"]?ord_type[\\x27\"]?\\s*[:=]\\s*[\\x27\"]?market|[\\x27\"]?ord_type[\\x27\"]?\\s*[:=]\\s*[\\x27\"]?best|[\\x27\"]?order_type[\\x27\"]?\\s*[:=]\\s*[\\x27\"]?(market|MARKET)|[\\x27\"]?orderType[\\x27\"]?\\s*[:=]\\s*[\\x27\"]?(market|MARKET)|[\\x27\"]?withdrawal_enabled[\\x27\"]?\\s*[:=]\\s*true|[\\x27\"]?deposit_enabled[\\x27\"]?\\s*[:=]\\s*true|\\/v1\\/deposits|\\/v1\\/withdraws|[\\x27\"]?futures_enabled[\\x27\"]?\\s*[:=]\\s*true|[\\x27\"]?leverage_enabled[\\x27\"]?\\s*[:=]\\s*true|[\\x27\"]?market_order_enabled[\\x27\"]?\\s*[:=]\\s*true|[\\x27\"]?entry_market_order_enabled[\\x27\"]?\\s*[:=]\\s*true' "
   + closeoutSourceScanPaths;
-const closeoutSecretSourceScanCommand = "rg --no-config -uuu -n 'SEEMIRAI_DATABASE_URL\\s*=\\s*postgres:\\/\\/[^\\s<:]+:[^\\s<@]+@|postgres(?:ql)?:\\/\\/[^:<\\s\"\\x27]+:[^@<\\s\"\\x27]+@|SEEMIRAI_UPBIT_ACCESS_KEY\\s*=\\s*[^<\\s]+|SEEMIRAI_UPBIT_SECRET_KEY\\s*=\\s*[^<\\s]+|SEEMIRAI_TELEGRAM_BOT_TOKEN\\s*=\\s*[0-9]+:[A-Za-z0-9_-]+|SEEMIRAI_TUI_CONTROL_TOKEN\\s*=\\s*[^<\\s]+|Authorization\\s*[:=]\\s*\"?(Bearer|bearer)\\s+[A-Za-z0-9._-]+|authorization\\s*[:=]\\s*\"?(Bearer|bearer)\\s+[A-Za-z0-9._-]+|raw_provider_payload|rawProviderPayload|raw_order_detail|rawOrderDetail' "
+const closeoutSecretSourceScanCommand = "rg --no-config -uuu -n 'SEEMIRAI_DATABASE_URL\\s*=\\s*postgres:\\/\\/[^\\s<:]+:[^\\s<@]+@|postgres(?:ql)?:\\/\\/[^:<\\s\"\\x27]+:[^@<\\s\"\\x27]+@|SEEMIRAI_UPBIT_ACCESS_KEY\\s*=\\s*[^<\\s]+|SEEMIRAI_UPBIT_SECRET_KEY\\s*=\\s*[^<\\s]+|SEEMIRAI_TELEGRAM_BOT_TOKEN\\s*=\\s*[0-9]+:[A-Za-z0-9_-]+|SEEMIRAI_TUI_CONTROL_TOKEN\\s*=\\s*[^<\\s]+|[\\x27\"]?Authorization[\\x27\"]?\\s*[:=]\\s*[\\x27\"]?(Bearer|bearer)\\s+[A-Za-z0-9._-]+|[\\x27\"]?authorization[\\x27\"]?\\s*[:=]\\s*[\\x27\"]?(Bearer|bearer)\\s+[A-Za-z0-9._-]+|raw_provider_payload|rawProviderPayload|raw_order_detail|rawOrderDetail' "
   + closeoutSourceScanPaths;
 
 describe("Issue 206 live:ops real-arm closeout script", () => {
@@ -267,7 +267,7 @@ describe("Issue 206 live:ops real-arm closeout script", () => {
           ...(manifest.sourceScan as Record<string, unknown>),
           commands: [
             closeoutUnsafeSourceScanCommand,
-            "rg --no-config -uuu -n 'SEEMIRAI_DATABASE_URL\\s*=\\s*postgres:\\/\\/[^\\s<:]+:[^\\s<@]+@|SEEMIRAI_UPBIT_ACCESS_KEY\\s*=\\s*[^<\\s]+|SEEMIRAI_UPBIT_SECRET_KEY\\s*=\\s*[^<\\s]+|SEEMIRAI_TELEGRAM_BOT_TOKEN\\s*=\\s*[0-9]+:[A-Za-z0-9_-]+|SEEMIRAI_TUI_CONTROL_TOKEN\\s*=\\s*[^<\\s]+|Authorization\\s*[:=]\\s*\"?(Bearer|bearer)\\s+[A-Za-z0-9._-]+|authorization\\s*[:=]\\s*\"?(Bearer|bearer)\\s+[A-Za-z0-9._-]+|raw_provider_payload|raw_order_detail' "
+            "rg --no-config -uuu -n 'SEEMIRAI_DATABASE_URL\\s*=\\s*postgres:\\/\\/[^\\s<:]+:[^\\s<@]+@|postgres(?:ql)?:\\/\\/[^:<\\s\"\\x27]+:[^@<\\s\"\\x27]+@|SEEMIRAI_UPBIT_ACCESS_KEY\\s*=\\s*[^<\\s]+|SEEMIRAI_UPBIT_SECRET_KEY\\s*=\\s*[^<\\s]+|SEEMIRAI_TELEGRAM_BOT_TOKEN\\s*=\\s*[0-9]+:[A-Za-z0-9_-]+|SEEMIRAI_TUI_CONTROL_TOKEN\\s*=\\s*[^<\\s]+|[\\x27\"]?Authorization[\\x27\"]?\\s*[:=]\\s*[\\x27\"]?(Bearer|bearer)\\s+[A-Za-z0-9._-]+|[\\x27\"]?authorization[\\x27\"]?\\s*[:=]\\s*[\\x27\"]?(Bearer|bearer)\\s+[A-Za-z0-9._-]+|raw_provider_payload|raw_order_detail' "
               + closeoutSourceScanPaths,
           ],
         },
@@ -291,7 +291,31 @@ describe("Issue 206 live:ops real-arm closeout script", () => {
           ...(manifest.sourceScan as Record<string, unknown>),
           commands: [
             closeoutUnsafeSourceScanCommand,
-            "rg --no-config -uuu -n 'SEEMIRAI_DATABASE_URL\\s*=\\s*postgres:\\/\\/[^\\s<:]+:[^\\s<@]+@|SEEMIRAI_UPBIT_ACCESS_KEY\\s*=\\s*[^<\\s]+|SEEMIRAI_UPBIT_SECRET_KEY\\s*=\\s*[^<\\s]+|SEEMIRAI_TELEGRAM_BOT_TOKEN\\s*=\\s*[0-9]+:[A-Za-z0-9_-]+|SEEMIRAI_TUI_CONTROL_TOKEN\\s*=\\s*[^<\\s]+|Authorization\\s*[:=]\\s*\"?(Bearer|bearer)\\s+[A-Za-z0-9._-]+|authorization\\s*[:=]\\s*\"?(Bearer|bearer)\\s+[A-Za-z0-9._-]+|raw_provider_payload|rawProviderPayload|raw_order_detail|rawOrderDetail' "
+            "rg --no-config -uuu -n 'SEEMIRAI_DATABASE_URL\\s*=\\s*postgres:\\/\\/[^\\s<:]+:[^\\s<@]+@|SEEMIRAI_UPBIT_ACCESS_KEY\\s*=\\s*[^<\\s]+|SEEMIRAI_UPBIT_SECRET_KEY\\s*=\\s*[^<\\s]+|SEEMIRAI_TELEGRAM_BOT_TOKEN\\s*=\\s*[0-9]+:[A-Za-z0-9_-]+|SEEMIRAI_TUI_CONTROL_TOKEN\\s*=\\s*[^<\\s]+|[\\x27\"]?Authorization[\\x27\"]?\\s*[:=]\\s*[\\x27\"]?(Bearer|bearer)\\s+[A-Za-z0-9._-]+|[\\x27\"]?authorization[\\x27\"]?\\s*[:=]\\s*[\\x27\"]?(Bearer|bearer)\\s+[A-Za-z0-9._-]+|raw_provider_payload|rawProviderPayload|raw_order_detail|rawOrderDetail' "
+              + closeoutSourceScanPaths,
+          ],
+        },
+      }),
+    });
+    const summary = await runScriptExpectingFailure(
+      ["--json", "--artifact-dir", artifactDir, "--manifest", manifestPath],
+      createReadyEnv(),
+    );
+
+    expect(summary.status).toBe("failed");
+    expect(getCheck(summary, "sourceSecurityScan")).toMatchObject({ status: "fail" });
+  });
+
+  it("fails when source scan commands omit quoted Authorization bearer coverage", async () => {
+    const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-issue-206-closeout-source-scan-quoted-authorization-"));
+    const manifestPath = await writeCloseoutManifest(artifactDir, {
+      manifestMutator: (manifest) => ({
+        ...manifest,
+        sourceScan: {
+          ...(manifest.sourceScan as Record<string, unknown>),
+          commands: [
+            closeoutUnsafeSourceScanCommand,
+            "rg --no-config -uuu -n 'SEEMIRAI_DATABASE_URL\\s*=\\s*postgres:\\/\\/[^\\s<:]+:[^\\s<@]+@|postgres(?:ql)?:\\/\\/[^:<\\s\"\\x27]+:[^@<\\s\"\\x27]+@|SEEMIRAI_UPBIT_ACCESS_KEY\\s*=\\s*[^<\\s]+|SEEMIRAI_UPBIT_SECRET_KEY\\s*=\\s*[^<\\s]+|SEEMIRAI_TELEGRAM_BOT_TOKEN\\s*=\\s*[0-9]+:[A-Za-z0-9_-]+|SEEMIRAI_TUI_CONTROL_TOKEN\\s*=\\s*[^<\\s]+|Authorization\\s*[:=]\\s*\"?(Bearer|bearer)\\s+[A-Za-z0-9._-]+|authorization\\s*[:=]\\s*\"?(Bearer|bearer)\\s+[A-Za-z0-9._-]+|raw_provider_payload|rawProviderPayload|raw_order_detail|rawOrderDetail' "
               + closeoutSourceScanPaths,
           ],
         },
@@ -316,7 +340,7 @@ describe("Issue 206 live:ops real-arm closeout script", () => {
           commands: [
             "rg --no-config -uuu -n '[\\x27\"]?ord_type[\\x27\"]?\\s*[:=]\\s*[\\x27\"]?price|[\\x27\"]?ord_type[\\x27\"]?\\s*[:=]\\s*[\\x27\"]?market|[\\x27\"]?ord_type[\\x27\"]?\\s*[:=]\\s*[\\x27\"]?best|[\\x27\"]?order_type[\\x27\"]?\\s*[:=]\\s*[\\x27\"]?(market|MARKET)|[\\x27\"]?orderType[\\x27\"]?\\s*[:=]\\s*[\\x27\"]?(market|MARKET)|[\\x27\"]?withdrawal_enabled[\\x27\"]?\\s*[:=]\\s*true|[\\x27\"]?deposit_enabled[\\x27\"]?\\s*[:=]\\s*true|\\/v1\\/deposits|\\/v1\\/withdraws|[\\x27\"]?futures_enabled[\\x27\"]?\\s*[:=]\\s*true|[\\x27\"]?leverage_enabled[\\x27\"]?\\s*[:=]\\s*true|[\\x27\"]?market_order_enabled[\\x27\"]?\\s*[:=]\\s*true|[\\x27\"]?entry_market_order_enabled[\\x27\"]?\\s*[:=]\\s*true' "
               + closeoutSourceScanPathsWithoutLiveBroker,
-            "rg --no-config -uuu -n 'SEEMIRAI_DATABASE_URL\\s*=\\s*postgres:\\/\\/[^\\s<:]+:[^\\s<@]+@|postgres(?:ql)?:\\/\\/[^:<\\s\"\\x27]+:[^@<\\s\"\\x27]+@|SEEMIRAI_UPBIT_ACCESS_KEY\\s*=\\s*[^<\\s]+|SEEMIRAI_UPBIT_SECRET_KEY\\s*=\\s*[^<\\s]+|SEEMIRAI_TELEGRAM_BOT_TOKEN\\s*=\\s*[0-9]+:[A-Za-z0-9_-]+|SEEMIRAI_TUI_CONTROL_TOKEN\\s*=\\s*[^<\\s]+|Authorization\\s*[:=]\\s*\"?(Bearer|bearer)\\s+[A-Za-z0-9._-]+|authorization\\s*[:=]\\s*\"?(Bearer|bearer)\\s+[A-Za-z0-9._-]+|raw_provider_payload|rawProviderPayload|raw_order_detail|rawOrderDetail' "
+            "rg --no-config -uuu -n 'SEEMIRAI_DATABASE_URL\\s*=\\s*postgres:\\/\\/[^\\s<:]+:[^\\s<@]+@|postgres(?:ql)?:\\/\\/[^:<\\s\"\\x27]+:[^@<\\s\"\\x27]+@|SEEMIRAI_UPBIT_ACCESS_KEY\\s*=\\s*[^<\\s]+|SEEMIRAI_UPBIT_SECRET_KEY\\s*=\\s*[^<\\s]+|SEEMIRAI_TELEGRAM_BOT_TOKEN\\s*=\\s*[0-9]+:[A-Za-z0-9_-]+|SEEMIRAI_TUI_CONTROL_TOKEN\\s*=\\s*[^<\\s]+|[\\x27\"]?Authorization[\\x27\"]?\\s*[:=]\\s*[\\x27\"]?(Bearer|bearer)\\s+[A-Za-z0-9._-]+|[\\x27\"]?authorization[\\x27\"]?\\s*[:=]\\s*[\\x27\"]?(Bearer|bearer)\\s+[A-Za-z0-9._-]+|raw_provider_payload|rawProviderPayload|raw_order_detail|rawOrderDetail' "
               + closeoutSourceScanPathsWithoutLiveBroker,
           ],
         },
