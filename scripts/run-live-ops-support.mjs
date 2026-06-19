@@ -1363,9 +1363,19 @@ async function claimAndRemoveLiveOpsCliDailyReservationLock(targetPath, expected
   }
   const claimed = await readLiveOpsCliDailyReservationLockState(claimPath, new Date().toISOString(), liveOpsCliDailyReservationLockLeaseMs);
   if (!claimed.exists || claimed.fingerprint !== expected.fingerprint) {
-    // mismatch는 다른 프로세스가 만든 fresh lock일 수 있으므로 target을 덮어쓰지 않는 link 복원만 시도한다.
-    await link(claimPath, targetPath).catch(() => undefined);
-    await unlink(claimPath).catch(() => undefined);
+    // target에 이미 fresh lock이 있으면 claim은 active owner의 lock일 수 있으므로 삭제하지 않고 보존한다.
+    const restored = await link(claimPath, targetPath).then(
+      () => true,
+      (error) => {
+        if (error?.code === "EEXIST") {
+          return false;
+        }
+        throw error;
+      },
+    );
+    if (restored) {
+      await unlink(claimPath).catch(() => undefined);
+    }
     const error = new Error("LiveOpsCliDailyReservationLockNotRecoverable");
     error.code = "EEXIST";
     throw error;
