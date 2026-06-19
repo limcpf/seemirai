@@ -97,6 +97,8 @@ const requiredUnsafeSourceScanPatterns = [
   { label: "snake_case market order artifact", pattern: /"?order_type"?\s*[:=]\s*"?(market|MARKET)/u },
   { label: "camelCase market order artifact", pattern: /"?orderType"?\s*[:=]\s*"?(market|MARKET)/u },
   { label: "withdrawal enabled true", pattern: /"?withdrawal_enabled"?\s*[:=]\s*true/u },
+  { label: "deposit enabled true", pattern: /"?deposit_enabled"?\s*[:=]\s*true/u },
+  { label: "Upbit deposit API path", pattern: /\/v1\/deposits/u },
   { label: "futures enabled true", pattern: /"?futures_enabled"?\s*[:=]\s*true/u },
   { label: "leverage enabled true", pattern: /"?leverage_enabled"?\s*[:=]\s*true/u },
   { label: "market order enabled true", pattern: /"?market_order_enabled"?\s*[:=]\s*true/u },
@@ -111,7 +113,9 @@ const requiredSecretSourceScanPatterns = [
   { label: "authorization bearer literal", pattern: /Authorization\s*[:=]\s*"?(Bearer|bearer)\s+[A-Za-z0-9._-]+/u },
   { label: "lowercase authorization bearer literal", pattern: /authorization\s*[:=]\s*"?(Bearer|bearer)\s+[A-Za-z0-9._-]+/u },
   { label: "raw provider payload field", pattern: /raw_provider_payload/u },
+  { label: "camelCase raw provider payload field", pattern: /rawProviderPayload/u },
   { label: "raw order detail field", pattern: /raw_order_detail/u },
+  { label: "camelCase raw order detail field", pattern: /rawOrderDetail/u },
 ];
 const disallowedRipgrepLongOptions = new Set([
   "--line-regexp",

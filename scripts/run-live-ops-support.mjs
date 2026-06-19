@@ -941,25 +941,28 @@ function attachLiveOpsCliCleanupRuntimeApprovalEvidence(intent) {
   }
 
   const evidence = createLiveOpsCliOrderIntentEvidence(intent);
+  const costSnapshot = intent.costSnapshot ?? {};
+  const riskApproval = intent.riskApproval ?? {};
   return {
     ...intent,
     costSnapshot: {
-      ...(intent.costSnapshot ?? {}),
-      source: intent.costSnapshot?.source ?? "cost_model",
+      ...costSnapshot,
+      source: costSnapshot.source ?? "cost_model",
       exchange_id: intent.exchangeId,
       market: intent.market,
-      trade_allowed: true,
-      reason_code: intent.costSnapshot?.reason_code ?? "cost_margin_ok",
+      // CostModel이 이미 차단한 후보는 날짜 scope 보정 중 승인 evidence로 바꾸지 않는다.
+      trade_allowed: costSnapshot.trade_allowed ?? true,
+      reason_code: costSnapshot.reason_code ?? "cost_margin_ok",
       order_intent: evidence,
     },
     riskApproval: {
-      ...(intent.riskApproval ?? {}),
-      source: intent.riskApproval?.source ?? "risk_gate",
-      approved: true,
-      action: intent.riskApproval?.action ?? "ALLOW",
-      status: intent.riskApproval?.status ?? "PASS",
-      failed_evaluation_reason_codes: Array.isArray(intent.riskApproval?.failed_evaluation_reason_codes)
-        ? intent.riskApproval.failed_evaluation_reason_codes
+      ...riskApproval,
+      source: riskApproval.source ?? "risk_gate",
+      approved: riskApproval.approved ?? true,
+      action: riskApproval.action ?? "ALLOW",
+      status: riskApproval.status ?? "PASS",
+      failed_evaluation_reason_codes: Array.isArray(riskApproval.failed_evaluation_reason_codes)
+        ? riskApproval.failed_evaluation_reason_codes
         : [],
       order_intent: evidence,
     },
@@ -5808,15 +5811,7 @@ function hasOnlyLiveOpsCliTrackedExecutionOpenOrders(openOrders, liveExecution) 
 
 function normalizeLiveOpsCliPnlStatus(summary, { liveExecution, observedAt } = {}) {
   if (isLiveOpsCliCleanCancelCloseout(liveExecution) && (summary === undefined || summary?.readStatus !== "OK")) {
-    return {
-      status: "cleanup_no_fill",
-      statusLabel: "변동 없음",
-      latestCapturedAt: liveExecution.terminalCheckedAt ?? null,
-      realizedPnlKrw: null,
-      unrealizedPnlKrw: null,
-      manualReviewRequired: false,
-      message: "terminal cancel과 no-fill 조건이 확인되어 이번 cleanup에서 손익 변동을 0으로 보정하지 않고 null로 유지합니다.",
-    };
+    return createLiveOpsCliCleanupNoFillPnlStatus(liveExecution);
   }
 
   if (summary === undefined) {
@@ -5845,6 +5840,10 @@ function normalizeLiveOpsCliPnlStatus(summary, { liveExecution, observedAt } = {
     };
   }
   if (readStatus === "OK" && !isLiveOpsCliFreshPnlStatus(summary, observedAt)) {
+    if (isLiveOpsCliCleanCancelCloseout(liveExecution)) {
+      // terminal cancel/no-fill에서는 새 체결이 없으므로 오래된 CALCULATED row만으로 수동 점검을 열지 않는다.
+      return createLiveOpsCliCleanupNoFillPnlStatus(liveExecution);
+    }
     // stale PnL row는 cleanup 이후 현재 상태 증거가 아니므로 ready summary로 낮추지 않는다.
     return {
       status: "pnl_snapshot_stale",
@@ -5867,6 +5866,18 @@ function normalizeLiveOpsCliPnlStatus(summary, { liveExecution, observedAt } = {
     message: readStatus === "OK"
       ? "최신 PnL snapshot에서 realized/unrealized PnL을 읽었습니다."
       : "PnL snapshot 상태가 준비되지 않아 손익을 0으로 보정하지 않습니다.",
+  };
+}
+
+function createLiveOpsCliCleanupNoFillPnlStatus(liveExecution) {
+  return {
+    status: "cleanup_no_fill",
+    statusLabel: "변동 없음",
+    latestCapturedAt: liveExecution?.terminalCheckedAt ?? null,
+    realizedPnlKrw: null,
+    unrealizedPnlKrw: null,
+    manualReviewRequired: false,
+    message: "terminal cancel과 no-fill 조건이 확인되어 이번 cleanup에서 손익 변동을 0으로 보정하지 않고 null로 유지합니다.",
   };
 }
 

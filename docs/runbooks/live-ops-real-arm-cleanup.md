@@ -156,11 +156,12 @@ src/infrastructure/upbit/private-client/client.ts scripts/run-live-ops.mjs scrip
 전체 범위의 금지 주문 경계 전체(`"?ord_type"?\s*[:=]\s*"?price`, `"?ord_type"?\s*[:=]\s*"?market`,
 `"?ord_type"?\s*[:=]\s*"?best`, `"?order_type"?\s*[:=]\s*"?(market|MARKET)`,
 `"?orderType"?\s*[:=]\s*"?(market|MARKET)`, `"?withdrawal_enabled"?\s*[:=]\s*true`,
+`"?deposit_enabled"?\s*[:=]\s*true`, `\/v1\/deposits`,
 `"?futures_enabled"?\s*[:=]\s*true`, `"?leverage_enabled"?\s*[:=]\s*true`,
 `"?market_order_enabled"?\s*[:=]\s*true`, `"?entry_market_order_enabled"?\s*[:=]\s*true`)와
 secret/raw payload 후보 전체(`SEEMIRAI_DATABASE_URL=postgres://...:<password>@...`, Upbit access/secret key literal,
 Telegram bot token literal, TUI control token literal, `Authorization: Bearer ...`, `authorization: bearer ...`,
-`raw_provider_payload`, `raw_order_detail`)를
+`raw_provider_payload`, `rawProviderPayload`, `raw_order_detail`, `rawOrderDetail`)를
 스캔한 증거를 포함해야 한다.
 일반 영어 단어 `market`은 정상 market 설정/문서에도 반복되므로 empty-match가 필요한 금지 주문 scan term으로 쓰지 않고,
 정상 차단 설정에 반복되는 `market_order` 단독 term도 필수 empty-match scan으로 쓰지 않는다. 금지 scope, 시장가, futures/leverage 같은
