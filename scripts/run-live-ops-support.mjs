@@ -1,5 +1,6 @@
 import { createHash, createHmac, randomUUID } from "node:crypto";
-import { mkdir, open, readdir, readFile, realpath, unlink, writeFile } from "node:fs/promises";
+import { readFileSync } from "node:fs";
+import { link, mkdir, open, readdir, readFile, realpath, stat, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { Decimal } from "decimal.js";
 import pg from "pg";
@@ -16,6 +17,8 @@ const liveOpsCliRepositoryRoot = path.resolve(".");
 const liveOpsCliUpbitIdentifierMaxLength = 32;
 const liveOpsCliCleanupCancelPollCount = 5;
 const liveOpsCliCleanupCancelPollIntervalMs = 1000;
+const liveOpsCliDailyReservationLockLeaseMs = 5 * 60 * 1000;
+const liveOpsCliProcessOwner = createLiveOpsCliProcessOwnerSnapshot(process.pid);
 const liveOpsWorkerLabels = {
   db_readiness: "DB readiness",
   market_data: "시세 수집",
@@ -1065,21 +1068,50 @@ export async function createLiveOpsCliCleanupArtifactStore({ configPath, env = {
       assertLiveOpsCliReservationDay(day);
       return path.join(realDir, `reservation-daily-${day}.lock`);
     },
-    async acquireDailyReservationLock(day) {
+    async acquireDailyReservationLock(day, { acquiredAt = new Date().toISOString(), ttlMs = liveOpsCliDailyReservationLockLeaseMs } = {}) {
       const targetPath = this.dailyReservationLockPath(day);
-      const handle = await open(targetPath, "wx");
-      let released = false;
-      return {
-        path: targetPath,
-        async release() {
-          if (released) {
-            return;
-          }
-          released = true;
-          await handle.close();
-          await unlink(targetPath).catch(() => undefined);
-        },
+      const acquire = async () => {
+        assertLiveOpsCliDailyReservationLockOwnerAvailable();
+        const leaseId = randomUUID();
+        const tempPath = `${targetPath}.tmp-${leaseId}`;
+        const lease = `${JSON.stringify(createLiveOpsCliDailyReservationLockLease({
+          day,
+          acquiredAt,
+          ttlMs,
+          leaseId,
+        }), null, 2)}\n`;
+        try {
+          await writeFile(tempPath, lease, { encoding: "utf8", flag: "wx" });
+          await link(tempPath, targetPath);
+        } catch (error) {
+          throw error;
+        } finally {
+          await unlink(tempPath).catch(() => undefined);
+        }
+        let released = false;
+        return {
+          path: targetPath,
+          leaseId,
+          async release() {
+            if (released) {
+              return;
+            }
+            released = true;
+            await releaseLiveOpsCliDailyReservationLockIfOwned(targetPath, leaseId);
+          },
+        };
       };
+
+      try {
+        return await acquire();
+      } catch (error) {
+        if (error?.code !== "EEXIST") {
+          throw error;
+        }
+        // stale 회수는 target을 비우기 전에 hard-link claim에서 fingerprint를 재확인해 fresh lock 삭제 경합을 차단한다.
+        await releaseLiveOpsCliRecoverableDailyReservationLock(targetPath, acquiredAt, ttlMs);
+        return await acquire();
+      }
     },
     async writeReservation(record) {
       const targetPath = this.reservationPath(record.attemptId);
@@ -1181,7 +1213,10 @@ export function createLiveOpsCliFileBudgetReservation({ artifactStore, clock = (
       }
       let lock;
       try {
-        lock = await artifactStore.acquireDailyReservationLock(day);
+        lock = await artifactStore.acquireDailyReservationLock(day, {
+          acquiredAt: reservedAt,
+          ttlMs: liveOpsCliDailyReservationLockLeaseMs,
+        });
       } catch (error) {
         if (error?.code !== "EEXIST") {
           throw error;
@@ -1277,6 +1312,279 @@ async function evaluateLiveOpsCliDailyBudgetReservation({ request, dailyUsage })
   }
 
   return { reserved: true };
+}
+
+function createLiveOpsCliDailyReservationLockLease({
+  day,
+  acquiredAt,
+  ttlMs,
+  leaseId = randomUUID(),
+  source = "live_ops_cli_daily_budget_reservation_lock",
+}) {
+  const acquiredAtMs = Date.parse(acquiredAt);
+  const resolvedAcquiredAt = Number.isFinite(acquiredAtMs) ? new Date(acquiredAtMs) : new Date();
+  return {
+    source,
+    day,
+    leaseId,
+    acquiredAt: resolvedAcquiredAt.toISOString(),
+    expiresAt: new Date(resolvedAcquiredAt.getTime() + ttlMs).toISOString(),
+    pid: process.pid,
+    owner: liveOpsCliProcessOwner,
+  };
+}
+
+function assertLiveOpsCliDailyReservationLockOwnerAvailable() {
+  if (!hasMeaningfulValue(liveOpsCliProcessOwner?.bootId) || !hasMeaningfulValue(liveOpsCliProcessOwner?.processStartTime)) {
+    throw new Error("LiveOpsCliDailyReservationLockOwnerUnavailable");
+  }
+}
+
+async function releaseLiveOpsCliDailyReservationLockIfOwned(targetPath, leaseId) {
+  const expected = await readLiveOpsCliDailyReservationLockState(targetPath, new Date().toISOString(), liveOpsCliDailyReservationLockLeaseMs);
+  if (!expected.exists || expected.lease?.leaseId !== leaseId) {
+    return;
+  }
+  await claimAndRemoveLiveOpsCliDailyReservationLock(targetPath, expected);
+}
+
+async function releaseLiveOpsCliRecoverableDailyReservationLock(targetPath, now, ttlMs) {
+  const expected = await readLiveOpsCliDailyReservationLockState(targetPath, now, ttlMs);
+  if (!expected.recoverable) {
+    const error = new Error("LiveOpsCliDailyReservationLockNotRecoverable");
+    error.code = "EEXIST";
+    throw error;
+  }
+  await claimAndRemoveLiveOpsCliDailyReservationLock(targetPath, expected);
+}
+
+async function claimAndRemoveLiveOpsCliDailyReservationLock(targetPath, expected) {
+  const claimPath = `${targetPath}.claimed-${expected.fingerprint}-${randomUUID()}`;
+  try {
+    await link(targetPath, claimPath);
+  } catch (error) {
+    if (error?.code === "ENOENT") {
+      return;
+    }
+    throw error;
+  }
+  const claimed = await readLiveOpsCliDailyReservationLockState(claimPath, new Date().toISOString(), liveOpsCliDailyReservationLockLeaseMs);
+  if (!claimed.exists || claimed.fingerprint !== expected.fingerprint) {
+    await unlink(claimPath).catch(() => undefined);
+    const error = new Error("LiveOpsCliDailyReservationLockNotRecoverable");
+    error.code = "EEXIST";
+    throw error;
+  }
+  const removable = await isLiveOpsCliDailyReservationLockClaimStillTarget(targetPath, claimPath);
+  if (!removable) {
+    await unlink(claimPath).catch(() => undefined);
+    const error = new Error("LiveOpsCliDailyReservationLockNotRecoverable");
+    error.code = "EEXIST";
+    throw error;
+  }
+  await unlink(targetPath).catch((error) => {
+    if (error?.code !== "ENOENT") {
+      throw error;
+    }
+  });
+  await unlink(claimPath).catch((error) => {
+    if (error?.code !== "ENOENT") {
+      throw error;
+    }
+  });
+}
+
+async function isLiveOpsCliDailyReservationLockClaimStillTarget(targetPath, claimPath) {
+  try {
+    let [targetMetadata, claimMetadata] = await Promise.all([stat(targetPath), stat(claimPath)]);
+    if (targetMetadata.dev === claimMetadata.dev && targetMetadata.ino === claimMetadata.ino && claimMetadata.nlink > 2) {
+      await removeLiveOpsCliOrphanDailyReservationLockClaims(targetPath, claimPath, targetMetadata);
+      [targetMetadata, claimMetadata] = await Promise.all([stat(targetPath), stat(claimPath)]);
+    }
+    // 같은 inode의 target+claim 두 link만 있을 때만 target을 제거해 다른 fresh lock이나 경쟁 claim을 건드리지 않는다.
+    return targetMetadata.dev === claimMetadata.dev
+      && targetMetadata.ino === claimMetadata.ino
+      && claimMetadata.nlink === 2;
+  } catch (error) {
+    if (error?.code === "ENOENT") {
+      return false;
+    }
+    throw error;
+  }
+}
+
+async function removeLiveOpsCliOrphanDailyReservationLockClaims(targetPath, claimPath, targetMetadata) {
+  const directory = path.dirname(targetPath);
+  const lockBasename = path.basename(targetPath);
+  const orphanPrefixes = [`${lockBasename}.claimed-`, `${lockBasename}.tmp-`];
+  const entries = await readdir(directory, { withFileTypes: true });
+  for (const entry of entries) {
+    if (!entry.isFile() || !orphanPrefixes.some((prefix) => entry.name.startsWith(prefix))) {
+      continue;
+    }
+    const candidatePath = path.join(directory, entry.name);
+    if (candidatePath === claimPath) {
+      continue;
+    }
+    try {
+      const candidateMetadata = await stat(candidatePath);
+      if (candidateMetadata.dev === targetMetadata.dev && candidateMetadata.ino === targetMetadata.ino) {
+        // crash로 남은 같은 inode claim은 target CAS 전에 제거해야 nlink 고착으로 인한 영구 busy를 막는다.
+        await unlink(candidatePath);
+      }
+    } catch (error) {
+      if (error?.code !== "ENOENT") {
+        throw error;
+      }
+    }
+  }
+}
+
+async function readLiveOpsCliDailyReservationLockState(targetPath, now, ttlMs) {
+  const nowMs = Date.parse(now);
+  const resolvedNowMs = Number.isFinite(nowMs) ? nowMs : Date.now();
+  let content;
+  try {
+    content = await readFile(targetPath, "utf8");
+  } catch (error) {
+    if (error?.code === "ENOENT") {
+      return { exists: false, recoverable: false, fingerprint: "missing" };
+    }
+    throw error;
+  }
+
+  try {
+    const lease = JSON.parse(content);
+    if (!isLiveOpsCliDailyReservationLockLeaseSchema(lease)) {
+      // 문법상 JSON이어도 lease 필수 필드가 없으면 owner를 신뢰할 수 없으므로 malformed TTL 복구 경로로 보낸다.
+      return readLiveOpsCliMalformedDailyReservationLockState(targetPath, resolvedNowMs, ttlMs, "lease_schema_invalid");
+    }
+    const expiresAtMs = Date.parse(lease?.expiresAt);
+    const expired = Number.isFinite(expiresAtMs) && expiresAtMs <= resolvedNowMs;
+    const ownerActive = isLiveOpsCliLockOwnerActive(lease);
+    return {
+      exists: true,
+      recoverable: expired && !ownerActive,
+      lease,
+      fingerprint: createHash("sha256")
+        .update(JSON.stringify({
+          source: lease?.source,
+          day: lease?.day,
+          leaseId: lease?.leaseId,
+          acquiredAt: lease?.acquiredAt,
+          expiresAt: lease?.expiresAt,
+          pid: lease?.pid,
+          owner: lease?.owner,
+        }))
+        .digest("hex")
+        .slice(0, 16),
+    };
+  } catch {
+    return readLiveOpsCliMalformedDailyReservationLockState(targetPath, resolvedNowMs, ttlMs, "json_parse_failed");
+  }
+}
+
+function isLiveOpsCliDailyReservationLockLeaseSchema(lease) {
+  return hasMeaningfulValue(lease?.source)
+    && hasMeaningfulValue(lease?.day)
+    && hasMeaningfulValue(lease?.leaseId)
+    && Number.isFinite(Date.parse(lease?.acquiredAt))
+    && Number.isFinite(Date.parse(lease?.expiresAt))
+    && Number.isInteger(lease?.pid)
+    && lease.pid > 0
+    && hasMeaningfulValue(lease?.owner?.bootId)
+    && hasMeaningfulValue(lease?.owner?.processStartTime);
+}
+
+async function readLiveOpsCliMalformedDailyReservationLockState(targetPath, resolvedNowMs, ttlMs, reason) {
+  const metadata = await stat(targetPath);
+  return {
+    exists: true,
+    recoverable: metadata.mtimeMs + ttlMs <= resolvedNowMs,
+    lease: undefined,
+    fingerprint: createHash("sha256")
+      .update(JSON.stringify({
+        malformed: true,
+        reason,
+        mtimeMs: metadata.mtimeMs,
+        size: metadata.size,
+      }))
+      .digest("hex")
+      .slice(0, 16),
+  };
+}
+
+function isLiveOpsCliLockOwnerActive(lease) {
+  const pid = lease?.pid;
+  if (!Number.isInteger(pid) || pid <= 0) {
+    return true;
+  }
+  const expectedOwner = lease?.owner;
+  if (!hasMeaningfulValue(expectedOwner?.bootId) || !hasMeaningfulValue(expectedOwner?.processStartTime)) {
+    return true;
+  }
+  const actualBootId = readLiveOpsCliBootId();
+  if (!hasMeaningfulValue(actualBootId)) {
+    return true;
+  }
+  if (expectedOwner.bootId !== actualBootId) {
+    return false;
+  }
+  const actualProcess = readLiveOpsCliProcessSnapshot(pid);
+  if (actualProcess.status === "missing") {
+    return false;
+  }
+  if (actualProcess.status !== "found") {
+    return true;
+  }
+  if (actualProcess.processStartTime !== expectedOwner.processStartTime) {
+    return false;
+  }
+  if (actualProcess.state === "Z") {
+    return false;
+  }
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    if (error?.code === "ESRCH") {
+      return false;
+    }
+    return true;
+  }
+}
+
+function createLiveOpsCliProcessOwnerSnapshot(pid) {
+  const processSnapshot = readLiveOpsCliProcessSnapshot(pid);
+  return {
+    pid,
+    bootId: readLiveOpsCliBootId(),
+    processStartTime: processSnapshot.status === "found" ? processSnapshot.processStartTime : undefined,
+  };
+}
+
+function readLiveOpsCliBootId() {
+  try {
+    return readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim();
+  } catch {
+    return undefined;
+  }
+}
+
+function readLiveOpsCliProcessSnapshot(pid) {
+  try {
+    const statContent = readFileSync(`/proc/${pid}/stat`, "utf8");
+    const lastParenIndex = statContent.lastIndexOf(")");
+    if (lastParenIndex < 0) {
+      return { status: "unknown" };
+    }
+    const fields = statContent.slice(lastParenIndex + 2).trim().split(/\s+/u);
+    return hasMeaningfulValue(fields[0]) && hasMeaningfulValue(fields[19])
+      ? { status: "found", state: fields[0], processStartTime: fields[19] }
+      : { status: "unknown" };
+  } catch (error) {
+    return error?.code === "ENOENT" ? { status: "missing" } : { status: "unknown" };
+  }
 }
 
 function assertLiveOpsCliPathOutsideRepository(targetPath, label) {
