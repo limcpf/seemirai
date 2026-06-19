@@ -1402,6 +1402,10 @@ async function readLiveOpsCliDailyReservationLockState(targetPath, now, ttlMs) {
 
   try {
     const lease = JSON.parse(content);
+    if (!isLiveOpsCliDailyReservationLockLeaseSchema(lease)) {
+      // 문법상 JSON이어도 lease 필수 필드가 없으면 owner를 신뢰할 수 없으므로 malformed TTL 복구 경로로 보낸다.
+      return readLiveOpsCliMalformedDailyReservationLockState(targetPath, resolvedNowMs, ttlMs, "lease_schema_invalid");
+    }
     const expiresAtMs = Date.parse(lease?.expiresAt);
     const expired = Number.isFinite(expiresAtMs) && expiresAtMs <= resolvedNowMs;
     const ownerActive = isLiveOpsCliLockOwnerActive(lease);
@@ -1423,21 +1427,38 @@ async function readLiveOpsCliDailyReservationLockState(targetPath, now, ttlMs) {
         .slice(0, 16),
     };
   } catch {
-    const metadata = await stat(targetPath);
-    return {
-      exists: true,
-      recoverable: metadata.mtimeMs + ttlMs <= resolvedNowMs,
-      lease: undefined,
-      fingerprint: createHash("sha256")
-        .update(JSON.stringify({
-          malformed: true,
-          mtimeMs: metadata.mtimeMs,
-          size: metadata.size,
-        }))
-        .digest("hex")
-        .slice(0, 16),
-    };
+    return readLiveOpsCliMalformedDailyReservationLockState(targetPath, resolvedNowMs, ttlMs, "json_parse_failed");
   }
+}
+
+function isLiveOpsCliDailyReservationLockLeaseSchema(lease) {
+  return hasMeaningfulValue(lease?.source)
+    && hasMeaningfulValue(lease?.day)
+    && hasMeaningfulValue(lease?.leaseId)
+    && Number.isFinite(Date.parse(lease?.acquiredAt))
+    && Number.isFinite(Date.parse(lease?.expiresAt))
+    && Number.isInteger(lease?.pid)
+    && lease.pid > 0
+    && hasMeaningfulValue(lease?.owner?.bootId)
+    && hasMeaningfulValue(lease?.owner?.processStartTime);
+}
+
+async function readLiveOpsCliMalformedDailyReservationLockState(targetPath, resolvedNowMs, ttlMs, reason) {
+  const metadata = await stat(targetPath);
+  return {
+    exists: true,
+    recoverable: metadata.mtimeMs + ttlMs <= resolvedNowMs,
+    lease: undefined,
+    fingerprint: createHash("sha256")
+      .update(JSON.stringify({
+        malformed: true,
+        reason,
+        mtimeMs: metadata.mtimeMs,
+        size: metadata.size,
+      }))
+      .digest("hex")
+      .slice(0, 16),
+  };
 }
 
 function isLiveOpsCliLockOwnerActive(lease) {

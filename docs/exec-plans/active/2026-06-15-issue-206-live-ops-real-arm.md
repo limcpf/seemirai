@@ -258,7 +258,7 @@ Telegram, TUI를 같은 lifecycle로 조립하고, 조건을 통과한 단일 `K
   - [x] 만료됐더라도 owner process fingerprint가 살아 있는 lock은 회수하지 않고 broker 호출 전 busy로 fail-closed 한다.
   - [x] owner가 사라진 만료 stale lock만 quarantine rename/CAS 절차로 회수한 뒤 같은 날짜 reservation을 재획득할 수 있다.
   - [x] mismatch 복원 중 target에 이미 fresh lock이 있으면 active owner의 claim을 삭제하지 않고 fail-closed 한다.
-  - [x] 기존 버전이나 외부 손상으로 생긴 malformed lock은 파일 mtime 기준 TTL 이후 CAS 절차로 회수한다.
+  - [x] 기존 버전이나 외부 손상으로 생긴 malformed lock과 필수 lease field가 빠진 valid JSON lock은 파일 mtime 기준 TTL 이후 CAS 절차로 회수한다.
   - [x] 관련 운영 문서가 lease TTL, owner fingerprint, stale lock recovery invariant를 설명한다.
   - [x] 관련 unit tests, `corepack pnpm typecheck`, `./scripts/verify docs`, `./scripts/verify`, `git diff --check`가 통과한다.
 
@@ -373,8 +373,8 @@ SEEMIRAI_RUN_LIVE_OPS_REAL_ARM_CLOSEOUT=1 \
 - 2026-06-18: daily reservation lock은 `leaseId`/`acquiredAt`/`expiresAt`/`pid`와 owner boot id/process start time lease metadata를
   기록한다. acquire는 temp 파일에 완성된 lease JSON을 쓴 뒤 hard link로 lock path를 선점한다. fresh lock은 동시 실행 보호로 유지하고,
   owner fingerprint가 사라진 만료 stale lock만 quarantine rename/CAS 절차로 회수해 crash/reboot 이후 같은 날짜 운영이 영구 차단되지 않게
-  한다. mismatch 복원 중 target에 이미 fresh lock이 있으면 active owner의 claim을 삭제하지 않고 fail-closed 한다. 기존 malformed lock은
-  파일 mtime 기준 TTL 이후 같은 CAS 절차로 회수한다.
+  한다. mismatch 복원 중 target에 이미 fresh lock이 있으면 active owner의 claim을 삭제하지 않고 fail-closed 한다. 기존 malformed lock과 필수
+  lease field가 빠진 valid JSON lock은 파일 mtime 기준 TTL 이후 같은 CAS 절차로 회수한다.
 
 ## 남은 이슈
 

@@ -5450,6 +5450,11 @@ console.log(JSON.stringify({
     }, null, 2), "utf8");
     const pidReusedLock = await artifactStore.acquireDailyReservationLock("2026-06-15", { acquiredAt: observedAt });
     await pidReusedLock.release();
+    await writeFile(staleLockPath, "{}", "utf8");
+    const schemaMalformedBusy = await budgetReservation.reserve(createRequest("ops-ffffffffffffffffffffffffff", "10000"));
+    await utimes(staleLockPath, new Date("2026-06-14T23:50:00.000Z"), new Date("2026-06-14T23:50:00.000Z"));
+    const schemaMalformedLock = await artifactStore.acquireDailyReservationLock("2026-06-15", { acquiredAt: observedAt });
+    await schemaMalformedLock.release();
     await writeFile(staleLockPath, "{", "utf8");
     await utimes(staleLockPath, new Date("2026-06-14T23:50:00.000Z"), new Date("2026-06-14T23:50:00.000Z"));
     const recovered = await budgetReservation.reserve(createRequest("ops-dddddddddddddddddddddddddd", "10000"));
@@ -5502,6 +5507,11 @@ console.log(JSON.stringify({
       owner: lockLease.owner,
     });
     expect(await artifactStore.readReservation("ops-eeeeeeeeeeeeeeeeeeeeeeeeee")).toBeUndefined();
+    expect(schemaMalformedBusy).toMatchObject({
+      reserved: false,
+      reasonCode: "live_ops_daily_budget_lock_busy",
+    });
+    expect(await artifactStore.readReservation("ops-ffffffffffffffffffffffffff")).toBeUndefined();
     expect(recovered).toMatchObject({
       reserved: true,
       reservation: {
