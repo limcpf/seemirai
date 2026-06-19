@@ -933,6 +933,7 @@ function createLiveOpsCliCleanupRuntimeIntent({ intent, observedAt }) {
         : intent.idempotencyKey,
       idempotency_date_scope: dateScope,
       idempotency_date_source: "live_ops_runtime_preflight",
+      idempotency_observed_at: observedAt,
     },
   };
 }
@@ -1039,6 +1040,26 @@ function readLiveOpsCliRuntimeDateScope(observedAt) {
 
 function readLiveOpsCliRuntimeObservedAt(observedAt) {
   return readLiveOpsCliRuntimeDateScope(observedAt) === undefined ? undefined : String(observedAt);
+}
+
+function readLiveOpsCliCleanupRuntimeObservedAt(orderIntents) {
+  if (!Array.isArray(orderIntents)) {
+    return undefined;
+  }
+  for (const intent of orderIntents) {
+    if (
+      intent?.strategyId !== "live_ops_cleanup_probe" ||
+      intent?.metadata?.idempotency_date_source !== "live_ops_runtime_preflight"
+    ) {
+      continue;
+    }
+    const observedAt = readLiveOpsCliRuntimeObservedAt(intent.metadata.idempotency_observed_at);
+    if (observedAt !== undefined) {
+      // preflight가 이미 날짜 scope를 선점했다면 제출 직전 wall clock으로 같은 후보 key를 재정규화하지 않는다.
+      return observedAt;
+    }
+  }
+  return undefined;
 }
 
 function createLiveOpsCliCleanupCostInput() {
@@ -3413,8 +3434,8 @@ export async function evaluateLiveOpsCliLiveExecution({
   cleanupLifecycle,
 }) {
   const market = config.universe?.default_market ?? "KRW-BTC";
-  const observedAt = new Date().toISOString();
   const intents = orderIntents ?? getLiveOpsCliAnalysisOrderIntents(analysisDecision);
+  const observedAt = readLiveOpsCliCleanupRuntimeObservedAt(intents) ?? new Date().toISOString();
   const brokerGuard = evaluateLiveOpsCliBrokerGuard({ config, env, fixtureSmoke });
 
   if (analysisDecision.ready !== true) {

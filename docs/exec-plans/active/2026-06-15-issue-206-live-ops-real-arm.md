@@ -491,6 +491,9 @@ SEEMIRAI_RUN_LIVE_OPS_REAL_ARM_CLOSEOUT=1 \
 - 2026-06-19: Sub PR 14 review drain 7차 보강으로 file budget reservation은 실제 reserve 시점의 wall clock 날짜로
   `reservedAt`과 일일 사용량을 확정한다. cleanup runtime evidence 보정은 기존 CostModel snapshot 객체가 malformed/stale이면
   승인 기본값을 채우지 않고 guard 차단으로 남긴다.
+- 2026-06-19: Sub PR 14 review drain 8차 보강으로 production preflight가 확정한 cleanup runtime `observedAt`과 날짜 key를
+  live execution submit 직전 wall clock으로 다시 정규화하지 않는다. UTC 자정 경계에서 Cost/Risk `order_intent` evidence와
+  entry runtime request가 서로 다른 날짜 key를 갖지 않도록 preflight 시각을 intent metadata에 보존한다.
 
 ## 남은 이슈
 

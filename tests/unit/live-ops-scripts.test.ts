@@ -2688,6 +2688,103 @@ console.log(JSON.stringify({
     expect(request?.candidate.riskApproval.order_intent.idempotency_key).toBe(runtimeDecisionKey);
   });
 
+  it("cleanup_probe live execution은 preflight 날짜 key를 제출 직전 wall clock 날짜로 다시 바꾸지 않는다", async () => {
+    const supportModulePath = path.join(process.cwd(), "scripts/run-live-ops-support.mjs");
+    const {
+      evaluateLiveOpsCliLiveExecution,
+    } = await import(supportModulePath);
+    const preflightAt = "2026-06-14T23:59:59.000Z";
+    const executionAt = "2026-06-15T00:00:01.000Z";
+    const preflightDecisionKey = "live_ops_cleanup_probe:2026-06-14:upbit_krw_spot:KRW-BTC:BUY:100000000:0.0001:10000";
+    const nextDayDecisionKey = "live_ops_cleanup_probe:2026-06-15:upbit_krw_spot:KRW-BTC:BUY:100000000:0.0001:10000";
+    const preflightIntent = createCleanupRuntimeIntentWithKey(preflightDecisionKey, "2026-06-14") as Record<string, any>;
+    preflightIntent.metadata = {
+      ...preflightIntent.metadata,
+      idempotency_date_source: "live_ops_runtime_preflight",
+      idempotency_observed_at: preflightAt,
+    };
+    const submittedRequests: Array<Record<string, any>> = [];
+
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(executionAt));
+    try {
+      await evaluateLiveOpsCliLiveExecution({
+        config: {
+          live_trading_enabled: true,
+          universe: { markets: ["KRW-BTC"], default_market: "KRW-BTC" },
+          budget: {
+            max_order_krw: "10000",
+            daily_autonomous_notional_limit_krw: "30000",
+            max_open_position_notional_krw: "30000",
+          },
+        },
+        fixtureSmoke: false,
+        analysisDecision: {
+          ready: true,
+          decisionCategory: "ORDER_INTENT",
+          orderIntentCount: 1,
+        },
+        marketData: {
+          ready: true,
+          latestHeartbeatAt: preflightAt,
+          referencePrice: "100000000",
+        },
+        env: {
+          SEEMIRAI_UPBIT_ACCESS_KEY: "fake-access-key",
+          SEEMIRAI_UPBIT_SECRET_KEY: "fake-secret-key",
+          SEEMIRAI_UPBIT_KEY_SCOPE: "자산조회,주문조회,주문하기",
+          SEEMIRAI_UPBIT_KEY_SCOPE_EVIDENCE_ID: "scope-evidence",
+        },
+        orderIntents: [preflightIntent],
+        entryRuntime: {
+          async submitEntryCandidate(request: Record<string, any>) {
+            submittedRequests.push(request);
+            return {
+              status: "BLOCKED",
+              attemptId: request.idempotencyKey,
+              idempotencyKey: request.idempotencyKey,
+              message: "unit blocked after request capture",
+              action: "none",
+              events: [],
+            };
+          },
+        },
+        executionStatus: {
+          killSwitchActive: false,
+          reconcileFresh: true,
+          evidenceId: "execution-status-evidence",
+        },
+        postSubmitReadiness: {
+          reconcileReady: true,
+          telegramReady: true,
+          evidenceId: "post-submit-readiness-evidence",
+        },
+        budgetSnapshot: {
+          maxOrderKrw: "10000",
+          dailyAutonomousNotionalLimitKrw: "30000",
+          dailyAutonomousNotionalUsedKrw: "0",
+          openPositionNotionalKrw: "0",
+          maxOpenPositionNotionalKrw: "30000",
+          capturedAt: preflightAt,
+        },
+        lossSnapshot: {
+          dailyRealizedLossKrw: "0",
+          weeklyRealizedLossKrw: "0",
+          capturedAt: preflightAt,
+        },
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+
+    const request = submittedRequests[0];
+    expect(request?.observedAt).toBe(preflightAt);
+    expect(request?.candidate.metadata.decision_idempotency_key).toBe(preflightDecisionKey);
+    expect(request?.candidate.metadata.decision_idempotency_key).not.toBe(nextDayDecisionKey);
+    expect(request?.candidate.costSnapshot.order_intent.idempotency_key).toBe(preflightDecisionKey);
+    expect(request?.candidate.riskApproval.order_intent.idempotency_key).toBe(preflightDecisionKey);
+  });
+
   it("cleanup_probe runtime evidence 보강은 이미 보존된 원본 analysis key를 덮어쓰지 않는다", async () => {
     const supportModulePath = path.join(process.cwd(), "scripts/run-live-ops-support.mjs");
     const {
