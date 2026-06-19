@@ -324,6 +324,8 @@ Telegram, TUI를 같은 lifecycle로 조립하고, 조건을 통과한 단일 `K
         manual review를 열지 않는다. 단, `PARTIAL`/manual-review snapshot status는 계속 수동 확인 대상으로 둔다.
   - [x] closeout source/security scan은 단일따옴표 주문 payload, Upbit live broker adapter 경로, 입출금 endpoint/toggle,
         raw Postgres credential URL, quoted Authorization bearer literal, camelCase raw provider/order payload field도 필수 coverage로 요구한다.
+  - [x] closeout source/security scan은 Upbit private JWT auth module, Upbit private mapper normalization 경로, legacy
+        `TELEGRAM_BOT_TOKEN=123:...` raw token literal도 필수 coverage로 요구한다.
   - [x] 관련 운영 문서와 unit/soak tests가 위 invariant를 설명하고 검증한다.
 
 ## 검증 방법
@@ -470,6 +472,10 @@ SEEMIRAI_RUN_LIVE_OPS_REAL_ARM_CLOSEOUT=1 \
   다시 runtime key로 덮어쓰지 않게 한다. closeout source/security scan은 `"authorization": "Bearer ..."`와
   `authorization: 'Bearer ...'`처럼 key/value에 따옴표가 붙은 raw bearer literal도 필수 coverage로 본다. runbook의 source scan
   path operand는 validator의 `config/live-ops.example.json`, `config/live-ops.env.example` 요구값과 정확히 맞춘다.
+- 2026-06-19: Sub PR 14 review drain 4차 보강으로 source scan 필수 path operand에 Upbit JWT 생성 module
+  `src/infrastructure/upbit/private-client/auth.ts`와 private response normalization 경계 `src/infrastructure/upbit/private-mappers`를
+  추가한다. Telegram dispatcher가 legacy `TELEGRAM_BOT_TOKEN` env fallback을 지원하므로 `TELEGRAM_BOT_TOKEN=123:...` literal도
+  raw token source scan 필수 coverage로 본다.
 
 ## 남은 이슈
 
