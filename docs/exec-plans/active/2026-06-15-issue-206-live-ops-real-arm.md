@@ -320,6 +320,10 @@ Telegram, TUI를 같은 lifecycle로 조립하고, 조건을 통과한 단일 `K
   - [x] runtime 날짜 scope 보정은 기존 `costSnapshot.trade_allowed=false`나 `riskApproval.approved=false` 같은 명시 차단 evidence를
         승인 evidence로 덮어쓰지 않는다. 같은 주문 후보의 날짜 key만 runtime preflight key로 갱신하고, 가격/수량/마켓이 다른 stale
         `order_intent` evidence는 보존해 broker guard에서 차단한다.
+  - [x] runtime evidence 보정은 기존 malformed/stale CostModel snapshot 객체가 있으면 `trade_allowed=true` 같은 승인 기본값을
+        합성하지 않고 broker guard가 차단하게 둔다.
+  - [x] file budget reservation의 `reservedAt`과 일일 사용량 집계 날짜는 오래된 request observedAt이 아니라 실제 `reserve()`
+        실행 wall clock으로 확정한다.
   - [x] terminal cancel/no-fill cleanup은 새 체결이 없다는 closeout evidence가 있으므로 stale `CALCULATED` PnL row만으로
         manual review를 열지 않는다. 단, `PARTIAL`/manual-review snapshot status는 계속 수동 확인 대상으로 둔다.
   - [x] closeout source/security scan은 단일따옴표 주문 payload, Upbit live broker adapter 경로, 입출금 endpoint/toggle,
@@ -484,6 +488,9 @@ SEEMIRAI_RUN_LIVE_OPS_REAL_ARM_CLOSEOUT=1 \
   `{ key: "ord_type", value: "price|market|best" }`도 금지 주문 payload source scan 필수 coverage로 본다.
 - 2026-06-19: Sub PR 14 review drain 6차 보강으로 한국어 `시장가` coverage를 복원하되, 정상 차단/수동검토 문구를
   빈 출력 위반으로 만들지 않도록 `시장가[^\r\n]*(허용|활성|enabled|true)` 위험 문구 패턴으로 제한한다.
+- 2026-06-19: Sub PR 14 review drain 7차 보강으로 file budget reservation은 실제 reserve 시점의 wall clock 날짜로
+  `reservedAt`과 일일 사용량을 확정한다. cleanup runtime evidence 보정은 기존 CostModel snapshot 객체가 malformed/stale이면
+  승인 기본값을 채우지 않고 guard 차단으로 남긴다.
 
 ## 남은 이슈
 

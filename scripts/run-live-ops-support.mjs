@@ -945,6 +945,7 @@ function attachLiveOpsCliCleanupRuntimeApprovalEvidence(intent) {
   const evidence = createLiveOpsCliOrderIntentEvidence(intent);
   const costSnapshot = intent.costSnapshot ?? {};
   const riskApproval = intent.riskApproval ?? {};
+  const hasExistingCostSnapshot = isNonEmptyRecord(intent.costSnapshot);
   const costOrderIntentEvidence = resolveLiveOpsCliCleanupRuntimeApprovalOrderIntentEvidence({
     existingEvidence: costSnapshot.order_intent,
     intent,
@@ -957,7 +958,10 @@ function attachLiveOpsCliCleanupRuntimeApprovalEvidence(intent) {
   });
   return {
     ...intent,
-    costSnapshot: {
+    costSnapshot: hasExistingCostSnapshot ? {
+      ...costSnapshot,
+      order_intent: costOrderIntentEvidence,
+    } : {
       ...costSnapshot,
       source: costSnapshot.source ?? "cost_model",
       exchange_id: intent.exchangeId,
@@ -1460,7 +1464,7 @@ export function createLiveOpsCliFileBudgetReservation({ artifactStore, clock = (
       return readDailyReservedNotionalForDay(day);
     },
     async reserve(request) {
-      const reservedAt = readLiveOpsCliRuntimeObservedAt(request?.observedAt) ?? clock();
+      const reservedAt = readLiveOpsCliRuntimeObservedAt(clock()) ?? new Date().toISOString();
       const day = String(reservedAt).slice(0, 10);
       const reservation = {
         reservationId: `reservation-${request.attemptId}`,

@@ -2882,6 +2882,104 @@ console.log(JSON.stringify({
     expect(submittedRequests).toHaveLength(0);
   });
 
+  it("cleanup_probe runtime evidence 보강은 malformed 기존 CostModel evidence를 승인으로 합성하지 않는다", async () => {
+    const supportModulePath = path.join(process.cwd(), "scripts/run-live-ops-support.mjs");
+    const {
+      evaluateLiveOpsCliLiveExecution,
+    } = await import(supportModulePath);
+    const executionAt = "2026-06-15T00:00:01.000Z";
+    const runtimeDecisionKey = "live_ops_cleanup_probe:2026-06-15:upbit_krw_spot:KRW-BTC:BUY:100000000:0.0001:10000";
+    const malformedCostIntent = createCleanupRuntimeIntentWithKey(runtimeDecisionKey, "2026-06-15") as Record<string, any>;
+    malformedCostIntent.costSnapshot = {
+      source: "cost_model",
+      order_intent: malformedCostIntent.costSnapshot.order_intent,
+    };
+    const submittedRequests: Array<Record<string, any>> = [];
+
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(executionAt));
+    try {
+      const summary = await evaluateLiveOpsCliLiveExecution({
+        config: {
+          live_trading_enabled: true,
+          universe: { markets: ["KRW-BTC"], default_market: "KRW-BTC" },
+          budget: {
+            max_order_krw: "10000",
+            daily_autonomous_notional_limit_krw: "30000",
+            max_open_position_notional_krw: "30000",
+          },
+        },
+        fixtureSmoke: false,
+        analysisDecision: {
+          ready: true,
+          decisionCategory: "ORDER_INTENT",
+          orderIntentCount: 1,
+        },
+        marketData: {
+          ready: true,
+          latestHeartbeatAt: executionAt,
+          referencePrice: "100000000",
+        },
+        env: {
+          SEEMIRAI_UPBIT_ACCESS_KEY: "fake-access-key",
+          SEEMIRAI_UPBIT_SECRET_KEY: "fake-secret-key",
+          SEEMIRAI_UPBIT_KEY_SCOPE: "자산조회,주문조회,주문하기",
+          SEEMIRAI_UPBIT_KEY_SCOPE_EVIDENCE_ID: "scope-evidence",
+        },
+        orderIntents: [malformedCostIntent],
+        entryRuntime: {
+          async submitEntryCandidate(request: Record<string, any>) {
+            submittedRequests.push(request);
+            return {
+              status: "SUBMITTED",
+              attemptId: request.idempotencyKey,
+              idempotencyKey: request.idempotencyKey,
+              brokerOrderId: "unexpected-malformed-cost-order",
+              message: "unexpected submit",
+              action: "none",
+              events: [],
+            };
+          },
+        },
+        executionStatus: {
+          killSwitchActive: false,
+          reconcileFresh: true,
+          evidenceId: "execution-status-evidence",
+        },
+        postSubmitReadiness: {
+          reconcileReady: true,
+          telegramReady: true,
+          evidenceId: "post-submit-readiness-evidence",
+        },
+        budgetSnapshot: {
+          maxOrderKrw: "10000",
+          dailyAutonomousNotionalLimitKrw: "30000",
+          dailyAutonomousNotionalUsedKrw: "0",
+          openPositionNotionalKrw: "0",
+          maxOpenPositionNotionalKrw: "30000",
+          capturedAt: executionAt,
+        },
+        lossSnapshot: {
+          dailyRealizedLossKrw: "0",
+          weeklyRealizedLossKrw: "0",
+          capturedAt: executionAt,
+        },
+      });
+
+      expect(summary).toMatchObject({
+        status: "blocked",
+        submittedOrderCount: 0,
+      });
+      expect(summary.checks).toContainEqual(expect.objectContaining({
+        code: "live_ops_order_intent_blocked",
+      }));
+    } finally {
+      vi.useRealTimers();
+    }
+
+    expect(submittedRequests).toHaveLength(0);
+  });
+
   it("cleanup_probe runtime evidence 보강은 다른 후보의 stale CostModel order_intent를 현재 후보로 다시 쓰지 않는다", async () => {
     const supportModulePath = path.join(process.cwd(), "scripts/run-live-ops-support.mjs");
     const {
@@ -7448,7 +7546,7 @@ console.log(JSON.stringify({
     expect(JSON.stringify(artifact)).not.toContain("raw_provider_payload");
   });
 
-  it("file budget reservation은 request observedAt 날짜로 reservation day를 고정한다", async () => {
+  it("file budget reservation은 reserve 실행 wall clock 날짜로 reservation day를 고정한다", async () => {
     const supportModulePath = path.join(process.cwd(), "scripts/run-live-ops-support.mjs");
     const {
       createLiveOpsCliCleanupArtifactStore,
@@ -7481,12 +7579,12 @@ console.log(JSON.stringify({
     expect(result).toMatchObject({
       reserved: true,
       reservation: {
-        reservedAt: requestObservedAt,
+        reservedAt: "2026-06-16T00:00:01.000Z",
         budgetUsageAfterReservationKrw: "10000",
       },
     });
-    expect(reservedOnRequestDay).toMatchObject({ day: "2026-06-15", reservedNotionalKrw: "10000" });
-    expect(reservedOnClockDay).toMatchObject({ day: "2026-06-16", reservedNotionalKrw: "0" });
+    expect(reservedOnRequestDay).toMatchObject({ day: "2026-06-15", reservedNotionalKrw: "0" });
+    expect(reservedOnClockDay).toMatchObject({ day: "2026-06-16", reservedNotionalKrw: "10000" });
   });
 
   it("file budget reservation은 일일 예산 집계를 lock 안에서 선점한다", async () => {
