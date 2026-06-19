@@ -820,6 +820,9 @@ policy resolver 구현 경계는 `src/runtime/live-ops-decision-policy.ts`다. r
 `cleanup_probe`는 수익 전략이 아니라 Issue #206 closeout lifecycle을 증명하기 위한 one-shot probe다. 최신 DB-backed market frame의
 orderbook에서 best bid를 읽고, configured tick offset만큼 낮춘 `BUY + LIMIT + POST_ONLY` 후보를 만든다. orderbook이 없거나 가격/수량/
 명목금액이 최소 주문금액, 예산, 호가 단위, `KRW-BTC` 단일 universe 조건을 만족하지 못하면 주문 후보 없이 HOLD/BLOCK evidence로 닫는다.
+cleanup probe decision key는 같은 날짜 안의 재시작 멱등성을 유지하되, 날짜 scope를 포함해 전날 reservation 파일이 다음 날 신규 cleanup
+attempt를 영구 차단하지 않게 한다. 이 날짜 scope는 최신 market heartbeat가 아니라 decision 실행 wall clock에서 계산해 자정 직후
+전날 heartbeat가 남아 있어도 새 운영일 attempt를 전날 reservation과 분리한다.
 
 `LiveOpsLiveExecution`은 analysis/decision safe summary와 내부 order intent 입력, 최신 budget/loss/cost/risk/reconcile snapshot을 기존
 `LiveAutonomousEntryRuntime` 요청으로 낮추는 adapter다. analysis가 blocked이거나 BLOCK decision이면 하위 runtime 호출 없이 blocked
@@ -829,6 +832,13 @@ runtime 호출 전에 fail-closed 한다. public adapter는 strategy의 긴 deci
 `ops-<sha256-prefix>` attempt id로 낮춰 재시작 후 같은 cleanup 후보가 새 random identifier를 만들지 않게 한다.
 조건을 통과한 후보는 manual JSONL 없이 `LiveAutonomousEntryRuntime.submitEntryCandidate`로 전달되며, durable budget reservation,
 RiskGate 재검증, broker submit, alert dispatch side effect는 해당 하위 runtime 경계에서만 발생한다.
+
+production preflight는 미체결 주문뿐 아니라 현재 `KRW-BTC` 보유 잔고도 reference price로 평가해 `openPositionNotionalKrw`와 RiskGate
+`positions`에 포함한다. 보유 잔고가 있는데 평가 기준가가 없으면 open position 한도 과소평가 위험이 있으므로 broker 제출 전 차단한다.
+PnL/status worker가 `OK` snapshot을 제공하지 않으면 realized loss를 0으로 보정하지 않고 loss snapshot 결측으로 제출 전 fail-closed 한다.
+clean reconcile DB evidence도 production preflight 실행 wall clock 기준 30초 freshness를 넘으면 stale로 보고 같은 tick의 private read
+preflight reconcile evidence를 새로 기록한다. market heartbeat 시각은 market data 관측 evidence로만 쓰며, 일일 예산 기준일과 reconcile
+freshness 기준일을 대신하지 않는다. recorder가 없거나 갱신 뒤에도 fresh clean evidence가 아니면 reconcile freshness guard가 broker 제출을 닫는다.
 
 cleanup probe는 broker 제출 성공을 최종 성공으로 보지 않는다. 같은 runtime이 받은 주문 uuid로 취소 요청을 보낸 뒤 terminal cancel
 polling을 수행하고, cancel 요청 이후 poll이 provider 오류나 rate-limit로 실패해도 summary만 반환하지 않는다. 이 경우 `manual_review_required`

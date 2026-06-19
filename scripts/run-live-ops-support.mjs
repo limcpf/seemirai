@@ -18,6 +18,7 @@ const liveOpsCliUpbitIdentifierMaxLength = 32;
 const liveOpsCliCleanupCancelPollCount = 5;
 const liveOpsCliCleanupCancelPollIntervalMs = 1000;
 const liveOpsCliDailyReservationLockLeaseMs = 5 * 60 * 1000;
+const liveOpsCliPreflightReconcileFreshnessMs = 30_000;
 const liveOpsCliProcessOwner = createLiveOpsCliProcessOwnerSnapshot(process.pid);
 const liveOpsWorkerLabels = {
   db_readiness: "DB readiness",
@@ -742,11 +743,13 @@ export async function createLiveOpsCliProductionExecutionInputs({
   }
 
   try {
+    // freshness와 일일 예산 기준일은 시장 이벤트 시각이 아니라 실제 제출 직전 wall clock으로 닫아야 한다.
+    const preflightObservedAt = new Date().toISOString();
     const preflight = await collectLiveOpsCliProductionPreflight({
       config,
       marketData,
       productionRuntime,
-      observedAt: new Date().toISOString(),
+      observedAt: preflightObservedAt,
     });
     return {
       ...base,
@@ -803,7 +806,7 @@ async function collectLiveOpsCliProductionPreflight({
   ]);
   let resolvedReconcileStatus = reconcileStatus;
   let preflightReconcileEvidence;
-  if (shouldCreateLiveOpsCliPrivateReadPreflightReconcile(reconcileStatus, productionRuntime, openOrders)) {
+  if (shouldCreateLiveOpsCliPrivateReadPreflightReconcile(reconcileStatus, productionRuntime, openOrders, observedAt)) {
     preflightReconcileEvidence = await productionRuntime.preflightReconcileRecorder.recordPreflight({
       market,
       openOrders,
@@ -814,11 +817,21 @@ async function collectLiveOpsCliProductionPreflight({
   }
 
   const openExposureKrw = sumLiveOpsCliOpenExposureKrw(openOrders);
+  const heldPositionExposure = createLiveOpsCliHeldPositionExposure({
+    balanceSnapshot,
+    market,
+    referencePrice: marketData.referencePrice,
+    observedAt,
+  });
+  const valuedHeldPositionKrw = isNonNegativeDecimalString(heldPositionExposure.notionalKrw)
+    ? heldPositionExposure.notionalKrw
+    : "0";
+  const openPositionNotionalKrw = new Decimal(openExposureKrw).plus(valuedHeldPositionKrw).toFixed();
   const budgetSnapshot = {
     maxOrderKrw: config.budget?.max_order_krw ?? "10000",
     dailyAutonomousNotionalLimitKrw: config.budget?.daily_autonomous_notional_limit_krw ?? "30000",
-    dailyAutonomousNotionalUsedKrw: new Decimal(reservationUsage.reservedNotionalKrw).plus(openExposureKrw).toFixed(),
-    openPositionNotionalKrw: openExposureKrw,
+    dailyAutonomousNotionalUsedKrw: new Decimal(reservationUsage.reservedNotionalKrw).plus(openPositionNotionalKrw).toFixed(),
+    openPositionNotionalKrw,
     maxOpenPositionNotionalKrw: config.budget?.max_open_position_notional_krw ?? "30000",
     capturedAt: observedAt,
     source: "live_ops_cli_private_preflight",
@@ -831,12 +844,15 @@ async function collectLiveOpsCliProductionPreflight({
   const normalizedReconcile = normalizeLiveOpsCliReconcileStatus(resolvedReconcileStatus, {
     openOrderCount: openOrders.length,
   });
+  const reconcileFresh = normalizedReconcile.manualReviewRequired !== true
+    && isLiveOpsCliFreshReconcileStatus(resolvedReconcileStatus, observedAt);
   const executionStatus = {
     killSwitchActive: killSwitchStatus.active,
-    reconcileFresh: normalizedReconcile.manualReviewRequired !== true,
+    reconcileFresh,
     evidenceId: createLiveOpsCliEvidenceId("execution-preflight", [
       killSwitchStatus.state,
       normalizedReconcile.result,
+      reconcileFresh ? "reconcile-fresh" : "reconcile-stale",
       marketData.latestHeartbeatAt ?? observedAt,
     ].join(":")),
     ...(preflightReconcileEvidence === undefined ? {} : { preflightReconcileEvidence }),
@@ -857,6 +873,7 @@ async function collectLiveOpsCliProductionPreflight({
     market,
     openOrders,
     balanceSnapshot,
+    heldPositionExposure,
     reconcileStatus: resolvedReconcileStatus,
     pnlStatus,
     killSwitchStatus,
@@ -923,6 +940,27 @@ function createLiveOpsCliCleanupRiskInput({ config, intent, preflight }) {
   const btcEthMaxPositionBps = toLiveOpsCliBudgetBps(config.budget?.max_open_position_notional_krw ?? "30000", equityKrw);
   const krwAvailable = findLiveOpsCliBalance(preflight.balanceSnapshot, "KRW")?.available;
   const krwAvailableBlocksSubmit = !isPositiveDecimalString(krwAvailable) || new Decimal(krwAvailable).lt(intent.requestedNotional);
+  const heldPositionRiskPosition = createLiveOpsCliHeldPositionRiskInput({
+    heldPositionExposure: preflight.heldPositionExposure,
+    equityKrw,
+    observedAt,
+  });
+  const infrastructureSignals = krwAvailableBlocksSubmit
+    ? [{
+        signal: "BALANCE_POSITION_MISMATCH",
+        observedAt,
+        // KRW 잔고 행이 없거나 0원이면 Upbit reject 전에 risk gate에서 신규 주문을 닫는다.
+        reason: isPositiveDecimalString(krwAvailable) ? "krw_available_below_request" : "krw_available_missing_or_non_positive",
+      }]
+    : [];
+  if (preflight.heldPositionExposure?.valuationMissing === true) {
+    // 보유 코인을 평가하지 못하면 open position 한도를 과소평가하므로 broker 제출 전에 RiskGate에서 차단한다.
+    infrastructureSignals.push({
+      signal: "BALANCE_POSITION_MISMATCH",
+      observedAt,
+      reason: "held_position_valuation_missing",
+    });
+  }
   return {
     account: {
       equityKrw,
@@ -931,27 +969,23 @@ function createLiveOpsCliCleanupRiskInput({ config, intent, preflight }) {
       maxDrawdownBps: "0",
       capturedAt: observedAt,
     },
-    positions: preflight.openOrders.map((order) => ({
-      market: order.market,
-      notionalBpsOfEquity: toLiveOpsCliBudgetBps(
-        readLiveOpsCliOpenOrderExposureKrw(order) ?? "0",
-        equityKrw,
-      ),
-      capturedAt: order.updatedAt ?? observedAt,
-    })),
+    positions: [
+      ...preflight.openOrders.map((order) => ({
+        market: order.market,
+        notionalBpsOfEquity: toLiveOpsCliBudgetBps(
+          readLiveOpsCliOpenOrderExposureKrw(order) ?? "0",
+          equityKrw,
+        ),
+        capturedAt: order.updatedAt ?? observedAt,
+      })),
+      ...(heldPositionRiskPosition === undefined ? [] : [heldPositionRiskPosition]),
+    ],
     strategy: {
       strategyId: intent.strategyId,
       consecutiveLosses: 0,
       capturedAt: observedAt,
     },
-    infrastructureSignals: krwAvailableBlocksSubmit
-      ? [{
-          signal: "BALANCE_POSITION_MISMATCH",
-          observedAt,
-          // KRW 잔고 행이 없거나 0원이면 Upbit reject 전에 risk gate에서 신규 주문을 닫는다.
-          reason: isPositiveDecimalString(krwAvailable) ? "krw_available_below_request" : "krw_available_missing_or_non_positive",
-        }]
-      : [],
+    infrastructureSignals,
     thresholdSnapshot: {
       thresholds: {
         dailyLossLimitBps: toLiveOpsCliBudgetBps(config.budget?.max_order_krw ?? "10000", equityKrw),
@@ -987,7 +1021,68 @@ function createLiveOpsCliOrderIntentEvidence(intent) {
   };
 }
 
+function createLiveOpsCliHeldPositionExposure({ balanceSnapshot, market, referencePrice, observedAt }) {
+  const baseCurrency = readLiveOpsCliMarketBaseCurrency(market);
+  const baseBalance = findLiveOpsCliBalance(balanceSnapshot, baseCurrency);
+  const quantity = isNonNegativeDecimalString(baseBalance?.total) ? baseBalance.total : "0";
+  if (new Decimal(quantity).isZero()) {
+    return {
+      market,
+      currency: baseCurrency,
+      quantity,
+      notionalKrw: "0",
+      capturedAt: baseBalance?.updatedAt ?? balanceSnapshot?.capturedAt ?? observedAt,
+      valuationMissing: false,
+    };
+  }
+  if (!isPositiveDecimalString(referencePrice)) {
+    return {
+      market,
+      currency: baseCurrency,
+      quantity,
+      notionalKrw: null,
+      capturedAt: baseBalance?.updatedAt ?? balanceSnapshot?.capturedAt ?? observedAt,
+      valuationMissing: true,
+    };
+  }
+  return {
+    market,
+    currency: baseCurrency,
+    quantity,
+    notionalKrw: new Decimal(quantity).mul(referencePrice).toFixed(),
+    capturedAt: baseBalance?.updatedAt ?? balanceSnapshot?.capturedAt ?? observedAt,
+    valuationMissing: false,
+  };
+}
+
+function createLiveOpsCliHeldPositionRiskInput({ heldPositionExposure, equityKrw, observedAt }) {
+  if (!isPositiveDecimalString(heldPositionExposure?.notionalKrw)) {
+    return undefined;
+  }
+  return {
+    market: heldPositionExposure.market,
+    notionalBpsOfEquity: toLiveOpsCliBudgetBps(heldPositionExposure.notionalKrw, equityKrw),
+    capturedAt: heldPositionExposure.capturedAt ?? observedAt,
+  };
+}
+
+function readLiveOpsCliMarketBaseCurrency(market) {
+  const [, baseCurrency] = String(market ?? "KRW-BTC").split("-");
+  return hasMeaningfulValue(baseCurrency) ? baseCurrency : "BTC";
+}
+
 function createLiveOpsCliLossSnapshotFromPnlStatus({ pnlStatus, balanceSnapshot, observedAt }) {
+  if (pnlStatus?.readStatus !== "OK" || !isDecimalString(pnlStatus?.latestRealizedPnlKrw)) {
+    // PnL worker가 OK snapshot을 쓰기 전에는 손실을 0으로 보정하지 않고 submit 전 loss guard에서 닫는다.
+    return {
+      dailyRealizedLossKrw: null,
+      weeklyRealizedLossKrw: null,
+      capturedAt: pnlStatus?.latestCapturedAt ?? balanceSnapshot?.capturedAt ?? observedAt,
+      source: "pnl_status_not_ready",
+      ready: false,
+      reasonCode: pnlStatus?.reason ?? "pnl_status_not_ok",
+    };
+  }
   const realizedPnl = isDecimalString(pnlStatus?.latestRealizedPnlKrw)
     ? new Decimal(pnlStatus.latestRealizedPnlKrw)
     : new Decimal(0);
@@ -2503,12 +2598,16 @@ export function createLiveOpsCliDatabasePreflightReconcileRecorder(pool) {
   };
 }
 
-function shouldCreateLiveOpsCliPrivateReadPreflightReconcile(reconcileStatus, productionRuntime, openOrders) {
+function shouldCreateLiveOpsCliPrivateReadPreflightReconcile(reconcileStatus, productionRuntime, openOrders, observedAt) {
   if (productionRuntime?.preflightReconcileRecorder === undefined) {
     return false;
   }
   const reason = reconcileStatus?.trace?.reason;
   if (reconcileStatus?.result === "SKIPPED" && reason === "reconcile_not_run") {
+    return true;
+  }
+  if (isLiveOpsCliCleanReconcileStatus(reconcileStatus) && !isLiveOpsCliFreshReconcileStatus(reconcileStatus, observedAt)) {
+    // 오래된 clean evidence는 현재 private read와 같은 tick의 증거가 아니므로 fresh preflight run으로 갱신한다.
     return true;
   }
   // 최신 DB evidence가 clean이어도 현재 private read에 open order가 있으면 새 manual-review evidence로 신규 제출을 닫는다.
@@ -2520,6 +2619,19 @@ function isLiveOpsCliCleanReconcileStatus(reconcileStatus) {
     ? Number(reconcileStatus.mismatchCount)
     : null;
   return reconcileStatus?.result === "SUCCESS" && mismatchCount === 0 && reconcileStatus?.balanceStatus === "OK";
+}
+
+function isLiveOpsCliFreshReconcileStatus(reconcileStatus, observedAt, maxAgeMs = liveOpsCliPreflightReconcileFreshnessMs) {
+  if (!isLiveOpsCliCleanReconcileStatus(reconcileStatus) || !hasMeaningfulValue(reconcileStatus?.lastReconcileAt)) {
+    return false;
+  }
+  const observedTime = Date.parse(String(observedAt));
+  const reconcileTime = Date.parse(String(reconcileStatus.lastReconcileAt));
+  if (!Number.isFinite(observedTime) || !Number.isFinite(reconcileTime)) {
+    return false;
+  }
+  const ageMs = observedTime - reconcileTime;
+  return ageMs >= 0 && ageMs <= maxAgeMs;
 }
 
 function normalizeLiveOpsCliPreflightBalanceSnapshots(balanceSnapshot, observedAt) {
@@ -6369,7 +6481,12 @@ function evaluateLiveOpsCliCleanupProbeStrategy({ config, marketData, observedAt
     requestedQuantity: sizing.requestedQuantity,
     requestedNotional: sizing.requestedNotional,
     referencePrice: marketData.referencePrice ?? calculateLiveOpsCliOrderbookMid(orderbook),
-    idempotencyKey: createLiveOpsCliCleanupProbeDecisionKey({ market, sizing }),
+    idempotencyKey: createLiveOpsCliCleanupProbeDecisionKey({
+      market,
+      sizing,
+      // attempt 중복 차단은 운영일 기준이므로 자정 경계에서 heartbeat 대신 decision 실행 시각을 사용한다.
+      observedAt,
+    }),
     reason: "issue_206_cleanup_probe",
     postOnly: true,
     timeInForce: "POST_ONLY",
@@ -6396,9 +6513,11 @@ function evaluateLiveOpsCliCleanupProbeStrategy({ config, marketData, observedAt
   };
 }
 
-function createLiveOpsCliCleanupProbeDecisionKey({ market, sizing }) {
+function createLiveOpsCliCleanupProbeDecisionKey({ market, sizing, observedAt }) {
+  const dayScope = hasMeaningfulValue(observedAt) ? String(observedAt).slice(0, 10) : "unknown-day";
   return [
     "live_ops_cleanup_probe",
+    dayScope,
     "upbit_krw_spot",
     market,
     "BUY",
