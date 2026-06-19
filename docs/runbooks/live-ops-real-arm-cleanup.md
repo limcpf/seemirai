@@ -164,6 +164,8 @@ scripts/run-live-ops-support.mjs config/live-ops.example.json config/live-ops.en
 `시장가[^\r\n]*(허용|활성|enabled|true)`,
 `[\x27"]?order_type[\x27"]?\s*[:=]\s*[\x27"]?(market|MARKET)`,
 `[\x27"]?orderType[\x27"]?\s*[:=]\s*[\x27"]?(market|MARKET)`,
+`[\x27"]?order_type[\x27"]?\s*[:=]\s*[\x27"]?(PRICE|price|BEST|best)`,
+`[\x27"]?orderType[\x27"]?\s*[:=]\s*[\x27"]?(PRICE|price|BEST|best)`,
 `[\x27"]?withdrawal_enabled[\x27"]?\s*[:=]\s*true`, `[\x27"]?deposit_enabled[\x27"]?\s*[:=]\s*true`,
 `\/v1\/deposits`, `\/v1\/withdraws`, `[\x27"]?futures_enabled[\x27"]?\s*[:=]\s*true`,
 `[\x27"]?leverage_enabled[\x27"]?\s*[:=]\s*true`, `[\x27"]?market_order_enabled[\x27"]?\s*[:=]\s*true`,
@@ -171,10 +173,14 @@ scripts/run-live-ops-support.mjs config/live-ops.example.json config/live-ops.en
 secret/raw payload 후보 전체(`SEEMIRAI_DATABASE_URL=postgres://...:<password>@...`,
 `postgres://...:<password>@...` 또는 `postgresql://...:<password>@...`, Upbit access/secret key literal, Telegram bot token literal,
 `[\x27"]?accessKey[\x27"]?\s*:\s*[\x27"][A-Za-z0-9._-]{16,}[\x27"]`,
-`[\x27"]?secretKey[\x27"]?\s*:\s*[\x27"][A-Za-z0-9._\/=+-]{16,}[\x27"]`, legacy `TELEGRAM_BOT_TOKEN=123:...` literal,
+`[\x27"]?secretKey[\x27"]?\s*:\s*[\x27"][A-Za-z0-9._\/=+-]{16,}[\x27"]`,
+`[\x27"]?access_key[\x27"]?\s*:\s*[\x27"][A-Za-z0-9._-]{16,}[\x27"]`,
+`[\x27"]?secret_key[\x27"]?\s*:\s*[\x27"][A-Za-z0-9._\/=+-]{16,}[\x27"]`, legacy `TELEGRAM_BOT_TOKEN=123:...` literal,
 TUI control token literal, `[\x27"]?Authorization[\x27"]?\s*[:=]\s*[\x27"]?(Bearer|bearer) ...`,
-`[\x27"]?authorization[\x27"]?\s*[:=]\s*[\x27"]?(Bearer|bearer) ...`, `raw_provider_payload`, `rawProviderPayload`,
-`raw_order_detail`, `rawOrderDetail`)를 스캔한 증거를 포함해야 한다.
+`[\x27"]?authorization[\x27"]?\s*[:=]\s*[\x27"]?(Bearer|bearer) ...`,
+`\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b`,
+`[\x27"]?jwt[\x27"]?\s*[:=]\s*[\x27"]eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+[\x27"]`,
+`raw_provider_payload`, `rawProviderPayload`, `raw_order_detail`, `rawOrderDetail`)를 스캔한 증거를 포함해야 한다.
 일반 영어 단어 `market`은 정상 market 설정/문서에도 반복되므로 empty-match가 필요한 금지 주문 scan term으로 쓰지 않고,
 정상 차단 설정에 반복되는 `market_order` 단독 term도 필수 empty-match scan으로 쓰지 않는다. 금지 scope, 시장가, futures/leverage 같은
 도메인 단어도 guard와 문서에 정상적으로 등장하므로, source scan은 단어 자체가 아니라 운영 runtime에서 위험 toggle이 `true`로 열리는

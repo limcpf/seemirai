@@ -504,6 +504,10 @@ SEEMIRAI_RUN_LIVE_OPS_REAL_ARM_CLOSEOUT=1 \
   `CALCULATED` snapshot을 손실 guard fallback으로 허용한다. 단 cleanup 전용 PnL row가 생긴 뒤에는 그 scope를 우선해 not-ready row가
   오래된 global 계산 완료 row에 가려지지 않게 한다. closeout source/security scan에는 Upbit private barrel entry 파일과
   `accessKey`/`secretKey` property literal 하드코딩 패턴도 필수 coverage로 추가한다.
+- 2026-06-19: Sub PR 14 review drain 11차 보강으로 cleanup 전용 PnL row가 아직 없을 때는 fallback row 안에서 최신 `PARTIAL`
+  snapshot보다 `CALCULATED` snapshot을 먼저 선택한다. cleanup 전용 row가 생긴 뒤에는 계속 cleanup scope를 최우선으로 본다.
+  closeout source/security scan에는 `order_type`/`orderType`의 `PRICE`/`BEST` 표현, raw compact JWT literal과 `jwt` field,
+  snake_case `access_key`/`secret_key` property literal 하드코딩 패턴도 필수 coverage로 추가한다.
 
 ## 남은 이슈
 

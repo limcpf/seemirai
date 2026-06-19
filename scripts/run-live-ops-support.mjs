@@ -2994,7 +2994,7 @@ export function createLiveOpsCliDatabasePnlStatusProvider(pool, market) {
     async getStatus() {
       try {
         const [latestResult, countResult] = await Promise.all([
-          // cleanup 전용 PnL row가 생긴 뒤에는 그 scope를 우선하되, 첫 cleanup 전에는 global 계산 완료 snapshot으로 손실 guard를 열 수 있어야 한다.
+          // cleanup 전용 PnL row가 생긴 뒤에는 그 scope를 우선하고, 첫 cleanup 전 fallback은 최신 미완료값보다 계산 완료값으로 손실 guard를 연다.
           pool.query(`
             SELECT
               strategy_id,
@@ -3015,8 +3015,11 @@ export function createLiveOpsCliDatabasePnlStatusProvider(pool, market) {
               )
             ORDER BY
               (strategy_id = 'live_ops_cleanup_probe') DESC,
-              captured_at DESC,
-              (market = $1) DESC
+              CASE WHEN strategy_id = 'live_ops_cleanup_probe' THEN captured_at END DESC,
+              CASE WHEN strategy_id = 'live_ops_cleanup_probe' THEN (market = $1) END DESC,
+              CASE WHEN strategy_id IS DISTINCT FROM 'live_ops_cleanup_probe' THEN (payload_json ->> 'status' = 'CALCULATED') END DESC,
+              CASE WHEN strategy_id IS DISTINCT FROM 'live_ops_cleanup_probe' THEN captured_at END DESC,
+              CASE WHEN strategy_id IS DISTINCT FROM 'live_ops_cleanup_probe' THEN (market = $1) END DESC
             LIMIT 1
           `, [market]),
           pool.query(`

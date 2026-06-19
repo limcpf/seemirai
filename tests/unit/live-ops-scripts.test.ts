@@ -1855,8 +1855,8 @@ console.log(JSON.stringify({
         queries.push({ text, params });
         if (text.includes("FROM pnl_snapshots") && text.includes("LIMIT 1")) {
           const orderBy = text.slice(text.indexOf("ORDER BY"));
-          const capturedBeforeMarketPreference = orderBy.indexOf("captured_at DESC") >= 0
-            && orderBy.indexOf("captured_at DESC") < orderBy.indexOf("(market = $1) DESC");
+          const capturedBeforeMarketPreference = orderBy.indexOf("captured_at") >= 0
+            && orderBy.indexOf("captured_at") < orderBy.indexOf("(market = $1)");
           const filtersLiveOpsStrategy = text.includes("strategy_id = 'live_ops_cleanup_probe'");
           return {
             rows: [capturedBeforeMarketPreference && filtersLiveOpsStrategy
@@ -1945,6 +1945,62 @@ console.log(JSON.stringify({
       snapshotCount: 1,
     });
     expect(queries[0]?.text).toContain("strategy_id IS NULL");
+  });
+
+  it("database PnL status provider는 cleanup row가 없으면 최신 not-ready보다 CALCULATED fallback row를 우선한다", async () => {
+    const supportModulePath = path.join(process.cwd(), "scripts/run-live-ops-support.mjs");
+    const {
+      createLiveOpsCliDatabasePnlStatusProvider,
+    } = await import(supportModulePath);
+    const queries: Array<{ text: string; params: unknown[] }> = [];
+    const freshNotReadyFallbackRow = {
+      strategy_id: null,
+      market: "KRW-BTC",
+      captured_at: "2026-06-18T13:33:29.000Z",
+      equity: "100000",
+      realized_pnl: "0",
+      unrealized_pnl: "0",
+      drawdown_bps: "0",
+      source_fingerprint: "fresh-not-ready",
+      payload_status: "PARTIAL",
+    };
+    const olderCalculatedFallbackRow = {
+      strategy_id: "global",
+      market: null,
+      captured_at: "2026-06-18T13:33:27.000Z",
+      equity: "100000",
+      realized_pnl: "-120",
+      unrealized_pnl: "30",
+      drawdown_bps: "2",
+      source_fingerprint: "older-calculated",
+      payload_status: "CALCULATED",
+    };
+    const pool = {
+      async query(sql: string, params: unknown[] = []) {
+        const text = sql.replace(/\s+/gu, " ").trim();
+        queries.push({ text, params });
+        if (text.includes("FROM pnl_snapshots") && text.includes("LIMIT 1")) {
+          const prefersCalculatedFallback = text.includes("payload_json ->> 'status' = 'CALCULATED'");
+          return { rows: [prefersCalculatedFallback ? olderCalculatedFallbackRow : freshNotReadyFallbackRow] };
+        }
+        if (text.includes("count(*)::int AS count") && text.includes("FROM pnl_snapshots")) {
+          return { rows: [{ count: 2 }] };
+        }
+        throw new Error(`unexpected query: ${text}`);
+      },
+    };
+
+    const status = await createLiveOpsCliDatabasePnlStatusProvider(pool, "KRW-BTC").getStatus();
+
+    expect(status).toMatchObject({
+      readStatus: "OK",
+      latestCapturedAt: "2026-06-18T13:33:27.000Z",
+      latestRealizedPnlKrw: "-120",
+      latestUnrealizedPnlKrw: "30",
+      latestStatus: "CALCULATED",
+      snapshotCount: 2,
+    });
+    expect(queries[0]?.text).toContain("payload_json ->> 'status' = 'CALCULATED'");
   });
 
   it("preflight recorder는 private read 결과를 DB reconcile evidence로 남긴다", async () => {
