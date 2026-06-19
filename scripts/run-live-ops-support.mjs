@@ -895,58 +895,85 @@ function attachLiveOpsCliCleanupRuntimeEvidence({ config, orderIntents, prefligh
       return intent;
     }
 
-    const runtimeIdempotencyKey = createLiveOpsCliCleanupProbeRuntimeDecisionKey({
+    const runtimeIntent = createLiveOpsCliCleanupRuntimeIntent({
       intent,
       observedAt: preflight.observedAt,
     });
-    const runtimeIntent = runtimeIdempotencyKey === undefined
-      ? intent
-      : {
-        ...intent,
-        idempotencyKey: runtimeIdempotencyKey,
-        metadata: {
-          ...(intent.metadata ?? {}),
-          // 자정 경계에서 중복 reservation이 열리지 않도록 실제 제출 직전 운영일로 idempotency scope를 확정한다.
-          analysis_idempotency_key: intent.idempotencyKey,
-          idempotency_date_scope: String(preflight.observedAt).slice(0, 10),
-          idempotency_date_source: "live_ops_runtime_preflight",
-        },
-      };
     const enriched = {
       ...runtimeIntent,
       costInput: runtimeIntent.costInput ?? createLiveOpsCliCleanupCostInput(),
       risk: runtimeIntent.risk ?? createLiveOpsCliCleanupRiskInput({ config, intent: runtimeIntent, preflight }),
     };
-    const evidence = createLiveOpsCliOrderIntentEvidence(enriched);
-    return {
-      ...enriched,
-      costSnapshot: intent.costSnapshot ?? {
-        source: "cost_model",
-        exchange_id: enriched.exchangeId,
-        market: enriched.market,
-        trade_allowed: true,
-        reason_code: "cost_margin_ok",
-        order_intent: evidence,
-      },
-      riskApproval: intent.riskApproval ?? {
-        source: "risk_gate",
-        approved: true,
-        action: "ALLOW",
-        status: "PASS",
-        failed_evaluation_reason_codes: [],
-        order_intent: evidence,
-      },
-    };
+    return attachLiveOpsCliCleanupRuntimeApprovalEvidence(enriched);
   });
 }
 
+function createLiveOpsCliCleanupRuntimeIntent({ intent, observedAt }) {
+  if (intent?.strategyId !== "live_ops_cleanup_probe") {
+    return intent;
+  }
+
+  const runtimeIdempotencyKey = createLiveOpsCliCleanupProbeRuntimeDecisionKey({
+    intent,
+    observedAt,
+  });
+  const dateScope = readLiveOpsCliRuntimeDateScope(observedAt);
+  if (runtimeIdempotencyKey === undefined || dateScope === undefined) {
+    return intent;
+  }
+
+  return {
+    ...intent,
+    idempotencyKey: runtimeIdempotencyKey,
+    metadata: {
+      ...(intent.metadata ?? {}),
+      // 자정 경계에서 중복 reservation이 열리지 않도록 실제 제출 직전 운영일로 idempotency scope를 확정한다.
+      analysis_idempotency_key: intent.idempotencyKey,
+      idempotency_date_scope: dateScope,
+      idempotency_date_source: "live_ops_runtime_preflight",
+    },
+  };
+}
+
+function attachLiveOpsCliCleanupRuntimeApprovalEvidence(intent) {
+  if (intent?.strategyId !== "live_ops_cleanup_probe") {
+    return intent;
+  }
+
+  const evidence = createLiveOpsCliOrderIntentEvidence(intent);
+  return {
+    ...intent,
+    costSnapshot: {
+      ...(intent.costSnapshot ?? {}),
+      source: intent.costSnapshot?.source ?? "cost_model",
+      exchange_id: intent.exchangeId,
+      market: intent.market,
+      trade_allowed: true,
+      reason_code: intent.costSnapshot?.reason_code ?? "cost_margin_ok",
+      order_intent: evidence,
+    },
+    riskApproval: {
+      ...(intent.riskApproval ?? {}),
+      source: intent.riskApproval?.source ?? "risk_gate",
+      approved: true,
+      action: intent.riskApproval?.action ?? "ALLOW",
+      status: intent.riskApproval?.status ?? "PASS",
+      failed_evaluation_reason_codes: Array.isArray(intent.riskApproval?.failed_evaluation_reason_codes)
+        ? intent.riskApproval.failed_evaluation_reason_codes
+        : [],
+      order_intent: evidence,
+    },
+  };
+}
+
 function createLiveOpsCliCleanupProbeRuntimeDecisionKey({ intent, observedAt }) {
+  const dateScope = readLiveOpsCliRuntimeDateScope(observedAt);
   if (
+    dateScope === undefined ||
     !hasMeaningfulValue(intent?.market) ||
     !hasMeaningfulValue(intent?.requestedPrice) ||
     !hasMeaningfulValue(intent?.requestedQuantity) ||
-    !hasMeaningfulValue(intent?.requestedNotional) ||
-    !hasMeaningfulValue(observedAt)
+    !hasMeaningfulValue(intent?.requestedNotional)
   ) {
     return undefined;
   }
@@ -957,8 +984,16 @@ function createLiveOpsCliCleanupProbeRuntimeDecisionKey({ intent, observedAt }) 
       requestedQuantity: String(intent.requestedQuantity),
       requestedNotional: String(intent.requestedNotional),
     },
-    observedAt,
+    observedAt: dateScope,
   });
+}
+
+function readLiveOpsCliRuntimeDateScope(observedAt) {
+  return /^\d{4}-\d{2}-\d{2}/u.test(String(observedAt ?? "")) ? String(observedAt).slice(0, 10) : undefined;
+}
+
+function readLiveOpsCliRuntimeObservedAt(observedAt) {
+  return readLiveOpsCliRuntimeDateScope(observedAt) === undefined ? undefined : String(observedAt);
 }
 
 function createLiveOpsCliCleanupCostInput() {
@@ -1384,7 +1419,7 @@ export function createLiveOpsCliFileBudgetReservation({ artifactStore, clock = (
       return readDailyReservedNotionalForDay(day);
     },
     async reserve(request) {
-      const reservedAt = clock();
+      const reservedAt = readLiveOpsCliRuntimeObservedAt(request?.observedAt) ?? clock();
       const day = String(reservedAt).slice(0, 10);
       const reservation = {
         reservationId: `reservation-${request.attemptId}`,
@@ -3511,7 +3546,10 @@ export async function evaluateLiveOpsCliLiveExecution({
     });
   }
 
-  const intent = intents[0];
+  const intent = attachLiveOpsCliCleanupRuntimeApprovalEvidence(createLiveOpsCliCleanupRuntimeIntent({
+    intent: intents[0],
+    observedAt,
+  }));
   const intentViolations = collectLiveOpsCliOrderIntentViolations({ config, marketData, intent });
   if (intentViolations.length > 0) {
     // 주문 후보가 live ops guard를 벗어나면 entry runtime에 넘기기 전에 닫아 broker side effect를 만들지 않는다.

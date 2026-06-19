@@ -150,15 +150,23 @@ closeout evidence로 인정하지 않는다.
 
 `keyScope`는 `grantedScopes: ["자산조회", "주문조회", "주문하기"]`, `forbiddenScopesAbsent: ["출금하기"]`,
 `withdrawalEnabled: false`처럼 허용 scope와 출금 권한 부재를 redacted safe summary로 기록한다. source/security scan은 실제 `rg -n`
-명령으로 repository root에서 `src scripts config docs` 전체 범위의 금지 주문 경계 전체(`"?ord_type"?\s*[:=]\s*"?price`,
-`"?ord_type"?\s*[:=]\s*"?market`, `"?ord_type"?\s*[:=]\s*"?best`, `"?order_type"?\s*[:=]\s*"?(market|MARKET)`,
-`시장가`, 출금/입금, leverage/futures/margin)와 secret/raw payload 후보 전체(access/secret key, 대문자 `ACCESS_KEY`/`SECRET_KEY`,
-Authorization/Bearer, JWT, Telegram token, TUI control token, DB URL/password, raw provider/order payload)를 스캔한 증거를 포함해야 한다.
+명령으로 repository root에서 runtime source path인 `src/runtime/live-ops-config src/runtime/live-ops-decision-policy
+src/runtime/live-ops-live-execution src/runtime/live-ops-analysis-decision scripts/run-live-ops.mjs scripts/run-live-ops-support.mjs config`
+전체 범위의 금지 주문 경계 전체(`"?ord_type"?\s*[:=]\s*"?price`, `"?ord_type"?\s*[:=]\s*"?market`,
+`"?ord_type"?\s*[:=]\s*"?best`, `"?order_type"?\s*[:=]\s*"?(market|MARKET)`,
+`"?orderType"?\s*[:=]\s*"?(market|MARKET)`, `"?withdrawal_enabled"?\s*[:=]\s*true`,
+`"?futures_enabled"?\s*[:=]\s*true`, `"?leverage_enabled"?\s*[:=]\s*true`,
+`"?market_order_enabled"?\s*[:=]\s*true`, `"?entry_market_order_enabled"?\s*[:=]\s*true`)와
+secret/raw payload 후보 전체(`SEEMIRAI_DATABASE_URL=postgres://...:<password>@...`, Upbit access/secret key literal,
+Telegram bot token literal, TUI control token literal, `Authorization: Bearer ...`, `raw_provider_payload`, `raw_order_detail`)를
+스캔한 증거를 포함해야 한다.
 일반 영어 단어 `market`은 정상 market 설정/문서에도 반복되므로 empty-match가 필요한 금지 주문 scan term으로 쓰지 않고,
-정상 차단 설정에 반복되는 `market_order` 단독 term도 필수 empty-match scan으로 쓰지 않는다.
+정상 차단 설정에 반복되는 `market_order` 단독 term도 필수 empty-match scan으로 쓰지 않는다. 금지 scope, 시장가, futures/leverage 같은
+도메인 단어도 guard와 문서에 정상적으로 등장하므로, source scan은 단어 자체가 아니라 운영 runtime에서 위험 toggle이 `true`로 열리는
+정밀 패턴을 찾는다. secret도 env var 이름, TypeScript property 이름, placeholder 예제가 아니라 실제 값이 하드코딩된 형태만 찾는다.
 `withdraw`/`출금`, `deposit`/`입금`, `access_key`/`accessKey`처럼 대체 표기가 있는 검색어는 각 표기를 개별로 포함해야 하며,
 `xaccess_key`처럼 검색어 앞뒤에 식별자 문자를 붙인 fake term은 coverage로 인정하지 않는다. source/security scan 명령은
-shell의 `RIPGREP_CONFIG_PATH`, `.gitignore`, hidden 기본 필터 영향을 받지 않도록 `--no-config`와 `-uuu` 또는 `--hidden --no-ignore`를 포함해야 한다. `src scripts config docs`는 검색 패턴 문자열이 아니라 `rg` argv의 실제 path operand로 들어가야 하며, `true`,
+shell의 `RIPGREP_CONFIG_PATH`, `.gitignore`, hidden 기본 필터 영향을 받지 않도록 `--no-config`와 `-uuu` 또는 `--hidden --no-ignore`를 포함해야 한다. 위 runtime source path들은 검색 패턴 문자열이 아니라 `rg` argv의 실제 path operand로 들어가야 하며, `true`,
 `echo rg ...`, 일부 토큰만 확인한 명령, 검색어가 아닌 path operand에 금지 패턴 단어를 붙인 명령,
 `-q`/`--quiet`, `-l`/`--files-without-match`, `--files`, `-F`/`--fixed-strings`, `-f`/`--file`,
 `-P`/`--pcre2`/`--engine=pcre2`, `-w`/`--word-regexp`, `-x`/`--line-regexp`, `-v`/`--invert-match`, `-c`/`--count`/`--count-matches`,

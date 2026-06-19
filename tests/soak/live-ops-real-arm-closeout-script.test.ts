@@ -7,6 +7,19 @@ import { describe, expect, it } from "vitest";
 
 const execFileAsync = promisify(execFile);
 const scriptPath = path.join(process.cwd(), "scripts", "run-live-ops-real-arm-closeout.mjs");
+const closeoutSourceScanPaths = [
+  "src/runtime/live-ops-config",
+  "src/runtime/live-ops-decision-policy",
+  "src/runtime/live-ops-live-execution",
+  "src/runtime/live-ops-analysis-decision",
+  "scripts/run-live-ops.mjs",
+  "scripts/run-live-ops-support.mjs",
+  "config",
+].join(" ");
+const closeoutUnsafeSourceScanCommand = "rg --no-config -uuu -n '\"?ord_type\"?\\s*[:=]\\s*\"?price|\"?ord_type\"?\\s*[:=]\\s*\"?market|\"?ord_type\"?\\s*[:=]\\s*\"?best|\"?order_type\"?\\s*[:=]\\s*\"?(market|MARKET)|\"?orderType\"?\\s*[:=]\\s*\"?(market|MARKET)|\"?withdrawal_enabled\"?\\s*[:=]\\s*true|\"?futures_enabled\"?\\s*[:=]\\s*true|\"?leverage_enabled\"?\\s*[:=]\\s*true|\"?market_order_enabled\"?\\s*[:=]\\s*true|\"?entry_market_order_enabled\"?\\s*[:=]\\s*true' "
+  + closeoutSourceScanPaths;
+const closeoutSecretSourceScanCommand = "rg --no-config -uuu -n 'SEEMIRAI_DATABASE_URL\\s*=\\s*postgres:\\/\\/[^\\s<:]+:[^\\s<@]+@|SEEMIRAI_UPBIT_ACCESS_KEY\\s*=\\s*[^<\\s]+|SEEMIRAI_UPBIT_SECRET_KEY\\s*=\\s*[^<\\s]+|SEEMIRAI_TELEGRAM_BOT_TOKEN\\s*=\\s*[0-9]+:[A-Za-z0-9_-]+|SEEMIRAI_TUI_CONTROL_TOKEN\\s*=\\s*[^<\\s]+|Authorization\\s*[:=]\\s*\"?Bearer\\s+[A-Za-z0-9._-]+|raw_provider_payload|raw_order_detail' "
+  + closeoutSourceScanPaths;
 
 describe("Issue 206 live:ops real-arm closeout script", () => {
   it("skips real closeout validation unless the explicit guard is enabled", async () => {
@@ -72,8 +85,8 @@ describe("Issue 206 live:ops real-arm closeout script", () => {
         sourceScan: {
           ...(manifest.sourceScan as Record<string, unknown>),
           commands: [
-            "rg --no-config -uuu -n '\"?ord_type\"?\\s*[:=]\\s*\"?price|\"?ord_type\"?\\s*[:=]\\s*\"?market|\"?ord_type\"?\\s*[:=]\\s*\"?best|\"?order_type\"?\\s*[:=]\\s*\"?(market|MARKET)|시장가|withdraw|출금|deposit|입금|leverage|futures|margin' src scripts config docs",
-            "rg --no-config -uuu -n \"access_key|accessKey|ACCESS_KEY|api_key|apiKey|API_KEY|secret_key|secretKey|SECRET_KEY|api_secret|apiSecret|API_SECRET|Authorization|authorization|Bearer|bearer|JWT|jwt|telegram_bot_token|botToken|TELEGRAM_BOT_TOKEN|SEEMIRAI_TUI_CONTROL_TOKEN|tuiControlToken|tui_control_token|DATABASE_URL|databasePassword|database_password|postgresPassword|postgres_password|POSTGRES_PASSWORD|db_password|pg_password|raw_provider|rawProvider|raw_order|rawOrder|raw_update|rawUpdate\" src scripts config docs",
+            closeoutUnsafeSourceScanCommand,
+            closeoutSecretSourceScanCommand,
           ],
         },
       }),
@@ -93,8 +106,9 @@ describe("Issue 206 live:ops real-arm closeout script", () => {
         sourceScan: {
           ...(manifest.sourceScan as Record<string, unknown>),
           commands: [
-            "rg --no-config -uuu -n '\"?ord_type\"?\\s*[:=]\\s*\"?price|\"?ord_type\"?\\s*[:=]\\s*\"?market|\"?order_type\"?\\s*[:=]\\s*\"?(market|MARKET)|MARKET|시장가|withdraw|출금|deposit|입금|leverage|futures|margin' src scripts config docs",
-            "rg --no-config -uuu -n \"access_key|accessKey|ACCESS_KEY|api_key|apiKey|API_KEY|secret_key|secretKey|SECRET_KEY|api_secret|apiSecret|API_SECRET|Authorization|authorization|Bearer|bearer|JWT|jwt|telegram_bot_token|botToken|TELEGRAM_BOT_TOKEN|SEEMIRAI_TUI_CONTROL_TOKEN|tuiControlToken|tui_control_token|DATABASE_URL|databasePassword|database_password|postgresPassword|postgres_password|POSTGRES_PASSWORD|db_password|pg_password|raw_provider|rawProvider|raw_order|rawOrder|raw_update|rawUpdate\" src scripts config docs",
+            "rg --no-config -uuu -n '\"?ord_type\"?\\s*[:=]\\s*\"?price|\"?ord_type\"?\\s*[:=]\\s*\"?market|\"?order_type\"?\\s*[:=]\\s*\"?(market|MARKET)|\"?orderType\"?\\s*[:=]\\s*\"?(market|MARKET)|MARKET|시장가|withdraw|출금|deposit|입금|leverage|futures|margin' "
+              + closeoutSourceScanPaths,
+            closeoutSecretSourceScanCommand,
           ],
         },
       }),
@@ -116,8 +130,33 @@ describe("Issue 206 live:ops real-arm closeout script", () => {
         sourceScan: {
           ...(manifest.sourceScan as Record<string, unknown>),
           commands: [
-            "rg --no-config -uuu -n '\"?ord_type\"?\\s*[:=]\\s*\"?price|\"?ord_type\"?\\s*[:=]\\s*\"?market|\"?ord_type\"?\\s*[:=]\\s*\"?best|시장가|withdraw|출금|deposit|입금|leverage|futures|margin' src scripts config docs",
-            "rg --no-config -uuu -n \"access_key|accessKey|ACCESS_KEY|api_key|apiKey|API_KEY|secret_key|secretKey|SECRET_KEY|api_secret|apiSecret|API_SECRET|Authorization|authorization|Bearer|bearer|JWT|jwt|telegram_bot_token|botToken|TELEGRAM_BOT_TOKEN|SEEMIRAI_TUI_CONTROL_TOKEN|tuiControlToken|tui_control_token|DATABASE_URL|databasePassword|database_password|postgresPassword|postgres_password|POSTGRES_PASSWORD|db_password|pg_password|raw_provider|rawProvider|raw_order|rawOrder|raw_update|rawUpdate\" src scripts config docs",
+            "rg --no-config -uuu -n '\"?ord_type\"?\\s*[:=]\\s*\"?price|\"?ord_type\"?\\s*[:=]\\s*\"?market|\"?ord_type\"?\\s*[:=]\\s*\"?best|\"?orderType\"?\\s*[:=]\\s*\"?(market|MARKET)|시장가|withdraw|출금|deposit|입금|leverage|futures|margin' "
+              + closeoutSourceScanPaths,
+            closeoutSecretSourceScanCommand,
+          ],
+        },
+      }),
+    });
+    const summary = await runScriptExpectingFailure(
+      ["--json", "--artifact-dir", artifactDir, "--manifest", manifestPath],
+      createReadyEnv(),
+    );
+
+    expect(summary.status).toBe("failed");
+    expect(getCheck(summary, "sourceSecurityScan")).toMatchObject({ status: "fail" });
+  });
+
+  it("fails when source scan commands omit camelCase orderType market-order artifact patterns", async () => {
+    const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-issue-206-closeout-source-scan-camel-order-type-"));
+    const manifestPath = await writeCloseoutManifest(artifactDir, {
+      manifestMutator: (manifest) => ({
+        ...manifest,
+        sourceScan: {
+          ...(manifest.sourceScan as Record<string, unknown>),
+          commands: [
+            "rg --no-config -uuu -n '\"?ord_type\"?\\s*[:=]\\s*\"?price|\"?ord_type\"?\\s*[:=]\\s*\"?market|\"?ord_type\"?\\s*[:=]\\s*\"?best|\"?order_type\"?\\s*[:=]\\s*\"?(market|MARKET)|시장가|withdraw|출금|deposit|입금|leverage|futures|margin' "
+              + closeoutSourceScanPaths,
+            closeoutSecretSourceScanCommand,
           ],
         },
       }),
@@ -4078,8 +4117,8 @@ async function writeCloseoutManifest(
       cwd: process.cwd(),
       repositoryRoot: process.cwd(),
       commands: [
-        "rg --no-config -uuu -n '\"?ord_type\"?\\s*[:=]\\s*\"?price|\"?ord_type\"?\\s*[:=]\\s*\"?market|\"?ord_type\"?\\s*[:=]\\s*\"?best|\"?order_type\"?\\s*[:=]\\s*\"?(market|MARKET)|시장가|withdraw|출금|deposit|입금|leverage|futures|margin' src scripts config docs",
-        "rg --no-config -uuu -n \"access_key|accessKey|ACCESS_KEY|api_key|apiKey|API_KEY|secret_key|secretKey|SECRET_KEY|api_secret|apiSecret|API_SECRET|Authorization|authorization|Bearer|bearer|JWT|jwt|telegram_bot_token|botToken|TELEGRAM_BOT_TOKEN|SEEMIRAI_TUI_CONTROL_TOKEN|tuiControlToken|tui_control_token|DATABASE_URL|databasePassword|database_password|postgresPassword|postgres_password|POSTGRES_PASSWORD|db_password|pg_password|raw_provider|rawProvider|raw_order|rawOrder|raw_update|rawUpdate\" src scripts config docs",
+        closeoutUnsafeSourceScanCommand,
+        closeoutSecretSourceScanCommand,
       ],
       unsafeMatches: [],
       secretMatches: [],

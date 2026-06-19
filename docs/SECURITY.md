@@ -155,8 +155,9 @@
   pilot 자동 주문 연결은 M21 이후 별도 보안 설계 전까지 금지한다.
 - 내부 idempotency key는 Upbit `identifier`로 그대로 매핑하며, identifier가 1자 이상 32자 이하가 아니면 거래소 호출 전에
   fail-closed 한다. 자동 truncate/hash는 중복 주문 충돌을 숨길 수 있으므로 금지한다.
-- 신규 주문은 KRW 현물 `LIMIT` 주문으로 제한하고, `ord_type=price`, `ord_type=market`, `ord_type=best`는 거래소 호출 전에
-  차단한다. `post_only`와 `smp_type` 동시 사용도 local guard에서 차단한다.
+- 신규 주문은 KRW 현물 `LIMIT` 주문으로 제한하고, `ord_type=price`, `ord_type=market`, `ord_type=best`,
+  `order_type=MARKET`, `orderType=MARKET`는 거래소 호출 전에 차단한다. `post_only`와 `smp_type` 동시 사용도
+  local guard에서 차단한다.
 - `listOpenOrders`는 `주문조회` 권한이 있는 owner-operated key에서만 허용하고, `wait`/`watch` 조회 결과는 raw provider payload가
   아니라 safe `BrokerOrder` 요약으로만 audit/status/smoke artifact에 남긴다.
 - raw access key, secret key, JWT, Authorization header, query hash 입력, raw provider payload는 log, audit, status, smoke

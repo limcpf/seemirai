@@ -2580,6 +2580,100 @@ console.log(JSON.stringify({
     }));
   });
 
+  it("cleanup_probe live execution은 reservation observedAt과 같은 날짜로 key와 evidence를 다시 만든다", async () => {
+    const supportModulePath = path.join(process.cwd(), "scripts/run-live-ops-support.mjs");
+    const {
+      evaluateLiveOpsCliLiveExecution,
+    } = await import(supportModulePath);
+    const executionAt = "2026-06-15T00:00:01.000Z";
+    const staleAnalysisKey = "live_ops_cleanup_probe:2026-06-14:upbit_krw_spot:KRW-BTC:BUY:100000000:0.0001:10000";
+    const runtimeDecisionKey = "live_ops_cleanup_probe:2026-06-15:upbit_krw_spot:KRW-BTC:BUY:100000000:0.0001:10000";
+    const submittedRequests: Array<Record<string, any>> = [];
+
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(executionAt));
+    try {
+      await evaluateLiveOpsCliLiveExecution({
+        config: {
+          live_trading_enabled: true,
+          universe: { markets: ["KRW-BTC"], default_market: "KRW-BTC" },
+          budget: {
+            max_order_krw: "10000",
+            daily_autonomous_notional_limit_krw: "30000",
+            max_open_position_notional_krw: "30000",
+          },
+        },
+        fixtureSmoke: false,
+        analysisDecision: {
+          ready: true,
+          decisionCategory: "ORDER_INTENT",
+          orderIntentCount: 1,
+        },
+        marketData: {
+          ready: true,
+          latestHeartbeatAt: "2026-06-14T23:59:59.000Z",
+          referencePrice: "100000000",
+        },
+        env: {
+          SEEMIRAI_UPBIT_ACCESS_KEY: "fake-access-key",
+          SEEMIRAI_UPBIT_SECRET_KEY: "fake-secret-key",
+          SEEMIRAI_UPBIT_KEY_SCOPE: "자산조회,주문조회,주문하기",
+          SEEMIRAI_UPBIT_KEY_SCOPE_EVIDENCE_ID: "scope-evidence",
+        },
+        orderIntents: [createCleanupRuntimeIntentWithKey(staleAnalysisKey, "2026-06-14")],
+        entryRuntime: {
+          async submitEntryCandidate(request: Record<string, any>) {
+            submittedRequests.push(request);
+            return {
+              status: "BLOCKED",
+              attemptId: request.idempotencyKey,
+              idempotencyKey: request.idempotencyKey,
+              message: "unit blocked after request capture",
+              action: "none",
+              events: [],
+            };
+          },
+        },
+        executionStatus: {
+          killSwitchActive: false,
+          reconcileFresh: true,
+          evidenceId: "execution-status-evidence",
+        },
+        postSubmitReadiness: {
+          reconcileReady: true,
+          telegramReady: true,
+          evidenceId: "post-submit-readiness-evidence",
+        },
+        budgetSnapshot: {
+          maxOrderKrw: "10000",
+          dailyAutonomousNotionalLimitKrw: "30000",
+          dailyAutonomousNotionalUsedKrw: "0",
+          openPositionNotionalKrw: "0",
+          maxOpenPositionNotionalKrw: "30000",
+          capturedAt: executionAt,
+        },
+        lossSnapshot: {
+          dailyRealizedLossKrw: "0",
+          weeklyRealizedLossKrw: "0",
+          capturedAt: executionAt,
+        },
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+
+    const request = submittedRequests[0];
+    expect(request?.observedAt).toBe(executionAt);
+    expect(request?.candidate.metadata).toMatchObject({
+      decision_idempotency_key: runtimeDecisionKey,
+      analysis_idempotency_key: staleAnalysisKey,
+      idempotency_date_scope: "2026-06-15",
+      idempotency_date_source: "live_ops_runtime_preflight",
+    });
+    expect(request?.candidate.costSnapshot.order_intent.idempotency_key).toBe(runtimeDecisionKey);
+    expect(request?.candidate.riskApproval.order_intent.idempotency_key).toBe(runtimeDecisionKey);
+  });
+
   it("production preflight는 오래된 clean reconcile도 같은 tick evidence로 갱신한다", async () => {
     const supportModulePath = path.join(process.cwd(), "scripts/run-live-ops-support.mjs");
     const {
@@ -6729,6 +6823,47 @@ console.log(JSON.stringify({
     expect(JSON.stringify(artifact)).not.toContain("raw_provider_payload");
   });
 
+  it("file budget reservation은 request observedAt 날짜로 reservation day를 고정한다", async () => {
+    const supportModulePath = path.join(process.cwd(), "scripts/run-live-ops-support.mjs");
+    const {
+      createLiveOpsCliCleanupArtifactStore,
+      createLiveOpsCliFileBudgetReservation,
+    } = await import(supportModulePath);
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-live-ops-budget-observed-at-"));
+    const artifactStore = await createLiveOpsCliCleanupArtifactStore({ artifactDir: tempDir });
+    const requestObservedAt = "2026-06-15T23:59:59.000Z";
+    const budgetReservation = createLiveOpsCliFileBudgetReservation({
+      artifactStore,
+      clock: () => "2026-06-16T00:00:01.000Z",
+    });
+
+    const result = await budgetReservation.reserve({
+      attemptId: "ops-aaaaaaaaaaaaaaaaaaaaaaaaaa",
+      idempotencyKey: "ops-aaaaaaaaaaaaaaaaaaaaaaaaaa",
+      market: "KRW-BTC",
+      strategyId: "live_ops_cleanup_probe",
+      requestedNotionalKrw: "10000",
+      budgetSnapshot: {
+        dailyAutonomousNotionalLimitKrw: "30000",
+        dailyAutonomousNotionalUsedKrw: "0",
+        openPositionNotionalKrw: "0",
+      },
+      observedAt: requestObservedAt,
+    });
+    const reservedOnRequestDay = await budgetReservation.readDailyReservedNotional(requestObservedAt);
+    const reservedOnClockDay = await budgetReservation.readDailyReservedNotional("2026-06-16T00:00:01.000Z");
+
+    expect(result).toMatchObject({
+      reserved: true,
+      reservation: {
+        reservedAt: requestObservedAt,
+        budgetUsageAfterReservationKrw: "10000",
+      },
+    });
+    expect(reservedOnRequestDay).toMatchObject({ day: "2026-06-15", reservedNotionalKrw: "10000" });
+    expect(reservedOnClockDay).toMatchObject({ day: "2026-06-16", reservedNotionalKrw: "0" });
+  });
+
   it("file budget reservation은 일일 예산 집계를 lock 안에서 선점한다", async () => {
     const supportModulePath = path.join(process.cwd(), "scripts/run-live-ops-support.mjs");
     const {
@@ -7574,6 +7709,32 @@ function createCleanupRuntimeIntent() {
       action: "ALLOW",
       status: "PASS",
       failed_evaluation_reason_codes: [],
+      order_intent: orderIntentEvidence,
+    },
+  };
+}
+
+function createCleanupRuntimeIntentWithKey(idempotencyKey: string, dateScope: string) {
+  const intent = createCleanupRuntimeIntent() as Record<string, any>;
+  const orderIntentEvidence = {
+    ...(intent.costSnapshot.order_intent as Record<string, unknown>),
+    idempotency_key: idempotencyKey,
+  };
+
+  return {
+    ...intent,
+    idempotencyKey,
+    metadata: {
+      ...(intent.metadata as Record<string, unknown>),
+      idempotency_date_scope: dateScope,
+      idempotency_date_source: "live_ops_runtime_preflight",
+    },
+    costSnapshot: {
+      ...(intent.costSnapshot as Record<string, unknown>),
+      order_intent: orderIntentEvidence,
+    },
+    riskApproval: {
+      ...(intent.riskApproval as Record<string, unknown>),
       order_intent: orderIntentEvidence,
     },
   };
