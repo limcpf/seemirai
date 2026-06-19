@@ -5463,7 +5463,9 @@ console.log(JSON.stringify({
       },
     }, null, 2), "utf8");
     const competingClaimPath = `${staleLockPath}.claimed-preexisting-test`;
+    const competingTempPath = `${staleLockPath}.tmp-preexisting-test`;
     await link(staleLockPath, competingClaimPath);
+    await link(staleLockPath, competingTempPath);
     const orphanClaimRecoveredLock = await artifactStore.acquireDailyReservationLock("2026-06-15", { acquiredAt: observedAt });
     await orphanClaimRecoveredLock.release();
     await writeFile(staleLockPath, "{}", "utf8");
@@ -5524,6 +5526,7 @@ console.log(JSON.stringify({
     });
     expect(await artifactStore.readReservation("ops-eeeeeeeeeeeeeeeeeeeeeeeeee")).toBeUndefined();
     await expect(readFile(competingClaimPath, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(readFile(competingTempPath, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
     expect(schemaMalformedBusy).toMatchObject({
       reserved: false,
       reasonCode: "live_ops_daily_budget_lock_busy",

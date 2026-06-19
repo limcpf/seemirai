@@ -1071,6 +1071,7 @@ export async function createLiveOpsCliCleanupArtifactStore({ configPath, env = {
     async acquireDailyReservationLock(day, { acquiredAt = new Date().toISOString(), ttlMs = liveOpsCliDailyReservationLockLeaseMs } = {}) {
       const targetPath = this.dailyReservationLockPath(day);
       const acquire = async () => {
+        assertLiveOpsCliDailyReservationLockOwnerAvailable();
         const leaseId = randomUUID();
         const tempPath = `${targetPath}.tmp-${leaseId}`;
         const lease = `${JSON.stringify(createLiveOpsCliDailyReservationLockLease({
@@ -1333,6 +1334,12 @@ function createLiveOpsCliDailyReservationLockLease({
   };
 }
 
+function assertLiveOpsCliDailyReservationLockOwnerAvailable() {
+  if (!hasMeaningfulValue(liveOpsCliProcessOwner?.bootId) || !hasMeaningfulValue(liveOpsCliProcessOwner?.processStartTime)) {
+    throw new Error("LiveOpsCliDailyReservationLockOwnerUnavailable");
+  }
+}
+
 async function releaseLiveOpsCliDailyReservationLockIfOwned(targetPath, leaseId) {
   const expected = await readLiveOpsCliDailyReservationLockState(targetPath, new Date().toISOString(), liveOpsCliDailyReservationLockLeaseMs);
   if (!expected.exists || expected.lease?.leaseId !== leaseId) {
@@ -1408,10 +1415,11 @@ async function isLiveOpsCliDailyReservationLockClaimStillTarget(targetPath, clai
 
 async function removeLiveOpsCliOrphanDailyReservationLockClaims(targetPath, claimPath, targetMetadata) {
   const directory = path.dirname(targetPath);
-  const claimPrefix = `${path.basename(targetPath)}.claimed-`;
+  const lockBasename = path.basename(targetPath);
+  const orphanPrefixes = [`${lockBasename}.claimed-`, `${lockBasename}.tmp-`];
   const entries = await readdir(directory, { withFileTypes: true });
   for (const entry of entries) {
-    if (!entry.isFile() || !entry.name.startsWith(claimPrefix)) {
+    if (!entry.isFile() || !orphanPrefixes.some((prefix) => entry.name.startsWith(prefix))) {
       continue;
     }
     const candidatePath = path.join(directory, entry.name);
@@ -1522,14 +1530,17 @@ function isLiveOpsCliLockOwnerActive(lease) {
   if (expectedOwner.bootId !== actualBootId) {
     return false;
   }
-  const actualStartTime = readLiveOpsCliProcessStartTime(pid);
-  if (actualStartTime.status === "missing") {
+  const actualProcess = readLiveOpsCliProcessSnapshot(pid);
+  if (actualProcess.status === "missing") {
     return false;
   }
-  if (actualStartTime.status !== "found") {
+  if (actualProcess.status !== "found") {
     return true;
   }
-  if (actualStartTime.value !== expectedOwner.processStartTime) {
+  if (actualProcess.processStartTime !== expectedOwner.processStartTime) {
+    return false;
+  }
+  if (actualProcess.state === "Z") {
     return false;
   }
   try {
@@ -1544,11 +1555,11 @@ function isLiveOpsCliLockOwnerActive(lease) {
 }
 
 function createLiveOpsCliProcessOwnerSnapshot(pid) {
-  const processStartTime = readLiveOpsCliProcessStartTime(pid);
+  const processSnapshot = readLiveOpsCliProcessSnapshot(pid);
   return {
     pid,
     bootId: readLiveOpsCliBootId(),
-    processStartTime: processStartTime.status === "found" ? processStartTime.value : undefined,
+    processStartTime: processSnapshot.status === "found" ? processSnapshot.processStartTime : undefined,
   };
 }
 
@@ -1560,7 +1571,7 @@ function readLiveOpsCliBootId() {
   }
 }
 
-function readLiveOpsCliProcessStartTime(pid) {
+function readLiveOpsCliProcessSnapshot(pid) {
   try {
     const statContent = readFileSync(`/proc/${pid}/stat`, "utf8");
     const lastParenIndex = statContent.lastIndexOf(")");
@@ -1568,7 +1579,9 @@ function readLiveOpsCliProcessStartTime(pid) {
       return { status: "unknown" };
     }
     const fields = statContent.slice(lastParenIndex + 2).trim().split(/\s+/u);
-    return hasMeaningfulValue(fields[19]) ? { status: "found", value: fields[19] } : { status: "unknown" };
+    return hasMeaningfulValue(fields[0]) && hasMeaningfulValue(fields[19])
+      ? { status: "found", state: fields[0], processStartTime: fields[19] }
+      : { status: "unknown" };
   } catch (error) {
     return error?.code === "ENOENT" ? { status: "missing" } : { status: "unknown" };
   }
