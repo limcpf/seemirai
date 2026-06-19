@@ -7,6 +7,130 @@ import { describe, expect, it } from "vitest";
 
 const execFileAsync = promisify(execFile);
 const scriptPath = path.join(process.cwd(), "scripts", "run-live-ops-real-arm-closeout.mjs");
+const closeoutSourceScanPaths = [
+  "src/runtime/live-ops-config.ts",
+  "src/runtime/live-ops-config",
+  "src/runtime/live-ops-decision-policy.ts",
+  "src/runtime/live-ops-decision-policy",
+  "src/runtime/live-ops-live-execution.ts",
+  "src/runtime/live-ops-live-execution",
+  "src/runtime/live-ops-analysis-decision.ts",
+  "src/runtime/live-ops-analysis-decision",
+  "src/application/live-autonomous-entry-runtime/service.ts",
+  "src/infrastructure/upbit/private-client.ts",
+  "src/infrastructure/upbit/private-client/client.ts",
+  "src/infrastructure/upbit/private-client/auth.ts",
+  "src/infrastructure/upbit/live-broker/service.ts",
+  "src/infrastructure/upbit/private-mappers.ts",
+  "src/infrastructure/upbit/private-mappers",
+  "scripts/run-live-ops.mjs",
+  "scripts/run-live-ops-support.mjs",
+  "config/live-ops.example.json",
+  "config/live-ops.env.example",
+].join(" ");
+const closeoutSourceScanPathsWithoutRuntimePublicEntries = [
+  "src/runtime/live-ops-config",
+  "src/runtime/live-ops-decision-policy",
+  "src/runtime/live-ops-live-execution",
+  "src/runtime/live-ops-analysis-decision",
+  "src/application/live-autonomous-entry-runtime/service.ts",
+  "src/infrastructure/upbit/private-client.ts",
+  "src/infrastructure/upbit/private-client/client.ts",
+  "src/infrastructure/upbit/private-client/auth.ts",
+  "src/infrastructure/upbit/live-broker/service.ts",
+  "src/infrastructure/upbit/private-mappers.ts",
+  "src/infrastructure/upbit/private-mappers",
+  "scripts/run-live-ops.mjs",
+  "scripts/run-live-ops-support.mjs",
+  "config/live-ops.example.json",
+  "config/live-ops.env.example",
+].join(" ");
+const closeoutSourceScanPathsWithoutLiveBroker = [
+  "src/runtime/live-ops-config.ts",
+  "src/runtime/live-ops-config",
+  "src/runtime/live-ops-decision-policy.ts",
+  "src/runtime/live-ops-decision-policy",
+  "src/runtime/live-ops-live-execution.ts",
+  "src/runtime/live-ops-live-execution",
+  "src/runtime/live-ops-analysis-decision.ts",
+  "src/runtime/live-ops-analysis-decision",
+  "src/application/live-autonomous-entry-runtime/service.ts",
+  "src/infrastructure/upbit/private-client.ts",
+  "src/infrastructure/upbit/private-client/client.ts",
+  "src/infrastructure/upbit/private-client/auth.ts",
+  "src/infrastructure/upbit/private-mappers.ts",
+  "src/infrastructure/upbit/private-mappers",
+  "scripts/run-live-ops.mjs",
+  "scripts/run-live-ops-support.mjs",
+  "config/live-ops.example.json",
+  "config/live-ops.env.example",
+].join(" ");
+const closeoutSourceScanPathsWithoutPrivateClientAuth = [
+  "src/runtime/live-ops-config.ts",
+  "src/runtime/live-ops-config",
+  "src/runtime/live-ops-decision-policy.ts",
+  "src/runtime/live-ops-decision-policy",
+  "src/runtime/live-ops-live-execution.ts",
+  "src/runtime/live-ops-live-execution",
+  "src/runtime/live-ops-analysis-decision.ts",
+  "src/runtime/live-ops-analysis-decision",
+  "src/application/live-autonomous-entry-runtime/service.ts",
+  "src/infrastructure/upbit/private-client.ts",
+  "src/infrastructure/upbit/private-client/client.ts",
+  "src/infrastructure/upbit/live-broker/service.ts",
+  "src/infrastructure/upbit/private-mappers.ts",
+  "src/infrastructure/upbit/private-mappers",
+  "scripts/run-live-ops.mjs",
+  "scripts/run-live-ops-support.mjs",
+  "config/live-ops.example.json",
+  "config/live-ops.env.example",
+].join(" ");
+const closeoutSourceScanPathsWithoutPrivateMappers = [
+  "src/runtime/live-ops-config.ts",
+  "src/runtime/live-ops-config",
+  "src/runtime/live-ops-decision-policy.ts",
+  "src/runtime/live-ops-decision-policy",
+  "src/runtime/live-ops-live-execution.ts",
+  "src/runtime/live-ops-live-execution",
+  "src/runtime/live-ops-analysis-decision.ts",
+  "src/runtime/live-ops-analysis-decision",
+  "src/application/live-autonomous-entry-runtime/service.ts",
+  "src/infrastructure/upbit/private-client.ts",
+  "src/infrastructure/upbit/private-client/client.ts",
+  "src/infrastructure/upbit/private-client/auth.ts",
+  "src/infrastructure/upbit/live-broker/service.ts",
+  "src/infrastructure/upbit/private-mappers.ts",
+  "scripts/run-live-ops.mjs",
+  "scripts/run-live-ops-support.mjs",
+  "config/live-ops.example.json",
+  "config/live-ops.env.example",
+].join(" ");
+const closeoutPriceBestOrderTypeUnsafePattern = "|[\\x27\"]?order_type[\\x27\"]?\\s*[:=]\\s*[\\x27\"]?(PRICE|price|BEST|best)|[\\x27\"]?orderType[\\x27\"]?\\s*[:=]\\s*[\\x27\"]?(PRICE|price|BEST|best)";
+const closeoutUnsafeSourceScanCommand = "rg --no-config -uuu -n '[\\x27\"]?ord_type[\\x27\"]?\\s*[:=]\\s*[\\x27\"]?price|[\\x27\"]?ord_type[\\x27\"]?\\s*[:=]\\s*[\\x27\"]?market|[\\x27\"]?ord_type[\\x27\"]?\\s*[:=]\\s*[\\x27\"]?best|[\\x27\"]?key[\\x27\"]?\\s*:\\s*[\\x27\"]ord_type[\\x27\"][^\\r\\n{}]*,[^\\r\\n{}]*[\\x27\"]?value[\\x27\"]?\\s*:\\s*[\\x27\"]?(price|market|best)|시장가[^\\r\\n]*(허용|활성|enabled|true)|[\\x27\"]?order_type[\\x27\"]?\\s*[:=]\\s*[\\x27\"]?(market|MARKET)|[\\x27\"]?orderType[\\x27\"]?\\s*[:=]\\s*[\\x27\"]?(market|MARKET)"
+  + closeoutPriceBestOrderTypeUnsafePattern
+  + "|[\\x27\"]?withdrawal_enabled[\\x27\"]?\\s*[:=]\\s*true|[\\x27\"]?deposit_enabled[\\x27\"]?\\s*[:=]\\s*true|\\/v1\\/deposits|\\/v1\\/withdraws|[\\x27\"]?futures_enabled[\\x27\"]?\\s*[:=]\\s*true|[\\x27\"]?leverage_enabled[\\x27\"]?\\s*[:=]\\s*true|[\\x27\"]?market_order_enabled[\\x27\"]?\\s*[:=]\\s*true|[\\x27\"]?entry_market_order_enabled[\\x27\"]?\\s*[:=]\\s*true' "
+  + closeoutSourceScanPaths;
+const closeoutCamelCredentialPropertySecretPattern = "|[\\x27\"]?accessKey[\\x27\"]?\\s*:\\s*[\\x27\"][A-Za-z0-9._-]{16,}[\\x27\"]|[\\x27\"]?secretKey[\\x27\"]?\\s*:\\s*[\\x27\"][A-Za-z0-9._\\/=+-]{16,}[\\x27\"]";
+const closeoutSnakeCredentialPropertySecretPattern = "|[\\x27\"]?access_key[\\x27\"]?\\s*:\\s*[\\x27\"][A-Za-z0-9._-]{16,}[\\x27\"]|[\\x27\"]?secret_key[\\x27\"]?\\s*:\\s*[\\x27\"][A-Za-z0-9._\\/=+-]{16,}[\\x27\"]";
+const closeoutRawJwtSecretPattern = "|\\beyJ[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+\\b|[\\x27\"]?jwt[\\x27\"]?\\s*[:=]\\s*[\\x27\"]eyJ[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+[\\x27\"]";
+const closeoutSecretSourceScanCommand = "rg --no-config -uuu -n 'SEEMIRAI_DATABASE_URL\\s*=\\s*postgres:\\/\\/[^\\s<:]+:[^\\s<@]+@|postgres(?:ql)?:\\/\\/[^:<\\s\"\\x27]+:[^@<\\s\"\\x27]+@|SEEMIRAI_UPBIT_ACCESS_KEY\\s*=\\s*[^<\\s]+|SEEMIRAI_UPBIT_SECRET_KEY\\s*=\\s*[^<\\s]+"
+  + closeoutCamelCredentialPropertySecretPattern
+  + closeoutSnakeCredentialPropertySecretPattern
+  + "|SEEMIRAI_TELEGRAM_BOT_TOKEN\\s*=\\s*[0-9]+:[A-Za-z0-9_-]+|\\bTELEGRAM_BOT_TOKEN\\s*=\\s*[0-9]+:[A-Za-z0-9_-]+|SEEMIRAI_TUI_CONTROL_TOKEN\\s*=\\s*[^<\\s]+|[\\x27\"]?Authorization[\\x27\"]?\\s*[:=]\\s*[\\x27\"]?(Bearer|bearer)\\s+[A-Za-z0-9._-]+|[\\x27\"]?authorization[\\x27\"]?\\s*[:=]\\s*[\\x27\"]?(Bearer|bearer)\\s+[A-Za-z0-9._-]+"
+  + closeoutRawJwtSecretPattern
+  + "|raw_provider_payload|rawProviderPayload|raw_order_detail|rawOrderDetail' "
+  + closeoutSourceScanPaths;
+const closeoutUnsafeSourceScanCommandWithoutRuntimePublicEntries = closeoutUnsafeSourceScanCommand.replace(closeoutSourceScanPaths, closeoutSourceScanPathsWithoutRuntimePublicEntries);
+const closeoutSecretSourceScanCommandWithoutRuntimePublicEntries = closeoutSecretSourceScanCommand.replace(closeoutSourceScanPaths, closeoutSourceScanPathsWithoutRuntimePublicEntries);
+const closeoutSourceScanPathsWithoutUpbitPublicEntries = closeoutSourceScanPaths
+  .replace("src/infrastructure/upbit/private-client.ts ", "")
+  .replace("src/infrastructure/upbit/private-mappers.ts ", "");
+const closeoutUnsafeSourceScanCommandWithoutUpbitPublicEntries = closeoutUnsafeSourceScanCommand.replace(closeoutSourceScanPaths, closeoutSourceScanPathsWithoutUpbitPublicEntries);
+const closeoutSecretSourceScanCommandWithoutUpbitPublicEntries = closeoutSecretSourceScanCommand.replace(closeoutSourceScanPaths, closeoutSourceScanPathsWithoutUpbitPublicEntries);
+const closeoutUnsafeSourceScanCommandWithoutPriceBestOrderType = closeoutUnsafeSourceScanCommand.replace(closeoutPriceBestOrderTypeUnsafePattern, "");
+const closeoutSecretSourceScanCommandWithoutCamelCredentialProperties = closeoutSecretSourceScanCommand.replace(closeoutCamelCredentialPropertySecretPattern, "");
+const closeoutSecretSourceScanCommandWithoutSnakeCredentialProperties = closeoutSecretSourceScanCommand.replace(closeoutSnakeCredentialPropertySecretPattern, "");
+const closeoutSecretSourceScanCommandWithoutRawJwt = closeoutSecretSourceScanCommand.replace(closeoutRawJwtSecretPattern, "");
 
 describe("Issue 206 live:ops real-arm closeout script", () => {
   it("skips real closeout validation unless the explicit guard is enabled", async () => {
@@ -62,6 +186,413 @@ describe("Issue 206 live:ops real-arm closeout script", () => {
       duplicateOrderCount: 0,
     });
     expect(getCheck(summary, "readinessAudit").status).toBe("ok");
+  });
+
+  it("passes when source scan keeps explicit order-risk terms without broad market-order patterns", async () => {
+    const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-issue-206-closeout-source-scan-no-generic-market-"));
+    const manifestPath = await writeCloseoutManifest(artifactDir, {
+      manifestMutator: (manifest) => ({
+        ...manifest,
+        sourceScan: {
+          ...(manifest.sourceScan as Record<string, unknown>),
+          commands: [
+            closeoutUnsafeSourceScanCommand,
+            closeoutSecretSourceScanCommand,
+          ],
+        },
+      }),
+    });
+    const { stdout } = await runScript(["--json", "--artifact-dir", artifactDir, "--manifest", manifestPath], createReadyEnv());
+    const summary = JSON.parse(stdout) as LiveOpsRealArmCloseoutSummary;
+
+    expect(summary.status).toBe("passed");
+    expect(getCheck(summary, "sourceSecurityScan").status).toBe("ok");
+  });
+
+  it("fails when source scan commands replace precise ord_type best payload coverage with bare MARKET", async () => {
+    const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-issue-206-closeout-source-scan-english-market-order-"));
+    const manifestPath = await writeCloseoutManifest(artifactDir, {
+      manifestMutator: (manifest) => ({
+        ...manifest,
+        sourceScan: {
+          ...(manifest.sourceScan as Record<string, unknown>),
+          commands: [
+            "rg --no-config -uuu -n '\"?ord_type\"?\\s*[:=]\\s*\"?price|\"?ord_type\"?\\s*[:=]\\s*\"?market|\"?order_type\"?\\s*[:=]\\s*\"?(market|MARKET)|\"?orderType\"?\\s*[:=]\\s*\"?(market|MARKET)|MARKET|시장가|withdraw|출금|deposit|입금|leverage|futures|margin' "
+              + closeoutSourceScanPaths,
+            closeoutSecretSourceScanCommand,
+          ],
+        },
+      }),
+    });
+    const summary = await runScriptExpectingFailure(
+      ["--json", "--artifact-dir", artifactDir, "--manifest", manifestPath],
+      createReadyEnv(),
+    );
+
+    expect(summary.status).toBe("failed");
+    expect(getCheck(summary, "sourceSecurityScan")).toMatchObject({ status: "fail" });
+  });
+
+  it("fails when source scan commands omit snake_case order_type market-order artifact patterns", async () => {
+    const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-issue-206-closeout-source-scan-snake-order-type-"));
+    const manifestPath = await writeCloseoutManifest(artifactDir, {
+      manifestMutator: (manifest) => ({
+        ...manifest,
+        sourceScan: {
+          ...(manifest.sourceScan as Record<string, unknown>),
+          commands: [
+            "rg --no-config -uuu -n '\"?ord_type\"?\\s*[:=]\\s*\"?price|\"?ord_type\"?\\s*[:=]\\s*\"?market|\"?ord_type\"?\\s*[:=]\\s*\"?best|\"?orderType\"?\\s*[:=]\\s*\"?(market|MARKET)|시장가|withdraw|출금|deposit|입금|leverage|futures|margin' "
+              + closeoutSourceScanPaths,
+            closeoutSecretSourceScanCommand,
+          ],
+        },
+      }),
+    });
+    const summary = await runScriptExpectingFailure(
+      ["--json", "--artifact-dir", artifactDir, "--manifest", manifestPath],
+      createReadyEnv(),
+    );
+
+    expect(summary.status).toBe("failed");
+    expect(getCheck(summary, "sourceSecurityScan")).toMatchObject({ status: "fail" });
+  });
+
+  it("fails when source scan commands omit camelCase orderType market-order artifact patterns", async () => {
+    const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-issue-206-closeout-source-scan-camel-order-type-"));
+    const manifestPath = await writeCloseoutManifest(artifactDir, {
+      manifestMutator: (manifest) => ({
+        ...manifest,
+        sourceScan: {
+          ...(manifest.sourceScan as Record<string, unknown>),
+          commands: [
+            "rg --no-config -uuu -n '\"?ord_type\"?\\s*[:=]\\s*\"?price|\"?ord_type\"?\\s*[:=]\\s*\"?market|\"?ord_type\"?\\s*[:=]\\s*\"?best|\"?order_type\"?\\s*[:=]\\s*\"?(market|MARKET)|시장가|withdraw|출금|deposit|입금|leverage|futures|margin' "
+              + closeoutSourceScanPaths,
+            closeoutSecretSourceScanCommand,
+          ],
+        },
+      }),
+    });
+    const summary = await runScriptExpectingFailure(
+      ["--json", "--artifact-dir", artifactDir, "--manifest", manifestPath],
+      createReadyEnv(),
+    );
+
+    expect(summary.status).toBe("failed");
+    expect(getCheck(summary, "sourceSecurityScan")).toMatchObject({ status: "fail" });
+  });
+
+  it("fails when source scan commands omit PRICE/BEST orderType artifact patterns", async () => {
+    const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-issue-206-closeout-source-scan-price-best-order-type-"));
+    const manifestPath = await writeCloseoutManifest(artifactDir, {
+      manifestMutator: (manifest) => ({
+        ...manifest,
+        sourceScan: {
+          ...(manifest.sourceScan as Record<string, unknown>),
+          commands: [
+            closeoutUnsafeSourceScanCommandWithoutPriceBestOrderType,
+            closeoutSecretSourceScanCommand,
+          ],
+        },
+      }),
+    });
+    const summary = await runScriptExpectingFailure(
+      ["--json", "--artifact-dir", artifactDir, "--manifest", manifestPath],
+      createReadyEnv(),
+    );
+
+    expect(summary.status).toBe("failed");
+    expect(getCheck(summary, "sourceSecurityScan")).toMatchObject({ status: "fail" });
+  });
+
+  it("fails when source scan commands omit single-quoted order payload coverage", async () => {
+    const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-issue-206-closeout-source-scan-single-quote-order-"));
+    const manifestPath = await writeCloseoutManifest(artifactDir, {
+      manifestMutator: (manifest) => ({
+        ...manifest,
+        sourceScan: {
+          ...(manifest.sourceScan as Record<string, unknown>),
+          commands: [
+            "rg --no-config -uuu -n '\"?ord_type\"?\\s*[:=]\\s*\"?price|\"?ord_type\"?\\s*[:=]\\s*\"?market|\"?ord_type\"?\\s*[:=]\\s*\"?best|\"?order_type\"?\\s*[:=]\\s*\"?(market|MARKET)|\"?orderType\"?\\s*[:=]\\s*\"?(market|MARKET)|\"?withdrawal_enabled\"?\\s*[:=]\\s*true|\"?deposit_enabled\"?\\s*[:=]\\s*true|\\/v1\\/deposits|\\/v1\\/withdraws|\"?futures_enabled\"?\\s*[:=]\\s*true|\"?leverage_enabled\"?\\s*[:=]\\s*true|\"?market_order_enabled\"?\\s*[:=]\\s*true|\"?entry_market_order_enabled\"?\\s*[:=]\\s*true' "
+              + closeoutSourceScanPaths,
+            closeoutSecretSourceScanCommand,
+          ],
+        },
+      }),
+    });
+    const summary = await runScriptExpectingFailure(
+      ["--json", "--artifact-dir", artifactDir, "--manifest", manifestPath],
+      createReadyEnv(),
+    );
+
+    expect(summary.status).toBe("failed");
+    expect(getCheck(summary, "sourceSecurityScan")).toMatchObject({ status: "fail" });
+  });
+
+  it("fails when source scan commands omit ord_type key/value order payload coverage", async () => {
+    const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-issue-206-closeout-source-scan-ord-type-key-value-"));
+    const manifestPath = await writeCloseoutManifest(artifactDir, {
+      manifestMutator: (manifest) => ({
+        ...manifest,
+        sourceScan: {
+          ...(manifest.sourceScan as Record<string, unknown>),
+          commands: [
+            "rg --no-config -uuu -n '[\\x27\"]?ord_type[\\x27\"]?\\s*[:=]\\s*[\\x27\"]?price|[\\x27\"]?ord_type[\\x27\"]?\\s*[:=]\\s*[\\x27\"]?market|[\\x27\"]?ord_type[\\x27\"]?\\s*[:=]\\s*[\\x27\"]?best|[\\x27\"]?order_type[\\x27\"]?\\s*[:=]\\s*[\\x27\"]?(market|MARKET)|[\\x27\"]?orderType[\\x27\"]?\\s*[:=]\\s*[\\x27\"]?(market|MARKET)|[\\x27\"]?withdrawal_enabled[\\x27\"]?\\s*[:=]\\s*true|[\\x27\"]?deposit_enabled[\\x27\"]?\\s*[:=]\\s*true|\\/v1\\/deposits|\\/v1\\/withdraws|[\\x27\"]?futures_enabled[\\x27\"]?\\s*[:=]\\s*true|[\\x27\"]?leverage_enabled[\\x27\"]?\\s*[:=]\\s*true|[\\x27\"]?market_order_enabled[\\x27\"]?\\s*[:=]\\s*true|[\\x27\"]?entry_market_order_enabled[\\x27\"]?\\s*[:=]\\s*true' "
+              + closeoutSourceScanPaths,
+            closeoutSecretSourceScanCommand,
+          ],
+        },
+      }),
+    });
+    const summary = await runScriptExpectingFailure(
+      ["--json", "--artifact-dir", artifactDir, "--manifest", manifestPath],
+      createReadyEnv(),
+    );
+
+    expect(summary.status).toBe("failed");
+    expect(getCheck(summary, "sourceSecurityScan")).toMatchObject({ status: "fail" });
+  });
+
+  it("fails when source scan commands omit Korean market-order allowance coverage", async () => {
+    const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-issue-206-closeout-source-scan-korean-market-order-"));
+    const manifestPath = await writeCloseoutManifest(artifactDir, {
+      manifestMutator: (manifest) => ({
+        ...manifest,
+        sourceScan: {
+          ...(manifest.sourceScan as Record<string, unknown>),
+          commands: [
+            "rg --no-config -uuu -n '[\\x27\"]?ord_type[\\x27\"]?\\s*[:=]\\s*[\\x27\"]?price|[\\x27\"]?ord_type[\\x27\"]?\\s*[:=]\\s*[\\x27\"]?market|[\\x27\"]?ord_type[\\x27\"]?\\s*[:=]\\s*[\\x27\"]?best|[\\x27\"]?key[\\x27\"]?\\s*:\\s*[\\x27\"]ord_type[\\x27\"][^\\r\\n{}]*,[^\\r\\n{}]*[\\x27\"]?value[\\x27\"]?\\s*:\\s*[\\x27\"]?(price|market|best)|[\\x27\"]?order_type[\\x27\"]?\\s*[:=]\\s*[\\x27\"]?(market|MARKET)|[\\x27\"]?orderType[\\x27\"]?\\s*[:=]\\s*[\\x27\"]?(market|MARKET)|[\\x27\"]?withdrawal_enabled[\\x27\"]?\\s*[:=]\\s*true|[\\x27\"]?deposit_enabled[\\x27\"]?\\s*[:=]\\s*true|\\/v1\\/deposits|\\/v1\\/withdraws|[\\x27\"]?futures_enabled[\\x27\"]?\\s*[:=]\\s*true|[\\x27\"]?leverage_enabled[\\x27\"]?\\s*[:=]\\s*true|[\\x27\"]?market_order_enabled[\\x27\"]?\\s*[:=]\\s*true|[\\x27\"]?entry_market_order_enabled[\\x27\"]?\\s*[:=]\\s*true' "
+              + closeoutSourceScanPaths,
+            closeoutSecretSourceScanCommand,
+          ],
+        },
+      }),
+    });
+    const summary = await runScriptExpectingFailure(
+      ["--json", "--artifact-dir", artifactDir, "--manifest", manifestPath],
+      createReadyEnv(),
+    );
+
+    expect(summary.status).toBe("failed");
+    expect(getCheck(summary, "sourceSecurityScan")).toMatchObject({ status: "fail" });
+  });
+
+  it("fails when source scan commands omit deposit path coverage", async () => {
+    const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-issue-206-closeout-source-scan-deposit-"));
+    const manifestPath = await writeCloseoutManifest(artifactDir, {
+      manifestMutator: (manifest) => ({
+        ...manifest,
+        sourceScan: {
+          ...(manifest.sourceScan as Record<string, unknown>),
+          commands: [
+            "rg --no-config -uuu -n '\"?ord_type\"?\\s*[:=]\\s*\"?price|\"?ord_type\"?\\s*[:=]\\s*\"?market|\"?ord_type\"?\\s*[:=]\\s*\"?best|\"?order_type\"?\\s*[:=]\\s*\"?(market|MARKET)|\"?orderType\"?\\s*[:=]\\s*\"?(market|MARKET)|\"?withdrawal_enabled\"?\\s*[:=]\\s*true|\"?futures_enabled\"?\\s*[:=]\\s*true|\"?leverage_enabled\"?\\s*[:=]\\s*true|\"?market_order_enabled\"?\\s*[:=]\\s*true|\"?entry_market_order_enabled\"?\\s*[:=]\\s*true' "
+              + closeoutSourceScanPaths,
+            closeoutSecretSourceScanCommand,
+          ],
+        },
+      }),
+    });
+    const summary = await runScriptExpectingFailure(
+      ["--json", "--artifact-dir", artifactDir, "--manifest", manifestPath],
+      createReadyEnv(),
+    );
+
+    expect(summary.status).toBe("failed");
+    expect(getCheck(summary, "sourceSecurityScan")).toMatchObject({ status: "fail" });
+  });
+
+  it("fails when source scan commands omit withdrawal API path coverage", async () => {
+    const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-issue-206-closeout-source-scan-withdraw-path-"));
+    const manifestPath = await writeCloseoutManifest(artifactDir, {
+      manifestMutator: (manifest) => ({
+        ...manifest,
+        sourceScan: {
+          ...(manifest.sourceScan as Record<string, unknown>),
+          commands: [
+            "rg --no-config -uuu -n '[\\x27\"]?ord_type[\\x27\"]?\\s*[:=]\\s*[\\x27\"]?price|[\\x27\"]?ord_type[\\x27\"]?\\s*[:=]\\s*[\\x27\"]?market|[\\x27\"]?ord_type[\\x27\"]?\\s*[:=]\\s*[\\x27\"]?best|[\\x27\"]?order_type[\\x27\"]?\\s*[:=]\\s*[\\x27\"]?(market|MARKET)|[\\x27\"]?orderType[\\x27\"]?\\s*[:=]\\s*[\\x27\"]?(market|MARKET)|[\\x27\"]?withdrawal_enabled[\\x27\"]?\\s*[:=]\\s*true|[\\x27\"]?deposit_enabled[\\x27\"]?\\s*[:=]\\s*true|\\/v1\\/deposits|[\\x27\"]?futures_enabled[\\x27\"]?\\s*[:=]\\s*true|[\\x27\"]?leverage_enabled[\\x27\"]?\\s*[:=]\\s*true|[\\x27\"]?market_order_enabled[\\x27\"]?\\s*[:=]\\s*true|[\\x27\"]?entry_market_order_enabled[\\x27\"]?\\s*[:=]\\s*true' "
+              + closeoutSourceScanPaths,
+            closeoutSecretSourceScanCommand,
+          ],
+        },
+      }),
+    });
+    const summary = await runScriptExpectingFailure(
+      ["--json", "--artifact-dir", artifactDir, "--manifest", manifestPath],
+      createReadyEnv(),
+    );
+
+    expect(summary.status).toBe("failed");
+    expect(getCheck(summary, "sourceSecurityScan")).toMatchObject({ status: "fail" });
+  });
+
+  it("fails when source scan commands omit camelCase raw payload field coverage", async () => {
+    const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-issue-206-closeout-source-scan-camel-raw-payload-"));
+    const manifestPath = await writeCloseoutManifest(artifactDir, {
+      manifestMutator: (manifest) => ({
+        ...manifest,
+        sourceScan: {
+          ...(manifest.sourceScan as Record<string, unknown>),
+          commands: [
+            closeoutUnsafeSourceScanCommand,
+            "rg --no-config -uuu -n 'SEEMIRAI_DATABASE_URL\\s*=\\s*postgres:\\/\\/[^\\s<:]+:[^\\s<@]+@|postgres(?:ql)?:\\/\\/[^:<\\s\"\\x27]+:[^@<\\s\"\\x27]+@|SEEMIRAI_UPBIT_ACCESS_KEY\\s*=\\s*[^<\\s]+|SEEMIRAI_UPBIT_SECRET_KEY\\s*=\\s*[^<\\s]+|SEEMIRAI_TELEGRAM_BOT_TOKEN\\s*=\\s*[0-9]+:[A-Za-z0-9_-]+|SEEMIRAI_TUI_CONTROL_TOKEN\\s*=\\s*[^<\\s]+|[\\x27\"]?Authorization[\\x27\"]?\\s*[:=]\\s*[\\x27\"]?(Bearer|bearer)\\s+[A-Za-z0-9._-]+|[\\x27\"]?authorization[\\x27\"]?\\s*[:=]\\s*[\\x27\"]?(Bearer|bearer)\\s+[A-Za-z0-9._-]+|raw_provider_payload|raw_order_detail' "
+              + closeoutSourceScanPaths,
+          ],
+        },
+      }),
+    });
+    const summary = await runScriptExpectingFailure(
+      ["--json", "--artifact-dir", artifactDir, "--manifest", manifestPath],
+      createReadyEnv(),
+    );
+
+    expect(summary.status).toBe("failed");
+    expect(getCheck(summary, "sourceSecurityScan")).toMatchObject({ status: "fail" });
+  });
+
+  it("fails when source scan commands omit raw Postgres credential URL coverage", async () => {
+    const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-issue-206-closeout-source-scan-postgres-url-"));
+    const manifestPath = await writeCloseoutManifest(artifactDir, {
+      manifestMutator: (manifest) => ({
+        ...manifest,
+        sourceScan: {
+          ...(manifest.sourceScan as Record<string, unknown>),
+          commands: [
+            closeoutUnsafeSourceScanCommand,
+            "rg --no-config -uuu -n 'SEEMIRAI_DATABASE_URL\\s*=\\s*postgres:\\/\\/[^\\s<:]+:[^\\s<@]+@|SEEMIRAI_UPBIT_ACCESS_KEY\\s*=\\s*[^<\\s]+|SEEMIRAI_UPBIT_SECRET_KEY\\s*=\\s*[^<\\s]+|SEEMIRAI_TELEGRAM_BOT_TOKEN\\s*=\\s*[0-9]+:[A-Za-z0-9_-]+|SEEMIRAI_TUI_CONTROL_TOKEN\\s*=\\s*[^<\\s]+|[\\x27\"]?Authorization[\\x27\"]?\\s*[:=]\\s*[\\x27\"]?(Bearer|bearer)\\s+[A-Za-z0-9._-]+|[\\x27\"]?authorization[\\x27\"]?\\s*[:=]\\s*[\\x27\"]?(Bearer|bearer)\\s+[A-Za-z0-9._-]+|raw_provider_payload|rawProviderPayload|raw_order_detail|rawOrderDetail' "
+              + closeoutSourceScanPaths,
+          ],
+        },
+      }),
+    });
+    const summary = await runScriptExpectingFailure(
+      ["--json", "--artifact-dir", artifactDir, "--manifest", manifestPath],
+      createReadyEnv(),
+    );
+
+    expect(summary.status).toBe("failed");
+    expect(getCheck(summary, "sourceSecurityScan")).toMatchObject({ status: "fail" });
+  });
+
+  it("fails when source scan commands omit quoted Authorization bearer coverage", async () => {
+    const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-issue-206-closeout-source-scan-quoted-authorization-"));
+    const manifestPath = await writeCloseoutManifest(artifactDir, {
+      manifestMutator: (manifest) => ({
+        ...manifest,
+        sourceScan: {
+          ...(manifest.sourceScan as Record<string, unknown>),
+          commands: [
+            closeoutUnsafeSourceScanCommand,
+            "rg --no-config -uuu -n 'SEEMIRAI_DATABASE_URL\\s*=\\s*postgres:\\/\\/[^\\s<:]+:[^\\s<@]+@|postgres(?:ql)?:\\/\\/[^:<\\s\"\\x27]+:[^@<\\s\"\\x27]+@|SEEMIRAI_UPBIT_ACCESS_KEY\\s*=\\s*[^<\\s]+|SEEMIRAI_UPBIT_SECRET_KEY\\s*=\\s*[^<\\s]+|SEEMIRAI_TELEGRAM_BOT_TOKEN\\s*=\\s*[0-9]+:[A-Za-z0-9_-]+|SEEMIRAI_TUI_CONTROL_TOKEN\\s*=\\s*[^<\\s]+|Authorization\\s*[:=]\\s*\"?(Bearer|bearer)\\s+[A-Za-z0-9._-]+|authorization\\s*[:=]\\s*\"?(Bearer|bearer)\\s+[A-Za-z0-9._-]+|raw_provider_payload|rawProviderPayload|raw_order_detail|rawOrderDetail' "
+              + closeoutSourceScanPaths,
+          ],
+        },
+      }),
+    });
+    const summary = await runScriptExpectingFailure(
+      ["--json", "--artifact-dir", artifactDir, "--manifest", manifestPath],
+      createReadyEnv(),
+    );
+
+    expect(summary.status).toBe("failed");
+    expect(getCheck(summary, "sourceSecurityScan")).toMatchObject({ status: "fail" });
+  });
+
+  it("fails when source scan commands omit the Upbit live broker adapter path", async () => {
+    const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-issue-206-closeout-source-scan-live-broker-path-"));
+    const manifestPath = await writeCloseoutManifest(artifactDir, {
+      manifestMutator: (manifest) => ({
+        ...manifest,
+        sourceScan: {
+          ...(manifest.sourceScan as Record<string, unknown>),
+          commands: [
+            "rg --no-config -uuu -n '[\\x27\"]?ord_type[\\x27\"]?\\s*[:=]\\s*[\\x27\"]?price|[\\x27\"]?ord_type[\\x27\"]?\\s*[:=]\\s*[\\x27\"]?market|[\\x27\"]?ord_type[\\x27\"]?\\s*[:=]\\s*[\\x27\"]?best|[\\x27\"]?order_type[\\x27\"]?\\s*[:=]\\s*[\\x27\"]?(market|MARKET)|[\\x27\"]?orderType[\\x27\"]?\\s*[:=]\\s*[\\x27\"]?(market|MARKET)|[\\x27\"]?withdrawal_enabled[\\x27\"]?\\s*[:=]\\s*true|[\\x27\"]?deposit_enabled[\\x27\"]?\\s*[:=]\\s*true|\\/v1\\/deposits|\\/v1\\/withdraws|[\\x27\"]?futures_enabled[\\x27\"]?\\s*[:=]\\s*true|[\\x27\"]?leverage_enabled[\\x27\"]?\\s*[:=]\\s*true|[\\x27\"]?market_order_enabled[\\x27\"]?\\s*[:=]\\s*true|[\\x27\"]?entry_market_order_enabled[\\x27\"]?\\s*[:=]\\s*true' "
+              + closeoutSourceScanPathsWithoutLiveBroker,
+            "rg --no-config -uuu -n 'SEEMIRAI_DATABASE_URL\\s*=\\s*postgres:\\/\\/[^\\s<:]+:[^\\s<@]+@|postgres(?:ql)?:\\/\\/[^:<\\s\"\\x27]+:[^@<\\s\"\\x27]+@|SEEMIRAI_UPBIT_ACCESS_KEY\\s*=\\s*[^<\\s]+|SEEMIRAI_UPBIT_SECRET_KEY\\s*=\\s*[^<\\s]+|SEEMIRAI_TELEGRAM_BOT_TOKEN\\s*=\\s*[0-9]+:[A-Za-z0-9_-]+|SEEMIRAI_TUI_CONTROL_TOKEN\\s*=\\s*[^<\\s]+|[\\x27\"]?Authorization[\\x27\"]?\\s*[:=]\\s*[\\x27\"]?(Bearer|bearer)\\s+[A-Za-z0-9._-]+|[\\x27\"]?authorization[\\x27\"]?\\s*[:=]\\s*[\\x27\"]?(Bearer|bearer)\\s+[A-Za-z0-9._-]+|raw_provider_payload|rawProviderPayload|raw_order_detail|rawOrderDetail' "
+              + closeoutSourceScanPathsWithoutLiveBroker,
+          ],
+        },
+      }),
+    });
+    const summary = await runScriptExpectingFailure(
+      ["--json", "--artifact-dir", artifactDir, "--manifest", manifestPath],
+      createReadyEnv(),
+    );
+
+    expect(summary.status).toBe("failed");
+    expect(getCheck(summary, "sourceSecurityScan")).toMatchObject({ status: "fail" });
+  });
+
+  it("fails when source scan commands omit the Upbit private client auth path", async () => {
+    const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-issue-206-closeout-source-scan-private-auth-path-"));
+    const manifestPath = await writeCloseoutManifest(artifactDir, {
+      manifestMutator: (manifest) => ({
+        ...manifest,
+        sourceScan: {
+          ...(manifest.sourceScan as Record<string, unknown>),
+          commands: [
+            "rg --no-config -uuu -n '[\\x27\"]?ord_type[\\x27\"]?\\s*[:=]\\s*[\\x27\"]?price|[\\x27\"]?ord_type[\\x27\"]?\\s*[:=]\\s*[\\x27\"]?market|[\\x27\"]?ord_type[\\x27\"]?\\s*[:=]\\s*[\\x27\"]?best|[\\x27\"]?order_type[\\x27\"]?\\s*[:=]\\s*[\\x27\"]?(market|MARKET)|[\\x27\"]?orderType[\\x27\"]?\\s*[:=]\\s*[\\x27\"]?(market|MARKET)|[\\x27\"]?withdrawal_enabled[\\x27\"]?\\s*[:=]\\s*true|[\\x27\"]?deposit_enabled[\\x27\"]?\\s*[:=]\\s*true|\\/v1\\/deposits|\\/v1\\/withdraws|[\\x27\"]?futures_enabled[\\x27\"]?\\s*[:=]\\s*true|[\\x27\"]?leverage_enabled[\\x27\"]?\\s*[:=]\\s*true|[\\x27\"]?market_order_enabled[\\x27\"]?\\s*[:=]\\s*true|[\\x27\"]?entry_market_order_enabled[\\x27\"]?\\s*[:=]\\s*true' "
+              + closeoutSourceScanPathsWithoutPrivateClientAuth,
+            "rg --no-config -uuu -n 'SEEMIRAI_DATABASE_URL\\s*=\\s*postgres:\\/\\/[^\\s<:]+:[^\\s<@]+@|postgres(?:ql)?:\\/\\/[^:<\\s\"\\x27]+:[^@<\\s\"\\x27]+@|SEEMIRAI_UPBIT_ACCESS_KEY\\s*=\\s*[^<\\s]+|SEEMIRAI_UPBIT_SECRET_KEY\\s*=\\s*[^<\\s]+|SEEMIRAI_TELEGRAM_BOT_TOKEN\\s*=\\s*[0-9]+:[A-Za-z0-9_-]+|\\bTELEGRAM_BOT_TOKEN\\s*=\\s*[0-9]+:[A-Za-z0-9_-]+|SEEMIRAI_TUI_CONTROL_TOKEN\\s*=\\s*[^<\\s]+|[\\x27\"]?Authorization[\\x27\"]?\\s*[:=]\\s*[\\x27\"]?(Bearer|bearer)\\s+[A-Za-z0-9._-]+|[\\x27\"]?authorization[\\x27\"]?\\s*[:=]\\s*[\\x27\"]?(Bearer|bearer)\\s+[A-Za-z0-9._-]+|raw_provider_payload|rawProviderPayload|raw_order_detail|rawOrderDetail' "
+              + closeoutSourceScanPathsWithoutPrivateClientAuth,
+          ],
+        },
+      }),
+    });
+    const summary = await runScriptExpectingFailure(
+      ["--json", "--artifact-dir", artifactDir, "--manifest", manifestPath],
+      createReadyEnv(),
+    );
+
+    expect(summary.status).toBe("failed");
+    expect(getCheck(summary, "sourceSecurityScan")).toMatchObject({ status: "fail" });
+  });
+
+  it("fails when source scan commands omit the Upbit private mapper path", async () => {
+    const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-issue-206-closeout-source-scan-private-mapper-path-"));
+    const manifestPath = await writeCloseoutManifest(artifactDir, {
+      manifestMutator: (manifest) => ({
+        ...manifest,
+        sourceScan: {
+          ...(manifest.sourceScan as Record<string, unknown>),
+          commands: [
+            "rg --no-config -uuu -n '[\\x27\"]?ord_type[\\x27\"]?\\s*[:=]\\s*[\\x27\"]?price|[\\x27\"]?ord_type[\\x27\"]?\\s*[:=]\\s*[\\x27\"]?market|[\\x27\"]?ord_type[\\x27\"]?\\s*[:=]\\s*[\\x27\"]?best|[\\x27\"]?order_type[\\x27\"]?\\s*[:=]\\s*[\\x27\"]?(market|MARKET)|[\\x27\"]?orderType[\\x27\"]?\\s*[:=]\\s*[\\x27\"]?(market|MARKET)|[\\x27\"]?withdrawal_enabled[\\x27\"]?\\s*[:=]\\s*true|[\\x27\"]?deposit_enabled[\\x27\"]?\\s*[:=]\\s*true|\\/v1\\/deposits|\\/v1\\/withdraws|[\\x27\"]?futures_enabled[\\x27\"]?\\s*[:=]\\s*true|[\\x27\"]?leverage_enabled[\\x27\"]?\\s*[:=]\\s*true|[\\x27\"]?market_order_enabled[\\x27\"]?\\s*[:=]\\s*true|[\\x27\"]?entry_market_order_enabled[\\x27\"]?\\s*[:=]\\s*true' "
+              + closeoutSourceScanPathsWithoutPrivateMappers,
+            "rg --no-config -uuu -n 'SEEMIRAI_DATABASE_URL\\s*=\\s*postgres:\\/\\/[^\\s<:]+:[^\\s<@]+@|postgres(?:ql)?:\\/\\/[^:<\\s\"\\x27]+:[^@<\\s\"\\x27]+@|SEEMIRAI_UPBIT_ACCESS_KEY\\s*=\\s*[^<\\s]+|SEEMIRAI_UPBIT_SECRET_KEY\\s*=\\s*[^<\\s]+|SEEMIRAI_TELEGRAM_BOT_TOKEN\\s*=\\s*[0-9]+:[A-Za-z0-9_-]+|\\bTELEGRAM_BOT_TOKEN\\s*=\\s*[0-9]+:[A-Za-z0-9_-]+|SEEMIRAI_TUI_CONTROL_TOKEN\\s*=\\s*[^<\\s]+|[\\x27\"]?Authorization[\\x27\"]?\\s*[:=]\\s*[\\x27\"]?(Bearer|bearer)\\s+[A-Za-z0-9._-]+|[\\x27\"]?authorization[\\x27\"]?\\s*[:=]\\s*[\\x27\"]?(Bearer|bearer)\\s+[A-Za-z0-9._-]+|raw_provider_payload|rawProviderPayload|raw_order_detail|rawOrderDetail' "
+              + closeoutSourceScanPathsWithoutPrivateMappers,
+          ],
+        },
+      }),
+    });
+    const summary = await runScriptExpectingFailure(
+      ["--json", "--artifact-dir", artifactDir, "--manifest", manifestPath],
+      createReadyEnv(),
+    );
+
+    expect(summary.status).toBe("failed");
+    expect(getCheck(summary, "sourceSecurityScan")).toMatchObject({ status: "fail" });
+  });
+
+  it("fails when source scan commands omit legacy Telegram token literal coverage", async () => {
+    const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-issue-206-closeout-source-scan-legacy-telegram-token-"));
+    const manifestPath = await writeCloseoutManifest(artifactDir, {
+      manifestMutator: (manifest) => ({
+        ...manifest,
+        sourceScan: {
+          ...(manifest.sourceScan as Record<string, unknown>),
+          commands: [
+            closeoutUnsafeSourceScanCommand,
+            "rg --no-config -uuu -n 'SEEMIRAI_DATABASE_URL\\s*=\\s*postgres:\\/\\/[^\\s<:]+:[^\\s<@]+@|postgres(?:ql)?:\\/\\/[^:<\\s\"\\x27]+:[^@<\\s\"\\x27]+@|SEEMIRAI_UPBIT_ACCESS_KEY\\s*=\\s*[^<\\s]+|SEEMIRAI_UPBIT_SECRET_KEY\\s*=\\s*[^<\\s]+|SEEMIRAI_TELEGRAM_BOT_TOKEN\\s*=\\s*[0-9]+:[A-Za-z0-9_-]+|SEEMIRAI_TUI_CONTROL_TOKEN\\s*=\\s*[^<\\s]+|[\\x27\"]?Authorization[\\x27\"]?\\s*[:=]\\s*[\\x27\"]?(Bearer|bearer)\\s+[A-Za-z0-9._-]+|[\\x27\"]?authorization[\\x27\"]?\\s*[:=]\\s*[\\x27\"]?(Bearer|bearer)\\s+[A-Za-z0-9._-]+|raw_provider_payload|rawProviderPayload|raw_order_detail|rawOrderDetail' "
+              + closeoutSourceScanPaths,
+          ],
+        },
+      }),
+    });
+    const summary = await runScriptExpectingFailure(
+      ["--json", "--artifact-dir", artifactDir, "--manifest", manifestPath],
+      createReadyEnv(),
+    );
+
+    expect(summary.status).toBe("failed");
+    expect(getCheck(summary, "sourceSecurityScan")).toMatchObject({ status: "fail" });
   });
 
   it("fails when the closeout order is not BUY LIMIT post_only KRW-BTC", async () => {
@@ -496,6 +1027,52 @@ describe("Issue 206 live:ops real-arm closeout script", () => {
     expect(getCheck(summary, "sourceSecurityScan")).toMatchObject({ status: "fail" });
   });
 
+  it("fails when source scan commands omit runtime public entry files", async () => {
+    const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-issue-206-closeout-source-scan-runtime-entry-files-"));
+    const manifestPath = await writeCloseoutManifest(artifactDir, {
+      manifestMutator: (manifest) => ({
+        ...manifest,
+        sourceScan: {
+          ...(manifest.sourceScan as Record<string, unknown>),
+          commands: [
+            closeoutUnsafeSourceScanCommandWithoutRuntimePublicEntries,
+            closeoutSecretSourceScanCommandWithoutRuntimePublicEntries,
+          ],
+        },
+      }),
+    });
+    const summary = await runScriptExpectingFailure(
+      ["--json", "--artifact-dir", artifactDir, "--manifest", manifestPath],
+      createReadyEnv(),
+    );
+
+    expect(summary.status).toBe("failed");
+    expect(getCheck(summary, "sourceSecurityScan")).toMatchObject({ status: "fail" });
+  });
+
+  it("fails when source scan commands omit Upbit public entry files", async () => {
+    const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-issue-206-closeout-source-scan-upbit-entry-files-"));
+    const manifestPath = await writeCloseoutManifest(artifactDir, {
+      manifestMutator: (manifest) => ({
+        ...manifest,
+        sourceScan: {
+          ...(manifest.sourceScan as Record<string, unknown>),
+          commands: [
+            closeoutUnsafeSourceScanCommandWithoutUpbitPublicEntries,
+            closeoutSecretSourceScanCommandWithoutUpbitPublicEntries,
+          ],
+        },
+      }),
+    });
+    const summary = await runScriptExpectingFailure(
+      ["--json", "--artifact-dir", artifactDir, "--manifest", manifestPath],
+      createReadyEnv(),
+    );
+
+    expect(summary.status).toBe("failed");
+    expect(getCheck(summary, "sourceSecurityScan")).toMatchObject({ status: "fail" });
+  });
+
   it("fails when required source paths only appear inside the search pattern", async () => {
     const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-issue-206-closeout-source-scan-operands-"));
     const manifestPath = await writeCloseoutManifest(artifactDir, {
@@ -561,6 +1138,75 @@ describe("Issue 206 live:ops real-arm closeout script", () => {
           ],
           unsafeMatches: [],
           secretMatches: [],
+        },
+      }),
+    });
+    const summary = await runScriptExpectingFailure(
+      ["--json", "--artifact-dir", artifactDir, "--manifest", manifestPath],
+      createReadyEnv(),
+    );
+
+    expect(summary.status).toBe("failed");
+    expect(getCheck(summary, "sourceSecurityScan")).toMatchObject({ status: "fail" });
+  });
+
+  it("fails when source scan commands omit Upbit credential property literal coverage", async () => {
+    const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-issue-206-closeout-source-scan-upbit-credential-properties-"));
+    const manifestPath = await writeCloseoutManifest(artifactDir, {
+      manifestMutator: (manifest) => ({
+        ...manifest,
+        sourceScan: {
+          ...(manifest.sourceScan as Record<string, unknown>),
+          commands: [
+            closeoutUnsafeSourceScanCommand,
+            closeoutSecretSourceScanCommandWithoutCamelCredentialProperties,
+          ],
+        },
+      }),
+    });
+    const summary = await runScriptExpectingFailure(
+      ["--json", "--artifact-dir", artifactDir, "--manifest", manifestPath],
+      createReadyEnv(),
+    );
+
+    expect(summary.status).toBe("failed");
+    expect(getCheck(summary, "sourceSecurityScan")).toMatchObject({ status: "fail" });
+  });
+
+  it("fails when source scan commands omit snake_case Upbit credential property literal coverage", async () => {
+    const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-issue-206-closeout-source-scan-snake-upbit-credential-properties-"));
+    const manifestPath = await writeCloseoutManifest(artifactDir, {
+      manifestMutator: (manifest) => ({
+        ...manifest,
+        sourceScan: {
+          ...(manifest.sourceScan as Record<string, unknown>),
+          commands: [
+            closeoutUnsafeSourceScanCommand,
+            closeoutSecretSourceScanCommandWithoutSnakeCredentialProperties,
+          ],
+        },
+      }),
+    });
+    const summary = await runScriptExpectingFailure(
+      ["--json", "--artifact-dir", artifactDir, "--manifest", manifestPath],
+      createReadyEnv(),
+    );
+
+    expect(summary.status).toBe("failed");
+    expect(getCheck(summary, "sourceSecurityScan")).toMatchObject({ status: "fail" });
+  });
+
+  it("fails when source scan commands omit raw compact JWT literal coverage", async () => {
+    const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-issue-206-closeout-source-scan-raw-jwt-literal-"));
+    const manifestPath = await writeCloseoutManifest(artifactDir, {
+      manifestMutator: (manifest) => ({
+        ...manifest,
+        sourceScan: {
+          ...(manifest.sourceScan as Record<string, unknown>),
+          commands: [
+            closeoutUnsafeSourceScanCommand,
+            closeoutSecretSourceScanCommandWithoutRawJwt,
+          ],
         },
       }),
     });
@@ -4011,8 +4657,8 @@ async function writeCloseoutManifest(
       cwd: process.cwd(),
       repositoryRoot: process.cwd(),
       commands: [
-        "rg --no-config -uuu -n \"ord_type|market|시장가|best|withdraw|출금|deposit|입금|leverage|futures|margin\" src scripts config docs",
-        "rg --no-config -uuu -n \"access_key|accessKey|ACCESS_KEY|api_key|apiKey|API_KEY|secret_key|secretKey|SECRET_KEY|api_secret|apiSecret|API_SECRET|Authorization|authorization|Bearer|bearer|JWT|jwt|telegram_bot_token|botToken|TELEGRAM_BOT_TOKEN|SEEMIRAI_TUI_CONTROL_TOKEN|tuiControlToken|tui_control_token|DATABASE_URL|databasePassword|database_password|postgresPassword|postgres_password|POSTGRES_PASSWORD|db_password|pg_password|raw_provider|rawProvider|raw_order|rawOrder|raw_update|rawUpdate\" src scripts config docs",
+        closeoutUnsafeSourceScanCommand,
+        closeoutSecretSourceScanCommand,
       ],
       unsafeMatches: [],
       secretMatches: [],

@@ -12,6 +12,7 @@ import type {
 
 export const LIVE_OPS_CLEANUP_PROBE_STRATEGY_ID = "live_ops_cleanup_probe";
 const minimumUpbitKrwOrderNotional = new Decimal(5_000);
+const runtimePreflightDateScope = "runtime_preflight_day";
 
 /**
  * issue #206 cleanup probe strategy가 사용하는 non-secret sizing 정책이다.
@@ -91,6 +92,7 @@ function evaluateCleanupProbe(
     requestedQuantity: sizing.requestedQuantity,
     requestedNotional: sizing.requestedNotional,
     idempotencyKey: createCleanupProbeIdempotencyKey({
+      dateScope: runtimePreflightDateScope,
       requestedPrice: sizing.requestedPrice,
       requestedQuantity: sizing.requestedQuantity,
       requestedNotional: sizing.requestedNotional,
@@ -103,6 +105,9 @@ function evaluateCleanupProbe(
       issue: "206",
       expected_loss_bps_of_equity: options.expectedLossBpsOfEquity.toFixed(),
       best_bid_price: sizing.bestBidPrice,
+      idempotency_date_scope: runtimePreflightDateScope,
+      idempotency_date_source: "live_ops_runtime_preflight",
+      strategy_observed_at: String(context.observedAt),
       tick_size_krw: options.tickSizeKrw.toFixed(),
       price_offset_ticks: options.priceOffsetTicks,
       policy_id: "cleanup_probe",
@@ -236,12 +241,14 @@ function readBestBid(orderbook: OrderbookEvent): Decimal | undefined {
 }
 
 function createCleanupProbeIdempotencyKey(input: {
+  readonly dateScope: string;
   readonly requestedPrice: NumericString;
   readonly requestedQuantity: NumericString;
   readonly requestedNotional: NumericString;
 }): string {
   return [
     LIVE_OPS_CLEANUP_PROBE_STRATEGY_ID,
+    input.dateScope,
     "upbit_krw_spot",
     "KRW-BTC",
     "BUY",

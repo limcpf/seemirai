@@ -299,6 +299,43 @@ Telegram, TUI를 같은 lifecycle로 조립하고, 조건을 통과한 단일 `K
   - [x] cleanup probe decision key는 실행 wall clock 날짜 scope를 포함해 전날 reservation 파일이 다음 날 attempt를 영구 차단하지 않게 한다.
   - [x] 관련 운영 문서와 unit tests가 위 invariant를 설명하고 검증한다.
 
+### Sub PR 14: PnL/source scan/cleanup key final guard 보강
+
+- 목표: final PR review에서 발견된 PnL snapshot 정책과 closeout source scan 오탐, TypeScript cleanup probe idempotency scope gap을 닫는다.
+- 제외 범위:
+  - 신규 전략, budget 확대, BTC 외 market 활성화.
+  - 시장가/best order, 출금/입금/선물/레버리지/마진 권한 허용.
+  - final main PR merge.
+- DnD:
+  - [x] closeout validator의 필수 unsafe source scan family에서 일반 영어 단어 `market`과 정상 설정에서 나오는 `market_order`를 제거하고,
+        `"?ord_type"?\s*[:=]\s*"?price|market|best` 계열과 `"?order_type"?\s*[:=]\s*"?(market|MARKET)`, `시장가`처럼
+        실제 주문 payload/artifact 경계에 가까운 term만 empty-match coverage로 요구한다.
+  - [x] production preflight PnL loss snapshot은 `readStatus=OK`와 숫자 realized PnL만으로 열리지 않고, `CALCULATED` snapshot
+        status와 provider read 완료 후 시각 기준 30초 freshness를 함께 요구한다.
+  - [x] `OK`, `SUCCESS`, `COMPLETE`, `COMPLETED`, `PARTIAL`, `MANUAL_REVIEW_REQUIRED`, `UNAVAILABLE`, status 누락 같은 PnL snapshot
+        status는 손실 증거로 쓰지 않고 `ready=false`로 낮춰 broker 제출 전 loss guard에서 차단한다.
+  - [x] preflight 시작 직후 PnL worker가 새 row를 쓰는 정상 경합은 stale로 보지 않도록 1초 이내 future skew만 허용한다.
+  - [x] TypeScript `cleanup_probe` strategy는 날짜 placeholder key만 만들고, production preflight가 실제 reservation wall-clock 날짜로
+        `strategy:date:exchange:market:side:price:qty:notional` key를 확정해 자정 경계 중복 주문을 막는다.
+  - [x] runtime 날짜 scope 보정은 기존 `costSnapshot.trade_allowed=false`나 `riskApproval.approved=false` 같은 명시 차단 evidence를
+        승인 evidence로 덮어쓰지 않는다. 같은 주문 후보의 날짜 key만 runtime preflight key로 갱신하고, 가격/수량/마켓이 다른 stale
+        `order_intent` evidence는 보존해 broker guard에서 차단한다.
+  - [x] runtime evidence 보정은 기존 malformed/stale CostModel snapshot 객체가 있으면 `trade_allowed=true` 같은 승인 기본값을
+        합성하지 않고 broker guard가 차단하게 둔다.
+  - [x] file budget reservation의 `reservedAt`과 일일 사용량 집계 날짜는 오래된 request observedAt이 아니라 실제 `reserve()`
+        실행 wall clock으로 확정한다.
+  - [x] terminal cancel/no-fill cleanup은 새 체결이 없다는 closeout evidence가 있으므로 stale `CALCULATED` PnL row만으로
+        manual review를 열지 않는다. 단, `PARTIAL`/manual-review snapshot status는 계속 수동 확인 대상으로 둔다.
+  - [x] closeout source/security scan은 단일따옴표 주문 payload, Upbit live broker adapter 경로, 입출금 endpoint/toggle,
+        raw Postgres credential URL, quoted Authorization bearer literal, camelCase raw provider/order payload field도 필수 coverage로 요구한다.
+  - [x] closeout source/security scan은 Upbit private JWT auth module, Upbit private mapper normalization 경로, legacy
+        `TELEGRAM_BOT_TOKEN=123:...` raw token literal도 필수 coverage로 요구한다.
+  - [x] closeout source scan은 Upbit private client의 `{ key: "ord_type", value: "..." }` 주문 payload 표현도
+        `price|market|best` 금지 후보로 요구한다.
+  - [x] closeout source scan은 한국어 user-facing/source 문자열에서 `시장가 ... 허용/활성/enabled/true` 형태의 위험 문구도
+        금지 후보로 요구하되, mapper의 정상 차단 메시지는 오탐하지 않는다.
+  - [x] 관련 운영 문서와 unit/soak tests가 위 invariant를 설명하고 검증한다.
+
 ## 검증 방법
 
 공통 검증:
@@ -347,8 +384,18 @@ SEEMIRAI_RUN_LIVE_OPS_REAL_ARM_CLOSEOUT=1 \
   `rg -n` source/security scan 명령, 미래가 아닌 주문 lifecycle timestamp, placeholder가 아닌 같은 주문 identifier/uuid suffix를 요구한다.
 - 2026-06-15: closeout validator는 추가/중복 인자 없는 정확한 `live:ops` command, symlink realpath 기준 저장소 밖 config/env/artifact,
   artifact safe summary와 manifest closeout 값의 일치, database password redaction도 검증한다.
-- 2026-06-15: guarded manifest 파일 자체도 저장소 밖이어야 하며, source/security scan은 `src scripts config docs` 전체 범위의 실제
-  `rg -n` 실행 증거여야 한다. 중첩 artifact summary와 `raw_provider_payload`/`raw_order_detail` 필드도 차단한다.
+- 2026-06-15: guarded manifest 파일 자체도 저장소 밖이어야 하며, source/security scan은 runtime source path
+  `src/runtime/live-ops-config.ts src/runtime/live-ops-config src/runtime/live-ops-decision-policy.ts
+  src/runtime/live-ops-decision-policy src/runtime/live-ops-live-execution.ts src/runtime/live-ops-live-execution
+  src/runtime/live-ops-analysis-decision.ts src/runtime/live-ops-analysis-decision
+  src/application/live-autonomous-entry-runtime/service.ts
+  src/infrastructure/upbit/private-client.ts src/infrastructure/upbit/private-client/client.ts
+  src/infrastructure/upbit/private-mappers.ts
+  scripts/run-live-ops.mjs scripts/run-live-ops-support.mjs config` 전체 범위의 실제 `rg -n` 실행 증거여야 한다.
+  validator/runbook 자체의 정밀 regex 문구가 운영 source scan 결과에 섞이면 manifest evidence와 실제 출력이 어긋나므로 docs와
+  closeout validator 파일은 필수 empty-match 범위에서 제외한다. 금지 scope/시장가/futures/leverage 단어 자체는 guard와 문서에
+  정상 등장하므로, source scan은 broad term 대신 위험 toggle `true`와 raw 주문 payload alias를 찾는 정밀 패턴으로 제한한다.
+  중첩 artifact summary와 `raw_provider_payload`/`raw_order_detail` 필드도 차단한다.
 - 2026-06-15: repository root 기준 저장소 경계, 배열 안 artifact record, `skipped`/`blocked` artifact status, redaction placeholder 뒤 원문
   secret도 closeout validator 차단 대상이다.
 - 2026-06-15: closeout validator는 production config/env contract, 절대 config/env command 경로, parse 가능한 JSON artifact,
@@ -418,10 +465,53 @@ SEEMIRAI_RUN_LIVE_OPS_REAL_ARM_CLOSEOUT=1 \
   redacted cleanup artifact로 남기고, post-cleanup status summary의 budget used는 현재 durable reservation 반영값을 하한으로 사용한다.
 - 2026-06-19: Sub PR 13의 reconcile freshness, daily budget day, cleanup probe 날짜 scope는 market heartbeat가 아니라 실행 wall clock을
   기준으로 계산한다. heartbeat는 market data 관측 evidence로 보존하되 자정 경계의 attempt id와 preflight readiness 판단을 대신하지 않는다.
+- 2026-06-19: Sub PR 14는 closeout source/security scan의 empty-match 필수 term에서 generic `market`과 정상 설정에서 나오는
+  `market_order`를 제외한다. 운영 source scan은 정상 market config/doc 문자열 때문에 실패하지 않도록 `"?ord_type"?\s*[:=]\s*"?price`,
+  `"?ord_type"?\s*[:=]\s*"?market`, `"?ord_type"?\s*[:=]\s*"?best`, `"?order_type"?\s*[:=]\s*"?(market|MARKET)`,
+  `시장가`처럼 실제 주문 payload/artifact 경계에 가까운 term을 사용한다.
+- 2026-06-19: production preflight PnL loss snapshot은 OK row라도 `CALCULATED` status와 provider read 완료 후 시각 기준 30초
+  freshness를 통과해야 손실 증거로 쓰며, status 누락, read-level `OK`, job/reconcile 계층 완료 status는 not-ready로 본다. preflight
+  시작 직후 쓰인 PnL row를 위해 1초 이내 future skew만 허용하고, cleanup probe의 실제 key 날짜는 runtime preflight wall clock에서 확정한다.
+- 2026-06-19: Sub PR 14 review drain 보강으로 cleanup runtime evidence 보정은 기존 cost/risk 차단값을 보존한다. terminal cancel/no-fill
+  closeout은 stale `CALCULATED` PnL row를 수동 점검으로 승격하지 않지만, 계산 미완료 PnL status는 정상 closeout으로 낮추지 않는다.
+- 2026-06-19: Sub PR 14 review drain 2차 보강으로 cleanup runtime evidence 보정은 같은 후보의 분석일 key를 runtime 날짜 key로
+  바꾸는 경우에만 `order_intent`를 갱신한다. 다른 가격/수량/마켓 stale approval은 현재 후보 approval로 재작성하지 않고
+  broker guard가 차단하게 둔다. PnL freshness는 provider read 완료 후 시각을 기준으로 판단한다. closeout source/security scan은
+  단일따옴표 주문 payload, `/v1/withdraws`, raw `postgres://user:pass@...`/`postgresql://user:pass@...` credential URL,
+  `src/infrastructure/upbit/live-broker/service.ts`도 필수 coverage로 본다.
+- 2026-06-19: Sub PR 14 review drain 3차 보강으로 runtime 날짜 정규화가 이미 보존된 `metadata.analysis_idempotency_key`를
+  다시 runtime key로 덮어쓰지 않게 한다. closeout source/security scan은 `"authorization": "Bearer ..."`와
+  `authorization: 'Bearer ...'`처럼 key/value에 따옴표가 붙은 raw bearer literal도 필수 coverage로 본다. runbook의 source scan
+  path operand는 validator의 `config/live-ops.example.json`, `config/live-ops.env.example` 요구값과 정확히 맞춘다.
+- 2026-06-19: Sub PR 14 review drain 4차 보강으로 source scan 필수 path operand에 Upbit JWT 생성 module
+  `src/infrastructure/upbit/private-client/auth.ts`와 private response normalization 경계 `src/infrastructure/upbit/private-mappers`를
+  추가한다. Telegram dispatcher가 legacy `TELEGRAM_BOT_TOKEN` env fallback을 지원하므로 `TELEGRAM_BOT_TOKEN=123:...` literal도
+  raw token source scan 필수 coverage로 본다.
+- 2026-06-19: Sub PR 14 review drain 5차 보강으로 Upbit private client의 query/body param 배열 표현
+  `{ key: "ord_type", value: "price|market|best" }`도 금지 주문 payload source scan 필수 coverage로 본다.
+- 2026-06-19: Sub PR 14 review drain 6차 보강으로 한국어 `시장가` coverage를 복원하되, 정상 차단/수동검토 문구를
+  빈 출력 위반으로 만들지 않도록 `시장가[^\r\n]*(허용|활성|enabled|true)` 위험 문구 패턴으로 제한한다.
+- 2026-06-19: Sub PR 14 review drain 7차 보강으로 file budget reservation은 실제 reserve 시점의 wall clock 날짜로
+  `reservedAt`과 일일 사용량을 확정한다. cleanup runtime evidence 보정은 기존 CostModel snapshot 객체가 malformed/stale이면
+  승인 기본값을 채우지 않고 guard 차단으로 남긴다.
+- 2026-06-19: Sub PR 14 review drain 8차 보강으로 production preflight가 확정한 cleanup runtime `observedAt`과 날짜 key를
+  live execution submit 직전 wall clock으로 다시 정규화하지 않는다. UTC 자정 경계에서 Cost/Risk `order_intent` evidence와
+  entry runtime request가 서로 다른 날짜 key를 갖지 않도록 preflight 시각을 intent metadata에 보존한다.
+- 2026-06-19: Sub PR 14 review drain 9차 보강으로 cleanup runtime evidence 보정은 기존 RiskGate snapshot 객체가 partial/malformed면
+  `approved=true`, `ALLOW`, `PASS` 같은 승인 기본값을 합성하지 않는다. closeout source/security scan 필수 operand에는
+  `src/runtime/live-ops-*.ts` public entry 파일도 포함해 runtime barrel 파일의 raw secret/금지 주문 literal 누락을 막는다.
+- 2026-06-19: Sub PR 14 review drain 10차 보강으로 첫 cleanup 전 `live_ops_cleanup_probe` PnL row가 없으면 global/aggregate
+  `CALCULATED` snapshot을 손실 guard fallback으로 허용한다. 단 cleanup 전용 PnL row가 생긴 뒤에는 그 scope를 우선해 not-ready row가
+  오래된 global 계산 완료 row에 가려지지 않게 한다. closeout source/security scan에는 Upbit private barrel entry 파일과
+  `accessKey`/`secretKey` property literal 하드코딩 패턴도 필수 coverage로 추가한다.
+- 2026-06-19: Sub PR 14 review drain 11차 보강으로 cleanup 전용 PnL row가 아직 없을 때는 fallback row 안에서 최신 `PARTIAL`
+  snapshot보다 `CALCULATED` snapshot을 먼저 선택한다. cleanup 전용 row가 생긴 뒤에는 계속 cleanup scope를 최우선으로 본다.
+  closeout source/security scan에는 `order_type`/`orderType`의 `PRICE`/`BEST` 표현, raw compact JWT literal과 `jwt` field,
+  snake_case `access_key`/`secret_key` property literal 하드코딩 패턴도 필수 coverage로 추가한다.
 
 ## 남은 이슈
 
-- Sub PR 13 완료 후 final main PR #218의 신규 review finding을 다시 drain해야 한다.
+- Sub PR 14 완료 후 final main PR #218의 신규 review finding을 다시 drain해야 한다.
 - 실제 운영 credential, key scope evidence, operator arm evidence, redacted artifact 경로는 저장소 밖 운영 vault에 있어야 한다.
 - 실제 주문 제출/취소 closeout은 저장소 밖 운영 config/env로 foreground `live:ops`를 실행한 뒤 자동 생성 artifact와 closeout manifest로
   검증한다.

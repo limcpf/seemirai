@@ -211,7 +211,7 @@ export async function runLiveOpsLiveExecution(
     });
   }
 
-  const intent = input.orderIntents[0] as OrderIntent;
+  const intent = normalizeLiveOpsCleanupProbeRuntimeIntent(input.orderIntents[0] as OrderIntent, input.observedAt);
   const intentViolations = collectOrderIntentViolations(config, input, intent);
   if (intentViolations.length > 0) {
     // order intent 자체가 production live ops guard를 벗어나면 M22 runtime에 넘기기 전에 닫아 호출 경계를 단순하게 유지한다.
@@ -339,6 +339,93 @@ function collectOrderIntentViolations(
   }
 
   return violations;
+}
+
+const liveOpsCleanupProbeStrategyId = "live_ops_cleanup_probe";
+
+/**
+ * cleanup probe 후보의 strategy 단계 idempotency key를 runtime 제출 날짜 기준 key로 낮춘다.
+ *
+ * 책임:
+ * - analysis pipeline이 날짜 placeholder 또는 오래된 decision key를 넘겨도 live execution reservation day와 같은 key를 사용하게 한다.
+ * - 원본 analysis key는 metadata에 보존해 감사 추적성을 잃지 않는다.
+ *
+ * invariant:
+ * - cleanup probe가 아닌 intent는 변경하지 않는다.
+ * - 날짜 scope는 `observedAt`의 UTC 날짜이며, key layout은 CLI helper와 동일한
+ *   `strategy:date:exchange:market:side:price:qty:notional` 순서를 유지한다.
+ *
+ * side effect:
+ * - 없음. 입력 intent를 복사해 반환하는 순수 정규화 함수다.
+ */
+function normalizeLiveOpsCleanupProbeRuntimeIntent(intent: OrderIntent, observedAt: string): OrderIntent {
+  if (intent.strategyId !== liveOpsCleanupProbeStrategyId) {
+    return intent;
+  }
+
+  const runtimeIdempotencyKey = createLiveOpsCleanupProbeRuntimeDecisionKey(intent, observedAt);
+  const dateScope = readLiveOpsRuntimeDateScope(observedAt);
+  if (runtimeIdempotencyKey === undefined || dateScope === undefined) {
+    return intent;
+  }
+
+  return {
+    ...intent,
+    idempotencyKey: runtimeIdempotencyKey,
+    metadata: {
+      ...(intent.metadata ?? {}),
+      // runtime adapter도 CLI preflight와 같은 운영일 key를 사용해야 자정 경계 중복 reservation을 막을 수 있다.
+      analysis_idempotency_key: readLiveOpsOriginalAnalysisIdempotencyKey(intent),
+      idempotency_date_scope: dateScope,
+      idempotency_date_source: "live_ops_runtime_preflight",
+    },
+  };
+}
+
+/**
+ * cleanup probe runtime 정규화 이전의 analysis idempotency key를 복구한다.
+ *
+ * 책임:
+ * - 이미 production preflight가 원본 analysis key를 보존한 intent를 다시 정규화할 때 audit 추적 키를 덮어쓰지 않는다.
+ *
+ * invariant:
+ * - `metadata.analysis_idempotency_key`가 비어 있지 않으면 그 값을 원본으로 유지한다.
+ * - 값이 없을 때만 현재 intent key를 analysis key로 사용한다.
+ *
+ * side effect:
+ * - 없음. metadata 값을 읽어 문자열 하나만 반환한다.
+ */
+function readLiveOpsOriginalAnalysisIdempotencyKey(intent: OrderIntent): string {
+  const existing = intent.metadata?.analysis_idempotency_key;
+  return typeof existing === "string" && existing.length > 0 ? existing : intent.idempotencyKey;
+}
+
+function createLiveOpsCleanupProbeRuntimeDecisionKey(intent: OrderIntent, observedAt: string): string | undefined {
+  const dateScope = readLiveOpsRuntimeDateScope(observedAt);
+  if (
+    dateScope === undefined ||
+    intent.orderType !== "LIMIT" ||
+    intent.requestedPrice === undefined ||
+    intent.requestedQuantity === undefined ||
+    intent.requestedNotional === undefined
+  ) {
+    return undefined;
+  }
+
+  return [
+    liveOpsCleanupProbeStrategyId,
+    dateScope,
+    intent.exchangeId,
+    intent.market,
+    intent.side,
+    intent.requestedPrice,
+    intent.requestedQuantity,
+    intent.requestedNotional,
+  ].join(":");
+}
+
+function readLiveOpsRuntimeDateScope(observedAt: string): string | undefined {
+  return /^\d{4}-\d{2}-\d{2}/u.test(observedAt) ? observedAt.slice(0, 10) : undefined;
 }
 
 function createLiveAutonomousEntryRequest(

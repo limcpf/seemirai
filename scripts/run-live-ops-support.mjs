@@ -19,6 +19,8 @@ const liveOpsCliCleanupCancelPollCount = 5;
 const liveOpsCliCleanupCancelPollIntervalMs = 1000;
 const liveOpsCliDailyReservationLockLeaseMs = 5 * 60 * 1000;
 const liveOpsCliPreflightReconcileFreshnessMs = 30_000;
+const liveOpsCliPreflightPnlFreshnessMs = 30_000;
+const liveOpsCliPreflightPnlFutureSkewMs = 1_000;
 const liveOpsCliProcessOwner = createLiveOpsCliProcessOwnerSnapshot(process.pid);
 const liveOpsWorkerLabels = {
   db_readiness: "DB readiness",
@@ -836,10 +838,12 @@ async function collectLiveOpsCliProductionPreflight({
     capturedAt: observedAt,
     source: "live_ops_cli_private_preflight",
   };
+  // 손실 snapshot freshness는 provider read 지연까지 포함한 제출 직전 시각으로 닫아야 stale PnL이 주문 후보를 열지 못한다.
+  const lossSnapshotObservedAt = new Date().toISOString();
   const lossSnapshot = createLiveOpsCliLossSnapshotFromPnlStatus({
     pnlStatus,
     balanceSnapshot,
-    observedAt,
+    observedAt: lossSnapshotObservedAt,
   });
   const normalizedReconcile = normalizeLiveOpsCliReconcileStatus(resolvedReconcileStatus, {
     openOrderCount: openOrders.length,
@@ -891,32 +895,176 @@ function attachLiveOpsCliCleanupRuntimeEvidence({ config, orderIntents, prefligh
       return intent;
     }
 
+    const runtimeIntent = createLiveOpsCliCleanupRuntimeIntent({
+      intent,
+      observedAt: preflight.observedAt,
+    });
     const enriched = {
-      ...intent,
-      costInput: intent.costInput ?? createLiveOpsCliCleanupCostInput(),
-      risk: intent.risk ?? createLiveOpsCliCleanupRiskInput({ config, intent, preflight }),
+      ...runtimeIntent,
+      costInput: runtimeIntent.costInput ?? createLiveOpsCliCleanupCostInput(),
+      risk: runtimeIntent.risk ?? createLiveOpsCliCleanupRiskInput({ config, intent: runtimeIntent, preflight }),
     };
-    const evidence = createLiveOpsCliOrderIntentEvidence(enriched);
-    return {
-      ...enriched,
-      costSnapshot: intent.costSnapshot ?? {
-        source: "cost_model",
-        exchange_id: enriched.exchangeId,
-        market: enriched.market,
-        trade_allowed: true,
-        reason_code: "cost_margin_ok",
-        order_intent: evidence,
-      },
-      riskApproval: intent.riskApproval ?? {
-        source: "risk_gate",
-        approved: true,
-        action: "ALLOW",
-        status: "PASS",
-        failed_evaluation_reason_codes: [],
-        order_intent: evidence,
-      },
-    };
+    return attachLiveOpsCliCleanupRuntimeApprovalEvidence(enriched);
   });
+}
+
+function createLiveOpsCliCleanupRuntimeIntent({ intent, observedAt }) {
+  if (intent?.strategyId !== "live_ops_cleanup_probe") {
+    return intent;
+  }
+
+  const runtimeIdempotencyKey = createLiveOpsCliCleanupProbeRuntimeDecisionKey({
+    intent,
+    observedAt,
+  });
+  const dateScope = readLiveOpsCliRuntimeDateScope(observedAt);
+  if (runtimeIdempotencyKey === undefined || dateScope === undefined) {
+    return intent;
+  }
+
+  return {
+    ...intent,
+    idempotencyKey: runtimeIdempotencyKey,
+    metadata: {
+      ...(intent.metadata ?? {}),
+      // 자정 경계에서 중복 reservation이 열리지 않도록 실제 제출 직전 운영일로 idempotency scope를 확정한다.
+      analysis_idempotency_key: hasMeaningfulValue(intent.metadata?.analysis_idempotency_key)
+        ? intent.metadata.analysis_idempotency_key
+        : intent.idempotencyKey,
+      idempotency_date_scope: dateScope,
+      idempotency_date_source: "live_ops_runtime_preflight",
+      idempotency_observed_at: observedAt,
+    },
+  };
+}
+
+function attachLiveOpsCliCleanupRuntimeApprovalEvidence(intent) {
+  if (intent?.strategyId !== "live_ops_cleanup_probe") {
+    return intent;
+  }
+
+  const evidence = createLiveOpsCliOrderIntentEvidence(intent);
+  const costSnapshot = intent.costSnapshot ?? {};
+  const riskApproval = intent.riskApproval ?? {};
+  const hasExistingCostSnapshot = isNonEmptyRecord(intent.costSnapshot);
+  const hasExistingRiskApproval = isNonEmptyRecord(intent.riskApproval);
+  const costOrderIntentEvidence = resolveLiveOpsCliCleanupRuntimeApprovalOrderIntentEvidence({
+    existingEvidence: costSnapshot.order_intent,
+    intent,
+    runtimeEvidence: evidence,
+  });
+  const riskOrderIntentEvidence = resolveLiveOpsCliCleanupRuntimeApprovalOrderIntentEvidence({
+    existingEvidence: riskApproval.order_intent,
+    intent,
+    runtimeEvidence: evidence,
+  });
+  return {
+    ...intent,
+    costSnapshot: hasExistingCostSnapshot ? {
+      ...costSnapshot,
+      order_intent: costOrderIntentEvidence,
+    } : {
+      ...costSnapshot,
+      source: costSnapshot.source ?? "cost_model",
+      exchange_id: intent.exchangeId,
+      market: intent.market,
+      // CostModel이 이미 차단한 후보는 날짜 scope 보정 중 승인 evidence로 바꾸지 않는다.
+      trade_allowed: costSnapshot.trade_allowed ?? true,
+      reason_code: costSnapshot.reason_code ?? "cost_margin_ok",
+      order_intent: costOrderIntentEvidence,
+    },
+    riskApproval: hasExistingRiskApproval ? {
+      ...riskApproval,
+      // RiskGate partial evidence는 승인으로 보정하지 않고 order intent 날짜 scope만 보정해 guard 차단 근거로 보존한다.
+      order_intent: riskOrderIntentEvidence,
+    } : {
+      ...riskApproval,
+      source: riskApproval.source ?? "risk_gate",
+      approved: riskApproval.approved ?? true,
+      action: riskApproval.action ?? "ALLOW",
+      status: riskApproval.status ?? "PASS",
+      failed_evaluation_reason_codes: Array.isArray(riskApproval.failed_evaluation_reason_codes)
+        ? riskApproval.failed_evaluation_reason_codes
+        : [],
+      order_intent: riskOrderIntentEvidence,
+    },
+  };
+}
+
+function resolveLiveOpsCliCleanupRuntimeApprovalOrderIntentEvidence({ existingEvidence, intent, runtimeEvidence }) {
+  if (!isNonEmptyRecord(existingEvidence)) {
+    return runtimeEvidence;
+  }
+  if (isLiveOpsCliCleanupRuntimeApprovalOrderIntentEvidenceRefreshable(existingEvidence, intent)) {
+    // 같은 후보의 분석일 key만 runtime preflight 날짜 key로 좁혀야 하므로 다른 가격/수량 evidence는 보존해 guard에서 차단한다.
+    return runtimeEvidence;
+  }
+  return existingEvidence;
+}
+
+function isLiveOpsCliCleanupRuntimeApprovalOrderIntentEvidenceRefreshable(evidence, intent) {
+  if (isLiveOpsCliOrderIntentEvidenceMatch(evidence, intent)) {
+    return true;
+  }
+
+  const analysisIdempotencyKey = intent?.metadata?.analysis_idempotency_key;
+  if (!hasMeaningfulValue(analysisIdempotencyKey)) {
+    return false;
+  }
+  return isLiveOpsCliOrderIntentEvidenceMatch(evidence, {
+    ...intent,
+    idempotencyKey: analysisIdempotencyKey,
+  });
+}
+
+function createLiveOpsCliCleanupProbeRuntimeDecisionKey({ intent, observedAt }) {
+  const dateScope = readLiveOpsCliRuntimeDateScope(observedAt);
+  if (
+    dateScope === undefined ||
+    !hasMeaningfulValue(intent?.market) ||
+    !hasMeaningfulValue(intent?.requestedPrice) ||
+    !hasMeaningfulValue(intent?.requestedQuantity) ||
+    !hasMeaningfulValue(intent?.requestedNotional)
+  ) {
+    return undefined;
+  }
+  return createLiveOpsCliCleanupProbeDecisionKey({
+    market: String(intent.market),
+    sizing: {
+      requestedPrice: String(intent.requestedPrice),
+      requestedQuantity: String(intent.requestedQuantity),
+      requestedNotional: String(intent.requestedNotional),
+    },
+    observedAt: dateScope,
+  });
+}
+
+function readLiveOpsCliRuntimeDateScope(observedAt) {
+  return /^\d{4}-\d{2}-\d{2}/u.test(String(observedAt ?? "")) ? String(observedAt).slice(0, 10) : undefined;
+}
+
+function readLiveOpsCliRuntimeObservedAt(observedAt) {
+  return readLiveOpsCliRuntimeDateScope(observedAt) === undefined ? undefined : String(observedAt);
+}
+
+function readLiveOpsCliCleanupRuntimeObservedAt(orderIntents) {
+  if (!Array.isArray(orderIntents)) {
+    return undefined;
+  }
+  for (const intent of orderIntents) {
+    if (
+      intent?.strategyId !== "live_ops_cleanup_probe" ||
+      intent?.metadata?.idempotency_date_source !== "live_ops_runtime_preflight"
+    ) {
+      continue;
+    }
+    const observedAt = readLiveOpsCliRuntimeObservedAt(intent.metadata.idempotency_observed_at);
+    if (observedAt !== undefined) {
+      // preflight가 이미 날짜 scope를 선점했다면 제출 직전 wall clock으로 같은 후보 key를 재정규화하지 않는다.
+      return observedAt;
+    }
+  }
+  return undefined;
 }
 
 function createLiveOpsCliCleanupCostInput() {
@@ -1074,14 +1222,30 @@ function readLiveOpsCliMarketBaseCurrency(market) {
 function createLiveOpsCliLossSnapshotFromPnlStatus({ pnlStatus, balanceSnapshot, observedAt }) {
   if (pnlStatus?.readStatus !== "OK" || !isDecimalString(pnlStatus?.latestRealizedPnlKrw)) {
     // PnL worker가 OK snapshot을 쓰기 전에는 손실을 0으로 보정하지 않고 submit 전 loss guard에서 닫는다.
-    return {
-      dailyRealizedLossKrw: null,
-      weeklyRealizedLossKrw: null,
-      capturedAt: pnlStatus?.latestCapturedAt ?? balanceSnapshot?.capturedAt ?? observedAt,
-      source: "pnl_status_not_ready",
-      ready: false,
+    return createLiveOpsCliUnavailableLossSnapshot({
+      pnlStatus,
+      balanceSnapshot,
+      observedAt,
       reasonCode: pnlStatus?.reason ?? "pnl_status_not_ok",
-    };
+    });
+  }
+  if (!isLiveOpsCliReadyPnlSnapshotStatus(pnlStatus.latestStatus)) {
+    // PARTIAL/manual-review PnL row는 DB 조회가 성공했어도 손실 한도 증거로 쓰면 신규 주문이 잘못 열린다.
+    return createLiveOpsCliUnavailableLossSnapshot({
+      pnlStatus,
+      balanceSnapshot,
+      observedAt,
+      reasonCode: "pnl_snapshot_status_not_ready",
+    });
+  }
+  if (!isLiveOpsCliFreshPnlStatus(pnlStatus, observedAt)) {
+    // 오래된 PnL row는 현재 preflight tick의 realized loss 증거가 아니므로 submit 전 loss guard에서 닫는다.
+    return createLiveOpsCliUnavailableLossSnapshot({
+      pnlStatus,
+      balanceSnapshot,
+      observedAt,
+      reasonCode: "pnl_snapshot_stale",
+    });
   }
   const realizedPnl = isDecimalString(pnlStatus?.latestRealizedPnlKrw)
     ? new Decimal(pnlStatus.latestRealizedPnlKrw)
@@ -1093,6 +1257,43 @@ function createLiveOpsCliLossSnapshotFromPnlStatus({ pnlStatus, balanceSnapshot,
     capturedAt: pnlStatus?.latestCapturedAt ?? balanceSnapshot?.capturedAt ?? observedAt,
     source: pnlStatus?.readStatus === "OK" ? "pnl_snapshots" : "private_read_clean_start",
   };
+}
+
+function createLiveOpsCliUnavailableLossSnapshot({ pnlStatus, balanceSnapshot, observedAt, reasonCode }) {
+  return {
+    dailyRealizedLossKrw: null,
+    weeklyRealizedLossKrw: null,
+    capturedAt: pnlStatus?.latestCapturedAt ?? balanceSnapshot?.capturedAt ?? observedAt,
+    source: "pnl_status_not_ready",
+    ready: false,
+    reasonCode,
+  };
+}
+
+function isLiveOpsCliReadyPnlSnapshotStatus(status) {
+  if (!hasMeaningfulValue(status)) {
+    return false;
+  }
+  return String(status).toUpperCase() === "CALCULATED";
+}
+
+function isLiveOpsCliFreshPnlStatus(
+  pnlStatus,
+  observedAt,
+  maxAgeMs = liveOpsCliPreflightPnlFreshnessMs,
+  maxFutureSkewMs = liveOpsCliPreflightPnlFutureSkewMs,
+) {
+  if (!hasMeaningfulValue(pnlStatus?.latestCapturedAt)) {
+    return false;
+  }
+  const observedTime = Date.parse(String(observedAt));
+  const capturedTime = Date.parse(String(pnlStatus.latestCapturedAt));
+  if (!Number.isFinite(observedTime) || !Number.isFinite(capturedTime)) {
+    return false;
+  }
+  const ageMs = observedTime - capturedTime;
+  // PnL worker/DB clock이 preflight 시작 직후 snapshot을 기록하는 정상 경합은 stale로 보지 않는다.
+  return ageMs >= -maxFutureSkewMs && ageMs <= maxAgeMs;
 }
 
 function readLiveOpsCliEquityKrw(balanceSnapshot, pnlStatus, config) {
@@ -1289,7 +1490,7 @@ export function createLiveOpsCliFileBudgetReservation({ artifactStore, clock = (
       return readDailyReservedNotionalForDay(day);
     },
     async reserve(request) {
-      const reservedAt = clock();
+      const reservedAt = readLiveOpsCliRuntimeObservedAt(clock()) ?? new Date().toISOString();
       const day = String(reservedAt).slice(0, 10);
       const reservation = {
         reservationId: `reservation-${request.attemptId}`,
@@ -2793,6 +2994,7 @@ export function createLiveOpsCliDatabasePnlStatusProvider(pool, market) {
     async getStatus() {
       try {
         const [latestResult, countResult] = await Promise.all([
+          // cleanup 전용 PnL row가 생긴 뒤에는 그 scope를 우선하고, 첫 cleanup 전 fallback은 최신 미완료값보다 계산 완료값으로 손실 guard를 연다.
           pool.query(`
             SELECT
               strategy_id,
@@ -2805,14 +3007,30 @@ export function createLiveOpsCliDatabasePnlStatusProvider(pool, market) {
               payload_json ->> 'sourceFingerprint' AS source_fingerprint,
               payload_json ->> 'status' AS payload_status
             FROM pnl_snapshots
-            WHERE market = $1 OR market IS NULL
-            ORDER BY (market = $1) DESC, captured_at DESC
+            WHERE (market = $1 OR market IS NULL)
+              AND (
+                strategy_id = 'live_ops_cleanup_probe'
+                OR strategy_id IS NULL
+                OR strategy_id IN ('global', 'aggregate')
+              )
+            ORDER BY
+              (strategy_id = 'live_ops_cleanup_probe') DESC,
+              CASE WHEN strategy_id = 'live_ops_cleanup_probe' THEN captured_at END DESC,
+              CASE WHEN strategy_id = 'live_ops_cleanup_probe' THEN (market = $1) END DESC,
+              CASE WHEN strategy_id IS DISTINCT FROM 'live_ops_cleanup_probe' THEN (payload_json ->> 'status' = 'CALCULATED') END DESC,
+              CASE WHEN strategy_id IS DISTINCT FROM 'live_ops_cleanup_probe' THEN captured_at END DESC,
+              CASE WHEN strategy_id IS DISTINCT FROM 'live_ops_cleanup_probe' THEN (market = $1) END DESC
             LIMIT 1
           `, [market]),
           pool.query(`
             SELECT count(*)::int AS count
             FROM pnl_snapshots
-            WHERE market = $1 OR market IS NULL
+            WHERE (market = $1 OR market IS NULL)
+              AND (
+                strategy_id = 'live_ops_cleanup_probe'
+                OR strategy_id IS NULL
+                OR strategy_id IN ('global', 'aggregate')
+              )
           `, [market]),
         ]);
         const latest = latestResult.rows[0];
@@ -3233,8 +3451,8 @@ export async function evaluateLiveOpsCliLiveExecution({
   cleanupLifecycle,
 }) {
   const market = config.universe?.default_market ?? "KRW-BTC";
-  const observedAt = new Date().toISOString();
   const intents = orderIntents ?? getLiveOpsCliAnalysisOrderIntents(analysisDecision);
+  const observedAt = readLiveOpsCliCleanupRuntimeObservedAt(intents) ?? new Date().toISOString();
   const brokerGuard = evaluateLiveOpsCliBrokerGuard({ config, env, fixtureSmoke });
 
   if (analysisDecision.ready !== true) {
@@ -3411,7 +3629,10 @@ export async function evaluateLiveOpsCliLiveExecution({
     });
   }
 
-  const intent = intents[0];
+  const intent = attachLiveOpsCliCleanupRuntimeApprovalEvidence(createLiveOpsCliCleanupRuntimeIntent({
+    intent: intents[0],
+    observedAt,
+  }));
   const intentViolations = collectLiveOpsCliOrderIntentViolations({ config, marketData, intent });
   if (intentViolations.length > 0) {
     // 주문 후보가 live ops guard를 벗어나면 entry runtime에 넘기기 전에 닫아 broker side effect를 만들지 않는다.
@@ -5392,6 +5613,7 @@ async function collectLiveOpsCliPrivateReadStatusSummary({
     });
   }
 
+  const postReadObservedAt = new Date().toISOString();
   const orders = openOrders;
   const openExposureKrw = sumLiveOpsCliOpenExposureKrw(orders);
   const resolvedReconcileStatus = normalizeLiveOpsCliReconcileStatus(reconcileStatus, {
@@ -5399,7 +5621,7 @@ async function collectLiveOpsCliPrivateReadStatusSummary({
     openOrders: orders,
     liveExecution,
   });
-  const resolvedPnlStatus = normalizeLiveOpsCliPnlStatus(pnlStatus, { liveExecution });
+  const resolvedPnlStatus = normalizeLiveOpsCliPnlStatus(pnlStatus, { liveExecution, observedAt: postReadObservedAt });
   const manualReviewRequired = resolvedReconcileStatus.manualReviewRequired || resolvedPnlStatus.manualReviewRequired;
   const budgetUsedKrw = resolveLiveOpsCliBudgetUsedKrw({
     budgetSnapshot,
@@ -5415,7 +5637,7 @@ async function collectLiveOpsCliPrivateReadStatusSummary({
     liveOrderCapable: liveExecution.liveOrderCapable === true && !manualReviewRequired,
     latestReconcileAt: resolvedReconcileStatus.lastReconcileAt,
     latestPnlAt: resolvedPnlStatus.latestCapturedAt,
-    latestStatusAt: observedAt,
+    latestStatusAt: postReadObservedAt,
     reconcileStatus: resolvedReconcileStatus.result,
     reconcileStatusLabel: resolvedReconcileStatus.statusLabel,
     pnlStatus: resolvedPnlStatus.status,
@@ -5668,17 +5890,9 @@ function hasOnlyLiveOpsCliTrackedExecutionOpenOrders(openOrders, liveExecution) 
   return brokerOrderMatches || idempotencyKeyMatches;
 }
 
-function normalizeLiveOpsCliPnlStatus(summary, { liveExecution } = {}) {
+function normalizeLiveOpsCliPnlStatus(summary, { liveExecution, observedAt } = {}) {
   if (isLiveOpsCliCleanCancelCloseout(liveExecution) && (summary === undefined || summary?.readStatus !== "OK")) {
-    return {
-      status: "cleanup_no_fill",
-      statusLabel: "변동 없음",
-      latestCapturedAt: liveExecution.terminalCheckedAt ?? null,
-      realizedPnlKrw: null,
-      unrealizedPnlKrw: null,
-      manualReviewRequired: false,
-      message: "terminal cancel과 no-fill 조건이 확인되어 이번 cleanup에서 손익 변동을 0으로 보정하지 않고 null로 유지합니다.",
-    };
+    return createLiveOpsCliCleanupNoFillPnlStatus(liveExecution);
   }
 
   if (summary === undefined) {
@@ -5694,6 +5908,34 @@ function normalizeLiveOpsCliPnlStatus(summary, { liveExecution } = {}) {
   }
 
   const readStatus = String(summary.readStatus ?? "UNAVAILABLE");
+  if (readStatus === "OK" && !isLiveOpsCliReadyPnlSnapshotStatus(summary.latestStatus)) {
+    // PnL provider read 성공과 계산 완료는 별개이므로 PARTIAL/manual-review snapshot은 post-submit 상태도 수동 점검으로 닫는다.
+    return {
+      status: "pnl_snapshot_status_not_ready",
+      statusLabel: "확인 필요",
+      latestCapturedAt: summary.latestCapturedAt ?? null,
+      realizedPnlKrw: summary.latestRealizedPnlKrw ?? null,
+      unrealizedPnlKrw: summary.latestUnrealizedPnlKrw ?? null,
+      manualReviewRequired: true,
+      message: "최신 PnL snapshot이 계산 완료 상태가 아니어서 손익 상태를 정상으로 확정하지 않습니다.",
+    };
+  }
+  if (readStatus === "OK" && !isLiveOpsCliFreshPnlStatus(summary, observedAt)) {
+    if (isLiveOpsCliCleanCancelCloseout(liveExecution)) {
+      // terminal cancel/no-fill에서는 새 체결이 없으므로 오래된 CALCULATED row만으로 수동 점검을 열지 않는다.
+      return createLiveOpsCliCleanupNoFillPnlStatus(liveExecution);
+    }
+    // stale PnL row는 cleanup 이후 현재 상태 증거가 아니므로 ready summary로 낮추지 않는다.
+    return {
+      status: "pnl_snapshot_stale",
+      statusLabel: "확인 필요",
+      latestCapturedAt: summary.latestCapturedAt ?? null,
+      realizedPnlKrw: summary.latestRealizedPnlKrw ?? null,
+      unrealizedPnlKrw: summary.latestUnrealizedPnlKrw ?? null,
+      manualReviewRequired: true,
+      message: "최신 PnL snapshot이 현재 status tick보다 오래되어 손익 상태를 정상으로 확정하지 않습니다.",
+    };
+  }
   const manualReviewRequired = readStatus !== "OK";
   return {
     status: readStatus.toLowerCase(),
@@ -5705,6 +5947,18 @@ function normalizeLiveOpsCliPnlStatus(summary, { liveExecution } = {}) {
     message: readStatus === "OK"
       ? "최신 PnL snapshot에서 realized/unrealized PnL을 읽었습니다."
       : "PnL snapshot 상태가 준비되지 않아 손익을 0으로 보정하지 않습니다.",
+  };
+}
+
+function createLiveOpsCliCleanupNoFillPnlStatus(liveExecution) {
+  return {
+    status: "cleanup_no_fill",
+    statusLabel: "변동 없음",
+    latestCapturedAt: liveExecution?.terminalCheckedAt ?? null,
+    realizedPnlKrw: null,
+    unrealizedPnlKrw: null,
+    manualReviewRequired: false,
+    message: "terminal cancel과 no-fill 조건이 확인되어 이번 cleanup에서 손익 변동을 0으로 보정하지 않고 null로 유지합니다.",
   };
 }
 
@@ -6484,8 +6738,8 @@ function evaluateLiveOpsCliCleanupProbeStrategy({ config, marketData, observedAt
     idempotencyKey: createLiveOpsCliCleanupProbeDecisionKey({
       market,
       sizing,
-      // attempt 중복 차단은 운영일 기준이므로 자정 경계에서 heartbeat 대신 decision 실행 시각을 사용한다.
-      observedAt,
+      // 실제 reservation day는 production preflight wall clock에서 확정되므로 분석 후보 key에는 날짜 placeholder만 남긴다.
+      observedAt: "runtime_preflight_day",
     }),
     reason: "issue_206_cleanup_probe",
     postOnly: true,
@@ -6495,6 +6749,9 @@ function evaluateLiveOpsCliCleanupProbeStrategy({ config, marketData, observedAt
       issue: "206",
       expected_loss_bps_of_equity: policy.cleanup_probe.expected_loss_bps_of_equity,
       best_bid_price: sizing.bestBidPrice,
+      idempotency_date_scope: "runtime_preflight_day",
+      idempotency_date_source: "live_ops_runtime_preflight",
+      strategy_observed_at: observedAt,
       tick_size_krw: policy.cleanup_probe.tick_size_krw,
       price_offset_ticks: policy.cleanup_probe.price_offset_ticks,
       policy_id: "cleanup_probe",
@@ -6514,7 +6771,10 @@ function evaluateLiveOpsCliCleanupProbeStrategy({ config, marketData, observedAt
 }
 
 function createLiveOpsCliCleanupProbeDecisionKey({ market, sizing, observedAt }) {
-  const dayScope = hasMeaningfulValue(observedAt) ? String(observedAt).slice(0, 10) : "unknown-day";
+  const observedAtText = hasMeaningfulValue(observedAt) ? String(observedAt) : "";
+  const dayScope = /^\d{4}-\d{2}-\d{2}/u.test(observedAtText)
+    ? observedAtText.slice(0, 10)
+    : (observedAtText || "unknown-day");
   return [
     "live_ops_cleanup_probe",
     dayScope,

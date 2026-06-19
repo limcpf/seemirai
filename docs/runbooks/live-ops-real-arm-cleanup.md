@@ -35,7 +35,7 @@ identifier 또는 uuid로 취소해 terminal cancel evidence로 닫는 절차다
 | decision policy | `analysis.decision_policy.id=cleanup_probe`이고 정적 allowlist resolver가 `live_ops_cleanup_probe` strategy를 조립한다 |
 | private read | account/order/balance 조회가 가능하고 raw payload 없이 safe summary로 낮아진다 |
 | reconcile | 기존 mismatch/manual review가 없고, DB run이 없으면 CLI가 private read preflight evidence를 자동 생성한다 |
-| PnL/status | 결측은 0으로 보정하지 않고 원인과 필요한 조치를 표시한다 |
+| PnL/status | `readStatus=OK`, `CALCULATED` snapshot status, provider read 완료 후 시각 기준 30초 freshness를 모두 만족해야 손실 증거로 쓰고, 결측/오래됨/PARTIAL/status 누락/read-level `OK`/job-level 완료 status는 0으로 보정하지 않는다. preflight 직후 새 row의 1초 이내 future skew만 허용한다 |
 | Telegram | startup/live order capable/order/cancel/manual review alert를 owner chat으로 보낼 수 있다 |
 | TUI | live armed/order capable, 최신 decision/order/cancel/reconcile/PnL 상태를 secret 없이 보여준다 |
 | artifact 경로 | symlink 기준 실제 경로가 저장소 밖이고 secret/raw payload 검사를 통과한다 |
@@ -150,12 +150,44 @@ closeout evidence로 인정하지 않는다.
 
 `keyScope`는 `grantedScopes: ["자산조회", "주문조회", "주문하기"]`, `forbiddenScopesAbsent: ["출금하기"]`,
 `withdrawalEnabled: false`처럼 허용 scope와 출금 권한 부재를 redacted safe summary로 기록한다. source/security scan은 실제 `rg -n`
-명령으로 repository root에서 `src scripts config docs` 전체 범위의 금지 주문 경계 전체(`ord_type`, market/best 주문, 출금/입금,
-leverage/futures/margin)와 secret/raw payload 후보 전체(access/secret key, 대문자 `ACCESS_KEY`/`SECRET_KEY`,
-Authorization/Bearer, JWT, Telegram token, TUI control token, DB URL/password, raw provider/order payload)를 스캔한 증거를 포함해야 한다.
+명령으로 repository root에서 runtime source path인 `src/runtime/live-ops-config.ts src/runtime/live-ops-config
+src/runtime/live-ops-decision-policy.ts src/runtime/live-ops-decision-policy src/runtime/live-ops-live-execution.ts
+src/runtime/live-ops-live-execution src/runtime/live-ops-analysis-decision.ts src/runtime/live-ops-analysis-decision
+src/application/live-autonomous-entry-runtime/service.ts src/infrastructure/upbit/private-client.ts
+src/infrastructure/upbit/private-client/client.ts src/infrastructure/upbit/private-client/auth.ts
+src/infrastructure/upbit/live-broker/service.ts src/infrastructure/upbit/private-mappers.ts
+src/infrastructure/upbit/private-mappers scripts/run-live-ops.mjs
+scripts/run-live-ops-support.mjs config/live-ops.example.json config/live-ops.env.example`
+전체 범위의 금지 주문 경계 전체(`[\x27"]?ord_type[\x27"]?\s*[:=]\s*[\x27"]?price`,
+`[\x27"]?ord_type[\x27"]?\s*[:=]\s*[\x27"]?market`, `[\x27"]?ord_type[\x27"]?\s*[:=]\s*[\x27"]?best`,
+`[\x27"]?key[\x27"]?\s*:\s*[\x27"]ord_type[\x27"][^\r\n{}]*,[^\r\n{}]*[\x27"]?value[\x27"]?\s*:\s*[\x27"]?(price|market|best)`,
+`시장가[^\r\n]*(허용|활성|enabled|true)`,
+`[\x27"]?order_type[\x27"]?\s*[:=]\s*[\x27"]?(market|MARKET)`,
+`[\x27"]?orderType[\x27"]?\s*[:=]\s*[\x27"]?(market|MARKET)`,
+`[\x27"]?order_type[\x27"]?\s*[:=]\s*[\x27"]?(PRICE|price|BEST|best)`,
+`[\x27"]?orderType[\x27"]?\s*[:=]\s*[\x27"]?(PRICE|price|BEST|best)`,
+`[\x27"]?withdrawal_enabled[\x27"]?\s*[:=]\s*true`, `[\x27"]?deposit_enabled[\x27"]?\s*[:=]\s*true`,
+`\/v1\/deposits`, `\/v1\/withdraws`, `[\x27"]?futures_enabled[\x27"]?\s*[:=]\s*true`,
+`[\x27"]?leverage_enabled[\x27"]?\s*[:=]\s*true`, `[\x27"]?market_order_enabled[\x27"]?\s*[:=]\s*true`,
+`[\x27"]?entry_market_order_enabled[\x27"]?\s*[:=]\s*true`)와
+secret/raw payload 후보 전체(`SEEMIRAI_DATABASE_URL=postgres://...:<password>@...`,
+`postgres://...:<password>@...` 또는 `postgresql://...:<password>@...`, Upbit access/secret key literal, Telegram bot token literal,
+`[\x27"]?accessKey[\x27"]?\s*:\s*[\x27"][A-Za-z0-9._-]{16,}[\x27"]`,
+`[\x27"]?secretKey[\x27"]?\s*:\s*[\x27"][A-Za-z0-9._\/=+-]{16,}[\x27"]`,
+`[\x27"]?access_key[\x27"]?\s*:\s*[\x27"][A-Za-z0-9._-]{16,}[\x27"]`,
+`[\x27"]?secret_key[\x27"]?\s*:\s*[\x27"][A-Za-z0-9._\/=+-]{16,}[\x27"]`, legacy `TELEGRAM_BOT_TOKEN=123:...` literal,
+TUI control token literal, `[\x27"]?Authorization[\x27"]?\s*[:=]\s*[\x27"]?(Bearer|bearer) ...`,
+`[\x27"]?authorization[\x27"]?\s*[:=]\s*[\x27"]?(Bearer|bearer) ...`,
+`\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b`,
+`[\x27"]?jwt[\x27"]?\s*[:=]\s*[\x27"]eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+[\x27"]`,
+`raw_provider_payload`, `rawProviderPayload`, `raw_order_detail`, `rawOrderDetail`)를 스캔한 증거를 포함해야 한다.
+일반 영어 단어 `market`은 정상 market 설정/문서에도 반복되므로 empty-match가 필요한 금지 주문 scan term으로 쓰지 않고,
+정상 차단 설정에 반복되는 `market_order` 단독 term도 필수 empty-match scan으로 쓰지 않는다. 금지 scope, 시장가, futures/leverage 같은
+도메인 단어도 guard와 문서에 정상적으로 등장하므로, source scan은 단어 자체가 아니라 운영 runtime에서 위험 toggle이 `true`로 열리는
+정밀 패턴을 찾는다. secret도 env var 이름, TypeScript property 이름, placeholder 예제가 아니라 실제 값이 하드코딩된 형태만 찾는다.
 `withdraw`/`출금`, `deposit`/`입금`, `access_key`/`accessKey`처럼 대체 표기가 있는 검색어는 각 표기를 개별로 포함해야 하며,
 `xaccess_key`처럼 검색어 앞뒤에 식별자 문자를 붙인 fake term은 coverage로 인정하지 않는다. source/security scan 명령은
-shell의 `RIPGREP_CONFIG_PATH`, `.gitignore`, hidden 기본 필터 영향을 받지 않도록 `--no-config`와 `-uuu` 또는 `--hidden --no-ignore`를 포함해야 한다. `src scripts config docs`는 검색 패턴 문자열이 아니라 `rg` argv의 실제 path operand로 들어가야 하며, `true`,
+shell의 `RIPGREP_CONFIG_PATH`, `.gitignore`, hidden 기본 필터 영향을 받지 않도록 `--no-config`와 `-uuu` 또는 `--hidden --no-ignore`를 포함해야 한다. 위 runtime source path들은 검색 패턴 문자열이 아니라 `rg` argv의 실제 path operand로 들어가야 하며, `true`,
 `echo rg ...`, 일부 토큰만 확인한 명령, 검색어가 아닌 path operand에 금지 패턴 단어를 붙인 명령,
 `-q`/`--quiet`, `-l`/`--files-without-match`, `--files`, `-F`/`--fixed-strings`, `-f`/`--file`,
 `-P`/`--pcre2`/`--engine=pcre2`, `-w`/`--word-regexp`, `-x`/`--line-regexp`, `-v`/`--invert-match`, `-c`/`--count`/`--count-matches`,
