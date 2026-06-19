@@ -2902,7 +2902,7 @@ export function createLiveOpsCliDatabasePnlStatusProvider(pool, market) {
               payload_json ->> 'status' AS payload_status
             FROM pnl_snapshots
             WHERE (market = $1 OR market IS NULL)
-              AND strategy_id = 'live_ops'
+              AND strategy_id = 'live_ops_cleanup_probe'
             ORDER BY
               captured_at DESC,
               (market = $1) DESC
@@ -2912,7 +2912,7 @@ export function createLiveOpsCliDatabasePnlStatusProvider(pool, market) {
             SELECT count(*)::int AS count
             FROM pnl_snapshots
             WHERE (market = $1 OR market IS NULL)
-              AND strategy_id = 'live_ops'
+              AND strategy_id = 'live_ops_cleanup_probe'
           `, [market]),
         ]);
         const latest = latestResult.rows[0];

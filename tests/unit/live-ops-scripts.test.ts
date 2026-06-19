@@ -1791,7 +1791,7 @@ console.log(JSON.stringify({
     } = await import(supportModulePath);
     const queries: Array<{ text: string; params: unknown[] }> = [];
     const staleMarketRow = {
-      strategy_id: "live_ops",
+      strategy_id: "live_ops_cleanup_probe",
       market: "KRW-BTC",
       captured_at: "2026-06-18T13:32:00.000Z",
       equity: "100000",
@@ -1813,7 +1813,7 @@ console.log(JSON.stringify({
       payload_status: "CALCULATED",
     };
     const freshAggregateRow = {
-      strategy_id: "live_ops",
+      strategy_id: "live_ops_cleanup_probe",
       market: null,
       captured_at: "2026-06-18T13:33:27.000Z",
       equity: "100000",
@@ -1824,7 +1824,7 @@ console.log(JSON.stringify({
       payload_status: "CALCULATED",
     };
     const freshestNotReadyRow = {
-      strategy_id: "live_ops",
+      strategy_id: "live_ops_cleanup_probe",
       market: "KRW-BTC",
       captured_at: "2026-06-18T13:33:29.000Z",
       equity: "100000",
@@ -1843,18 +1843,18 @@ console.log(JSON.stringify({
           const orderBy = text.slice(text.indexOf("ORDER BY"));
           const capturedBeforeMarketPreference = orderBy.indexOf("captured_at DESC") >= 0
             && orderBy.indexOf("captured_at DESC") < orderBy.indexOf("(market = $1) DESC");
-          const filtersLiveOpsStrategy = text.includes("strategy_id = 'live_ops'");
+          const filtersLiveOpsStrategy = text.includes("strategy_id = 'live_ops_cleanup_probe'");
           return {
             rows: [capturedBeforeMarketPreference && filtersLiveOpsStrategy
-              ? rows.filter((row) => row.strategy_id === "live_ops").sort((left, right) => (
+              ? rows.filter((row) => row.strategy_id === "live_ops_cleanup_probe").sort((left, right) => (
                 String(right.captured_at).localeCompare(String(left.captured_at))
               ))[0]
               : staleMarketRow],
           };
         }
         if (text.includes("count(*)::int AS count") && text.includes("FROM pnl_snapshots")) {
-          return { rows: [{ count: text.includes("strategy_id = 'live_ops'")
-            ? rows.filter((row) => row.strategy_id === "live_ops").length
+          return { rows: [{ count: text.includes("strategy_id = 'live_ops_cleanup_probe'")
+            ? rows.filter((row) => row.strategy_id === "live_ops_cleanup_probe").length
             : rows.length }] };
         }
         throw new Error(`unexpected query: ${text}`);
@@ -1872,7 +1872,7 @@ console.log(JSON.stringify({
       snapshotCount: 3,
     });
     expect(queries[0]?.params).toEqual(["KRW-BTC"]);
-    expect(queries[0]?.text).toContain("strategy_id = 'live_ops'");
+    expect(queries[0]?.text).toContain("strategy_id = 'live_ops_cleanup_probe'");
 
     rows = [freshOtherStrategyAggregateRow, freshAggregateRow, staleMarketRow];
     const aggregateFallbackStatus = await createLiveOpsCliDatabasePnlStatusProvider(pool, "KRW-BTC").getStatus();

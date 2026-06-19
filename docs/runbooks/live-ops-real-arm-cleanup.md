@@ -150,8 +150,9 @@ closeout evidence로 인정하지 않는다.
 
 `keyScope`는 `grantedScopes: ["자산조회", "주문조회", "주문하기"]`, `forbiddenScopesAbsent: ["출금하기"]`,
 `withdrawalEnabled: false`처럼 허용 scope와 출금 권한 부재를 redacted safe summary로 기록한다. source/security scan은 실제 `rg -n`
-명령으로 repository root에서 `src scripts config docs` 전체 범위의 금지 주문 경계 전체(`ord_type\s*:.*market`,
-`ord_type\s*:.*best`, `order_type\s*:\s*"MARKET`, `시장가`, 출금/입금, leverage/futures/margin)와 secret/raw payload 후보 전체(access/secret key, 대문자 `ACCESS_KEY`/`SECRET_KEY`,
+명령으로 repository root에서 `src scripts config docs` 전체 범위의 금지 주문 경계 전체(`"?ord_type"?\s*[:=]\s*"?price`,
+`"?ord_type"?\s*[:=]\s*"?market`, `"?ord_type"?\s*[:=]\s*"?best`, `"?order_type"?\s*[:=]\s*"?(market|MARKET)`,
+`시장가`, 출금/입금, leverage/futures/margin)와 secret/raw payload 후보 전체(access/secret key, 대문자 `ACCESS_KEY`/`SECRET_KEY`,
 Authorization/Bearer, JWT, Telegram token, TUI control token, DB URL/password, raw provider/order payload)를 스캔한 증거를 포함해야 한다.
 일반 영어 단어 `market`은 정상 market 설정/문서에도 반복되므로 empty-match가 필요한 금지 주문 scan term으로 쓰지 않고,
 정상 차단 설정에 반복되는 `market_order` 단독 term도 필수 empty-match scan으로 쓰지 않는다.
