@@ -369,8 +369,9 @@ SEEMIRAI_RUN_LIVE_OPS_REAL_ARM_CLOSEOUT=1 \
   artifact safe summary와 manifest closeout 값의 일치, database password redaction도 검증한다.
 - 2026-06-15: guarded manifest 파일 자체도 저장소 밖이어야 하며, source/security scan은 runtime source path
   `src/runtime/live-ops-config src/runtime/live-ops-decision-policy src/runtime/live-ops-live-execution
-  src/runtime/live-ops-analysis-decision scripts/run-live-ops.mjs scripts/run-live-ops-support.mjs config` 전체 범위의 실제
-  `rg -n` 실행 증거여야 한다.
+  src/runtime/live-ops-analysis-decision src/application/live-autonomous-entry-runtime/service.ts
+  src/infrastructure/upbit/private-client/client.ts
+  scripts/run-live-ops.mjs scripts/run-live-ops-support.mjs config` 전체 범위의 실제 `rg -n` 실행 증거여야 한다.
   validator/runbook 자체의 정밀 regex 문구가 운영 source scan 결과에 섞이면 manifest evidence와 실제 출력이 어긋나므로 docs와
   closeout validator 파일은 필수 empty-match 범위에서 제외한다. 금지 scope/시장가/futures/leverage 단어 자체는 guard와 문서에
   정상 등장하므로, source scan은 broad term 대신 위험 toggle `true`와 raw 주문 payload alias를 찾는 정밀 패턴으로 제한한다.

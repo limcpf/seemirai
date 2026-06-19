@@ -25,6 +25,8 @@ const requiredSourceScanPaths = [
   "src/runtime/live-ops-decision-policy",
   "src/runtime/live-ops-live-execution",
   "src/runtime/live-ops-analysis-decision",
+  "src/application/live-autonomous-entry-runtime/service.ts",
+  "src/infrastructure/upbit/private-client/client.ts",
   "scripts/run-live-ops.mjs",
   "scripts/run-live-ops-support.mjs",
   "config",
@@ -106,7 +108,8 @@ const requiredSecretSourceScanPatterns = [
   { label: "upbit secret key literal", pattern: /SEEMIRAI_UPBIT_SECRET_KEY\s*=\s*[^<\s]+/u },
   { label: "telegram bot token literal", pattern: /SEEMIRAI_TELEGRAM_BOT_TOKEN\s*=\s*[0-9]+:[A-Za-z0-9_-]+/u },
   { label: "TUI control token literal", pattern: /SEEMIRAI_TUI_CONTROL_TOKEN\s*=\s*[^<\s]+/u },
-  { label: "authorization bearer literal", pattern: /Authorization\s*[:=]\s*"?Bearer\s+[A-Za-z0-9._-]+/u },
+  { label: "authorization bearer literal", pattern: /Authorization\s*[:=]\s*"?(Bearer|bearer)\s+[A-Za-z0-9._-]+/u },
+  { label: "lowercase authorization bearer literal", pattern: /authorization\s*[:=]\s*"?(Bearer|bearer)\s+[A-Za-z0-9._-]+/u },
   { label: "raw provider payload field", pattern: /raw_provider_payload/u },
   { label: "raw order detail field", pattern: /raw_order_detail/u },
 ];

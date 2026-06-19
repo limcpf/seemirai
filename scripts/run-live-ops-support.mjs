@@ -5537,7 +5537,7 @@ async function collectLiveOpsCliPrivateReadStatusSummary({
     openOrders: orders,
     liveExecution,
   });
-  const resolvedPnlStatus = normalizeLiveOpsCliPnlStatus(pnlStatus, { liveExecution });
+  const resolvedPnlStatus = normalizeLiveOpsCliPnlStatus(pnlStatus, { liveExecution, observedAt });
   const manualReviewRequired = resolvedReconcileStatus.manualReviewRequired || resolvedPnlStatus.manualReviewRequired;
   const budgetUsedKrw = resolveLiveOpsCliBudgetUsedKrw({
     budgetSnapshot,
@@ -5806,7 +5806,7 @@ function hasOnlyLiveOpsCliTrackedExecutionOpenOrders(openOrders, liveExecution) 
   return brokerOrderMatches || idempotencyKeyMatches;
 }
 
-function normalizeLiveOpsCliPnlStatus(summary, { liveExecution } = {}) {
+function normalizeLiveOpsCliPnlStatus(summary, { liveExecution, observedAt } = {}) {
   if (isLiveOpsCliCleanCancelCloseout(liveExecution) && (summary === undefined || summary?.readStatus !== "OK")) {
     return {
       status: "cleanup_no_fill",
@@ -5832,6 +5832,30 @@ function normalizeLiveOpsCliPnlStatus(summary, { liveExecution } = {}) {
   }
 
   const readStatus = String(summary.readStatus ?? "UNAVAILABLE");
+  if (readStatus === "OK" && !isLiveOpsCliReadyPnlSnapshotStatus(summary.latestStatus)) {
+    // PnL provider read 성공과 계산 완료는 별개이므로 PARTIAL/manual-review snapshot은 post-submit 상태도 수동 점검으로 닫는다.
+    return {
+      status: "pnl_snapshot_status_not_ready",
+      statusLabel: "확인 필요",
+      latestCapturedAt: summary.latestCapturedAt ?? null,
+      realizedPnlKrw: summary.latestRealizedPnlKrw ?? null,
+      unrealizedPnlKrw: summary.latestUnrealizedPnlKrw ?? null,
+      manualReviewRequired: true,
+      message: "최신 PnL snapshot이 계산 완료 상태가 아니어서 손익 상태를 정상으로 확정하지 않습니다.",
+    };
+  }
+  if (readStatus === "OK" && !isLiveOpsCliFreshPnlStatus(summary, observedAt)) {
+    // stale PnL row는 cleanup 이후 현재 상태 증거가 아니므로 ready summary로 낮추지 않는다.
+    return {
+      status: "pnl_snapshot_stale",
+      statusLabel: "확인 필요",
+      latestCapturedAt: summary.latestCapturedAt ?? null,
+      realizedPnlKrw: summary.latestRealizedPnlKrw ?? null,
+      unrealizedPnlKrw: summary.latestUnrealizedPnlKrw ?? null,
+      manualReviewRequired: true,
+      message: "최신 PnL snapshot이 현재 status tick보다 오래되어 손익 상태를 정상으로 확정하지 않습니다.",
+    };
+  }
   const manualReviewRequired = readStatus !== "OK";
   return {
     status: readStatus.toLowerCase(),

@@ -657,7 +657,7 @@ const summary = await evaluateLiveOpsCliReconcilePnlStatus({
         latestUnrealizedPnlKrw: "-300",
         latestDrawdownBps: "5",
         latestSource: "pnl_snapshots",
-        latestStatus: "COMPLETE",
+        latestStatus: "CALCULATED",
         snapshotCount: 1,
         reason: "pnl_snapshot_latest_read",
       };
@@ -3984,6 +3984,160 @@ console.log(JSON.stringify({
       openExposureKrw: "0",
       budgetUsedKrw: "10000",
     });
+  });
+
+  it("post-submit PnL summary는 계산 미완료 snapshot을 ready로 낮추지 않는다", async () => {
+    const supportModulePath = path.join(process.cwd(), "scripts/run-live-ops-support.mjs");
+    const {
+      evaluateLiveOpsCliReconcilePnlStatus,
+    } = await import(supportModulePath);
+    const observedAt = "2026-06-18T13:33:27.000Z";
+    const summary = await evaluateLiveOpsCliReconcilePnlStatus({
+      config: {
+        universe: { default_market: "KRW-BTC" },
+      },
+      fixtureSmoke: false,
+      liveExecution: {
+        status: "cancel_confirmed",
+        ready: true,
+        liveOrderCapable: true,
+        attemptId: "ops-attempt-1",
+        brokerOrderId: "upbit-order-1",
+        idempotencyKey: "ops-idem-1",
+        reservedNotionalKrw: "10000",
+        budgetUsageAfterReservationKrw: "10000",
+      },
+      privateReadProvider: {
+        async listOpenOrders() {
+          return [];
+        },
+        async getBalances() {
+          return {
+            exchangeId: "upbit_krw_spot",
+            capturedAt: observedAt,
+            balances: [{ currency: "KRW", available: "40000", locked: "0", total: "40000" }],
+          };
+        },
+      },
+      reconcileStatusProvider: {
+        async getReconcileStatus() {
+          return {
+            lastReconcileAt: observedAt,
+            result: "SUCCESS",
+            mismatchCount: 0,
+            openOrderCount: 0,
+            balanceStatus: "OK",
+            websocketStatus: "CONNECTED",
+            actionRequired: "없음",
+            message: "cleanup 뒤 계정 상태가 정상입니다.",
+          };
+        },
+      },
+      pnlStatusProvider: {
+        async getStatus() {
+          return {
+            readStatus: "OK",
+            latestCapturedAt: observedAt,
+            latestRealizedPnlKrw: "0",
+            latestUnrealizedPnlKrw: "0",
+            latestStatus: "PARTIAL",
+            snapshotCount: 1,
+          };
+        },
+      },
+      budgetSnapshot: {
+        dailyAutonomousNotionalUsedKrw: "0",
+      },
+      observedAt,
+    });
+
+    expect(summary).toMatchObject({
+      status: "manual_review_required",
+      ready: false,
+      manualReviewRequired: true,
+      pnlStatus: "pnl_snapshot_status_not_ready",
+      budgetUsedKrw: "10000",
+    });
+    expect(summary.checks).toContainEqual(expect.objectContaining({
+      code: "live_ops_pnl_status_requires_review",
+    }));
+  });
+
+  it("post-submit PnL summary는 stale snapshot을 ready로 낮추지 않는다", async () => {
+    const supportModulePath = path.join(process.cwd(), "scripts/run-live-ops-support.mjs");
+    const {
+      evaluateLiveOpsCliReconcilePnlStatus,
+    } = await import(supportModulePath);
+    const observedAt = "2026-06-18T13:33:27.000Z";
+    const summary = await evaluateLiveOpsCliReconcilePnlStatus({
+      config: {
+        universe: { default_market: "KRW-BTC" },
+      },
+      fixtureSmoke: false,
+      liveExecution: {
+        status: "cancel_confirmed",
+        ready: true,
+        liveOrderCapable: true,
+        attemptId: "ops-attempt-1",
+        brokerOrderId: "upbit-order-1",
+        idempotencyKey: "ops-idem-1",
+        reservedNotionalKrw: "10000",
+        budgetUsageAfterReservationKrw: "10000",
+      },
+      privateReadProvider: {
+        async listOpenOrders() {
+          return [];
+        },
+        async getBalances() {
+          return {
+            exchangeId: "upbit_krw_spot",
+            capturedAt: observedAt,
+            balances: [{ currency: "KRW", available: "40000", locked: "0", total: "40000" }],
+          };
+        },
+      },
+      reconcileStatusProvider: {
+        async getReconcileStatus() {
+          return {
+            lastReconcileAt: observedAt,
+            result: "SUCCESS",
+            mismatchCount: 0,
+            openOrderCount: 0,
+            balanceStatus: "OK",
+            websocketStatus: "CONNECTED",
+            actionRequired: "없음",
+            message: "cleanup 뒤 계정 상태가 정상입니다.",
+          };
+        },
+      },
+      pnlStatusProvider: {
+        async getStatus() {
+          return {
+            readStatus: "OK",
+            latestCapturedAt: "2026-06-18T13:32:20.000Z",
+            latestRealizedPnlKrw: "0",
+            latestUnrealizedPnlKrw: "0",
+            latestStatus: "CALCULATED",
+            snapshotCount: 1,
+          };
+        },
+      },
+      budgetSnapshot: {
+        dailyAutonomousNotionalUsedKrw: "0",
+      },
+      observedAt,
+    });
+
+    expect(summary).toMatchObject({
+      status: "manual_review_required",
+      ready: false,
+      manualReviewRequired: true,
+      pnlStatus: "pnl_snapshot_stale",
+      budgetUsedKrw: "10000",
+    });
+    expect(summary.checks).toContainEqual(expect.objectContaining({
+      code: "live_ops_pnl_status_requires_review",
+    }));
   });
 
   it("private read 실패와 변형 응답도 현재 reservation notional을 budget used 하한으로 보존한다", async () => {
