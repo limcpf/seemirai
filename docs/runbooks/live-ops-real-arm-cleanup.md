@@ -35,7 +35,7 @@ identifier 또는 uuid로 취소해 terminal cancel evidence로 닫는 절차다
 | decision policy | `analysis.decision_policy.id=cleanup_probe`이고 정적 allowlist resolver가 `live_ops_cleanup_probe` strategy를 조립한다 |
 | private read | account/order/balance 조회가 가능하고 raw payload 없이 safe summary로 낮아진다 |
 | reconcile | 기존 mismatch/manual review가 없고, DB run이 없으면 CLI가 private read preflight evidence를 자동 생성한다 |
-| PnL/status | `readStatus=OK`, 완료 계열 snapshot status, 30초 freshness를 모두 만족해야 손실 증거로 쓰고, 결측/오래됨/PARTIAL은 0으로 보정하지 않는다 |
+| PnL/status | `readStatus=OK`, 명시적인 완료 계열 snapshot status, 30초 freshness를 모두 만족해야 손실 증거로 쓰고, 결측/오래됨/PARTIAL/status 누락은 0으로 보정하지 않는다. preflight 직후 새 row의 1초 이내 future skew만 허용한다 |
 | Telegram | startup/live order capable/order/cancel/manual review alert를 owner chat으로 보낼 수 있다 |
 | TUI | live armed/order capable, 최신 decision/order/cancel/reconcile/PnL 상태를 secret 없이 보여준다 |
 | artifact 경로 | symlink 기준 실제 경로가 저장소 밖이고 secret/raw payload 검사를 통과한다 |

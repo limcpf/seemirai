@@ -325,7 +325,8 @@ endpoint가 공통으로 사용할 인증 guard만 고정한다.
   조회 상태의 한국어 label/message/action
 - PnL: `pnl_snapshots`의 최신 safe summary에서 평가자산, 실현/미실현 손익, drawdown, snapshot count,
   조회 상태의 한국어 label/message/action. production 실주문 preflight의 손실 증거로 쓰려면 `readStatus=OK`뿐 아니라
-  완료 계열 snapshot status와 30초 freshness를 함께 만족해야 하며, `PARTIAL`/manual-review/unavailable snapshot은 0 손실로 보정하지 않는다.
+  명시적인 완료 계열 snapshot status와 30초 freshness를 함께 만족해야 하며, `PARTIAL`/manual-review/unavailable/status 누락 snapshot은
+  0 손실로 보정하지 않는다. preflight 시작 직후 PnL worker가 새 snapshot을 쓰는 정상 경합은 1초 이내 future skew만 허용한다.
 
 `/status`는 `secrets`, local control token, Telegram token, raw headers, raw order detail, raw position detail을 반환하지 않는다.
 kill switch가 `NEW_ORDERS_BLOCKED` 또는 `HARD_STOP` 같은 active 상태여도 `/readyz` 실패로 표현하지 않고

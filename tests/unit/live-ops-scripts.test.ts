@@ -581,6 +581,7 @@ function createOkPnlStatusProvider() {
         latestCapturedAt: observedAt,
         latestRealizedPnlKrw: "0",
         latestUnrealizedPnlKrw: "0",
+        latestStatus: "CALCULATED",
         snapshotCount: 1,
         reason: "pnl_snapshot_latest_read",
       };
@@ -691,7 +692,7 @@ const malformed = await evaluateLiveOpsCliReconcilePnlStatus({
   },
   pnlStatusProvider: {
     async getStatus() {
-      return { readStatus: "OK", latestCapturedAt: observedAt, latestRealizedPnlKrw: "0", latestUnrealizedPnlKrw: "0" };
+      return { readStatus: "OK", latestCapturedAt: observedAt, latestRealizedPnlKrw: "0", latestUnrealizedPnlKrw: "0", latestStatus: "CALCULATED" };
     },
   },
   observedAt,
@@ -728,7 +729,7 @@ const malformedOrder = await evaluateLiveOpsCliReconcilePnlStatus({
   },
   pnlStatusProvider: {
     async getStatus() {
-      return { readStatus: "OK", latestCapturedAt: observedAt, latestRealizedPnlKrw: "0", latestUnrealizedPnlKrw: "0" };
+      return { readStatus: "OK", latestCapturedAt: observedAt, latestRealizedPnlKrw: "0", latestUnrealizedPnlKrw: "0", latestStatus: "CALCULATED" };
     },
   },
   budgetSnapshot: {
@@ -2103,6 +2104,7 @@ console.log(JSON.stringify({
       createLiveOpsCliProductionExecutionInputs,
     } = await import(supportModulePath);
     const executionAt = "2026-06-19T00:00:10.000Z";
+    const latestPnlCapturedAt = "2026-06-19T00:00:10.500Z";
     const latestHeartbeatAt = "2026-06-18T23:59:45.000Z";
     const staleReconcileAt = "2026-06-18T23:59:30.000Z";
     const recorded: unknown[] = [];
@@ -2155,7 +2157,7 @@ console.log(JSON.stringify({
       },
       pnlStatusProvider: {
         async getStatus() {
-          return { readStatus: "OK", latestCapturedAt: executionAt, latestRealizedPnlKrw: "0", latestUnrealizedPnlKrw: "0" };
+          return { readStatus: "OK", latestCapturedAt: latestPnlCapturedAt, latestRealizedPnlKrw: "0", latestUnrealizedPnlKrw: "0", latestStatus: "CALCULATED" };
         },
       },
       killSwitchProvider: {
@@ -2229,6 +2231,12 @@ console.log(JSON.stringify({
         runId: "preflight-run-wall-clock",
         status: "COMPLETED",
       },
+    });
+    expect(result.lossSnapshot).toMatchObject({
+      dailyRealizedLossKrw: "0",
+      weeklyRealizedLossKrw: "0",
+      capturedAt: latestPnlCapturedAt,
+      source: "pnl_snapshots",
     });
   });
 
@@ -2394,7 +2402,7 @@ console.log(JSON.stringify({
       },
       pnlStatusProvider: {
         async getStatus() {
-          return { readStatus: "OK", latestCapturedAt: observedAt, latestRealizedPnlKrw: "0", latestUnrealizedPnlKrw: "0" };
+          return { readStatus: "OK", latestCapturedAt: observedAt, latestRealizedPnlKrw: "0", latestUnrealizedPnlKrw: "0", latestStatus: "CALCULATED" };
         },
       },
       killSwitchProvider: {
@@ -2497,7 +2505,7 @@ console.log(JSON.stringify({
       },
       pnlStatusProvider: {
         async getStatus() {
-          return { readStatus: "OK", latestCapturedAt: observedAt, latestRealizedPnlKrw: "0", latestUnrealizedPnlKrw: "0" };
+          return { readStatus: "OK", latestCapturedAt: observedAt, latestRealizedPnlKrw: "0", latestUnrealizedPnlKrw: "0", latestStatus: "CALCULATED" };
         },
       },
       killSwitchProvider: {
@@ -2728,6 +2736,16 @@ console.log(JSON.stringify({
         latestRealizedPnlKrw: "0",
         latestUnrealizedPnlKrw: "0",
         latestStatus: "PARTIAL",
+      },
+      reasonCode: "pnl_snapshot_status_not_ready",
+    },
+    {
+      name: "status가 없는 OK PnL snapshot",
+      pnlStatus: {
+        readStatus: "OK",
+        latestCapturedAt: "2026-06-18T13:33:27.000Z",
+        latestRealizedPnlKrw: "0",
+        latestUnrealizedPnlKrw: "0",
       },
       reasonCode: "pnl_snapshot_status_not_ready",
     },
@@ -2989,6 +3007,7 @@ console.log(JSON.stringify({
               latestCapturedAt: "2026-06-18T13:33:27.000Z",
               latestRealizedPnlKrw: "0",
               latestUnrealizedPnlKrw: "0",
+              latestStatus: "CALCULATED",
             };
           },
         },
@@ -3504,6 +3523,7 @@ console.log(JSON.stringify({
             latestCapturedAt: observedAt,
             latestRealizedPnlKrw: "0",
             latestUnrealizedPnlKrw: "0",
+            latestStatus: "CALCULATED",
             snapshotCount: 1,
           };
         },
@@ -3583,6 +3603,7 @@ console.log(JSON.stringify({
             latestCapturedAt: observedAt,
             latestRealizedPnlKrw: "0",
             latestUnrealizedPnlKrw: "0",
+            latestStatus: "CALCULATED",
             snapshotCount: 1,
           };
         },

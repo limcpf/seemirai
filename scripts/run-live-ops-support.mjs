@@ -20,6 +20,7 @@ const liveOpsCliCleanupCancelPollIntervalMs = 1000;
 const liveOpsCliDailyReservationLockLeaseMs = 5 * 60 * 1000;
 const liveOpsCliPreflightReconcileFreshnessMs = 30_000;
 const liveOpsCliPreflightPnlFreshnessMs = 30_000;
+const liveOpsCliPreflightPnlFutureSkewMs = 1_000;
 const liveOpsCliProcessOwner = createLiveOpsCliProcessOwnerSnapshot(process.pid);
 const liveOpsWorkerLabels = {
   db_readiness: "DB readiness",
@@ -1125,12 +1126,17 @@ function createLiveOpsCliUnavailableLossSnapshot({ pnlStatus, balanceSnapshot, o
 
 function isLiveOpsCliReadyPnlSnapshotStatus(status) {
   if (!hasMeaningfulValue(status)) {
-    return true;
+    return false;
   }
   return ["OK", "SUCCESS", "COMPLETE", "COMPLETED", "CALCULATED"].includes(String(status).toUpperCase());
 }
 
-function isLiveOpsCliFreshPnlStatus(pnlStatus, observedAt, maxAgeMs = liveOpsCliPreflightPnlFreshnessMs) {
+function isLiveOpsCliFreshPnlStatus(
+  pnlStatus,
+  observedAt,
+  maxAgeMs = liveOpsCliPreflightPnlFreshnessMs,
+  maxFutureSkewMs = liveOpsCliPreflightPnlFutureSkewMs,
+) {
   if (!hasMeaningfulValue(pnlStatus?.latestCapturedAt)) {
     return false;
   }
@@ -1140,7 +1146,8 @@ function isLiveOpsCliFreshPnlStatus(pnlStatus, observedAt, maxAgeMs = liveOpsCli
     return false;
   }
   const ageMs = observedTime - capturedTime;
-  return ageMs >= 0 && ageMs <= maxAgeMs;
+  // PnL worker/DB clock이 preflight 시작 직후 snapshot을 기록하는 정상 경합은 stale로 보지 않는다.
+  return ageMs >= -maxFutureSkewMs && ageMs <= maxAgeMs;
 }
 
 function readLiveOpsCliEquityKrw(balanceSnapshot, pnlStatus, config) {

@@ -309,10 +309,11 @@ Telegram, TUI를 같은 lifecycle로 조립하고, 조건을 통과한 단일 `K
 - DnD:
   - [x] closeout validator의 필수 unsafe source scan family에서 일반 영어 단어 `market`을 제거하고, `ord_type`/`시장가`/`best`처럼
         금지 주문 의미가 분명한 term만 empty-match coverage로 요구한다.
-  - [x] production preflight PnL loss snapshot은 `readStatus=OK`와 숫자 realized PnL만으로 열리지 않고, 완료 계열 snapshot status와
-        30초 freshness를 함께 요구한다.
-  - [x] `PARTIAL`, `MANUAL_REVIEW_REQUIRED`, `UNAVAILABLE` 같은 PnL snapshot status는 손실 증거로 쓰지 않고 `ready=false`로 낮춰
-        broker 제출 전 loss guard에서 차단한다.
+  - [x] production preflight PnL loss snapshot은 `readStatus=OK`와 숫자 realized PnL만으로 열리지 않고, 명시적인 완료 계열 snapshot
+        status와 30초 freshness를 함께 요구한다.
+  - [x] `PARTIAL`, `MANUAL_REVIEW_REQUIRED`, `UNAVAILABLE`, status 누락 같은 PnL snapshot status는 손실 증거로 쓰지 않고
+        `ready=false`로 낮춰 broker 제출 전 loss guard에서 차단한다.
+  - [x] preflight 시작 직후 PnL worker가 새 row를 쓰는 정상 경합은 stale로 보지 않도록 1초 이내 future skew만 허용한다.
   - [x] TypeScript `cleanup_probe` strategy idempotency key도 `StrategyContext.observedAt` 날짜 scope를 포함해 익일 같은 후보가 전날
         key와 충돌하지 않는다.
   - [x] 관련 운영 문서와 unit/soak tests가 위 invariant를 설명하고 검증한다.
@@ -438,7 +439,8 @@ SEEMIRAI_RUN_LIVE_OPS_REAL_ARM_CLOSEOUT=1 \
   기준으로 계산한다. heartbeat는 market data 관측 evidence로 보존하되 자정 경계의 attempt id와 preflight readiness 판단을 대신하지 않는다.
 - 2026-06-19: Sub PR 14는 closeout source/security scan의 empty-match 필수 term에서 generic `market`을 제외한다. 운영 source scan은
   정상 market config/doc 문자열 때문에 실패하지 않도록 `ord_type`, `시장가`, `best` 같은 금지 주문 의미가 분명한 term을 사용한다.
-- 2026-06-19: production preflight PnL loss snapshot은 OK row라도 완료 status와 30초 freshness를 통과해야 손실 증거로 쓰며,
+- 2026-06-19: production preflight PnL loss snapshot은 OK row라도 명시적인 완료 status와 30초 freshness를 통과해야 손실 증거로 쓰며,
+  status 누락은 not-ready로 본다. preflight 시작 직후 쓰인 PnL row를 위해 1초 이내 future skew만 허용하고,
   TypeScript cleanup probe key도 observedAt 날짜 scope를 포함한다.
 
 ## 남은 이슈
