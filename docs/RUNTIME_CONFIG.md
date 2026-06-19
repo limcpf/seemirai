@@ -792,10 +792,10 @@ production cleanup reservation은 저장소 밖 artifact 디렉터리에 attempt
 넘으면 attempt reservation을 만들지 않고 broker 제출 전 fail-closed 한다. lock이 이미 잡혀 있으면 다른 live ops 실행이 예산을 선점 중인
 상태로 보고 신규 실주문을 제출하지 않는다. lock 파일에는 `leaseId`, `acquiredAt`, `expiresAt`, `pid`, owner boot id, process start time
 lease metadata를 기록한다. 기본 lease TTL은 5분이며, acquire는 temp 파일에 완성된 lease JSON을 쓴 뒤 hard link로 lock path를 선점한다.
-후속 실행은 owner process fingerprint가 더 이상 살아 있지 않은 만료 lock만 quarantine rename/CAS 절차로 회수해 같은 날짜 운영이 crash로 영구
-차단되지 않게 한다. mismatch 복원 중 target에 이미 fresh lock이 있으면 claim은 active owner의 lock일 수 있으므로 삭제하지 않는다. 기존
-버전이나 외부 손상으로 생긴 malformed lock, 필수 lease field가 빠진 valid JSON lock은 파일 mtime 기준 TTL을 지난 뒤에만 같은 CAS 절차로
-회수한다.
+후속 실행은 owner process fingerprint가 더 이상 살아 있지 않은 만료 lock만 hard-link claim/CAS 절차로 회수해 같은 날짜 운영이 crash로 영구
+차단되지 않게 한다. 이 CAS는 target을 비우기 전에 fingerprint, inode, link count를 확인하므로 fresh lock을 claim 중 target에서 제거하지
+않는다. 기존 버전이나 외부 손상으로 생긴 malformed lock, 필수 lease field가 빠진 valid JSON lock은 파일 mtime 기준 TTL을 지난 뒤에만 같은
+CAS 절차로 회수한다. owner process start time 조회가 권한/환경 문제로 불확실하면 active owner로 fail-closed 한다.
 
 Sub PR 06부터 production `analysis.decision_policy`는 정적 allowlist policy id만 허용한다. 기본 policy는 `cleanup_probe`이며,
 config JSON에는 다음 non-secret 값만 둔다.

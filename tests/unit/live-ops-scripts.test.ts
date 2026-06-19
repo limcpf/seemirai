@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { mkdtemp, readFile, utimes, writeFile } from "node:fs/promises";
+import { link, mkdtemp, readFile, unlink, utimes, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
@@ -5450,6 +5450,25 @@ console.log(JSON.stringify({
     }, null, 2), "utf8");
     const pidReusedLock = await artifactStore.acquireDailyReservationLock("2026-06-15", { acquiredAt: observedAt });
     await pidReusedLock.release();
+    await writeFile(staleLockPath, JSON.stringify({
+      source: "live_ops_cli_daily_budget_reservation_lock",
+      day: "2026-06-15",
+      leaseId: "competing-claim-main-lock",
+      acquiredAt: "2026-06-14T23:50:00.000Z",
+      expiresAt: "2026-06-14T23:55:00.000Z",
+      pid: process.pid,
+      owner: {
+        ...lockLease.owner,
+        processStartTime: "stale-process-start",
+      },
+    }, null, 2), "utf8");
+    const competingClaimPath = `${staleLockPath}.claimed-preexisting-test`;
+    await link(staleLockPath, competingClaimPath);
+    const competingClaimBusy = await budgetReservation.reserve(createRequest("ops-11111111111111111111111111", "10000"));
+    const competingClaimTargetAfterBusy = JSON.parse(await readFile(staleLockPath, "utf8"));
+    await unlink(competingClaimPath);
+    const competingClaimRecoveredLock = await artifactStore.acquireDailyReservationLock("2026-06-15", { acquiredAt: observedAt });
+    await competingClaimRecoveredLock.release();
     await writeFile(staleLockPath, "{}", "utf8");
     const schemaMalformedBusy = await budgetReservation.reserve(createRequest("ops-ffffffffffffffffffffffffff", "10000"));
     await utimes(staleLockPath, new Date("2026-06-14T23:50:00.000Z"), new Date("2026-06-14T23:50:00.000Z"));
@@ -5507,6 +5526,14 @@ console.log(JSON.stringify({
       owner: lockLease.owner,
     });
     expect(await artifactStore.readReservation("ops-eeeeeeeeeeeeeeeeeeeeeeeeee")).toBeUndefined();
+    expect(competingClaimBusy).toMatchObject({
+      reserved: false,
+      reasonCode: "live_ops_daily_budget_lock_busy",
+    });
+    expect(competingClaimTargetAfterBusy).toMatchObject({
+      leaseId: "competing-claim-main-lock",
+    });
+    expect(await artifactStore.readReservation("ops-11111111111111111111111111")).toBeUndefined();
     expect(schemaMalformedBusy).toMatchObject({
       reserved: false,
       reasonCode: "live_ops_daily_budget_lock_busy",
