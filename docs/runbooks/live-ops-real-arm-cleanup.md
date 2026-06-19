@@ -157,6 +157,7 @@ src/infrastructure/upbit/live-broker/service.ts src/infrastructure/upbit/private
 scripts/run-live-ops-support.mjs config/live-ops.example.json config/live-ops.env.example`
 전체 범위의 금지 주문 경계 전체(`[\x27"]?ord_type[\x27"]?\s*[:=]\s*[\x27"]?price`,
 `[\x27"]?ord_type[\x27"]?\s*[:=]\s*[\x27"]?market`, `[\x27"]?ord_type[\x27"]?\s*[:=]\s*[\x27"]?best`,
+`[\x27"]?key[\x27"]?\s*:\s*[\x27"]ord_type[\x27"][^\r\n{}]*,[^\r\n{}]*[\x27"]?value[\x27"]?\s*:\s*[\x27"]?(price|market|best)`,
 `[\x27"]?order_type[\x27"]?\s*[:=]\s*[\x27"]?(market|MARKET)`,
 `[\x27"]?orderType[\x27"]?\s*[:=]\s*[\x27"]?(market|MARKET)`,
 `[\x27"]?withdrawal_enabled[\x27"]?\s*[:=]\s*true`, `[\x27"]?deposit_enabled[\x27"]?\s*[:=]\s*true`,

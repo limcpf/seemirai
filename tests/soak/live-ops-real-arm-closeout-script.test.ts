@@ -64,7 +64,7 @@ const closeoutSourceScanPathsWithoutPrivateMappers = [
   "config/live-ops.example.json",
   "config/live-ops.env.example",
 ].join(" ");
-const closeoutUnsafeSourceScanCommand = "rg --no-config -uuu -n '[\\x27\"]?ord_type[\\x27\"]?\\s*[:=]\\s*[\\x27\"]?price|[\\x27\"]?ord_type[\\x27\"]?\\s*[:=]\\s*[\\x27\"]?market|[\\x27\"]?ord_type[\\x27\"]?\\s*[:=]\\s*[\\x27\"]?best|[\\x27\"]?order_type[\\x27\"]?\\s*[:=]\\s*[\\x27\"]?(market|MARKET)|[\\x27\"]?orderType[\\x27\"]?\\s*[:=]\\s*[\\x27\"]?(market|MARKET)|[\\x27\"]?withdrawal_enabled[\\x27\"]?\\s*[:=]\\s*true|[\\x27\"]?deposit_enabled[\\x27\"]?\\s*[:=]\\s*true|\\/v1\\/deposits|\\/v1\\/withdraws|[\\x27\"]?futures_enabled[\\x27\"]?\\s*[:=]\\s*true|[\\x27\"]?leverage_enabled[\\x27\"]?\\s*[:=]\\s*true|[\\x27\"]?market_order_enabled[\\x27\"]?\\s*[:=]\\s*true|[\\x27\"]?entry_market_order_enabled[\\x27\"]?\\s*[:=]\\s*true' "
+const closeoutUnsafeSourceScanCommand = "rg --no-config -uuu -n '[\\x27\"]?ord_type[\\x27\"]?\\s*[:=]\\s*[\\x27\"]?price|[\\x27\"]?ord_type[\\x27\"]?\\s*[:=]\\s*[\\x27\"]?market|[\\x27\"]?ord_type[\\x27\"]?\\s*[:=]\\s*[\\x27\"]?best|[\\x27\"]?key[\\x27\"]?\\s*:\\s*[\\x27\"]ord_type[\\x27\"][^\\r\\n{}]*,[^\\r\\n{}]*[\\x27\"]?value[\\x27\"]?\\s*:\\s*[\\x27\"]?(price|market|best)|[\\x27\"]?order_type[\\x27\"]?\\s*[:=]\\s*[\\x27\"]?(market|MARKET)|[\\x27\"]?orderType[\\x27\"]?\\s*[:=]\\s*[\\x27\"]?(market|MARKET)|[\\x27\"]?withdrawal_enabled[\\x27\"]?\\s*[:=]\\s*true|[\\x27\"]?deposit_enabled[\\x27\"]?\\s*[:=]\\s*true|\\/v1\\/deposits|\\/v1\\/withdraws|[\\x27\"]?futures_enabled[\\x27\"]?\\s*[:=]\\s*true|[\\x27\"]?leverage_enabled[\\x27\"]?\\s*[:=]\\s*true|[\\x27\"]?market_order_enabled[\\x27\"]?\\s*[:=]\\s*true|[\\x27\"]?entry_market_order_enabled[\\x27\"]?\\s*[:=]\\s*true' "
   + closeoutSourceScanPaths;
 const closeoutSecretSourceScanCommand = "rg --no-config -uuu -n 'SEEMIRAI_DATABASE_URL\\s*=\\s*postgres:\\/\\/[^\\s<:]+:[^\\s<@]+@|postgres(?:ql)?:\\/\\/[^:<\\s\"\\x27]+:[^@<\\s\"\\x27]+@|SEEMIRAI_UPBIT_ACCESS_KEY\\s*=\\s*[^<\\s]+|SEEMIRAI_UPBIT_SECRET_KEY\\s*=\\s*[^<\\s]+|SEEMIRAI_TELEGRAM_BOT_TOKEN\\s*=\\s*[0-9]+:[A-Za-z0-9_-]+|\\bTELEGRAM_BOT_TOKEN\\s*=\\s*[0-9]+:[A-Za-z0-9_-]+|SEEMIRAI_TUI_CONTROL_TOKEN\\s*=\\s*[^<\\s]+|[\\x27\"]?Authorization[\\x27\"]?\\s*[:=]\\s*[\\x27\"]?(Bearer|bearer)\\s+[A-Za-z0-9._-]+|[\\x27\"]?authorization[\\x27\"]?\\s*[:=]\\s*[\\x27\"]?(Bearer|bearer)\\s+[A-Za-z0-9._-]+|raw_provider_payload|rawProviderPayload|raw_order_detail|rawOrderDetail' "
   + closeoutSourceScanPaths;
@@ -227,6 +227,30 @@ describe("Issue 206 live:ops real-arm closeout script", () => {
           ...(manifest.sourceScan as Record<string, unknown>),
           commands: [
             "rg --no-config -uuu -n '\"?ord_type\"?\\s*[:=]\\s*\"?price|\"?ord_type\"?\\s*[:=]\\s*\"?market|\"?ord_type\"?\\s*[:=]\\s*\"?best|\"?order_type\"?\\s*[:=]\\s*\"?(market|MARKET)|\"?orderType\"?\\s*[:=]\\s*\"?(market|MARKET)|\"?withdrawal_enabled\"?\\s*[:=]\\s*true|\"?deposit_enabled\"?\\s*[:=]\\s*true|\\/v1\\/deposits|\\/v1\\/withdraws|\"?futures_enabled\"?\\s*[:=]\\s*true|\"?leverage_enabled\"?\\s*[:=]\\s*true|\"?market_order_enabled\"?\\s*[:=]\\s*true|\"?entry_market_order_enabled\"?\\s*[:=]\\s*true' "
+              + closeoutSourceScanPaths,
+            closeoutSecretSourceScanCommand,
+          ],
+        },
+      }),
+    });
+    const summary = await runScriptExpectingFailure(
+      ["--json", "--artifact-dir", artifactDir, "--manifest", manifestPath],
+      createReadyEnv(),
+    );
+
+    expect(summary.status).toBe("failed");
+    expect(getCheck(summary, "sourceSecurityScan")).toMatchObject({ status: "fail" });
+  });
+
+  it("fails when source scan commands omit ord_type key/value order payload coverage", async () => {
+    const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-issue-206-closeout-source-scan-ord-type-key-value-"));
+    const manifestPath = await writeCloseoutManifest(artifactDir, {
+      manifestMutator: (manifest) => ({
+        ...manifest,
+        sourceScan: {
+          ...(manifest.sourceScan as Record<string, unknown>),
+          commands: [
+            "rg --no-config -uuu -n '[\\x27\"]?ord_type[\\x27\"]?\\s*[:=]\\s*[\\x27\"]?price|[\\x27\"]?ord_type[\\x27\"]?\\s*[:=]\\s*[\\x27\"]?market|[\\x27\"]?ord_type[\\x27\"]?\\s*[:=]\\s*[\\x27\"]?best|[\\x27\"]?order_type[\\x27\"]?\\s*[:=]\\s*[\\x27\"]?(market|MARKET)|[\\x27\"]?orderType[\\x27\"]?\\s*[:=]\\s*[\\x27\"]?(market|MARKET)|[\\x27\"]?withdrawal_enabled[\\x27\"]?\\s*[:=]\\s*true|[\\x27\"]?deposit_enabled[\\x27\"]?\\s*[:=]\\s*true|\\/v1\\/deposits|\\/v1\\/withdraws|[\\x27\"]?futures_enabled[\\x27\"]?\\s*[:=]\\s*true|[\\x27\"]?leverage_enabled[\\x27\"]?\\s*[:=]\\s*true|[\\x27\"]?market_order_enabled[\\x27\"]?\\s*[:=]\\s*true|[\\x27\"]?entry_market_order_enabled[\\x27\"]?\\s*[:=]\\s*true' "
               + closeoutSourceScanPaths,
             closeoutSecretSourceScanCommand,
           ],
