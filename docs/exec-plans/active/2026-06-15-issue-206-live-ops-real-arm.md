@@ -283,6 +283,22 @@ Telegram, TUI를 같은 lifecycle로 조립하고, 조건을 통과한 단일 `K
   - [x] 관련 운영 문서가 scope guard 순서, cancel poll failure artifact, post-reservation budget used invariant를 설명한다.
   - [x] 관련 unit tests와 `git diff --check`가 통과한다.
 
+### Sub PR 13: risk/freshness final guard 보강
+
+- 목표: final PR review에서 발견된 추가 risk/readiness gap을 닫는다. 기존 BTC 보유 포지션을 예산과 RiskGate 입력에 반영하고,
+  PnL non-OK 상태를 0 손실로 보정하지 않으며, clean reconcile evidence에도 freshness 범위를 적용하고, cleanup probe attempt id를 날짜별로 분리한다.
+- 제외 범위:
+  - hard-stop 청산, 시장가 매도, BTC 외 market 활성화.
+  - budget 한도 확대, 신규 전략 추가.
+  - final main PR merge.
+- DnD:
+  - [x] `KRW-BTC` 보유 잔고가 있으면 reference price로 평가해 `openPositionNotionalKrw`와 RiskGate `positions`에 포함한다.
+  - [x] 보유 포지션 평가 기준가가 없으면 open position 과소평가를 막기 위해 broker 제출 전 fail-closed 한다.
+  - [x] PnL/status provider가 `OK` snapshot을 주지 않으면 realized loss를 0으로 보정하지 않고 loss snapshot 결측으로 차단한다.
+  - [x] clean reconcile evidence도 preflight 기준 30초 freshness를 넘으면 stale로 보고 같은 tick의 private read preflight evidence를 기록한다.
+  - [x] cleanup probe decision key는 날짜 scope를 포함해 전날 reservation 파일이 다음 날 attempt를 영구 차단하지 않게 한다.
+  - [x] 관련 운영 문서와 unit tests가 위 invariant를 설명하고 검증한다.
+
 ## 검증 방법
 
 공통 검증:

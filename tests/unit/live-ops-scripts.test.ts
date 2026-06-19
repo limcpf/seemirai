@@ -318,7 +318,7 @@ console.log(JSON.stringify({
       requestedPrice: "99999000",
       requestedQuantity: "0.0001",
       requestedNotional: "9999.9",
-      idempotencyKey: "live_ops_cleanup_probe:upbit_krw_spot:KRW-BTC:BUY:99999000:0.0001:9999.9",
+      idempotencyKey: "live_ops_cleanup_probe:2026-06-16:upbit_krw_spot:KRW-BTC:BUY:99999000:0.0001:9999.9",
       postOnly: true,
       timeInForce: "POST_ONLY",
     });
@@ -2134,6 +2134,368 @@ console.log(JSON.stringify({
     }));
   });
 
+  it("production preflight는 오래된 clean reconcile도 같은 tick evidence로 갱신한다", async () => {
+    const supportModulePath = path.join(process.cwd(), "scripts/run-live-ops-support.mjs");
+    const {
+      createLiveOpsCliProductionExecutionInputs,
+    } = await import(supportModulePath);
+    const observedAt = "2026-06-18T13:33:27.000Z";
+    const recorded: unknown[] = [];
+    let reconcileReadCount = 0;
+    const productionRuntime = {
+      entryRuntime: {},
+      cleanupLifecycle: {},
+      privateReadProvider: {
+        async listOpenOrders() {
+          return [];
+        },
+        async getBalances() {
+          return {
+            exchangeId: "upbit_krw_spot",
+            capturedAt: observedAt,
+            balances: [{ currency: "KRW", available: "50000", locked: "0", total: "50000" }],
+          };
+        },
+      },
+      reconcileStatusProvider: {
+        async getReconcileStatus() {
+          reconcileReadCount += 1;
+          if (reconcileReadCount === 1) {
+            return {
+              lastReconcileAt: "2026-06-18T13:00:00.000Z",
+              result: "SUCCESS",
+              mismatchCount: 0,
+              openOrderCount: 0,
+              balanceStatus: "OK",
+              websocketStatus: "CONNECTED",
+            };
+          }
+          return {
+            lastReconcileAt: observedAt,
+            result: "SUCCESS",
+            mismatchCount: 0,
+            openOrderCount: 0,
+            balanceStatus: "OK",
+            websocketStatus: "CONNECTED",
+          };
+        },
+      },
+      pnlStatusProvider: {
+        async getStatus() {
+          return { readStatus: "OK", latestCapturedAt: observedAt, latestRealizedPnlKrw: "0", latestUnrealizedPnlKrw: "0" };
+        },
+      },
+      killSwitchProvider: {
+        async getStatus() {
+          return { active: false, state: "NORMAL" };
+        },
+      },
+      budgetReservation: {
+        async readDailyReservedNotional() {
+          return { reservedNotionalKrw: "0", reservationCount: 0 };
+        },
+      },
+      preflightReconcileRecorder: {
+        async recordPreflight(input: unknown) {
+          recorded.push(input);
+          return { created: true, runId: "fresh-preflight-run", status: "COMPLETED" };
+        },
+      },
+      telegramDispatcher: {},
+    };
+
+    const result = await createLiveOpsCliProductionExecutionInputs({
+      config: {
+        universe: { markets: ["KRW-BTC"], default_market: "KRW-BTC" },
+        budget: {
+          max_order_krw: "10000",
+          daily_autonomous_notional_limit_krw: "30000",
+          max_open_position_notional_krw: "30000",
+        },
+      },
+      env: {
+        SEEMIRAI_UPBIT_ACCESS_KEY: "fake-access-key",
+        SEEMIRAI_UPBIT_SECRET_KEY: "fake-secret-key",
+        SEEMIRAI_UPBIT_KEY_SCOPE: "자산조회,주문조회,주문하기",
+        SEEMIRAI_UPBIT_KEY_SCOPE_EVIDENCE_ID: "scope-evidence",
+      },
+      fixtureSmoke: false,
+      analysisDecision: { ready: true, decisionCategory: "ORDER_INTENT", orderIntentCount: 1 },
+      marketData: { ready: true, latestHeartbeatAt: observedAt, referencePrice: "100000000" },
+      orderIntents: [createCleanupRuntimeIntent()],
+      productionRuntime,
+    });
+
+    expect(recorded).toHaveLength(1);
+    expect(reconcileReadCount).toBe(2);
+    expect(result.executionStatus).toMatchObject({
+      reconcileFresh: true,
+      preflightReconcileEvidence: {
+        runId: "fresh-preflight-run",
+        status: "COMPLETED",
+      },
+    });
+  });
+
+  it("production preflight는 기존 BTC 보유분을 open position 예산과 RiskGate positions에 반영한다", async () => {
+    const supportModulePath = path.join(process.cwd(), "scripts/run-live-ops-support.mjs");
+    const {
+      createLiveOpsCliEntryRuntime,
+      createLiveOpsCliProductionExecutionInputs,
+      evaluateLiveOpsCliLiveExecution,
+    } = await import(supportModulePath);
+    const observedAt = "2026-06-18T13:33:27.000Z";
+    const submitted: unknown[] = [];
+    const reservations: unknown[] = [];
+    const rawIntent = { ...createCleanupRuntimeIntent() } as Record<string, unknown>;
+    delete rawIntent.costSnapshot;
+    delete rawIntent.costInput;
+    delete rawIntent.riskApproval;
+    delete rawIntent.risk;
+    const config = {
+      universe: { markets: ["KRW-BTC"], default_market: "KRW-BTC" },
+      budget: {
+        max_order_krw: "10000",
+        daily_autonomous_notional_limit_krw: "100000",
+        max_open_position_notional_krw: "30000",
+      },
+    };
+    const productionRuntime = {
+      entryRuntime: {},
+      cleanupLifecycle: {},
+      privateReadProvider: {
+        async listOpenOrders() {
+          return [];
+        },
+        async getBalances() {
+          return {
+            exchangeId: "upbit_krw_spot",
+            capturedAt: observedAt,
+            balances: [
+              { currency: "KRW", available: "50000", locked: "0", total: "50000" },
+              { currency: "BTC", available: "0.00025", locked: "0", total: "0.00025" },
+            ],
+          };
+        },
+      },
+      reconcileStatusProvider: {
+        async getReconcileStatus() {
+          return { lastReconcileAt: observedAt, result: "SUCCESS", mismatchCount: 0, openOrderCount: 0, balanceStatus: "OK" };
+        },
+      },
+      pnlStatusProvider: {
+        async getStatus() {
+          return { readStatus: "OK", latestCapturedAt: observedAt, latestRealizedPnlKrw: "0", latestUnrealizedPnlKrw: "0" };
+        },
+      },
+      killSwitchProvider: {
+        async getStatus() {
+          return { active: false, state: "NORMAL" };
+        },
+      },
+      budgetReservation: {
+        async readDailyReservedNotional() {
+          return { reservedNotionalKrw: "0", reservationCount: 0 };
+        },
+      },
+      preflightReconcileRecorder: {
+        async recordPreflight() {
+          throw new Error("FreshCleanReconcileShouldNotRecord");
+        },
+      },
+      telegramDispatcher: {},
+    };
+    const executionInputs = await createLiveOpsCliProductionExecutionInputs({
+      config,
+      env: {
+        SEEMIRAI_UPBIT_ACCESS_KEY: "fake-access-key",
+        SEEMIRAI_UPBIT_SECRET_KEY: "fake-secret-key",
+        SEEMIRAI_UPBIT_KEY_SCOPE: "자산조회,주문조회,주문하기",
+        SEEMIRAI_UPBIT_KEY_SCOPE_EVIDENCE_ID: "scope-evidence",
+      },
+      fixtureSmoke: false,
+      analysisDecision: { ready: true, decisionCategory: "ORDER_INTENT", orderIntentCount: 1 },
+      marketData: { ready: true, latestHeartbeatAt: observedAt, referencePrice: "100000000" },
+      orderIntents: [rawIntent],
+      productionRuntime,
+    });
+    const liveExecution = await evaluateLiveOpsCliLiveExecution({
+      config,
+      fixtureSmoke: false,
+      analysisDecision: { ready: true, decisionCategory: "ORDER_INTENT", orderIntentCount: 1 },
+      marketData: { ready: true, latestHeartbeatAt: observedAt, referencePrice: "100000000" },
+      env: {
+        SEEMIRAI_UPBIT_ACCESS_KEY: "fake-access-key",
+        SEEMIRAI_UPBIT_SECRET_KEY: "fake-secret-key",
+        SEEMIRAI_UPBIT_KEY_SCOPE: "자산조회,주문조회,주문하기",
+        SEEMIRAI_UPBIT_KEY_SCOPE_EVIDENCE_ID: "scope-evidence",
+      },
+      orderIntents: executionInputs.orderIntents,
+      entryRuntime: createLiveOpsCliEntryRuntime({
+        broker: {
+          async submitOrder(submission: unknown) {
+            submitted.push(submission);
+            return { brokerOrderId: "unexpected-held-position-order" };
+          },
+        },
+        budgetReservation: {
+          async reserve(request: unknown) {
+            reservations.push(request);
+            return { reserved: true };
+          },
+        },
+      }),
+      executionStatus: executionInputs.executionStatus,
+      postSubmitReadiness: executionInputs.postSubmitReadiness,
+      budgetSnapshot: executionInputs.budgetSnapshot,
+      lossSnapshot: executionInputs.lossSnapshot,
+      cleanupLifecycle: executionInputs.cleanupLifecycle,
+    });
+
+    expect(executionInputs.budgetSnapshot).toMatchObject({
+      openPositionNotionalKrw: "25000",
+      dailyAutonomousNotionalUsedKrw: "25000",
+    });
+    expect(executionInputs.orderIntents[0]?.risk.positions).toContainEqual(expect.objectContaining({
+      market: "KRW-BTC",
+      notionalBpsOfEquity: "5000",
+    }));
+    expect(liveExecution).toMatchObject({
+      status: "blocked",
+      attemptStatus: "BLOCKED",
+      submittedOrderCount: 0,
+    });
+    expect(submitted).toHaveLength(0);
+    expect(reservations).toHaveLength(0);
+  });
+
+  it("production preflight는 PnL non-OK 상태를 0 손실로 보정하지 않고 제출 전 차단한다", async () => {
+    const supportModulePath = path.join(process.cwd(), "scripts/run-live-ops-support.mjs");
+    const {
+      createLiveOpsCliEntryRuntime,
+      createLiveOpsCliProductionExecutionInputs,
+      evaluateLiveOpsCliLiveExecution,
+    } = await import(supportModulePath);
+    const observedAt = "2026-06-18T13:33:27.000Z";
+    const submitted: unknown[] = [];
+    const rawIntent = { ...createCleanupRuntimeIntent() } as Record<string, unknown>;
+    delete rawIntent.costSnapshot;
+    delete rawIntent.costInput;
+    delete rawIntent.riskApproval;
+    delete rawIntent.risk;
+    const config = {
+      universe: { markets: ["KRW-BTC"], default_market: "KRW-BTC" },
+      budget: {
+        max_order_krw: "10000",
+        daily_autonomous_notional_limit_krw: "30000",
+        max_open_position_notional_krw: "30000",
+      },
+    };
+    const productionRuntime = {
+      entryRuntime: {},
+      cleanupLifecycle: {},
+      privateReadProvider: {
+        async listOpenOrders() {
+          return [];
+        },
+        async getBalances() {
+          return {
+            exchangeId: "upbit_krw_spot",
+            capturedAt: observedAt,
+            balances: [{ currency: "KRW", available: "50000", locked: "0", total: "50000" }],
+          };
+        },
+      },
+      reconcileStatusProvider: {
+        async getReconcileStatus() {
+          return { lastReconcileAt: observedAt, result: "SUCCESS", mismatchCount: 0, openOrderCount: 0, balanceStatus: "OK" };
+        },
+      },
+      pnlStatusProvider: {
+        async getStatus() {
+          return { readStatus: "NOT_FOUND", reason: "pnl_snapshot_not_found" };
+        },
+      },
+      killSwitchProvider: {
+        async getStatus() {
+          return { active: false, state: "NORMAL" };
+        },
+      },
+      budgetReservation: {
+        async readDailyReservedNotional() {
+          return { reservedNotionalKrw: "0", reservationCount: 0 };
+        },
+      },
+      preflightReconcileRecorder: {
+        async recordPreflight() {
+          throw new Error("FreshCleanReconcileShouldNotRecord");
+        },
+      },
+      telegramDispatcher: {},
+    };
+    const executionInputs = await createLiveOpsCliProductionExecutionInputs({
+      config,
+      env: {
+        SEEMIRAI_UPBIT_ACCESS_KEY: "fake-access-key",
+        SEEMIRAI_UPBIT_SECRET_KEY: "fake-secret-key",
+        SEEMIRAI_UPBIT_KEY_SCOPE: "자산조회,주문조회,주문하기",
+        SEEMIRAI_UPBIT_KEY_SCOPE_EVIDENCE_ID: "scope-evidence",
+      },
+      fixtureSmoke: false,
+      analysisDecision: { ready: true, decisionCategory: "ORDER_INTENT", orderIntentCount: 1 },
+      marketData: { ready: true, latestHeartbeatAt: observedAt, referencePrice: "100000000" },
+      orderIntents: [rawIntent],
+      productionRuntime,
+    });
+    const liveExecution = await evaluateLiveOpsCliLiveExecution({
+      config,
+      fixtureSmoke: false,
+      analysisDecision: { ready: true, decisionCategory: "ORDER_INTENT", orderIntentCount: 1 },
+      marketData: { ready: true, latestHeartbeatAt: observedAt, referencePrice: "100000000" },
+      env: {
+        SEEMIRAI_UPBIT_ACCESS_KEY: "fake-access-key",
+        SEEMIRAI_UPBIT_SECRET_KEY: "fake-secret-key",
+        SEEMIRAI_UPBIT_KEY_SCOPE: "자산조회,주문조회,주문하기",
+        SEEMIRAI_UPBIT_KEY_SCOPE_EVIDENCE_ID: "scope-evidence",
+      },
+      orderIntents: executionInputs.orderIntents,
+      entryRuntime: createLiveOpsCliEntryRuntime({
+        broker: {
+          async submitOrder(submission: unknown) {
+            submitted.push(submission);
+            return { brokerOrderId: "unexpected-pnl-missing-order" };
+          },
+        },
+        budgetReservation: {
+          async reserve() {
+            return { reserved: true };
+          },
+        },
+      }),
+      executionStatus: executionInputs.executionStatus,
+      postSubmitReadiness: executionInputs.postSubmitReadiness,
+      budgetSnapshot: executionInputs.budgetSnapshot,
+      lossSnapshot: executionInputs.lossSnapshot,
+      cleanupLifecycle: executionInputs.cleanupLifecycle,
+    });
+
+    expect(executionInputs.lossSnapshot).toMatchObject({
+      ready: false,
+      reasonCode: "pnl_snapshot_not_found",
+    });
+    expect(liveExecution).toMatchObject({
+      status: "blocked",
+      submittedOrderCount: 0,
+    });
+    expect(liveExecution.checks).toContainEqual(expect.objectContaining({
+      code: "live_ops_execution_status_blocked",
+      details: expect.objectContaining({
+        violations: expect.arrayContaining(["실제 realized loss snapshot이 필요합니다"]),
+      }),
+    }));
+    expect(submitted).toHaveLength(0);
+  });
+
   it("production boot는 broker guard를 runtime 생성 조건으로 먼저 평가한다", async () => {
     const supportSource = await readFile(
       path.join(process.cwd(), "scripts", "run-live-ops-support.mjs"),
@@ -2246,7 +2608,7 @@ console.log(JSON.stringify({
         reconcileStatusProvider: {
           async getReconcileStatus() {
             return {
-              lastReconcileAt: "2026-06-18T13:00:00.000Z",
+              lastReconcileAt: "2026-06-18T13:33:27.000Z",
               result: "SUCCESS",
               mismatchCount: 0,
               openOrderCount: 0,
@@ -2260,7 +2622,12 @@ console.log(JSON.stringify({
         },
         pnlStatusProvider: {
           async getStatus() {
-            return { readStatus: "NOT_FOUND", reason: "pnl_snapshot_not_found" };
+            return {
+              readStatus: "OK",
+              latestCapturedAt: "2026-06-18T13:33:27.000Z",
+              latestRealizedPnlKrw: "0",
+              latestUnrealizedPnlKrw: "0",
+            };
           },
         },
         killSwitchProvider: {
