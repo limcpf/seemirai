@@ -153,9 +153,10 @@ closeout evidence로 인정하지 않는다.
 명령으로 repository root에서 runtime source path인 `src/runtime/live-ops-config.ts src/runtime/live-ops-config
 src/runtime/live-ops-decision-policy.ts src/runtime/live-ops-decision-policy src/runtime/live-ops-live-execution.ts
 src/runtime/live-ops-live-execution src/runtime/live-ops-analysis-decision.ts src/runtime/live-ops-analysis-decision
-src/application/live-autonomous-entry-runtime/service.ts
+src/application/live-autonomous-entry-runtime/service.ts src/infrastructure/upbit/private-client.ts
 src/infrastructure/upbit/private-client/client.ts src/infrastructure/upbit/private-client/auth.ts
-src/infrastructure/upbit/live-broker/service.ts src/infrastructure/upbit/private-mappers scripts/run-live-ops.mjs
+src/infrastructure/upbit/live-broker/service.ts src/infrastructure/upbit/private-mappers.ts
+src/infrastructure/upbit/private-mappers scripts/run-live-ops.mjs
 scripts/run-live-ops-support.mjs config/live-ops.example.json config/live-ops.env.example`
 전체 범위의 금지 주문 경계 전체(`[\x27"]?ord_type[\x27"]?\s*[:=]\s*[\x27"]?price`,
 `[\x27"]?ord_type[\x27"]?\s*[:=]\s*[\x27"]?market`, `[\x27"]?ord_type[\x27"]?\s*[:=]\s*[\x27"]?best`,
@@ -169,7 +170,8 @@ scripts/run-live-ops-support.mjs config/live-ops.example.json config/live-ops.en
 `[\x27"]?entry_market_order_enabled[\x27"]?\s*[:=]\s*true`)와
 secret/raw payload 후보 전체(`SEEMIRAI_DATABASE_URL=postgres://...:<password>@...`,
 `postgres://...:<password>@...` 또는 `postgresql://...:<password>@...`, Upbit access/secret key literal, Telegram bot token literal,
-legacy `TELEGRAM_BOT_TOKEN=123:...` literal,
+`[\x27"]?accessKey[\x27"]?\s*:\s*[\x27"][A-Za-z0-9._-]{16,}[\x27"]`,
+`[\x27"]?secretKey[\x27"]?\s*:\s*[\x27"][A-Za-z0-9._\/=+-]{16,}[\x27"]`, legacy `TELEGRAM_BOT_TOKEN=123:...` literal,
 TUI control token literal, `[\x27"]?Authorization[\x27"]?\s*[:=]\s*[\x27"]?(Bearer|bearer) ...`,
 `[\x27"]?authorization[\x27"]?\s*[:=]\s*[\x27"]?(Bearer|bearer) ...`, `raw_provider_payload`, `rawProviderPayload`,
 `raw_order_detail`, `rawOrderDetail`)를 스캔한 증거를 포함해야 한다.

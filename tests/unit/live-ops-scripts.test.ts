@@ -1901,6 +1901,52 @@ console.log(JSON.stringify({
     });
   });
 
+  it("database PnL status provider는 cleanup strategy row가 없으면 global 계산 완료 row를 최초 cleanup 손실 근거로 읽는다", async () => {
+    const supportModulePath = path.join(process.cwd(), "scripts/run-live-ops-support.mjs");
+    const {
+      createLiveOpsCliDatabasePnlStatusProvider,
+    } = await import(supportModulePath);
+    const queries: Array<{ text: string; params: unknown[] }> = [];
+    const globalCalculatedRow = {
+      strategy_id: null,
+      market: null,
+      captured_at: "2026-06-18T13:33:27.000Z",
+      equity: "100000",
+      realized_pnl: "0",
+      unrealized_pnl: "0",
+      drawdown_bps: "0",
+      source_fingerprint: "global-calculated",
+      payload_status: "CALCULATED",
+    };
+    const pool = {
+      async query(sql: string, params: unknown[] = []) {
+        const text = sql.replace(/\s+/gu, " ").trim();
+        queries.push({ text, params });
+        if (text.includes("FROM pnl_snapshots") && text.includes("LIMIT 1")) {
+          const allowsGlobalFallback = text.includes("strategy_id IS NULL");
+          return { rows: allowsGlobalFallback ? [globalCalculatedRow] : [] };
+        }
+        if (text.includes("count(*)::int AS count") && text.includes("FROM pnl_snapshots")) {
+          const allowsGlobalFallback = text.includes("strategy_id IS NULL");
+          return { rows: [{ count: allowsGlobalFallback ? 1 : 0 }] };
+        }
+        throw new Error(`unexpected query: ${text}`);
+      },
+    };
+
+    const status = await createLiveOpsCliDatabasePnlStatusProvider(pool, "KRW-BTC").getStatus();
+
+    expect(status).toMatchObject({
+      readStatus: "OK",
+      latestCapturedAt: "2026-06-18T13:33:27.000Z",
+      latestRealizedPnlKrw: "0",
+      latestUnrealizedPnlKrw: "0",
+      latestStatus: "CALCULATED",
+      snapshotCount: 1,
+    });
+    expect(queries[0]?.text).toContain("strategy_id IS NULL");
+  });
+
   it("preflight recorder는 private read 결과를 DB reconcile evidence로 남긴다", async () => {
     const supportModulePath = path.join(process.cwd(), "scripts/run-live-ops-support.mjs");
     const {

@@ -2994,7 +2994,7 @@ export function createLiveOpsCliDatabasePnlStatusProvider(pool, market) {
     async getStatus() {
       try {
         const [latestResult, countResult] = await Promise.all([
-          // 손실 guard는 같은 live ops strategy의 최신 PnL 상태를 봐야 하며, 최신 not-ready row를 오래된 계산 완료 row로 숨기지 않는다.
+          // cleanup 전용 PnL row가 생긴 뒤에는 그 scope를 우선하되, 첫 cleanup 전에는 global 계산 완료 snapshot으로 손실 guard를 열 수 있어야 한다.
           pool.query(`
             SELECT
               strategy_id,
@@ -3008,8 +3008,13 @@ export function createLiveOpsCliDatabasePnlStatusProvider(pool, market) {
               payload_json ->> 'status' AS payload_status
             FROM pnl_snapshots
             WHERE (market = $1 OR market IS NULL)
-              AND strategy_id = 'live_ops_cleanup_probe'
+              AND (
+                strategy_id = 'live_ops_cleanup_probe'
+                OR strategy_id IS NULL
+                OR strategy_id IN ('global', 'aggregate')
+              )
             ORDER BY
+              (strategy_id = 'live_ops_cleanup_probe') DESC,
               captured_at DESC,
               (market = $1) DESC
             LIMIT 1
@@ -3018,7 +3023,11 @@ export function createLiveOpsCliDatabasePnlStatusProvider(pool, market) {
             SELECT count(*)::int AS count
             FROM pnl_snapshots
             WHERE (market = $1 OR market IS NULL)
-              AND strategy_id = 'live_ops_cleanup_probe'
+              AND (
+                strategy_id = 'live_ops_cleanup_probe'
+                OR strategy_id IS NULL
+                OR strategy_id IN ('global', 'aggregate')
+              )
           `, [market]),
         ]);
         const latest = latestResult.rows[0];

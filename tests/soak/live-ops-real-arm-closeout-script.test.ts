@@ -17,9 +17,11 @@ const closeoutSourceScanPaths = [
   "src/runtime/live-ops-analysis-decision.ts",
   "src/runtime/live-ops-analysis-decision",
   "src/application/live-autonomous-entry-runtime/service.ts",
+  "src/infrastructure/upbit/private-client.ts",
   "src/infrastructure/upbit/private-client/client.ts",
   "src/infrastructure/upbit/private-client/auth.ts",
   "src/infrastructure/upbit/live-broker/service.ts",
+  "src/infrastructure/upbit/private-mappers.ts",
   "src/infrastructure/upbit/private-mappers",
   "scripts/run-live-ops.mjs",
   "scripts/run-live-ops-support.mjs",
@@ -32,9 +34,11 @@ const closeoutSourceScanPathsWithoutRuntimePublicEntries = [
   "src/runtime/live-ops-live-execution",
   "src/runtime/live-ops-analysis-decision",
   "src/application/live-autonomous-entry-runtime/service.ts",
+  "src/infrastructure/upbit/private-client.ts",
   "src/infrastructure/upbit/private-client/client.ts",
   "src/infrastructure/upbit/private-client/auth.ts",
   "src/infrastructure/upbit/live-broker/service.ts",
+  "src/infrastructure/upbit/private-mappers.ts",
   "src/infrastructure/upbit/private-mappers",
   "scripts/run-live-ops.mjs",
   "scripts/run-live-ops-support.mjs",
@@ -51,8 +55,10 @@ const closeoutSourceScanPathsWithoutLiveBroker = [
   "src/runtime/live-ops-analysis-decision.ts",
   "src/runtime/live-ops-analysis-decision",
   "src/application/live-autonomous-entry-runtime/service.ts",
+  "src/infrastructure/upbit/private-client.ts",
   "src/infrastructure/upbit/private-client/client.ts",
   "src/infrastructure/upbit/private-client/auth.ts",
+  "src/infrastructure/upbit/private-mappers.ts",
   "src/infrastructure/upbit/private-mappers",
   "scripts/run-live-ops.mjs",
   "scripts/run-live-ops-support.mjs",
@@ -69,8 +75,10 @@ const closeoutSourceScanPathsWithoutPrivateClientAuth = [
   "src/runtime/live-ops-analysis-decision.ts",
   "src/runtime/live-ops-analysis-decision",
   "src/application/live-autonomous-entry-runtime/service.ts",
+  "src/infrastructure/upbit/private-client.ts",
   "src/infrastructure/upbit/private-client/client.ts",
   "src/infrastructure/upbit/live-broker/service.ts",
+  "src/infrastructure/upbit/private-mappers.ts",
   "src/infrastructure/upbit/private-mappers",
   "scripts/run-live-ops.mjs",
   "scripts/run-live-ops-support.mjs",
@@ -87,9 +95,11 @@ const closeoutSourceScanPathsWithoutPrivateMappers = [
   "src/runtime/live-ops-analysis-decision.ts",
   "src/runtime/live-ops-analysis-decision",
   "src/application/live-autonomous-entry-runtime/service.ts",
+  "src/infrastructure/upbit/private-client.ts",
   "src/infrastructure/upbit/private-client/client.ts",
   "src/infrastructure/upbit/private-client/auth.ts",
   "src/infrastructure/upbit/live-broker/service.ts",
+  "src/infrastructure/upbit/private-mappers.ts",
   "scripts/run-live-ops.mjs",
   "scripts/run-live-ops-support.mjs",
   "config/live-ops.example.json",
@@ -97,10 +107,19 @@ const closeoutSourceScanPathsWithoutPrivateMappers = [
 ].join(" ");
 const closeoutUnsafeSourceScanCommand = "rg --no-config -uuu -n '[\\x27\"]?ord_type[\\x27\"]?\\s*[:=]\\s*[\\x27\"]?price|[\\x27\"]?ord_type[\\x27\"]?\\s*[:=]\\s*[\\x27\"]?market|[\\x27\"]?ord_type[\\x27\"]?\\s*[:=]\\s*[\\x27\"]?best|[\\x27\"]?key[\\x27\"]?\\s*:\\s*[\\x27\"]ord_type[\\x27\"][^\\r\\n{}]*,[^\\r\\n{}]*[\\x27\"]?value[\\x27\"]?\\s*:\\s*[\\x27\"]?(price|market|best)|시장가[^\\r\\n]*(허용|활성|enabled|true)|[\\x27\"]?order_type[\\x27\"]?\\s*[:=]\\s*[\\x27\"]?(market|MARKET)|[\\x27\"]?orderType[\\x27\"]?\\s*[:=]\\s*[\\x27\"]?(market|MARKET)|[\\x27\"]?withdrawal_enabled[\\x27\"]?\\s*[:=]\\s*true|[\\x27\"]?deposit_enabled[\\x27\"]?\\s*[:=]\\s*true|\\/v1\\/deposits|\\/v1\\/withdraws|[\\x27\"]?futures_enabled[\\x27\"]?\\s*[:=]\\s*true|[\\x27\"]?leverage_enabled[\\x27\"]?\\s*[:=]\\s*true|[\\x27\"]?market_order_enabled[\\x27\"]?\\s*[:=]\\s*true|[\\x27\"]?entry_market_order_enabled[\\x27\"]?\\s*[:=]\\s*true' "
   + closeoutSourceScanPaths;
-const closeoutSecretSourceScanCommand = "rg --no-config -uuu -n 'SEEMIRAI_DATABASE_URL\\s*=\\s*postgres:\\/\\/[^\\s<:]+:[^\\s<@]+@|postgres(?:ql)?:\\/\\/[^:<\\s\"\\x27]+:[^@<\\s\"\\x27]+@|SEEMIRAI_UPBIT_ACCESS_KEY\\s*=\\s*[^<\\s]+|SEEMIRAI_UPBIT_SECRET_KEY\\s*=\\s*[^<\\s]+|SEEMIRAI_TELEGRAM_BOT_TOKEN\\s*=\\s*[0-9]+:[A-Za-z0-9_-]+|\\bTELEGRAM_BOT_TOKEN\\s*=\\s*[0-9]+:[A-Za-z0-9_-]+|SEEMIRAI_TUI_CONTROL_TOKEN\\s*=\\s*[^<\\s]+|[\\x27\"]?Authorization[\\x27\"]?\\s*[:=]\\s*[\\x27\"]?(Bearer|bearer)\\s+[A-Za-z0-9._-]+|[\\x27\"]?authorization[\\x27\"]?\\s*[:=]\\s*[\\x27\"]?(Bearer|bearer)\\s+[A-Za-z0-9._-]+|raw_provider_payload|rawProviderPayload|raw_order_detail|rawOrderDetail' "
+const closeoutCredentialPropertySecretPattern = "|[\\x27\"]?accessKey[\\x27\"]?\\s*:\\s*[\\x27\"][A-Za-z0-9._-]{16,}[\\x27\"]|[\\x27\"]?secretKey[\\x27\"]?\\s*:\\s*[\\x27\"][A-Za-z0-9._\\/=+-]{16,}[\\x27\"]";
+const closeoutSecretSourceScanCommand = "rg --no-config -uuu -n 'SEEMIRAI_DATABASE_URL\\s*=\\s*postgres:\\/\\/[^\\s<:]+:[^\\s<@]+@|postgres(?:ql)?:\\/\\/[^:<\\s\"\\x27]+:[^@<\\s\"\\x27]+@|SEEMIRAI_UPBIT_ACCESS_KEY\\s*=\\s*[^<\\s]+|SEEMIRAI_UPBIT_SECRET_KEY\\s*=\\s*[^<\\s]+"
+  + closeoutCredentialPropertySecretPattern
+  + "|SEEMIRAI_TELEGRAM_BOT_TOKEN\\s*=\\s*[0-9]+:[A-Za-z0-9_-]+|\\bTELEGRAM_BOT_TOKEN\\s*=\\s*[0-9]+:[A-Za-z0-9_-]+|SEEMIRAI_TUI_CONTROL_TOKEN\\s*=\\s*[^<\\s]+|[\\x27\"]?Authorization[\\x27\"]?\\s*[:=]\\s*[\\x27\"]?(Bearer|bearer)\\s+[A-Za-z0-9._-]+|[\\x27\"]?authorization[\\x27\"]?\\s*[:=]\\s*[\\x27\"]?(Bearer|bearer)\\s+[A-Za-z0-9._-]+|raw_provider_payload|rawProviderPayload|raw_order_detail|rawOrderDetail' "
   + closeoutSourceScanPaths;
 const closeoutUnsafeSourceScanCommandWithoutRuntimePublicEntries = closeoutUnsafeSourceScanCommand.replace(closeoutSourceScanPaths, closeoutSourceScanPathsWithoutRuntimePublicEntries);
 const closeoutSecretSourceScanCommandWithoutRuntimePublicEntries = closeoutSecretSourceScanCommand.replace(closeoutSourceScanPaths, closeoutSourceScanPathsWithoutRuntimePublicEntries);
+const closeoutSourceScanPathsWithoutUpbitPublicEntries = closeoutSourceScanPaths
+  .replace("src/infrastructure/upbit/private-client.ts ", "")
+  .replace("src/infrastructure/upbit/private-mappers.ts ", "");
+const closeoutUnsafeSourceScanCommandWithoutUpbitPublicEntries = closeoutUnsafeSourceScanCommand.replace(closeoutSourceScanPaths, closeoutSourceScanPathsWithoutUpbitPublicEntries);
+const closeoutSecretSourceScanCommandWithoutUpbitPublicEntries = closeoutSecretSourceScanCommand.replace(closeoutSourceScanPaths, closeoutSourceScanPathsWithoutUpbitPublicEntries);
+const closeoutSecretSourceScanCommandWithoutCredentialProperties = closeoutSecretSourceScanCommand.replace(closeoutCredentialPropertySecretPattern, "");
 
 describe("Issue 206 live:ops real-arm closeout script", () => {
   it("skips real closeout validation unless the explicit guard is enabled", async () => {
@@ -997,6 +1016,29 @@ describe("Issue 206 live:ops real-arm closeout script", () => {
     expect(getCheck(summary, "sourceSecurityScan")).toMatchObject({ status: "fail" });
   });
 
+  it("fails when source scan commands omit Upbit public entry files", async () => {
+    const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-issue-206-closeout-source-scan-upbit-entry-files-"));
+    const manifestPath = await writeCloseoutManifest(artifactDir, {
+      manifestMutator: (manifest) => ({
+        ...manifest,
+        sourceScan: {
+          ...(manifest.sourceScan as Record<string, unknown>),
+          commands: [
+            closeoutUnsafeSourceScanCommandWithoutUpbitPublicEntries,
+            closeoutSecretSourceScanCommandWithoutUpbitPublicEntries,
+          ],
+        },
+      }),
+    });
+    const summary = await runScriptExpectingFailure(
+      ["--json", "--artifact-dir", artifactDir, "--manifest", manifestPath],
+      createReadyEnv(),
+    );
+
+    expect(summary.status).toBe("failed");
+    expect(getCheck(summary, "sourceSecurityScan")).toMatchObject({ status: "fail" });
+  });
+
   it("fails when required source paths only appear inside the search pattern", async () => {
     const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-issue-206-closeout-source-scan-operands-"));
     const manifestPath = await writeCloseoutManifest(artifactDir, {
@@ -1062,6 +1104,29 @@ describe("Issue 206 live:ops real-arm closeout script", () => {
           ],
           unsafeMatches: [],
           secretMatches: [],
+        },
+      }),
+    });
+    const summary = await runScriptExpectingFailure(
+      ["--json", "--artifact-dir", artifactDir, "--manifest", manifestPath],
+      createReadyEnv(),
+    );
+
+    expect(summary.status).toBe("failed");
+    expect(getCheck(summary, "sourceSecurityScan")).toMatchObject({ status: "fail" });
+  });
+
+  it("fails when source scan commands omit Upbit credential property literal coverage", async () => {
+    const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-issue-206-closeout-source-scan-upbit-credential-properties-"));
+    const manifestPath = await writeCloseoutManifest(artifactDir, {
+      manifestMutator: (manifest) => ({
+        ...manifest,
+        sourceScan: {
+          ...(manifest.sourceScan as Record<string, unknown>),
+          commands: [
+            closeoutUnsafeSourceScanCommand,
+            closeoutSecretSourceScanCommandWithoutCredentialProperties,
+          ],
         },
       }),
     });

@@ -389,7 +389,8 @@ SEEMIRAI_RUN_LIVE_OPS_REAL_ARM_CLOSEOUT=1 \
   src/runtime/live-ops-decision-policy src/runtime/live-ops-live-execution.ts src/runtime/live-ops-live-execution
   src/runtime/live-ops-analysis-decision.ts src/runtime/live-ops-analysis-decision
   src/application/live-autonomous-entry-runtime/service.ts
-  src/infrastructure/upbit/private-client/client.ts
+  src/infrastructure/upbit/private-client.ts src/infrastructure/upbit/private-client/client.ts
+  src/infrastructure/upbit/private-mappers.ts
   scripts/run-live-ops.mjs scripts/run-live-ops-support.mjs config` 전체 범위의 실제 `rg -n` 실행 증거여야 한다.
   validator/runbook 자체의 정밀 regex 문구가 운영 source scan 결과에 섞이면 manifest evidence와 실제 출력이 어긋나므로 docs와
   closeout validator 파일은 필수 empty-match 범위에서 제외한다. 금지 scope/시장가/futures/leverage 단어 자체는 guard와 문서에
@@ -499,6 +500,10 @@ SEEMIRAI_RUN_LIVE_OPS_REAL_ARM_CLOSEOUT=1 \
 - 2026-06-19: Sub PR 14 review drain 9차 보강으로 cleanup runtime evidence 보정은 기존 RiskGate snapshot 객체가 partial/malformed면
   `approved=true`, `ALLOW`, `PASS` 같은 승인 기본값을 합성하지 않는다. closeout source/security scan 필수 operand에는
   `src/runtime/live-ops-*.ts` public entry 파일도 포함해 runtime barrel 파일의 raw secret/금지 주문 literal 누락을 막는다.
+- 2026-06-19: Sub PR 14 review drain 10차 보강으로 첫 cleanup 전 `live_ops_cleanup_probe` PnL row가 없으면 global/aggregate
+  `CALCULATED` snapshot을 손실 guard fallback으로 허용한다. 단 cleanup 전용 PnL row가 생긴 뒤에는 그 scope를 우선해 not-ready row가
+  오래된 global 계산 완료 row에 가려지지 않게 한다. closeout source/security scan에는 Upbit private barrel entry 파일과
+  `accessKey`/`secretKey` property literal 하드코딩 패턴도 필수 coverage로 추가한다.
 
 ## 남은 이슈
 
