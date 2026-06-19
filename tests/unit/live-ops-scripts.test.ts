@@ -1784,6 +1784,68 @@ console.log(JSON.stringify({
     expect(result.stdout).not.toContain("fake-telegram-token");
   });
 
+  it("database PnL status provider는 오래된 market row보다 최신 CALCULATED aggregate row를 우선한다", async () => {
+    const supportModulePath = path.join(process.cwd(), "scripts/run-live-ops-support.mjs");
+    const {
+      createLiveOpsCliDatabasePnlStatusProvider,
+    } = await import(supportModulePath);
+    const queries: Array<{ text: string; params: unknown[] }> = [];
+    const staleMarketRow = {
+      strategy_id: "live_ops",
+      market: "KRW-BTC",
+      captured_at: "2026-06-18T13:32:00.000Z",
+      equity: "100000",
+      realized_pnl: "0",
+      unrealized_pnl: "0",
+      drawdown_bps: "0",
+      source_fingerprint: "stale-market",
+      payload_status: "CALCULATED",
+    };
+    const freshAggregateRow = {
+      strategy_id: "live_ops",
+      market: null,
+      captured_at: "2026-06-18T13:33:27.000Z",
+      equity: "100000",
+      realized_pnl: "-120",
+      unrealized_pnl: "30",
+      drawdown_bps: "2",
+      source_fingerprint: "fresh-aggregate",
+      payload_status: "CALCULATED",
+    };
+    const pool = {
+      async query(sql: string, params: unknown[] = []) {
+        const text = sql.replace(/\s+/gu, " ").trim();
+        queries.push({ text, params });
+        if (text.includes("FROM pnl_snapshots") && text.includes("LIMIT 1")) {
+          const orderBy = text.slice(text.indexOf("ORDER BY"));
+          const calculatedBeforeCaptured = orderBy.indexOf("payload_json ->> 'status'") >= 0
+            && orderBy.indexOf("payload_json ->> 'status'") < orderBy.indexOf("captured_at DESC");
+          const capturedBeforeMarketPreference = orderBy.indexOf("captured_at DESC") >= 0
+            && orderBy.indexOf("captured_at DESC") < orderBy.indexOf("(market = $1) DESC");
+          return {
+            rows: [calculatedBeforeCaptured && capturedBeforeMarketPreference ? freshAggregateRow : staleMarketRow],
+          };
+        }
+        if (text.includes("count(*)::int AS count") && text.includes("FROM pnl_snapshots")) {
+          return { rows: [{ count: 2 }] };
+        }
+        throw new Error(`unexpected query: ${text}`);
+      },
+    };
+
+    const status = await createLiveOpsCliDatabasePnlStatusProvider(pool, "KRW-BTC").getStatus();
+
+    expect(status).toMatchObject({
+      readStatus: "OK",
+      latestCapturedAt: "2026-06-18T13:33:27.000Z",
+      latestRealizedPnlKrw: "-120",
+      latestUnrealizedPnlKrw: "30",
+      latestStatus: "CALCULATED",
+      snapshotCount: 2,
+    });
+    expect(queries[0]?.params).toEqual(["KRW-BTC"]);
+  });
+
   it("preflight recorder는 private read 결과를 DB reconcile evidence로 남긴다", async () => {
     const supportModulePath = path.join(process.cwd(), "scripts/run-live-ops-support.mjs");
     const {

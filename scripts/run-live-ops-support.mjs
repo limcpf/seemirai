@@ -2850,6 +2850,7 @@ export function createLiveOpsCliDatabasePnlStatusProvider(pool, market) {
     async getStatus() {
       try {
         const [latestResult, countResult] = await Promise.all([
+          // 오래된 market row가 최신 aggregate PnL을 가리면 손실 증거가 stale로 닫히므로 계산 완료 최신 row를 먼저 고른다.
           pool.query(`
             SELECT
               strategy_id,
@@ -2863,7 +2864,10 @@ export function createLiveOpsCliDatabasePnlStatusProvider(pool, market) {
               payload_json ->> 'status' AS payload_status
             FROM pnl_snapshots
             WHERE market = $1 OR market IS NULL
-            ORDER BY (market = $1) DESC, captured_at DESC
+            ORDER BY
+              CASE WHEN payload_json ->> 'status' = 'CALCULATED' THEN 0 ELSE 1 END,
+              captured_at DESC,
+              (market = $1) DESC
             LIMIT 1
           `, [market]),
           pool.query(`

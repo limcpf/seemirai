@@ -72,7 +72,7 @@ describe("Issue 206 live:ops real-arm closeout script", () => {
         sourceScan: {
           ...(manifest.sourceScan as Record<string, unknown>),
           commands: [
-            "rg --no-config -uuu -n \"ord_type|market_order|orderType.*MARKET|시장가|best|withdraw|출금|deposit|입금|leverage|futures|margin\" src scripts config docs",
+            "rg --no-config -uuu -n \"ord_type|orderType.*MARKET|order_type.*MARKET|시장가|best|withdraw|출금|deposit|입금|leverage|futures|margin\" src scripts config docs",
             "rg --no-config -uuu -n \"access_key|accessKey|ACCESS_KEY|api_key|apiKey|API_KEY|secret_key|secretKey|SECRET_KEY|api_secret|apiSecret|API_SECRET|Authorization|authorization|Bearer|bearer|JWT|jwt|telegram_bot_token|botToken|TELEGRAM_BOT_TOKEN|SEEMIRAI_TUI_CONTROL_TOKEN|tuiControlToken|tui_control_token|DATABASE_URL|databasePassword|database_password|postgresPassword|postgres_password|POSTGRES_PASSWORD|db_password|pg_password|raw_provider|rawProvider|raw_order|rawOrder|raw_update|rawUpdate\" src scripts config docs",
           ],
         },
@@ -93,7 +93,30 @@ describe("Issue 206 live:ops real-arm closeout script", () => {
         sourceScan: {
           ...(manifest.sourceScan as Record<string, unknown>),
           commands: [
-            "rg --no-config -uuu -n \"ord_type|market_order|MARKET|시장가|best|withdraw|출금|deposit|입금|leverage|futures|margin\" src scripts config docs",
+            "rg --no-config -uuu -n \"ord_type|order_type.*MARKET|MARKET|시장가|best|withdraw|출금|deposit|입금|leverage|futures|margin\" src scripts config docs",
+            "rg --no-config -uuu -n \"access_key|accessKey|ACCESS_KEY|api_key|apiKey|API_KEY|secret_key|secretKey|SECRET_KEY|api_secret|apiSecret|API_SECRET|Authorization|authorization|Bearer|bearer|JWT|jwt|telegram_bot_token|botToken|TELEGRAM_BOT_TOKEN|SEEMIRAI_TUI_CONTROL_TOKEN|tuiControlToken|tui_control_token|DATABASE_URL|databasePassword|database_password|postgresPassword|postgres_password|POSTGRES_PASSWORD|db_password|pg_password|raw_provider|rawProvider|raw_order|rawOrder|raw_update|rawUpdate\" src scripts config docs",
+          ],
+        },
+      }),
+    });
+    const summary = await runScriptExpectingFailure(
+      ["--json", "--artifact-dir", artifactDir, "--manifest", manifestPath],
+      createReadyEnv(),
+    );
+
+    expect(summary.status).toBe("failed");
+    expect(getCheck(summary, "sourceSecurityScan")).toMatchObject({ status: "fail" });
+  });
+
+  it("fails when source scan commands omit snake_case order_type market-order patterns", async () => {
+    const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-issue-206-closeout-source-scan-snake-order-type-"));
+    const manifestPath = await writeCloseoutManifest(artifactDir, {
+      manifestMutator: (manifest) => ({
+        ...manifest,
+        sourceScan: {
+          ...(manifest.sourceScan as Record<string, unknown>),
+          commands: [
+            "rg --no-config -uuu -n \"ord_type|orderType.*MARKET|시장가|best|withdraw|출금|deposit|입금|leverage|futures|margin\" src scripts config docs",
             "rg --no-config -uuu -n \"access_key|accessKey|ACCESS_KEY|api_key|apiKey|API_KEY|secret_key|secretKey|SECRET_KEY|api_secret|apiSecret|API_SECRET|Authorization|authorization|Bearer|bearer|JWT|jwt|telegram_bot_token|botToken|TELEGRAM_BOT_TOKEN|SEEMIRAI_TUI_CONTROL_TOKEN|tuiControlToken|tui_control_token|DATABASE_URL|databasePassword|database_password|postgresPassword|postgres_password|POSTGRES_PASSWORD|db_password|pg_password|raw_provider|rawProvider|raw_order|rawOrder|raw_update|rawUpdate\" src scripts config docs",
           ],
         },
@@ -4055,7 +4078,7 @@ async function writeCloseoutManifest(
       cwd: process.cwd(),
       repositoryRoot: process.cwd(),
       commands: [
-        "rg --no-config -uuu -n \"ord_type|market_order|orderType.*MARKET|시장가|best|withdraw|출금|deposit|입금|leverage|futures|margin\" src scripts config docs",
+        "rg --no-config -uuu -n \"ord_type|orderType.*MARKET|order_type.*MARKET|시장가|best|withdraw|출금|deposit|입금|leverage|futures|margin\" src scripts config docs",
         "rg --no-config -uuu -n \"access_key|accessKey|ACCESS_KEY|api_key|apiKey|API_KEY|secret_key|secretKey|SECRET_KEY|api_secret|apiSecret|API_SECRET|Authorization|authorization|Bearer|bearer|JWT|jwt|telegram_bot_token|botToken|TELEGRAM_BOT_TOKEN|SEEMIRAI_TUI_CONTROL_TOKEN|tuiControlToken|tui_control_token|DATABASE_URL|databasePassword|database_password|postgresPassword|postgres_password|POSTGRES_PASSWORD|db_password|pg_password|raw_provider|rawProvider|raw_order|rawOrder|raw_update|rawUpdate\" src scripts config docs",
       ],
       unsafeMatches: [],

@@ -82,8 +82,8 @@ const liveOpsConfigAllowedKeys = {
 };
 const requiredUnsafeSourceScanPatterns = [
   { label: "ord_type", pattern: /ord_type/u },
-  { label: "market_order", pattern: /market_order/u },
   { label: "orderType market order", pattern: /orderType.*MARKET/u },
+  { label: "order_type market order", pattern: /order_type.*MARKET/u },
   { label: "korean market order", pattern: /시장가/u },
   { label: "best order", pattern: /best/u },
   { label: "withdrawal", pattern: /withdraw/u },
