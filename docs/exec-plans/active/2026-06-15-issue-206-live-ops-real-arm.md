@@ -265,6 +265,24 @@ Telegram, TUI를 같은 lifecycle로 조립하고, 조건을 통과한 단일 `K
   - [x] 관련 운영 문서가 lease TTL, owner fingerprint, stale lock recovery invariant를 설명한다.
   - [x] 관련 unit tests, `corepack pnpm typecheck`, `./scripts/verify docs`, `./scripts/verify`, `git diff --check`가 통과한다.
 
+### Sub PR 12: final review guard 보강
+
+- 목표: final PR review에서 발견된 세 P2 gap을 닫는다. 금지 key scope에서는 preflight private read도 열지 않고, cancel 요청 이후 poll
+  실패는 cleanup artifact로 남기며, post-cleanup status summary는 현재 durable reservation notional을 budget used에 반영한다.
+- 제외 범위:
+  - 신규 전략, budget 확대, BTC 외 market 활성화.
+  - Upbit 주문 유형 확대, 시장가/best order, 출금/입금/선물/레버리지/마진 권한 허용.
+  - final main PR merge.
+- DnD:
+  - [x] `SEEMIRAI_UPBIT_KEY_SCOPE`에 출금/입금/선물/레버리지/마진 또는 알 수 없는 scope가 포함되면 `listOpenOrders`/`getBalances`를
+        호출하기 전에 broker guard 차단으로 수렴한다.
+  - [x] cancel 요청 성공 뒤 terminal poll이 provider 오류나 rate-limit로 실패해도 generic catch로 빠지지 않고
+        `manual_review_required` cleanup artifact에 cancel evidence와 실패 사유를 남긴다.
+  - [x] cleanup submit/cancel 이후 reconcile/PnL/status summary의 `budgetUsedKrw`는 preflight snapshot만 사용하지 않고 현재
+        durable reservation 반영값을 하한으로 사용한다.
+  - [x] 관련 운영 문서가 scope guard 순서, cancel poll failure artifact, post-reservation budget used invariant를 설명한다.
+  - [x] 관련 unit tests와 `git diff --check`가 통과한다.
+
 ## 검증 방법
 
 공통 검증:
@@ -380,10 +398,12 @@ SEEMIRAI_RUN_LIVE_OPS_REAL_ARM_CLOSEOUT=1 \
   정리해 nlink 고착을 풀 수 있다. 기존 malformed lock과 필수 lease field가 빠진 valid JSON lock은 파일 mtime 기준 TTL 이후 같은 CAS 절차로
   회수한다. owner boot id 또는 process start time을 lock 생성 시점에 기록할 수 없으면 lock 획득을 중단한다. owner 조회가 권한/환경 문제로
   불확실하면 active owner로 fail-closed 하고, zombie 상태가 확인되면 stale owner로 본다.
+- 2026-06-19: final review guard 보강은 key scope guard를 preflight private read 앞에 둔다. cancel 요청 이후 terminal poll 실패도
+  redacted cleanup artifact로 남기고, post-cleanup status summary의 budget used는 현재 durable reservation 반영값을 하한으로 사용한다.
 
 ## 남은 이슈
 
-- Sub PR 11 완료 후 final main PR #218의 stale lock review finding을 다시 drain해야 한다.
+- Sub PR 12 완료 후 final main PR #218의 신규 review finding을 다시 drain해야 한다.
 - 실제 운영 credential, key scope evidence, operator arm evidence, redacted artifact 경로는 저장소 밖 운영 vault에 있어야 한다.
 - 실제 주문 제출/취소 closeout은 저장소 밖 운영 config/env로 foreground `live:ops`를 실행한 뒤 자동 생성 artifact와 closeout manifest로
   검증한다.

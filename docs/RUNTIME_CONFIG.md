@@ -799,6 +799,10 @@ malformed lock, 필수 lease field가 빠진 valid JSON lock은 파일 mtime 기
 process start time을 lock 생성 시점에 기록할 수 없으면 lock 획득을 중단한다. owner 조회가 권한/환경 문제로 불확실하면 active owner로
 fail-closed 하고, zombie 상태가 확인되면 stale owner로 본다.
 
+production preflight private read는 key scope guard 뒤에서만 열린다. `SEEMIRAI_UPBIT_KEY_SCOPE`에 출금/입금, 선물, 레버리지, 마진 또는
+알 수 없는 scope가 포함되면 broker/private read runtime 생성 전 단계에서 닫는다. 이 경우 잔고/미체결 주문 조회도 호출하지 않고
+live execution의 broker guard 차단으로 수렴한다.
+
 Sub PR 06부터 production `analysis.decision_policy`는 정적 allowlist policy id만 허용한다. 기본 policy는 `cleanup_probe`이며,
 config JSON에는 다음 non-secret 값만 둔다.
 
@@ -825,6 +829,13 @@ runtime 호출 전에 fail-closed 한다. public adapter는 strategy의 긴 deci
 `ops-<sha256-prefix>` attempt id로 낮춰 재시작 후 같은 cleanup 후보가 새 random identifier를 만들지 않게 한다.
 조건을 통과한 후보는 manual JSONL 없이 `LiveAutonomousEntryRuntime.submitEntryCandidate`로 전달되며, durable budget reservation,
 RiskGate 재검증, broker submit, alert dispatch side effect는 해당 하위 runtime 경계에서만 발생한다.
+
+cleanup probe는 broker 제출 성공을 최종 성공으로 보지 않는다. 같은 runtime이 받은 주문 uuid로 취소 요청을 보낸 뒤 terminal cancel
+polling을 수행하고, cancel 요청 이후 poll이 provider 오류나 rate-limit로 실패해도 summary만 반환하지 않는다. 이 경우 `manual_review_required`
+cleanup artifact에 cancel 요청 시각, redacted broker order suffix, terminal 조회 실패 사유, provider-safe `status`/Upbit error name 요약을
+남겨 closeout/manual review가 거래소 side effect를 추적할 수 있게 한다. post-cleanup reconcile/PnL/status summary의 `budgetUsedKrw`는
+preflight snapshot 값만 쓰지 않고, daily reservation lock 안에서 읽은 최신 일일 reservation 합계와 현재 attempt reservation을 더한 값을
+하한으로 사용한다. private read 실패나 malformed 응답 경로도 같은 하한을 보존한다.
 
 fixture smoke dashboard는 analysis/decision을 `보류 / 주문 후보 0 / 전략 1`, live execution을 `후보 없음 / broker 제출 0`으로 표시한다.
 reconcile/PnL/status summary는 같은 fixture lifecycle에서 open order, 예산 사용, 노출, PnL 관측 상태를 secret-safe shape로 묶는다.

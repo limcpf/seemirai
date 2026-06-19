@@ -108,8 +108,12 @@ Codex-native 운영은 Codex, Git, GitHub, shell command, 문서 상태를 연�
   확인되면 새 manual-review preflight run을 append하고, 가격 또는 원 주문 수량이 없는 `market`/`best` 계열 open order도 `remaining_volume`
   기반 evidence로 남겨 차단한다. submitted 또는 cancel requested lifecycle의 계정 전체 open order는 현재 live execution identity와 일치하는
   1건만 tracked로 인정하며, preflight manual-review summary는 계산 가능한 노출 금액과 owner Telegram manual-review alert를 보존한다.
+  단, key scope guard가 출금/입금/선물/레버리지/마진 또는 알 수 없는 권한을 감지하면 private read를 열기 전에 fail-closed 한다.
 - Telegram 전송 실패는 주문/리스크 commit을 되돌리지 않고 retry/manual review summary로 격리한다.
-- 실제 cleanup run은 저장소 밖 redacted artifact에만 기록하고, issue/PR에는 safe summary와 artifact 경로만 남긴다.
+- 실제 cleanup run은 저장소 밖 redacted artifact에만 기록하고, issue/PR에는 safe summary와 artifact 경로만 남긴다. 취소 요청 이후
+  terminal poll이 실패해도 artifact 없이 generic manual review로 빠지지 않고, cancel evidence와 poll 실패 사유를 redacted cleanup
+  artifact로 남긴다. status summary의 budget used는 제출 전 preflight snapshot만 신뢰하지 않고 현재 durable reservation 반영값을 하한으로
+  사용한다.
 
 ## M23 restart/recovery drill 신뢰성 기준
 

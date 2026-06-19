@@ -177,9 +177,15 @@ export async function loadLiveOpsCliInputs(options) {
     fixtureSmoke: options.fixtureSmoke,
     marketData,
   });
+  const productionBrokerGuard = evaluateLiveOpsCliBrokerGuard({
+    config,
+    env,
+    fixtureSmoke: options.fixtureSmoke,
+  });
   let productionRuntime;
   try {
-    productionRuntime = options.fixtureSmoke
+    // broker guard가 막힌 key는 private read와 broker runtime 생성 전 단계에서 닫아 side effect 없는 계좌 조회도 열지 않는다.
+    productionRuntime = options.fixtureSmoke || !productionBrokerGuard.ready
       ? undefined
       : await createLiveOpsCliProductionRuntime({
           configPath,
@@ -194,6 +200,7 @@ export async function loadLiveOpsCliInputs(options) {
         });
     const productionExecutionInputs = await createLiveOpsCliProductionExecutionInputs({
       config,
+      env,
       fixtureSmoke: options.fixtureSmoke,
       analysisDecision,
       marketData,
@@ -701,6 +708,7 @@ export async function createLiveOpsCliProductionRuntime({
 
 export async function createLiveOpsCliProductionExecutionInputs({
   config,
+  env = {},
   fixtureSmoke,
   analysisDecision,
   marketData,
@@ -724,6 +732,12 @@ export async function createLiveOpsCliProductionExecutionInputs({
     !Array.isArray(orderIntents) ||
     orderIntents.length === 0
   ) {
+    return base;
+  }
+
+  const brokerGuard = evaluateLiveOpsCliBrokerGuard({ config, env, fixtureSmoke });
+  if (!brokerGuard.ready) {
+    // 금지 scope key는 private read에도 쓰지 않도록 실계좌 조회 전 단계에서 닫는다.
     return base;
   }
 
@@ -1228,19 +1242,26 @@ export function createLiveOpsCliFileBudgetReservation({ artifactStore, clock = (
         };
       }
       try {
+        const dailyUsage = await readDailyReservedNotionalForDay(day);
         const dailyBudgetCheck = await evaluateLiveOpsCliDailyBudgetReservation({
           request,
-          dailyUsage: await readDailyReservedNotionalForDay(day),
+          dailyUsage,
         });
         if (dailyBudgetCheck.reserved === false) {
           return dailyBudgetCheck;
         }
         // 일일 예산 집계와 attempt 파일 생성을 같은 lock 안에서 수행해 동시 실행의 예산 초과 제출을 막는다.
-        const artifactPath = await artifactStore.writeReservation(reservation);
+        const reservedReservation = {
+          ...reservation,
+          budgetUsageAfterReservationKrw: new Decimal(dailyUsage.reservedNotionalKrw)
+            .plus(request.requestedNotionalKrw)
+            .toFixed(),
+        };
+        const artifactPath = await artifactStore.writeReservation(reservedReservation);
         return {
           reserved: true,
           reservation: {
-            ...reservation,
+            ...reservedReservation,
             artifactPath,
           },
         };
@@ -3335,6 +3356,7 @@ export async function evaluateLiveOpsCliLiveExecution({
   }
 
   const submitted = attempt.status === "SUBMITTED";
+  const budgetUsageAfterReservationKrw = createLiveOpsCliBudgetUsageAfterReservation({ attempt });
   const submittedSummary = {
     status: submitted ? "submitted" : String(attempt.status ?? "blocked").toLowerCase(),
     ready: submitted,
@@ -3348,6 +3370,8 @@ export async function evaluateLiveOpsCliLiveExecution({
     attemptId: attempt.attemptId ?? null,
     idempotencyKey: attempt.idempotencyKey ?? request.idempotencyKey,
     brokerOrderId: attempt.brokerOrderId ?? attempt.executionResult?.brokerOrder?.brokerOrderId ?? null,
+    reservedNotionalKrw: readLiveOpsCliAttemptReservedNotionalKrw(attempt),
+    budgetUsageAfterReservationKrw,
     brokerGuard,
     statusLabel: submitted ? "broker 제출" : "제출 차단",
     message: submitted
@@ -3608,6 +3632,7 @@ export function createLiveOpsCliEntryRuntime({ broker, budgetReservation } = {})
           reason: "broker_submitted",
         },
         submission,
+        reservation: reservation.reservation,
         executionResult: {
           status: "SUBMITTED",
           submission,
@@ -3649,6 +3674,7 @@ export function createLiveOpsCliCleanupLifecycle({
       const record = createLiveOpsCliCleanupArtifactRecord({
         status: "manual_review_required",
         reason: safeErrorName(error),
+        failure: error,
         attempt,
         request,
         brokerOrder,
@@ -3673,13 +3699,45 @@ export function createLiveOpsCliCleanupLifecycle({
       });
     }
 
-    const terminal = await waitForLiveOpsCliTerminalCancel({
-      broker,
-      brokerOrderId: brokerOrder.brokerOrderId,
-      pollCount: cancelPollCount,
-      pollIntervalMs: cancelPollIntervalMs,
-      submittedOrder: brokerOrder,
-    });
+    let terminal;
+    try {
+      terminal = await waitForLiveOpsCliTerminalCancel({
+        broker,
+        brokerOrderId: brokerOrder.brokerOrderId,
+        pollCount: cancelPollCount,
+        pollIntervalMs: cancelPollIntervalMs,
+        submittedOrder: brokerOrder,
+      });
+    } catch (error) {
+      const terminalCheckedAt = clock();
+      const record = createLiveOpsCliCleanupArtifactRecord({
+        status: "manual_review_required",
+        reason: safeErrorName(error),
+        failure: error,
+        attempt,
+        request,
+        brokerOrder,
+        cancelOrder,
+        terminalOrder: undefined,
+        submittedAt: observedAt,
+        cancelRequestedAt,
+        terminalCheckedAt,
+        cleanCancel: false,
+      });
+      // 취소 side effect 이후 poll만 실패한 경우도 closeout 수동 점검에 필요한 evidence를 잃지 않는다.
+      const artifactPath = await safeWriteLiveOpsCliCleanupArtifact(artifactStore, record);
+      return createLiveOpsCliCleanupManualReviewSummary({
+        submittedSummary,
+        attempt,
+        request,
+        market,
+        observedAt,
+        reason: "cancel_poll_failed",
+        message: "취소 요청은 전송됐지만 terminal 상태 조회를 완료하지 못해 수동 점검 상태로 전환했습니다.",
+        action: "거래소 주문 uuid로 최종 주문 상태와 fill 여부를 조회하고 cleanup artifact와 함께 closeout evidence를 남기세요.",
+        artifactPath,
+      });
+    }
     const terminalCheckedAt = clock();
     const cleanCancel = isLiveOpsCliCleanTerminalCancel({
       submittedOrder: brokerOrder,
@@ -3829,6 +3887,7 @@ function isLiveOpsCliTerminalFilledStatus(status) {
 function createLiveOpsCliCleanupArtifactRecord({
   status,
   reason,
+  failure,
   attempt,
   request,
   brokerOrder,
@@ -3859,6 +3918,7 @@ function createLiveOpsCliCleanupArtifactRecord({
     brokerOrderIdSuffix: suffixLiveOpsCliIdentifier(brokerOrder?.brokerOrderId),
     cancelBrokerOrderIdSuffix: suffixLiveOpsCliIdentifier(cancelOrder?.brokerOrderId ?? brokerOrder?.brokerOrderId),
     terminalState: terminalOrder?.status ?? null,
+    ...(failure === undefined ? {} : { failure: createLiveOpsCliCleanupFailureSummary(failure) }),
     openExposureKrw: cleanCancel ? "0" : null,
     duplicateOrderCount: 0,
     reconcileMismatchCount: cleanCancel ? 0 : null,
@@ -3868,6 +3928,19 @@ function createLiveOpsCliCleanupArtifactRecord({
       ? "submit -> cancel requested -> terminal cancel 확인이 완료됐습니다."
       : "cleanup lifecycle 확인이 수동 점검 상태로 전환됐습니다.",
   };
+}
+
+function createLiveOpsCliCleanupFailureSummary(error) {
+  const summary = {
+    errorName: safeErrorName(error),
+  };
+  if (Number.isInteger(error?.status)) {
+    summary.status = error.status;
+  }
+  if (hasMeaningfulValue(error?.upbitErrorName)) {
+    summary.upbitErrorName = String(error.upbitErrorName);
+  }
+  return summary;
 }
 
 async function safeWriteLiveOpsCliCleanupArtifact(artifactStore, record) {
@@ -4393,6 +4466,24 @@ function createLiveOpsCliBudgetReservationRequest(request) {
       source: "live_ops_cli_entry_runtime",
     },
   };
+}
+
+function readLiveOpsCliAttemptReservedNotionalKrw(attempt) {
+  const value = attempt?.reservation?.reservedNotionalKrw;
+  return isNonNegativeDecimalString(value) ? value : null;
+}
+
+function createLiveOpsCliBudgetUsageAfterReservation({ attempt }) {
+  const persistedBudgetUsageKrw = attempt?.reservation?.budgetUsageAfterReservationKrw;
+  if (isNonNegativeDecimalString(persistedBudgetUsageKrw)) {
+    return persistedBudgetUsageKrw;
+  }
+  const reservedNotionalKrw = readLiveOpsCliAttemptReservedNotionalKrw(attempt);
+  if (!isNonNegativeDecimalString(reservedNotionalKrw)) {
+    return null;
+  }
+  // 구버전 reservation에는 post-reservation 총액이 없으므로 최소한 이번 reservation 금액만 하한으로 보존한다.
+  return reservedNotionalKrw;
 }
 
 function collectLiveOpsCliEntryRuntimeStatusViolations(request) {
@@ -5134,6 +5225,11 @@ async function collectLiveOpsCliPrivateReadStatusSummary({
       readLiveOpsCliPnlStatus(pnlStatusProvider),
     ]);
   } catch (error) {
+    const budgetUsedKrw = resolveLiveOpsCliBudgetUsedKrw({
+      budgetSnapshot,
+      openOrders: [],
+      liveExecution,
+    });
     return {
       status: "manual_review_required",
       ready: false,
@@ -5148,7 +5244,7 @@ async function collectLiveOpsCliPrivateReadStatusSummary({
       pnlStatusLabel: "확인 필요",
       openOrderCount: 0,
       openExposureKrw: "0",
-      budgetUsedKrw: "0",
+      budgetUsedKrw,
       realizedPnlKrw: null,
       unrealizedPnlKrw: null,
       mismatchCount: null,
@@ -5176,6 +5272,7 @@ async function collectLiveOpsCliPrivateReadStatusSummary({
     return createLiveOpsCliPrivateReadFailureSummary({
       market,
       liveExecution,
+      budgetSnapshot,
       observedAt,
       code: malformedPrivateRead.code,
       message: malformedPrivateRead.message,
@@ -5195,6 +5292,7 @@ async function collectLiveOpsCliPrivateReadStatusSummary({
   const budgetUsedKrw = resolveLiveOpsCliBudgetUsedKrw({
     budgetSnapshot,
     openOrders: orders,
+    liveExecution,
   });
   const krwBalance = findLiveOpsCliBalance(balanceSnapshot, "KRW");
 
@@ -5268,7 +5366,12 @@ async function collectLiveOpsCliPrivateReadStatusSummary({
   };
 }
 
-function createLiveOpsCliPrivateReadFailureSummary({ market, liveExecution, observedAt, code, message, reason }) {
+function createLiveOpsCliPrivateReadFailureSummary({ market, liveExecution, budgetSnapshot, observedAt, code, message, reason }) {
+  const budgetUsedKrw = resolveLiveOpsCliBudgetUsedKrw({
+    budgetSnapshot,
+    openOrders: [],
+    liveExecution,
+  });
   return {
     status: "manual_review_required",
     ready: false,
@@ -5283,7 +5386,7 @@ function createLiveOpsCliPrivateReadFailureSummary({ market, liveExecution, obse
     pnlStatusLabel: "확인 필요",
     openOrderCount: 0,
     openExposureKrw: "0",
-    budgetUsedKrw: "0",
+    budgetUsedKrw,
     realizedPnlKrw: null,
     unrealizedPnlKrw: null,
     mismatchCount: null,
@@ -5503,14 +5606,18 @@ function sumLiveOpsCliOpenExposureKrw(openOrders) {
   }));
 }
 
-function resolveLiveOpsCliBudgetUsedKrw({ budgetSnapshot, openOrders }) {
-  if (isNonNegativeDecimalString(budgetSnapshot?.dailyAutonomousNotionalUsedKrw)) {
-    return budgetSnapshot.dailyAutonomousNotionalUsedKrw;
-  }
-
-  return sumDecimalStrings(openOrders.map((order) => {
+function resolveLiveOpsCliBudgetUsedKrw({ budgetSnapshot, openOrders, liveExecution }) {
+  const snapshotBudgetUsedKrw = isNonNegativeDecimalString(budgetSnapshot?.dailyAutonomousNotionalUsedKrw)
+    ? budgetSnapshot.dailyAutonomousNotionalUsedKrw
+    : sumDecimalStrings(openOrders.map((order) => {
     return readLiveOpsCliOpenOrderRequestedNotionalKrw(order);
   }));
+  const postReservationBudgetUsedKrw = liveExecution?.budgetUsageAfterReservationKrw;
+  if (isNonNegativeDecimalString(postReservationBudgetUsedKrw)) {
+    // preflight snapshot은 주문 제출 전 값일 수 있으므로 현재 reservation 반영값을 하한으로 잡는다.
+    return Decimal.max(snapshotBudgetUsedKrw, postReservationBudgetUsedKrw).toFixed();
+  }
+  return snapshotBudgetUsedKrw;
 }
 
 function readLiveOpsCliOpenOrderExposureKrw(order) {
