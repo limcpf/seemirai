@@ -385,8 +385,10 @@ SEEMIRAI_RUN_LIVE_OPS_REAL_ARM_CLOSEOUT=1 \
 - 2026-06-15: closeout validator는 추가/중복 인자 없는 정확한 `live:ops` command, symlink realpath 기준 저장소 밖 config/env/artifact,
   artifact safe summary와 manifest closeout 값의 일치, database password redaction도 검증한다.
 - 2026-06-15: guarded manifest 파일 자체도 저장소 밖이어야 하며, source/security scan은 runtime source path
-  `src/runtime/live-ops-config src/runtime/live-ops-decision-policy src/runtime/live-ops-live-execution
-  src/runtime/live-ops-analysis-decision src/application/live-autonomous-entry-runtime/service.ts
+  `src/runtime/live-ops-config.ts src/runtime/live-ops-config src/runtime/live-ops-decision-policy.ts
+  src/runtime/live-ops-decision-policy src/runtime/live-ops-live-execution.ts src/runtime/live-ops-live-execution
+  src/runtime/live-ops-analysis-decision.ts src/runtime/live-ops-analysis-decision
+  src/application/live-autonomous-entry-runtime/service.ts
   src/infrastructure/upbit/private-client/client.ts
   scripts/run-live-ops.mjs scripts/run-live-ops-support.mjs config` 전체 범위의 실제 `rg -n` 실행 증거여야 한다.
   validator/runbook 자체의 정밀 regex 문구가 운영 source scan 결과에 섞이면 manifest evidence와 실제 출력이 어긋나므로 docs와
@@ -494,6 +496,9 @@ SEEMIRAI_RUN_LIVE_OPS_REAL_ARM_CLOSEOUT=1 \
 - 2026-06-19: Sub PR 14 review drain 8차 보강으로 production preflight가 확정한 cleanup runtime `observedAt`과 날짜 key를
   live execution submit 직전 wall clock으로 다시 정규화하지 않는다. UTC 자정 경계에서 Cost/Risk `order_intent` evidence와
   entry runtime request가 서로 다른 날짜 key를 갖지 않도록 preflight 시각을 intent metadata에 보존한다.
+- 2026-06-19: Sub PR 14 review drain 9차 보강으로 cleanup runtime evidence 보정은 기존 RiskGate snapshot 객체가 partial/malformed면
+  `approved=true`, `ALLOW`, `PASS` 같은 승인 기본값을 합성하지 않는다. closeout source/security scan 필수 operand에는
+  `src/runtime/live-ops-*.ts` public entry 파일도 포함해 runtime barrel 파일의 raw secret/금지 주문 literal 누락을 막는다.
 
 ## 남은 이슈
 

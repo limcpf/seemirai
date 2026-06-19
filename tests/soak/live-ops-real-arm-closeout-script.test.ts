@@ -8,6 +8,25 @@ import { describe, expect, it } from "vitest";
 const execFileAsync = promisify(execFile);
 const scriptPath = path.join(process.cwd(), "scripts", "run-live-ops-real-arm-closeout.mjs");
 const closeoutSourceScanPaths = [
+  "src/runtime/live-ops-config.ts",
+  "src/runtime/live-ops-config",
+  "src/runtime/live-ops-decision-policy.ts",
+  "src/runtime/live-ops-decision-policy",
+  "src/runtime/live-ops-live-execution.ts",
+  "src/runtime/live-ops-live-execution",
+  "src/runtime/live-ops-analysis-decision.ts",
+  "src/runtime/live-ops-analysis-decision",
+  "src/application/live-autonomous-entry-runtime/service.ts",
+  "src/infrastructure/upbit/private-client/client.ts",
+  "src/infrastructure/upbit/private-client/auth.ts",
+  "src/infrastructure/upbit/live-broker/service.ts",
+  "src/infrastructure/upbit/private-mappers",
+  "scripts/run-live-ops.mjs",
+  "scripts/run-live-ops-support.mjs",
+  "config/live-ops.example.json",
+  "config/live-ops.env.example",
+].join(" ");
+const closeoutSourceScanPathsWithoutRuntimePublicEntries = [
   "src/runtime/live-ops-config",
   "src/runtime/live-ops-decision-policy",
   "src/runtime/live-ops-live-execution",
@@ -23,9 +42,13 @@ const closeoutSourceScanPaths = [
   "config/live-ops.env.example",
 ].join(" ");
 const closeoutSourceScanPathsWithoutLiveBroker = [
+  "src/runtime/live-ops-config.ts",
   "src/runtime/live-ops-config",
+  "src/runtime/live-ops-decision-policy.ts",
   "src/runtime/live-ops-decision-policy",
+  "src/runtime/live-ops-live-execution.ts",
   "src/runtime/live-ops-live-execution",
+  "src/runtime/live-ops-analysis-decision.ts",
   "src/runtime/live-ops-analysis-decision",
   "src/application/live-autonomous-entry-runtime/service.ts",
   "src/infrastructure/upbit/private-client/client.ts",
@@ -37,9 +60,13 @@ const closeoutSourceScanPathsWithoutLiveBroker = [
   "config/live-ops.env.example",
 ].join(" ");
 const closeoutSourceScanPathsWithoutPrivateClientAuth = [
+  "src/runtime/live-ops-config.ts",
   "src/runtime/live-ops-config",
+  "src/runtime/live-ops-decision-policy.ts",
   "src/runtime/live-ops-decision-policy",
+  "src/runtime/live-ops-live-execution.ts",
   "src/runtime/live-ops-live-execution",
+  "src/runtime/live-ops-analysis-decision.ts",
   "src/runtime/live-ops-analysis-decision",
   "src/application/live-autonomous-entry-runtime/service.ts",
   "src/infrastructure/upbit/private-client/client.ts",
@@ -51,9 +78,13 @@ const closeoutSourceScanPathsWithoutPrivateClientAuth = [
   "config/live-ops.env.example",
 ].join(" ");
 const closeoutSourceScanPathsWithoutPrivateMappers = [
+  "src/runtime/live-ops-config.ts",
   "src/runtime/live-ops-config",
+  "src/runtime/live-ops-decision-policy.ts",
   "src/runtime/live-ops-decision-policy",
+  "src/runtime/live-ops-live-execution.ts",
   "src/runtime/live-ops-live-execution",
+  "src/runtime/live-ops-analysis-decision.ts",
   "src/runtime/live-ops-analysis-decision",
   "src/application/live-autonomous-entry-runtime/service.ts",
   "src/infrastructure/upbit/private-client/client.ts",
@@ -68,6 +99,8 @@ const closeoutUnsafeSourceScanCommand = "rg --no-config -uuu -n '[\\x27\"]?ord_t
   + closeoutSourceScanPaths;
 const closeoutSecretSourceScanCommand = "rg --no-config -uuu -n 'SEEMIRAI_DATABASE_URL\\s*=\\s*postgres:\\/\\/[^\\s<:]+:[^\\s<@]+@|postgres(?:ql)?:\\/\\/[^:<\\s\"\\x27]+:[^@<\\s\"\\x27]+@|SEEMIRAI_UPBIT_ACCESS_KEY\\s*=\\s*[^<\\s]+|SEEMIRAI_UPBIT_SECRET_KEY\\s*=\\s*[^<\\s]+|SEEMIRAI_TELEGRAM_BOT_TOKEN\\s*=\\s*[0-9]+:[A-Za-z0-9_-]+|\\bTELEGRAM_BOT_TOKEN\\s*=\\s*[0-9]+:[A-Za-z0-9_-]+|SEEMIRAI_TUI_CONTROL_TOKEN\\s*=\\s*[^<\\s]+|[\\x27\"]?Authorization[\\x27\"]?\\s*[:=]\\s*[\\x27\"]?(Bearer|bearer)\\s+[A-Za-z0-9._-]+|[\\x27\"]?authorization[\\x27\"]?\\s*[:=]\\s*[\\x27\"]?(Bearer|bearer)\\s+[A-Za-z0-9._-]+|raw_provider_payload|rawProviderPayload|raw_order_detail|rawOrderDetail' "
   + closeoutSourceScanPaths;
+const closeoutUnsafeSourceScanCommandWithoutRuntimePublicEntries = closeoutUnsafeSourceScanCommand.replace(closeoutSourceScanPaths, closeoutSourceScanPathsWithoutRuntimePublicEntries);
+const closeoutSecretSourceScanCommandWithoutRuntimePublicEntries = closeoutSecretSourceScanCommand.replace(closeoutSourceScanPaths, closeoutSourceScanPathsWithoutRuntimePublicEntries);
 
 describe("Issue 206 live:ops real-arm closeout script", () => {
   it("skips real closeout validation unless the explicit guard is enabled", async () => {
@@ -929,6 +962,29 @@ describe("Issue 206 live:ops real-arm closeout script", () => {
           commands: ["rg -n withdraw scripts", "rg -n access_key scripts"],
           unsafeMatches: [],
           secretMatches: [],
+        },
+      }),
+    });
+    const summary = await runScriptExpectingFailure(
+      ["--json", "--artifact-dir", artifactDir, "--manifest", manifestPath],
+      createReadyEnv(),
+    );
+
+    expect(summary.status).toBe("failed");
+    expect(getCheck(summary, "sourceSecurityScan")).toMatchObject({ status: "fail" });
+  });
+
+  it("fails when source scan commands omit runtime public entry files", async () => {
+    const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-issue-206-closeout-source-scan-runtime-entry-files-"));
+    const manifestPath = await writeCloseoutManifest(artifactDir, {
+      manifestMutator: (manifest) => ({
+        ...manifest,
+        sourceScan: {
+          ...(manifest.sourceScan as Record<string, unknown>),
+          commands: [
+            closeoutUnsafeSourceScanCommandWithoutRuntimePublicEntries,
+            closeoutSecretSourceScanCommandWithoutRuntimePublicEntries,
+          ],
         },
       }),
     });

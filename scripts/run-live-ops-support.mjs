@@ -947,6 +947,7 @@ function attachLiveOpsCliCleanupRuntimeApprovalEvidence(intent) {
   const costSnapshot = intent.costSnapshot ?? {};
   const riskApproval = intent.riskApproval ?? {};
   const hasExistingCostSnapshot = isNonEmptyRecord(intent.costSnapshot);
+  const hasExistingRiskApproval = isNonEmptyRecord(intent.riskApproval);
   const costOrderIntentEvidence = resolveLiveOpsCliCleanupRuntimeApprovalOrderIntentEvidence({
     existingEvidence: costSnapshot.order_intent,
     intent,
@@ -972,7 +973,11 @@ function attachLiveOpsCliCleanupRuntimeApprovalEvidence(intent) {
       reason_code: costSnapshot.reason_code ?? "cost_margin_ok",
       order_intent: costOrderIntentEvidence,
     },
-    riskApproval: {
+    riskApproval: hasExistingRiskApproval ? {
+      ...riskApproval,
+      // RiskGate partial evidence는 승인으로 보정하지 않고 order intent 날짜 scope만 보정해 guard 차단 근거로 보존한다.
+      order_intent: riskOrderIntentEvidence,
+    } : {
       ...riskApproval,
       source: riskApproval.source ?? "risk_gate",
       approved: riskApproval.approved ?? true,

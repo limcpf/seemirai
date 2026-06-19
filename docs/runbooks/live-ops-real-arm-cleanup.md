@@ -150,8 +150,10 @@ closeout evidence로 인정하지 않는다.
 
 `keyScope`는 `grantedScopes: ["자산조회", "주문조회", "주문하기"]`, `forbiddenScopesAbsent: ["출금하기"]`,
 `withdrawalEnabled: false`처럼 허용 scope와 출금 권한 부재를 redacted safe summary로 기록한다. source/security scan은 실제 `rg -n`
-명령으로 repository root에서 runtime source path인 `src/runtime/live-ops-config src/runtime/live-ops-decision-policy
-src/runtime/live-ops-live-execution src/runtime/live-ops-analysis-decision src/application/live-autonomous-entry-runtime/service.ts
+명령으로 repository root에서 runtime source path인 `src/runtime/live-ops-config.ts src/runtime/live-ops-config
+src/runtime/live-ops-decision-policy.ts src/runtime/live-ops-decision-policy src/runtime/live-ops-live-execution.ts
+src/runtime/live-ops-live-execution src/runtime/live-ops-analysis-decision.ts src/runtime/live-ops-analysis-decision
+src/application/live-autonomous-entry-runtime/service.ts
 src/infrastructure/upbit/private-client/client.ts src/infrastructure/upbit/private-client/auth.ts
 src/infrastructure/upbit/live-broker/service.ts src/infrastructure/upbit/private-mappers scripts/run-live-ops.mjs
 scripts/run-live-ops-support.mjs config/live-ops.example.json config/live-ops.env.example`

@@ -21,9 +21,13 @@ const invocationCwd = process.cwd();
 const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const requiredKeyScopes = ["자산조회", "주문조회", "주문하기"];
 const requiredSourceScanPaths = [
+  "src/runtime/live-ops-config.ts",
   "src/runtime/live-ops-config",
+  "src/runtime/live-ops-decision-policy.ts",
   "src/runtime/live-ops-decision-policy",
+  "src/runtime/live-ops-live-execution.ts",
   "src/runtime/live-ops-live-execution",
+  "src/runtime/live-ops-analysis-decision.ts",
   "src/runtime/live-ops-analysis-decision",
   "src/application/live-autonomous-entry-runtime/service.ts",
   "src/infrastructure/upbit/private-client/client.ts",
