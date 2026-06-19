@@ -62,10 +62,11 @@ Codex-native 운영은 Codex, Git, GitHub, shell command, 문서 상태를 연�
 - budget reservation은 attempt id 파일만으로 완료하지 않는다. 같은 날짜 reservation lock을 먼저 잡고, lock 안에서 현재 reservation
   집계와 open position snapshot을 합산해 일일 자동 주문 예산을 다시 확인한 뒤 attempt 파일을 만든다. lock이 busy이거나 예산 초과가
   확인되면 broker 호출 전 fail-closed 한다. lock 파일은 lease id, owner boot id, process start time을 포함하고 기본 5분 TTL이 지났더라도
-  owner process fingerprint가 살아 있으면 회수하지 않는다. stale 회수와 release는 lock 파일을 먼저 quarantine path로 `rename`한 뒤 lease
+  owner process fingerprint가 살아 있으면 회수하지 않는다. acquire는 temp 파일에 완성된 lease JSON을 쓴 뒤 hard link로 lock path를
+  선점해 lock path에 부분 JSON이 노출되지 않게 한다. stale 회수와 release는 lock 파일을 먼저 quarantine path로 `rename`한 뒤 lease
   fingerprint를 재확인하는 CAS 절차로 수행해 다른 프로세스가 방금 만든 fresh lock을 지우지 않는다. fresh lock은 동시 실행 보호로 유지해 같은
-  날짜 budget oversubscription을 막고, owner가 사라진 stale lock 또는 TTL이 지난 malformed lock은 crash/reboot 이후 운영 복구를 위해
-  제거할 수 있다.
+  날짜 budget oversubscription을 막고, owner가 사라진 stale lock 또는 TTL이 지난 legacy malformed lock은 crash/reboot 이후 운영 복구를
+  위해 제거할 수 있다.
 - reconcile/PnL/status summary는 live execution 이후 같은 lifecycle에서 계산하되, fixture smoke에서는 private provider 조회를 수행하지
   않는다. open order, 예산 사용, 노출은 safe placeholder로 표시하고 PnL 결측은 0으로 보정하지 않고 `관측 대기`로 남겨 실제
   reconcile/PnL evidence 연결 전까지 운영자가 상태 의미를 오해하지 않게 한다.

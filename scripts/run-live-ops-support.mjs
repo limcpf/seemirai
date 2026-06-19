@@ -1,6 +1,6 @@
 import { createHash, createHmac, randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
-import { mkdir, open, readdir, readFile, realpath, rename, stat, unlink, writeFile } from "node:fs/promises";
+import { link, mkdir, open, readdir, readFile, realpath, rename, stat, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { Decimal } from "decimal.js";
 import pg from "pg";
@@ -1072,18 +1072,20 @@ export async function createLiveOpsCliCleanupArtifactStore({ configPath, env = {
       const targetPath = this.dailyReservationLockPath(day);
       const acquire = async () => {
         const leaseId = randomUUID();
-        const handle = await open(targetPath, "wx");
+        const tempPath = `${targetPath}.tmp-${leaseId}`;
+        const lease = `${JSON.stringify(createLiveOpsCliDailyReservationLockLease({
+          day,
+          acquiredAt,
+          ttlMs,
+          leaseId,
+        }), null, 2)}\n`;
         try {
-          await handle.writeFile(`${JSON.stringify(createLiveOpsCliDailyReservationLockLease({
-            day,
-            acquiredAt,
-            ttlMs,
-            leaseId,
-          }), null, 2)}\n`, "utf8");
+          await writeFile(tempPath, lease, { encoding: "utf8", flag: "wx" });
+          await link(tempPath, targetPath);
         } catch (error) {
-          await handle.close().catch(() => undefined);
-          await unlink(targetPath).catch(() => undefined);
           throw error;
+        } finally {
+          await unlink(tempPath).catch(() => undefined);
         }
         let released = false;
         return {
@@ -1094,7 +1096,6 @@ export async function createLiveOpsCliCleanupArtifactStore({ configPath, env = {
               return;
             }
             released = true;
-            await handle.close();
             await releaseLiveOpsCliDailyReservationLockIfOwned(targetPath, leaseId);
           },
         };
@@ -1362,11 +1363,9 @@ async function claimAndRemoveLiveOpsCliDailyReservationLock(targetPath, expected
   }
   const claimed = await readLiveOpsCliDailyReservationLockState(claimPath, new Date().toISOString(), liveOpsCliDailyReservationLockLeaseMs);
   if (!claimed.exists || claimed.fingerprint !== expected.fingerprint) {
-    if (restoreOnMismatch) {
-      await rename(claimPath, targetPath).catch(() => undefined);
-    } else {
-      await rename(claimPath, targetPath).catch(() => undefined);
-    }
+    // mismatch는 다른 프로세스가 만든 fresh lock일 수 있으므로 target을 덮어쓰지 않는 link 복원만 시도한다.
+    await link(claimPath, targetPath).catch(() => undefined);
+    await unlink(claimPath).catch(() => undefined);
     const error = new Error("LiveOpsCliDailyReservationLockNotRecoverable");
     error.code = "EEXIST";
     throw error;
