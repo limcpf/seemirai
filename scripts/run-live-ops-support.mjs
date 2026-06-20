@@ -1889,6 +1889,29 @@ function createLiveOpsCliAutonomousPositionOwnership({ reservationUsage, heldPos
 
 function createLiveOpsCliAutonomousPnlPositionSnapshot({ ownership, heldPositionExposure }) {
   if (
+    ownership?.strategyId === liveOpsCliAutonomous24x7StrategyId &&
+    String(ownership?.status ?? "").toUpperCase() === "CLOSED" &&
+    heldPositionExposure?.market === "KRW-BTC" &&
+    isNonNegativeDecimalString(heldPositionExposure?.quantity) &&
+    new Decimal(heldPositionExposure.quantity).eq(0) &&
+    isDecimalString(ownership?.realizedPnlKrw)
+  ) {
+    // 전량 청산 직후에는 지갑 BTC가 0이라 owned=false가 되지만, realized PnL은 현재 tick closeout에 넘겨야 한다.
+    return {
+      source: "live_ops_autonomous_artifact_position",
+      strategyId: liveOpsCliAutonomous24x7StrategyId,
+      market: "KRW-BTC",
+      quantity: "0",
+      averageEntryPrice: isNonNegativeDecimalString(ownership?.averageEntryPrice) ? String(ownership.averageEntryPrice) : "0",
+      realizedPnlKrw: String(ownership.realizedPnlKrw),
+      openedAt: ownership.openedAt,
+      closedAt: ownership.closedAt,
+      latestReservationAt: ownership.latestReservationAt,
+      highWatermarkPrice: ownership.highWatermarkPrice,
+      highWatermarkAt: ownership.highWatermarkAt,
+    };
+  }
+  if (
     ownership?.strategyId !== liveOpsCliAutonomous24x7StrategyId ||
     ownership?.owned !== true ||
     heldPositionExposure?.market !== "KRW-BTC" ||
@@ -1932,6 +1955,11 @@ function createLiveOpsCliHeldPositionRiskInput({ heldPositionExposure, equityKrw
 function readLiveOpsCliMarketBaseCurrency(market) {
   const [, baseCurrency] = String(market ?? "KRW-BTC").split("-");
   return hasMeaningfulValue(baseCurrency) ? baseCurrency : "BTC";
+}
+
+function readLiveOpsCliMarketQuoteCurrency(market) {
+  const [quoteCurrency] = String(market ?? "KRW-BTC").split("-");
+  return hasMeaningfulValue(quoteCurrency) ? quoteCurrency : "KRW";
 }
 
 function createLiveOpsCliLossSnapshotFromPnlStatus({ pnlStatus, balanceSnapshot, observedAt }) {
@@ -3580,6 +3608,7 @@ function toLiveOpsCliBrokerOrder(payload, { operation, clock, identifierSource, 
   }
   const remainingQuantity = normalizeLiveOpsCliDecimalString(payload.remaining_volume ?? payload.volume);
   const requestedQuantity = normalizeLiveOpsCliOptionalDecimalString(payload.volume) ?? remainingQuantity;
+  const paidFee = normalizeLiveOpsCliOptionalDecimalString(payload.paid_fee);
   return {
     brokerOrderId: String(payload.uuid),
     idempotencyKey: String(payload.identifier ?? ""),
@@ -3593,6 +3622,9 @@ function toLiveOpsCliBrokerOrder(payload, { operation, clock, identifierSource, 
     requestedPrice: normalizeLiveOpsCliOptionalDecimalString(payload.price),
     acceptedAt: hasMeaningfulValue(payload.created_at) ? String(payload.created_at) : clock(),
     updatedAt: clock(),
+    ...(isNonNegativeDecimalString(paidFee)
+      ? { paidFee, feeCurrency: readLiveOpsCliMarketQuoteCurrency(payload.market) }
+      : {}),
     metadata: {
       source: "upbit_private_order_safe_summary",
       upbitLiveBrokerOperation: operation ?? "unknown",
@@ -4637,6 +4669,8 @@ function formatLiveOpsCliTelegramEventKind(eventKind) {
       return "주문 제출";
     case "ORDER_FILLED":
       return "주문 체결";
+    case "REQUOTE_READY":
+      return "재호가 대기";
     case "CANCEL_REQUESTED":
       return "취소 요청";
     case "CANCEL_CONFIRMED":
@@ -9061,6 +9095,9 @@ function mapLiveOpsCliTelegramTradeEventKind(liveExecution) {
       return "CANCEL_REQUESTED";
     case "cancel_confirmed":
       return "CANCEL_CONFIRMED";
+    case "entry_requote_ready":
+    case "exit_requote_ready":
+      return "REQUOTE_READY";
     case "reconcile_required":
       return "RECONCILE_BLOCKED";
     case "manual_review_required":

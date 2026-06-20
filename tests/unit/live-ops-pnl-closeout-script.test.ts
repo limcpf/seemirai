@@ -264,6 +264,71 @@ describe("Issue 206 live:ops PnL closeout runner", () => {
     });
   });
 
+  it("전량 청산 artifact snapshot은 0수량 realized PnL closeout으로 계산한다", async () => {
+    const { runLiveOpsPnlCloseout } = await import(supportModulePath);
+    const insertedRows: unknown[] = [];
+    const pool = createFakePnlCloseoutPool({
+      latestRun: {
+        id: "preflight-run-closed-artifact-position",
+        status: "COMPLETED",
+        finished_at: "2026-06-20T05:00:00.000Z",
+        balance_snapshot_count: 1,
+        open_order_count: 0,
+        mismatch_count: 0,
+      },
+      balances: [
+        { currency: "KRW", available: "60090.05", locked: "0", total: "60090.05", captured_at: "2026-06-20T05:00:00.000Z" },
+        { currency: "BTC", available: "0", locked: "0", total: "0", captured_at: "2026-06-20T05:00:00.000Z" },
+      ],
+      positions: [],
+      fillsCount: 0,
+      referencePrice: "100000000",
+      insertedRows,
+    });
+
+    const result = await runLiveOpsPnlCloseout({
+      pool,
+      market: "KRW-BTC",
+      strategyId: "live_ops_autonomous_24x7_core",
+      capturedAt: "2026-06-20T05:00:00.000Z",
+      referencePrice: "100000000",
+      maxReconcileAgeMs: 30_000,
+      positionSnapshot: {
+        source: "live_ops_autonomous_artifact_position",
+        strategyId: "live_ops_autonomous_24x7_core",
+        market: "KRW-BTC",
+        quantity: "0",
+        averageEntryPrice: "0",
+        realizedPnlKrw: "90.05",
+        openedAt: "2026-06-20T04:00:00.000Z",
+        closedAt: "2026-06-20T04:59:00.000Z",
+      },
+    });
+
+    expect(result).toMatchObject({
+      status: "ready",
+      inserted: true,
+      strategyId: "live_ops_autonomous_24x7_core",
+      equityKrw: "60090.05",
+      realizedPnlKrw: "90.05",
+      unrealizedPnlKrw: "0",
+    });
+    expect(insertedRows[0]).toMatchObject({
+      strategy_id: "live_ops_autonomous_24x7_core",
+      market: "KRW-BTC",
+      realized_pnl: "90.05",
+      unrealized_pnl: "0",
+      equity: "60090.05",
+      payload_json: expect.objectContaining({
+        positionDetail: expect.objectContaining({
+          quantity: "0",
+          averageEntryPrice: "0",
+          source: "live_ops_autonomous_artifact_position",
+        }),
+      }),
+    });
+  });
+
   it("preflight runner wrapper는 artifact-owned positionSnapshot을 closeout에 전달한다", async () => {
     const { createLiveOpsPnlCloseoutRunner } = await import(supportModulePath);
     const insertedRows: unknown[] = [];

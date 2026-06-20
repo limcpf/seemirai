@@ -472,15 +472,22 @@ function normalizeInjectedPositionSnapshot(positionSnapshot, { market, strategyI
   if (
     positionSnapshot.strategyId !== strategyId ||
     positionSnapshot.market !== market ||
-    !isPositiveDecimalString(positionSnapshot.quantity) ||
-    !isPositiveDecimalString(positionSnapshot.averageEntryPrice)
+    !isNonNegativeDecimalString(positionSnapshot.quantity)
   ) {
+    return undefined;
+  }
+  const quantity = normalizeNonNegativeDecimal(positionSnapshot.quantity, "positionSnapshot.quantity");
+  // 열린 포지션은 원가가 필수지만, 전량 청산 snapshot은 realized PnL 보존을 위해 0원 평균단가를 허용한다.
+  const hasUsableAverageEntryPrice = new Decimal(quantity).gt(0)
+    ? isPositiveDecimalString(positionSnapshot.averageEntryPrice)
+    : isNonNegativeDecimalString(positionSnapshot.averageEntryPrice);
+  if (!hasUsableAverageEntryPrice) {
     return undefined;
   }
   return {
     strategy_id: strategyId,
     market,
-    quantity: normalizeNonNegativeDecimal(positionSnapshot.quantity, "positionSnapshot.quantity"),
+    quantity,
     average_entry_price: normalizeNonNegativeDecimal(positionSnapshot.averageEntryPrice, "positionSnapshot.averageEntryPrice"),
     realized_pnl: normalizeDecimal(positionSnapshot.realizedPnlKrw ?? "0"),
     unrealized_pnl: normalizeDecimal(positionSnapshot.unrealizedPnlKrw ?? "0"),
