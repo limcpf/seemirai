@@ -109,6 +109,10 @@ Codex-native 운영은 Codex, Git, GitHub, shell command, 문서 상태를 연�
   기반 evidence로 남겨 차단한다. submitted 또는 cancel requested lifecycle의 계정 전체 open order는 현재 live execution identity와 일치하는
   1건만 tracked로 인정하며, preflight manual-review summary는 계산 가능한 노출 금액과 owner Telegram manual-review alert를 보존한다.
   단, key scope guard가 출금/입금/선물/레버리지/마진 또는 알 수 없는 권한을 감지하면 private read를 열기 전에 fail-closed 한다.
+- production `live:ops`는 PnL snapshot 결측이나 stale `CALCULATED` row를 만나면 fresh clean reconcile과 잔고 snapshot이 있는 경우에만
+  `live_ops_cleanup_probe` PnL closeout runner를 같은 preflight tick에서 실행한다. runner는 append-only `pnl_snapshots` row를
+  `captured_at + strategy_id + market + sourceFingerprint` 기준으로 멱등 처리하며, 최신 row가 PARTIAL/manual-review/status 미완료이거나
+  reconcile/open order/mismatch/position/reference price source가 불확실하면 새 0원 snapshot을 만들지 않고 기존 loss guard 차단을 유지한다.
 - Telegram 전송 실패는 주문/리스크 commit을 되돌리지 않고 retry/manual review summary로 격리한다.
 - 실제 cleanup run은 저장소 밖 redacted artifact에만 기록하고, issue/PR에는 safe summary와 artifact 경로만 남긴다. 취소 요청 이후
   terminal poll이 실패해도 artifact 없이 generic manual review로 빠지지 않고, cancel evidence와 poll 실패 사유를 redacted cleanup

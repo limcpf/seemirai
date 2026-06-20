@@ -4,6 +4,7 @@ import { link, mkdir, open, readdir, readFile, realpath, stat, unlink, writeFile
 import path from "node:path";
 import { Decimal } from "decimal.js";
 import pg from "pg";
+import { createLiveOpsPnlCloseoutRunner } from "./run-live-ops-pnl-closeout-support.mjs";
 
 const { Pool: PgPool } = pg;
 const migrationFilePattern = /^(\d{6})_[a-z0-9_]+\.sql$/u;
@@ -817,6 +818,15 @@ async function collectLiveOpsCliProductionPreflight({
     });
     resolvedReconcileStatus = await readLiveOpsCliReconcileStatus(productionRuntime.reconcileStatusProvider);
   }
+  let resolvedPnlStatus = await refreshLiveOpsCliPreflightPnlStatusIfNeeded({
+    productionRuntime,
+    pnlStatus,
+    balanceSnapshot,
+    reconcileStatus: resolvedReconcileStatus,
+    market,
+    marketData,
+    observedAt,
+  });
 
   const openExposureKrw = sumLiveOpsCliOpenExposureKrw(openOrders);
   const heldPositionExposure = createLiveOpsCliHeldPositionExposure({
@@ -841,7 +851,7 @@ async function collectLiveOpsCliProductionPreflight({
   // 손실 snapshot freshness는 provider read 지연까지 포함한 제출 직전 시각으로 닫아야 stale PnL이 주문 후보를 열지 못한다.
   const lossSnapshotObservedAt = new Date().toISOString();
   const lossSnapshot = createLiveOpsCliLossSnapshotFromPnlStatus({
-    pnlStatus,
+    pnlStatus: resolvedPnlStatus,
     balanceSnapshot,
     observedAt: lossSnapshotObservedAt,
   });
@@ -879,7 +889,7 @@ async function collectLiveOpsCliProductionPreflight({
     balanceSnapshot,
     heldPositionExposure,
     reconcileStatus: resolvedReconcileStatus,
-    pnlStatus,
+    pnlStatus: resolvedPnlStatus,
     killSwitchStatus,
     preflightReconcileEvidence,
     budgetSnapshot,
@@ -887,6 +897,58 @@ async function collectLiveOpsCliProductionPreflight({
     executionStatus,
     postSubmitReadiness,
   };
+}
+
+async function refreshLiveOpsCliPreflightPnlStatusIfNeeded({
+  productionRuntime,
+  pnlStatus,
+  balanceSnapshot,
+  reconcileStatus,
+  market,
+  marketData,
+  observedAt,
+}) {
+  if (
+    productionRuntime?.pnlCloseoutRunner === undefined ||
+    productionRuntime?.pnlStatusProvider === undefined
+  ) {
+    return pnlStatus;
+  }
+  if (
+    pnlStatus?.readStatus === "OK" &&
+    !isLiveOpsCliReadyPnlSnapshotStatus(pnlStatus.latestStatus)
+  ) {
+    // 계산 미완료/manual-review PnL row를 새 0원 snapshot으로 가리면 실제 회계 차단 사유가 사라진다.
+    return pnlStatus;
+  }
+  if (
+    pnlStatus?.readStatus === "OK" &&
+    isLiveOpsCliReadyPnlSnapshotStatus(pnlStatus.latestStatus) &&
+    isLiveOpsCliFreshPnlStatus(pnlStatus, observedAt)
+  ) {
+    return pnlStatus;
+  }
+  if (!isLiveOpsCliFreshReconcileStatus(reconcileStatus, observedAt)) {
+    return pnlStatus;
+  }
+
+  try {
+    const closeout = await productionRuntime.pnlCloseoutRunner.refreshPreflightPnl({
+      market,
+      strategyId: "live_ops_cleanup_probe",
+      observedAt,
+      balanceSnapshot,
+      reconcileStatus,
+      referencePrice: marketData?.referencePrice ?? readLiveOpsCliMarketReferencePrice(marketData),
+    });
+    if (closeout?.status !== "ready") {
+      return pnlStatus;
+    }
+    // 같은 preflight tick에서 append-only PnL snapshot을 쓴 뒤 provider를 다시 읽어 loss guard 입력으로 고정한다.
+    return readLiveOpsCliPnlStatus(productionRuntime.pnlStatusProvider);
+  } catch {
+    return pnlStatus;
+  }
 }
 
 function attachLiveOpsCliCleanupRuntimeEvidence({ config, orderIntents, preflight }) {
@@ -1333,6 +1395,7 @@ export function createLiveOpsCliProductionProviders({ config, env, market, fetch
     reconcileStatusProvider: createLiveOpsCliDatabaseReconcileStatusProvider(pool),
     preflightReconcileRecorder: createLiveOpsCliDatabasePreflightReconcileRecorder(pool),
     pnlStatusProvider: createLiveOpsCliDatabasePnlStatusProvider(pool, market),
+    pnlCloseoutRunner: createLiveOpsPnlCloseoutRunner({ pool, market }),
     killSwitchProvider: createLiveOpsCliDatabaseKillSwitchProvider(pool),
     telegramDispatcher: createLiveOpsCliTelegramDispatcher({ config, env, fetchImpl }),
     async close() {

@@ -38,6 +38,8 @@ const requiredSourceScanPaths = [
   "src/infrastructure/upbit/private-mappers",
   "scripts/run-live-ops.mjs",
   "scripts/run-live-ops-support.mjs",
+  "scripts/run-live-ops-pnl-closeout.mjs",
+  "scripts/run-live-ops-pnl-closeout-support.mjs",
   "config/live-ops.example.json",
   "config/live-ops.env.example",
 ];

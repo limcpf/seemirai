@@ -336,6 +336,30 @@ Telegram, TUI를 같은 lifecycle로 조립하고, 조건을 통과한 단일 `K
         금지 후보로 요구하되, mapper의 정상 차단 메시지는 오탐하지 않는다.
   - [x] 관련 운영 문서와 unit/soak tests가 위 invariant를 설명하고 검증한다.
 
+### Sub PR 15: PnL closeout runner와 live:ops preflight 자동 refresh
+
+- 목표: Sub PR 14의 `CALCULATED` PnL freshness guard가 운영 DB에서 row 부재만으로 영구 차단되는 gap을 닫는다. 운영자가 수동 JSON 증적을
+  만들지 않아도 production `live:ops`가 fresh clean reconcile/balance source를 확보한 뒤 `live_ops_cleanup_probe` PnL closeout snapshot을
+  append-only로 생성하고, 같은 tick에서 다시 읽어 loss guard를 판단하게 한다. 필요하면 같은 기능을 독립 CLI로도 실행할 수 있게 한다.
+- 제외 범위:
+  - 실제 주문 제출/취소 lifecycle 변경, budget 상한 확대, BTC 외 market 활성화.
+  - PARTIAL/manual-review PnL row를 새 0원 snapshot으로 덮는 자동 복구.
+  - raw provider payload, secret, DB URL, Authorization/JWT 출력 또는 artifact 저장.
+- DnD:
+  - [x] `corepack pnpm live:ops:pnl-closeout -- --env-file <운영-env-path> --market KRW-BTC --strategy-id live_ops_cleanup_probe --json`
+        명령이 추가되고, 실제 주문 API나 Telegram provider를 호출하지 않는다.
+  - [x] runner는 fresh clean reconcile, balance snapshot, strategy position/fill 요약, 최신 reference price, 기존 PnL history만으로
+        `pnl_snapshots` row를 계산하며 `payload_json.status=CALCULATED`, `source=live_ops_pnl_closeout_preflight`,
+        `sourceFingerprint`를 저장한다.
+  - [x] `captured_at + strategy_id + market + sourceFingerprint` 기준 advisory lock/SELECT/INSERT 순서로 append-only idempotency를 보장한다.
+  - [x] open order, mismatch/manual review, stale reconcile, 체결 이력 대비 position snapshot 결측, 보유 수량 평가 기준가 결측은
+        새 PnL row 없이 blocked result로 닫는다.
+  - [x] production `live:ops` preflight는 PnL 결측 또는 stale `CALCULATED` row를 만나면 runner를 자동 호출하고 provider를 다시 읽는다.
+        최신 row가 PARTIAL/manual-review/status 미완료이면 자동 row로 가리지 않고 기존 loss guard 차단을 유지한다.
+  - [x] runbook, runtime config, reliability, feature requirements, source scan path, active plan이 새 CLI와 자동 refresh invariant를 설명한다.
+  - [x] 관련 unit tests, soak closeout source-path tests, `corepack pnpm typecheck`, `./scripts/verify docs`, `./scripts/verify`,
+        `git diff --check`가 통과한다.
+
 ## 검증 방법
 
 공통 검증:
@@ -391,7 +415,8 @@ SEEMIRAI_RUN_LIVE_OPS_REAL_ARM_CLOSEOUT=1 \
   src/application/live-autonomous-entry-runtime/service.ts
   src/infrastructure/upbit/private-client.ts src/infrastructure/upbit/private-client/client.ts
   src/infrastructure/upbit/private-mappers.ts
-  scripts/run-live-ops.mjs scripts/run-live-ops-support.mjs config` 전체 범위의 실제 `rg -n` 실행 증거여야 한다.
+  scripts/run-live-ops.mjs scripts/run-live-ops-support.mjs scripts/run-live-ops-pnl-closeout.mjs
+  scripts/run-live-ops-pnl-closeout-support.mjs config` 전체 범위의 실제 `rg -n` 실행 증거여야 한다.
   validator/runbook 자체의 정밀 regex 문구가 운영 source scan 결과에 섞이면 manifest evidence와 실제 출력이 어긋나므로 docs와
   closeout validator 파일은 필수 empty-match 범위에서 제외한다. 금지 scope/시장가/futures/leverage 단어 자체는 guard와 문서에
   정상 등장하므로, source scan은 broad term 대신 위험 toggle `true`와 raw 주문 payload alias를 찾는 정밀 패턴으로 제한한다.
