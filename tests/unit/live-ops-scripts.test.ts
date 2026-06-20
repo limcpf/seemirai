@@ -1901,6 +1901,15 @@ console.log(JSON.stringify({
     });
   });
 
+  it("database reconcile status provider는 잔량 미확인 open order도 open으로 집계한다", async () => {
+    const supportSource = await readFile(
+      path.join(process.cwd(), "scripts/run-live-ops-support.mjs"),
+      "utf8",
+    );
+
+    expect(supportSource).toContain("remaining_quantity IS NULL OR remaining_quantity > 0");
+  });
+
   it("database PnL status provider는 cleanup strategy row가 없으면 global 계산 완료 row를 최초 cleanup 손실 근거로 읽는다", async () => {
     const supportModulePath = path.join(process.cwd(), "scripts/run-live-ops-support.mjs");
     const {
@@ -3613,6 +3622,135 @@ console.log(JSON.stringify({
     });
     expect(submitted).toHaveLength(0);
     expect(reservations).toHaveLength(0);
+  });
+
+  it("production preflight는 clean source가 있으면 PnL missing을 closeout runner로 복구한다", async () => {
+    const supportModulePath = path.join(process.cwd(), "scripts/run-live-ops-support.mjs");
+    const {
+      createLiveOpsCliProductionExecutionInputs,
+    } = await import(supportModulePath);
+    const observedAt = "2026-06-20T05:00:00.000Z";
+    const closeoutCalls: unknown[] = [];
+    let pnlReadCount = 0;
+    const rawIntent = { ...createCleanupRuntimeIntent() } as Record<string, unknown>;
+    delete rawIntent.costSnapshot;
+    delete rawIntent.costInput;
+    delete rawIntent.riskApproval;
+    delete rawIntent.risk;
+    const config = {
+      universe: { markets: ["KRW-BTC"], default_market: "KRW-BTC" },
+      budget: {
+        max_order_krw: "10000",
+        daily_autonomous_notional_limit_krw: "30000",
+        max_open_position_notional_krw: "30000",
+      },
+    };
+    const productionRuntime = {
+      entryRuntime: {},
+      cleanupLifecycle: {},
+      privateReadProvider: {
+        async listOpenOrders() {
+          return [];
+        },
+        async getBalances() {
+          return {
+            exchangeId: "upbit_krw_spot",
+            capturedAt: observedAt,
+            balances: [{ currency: "KRW", available: "50000", locked: "0", total: "50000" }],
+          };
+        },
+      },
+      reconcileStatusProvider: {
+        async getReconcileStatus() {
+          return {
+            lastReconcileAt: observedAt,
+            result: "SUCCESS",
+            mismatchCount: 0,
+            openOrderCount: 0,
+            balanceStatus: "OK",
+          };
+        },
+      },
+      pnlStatusProvider: {
+        async getStatus() {
+          pnlReadCount += 1;
+          if (pnlReadCount === 1) {
+            return { readStatus: "NOT_FOUND", reason: "pnl_snapshot_not_found" };
+          }
+          return {
+            readStatus: "OK",
+            latestCapturedAt: observedAt,
+            latestEquityKrw: "50000",
+            latestRealizedPnlKrw: "0",
+            latestUnrealizedPnlKrw: "0",
+            latestDrawdownBps: "0",
+            latestStatus: "CALCULATED",
+            latestSource: "pnl_snapshots",
+            snapshotCount: 1,
+            reason: "pnl_snapshot_latest_read",
+          };
+        },
+      },
+      pnlCloseoutRunner: {
+        async refreshPreflightPnl(input: unknown) {
+          closeoutCalls.push(input);
+          return {
+            status: "ready",
+            inserted: true,
+            capturedAt: observedAt,
+            strategyId: "live_ops_cleanup_probe",
+            market: "KRW-BTC",
+            realizedPnlKrw: "0",
+            unrealizedPnlKrw: "0",
+          };
+        },
+      },
+      killSwitchProvider: {
+        async getStatus() {
+          return { active: false, state: "NORMAL" };
+        },
+      },
+      budgetReservation: {
+        async readDailyReservedNotional() {
+          return { reservedNotionalKrw: "0", reservationCount: 0 };
+        },
+      },
+      preflightReconcileRecorder: {
+        async recordPreflight() {
+          throw new Error("FreshCleanReconcileShouldNotRecord");
+        },
+      },
+      telegramDispatcher: {},
+    };
+
+    const executionInputs = await withFakeSystemTime(observedAt, () => createLiveOpsCliProductionExecutionInputs({
+      config,
+      env: {
+        SEEMIRAI_UPBIT_ACCESS_KEY: "fake-access-key",
+        SEEMIRAI_UPBIT_SECRET_KEY: "fake-secret-key",
+        SEEMIRAI_UPBIT_KEY_SCOPE: "자산조회,주문조회,주문하기",
+        SEEMIRAI_UPBIT_KEY_SCOPE_EVIDENCE_ID: "scope-evidence",
+      },
+      fixtureSmoke: false,
+      analysisDecision: { ready: true, decisionCategory: "ORDER_INTENT", orderIntentCount: 1 },
+      marketData: { ready: true, latestHeartbeatAt: observedAt, referencePrice: "100000000" },
+      orderIntents: [rawIntent],
+      productionRuntime,
+    }));
+
+    expect(closeoutCalls).toEqual([expect.objectContaining({
+      market: "KRW-BTC",
+      strategyId: "live_ops_cleanup_probe",
+      observedAt,
+      referencePrice: "100000000",
+    })]);
+    expect(pnlReadCount).toBe(2);
+    expect(executionInputs.lossSnapshot).toMatchObject({
+      dailyRealizedLossKrw: "0",
+      weeklyRealizedLossKrw: "0",
+      capturedAt: observedAt,
+      source: "pnl_snapshots",
+    });
   });
 
   it("production preflight는 PnL non-OK 상태를 0 손실로 보정하지 않고 제출 전 차단한다", async () => {

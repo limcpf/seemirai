@@ -25,6 +25,8 @@ const closeoutSourceScanPaths = [
   "src/infrastructure/upbit/private-mappers",
   "scripts/run-live-ops.mjs",
   "scripts/run-live-ops-support.mjs",
+  "scripts/run-live-ops-pnl-closeout.mjs",
+  "scripts/run-live-ops-pnl-closeout-support.mjs",
   "config/live-ops.example.json",
   "config/live-ops.env.example",
 ].join(" ");
@@ -42,6 +44,8 @@ const closeoutSourceScanPathsWithoutRuntimePublicEntries = [
   "src/infrastructure/upbit/private-mappers",
   "scripts/run-live-ops.mjs",
   "scripts/run-live-ops-support.mjs",
+  "scripts/run-live-ops-pnl-closeout.mjs",
+  "scripts/run-live-ops-pnl-closeout-support.mjs",
   "config/live-ops.example.json",
   "config/live-ops.env.example",
 ].join(" ");
@@ -62,6 +66,8 @@ const closeoutSourceScanPathsWithoutLiveBroker = [
   "src/infrastructure/upbit/private-mappers",
   "scripts/run-live-ops.mjs",
   "scripts/run-live-ops-support.mjs",
+  "scripts/run-live-ops-pnl-closeout.mjs",
+  "scripts/run-live-ops-pnl-closeout-support.mjs",
   "config/live-ops.example.json",
   "config/live-ops.env.example",
 ].join(" ");
@@ -82,6 +88,8 @@ const closeoutSourceScanPathsWithoutPrivateClientAuth = [
   "src/infrastructure/upbit/private-mappers",
   "scripts/run-live-ops.mjs",
   "scripts/run-live-ops-support.mjs",
+  "scripts/run-live-ops-pnl-closeout.mjs",
+  "scripts/run-live-ops-pnl-closeout-support.mjs",
   "config/live-ops.example.json",
   "config/live-ops.env.example",
 ].join(" ");
@@ -102,6 +110,8 @@ const closeoutSourceScanPathsWithoutPrivateMappers = [
   "src/infrastructure/upbit/private-mappers.ts",
   "scripts/run-live-ops.mjs",
   "scripts/run-live-ops-support.mjs",
+  "scripts/run-live-ops-pnl-closeout.mjs",
+  "scripts/run-live-ops-pnl-closeout-support.mjs",
   "config/live-ops.example.json",
   "config/live-ops.env.example",
 ].join(" ");

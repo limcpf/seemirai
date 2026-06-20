@@ -850,6 +850,9 @@ Acceptance Criteria:
 - [ ] private read reconcile이 account/order/balance 상태를 읽고 status/TUI/Telegram에 secret 없이 표시한다.
 - [ ] clean-start DB에 완료된 reconcile run이 없으면 production `live:ops`가 계정 전체 미체결 주문과 actual private read 결과를
   `LIVE_OPS_PRIVATE_READ_PREFLIGHT` DB evidence로 저장하고, 기존 mismatch/manual review 상태는 덮어쓰지 않는다.
+- [ ] PnL snapshot이 없거나 stale이면 production `live:ops`가 fresh clean reconcile/balance source로
+  `live_ops_cleanup_probe` `CALCULATED` PnL snapshot을 append-only 생성하고 다시 읽는다. PARTIAL/manual-review/status 미완료 PnL row,
+  open order, mismatch, stale reconcile, position/reference price 결측은 새 0원 snapshot으로 덮지 않고 broker 제출 전 fail-closed 한다.
 - [ ] 기존 clean reconcile 뒤 현재 private read에서 계정 전체 미체결 주문이 발견되면 가격 또는 원 주문 수량이 없는 주문까지
   `remaining_volume` 기반 manual-review evidence로 저장하고 신규 cleanup 주문을 차단한다.
 - [ ] submitted/cancel_requested 상태의 open order는 현재 live execution identity와 일치하는 1건만 tracked로 인정하며, preflight

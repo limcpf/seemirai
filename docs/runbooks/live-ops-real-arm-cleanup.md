@@ -35,7 +35,7 @@ identifier 또는 uuid로 취소해 terminal cancel evidence로 닫는 절차다
 | decision policy | `analysis.decision_policy.id=cleanup_probe`이고 정적 allowlist resolver가 `live_ops_cleanup_probe` strategy를 조립한다 |
 | private read | account/order/balance 조회가 가능하고 raw payload 없이 safe summary로 낮아진다 |
 | reconcile | 기존 mismatch/manual review가 없고, DB run이 없으면 CLI가 private read preflight evidence를 자동 생성한다 |
-| PnL/status | `readStatus=OK`, `CALCULATED` snapshot status, provider read 완료 후 시각 기준 30초 freshness를 모두 만족해야 손실 증거로 쓰고, 결측/오래됨/PARTIAL/status 누락/read-level `OK`/job-level 완료 status는 0으로 보정하지 않는다. preflight 직후 새 row의 1초 이내 future skew만 허용한다 |
+| PnL/status | `readStatus=OK`, `CALCULATED` snapshot status, provider read 완료 후 시각 기준 30초 freshness를 모두 만족해야 손실 증거로 쓴다. 결측/오래됨/PARTIAL/status 누락/read-level `OK`/job-level 완료 status는 0으로 보정하지 않는다. clean/fresh reconcile과 잔고 source가 있으면 CLI가 `live_ops_cleanup_probe` PnL closeout snapshot을 자동 생성하고, preflight 직후 새 row의 1초 이내 future skew만 허용한다 |
 | Telegram | startup/live order capable/order/cancel/manual review alert를 owner chat으로 보낼 수 있다 |
 | TUI | live armed/order capable, 최신 decision/order/cancel/reconcile/PnL 상태를 secret 없이 보여준다 |
 | artifact 경로 | symlink 기준 실제 경로가 저장소 밖이고 secret/raw payload 검사를 통과한다 |
@@ -55,8 +55,9 @@ corepack pnpm live:ops -- --config <운영-json-path> --env-file <운영-env-pat
 5. 단일 `KRW-BTC` 후보가 생성되면 CLI가 private read/reconcile/PnL preflight, cost/risk/reconcile/budget/kill switch guard,
    deterministic budget reservation을 순서대로 통과시킨다. DB에 완료된 reconcile run이 아직 없고 기존 mismatch/manual review도 없으면,
    CLI는 방금 읽은 Upbit private 잔고/미체결 주문 결과를 `live_reconcile_*` 테이블에
-   `LIVE_OPS_PRIVATE_READ_PREFLIGHT` evidence로 저장한 뒤 그 row를 다시 읽어 readiness를 판단한다. 이 단계가 하나라도 실패하면
-   broker 호출 전에 fail-closed 된다.
+   `LIVE_OPS_PRIVATE_READ_PREFLIGHT` evidence로 저장한 뒤 그 row를 다시 읽어 readiness를 판단한다. 이어서 PnL snapshot이 없거나
+   오래됐고 최신 PnL row가 PARTIAL/manual-review가 아니면, 같은 clean source로 `pnl_snapshots`에 `status=CALCULATED` row를 append-only
+   저장하고 다시 읽어 loss guard를 판단한다. 이 단계가 하나라도 실패하면 broker 호출 전에 fail-closed 된다.
 6. 주문이 제출되면 CLI가 같은 runtime에서 받은 Upbit uuid로 즉시 취소 요청을 보낸다. 같은 runtime이 만든 uuid가 아니면 취소를
    시도하지 않고 manual review로 격상한다.
 7. CLI가 제한된 polling으로 terminal cancel/done 상태를 확인한다. terminal cancel을 확인하지 못하면 open exposure를 0으로 보정하지 않고
@@ -96,6 +97,29 @@ DB에 `live_reconcile_runs` 완료 기록이 없는 clean-start 운영 DB에서�
 정리할 DB run을 바로 찾을 수 있어야 한다. 이때 계산 가능한 open exposure와 budget used를 0으로 숨기지 않고, owner Telegram manual-review
 alert도 전송되어야 한다. submit 이후 상태 조회에서는 현재 live execution의 broker order id 또는 idempotency key와 일치하는 1건만 tracked
 open order로 인정한다.
+
+`pnl_snapshots`에 `live_ops_cleanup_probe` 계산 완료 row가 없거나 stale이면 production `live:ops`는 fresh clean reconcile과 잔고 snapshot을
+확보한 뒤 PnL closeout runner를 자동 실행한다. 이 runner는 `KRW-BTC` 기준 KRW 잔고, BTC 평가 기준가, strategy position/fill 요약, 과거
+PnL peak를 읽어 `status=CALCULATED`, `source=live_ops_pnl_closeout_preflight`, `sourceFingerprint`를 가진 snapshot을 append-only로 저장한다.
+체결 이력 또는 BTC 잔고가 있는데 position snapshot이 없거나 position 수량이 0이면, position 수량 대비 BTC balance row가 결측이거나
+position 수량과 거래소 BTC 잔고가 다르거나 양수 position 평균단가가 0이면, 잔량 미확인 open order/mismatch/manual review/stale
+reconcile/stale reference price/reference price 결측이 있으면 새 PnL row를 만들지 않고 기존 fail-closed 상태를 유지한다. production
+preflight reconcile provider도 잔량이 null인 open order를 미체결 주문으로 집계한다. cleanup 전용 row가 없어도 global/aggregate 최신 PnL row가 PARTIAL/manual-review/status 미완료이면 새
+cleanup `CALCULATED` row로 가리지 않는다. 같은 reconcile run 안에 같은 통화 balance row가 여러 개 있으면 currency별 최신 snapshot만
+closeout 입력으로 사용한다. 운영자가 이 단계를
+단독으로 재실행하거나 상태를 확인해야 할 때는 다음 명령을 사용한다.
+
+```sh
+corepack pnpm live:ops:pnl-closeout -- \
+  --env-file <운영-env-path> \
+  --market KRW-BTC \
+  --strategy-id live_ops_cleanup_probe \
+  --json
+```
+
+이 명령도 실제 주문을 제출하지 않는다. 단, `SEEMIRAI_DATABASE_URL`로 운영 DB에 접속해 clean reconcile/balance source를 읽고
+`pnl_snapshots`에 append-only row를 쓸 수 있으므로 저장소 밖 운영 env 파일만 전달해야 한다. 출력에는 DB URL, credential, raw provider payload를
+남기지 않는다.
 
 submit/cancel lifecycle artifact는 terminal cancel 확인 뒤에만 success status가 된다. artifact에는 full access key, secret key, JWT,
 Authorization header, Telegram token, DB URL/password, TUI control token, raw provider payload, raw order detail을 쓰지 않는다. uuid와
@@ -157,7 +181,8 @@ src/application/live-autonomous-entry-runtime/service.ts src/infrastructure/upbi
 src/infrastructure/upbit/private-client/client.ts src/infrastructure/upbit/private-client/auth.ts
 src/infrastructure/upbit/live-broker/service.ts src/infrastructure/upbit/private-mappers.ts
 src/infrastructure/upbit/private-mappers scripts/run-live-ops.mjs
-scripts/run-live-ops-support.mjs config/live-ops.example.json config/live-ops.env.example`
+scripts/run-live-ops-support.mjs scripts/run-live-ops-pnl-closeout.mjs scripts/run-live-ops-pnl-closeout-support.mjs
+config/live-ops.example.json config/live-ops.env.example`
 전체 범위의 금지 주문 경계 전체(`[\x27"]?ord_type[\x27"]?\s*[:=]\s*[\x27"]?price`,
 `[\x27"]?ord_type[\x27"]?\s*[:=]\s*[\x27"]?market`, `[\x27"]?ord_type[\x27"]?\s*[:=]\s*[\x27"]?best`,
 `[\x27"]?key[\x27"]?\s*:\s*[\x27"]ord_type[\x27"][^\r\n{}]*,[^\r\n{}]*[\x27"]?value[\x27"]?\s*:\s*[\x27"]?(price|market|best)`,

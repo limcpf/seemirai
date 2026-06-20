@@ -725,6 +725,7 @@ Issue #196은 M22/M23 pilot runner를 실운영 주경로로 쓰지 않고, `liv
 - live execution adapter: `src/runtime/live-ops-live-execution.ts`
 - Telegram alert mapper: `src/runtime/live-ops-telegram-alerts.ts`
 - CLI/TUI reconcile/PnL/status summary: `scripts/run-live-ops-support.mjs`
+- PnL closeout runner: `scripts/run-live-ops-pnl-closeout.mjs`, `scripts/run-live-ops-pnl-closeout-support.mjs`
 - script skeleton: `scripts/run-live-ops.mjs`, `scripts/run-live-ops-tui.mjs`
 - 예시 JSON: `config/live-ops.example.json`
 - 예시 env: `config/live-ops.env.example`
@@ -732,6 +733,8 @@ Issue #196은 M22/M23 pilot runner를 실운영 주경로로 쓰지 않고, `liv
   `corepack pnpm live:ops -- --config <운영-json-path> --env-file <운영-env-path> --tui`
 - attach command:
   `corepack pnpm live:ops:tui -- --config <운영-json-path> --env-file <운영-env-path> --attach <run-id|socket|status-source>`
+- PnL closeout command:
+  `corepack pnpm live:ops:pnl-closeout -- --env-file <운영-env-path> --market KRW-BTC --strategy-id live_ops_cleanup_probe --json`
 
 JSON config에는 다음처럼 secret이 아닌 운영 정책만 둔다.
 
@@ -838,10 +841,17 @@ RiskGate 재검증, broker submit, alert dispatch side effect는 해당 하위 r
 
 production preflight는 미체결 주문뿐 아니라 현재 `KRW-BTC` 보유 잔고도 reference price로 평가해 `openPositionNotionalKrw`와 RiskGate
 `positions`에 포함한다. 보유 잔고가 있는데 평가 기준가가 없으면 open position 한도 과소평가 위험이 있으므로 broker 제출 전 차단한다.
-PnL/status worker가 `OK` snapshot을 제공하지 않으면 realized loss를 0으로 보정하지 않고 loss snapshot 결측으로 제출 전 fail-closed 한다.
-clean reconcile DB evidence도 production preflight 실행 wall clock 기준 30초 freshness를 넘으면 stale로 보고 같은 tick의 private read
-preflight reconcile evidence를 새로 기록한다. market heartbeat 시각은 market data 관측 evidence로만 쓰며, 일일 예산 기준일과 reconcile
-freshness 기준일을 대신하지 않는다. recorder가 없거나 갱신 뒤에도 fresh clean evidence가 아니면 reconcile freshness guard가 broker 제출을 닫는다.
+PnL/status worker가 `OK` + `CALCULATED` snapshot을 제공하지 않으면 realized loss를 0으로 보정하지 않고 loss snapshot 결측으로 제출 전
+fail-closed 한다. 단, production preflight가 clean/fresh reconcile과 잔고 snapshot을 확보했고 최신 PnL row가 PARTIAL/manual-review가 아니라
+결측 또는 stale인 경우에는 같은 tick에서 PnL closeout runner를 실행해 `live_ops_cleanup_probe` scope의 `CALCULATED` row를 append-only로
+생성한 뒤 provider를 다시 읽는다. runner는 open order/mismatch/manual review/stale reconcile, 최신 PnL row의 status 미완료, BTC 잔고
+대비 position snapshot 결측 또는 0수량 position, position 수량 대비 BTC balance row 결측, stale/결측 기준가를 만나면 새 PnL row를 만들지
+않고 기존 fail-closed 상태를 보존한다. position 수량과 거래소 BTC 잔고가 다르거나 양수 position 평균단가가 0이어도 원가/잔고 source가
+불확실하므로 차단한다. 잔량이 null인 open order도 미체결 주문으로 세고, production reconcile provider도 같은 집계를 사용한다. cleanup row가
+없어도 global/aggregate 최신 PnL row가 status 미완료이면 새 cleanup `CALCULATED` row로 가리지 않는다. 같은 reconcile run 안의 중복 balance row는 currency별 최신 snapshot만 사용한다. clean reconcile DB evidence도 production
+preflight 실행 wall clock 기준 30초 freshness를 넘으면 stale로 보고 같은 tick의 private read preflight reconcile evidence를 새로 기록한다.
+market heartbeat 시각은 market data 관측 evidence로만 쓰며, 일일 예산 기준일과 reconcile freshness 기준일을 대신하지 않는다. recorder가
+없거나 갱신 뒤에도 fresh clean evidence가 아니면 reconcile freshness guard가 broker 제출을 닫는다.
 
 cleanup probe는 broker 제출 성공을 최종 성공으로 보지 않는다. 같은 runtime이 받은 주문 uuid로 취소 요청을 보낸 뒤 terminal cancel
 polling을 수행하고, cancel 요청 이후 poll이 provider 오류나 rate-limit로 실패해도 summary만 반환하지 않는다. 이 경우 `manual_review_required`
