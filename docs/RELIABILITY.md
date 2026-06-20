@@ -125,6 +125,24 @@ Codex-native 운영은 Codex, Git, GitHub, shell command, 문서 상태를 연�
   artifact로 남긴다. status summary의 budget used는 제출 전 preflight snapshot만 신뢰하지 않고 현재 durable reservation 반영값을 하한으로
   사용한다.
 
+## Issue #206 24/7 entry/exit daemon 신뢰성 기준
+
+- `live:ops:daemon`은 cleanup canary가 아니라 entry, hold, exit, manual review를 반복 평가하는 장시간 loop다.
+- daemon 실행은 저장소 밖 config/env만 요구한다. fixture manifest, hand-written evidence, 수동 candidate JSONL은 실행 전제 조건이
+  아니며, decision evidence와 artifact는 runtime이 자동 생성해야 한다.
+- 각 tick은 이전 tick의 broker/order side effect를 먼저 reconcile 한 뒤 새 entry/exit decision을 평가한다. 이전 open order,
+  untracked fill, mismatch, terminal cancel 미확인 상태가 남아 있으면 새 주문으로 전진하지 않는다.
+- 보유 포지션이 있으면 exit policy를 entry policy보다 먼저 평가한다. 이 순서가 깨지면 open exposure가 의도보다 커질 수 있으므로
+  broker 호출 전에 fail-closed 해야 한다.
+- exit order는 현재 보유 수량 이하의 `SELL + LIMIT + POST_ONLY`만 허용한다. hard stop, stale data, mismatch는 자동 시장가 청산이 아니라
+  신규 주문 차단과 manual review로 수렴한다.
+- tick 실패는 실패 종류별로 분리한다. transient provider 오류는 bounded backoff 후 재시도하고, manual review 오류는 loop를 중단하거나
+  신규 주문 disabled 상태로 유지한다.
+- 24시간 run summary는 crash, unhandled rejection, duplicate order, reconcile mismatch, untracked fill, live order cleanup failure를
+  명시적 counter로 자동 집계한다.
+- Telegram/TUI/status는 HOLD도 정상 decision으로 기록해야 한다. 주문이 없었던 기간을 “ready”로만 표시하면 운영자가 전략 미동작과
+  정상 현금 보유를 구분할 수 없다.
+
 ## M23 restart/recovery drill 신뢰성 기준
 
 - M23 recovery drill은 restart 전후 event log를 같은 restart id로 묶어야 하며, 감지와 복구 Telegram/status evidence가 모두 있어야 한다.

@@ -908,6 +908,64 @@ Acceptance Criteria:
 - LLM 직접 매수/매도 판단.
 - secret 원문이나 raw provider payload를 issue, PR, log, artifact에 기록하는 작업.
 
+### FR-OPS-007: Live Ops는 24/7 자동 매수/보유/매도 loop를 제공해야 한다
+
+설명:
+
+- Issue #206 real-arm cleanup은 실거래 경계 검증을 닫았지만, 운영자가 기대한 24/7 자동매매는 entry와 exit가 모두 있어야 한다.
+- production `live:ops`는 cleanup canary와 별개로 장시간 daemon loop를 제공하고, 보유 포지션이 있으면 매도/축소 판단을 entry보다
+  먼저 수행해야 한다.
+- 실행 전에 수동 fixture manifest, hand-written evidence, JSONL 후보 파일을 요구하지 않는다. config/env만으로 시작하고, 필요한
+  artifact와 decision evidence는 runtime이 자동 생성한다.
+- 전략은 정적 allowlist registry와 config parameter로 조립한다. 임의 코드 경로, 동적 import, 원격 plugin, 저장소 밖 strategy 코드는
+  허용하지 않는다.
+
+Acceptance Criteria:
+
+- [ ] `corepack pnpm live:ops:daemon -- --config <운영-json-path> --env-file <운영-env-path> --tui`가 24/7 loop를 시작한다.
+- [ ] `live:ops:daemon` production 실행은 fixture manifest, hand-written evidence, 수동 JSONL 후보 파일을 요구하지 않는다.
+- [ ] loop tick은 config/env validation, DB readiness, market data freshness, private read reconcile, PnL/status, decision, live execution,
+  Telegram/status summary 순서를 지킨다.
+- [ ] 보유 포지션이 있으면 exit policy가 entry policy보다 먼저 평가된다.
+- [ ] exit policy는 take profit, stop loss, trailing stop, max holding time, risk reduction rule을 독립 rule로 조립한다.
+- [ ] exit intent는 보유 수량 이하의 `SELL + LIMIT + POST_ONLY`만 허용하고, 시장가 매도와 hard-stop 자동 시장가 청산은 금지한다.
+- [ ] entry strategy는 조건이 약하면 주문을 만들지 않고 HOLD evidence를 남긴다.
+- [ ] entry intent는 `KRW-BTC`, `BUY`, `LIMIT`, `POST_ONLY`, 10,000 KRW 이하만 허용한다.
+- [ ] strategy registry는 `cleanup_probe`와 production 24/7 strategy를 분리하고, 새 strategy를 나중에 allowlist로 추가/교체할 수 있다.
+- [ ] strategy는 broker, Upbit client, DB connection, Telegram dispatcher를 직접 호출하지 않는다.
+- [ ] stale market data, stale PnL, reconcile mismatch, open order, budget 초과, kill switch, Telegram owner alert 불능은 broker 호출 전에
+  fail-closed 된다.
+- [ ] 미체결 entry/exit order는 bounded cancel/requote 또는 manual review로 닫히고, terminal 확인 실패는 성공으로 표시하지 않는다.
+- [ ] TUI/Telegram/status는 한국어로 현재 상태, 보유/현금 판단 이유, 최근 entry/exit decision, open exposure, PnL, 필요한 조치를
+  보여준다.
+- [ ] 24시간 run summary는 crash 0회, unhandled rejection 0회, duplicate order 0건, reconcile mismatch 0건, untracked fill 0건,
+  live order cleanup failure 0건을 자동 산출한다.
+
+테스트 요구사항:
+
+- 단위 테스트: strategy registry가 허용 strategy만 조립하고 동적 코드 경로를 거부한다.
+- 단위 테스트: 보유 포지션이 있으면 exit evaluation이 entry evaluation보다 먼저 실행된다.
+- 단위 테스트: take profit, stop loss, trailing stop, max holding time, risk reduction rule이 각각 SELL intent 또는 HOLD/BLOCK을 만든다.
+- 단위 테스트: exit intent가 보유 수량을 초과하거나 시장가/best order이면 broker 호출 전에 차단된다.
+- 단위 테스트: daemon loop가 success, HOLD, BLOCK, manual review, transient failure에 대해 각각 다른 sleep/backoff 정책을 적용한다.
+- 통합 테스트: fake provider/fake broker/fake Telegram으로 entry 체결, 보유, exit 제출, cancel/requote, terminal close summary를 검증한다.
+- script smoke: `corepack pnpm live:ops:daemon -- --config config/live-ops.example.json --env-file tests/fixtures/live-ops/fake.env --fixture-smoke --duration-ms 1000 --tui`
+  가 외부 DB/provider/order side effect 없이 loop contract를 검증한다.
+
+문서 요구사항:
+
+- `docs/runbooks/live-ops-24x7-autonomous.md`가 실행 명령, strategy 교체성, entry/exit DnD, 중지 기준을 설명한다.
+- provider arm, strategy registry, daemon loop, exit execution 기준이 바뀌면 `docs/RUNTIME_CONFIG.md`, `docs/RELIABILITY.md`,
+  `docs/SECURITY.md`, `docs/product-specs/upbit-live-autonomous-trading.md`, active plan을 함께 갱신한다.
+
+제외 범위:
+
+- 수익 보장, 투자 자문, 타인 자금 운용, 신호 판매.
+- BTC 외 market 기본 활성화, 자동 budget 확대, M24 scaled 운영.
+- 신규 진입 시장가, 시장가 매도, best order 기본 허용.
+- hard stop open position 자동 시장가 청산.
+- LLM 직접 매수/매도 판단.
+
 ### FR-LLM-001: LLM은 직접 매매 판단에 사용하지 않는다
 
 설명:

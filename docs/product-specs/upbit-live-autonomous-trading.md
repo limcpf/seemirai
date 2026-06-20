@@ -34,10 +34,15 @@ decision evidence, live execution guard, Telegram, TUI 상태를 같은 lifecycl
 실행 skeleton만 고정하며, 실제 DB/provider/TUI lifecycle 연결은 후속 sub PR에서 닫는다.
 
 Issue #206 production live ops real arm은 #196 skeleton 위에서 실제 DB, Upbit public/private provider, Telegram owner chat, TUI를 같은
-lifecycle로 조립한다. 완료 근거는 fixture smoke나 dashboard readiness가 아니라 단일 `KRW-BTC` 소액 `BUY + LIMIT + post_only` 주문의
+lifecycle로 조립한다. 첫 완료 근거는 fixture smoke나 dashboard readiness가 아니라 단일 `KRW-BTC` 소액 `BUY + LIMIT + post_only` 주문의
 submit/cancel terminal evidence다. production decision은 임의 코드 로딩이 아니라 정적 allowlist `analysis.decision_policy`로 strategy를
 조립하며, issue #206 closeout 후보는 `cleanup_probe` policy가 만든다. cleanup 절차와 redaction 기준은
 [`../runbooks/live-ops-real-arm-cleanup.md`](../runbooks/live-ops-real-arm-cleanup.md)를 따른다.
+
+사용자가 기대한 24/7 자동매매는 cleanup canary만으로 완료되지 않는다. Issue #206 확장 범위는 `live:ops:daemon`을 추가해 entry,
+hold, exit, manual review를 반복 평가하고, 보유 포지션이 있을 때 매도/축소 판단을 entry보다 먼저 수행하는 production loop로 닫는다.
+이 경로는 실행 전에 수동 fixture manifest나 hand-written evidence를 요구하지 않고, 저장소 밖 config/env만으로 시작해야 한다. 자세한
+운영 기준은 [`../runbooks/live-ops-24x7-autonomous.md`](../runbooks/live-ops-24x7-autonomous.md)를 따른다.
 
 ## 3. 비목표
 
@@ -466,7 +471,8 @@ M22 진입 전에는 다음을 모두 만족해야 한다.
 - 첫 `LIVE_AUTONOMOUS_SMALL_BUDGET` 대상 market은 Issue #180에서 `KRW-BTC` 단일로 결정했다.
 - 첫 live autonomous 예산은 Issue #180에서 M21 기본값 유지로 결정했다. 1회 주문 상한은 `10000` KRW, 일일 자동 주문 notional
   한도는 `30000` KRW다.
-- 초기 exit rule 조합을 손절/익절/시간 기반으로 시작할지 trailing stop까지 포함할지 결정해야 한다.
+- 초기 exit rule 조합은 손절, 익절, trailing stop, 시간 기반 청산, risk reduction을 모두 독립 rule로 둔다. production 기본값과
+  threshold는 Issue #206 24/7 strategy sub PR에서 테스트와 함께 고정한다.
 - Telegram inbound는 webhook과 polling 중 하나를 선택해야 한다.
 - 배포 위치와 고정 IP, Upbit API key allowlist 운영 방식을 결정해야 한다.
 

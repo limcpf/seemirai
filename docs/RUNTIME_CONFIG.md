@@ -1678,3 +1678,21 @@ corepack pnpm typecheck
 corepack pnpm test
 ./scripts/verify
 ```
+
+## Issue #206 24/7 live ops daemon config 기준
+
+production 24/7 자동매매는 기존 `cleanup_probe` closeout policy와 별도 decision policy를 사용한다. `cleanup_probe`는 실거래
+provider arm을 검증하기 위한 submit/cancel canary이고, 24/7 운영 strategy는 entry/exit loop를 모두 가져야 한다.
+
+24/7 daemon config는 다음 원칙을 지켜야 한다.
+
+- `live:ops:daemon`은 저장소 밖 config/env만 입력으로 받고, fixture manifest나 hand-written evidence 파일을 실행 전 필수값으로 요구하지 않는다.
+- config는 strategy id와 parameter만 선택한다. 임의 파일 경로, 동적 import, 원격 plugin, 저장소 밖 strategy 코드는 금지한다.
+- entry order는 `BUY + LIMIT + POST_ONLY`, exit order는 보유 수량 이하 `SELL + LIMIT + POST_ONLY`만 허용한다.
+- strategy parameter는 secret이 아니어야 하며, API key, Telegram token, DB URL, local control token을 포함하면 validation이 실패해야 한다.
+- 보유 포지션이 있으면 exit policy가 entry policy보다 먼저 평가되어야 한다.
+- `duration_ms`, `tick_interval_ms`, `max_consecutive_failures`, `transient_backoff_ms` 같은 loop 제어값은 운영 안전값으로 validation한다.
+- `hard_stop_market_sell_enabled` 같은 시장가 청산 toggle은 production small-budget profile에서 허용하지 않는다.
+
+초기 구현의 허용 policy id는 implementation PR에서 schema와 test로 고정한다. 새 strategy를 추가할 때는 allowlist, config schema,
+unit test, fake live integration, paper/live shadow 기준을 함께 추가해야 production 선택이 가능하다.

@@ -1,0 +1,132 @@
+# Live Ops 24/7 자동 매수/매도 runbook
+
+이 runbook은 Issue #206 확장 범위의 production `live:ops`를 “한 번 submit/cancel 하는 cleanup probe”가 아니라, 제한 예산 안에서
+24/7로 매수, 보유, 매도 판단을 반복하는 운영 경로로 닫기 위한 기준이다.
+
+## 목표
+
+- 운영자는 저장소 밖 config/env 파일만 준비하면 `corepack pnpm live:ops:daemon -- --config <운영-json-path> --env-file <운영-env-path> --tui`
+  한 줄로 자동 매수/보유/매도 loop를 시작할 수 있어야 한다.
+- 실행 전에 별도 fixture manifest, hand-written evidence, 수동 JSONL 후보 파일을 요구하지 않는다.
+- runtime은 필요한 artifact, status summary, decision ledger, order lifecycle, Telegram alert를 자동 생성한다.
+- 시스템은 수익을 보장하지 않는다. 완료 기준은 “자동으로 수익이 난다”가 아니라 “24/7로 entry/exit 판단과 risk fail-closed가 반복 가능하다”이다.
+
+## 허용 범위
+
+| 항목 | 기준 |
+| --- | --- |
+| market | `KRW-BTC` 단일 |
+| mode | `LIVE_AUTONOMOUS_SMALL_BUDGET` |
+| entry order | `BUY + LIMIT + POST_ONLY` |
+| exit order | `SELL + LIMIT + POST_ONLY` |
+| 1회 주문 상한 | 10,000 KRW |
+| 일일 자동 주문 notional | 30,000 KRW |
+| open position notional | 30,000 KRW |
+| 운영 중지 ceiling | realized loss + open exposure가 50,000 KRW에 닿기 전 |
+| API key scope | `자산조회`, `주문조회`, `주문하기`만 허용 |
+
+## 금지 범위
+
+- 시장가 신규 진입, 시장가 매도, best order 기본 허용.
+- BTC 외 market 기본 활성화, 자동 budget 확대.
+- hard stop 상황에서 open position을 무조건 시장가 청산하는 동작.
+- 출금, 입출금 자동화, 선물, 레버리지, 마진, 타인 계정, 신호 판매.
+- LLM이 `BUY`, `SELL`, 목표가, 포지션 크기를 직접 결정하는 구조.
+- secret 원문, raw Authorization/JWT, raw provider payload, raw order detail 저장.
+
+## 전략 원칙
+
+초기 production strategy는 “유명 투자자의 이름을 흉내 내는 전략”이 아니라, 장기적으로 검증된 운용 원칙을 작은 deterministic rule로
+분해해 조립한다.
+
+- 추세추종 원칙: 강한 흐름에는 작게 진입하되, 손실이 작을 때 빠르게 인정한다.
+- 평균회귀 원칙: 과매도 bounce 후보는 유동성/스프레드/수수료를 차감한 뒤에만 진입한다.
+- 리스크 우선 원칙: 포지션 크기는 기대수익보다 손실 한도, open exposure, stale data 여부가 먼저 제한한다.
+- 현금 보유 원칙: 조건이 약하면 아무 주문도 내지 않고 HOLD evidence를 남긴다.
+- 매도 우선 원칙: 보유 포지션이 있으면 entry보다 exit 평가를 먼저 수행한다.
+
+초기 구현은 정적 allowlist strategy registry를 사용한다. 운영 config는 strategy id와 parameter만 선택할 수 있고, 임의 파일 경로,
+동적 import, 원격 plugin, 저장소 밖 strategy 코드를 실행할 수 없다.
+
+## 24/7 loop 동작
+
+1. config/env 검증, legacy env 차단, key scope guard를 통과한다.
+2. DB migration/readiness를 확인한다.
+3. Upbit public market data를 읽고 stale이면 주문을 만들지 않는다.
+4. Upbit private read로 계정 전체 open order, balance, position source를 확인한다.
+5. 기존 open order나 mismatch가 있으면 신규 entry/exit를 중지하고 manual review로 닫는다.
+6. PnL/status가 stale 또는 partial이면 새 주문을 만들지 않는다.
+7. 보유 포지션이 있으면 exit policy를 먼저 평가한다.
+8. 보유 포지션이 없거나 추가 진입이 허용되면 entry policy를 평가한다.
+9. order intent는 cost/risk/budget/reconcile/kill switch guard를 통과해야 한다.
+10. 통과한 단일 intent만 broker submit으로 전진한다.
+11. 미체결 주문은 bounded timeout 안에서 cancel/requote 또는 manual review로 닫는다.
+12. 매 tick마다 decision ledger, status summary, Telegram alert 후보, redacted artifact를 자동 생성한다.
+
+## Entry DnD
+
+- [ ] `live:ops:daemon`은 hand-written evidence나 fixture manifest 없이 config/env만으로 시작한다.
+- [ ] `cleanup_probe`와 별개인 production entry strategy allowlist가 있다.
+- [ ] entry strategy는 `HOLD`, `BLOCK`, `ORDER_INTENT`를 구분하고 모두 decision ledger에 남긴다.
+- [ ] entry intent는 `KRW-BTC`, `BUY`, `LIMIT`, `POST_ONLY`, 10,000 KRW 이하만 허용한다.
+- [ ] stale market data, stale PnL, reconcile mismatch, open order, budget 초과, kill switch는 broker 호출 전에 차단한다.
+
+## Exit DnD
+
+- [ ] 보유 포지션이 있으면 entry보다 exit 평가가 먼저 실행된다.
+- [ ] exit policy는 take profit, stop loss, trailing stop, max holding time, risk reduction rule을 독립 rule로 가진다.
+- [ ] exit intent는 보유 수량 이하의 `SELL + LIMIT + POST_ONLY`만 허용한다.
+- [ ] exit 미체결은 bounded cancel/requote 정책으로 닫고, terminal 확인 실패는 manual review로 격상한다.
+- [ ] hard stop은 신규 주문 차단과 manual review를 만들 수 있지만, 시장가 자동 청산을 만들지 않는다.
+
+## Strategy 교체성 DnD
+
+- [ ] strategy interface는 entry/exit 후보 생성과 설명 metadata를 분리한다.
+- [ ] strategy는 broker, Upbit client, DB connection, Telegram dispatcher를 직접 호출하지 않는다.
+- [ ] 새 strategy는 registry allowlist와 config schema에 추가된 뒤에만 선택할 수 있다.
+- [ ] strategy parameter는 JSON config에 secret 없이 저장된다.
+- [ ] strategy별 unit test와 paper/live shadow fixture가 없으면 production allowlist에 추가하지 않는다.
+
+## 운영 명령
+
+초기 smoke:
+
+```sh
+corepack pnpm live:ops:daemon -- \
+  --config <운영-json-path> \
+  --env-file <운영-env-path> \
+  --duration-ms 60000 \
+  --fixture-smoke \
+  --tui
+```
+
+실제 24/7 운영:
+
+```sh
+corepack pnpm live:ops:daemon -- \
+  --config <운영-json-path> \
+  --env-file <운영-env-path> \
+  --tui
+```
+
+`--fixture-smoke`는 개발 검증용이며 production 실행의 필수 준비물이 아니다. 실제 운영 명령은 저장소 밖 config/env만 요구하고,
+artifact/status/report는 runtime이 자동으로 만든다.
+
+## 중지 기준
+
+- cancel terminal 확인 실패.
+- untracked fill 또는 reconcile mismatch.
+- PnL 계산 불가 상태에서 포지션 또는 open order가 있음.
+- duplicate order attempt 감지.
+- realized loss + open exposure가 50,000 KRW에 접근.
+- Telegram owner alert가 반복 실패하고 operator가 상태를 확인할 수 없음.
+- Upbit 점검, market warning, stale market data가 freshness 기준을 초과.
+
+## 완료 기준
+
+- `live:ops:daemon` fixture smoke가 외부 provider/order side effect 없이 loop contract를 검증한다.
+- fake provider integration이 entry 성공, exit 성공, HOLD, BLOCK, cancel/requote 실패, manual review를 모두 검증한다.
+- production config/env 실행은 hand-written evidence 없이 시작하고, broker submit 전 모든 guard를 자동 평가한다.
+- 24시간 run summary는 crash 0회, unhandled rejection 0회, duplicate order 0건, reconcile mismatch 0건, untracked fill 0건,
+  live order cleanup failure 0건을 자동 산출한다.
+- final PR은 current head 기준 Codex clean signal, GitHub checks pass, unresolved thread 0개를 만족한다.
