@@ -192,6 +192,32 @@ describe("production live ops live execution adapter", () => {
     });
   });
 
+  it("SELL 후보도 kill switch와 reconcile freshness guard를 통과하지 못하면 exit runtime을 호출하지 않는다", async () => {
+    const entryRuntime = createEntryRuntimeRecorder();
+    const exitRuntime = createExitRuntimeRecorder();
+
+    const summary = await runLiveOpsLiveExecution(createInput({
+      analysisDecision: analysisSummary({ orderIntentCount: 1, decisionCategory: "ORDER_INTENT" }),
+      orderIntents: [createSellOrderIntent()],
+      entryRuntime,
+      exitRuntime,
+      killSwitchActive: true,
+      reconcileFresh: false,
+    }));
+
+    expect(summary).toMatchObject({
+      status: "blocked",
+      ready: false,
+      liveOrderCapable: false,
+      attemptedOrderCount: 0,
+    });
+    expect(summary.checks.map((check) => check.code)).toContain("live_ops_exit_execution_status_blocked");
+    expect(JSON.stringify(summary.checks)).toContain("kill switch");
+    expect(JSON.stringify(summary.checks)).toContain("reconcile freshness");
+    expect(exitRuntime.submitExitOrder).not.toHaveBeenCalled();
+    expect(entryRuntime.submitEntryCandidate).not.toHaveBeenCalled();
+  });
+
   it("SELL 후보의 긴 strategy decision key를 Upbit-safe attempt id로 낮춘다", async () => {
     const entryRuntime = createEntryRuntimeRecorder();
     const exitRuntime = createExitRuntimeRecorder();

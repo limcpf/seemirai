@@ -313,6 +313,24 @@ async function runLiveOpsExitExecution(
   checks: LiveOpsLiveExecutionCheck[],
   intent: OrderIntent,
 ): Promise<LiveOpsLiveExecutionSummary> {
+  const executionStatusViolations = collectLiveOpsExecutionStatusViolations(input);
+  if (executionStatusViolations.length > 0) {
+    // SELL도 실계좌 side effect이므로 BUY runtime과 같은 운영 상태 guard를 통과해야 broker 경계가 열린다.
+    checks.push(blockedCheck(
+      "execution_request",
+      "매도 실행 운영 상태 snapshot이 production 제출 조건을 통과하지 못했습니다.",
+      "live_ops_exit_execution_status_blocked",
+      { violations: executionStatusViolations },
+    ));
+    return buildSummary(config, input, checks, {
+      status: "blocked",
+      ready: false,
+      liveOrderCapable: false,
+      message: "매도 실행 운영 상태 증거가 부족해 SELL 후보를 제출하지 않았습니다.",
+      action: "kill switch와 reconcile freshness evidence를 먼저 복구하세요.",
+    });
+  }
+
   const intentViolations = collectExitOrderIntentViolations(config, input, intent);
   if (intentViolations.length > 0) {
     // SELL 후보도 보유 수량과 exit evidence가 맞지 않으면 exit runtime 호출 전에 닫아 broker side effect를 만들지 않는다.
@@ -438,6 +456,17 @@ function validateOrderIntentCount(input: LiveOpsLiveExecutionInput): {
   }
 
   return undefined;
+}
+
+function collectLiveOpsExecutionStatusViolations(input: LiveOpsLiveExecutionInput): string[] {
+  const violations: string[] = [];
+  if (input.killSwitchActive !== false) {
+    violations.push("kill switch가 꺼진 상태임을 확인해야 합니다");
+  }
+  if (input.reconcileFresh !== true) {
+    violations.push("reconcile freshness가 최신 상태임을 확인해야 합니다");
+  }
+  return violations;
 }
 
 function collectEntryOrderIntentViolations(

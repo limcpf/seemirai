@@ -2142,6 +2142,35 @@ console.log(JSON.stringify({
     expect(queries[0]?.text).toContain("payload_json ->> 'status' = 'CALCULATED'");
   });
 
+  it("database kill switch provider는 STRATEGY_PAUSED를 전역 신규 주문 차단으로 낮추지 않는다", async () => {
+    const {
+      createLiveOpsCliDatabaseKillSwitchProvider,
+    } = await import(path.join(process.cwd(), "scripts/run-live-ops-support.mjs"));
+    const provider = createLiveOpsCliDatabaseKillSwitchProvider({
+      async query() {
+        return {
+          rows: [{
+            state: "STRATEGY_PAUSED",
+            reason_code: "operator_strategy_pause",
+            updated_at: "2026-06-20T05:00:00.000Z",
+            correlation_id: "pause-1",
+          }],
+        };
+      },
+    });
+
+    await expect(provider.getStatus()).resolves.toMatchObject({
+      active: false,
+      state: "STRATEGY_PAUSED",
+      reasonCode: "operator_strategy_pause",
+      actionPlan: {
+        newOrdersBlocked: false,
+        strategyEvaluationBlocked: true,
+        requiresManualReview: false,
+      },
+    });
+  });
+
   it("preflight recorder는 private read 결과를 DB reconcile evidence로 남긴다", async () => {
     const supportModulePath = path.join(process.cwd(), "scripts/run-live-ops-support.mjs");
     const {
@@ -8865,6 +8894,34 @@ try {
     expect(result.stderr).toBe("");
   });
 
+  it("autonomous_24x7 운영 JSON은 CLI contract에서 허용한다", async () => {
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-live-ops-script-"));
+    const config = createAutonomousLiveOpsConfig(JSON.parse(await readFile(path.join(process.cwd(), "config", "live-ops.example.json"), "utf8")));
+    const configPath = path.join(tempDir, "autonomous-live-ops.json");
+    await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`, "utf8");
+
+    const result = spawnSync(
+      process.execPath,
+      [
+        "scripts/run-live-ops.mjs",
+        "--config",
+        configPath,
+        "--env-file",
+        "tests/fixtures/live-ops/fake.env",
+        "--fixture-smoke",
+      ],
+      {
+        cwd: process.cwd(),
+        encoding: "utf8",
+        env: minimalEnv(),
+      },
+    );
+
+    expect(result.status).toBe(0);
+    expect(result.stderr).toBe("");
+    expect(result.stdout).toContain("\"fixtureSmoke\": true");
+  });
+
   it("strict runtime config와 다른 exchange/unknown key는 CLI contract에서도 fail-closed 한다", async () => {
     const tempDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-live-ops-script-"));
     const config = JSON.parse(await readFile(path.join(process.cwd(), "config", "live-ops.example.json"), "utf8"));
@@ -9143,6 +9200,35 @@ function liveOrderEnv(): Record<string, string> {
     SEEMIRAI_UPBIT_SECRET_KEY: "fake-secret-key",
     SEEMIRAI_UPBIT_KEY_SCOPE: "자산조회,주문조회,주문하기",
     SEEMIRAI_UPBIT_KEY_SCOPE_EVIDENCE_ID: "scope-evidence",
+  };
+}
+
+function createAutonomousLiveOpsConfig(config: Record<string, any>): Record<string, any> {
+  return {
+    ...config,
+    analysis: {
+      ...config.analysis,
+      decision_policy: {
+        id: "autonomous_24x7",
+        autonomous_24x7: {
+          max_entry_notional_krw: "10000",
+          tick_size_krw: "1000",
+          entry_price_offset_ticks: 1,
+          exit_price_offset_ticks: 1,
+          quantity_scale: 8,
+          min_entry_margin_bps: "10",
+          trend_confirmation_bps: "20",
+          mean_reversion_discount_bps: "30",
+          take_profit_bps: "120",
+          stop_loss_bps: "80",
+          trailing_stop_bps: "60",
+          max_holding_ms: 86_400_000,
+          risk_reduction_open_notional_krw: "25000",
+          risk_reduction_sell_fraction: "0.5",
+          expected_loss_bps_of_equity: "5",
+        },
+      },
+    },
   };
 }
 

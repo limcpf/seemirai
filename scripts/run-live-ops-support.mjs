@@ -72,12 +72,29 @@ const liveOpsConfigAllowedKeys = {
   workers: ["db_readiness", "market_data", "analysis_decision", "live_execution", "reconcile_pnl_status", "telegram", "tui"],
   market_data: ["provider", "websocket_enabled", "rest_policy_snapshot_enabled", "stale_after_ms"],
   analysis: ["candle_interval_seconds", "feature_interval_seconds", "decision_interval_seconds", "record_hold_decision", "decision_policy"],
-  analysis_decision_policy: ["id", "cleanup_probe"],
+  analysis_decision_policy: ["id", "cleanup_probe", "autonomous_24x7"],
   analysis_decision_policy_cleanup_probe: [
     "max_notional_krw",
     "tick_size_krw",
     "price_offset_ticks",
     "quantity_scale",
+    "expected_loss_bps_of_equity",
+  ],
+  analysis_decision_policy_autonomous_24x7: [
+    "max_entry_notional_krw",
+    "tick_size_krw",
+    "entry_price_offset_ticks",
+    "exit_price_offset_ticks",
+    "quantity_scale",
+    "min_entry_margin_bps",
+    "trend_confirmation_bps",
+    "mean_reversion_discount_bps",
+    "take_profit_bps",
+    "stop_loss_bps",
+    "trailing_stop_bps",
+    "max_holding_ms",
+    "risk_reduction_open_notional_krw",
+    "risk_reduction_sell_fraction",
     "expected_loss_bps_of_equity",
   ],
   telegram: ["startup_alert_enabled", "live_order_capable_alert_enabled", "trade_event_alerts_enabled", "provider_timeout_ms"],
@@ -469,6 +486,12 @@ function validateLiveOpsConfig(config) {
     "analysis.decision_policy.cleanup_probe",
     liveOpsConfigAllowedKeys.analysis_decision_policy_cleanup_probe,
   );
+  validateAllowedKeys(
+    errors,
+    config.analysis?.decision_policy?.autonomous_24x7,
+    "analysis.decision_policy.autonomous_24x7",
+    liveOpsConfigAllowedKeys.analysis_decision_policy_autonomous_24x7,
+  );
   validateAllowedKeys(errors, config.telegram, "telegram", liveOpsConfigAllowedKeys.telegram);
   validateAllowedKeys(errors, config.tui, "tui", liveOpsConfigAllowedKeys.tui);
   const secretPaths = findSecretLikeKeys(config);
@@ -550,23 +573,52 @@ function validateLiveOpsDecisionPolicyConfig(errors, decisionPolicy) {
     errors.push("analysis.decision_policy 설정이 필요합니다.");
     return;
   }
-  if (decisionPolicy.id !== "cleanup_probe") {
-    errors.push("analysis.decision_policy.id는 cleanup_probe여야 합니다.");
-  }
 
-  const cleanupProbe = decisionPolicy.cleanup_probe;
-  if (cleanupProbe === null || typeof cleanupProbe !== "object" || Array.isArray(cleanupProbe)) {
-    errors.push("analysis.decision_policy.cleanup_probe 설정이 필요합니다.");
+  if (decisionPolicy.id === "cleanup_probe") {
+    const cleanupProbe = decisionPolicy.cleanup_probe;
+    if (cleanupProbe === null || typeof cleanupProbe !== "object" || Array.isArray(cleanupProbe)) {
+      errors.push("analysis.decision_policy.cleanup_probe 설정이 필요합니다.");
+      return;
+    }
+
+    validateExpectedValues(errors, cleanupProbe, "analysis.decision_policy.cleanup_probe", {
+      max_notional_krw: "10000",
+      tick_size_krw: "1000",
+      price_offset_ticks: 1,
+      quantity_scale: 8,
+      expected_loss_bps_of_equity: "5",
+    });
     return;
   }
 
-  validateExpectedValues(errors, cleanupProbe, "analysis.decision_policy.cleanup_probe", {
-    max_notional_krw: "10000",
-    tick_size_krw: "1000",
-    price_offset_ticks: 1,
-    quantity_scale: 8,
-    expected_loss_bps_of_equity: "5",
-  });
+  if (decisionPolicy.id === "autonomous_24x7") {
+    const autonomous = decisionPolicy.autonomous_24x7;
+    if (autonomous === null || typeof autonomous !== "object" || Array.isArray(autonomous)) {
+      errors.push("analysis.decision_policy.autonomous_24x7 설정이 필요합니다.");
+      return;
+    }
+
+    validateExpectedValues(errors, autonomous, "analysis.decision_policy.autonomous_24x7", {
+      max_entry_notional_krw: "10000",
+      tick_size_krw: "1000",
+      entry_price_offset_ticks: 1,
+      exit_price_offset_ticks: 1,
+      quantity_scale: 8,
+      min_entry_margin_bps: "10",
+      trend_confirmation_bps: "20",
+      mean_reversion_discount_bps: "30",
+      take_profit_bps: "120",
+      stop_loss_bps: "80",
+      trailing_stop_bps: "60",
+      max_holding_ms: 86_400_000,
+      risk_reduction_open_notional_krw: "25000",
+      risk_reduction_sell_fraction: "0.5",
+      expected_loss_bps_of_equity: "5",
+    });
+    return;
+  }
+
+  errors.push("analysis.decision_policy.id는 cleanup_probe 또는 autonomous_24x7이어야 합니다.");
 }
 
 function validateLiveOpsEnv(env, processEnv) {
@@ -945,6 +997,7 @@ async function refreshLiveOpsCliPreflightPnlStatusIfNeeded({
       balanceSnapshot,
       reconcileStatus,
       referencePrice: marketData?.referencePrice ?? readLiveOpsCliMarketReferencePrice(marketData),
+      referencePriceObservedAt: marketData?.latestHeartbeatAt,
     });
     if (closeout?.status !== "ready") {
       return pnlStatus;
@@ -3315,15 +3368,19 @@ export function createLiveOpsCliDatabaseKillSwitchProvider(pool) {
             message: "kill switch 상태를 DB에서 확인하지 못해 신규 실주문을 차단합니다.",
           };
         }
+        const actionPlan = mapLiveOpsCliKillSwitchActionPlan(row.state);
         return {
-          active: row.state !== "NORMAL",
+          active: actionPlan.newOrdersBlocked || actionPlan.requiresManualReview,
           state: row.state,
           reasonCode: row.reason_code,
           updatedAt: toIsoString(row.updated_at),
           correlationId: row.correlation_id ?? null,
           message: row.state === "NORMAL"
             ? "kill switch가 NORMAL 상태입니다."
-            : "kill switch가 신규 실주문 차단 상태입니다.",
+            : actionPlan.newOrdersBlocked || actionPlan.requiresManualReview
+            ? "kill switch가 신규 실주문 차단 상태입니다."
+            : "kill switch가 strategy pause 상태지만 전역 신규 실주문 차단은 아닙니다.",
+          actionPlan,
         };
       } catch {
         return {
@@ -3336,6 +3393,22 @@ export function createLiveOpsCliDatabaseKillSwitchProvider(pool) {
       }
     },
   };
+}
+
+function mapLiveOpsCliKillSwitchActionPlan(state) {
+  switch (state) {
+    case "NORMAL":
+      return { newOrdersBlocked: false, strategyEvaluationBlocked: false, requiresManualReview: false };
+    case "STRATEGY_PAUSED":
+      return { newOrdersBlocked: false, strategyEvaluationBlocked: true, requiresManualReview: false };
+    case "NEW_ORDERS_BLOCKED":
+      return { newOrdersBlocked: true, strategyEvaluationBlocked: false, requiresManualReview: false };
+    case "HARD_STOP":
+    case "MANUAL_REVIEW_REQUIRED":
+      return { newOrdersBlocked: true, strategyEvaluationBlocked: true, requiresManualReview: true };
+    default:
+      return { newOrdersBlocked: true, strategyEvaluationBlocked: true, requiresManualReview: true };
+  }
 }
 
 async function readLiveOpsCliKillSwitchStatus(provider) {

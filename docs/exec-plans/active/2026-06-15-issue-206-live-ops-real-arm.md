@@ -445,6 +445,23 @@ Telegram, TUI를 같은 lifecycle로 조립하고, 조건을 통과한 단일 `K
         자동 집계한다.
   - [x] 관련 script tests, typecheck, `./scripts/verify`, `git diff --check`가 통과한다.
 
+### Sub PR 21: final review drain runtime guard 보강
+
+- 목표: final main PR review에서 발견된 24/7 자동매매 차단 항목을 실제 runtime invariant와 CLI contract로 닫는다.
+- 제외 범위:
+  - budget 상한 확대, BTC 외 market 활성화, 시장가/best order, 수동 증적 파일 또는 fixture manifest 요구.
+  - final main PR merge.
+- DnD:
+  - [x] `autonomous_24x7` strategy는 포지션 snapshot 결측을 0수량 무포지션으로 보정하지 않고 `BLOCK`으로 fail-closed 한다.
+  - [x] `autonomous_24x7` strategy는 비용 차감 마진, 추세 강도, 평균회귀 할인 피처를 `requiredFeatures`로 선언하고, feature snapshot 실패 시
+        주문 후보 없이 차단된다.
+  - [x] SELL 후보도 BUY와 동일하게 kill switch와 reconcile freshness guard를 통과해야 exit runtime/broker side effect 경계가 열린다.
+  - [x] production CLI config contract는 정적 allowlist 안의 `autonomous_24x7` 운영 JSON을 허용하고, 임의 strategy path나 unknown key는
+        계속 차단한다.
+  - [x] `STRATEGY_PAUSED` kill switch state는 strategy evaluation 차단으로만 해석하고 전역 신규 주문 차단으로 낮추지 않는다.
+  - [x] preflight PnL closeout은 주입된 기준가도 market heartbeat timestamp 기준 freshness를 통과해야 CALCULATED row를 만들 수 있다.
+  - [x] 관련 unit/script tests, `corepack pnpm exec tsc --noEmit`, `./scripts/verify docs`, `./scripts/verify`, `git diff --check`가 통과한다.
+
 ## 검증 방법
 
 공통 검증:
@@ -624,10 +641,15 @@ SEEMIRAI_RUN_LIVE_OPS_REAL_ARM_CLOSEOUT=1 \
 - 2026-06-20: Sub PR 15 review drain 보강으로 production reconcile provider와 PnL closeout runner가 잔량 null open order를 같은 미체결
   주문으로 집계한다. runner는 position 수량과 거래소 BTC balance 수량이 다르거나 양수 position 평균단가가 0이면 원가/보유 source 불일치로
   보고 `CALCULATED` PnL snapshot을 만들지 않는다.
+- 2026-06-20: Sub PR 21 final review drain 보강으로 `autonomous_24x7`은 position snapshot 결측을 무포지션으로 보정하지 않는다.
+  required feature가 없거나 snapshot이 실패하면 주문 후보를 만들지 않고 차단한다. SELL 후보도 kill switch와 reconcile freshness guard를
+  통과해야 exit runtime으로 넘어간다. CLI contract는 정적 allowlist의 `autonomous_24x7` 설정만 허용하며, `STRATEGY_PAUSED`는 전역
+  신규 주문 차단이 아니라 strategy evaluation pause로 해석한다. PnL closeout의 주입 기준가는 market heartbeat timestamp freshness를
+  통과해야 한다.
 
 ## 남은 이슈
 
-- Sub PR 14 완료 후 final main PR #218의 신규 review finding을 다시 drain해야 한다.
+- Sub PR 21 완료 후 final main PR #218의 신규 review finding을 다시 drain해야 한다.
 - 실제 운영 credential, key scope evidence, operator arm evidence, redacted artifact 경로는 저장소 밖 운영 vault에 있어야 한다.
 - 실제 주문 제출/취소 closeout은 저장소 밖 운영 config/env로 foreground `live:ops`를 실행한 뒤 자동 생성 artifact와 closeout manifest로
   검증한다.
