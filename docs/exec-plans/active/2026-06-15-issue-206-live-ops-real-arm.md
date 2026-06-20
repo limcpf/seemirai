@@ -477,6 +477,40 @@ Telegram, TUI를 같은 lifecycle로 조립하고, 조건을 통과한 단일 `K
         대상으로 포함된다.
   - [x] 관련 unit/script tests, `corepack pnpm exec tsc --noEmit`, `./scripts/verify docs`, `./scripts/verify`, `git diff --check`가 통과한다.
 
+### Sub PR 23: autonomous analysis/runtime final review 보강
+
+- 목표: final main PR review에서 추가로 발견된 autonomous 24/7 분석 차단, BUY runtime evidence, daemon attach/status, SELL 재호가/terminal cancel gap을 닫는다.
+- 제외 범위:
+  - budget 상한 확대, BTC 외 market 활성화, 시장가/best order, 저장소 밖 strategy code, 수동 증적 파일 또는 fixture manifest 요구.
+  - final main PR merge.
+- DnD:
+  - [x] production CLI analysis는 `autonomous_24x7` policy를 cleanup 전용 BLOCK으로 닫지 않고, broker guard 뒤 private read preflight로 position context를 만든다.
+  - [x] autonomous BUY intent는 preflight 기반 CostModel/RiskGate/runtime evidence를 갖춘 뒤 entry runtime으로 전달된다.
+  - [x] autonomous BUY runtime identifier는 원본 strategy decision key를 직접 쓰지 않고 preflight tick scope를 포함한 `ops-` attempt id로 낮춘다.
+  - [x] autonomous BUY Cost/Risk evidence 검증은 원본 decision key가 아니라 runtime `ops-` attempt id와 일치한다.
+  - [x] autonomous BUY 제출 성공은 bounded fill/cancel closeout으로 닫는다. FILLED면 entry fill artifact를 남기고, no-fill/cancel이면 다음 tick 재호가로 넘긴다.
+  - [x] FILLED entry closeout이 없는 신규 autonomous BUY reservation은 예산 선점 evidence일 뿐 strategy-owned position으로 승격하지 않는다.
+  - [x] production execution은 analysis 단계 preflight를 broker 제출 근거로 재사용하지 않고, private provider가 있으면 제출 직전 preflight를 다시 읽는다.
+  - [x] autonomous SELL intent의 position scope는 제출 직전 fresh private preflight의 strategy-owned scope와 일치해야 broker로 전진한다.
+  - [x] feature provider가 비어 있는 production public tick에서도 기준가 대비 실제 edge가 있으면 entry 후보를 만들 수 있지만, tight spread만으로는 BUY 후보를 만들지 않는다.
+  - [x] 지갑 BTC 잔고는 FILLED entry closeout과 strategy reservation 소유 기록 없이는 `autonomous_24x7` 포지션으로 간주하지 않고 BLOCK으로 닫는다.
+  - [x] requested quantity가 없는 구형 reservation은 wallet 관측값과 reserved notional/current price로 strategy-owned 수량을 복원한다. 단, FILLED SELL closeout 뒤에는 수동 BTC로 되살리지 않는다.
+  - [x] FILLED autonomous SELL closeout은 runtime이 저장소 밖 artifact로 자동 기록하고 strategy-owned 수량에서 차감해, 종료된 reservation이 수동 BTC를 다시 소유한 것처럼 보이지 않게 한다.
+  - [x] FILLED SELL cleanup은 BUY lot을 FIFO로 소진하며, 완전 청산된 과거 BUY lot의 평균단가는 새 포지션 평균 진입가에서 제외한다.
+  - [x] autonomous position high-water state는 tick 간 보존되어 trailing stop이 현재 tick의 `max(entry,current)` 보정으로 무력화되지 않는다.
+  - [x] autonomous analysis/execution preflight PnL provider와 PnL closeout runner는 cleanup probe scope가 아니라 `live_ops_autonomous_24x7_core` scope를 사용한다.
+  - [x] autonomous scope PnL provider는 해당 scope row가 없을 때 global/aggregate row를 재사용하지 않고, 같은 scope closeout runner가 계산하게 둔다.
+  - [x] autonomous PnL closeout은 DB position row가 없더라도 같은 preflight tick의 artifact-owned position snapshot을 원가 source로 주입할 수 있다.
+        수동 BTC가 같은 지갑에 섞여도 strategy-owned 수량만 주입한다.
+  - [x] FILLED autonomous SELL closeout artifact는 matched entry average price, entry cost notional, realized PnL을 기록하고 원가 basis가 없으면 manual review로 닫는다.
+  - [x] 25,000 KRW risk-reduction 기준보다 작은 strategy-owned 보유분도 take-profit/stop-loss/trailing/max-holding 조건이면 SELL 후보를 만든다.
+  - [x] daemon status file의 top-level `latestSummary`는 `live:ops:tui --attach` source로 읽힌다.
+  - [x] daemon status file의 top-level `transient_failure`는 attach 화면에서 stale `latestSummary`보다 우선해 blocked 상태로 표시된다.
+  - [x] daemon tick status payload도 실제 `statusFilePath`를 보존한다.
+  - [x] SELL 재호가 runtime identifier는 같은 strategy decision key라도 preflight tick scope가 다르면 달라진다.
+  - [x] 이미 terminal cancel/no-fill로 확인된 SELL은 두 번째 cancel 요청 없이 재호가 대기 또는 수동 점검으로 닫는다.
+  - [x] 관련 unit/script tests, `corepack pnpm exec tsc --noEmit`, `./scripts/verify docs`, `./scripts/verify`, `git diff --check`가 통과한다.
+
 ## 검증 방법
 
 공통 검증:
@@ -664,10 +698,26 @@ SEEMIRAI_RUN_LIVE_OPS_REAL_ARM_CLOSEOUT=1 \
 - 2026-06-21: Sub PR 22 final review drain 보강으로 daemon 실패 tick은 status file을 최신 실패 payload로 갱신한다. daemon은 첫 성공
   tick 이후 startup Telegram alert를 반복 생성하지 않는다. SELL exit runtime은 post-submit poll 오류를 broker order id가 있는 수동 점검
   결과로 닫고, SELL 체결/재호가 상태는 private read/reconcile/PnL status 확인 대상으로 포함한다.
+- 2026-06-21: Sub PR 23 final review drain 보강으로 production CLI analysis는 `autonomous_24x7` policy를 cleanup 전용 BLOCK으로
+  닫지 않고 private read preflight position context로 entry/exit를 평가한다. autonomous BUY는 CostModel/RiskGate/runtime evidence를
+  붙여 entry runtime으로 전달하고 bounded fill/cancel closeout으로 닫는다. daemon status `latestSummary` attach, tick payload
+  `statusFilePath`, SELL 재호가 runtime identifier scope, terminal cancel no-fill 재취소 방지를 추가한다. 추가 review drain으로
+  public tick bootstrap feature, strategy reservation 기반 position ownership, 소액 포지션 take-profit/stop-loss/trailing/max-holding
+  exit를 보강해 지갑 수동 BTC 자동 매도와 영구 HOLD를 차단한다.
+- 2026-06-20: Sub PR 23 추가 review drain 보강으로 autonomous BUY도 preflight tick scope를 포함한 `ops-` attempt id를 사용한다.
+  production execution은 analysis preflight를 제출 근거로 재사용하지 않고 private provider preflight를 다시 읽는다. 구형 reservation은
+  wallet 관측값으로 소유 수량을 복원하고, FILLED SELL cleanup은 BUY lot을 FIFO로 차감해 닫힌 매수분 평균단가를 제외한다. autonomous PnL
+  closeout은 같은 tick의 artifact-owned position snapshot을 DB position fallback으로 주입한다.
+- 2026-06-20: Sub PR 23 추가 review drain 2차 보강으로 autonomous BUY evidence 검증은 runtime `ops-` key를 사용하고, autonomous SELL은
+  fresh preflight의 strategy-owned position scope와 intent scope가 일치할 때만 제출된다. SELL fill closeout은 entry 원가와 realized PnL을
+  artifact에 기록하며, mixed wallet에서는 strategy-owned 수량만 PnL snapshot으로 주입한다.
+- 2026-06-20: Sub PR 23 추가 review drain 3차 보강으로 autonomous BUY reservation은 FILLED entry closeout이 있어야 open lot으로 승격된다.
+  production entry runtime은 post-only BUY를 bounded fill/cancel closeout으로 닫고, no-fill reservation과 SELL 뒤 닫힌 legacy reservation은
+  수동 BTC를 strategy-owned 포지션으로 되살리지 않는다. autonomous PnL scope 조회는 global/aggregate row로 fallback하지 않는다.
 
 ## 남은 이슈
 
-- Sub PR 22 완료 후 final main PR #218의 신규 review finding을 다시 drain해야 한다.
+- Sub PR 23 완료 후 final main PR #218의 신규 review finding을 다시 drain해야 한다.
 - 실제 운영 credential, key scope evidence, operator arm evidence, redacted artifact 경로는 저장소 밖 운영 vault에 있어야 한다.
 - 실제 주문 제출/취소 closeout은 저장소 밖 운영 config/env로 foreground `live:ops`를 실행한 뒤 자동 생성 artifact와 closeout manifest로
   검증한다.

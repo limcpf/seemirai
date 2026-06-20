@@ -115,6 +115,7 @@ export function createLiveOpsPnlCloseoutRunner({
         reconcileStatus: input.reconcileStatus,
         referencePrice: input.referencePrice,
         referencePriceObservedAt: input.referencePriceObservedAt,
+        positionSnapshot: input.positionSnapshot,
         maxReconcileAgeMs,
       });
     },
@@ -130,6 +131,7 @@ export async function runLiveOpsPnlCloseout({
   reconcileStatus,
   referencePrice,
   referencePriceObservedAt,
+  positionSnapshot,
   maxReconcileAgeMs = defaultMaxReconcileAgeMs,
 } = {}) {
   if (pool === undefined || pool === null) {
@@ -148,6 +150,7 @@ export async function runLiveOpsPnlCloseout({
     reconcileStatus,
     referencePrice,
     referencePriceObservedAt,
+    positionSnapshot,
     maxReconcileAgeMs,
   });
   if (source.status !== "ready") {
@@ -202,6 +205,7 @@ async function loadLiveOpsPnlCloseoutSource({
   reconcileStatus,
   referencePrice,
   referencePriceObservedAt,
+  positionSnapshot,
   maxReconcileAgeMs,
 }) {
   const reconcile = reconcileStatus === undefined
@@ -221,12 +225,15 @@ async function loadLiveOpsPnlCloseoutSource({
     });
   }
 
-  const [position, fillsCount, latestPnlStatus, history] = await Promise.all([
+  const [dbPosition, fillsCount, latestPnlStatus, history] = await Promise.all([
     readCurrentPosition(pool, { market, strategyId }),
     readFillCount(pool, { market, strategyId }),
     readLatestPnlSnapshotStatus(pool, { market, strategyId, capturedAt }),
     readPnlSnapshotHistory(pool, { market, strategyId, capturedAt }),
   ]);
+  // 제출 직전 preflight가 읽은 artifact 소유권은 stale DB row보다 최신 원가 source다.
+  const injectedPosition = normalizeInjectedPositionSnapshot(positionSnapshot, { market, strategyId });
+  const position = injectedPosition ?? dbPosition;
   const latestPnlStatusBlock = validateLatestPnlSnapshotStatus(latestPnlStatus);
   if (latestPnlStatusBlock !== undefined) {
     // 최신 manual-review/partial row를 새 CALCULATED row로 가리면 손실 guard가 실제 차단 사유를 잃는다.
@@ -243,6 +250,7 @@ async function loadLiveOpsPnlCloseoutSource({
   }
   const baseBalance = findBalance(balances, baseCurrency);
   const positionQuantity = position === undefined ? new Decimal(0) : new Decimal(position.quantity);
+  const allowInjectedClosedPositionCloseout = injectedPosition !== undefined && position === injectedPosition && positionQuantity.eq(0);
   if (positionQuantity.gt(0) && baseBalance === undefined) {
     // position source만 있고 거래소 base 잔고 source가 없으면 평가액을 0으로 낮춰 주문 한도를 열 수 있다.
     return blockedSource(
@@ -268,19 +276,20 @@ async function loadLiveOpsPnlCloseoutSource({
       { baseCurrency, baseTotal: baseTotal.toFixed() },
     );
   }
-  if (position !== undefined && positionQuantity.eq(0) && baseTotal.gt(0)) {
-    // 0수량 position row는 보유분 원가 source가 아니므로 실계좌 BTC 잔고를 정상 PnL로 닫지 않는다.
+  if (position !== undefined && positionQuantity.eq(0) && baseTotal.gt(0) && !allowInjectedClosedPositionCloseout) {
+    // DB의 0수량 position row는 보유분 원가 source가 아니므로 실계좌 BTC 잔고를 정상 PnL로 닫지 않는다.
     return blockedSource(
       "pnl_closeout_position_quantity_zero_for_balance",
       "실계좌 base 잔고는 있지만 strategy position 수량이 0이라 PnL closeout을 만들지 않습니다.",
       { baseCurrency, baseTotal: baseTotal.toFixed() },
     );
   }
-  if (positionQuantity.gt(0) && !baseTotal.eq(positionQuantity)) {
-    // 거래소 잔고와 로컬 position 수량이 다르면 equity와 미실현 손익이 서로 다른 보유분으로 계산된다.
+  // injected closeout snapshot은 전략 소유 포지션이 이미 닫혔다는 source이므로 남은 수동 BTC 잔고와 분리해 실현손익을 보존한다.
+  if (positionQuantity.gt(0) && baseTotal.lt(positionQuantity)) {
+    // 거래소 잔고가 strategy position보다 적으면 원가 source가 실제 보유분을 초과하므로 손익을 확정하지 않는다.
     return blockedSource(
       "pnl_closeout_position_balance_quantity_mismatch",
-      "거래소 base 잔고와 strategy position 수량이 일치하지 않아 PnL closeout을 만들지 않습니다.",
+      "거래소 base 잔고가 strategy position 수량보다 적어 PnL closeout을 만들지 않습니다.",
       { baseCurrency, baseTotal: baseTotal.toFixed(), positionQuantity: positionQuantity.toFixed() },
     );
   }
@@ -458,6 +467,41 @@ function normalizeInjectedBalances(balanceSnapshot) {
   })));
 }
 
+function normalizeInjectedPositionSnapshot(positionSnapshot, { market, strategyId }) {
+  if (positionSnapshot === undefined || positionSnapshot === null) {
+    return undefined;
+  }
+  if (
+    positionSnapshot.strategyId !== strategyId ||
+    positionSnapshot.market !== market ||
+    !isNonNegativeDecimalString(positionSnapshot.quantity)
+  ) {
+    return undefined;
+  }
+  const quantity = normalizeNonNegativeDecimal(positionSnapshot.quantity, "positionSnapshot.quantity");
+  // 열린 포지션은 원가가 필수지만, 전량 청산 snapshot은 realized PnL 보존을 위해 0원 평균단가를 허용한다.
+  const hasUsableAverageEntryPrice = new Decimal(quantity).gt(0)
+    ? isPositiveDecimalString(positionSnapshot.averageEntryPrice)
+    : isNonNegativeDecimalString(positionSnapshot.averageEntryPrice);
+  if (!hasUsableAverageEntryPrice) {
+    return undefined;
+  }
+  return {
+    strategy_id: strategyId,
+    market,
+    quantity,
+    average_entry_price: normalizeNonNegativeDecimal(positionSnapshot.averageEntryPrice, "positionSnapshot.averageEntryPrice"),
+    realized_pnl: normalizeDecimal(positionSnapshot.realizedPnlKrw ?? "0"),
+    unrealized_pnl: normalizeDecimal(positionSnapshot.unrealizedPnlKrw ?? "0"),
+    updated_at: hasMeaningfulValue(positionSnapshot.updatedAt)
+      ? toIsoString(positionSnapshot.updatedAt)
+      : hasMeaningfulValue(positionSnapshot.latestObservationAt)
+      ? toIsoString(positionSnapshot.latestObservationAt)
+      : null,
+    source: hasMeaningfulValue(positionSnapshot.source) ? String(positionSnapshot.source) : "injected_position_snapshot",
+  };
+}
+
 function normalizeBalanceRow(row) {
   const available = normalizeNonNegativeDecimal(row.available, "balance.available");
   const locked = normalizeNonNegativeDecimal(row.locked, "balance.locked");
@@ -605,6 +649,28 @@ async function resolveLiveOpsPnlCloseoutReferencePrice({
 }
 
 async function readLatestPnlSnapshotStatus(pool, { market, strategyId, capturedAt }) {
+  if (strategyId !== defaultStrategyId) {
+    // explicit 전략 closeout은 cleanup/global 상태를 상속하지 않아야 자기 scope의 PnL만 차단 근거로 쓴다.
+    const result = await pool.query(`
+      SELECT strategy_id, market, captured_at, payload_json ->> 'status' AS payload_status
+      FROM pnl_snapshots
+      WHERE strategy_id = $1
+        AND (market = $2 OR market IS NULL)
+        AND captured_at <= $3
+      ORDER BY captured_at DESC, (market = $2) DESC
+      LIMIT 1
+    `, [strategyId, market, capturedAt]);
+    const row = result.rows[0];
+    if (row === undefined) {
+      return undefined;
+    }
+    return {
+      strategyId: hasMeaningfulValue(row.strategy_id) ? String(row.strategy_id) : null,
+      market: hasMeaningfulValue(row.market) ? String(row.market) : null,
+      capturedAt: hasMeaningfulValue(row.captured_at) ? toIsoString(row.captured_at) : null,
+      status: hasMeaningfulValue(row.payload_status) ? String(row.payload_status) : null,
+    };
+  }
   const result = await pool.query(`
     SELECT strategy_id, market, captured_at, payload_json ->> 'status' AS payload_status
     FROM pnl_snapshots
@@ -687,6 +753,7 @@ function buildLiveOpsPnlSnapshot({ market, strategyId, capturedAt, source }) {
           market,
           quantity: source.position.quantity,
           averageEntryPrice: source.position.average_entry_price,
+          source: source.position.source ?? "positions",
           marketValueKrw: source.referencePrice === null
             ? "0"
             : new Decimal(source.position.quantity).mul(source.referencePrice).toFixed(),
@@ -704,6 +771,7 @@ function buildLiveOpsPnlSnapshot({ market, strategyId, capturedAt, source }) {
         "pnl_snapshots",
       ],
       referencePriceSource: source.referencePriceSource,
+      positionSource: source.position?.source ?? null,
     },
   };
   return {

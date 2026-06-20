@@ -58,9 +58,9 @@ Codex-native 운영은 Codex, Git, GitHub, shell command, 문서 상태를 연�
 - analysis/decision pipeline은 market data 미준비와 feature 실패를 0값으로 보정하지 않는다. 해당 경우 strategy 평가를 열지 않고
   HOLD/차단 summary를 남기며, order intent가 없으면 live execution으로 전진하지 않는다.
 - live execution adapter는 analysis summary와 order intent 수가 어긋나거나 복수 후보가 들어오면 broker runtime을 호출하지 않는다.
-  단일 `BUY + LIMIT + post_only` 후보만 기존 `LiveAutonomousEntryRuntime` 요청으로 낮추며, budget reservation과 broker submit side
-  effect는 하위 runtime이 반환한 attempt 결과로만 확정한다. 하위 runtime 예외는 제출 여부를 단정하지 않고 manual review summary로
-  수렴한다.
+  단일 `BUY + LIMIT + post_only` 후보만 기존 `LiveAutonomousEntryRuntime` 요청으로 낮추며, budget reservation, broker submit,
+  bounded fill/cancel closeout side effect는 하위 runtime이 반환한 attempt 결과로만 확정한다. 하위 runtime 예외는 제출 여부를
+  단정하지 않고 manual review summary로 수렴한다.
 - budget reservation은 attempt id 파일만으로 완료하지 않는다. 같은 날짜 reservation lock을 먼저 잡고, lock 안에서 현재 reservation
   집계와 open position snapshot을 합산해 일일 자동 주문 예산을 다시 확인한 뒤 attempt 파일을 만든다. lock이 busy이거나 예산 초과가
   확인되면 broker 호출 전 fail-closed 한다. lock 파일은 lease id, owner boot id, process start time을 포함하고 기본 5분 TTL이 지났더라도
@@ -94,7 +94,10 @@ Codex-native 운영은 Codex, Git, GitHub, shell command, 문서 상태를 연�
 - `autonomous_24x7` policy는 보유 포지션 snapshot이 있으면 entry보다 exit rule을 먼저 평가한다. analysis pipeline은 position
   snapshot을 조회하지 않고 `StrategyContext.positions`로 전달만 하며, strategy는 SELL/BUY order intent를 만들 뿐 broker, DB,
   Telegram side effect를 직접 수행하지 않는다.
+- `autonomous_24x7` policy는 지갑 BTC 잔고만으로 전략 소유 포지션을 추정하지 않는다. runtime이 자동 생성한 FILLED entry closeout과
+  strategy reservation 기록으로 소유 범위와 수량을 확인하지 못하면 자동 SELL 대신 manual review 성격의 BLOCK으로 닫는다.
 - `autonomous_24x7` exit rule은 take profit, stop loss, trailing stop, max holding time, risk reduction을 독립 reason code로 남긴다.
+  risk reduction 기준보다 작은 소액 포지션도 take profit, stop loss, trailing stop, max holding time 조건이면 SELL 후보를 만들 수 있다.
   exit 조건이 없으면 같은 tick의 강한 entry signal도 BUY로 전환하지 않고 HOLD로 닫아 물타기식 중복 진입을 막는다.
 - live execution adapter는 SELL 후보를 entry runtime으로 우회시키지 않는다. `position_effect`, exit reason/rule, position scope,
   보유 수량 이하 조건을 확인한 뒤 `exit_cost_model` evidence와 RiskGate evidence를 만들어 exit runtime port로만 전달한다.
@@ -109,6 +112,17 @@ Codex-native 운영은 Codex, Git, GitHub, shell command, 문서 상태를 연�
 - 같은 order attempt나 idempotency key로 재시작하는 경우 새 Upbit identifier를 만들지 않는다. broker submit 결과가 불확실하면 재주문하지
   않고 reconcile/manual review로 수렴한다. public live execution adapter는 긴 decision key를 stable `ops-` attempt id로 낮춰 같은 cleanup
   후보가 재평가되어도 동일 identifier chain을 유지한다.
+- autonomous BUY runtime도 strategy decision key를 broker identifier로 직접 쓰지 않는다. 제출 직전 preflight tick scope를 포함한 `ops-`
+  attempt id로 낮추고 원본 decision key는 metadata에 보존한다. autonomous BUY Cost/Risk evidence 검증도 runtime attempt id를 기준으로
+  수행해, 원본 decision key와 runtime `ops-` key 불일치로 `execution_evidence_missing`이 발생하지 않게 한다. 이 분리는 매수-매도 이후
+  같은 날 같은 가격/수량의 재진입이 과거 reservation 파일에 막히지 않게 하는 invariant다.
+- autonomous BUY reservation은 예산 선점 evidence이고 포지션 소유권 evidence가 아니다. production entry runtime은 post-only BUY를
+  bounded wait 안에서 FILLED entry closeout 또는 no-fill cancel/requote closeout으로 닫고, FILLED entry closeout이 없는 신규 reservation은
+  strategy-owned quantity로 승격하지 않는다.
+- production broker 제출 경계는 analysis 단계에서 만든 private preflight snapshot을 재사용하지 않는다. private provider가 조립된 실행
+  경로에서는 제출 직전 open order, balance, reconcile, PnL, kill switch, budget reservation을 다시 읽어 stale account 상태로 주문하지 않는다.
+  autonomous SELL은 intent의 position scope가 이 fresh preflight의 strategy-owned scope와 일치할 때만 broker로 전진하며, 소유 수량이
+  사라졌거나 수동 BTC와 scope가 섞인 stale intent는 fail-closed 한다.
 - submit 이후 cancel requested와 terminal cancel 확인은 같은 attempt/identifier chain으로 연결되어야 하며, open exposure 0,
   duplicate order 0건, reconcile mismatch 0건, untracked fill 0건이 closeout evidence에 포함되어야 한다.
 - production `live:ops` clean-start DB에 완료된 reconcile run이 없으면, broker 제출 전 actual Upbit private read 결과를
@@ -125,9 +139,16 @@ Codex-native 운영은 Codex, Git, GitHub, shell command, 문서 상태를 연�
   `captured_at + strategy_id + market + sourceFingerprint` 기준으로 멱등 처리하며, 최신 row가 PARTIAL/manual-review/status 미완료이거나
   reconcile/open order/mismatch/position/balance/reference price source가 불확실하면 새 0원 snapshot을 만들지 않고 기존 loss guard 차단을
   유지한다. 잔량이 null인 open order는 production reconcile provider와 closeout runner 모두 미체결 주문으로 집계한다. 0수량 position으로
-  남은 BTC 보유분, position 수량과 거래소 BTC 잔고 불일치, 양수 position의 평균단가 0, cleanup row가 없을 때의 global/aggregate
-  not-ready PnL도 fail-closed 대상이다. 같은 reconcile run의 중복 balance row는 currency별 최신 snapshot만 사용하고, stale orderbook
-  기준가는 fresh closeout 근거로 쓰지 않는다.
+  남은 BTC 보유분, strategy position 수량보다 적은 거래소 BTC 잔고, 양수 position의 평균단가 0, cleanup row가 없을 때의 global/aggregate
+  not-ready PnL도 fail-closed 대상이다. 명시 strategy scope의 PnL 조회는 global/aggregate row를 재사용하지 않고 해당 scope closeout이
+  직접 계산되게 한다. 같은 reconcile run의 중복 balance row는 currency별 최신 snapshot만 사용하고, stale orderbook 기준가는 fresh closeout
+  근거로 쓰지 않는다.
+- autonomous PnL closeout은 DB `positions` row가 아직 없더라도 같은 preflight tick에서 runtime이 만든 strategy-owned artifact position을
+  원가 source로 주입할 수 있다. 이 fallback은 DB position이 없고, 거래소 BTC balance가 artifact-owned 수량 이상이며, 평균단가가 양수일 때
+  strategy-owned 수량만 주입한다. 수동 BTC가 같은 지갑에 섞여도 자동 SELL/PnL snapshot은 strategy-owned 수량으로만 닫는다.
+- autonomous SELL fill closeout artifact는 체결 수량/가격뿐 아니라 matched entry average price, entry cost notional, realized PnL을 저장한다.
+  원가 basis가 없으면 closeout을 ready로 인정하지 않고 manual review로 닫아, stop-loss 이후 다음 preflight가 실현손익을 0 KRW로 계산해
+  재진입을 여는 일을 막는다.
 - Telegram 전송 실패는 주문/리스크 commit을 되돌리지 않고 retry/manual review summary로 격리한다.
 - 실제 cleanup run은 저장소 밖 redacted artifact에만 기록하고, issue/PR에는 safe summary와 artifact 경로만 남긴다. 취소 요청 이후
   terminal poll이 실패해도 artifact 없이 generic manual review로 빠지지 않고, cancel evidence와 poll 실패 사유를 redacted cleanup
@@ -159,6 +180,12 @@ Codex-native 운영은 Codex, Git, GitHub, shell command, 문서 상태를 연�
   불확실성은 자동 재주문이 아니라 manual review counter와 신규 주문 차단으로 수렴한다.
 - exit SELL 수량이 1회 주문 예산을 넘으면 strategy가 예산 이하 chunk를 만든다. 잔여 보유 수량은 다음 tick에서 다시 평가해야 하며,
   daemon은 이를 실패나 cleanup 누락으로 보지 않는다.
+- autonomous position 소유권은 FILLED entry closeout이 있는 BUY lot에서 FILLED SELL cleanup을 FIFO로 차감해 계산한다. 완전 청산된 과거
+  BUY lot의 평균단가는 이후 새 BUY 포지션의 take-profit, stop-loss, trailing 기준에 섞지 않는다. 미체결 BUY reservation과 no-fill
+  closeout은 포지션 소유권으로 승격하지 않는다.
+- requested quantity가 없는 구형 reservation은 wallet BTC 관측값과 reserved notional/current price로 복원할 수 있지만, reservation 금액
+  근거가 없으면 지갑 BTC만으로 strategy-owned position state를 만들지 않는다. 이후 FILLED SELL closeout으로 닫힌 legacy reservation은
+  wallet BTC 관측값으로 다시 열지 않는다.
 
 ## M23 restart/recovery drill 신뢰성 기준
 
@@ -482,6 +509,11 @@ Codex-native 운영은 Codex, Git, GitHub, shell command, 문서 상태를 연�
   closeout은 7일 연속 daily report와 live-armed 설정 evidence를 요구한다.
 - restart drill은 기존 order attempt, durable reservation, reconcile snapshot, status summary를 재사용해야 하며, 재시작 때문에
   duplicate live order를 만들면 merge-blocking 실패로 본다.
+- 24/7 autonomous 포지션 소유권은 durable BUY reservation만으로 영구 인정하지 않는다. runtime이 자동 기록한 FILLED entry closeout만
+  open BUY lot으로 승격하고, FILLED SELL closeout을 같은 strategy scope에서 차감한다. trailing stop high-water는 autonomous position
+  state에 보존해 재시작/다음 tick에서 잃지 않는다.
+- autonomous preflight PnL/status와 PnL closeout은 cleanup probe scope와 섞지 않고 활성 strategy scope를 사용해야 한다. 활성 strategy
+  row가 없으면 global row로 대체하지 않고 closeout runner가 같은 scope의 snapshot을 계산하게 둔다.
 - Telegram lifecycle 알림은 연결 성공, live order capable 시작, 정상 종료, operator stop, kill switch, manual review, crash/restart를
   구분한다. 알림 실패는 P0/P1 retry evidence와 manual review 수렴 상태로 남긴다.
 - 주문 제출, 취소 요청, 취소 확인, 체결, 부분체결, risk/cost/reconcile 차단 이벤트는 audit/risk/decision evidence 확정 이후
