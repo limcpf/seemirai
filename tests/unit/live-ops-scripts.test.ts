@@ -1781,7 +1781,7 @@ console.log(JSON.stringify(summary));
     expect([first.reason, second.reason]).toContain("live_ops_exit_submission_lock_busy");
   });
 
-  it("SELL exit runtime lock scope는 재호가 가격과 preflight 관측 시각이 달라도 같은 포지션 decision을 직렬화한다", async () => {
+  it("SELL exit runtime lock scope는 재호가 가격과 수량, preflight 관측 시각이 달라도 같은 포지션 decision을 직렬화한다", async () => {
     const {
       createLiveOpsCliExitRuntime,
     } = await import(path.join(process.cwd(), "scripts/run-live-ops-support.mjs"));
@@ -1789,26 +1789,32 @@ console.log(JSON.stringify(summary));
     const createSubmission = ({
       idempotencyKey,
       requestedPrice,
+      requestedQuantity,
       requestedNotional,
       observedAt,
     }: {
       idempotencyKey: string;
       requestedPrice: string;
+      requestedQuantity: string;
       requestedNotional: string;
       observedAt: string;
     }) => {
       const intent = createCliSellIntent({ idempotencyKey }) as Record<string, any>;
       intent.requestedPrice = requestedPrice;
+      intent.requestedQuantity = requestedQuantity;
       intent.requestedNotional = requestedNotional;
       intent.metadata = {
         ...intent.metadata,
+        position_effect: "REDUCE",
         decision_idempotency_key: decisionKey,
         position_scope: {
           ...intent.metadata.position_scope,
+          total_quantity: "0.0002",
           average_entry_price: "98000000",
         },
         preflight_position_scope: {
           ...intent.metadata.position_scope,
+          total_quantity: "0.0002",
           average_entry_price: "98000000",
           owned: true,
           observed_at: observedAt,
@@ -1816,9 +1822,11 @@ console.log(JSON.stringify(summary));
       };
       const orderIntentEvidence = {
         ...intent.costSnapshot.order_intent,
+        requested_quantity: requestedQuantity,
         requested_price: requestedPrice,
         requested_notional: requestedNotional,
         idempotency_key: idempotencyKey,
+        position_effect: "REDUCE",
       };
       intent.costSnapshot = {
         ...intent.costSnapshot,
@@ -1895,13 +1903,15 @@ console.log(JSON.stringify(summary));
       runtime.submitExitOrder(createSubmission({
         idempotencyKey: `ops-${"8".repeat(26)}`,
         requestedPrice: "99000000",
-        requestedNotional: "9900",
+        requestedQuantity: "0.00010101",
+        requestedNotional: "9999.99",
         observedAt: "2026-06-20T00:00:00.000Z",
       })),
       runtime.submitExitOrder(createSubmission({
         idempotencyKey: `ops-${"7".repeat(26)}`,
         requestedPrice: "99001000",
-        requestedNotional: "9900.1",
+        requestedQuantity: "0.00010099",
+        requestedNotional: "9998.11099",
         observedAt: "2026-06-20T00:00:01.000Z",
       })),
     ]);

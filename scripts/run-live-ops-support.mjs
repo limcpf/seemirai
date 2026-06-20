@@ -6523,7 +6523,7 @@ function createLiveOpsCliExitSubmissionLockScope(submission) {
     market: intent.market,
     side: intent.side,
     decisionIdempotencyKey: intent?.metadata?.decision_idempotency_key ?? intent.idempotencyKey,
-    requestedQuantity: intent.requestedQuantity,
+    // 재호가로 산출 수량이 흔들려도 같은 strategy position/decision SELL은 하나의 broker 제출만 통과해야 한다.
     positionScope: stablePositionScope,
   });
 }
