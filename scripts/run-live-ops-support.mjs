@@ -6428,13 +6428,31 @@ export function createLiveOpsCliExitRuntime({
         };
       }
 
-      const terminal = await waitForLiveOpsCliTerminalCancel({
-        broker,
-        brokerOrderId: brokerOrder.brokerOrderId,
-        pollCount,
-        pollIntervalMs,
-        submittedOrder: brokerOrder,
-      });
+	      let terminal;
+	      try {
+	        // 취소 요청 이후 조회 실패를 throw로 잃으면 이미 발생한 SELL side effect를 운영자가 추적할 수 없다.
+	        terminal = await waitForLiveOpsCliTerminalCancel({
+	          broker,
+	          brokerOrderId: brokerOrder.brokerOrderId,
+	          pollCount,
+	          pollIntervalMs,
+	          submittedOrder: brokerOrder,
+	        });
+	      } catch (error) {
+	        return {
+	          status: "MANUAL_REVIEW_REQUIRED",
+	          statusLabel: "수동 점검",
+	          brokerOrderId: brokerOrder.brokerOrderId,
+	          manualReviewRequired: true,
+	          message: "SELL 주문 취소 요청 후 terminal 상태 조회를 완료하지 못해 수동 점검 상태로 전환했습니다.",
+	          action: "거래소 주문 uuid와 취소 요청 결과로 open order, partial fill, 보유 수량을 확인한 뒤 다음 재호가 여부를 결정하세요.",
+	          reason: "exit_terminal_cancel_poll_failed",
+	          errorName: safeErrorName(error),
+	          errorMessage: error instanceof Error ? error.message : String(error),
+	          submittedOrder: brokerOrder,
+	          cancelOrder,
+	        };
+	      }
       if (isLiveOpsCliCleanTerminalCancel({ submittedOrder: brokerOrder, terminalOrder: terminal.order })) {
         return {
           status: "CANCELED_FOR_REQUOTE",

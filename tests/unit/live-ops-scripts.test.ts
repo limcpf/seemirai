@@ -1630,6 +1630,82 @@ console.log(JSON.stringify(summary));
     expect(JSON.stringify(result)).toContain("RateLimitedDuringExitPoll");
   });
 
+  it("SELL exit runtime은 cancel 이후 terminal poll 실패도 broker와 cancel 증거로 수동 점검을 반환한다", async () => {
+    const {
+      createLiveOpsCliExitRuntime,
+    } = await import(path.join(process.cwd(), "scripts/run-live-ops-support.mjs"));
+    const idempotencyKey = `ops-${"9".repeat(26)}`;
+    const sellIntent = createCliSellIntent({ idempotencyKey }) as Record<string, any>;
+    sellIntent.metadata.preflight_position_scope = {
+      ...sellIntent.metadata.position_scope,
+      owned: true,
+    };
+    const brokerOrder = {
+      brokerOrderId: "exit-order-cancel-poll-failed",
+      idempotencyKey,
+      exchangeId: "upbit_krw_spot",
+      market: "KRW-BTC",
+      side: "SELL",
+      orderType: "LIMIT",
+      status: "ACCEPTED",
+      requestedQuantity: sellIntent.requestedQuantity,
+      remainingQuantity: sellIntent.requestedQuantity,
+      requestedPrice: sellIntent.requestedPrice,
+      acceptedAt: "2026-06-20T00:00:00.000Z",
+      updatedAt: "2026-06-20T00:00:00.000Z",
+    };
+    const cancelOrder = {
+      ...brokerOrder,
+      status: "CANCEL_REQUESTED",
+      updatedAt: "2026-06-20T00:00:01.000Z",
+    };
+    let getOrderCalls = 0;
+    const runtime = createLiveOpsCliExitRuntime({
+      pollCount: 1,
+      pollIntervalMs: 0,
+      broker: {
+        async submitOrder() {
+          return brokerOrder;
+        },
+        async getOrder() {
+          getOrderCalls += 1;
+          if (getOrderCalls === 1) {
+            return brokerOrder;
+          }
+          throw Object.assign(new Error("RateLimitedAfterExitCancel"), {
+            status: 429,
+            upbitErrorName: "too_many_requests",
+          });
+        },
+        async cancelOrder() {
+          return cancelOrder;
+        },
+      },
+    });
+
+    const result = await runtime.submitExitOrder({
+      intent: sellIntent,
+      costSnapshot: sellIntent.costSnapshot,
+      riskApproval: sellIntent.riskApproval,
+      observedAt: "2026-06-20T00:00:00.000Z",
+    });
+
+    expect(result).toMatchObject({
+      status: "MANUAL_REVIEW_REQUIRED",
+      brokerOrderId: "exit-order-cancel-poll-failed",
+      manualReviewRequired: true,
+      reason: "exit_terminal_cancel_poll_failed",
+      cancelOrder: {
+        brokerOrderId: "exit-order-cancel-poll-failed",
+        status: "CANCEL_REQUESTED",
+      },
+      submittedOrder: expect.objectContaining({
+        brokerOrderId: "exit-order-cancel-poll-failed",
+      }),
+    });
+    expect(JSON.stringify(result)).toContain("RateLimitedAfterExitCancel");
+  });
+
   it("SELL exit runtime은 같은 decision/position scope의 동시 제출을 artifact lock으로 직렬화한다", async () => {
     const {
       createLiveOpsCliExitRuntime,
