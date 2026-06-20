@@ -10,6 +10,7 @@ import {
 } from "./evidence-fingerprint.js";
 import type {
   ExecutionCostSnapshotEvidence,
+  ExecutionExitCostEvidence,
   ExecutionRiskApprovalEvidence,
 } from "./types.js";
 
@@ -56,5 +57,33 @@ export function createExecutionCostSnapshotEvidence(
     ...snapshot,
     source: "cost_model",
     order_intent: createOrderIntentEvidence(intent, expectedLossBpsOfEquity),
+  };
+}
+
+/**
+ * exit SELL 후보의 비용 evidence를 ExecutionEngine이 검증할 수 있는 snapshot으로 만든다.
+ *
+ * 책임:
+ * - entry cost_model evidence와 exit_cost_model evidence를 분리해 BUY 승인 근거가 SELL 청산에 재사용되지 않게 한다.
+ * - position scope와 현재 intent fingerprint를 함께 묶어 보유 수량, market, strategy가 다른 SELL 후보를 broker 직전에 차단하게 한다.
+ *
+ * side effect:
+ * - 없음. 이 함수는 순수 evidence 객체만 생성한다.
+ */
+export function createExecutionExitCostEvidence(input: {
+  readonly intent: OrderIntent;
+  readonly positionScope: ExecutionExitCostEvidence["position_scope"];
+  readonly exitCostBps: string;
+  readonly exitSlippageBps: string;
+  readonly expectedLossBpsOfEquity?: string;
+}): ExecutionExitCostEvidence {
+  return {
+    source: "exit_cost_model",
+    exit_cost_allowed: true,
+    exit_cost_reason_code: "exit_cost_margin_ok",
+    exit_cost_bps: input.exitCostBps,
+    exit_slippage_bps: input.exitSlippageBps,
+    position_scope: input.positionScope,
+    order_intent: createOrderIntentEvidence(input.intent, input.expectedLossBpsOfEquity),
   };
 }

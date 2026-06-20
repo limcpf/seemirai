@@ -421,11 +421,12 @@ Telegram, TUI를 같은 lifecycle로 조립하고, 조건을 통과한 단일 `K
 - 제외 범위:
   - 시장가 매도, hard-stop 자동 청산, budget 확대.
 - DnD:
-  - [ ] 보유 수량 이하 SELL intent만 broker submit 경계로 전달된다.
-  - [ ] entry/exit open order는 bounded cancel/requote 또는 manual review로 수렴한다.
-  - [ ] terminal 확인 실패, partial fill, untracked fill은 신규 주문 차단과 manual review evidence를 만든다.
-  - [ ] TUI/Telegram/status가 보유/매도 판단 이유와 필요한 조치를 한국어로 표시한다.
-  - [ ] 관련 unit/integration tests, typecheck, `./scripts/verify`, `git diff --check`가 통과한다.
+  - [x] 보유 수량 이하 SELL intent만 exit runtime 경계로 전달된다.
+  - [x] SELL 후보는 entry runtime으로 우회하지 않고 `exit_cost_model` evidence와 RiskGate evidence를 자동 생성한다.
+  - [x] SELL 후보의 긴 strategy decision key는 Upbit-safe `ops-` attempt id로 낮추고 원본 decision key는 metadata에 보존한다.
+  - [x] `SELL + LIMIT + POST_ONLY`, `position_effect=REDUCE|EXIT`, exit reason/rule, position scope가 없으면 exit runtime 호출 전에 차단한다.
+  - [x] exit runtime 결과가 불확실하면 manual review summary로 수렴한다.
+  - [x] 관련 unit/integration tests, typecheck, `./scripts/verify`, `git diff --check`가 통과한다.
 
 ### Sub PR 20: live:ops daemon loop와 24시간 summary
 
@@ -437,6 +438,9 @@ Telegram, TUI를 같은 lifecycle로 조립하고, 조건을 통과한 단일 `K
   - [ ] 실행 전 fixture manifest, hand-written evidence, 수동 JSONL 후보 파일이 필요 없다.
   - [ ] `--fixture-smoke --duration-ms 1000` smoke가 외부 provider/order side effect 없이 loop contract를 검증한다.
   - [ ] loop는 success/HOLD/BLOCK/manual-review/transient failure별 sleep/backoff 정책을 가진다.
+  - [ ] entry/exit open order는 bounded cancel/requote 또는 manual review로 수렴한다.
+  - [ ] terminal 확인 실패, partial fill, untracked fill은 신규 주문 차단과 manual review evidence를 만든다.
+  - [ ] TUI/Telegram/status가 보유/매도 판단 이유와 필요한 조치를 한국어로 표시한다.
   - [ ] 24시간 summary가 crash, unhandled rejection, duplicate order, reconcile mismatch, untracked fill, live order cleanup failure counter를
         자동 집계한다.
   - [ ] 관련 script tests, typecheck, `./scripts/verify`, `git diff --check`가 통과한다.

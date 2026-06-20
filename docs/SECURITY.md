@@ -292,7 +292,8 @@
 - `autonomous_24x7` strategy parameter는 non-secret threshold만 허용한다. credential, token, DB URL, local control token은 config
   schema와 startup contract에서 계속 분리해야 한다.
 - LLM은 24/7 strategy의 `BUY`, `SELL`, 목표가, 포지션 크기, 주문 허용 여부를 직접 결정할 수 없다.
-- exit order가 허용되어도 `SELL + LIMIT + POST_ONLY`와 현재 보유 수량 이하 조건을 provider 호출 전에 검증한다.
+- exit order가 허용되어도 `SELL + LIMIT + POST_ONLY`, `position_effect=REDUCE|EXIT`, exit reason/rule, 현재 보유 수량 이하 조건을
+  provider 호출 전에 검증한다. SELL 후보는 entry runtime으로 우회하지 않는다.
 - hard stop이나 mismatch가 open position 자동 시장가 청산을 만들면 안 된다. 보안상 불확실 상태의 기본 동작은 신규 주문 차단과
   manual review다.
 - daemon summary, artifact, Telegram, TUI는 access key, secret key, JWT, Authorization header, DB URL/password, raw provider payload,

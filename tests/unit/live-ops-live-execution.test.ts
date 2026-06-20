@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import type {
   LiveAutonomousEntryAttemptResult,
   LiveAutonomousEntryRuntimeRequest,
+  ExecutionSubmitOrderResult,
 } from "../../src/application/index.js";
 import {
   createRiskThresholdSnapshot,
@@ -127,6 +128,148 @@ describe("production live ops live execution adapter", () => {
       },
     });
     expect(JSON.stringify(summary)).not.toContain("fake-upbit-secret-key");
+  });
+
+  it("SELL LIMIT POST_ONLY 후보를 exit runtime submission으로 변환하고 entry runtime은 호출하지 않는다", async () => {
+    const entryRuntime = createEntryRuntimeRecorder();
+    const exitRuntime = createExitRuntimeRecorder();
+    const intent = createSellOrderIntent();
+
+    const summary = await runLiveOpsLiveExecution(createInput({
+      analysisDecision: analysisSummary({ orderIntentCount: 1, decisionCategory: "ORDER_INTENT" }),
+      orderIntents: [intent],
+      entryRuntime,
+      exitRuntime,
+      idempotencyKey: explicitIdempotencyKey,
+    }));
+
+    expect(summary).toMatchObject({
+      status: "submitted",
+      ready: true,
+      liveOrderCapable: true,
+      attemptedOrderCount: 1,
+      submittedOrderCount: 1,
+      attemptStatus: "SUBMITTED",
+      brokerOrderId: "fake-live-exit-order-001",
+    });
+    expect(entryRuntime.submitEntryCandidate).not.toHaveBeenCalled();
+    expect(exitRuntime.submitExitOrder).toHaveBeenCalledTimes(1);
+    const submission = exitRuntime.submitExitOrder.mock.calls[0]?.[0];
+    expect(submission).toMatchObject({
+      submittedAt: observedAt,
+      expectedLossBpsOfEquity: "5",
+      intent: {
+        idempotencyKey: explicitIdempotencyKey,
+        side: "SELL",
+        orderType: "LIMIT",
+        postOnly: true,
+        timeInForce: "POST_ONLY",
+        metadata: {
+          decision_idempotency_key: "decision-fixture-exit-intent",
+          runtime_idempotency_source: "live_ops_live_execution_exit",
+          position_effect: "EXIT",
+          exit_reason_code: "autonomous_24x7_take_profit",
+          exit_rule_id: "take_profit",
+        },
+      },
+      costSnapshot: {
+        source: "exit_cost_model",
+        exit_cost_allowed: true,
+        exit_cost_reason_code: "exit_cost_margin_ok",
+        exit_cost_bps: "0",
+        exit_slippage_bps: "0",
+        position_scope: {
+          market: "KRW-BTC",
+          strategy_id: "fixture_order_strategy",
+          total_quantity: "0.0001",
+        },
+      },
+      riskApproval: {
+        source: "risk_gate",
+        approved: true,
+        action: "ALLOW",
+      },
+    });
+  });
+
+  it("SELL 후보의 긴 strategy decision key를 Upbit-safe attempt id로 낮춘다", async () => {
+    const entryRuntime = createEntryRuntimeRecorder();
+    const exitRuntime = createExitRuntimeRecorder();
+    const intent = createSellOrderIntent({
+      idempotencyKey: "autonomous_24x7:2026-06-20:upbit_krw_spot:KRW-BTC:SELL:take_profit:99000000:0.0001:9900",
+    });
+
+    const summary = await runLiveOpsLiveExecution(createInput({
+      analysisDecision: analysisSummary({ orderIntentCount: 1, decisionCategory: "ORDER_INTENT" }),
+      orderIntents: [intent],
+      entryRuntime,
+      exitRuntime,
+    }));
+
+    const submission = exitRuntime.submitExitOrder.mock.calls[0]?.[0];
+    expect(summary.attemptId).toMatch(/^ops-[a-f0-9]{26}$/u);
+    expect(summary.attemptId).not.toBe(intent.idempotencyKey);
+    expect(submission?.intent.idempotencyKey).toBe(summary.attemptId);
+    expect(submission?.intent.metadata).toMatchObject({
+      decision_idempotency_key: intent.idempotencyKey,
+      runtime_idempotency_source: "live_ops_live_execution_exit",
+    });
+    expect(submission?.costSnapshot).toMatchObject({
+      order_intent: {
+        idempotency_key: summary.attemptId,
+      },
+    });
+    expect(submission?.riskApproval).toMatchObject({
+      order_intent: {
+        idempotency_key: summary.attemptId,
+      },
+    });
+  });
+
+  it("SELL 후보가 있지만 exit runtime이 없으면 broker 실행 경계 전에 차단한다", async () => {
+    const entryRuntime = createEntryRuntimeRecorder();
+
+    const summary = await runLiveOpsLiveExecution(createInput({
+      analysisDecision: analysisSummary({ orderIntentCount: 1, decisionCategory: "ORDER_INTENT" }),
+      orderIntents: [createSellOrderIntent()],
+      entryRuntime,
+    }));
+
+    expect(summary).toMatchObject({
+      status: "blocked",
+      ready: false,
+      liveOrderCapable: false,
+      attemptedOrderCount: 0,
+    });
+    expect(summary.checks.map((check) => check.code)).toContain("live_ops_exit_runtime_missing");
+    expect(entryRuntime.submitEntryCandidate).not.toHaveBeenCalled();
+  });
+
+  it("SELL 수량이 보유 scope를 초과하면 exit runtime 호출 전에 차단한다", async () => {
+    const entryRuntime = createEntryRuntimeRecorder();
+    const exitRuntime = createExitRuntimeRecorder();
+
+    const summary = await runLiveOpsLiveExecution(createInput({
+      analysisDecision: analysisSummary({ orderIntentCount: 1, decisionCategory: "ORDER_INTENT" }),
+      orderIntents: [
+        createSellOrderIntent({
+          requestedQuantity: "0.0003",
+          requestedNotional: "30300",
+        }),
+      ],
+      entryRuntime,
+      exitRuntime,
+    }));
+
+    expect(summary).toMatchObject({
+      status: "blocked",
+      ready: false,
+      liveOrderCapable: false,
+    });
+    expect(summary.checks.map((check) => check.code)).toContain("live_ops_order_intent_blocked");
+    expect(JSON.stringify(summary.checks)).toContain("보유 수량");
+    expect(exitRuntime.submitExitOrder).not.toHaveBeenCalled();
+    expect(entryRuntime.submitEntryCandidate).not.toHaveBeenCalled();
   });
 
   it("명시 id가 없어도 decision key를 stable ops attempt id로 낮춘다", async () => {
@@ -395,6 +538,37 @@ function createCleanupProbeOrderIntent(): Extract<OrderIntent, { orderType: "LIM
   };
 }
 
+function createSellOrderIntent(
+  overrides: Partial<Extract<OrderIntent, { orderType: "LIMIT" }>> = {},
+): Extract<OrderIntent, { orderType: "LIMIT" }> {
+  return {
+    exchangeId: "upbit_krw_spot",
+    market: "KRW-BTC",
+    strategyId: "fixture_order_strategy",
+    side: "SELL",
+    orderType: "LIMIT",
+    requestedQuantity: "0.0001",
+    requestedNotional: "9900",
+    requestedPrice: "99000000",
+    idempotencyKey: "decision-fixture-exit-intent",
+    reason: "autonomous_24x7_take_profit",
+    postOnly: true,
+    timeInForce: "POST_ONLY",
+    metadata: {
+      expected_loss_bps_of_equity: "5",
+      position_effect: "EXIT",
+      exit_reason_code: "autonomous_24x7_take_profit",
+      exit_rule_id: "take_profit",
+      position_scope: {
+        market: "KRW-BTC",
+        strategy_id: "fixture_order_strategy",
+        total_quantity: "0.0001",
+      },
+    },
+    ...overrides,
+  };
+}
+
 function createEntryRuntimeRecorder() {
   return {
     submitEntryCandidate: vi.fn(async (request: LiveAutonomousEntryRuntimeRequest): Promise<LiveAutonomousEntryAttemptResult> => {
@@ -420,6 +594,20 @@ function createEntryRuntimeRecorder() {
         },
       };
     }),
+  };
+}
+
+function createExitRuntimeRecorder() {
+  return {
+    submitExitOrder: vi.fn(async (submission: OrderSubmission): Promise<ExecutionSubmitOrderResult> => ({
+      status: "SUBMITTED",
+      submission,
+      brokerOrder: {
+        ...createBrokerOrder(submission),
+        brokerOrderId: "fake-live-exit-order-001",
+        status: "ACCEPTED",
+      },
+    })),
   };
 }
 

@@ -1,5 +1,13 @@
 import { createHash } from "node:crypto";
+import { Decimal } from "decimal.js";
+import {
+  createExecutionExitCostEvidence,
+  createExecutionRiskApprovalEvidence,
+  evaluateRiskGate,
+} from "../../application/index.js";
 import type {
+  ExecutionExitCostEvidence,
+  ExecutionSubmitOrderResult,
   LiveAutonomousEntryAttemptResult,
   LiveAutonomousEntryCostInput,
   LiveAutonomousEntryLossSnapshot,
@@ -11,6 +19,9 @@ import type {
   JsonRecord,
   LiveAutonomousBudgetSnapshot,
   OrderIntent,
+  OrderSubmission,
+  RiskGateContext,
+  RiskGateResult,
 } from "../../domain/index.js";
 import {
   loadLiveOpsConfig,
@@ -73,16 +84,31 @@ export interface LiveOpsLiveExecutionEntryRuntime {
 }
 
 /**
+ * live execution adapter가 호출할 하위 exit runtime port다.
+ *
+ * 책임:
+ * - production live ops adapter가 SELL exit 후보를 ExecutionEngine 또는 후속 live-safe exit service에 전달하는 경계를 표현한다.
+ * - adapter가 exit cost/risk evidence를 만든 뒤 단일 `OrderSubmission`만 넘기게 해 entry runtime과 SELL 경계를 분리한다.
+ *
+ * side effect:
+ * - 구현체는 broker submit/cancel side effect를 만들 수 있으므로 adapter는 SELL 수량, position scope, RiskGate를 통과한 뒤에만 호출해야 한다.
+ */
+export interface LiveOpsLiveExecutionExitRuntime {
+  submitExitOrder(submission: OrderSubmission): Promise<ExecutionSubmitOrderResult>;
+}
+
+/**
  * production live ops live execution adapter 입력 계약이다.
  *
  * 책임:
- * - analysis/decision에서 만든 주문 후보를 기존 live autonomous entry runtime 요청으로 낮춘다.
+ * - analysis/decision에서 만든 BUY 후보는 기존 live autonomous entry runtime 요청으로 낮춘다.
+ * - SELL 후보는 exit evidence가 포함된 `OrderSubmission`으로 낮춰 exit runtime port로 전달한다.
  * - budget, loss, cost, risk, kill switch, reconcile freshness snapshot을 같은 broker 제출 경계로 묶는다.
  *
  * 호출 경계:
  * - caller는 DB/status provider에서 최신 snapshot을 읽은 뒤 이 함수에 값으로 전달한다.
- * - 이 adapter는 `entryRuntime.submitEntryCandidate`를 호출할 수 있으며, 그 호출이 예산 reservation과 broker 제출 side effect의
- *   유일한 경계다.
+ * - 이 adapter는 BUY에서 `entryRuntime.submitEntryCandidate`, SELL에서 `exitRuntime.submitExitOrder`를 호출할 수 있다.
+ *   두 호출 모두 모든 guard를 통과한 뒤에만 열린다.
  *
  * invariant:
  * - analysis가 ready가 아니거나 주문 후보 수가 0개/복수이면 broker 호출로 전진하지 않는다.
@@ -100,6 +126,7 @@ export interface LiveOpsLiveExecutionInput {
   readonly killSwitchActive: boolean;
   readonly reconcileFresh: boolean;
   readonly entryRuntime: LiveOpsLiveExecutionEntryRuntime;
+  readonly exitRuntime?: LiveOpsLiveExecutionExitRuntime;
   readonly referencePrice?: string;
   readonly idempotencyKey?: string;
   readonly trace?: JsonRecord;
@@ -143,7 +170,8 @@ export interface LiveOpsLiveExecutionSummary {
  * @returns TUI와 JSON status가 사용할 수 있는 live execution safe summary
  *
  * side effect:
- * - 주문 후보가 정확히 1개이고 모든 adapter guard를 통과할 때만 `entryRuntime.submitEntryCandidate`를 호출한다.
+ * - 주문 후보가 정확히 1개이고 모든 adapter guard를 통과할 때만 BUY는 `entryRuntime.submitEntryCandidate`, SELL은
+ *   `exitRuntime.submitExitOrder`를 호출한다.
  * - 그 외 상태는 외부 DB write, Upbit broker 호출, Telegram 전송을 만들지 않는다.
  */
 export async function runLiveOpsLiveExecution(
@@ -211,8 +239,13 @@ export async function runLiveOpsLiveExecution(
     });
   }
 
-  const intent = normalizeLiveOpsCleanupProbeRuntimeIntent(input.orderIntents[0] as OrderIntent, input.observedAt);
-  const intentViolations = collectOrderIntentViolations(config, input, intent);
+  const receivedIntent = input.orderIntents[0] as OrderIntent;
+  if (receivedIntent.side === "SELL") {
+    return runLiveOpsExitExecution(config, input, checks, receivedIntent);
+  }
+
+  const intent = normalizeLiveOpsCleanupProbeRuntimeIntent(receivedIntent, input.observedAt);
+  const intentViolations = collectEntryOrderIntentViolations(config, input, intent);
   if (intentViolations.length > 0) {
     // order intent 자체가 production live ops guard를 벗어나면 M22 runtime에 넘기기 전에 닫아 호출 경계를 단순하게 유지한다.
     checks.push(blockedCheck(
@@ -274,6 +307,110 @@ export async function runLiveOpsLiveExecution(
   return buildSummaryFromAttempt(config, input, checks, attempt);
 }
 
+async function runLiveOpsExitExecution(
+  config: LiveOpsConfig,
+  input: LiveOpsLiveExecutionInput,
+  checks: LiveOpsLiveExecutionCheck[],
+  intent: OrderIntent,
+): Promise<LiveOpsLiveExecutionSummary> {
+  const intentViolations = collectExitOrderIntentViolations(config, input, intent);
+  if (intentViolations.length > 0) {
+    // SELL 후보도 보유 수량과 exit evidence가 맞지 않으면 exit runtime 호출 전에 닫아 broker side effect를 만들지 않는다.
+    checks.push(blockedCheck(
+      "order_intent",
+      "매도 후보가 production live exit guard를 통과하지 못했습니다.",
+      "live_ops_order_intent_blocked",
+      { violations: intentViolations },
+    ));
+    return buildSummary(config, input, checks, {
+      status: "blocked",
+      ready: false,
+      liveOrderCapable: false,
+      message: "매도 후보가 실운영 실행 조건을 통과하지 못해 제출하지 않았습니다.",
+      action: "보유 수량, exit reason, position scope, post-only 조건을 확인합니다.",
+    });
+  }
+
+  checks.push(okCheck("order_intent", "단일 SELL LIMIT + post-only exit 후보를 확인했습니다.", "live_ops_exit_order_intent_ready", {
+    market: intent.market,
+    strategyId: intent.strategyId,
+  }));
+
+  if (input.exitRuntime === undefined) {
+    // SELL 실행 port가 없으면 entry runtime으로 우회하지 않고 닫아 매수/매도 책임을 섞지 않는다.
+    checks.push(blockedCheck(
+      "execution_request",
+      "exit runtime이 조립되지 않아 매도 후보를 제출하지 않습니다.",
+      "live_ops_exit_runtime_missing",
+    ));
+    return buildSummary(config, input, checks, {
+      status: "blocked",
+      ready: false,
+      liveOrderCapable: false,
+      message: "매도 실행 경계가 연결되지 않아 실주문 제출을 중단했습니다.",
+      action: "exit runtime port와 live broker 조립 상태를 먼저 확인합니다.",
+    });
+  }
+
+  const exitRequest = createExitOrderSubmission(input, intent);
+  if (!exitRequest.riskGateResult.approved) {
+    // RiskGate가 SELL도 허용하지 않으면 exit runtime을 호출하지 않고 operator-visible block으로 남긴다.
+    checks.push(blockedCheck(
+      "execution_request",
+      "매도 후보가 RiskGate를 통과하지 못했습니다.",
+      "live_ops_exit_risk_blocked",
+      {
+        action: exitRequest.riskGateResult.action,
+        failed_reason_codes: exitRequest.riskGateResult.failedEvaluations.map((evaluation) => evaluation.reasonCode),
+      },
+    ));
+    return buildSummary(config, input, checks, {
+      status: "blocked",
+      ready: false,
+      liveOrderCapable: false,
+      message: "매도 후보가 RiskGate를 통과하지 못해 제출하지 않았습니다.",
+      action: "실패한 RiskGate 평가와 보유 포지션 snapshot을 확인합니다.",
+    });
+  }
+
+  checks.push(okCheck("execution_request", "live autonomous exit submission을 만들었습니다.", "live_ops_exit_request_ready", {
+    market: exitRequest.submission.intent.market,
+    strategyId: exitRequest.submission.intent.strategyId,
+    positionEffect: readStringMetadata(exitRequest.submission.intent.metadata, "position_effect"),
+  }));
+
+  let result: ExecutionSubmitOrderResult;
+  try {
+    result = await input.exitRuntime.submitExitOrder(exitRequest.submission);
+  } catch (error) {
+    // exit runtime 예외는 SELL side effect 여부가 불확실하므로 수동 reconcile 대상으로 격상한다.
+    checks.push(blockedCheck(
+      "execution_result",
+      "exit runtime 결과를 확정할 수 없어 수동 점검이 필요합니다.",
+      "live_ops_exit_runtime_uncertain",
+      { reason: safeErrorName(error) },
+    ));
+    return buildSummary(config, input, checks, {
+      status: "manual_review_required",
+      ready: false,
+      liveOrderCapable: false,
+      latestExecutionAt: input.observedAt,
+      message: "매도 실행 결과를 확정할 수 없어 수동 점검 상태로 전환했습니다.",
+      action: "거래소 주문과 포지션/reconcile 상태를 먼저 확인한 뒤 재시도 여부를 결정합니다.",
+      trace: {
+        reason: "live_ops_exit_runtime_uncertain",
+        errorName: safeErrorName(error),
+      },
+    });
+  }
+
+  checks.push(okCheck("execution_result", "exit runtime 결과를 확인했습니다.", "live_ops_exit_result_recorded", {
+    attemptStatus: result.status,
+  }));
+
+  return buildSummaryFromExitResult(config, input, checks, result);
+}
+
 function validateOrderIntentCount(input: LiveOpsLiveExecutionInput): {
   code: string;
   message: string;
@@ -303,7 +440,7 @@ function validateOrderIntentCount(input: LiveOpsLiveExecutionInput): {
   return undefined;
 }
 
-function collectOrderIntentViolations(
+function collectEntryOrderIntentViolations(
   config: LiveOpsConfig,
   input: LiveOpsLiveExecutionInput,
   intent: OrderIntent,
@@ -336,6 +473,66 @@ function collectOrderIntentViolations(
 
   if (readExpectedLossBps(intent) === undefined) {
     violations.push("주문 후보에는 RiskGate expected loss 입력이 필요합니다");
+  }
+
+  return violations;
+}
+
+function collectExitOrderIntentViolations(
+  config: LiveOpsConfig,
+  input: LiveOpsLiveExecutionInput,
+  intent: OrderIntent,
+): string[] {
+  const violations: string[] = [];
+
+  if (intent.exchangeId !== "upbit_krw_spot") {
+    violations.push("exchange는 upbit_krw_spot이어야 합니다");
+  }
+
+  if (!config.universe.markets.includes(intent.market) || intent.market !== config.universe.default_market) {
+    violations.push("매도 후보 market은 production live ops 기본 market이어야 합니다");
+  }
+
+  if (intent.side !== "SELL") {
+    violations.push("production live ops exit은 SELL 후보만 허용합니다");
+  }
+
+  if (intent.orderType !== "LIMIT") {
+    violations.push("production live ops exit은 LIMIT 주문만 허용합니다");
+  } else if (intent.postOnly !== true || intent.timeInForce !== "POST_ONLY") {
+    violations.push("production live ops exit은 post-only LIMIT 주문만 허용합니다");
+  }
+
+  if (input.risk.strategy.strategyId !== intent.strategyId) {
+    violations.push("RiskGate strategy snapshot과 매도 후보 strategy가 일치해야 합니다");
+  }
+
+  if (readExpectedLossBps(intent) === undefined) {
+    violations.push("매도 후보에는 RiskGate expected loss 입력이 필요합니다");
+  }
+
+  const positionEffect = readStringMetadata(intent.metadata, "position_effect") ?? readStringMetadata(intent.metadata, "positionEffect");
+  if (positionEffect !== "REDUCE" && positionEffect !== "EXIT") {
+    violations.push("매도 후보에는 REDUCE 또는 EXIT position effect가 필요합니다");
+  }
+
+  if (readStringMetadata(intent.metadata, "exit_reason_code") === undefined) {
+    violations.push("매도 후보에는 exit reason code가 필요합니다");
+  }
+
+  if (readStringMetadata(intent.metadata, "exit_rule_id") === undefined) {
+    violations.push("매도 후보에는 exit rule id가 필요합니다");
+  }
+
+  const positionScope = readExitPositionScope(intent);
+  if (positionScope === undefined) {
+    violations.push("매도 후보에는 보유 수량 position scope가 필요합니다");
+    return violations;
+  }
+
+  const quantityViolation = validateExitQuantityAgainstScope(intent, positionScope, positionEffect);
+  if (quantityViolation !== undefined) {
+    violations.push(quantityViolation);
   }
 
   return violations;
@@ -397,6 +594,11 @@ function normalizeLiveOpsCleanupProbeRuntimeIntent(intent: OrderIntent, observed
  */
 function readLiveOpsOriginalAnalysisIdempotencyKey(intent: OrderIntent): string {
   const existing = intent.metadata?.analysis_idempotency_key;
+  return typeof existing === "string" && existing.length > 0 ? existing : intent.idempotencyKey;
+}
+
+function readOriginalDecisionIdempotencyKey(intent: OrderIntent): string {
+  const existing = intent.metadata?.decision_idempotency_key;
   return typeof existing === "string" && existing.length > 0 ? existing : intent.idempotencyKey;
 }
 
@@ -521,6 +723,158 @@ function requireExpectedLossBps(intent: OrderIntent): string {
   }
 
   return value;
+}
+
+function createExitOrderSubmission(
+  input: LiveOpsLiveExecutionInput,
+  intent: OrderIntent,
+): {
+  readonly submission: OrderSubmission;
+  readonly riskGateResult: RiskGateResult;
+} {
+  const expectedLossBpsOfEquity = requireExpectedLossBps(intent);
+  const positionScope = requireExitPositionScope(intent);
+  const runtimeIntent = normalizeLiveOpsExitRuntimeIntent(input, intent);
+  const riskContext = createExitRiskContext(input, runtimeIntent, expectedLossBpsOfEquity);
+  const riskGateResult = evaluateRiskGate(riskContext);
+  const submission: OrderSubmission = {
+    intent: runtimeIntent,
+    costSnapshot: createExecutionExitCostEvidence({
+      intent: runtimeIntent,
+      positionScope,
+      exitCostBps: readStringMetadata(runtimeIntent.metadata, "exit_cost_bps") ?? "0",
+      exitSlippageBps: readStringMetadata(runtimeIntent.metadata, "exit_slippage_bps") ?? "0",
+      expectedLossBpsOfEquity,
+    }),
+    riskApproval: createExecutionRiskApprovalEvidence(riskGateResult, riskContext),
+    expectedLossBpsOfEquity,
+    submittedAt: input.observedAt,
+  };
+
+  return {
+    submission,
+    riskGateResult,
+  };
+}
+
+/**
+ * SELL exit 후보의 strategy decision key를 live broker identifier로 사용할 수 있는 runtime key로 낮춘다.
+ *
+ * 책임:
+ * - autonomous strategy가 만든 긴 decision fingerprint를 Upbit identifier 제한에 맞는 `ops-` attempt id로 변환한다.
+ * - 원본 decision key는 metadata에 보존해 strategy 판단 재현과 duplicate order 추적을 유지한다.
+ *
+ * side effect:
+ * - 없음. OrderIntent 값을 복사해 broker 제출 전 순수 정규화만 수행한다.
+ */
+function normalizeLiveOpsExitRuntimeIntent(input: LiveOpsLiveExecutionInput, intent: OrderIntent): OrderIntent {
+  const runtimeIdempotencyKey = createStableLiveOpsAttemptId(input, intent);
+  const originalDecisionKey = readOriginalDecisionIdempotencyKey(intent);
+
+  return {
+    ...intent,
+    idempotencyKey: runtimeIdempotencyKey,
+    metadata: {
+      ...(intent.metadata ?? {}),
+      // SELL도 BUY와 동일하게 broker identifier와 strategy decision key를 분리해 Upbit identifier 길이 제한을 넘지 않게 한다.
+      decision_idempotency_key: originalDecisionKey,
+      runtime_idempotency_source: "live_ops_live_execution_exit",
+    },
+  };
+}
+
+/**
+ * SELL exit 후보의 RiskGate context를 만든다.
+ *
+ * 책임:
+ * - entry runtime을 거치지 않는 SELL도 같은 RiskGate evidence factory를 사용하게 한다.
+ * - caller가 전달한 최신 account/position/strategy/infrastructure snapshot과 현재 intent fingerprint를 묶는다.
+ *
+ * side effect:
+ * - 없음. 순수 context 생성이며 DB/provider 조회를 수행하지 않는다.
+ */
+function createExitRiskContext(
+  input: LiveOpsLiveExecutionInput,
+  intent: OrderIntent,
+  expectedLossBpsOfEquity: string,
+): RiskGateContext {
+  return {
+    orderIntent: intent,
+    account: input.risk.account,
+    positions: input.risk.positions,
+    strategy: input.risk.strategy,
+    infrastructureSignals: input.risk.infrastructureSignals,
+    thresholdSnapshot: input.risk.thresholdSnapshot,
+    observedAt: input.observedAt,
+    expectedLossBpsOfEquity,
+    metadata: {
+      ...(input.risk.metadata ?? {}),
+      source: "live_ops_live_execution_exit",
+    },
+  };
+}
+
+/**
+ * exit runtime 결과를 live ops safe summary로 낮춘다.
+ *
+ * invariant:
+ * - `REJECTED`는 broker side effect 없음으로 보고 rejected summary로 닫는다.
+ * - `DUPLICATE_SUPPRESSED`는 새 broker 제출은 아니지만 같은 주문 lifecycle을 공유하므로 submitted 계열 summary로 보존한다.
+ */
+function buildSummaryFromExitResult(
+  config: LiveOpsConfig,
+  input: LiveOpsLiveExecutionInput,
+  checks: readonly LiveOpsLiveExecutionCheck[],
+  result: ExecutionSubmitOrderResult,
+): LiveOpsLiveExecutionSummary {
+  const base = {
+    latestExecutionAt: input.observedAt,
+    attemptStatus: result.status,
+    attemptId: result.submission.intent.idempotencyKey,
+    idempotencyKey: result.submission.intent.idempotencyKey,
+    brokerOrderId: result.status === "REJECTED" ? null : result.brokerOrder.brokerOrderId,
+    trace: {
+      reason: result.status === "REJECTED" ? result.rejection.reasonCode : "exit_order_submitted",
+      attemptStatus: result.status,
+      side: result.submission.intent.side,
+    },
+  };
+
+  if (result.status === "SUBMITTED") {
+    return buildSummary(config, input, checks, {
+      ...base,
+      status: "submitted",
+      ready: true,
+      liveOrderCapable: true,
+      attemptedOrderCount: 1,
+      submittedOrderCount: 1,
+      message: "매도 실행 경계가 SELL 후보를 broker 제출까지 전진시켰습니다.",
+      action: "체결, 취소, reconcile/PnL/status worker에서 포지션 종료 상태를 확인합니다.",
+    });
+  }
+
+  if (result.status === "DUPLICATE_SUPPRESSED") {
+    return buildSummary(config, input, checks, {
+      ...base,
+      status: "submitted",
+      ready: true,
+      liveOrderCapable: true,
+      attemptedOrderCount: 1,
+      submittedOrderCount: 0,
+      message: "동일 매도 후보가 이미 실행 중이라 중복 broker 제출을 억제했습니다.",
+      action: "기존 주문의 체결, 취소, reconcile 상태를 확인합니다.",
+    });
+  }
+
+  return buildSummary(config, input, checks, {
+    ...base,
+    status: "rejected",
+    ready: false,
+    liveOrderCapable: false,
+    attemptedOrderCount: 1,
+    message: result.rejection.message,
+    action: "ExecutionEngine 거부 사유를 확인하고 같은 후보를 재제출하지 않습니다.",
+  });
 }
 
 function buildSummaryFromAttempt(
@@ -657,6 +1011,78 @@ function readBrokerOrderId(attempt: LiveAutonomousEntryAttemptResult): string | 
   }
 
   return executionResult.brokerOrder.brokerOrderId;
+}
+
+function readExitPositionScope(intent: OrderIntent): ExecutionExitCostEvidence["position_scope"] | undefined {
+  const scope = intent.metadata?.position_scope;
+  if (!isNonEmptyRecord(scope)) {
+    return undefined;
+  }
+
+  if (
+    typeof scope.market !== "string" ||
+    typeof scope.strategy_id !== "string" ||
+    typeof scope.total_quantity !== "string"
+  ) {
+    return undefined;
+  }
+
+  return {
+    market: scope.market,
+    strategy_id: scope.strategy_id,
+    total_quantity: scope.total_quantity,
+  };
+}
+
+function requireExitPositionScope(intent: OrderIntent): ExecutionExitCostEvidence["position_scope"] {
+  const scope = readExitPositionScope(intent);
+  if (scope === undefined) {
+    throw new Error("LiveOpsLiveExecutionExitPositionScopeMissing");
+  }
+
+  return scope;
+}
+
+function validateExitQuantityAgainstScope(
+  intent: OrderIntent,
+  positionScope: ExecutionExitCostEvidence["position_scope"],
+  positionEffect: string | undefined,
+): string | undefined {
+  try {
+    const requestedQuantity = new Decimal(intent.requestedQuantity);
+    const openQuantity = new Decimal(positionScope.total_quantity);
+
+    if (!openQuantity.gt(0)) {
+      return "매도 후보의 보유 수량 scope는 0보다 커야 합니다";
+    }
+
+    if (requestedQuantity.gt(openQuantity)) {
+      return "매도 후보 수량은 보유 수량을 초과할 수 없습니다";
+    }
+
+    if (positionEffect === "EXIT" && !requestedQuantity.eq(openQuantity)) {
+      return "EXIT 매도 후보 수량은 보유 수량 전체와 일치해야 합니다";
+    }
+  } catch {
+    return "매도 후보 수량과 보유 수량은 Decimal 문자열이어야 합니다";
+  }
+
+  return undefined;
+}
+
+function readStringMetadata(metadata: JsonRecord | undefined, key: string): string | undefined {
+  const value = metadata?.[key];
+
+  return typeof value === "string" && value.length > 0 ? value : undefined;
+}
+
+function isNonEmptyRecord(value: unknown): value is JsonRecord {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    !Array.isArray(value) &&
+    Object.keys(value).length > 0
+  );
 }
 
 function okCheck(

@@ -4,6 +4,7 @@ export {
 export type {
   LiveOpsLiveExecutionCheck,
   LiveOpsLiveExecutionEntryRuntime,
+  LiveOpsLiveExecutionExitRuntime,
   LiveOpsLiveExecutionInput,
   LiveOpsLiveExecutionStatus,
   LiveOpsLiveExecutionSummary,

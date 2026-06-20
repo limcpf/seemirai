@@ -170,6 +170,16 @@ describe("production live ops decision policy resolver", () => {
       postOnly: true,
       timeInForce: "POST_ONLY",
       reason: "autonomous_24x7_take_profit",
+      metadata: {
+        position_effect: "EXIT",
+        exit_reason_code: "autonomous_24x7_take_profit",
+        exit_rule_id: "take_profit",
+        position_scope: {
+          market: "KRW-BTC",
+          strategy_id: LIVE_OPS_AUTONOMOUS_24X7_STRATEGY_ID,
+          total_quantity: "0.0002",
+        },
+      },
     });
   });
 
