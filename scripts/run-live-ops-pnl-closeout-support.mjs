@@ -264,6 +264,14 @@ async function loadLiveOpsPnlCloseoutSource({
       { baseCurrency, baseTotal: baseTotal.toFixed() },
     );
   }
+  if (position !== undefined && positionQuantity.eq(0) && baseTotal.gt(0)) {
+    // 0수량 position row는 보유분 원가 source가 아니므로 실계좌 BTC 잔고를 정상 PnL로 닫지 않는다.
+    return blockedSource(
+      "pnl_closeout_position_quantity_zero_for_balance",
+      "실계좌 base 잔고는 있지만 strategy position 수량이 0이라 PnL closeout을 만들지 않습니다.",
+      { baseCurrency, baseTotal: baseTotal.toFixed() },
+    );
+  }
 
   const resolvedReferencePrice = await resolveLiveOpsPnlCloseoutReferencePrice({
     pool,
@@ -325,8 +333,7 @@ async function readLatestReconcile(pool) {
           FROM live_reconcile_exchange_order_snapshots
           WHERE run_id = latest_run.id
             AND upper(status) IN ('OPEN', 'ACCEPTED', 'WAIT', 'WATCH')
-            AND remaining_quantity IS NOT NULL
-            AND remaining_quantity > 0
+            AND (remaining_quantity IS NULL OR remaining_quantity > 0)
         ) AS open_order_count,
         (SELECT count(*)::int FROM live_reconcile_mismatch_evidence WHERE run_id = latest_run.id) AS mismatch_count
       FROM latest_run
@@ -568,12 +575,16 @@ async function resolveLiveOpsPnlCloseoutReferencePrice({
 
 async function readLatestPnlSnapshotStatus(pool, { market, strategyId, capturedAt }) {
   const result = await pool.query(`
-    SELECT captured_at, payload_json ->> 'status' AS payload_status
+    SELECT strategy_id, market, captured_at, payload_json ->> 'status' AS payload_status
     FROM pnl_snapshots
-    WHERE strategy_id = $1
-      AND (market = $2 OR market IS NULL)
+    WHERE (market = $2 OR market IS NULL)
+      AND (
+        strategy_id = $1
+        OR strategy_id IS NULL
+        OR strategy_id IN ('global', 'aggregate')
+      )
       AND captured_at <= $3
-    ORDER BY captured_at DESC, (market = $2) DESC
+    ORDER BY captured_at DESC, (strategy_id = $1) DESC, (market = $2) DESC
     LIMIT 1
   `, [strategyId, market, capturedAt]);
   const row = result.rows[0];
@@ -581,6 +592,8 @@ async function readLatestPnlSnapshotStatus(pool, { market, strategyId, capturedA
     return undefined;
   }
   return {
+    strategyId: hasMeaningfulValue(row.strategy_id) ? String(row.strategy_id) : null,
+    market: hasMeaningfulValue(row.market) ? String(row.market) : null,
     capturedAt: hasMeaningfulValue(row.captured_at) ? toIsoString(row.captured_at) : null,
     status: hasMeaningfulValue(row.payload_status) ? String(row.payload_status) : null,
   };
@@ -594,6 +607,8 @@ function validateLatestPnlSnapshotStatus(latestPnlStatus) {
     "pnl_closeout_latest_status_not_ready",
     "최신 PnL snapshot이 계산 완료 상태가 아니어서 새 closeout snapshot으로 차단 사유를 덮지 않습니다.",
     {
+      latestPnlStrategyId: latestPnlStatus.strategyId,
+      latestPnlMarket: latestPnlStatus.market,
       latestPnlCapturedAt: latestPnlStatus.capturedAt,
       latestPnlStatus: latestPnlStatus.status,
     },

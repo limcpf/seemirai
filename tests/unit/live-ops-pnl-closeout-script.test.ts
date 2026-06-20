@@ -1,3 +1,4 @@
+import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 
@@ -254,6 +255,54 @@ describe("Issue 206 live:ops PnL closeout runner", () => {
     expect(pool.connectCalled()).toBe(false);
   });
 
+  it("BTC 잔고가 있는데 position row 수량이 0이면 CALCULATED snapshot을 만들지 않는다", async () => {
+    const { runLiveOpsPnlCloseout } = await import(supportModulePath);
+    const insertedRows: unknown[] = [];
+    const pool = createFakePnlCloseoutPool({
+      latestRun: {
+        id: "preflight-run-5b",
+        status: "COMPLETED",
+        finished_at: "2026-06-20T05:00:00.000Z",
+        balance_snapshot_count: 1,
+        open_order_count: 0,
+        mismatch_count: 0,
+      },
+      balances: [
+        { currency: "KRW", available: "50000", locked: "0", total: "50000", captured_at: "2026-06-20T05:00:00.000Z" },
+        { currency: "BTC", available: "0.0001", locked: "0", total: "0.0001", captured_at: "2026-06-20T05:00:00.000Z" },
+      ],
+      positions: [{
+        strategy_id: "live_ops_cleanup_probe",
+        market: "KRW-BTC",
+        quantity: "0",
+        average_entry_price: "0",
+        realized_pnl: "0",
+        unrealized_pnl: "0",
+        updated_at: "2026-06-20T05:00:00.000Z",
+      }],
+      fillsCount: 0,
+      referencePrice: "100000000",
+      insertedRows,
+    });
+
+    const result = await runLiveOpsPnlCloseout({
+      pool,
+      market: "KRW-BTC",
+      strategyId: "live_ops_cleanup_probe",
+      capturedAt: "2026-06-20T05:00:00.000Z",
+      referencePrice: "100000000",
+      maxReconcileAgeMs: 30_000,
+    });
+
+    expect(result).toMatchObject({
+      status: "blocked",
+      reasonCode: "pnl_closeout_position_quantity_zero_for_balance",
+      inserted: false,
+    });
+    expect(insertedRows).toHaveLength(0);
+    expect(pool.connectCalled()).toBe(false);
+  });
+
   it("orderbook 기준가가 reconcile freshness 한도보다 오래되면 closeout을 만들지 않는다", async () => {
     const { runLiveOpsPnlCloseout } = await import(supportModulePath);
     const insertedRows: unknown[] = [];
@@ -363,6 +412,7 @@ describe("Issue 206 live:ops PnL closeout runner", () => {
       fillsCount: 0,
       referencePrice: "100000000",
       pnlSnapshots: [{
+        strategy_id: "live_ops_cleanup_probe",
         captured_at: "2026-06-20T05:00:00.000Z",
         equity: "50000",
         payload_status: "MANUAL_REVIEW_REQUIRED",
@@ -386,6 +436,58 @@ describe("Issue 206 live:ops PnL closeout runner", () => {
     });
     expect(insertedRows).toHaveLength(0);
     expect(pool.connectCalled()).toBe(false);
+  });
+
+  it("aggregate 최신 PnL row가 manual review면 cleanup closeout으로 가리지 않는다", async () => {
+    const { runLiveOpsPnlCloseout } = await import(supportModulePath);
+    const insertedRows: unknown[] = [];
+    const pool = createFakePnlCloseoutPool({
+      latestRun: {
+        id: "preflight-run-9",
+        status: "COMPLETED",
+        finished_at: "2026-06-20T05:00:00.000Z",
+        balance_snapshot_count: 1,
+        open_order_count: 0,
+        mismatch_count: 0,
+      },
+      balances: [
+        { currency: "KRW", available: "50000", locked: "0", total: "50000", captured_at: "2026-06-20T05:00:00.000Z" },
+        { currency: "BTC", available: "0", locked: "0", total: "0", captured_at: "2026-06-20T05:00:00.000Z" },
+      ],
+      positions: [],
+      fillsCount: 0,
+      referencePrice: "100000000",
+      pnlSnapshots: [{
+        strategy_id: "aggregate",
+        captured_at: "2026-06-20T05:00:00.000Z",
+        equity: "50000",
+        payload_status: "MANUAL_REVIEW_REQUIRED",
+      }],
+      insertedRows,
+    });
+
+    const result = await runLiveOpsPnlCloseout({
+      pool,
+      market: "KRW-BTC",
+      strategyId: "live_ops_cleanup_probe",
+      capturedAt: "2026-06-20T05:00:00.000Z",
+      referencePrice: "100000000",
+      maxReconcileAgeMs: 30_000,
+    });
+
+    expect(result).toMatchObject({
+      status: "blocked",
+      reasonCode: "pnl_closeout_latest_status_not_ready",
+      inserted: false,
+    });
+    expect(insertedRows).toHaveLength(0);
+    expect(pool.connectCalled()).toBe(false);
+  });
+
+  it("open order count query는 잔량 미확인 open order도 차단 대상으로 센다", async () => {
+    const source = await readFile(supportModulePath, "utf8");
+
+    expect(source).toContain("remaining_quantity IS NULL OR remaining_quantity > 0");
   });
 });
 
@@ -427,7 +529,7 @@ function createFakePnlCloseoutPool(options: {
       };
     }
     if (text.includes("payload_json ->> 'status' AS payload_status")) {
-      return { rows: options.pnlSnapshots ?? [] };
+      return { rows: selectFakePnlStatusRows(options.pnlSnapshots ?? [], text, params) };
     }
     if (text.includes("FROM pnl_snapshots")) {
       return {
@@ -482,4 +584,22 @@ function createFakePnlCloseoutPool(options: {
       return connectCalled;
     },
   };
+}
+
+function selectFakePnlStatusRows(
+  rows: Array<Record<string, unknown>>,
+  sql: string,
+  params: unknown[],
+): Array<Record<string, unknown>> {
+  const strategyId = String(params[0]);
+  const includesFallbackScopes = sql.includes("strategy_id IS NULL") || sql.includes("'global'") || sql.includes("'aggregate'");
+  return rows
+    .filter((row) => {
+      const rowStrategy = row.strategy_id === undefined || row.strategy_id === null ? null : String(row.strategy_id);
+      if (rowStrategy === strategyId) {
+        return true;
+      }
+      return includesFallbackScopes && (rowStrategy === null || rowStrategy === "global" || rowStrategy === "aggregate");
+    })
+    .sort((left, right) => Date.parse(String(right.captured_at)) - Date.parse(String(left.captured_at)));
 }

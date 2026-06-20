@@ -845,8 +845,9 @@ PnL/status worker가 `OK` + `CALCULATED` snapshot을 제공하지 않으면 real
 fail-closed 한다. 단, production preflight가 clean/fresh reconcile과 잔고 snapshot을 확보했고 최신 PnL row가 PARTIAL/manual-review가 아니라
 결측 또는 stale인 경우에는 같은 tick에서 PnL closeout runner를 실행해 `live_ops_cleanup_probe` scope의 `CALCULATED` row를 append-only로
 생성한 뒤 provider를 다시 읽는다. runner는 open order/mismatch/manual review/stale reconcile, 최신 PnL row의 status 미완료, BTC 잔고
-대비 position snapshot 결측, position 수량 대비 BTC balance row 결측, stale/결측 기준가를 만나면 새 PnL row를 만들지 않고 기존 fail-closed
-상태를 보존한다. 같은 reconcile run 안의 중복 balance row는 currency별 최신 snapshot만 사용한다. clean reconcile DB evidence도 production
+대비 position snapshot 결측 또는 0수량 position, position 수량 대비 BTC balance row 결측, stale/결측 기준가를 만나면 새 PnL row를 만들지
+않고 기존 fail-closed 상태를 보존한다. 잔량이 null인 open order도 미체결 주문으로 세고, cleanup row가 없어도 global/aggregate 최신 PnL row가
+status 미완료이면 새 cleanup `CALCULATED` row로 가리지 않는다. 같은 reconcile run 안의 중복 balance row는 currency별 최신 snapshot만 사용한다. clean reconcile DB evidence도 production
 preflight 실행 wall clock 기준 30초 freshness를 넘으면 stale로 보고 같은 tick의 private read preflight reconcile evidence를 새로 기록한다.
 market heartbeat 시각은 market data 관측 evidence로만 쓰며, 일일 예산 기준일과 reconcile freshness 기준일을 대신하지 않는다. recorder가
 없거나 갱신 뒤에도 fresh clean evidence가 아니면 reconcile freshness guard가 broker 제출을 닫는다.
