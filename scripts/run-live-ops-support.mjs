@@ -1892,11 +1892,9 @@ function createLiveOpsCliAutonomousPnlPositionSnapshot({ ownership, heldPosition
     ownership?.strategyId === liveOpsCliAutonomous24x7StrategyId &&
     String(ownership?.status ?? "").toUpperCase() === "CLOSED" &&
     heldPositionExposure?.market === "KRW-BTC" &&
-    isNonNegativeDecimalString(heldPositionExposure?.quantity) &&
-    new Decimal(heldPositionExposure.quantity).eq(0) &&
     isDecimalString(ownership?.realizedPnlKrw)
   ) {
-    // 전량 청산 직후에는 지갑 BTC가 0이라 owned=false가 되지만, realized PnL은 현재 tick closeout에 넘겨야 한다.
+    // 전량 청산된 전략 lot은 수동 BTC 잔고가 남아도 realized PnL closeout을 현재 tick에 넘겨야 한다.
     return {
       source: "live_ops_autonomous_artifact_position",
       strategyId: liveOpsCliAutonomous24x7StrategyId,
@@ -2334,6 +2332,7 @@ export function createLiveOpsCliFileBudgetReservation({ artifactStore, clock = (
         reservationRecords,
         cleanupRecords,
         walletQuantity,
+        currentUnitPrice,
       });
       const averageEntryPrice = isPositiveDecimalString(observation?.averageEntryPrice)
         ? new Decimal(observation.averageEntryPrice)
@@ -2617,8 +2616,13 @@ function summarizeLiveOpsCliAutonomousReservationOwnership({ reservationRecords,
   };
 }
 
-function summarizeLiveOpsCliLegacyAutonomousObservationFallback({ reservationRecords, cleanupRecords = [], walletQuantity }) {
+function summarizeLiveOpsCliLegacyAutonomousObservationFallback({ reservationRecords, cleanupRecords = [], walletQuantity, currentUnitPrice }) {
   const observedWalletQuantity = walletQuantity instanceof Decimal ? walletQuantity : new Decimal(0);
+  const observedUnitPrice = currentUnitPrice instanceof Decimal
+    ? currentUnitPrice
+    : isPositiveDecimalString(currentUnitPrice)
+    ? new Decimal(currentUnitPrice)
+    : undefined;
   const legacyReservations = (Array.isArray(reservationRecords) ? reservationRecords : [])
     .filter((record) => (
       record?.strategyId === liveOpsCliAutonomous24x7StrategyId &&
@@ -2682,7 +2686,10 @@ function summarizeLiveOpsCliLegacyAutonomousObservationFallback({ reservationRec
       latestReservationAt,
     };
   }
-  const estimatedOriginalQuantity = observedWalletQuantity.plus(consumedOpenQuantity);
+  const restorableOpenQuantity = observedUnitPrice instanceof Decimal && observedUnitPrice.gt(0)
+    ? Decimal.min(observedWalletQuantity, originalOpenNotional.div(observedUnitPrice))
+    : observedWalletQuantity;
+  const estimatedOriginalQuantity = restorableOpenQuantity.plus(consumedOpenQuantity);
   if (!estimatedOriginalQuantity.gt(0)) {
     return {
       reservedNotionalKrw: "0",
@@ -2692,11 +2699,11 @@ function summarizeLiveOpsCliLegacyAutonomousObservationFallback({ reservationRec
       latestReservationAt,
     };
   }
-  // 구형 reservation에는 수량이 없으므로 현재 지갑 수량과 이미 청산된 수량으로 최초 평균 원가를 복원한다.
+  // 구형 reservation에는 수량이 없으므로 지갑 전체가 아니라 현재 가격으로 복원 가능한 전략 수량만 자동 소유로 인정한다.
   const averageEntryPrice = originalOpenNotional.div(estimatedOriginalQuantity);
   return {
-    reservedNotionalKrw: averageEntryPrice.mul(observedWalletQuantity).toFixed(),
-    requestedQuantity: observedWalletQuantity.toFixed(),
+    reservedNotionalKrw: averageEntryPrice.mul(restorableOpenQuantity).toFixed(),
+    requestedQuantity: restorableOpenQuantity.toFixed(),
     averageEntryPrice: averageEntryPrice.toFixed(),
     openedAt,
     latestReservationAt,
@@ -2793,6 +2800,10 @@ function applyLiveOpsCliAutonomousExitLots(lots, sortedExits) {
     let remainingExitQuantity = new Decimal(readLiveOpsCliAutonomousExitFilledQuantity(exit));
     for (const lot of openLots) {
       if (remainingExitQuantity.lte(0) || lot.quantity.lte(0)) {
+        continue;
+      }
+      if (!isLiveOpsCliAutonomousExitAfterReservation(exit, { reservedAt: lot.reservedAt })) {
+        // 과거 SELL closeout은 이후 새 BUY lot의 보유 수량을 줄일 수 없으므로 FIFO 차감에서 제외한다.
         continue;
       }
       const quantityBeforeExit = lot.quantity;
