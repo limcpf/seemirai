@@ -832,14 +832,20 @@ cleanup probe decision key는 같은 날짜 안의 재시작 멱등성을 유지
 attempt를 영구 차단하지 않게 한다. production CLI helper는 최신 market heartbeat가 아니라 제출 직전 wall clock에서 날짜 scope를
 계산하고, TypeScript `cleanup_probe` strategy는 `StrategyContext.observedAt` 날짜 scope를 key와 metadata에 포함한다.
 
-`LiveOpsLiveExecution`은 analysis/decision safe summary와 내부 order intent 입력, 최신 budget/loss/cost/risk/reconcile snapshot을 기존
-`LiveAutonomousEntryRuntime` 요청으로 낮추는 adapter다. analysis가 blocked이거나 BLOCK decision이면 하위 runtime 호출 없이 blocked
-summary로 닫고, HOLD로 주문 후보가 0개이면 idle summary로 닫는다. 주문 후보가 있더라도 첫 production 경계에서는 한 tick에 단일
-`BUY + LIMIT + post_only` 후보만 허용하고, market allowlist, `upbit_krw_spot`, strategy/risk scope가 맞지 않으면 live autonomous
-runtime 호출 전에 fail-closed 한다. public adapter는 strategy의 긴 decision idempotency key를 Upbit identifier 길이에 맞는 stable
-`ops-<sha256-prefix>` attempt id로 낮춰 재시작 후 같은 cleanup 후보가 새 random identifier를 만들지 않게 한다.
-조건을 통과한 후보는 manual JSONL 없이 `LiveAutonomousEntryRuntime.submitEntryCandidate`로 전달되며, durable budget reservation,
-RiskGate 재검증, broker submit, alert dispatch side effect는 해당 하위 runtime 경계에서만 발생한다.
+`LiveOpsLiveExecution`은 analysis/decision safe summary와 내부 order intent 입력, 최신 budget/loss/cost/risk/reconcile snapshot을 실행
+경계 입력으로 낮추는 adapter다. analysis가 blocked이거나 BLOCK decision이면 하위 runtime 호출 없이 blocked summary로 닫고, HOLD로 주문
+후보가 0개이면 idle summary로 닫는다. 주문 후보가 있더라도 첫 production 경계에서는 한 tick에 단일 후보만 허용한다.
+
+BUY 후보는 `BUY + LIMIT + post_only`만 허용하고, market allowlist, `upbit_krw_spot`, strategy/risk scope가 맞지 않으면
+`LiveAutonomousEntryRuntime.submitEntryCandidate` 호출 전에 fail-closed 한다. public adapter는 strategy의 긴 decision idempotency key를
+Upbit identifier 길이에 맞는 stable `ops-<sha256-prefix>` attempt id로 낮춰 재시작 후 같은 cleanup 후보가 새 random identifier를 만들지
+않게 한다. 조건을 통과한 BUY 후보는 manual JSONL 없이 entry runtime으로 전달되며, durable budget reservation, RiskGate 재검증, broker
+submit, alert dispatch side effect는 해당 하위 runtime 경계에서만 발생한다.
+
+SELL 후보는 `SELL + LIMIT + post_only`, `position_effect=REDUCE|EXIT`, `exit_reason_code`, `exit_rule_id`, position scope를 요구한다.
+requested quantity가 position scope의 보유 수량을 초과하거나 `EXIT`인데 전체 수량과 일치하지 않으면 `exitRuntime.submitExitOrder` 호출 전에
+fail-closed 한다. 통과한 SELL 후보는 adapter가 `exit_cost_model` cost evidence와 RiskGate evidence를 자동 생성한 뒤 exit runtime port로만
+전달한다. SELL은 entry runtime으로 우회하지 않는다.
 
 production preflight는 미체결 주문뿐 아니라 현재 `KRW-BTC` 보유 잔고도 reference price로 평가해 `openPositionNotionalKrw`와 RiskGate
 `positions`에 포함한다. 보유 잔고가 있는데 평가 기준가가 없으면 open position 한도 과소평가 위험이 있으므로 broker 제출 전 차단한다.

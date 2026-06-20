@@ -96,6 +96,10 @@ Codex-native 운영은 Codex, Git, GitHub, shell command, 문서 상태를 연�
   Telegram side effect를 직접 수행하지 않는다.
 - `autonomous_24x7` exit rule은 take profit, stop loss, trailing stop, max holding time, risk reduction을 독립 reason code로 남긴다.
   exit 조건이 없으면 같은 tick의 강한 entry signal도 BUY로 전환하지 않고 HOLD로 닫아 물타기식 중복 진입을 막는다.
+- live execution adapter는 SELL 후보를 entry runtime으로 우회시키지 않는다. `position_effect`, exit reason/rule, position scope,
+  보유 수량 이하 조건을 확인한 뒤 `exit_cost_model` evidence와 RiskGate evidence를 만들어 exit runtime port로만 전달한다.
+- SELL requested quantity가 position scope의 보유 수량을 초과하거나 `EXIT` 수량이 전체 보유 수량과 일치하지 않으면 exit runtime 호출
+  전에 fail-closed 한다.
 - `cleanup_probe`는 같은 market data tick의 orderbook에서 단일 order intent만 만들며, analysis safe summary의 `orderIntentCount`와
   live execution 내부 입력으로 전달되는 order intent 배열이 다르면 broker 제출로 전진하지 않는다. raw order intent는 status/TUI/JSON
   summary에 직렬화하지 않고, public pipeline도 non-enumerable result channel로만 같은 tick 후보를 전달한다.
