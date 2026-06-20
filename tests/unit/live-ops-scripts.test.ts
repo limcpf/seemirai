@@ -528,7 +528,7 @@ try {
       createLiveOpsCliProductionExecutionInputs,
       getLiveOpsCliAnalysisOrderIntents,
     } = await import(path.join(process.cwd(), "scripts/run-live-ops-support.mjs"));
-    const observedAt = "2026-06-20T00:00:00.000Z";
+    const observedAt = new Date().toISOString();
     const config = createAutonomousLiveOpsConfig(JSON.parse(await readFile(path.join(process.cwd(), "config", "live-ops.example.json"), "utf8")));
     const marketData = {
       ready: true,
@@ -658,7 +658,7 @@ try {
       createLiveOpsCliProductionExecutionInputs,
       getLiveOpsCliAnalysisOrderIntents,
     } = await import(path.join(process.cwd(), "scripts/run-live-ops-support.mjs"));
-    const observedAt = "2026-06-20T00:00:00.000Z";
+    const observedAt = new Date().toISOString();
     const config = createAutonomousLiveOpsConfig(JSON.parse(await readFile(path.join(process.cwd(), "config", "live-ops.example.json"), "utf8")));
     const marketData = {
       ready: true,
@@ -1781,6 +1781,138 @@ console.log(JSON.stringify(summary));
     expect([first.reason, second.reason]).toContain("live_ops_exit_submission_lock_busy");
   });
 
+  it("SELL exit runtime lock scope는 재호가 가격과 preflight 관측 시각이 달라도 같은 포지션 decision을 직렬화한다", async () => {
+    const {
+      createLiveOpsCliExitRuntime,
+    } = await import(path.join(process.cwd(), "scripts/run-live-ops-support.mjs"));
+    const decisionKey = "autonomous-exit-decision-2026-06-20T00:00:00Z";
+    const createSubmission = ({
+      idempotencyKey,
+      requestedPrice,
+      requestedNotional,
+      observedAt,
+    }: {
+      idempotencyKey: string;
+      requestedPrice: string;
+      requestedNotional: string;
+      observedAt: string;
+    }) => {
+      const intent = createCliSellIntent({ idempotencyKey }) as Record<string, any>;
+      intent.requestedPrice = requestedPrice;
+      intent.requestedNotional = requestedNotional;
+      intent.metadata = {
+        ...intent.metadata,
+        decision_idempotency_key: decisionKey,
+        position_scope: {
+          ...intent.metadata.position_scope,
+          average_entry_price: "98000000",
+        },
+        preflight_position_scope: {
+          ...intent.metadata.position_scope,
+          average_entry_price: "98000000",
+          owned: true,
+          observed_at: observedAt,
+        },
+      };
+      const orderIntentEvidence = {
+        ...intent.costSnapshot.order_intent,
+        requested_price: requestedPrice,
+        requested_notional: requestedNotional,
+        idempotency_key: idempotencyKey,
+      };
+      intent.costSnapshot = {
+        ...intent.costSnapshot,
+        position_scope: intent.metadata.position_scope,
+        order_intent: orderIntentEvidence,
+      };
+      intent.riskApproval = {
+        ...intent.riskApproval,
+        order_intent: orderIntentEvidence,
+      };
+      return {
+        intent,
+        costSnapshot: intent.costSnapshot,
+        riskApproval: intent.riskApproval,
+        observedAt,
+      };
+    };
+    const activeLocks = new Set<string>();
+    const lockScopes: string[] = [];
+    const ordersById = new Map<string, Record<string, unknown>>();
+    let sequence = 0;
+    const submitOrder = vi.fn(async (submission: { intent: Record<string, any> }) => {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      sequence += 1;
+      const brokerOrder = {
+        brokerOrderId: `exit-lock-stable-${sequence}`,
+        idempotencyKey: submission.intent.idempotencyKey,
+        exchangeId: "upbit_krw_spot",
+        market: "KRW-BTC",
+        side: "SELL",
+        orderType: "LIMIT",
+        status: "ACCEPTED",
+        requestedQuantity: submission.intent.requestedQuantity,
+        remainingQuantity: submission.intent.requestedQuantity,
+        requestedPrice: submission.intent.requestedPrice,
+        acceptedAt: "2026-06-20T00:00:00.000Z",
+        updatedAt: "2026-06-20T00:00:00.000Z",
+      };
+      ordersById.set(brokerOrder.brokerOrderId, brokerOrder);
+      return brokerOrder;
+    });
+    const runtime = createLiveOpsCliExitRuntime({
+      pollCount: 1,
+      pollIntervalMs: 0,
+      artifactStore: {
+        async acquireExitSubmissionLock(scope: string) {
+          lockScopes.push(scope);
+          if (activeLocks.has(scope)) {
+            throw Object.assign(new Error("LiveOpsCliExitSubmissionLockBusy"), { code: "EEXIST" });
+          }
+          activeLocks.add(scope);
+          return {
+            async release() {
+              activeLocks.delete(scope);
+            },
+          };
+        },
+      },
+      broker: {
+        submitOrder,
+        async getOrder(orderId: string) {
+          return {
+            ...ordersById.get(orderId),
+            status: "CANCELED",
+          };
+        },
+        async cancelOrder() {
+          throw new Error("CancelShouldNotRunForTerminalNoFill");
+        },
+      },
+    });
+
+    const [first, second] = await Promise.all([
+      runtime.submitExitOrder(createSubmission({
+        idempotencyKey: `ops-${"8".repeat(26)}`,
+        requestedPrice: "99000000",
+        requestedNotional: "9900",
+        observedAt: "2026-06-20T00:00:00.000Z",
+      })),
+      runtime.submitExitOrder(createSubmission({
+        idempotencyKey: `ops-${"7".repeat(26)}`,
+        requestedPrice: "99001000",
+        requestedNotional: "9900.1",
+        observedAt: "2026-06-20T00:00:01.000Z",
+      })),
+    ]);
+
+    expect(lockScopes).toHaveLength(2);
+    expect(lockScopes[0]).toBe(lockScopes[1]);
+    expect(submitOrder).toHaveBeenCalledTimes(1);
+    expect([first.status, second.status].sort()).toEqual(["CANCELED_FOR_REQUOTE", "REJECTED"]);
+    expect([first.reason, second.reason]).toContain("live_ops_exit_submission_lock_busy");
+  });
+
   it("SELL exit runtime은 이미 terminal cancel된 no-fill 주문을 다시 취소하지 않는다", async () => {
     const {
       createLiveOpsCliExitRuntime,
@@ -2089,6 +2221,85 @@ console.log(JSON.stringify(summary));
       statusLabel: "private read 확인",
     });
     expect(calls).toEqual({ openOrders: 2, balances: 2 });
+  });
+
+  it("autonomous post-submit PnL summary는 autonomous strategy scope로 provider를 조회한다", async () => {
+    const {
+      evaluateLiveOpsCliReconcilePnlStatus,
+    } = await import(path.join(process.cwd(), "scripts/run-live-ops-support.mjs"));
+    const observedAt = new Date().toISOString();
+    const pnlScopes: unknown[] = [];
+
+    const summary = await evaluateLiveOpsCliReconcilePnlStatus({
+      config: { universe: { default_market: "KRW-BTC" } },
+      fixtureSmoke: false,
+      liveExecution: {
+        status: "filled",
+        ready: true,
+        liveOrderCapable: true,
+        attemptStatus: "FILLED",
+        attemptId: `ops-${"6".repeat(26)}`,
+        idempotencyKey: `ops-${"6".repeat(26)}`,
+        brokerOrderId: "autonomous-filled-order",
+        strategyId: "live_ops_autonomous_24x7_core",
+      },
+      privateReadProvider: {
+        async listOpenOrders() {
+          return [];
+        },
+        async getBalances() {
+          return {
+            exchangeId: "upbit_krw_spot",
+            capturedAt: observedAt,
+            balances: [{ currency: "KRW", available: "100000", locked: "0", total: "100000", updatedAt: observedAt }],
+          };
+        },
+      },
+      reconcileStatusProvider: {
+        async getReconcileStatus() {
+          return {
+            lastReconcileAt: observedAt,
+            result: "SUCCESS",
+            mismatchCount: 0,
+            openOrderCount: 0,
+            balanceStatus: "OK",
+            websocketStatus: "CONNECTED",
+            actionRequired: "없음",
+            message: "실계좌 상태 대조가 정상입니다.",
+          };
+        },
+      },
+      pnlStatusProvider: {
+        async getStatus(scope: unknown) {
+          pnlScopes.push(scope);
+          return {
+            readStatus: "OK",
+            latestCapturedAt: observedAt,
+            latestRealizedPnlKrw: "0",
+            latestUnrealizedPnlKrw: "0",
+            latestStatus: "CALCULATED",
+            snapshotCount: 1,
+            reason: "pnl_snapshot_latest_read",
+          };
+        },
+      },
+      budgetSnapshot: {
+        dailyAutonomousNotionalUsedKrw: "0",
+      },
+      observedAt,
+    });
+
+    expect(summary).toMatchObject({
+      status: "ready",
+      ready: true,
+      pnlStatus: "ok",
+    });
+    expect(pnlScopes).toEqual([
+      {
+        strategyId: "live_ops_autonomous_24x7_core",
+        market: "KRW-BTC",
+      },
+    ]);
   });
 
   it("reconcile/PnL/status helper는 private read provider 결과를 secret-safe summary로 낮춘다", () => {

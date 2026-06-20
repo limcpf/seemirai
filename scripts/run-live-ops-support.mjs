@@ -5431,12 +5431,13 @@ export async function evaluateLiveOpsCliLiveExecution({
   const submitted = attempt.status === "SUBMITTED" || attempt.status === "FILLED" || attempt.status === "CANCELED_FOR_REQUOTE";
   const entryReady = submitted && attempt.manualReviewRequired !== true;
   const budgetUsageAfterReservationKrw = createLiveOpsCliBudgetUsageAfterReservation({ attempt });
-  const submittedSummary = {
-    status: attempt.status === "CANCELED_FOR_REQUOTE" ? "entry_requote_ready" : submitted ? String(attempt.status).toLowerCase() : String(attempt.status ?? "blocked").toLowerCase(),
-    ready: entryReady,
-    liveOrderCapable: entryReady,
-    market,
-    latestExecutionAt: observedAt,
+	  const submittedSummary = {
+	    status: attempt.status === "CANCELED_FOR_REQUOTE" ? "entry_requote_ready" : submitted ? String(attempt.status).toLowerCase() : String(attempt.status ?? "blocked").toLowerCase(),
+	    ready: entryReady,
+	    liveOrderCapable: entryReady,
+	    market,
+	    strategyId: intent.strategyId,
+	    latestExecutionAt: observedAt,
     orderIntentCount: intents.length,
     attemptedOrderCount: 1,
     submittedOrderCount: submitted ? 1 : 0,
@@ -5612,10 +5613,11 @@ async function evaluateLiveOpsCliExitExecution({
   const ready = submitted && attempt.manualReviewRequired !== true;
   return buildLiveOpsCliLiveExecutionSummary({
     status: attempt.status === "CANCELED_FOR_REQUOTE" ? "exit_requote_ready" : String(attempt.status ?? "blocked").toLowerCase(),
-    ready,
-    liveOrderCapable: ready,
-    market,
-    latestExecutionAt: observedAt,
+	    ready,
+	    liveOrderCapable: ready,
+	    market,
+	    strategyId: intent.strategyId,
+	    latestExecutionAt: observedAt,
     observedAt,
     orderIntentCount: 1,
     attemptedOrderCount: 1,
@@ -6510,14 +6512,19 @@ export function createLiveOpsCliExitRuntime({
 function createLiveOpsCliExitSubmissionLockScope(submission) {
   const intent = submission?.intent ?? {};
   const positionScope = intent?.metadata?.preflight_position_scope ?? intent?.metadata?.position_scope ?? {};
+  const stablePositionScope = {
+    ...(hasMeaningfulValue(positionScope?.market) ? { market: String(positionScope.market) } : {}),
+    ...(hasMeaningfulValue(positionScope?.strategy_id) ? { strategy_id: String(positionScope.strategy_id) } : {}),
+    ...(isNonNegativeDecimalString(positionScope?.total_quantity) ? { total_quantity: String(positionScope.total_quantity) } : {}),
+    ...(isPositiveDecimalString(positionScope?.average_entry_price) ? { average_entry_price: String(positionScope.average_entry_price) } : {}),
+  };
   return JSON.stringify({
     strategyId: intent.strategyId,
     market: intent.market,
     side: intent.side,
     decisionIdempotencyKey: intent?.metadata?.decision_idempotency_key ?? intent.idempotencyKey,
     requestedQuantity: intent.requestedQuantity,
-    requestedPrice: intent.requestedPrice,
-    positionScope,
+    positionScope: stablePositionScope,
   });
 }
 
@@ -7147,10 +7154,11 @@ function collectLiveOpsCliExitRuntimeGuardViolations(submission) {
 function buildLiveOpsCliLiveExecutionSummary(input) {
   return {
     status: input.status,
-    ready: input.ready,
-    liveOrderCapable: input.liveOrderCapable,
-    market: input.market,
-    latestExecutionAt: input.latestExecutionAt ?? null,
+	    ready: input.ready,
+	    liveOrderCapable: input.liveOrderCapable,
+	    market: input.market,
+	    ...(hasMeaningfulValue(input.strategyId) ? { strategyId: String(input.strategyId) } : {}),
+	    latestExecutionAt: input.latestExecutionAt ?? null,
     orderIntentCount: input.orderIntentCount,
     attemptedOrderCount: input.attemptedOrderCount,
     submittedOrderCount: input.submittedOrderCount,
@@ -8526,6 +8534,17 @@ function createLiveOpsCliReconcileBoundaryMissingSummary({ market, liveExecution
   };
 }
 
+function createLiveOpsCliPostSubmitPnlScope({ liveExecution, market }) {
+  if (!hasMeaningfulValue(liveExecution?.strategyId)) {
+    return undefined;
+  }
+  // 실주문 후 PnL summary는 방금 처리한 전략 scope를 따라가야 cleanup/global row가 autonomous 손익을 덮지 않는다.
+  return createLiveOpsCliPnlScope({
+    strategyId: liveExecution.strategyId,
+    market,
+  });
+}
+
 function createLiveOpsCliPreflightManualReviewStatusSummary({ market, liveExecution, budgetSnapshot, observedAt }) {
   const evidence = liveExecution.preflightReconcileEvidence;
   const openExposureKrw = isNonNegativeDecimalString(budgetSnapshot?.openPositionNotionalKrw)
@@ -8588,11 +8607,11 @@ async function collectLiveOpsCliPrivateReadStatusSummary({
     // 실계좌 조회는 주문 side effect가 없는 private read 경계지만, 실패하면 신규 주문 가능 상태를 확정하지 않는다.
     [openOrders, balanceSnapshot, reconcileStatus, pnlStatus] = await Promise.all([
       // 실행 후 상태 요약도 계정 전체 미체결 주문을 기준으로 해야 다른 마켓 잔여 주문을 숨기지 않는다.
-      privateReadProvider.listOpenOrders(),
-      privateReadProvider.getBalances(),
-      readLiveOpsCliReconcileStatus(reconcileStatusProvider),
-      readLiveOpsCliPnlStatus(pnlStatusProvider),
-    ]);
+	      privateReadProvider.listOpenOrders(),
+	      privateReadProvider.getBalances(),
+	      readLiveOpsCliReconcileStatus(reconcileStatusProvider),
+	      readLiveOpsCliPnlStatus(pnlStatusProvider, createLiveOpsCliPostSubmitPnlScope({ liveExecution, market })),
+	    ]);
   } catch (error) {
     const budgetUsedKrw = resolveLiveOpsCliBudgetUsedKrw({
       budgetSnapshot,
