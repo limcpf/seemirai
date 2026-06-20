@@ -1127,6 +1127,7 @@ async function refreshLiveOpsCliPreflightPnlStatusIfNeeded({
   pnlScope,
   positionSnapshot,
 }) {
+  const hasInjectedPositionSnapshot = positionSnapshot !== undefined && positionSnapshot !== null;
   if (
     productionRuntime?.pnlCloseoutRunner === undefined ||
     productionRuntime?.pnlStatusProvider === undefined
@@ -1143,7 +1144,8 @@ async function refreshLiveOpsCliPreflightPnlStatusIfNeeded({
   if (
     pnlStatus?.readStatus === "OK" &&
     isLiveOpsCliReadyPnlSnapshotStatus(pnlStatus.latestStatus) &&
-    isLiveOpsCliFreshPnlStatus(pnlStatus, observedAt)
+    isLiveOpsCliFreshPnlStatus(pnlStatus, observedAt) &&
+    !hasInjectedPositionSnapshot
   ) {
     return pnlStatus;
   }
@@ -2244,7 +2246,7 @@ export async function createLiveOpsCliCleanupArtifactStore({ configPath, env = {
 }
 
 export function createLiveOpsCliFileBudgetReservation({ artifactStore, clock = () => new Date().toISOString() }) {
-  async function readDailyReservedNotionalForDay(day) {
+  async function readDailyReservedNotionalForDay(day, observedAt) {
     const [records, cleanupRecords, autonomousPositionState] = await Promise.all([
       artifactStore.listReservations(),
       typeof artifactStore.listCleanups === "function" ? artifactStore.listCleanups() : [],
@@ -2267,6 +2269,7 @@ export function createLiveOpsCliFileBudgetReservation({ artifactStore, clock = (
       reservationRecords: records,
       cleanupRecords,
       autonomousPositionState,
+      observedAt,
     });
     return {
       day,
@@ -2279,7 +2282,7 @@ export function createLiveOpsCliFileBudgetReservation({ artifactStore, clock = (
   return {
     async readDailyReservedNotional(observedAt = clock()) {
       const day = String(observedAt).slice(0, 10);
-      return readDailyReservedNotionalForDay(day);
+      return readDailyReservedNotionalForDay(day, observedAt);
     },
     async recordAutonomousPositionObservation(observation) {
       if (typeof artifactStore.writeAutonomousPositionState !== "function") {
@@ -2305,6 +2308,7 @@ export function createLiveOpsCliFileBudgetReservation({ artifactStore, clock = (
         reservationRecords,
         cleanupRecords,
         autonomousPositionState: previousState,
+        observedAt,
       });
       const currentUnitPrice = new Decimal(observation.currentUnitPrice);
       const walletQuantity = new Decimal(observation.walletQuantity);
@@ -2357,6 +2361,29 @@ export function createLiveOpsCliFileBudgetReservation({ artifactStore, clock = (
           ? currentAggregate.latestReservationAt
           : legacyObservationFallback.latestReservationAt,
       };
+      if (
+        walletQuantity.gt(0) &&
+        isPositiveDecimalString(aggregateWithLegacyFallback.requestedQuantity) &&
+        walletQuantity.lt(new Decimal(aggregateWithLegacyFallback.requestedQuantity))
+      ) {
+        const state = {
+          kind: "live_ops_autonomous_position_state",
+          strategyId: liveOpsCliAutonomous24x7StrategyId,
+          market,
+          status: "MANUAL_REVIEW_REQUIRED",
+          reservedNotionalKrw: "0",
+          requestedQuantity: "0",
+          openedAt: hasMeaningfulValue(aggregateWithLegacyFallback.openedAt) ? aggregateWithLegacyFallback.openedAt : undefined,
+          latestReservationAt: hasMeaningfulValue(aggregateWithLegacyFallback.latestReservationAt)
+            ? aggregateWithLegacyFallback.latestReservationAt
+            : undefined,
+          latestObservationAt: observedAt,
+          manualReviewReason: "autonomous_position_wallet_quantity_below_owned_scope",
+        };
+        // 전략 소유 수량보다 지갑 BTC가 작아진 경우 수동 매도/출금 가능성이 있어 자동 lot 축소로 손실·청산 판단을 덮지 않는다.
+        await artifactStore.writeAutonomousPositionState(state);
+        return state;
+      }
       const positionQuantity = resolveLiveOpsCliObservedAutonomousPositionQuantity({
         aggregate: aggregateWithLegacyFallback,
         walletQuantity,
@@ -2447,7 +2474,7 @@ export function createLiveOpsCliFileBudgetReservation({ artifactStore, clock = (
         };
       }
       try {
-        const dailyUsage = await readDailyReservedNotionalForDay(day);
+        const dailyUsage = await readDailyReservedNotionalForDay(day, reservedAt);
         const dailyBudgetCheck = await evaluateLiveOpsCliDailyBudgetReservation({
           request,
           dailyUsage,
@@ -2488,7 +2515,12 @@ export function createLiveOpsCliFileBudgetReservation({ artifactStore, clock = (
   };
 }
 
-function summarizeLiveOpsCliAutonomousReservationOwnership({ reservationRecords, cleanupRecords = [], autonomousPositionState } = {}) {
+function summarizeLiveOpsCliAutonomousReservationOwnership({
+  reservationRecords,
+  cleanupRecords = [],
+  autonomousPositionState,
+  observedAt,
+} = {}) {
   const strategyRecords = (Array.isArray(reservationRecords) ? reservationRecords : []).filter((record) => (
     record?.strategyId === liveOpsCliAutonomous24x7StrategyId &&
     record?.market === "KRW-BTC" &&
@@ -2511,7 +2543,11 @@ function summarizeLiveOpsCliAutonomousReservationOwnership({ reservationRecords,
   const netReservedNotional = openLots.reduce((total, lot) => total.plus(lot.quantity.mul(lot.averageEntryPrice)), new Decimal(0));
   const netEntryFeeKrw = openLots.reduce((total, lot) => total.plus(lot.entryFeeKrw), new Decimal(0));
   const averageEntryPrice = netQuantity.gt(0) ? netReservedNotional.div(netQuantity) : undefined;
-  const realizedPnlKrw = sortedExits.reduce((total, record) => {
+  const realizedPnlWindowExits = sortedExits.filter((record) => (
+    isLiveOpsCliAutonomousExitInRealizedPnlWindow(record, observedAt)
+  ));
+  // 일일 손실 guard가 지난 운영일의 SELL 손실을 재차 차감하지 않도록 현재 tick의 운영일 closeout만 반영한다.
+  const realizedPnlKrw = realizedPnlWindowExits.reduce((total, record) => {
     return total.plus(readLiveOpsCliAutonomousExitRealizedPnlKrw(record));
   }, new Decimal(0)).toFixed();
   const stateOpen = autonomousPositionState?.strategyId === liveOpsCliAutonomous24x7StrategyId
@@ -2541,10 +2577,10 @@ function summarizeLiveOpsCliAutonomousReservationOwnership({ reservationRecords,
     };
   }
   if (
-    netQuantity.isZero() &&
     stateManualReview &&
-    isLiveOpsCliAutonomousPositionStateNewerThanLatestExit({ state: autonomousPositionState, sortedExits })
+    isLiveOpsCliAutonomousPositionStateNewerThanLatestLot({ state: autonomousPositionState, openLots })
   ) {
+    // 수동점검 상태는 위험 차단 source이므로 아직 열린 lot이 남아도 자동 재구성으로 덮지 않는다.
     return {
       strategyId: liveOpsCliAutonomous24x7StrategyId,
       reservedNotionalKrw: "0",
@@ -2578,12 +2614,14 @@ function summarizeLiveOpsCliAutonomousReservationOwnership({ reservationRecords,
       status: "OPEN",
     };
   }
-  const highWatermarkPrice = stateOpen && isPositiveDecimalString(autonomousPositionState?.highWatermarkPrice)
-    && isDecimalEqual(autonomousPositionState?.requestedQuantity, netQuantity.toFixed())
+  const preserveStateHighWatermark = stateOpen &&
+    isPositiveDecimalString(autonomousPositionState?.highWatermarkPrice) &&
+    isLiveOpsCliAutonomousPositionStateNewerThanLatestLot({ state: autonomousPositionState, openLots });
+  // 부분 SELL 뒤 남은 전략 lot은 기존 trailing 기준을 이어받아야 하므로 수량 일치 여부만으로 high-water를 초기화하지 않는다.
+  const highWatermarkPrice = preserveStateHighWatermark
     ? autonomousPositionState.highWatermarkPrice
     : averageEntryPrice?.toFixed();
-  const highWatermarkAt = stateOpen && hasMeaningfulValue(autonomousPositionState?.highWatermarkAt)
-    && isDecimalEqual(autonomousPositionState?.requestedQuantity, netQuantity.toFixed())
+  const highWatermarkAt = preserveStateHighWatermark && hasMeaningfulValue(autonomousPositionState?.highWatermarkAt)
     ? autonomousPositionState.highWatermarkAt
     : openLots.at(-1)?.reservedAt;
   if (netQuantity.isZero()) {
@@ -2962,6 +3000,17 @@ function readLiveOpsCliAutonomousExitRealizedPnlKrw(record) {
     return record.realizedPnlKrw;
   }
   return "0";
+}
+
+function isLiveOpsCliAutonomousExitInRealizedPnlWindow(record, observedAt) {
+  if (!hasMeaningfulValue(observedAt)) {
+    return true;
+  }
+  const closedAt = readLiveOpsCliAutonomousExitClosedAt(record);
+  if (!hasMeaningfulValue(closedAt)) {
+    return false;
+  }
+  return String(closedAt).slice(0, 10) === String(observedAt).slice(0, 10);
 }
 
 function readLiveOpsCliAutonomousExitClosedAt(record) {
@@ -5725,13 +5774,29 @@ async function closeLiveOpsCliAutonomousEntryOrder({
     });
   }
 
-  const terminal = await waitForLiveOpsCliTerminalCancel({
-    broker,
-    brokerOrderId: brokerOrder.brokerOrderId,
-    pollCount,
-    pollIntervalMs,
-    submittedOrder: brokerOrder,
-  });
+  let terminal;
+  try {
+    // 취소 요청까지 나간 뒤 조회 실패를 throw로 잃으면 주문 uuid와 reservation을 운영자가 추적할 수 없다.
+    terminal = await waitForLiveOpsCliTerminalCancel({
+      broker,
+      brokerOrderId: brokerOrder.brokerOrderId,
+      pollCount,
+      pollIntervalMs,
+      submittedOrder: brokerOrder,
+    });
+  } catch (error) {
+    return createLiveOpsCliAutonomousEntryManualReview({
+      request,
+      reservation,
+      submission,
+      brokerOrder,
+      cancelOrder,
+      reason: "entry_terminal_cancel_poll_failed",
+      error,
+      message: "BUY 주문 취소 요청 후 terminal 상태 조회를 완료하지 못해 수동 점검 상태로 전환했습니다.",
+      action: "거래소 주문 uuid와 reservation id로 취소/체결 상태를 확인한 뒤 다음 재호가 여부를 결정하세요.",
+    });
+  }
   if (isLiveOpsCliCleanTerminalCancel({ submittedOrder: brokerOrder, terminalOrder: terminal.order })) {
     return writeLiveOpsCliAutonomousEntryNoFillCloseoutResult({
       artifactStore,

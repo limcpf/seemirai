@@ -250,6 +250,7 @@ async function loadLiveOpsPnlCloseoutSource({
   }
   const baseBalance = findBalance(balances, baseCurrency);
   const positionQuantity = position === undefined ? new Decimal(0) : new Decimal(position.quantity);
+  const allowInjectedClosedPositionCloseout = injectedPosition !== undefined && position === injectedPosition && positionQuantity.eq(0);
   if (positionQuantity.gt(0) && baseBalance === undefined) {
     // position source만 있고 거래소 base 잔고 source가 없으면 평가액을 0으로 낮춰 주문 한도를 열 수 있다.
     return blockedSource(
@@ -275,14 +276,15 @@ async function loadLiveOpsPnlCloseoutSource({
       { baseCurrency, baseTotal: baseTotal.toFixed() },
     );
   }
-  if (position !== undefined && positionQuantity.eq(0) && baseTotal.gt(0)) {
-    // 0수량 position row는 보유분 원가 source가 아니므로 실계좌 BTC 잔고를 정상 PnL로 닫지 않는다.
+  if (position !== undefined && positionQuantity.eq(0) && baseTotal.gt(0) && !allowInjectedClosedPositionCloseout) {
+    // DB의 0수량 position row는 보유분 원가 source가 아니므로 실계좌 BTC 잔고를 정상 PnL로 닫지 않는다.
     return blockedSource(
       "pnl_closeout_position_quantity_zero_for_balance",
       "실계좌 base 잔고는 있지만 strategy position 수량이 0이라 PnL closeout을 만들지 않습니다.",
       { baseCurrency, baseTotal: baseTotal.toFixed() },
     );
   }
+  // injected closeout snapshot은 전략 소유 포지션이 이미 닫혔다는 source이므로 남은 수동 BTC 잔고와 분리해 실현손익을 보존한다.
   if (positionQuantity.gt(0) && baseTotal.lt(positionQuantity)) {
     // 거래소 잔고가 strategy position보다 적으면 원가 source가 실제 보유분을 초과하므로 손익을 확정하지 않는다.
     return blockedSource(
