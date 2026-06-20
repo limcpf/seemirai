@@ -390,13 +390,13 @@ Telegram, TUI를 같은 lifecycle로 조립하고, 조건을 통과한 단일 `K
   - 코드 구현, DB migration, live order side effect.
   - 수익 보장, 투자 자문, BTC 외 market, budget 확대.
 - DnD:
-  - [ ] `docs/FEATURE_REQUIREMENTS.md`에 `live:ops:daemon` 24/7 entry/exit acceptance criteria가 있다.
-  - [ ] `docs/runbooks/live-ops-24x7-autonomous.md`가 config/env만으로 실행하는 운영 명령, entry/exit DnD, strategy 교체성,
+  - [x] `docs/FEATURE_REQUIREMENTS.md`에 `live:ops:daemon` 24/7 entry/exit acceptance criteria가 있다.
+  - [x] `docs/runbooks/live-ops-24x7-autonomous.md`가 config/env만으로 실행하는 운영 명령, entry/exit DnD, strategy 교체성,
         중지 기준을 설명한다.
-  - [ ] `docs/RUNTIME_CONFIG.md`, `docs/RELIABILITY.md`, `docs/SECURITY.md`, product spec, docs/runbook index/context map이
+  - [x] `docs/RUNTIME_CONFIG.md`, `docs/RELIABILITY.md`, `docs/SECURITY.md`, product spec, docs/runbook index/context map이
         cleanup canary와 24/7 daemon을 구분한다.
-  - [ ] DnD가 실행 전 fixture/evidence 파일 요구를 금지하고 runtime 자동 artifact 생성을 요구한다.
-  - [ ] 문서 검증과 `git diff --check`가 통과한다.
+  - [x] DnD가 실행 전 fixture/evidence 파일 요구를 금지하고 runtime 자동 artifact 생성을 요구한다.
+  - [x] 문서 검증과 `git diff --check`가 통과한다.
 
 ### Sub PR 18: 24/7 strategy registry와 entry/exit policy core
 
@@ -406,13 +406,13 @@ Telegram, TUI를 같은 lifecycle로 조립하고, 조건을 통과한 단일 `K
   - broker submit, daemon loop, DB migration.
   - LLM/뉴스/SNS 기반 주문 판단.
 - DnD:
-  - [ ] strategy interface가 entry/exit 후보 생성과 설명 metadata를 분리한다.
-  - [ ] strategy는 broker, Upbit client, DB, Telegram을 직접 호출하지 않는다.
-  - [ ] allowlist registry는 동적 import/임의 path/원격 plugin을 거부한다.
-  - [ ] 보유 포지션이 있으면 exit evaluation plan이 entry보다 먼저 나온다.
-  - [ ] exit rules는 take profit, stop loss, trailing stop, max holding time, risk reduction을 독립 rule로 가진다.
-  - [ ] entry rules는 조건 미충족 시 HOLD evidence를 남긴다.
-  - [ ] 관련 unit tests, typecheck, docs verify, `./scripts/verify`, `git diff --check`가 통과한다.
+  - [x] strategy interface가 entry/exit 후보 생성과 설명 metadata를 분리한다.
+  - [x] strategy는 broker, Upbit client, DB, Telegram을 직접 호출하지 않는다.
+  - [x] allowlist registry는 동적 import/임의 path/원격 plugin을 거부한다.
+  - [x] 보유 포지션이 있으면 exit evaluation plan이 entry보다 먼저 나온다.
+  - [x] exit rules는 take profit, stop loss, trailing stop, max holding time, risk reduction을 독립 rule로 가진다.
+  - [x] entry rules는 조건 미충족 시 HOLD evidence를 남긴다.
+  - [x] 관련 unit tests, typecheck, docs verify, `./scripts/verify`, `git diff --check`가 통과한다.
 
 ### Sub PR 19: position lifecycle와 SELL 실행 경계
 

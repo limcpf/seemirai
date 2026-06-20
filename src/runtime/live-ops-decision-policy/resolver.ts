@@ -3,12 +3,17 @@ import type {
   Strategy,
 } from "../../domain/index.js";
 import {
+  LIVE_OPS_AUTONOMOUS_24X7_DECISION_POLICY_ID,
   LIVE_OPS_CLEANUP_PROBE_DECISION_POLICY_ID,
   loadLiveOpsConfig,
 } from "../live-ops-config.js";
 import type {
   LiveOpsConfig,
 } from "../live-ops-config.js";
+import {
+  LIVE_OPS_AUTONOMOUS_24X7_STRATEGY_ID,
+  createLiveOpsAutonomous24x7Strategy,
+} from "./autonomous-24x7.js";
 import {
   LIVE_OPS_CLEANUP_PROBE_STRATEGY_ID,
   createLiveOpsCleanupProbeStrategy,
@@ -99,6 +104,43 @@ export function resolveLiveOpsDecisionPolicy(
     };
   }
 
+  if (policy.id === LIVE_OPS_AUTONOMOUS_24X7_DECISION_POLICY_ID) {
+    const strategy = createLiveOpsAutonomous24x7Strategy({
+      maxEntryNotionalKrw: policy.autonomous_24x7.max_entry_notional_krw,
+      tickSizeKrw: policy.autonomous_24x7.tick_size_krw,
+      entryPriceOffsetTicks: policy.autonomous_24x7.entry_price_offset_ticks,
+      exitPriceOffsetTicks: policy.autonomous_24x7.exit_price_offset_ticks,
+      quantityScale: policy.autonomous_24x7.quantity_scale,
+      minEntryMarginBps: policy.autonomous_24x7.min_entry_margin_bps,
+      trendConfirmationBps: policy.autonomous_24x7.trend_confirmation_bps,
+      meanReversionDiscountBps: policy.autonomous_24x7.mean_reversion_discount_bps,
+      takeProfitBps: policy.autonomous_24x7.take_profit_bps,
+      stopLossBps: policy.autonomous_24x7.stop_loss_bps,
+      trailingStopBps: policy.autonomous_24x7.trailing_stop_bps,
+      maxHoldingMs: policy.autonomous_24x7.max_holding_ms,
+      riskReductionOpenNotionalKrw: policy.autonomous_24x7.risk_reduction_open_notional_krw,
+      riskReductionSellFraction: policy.autonomous_24x7.risk_reduction_sell_fraction,
+      expectedLossBpsOfEquity: policy.autonomous_24x7.expected_loss_bps_of_equity,
+    });
+
+    return {
+      policyId: policy.id,
+      strategies: [strategy],
+      evidence: {
+        policyId: policy.id,
+        strategyIds: [LIVE_OPS_AUTONOMOUS_24X7_STRATEGY_ID],
+        dynamicCodeLoading: false,
+        message: "24/7 autonomous decision policy를 정적 entry/exit strategy로 조립했습니다.",
+        trace: {
+          source: "live_ops_decision_policy_resolver",
+          dynamicCodeLoading: false,
+          entryExitOrder: "exit_before_entry",
+          ...(input.trace ?? {}),
+        },
+      },
+    };
+  }
+
   // schema allowlist가 깨진 경우에도 임의 strategy 실행으로 넘어가지 않고 닫는다.
-  throw new Error(`UnsupportedLiveOpsDecisionPolicy:${String(policy.id)}`);
+  throw new Error("UnsupportedLiveOpsDecisionPolicy");
 }

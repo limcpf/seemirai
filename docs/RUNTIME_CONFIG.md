@@ -1694,5 +1694,39 @@ provider arm을 검증하기 위한 submit/cancel canary이고, 24/7 운영 stra
 - `duration_ms`, `tick_interval_ms`, `max_consecutive_failures`, `transient_backoff_ms` 같은 loop 제어값은 운영 안전값으로 validation한다.
 - `hard_stop_market_sell_enabled` 같은 시장가 청산 toggle은 production small-budget profile에서 허용하지 않는다.
 
-초기 구현의 허용 policy id는 implementation PR에서 schema와 test로 고정한다. 새 strategy를 추가할 때는 allowlist, config schema,
-unit test, fake live integration, paper/live shadow 기준을 함께 추가해야 production 선택이 가능하다.
+현재 허용 policy id는 `cleanup_probe`와 `autonomous_24x7`이다. 새 strategy를 추가할 때는 allowlist, config schema, unit test,
+fake live integration, paper/live shadow 기준을 함께 추가해야 production 선택이 가능하다.
+
+`autonomous_24x7` config shape:
+
+```json
+{
+  "analysis": {
+    "decision_policy": {
+      "id": "autonomous_24x7",
+      "autonomous_24x7": {
+        "max_entry_notional_krw": "10000",
+        "tick_size_krw": "1000",
+        "entry_price_offset_ticks": 1,
+        "exit_price_offset_ticks": 1,
+        "quantity_scale": 8,
+        "min_entry_margin_bps": "10",
+        "trend_confirmation_bps": "20",
+        "mean_reversion_discount_bps": "30",
+        "take_profit_bps": "120",
+        "stop_loss_bps": "80",
+        "trailing_stop_bps": "60",
+        "max_holding_ms": 86400000,
+        "risk_reduction_open_notional_krw": "25000",
+        "risk_reduction_sell_fraction": "0.5",
+        "expected_loss_bps_of_equity": "5"
+      }
+    }
+  }
+}
+```
+
+`autonomous_24x7` strategy는 `StrategyContext.positions`가 0보다 큰 보유 수량을 담고 있으면 take profit, stop loss, trailing stop,
+max holding time, risk reduction rule을 먼저 평가한다. exit 조건이 없으면 `HOLD`로 닫고, entry signal이 강해도 같은 tick에서 BUY를
+만들지 않는다. 미보유 상태에서만 비용 차감 margin, trend confirmation, mean-reversion discount feature를 보고 `BUY + LIMIT +
+POST_ONLY` 후보를 만들 수 있다. 이 strategy는 order intent 생성까지만 담당하며 DB 조회, broker submit, Telegram 전송은 수행하지 않는다.
