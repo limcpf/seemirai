@@ -477,6 +477,22 @@ Telegram, TUI를 같은 lifecycle로 조립하고, 조건을 통과한 단일 `K
         대상으로 포함된다.
   - [x] 관련 unit/script tests, `corepack pnpm exec tsc --noEmit`, `./scripts/verify docs`, `./scripts/verify`, `git diff --check`가 통과한다.
 
+### Sub PR 23: autonomous analysis/runtime final review 보강
+
+- 목표: final main PR review에서 추가로 발견된 autonomous 24/7 분석 차단, BUY runtime evidence, daemon attach/status, SELL 재호가/terminal cancel gap을 닫는다.
+- 제외 범위:
+  - budget 상한 확대, BTC 외 market 활성화, 시장가/best order, 저장소 밖 strategy code, 수동 증적 파일 또는 fixture manifest 요구.
+  - final main PR merge.
+- DnD:
+  - [x] production CLI analysis는 `autonomous_24x7` policy를 cleanup 전용 BLOCK으로 닫지 않고, broker guard 뒤 private read preflight로 position context를 만든다.
+  - [x] autonomous BUY intent는 preflight 기반 CostModel/RiskGate/runtime evidence를 갖춘 뒤 entry runtime으로 전달된다.
+  - [x] autonomous BUY 제출 성공은 cleanup lifecycle로 즉시 취소하지 않고 후속 reconcile/PnL/status loop로 넘긴다.
+  - [x] daemon status file의 top-level `latestSummary`는 `live:ops:tui --attach` source로 읽힌다.
+  - [x] daemon tick status payload도 실제 `statusFilePath`를 보존한다.
+  - [x] SELL 재호가 runtime identifier는 같은 strategy decision key라도 preflight tick scope가 다르면 달라진다.
+  - [x] 이미 terminal cancel/no-fill로 확인된 SELL은 두 번째 cancel 요청 없이 재호가 대기 또는 수동 점검으로 닫는다.
+  - [x] 관련 unit/script tests, `corepack pnpm exec tsc --noEmit`, `./scripts/verify docs`, `./scripts/verify`, `git diff --check`가 통과한다.
+
 ## 검증 방법
 
 공통 검증:
@@ -664,10 +680,14 @@ SEEMIRAI_RUN_LIVE_OPS_REAL_ARM_CLOSEOUT=1 \
 - 2026-06-21: Sub PR 22 final review drain 보강으로 daemon 실패 tick은 status file을 최신 실패 payload로 갱신한다. daemon은 첫 성공
   tick 이후 startup Telegram alert를 반복 생성하지 않는다. SELL exit runtime은 post-submit poll 오류를 broker order id가 있는 수동 점검
   결과로 닫고, SELL 체결/재호가 상태는 private read/reconcile/PnL status 확인 대상으로 포함한다.
+- 2026-06-21: Sub PR 23 final review drain 보강으로 production CLI analysis는 `autonomous_24x7` policy를 cleanup 전용 BLOCK으로
+  닫지 않고 private read preflight position context로 entry/exit를 평가한다. autonomous BUY는 CostModel/RiskGate/runtime evidence를
+  붙여 entry runtime으로 전달하고 cleanup lifecycle로 즉시 취소하지 않는다. daemon status `latestSummary` attach, tick payload
+  `statusFilePath`, SELL 재호가 runtime identifier scope, terminal cancel no-fill 재취소 방지를 추가한다.
 
 ## 남은 이슈
 
-- Sub PR 22 완료 후 final main PR #218의 신규 review finding을 다시 drain해야 한다.
+- Sub PR 23 완료 후 final main PR #218의 신규 review finding을 다시 drain해야 한다.
 - 실제 운영 credential, key scope evidence, operator arm evidence, redacted artifact 경로는 저장소 밖 운영 vault에 있어야 한다.
 - 실제 주문 제출/취소 closeout은 저장소 밖 운영 config/env로 foreground `live:ops`를 실행한 뒤 자동 생성 artifact와 closeout manifest로
   검증한다.

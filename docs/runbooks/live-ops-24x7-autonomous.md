@@ -56,13 +56,14 @@
 4. Upbit private read로 계정 전체 open order, balance, position source를 확인한다.
 5. 기존 open order나 mismatch가 있으면 신규 entry/exit를 중지하고 manual review로 닫는다.
 6. PnL/status가 stale 또는 partial이면 새 주문을 만들지 않는다.
-7. 보유 포지션이 있으면 exit policy를 먼저 평가한다.
-8. 보유 포지션이 없거나 추가 진입이 허용되면 entry policy를 평가한다.
-9. order intent는 cost/risk/budget/reconcile/kill switch guard를 통과해야 한다.
-10. 통과한 단일 intent만 broker submit으로 전진한다.
-11. 미체결 주문은 bounded timeout 안에서 cancel/requote 또는 manual review로 닫는다.
-12. 매 tick마다 decision ledger, status summary, Telegram alert 후보, redacted artifact를 자동 생성한다.
-13. daemon 시작 후 startup Telegram 후보는 첫 성공 tick에만 만들고, idle tick마다 반복 전송하지 않는다.
+7. `autonomous_24x7` 분석은 key scope guard를 통과한 뒤 private read preflight의 balance/open order/PnL/reconcile snapshot으로 position context를 만든다.
+8. 보유 포지션이 있으면 exit policy를 먼저 평가한다.
+9. 보유 포지션이 없거나 추가 진입이 허용되면 entry policy를 평가한다.
+10. order intent는 cost/risk/budget/reconcile/kill switch guard를 통과해야 한다.
+11. 통과한 단일 intent만 broker submit으로 전진한다.
+12. 미체결 SELL 주문은 bounded timeout 안에서 cancel/requote 또는 manual review로 닫는다. autonomous BUY는 cleanup probe처럼 즉시 취소하지 않는다.
+13. 매 tick마다 decision ledger, status summary, Telegram alert 후보, redacted artifact를 자동 생성한다.
+14. daemon 시작 후 startup Telegram 후보는 첫 성공 tick에만 만들고, idle tick마다 반복 전송하지 않는다.
 
 daemon loop는 1회성 cleanup probe가 아니다. 명시한 `--duration-ms`나 `--max-ticks`가 없으면 계속 반복하며, HOLD/차단/수동 확인/일시
 실패별로 다른 sleep을 둔다. 기본 tick 간격은 1초이고, 차단은 5초, 수동 확인은 30초, provider/DB 일시 실패는 5초 후 재시도한다.
@@ -70,6 +71,7 @@ daemon loop는 1회성 cleanup probe가 아니다. 명시한 `--duration-ms`나 
 production에서 `--status-file`을 지정하지 않으면 config 파일이 있는 디렉터리의 `artifacts/live-ops-daemon-status.json`을 출력 상태로
 자동 생성한다. 이 파일은 실행 전 준비물이 아니며, 감시자나 operator가 최신 counter를 읽기 위한 결과물이다. 성공 tick 뒤 provider/DB
 일시 실패가 발생해도 같은 status file은 `transient_failure`, 최신 counter, 최신 error로 갱신되어 직전 정상 tick 상태로 남지 않는다.
+`live:ops:tui --attach <status-json>`은 foreground summary뿐 아니라 daemon status의 top-level `latestSummary`도 읽는다.
 
 ## Entry DnD
 
@@ -77,6 +79,8 @@ production에서 `--status-file`을 지정하지 않으면 config 파일이 있�
 - [x] `cleanup_probe`와 별개인 production entry strategy allowlist가 있다.
 - [x] entry strategy는 `HOLD`, `BLOCK`, `ORDER_INTENT`를 구분하고 모두 decision ledger에 남긴다.
 - [x] entry intent는 `KRW-BTC`, `BUY`, `LIMIT`, `POST_ONLY`, 10,000 KRW 이하만 허용한다.
+- [x] autonomous BUY intent는 preflight 기반 CostModel/RiskGate/runtime evidence가 붙은 뒤에만 entry runtime으로 전달된다.
+- [x] autonomous BUY 제출 성공은 cleanup lifecycle로 즉시 취소하지 않고, 후속 reconcile/PnL/status loop로 넘긴다.
 - [x] stale market data, stale PnL, reconcile mismatch, open order, budget 초과, kill switch는 broker 호출 전에 차단한다.
 
 ## Exit DnD
@@ -86,6 +90,8 @@ production에서 `--status-file`을 지정하지 않으면 config 파일이 있�
 - [x] exit intent는 보유 수량 이하의 `SELL + LIMIT + POST_ONLY`만 허용한다.
 - [x] exit 미체결은 bounded cancel/requote 정책으로 닫고, terminal 확인 실패는 manual review로 격상한다.
 - [x] exit submit 이후 상태 조회가 실패하면 broker order id를 보존한 manual review summary로 닫는다.
+- [x] exit 재호가 attempt는 취소된 주문과 같은 strategy decision key를 쓰더라도 preflight tick scope가 다른 runtime identifier를 사용한다.
+- [x] 이미 terminal cancel/no-fill로 확인된 SELL은 다시 취소하지 않고 재호가 대기 또는 수동 점검으로 닫는다.
 - [x] exit 체결 또는 cancel/requote 확인 뒤에는 private read, reconcile, PnL status를 다시 읽어 포지션과 open order 상태를 확인한다.
 - [x] hard stop은 신규 주문 차단과 manual review를 만들 수 있지만, 시장가 자동 청산을 만들지 않는다.
 

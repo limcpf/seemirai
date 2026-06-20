@@ -23,6 +23,7 @@ const liveOpsCliPreflightReconcileFreshnessMs = 30_000;
 const liveOpsCliPreflightPnlFreshnessMs = 30_000;
 const liveOpsCliPreflightPnlFutureSkewMs = 1_000;
 const liveOpsCliProcessOwner = createLiveOpsCliProcessOwnerSnapshot(process.pid);
+const liveOpsCliAutonomous24x7StrategyId = "live_ops_autonomous_24x7_core";
 const liveOpsWorkerLabels = {
   db_readiness: "DB readiness",
   market_data: "시세 수집",
@@ -196,11 +197,6 @@ export async function loadLiveOpsCliInputs(options) {
   });
   assertLiveOpsCliMarketDataReady(marketData, { fixtureSmoke: options.fixtureSmoke });
 
-  const analysisDecision = await evaluateLiveOpsCliAnalysisDecision({
-    config,
-    fixtureSmoke: options.fixtureSmoke,
-    marketData,
-  });
   const productionBrokerGuard = evaluateLiveOpsCliBrokerGuard({
     config,
     env,
@@ -222,6 +218,19 @@ export async function loadLiveOpsCliInputs(options) {
           cancelPollCount: options.cancelPollCount,
           cancelPollIntervalMs: options.cancelPollIntervalMs,
         });
+    const autonomousAnalysisPreflight = await collectLiveOpsCliAutonomousAnalysisPreflight({
+      config,
+      fixtureSmoke: options.fixtureSmoke,
+      marketData,
+      productionRuntime,
+    });
+    const analysisDecision = await evaluateLiveOpsCliAnalysisDecision({
+      config,
+      fixtureSmoke: options.fixtureSmoke,
+      marketData,
+      productionPreflight: autonomousAnalysisPreflight?.preflight,
+      productionPreflightError: autonomousAnalysisPreflight?.error,
+    });
     const productionExecutionInputs = await createLiveOpsCliProductionExecutionInputs({
       config,
       env,
@@ -230,6 +239,7 @@ export async function loadLiveOpsCliInputs(options) {
       marketData,
       orderIntents: getLiveOpsCliAnalysisOrderIntents(analysisDecision),
       productionRuntime,
+      preflight: autonomousAnalysisPreflight?.preflight,
     });
     const liveExecution = await evaluateLiveOpsCliLiveExecution({
       config,
@@ -298,7 +308,7 @@ async function loadLiveOpsCliAttachReadonlyInputs({ configPath, envFilePath, con
   } catch (error) {
     throw new Error(`attach status source를 읽지 못해 TUI attach를 중단합니다: ${safeErrorName(error)}`);
   }
-  const summary = source?.summary ?? source;
+  const summary = source?.summary ?? source?.latestSummary ?? source;
   assertLiveOpsCliAttachStatusSource(summary);
   return {
     configPath,
@@ -779,6 +789,37 @@ export async function createLiveOpsCliProductionRuntime({
   };
 }
 
+async function collectLiveOpsCliAutonomousAnalysisPreflight({
+  config,
+  fixtureSmoke,
+  marketData,
+  productionRuntime,
+}) {
+  if (fixtureSmoke || !isLiveOpsCliAutonomous24x7Policy(config) || productionRuntime === undefined) {
+    return undefined;
+  }
+
+  const observedAt = new Date().toISOString();
+  try {
+    return {
+      preflight: await collectLiveOpsCliProductionPreflight({
+        config,
+        marketData,
+        productionRuntime,
+        observedAt,
+      }),
+    };
+  } catch (error) {
+    return {
+      error: {
+        name: safeErrorName(error),
+        message: error instanceof Error ? error.message : String(error),
+        observedAt,
+      },
+    };
+  }
+}
+
 export async function createLiveOpsCliProductionExecutionInputs({
   config,
   env = {},
@@ -787,6 +828,7 @@ export async function createLiveOpsCliProductionExecutionInputs({
   marketData,
   orderIntents,
   productionRuntime,
+  preflight: providedPreflight,
 }) {
   const base = {
     orderIntents,
@@ -818,7 +860,7 @@ export async function createLiveOpsCliProductionExecutionInputs({
   try {
     // freshness와 일일 예산 기준일은 시장 이벤트 시각이 아니라 실제 제출 직전 wall clock으로 닫아야 한다.
     const preflightObservedAt = new Date().toISOString();
-    const preflight = await collectLiveOpsCliProductionPreflight({
+    const preflight = providedPreflight ?? await collectLiveOpsCliProductionPreflight({
       config,
       marketData,
       productionRuntime,
@@ -1025,7 +1067,7 @@ async function refreshLiveOpsCliPreflightPnlStatusIfNeeded({
 function attachLiveOpsCliRuntimeEvidence({ config, orderIntents, preflight }) {
   return orderIntents.map((intent) => {
     if (intent?.strategyId !== "live_ops_cleanup_probe") {
-      return attachLiveOpsCliAutonomousExitRuntimeEvidence({
+      return attachLiveOpsCliAutonomousRuntimeEvidence({
         config,
         intent,
         preflight,
@@ -1045,12 +1087,45 @@ function attachLiveOpsCliRuntimeEvidence({ config, orderIntents, preflight }) {
   });
 }
 
-function attachLiveOpsCliAutonomousExitRuntimeEvidence({ config, intent, preflight }) {
-  if (intent?.side !== "SELL") {
+function attachLiveOpsCliAutonomousRuntimeEvidence({ config, intent, preflight }) {
+  if (intent?.side === "BUY") {
+    return attachLiveOpsCliAutonomousEntryRuntimeEvidence({ config, intent, preflight });
+  }
+  if (intent?.side === "SELL") {
+    return attachLiveOpsCliAutonomousExitRuntimeEvidence({ config, intent, preflight });
+  }
+  return intent;
+}
+
+function attachLiveOpsCliAutonomousEntryRuntimeEvidence({ config, intent, preflight }) {
+  if (intent?.strategyId !== liveOpsCliAutonomous24x7StrategyId) {
     return intent;
   }
 
-  const runtimeIntent = createLiveOpsCliExitRuntimeIntent(intent);
+  const runtimeIntent = createLiveOpsCliAutonomousEntryRuntimeIntent({
+    intent,
+    observedAt: preflight.observedAt,
+  });
+  const risk = runtimeIntent.risk ?? createLiveOpsCliCleanupRiskInput({
+    config,
+    intent: runtimeIntent,
+    preflight,
+  });
+  return attachLiveOpsCliEntryRuntimeApprovalEvidence({
+    ...runtimeIntent,
+    costInput: runtimeIntent.costInput ?? createLiveOpsCliAutonomousEntryCostInput(runtimeIntent),
+    risk,
+  });
+}
+
+function attachLiveOpsCliAutonomousExitRuntimeEvidence({ config, intent, preflight }) {
+  if (intent?.strategyId !== liveOpsCliAutonomous24x7StrategyId) {
+    return intent;
+  }
+
+  const runtimeIntent = createLiveOpsCliExitRuntimeIntent(intent, {
+    observedAt: preflight.observedAt,
+  });
   const risk = runtimeIntent.risk ?? createLiveOpsCliExitRiskInput({
     config,
     intent: runtimeIntent,
@@ -1064,6 +1139,22 @@ function attachLiveOpsCliAutonomousExitRuntimeEvidence({ config, intent, preflig
       intent: runtimeIntent,
       risk,
     }),
+  };
+}
+
+function createLiveOpsCliAutonomousEntryRuntimeIntent({ intent, observedAt }) {
+  return {
+    ...intent,
+    metadata: {
+      ...(intent?.metadata ?? {}),
+      analysis_idempotency_key: hasMeaningfulValue(intent?.metadata?.analysis_idempotency_key)
+        ? intent.metadata.analysis_idempotency_key
+        : intent?.idempotencyKey,
+      idempotency_date_scope: readLiveOpsCliRuntimeDateScope(observedAt),
+      idempotency_date_source: "live_ops_runtime_preflight",
+      idempotency_observed_at: observedAt,
+      runtime_idempotency_source: "live_ops_cli_autonomous_entry_runtime",
+    },
   };
 }
 
@@ -1102,6 +1193,10 @@ function attachLiveOpsCliCleanupRuntimeApprovalEvidence(intent) {
     return intent;
   }
 
+  return attachLiveOpsCliEntryRuntimeApprovalEvidence(intent);
+}
+
+function attachLiveOpsCliEntryRuntimeApprovalEvidence(intent) {
   const evidence = createLiveOpsCliOrderIntentEvidence(intent);
   const costSnapshot = intent.costSnapshot ?? {};
   const riskApproval = intent.riskApproval ?? {};
@@ -1147,6 +1242,16 @@ function attachLiveOpsCliCleanupRuntimeApprovalEvidence(intent) {
         : [],
       order_intent: riskOrderIntentEvidence,
     },
+  };
+}
+
+function createLiveOpsCliAutonomousEntryCostInput(intent) {
+  const expectedReturnBps = isNonNegativeDecimalString(intent?.metadata?.cost_adjusted_margin_bps)
+    ? String(intent.metadata.cost_adjusted_margin_bps)
+    : "0";
+  return {
+    ...createLiveOpsCliCleanupCostInput(),
+    expectedReturnBps,
   };
 }
 
@@ -1226,17 +1331,32 @@ function readLiveOpsCliCleanupRuntimeObservedAt(orderIntents) {
   return undefined;
 }
 
-function createLiveOpsCliExitRuntimeIntent(intent) {
-  const runtimeIdempotencyKey = createLiveOpsCliAttemptId(intent?.idempotencyKey);
+function createLiveOpsCliExitRuntimeIntent(intent, { observedAt } = {}) {
+  if (
+    intent?.metadata?.runtime_idempotency_source === "live_ops_cli_exit_runtime" &&
+    isLiveOpsCliLiveAttemptId(intent?.idempotencyKey)
+  ) {
+    return intent;
+  }
+
+  const decisionIdempotencyKey = hasMeaningfulValue(intent?.metadata?.decision_idempotency_key)
+    ? intent.metadata.decision_idempotency_key
+    : intent?.idempotencyKey;
+  const runtimeAttemptScope = hasMeaningfulValue(observedAt)
+    ? String(observedAt)
+    : readLiveOpsCliRuntimeObservedAt(intent?.metadata?.idempotency_observed_at);
+  const runtimeSourceKey = hasMeaningfulValue(runtimeAttemptScope)
+    ? [decisionIdempotencyKey, "exit-requote-scope", runtimeAttemptScope].join(":")
+    : decisionIdempotencyKey;
+  const runtimeIdempotencyKey = createLiveOpsCliAttemptId(runtimeSourceKey);
   return {
     ...intent,
     idempotencyKey: runtimeIdempotencyKey,
     metadata: {
       ...(intent?.metadata ?? {}),
       // SELL도 broker identifier와 strategy decision key를 분리해야 Upbit 32자 identifier 제한을 넘지 않는다.
-      decision_idempotency_key: hasMeaningfulValue(intent?.metadata?.decision_idempotency_key)
-        ? intent.metadata.decision_idempotency_key
-        : intent?.idempotencyKey,
+      decision_idempotency_key: decisionIdempotencyKey,
+      ...(hasMeaningfulValue(runtimeAttemptScope) ? { exit_runtime_attempt_scope: runtimeAttemptScope } : {}),
       runtime_idempotency_source: "live_ops_cli_exit_runtime",
     },
   };
@@ -4067,7 +4187,7 @@ export async function evaluateLiveOpsCliLiveExecution({
       },
     ],
   };
-  if (submitted && cleanupLifecycle !== undefined) {
+  if (submitted && cleanupLifecycle !== undefined && intent.strategyId === "live_ops_cleanup_probe") {
     try {
       // cleanup_probe 실주문은 제출 성공을 최종 readiness로 보지 않고 같은 runtime에서 취소와 terminal 확인까지 닫는다.
       return await cleanupLifecycle({
@@ -4560,6 +4680,30 @@ export function createLiveOpsCliExitRuntime({
           message: "SELL 주문이 bounded wait 안에서 체결됐습니다.",
           action: "다음 daemon tick에서 포지션, PnL, reconcile 상태를 다시 평가합니다.",
           filledAt: clock(),
+        };
+      }
+      if (isLiveOpsCliTerminalCancelStatus(fillProbe.order?.status)) {
+        if (isLiveOpsCliCleanTerminalCancel({ submittedOrder: brokerOrder, terminalOrder: fillProbe.order })) {
+          return {
+            status: "CANCELED_FOR_REQUOTE",
+            statusLabel: "재호가 대기",
+            brokerOrderId: brokerOrder.brokerOrderId,
+            manualReviewRequired: false,
+            message: "SELL 주문이 이미 terminal cancel/no-fill 상태라 추가 취소 없이 다음 tick 재호가 대기로 전환했습니다.",
+            action: "다음 daemon tick에서 보유 수량과 최신 호가로 SELL 여부를 다시 판단합니다.",
+            cancelOrder: undefined,
+            terminalOrder: fillProbe.order,
+          };
+        }
+        return {
+          status: "MANUAL_REVIEW_REQUIRED",
+          statusLabel: "수동 점검",
+          brokerOrderId: brokerOrder.brokerOrderId,
+          manualReviewRequired: true,
+          message: "SELL 주문이 이미 terminal cancel 상태지만 no-fill fingerprint가 맞지 않아 수동 점검 상태로 전환했습니다.",
+          action: "부분 체결, 수동 취소, 잔고 mismatch 여부를 reconcile한 뒤 다음 재호가 여부를 결정하세요.",
+          reason: fillProbe.reason,
+          terminalOrder: fillProbe.order,
         };
       }
 
@@ -6173,6 +6317,13 @@ function isDecimalString(value) {
   }
 }
 
+function readLiveOpsCliOptionalDecimal(value) {
+  if (!isDecimalString(value)) {
+    return undefined;
+  }
+  return new Decimal(value);
+}
+
 function hasDecimalComparableValue(value) {
   return typeof value === "string" && value.trim().length > 0;
 }
@@ -7419,7 +7570,13 @@ function isLiveOpsCliLifecycleAlert(eventKind) {
   ].includes(eventKind);
 }
 
-export async function evaluateLiveOpsCliAnalysisDecision({ config, fixtureSmoke, marketData }) {
+export async function evaluateLiveOpsCliAnalysisDecision({
+  config,
+  fixtureSmoke,
+  marketData,
+  productionPreflight,
+  productionPreflightError,
+}) {
   const market = config.universe?.default_market ?? "KRW-BTC";
 
   if (marketData.ready !== true) {
@@ -7450,10 +7607,12 @@ export async function evaluateLiveOpsCliAnalysisDecision({ config, fixtureSmoke,
 
   const latestDecisionAt = new Date().toISOString();
   if (!fixtureSmoke) {
-    return evaluateLiveOpsCliCleanupProbeAnalysisDecision({
+    return evaluateLiveOpsCliProductionAnalysisDecision({
       config,
       marketData,
       observedAt: latestDecisionAt,
+      productionPreflight,
+      productionPreflightError,
     });
   }
 
@@ -7487,6 +7646,30 @@ export async function evaluateLiveOpsCliAnalysisDecision({ config, fixtureSmoke,
       },
     ],
   }, []);
+}
+
+function evaluateLiveOpsCliProductionAnalysisDecision({
+  config,
+  marketData,
+  observedAt,
+  productionPreflight,
+  productionPreflightError,
+}) {
+  if (isLiveOpsCliAutonomous24x7Policy(config)) {
+    return evaluateLiveOpsCliAutonomous24x7AnalysisDecision({
+      config,
+      marketData,
+      observedAt: productionPreflight?.observedAt ?? observedAt,
+      productionPreflight,
+      productionPreflightError,
+    });
+  }
+
+  return evaluateLiveOpsCliCleanupProbeAnalysisDecision({
+    config,
+    marketData,
+    observedAt,
+  });
 }
 
 function evaluateLiveOpsCliCleanupProbeAnalysisDecision({ config, marketData, observedAt }) {
@@ -7567,8 +7750,471 @@ function evaluateLiveOpsCliCleanupProbeAnalysisDecision({ config, marketData, ob
 function readLiveOpsCliDecisionPolicyEvidence(policy) {
   return {
     policyId: policy?.id ?? "unknown",
-    strategyIds: policy?.id === "cleanup_probe" ? ["live_ops_cleanup_probe"] : [],
+    strategyIds: policy?.id === "cleanup_probe"
+      ? ["live_ops_cleanup_probe"]
+      : policy?.id === "autonomous_24x7"
+        ? [liveOpsCliAutonomous24x7StrategyId]
+        : [],
     dynamicCodeLoading: false,
+  };
+}
+
+function isLiveOpsCliAutonomous24x7Policy(config) {
+  return config?.analysis?.decision_policy?.id === "autonomous_24x7";
+}
+
+function evaluateLiveOpsCliAutonomous24x7AnalysisDecision({
+  config,
+  marketData,
+  observedAt,
+  productionPreflight,
+  productionPreflightError,
+}) {
+  const market = config.universe?.default_market ?? "KRW-BTC";
+  const policy = config.analysis?.decision_policy;
+  const policyEvidence = readLiveOpsCliDecisionPolicyEvidence(policy);
+  const decision = evaluateLiveOpsCliAutonomous24x7Strategy({
+    config,
+    marketData,
+    observedAt,
+    policy: policy?.autonomous_24x7,
+    productionPreflight,
+    productionPreflightError,
+  });
+  const orderIntents = decision.kind === "ORDER_INTENT" ? decision.orderIntents : [];
+  const decisionCategory = decision.kind === "ORDER_INTENT"
+    ? "ORDER_INTENT"
+    : decision.kind === "BLOCK"
+      ? "BLOCKED"
+      : "HOLD";
+  const ready = decision.kind !== "BLOCK";
+
+  return attachLiveOpsCliAnalysisOrderIntents({
+    status: ready ? "ready" : "blocked",
+    ready,
+    market,
+    observedAt,
+    latestDecisionAt: observedAt,
+    decisionCategory,
+    featureStatus: decision.featureStatus ?? "ok",
+    evaluatedStrategyCount: 1,
+    holdCount: decision.kind === "HOLD" ? 1 : 0,
+    blockCount: decision.kind === "BLOCK" ? 1 : 0,
+    orderIntentCount: orderIntents.length,
+    recordHoldDecision: config.analysis?.record_hold_decision === true && orderIntents.length === 0,
+    decisionSourceConnected: true,
+    message: toLiveOpsCliAnalysisDecisionMessage(decisionCategory, orderIntents.length),
+    checks: [
+      {
+        name: "market_data",
+        status: "ok",
+        code: "live_ops_market_data_ready",
+        message: "DB-backed market data freshness summary를 확인했습니다.",
+        details: {
+          latestHeartbeatAt: marketData.latestHeartbeatAt,
+          tradeCount: marketData.persisted?.tradeCount ?? 0,
+          orderbookCount: marketData.persisted?.orderbookCount ?? 0,
+        },
+      },
+      {
+        name: "decision_policy",
+        status: "ok",
+        code: "live_ops_decision_policy_resolved",
+        message: "24/7 autonomous decision policy를 정적 entry/exit strategy로 조립했습니다.",
+        details: policyEvidence,
+      },
+      {
+        name: "strategy_decision",
+        status: ready ? "ok" : "blocked",
+        code: ready ? "live_ops_strategy_decision_ok" : "live_ops_strategy_decision_blocked",
+        message: ready ? "production 24/7 strategy decision 평가를 완료했습니다." : "24/7 strategy decision이 후보 생성을 차단했습니다.",
+        details: {
+          strategyId: liveOpsCliAutonomous24x7StrategyId,
+          decisionKind: decision.kind,
+          orderIntentCount: orderIntents.length,
+          reason: decision.reason,
+        },
+      },
+    ],
+    trace: {
+      source: "live_ops_cli_analysis_decision",
+      marketDataSourceProfile: marketData.sourceProfile,
+      decisionSourceConnected: true,
+      policyId: policy?.id ?? null,
+      dynamicCodeLoading: false,
+    },
+  }, orderIntents);
+}
+
+function evaluateLiveOpsCliAutonomous24x7Strategy({
+  config,
+  marketData,
+  observedAt,
+  policy,
+  productionPreflight,
+  productionPreflightError,
+}) {
+  if (policy === undefined) {
+    return liveOpsCliStrategyBlock("autonomous_24x7_policy_missing", { policyId: config.analysis?.decision_policy?.id ?? null });
+  }
+  if (productionPreflightError !== undefined) {
+    return {
+      ...liveOpsCliStrategyBlock("autonomous_24x7_private_read_failed", productionPreflightError),
+      featureStatus: "not_run",
+    };
+  }
+  if (productionPreflight === undefined) {
+    return {
+      ...liveOpsCliStrategyBlock("autonomous_24x7_position_snapshot_missing", { positions_present: false }),
+      featureStatus: "not_run",
+    };
+  }
+
+  const orderbook = readLiveOpsCliLatestOrderbook(marketData);
+  if (orderbook === undefined) {
+    return liveOpsCliStrategyHold("autonomous_24x7_orderbook_missing", { market: config.universe?.default_market ?? "KRW-BTC" });
+  }
+
+  const position = createLiveOpsCliAutonomousPositionSnapshot({
+    preflight: productionPreflight,
+    policy,
+    observedAt,
+  });
+  if (position.kind === "blocked") {
+    return liveOpsCliStrategyBlock(position.reasonCode, position.metadata);
+  }
+  if (new Decimal(position.quantity).gt(0)) {
+    return evaluateLiveOpsCliAutonomousExitPolicy({
+      config,
+      orderbook,
+      observedAt,
+      policy,
+      position,
+    });
+  }
+
+  return evaluateLiveOpsCliAutonomousEntryPolicy({
+    config,
+    marketData,
+    orderbook,
+    observedAt,
+    policy,
+  });
+}
+
+function createLiveOpsCliAutonomousPositionSnapshot({ preflight, policy, observedAt }) {
+  const exposure = preflight.heldPositionExposure;
+  if (exposure?.valuationMissing === true) {
+    return {
+      kind: "blocked",
+      reasonCode: "autonomous_24x7_position_valuation_missing",
+      metadata: {
+        market: exposure.market,
+        currency: exposure.currency,
+        capturedAt: exposure.capturedAt ?? observedAt,
+      },
+    };
+  }
+  if (!isNonNegativeDecimalString(exposure?.quantity) || !isNonNegativeDecimalString(exposure?.notionalKrw)) {
+    return {
+      kind: "blocked",
+      reasonCode: "autonomous_24x7_position_snapshot_invalid",
+      metadata: {
+        positions_present: true,
+        capturedAt: exposure?.capturedAt ?? observedAt,
+      },
+    };
+  }
+
+  const quantity = new Decimal(exposure.quantity);
+  const currentNotional = new Decimal(exposure.notionalKrw);
+  const averageEntryPrice = quantity.gt(0)
+    ? currentNotional.div(quantity)
+    : new Decimal(0);
+  return {
+    kind: "ok",
+    quantity: quantity.toFixed(),
+    averageEntryPrice: averageEntryPrice.toFixed(),
+    highWatermarkPrice: averageEntryPrice.toFixed(),
+    openPositionNotionalKrw: currentNotional.toFixed(),
+    openedAt: exposure.capturedAt ?? observedAt,
+    riskReductionOpenNotionalKrw: policy.risk_reduction_open_notional_krw,
+  };
+}
+
+function evaluateLiveOpsCliAutonomousEntryPolicy({ config, marketData, orderbook, observedAt, policy }) {
+  const bestBid = readLiveOpsCliBestBid(orderbook);
+  if (bestBid === undefined) {
+    return liveOpsCliStrategyHold("autonomous_24x7_entry_best_bid_missing", {
+      bid_level_count: orderbook.bids?.length ?? 0,
+    });
+  }
+
+  const features = createLiveOpsCliAutonomousFeatureSnapshot({ marketData, orderbook, policy });
+  const signal = evaluateLiveOpsCliAutonomousEntrySignal({ features, policy });
+  if (!signal.ready) {
+    return liveOpsCliStrategyHold("autonomous_24x7_entry_signal_weak", signal.metadata);
+  }
+
+  const sizing = createLiveOpsCliAutonomousLimitSizing({
+    side: "BUY",
+    requestedPrice: bestBid.minus(new Decimal(policy.tick_size_krw).mul(policy.entry_price_offset_ticks)),
+    maxNotionalKrw: new Decimal(policy.max_entry_notional_krw),
+    quantityScale: policy.quantity_scale,
+  });
+  if (sizing.kind === "blocked") {
+    return liveOpsCliStrategyBlock(sizing.reasonCode, sizing.metadata);
+  }
+
+  const intent = createLiveOpsCliAutonomousLimitIntent({
+    side: "BUY",
+    reason: "autonomous_24x7_entry_signal",
+    requestedPrice: sizing.requestedPrice,
+    requestedQuantity: sizing.requestedQuantity,
+    requestedNotional: sizing.requestedNotional,
+    referencePrice: marketData.referencePrice ?? calculateLiveOpsCliOrderbookMid(orderbook),
+    observedAt,
+    metadata: {
+      source: "live_ops_autonomous_24x7",
+      policy_id: "autonomous_24x7",
+      expected_loss_bps_of_equity: policy.expected_loss_bps_of_equity,
+      best_bid_price: bestBid.toFixed(),
+      ...signal.metadata,
+    },
+  });
+
+  return {
+    kind: "ORDER_INTENT",
+    strategyId: liveOpsCliAutonomous24x7StrategyId,
+    reason: "autonomous_24x7_entry_signal",
+    orderIntents: [intent],
+    metadata: {
+      source: "live_ops_autonomous_24x7",
+      phase: "entry",
+      intent_count: 1,
+    },
+  };
+}
+
+function evaluateLiveOpsCliAutonomousExitPolicy({ config, orderbook, observedAt, policy, position }) {
+  const bestAsk = readLiveOpsCliBestAsk(orderbook);
+  if (bestAsk === undefined) {
+    return liveOpsCliStrategyHold("autonomous_24x7_exit_orderbook_incomplete", {
+      ask_level_count: orderbook.asks?.length ?? 0,
+    });
+  }
+
+  const openNotional = new Decimal(position.openPositionNotionalKrw);
+  if (openNotional.lt(new Decimal(policy.risk_reduction_open_notional_krw))) {
+    return liveOpsCliStrategyHold("autonomous_24x7_position_hold", {
+      source: "live_ops_autonomous_24x7",
+      quantity: position.quantity,
+      open_position_notional_krw: openNotional.toFixed(),
+    });
+  }
+
+  const requestedPrice = bestAsk.plus(new Decimal(policy.tick_size_krw).mul(policy.exit_price_offset_ticks));
+  const targetQuantity = new Decimal(position.quantity)
+    .mul(policy.risk_reduction_sell_fraction)
+    .toDecimalPlaces(policy.quantity_scale, Decimal.ROUND_DOWN);
+  const requestedQuantity = Decimal.min(
+    targetQuantity,
+    new Decimal(policy.max_entry_notional_krw).div(requestedPrice),
+  ).toDecimalPlaces(policy.quantity_scale, Decimal.ROUND_DOWN);
+  const sizing = createLiveOpsCliAutonomousLimitSizing({
+    side: "SELL",
+    requestedPrice,
+    requestedQuantity,
+    maxNotionalKrw: new Decimal(policy.max_entry_notional_krw),
+    quantityScale: policy.quantity_scale,
+  });
+  if (sizing.kind === "blocked") {
+    return liveOpsCliStrategyBlock(sizing.reasonCode, sizing.metadata);
+  }
+
+  const intent = createLiveOpsCliAutonomousLimitIntent({
+    side: "SELL",
+    reason: "autonomous_24x7_risk_reduction",
+    requestedPrice: sizing.requestedPrice,
+    requestedQuantity: sizing.requestedQuantity,
+    requestedNotional: sizing.requestedNotional,
+    referencePrice: calculateLiveOpsCliOrderbookMid(orderbook),
+    observedAt,
+    metadata: {
+      source: "live_ops_autonomous_24x7",
+      policy_id: "autonomous_24x7",
+      expected_loss_bps_of_equity: policy.expected_loss_bps_of_equity,
+      position_effect: requestedQuantity.eq(new Decimal(position.quantity)) ? "EXIT" : "REDUCE",
+      exit_reason_code: "autonomous_24x7_risk_reduction",
+      exit_rule_id: "risk_reduction",
+      exit_cost_bps: "0",
+      exit_slippage_bps: "0",
+      position_scope: {
+        market: config.universe?.default_market ?? "KRW-BTC",
+        strategy_id: liveOpsCliAutonomous24x7StrategyId,
+        total_quantity: position.quantity,
+      },
+      exit_target_quantity: targetQuantity.toFixed(),
+      exit_chunked: requestedQuantity.lt(targetQuantity) ? "true" : "false",
+      open_position_notional_krw: openNotional.toFixed(),
+      average_entry_price: position.averageEntryPrice,
+    },
+  });
+
+  return {
+    kind: "ORDER_INTENT",
+    strategyId: liveOpsCliAutonomous24x7StrategyId,
+    reason: "autonomous_24x7_risk_reduction",
+    orderIntents: [intent],
+    metadata: {
+      source: "live_ops_autonomous_24x7",
+      phase: "exit",
+      intent_count: 1,
+    },
+  };
+}
+
+function createLiveOpsCliAutonomousFeatureSnapshot({ marketData, orderbook, policy }) {
+  const provided = marketData?.autonomousFeatures ?? marketData?.features;
+  if (isNonEmptyRecord(provided)) {
+    return provided;
+  }
+
+  const bestBid = readLiveOpsCliBestBid(orderbook);
+  const referencePrice = isPositiveDecimalString(marketData?.referencePrice)
+    ? new Decimal(marketData.referencePrice)
+    : new Decimal(calculateLiveOpsCliOrderbookMid(orderbook) ?? "0");
+  const requestedPrice = bestBid === undefined
+    ? referencePrice
+    : bestBid.minus(new Decimal(policy.tick_size_krw).mul(policy.entry_price_offset_ticks));
+  const meanReversionDiscount = referencePrice.gt(0)
+    ? Decimal.max(0, referencePrice.minus(requestedPrice).div(referencePrice).mul(10_000))
+    : new Decimal(0);
+
+  return {
+    cost_adjusted_margin_bps: meanReversionDiscount.toFixed(),
+    trend_strength_bps: "0",
+    mean_reversion_discount_bps: meanReversionDiscount.toFixed(),
+  };
+}
+
+function evaluateLiveOpsCliAutonomousEntrySignal({ features, policy }) {
+  const margin = readLiveOpsCliOptionalDecimal(features.cost_adjusted_margin_bps) ?? new Decimal(0);
+  const trend = readLiveOpsCliOptionalDecimal(features.trend_strength_bps) ?? new Decimal(0);
+  const meanReversion = readLiveOpsCliOptionalDecimal(features.mean_reversion_discount_bps) ?? new Decimal(0);
+  const marginReady = margin.gte(new Decimal(policy.min_entry_margin_bps));
+  const trendReady = trend.gte(new Decimal(policy.trend_confirmation_bps));
+  const meanReversionReady = meanReversion.gte(new Decimal(policy.mean_reversion_discount_bps));
+  return {
+    ready: marginReady && (trendReady || meanReversionReady),
+    metadata: {
+      cost_adjusted_margin_bps: margin.toFixed(),
+      trend_strength_bps: trend.toFixed(),
+      mean_reversion_discount_bps: meanReversion.toFixed(),
+      min_entry_margin_bps: String(policy.min_entry_margin_bps),
+      trend_confirmation_bps: String(policy.trend_confirmation_bps),
+      mean_reversion_discount_bps_threshold: String(policy.mean_reversion_discount_bps),
+    },
+  };
+}
+
+function createLiveOpsCliAutonomousLimitSizing({
+  side,
+  requestedPrice,
+  requestedQuantity,
+  maxNotionalKrw,
+  quantityScale,
+}) {
+  if (!requestedPrice.gt(0)) {
+    return {
+      kind: "blocked",
+      reasonCode: `autonomous_24x7_${side.toLowerCase()}_price_invalid`,
+      metadata: { requestedPrice: requestedPrice.toFixed() },
+    };
+  }
+  const quantity = requestedQuantity === undefined
+    ? maxNotionalKrw.div(requestedPrice).toDecimalPlaces(quantityScale, Decimal.ROUND_DOWN)
+    : requestedQuantity.toDecimalPlaces(quantityScale, Decimal.ROUND_DOWN);
+  const requestedNotional = requestedPrice.mul(quantity);
+  if (!quantity.gt(0) || requestedNotional.lt(5_000)) {
+    return {
+      kind: "blocked",
+      reasonCode: `autonomous_24x7_${side.toLowerCase()}_notional_below_minimum`,
+      metadata: { requestedNotionalKrw: requestedNotional.toFixed() },
+    };
+  }
+  if (requestedNotional.gt(maxNotionalKrw)) {
+    return {
+      kind: "blocked",
+      reasonCode: `autonomous_24x7_${side.toLowerCase()}_notional_above_budget`,
+      metadata: {
+        requestedNotionalKrw: requestedNotional.toFixed(),
+        maxNotionalKrw: maxNotionalKrw.toFixed(),
+      },
+    };
+  }
+  return {
+    kind: "ok",
+    requestedPrice: requestedPrice.toFixed(),
+    requestedQuantity: quantity.toFixed(),
+    requestedNotional: requestedNotional.toFixed(),
+  };
+}
+
+function createLiveOpsCliAutonomousLimitIntent({
+  side,
+  reason,
+  requestedPrice,
+  requestedQuantity,
+  requestedNotional,
+  referencePrice,
+  observedAt,
+  metadata,
+}) {
+  return {
+    exchangeId: "upbit_krw_spot",
+    market: "KRW-BTC",
+    strategyId: liveOpsCliAutonomous24x7StrategyId,
+    side,
+    orderType: "LIMIT",
+    requestedPrice,
+    requestedQuantity,
+    requestedNotional,
+    referencePrice,
+    idempotencyKey: [
+      liveOpsCliAutonomous24x7StrategyId,
+      readLiveOpsCliRuntimeDateScope(observedAt) ?? "unknown_date",
+      "upbit_krw_spot",
+      "KRW-BTC",
+      side,
+      reason,
+      requestedPrice,
+      requestedQuantity,
+      requestedNotional,
+    ].join(":"),
+    reason,
+    postOnly: true,
+    timeInForce: "POST_ONLY",
+    metadata,
+  };
+}
+
+function liveOpsCliStrategyHold(reason, metadata = {}) {
+  return {
+    kind: "HOLD",
+    strategyId: liveOpsCliAutonomous24x7StrategyId,
+    reason,
+    metadata,
+  };
+}
+
+function liveOpsCliStrategyBlock(reasonCode, metadata = {}) {
+  return {
+    kind: "BLOCK",
+    strategyId: liveOpsCliAutonomous24x7StrategyId,
+    reason: reasonCode,
+    reasonCode,
+    metadata,
   };
 }
 
@@ -7788,10 +8434,9 @@ function readLiveOpsCliBestBid(orderbook) {
   return prices[0];
 }
 
-function calculateLiveOpsCliOrderbookMid(orderbook) {
-  const bestBid = readLiveOpsCliBestBid(orderbook);
+function readLiveOpsCliBestAsk(orderbook) {
   const asks = Array.isArray(orderbook?.asks) ? orderbook.asks : [];
-  const bestAsk = asks
+  const prices = asks
     .map((level) => {
       try {
         return new Decimal(level.price);
@@ -7800,7 +8445,13 @@ function calculateLiveOpsCliOrderbookMid(orderbook) {
       }
     })
     .filter((price) => price !== undefined && price.isFinite())
-    .toSorted((left, right) => left.comparedTo(right))[0];
+    .toSorted((left, right) => left.comparedTo(right));
+  return prices[0];
+}
+
+function calculateLiveOpsCliOrderbookMid(orderbook) {
+  const bestBid = readLiveOpsCliBestBid(orderbook);
+  const bestAsk = readLiveOpsCliBestAsk(orderbook);
   if (bestBid === undefined || bestAsk === undefined) {
     return undefined;
   }

@@ -111,6 +111,7 @@ export async function runLiveOpsDaemon(options, io = {}) {
           latestSummary,
           latestError,
           unhandledRejections,
+          statusFilePath,
         }));
       } catch (error) {
         counters.tickCount += 1;
@@ -131,6 +132,7 @@ export async function runLiveOpsDaemon(options, io = {}) {
           latestSummary,
           latestError,
           unhandledRejections,
+          statusFilePath,
         }));
       }
 
