@@ -434,16 +434,16 @@ Telegram, TUI를 같은 lifecycle로 조립하고, 조건을 통과한 단일 `K
 - 제외 범위:
   - final main PR merge.
 - DnD:
-  - [ ] `corepack pnpm live:ops:daemon -- --config <path> --env-file <path> --tui`가 production loop를 시작한다.
-  - [ ] 실행 전 fixture manifest, hand-written evidence, 수동 JSONL 후보 파일이 필요 없다.
-  - [ ] `--fixture-smoke --duration-ms 1000` smoke가 외부 provider/order side effect 없이 loop contract를 검증한다.
-  - [ ] loop는 success/HOLD/BLOCK/manual-review/transient failure별 sleep/backoff 정책을 가진다.
-  - [ ] entry/exit open order는 bounded cancel/requote 또는 manual review로 수렴한다.
-  - [ ] terminal 확인 실패, partial fill, untracked fill은 신규 주문 차단과 manual review evidence를 만든다.
-  - [ ] TUI/Telegram/status가 보유/매도 판단 이유와 필요한 조치를 한국어로 표시한다.
-  - [ ] 24시간 summary가 crash, unhandled rejection, duplicate order, reconcile mismatch, untracked fill, live order cleanup failure counter를
+  - [x] `corepack pnpm live:ops:daemon -- --config <path> --env-file <path> --tui`가 production loop를 시작한다.
+  - [x] 실행 전 fixture manifest, hand-written evidence, 수동 JSONL 후보 파일이 필요 없다.
+  - [x] `--fixture-smoke --duration-ms 1000` smoke가 외부 provider/order side effect 없이 loop contract를 검증한다.
+  - [x] loop는 success/HOLD/BLOCK/manual-review/transient failure별 sleep/backoff 정책을 가진다.
+  - [x] entry/exit open order는 bounded cancel/requote 또는 manual review로 수렴한다.
+  - [x] terminal 확인 실패, partial fill, untracked fill은 신규 주문 차단과 manual review evidence를 만든다.
+  - [x] TUI/Telegram/status가 보유/매도 판단 이유와 필요한 조치를 한국어로 표시한다.
+  - [x] 24시간 summary가 crash, unhandled rejection, duplicate order, reconcile mismatch, untracked fill, live order cleanup failure counter를
         자동 집계한다.
-  - [ ] 관련 script tests, typecheck, `./scripts/verify`, `git diff --check`가 통과한다.
+  - [x] 관련 script tests, typecheck, `./scripts/verify`, `git diff --check`가 통과한다.
 
 ## 검증 방법
 

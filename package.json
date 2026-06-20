@@ -9,6 +9,7 @@
   },
   "scripts": {
     "live:ops": "node scripts/run-live-ops.mjs",
+    "live:ops:daemon": "node scripts/run-live-ops-daemon.mjs",
     "live:ops:pnl-closeout": "node scripts/run-live-ops-pnl-closeout.mjs",
     "live:ops:tui": "node scripts/run-live-ops-tui.mjs",
     "typecheck": "tsc --noEmit",

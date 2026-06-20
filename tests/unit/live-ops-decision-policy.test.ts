@@ -165,15 +165,18 @@ describe("production live ops decision policy resolver", () => {
       side: "SELL",
       orderType: "LIMIT",
       requestedPrice: "101202000",
-      requestedQuantity: "0.0002",
-      requestedNotional: "20240.4",
+      requestedQuantity: "0.00009881",
+      requestedNotional: "9999.76962",
       postOnly: true,
       timeInForce: "POST_ONLY",
       reason: "autonomous_24x7_take_profit",
       metadata: {
-        position_effect: "EXIT",
+        position_effect: "REDUCE",
         exit_reason_code: "autonomous_24x7_take_profit",
         exit_rule_id: "take_profit",
+        exit_target_quantity: "0.0002",
+        exit_chunked: "true",
+        max_exit_notional_krw: "10000",
         position_scope: {
           market: "KRW-BTC",
           strategy_id: LIVE_OPS_AUTONOMOUS_24X7_STRATEGY_ID,
@@ -201,11 +204,11 @@ describe("production live ops decision policy resolver", () => {
     expect(decision.orderIntents[0]).toMatchObject({
       side: "SELL",
       orderType: "LIMIT",
-      requestedQuantity: "0.0002",
       postOnly: true,
       timeInForce: "POST_ONLY",
     });
     expect(Number(decision.orderIntents[0]?.requestedQuantity)).toBeLessThanOrEqual(0.0002);
+    expect(Number(decision.orderIntents[0]?.requestedNotional)).toBeLessThanOrEqual(10000);
   });
 
   it("autonomous_24x7 strategy는 trailing stop과 max holding rule을 독립 exit rule로 평가한다", async () => {
@@ -250,10 +253,11 @@ describe("production live ops decision policy resolver", () => {
     expect(decision.reason).toBe("autonomous_24x7_risk_reduction");
     expect(decision.orderIntents[0]).toMatchObject({
       side: "SELL",
-      requestedQuantity: "0.0001",
       postOnly: true,
       timeInForce: "POST_ONLY",
     });
+    expect(Number(decision.orderIntents[0]?.requestedQuantity)).toBeLessThanOrEqual(0.0001);
+    expect(Number(decision.orderIntents[0]?.requestedNotional)).toBeLessThanOrEqual(10000);
   });
 
   it("autonomous_24x7 strategy는 보유 중 exit 조건이 약하면 BUY를 만들지 않고 HOLD로 닫는다", async () => {

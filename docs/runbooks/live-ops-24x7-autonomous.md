@@ -63,33 +63,42 @@
 11. 미체결 주문은 bounded timeout 안에서 cancel/requote 또는 manual review로 닫는다.
 12. 매 tick마다 decision ledger, status summary, Telegram alert 후보, redacted artifact를 자동 생성한다.
 
+daemon loop는 1회성 cleanup probe가 아니다. 명시한 `--duration-ms`나 `--max-ticks`가 없으면 계속 반복하며, HOLD/차단/수동 확인/일시
+실패별로 다른 sleep을 둔다. 기본 tick 간격은 1초이고, 차단은 5초, 수동 확인은 30초, provider/DB 일시 실패는 5초 후 재시도한다.
+
+production에서 `--status-file`을 지정하지 않으면 config 파일이 있는 디렉터리의 `artifacts/live-ops-daemon-status.json`을 출력 상태로
+자동 생성한다. 이 파일은 실행 전 준비물이 아니며, 감시자나 operator가 최신 counter를 읽기 위한 결과물이다.
+
 ## Entry DnD
 
-- [ ] `live:ops:daemon`은 hand-written evidence나 fixture manifest 없이 config/env만으로 시작한다.
-- [ ] `cleanup_probe`와 별개인 production entry strategy allowlist가 있다.
-- [ ] entry strategy는 `HOLD`, `BLOCK`, `ORDER_INTENT`를 구분하고 모두 decision ledger에 남긴다.
-- [ ] entry intent는 `KRW-BTC`, `BUY`, `LIMIT`, `POST_ONLY`, 10,000 KRW 이하만 허용한다.
-- [ ] stale market data, stale PnL, reconcile mismatch, open order, budget 초과, kill switch는 broker 호출 전에 차단한다.
+- [x] `live:ops:daemon`은 hand-written evidence나 fixture manifest 없이 config/env만으로 시작한다.
+- [x] `cleanup_probe`와 별개인 production entry strategy allowlist가 있다.
+- [x] entry strategy는 `HOLD`, `BLOCK`, `ORDER_INTENT`를 구분하고 모두 decision ledger에 남긴다.
+- [x] entry intent는 `KRW-BTC`, `BUY`, `LIMIT`, `POST_ONLY`, 10,000 KRW 이하만 허용한다.
+- [x] stale market data, stale PnL, reconcile mismatch, open order, budget 초과, kill switch는 broker 호출 전에 차단한다.
 
 ## Exit DnD
 
-- [ ] 보유 포지션이 있으면 entry보다 exit 평가가 먼저 실행된다.
-- [ ] exit policy는 take profit, stop loss, trailing stop, max holding time, risk reduction rule을 독립 rule로 가진다.
-- [ ] exit intent는 보유 수량 이하의 `SELL + LIMIT + POST_ONLY`만 허용한다.
-- [ ] exit 미체결은 bounded cancel/requote 정책으로 닫고, terminal 확인 실패는 manual review로 격상한다.
-- [ ] hard stop은 신규 주문 차단과 manual review를 만들 수 있지만, 시장가 자동 청산을 만들지 않는다.
+- [x] 보유 포지션이 있으면 entry보다 exit 평가가 먼저 실행된다.
+- [x] exit policy는 take profit, stop loss, trailing stop, max holding time, risk reduction rule을 독립 rule로 가진다.
+- [x] exit intent는 보유 수량 이하의 `SELL + LIMIT + POST_ONLY`만 허용한다.
+- [x] exit 미체결은 bounded cancel/requote 정책으로 닫고, terminal 확인 실패는 manual review로 격상한다.
+- [x] hard stop은 신규 주문 차단과 manual review를 만들 수 있지만, 시장가 자동 청산을 만들지 않는다.
+
+SELL 후보의 전체 보유 수량이 1회 주문 상한을 넘으면 daemon은 시장가로 한 번에 던지지 않는다. strategy가 10,000 KRW 이하 chunk를
+만들고 `position_effect=REDUCE`로 남긴 뒤, 체결 또는 취소 재호가 결과에 따라 다음 tick에서 잔여 수량을 다시 판단한다.
 
 ## Strategy 교체성 DnD
 
-- [ ] strategy interface는 entry/exit 후보 생성과 설명 metadata를 분리한다.
-- [ ] strategy는 broker, Upbit client, DB connection, Telegram dispatcher를 직접 호출하지 않는다.
-- [ ] 새 strategy는 registry allowlist와 config schema에 추가된 뒤에만 선택할 수 있다.
-- [ ] strategy parameter는 JSON config에 secret 없이 저장된다.
-- [ ] strategy별 unit test와 paper/live shadow fixture가 없으면 production allowlist에 추가하지 않는다.
+- [x] strategy interface는 entry/exit 후보 생성과 설명 metadata를 분리한다.
+- [x] strategy는 broker, Upbit client, DB connection, Telegram dispatcher를 직접 호출하지 않는다.
+- [x] 새 strategy는 registry allowlist와 config schema에 추가된 뒤에만 선택할 수 있다.
+- [x] strategy parameter는 JSON config에 secret 없이 저장된다.
+- [x] strategy별 unit test와 paper/live shadow fixture가 없으면 production allowlist에 추가하지 않는다.
 
 ## 운영 명령
 
-초기 smoke:
+선택 smoke:
 
 ```sh
 corepack pnpm live:ops:daemon -- \
@@ -100,12 +109,25 @@ corepack pnpm live:ops:daemon -- \
   --tui
 ```
 
+이 smoke는 provider/order side effect 없이 loop contract만 검증한다. 실제 24/7 운영 전에 사람이 따로 fixture manifest나 evidence 파일을
+만들 필요는 없다.
+
 실제 24/7 운영:
 
 ```sh
 corepack pnpm live:ops:daemon -- \
   --config <운영-json-path> \
   --env-file <운영-env-path> \
+  --tui
+```
+
+감시자가 읽을 상태 파일을 고정하려면 다음처럼 지정한다.
+
+```sh
+corepack pnpm live:ops:daemon -- \
+  --config <운영-json-path> \
+  --env-file <운영-env-path> \
+  --status-file <운영-status-json-path> \
   --tui
 ```
 

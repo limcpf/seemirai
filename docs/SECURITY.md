@@ -272,8 +272,8 @@
 - 실제 arm env file에는 DB/Upbit/Telegram/TUI credential만 담고, issue/PR/log/artifact/TUI/Telegram/status에는 원문 값을 남기지 않는다.
 - Upbit key scope는 `자산조회`, `주문조회`, `주문하기`만 허용한다. 출금, 입출금, 선물, 레버리지, 마진, 타인 계정 관련 scope가
   관찰되면 runtime은 주문 가능 상태로 시작하지 않는다.
-- 주문 side effect는 단일 `KRW-BTC` `BUY + LIMIT + post_only` 후보만 허용하며, 시장가/best order/시장가 매도/자동 budget 확대는
-  provider 호출 전에 차단한다.
+- 주문 side effect는 단일 `KRW-BTC` `BUY + LIMIT + post_only` 진입과 보유 수량 이하 `SELL + LIMIT + post_only` exit만 허용하며,
+  시장가/best order/시장가 매도/자동 budget 확대는 provider 호출 전에 차단한다.
 - decision policy config는 `cleanup_probe`, `autonomous_24x7` 같은 정적 allowlist id만 허용한다. JSON config나 env로 임의 JS/TS 파일
   경로, 동적 import, 원격 plugin, 저장소 밖 strategy 코드를 실행하게 만들지 않는다.
 - live:ops preflight reconcile DB evidence에는 잔고 숫자, 미체결 주문 safe identity, 상태, 시각, source summary만 저장한다.
@@ -294,6 +294,8 @@
 - LLM은 24/7 strategy의 `BUY`, `SELL`, 목표가, 포지션 크기, 주문 허용 여부를 직접 결정할 수 없다.
 - exit order가 허용되어도 `SELL + LIMIT + POST_ONLY`, `position_effect=REDUCE|EXIT`, exit reason/rule, 현재 보유 수량 이하 조건을
   provider 호출 전에 검증한다. SELL 후보는 entry runtime으로 우회하지 않는다.
+- SELL idempotency key는 Upbit identifier 허용 문자로 정규화하고, 원래 decision idempotency key는 metadata 추적 정보에만 보존한다.
+  provider payload, JWT, query hash, raw order detail은 daemon summary/status file에 저장하지 않는다.
 - hard stop이나 mismatch가 open position 자동 시장가 청산을 만들면 안 된다. 보안상 불확실 상태의 기본 동작은 신규 주문 차단과
   manual review다.
 - daemon summary, artifact, Telegram, TUI는 access key, secret key, JWT, Authorization header, DB URL/password, raw provider payload,

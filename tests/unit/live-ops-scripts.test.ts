@@ -5,6 +5,51 @@ import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 
 describe("production live ops script skeleton", () => {
+  it("live:ops:daemon fixture smoke는 수동 evidence 파일 없이 24/7 loop summary를 만든다", () => {
+    const result = spawnSync(
+      process.execPath,
+      [
+        "scripts/run-live-ops-daemon.mjs",
+        "--config",
+        "config/live-ops.example.json",
+        "--env-file",
+        "tests/fixtures/live-ops/fake.env",
+        "--fixture-smoke",
+        "--duration-ms",
+        "1000",
+        "--json",
+      ],
+      {
+        cwd: process.cwd(),
+        encoding: "utf8",
+        env: minimalEnv(),
+      },
+    );
+
+    expect(result.status).toBe(0);
+    expect(result.stderr).toBe("");
+    const summary = JSON.parse(result.stdout);
+    expect(summary).toMatchObject({
+      kind: "live_ops_daemon_summary",
+      fixtureSmoke: true,
+      durationMs: 1000,
+      message: "live:ops daemon이 config/env만으로 자동 매수, 보유, 매도 tick을 반복 평가했습니다.",
+    });
+    expect(summary.counters.tickCount).toBeGreaterThanOrEqual(1);
+    expect(summary.counters.unhandledRejectionCount).toBe(0);
+    expect(summary.counters.crashCount).toBe(0);
+    expect(summary.latestSummary).toMatchObject({
+      fixtureSmoke: true,
+      liveOrderCapable: false,
+      liveExecution: {
+        status: "idle",
+      },
+    });
+    expect(result.stdout).not.toContain("candidate-file");
+    expect(result.stdout).not.toContain("manual JSONL");
+    expect(result.stdout).not.toContain("fake-upbit-secret-key");
+  });
+
   it("live:ops --tui는 fixture smoke에서 provider 호출 없이 운영 dashboard 첫 화면을 출력한다", () => {
     const result = spawnSync(
       process.execPath,
@@ -541,6 +586,91 @@ console.log(JSON.stringify(summary));
     expect(codes).toContain("live_ops_entry_runtime_missing");
     expect(codes).not.toContain("live_ops_execution_status_blocked");
     expect(codes).not.toContain("live_ops_order_intent_blocked");
+  });
+
+  it("CLI live execution은 SELL 후보를 entry runtime 없이 exit runtime으로 전달한다", async () => {
+    const {
+      evaluateLiveOpsCliLiveExecution,
+    } = await import(path.join(process.cwd(), "scripts/run-live-ops-support.mjs"));
+    const config = JSON.parse(await readFile(path.join(process.cwd(), "config", "live-ops.example.json"), "utf8"));
+    const observedAt = "2026-06-20T00:00:00.000Z";
+    const idempotencyKey = `ops-${"b".repeat(26)}`;
+    const sellIntent = createCliSellIntent({ idempotencyKey });
+    const exitRuntime = {
+      submitExitOrder: vi.fn(async (submission: unknown) => ({
+        status: "CANCELED_FOR_REQUOTE",
+        statusLabel: "재호가 대기",
+        brokerOrderId: "exit-order-001",
+        manualReviewRequired: false,
+        message: "SELL 주문이 bounded wait 안에 체결되지 않아 취소 확인 후 다음 tick 재호가 대기로 전환했습니다.",
+        action: "다음 daemon tick에서 보유 수량과 최신 호가로 SELL 여부를 다시 판단합니다.",
+        submission,
+      })),
+    };
+
+    const summary = await evaluateLiveOpsCliLiveExecution({
+      config,
+      fixtureSmoke: false,
+      analysisDecision: {
+        ready: true,
+        orderIntentCount: 1,
+        decisionCategory: "ORDER_INTENT",
+      },
+      marketData: {
+        ready: true,
+        referencePrice: "99000000",
+      },
+      env: liveOrderEnv(),
+      orderIntents: [sellIntent],
+      exitRuntime,
+      executionStatus: {
+        killSwitchActive: false,
+        reconcileFresh: true,
+        evidenceId: "execution-status-evidence",
+      },
+      postSubmitReadiness: {
+        reconcileReady: true,
+        telegramReady: true,
+        evidenceId: "post-submit-evidence",
+      },
+      budgetSnapshot: {
+        maxOrderKrw: "10000",
+        dailyAutonomousNotionalLimitKrw: "30000",
+        dailyAutonomousNotionalUsedKrw: "10000",
+        openPositionNotionalKrw: "9900",
+        maxOpenPositionNotionalKrw: "30000",
+        capturedAt: observedAt,
+      },
+      lossSnapshot: {
+        dailyRealizedLossKrw: "0",
+        weeklyRealizedLossKrw: "0",
+        capturedAt: observedAt,
+      },
+    });
+
+    expect(summary).toMatchObject({
+      status: "exit_requote_ready",
+      ready: true,
+      liveOrderCapable: true,
+      attemptedOrderCount: 1,
+      submittedOrderCount: 1,
+      statusLabel: "재호가 대기",
+      brokerOrderId: "exit-order-001",
+    });
+    expect(summary.checks.map((check: { code: string }) => check.code)).toContain("live_ops_exit_request_ready");
+    expect(summary.checks.map((check: { code: string }) => check.code)).not.toContain("live_ops_entry_runtime_missing");
+    expect(exitRuntime.submitExitOrder).toHaveBeenCalledTimes(1);
+    const submission = exitRuntime.submitExitOrder.mock.calls[0]?.[0] as {
+      intent: { side: string; idempotencyKey: string };
+      costSnapshot: { source: string };
+      riskApproval: { source: string };
+    };
+    expect(submission.intent).toMatchObject({
+      side: "SELL",
+      idempotencyKey,
+    });
+    expect(submission.costSnapshot.source).toBe("exit_cost_model");
+    expect(submission.riskApproval.source).toBe("risk_gate");
   });
 
   it("reconcile/PnL/status helper는 private read provider 결과를 secret-safe summary로 낮춘다", () => {
@@ -8939,6 +9069,80 @@ function createCleanupRuntimeIntentWithKey(idempotencyKey: string, dateScope: st
       ...(intent.riskApproval as Record<string, unknown>),
       order_intent: orderIntentEvidence,
     },
+  };
+}
+
+function createCliSellIntent({ idempotencyKey }: { idempotencyKey: string }) {
+  const intent = {
+    exchangeId: "upbit_krw_spot",
+    market: "KRW-BTC",
+    strategyId: "live_ops_autonomous_24x7_core",
+    side: "SELL",
+    orderType: "LIMIT",
+    requestedQuantity: "0.0001",
+    requestedNotional: "9900",
+    requestedPrice: "99000000",
+    idempotencyKey,
+    reason: "autonomous_24x7_take_profit",
+    postOnly: true,
+    timeInForce: "POST_ONLY",
+    metadata: {
+      expected_loss_bps_of_equity: "5",
+      position_effect: "EXIT",
+      exit_reason_code: "autonomous_24x7_take_profit",
+      exit_rule_id: "take_profit",
+      position_scope: {
+        market: "KRW-BTC",
+        strategy_id: "live_ops_autonomous_24x7_core",
+        total_quantity: "0.0001",
+      },
+    },
+  };
+  const orderIntentEvidence = {
+    exchange_id: intent.exchangeId,
+    market: intent.market,
+    strategy_id: intent.strategyId,
+    side: intent.side,
+    order_type: intent.orderType,
+    post_only: intent.postOnly,
+    time_in_force: intent.timeInForce,
+    requested_quantity: intent.requestedQuantity,
+    requested_notional: intent.requestedNotional,
+    requested_price: intent.requestedPrice,
+    idempotency_key: intent.idempotencyKey,
+    expected_loss_bps_of_equity: intent.metadata.expected_loss_bps_of_equity,
+    position_effect: intent.metadata.position_effect,
+  };
+
+  return {
+    ...intent,
+    costSnapshot: {
+      source: "exit_cost_model",
+      exit_cost_allowed: true,
+      exit_cost_reason_code: "exit_cost_margin_ok",
+      exit_cost_bps: "0",
+      exit_slippage_bps: "0",
+      position_scope: intent.metadata.position_scope,
+      order_intent: orderIntentEvidence,
+    },
+    riskApproval: {
+      source: "risk_gate",
+      approved: true,
+      action: "ALLOW",
+      status: "PASS",
+      failed_evaluation_reason_codes: [],
+      warning_evaluation_reason_codes: [],
+      order_intent: orderIntentEvidence,
+    },
+  };
+}
+
+function liveOrderEnv(): Record<string, string> {
+  return {
+    SEEMIRAI_UPBIT_ACCESS_KEY: "fake-access-key",
+    SEEMIRAI_UPBIT_SECRET_KEY: "fake-secret-key",
+    SEEMIRAI_UPBIT_KEY_SCOPE: "자산조회,주문조회,주문하기",
+    SEEMIRAI_UPBIT_KEY_SCOPE_EVIDENCE_ID: "scope-evidence",
   };
 }
 

@@ -149,13 +149,20 @@ function evaluateExitPolicy(input: {
     });
   }
 
-  const sellQuantity = calculateExitQuantity(input.position.quantity, input.options, exitRule.kind);
   const requestedPrice = bestAsk.plus(input.options.tickSizeKrw.mul(input.options.exitPriceOffsetTicks));
+  const targetSellQuantity = calculateExitQuantity(input.position.quantity, input.options, exitRule.kind);
+  const sellQuantity = capExitQuantityByOrderNotional({
+    targetQuantity: targetSellQuantity,
+    requestedPrice,
+    maxNotionalKrw: input.options.maxEntryNotionalKrw,
+    quantityScale: input.options.quantityScale,
+  });
   const sizing = createLimitSizing({
     side: "SELL",
     requestedPrice,
     requestedQuantity: sellQuantity,
     minimumNotionalKrw: minimumUpbitKrwOrderNotional,
+    maxNotionalKrw: input.options.maxEntryNotionalKrw,
   });
   if (sizing.kind === "blocked") {
     return block(sizing.reasonCode, sizing.metadata);
@@ -183,6 +190,9 @@ function evaluateExitPolicy(input: {
         strategy_id: LIVE_OPS_AUTONOMOUS_24X7_STRATEGY_ID,
         total_quantity: input.position.quantity.toFixed(),
       },
+      exit_target_quantity: targetSellQuantity.toFixed(),
+      exit_chunked: sellQuantity.lt(targetSellQuantity) ? "true" : "false",
+      max_exit_notional_krw: input.options.maxEntryNotionalKrw.toFixed(),
       best_bid_price: bestBid.toFixed(),
       best_ask_price: bestAsk.toFixed(),
       held_quantity: input.position.quantity.toFixed(),
@@ -537,6 +547,33 @@ function calculateExitQuantity(quantity: Decimal, options: NormalizedOptions, ru
 }
 
 /**
+ * exit 후보 수량을 1회 주문 한도 안의 chunk로 낮춘다.
+ *
+ * 책임:
+ * - 누적 포지션이 최대 open position 한도까지 커졌더라도 Upbit 제출 한 번은 small-budget 단일 주문 한도를 넘지 않게 한다.
+ * - 전체 청산 rule도 필요한 경우 여러 daemon tick의 `REDUCE` 주문으로 쪼갤 수 있게 한다.
+ *
+ * side effect:
+ * - 없음. 순수 수량 계산만 수행한다.
+ */
+function capExitQuantityByOrderNotional(input: {
+  readonly targetQuantity: Decimal;
+  readonly requestedPrice: Decimal;
+  readonly maxNotionalKrw: Decimal;
+  readonly quantityScale: number;
+}): Decimal {
+  if (!input.requestedPrice.gt(0)) {
+    return new Decimal(0);
+  }
+
+  const maxQuantity = input.maxNotionalKrw
+    .div(input.requestedPrice)
+    .toDecimalPlaces(input.quantityScale, Decimal.ROUND_DOWN);
+
+  return Decimal.min(input.targetQuantity, maxQuantity).toDecimalPlaces(input.quantityScale, Decimal.ROUND_DOWN);
+}
+
+/**
  * entry 후보를 만들 만큼 비용 차감 margin과 trend/mean-reversion 신호가 강한지 평가한다.
  *
  * @param features feature snapshot에서 전달된 secret-free 수치
@@ -616,7 +653,7 @@ function createLimitSizing(input: {
   if (input.maxNotionalKrw !== undefined && requestedNotional.gt(input.maxNotionalKrw)) {
     return {
       kind: "blocked",
-      reasonCode: "autonomous_24x7_buy_notional_above_budget",
+      reasonCode: `autonomous_24x7_${input.side.toLowerCase()}_notional_above_budget`,
       metadata: {
         requested_notional_krw: requestedNotional.toFixed(),
         max_notional_krw: input.maxNotionalKrw.toFixed(),
