@@ -1227,19 +1227,50 @@ function attachLiveOpsCliAutonomousExitRuntimeEvidence({ config, intent, preflig
   const runtimeIntent = createLiveOpsCliExitRuntimeIntent(intent, {
     observedAt: preflight.observedAt,
   });
-  const risk = runtimeIntent.risk ?? createLiveOpsCliExitRiskInput({
+  // SELL은 분석 시점의 position scope가 stale해질 수 있으므로 제출 직전 소유 scope를 별도 evidence로 보존한다.
+  const preflightPositionScope = createLiveOpsCliAutonomousPreflightPositionScope(preflight);
+  const scopedRuntimeIntent = {
+    ...runtimeIntent,
+    metadata: {
+      ...(runtimeIntent.metadata ?? {}),
+      preflight_position_scope: preflightPositionScope,
+    },
+  };
+  const risk = scopedRuntimeIntent.risk ?? createLiveOpsCliExitRiskInput({
     config,
-    intent: runtimeIntent,
+    intent: scopedRuntimeIntent,
     preflight,
   });
   return {
-    ...runtimeIntent,
+    ...scopedRuntimeIntent,
     risk,
-    costSnapshot: runtimeIntent.costSnapshot ?? createLiveOpsCliExitCostEvidence(runtimeIntent),
-    riskApproval: runtimeIntent.riskApproval ?? createLiveOpsCliRiskApprovalEvidence({
-      intent: runtimeIntent,
+    costSnapshot: scopedRuntimeIntent.costSnapshot ?? createLiveOpsCliExitCostEvidence(scopedRuntimeIntent),
+    riskApproval: scopedRuntimeIntent.riskApproval ?? createLiveOpsCliRiskApprovalEvidence({
+      intent: scopedRuntimeIntent,
       risk,
     }),
+  };
+}
+
+function createLiveOpsCliAutonomousPreflightPositionScope(preflight) {
+  const ownership = preflight?.autonomousPositionOwnership;
+  const heldPositionExposure = preflight?.heldPositionExposure;
+  const walletQuantity = isNonNegativeDecimalString(heldPositionExposure?.quantity)
+    ? new Decimal(heldPositionExposure.quantity)
+    : new Decimal(0);
+  const ownedQuantity = ownership?.owned === true
+    ? resolveLiveOpsCliAutonomousOwnedQuantity({ walletQuantity, ownership })
+    : undefined;
+  return {
+    market: heldPositionExposure?.market ?? "KRW-BTC",
+    strategy_id: liveOpsCliAutonomous24x7StrategyId,
+    owned: ownership?.owned === true && ownedQuantity !== undefined && ownedQuantity.gt(0),
+    total_quantity: ownedQuantity === undefined ? "0" : ownedQuantity.toFixed(),
+    reserved_notional_krw: isNonNegativeDecimalString(ownership?.reservedNotionalKrw) ? ownership.reservedNotionalKrw : "0",
+    average_entry_price: isPositiveDecimalString(ownership?.averageEntryPrice) ? ownership.averageEntryPrice : null,
+    high_watermark_price: isPositiveDecimalString(ownership?.highWatermarkPrice) ? ownership.highWatermarkPrice : null,
+    observed_at: preflight?.observedAt,
+    source: ownership?.source ?? "live_ops_cli_private_preflight",
   };
 }
 
@@ -1804,6 +1835,7 @@ function createLiveOpsCliAutonomousPositionOwnership({ reservationUsage, heldPos
     closedAt: hasMeaningfulValue(aggregate.closedAt) ? aggregate.closedAt : undefined,
     openedAt: hasMeaningfulValue(aggregate.openedAt) ? aggregate.openedAt : undefined,
     latestReservationAt: hasMeaningfulValue(aggregate.latestReservationAt) ? aggregate.latestReservationAt : observedAt,
+    realizedPnlKrw: isDecimalString(aggregate.realizedPnlKrw) ? aggregate.realizedPnlKrw : undefined,
     source: "live_ops_cli_budget_reservation",
   };
 }
@@ -1821,7 +1853,8 @@ function createLiveOpsCliAutonomousPnlPositionSnapshot({ ownership, heldPosition
   }
   const walletQuantity = new Decimal(heldPositionExposure.quantity);
   const ownedQuantity = new Decimal(ownership.requestedQuantity);
-  if (!walletQuantity.eq(ownedQuantity)) {
+  // 수동 BTC가 섞인 지갑에서도 전략 소유 수량만 PnL closeout 원가 source로 전달한다.
+  if (walletQuantity.lt(ownedQuantity)) {
     return undefined;
   }
   return {
@@ -1830,7 +1863,7 @@ function createLiveOpsCliAutonomousPnlPositionSnapshot({ ownership, heldPosition
     market: "KRW-BTC",
     quantity: ownedQuantity.toFixed(),
     averageEntryPrice: String(ownership.averageEntryPrice),
-    realizedPnlKrw: "0",
+    realizedPnlKrw: isDecimalString(ownership.realizedPnlKrw) ? String(ownership.realizedPnlKrw) : "0",
     openedAt: ownership.openedAt,
     latestReservationAt: ownership.latestReservationAt,
     highWatermarkPrice: ownership.highWatermarkPrice,
@@ -2350,6 +2383,9 @@ function summarizeLiveOpsCliAutonomousReservationOwnership({ reservationRecords,
   const netQuantity = openLots.reduce((total, lot) => total.plus(lot.quantity), new Decimal(0));
   const netReservedNotional = openLots.reduce((total, lot) => total.plus(lot.quantity.mul(lot.averageEntryPrice)), new Decimal(0));
   const averageEntryPrice = netQuantity.gt(0) ? netReservedNotional.div(netQuantity) : undefined;
+  const realizedPnlKrw = sortedExits.reduce((total, record) => {
+    return total.plus(readLiveOpsCliAutonomousExitRealizedPnlKrw(record));
+  }, new Decimal(0)).toFixed();
   const stateOpen = autonomousPositionState?.strategyId === liveOpsCliAutonomous24x7StrategyId
     && autonomousPositionState?.market === "KRW-BTC"
     && autonomousPositionState?.status === "OPEN";
@@ -2367,6 +2403,7 @@ function summarizeLiveOpsCliAutonomousReservationOwnership({ reservationRecords,
       highWatermarkAt: autonomousPositionState.highWatermarkAt,
       openedAt: hasMeaningfulValue(autonomousPositionState.openedAt) ? autonomousPositionState.openedAt : sortedReservations[0]?.reservedAt,
       latestReservationAt: sortedReservations.at(-1)?.reservedAt ?? autonomousPositionState.latestObservationAt,
+      realizedPnlKrw,
       status: "OPEN",
     };
   }
@@ -2387,6 +2424,7 @@ function summarizeLiveOpsCliAutonomousReservationOwnership({ reservationRecords,
       averageEntryPrice: averageEntryPrice?.toFixed(),
       openedAt: sortedReservations[0]?.reservedAt,
       latestReservationAt: sortedReservations.at(-1)?.reservedAt,
+      realizedPnlKrw,
       status: "CLOSED",
       closedAt: readLiveOpsCliAutonomousExitClosedAt(sortedExits.at(-1)),
     };
@@ -2401,6 +2439,7 @@ function summarizeLiveOpsCliAutonomousReservationOwnership({ reservationRecords,
     highWatermarkAt,
     openedAt: openLots[0]?.reservedAt,
     latestReservationAt: openLots.at(-1)?.reservedAt,
+    realizedPnlKrw,
     status: "OPEN",
   };
 }
@@ -2501,6 +2540,13 @@ function readLiveOpsCliAutonomousExitFilledQuantity(record) {
   }
   if (isNonNegativeDecimalString(record?.terminalOrder?.requestedQuantity) && isDecimalEqual(record?.terminalOrder?.remainingQuantity ?? "0", "0")) {
     return record.terminalOrder.requestedQuantity;
+  }
+  return "0";
+}
+
+function readLiveOpsCliAutonomousExitRealizedPnlKrw(record) {
+  if (isDecimalString(record?.realizedPnlKrw)) {
+    return record.realizedPnlKrw;
   }
   return "0";
 }
@@ -5378,6 +5424,24 @@ async function writeLiveOpsCliAutonomousExitCloseoutOrManualReview({
     ? terminalOrder.requestedQuantity
     : intent.requestedQuantity;
   const requestedPrice = isPositiveDecimalString(intent.requestedPrice) ? intent.requestedPrice : terminalOrder?.requestedPrice;
+  const pnlEvidence = createLiveOpsCliAutonomousExitRealizedPnlEvidence({
+    intent,
+    filledQuantity,
+    requestedPrice,
+  });
+  if (pnlEvidence.status !== "ready") {
+    // 실현손익 없는 closeout은 손실 guard를 잘못 열 수 있으므로 artifact ready로 인정하지 않는다.
+    return {
+      status: "MANUAL_REVIEW_REQUIRED",
+      statusLabel: "수동 점검",
+      brokerOrderId: brokerOrder?.brokerOrderId ?? null,
+      manualReviewRequired: true,
+      message: "SELL 체결은 확인됐지만 원가/체결가 기반 실현손익을 계산할 수 없어 수동 점검 상태로 전환했습니다.",
+      action: "전략 reservation 원가와 실제 체결가를 확인하고 realized PnL closeout artifact를 복구하세요.",
+      reason: pnlEvidence.reason,
+      filledAt,
+    };
+  }
   const record = {
     kind: "live_ops_autonomous_exit_closeout",
     attemptId: intent.idempotencyKey,
@@ -5386,9 +5450,12 @@ async function writeLiveOpsCliAutonomousExitCloseoutOrManualReview({
     side: "SELL",
     status: "FILLED",
     filledQuantity,
-    filledNotionalKrw: isNonNegativeDecimalString(filledQuantity) && isPositiveDecimalString(requestedPrice)
-      ? new Decimal(filledQuantity).mul(requestedPrice).toFixed()
-      : null,
+    filledPrice: pnlEvidence.filledPrice,
+    filledNotionalKrw: pnlEvidence.filledNotionalKrw,
+    entryAveragePrice: pnlEvidence.entryAveragePrice,
+    entryCostNotionalKrw: pnlEvidence.entryCostNotionalKrw,
+    realizedPnlKrw: pnlEvidence.realizedPnlKrw,
+    pnlSource: pnlEvidence.source,
     filledAt,
     terminalCheckedAt: filledAt,
     idempotencyKeySuffix: suffixLiveOpsCliIdentifier(intent.idempotencyKey),
@@ -5413,6 +5480,45 @@ async function writeLiveOpsCliAutonomousExitCloseoutOrManualReview({
       filledAt,
     };
   }
+}
+
+function createLiveOpsCliAutonomousExitRealizedPnlEvidence({ intent, filledQuantity, requestedPrice }) {
+  const entryAveragePrice = readLiveOpsCliAutonomousExitEntryAveragePrice(intent);
+  if (!isPositiveDecimalString(filledQuantity)) {
+    return { status: "blocked", reason: "exit_filled_quantity_missing" };
+  }
+  if (!isPositiveDecimalString(requestedPrice)) {
+    return { status: "blocked", reason: "exit_filled_price_missing" };
+  }
+  if (!isPositiveDecimalString(entryAveragePrice)) {
+    return { status: "blocked", reason: "exit_entry_cost_basis_missing" };
+  }
+  const quantity = new Decimal(filledQuantity);
+  const filledPrice = new Decimal(requestedPrice);
+  const averageEntryPrice = new Decimal(entryAveragePrice);
+  const filledNotionalKrw = quantity.mul(filledPrice);
+  const entryCostNotionalKrw = quantity.mul(averageEntryPrice);
+  return {
+    status: "ready",
+    filledPrice: filledPrice.toFixed(),
+    filledNotionalKrw: filledNotionalKrw.toFixed(),
+    entryAveragePrice: averageEntryPrice.toFixed(),
+    entryCostNotionalKrw: entryCostNotionalKrw.toFixed(),
+    realizedPnlKrw: filledNotionalKrw.minus(entryCostNotionalKrw).toFixed(),
+    source: "live_ops_autonomous_preflight_position_scope",
+  };
+}
+
+function readLiveOpsCliAutonomousExitEntryAveragePrice(intent) {
+  const preflightScope = intent?.metadata?.preflight_position_scope;
+  if (isPositiveDecimalString(preflightScope?.average_entry_price)) {
+    return preflightScope.average_entry_price;
+  }
+  const positionScope = intent?.metadata?.position_scope;
+  if (isPositiveDecimalString(positionScope?.average_entry_price)) {
+    return positionScope.average_entry_price;
+  }
+  return undefined;
 }
 
 export function createLiveOpsCliCleanupLifecycle({
@@ -5767,6 +5873,8 @@ function sleepLiveOpsCli(durationMs) {
 }
 
 function isLiveOpsCliEntryRuntimeRequestEvidenceReady(request) {
+  const useRuntimeEvidenceKey = request.candidate?.strategyId === liveOpsCliAutonomous24x7StrategyId &&
+    request.candidate?.metadata?.runtime_idempotency_source === "live_ops_cli_autonomous_entry_runtime";
   const intent = {
     exchangeId: request.candidate?.exchangeId,
     market: request.candidate?.market,
@@ -5778,7 +5886,9 @@ function isLiveOpsCliEntryRuntimeRequestEvidenceReady(request) {
     requestedQuantity: request.candidate?.requestedQuantity,
     requestedNotional: request.candidate?.requestedNotional,
     requestedPrice: request.candidate?.requestedPrice,
-    idempotencyKey: request.candidate?.metadata?.decision_idempotency_key ?? request.idempotencyKey,
+    idempotencyKey: useRuntimeEvidenceKey
+      ? request.idempotencyKey
+      : request.candidate?.metadata?.decision_idempotency_key ?? request.idempotencyKey,
     metadata: {
       expected_loss_bps_of_equity: request.candidate?.expectedLossBpsOfEquity,
     },
@@ -6156,6 +6266,11 @@ function collectLiveOpsCliExitOrderIntentViolations({ config, marketData, intent
     if (quantityViolation !== undefined) {
       violations.push(quantityViolation);
     }
+    // fresh preflight와 다르면 수동 개입 또는 다른 daemon 변경을 자동 SELL로 이어가지 않는다.
+    const preflightScopeViolation = validateLiveOpsCliExitScopeAgainstPreflight(intent, positionScope);
+    if (preflightScopeViolation !== undefined) {
+      violations.push(preflightScopeViolation);
+    }
   }
   if (!isLiveOpsCliExitCostSnapshotEvidence(intent?.costSnapshot, intent)) {
     violations.push("매도 후보에는 현재 intent와 일치하는 exit_cost_model evidence가 필요합니다");
@@ -6167,6 +6282,40 @@ function collectLiveOpsCliExitOrderIntentViolations({ config, marketData, intent
     appendLiveOpsCliRiskGateInfrastructureViolations(violations, intent.risk.infrastructureSignals);
   }
   return violations;
+}
+
+function validateLiveOpsCliExitScopeAgainstPreflight(intent, positionScope) {
+  const preflightScope = readLiveOpsCliExitPreflightPositionScope(intent);
+  if (preflightScope === undefined) {
+    return undefined;
+  }
+  if (preflightScope.owned !== true) {
+    return "매도 후보는 제출 직전 preflight에서 전략 소유 포지션이 확인되어야 합니다";
+  }
+  if (preflightScope.market !== positionScope.market || preflightScope.strategy_id !== positionScope.strategy_id) {
+    return "매도 후보 position scope가 제출 직전 preflight market/strategy와 일치해야 합니다";
+  }
+  if (!isPositiveDecimalString(preflightScope.total_quantity)) {
+    return "매도 후보는 제출 직전 preflight 전략 소유 수량이 양수여야 합니다";
+  }
+  if (!isDecimalEqual(preflightScope.total_quantity, positionScope.total_quantity)) {
+    return "매도 후보 position scope가 제출 직전 preflight 전략 소유 수량과 일치해야 합니다";
+  }
+  return undefined;
+}
+
+function readLiveOpsCliExitPreflightPositionScope(intent) {
+  const scope = intent?.metadata?.preflight_position_scope;
+  if (!isNonEmptyRecord(scope)) {
+    return undefined;
+  }
+  return {
+    market: hasMeaningfulValue(scope.market) ? String(scope.market) : "",
+    strategy_id: hasMeaningfulValue(scope.strategy_id) ? String(scope.strategy_id) : "",
+    owned: scope.owned === true,
+    total_quantity: isNonNegativeDecimalString(scope.total_quantity) ? String(scope.total_quantity) : "0",
+    average_entry_price: isPositiveDecimalString(scope.average_entry_price) ? String(scope.average_entry_price) : undefined,
+  };
 }
 
 function readLiveOpsCliExitPositionScope(intent) {

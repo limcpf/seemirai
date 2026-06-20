@@ -1130,6 +1130,206 @@ console.log(JSON.stringify(summary));
     });
   });
 
+  it("autonomous BUY runtime은 원본 decision key가 있어도 runtime key evidence로 실주문을 제출한다", async () => {
+    const {
+      createLiveOpsCliEntryRuntime,
+      createLiveOpsCliProductionExecutionInputs,
+      evaluateLiveOpsCliLiveExecution,
+    } = await import(path.join(process.cwd(), "scripts/run-live-ops-support.mjs"));
+    const observedAt = "2026-06-20T00:00:00.000Z";
+    const decisionKey = "live_ops_autonomous_24x7_core:2026-06-20:upbit_krw_spot:KRW-BTC:BUY:100000000:0.0001:10000";
+    const submitted: unknown[] = [];
+    const reservations: unknown[] = [];
+    const config = {
+      live_trading_enabled: true,
+      universe: { markets: ["KRW-BTC"], default_market: "KRW-BTC" },
+      budget: {
+        max_order_krw: "10000",
+        daily_autonomous_notional_limit_krw: "30000",
+        max_open_position_notional_krw: "30000",
+      },
+    };
+    const analysisDecision = { ready: true, decisionCategory: "ORDER_INTENT", orderIntentCount: 1 };
+    const marketData = { ready: true, latestHeartbeatAt: observedAt, referencePrice: "100000000" };
+    const productionInputs = await createLiveOpsCliProductionExecutionInputs({
+      config,
+      env: liveOrderEnv(),
+      fixtureSmoke: false,
+      analysisDecision,
+      marketData,
+      orderIntents: [createCliBuyIntent({ idempotencyKey: decisionKey })],
+      preflight: createAutonomousPreflight({ observedAt }),
+      productionRuntime: {
+        entryRuntime: {},
+      },
+    });
+
+    const summary = await evaluateLiveOpsCliLiveExecution({
+      config,
+      fixtureSmoke: false,
+      analysisDecision,
+      marketData,
+      env: liveOrderEnv(),
+      orderIntents: productionInputs.orderIntents,
+      entryRuntime: createLiveOpsCliEntryRuntime({
+        broker: {
+          async submitOrder(submission: unknown) {
+            submitted.push(submission);
+            return {
+              brokerOrderId: "autonomous-entry-runtime-key",
+              idempotencyKey: (submission as Record<string, any>).intent.idempotencyKey,
+              exchangeId: "upbit_krw_spot",
+              market: "KRW-BTC",
+              status: "ACCEPTED",
+            };
+          },
+        },
+        budgetReservation: {
+          async reserve(request: Record<string, any>) {
+            reservations.push(request);
+            return {
+              reserved: true,
+              reservation: {
+                reservationId: `reservation-${request.attemptId}`,
+                attemptId: request.attemptId,
+                idempotencyKey: request.idempotencyKey,
+                reservedNotionalKrw: request.requestedNotionalKrw,
+                budgetSnapshot: request.budgetSnapshot,
+                reservedAt: request.observedAt,
+              },
+            };
+          },
+        },
+      }),
+      executionStatus: productionInputs.executionStatus,
+      postSubmitReadiness: productionInputs.postSubmitReadiness,
+      budgetSnapshot: productionInputs.budgetSnapshot,
+      lossSnapshot: productionInputs.lossSnapshot,
+      cleanupLifecycle: productionInputs.cleanupLifecycle,
+    });
+
+    expect(summary).toMatchObject({
+      status: "submitted",
+      submittedOrderCount: 1,
+      brokerOrderId: "autonomous-entry-runtime-key",
+    });
+    expect(reservations).toHaveLength(1);
+    expect(submitted).toHaveLength(1);
+    expect((reservations[0] as Record<string, any>).idempotencyKey).toMatch(/^ops-[a-f0-9]{26}$/u);
+    expect((reservations[0] as Record<string, any>).idempotencyKey).not.toBe(decisionKey);
+  });
+
+  it("autonomous SELL은 제출 직전 preflight ownership이 intent scope와 다르면 broker 제출 전에 차단한다", async () => {
+    const {
+      createLiveOpsCliProductionExecutionInputs,
+      evaluateLiveOpsCliLiveExecution,
+    } = await import(path.join(process.cwd(), "scripts/run-live-ops-support.mjs"));
+    const observedAt = "2026-06-20T00:00:00.000Z";
+    const submitted = vi.fn(async () => ({ status: "SUBMITTED", brokerOrderId: "unexpected-stale-sell" }));
+    const config = {
+      live_trading_enabled: true,
+      universe: { markets: ["KRW-BTC"], default_market: "KRW-BTC" },
+      budget: {
+        max_order_krw: "10000",
+        daily_autonomous_notional_limit_krw: "30000",
+        max_open_position_notional_krw: "30000",
+      },
+    };
+    const analysisDecision = { ready: true, decisionCategory: "ORDER_INTENT", orderIntentCount: 1 };
+    const marketData = { ready: true, latestHeartbeatAt: observedAt, referencePrice: "100000000" };
+    const productionRuntime = {
+      exitRuntime: {},
+      cleanupLifecycle: {},
+      privateReadProvider: {
+        async listOpenOrders() {
+          return [];
+        },
+        async getBalances() {
+          return {
+            exchangeId: "upbit_krw_spot",
+            capturedAt: observedAt,
+            balances: [
+              { currency: "KRW", available: "100000", locked: "0", total: "100000", updatedAt: observedAt },
+              { currency: "BTC", available: "0", locked: "0", total: "0", updatedAt: observedAt },
+            ],
+          };
+        },
+      },
+      reconcileStatusProvider: {
+        async getReconcileStatus() {
+          return {
+            lastReconcileAt: observedAt,
+            result: "SUCCESS",
+            mismatchCount: 0,
+            openOrderCount: 0,
+            balanceStatus: "OK",
+          };
+        },
+      },
+      pnlStatusProvider: {
+        async getStatus() {
+          return {
+            readStatus: "OK",
+            latestCapturedAt: observedAt,
+            latestRealizedPnlKrw: "0",
+            latestUnrealizedPnlKrw: "0",
+            latestStatus: "CALCULATED",
+          };
+        },
+      },
+      killSwitchProvider: {
+        async getStatus() {
+          return { active: false, state: "NORMAL", updatedAt: observedAt };
+        },
+      },
+      budgetReservation: {
+        async readDailyReservedNotional() {
+          return { reservedNotionalKrw: "0", reservationCount: 0 };
+        },
+      },
+      preflightReconcileRecorder: {
+        async recordPreflight() {
+          throw new Error("FreshCleanReconcileShouldNotRecord");
+        },
+      },
+      telegramDispatcher: {},
+    };
+
+    const productionInputs = await withFakeSystemTime(observedAt, () => createLiveOpsCliProductionExecutionInputs({
+      config,
+      env: liveOrderEnv(),
+      fixtureSmoke: false,
+      analysisDecision,
+      marketData,
+      orderIntents: [createCliSellIntent({ idempotencyKey: `ops-${"e".repeat(26)}` })],
+      productionRuntime,
+    }));
+    const summary = await evaluateLiveOpsCliLiveExecution({
+      config,
+      fixtureSmoke: false,
+      analysisDecision,
+      marketData,
+      env: liveOrderEnv(),
+      orderIntents: productionInputs.orderIntents,
+      exitRuntime: { submitExitOrder: submitted },
+      executionStatus: productionInputs.executionStatus,
+      postSubmitReadiness: productionInputs.postSubmitReadiness,
+      budgetSnapshot: productionInputs.budgetSnapshot,
+      lossSnapshot: productionInputs.lossSnapshot,
+      cleanupLifecycle: productionInputs.cleanupLifecycle,
+    });
+
+    expect(summary).toMatchObject({
+      status: "blocked",
+      submittedOrderCount: 0,
+    });
+    expect(summary.checks).toContainEqual(expect.objectContaining({
+      code: "live_ops_order_intent_blocked",
+    }));
+    expect(JSON.stringify(summary.checks)).toContain("preflight");
+    expect(submitted).not.toHaveBeenCalled();
+  });
+
   it("SELL exit runtime은 제출 이후 poll 오류도 broker order id가 있는 수동 점검 결과로 닫는다", async () => {
     const {
       createLiveOpsCliExitRuntime,
@@ -1235,6 +1435,81 @@ console.log(JSON.stringify(summary));
       },
     });
     expect(cancelOrder).not.toHaveBeenCalled();
+  });
+
+  it("SELL exit closeout은 매칭 원가와 실현 손익을 artifact에 보존한다", async () => {
+    const {
+      createLiveOpsCliExitRuntime,
+    } = await import(path.join(process.cwd(), "scripts/run-live-ops-support.mjs"));
+    const idempotencyKey = `ops-${"f".repeat(26)}`;
+    const sellIntent = createCliSellIntent({ idempotencyKey }) as Record<string, any>;
+    sellIntent.metadata = {
+      ...sellIntent.metadata,
+      preflight_position_scope: {
+        market: "KRW-BTC",
+        strategy_id: "live_ops_autonomous_24x7_core",
+        total_quantity: "0.0001",
+        average_entry_price: "100000000",
+        reserved_notional_krw: "10000",
+        owned: true,
+      },
+    };
+    const cleanupRecords: unknown[] = [];
+    const brokerOrder = {
+      brokerOrderId: "exit-order-filled-loss",
+      idempotencyKey,
+      exchangeId: "upbit_krw_spot",
+      market: "KRW-BTC",
+      side: "SELL",
+      orderType: "LIMIT",
+      status: "ACCEPTED",
+      requestedQuantity: sellIntent.requestedQuantity,
+      remainingQuantity: sellIntent.requestedQuantity,
+      requestedPrice: "99000000",
+      acceptedAt: "2026-06-20T00:00:00.000Z",
+      updatedAt: "2026-06-20T00:00:00.000Z",
+    };
+    const runtime = createLiveOpsCliExitRuntime({
+      pollCount: 1,
+      pollIntervalMs: 0,
+      artifactStore: {
+        async writeCleanup(record: unknown) {
+          cleanupRecords.push(record);
+          return "/tmp/autonomous-exit-closeout.json";
+        },
+      },
+      broker: {
+        async submitOrder() {
+          return brokerOrder;
+        },
+        async getOrder() {
+          return {
+            ...brokerOrder,
+            status: "FILLED",
+            remainingQuantity: "0",
+          };
+        },
+      },
+    });
+
+    const result = await runtime.submitExitOrder({
+      intent: sellIntent,
+      costSnapshot: sellIntent.costSnapshot,
+      riskApproval: sellIntent.riskApproval,
+      observedAt: "2026-06-20T00:00:00.000Z",
+    });
+
+    expect(result).toMatchObject({
+      status: "FILLED",
+      cleanupArtifactPath: "/tmp/autonomous-exit-closeout.json",
+    });
+    expect(cleanupRecords).toEqual([expect.objectContaining({
+      filledQuantity: "0.0001",
+      filledNotionalKrw: "9900",
+      entryAveragePrice: "100000000",
+      entryCostNotionalKrw: "10000",
+      realizedPnlKrw: "-100",
+    })]);
   });
 
   it("SELL exit terminal/requote 상태도 private read PnL status로 닫는다", async () => {
@@ -3210,7 +3485,7 @@ console.log(JSON.stringify({
             capturedAt: executionAt,
             balances: [
               { currency: "KRW", available: "100000", locked: "0", total: "100000", updatedAt: executionAt },
-              { currency: "BTC", available: "0.0001", locked: "0", total: "0.0001", updatedAt: executionAt },
+              { currency: "BTC", available: "0.0002", locked: "0", total: "0.0002", updatedAt: executionAt },
             ],
           };
         },
@@ -3321,6 +3596,7 @@ console.log(JSON.stringify({
         market: "KRW-BTC",
         quantity: "0.0001",
         averageEntryPrice: "100000000",
+        source: "live_ops_autonomous_artifact_position",
       }),
     })]);
   });

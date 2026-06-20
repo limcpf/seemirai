@@ -113,10 +113,13 @@ Codex-native 운영은 Codex, Git, GitHub, shell command, 문서 상태를 연�
   않고 reconcile/manual review로 수렴한다. public live execution adapter는 긴 decision key를 stable `ops-` attempt id로 낮춰 같은 cleanup
   후보가 재평가되어도 동일 identifier chain을 유지한다.
 - autonomous BUY runtime도 strategy decision key를 broker identifier로 직접 쓰지 않는다. 제출 직전 preflight tick scope를 포함한 `ops-`
-  attempt id로 낮추고 원본 decision key는 metadata에 보존해, 매수-매도 이후 같은 날 같은 가격/수량의 재진입이 과거 reservation 파일에
-  막히지 않게 한다.
+  attempt id로 낮추고 원본 decision key는 metadata에 보존한다. autonomous BUY Cost/Risk evidence 검증도 runtime attempt id를 기준으로
+  수행해, 원본 decision key와 runtime `ops-` key 불일치로 `execution_evidence_missing`이 발생하지 않게 한다. 이 분리는 매수-매도 이후
+  같은 날 같은 가격/수량의 재진입이 과거 reservation 파일에 막히지 않게 하는 invariant다.
 - production broker 제출 경계는 analysis 단계에서 만든 private preflight snapshot을 재사용하지 않는다. private provider가 조립된 실행
   경로에서는 제출 직전 open order, balance, reconcile, PnL, kill switch, budget reservation을 다시 읽어 stale account 상태로 주문하지 않는다.
+  autonomous SELL은 intent의 position scope가 이 fresh preflight의 strategy-owned scope와 일치할 때만 broker로 전진하며, 소유 수량이
+  사라졌거나 수동 BTC와 scope가 섞인 stale intent는 fail-closed 한다.
 - submit 이후 cancel requested와 terminal cancel 확인은 같은 attempt/identifier chain으로 연결되어야 하며, open exposure 0,
   duplicate order 0건, reconcile mismatch 0건, untracked fill 0건이 closeout evidence에 포함되어야 한다.
 - production `live:ops` clean-start DB에 완료된 reconcile run이 없으면, broker 제출 전 actual Upbit private read 결과를
@@ -137,8 +140,11 @@ Codex-native 운영은 Codex, Git, GitHub, shell command, 문서 상태를 연�
   not-ready PnL도 fail-closed 대상이다. 같은 reconcile run의 중복 balance row는 currency별 최신 snapshot만 사용하고, stale orderbook
   기준가는 fresh closeout 근거로 쓰지 않는다.
 - autonomous PnL closeout은 DB `positions` row가 아직 없더라도 같은 preflight tick에서 runtime이 만든 strategy-owned artifact position을
-  원가 source로 주입할 수 있다. 이 fallback은 DB position이 없고, artifact quantity와 거래소 BTC balance가 일치하며, 평균단가가 양수일 때만
-  허용한다.
+  원가 source로 주입할 수 있다. 이 fallback은 DB position이 없고, 거래소 BTC balance가 artifact-owned 수량 이상이며, 평균단가가 양수일 때
+  strategy-owned 수량만 주입한다. 수동 BTC가 같은 지갑에 섞여도 자동 SELL/PnL snapshot은 strategy-owned 수량으로만 닫는다.
+- autonomous SELL fill closeout artifact는 체결 수량/가격뿐 아니라 matched entry average price, entry cost notional, realized PnL을 저장한다.
+  원가 basis가 없으면 closeout을 ready로 인정하지 않고 manual review로 닫아, stop-loss 이후 다음 preflight가 실현손익을 0 KRW로 계산해
+  재진입을 여는 일을 막는다.
 - Telegram 전송 실패는 주문/리스크 commit을 되돌리지 않고 retry/manual review summary로 격리한다.
 - 실제 cleanup run은 저장소 밖 redacted artifact에만 기록하고, issue/PR에는 safe summary와 artifact 경로만 남긴다. 취소 요청 이후
   terminal poll이 실패해도 artifact 없이 generic manual review로 빠지지 않고, cancel evidence와 poll 실패 사유를 redacted cleanup
