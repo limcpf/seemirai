@@ -19,6 +19,7 @@ const liveOpsCliUpbitIdentifierMaxLength = 32;
 const liveOpsCliCleanupCancelPollCount = 5;
 const liveOpsCliCleanupCancelPollIntervalMs = 1000;
 const liveOpsCliDailyReservationLockLeaseMs = 5 * 60 * 1000;
+const liveOpsCliExitSubmissionLockLeaseMs = 60 * 1000;
 const liveOpsCliPreflightReconcileFreshnessMs = 30_000;
 const liveOpsCliPreflightPnlFreshnessMs = 30_000;
 const liveOpsCliPreflightPnlFutureSkewMs = 1_000;
@@ -2191,6 +2192,54 @@ export async function createLiveOpsCliCleanupArtifactStore({ configPath, env = {
       assertLiveOpsCliReservationDay(day);
       return path.join(realDir, `reservation-daily-${day}.lock`);
     },
+    exitSubmissionLockPath(scope) {
+      const scopeHash = createHash("sha256").update(String(scope ?? "unknown-exit-scope")).digest("hex").slice(0, 32);
+      return path.join(realDir, `exit-submission-${scopeHash}.lock`);
+    },
+    async acquireExitSubmissionLock(scope, { acquiredAt = new Date().toISOString(), ttlMs = liveOpsCliExitSubmissionLockLeaseMs } = {}) {
+      const targetPath = this.exitSubmissionLockPath(scope);
+      const acquire = async () => {
+        assertLiveOpsCliDailyReservationLockOwnerAvailable();
+        const leaseId = randomUUID();
+        const tempPath = `${targetPath}.tmp-${leaseId}`;
+        const lease = `${JSON.stringify(createLiveOpsCliDailyReservationLockLease({
+          day: "exit-submission",
+          acquiredAt,
+          ttlMs,
+          leaseId,
+          source: "live_ops_cli_exit_submission_lock",
+        }), null, 2)}\n`;
+        try {
+          await writeFile(tempPath, lease, { encoding: "utf8", flag: "wx" });
+          await link(tempPath, targetPath);
+        } finally {
+          await unlink(tempPath).catch(() => undefined);
+        }
+        let released = false;
+        return {
+          path: targetPath,
+          leaseId,
+          async release() {
+            if (released) {
+              return;
+            }
+            released = true;
+            await releaseLiveOpsCliDailyReservationLockIfOwned(targetPath, leaseId);
+          },
+        };
+      };
+
+      try {
+        return await acquire();
+      } catch (error) {
+        if (error?.code !== "EEXIST") {
+          throw error;
+        }
+        // 같은 decision/position SELL은 broker 제출 전 파일 lock으로 직렬화해 중복 포지션 축소를 막는다.
+        await releaseLiveOpsCliRecoverableDailyReservationLock(targetPath, acquiredAt, ttlMs);
+        return await acquire();
+      }
+    },
     async acquireDailyReservationLock(day, { acquiredAt = new Date().toISOString(), ttlMs = liveOpsCliDailyReservationLockLeaseMs } = {}) {
       const targetPath = this.dailyReservationLockPath(day);
       const acquire = async () => {
@@ -2777,6 +2826,9 @@ function summarizeLiveOpsCliLegacyAutonomousObservationFallback({ reservationRec
     .map((record) => ({
       record,
       originalNotional: new Decimal(record.reservedNotionalKrw),
+      originalQuantityLimit: isPositiveDecimalString(record?.requestedPrice)
+        ? new Decimal(record.reservedNotionalKrw).div(record.requestedPrice)
+        : undefined,
       remainingCost: new Decimal(record.reservedNotionalKrw),
       consumedQuantity: new Decimal(0),
     }));
@@ -2816,6 +2868,12 @@ function summarizeLiveOpsCliLegacyAutonomousObservationFallback({ reservationRec
   const consumedOpenQuantity = openReservations.reduce((total, reservation) => {
     return total.plus(reservation.consumedQuantity);
   }, new Decimal(0));
+  const originalOpenQuantityLimit = openReservations.reduce((total, reservation) => {
+    if (!(reservation.originalQuantityLimit instanceof Decimal)) {
+      return total;
+    }
+    return total.plus(Decimal.max(reservation.originalQuantityLimit.minus(reservation.consumedQuantity), 0));
+  }, new Decimal(0));
   const openedAt = openReservations.find((reservation) => hasMeaningfulValue(reservation.record?.reservedAt))?.record?.reservedAt;
   const latestReservationAt = [...openReservations]
     .reverse()
@@ -2829,9 +2887,12 @@ function summarizeLiveOpsCliLegacyAutonomousObservationFallback({ reservationRec
       latestReservationAt,
     };
   }
-  const restorableOpenQuantity = observedUnitPrice instanceof Decimal && observedUnitPrice.gt(0)
+  const currentPriceRestorableOpenQuantity = observedUnitPrice instanceof Decimal && observedUnitPrice.gt(0)
     ? Decimal.min(observedWalletQuantity, originalOpenNotional.div(observedUnitPrice))
     : observedWalletQuantity;
+  const restorableOpenQuantity = originalOpenQuantityLimit.gt(0)
+    ? Decimal.min(observedWalletQuantity, currentPriceRestorableOpenQuantity, originalOpenQuantityLimit)
+    : currentPriceRestorableOpenQuantity;
   const estimatedOriginalQuantity = restorableOpenQuantity.plus(consumedOpenQuantity);
   if (!estimatedOriginalQuantity.gt(0)) {
     return {
@@ -2842,7 +2903,7 @@ function summarizeLiveOpsCliLegacyAutonomousObservationFallback({ reservationRec
       latestReservationAt,
     };
   }
-  // 구형 reservation에는 수량이 없으므로 지갑 전체가 아니라 현재 가격으로 복원 가능한 전략 수량만 자동 소유로 인정한다.
+  // 구형 reservation에는 수량이 없으므로 지갑 전체가 아니라 요청가/현재가로 복원 가능한 전략 수량만 자동 소유로 인정한다.
   const averageEntryPrice = originalOpenNotional.div(estimatedOriginalQuantity);
   return {
     reservedNotionalKrw: averageEntryPrice.mul(restorableOpenQuantity).toFixed(),
@@ -6216,6 +6277,41 @@ export function createLiveOpsCliExitRuntime({
         };
       }
 
+      let exitSubmissionLock;
+      if (typeof artifactStore?.acquireExitSubmissionLock === "function") {
+        const lockScope = createLiveOpsCliExitSubmissionLockScope(submission);
+        try {
+          // exit에는 BUY reservation lock이 없으므로 같은 position/decision SELL을 broker 제출 전용 lock으로 직렬화한다.
+          exitSubmissionLock = await artifactStore.acquireExitSubmissionLock(lockScope, {
+            acquiredAt: clock(),
+            ttlMs: liveOpsCliExitSubmissionLockLeaseMs,
+          });
+        } catch (error) {
+          if (error?.code === "EEXIST") {
+            return {
+              status: "REJECTED",
+              statusLabel: "exit 동시 제출 차단",
+              brokerOrderId: null,
+              manualReviewRequired: false,
+              message: "같은 전략 포지션의 SELL 제출이 이미 진행 중이라 중복 매도를 중단했습니다.",
+              action: "진행 중인 SELL 주문의 terminal 상태와 reconcile 결과를 확인한 뒤 다음 tick에서 재평가하세요.",
+              reason: "live_ops_exit_submission_lock_busy",
+            };
+          }
+          return {
+            status: "MANUAL_REVIEW_REQUIRED",
+            statusLabel: "수동 점검",
+            brokerOrderId: null,
+            manualReviewRequired: true,
+            message: "SELL 동시 제출 lock 상태를 확정하지 못해 수동 점검으로 전환했습니다.",
+            action: "artifact lock 파일과 거래소 open order를 확인한 뒤 재시도 여부를 결정하세요.",
+            reason: safeErrorName(error),
+          };
+        }
+      }
+
+      try {
+        return await (async () => {
       let brokerOrder;
       try {
         // SELL 제출은 실계좌 포지션을 줄이는 side effect이므로 모든 evidence guard 뒤에서만 호출한다.
@@ -6385,8 +6481,26 @@ export function createLiveOpsCliExitRuntime({
         cancelOrder,
         terminalOrder: terminal.order,
       };
+        })();
+      } finally {
+        await exitSubmissionLock?.release?.().catch(() => undefined);
+      }
     },
   };
+}
+
+function createLiveOpsCliExitSubmissionLockScope(submission) {
+  const intent = submission?.intent ?? {};
+  const positionScope = intent?.metadata?.preflight_position_scope ?? intent?.metadata?.position_scope ?? {};
+  return JSON.stringify({
+    strategyId: intent.strategyId,
+    market: intent.market,
+    side: intent.side,
+    decisionIdempotencyKey: intent?.metadata?.decision_idempotency_key ?? intent.idempotencyKey,
+    requestedQuantity: intent.requestedQuantity,
+    requestedPrice: intent.requestedPrice,
+    positionScope,
+  });
 }
 
 async function writeLiveOpsCliAutonomousExitCloseoutOrManualReview({
@@ -9779,6 +9893,7 @@ function evaluateLiveOpsCliAutonomous24x7Strategy({
 
 function createLiveOpsCliAutonomousPositionSnapshot({ preflight, policy, observedAt }) {
   const exposure = preflight.heldPositionExposure;
+  const ownership = preflight.autonomousPositionOwnership;
   if (exposure?.valuationMissing === true) {
     return {
       kind: "blocked",
@@ -9800,6 +9915,22 @@ function createLiveOpsCliAutonomousPositionSnapshot({ preflight, policy, observe
       },
     };
   }
+  if (
+    ownership?.strategyId === liveOpsCliAutonomous24x7StrategyId &&
+    String(ownership?.status ?? "").toUpperCase() === "MANUAL_REVIEW_REQUIRED"
+  ) {
+    // 수량이 0으로 관측돼도 미해결 수동점검 state가 있으면 손익/소유권 복구 전 신규 BUY로 전진하지 않는다.
+    return {
+      kind: "blocked",
+      reasonCode: "autonomous_24x7_position_manual_review_required",
+      metadata: {
+        market: exposure?.market ?? "KRW-BTC",
+        capturedAt: exposure?.capturedAt ?? observedAt,
+        strategyId: liveOpsCliAutonomous24x7StrategyId,
+        manualReviewReason: ownership.manualReviewReason ?? "autonomous_position_manual_review_required",
+      },
+    };
+  }
 
   const quantity = new Decimal(exposure.quantity);
   if (quantity.isZero()) {
@@ -9814,7 +9945,6 @@ function createLiveOpsCliAutonomousPositionSnapshot({ preflight, policy, observe
     };
   }
 
-  const ownership = preflight.autonomousPositionOwnership;
   // 지갑 잔고만으로 전략 소유를 추정하면 수동 보유 BTC를 자동 SELL할 수 있어 reservation 소유 기록이 없으면 닫는다.
   if (
     ownership?.owned !== true ||
