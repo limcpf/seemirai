@@ -9,3 +9,4 @@
 - [`m22-live-autonomous-pilot.md`](./m22-live-autonomous-pilot.md): M22 제한적 완전 자동매매 24시간 pilot local file preparer, 기본 daemon, runner, env/evidence, closeout artifact 판정 절차
 - [`m23-live-small-budget-operations.md`](./m23-live-small-budget-operations.md): M23 실제 주문 가능 live-armed 7일 운영 안정화, 상태 확인, 중지/복구, DB backup/restore smoke, closeout evidence 절차
 - [`live-ops-real-arm-cleanup.md`](./live-ops-real-arm-cleanup.md): Issue #206 production `live:ops` 실제 provider arm과 단일 소액 주문 submit/cancel cleanup evidence 절차
+- [`live-ops-24x7-autonomous.md`](./live-ops-24x7-autonomous.md): Issue #206 확장 범위의 production `live:ops` 24/7 자동 매수/보유/매도 운영 절차와 중지 기준

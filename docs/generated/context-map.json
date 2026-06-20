@@ -142,6 +142,13 @@
       "owner_scope": "docs/runbooks"
     },
     {
+      "path": "docs/runbooks/live-ops-24x7-autonomous.md",
+      "kind": "reference",
+      "role": "Issue #206 production live ops 24/7 자동 매수/보유/매도 운영 절차와 중지 기준",
+      "read_when": ["issue #206 구현", "Live Ops 24/7 자동매매", "live ops daemon", "자동 매수 매도", "entry exit strategy"],
+      "owner_scope": "docs/runbooks"
+    },
+    {
       "path": "docs/DESIGN.md",
       "kind": "policy",
       "role": "구조 변경과 설계 기록 작성 기준",

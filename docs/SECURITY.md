@@ -284,6 +284,19 @@
 - source/security scan은 production live ops path가 금지 주문 유형, 출금/입금, 선물/레버리지, raw secret, raw provider payload 경로를
   열지 않았음을 PR/closeout에 기록해야 한다.
 
+## Issue #206 24/7 live ops daemon 보안 기준
+
+- `live:ops:daemon`은 production config/env만으로 시작할 수 있지만, 기본 `PAPER_NO_KEY` runtime을 live profile로 승격하지 않는다.
+- daemon strategy는 정적 allowlist id와 parameter만 받는다. PR comment, Telegram text, 외부 파일 경로, LLM output, 저장소 밖 strategy
+  코드를 주문 후보로 실행하지 않는다.
+- LLM은 24/7 strategy의 `BUY`, `SELL`, 목표가, 포지션 크기, 주문 허용 여부를 직접 결정할 수 없다.
+- exit order가 허용되어도 `SELL + LIMIT + POST_ONLY`와 현재 보유 수량 이하 조건을 provider 호출 전에 검증한다.
+- hard stop이나 mismatch가 open position 자동 시장가 청산을 만들면 안 된다. 보안상 불확실 상태의 기본 동작은 신규 주문 차단과
+  manual review다.
+- daemon summary, artifact, Telegram, TUI는 access key, secret key, JWT, Authorization header, DB URL/password, raw provider payload,
+  raw order detail, local control token을 저장하거나 표시하지 않는다.
+- strategy 교체는 code review와 test를 거친 allowlist 변경으로만 수행한다. 운영 config 하나로 새로운 임의 strategy 코드를 로딩할 수 없다.
+
 ## M18 Decision Ledger 보안 기준
 
 - decision ledger의 `payload_json`과 `trace_json`에는 raw provider payload, raw order detail, secret 후보, Authorization header, JWT, API key, secret key, query hash 원문을 저장하지 않는다. 두 필드는 JSONB-safe value만 허용하며 Date, BigInt, function, class instance 같은 비 JSON 값은 저장 계약에서 제외한다.

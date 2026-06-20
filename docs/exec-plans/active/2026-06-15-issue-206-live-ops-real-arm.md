@@ -10,6 +10,10 @@ Telegram, TUI를 같은 lifecycle로 조립하고, 조건을 통과한 단일 `K
 `BUY + LIMIT + post_only` 주문을 제출하고, 같은 Upbit `identifier` 또는 uuid로 취소 요청과 terminal cancel 확인까지 닫은 evidence를
 남기는 것이 최종 closeout 기준이다.
 
+2026-06-20 확장: 사용자가 요구한 “24/7 자동 매매”는 cleanup canary가 아니라 자동 매수, 보유, 매도 판단이 모두 포함된 daemon loop여야
+한다. 따라서 이 계획은 기존 real-arm cleanup 위에 `live:ops:daemon`과 production entry/exit strategy allowlist를 추가한다. 실행 전
+수동 fixture manifest, hand-written evidence, JSONL 후보 파일을 요구하지 않고, runtime이 decision evidence와 artifact를 자동 생성해야 한다.
+
 ## 범위
 
 - production `live:ops` boot sequence의 실제 provider arm
@@ -20,6 +24,7 @@ Telegram, TUI를 같은 lifecycle로 조립하고, 조건을 통과한 단일 `K
 - 실제 Telegram startup/live capable/order/cancel/manual review alert dispatch
 - TUI 실제 운영 화면과 최소 5초 이하 status 갱신
 - 실거래 cleanup submit/cancel terminal evidence와 redaction/source scan closeout
+- 24/7 daemon loop, entry/exit strategy registry, 보유 포지션 우선 exit 평가, bounded cancel/requote/manual-review 수렴
 
 ## 제외 범위
 
@@ -31,6 +36,7 @@ Telegram, TUI를 같은 lifecycle로 조립하고, 조건을 통과한 단일 `K
 - Web 백오피스와 Telegram public webhook endpoint
 - LLM 직접 매수/매도 판단
 - secret 원문이나 raw provider payload를 issue, PR, log, artifact, TUI, Telegram, status에 기록하는 작업
+- 수익 보장, 투자 자문, 타인 자금 운용, 신호 판매
 
 ## Sub PR 계획
 
@@ -376,6 +382,64 @@ Telegram, TUI를 같은 lifecycle로 조립하고, 조건을 통과한 단일 `K
   - [x] attach read-only 여부는 실행 형태/필요 조치로 구분하고, 원본 실주문 가능 여부 표시는 유지한다.
   - [x] attach source의 `liveExecution.liveOrderCapable`이 boolean이 아니면 문자열 truthy 오표시를 막기 위해 fail-closed 한다.
   - [x] 관련 unit test, 문서 검증, `git diff --check`, `corepack pnpm typecheck`, `./scripts/verify`가 통과한다.
+
+### Sub PR 17: 24/7 자동 매수/매도 DnD와 운영 contract
+
+- 목표: cleanup canary와 진짜 24/7 자동매매의 gap을 문서와 DnD로 명확히 닫는다.
+- 제외 범위:
+  - 코드 구현, DB migration, live order side effect.
+  - 수익 보장, 투자 자문, BTC 외 market, budget 확대.
+- DnD:
+  - [ ] `docs/FEATURE_REQUIREMENTS.md`에 `live:ops:daemon` 24/7 entry/exit acceptance criteria가 있다.
+  - [ ] `docs/runbooks/live-ops-24x7-autonomous.md`가 config/env만으로 실행하는 운영 명령, entry/exit DnD, strategy 교체성,
+        중지 기준을 설명한다.
+  - [ ] `docs/RUNTIME_CONFIG.md`, `docs/RELIABILITY.md`, `docs/SECURITY.md`, product spec, docs/runbook index/context map이
+        cleanup canary와 24/7 daemon을 구분한다.
+  - [ ] DnD가 실행 전 fixture/evidence 파일 요구를 금지하고 runtime 자동 artifact 생성을 요구한다.
+  - [ ] 문서 검증과 `git diff --check`가 통과한다.
+
+### Sub PR 18: 24/7 strategy registry와 entry/exit policy core
+
+- 목표: production allowlist strategy를 cleanup probe와 분리하고, 유명 투자 원칙에서 가져온 추세추종, 평균회귀, 리스크 우선,
+  현금 보유, 매도 우선 원칙을 deterministic rule 조합으로 구현한다.
+- 제외 범위:
+  - broker submit, daemon loop, DB migration.
+  - LLM/뉴스/SNS 기반 주문 판단.
+- DnD:
+  - [ ] strategy interface가 entry/exit 후보 생성과 설명 metadata를 분리한다.
+  - [ ] strategy는 broker, Upbit client, DB, Telegram을 직접 호출하지 않는다.
+  - [ ] allowlist registry는 동적 import/임의 path/원격 plugin을 거부한다.
+  - [ ] 보유 포지션이 있으면 exit evaluation plan이 entry보다 먼저 나온다.
+  - [ ] exit rules는 take profit, stop loss, trailing stop, max holding time, risk reduction을 독립 rule로 가진다.
+  - [ ] entry rules는 조건 미충족 시 HOLD evidence를 남긴다.
+  - [ ] 관련 unit tests, typecheck, docs verify, `./scripts/verify`, `git diff --check`가 통과한다.
+
+### Sub PR 19: position lifecycle와 SELL 실행 경계
+
+- 목표: `FLAT -> ENTERING -> OPEN -> EXITING -> CLOSED` lifecycle과 `SELL + LIMIT + POST_ONLY` execution guard를 production live ops에
+  연결한다.
+- 제외 범위:
+  - 시장가 매도, hard-stop 자동 청산, budget 확대.
+- DnD:
+  - [ ] 보유 수량 이하 SELL intent만 broker submit 경계로 전달된다.
+  - [ ] entry/exit open order는 bounded cancel/requote 또는 manual review로 수렴한다.
+  - [ ] terminal 확인 실패, partial fill, untracked fill은 신규 주문 차단과 manual review evidence를 만든다.
+  - [ ] TUI/Telegram/status가 보유/매도 판단 이유와 필요한 조치를 한국어로 표시한다.
+  - [ ] 관련 unit/integration tests, typecheck, `./scripts/verify`, `git diff --check`가 통과한다.
+
+### Sub PR 20: live:ops daemon loop와 24시간 summary
+
+- 목표: 한 줄 명령으로 24/7 loop를 실행하고, entry/exit/HOLD/BLOCK/manual-review를 반복 평가하며 24시간 summary를 자동 산출한다.
+- 제외 범위:
+  - final main PR merge.
+- DnD:
+  - [ ] `corepack pnpm live:ops:daemon -- --config <path> --env-file <path> --tui`가 production loop를 시작한다.
+  - [ ] 실행 전 fixture manifest, hand-written evidence, 수동 JSONL 후보 파일이 필요 없다.
+  - [ ] `--fixture-smoke --duration-ms 1000` smoke가 외부 provider/order side effect 없이 loop contract를 검증한다.
+  - [ ] loop는 success/HOLD/BLOCK/manual-review/transient failure별 sleep/backoff 정책을 가진다.
+  - [ ] 24시간 summary가 crash, unhandled rejection, duplicate order, reconcile mismatch, untracked fill, live order cleanup failure counter를
+        자동 집계한다.
+  - [ ] 관련 script tests, typecheck, `./scripts/verify`, `git diff --check`가 통과한다.
 
 ## 검증 방법
 
