@@ -274,8 +274,8 @@
   관찰되면 runtime은 주문 가능 상태로 시작하지 않는다.
 - 주문 side effect는 단일 `KRW-BTC` `BUY + LIMIT + post_only` 후보만 허용하며, 시장가/best order/시장가 매도/자동 budget 확대는
   provider 호출 전에 차단한다.
-- decision policy config는 `cleanup_probe` 같은 정적 allowlist id만 허용한다. JSON config나 env로 임의 JS/TS 파일 경로, 동적 import,
-  원격 plugin, 저장소 밖 strategy 코드를 실행하게 만들지 않는다.
+- decision policy config는 `cleanup_probe`, `autonomous_24x7` 같은 정적 allowlist id만 허용한다. JSON config나 env로 임의 JS/TS 파일
+  경로, 동적 import, 원격 plugin, 저장소 밖 strategy 코드를 실행하게 만들지 않는다.
 - live:ops preflight reconcile DB evidence에는 잔고 숫자, 미체결 주문 safe identity, 상태, 시각, source summary만 저장한다.
   access key, secret key, JWT, Authorization header, REST query hash, raw provider payload, raw order detail, Telegram token, DB URL 원문은
   `live_reconcile_*` table의 metadata/trace에도 저장하지 않는다.
@@ -289,6 +289,8 @@
 - `live:ops:daemon`은 production config/env만으로 시작할 수 있지만, 기본 `PAPER_NO_KEY` runtime을 live profile로 승격하지 않는다.
 - daemon strategy는 정적 allowlist id와 parameter만 받는다. PR comment, Telegram text, 외부 파일 경로, LLM output, 저장소 밖 strategy
   코드를 주문 후보로 실행하지 않는다.
+- `autonomous_24x7` strategy parameter는 non-secret threshold만 허용한다. credential, token, DB URL, local control token은 config
+  schema와 startup contract에서 계속 분리해야 한다.
 - LLM은 24/7 strategy의 `BUY`, `SELL`, 목표가, 포지션 크기, 주문 허용 여부를 직접 결정할 수 없다.
 - exit order가 허용되어도 `SELL + LIMIT + POST_ONLY`와 현재 보유 수량 이하 조건을 provider 호출 전에 검증한다.
 - hard stop이나 mismatch가 open position 자동 시장가 청산을 만들면 안 된다. 보안상 불확실 상태의 기본 동작은 신규 주문 차단과

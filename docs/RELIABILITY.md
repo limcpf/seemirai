@@ -91,6 +91,11 @@ Codex-native 운영은 Codex, Git, GitHub, shell command, 문서 상태를 연�
   전진하지 않는다.
 - decision policy resolver는 config의 정적 allowlist policy id만 strategy로 조립한다. 알 수 없는 policy, 임의 코드 경로, 동적 import,
   저장소 밖 strategy 입력은 HOLD로 가장하지 않고 startup/config 또는 strategy decision 경계에서 fail-closed 한다.
+- `autonomous_24x7` policy는 보유 포지션 snapshot이 있으면 entry보다 exit rule을 먼저 평가한다. analysis pipeline은 position
+  snapshot을 조회하지 않고 `StrategyContext.positions`로 전달만 하며, strategy는 SELL/BUY order intent를 만들 뿐 broker, DB,
+  Telegram side effect를 직접 수행하지 않는다.
+- `autonomous_24x7` exit rule은 take profit, stop loss, trailing stop, max holding time, risk reduction을 독립 reason code로 남긴다.
+  exit 조건이 없으면 같은 tick의 강한 entry signal도 BUY로 전환하지 않고 HOLD로 닫아 물타기식 중복 진입을 막는다.
 - `cleanup_probe`는 같은 market data tick의 orderbook에서 단일 order intent만 만들며, analysis safe summary의 `orderIntentCount`와
   live execution 내부 입력으로 전달되는 order intent 배열이 다르면 broker 제출로 전진하지 않는다. raw order intent는 status/TUI/JSON
   summary에 직렬화하지 않고, public pipeline도 non-enumerable result channel로만 같은 tick 후보를 전달한다.

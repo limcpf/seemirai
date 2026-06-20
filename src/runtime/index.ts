@@ -189,6 +189,7 @@ export {
   loadRuntimeConfigFile,
 } from "./config.js";
 export {
+  LIVE_OPS_AUTONOMOUS_24X7_DECISION_POLICY_ID,
   LIVE_OPS_CLEANUP_PROBE_DECISION_POLICY_ID,
   LIVE_OPS_DEFAULT_MARKET,
   LIVE_OPS_LEGACY_ENV_NAMES,
@@ -219,11 +220,14 @@ export type {
   LoadLiveOpsSecretsOptions,
 } from "./live-ops-config.js";
 export {
+  LIVE_OPS_AUTONOMOUS_24X7_STRATEGY_ID,
   LIVE_OPS_CLEANUP_PROBE_STRATEGY_ID,
+  createLiveOpsAutonomous24x7Strategy,
   createLiveOpsCleanupProbeStrategy,
   resolveLiveOpsDecisionPolicy,
 } from "./live-ops-decision-policy.js";
 export type {
+  LiveOpsAutonomous24x7StrategyOptions,
   LiveOpsCleanupProbeStrategyOptions,
   LiveOpsDecisionPolicyEvidence,
   LiveOpsDecisionPolicyResolution,

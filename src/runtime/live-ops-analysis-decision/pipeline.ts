@@ -47,11 +47,12 @@ export type LiveOpsDecisionCategory = "ORDER_INTENT" | "HOLD" | "BLOCKED";
  *
  * 책임:
  * - DB-backed market data collector summary와 market event window를 feature 계산/strategy 평가 경계로 전달한다.
+ * - 최신 포지션 snapshot을 strategy context에 값으로 전달해 보유 중 exit-before-entry 판단을 가능하게 한다.
  * - caller가 이미 계산한 feature snapshot을 주입할 수 있어 DB cursor 기반 source와 fixture source가 같은 pipeline을 재사용한다.
  *
  * invariant:
  * - config는 `LiveOpsConfig`로 다시 검증되어 KRW-BTC 단일 market과 record_hold_decision 정책을 유지해야 한다.
- * - pipeline은 DB write, broker 호출, Upbit 호출, Telegram 전송 side effect를 만들지 않는다.
+ * - pipeline은 position snapshot을 조회하지 않고 전달만 하며 DB write, broker 호출, Upbit 호출, Telegram 전송 side effect를 만들지 않는다.
  */
 export interface LiveOpsAnalysisDecisionInput {
   readonly config: LiveOpsConfig | unknown;
@@ -59,6 +60,7 @@ export interface LiveOpsAnalysisDecisionInput {
   readonly observedAt: string;
   readonly marketEvents: readonly MarketDataEvent[];
   readonly strategies: readonly Strategy[];
+  readonly positions?: JsonRecord;
   readonly cost?: FeatureCostInput;
   readonly featureSnapshot?: FeatureCalculationResult;
   readonly trace?: JsonRecord;
@@ -276,7 +278,7 @@ async function evaluateStrategies(
   const decisions: StrategyDecision[] = [];
 
   for (const strategy of strategies) {
-    const decision = await strategy.evaluate({
+    const strategyContext = {
       strategyId: strategy.id,
       exchangeId: "upbit_krw_spot",
       market: config.universe.default_market,
@@ -286,7 +288,9 @@ async function evaluateStrategies(
       metadata: {
         source: "live_ops_analysis_decision",
       },
-    });
+      ...(input.positions === undefined ? {} : { positions: input.positions }),
+    };
+    const decision = await strategy.evaluate(strategyContext);
     decisions.push(decision);
   }
 

@@ -3,6 +3,7 @@ import { z } from "zod";
 export const LIVE_OPS_PRODUCTION_MODE = "LIVE_AUTONOMOUS_SMALL_BUDGET";
 export const LIVE_OPS_DEFAULT_MARKET = "KRW-BTC";
 export const LIVE_OPS_CLEANUP_PROBE_DECISION_POLICY_ID = "cleanup_probe";
+export const LIVE_OPS_AUTONOMOUS_24X7_DECISION_POLICY_ID = "autonomous_24x7";
 
 const MarketCodeSchema = z.string().regex(/^KRW-[A-Z0-9]+$/u, "KRW market code is required");
 const PositiveIntegerSchema = z.number().int().positive();
@@ -14,6 +15,57 @@ const PositiveDecimalStringSchema = z
   .string()
   .regex(/^(?:0|[1-9]\d*)(?:\.\d+)?$/u, "must be a non-negative decimal string")
   .refine((value) => Number(value) > 0, "must be greater than 0");
+const PositiveFractionDecimalStringSchema = PositiveDecimalStringSchema
+  .refine((value) => Number(value) > 0 && Number(value) <= 1, "must be greater than 0 and less than or equal to 1");
+
+const CleanupProbeDecisionPolicySchema = z
+  .object({
+    id: z.literal(LIVE_OPS_CLEANUP_PROBE_DECISION_POLICY_ID).default(
+      LIVE_OPS_CLEANUP_PROBE_DECISION_POLICY_ID,
+    ),
+    cleanup_probe: z
+      .object({
+        max_notional_krw: z.literal("10000").default("10000"),
+        tick_size_krw: PositiveDecimalStringSchema.default("1000"),
+        price_offset_ticks: PositiveIntegerSchema.default(1),
+        quantity_scale: PositiveIntegerSchema.max(12).default(8),
+        expected_loss_bps_of_equity: NonNegativeDecimalStringSchema.default("5"),
+      })
+      .strict()
+      .default({
+        max_notional_krw: "10000",
+        tick_size_krw: "1000",
+        price_offset_ticks: 1,
+        quantity_scale: 8,
+        expected_loss_bps_of_equity: "5",
+      }),
+  })
+  .strict();
+
+const Autonomous24x7DecisionPolicySchema = z
+  .object({
+    id: z.literal(LIVE_OPS_AUTONOMOUS_24X7_DECISION_POLICY_ID),
+    autonomous_24x7: z
+      .object({
+        max_entry_notional_krw: z.literal("10000").default("10000"),
+        tick_size_krw: PositiveDecimalStringSchema.default("1000"),
+        entry_price_offset_ticks: PositiveIntegerSchema.default(1),
+        exit_price_offset_ticks: PositiveIntegerSchema.default(1),
+        quantity_scale: PositiveIntegerSchema.max(12).default(8),
+        min_entry_margin_bps: PositiveDecimalStringSchema.default("10"),
+        trend_confirmation_bps: PositiveDecimalStringSchema.default("20"),
+        mean_reversion_discount_bps: PositiveDecimalStringSchema.default("30"),
+        take_profit_bps: PositiveDecimalStringSchema.default("120"),
+        stop_loss_bps: PositiveDecimalStringSchema.default("80"),
+        trailing_stop_bps: PositiveDecimalStringSchema.default("60"),
+        max_holding_ms: PositiveIntegerSchema.default(86_400_000),
+        risk_reduction_open_notional_krw: PositiveDecimalStringSchema.default("25000"),
+        risk_reduction_sell_fraction: PositiveFractionDecimalStringSchema.default("0.5"),
+        expected_loss_bps_of_equity: NonNegativeDecimalStringSchema.default("5"),
+      })
+      .strict(),
+  })
+  .strict();
 
 /**
  * production live ops JSON 설정의 기본 계약이다.
@@ -168,33 +220,10 @@ export const LiveOpsConfigSchema = z
           defaultLiveOpsConfig.analysis.decision_interval_seconds,
         ),
         record_hold_decision: z.literal(true).default(defaultLiveOpsConfig.analysis.record_hold_decision),
-        decision_policy: z
-          .object({
-            id: z.literal(LIVE_OPS_CLEANUP_PROBE_DECISION_POLICY_ID).default(
-              defaultLiveOpsConfig.analysis.decision_policy.id,
-            ),
-            cleanup_probe: z
-              .object({
-                max_notional_krw: z.literal("10000").default(
-                  defaultLiveOpsConfig.analysis.decision_policy.cleanup_probe.max_notional_krw,
-                ),
-                tick_size_krw: PositiveDecimalStringSchema.default(
-                  defaultLiveOpsConfig.analysis.decision_policy.cleanup_probe.tick_size_krw,
-                ),
-                price_offset_ticks: PositiveIntegerSchema.default(
-                  defaultLiveOpsConfig.analysis.decision_policy.cleanup_probe.price_offset_ticks,
-                ),
-                quantity_scale: PositiveIntegerSchema.max(12).default(
-                  defaultLiveOpsConfig.analysis.decision_policy.cleanup_probe.quantity_scale,
-                ),
-                expected_loss_bps_of_equity: NonNegativeDecimalStringSchema.default(
-                  defaultLiveOpsConfig.analysis.decision_policy.cleanup_probe.expected_loss_bps_of_equity,
-                ),
-              })
-              .strict()
-              .default(defaultLiveOpsConfig.analysis.decision_policy.cleanup_probe),
-          })
-          .strict()
+        decision_policy: z.discriminatedUnion("id", [
+          CleanupProbeDecisionPolicySchema,
+          Autonomous24x7DecisionPolicySchema,
+        ])
           .default(defaultLiveOpsConfig.analysis.decision_policy),
       })
       .strict()
