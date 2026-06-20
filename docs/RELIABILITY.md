@@ -485,6 +485,9 @@ Codex-native 운영은 Codex, Git, GitHub, shell command, 문서 상태를 연�
   closeout은 7일 연속 daily report와 live-armed 설정 evidence를 요구한다.
 - restart drill은 기존 order attempt, durable reservation, reconcile snapshot, status summary를 재사용해야 하며, 재시작 때문에
   duplicate live order를 만들면 merge-blocking 실패로 본다.
+- 24/7 autonomous 포지션 소유권은 durable BUY reservation만으로 영구 인정하지 않는다. runtime이 자동 기록한 FILLED SELL closeout을
+  같은 strategy scope에서 차감하고, trailing stop high-water는 autonomous position state에 보존해 재시작/다음 tick에서 잃지 않는다.
+- autonomous preflight PnL/status와 PnL closeout은 cleanup probe scope와 섞지 않고 활성 strategy scope를 사용해야 한다.
 - Telegram lifecycle 알림은 연결 성공, live order capable 시작, 정상 종료, operator stop, kill switch, manual review, crash/restart를
   구분한다. 알림 실패는 P0/P1 retry evidence와 manual review 수렴 상태로 남긴다.
 - 주문 제출, 취소 요청, 취소 확인, 체결, 부분체결, risk/cost/reconcile 차단 이벤트는 audit/risk/decision evidence 확정 이후

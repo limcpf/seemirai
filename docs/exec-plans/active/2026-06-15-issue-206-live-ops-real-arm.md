@@ -487,10 +487,14 @@ Telegram, TUI를 같은 lifecycle로 조립하고, 조건을 통과한 단일 `K
   - [x] production CLI analysis는 `autonomous_24x7` policy를 cleanup 전용 BLOCK으로 닫지 않고, broker guard 뒤 private read preflight로 position context를 만든다.
   - [x] autonomous BUY intent는 preflight 기반 CostModel/RiskGate/runtime evidence를 갖춘 뒤 entry runtime으로 전달된다.
   - [x] autonomous BUY 제출 성공은 cleanup lifecycle로 즉시 취소하지 않고 후속 reconcile/PnL/status loop로 넘긴다.
-  - [x] feature provider가 비어 있는 production public tick에서도 fresh orderbook/status 기반 bootstrap feature로 entry 후보를 만들 수 있다.
+  - [x] feature provider가 비어 있는 production public tick에서도 기준가 대비 실제 edge가 있으면 entry 후보를 만들 수 있지만, tight spread만으로는 BUY 후보를 만들지 않는다.
   - [x] 지갑 BTC 잔고는 strategy reservation 소유 기록 없이는 `autonomous_24x7` 포지션으로 간주하지 않고 BLOCK으로 닫는다.
+  - [x] FILLED autonomous SELL closeout은 runtime이 저장소 밖 artifact로 자동 기록하고 strategy-owned 수량에서 차감해, 종료된 reservation이 수동 BTC를 다시 소유한 것처럼 보이지 않게 한다.
+  - [x] autonomous position high-water state는 tick 간 보존되어 trailing stop이 현재 tick의 `max(entry,current)` 보정으로 무력화되지 않는다.
+  - [x] autonomous analysis/execution preflight PnL provider와 PnL closeout runner는 cleanup probe scope가 아니라 `live_ops_autonomous_24x7_core` scope를 사용한다.
   - [x] 25,000 KRW risk-reduction 기준보다 작은 strategy-owned 보유분도 take-profit/stop-loss/trailing/max-holding 조건이면 SELL 후보를 만든다.
   - [x] daemon status file의 top-level `latestSummary`는 `live:ops:tui --attach` source로 읽힌다.
+  - [x] daemon status file의 top-level `transient_failure`는 attach 화면에서 stale `latestSummary`보다 우선해 blocked 상태로 표시된다.
   - [x] daemon tick status payload도 실제 `statusFilePath`를 보존한다.
   - [x] SELL 재호가 runtime identifier는 같은 strategy decision key라도 preflight tick scope가 다르면 달라진다.
   - [x] 이미 terminal cancel/no-fill로 확인된 SELL은 두 번째 cancel 요청 없이 재호가 대기 또는 수동 점검으로 닫는다.

@@ -308,7 +308,7 @@ async function loadLiveOpsCliAttachReadonlyInputs({ configPath, envFilePath, con
   } catch (error) {
     throw new Error(`attach status source를 읽지 못해 TUI attach를 중단합니다: ${safeErrorName(error)}`);
   }
-  const summary = source?.summary ?? source?.latestSummary ?? source;
+  const summary = createLiveOpsCliAttachSummary(source);
   assertLiveOpsCliAttachStatusSource(summary);
   return {
     configPath,
@@ -323,6 +323,44 @@ async function loadLiveOpsCliAttachReadonlyInputs({ configPath, envFilePath, con
     reconcilePnlStatus: summary.reconcilePnlStatus,
     telegramAlert: summary.telegramAlert,
     attachStatusSourcePath: statusSourcePath,
+  };
+}
+
+function createLiveOpsCliAttachSummary(source) {
+  const summary = source?.summary ?? source?.latestSummary ?? source;
+  if (
+    source?.kind !== "live_ops_daemon_summary" ||
+    source?.status !== "transient_failure" ||
+    !isNonEmptyRecord(source?.latestSummary)
+  ) {
+    return summary;
+  }
+
+  const latestError = source.latestError ?? {};
+  const observedAt = hasMeaningfulValue(latestError?.observedAt)
+    ? String(latestError.observedAt)
+    : new Date().toISOString();
+  const errorName = hasMeaningfulValue(latestError?.name) ? String(latestError.name) : safeErrorName(latestError);
+  return {
+    ...summary,
+    liveExecution: {
+      ...(summary.liveExecution ?? {}),
+      status: "daemon_transient_failure",
+      ready: false,
+      liveOrderCapable: false,
+      latestExecutionAt: observedAt,
+      observedAt,
+      statusLabel: "daemon 일시 실패",
+      message: "daemon tick이 실패해 attach 화면이 stale ready 상태를 실주문 가능 상태로 표시하지 않습니다.",
+      action: "daemon status file의 latestError와 최근 로그를 확인한 뒤 실패 원인을 복구하세요.",
+      checks: [
+        ...(Array.isArray(summary.liveExecution?.checks) ? summary.liveExecution.checks : []),
+        blockedLiveExecutionCheck("daemon_status", "daemon 최신 tick이 실패 상태입니다.", "live_ops_daemon_transient_failure", {
+          status: source.status,
+          errorName,
+        }),
+      ],
+    },
   };
 }
 
@@ -775,7 +813,7 @@ export async function createLiveOpsCliProductionRuntime({
     artifactStore,
     budgetReservation,
     entryRuntime: createLiveOpsCliEntryRuntime({ broker, budgetReservation }),
-    exitRuntime: createLiveOpsCliExitRuntime({ broker, clock }),
+    exitRuntime: createLiveOpsCliExitRuntime({ broker, artifactStore, clock }),
     cleanupLifecycle: createLiveOpsCliCleanupLifecycle({
       broker,
       artifactStore,
@@ -807,6 +845,7 @@ async function collectLiveOpsCliAutonomousAnalysisPreflight({
         marketData,
         productionRuntime,
         observedAt,
+        pnlScopeStrategyId: liveOpsCliAutonomous24x7StrategyId,
       }),
     };
   } catch (error) {
@@ -818,6 +857,25 @@ async function collectLiveOpsCliAutonomousAnalysisPreflight({
       },
     };
   }
+}
+
+function resolveLiveOpsCliPreflightPnlStrategyId(orderIntents) {
+  const strategyIds = new Set(
+    (Array.isArray(orderIntents) ? orderIntents : [])
+      .map((intent) => intent?.strategyId)
+      .filter((strategyId) => hasMeaningfulValue(strategyId)),
+  );
+  if (strategyIds.has(liveOpsCliAutonomous24x7StrategyId)) {
+    return liveOpsCliAutonomous24x7StrategyId;
+  }
+  return "live_ops_cleanup_probe";
+}
+
+function createLiveOpsCliPnlScope({ strategyId = "live_ops_cleanup_probe", market } = {}) {
+  return {
+    strategyId: hasMeaningfulValue(strategyId) ? String(strategyId) : "live_ops_cleanup_probe",
+    market: hasMeaningfulValue(market) ? String(market) : "KRW-BTC",
+  };
 }
 
 export async function createLiveOpsCliProductionExecutionInputs({
@@ -865,6 +923,7 @@ export async function createLiveOpsCliProductionExecutionInputs({
       marketData,
       productionRuntime,
       observedAt: preflightObservedAt,
+      pnlScopeStrategyId: resolveLiveOpsCliPreflightPnlStrategyId(orderIntents),
     });
     return {
       ...base,
@@ -901,21 +960,23 @@ async function collectLiveOpsCliProductionPreflight({
   marketData,
   productionRuntime,
   observedAt,
+  pnlScopeStrategyId = "live_ops_cleanup_probe",
 }) {
   const market = config.universe?.default_market ?? "KRW-BTC";
+  const pnlScope = createLiveOpsCliPnlScope({ strategyId: pnlScopeStrategyId, market });
   const [
     openOrders,
     balanceSnapshot,
     reconcileStatus,
     pnlStatus,
     killSwitchStatus,
-    reservationUsage,
+    initialReservationUsage,
   ] = await Promise.all([
     // clean-start evidence는 계정 전체 미체결 주문을 기준으로 해야 다른 KRW 마켓 잔여 주문이 신규 제출을 열지 못한다.
     productionRuntime.privateReadProvider.listOpenOrders(),
     productionRuntime.privateReadProvider.getBalances(),
     readLiveOpsCliReconcileStatus(productionRuntime.reconcileStatusProvider),
-    readLiveOpsCliPnlStatus(productionRuntime.pnlStatusProvider),
+    readLiveOpsCliPnlStatus(productionRuntime.pnlStatusProvider, pnlScope),
     readLiveOpsCliKillSwitchStatus(productionRuntime.killSwitchProvider),
     productionRuntime.budgetReservation.readDailyReservedNotional(observedAt),
   ]);
@@ -938,6 +999,7 @@ async function collectLiveOpsCliProductionPreflight({
     market,
     marketData,
     observedAt,
+    pnlScope,
   });
 
   const openExposureKrw = sumLiveOpsCliOpenExposureKrw(openOrders);
@@ -945,6 +1007,12 @@ async function collectLiveOpsCliProductionPreflight({
     balanceSnapshot,
     market,
     referencePrice: marketData.referencePrice,
+    observedAt,
+  });
+  const reservationUsage = await refreshLiveOpsCliAutonomousPositionObservation({
+    productionRuntime,
+    reservationUsage: initialReservationUsage,
+    heldPositionExposure,
     observedAt,
   });
   const autonomousPositionOwnership = createLiveOpsCliAutonomousPositionOwnership({
@@ -1025,6 +1093,7 @@ async function refreshLiveOpsCliPreflightPnlStatusIfNeeded({
   market,
   marketData,
   observedAt,
+  pnlScope,
 }) {
   if (
     productionRuntime?.pnlCloseoutRunner === undefined ||
@@ -1053,7 +1122,7 @@ async function refreshLiveOpsCliPreflightPnlStatusIfNeeded({
   try {
     const closeout = await productionRuntime.pnlCloseoutRunner.refreshPreflightPnl({
       market,
-      strategyId: "live_ops_cleanup_probe",
+      strategyId: pnlScope?.strategyId ?? "live_ops_cleanup_probe",
       observedAt,
       balanceSnapshot,
       reconcileStatus,
@@ -1064,7 +1133,7 @@ async function refreshLiveOpsCliPreflightPnlStatusIfNeeded({
       return pnlStatus;
     }
     // 같은 preflight tick에서 append-only PnL snapshot을 쓴 뒤 provider를 다시 읽어 loss guard 입력으로 고정한다.
-    return readLiveOpsCliPnlStatus(productionRuntime.pnlStatusProvider);
+    return readLiveOpsCliPnlStatus(productionRuntime.pnlStatusProvider, pnlScope);
   } catch {
     return pnlStatus;
   }
@@ -1630,6 +1699,35 @@ function createLiveOpsCliHeldPositionExposure({ balanceSnapshot, market, referen
   };
 }
 
+async function refreshLiveOpsCliAutonomousPositionObservation({
+  productionRuntime,
+  reservationUsage,
+  heldPositionExposure,
+  observedAt,
+}) {
+  if (typeof productionRuntime?.budgetReservation?.recordAutonomousPositionObservation !== "function") {
+    return reservationUsage;
+  }
+  if (
+    heldPositionExposure?.valuationMissing === true ||
+    !isPositiveDecimalString(heldPositionExposure?.quantity) ||
+    !isPositiveDecimalString(heldPositionExposure?.notionalKrw)
+  ) {
+    return reservationUsage;
+  }
+  const currentUnitPrice = new Decimal(heldPositionExposure.notionalKrw).div(heldPositionExposure.quantity).toFixed();
+  await productionRuntime.budgetReservation.recordAutonomousPositionObservation({
+    strategyId: liveOpsCliAutonomous24x7StrategyId,
+    market: heldPositionExposure.market,
+    observedAt,
+    walletQuantity: heldPositionExposure.quantity,
+    currentUnitPrice,
+    averageEntryPrice: reservationUsage?.autonomous24x7Position?.averageEntryPrice,
+  });
+  // state write 이후 다시 읽어 같은 tick의 exit rule이 이전 tick high-water를 잃지 않게 한다.
+  return productionRuntime.budgetReservation.readDailyReservedNotional(observedAt);
+}
+
 function createLiveOpsCliAutonomousPositionOwnership({ reservationUsage, heldPositionExposure, observedAt }) {
   const aggregate = reservationUsage?.autonomous24x7Position ?? {};
   const walletQuantity = isNonNegativeDecimalString(heldPositionExposure?.quantity)
@@ -1644,6 +1742,9 @@ function createLiveOpsCliAutonomousPositionOwnership({ reservationUsage, heldPos
   const averageEntryPrice = isPositiveDecimalString(aggregate.averageEntryPrice)
     ? aggregate.averageEntryPrice
     : undefined;
+  const highWatermarkPrice = isPositiveDecimalString(aggregate.highWatermarkPrice)
+    ? aggregate.highWatermarkPrice
+    : undefined;
   return {
     strategyId: liveOpsCliAutonomous24x7StrategyId,
     owned: walletQuantity.gt(0) && new Decimal(reservedNotionalKrw).gt(0),
@@ -1651,6 +1752,10 @@ function createLiveOpsCliAutonomousPositionOwnership({ reservationUsage, heldPos
     reservationCount: Number.isInteger(aggregate.reservationCount) ? aggregate.reservationCount : 0,
     requestedQuantity,
     averageEntryPrice,
+    highWatermarkPrice,
+    highWatermarkAt: hasMeaningfulValue(aggregate.highWatermarkAt) ? aggregate.highWatermarkAt : undefined,
+    status: hasMeaningfulValue(aggregate.status) ? aggregate.status : undefined,
+    closedAt: hasMeaningfulValue(aggregate.closedAt) ? aggregate.closedAt : undefined,
     openedAt: hasMeaningfulValue(aggregate.openedAt) ? aggregate.openedAt : undefined,
     latestReservationAt: hasMeaningfulValue(aggregate.latestReservationAt) ? aggregate.latestReservationAt : observedAt,
     source: "live_ops_cli_budget_reservation",
@@ -1829,6 +1934,9 @@ export async function createLiveOpsCliCleanupArtifactStore({ configPath, env = {
       assertLiveOpsCliAttemptPathSegment(attemptId);
       return path.join(realDir, `cleanup-${attemptId}.json`);
     },
+    autonomousPositionStatePath() {
+      return path.join(realDir, `autonomous-position-${liveOpsCliAutonomous24x7StrategyId}.json`);
+    },
     dailyReservationLockPath(day) {
       assertLiveOpsCliReservationDay(day);
       return path.join(realDir, `reservation-daily-${day}.lock`);
@@ -1914,6 +2022,37 @@ export async function createLiveOpsCliCleanupArtifactStore({ configPath, env = {
       }
       return records;
     },
+    async listCleanups() {
+      const entries = await readdir(realDir, { withFileTypes: true });
+      const records = [];
+      for (const entry of entries) {
+        if (!entry.isFile() || !/^cleanup-ops-[a-f0-9]{26}\.json$/u.test(entry.name)) {
+          continue;
+        }
+        try {
+          records.push(JSON.parse(await readFile(path.join(realDir, entry.name), "utf8")));
+        } catch {
+          // 손상된 cleanup은 종료 수량을 과소평가할 수 있으므로 집계 단계에서 fail-closed 되도록 표시한다.
+          records.push({ malformed: true, filledQuantity: "0", terminalCheckedAt: null });
+        }
+      }
+      return records;
+    },
+    async readAutonomousPositionState() {
+      try {
+        return JSON.parse(await readFile(this.autonomousPositionStatePath(), "utf8"));
+      } catch (error) {
+        if (error?.code === "ENOENT") {
+          return undefined;
+        }
+        throw error;
+      }
+    },
+    async writeAutonomousPositionState(record) {
+      const targetPath = this.autonomousPositionStatePath();
+      await writeFile(targetPath, `${JSON.stringify(record, null, 2)}\n`, { encoding: "utf8", flag: "w" });
+      return targetPath;
+    },
     async writeCleanup(record) {
       const targetPath = this.cleanupPath(record.attemptId);
       await writeFile(targetPath, `${JSON.stringify(record, null, 2)}\n`, { encoding: "utf8", flag: "w" });
@@ -1924,8 +2063,12 @@ export async function createLiveOpsCliCleanupArtifactStore({ configPath, env = {
 
 export function createLiveOpsCliFileBudgetReservation({ artifactStore, clock = () => new Date().toISOString() }) {
   async function readDailyReservedNotionalForDay(day) {
-    const records = await artifactStore.listReservations();
-    if (records.some((record) => record?.malformed === true)) {
+    const [records, cleanupRecords, autonomousPositionState] = await Promise.all([
+      artifactStore.listReservations(),
+      typeof artifactStore.listCleanups === "function" ? artifactStore.listCleanups() : [],
+      typeof artifactStore.readAutonomousPositionState === "function" ? artifactStore.readAutonomousPositionState() : undefined,
+    ]);
+    if (records.some((record) => record?.malformed === true) || cleanupRecords.some((record) => record?.malformed === true)) {
       throw new Error("LiveOpsCliBudgetReservationMalformed");
     }
     const dayRecords = records.filter((record) => String(record?.reservedAt ?? "").slice(0, 10) === day);
@@ -1933,7 +2076,11 @@ export function createLiveOpsCliFileBudgetReservation({ artifactStore, clock = (
       return total.plus(isNonNegativeDecimalString(record?.reservedNotionalKrw) ? record.reservedNotionalKrw : "0");
     }, new Decimal(0)).toFixed();
     // 일일 예산은 당일만 집계하지만, 보유 포지션 소유권은 UTC 날짜 경계 뒤에도 exit rule이 작동해야 하므로 전체 자동 reservation을 본다.
-    const autonomous24x7Position = summarizeLiveOpsCliAutonomousReservationOwnership(records);
+    const autonomous24x7Position = summarizeLiveOpsCliAutonomousReservationOwnership({
+      reservationRecords: records,
+      cleanupRecords,
+      autonomousPositionState,
+    });
     return {
       day,
       reservedNotionalKrw,
@@ -1946,6 +2093,65 @@ export function createLiveOpsCliFileBudgetReservation({ artifactStore, clock = (
     async readDailyReservedNotional(observedAt = clock()) {
       const day = String(observedAt).slice(0, 10);
       return readDailyReservedNotionalForDay(day);
+    },
+    async recordAutonomousPositionObservation(observation) {
+      if (typeof artifactStore.writeAutonomousPositionState !== "function") {
+        return undefined;
+      }
+      const observedAt = readLiveOpsCliRuntimeObservedAt(observation?.observedAt) ?? readLiveOpsCliRuntimeObservedAt(clock()) ?? new Date().toISOString();
+      const market = hasMeaningfulValue(observation?.market) ? String(observation.market) : "KRW-BTC";
+      if (observation?.strategyId !== liveOpsCliAutonomous24x7StrategyId || market !== "KRW-BTC") {
+        return undefined;
+      }
+      if (!isNonNegativeDecimalString(observation?.walletQuantity) || !isPositiveDecimalString(observation?.currentUnitPrice)) {
+        return undefined;
+      }
+      const [reservationRecords, cleanupRecords, previousState] = await Promise.all([
+        artifactStore.listReservations(),
+        typeof artifactStore.listCleanups === "function" ? artifactStore.listCleanups() : [],
+        typeof artifactStore.readAutonomousPositionState === "function" ? artifactStore.readAutonomousPositionState() : undefined,
+      ]);
+      if (reservationRecords.some((record) => record?.malformed === true) || cleanupRecords.some((record) => record?.malformed === true)) {
+        throw new Error("LiveOpsCliBudgetReservationMalformed");
+      }
+      const currentAggregate = summarizeLiveOpsCliAutonomousReservationOwnership({
+        reservationRecords,
+        cleanupRecords,
+        autonomousPositionState: previousState,
+      });
+      const currentUnitPrice = new Decimal(observation.currentUnitPrice);
+      const averageEntryPrice = isPositiveDecimalString(observation?.averageEntryPrice)
+        ? new Decimal(observation.averageEntryPrice)
+        : isPositiveDecimalString(currentAggregate.averageEntryPrice)
+        ? new Decimal(currentAggregate.averageEntryPrice)
+        : currentUnitPrice;
+      const walletQuantity = new Decimal(observation.walletQuantity);
+      const positionQuantity = isNonNegativeDecimalString(currentAggregate.requestedQuantity)
+        ? Decimal.min(walletQuantity, new Decimal(currentAggregate.requestedQuantity))
+        : walletQuantity;
+      const previousHighWatermark = isPositiveDecimalString(currentAggregate.highWatermarkPrice)
+        ? new Decimal(currentAggregate.highWatermarkPrice)
+        : averageEntryPrice;
+      const highWatermarkPrice = Decimal.max(previousHighWatermark, currentUnitPrice);
+      const highWatermarkAt = highWatermarkPrice.eq(previousHighWatermark) && hasMeaningfulValue(currentAggregate.highWatermarkAt)
+        ? currentAggregate.highWatermarkAt
+        : observedAt;
+      const state = {
+        kind: "live_ops_autonomous_position_state",
+        strategyId: liveOpsCliAutonomous24x7StrategyId,
+        market,
+        status: positionQuantity.gt(0) ? "OPEN" : "CLOSED",
+        reservedNotionalKrw: positionQuantity.gt(0) ? averageEntryPrice.mul(positionQuantity).toFixed() : "0",
+        requestedQuantity: positionQuantity.toFixed(),
+        averageEntryPrice: positionQuantity.gt(0) ? averageEntryPrice.toFixed() : undefined,
+        highWatermarkPrice: positionQuantity.gt(0) ? highWatermarkPrice.toFixed() : undefined,
+        highWatermarkAt: positionQuantity.gt(0) ? highWatermarkAt : undefined,
+        openedAt: hasMeaningfulValue(currentAggregate.openedAt) ? currentAggregate.openedAt : observedAt,
+        latestObservationAt: observedAt,
+        ...(positionQuantity.gt(0) ? {} : { closedAt: observedAt }),
+      };
+      await artifactStore.writeAutonomousPositionState(state);
+      return state;
     },
     async reserve(request) {
       const reservedAt = readLiveOpsCliRuntimeObservedAt(clock()) ?? new Date().toISOString();
@@ -2039,16 +2245,16 @@ export function createLiveOpsCliFileBudgetReservation({ artifactStore, clock = (
   };
 }
 
-function summarizeLiveOpsCliAutonomousReservationOwnership(records) {
-  const strategyRecords = records.filter((record) => (
+function summarizeLiveOpsCliAutonomousReservationOwnership({ reservationRecords, cleanupRecords = [], autonomousPositionState } = {}) {
+  const strategyRecords = (Array.isArray(reservationRecords) ? reservationRecords : []).filter((record) => (
     record?.strategyId === liveOpsCliAutonomous24x7StrategyId &&
     record?.market === "KRW-BTC" &&
     isNonNegativeDecimalString(record?.reservedNotionalKrw)
   ));
-  const reservedNotional = strategyRecords.reduce((total, record) => {
+  const grossReservedNotional = strategyRecords.reduce((total, record) => {
     return total.plus(record.reservedNotionalKrw);
   }, new Decimal(0));
-  const requestedQuantity = strategyRecords.reduce((total, record) => {
+  const grossRequestedQuantity = strategyRecords.reduce((total, record) => {
     return total.plus(isNonNegativeDecimalString(record?.requestedQuantity) ? record.requestedQuantity : "0");
   }, new Decimal(0));
   const weightedEntryNotional = strategyRecords.reduce((total, record) => {
@@ -2060,17 +2266,85 @@ function summarizeLiveOpsCliAutonomousReservationOwnership(records) {
   const sortedReservations = [...strategyRecords].sort((left, right) => {
     return String(left?.reservedAt ?? "").localeCompare(String(right?.reservedAt ?? ""));
   });
+  const exitRecords = (Array.isArray(cleanupRecords) ? cleanupRecords : []).filter(isLiveOpsCliAutonomousExitCleanupRecord);
+  const exitedQuantity = exitRecords.reduce((total, record) => {
+    return total.plus(readLiveOpsCliAutonomousExitFilledQuantity(record));
+  }, new Decimal(0));
+  const averageEntryPrice = grossRequestedQuantity.gt(0)
+    ? weightedEntryNotional.div(grossRequestedQuantity)
+    : undefined;
+  const netQuantity = Decimal.max(0, grossRequestedQuantity.minus(exitedQuantity));
+  const exitedNotional = exitRecords.reduce((total, record) => {
+    return total.plus(isNonNegativeDecimalString(record?.filledNotionalKrw) ? record.filledNotionalKrw : "0");
+  }, new Decimal(0));
+  const netReservedNotional = averageEntryPrice !== undefined
+    ? averageEntryPrice.mul(netQuantity)
+    : Decimal.max(0, grossReservedNotional.minus(exitedNotional));
+  const sortedExits = [...exitRecords].sort((left, right) => {
+    return String(readLiveOpsCliAutonomousExitClosedAt(left) ?? "").localeCompare(String(readLiveOpsCliAutonomousExitClosedAt(right) ?? ""));
+  });
+  const stateOpen = autonomousPositionState?.strategyId === liveOpsCliAutonomous24x7StrategyId
+    && autonomousPositionState?.market === "KRW-BTC"
+    && autonomousPositionState?.status === "OPEN";
+  const highWatermarkPrice = stateOpen && isPositiveDecimalString(autonomousPositionState?.highWatermarkPrice)
+    ? autonomousPositionState.highWatermarkPrice
+    : averageEntryPrice?.toFixed();
+  const highWatermarkAt = stateOpen && hasMeaningfulValue(autonomousPositionState?.highWatermarkAt)
+    ? autonomousPositionState.highWatermarkAt
+    : sortedReservations.at(-1)?.reservedAt;
+  if (netQuantity.isZero()) {
+    return {
+      strategyId: liveOpsCliAutonomous24x7StrategyId,
+      reservedNotionalKrw: "0",
+      reservationCount: strategyRecords.length,
+      requestedQuantity: "0",
+      averageEntryPrice: averageEntryPrice?.toFixed(),
+      openedAt: sortedReservations[0]?.reservedAt,
+      latestReservationAt: sortedReservations.at(-1)?.reservedAt,
+      status: "CLOSED",
+      closedAt: readLiveOpsCliAutonomousExitClosedAt(sortedExits.at(-1)),
+    };
+  }
   return {
     strategyId: liveOpsCliAutonomous24x7StrategyId,
-    reservedNotionalKrw: reservedNotional.toFixed(),
+    reservedNotionalKrw: netReservedNotional.toFixed(),
     reservationCount: strategyRecords.length,
-    requestedQuantity: requestedQuantity.toFixed(),
-    averageEntryPrice: requestedQuantity.gt(0)
-      ? weightedEntryNotional.div(requestedQuantity).toFixed()
-      : undefined,
+    requestedQuantity: netQuantity.toFixed(),
+    averageEntryPrice: averageEntryPrice?.toFixed(),
+    highWatermarkPrice,
+    highWatermarkAt,
     openedAt: sortedReservations[0]?.reservedAt,
     latestReservationAt: sortedReservations.at(-1)?.reservedAt,
+    status: "OPEN",
   };
+}
+
+function isLiveOpsCliAutonomousExitCleanupRecord(record) {
+  return (
+    (record?.kind === "live_ops_autonomous_exit_closeout" || record?.strategyId === liveOpsCliAutonomous24x7StrategyId) &&
+    record?.strategyId === liveOpsCliAutonomous24x7StrategyId &&
+    record?.market === "KRW-BTC" &&
+    String(record?.side ?? "").toUpperCase() === "SELL" &&
+    isLiveOpsCliTerminalFilledStatus(record?.status) &&
+    isNonNegativeDecimalString(readLiveOpsCliAutonomousExitFilledQuantity(record))
+  );
+}
+
+function readLiveOpsCliAutonomousExitFilledQuantity(record) {
+  if (isNonNegativeDecimalString(record?.filledQuantity)) {
+    return record.filledQuantity;
+  }
+  if (isNonNegativeDecimalString(record?.terminalOrder?.requestedQuantity) && isDecimalEqual(record?.terminalOrder?.remainingQuantity ?? "0", "0")) {
+    return record.terminalOrder.requestedQuantity;
+  }
+  return "0";
+}
+
+function readLiveOpsCliAutonomousExitClosedAt(record) {
+  if (!isNonEmptyRecord(record)) {
+    return undefined;
+  }
+  return record.filledAt ?? record.terminalCheckedAt ?? record.closedAt ?? record.observedAt;
 }
 
 async function evaluateLiveOpsCliDailyBudgetReservation({ request, dailyUsage }) {
@@ -3486,11 +3760,14 @@ function normalizeLiveOpsCliOptionalPositiveDecimal(value) {
 
 export function createLiveOpsCliDatabasePnlStatusProvider(pool, market) {
   return {
-    async getStatus() {
+    async getStatus(scope = undefined) {
+      const scopedMarket = hasMeaningfulValue(scope?.market) ? String(scope.market) : market;
+      const strategyId = hasMeaningfulValue(scope?.strategyId) ? String(scope.strategyId) : "live_ops_cleanup_probe";
+      const useLegacyCleanupQuery = scope === undefined && strategyId === "live_ops_cleanup_probe";
       try {
-        const [latestResult, countResult] = await Promise.all([
-          // cleanup 전용 PnL row가 생긴 뒤에는 그 scope를 우선하고, 첫 cleanup 전 fallback은 최신 미완료값보다 계산 완료값으로 손실 guard를 연다.
-          pool.query(`
+        const latestQuery = useLegacyCleanupQuery
+          ? {
+              sql: `
             SELECT
               strategy_id,
               market,
@@ -3516,8 +3793,42 @@ export function createLiveOpsCliDatabasePnlStatusProvider(pool, market) {
               CASE WHEN strategy_id IS DISTINCT FROM 'live_ops_cleanup_probe' THEN captured_at END DESC,
               CASE WHEN strategy_id IS DISTINCT FROM 'live_ops_cleanup_probe' THEN (market = $1) END DESC
             LIMIT 1
-          `, [market]),
-          pool.query(`
+          `,
+              params: [scopedMarket],
+            }
+          : {
+              sql: `
+            SELECT
+              strategy_id,
+              market,
+              captured_at,
+              equity,
+              realized_pnl,
+              unrealized_pnl,
+              drawdown_bps,
+              payload_json ->> 'sourceFingerprint' AS source_fingerprint,
+              payload_json ->> 'status' AS payload_status
+            FROM pnl_snapshots
+            WHERE (market = $1 OR market IS NULL)
+              AND (
+                strategy_id = $2
+                OR strategy_id IS NULL
+                OR strategy_id IN ('global', 'aggregate')
+              )
+            ORDER BY
+              (strategy_id = $2) DESC,
+              CASE WHEN strategy_id = $2 THEN captured_at END DESC,
+              CASE WHEN strategy_id = $2 THEN (market = $1) END DESC,
+              CASE WHEN strategy_id IS DISTINCT FROM $2 THEN (payload_json ->> 'status' = 'CALCULATED') END DESC,
+              CASE WHEN strategy_id IS DISTINCT FROM $2 THEN captured_at END DESC,
+              CASE WHEN strategy_id IS DISTINCT FROM $2 THEN (market = $1) END DESC
+            LIMIT 1
+          `,
+              params: [scopedMarket, strategyId],
+            };
+        const countQuery = useLegacyCleanupQuery
+          ? {
+              sql: `
             SELECT count(*)::int AS count
             FROM pnl_snapshots
             WHERE (market = $1 OR market IS NULL)
@@ -3526,7 +3837,26 @@ export function createLiveOpsCliDatabasePnlStatusProvider(pool, market) {
                 OR strategy_id IS NULL
                 OR strategy_id IN ('global', 'aggregate')
               )
-          `, [market]),
+          `,
+              params: [scopedMarket],
+            }
+          : {
+              sql: `
+            SELECT count(*)::int AS count
+            FROM pnl_snapshots
+            WHERE (market = $1 OR market IS NULL)
+              AND (
+                strategy_id = $2
+                OR strategy_id IS NULL
+                OR strategy_id IN ('global', 'aggregate')
+              )
+          `,
+              params: [scopedMarket, strategyId],
+            };
+        const [latestResult, countResult] = await Promise.all([
+          // strategy scope 전용 PnL row가 생긴 뒤에는 그 scope를 우선하고, 첫 scope row 전 fallback은 계산 완료값으로 손실 guard를 연다.
+          pool.query(latestQuery.sql, latestQuery.params),
+          pool.query(countQuery.sql, countQuery.params),
         ]);
         const latest = latestResult.rows[0];
         const snapshotCount = numberRowValue(countResult.rows[0]?.count);
@@ -4661,6 +4991,7 @@ export function createLiveOpsCliEntryRuntime({ broker, budgetReservation } = {})
 
 export function createLiveOpsCliExitRuntime({
   broker,
+  artifactStore,
   clock = () => new Date().toISOString(),
   pollCount = liveOpsCliCleanupCancelPollCount,
   pollIntervalMs = liveOpsCliCleanupCancelPollIntervalMs,
@@ -4744,6 +5075,17 @@ export function createLiveOpsCliExitRuntime({
         };
       }
       if (isLiveOpsCliFilledOrder(fillProbe.order)) {
+        const filledAt = clock();
+        const closeout = await writeLiveOpsCliAutonomousExitCloseoutOrManualReview({
+          artifactStore,
+          submission,
+          brokerOrder,
+          terminalOrder: fillProbe.order,
+          filledAt,
+        });
+        if (closeout?.status === "MANUAL_REVIEW_REQUIRED") {
+          return closeout;
+        }
         return {
           status: "FILLED",
           statusLabel: "매도 체결",
@@ -4751,7 +5093,8 @@ export function createLiveOpsCliExitRuntime({
           manualReviewRequired: false,
           message: "SELL 주문이 bounded wait 안에서 체결됐습니다.",
           action: "다음 daemon tick에서 포지션, PnL, reconcile 상태를 다시 평가합니다.",
-          filledAt: clock(),
+          filledAt,
+          cleanupArtifactPath: closeout?.artifactPath,
         };
       }
       if (isLiveOpsCliTerminalCancelStatus(fillProbe.order?.status)) {
@@ -4815,6 +5158,17 @@ export function createLiveOpsCliExitRuntime({
         };
       }
       if (isLiveOpsCliFilledOrder(terminal.order)) {
+        const filledAt = clock();
+        const closeout = await writeLiveOpsCliAutonomousExitCloseoutOrManualReview({
+          artifactStore,
+          submission,
+          brokerOrder,
+          terminalOrder: terminal.order,
+          filledAt,
+        });
+        if (closeout?.status === "MANUAL_REVIEW_REQUIRED") {
+          return closeout;
+        }
         return {
           status: "FILLED",
           statusLabel: "매도 체결",
@@ -4822,7 +5176,8 @@ export function createLiveOpsCliExitRuntime({
           manualReviewRequired: false,
           message: "SELL 주문이 cancel 확인 전 체결 상태로 확인됐습니다.",
           action: "다음 daemon tick에서 포지션, PnL, reconcile 상태를 다시 평가합니다.",
-          filledAt: clock(),
+          filledAt,
+          cleanupArtifactPath: closeout?.artifactPath,
         };
       }
       return {
@@ -4838,6 +5193,61 @@ export function createLiveOpsCliExitRuntime({
       };
     },
   };
+}
+
+async function writeLiveOpsCliAutonomousExitCloseoutOrManualReview({
+  artifactStore,
+  submission,
+  brokerOrder,
+  terminalOrder,
+  filledAt,
+}) {
+  if (artifactStore === undefined || typeof artifactStore.writeCleanup !== "function") {
+    return undefined;
+  }
+  const intent = submission?.intent ?? {};
+  if (intent.strategyId !== liveOpsCliAutonomous24x7StrategyId || intent.side !== "SELL") {
+    return undefined;
+  }
+  const filledQuantity = isNonNegativeDecimalString(terminalOrder?.requestedQuantity) && isDecimalEqual(terminalOrder?.remainingQuantity ?? "0", "0")
+    ? terminalOrder.requestedQuantity
+    : intent.requestedQuantity;
+  const requestedPrice = isPositiveDecimalString(intent.requestedPrice) ? intent.requestedPrice : terminalOrder?.requestedPrice;
+  const record = {
+    kind: "live_ops_autonomous_exit_closeout",
+    attemptId: intent.idempotencyKey,
+    strategyId: liveOpsCliAutonomous24x7StrategyId,
+    market: intent.market ?? brokerOrder?.market ?? "KRW-BTC",
+    side: "SELL",
+    status: "FILLED",
+    filledQuantity,
+    filledNotionalKrw: isNonNegativeDecimalString(filledQuantity) && isPositiveDecimalString(requestedPrice)
+      ? new Decimal(filledQuantity).mul(requestedPrice).toFixed()
+      : null,
+    filledAt,
+    terminalCheckedAt: filledAt,
+    idempotencyKeySuffix: suffixLiveOpsCliIdentifier(intent.idempotencyKey),
+    brokerOrderIdSuffix: suffixLiveOpsCliIdentifier(brokerOrder?.brokerOrderId),
+    terminalState: terminalOrder?.status ?? null,
+    positionEffect: readLiveOpsCliPositionEffect(intent) ?? "EXIT",
+    safeSummary: "autonomous SELL 체결 closeout을 기록했습니다.",
+  };
+  try {
+    const artifactPath = await artifactStore.writeCleanup(record);
+    return { artifactPath };
+  } catch (error) {
+    return {
+      status: "MANUAL_REVIEW_REQUIRED",
+      statusLabel: "수동 점검",
+      brokerOrderId: brokerOrder?.brokerOrderId ?? null,
+      manualReviewRequired: true,
+      message: "SELL 체결은 확인됐지만 autonomous closeout artifact를 기록하지 못해 수동 점검 상태로 전환했습니다.",
+      action: "체결 주문 uuid와 포지션 상태를 확인하고 같은 포지션을 다시 자동 매도하지 않도록 closeout 상태를 복구하세요.",
+      reason: "exit_cleanup_artifact_write_failed",
+      errorName: safeErrorName(error),
+      filledAt,
+    };
+  }
 }
 
 export function createLiveOpsCliCleanupLifecycle({
@@ -6924,11 +7334,11 @@ async function readLiveOpsCliReconcileStatus(provider) {
   return provider.getReconcileStatus();
 }
 
-async function readLiveOpsCliPnlStatus(provider) {
+async function readLiveOpsCliPnlStatus(provider, scope) {
   if (provider === undefined || provider === null || typeof provider.getStatus !== "function") {
     return undefined;
   }
-  return provider.getStatus();
+  return provider.getStatus(scope);
 }
 
 function normalizeLiveOpsCliReconcileStatus(summary, { openOrderCount, openOrders, liveExecution } = {}) {
@@ -7907,6 +8317,7 @@ function evaluateLiveOpsCliAutonomous24x7AnalysisDecision({
           decisionKind: decision.kind,
           orderIntentCount: orderIntents.length,
           reason: decision.reason,
+          ...(isNonEmptyRecord(decision.metadata) ? decision.metadata : {}),
         },
       },
     ],
@@ -8323,23 +8734,24 @@ function createLiveOpsCliAutonomousFeatureSnapshot({ marketData, orderbook, poli
   const publicTickReady = Number(marketData?.persisted?.tradeCount ?? 0) > 0
     && Number(marketData?.persisted?.orderbookCount ?? 0) > 0
     && Number(marketData?.persisted?.statusCount ?? 0) > 0;
-  const spreadSane = bestBid !== undefined
-    && bestAsk !== undefined
-    && bestAsk.gt(bestBid)
-    && spreadBps.lte(new Decimal(policy.min_entry_margin_bps));
-  if (publicTickReady && spreadSane) {
-    // feature provider 결측을 무한 HOLD로 보정하지 않도록 fresh public tick에서 최소 bootstrap feature를 만든다.
+  const costAdjustedMargin = Decimal.max(0, meanReversionDiscount.minus(spreadBps));
+  if (
+    publicTickReady &&
+    costAdjustedMargin.gte(new Decimal(policy.min_entry_margin_bps)) &&
+    meanReversionDiscount.gte(new Decimal(policy.mean_reversion_discount_bps))
+  ) {
+    // 좁은 spread 자체가 아니라 public reference 대비 실제 bid edge가 있을 때만 provider 결측을 entry 후보로 보정한다.
     return {
-      cost_adjusted_margin_bps: Decimal.max(new Decimal(policy.min_entry_margin_bps), meanReversionDiscount.plus(spreadBps)).toFixed(),
-      trend_strength_bps: String(policy.trend_confirmation_bps),
+      cost_adjusted_margin_bps: costAdjustedMargin.toFixed(),
+      trend_strength_bps: "0",
       mean_reversion_discount_bps: meanReversionDiscount.toFixed(),
-      feature_source: "live_ops_cli_public_tick_bootstrap",
+      feature_source: "live_ops_cli_public_tick_edge",
       spread_bps: spreadBps.toFixed(),
     };
   }
 
   return {
-    cost_adjusted_margin_bps: meanReversionDiscount.toFixed(),
+    cost_adjusted_margin_bps: costAdjustedMargin.toFixed(),
     trend_strength_bps: "0",
     mean_reversion_discount_bps: meanReversionDiscount.toFixed(),
     feature_source: "live_ops_cli_public_tick_weak",

@@ -929,11 +929,14 @@ Acceptance Criteria:
 - [x] 보유 포지션이 있으면 exit policy가 entry policy보다 먼저 평가된다.
 - [x] exit policy는 take profit, stop loss, trailing stop, max holding time, risk reduction rule을 독립 rule로 조립한다.
 - [x] exit policy는 strategy reservation 기록으로 확인된 자동 전략 소유 수량만 SELL 대상으로 삼고, 수동 보유 BTC는 자동 축소하지 않는다.
+- [x] exit 체결 closeout은 runtime이 저장소 밖 artifact로 자동 기록하고, FILLED SELL 수량은 strategy-owned 수량에서 차감한다.
+- [x] trailing stop은 tick마다 새 entry/current price만 보지 않고, runtime position state에 저장된 high-water price를 보존한다.
 - [x] risk-reduction 기준보다 작은 소액 보유분도 take profit, stop loss, trailing stop, max holding time 조건이면 exit intent를 만들 수 있다.
 - [x] exit intent는 보유 수량 이하의 `SELL + LIMIT + POST_ONLY`만 허용하고, 시장가 매도와 hard-stop 자동 시장가 청산은 금지한다.
 - [x] entry strategy는 조건이 약하면 주문을 만들지 않고 HOLD evidence를 남긴다.
-- [x] feature provider가 아직 붙지 않은 production tick도 fresh public tick과 orderbook spread로 entry bootstrap feature를 자동 산출한다.
+- [x] feature provider가 아직 붙지 않은 production tick도 fresh public tick의 reference-price edge로 entry feature를 산출하되, tight spread만으로는 BUY 후보를 만들지 않는다.
 - [x] entry intent는 `KRW-BTC`, `BUY`, `LIMIT`, `POST_ONLY`, 10,000 KRW 이하만 허용한다.
+- [x] autonomous preflight PnL/status와 preflight PnL closeout은 `live_ops_cleanup_probe`가 아니라 활성 autonomous strategy scope를 사용한다.
 - [x] strategy registry는 `cleanup_probe`와 production 24/7 strategy를 분리하고, 새 strategy를 나중에 allowlist로 추가/교체할 수 있다.
 - [x] strategy는 broker, Upbit client, DB connection, Telegram dispatcher를 직접 호출하지 않는다.
 - [x] stale market data, stale PnL, reconcile mismatch, open order, budget 초과, kill switch, Telegram owner alert 불능은 broker 호출 전에
@@ -941,6 +944,7 @@ Acceptance Criteria:
 - [x] 미체결 entry/exit order는 bounded cancel/requote 또는 manual review로 닫히고, terminal 확인 실패는 성공으로 표시하지 않는다.
 - [x] TUI/Telegram/status는 한국어로 현재 상태, 보유/현금 판단 이유, 최근 entry/exit decision, open exposure, PnL, 필요한 조치를
   보여준다.
+- [x] `live:ops:tui --attach`는 daemon top-level `transient_failure`를 stale `latestSummary`보다 우선해 차단 상태로 표시한다.
 - [x] 24시간 run summary는 crash 0회, unhandled rejection 0회, duplicate order 0건, reconcile mismatch 0건, untracked fill 0건,
   live order cleanup failure 0건을 자동 산출한다.
 
@@ -951,7 +955,11 @@ Acceptance Criteria:
 - 단위 테스트: take profit, stop loss, trailing stop, max holding time, risk reduction rule이 각각 SELL intent 또는 HOLD/BLOCK을 만든다.
 - 단위 테스트: strategy 소유 기록 없는 지갑 BTC는 자동 SELL이 아니라 BLOCK으로 닫힌다.
 - 단위 테스트: risk-reduction 기준보다 작은 strategy-owned 포지션도 take-profit 조건이면 SELL intent를 만든다.
-- 단위 테스트: 외부 feature 주입 없이 fresh public tick fallback만으로도 entry 후보를 만들 수 있다.
+- 단위 테스트: FILLED autonomous SELL cleanup은 strategy-owned 수량에서 차감되고, 이전 reservation만으로 수동 BTC를 자동 소유로 보지 않는다.
+- 단위 테스트: position state가 trailing stop high-water를 tick 간 보존한다.
+- 단위 테스트: 외부 feature 주입 없이 fresh public tick reference edge가 있으면 entry 후보를 만들고, tight spread만 있으면 HOLD한다.
+- 단위 테스트: autonomous order intent의 PnL provider/closeout 호출이 autonomous strategy scope로 수행된다.
+- 단위 테스트: daemon attach는 top-level transient failure를 stale ready latestSummary보다 우선 표시한다.
 - 단위 테스트: exit intent가 보유 수량을 초과하거나 시장가/best order이면 broker 호출 전에 차단된다.
 - 단위 테스트: daemon loop가 success, HOLD, BLOCK, manual review, transient failure에 대해 각각 다른 sleep/backoff 정책을 적용한다.
 - 통합 테스트: fake provider/fake broker/fake Telegram으로 entry 체결, 보유, exit 제출, cancel/requote, terminal close summary를 검증한다.
