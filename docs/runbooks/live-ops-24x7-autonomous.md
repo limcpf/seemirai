@@ -62,12 +62,14 @@
 10. 통과한 단일 intent만 broker submit으로 전진한다.
 11. 미체결 주문은 bounded timeout 안에서 cancel/requote 또는 manual review로 닫는다.
 12. 매 tick마다 decision ledger, status summary, Telegram alert 후보, redacted artifact를 자동 생성한다.
+13. daemon 시작 후 startup Telegram 후보는 첫 성공 tick에만 만들고, idle tick마다 반복 전송하지 않는다.
 
 daemon loop는 1회성 cleanup probe가 아니다. 명시한 `--duration-ms`나 `--max-ticks`가 없으면 계속 반복하며, HOLD/차단/수동 확인/일시
 실패별로 다른 sleep을 둔다. 기본 tick 간격은 1초이고, 차단은 5초, 수동 확인은 30초, provider/DB 일시 실패는 5초 후 재시도한다.
 
 production에서 `--status-file`을 지정하지 않으면 config 파일이 있는 디렉터리의 `artifacts/live-ops-daemon-status.json`을 출력 상태로
-자동 생성한다. 이 파일은 실행 전 준비물이 아니며, 감시자나 operator가 최신 counter를 읽기 위한 결과물이다.
+자동 생성한다. 이 파일은 실행 전 준비물이 아니며, 감시자나 operator가 최신 counter를 읽기 위한 결과물이다. 성공 tick 뒤 provider/DB
+일시 실패가 발생해도 같은 status file은 `transient_failure`, 최신 counter, 최신 error로 갱신되어 직전 정상 tick 상태로 남지 않는다.
 
 ## Entry DnD
 
@@ -83,6 +85,8 @@ production에서 `--status-file`을 지정하지 않으면 config 파일이 있�
 - [x] exit policy는 take profit, stop loss, trailing stop, max holding time, risk reduction rule을 독립 rule로 가진다.
 - [x] exit intent는 보유 수량 이하의 `SELL + LIMIT + POST_ONLY`만 허용한다.
 - [x] exit 미체결은 bounded cancel/requote 정책으로 닫고, terminal 확인 실패는 manual review로 격상한다.
+- [x] exit submit 이후 상태 조회가 실패하면 broker order id를 보존한 manual review summary로 닫는다.
+- [x] exit 체결 또는 cancel/requote 확인 뒤에는 private read, reconcile, PnL status를 다시 읽어 포지션과 open order 상태를 확인한다.
 - [x] hard stop은 신규 주문 차단과 manual review를 만들 수 있지만, 시장가 자동 청산을 만들지 않는다.
 
 SELL 후보의 전체 보유 수량이 1회 주문 상한을 넘으면 daemon은 시장가로 한 번에 던지지 않는다. strategy가 10,000 KRW 이하 chunk를
