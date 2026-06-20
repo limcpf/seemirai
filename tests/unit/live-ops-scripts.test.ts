@@ -5454,6 +5454,51 @@ console.log(JSON.stringify({
     expect(result.stderr).toContain("attach status source");
   });
 
+  it("non-fixture live:ops:tui attach는 liveOrderCapable이 boolean이 아니면 실패한다", async () => {
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-live-ops-attach-invalid-"));
+    const statusSourcePath = path.join(tempDir, "status-source.json");
+    await writeFile(statusSourcePath, JSON.stringify({
+      summary: {
+        dbReadiness: { ready: true },
+        marketData: { ready: true },
+        analysisDecision: { ready: true },
+        liveExecution: {
+          ready: true,
+          status: "idle",
+          liveOrderCapable: "false",
+        },
+        reconcilePnlStatus: { ready: true },
+        telegramAlert: { ready: true },
+      },
+    }), "utf8");
+    const result = spawnSync(
+      process.execPath,
+      [
+        "--input-type=module",
+        "--eval",
+        `
+import { loadLiveOpsCliInputs } from "./scripts/run-live-ops-support.mjs";
+
+await loadLiveOpsCliInputs({
+  configPath: "config/live-ops.example.json",
+  envFilePath: "tests/fixtures/live-ops/fake.env",
+  fixtureSmoke: false,
+  attach: ${JSON.stringify(statusSourcePath)},
+  attachReadonly: true,
+});
+        `,
+      ],
+      {
+        cwd: process.cwd(),
+        encoding: "utf8",
+        env: minimalEnv(),
+      },
+    );
+
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain("liveOrderCapable");
+  });
+
   it("live:ops foreground 명령은 --attach를 성공 처리하지 않는다", async () => {
     const tempDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-live-ops-foreground-attach-"));
     const statusSourcePath = path.join(tempDir, "status-source.json");

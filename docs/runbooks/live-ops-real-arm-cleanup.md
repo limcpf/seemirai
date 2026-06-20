@@ -171,7 +171,8 @@ root 기준으로 판정한다. `fixture-*` 같은 fixture credential 값도 fak
 필수 status summary가 없으면 정상 dashboard를 합성하지 않고 실패해야 한다. attach 출력은 운영 중 상태 확인에는 쓸 수 있지만,
 foreground boot, Upbit provider arm, broker submit/cancel, Telegram dispatch, cleanup artifact 생성을 새로 수행하지 않으므로 실거래
 closeout evidence로 인정하지 않는다. 읽기 전용 attach 화면도 원본 foreground status의 실주문 가능 여부는 보존해 보여줘야 하며, 새
-주문 side effect가 없다는 사실은 실행 형태와 필요 조치에서 구분한다.
+주문 side effect가 없다는 사실은 실행 형태와 필요 조치에서 구분한다. 단, source의 `liveOrderCapable`이 boolean이 아니면 문자열 truthy
+오표시를 막기 위해 실패해야 한다.
 
 `keyScope`는 `grantedScopes: ["자산조회", "주문조회", "주문하기"]`, `forbiddenScopesAbsent: ["출금하기"]`,
 `withdrawalEnabled: false`처럼 허용 scope와 출금 권한 부재를 redacted safe summary로 기록한다. source/security scan은 실제 `rg -n`

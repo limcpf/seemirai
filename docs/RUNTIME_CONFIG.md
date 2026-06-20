@@ -774,7 +774,8 @@ production live ops path에서 다음 legacy milestone/test env는 readiness 입
 Telegram dispatch를 새로 시작하지 않는다. non-fixture attach 대상은 기존 foreground 실행이 남긴 JSON status source여야 하며, source를
 읽지 못하거나 필수 summary 항목이 없으면 정상 dashboard를 합성하지 않고 fail-closed 한다. `--attach` 인자는 `live:ops:tui`에서만 허용하고
 foreground `live:ops` 명령에서는 성공 처리하지 않는다. attach 화면은 새 주문 side effect가 없다는 실행 형태를 따로 표시하되, 원본
-foreground summary의 실주문 가능 여부는 그대로 보여준다. 첫 화면은 모드, 시장, 실주문 가능 여부, DB readiness/schema version, worker 상태,
+foreground summary의 실주문 가능 여부는 그대로 보여준다. 단, attach source의 `liveOrderCapable`은 boolean이어야 하며 문자열/숫자 값은
+정상 dashboard로 표시하지 않는다. 첫 화면은 모드, 시장, 실주문 가능 여부, DB readiness/schema version, worker 상태,
 예산, 최근 관측 상태, 필요 조치를 한국어로 표시하고, env file 경로, credential, raw provider payload, raw config enum은 노출하지 않는다.
 fixture smoke dashboard는 외부 DB/provider를 호출하지 않았음을 표시하고, 후속 provider 연결 전에는 신규 실주문이 제출되지 않는 상태로
 고정한다.

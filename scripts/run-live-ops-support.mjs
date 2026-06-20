@@ -297,6 +297,10 @@ function assertLiveOpsCliAttachStatusSource(summary) {
   if (missing.length > 0) {
     throw new Error(`attach status source에 필요한 summary 항목이 없습니다: ${missing.join(", ")}`);
   }
+  if (typeof summary.liveExecution.liveOrderCapable !== "boolean") {
+    // 외부 JSON attach source의 문자열/숫자 값을 truthy로 표시하면 실제 foreground 실주문 가능 상태를 왜곡한다.
+    throw new Error("attach status source의 liveExecution.liveOrderCapable은 boolean이어야 합니다.");
+  }
 }
 
 export function renderLiveOpsSummary(input) {

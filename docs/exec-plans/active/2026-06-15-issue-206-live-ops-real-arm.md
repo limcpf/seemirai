@@ -374,6 +374,7 @@ Telegram, TUI를 같은 lifecycle로 조립하고, 조건을 통과한 단일 `K
 - DnD:
   - [x] non-fixture attach loader가 source summary의 `liveExecution.liveOrderCapable`을 `false`로 덮어쓰지 않는다.
   - [x] attach read-only 여부는 실행 형태/필요 조치로 구분하고, 원본 실주문 가능 여부 표시는 유지한다.
+  - [x] attach source의 `liveExecution.liveOrderCapable`이 boolean이 아니면 문자열 truthy 오표시를 막기 위해 fail-closed 한다.
   - [x] 관련 unit test, 문서 검증, `git diff --check`, `corepack pnpm typecheck`, `./scripts/verify`가 통과한다.
 
 ## 검증 방법
@@ -494,7 +495,8 @@ SEEMIRAI_RUN_LIVE_OPS_REAL_ARM_CLOSEOUT=1 \
   못하면 fail-closed 한다. attach 경로는 foreground boot sequence나 Upbit provider, broker, cleanup lifecycle, Telegram dispatch를 새로
   시작하지 않는다. foreground `live:ops` 명령의 `--attach`는 성공 처리하지 않는다.
 - 2026-06-20: Sub PR 16으로 attach read-only 화면은 새 주문 side effect를 열지 않는다는 실행 형태를 표시하되, 원본 foreground status의
-  live-order-capable 값은 덮어쓰지 않고 그대로 보여주도록 보강한다.
+  live-order-capable 값은 덮어쓰지 않고 그대로 보여주도록 보강한다. review drain 보강으로 attach source의 `liveOrderCapable`이 boolean이
+  아니면 정상 dashboard로 낮추지 않고 fail-closed 한다.
 - 2026-06-18: cleanup budget reservation은 attempt id 파일 생성 전에 같은 날짜 lock을 잡고, lock 안에서 reservation aggregate와 open
   position snapshot을 다시 합산해 일일 자동 주문 예산을 선점한다.
 - 2026-06-18: daily reservation lock은 `leaseId`/`acquiredAt`/`expiresAt`/`pid`와 owner boot id/process start time lease metadata를
