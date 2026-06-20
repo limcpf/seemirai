@@ -78,21 +78,24 @@ export async function runLiveOpsDaemon(options, io = {}) {
   let latestSummary = null;
   let latestError = null;
   let statusFilePath = options.statusFilePath === undefined ? undefined : path.resolve(options.statusFilePath);
+  let startupAlertConsumed = false;
 
   try {
     while (shouldContinueDaemon({ startedMs, durationMs, tickCount: counters.tickCount, maxTicks })) {
       const tickStartedAt = clock();
       try {
-        const inputs = await loadLiveOpsCliInputs(options);
+        const tickOptions = startupAlertConsumed ? withStartupAlertSuppressed(options) : options;
+        const inputs = await loadLiveOpsCliInputs(tickOptions);
         const summary = renderLiveOpsSummary({
-          ...options,
+          ...tickOptions,
           ...inputs,
-          tui: options.tui,
+          tui: tickOptions.tui,
         });
         latestSummary = summary;
         latestError = null;
         counters.tickCount += 1;
         accumulateDaemonCounters(counters, summary);
+        startupAlertConsumed = true;
 
         if (options.tui) {
           writeDaemonText(stdout, renderLiveOpsTuiDashboard(summary));
@@ -119,6 +122,16 @@ export async function runLiveOpsDaemon(options, io = {}) {
         if (options.tui) {
           writeDaemonText(stdout, `live:ops daemon tick 실패: ${latestError.message}\n`);
         }
+        // 실패 tick도 외부 monitor가 직전 정상 JSON만 보지 않도록 같은 status file에 즉시 반영한다.
+        await writeDaemonStatusIfConfigured(statusFilePath, createDaemonStatusPayload({
+          options,
+          startedAt,
+          tickStartedAt,
+          counters,
+          latestSummary,
+          latestError,
+          unhandledRejections,
+        }));
       }
 
       const delayMs = resolveNextDaemonDelayMs({
@@ -154,6 +167,13 @@ export async function runLiveOpsDaemon(options, io = {}) {
     writeDaemonJson(stdout, result);
   }
   return result;
+}
+
+function withStartupAlertSuppressed(options) {
+  return {
+    ...options,
+    suppressStartupTelegramAlert: true,
+  };
 }
 
 export function printLiveOpsDaemonHelp() {

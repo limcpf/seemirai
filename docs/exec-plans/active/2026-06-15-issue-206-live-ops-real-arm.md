@@ -462,6 +462,21 @@ Telegram, TUI를 같은 lifecycle로 조립하고, 조건을 통과한 단일 `K
   - [x] preflight PnL closeout은 주입된 기준가도 market heartbeat timestamp 기준 freshness를 통과해야 CALCULATED row를 만들 수 있다.
   - [x] 관련 unit/script tests, `corepack pnpm exec tsc --noEmit`, `./scripts/verify docs`, `./scripts/verify`, `git diff --check`가 통과한다.
 
+### Sub PR 22: daemon/SELL final review runtime 보강
+
+- 목표: final main PR review에서 추가로 발견된 daemon status, Telegram startup 반복, SELL post-submit status gap을 runtime invariant로 닫는다.
+- 제외 범위:
+  - budget 상한 확대, BTC 외 market 활성화, 시장가/best order, 수동 증적 파일 또는 fixture manifest 요구.
+  - final main PR merge.
+- DnD:
+  - [x] `live:ops:daemon`은 성공 tick 뒤 실패 tick이 발생해도 같은 status file에 `transient_failure`와 최신 counters/error를 즉시 기록한다.
+  - [x] daemon 반복 실행은 startup Telegram 후보를 매 idle tick마다 다시 만들지 않고, 첫 성공 tick 이후 runtime config에서 startup alert를
+        비활성화한다.
+  - [x] SELL submit 이후 `getOrder` poll 오류는 broker order id와 submitted order evidence를 보존한 `MANUAL_REVIEW_REQUIRED` 결과로 닫는다.
+  - [x] SELL `FILLED`와 `CANCELED_FOR_REQUOTE`/`exit_requote_ready` 상태는 generic pending이 아니라 private read/reconcile/PnL status 확인
+        대상으로 포함된다.
+  - [x] 관련 unit/script tests, `corepack pnpm exec tsc --noEmit`, `./scripts/verify docs`, `./scripts/verify`, `git diff --check`가 통과한다.
+
 ## 검증 방법
 
 공통 검증:
@@ -646,10 +661,13 @@ SEEMIRAI_RUN_LIVE_OPS_REAL_ARM_CLOSEOUT=1 \
   통과해야 exit runtime으로 넘어간다. CLI contract는 정적 allowlist의 `autonomous_24x7` 설정만 허용하며, `STRATEGY_PAUSED`는 전역
   신규 주문 차단이 아니라 strategy evaluation pause로 해석한다. PnL closeout의 주입 기준가는 market heartbeat timestamp freshness를
   통과해야 한다.
+- 2026-06-21: Sub PR 22 final review drain 보강으로 daemon 실패 tick은 status file을 최신 실패 payload로 갱신한다. daemon은 첫 성공
+  tick 이후 startup Telegram alert를 반복 생성하지 않는다. SELL exit runtime은 post-submit poll 오류를 broker order id가 있는 수동 점검
+  결과로 닫고, SELL 체결/재호가 상태는 private read/reconcile/PnL status 확인 대상으로 포함한다.
 
 ## 남은 이슈
 
-- Sub PR 21 완료 후 final main PR #218의 신규 review finding을 다시 drain해야 한다.
+- Sub PR 22 완료 후 final main PR #218의 신규 review finding을 다시 drain해야 한다.
 - 실제 운영 credential, key scope evidence, operator arm evidence, redacted artifact 경로는 저장소 밖 운영 vault에 있어야 한다.
 - 실제 주문 제출/취소 closeout은 저장소 밖 운영 config/env로 foreground `live:ops`를 실행한 뒤 자동 생성 artifact와 closeout manifest로
   검증한다.

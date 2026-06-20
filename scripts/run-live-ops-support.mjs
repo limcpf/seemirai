@@ -161,10 +161,13 @@ export async function loadLiveOpsCliInputs(options) {
 
   const configPath = path.resolve(options.configPath);
   const envFilePath = path.resolve(options.envFilePath);
-  const config = JSON.parse(await readFile(configPath, "utf8"));
+  let config = JSON.parse(await readFile(configPath, "utf8"));
   const env = parseEnvFile(await readFile(envFilePath, "utf8"));
   validateLiveOpsConfig(config);
   validateLiveOpsEnv(env, process.env);
+  if (options.suppressStartupTelegramAlert === true) {
+    config = suppressLiveOpsCliStartupTelegramAlert(config);
+  }
   if (options.attach !== undefined && options.attachReadonly !== true) {
     throw new Error("--attach는 live:ops:tui 명령에서만 사용할 수 있습니다.");
   }
@@ -275,6 +278,16 @@ export async function loadLiveOpsCliInputs(options) {
   } finally {
     await productionRuntime?.close?.();
   }
+}
+
+function suppressLiveOpsCliStartupTelegramAlert(config) {
+  return {
+    ...config,
+    telegram: {
+      ...(config.telegram ?? {}),
+      startup_alert_enabled: false,
+    },
+  };
 }
 
 async function loadLiveOpsCliAttachReadonlyInputs({ configPath, envFilePath, config, env, attach }) {
@@ -4515,13 +4528,29 @@ export function createLiveOpsCliExitRuntime({
         };
       }
 
-      const fillProbe = await waitForLiveOpsCliExitFillOrOpen({
-        broker,
-        brokerOrderId: brokerOrder.brokerOrderId,
-        pollCount,
-        pollIntervalMs,
-        submittedOrder: brokerOrder,
-      });
+      let fillProbe;
+      try {
+        fillProbe = await waitForLiveOpsCliExitFillOrOpen({
+          broker,
+          brokerOrderId: brokerOrder.brokerOrderId,
+          pollCount,
+          pollIntervalMs,
+          submittedOrder: brokerOrder,
+        });
+      } catch (error) {
+        return {
+          status: "MANUAL_REVIEW_REQUIRED",
+          statusLabel: "수동 점검",
+          brokerOrderId: brokerOrder.brokerOrderId,
+          manualReviewRequired: true,
+          message: "SELL 주문 제출 후 상태 조회를 완료하지 못해 수동 점검 상태로 전환했습니다.",
+          action: "거래소 주문 uuid로 open order, partial fill, 보유 수량을 확인한 뒤 다음 재호가 여부를 결정하세요.",
+          reason: "exit_order_poll_failed",
+          errorName: safeErrorName(error),
+          errorMessage: error instanceof Error ? error.message : String(error),
+          submittedOrder: brokerOrder,
+        };
+      }
       if (isLiveOpsCliFilledOrder(fillProbe.order)) {
         return {
           status: "FILLED",
@@ -6605,7 +6634,11 @@ function shouldProbeLiveOpsCliPrivateRead(liveExecution) {
     liveExecution.status === "manual_review_required" ||
     liveExecution.status === "reconcile_required" ||
     liveExecution.status === "cancel_requested" ||
-    liveExecution.status === "cancel_confirmed"
+    liveExecution.status === "cancel_confirmed" ||
+    liveExecution.status === "filled" ||
+    liveExecution.status === "exit_requote_ready" ||
+    liveExecution.attemptStatus === "FILLED" ||
+    liveExecution.attemptStatus === "CANCELED_FOR_REQUOTE"
   );
 }
 

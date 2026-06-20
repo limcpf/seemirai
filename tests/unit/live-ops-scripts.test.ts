@@ -50,6 +50,79 @@ describe("production live ops script skeleton", () => {
     expect(result.stdout).not.toContain("fake-upbit-secret-key");
   });
 
+  it("live:ops:daemon 실패 tick도 status file에 최신 실패 상태를 기록한다", async () => {
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-live-ops-daemon-status-"));
+    const statusFilePath = path.join(tempDir, "daemon-status.json");
+    const result = spawnSync(
+      process.execPath,
+      [
+        "scripts/run-live-ops-daemon.mjs",
+        "--config",
+        path.join(tempDir, "missing-live-ops.json"),
+        "--env-file",
+        "tests/fixtures/live-ops/fake.env",
+        "--status-file",
+        statusFilePath,
+        "--max-ticks",
+        "1",
+        "--json",
+      ],
+      {
+        cwd: process.cwd(),
+        encoding: "utf8",
+        env: minimalEnv(),
+      },
+    );
+
+    expect(result.status).toBe(0);
+    const statusFile = JSON.parse(await readFile(statusFilePath, "utf8"));
+    expect(statusFile).toMatchObject({
+      kind: "live_ops_daemon_summary",
+      status: "transient_failure",
+      latestError: {
+        name: expect.any(String),
+      },
+      counters: {
+        tickCount: 1,
+        transientFailureCount: 1,
+      },
+    });
+    expect(statusFile.latestSummary).toBeNull();
+  });
+
+  it("live:ops:daemon은 startup Telegram 후보를 반복 tick마다 다시 만들지 않는다", () => {
+    const result = spawnSync(
+      process.execPath,
+      [
+        "scripts/run-live-ops-daemon.mjs",
+        "--config",
+        "config/live-ops.example.json",
+        "--env-file",
+        "tests/fixtures/live-ops/fake.env",
+        "--fixture-smoke",
+        "--duration-ms",
+        "250",
+        "--tick-interval-ms",
+        "0",
+        "--json",
+      ],
+      {
+        cwd: process.cwd(),
+        encoding: "utf8",
+        env: minimalEnv(),
+      },
+    );
+
+    expect(result.status).toBe(0);
+    expect(result.stderr).toBe("");
+    const summary = JSON.parse(result.stdout);
+    expect(summary.counters.tickCount).toBeGreaterThan(1);
+    expect(summary.latestSummary.telegramAlert).toMatchObject({
+      lifecycleAlertCount: 0,
+      alertCount: 0,
+    });
+  });
+
   it("live:ops --tui는 fixture smoke에서 provider 호출 없이 운영 dashboard 첫 화면을 출력한다", () => {
     const result = spawnSync(
       process.execPath,
@@ -593,7 +666,7 @@ console.log(JSON.stringify(summary));
       evaluateLiveOpsCliLiveExecution,
     } = await import(path.join(process.cwd(), "scripts/run-live-ops-support.mjs"));
     const config = JSON.parse(await readFile(path.join(process.cwd(), "config", "live-ops.example.json"), "utf8"));
-    const observedAt = "2026-06-20T00:00:00.000Z";
+    const observedAt = new Date().toISOString();
     const idempotencyKey = `ops-${"b".repeat(26)}`;
     const sellIntent = createCliSellIntent({ idempotencyKey });
     const exitRuntime = {
@@ -671,6 +744,156 @@ console.log(JSON.stringify(summary));
     });
     expect(submission.costSnapshot.source).toBe("exit_cost_model");
     expect(submission.riskApproval.source).toBe("risk_gate");
+  });
+
+  it("SELL exit runtime은 제출 이후 poll 오류도 broker order id가 있는 수동 점검 결과로 닫는다", async () => {
+    const {
+      createLiveOpsCliExitRuntime,
+    } = await import(path.join(process.cwd(), "scripts/run-live-ops-support.mjs"));
+    const idempotencyKey = `ops-${"c".repeat(26)}`;
+    const sellIntent = createCliSellIntent({ idempotencyKey });
+    const brokerOrder = {
+      brokerOrderId: "exit-order-poll-failed",
+      idempotencyKey,
+      exchangeId: "upbit_krw_spot",
+      market: "KRW-BTC",
+      side: "SELL",
+      orderType: "LIMIT",
+      status: "ACCEPTED",
+      requestedQuantity: sellIntent.requestedQuantity,
+      remainingQuantity: sellIntent.requestedQuantity,
+      requestedPrice: sellIntent.requestedPrice,
+      acceptedAt: "2026-06-20T00:00:00.000Z",
+      updatedAt: "2026-06-20T00:00:00.000Z",
+    };
+    const runtime = createLiveOpsCliExitRuntime({
+      pollCount: 1,
+      pollIntervalMs: 0,
+      broker: {
+        async submitOrder() {
+          return brokerOrder;
+        },
+        async getOrder() {
+          throw Object.assign(new Error("RateLimitedDuringExitPoll"), {
+            status: 429,
+          });
+        },
+      },
+    });
+
+    const result = await runtime.submitExitOrder({
+      intent: sellIntent,
+      costSnapshot: sellIntent.costSnapshot,
+      riskApproval: sellIntent.riskApproval,
+      observedAt: "2026-06-20T00:00:00.000Z",
+    });
+
+    expect(result).toMatchObject({
+      status: "MANUAL_REVIEW_REQUIRED",
+      brokerOrderId: "exit-order-poll-failed",
+      manualReviewRequired: true,
+      reason: "exit_order_poll_failed",
+    });
+    expect(JSON.stringify(result)).toContain("RateLimitedDuringExitPoll");
+  });
+
+  it("SELL exit terminal/requote 상태도 private read PnL status로 닫는다", async () => {
+    const {
+      evaluateLiveOpsCliReconcilePnlStatus,
+    } = await import(path.join(process.cwd(), "scripts/run-live-ops-support.mjs"));
+    const observedAt = new Date().toISOString();
+    const calls = { openOrders: 0, balances: 0 };
+    const privateReadProvider = {
+      async listOpenOrders() {
+        calls.openOrders += 1;
+        return [];
+      },
+      async getBalances() {
+        calls.balances += 1;
+        return {
+          exchangeId: "upbit_krw_spot",
+          capturedAt: observedAt,
+          balances: [
+            { currency: "KRW", available: "100000", locked: "0", total: "100000", updatedAt: observedAt },
+          ],
+        };
+      },
+    };
+    const reconcileStatusProvider = {
+      async getReconcileStatus() {
+        return {
+          lastReconcileAt: observedAt,
+          result: "SUCCESS",
+          mismatchCount: 0,
+          openOrderCount: 0,
+          balanceStatus: "OK",
+          websocketStatus: "CONNECTED",
+          actionRequired: "없음",
+          message: "실계좌 상태 대조가 정상입니다.",
+        };
+      },
+    };
+    const pnlStatusProvider = {
+      async getStatus() {
+        return {
+          readStatus: "OK",
+          latestCapturedAt: observedAt,
+          latestRealizedPnlKrw: "0",
+          latestUnrealizedPnlKrw: "0",
+          latestStatus: "CALCULATED",
+          snapshotCount: 1,
+          reason: "pnl_snapshot_latest_read",
+        };
+      },
+    };
+    const baseLiveExecution = {
+      ready: true,
+      liveOrderCapable: true,
+      attemptId: "ops-exit-attempt",
+      brokerOrderId: "exit-order-001",
+      idempotencyKey: "ops-exit-idem",
+    };
+
+    const requote = await evaluateLiveOpsCliReconcilePnlStatus({
+      config: { universe: { default_market: "KRW-BTC" } },
+      fixtureSmoke: false,
+      liveExecution: {
+        ...baseLiveExecution,
+        status: "exit_requote_ready",
+        attemptStatus: "CANCELED_FOR_REQUOTE",
+      },
+      privateReadProvider,
+      reconcileStatusProvider,
+      pnlStatusProvider,
+      observedAt,
+    });
+    const filled = await evaluateLiveOpsCliReconcilePnlStatus({
+      config: { universe: { default_market: "KRW-BTC" } },
+      fixtureSmoke: false,
+      liveExecution: {
+        ...baseLiveExecution,
+        status: "filled",
+        attemptStatus: "FILLED",
+      },
+      privateReadProvider,
+      reconcileStatusProvider,
+      pnlStatusProvider,
+      observedAt,
+    });
+
+    expect(requote).toMatchObject({
+      status: "ready",
+      ready: true,
+      providerProbeAttempted: true,
+      statusLabel: "private read 확인",
+    });
+    expect(filled).toMatchObject({
+      status: "ready",
+      ready: true,
+      providerProbeAttempted: true,
+      statusLabel: "private read 확인",
+    });
+    expect(calls).toEqual({ openOrders: 2, balances: 2 });
   });
 
   it("reconcile/PnL/status helper는 private read provider 결과를 secret-safe summary로 낮춘다", () => {
