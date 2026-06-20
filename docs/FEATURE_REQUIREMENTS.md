@@ -922,23 +922,23 @@ Acceptance Criteria:
 
 Acceptance Criteria:
 
-- [ ] `corepack pnpm live:ops:daemon -- --config <운영-json-path> --env-file <운영-env-path> --tui`가 24/7 loop를 시작한다.
-- [ ] `live:ops:daemon` production 실행은 fixture manifest, hand-written evidence, 수동 JSONL 후보 파일을 요구하지 않는다.
-- [ ] loop tick은 config/env validation, DB readiness, market data freshness, private read reconcile, PnL/status, decision, live execution,
+- [x] `corepack pnpm live:ops:daemon -- --config <운영-json-path> --env-file <운영-env-path> --tui`가 24/7 loop를 시작한다.
+- [x] `live:ops:daemon` production 실행은 fixture manifest, hand-written evidence, 수동 JSONL 후보 파일을 요구하지 않는다.
+- [x] loop tick은 config/env validation, DB readiness, market data freshness, private read reconcile, PnL/status, decision, live execution,
   Telegram/status summary 순서를 지킨다.
-- [ ] 보유 포지션이 있으면 exit policy가 entry policy보다 먼저 평가된다.
-- [ ] exit policy는 take profit, stop loss, trailing stop, max holding time, risk reduction rule을 독립 rule로 조립한다.
-- [ ] exit intent는 보유 수량 이하의 `SELL + LIMIT + POST_ONLY`만 허용하고, 시장가 매도와 hard-stop 자동 시장가 청산은 금지한다.
-- [ ] entry strategy는 조건이 약하면 주문을 만들지 않고 HOLD evidence를 남긴다.
-- [ ] entry intent는 `KRW-BTC`, `BUY`, `LIMIT`, `POST_ONLY`, 10,000 KRW 이하만 허용한다.
-- [ ] strategy registry는 `cleanup_probe`와 production 24/7 strategy를 분리하고, 새 strategy를 나중에 allowlist로 추가/교체할 수 있다.
-- [ ] strategy는 broker, Upbit client, DB connection, Telegram dispatcher를 직접 호출하지 않는다.
-- [ ] stale market data, stale PnL, reconcile mismatch, open order, budget 초과, kill switch, Telegram owner alert 불능은 broker 호출 전에
+- [x] 보유 포지션이 있으면 exit policy가 entry policy보다 먼저 평가된다.
+- [x] exit policy는 take profit, stop loss, trailing stop, max holding time, risk reduction rule을 독립 rule로 조립한다.
+- [x] exit intent는 보유 수량 이하의 `SELL + LIMIT + POST_ONLY`만 허용하고, 시장가 매도와 hard-stop 자동 시장가 청산은 금지한다.
+- [x] entry strategy는 조건이 약하면 주문을 만들지 않고 HOLD evidence를 남긴다.
+- [x] entry intent는 `KRW-BTC`, `BUY`, `LIMIT`, `POST_ONLY`, 10,000 KRW 이하만 허용한다.
+- [x] strategy registry는 `cleanup_probe`와 production 24/7 strategy를 분리하고, 새 strategy를 나중에 allowlist로 추가/교체할 수 있다.
+- [x] strategy는 broker, Upbit client, DB connection, Telegram dispatcher를 직접 호출하지 않는다.
+- [x] stale market data, stale PnL, reconcile mismatch, open order, budget 초과, kill switch, Telegram owner alert 불능은 broker 호출 전에
   fail-closed 된다.
-- [ ] 미체결 entry/exit order는 bounded cancel/requote 또는 manual review로 닫히고, terminal 확인 실패는 성공으로 표시하지 않는다.
-- [ ] TUI/Telegram/status는 한국어로 현재 상태, 보유/현금 판단 이유, 최근 entry/exit decision, open exposure, PnL, 필요한 조치를
+- [x] 미체결 entry/exit order는 bounded cancel/requote 또는 manual review로 닫히고, terminal 확인 실패는 성공으로 표시하지 않는다.
+- [x] TUI/Telegram/status는 한국어로 현재 상태, 보유/현금 판단 이유, 최근 entry/exit decision, open exposure, PnL, 필요한 조치를
   보여준다.
-- [ ] 24시간 run summary는 crash 0회, unhandled rejection 0회, duplicate order 0건, reconcile mismatch 0건, untracked fill 0건,
+- [x] 24시간 run summary는 crash 0회, unhandled rejection 0회, duplicate order 0건, reconcile mismatch 0건, untracked fill 0건,
   live order cleanup failure 0건을 자동 산출한다.
 
 테스트 요구사항:

@@ -1,6 +1,6 @@
 # Upbit Live Autonomous Trading 로드맵
 
-- 상태: M22 구현 closeout, source scan, 24시간 heartbeat-only pilot, dry-run candidate canary, runner/runbook/local file preparer/기본 daemon 완료. Issue #196에서 production `live:ops`/TUI-first 운영 skeleton이 완료됐고, Issue #206에서 실제 DB/provider arm과 소액 submit/cancel cleanup evidence를 붙이는 작업 진행 중. M23/M24 운영 검증은 live canary cleanup과 7일 안정화 evidence부터 진행 (2026-06-15)
+- 상태: M22 구현 closeout, source scan, 24시간 heartbeat-only pilot, dry-run candidate canary, runner/runbook/local file preparer/기본 daemon 완료. Issue #196에서 production `live:ops`/TUI-first 운영 skeleton이 완료됐고, Issue #206에서 실제 DB/provider arm, 소액 submit/cancel cleanup evidence, `live:ops:daemon` 24/7 entry/exit loop를 붙이는 작업 진행 중. M23/M24 운영 검증은 live canary cleanup과 7일 안정화 evidence부터 진행 (2026-06-20)
 - 작성일: 2026-06-01
 - 관련 범위: M15 이후 post-MVP 실거래 자율 운용
 - 기준 문서: [`../PRD.md`](../PRD.md), [`../FEATURE_REQUIREMENTS.md`](../FEATURE_REQUIREMENTS.md), [`../../ARCHITECTURE.md`](../../ARCHITECTURE.md), [`./upbit-v0-2-pilot-private-api.md`](./upbit-v0-2-pilot-private-api.md), [`../RUNTIME_CONFIG.md`](../RUNTIME_CONFIG.md), [`../RELIABILITY.md`](../RELIABILITY.md), [`../SECURITY.md`](../SECURITY.md)
@@ -43,6 +43,11 @@ submit/cancel terminal evidence다. production decision은 임의 코드 로딩�
 hold, exit, manual review를 반복 평가하고, 보유 포지션이 있을 때 매도/축소 판단을 entry보다 먼저 수행하는 production loop로 닫는다.
 이 경로는 실행 전에 수동 fixture manifest나 hand-written evidence를 요구하지 않고, 저장소 밖 config/env만으로 시작해야 한다. 자세한
 운영 기준은 [`../runbooks/live-ops-24x7-autonomous.md`](../runbooks/live-ops-24x7-autonomous.md)를 따른다.
+
+`live:ops:daemon`은 config/env validation부터 decision, live execution, reconcile/status, Telegram summary까지 매 tick 반복한다. SELL
+exit는 보유 수량과 1회 주문 예산을 동시에 지키기 위해 10,000 KRW 이하 chunk로 나뉠 수 있으며, 미체결은 bounded cancel 후 다음 tick
+재호가로 수렴한다. 부분 체결, terminal 확인 실패, untracked fill, reconcile mismatch는 자동 재주문이 아니라 신규 주문 차단과 수동 확인으로
+처리한다.
 
 ## 3. 비목표
 
@@ -464,6 +469,7 @@ M22 진입 전에는 다음을 모두 만족해야 한다.
 - gated live read-only: accounts, orders/chance, order lookup, reconcile
 - gated live order smoke: 소액 지정가 생성/취소
 - paper/live parity: 같은 event fixture에서 decision, cost, risk, exit 결과 비교
+- daemon smoke: `live:ops:daemon --fixture-smoke --duration-ms 1000`로 수동 evidence 파일 없이 반복 loop와 summary counter를 검증
 - soak: 24시간 small-budget live autonomous pilot, 이후 7일 운영 안정화
 
 ## 10. Open Questions
@@ -472,7 +478,7 @@ M22 진입 전에는 다음을 모두 만족해야 한다.
 - 첫 live autonomous 예산은 Issue #180에서 M21 기본값 유지로 결정했다. 1회 주문 상한은 `10000` KRW, 일일 자동 주문 notional
   한도는 `30000` KRW다.
 - 초기 exit rule 조합은 손절, 익절, trailing stop, 시간 기반 청산, risk reduction을 모두 독립 rule로 둔다. production 기본값과
-  threshold는 Issue #206 24/7 strategy sub PR에서 테스트와 함께 고정한다.
+  threshold는 Issue #206 24/7 strategy sub PR에서 테스트와 함께 고정했고, 후속 strategy는 allowlist와 test를 추가해야 교체할 수 있다.
 - Telegram inbound는 webhook과 polling 중 하나를 선택해야 한다.
 - 배포 위치와 고정 IP, Upbit API key allowlist 운영 방식을 결정해야 한다.
 

@@ -1736,3 +1736,21 @@ fake live integration, paper/live shadow 기준을 함께 추가해야 productio
 max holding time, risk reduction rule을 먼저 평가한다. exit 조건이 없으면 `HOLD`로 닫고, entry signal이 강해도 같은 tick에서 BUY를
 만들지 않는다. 미보유 상태에서만 비용 차감 margin, trend confirmation, mean-reversion discount feature를 보고 `BUY + LIMIT +
 POST_ONLY` 후보를 만들 수 있다. 이 strategy는 order intent 생성까지만 담당하며 DB 조회, broker submit, Telegram 전송은 수행하지 않는다.
+
+`live:ops:daemon` 실행 기준:
+
+- production 실행 명령은 `corepack pnpm live:ops:daemon -- --config <운영-json-path> --env-file <운영-env-path> --tui`다.
+- 실행 전 입력은 저장소 밖 config/env뿐이다. fixture manifest, hand-written evidence, 수동 JSONL 후보 파일은 production 시작 조건이 아니다.
+- `--fixture-smoke --duration-ms <ms>`는 개발/PR 검증용 loop contract smoke이며, 실제 운영에 필요한 준비물이 아니다.
+- `--status-file <path>`를 주면 최신 daemon summary를 해당 JSON 파일에 자동 기록한다. production에서 생략하면 config 파일 옆
+  `artifacts/live-ops-daemon-status.json`에 자동 기록하며, fixture smoke는 기본 status file을 만들지 않는다.
+- `--tick-interval-ms <ms>`는 정상 보유/대기 tick 간격을 조정한다. 기본값은 1초이며, 차단은 5초, 수동 확인은 30초, transient failure는
+  5초 backoff를 적용한다.
+- 24시간 summary counter는 tick, 보유/대기, 차단, 수동 확인, 주문 제출, 매도 재호가, crash, unhandled rejection, duplicate order,
+  reconcile mismatch, untracked fill, live order cleanup failure를 자동 집계한다.
+- exit SELL은 보유 수량 전체가 1회 주문 예산을 넘으면 10,000 KRW 이하 chunk로 나눠 `position_effect=REDUCE`를 남기고, 남은 보유분은
+  다음 tick에서 다시 평가한다.
+- exit runtime은 SELL 후보도 entry runtime으로 우회시키지 않는다. 보유 수량, `SELL + LIMIT + POST_ONLY`, 비용 evidence, RiskGate
+  evidence, Upbit-safe idempotency key를 다시 검증한 뒤 submit한다.
+- exit 주문이 제한 시간 안에 체결되지 않으면 같은 runtime-owned order를 취소하고 `재호가 대기`로 닫는다. 부분 체결, 취소 terminal 확인
+  실패, broker 불확실성은 신규 주문을 차단하고 수동 확인으로 격상한다.
