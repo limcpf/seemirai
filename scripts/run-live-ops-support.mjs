@@ -812,7 +812,14 @@ export async function createLiveOpsCliProductionRuntime({
     broker,
     artifactStore,
     budgetReservation,
-    entryRuntime: createLiveOpsCliEntryRuntime({ broker, budgetReservation }),
+    entryRuntime: createLiveOpsCliEntryRuntime({
+      broker,
+      budgetReservation,
+      artifactStore,
+      clock,
+      pollCount: cancelPollCount,
+      pollIntervalMs: cancelPollIntervalMs,
+    }),
     exitRuntime: createLiveOpsCliExitRuntime({ broker, artifactStore, clock }),
     cleanupLifecycle: createLiveOpsCliCleanupLifecycle({
       broker,
@@ -2239,7 +2246,10 @@ export function createLiveOpsCliFileBudgetReservation({ artifactStore, clock = (
         ...currentAggregate,
         reservedNotionalKrw: isPositiveDecimalString(currentAggregate.reservedNotionalKrw)
           ? currentAggregate.reservedNotionalKrw
-          : sumLiveOpsCliAutonomousReservationNotional(reservationRecords),
+          : sumLiveOpsCliOpenLegacyAutonomousReservationNotional({
+              reservationRecords,
+              cleanupRecords,
+            }),
       };
       const positionQuantity = resolveLiveOpsCliObservedAutonomousPositionQuantity({
         aggregate: aggregateWithLegacyFallback,
@@ -2375,9 +2385,10 @@ function summarizeLiveOpsCliAutonomousReservationOwnership({ reservationRecords,
   const sortedExits = [...exitRecords].sort((left, right) => {
     return String(readLiveOpsCliAutonomousExitClosedAt(left) ?? "").localeCompare(String(readLiveOpsCliAutonomousExitClosedAt(right) ?? ""));
   });
+  const entryFillRecords = (Array.isArray(cleanupRecords) ? cleanupRecords : []).filter(isLiveOpsCliAutonomousEntryFillCleanupRecord);
   // SELL cleanup은 오래된 BUY lot부터 소진해 닫힌 원가가 다음 entry/exit 판단에 섞이지 않게 한다.
   const openLots = applyLiveOpsCliAutonomousExitLots(
-    sortedReservations.map(createLiveOpsCliAutonomousReservationLot).filter((lot) => lot !== undefined),
+    sortedReservations.map((record) => createLiveOpsCliAutonomousReservationLot(record, entryFillRecords)).filter((lot) => lot !== undefined),
     sortedExits,
   );
   const netQuantity = openLots.reduce((total, lot) => total.plus(lot.quantity), new Decimal(0));
@@ -2444,13 +2455,22 @@ function summarizeLiveOpsCliAutonomousReservationOwnership({ reservationRecords,
   };
 }
 
-function sumLiveOpsCliAutonomousReservationNotional(reservationRecords) {
+function sumLiveOpsCliOpenLegacyAutonomousReservationNotional({ reservationRecords, cleanupRecords = [] }) {
+  const sortedExits = (Array.isArray(cleanupRecords) ? cleanupRecords : [])
+    .filter(isLiveOpsCliAutonomousExitCleanupRecord)
+    .sort((left, right) => {
+      return String(readLiveOpsCliAutonomousExitClosedAt(left) ?? "").localeCompare(String(readLiveOpsCliAutonomousExitClosedAt(right) ?? ""));
+    });
   return (Array.isArray(reservationRecords) ? reservationRecords : []).reduce((total, record) => {
     if (
       record?.strategyId !== liveOpsCliAutonomous24x7StrategyId ||
       record?.market !== "KRW-BTC" ||
-      !isNonNegativeDecimalString(record?.reservedNotionalKrw)
+      !isNonNegativeDecimalString(record?.reservedNotionalKrw) ||
+      isPositiveDecimalString(record?.requestedQuantity)
     ) {
+      return total;
+    }
+    if (isLiveOpsCliAutonomousReservationClosedByExit(record, sortedExits)) {
       return total;
     }
     return total.plus(record.reservedNotionalKrw);
@@ -2468,11 +2488,21 @@ function resolveLiveOpsCliObservedAutonomousPositionQuantity({ aggregate, wallet
   return new Decimal(0);
 }
 
-function createLiveOpsCliAutonomousReservationLot(record) {
-  const quantity = isPositiveDecimalString(record?.requestedQuantity)
+function createLiveOpsCliAutonomousReservationLot(record, entryFillRecords = []) {
+  const entryFill = findLiveOpsCliAutonomousEntryFillForReservation(record, entryFillRecords);
+  if (entryFill === undefined && isPositiveDecimalString(record?.requestedQuantity)) {
+    return undefined;
+  }
+  const quantity = isPositiveDecimalString(readLiveOpsCliAutonomousEntryFilledQuantity(entryFill))
+    ? new Decimal(readLiveOpsCliAutonomousEntryFilledQuantity(entryFill))
+    : isPositiveDecimalString(record?.requestedQuantity)
     ? new Decimal(record.requestedQuantity)
     : undefined;
-  const averageEntryPrice = quantity !== undefined && isPositiveDecimalString(record?.requestedPrice)
+  const averageEntryPrice = quantity !== undefined && isPositiveDecimalString(readLiveOpsCliAutonomousEntryFilledPrice(entryFill))
+    ? new Decimal(readLiveOpsCliAutonomousEntryFilledPrice(entryFill))
+    : quantity !== undefined && isPositiveDecimalString(entryFill?.filledNotionalKrw)
+    ? new Decimal(entryFill.filledNotionalKrw).div(quantity)
+    : quantity !== undefined && isPositiveDecimalString(record?.requestedPrice)
     ? new Decimal(record.requestedPrice)
     : quantity !== undefined && isPositiveDecimalString(record?.reservedNotionalKrw)
     ? new Decimal(record.reservedNotionalKrw).div(quantity)
@@ -2483,9 +2513,19 @@ function createLiveOpsCliAutonomousReservationLot(record) {
   return {
     quantity,
     averageEntryPrice,
-    reservedAt: record?.reservedAt,
+    reservedAt: entryFill?.filledAt ?? record?.reservedAt,
     attemptId: record?.attemptId,
   };
+}
+
+function findLiveOpsCliAutonomousEntryFillForReservation(record, entryFillRecords) {
+  if (!hasMeaningfulValue(record?.attemptId) && !hasMeaningfulValue(record?.idempotencyKey)) {
+    return undefined;
+  }
+  return entryFillRecords.find((entryFill) => (
+    (hasMeaningfulValue(record?.attemptId) && entryFill?.attemptId === record.attemptId) ||
+    (hasMeaningfulValue(record?.idempotencyKey) && entryFill?.idempotencyKey === record.idempotencyKey)
+  ));
 }
 
 function applyLiveOpsCliAutonomousExitLots(lots, sortedExits) {
@@ -2532,6 +2572,48 @@ function isLiveOpsCliAutonomousExitCleanupRecord(record) {
     isLiveOpsCliTerminalFilledStatus(record?.status) &&
     isNonNegativeDecimalString(readLiveOpsCliAutonomousExitFilledQuantity(record))
   );
+}
+
+function isLiveOpsCliAutonomousEntryFillCleanupRecord(record) {
+  return (
+    (record?.kind === "live_ops_autonomous_entry_fill_closeout" || record?.strategyId === liveOpsCliAutonomous24x7StrategyId) &&
+    record?.strategyId === liveOpsCliAutonomous24x7StrategyId &&
+    record?.market === "KRW-BTC" &&
+    String(record?.side ?? "").toUpperCase() === "BUY" &&
+    isLiveOpsCliTerminalFilledStatus(record?.status) &&
+    isPositiveDecimalString(readLiveOpsCliAutonomousEntryFilledQuantity(record))
+  );
+}
+
+function readLiveOpsCliAutonomousEntryFilledQuantity(record) {
+  if (isPositiveDecimalString(record?.filledQuantity)) {
+    return record.filledQuantity;
+  }
+  if (isPositiveDecimalString(record?.terminalOrder?.requestedQuantity) && isDecimalEqual(record?.terminalOrder?.remainingQuantity ?? "0", "0")) {
+    return record.terminalOrder.requestedQuantity;
+  }
+  return "0";
+}
+
+function readLiveOpsCliAutonomousEntryFilledPrice(record) {
+  if (isPositiveDecimalString(record?.filledPrice)) {
+    return record.filledPrice;
+  }
+  if (isPositiveDecimalString(record?.terminalOrder?.requestedPrice)) {
+    return record.terminalOrder.requestedPrice;
+  }
+  return undefined;
+}
+
+function isLiveOpsCliAutonomousReservationClosedByExit(record, sortedExits) {
+  const reservedAt = hasMeaningfulValue(record?.reservedAt) ? String(record.reservedAt) : undefined;
+  if (reservedAt === undefined) {
+    return sortedExits.length > 0;
+  }
+  return sortedExits.some((exit) => {
+    const closedAt = readLiveOpsCliAutonomousExitClosedAt(exit);
+    return hasMeaningfulValue(closedAt) && String(closedAt) >= reservedAt;
+  });
 }
 
 function readLiveOpsCliAutonomousExitFilledQuantity(record) {
@@ -4021,18 +4103,10 @@ export function createLiveOpsCliDatabasePnlStatusProvider(pool, market) {
               payload_json ->> 'status' AS payload_status
             FROM pnl_snapshots
             WHERE (market = $1 OR market IS NULL)
-              AND (
-                strategy_id = $2
-                OR strategy_id IS NULL
-                OR strategy_id IN ('global', 'aggregate')
-              )
+              AND strategy_id = $2
             ORDER BY
-              (strategy_id = $2) DESC,
-              CASE WHEN strategy_id = $2 THEN captured_at END DESC,
-              CASE WHEN strategy_id = $2 THEN (market = $1) END DESC,
-              CASE WHEN strategy_id IS DISTINCT FROM $2 THEN (payload_json ->> 'status' = 'CALCULATED') END DESC,
-              CASE WHEN strategy_id IS DISTINCT FROM $2 THEN captured_at END DESC,
-              CASE WHEN strategy_id IS DISTINCT FROM $2 THEN (market = $1) END DESC
+              captured_at DESC,
+              (market = $1) DESC
             LIMIT 1
           `,
               params: [scopedMarket, strategyId],
@@ -4056,16 +4130,12 @@ export function createLiveOpsCliDatabasePnlStatusProvider(pool, market) {
             SELECT count(*)::int AS count
             FROM pnl_snapshots
             WHERE (market = $1 OR market IS NULL)
-              AND (
-                strategy_id = $2
-                OR strategy_id IS NULL
-                OR strategy_id IN ('global', 'aggregate')
-              )
+              AND strategy_id = $2
           `,
               params: [scopedMarket, strategyId],
             };
         const [latestResult, countResult] = await Promise.all([
-          // strategy scope 전용 PnL row가 생긴 뒤에는 그 scope를 우선하고, 첫 scope row 전 fallback은 계산 완료값으로 손실 guard를 연다.
+          // 명시 scope는 전역 PnL row로 손실 guard를 열지 않고 해당 strategy closeout이 직접 계산되게 둔다.
           pool.query(latestQuery.sql, latestQuery.params),
           pool.query(countQuery.sql, countQuery.params),
         ]);
@@ -4763,12 +4833,13 @@ export async function evaluateLiveOpsCliLiveExecution({
     });
   }
 
-  const submitted = attempt.status === "SUBMITTED";
+  const submitted = attempt.status === "SUBMITTED" || attempt.status === "FILLED" || attempt.status === "CANCELED_FOR_REQUOTE";
+  const entryReady = submitted && attempt.manualReviewRequired !== true;
   const budgetUsageAfterReservationKrw = createLiveOpsCliBudgetUsageAfterReservation({ attempt });
   const submittedSummary = {
-    status: submitted ? "submitted" : String(attempt.status ?? "blocked").toLowerCase(),
-    ready: submitted,
-    liveOrderCapable: submitted,
+    status: attempt.status === "CANCELED_FOR_REQUOTE" ? "entry_requote_ready" : submitted ? String(attempt.status).toLowerCase() : String(attempt.status ?? "blocked").toLowerCase(),
+    ready: entryReady,
+    liveOrderCapable: entryReady,
     market,
     latestExecutionAt: observedAt,
     orderIntentCount: intents.length,
@@ -4781,12 +4852,12 @@ export async function evaluateLiveOpsCliLiveExecution({
     reservedNotionalKrw: readLiveOpsCliAttemptReservedNotionalKrw(attempt),
     budgetUsageAfterReservationKrw,
     brokerGuard,
-    statusLabel: submitted ? "broker 제출" : "제출 차단",
-    message: submitted
-      ? "실주문 실행 경계가 주문 후보를 broker 제출까지 전진시켰습니다."
+    statusLabel: attempt.status === "FILLED" ? "매수 체결" : attempt.status === "CANCELED_FOR_REQUOTE" ? "매수 재호가 대기" : submitted ? "broker 제출" : "제출 차단",
+    message: entryReady
+      ? (attempt.message ?? "실주문 실행 경계가 주문 후보를 처리했습니다.")
       : (attempt.message ?? "live execution runtime이 주문 후보를 제출하지 않았습니다."),
-    action: submitted
-      ? "체결, 취소, reconcile/PnL/status worker에서 후속 상태를 확인합니다."
+    action: entryReady
+      ? (attempt.action ?? "체결, 취소, reconcile/PnL/status worker에서 후속 상태를 확인합니다.")
       : (attempt.action ?? "차단 원인을 확인한 뒤 다음 tick에서 다시 평가합니다."),
     checks: [
       okLiveExecutionCheck("analysis_decision", "analysis/decision summary를 확인했습니다.", "live_ops_analysis_ready"),
@@ -4794,9 +4865,9 @@ export async function evaluateLiveOpsCliLiveExecution({
       okLiveExecutionCheck("execution_request", "live autonomous entry runtime 요청을 만들었습니다.", "live_ops_execution_request_ready"),
       {
         name: "execution_result",
-        status: submitted ? "ok" : "blocked",
-        code: submitted ? "live_ops_execution_submitted" : "live_ops_execution_blocked",
-        message: submitted ? "broker 제출 결과를 확인했습니다." : "entry runtime이 제출을 차단했습니다.",
+        status: entryReady ? "ok" : "blocked",
+        code: attempt.status === "SUBMITTED" ? "live_ops_execution_submitted" : entryReady ? "live_ops_execution_recorded" : "live_ops_execution_blocked",
+        message: attempt.status === "SUBMITTED" ? "broker 제출 결과를 확인했습니다." : entryReady ? "entry runtime 결과를 확인했습니다." : "entry runtime이 제출을 차단했습니다.",
       },
     ],
   };
@@ -4976,7 +5047,14 @@ async function evaluateLiveOpsCliExitExecution({
   });
 }
 
-export function createLiveOpsCliEntryRuntime({ broker, budgetReservation } = {}) {
+export function createLiveOpsCliEntryRuntime({
+  broker,
+  budgetReservation,
+  artifactStore,
+  clock = () => new Date().toISOString(),
+  pollCount = liveOpsCliCleanupCancelPollCount,
+  pollIntervalMs = liveOpsCliCleanupCancelPollIntervalMs,
+} = {}) {
   return {
     async submitEntryCandidate(request) {
       if (broker === undefined || typeof broker.submitOrder !== "function") {
@@ -5176,6 +5254,19 @@ export function createLiveOpsCliEntryRuntime({ broker, budgetReservation } = {})
           reservation: reservation.reservation,
         };
       }
+      if (isLiveOpsCliAutonomousEntryLifecycleEnabled({ request, artifactStore, broker })) {
+        return closeLiveOpsCliAutonomousEntryOrder({
+          broker,
+          artifactStore,
+          request,
+          reservation: reservation.reservation,
+          submission,
+          brokerOrder,
+          clock,
+          pollCount,
+          pollIntervalMs,
+        });
+      }
       return {
         status: "SUBMITTED",
         attemptId: request.idempotencyKey,
@@ -5197,6 +5288,346 @@ export function createLiveOpsCliEntryRuntime({ broker, budgetReservation } = {})
         },
       };
     },
+  };
+}
+
+function isLiveOpsCliAutonomousEntryLifecycleEnabled({ request, artifactStore, broker }) {
+  return request?.candidate?.strategyId === liveOpsCliAutonomous24x7StrategyId &&
+    artifactStore !== undefined &&
+    typeof artifactStore.writeCleanup === "function" &&
+    typeof broker?.getOrder === "function" &&
+    typeof broker?.cancelOrder === "function";
+}
+
+async function closeLiveOpsCliAutonomousEntryOrder({
+  broker,
+  artifactStore,
+  request,
+  reservation,
+  submission,
+  brokerOrder,
+  clock,
+  pollCount,
+  pollIntervalMs,
+}) {
+  let fillProbe;
+  try {
+    fillProbe = await waitForLiveOpsCliExitFillOrOpen({
+      broker,
+      brokerOrderId: brokerOrder.brokerOrderId,
+      pollCount,
+      pollIntervalMs,
+      submittedOrder: brokerOrder,
+    });
+  } catch (error) {
+    return createLiveOpsCliAutonomousEntryManualReview({
+      request,
+      reservation,
+      submission,
+      brokerOrder,
+      reason: "entry_order_poll_failed",
+      error,
+      message: "BUY 주문 제출 후 상태 조회를 완료하지 못해 수동 점검 상태로 전환했습니다.",
+      action: "거래소 주문 uuid로 open order, partial fill, 보유 수량을 확인한 뒤 다음 매수 재호가 여부를 결정하세요.",
+    });
+  }
+  if (isLiveOpsCliFilledOrder(fillProbe.order)) {
+    return writeLiveOpsCliAutonomousEntryFillCloseoutResult({
+      artifactStore,
+      request,
+      reservation,
+      submission,
+      brokerOrder,
+      terminalOrder: fillProbe.order,
+      filledAt: clock(),
+    });
+  }
+  if (isLiveOpsCliTerminalCancelStatus(fillProbe.order?.status)) {
+    if (isLiveOpsCliCleanTerminalCancel({ submittedOrder: brokerOrder, terminalOrder: fillProbe.order })) {
+      return writeLiveOpsCliAutonomousEntryNoFillCloseoutResult({
+        artifactStore,
+        request,
+        reservation,
+        submission,
+        brokerOrder,
+        terminalOrder: fillProbe.order,
+        terminalCheckedAt: clock(),
+        status: "CANCELED_FOR_REQUOTE",
+        message: "BUY 주문이 이미 terminal cancel/no-fill 상태라 추가 취소 없이 다음 tick 재호가로 전환했습니다.",
+        action: "다음 daemon tick에서 최신 호가와 예산으로 BUY 여부를 다시 판단합니다.",
+      });
+    }
+    return createLiveOpsCliAutonomousEntryManualReview({
+      request,
+      reservation,
+      submission,
+      brokerOrder,
+      terminalOrder: fillProbe.order,
+      reason: fillProbe.reason,
+      message: "BUY 주문이 이미 terminal cancel 상태지만 no-fill fingerprint가 맞지 않아 수동 점검 상태로 전환했습니다.",
+      action: "부분 체결, 수동 취소, 잔고 mismatch 여부를 reconcile한 뒤 다음 매수 재호가 여부를 결정하세요.",
+    });
+  }
+
+  let cancelOrder;
+  try {
+    // bounded window 안에 체결되지 않은 post-only BUY는 같은 runtime 소유 uuid만 취소해 예약을 포지션으로 승격하지 않는다.
+    cancelOrder = await broker.cancelOrder(brokerOrder.brokerOrderId);
+  } catch (error) {
+    return createLiveOpsCliAutonomousEntryManualReview({
+      request,
+      reservation,
+      submission,
+      brokerOrder,
+      reason: "entry_cancel_failed",
+      error,
+      message: "BUY 주문이 bounded wait 안에 체결되지 않았고 취소 요청도 실패해 수동 점검 상태로 전환했습니다.",
+      action: "거래소 open order와 partial fill 여부를 확인한 뒤 수동 취소 또는 reconcile을 진행하세요.",
+    });
+  }
+
+  const terminal = await waitForLiveOpsCliTerminalCancel({
+    broker,
+    brokerOrderId: brokerOrder.brokerOrderId,
+    pollCount,
+    pollIntervalMs,
+    submittedOrder: brokerOrder,
+  });
+  if (isLiveOpsCliCleanTerminalCancel({ submittedOrder: brokerOrder, terminalOrder: terminal.order })) {
+    return writeLiveOpsCliAutonomousEntryNoFillCloseoutResult({
+      artifactStore,
+      request,
+      reservation,
+      submission,
+      brokerOrder,
+      cancelOrder,
+      terminalOrder: terminal.order,
+      terminalCheckedAt: clock(),
+      status: "CANCELED_FOR_REQUOTE",
+      message: "BUY 주문이 bounded wait 안에 체결되지 않아 취소 확인 후 다음 tick 재호가로 전환했습니다.",
+      action: "다음 daemon tick에서 최신 호가와 예산으로 BUY 여부를 다시 판단합니다.",
+    });
+  }
+  if (isLiveOpsCliFilledOrder(terminal.order)) {
+    return writeLiveOpsCliAutonomousEntryFillCloseoutResult({
+      artifactStore,
+      request,
+      reservation,
+      submission,
+      brokerOrder,
+      cancelOrder,
+      terminalOrder: terminal.order,
+      filledAt: clock(),
+    });
+  }
+  return createLiveOpsCliAutonomousEntryManualReview({
+    request,
+    reservation,
+    submission,
+    brokerOrder,
+    cancelOrder,
+    terminalOrder: terminal.order,
+    reason: terminal.reason,
+    message: "BUY 주문의 terminal cancel/no-fill 조건을 확인하지 못해 수동 점검 상태로 전환했습니다.",
+    action: "partial fill, open order, balance mismatch 여부를 확인하고 신규 주문 전 reconcile evidence를 닫으세요.",
+  });
+}
+
+async function writeLiveOpsCliAutonomousEntryFillCloseoutResult({
+  artifactStore,
+  request,
+  reservation,
+  submission,
+  brokerOrder,
+  cancelOrder,
+  terminalOrder,
+  filledAt,
+}) {
+  const filledQuantity = isPositiveDecimalString(terminalOrder?.requestedQuantity) && isDecimalEqual(terminalOrder?.remainingQuantity ?? "0", "0")
+    ? terminalOrder.requestedQuantity
+    : request.candidate?.requestedQuantity;
+  const filledPrice = isPositiveDecimalString(terminalOrder?.requestedPrice)
+    ? terminalOrder.requestedPrice
+    : request.candidate?.requestedPrice;
+  if (!isPositiveDecimalString(filledQuantity) || !isPositiveDecimalString(filledPrice)) {
+    return createLiveOpsCliAutonomousEntryManualReview({
+      request,
+      reservation,
+      submission,
+      brokerOrder,
+      cancelOrder,
+      terminalOrder,
+      reason: "entry_fill_quantity_or_price_missing",
+      message: "BUY 체결은 확인됐지만 체결 수량/가격을 계산할 수 없어 수동 점검 상태로 전환했습니다.",
+      action: "거래소 체결 수량과 가격을 확인하고 autonomous entry fill artifact를 복구하세요.",
+    });
+  }
+  const record = {
+    kind: "live_ops_autonomous_entry_fill_closeout",
+    attemptId: request.idempotencyKey,
+    idempotencyKey: request.idempotencyKey,
+    strategyId: liveOpsCliAutonomous24x7StrategyId,
+    market: request.candidate?.market ?? brokerOrder?.market ?? "KRW-BTC",
+    side: "BUY",
+    status: "FILLED",
+    filledQuantity,
+    filledPrice,
+    filledNotionalKrw: new Decimal(filledQuantity).mul(filledPrice).toFixed(),
+    filledAt,
+    terminalCheckedAt: filledAt,
+    idempotencyKeySuffix: suffixLiveOpsCliIdentifier(request.idempotencyKey),
+    brokerOrderIdSuffix: suffixLiveOpsCliIdentifier(brokerOrder?.brokerOrderId),
+    terminalState: terminalOrder?.status ?? null,
+    safeSummary: "autonomous BUY 체결 closeout을 기록했습니다.",
+  };
+  try {
+    const artifactPath = await artifactStore.writeCleanup(record);
+    return {
+      status: "FILLED",
+      attemptId: request.idempotencyKey,
+      idempotencyKey: request.idempotencyKey,
+      brokerOrderId: brokerOrder.brokerOrderId,
+      message: "BUY 주문이 bounded wait 안에서 체결됐습니다.",
+      action: "다음 daemon tick에서 포지션, PnL, reconcile 상태를 다시 평가합니다.",
+      violations: [],
+      events: [],
+      trace: {
+        reason: "autonomous_entry_filled",
+      },
+      submission,
+      reservation,
+      cancelOrder,
+      terminalOrder,
+      fillArtifactPath: artifactPath,
+      executionResult: {
+        status: "FILLED",
+        submission,
+        brokerOrder,
+        terminalOrder,
+      },
+    };
+  } catch (error) {
+    return createLiveOpsCliAutonomousEntryManualReview({
+      request,
+      reservation,
+      submission,
+      brokerOrder,
+      cancelOrder,
+      terminalOrder,
+      reason: "entry_fill_artifact_write_failed",
+      error,
+      message: "BUY 체결은 확인됐지만 autonomous entry fill artifact를 기록하지 못해 수동 점검 상태로 전환했습니다.",
+      action: "체결 주문 uuid와 포지션 상태를 확인하고 같은 포지션을 다시 자동 매수로 열지 않도록 fill 상태를 복구하세요.",
+    });
+  }
+}
+
+async function writeLiveOpsCliAutonomousEntryNoFillCloseoutResult({
+  artifactStore,
+  request,
+  reservation,
+  submission,
+  brokerOrder,
+  cancelOrder,
+  terminalOrder,
+  terminalCheckedAt,
+  status,
+  message,
+  action,
+}) {
+  const record = {
+    kind: "live_ops_autonomous_entry_no_fill_closeout",
+    attemptId: request.idempotencyKey,
+    idempotencyKey: request.idempotencyKey,
+    strategyId: liveOpsCliAutonomous24x7StrategyId,
+    market: request.candidate?.market ?? brokerOrder?.market ?? "KRW-BTC",
+    side: "BUY",
+    status: "CANCELED",
+    filledQuantity: "0",
+    filledNotionalKrw: "0",
+    terminalCheckedAt,
+    idempotencyKeySuffix: suffixLiveOpsCliIdentifier(request.idempotencyKey),
+    brokerOrderIdSuffix: suffixLiveOpsCliIdentifier(brokerOrder?.brokerOrderId),
+    terminalState: terminalOrder?.status ?? null,
+    safeSummary: "autonomous BUY no-fill closeout을 기록했습니다.",
+  };
+  try {
+    const artifactPath = await artifactStore.writeCleanup(record);
+    return {
+      status,
+      attemptId: request.idempotencyKey,
+      idempotencyKey: request.idempotencyKey,
+      brokerOrderId: brokerOrder.brokerOrderId,
+      message,
+      action,
+      violations: [],
+      events: [],
+      trace: {
+        reason: "autonomous_entry_no_fill",
+      },
+      submission,
+      reservation,
+      cancelOrder,
+      terminalOrder,
+      cleanupArtifactPath: artifactPath,
+      executionResult: {
+        status,
+        submission,
+        brokerOrder,
+        terminalOrder,
+      },
+    };
+  } catch (error) {
+    return createLiveOpsCliAutonomousEntryManualReview({
+      request,
+      reservation,
+      submission,
+      brokerOrder,
+      cancelOrder,
+      terminalOrder,
+      reason: "entry_no_fill_artifact_write_failed",
+      error,
+      message: "BUY no-fill은 확인됐지만 closeout artifact를 기록하지 못해 수동 점검 상태로 전환했습니다.",
+      action: "거래소 주문 uuid와 reservation 상태를 확인하고 같은 예약을 포지션으로 승격하지 않도록 closeout 상태를 복구하세요.",
+    });
+  }
+}
+
+function createLiveOpsCliAutonomousEntryManualReview({
+  request,
+  reservation,
+  submission,
+  brokerOrder,
+  cancelOrder,
+  terminalOrder,
+  reason,
+  error,
+  message,
+  action,
+}) {
+  return {
+    status: "MANUAL_REVIEW_REQUIRED",
+    attemptId: request.idempotencyKey,
+    idempotencyKey: request.idempotencyKey,
+    brokerOrderId: brokerOrder?.brokerOrderId ?? null,
+    manualReviewRequired: true,
+    message,
+    action,
+    violations: [reason],
+    events: [],
+    trace: {
+      reason,
+      ...(error === undefined ? {} : { error: safeErrorName(error) }),
+      reservation,
+      submission,
+      brokerOrder,
+      cancelOrder,
+      terminalOrder,
+    },
+    submission,
+    reservation,
+    cancelOrder,
+    terminalOrder,
   };
 }
 

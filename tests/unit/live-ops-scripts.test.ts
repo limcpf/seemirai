@@ -3001,6 +3001,52 @@ console.log(JSON.stringify({
     expect(queries[1]?.params).toEqual(["KRW-BTC", "live_ops_autonomous_24x7_core"]);
   });
 
+  it("database PnL status provider는 autonomous scope에서 global row로 fallback하지 않는다", async () => {
+    const supportModulePath = path.join(process.cwd(), "scripts/run-live-ops-support.mjs");
+    const {
+      createLiveOpsCliDatabasePnlStatusProvider,
+    } = await import(supportModulePath);
+    const queries: Array<{ text: string; params: unknown[] }> = [];
+    const globalCalculatedRow = {
+      strategy_id: null,
+      market: null,
+      captured_at: "2026-06-18T13:33:27.000Z",
+      equity: "100000",
+      realized_pnl: "0",
+      unrealized_pnl: "0",
+      drawdown_bps: "0",
+      source_fingerprint: "global-calculated",
+      payload_status: "CALCULATED",
+    };
+    const pool = {
+      async query(sql: string, params: unknown[] = []) {
+        const text = sql.replace(/\s+/gu, " ").trim();
+        queries.push({ text, params });
+        if (text.includes("FROM pnl_snapshots") && text.includes("LIMIT 1")) {
+          return { rows: text.includes("strategy_id IS NULL") ? [globalCalculatedRow] : [] };
+        }
+        if (text.includes("count(*)::int AS count") && text.includes("FROM pnl_snapshots")) {
+          return { rows: [{ count: text.includes("strategy_id IS NULL") ? 1 : 0 }] };
+        }
+        throw new Error(`unexpected query: ${text}`);
+      },
+    };
+
+    const status = await createLiveOpsCliDatabasePnlStatusProvider(pool, "KRW-BTC").getStatus({
+      strategyId: "live_ops_autonomous_24x7_core",
+      market: "KRW-BTC",
+    });
+
+    expect(status).toMatchObject({
+      readStatus: "NOT_FOUND",
+      reason: "pnl_snapshot_not_found",
+    });
+    expect(queries[0]?.params).toEqual(["KRW-BTC", "live_ops_autonomous_24x7_core"]);
+    expect(queries[0]?.text).toContain("strategy_id = $2");
+    expect(queries[0]?.text).not.toContain("strategy_id IS NULL");
+    expect(queries[0]?.text).not.toContain("strategy_id IN ('global', 'aggregate')");
+  });
+
   it("database reconcile status provider는 잔량 미확인 open order도 open으로 집계한다", async () => {
     const supportSource = await readFile(
       path.join(process.cwd(), "scripts/run-live-ops-support.mjs"),
@@ -9689,6 +9735,19 @@ console.log(JSON.stringify({
       },
       observedAt: "2026-06-15T23:59:59.000Z",
     });
+    await artifactStore.writeCleanup({
+      kind: "live_ops_autonomous_entry_fill_closeout",
+      attemptId: "ops-aaaaaaaaaaaaaaaaaaaaaaaaaa",
+      idempotencyKey: "ops-aaaaaaaaaaaaaaaaaaaaaaaaaa",
+      strategyId: "live_ops_autonomous_24x7_core",
+      market: "KRW-BTC",
+      side: "BUY",
+      status: "FILLED",
+      filledQuantity: "0.000098",
+      filledPrice: "100000000",
+      filledNotionalKrw: "9800",
+      filledAt: "2026-06-15T23:59:59.000Z",
+    });
     const nextDayUsage = await budgetReservation.readDailyReservedNotional("2026-06-16T00:00:01.000Z");
 
     expect(nextDayUsage).toMatchObject({
@@ -9732,6 +9791,19 @@ console.log(JSON.stringify({
       observedAt: "2026-06-15T23:59:59.000Z",
     });
     await artifactStore.writeCleanup({
+      kind: "live_ops_autonomous_entry_fill_closeout",
+      attemptId: "ops-aaaaaaaaaaaaaaaaaaaaaaaaaa",
+      idempotencyKey: "ops-aaaaaaaaaaaaaaaaaaaaaaaaaa",
+      strategyId: "live_ops_autonomous_24x7_core",
+      market: "KRW-BTC",
+      side: "BUY",
+      status: "FILLED",
+      filledQuantity: "0.000098",
+      filledPrice: "100000000",
+      filledNotionalKrw: "9800",
+      filledAt: "2026-06-15T23:59:59.000Z",
+    });
+    await artifactStore.writeCleanup({
       kind: "live_ops_autonomous_exit_closeout",
       attemptId: "ops-bbbbbbbbbbbbbbbbbbbbbbbbbb",
       strategyId: "live_ops_autonomous_24x7_core",
@@ -9755,6 +9827,44 @@ console.log(JSON.stringify({
         status: "CLOSED",
         closedAt: "2026-06-16T00:01:00.000Z",
       },
+    });
+  });
+
+  it("file budget reservation은 미체결 autonomous BUY reservation을 소유 수량으로 보지 않는다", async () => {
+    const supportModulePath = path.join(process.cwd(), "scripts/run-live-ops-support.mjs");
+    const {
+      createLiveOpsCliCleanupArtifactStore,
+      createLiveOpsCliFileBudgetReservation,
+    } = await import(supportModulePath);
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-live-ops-budget-unfilled-entry-"));
+    const artifactStore = await createLiveOpsCliCleanupArtifactStore({ artifactDir: tempDir });
+    const budgetReservation = createLiveOpsCliFileBudgetReservation({
+      artifactStore,
+      clock: () => "2026-06-20T00:00:00.000Z",
+    });
+
+    await budgetReservation.reserve({
+      attemptId: "ops-aaaaaaaaaaaaaaaaaaaaaaaaaa",
+      idempotencyKey: "ops-aaaaaaaaaaaaaaaaaaaaaaaaaa",
+      market: "KRW-BTC",
+      strategyId: "live_ops_autonomous_24x7_core",
+      requestedNotionalKrw: "10000",
+      requestedPrice: "100000000",
+      requestedQuantity: "0.0001",
+      budgetSnapshot: {
+        dailyAutonomousNotionalLimitKrw: "30000",
+        dailyAutonomousNotionalUsedKrw: "0",
+        openPositionNotionalKrw: "0",
+      },
+      observedAt: "2026-06-20T00:00:00.000Z",
+    });
+
+    const usage = await budgetReservation.readDailyReservedNotional("2026-06-20T00:00:30.000Z");
+
+    expect(usage.autonomous24x7Position).toMatchObject({
+      status: "CLOSED",
+      reservedNotionalKrw: "0",
+      requestedQuantity: "0",
     });
   });
 
@@ -9802,6 +9912,60 @@ console.log(JSON.stringify({
     });
   });
 
+  it("file budget reservation은 닫힌 legacy reservation을 wallet 관측값으로 되살리지 않는다", async () => {
+    const supportModulePath = path.join(process.cwd(), "scripts/run-live-ops-support.mjs");
+    const {
+      createLiveOpsCliCleanupArtifactStore,
+      createLiveOpsCliFileBudgetReservation,
+    } = await import(supportModulePath);
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-live-ops-budget-legacy-closed-"));
+    const artifactStore = await createLiveOpsCliCleanupArtifactStore({ artifactDir: tempDir });
+    await artifactStore.writeReservation({
+      reservationId: "reservation-legacy-buy",
+      attemptId: "ops-cccccccccccccccccccccccccc",
+      idempotencyKey: "ops-cccccccccccccccccccccccccc",
+      market: "KRW-BTC",
+      strategyId: "live_ops_autonomous_24x7_core",
+      reservedNotionalKrw: "10000",
+      reservedAt: "2026-06-20T00:00:00.000Z",
+      metadata: {
+        source: "legacy_live_ops_cli_file_budget_reservation",
+      },
+    });
+    await artifactStore.writeCleanup({
+      kind: "live_ops_autonomous_exit_closeout",
+      attemptId: "ops-dddddddddddddddddddddddddd",
+      strategyId: "live_ops_autonomous_24x7_core",
+      market: "KRW-BTC",
+      side: "SELL",
+      status: "FILLED",
+      filledQuantity: "0.0001",
+      filledNotionalKrw: "10100",
+      filledAt: "2026-06-20T00:01:00.000Z",
+      terminalCheckedAt: "2026-06-20T00:01:00.000Z",
+    });
+    const budgetReservation = createLiveOpsCliFileBudgetReservation({
+      artifactStore,
+      clock: () => "2026-06-20T00:02:00.000Z",
+    });
+
+    await budgetReservation.recordAutonomousPositionObservation({
+      strategyId: "live_ops_autonomous_24x7_core",
+      market: "KRW-BTC",
+      observedAt: "2026-06-20T00:02:00.000Z",
+      walletQuantity: "0.0001",
+      currentUnitPrice: "100000000",
+    });
+    const usage = await budgetReservation.readDailyReservedNotional("2026-06-20T00:02:30.000Z");
+
+    expect(usage.autonomous24x7Position).toMatchObject({
+      status: "CLOSED",
+      reservedNotionalKrw: "0",
+      requestedQuantity: "0",
+      closedAt: "2026-06-20T00:01:00.000Z",
+    });
+  });
+
   it("file budget reservation은 완전 청산된 BUY lot을 이후 평균 진입가에서 제외한다", async () => {
     const supportModulePath = path.join(process.cwd(), "scripts/run-live-ops-support.mjs");
     const {
@@ -9832,6 +9996,19 @@ console.log(JSON.stringify({
       observedAt: "2026-06-20T00:00:00.000Z",
     });
     await artifactStore.writeCleanup({
+      kind: "live_ops_autonomous_entry_fill_closeout",
+      attemptId: "ops-aaaaaaaaaaaaaaaaaaaaaaaaaa",
+      idempotencyKey: "ops-aaaaaaaaaaaaaaaaaaaaaaaaaa",
+      strategyId: "live_ops_autonomous_24x7_core",
+      market: "KRW-BTC",
+      side: "BUY",
+      status: "FILLED",
+      filledQuantity: "0.0001",
+      filledPrice: "100000000",
+      filledNotionalKrw: "10000",
+      filledAt: "2026-06-20T00:00:00.000Z",
+    });
+    await artifactStore.writeCleanup({
       kind: "live_ops_autonomous_exit_closeout",
       attemptId: "ops-bbbbbbbbbbbbbbbbbbbbbbbbbb",
       strategyId: "live_ops_autonomous_24x7_core",
@@ -9858,6 +10035,19 @@ console.log(JSON.stringify({
         openPositionNotionalKrw: "0",
       },
       observedAt: "2026-06-20T00:02:00.000Z",
+    });
+    await artifactStore.writeCleanup({
+      kind: "live_ops_autonomous_entry_fill_closeout",
+      attemptId: "ops-dddddddddddddddddddddddddd",
+      idempotencyKey: "ops-dddddddddddddddddddddddddd",
+      strategyId: "live_ops_autonomous_24x7_core",
+      market: "KRW-BTC",
+      side: "BUY",
+      status: "FILLED",
+      filledQuantity: "0.00009",
+      filledPrice: "110000000",
+      filledNotionalKrw: "9900",
+      filledAt: "2026-06-20T00:02:00.000Z",
     });
     const usage = await budgetReservation.readDailyReservedNotional("2026-06-20T00:03:00.000Z");
 
@@ -9898,6 +10088,19 @@ console.log(JSON.stringify({
         openPositionNotionalKrw: "0",
       },
       observedAt: "2026-06-15T23:59:59.000Z",
+    });
+    await artifactStore.writeCleanup({
+      kind: "live_ops_autonomous_entry_fill_closeout",
+      attemptId: "ops-aaaaaaaaaaaaaaaaaaaaaaaaaa",
+      idempotencyKey: "ops-aaaaaaaaaaaaaaaaaaaaaaaaaa",
+      strategyId: "live_ops_autonomous_24x7_core",
+      market: "KRW-BTC",
+      side: "BUY",
+      status: "FILLED",
+      filledQuantity: "0.000098",
+      filledPrice: "100000000",
+      filledNotionalKrw: "9800",
+      filledAt: "2026-06-15T23:59:59.000Z",
     });
 
     expect(budgetReservation.recordAutonomousPositionObservation).toEqual(expect.any(Function));

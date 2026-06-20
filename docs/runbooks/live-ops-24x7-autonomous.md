@@ -61,7 +61,7 @@
 9. 보유 포지션이 없거나 추가 진입이 허용되면 entry policy를 평가한다.
 10. order intent는 cost/risk/budget/reconcile/kill switch guard를 통과해야 한다.
 11. 통과한 단일 intent만 broker submit으로 전진한다.
-12. 미체결 SELL 주문은 bounded timeout 안에서 cancel/requote 또는 manual review로 닫는다. autonomous BUY는 cleanup probe처럼 즉시 취소하지 않는다.
+12. 미체결 SELL 주문과 autonomous BUY post-only 주문은 bounded timeout 안에서 cancel/requote 또는 manual review로 닫는다. BUY가 체결되면 entry fill closeout artifact를 남기고, no-fill이면 포지션 소유권으로 승격하지 않는다.
 13. 매 tick마다 decision ledger, status summary, Telegram alert 후보, redacted artifact를 자동 생성한다.
 14. daemon 시작 후 startup Telegram 후보는 첫 성공 tick에만 만들고, idle tick마다 반복 전송하지 않는다.
 
@@ -84,15 +84,16 @@ production에서 `--status-file`을 지정하지 않으면 config 파일이 있�
 - [x] autonomous BUY intent는 preflight 기반 CostModel/RiskGate/runtime evidence가 붙은 뒤에만 entry runtime으로 전달된다.
 - [x] autonomous BUY runtime identifier는 원본 strategy decision key가 아니라 preflight tick scope를 포함한 `ops-` attempt id를 사용한다.
 - [x] autonomous BUY Cost/Risk evidence 검증은 원본 decision key가 아니라 runtime `ops-` attempt id와 일치해야 한다.
-- [x] autonomous BUY 제출 성공은 cleanup lifecycle로 즉시 취소하지 않고, 후속 reconcile/PnL/status loop로 넘긴다.
+- [x] autonomous BUY 제출 성공은 bounded fill/cancel closeout으로 닫는다. FILLED면 entry fill artifact를 남기고, no-fill/cancel이면 다음 tick 재호가로 넘긴다.
+- [x] autonomous BUY reservation은 예산 선점 evidence일 뿐 포지션 소유권 evidence가 아니다. FILLED entry closeout이 없는 신규 reservation은 자동 SELL 대상이 될 수 없다.
 - [x] stale market data, stale PnL, reconcile mismatch, open order, budget 초과, kill switch는 broker 호출 전에 차단한다.
 - [x] production 제출 경계는 analysis preflight를 재사용하지 않고 private provider preflight를 제출 직전에 다시 읽는다.
 
 ## Exit DnD
 
 - [x] 보유 포지션이 있으면 entry보다 exit 평가가 먼저 실행된다.
-- [x] exit 평가 대상 수량은 지갑 BTC 전체가 아니라 UTC 날짜가 바뀌어도 runtime이 자동 생성한 strategy reservation 기록으로 소유 범위를 확인한 수량으로 제한한다.
-- [x] requested quantity가 없는 구형 reservation은 wallet 관측값과 reserved notional/current price로 strategy-owned 수량을 복원한다.
+- [x] exit 평가 대상 수량은 지갑 BTC 전체가 아니라 UTC 날짜가 바뀌어도 runtime이 자동 생성한 FILLED entry closeout과 strategy reservation 기록으로 소유 범위를 확인한 수량으로 제한한다.
+- [x] requested quantity가 없는 구형 reservation은 wallet 관측값과 reserved notional/current price로 strategy-owned 수량을 복원한다. 단, 이후 FILLED SELL closeout으로 닫힌 legacy reservation은 wallet BTC 관측값으로 되살리지 않는다.
 - [x] FILLED autonomous SELL closeout artifact는 runtime이 자동 기록하고, 해당 수량은 strategy-owned 수량에서 차감한다.
 - [x] FILLED SELL cleanup은 BUY lot을 FIFO로 소진하며, 완전 청산된 과거 BUY 평균단가는 새 포지션 평균 진입가에서 제외한다.
 - [x] strategy 소유 기록이 없는 지갑 BTC 잔고는 자동 SELL로 축소하지 않고 수동 점검이 필요한 BLOCK으로 닫는다.
@@ -175,7 +176,7 @@ artifact/status/report는 runtime이 자동으로 만든다.
 - `live:ops:daemon` fixture smoke가 외부 provider/order side effect 없이 loop contract를 검증한다.
 - fake provider integration이 entry 성공, exit 성공, HOLD, BLOCK, cancel/requote 실패, manual review를 모두 검증한다.
 - production config/env 실행은 hand-written evidence 없이 시작하고, broker submit 전 모든 guard를 자동 평가한다.
-- runtime은 저장소 밖 artifact directory에 entry reservation, exit closeout, autonomous position state를 자동 유지하며 운영자가 별도 evidence 파일을 만들지 않는다.
+- runtime은 저장소 밖 artifact directory에 entry reservation, entry fill/no-fill closeout, exit closeout, autonomous position state를 자동 유지하며 운영자가 별도 evidence 파일을 만들지 않는다.
 - attach TUI는 daemon top-level `transient_failure`가 있으면 stale `latestSummary` 준비 상태보다 실패 상태를 우선 표시한다.
 - 24시간 run summary는 crash 0회, unhandled rejection 0회, duplicate order 0건, reconcile mismatch 0건, untracked fill 0건,
   live order cleanup failure 0건을 자동 산출한다.
