@@ -6732,6 +6732,14 @@ function validateLiveOpsCliExitScopeAgainstPreflight(intent, positionScope) {
   if (!isDecimalEqual(preflightScope.total_quantity, positionScope.total_quantity)) {
     return "매도 후보 position scope가 제출 직전 preflight 전략 소유 수량과 일치해야 합니다";
   }
+  // 같은 수량의 새 lot으로 교체된 경우 이전 평균단가 기반 SELL을 제출하면 사용자 보유분을 잘못 줄일 수 있다.
+  if (
+    isPositiveDecimalString(positionScope.average_entry_price) &&
+    isPositiveDecimalString(preflightScope.average_entry_price) &&
+    !isDecimalEqual(preflightScope.average_entry_price, positionScope.average_entry_price)
+  ) {
+    return "매도 후보 position scope가 제출 직전 preflight 평균 진입가와 일치해야 합니다";
+  }
   return undefined;
 }
 
@@ -6758,6 +6766,7 @@ function readLiveOpsCliExitPositionScope(intent) {
     market: String(scope.market),
     strategy_id: String(scope.strategy_id),
     total_quantity: String(scope.total_quantity),
+    average_entry_price: isPositiveDecimalString(scope.average_entry_price) ? String(scope.average_entry_price) : undefined,
   };
 }
 
@@ -9369,6 +9378,7 @@ function evaluateLiveOpsCliAutonomousExitPolicy({ config, orderbook, observedAt,
         market: config.universe?.default_market ?? "KRW-BTC",
         strategy_id: liveOpsCliAutonomous24x7StrategyId,
         total_quantity: position.quantity,
+        average_entry_price: position.averageEntryPrice,
       },
       exit_target_quantity: targetQuantity.toFixed(),
       exit_chunked: requestedQuantity.lt(targetQuantity) ? "true" : "false",

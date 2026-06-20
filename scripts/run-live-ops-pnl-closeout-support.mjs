@@ -115,6 +115,7 @@ export function createLiveOpsPnlCloseoutRunner({
         reconcileStatus: input.reconcileStatus,
         referencePrice: input.referencePrice,
         referencePriceObservedAt: input.referencePriceObservedAt,
+        positionSnapshot: input.positionSnapshot,
         maxReconcileAgeMs,
       });
     },

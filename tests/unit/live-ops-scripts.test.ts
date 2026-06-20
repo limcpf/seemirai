@@ -1330,6 +1330,80 @@ console.log(JSON.stringify(summary));
     expect(submitted).not.toHaveBeenCalled();
   });
 
+  it("autonomous SELL은 제출 직전 preflight 평균단가가 intent scope와 다르면 broker 제출 전에 차단한다", async () => {
+    const { evaluateLiveOpsCliLiveExecution } = await import(path.join(process.cwd(), "scripts/run-live-ops-support.mjs"));
+    const observedAt = "2026-06-20T00:00:00.000Z";
+    const submitted = vi.fn(async () => ({ status: "SUBMITTED", brokerOrderId: "unexpected-replaced-lot-sell" }));
+    const sellIntent = createCliSellIntent({ idempotencyKey: `ops-${"f".repeat(26)}` }) as Record<string, any>;
+    sellIntent.metadata.position_scope.average_entry_price = "100000000";
+    sellIntent.metadata.preflight_position_scope = {
+      market: "KRW-BTC",
+      strategy_id: "live_ops_autonomous_24x7_core",
+      owned: true,
+      total_quantity: "0.0001",
+      average_entry_price: "101000000",
+    };
+    sellIntent.costSnapshot.position_scope = sellIntent.metadata.position_scope;
+
+    const summary = await withFakeSystemTime(observedAt, () => evaluateLiveOpsCliLiveExecution({
+      config: {
+        live_trading_enabled: true,
+        universe: { markets: ["KRW-BTC"], default_market: "KRW-BTC" },
+        budget: {
+          max_order_krw: "10000",
+          daily_autonomous_notional_limit_krw: "30000",
+          max_open_position_notional_krw: "30000",
+        },
+      },
+      fixtureSmoke: false,
+      analysisDecision: {
+        ready: true,
+        orderIntentCount: 1,
+        decisionCategory: "ORDER_INTENT",
+      },
+      marketData: {
+        ready: true,
+        referencePrice: "101000000",
+      },
+      env: liveOrderEnv(),
+      orderIntents: [sellIntent],
+      exitRuntime: { submitExitOrder: submitted },
+      executionStatus: {
+        killSwitchActive: false,
+        reconcileFresh: true,
+        evidenceId: "execution-status-evidence",
+      },
+      postSubmitReadiness: {
+        reconcileReady: true,
+        telegramReady: true,
+        evidenceId: "post-submit-evidence",
+      },
+      budgetSnapshot: {
+        maxOrderKrw: "10000",
+        dailyAutonomousNotionalLimitKrw: "30000",
+        dailyAutonomousNotionalUsedKrw: "10000",
+        openPositionNotionalKrw: "10000",
+        maxOpenPositionNotionalKrw: "30000",
+        capturedAt: observedAt,
+      },
+      lossSnapshot: {
+        dailyRealizedLossKrw: "0",
+        weeklyRealizedLossKrw: "0",
+        capturedAt: observedAt,
+      },
+    }));
+
+    expect(summary).toMatchObject({
+      status: "blocked",
+      submittedOrderCount: 0,
+    });
+    expect(summary.checks).toContainEqual(expect.objectContaining({
+      code: "live_ops_order_intent_blocked",
+    }));
+    expect(JSON.stringify(summary.checks)).toContain("평균 진입가");
+    expect(submitted).not.toHaveBeenCalled();
+  });
+
   it("SELL exit runtime은 제출 이후 poll 오류도 broker order id가 있는 수동 점검 결과로 닫는다", async () => {
     const {
       createLiveOpsCliExitRuntime,
