@@ -166,6 +166,227 @@ describe("Issue 206 live:ops PnL closeout runner", () => {
     expect(insertedRows).toHaveLength(0);
     expect(pool.connectCalled()).toBe(false);
   });
+
+  it("BTC 잔고가 있는데 position snapshot이 없으면 CALCULATED snapshot을 만들지 않는다", async () => {
+    const { runLiveOpsPnlCloseout } = await import(supportModulePath);
+    const insertedRows: unknown[] = [];
+    const pool = createFakePnlCloseoutPool({
+      latestRun: {
+        id: "preflight-run-4",
+        status: "COMPLETED",
+        finished_at: "2026-06-20T05:00:00.000Z",
+        balance_snapshot_count: 1,
+        open_order_count: 0,
+        mismatch_count: 0,
+      },
+      balances: [
+        { currency: "KRW", available: "50000", locked: "0", total: "50000", captured_at: "2026-06-20T05:00:00.000Z" },
+        { currency: "BTC", available: "0.0001", locked: "0", total: "0.0001", captured_at: "2026-06-20T05:00:00.000Z" },
+      ],
+      positions: [],
+      fillsCount: 0,
+      referencePrice: "100000000",
+      insertedRows,
+    });
+
+    const result = await runLiveOpsPnlCloseout({
+      pool,
+      market: "KRW-BTC",
+      strategyId: "live_ops_cleanup_probe",
+      capturedAt: "2026-06-20T05:00:00.000Z",
+      referencePrice: "100000000",
+      maxReconcileAgeMs: 30_000,
+    });
+
+    expect(result).toMatchObject({
+      status: "blocked",
+      reasonCode: "pnl_closeout_position_missing_for_balance",
+      inserted: false,
+    });
+    expect(insertedRows).toHaveLength(0);
+    expect(pool.connectCalled()).toBe(false);
+  });
+
+  it("position 수량이 있는데 BTC balance row가 없으면 평가액을 0으로 만들지 않는다", async () => {
+    const { runLiveOpsPnlCloseout } = await import(supportModulePath);
+    const insertedRows: unknown[] = [];
+    const pool = createFakePnlCloseoutPool({
+      latestRun: {
+        id: "preflight-run-5",
+        status: "COMPLETED",
+        finished_at: "2026-06-20T05:00:00.000Z",
+        balance_snapshot_count: 1,
+        open_order_count: 0,
+        mismatch_count: 0,
+      },
+      balances: [
+        { currency: "KRW", available: "50000", locked: "0", total: "50000", captured_at: "2026-06-20T05:00:00.000Z" },
+      ],
+      positions: [{
+        strategy_id: "live_ops_cleanup_probe",
+        market: "KRW-BTC",
+        quantity: "0.0001",
+        average_entry_price: "90000000",
+        realized_pnl: "0",
+        unrealized_pnl: "0",
+        updated_at: "2026-06-20T05:00:00.000Z",
+      }],
+      fillsCount: 0,
+      referencePrice: "100000000",
+      insertedRows,
+    });
+
+    const result = await runLiveOpsPnlCloseout({
+      pool,
+      market: "KRW-BTC",
+      strategyId: "live_ops_cleanup_probe",
+      capturedAt: "2026-06-20T05:00:00.000Z",
+      referencePrice: "100000000",
+      maxReconcileAgeMs: 30_000,
+    });
+
+    expect(result).toMatchObject({
+      status: "blocked",
+      reasonCode: "pnl_closeout_base_balance_missing_for_position",
+      inserted: false,
+    });
+    expect(insertedRows).toHaveLength(0);
+    expect(pool.connectCalled()).toBe(false);
+  });
+
+  it("orderbook 기준가가 reconcile freshness 한도보다 오래되면 closeout을 만들지 않는다", async () => {
+    const { runLiveOpsPnlCloseout } = await import(supportModulePath);
+    const insertedRows: unknown[] = [];
+    const pool = createFakePnlCloseoutPool({
+      latestRun: {
+        id: "preflight-run-6",
+        status: "COMPLETED",
+        finished_at: "2026-06-20T05:00:00.000Z",
+        balance_snapshot_count: 1,
+        open_order_count: 0,
+        mismatch_count: 0,
+      },
+      balances: [
+        { currency: "KRW", available: "50000", locked: "0", total: "50000", captured_at: "2026-06-20T05:00:00.000Z" },
+        { currency: "BTC", available: "0.0001", locked: "0", total: "0.0001", captured_at: "2026-06-20T05:00:00.000Z" },
+      ],
+      positions: [{
+        strategy_id: "live_ops_cleanup_probe",
+        market: "KRW-BTC",
+        quantity: "0.0001",
+        average_entry_price: "90000000",
+        realized_pnl: "0",
+        unrealized_pnl: "0",
+        updated_at: "2026-06-20T05:00:00.000Z",
+      }],
+      fillsCount: 0,
+      referencePrice: "100000000",
+      referenceBucketAt: "2026-06-20T04:00:00.000Z",
+      insertedRows,
+    });
+
+    const result = await runLiveOpsPnlCloseout({
+      pool,
+      market: "KRW-BTC",
+      strategyId: "live_ops_cleanup_probe",
+      capturedAt: "2026-06-20T05:00:00.000Z",
+      maxReconcileAgeMs: 30_000,
+    });
+
+    expect(result).toMatchObject({
+      status: "blocked",
+      reasonCode: "pnl_closeout_reference_price_stale",
+      inserted: false,
+    });
+    expect(insertedRows).toHaveLength(0);
+    expect(pool.connectCalled()).toBe(false);
+  });
+
+  it("같은 reconcile run의 중복 balance row 중 currency별 최신 snapshot만 사용한다", async () => {
+    const { runLiveOpsPnlCloseout } = await import(supportModulePath);
+    const insertedRows: unknown[] = [];
+    const pool = createFakePnlCloseoutPool({
+      latestRun: {
+        id: "preflight-run-7",
+        status: "COMPLETED",
+        finished_at: "2026-06-20T05:00:00.000Z",
+        balance_snapshot_count: 3,
+        open_order_count: 0,
+        mismatch_count: 0,
+      },
+      balances: [
+        { currency: "KRW", available: "10000", locked: "0", total: "10000", captured_at: "2026-06-20T04:59:50.000Z" },
+        { currency: "KRW", available: "50000", locked: "0", total: "50000", captured_at: "2026-06-20T05:00:00.000Z" },
+        { currency: "BTC", available: "0", locked: "0", total: "0", captured_at: "2026-06-20T05:00:00.000Z" },
+      ],
+      positions: [],
+      fillsCount: 0,
+      referencePrice: "100000000",
+      insertedRows,
+    });
+
+    const result = await runLiveOpsPnlCloseout({
+      pool,
+      market: "KRW-BTC",
+      strategyId: "live_ops_cleanup_probe",
+      capturedAt: "2026-06-20T05:00:00.000Z",
+      referencePrice: "100000000",
+      maxReconcileAgeMs: 30_000,
+    });
+
+    expect(result).toMatchObject({
+      status: "ready",
+      equityKrw: "50000",
+      inserted: true,
+    });
+    expect(insertedRows).toHaveLength(1);
+    expect(insertedRows[0]).toMatchObject({ equity: "50000" });
+  });
+
+  it("최신 PnL row가 manual review면 standalone closeout도 새 CALCULATED row로 덮지 않는다", async () => {
+    const { runLiveOpsPnlCloseout } = await import(supportModulePath);
+    const insertedRows: unknown[] = [];
+    const pool = createFakePnlCloseoutPool({
+      latestRun: {
+        id: "preflight-run-8",
+        status: "COMPLETED",
+        finished_at: "2026-06-20T05:00:00.000Z",
+        balance_snapshot_count: 1,
+        open_order_count: 0,
+        mismatch_count: 0,
+      },
+      balances: [
+        { currency: "KRW", available: "50000", locked: "0", total: "50000", captured_at: "2026-06-20T05:00:00.000Z" },
+        { currency: "BTC", available: "0", locked: "0", total: "0", captured_at: "2026-06-20T05:00:00.000Z" },
+      ],
+      positions: [],
+      fillsCount: 0,
+      referencePrice: "100000000",
+      pnlSnapshots: [{
+        captured_at: "2026-06-20T05:00:00.000Z",
+        equity: "50000",
+        payload_status: "MANUAL_REVIEW_REQUIRED",
+      }],
+      insertedRows,
+    });
+
+    const result = await runLiveOpsPnlCloseout({
+      pool,
+      market: "KRW-BTC",
+      strategyId: "live_ops_cleanup_probe",
+      capturedAt: "2026-06-20T05:00:00.000Z",
+      referencePrice: "100000000",
+      maxReconcileAgeMs: 30_000,
+    });
+
+    expect(result).toMatchObject({
+      status: "blocked",
+      reasonCode: "pnl_closeout_latest_status_not_ready",
+      inserted: false,
+    });
+    expect(insertedRows).toHaveLength(0);
+    expect(pool.connectCalled()).toBe(false);
+  });
 });
 
 function createFakePnlCloseoutPool(options: {
@@ -174,6 +395,8 @@ function createFakePnlCloseoutPool(options: {
   positions: Array<Record<string, unknown>>;
   fillsCount: number;
   referencePrice: string | null;
+  referenceBucketAt?: string;
+  pnlSnapshots?: Array<Record<string, unknown>>;
   insertedRows: unknown[];
 }) {
   let connectCalled = false;
@@ -199,12 +422,17 @@ function createFakePnlCloseoutPool(options: {
           : [{
               best_bid_price: options.referencePrice,
               best_ask_price: options.referencePrice,
-              bucket_at: params[1] ?? "2026-06-20T05:00:00.000Z",
+              bucket_at: options.referenceBucketAt ?? params[1] ?? "2026-06-20T05:00:00.000Z",
             }],
       };
     }
+    if (text.includes("payload_json ->> 'status' AS payload_status")) {
+      return { rows: options.pnlSnapshots ?? [] };
+    }
     if (text.includes("FROM pnl_snapshots")) {
-      return { rows: [] };
+      return {
+        rows: (options.pnlSnapshots ?? []).filter((row) => row.payload_status === "CALCULATED"),
+      };
     }
     throw new Error(`unexpected pool query: ${text}`);
   };

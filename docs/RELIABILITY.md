@@ -112,7 +112,8 @@ Codex-native 운영은 Codex, Git, GitHub, shell command, 문서 상태를 연�
 - production `live:ops`는 PnL snapshot 결측이나 stale `CALCULATED` row를 만나면 fresh clean reconcile과 잔고 snapshot이 있는 경우에만
   `live_ops_cleanup_probe` PnL closeout runner를 같은 preflight tick에서 실행한다. runner는 append-only `pnl_snapshots` row를
   `captured_at + strategy_id + market + sourceFingerprint` 기준으로 멱등 처리하며, 최신 row가 PARTIAL/manual-review/status 미완료이거나
-  reconcile/open order/mismatch/position/reference price source가 불확실하면 새 0원 snapshot을 만들지 않고 기존 loss guard 차단을 유지한다.
+  reconcile/open order/mismatch/position/balance/reference price source가 불확실하면 새 0원 snapshot을 만들지 않고 기존 loss guard 차단을
+  유지한다. 같은 reconcile run의 중복 balance row는 currency별 최신 snapshot만 사용하고, stale orderbook 기준가는 fresh closeout 근거로 쓰지 않는다.
 - Telegram 전송 실패는 주문/리스크 commit을 되돌리지 않고 retry/manual review summary로 격리한다.
 - 실제 cleanup run은 저장소 밖 redacted artifact에만 기록하고, issue/PR에는 safe summary와 artifact 경로만 남긴다. 취소 요청 이후
   terminal poll이 실패해도 artifact 없이 generic manual review로 빠지지 않고, cancel evidence와 poll 실패 사유를 redacted cleanup

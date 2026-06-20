@@ -352,8 +352,9 @@ Telegram, TUI를 같은 lifecycle로 조립하고, 조건을 통과한 단일 `K
         `pnl_snapshots` row를 계산하며 `payload_json.status=CALCULATED`, `source=live_ops_pnl_closeout_preflight`,
         `sourceFingerprint`를 저장한다.
   - [x] `captured_at + strategy_id + market + sourceFingerprint` 기준 advisory lock/SELECT/INSERT 순서로 append-only idempotency를 보장한다.
-  - [x] open order, mismatch/manual review, stale reconcile, 체결 이력 대비 position snapshot 결측, 보유 수량 평가 기준가 결측은
-        새 PnL row 없이 blocked result로 닫는다.
+  - [x] open order, mismatch/manual review, stale reconcile, 최신 PnL status 미완료, 체결 이력 또는 BTC 잔고 대비 position snapshot
+        결측, position 수량 대비 BTC balance row 결측, stale/결측 기준가는 새 PnL row 없이 blocked result로 닫는다.
+  - [x] 같은 reconcile run 안의 중복 balance row는 currency별 최신 snapshot만 closeout 입력으로 사용한다.
   - [x] production `live:ops` preflight는 PnL 결측 또는 stale `CALCULATED` row를 만나면 runner를 자동 호출하고 provider를 다시 읽는다.
         최신 row가 PARTIAL/manual-review/status 미완료이면 자동 row로 가리지 않고 기존 loss guard 차단을 유지한다.
   - [x] runbook, runtime config, reliability, feature requirements, source scan path, active plan이 새 CLI와 자동 refresh invariant를 설명한다.

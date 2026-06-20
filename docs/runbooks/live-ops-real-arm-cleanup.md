@@ -101,8 +101,10 @@ open order로 인정한다.
 `pnl_snapshots`에 `live_ops_cleanup_probe` 계산 완료 row가 없거나 stale이면 production `live:ops`는 fresh clean reconcile과 잔고 snapshot을
 확보한 뒤 PnL closeout runner를 자동 실행한다. 이 runner는 `KRW-BTC` 기준 KRW 잔고, BTC 평가 기준가, strategy position/fill 요약, 과거
 PnL peak를 읽어 `status=CALCULATED`, `source=live_ops_pnl_closeout_preflight`, `sourceFingerprint`를 가진 snapshot을 append-only로 저장한다.
-체결 이력은 있는데 position snapshot이 없거나, open order/mismatch/manual review/stale reconcile/reference price 결측이 있으면 새 PnL row를
-만들지 않고 기존 fail-closed 상태를 유지한다. 운영자가 이 단계를 단독으로 재실행하거나 상태를 확인해야 할 때는 다음 명령을 사용한다.
+체결 이력 또는 BTC 잔고가 있는데 position snapshot이 없거나, position 수량 대비 BTC balance row가 결측이거나, open order/mismatch/manual
+review/stale reconcile/stale reference price/reference price 결측이 있으면 새 PnL row를 만들지 않고 기존 fail-closed 상태를 유지한다. 같은
+reconcile run 안에 같은 통화 balance row가 여러 개 있으면 currency별 최신 snapshot만 closeout 입력으로 사용한다. 운영자가 이 단계를
+단독으로 재실행하거나 상태를 확인해야 할 때는 다음 명령을 사용한다.
 
 ```sh
 corepack pnpm live:ops:pnl-closeout -- \

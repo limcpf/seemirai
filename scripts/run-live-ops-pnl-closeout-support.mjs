@@ -217,22 +217,17 @@ async function loadLiveOpsPnlCloseoutSource({
     });
   }
 
-  const [position, fillsCount, history] = await Promise.all([
+  const [position, fillsCount, latestPnlStatus, history] = await Promise.all([
     readCurrentPosition(pool, { market, strategyId }),
     readFillCount(pool, { market, strategyId }),
+    readLatestPnlSnapshotStatus(pool, { market, strategyId, capturedAt }),
     readPnlSnapshotHistory(pool, { market, strategyId, capturedAt }),
   ]);
-  if (position === undefined && fillsCount > 0) {
-    return blockedSource(
-      "pnl_closeout_position_missing_for_fills",
-      "체결 이력은 있지만 strategy position snapshot이 없어 실현 손익을 0으로 만들지 않습니다.",
-      { fillsCount },
-    );
+  const latestPnlStatusBlock = validateLatestPnlSnapshotStatus(latestPnlStatus);
+  if (latestPnlStatusBlock !== undefined) {
+    // 최신 manual-review/partial row를 새 CALCULATED row로 가리면 손실 guard가 실제 차단 사유를 잃는다.
+    return latestPnlStatusBlock;
   }
-
-  const resolvedReferencePrice = isPositiveDecimalString(referencePrice)
-    ? { price: new Decimal(normalizeDecimal(referencePrice)), source: "market_data_preflight" }
-    : await readLatestReferencePrice(pool, market);
   const baseCurrency = readMarketBaseCurrency(market);
   const krwBalance = findBalance(balances, "KRW");
   if (krwBalance === undefined) {
@@ -243,23 +238,57 @@ async function loadLiveOpsPnlCloseoutSource({
     );
   }
   const baseBalance = findBalance(balances, baseCurrency);
-  const baseTotal = readBalanceTotal(baseBalance);
   const positionQuantity = position === undefined ? new Decimal(0) : new Decimal(position.quantity);
-  if ((baseTotal.gt(0) || positionQuantity.gt(0)) && resolvedReferencePrice === undefined) {
+  if (positionQuantity.gt(0) && baseBalance === undefined) {
+    // position source만 있고 거래소 base 잔고 source가 없으면 평가액을 0으로 낮춰 주문 한도를 열 수 있다.
     return blockedSource(
-      "pnl_closeout_reference_price_missing",
-      "보유 수량 평가에 필요한 최신 기준가가 없어 PnL closeout을 만들지 않습니다.",
-      { baseCurrency },
+      "pnl_closeout_base_balance_missing_for_position",
+      "strategy position 수량은 있지만 거래소 base 잔고 snapshot이 없어 PnL closeout을 만들지 않습니다.",
+      { baseCurrency, positionQuantity: positionQuantity.toFixed() },
+    );
+  }
+  const baseTotal = readBalanceTotal(baseBalance);
+  if (position === undefined && fillsCount > 0) {
+    // 체결 기반 실현손익을 복원할 source가 없으면 0원 closeout으로 회계 결측을 덮지 않는다.
+    return blockedSource(
+      "pnl_closeout_position_missing_for_fills",
+      "체결 이력은 있지만 strategy position snapshot이 없어 실현 손익을 0으로 만들지 않습니다.",
+      { fillsCount },
+    );
+  }
+  if (position === undefined && baseTotal.gt(0)) {
+    // 실계좌 보유분의 원가/실현손익 source가 없으면 평가액만 있는 snapshot을 계산 완료로 남기지 않는다.
+    return blockedSource(
+      "pnl_closeout_position_missing_for_balance",
+      "실계좌 base 잔고는 있지만 strategy position snapshot이 없어 PnL closeout을 만들지 않습니다.",
+      { baseCurrency, baseTotal: baseTotal.toFixed() },
+    );
+  }
+
+  const resolvedReferencePrice = await resolveLiveOpsPnlCloseoutReferencePrice({
+    pool,
+    market,
+    capturedAt,
+    referencePrice,
+    maxReconcileAgeMs,
+    required: baseTotal.gt(0) || positionQuantity.gt(0),
+  });
+  if (resolvedReferencePrice.status !== "ready") {
+    // 보유 수량이 있는데 fresh 기준가가 없으면 open position과 drawdown을 과소평가할 수 있어 차단한다.
+    return blockedSource(
+      resolvedReferencePrice.reasonCode,
+      resolvedReferencePrice.message,
+      resolvedReferencePrice.trace,
     );
   }
 
   const krwTotal = readBalanceTotal(krwBalance);
-  const baseMarketValue = resolvedReferencePrice === undefined
+  const baseMarketValue = resolvedReferencePrice.value === undefined
     ? new Decimal(0)
-    : baseTotal.mul(resolvedReferencePrice.price);
+    : baseTotal.mul(resolvedReferencePrice.value.price);
   const equity = krwTotal.plus(baseMarketValue);
   const realizedPnl = position === undefined ? new Decimal(0) : new Decimal(position.realized_pnl);
-  const unrealizedPnl = computeUnrealizedPnl({ position, referencePrice: resolvedReferencePrice?.price });
+  const unrealizedPnl = computeUnrealizedPnl({ position, referencePrice: resolvedReferencePrice.value?.price });
   const drawdownBps = computeDrawdownBps(equity, history);
 
   return {
@@ -272,8 +301,8 @@ async function loadLiveOpsPnlCloseoutSource({
     realizedPnl: realizedPnl.toFixed(),
     unrealizedPnl: unrealizedPnl.toFixed(),
     drawdownBps,
-    referencePrice: resolvedReferencePrice?.price.toFixed() ?? null,
-    referencePriceSource: resolvedReferencePrice?.source ?? null,
+    referencePrice: resolvedReferencePrice.value?.price.toFixed() ?? null,
+    referencePriceSource: resolvedReferencePrice.value?.source ?? null,
     baseCurrency,
     krwTotal: krwTotal.toFixed(),
     baseTotal: baseTotal.toFixed(),
@@ -379,25 +408,26 @@ async function readReconcileBalances(pool, runId) {
     return [];
   }
   const result = await pool.query(`
-    SELECT currency, available, locked, total, captured_at
+    SELECT currency, available, locked, total, captured_at, source
     FROM live_reconcile_balance_snapshots
     WHERE run_id = $1
-    ORDER BY currency
+    ORDER BY currency, captured_at DESC, source
   `, [runId]);
-  return result.rows.map(normalizeBalanceRow);
+  return selectLatestBalancesByCurrency(result.rows.map(normalizeBalanceRow));
 }
 
 function normalizeInjectedBalances(balanceSnapshot) {
   if (!Array.isArray(balanceSnapshot?.balances)) {
     return [];
   }
-  return balanceSnapshot.balances.map((balance) => normalizeBalanceRow({
+  return selectLatestBalancesByCurrency(balanceSnapshot.balances.map((balance) => normalizeBalanceRow({
     currency: balance.currency,
     available: balance.available,
     locked: balance.locked,
     total: balance.total ?? new Decimal(String(balance.available ?? 0)).plus(String(balance.locked ?? 0)).toFixed(),
     captured_at: balance.updatedAt ?? balanceSnapshot.capturedAt,
-  }));
+    source: balance.source,
+  })));
 }
 
 function normalizeBalanceRow(row) {
@@ -412,7 +442,31 @@ function normalizeBalanceRow(row) {
     locked,
     total,
     capturedAt: hasMeaningfulValue(row.captured_at) ? toIsoString(row.captured_at) : null,
+    source: hasMeaningfulValue(row.source) ? String(row.source).toUpperCase() : null,
   };
+}
+
+function selectLatestBalancesByCurrency(balances) {
+  const selected = new Map();
+  for (const balance of balances) {
+    if (!hasMeaningfulValue(balance.currency)) {
+      continue;
+    }
+    const current = selected.get(balance.currency);
+    if (current === undefined || compareBalanceSnapshotRecency(balance, current) > 0) {
+      selected.set(balance.currency, balance);
+    }
+  }
+  return [...selected.values()].sort((left, right) => left.currency.localeCompare(right.currency));
+}
+
+function compareBalanceSnapshotRecency(left, right) {
+  const leftTime = timestampSortKey(left.capturedAt);
+  const rightTime = timestampSortKey(right.capturedAt);
+  if (leftTime !== rightTime) {
+    return leftTime - rightTime;
+  }
+  return balanceSourcePriority(left.source) - balanceSourcePriority(right.source);
 }
 
 async function readCurrentPosition(pool, { market, strategyId }) {
@@ -469,6 +523,81 @@ async function readLatestReferencePrice(pool, market) {
     source: "orderbook_metrics",
     observedAt: hasMeaningfulValue(row.bucket_at) ? toIsoString(row.bucket_at) : null,
   };
+}
+
+async function resolveLiveOpsPnlCloseoutReferencePrice({
+  pool,
+  market,
+  capturedAt,
+  referencePrice,
+  maxReconcileAgeMs,
+  required,
+}) {
+  if (!required) {
+    return { status: "ready", value: undefined };
+  }
+  if (isPositiveDecimalString(referencePrice)) {
+    return {
+      status: "ready",
+      value: { price: new Decimal(normalizeDecimal(referencePrice)), source: "market_data_preflight", observedAt: capturedAt },
+    };
+  }
+  const latestReferencePrice = await readLatestReferencePrice(pool, market);
+  if (latestReferencePrice === undefined) {
+    return {
+      status: "blocked",
+      reasonCode: "pnl_closeout_reference_price_missing",
+      message: "보유 수량 평가에 필요한 최신 기준가가 없어 PnL closeout을 만들지 않습니다.",
+      trace: { market },
+    };
+  }
+  if (!isFreshTimestamp(latestReferencePrice.observedAt, capturedAt, maxReconcileAgeMs)) {
+    return {
+      status: "blocked",
+      reasonCode: "pnl_closeout_reference_price_stale",
+      message: "보유 수량 평가 기준가가 현재 closeout 시점보다 오래되어 PnL closeout을 만들지 않습니다.",
+      trace: {
+        market,
+        referencePriceAt: latestReferencePrice.observedAt,
+        maxReconcileAgeMs,
+      },
+    };
+  }
+  return { status: "ready", value: latestReferencePrice };
+}
+
+async function readLatestPnlSnapshotStatus(pool, { market, strategyId, capturedAt }) {
+  const result = await pool.query(`
+    SELECT captured_at, payload_json ->> 'status' AS payload_status
+    FROM pnl_snapshots
+    WHERE strategy_id = $1
+      AND (market = $2 OR market IS NULL)
+      AND captured_at <= $3
+    ORDER BY captured_at DESC, (market = $2) DESC
+    LIMIT 1
+  `, [strategyId, market, capturedAt]);
+  const row = result.rows[0];
+  if (row === undefined) {
+    return undefined;
+  }
+  return {
+    capturedAt: hasMeaningfulValue(row.captured_at) ? toIsoString(row.captured_at) : null,
+    status: hasMeaningfulValue(row.payload_status) ? String(row.payload_status) : null,
+  };
+}
+
+function validateLatestPnlSnapshotStatus(latestPnlStatus) {
+  if (latestPnlStatus === undefined || latestPnlStatus.status === "CALCULATED") {
+    return undefined;
+  }
+  return blockedSource(
+    "pnl_closeout_latest_status_not_ready",
+    "최신 PnL snapshot이 계산 완료 상태가 아니어서 새 closeout snapshot으로 차단 사유를 덮지 않습니다.",
+    {
+      latestPnlCapturedAt: latestPnlStatus.capturedAt,
+      latestPnlStatus: latestPnlStatus.status,
+    },
+  );
 }
 
 async function readPnlSnapshotHistory(pool, { market, strategyId, capturedAt }) {
@@ -800,6 +929,25 @@ function isFreshTimestamp(sourceAt, observedAt, maxAgeMs) {
   }
   const ageMs = observedMs - sourceMs;
   return ageMs >= 0 && ageMs <= maxAgeMs;
+}
+
+function timestampSortKey(value) {
+  if (!hasMeaningfulValue(value)) {
+    return Number.NEGATIVE_INFINITY;
+  }
+  const time = Date.parse(String(value));
+  return Number.isFinite(time) ? time : Number.NEGATIVE_INFINITY;
+}
+
+function balanceSourcePriority(source) {
+  switch (String(source ?? "").toUpperCase()) {
+    case "REST":
+      return 2;
+    case "WS":
+      return 1;
+    default:
+      return 0;
+  }
 }
 
 function nullableNumber(value) {
