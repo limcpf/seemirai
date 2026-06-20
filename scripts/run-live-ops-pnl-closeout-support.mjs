@@ -272,6 +272,22 @@ async function loadLiveOpsPnlCloseoutSource({
       { baseCurrency, baseTotal: baseTotal.toFixed() },
     );
   }
+  if (positionQuantity.gt(0) && !baseTotal.eq(positionQuantity)) {
+    // 거래소 잔고와 로컬 position 수량이 다르면 equity와 미실현 손익이 서로 다른 보유분으로 계산된다.
+    return blockedSource(
+      "pnl_closeout_position_balance_quantity_mismatch",
+      "거래소 base 잔고와 strategy position 수량이 일치하지 않아 PnL closeout을 만들지 않습니다.",
+      { baseCurrency, baseTotal: baseTotal.toFixed(), positionQuantity: positionQuantity.toFixed() },
+    );
+  }
+  if (positionQuantity.gt(0) && !new Decimal(position.average_entry_price).gt(0)) {
+    // 평균단가가 0인 양수 position은 원가 source가 결측인 상태라 손익 계산 완료로 인정하지 않는다.
+    return blockedSource(
+      "pnl_closeout_position_average_entry_price_missing",
+      "strategy position 수량은 있지만 평균단가가 0이라 PnL closeout을 만들지 않습니다.",
+      { baseCurrency, positionQuantity: positionQuantity.toFixed() },
+    );
+  }
 
   const resolvedReferencePrice = await resolveLiveOpsPnlCloseoutReferencePrice({
     pool,

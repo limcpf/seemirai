@@ -353,8 +353,10 @@ Telegram, TUI를 같은 lifecycle로 조립하고, 조건을 통과한 단일 `K
         `sourceFingerprint`를 저장한다.
   - [x] `captured_at + strategy_id + market + sourceFingerprint` 기준 advisory lock/SELECT/INSERT 순서로 append-only idempotency를 보장한다.
   - [x] open order, 잔량 미확인 open order, mismatch/manual review, stale reconcile, 최신 PnL status 미완료, cleanup/global/aggregate
-        not-ready PnL, 체결 이력 또는 BTC 잔고 대비 position snapshot 결측/0수량, position 수량 대비 BTC balance row 결측,
-        stale/결측 기준가는 새 PnL row 없이 blocked result로 닫는다.
+        not-ready PnL, 체결 이력 또는 BTC 잔고 대비 position snapshot 결측/0수량, position 수량 대비 BTC balance row 결측/수량 불일치,
+        양수 position 평균단가 0, stale/결측 기준가는 새 PnL row 없이 blocked result로 닫는다.
+  - [x] production reconcile provider도 잔량이 null인 open order를 미체결 주문으로 집계해 runner와 live readiness가 같은 source 기준으로
+        차단한다.
   - [x] 같은 reconcile run 안의 중복 balance row는 currency별 최신 snapshot만 closeout 입력으로 사용한다.
   - [x] production `live:ops` preflight는 PnL 결측 또는 stale `CALCULATED` row를 만나면 runner를 자동 호출하고 provider를 다시 읽는다.
         최신 row가 PARTIAL/manual-review/status 미완료이면 자동 row로 가리지 않고 기존 loss guard 차단을 유지한다.
@@ -535,6 +537,9 @@ SEEMIRAI_RUN_LIVE_OPS_REAL_ARM_CLOSEOUT=1 \
   snapshot보다 `CALCULATED` snapshot을 먼저 선택한다. cleanup 전용 row가 생긴 뒤에는 계속 cleanup scope를 최우선으로 본다.
   closeout source/security scan에는 `order_type`/`orderType`의 `PRICE`/`BEST` 표현, raw compact JWT literal과 `jwt` field,
   snake_case `access_key`/`secret_key` property literal 하드코딩 패턴도 필수 coverage로 추가한다.
+- 2026-06-20: Sub PR 15 review drain 보강으로 production reconcile provider와 PnL closeout runner가 잔량 null open order를 같은 미체결
+  주문으로 집계한다. runner는 position 수량과 거래소 BTC balance 수량이 다르거나 양수 position 평균단가가 0이면 원가/보유 source 불일치로
+  보고 `CALCULATED` PnL snapshot을 만들지 않는다.
 
 ## 남은 이슈
 

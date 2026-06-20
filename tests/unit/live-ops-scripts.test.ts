@@ -1901,6 +1901,15 @@ console.log(JSON.stringify({
     });
   });
 
+  it("database reconcile status provider는 잔량 미확인 open order도 open으로 집계한다", async () => {
+    const supportSource = await readFile(
+      path.join(process.cwd(), "scripts/run-live-ops-support.mjs"),
+      "utf8",
+    );
+
+    expect(supportSource).toContain("remaining_quantity IS NULL OR remaining_quantity > 0");
+  });
+
   it("database PnL status provider는 cleanup strategy row가 없으면 global 계산 완료 row를 최초 cleanup 손실 근거로 읽는다", async () => {
     const supportModulePath = path.join(process.cwd(), "scripts/run-live-ops-support.mjs");
     const {

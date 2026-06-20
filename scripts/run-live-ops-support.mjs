@@ -2570,10 +2570,12 @@ function addLiveOpsCliIdentityKeys(target, identityKeys) {
 function isLiveOpsCliOpenExchangeOrderRow(row) {
   const source = String(row.source ?? "").toLowerCase();
   const status = String(row.status ?? "").toUpperCase();
+  const remainingQuantityUnknown = row.remaining_quantity === null || row.remaining_quantity === undefined;
   return (
     (source === "open" || source === "lookup" || source === "ws") &&
     (status === "OPEN" || status === "ACCEPTED" || status === "WAIT" || status === "WATCH") &&
-    isPositiveDecimalString(decimalRowValue(row.remaining_quantity))
+    // 잔량 정규화가 실패한 open 상태를 0으로 간주하면 cleanup closeout이 미체결 주문을 가릴 수 있다.
+    (remainingQuantityUnknown || isPositiveDecimalString(decimalRowValue(row.remaining_quantity)))
   );
 }
 
@@ -2608,8 +2610,7 @@ export function createLiveOpsCliDatabaseReconcileStatusProvider(pool) {
               FROM live_reconcile_exchange_order_snapshots
               WHERE run_id = latest_run.id
                 AND upper(status) IN ('OPEN', 'ACCEPTED', 'WAIT', 'WATCH')
-                AND remaining_quantity IS NOT NULL
-                AND remaining_quantity > 0
+                AND (remaining_quantity IS NULL OR remaining_quantity > 0)
             ) AS open_order_count,
             (SELECT count(*)::int FROM live_reconcile_mismatch_evidence WHERE run_id = latest_run.id) AS mismatch_count,
             (
