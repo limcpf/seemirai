@@ -3932,6 +3932,231 @@ console.log(JSON.stringify({
     });
   });
 
+  it("production preflight는 PnL 일일/주간 realized loss 창을 분리해서 loss snapshot에 반영한다", async () => {
+    const supportModulePath = path.join(process.cwd(), "scripts/run-live-ops-support.mjs");
+    const {
+      createLiveOpsCliProductionExecutionInputs,
+    } = await import(supportModulePath);
+    const executionAt = "2026-06-20T00:00:00.000Z";
+    const config = {
+      universe: { markets: ["KRW-BTC"], default_market: "KRW-BTC" },
+      budget: {
+        max_order_krw: "10000",
+        daily_autonomous_notional_limit_krw: "30000",
+        max_open_position_notional_krw: "30000",
+      },
+    };
+    const productionRuntime = {
+      entryRuntime: {},
+      cleanupLifecycle: {},
+      privateReadProvider: {
+        async listOpenOrders() {
+          return [];
+        },
+        async getBalances() {
+          return {
+            exchangeId: "upbit_krw_spot",
+            capturedAt: executionAt,
+            balances: [
+              { currency: "KRW", available: "100000", locked: "0", total: "100000", updatedAt: executionAt },
+            ],
+          };
+        },
+      },
+      reconcileStatusProvider: {
+        async getReconcileStatus() {
+          return {
+            lastReconcileAt: executionAt,
+            result: "SUCCESS",
+            mismatchCount: 0,
+            openOrderCount: 0,
+            balanceStatus: "OK",
+          };
+        },
+      },
+      pnlStatusProvider: {
+        async getStatus() {
+          return {
+            readStatus: "OK",
+            latestCapturedAt: executionAt,
+            latestRealizedPnlKrw: "-25",
+            latestDailyRealizedPnlKrw: "-25",
+            latestWeeklyRealizedPnlKrw: "-125",
+            latestUnrealizedPnlKrw: "0",
+            latestStatus: "CALCULATED",
+          };
+        },
+      },
+      killSwitchProvider: {
+        async getStatus() {
+          return {
+            active: false,
+            state: "NORMAL",
+            reasonCode: "normal",
+            updatedAt: executionAt,
+          };
+        },
+      },
+      budgetReservation: {
+        async readDailyReservedNotional() {
+          return { reservedNotionalKrw: "0", reservationCount: 0 };
+        },
+      },
+      preflightReconcileRecorder: {
+        async recordPreflight() {
+          throw new Error("FreshCleanReconcileShouldNotRecord");
+        },
+      },
+      telegramDispatcher: {},
+    };
+
+    const result = await withFakeSystemTime(executionAt, () => createLiveOpsCliProductionExecutionInputs({
+      config,
+      env: liveOrderEnv(),
+      fixtureSmoke: false,
+      analysisDecision: {
+        ready: true,
+        decisionCategory: "ORDER_INTENT",
+        orderIntentCount: 1,
+      },
+      marketData: {
+        ready: true,
+        latestHeartbeatAt: executionAt,
+        referencePrice: "100000000",
+      },
+      orderIntents: [createCliBuyIntent({ idempotencyKey: "ops-aaaaaaaaaaaaaaaaaaaaaaaaaa" })],
+      productionRuntime,
+    }));
+
+    expect(result.lossSnapshot).toMatchObject({
+      dailyRealizedLossKrw: "25",
+      weeklyRealizedLossKrw: "125",
+      capturedAt: executionAt,
+      source: "pnl_snapshots",
+    });
+  });
+
+  it("production preflight는 제출 직전 열린 autonomous 포지션이 있으면 새 BUY를 risk gate에서 차단한다", async () => {
+    const supportModulePath = path.join(process.cwd(), "scripts/run-live-ops-support.mjs");
+    const {
+      createLiveOpsCliProductionExecutionInputs,
+    } = await import(supportModulePath);
+    const executionAt = "2026-06-20T00:00:00.000Z";
+    const config = {
+      universe: { markets: ["KRW-BTC"], default_market: "KRW-BTC" },
+      budget: {
+        max_order_krw: "10000",
+        daily_autonomous_notional_limit_krw: "30000",
+        max_open_position_notional_krw: "30000",
+      },
+    };
+    const productionRuntime = {
+      entryRuntime: {},
+      cleanupLifecycle: {},
+      privateReadProvider: {
+        async listOpenOrders() {
+          return [];
+        },
+        async getBalances() {
+          return {
+            exchangeId: "upbit_krw_spot",
+            capturedAt: executionAt,
+            balances: [
+              { currency: "KRW", available: "100000", locked: "0", total: "100000", updatedAt: executionAt },
+              { currency: "BTC", available: "0.0001", locked: "0", total: "0.0001", updatedAt: executionAt },
+            ],
+          };
+        },
+      },
+      reconcileStatusProvider: {
+        async getReconcileStatus() {
+          return {
+            lastReconcileAt: executionAt,
+            result: "SUCCESS",
+            mismatchCount: 0,
+            openOrderCount: 0,
+            balanceStatus: "OK",
+          };
+        },
+      },
+      pnlStatusProvider: {
+        async getStatus() {
+          return {
+            readStatus: "OK",
+            latestCapturedAt: executionAt,
+            latestRealizedPnlKrw: "0",
+            latestUnrealizedPnlKrw: "0",
+            latestStatus: "CALCULATED",
+          };
+        },
+      },
+      killSwitchProvider: {
+        async getStatus() {
+          return {
+            active: false,
+            state: "NORMAL",
+            reasonCode: "normal",
+            updatedAt: executionAt,
+          };
+        },
+      },
+      budgetReservation: {
+        async readDailyReservedNotional() {
+          return {
+            reservedNotionalKrw: "10000",
+            reservationCount: 1,
+            autonomous24x7Position: {
+              strategyId: "live_ops_autonomous_24x7_core",
+              reservedNotionalKrw: "10000",
+              requestedQuantity: "0.0001",
+              averageEntryPrice: "100000000",
+              openedAt: "2026-06-20T00:00:00.000Z",
+              status: "OPEN",
+            },
+          };
+        },
+      },
+      preflightReconcileRecorder: {
+        async recordPreflight() {
+          throw new Error("FreshCleanReconcileShouldNotRecord");
+        },
+      },
+      telegramDispatcher: {},
+    };
+
+    const result = await withFakeSystemTime(executionAt, () => createLiveOpsCliProductionExecutionInputs({
+      config,
+      env: liveOrderEnv(),
+      fixtureSmoke: false,
+      analysisDecision: {
+        ready: true,
+        decisionCategory: "ORDER_INTENT",
+        orderIntentCount: 1,
+      },
+      marketData: {
+        ready: true,
+        latestHeartbeatAt: executionAt,
+        referencePrice: "100000000",
+      },
+      orderIntents: [createCliBuyIntent({ idempotencyKey: "ops-aaaaaaaaaaaaaaaaaaaaaaaaaa" })],
+      productionRuntime,
+    }));
+
+    const intent = result.orderIntents[0] as Record<string, any>;
+    expect(intent.risk.infrastructureSignals).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        signal: "AUTONOMOUS_POSITION_ALREADY_OPEN_FOR_ENTRY",
+        reason: "autonomous_position_already_open_for_entry",
+      }),
+    ]));
+    expect(intent.riskApproval).toMatchObject({
+      approved: false,
+      action: "BLOCK",
+      status: "FAIL",
+      failed_evaluation_reason_codes: expect.arrayContaining(["live_ops_exit_infrastructure_signal_active"]),
+    });
+  });
+
   it("production preflight는 autonomous order intent의 PnL scope로 provider와 closeout runner를 호출한다", async () => {
     const supportModulePath = path.join(process.cwd(), "scripts/run-live-ops-support.mjs");
     const {
@@ -7815,6 +8040,7 @@ console.log(JSON.stringify({
         observedAt: "2026-06-20T00:00:05.000Z",
       },
       latestSummary: {
+        liveOrderCapable: true,
         dbReadiness: {
           ready: true,
           migration: {
@@ -7842,7 +8068,7 @@ console.log(JSON.stringify({
         liveExecution: {
           status: "idle",
           ready: true,
-          liveOrderCapable: false,
+          liveOrderCapable: true,
           statusLabel: "후보 없음",
           orderIntentCount: 0,
           attemptedOrderCount: 0,
@@ -7909,6 +8135,8 @@ console.log(JSON.stringify({
       },
     });
     expect(summary.liveExecution.checks.map((check: { code: string }) => check.code)).toContain("live_ops_daemon_transient_failure");
+    const supportSource = await readFile(path.join(process.cwd(), "scripts/run-live-ops-support.mjs"), "utf8");
+    expect(supportSource).toMatch(/return\s*\{\s*\n\s*\.\.\.summary,\s*\n\s*liveOrderCapable:\s*false,\s*\n\s*liveExecution:/u);
   });
 
   it("non-fixture live:ops:tui attach는 status source를 읽지 못하면 실패한다", () => {
@@ -11502,6 +11730,8 @@ console.log(JSON.stringify({
       requestedQuantity: "0",
       reservedNotionalKrw: "0",
       realizedPnlKrw: "-25",
+      dailyRealizedPnlKrw: "-25",
+      weeklyRealizedPnlKrw: "-125",
       closedAt: "2026-06-20T00:01:00.000Z",
     });
   });
@@ -11640,6 +11870,23 @@ console.log(JSON.stringify({
       requestedQuantity: "0",
       manualReviewReason: "autonomous_position_wallet_quantity_below_owned_scope",
     });
+
+    await budgetReservation.recordAutonomousPositionObservation({
+      strategyId: "live_ops_autonomous_24x7_core",
+      market: "KRW-BTC",
+      observedAt: "2026-06-20T00:01:00.000Z",
+      walletQuantity: "0.00005",
+      currentUnitPrice: "100000000",
+      averageEntryPrice: "100000000",
+    });
+    const nextUsage = await budgetReservation.readDailyReservedNotional("2026-06-20T00:01:01.000Z");
+
+    expect(nextUsage.autonomous24x7Position).toMatchObject({
+      status: "MANUAL_REVIEW_REQUIRED",
+      reservedNotionalKrw: "0",
+      requestedQuantity: "0",
+      manualReviewReason: "autonomous_position_wallet_quantity_below_owned_scope",
+    });
   });
 
   it("production preflight는 지갑 0수량 관측으로 열린 autonomous lot을 닫는다", async () => {
@@ -11749,6 +11996,67 @@ console.log(JSON.stringify({
       reservedNotionalKrw: "0",
       requestedQuantity: "0",
       closedAt: observedAt,
+    });
+  });
+
+  it("file budget reservation은 CLOSED state 뒤늦게 도착한 BUY fill artifact를 열린 autonomous lot으로 복구한다", async () => {
+    const supportModulePath = path.join(process.cwd(), "scripts/run-live-ops-support.mjs");
+    const {
+      createLiveOpsCliCleanupArtifactStore,
+      createLiveOpsCliFileBudgetReservation,
+    } = await import(supportModulePath);
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-live-ops-budget-late-entry-fill-"));
+    const artifactStore = await createLiveOpsCliCleanupArtifactStore({ artifactDir: tempDir });
+    const budgetReservation = createLiveOpsCliFileBudgetReservation({
+      artifactStore,
+      clock: () => "2026-06-20T00:00:00.000Z",
+    });
+
+    await budgetReservation.reserve({
+      attemptId: "ops-aaaaaaaaaaaaaaaaaaaaaaaaaa",
+      idempotencyKey: "ops-aaaaaaaaaaaaaaaaaaaaaaaaaa",
+      market: "KRW-BTC",
+      strategyId: "live_ops_autonomous_24x7_core",
+      requestedNotionalKrw: "10000",
+      requestedPrice: "100000000",
+      requestedQuantity: "0.0001",
+      budgetSnapshot: {
+        dailyAutonomousNotionalLimitKrw: "30000",
+        dailyAutonomousNotionalUsedKrw: "0",
+        openPositionNotionalKrw: "0",
+      },
+      observedAt: "2026-06-20T00:00:00.000Z",
+    });
+    await budgetReservation.recordAutonomousPositionObservation({
+      strategyId: "live_ops_autonomous_24x7_core",
+      market: "KRW-BTC",
+      observedAt: "2026-06-20T00:01:00.000Z",
+      walletQuantity: "0",
+      currentUnitPrice: "100000000",
+      averageEntryPrice: "100000000",
+    });
+    await artifactStore.writeCleanup({
+      kind: "live_ops_autonomous_entry_fill_closeout",
+      attemptId: "ops-aaaaaaaaaaaaaaaaaaaaaaaaaa",
+      idempotencyKey: "ops-aaaaaaaaaaaaaaaaaaaaaaaaaa",
+      strategyId: "live_ops_autonomous_24x7_core",
+      market: "KRW-BTC",
+      side: "BUY",
+      status: "FILLED",
+      filledQuantity: "0.0001",
+      filledPrice: "100000000",
+      filledNotionalKrw: "10000",
+      filledAt: "2026-06-20T00:00:30.000Z",
+    });
+
+    const usage = await budgetReservation.readDailyReservedNotional("2026-06-20T00:02:00.000Z");
+
+    expect(usage.autonomous24x7Position).toMatchObject({
+      status: "OPEN",
+      reservedNotionalKrw: "10000",
+      requestedQuantity: "0.0001",
+      averageEntryPrice: "100000000",
+      openedAt: "2026-06-20T00:00:30.000Z",
     });
   });
 
