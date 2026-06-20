@@ -1081,6 +1081,55 @@ console.log(JSON.stringify(summary));
     });
   });
 
+  it("autonomous BUY runtime identifier도 preflight tick 범위를 포함해 재진입을 막지 않는다", async () => {
+    const {
+      createLiveOpsCliProductionExecutionInputs,
+    } = await import(path.join(process.cwd(), "scripts/run-live-ops-support.mjs"));
+    const config = createAutonomousLiveOpsConfig(JSON.parse(await readFile(path.join(process.cwd(), "config", "live-ops.example.json"), "utf8")));
+    const decisionKey = "live_ops_autonomous_24x7_core:2026-06-20:upbit_krw_spot:KRW-BTC:BUY:100000000:0.0001:10000";
+    const buyIntent = createCliBuyIntent({ idempotencyKey: decisionKey });
+    const baseInput = {
+      config,
+      env: liveOrderEnv(),
+      fixtureSmoke: false,
+      analysisDecision: {
+        ready: true,
+        orderIntentCount: 1,
+        decisionCategory: "ORDER_INTENT",
+      },
+      marketData: {
+        ready: true,
+        referencePrice: "100000000",
+      },
+      orderIntents: [buyIntent],
+      productionRuntime: {
+        entryRuntime: {},
+      },
+    };
+
+    const first = await createLiveOpsCliProductionExecutionInputs({
+      ...baseInput,
+      preflight: createAutonomousPreflight({
+        observedAt: "2026-06-20T00:00:00.000Z",
+      }),
+    });
+    const second = await createLiveOpsCliProductionExecutionInputs({
+      ...baseInput,
+      preflight: createAutonomousPreflight({
+        observedAt: "2026-06-20T00:00:05.000Z",
+      }),
+    });
+
+    expect(first.orderIntents[0]?.idempotencyKey).toMatch(/^ops-[a-f0-9]{26}$/u);
+    expect(second.orderIntents[0]?.idempotencyKey).toMatch(/^ops-[a-f0-9]{26}$/u);
+    expect(first.orderIntents[0]?.idempotencyKey).not.toBe(second.orderIntents[0]?.idempotencyKey);
+    expect(first.orderIntents[0]?.metadata).toMatchObject({
+      decision_idempotency_key: decisionKey,
+      entry_runtime_attempt_scope: "2026-06-20T00:00:00.000Z",
+      runtime_idempotency_source: "live_ops_cli_autonomous_entry_runtime",
+    });
+  });
+
   it("SELL exit runtime은 제출 이후 poll 오류도 broker order id가 있는 수동 점검 결과로 닫는다", async () => {
     const {
       createLiveOpsCliExitRuntime,
@@ -3267,7 +3316,126 @@ console.log(JSON.stringify({
     expect(closeoutScopes).toEqual([expect.objectContaining({
       strategyId: "live_ops_autonomous_24x7_core",
       market: "KRW-BTC",
+      positionSnapshot: expect.objectContaining({
+        strategyId: "live_ops_autonomous_24x7_core",
+        market: "KRW-BTC",
+        quantity: "0.0001",
+        averageEntryPrice: "100000000",
+      }),
     })]);
+  });
+
+  it("production execution은 분석용 preflight를 재사용하지 않고 제출 직전 private preflight를 다시 읽는다", async () => {
+    const {
+      createLiveOpsCliProductionExecutionInputs,
+    } = await import(path.join(process.cwd(), "scripts/run-live-ops-support.mjs"));
+    const executionAt = "2026-06-20T00:00:10.000Z";
+    const staleAnalysisPreflight = createAutonomousPreflight({ observedAt: "2026-06-20T00:00:00.000Z" });
+    const providerCalls = { openOrders: 0, balances: 0 };
+    const config = {
+      universe: { markets: ["KRW-BTC"], default_market: "KRW-BTC" },
+      budget: {
+        max_order_krw: "10000",
+        daily_autonomous_notional_limit_krw: "30000",
+        max_open_position_notional_krw: "30000",
+      },
+    };
+
+    const result = await withFakeSystemTime(executionAt, () => createLiveOpsCliProductionExecutionInputs({
+      config,
+      env: liveOrderEnv(),
+      fixtureSmoke: false,
+      analysisDecision: {
+        ready: true,
+        decisionCategory: "ORDER_INTENT",
+        orderIntentCount: 1,
+      },
+      marketData: {
+        ready: true,
+        latestHeartbeatAt: executionAt,
+        referencePrice: "100000000",
+      },
+      orderIntents: [createCliBuyIntent({
+        idempotencyKey: "live_ops_autonomous_24x7_core:2026-06-20:upbit_krw_spot:KRW-BTC:BUY:100000000:0.0001:10000",
+      })],
+      preflight: staleAnalysisPreflight,
+      productionRuntime: {
+        entryRuntime: {},
+        privateReadProvider: {
+          async listOpenOrders() {
+            providerCalls.openOrders += 1;
+            return [];
+          },
+          async getBalances() {
+            providerCalls.balances += 1;
+            return {
+              exchangeId: "upbit_krw_spot",
+              capturedAt: executionAt,
+              balances: [
+                { currency: "KRW", available: "100000", locked: "0", total: "100000", updatedAt: executionAt },
+                { currency: "BTC", available: "0", locked: "0", total: "0", updatedAt: executionAt },
+              ],
+            };
+          },
+        },
+        reconcileStatusProvider: {
+          async getReconcileStatus() {
+            return {
+              lastReconcileAt: executionAt,
+              result: "SUCCESS",
+              mismatchCount: 0,
+              openOrderCount: 0,
+              balanceStatus: "OK",
+            };
+          },
+        },
+        pnlStatusProvider: {
+          async getStatus() {
+            return {
+              readStatus: "OK",
+              latestCapturedAt: executionAt,
+              latestRealizedPnlKrw: "0",
+              latestUnrealizedPnlKrw: "0",
+              latestStatus: "CALCULATED",
+            };
+          },
+        },
+        killSwitchProvider: {
+          async getStatus() {
+            return {
+              active: false,
+              state: "NORMAL",
+              reasonCode: "normal",
+              updatedAt: executionAt,
+            };
+          },
+        },
+        budgetReservation: {
+          async readDailyReservedNotional(observedAt: string) {
+            return {
+              day: observedAt.slice(0, 10),
+              reservedNotionalKrw: "0",
+              reservationCount: 0,
+            };
+          },
+        },
+        preflightReconcileRecorder: {
+          async recordPreflight() {
+            throw new Error("FreshCleanReconcileShouldNotRecord");
+          },
+        },
+        telegramDispatcher: {},
+      },
+    }));
+
+    expect(providerCalls).toEqual({ openOrders: 1, balances: 1 });
+    expect(result.budgetSnapshot).toMatchObject({
+      capturedAt: executionAt,
+      source: "live_ops_cli_private_preflight",
+    });
+    expect(result.orderIntents[0]?.metadata).toMatchObject({
+      idempotency_observed_at: executionAt,
+    });
   });
 
   it("production preflight는 freshness와 daily budget day를 실행 wall clock 기준으로 판정한다", async () => {
@@ -9314,6 +9482,119 @@ console.log(JSON.stringify({
     });
   });
 
+  it("file budget reservation은 구형 reservation도 wallet 관측값으로 autonomous 소유 수량을 복원한다", async () => {
+    const supportModulePath = path.join(process.cwd(), "scripts/run-live-ops-support.mjs");
+    const {
+      createLiveOpsCliCleanupArtifactStore,
+      createLiveOpsCliFileBudgetReservation,
+    } = await import(supportModulePath);
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-live-ops-budget-legacy-ownership-"));
+    const artifactStore = await createLiveOpsCliCleanupArtifactStore({ artifactDir: tempDir });
+    await artifactStore.writeReservation({
+      reservationId: "reservation-legacy-buy",
+      attemptId: "ops-cccccccccccccccccccccccccc",
+      idempotencyKey: "ops-cccccccccccccccccccccccccc",
+      market: "KRW-BTC",
+      strategyId: "live_ops_autonomous_24x7_core",
+      reservedNotionalKrw: "10000",
+      reservedAt: "2026-06-20T00:00:00.000Z",
+      metadata: {
+        source: "legacy_live_ops_cli_file_budget_reservation",
+      },
+    });
+    const budgetReservation = createLiveOpsCliFileBudgetReservation({
+      artifactStore,
+      clock: () => "2026-06-20T00:00:30.000Z",
+    });
+
+    await budgetReservation.recordAutonomousPositionObservation({
+      strategyId: "live_ops_autonomous_24x7_core",
+      market: "KRW-BTC",
+      observedAt: "2026-06-20T00:00:30.000Z",
+      walletQuantity: "0.0001",
+      currentUnitPrice: "100000000",
+    });
+    const usage = await budgetReservation.readDailyReservedNotional("2026-06-20T00:00:31.000Z");
+
+    expect(usage.autonomous24x7Position).toMatchObject({
+      status: "OPEN",
+      reservedNotionalKrw: "10000",
+      requestedQuantity: "0.0001",
+      averageEntryPrice: "100000000",
+      highWatermarkPrice: "100000000",
+      openedAt: "2026-06-20T00:00:00.000Z",
+    });
+  });
+
+  it("file budget reservation은 완전 청산된 BUY lot을 이후 평균 진입가에서 제외한다", async () => {
+    const supportModulePath = path.join(process.cwd(), "scripts/run-live-ops-support.mjs");
+    const {
+      createLiveOpsCliCleanupArtifactStore,
+      createLiveOpsCliFileBudgetReservation,
+    } = await import(supportModulePath);
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-live-ops-budget-lot-cost-"));
+    const artifactStore = await createLiveOpsCliCleanupArtifactStore({ artifactDir: tempDir });
+    let clockAt = "2026-06-20T00:00:00.000Z";
+    const budgetReservation = createLiveOpsCliFileBudgetReservation({
+      artifactStore,
+      clock: () => clockAt,
+    });
+
+    await budgetReservation.reserve({
+      attemptId: "ops-aaaaaaaaaaaaaaaaaaaaaaaaaa",
+      idempotencyKey: "ops-aaaaaaaaaaaaaaaaaaaaaaaaaa",
+      market: "KRW-BTC",
+      strategyId: "live_ops_autonomous_24x7_core",
+      requestedNotionalKrw: "10000",
+      requestedPrice: "100000000",
+      requestedQuantity: "0.0001",
+      budgetSnapshot: {
+        dailyAutonomousNotionalLimitKrw: "30000",
+        dailyAutonomousNotionalUsedKrw: "0",
+        openPositionNotionalKrw: "0",
+      },
+      observedAt: "2026-06-20T00:00:00.000Z",
+    });
+    await artifactStore.writeCleanup({
+      kind: "live_ops_autonomous_exit_closeout",
+      attemptId: "ops-bbbbbbbbbbbbbbbbbbbbbbbbbb",
+      strategyId: "live_ops_autonomous_24x7_core",
+      market: "KRW-BTC",
+      side: "SELL",
+      status: "FILLED",
+      filledQuantity: "0.0001",
+      filledNotionalKrw: "10100",
+      filledAt: "2026-06-20T00:01:00.000Z",
+      terminalCheckedAt: "2026-06-20T00:01:00.000Z",
+    });
+    clockAt = "2026-06-20T00:02:00.000Z";
+    await budgetReservation.reserve({
+      attemptId: "ops-dddddddddddddddddddddddddd",
+      idempotencyKey: "ops-dddddddddddddddddddddddddd",
+      market: "KRW-BTC",
+      strategyId: "live_ops_autonomous_24x7_core",
+      requestedNotionalKrw: "9900",
+      requestedPrice: "110000000",
+      requestedQuantity: "0.00009",
+      budgetSnapshot: {
+        dailyAutonomousNotionalLimitKrw: "30000",
+        dailyAutonomousNotionalUsedKrw: "0",
+        openPositionNotionalKrw: "0",
+      },
+      observedAt: "2026-06-20T00:02:00.000Z",
+    });
+    const usage = await budgetReservation.readDailyReservedNotional("2026-06-20T00:03:00.000Z");
+
+    expect(usage.autonomous24x7Position).toMatchObject({
+      status: "OPEN",
+      requestedQuantity: "0.00009",
+      reservedNotionalKrw: "9900",
+      averageEntryPrice: "110000000",
+      openedAt: "2026-06-20T00:02:00.000Z",
+      latestReservationAt: "2026-06-20T00:02:00.000Z",
+    });
+  });
+
   it("file budget reservation은 autonomous 포지션 high-water를 tick 간 보존한다", async () => {
     const supportModulePath = path.join(process.cwd(), "scripts/run-live-ops-support.mjs");
     const {
@@ -10328,6 +10609,63 @@ function createCliSellIntent({ idempotencyKey }: { idempotencyKey: string }) {
       exit_cost_bps: "0",
       exit_slippage_bps: "0",
       position_scope: intent.metadata.position_scope,
+      order_intent: orderIntentEvidence,
+    },
+    riskApproval: {
+      source: "risk_gate",
+      approved: true,
+      action: "ALLOW",
+      status: "PASS",
+      failed_evaluation_reason_codes: [],
+      warning_evaluation_reason_codes: [],
+      order_intent: orderIntentEvidence,
+    },
+  };
+}
+
+function createCliBuyIntent({ idempotencyKey }: { idempotencyKey: string }) {
+  const intent = {
+    exchangeId: "upbit_krw_spot",
+    market: "KRW-BTC",
+    strategyId: "live_ops_autonomous_24x7_core",
+    side: "BUY",
+    orderType: "LIMIT",
+    requestedQuantity: "0.0001",
+    requestedNotional: "10000",
+    requestedPrice: "100000000",
+    referencePrice: "100000000",
+    idempotencyKey,
+    reason: "autonomous_24x7_entry_signal",
+    postOnly: true,
+    timeInForce: "POST_ONLY",
+    metadata: {
+      expected_loss_bps_of_equity: "5",
+      cost_adjusted_margin_bps: "40",
+    },
+  };
+  const orderIntentEvidence = {
+    exchange_id: intent.exchangeId,
+    market: intent.market,
+    strategy_id: intent.strategyId,
+    side: intent.side,
+    order_type: intent.orderType,
+    post_only: intent.postOnly,
+    time_in_force: intent.timeInForce,
+    requested_quantity: intent.requestedQuantity,
+    requested_notional: intent.requestedNotional,
+    requested_price: intent.requestedPrice,
+    idempotency_key: intent.idempotencyKey,
+    expected_loss_bps_of_equity: intent.metadata.expected_loss_bps_of_equity,
+  };
+
+  return {
+    ...intent,
+    costSnapshot: {
+      source: "cost_model",
+      exchange_id: intent.exchangeId,
+      market: intent.market,
+      trade_allowed: true,
+      reason_code: "cost_margin_ok",
       order_intent: orderIntentEvidence,
     },
     riskApproval: {

@@ -112,6 +112,11 @@ Codex-native 운영은 Codex, Git, GitHub, shell command, 문서 상태를 연�
 - 같은 order attempt나 idempotency key로 재시작하는 경우 새 Upbit identifier를 만들지 않는다. broker submit 결과가 불확실하면 재주문하지
   않고 reconcile/manual review로 수렴한다. public live execution adapter는 긴 decision key를 stable `ops-` attempt id로 낮춰 같은 cleanup
   후보가 재평가되어도 동일 identifier chain을 유지한다.
+- autonomous BUY runtime도 strategy decision key를 broker identifier로 직접 쓰지 않는다. 제출 직전 preflight tick scope를 포함한 `ops-`
+  attempt id로 낮추고 원본 decision key는 metadata에 보존해, 매수-매도 이후 같은 날 같은 가격/수량의 재진입이 과거 reservation 파일에
+  막히지 않게 한다.
+- production broker 제출 경계는 analysis 단계에서 만든 private preflight snapshot을 재사용하지 않는다. private provider가 조립된 실행
+  경로에서는 제출 직전 open order, balance, reconcile, PnL, kill switch, budget reservation을 다시 읽어 stale account 상태로 주문하지 않는다.
 - submit 이후 cancel requested와 terminal cancel 확인은 같은 attempt/identifier chain으로 연결되어야 하며, open exposure 0,
   duplicate order 0건, reconcile mismatch 0건, untracked fill 0건이 closeout evidence에 포함되어야 한다.
 - production `live:ops` clean-start DB에 완료된 reconcile run이 없으면, broker 제출 전 actual Upbit private read 결과를
@@ -131,6 +136,9 @@ Codex-native 운영은 Codex, Git, GitHub, shell command, 문서 상태를 연�
   남은 BTC 보유분, position 수량과 거래소 BTC 잔고 불일치, 양수 position의 평균단가 0, cleanup row가 없을 때의 global/aggregate
   not-ready PnL도 fail-closed 대상이다. 같은 reconcile run의 중복 balance row는 currency별 최신 snapshot만 사용하고, stale orderbook
   기준가는 fresh closeout 근거로 쓰지 않는다.
+- autonomous PnL closeout은 DB `positions` row가 아직 없더라도 같은 preflight tick에서 runtime이 만든 strategy-owned artifact position을
+  원가 source로 주입할 수 있다. 이 fallback은 DB position이 없고, artifact quantity와 거래소 BTC balance가 일치하며, 평균단가가 양수일 때만
+  허용한다.
 - Telegram 전송 실패는 주문/리스크 commit을 되돌리지 않고 retry/manual review summary로 격리한다.
 - 실제 cleanup run은 저장소 밖 redacted artifact에만 기록하고, issue/PR에는 safe summary와 artifact 경로만 남긴다. 취소 요청 이후
   terminal poll이 실패해도 artifact 없이 generic manual review로 빠지지 않고, cancel evidence와 poll 실패 사유를 redacted cleanup
@@ -162,6 +170,10 @@ Codex-native 운영은 Codex, Git, GitHub, shell command, 문서 상태를 연�
   불확실성은 자동 재주문이 아니라 manual review counter와 신규 주문 차단으로 수렴한다.
 - exit SELL 수량이 1회 주문 예산을 넘으면 strategy가 예산 이하 chunk를 만든다. 잔여 보유 수량은 다음 tick에서 다시 평가해야 하며,
   daemon은 이를 실패나 cleanup 누락으로 보지 않는다.
+- autonomous position 소유권은 BUY reservation lot에서 FILLED SELL cleanup을 FIFO로 차감해 계산한다. 완전 청산된 과거 BUY lot의 평균단가는
+  이후 새 BUY 포지션의 take-profit, stop-loss, trailing 기준에 섞지 않는다.
+- requested quantity가 없는 구형 reservation은 wallet BTC 관측값과 reserved notional/current price로 복원할 수 있지만, reservation 금액
+  근거가 없으면 지갑 BTC만으로 strategy-owned position state를 만들지 않는다.
 
 ## M23 restart/recovery drill 신뢰성 기준
 

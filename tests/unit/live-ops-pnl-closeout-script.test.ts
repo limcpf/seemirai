@@ -208,6 +208,62 @@ describe("Issue 206 live:ops PnL closeout runner", () => {
     expect(pool.connectCalled()).toBe(false);
   });
 
+  it("artifact-owned autonomous position을 주입하면 DB position row 없이도 PnL closeout을 계산한다", async () => {
+    const { runLiveOpsPnlCloseout } = await import(supportModulePath);
+    const insertedRows: unknown[] = [];
+    const pool = createFakePnlCloseoutPool({
+      latestRun: {
+        id: "preflight-run-artifact-position",
+        status: "COMPLETED",
+        finished_at: "2026-06-20T05:00:00.000Z",
+        balance_snapshot_count: 1,
+        open_order_count: 0,
+        mismatch_count: 0,
+      },
+      balances: [
+        { currency: "KRW", available: "40000", locked: "0", total: "40000", captured_at: "2026-06-20T05:00:00.000Z" },
+        { currency: "BTC", available: "0.0001", locked: "0", total: "0.0001", captured_at: "2026-06-20T05:00:00.000Z" },
+      ],
+      positions: [],
+      fillsCount: 0,
+      referencePrice: "101000000",
+      insertedRows,
+    });
+
+    const result = await runLiveOpsPnlCloseout({
+      pool,
+      market: "KRW-BTC",
+      strategyId: "live_ops_autonomous_24x7_core",
+      capturedAt: "2026-06-20T05:00:00.000Z",
+      referencePrice: "101000000",
+      maxReconcileAgeMs: 30_000,
+      positionSnapshot: {
+        source: "live_ops_autonomous_artifact_position",
+        strategyId: "live_ops_autonomous_24x7_core",
+        market: "KRW-BTC",
+        quantity: "0.0001",
+        averageEntryPrice: "100000000",
+        realizedPnlKrw: "0",
+        openedAt: "2026-06-20T04:00:00.000Z",
+      },
+    });
+
+    expect(result).toMatchObject({
+      status: "ready",
+      inserted: true,
+      strategyId: "live_ops_autonomous_24x7_core",
+      equityKrw: "50100",
+      realizedPnlKrw: "0",
+      unrealizedPnlKrw: "100",
+    });
+    expect(insertedRows[0]).toMatchObject({
+      strategy_id: "live_ops_autonomous_24x7_core",
+      market: "KRW-BTC",
+      equity: "50100",
+      unrealized_pnl: "100",
+    });
+  });
+
   it("position 수량이 있는데 BTC balance row가 없으면 평가액을 0으로 만들지 않는다", async () => {
     const { runLiveOpsPnlCloseout } = await import(supportModulePath);
     const insertedRows: unknown[] = [];

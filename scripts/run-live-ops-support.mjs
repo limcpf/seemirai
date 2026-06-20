@@ -918,13 +918,15 @@ export async function createLiveOpsCliProductionExecutionInputs({
   try {
     // freshness와 일일 예산 기준일은 시장 이벤트 시각이 아니라 실제 제출 직전 wall clock으로 닫아야 한다.
     const preflightObservedAt = new Date().toISOString();
-    const preflight = providedPreflight ?? await collectLiveOpsCliProductionPreflight({
-      config,
-      marketData,
-      productionRuntime,
-      observedAt: preflightObservedAt,
-      pnlScopeStrategyId: resolveLiveOpsCliPreflightPnlStrategyId(orderIntents),
-    });
+    const preflight = shouldReuseLiveOpsCliProvidedExecutionPreflight({ providedPreflight, productionRuntime })
+      ? providedPreflight
+      : await collectLiveOpsCliProductionPreflight({
+          config,
+          marketData,
+          productionRuntime,
+          observedAt: preflightObservedAt,
+          pnlScopeStrategyId: resolveLiveOpsCliPreflightPnlStrategyId(orderIntents),
+        });
     return {
       ...base,
       orderIntents: attachLiveOpsCliRuntimeEvidence({
@@ -953,6 +955,24 @@ export async function createLiveOpsCliProductionExecutionInputs({
       },
     };
   }
+}
+
+function shouldReuseLiveOpsCliProvidedExecutionPreflight({ providedPreflight, productionRuntime }) {
+  if (providedPreflight === undefined) {
+    return false;
+  }
+  // production provider가 조립된 경로에서는 분석 시점 snapshot으로 broker 제출 직전 위험 상태를 대체하지 않는다.
+  return !hasLiveOpsCliProductionPreflightProviders(productionRuntime);
+}
+
+function hasLiveOpsCliProductionPreflightProviders(productionRuntime) {
+  return (
+    isLiveOpsCliPrivateReadProvider(productionRuntime?.privateReadProvider) &&
+    productionRuntime?.reconcileStatusProvider !== undefined &&
+    productionRuntime?.pnlStatusProvider !== undefined &&
+    productionRuntime?.killSwitchProvider !== undefined &&
+    typeof productionRuntime?.budgetReservation?.readDailyReservedNotional === "function"
+  );
 }
 
 async function collectLiveOpsCliProductionPreflight({
@@ -991,17 +1011,6 @@ async function collectLiveOpsCliProductionPreflight({
     });
     resolvedReconcileStatus = await readLiveOpsCliReconcileStatus(productionRuntime.reconcileStatusProvider);
   }
-  let resolvedPnlStatus = await refreshLiveOpsCliPreflightPnlStatusIfNeeded({
-    productionRuntime,
-    pnlStatus,
-    balanceSnapshot,
-    reconcileStatus: resolvedReconcileStatus,
-    market,
-    marketData,
-    observedAt,
-    pnlScope,
-  });
-
   const openExposureKrw = sumLiveOpsCliOpenExposureKrw(openOrders);
   const heldPositionExposure = createLiveOpsCliHeldPositionExposure({
     balanceSnapshot,
@@ -1019,6 +1028,21 @@ async function collectLiveOpsCliProductionPreflight({
     reservationUsage,
     heldPositionExposure,
     observedAt,
+  });
+  const autonomousPnlPositionSnapshot = createLiveOpsCliAutonomousPnlPositionSnapshot({
+    ownership: autonomousPositionOwnership,
+    heldPositionExposure,
+  });
+  let resolvedPnlStatus = await refreshLiveOpsCliPreflightPnlStatusIfNeeded({
+    productionRuntime,
+    pnlStatus,
+    balanceSnapshot,
+    reconcileStatus: resolvedReconcileStatus,
+    market,
+    marketData,
+    observedAt,
+    pnlScope,
+    positionSnapshot: autonomousPnlPositionSnapshot,
   });
   const valuedHeldPositionKrw = isNonNegativeDecimalString(heldPositionExposure.notionalKrw)
     ? heldPositionExposure.notionalKrw
@@ -1094,6 +1118,7 @@ async function refreshLiveOpsCliPreflightPnlStatusIfNeeded({
   marketData,
   observedAt,
   pnlScope,
+  positionSnapshot,
 }) {
   if (
     productionRuntime?.pnlCloseoutRunner === undefined ||
@@ -1128,6 +1153,7 @@ async function refreshLiveOpsCliPreflightPnlStatusIfNeeded({
       reconcileStatus,
       referencePrice: marketData?.referencePrice ?? readLiveOpsCliMarketReferencePrice(marketData),
       referencePriceObservedAt: marketData?.latestHeartbeatAt,
+      positionSnapshot,
     });
     if (closeout?.status !== "ready") {
       return pnlStatus;
@@ -1218,13 +1244,33 @@ function attachLiveOpsCliAutonomousExitRuntimeEvidence({ config, intent, preflig
 }
 
 function createLiveOpsCliAutonomousEntryRuntimeIntent({ intent, observedAt }) {
+  if (
+    intent?.metadata?.runtime_idempotency_source === "live_ops_cli_autonomous_entry_runtime" &&
+    isLiveOpsCliLiveAttemptId(intent?.idempotencyKey)
+  ) {
+    return intent;
+  }
+  const decisionIdempotencyKey = hasMeaningfulValue(intent?.metadata?.decision_idempotency_key)
+    ? intent.metadata.decision_idempotency_key
+    : intent?.idempotencyKey;
+  const runtimeAttemptScope = hasMeaningfulValue(observedAt)
+    ? String(observedAt)
+    : readLiveOpsCliRuntimeObservedAt(intent?.metadata?.idempotency_observed_at);
+  const runtimeSourceKey = hasMeaningfulValue(runtimeAttemptScope)
+    ? [decisionIdempotencyKey, "entry-attempt-scope", runtimeAttemptScope].join(":")
+    : decisionIdempotencyKey;
+  // BUY도 분석 key와 broker identifier를 분리해 하루 중 매수-매도 이후 재진입이 과거 reservation에 막히지 않게 한다.
+  const runtimeIdempotencyKey = createLiveOpsCliAttemptId(runtimeSourceKey);
   return {
     ...intent,
+    idempotencyKey: runtimeIdempotencyKey,
     metadata: {
       ...(intent?.metadata ?? {}),
       analysis_idempotency_key: hasMeaningfulValue(intent?.metadata?.analysis_idempotency_key)
         ? intent.metadata.analysis_idempotency_key
-        : intent?.idempotencyKey,
+        : decisionIdempotencyKey,
+      decision_idempotency_key: decisionIdempotencyKey,
+      ...(hasMeaningfulValue(runtimeAttemptScope) ? { entry_runtime_attempt_scope: runtimeAttemptScope } : {}),
       idempotency_date_scope: readLiveOpsCliRuntimeDateScope(observedAt),
       idempotency_date_source: "live_ops_runtime_preflight",
       idempotency_observed_at: observedAt,
@@ -1762,6 +1808,36 @@ function createLiveOpsCliAutonomousPositionOwnership({ reservationUsage, heldPos
   };
 }
 
+function createLiveOpsCliAutonomousPnlPositionSnapshot({ ownership, heldPositionExposure }) {
+  if (
+    ownership?.strategyId !== liveOpsCliAutonomous24x7StrategyId ||
+    ownership?.owned !== true ||
+    heldPositionExposure?.market !== "KRW-BTC" ||
+    !isPositiveDecimalString(heldPositionExposure?.quantity) ||
+    !isPositiveDecimalString(ownership?.requestedQuantity) ||
+    !isPositiveDecimalString(ownership?.averageEntryPrice)
+  ) {
+    return undefined;
+  }
+  const walletQuantity = new Decimal(heldPositionExposure.quantity);
+  const ownedQuantity = new Decimal(ownership.requestedQuantity);
+  if (!walletQuantity.eq(ownedQuantity)) {
+    return undefined;
+  }
+  return {
+    source: "live_ops_autonomous_artifact_position",
+    strategyId: liveOpsCliAutonomous24x7StrategyId,
+    market: "KRW-BTC",
+    quantity: ownedQuantity.toFixed(),
+    averageEntryPrice: String(ownership.averageEntryPrice),
+    realizedPnlKrw: "0",
+    openedAt: ownership.openedAt,
+    latestReservationAt: ownership.latestReservationAt,
+    highWatermarkPrice: ownership.highWatermarkPrice,
+    highWatermarkAt: ownership.highWatermarkAt,
+  };
+}
+
 function createLiveOpsCliHeldPositionRiskInput({ heldPositionExposure, equityKrw, observedAt }) {
   if (!isPositiveDecimalString(heldPositionExposure?.notionalKrw)) {
     return undefined;
@@ -2126,9 +2202,17 @@ export function createLiveOpsCliFileBudgetReservation({ artifactStore, clock = (
         ? new Decimal(currentAggregate.averageEntryPrice)
         : currentUnitPrice;
       const walletQuantity = new Decimal(observation.walletQuantity);
-      const positionQuantity = isNonNegativeDecimalString(currentAggregate.requestedQuantity)
-        ? Decimal.min(walletQuantity, new Decimal(currentAggregate.requestedQuantity))
-        : walletQuantity;
+      const aggregateWithLegacyFallback = {
+        ...currentAggregate,
+        reservedNotionalKrw: isPositiveDecimalString(currentAggregate.reservedNotionalKrw)
+          ? currentAggregate.reservedNotionalKrw
+          : sumLiveOpsCliAutonomousReservationNotional(reservationRecords),
+      };
+      const positionQuantity = resolveLiveOpsCliObservedAutonomousPositionQuantity({
+        aggregate: aggregateWithLegacyFallback,
+        walletQuantity,
+        averageEntryPrice,
+      });
       const previousHighWatermark = isPositiveDecimalString(currentAggregate.highWatermarkPrice)
         ? new Decimal(currentAggregate.highWatermarkPrice)
         : averageEntryPrice;
@@ -2251,47 +2335,49 @@ function summarizeLiveOpsCliAutonomousReservationOwnership({ reservationRecords,
     record?.market === "KRW-BTC" &&
     isNonNegativeDecimalString(record?.reservedNotionalKrw)
   ));
-  const grossReservedNotional = strategyRecords.reduce((total, record) => {
-    return total.plus(record.reservedNotionalKrw);
-  }, new Decimal(0));
-  const grossRequestedQuantity = strategyRecords.reduce((total, record) => {
-    return total.plus(isNonNegativeDecimalString(record?.requestedQuantity) ? record.requestedQuantity : "0");
-  }, new Decimal(0));
-  const weightedEntryNotional = strategyRecords.reduce((total, record) => {
-    if (!isPositiveDecimalString(record?.requestedPrice) || !isNonNegativeDecimalString(record?.requestedQuantity)) {
-      return total;
-    }
-    return total.plus(new Decimal(record.requestedPrice).mul(record.requestedQuantity));
-  }, new Decimal(0));
   const sortedReservations = [...strategyRecords].sort((left, right) => {
     return String(left?.reservedAt ?? "").localeCompare(String(right?.reservedAt ?? ""));
   });
   const exitRecords = (Array.isArray(cleanupRecords) ? cleanupRecords : []).filter(isLiveOpsCliAutonomousExitCleanupRecord);
-  const exitedQuantity = exitRecords.reduce((total, record) => {
-    return total.plus(readLiveOpsCliAutonomousExitFilledQuantity(record));
-  }, new Decimal(0));
-  const averageEntryPrice = grossRequestedQuantity.gt(0)
-    ? weightedEntryNotional.div(grossRequestedQuantity)
-    : undefined;
-  const netQuantity = Decimal.max(0, grossRequestedQuantity.minus(exitedQuantity));
-  const exitedNotional = exitRecords.reduce((total, record) => {
-    return total.plus(isNonNegativeDecimalString(record?.filledNotionalKrw) ? record.filledNotionalKrw : "0");
-  }, new Decimal(0));
-  const netReservedNotional = averageEntryPrice !== undefined
-    ? averageEntryPrice.mul(netQuantity)
-    : Decimal.max(0, grossReservedNotional.minus(exitedNotional));
   const sortedExits = [...exitRecords].sort((left, right) => {
     return String(readLiveOpsCliAutonomousExitClosedAt(left) ?? "").localeCompare(String(readLiveOpsCliAutonomousExitClosedAt(right) ?? ""));
   });
+  // SELL cleanup은 오래된 BUY lot부터 소진해 닫힌 원가가 다음 entry/exit 판단에 섞이지 않게 한다.
+  const openLots = applyLiveOpsCliAutonomousExitLots(
+    sortedReservations.map(createLiveOpsCliAutonomousReservationLot).filter((lot) => lot !== undefined),
+    sortedExits,
+  );
+  const netQuantity = openLots.reduce((total, lot) => total.plus(lot.quantity), new Decimal(0));
+  const netReservedNotional = openLots.reduce((total, lot) => total.plus(lot.quantity.mul(lot.averageEntryPrice)), new Decimal(0));
+  const averageEntryPrice = netQuantity.gt(0) ? netReservedNotional.div(netQuantity) : undefined;
   const stateOpen = autonomousPositionState?.strategyId === liveOpsCliAutonomous24x7StrategyId
     && autonomousPositionState?.market === "KRW-BTC"
     && autonomousPositionState?.status === "OPEN";
+  if (
+    netQuantity.isZero() &&
+    isUsableLiveOpsCliAutonomousPositionState({ state: autonomousPositionState, sortedExits })
+  ) {
+    return {
+      strategyId: liveOpsCliAutonomous24x7StrategyId,
+      reservedNotionalKrw: String(autonomousPositionState.reservedNotionalKrw),
+      reservationCount: strategyRecords.length,
+      requestedQuantity: String(autonomousPositionState.requestedQuantity),
+      averageEntryPrice: String(autonomousPositionState.averageEntryPrice),
+      highWatermarkPrice: autonomousPositionState.highWatermarkPrice,
+      highWatermarkAt: autonomousPositionState.highWatermarkAt,
+      openedAt: hasMeaningfulValue(autonomousPositionState.openedAt) ? autonomousPositionState.openedAt : sortedReservations[0]?.reservedAt,
+      latestReservationAt: sortedReservations.at(-1)?.reservedAt ?? autonomousPositionState.latestObservationAt,
+      status: "OPEN",
+    };
+  }
   const highWatermarkPrice = stateOpen && isPositiveDecimalString(autonomousPositionState?.highWatermarkPrice)
+    && isDecimalEqual(autonomousPositionState?.requestedQuantity, netQuantity.toFixed())
     ? autonomousPositionState.highWatermarkPrice
     : averageEntryPrice?.toFixed();
   const highWatermarkAt = stateOpen && hasMeaningfulValue(autonomousPositionState?.highWatermarkAt)
+    && isDecimalEqual(autonomousPositionState?.requestedQuantity, netQuantity.toFixed())
     ? autonomousPositionState.highWatermarkAt
-    : sortedReservations.at(-1)?.reservedAt;
+    : openLots.at(-1)?.reservedAt;
   if (netQuantity.isZero()) {
     return {
       strategyId: liveOpsCliAutonomous24x7StrategyId,
@@ -2313,10 +2399,89 @@ function summarizeLiveOpsCliAutonomousReservationOwnership({ reservationRecords,
     averageEntryPrice: averageEntryPrice?.toFixed(),
     highWatermarkPrice,
     highWatermarkAt,
-    openedAt: sortedReservations[0]?.reservedAt,
-    latestReservationAt: sortedReservations.at(-1)?.reservedAt,
+    openedAt: openLots[0]?.reservedAt,
+    latestReservationAt: openLots.at(-1)?.reservedAt,
     status: "OPEN",
   };
+}
+
+function sumLiveOpsCliAutonomousReservationNotional(reservationRecords) {
+  return (Array.isArray(reservationRecords) ? reservationRecords : []).reduce((total, record) => {
+    if (
+      record?.strategyId !== liveOpsCliAutonomous24x7StrategyId ||
+      record?.market !== "KRW-BTC" ||
+      !isNonNegativeDecimalString(record?.reservedNotionalKrw)
+    ) {
+      return total;
+    }
+    return total.plus(record.reservedNotionalKrw);
+  }, new Decimal(0)).toFixed();
+}
+
+function resolveLiveOpsCliObservedAutonomousPositionQuantity({ aggregate, walletQuantity, averageEntryPrice }) {
+  if (isPositiveDecimalString(aggregate?.requestedQuantity)) {
+    return Decimal.min(walletQuantity, new Decimal(aggregate.requestedQuantity));
+  }
+  if (isPositiveDecimalString(aggregate?.reservedNotionalKrw) && averageEntryPrice.gt(0)) {
+    // 구형 reservation은 수량 필드가 없으므로 보유 관측값과 원가 추정치 안에서만 소유 수량을 복원한다.
+    return Decimal.min(walletQuantity, new Decimal(aggregate.reservedNotionalKrw).div(averageEntryPrice));
+  }
+  return new Decimal(0);
+}
+
+function createLiveOpsCliAutonomousReservationLot(record) {
+  const quantity = isPositiveDecimalString(record?.requestedQuantity)
+    ? new Decimal(record.requestedQuantity)
+    : undefined;
+  const averageEntryPrice = quantity !== undefined && isPositiveDecimalString(record?.requestedPrice)
+    ? new Decimal(record.requestedPrice)
+    : quantity !== undefined && isPositiveDecimalString(record?.reservedNotionalKrw)
+    ? new Decimal(record.reservedNotionalKrw).div(quantity)
+    : undefined;
+  if (quantity === undefined || averageEntryPrice === undefined) {
+    return undefined;
+  }
+  return {
+    quantity,
+    averageEntryPrice,
+    reservedAt: record?.reservedAt,
+    attemptId: record?.attemptId,
+  };
+}
+
+function applyLiveOpsCliAutonomousExitLots(lots, sortedExits) {
+  const openLots = lots.map((lot) => ({ ...lot }));
+  for (const exit of sortedExits) {
+    let remainingExitQuantity = new Decimal(readLiveOpsCliAutonomousExitFilledQuantity(exit));
+    for (const lot of openLots) {
+      if (remainingExitQuantity.lte(0) || lot.quantity.lte(0)) {
+        continue;
+      }
+      const consumed = Decimal.min(lot.quantity, remainingExitQuantity);
+      lot.quantity = lot.quantity.minus(consumed);
+      remainingExitQuantity = remainingExitQuantity.minus(consumed);
+    }
+  }
+  return openLots.filter((lot) => lot.quantity.gt(0));
+}
+
+function isUsableLiveOpsCliAutonomousPositionState({ state, sortedExits }) {
+  if (
+    state?.strategyId !== liveOpsCliAutonomous24x7StrategyId ||
+    state?.market !== "KRW-BTC" ||
+    state?.status !== "OPEN" ||
+    !isPositiveDecimalString(state?.reservedNotionalKrw) ||
+    !isPositiveDecimalString(state?.requestedQuantity) ||
+    !isPositiveDecimalString(state?.averageEntryPrice)
+  ) {
+    return false;
+  }
+  const latestExitClosedAt = readLiveOpsCliAutonomousExitClosedAt(sortedExits.at(-1));
+  if (!hasMeaningfulValue(latestExitClosedAt)) {
+    return true;
+  }
+  const stateObservedAt = state.latestObservationAt ?? state.highWatermarkAt ?? state.openedAt;
+  return hasMeaningfulValue(stateObservedAt) && String(stateObservedAt) > String(latestExitClosedAt);
 }
 
 function isLiveOpsCliAutonomousExitCleanupRecord(record) {
@@ -6273,7 +6438,9 @@ function createLiveOpsCliEntryRuntimeRequest({ config, marketData, intent, obser
       metadata: {
         ...(intent.metadata ?? {}),
         source: "live_ops_cli_live_execution",
-        decision_idempotency_key: intent.idempotencyKey,
+        decision_idempotency_key: hasMeaningfulValue(intent.metadata?.decision_idempotency_key)
+          ? intent.metadata.decision_idempotency_key
+          : intent.idempotencyKey,
       },
     },
     budgetSnapshot,

@@ -82,14 +82,18 @@ production에서 `--status-file`을 지정하지 않으면 config 파일이 있�
 - [x] 외부 feature provider가 아직 붙지 않아도 fresh public tick의 reference-price edge로 entry feature를 자동 산출한다.
 - [x] orderbook spread가 좁다는 사실만으로는 BUY 후보를 만들지 않고, 기준가 대비 실제 edge가 약하면 HOLD evidence로 닫는다.
 - [x] autonomous BUY intent는 preflight 기반 CostModel/RiskGate/runtime evidence가 붙은 뒤에만 entry runtime으로 전달된다.
+- [x] autonomous BUY runtime identifier는 원본 strategy decision key가 아니라 preflight tick scope를 포함한 `ops-` attempt id를 사용한다.
 - [x] autonomous BUY 제출 성공은 cleanup lifecycle로 즉시 취소하지 않고, 후속 reconcile/PnL/status loop로 넘긴다.
 - [x] stale market data, stale PnL, reconcile mismatch, open order, budget 초과, kill switch는 broker 호출 전에 차단한다.
+- [x] production 제출 경계는 analysis preflight를 재사용하지 않고 private provider preflight를 제출 직전에 다시 읽는다.
 
 ## Exit DnD
 
 - [x] 보유 포지션이 있으면 entry보다 exit 평가가 먼저 실행된다.
 - [x] exit 평가 대상 수량은 지갑 BTC 전체가 아니라 UTC 날짜가 바뀌어도 runtime이 자동 생성한 strategy reservation 기록으로 소유 범위를 확인한 수량으로 제한한다.
+- [x] requested quantity가 없는 구형 reservation은 wallet 관측값과 reserved notional/current price로 strategy-owned 수량을 복원한다.
 - [x] FILLED autonomous SELL closeout artifact는 runtime이 자동 기록하고, 해당 수량은 strategy-owned 수량에서 차감한다.
+- [x] FILLED SELL cleanup은 BUY lot을 FIFO로 소진하며, 완전 청산된 과거 BUY 평균단가는 새 포지션 평균 진입가에서 제외한다.
 - [x] strategy 소유 기록이 없는 지갑 BTC 잔고는 자동 SELL로 축소하지 않고 수동 점검이 필요한 BLOCK으로 닫는다.
 - [x] exit policy는 take profit, stop loss, trailing stop, max holding time, risk reduction rule을 독립 rule로 가진다.
 - [x] trailing stop은 현재 tick 가격만 보지 않고, runtime position state에 보존된 high-water price 기준으로 판단한다.
@@ -101,6 +105,7 @@ production에서 `--status-file`을 지정하지 않으면 config 파일이 있�
 - [x] 이미 terminal cancel/no-fill로 확인된 SELL은 다시 취소하지 않고 재호가 대기 또는 수동 점검으로 닫는다.
 - [x] exit 체결 또는 cancel/requote 확인 뒤에는 private read, reconcile, PnL status를 다시 읽어 포지션과 open order 상태를 확인한다.
 - [x] autonomous preflight PnL/status와 PnL closeout은 cleanup probe scope가 아니라 `live_ops_autonomous_24x7_core` scope를 사용한다.
+- [x] DB position row가 아직 없으면 같은 preflight tick의 artifact-owned position snapshot을 PnL closeout 원가 source로 주입한다.
 - [x] hard stop은 신규 주문 차단과 manual review를 만들 수 있지만, 시장가 자동 청산을 만들지 않는다.
 
 SELL 후보의 전체 보유 수량이 1회 주문 상한을 넘으면 daemon은 시장가로 한 번에 던지지 않는다. strategy가 10,000 KRW 이하 chunk를

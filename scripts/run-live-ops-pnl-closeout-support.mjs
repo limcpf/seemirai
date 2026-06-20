@@ -130,6 +130,7 @@ export async function runLiveOpsPnlCloseout({
   reconcileStatus,
   referencePrice,
   referencePriceObservedAt,
+  positionSnapshot,
   maxReconcileAgeMs = defaultMaxReconcileAgeMs,
 } = {}) {
   if (pool === undefined || pool === null) {
@@ -148,6 +149,7 @@ export async function runLiveOpsPnlCloseout({
     reconcileStatus,
     referencePrice,
     referencePriceObservedAt,
+    positionSnapshot,
     maxReconcileAgeMs,
   });
   if (source.status !== "ready") {
@@ -202,6 +204,7 @@ async function loadLiveOpsPnlCloseoutSource({
   reconcileStatus,
   referencePrice,
   referencePriceObservedAt,
+  positionSnapshot,
   maxReconcileAgeMs,
 }) {
   const reconcile = reconcileStatus === undefined
@@ -221,12 +224,15 @@ async function loadLiveOpsPnlCloseoutSource({
     });
   }
 
-  const [position, fillsCount, latestPnlStatus, history] = await Promise.all([
+  const [dbPosition, fillsCount, latestPnlStatus, history] = await Promise.all([
     readCurrentPosition(pool, { market, strategyId }),
     readFillCount(pool, { market, strategyId }),
     readLatestPnlSnapshotStatus(pool, { market, strategyId, capturedAt }),
     readPnlSnapshotHistory(pool, { market, strategyId, capturedAt }),
   ]);
+  // DB position row가 아직 없을 때만 같은 preflight tick의 artifact 소유권 snapshot을 원가 source로 사용한다.
+  const injectedPosition = normalizeInjectedPositionSnapshot(positionSnapshot, { market, strategyId });
+  const position = dbPosition ?? injectedPosition;
   const latestPnlStatusBlock = validateLatestPnlSnapshotStatus(latestPnlStatus);
   if (latestPnlStatusBlock !== undefined) {
     // 최신 manual-review/partial row를 새 CALCULATED row로 가리면 손실 guard가 실제 차단 사유를 잃는다.
@@ -458,6 +464,34 @@ function normalizeInjectedBalances(balanceSnapshot) {
   })));
 }
 
+function normalizeInjectedPositionSnapshot(positionSnapshot, { market, strategyId }) {
+  if (positionSnapshot === undefined || positionSnapshot === null) {
+    return undefined;
+  }
+  if (
+    positionSnapshot.strategyId !== strategyId ||
+    positionSnapshot.market !== market ||
+    !isPositiveDecimalString(positionSnapshot.quantity) ||
+    !isPositiveDecimalString(positionSnapshot.averageEntryPrice)
+  ) {
+    return undefined;
+  }
+  return {
+    strategy_id: strategyId,
+    market,
+    quantity: normalizeNonNegativeDecimal(positionSnapshot.quantity, "positionSnapshot.quantity"),
+    average_entry_price: normalizeNonNegativeDecimal(positionSnapshot.averageEntryPrice, "positionSnapshot.averageEntryPrice"),
+    realized_pnl: normalizeDecimal(positionSnapshot.realizedPnlKrw ?? "0"),
+    unrealized_pnl: normalizeDecimal(positionSnapshot.unrealizedPnlKrw ?? "0"),
+    updated_at: hasMeaningfulValue(positionSnapshot.updatedAt)
+      ? toIsoString(positionSnapshot.updatedAt)
+      : hasMeaningfulValue(positionSnapshot.latestObservationAt)
+      ? toIsoString(positionSnapshot.latestObservationAt)
+      : null,
+    source: hasMeaningfulValue(positionSnapshot.source) ? String(positionSnapshot.source) : "injected_position_snapshot",
+  };
+}
+
 function normalizeBalanceRow(row) {
   const available = normalizeNonNegativeDecimal(row.available, "balance.available");
   const locked = normalizeNonNegativeDecimal(row.locked, "balance.locked");
@@ -687,6 +721,7 @@ function buildLiveOpsPnlSnapshot({ market, strategyId, capturedAt, source }) {
           market,
           quantity: source.position.quantity,
           averageEntryPrice: source.position.average_entry_price,
+          source: source.position.source ?? "positions",
           marketValueKrw: source.referencePrice === null
             ? "0"
             : new Decimal(source.position.quantity).mul(source.referencePrice).toFixed(),
@@ -704,6 +739,7 @@ function buildLiveOpsPnlSnapshot({ market, strategyId, capturedAt, source }) {
         "pnl_snapshots",
       ],
       referencePriceSource: source.referencePriceSource,
+      positionSource: source.position?.source ?? null,
     },
   };
   return {
