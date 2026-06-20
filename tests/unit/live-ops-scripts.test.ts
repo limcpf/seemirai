@@ -5418,7 +5418,7 @@ console.log(JSON.stringify({
     };
     expect(output).toMatchObject({
       status: "blocked",
-      liveOrderCapable: false,
+      liveOrderCapable: true,
       openOrderCount: 2,
       budgetUsedKrw: "12000",
       manualReviewRequired: true,

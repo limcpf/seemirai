@@ -277,10 +277,8 @@ async function loadLiveOpsCliAttachReadonlyInputs({ configPath, envFilePath, con
     dbReadiness: summary.dbReadiness,
     marketData: summary.marketData,
     analysisDecision: summary.analysisDecision,
-    liveExecution: {
-      ...summary.liveExecution,
-      liveOrderCapable: false,
-    },
+    // attach 화면은 새 주문 side effect만 닫고, 원본 foreground 실행의 실주문 가능 상태 표시는 보존해야 한다.
+    liveExecution: summary.liveExecution,
     reconcilePnlStatus: summary.reconcilePnlStatus,
     telegramAlert: summary.telegramAlert,
     attachStatusSourcePath: statusSourcePath,
