@@ -487,6 +487,9 @@ Telegram, TUI를 같은 lifecycle로 조립하고, 조건을 통과한 단일 `K
   - [x] production CLI analysis는 `autonomous_24x7` policy를 cleanup 전용 BLOCK으로 닫지 않고, broker guard 뒤 private read preflight로 position context를 만든다.
   - [x] autonomous BUY intent는 preflight 기반 CostModel/RiskGate/runtime evidence를 갖춘 뒤 entry runtime으로 전달된다.
   - [x] autonomous BUY 제출 성공은 cleanup lifecycle로 즉시 취소하지 않고 후속 reconcile/PnL/status loop로 넘긴다.
+  - [x] feature provider가 비어 있는 production public tick에서도 fresh orderbook/status 기반 bootstrap feature로 entry 후보를 만들 수 있다.
+  - [x] 지갑 BTC 잔고는 strategy reservation 소유 기록 없이는 `autonomous_24x7` 포지션으로 간주하지 않고 BLOCK으로 닫는다.
+  - [x] 25,000 KRW risk-reduction 기준보다 작은 strategy-owned 보유분도 take-profit/stop-loss/trailing/max-holding 조건이면 SELL 후보를 만든다.
   - [x] daemon status file의 top-level `latestSummary`는 `live:ops:tui --attach` source로 읽힌다.
   - [x] daemon tick status payload도 실제 `statusFilePath`를 보존한다.
   - [x] SELL 재호가 runtime identifier는 같은 strategy decision key라도 preflight tick scope가 다르면 달라진다.
@@ -683,7 +686,9 @@ SEEMIRAI_RUN_LIVE_OPS_REAL_ARM_CLOSEOUT=1 \
 - 2026-06-21: Sub PR 23 final review drain 보강으로 production CLI analysis는 `autonomous_24x7` policy를 cleanup 전용 BLOCK으로
   닫지 않고 private read preflight position context로 entry/exit를 평가한다. autonomous BUY는 CostModel/RiskGate/runtime evidence를
   붙여 entry runtime으로 전달하고 cleanup lifecycle로 즉시 취소하지 않는다. daemon status `latestSummary` attach, tick payload
-  `statusFilePath`, SELL 재호가 runtime identifier scope, terminal cancel no-fill 재취소 방지를 추가한다.
+  `statusFilePath`, SELL 재호가 runtime identifier scope, terminal cancel no-fill 재취소 방지를 추가한다. 추가 review drain으로
+  public tick bootstrap feature, strategy reservation 기반 position ownership, 소액 포지션 take-profit/stop-loss/trailing/max-holding
+  exit를 보강해 지갑 수동 BTC 자동 매도와 영구 HOLD를 차단한다.
 
 ## 남은 이슈
 

@@ -79,6 +79,7 @@ production에서 `--status-file`을 지정하지 않으면 config 파일이 있�
 - [x] `cleanup_probe`와 별개인 production entry strategy allowlist가 있다.
 - [x] entry strategy는 `HOLD`, `BLOCK`, `ORDER_INTENT`를 구분하고 모두 decision ledger에 남긴다.
 - [x] entry intent는 `KRW-BTC`, `BUY`, `LIMIT`, `POST_ONLY`, 10,000 KRW 이하만 허용한다.
+- [x] 외부 feature provider가 아직 붙지 않아도 fresh public tick, orderbook spread, market status count로 entry bootstrap feature를 자동 산출한다.
 - [x] autonomous BUY intent는 preflight 기반 CostModel/RiskGate/runtime evidence가 붙은 뒤에만 entry runtime으로 전달된다.
 - [x] autonomous BUY 제출 성공은 cleanup lifecycle로 즉시 취소하지 않고, 후속 reconcile/PnL/status loop로 넘긴다.
 - [x] stale market data, stale PnL, reconcile mismatch, open order, budget 초과, kill switch는 broker 호출 전에 차단한다.
@@ -86,7 +87,10 @@ production에서 `--status-file`을 지정하지 않으면 config 파일이 있�
 ## Exit DnD
 
 - [x] 보유 포지션이 있으면 entry보다 exit 평가가 먼저 실행된다.
+- [x] exit 평가 대상 수량은 지갑 BTC 전체가 아니라 UTC 날짜가 바뀌어도 runtime이 자동 생성한 strategy reservation 기록으로 소유 범위를 확인한 수량으로 제한한다.
+- [x] strategy 소유 기록이 없는 지갑 BTC 잔고는 자동 SELL로 축소하지 않고 수동 점검이 필요한 BLOCK으로 닫는다.
 - [x] exit policy는 take profit, stop loss, trailing stop, max holding time, risk reduction rule을 독립 rule로 가진다.
+- [x] 25,000 KRW risk-reduction 기준보다 작은 소액 보유분도 take profit, stop loss, trailing stop, max holding time 조건이면 SELL 후보를 만든다.
 - [x] exit intent는 보유 수량 이하의 `SELL + LIMIT + POST_ONLY`만 허용한다.
 - [x] exit 미체결은 bounded cancel/requote 정책으로 닫고, terminal 확인 실패는 manual review로 격상한다.
 - [x] exit submit 이후 상태 조회가 실패하면 broker order id를 보존한 manual review summary로 닫는다.

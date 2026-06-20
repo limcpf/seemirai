@@ -94,7 +94,10 @@ Codex-native 운영은 Codex, Git, GitHub, shell command, 문서 상태를 연�
 - `autonomous_24x7` policy는 보유 포지션 snapshot이 있으면 entry보다 exit rule을 먼저 평가한다. analysis pipeline은 position
   snapshot을 조회하지 않고 `StrategyContext.positions`로 전달만 하며, strategy는 SELL/BUY order intent를 만들 뿐 broker, DB,
   Telegram side effect를 직접 수행하지 않는다.
+- `autonomous_24x7` policy는 지갑 BTC 잔고만으로 전략 소유 포지션을 추정하지 않는다. runtime이 자동 생성한 strategy reservation 기록으로
+  소유 범위와 수량을 확인하지 못하면 자동 SELL 대신 manual review 성격의 BLOCK으로 닫는다.
 - `autonomous_24x7` exit rule은 take profit, stop loss, trailing stop, max holding time, risk reduction을 독립 reason code로 남긴다.
+  risk reduction 기준보다 작은 소액 포지션도 take profit, stop loss, trailing stop, max holding time 조건이면 SELL 후보를 만들 수 있다.
   exit 조건이 없으면 같은 tick의 강한 entry signal도 BUY로 전환하지 않고 HOLD로 닫아 물타기식 중복 진입을 막는다.
 - live execution adapter는 SELL 후보를 entry runtime으로 우회시키지 않는다. `position_effect`, exit reason/rule, position scope,
   보유 수량 이하 조건을 확인한 뒤 `exit_cost_model` evidence와 RiskGate evidence를 만들어 exit runtime port로만 전달한다.
