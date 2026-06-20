@@ -1794,12 +1794,22 @@ async function refreshLiveOpsCliAutonomousPositionObservation({
   }
   if (
     heldPositionExposure?.valuationMissing === true ||
-    !isPositiveDecimalString(heldPositionExposure?.quantity) ||
-    !isPositiveDecimalString(heldPositionExposure?.notionalKrw)
+    !isNonNegativeDecimalString(heldPositionExposure?.quantity)
   ) {
     return reservationUsage;
   }
-  const currentUnitPrice = new Decimal(heldPositionExposure.notionalKrw).div(heldPositionExposure.quantity).toFixed();
+  const heldQuantity = new Decimal(heldPositionExposure.quantity);
+  if (heldQuantity.gt(0) && !isPositiveDecimalString(heldPositionExposure?.notionalKrw)) {
+    return reservationUsage;
+  }
+  // 지갑 0수량 관측도 stale open lot을 닫는 evidence이므로 기존 원가를 기준 가격 대용으로 넘긴다.
+  const currentUnitPrice = heldQuantity.gt(0)
+    ? new Decimal(heldPositionExposure.notionalKrw).div(heldQuantity).toFixed()
+    : isPositiveDecimalString(reservationUsage?.autonomous24x7Position?.averageEntryPrice)
+    ? String(reservationUsage.autonomous24x7Position.averageEntryPrice)
+    : isPositiveDecimalString(reservationUsage?.autonomous24x7Position?.highWatermarkPrice)
+    ? String(reservationUsage.autonomous24x7Position.highWatermarkPrice)
+    : "1";
   await productionRuntime.budgetReservation.recordAutonomousPositionObservation({
     strategyId: liveOpsCliAutonomous24x7StrategyId,
     market: heldPositionExposure.market,
@@ -1840,6 +1850,7 @@ function createLiveOpsCliAutonomousPositionOwnership({ reservationUsage, heldPos
     highWatermarkAt: hasMeaningfulValue(aggregate.highWatermarkAt) ? aggregate.highWatermarkAt : undefined,
     status: hasMeaningfulValue(aggregate.status) ? aggregate.status : undefined,
     closedAt: hasMeaningfulValue(aggregate.closedAt) ? aggregate.closedAt : undefined,
+    manualReviewReason: hasMeaningfulValue(aggregate.manualReviewReason) ? aggregate.manualReviewReason : undefined,
     openedAt: hasMeaningfulValue(aggregate.openedAt) ? aggregate.openedAt : undefined,
     latestReservationAt: hasMeaningfulValue(aggregate.latestReservationAt) ? aggregate.latestReservationAt : observedAt,
     realizedPnlKrw: isDecimalString(aggregate.realizedPnlKrw) ? aggregate.realizedPnlKrw : undefined,
@@ -2236,20 +2247,53 @@ export function createLiveOpsCliFileBudgetReservation({ artifactStore, clock = (
         autonomousPositionState: previousState,
       });
       const currentUnitPrice = new Decimal(observation.currentUnitPrice);
+      const walletQuantity = new Decimal(observation.walletQuantity);
+      if (
+        walletQuantity.gt(0) &&
+        !isPositiveDecimalString(currentAggregate.requestedQuantity) &&
+        hasLiveOpsCliUncertainAutonomousEntryReservation({ reservationRecords, cleanupRecords })
+      ) {
+        const state = {
+          kind: "live_ops_autonomous_position_state",
+          strategyId: liveOpsCliAutonomous24x7StrategyId,
+          market,
+          status: "MANUAL_REVIEW_REQUIRED",
+          reservedNotionalKrw: "0",
+          requestedQuantity: "0",
+          openedAt: hasMeaningfulValue(currentAggregate.openedAt) ? currentAggregate.openedAt : undefined,
+          latestObservationAt: observedAt,
+          manualReviewReason: "autonomous_entry_fill_state_uncertain",
+        };
+        // BUY 예약의 fill/no-fill 증거가 없는데 지갑 BTC가 있으면 자동 소유권을 확정하지 않고 운영자 점검으로 넘긴다.
+        await artifactStore.writeAutonomousPositionState(state);
+        return state;
+      }
+      const legacyObservationFallback = summarizeLiveOpsCliLegacyAutonomousObservationFallback({
+        reservationRecords,
+        cleanupRecords,
+        walletQuantity,
+      });
       const averageEntryPrice = isPositiveDecimalString(observation?.averageEntryPrice)
         ? new Decimal(observation.averageEntryPrice)
         : isPositiveDecimalString(currentAggregate.averageEntryPrice)
         ? new Decimal(currentAggregate.averageEntryPrice)
+        : isPositiveDecimalString(legacyObservationFallback.averageEntryPrice)
+        ? new Decimal(legacyObservationFallback.averageEntryPrice)
         : currentUnitPrice;
-      const walletQuantity = new Decimal(observation.walletQuantity);
       const aggregateWithLegacyFallback = {
         ...currentAggregate,
         reservedNotionalKrw: isPositiveDecimalString(currentAggregate.reservedNotionalKrw)
           ? currentAggregate.reservedNotionalKrw
-          : sumLiveOpsCliOpenLegacyAutonomousReservationNotional({
-              reservationRecords,
-              cleanupRecords,
-            }),
+          : legacyObservationFallback.reservedNotionalKrw,
+        requestedQuantity: isPositiveDecimalString(currentAggregate.requestedQuantity)
+          ? currentAggregate.requestedQuantity
+          : legacyObservationFallback.requestedQuantity,
+        openedAt: hasMeaningfulValue(currentAggregate.openedAt)
+          ? currentAggregate.openedAt
+          : legacyObservationFallback.openedAt,
+        latestReservationAt: hasMeaningfulValue(currentAggregate.latestReservationAt)
+          ? currentAggregate.latestReservationAt
+          : legacyObservationFallback.latestReservationAt,
       };
       const positionQuantity = resolveLiveOpsCliObservedAutonomousPositionQuantity({
         aggregate: aggregateWithLegacyFallback,
@@ -2273,7 +2317,10 @@ export function createLiveOpsCliFileBudgetReservation({ artifactStore, clock = (
         averageEntryPrice: positionQuantity.gt(0) ? averageEntryPrice.toFixed() : undefined,
         highWatermarkPrice: positionQuantity.gt(0) ? highWatermarkPrice.toFixed() : undefined,
         highWatermarkAt: positionQuantity.gt(0) ? highWatermarkAt : undefined,
-        openedAt: hasMeaningfulValue(currentAggregate.openedAt) ? currentAggregate.openedAt : observedAt,
+        openedAt: hasMeaningfulValue(aggregateWithLegacyFallback.openedAt) ? aggregateWithLegacyFallback.openedAt : observedAt,
+        latestReservationAt: hasMeaningfulValue(aggregateWithLegacyFallback.latestReservationAt)
+          ? aggregateWithLegacyFallback.latestReservationAt
+          : undefined,
         latestObservationAt: observedAt,
         ...(positionQuantity.gt(0) ? {} : { closedAt: observedAt }),
       };
@@ -2400,6 +2447,48 @@ function summarizeLiveOpsCliAutonomousReservationOwnership({ reservationRecords,
   const stateOpen = autonomousPositionState?.strategyId === liveOpsCliAutonomous24x7StrategyId
     && autonomousPositionState?.market === "KRW-BTC"
     && autonomousPositionState?.status === "OPEN";
+  const stateManualReview = autonomousPositionState?.strategyId === liveOpsCliAutonomous24x7StrategyId
+    && autonomousPositionState?.market === "KRW-BTC"
+    && autonomousPositionState?.status === "MANUAL_REVIEW_REQUIRED";
+  const stateClosed = autonomousPositionState?.strategyId === liveOpsCliAutonomous24x7StrategyId
+    && autonomousPositionState?.market === "KRW-BTC"
+    && autonomousPositionState?.status === "CLOSED";
+  if (
+    stateClosed &&
+    netQuantity.gt(0) &&
+    isLiveOpsCliAutonomousPositionStateNewerThanLatestLot({ state: autonomousPositionState, openLots })
+  ) {
+    return {
+      strategyId: liveOpsCliAutonomous24x7StrategyId,
+      reservedNotionalKrw: "0",
+      reservationCount: strategyRecords.length,
+      requestedQuantity: "0",
+      openedAt: hasMeaningfulValue(autonomousPositionState.openedAt) ? autonomousPositionState.openedAt : sortedReservations[0]?.reservedAt,
+      latestReservationAt: sortedReservations.at(-1)?.reservedAt ?? autonomousPositionState.latestObservationAt,
+      realizedPnlKrw,
+      status: "CLOSED",
+      closedAt: autonomousPositionState.closedAt ?? autonomousPositionState.latestObservationAt,
+    };
+  }
+  if (
+    netQuantity.isZero() &&
+    stateManualReview &&
+    isLiveOpsCliAutonomousPositionStateNewerThanLatestExit({ state: autonomousPositionState, sortedExits })
+  ) {
+    return {
+      strategyId: liveOpsCliAutonomous24x7StrategyId,
+      reservedNotionalKrw: "0",
+      reservationCount: strategyRecords.length,
+      requestedQuantity: "0",
+      openedAt: hasMeaningfulValue(autonomousPositionState.openedAt) ? autonomousPositionState.openedAt : sortedReservations[0]?.reservedAt,
+      latestReservationAt: sortedReservations.at(-1)?.reservedAt ?? autonomousPositionState.latestObservationAt,
+      realizedPnlKrw,
+      status: "MANUAL_REVIEW_REQUIRED",
+      manualReviewReason: hasMeaningfulValue(autonomousPositionState.manualReviewReason)
+        ? autonomousPositionState.manualReviewReason
+        : "autonomous_position_manual_review_required",
+    };
+  }
   if (
     netQuantity.isZero() &&
     isUsableLiveOpsCliAutonomousPositionState({ state: autonomousPositionState, sortedExits })
@@ -2455,26 +2544,90 @@ function summarizeLiveOpsCliAutonomousReservationOwnership({ reservationRecords,
   };
 }
 
-function sumLiveOpsCliOpenLegacyAutonomousReservationNotional({ reservationRecords, cleanupRecords = [] }) {
+function summarizeLiveOpsCliLegacyAutonomousObservationFallback({ reservationRecords, cleanupRecords = [], walletQuantity }) {
+  const observedWalletQuantity = walletQuantity instanceof Decimal ? walletQuantity : new Decimal(0);
+  const legacyReservations = (Array.isArray(reservationRecords) ? reservationRecords : [])
+    .filter((record) => (
+      record?.strategyId === liveOpsCliAutonomous24x7StrategyId &&
+      record?.market === "KRW-BTC" &&
+      isPositiveDecimalString(record?.reservedNotionalKrw) &&
+      !isPositiveDecimalString(record?.requestedQuantity)
+    ))
+    .sort((left, right) => String(left?.reservedAt ?? "").localeCompare(String(right?.reservedAt ?? "")))
+    .map((record) => ({
+      record,
+      originalNotional: new Decimal(record.reservedNotionalKrw),
+      remainingCost: new Decimal(record.reservedNotionalKrw),
+      consumedQuantity: new Decimal(0),
+    }));
   const sortedExits = (Array.isArray(cleanupRecords) ? cleanupRecords : [])
     .filter(isLiveOpsCliAutonomousExitCleanupRecord)
     .sort((left, right) => {
       return String(readLiveOpsCliAutonomousExitClosedAt(left) ?? "").localeCompare(String(readLiveOpsCliAutonomousExitClosedAt(right) ?? ""));
     });
-  return (Array.isArray(reservationRecords) ? reservationRecords : []).reduce((total, record) => {
-    if (
-      record?.strategyId !== liveOpsCliAutonomous24x7StrategyId ||
-      record?.market !== "KRW-BTC" ||
-      !isNonNegativeDecimalString(record?.reservedNotionalKrw) ||
-      isPositiveDecimalString(record?.requestedQuantity)
-    ) {
-      return total;
+  for (const exit of sortedExits) {
+    const exitCost = new Decimal(readLiveOpsCliAutonomousExitCostNotionalKrw(exit));
+    if (!exitCost.gt(0)) {
+      continue;
     }
-    if (isLiveOpsCliAutonomousReservationClosedByExit(record, sortedExits)) {
-      return total;
+    const exitQuantity = new Decimal(readLiveOpsCliAutonomousExitFilledQuantity(exit));
+    let remainingExitCost = exitCost;
+    for (const reservation of legacyReservations) {
+      if (remainingExitCost.lte(0)) {
+        break;
+      }
+      if (
+        reservation.remainingCost.lte(0) ||
+        !isLiveOpsCliAutonomousExitAfterReservation(exit, reservation.record)
+      ) {
+        continue;
+      }
+      const consumedCost = Decimal.min(reservation.remainingCost, remainingExitCost);
+      const consumedRatio = consumedCost.div(exitCost);
+      reservation.remainingCost = reservation.remainingCost.minus(consumedCost);
+      reservation.consumedQuantity = reservation.consumedQuantity.plus(exitQuantity.mul(consumedRatio));
+      remainingExitCost = remainingExitCost.minus(consumedCost);
     }
-    return total.plus(record.reservedNotionalKrw);
-  }, new Decimal(0)).toFixed();
+  }
+  const openReservations = legacyReservations.filter((reservation) => reservation.remainingCost.gt(0));
+  const originalOpenNotional = openReservations.reduce((total, reservation) => {
+    return total.plus(reservation.originalNotional);
+  }, new Decimal(0));
+  const consumedOpenQuantity = openReservations.reduce((total, reservation) => {
+    return total.plus(reservation.consumedQuantity);
+  }, new Decimal(0));
+  const openedAt = openReservations.find((reservation) => hasMeaningfulValue(reservation.record?.reservedAt))?.record?.reservedAt;
+  const latestReservationAt = [...openReservations]
+    .reverse()
+    .find((reservation) => hasMeaningfulValue(reservation.record?.reservedAt))?.record?.reservedAt;
+  if (!originalOpenNotional.gt(0) || !observedWalletQuantity.gt(0)) {
+    return {
+      reservedNotionalKrw: "0",
+      requestedQuantity: "0",
+      averageEntryPrice: undefined,
+      openedAt,
+      latestReservationAt,
+    };
+  }
+  const estimatedOriginalQuantity = observedWalletQuantity.plus(consumedOpenQuantity);
+  if (!estimatedOriginalQuantity.gt(0)) {
+    return {
+      reservedNotionalKrw: "0",
+      requestedQuantity: "0",
+      averageEntryPrice: undefined,
+      openedAt,
+      latestReservationAt,
+    };
+  }
+  // 구형 reservation에는 수량이 없으므로 현재 지갑 수량과 이미 청산된 수량으로 최초 평균 원가를 복원한다.
+  const averageEntryPrice = originalOpenNotional.div(estimatedOriginalQuantity);
+  return {
+    reservedNotionalKrw: averageEntryPrice.mul(observedWalletQuantity).toFixed(),
+    requestedQuantity: observedWalletQuantity.toFixed(),
+    averageEntryPrice: averageEntryPrice.toFixed(),
+    openedAt,
+    latestReservationAt,
+  };
 }
 
 function resolveLiveOpsCliObservedAutonomousPositionQuantity({ aggregate, walletQuantity, averageEntryPrice }) {
@@ -2528,6 +2681,28 @@ function findLiveOpsCliAutonomousEntryFillForReservation(record, entryFillRecord
   ));
 }
 
+function hasLiveOpsCliUncertainAutonomousEntryReservation({ reservationRecords, cleanupRecords = [] }) {
+  const entryFillRecords = (Array.isArray(cleanupRecords) ? cleanupRecords : []).filter(isLiveOpsCliAutonomousEntryFillCleanupRecord);
+  const entryNoFillRecords = (Array.isArray(cleanupRecords) ? cleanupRecords : []).filter(isLiveOpsCliAutonomousEntryNoFillCleanupRecord);
+  return (Array.isArray(reservationRecords) ? reservationRecords : []).some((record) => (
+    record?.strategyId === liveOpsCliAutonomous24x7StrategyId &&
+    record?.market === "KRW-BTC" &&
+    isPositiveDecimalString(record?.requestedQuantity) &&
+    findLiveOpsCliAutonomousEntryFillForReservation(record, entryFillRecords) === undefined &&
+    findLiveOpsCliAutonomousEntryNoFillForReservation(record, entryNoFillRecords) === undefined
+  ));
+}
+
+function findLiveOpsCliAutonomousEntryNoFillForReservation(record, entryNoFillRecords) {
+  if (!hasMeaningfulValue(record?.attemptId) && !hasMeaningfulValue(record?.idempotencyKey)) {
+    return undefined;
+  }
+  return entryNoFillRecords.find((entryNoFill) => (
+    (hasMeaningfulValue(record?.attemptId) && entryNoFill?.attemptId === record.attemptId) ||
+    (hasMeaningfulValue(record?.idempotencyKey) && entryNoFill?.idempotencyKey === record.idempotencyKey)
+  ));
+}
+
 function applyLiveOpsCliAutonomousExitLots(lots, sortedExits) {
   const openLots = lots.map((lot) => ({ ...lot }));
   for (const exit of sortedExits) {
@@ -2555,12 +2730,27 @@ function isUsableLiveOpsCliAutonomousPositionState({ state, sortedExits }) {
   ) {
     return false;
   }
+  return isLiveOpsCliAutonomousPositionStateNewerThanLatestExit({ state, sortedExits });
+}
+
+function isLiveOpsCliAutonomousPositionStateNewerThanLatestExit({ state, sortedExits }) {
   const latestExitClosedAt = readLiveOpsCliAutonomousExitClosedAt(sortedExits.at(-1));
   if (!hasMeaningfulValue(latestExitClosedAt)) {
     return true;
   }
   const stateObservedAt = state.latestObservationAt ?? state.highWatermarkAt ?? state.openedAt;
   return hasMeaningfulValue(stateObservedAt) && String(stateObservedAt) > String(latestExitClosedAt);
+}
+
+function isLiveOpsCliAutonomousPositionStateNewerThanLatestLot({ state, openLots }) {
+  const latestLotAt = [...(Array.isArray(openLots) ? openLots : [])]
+    .reverse()
+    .find((lot) => hasMeaningfulValue(lot?.reservedAt))?.reservedAt;
+  if (!hasMeaningfulValue(latestLotAt)) {
+    return true;
+  }
+  const stateObservedAt = state.latestObservationAt ?? state.closedAt ?? state.openedAt;
+  return hasMeaningfulValue(stateObservedAt) && String(stateObservedAt) > String(latestLotAt);
 }
 
 function isLiveOpsCliAutonomousExitCleanupRecord(record) {
@@ -2585,6 +2775,18 @@ function isLiveOpsCliAutonomousEntryFillCleanupRecord(record) {
   );
 }
 
+function isLiveOpsCliAutonomousEntryNoFillCleanupRecord(record) {
+  const status = String(record?.status ?? "").toUpperCase();
+  return (
+    record?.kind === "live_ops_autonomous_entry_no_fill_closeout" &&
+    record?.strategyId === liveOpsCliAutonomous24x7StrategyId &&
+    record?.market === "KRW-BTC" &&
+    String(record?.side ?? "").toUpperCase() === "BUY" &&
+    (status === "CANCELED" || status === "CANCELLED" || status === "NO_FILL" || status === "EXPIRED") &&
+    !isPositiveDecimalString(readLiveOpsCliAutonomousEntryFilledQuantity(record))
+  );
+}
+
 function readLiveOpsCliAutonomousEntryFilledQuantity(record) {
   if (isPositiveDecimalString(record?.filledQuantity)) {
     return record.filledQuantity;
@@ -2605,15 +2807,10 @@ function readLiveOpsCliAutonomousEntryFilledPrice(record) {
   return undefined;
 }
 
-function isLiveOpsCliAutonomousReservationClosedByExit(record, sortedExits) {
-  const reservedAt = hasMeaningfulValue(record?.reservedAt) ? String(record.reservedAt) : undefined;
-  if (reservedAt === undefined) {
-    return sortedExits.length > 0;
-  }
-  return sortedExits.some((exit) => {
-    const closedAt = readLiveOpsCliAutonomousExitClosedAt(exit);
-    return hasMeaningfulValue(closedAt) && String(closedAt) >= reservedAt;
-  });
+function isLiveOpsCliAutonomousExitAfterReservation(exit, reservation) {
+  const reservedAt = hasMeaningfulValue(reservation?.reservedAt) ? String(reservation.reservedAt) : undefined;
+  const closedAt = readLiveOpsCliAutonomousExitClosedAt(exit);
+  return reservedAt === undefined || !hasMeaningfulValue(closedAt) || String(closedAt) >= reservedAt;
 }
 
 function readLiveOpsCliAutonomousExitFilledQuantity(record) {
@@ -2622,6 +2819,30 @@ function readLiveOpsCliAutonomousExitFilledQuantity(record) {
   }
   if (isNonNegativeDecimalString(record?.terminalOrder?.requestedQuantity) && isDecimalEqual(record?.terminalOrder?.remainingQuantity ?? "0", "0")) {
     return record.terminalOrder.requestedQuantity;
+  }
+  return "0";
+}
+
+function readLiveOpsCliAutonomousExitCostNotionalKrw(record) {
+  if (isPositiveDecimalString(record?.entryCostNotionalKrw)) {
+    return record.entryCostNotionalKrw;
+  }
+  if (isPositiveDecimalString(record?.pnlEvidence?.entryCostNotionalKrw)) {
+    return record.pnlEvidence.entryCostNotionalKrw;
+  }
+  return readLiveOpsCliAutonomousExitFilledNotionalKrw(record);
+}
+
+function readLiveOpsCliAutonomousExitFilledNotionalKrw(record) {
+  if (isPositiveDecimalString(record?.filledNotionalKrw)) {
+    return record.filledNotionalKrw;
+  }
+  if (
+    isPositiveDecimalString(record?.terminalOrder?.requestedQuantity) &&
+    isPositiveDecimalString(record?.terminalOrder?.requestedPrice) &&
+    isDecimalEqual(record?.terminalOrder?.remainingQuantity ?? "0", "0")
+  ) {
+    return new Decimal(record.terminalOrder.requestedQuantity).mul(record.terminalOrder.requestedPrice).toFixed();
   }
   return "0";
 }

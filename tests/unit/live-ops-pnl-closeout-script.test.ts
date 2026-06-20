@@ -792,6 +792,113 @@ describe("Issue 206 live:ops PnL closeout runner", () => {
     expect(pool.connectCalled()).toBe(false);
   });
 
+  it("autonomous scope closeout은 unrelated global 최신 PnL row로 차단하지 않는다", async () => {
+    const { runLiveOpsPnlCloseout } = await import(supportModulePath);
+    const insertedRows: unknown[] = [];
+    const pool = createFakePnlCloseoutPool({
+      latestRun: {
+        id: "preflight-run-autonomous-scoped-status",
+        status: "COMPLETED",
+        finished_at: "2026-06-20T05:00:00.000Z",
+        balance_snapshot_count: 1,
+        open_order_count: 0,
+        mismatch_count: 0,
+      },
+      balances: [
+        { currency: "KRW", available: "40000", locked: "0", total: "40000", captured_at: "2026-06-20T05:00:00.000Z" },
+        { currency: "BTC", available: "0.0001", locked: "0", total: "0.0001", captured_at: "2026-06-20T05:00:00.000Z" },
+      ],
+      positions: [],
+      fillsCount: 0,
+      referencePrice: "101000000",
+      pnlSnapshots: [{
+        strategy_id: "aggregate",
+        captured_at: "2026-06-20T05:00:00.000Z",
+        equity: "50000",
+        payload_status: "MANUAL_REVIEW_REQUIRED",
+      }],
+      insertedRows,
+    });
+
+    const result = await runLiveOpsPnlCloseout({
+      pool,
+      market: "KRW-BTC",
+      strategyId: "live_ops_autonomous_24x7_core",
+      capturedAt: "2026-06-20T05:00:00.000Z",
+      referencePrice: "101000000",
+      maxReconcileAgeMs: 30_000,
+      positionSnapshot: {
+        source: "live_ops_autonomous_artifact_position",
+        strategyId: "live_ops_autonomous_24x7_core",
+        market: "KRW-BTC",
+        quantity: "0.0001",
+        averageEntryPrice: "100000000",
+        realizedPnlKrw: "0",
+      },
+    });
+
+    expect(result).toMatchObject({
+      status: "ready",
+      inserted: true,
+      strategyId: "live_ops_autonomous_24x7_core",
+      unrealizedPnlKrw: "100",
+    });
+  });
+
+  it("artifact positionSnapshot이 있으면 stale DB position보다 최신 preflight 원가를 우선한다", async () => {
+    const { runLiveOpsPnlCloseout } = await import(supportModulePath);
+    const insertedRows: unknown[] = [];
+    const pool = createFakePnlCloseoutPool({
+      latestRun: {
+        id: "preflight-run-artifact-over-db-position",
+        status: "COMPLETED",
+        finished_at: "2026-06-20T05:00:00.000Z",
+        balance_snapshot_count: 1,
+        open_order_count: 0,
+        mismatch_count: 0,
+      },
+      balances: [
+        { currency: "KRW", available: "40000", locked: "0", total: "40000", captured_at: "2026-06-20T05:00:00.000Z" },
+        { currency: "BTC", available: "0.0001", locked: "0", total: "0.0001", captured_at: "2026-06-20T05:00:00.000Z" },
+      ],
+      positions: [{
+        strategy_id: "live_ops_autonomous_24x7_core",
+        market: "KRW-BTC",
+        quantity: "0",
+        average_entry_price: "0",
+        realized_pnl: "0",
+        unrealized_pnl: "0",
+        updated_at: "2026-06-19T05:00:00.000Z",
+      }],
+      fillsCount: 0,
+      referencePrice: "101000000",
+      insertedRows,
+    });
+
+    const result = await runLiveOpsPnlCloseout({
+      pool,
+      market: "KRW-BTC",
+      strategyId: "live_ops_autonomous_24x7_core",
+      capturedAt: "2026-06-20T05:00:00.000Z",
+      referencePrice: "101000000",
+      maxReconcileAgeMs: 30_000,
+      positionSnapshot: {
+        source: "live_ops_autonomous_artifact_position",
+        strategyId: "live_ops_autonomous_24x7_core",
+        market: "KRW-BTC",
+        quantity: "0.0001",
+        averageEntryPrice: "100000000",
+        realizedPnlKrw: "0",
+      },
+    });
+
+    expect(result).toMatchObject({
+      status: "ready",
+      inserted: true,
+      unrealizedPnlKrw: "100",
+    });
+  });
+
   it("open order count query는 잔량 미확인 open order도 차단 대상으로 센다", async () => {
     const source = await readFile(supportModulePath, "utf8");
 

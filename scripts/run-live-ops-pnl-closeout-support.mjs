@@ -231,9 +231,9 @@ async function loadLiveOpsPnlCloseoutSource({
     readLatestPnlSnapshotStatus(pool, { market, strategyId, capturedAt }),
     readPnlSnapshotHistory(pool, { market, strategyId, capturedAt }),
   ]);
-  // DB position row가 아직 없을 때만 같은 preflight tick의 artifact 소유권 snapshot을 원가 source로 사용한다.
+  // 제출 직전 preflight가 읽은 artifact 소유권은 stale DB row보다 최신 원가 source다.
   const injectedPosition = normalizeInjectedPositionSnapshot(positionSnapshot, { market, strategyId });
-  const position = dbPosition ?? injectedPosition;
+  const position = injectedPosition ?? dbPosition;
   const latestPnlStatusBlock = validateLatestPnlSnapshotStatus(latestPnlStatus);
   if (latestPnlStatusBlock !== undefined) {
     // 최신 manual-review/partial row를 새 CALCULATED row로 가리면 손실 guard가 실제 차단 사유를 잃는다.
@@ -640,6 +640,28 @@ async function resolveLiveOpsPnlCloseoutReferencePrice({
 }
 
 async function readLatestPnlSnapshotStatus(pool, { market, strategyId, capturedAt }) {
+  if (strategyId !== defaultStrategyId) {
+    // explicit 전략 closeout은 cleanup/global 상태를 상속하지 않아야 자기 scope의 PnL만 차단 근거로 쓴다.
+    const result = await pool.query(`
+      SELECT strategy_id, market, captured_at, payload_json ->> 'status' AS payload_status
+      FROM pnl_snapshots
+      WHERE strategy_id = $1
+        AND (market = $2 OR market IS NULL)
+        AND captured_at <= $3
+      ORDER BY captured_at DESC, (market = $2) DESC
+      LIMIT 1
+    `, [strategyId, market, capturedAt]);
+    const row = result.rows[0];
+    if (row === undefined) {
+      return undefined;
+    }
+    return {
+      strategyId: hasMeaningfulValue(row.strategy_id) ? String(row.strategy_id) : null,
+      market: hasMeaningfulValue(row.market) ? String(row.market) : null,
+      capturedAt: hasMeaningfulValue(row.captured_at) ? toIsoString(row.captured_at) : null,
+      status: hasMeaningfulValue(row.payload_status) ? String(row.payload_status) : null,
+    };
+  }
   const result = await pool.query(`
     SELECT strategy_id, market, captured_at, payload_json ->> 'status' AS payload_status
     FROM pnl_snapshots
