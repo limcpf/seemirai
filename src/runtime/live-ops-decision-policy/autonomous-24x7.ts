@@ -14,6 +14,11 @@ export const LIVE_OPS_AUTONOMOUS_24X7_STRATEGY_ID = "live_ops_autonomous_24x7_co
 
 const minimumUpbitKrwOrderNotional = new Decimal(5_000);
 const bpsDenominator = new Decimal(10_000);
+const autonomous24x7RequiredFeatures = [
+  "cost_adjusted_margin_bps",
+  "trend_strength_bps",
+  "mean_reversion_discount_bps",
+] as const;
 
 /**
  * 24/7 live ops entry/exit 전략의 non-secret parameter contract다.
@@ -61,7 +66,7 @@ export function createLiveOpsAutonomous24x7Strategy(options: LiveOpsAutonomous24
   return {
     id: LIVE_OPS_AUTONOMOUS_24X7_STRATEGY_ID,
     version: "1",
-    requiredFeatures: [],
+    requiredFeatures: [...autonomous24x7RequiredFeatures],
     evaluate: (context) => evaluateAutonomous24x7(context, normalizedOptions),
   };
 }
@@ -386,13 +391,10 @@ type PositionSnapshotReadResult = {
 function readPositionSnapshot(input: JsonRecord | undefined): PositionSnapshotReadResult {
   if (input === undefined) {
     return {
-      kind: "ok",
-      snapshot: {
-        quantity: new Decimal(0),
-        averageEntryPrice: new Decimal(0),
-        openedAt: undefined,
-        highWatermarkPrice: undefined,
-        openPositionNotionalKrw: undefined,
+      kind: "blocked",
+      reasonCode: "autonomous_24x7_position_snapshot_missing",
+      metadata: {
+        positions_present: false,
       },
     };
   }

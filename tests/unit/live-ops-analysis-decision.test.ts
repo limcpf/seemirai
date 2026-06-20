@@ -213,6 +213,34 @@ describe("production live ops analysis/decision pipeline", () => {
       timeInForce: "POST_ONLY",
     });
   });
+
+  it("autonomous_24x7 feature snapshot 실패는 required feature 누락으로 fail-closed 한다", async () => {
+    const config = autonomousConfig();
+    const [strategy] = resolveLiveOpsDecisionPolicy({ config }).strategies;
+    if (strategy === undefined) throw new Error("expected autonomous strategy");
+
+    const result = await runLiveOpsAnalysisDecisionPipeline({
+      config,
+      marketData: marketDataSummary(),
+      observedAt,
+      marketEvents: [orderbookEvent({ bid: "100000000", ask: "100001000" })],
+      strategies: [strategy],
+      featureSnapshot: failedFeatureSnapshot(),
+      positions: {
+        quantity: "0",
+        averageEntryPrice: "0",
+      },
+    });
+
+    expect(result.summary).toMatchObject({
+      status: "blocked",
+      ready: false,
+      featureStatus: "failed",
+      orderIntentCount: 0,
+    });
+    expect(result.summary.checks.map((check) => check.code)).toContain("live_ops_feature_snapshot_failed");
+    expect(result.orderIntents).toHaveLength(0);
+  });
 });
 
 function marketDataSummary(

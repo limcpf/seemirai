@@ -114,6 +114,7 @@ export function createLiveOpsPnlCloseoutRunner({
         balanceSnapshot: input.balanceSnapshot,
         reconcileStatus: input.reconcileStatus,
         referencePrice: input.referencePrice,
+        referencePriceObservedAt: input.referencePriceObservedAt,
         maxReconcileAgeMs,
       });
     },
@@ -128,6 +129,7 @@ export async function runLiveOpsPnlCloseout({
   balanceSnapshot,
   reconcileStatus,
   referencePrice,
+  referencePriceObservedAt,
   maxReconcileAgeMs = defaultMaxReconcileAgeMs,
 } = {}) {
   if (pool === undefined || pool === null) {
@@ -145,6 +147,7 @@ export async function runLiveOpsPnlCloseout({
     balanceSnapshot,
     reconcileStatus,
     referencePrice,
+    referencePriceObservedAt,
     maxReconcileAgeMs,
   });
   if (source.status !== "ready") {
@@ -198,6 +201,7 @@ async function loadLiveOpsPnlCloseoutSource({
   balanceSnapshot,
   reconcileStatus,
   referencePrice,
+  referencePriceObservedAt,
   maxReconcileAgeMs,
 }) {
   const reconcile = reconcileStatus === undefined
@@ -294,6 +298,7 @@ async function loadLiveOpsPnlCloseoutSource({
     market,
     capturedAt,
     referencePrice,
+    referencePriceObservedAt,
     maxReconcileAgeMs,
     required: baseTotal.gt(0) || positionQuantity.gt(0),
   });
@@ -553,6 +558,7 @@ async function resolveLiveOpsPnlCloseoutReferencePrice({
   market,
   capturedAt,
   referencePrice,
+  referencePriceObservedAt,
   maxReconcileAgeMs,
   required,
 }) {
@@ -560,9 +566,18 @@ async function resolveLiveOpsPnlCloseoutReferencePrice({
     return { status: "ready", value: undefined };
   }
   if (isPositiveDecimalString(referencePrice)) {
+    const observedAt = hasMeaningfulValue(referencePriceObservedAt) ? toIsoString(referencePriceObservedAt) : capturedAt;
+    if (!isFreshTimestamp(observedAt, capturedAt, maxReconcileAgeMs)) {
+      return {
+        status: "blocked",
+        reasonCode: "pnl_closeout_reference_price_stale",
+        message: "주입된 기준가가 오래되어 PnL closeout을 만들지 않습니다.",
+        trace: { market, referencePriceAt: observedAt, capturedAt },
+      };
+    }
     return {
       status: "ready",
-      value: { price: new Decimal(normalizeDecimal(referencePrice)), source: "market_data_preflight", observedAt: capturedAt },
+      value: { price: new Decimal(normalizeDecimal(referencePrice)), source: "market_data_preflight", observedAt },
     };
   }
   const latestReferencePrice = await readLatestReferencePrice(pool, market);

@@ -130,6 +130,11 @@ describe("production live ops decision policy resolver", () => {
       },
     });
     expect(resolution.strategies).toHaveLength(1);
+    expect(resolution.strategies[0]?.requiredFeatures).toEqual([
+      "cost_adjusted_margin_bps",
+      "trend_strength_bps",
+      "mean_reversion_discount_bps",
+    ]);
     expect(() => loadLiveOpsConfig({
       ...config,
       analysis: {
@@ -276,6 +281,27 @@ describe("production live ops decision policy resolver", () => {
       kind: "HOLD",
       strategyId: LIVE_OPS_AUTONOMOUS_24X7_STRATEGY_ID,
       reason: "autonomous_24x7_position_hold",
+    });
+  });
+
+  it("autonomous_24x7 strategy는 position snapshot 결측을 무포지션으로 보정하지 않고 BLOCK으로 닫는다", async () => {
+    const strategy = resolveAutonomousStrategy();
+    const decision = await strategy.evaluate({
+      strategyId: strategy.id,
+      exchangeId: "upbit_krw_spot",
+      market: "KRW-BTC",
+      observedAt,
+      marketEvents: [orderbookEvent({ bid: "100000000", ask: "100001000" })],
+      features: strongEntryFeatures(),
+    });
+
+    expect(decision).toMatchObject({
+      kind: "BLOCK",
+      strategyId: LIVE_OPS_AUTONOMOUS_24X7_STRATEGY_ID,
+      reason: "autonomous_24x7_position_snapshot_missing",
+      metadata: {
+        positions_present: false,
+      },
     });
   });
 
