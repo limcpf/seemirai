@@ -7123,7 +7123,8 @@ function collectLiveOpsCliExitOrderIntentViolations({ config, marketData, intent
 function validateLiveOpsCliExitScopeAgainstPreflight(intent, positionScope) {
   const preflightScope = readLiveOpsCliExitPreflightPositionScope(intent);
   if (preflightScope === undefined) {
-    return undefined;
+    // SELL은 사용자 보유 BTC를 줄이는 side effect라 제출 직전 private-read 소유 scope 없이는 stale intent를 신뢰하지 않는다.
+    return "매도 후보에는 제출 직전 preflight position scope가 필요합니다";
   }
   if (preflightScope.owned !== true) {
     return "매도 후보는 제출 직전 preflight에서 전략 소유 포지션이 확인되어야 합니다";

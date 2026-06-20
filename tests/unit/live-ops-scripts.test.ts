@@ -1014,7 +1014,11 @@ console.log(JSON.stringify(summary));
     const config = JSON.parse(await readFile(path.join(process.cwd(), "config", "live-ops.example.json"), "utf8"));
     const observedAt = new Date().toISOString();
     const idempotencyKey = `ops-${"b".repeat(26)}`;
-    const sellIntent = createCliSellIntent({ idempotencyKey });
+    const sellIntent = createCliSellIntent({ idempotencyKey }) as Record<string, any>;
+    sellIntent.metadata.preflight_position_scope = {
+      ...sellIntent.metadata.position_scope,
+      owned: true,
+    };
     const exitRuntime = {
       submitExitOrder: vi.fn(async (submission: unknown) => ({
         status: "CANCELED_FOR_REQUOTE",
@@ -1465,6 +1469,72 @@ console.log(JSON.stringify(summary));
       code: "live_ops_order_intent_blocked",
     }));
     expect(JSON.stringify(summary.checks)).toContain("평균 진입가");
+    expect(submitted).not.toHaveBeenCalled();
+  });
+
+  it("autonomous SELL은 제출 직전 preflight scope가 없으면 broker 제출 전에 차단한다", async () => {
+    const { evaluateLiveOpsCliLiveExecution } = await import(path.join(process.cwd(), "scripts/run-live-ops-support.mjs"));
+    const observedAt = "2026-06-20T00:00:00.000Z";
+    const submitted = vi.fn(async () => ({ status: "SUBMITTED", brokerOrderId: "unexpected-no-preflight-sell" }));
+    const sellIntent = createCliSellIntent({ idempotencyKey: `ops-${"a".repeat(26)}` }) as Record<string, any>;
+    delete sellIntent.metadata.preflight_position_scope;
+
+    const summary = await withFakeSystemTime(observedAt, () => evaluateLiveOpsCliLiveExecution({
+      config: {
+        live_trading_enabled: true,
+        universe: { markets: ["KRW-BTC"], default_market: "KRW-BTC" },
+        budget: {
+          max_order_krw: "10000",
+          daily_autonomous_notional_limit_krw: "30000",
+          max_open_position_notional_krw: "30000",
+        },
+      },
+      fixtureSmoke: false,
+      analysisDecision: {
+        ready: true,
+        orderIntentCount: 1,
+        decisionCategory: "ORDER_INTENT",
+      },
+      marketData: {
+        ready: true,
+        referencePrice: "100000000",
+      },
+      env: liveOrderEnv(),
+      orderIntents: [sellIntent],
+      exitRuntime: { submitExitOrder: submitted },
+      executionStatus: {
+        killSwitchActive: false,
+        reconcileFresh: true,
+        evidenceId: "execution-status-evidence",
+      },
+      postSubmitReadiness: {
+        reconcileReady: true,
+        telegramReady: true,
+        evidenceId: "post-submit-evidence",
+      },
+      budgetSnapshot: {
+        maxOrderKrw: "10000",
+        dailyAutonomousNotionalLimitKrw: "30000",
+        dailyAutonomousNotionalUsedKrw: "10000",
+        openPositionNotionalKrw: "10000",
+        maxOpenPositionNotionalKrw: "30000",
+        capturedAt: observedAt,
+      },
+      lossSnapshot: {
+        dailyRealizedLossKrw: "0",
+        weeklyRealizedLossKrw: "0",
+        capturedAt: observedAt,
+      },
+    }));
+
+    expect(summary).toMatchObject({
+      status: "blocked",
+      submittedOrderCount: 0,
+    });
+    expect(summary.checks).toContainEqual(expect.objectContaining({
+      code: "live_ops_order_intent_blocked",
+    }));
+    expect(JSON.stringify(summary.checks)).toContain("제출 직전 preflight");
     expect(submitted).not.toHaveBeenCalled();
   });
 
