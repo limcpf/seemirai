@@ -1275,6 +1275,7 @@ function createLiveOpsCliAutonomousPreflightPositionScope(preflight) {
     total_quantity: ownedQuantity === undefined ? "0" : ownedQuantity.toFixed(),
     reserved_notional_krw: isNonNegativeDecimalString(ownership?.reservedNotionalKrw) ? ownership.reservedNotionalKrw : "0",
     average_entry_price: isPositiveDecimalString(ownership?.averageEntryPrice) ? ownership.averageEntryPrice : null,
+    entry_fee_krw: isNonNegativeDecimalString(ownership?.entryFeeKrw) ? ownership.entryFeeKrw : "0",
     high_watermark_price: isPositiveDecimalString(ownership?.highWatermarkPrice) ? ownership.highWatermarkPrice : null,
     observed_at: preflight?.observedAt,
     source: ownership?.source ?? "live_ops_cli_private_preflight",
@@ -1405,13 +1406,41 @@ function attachLiveOpsCliEntryRuntimeApprovalEvidence(intent) {
 }
 
 function createLiveOpsCliAutonomousEntryCostInput(intent) {
-  const expectedReturnBps = isNonNegativeDecimalString(intent?.metadata?.cost_adjusted_margin_bps)
-    ? String(intent.metadata.cost_adjusted_margin_bps)
-    : "0";
+  const costInput = createLiveOpsCliCleanupCostInput();
+  const expectedReturnBps = resolveLiveOpsCliAutonomousEntryExpectedReturnBps({
+    intent,
+    costInput,
+  });
   return {
-    ...createLiveOpsCliCleanupCostInput(),
+    ...costInput,
     expectedReturnBps,
   };
+}
+
+function resolveLiveOpsCliAutonomousEntryExpectedReturnBps({ intent, costInput }) {
+  if (isNonNegativeDecimalString(intent?.metadata?.gross_expected_return_bps)) {
+    return String(intent.metadata.gross_expected_return_bps);
+  }
+  if (!isNonNegativeDecimalString(intent?.metadata?.cost_adjusted_margin_bps)) {
+    return "0";
+  }
+  // 전략 신호의 cost_adjusted_margin_bps는 비용 차감 후 순마진이므로 CostModel 입력에는 비용을 다시 더한 gross 기대수익을 전달한다.
+  return new Decimal(intent.metadata.cost_adjusted_margin_bps)
+    .plus(sumLiveOpsCliEntryCostBurdenBps(costInput))
+    .toFixed();
+}
+
+function sumLiveOpsCliEntryCostBurdenBps(costInput) {
+  return [
+    costInput?.entryFeeBps,
+    costInput?.exitFeeBps,
+    costInput?.spreadCostBpsP75,
+    costInput?.expectedSlippageBpsP95,
+    costInput?.cancelRequotePenaltyBps,
+    costInput?.safetyBufferBps,
+  ].reduce((total, value) => {
+    return total.plus(isNonNegativeDecimalString(value) ? value : "0");
+  }, new Decimal(0));
 }
 
 function resolveLiveOpsCliCleanupRuntimeApprovalOrderIntentEvidence({ existingEvidence, intent, runtimeEvidence }) {
@@ -2199,9 +2228,14 @@ export function createLiveOpsCliFileBudgetReservation({ artifactStore, clock = (
       throw new Error("LiveOpsCliBudgetReservationMalformed");
     }
     const dayRecords = records.filter((record) => String(record?.reservedAt ?? "").slice(0, 10) === day);
-    const reservedNotionalKrw = dayRecords.reduce((total, record) => {
+    const entryNoFillRecords = cleanupRecords.filter(isLiveOpsCliAutonomousEntryNoFillCleanupRecord);
+    const activeDayRecords = dayRecords.filter((record) => (
+      findLiveOpsCliAutonomousEntryNoFillForReservation(record, entryNoFillRecords) === undefined
+    ));
+    const reservedNotionalKrw = activeDayRecords.reduce((total, record) => {
       return total.plus(isNonNegativeDecimalString(record?.reservedNotionalKrw) ? record.reservedNotionalKrw : "0");
     }, new Decimal(0)).toFixed();
+    // terminal no-fill이 확인된 post-only BUY는 포지션도 주문도 없으므로 다음 tick 예산을 즉시 돌려준다.
     // 일일 예산은 당일만 집계하지만, 보유 포지션 소유권은 UTC 날짜 경계 뒤에도 exit rule이 작동해야 하므로 전체 자동 reservation을 본다.
     const autonomous24x7Position = summarizeLiveOpsCliAutonomousReservationOwnership({
       reservationRecords: records,
@@ -2211,7 +2245,7 @@ export function createLiveOpsCliFileBudgetReservation({ artifactStore, clock = (
     return {
       day,
       reservedNotionalKrw,
-      reservationCount: dayRecords.length,
+      reservationCount: activeDayRecords.length,
       autonomous24x7Position,
     };
   }
@@ -2288,6 +2322,7 @@ export function createLiveOpsCliFileBudgetReservation({ artifactStore, clock = (
         requestedQuantity: isPositiveDecimalString(currentAggregate.requestedQuantity)
           ? currentAggregate.requestedQuantity
           : legacyObservationFallback.requestedQuantity,
+        entryFeeKrw: isNonNegativeDecimalString(currentAggregate.entryFeeKrw) ? currentAggregate.entryFeeKrw : "0",
         openedAt: hasMeaningfulValue(currentAggregate.openedAt)
           ? currentAggregate.openedAt
           : legacyObservationFallback.openedAt,
@@ -2315,6 +2350,13 @@ export function createLiveOpsCliFileBudgetReservation({ artifactStore, clock = (
         reservedNotionalKrw: positionQuantity.gt(0) ? averageEntryPrice.mul(positionQuantity).toFixed() : "0",
         requestedQuantity: positionQuantity.toFixed(),
         averageEntryPrice: positionQuantity.gt(0) ? averageEntryPrice.toFixed() : undefined,
+        entryFeeKrw: positionQuantity.gt(0) && isNonNegativeDecimalString(aggregateWithLegacyFallback.entryFeeKrw)
+          ? scaleLiveOpsCliAutonomousEntryFeeForQuantity({
+            entryFeeKrw: aggregateWithLegacyFallback.entryFeeKrw,
+            sourceQuantity: aggregateWithLegacyFallback.requestedQuantity,
+            targetQuantity: positionQuantity.toFixed(),
+          })
+          : "0",
         highWatermarkPrice: positionQuantity.gt(0) ? highWatermarkPrice.toFixed() : undefined,
         highWatermarkAt: positionQuantity.gt(0) ? highWatermarkAt : undefined,
         openedAt: hasMeaningfulValue(aggregateWithLegacyFallback.openedAt) ? aggregateWithLegacyFallback.openedAt : observedAt,
@@ -2440,6 +2482,7 @@ function summarizeLiveOpsCliAutonomousReservationOwnership({ reservationRecords,
   );
   const netQuantity = openLots.reduce((total, lot) => total.plus(lot.quantity), new Decimal(0));
   const netReservedNotional = openLots.reduce((total, lot) => total.plus(lot.quantity.mul(lot.averageEntryPrice)), new Decimal(0));
+  const netEntryFeeKrw = openLots.reduce((total, lot) => total.plus(lot.entryFeeKrw), new Decimal(0));
   const averageEntryPrice = netQuantity.gt(0) ? netReservedNotional.div(netQuantity) : undefined;
   const realizedPnlKrw = sortedExits.reduce((total, record) => {
     return total.plus(readLiveOpsCliAutonomousExitRealizedPnlKrw(record));
@@ -2499,6 +2542,7 @@ function summarizeLiveOpsCliAutonomousReservationOwnership({ reservationRecords,
       reservationCount: strategyRecords.length,
       requestedQuantity: String(autonomousPositionState.requestedQuantity),
       averageEntryPrice: String(autonomousPositionState.averageEntryPrice),
+      ...(isNonNegativeDecimalString(autonomousPositionState.entryFeeKrw) ? { entryFeeKrw: String(autonomousPositionState.entryFeeKrw) } : {}),
       highWatermarkPrice: autonomousPositionState.highWatermarkPrice,
       highWatermarkAt: autonomousPositionState.highWatermarkAt,
       openedAt: hasMeaningfulValue(autonomousPositionState.openedAt) ? autonomousPositionState.openedAt : sortedReservations[0]?.reservedAt,
@@ -2535,6 +2579,7 @@ function summarizeLiveOpsCliAutonomousReservationOwnership({ reservationRecords,
     reservationCount: strategyRecords.length,
     requestedQuantity: netQuantity.toFixed(),
     averageEntryPrice: averageEntryPrice?.toFixed(),
+    entryFeeKrw: netEntryFeeKrw.toFixed(),
     highWatermarkPrice,
     highWatermarkAt,
     openedAt: openLots[0]?.reservedAt,
@@ -2641,6 +2686,15 @@ function resolveLiveOpsCliObservedAutonomousPositionQuantity({ aggregate, wallet
   return new Decimal(0);
 }
 
+function scaleLiveOpsCliAutonomousEntryFeeForQuantity({ entryFeeKrw, sourceQuantity, targetQuantity }) {
+  if (!isNonNegativeDecimalString(entryFeeKrw) || !isPositiveDecimalString(sourceQuantity) || !isNonNegativeDecimalString(targetQuantity)) {
+    return "0";
+  }
+  return new Decimal(entryFeeKrw)
+    .mul(Decimal.min(new Decimal(targetQuantity), new Decimal(sourceQuantity)).div(sourceQuantity))
+    .toFixed();
+}
+
 function createLiveOpsCliAutonomousReservationLot(record, entryFillRecords = []) {
   const entryFill = findLiveOpsCliAutonomousEntryFillForReservation(record, entryFillRecords);
   if (entryFill === undefined && isPositiveDecimalString(record?.requestedQuantity)) {
@@ -2663,9 +2717,11 @@ function createLiveOpsCliAutonomousReservationLot(record, entryFillRecords = [])
   if (quantity === undefined || averageEntryPrice === undefined) {
     return undefined;
   }
+  const entryFeeKrw = readLiveOpsCliAutonomousEntryFeeKrw(entryFill);
   return {
     quantity,
     averageEntryPrice,
+    entryFeeKrw: new Decimal(entryFeeKrw),
     reservedAt: entryFill?.filledAt ?? record?.reservedAt,
     attemptId: record?.attemptId,
   };
@@ -2711,8 +2767,13 @@ function applyLiveOpsCliAutonomousExitLots(lots, sortedExits) {
       if (remainingExitQuantity.lte(0) || lot.quantity.lte(0)) {
         continue;
       }
+      const quantityBeforeExit = lot.quantity;
       const consumed = Decimal.min(lot.quantity, remainingExitQuantity);
       lot.quantity = lot.quantity.minus(consumed);
+      if (lot.entryFeeKrw instanceof Decimal && quantityBeforeExit.gt(0)) {
+        // 부분 청산된 lot 수수료는 이미 해당 SELL 손익에 반영되므로 남은 보유분 수수료만 다음 tick에 보존한다.
+        lot.entryFeeKrw = lot.entryFeeKrw.minus(lot.entryFeeKrw.mul(consumed.div(quantityBeforeExit)));
+      }
       remainingExitQuantity = remainingExitQuantity.minus(consumed);
     }
   }
@@ -2805,6 +2866,16 @@ function readLiveOpsCliAutonomousEntryFilledPrice(record) {
     return record.terminalOrder.requestedPrice;
   }
   return undefined;
+}
+
+function readLiveOpsCliAutonomousEntryFeeKrw(record) {
+  if (isNonNegativeDecimalString(record?.entryFeeKrw)) {
+    return record.entryFeeKrw;
+  }
+  if (isNonNegativeDecimalString(record?.entry_fee_krw)) {
+    return record.entry_fee_krw;
+  }
+  return "0";
 }
 
 function isLiveOpsCliAutonomousExitAfterReservation(exit, reservation) {
@@ -4564,6 +4635,8 @@ function formatLiveOpsCliTelegramEventKind(eventKind) {
       return "실주문 가능 경계 진입";
     case "ORDER_SUBMITTED":
       return "주문 제출";
+    case "ORDER_FILLED":
+      return "주문 체결";
     case "CANCEL_REQUESTED":
       return "취소 요청";
     case "CANCEL_CONFIRMED":
@@ -5683,6 +5756,7 @@ async function writeLiveOpsCliAutonomousEntryFillCloseoutResult({
       action: "거래소 체결 수량과 가격을 확인하고 autonomous entry fill artifact를 복구하세요.",
     });
   }
+  const entryFeeKrw = readLiveOpsCliOrderPaidFeeKrw(terminalOrder) ?? readLiveOpsCliOrderPaidFeeKrw(brokerOrder);
   const record = {
     kind: "live_ops_autonomous_entry_fill_closeout",
     attemptId: request.idempotencyKey,
@@ -5694,6 +5768,7 @@ async function writeLiveOpsCliAutonomousEntryFillCloseoutResult({
     filledQuantity,
     filledPrice,
     filledNotionalKrw: new Decimal(filledQuantity).mul(filledPrice).toFixed(),
+    ...(isPositiveDecimalString(entryFeeKrw) ? { entryFeeKrw } : {}),
     filledAt,
     terminalCheckedAt: filledAt,
     idempotencyKeySuffix: suffixLiveOpsCliIdentifier(request.idempotencyKey),
@@ -6080,6 +6155,8 @@ async function writeLiveOpsCliAutonomousExitCloseoutOrManualReview({
     intent,
     filledQuantity,
     requestedPrice,
+    terminalOrder,
+    brokerOrder,
   });
   if (pnlEvidence.status !== "ready") {
     // 실현손익 없는 closeout은 손실 guard를 잘못 열 수 있으므로 artifact ready로 인정하지 않는다.
@@ -6106,6 +6183,9 @@ async function writeLiveOpsCliAutonomousExitCloseoutOrManualReview({
     filledNotionalKrw: pnlEvidence.filledNotionalKrw,
     entryAveragePrice: pnlEvidence.entryAveragePrice,
     entryCostNotionalKrw: pnlEvidence.entryCostNotionalKrw,
+    entryFeeKrw: pnlEvidence.entryFeeKrw,
+    exitFeeKrw: pnlEvidence.exitFeeKrw,
+    totalFeeKrw: pnlEvidence.totalFeeKrw,
     realizedPnlKrw: pnlEvidence.realizedPnlKrw,
     pnlSource: pnlEvidence.source,
     filledAt,
@@ -6134,7 +6214,7 @@ async function writeLiveOpsCliAutonomousExitCloseoutOrManualReview({
   }
 }
 
-function createLiveOpsCliAutonomousExitRealizedPnlEvidence({ intent, filledQuantity, requestedPrice }) {
+function createLiveOpsCliAutonomousExitRealizedPnlEvidence({ intent, filledQuantity, requestedPrice, terminalOrder, brokerOrder }) {
   const entryAveragePrice = readLiveOpsCliAutonomousExitEntryAveragePrice(intent);
   if (!isPositiveDecimalString(filledQuantity)) {
     return { status: "blocked", reason: "exit_filled_quantity_missing" };
@@ -6150,13 +6230,19 @@ function createLiveOpsCliAutonomousExitRealizedPnlEvidence({ intent, filledQuant
   const averageEntryPrice = new Decimal(entryAveragePrice);
   const filledNotionalKrw = quantity.mul(filledPrice);
   const entryCostNotionalKrw = quantity.mul(averageEntryPrice);
+  const entryFeeKrw = new Decimal(readLiveOpsCliAutonomousExitEntryFeeKrw({ intent, filledQuantity }));
+  const exitFeeKrw = new Decimal(readLiveOpsCliOrderPaidFeeKrw(terminalOrder) ?? readLiveOpsCliOrderPaidFeeKrw(brokerOrder) ?? "0");
+  const totalFeeKrw = entryFeeKrw.plus(exitFeeKrw);
   return {
     status: "ready",
     filledPrice: filledPrice.toFixed(),
     filledNotionalKrw: filledNotionalKrw.toFixed(),
     entryAveragePrice: averageEntryPrice.toFixed(),
     entryCostNotionalKrw: entryCostNotionalKrw.toFixed(),
-    realizedPnlKrw: filledNotionalKrw.minus(entryCostNotionalKrw).toFixed(),
+    entryFeeKrw: entryFeeKrw.toFixed(),
+    exitFeeKrw: exitFeeKrw.toFixed(),
+    totalFeeKrw: totalFeeKrw.toFixed(),
+    realizedPnlKrw: filledNotionalKrw.minus(entryCostNotionalKrw).minus(totalFeeKrw).toFixed(),
     source: "live_ops_autonomous_preflight_position_scope",
   };
 }
@@ -6169,6 +6255,70 @@ function readLiveOpsCliAutonomousExitEntryAveragePrice(intent) {
   const positionScope = intent?.metadata?.position_scope;
   if (isPositiveDecimalString(positionScope?.average_entry_price)) {
     return positionScope.average_entry_price;
+  }
+  return undefined;
+}
+
+function readLiveOpsCliAutonomousExitEntryFeeKrw({ intent, filledQuantity }) {
+  const preflightScope = intent?.metadata?.preflight_position_scope;
+  const positionScope = intent?.metadata?.position_scope;
+  const scope = isNonNegativeDecimalString(preflightScope?.entry_fee_krw)
+    ? preflightScope
+    : isNonNegativeDecimalString(positionScope?.entry_fee_krw)
+    ? positionScope
+    : intent?.metadata;
+  const entryFeeKrw = isNonNegativeDecimalString(scope?.entry_fee_krw)
+    ? new Decimal(scope.entry_fee_krw)
+    : isNonNegativeDecimalString(scope?.entryFeeKrw)
+    ? new Decimal(scope.entryFeeKrw)
+    : new Decimal(0);
+  const totalQuantity = isPositiveDecimalString(scope?.total_quantity) ? new Decimal(scope.total_quantity) : undefined;
+  if (totalQuantity !== undefined && totalQuantity.gt(0) && isPositiveDecimalString(filledQuantity)) {
+    return entryFeeKrw.mul(Decimal.min(new Decimal(filledQuantity), totalQuantity).div(totalQuantity)).toFixed();
+  }
+  return entryFeeKrw.toFixed();
+}
+
+function readLiveOpsCliOrderPaidFeeKrw(order) {
+  const fee = readFirstLiveOpsCliDecimalField(order, [
+    "paidFeeKrw",
+    "paid_fee_krw",
+    "paidFee",
+    "paid_fee",
+    "tradeFee",
+    "trade_fee",
+    "executedFee",
+    "executed_fee",
+  ]);
+  if (!isNonNegativeDecimalString(fee)) {
+    return undefined;
+  }
+  const currency = readFirstLiveOpsCliStringField(order, [
+    "feeCurrency",
+    "fee_currency",
+    "paidFeeCurrency",
+    "paid_fee_currency",
+  ]);
+  if (currency !== undefined && String(currency).toUpperCase() !== "KRW") {
+    return undefined;
+  }
+  return fee;
+}
+
+function readFirstLiveOpsCliDecimalField(record, keys) {
+  for (const key of keys) {
+    if (isNonNegativeDecimalString(record?.[key])) {
+      return String(record[key]);
+    }
+  }
+  return undefined;
+}
+
+function readFirstLiveOpsCliStringField(record, keys) {
+  for (const key of keys) {
+    if (hasMeaningfulValue(record?.[key])) {
+      return String(record[key]);
+    }
   }
   return undefined;
 }
@@ -8904,6 +9054,9 @@ function mapLiveOpsCliTelegramTradeEventKind(liveExecution) {
   switch (liveExecution.status) {
     case "submitted":
       return "ORDER_SUBMITTED";
+    case "filled":
+    case "FILLED":
+      return "ORDER_FILLED";
     case "cancel_requested":
       return "CANCEL_REQUESTED";
     case "cancel_confirmed":
@@ -9452,6 +9605,7 @@ function createLiveOpsCliAutonomousPositionSnapshot({ preflight, policy, observe
     kind: "ok",
     quantity: ownedQuantity.toFixed(),
     averageEntryPrice: averageEntryPrice.toFixed(),
+    entryFeeKrw: isNonNegativeDecimalString(ownership.entryFeeKrw) ? ownership.entryFeeKrw : "0",
     highWatermarkPrice: highWatermarkPrice.toFixed(),
     openPositionNotionalKrw: currentNotional.toFixed(),
     openedAt: hasMeaningfulValue(ownership.openedAt) ? ownership.openedAt : exposure.capturedAt ?? observedAt,
@@ -9600,6 +9754,7 @@ function evaluateLiveOpsCliAutonomousExitPolicy({ config, orderbook, observedAt,
         strategy_id: liveOpsCliAutonomous24x7StrategyId,
         total_quantity: position.quantity,
         average_entry_price: position.averageEntryPrice,
+        entry_fee_krw: isNonNegativeDecimalString(position.entryFeeKrw) ? position.entryFeeKrw : "0",
       },
       exit_target_quantity: targetQuantity.toFixed(),
       exit_chunked: requestedQuantity.lt(targetQuantity) ? "true" : "false",
