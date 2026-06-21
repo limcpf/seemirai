@@ -249,7 +249,8 @@ function shouldContinueDaemon({ startedMs, durationMs, tickCount, maxTicks }) {
     return false;
   }
   if (durationMs === undefined) {
-    return tickCount === 0 || maxTicks === undefined;
+    // maxTicks는 위 분기에서만 종료시켜 duration 없는 smoke 반복이 첫 tick 뒤 조기 종료되지 않게 한다.
+    return true;
   }
   if (!Number.isFinite(startedMs)) {
     return tickCount === 0;

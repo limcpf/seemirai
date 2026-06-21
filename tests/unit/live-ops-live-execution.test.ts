@@ -130,6 +130,32 @@ describe("production live ops live execution adapter", () => {
     expect(JSON.stringify(summary)).not.toContain("fake-upbit-secret-key");
   });
 
+  it("BUY 후보는 fresh reference price가 없으면 requestedPrice로 보정하지 않고 차단한다", async () => {
+    const entryRuntime = createEntryRuntimeRecorder();
+    const input = createInput({
+      analysisDecision: analysisSummary({ orderIntentCount: 1, decisionCategory: "ORDER_INTENT" }),
+      orderIntents: [
+        createOrderIntent({
+          requestedPrice: "120000000",
+          requestedNotional: "12000",
+        }),
+      ],
+      entryRuntime,
+    });
+    const { referencePrice: _referencePrice, ...inputWithoutReferencePrice } = input;
+    const summary = await runLiveOpsLiveExecution(inputWithoutReferencePrice);
+
+    expect(summary).toMatchObject({
+      status: "blocked",
+      ready: false,
+      liveOrderCapable: false,
+      attemptedOrderCount: 0,
+    });
+    expect(summary.checks.map((check) => check.code)).toContain("live_ops_order_intent_blocked");
+    expect(JSON.stringify(summary.checks)).toContain("fresh reference price");
+    expect(entryRuntime.submitEntryCandidate).not.toHaveBeenCalled();
+  });
+
   it("SELL LIMIT POST_ONLY 후보를 exit runtime submission으로 변환하고 entry runtime은 호출하지 않는다", async () => {
     const entryRuntime = createEntryRuntimeRecorder();
     const exitRuntime = createExitRuntimeRecorder();
@@ -298,6 +324,42 @@ describe("production live ops live execution adapter", () => {
     expect(entryRuntime.submitEntryCandidate).not.toHaveBeenCalled();
   });
 
+  it("SELL 후보는 최신 position snapshot 수량보다 크면 exit runtime 호출 전에 차단한다", async () => {
+    const entryRuntime = createEntryRuntimeRecorder();
+    const exitRuntime = createExitRuntimeRecorder();
+
+    const summary = await runLiveOpsLiveExecution(createInput({
+      analysisDecision: analysisSummary({ orderIntentCount: 1, decisionCategory: "ORDER_INTENT" }),
+      orderIntents: [
+        createSellOrderIntent({
+          requestedQuantity: "0.0001",
+          requestedNotional: "9900",
+        }),
+      ],
+      entryRuntime,
+      exitRuntime,
+      risk: createRiskInput({
+        positions: [
+          createPositionRiskSnapshot({
+            metadata: {
+              strategy_owned_quantity: "0.00008",
+            },
+          }),
+        ],
+      }),
+    }));
+
+    expect(summary).toMatchObject({
+      status: "blocked",
+      ready: false,
+      liveOrderCapable: false,
+    });
+    expect(summary.checks.map((check) => check.code)).toContain("live_ops_order_intent_blocked");
+    expect(JSON.stringify(summary.checks)).toContain("최신 포지션");
+    expect(exitRuntime.submitExitOrder).not.toHaveBeenCalled();
+    expect(entryRuntime.submitEntryCandidate).not.toHaveBeenCalled();
+  });
+
   it("명시 id가 없어도 decision key를 stable ops attempt id로 낮춘다", async () => {
     const entryRuntime = createEntryRuntimeRecorder();
     const intent = createOrderIntent();
@@ -450,7 +512,7 @@ describe("production live ops live execution adapter", () => {
 function createInput(
   overrides: Partial<LiveOpsLiveExecutionInput> = {},
 ): LiveOpsLiveExecutionInput {
-  return {
+  const input: LiveOpsLiveExecutionInput = {
     config: defaultLiveOpsConfig,
     analysisDecision: analysisSummary({ orderIntentCount: 1, decisionCategory: "ORDER_INTENT" }),
     orderIntents: [createOrderIntent()],
@@ -477,30 +539,50 @@ function createInput(
       cancelRequotePenaltyBps: "1",
       safetyBufferBps: "10",
     },
-    risk: {
-      account: {
-        equityKrw: "1000000",
-        dailyRealizedPnlBps: "0",
-        weeklyRealizedPnlBps: "0",
-        maxDrawdownBps: "0",
-        capturedAt: observedAt,
-      },
-      positions: [],
-      strategy: {
-        strategyId: "fixture_order_strategy",
-        consecutiveLosses: 0,
-        capturedAt: observedAt,
-      },
-      infrastructureSignals: [],
-      thresholdSnapshot: createRiskThresholdSnapshot(
-        defaultRiskLimitThresholds,
-        observedAt,
-        "live-ops-live-execution.test",
-      ),
-    },
+    risk: createRiskInput(),
     killSwitchActive: false,
     reconcileFresh: true,
     entryRuntime: createEntryRuntimeRecorder(),
+    referencePrice: "100000000",
+    ...overrides,
+  };
+
+  if (overrides.risk === undefined && input.orderIntents[0]?.side === "SELL") {
+    return {
+      ...input,
+      risk: {
+        ...input.risk,
+        positions: [createPositionRiskSnapshot()],
+      },
+    };
+  }
+
+  return input;
+}
+
+function createRiskInput(
+  overrides: Partial<LiveOpsLiveExecutionInput["risk"]> = {},
+): LiveOpsLiveExecutionInput["risk"] {
+  return {
+    account: {
+      equityKrw: "1000000",
+      dailyRealizedPnlBps: "0",
+      weeklyRealizedPnlBps: "0",
+      maxDrawdownBps: "0",
+      capturedAt: observedAt,
+    },
+    positions: [],
+    strategy: {
+      strategyId: "fixture_order_strategy",
+      consecutiveLosses: 0,
+      capturedAt: observedAt,
+    },
+    infrastructureSignals: [],
+    thresholdSnapshot: createRiskThresholdSnapshot(
+      defaultRiskLimitThresholds,
+      observedAt,
+      "live-ops-live-execution.test",
+    ),
     ...overrides,
   };
 }
@@ -531,7 +613,9 @@ function analysisSummary(
   };
 }
 
-function createOrderIntent(): Extract<OrderIntent, { orderType: "LIMIT" }> {
+function createOrderIntent(
+  overrides: Partial<Extract<OrderIntent, { orderType: "LIMIT" }>> = {},
+): Extract<OrderIntent, { orderType: "LIMIT" }> {
   return {
     exchangeId: "upbit_krw_spot",
     market: "KRW-BTC",
@@ -548,6 +632,7 @@ function createOrderIntent(): Extract<OrderIntent, { orderType: "LIMIT" }> {
     metadata: {
       expected_loss_bps_of_equity: "5",
     },
+    ...overrides,
   };
 }
 
@@ -590,6 +675,24 @@ function createSellOrderIntent(
         strategy_id: "fixture_order_strategy",
         total_quantity: "0.0001",
       },
+    },
+    ...overrides,
+  };
+}
+
+function createPositionRiskSnapshot(
+  overrides: Partial<LiveOpsLiveExecutionInput["risk"]["positions"][number]> = {},
+): LiveOpsLiveExecutionInput["risk"]["positions"][number] {
+  return {
+    exchangeId: "upbit_krw_spot",
+    market: "KRW-BTC",
+    strategyId: "fixture_order_strategy",
+    notionalKrw: "9900",
+    notionalBpsOfEquity: "99",
+    unrealizedPnlBps: "0",
+    capturedAt: observedAt,
+    metadata: {
+      strategy_owned_quantity: "0.0001",
     },
     ...overrides,
   };

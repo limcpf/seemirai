@@ -50,6 +50,35 @@ describe("production live ops script skeleton", () => {
     expect(result.stdout).not.toContain("fake-upbit-secret-key");
   });
 
+  it("live:ops:daemon --max-ticks는 duration 없이도 지정 tick 수까지 반복한다", () => {
+    const result = spawnSync(
+      process.execPath,
+      [
+        "scripts/run-live-ops-daemon.mjs",
+        "--config",
+        "config/live-ops.example.json",
+        "--env-file",
+        "tests/fixtures/live-ops/fake.env",
+        "--fixture-smoke",
+        "--max-ticks",
+        "3",
+        "--tick-interval-ms",
+        "0",
+        "--json",
+      ],
+      {
+        cwd: process.cwd(),
+        encoding: "utf8",
+        env: minimalEnv(),
+      },
+    );
+
+    expect(result.status).toBe(0);
+    expect(result.stderr).toBe("");
+    const summary = JSON.parse(result.stdout);
+    expect(summary.counters.tickCount).toBe(3);
+  });
+
   it("live:ops:daemon 실패 tick도 status file에 최신 실패 상태를 기록한다", async () => {
     const tempDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-live-ops-daemon-status-"));
     const statusFilePath = path.join(tempDir, "daemon-status.json");
