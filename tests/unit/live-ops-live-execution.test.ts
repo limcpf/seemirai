@@ -244,6 +244,48 @@ describe("production live ops live execution adapter", () => {
     expect(entryRuntime.submitEntryCandidate).not.toHaveBeenCalled();
   });
 
+  it("risk-reducing SELL 후보는 계정 손실 한도 초과 상태에서도 exit runtime으로 전진한다", async () => {
+    const entryRuntime = createEntryRuntimeRecorder();
+    const exitRuntime = createExitRuntimeRecorder();
+
+    const summary = await runLiveOpsLiveExecution(createInput({
+      analysisDecision: analysisSummary({ orderIntentCount: 1, decisionCategory: "ORDER_INTENT" }),
+      orderIntents: [createSellOrderIntent({ reason: "autonomous_24x7_stop_loss" })],
+      entryRuntime,
+      exitRuntime,
+      risk: createRiskInput({
+        account: {
+          equityKrw: "1000000",
+          dailyRealizedPnlBps: "-100",
+          weeklyRealizedPnlBps: "0",
+          maxDrawdownBps: "0",
+          capturedAt: observedAt,
+        },
+        positions: [createPositionRiskSnapshot()],
+      }),
+    }));
+
+    expect(summary).toMatchObject({
+      status: "submitted",
+      ready: true,
+      liveOrderCapable: true,
+      attemptedOrderCount: 1,
+      submittedOrderCount: 1,
+    });
+    expect(summary.checks.map((check) => check.code)).not.toContain("live_ops_exit_risk_blocked");
+    expect(exitRuntime.submitExitOrder).toHaveBeenCalledTimes(1);
+    expect(entryRuntime.submitEntryCandidate).not.toHaveBeenCalled();
+    const submission = exitRuntime.submitExitOrder.mock.calls[0]?.[0];
+    expect(submission?.riskApproval).toMatchObject({
+      source: "risk_gate",
+      approved: true,
+      action: "ALLOW",
+      status: "WARN",
+      failed_evaluation_reason_codes: [],
+      warning_evaluation_reason_codes: expect.arrayContaining(["daily_loss_limit_exceeded"]),
+    });
+  });
+
   it("SELL 후보의 긴 strategy decision key를 Upbit-safe attempt id로 낮춘다", async () => {
     const entryRuntime = createEntryRuntimeRecorder();
     const exitRuntime = createExitRuntimeRecorder();
