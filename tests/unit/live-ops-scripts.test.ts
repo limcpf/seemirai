@@ -2183,18 +2183,19 @@ console.log(JSON.stringify(summary));
     expect([first.reason, second.reason]).toContain("live_ops_exit_submission_lock_busy");
   });
 
-  it("SELL exit runtime lock scope는 재호가 가격과 수량, preflight 관측 시각이 달라도 같은 포지션 decision을 직렬화한다", async () => {
+  it("SELL exit runtime lock scope는 decision key와 재호가 가격이 달라도 같은 포지션 scope를 직렬화한다", async () => {
     const {
       createLiveOpsCliExitRuntime,
     } = await import(path.join(process.cwd(), "scripts/run-live-ops-support.mjs"));
-    const decisionKey = "autonomous-exit-decision-2026-06-20T00:00:00Z";
     const createSubmission = ({
+      decisionKey,
       idempotencyKey,
       requestedPrice,
       requestedQuantity,
       requestedNotional,
       observedAt,
     }: {
+      decisionKey: string;
       idempotencyKey: string;
       requestedPrice: string;
       requestedQuantity: string;
@@ -2303,6 +2304,7 @@ console.log(JSON.stringify(summary));
 
     const [first, second] = await Promise.all([
       runtime.submitExitOrder(createSubmission({
+        decisionKey: "autonomous-exit-decision-2026-06-20T00:00:00Z",
         idempotencyKey: `ops-${"8".repeat(26)}`,
         requestedPrice: "99000000",
         requestedQuantity: "0.00010101",
@@ -2310,6 +2312,7 @@ console.log(JSON.stringify(summary));
         observedAt: "2026-06-20T00:00:00.000Z",
       })),
       runtime.submitExitOrder(createSubmission({
+        decisionKey: "autonomous-exit-decision-2026-06-20T00:00:01Z",
         idempotencyKey: `ops-${"7".repeat(26)}`,
         requestedPrice: "99001000",
         requestedQuantity: "0.00010099",
@@ -6922,7 +6925,7 @@ console.log(JSON.stringify({
 
     expect(executionInputs.budgetSnapshot).toMatchObject({
       openPositionNotionalKrw: "25000",
-      dailyAutonomousNotionalUsedKrw: "25000",
+      dailyAutonomousNotionalUsedKrw: "0",
     });
     expect(executionInputs.orderIntents[0]?.risk.positions).toContainEqual(expect.objectContaining({
       market: "KRW-BTC",
@@ -7788,7 +7791,7 @@ console.log(JSON.stringify({
     });
     expect(result.budgetSnapshot).toMatchObject({
       openPositionNotionalKrw: "5000",
-      dailyAutonomousNotionalUsedKrw: "5000",
+      dailyAutonomousNotionalUsedKrw: "0",
     });
   });
 
@@ -12747,7 +12750,7 @@ console.log(JSON.stringify({
     });
   });
 
-  it("production preflight는 지갑 0수량 관측으로 열린 autonomous lot을 닫는다", async () => {
+  it("production preflight는 전략 소유 lot이 있는데 지갑 0수량이면 수동 점검으로 차단한다", async () => {
     const supportModulePath = path.join(process.cwd(), "scripts/run-live-ops-support.mjs");
     const {
       createLiveOpsCliCleanupArtifactStore,
@@ -12850,10 +12853,10 @@ console.log(JSON.stringify({
 
     const usage = await budgetReservation.readDailyReservedNotional("2026-06-20T00:02:30.000Z");
     expect(usage.autonomous24x7Position).toMatchObject({
-      status: "CLOSED",
+      status: "MANUAL_REVIEW_REQUIRED",
       reservedNotionalKrw: "0",
       requestedQuantity: "0",
-      closedAt: observedAt,
+      manualReviewReason: "autonomous_position_wallet_quantity_below_owned_scope",
     });
   });
 

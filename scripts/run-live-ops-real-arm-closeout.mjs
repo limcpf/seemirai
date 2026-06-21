@@ -611,12 +611,14 @@ function createOrderPolicyCheck(run) {
   const timeInForceValues = readStringAliasValues(run, ["timeInForce", "time_in_force"])
     .map((actual) => ({ alias: actual.alias, value: normalizeTimeInForce(actual.value) }));
   const invalidTimeInForceValues = timeInForceValues.filter((actual) => actual.value !== expectedTimeInForce);
+  const orderType = orderTypeValues[0]?.value;
+  const timeInForce = timeInForceValues[0]?.value;
   const actual = {
     market: readString(run.market),
     side: readString(run.side),
-    orderType: readString(run.orderType),
+    orderType,
     orderTypeValues,
-    timeInForce: normalizeTimeInForce(readString(run.timeInForce)),
+    timeInForce,
     timeInForceValues,
     requestedNotionalKrw,
   };
@@ -650,10 +652,10 @@ function createOrderPolicyCheck(run) {
 }
 
 function createOrderLifecycleCheck(run) {
-  const submittedAtMs = readTimestampMs(run.submittedAt);
-  const cancelRequestedAtMs = readTimestampMs(run.cancelRequestedAt);
-  const terminalCancelConfirmedAtMs = readTimestampMs(run.terminalCancelConfirmedAt);
-  const terminalState = normalizeTerminalState(readString(run.terminalState));
+  const submittedAtMs = readTimestampMsFromAliases(run, ["submittedAt", "submitted_at"]);
+  const cancelRequestedAtMs = readTimestampMsFromAliases(run, ["cancelRequestedAt", "cancel_requested_at"]);
+  const terminalCancelConfirmedAtMs = readTimestampMsFromAliases(run, ["terminalCancelConfirmedAt", "terminal_cancel_confirmed_at"]);
+  const terminalState = readTerminalStateFromAliases(run);
   const sameChain = hasSameOrderChain(run);
   const nowMs = Date.now();
   const timestampsNotFuture = [submittedAtMs, cancelRequestedAtMs, terminalCancelConfirmedAtMs]
@@ -887,7 +889,7 @@ function createReadinessAuditCheck(manifest) {
 function createMetrics(run, counters) {
   return {
     requestedNotionalKrw: readNumber(run.requestedNotionalKrw) ?? null,
-    terminalCancelConfirmed: normalizeTerminalState(readString(run.terminalState)) === "CANCEL",
+    terminalCancelConfirmed: readTerminalStateFromAliases(run) === "CANCEL",
     openExposureKrw: readNumber(run.openExposureKrw) ?? null,
     crashCount: readNumber(counters.crashCount) ?? null,
     unhandledRejectionCount: readNumber(counters.unhandledRejectionCount) ?? null,
@@ -2377,8 +2379,15 @@ function isWithdrawalScope(scope) {
 }
 
 function normalizeTerminalState(value) {
-  const normalized = value?.trim().toUpperCase();
-  if (normalized === "CANCEL" || normalized === "CANCELED" || normalized === "CANCELLED") {
+  const normalized = value?.trim().toUpperCase().replace(/[-\s]+/gu, "_");
+  if (
+    normalized === "CANCEL"
+    || normalized === "CANCELED"
+    || normalized === "CANCELLED"
+    || normalized === "CANCEL_CONFIRMED"
+    || normalized === "CANCELED_CONFIRMED"
+    || normalized === "CANCELLED_CONFIRMED"
+  ) {
     return "CANCEL";
   }
   return normalized;

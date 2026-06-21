@@ -1061,10 +1061,14 @@ async function collectLiveOpsCliProductionPreflight({
     ? heldPositionExposure.notionalKrw
     : "0";
   const openPositionNotionalKrw = new Decimal(openExposureKrw).plus(valuedHeldPositionKrw).toFixed();
+  const dailyAutonomousNotionalUsedKrw = isNonNegativeDecimalString(reservationUsage.reservedNotionalKrw)
+    ? reservationUsage.reservedNotionalKrw
+    : "0";
   const budgetSnapshot = {
     maxOrderKrw: config.budget?.max_order_krw ?? "10000",
     dailyAutonomousNotionalLimitKrw: config.budget?.daily_autonomous_notional_limit_krw ?? "30000",
-    dailyAutonomousNotionalUsedKrw: new Decimal(reservationUsage.reservedNotionalKrw).plus(openPositionNotionalKrw).toFixed(),
+    // 일일 자동 주문 한도와 open exposure 한도는 서로 다른 gate라 합산하면 보유 포지션이 당일 예산을 이중 차감한다.
+    dailyAutonomousNotionalUsedKrw,
     openPositionNotionalKrw,
     maxOpenPositionNotionalKrw: config.budget?.max_open_position_notional_krw ?? "30000",
     capturedAt: observedAt,
@@ -2529,7 +2533,6 @@ export function createLiveOpsCliFileBudgetReservation({ artifactStore, clock = (
           : legacyObservationFallback.latestReservationAt,
       };
       if (
-        walletQuantity.gt(0) &&
         isPositiveDecimalString(aggregateWithLegacyFallback.requestedQuantity) &&
         walletQuantity.lt(new Decimal(aggregateWithLegacyFallback.requestedQuantity))
       ) {
@@ -6553,8 +6556,7 @@ function createLiveOpsCliExitSubmissionLockScope(submission) {
     strategyId: intent.strategyId,
     market: intent.market,
     side: intent.side,
-    decisionIdempotencyKey: intent?.metadata?.decision_idempotency_key ?? intent.idempotencyKey,
-    // 재호가로 산출 수량이 흔들려도 같은 strategy position/decision SELL은 하나의 broker 제출만 통과해야 한다.
+    // decision key나 재호가가 달라도 같은 strategy position SELL은 동일 BTC lot을 줄이는 side effect라 하나의 broker 제출만 통과해야 한다.
     positionScope: stablePositionScope,
   });
 }

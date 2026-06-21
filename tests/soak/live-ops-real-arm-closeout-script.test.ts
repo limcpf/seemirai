@@ -3411,6 +3411,80 @@ describe("Issue 206 live:ops real-arm closeout script", () => {
     expect(getCheck(summary, "artifactFiles")).toMatchObject({ status: "ok" });
   });
 
+  it("accepts snake_case order_type as the canonical safe summary order type", async () => {
+    const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-issue-206-closeout-artifact-order-type-alias-"));
+    const manifestPath = await writeCloseoutManifest(artifactDir, {
+      artifactText: JSON.stringify(createArtifactFixture({
+        orderType: undefined,
+        order_type: "LIMIT",
+      })),
+    });
+    const { stdout } = await runScript(["--json", "--artifact-dir", artifactDir, "--manifest", manifestPath], createReadyEnv());
+    const summary = JSON.parse(stdout) as LiveOpsRealArmCloseoutSummary;
+
+    expect(summary.status).toBe("passed");
+    expect(getCheck(summary, "artifactFiles")).toMatchObject({ status: "ok" });
+  });
+
+  it("accepts manifest run order_type alias as the canonical order type", async () => {
+    const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-issue-206-closeout-run-order-type-alias-"));
+    const manifestPath = await writeCloseoutManifest(artifactDir, {
+      manifestMutator: (manifest) => {
+        const run = manifest.run as Record<string, unknown>;
+        return {
+          ...manifest,
+          run: {
+            ...run,
+            orderType: undefined,
+            order_type: "LIMIT",
+          },
+        };
+      },
+    });
+    const { stdout } = await runScript(["--json", "--artifact-dir", artifactDir, "--manifest", manifestPath], createReadyEnv());
+    const summary = JSON.parse(stdout) as LiveOpsRealArmCloseoutSummary;
+
+    expect(summary.status).toBe("passed");
+    expect(getCheck(summary, "orderPolicy")).toMatchObject({ status: "ok" });
+  });
+
+  it("accepts CANCEL_CONFIRMED terminal_state as terminal cancel evidence", async () => {
+    const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-issue-206-closeout-artifact-terminal-confirmed-"));
+    const manifestPath = await writeCloseoutManifest(artifactDir, {
+      artifactText: JSON.stringify(createArtifactFixture({
+        terminalState: undefined,
+        terminal_state: "CANCEL_CONFIRMED",
+      })),
+    });
+    const { stdout } = await runScript(["--json", "--artifact-dir", artifactDir, "--manifest", manifestPath], createReadyEnv());
+    const summary = JSON.parse(stdout) as LiveOpsRealArmCloseoutSummary;
+
+    expect(summary.status).toBe("passed");
+    expect(getCheck(summary, "artifactFiles")).toMatchObject({ status: "ok" });
+  });
+
+  it("accepts manifest run terminal_state CANCEL_CONFIRMED as terminal cancel evidence", async () => {
+    const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-issue-206-closeout-run-terminal-confirmed-"));
+    const manifestPath = await writeCloseoutManifest(artifactDir, {
+      manifestMutator: (manifest) => {
+        const run = manifest.run as Record<string, unknown>;
+        return {
+          ...manifest,
+          run: {
+            ...run,
+            terminalState: undefined,
+            terminal_state: "CANCEL_CONFIRMED",
+          },
+        };
+      },
+    });
+    const { stdout } = await runScript(["--json", "--artifact-dir", artifactDir, "--manifest", manifestPath], createReadyEnv());
+    const summary = JSON.parse(stdout) as LiveOpsRealArmCloseoutSummary;
+
+    expect(summary.status).toBe("passed");
+    expect(getCheck(summary, "orderLifecycle")).toMatchObject({ status: "ok" });
+  });
+
   it("fails when artifact safe summary conflicts through snake_case order policy fields", async () => {
     const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-issue-206-closeout-artifact-policy-snake-"));
     const manifestPath = await writeCloseoutManifest(artifactDir, {
