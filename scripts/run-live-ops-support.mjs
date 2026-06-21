@@ -1676,6 +1676,19 @@ function createLiveOpsCliCleanupRiskInput({ config, intent, preflight }) {
   if (
     intent?.strategyId === liveOpsCliAutonomous24x7StrategyId &&
     String(intent?.side ?? "").toUpperCase() === "BUY" &&
+    isPositiveDecimalString(preflight.heldPositionExposure?.quantity) &&
+    preflight.autonomousPositionOwnership?.owned !== true
+  ) {
+    // fresh private read에서 수동 BTC가 보이면 새 BUY가 수동 보유분과 섞이므로 broker 제출 전에 fail-closed 한다.
+    infrastructureSignals.push({
+      signal: "BALANCE_POSITION_MISMATCH",
+      observedAt,
+      reason: "autonomous_position_ownership_missing_for_entry",
+    });
+  }
+  if (
+    intent?.strategyId === liveOpsCliAutonomous24x7StrategyId &&
+    String(intent?.side ?? "").toUpperCase() === "BUY" &&
     preflight.autonomousPositionOwnership?.owned === true
   ) {
     // 분석 시점과 제출 직전 사이에 이미 전략 포지션이 열렸으면 같은 loop의 중복 BUY가 open-position 한도 안에서 새 주문으로 새는 것을 막는다.
@@ -8177,6 +8190,7 @@ function appendLiveOpsCliRiskGateStrategyViolations(violations, risk, thresholds
 
 function appendLiveOpsCliRiskGateInfrastructureViolations(violations, infrastructureSignals) {
   for (const signal of infrastructureSignals) {
+    const reasonSuffix = typeof signal?.reason === "string" && signal.reason.length > 0 ? ` (${signal.reason})` : "";
     switch (signal?.signal) {
       case "NOTIFICATION_FAILURE":
         break;
@@ -8186,7 +8200,8 @@ function appendLiveOpsCliRiskGateInfrastructureViolations(violations, infrastruc
       case "DB_WRITE_FAILURE":
       case "DUPLICATE_ORDER_IDEMPOTENCY_KEY":
       case "BALANCE_POSITION_MISMATCH":
-        violations.push(`live ops wrapper RiskGate 현재 인프라 차단 신호가 활성화됐습니다: ${signal.signal}`);
+        // 같은 balance mismatch라도 수동 보유 BTC 차단처럼 복구 절차가 달라지는 사유는 운영 추적 정보로 보존한다.
+        violations.push(`live ops wrapper RiskGate 현재 인프라 차단 신호가 활성화됐습니다: ${signal.signal}${reasonSuffix}`);
         break;
       default:
         violations.push("live ops wrapper RiskGate 알 수 없는 인프라 신호가 있습니다");

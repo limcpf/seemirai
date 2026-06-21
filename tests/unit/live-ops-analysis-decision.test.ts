@@ -154,6 +154,30 @@ describe("production live ops analysis/decision pipeline", () => {
     expect(JSON.stringify(result)).not.toContain("live_ops_cleanup_probe:upbit_krw_spot");
   });
 
+  it("cleanup probe도 market data 계열 feature 실패에서는 주문 후보를 열지 않는다", async () => {
+    const [strategy] = resolveLiveOpsDecisionPolicy({ config: defaultLiveOpsConfig }).strategies;
+    if (strategy === undefined) throw new Error("expected cleanup strategy");
+
+    const result = await runLiveOpsAnalysisDecisionPipeline({
+      config: defaultLiveOpsConfig,
+      marketData: marketDataSummary(),
+      observedAt,
+      marketEvents: [orderbookEvent()],
+      strategies: [strategy],
+      featureSnapshot: failedFeatureSnapshot("FEATURE_MARKET_DATA_STALE"),
+    });
+
+    expect(result.summary).toMatchObject({
+      status: "blocked",
+      ready: false,
+      decisionCategory: "HOLD",
+      featureStatus: "failed",
+      orderIntentCount: 0,
+    });
+    expect(result.summary.checks.map((check) => check.code)).toContain("live_ops_feature_snapshot_failed");
+    expect(result.orderIntents).toHaveLength(0);
+  });
+
   it("BLOCK strategy result는 idle이 아니라 blocked analysis로 닫는다", async () => {
     const result = await runLiveOpsAnalysisDecisionPipeline({
       config: defaultLiveOpsConfig,
@@ -280,7 +304,10 @@ function okFeatureSnapshot(features: Record<string, unknown> = {}): FeatureCalcu
   };
 }
 
-function failedFeatureSnapshot(): FeatureCalculationResult {
+function failedFeatureSnapshot(
+  reasonCode: "FEATURE_INSUFFICIENT_INPUT" | "FEATURE_INVALID_DECIMAL" | "FEATURE_INVALID_MARKET_VALUE" | "FEATURE_MARKET_DATA_STALE" =
+    "FEATURE_INSUFFICIENT_INPUT",
+): FeatureCalculationResult {
   return {
     status: "failed",
     observedAt,
@@ -290,7 +317,7 @@ function failedFeatureSnapshot(): FeatureCalculationResult {
       {
         status: "failed",
         key: "candle_momentum_bps",
-        reasonCode: "FEATURE_INSUFFICIENT_INPUT",
+        reasonCode,
         message: "fixture failure",
         observedAt,
         windowEndAt: observedAt,

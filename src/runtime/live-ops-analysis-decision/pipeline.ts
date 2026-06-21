@@ -169,13 +169,20 @@ export async function runLiveOpsAnalysisDecisionPipeline(
   if (featureSnapshot.status !== "ok") {
     const featurelessStrategies = input.strategies.filter((strategy) => strategy.requiredFeatures.length === 0);
 
-    if (featurelessStrategies.length === 0 || featurelessStrategies.length !== input.strategies.length) {
+    if (
+      featurelessStrategies.length === 0 ||
+      featurelessStrategies.length !== input.strategies.length ||
+      hasMarketDataBlockingFeatureFailure(featureSnapshot)
+    ) {
       // feature 실패를 0으로 보정하면 후보가 열릴 수 있으므로 feature 의존 strategy는 live execution 전진을 막는다.
       checks.push(blockedCheck(
         "features",
         "feature snapshot이 실패해 strategy 후보 생성을 보류합니다.",
         "live_ops_feature_snapshot_failed",
-        { failureCount: featureSnapshot.failureReasons.length },
+        {
+          failureCount: featureSnapshot.failureReasons.length,
+          reasonCodes: featureSnapshot.failureReasons.map((reason) => reason.reasonCode),
+        },
       ));
       return buildResult(buildSummary(config, input, checks, {
         featureStatus: featureSnapshot.status,
@@ -321,6 +328,33 @@ function createFeatureCalculationInput(input: LiveOpsAnalysisDecisionInput): {
   }
 
   return featureInput;
+}
+
+/**
+ * featureless cleanup strategy도 stale/invalid market data 실패에서는 실행하지 않도록 판정한다.
+ *
+ * 책임:
+ * - `requiredFeatures=[]` 전략 우회가 market data freshness 실패를 숨기지 못하게 한다.
+ * - feature 입력 부족처럼 cleanup orderbook-only 전략과 독립적인 실패와, stale/invalid 가격 입력처럼 주문 가격 산출을 오염시키는 실패를 분리한다.
+ *
+ * 호출 경계:
+ * - analysis/decision pipeline의 feature failure branch에서만 호출하며 strategy evaluation 전 broker side effect 차단 여부를 정한다.
+ *
+ * 입력/출력:
+ * - 입력은 feature calculator가 반환한 실패 reason 목록이고, 출력은 cleanup strategy까지 fail-closed 해야 하는지에 대한 boolean이다.
+ *
+ * invariant:
+ * - 반환값이 true면 broker side effect 전 analysis summary가 fail-closed `BLOCK`으로 닫혀야 한다.
+ *
+ * side effect:
+ * - 없음. feature failure reason만 읽는다.
+ */
+function hasMarketDataBlockingFeatureFailure(featureSnapshot: FeatureCalculationResult): boolean {
+  return featureSnapshot.failureReasons.some((reason) => (
+    reason.reasonCode === "FEATURE_MARKET_DATA_STALE" ||
+    reason.reasonCode === "FEATURE_INVALID_MARKET_VALUE" ||
+    reason.reasonCode === "FEATURE_INVALID_DECIMAL"
+  ));
 }
 
 function buildSummary(
