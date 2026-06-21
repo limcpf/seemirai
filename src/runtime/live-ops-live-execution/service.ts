@@ -21,6 +21,7 @@ import type {
   OrderIntent,
   OrderSubmission,
   RiskGateContext,
+  RiskGateEvaluation,
   RiskGateResult,
 } from "../../domain/index.js";
 import {
@@ -775,7 +776,8 @@ function createExitOrderSubmission(
   const positionScope = requireExitPositionScope(intent);
   const runtimeIntent = normalizeLiveOpsExitRuntimeIntent(input, intent);
   const riskContext = createExitRiskContext(input, runtimeIntent, expectedLossBpsOfEquity);
-  const riskGateResult = evaluateRiskGate(riskContext);
+  const rawRiskGateResult = evaluateRiskGate(riskContext);
+  const riskGateResult = createRiskReducingExitRiskGateResult(rawRiskGateResult, runtimeIntent);
   const submission: OrderSubmission = {
     intent: runtimeIntent,
     costSnapshot: createExecutionExitCostEvidence({
@@ -849,6 +851,93 @@ function createExitRiskContext(
     metadata: {
       ...(input.risk.metadata ?? {}),
       source: "live_ops_live_execution_exit",
+    },
+  };
+}
+
+const riskReducingExitWaivableRiskGateReasonCodes = new Set([
+  "daily_loss_limit_exceeded",
+  "weekly_loss_limit_exceeded",
+  "max_drawdown_limit_exceeded",
+  "consecutive_strategy_loss_limit_exceeded",
+  "btc_eth_position_limit_exceeded",
+  "single_alt_position_limit_exceeded",
+  "total_alt_position_limit_exceeded",
+]);
+
+/**
+ * risk-reducing SELL 후보에서 신규 주문 차단용 RiskGate 실패를 exit 허용 evidence로 낮춘다.
+ *
+ * 책임:
+ * - 손실 한도나 전략 연속손실 중지는 신규 BUY를 막기 위한 상태이므로, 이미 열린 포지션을 줄이는 SELL은 막지 않는다.
+ * - 인프라 장애, snapshot mismatch, expected loss invalid 같은 제출 안전성 실패는 절대 완화하지 않는다.
+ *
+ * invariant:
+ * - 완화 대상은 `SELL`이며 metadata의 `position_effect`가 `EXIT` 또는 `REDUCE`인 후보로 한정한다.
+ * - 변환된 결과는 원래 실패 reason을 warning으로 보존해 audit/summary가 손실 한도 상태를 숨기지 않게 한다.
+ *
+ * side effect:
+ * - 없음. RiskGateResult 값만 복사해 submission evidence에 사용할 approval-capable shape로 낮춘다.
+ */
+function createRiskReducingExitRiskGateResult(
+  result: RiskGateResult,
+  intent: OrderIntent,
+): RiskGateResult {
+  if (!shouldAllowRiskReducingExitDespiteNewOrderBlocks(result, intent)) {
+    return result;
+  }
+
+  const evaluations = result.evaluations.map((evaluation) =>
+    riskReducingExitWaivableRiskGateReasonCodes.has(evaluation.reasonCode)
+      ? toRiskReducingExitWarning(evaluation)
+      : evaluation,
+  );
+  const warningEvaluations = evaluations.filter((evaluation) => evaluation.status === "WARN");
+
+  return {
+    ...result,
+    status: warningEvaluations.length > 0 ? "WARN" : "PASS",
+    approved: true,
+    action: "ALLOW",
+    evaluations,
+    failedEvaluations: [],
+    warningEvaluations,
+  };
+}
+
+function shouldAllowRiskReducingExitDespiteNewOrderBlocks(
+  result: RiskGateResult,
+  intent: OrderIntent,
+): boolean {
+  if (result.approved || intent.side !== "SELL" || !isRiskReducingExitIntent(intent)) {
+    return false;
+  }
+  if (result.failedEvaluations.length === 0) {
+    return false;
+  }
+
+  return result.failedEvaluations.every((evaluation) =>
+    riskReducingExitWaivableRiskGateReasonCodes.has(evaluation.reasonCode),
+  );
+}
+
+function isRiskReducingExitIntent(intent: OrderIntent): boolean {
+  const positionEffect = readStringMetadata(intent.metadata, "position_effect")
+    ?? readStringMetadata(intent.metadata, "positionEffect");
+  return positionEffect === "EXIT" || positionEffect === "REDUCE";
+}
+
+function toRiskReducingExitWarning(evaluation: RiskGateEvaluation): RiskGateEvaluation {
+  return {
+    ...evaluation,
+    status: "WARN",
+    severity: "WARN",
+    action: "ALLOW",
+    message: `${evaluation.message}; risk-reducing SELL is allowed to reduce exposure`,
+    metadata: {
+      ...(evaluation.metadata ?? {}),
+      original_action: evaluation.action,
+      risk_reducing_exit_allowed: true,
     },
   };
 }

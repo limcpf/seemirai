@@ -238,7 +238,12 @@ function evaluateEntryPolicy(input: {
     });
   }
 
-  const signal = evaluateEntrySignal(input.context.features, input.options);
+  const featureResult = readEntryFeatureSnapshot(input.context.features);
+  if (featureResult.kind === "blocked") {
+    return block(featureResult.reasonCode, featureResult.metadata);
+  }
+
+  const signal = evaluateEntrySignal(featureResult.snapshot, input.options);
   if (!signal.ready) {
     // 유명 투자자식 "기다릴 줄 아는 현금 보유" 원칙을 실주문 후보 없음으로 표현한다.
     return hold("autonomous_24x7_entry_signal_weak", signal.metadata);
@@ -401,11 +406,54 @@ function readPositionSnapshot(input: JsonRecord | undefined): PositionSnapshotRe
 
   const quantity = readOptionalDecimal(input.quantity);
   const averageEntryPrice = readOptionalDecimal(input.averageEntryPrice);
+  const highWatermarkPrice = readOptionalDecimal(input.highWatermarkPrice);
+  const openPositionNotionalKrw = readOptionalDecimal(input.openPositionNotionalKrw);
   if (quantity === undefined || averageEntryPrice === undefined) {
     return {
       kind: "blocked",
       reasonCode: "autonomous_24x7_position_snapshot_invalid",
       metadata: { has_quantity: quantity !== undefined, has_average_entry_price: averageEntryPrice !== undefined },
+    };
+  }
+  if (quantity.lt(0)) {
+    return {
+      kind: "blocked",
+      reasonCode: "autonomous_24x7_position_snapshot_invalid",
+      metadata: {
+        quantity: quantity.toFixed(),
+        quantity_non_negative: false,
+      },
+    };
+  }
+  if (quantity.gt(0) && !averageEntryPrice.gt(0)) {
+    return {
+      kind: "blocked",
+      reasonCode: "autonomous_24x7_position_snapshot_invalid",
+      metadata: {
+        quantity: quantity.toFixed(),
+        average_entry_price: averageEntryPrice.toFixed(),
+        average_entry_price_positive: false,
+      },
+    };
+  }
+  if (quantity.gt(0) && highWatermarkPrice !== undefined && !highWatermarkPrice.gt(0)) {
+    return {
+      kind: "blocked",
+      reasonCode: "autonomous_24x7_position_snapshot_invalid",
+      metadata: {
+        high_watermark_price: highWatermarkPrice.toFixed(),
+        high_watermark_price_positive: false,
+      },
+    };
+  }
+  if (openPositionNotionalKrw !== undefined && openPositionNotionalKrw.lt(0)) {
+    return {
+      kind: "blocked",
+      reasonCode: "autonomous_24x7_position_snapshot_invalid",
+      metadata: {
+        open_position_notional_krw: openPositionNotionalKrw.toFixed(),
+        open_position_notional_non_negative: false,
+      },
     };
   }
 
@@ -415,8 +463,8 @@ function readPositionSnapshot(input: JsonRecord | undefined): PositionSnapshotRe
       quantity,
       averageEntryPrice,
       openedAt: typeof input.openedAt === "string" ? input.openedAt : undefined,
-      highWatermarkPrice: readOptionalDecimal(input.highWatermarkPrice),
-      openPositionNotionalKrw: readOptionalDecimal(input.openPositionNotionalKrw),
+      highWatermarkPrice,
+      openPositionNotionalKrw,
     },
   };
 }
@@ -441,7 +489,7 @@ interface ExitRuleSelection {
  *
  * invariant:
  * - rule 선택은 주문 제출이 아니라 intent reason 선택까지만 수행한다.
- * - stop loss, max holding, risk reduction, trailing stop, take profit 순서로 보수적 회수 조건을 먼저 본다.
+ * - stop loss, max holding, trailing stop, take profit, risk reduction 순서로 손실 회수와 이익 보호를 부분 축소보다 먼저 본다.
  */
 function selectExitRule(input: {
   readonly observedAt: string;
@@ -450,14 +498,6 @@ function selectExitRule(input: {
   readonly position: PositionSnapshot;
 }): ExitRuleSelection | undefined {
   const entryPrice = input.position.averageEntryPrice;
-  if (entryPrice.lte(0)) {
-    return {
-      kind: "risk_reduction",
-      reason: "autonomous_24x7_risk_reduction",
-      metadata: { reason_code: "average_entry_price_missing" },
-    };
-  }
-
   const stopLossPrice = entryPrice.mul(bpsDenominator.minus(input.options.stopLossBps)).div(bpsDenominator);
   if (input.bestBid.lte(stopLossPrice)) {
     return {
@@ -472,20 +512,6 @@ function selectExitRule(input: {
       kind: "max_holding_time",
       reason: "autonomous_24x7_max_holding_time",
       metadata: { opened_at: input.position.openedAt ?? null, max_holding_ms: input.options.maxHoldingMs },
-    };
-  }
-
-  if (
-    input.position.openPositionNotionalKrw !== undefined &&
-    input.position.openPositionNotionalKrw.gt(input.options.riskReductionOpenNotionalKrw)
-  ) {
-    return {
-      kind: "risk_reduction",
-      reason: "autonomous_24x7_risk_reduction",
-      metadata: {
-        open_position_notional_krw: input.position.openPositionNotionalKrw.toFixed(),
-        threshold_krw: input.options.riskReductionOpenNotionalKrw.toFixed(),
-      },
     };
   }
 
@@ -511,6 +537,20 @@ function selectExitRule(input: {
       kind: "take_profit",
       reason: "autonomous_24x7_take_profit",
       metadata: { take_profit_price: takeProfitPrice.toFixed() },
+    };
+  }
+
+  if (
+    input.position.openPositionNotionalKrw !== undefined &&
+    input.position.openPositionNotionalKrw.gt(input.options.riskReductionOpenNotionalKrw)
+  ) {
+    return {
+      kind: "risk_reduction",
+      reason: "autonomous_24x7_risk_reduction",
+      metadata: {
+        open_position_notional_krw: input.position.openPositionNotionalKrw.toFixed(),
+        threshold_krw: input.options.riskReductionOpenNotionalKrw.toFixed(),
+      },
     };
   }
 
@@ -576,19 +616,102 @@ function capExitQuantityByOrderNotional(input: {
 }
 
 /**
+ * autonomous entry 평가에 필요한 feature 값을 Decimal로 고정한 snapshot이다.
+ *
+ * 책임:
+ * - feature calculator 결과를 strategy threshold 계산에 바로 사용할 수 있는 숫자 값으로 낮춘다.
+ * - 입력 key 이름과 내부 계산 필드 이름을 분리해 entry signal 계산이 raw JSON을 다시 읽지 않게 한다.
+ *
+ * invariant:
+ * - 모든 값은 finite Decimal이며 결측/invalid feature는 이 타입으로 들어오지 않는다.
+ *
+ * side effect:
+ * - 없음. 순수 값 객체다.
+ */
+interface EntryFeatureSnapshot {
+  readonly costAdjustedMarginBps: Decimal;
+  readonly trendStrengthBps: Decimal;
+  readonly meanReversionDiscountBps: Decimal;
+}
+
+/**
+ * entry feature read boundary의 결과 타입이다.
+ *
+ * 책임:
+ * - required feature가 모두 있으면 `ok` snapshot으로 entry signal 계산을 허용한다.
+ * - 결측이나 invalid feature가 있으면 주문 후보 없음이 아니라 BLOCK reason/metadata를 반환한다.
+ *
+ * 호출 경계:
+ * - `evaluateEntryPolicy`만 이 결과를 받아 `StrategyDecision`으로 변환한다.
+ *
+ * invariant:
+ * - `ok`와 `blocked`는 상호 배타적이며, `blocked`는 broker/DB side effect 전에 fail-closed 된다.
+ *
+ * side effect:
+ * - 없음. 분기 결과만 표현한다.
+ */
+type EntryFeatureReadResult = {
+  readonly kind: "ok";
+  readonly snapshot: EntryFeatureSnapshot;
+} | {
+  readonly kind: "blocked";
+  readonly reasonCode: string;
+  readonly metadata: JsonRecord;
+};
+
+/**
+ * entry 판단에 필요한 feature를 모두 Decimal snapshot으로 고정한다.
+ *
+ * 책임:
+ * - strategy가 선언한 required feature 결측을 0으로 보정하지 않고 operator-visible BLOCK으로 드러낸다.
+ * - feature calculator 배선 누락과 실제 weak signal을 분리해 24/7 daemon이 조용히 HOLD로 숨기지 않게 한다.
+ *
+ * side effect:
+ * - 없음. feature record만 읽는다.
+ */
+function readEntryFeatureSnapshot(features: Readonly<Record<string, unknown>>): EntryFeatureReadResult {
+  const entries = autonomous24x7RequiredFeatures.map((featureName) => ({
+    featureName,
+    value: readOptionalDecimal(features[featureName]),
+  }));
+  const missingFeatures = entries
+    .filter((entry) => entry.value === undefined)
+    .map((entry) => entry.featureName);
+  if (missingFeatures.length > 0) {
+    return {
+      kind: "blocked",
+      reasonCode: "autonomous_24x7_required_feature_missing",
+      metadata: {
+        required_features: [...autonomous24x7RequiredFeatures],
+        missing_features: missingFeatures,
+      },
+    };
+  }
+
+  return {
+    kind: "ok",
+    snapshot: {
+      costAdjustedMarginBps: entries[0]?.value ?? new Decimal(0),
+      trendStrengthBps: entries[1]?.value ?? new Decimal(0),
+      meanReversionDiscountBps: entries[2]?.value ?? new Decimal(0),
+    },
+  };
+}
+
+/**
  * entry 후보를 만들 만큼 비용 차감 margin과 trend/mean-reversion 신호가 강한지 평가한다.
  *
  * @param features feature snapshot에서 전달된 secret-free 수치
  * @param options strategy threshold
  * @returns BUY 후보 가능 여부와 decision metadata
  */
-function evaluateEntrySignal(features: Readonly<Record<string, unknown>>, options: NormalizedOptions): {
+function evaluateEntrySignal(features: EntryFeatureSnapshot, options: NormalizedOptions): {
   readonly ready: boolean;
   readonly metadata: JsonRecord;
 } {
-  const margin = readOptionalDecimal(features.cost_adjusted_margin_bps) ?? new Decimal(0);
-  const trend = readOptionalDecimal(features.trend_strength_bps) ?? new Decimal(0);
-  const meanReversion = readOptionalDecimal(features.mean_reversion_discount_bps) ?? new Decimal(0);
+  const margin = features.costAdjustedMarginBps;
+  const trend = features.trendStrengthBps;
+  const meanReversion = features.meanReversionDiscountBps;
   const marginReady = margin.gte(options.minEntryMarginBps);
   const trendReady = trend.gte(options.trendConfirmationBps);
   const meanReversionReady = meanReversion.gte(options.meanReversionDiscountBps);

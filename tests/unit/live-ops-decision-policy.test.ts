@@ -250,7 +250,7 @@ describe("production live ops decision policy resolver", () => {
       observedAt,
       marketEvents: [orderbookEvent({ bid: "100100000", ask: "100101000" })],
       features: strongEntryFeatures(),
-      positions: heldPosition({ openPositionNotionalKrw: "26000" }),
+      positions: heldPosition({ highWatermarkPrice: "100200000", openPositionNotionalKrw: "26000" }),
     });
 
     expect(decision.kind).toBe("ORDER_INTENT");
@@ -263,6 +263,37 @@ describe("production live ops decision policy resolver", () => {
     });
     expect(Number(decision.orderIntents[0]?.requestedQuantity)).toBeLessThanOrEqual(0.0001);
     expect(Number(decision.orderIntents[0]?.requestedNotional)).toBeLessThanOrEqual(10000);
+  });
+
+  it("autonomous_24x7 strategy는 risk reduction보다 익절과 trailing stop exit rule을 우선한다", async () => {
+    const strategy = resolveAutonomousStrategy();
+    const takeProfit = await strategy.evaluate({
+      strategyId: strategy.id,
+      exchangeId: "upbit_krw_spot",
+      market: "KRW-BTC",
+      observedAt,
+      marketEvents: [orderbookEvent({ bid: "101200000", ask: "101201000" })],
+      features: strongEntryFeatures(),
+      positions: heldPosition({ openPositionNotionalKrw: "26000" }),
+    });
+    const trailing = await strategy.evaluate({
+      strategyId: strategy.id,
+      exchangeId: "upbit_krw_spot",
+      market: "KRW-BTC",
+      observedAt,
+      marketEvents: [orderbookEvent({ bid: "101300000", ask: "101301000" })],
+      features: strongEntryFeatures(),
+      positions: heldPosition({ highWatermarkPrice: "102000000", openPositionNotionalKrw: "26000" }),
+    });
+
+    expect(takeProfit).toMatchObject({
+      kind: "ORDER_INTENT",
+      reason: "autonomous_24x7_take_profit",
+    });
+    expect(trailing).toMatchObject({
+      kind: "ORDER_INTENT",
+      reason: "autonomous_24x7_trailing_stop",
+    });
   });
 
   it("autonomous_24x7 strategy는 보유 중 exit 조건이 약하면 BUY를 만들지 않고 HOLD로 닫는다", async () => {
@@ -301,6 +332,43 @@ describe("production live ops decision policy resolver", () => {
       reason: "autonomous_24x7_position_snapshot_missing",
       metadata: {
         positions_present: false,
+      },
+    });
+  });
+
+  it("autonomous_24x7 strategy는 음수 포지션과 보유 중 평균단가 결측을 무포지션으로 보정하지 않는다", async () => {
+    const strategy = resolveAutonomousStrategy();
+    const negativeQuantity = await strategy.evaluate({
+      strategyId: strategy.id,
+      exchangeId: "upbit_krw_spot",
+      market: "KRW-BTC",
+      observedAt,
+      marketEvents: [orderbookEvent({ bid: "100000000", ask: "100001000" })],
+      features: strongEntryFeatures(),
+      positions: { quantity: "-0.1", averageEntryPrice: "0" },
+    });
+    const missingAverageEntry = await strategy.evaluate({
+      strategyId: strategy.id,
+      exchangeId: "upbit_krw_spot",
+      market: "KRW-BTC",
+      observedAt,
+      marketEvents: [orderbookEvent({ bid: "100000000", ask: "100001000" })],
+      features: strongEntryFeatures(),
+      positions: { quantity: "0.0002", averageEntryPrice: "0" },
+    });
+
+    expect(negativeQuantity).toMatchObject({
+      kind: "BLOCK",
+      reason: "autonomous_24x7_position_snapshot_invalid",
+      metadata: {
+        quantity_non_negative: false,
+      },
+    });
+    expect(missingAverageEntry).toMatchObject({
+      kind: "BLOCK",
+      reason: "autonomous_24x7_position_snapshot_invalid",
+      metadata: {
+        average_entry_price_positive: false,
       },
     });
   });
@@ -344,6 +412,29 @@ describe("production live ops decision policy resolver", () => {
     expect(hold).toMatchObject({
       kind: "HOLD",
       reason: "autonomous_24x7_entry_signal_weak",
+    });
+  });
+
+  it("autonomous_24x7 strategy는 required feature 결측을 ready HOLD가 아니라 BLOCK으로 드러낸다", async () => {
+    const strategy = resolveAutonomousStrategy();
+    const decision = await strategy.evaluate({
+      strategyId: strategy.id,
+      exchangeId: "upbit_krw_spot",
+      market: "KRW-BTC",
+      observedAt,
+      marketEvents: [orderbookEvent({ bid: "100000000", ask: "100001000" })],
+      features: {
+        cost_adjusted_margin_bps: "18",
+      },
+      positions: { quantity: "0", averageEntryPrice: "0" },
+    });
+
+    expect(decision).toMatchObject({
+      kind: "BLOCK",
+      reason: "autonomous_24x7_required_feature_missing",
+      metadata: {
+        missing_features: ["trend_strength_bps", "mean_reversion_discount_bps"],
+      },
     });
   });
 });

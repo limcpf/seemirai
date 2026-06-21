@@ -72,6 +72,8 @@ M11 feature key는 아래 이름을 기준으로 한다. 구현 PR에서 계산�
 | `depth_change_rate_ratio` | 최근 depth가 직전 기준 대비 줄었는지 확인 | 현재 depth5와 5분 전 depth5 | ratio | 양수는 깊이 증가, 음수는 깊이 감소 | 과거 depth가 없거나 0이면 failure |
 | `vwap_deviation_bps` | 현재 가격이 rolling VWAP에서 얼마나 벗어났는지 확인 | 기본 20개 1분 trade bucket | bps | 양수는 VWAP 위, 음수는 VWAP 아래 | 거래대금 합계가 0이면 failure |
 | `trade_direction_imbalance_ratio` | 체결 방향 누적 불균형 | 기본 최근 5분 trade events | -1..1 ratio | BID 체결 우세는 양수, ASK 체결 우세는 음수 | BID/ASK 체결이 모두 없으면 failure |
+| `trend_strength_bps` | 24/7 autonomous entry가 BUY 추세 강도를 과대 해석하지 않도록 상승 momentum만 분리 | `candle_momentum_bps` | bps | 양수는 상승 추세 강도, 하락 또는 0 momentum은 0 | `candle_momentum_bps`가 failure면 failure |
+| `mean_reversion_discount_bps` | 24/7 autonomous entry가 VWAP 아래 할인 폭만 평균회귀 BUY 신호로 사용 | `vwap_deviation_bps` | bps | 양수는 VWAP 대비 할인 폭, VWAP 위 가격은 0 | `vwap_deviation_bps`가 failure면 failure |
 | `market_regime` | trend/range/volatile/liquidity stress를 분류 | momentum, volatility, volume, depth, spread feature snapshot | enum string | 부호 없음 | 필요한 하위 feature가 failure면 failure |
 | `session_liquidity_score` | 시간대별 유동성 조건을 숫자로 표현 | KST hour, 최근 20개 bucket volume/depth baseline | 0..1 ratio | 1에 가까울수록 정상 유동성 | baseline이 없으면 failure |
 | `session_liquidity_state` | 시간대별 유동성 filter 결과 | `session_liquidity_score`와 KST hour | enum string | 부호 없음 | score failure면 failure |
@@ -80,6 +82,10 @@ M11 feature key는 아래 이름을 기준으로 한다. 구현 PR에서 계산�
 
 `cost_adjusted_expected_return_bps`는 CostModel을 대체하지 않는다. 전략 단계의 설명력과 calibration 비교를 위한 feature이며, 실제
 주문 제출 허용은 기존 CostModel과 RiskGate가 계속 최종 권한을 가진다.
+
+`trend_strength_bps`는 `max(candle_momentum_bps, 0)`으로 계산한다. `mean_reversion_discount_bps`는
+`max(-vwap_deviation_bps, 0)`으로 계산한다. 두 feature는 기존 M11 window와 결측 정책을 재사용하므로 별도 입력 window를 요구하지
+않고, `autonomous_24x7` entry에서 하락 momentum이나 VWAP 위 가격을 BUY 근거로 오해하지 않기 위한 파생 feature다.
 
 ## Market regime 값
 
@@ -104,6 +110,7 @@ Sub PR 4에서 strategy integration을 수행할 때 아래 required feature를 
 | `volatility_breakout` | `realized_volatility_bps`, `volume_spike_ratio`, `candle_momentum_bps`, `market_regime`, `cost_adjusted_margin_bps` |
 | `orderbook_imbalance_momentum` | `bid_depth_slope_krw_per_bps`, `ask_depth_slope_krw_per_bps`, `trade_direction_imbalance_ratio`, `depth_change_rate_ratio`, `cost_adjusted_margin_bps` |
 | `liquidity_reversion` | `depth_change_rate_ratio`, `session_liquidity_score`, `vwap_deviation_bps`, `cost_adjusted_margin_bps` |
+| `autonomous_24x7` | `cost_adjusted_margin_bps`, `trend_strength_bps`, `mean_reversion_discount_bps` |
 
 기존 `spread_bps`, `depth_krw`, `trade_strength`, `orderbook_imbalance`, `mean_reversion_deviation_bps`,
 `volatility_expansion_bps`, `breakout_direction`, `liquidity_reversion_bps` feature는 Sub PR 4 전까지 유지한다.
