@@ -1088,6 +1088,8 @@ async function collectLiveOpsCliProductionPreflight({
     && isLiveOpsCliFreshReconcileStatus(resolvedReconcileStatus, observedAt);
   const executionStatus = {
     killSwitchActive: killSwitchStatus.active,
+    // STRATEGY_PAUSED는 전역 kill switch와 다르지만 전략 주문 후보는 broker 제출 전에 닫아야 한다.
+    ...(killSwitchStatus.actionPlan?.strategyEvaluationBlocked === true ? { strategyEvaluationBlocked: true } : {}),
     reconcileFresh,
     evidenceId: createLiveOpsCliEvidenceId("execution-preflight", [
       killSwitchStatus.state,
@@ -7319,6 +7321,9 @@ function collectLiveOpsCliExecutionStatusViolations(executionStatus, postSubmitR
   } else {
     if (executionStatus.killSwitchActive !== false) {
       violations.push("kill switch가 꺼진 상태임을 확인해야 합니다");
+    }
+    if (executionStatus.strategyEvaluationBlocked === true) {
+      violations.push("전략 평가가 일시 중지되어 주문 후보를 제출할 수 없습니다");
     }
     if (executionStatus.reconcileFresh !== true) {
       violations.push("reconcile freshness가 최신 상태임을 확인해야 합니다");

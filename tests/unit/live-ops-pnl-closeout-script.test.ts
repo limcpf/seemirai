@@ -915,6 +915,60 @@ describe("Issue 206 live:ops PnL closeout runner", () => {
     expect(pool.connectCalled()).toBe(false);
   });
 
+  it("cleanup 전용 PnL row는 최신 aggregate fallback보다 우선한다", async () => {
+    const { runLiveOpsPnlCloseout } = await import(supportModulePath);
+    const insertedRows: unknown[] = [];
+    const pool = createFakePnlCloseoutPool({
+      latestRun: {
+        id: "preflight-run-cleanup-scope-status",
+        status: "COMPLETED",
+        finished_at: "2026-06-20T05:00:00.000Z",
+        balance_snapshot_count: 1,
+        open_order_count: 0,
+        mismatch_count: 0,
+      },
+      balances: [
+        { currency: "KRW", available: "50000", locked: "0", total: "50000", captured_at: "2026-06-20T05:00:00.000Z" },
+        { currency: "BTC", available: "0", locked: "0", total: "0", captured_at: "2026-06-20T05:00:00.000Z" },
+      ],
+      positions: [],
+      fillsCount: 0,
+      referencePrice: "100000000",
+      pnlSnapshots: [
+        {
+          strategy_id: "live_ops_cleanup_probe",
+          captured_at: "2026-06-20T04:59:50.000Z",
+          equity: "50000",
+          payload_status: "CALCULATED",
+        },
+        {
+          strategy_id: "aggregate",
+          captured_at: "2026-06-20T05:00:00.000Z",
+          equity: "50000",
+          payload_status: "MANUAL_REVIEW_REQUIRED",
+        },
+      ],
+      insertedRows,
+    });
+
+    const result = await runLiveOpsPnlCloseout({
+      pool,
+      market: "KRW-BTC",
+      strategyId: "live_ops_cleanup_probe",
+      capturedAt: "2026-06-20T05:00:00.000Z",
+      referencePrice: "100000000",
+      maxReconcileAgeMs: 30_000,
+    });
+
+    expect(result).toMatchObject({
+      status: "ready",
+      inserted: true,
+      strategyId: "live_ops_cleanup_probe",
+    });
+    expect(insertedRows).toHaveLength(1);
+    expect(pool.connectCalled()).toBe(true);
+  });
+
   it("autonomous scope closeout은 unrelated global 최신 PnL row로 차단하지 않는다", async () => {
     const { runLiveOpsPnlCloseout } = await import(supportModulePath);
     const insertedRows: unknown[] = [];
@@ -1139,5 +1193,12 @@ function selectFakePnlStatusRows(
       }
       return includesFallbackScopes && (rowStrategy === null || rowStrategy === "global" || rowStrategy === "aggregate");
     })
-    .sort((left, right) => Date.parse(String(right.captured_at)) - Date.parse(String(left.captured_at)));
+    .sort((left, right) => {
+      const leftStrategyMatched = String(left.strategy_id ?? "") === strategyId ? 1 : 0;
+      const rightStrategyMatched = String(right.strategy_id ?? "") === strategyId ? 1 : 0;
+      if (leftStrategyMatched !== rightStrategyMatched) {
+        return rightStrategyMatched - leftStrategyMatched;
+      }
+      return Date.parse(String(right.captured_at)) - Date.parse(String(left.captured_at));
+    });
 }

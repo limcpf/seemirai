@@ -681,7 +681,7 @@ async function readLatestPnlSnapshotStatus(pool, { market, strategyId, capturedA
         OR strategy_id IN ('global', 'aggregate')
       )
       AND captured_at <= $3
-    ORDER BY captured_at DESC, (strategy_id = $1) DESC, (market = $2) DESC
+    ORDER BY (strategy_id = $1) DESC, captured_at DESC, (market = $2) DESC
     LIMIT 1
   `, [strategyId, market, capturedAt]);
   const row = result.rows[0];
