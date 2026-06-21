@@ -611,12 +611,14 @@ function createOrderPolicyCheck(run) {
   const timeInForceValues = readStringAliasValues(run, ["timeInForce", "time_in_force"])
     .map((actual) => ({ alias: actual.alias, value: normalizeTimeInForce(actual.value) }));
   const invalidTimeInForceValues = timeInForceValues.filter((actual) => actual.value !== expectedTimeInForce);
+  const orderType = orderTypeValues[0]?.value;
+  const timeInForce = timeInForceValues[0]?.value;
   const actual = {
     market: readString(run.market),
     side: readString(run.side),
-    orderType: readString(run.orderType),
+    orderType,
     orderTypeValues,
-    timeInForce: normalizeTimeInForce(readString(run.timeInForce)),
+    timeInForce,
     timeInForceValues,
     requestedNotionalKrw,
   };
@@ -650,21 +652,26 @@ function createOrderPolicyCheck(run) {
 }
 
 function createOrderLifecycleCheck(run) {
-  const submittedAtMs = readTimestampMs(run.submittedAt);
-  const cancelRequestedAtMs = readTimestampMs(run.cancelRequestedAt);
-  const terminalCancelConfirmedAtMs = readTimestampMs(run.terminalCancelConfirmedAt);
-  const terminalState = normalizeTerminalState(readString(run.terminalState));
+  // 같은 timestamp의 camelCase/snake_case 표기가 충돌하면 closeout 순서 증명이 모호해지므로 첫 값 채택으로 넘기지 않는다.
+  const submittedAt = createTimestampAliasCheck(run, ["submittedAt", "submitted_at"]);
+  const cancelRequestedAt = createTimestampAliasCheck(run, ["cancelRequestedAt", "cancel_requested_at"]);
+  const terminalCancelConfirmedAt = createTimestampAliasCheck(run, ["terminalCancelConfirmedAt", "terminal_cancel_confirmed_at"]);
+  const terminalStateValues = readTerminalStateAliasValues(run);
+  const invalidTerminalStateValues = terminalStateValues.filter((actual) => actual.value !== "CANCEL");
+  const terminalState = terminalStateValues[0]?.value;
   const sameChain = hasSameOrderChain(run);
   const nowMs = Date.now();
-  const timestampsNotFuture = [submittedAtMs, cancelRequestedAtMs, terminalCancelConfirmedAtMs]
+  const timestampsNotFuture = [submittedAt.timestampMs, cancelRequestedAt.timestampMs, terminalCancelConfirmedAt.timestampMs]
     .every((timestampMs) => timestampMs !== undefined && timestampMs <= nowMs);
-  const ok = submittedAtMs !== undefined
-    && cancelRequestedAtMs !== undefined
-    && terminalCancelConfirmedAtMs !== undefined
-    && submittedAtMs <= cancelRequestedAtMs
-    && cancelRequestedAtMs <= terminalCancelConfirmedAtMs
+  const ok = submittedAt.ok
+    && cancelRequestedAt.ok
+    && terminalCancelConfirmedAt.ok
+    && submittedAt.timestampMs <= cancelRequestedAt.timestampMs
+    && cancelRequestedAt.timestampMs <= terminalCancelConfirmedAt.timestampMs
     && timestampsNotFuture
     && terminalState === "CANCEL"
+    && terminalStateValues.length > 0
+    && invalidTerminalStateValues.length === 0
     && sameChain;
 
   if (ok) {
@@ -672,7 +679,9 @@ function createOrderLifecycleCheck(run) {
       submittedAt: run.submittedAt,
       cancelRequestedAt: run.cancelRequestedAt,
       terminalCancelConfirmedAt: run.terminalCancelConfirmedAt,
+      timestampAliases: { submittedAt, cancelRequestedAt, terminalCancelConfirmedAt },
       terminalState,
+      terminalStateValues,
       sameChain,
       timestampsNotFuture,
     });
@@ -682,7 +691,10 @@ function createOrderLifecycleCheck(run) {
     submittedAt: run.submittedAt ?? null,
     cancelRequestedAt: run.cancelRequestedAt ?? null,
     terminalCancelConfirmedAt: run.terminalCancelConfirmedAt ?? null,
+    timestampAliases: { submittedAt, cancelRequestedAt, terminalCancelConfirmedAt },
     terminalState,
+    terminalStateValues,
+    invalidTerminalStateValues,
     sameChain,
     timestampsNotFuture,
   });
@@ -887,7 +899,7 @@ function createReadinessAuditCheck(manifest) {
 function createMetrics(run, counters) {
   return {
     requestedNotionalKrw: readNumber(run.requestedNotionalKrw) ?? null,
-    terminalCancelConfirmed: normalizeTerminalState(readString(run.terminalState)) === "CANCEL",
+    terminalCancelConfirmed: readTerminalStateFromAliases(run) === "CANCEL",
     openExposureKrw: readNumber(run.openExposureKrw) ?? null,
     crashCount: readNumber(counters.crashCount) ?? null,
     unhandledRejectionCount: readNumber(counters.unhandledRejectionCount) ?? null,
@@ -2068,9 +2080,9 @@ function createArtifactManifestConflicts(artifactFiles, manifest, run, counters)
   };
   const expectedRequestedNotionalKrw = readNumber(run.requestedNotionalKrw);
   const expectedLifecycleTimestamps = {
-    submittedAt: readTimestampMs(run.submittedAt),
-    cancelRequestedAt: readTimestampMs(run.cancelRequestedAt),
-    terminalCancelConfirmedAt: readTimestampMs(run.terminalCancelConfirmedAt),
+    submittedAt: readTimestampMsFromAliases(run, artifactFieldAliases("submittedAt")),
+    cancelRequestedAt: readTimestampMsFromAliases(run, artifactFieldAliases("cancelRequestedAt")),
+    terminalCancelConfirmedAt: readTimestampMsFromAliases(run, artifactFieldAliases("terminalCancelConfirmedAt")),
   };
   const conflicts = [];
 
@@ -2164,6 +2176,9 @@ function isFailureArtifactStatus(value) {
 
 function isCompleteArtifactCloseoutEvidence(record, run) {
   const expectedRequestedNotionalKrw = readNumber(run.requestedNotionalKrw);
+  const expectedSubmittedAt = readTimestampMsFromAliases(run, artifactFieldAliases("submittedAt"));
+  const expectedCancelRequestedAt = readTimestampMsFromAliases(run, artifactFieldAliases("cancelRequestedAt"));
+  const expectedTerminalCancelConfirmedAt = readTimestampMsFromAliases(run, artifactFieldAliases("terminalCancelConfirmedAt"));
   return /^(?:passed|pass|success|succeeded|ok|completed)$/iu.test(readString(record.status) ?? "")
     && readTerminalStateFromAliases(record) === "CANCEL"
     && readArtifactPolicyField(record, "market") === expectedMarket
@@ -2171,9 +2186,9 @@ function isCompleteArtifactCloseoutEvidence(record, run) {
     && readArtifactPolicyField(record, "orderType") === expectedOrderType
     && readArtifactPolicyField(record, "timeInForce") === expectedTimeInForce
     && readNumberFromAliases(record, ["requestedNotionalKrw", "requested_notional_krw"]) === expectedRequestedNotionalKrw
-    && readTimestampMsFromAliases(record, ["submittedAt", "submitted_at"]) === readTimestampMs(run.submittedAt)
-    && readTimestampMsFromAliases(record, ["cancelRequestedAt", "cancel_requested_at"]) === readTimestampMs(run.cancelRequestedAt)
-    && readTimestampMsFromAliases(record, ["terminalCancelConfirmedAt", "terminal_cancel_confirmed_at"]) === readTimestampMs(run.terminalCancelConfirmedAt)
+    && readTimestampMsFromAliases(record, ["submittedAt", "submitted_at"]) === expectedSubmittedAt
+    && readTimestampMsFromAliases(record, ["cancelRequestedAt", "cancel_requested_at"]) === expectedCancelRequestedAt
+    && readTimestampMsFromAliases(record, ["terminalCancelConfirmedAt", "terminal_cancel_confirmed_at"]) === expectedTerminalCancelConfirmedAt
     && readNumberFromAliases(record, ["openExposureKrw", "open_exposure_krw"]) === readNumber(run.openExposureKrw)
     && hasMatchingArtifactOrderSuffix(record, run);
 }
@@ -2377,8 +2392,15 @@ function isWithdrawalScope(scope) {
 }
 
 function normalizeTerminalState(value) {
-  const normalized = value?.trim().toUpperCase();
-  if (normalized === "CANCEL" || normalized === "CANCELED" || normalized === "CANCELLED") {
+  const normalized = value?.trim().toUpperCase().replace(/[-\s]+/gu, "_");
+  if (
+    normalized === "CANCEL"
+    || normalized === "CANCELED"
+    || normalized === "CANCELLED"
+    || normalized === "CANCEL_CONFIRMED"
+    || normalized === "CANCELED_CONFIRMED"
+    || normalized === "CANCELLED_CONFIRMED"
+  ) {
     return "CANCEL";
   }
   return normalized;
@@ -2425,6 +2447,23 @@ function readTimestampMsAliasValues(record, aliases) {
   return readStringAliasValues(record, aliases)
     .map((actual) => ({ alias: actual.alias, value: readTimestampMs(actual.value) }))
     .filter((actual) => actual.value !== undefined);
+}
+
+function createTimestampAliasCheck(record, aliases) {
+  const aliasValues = readStringAliasValues(record, aliases)
+    .map((actual) => ({ alias: actual.alias, rawValue: actual.value, timestampMs: readTimestampMs(actual.value) }));
+  const invalidAliasValues = aliasValues.filter((actual) => actual.timestampMs === undefined);
+  const validAliasValues = aliasValues.filter((actual) => actual.timestampMs !== undefined);
+  const timestampMs = validAliasValues[0]?.timestampMs;
+  const conflictingAliasValues = validAliasValues
+    .filter((actual) => actual.timestampMs !== timestampMs);
+  return {
+    ok: aliasValues.length > 0 && invalidAliasValues.length === 0 && conflictingAliasValues.length === 0,
+    timestampMs,
+    aliasValues,
+    invalidAliasValues,
+    conflictingAliasValues,
+  };
 }
 
 function readNumber(value) {

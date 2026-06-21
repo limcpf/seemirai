@@ -2183,18 +2183,19 @@ console.log(JSON.stringify(summary));
     expect([first.reason, second.reason]).toContain("live_ops_exit_submission_lock_busy");
   });
 
-  it("SELL exit runtime lock scope는 재호가 가격과 수량, preflight 관측 시각이 달라도 같은 포지션 decision을 직렬화한다", async () => {
+  it("SELL exit runtime lock scope는 decision key와 재호가 가격이 달라도 같은 포지션 scope를 직렬화한다", async () => {
     const {
       createLiveOpsCliExitRuntime,
     } = await import(path.join(process.cwd(), "scripts/run-live-ops-support.mjs"));
-    const decisionKey = "autonomous-exit-decision-2026-06-20T00:00:00Z";
     const createSubmission = ({
+      decisionKey,
       idempotencyKey,
       requestedPrice,
       requestedQuantity,
       requestedNotional,
       observedAt,
     }: {
+      decisionKey: string;
       idempotencyKey: string;
       requestedPrice: string;
       requestedQuantity: string;
@@ -2303,6 +2304,7 @@ console.log(JSON.stringify(summary));
 
     const [first, second] = await Promise.all([
       runtime.submitExitOrder(createSubmission({
+        decisionKey: "autonomous-exit-decision-2026-06-20T00:00:00Z",
         idempotencyKey: `ops-${"8".repeat(26)}`,
         requestedPrice: "99000000",
         requestedQuantity: "0.00010101",
@@ -2310,6 +2312,7 @@ console.log(JSON.stringify(summary));
         observedAt: "2026-06-20T00:00:00.000Z",
       })),
       runtime.submitExitOrder(createSubmission({
+        decisionKey: "autonomous-exit-decision-2026-06-20T00:00:01Z",
         idempotencyKey: `ops-${"7".repeat(26)}`,
         requestedPrice: "99001000",
         requestedQuantity: "0.00010099",
@@ -6922,7 +6925,7 @@ console.log(JSON.stringify({
 
     expect(executionInputs.budgetSnapshot).toMatchObject({
       openPositionNotionalKrw: "25000",
-      dailyAutonomousNotionalUsedKrw: "25000",
+      dailyAutonomousNotionalUsedKrw: "0",
     });
     expect(executionInputs.orderIntents[0]?.risk.positions).toContainEqual(expect.objectContaining({
       market: "KRW-BTC",
@@ -6930,7 +6933,6 @@ console.log(JSON.stringify({
     }));
     expect(liveExecution).toMatchObject({
       status: "blocked",
-      attemptStatus: "BLOCKED",
       submittedOrderCount: 0,
     });
     expect(submitted).toHaveLength(0);
@@ -7788,7 +7790,7 @@ console.log(JSON.stringify({
     });
     expect(result.budgetSnapshot).toMatchObject({
       openPositionNotionalKrw: "5000",
-      dailyAutonomousNotionalUsedKrw: "5000",
+      dailyAutonomousNotionalUsedKrw: "0",
     });
   });
 
@@ -12747,12 +12749,13 @@ console.log(JSON.stringify({
     });
   });
 
-  it("production preflight는 지갑 0수량 관측으로 열린 autonomous lot을 닫는다", async () => {
+  it("production preflight는 전략 소유 lot이 있는데 지갑 0수량이면 수동 점검으로 차단한다", async () => {
     const supportModulePath = path.join(process.cwd(), "scripts/run-live-ops-support.mjs");
     const {
       createLiveOpsCliCleanupArtifactStore,
       createLiveOpsCliFileBudgetReservation,
       createLiveOpsCliProductionExecutionInputs,
+      evaluateLiveOpsCliLiveExecution,
     } = await import(supportModulePath);
     const tempDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-live-ops-budget-zero-wallet-preflight-"));
     const artifactStore = await createLiveOpsCliCleanupArtifactStore({ artifactDir: tempDir });
@@ -12790,16 +12793,17 @@ console.log(JSON.stringify({
       filledAt: "2026-06-20T00:00:00.000Z",
     });
 
-    await withFakeSystemTime(observedAt, () => createLiveOpsCliProductionExecutionInputs({
-      config: {
-        live_trading_enabled: true,
-        universe: { markets: ["KRW-BTC"], default_market: "KRW-BTC" },
-        budget: {
-          max_order_krw: "10000",
-          daily_autonomous_notional_limit_krw: "30000",
-          max_open_position_notional_krw: "30000",
-        },
+    const config = {
+      live_trading_enabled: true,
+      universe: { markets: ["KRW-BTC"], default_market: "KRW-BTC" },
+      budget: {
+        max_order_krw: "10000",
+        daily_autonomous_notional_limit_krw: "30000",
+        max_open_position_notional_krw: "30000",
       },
+    };
+    const executionInputs = await withFakeSystemTime(observedAt, () => createLiveOpsCliProductionExecutionInputs({
+      config,
       env: liveOrderEnv(),
       fixtureSmoke: false,
       analysisDecision: { ready: true, decisionCategory: "ORDER_INTENT", orderIntentCount: 1 },
@@ -12847,14 +12851,40 @@ console.log(JSON.stringify({
         telegramDispatcher: {},
       },
     }));
+    const submitted: unknown[] = [];
+    const liveExecution = await withFakeSystemTime(observedAt, () => evaluateLiveOpsCliLiveExecution({
+      config,
+      fixtureSmoke: false,
+      analysisDecision: { ready: true, decisionCategory: "ORDER_INTENT", orderIntentCount: 1 },
+      marketData: { ready: true, latestHeartbeatAt: observedAt, referencePrice: "100000000" },
+      env: liveOrderEnv(),
+      orderIntents: executionInputs.orderIntents,
+      entryRuntime: {
+        async submitEntryCandidate(submission: unknown) {
+          submitted.push(submission);
+          return { status: "SUBMITTED", submittedOrder: { brokerOrderId: "unexpected-zero-wallet-buy" } };
+        },
+      },
+      executionStatus: executionInputs.executionStatus,
+      postSubmitReadiness: executionInputs.postSubmitReadiness,
+      budgetSnapshot: executionInputs.budgetSnapshot,
+      lossSnapshot: executionInputs.lossSnapshot,
+      cleanupLifecycle: executionInputs.cleanupLifecycle,
+    }));
 
     const usage = await budgetReservation.readDailyReservedNotional("2026-06-20T00:02:30.000Z");
     expect(usage.autonomous24x7Position).toMatchObject({
-      status: "CLOSED",
+      status: "MANUAL_REVIEW_REQUIRED",
       reservedNotionalKrw: "0",
       requestedQuantity: "0",
-      closedAt: observedAt,
+      manualReviewReason: "autonomous_position_wallet_quantity_below_owned_scope",
     });
+    expect(liveExecution).toMatchObject({
+      status: "blocked",
+      submittedOrderCount: 0,
+    });
+    expect(JSON.stringify(executionInputs.orderIntents[0]?.riskApproval)).toContain("live_ops_exit_infrastructure_signal_active");
+    expect(submitted).toHaveLength(0);
   });
 
   it("file budget reservation은 CLOSED state 뒤늦게 도착한 BUY fill artifact를 열린 autonomous lot으로 복구한다", async () => {
@@ -12987,6 +13017,44 @@ console.log(JSON.stringify({
       highWatermarkPrice: "102000000",
       highWatermarkAt: "2026-06-16T00:00:30.000Z",
       status: "OPEN",
+    });
+  });
+
+  it("file budget reservation은 open position notional을 일일 주문 예약 한도에 다시 더하지 않는다", async () => {
+    const supportModulePath = path.join(process.cwd(), "scripts/run-live-ops-support.mjs");
+    const {
+      createLiveOpsCliCleanupArtifactStore,
+      createLiveOpsCliFileBudgetReservation,
+    } = await import(supportModulePath);
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-live-ops-budget-open-position-separate-"));
+    const artifactStore = await createLiveOpsCliCleanupArtifactStore({ artifactDir: tempDir });
+    const observedAt = "2026-06-15T00:00:00.000Z";
+    const budgetReservation = createLiveOpsCliFileBudgetReservation({
+      artifactStore,
+      clock: () => observedAt,
+    });
+
+    const result = await budgetReservation.reserve({
+      attemptId: "ops-aaaaaaaaaaaaaaaaaaaaaaaaaa",
+      idempotencyKey: "ops-aaaaaaaaaaaaaaaaaaaaaaaaaa",
+      market: "KRW-BTC",
+      strategyId: "live_ops_autonomous_24x7_core",
+      requestedNotionalKrw: "10000",
+      budgetSnapshot: {
+        dailyAutonomousNotionalLimitKrw: "30000",
+        dailyAutonomousNotionalUsedKrw: "0",
+        openPositionNotionalKrw: "25000",
+      },
+      observedAt,
+    });
+
+    expect(result).toMatchObject({
+      reserved: true,
+      reservation: {
+        attemptId: "ops-aaaaaaaaaaaaaaaaaaaaaaaaaa",
+        reservedNotionalKrw: "10000",
+        budgetUsageAfterReservationKrw: "10000",
+      },
     });
   });
 
