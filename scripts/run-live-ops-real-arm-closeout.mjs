@@ -603,7 +603,6 @@ function createArtifactFilesCheck(artifactFiles, manifest, run, counters) {
 }
 
 function createOrderPolicyCheck(run) {
-  const requestedNotionalKrw = Number(readStringOrNumber(run.requestedNotionalKrw));
   // 운영 manifest의 alias 충돌은 실제 주문 정책을 모호하게 만들므로 모든 표기를 같은 정책 값으로 검증한다.
   const orderTypeValues = readStringAliasValues(run, ["orderType", "order_type", "ord_type"])
     .map((actual) => ({ alias: actual.alias, value: actual.value.toUpperCase() }));
@@ -611,6 +610,8 @@ function createOrderPolicyCheck(run) {
   const timeInForceValues = readStringAliasValues(run, ["timeInForce", "time_in_force"])
     .map((actual) => ({ alias: actual.alias, value: normalizeTimeInForce(actual.value) }));
   const invalidTimeInForceValues = timeInForceValues.filter((actual) => actual.value !== expectedTimeInForce);
+  const requestedNotional = createNumberAliasCheck(run, artifactFieldAliases("requestedNotionalKrw"));
+  const requestedNotionalKrw = requestedNotional.value;
   const orderType = orderTypeValues[0]?.value;
   const timeInForce = timeInForceValues[0]?.value;
   const actual = {
@@ -621,6 +622,7 @@ function createOrderPolicyCheck(run) {
     timeInForce,
     timeInForceValues,
     requestedNotionalKrw,
+    requestedNotional,
   };
   const ok = actual.market === expectedMarket
     && actual.side === expectedSide
@@ -630,6 +632,7 @@ function createOrderPolicyCheck(run) {
     && timeInForceValues.length > 0
     && invalidTimeInForceValues.length === 0
     && actual.timeInForce === expectedTimeInForce
+    && requestedNotional.ok
     && Number.isFinite(requestedNotionalKrw)
     && requestedNotionalKrw >= minRequestedNotionalKrw
     && requestedNotionalKrw <= maxRequestedNotionalKrw;
@@ -655,7 +658,7 @@ function createOrderLifecycleCheck(run) {
   // 같은 timestamp의 camelCase/snake_case 표기가 충돌하면 closeout 순서 증명이 모호해지므로 첫 값 채택으로 넘기지 않는다.
   const submittedAt = createTimestampAliasCheck(run, ["submittedAt", "submitted_at"]);
   const cancelRequestedAt = createTimestampAliasCheck(run, ["cancelRequestedAt", "cancel_requested_at"]);
-  const terminalCancelConfirmedAt = createTimestampAliasCheck(run, ["terminalCancelConfirmedAt", "terminal_cancel_confirmed_at"]);
+  const terminalCancelConfirmedAt = createTimestampAliasCheck(run, artifactFieldAliases("terminalCancelConfirmedAt"));
   const terminalStateValues = readTerminalStateAliasValues(run);
   const invalidTerminalStateValues = terminalStateValues.filter((actual) => actual.value !== "CANCEL");
   const terminalState = terminalStateValues[0]?.value;
@@ -898,7 +901,7 @@ function createReadinessAuditCheck(manifest) {
 
 function createMetrics(run, counters) {
   return {
-    requestedNotionalKrw: readNumber(run.requestedNotionalKrw) ?? null,
+    requestedNotionalKrw: readNumberFromAliases(run, artifactFieldAliases("requestedNotionalKrw")) ?? null,
     terminalCancelConfirmed: readTerminalStateFromAliases(run) === "CANCEL",
     openExposureKrw: readNumber(run.openExposureKrw) ?? null,
     crashCount: readNumber(counters.crashCount) ?? null,
@@ -2078,7 +2081,7 @@ function createArtifactManifestConflicts(artifactFiles, manifest, run, counters)
     orderType: expectedOrderType,
     timeInForce: expectedTimeInForce,
   };
-  const expectedRequestedNotionalKrw = readNumber(run.requestedNotionalKrw);
+  const expectedRequestedNotionalKrw = readNumberFromAliases(run, artifactFieldAliases("requestedNotionalKrw"));
   const expectedLifecycleTimestamps = {
     submittedAt: readTimestampMsFromAliases(run, artifactFieldAliases("submittedAt")),
     cancelRequestedAt: readTimestampMsFromAliases(run, artifactFieldAliases("cancelRequestedAt")),
@@ -2175,7 +2178,7 @@ function isFailureArtifactStatus(value) {
 }
 
 function isCompleteArtifactCloseoutEvidence(record, run) {
-  const expectedRequestedNotionalKrw = readNumber(run.requestedNotionalKrw);
+  const expectedRequestedNotionalKrw = readNumberFromAliases(run, artifactFieldAliases("requestedNotionalKrw"));
   const expectedSubmittedAt = readTimestampMsFromAliases(run, artifactFieldAliases("submittedAt"));
   const expectedCancelRequestedAt = readTimestampMsFromAliases(run, artifactFieldAliases("cancelRequestedAt"));
   const expectedTerminalCancelConfirmedAt = readTimestampMsFromAliases(run, artifactFieldAliases("terminalCancelConfirmedAt"));
@@ -2185,10 +2188,10 @@ function isCompleteArtifactCloseoutEvidence(record, run) {
     && readArtifactPolicyField(record, "side") === expectedSide
     && readArtifactPolicyField(record, "orderType") === expectedOrderType
     && readArtifactPolicyField(record, "timeInForce") === expectedTimeInForce
-    && readNumberFromAliases(record, ["requestedNotionalKrw", "requested_notional_krw"]) === expectedRequestedNotionalKrw
-    && readTimestampMsFromAliases(record, ["submittedAt", "submitted_at"]) === expectedSubmittedAt
-    && readTimestampMsFromAliases(record, ["cancelRequestedAt", "cancel_requested_at"]) === expectedCancelRequestedAt
-    && readTimestampMsFromAliases(record, ["terminalCancelConfirmedAt", "terminal_cancel_confirmed_at"]) === expectedTerminalCancelConfirmedAt
+    && readNumberFromAliases(record, artifactFieldAliases("requestedNotionalKrw")) === expectedRequestedNotionalKrw
+    && readTimestampMsFromAliases(record, artifactFieldAliases("submittedAt")) === expectedSubmittedAt
+    && readTimestampMsFromAliases(record, artifactFieldAliases("cancelRequestedAt")) === expectedCancelRequestedAt
+    && readTimestampMsFromAliases(record, artifactFieldAliases("terminalCancelConfirmedAt")) === expectedTerminalCancelConfirmedAt
     && readNumberFromAliases(record, ["openExposureKrw", "open_exposure_krw"]) === readNumber(run.openExposureKrw)
     && hasMatchingArtifactOrderSuffix(record, run);
 }
@@ -2210,7 +2213,7 @@ function isCloseoutEvidenceRecord(record) {
 }
 
 function isOrderLifecycleEvidenceRecord(record) {
-  const hasLifecycleTimestamp = ["submittedAt", "submitted_at", "cancelRequestedAt", "cancel_requested_at", "terminalCancelConfirmedAt", "terminal_cancel_confirmed_at"]
+  const hasLifecycleTimestamp = ["submittedAt", "submitted_at", "cancelRequestedAt", "cancel_requested_at", ...artifactFieldAliases("terminalCancelConfirmedAt")]
     .some((field) => record[field] !== undefined);
   const hasOrderChainIdentifier = [
     "identifierSuffix",
@@ -2282,9 +2285,10 @@ function artifactFieldAliases(field) {
     terminalState: ["terminalState", "terminal_state"],
     orderType: ["orderType", "order_type", "ord_type"],
     timeInForce: ["timeInForce", "time_in_force"],
+    requestedNotionalKrw: ["requestedNotionalKrw", "requested_notional_krw"],
     submittedAt: ["submittedAt", "submitted_at"],
     cancelRequestedAt: ["cancelRequestedAt", "cancel_requested_at"],
-    terminalCancelConfirmedAt: ["terminalCancelConfirmedAt", "terminal_cancel_confirmed_at"],
+    terminalCancelConfirmedAt: ["terminalCancelConfirmedAt", "terminal_cancel_confirmed_at", "terminalCheckedAt", "terminal_checked_at"],
     openExposureKrw: ["openExposureKrw", "open_exposure_krw"],
     openOrderCount: ["openOrderCount", "open_order_count"],
     reconcileMismatchCount: ["reconcileMismatchCount", "reconcile_mismatch_count"],
@@ -2460,6 +2464,23 @@ function createTimestampAliasCheck(record, aliases) {
   return {
     ok: aliasValues.length > 0 && invalidAliasValues.length === 0 && conflictingAliasValues.length === 0,
     timestampMs,
+    aliasValues,
+    invalidAliasValues,
+    conflictingAliasValues,
+  };
+}
+
+function createNumberAliasCheck(record, aliases) {
+  const aliasValues = aliases
+    .map((alias) => ({ alias, rawValue: readStringOrNumber(record[alias]), value: readNumber(record[alias]) }))
+    .filter((actual) => actual.rawValue !== undefined);
+  const invalidAliasValues = aliasValues.filter((actual) => actual.value === undefined);
+  const validAliasValues = aliasValues.filter((actual) => actual.value !== undefined);
+  const value = validAliasValues[0]?.value;
+  const conflictingAliasValues = validAliasValues.filter((actual) => actual.value !== value);
+  return {
+    ok: aliasValues.length > 0 && invalidAliasValues.length === 0 && conflictingAliasValues.length === 0,
+    value,
     aliasValues,
     invalidAliasValues,
     conflictingAliasValues,
