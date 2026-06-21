@@ -1624,6 +1624,112 @@ console.log(JSON.stringify(summary));
     expect(reserved).not.toHaveBeenCalled();
   });
 
+  it("autonomous BUY는 runtime risk가 붙은 후보도 제출 직전 미소유 BTC 보유가 보이면 차단한다", async () => {
+    const {
+      createLiveOpsCliEntryRuntime,
+      createLiveOpsCliProductionExecutionInputs,
+      evaluateLiveOpsCliLiveExecution,
+    } = await import(path.join(process.cwd(), "scripts/run-live-ops-support.mjs"));
+    const observedAt = "2026-06-20T00:00:00.000Z";
+    const submitted = vi.fn(async () => ({ status: "SUBMITTED", brokerOrderId: "unexpected-stale-risk-buy" }));
+    const reserved = vi.fn(async () => ({
+      reserved: true,
+      reservation: {
+        reservationId: "unexpected-stale-risk-reservation",
+        attemptId: "unexpected",
+        idempotencyKey: "unexpected",
+        reservedNotionalKrw: "10000",
+        budgetSnapshot: {},
+        reservedAt: observedAt,
+      },
+    }));
+    const config = {
+      live_trading_enabled: true,
+      universe: { markets: ["KRW-BTC"], default_market: "KRW-BTC" },
+      budget: {
+        max_order_krw: "10000",
+        daily_autonomous_notional_limit_krw: "30000",
+        max_open_position_notional_krw: "30000",
+      },
+    };
+    const analysisDecision = { ready: true, decisionCategory: "ORDER_INTENT", orderIntentCount: 1 };
+    const marketData = { ready: true, latestHeartbeatAt: observedAt, referencePrice: "100000000" };
+    const previouslyApprovedInputs = await createLiveOpsCliProductionExecutionInputs({
+      config,
+      env: liveOrderEnv(),
+      fixtureSmoke: false,
+      analysisDecision,
+      marketData,
+      orderIntents: [createCliBuyIntent({
+        idempotencyKey: "live_ops_autonomous_24x7_core:2026-06-20:upbit_krw_spot:KRW-BTC:BUY:100000000:0.0001:10000",
+      })],
+      preflight: createAutonomousPreflight({ observedAt }),
+      productionRuntime: {
+        entryRuntime: {},
+      },
+    });
+    const preEnrichedIntent = previouslyApprovedInputs.orderIntents[0] as Record<string, any>;
+    expect(preEnrichedIntent.riskApproval).toMatchObject({
+      approved: true,
+      action: "ALLOW",
+    });
+    expect(preEnrichedIntent.risk).toMatchObject({
+      strategy: {
+        strategyId: "live_ops_autonomous_24x7_core",
+      },
+    });
+
+    const productionInputs = await createLiveOpsCliProductionExecutionInputs({
+      config,
+      env: liveOrderEnv(),
+      fixtureSmoke: false,
+      analysisDecision,
+      marketData,
+      orderIntents: [preEnrichedIntent],
+      preflight: createAutonomousPreflight({
+        observedAt,
+        btcQuantity: "0.0001",
+        btcNotionalKrw: "10000",
+      }),
+      productionRuntime: {
+        entryRuntime: {},
+      },
+    });
+
+    const summary = await evaluateLiveOpsCliLiveExecution({
+      config,
+      fixtureSmoke: false,
+      analysisDecision,
+      marketData,
+      env: liveOrderEnv(),
+      orderIntents: productionInputs.orderIntents,
+      entryRuntime: createLiveOpsCliEntryRuntime({
+        broker: {
+          submitOrder: submitted,
+        },
+        budgetReservation: {
+          reserve: reserved,
+        },
+      }),
+      executionStatus: productionInputs.executionStatus,
+      postSubmitReadiness: productionInputs.postSubmitReadiness,
+      budgetSnapshot: productionInputs.budgetSnapshot,
+      lossSnapshot: productionInputs.lossSnapshot,
+      cleanupLifecycle: productionInputs.cleanupLifecycle,
+    });
+
+    expect(summary).toMatchObject({
+      status: "blocked",
+      submittedOrderCount: 0,
+    });
+    expect(summary.checks).toContainEqual(expect.objectContaining({
+      code: "live_ops_order_intent_blocked",
+    }));
+    expect(JSON.stringify(summary.checks)).toContain("autonomous_position_ownership_missing_for_entry");
+    expect(submitted).not.toHaveBeenCalled();
+    expect(reserved).not.toHaveBeenCalled();
+  });
+
   it("autonomous SELL은 제출 직전 preflight ownership이 intent scope와 다르면 broker 제출 전에 차단한다", async () => {
     const {
       createLiveOpsCliProductionExecutionInputs,

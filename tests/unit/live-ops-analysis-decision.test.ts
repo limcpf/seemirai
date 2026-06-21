@@ -178,6 +178,31 @@ describe("production live ops analysis/decision pipeline", () => {
     expect(result.orderIntents).toHaveLength(0);
   });
 
+  it("cleanup probe는 cost feature 입력 실패와 독립적으로 같은 tick order intent를 반환한다", async () => {
+    const [strategy] = resolveLiveOpsDecisionPolicy({ config: defaultLiveOpsConfig }).strategies;
+    if (strategy === undefined) throw new Error("expected cleanup strategy");
+
+    const result = await runLiveOpsAnalysisDecisionPipeline({
+      config: defaultLiveOpsConfig,
+      marketData: marketDataSummary(),
+      observedAt,
+      marketEvents: [orderbookEvent()],
+      strategies: [strategy],
+      featureSnapshot: failedFeatureSnapshot("FEATURE_INVALID_DECIMAL", "cost_adjusted_margin_bps"),
+    });
+
+    expect(result.summary).toMatchObject({
+      status: "ready",
+      ready: true,
+      decisionCategory: "ORDER_INTENT",
+      featureStatus: "failed",
+      orderIntentCount: 1,
+    });
+    expect(result.summary.checks.map((check) => check.code)).toContain("live_ops_feature_snapshot_not_required");
+    expect(result.orderIntents).toHaveLength(1);
+    expect(result.orderIntents[0]?.strategyId).toBe("live_ops_cleanup_probe");
+  });
+
   it("BLOCK strategy result는 idle이 아니라 blocked analysis로 닫는다", async () => {
     const result = await runLiveOpsAnalysisDecisionPipeline({
       config: defaultLiveOpsConfig,
@@ -307,6 +332,7 @@ function okFeatureSnapshot(features: Record<string, unknown> = {}): FeatureCalcu
 function failedFeatureSnapshot(
   reasonCode: "FEATURE_INSUFFICIENT_INPUT" | "FEATURE_INVALID_DECIMAL" | "FEATURE_INVALID_MARKET_VALUE" | "FEATURE_MARKET_DATA_STALE" =
     "FEATURE_INSUFFICIENT_INPUT",
+  key: FeatureCalculationResult["failureReasons"][number]["key"] = "candle_momentum_bps",
 ): FeatureCalculationResult {
   return {
     status: "failed",
@@ -316,7 +342,7 @@ function failedFeatureSnapshot(
     failureReasons: [
       {
         status: "failed",
-        key: "candle_momentum_bps",
+        key,
         reasonCode,
         message: "fixture failure",
         observedAt,

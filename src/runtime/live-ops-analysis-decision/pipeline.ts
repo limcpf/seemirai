@@ -24,6 +24,22 @@ import type {
   LiveOpsMarketDataCollectorSummary,
 } from "../live-ops-market-data.js";
 
+const LIVE_OPS_MARKET_DATA_FEATURE_KEYS = new Set<FeatureCalculationResult["failureReasons"][number]["key"]>([
+  "candle_momentum_bps",
+  "realized_volatility_bps",
+  "volume_spike_ratio",
+  "bid_depth_slope_krw_per_bps",
+  "ask_depth_slope_krw_per_bps",
+  "depth_change_rate_ratio",
+  "vwap_deviation_bps",
+  "trade_direction_imbalance_ratio",
+  "trend_strength_bps",
+  "mean_reversion_discount_bps",
+  "market_regime",
+  "session_liquidity_score",
+  "session_liquidity_state",
+]);
+
 /**
  * live ops analysis/decision pipeline의 최종 상태 코드다.
  *
@@ -335,7 +351,7 @@ function createFeatureCalculationInput(input: LiveOpsAnalysisDecisionInput): {
  *
  * 책임:
  * - `requiredFeatures=[]` 전략 우회가 market data freshness 실패를 숨기지 못하게 한다.
- * - feature 입력 부족처럼 cleanup orderbook-only 전략과 독립적인 실패와, stale/invalid 가격 입력처럼 주문 가격 산출을 오염시키는 실패를 분리한다.
+ * - feature 입력 부족이나 cost feature 실패처럼 cleanup orderbook-only 전략과 독립적인 실패와, stale/invalid 가격 입력처럼 주문 가격 산출을 오염시키는 실패를 분리한다.
  *
  * 호출 경계:
  * - analysis/decision pipeline의 feature failure branch에서만 호출하며 strategy evaluation 전 broker side effect 차단 여부를 정한다.
@@ -350,11 +366,16 @@ function createFeatureCalculationInput(input: LiveOpsAnalysisDecisionInput): {
  * - 없음. feature failure reason만 읽는다.
  */
 function hasMarketDataBlockingFeatureFailure(featureSnapshot: FeatureCalculationResult): boolean {
-  return featureSnapshot.failureReasons.some((reason) => (
-    reason.reasonCode === "FEATURE_MARKET_DATA_STALE" ||
-    reason.reasonCode === "FEATURE_INVALID_MARKET_VALUE" ||
-    reason.reasonCode === "FEATURE_INVALID_DECIMAL"
-  ));
+  return featureSnapshot.failureReasons.some((reason) => {
+    if (reason.reasonCode === "FEATURE_MARKET_DATA_STALE") {
+      return true;
+    }
+    if (reason.reasonCode !== "FEATURE_INVALID_MARKET_VALUE" && reason.reasonCode !== "FEATURE_INVALID_DECIMAL") {
+      return false;
+    }
+    // cost feature 입력 실패는 cleanup probe의 orderbook-only 후보와 독립적이므로 market-data key에서 난 실패만 차단한다.
+    return LIVE_OPS_MARKET_DATA_FEATURE_KEYS.has(reason.key);
+  });
 }
 
 function buildSummary(

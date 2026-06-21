@@ -1222,7 +1222,8 @@ function attachLiveOpsCliAutonomousEntryRuntimeEvidence({ config, intent, prefli
     intent,
     observedAt: preflight.observedAt,
   });
-  const risk = runtimeIntent.risk ?? createLiveOpsCliCleanupRiskInput({
+  // 신규 BUY는 제출 직전 private preflight가 최종 truth라 stale risk가 붙은 후보도 현재 ownership guard로 다시 닫는다.
+  const risk = createLiveOpsCliCleanupRiskInput({
     config,
     intent: runtimeIntent,
     preflight,
