@@ -1152,7 +1152,7 @@ function requireLiveOpsEntryReferencePrice(input: LiveOpsLiveExecutionInput): st
  *
  * 책임:
  * - analysis 시점 position scope만 믿고 stale SELL이 broker까지 가는 것을 막는다.
- * - `input.risk.positions`의 strategy-owned quantity를 제출 직전 snapshot으로 보고, requested quantity와 metadata scope를 함께 대조한다.
+ * - 명시적 strategy-owned position snapshot만 제출 직전 근거로 보고, requested quantity와 metadata scope를 함께 대조한다.
  *
  * invariant:
  * - matching position은 exchange/market/strategy가 모두 같아야 한다.
@@ -1167,11 +1167,7 @@ function validateExitQuantityAgainstLatestPosition(
   positionScope: ExecutionExitCostEvidence["position_scope"],
   positionEffect: string | undefined,
 ): string | undefined {
-  const latestPosition = input.risk.positions.find((position) =>
-    position.exchangeId === intent.exchangeId &&
-    position.market === positionScope.market &&
-    (position.strategyId ?? input.risk.strategy.strategyId) === positionScope.strategy_id
-  );
+  const latestPosition = input.risk.positions.find((position) => isMatchingExitPositionSnapshot(position, intent, positionScope));
   const latestQuantity = readPositionRiskSnapshotQuantity(latestPosition);
   if (latestQuantity === undefined) {
     return "매도 후보에는 최신 포지션 snapshot의 strategy-owned 수량 evidence가 필요합니다";
@@ -1204,6 +1200,28 @@ function validateExitQuantityAgainstLatestPosition(
 }
 
 /**
+ * 최신 SELL position snapshot이 특정 strategy 소유 근거인지 판정한다.
+ *
+ * 책임:
+ * - `strategyId`가 없는 aggregate/account snapshot을 현재 strategy snapshot으로 암묵 변환하지 않는다.
+ * - exchange, market, strategy가 모두 명시적으로 일치할 때만 SELL 수량 재검증 근거로 사용한다.
+ *
+ * side effect:
+ * - 없음. snapshot과 intent 값을 비교만 한다.
+ */
+function isMatchingExitPositionSnapshot(
+  position: LiveOpsLiveExecutionInput["risk"]["positions"][number],
+  intent: OrderIntent,
+  positionScope: ExecutionExitCostEvidence["position_scope"],
+): boolean {
+  return (
+    position.exchangeId === intent.exchangeId &&
+    position.market === positionScope.market &&
+    position.strategyId === positionScope.strategy_id
+  );
+}
+
+/**
  * RiskGate position snapshot metadata에서 strategy-owned 수량 evidence를 읽는다.
  *
  * 책임:
@@ -1221,10 +1239,12 @@ function readPositionRiskSnapshotQuantity(
   }
   const quantity =
     readStringMetadata(position.metadata, "strategy_owned_quantity") ??
-    readStringMetadata(position.metadata, "position_quantity") ??
-    readStringMetadata(position.metadata, "position_total_quantity") ??
-    readStringMetadata(position.metadata, "total_quantity") ??
-    readStringMetadata(position.metadata, "quantity");
+    (position.strategyId === undefined
+      ? undefined
+      : readStringMetadata(position.metadata, "position_quantity") ??
+        readStringMetadata(position.metadata, "position_total_quantity") ??
+        readStringMetadata(position.metadata, "total_quantity") ??
+        readStringMetadata(position.metadata, "quantity"));
   return readPositiveDecimal(quantity);
 }
 

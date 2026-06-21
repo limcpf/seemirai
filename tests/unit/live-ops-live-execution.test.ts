@@ -360,6 +360,37 @@ describe("production live ops live execution adapter", () => {
     expect(entryRuntime.submitEntryCandidate).not.toHaveBeenCalled();
   });
 
+  it("SELL 후보는 strategyId 없는 aggregate position snapshot을 전략 소유 수량으로 쓰지 않는다", async () => {
+    const entryRuntime = createEntryRuntimeRecorder();
+    const exitRuntime = createExitRuntimeRecorder();
+    const aggregatePosition = createPositionRiskSnapshot({
+      metadata: {
+        quantity: "0.0001",
+      },
+    });
+    const { strategyId: _strategyId, ...positionWithoutStrategyId } = aggregatePosition;
+
+    const summary = await runLiveOpsLiveExecution(createInput({
+      analysisDecision: analysisSummary({ orderIntentCount: 1, decisionCategory: "ORDER_INTENT" }),
+      orderIntents: [createSellOrderIntent()],
+      entryRuntime,
+      exitRuntime,
+      risk: createRiskInput({
+        positions: [positionWithoutStrategyId],
+      }),
+    }));
+
+    expect(summary).toMatchObject({
+      status: "blocked",
+      ready: false,
+      liveOrderCapable: false,
+    });
+    expect(summary.checks.map((check) => check.code)).toContain("live_ops_order_intent_blocked");
+    expect(JSON.stringify(summary.checks)).toContain("strategy-owned 수량 evidence");
+    expect(exitRuntime.submitExitOrder).not.toHaveBeenCalled();
+    expect(entryRuntime.submitEntryCandidate).not.toHaveBeenCalled();
+  });
+
   it("명시 id가 없어도 decision key를 stable ops attempt id로 낮춘다", async () => {
     const entryRuntime = createEntryRuntimeRecorder();
     const intent = createOrderIntent();
