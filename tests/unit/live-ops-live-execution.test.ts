@@ -286,6 +286,79 @@ describe("production live ops live execution adapter", () => {
     });
   });
 
+  it("risk-reducing SELL 후보는 현재 BTC 노출이 한도 초과여도 축소 runtime으로 전진한다", async () => {
+    const entryRuntime = createEntryRuntimeRecorder();
+    const exitRuntime = createExitRuntimeRecorder();
+
+    const summary = await runLiveOpsLiveExecution(createInput({
+      analysisDecision: analysisSummary({ orderIntentCount: 1, decisionCategory: "ORDER_INTENT" }),
+      orderIntents: [createSellOrderIntent({ reason: "autonomous_24x7_risk_reduction" })],
+      entryRuntime,
+      exitRuntime,
+      risk: createRiskInput({
+        positions: [
+          createPositionRiskSnapshot({
+            notionalKrw: "250000",
+            notionalBpsOfEquity: "2500",
+          }),
+        ],
+      }),
+    }));
+
+    expect(summary).toMatchObject({
+      status: "submitted",
+      ready: true,
+      liveOrderCapable: true,
+    });
+    expect(exitRuntime.submitExitOrder).toHaveBeenCalledTimes(1);
+    const submission = exitRuntime.submitExitOrder.mock.calls[0]?.[0];
+    expect(submission?.riskApproval).toMatchObject({
+      approved: true,
+      action: "ALLOW",
+      status: "WARN",
+      failed_evaluation_reason_codes: [],
+      warning_evaluation_reason_codes: expect.arrayContaining(["btc_eth_position_limit_exceeded"]),
+    });
+  });
+
+  it("risk-reducing SELL 후보는 camelCase positionEffect alias도 완화 대상으로 본다", async () => {
+    const entryRuntime = createEntryRuntimeRecorder();
+    const exitRuntime = createExitRuntimeRecorder();
+    const snakeCaseIntent = createSellOrderIntent({ reason: "autonomous_24x7_stop_loss" });
+    const {
+      position_effect: _positionEffect,
+      ...metadataWithoutSnakeCasePositionEffect
+    } = snakeCaseIntent.metadata ?? {};
+
+    const summary = await runLiveOpsLiveExecution(createInput({
+      analysisDecision: analysisSummary({ orderIntentCount: 1, decisionCategory: "ORDER_INTENT" }),
+      orderIntents: [
+        {
+          ...snakeCaseIntent,
+          metadata: {
+            ...metadataWithoutSnakeCasePositionEffect,
+            positionEffect: "EXIT",
+          },
+        },
+      ],
+      entryRuntime,
+      exitRuntime,
+      risk: createRiskInput({
+        account: {
+          equityKrw: "1000000",
+          dailyRealizedPnlBps: "-100",
+          weeklyRealizedPnlBps: "0",
+          maxDrawdownBps: "0",
+          capturedAt: observedAt,
+        },
+        positions: [createPositionRiskSnapshot()],
+      }),
+    }));
+
+    expect(summary.status).toBe("submitted");
+    expect(exitRuntime.submitExitOrder).toHaveBeenCalledTimes(1);
+  });
+
   it("SELL 후보의 긴 strategy decision key를 Upbit-safe attempt id로 낮춘다", async () => {
     const entryRuntime = createEntryRuntimeRecorder();
     const exitRuntime = createExitRuntimeRecorder();

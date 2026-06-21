@@ -48,6 +48,8 @@ const FEATURE_KEYS: readonly M11FeatureKey[] = [
   "depth_change_rate_ratio",
   "vwap_deviation_bps",
   "trade_direction_imbalance_ratio",
+  "trend_strength_bps",
+  "mean_reversion_discount_bps",
   "market_regime",
   "session_liquidity_score",
   "session_liquidity_state",
@@ -113,6 +115,8 @@ interface ComputedFeatureValues {
   depthChangeRateRatio?: Decimal;
   vwapDeviationBps?: Decimal;
   tradeDirectionImbalanceRatio?: Decimal;
+  trendStrengthBps?: Decimal;
+  meanReversionDiscountBps?: Decimal;
   marketRegime?: MarketRegime;
   sessionLiquidityScore?: Decimal;
   sessionLiquidityState?: SessionLiquidityState;
@@ -168,12 +172,14 @@ export function calculateM11FeatureSnapshot(
     ),
     calculateDecimalFeature(context, "depth_change_rate_ratio", () => calculateDepthChangeRateRatio(context), computed),
     calculateDecimalFeature(context, "vwap_deviation_bps", () => calculateVwapDeviationBps(context), computed),
+    calculateDecimalFeature(context, "mean_reversion_discount_bps", () => calculateMeanReversionDiscountBps(computed), computed),
     calculateDecimalFeature(
       context,
       "trade_direction_imbalance_ratio",
       () => calculateTradeDirectionImbalanceRatio(context),
       computed,
     ),
+    calculateDecimalFeature(context, "trend_strength_bps", () => calculateTrendStrengthBps(computed), computed),
   ];
 
   results.push(calculateDecimalFeature(context, "session_liquidity_score", () => calculateSessionLiquidityScore(context), computed));
@@ -351,6 +357,21 @@ function calculateVwapDeviationBps(context: CalculationContext): Decimal {
   return latestPrice.minus(vwap).div(vwap).mul(10_000);
 }
 
+/**
+ * VWAP 대비 현재가 할인 폭을 autonomous 평균회귀 entry feature로 낮춘다.
+ *
+ * 책임:
+ * - 기존 `vwap_deviation_bps`를 재사용해 기본 M11 feature 경로에서도 `mean_reversion_discount_bps`를 산출한다.
+ * - 현재가가 VWAP보다 높으면 할인 폭은 0으로 닫아 BUY mean-reversion 신호로 과대 해석하지 않는다.
+ *
+ * side effect:
+ * - 없음. 이미 계산된 feature cache만 읽는다.
+ */
+function calculateMeanReversionDiscountBps(computed: ComputedFeatureValues): Decimal {
+  const required = readRequiredComputedDecimals(computed, ["vwapDeviationBps"]);
+  return Decimal.max(required.vwapDeviationBps.negated(), 0);
+}
+
 function calculateTradeDirectionImbalanceRatio(context: CalculationContext): Decimal {
   const trades = getTradesInLookback(context, context.options.tradeImbalanceWindowMs).filter(
     (trade) => trade.side === "BID" || trade.side === "ASK",
@@ -377,6 +398,21 @@ function calculateTradeDirectionImbalanceRatio(context: CalculationContext): Dec
   }
 
   return bidQuantity.minus(askQuantity).div(totalQuantity);
+}
+
+/**
+ * 양의 candle momentum을 autonomous trend entry feature로 낮춘다.
+ *
+ * 책임:
+ * - 기존 M11 candle momentum을 재사용해 production 기본 feature calculator가 `trend_strength_bps`를 제공하게 한다.
+ * - 하락 momentum은 0으로 닫아 trend-following BUY 신호로 사용하지 않는다.
+ *
+ * side effect:
+ * - 없음. 이미 계산된 feature cache만 읽는다.
+ */
+function calculateTrendStrengthBps(computed: ComputedFeatureValues): Decimal {
+  const required = readRequiredComputedDecimals(computed, ["candleMomentumBps"]);
+  return Decimal.max(required.candleMomentumBps, 0);
 }
 
 function calculateMarketRegimeFeature(context: CalculationContext, computed: ComputedFeatureValues): FeatureResult {
@@ -1228,6 +1264,12 @@ function rememberDecimalFeatureValue(computed: ComputedFeatureValues, key: Decim
       break;
     case "trade_direction_imbalance_ratio":
       computed.tradeDirectionImbalanceRatio = value;
+      break;
+    case "trend_strength_bps":
+      computed.trendStrengthBps = value;
+      break;
+    case "mean_reversion_discount_bps":
+      computed.meanReversionDiscountBps = value;
       break;
     case "session_liquidity_score":
       computed.sessionLiquidityScore = value;

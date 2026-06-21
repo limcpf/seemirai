@@ -616,11 +616,17 @@ function capExitQuantityByOrderNotional(input: {
 }
 
 /**
- * entry 후보를 만들 만큼 비용 차감 margin과 trend/mean-reversion 신호가 강한지 평가한다.
+ * autonomous entry 평가에 필요한 feature 값을 Decimal로 고정한 snapshot이다.
  *
- * @param features feature snapshot에서 전달된 secret-free 수치
- * @param options strategy threshold
- * @returns BUY 후보 가능 여부와 decision metadata
+ * 책임:
+ * - feature calculator 결과를 strategy threshold 계산에 바로 사용할 수 있는 숫자 값으로 낮춘다.
+ * - 입력 key 이름과 내부 계산 필드 이름을 분리해 entry signal 계산이 raw JSON을 다시 읽지 않게 한다.
+ *
+ * invariant:
+ * - 모든 값은 finite Decimal이며 결측/invalid feature는 이 타입으로 들어오지 않는다.
+ *
+ * side effect:
+ * - 없음. 순수 값 객체다.
  */
 interface EntryFeatureSnapshot {
   readonly costAdjustedMarginBps: Decimal;
@@ -628,6 +634,22 @@ interface EntryFeatureSnapshot {
   readonly meanReversionDiscountBps: Decimal;
 }
 
+/**
+ * entry feature read boundary의 결과 타입이다.
+ *
+ * 책임:
+ * - required feature가 모두 있으면 `ok` snapshot으로 entry signal 계산을 허용한다.
+ * - 결측이나 invalid feature가 있으면 주문 후보 없음이 아니라 BLOCK reason/metadata를 반환한다.
+ *
+ * 호출 경계:
+ * - `evaluateEntryPolicy`만 이 결과를 받아 `StrategyDecision`으로 변환한다.
+ *
+ * invariant:
+ * - `ok`와 `blocked`는 상호 배타적이며, `blocked`는 broker/DB side effect 전에 fail-closed 된다.
+ *
+ * side effect:
+ * - 없음. 분기 결과만 표현한다.
+ */
 type EntryFeatureReadResult = {
   readonly kind: "ok";
   readonly snapshot: EntryFeatureSnapshot;
@@ -676,6 +698,13 @@ function readEntryFeatureSnapshot(features: Readonly<Record<string, unknown>>): 
   };
 }
 
+/**
+ * entry 후보를 만들 만큼 비용 차감 margin과 trend/mean-reversion 신호가 강한지 평가한다.
+ *
+ * @param features feature snapshot에서 전달된 secret-free 수치
+ * @param options strategy threshold
+ * @returns BUY 후보 가능 여부와 decision metadata
+ */
 function evaluateEntrySignal(features: EntryFeatureSnapshot, options: NormalizedOptions): {
   readonly ready: boolean;
   readonly metadata: JsonRecord;

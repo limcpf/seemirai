@@ -860,6 +860,9 @@ const riskReducingExitWaivableRiskGateReasonCodes = new Set([
   "weekly_loss_limit_exceeded",
   "max_drawdown_limit_exceeded",
   "consecutive_strategy_loss_limit_exceeded",
+  "btc_eth_position_limit_exceeded",
+  "single_alt_position_limit_exceeded",
+  "total_alt_position_limit_exceeded",
 ]);
 
 /**
@@ -919,7 +922,8 @@ function shouldAllowRiskReducingExitDespiteNewOrderBlocks(
 }
 
 function isRiskReducingExitIntent(intent: OrderIntent): boolean {
-  const positionEffect = readStringMetadata(intent.metadata, "position_effect");
+  const positionEffect = readStringMetadata(intent.metadata, "position_effect")
+    ?? readStringMetadata(intent.metadata, "positionEffect");
   return positionEffect === "EXIT" || positionEffect === "REDUCE";
 }
 
