@@ -652,21 +652,22 @@ function createOrderPolicyCheck(run) {
 }
 
 function createOrderLifecycleCheck(run) {
-  const submittedAtMs = readTimestampMsFromAliases(run, ["submittedAt", "submitted_at"]);
-  const cancelRequestedAtMs = readTimestampMsFromAliases(run, ["cancelRequestedAt", "cancel_requested_at"]);
-  const terminalCancelConfirmedAtMs = readTimestampMsFromAliases(run, ["terminalCancelConfirmedAt", "terminal_cancel_confirmed_at"]);
+  // 같은 timestamp의 camelCase/snake_case 표기가 충돌하면 closeout 순서 증명이 모호해지므로 첫 값 채택으로 넘기지 않는다.
+  const submittedAt = createTimestampAliasCheck(run, ["submittedAt", "submitted_at"]);
+  const cancelRequestedAt = createTimestampAliasCheck(run, ["cancelRequestedAt", "cancel_requested_at"]);
+  const terminalCancelConfirmedAt = createTimestampAliasCheck(run, ["terminalCancelConfirmedAt", "terminal_cancel_confirmed_at"]);
   const terminalStateValues = readTerminalStateAliasValues(run);
   const invalidTerminalStateValues = terminalStateValues.filter((actual) => actual.value !== "CANCEL");
   const terminalState = terminalStateValues[0]?.value;
   const sameChain = hasSameOrderChain(run);
   const nowMs = Date.now();
-  const timestampsNotFuture = [submittedAtMs, cancelRequestedAtMs, terminalCancelConfirmedAtMs]
+  const timestampsNotFuture = [submittedAt.timestampMs, cancelRequestedAt.timestampMs, terminalCancelConfirmedAt.timestampMs]
     .every((timestampMs) => timestampMs !== undefined && timestampMs <= nowMs);
-  const ok = submittedAtMs !== undefined
-    && cancelRequestedAtMs !== undefined
-    && terminalCancelConfirmedAtMs !== undefined
-    && submittedAtMs <= cancelRequestedAtMs
-    && cancelRequestedAtMs <= terminalCancelConfirmedAtMs
+  const ok = submittedAt.ok
+    && cancelRequestedAt.ok
+    && terminalCancelConfirmedAt.ok
+    && submittedAt.timestampMs <= cancelRequestedAt.timestampMs
+    && cancelRequestedAt.timestampMs <= terminalCancelConfirmedAt.timestampMs
     && timestampsNotFuture
     && terminalState === "CANCEL"
     && terminalStateValues.length > 0
@@ -678,6 +679,7 @@ function createOrderLifecycleCheck(run) {
       submittedAt: run.submittedAt,
       cancelRequestedAt: run.cancelRequestedAt,
       terminalCancelConfirmedAt: run.terminalCancelConfirmedAt,
+      timestampAliases: { submittedAt, cancelRequestedAt, terminalCancelConfirmedAt },
       terminalState,
       terminalStateValues,
       sameChain,
@@ -689,6 +691,7 @@ function createOrderLifecycleCheck(run) {
     submittedAt: run.submittedAt ?? null,
     cancelRequestedAt: run.cancelRequestedAt ?? null,
     terminalCancelConfirmedAt: run.terminalCancelConfirmedAt ?? null,
+    timestampAliases: { submittedAt, cancelRequestedAt, terminalCancelConfirmedAt },
     terminalState,
     terminalStateValues,
     invalidTerminalStateValues,
@@ -2444,6 +2447,23 @@ function readTimestampMsAliasValues(record, aliases) {
   return readStringAliasValues(record, aliases)
     .map((actual) => ({ alias: actual.alias, value: readTimestampMs(actual.value) }))
     .filter((actual) => actual.value !== undefined);
+}
+
+function createTimestampAliasCheck(record, aliases) {
+  const aliasValues = readStringAliasValues(record, aliases)
+    .map((actual) => ({ alias: actual.alias, rawValue: actual.value, timestampMs: readTimestampMs(actual.value) }));
+  const invalidAliasValues = aliasValues.filter((actual) => actual.timestampMs === undefined);
+  const validAliasValues = aliasValues.filter((actual) => actual.timestampMs !== undefined);
+  const timestampMs = validAliasValues[0]?.timestampMs;
+  const conflictingAliasValues = validAliasValues
+    .filter((actual) => actual.timestampMs !== timestampMs);
+  return {
+    ok: aliasValues.length > 0 && invalidAliasValues.length === 0 && conflictingAliasValues.length === 0,
+    timestampMs,
+    aliasValues,
+    invalidAliasValues,
+    conflictingAliasValues,
+  };
 }
 
 function readNumber(value) {

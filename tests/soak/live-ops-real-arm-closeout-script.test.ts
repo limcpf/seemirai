@@ -661,6 +661,20 @@ describe("Issue 206 live:ops real-arm closeout script", () => {
     expect(getCheck(summary, "orderLifecycle").status).toBe("fail");
   });
 
+  it("fails when manifest run timestamp aliases conflict", async () => {
+    const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-issue-206-closeout-run-timestamp-conflict-"));
+    const manifestPath = await writeCloseoutManifest(artifactDir, {
+      runMutator: (run) => ({ ...run, submitted_at: "2026-06-15T00:00:01.000Z" }),
+    });
+    const summary = await runScriptExpectingFailure(
+      ["--json", "--artifact-dir", artifactDir, "--manifest", manifestPath],
+      createReadyEnv(),
+    );
+
+    expect(summary.status).toBe("failed");
+    expect(getCheck(summary, "orderLifecycle").status).toBe("fail");
+  });
+
   it("fails when the command is not the actual live:ops foreground execution", async () => {
     const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-issue-206-closeout-command-"));
     const manifestPath = await writeCloseoutManifest(artifactDir, {
