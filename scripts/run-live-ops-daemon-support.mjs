@@ -79,7 +79,7 @@ export async function runLiveOpsDaemon(options, io = {}) {
 
   let latestSummary = null;
   let latestError = null;
-  let statusFilePath = options.statusFilePath === undefined ? undefined : path.resolve(options.statusFilePath);
+  let statusFilePath = resolveInitialDaemonStatusFile(options);
   let startupAlertConsumed = false;
 
   try {
@@ -168,6 +168,8 @@ export async function runLiveOpsDaemon(options, io = {}) {
     unhandledRejections,
     statusFilePath,
   });
+  // 제한 실행이 끝난 뒤에도 monitor/attach가 stale running tick을 읽지 않도록 terminal payload를 같은 파일에 커밋한다.
+  await writeDaemonStatusIfConfigured(statusFilePath, result);
   if (options.tui) {
     writeDaemonText(stdout, renderLiveOpsDaemonSummary(result));
   } else {
@@ -315,11 +317,50 @@ function createDaemonStatusPayload({
   };
 }
 
+/**
+ * daemon status 파일의 초기 기록 위치를 계산한다.
+ *
+ * 책임:
+ * - 명시 `--status-file`은 절대 경로로 고정한다.
+ * - non-fixture 운영 실행은 첫 tick이 config/env/DB 단계에서 실패해 summary를 만들지 못해도
+ *   config 옆 `artifacts/live-ops-daemon-status.json`에 실패 payload를 남길 수 있게 한다.
+ *
+ * invariant:
+ * - fixture smoke는 사용자가 명시하지 않는 한 repo/config 옆에 운영 status 파일을 만들지 않는다.
+ *
+ * side effect:
+ * - 없음. 경로 문자열만 계산한다.
+ */
+function resolveInitialDaemonStatusFile(options) {
+  if (options.statusFilePath !== undefined) {
+    return path.resolve(options.statusFilePath);
+  }
+  return resolveDefaultDaemonStatusFileFromConfigPath(options);
+}
+
 function resolveDefaultDaemonStatusFile(options, summary) {
   if (options.fixtureSmoke === true || !summary?.configPath) {
     return undefined;
   }
   return path.join(path.dirname(summary.configPath), "artifacts", "live-ops-daemon-status.json");
+}
+
+/**
+ * summary가 없는 실패 tick에서도 사용할 수 있는 기본 daemon status 경로를 만든다.
+ *
+ * 책임:
+ * - live ops config 파일 위치만으로 운영자가 예상하는 status JSON 경로를 산출한다.
+ * - 아직 provider/DB/readiness가 열리기 전 실패도 관측 가능하게 만드는 경계다.
+ *
+ * side effect:
+ * - 없음.
+ */
+function resolveDefaultDaemonStatusFileFromConfigPath(options) {
+  if (options.fixtureSmoke === true || options.configPath === undefined) {
+    return undefined;
+  }
+  const configPath = path.resolve(options.configPath);
+  return path.join(path.dirname(configPath), "artifacts", "live-ops-daemon-status.json");
 }
 
 async function writeDaemonStatusIfConfigured(statusFilePath, payload) {

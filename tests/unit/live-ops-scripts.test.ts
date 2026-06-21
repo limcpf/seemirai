@@ -120,6 +120,114 @@ describe("production live ops script skeleton", () => {
     expect(statusFile.latestSummary).toBeNull();
   });
 
+  it("live:ops:daemon 첫 실패 tick도 기본 status file에 기록한다", async () => {
+    const daemonModulePath = path.join(process.cwd(), "scripts/run-live-ops-daemon-support.mjs");
+    const { runLiveOpsDaemon } = await import(daemonModulePath);
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-live-ops-daemon-default-failure-"));
+    const configPath = path.join(tempDir, "live-ops.production.json");
+    const statusFilePath = path.join(tempDir, "artifacts", "live-ops-daemon-status.json");
+    const stdoutChunks: string[] = [];
+
+    const result = await runLiveOpsDaemon(
+      { configPath, maxTicks: 1, tickIntervalMs: 0, json: true },
+      {
+        stdout: {
+          write(chunk: string) {
+            stdoutChunks.push(chunk);
+            return true;
+          },
+        },
+        clock: () => "2026-06-21T01:30:00.000Z",
+        sleep: async () => undefined,
+        async loadInputs() {
+          throw new Error("DB provider unavailable");
+        },
+      },
+    );
+
+    expect(result).toMatchObject({
+      status: "transient_failure",
+      statusFilePath,
+      latestError: {
+        message: "DB provider unavailable",
+      },
+      counters: {
+        tickCount: 1,
+        transientFailureCount: 1,
+      },
+    });
+    const statusFile = JSON.parse(await readFile(statusFilePath, "utf8"));
+    expect(statusFile).toMatchObject({
+      status: "transient_failure",
+      statusFilePath,
+      latestSummary: null,
+      latestError: {
+        message: "DB provider unavailable",
+      },
+    });
+    expect(stdoutChunks.join("")).not.toContain("fake-upbit-secret-key");
+  });
+
+  it("live:ops:daemon 제한 실행 종료 결과도 status file에 completed로 기록한다", async () => {
+    const daemonModulePath = path.join(process.cwd(), "scripts/run-live-ops-daemon-support.mjs");
+    const { runLiveOpsDaemon } = await import(daemonModulePath);
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-live-ops-daemon-completed-status-"));
+    const configPath = path.join(tempDir, "live-ops.production.json");
+    const statusFilePath = path.join(tempDir, "artifacts", "live-ops-daemon-status.json");
+    const stdoutChunks: string[] = [];
+
+    const result = await runLiveOpsDaemon(
+      { configPath, maxTicks: 1, tickIntervalMs: 0, json: true },
+      {
+        stdout: {
+          write(chunk: string) {
+            stdoutChunks.push(chunk);
+            return true;
+          },
+        },
+        clock: () => "2026-06-21T01:35:00.000Z",
+        sleep: async () => undefined,
+        async loadInputs() {
+          return {};
+        },
+        renderSummary() {
+          return createDaemonStartupTelegramSummary({
+            status: "ready",
+            telegramAlert: {
+              ready: true,
+              status: "idle",
+              lifecycleAlertCount: 0,
+              alertCount: 0,
+              providerDispatchAttempted: false,
+            },
+          });
+        },
+      },
+    );
+
+    expect(result).toMatchObject({
+      status: "completed",
+      statusFilePath,
+      counters: {
+        tickCount: 1,
+        transientFailureCount: 0,
+      },
+    });
+    const statusFile = JSON.parse(await readFile(statusFilePath, "utf8"));
+    expect(statusFile).toMatchObject({
+      status: "completed",
+      statusFilePath,
+      finishedAt: "2026-06-21T01:35:00.000Z",
+      counters: {
+        tickCount: 1,
+      },
+      latestSummary: {
+        status: "ready",
+      },
+    });
+    expect(stdoutChunks.join("")).not.toContain("fake-telegram-token");
+  });
+
   it("live:ops:daemon은 startup Telegram 후보를 반복 tick마다 다시 만들지 않는다", () => {
     const result = spawnSync(
       process.execPath,
