@@ -1222,7 +1222,8 @@ function attachLiveOpsCliAutonomousEntryRuntimeEvidence({ config, intent, prefli
     intent,
     observedAt: preflight.observedAt,
   });
-  const risk = runtimeIntent.risk ?? createLiveOpsCliCleanupRiskInput({
+  // 신규 BUY는 제출 직전 private preflight가 최종 truth라 stale risk가 붙은 후보도 현재 ownership guard로 다시 닫는다.
+  const risk = createLiveOpsCliCleanupRiskInput({
     config,
     intent: runtimeIntent,
     preflight,
@@ -1671,6 +1672,19 @@ function createLiveOpsCliCleanupRiskInput({ config, intent, preflight }) {
       signal: "BALANCE_POSITION_MISMATCH",
       observedAt,
       reason: "held_position_valuation_missing",
+    });
+  }
+  if (
+    intent?.strategyId === liveOpsCliAutonomous24x7StrategyId &&
+    String(intent?.side ?? "").toUpperCase() === "BUY" &&
+    isPositiveDecimalString(preflight.heldPositionExposure?.quantity) &&
+    preflight.autonomousPositionOwnership?.owned !== true
+  ) {
+    // fresh private read에서 수동 BTC가 보이면 새 BUY가 수동 보유분과 섞이므로 broker 제출 전에 fail-closed 한다.
+    infrastructureSignals.push({
+      signal: "BALANCE_POSITION_MISMATCH",
+      observedAt,
+      reason: "autonomous_position_ownership_missing_for_entry",
     });
   }
   if (
@@ -8177,6 +8191,7 @@ function appendLiveOpsCliRiskGateStrategyViolations(violations, risk, thresholds
 
 function appendLiveOpsCliRiskGateInfrastructureViolations(violations, infrastructureSignals) {
   for (const signal of infrastructureSignals) {
+    const reasonSuffix = typeof signal?.reason === "string" && signal.reason.length > 0 ? ` (${signal.reason})` : "";
     switch (signal?.signal) {
       case "NOTIFICATION_FAILURE":
         break;
@@ -8186,7 +8201,8 @@ function appendLiveOpsCliRiskGateInfrastructureViolations(violations, infrastruc
       case "DB_WRITE_FAILURE":
       case "DUPLICATE_ORDER_IDEMPOTENCY_KEY":
       case "BALANCE_POSITION_MISMATCH":
-        violations.push(`live ops wrapper RiskGate 현재 인프라 차단 신호가 활성화됐습니다: ${signal.signal}`);
+        // 같은 balance mismatch라도 수동 보유 BTC 차단처럼 복구 절차가 달라지는 사유는 운영 추적 정보로 보존한다.
+        violations.push(`live ops wrapper RiskGate 현재 인프라 차단 신호가 활성화됐습니다: ${signal.signal}${reasonSuffix}`);
         break;
       default:
         violations.push("live ops wrapper RiskGate 알 수 없는 인프라 신호가 있습니다");
