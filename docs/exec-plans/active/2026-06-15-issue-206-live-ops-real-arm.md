@@ -511,6 +511,63 @@ Telegram, TUI를 같은 lifecycle로 조립하고, 조건을 통과한 단일 `K
   - [x] 이미 terminal cancel/no-fill로 확인된 SELL은 두 번째 cancel 요청 없이 재호가 대기 또는 수동 점검으로 닫는다.
   - [x] 관련 unit/script tests, `corepack pnpm exec tsc --noEmit`, `./scripts/verify docs`, `./scripts/verify`, `git diff --check`가 통과한다.
 
+### Sub PR 24: final live execution ownership guard 보강
+
+- 목표: final main PR review에서 발견된 SELL 제출 직전 strategy ownership 오인 위험을 닫는다.
+- 제외 범위:
+  - 수동 BTC 자동 매도, strategy ownership 없는 aggregate/account snapshot fallback, final main PR merge.
+- DnD:
+  - [x] SELL 제출 직전 position snapshot은 exchange, market, `strategyId`가 명시적으로 같은 경우에만 strategy-owned 수량으로 인정한다.
+  - [x] `strategyId` 없는 aggregate/account snapshot의 generic 수량 alias는 자동 SELL 근거가 되지 않는다.
+  - [x] CLI risk snapshot은 autonomous ownership preflight가 확인한 owned quantity만 `strategyId`와 `strategy_owned_quantity`로 전달한다.
+  - [x] 관련 live execution/script tests, `corepack pnpm exec tsc --noEmit`, `git diff --check`, `./scripts/verify`가 통과한다.
+
+### Sub PR 25: daemon startup Telegram retry 보강
+
+- 목표: startup Telegram alert가 provider 실패 또는 partial failure tick에서 소비되어 이후 복구 알림을 놓치는 문제를 닫는다.
+- 제외 범위:
+  - Telegram credential 변경, 알림 채널 추가, final main PR merge.
+- DnD:
+  - [x] startup alert는 `telegramAlert.ready=true`인 tick 뒤에만 consumed 처리된다.
+  - [x] startup Telegram 실패/partial failure tick은 다음 tick에서 startup alert를 다시 계획한다.
+  - [x] 수동 evidence 파일 없이 daemon fixture smoke가 3 tick 이상 startup retry contract를 검증한다.
+  - [x] 관련 script tests, daemon fixture smoke, `corepack pnpm exec tsc --noEmit`, `git diff --check`, `./scripts/verify`가 통과한다.
+
+### Sub PR 26: daemon status terminal record 보강
+
+- 목표: daemon 첫 실패와 제한 실행 완료 상태가 status file에 남지 않아 24/7 운영 attach가 stale 상태를 보는 문제를 닫는다.
+- 제외 범위:
+  - status 파일 외부 포맷 대규모 변경, fixture smoke 기본 artifact 생성 강제, final main PR merge.
+- DnD:
+  - [x] 첫 daemon tick이 `loadInputs()` 단계에서 실패해도 non-fixture 기본 status file에 `transient_failure` payload를 기록한다.
+  - [x] `--max-ticks`/`--duration-ms` 제한 실행이 정상 종료되면 status file도 `completed` terminal payload로 갱신한다.
+  - [x] fixture smoke는 `--status-file`을 명시하지 않는 한 기본 운영 status file을 만들지 않는다.
+  - [x] 관련 script tests, daemon fixture smoke, `corepack pnpm exec tsc --noEmit`, `git diff --check`, `./scripts/verify`가 통과한다.
+
+### Sub PR 27: autonomous exit/risk/feature guard 보강
+
+- 목표: final main PR review에서 발견된 autonomous exit 우선순위, risk-reducing SELL, required feature 계약 누락을 닫는다.
+- 제외 범위:
+  - budget 상한 확대, BTC 외 market 활성화, 시장가/best order, final main PR merge.
+- DnD:
+  - [x] `autonomous_24x7` position snapshot은 음수 수량과 보유 중 평균단가 결측을 `BLOCK`으로 닫는다.
+  - [x] 보유 포지션이 있으면 stop-loss, max-holding, trailing stop, take-profit exit가 risk reduction보다 먼저 평가된다.
+  - [x] required entry feature 결측은 ready HOLD가 아니라 operator-visible `BLOCK`으로 닫힌다.
+  - [x] daily/weekly loss, MDD, consecutive loss, 노출 초과 같은 신규 BUY 차단 사유는 risk-reducing SELL을 막지 않는다.
+  - [x] `position_effect`와 `positionEffect` alias 모두 risk-reducing SELL intent로 인정한다.
+  - [x] `trend_strength_bps`, `mean_reversion_discount_bps`는 기본 M11 feature calculator와 feature quality 설계 문서 계약에 모두 반영된다.
+  - [x] 관련 feature/live execution/decision tests, `corepack pnpm exec tsc --noEmit`, `./scripts/verify docs`, `git diff --check`, `./scripts/verify`가 통과한다.
+
+### Sub PR 28: runner closeout 문서 정합성
+
+- 목표: active exec plan이 실제 subPR #24-#27과 final PR review-drain 운영 절차를 최신 상태로 반영하게 한다.
+- 제외 범위:
+  - runtime code 변경, config/env 변경, final main PR merge.
+- DnD:
+  - [x] active exec plan에 subPR #24-#27 DnD와 runner closeout 절차가 기록된다.
+  - [x] "final review drain 남음" 같은 stale 상태 문구를 final PR 최신 head에서 재확인해야 하는 runner 종료 절차로 바꾼다.
+  - [x] 문서 전용 변경이며 `./scripts/verify docs`, `git diff --check`, `./scripts/verify`가 통과한다.
+
 ## 검증 방법
 
 공통 검증:
@@ -714,10 +771,25 @@ SEEMIRAI_RUN_LIVE_OPS_REAL_ARM_CLOSEOUT=1 \
 - 2026-06-20: Sub PR 23 추가 review drain 3차 보강으로 autonomous BUY reservation은 FILLED entry closeout이 있어야 open lot으로 승격된다.
   production entry runtime은 post-only BUY를 bounded fill/cancel closeout으로 닫고, no-fill reservation과 SELL 뒤 닫힌 legacy reservation은
   수동 BTC를 strategy-owned 포지션으로 되살리지 않는다. autonomous PnL scope 조회는 global/aggregate row로 fallback하지 않는다.
+- 2026-06-21: Sub PR 24 final review drain 보강으로 SELL 제출 직전 position snapshot은 명시적 `strategyId`가 같은 strategy-owned
+  수량만 인정한다. `strategyId` 없는 aggregate/account snapshot의 generic 수량은 수동 BTC나 다른 전략 보유분을 포함할 수 있으므로 자동
+  SELL 근거가 되지 않는다.
+- 2026-06-21: Sub PR 25 final review drain 보강으로 startup Telegram alert는 provider 실패나 partial failure tick에서 소비되지 않는다.
+  owner chat 전송이 성공한 tick 뒤에만 startup alert를 suppress해 24/7 daemon 시작 알림이 일시 장애에 묻히지 않게 한다.
+- 2026-06-21: Sub PR 26 final review drain 보강으로 daemon은 첫 tick 실패도 status file에 기록하고, 제한 실행 정상 종료도 `completed`
+  terminal payload로 남긴다. fixture smoke는 status file을 명시하지 않으면 기본 운영 status file을 만들지 않는다.
+- 2026-06-21: Sub PR 27 final review drain 보강으로 autonomous position snapshot invalid 값은 무포지션 entry로 보정하지 않는다.
+  exit rule은 risk reduction보다 손절/익절/트레일링/max-holding을 먼저 평가하고, 신규 BUY 차단용 손실/노출 한도 reason은
+  risk-reducing SELL을 막지 않는다. 기본 M11 feature calculator와 feature quality 설계 문서가 `trend_strength_bps`,
+  `mean_reversion_discount_bps` 계약을 공유한다.
+- 2026-06-21: Sub PR 28 runner closeout 문서 보강으로 active exec plan은 Sub PR 24-27까지의 DnD와 final PR review-drain 종료 절차를
+  기록한다. 이 subPR은 runtime 동작, 운영 config/env, credential, final main PR merge를 변경하지 않는다.
 
 ## 남은 이슈
 
-- Sub PR 23 완료 후 final main PR #218의 신규 review finding을 다시 drain해야 한다.
 - 실제 운영 credential, key scope evidence, operator arm evidence, redacted artifact 경로는 저장소 밖 운영 vault에 있어야 한다.
 - 실제 주문 제출/취소 closeout은 저장소 밖 운영 config/env로 foreground `live:ops`를 실행한 뒤 자동 생성 artifact와 closeout manifest로
   검증한다.
+- final main PR #218은 runner 규칙상 merge하지 않는다. 마지막 subPR이 mother에 merge된 뒤 최신 head 기준 GitHub checks, unresolved
+  thread, Codex `+1` 또는 no-major-issues review를 다시 확인하고 결과를 `/home/lim/vaults/99_운영/seemirai-reviews/PR-218.md`에
+  갱신한다.
