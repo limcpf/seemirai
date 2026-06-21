@@ -647,6 +647,20 @@ describe("Issue 206 live:ops real-arm closeout script", () => {
     expect(getCheck(summary, "orderPolicy").status).toBe("fail");
   });
 
+  it("fails when manifest run terminal_state conflicts with terminalState", async () => {
+    const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-issue-206-closeout-run-terminal-state-conflict-"));
+    const manifestPath = await writeCloseoutManifest(artifactDir, {
+      runMutator: (run) => ({ ...run, terminal_state: "FILLED" }),
+    });
+    const summary = await runScriptExpectingFailure(
+      ["--json", "--artifact-dir", artifactDir, "--manifest", manifestPath],
+      createReadyEnv(),
+    );
+
+    expect(summary.status).toBe("failed");
+    expect(getCheck(summary, "orderLifecycle").status).toBe("fail");
+  });
+
   it("fails when the command is not the actual live:ops foreground execution", async () => {
     const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-issue-206-closeout-command-"));
     const manifestPath = await writeCloseoutManifest(artifactDir, {
@@ -3483,6 +3497,43 @@ describe("Issue 206 live:ops real-arm closeout script", () => {
 
     expect(summary.status).toBe("passed");
     expect(getCheck(summary, "orderLifecycle")).toMatchObject({ status: "ok" });
+  });
+
+  it("accepts manifest and artifact snake_case lifecycle timestamp aliases", async () => {
+    const submittedAt = "2026-06-15T00:00:00.000Z";
+    const cancelRequestedAt = "2026-06-15T00:00:05.000Z";
+    const terminalCancelConfirmedAt = "2026-06-15T00:00:10.000Z";
+    const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-issue-206-closeout-run-timestamp-alias-"));
+    const manifestPath = await writeCloseoutManifest(artifactDir, {
+      artifactText: JSON.stringify(createArtifactFixture({
+        submittedAt: undefined,
+        cancelRequestedAt: undefined,
+        terminalCancelConfirmedAt: undefined,
+        submitted_at: submittedAt,
+        cancel_requested_at: cancelRequestedAt,
+        terminal_cancel_confirmed_at: terminalCancelConfirmedAt,
+      })),
+      manifestMutator: (manifest) => {
+        const run = manifest.run as Record<string, unknown>;
+        return {
+          ...manifest,
+          run: {
+            ...run,
+            submittedAt: undefined,
+            cancelRequestedAt: undefined,
+            terminalCancelConfirmedAt: undefined,
+            submitted_at: submittedAt,
+            cancel_requested_at: cancelRequestedAt,
+            terminal_cancel_confirmed_at: terminalCancelConfirmedAt,
+          },
+        };
+      },
+    });
+    const { stdout } = await runScript(["--json", "--artifact-dir", artifactDir, "--manifest", manifestPath], createReadyEnv());
+    const summary = JSON.parse(stdout) as LiveOpsRealArmCloseoutSummary;
+
+    expect(summary.status).toBe("passed");
+    expect(getCheck(summary, "artifactFiles")).toMatchObject({ status: "ok" });
   });
 
   it("fails when artifact safe summary conflicts through snake_case order policy fields", async () => {

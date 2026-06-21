@@ -655,7 +655,9 @@ function createOrderLifecycleCheck(run) {
   const submittedAtMs = readTimestampMsFromAliases(run, ["submittedAt", "submitted_at"]);
   const cancelRequestedAtMs = readTimestampMsFromAliases(run, ["cancelRequestedAt", "cancel_requested_at"]);
   const terminalCancelConfirmedAtMs = readTimestampMsFromAliases(run, ["terminalCancelConfirmedAt", "terminal_cancel_confirmed_at"]);
-  const terminalState = readTerminalStateFromAliases(run);
+  const terminalStateValues = readTerminalStateAliasValues(run);
+  const invalidTerminalStateValues = terminalStateValues.filter((actual) => actual.value !== "CANCEL");
+  const terminalState = terminalStateValues[0]?.value;
   const sameChain = hasSameOrderChain(run);
   const nowMs = Date.now();
   const timestampsNotFuture = [submittedAtMs, cancelRequestedAtMs, terminalCancelConfirmedAtMs]
@@ -667,6 +669,8 @@ function createOrderLifecycleCheck(run) {
     && cancelRequestedAtMs <= terminalCancelConfirmedAtMs
     && timestampsNotFuture
     && terminalState === "CANCEL"
+    && terminalStateValues.length > 0
+    && invalidTerminalStateValues.length === 0
     && sameChain;
 
   if (ok) {
@@ -675,6 +679,7 @@ function createOrderLifecycleCheck(run) {
       cancelRequestedAt: run.cancelRequestedAt,
       terminalCancelConfirmedAt: run.terminalCancelConfirmedAt,
       terminalState,
+      terminalStateValues,
       sameChain,
       timestampsNotFuture,
     });
@@ -685,6 +690,8 @@ function createOrderLifecycleCheck(run) {
     cancelRequestedAt: run.cancelRequestedAt ?? null,
     terminalCancelConfirmedAt: run.terminalCancelConfirmedAt ?? null,
     terminalState,
+    terminalStateValues,
+    invalidTerminalStateValues,
     sameChain,
     timestampsNotFuture,
   });
@@ -2070,9 +2077,9 @@ function createArtifactManifestConflicts(artifactFiles, manifest, run, counters)
   };
   const expectedRequestedNotionalKrw = readNumber(run.requestedNotionalKrw);
   const expectedLifecycleTimestamps = {
-    submittedAt: readTimestampMs(run.submittedAt),
-    cancelRequestedAt: readTimestampMs(run.cancelRequestedAt),
-    terminalCancelConfirmedAt: readTimestampMs(run.terminalCancelConfirmedAt),
+    submittedAt: readTimestampMsFromAliases(run, artifactFieldAliases("submittedAt")),
+    cancelRequestedAt: readTimestampMsFromAliases(run, artifactFieldAliases("cancelRequestedAt")),
+    terminalCancelConfirmedAt: readTimestampMsFromAliases(run, artifactFieldAliases("terminalCancelConfirmedAt")),
   };
   const conflicts = [];
 
@@ -2166,6 +2173,9 @@ function isFailureArtifactStatus(value) {
 
 function isCompleteArtifactCloseoutEvidence(record, run) {
   const expectedRequestedNotionalKrw = readNumber(run.requestedNotionalKrw);
+  const expectedSubmittedAt = readTimestampMsFromAliases(run, artifactFieldAliases("submittedAt"));
+  const expectedCancelRequestedAt = readTimestampMsFromAliases(run, artifactFieldAliases("cancelRequestedAt"));
+  const expectedTerminalCancelConfirmedAt = readTimestampMsFromAliases(run, artifactFieldAliases("terminalCancelConfirmedAt"));
   return /^(?:passed|pass|success|succeeded|ok|completed)$/iu.test(readString(record.status) ?? "")
     && readTerminalStateFromAliases(record) === "CANCEL"
     && readArtifactPolicyField(record, "market") === expectedMarket
@@ -2173,9 +2183,9 @@ function isCompleteArtifactCloseoutEvidence(record, run) {
     && readArtifactPolicyField(record, "orderType") === expectedOrderType
     && readArtifactPolicyField(record, "timeInForce") === expectedTimeInForce
     && readNumberFromAliases(record, ["requestedNotionalKrw", "requested_notional_krw"]) === expectedRequestedNotionalKrw
-    && readTimestampMsFromAliases(record, ["submittedAt", "submitted_at"]) === readTimestampMs(run.submittedAt)
-    && readTimestampMsFromAliases(record, ["cancelRequestedAt", "cancel_requested_at"]) === readTimestampMs(run.cancelRequestedAt)
-    && readTimestampMsFromAliases(record, ["terminalCancelConfirmedAt", "terminal_cancel_confirmed_at"]) === readTimestampMs(run.terminalCancelConfirmedAt)
+    && readTimestampMsFromAliases(record, ["submittedAt", "submitted_at"]) === expectedSubmittedAt
+    && readTimestampMsFromAliases(record, ["cancelRequestedAt", "cancel_requested_at"]) === expectedCancelRequestedAt
+    && readTimestampMsFromAliases(record, ["terminalCancelConfirmedAt", "terminal_cancel_confirmed_at"]) === expectedTerminalCancelConfirmedAt
     && readNumberFromAliases(record, ["openExposureKrw", "open_exposure_krw"]) === readNumber(run.openExposureKrw)
     && hasMatchingArtifactOrderSuffix(record, run);
 }

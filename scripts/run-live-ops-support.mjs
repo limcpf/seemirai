@@ -1681,6 +1681,18 @@ function createLiveOpsCliCleanupRiskInput({ config, intent, preflight }) {
   if (
     intent?.strategyId === liveOpsCliAutonomous24x7StrategyId &&
     String(intent?.side ?? "").toUpperCase() === "BUY" &&
+    String(preflight.autonomousPositionOwnership?.status ?? "").toUpperCase() === "MANUAL_REVIEW_REQUIRED"
+  ) {
+    // 수동점검 state는 지갑 0수량이어도 자동 복구가 끝난 상태가 아니므로 신규 BUY를 열지 않고 운영자 확인으로 멈춘다.
+    infrastructureSignals.push({
+      signal: "BALANCE_POSITION_MISMATCH",
+      observedAt,
+      reason: preflight.autonomousPositionOwnership?.manualReviewReason ?? "autonomous_position_manual_review_required",
+    });
+  }
+  if (
+    intent?.strategyId === liveOpsCliAutonomous24x7StrategyId &&
+    String(intent?.side ?? "").toUpperCase() === "BUY" &&
     isPositiveDecimalString(preflight.heldPositionExposure?.quantity) &&
     preflight.autonomousPositionOwnership?.owned !== true
   ) {
@@ -3285,13 +3297,12 @@ async function evaluateLiveOpsCliDailyBudgetReservation({ request, dailyUsage })
   }
 
   const reservedNotional = new Decimal(dailyUsage.reservedNotionalKrw);
-  const openPositionNotional = new Decimal(request.budgetSnapshot.openPositionNotionalKrw);
   const snapshotUsed = isNonNegativeDecimalString(request.budgetSnapshot.dailyAutonomousNotionalUsedKrw)
     ? new Decimal(request.budgetSnapshot.dailyAutonomousNotionalUsedKrw)
     : undefined;
   const currentUsed = snapshotUsed === undefined
-    ? reservedNotional.plus(openPositionNotional)
-    : Decimal.max(snapshotUsed, reservedNotional.plus(openPositionNotional));
+    ? reservedNotional
+    : Decimal.max(snapshotUsed, reservedNotional);
   const requestedNotional = new Decimal(request.requestedNotionalKrw);
   const limit = new Decimal(request.budgetSnapshot.dailyAutonomousNotionalLimitKrw);
 
