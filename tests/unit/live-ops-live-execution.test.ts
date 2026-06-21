@@ -524,6 +524,51 @@ describe("production live ops live execution adapter", () => {
     expect(request?.candidate.metadata?.decision_idempotency_key).toBe(intent.idempotencyKey);
   });
 
+  it("autonomous_24x7 BUY attempt id는 제출 tick scope를 포함한다", async () => {
+    const firstRuntime = createEntryRuntimeRecorder();
+    const nextRuntime = createEntryRuntimeRecorder();
+    const intent = createOrderIntent({
+      strategyId: "live_ops_autonomous_24x7_core",
+      idempotencyKey: "autonomous_24x7:2026-06-20:upbit_krw_spot:KRW-BTC:BUY:100000000:0.0001:10000",
+    });
+    const risk = createRiskInput({
+      strategy: {
+        strategyId: "live_ops_autonomous_24x7_core",
+        consecutiveLosses: 0,
+        capturedAt: observedAt,
+      },
+    });
+
+    const firstSummary = await runLiveOpsLiveExecution(createInput({
+      observedAt: "2026-06-20T05:00:00.000Z",
+      orderIntents: [intent],
+      risk,
+      entryRuntime: firstRuntime,
+    }));
+    const nextSummary = await runLiveOpsLiveExecution(createInput({
+      observedAt: "2026-06-20T05:05:00.000Z",
+      orderIntents: [intent],
+      risk,
+      entryRuntime: nextRuntime,
+    }));
+
+    expect(firstSummary.status).toBe("submitted");
+    expect(nextSummary.status).toBe("submitted");
+    expect(firstSummary.attemptId).toMatch(/^ops-[a-f0-9]{26}$/u);
+    expect(nextSummary.attemptId).toMatch(/^ops-[a-f0-9]{26}$/u);
+    expect(firstSummary.attemptId).not.toBe(nextSummary.attemptId);
+    expect(firstRuntime.submitEntryCandidate.mock.calls[0]?.[0].candidate.metadata).toMatchObject({
+      decision_idempotency_key: intent.idempotencyKey,
+      runtime_attempt_scope: "2026-06-20T05:00:00.000Z",
+      runtime_idempotency_source: "live_ops_live_execution_entry_tick",
+    });
+    expect(nextRuntime.submitEntryCandidate.mock.calls[0]?.[0].candidate.metadata).toMatchObject({
+      decision_idempotency_key: intent.idempotencyKey,
+      runtime_attempt_scope: "2026-06-20T05:05:00.000Z",
+      runtime_idempotency_source: "live_ops_live_execution_entry_tick",
+    });
+  });
+
   it("cleanup_probe placeholder key는 live execution runtime 날짜로 치환한 뒤 attempt id를 만든다", async () => {
     const firstRuntime = createEntryRuntimeRecorder();
     const nextRuntime = createEntryRuntimeRecorder();

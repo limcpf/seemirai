@@ -579,6 +579,7 @@ function collectExitOrderIntentViolations(
 }
 
 const liveOpsCleanupProbeStrategyId = "live_ops_cleanup_probe";
+const liveOpsAutonomous24x7StrategyId = "live_ops_autonomous_24x7_core";
 
 /**
  * cleanup probe 후보의 strategy 단계 idempotency key를 runtime 제출 날짜 기준 key로 낮춘다.
@@ -695,6 +696,7 @@ function createLiveAutonomousEntryRequest(
         ...(intent.metadata ?? {}),
         source: "live_ops_live_execution",
         decision_idempotency_key: intent.idempotencyKey,
+        ...createEntryRuntimeAttemptMetadata(input, intent),
       },
     },
     budgetSnapshot: input.budgetSnapshot,
@@ -728,12 +730,88 @@ function createStableLiveOpsAttemptId(
     return candidate;
   }
 
-  const source = candidate.trim().length > 0 ? candidate : "missing-live-ops-decision-key";
+  const source = createLiveOpsAttemptHashSource(input, intent, candidate);
   return `ops-${createHash("sha256").update(source).digest("hex").slice(0, 26)}`;
 }
 
 function isLiveOpsAttemptId(value: string): boolean {
   return /^ops-[a-f0-9]{26}$/u.test(value);
+}
+
+/**
+ * broker identifier hash에 넣을 strategy decision source를 만든다.
+ *
+ * 책임:
+ * - 명시 `ops-` id가 없는 BUY 재진입 후보만 제출 tick scope를 포함해 당일 청산 후 재매수를 막지 않는다.
+ * - cleanup probe처럼 이미 날짜 scope가 있는 운영 후보는 기존 key 안정성을 유지한다.
+ *
+ * side effect:
+ * - 없음. 입력 snapshot과 intent만 읽는 순수 문자열 생성이다.
+ */
+function createLiveOpsAttemptHashSource(
+  input: LiveOpsLiveExecutionInput,
+  intent: OrderIntent,
+  candidate: string,
+): string {
+  const source = candidate.trim().length > 0 ? candidate : "missing-live-ops-decision-key";
+  const runtimeScope = readEntryRuntimeAttemptScope(input, intent);
+  if (runtimeScope === undefined) {
+    return source;
+  }
+
+  return `${source}:runtime_attempt:${runtimeScope}`;
+}
+
+/**
+ * autonomous 24/7 BUY 후보의 runtime 제출 scope를 읽는다.
+ *
+ * 책임:
+ * - strategy decision key가 같은 후보라도 새 tick에서 다시 평가된 BUY는 새 broker attempt로 제출될 수 있게 한다.
+ * - caller가 직접 runtime idempotency key를 지정한 경우와 cleanup probe 날짜 key는 건드리지 않는다.
+ *
+ * side effect:
+ * - 없음. DB/provider/broker 호출 없이 guard 조건만 평가한다.
+ */
+function readEntryRuntimeAttemptScope(
+  input: LiveOpsLiveExecutionInput,
+  intent: OrderIntent,
+): string | undefined {
+  if (input.idempotencyKey !== undefined) {
+    return undefined;
+  }
+  if (intent.side !== "BUY") {
+    return undefined;
+  }
+  if (intent.strategyId !== liveOpsAutonomous24x7StrategyId) {
+    return undefined;
+  }
+
+  return input.observedAt;
+}
+
+/**
+ * entry runtime request metadata에 runtime attempt scope를 보존한다.
+ *
+ * 책임:
+ * - broker identifier hash가 tick scope를 사용한 경우 그 근거를 request metadata에도 남겨 재진입 판단을 감사할 수 있게 한다.
+ * - scope가 없는 후보에는 빈 metadata만 더해 기존 request 계약을 유지한다.
+ *
+ * side effect:
+ * - 없음. request metadata 조립용 순수 값이다.
+ */
+function createEntryRuntimeAttemptMetadata(
+  input: LiveOpsLiveExecutionInput,
+  intent: OrderIntent,
+): JsonRecord {
+  const runtimeScope = readEntryRuntimeAttemptScope(input, intent);
+  if (runtimeScope === undefined) {
+    return {};
+  }
+
+  return {
+    runtime_attempt_scope: runtimeScope,
+    runtime_idempotency_source: "live_ops_live_execution_entry_tick",
+  };
 }
 
 function createEntryRuntimeConfig(config: LiveOpsConfig): LiveAutonomousEntryRuntimeConfig {

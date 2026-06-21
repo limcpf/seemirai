@@ -865,6 +865,74 @@ try {
     expect(summary.checks.map((check: { code: string }) => check.code)).not.toContain("live_ops_order_intent_blocked");
   });
 
+  it("STRATEGY_PAUSED preflight는 전략 주문 후보를 broker 제출 전에 차단한다", async () => {
+    const {
+      evaluateLiveOpsCliLiveExecution,
+    } = await import(path.join(process.cwd(), "scripts/run-live-ops-support.mjs"));
+    const entryRuntime = {
+      submitEntryCandidate: vi.fn(async () => {
+        throw new Error("StrategyPausedShouldNotSubmit");
+      }),
+    };
+
+    const summary = await evaluateLiveOpsCliLiveExecution({
+      config: {
+        live_trading_enabled: true,
+        universe: { markets: ["KRW-BTC"], default_market: "KRW-BTC" },
+        budget: {
+          max_order_krw: "10000",
+          daily_autonomous_notional_limit_krw: "30000",
+          max_open_position_notional_krw: "30000",
+        },
+      },
+      fixtureSmoke: false,
+      analysisDecision: {
+        ready: true,
+        decisionCategory: "ORDER_INTENT",
+        orderIntentCount: 1,
+      },
+      marketData: {
+        ready: true,
+        latestHeartbeatAt: "2026-06-15T00:00:00.000Z",
+        referencePrice: "100000000",
+      },
+      env: liveOrderEnv(),
+      orderIntents: [createCleanupRuntimeIntent()],
+      entryRuntime,
+      executionStatus: {
+        killSwitchActive: false,
+        strategyEvaluationBlocked: true,
+        reconcileFresh: true,
+        evidenceId: "execution-status-strategy-paused",
+      },
+      postSubmitReadiness: {
+        reconcileReady: true,
+        telegramReady: true,
+        evidenceId: "post-submit-readiness-evidence",
+      },
+      budgetSnapshot: {
+        maxOrderKrw: "10000",
+        dailyAutonomousNotionalLimitKrw: "30000",
+        dailyAutonomousNotionalUsedKrw: "0",
+        openPositionNotionalKrw: "0",
+        maxOpenPositionNotionalKrw: "30000",
+        capturedAt: "2026-06-15T00:00:00.000Z",
+      },
+      lossSnapshot: {
+        dailyRealizedLossKrw: "0",
+        weeklyRealizedLossKrw: "0",
+        capturedAt: "2026-06-15T00:00:00.000Z",
+      },
+    });
+
+    expect(summary).toMatchObject({
+      status: "blocked",
+      submittedOrderCount: 0,
+    });
+    expect(JSON.stringify(summary.checks)).toContain("전략 평가가 일시 중지");
+    expect(entryRuntime.submitEntryCandidate).not.toHaveBeenCalled();
+  });
+
   it("autonomous_24x7 BUY cost input은 순마진을 비용 포함 gross 기대수익으로 변환한다", async () => {
     const {
       evaluateLiveOpsCliAnalysisDecision,
