@@ -766,6 +766,48 @@ describe("Issue 206 live:ops real-arm closeout script", () => {
     expect(getCheck(summary, "orderPolicy")).toMatchObject({ status: "fail" });
   });
 
+  it("accepts requested_notional_krw as the closeout policy notional alias", async () => {
+    const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-issue-206-closeout-requested-notional-alias-"));
+    const manifestPath = await writeCloseoutManifest(artifactDir, {
+      artifactText: JSON.stringify(createArtifactFixture({
+        requestedNotionalKrw: undefined,
+        requested_notional_krw: 5000,
+      })),
+      manifestMutator: (manifest) => {
+        const run = manifest.run as Record<string, unknown>;
+        return {
+          ...manifest,
+          run: {
+            ...run,
+            requestedNotionalKrw: undefined,
+            requested_notional_krw: "5000",
+          },
+        };
+      },
+    });
+    const { stdout } = await runScript(["--json", "--artifact-dir", artifactDir, "--manifest", manifestPath], createReadyEnv());
+    const summary = JSON.parse(stdout) as LiveOpsRealArmCloseoutSummary;
+
+    expect(summary.status).toBe("passed");
+    expect(summary.metrics.requestedNotionalKrw).toBe(5000);
+    expect(getCheck(summary, "orderPolicy")).toMatchObject({ status: "ok" });
+    expect(getCheck(summary, "artifactFiles")).toMatchObject({ status: "ok" });
+  });
+
+  it("fails when requested notional aliases conflict", async () => {
+    const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-issue-206-closeout-requested-notional-conflict-"));
+    const manifestPath = await writeCloseoutManifest(artifactDir, {
+      runMutator: (run) => ({ ...run, requested_notional_krw: "6000" }),
+    });
+    const summary = await runScriptExpectingFailure(
+      ["--json", "--artifact-dir", artifactDir, "--manifest", manifestPath],
+      createReadyEnv(),
+    );
+
+    expect(summary.status).toBe("failed");
+    expect(getCheck(summary, "orderPolicy")).toMatchObject({ status: "fail" });
+  });
+
   it("fails when run and reconcile exposure evidence conflict", async () => {
     const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-issue-206-closeout-exposure-conflict-"));
     const manifestPath = await writeCloseoutManifest(artifactDir, {
@@ -3548,6 +3590,48 @@ describe("Issue 206 live:ops real-arm closeout script", () => {
 
     expect(summary.status).toBe("passed");
     expect(getCheck(summary, "artifactFiles")).toMatchObject({ status: "ok" });
+  });
+
+  it("accepts terminal_checked_at as the terminal cancel timestamp alias", async () => {
+    const terminalCheckedAt = "2026-06-15T00:00:10.000Z";
+    const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-issue-206-closeout-terminal-checked-at-"));
+    const manifestPath = await writeCloseoutManifest(artifactDir, {
+      artifactText: JSON.stringify(createArtifactFixture({
+        terminalCancelConfirmedAt: undefined,
+        terminal_checked_at: terminalCheckedAt,
+      })),
+      manifestMutator: (manifest) => {
+        const run = manifest.run as Record<string, unknown>;
+        return {
+          ...manifest,
+          run: {
+            ...run,
+            terminalCancelConfirmedAt: undefined,
+            terminal_checked_at: terminalCheckedAt,
+          },
+        };
+      },
+    });
+    const { stdout } = await runScript(["--json", "--artifact-dir", artifactDir, "--manifest", manifestPath], createReadyEnv());
+    const summary = JSON.parse(stdout) as LiveOpsRealArmCloseoutSummary;
+
+    expect(summary.status).toBe("passed");
+    expect(getCheck(summary, "orderLifecycle")).toMatchObject({ status: "ok" });
+    expect(getCheck(summary, "artifactFiles")).toMatchObject({ status: "ok" });
+  });
+
+  it("fails when terminal checked timestamp aliases conflict", async () => {
+    const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-issue-206-closeout-terminal-checked-conflict-"));
+    const manifestPath = await writeCloseoutManifest(artifactDir, {
+      runMutator: (run) => ({ ...run, terminal_checked_at: "2026-06-15T00:00:11.000Z" }),
+    });
+    const summary = await runScriptExpectingFailure(
+      ["--json", "--artifact-dir", artifactDir, "--manifest", manifestPath],
+      createReadyEnv(),
+    );
+
+    expect(summary.status).toBe("failed");
+    expect(getCheck(summary, "orderLifecycle")).toMatchObject({ status: "fail" });
   });
 
   it("fails when artifact safe summary conflicts through snake_case order policy fields", async () => {
