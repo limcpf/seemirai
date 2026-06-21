@@ -1654,6 +1654,8 @@ function createLiveOpsCliCleanupRiskInput({ config, intent, preflight }) {
     heldPositionExposure: preflight.heldPositionExposure,
     equityKrw,
     observedAt,
+    ownership: preflight.autonomousPositionOwnership,
+    strategyId: intent.strategyId,
   });
   const infrastructureSignals = krwAvailableBlocksSubmit
     ? [{
@@ -1737,6 +1739,8 @@ function createLiveOpsCliExitRiskInput({ config, intent, preflight }) {
     heldPositionExposure: preflight.heldPositionExposure,
     equityKrw,
     observedAt,
+    ownership: preflight.autonomousPositionOwnership,
+    strategyId: intent.strategyId,
   });
   const infrastructureSignals = [];
   if (preflight.heldPositionExposure?.valuationMissing === true) {
@@ -1979,14 +1983,27 @@ function createLiveOpsCliAutonomousPnlPositionSnapshot({ ownership, heldPosition
   };
 }
 
-function createLiveOpsCliHeldPositionRiskInput({ heldPositionExposure, equityKrw, observedAt }) {
+function createLiveOpsCliHeldPositionRiskInput({ heldPositionExposure, equityKrw, observedAt, ownership, strategyId }) {
   if (!isPositiveDecimalString(heldPositionExposure?.notionalKrw)) {
     return undefined;
   }
+  const walletQuantity = isNonNegativeDecimalString(heldPositionExposure?.quantity)
+    ? new Decimal(heldPositionExposure.quantity)
+    : new Decimal(0);
+  const ownedQuantity = ownership?.owned === true
+    ? resolveLiveOpsCliAutonomousOwnedQuantity({ walletQuantity, ownership })
+    : undefined;
   return {
+    exchangeId: "upbit_krw_spot",
     market: heldPositionExposure.market,
+    ...(ownedQuantity === undefined || !ownedQuantity.gt(0) ? {} : { strategyId }),
     notionalBpsOfEquity: toLiveOpsCliBudgetBps(heldPositionExposure.notionalKrw, equityKrw),
     capturedAt: heldPositionExposure.capturedAt ?? observedAt,
+    metadata: {
+      ...(ownedQuantity === undefined || !ownedQuantity.gt(0) ? {} : {
+        strategy_owned_quantity: ownedQuantity.toFixed(),
+      }),
+    },
   };
 }
 

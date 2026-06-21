@@ -504,6 +504,11 @@ function collectEntryOrderIntentViolations(
     violations.push("주문 후보에는 RiskGate expected loss 입력이 필요합니다");
   }
 
+  const referencePriceViolation = validateLiveOpsEntryReferencePrice(input.referencePrice);
+  if (referencePriceViolation !== undefined) {
+    violations.push(referencePriceViolation);
+  }
+
   return violations;
 }
 
@@ -562,6 +567,11 @@ function collectExitOrderIntentViolations(
   const quantityViolation = validateExitQuantityAgainstScope(intent, positionScope, positionEffect);
   if (quantityViolation !== undefined) {
     violations.push(quantityViolation);
+  }
+
+  const latestPositionViolation = validateExitQuantityAgainstLatestPosition(input, intent, positionScope, positionEffect);
+  if (latestPositionViolation !== undefined) {
+    violations.push(latestPositionViolation);
   }
 
   return violations;
@@ -673,7 +683,7 @@ function createLiveAutonomousEntryRequest(
       requestedQuantity: intent.requestedQuantity,
       requestedNotional: intent.requestedNotional,
       requestedPrice: intent.requestedPrice,
-      referencePrice: input.referencePrice ?? intent.requestedPrice,
+      referencePrice: requireLiveOpsEntryReferencePrice(input),
       reason: intent.reason,
       expectedLossBpsOfEquity: requireExpectedLossBps(intent),
       costInput: input.costInput,
@@ -1097,6 +1107,166 @@ function validateExitQuantityAgainstScope(
   }
 
   return undefined;
+}
+
+/**
+ * BUY entry adapter가 fresh market reference를 갖고 있는지 검증한다.
+ *
+ * 책임:
+ * - adapter 호출자가 기준가를 누락했을 때 요청가를 기준가로 보정해 가격 이탈 검증을 무력화하지 못하게 한다.
+ * - 반환 문자열은 broker side effect 전에 사용자-visible block reason으로 내려갈 수 있는 secret-safe 문장이다.
+ *
+ * side effect:
+ * - 없음. 문자열과 Decimal 파싱만 수행한다.
+ */
+function validateLiveOpsEntryReferencePrice(referencePrice: string | undefined): string | undefined {
+  const parsed = readPositiveDecimal(referencePrice);
+  if (parsed === undefined) {
+    return "BUY 후보에는 fresh reference price evidence가 필요하며 요청가로 보정하지 않습니다";
+  }
+
+  return undefined;
+}
+
+/**
+ * entry runtime request에 전달할 검증된 reference price를 반환한다.
+ *
+ * 책임:
+ * - 앞선 guard를 통과한 입력만 하위 runtime request로 낮춘다는 invariant를 타입 수준에서 보조한다.
+ * - invariant가 깨진 내부 호출은 예외로 드러내되, 정상 경로에서는 broker/API side effect를 만들지 않는다.
+ *
+ * side effect:
+ * - 없음. 입력 snapshot만 읽는다.
+ */
+function requireLiveOpsEntryReferencePrice(input: LiveOpsLiveExecutionInput): string {
+  const referencePrice = input.referencePrice?.trim();
+  if (referencePrice === undefined || readPositiveDecimal(referencePrice) === undefined) {
+    throw new Error("LiveOpsLiveExecutionReferencePriceMissing");
+  }
+
+  return referencePrice;
+}
+
+/**
+ * SELL exit 후보의 scope가 제출 직전 최신 position snapshot과 일치하는지 검증한다.
+ *
+ * 책임:
+ * - analysis 시점 position scope만 믿고 stale SELL이 broker까지 가는 것을 막는다.
+ * - 명시적 strategy-owned position snapshot만 제출 직전 근거로 보고, requested quantity와 metadata scope를 함께 대조한다.
+ *
+ * invariant:
+ * - matching position은 exchange/market/strategy가 모두 같아야 한다.
+ * - REDUCE는 최신 수량 이하만 허용하고, EXIT는 최신 전체 수량과 정확히 일치해야 한다.
+ *
+ * side effect:
+ * - 없음. Risk snapshot과 intent metadata만 읽는다.
+ */
+function validateExitQuantityAgainstLatestPosition(
+  input: LiveOpsLiveExecutionInput,
+  intent: OrderIntent,
+  positionScope: ExecutionExitCostEvidence["position_scope"],
+  positionEffect: string | undefined,
+): string | undefined {
+  const latestPosition = input.risk.positions.find((position) => isMatchingExitPositionSnapshot(position, intent, positionScope));
+  const latestQuantity = readPositionRiskSnapshotQuantity(latestPosition);
+  if (latestQuantity === undefined) {
+    return "매도 후보에는 최신 포지션 snapshot의 strategy-owned 수량 evidence가 필요합니다";
+  }
+
+  try {
+    const requestedQuantity = new Decimal(intent.requestedQuantity);
+    const scopedQuantity = new Decimal(positionScope.total_quantity);
+
+    if (!latestQuantity.gt(0)) {
+      return "최신 포지션 snapshot 수량은 0보다 커야 SELL 후보를 제출할 수 있습니다";
+    }
+
+    if (!scopedQuantity.eq(latestQuantity)) {
+      return "매도 후보 position scope가 최신 포지션 snapshot 수량과 일치해야 합니다";
+    }
+
+    if (requestedQuantity.gt(latestQuantity)) {
+      return "매도 후보 수량은 최신 포지션 snapshot 수량을 초과할 수 없습니다";
+    }
+
+    if (positionEffect === "EXIT" && !requestedQuantity.eq(latestQuantity)) {
+      return "EXIT 매도 후보 수량은 최신 포지션 snapshot 전체 수량과 일치해야 합니다";
+    }
+  } catch {
+    return "최신 포지션 snapshot 수량과 매도 후보 수량은 Decimal 문자열이어야 합니다";
+  }
+
+  return undefined;
+}
+
+/**
+ * 최신 SELL position snapshot이 특정 strategy 소유 근거인지 판정한다.
+ *
+ * 책임:
+ * - `strategyId`가 없는 aggregate/account snapshot을 현재 strategy snapshot으로 암묵 변환하지 않는다.
+ * - exchange, market, strategy가 모두 명시적으로 일치할 때만 SELL 수량 재검증 근거로 사용한다.
+ *
+ * side effect:
+ * - 없음. snapshot과 intent 값을 비교만 한다.
+ */
+function isMatchingExitPositionSnapshot(
+  position: LiveOpsLiveExecutionInput["risk"]["positions"][number],
+  intent: OrderIntent,
+  positionScope: ExecutionExitCostEvidence["position_scope"],
+): boolean {
+  return (
+    position.exchangeId === intent.exchangeId &&
+    position.market === positionScope.market &&
+    position.strategyId === positionScope.strategy_id
+  );
+}
+
+/**
+ * RiskGate position snapshot metadata에서 strategy-owned 수량 evidence를 읽는다.
+ *
+ * 책임:
+ * - 여러 caller가 사용하는 수량 key alias를 같은 우선순위로 정규화한다.
+ * - 수량이 없거나 0 이하, Decimal 파싱 불가이면 제출 가능 수량으로 보지 않는다.
+ *
+ * side effect:
+ * - 없음. metadata 조회와 Decimal 파싱만 수행한다.
+ */
+function readPositionRiskSnapshotQuantity(
+  position: LiveOpsLiveExecutionInput["risk"]["positions"][number] | undefined,
+): Decimal | undefined {
+  if (position === undefined) {
+    return undefined;
+  }
+  const quantity =
+    readStringMetadata(position.metadata, "strategy_owned_quantity") ??
+    (position.strategyId === undefined
+      ? undefined
+      : readStringMetadata(position.metadata, "position_quantity") ??
+        readStringMetadata(position.metadata, "position_total_quantity") ??
+        readStringMetadata(position.metadata, "total_quantity") ??
+        readStringMetadata(position.metadata, "quantity"));
+  return readPositiveDecimal(quantity);
+}
+
+/**
+ * 양수 Decimal 문자열만 내부 계산값으로 낮춘다.
+ *
+ * 책임:
+ * - guard helper들이 빈 문자열, 0 이하, malformed numeric input을 동일하게 결측 evidence로 다루게 한다.
+ *
+ * side effect:
+ * - 없음.
+ */
+function readPositiveDecimal(value: string | undefined): Decimal | undefined {
+  if (value === undefined || value.trim().length === 0) {
+    return undefined;
+  }
+  try {
+    const parsed = new Decimal(value);
+    return parsed.gt(0) ? parsed : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 function readStringMetadata(metadata: JsonRecord | undefined, key: string): string | undefined {
