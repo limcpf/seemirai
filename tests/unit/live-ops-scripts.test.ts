@@ -153,6 +153,82 @@ describe("production live ops script skeleton", () => {
     });
   });
 
+  it("live:ops:daemon은 startup Telegram 실패 후 다음 tick에서 startup 알림을 재시도한다", async () => {
+    const daemonModulePath = path.join(process.cwd(), "scripts/run-live-ops-daemon-support.mjs");
+    const { runLiveOpsDaemon } = await import(daemonModulePath);
+    const stdoutChunks: string[] = [];
+    const tickOptions: Array<{ suppressStartupTelegramAlert?: boolean }> = [];
+    const summaries = [
+      createDaemonStartupTelegramSummary({
+        status: "blocked",
+        telegramAlert: {
+          ready: false,
+          status: "manual_review_required",
+          lifecycleAlertCount: 1,
+          alertCount: 1,
+          providerDispatchAttempted: true,
+          attemptedCount: 1,
+          deliveredCount: 0,
+          failureCount: 1,
+        },
+      }),
+      createDaemonStartupTelegramSummary({
+        status: "ready",
+        telegramAlert: {
+          ready: true,
+          status: "sent",
+          lifecycleAlertCount: 1,
+          alertCount: 1,
+          providerDispatchAttempted: true,
+          attemptedCount: 1,
+          deliveredCount: 1,
+          failureCount: 0,
+        },
+      }),
+      createDaemonStartupTelegramSummary({
+        status: "ready",
+        telegramAlert: {
+          ready: true,
+          status: "idle",
+          lifecycleAlertCount: 0,
+          alertCount: 0,
+          providerDispatchAttempted: false,
+        },
+      }),
+    ];
+
+    const result = await runLiveOpsDaemon(
+      { maxTicks: 3, tickIntervalMs: 0, json: true },
+      {
+        stdout: {
+          write(chunk: string) {
+            stdoutChunks.push(chunk);
+            return true;
+          },
+        },
+        clock: () => "2026-06-21T01:00:00.000Z",
+        sleep: async () => undefined,
+        async loadInputs(options: { suppressStartupTelegramAlert?: boolean }) {
+          tickOptions.push(options.suppressStartupTelegramAlert === undefined
+            ? {}
+            : { suppressStartupTelegramAlert: options.suppressStartupTelegramAlert });
+          return { tickIndex: tickOptions.length - 1 };
+        },
+        renderSummary(input: { tickIndex: number }) {
+          return summaries[input.tickIndex];
+        },
+      },
+    );
+
+    expect(result.counters.tickCount).toBe(3);
+    expect(tickOptions.map((options) => options.suppressStartupTelegramAlert === true)).toEqual([
+      false,
+      false,
+      true,
+    ]);
+    expect(stdoutChunks.join("")).not.toContain("fake-telegram-token");
+  });
+
   it("live:ops --tui는 fixture smoke에서 provider 호출 없이 운영 dashboard 첫 화면을 출력한다", () => {
     const result = spawnSync(
       process.execPath,
@@ -13851,6 +13927,44 @@ function createAutonomousLiveOpsConfig(config: Record<string, any>): Record<stri
         },
       },
     },
+  };
+}
+
+/**
+ * daemon startup Telegram retry 테스트에 필요한 최소 live ops summary를 만든다.
+ *
+ * 책임:
+ * - runLiveOpsDaemon의 tick state 전이를 검증할 수 있게 live execution, reconcile, Telegram summary shape를 고정한다.
+ * - 외부 DB/provider 호출 없이 Telegram ready 여부만 테스트 입력으로 드러낸다.
+ *
+ * side effect:
+ * - 없음. 테스트용 plain object만 생성한다.
+ */
+function createDaemonStartupTelegramSummary({
+  status,
+  telegramAlert,
+}: {
+  status: string;
+  telegramAlert: Record<string, any>;
+}): Record<string, any> {
+  return {
+    status,
+    fixtureSmoke: false,
+    configPath: "/tmp/live-ops.production.json",
+    liveOrderCapable: false,
+    liveExecution: {
+      status: "idle",
+      ready: true,
+      liveOrderCapable: false,
+      submittedOrderCount: 0,
+    },
+    reconcilePnlStatus: {
+      ready: true,
+      status: "ready",
+      manualReviewRequired: false,
+      mismatchCount: 0,
+    },
+    telegramAlert,
   };
 }
 

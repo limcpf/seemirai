@@ -61,6 +61,8 @@ export async function runLiveOpsDaemon(options, io = {}) {
   const stdout = io.stdout ?? process.stdout;
   const clock = io.clock ?? (() => new Date().toISOString());
   const sleep = io.sleep ?? sleepLiveOpsDaemon;
+  const loadInputs = io.loadInputs ?? loadLiveOpsCliInputs;
+  const renderSummary = io.renderSummary ?? renderLiveOpsSummary;
   const startedAt = clock();
   const startedMs = Date.parse(startedAt);
   const durationMs = Number.isFinite(options.durationMs) && options.durationMs > 0 ? Number(options.durationMs) : undefined;
@@ -85,8 +87,8 @@ export async function runLiveOpsDaemon(options, io = {}) {
       const tickStartedAt = clock();
       try {
         const tickOptions = startupAlertConsumed ? withStartupAlertSuppressed(options) : options;
-        const inputs = await loadLiveOpsCliInputs(tickOptions);
-        const summary = renderLiveOpsSummary({
+        const inputs = await loadInputs(tickOptions);
+        const summary = renderSummary({
           ...tickOptions,
           ...inputs,
           tui: tickOptions.tui,
@@ -95,7 +97,10 @@ export async function runLiveOpsDaemon(options, io = {}) {
         latestError = null;
         counters.tickCount += 1;
         accumulateDaemonCounters(counters, summary);
-        startupAlertConsumed = true;
+        if (!startupAlertConsumed && shouldConsumeLiveOpsDaemonStartupAlert(summary)) {
+          // startup 알림 실패 tick에서는 다음 tick에서 owner chat 연결 복구를 재시도해야 하므로 ready 확인 뒤에만 소비한다.
+          startupAlertConsumed = true;
+        }
 
         if (options.tui) {
           writeDaemonText(stdout, renderLiveOpsTuiDashboard(summary));
@@ -176,6 +181,20 @@ function withStartupAlertSuppressed(options) {
     ...options,
     suppressStartupTelegramAlert: true,
   };
+}
+
+/**
+ * daemon startup Telegram 알림을 이번 프로세스에서 소비 처리할지 판정한다.
+ *
+ * 책임:
+ * - owner chat 전송 실패나 partial failure tick을 소비 처리하지 않아 다음 tick 재시도 기회를 보존한다.
+ * - 이미 alert summary가 ready로 닫힌 tick은 이후 반복 tick에서 startup 알림을 중복 생성하지 않게 한다.
+ *
+ * side effect:
+ * - 없음. latest summary의 Telegram readiness만 읽는다.
+ */
+function shouldConsumeLiveOpsDaemonStartupAlert(summary) {
+  return summary?.telegramAlert?.ready === true;
 }
 
 export function printLiveOpsDaemonHelp() {
