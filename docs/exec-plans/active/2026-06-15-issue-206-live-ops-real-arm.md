@@ -793,3 +793,123 @@ SEEMIRAI_RUN_LIVE_OPS_REAL_ARM_CLOSEOUT=1 \
 - final main PR #218은 runner 규칙상 merge하지 않는다. 마지막 subPR이 mother에 merge된 뒤 최신 head 기준 GitHub checks, unresolved
   thread, Codex `+1` 또는 no-major-issues review를 다시 확인하고 결과를 `/home/lim/vaults/99_운영/seemirai-reviews/PR-218.md`에
   갱신한다.
+
+## Main merge 이후 후속 개선 backlog
+
+2026-06-23 기준 issue #206 main merge 이후 운영 점검에서 production DB에는 최근 market data가 정상 저장됐고, 최신 DB trade/orderbook
+값으로 재계산한 entry feature와 status file의 `autonomous_24x7_entry_signal_weak` 판단값이 일치했다. 2026-06-24 추가 점검에서는
+production `live:ops`가 `KRW-BTC` 단일 market 전제를 config, strategy, broker guard, closeout validator에 강하게 박아 둔 것도
+확인했다. 따라서 즉시 확인된 문제는 provider/broker arm 장애가 아니라 24/7 운영을 길게 가져가기 위한 관측성, feature 품질, 전략 보정,
+SELL 검증, 운영 화면, daemon 운영화, 다중 market 확장성 개선이다.
+
+### Follow-up 01: live 판단 이력 DB 저장
+
+- 목표: `live:ops`와 `live:ops:daemon`의 HOLD/BUY/SELL/BLOCK 판단을 status JSON에만 남기지 않고 DB에 append-only 또는 time-series로
+  남긴다.
+- 근거: 2026-06-23 점검에서 `strategy_signals`는 0건이었지만 status file에는 최신 `autonomous_24x7` HOLD 판단과 feature/threshold
+  값이 존재했다. 운영자가 나중에 "왜 안 샀나", "왜 팔았나"를 DB에서 조회하려면 판단 이력이 durable해야 한다.
+- DnD:
+  - [ ] live decision tick마다 strategy id, market, decision kind, reason, feature snapshot, threshold, order intent count가 secret-free DB row로 저장된다.
+  - [ ] HOLD 기록은 저장 폭주를 막기 위해 dedupe, sampling, bucket, retention 중 하나 이상의 정책을 가진다.
+  - [ ] 저장 실패는 broker submit을 보정하거나 재시도 주문을 만들지 않고, TUI/status에 관측성 degraded 상태로 표시된다.
+  - [ ] DB row에는 raw provider payload, credential, Telegram token, DB URL, Upbit JWT가 저장되지 않는다.
+  - [ ] 관련 unit/integration/script smoke, `corepack pnpm typecheck`, `./scripts/verify`가 통과한다.
+
+### Follow-up 02: DB-backed feature 강화
+
+- 목표: production entry/exit 판단이 단일 public tick fallback에 머물지 않고 DB window에서 candle momentum, realized volatility,
+  volume spike, depth slope, VWAP deviation, trade direction imbalance 같은 feature를 계산해 사용한다.
+- 근거: 2026-06-23 최신 운영 tick은 `feature_source=live_ops_cli_public_tick_weak`, `trend_strength_bps=0`,
+  `mean_reversion_discount_bps=3.916...`, `cost_adjusted_margin_bps=0`이었다. DB에는 최근 15분 `trades=150`,
+  `orderbook_metrics=449`가 있었으므로 더 풍부한 feature를 계산할 수 있다.
+- DnD:
+  - [ ] live CLI/daemon이 DB window 기반 `autonomousFeatures`를 만들고 strategy에 전달한다.
+  - [ ] feature freshness, 최소 sample 수, market mismatch, stale candle/orderbook window는 후보 생성 전 fail-closed 된다.
+  - [ ] 기존 public tick fallback은 cold-start 또는 feature degraded 상태로 명시되고, fallback 사용 여부가 status/DB 판단 이력에 남는다.
+  - [ ] M11 feature calculator와 live CLI feature key contract가 `trend_strength_bps`, `mean_reversion_discount_bps`,
+        `cost_adjusted_margin_bps`를 동일 의미로 유지한다.
+  - [ ] fixture manifest나 수동 evidence 파일 없이 운영 DB만으로 feature smoke를 재현할 수 있다.
+
+### Follow-up 03: 전략 threshold calibration
+
+- 목표: 실제 KRW-BTC 운영 DB window와 paper/live shadow 비교를 사용해 `autonomous_24x7` entry/exit threshold 후보를 보수적으로
+  산출하고, config 변경 전후 기대 주문 빈도와 비용 차감 결과를 비교한다.
+- 근거: 2026-06-23 제한 실행은 143 tick 모두 HOLD였고, 최신 tick은 `min_entry_margin_bps=10`,
+  `mean_reversion_discount_bps=30`을 넘지 못했다. threshold를 무작정 낮추면 거의 모든 작은 눌림에 매수하는 전략이 되므로 calibration
+  evidence가 필요하다.
+- DnD:
+  - [ ] 최근 운영 DB window에서 현재 threshold와 후보 threshold의 주문 후보 수, 예상 spread/cost, drawdown proxy를 비교한다.
+  - [ ] calibration 산출물은 기본값을 즉시 바꾸지 않고 비활성 proposal 또는 별도 config patch로 남긴다.
+  - [ ] threshold 후보는 최소 주문금액, 수수료, spread, slippage proxy, daily budget, max open position budget을 모두 차감한다.
+  - [ ] 공격적 완화는 예상 비용 차감 마진이 음수이거나 drawdown proxy가 악화되면 자동 rejection으로 남긴다.
+  - [ ] 검증 명령과 비교 결과가 PR 본문 또는 closeout 문서에 요약된다.
+
+### Follow-up 04: SELL 경로 실운영 검증
+
+- 목표: 자동전략이 실제로 소유한 BTC 포지션이 있을 때 stop-loss, take-profit, trailing stop, max holding time, risk reduction SELL
+  판단과 post-only sell submit/cancel/requote closeout을 운영 경로에서 검증한다.
+- 근거: 2026-06-23 reconcile에는 자동전략 소유 BTC 포지션이 없었고 `positions`도 비어 있어 SELL 분기는 운영 DB에서 아직 재현되지 않았다.
+- DnD:
+  - [ ] SELL은 strategy-owned position snapshot과 fresh private read preflight가 일치할 때만 후보를 만든다.
+  - [ ] 수동 BTC, 다른 전략 포지션, generic account balance는 자동 SELL 근거로 쓰지 않는다.
+  - [ ] SELL 후보는 kill switch, reconcile freshness, PnL freshness, open order, idempotency guard를 통과해야 submit된다.
+  - [ ] SELL fill/cancel/requote 결과는 realized PnL, remaining position, reservation closeout, Telegram trade alert와 함께 확인된다.
+  - [ ] SELL post-submit poll 실패는 broker order id가 있으면 수동 점검으로 닫고 중복 SELL을 만들지 않는다.
+
+### Follow-up 05: TUI/status 문구 분리
+
+- 목표: 운영 화면에서 "실주문 가능 여부"와 "이번 tick 주문 후보 존재 여부"를 분리해 broker/provider arm 문제와 전략 HOLD를 혼동하지 않게 한다.
+- 근거: 2026-06-23 status file에서 broker guard는 ready이고 violations는 없었지만 주문 후보가 없어 `liveOrderCapable=false`,
+  "실주문 가능: 아니오"처럼 보일 수 있었다. 이 문구는 operator에게 provider 미연결처럼 오해될 수 있다.
+- DnD:
+  - [ ] TUI/status는 provider/broker arm, key scope, live trading enabled, 이번 tick order intent count를 별도 필드와 한국어 문구로 표시한다.
+  - [ ] 주문 후보 없음은 "브로커 불가"가 아니라 "이번 tick 후보 없음"으로 표시한다.
+  - [ ] BLOCK, HOLD, ORDER_INTENT, submitted/canceled/manual review 상태가 서로 다른 색인과 필요 조치를 가진다.
+  - [ ] attach read-only 화면은 원본 foreground status와 attach 실행 형태를 구분하되 live-order-capable 값을 덮어쓰지 않는다.
+  - [ ] 관련 status/TUI snapshot 테스트와 script smoke가 통과한다.
+
+### Follow-up 06: 24/7 daemon 운영 안정화
+
+- 목표: `live:ops:daemon`을 제한 실행이 아니라 장기 운영 단위로 배치할 수 있게 process supervision, status retention, alerting,
+  restart policy를 문서와 runtime 경계에서 정리한다.
+- 근거: 2026-06-23 점검 대상 daemon은 143 tick을 성공 처리하고 제한 실행 종료로 `completed` terminal payload를 남겼다. 장기 운영에서는
+  의도한 `completed`와 비정상 중단, transient failure, stale status file을 구분해야 한다.
+- DnD:
+  - [ ] duration/max tick 없는 24/7 실행과 제한 smoke 실행의 status 문구와 closeout 기준이 분리된다.
+  - [ ] systemd 또는 tmux/supervisor 기준 runbook이 status file, log, restart, stop, emergency halt 절차를 포함한다.
+  - [ ] daemon heartbeat stale, crash count, unhandled rejection, transient failure, duplicate order, reconcile mismatch가 alert 조건으로 연결된다.
+  - [ ] status file rotation 또는 retention 정책이 있어 장기 실행 중 파일 비대화와 마지막 상태 유실을 막는다.
+  - [ ] 재시작 후 daily budget reservation, open position, outstanding order, Telegram startup alert가 중복 side effect 없이 복구된다.
+
+### Follow-up 07: 다중 market/ETH 확장 구조 개선
+
+- 목표: production `live:ops`가 `KRW-BTC` 단일 하드코딩에 묶이지 않고 `KRW-BTC`, `KRW-ETH` 같은 명시 allowlist market을 같은
+  안전장치 아래에서 점진적으로 운영할 수 있게 한다.
+- 근거: 2026-06-24 점검에서 paper runtime은 `KRW-ETH`를 일부 다룰 수 있지만 production `live:ops`는 `LiveOpsConfigSchema`,
+  `autonomous_24x7` strategy, broker wrapper, entry/exit guard, PnL closeout, real-arm closeout validator에 `KRW-BTC` 단일 전제를
+  분산해 두었다. 이 상태에서 운영 JSON만 `KRW-ETH`로 바꾸면 readiness 또는 broker guard에서 막히며, guard를 억지로 풀면 예산,
+  포지션 ownership, 청산 scope가 섞일 위험이 있다.
+- 설계 방향:
+  - 안전장치는 코드 전역의 `market === "KRW-BTC"` literal이 아니라 `market policy registry`와 config allowlist에 둔다.
+  - `KRW-BTC`, `KRW-ETH`는 market별 tick size, quantity scale, 최소 주문금액, entry/exit offset, per-market budget, enabled state를 가진다.
+  - 모든 주문/포지션/예약/PnL/reconcile/Telegram/TUI 상태는 최소 `strategyId + market` scope를 가진다.
+  - global budget은 전체 계정 손실과 총 노출을 막고, per-market budget은 특정 market 쏠림과 중복 진입을 막는다.
+- DnD:
+  - [ ] production live ops config가 `allowed_markets` 또는 `market_policies`로 `KRW-BTC`, `KRW-ETH`를 정적 allowlist로 허용하되,
+        unknown KRW market, market order, leverage, futures, withdrawal은 계속 fail-closed 한다.
+  - [ ] `LiveOpsConfigSchema`, CLI validation, strategy resolver, real-arm closeout validator의 BTC 단일 guard가 market policy 기반 guard로
+        이동한다.
+  - [ ] `autonomous_24x7` strategy는 `context.market` 기준으로 entry/exit intent를 만들고, intent metadata와 position scope에 실제 market을
+        보존한다.
+  - [ ] daemon은 market별 tick을 분리 평가하고, 같은 tick 안에서 global budget/risk와 per-market budget/risk를 모두 통과한 후보만
+        live execution으로 넘긴다.
+  - [ ] market data collector는 BTC/ETH public trade/orderbook/status를 market별로 저장하고, feature 계산은 다른 market의 최신 호가나
+        trade를 섞지 않는다.
+  - [ ] entry reservation, fill closeout, average entry, high watermark, no-fill cleanup, SELL closeout, PnL snapshot은
+        `strategyId + market` 단위로 분리된다.
+  - [ ] private read reconcile은 BTC 잔고와 ETH 잔고를 각각 market scope에 연결하고, 수동 보유 ETH 또는 다른 전략 보유분을
+        autonomous SELL 근거로 쓰지 않는다.
+  - [ ] TUI/status/Telegram은 market별 HOLD/BLOCK/ORDER_INTENT/submitted/canceled/manual review와 전체 budget summary를 분리 표시한다.
+  - [ ] rollout은 `KRW-ETH` shadow market data 수집 -> ETH decision dry run/HOLD 기록 -> ETH 소액 submit/cancel canary ->
+        ETH autonomous 소액 운영 -> BTC+ETH 동시 24/7 순서로 닫는다.
+  - [ ] 관련 unit/integration/script smoke, `corepack pnpm typecheck`, `./scripts/verify`가 통과한다.
