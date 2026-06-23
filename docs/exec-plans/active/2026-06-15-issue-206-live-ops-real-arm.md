@@ -797,9 +797,10 @@ SEEMIRAI_RUN_LIVE_OPS_REAL_ARM_CLOSEOUT=1 \
 ## Main merge 이후 후속 개선 backlog
 
 2026-06-23 기준 issue #206 main merge 이후 운영 점검에서 production DB에는 최근 market data가 정상 저장됐고, 최신 DB trade/orderbook
-값으로 재계산한 entry feature와 status file의 `autonomous_24x7_entry_signal_weak` 판단값이 일치했다. 따라서 즉시 확인된 문제는
-provider/broker arm 장애가 아니라 24/7 운영을 길게 가져가기 위한 관측성, feature 품질, 전략 보정, SELL 검증, 운영 화면, daemon 운영화
-개선이다.
+값으로 재계산한 entry feature와 status file의 `autonomous_24x7_entry_signal_weak` 판단값이 일치했다. 2026-06-24 추가 점검에서는
+production `live:ops`가 `KRW-BTC` 단일 market 전제를 config, strategy, broker guard, closeout validator에 강하게 박아 둔 것도
+확인했다. 따라서 즉시 확인된 문제는 provider/broker arm 장애가 아니라 24/7 운영을 길게 가져가기 위한 관측성, feature 품질, 전략 보정,
+SELL 검증, 운영 화면, daemon 운영화, 다중 market 확장성 개선이다.
 
 ### Follow-up 01: live 판단 이력 DB 저장
 
@@ -879,3 +880,36 @@ provider/broker arm 장애가 아니라 24/7 운영을 길게 가져가기 위�
   - [ ] daemon heartbeat stale, crash count, unhandled rejection, transient failure, duplicate order, reconcile mismatch가 alert 조건으로 연결된다.
   - [ ] status file rotation 또는 retention 정책이 있어 장기 실행 중 파일 비대화와 마지막 상태 유실을 막는다.
   - [ ] 재시작 후 daily budget reservation, open position, outstanding order, Telegram startup alert가 중복 side effect 없이 복구된다.
+
+### Follow-up 07: 다중 market/ETH 확장 구조 개선
+
+- 목표: production `live:ops`가 `KRW-BTC` 단일 하드코딩에 묶이지 않고 `KRW-BTC`, `KRW-ETH` 같은 명시 allowlist market을 같은
+  안전장치 아래에서 점진적으로 운영할 수 있게 한다.
+- 근거: 2026-06-24 점검에서 paper runtime은 `KRW-ETH`를 일부 다룰 수 있지만 production `live:ops`는 `LiveOpsConfigSchema`,
+  `autonomous_24x7` strategy, broker wrapper, entry/exit guard, PnL closeout, real-arm closeout validator에 `KRW-BTC` 단일 전제를
+  분산해 두었다. 이 상태에서 운영 JSON만 `KRW-ETH`로 바꾸면 readiness 또는 broker guard에서 막히며, guard를 억지로 풀면 예산,
+  포지션 ownership, 청산 scope가 섞일 위험이 있다.
+- 설계 방향:
+  - 안전장치는 코드 전역의 `market === "KRW-BTC"` literal이 아니라 `market policy registry`와 config allowlist에 둔다.
+  - `KRW-BTC`, `KRW-ETH`는 market별 tick size, quantity scale, 최소 주문금액, entry/exit offset, per-market budget, enabled state를 가진다.
+  - 모든 주문/포지션/예약/PnL/reconcile/Telegram/TUI 상태는 최소 `strategyId + market` scope를 가진다.
+  - global budget은 전체 계정 손실과 총 노출을 막고, per-market budget은 특정 market 쏠림과 중복 진입을 막는다.
+- DnD:
+  - [ ] production live ops config가 `allowed_markets` 또는 `market_policies`로 `KRW-BTC`, `KRW-ETH`를 정적 allowlist로 허용하되,
+        unknown KRW market, market order, leverage, futures, withdrawal은 계속 fail-closed 한다.
+  - [ ] `LiveOpsConfigSchema`, CLI validation, strategy resolver, real-arm closeout validator의 BTC 단일 guard가 market policy 기반 guard로
+        이동한다.
+  - [ ] `autonomous_24x7` strategy는 `context.market` 기준으로 entry/exit intent를 만들고, intent metadata와 position scope에 실제 market을
+        보존한다.
+  - [ ] daemon은 market별 tick을 분리 평가하고, 같은 tick 안에서 global budget/risk와 per-market budget/risk를 모두 통과한 후보만
+        live execution으로 넘긴다.
+  - [ ] market data collector는 BTC/ETH public trade/orderbook/status를 market별로 저장하고, feature 계산은 다른 market의 최신 호가나
+        trade를 섞지 않는다.
+  - [ ] entry reservation, fill closeout, average entry, high watermark, no-fill cleanup, SELL closeout, PnL snapshot은
+        `strategyId + market` 단위로 분리된다.
+  - [ ] private read reconcile은 BTC 잔고와 ETH 잔고를 각각 market scope에 연결하고, 수동 보유 ETH 또는 다른 전략 보유분을
+        autonomous SELL 근거로 쓰지 않는다.
+  - [ ] TUI/status/Telegram은 market별 HOLD/BLOCK/ORDER_INTENT/submitted/canceled/manual review와 전체 budget summary를 분리 표시한다.
+  - [ ] rollout은 `KRW-ETH` shadow market data 수집 -> ETH decision dry run/HOLD 기록 -> ETH 소액 submit/cancel canary ->
+        ETH autonomous 소액 운영 -> BTC+ETH 동시 24/7 순서로 닫는다.
+  - [ ] 관련 unit/integration/script smoke, `corepack pnpm typecheck`, `./scripts/verify`가 통과한다.
