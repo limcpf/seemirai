@@ -40,7 +40,17 @@
     "candle_interval_seconds": 60,
     "feature_interval_seconds": 5,
     "decision_interval_seconds": 5,
-    "record_hold_decision": true
+    "record_hold_decision": true,
+    "decision_policy": {
+      "id": "cleanup_probe",
+      "cleanup_probe": {
+        "max_notional_krw": "10000",
+        "tick_size_krw": "1000",
+        "price_offset_ticks": 1,
+        "quantity_scale": 8,
+        "expected_loss_bps_of_equity": "5"
+      }
+    }
   },
   "telegram": {
     "startup_alert_enabled": true,

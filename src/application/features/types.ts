@@ -16,6 +16,8 @@ export type M11FeatureKey =
   | "depth_change_rate_ratio"
   | "vwap_deviation_bps"
   | "trade_direction_imbalance_ratio"
+  | "trend_strength_bps"
+  | "mean_reversion_discount_bps"
   | "market_regime"
   | "session_liquidity_score"
   | "session_liquidity_state"

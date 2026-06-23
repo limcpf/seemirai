@@ -155,8 +155,9 @@
   pilot 자동 주문 연결은 M21 이후 별도 보안 설계 전까지 금지한다.
 - 내부 idempotency key는 Upbit `identifier`로 그대로 매핑하며, identifier가 1자 이상 32자 이하가 아니면 거래소 호출 전에
   fail-closed 한다. 자동 truncate/hash는 중복 주문 충돌을 숨길 수 있으므로 금지한다.
-- 신규 주문은 KRW 현물 `LIMIT` 주문으로 제한하고, `ord_type=price`, `ord_type=market`, `ord_type=best`는 거래소 호출 전에
-  차단한다. `post_only`와 `smp_type` 동시 사용도 local guard에서 차단한다.
+- 신규 주문은 KRW 현물 `LIMIT` 주문으로 제한하고, `ord_type=price`, `ord_type=market`, `ord_type=best`,
+  `order_type=MARKET`, `orderType=MARKET`는 거래소 호출 전에 차단한다. `post_only`와 `smp_type` 동시 사용도
+  local guard에서 차단한다.
 - `listOpenOrders`는 `주문조회` 권한이 있는 owner-operated key에서만 허용하고, `wait`/`watch` 조회 결과는 raw provider payload가
   아니라 safe `BrokerOrder` 요약으로만 audit/status/smoke artifact에 남긴다.
 - raw access key, secret key, JWT, Authorization header, query hash 입력, raw provider payload는 log, audit, status, smoke
@@ -254,8 +255,8 @@
 
 - production live ops JSON config에는 secret, token, password, access key, secret key, database URL, Authorization/JWT 계열 key를
   넣지 않는다. `src/runtime/live-ops-config.ts`는 secret-like key를 발견하면 startup contract를 fail-closed 한다.
-- production live ops env file은 DB/Upbit/Telegram/TUI credential만 담는다. M22/M23 milestone runner의 smoke/readiness env는
-  production readiness로 쓰지 않는다.
+- production live ops env file은 DB/Upbit/Telegram/TUI credential과 Upbit key scope 확인값, 저장소 밖 evidence id만 담는다.
+  M22/M23 milestone runner의 smoke/readiness env는 production readiness로 쓰지 않는다.
 - `live:ops`와 `live:ops:tui`는 Sub PR 01 skeleton 단계에서 provider를 호출하지 않으며, 실제 Upbit private client, live broker,
   Telegram provider, TUI control side effect는 후속 readiness와 control confirmation 경계가 붙은 뒤에만 열린다.
 - TUI와 CLI 첫 화면은 `PAPER_NO_KEY`, 내부 enum, reason code를 주요 문구로 노출하지 않고 한국어 상태/원인/영향/필요 조치를 먼저
@@ -264,6 +265,42 @@
   startup contract가 실패해야 한다.
 - source/security scan은 production live ops path가 시장가/best order, 출금/입출금, 선물/레버리지, raw secret 노출 경로를 새로
   열지 않았음을 확인해야 한다.
+
+## Issue #206 production live ops 실제 arm 보안 기준
+
+- 실제 arm config JSON에는 secret, token, password, access key, secret key, database URL, Authorization/JWT 계열 key를 넣지 않는다.
+- 실제 arm env file에는 DB/Upbit/Telegram/TUI credential만 담고, issue/PR/log/artifact/TUI/Telegram/status에는 원문 값을 남기지 않는다.
+- Upbit key scope는 `자산조회`, `주문조회`, `주문하기`만 허용한다. 출금, 입출금, 선물, 레버리지, 마진, 타인 계정 관련 scope가
+  관찰되면 runtime은 주문 가능 상태로 시작하지 않는다.
+- 주문 side effect는 단일 `KRW-BTC` `BUY + LIMIT + post_only` 진입과 보유 수량 이하 `SELL + LIMIT + post_only` exit만 허용하며,
+  시장가/best order/시장가 매도/자동 budget 확대는 provider 호출 전에 차단한다.
+- decision policy config는 `cleanup_probe`, `autonomous_24x7` 같은 정적 allowlist id만 허용한다. JSON config나 env로 임의 JS/TS 파일
+  경로, 동적 import, 원격 plugin, 저장소 밖 strategy 코드를 실행하게 만들지 않는다.
+- live:ops preflight reconcile DB evidence에는 잔고 숫자, 미체결 주문 safe identity, 상태, 시각, source summary만 저장한다.
+  access key, secret key, JWT, Authorization header, REST query hash, raw provider payload, raw order detail, Telegram token, DB URL 원문은
+  `live_reconcile_*` table의 metadata/trace에도 저장하지 않는다.
+- 실거래 cleanup artifact에는 stable suffix나 redacted id만 남긴다. access key, secret key, JWT, Authorization header, Telegram token,
+  raw provider payload, raw order detail은 저장하지 않는다.
+- source/security scan은 production live ops path가 금지 주문 유형, 출금/입금, 선물/레버리지, raw secret, raw provider payload 경로를
+  열지 않았음을 PR/closeout에 기록해야 한다.
+
+## Issue #206 24/7 live ops daemon 보안 기준
+
+- `live:ops:daemon`은 production config/env만으로 시작할 수 있지만, 기본 `PAPER_NO_KEY` runtime을 live profile로 승격하지 않는다.
+- daemon strategy는 정적 allowlist id와 parameter만 받는다. PR comment, Telegram text, 외부 파일 경로, LLM output, 저장소 밖 strategy
+  코드를 주문 후보로 실행하지 않는다.
+- `autonomous_24x7` strategy parameter는 non-secret threshold만 허용한다. credential, token, DB URL, local control token은 config
+  schema와 startup contract에서 계속 분리해야 한다.
+- LLM은 24/7 strategy의 `BUY`, `SELL`, 목표가, 포지션 크기, 주문 허용 여부를 직접 결정할 수 없다.
+- exit order가 허용되어도 `SELL + LIMIT + POST_ONLY`, `position_effect=REDUCE|EXIT`, exit reason/rule, 현재 보유 수량 이하 조건을
+  provider 호출 전에 검증한다. SELL 후보는 entry runtime으로 우회하지 않는다.
+- SELL idempotency key는 Upbit identifier 허용 문자로 정규화하고, 원래 decision idempotency key는 metadata 추적 정보에만 보존한다.
+  provider payload, JWT, query hash, raw order detail은 daemon summary/status file에 저장하지 않는다.
+- hard stop이나 mismatch가 open position 자동 시장가 청산을 만들면 안 된다. 보안상 불확실 상태의 기본 동작은 신규 주문 차단과
+  manual review다.
+- daemon summary, artifact, Telegram, TUI는 access key, secret key, JWT, Authorization header, DB URL/password, raw provider payload,
+  raw order detail, local control token을 저장하거나 표시하지 않는다.
+- strategy 교체는 code review와 test를 거친 allowlist 변경으로만 수행한다. 운영 config 하나로 새로운 임의 strategy 코드를 로딩할 수 없다.
 
 ## M18 Decision Ledger 보안 기준
 

@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import type {
   LiveAutonomousEntryAttemptResult,
   LiveAutonomousEntryRuntimeRequest,
+  ExecutionSubmitOrderResult,
 } from "../../src/application/index.js";
 import {
   createRiskThresholdSnapshot,
@@ -129,6 +130,531 @@ describe("production live ops live execution adapter", () => {
     expect(JSON.stringify(summary)).not.toContain("fake-upbit-secret-key");
   });
 
+  it("BUY 후보는 fresh reference price가 없으면 requestedPrice로 보정하지 않고 차단한다", async () => {
+    const entryRuntime = createEntryRuntimeRecorder();
+    const input = createInput({
+      analysisDecision: analysisSummary({ orderIntentCount: 1, decisionCategory: "ORDER_INTENT" }),
+      orderIntents: [
+        createOrderIntent({
+          requestedPrice: "120000000",
+          requestedNotional: "12000",
+        }),
+      ],
+      entryRuntime,
+    });
+    const { referencePrice: _referencePrice, ...inputWithoutReferencePrice } = input;
+    const summary = await runLiveOpsLiveExecution(inputWithoutReferencePrice);
+
+    expect(summary).toMatchObject({
+      status: "blocked",
+      ready: false,
+      liveOrderCapable: false,
+      attemptedOrderCount: 0,
+    });
+    expect(summary.checks.map((check) => check.code)).toContain("live_ops_order_intent_blocked");
+    expect(JSON.stringify(summary.checks)).toContain("fresh reference price");
+    expect(entryRuntime.submitEntryCandidate).not.toHaveBeenCalled();
+  });
+
+  it("SELL LIMIT POST_ONLY 후보를 exit runtime submission으로 변환하고 entry runtime은 호출하지 않는다", async () => {
+    const entryRuntime = createEntryRuntimeRecorder();
+    const exitRuntime = createExitRuntimeRecorder();
+    const intent = createSellOrderIntent();
+
+    const summary = await runLiveOpsLiveExecution(createInput({
+      analysisDecision: analysisSummary({ orderIntentCount: 1, decisionCategory: "ORDER_INTENT" }),
+      orderIntents: [intent],
+      entryRuntime,
+      exitRuntime,
+      idempotencyKey: explicitIdempotencyKey,
+    }));
+
+    expect(summary).toMatchObject({
+      status: "submitted",
+      ready: true,
+      liveOrderCapable: true,
+      attemptedOrderCount: 1,
+      submittedOrderCount: 1,
+      attemptStatus: "SUBMITTED",
+      brokerOrderId: "fake-live-exit-order-001",
+    });
+    expect(entryRuntime.submitEntryCandidate).not.toHaveBeenCalled();
+    expect(exitRuntime.submitExitOrder).toHaveBeenCalledTimes(1);
+    const submission = exitRuntime.submitExitOrder.mock.calls[0]?.[0];
+    expect(submission).toMatchObject({
+      submittedAt: observedAt,
+      expectedLossBpsOfEquity: "5",
+      intent: {
+        idempotencyKey: explicitIdempotencyKey,
+        side: "SELL",
+        orderType: "LIMIT",
+        postOnly: true,
+        timeInForce: "POST_ONLY",
+        metadata: {
+          decision_idempotency_key: "decision-fixture-exit-intent",
+          runtime_idempotency_source: "live_ops_live_execution_exit",
+          position_effect: "EXIT",
+          exit_reason_code: "autonomous_24x7_take_profit",
+          exit_rule_id: "take_profit",
+        },
+      },
+      costSnapshot: {
+        source: "exit_cost_model",
+        exit_cost_allowed: true,
+        exit_cost_reason_code: "exit_cost_margin_ok",
+        exit_cost_bps: "0",
+        exit_slippage_bps: "0",
+        position_scope: {
+          market: "KRW-BTC",
+          strategy_id: "fixture_order_strategy",
+          total_quantity: "0.0001",
+        },
+      },
+      riskApproval: {
+        source: "risk_gate",
+        approved: true,
+        action: "ALLOW",
+      },
+    });
+  });
+
+  it("SELL 후보도 kill switch와 reconcile freshness guard를 통과하지 못하면 exit runtime을 호출하지 않는다", async () => {
+    const entryRuntime = createEntryRuntimeRecorder();
+    const exitRuntime = createExitRuntimeRecorder();
+
+    const summary = await runLiveOpsLiveExecution(createInput({
+      analysisDecision: analysisSummary({ orderIntentCount: 1, decisionCategory: "ORDER_INTENT" }),
+      orderIntents: [createSellOrderIntent()],
+      entryRuntime,
+      exitRuntime,
+      killSwitchActive: true,
+      reconcileFresh: false,
+    }));
+
+    expect(summary).toMatchObject({
+      status: "blocked",
+      ready: false,
+      liveOrderCapable: false,
+      attemptedOrderCount: 0,
+    });
+    expect(summary.checks.map((check) => check.code)).toContain("live_ops_exit_execution_status_blocked");
+    expect(JSON.stringify(summary.checks)).toContain("kill switch");
+    expect(JSON.stringify(summary.checks)).toContain("reconcile freshness");
+    expect(exitRuntime.submitExitOrder).not.toHaveBeenCalled();
+    expect(entryRuntime.submitEntryCandidate).not.toHaveBeenCalled();
+  });
+
+  it("risk-reducing SELL 후보는 계정 손실 한도 초과 상태에서도 exit runtime으로 전진한다", async () => {
+    const entryRuntime = createEntryRuntimeRecorder();
+    const exitRuntime = createExitRuntimeRecorder();
+
+    const summary = await runLiveOpsLiveExecution(createInput({
+      analysisDecision: analysisSummary({ orderIntentCount: 1, decisionCategory: "ORDER_INTENT" }),
+      orderIntents: [createSellOrderIntent({ reason: "autonomous_24x7_stop_loss" })],
+      entryRuntime,
+      exitRuntime,
+      risk: createRiskInput({
+        account: {
+          equityKrw: "1000000",
+          dailyRealizedPnlBps: "-100",
+          weeklyRealizedPnlBps: "0",
+          maxDrawdownBps: "0",
+          capturedAt: observedAt,
+        },
+        positions: [createPositionRiskSnapshot()],
+      }),
+    }));
+
+    expect(summary).toMatchObject({
+      status: "submitted",
+      ready: true,
+      liveOrderCapable: true,
+      attemptedOrderCount: 1,
+      submittedOrderCount: 1,
+    });
+    expect(summary.checks.map((check) => check.code)).not.toContain("live_ops_exit_risk_blocked");
+    expect(exitRuntime.submitExitOrder).toHaveBeenCalledTimes(1);
+    expect(entryRuntime.submitEntryCandidate).not.toHaveBeenCalled();
+    const submission = exitRuntime.submitExitOrder.mock.calls[0]?.[0];
+    expect(submission?.riskApproval).toMatchObject({
+      source: "risk_gate",
+      approved: true,
+      action: "ALLOW",
+      status: "WARN",
+      failed_evaluation_reason_codes: [],
+      warning_evaluation_reason_codes: expect.arrayContaining(["daily_loss_limit_exceeded"]),
+    });
+  });
+
+  it("risk-reducing SELL 후보는 현재 BTC 노출이 한도 초과여도 축소 runtime으로 전진한다", async () => {
+    const entryRuntime = createEntryRuntimeRecorder();
+    const exitRuntime = createExitRuntimeRecorder();
+
+    const summary = await runLiveOpsLiveExecution(createInput({
+      analysisDecision: analysisSummary({ orderIntentCount: 1, decisionCategory: "ORDER_INTENT" }),
+      orderIntents: [createSellOrderIntent({ reason: "autonomous_24x7_risk_reduction" })],
+      entryRuntime,
+      exitRuntime,
+      risk: createRiskInput({
+        positions: [
+          createPositionRiskSnapshot({
+            notionalKrw: "250000",
+            notionalBpsOfEquity: "2500",
+          }),
+        ],
+      }),
+    }));
+
+    expect(summary).toMatchObject({
+      status: "submitted",
+      ready: true,
+      liveOrderCapable: true,
+    });
+    expect(exitRuntime.submitExitOrder).toHaveBeenCalledTimes(1);
+    const submission = exitRuntime.submitExitOrder.mock.calls[0]?.[0];
+    expect(submission?.riskApproval).toMatchObject({
+      approved: true,
+      action: "ALLOW",
+      status: "WARN",
+      failed_evaluation_reason_codes: [],
+      warning_evaluation_reason_codes: expect.arrayContaining(["btc_eth_position_limit_exceeded"]),
+    });
+  });
+
+  it("risk-reducing SELL 후보는 camelCase positionEffect alias도 완화 대상으로 본다", async () => {
+    const entryRuntime = createEntryRuntimeRecorder();
+    const exitRuntime = createExitRuntimeRecorder();
+    const snakeCaseIntent = createSellOrderIntent({ reason: "autonomous_24x7_stop_loss" });
+    const {
+      position_effect: _positionEffect,
+      ...metadataWithoutSnakeCasePositionEffect
+    } = snakeCaseIntent.metadata ?? {};
+
+    const summary = await runLiveOpsLiveExecution(createInput({
+      analysisDecision: analysisSummary({ orderIntentCount: 1, decisionCategory: "ORDER_INTENT" }),
+      orderIntents: [
+        {
+          ...snakeCaseIntent,
+          metadata: {
+            ...metadataWithoutSnakeCasePositionEffect,
+            positionEffect: "EXIT",
+          },
+        },
+      ],
+      entryRuntime,
+      exitRuntime,
+      risk: createRiskInput({
+        account: {
+          equityKrw: "1000000",
+          dailyRealizedPnlBps: "-100",
+          weeklyRealizedPnlBps: "0",
+          maxDrawdownBps: "0",
+          capturedAt: observedAt,
+        },
+        positions: [createPositionRiskSnapshot()],
+      }),
+    }));
+
+    expect(summary.status).toBe("submitted");
+    expect(exitRuntime.submitExitOrder).toHaveBeenCalledTimes(1);
+  });
+
+  it("SELL 후보의 긴 strategy decision key를 Upbit-safe attempt id로 낮춘다", async () => {
+    const entryRuntime = createEntryRuntimeRecorder();
+    const exitRuntime = createExitRuntimeRecorder();
+    const intent = createSellOrderIntent({
+      idempotencyKey: "autonomous_24x7:2026-06-20:upbit_krw_spot:KRW-BTC:SELL:take_profit:99000000:0.0001:9900",
+    });
+
+    const summary = await runLiveOpsLiveExecution(createInput({
+      analysisDecision: analysisSummary({ orderIntentCount: 1, decisionCategory: "ORDER_INTENT" }),
+      orderIntents: [intent],
+      entryRuntime,
+      exitRuntime,
+    }));
+
+    const submission = exitRuntime.submitExitOrder.mock.calls[0]?.[0];
+    expect(summary.attemptId).toMatch(/^ops-[a-f0-9]{26}$/u);
+    expect(summary.attemptId).not.toBe(intent.idempotencyKey);
+    expect(submission?.intent.idempotencyKey).toBe(summary.attemptId);
+    expect(submission?.intent.metadata).toMatchObject({
+      decision_idempotency_key: intent.idempotencyKey,
+      runtime_idempotency_source: "live_ops_live_execution_exit",
+    });
+    expect(submission?.costSnapshot).toMatchObject({
+      order_intent: {
+        idempotency_key: summary.attemptId,
+      },
+    });
+    expect(submission?.riskApproval).toMatchObject({
+      order_intent: {
+        idempotency_key: summary.attemptId,
+      },
+    });
+  });
+
+  it("SELL 후보가 있지만 exit runtime이 없으면 broker 실행 경계 전에 차단한다", async () => {
+    const entryRuntime = createEntryRuntimeRecorder();
+
+    const summary = await runLiveOpsLiveExecution(createInput({
+      analysisDecision: analysisSummary({ orderIntentCount: 1, decisionCategory: "ORDER_INTENT" }),
+      orderIntents: [createSellOrderIntent()],
+      entryRuntime,
+    }));
+
+    expect(summary).toMatchObject({
+      status: "blocked",
+      ready: false,
+      liveOrderCapable: false,
+      attemptedOrderCount: 0,
+    });
+    expect(summary.checks.map((check) => check.code)).toContain("live_ops_exit_runtime_missing");
+    expect(entryRuntime.submitEntryCandidate).not.toHaveBeenCalled();
+  });
+
+  it("SELL 수량이 보유 scope를 초과하면 exit runtime 호출 전에 차단한다", async () => {
+    const entryRuntime = createEntryRuntimeRecorder();
+    const exitRuntime = createExitRuntimeRecorder();
+
+    const summary = await runLiveOpsLiveExecution(createInput({
+      analysisDecision: analysisSummary({ orderIntentCount: 1, decisionCategory: "ORDER_INTENT" }),
+      orderIntents: [
+        createSellOrderIntent({
+          requestedQuantity: "0.0003",
+          requestedNotional: "30300",
+        }),
+      ],
+      entryRuntime,
+      exitRuntime,
+    }));
+
+    expect(summary).toMatchObject({
+      status: "blocked",
+      ready: false,
+      liveOrderCapable: false,
+    });
+    expect(summary.checks.map((check) => check.code)).toContain("live_ops_order_intent_blocked");
+    expect(JSON.stringify(summary.checks)).toContain("보유 수량");
+    expect(exitRuntime.submitExitOrder).not.toHaveBeenCalled();
+    expect(entryRuntime.submitEntryCandidate).not.toHaveBeenCalled();
+  });
+
+  it("SELL 후보는 최신 position snapshot 수량보다 크면 exit runtime 호출 전에 차단한다", async () => {
+    const entryRuntime = createEntryRuntimeRecorder();
+    const exitRuntime = createExitRuntimeRecorder();
+
+    const summary = await runLiveOpsLiveExecution(createInput({
+      analysisDecision: analysisSummary({ orderIntentCount: 1, decisionCategory: "ORDER_INTENT" }),
+      orderIntents: [
+        createSellOrderIntent({
+          requestedQuantity: "0.0001",
+          requestedNotional: "9900",
+        }),
+      ],
+      entryRuntime,
+      exitRuntime,
+      risk: createRiskInput({
+        positions: [
+          createPositionRiskSnapshot({
+            metadata: {
+              strategy_owned_quantity: "0.00008",
+            },
+          }),
+        ],
+      }),
+    }));
+
+    expect(summary).toMatchObject({
+      status: "blocked",
+      ready: false,
+      liveOrderCapable: false,
+    });
+    expect(summary.checks.map((check) => check.code)).toContain("live_ops_order_intent_blocked");
+    expect(JSON.stringify(summary.checks)).toContain("최신 포지션");
+    expect(exitRuntime.submitExitOrder).not.toHaveBeenCalled();
+    expect(entryRuntime.submitEntryCandidate).not.toHaveBeenCalled();
+  });
+
+  it("SELL 후보는 strategyId 없는 aggregate position snapshot을 전략 소유 수량으로 쓰지 않는다", async () => {
+    const entryRuntime = createEntryRuntimeRecorder();
+    const exitRuntime = createExitRuntimeRecorder();
+    const aggregatePosition = createPositionRiskSnapshot({
+      metadata: {
+        quantity: "0.0001",
+      },
+    });
+    const { strategyId: _strategyId, ...positionWithoutStrategyId } = aggregatePosition;
+
+    const summary = await runLiveOpsLiveExecution(createInput({
+      analysisDecision: analysisSummary({ orderIntentCount: 1, decisionCategory: "ORDER_INTENT" }),
+      orderIntents: [createSellOrderIntent()],
+      entryRuntime,
+      exitRuntime,
+      risk: createRiskInput({
+        positions: [positionWithoutStrategyId],
+      }),
+    }));
+
+    expect(summary).toMatchObject({
+      status: "blocked",
+      ready: false,
+      liveOrderCapable: false,
+    });
+    expect(summary.checks.map((check) => check.code)).toContain("live_ops_order_intent_blocked");
+    expect(JSON.stringify(summary.checks)).toContain("strategy-owned 수량 evidence");
+    expect(exitRuntime.submitExitOrder).not.toHaveBeenCalled();
+    expect(entryRuntime.submitEntryCandidate).not.toHaveBeenCalled();
+  });
+
+  it("명시 id가 없어도 decision key를 stable ops attempt id로 낮춘다", async () => {
+    const entryRuntime = createEntryRuntimeRecorder();
+    const intent = createOrderIntent();
+
+    const summary = await runLiveOpsLiveExecution(createInput({
+      analysisDecision: analysisSummary({ orderIntentCount: 1, decisionCategory: "ORDER_INTENT" }),
+      orderIntents: [intent],
+      entryRuntime,
+    }));
+
+    expect(summary.status).toBe("submitted");
+    expect(summary.attemptId).toMatch(/^ops-[a-f0-9]{26}$/u);
+    expect(summary.attemptId).not.toBe(intent.idempotencyKey);
+    const request = entryRuntime.submitEntryCandidate.mock.calls[0]?.[0];
+    expect(request?.idempotencyKey).toBe(summary.attemptId);
+    expect(request?.candidate.metadata?.decision_idempotency_key).toBe(intent.idempotencyKey);
+  });
+
+  it("autonomous_24x7 BUY attempt id는 제출 tick scope를 포함한다", async () => {
+    const firstRuntime = createEntryRuntimeRecorder();
+    const nextRuntime = createEntryRuntimeRecorder();
+    const intent = createOrderIntent({
+      strategyId: "live_ops_autonomous_24x7_core",
+      idempotencyKey: "autonomous_24x7:2026-06-20:upbit_krw_spot:KRW-BTC:BUY:100000000:0.0001:10000",
+    });
+    const risk = createRiskInput({
+      strategy: {
+        strategyId: "live_ops_autonomous_24x7_core",
+        consecutiveLosses: 0,
+        capturedAt: observedAt,
+      },
+    });
+
+    const firstSummary = await runLiveOpsLiveExecution(createInput({
+      observedAt: "2026-06-20T05:00:00.000Z",
+      orderIntents: [intent],
+      risk,
+      entryRuntime: firstRuntime,
+    }));
+    const nextSummary = await runLiveOpsLiveExecution(createInput({
+      observedAt: "2026-06-20T05:05:00.000Z",
+      orderIntents: [intent],
+      risk,
+      entryRuntime: nextRuntime,
+    }));
+
+    expect(firstSummary.status).toBe("submitted");
+    expect(nextSummary.status).toBe("submitted");
+    expect(firstSummary.attemptId).toMatch(/^ops-[a-f0-9]{26}$/u);
+    expect(nextSummary.attemptId).toMatch(/^ops-[a-f0-9]{26}$/u);
+    expect(firstSummary.attemptId).not.toBe(nextSummary.attemptId);
+    expect(firstRuntime.submitEntryCandidate.mock.calls[0]?.[0].candidate.metadata).toMatchObject({
+      decision_idempotency_key: intent.idempotencyKey,
+      runtime_attempt_scope: "2026-06-20T05:00:00.000Z",
+      runtime_idempotency_source: "live_ops_live_execution_entry_tick",
+    });
+    expect(nextRuntime.submitEntryCandidate.mock.calls[0]?.[0].candidate.metadata).toMatchObject({
+      decision_idempotency_key: intent.idempotencyKey,
+      runtime_attempt_scope: "2026-06-20T05:05:00.000Z",
+      runtime_idempotency_source: "live_ops_live_execution_entry_tick",
+    });
+  });
+
+  it("cleanup_probe placeholder key는 live execution runtime 날짜로 치환한 뒤 attempt id를 만든다", async () => {
+    const firstRuntime = createEntryRuntimeRecorder();
+    const nextRuntime = createEntryRuntimeRecorder();
+    const intent = createCleanupProbeOrderIntent();
+    const firstInput = createInput({
+      observedAt: "2026-06-14T23:59:59.000Z",
+      orderIntents: [intent],
+      entryRuntime: firstRuntime,
+    });
+    const nextInput = createInput({
+      observedAt: "2026-06-15T00:00:01.000Z",
+      orderIntents: [intent],
+      entryRuntime: nextRuntime,
+    });
+
+    const firstSummary = await runLiveOpsLiveExecution({
+      ...firstInput,
+      risk: {
+        ...firstInput.risk,
+        strategy: { ...firstInput.risk.strategy, strategyId: "live_ops_cleanup_probe" },
+      },
+    });
+    const nextSummary = await runLiveOpsLiveExecution({
+      ...nextInput,
+      risk: {
+        ...nextInput.risk,
+        strategy: { ...nextInput.risk.strategy, strategyId: "live_ops_cleanup_probe" },
+      },
+    });
+
+    const firstRequest = firstRuntime.submitEntryCandidate.mock.calls[0]?.[0];
+    const nextRequest = nextRuntime.submitEntryCandidate.mock.calls[0]?.[0];
+    expect(firstRequest?.candidate.metadata).toMatchObject({
+      decision_idempotency_key: "live_ops_cleanup_probe:2026-06-14:upbit_krw_spot:KRW-BTC:BUY:100000000:0.0001:10000",
+      analysis_idempotency_key: intent.idempotencyKey,
+      idempotency_date_scope: "2026-06-14",
+      idempotency_date_source: "live_ops_runtime_preflight",
+    });
+    expect(nextRequest?.candidate.metadata).toMatchObject({
+      decision_idempotency_key: "live_ops_cleanup_probe:2026-06-15:upbit_krw_spot:KRW-BTC:BUY:100000000:0.0001:10000",
+      analysis_idempotency_key: intent.idempotencyKey,
+      idempotency_date_scope: "2026-06-15",
+      idempotency_date_source: "live_ops_runtime_preflight",
+    });
+    expect(firstSummary.attemptId).toMatch(/^ops-[a-f0-9]{26}$/u);
+    expect(nextSummary.attemptId).toMatch(/^ops-[a-f0-9]{26}$/u);
+    expect(firstSummary.attemptId).not.toBe(nextSummary.attemptId);
+  });
+
+  it("cleanup_probe runtime 날짜 정규화는 이미 보존된 원본 analysis key를 덮어쓰지 않는다", async () => {
+    const entryRuntime = createEntryRuntimeRecorder();
+    const originalAnalysisKey = "live_ops_cleanup_probe:runtime_preflight_day:upbit_krw_spot:KRW-BTC:BUY:100000000:0.0001:10000";
+    const runtimeKey = "live_ops_cleanup_probe:2026-06-15:upbit_krw_spot:KRW-BTC:BUY:100000000:0.0001:10000";
+    const intent = {
+      ...createCleanupProbeOrderIntent(),
+      idempotencyKey: runtimeKey,
+      metadata: {
+        expected_loss_bps_of_equity: "5",
+        analysis_idempotency_key: originalAnalysisKey,
+        idempotency_date_scope: "2026-06-15",
+        idempotency_date_source: "live_ops_runtime_preflight",
+      },
+    };
+    const input = createInput({
+      observedAt: "2026-06-15T00:00:01.000Z",
+      orderIntents: [intent],
+      entryRuntime,
+    });
+
+    await runLiveOpsLiveExecution({
+      ...input,
+      risk: {
+        ...input.risk,
+        strategy: { ...input.risk.strategy, strategyId: "live_ops_cleanup_probe" },
+      },
+    });
+
+    const request = entryRuntime.submitEntryCandidate.mock.calls[0]?.[0];
+    expect(request?.candidate.metadata).toMatchObject({
+      decision_idempotency_key: runtimeKey,
+      analysis_idempotency_key: originalAnalysisKey,
+      idempotency_date_scope: "2026-06-15",
+      idempotency_date_source: "live_ops_runtime_preflight",
+    });
+  });
+
   it("시장가나 post-only가 아닌 후보는 하위 runtime 호출 전에 fail-closed 한다", async () => {
     const entryRuntime = createEntryRuntimeRecorder();
 
@@ -177,7 +703,7 @@ describe("production live ops live execution adapter", () => {
 function createInput(
   overrides: Partial<LiveOpsLiveExecutionInput> = {},
 ): LiveOpsLiveExecutionInput {
-  return {
+  const input: LiveOpsLiveExecutionInput = {
     config: defaultLiveOpsConfig,
     analysisDecision: analysisSummary({ orderIntentCount: 1, decisionCategory: "ORDER_INTENT" }),
     orderIntents: [createOrderIntent()],
@@ -204,30 +730,50 @@ function createInput(
       cancelRequotePenaltyBps: "1",
       safetyBufferBps: "10",
     },
-    risk: {
-      account: {
-        equityKrw: "1000000",
-        dailyRealizedPnlBps: "0",
-        weeklyRealizedPnlBps: "0",
-        maxDrawdownBps: "0",
-        capturedAt: observedAt,
-      },
-      positions: [],
-      strategy: {
-        strategyId: "fixture_order_strategy",
-        consecutiveLosses: 0,
-        capturedAt: observedAt,
-      },
-      infrastructureSignals: [],
-      thresholdSnapshot: createRiskThresholdSnapshot(
-        defaultRiskLimitThresholds,
-        observedAt,
-        "live-ops-live-execution.test",
-      ),
-    },
+    risk: createRiskInput(),
     killSwitchActive: false,
     reconcileFresh: true,
     entryRuntime: createEntryRuntimeRecorder(),
+    referencePrice: "100000000",
+    ...overrides,
+  };
+
+  if (overrides.risk === undefined && input.orderIntents[0]?.side === "SELL") {
+    return {
+      ...input,
+      risk: {
+        ...input.risk,
+        positions: [createPositionRiskSnapshot()],
+      },
+    };
+  }
+
+  return input;
+}
+
+function createRiskInput(
+  overrides: Partial<LiveOpsLiveExecutionInput["risk"]> = {},
+): LiveOpsLiveExecutionInput["risk"] {
+  return {
+    account: {
+      equityKrw: "1000000",
+      dailyRealizedPnlBps: "0",
+      weeklyRealizedPnlBps: "0",
+      maxDrawdownBps: "0",
+      capturedAt: observedAt,
+    },
+    positions: [],
+    strategy: {
+      strategyId: "fixture_order_strategy",
+      consecutiveLosses: 0,
+      capturedAt: observedAt,
+    },
+    infrastructureSignals: [],
+    thresholdSnapshot: createRiskThresholdSnapshot(
+      defaultRiskLimitThresholds,
+      observedAt,
+      "live-ops-live-execution.test",
+    ),
     ...overrides,
   };
 }
@@ -258,7 +804,9 @@ function analysisSummary(
   };
 }
 
-function createOrderIntent(): Extract<OrderIntent, { orderType: "LIMIT" }> {
+function createOrderIntent(
+  overrides: Partial<Extract<OrderIntent, { orderType: "LIMIT" }>> = {},
+): Extract<OrderIntent, { orderType: "LIMIT" }> {
   return {
     exchangeId: "upbit_krw_spot",
     market: "KRW-BTC",
@@ -275,6 +823,69 @@ function createOrderIntent(): Extract<OrderIntent, { orderType: "LIMIT" }> {
     metadata: {
       expected_loss_bps_of_equity: "5",
     },
+    ...overrides,
+  };
+}
+
+function createCleanupProbeOrderIntent(): Extract<OrderIntent, { orderType: "LIMIT" }> {
+  return {
+    ...createOrderIntent(),
+    strategyId: "live_ops_cleanup_probe",
+    idempotencyKey: "live_ops_cleanup_probe:runtime_preflight_day:upbit_krw_spot:KRW-BTC:BUY:100000000:0.0001:10000",
+    metadata: {
+      expected_loss_bps_of_equity: "5",
+      idempotency_date_scope: "runtime_preflight_day",
+      idempotency_date_source: "live_ops_runtime_preflight",
+    },
+  };
+}
+
+function createSellOrderIntent(
+  overrides: Partial<Extract<OrderIntent, { orderType: "LIMIT" }>> = {},
+): Extract<OrderIntent, { orderType: "LIMIT" }> {
+  return {
+    exchangeId: "upbit_krw_spot",
+    market: "KRW-BTC",
+    strategyId: "fixture_order_strategy",
+    side: "SELL",
+    orderType: "LIMIT",
+    requestedQuantity: "0.0001",
+    requestedNotional: "9900",
+    requestedPrice: "99000000",
+    idempotencyKey: "decision-fixture-exit-intent",
+    reason: "autonomous_24x7_take_profit",
+    postOnly: true,
+    timeInForce: "POST_ONLY",
+    metadata: {
+      expected_loss_bps_of_equity: "5",
+      position_effect: "EXIT",
+      exit_reason_code: "autonomous_24x7_take_profit",
+      exit_rule_id: "take_profit",
+      position_scope: {
+        market: "KRW-BTC",
+        strategy_id: "fixture_order_strategy",
+        total_quantity: "0.0001",
+      },
+    },
+    ...overrides,
+  };
+}
+
+function createPositionRiskSnapshot(
+  overrides: Partial<LiveOpsLiveExecutionInput["risk"]["positions"][number]> = {},
+): LiveOpsLiveExecutionInput["risk"]["positions"][number] {
+  return {
+    exchangeId: "upbit_krw_spot",
+    market: "KRW-BTC",
+    strategyId: "fixture_order_strategy",
+    notionalKrw: "9900",
+    notionalBpsOfEquity: "99",
+    unrealizedPnlBps: "0",
+    capturedAt: observedAt,
+    metadata: {
+      strategy_owned_quantity: "0.0001",
+    },
+    ...overrides,
   };
 }
 
@@ -303,6 +914,20 @@ function createEntryRuntimeRecorder() {
         },
       };
     }),
+  };
+}
+
+function createExitRuntimeRecorder() {
+  return {
+    submitExitOrder: vi.fn(async (submission: OrderSubmission): Promise<ExecutionSubmitOrderResult> => ({
+      status: "SUBMITTED",
+      submission,
+      brokerOrder: {
+        ...createBrokerOrder(submission),
+        brokerOrderId: "fake-live-exit-order-001",
+        status: "ACCEPTED",
+      },
+    })),
   };
 }
 

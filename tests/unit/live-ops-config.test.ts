@@ -43,6 +43,18 @@ describe("production live ops config/env contract", () => {
         max_open_position_notional_krw: "30000",
         operations_stop_ceiling_krw: "49999",
       },
+      analysis: {
+        decision_policy: {
+          id: "cleanup_probe",
+          cleanup_probe: {
+            max_notional_krw: "10000",
+            tick_size_krw: "1000",
+            price_offset_ticks: 1,
+            quantity_scale: 8,
+            expected_loss_bps_of_equity: "5",
+          },
+        },
+      },
       tui: {
         foreground_enabled: true,
         attach_enabled: true,
@@ -82,6 +94,21 @@ describe("production live ops config/env contract", () => {
     expect(result.ready).toBe(false);
     if (result.ready) throw new Error("expected blocked contract");
     expect(result.errors.join("\n")).toContain("secret-like key");
+  });
+
+  it("decision policy는 정적 cleanup_probe allowlist 밖 값을 허용하지 않는다", () => {
+    const config = loadLiveOpsConfig(defaultLiveOpsConfig);
+
+    expect(() => loadLiveOpsConfig({
+      ...config,
+      analysis: {
+        ...config.analysis,
+        decision_policy: {
+          id: "file_strategy",
+          script_path: "/tmp/strategy.js",
+        },
+      },
+    })).toThrow();
   });
 
   it("legacy milestone env는 production live ops readiness 입력으로 쓰지 않는다", () => {

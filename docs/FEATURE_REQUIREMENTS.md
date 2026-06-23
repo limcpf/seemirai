@@ -822,6 +822,164 @@ Acceptance Criteria:
 - 신규 진입 시장가, 시장가 매도, best order 기본 허용, hard stop open position 자동 시장가 청산.
 - 출금, 입출금 자동화, 선물, 레버리지, 마진, 타인 계정, 신호 판매.
 
+### FR-OPS-006: Live Ops production 경로는 실제 주문 가능한 provider arm과 cleanup evidence로 닫혀야 한다
+
+설명:
+
+- Issue #206은 #196에서 만든 production `live:ops`/TUI 경로를 실제 DB, 실제 Upbit public/private API, 실제 Telegram과 같은
+  lifecycle로 조립하는 단계다.
+- 완료 상태는 fixture smoke, heartbeat-only, dashboard readiness, 가짜 provider summary가 아니라 실제 `KRW-BTC` 소액 주문
+  submit/cancel terminal evidence다.
+- production path는 조건을 통과한 단일 `BUY + LIMIT + post_only` 후보만 `LiveAutonomousEntryRuntime`과 `UpbitLiveBroker` 경계로
+  전진시킨다.
+- 주문이 없거나 차단되는 날도 후보 없음, market data stale, cost/risk/reconcile/budget/kill switch 차단 이유가 DB/TUI/Telegram/status에
+  secret 없이 남아야 한다.
+
+Acceptance Criteria:
+
+- [ ] `live:ops` 운영 실행이 실제 DB와 실제 Upbit/Telegram provider lifecycle을 시작한다.
+- [ ] 운영 실행에서 fixture provider summary나 주문 없는 dashboard 출력만으로 ready를 표시하지 않는다.
+- [ ] Upbit public market data가 DB에 지속 적재되고 TUI에 freshness가 표시된다.
+- [ ] decision pipeline이 실제 market frame을 읽고 HOLD 또는 order intent evidence를 남긴다.
+- [ ] production `analysis.decision_policy`는 정적 allowlist policy id만 허용하고, `cleanup_probe` policy가 검증된 strategy 구현체로
+  조립된다.
+- [ ] order intent가 조건을 통과하면 `LiveAutonomousEntryRuntime`을 거쳐 `UpbitLiveBroker.submitOrder` 경계까지 도달한다.
+- [ ] `BUY + LIMIT + post_only` 외 주문은 provider 호출 전에 fail-closed 된다.
+- [ ] 같은 order attempt/idempotency key 재시작은 duplicate live order를 만들지 않는다.
+- [ ] broker submit 불확실 결과는 재주문이 아니라 reconcile/manual review로 수렴한다.
+- [ ] private read reconcile이 account/order/balance 상태를 읽고 status/TUI/Telegram에 secret 없이 표시한다.
+- [ ] clean-start DB에 완료된 reconcile run이 없으면 production `live:ops`가 계정 전체 미체결 주문과 actual private read 결과를
+  `LIVE_OPS_PRIVATE_READ_PREFLIGHT` DB evidence로 저장하고, 기존 mismatch/manual review 상태는 덮어쓰지 않는다.
+- [ ] PnL snapshot이 없거나 stale이면 production `live:ops`가 fresh clean reconcile/balance source로
+  `live_ops_cleanup_probe` `CALCULATED` PnL snapshot을 append-only 생성하고 다시 읽는다. PARTIAL/manual-review/status 미완료 PnL row,
+  open order, mismatch, stale reconcile, position/reference price 결측은 새 0원 snapshot으로 덮지 않고 broker 제출 전 fail-closed 한다.
+- [ ] 기존 clean reconcile 뒤 현재 private read에서 계정 전체 미체결 주문이 발견되면 가격 또는 원 주문 수량이 없는 주문까지
+  `remaining_volume` 기반 manual-review evidence로 저장하고 신규 cleanup 주문을 차단한다.
+- [ ] submitted/cancel_requested 상태의 open order는 현재 live execution identity와 일치하는 1건만 tracked로 인정하며, preflight
+  manual-review 차단은 노출 금액과 Telegram owner alert를 보존한다.
+- [ ] Telegram startup/live order capable/order submitted/cancel confirmed/manual review 알림이 실제 owner chat으로 전송된다.
+- [ ] TUI가 실제 live armed/order capable 상태와 주문/취소/차단 상태, preflight/reconcile 차단 사유를 secret 없이 보여준다.
+- [ ] 실제 KRW-BTC 소액 실거래 cleanup run이 `submit -> cancel requested -> terminal cancel 확인 -> open exposure 0`으로 닫힌다.
+- [ ] crash 0회, unhandled rejection 0회, duplicate order 0건, reconcile mismatch 0건, untracked fill 0건, live order cleanup failure 0건을
+  증명한다.
+- [ ] dry-run, heartbeat-only, fixture-only, 주문 없는 dashboard 출력만으로 완료 선언하지 않는다.
+
+테스트 요구사항:
+
+- 단위 테스트: production boot sequence가 실제 provider arm에서 config/env validation, DB readiness, public market data, private probe,
+  Telegram startup, reconcile/PnL/status readiness, decision, live execution 순서를 지키는지 확인한다.
+- 단위 테스트: decision policy resolver가 임의 code path 없이 `cleanup_probe`를 정적 strategy로 조립하고, 최신 orderbook에서 단일
+  `BUY + LIMIT + POST_ONLY` order intent 또는 HOLD/BLOCK evidence를 만든다.
+- 단위 테스트: 단일 `BUY + LIMIT + post_only` 후보만 live autonomous runtime으로 전달되고 나머지 주문 유형은 fail-closed 되는지 확인한다.
+- 통합 테스트: fake Upbit public/private provider와 fake Telegram dispatch로 submit/cancel/reconcile summary contract를 검증한다.
+- script smoke: fixture smoke는 외부 DB/provider 호출 0회를 유지하고, 실제 provider arm flag 없이는 live order side effect를 만들지
+  않는지 확인한다.
+- 실제 운영 검증: 저장소 밖 credential/evidence가 준비된 환경에서 `docs/runbooks/live-ops-real-arm-cleanup.md` 절차로 submit/cancel
+  terminal artifact를 생성한다.
+- closeout validator: `node scripts/run-live-ops-real-arm-closeout.mjs --fixture-smoke --json`은 live/API side effect 없이 contract를
+  검증하고, 운영 guard 없는 실행은 credential/evidence 부재 blocker를 skipped summary로 남긴다.
+- closeout validator: guarded manifest는 실제 존재하는 저장소 밖 config/env 파일, `자산조회`/`주문조회`/`주문하기`만 허용된 key scope
+  safe summary, `rg -n` 기반 금지 주문/secret scan 명령, 미래가 아닌 submit/cancel timestamp, placeholder가 아닌 같은 주문 suffix
+  evidence를 요구한다.
+- closeout validator: guarded manifest의 command는 추가/중복 인자 없는 정확한 foreground 실행이어야 하며, config/env/artifact는
+  symlink를 따라간 실제 경로도 저장소 밖이어야 한다. artifact safe summary가 실패 상태, 미취소 terminal state, 남은 exposure/counter를
+  보고하면 manifest 값과 충돌하므로 실패해야 한다.
+- closeout validator: guarded manifest 파일 자체도 realpath 기준 저장소 밖이어야 하며, source/security scan 명령은 `src scripts config docs`
+  전체 범위를 실제 `rg -n`으로 스캔해야 한다. 중첩 artifact 값과 `raw_provider_payload`/`raw_order_detail` 형태도 검증 대상이다.
+- closeout validator: 저장소 경계는 validator 실행 위치가 아니라 repository root 기준이며, 배열 안 artifact record와 `skipped`/`blocked`
+  status도 closeout 충돌로 본다. JSON redaction placeholder 뒤에 원문이 붙은 값은 secret leak으로 실패해야 한다.
+- source/security scan: 시장가/best order, 출금/입금, 선물/레버리지, raw secret, raw provider payload 후보가 production 경로에서
+  열리지 않았는지 확인한다.
+
+문서 요구사항:
+
+- `docs/exec-plans/active/2026-06-15-issue-206-live-ops-real-arm.md`가 sub PR 순서, DnD, 검증 방법, closeout 기준을 추적한다.
+- 실제 cleanup 절차는 `docs/runbooks/live-ops-real-arm-cleanup.md`를 따른다.
+- provider arm, decision policy, Telegram, reconcile, cleanup 기준이 바뀌면 `docs/RUNTIME_CONFIG.md`, `docs/RELIABILITY.md`, `docs/SECURITY.md`,
+  `docs/product-specs/upbit-live-autonomous-trading.md`, 관련 runbook과 active/completed exec plan을 함께 갱신한다.
+
+제외 범위:
+
+- BTC 외 market 기본 활성화, 자동 budget 확대, M24 scaled 운영.
+- 신규 진입 시장가, 시장가 매도, best order 기본 허용.
+- hard stop 시 open position 자동 시장가 청산.
+- 출금, 입출금 자동화, 선물, 레버리지, 마진, 타인 계정, 신호 판매.
+- Web 백오피스와 Telegram public webhook endpoint.
+- LLM 직접 매수/매도 판단.
+- secret 원문이나 raw provider payload를 issue, PR, log, artifact에 기록하는 작업.
+
+### FR-OPS-007: Live Ops는 24/7 자동 매수/보유/매도 loop를 제공해야 한다
+
+설명:
+
+- Issue #206 real-arm cleanup은 실거래 경계 검증을 닫았지만, 운영자가 기대한 24/7 자동매매는 entry와 exit가 모두 있어야 한다.
+- production `live:ops`는 cleanup canary와 별개로 장시간 daemon loop를 제공하고, 보유 포지션이 있으면 매도/축소 판단을 entry보다
+  먼저 수행해야 한다.
+- 실행 전에 수동 fixture manifest, hand-written evidence, JSONL 후보 파일을 요구하지 않는다. config/env만으로 시작하고, 필요한
+  artifact와 decision evidence는 runtime이 자동 생성한다.
+- 전략은 정적 allowlist registry와 config parameter로 조립한다. 임의 코드 경로, 동적 import, 원격 plugin, 저장소 밖 strategy 코드는
+  허용하지 않는다.
+
+Acceptance Criteria:
+
+- [x] `corepack pnpm live:ops:daemon -- --config <운영-json-path> --env-file <운영-env-path> --tui`가 24/7 loop를 시작한다.
+- [x] `live:ops:daemon` production 실행은 fixture manifest, hand-written evidence, 수동 JSONL 후보 파일을 요구하지 않는다.
+- [x] loop tick은 config/env validation, DB readiness, market data freshness, private read reconcile, PnL/status, decision, live execution,
+  Telegram/status summary 순서를 지킨다.
+- [x] 보유 포지션이 있으면 exit policy가 entry policy보다 먼저 평가된다.
+- [x] exit policy는 take profit, stop loss, trailing stop, max holding time, risk reduction rule을 독립 rule로 조립한다.
+- [x] exit policy는 strategy reservation 기록으로 확인된 자동 전략 소유 수량만 SELL 대상으로 삼고, 수동 보유 BTC는 자동 축소하지 않는다.
+- [x] exit 체결 closeout은 runtime이 저장소 밖 artifact로 자동 기록하고, FILLED SELL 수량은 strategy-owned 수량에서 차감한다.
+- [x] trailing stop은 tick마다 새 entry/current price만 보지 않고, runtime position state에 저장된 high-water price를 보존한다.
+- [x] risk-reduction 기준보다 작은 소액 보유분도 take profit, stop loss, trailing stop, max holding time 조건이면 exit intent를 만들 수 있다.
+- [x] exit intent는 보유 수량 이하의 `SELL + LIMIT + POST_ONLY`만 허용하고, 시장가 매도와 hard-stop 자동 시장가 청산은 금지한다.
+- [x] entry strategy는 조건이 약하면 주문을 만들지 않고 HOLD evidence를 남긴다.
+- [x] feature provider가 아직 붙지 않은 production tick도 fresh public tick의 reference-price edge로 entry feature를 산출하되, tight spread만으로는 BUY 후보를 만들지 않는다.
+- [x] entry intent는 `KRW-BTC`, `BUY`, `LIMIT`, `POST_ONLY`, 10,000 KRW 이하만 허용한다.
+- [x] autonomous preflight PnL/status와 preflight PnL closeout은 `live_ops_cleanup_probe`가 아니라 활성 autonomous strategy scope를 사용한다.
+- [x] strategy registry는 `cleanup_probe`와 production 24/7 strategy를 분리하고, 새 strategy를 나중에 allowlist로 추가/교체할 수 있다.
+- [x] strategy는 broker, Upbit client, DB connection, Telegram dispatcher를 직접 호출하지 않는다.
+- [x] stale market data, stale PnL, reconcile mismatch, open order, budget 초과, kill switch, Telegram owner alert 불능은 broker 호출 전에
+  fail-closed 된다.
+- [x] 미체결 entry/exit order는 bounded cancel/requote 또는 manual review로 닫히고, terminal 확인 실패는 성공으로 표시하지 않는다.
+- [x] TUI/Telegram/status는 한국어로 현재 상태, 보유/현금 판단 이유, 최근 entry/exit decision, open exposure, PnL, 필요한 조치를
+  보여준다.
+- [x] `live:ops:tui --attach`는 daemon top-level `transient_failure`를 stale `latestSummary`보다 우선해 차단 상태로 표시한다.
+- [x] 24시간 run summary는 crash 0회, unhandled rejection 0회, duplicate order 0건, reconcile mismatch 0건, untracked fill 0건,
+  live order cleanup failure 0건을 자동 산출한다.
+
+테스트 요구사항:
+
+- 단위 테스트: strategy registry가 허용 strategy만 조립하고 동적 코드 경로를 거부한다.
+- 단위 테스트: 보유 포지션이 있으면 exit evaluation이 entry evaluation보다 먼저 실행된다.
+- 단위 테스트: take profit, stop loss, trailing stop, max holding time, risk reduction rule이 각각 SELL intent 또는 HOLD/BLOCK을 만든다.
+- 단위 테스트: strategy 소유 기록 없는 지갑 BTC는 자동 SELL이 아니라 BLOCK으로 닫힌다.
+- 단위 테스트: risk-reduction 기준보다 작은 strategy-owned 포지션도 take-profit 조건이면 SELL intent를 만든다.
+- 단위 테스트: FILLED autonomous SELL cleanup은 strategy-owned 수량에서 차감되고, 이전 reservation만으로 수동 BTC를 자동 소유로 보지 않는다.
+- 단위 테스트: position state가 trailing stop high-water를 tick 간 보존한다.
+- 단위 테스트: 외부 feature 주입 없이 fresh public tick reference edge가 있으면 entry 후보를 만들고, tight spread만 있으면 HOLD한다.
+- 단위 테스트: autonomous order intent의 PnL provider/closeout 호출이 autonomous strategy scope로 수행된다.
+- 단위 테스트: daemon attach는 top-level transient failure를 stale ready latestSummary보다 우선 표시한다.
+- 단위 테스트: exit intent가 보유 수량을 초과하거나 시장가/best order이면 broker 호출 전에 차단된다.
+- 단위 테스트: daemon loop가 success, HOLD, BLOCK, manual review, transient failure에 대해 각각 다른 sleep/backoff 정책을 적용한다.
+- 통합 테스트: fake provider/fake broker/fake Telegram으로 entry 체결, 보유, exit 제출, cancel/requote, terminal close summary를 검증한다.
+- script smoke: `corepack pnpm live:ops:daemon -- --config config/live-ops.example.json --env-file tests/fixtures/live-ops/fake.env --fixture-smoke --duration-ms 1000 --tui`
+  가 외부 DB/provider/order side effect 없이 loop contract를 검증한다.
+
+문서 요구사항:
+
+- `docs/runbooks/live-ops-24x7-autonomous.md`가 실행 명령, strategy 교체성, entry/exit DnD, 중지 기준을 설명한다.
+- provider arm, strategy registry, daemon loop, exit execution 기준이 바뀌면 `docs/RUNTIME_CONFIG.md`, `docs/RELIABILITY.md`,
+  `docs/SECURITY.md`, `docs/product-specs/upbit-live-autonomous-trading.md`, active plan을 함께 갱신한다.
+
+제외 범위:
+
+- 수익 보장, 투자 자문, 타인 자금 운용, 신호 판매.
+- BTC 외 market 기본 활성화, 자동 budget 확대, M24 scaled 운영.
+- 신규 진입 시장가, 시장가 매도, best order 기본 허용.
+- hard stop open position 자동 시장가 청산.
+- LLM 직접 매수/매도 판단.
+
 ### FR-LLM-001: LLM은 직접 매매 판단에 사용하지 않는다
 
 설명:

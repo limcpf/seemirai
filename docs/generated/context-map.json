@@ -135,6 +135,20 @@
       "owner_scope": "docs/runbooks"
     },
     {
+      "path": "docs/runbooks/live-ops-real-arm-cleanup.md",
+      "kind": "reference",
+      "role": "Issue #206 production live ops 실제 provider arm과 단일 소액 주문 submit/cancel cleanup evidence 절차",
+      "read_when": ["issue #206 구현", "Live Ops 실거래 arm", "live ops cleanup run", "Upbit submit cancel evidence", "production live ops provider arm"],
+      "owner_scope": "docs/runbooks"
+    },
+    {
+      "path": "docs/runbooks/live-ops-24x7-autonomous.md",
+      "kind": "reference",
+      "role": "Issue #206 production live ops 24/7 자동 매수/보유/매도 운영 절차와 중지 기준",
+      "read_when": ["issue #206 구현", "Live Ops 24/7 자동매매", "live ops daemon", "자동 매수 매도", "entry exit strategy"],
+      "owner_scope": "docs/runbooks"
+    },
+    {
       "path": "docs/DESIGN.md",
       "kind": "policy",
       "role": "구조 변경과 설계 기록 작성 기준",
@@ -265,6 +279,13 @@
       "kind": "exec-plan",
       "role": "Issue #196 Live Ops 원클릭 앱과 TUI 필수 운영 콘솔 sub PR 실행 계획",
       "read_when": ["issue #196 구현", "Live Ops 원클릭 앱", "TUI 운영 콘솔", "production live ops config", "sub PR 계획 확인"],
+      "owner_scope": "docs/exec-plans/active"
+    },
+    {
+      "path": "docs/exec-plans/active/2026-06-15-issue-206-live-ops-real-arm.md",
+      "kind": "exec-plan",
+      "role": "Issue #206 production live ops 실거래 arm과 소액 주문 submit/cancel cleanup evidence 실행 계획",
+      "read_when": ["issue #206 구현", "Live Ops 실거래 arm", "production live ops provider arm", "sub PR 계획 확인", "cleanup evidence 확인"],
       "owner_scope": "docs/exec-plans/active"
     },
     {

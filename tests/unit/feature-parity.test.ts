@@ -120,7 +120,7 @@ describe("M11 backtest/paper feature parity", () => {
     expect(backtestSnapshot).toEqual(paperSnapshot);
     expect(backtestSnapshot.status).toBe("failed");
     expect(backtestSnapshot.features).toEqual({});
-    expect(backtestSnapshot.failureReasons).toHaveLength(13);
+    expect(backtestSnapshot.failureReasons).toHaveLength(15);
     expect(
       backtestSnapshot.failureReasons.every(
         (failure) =>

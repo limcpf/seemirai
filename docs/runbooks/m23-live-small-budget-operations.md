@@ -4,6 +4,9 @@
 호출할 수 있는 live-armed 상태에서 운영자가 상태, 판단 이유, 주문/취소/체결/차단, 중지/복구 evidence를 secret 없이 확인할 수
 있게 하는 것이다.
 
+Issue #206 production `live:ops` 실제 arm과 단일 submit/cancel cleanup 절차는 [`live-ops-real-arm-cleanup.md`](./live-ops-real-arm-cleanup.md)를
+따른다. 이 runbook의 7일 안정화는 cleanup evidence 이후 장기 운영 안정화를 닫는 기준으로 유지한다.
+
 ## 범위
 
 - 대상 모드: `LIVE_AUTONOMOUS_SMALL_BUDGET`

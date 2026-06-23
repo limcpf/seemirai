@@ -324,7 +324,10 @@ endpoint가 공통으로 사용할 인증 guard만 고정한다.
 - daily report: `jobs`의 `report.daily` 최신 row에서 읽은 last status, report date, next run time, updated time,
   조회 상태의 한국어 label/message/action
 - PnL: `pnl_snapshots`의 최신 safe summary에서 평가자산, 실현/미실현 손익, drawdown, snapshot count,
-  조회 상태의 한국어 label/message/action
+  조회 상태의 한국어 label/message/action. production 실주문 preflight의 손실 증거로 쓰려면 `readStatus=OK`뿐 아니라
+  `CALCULATED` snapshot status와 provider read 완료 후 시각 기준 30초 freshness를 함께 만족해야 한다. `OK`, `SUCCESS`,
+  `COMPLETE`, `COMPLETED`는 read/job/reconcile 계층 상태이지 snapshot 완료 status가 아니며, `PARTIAL`/manual-review/unavailable/status
+  누락 snapshot은 0 손실로 보정하지 않는다. preflight 시작 직후 PnL worker가 새 snapshot을 쓰는 정상 경합은 1초 이내 future skew만 허용한다.
 
 `/status`는 `secrets`, local control token, Telegram token, raw headers, raw order detail, raw position detail을 반환하지 않는다.
 kill switch가 `NEW_ORDERS_BLOCKED` 또는 `HARD_STOP` 같은 active 상태여도 `/readyz` 실패로 표현하지 않고
@@ -722,6 +725,7 @@ Issue #196은 M22/M23 pilot runner를 실운영 주경로로 쓰지 않고, `liv
 - live execution adapter: `src/runtime/live-ops-live-execution.ts`
 - Telegram alert mapper: `src/runtime/live-ops-telegram-alerts.ts`
 - CLI/TUI reconcile/PnL/status summary: `scripts/run-live-ops-support.mjs`
+- PnL closeout runner: `scripts/run-live-ops-pnl-closeout.mjs`, `scripts/run-live-ops-pnl-closeout-support.mjs`
 - script skeleton: `scripts/run-live-ops.mjs`, `scripts/run-live-ops-tui.mjs`
 - 예시 JSON: `config/live-ops.example.json`
 - 예시 env: `config/live-ops.env.example`
@@ -729,6 +733,8 @@ Issue #196은 M22/M23 pilot runner를 실운영 주경로로 쓰지 않고, `liv
   `corepack pnpm live:ops -- --config <운영-json-path> --env-file <운영-env-path> --tui`
 - attach command:
   `corepack pnpm live:ops:tui -- --config <운영-json-path> --env-file <운영-env-path> --attach <run-id|socket|status-source>`
+- PnL closeout command:
+  `corepack pnpm live:ops:pnl-closeout -- --env-file <운영-env-path> --market KRW-BTC --strategy-id live_ops_cleanup_probe --json`
 
 JSON config에는 다음처럼 secret이 아닌 운영 정책만 둔다.
 
@@ -763,10 +769,16 @@ production live ops path에서 다음 legacy milestone/test env는 readiness 입
 디스크 migration 기준만 확인하며, 실제 실행에서는 `SEEMIRAI_DATABASE_URL`로 read-only 연결 probe와 `schema_migrations` 적용 이력을
 조회한다. pending migration, missing table, unknown applied migration, checksum drift는 live worker boot 전에 fail-closed 한다.
 
-`live:ops -- --tui`와 `live:ops:tui -- --attach ...`는 같은 secret-safe TUI dashboard renderer를 사용한다. 첫 화면은 모드, 시장,
-실주문 가능 여부, DB readiness/schema version, worker 상태, 예산, 최근 관측 상태, 필요 조치를 한국어로 표시하고, env file 경로,
-credential, raw provider payload, raw config enum은 노출하지 않는다. fixture smoke dashboard는 외부 DB/provider를 호출하지 않았음을
-표시하고, 후속 provider 연결 전에는 신규 실주문이 제출되지 않는 상태로 고정한다.
+`live:ops -- --tui`와 `live:ops:tui -- --attach ...`는 같은 secret-safe TUI dashboard renderer를 사용한다. 단, attach TUI는 기존 실행
+상태를 읽는 화면이므로 non-fixture에서도 foreground boot sequence, Upbit public/private provider, live broker, cleanup lifecycle,
+Telegram dispatch를 새로 시작하지 않는다. non-fixture attach 대상은 기존 foreground 실행이 남긴 JSON status source여야 하며, source를
+읽지 못하거나 필수 summary 항목이 없으면 정상 dashboard를 합성하지 않고 fail-closed 한다. `--attach` 인자는 `live:ops:tui`에서만 허용하고
+foreground `live:ops` 명령에서는 성공 처리하지 않는다. attach 화면은 새 주문 side effect가 없다는 실행 형태를 따로 표시하되, 원본
+foreground summary의 실주문 가능 여부는 그대로 보여준다. 단, attach source의 `liveOrderCapable`은 boolean이어야 하며 문자열/숫자 값은
+정상 dashboard로 표시하지 않는다. 첫 화면은 모드, 시장, 실주문 가능 여부, DB readiness/schema version, worker 상태,
+예산, 최근 관측 상태, 필요 조치를 한국어로 표시하고, env file 경로, credential, raw provider payload, raw config enum은 노출하지 않는다.
+fixture smoke dashboard는 외부 DB/provider를 호출하지 않았음을 표시하고, 후속 provider 연결 전에는 신규 실주문이 제출되지 않는 상태로
+고정한다.
 
 `LiveOpsMarketDataCollector`는 `UPBIT_PUBLIC` production event source를 기존 DB-backed `MarketDataRuntimeEventStore`에 저장한다.
 collector는 config를 다시 `LiveOpsConfig`로 해석하고 KRW-BTC 단일 universe, `upbit_krw_spot` exchange, trade/orderbook/status event
@@ -775,17 +787,86 @@ analysis/decision lifecycle로 전진시키지 않는다.
 
 fixture smoke dashboard는 외부 Upbit/DB 호출 없이 collector summary shape를 검증하고 `체결 1 / 호가 1 / 상태 1` 저장 확인을 표시한다.
 `LiveOpsAnalysisDecisionPipeline`은 market data collector summary, market event window, feature snapshot, strategy 목록을 같은
-runtime 경계에서 묶는다. market data가 준비되지 않았거나 feature snapshot이 실패하면 strategy를 평가하지 않고 HOLD/차단 summary로
-닫는다. feature가 통과하면 주입된 strategy들을 KRW-BTC/upbit_krw_spot context로 평가하고 order intent 수, HOLD/BLOCK count,
-`record_hold_decision` 여부를 secret-safe summary로 반환한다. 이 pipeline은 DB write, broker 호출, Upbit 호출, Telegram 전송을 하지
-않는다.
+runtime 경계에서 묶는다. market data가 준비되지 않았거나 feature 의존 strategy의 feature snapshot이 실패하면 strategy를 평가하지
+않고 HOLD/차단 summary로 닫는다. `cleanup_probe`처럼 `requiredFeatures=[]`인 policy는 fresh orderbook만으로 후보를 만들 수 있어야
+하므로 feature snapshot 실패를 0으로 보정하지 않고 `live_ops_feature_snapshot_not_required` evidence와 함께 strategy를 평가한다.
+feature가 통과하거나 featureless policy 우회 조건이 충족되면 주입된 strategy들을 KRW-BTC/upbit_krw_spot context로 평가하고 order
+intent 수, HOLD/BLOCK count, `record_hold_decision` 여부를 secret-safe summary로 반환한다. raw `OrderIntent`는 status/TUI/JSON
+summary에 직렬화하지 않고, pipeline 결과 객체의 non-enumerable `orderIntents` 채널 또는 CLI 내부 symbol 채널로 같은 decision tick의
+live execution 입력에만 전달한다. 이 pipeline은 DB write, broker 호출, Upbit 호출, Telegram 전송을 하지 않는다.
 
-`LiveOpsLiveExecution`은 analysis/decision summary와 order intent, 최신 budget/loss/cost/risk/reconcile snapshot을 기존
-`LiveAutonomousEntryRuntime` 요청으로 낮추는 adapter다. analysis가 blocked이거나 HOLD로 주문 후보가 0개이면 하위 runtime 호출 없이
-idle/blocked summary로 닫는다. 주문 후보가 있더라도 첫 production 경계에서는 한 tick에 단일 `BUY + LIMIT + post_only` 후보만
-허용하고, market allowlist, `upbit_krw_spot`, strategy/risk scope가 맞지 않으면 live autonomous runtime 호출 전에 fail-closed 한다.
-조건을 통과한 후보는 manual JSONL 없이 `LiveAutonomousEntryRuntime.submitEntryCandidate`로 전달되며, durable budget reservation,
-RiskGate 재검증, broker submit, alert dispatch side effect는 해당 하위 runtime 경계에서만 발생한다.
+production cleanup reservation은 저장소 밖 artifact 디렉터리에 attempt 파일을 남기기 전, 같은 날짜의 `reservation-daily-YYYY-MM-DD.lock`
+파일을 원자적으로 선점한다. lock 안에서 현재 reservation 파일 집계, open position snapshot, 요청 금액을 다시 합산해 일일 자동 주문 예산을
+넘으면 attempt reservation을 만들지 않고 broker 제출 전 fail-closed 한다. lock이 이미 잡혀 있으면 다른 live ops 실행이 예산을 선점 중인
+상태로 보고 신규 실주문을 제출하지 않는다. lock 파일에는 `leaseId`, `acquiredAt`, `expiresAt`, `pid`, owner boot id, process start time
+lease metadata를 기록한다. 기본 lease TTL은 5분이며, acquire는 temp 파일에 완성된 lease JSON을 쓴 뒤 hard link로 lock path를 선점한다.
+후속 실행은 owner process fingerprint가 더 이상 살아 있지 않은 만료 lock만 hard-link claim/CAS 절차로 회수해 같은 날짜 운영이 crash로 영구
+차단되지 않게 한다. 이 CAS는 target을 비우기 전에 fingerprint, inode, link count를 확인하므로 fresh lock을 claim 중 target에서 제거하지
+않는다. crash로 남은 같은 inode의 orphan claim/tmp hard link는 CAS 전에 정리해 nlink 고착을 풀 수 있다. 기존 버전이나 외부 손상으로 생긴
+malformed lock, 필수 lease field가 빠진 valid JSON lock은 파일 mtime 기준 TTL을 지난 뒤에만 같은 CAS 절차로 회수한다. owner boot id 또는
+process start time을 lock 생성 시점에 기록할 수 없으면 lock 획득을 중단한다. owner 조회가 권한/환경 문제로 불확실하면 active owner로
+fail-closed 하고, zombie 상태가 확인되면 stale owner로 본다.
+
+production preflight private read는 key scope guard 뒤에서만 열린다. `SEEMIRAI_UPBIT_KEY_SCOPE`에 출금/입금, 선물, 레버리지, 마진 또는
+알 수 없는 scope가 포함되면 broker/private read runtime 생성 전 단계에서 닫는다. 이 경우 잔고/미체결 주문 조회도 호출하지 않고
+live execution의 broker guard 차단으로 수렴한다.
+
+Sub PR 06부터 production `analysis.decision_policy`는 정적 allowlist policy id만 허용한다. 기본 policy는 `cleanup_probe`이며,
+config JSON에는 다음 non-secret 값만 둔다.
+
+- `analysis.decision_policy.id=cleanup_probe`
+- `analysis.decision_policy.cleanup_probe.max_notional_krw=10000`
+- `analysis.decision_policy.cleanup_probe.tick_size_krw=1000`
+- `analysis.decision_policy.cleanup_probe.price_offset_ticks=1`
+- `analysis.decision_policy.cleanup_probe.quantity_scale=8`
+- `analysis.decision_policy.cleanup_probe.expected_loss_bps_of_equity=5`
+
+policy resolver 구현 경계는 `src/runtime/live-ops-decision-policy.ts`다. resolver는 config를 `LiveOpsConfig`로 다시 검증하고,
+`cleanup_probe` 같은 허용 policy를 정적 `Strategy[]`로 조립한다. 임의 파일 경로, 동적 import, 원격 plugin, 저장소 밖 strategy 코드는
+허용하지 않는다. resolver와 strategy 평가는 DB write, broker 호출, Upbit 호출, Telegram 전송 side effect를 만들지 않는다.
+
+`cleanup_probe`는 수익 전략이 아니라 Issue #206 closeout lifecycle을 증명하기 위한 one-shot probe다. 최신 DB-backed market frame의
+orderbook에서 best bid를 읽고, configured tick offset만큼 낮춘 `BUY + LIMIT + POST_ONLY` 후보를 만든다. orderbook이 없거나 가격/수량/
+명목금액이 최소 주문금액, 예산, 호가 단위, `KRW-BTC` 단일 universe 조건을 만족하지 못하면 주문 후보 없이 HOLD/BLOCK evidence로 닫는다.
+cleanup probe decision key는 같은 날짜 안의 재시작 멱등성을 유지하되, 날짜 scope를 포함해 전날 reservation 파일이 다음 날 신규 cleanup
+attempt를 영구 차단하지 않게 한다. production CLI helper는 최신 market heartbeat가 아니라 제출 직전 wall clock에서 날짜 scope를
+계산하고, TypeScript `cleanup_probe` strategy는 `StrategyContext.observedAt` 날짜 scope를 key와 metadata에 포함한다.
+
+`LiveOpsLiveExecution`은 analysis/decision safe summary와 내부 order intent 입력, 최신 budget/loss/cost/risk/reconcile snapshot을 실행
+경계 입력으로 낮추는 adapter다. analysis가 blocked이거나 BLOCK decision이면 하위 runtime 호출 없이 blocked summary로 닫고, HOLD로 주문
+후보가 0개이면 idle summary로 닫는다. 주문 후보가 있더라도 첫 production 경계에서는 한 tick에 단일 후보만 허용한다.
+
+BUY 후보는 `BUY + LIMIT + post_only`만 허용하고, market allowlist, `upbit_krw_spot`, strategy/risk scope가 맞지 않으면
+`LiveAutonomousEntryRuntime.submitEntryCandidate` 호출 전에 fail-closed 한다. public adapter는 strategy의 긴 decision idempotency key를
+Upbit identifier 길이에 맞는 stable `ops-<sha256-prefix>` attempt id로 낮춰 재시작 후 같은 cleanup 후보가 새 random identifier를 만들지
+않게 한다. 조건을 통과한 BUY 후보는 manual JSONL 없이 entry runtime으로 전달되며, durable budget reservation, RiskGate 재검증, broker
+submit, alert dispatch side effect는 해당 하위 runtime 경계에서만 발생한다.
+
+SELL 후보는 `SELL + LIMIT + post_only`, `position_effect=REDUCE|EXIT`, `exit_reason_code`, `exit_rule_id`, position scope를 요구한다.
+requested quantity가 position scope의 보유 수량을 초과하거나 `EXIT`인데 전체 수량과 일치하지 않으면 `exitRuntime.submitExitOrder` 호출 전에
+fail-closed 한다. 통과한 SELL 후보는 adapter가 `exit_cost_model` cost evidence와 RiskGate evidence를 자동 생성한 뒤 exit runtime port로만
+전달한다. SELL은 entry runtime으로 우회하지 않는다.
+
+production preflight는 미체결 주문뿐 아니라 현재 `KRW-BTC` 보유 잔고도 reference price로 평가해 `openPositionNotionalKrw`와 RiskGate
+`positions`에 포함한다. 보유 잔고가 있는데 평가 기준가가 없으면 open position 한도 과소평가 위험이 있으므로 broker 제출 전 차단한다.
+PnL/status worker가 `OK` + `CALCULATED` snapshot을 제공하지 않으면 realized loss를 0으로 보정하지 않고 loss snapshot 결측으로 제출 전
+fail-closed 한다. 단, production preflight가 clean/fresh reconcile과 잔고 snapshot을 확보했고 최신 PnL row가 PARTIAL/manual-review가 아니라
+결측 또는 stale인 경우에는 같은 tick에서 PnL closeout runner를 실행해 `live_ops_cleanup_probe` scope의 `CALCULATED` row를 append-only로
+생성한 뒤 provider를 다시 읽는다. runner는 open order/mismatch/manual review/stale reconcile, 최신 PnL row의 status 미완료, BTC 잔고
+대비 position snapshot 결측 또는 0수량 position, position 수량 대비 BTC balance row 결측, stale/결측 기준가를 만나면 새 PnL row를 만들지
+않고 기존 fail-closed 상태를 보존한다. position 수량과 거래소 BTC 잔고가 다르거나 양수 position 평균단가가 0이어도 원가/잔고 source가
+불확실하므로 차단한다. 잔량이 null인 open order도 미체결 주문으로 세고, production reconcile provider도 같은 집계를 사용한다. cleanup row가
+없어도 global/aggregate 최신 PnL row가 status 미완료이면 새 cleanup `CALCULATED` row로 가리지 않는다. 같은 reconcile run 안의 중복 balance row는 currency별 최신 snapshot만 사용한다. clean reconcile DB evidence도 production
+preflight 실행 wall clock 기준 30초 freshness를 넘으면 stale로 보고 같은 tick의 private read preflight reconcile evidence를 새로 기록한다.
+market heartbeat 시각은 market data 관측 evidence로만 쓰며, 일일 예산 기준일과 reconcile freshness 기준일을 대신하지 않는다. recorder가
+없거나 갱신 뒤에도 fresh clean evidence가 아니면 reconcile freshness guard가 broker 제출을 닫는다.
+
+cleanup probe는 broker 제출 성공을 최종 성공으로 보지 않는다. 같은 runtime이 받은 주문 uuid로 취소 요청을 보낸 뒤 terminal cancel
+polling을 수행하고, cancel 요청 이후 poll이 provider 오류나 rate-limit로 실패해도 summary만 반환하지 않는다. 이 경우 `manual_review_required`
+cleanup artifact에 cancel 요청 시각, redacted broker order suffix, terminal 조회 실패 사유, provider-safe `status`/Upbit error name 요약을
+남겨 closeout/manual review가 거래소 side effect를 추적할 수 있게 한다. post-cleanup reconcile/PnL/status summary의 `budgetUsedKrw`는
+preflight snapshot 값만 쓰지 않고, daily reservation lock 안에서 읽은 최신 일일 reservation 합계와 현재 attempt reservation을 더한 값을
+하한으로 사용한다. private read 실패나 malformed 응답 경로도 같은 하한을 보존한다.
 
 fixture smoke dashboard는 analysis/decision을 `보류 / 주문 후보 0 / 전략 1`, live execution을 `후보 없음 / broker 제출 0`으로 표시한다.
 reconcile/PnL/status summary는 같은 fixture lifecycle에서 open order, 예산 사용, 노출, PnL 관측 상태를 secret-safe shape로 묶는다.
@@ -802,6 +883,30 @@ application alert/cooldown/retry/Telegram formatter 경계에 연결한다. plan
 fixture smoke dashboard는 Telegram alert를 `fixture plan / lifecycle 1 / trade 0 / provider 호출 0`으로 표시한다. Upbit public/private
 probe, 실제 provider arm, TUI control lifecycle은 후속 범위에서 같은 config/env contract, DB readiness, market data collector,
 analysis/decision pipeline, live execution adapter, reconcile/PnL/status summary, Telegram alert mapper 위에 연결한다.
+
+## Issue #206 production live ops 실제 arm 기준
+
+Issue #206은 #196의 fixture-safe production skeleton을 실제 주문 가능한 운영 lifecycle로 전환한다. `--fixture-smoke`는 계속 외부
+provider 호출 0회의 contract 검증 경로이고, 운영 실행은 실제 DB와 실제 provider readiness를 계산해야 한다.
+
+실제 arm boot sequence는 다음 순서를 지킨다.
+
+1. config/env validation과 secret redaction logger 준비
+2. DB connection, migration/table readiness, schema drift 확인
+3. Upbit public market data connection과 `KRW-BTC` freshness 확인
+4. Upbit private key/order capability probe와 key scope 확인
+5. Telegram startup alert
+6. reconcile/PnL/status readiness
+7. decision pipeline readiness와 HOLD/order intent evidence
+8. live execution arm과 live order capable 전환
+
+broker 조립 전 실패는 private client와 broker를 만들지 않고 fail-closed 한다. broker 조립 이후 장애는 신규 주문 중지,
+reconcile/manual review, Telegram/TUI 경고로 수렴한다. 실제 order side effect는 단일 `BUY + LIMIT + post_only` 후보가 market
+allowlist, key scope, budget, market data freshness, reconcile freshness, PnL/status, decision ledger, kill switch, Upbit policy,
+price deviation guard를 모두 통과한 뒤에만 열린다.
+
+실거래 cleanup closeout은 [`runbooks/live-ops-real-arm-cleanup.md`](./runbooks/live-ops-real-arm-cleanup.md)를 따른다. 이 closeout은
+`submit -> cancel requested -> terminal cancel 확인 -> open exposure 0` evidence가 없으면 PASS가 아니다.
 
 Autonomous entry runtime 기준:
 
@@ -1579,3 +1684,73 @@ corepack pnpm typecheck
 corepack pnpm test
 ./scripts/verify
 ```
+
+## Issue #206 24/7 live ops daemon config 기준
+
+production 24/7 자동매매는 기존 `cleanup_probe` closeout policy와 별도 decision policy를 사용한다. `cleanup_probe`는 실거래
+provider arm을 검증하기 위한 submit/cancel canary이고, 24/7 운영 strategy는 entry/exit loop를 모두 가져야 한다.
+
+24/7 daemon config는 다음 원칙을 지켜야 한다.
+
+- `live:ops:daemon`은 저장소 밖 config/env만 입력으로 받고, fixture manifest나 hand-written evidence 파일을 실행 전 필수값으로 요구하지 않는다.
+- config는 strategy id와 parameter만 선택한다. 임의 파일 경로, 동적 import, 원격 plugin, 저장소 밖 strategy 코드는 금지한다.
+- entry order는 `BUY + LIMIT + POST_ONLY`, exit order는 보유 수량 이하 `SELL + LIMIT + POST_ONLY`만 허용한다.
+- strategy parameter는 secret이 아니어야 하며, API key, Telegram token, DB URL, local control token을 포함하면 validation이 실패해야 한다.
+- 보유 포지션이 있으면 exit policy가 entry policy보다 먼저 평가되어야 한다.
+- `duration_ms`, `tick_interval_ms`, `max_consecutive_failures`, `transient_backoff_ms` 같은 loop 제어값은 운영 안전값으로 validation한다.
+- `hard_stop_market_sell_enabled` 같은 시장가 청산 toggle은 production small-budget profile에서 허용하지 않는다.
+
+현재 허용 policy id는 `cleanup_probe`와 `autonomous_24x7`이다. 새 strategy를 추가할 때는 allowlist, config schema, unit test,
+fake live integration, paper/live shadow 기준을 함께 추가해야 production 선택이 가능하다.
+
+`autonomous_24x7` config shape:
+
+```json
+{
+  "analysis": {
+    "decision_policy": {
+      "id": "autonomous_24x7",
+      "autonomous_24x7": {
+        "max_entry_notional_krw": "10000",
+        "tick_size_krw": "1000",
+        "entry_price_offset_ticks": 1,
+        "exit_price_offset_ticks": 1,
+        "quantity_scale": 8,
+        "min_entry_margin_bps": "10",
+        "trend_confirmation_bps": "20",
+        "mean_reversion_discount_bps": "30",
+        "take_profit_bps": "120",
+        "stop_loss_bps": "80",
+        "trailing_stop_bps": "60",
+        "max_holding_ms": 86400000,
+        "risk_reduction_open_notional_krw": "25000",
+        "risk_reduction_sell_fraction": "0.5",
+        "expected_loss_bps_of_equity": "5"
+      }
+    }
+  }
+}
+```
+
+`autonomous_24x7` strategy는 `StrategyContext.positions`가 0보다 큰 보유 수량을 담고 있으면 take profit, stop loss, trailing stop,
+max holding time, risk reduction rule을 먼저 평가한다. exit 조건이 없으면 `HOLD`로 닫고, entry signal이 강해도 같은 tick에서 BUY를
+만들지 않는다. 미보유 상태에서만 비용 차감 margin, trend confirmation, mean-reversion discount feature를 보고 `BUY + LIMIT +
+POST_ONLY` 후보를 만들 수 있다. 이 strategy는 order intent 생성까지만 담당하며 DB 조회, broker submit, Telegram 전송은 수행하지 않는다.
+
+`live:ops:daemon` 실행 기준:
+
+- production 실행 명령은 `corepack pnpm live:ops:daemon -- --config <운영-json-path> --env-file <운영-env-path> --tui`다.
+- 실행 전 입력은 저장소 밖 config/env뿐이다. fixture manifest, hand-written evidence, 수동 JSONL 후보 파일은 production 시작 조건이 아니다.
+- `--fixture-smoke --duration-ms <ms>`는 개발/PR 검증용 loop contract smoke이며, 실제 운영에 필요한 준비물이 아니다.
+- `--status-file <path>`를 주면 최신 daemon summary를 해당 JSON 파일에 자동 기록한다. production에서 생략하면 config 파일 옆
+  `artifacts/live-ops-daemon-status.json`에 자동 기록하며, fixture smoke는 기본 status file을 만들지 않는다.
+- `--tick-interval-ms <ms>`는 정상 보유/대기 tick 간격을 조정한다. 기본값은 1초이며, 차단은 5초, 수동 확인은 30초, transient failure는
+  5초 backoff를 적용한다.
+- 24시간 summary counter는 tick, 보유/대기, 차단, 수동 확인, 주문 제출, 매도 재호가, crash, unhandled rejection, duplicate order,
+  reconcile mismatch, untracked fill, live order cleanup failure를 자동 집계한다.
+- exit SELL은 보유 수량 전체가 1회 주문 예산을 넘으면 10,000 KRW 이하 chunk로 나눠 `position_effect=REDUCE`를 남기고, 남은 보유분은
+  다음 tick에서 다시 평가한다.
+- exit runtime은 SELL 후보도 entry runtime으로 우회시키지 않는다. 보유 수량, `SELL + LIMIT + POST_ONLY`, 비용 evidence, RiskGate
+  evidence, Upbit-safe idempotency key를 다시 검증한 뒤 submit한다.
+- exit 주문이 제한 시간 안에 체결되지 않으면 같은 runtime-owned order를 취소하고 `재호가 대기`로 닫는다. 부분 체결, 취소 terminal 확인
+  실패, broker 불확실성은 신규 주문을 차단하고 수동 확인으로 격상한다.

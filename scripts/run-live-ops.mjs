@@ -2,6 +2,7 @@
 import {
   loadLiveOpsCliInputs,
   parseArgs,
+  assertLiveOpsCliSummaryReady,
   printHelp,
   printJson,
   printText,
@@ -21,9 +22,10 @@ try {
     } else {
       printJson(summary);
     }
+    assertLiveOpsCliSummaryReady(summary, { fixtureSmoke: options.fixtureSmoke });
 
     if (!options.fixtureSmoke && !options.tui) {
-      process.stdout.write("DB readiness를 통과했습니다. provider/TUI lifecycle은 후속 sub PR에서 연결됩니다.\n");
+      process.stdout.write("DB readiness와 Upbit public market data provider boot를 통과했습니다. TUI lifecycle은 별도 명령으로 확인하세요.\n");
     }
   }
 } catch (error) {

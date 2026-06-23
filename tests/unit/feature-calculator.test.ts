@@ -34,6 +34,8 @@ describe("M11 feature calculator", () => {
       ask_depth_slope_krw_per_bps: expectedAskDepthSlope(),
       depth_change_rate_ratio: "1",
       trade_direction_imbalance_ratio: "1",
+      trend_strength_bps: "1000",
+      mean_reversion_discount_bps: "0",
       market_regime: "trend_up",
       session_liquidity_score: "1",
       session_liquidity_state: "normal",
@@ -139,7 +141,7 @@ describe("M11 feature calculator", () => {
 
     expect(invalidObservedAt.status).toBe("failed");
     expect(invalidObservedAt.observedAt).toBe("not-a-timestamp");
-    expect(invalidObservedAt.failureReasons).toHaveLength(13);
+    expect(invalidObservedAt.failureReasons).toHaveLength(15);
     expect(invalidObservedAt.failureReasons.every((failure) => failure.reasonCode === "FEATURE_INVALID_MARKET_VALUE")).toBe(
       true,
     );
@@ -160,7 +162,7 @@ describe("M11 feature calculator", () => {
     });
 
     expect(result.status).toBe("failed");
-    expect(result.failureReasons).toHaveLength(13);
+    expect(result.failureReasons).toHaveLength(15);
     expect(result.failureReasons.every((failure) => failure.reasonCode === "FEATURE_INVALID_MARKET_VALUE")).toBe(true);
   });
 
@@ -178,7 +180,7 @@ describe("M11 feature calculator", () => {
     });
 
     expect(result.status).toBe("failed");
-    expect(result.failureReasons).toHaveLength(13);
+    expect(result.failureReasons).toHaveLength(15);
     expect(result.failureReasons.every((failure) => failure.reasonCode === "FEATURE_INVALID_MARKET_VALUE")).toBe(true);
   });
 
@@ -280,7 +282,7 @@ describe("M11 feature calculator", () => {
 
     expect(result.status).toBe("failed");
     expect(result.features).toEqual({});
-    expect(result.failureReasons).toHaveLength(13);
+    expect(result.failureReasons).toHaveLength(15);
     expect(result.failureReasons.every((failure) => failure.reasonCode === "FEATURE_MARKET_DATA_STALE")).toBe(true);
   });
 

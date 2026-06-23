@@ -66,6 +66,21 @@ export interface LiveOpsTelegramAlertPlanInput {
   readonly observedAt: string;
   readonly telegramReady: boolean;
   readonly liveExecution: LiveOpsLiveExecutionSummary;
+  /**
+   * live execution summary만으로 표현되지 않는 cancel/block event를 후속 reconcile/exit 경계가 명시할 때 사용한다.
+   *
+   * caller는 이미 주문/취소/reconcile evidence가 확정된 뒤에만 이 값을 넘겨야 하며, mapper는 provider 호출 없이 alert event로만
+   * 낮춘다. 이 필드는 Telegram provider side effect를 만들지 않는다.
+   */
+  readonly tradeEventKind?: Extract<
+    LiveOpsAlertEventKind,
+    | "ORDER_SUBMITTED"
+    | "CANCEL_REQUESTED"
+    | "CANCEL_CONFIRMED"
+    | "RISK_BLOCKED"
+    | "COST_BLOCKED"
+    | "RECONCILE_BLOCKED"
+  >;
   readonly orderIntent?: OrderIntent;
   readonly correlationId?: string;
   readonly telegramConnectionEvidenceId?: string;
@@ -315,6 +330,10 @@ function createTradeEvents(
 }
 
 function mapLiveExecutionToTradeEvent(input: LiveOpsTelegramAlertPlanInput): LiveOpsAlertInput | undefined {
+  if (input.tradeEventKind !== undefined) {
+    return createExplicitTradeEvent(input, input.tradeEventKind);
+  }
+
   const liveExecution = input.liveExecution;
   if (liveExecution.status === "idle" || liveExecution.attemptedOrderCount === 0) {
     return undefined;
@@ -342,7 +361,36 @@ function mapLiveExecutionToTradeEvent(input: LiveOpsTelegramAlertPlanInput): Liv
     return event;
   }
 
-  return createBlockedTradeEvent(input, "RISK_BLOCKED");
+  if (liveExecution.status === "rejected") {
+    return createBlockedTradeEvent(input, "RISK_BLOCKED");
+  }
+
+  if (isLiveOpsBlockedAttempt(liveExecution)) {
+    // 실제 entry runtime attempt가 차단된 경우만 owner chat block alert로 낮추고 wiring blocked와 분리한다.
+    return createBlockedTradeEvent(input, "RISK_BLOCKED");
+  }
+
+  // generic blocked summary는 wiring/readiness 차단도 포함하므로 명시적 evidence 없이 RiskGate alert로 낮추지 않는다.
+  return undefined;
+}
+
+function isLiveOpsBlockedAttempt(liveExecution: LiveOpsLiveExecutionSummary): boolean {
+  return liveExecution.status === "blocked" && liveExecution.attemptStatus === "BLOCKED" && liveExecution.attemptedOrderCount > 0;
+}
+
+function createExplicitTradeEvent(
+  input: LiveOpsTelegramAlertPlanInput,
+  eventKind: NonNullable<LiveOpsTelegramAlertPlanInput["tradeEventKind"]>,
+): LiveOpsAlertInput {
+  if (eventKind === "ORDER_SUBMITTED") {
+    return createOrderSubmittedEvent(input);
+  }
+
+  if (eventKind === "RISK_BLOCKED" || eventKind === "COST_BLOCKED" || eventKind === "RECONCILE_BLOCKED") {
+    return createBlockedTradeEvent(input, eventKind);
+  }
+
+  return createOrderProgressEvent(input, eventKind);
 }
 
 function createOrderSubmittedEvent(input: LiveOpsTelegramAlertPlanInput): LiveOpsAlertInput {
@@ -375,7 +423,7 @@ function createOrderSubmittedEvent(input: LiveOpsTelegramAlertPlanInput): LiveOp
 
 function createBlockedTradeEvent(
   input: LiveOpsTelegramAlertPlanInput,
-  eventKind: Extract<LiveOpsAlertEventKind, "RISK_BLOCKED" | "RECONCILE_BLOCKED">,
+  eventKind: Extract<LiveOpsAlertEventKind, "RISK_BLOCKED" | "COST_BLOCKED" | "RECONCILE_BLOCKED">,
 ): LiveOpsAlertInput {
   const event = createBaseEvent(input, eventKind);
   event.market = input.liveExecution.market;
@@ -388,6 +436,37 @@ function createBlockedTradeEvent(
   };
   assignIfDefined(event, "strategyId", input.orderIntent?.strategyId);
   assignIfDefined(event, "evidenceId", input.tradeEvidenceId ?? input.liveExecution.attemptId ?? undefined);
+  return event;
+}
+
+function createOrderProgressEvent(
+  input: LiveOpsTelegramAlertPlanInput,
+  eventKind: Extract<LiveOpsAlertEventKind, "CANCEL_REQUESTED" | "CANCEL_CONFIRMED">,
+): LiveOpsAlertInput {
+  const intent = input.orderIntent;
+  const event = createBaseEvent(input, eventKind);
+  event.market = input.liveExecution.market;
+  event.liveOrderCapable = false;
+  event.safeSummary = input.liveExecution.message;
+  event.safeDetails = {
+    execution_status: input.liveExecution.status,
+    attempt_status: input.liveExecution.attemptStatus,
+  };
+  assignIfDefined(event, "strategyId", intent?.strategyId);
+  assignIfDefined(event, "orderId", input.liveExecution.attemptId ?? undefined);
+  assignIfDefined(event, "brokerOrderId", input.liveExecution.brokerOrderId ?? undefined);
+  assignIfDefined(event, "idempotencyKey", input.liveExecution.idempotencyKey ?? undefined);
+  assignIfDefined(event, "evidenceId", input.tradeEvidenceId ?? input.liveExecution.attemptId ?? undefined);
+
+  if (intent !== undefined) {
+    assignIfDefined(event, "side", intent.side);
+    assignIfDefined(event, "quantity", intent.requestedQuantity);
+    assignIfDefined(event, "notionalKrw", intent.requestedNotional);
+    if (intent.orderType === "LIMIT") {
+      assignIfDefined(event, "requestedPrice", intent.requestedPrice);
+    }
+  }
+
   return event;
 }
 

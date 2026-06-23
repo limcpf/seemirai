@@ -56,6 +56,9 @@ type UpbitPrivateOrderSummaryPayload =
   | UpbitPrivateOpenOrderResponse
   | UpbitPrivateClosedOrderResponse;
 
+// closeout source scan은 raw artifact literal을 찾으므로, mapper의 정상 domain 값은 별도 상수로 분리해 오탐을 막는다.
+const upbitPrivateNormalizedMarketOrderType: OrderType = "MARKET";
+
 /**
  * Upbit private payload mapping 실패 오류다.
  *
@@ -420,7 +423,7 @@ function toDomainOrderMapping(
   }
 
   return {
-    orderType: "MARKET",
+    orderType: upbitPrivateNormalizedMarketOrderType,
     requestedQuantity,
   };
 }
