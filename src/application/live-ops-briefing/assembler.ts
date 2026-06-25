@@ -510,6 +510,10 @@ function collectWhyReasonCodes(why: WhySummary): readonly string[] {
     readTraceString(why.markets.trace, "reasonCode") ?? "",
     readTraceString(why.strategies.trace, "reasonCode") ?? "",
     readTraceString(why.cash.trace, "reasonCode") ?? "",
+    readTraceString(why.trace, "reason") ?? "",
+    readTraceString(why.markets.trace, "reason") ?? "",
+    readTraceString(why.strategies.trace, "reason") ?? "",
+    readTraceString(why.cash.trace, "reason") ?? "",
     ...readTraceStringArray(why.trace, "reasonCodes"),
     ...readTraceStringArray(why.markets.trace, "reasonCodes"),
     ...readTraceStringArray(why.strategies.trace, "reasonCodes"),
@@ -517,17 +521,21 @@ function collectWhyReasonCodes(why: WhySummary): readonly string[] {
   ];
   for (const item of why.markets.items) {
     reasons.push(readTraceString(item.trace, "reasonCode") ?? "");
+    reasons.push(readTraceString(item.trace, "reason") ?? "");
     reasons.push(...readTraceStringArray(item.trace, "reasonCodes"));
   }
   for (const item of why.strategies.items) {
     reasons.push(readTraceString(item.trace, "reasonCode") ?? "");
+    reasons.push(readTraceString(item.trace, "reason") ?? "");
     reasons.push(...readTraceStringArray(item.trace, "reasonCodes"));
   }
   if (why.cash.item !== null) {
     reasons.push(readTraceString(why.cash.item.trace, "reasonCode") ?? "");
+    reasons.push(readTraceString(why.cash.item.trace, "reason") ?? "");
     reasons.push(...readTraceStringArray(why.cash.item.trace, "reasonCodes"));
     for (const holdReason of why.cash.item.holdReasons) {
       reasons.push(readTraceString(holdReason.trace, "reasonCode") ?? "");
+      reasons.push(readTraceString(holdReason.trace, "reason") ?? "");
       reasons.push(...readTraceStringArray(holdReason.trace, "reasonCodes"));
     }
   }
@@ -620,9 +628,12 @@ function isEntryMarketItem(item: WhyMarketSummary): boolean {
     return false;
   }
 
+  if (category === "CASH_HOLD") {
+    return false;
+  }
+
   if (category === "DISCARD") {
-    const reasonCode = readTraceString(item.trace, "reasonCode")?.toLowerCase() ?? "";
-    return isKnownEntryDiscardReasonCode(reasonCode);
+    return collectTraceReasonCodes(item.trace).some(isKnownEntryDiscardReasonCode);
   }
 
   const strategyId = readFirstTraceString(item.trace, ["strategyId", "strategy_id", "resolvedStrategyId"]);
@@ -663,12 +674,11 @@ function isExitDecisionTrace(trace: JsonRecord): boolean {
 
   const phase = readTraceString(trace, "phase")?.toLowerCase() ?? "";
   const source = readTraceString(trace, "source")?.toLowerCase() ?? "";
-  const reasonCode = readTraceString(trace, "reasonCode")?.toLowerCase() ?? "";
+  const reasonCodes = collectTraceReasonCodes(trace);
   return (
     phase.includes("exit") ||
     source.includes("exit") ||
-    hasReasonCodeToken(reasonCode, "exit") ||
-    hasReasonCodeToken(reasonCode, "sell")
+    reasonCodes.some((reasonCode) => hasReasonCodeToken(reasonCode, "exit") || hasReasonCodeToken(reasonCode, "sell"))
   );
 }
 
@@ -692,14 +702,18 @@ function hasEntryDecisionTrace(trace: JsonRecord): boolean {
 
   const phase = readTraceString(trace, "phase")?.toLowerCase() ?? "";
   const source = readTraceString(trace, "source")?.toLowerCase() ?? "";
-  const reasonCode = readTraceString(trace, "reasonCode")?.toLowerCase() ?? "";
+  const reasonCodes = collectTraceReasonCodes(trace);
   return (
     phase.includes("entry") ||
     source.includes("entry") ||
-    reasonCode.includes("entry") ||
-    reasonCode.includes("buy") ||
-    isKnownEntryRiskReasonCode(reasonCode)
+    reasonCodes.some(isEntryReasonCode)
   );
+}
+
+function isEntryReasonCode(reasonCode: string): boolean {
+  return reasonCode.includes("entry") ||
+    reasonCode.includes("buy") ||
+    isKnownEntryRiskReasonCode(reasonCode);
 }
 
 /**
@@ -725,6 +739,19 @@ function isKnownEntryDiscardReasonCode(reasonCode: string): boolean {
   return reasonCode === "market_order_disabled" ||
     reasonCode === "entry_market_order_disabled" ||
     reasonCode === "requested_quantity_invalid";
+}
+
+/**
+ * decision-ledger trace의 단일/배열 reason code 표현을 동일한 분류 입력으로 정규화한다.
+ *
+ * DB-backed summary는 frame `reason_counts_json`을 `reasonCodes` 배열로 낮추므로, 단일 `reasonCode`만 보면 실제 entry/exit
+ * guard를 놓칠 수 있다. 이 함수는 trace만 읽고 snapshot이나 외부 상태를 바꾸지 않는다.
+ */
+function collectTraceReasonCodes(trace: JsonRecord): readonly string[] {
+  return uniqueText([
+    readTraceString(trace, "reasonCode"),
+    ...readTraceStringArray(trace, "reasonCodes"),
+  ]).map((reasonCode) => reasonCode.toLowerCase());
 }
 
 function hasReasonCodeToken(reasonCode: string, token: string): boolean {

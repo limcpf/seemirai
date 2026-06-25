@@ -864,6 +864,88 @@ describe("live ops briefing assembler", () => {
     expect(snapshot.trace.reasonCodes).toContain("open_position_budget_exceeded");
   });
 
+  it("uses reason code arrays when classifying entry risk blocks", () => {
+    const snapshot = createLiveOpsBriefingSnapshot({
+      observedAt,
+      status: createLiveOpsStatusSummary(liveOpsInput()),
+      why: whySummaryFixture({
+        markets: [
+          {
+            market: "KRW-BTC",
+            statusLabel: "진입 차단",
+            message: "open position 예산 한도 때문에 신규 진입을 보류했습니다.",
+            latestDecisionAt: observedAt,
+            category: "RISK_REJECTED",
+            reasonCode: "",
+            trace: {
+              strategyId: "live_ops_autonomous_24x7_core",
+              reasonCodes: ["open_position_budget_exceeded"],
+            },
+          },
+        ],
+        strategies: [],
+      }),
+    });
+
+    expect(snapshot.decisions.latestEntryDecision).toContain("KRW-BTC: 진입 차단");
+    expect(snapshot.decisions.buyConditions).toEqual(["KRW-BTC: 진입 차단"]);
+    expect(snapshot.trace.reasonCodes).toContain("open_position_budget_exceeded");
+  });
+
+  it("does not classify no-strategy CASH_HOLD market aggregate rows as buy conditions", () => {
+    const snapshot = createLiveOpsBriefingSnapshot({
+      observedAt,
+      status: createLiveOpsStatusSummary(liveOpsInput()),
+      why: whySummaryFixture({
+        markets: [
+          {
+            market: "KRW-BTC",
+            statusLabel: "현금 보유",
+            message: "모든 전략이 대기해 신규 주문 후보가 없습니다.",
+            latestDecisionAt: observedAt,
+            category: "CASH_HOLD",
+            reasonCode: "all_strategies_hold",
+          },
+        ],
+        strategies: [],
+      }),
+    });
+
+    expect(snapshot.decisions.latestEntryDecision).toBe("관측 없음");
+    expect(snapshot.decisions.latestExitDecision).toBe("관측 없음");
+    expect(snapshot.decisions.buyConditions).toEqual([]);
+    expect(snapshot.decisions.sellConditions).toEqual([]);
+    expect(snapshot.trace.reasonCodes).toContain("all_strategies_hold");
+  });
+
+  it("preserves why trace reason values in briefing trace reason codes", () => {
+    const why: WhySummary = {
+      ...unavailableWhySummaryFixture(),
+      trace: {
+        querySource: "decision_ledger_frames",
+        reason: "db_query_failed",
+      },
+      markets: {
+        ...unavailableWhySummaryFixture().markets,
+        trace: {
+          querySource: "decision_ledger_frames",
+          reason: "market_db_query_failed",
+        },
+      },
+    };
+    const snapshot = createLiveOpsBriefingSnapshot({
+      observedAt,
+      status: createLiveOpsStatusSummary(liveOpsInput()),
+      why,
+    });
+
+    expect(snapshot.trace.reasonCodes).toEqual(expect.arrayContaining([
+      "db_query_failed",
+      "market_db_query_failed",
+      "decision_ledger_why_unavailable",
+    ]));
+  });
+
   it("uses market exit decisions even when the strategy why section has no records", () => {
     const baseWhy = whySummaryFixture({
       markets: [
