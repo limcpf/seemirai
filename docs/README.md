@@ -13,6 +13,7 @@
 - Upbit v0.2 pilot private API와 소액 주문 smoke 업무 명세: [`product-specs/upbit-v0-2-pilot-private-api.md`](./product-specs/upbit-v0-2-pilot-private-api.md)
 - Upbit 실거래 자율 운용 M15 이후 로드맵: [`product-specs/upbit-live-autonomous-trading.md`](./product-specs/upbit-live-autonomous-trading.md)
 - Issue #244 Live Ops TypeScript 앱 코어 closeout: [`exec-plans/completed/2026-06-25-issue-244-live-ops-typescript-app-core-closeout.md`](./exec-plans/completed/2026-06-25-issue-244-live-ops-typescript-app-core-closeout.md)
+- Issue #245 Live Ops LLM Telegram 브리핑 실행 계획: [`exec-plans/active/2026-06-25-issue-245-live-ops-llm-telegram-briefing.md`](./exec-plans/active/2026-06-25-issue-245-live-ops-llm-telegram-briefing.md)
 - Issue #196 Live Ops 원클릭 앱/TUI 실행 계획: [`exec-plans/active/2026-06-14-issue-196-live-ops-one-click-app.md`](./exec-plans/active/2026-06-14-issue-196-live-ops-one-click-app.md)
 - Issue #206 Live Ops 실거래 arm 실행 계획: [`exec-plans/active/2026-06-15-issue-206-live-ops-real-arm.md`](./exec-plans/active/2026-06-15-issue-206-live-ops-real-arm.md)
 - 로컬 개발 환경과 검증 절차: [`DEVELOPMENT.md`](./DEVELOPMENT.md)
