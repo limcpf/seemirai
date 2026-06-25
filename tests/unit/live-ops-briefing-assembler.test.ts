@@ -116,8 +116,10 @@ describe("live ops briefing assembler", () => {
     expect(snapshot.decisions.sellConditions).toEqual([]);
     expect(snapshot.decisions.holdReason).toContain("비용 차감 후 기대값 부족 2건");
     expect(snapshot.decisions.blockReason).toBeNull();
-    expect(snapshot.operations.openOrders).toBe("미체결 주문 1건");
-    expect(snapshot.operations.reconcile).toContain("SUCCESS");
+    expect(snapshot.operations.openOrders).toContain("주문 시도: 주문 제출");
+    expect(snapshot.operations.openOrders).toContain("체결/취소: 전체 체결");
+    expect(snapshot.operations.openOrders).toContain("미체결 주문 1건");
+    expect(snapshot.operations.reconcile).toContain("reconcile 정상");
     expect(snapshot.trace.evidenceIds).toContain("m23-status-001");
     expect(snapshot.trace.reasonCodes).toEqual(expect.arrayContaining([
       "operator_brief_requested",
@@ -174,6 +176,21 @@ describe("live ops briefing assembler", () => {
     expect(snapshot.decisions.blockReason).toContain("decision ledger why summary 조회 불가");
     expect(snapshot.trace.reasonCodes).toContain("decision_ledger_why_unavailable");
     expect(briefing).toContain("BLOCK 이유: decision ledger why summary 조회 불가");
+  });
+
+  it("keeps why NOT_FOUND as no-record observations instead of failure block reasons", () => {
+    const snapshot = createLiveOpsBriefingSnapshot({
+      observedAt,
+      status: createLiveOpsStatusSummary(liveOpsInput()),
+      why: notFoundWhySummaryFixture(),
+    });
+    const briefing = formatLiveOpsBriefing(snapshot);
+
+    expect(snapshot.decisions.latestEntryDecision).toContain("시장별 판단 이유 기록 없음");
+    expect(snapshot.decisions.latestExitDecision).toContain("전략별 판단 이유 기록 없음");
+    expect(snapshot.decisions.blockReason).toBeNull();
+    expect(briefing).toContain("BLOCK 이유: 관측 없음");
+    expect(briefing).not.toContain("decision ledger why summary 조회 불가");
   });
 
   it("uses latest decision timestamps and does not treat generic strategy BUY as sell conditions", () => {
@@ -239,12 +256,62 @@ describe("live ops briefing assembler", () => {
       why: whySummaryFixture(),
     });
     const briefing = formatLiveOpsBriefing(snapshot);
+    const visibleBriefing = briefing.slice(0, briefing.indexOf("추적 정보"));
 
     expect(snapshot.decisions.blockReason).toBe("신규 주문 차단 상태라 신규 진입 판단을 실행하지 않습니다.");
     expect(snapshot.operations.risk).toContain("신규 주문 차단");
     expect(snapshot.operations.risk).not.toContain("operator_pause");
-    expect(briefing).not.toContain("사유 operator_pause");
+    expect(snapshot.operations.risk).not.toContain("NEW_ORDERS_BLOCKED");
+    expect(visibleBriefing).not.toContain("사유 operator_pause");
+    expect(visibleBriefing).not.toContain("NEW_ORDERS_BLOCKED");
     expect(snapshot.trace.reasonCodes).toContain("operator_pause");
+    expect(snapshot.trace.reasonCodes).toContain("NEW_ORDERS_BLOCKED");
+  });
+
+  it("renders reconcile and latest order status as Korean user-facing text", () => {
+    const snapshot = createLiveOpsBriefingSnapshot({
+      observedAt,
+      status: createLiveOpsStatusSummary(liveOpsInput({
+        reconcile: {
+          result: "FAILED",
+          mismatchCount: null,
+          openOrderCount: 2,
+          lastReconcileAt: observedAt,
+          actionRequired: "잔고 조회 복구 후 reconcile을 재실행하세요.",
+        },
+        latestOrderAttempt: {
+          statusLabel: "주문 거절",
+          message: "최근 주문 시도는 risk gate에서 차단됐습니다.",
+          observedAt,
+          action: "risk evidence를 확인하세요.",
+          trace: {
+            source: "live_order_attempt",
+          },
+        },
+        latestFillOrCancel: {
+          statusLabel: "취소 확인",
+          message: "최근 주문은 운영자 요청으로 취소됐습니다.",
+          observedAt,
+          action: null,
+          trace: {
+            source: "broker_order_status",
+          },
+        },
+      })),
+      why: whySummaryFixture(),
+    });
+    const briefing = formatLiveOpsBriefing(snapshot);
+    const visibleBriefing = briefing.slice(0, briefing.indexOf("추적 정보"));
+
+    expect(snapshot.operations.openOrders).toContain("주문 시도: 주문 거절");
+    expect(snapshot.operations.openOrders).toContain("체결/취소: 취소 확인");
+    expect(snapshot.operations.openOrders).toContain("미체결 주문 2건");
+    expect(snapshot.operations.reconcile).toContain("reconcile 확인 실패");
+    expect(snapshot.operations.reconcile).not.toContain("FAILED");
+    expect(snapshot.operations.risk).not.toContain("NORMAL");
+    expect(visibleBriefing).not.toContain("FAILED");
+    expect(visibleBriefing).not.toContain("kill switch NORMAL");
+    expect(snapshot.trace.reasonCodes).toContain("FAILED");
   });
 
   it("represents missing provider sources as unavailable observations without zero coercion", () => {
@@ -576,6 +643,49 @@ function unavailableWhySummaryFixture(): WhySummary {
     trace: {
       querySource: "decision_ledger_frames",
       reasonCode: "why_query_failed",
+    },
+  };
+}
+
+function notFoundWhySummaryFixture(): WhySummary {
+  return {
+    markets: {
+      readStatus: "NOT_FOUND",
+      statusLabel: "시장별 판단 이유 기록 없음",
+      message: "시장별 판단 이유가 아직 기록되지 않았습니다.",
+      impact: null,
+      action: "러너를 실행한 뒤 다시 조회하세요.",
+      items: [],
+      trace: {
+        querySource: "decision_ledger_frames",
+      },
+    },
+    strategies: {
+      readStatus: "NOT_FOUND",
+      statusLabel: "전략별 판단 이유 기록 없음",
+      message: "전략별 판단 이유가 아직 기록되지 않았습니다.",
+      impact: null,
+      action: "러너를 실행한 뒤 다시 조회하세요.",
+      items: [],
+      trace: {
+        querySource: "decision_ledger_frames",
+      },
+    },
+    cash: {
+      readStatus: "NOT_FOUND",
+      statusLabel: "현금 보유 이유 기록 없음",
+      message: "현금 보유 이유가 아직 기록되지 않았습니다.",
+      impact: null,
+      action: "러너를 실행한 뒤 다시 조회하세요.",
+      item: null,
+      trace: {
+        querySource: "decision_ledger_frames",
+      },
+    },
+    generatedAt: observedAt,
+    readStatus: "NOT_FOUND",
+    trace: {
+      querySource: "decision_ledger_frames",
     },
   };
 }

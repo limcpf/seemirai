@@ -232,16 +232,14 @@ function createOperations(status: LiveOpsStatusSummary | null): LiveOpsBriefingO
   }
 
   return {
-    openOrders: status.reconcile.openOrderCount === null
-      ? "미체결 주문 관측 없음"
-      : `미체결 주문 ${status.reconcile.openOrderCount}건`,
+    openOrders: formatOrderOperation(status),
     reconcile: [
-      status.reconcile.result,
+      formatReconcileResult(status.reconcile.result),
       status.reconcile.lastReconcileAt === null ? null : `마지막 ${status.reconcile.lastReconcileAt}`,
       status.reconcile.actionRequired === null ? null : `조치 ${status.reconcile.actionRequired}`,
     ].filter(isNonEmptyString).join(", "),
     risk: [
-      `kill switch ${status.riskBlock.killSwitchState}`,
+      formatRiskState(status),
       status.riskBlock.newOrdersBlocked ? "신규 주문 차단" : "신규 주문 허용",
       status.riskBlock.requiresManualReview ? "manual review 필요" : "manual review 없음",
       status.riskBlock.blockedReason === null ? null : "차단 사유는 추적 정보에 보존",
@@ -330,6 +328,8 @@ function collectStatusReasonCodes(status: LiveOpsStatusSummary): readonly string
   return uniqueText([
     readTraceString(status.trace, "reason"),
     status.riskBlock.blockedReason,
+    status.riskBlock.killSwitchState,
+    status.reconcile.result,
   ]);
 }
 
@@ -451,15 +451,22 @@ function formatWhySectionUnavailable(section: {
 }
 
 function formatWhyBlockReason(why: WhySummary | null): string | null {
-  if (why === null || why.readStatus === "OK") {
+  if (why === null) {
+    return null;
+  }
+
+  const unavailableSections = [
+    why.markets.readStatus === "UNAVAILABLE" ? why.markets.statusLabel : null,
+    why.strategies.readStatus === "UNAVAILABLE" ? why.strategies.statusLabel : null,
+    why.cash.readStatus === "UNAVAILABLE" ? why.cash.statusLabel : null,
+  ];
+  if (why.readStatus !== "UNAVAILABLE" && unavailableSections.every((section) => section === null)) {
     return null;
   }
 
   return [
     "decision ledger why summary 조회 불가",
-    why.markets.readStatus === "OK" ? null : why.markets.statusLabel,
-    why.strategies.readStatus === "OK" ? null : why.strategies.statusLabel,
-    why.cash.readStatus === "OK" ? null : why.cash.statusLabel,
+    ...unavailableSections,
   ].filter(isNonEmptyString).join(": ");
 }
 
@@ -474,6 +481,45 @@ function formatRiskBlockReason(status: LiveOpsStatusSummary | null): string | nu
     return "신규 주문 차단 상태라 신규 진입 판단을 실행하지 않습니다.";
   }
   return null;
+}
+
+function formatOrderOperation(status: LiveOpsStatusSummary): string {
+  const openOrders = status.reconcile.openOrderCount === null
+    ? "미체결 주문 관측 없음"
+    : `미체결 주문 ${status.reconcile.openOrderCount}건`;
+
+  return [
+    `주문 시도: ${formatObservedFact(status.latestOrderAttempt)}`,
+    `체결/취소: ${formatObservedFact(status.latestFillOrCancel)}`,
+    openOrders,
+  ].join(", ");
+}
+
+function formatReconcileResult(result: string): string {
+  switch (result) {
+    case "SUCCESS":
+      return "reconcile 정상";
+    case "MISMATCH_DETECTED":
+      return "reconcile 불일치 발견";
+    case "FAILED":
+      return "reconcile 확인 실패";
+    case "UNAVAILABLE":
+      return "reconcile 조회 불가";
+    case "SKIPPED":
+      return "reconcile 실행 전";
+    default:
+      return "reconcile 상태 확인 필요";
+  }
+}
+
+function formatRiskState(status: LiveOpsStatusSummary): string {
+  if (status.riskBlock.requiresManualReview) {
+    return "수동 검토 필요 상태";
+  }
+  if (status.riskBlock.newOrdersBlocked) {
+    return "신규 주문 차단 상태";
+  }
+  return "신규 주문 제한 없음";
 }
 
 function formatCashHoldReason(cash: WhyCashSummary): string {
