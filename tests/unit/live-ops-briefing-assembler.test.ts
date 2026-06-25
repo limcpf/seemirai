@@ -517,6 +517,36 @@ describe("live ops briefing assembler", () => {
     expect(snapshot.headline.cause).toContain("live trading 설정이 꺼져 있어");
   });
 
+  it("treats future market heartbeat timestamps as freshness issues", () => {
+    const futureHeartbeatAt = "2026-06-25T03:01:00.000Z";
+    const snapshot = createLiveOpsBriefingSnapshot({
+      observedAt,
+      status: createLiveOpsStatusSummary(liveOpsInput({
+        liveTradingEnabled: false,
+        marketData: {
+          connectionStatus: "CONNECTED",
+          lagMs: 50,
+          updatedAt: futureHeartbeatAt,
+        },
+        latestHeartbeat: {
+          statusLabel: "수신 확인",
+          message: "market data heartbeat를 확인했습니다.",
+          observedAt: futureHeartbeatAt,
+          action: null,
+          trace: {
+            source: "market_data_status",
+          },
+        },
+      })),
+      why: whySummaryFixture(),
+    });
+    const briefing = formatLiveOpsBriefing(snapshot);
+
+    expect(snapshot.market.freshnessLabel).toBe("시장 데이터 freshness 확인 필요");
+    expect(snapshot.market.summary).toContain("브리핑 시각보다 미래입니다.");
+    expect(briefing).not.toContain("freshness: 수신 확인");
+  });
+
   it("does not expose live autonomous enabled as live trading enabled when live trading is off", () => {
     const snapshot = createLiveOpsBriefingSnapshot({
       observedAt,
@@ -661,6 +691,29 @@ describe("live ops briefing assembler", () => {
     expect(briefing).not.toContain("coin/position: 관측 없음");
   });
 
+  it("does not hide positions behind an empty balance status label", () => {
+    const snapshot = createLiveOpsBriefingSnapshot({
+      observedAt,
+      status: createLiveOpsStatusSummary(liveOpsInput()),
+      why: whySummaryFixture(),
+      portfolio: {
+        balances: [],
+        positions: [
+          {
+            market: "KRW-BTC",
+            quantity: "0.002",
+            averageEntryPriceKrw: "60000000",
+            statusLabel: "전략 보유",
+          },
+        ],
+      },
+    });
+    const briefing = formatLiveOpsBriefing(snapshot);
+
+    expect(briefing).toContain("coin/position: coin balance 조회 완료: 보유 없음, KRW-BTC 0.002 전략 보유");
+    expect(briefing).toContain("position scope: KRW-BTC 0.002 전략 보유");
+  });
+
   it("keeps strategy-backed conversion discards visible as entry block observations", () => {
     const snapshot = createLiveOpsBriefingSnapshot({
       observedAt,
@@ -687,6 +740,43 @@ describe("live ops briefing assembler", () => {
     expect(snapshot.decisions.latestExitDecision).toBe("관측 없음");
     expect(snapshot.decisions.buyConditions).toEqual(["KRW-BTC: 주문 후보 폐기"]);
     expect(snapshot.decisions.sellConditions).toEqual([]);
+  });
+
+  it("uses market exit decisions even when the strategy why section has no records", () => {
+    const baseWhy = whySummaryFixture({
+      markets: [
+        {
+          market: "KRW-BTC",
+          statusLabel: "청산 실행",
+          message: "시장별 최신 frame은 SELL exit을 기록했습니다.",
+          latestDecisionAt: observedAt,
+          category: "SELL",
+          reasonCode: "exit_sell_executed",
+        },
+      ],
+      strategies: [],
+    });
+    const why: WhySummary = {
+      ...baseWhy,
+      strategies: {
+        ...baseWhy.strategies,
+        readStatus: "NOT_FOUND",
+        statusLabel: "전략별 판단 이유 기록 없음",
+        message: "전략별 판단 이유가 아직 기록되지 않았습니다.",
+        action: "러너를 실행한 뒤 다시 조회하세요.",
+        items: [],
+      },
+    };
+
+    const snapshot = createLiveOpsBriefingSnapshot({
+      observedAt,
+      status: createLiveOpsStatusSummary(liveOpsInput()),
+      why,
+    });
+
+    expect(snapshot.decisions.latestExitDecision).toContain("KRW-BTC: 청산 실행");
+    expect(snapshot.decisions.sellConditions).toEqual(["KRW-BTC: 청산 실행"]);
+    expect(snapshot.decisions.latestExitDecision).not.toContain("전략별 판단 이유 기록 없음");
   });
 
   it("represents missing provider sources as unavailable observations without zero coercion", () => {

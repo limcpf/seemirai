@@ -123,11 +123,12 @@ function createMarket(
     };
   }
 
-  if (isStaleMarketHeartbeat(status.latestHeartbeat.observedAt, observedAt)) {
+  const heartbeatFreshnessIssue = resolveMarketHeartbeatFreshnessIssue(status.latestHeartbeat.observedAt, observedAt);
+  if (heartbeatFreshnessIssue !== null) {
     // status reason이 다른 guard에서 먼저 정해졌더라도 market freshness는 heartbeat 시각으로 다시 닫는다.
     return {
       freshnessLabel: "시장 데이터 freshness 확인 필요",
-      summary: `시장 데이터 heartbeat가 5분보다 오래되었습니다. 마지막 수신 ${status.latestHeartbeat.observedAt}.`,
+      summary: formatMarketHeartbeatFreshnessIssue(heartbeatFreshnessIssue, status.latestHeartbeat.observedAt),
       observedAt: status.latestHeartbeat.observedAt,
     };
   }
@@ -184,8 +185,9 @@ function createDecisions(
         ? unavailableText
         : formatObservedFact(status.latestDecision)
       : formatMarketDecisionItem(latestEntry)),
-    latestExitDecision: formatWhySectionUnavailable(why?.strategies)
-      ?? (latestSell === null ? unavailableText : formatDecisionItem(latestSell)),
+    latestExitDecision: latestSell === null
+      ? formatWhySectionUnavailable(why?.strategies) ?? unavailableText
+      : formatDecisionItem(latestSell),
     buyConditions: entryItems.map((item) => `${item.market}: ${item.statusLabel}`),
     sellConditions: sellItems.map((item) => `${item.label}: ${item.statusLabel}`),
     holdReason: why?.cash.item === null || why?.cash.item === undefined
@@ -268,24 +270,50 @@ function createUnavailablePnl(): LiveOpsBriefingPnlSnapshot {
 }
 
 /**
- * market heartbeat가 briefing 관측 시각 기준 freshness window를 벗어났는지 판정한다.
+ * market heartbeat가 briefing 관측 시각 기준 freshness window를 벗어났거나 시각이 깨졌는지 판정한다.
  *
  * status의 대표 reason은 live trading disabled 같은 다른 guard가 선점할 수 있으므로, market section은 heartbeat 시각을 직접
  * 비교한다. 이 함수는 날짜 계산만 수행하고 provider 재조회나 snapshot 변경 side effect를 만들지 않는다.
  */
-function isStaleMarketHeartbeat(heartbeatObservedAt: string | null, briefingObservedAt: string): boolean {
+function resolveMarketHeartbeatFreshnessIssue(
+  heartbeatObservedAt: string | null,
+  briefingObservedAt: string,
+): "future" | "invalid" | "stale" | null {
   if (heartbeatObservedAt === null) {
-    return false;
+    return null;
   }
 
   const heartbeatTime = Date.parse(heartbeatObservedAt);
   const briefingTime = Date.parse(briefingObservedAt);
   if (!Number.isFinite(heartbeatTime) || !Number.isFinite(briefingTime)) {
-    return true;
+    return "invalid";
   }
 
   const ageMs = briefingTime - heartbeatTime;
-  return ageMs > marketHeartbeatFreshnessWindowMs;
+  if (ageMs < 0) {
+    return "future";
+  }
+  return ageMs > marketHeartbeatFreshnessWindowMs ? "stale" : null;
+}
+
+/**
+ * market heartbeat freshness 문제를 운영자가 읽을 한국어 문구로 변환한다.
+ *
+ * 내부 reason code를 만들지 않고 market section의 사용자-facing summary만 생성한다. 원 관측 시각은 trace가 아니라 본문에 필요한
+ * 안전한 ISO 문자열로만 포함한다.
+ */
+function formatMarketHeartbeatFreshnessIssue(
+  issue: "future" | "invalid" | "stale",
+  heartbeatObservedAt: string | null,
+): string {
+  switch (issue) {
+    case "future":
+      return `시장 데이터 heartbeat 시각이 브리핑 시각보다 미래입니다. 마지막 수신 ${heartbeatObservedAt}.`;
+    case "invalid":
+      return `시장 데이터 heartbeat 시각을 해석할 수 없습니다. 마지막 수신 ${heartbeatObservedAt}.`;
+    case "stale":
+      return `시장 데이터 heartbeat가 5분보다 오래되었습니다. 마지막 수신 ${heartbeatObservedAt}.`;
+  }
 }
 
 /**

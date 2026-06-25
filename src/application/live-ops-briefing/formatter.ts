@@ -144,7 +144,16 @@ function formatCash(portfolio: LiveOpsBriefingPortfolioSnapshot): string {
 }
 
 function formatCoinPosition(portfolio: LiveOpsBriefingPortfolioSnapshot): string {
+  const positionSummary = portfolio.positions.length > 0
+    ? portfolio.positions
+      .map((position) => `${sanitizeText(position.market)} ${formatNullableText(position.quantity)} ${sanitizeText(position.statusLabel)}`)
+      .join(", ")
+    : null;
+
   if (portfolio.balanceStatusLabel !== null && portfolio.balanceStatusLabel !== undefined) {
+    if (positionSummary !== null) {
+      return `${sanitizeText(portfolio.balanceStatusLabel)}, ${positionSummary}`;
+    }
     return sanitizeText(portfolio.balanceStatusLabel);
   }
 
@@ -159,9 +168,7 @@ function formatCoinPosition(portfolio: LiveOpsBriefingPortfolioSnapshot): string
     return portfolio.balances.map(formatBalance).join(", ");
   }
 
-  return portfolio.positions
-    .map((position) => `${sanitizeText(position.market)} ${formatNullableText(position.quantity)} ${sanitizeText(position.statusLabel)}`)
-    .join(", ");
+  return positionSummary ?? "관측 없음";
 }
 
 function formatBalance(balance: LiveOpsBriefingBalanceSnapshot): string {
