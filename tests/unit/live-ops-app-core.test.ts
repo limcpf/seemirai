@@ -96,7 +96,11 @@ describe("Live Ops app core contract", () => {
   });
 
   it("foreground core는 기존 support side effect 순서를 유지하고 readiness assertion까지 실행한다", async () => {
-    const support = createFakeSupport({ fixtureSmoke: true });
+    const support = createFakeSupport({
+      configPath: "config/live-ops.example.json",
+      envFilePath: "tests/fixtures/live-ops/fake.env",
+      fixtureSmoke: true,
+    });
 
     const result = await runLiveOpsForegroundAppCore({
       support,
@@ -119,6 +123,42 @@ describe("Live Ops app core contract", () => {
       'printJson:{"status":"ready","fixtureSmoke":true,"tui":false}',
       'assertReady:true:{"status":"ready","fixtureSmoke":true,"tui":false}',
     ]);
+  });
+
+  it("foreground core는 support가 structured runtime adapter를 제공하면 legacy input loader를 건너뛴다", async () => {
+    const support = createFakeSupport({
+      configPath: "config/live-ops.example.json",
+      envFilePath: "tests/fixtures/live-ops/fake.env",
+      fixtureSmoke: true,
+    });
+    support.loadLiveOpsCliInputs = async () => {
+      support.calls.push("legacyLoadInputs");
+      return { legacy: true };
+    };
+    const runtimeAdapter = createFakeSupportRuntimeAdapter(support.calls);
+    const supportWithAdapter = Object.assign(support, {
+      createLiveOpsRuntimeAdapter() {
+        support.calls.push("createRuntimeAdapter");
+        return runtimeAdapter;
+      },
+    });
+
+    await runLiveOpsForegroundAppCore({
+      support: supportWithAdapter,
+      argv: ["--fixture-smoke"],
+      commandName: "live:ops",
+    });
+
+    expect(support.calls).toContain("createRuntimeAdapter");
+    expect(support.calls).toContain("runtimeAdapter:telegramAlert");
+    expect(support.calls).not.toContain("legacyLoadInputs");
+    expect(support.lastSummaryInput).toMatchObject({
+      configPath: "config/live-ops.example.json",
+      envFilePath: "tests/fixtures/live-ops/fake.env",
+      telegramAlert: {
+        ready: true,
+      },
+    });
   });
 
   it("TUI core는 attach 누락 시 provider와 broker side effect 전에 fail-closed 한다", async () => {
@@ -161,3 +201,87 @@ describe("Live Ops app core contract", () => {
     ]);
   });
 });
+
+function createFakeSupportRuntimeAdapter(calls: string[]) {
+  return {
+    resolvePath(value: string) {
+      calls.push(`runtimeAdapter:resolve:${value}`);
+      return value;
+    },
+    async loadConfigFile() {
+      calls.push("runtimeAdapter:loadConfig");
+      return { universe: { default_market: "KRW-BTC" } };
+    },
+    async loadEnvFile() {
+      calls.push("runtimeAdapter:loadEnv");
+      return { SEEMIRAI_DATABASE_URL: "postgres://fixture" };
+    },
+    validateConfig() {
+      calls.push("runtimeAdapter:validateConfig");
+    },
+    validateEnv() {
+      calls.push("runtimeAdapter:validateEnv");
+    },
+    suppressStartupTelegramAlert(config: Record<string, unknown>) {
+      calls.push("runtimeAdapter:suppressStartupTelegramAlert");
+      return config;
+    },
+    async loadAttachReadonlyInputs() {
+      calls.push("runtimeAdapter:attach");
+      return {};
+    },
+    async evaluateDbReadiness() {
+      calls.push("runtimeAdapter:dbReadiness");
+      return { ready: true };
+    },
+    assertDbReadinessReady() {
+      calls.push("runtimeAdapter:assertDbReadiness");
+    },
+    async evaluateMarketData() {
+      calls.push("runtimeAdapter:marketData");
+      return { ready: true };
+    },
+    assertMarketDataReady() {
+      calls.push("runtimeAdapter:assertMarketData");
+    },
+    evaluateBrokerGuard() {
+      calls.push("runtimeAdapter:brokerGuard");
+      return { ready: true };
+    },
+    async createProductionRuntime() {
+      calls.push("runtimeAdapter:createRuntime");
+      return {};
+    },
+    async collectAutonomousAnalysisPreflight() {
+      calls.push("runtimeAdapter:analysisPreflight");
+      return undefined;
+    },
+    async evaluateAnalysisDecision() {
+      calls.push("runtimeAdapter:analysisDecision");
+      return { ready: true };
+    },
+    getAnalysisOrderIntents() {
+      calls.push("runtimeAdapter:orderIntents");
+      return [];
+    },
+    async createProductionExecutionInputs() {
+      calls.push("runtimeAdapter:executionInputs");
+      return { orderIntents: [] };
+    },
+    async evaluateLiveExecution() {
+      calls.push("runtimeAdapter:liveExecution");
+      return { ready: true, liveOrderCapable: false };
+    },
+    async evaluateReconcilePnlStatus() {
+      calls.push("runtimeAdapter:reconcilePnlStatus");
+      return { ready: true };
+    },
+    async evaluateTelegramAlert() {
+      calls.push("runtimeAdapter:telegramAlert");
+      return { ready: true };
+    },
+    async closeProductionRuntime() {
+      calls.push("runtimeAdapter:closeRuntime");
+    },
+  };
+}

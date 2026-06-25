@@ -1,3 +1,5 @@
+import type { LiveOpsRuntimeAdapterPort } from "../live-ops-runtime-adapter.js";
+
 /**
  * production Live Ops CLI가 기존 `.mjs` support shim과 주고받는 최소 option 계약이다.
  *
@@ -19,12 +21,13 @@ export type LiveOpsCliOptions = Record<string, unknown> & {
  * `run-live-ops-support.mjs`에서 TypeScript dist entry가 호출하는 public compatibility surface다.
  *
  * support module은 config/env 해석, summary 생성, TUI 렌더링, readiness 판단의 기존 side effect를
- * 보존한다. dist entry는 parser와 renderer의 순서만 결정하며, raw provider payload나 secret을
+ * 보존한다. dist entry는 parser와 renderer의 순서만 결정하며, provider 원본 payload나 secret을
  * 새로 만들거나 출력하지 않는 invariant를 유지해야 한다.
  */
 export interface LiveOpsSupportModule {
   parseArgs(argv: readonly string[]): LiveOpsCliOptions;
   loadLiveOpsCliInputs(options: LiveOpsCliOptions): Promise<Record<string, unknown>>;
+  createLiveOpsRuntimeAdapter?(): LiveOpsRuntimeAdapterPort;
   renderLiveOpsSummary(input: Record<string, unknown>): unknown;
   renderLiveOpsTuiDashboard(summary: unknown): string;
   assertLiveOpsCliSummaryReady(summary: unknown, options: { fixtureSmoke?: boolean }): void;
