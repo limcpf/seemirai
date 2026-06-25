@@ -1,10 +1,138 @@
 import { spawnSync } from "node:child_process";
-import { link, mkdtemp, readFile, utimes, writeFile } from "node:fs/promises";
+import { link, mkdtemp, readFile, rm, utimes, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 
 describe("production live ops script skeleton", () => {
+  it("production live ops package scripts는 dist build 산출물을 실행한다", async () => {
+    const packageJson = JSON.parse(await readFile(path.join(process.cwd(), "package.json"), "utf8"));
+    const buildConfig = JSON.parse(await readFile(path.join(process.cwd(), "tsconfig.build.json"), "utf8"));
+
+    expect(packageJson.scripts).toMatchObject({
+      build: "tsc -p tsconfig.build.json",
+      "prelive:ops": "pnpm build",
+      "live:ops": "node dist/runtime/live-ops-cli.js",
+      "prelive:ops:daemon": "pnpm build",
+      "live:ops:daemon": "node dist/runtime/live-ops-daemon-cli.js",
+      "prelive:ops:pnl-closeout": "pnpm build",
+      "live:ops:pnl-closeout": "node dist/runtime/live-ops-pnl-closeout-cli.js",
+      "prelive:ops:tui": "pnpm build",
+      "live:ops:tui": "node dist/runtime/live-ops-tui-cli.js",
+    });
+    expect(buildConfig).toMatchObject({
+      extends: "./tsconfig.json",
+      compilerOptions: {
+        rootDir: "src",
+        outDir: "dist",
+      },
+      include: ["src/**/*.ts"],
+    });
+  });
+
+  it("corepack pnpm build 이후 dist 기반 production live ops 명령이 통과한다", async () => {
+    const buildResult = spawnSync("corepack", ["pnpm", "build"], {
+      cwd: process.cwd(),
+      encoding: "utf8",
+      env: minimalEnv(),
+    });
+
+    expect(buildResult.status).toBe(0);
+    expect(buildResult.stderr).not.toContain("error TS");
+    await expect(readFile(path.join(process.cwd(), "dist/runtime/live-ops-cli.js"), "utf8")).resolves.toContain(
+      "runLiveOpsCli",
+    );
+    await rm(path.join(process.cwd(), "dist"), { recursive: true, force: true });
+
+    const result = spawnSync(
+      "corepack",
+      [
+        "pnpm",
+        "live:ops",
+        "--",
+        "--config",
+        "config/live-ops.example.json",
+        "--env-file",
+        "tests/fixtures/live-ops/fake.env",
+        "--fixture-smoke",
+      ],
+      {
+        cwd: process.cwd(),
+        encoding: "utf8",
+        env: minimalEnv(),
+      },
+    );
+
+    expect(result.status).toBe(0);
+    expect(result.stderr).toBe("");
+    const summary = JSON.parse(result.stdout.slice(result.stdout.indexOf("{")));
+    expect(summary).toMatchObject({
+      fixtureSmoke: true,
+      liveOrderCapable: false,
+    });
+    expect(result.stdout).not.toContain("fake-upbit-secret-key");
+
+    const daemonResult = spawnSync(
+      process.execPath,
+      [
+        "dist/runtime/live-ops-daemon-cli.js",
+        "--config",
+        "config/live-ops.example.json",
+        "--env-file",
+        "tests/fixtures/live-ops/fake.env",
+        "--fixture-smoke",
+        "--duration-ms",
+        "1000",
+        "--json",
+      ],
+      {
+        cwd: process.cwd(),
+        encoding: "utf8",
+        env: minimalEnv(),
+      },
+    );
+    expect(daemonResult.status).toBe(0);
+    expect(daemonResult.stderr).toBe("");
+    const daemonSummary = JSON.parse(daemonResult.stdout.slice(daemonResult.stdout.indexOf("{")));
+    expect(daemonSummary).toMatchObject({
+      kind: "live_ops_daemon_summary",
+      fixtureSmoke: true,
+    });
+    expect(daemonResult.stdout).not.toContain("fake-upbit-secret-key");
+
+    const tuiResult = spawnSync(
+      process.execPath,
+      [
+        "dist/runtime/live-ops-tui-cli.js",
+        "--config",
+        "config/live-ops.example.json",
+        "--env-file",
+        "tests/fixtures/live-ops/fake.env",
+        "--fixture-smoke",
+        "--attach",
+        "fixture",
+      ],
+      {
+        cwd: process.cwd(),
+        encoding: "utf8",
+        env: minimalEnv(),
+      },
+    );
+    expect(tuiResult.status).toBe(0);
+    expect(tuiResult.stderr).toBe("");
+    expect(tuiResult.stdout).toContain("Seemirai Live Ops");
+    expect(tuiResult.stdout).not.toContain("fake-telegram-token");
+
+    const pnlCloseoutHelp = spawnSync(process.execPath, ["dist/runtime/live-ops-pnl-closeout-cli.js", "--help"], {
+      cwd: process.cwd(),
+      encoding: "utf8",
+      env: minimalEnv(),
+    });
+    expect(pnlCloseoutHelp.status).toBe(0);
+    expect(pnlCloseoutHelp.stderr).toBe("");
+    expect(pnlCloseoutHelp.stdout).toContain("live:ops:pnl-closeout");
+  }, 30_000);
+
   it("live:ops:daemon fixture smoke는 수동 evidence 파일 없이 24/7 loop summary를 만든다", () => {
     const result = spawnSync(
       process.execPath,
