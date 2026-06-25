@@ -17,7 +17,7 @@ describe("live ops briefing", () => {
     expect(briefing).toContain("필요 조치: 차단 사유가 해소될 때까지 신규 진입을 열지 마세요.");
     expect(briefing).toContain("매수 조건: 스프레드 정상, 호가 깊이 충분");
     expect(briefing).toContain("매도 조건: 익절 조건 미충족, 손절 조건 미충족");
-    expect(briefing).toContain("현금: 사용 가능 120000 KRW");
+    expect(briefing).toContain("현금: 총 125000 KRW, 사용 가능 120000 KRW");
     expect(briefing).toContain("coin/position: KRW-BTC total 0.002 BTC, available 0.002 BTC 보유");
     expect(briefing).toContain("position scope: KRW-BTC 0.002 전략 보유 (평균단가 60000000 KRW)");
     expect(briefing).toContain("PnL: 실현 1200 KRW, 미실현 -300 KRW, 평가 1000000 KRW");
@@ -202,6 +202,33 @@ describe("live ops briefing", () => {
 
     expect(briefing).toContain("coin/position: KRW-BTC total 0.002 BTC, available 0 BTC 보유");
     expect(briefing).not.toContain("KRW-BTC 0.002 BTC 보유");
+  });
+
+  it("keeps observed cash total visible when available cash is missing", () => {
+    const briefing = formatLiveOpsBriefing(liveOpsBriefingSnapshot({
+      portfolio: {
+        cash: {
+          statusLabel: "조회 완료",
+          availableKrw: null,
+          totalKrw: "125000",
+          observedAt,
+        },
+        balances: [],
+        positions: [],
+        pnl: {
+          statusLabel: "조회 완료",
+          realizedKrw: "1200",
+          unrealizedKrw: "-300",
+          equityKrw: "1000000",
+          observedAt,
+        },
+        openExposureKrw: "120000",
+        budgetUsedKrw: "5000",
+      },
+    }));
+
+    expect(briefing).toContain("현금: 총 125000 KRW, 사용 가능 관측 없음");
+    expect(briefing).not.toContain("현금: 조회 완료");
   });
 
   it("distinguishes a stopped daemon from missing daemon observations", () => {

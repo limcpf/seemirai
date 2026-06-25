@@ -112,10 +112,22 @@ export function validateLiveOpsBriefingSnapshotSafety(
 
 function formatCash(portfolio: LiveOpsBriefingPortfolioSnapshot): string {
   const cash = portfolio.cash;
-  if (cash.availableKrw === null) {
+  if (cash.totalKrw === null && cash.availableKrw === null) {
     return sanitizeText(cash.statusLabel);
   }
-  return `사용 가능 ${sanitizeText(cash.availableKrw)} KRW`;
+
+  // 총액이 관측된 경우 available 결측이나 잠김 현금 때문에 운영자가 실제 현금 규모를 놓치지 않게 한다.
+  const total = cash.totalKrw === null
+    ? null
+    : `총 ${sanitizeText(cash.totalKrw)} KRW`;
+  const available = cash.availableKrw === null
+    ? "사용 가능 관측 없음"
+    : `사용 가능 ${sanitizeText(cash.availableKrw)} KRW`;
+
+  if (total === null) {
+    return available;
+  }
+  return `${total}, ${available}`;
 }
 
 function formatCoinPosition(portfolio: LiveOpsBriefingPortfolioSnapshot): string {
