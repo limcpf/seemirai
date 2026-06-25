@@ -8,10 +8,15 @@
     "node": ">=24 <25"
   },
   "scripts": {
-    "live:ops": "node scripts/run-live-ops.mjs",
-    "live:ops:daemon": "node scripts/run-live-ops-daemon.mjs",
-    "live:ops:pnl-closeout": "node scripts/run-live-ops-pnl-closeout.mjs",
-    "live:ops:tui": "node scripts/run-live-ops-tui.mjs",
+    "build": "tsc -p tsconfig.build.json",
+    "prelive:ops": "pnpm build",
+    "live:ops": "node dist/runtime/live-ops-cli.js",
+    "prelive:ops:daemon": "pnpm build",
+    "live:ops:daemon": "node dist/runtime/live-ops-daemon-cli.js",
+    "prelive:ops:pnl-closeout": "pnpm build",
+    "live:ops:pnl-closeout": "node dist/runtime/live-ops-pnl-closeout-cli.js",
+    "prelive:ops:tui": "pnpm build",
+    "live:ops:tui": "node dist/runtime/live-ops-tui-cli.js",
     "typecheck": "tsc --noEmit",
     "test": "vitest run"
   },
