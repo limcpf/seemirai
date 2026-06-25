@@ -408,8 +408,8 @@ Codex-native 운영은 Codex, Git, GitHub, shell command, 문서 상태를 연�
   아니라 사람 확인 후보로 남겨 주문 lifecycle과 idempotency 경계를 우회하지 않는다.
 - LLM audit 저장은 append-only evidence다. audit 저장 실패는 별도 장애로 다루며, LLM 결과를 주문 허용 신호로 보정하거나
   deterministic 업무 성공을 되돌리는 근거가 될 수 없다.
-- LLM daily report draft는 deterministic daily report 옆의 보조 텍스트다. provider 실패, 비일간 리포트 result, order-like metadata는
-  draft attachment에서 제외하고 원본 report notification payload를 유지한다.
+- LLM daily report draft와 Live Ops briefing draft는 deterministic evidence 옆의 보조 텍스트다. provider 실패, 다른 result type,
+  unsafe output, order-like metadata는 draft attachment에서 제외하고 deterministic report/briefing payload를 유지한다.
 - 실제 Codex OAuth smoke는 `SEEMIRAI_RUN_CODEX_LLM_SMOKE=1`이 있을 때만 실행한다. 기본 검증은 fake runner와 deterministic fixture로
   fail-closed contract를 확인해 CI가 외부 provider 지연에 묶이지 않게 한다.
 

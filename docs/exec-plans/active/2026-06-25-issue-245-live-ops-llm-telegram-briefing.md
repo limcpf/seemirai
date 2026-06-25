@@ -62,6 +62,7 @@ LLM은 deterministic evidence를 사람이 읽기 쉬운 초안으로 낮추는 
 - 2026-06-25: scheduled briefing은 기본 비활성으로 두고 `/brief`는 read-only command로만 추가한다.
 - 2026-06-25: LLM은 deterministic snapshot 설명 초안으로만 사용하고 unsafe output은 deterministic fallback으로 닫는다.
 - 2026-06-25: Sub PR 02 assembler는 provider I/O 없이 `LiveOpsStatusSummary`, decision ledger `WhySummary`, market/portfolio safe projection을 입력으로 받는 순수 조립 경계로 확정했다.
+- 2026-06-25: Sub PR 03 LLM briefing draft는 `live_ops_status_snapshot`/`live_ops_briefing_draft` contract와 redacted deterministic briefing prompt만 사용하며, provider 실패·unsafe output·source mismatch는 deterministic fallback으로 수렴한다.
 
 ## 남은 이슈
 

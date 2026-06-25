@@ -19,6 +19,33 @@ const TimestampSchema = z.union([z.string().datetime({ offset: true }), z.date()
 const MarketCodeSchema = z.string().regex(/^KRW-[A-Z0-9]+$/u, "KRW market code is required");
 const NoticeUrlSchema = z.string().url().max(2_048);
 const ReasonCodeSchema = z.string().trim().min(1).max(128).regex(/^[a-z0-9_:-]+$/u);
+const unsafeResultTextPatterns: readonly { pattern: RegExp; code: string; message: string }[] = [
+  {
+    pattern: /\b(?:BUY|SELL|INCREASE_POSITION)\b/iu,
+    code: "forbidden_trade_action_text",
+    message: "LLM result text contains a forbidden trade action token.",
+  },
+  {
+    pattern: /(?:매수|진입)\s*(?:하세요|하십시오|권고|추천)/iu,
+    code: "direct_buy_advice",
+    message: "LLM result text contains direct buy advice.",
+  },
+  {
+    pattern: /(?:매도|청산)\s*(?:하세요|하십시오|권고|추천)/iu,
+    code: "direct_sell_advice",
+    message: "LLM result text contains direct sell advice.",
+  },
+  {
+    pattern: /(?:목표가|target\s*price)\s*[:：]?\s*[0-9]/iu,
+    code: "target_price_text",
+    message: "LLM result text contains a target price.",
+  },
+  {
+    pattern: /(?:주문\s*수량|position\s*size)\s*[:：]?\s*[0-9]/iu,
+    code: "order_quantity_text",
+    message: "LLM result text contains an order quantity.",
+  },
+];
 
 export const LlmRiskAssistantInputSourceSchema = z.enum(llmRiskAssistantInputSources);
 export const LlmRiskAssistantResultTypeSchema = z.enum(llmRiskAssistantResultTypes);
@@ -120,6 +147,15 @@ export function parseLlmRiskAssistantResult(input: unknown): LlmRiskAssistantRes
     );
   }
 
+  const unsafeIssues = collectUnsafeResultTextIssues(result.data);
+  if (unsafeIssues.length > 0) {
+    // schema shape가 맞아도 문장 안에 매매 지시가 있으면 보조 초안으로 보정하지 않고 provider 실패로 닫는다.
+    throw new LlmRiskAssistantContractError(
+      "llm_risk_assistant_result_unsafe",
+      unsafeIssues,
+    );
+  }
+
   return result.data;
 }
 
@@ -146,4 +182,30 @@ function normalizeContractIssues(issues: readonly ZodIssue[]): readonly LlmRiskA
     code: issue.code,
     message: issue.message,
   }));
+}
+
+/**
+ * schema를 통과한 provider 결과 본문에서 주문 지시형 문구를 찾는다.
+ *
+ * LLM이 JSON field 대신 summary/evidence 문장에 목표가나 주문 수량을 숨길 수 있으므로, 사람이 볼 텍스트 필드도 fail-closed
+ * guard 대상이다. 이 함수는 검사만 수행하며 result를 수정하지 않고 외부 side effect도 만들지 않는다.
+ */
+function collectUnsafeResultTextIssues(result: LlmRiskAssistantResult): readonly LlmRiskAssistantContractIssue[] {
+  return [
+    ...collectUnsafeTextIssues(result.summary, "summary"),
+    ...(result.evidence ?? []).flatMap((entry, index) => collectUnsafeTextIssues(entry, `evidence.${index}`)),
+  ];
+}
+
+function collectUnsafeTextIssues(text: string, path: string): readonly LlmRiskAssistantContractIssue[] {
+  const issues: LlmRiskAssistantContractIssue[] = [];
+
+  for (const { pattern, code, message } of unsafeResultTextPatterns) {
+    pattern.lastIndex = 0;
+    if (pattern.test(text)) {
+      issues.push({ path, code, message });
+    }
+  }
+
+  return issues;
 }
