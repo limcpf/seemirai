@@ -296,6 +296,9 @@ describe("live ops briefing assembler", () => {
             latestDecisionAt: observedAt,
             category: "HOLD",
             reasonCode: "autonomous_24x7_position_hold",
+            trace: {
+              phase: "exit_evaluation",
+            },
           },
           {
             strategyId: "trend-following",
@@ -346,6 +349,92 @@ describe("live ops briefing assembler", () => {
     expect(snapshot.decisions.sellConditions).toEqual(["KRW-BTC: 실행 완료"]);
   });
 
+  it("does not put strategy-backed market HOLD items into entry conditions without direction evidence", () => {
+    const snapshot = createLiveOpsBriefingSnapshot({
+      observedAt,
+      status: createLiveOpsStatusSummary(liveOpsInput()),
+      why: whySummaryFixture({
+        markets: [
+          {
+            market: "KRW-BTC",
+            statusLabel: "포지션 보유",
+            message: "보유 포지션은 손절과 익절 조건을 아직 충족하지 않았습니다.",
+            latestDecisionAt: observedAt,
+            category: "HOLD",
+            reasonCode: "autonomous_24x7_position_hold",
+            trace: {
+              strategyId: "live_ops_autonomous_24x7_core",
+            },
+          },
+        ],
+        strategies: [],
+      }),
+    });
+
+    expect(snapshot.decisions.latestEntryDecision).toContain("최근 frame은 매수 후보를 승인했습니다.");
+    expect(snapshot.decisions.latestExitDecision).toBe("관측 없음");
+    expect(snapshot.decisions.buyConditions).toEqual([]);
+    expect(snapshot.decisions.sellConditions).toEqual([]);
+    expect(snapshot.trace.reasonCodes).toContain("autonomous_24x7_position_hold");
+  });
+
+  it("keeps position-limit entry blocks in buy conditions instead of exit conditions", () => {
+    const snapshot = createLiveOpsBriefingSnapshot({
+      observedAt,
+      status: createLiveOpsStatusSummary(liveOpsInput()),
+      why: whySummaryFixture({
+        markets: [
+          {
+            market: "KRW-BTC",
+            statusLabel: "진입 차단",
+            message: "open position 예산 한도 때문에 신규 진입을 보류했습니다.",
+            latestDecisionAt: observedAt,
+            category: "RISK_REJECTED",
+            reasonCode: "open_position_budget_exceeded",
+            trace: {
+              strategyId: "live_ops_autonomous_24x7_core",
+            },
+          },
+        ],
+        strategies: [],
+      }),
+    });
+
+    expect(snapshot.decisions.latestEntryDecision).toContain("KRW-BTC: 진입 차단");
+    expect(snapshot.decisions.latestExitDecision).toBe("관측 없음");
+    expect(snapshot.decisions.buyConditions).toEqual(["KRW-BTC: 진입 차단"]);
+    expect(snapshot.decisions.sellConditions).toEqual([]);
+  });
+
+  it("uses preserved intent side evidence to keep executed BUY decisions in entry conditions", () => {
+    const snapshot = createLiveOpsBriefingSnapshot({
+      observedAt,
+      status: createLiveOpsStatusSummary(liveOpsInput()),
+      why: whySummaryFixture({
+        markets: [
+          {
+            market: "KRW-BTC",
+            statusLabel: "실행 완료",
+            message: "신규 진입 주문이 체결됐습니다.",
+            latestDecisionAt: observedAt,
+            category: "EXECUTED",
+            reasonCode: "paper_order_accepted",
+            trace: {
+              intentSide: "BUY",
+              strategyId: "live_ops_autonomous_24x7_core",
+            },
+          },
+        ],
+        strategies: [],
+      }),
+    });
+
+    expect(snapshot.decisions.latestEntryDecision).toContain("KRW-BTC: 실행 완료");
+    expect(snapshot.decisions.latestExitDecision).toBe("관측 없음");
+    expect(snapshot.decisions.buyConditions).toEqual(["KRW-BTC: 실행 완료"]);
+    expect(snapshot.decisions.sellConditions).toEqual([]);
+  });
+
   it("does not mark the daemon stopped when only market heartbeat is missing", () => {
     const snapshot = createLiveOpsBriefingSnapshot({
       observedAt,
@@ -366,6 +455,53 @@ describe("live ops briefing assembler", () => {
     expect(snapshot.market.freshnessLabel).toBe("관측 없음");
     expect(briefing).toContain("daemon: 작동 중");
     expect(briefing).not.toContain("daemon: 중지됨");
+  });
+
+  it("does not show stale status heartbeat labels as fresh market data", () => {
+    const staleHeartbeatAt = "2026-06-25T02:53:00.000Z";
+    const snapshot = createLiveOpsBriefingSnapshot({
+      observedAt,
+      status: createLiveOpsStatusSummary(liveOpsInput({
+        marketData: {
+          connectionStatus: "CONNECTED",
+          lagMs: 50,
+          updatedAt: staleHeartbeatAt,
+        },
+        latestHeartbeat: {
+          statusLabel: "수신 확인",
+          message: "market data heartbeat를 확인했습니다.",
+          observedAt: staleHeartbeatAt,
+          action: null,
+          trace: {
+            source: "market_data_status",
+          },
+        },
+      })),
+      why: whySummaryFixture(),
+    });
+    const briefing = formatLiveOpsBriefing(snapshot);
+
+    expect(snapshot.market.freshnessLabel).toBe("시장 데이터 freshness 확인 필요");
+    expect(snapshot.market.summary).toContain("최신 market data heartbeat가 확인되지 않아");
+    expect(snapshot.market.observedAt).toBe(staleHeartbeatAt);
+    expect(briefing).toContain("freshness: 시장 데이터 freshness 확인 필요");
+    expect(briefing).not.toContain("freshness: 수신 확인");
+  });
+
+  it("does not expose live autonomous enabled as live trading enabled when live trading is off", () => {
+    const snapshot = createLiveOpsBriefingSnapshot({
+      observedAt,
+      status: createLiveOpsStatusSummary(liveOpsInput({
+        liveTradingEnabled: false,
+      })),
+      why: whySummaryFixture(),
+    });
+    const briefing = formatLiveOpsBriefing(snapshot);
+
+    expect(snapshot.runtime.liveEnabled).toBe(false);
+    expect(snapshot.runtime.liveArmed).toBe(false);
+    expect(snapshot.runtime.liveOrderCapable).toBe(false);
+    expect(briefing).toContain("실거래 활성화/무장/주문 가능: 아니오 / 아니오 / 아니오");
   });
 
   it("keeps internal risk reason codes in trace instead of user-facing briefing text", () => {
@@ -438,6 +574,43 @@ describe("live ops briefing assembler", () => {
     expect(visibleBriefing).not.toContain("FAILED");
     expect(visibleBriefing).not.toContain("kill switch NORMAL");
     expect(snapshot.trace.reasonCodes).toContain("FAILED");
+  });
+
+  it("keeps explicit balance and position null sources visible instead of treating them as empty holdings", () => {
+    const snapshot = createLiveOpsBriefingSnapshot({
+      observedAt,
+      status: createLiveOpsStatusSummary(liveOpsInput()),
+      why: whySummaryFixture(),
+      portfolio: {
+        cash: {
+          statusLabel: "조회 완료",
+          availableKrw: "120000",
+          totalKrw: "125000",
+          observedAt,
+        },
+        balances: null,
+        positions: null,
+        pnl: {
+          statusLabel: "조회 완료",
+          realizedKrw: "1200",
+          unrealizedKrw: "-300",
+          equityKrw: "1000000",
+          observedAt,
+        },
+      },
+    });
+    const briefing = formatLiveOpsBriefing(snapshot);
+
+    expect(snapshot.portfolio.balances).toEqual([]);
+    expect(snapshot.portfolio.positions).toEqual([]);
+    expect(snapshot.portfolio.balanceStatusLabel).toBe("coin balance source 관측 없음");
+    expect(snapshot.portfolio.positionStatusLabel).toBe("position source 관측 없음");
+    expect(snapshot.trace.reasonCodes).toEqual(expect.arrayContaining([
+      "portfolio_balances_unavailable",
+      "portfolio_positions_unavailable",
+    ]));
+    expect(briefing).toContain("coin/position: coin balance source 관측 없음");
+    expect(briefing).toContain("position scope: position source 관측 없음");
   });
 
   it("represents missing provider sources as unavailable observations without zero coercion", () => {
@@ -683,6 +856,7 @@ function whySummaryFixture(overrides: {
         trace: {
           category: item.category,
           reasonCode: item.reasonCode,
+          ...(item.trace ?? {}),
         },
       })),
       trace: {
@@ -834,4 +1008,5 @@ interface WhyStrategyItemFixture {
   latestDecisionAt: string;
   category: DecisionCategory;
   reasonCode: string;
+  trace?: Record<string, unknown> | undefined;
 }

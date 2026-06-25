@@ -430,6 +430,8 @@ export function buildDecisionLedgerFromRunnerResult(
     const market = resolveMarket(group.trace);
     const strategyId = group.strategyId;
     const correlationId = resolveCorrelationId(group.trace);
+    const intentSide = resolveGroupIntentSide(group.trace);
+    const positionEffect = resolveGroupPositionEffect(group.trace);
     const dedupeKey = buildFrameDedupeKey(dedupeKeyPrefix, sourceFrameId, strategyId);
 
     const traceJson: DecisionLedgerJsonRecord = {
@@ -441,6 +443,8 @@ export function buildDecisionLedgerFromRunnerResult(
       ...(market !== null ? { resolvedMarket: market } : {}),
       ...(strategyId !== null ? { resolvedStrategyId: strategyId } : {}),
       ...(correlationId !== null ? { resolvedCorrelationId: correlationId } : {}),
+      ...(intentSide !== null ? { intentSide } : {}),
+      ...(positionEffect !== null ? { positionEffect } : {}),
     };
 
     const baseFrame = {
@@ -839,6 +843,56 @@ function resolveCorrelationId(
 }
 
 /**
+ * flow trace에서 주문 의도 side를 추출해 frame trace에 보존한다.
+ *
+ * EXECUTED frame category는 side를 잃기 쉬우므로 최신 stage metadata를 우선하고, 없으면 conversion 단계의
+ * `intent_directions`를 사용한다. 값을 찾지 못하면 BUY/SELL을 추정하지 않고 `null`로 남긴다.
+ */
+function resolveGroupIntentSide(
+  trace: readonly PaperDecisionRunnerTraceRecord[],
+): "BUY" | "SELL" | null {
+  for (let index = trace.length - 1; index >= 0; index -= 1) {
+    const record = trace[index]!;
+    const side = normalizeIntentSide(
+      readStringMetadata(record.metadata, "intent_side") ??
+      readStringMetadata(record.metadata, "intentSide") ??
+      readStringMetadata(record.metadata, "side"),
+    );
+    if (side !== null) {
+      return side;
+    }
+
+    const directions = readStringArray(record.metadata?.intent_directions)
+      .map(normalizeIntentSide)
+      .filter((direction): direction is "BUY" | "SELL" => direction !== null);
+    if (directions.length > 0) {
+      return directions[0]!;
+    }
+  }
+  return null;
+}
+
+/**
+ * flow trace에서 position effect를 추출해 exit/entry briefing 분류 근거로 보존한다.
+ *
+ * `position_effect=EXIT|REDUCE`는 SELL exit 근거로 쓰이고, `ENTRY|INCREASE`는 신규 진입 근거로 쓰인다. metadata에
+ * 명시된 값이 없으면 reason code 문자열로 추정하지 않는다.
+ */
+function resolveGroupPositionEffect(
+  trace: readonly PaperDecisionRunnerTraceRecord[],
+): string | null {
+  for (let index = trace.length - 1; index >= 0; index -= 1) {
+    const record = trace[index]!;
+    const positionEffect = readStringMetadata(record.metadata, "position_effect") ??
+      readStringMetadata(record.metadata, "positionEffect");
+    if (positionEffect !== null && positionEffect.trim().length > 0) {
+      return positionEffect.trim().toUpperCase();
+    }
+  }
+  return null;
+}
+
+/**
  * source run, input frame, strategy flow가 같은 재실행을 하나의 ledger frame으로 묶는 dedupe key를 만든다.
  */
 function buildFrameDedupeKey(
@@ -886,6 +940,32 @@ function isPositiveQuantity(value: unknown): boolean {
  */
 function readStringArray(value: unknown): readonly string[] {
   return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
+}
+
+/**
+ * JSON metadata에서 안전한 문자열 값만 읽는다.
+ *
+ * raw metadata 전체를 frame trace로 복사하지 않고, side/effect 분류에 필요한 개별 문자열만 allowlist로 추출한다.
+ */
+function readStringMetadata(metadata: Record<string, unknown> | undefined, key: string): string | null {
+  const value = metadata?.[key];
+  return typeof value === "string" && value.trim().length > 0 ? value : null;
+}
+
+/**
+ * 주문 방향 alias를 BUY/SELL로 정규화한다.
+ *
+ * 알 수 없는 값은 HOLD나 BUY로 보정하지 않고 null로 남겨 briefing 분류가 방향을 추정하지 않게 한다.
+ */
+function normalizeIntentSide(value: string | null): "BUY" | "SELL" | null {
+  const normalized = value?.trim().toUpperCase();
+  if (normalized === "BUY" || normalized === "BID") {
+    return "BUY";
+  }
+  if (normalized === "SELL" || normalized === "ASK") {
+    return "SELL";
+  }
+  return null;
 }
 
 /**

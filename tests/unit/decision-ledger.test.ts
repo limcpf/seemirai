@@ -769,6 +769,7 @@ describe("Frame builder (producer)", () => {
     expect(frame.exchange).toBe("UPBIT");
     expect(frame.dedupeKey).toContain("run-smoke-001");
     expect(frame.dedupeKey).toContain("frame-001");
+    expect(frame.trace.intentSide).toBe("BUY");
 
     // FRAME_RECEIVED는 evidence로 변환되지 않는다
     const evidenceKinds = evidenceItems.map((item) => item.evidenceKind);
@@ -1178,8 +1179,8 @@ describe("Frame builder (producer)", () => {
         { frameId: "sell-side-frame", strategyId: "strategy.sell", stage: "FRAME_RECEIVED", status: "received", observedAt: "2026-06-06T10:00:00Z" },
         { frameId: "sell-side-frame", strategyId: "strategy.sell", stage: "STRATEGY_DECISION", status: "SELL", reasonCode: "trend_down", message: "매도", observedAt: "2026-06-06T10:00:01Z" },
         { frameId: "sell-side-frame", strategyId: "strategy.sell", stage: "ORDER_INTENT_CONVERSION", status: "CONVERTED", reasonCode: "order_intent_promoted", message: "변환", observedAt: "2026-06-06T10:00:02Z", metadata: { intent_directions: ["SELL"] } },
-        { frameId: "sell-side-frame", strategyId: "strategy.sell", stage: "COST_DECISION", status: "ALLOW", reasonCode: "cost_margin_ok", message: "비용 통과", observedAt: "2026-06-06T10:00:03Z", metadata: { trade_allowed: true, intent_side: "SELL" } },
-        { frameId: "sell-side-frame", strategyId: "strategy.sell", stage: "RISK_DECISION", status: "PASS", reasonCode: "ALLOW", message: "리스크 통과", observedAt: "2026-06-06T10:00:04Z", metadata: { approved: true, intent_side: "SELL" } },
+        { frameId: "sell-side-frame", strategyId: "strategy.sell", stage: "COST_DECISION", status: "ALLOW", reasonCode: "cost_margin_ok", message: "비용 통과", observedAt: "2026-06-06T10:00:03Z", metadata: { trade_allowed: true, intent_side: "SELL", position_effect: "REDUCE" } },
+        { frameId: "sell-side-frame", strategyId: "strategy.sell", stage: "RISK_DECISION", status: "PASS", reasonCode: "ALLOW", message: "리스크 통과", observedAt: "2026-06-06T10:00:04Z", metadata: { approved: true, intent_side: "SELL", position_effect: "REDUCE" } },
       ] as const,
     };
 
@@ -1191,6 +1192,8 @@ describe("Frame builder (producer)", () => {
 
     const costEvidence = frames[0]!.evidenceItems.find((item) => item.evidenceKind === "COST_BREAKDOWN");
     const riskEvidence = frames[0]!.evidenceItems.find((item) => item.evidenceKind === "RISK_DECISION");
+    expect(frames[0]!.frame.trace.intentSide).toBe("SELL");
+    expect(frames[0]!.frame.trace.positionEffect).toBe("REDUCE");
     expect(costEvidence!.category).toBe("SELL");
     expect(riskEvidence!.category).toBe("SELL");
   });

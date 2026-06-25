@@ -49,7 +49,7 @@ export function createLiveOpsBriefingSnapshot(
     schemaVersion: LIVE_OPS_BRIEFING_SCHEMA_VERSION,
     observedAt: input.observedAt,
     headline: createHeadline(input.status),
-    runtime: createRuntime(input.status),
+    runtime: createRuntime(input.status, input.liveTradingEnabled),
     market: createMarket(input.market, input.status),
     decisions: createDecisions(input.status, input.why),
     portfolio: createPortfolio(input.portfolio, input.status),
@@ -77,7 +77,10 @@ function createHeadline(status: LiveOpsStatusSummary | null): LiveOpsBriefingHea
   };
 }
 
-function createRuntime(status: LiveOpsStatusSummary | null): LiveOpsBriefingRuntimeSnapshot {
+function createRuntime(
+  status: LiveOpsStatusSummary | null,
+  liveTradingEnabled: boolean | null | undefined,
+): LiveOpsBriefingRuntimeSnapshot {
   if (status === null) {
     // daemon/readiness 결측은 live armed로 보정하면 위험하므로 모든 runtime capability를 닫는다.
     return {
@@ -94,7 +97,7 @@ function createRuntime(status: LiveOpsStatusSummary | null): LiveOpsBriefingRunt
     // status source 응답은 daemon 관측 가능 상태로 보고, market heartbeat 장애를 daemon 중지로 오인하지 않는다.
     daemonAlive: true,
     runModeLabel: labelOperatingMode(status.mode),
-    liveEnabled: status.liveEnabled,
+    liveEnabled: liveTradingEnabled ?? isLiveTradingMode(status),
     liveArmed: status.mode === "live_armed" || status.mode === "live_order_capable",
     liveOrderCapable: status.liveOrderCapable,
     readinessGuard: status.action ?? status.message,
@@ -115,6 +118,15 @@ function createMarket(
       freshnessLabel: unavailableText,
       summary: "시장 데이터 freshness source가 아직 briefing assembler에 연결되지 않았습니다.",
       observedAt: null,
+    };
+  }
+
+  if (readTraceString(status.trace, "reason") === "heartbeat_unavailable") {
+    // status summary가 stale heartbeat를 이미 차단했으면 오래된 수신 label을 정상 freshness처럼 재사용하지 않는다.
+    return {
+      freshnessLabel: "시장 데이터 freshness 확인 필요",
+      summary: status.message,
+      observedAt: status.latestHeartbeat.observedAt,
     };
   }
 
@@ -194,7 +206,9 @@ function createPortfolio(
       observedAt: null,
     },
     balances: source.balances ?? [],
+    ...(source.balances === null ? { balanceStatusLabel: "coin balance source 관측 없음" } : {}),
     positions: source.positions ?? [],
+    ...(source.positions === null ? { positionStatusLabel: "position source 관측 없음" } : {}),
     pnl,
     openExposureKrw: source.openExposureKrw === undefined ? status?.budget.openExposureKrw ?? null : source.openExposureKrw,
     budgetUsedKrw: source.budgetUsedKrw === undefined ? status?.budget.dailyNotionalUsedKrw ?? null : source.budgetUsedKrw,
@@ -311,6 +325,14 @@ function collectSourceAvailabilityReasons(input: CreateLiveOpsBriefingSnapshotIn
   if (input.portfolio === null || input.portfolio === undefined) {
     reasons.push("portfolio_source_unavailable");
   }
+  if (input.portfolio !== null && input.portfolio !== undefined) {
+    if (input.portfolio.balances === null) {
+      reasons.push("portfolio_balances_unavailable");
+    }
+    if (input.portfolio.positions === null) {
+      reasons.push("portfolio_positions_unavailable");
+    }
+  }
   return reasons;
 }
 
@@ -318,6 +340,7 @@ function createTraceMetadata(input: CreateLiveOpsBriefingSnapshotInput): JsonRec
   const base: JsonRecord = {
     liveOpsStatus: input.status?.status ?? "unavailable",
     liveOpsMode: input.status?.mode ?? "unavailable",
+    liveTradingEnabled: input.liveTradingEnabled ?? "not_provided",
     whyReadStatus: input.why?.readStatus ?? "unavailable",
   };
   return input.trace?.metadata === undefined
@@ -456,9 +479,19 @@ function isEntryMarketItem(item: WhyMarketSummary): boolean {
     return false;
   }
 
+  if (hasEntryDecisionTrace(item.trace)) {
+    return true;
+  }
+
   const category = readTraceString(item.trace, "category");
   if (category === "EXECUTED" || category === "EXECUTION_REJECTED") {
-    return hasEntrySideTrace(item.trace);
+    return false;
+  }
+
+  const strategyId = readFirstTraceString(item.trace, ["strategyId", "strategy_id", "resolvedStrategyId"]);
+  if (strategyId !== null) {
+    // market+strategy frame은 entry/exit 방향 근거가 없으면 매수 조건으로 단정하지 않는다.
+    return false;
   }
 
   return true;
@@ -497,12 +530,16 @@ function isExitDecisionTrace(trace: JsonRecord): boolean {
   return (
     phase.includes("exit") ||
     source.includes("exit") ||
-    reasonCode.includes("exit") ||
-    reasonCode.includes("position")
+    reasonCode.includes("exit")
   );
 }
 
-function hasEntrySideTrace(trace: JsonRecord): boolean {
+function hasEntryDecisionTrace(trace: JsonRecord): boolean {
+  const category = readTraceString(trace, "category");
+  if (category === "BUY") {
+    return true;
+  }
+
   const side = readFirstTraceString(trace, ["side", "orderSide", "order_side", "intentSide", "intent_side", "decisionSide", "decision_side"])
     ?.toUpperCase();
   if (side === "BUY" || side === "BID") {
@@ -511,7 +548,33 @@ function hasEntrySideTrace(trace: JsonRecord): boolean {
 
   const positionEffect = readFirstTraceString(trace, ["positionEffect", "position_effect"])
     ?.toUpperCase();
-  return positionEffect === "ENTRY" || positionEffect === "INCREASE";
+  if (positionEffect === "ENTRY" || positionEffect === "INCREASE") {
+    return true;
+  }
+
+  const phase = readTraceString(trace, "phase")?.toLowerCase() ?? "";
+  const source = readTraceString(trace, "source")?.toLowerCase() ?? "";
+  const reasonCode = readTraceString(trace, "reasonCode")?.toLowerCase() ?? "";
+  return (
+    phase.includes("entry") ||
+    source.includes("entry") ||
+    reasonCode.includes("entry") ||
+    reasonCode.includes("buy") ||
+    isKnownEntryRiskReasonCode(reasonCode)
+  );
+}
+
+/**
+ * 신규 진입 한도 차단으로 계약된 decision-ledger reason code인지 판정한다.
+ *
+ * position 단어만으로 exit을 추정하지 않기 위해 entry risk reason allowlist만 사용한다. 이 함수는 분류만 수행하며 trace나
+ * snapshot을 변경하지 않는다.
+ */
+function isKnownEntryRiskReasonCode(reasonCode: string): boolean {
+  return reasonCode === "open_position_budget_exceeded" ||
+    reasonCode === "btc_eth_position_limit_exceeded" ||
+    reasonCode === "single_alt_position_limit_exceeded" ||
+    reasonCode === "exposure_limit_exceeded";
 }
 
 function readFirstTraceString(trace: JsonRecord, keys: readonly string[]): string | null {
@@ -634,6 +697,16 @@ function labelOperatingMode(mode: LiveOpsStatusSummary["mode"]): string {
     case "dry_run":
       return "모의 운영";
   }
+}
+
+/**
+ * status summary mode가 실제 live trading 활성 표시에 사용할 수 있는지 판정한다.
+ *
+ * `status.liveEnabled`는 guard 활성화일 수 있으므로 briefing의 실거래 활성화 표시는 live armed/order-capable mode만 true로
+ * 낮춘다. 외부 provider 호출이나 runtime 상태 변경 side effect는 없다.
+ */
+function isLiveTradingMode(status: LiveOpsStatusSummary): boolean {
+  return status.mode === "live_armed" || status.mode === "live_order_capable";
 }
 
 function uniqueText(values: readonly (string | null | undefined)[]): string[] {

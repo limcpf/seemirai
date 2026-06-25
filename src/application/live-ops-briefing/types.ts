@@ -130,7 +130,19 @@ export interface LiveOpsBriefingPnlSnapshot {
 export interface LiveOpsBriefingPortfolioSnapshot {
   cash: LiveOpsBriefingCashSnapshot;
   balances: readonly LiveOpsBriefingBalanceSnapshot[];
+  /**
+   * coin balance source가 명시적으로 결측일 때 formatter가 빈 잔고와 조회 실패를 구분하기 위한 한국어 상태 문구다.
+   *
+   * 값이 있으면 `balances=[]`는 무보유가 아니라 source 결측을 의미하며, 내부 reason code는 `trace.reasonCodes`에 따로 둔다.
+   */
+  balanceStatusLabel?: string | null | undefined;
   positions: readonly LiveOpsBriefingPositionSnapshot[];
+  /**
+   * position source가 명시적으로 결측일 때 formatter가 무포지션과 조회 실패를 구분하기 위한 한국어 상태 문구다.
+   *
+   * 값이 있으면 `positions=[]`는 무포지션이 아니라 source 결측을 의미하며, broker/provider 재조회 side effect는 만들지 않는다.
+   */
+  positionStatusLabel?: string | null | undefined;
   pnl: LiveOpsBriefingPnlSnapshot;
   openExposureKrw: string | null;
   budgetUsedKrw: string | null;
@@ -218,6 +230,13 @@ export interface CreateLiveOpsBriefingSnapshotInput {
   observedAt: string;
   status: LiveOpsStatusSummary | null;
   why: WhySummary | null;
+  /**
+   * 실제 live trading config가 켜져 있는지 나타내는 optional runtime projection이다.
+   *
+   * `/status` summary의 `liveEnabled`는 live autonomous guard 활성화를 뜻할 수 있으므로, caller가 이 값을 제공하면 briefing은
+   * 실거래 활성화 표시를 이 값으로 낮춘다. 제공되지 않으면 summary mode/order-capable 값으로 fail-closed 추정한다.
+   */
+  liveTradingEnabled?: boolean | null | undefined;
   market?: LiveOpsBriefingMarketSourceInput | null | undefined;
   portfolio?: LiveOpsBriefingPortfolioSourceInput | null | undefined;
   trace?: Partial<LiveOpsBriefingTraceSnapshot> | undefined;
