@@ -19,7 +19,8 @@ describe("live ops briefing", () => {
     expect(briefing).toContain("매도 조건: 익절 조건 미충족, 손절 조건 미충족");
     expect(briefing).toContain("현금: 사용 가능 120000 KRW");
     expect(briefing).toContain("coin/position: KRW-BTC 0.002 BTC 보유");
-    expect(briefing).toContain("PnL: 실현 1200 KRW, 미실현 -300 KRW");
+    expect(briefing).toContain("position scope: KRW-BTC 0.002 전략 보유 (평균단가 60000000 KRW)");
+    expect(briefing).toContain("PnL: 실현 1200 KRW, 미실현 -300 KRW, 평가 1000000 KRW");
     expect(briefing).toContain("추적 정보");
     expect(briefing.indexOf("상태:")).toBeLessThan(briefing.indexOf("추적 정보"));
     expect(briefing.indexOf("live_order_capable")).toBeGreaterThan(briefing.indexOf("추적 정보"));
@@ -87,6 +88,55 @@ describe("live ops briefing", () => {
     expect(briefing).not.toContain("raw order detail");
     expect(briefing).not.toContain("telegram_bot_token");
     expect(briefing).not.toContain("access_key=secret-value");
+  });
+
+  it("redacts standalone JWT values and flags sensitive metadata keys", () => {
+    const unsafeSnapshot = liveOpsBriefingSnapshot({
+      headline: {
+        statusLabel: "실매매 준비 중",
+        cause: "standalone jwt eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0In0.signaturevalue",
+        impact: "신규 진입 판단에는 사용하지 않습니다.",
+        action: "운영자가 source를 다시 확인하세요.",
+      },
+      trace: {
+        evidenceIds: ["live-ops-status-1"],
+        reasonCodes: ["live_order_capable"],
+        sourceIds: ["status-summary"],
+        metadata: {
+          secret_key: "opaque-value",
+          rawProviderPayload: {
+            nested: true,
+          },
+        },
+      },
+    });
+
+    const issues = validateLiveOpsBriefingSnapshotSafety(unsafeSnapshot);
+    const briefing = formatLiveOpsBriefing(unsafeSnapshot);
+
+    expect(issues.map((issue) => issue.path)).toEqual([
+      "headline.cause",
+      "trace.metadata.secret_key",
+      "trace.metadata.rawProviderPayload",
+    ]);
+    expect(briefing).not.toContain("eyJhbGciOiJIUzI1NiJ9");
+    expect(briefing).toContain("[비공개]");
+  });
+
+  it("distinguishes a stopped daemon from missing daemon observations", () => {
+    const briefing = formatLiveOpsBriefing(liveOpsBriefingSnapshot({
+      runtime: {
+        daemonAlive: false,
+        runModeLabel: "live armed",
+        liveEnabled: true,
+        liveArmed: true,
+        liveOrderCapable: false,
+        readinessGuard: "daemon heartbeat 중단",
+      },
+    }));
+
+    expect(briefing).toContain("daemon: 중지됨");
+    expect(briefing).not.toContain("daemon: 관측 없음");
   });
 
   it("truncates deterministic briefing text within the Telegram message limit", () => {

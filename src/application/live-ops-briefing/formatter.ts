@@ -15,9 +15,18 @@ const unsafeTextPatterns: readonly { pattern: RegExp; reason: string }[] = [
   { pattern: /raw\s+order\s+detail/giu, reason: "raw_order_detail" },
   { pattern: /\bAuthorization\s*:\s*[^\r\n,;]+/giu, reason: "authorization_header" },
   { pattern: /\bBearer\s+[A-Za-z0-9._~+/=-]+/giu, reason: "bearer_token" },
+  { pattern: /\b[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{8,}\b/gu, reason: "jwt_token" },
   { pattern: /\btelegram_bot_token\s*=\s*[^/?&#\s]+/giu, reason: "telegram_token" },
   { pattern: /\b(?:access|secret)[_-]?key\s*=\s*[^/?&#\s]+/giu, reason: "api_key" },
   { pattern: /\b(?:api[_-]?key|token|secret)[=/][^/?&#\s]+/giu, reason: "secret_like_value" },
+];
+
+const unsafeKeyPatterns: readonly { pattern: RegExp; reason: string }[] = [
+  { pattern: /raw[_-]?provider[_-]?payload/iu, reason: "raw_provider_payload_key" },
+  { pattern: /raw[_-]?order[_-]?detail/iu, reason: "raw_order_detail_key" },
+  { pattern: /authorization/iu, reason: "authorization_key" },
+  { pattern: /jwt/iu, reason: "jwt_key" },
+  { pattern: /(?:api[_-]?key|access[_-]?key|secret[_-]?key|token|secret|password|credential)/iu, reason: "secret_key" },
 ];
 
 /**
@@ -44,7 +53,7 @@ export function formatLiveOpsBriefing(
     `필요 조치: ${sanitizeText(snapshot.headline.action)}`,
     "",
     "운영 상태",
-    `- daemon: ${snapshot.runtime.daemonAlive ? "작동 중" : "관측 없음"}`,
+    `- daemon: ${formatDaemonState(snapshot.runtime.daemonAlive)}`,
     `- 실행 모드: ${sanitizeText(snapshot.runtime.runModeLabel)}`,
     `- live enabled/armed/order capable: ${formatBoolean(snapshot.runtime.liveEnabled)} / ${formatBoolean(snapshot.runtime.liveArmed)} / ${formatBoolean(snapshot.runtime.liveOrderCapable)}`,
     `- readiness guard: ${sanitizeText(snapshot.runtime.readinessGuard)}`,
@@ -65,6 +74,7 @@ export function formatLiveOpsBriefing(
     "wallet/cash/coin",
     `- 현금: ${formatCash(snapshot.portfolio)}`,
     `- coin/position: ${formatCoinPosition(snapshot.portfolio)}`,
+    `- position scope: ${formatPositionScope(snapshot.portfolio)}`,
     `- PnL: ${formatPnl(snapshot.portfolio)}`,
     `- 예산/노출: ${formatBudgetExposure(snapshot.portfolio)}`,
     "",
@@ -125,12 +135,26 @@ function formatBalance(balance: LiveOpsBriefingBalanceSnapshot): string {
   return `${sanitizeText(balance.market)} ${formatNullableText(balance.total)} ${sanitizeText(balance.currency)} ${sanitizeText(balance.statusLabel)}`;
 }
 
+function formatPositionScope(portfolio: LiveOpsBriefingPortfolioSnapshot): string {
+  if (portfolio.positions.length === 0) {
+    return "관측 없음";
+  }
+  return portfolio.positions
+    .map((position) => {
+      const averageEntry = position.averageEntryPriceKrw === null
+        ? "평균단가 관측 없음"
+        : `평균단가 ${sanitizeText(position.averageEntryPriceKrw)} KRW`;
+      return `${sanitizeText(position.market)} ${formatNullableText(position.quantity)} ${sanitizeText(position.statusLabel)} (${averageEntry})`;
+    })
+    .join(", ");
+}
+
 function formatPnl(portfolio: LiveOpsBriefingPortfolioSnapshot): string {
   const { pnl } = portfolio;
-  if (pnl.realizedKrw === null && pnl.unrealizedKrw === null) {
+  if (pnl.realizedKrw === null && pnl.unrealizedKrw === null && pnl.equityKrw === null) {
     return sanitizeText(pnl.statusLabel);
   }
-  return `실현 ${formatNullableKrw(pnl.realizedKrw)}, 미실현 ${formatNullableKrw(pnl.unrealizedKrw)}`;
+  return `실현 ${formatNullableKrw(pnl.realizedKrw)}, 미실현 ${formatNullableKrw(pnl.unrealizedKrw)}, 평가 ${formatNullableKrw(pnl.equityKrw)}`;
 }
 
 function formatBudgetExposure(portfolio: LiveOpsBriefingPortfolioSnapshot): string {
@@ -157,6 +181,10 @@ function formatNullableKrw(value: string | null): string {
 
 function formatBoolean(value: boolean): string {
   return value ? "예" : "아니오";
+}
+
+function formatDaemonState(daemonAlive: boolean): string {
+  return daemonAlive ? "작동 중" : "중지됨";
 }
 
 function sanitizeText(value: string): string {
@@ -191,7 +219,13 @@ function collectSafetyIssues(value: unknown, path: readonly string[]): readonly 
     return value.flatMap((item, index) => collectSafetyIssues(item, [...path, String(index)]));
   }
 
-  return Object.entries(value).flatMap(([key, entryValue]) => collectSafetyIssues(entryValue, [...path, key]));
+  return Object.entries(value).flatMap(([key, entryValue]) => {
+    const entryPath = [...path, key];
+    return [
+      ...collectKeyIssues(key, entryPath),
+      ...collectSafetyIssues(entryValue, entryPath),
+    ];
+  });
 }
 
 function collectStringIssues(value: string, path: readonly string[]): readonly LiveOpsBriefingSafetyIssue[] {
@@ -202,6 +236,20 @@ function collectStringIssues(value: string, path: readonly string[]): readonly L
         path: path.join("."),
         reason,
         redactedPreview: sanitizeText(value).slice(0, 160),
+      }];
+    }
+  }
+  return [];
+}
+
+function collectKeyIssues(key: string, path: readonly string[]): readonly LiveOpsBriefingSafetyIssue[] {
+  for (const { pattern, reason } of unsafeKeyPatterns) {
+    pattern.lastIndex = 0;
+    if (pattern.test(key)) {
+      return [{
+        path: path.join("."),
+        reason,
+        redactedPreview: redactedMarker,
       }];
     }
   }
