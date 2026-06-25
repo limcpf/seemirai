@@ -11,8 +11,8 @@ const redactedMarker = "[비공개]";
 const omittedMarker = "\n[이후 생략]";
 
 const unsafeTextPatterns: readonly { pattern: RegExp; reason: string }[] = [
-  { pattern: /raw(?:[\s_-]?provider[\s_-]?payload|ProviderPayload)\s*[:=]\s*(?:"[^"]*"|'[^']*'|\{[^\r\n]*?\}|\[[^\r\n]*?\]|[^\s,;]+)/giu, reason: "raw_provider_payload" },
-  { pattern: /raw(?:[\s_-]?order[\s_-]?detail|OrderDetail)\s*[:=]\s*(?:"[^"]*"|'[^']*'|\{[^\r\n]*?\}|\[[^\r\n]*?\]|[^\s,;]+)/giu, reason: "raw_order_detail" },
+  { pattern: /raw(?:[\s_-]?provider[\s_-]?payload|ProviderPayload)\s*[:=]\s*.*/giu, reason: "raw_provider_payload" },
+  { pattern: /raw(?:[\s_-]?order[\s_-]?detail|OrderDetail)\s*[:=]\s*.*/giu, reason: "raw_order_detail" },
   { pattern: /raw[\s_-]?provider[\s_-]?payload/giu, reason: "raw_provider_payload" },
   { pattern: /raw[\s_-]?order[\s_-]?detail/giu, reason: "raw_order_detail" },
   { pattern: /https:\/\/api\.telegram\.org\/bot[^/\s]+\/[A-Za-z][A-Za-z0-9_]*/giu, reason: "telegram_token_url" },
@@ -20,6 +20,9 @@ const unsafeTextPatterns: readonly { pattern: RegExp; reason: string }[] = [
   { pattern: /\bBearer\s+[A-Za-z0-9._~+/=-]+/giu, reason: "bearer_token" },
   { pattern: /\b[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{8,}\b/gu, reason: "jwt_token" },
   { pattern: /\b(?:SEEMIRAI_)?TELEGRAM_BOT_TOKEN\s*[:=]\s*(?:"[^"]*"|'[^']*'|[^\s,;}]+)/giu, reason: "telegram_token" },
+  { pattern: /\b(?:SEEMIRAI_)?(?:TUI_)?(?:LOCAL_)?CONTROL_TOKEN\s*[:=]\s*(?:"[^"]*"|'[^']*'|[^\s,;}]+)/giu, reason: "local_control_token" },
+  { pattern: /(?<![A-Za-z0-9_-])["']?localControlToken["']?\s*[:=]\s*(?:"[^"]*"|'[^']*'|[^\s,;&}]+)/giu, reason: "local_control_token" },
+  { pattern: /\bquery[_-]?hash\s*[:=]\s*(?:"[^"]*"|'[^']*'|[^\s,;}]+)/giu, reason: "query_hash" },
   { pattern: /(?<![A-Za-z0-9_-])["']?(?:telegram)?botToken["']?\s*[:=]\s*(?:"[^"]*"|'[^']*'|[^\s,;&}]+)/giu, reason: "telegram_token" },
   { pattern: /\b(?:SEEMIRAI_)?(?:UPBIT_)?(?:ACCESS|SECRET)_KEY\s*[:=]\s*(?:"[^"]*"|'[^']*'|[^\s,;}]+)/giu, reason: "api_key" },
   { pattern: /\b(?:access|secret)[_-]?key\s*=\s*[^\s,;}]+/giu, reason: "api_key" },
@@ -35,6 +38,7 @@ const unsafeKeyPatterns: readonly { pattern: RegExp; reason: string }[] = [
   { pattern: /raw[_-]?order[_-]?detail/iu, reason: "raw_order_detail_key" },
   { pattern: /authorization/iu, reason: "authorization_key" },
   { pattern: /jwt/iu, reason: "jwt_key" },
+  { pattern: /query[_-]?hash/iu, reason: "query_hash_key" },
   { pattern: /database[_-]?url/iu, reason: "database_url_key" },
   { pattern: /(?:api[_-]?key|access[_-]?key|secret[_-]?key|token|secret|password|credential)/iu, reason: "secret_key" },
 ];

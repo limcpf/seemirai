@@ -267,6 +267,57 @@ describe("live ops briefing", () => {
     expect(briefing).not.toContain("\"state\":\"wait\"");
   });
 
+  it("redacts nested and escaped raw payload bodies after raw payload labels", () => {
+    const unsafeSnapshot = liveOpsBriefingSnapshot({
+      headline: {
+        statusLabel: "실매매 준비 중",
+        cause: "rawProviderPayload=\"{\\\"uuid\\\":\\\"nested-provider-id\\\",\\\"nested\\\":{\\\"price\\\":\\\"100\\\"}}\"",
+        impact: "raw_order_detail={\"outer\":{\"uuid\":\"nested-order-id\",\"state\":\"wait\"}}",
+        action: "운영자에게 safe summary만 보여줍니다.",
+      },
+    });
+
+    const issues = validateLiveOpsBriefingSnapshotSafety(unsafeSnapshot);
+    const briefing = formatLiveOpsBriefing(unsafeSnapshot);
+
+    expect(issues.map((issue) => issue.path)).toEqual([
+      "headline.cause",
+      "headline.impact",
+    ]);
+    expect(briefing).toContain("[비공개]");
+    expect(briefing).not.toContain("nested-provider-id");
+    expect(briefing).not.toContain("nested-order-id");
+    expect(briefing).not.toContain("\\\"price\\\"");
+    expect(briefing).not.toContain("\"state\":\"wait\"");
+  });
+
+  it("redacts local control tokens and Upbit query hashes", () => {
+    const unsafeSnapshot = liveOpsBriefingSnapshot({
+      operations: {
+        openOrders: "미체결 주문 0건",
+        reconcile: "SEEMIRAI_TUI_CONTROL_TOKEN=control/secret?value 확인 필요",
+        risk: "local_control_token=local-control-secret 값은 출력하지 않습니다.",
+        alertRetry: "query_hash=abcdef1234567890 원문은 남기지 않습니다.",
+      },
+    });
+
+    const issues = validateLiveOpsBriefingSnapshotSafety(unsafeSnapshot);
+    const briefing = formatLiveOpsBriefing(unsafeSnapshot);
+
+    expect(issues.map((issue) => issue.path)).toEqual([
+      "operations.reconcile",
+      "operations.risk",
+      "operations.alertRetry",
+    ]);
+    expect(briefing).toContain("[비공개]");
+    expect(briefing).not.toContain("SEEMIRAI_TUI_CONTROL_TOKEN");
+    expect(briefing).not.toContain("control/secret?value");
+    expect(briefing).not.toContain("local_control_token");
+    expect(briefing).not.toContain("local-control-secret");
+    expect(briefing).not.toContain("query_hash");
+    expect(briefing).not.toContain("abcdef1234567890");
+  });
+
   it("collapses newlines inside snapshot fields before rendering labels", () => {
     const briefing = formatLiveOpsBriefing(liveOpsBriefingSnapshot({
       headline: {
