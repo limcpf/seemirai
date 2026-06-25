@@ -23,6 +23,8 @@ import type {
 } from "./types.js";
 
 const unavailableText = "관측 없음";
+const marketProjectionUnavailableSummary = "시장 데이터 시황 projection이 아직 briefing assembler에 연결되지 않았습니다.";
+const marketFreshnessSourceUnavailableSummary = "시장 데이터 freshness source가 아직 briefing assembler에 연결되지 않았습니다.";
 const marketHeartbeatFreshnessWindowMs = 5 * 60 * 1000;
 
 interface BriefingWhyDecisionItem {
@@ -114,16 +116,28 @@ function createMarket(
     return market;
   }
 
-  if (market === null || status === null || status.latestHeartbeat.observedAt === null) {
+  if (market === null) {
     // market freshness 결측은 stale/healthy 어느 쪽으로도 추정하지 않고 관측 불가로 남긴다.
     return {
       freshnessLabel: unavailableText,
-      summary: "시장 데이터 freshness source가 아직 briefing assembler에 연결되지 않았습니다.",
+      summary: marketFreshnessSourceUnavailableSummary,
       observedAt: null,
     };
   }
 
-  const heartbeatFreshnessIssue = resolveMarketHeartbeatFreshnessIssue(status.latestHeartbeat.observedAt, observedAt);
+  if (status === null || status.latestHeartbeat.observedAt === null) {
+    // market projection 미연결 상태에서는 status heartbeat를 정상 시황으로 승격하지 않는다.
+    return {
+      freshnessLabel: unavailableText,
+      summary: marketProjectionUnavailableSummary,
+      observedAt: null,
+    };
+  }
+
+  const heartbeatFreshnessIssue = resolveMarketHeartbeatFreshnessIssue(
+    status.latestHeartbeat.observedAt,
+    observedAt,
+  );
   if (heartbeatFreshnessIssue !== null) {
     // status reason이 다른 guard에서 먼저 정해졌더라도 market freshness는 heartbeat 시각으로 다시 닫는다.
     return {
@@ -142,10 +156,11 @@ function createMarket(
     };
   }
 
+  // market projection이 없는 정상 heartbeat는 시황 근거가 아니므로 freshness/source 결측으로 남긴다.
   return {
-    freshnessLabel: status.latestHeartbeat.statusLabel,
-    summary: status.latestHeartbeat.message,
-    observedAt: status.latestHeartbeat.observedAt,
+    freshnessLabel: unavailableText,
+    summary: marketProjectionUnavailableSummary,
+    observedAt: null,
   };
 }
 
@@ -181,9 +196,9 @@ function createDecisions(
       : formatObservedFact(status.latestCandidate),
     latestEntryDecision: formatWhySectionUnavailable(why?.markets)
       ?? (latestEntry === null
-      ? status === null
-        ? unavailableText
-        : formatObservedFact(status.latestDecision)
+      ? why === null && status !== null
+        ? formatObservedFact(status.latestDecision)
+        : unavailableText
       : formatMarketDecisionItem(latestEntry)),
     latestExitDecision: latestSell === null
       ? formatWhySectionUnavailable(why?.strategies) ?? unavailableText
@@ -247,6 +262,11 @@ function createUnavailablePortfolio(): LiveOpsBriefingPortfolioSnapshot {
 function createPnlFromStatus(status: LiveOpsStatusSummary | null): LiveOpsBriefingPnlSnapshot {
   if (status === null) {
     // PnL 결측은 0 손익으로 보정하면 closeout evidence를 왜곡하므로 null로 유지한다.
+    return createUnavailablePnl();
+  }
+
+  if (status.budget.realizedPnlKrw === null && status.budget.unrealizedPnlKrw === null) {
+    // status budget에도 손익 숫자가 없으면 정상 fallback label을 붙이지 않아 운영자가 source 결측을 볼 수 있게 한다.
     return createUnavailablePnl();
   }
 
@@ -415,7 +435,7 @@ function createTrace(input: CreateLiveOpsBriefingSnapshotInput): LiveOpsBriefing
 
 function collectSourceAvailabilityReasons(input: CreateLiveOpsBriefingSnapshotInput): readonly string[] {
   const reasons: string[] = [];
-  if (input.market === null || (input.market === undefined && input.status === null)) {
+  if (input.market === null || input.market === undefined) {
     reasons.push("market_data_source_unavailable");
   }
   if (input.portfolio === null || input.portfolio === undefined) {
@@ -490,17 +510,25 @@ function collectWhyReasonCodes(why: WhySummary): readonly string[] {
     readTraceString(why.markets.trace, "reasonCode") ?? "",
     readTraceString(why.strategies.trace, "reasonCode") ?? "",
     readTraceString(why.cash.trace, "reasonCode") ?? "",
+    ...readTraceStringArray(why.trace, "reasonCodes"),
+    ...readTraceStringArray(why.markets.trace, "reasonCodes"),
+    ...readTraceStringArray(why.strategies.trace, "reasonCodes"),
+    ...readTraceStringArray(why.cash.trace, "reasonCodes"),
   ];
   for (const item of why.markets.items) {
     reasons.push(readTraceString(item.trace, "reasonCode") ?? "");
+    reasons.push(...readTraceStringArray(item.trace, "reasonCodes"));
   }
   for (const item of why.strategies.items) {
     reasons.push(readTraceString(item.trace, "reasonCode") ?? "");
+    reasons.push(...readTraceStringArray(item.trace, "reasonCodes"));
   }
   if (why.cash.item !== null) {
     reasons.push(readTraceString(why.cash.item.trace, "reasonCode") ?? "");
+    reasons.push(...readTraceStringArray(why.cash.item.trace, "reasonCodes"));
     for (const holdReason of why.cash.item.holdReasons) {
       reasons.push(readTraceString(holdReason.trace, "reasonCode") ?? "");
+      reasons.push(...readTraceStringArray(holdReason.trace, "reasonCodes"));
     }
   }
   if (why.readStatus !== "OK") {
@@ -512,6 +540,14 @@ function collectWhyReasonCodes(why: WhySummary): readonly string[] {
 function readTraceString(trace: JsonRecord, key: string): string | null {
   const value = trace[key];
   return typeof value === "string" && value.trim().length > 0 ? value : null;
+}
+
+function readTraceStringArray(trace: JsonRecord, key: string): readonly string[] {
+  const value = trace[key];
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value.filter((item): item is string => typeof item === "string" && item.trim().length > 0);
 }
 
 function formatObservedFact(fact: LiveOpsObservedFact): string {
@@ -585,7 +621,8 @@ function isEntryMarketItem(item: WhyMarketSummary): boolean {
   }
 
   if (category === "DISCARD") {
-    return true;
+    const reasonCode = readTraceString(item.trace, "reasonCode")?.toLowerCase() ?? "";
+    return isKnownEntryDiscardReasonCode(reasonCode);
   }
 
   const strategyId = readFirstTraceString(item.trace, ["strategyId", "strategy_id", "resolvedStrategyId"]);
@@ -630,7 +667,8 @@ function isExitDecisionTrace(trace: JsonRecord): boolean {
   return (
     phase.includes("exit") ||
     source.includes("exit") ||
-    reasonCode.includes("exit")
+    hasReasonCodeToken(reasonCode, "exit") ||
+    hasReasonCodeToken(reasonCode, "sell")
   );
 }
 
@@ -675,6 +713,22 @@ function isKnownEntryRiskReasonCode(reasonCode: string): boolean {
     reasonCode === "btc_eth_position_limit_exceeded" ||
     reasonCode === "single_alt_position_limit_exceeded" ||
     reasonCode === "exposure_limit_exceeded";
+}
+
+/**
+ * order intent 변환 단계에서 신규 진입 후보 폐기로 계약된 reason code인지 판정한다.
+ *
+ * DISCARD category만으로 entry/exit 방향을 알 수 없으므로 sell-side 폐기 reason과 섞이지 않게 entry 변환 계층의 안정 code만
+ * 허용한다. 이 함수는 분류만 수행하고 trace를 변경하지 않는다.
+ */
+function isKnownEntryDiscardReasonCode(reasonCode: string): boolean {
+  return reasonCode === "market_order_disabled" ||
+    reasonCode === "entry_market_order_disabled" ||
+    reasonCode === "requested_quantity_invalid";
+}
+
+function hasReasonCodeToken(reasonCode: string, token: string): boolean {
+  return reasonCode.split(/[^a-z0-9]+/u).includes(token);
 }
 
 function readFirstTraceString(trace: JsonRecord, keys: readonly string[]): string | null {

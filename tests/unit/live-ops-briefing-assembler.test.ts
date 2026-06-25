@@ -343,10 +343,44 @@ describe("live ops briefing assembler", () => {
       why: summary,
     });
 
-    expect(snapshot.decisions.latestEntryDecision).toContain("최근 frame은 매수 후보를 승인했습니다.");
+    expect(snapshot.decisions.latestEntryDecision).toBe("관측 없음");
     expect(snapshot.decisions.latestExitDecision).toContain("KRW-BTC: 실행 완료");
     expect(snapshot.decisions.buyConditions).toEqual([]);
     expect(snapshot.decisions.sellConditions).toEqual(["KRW-BTC: 실행 완료"]);
+  });
+
+  it("does not use generic status latest decision as an entry fallback when why has only sell decisions", () => {
+    const snapshot = createLiveOpsBriefingSnapshot({
+      observedAt,
+      status: createLiveOpsStatusSummary(liveOpsInput({
+        latestDecision: {
+          statusLabel: "매도 판단",
+          message: "최근 frame은 청산 후보를 승인했습니다.",
+          observedAt,
+          action: null,
+          trace: {
+            source: "decision_ledger",
+          },
+        },
+      })),
+      why: whySummaryFixture({
+        markets: [
+          {
+            market: "KRW-BTC",
+            statusLabel: "청산 실행",
+            message: "보유 포지션 청산 주문이 체결됐습니다.",
+            latestDecisionAt: observedAt,
+            category: "SELL",
+            reasonCode: "exit_sell_executed",
+          },
+        ],
+        strategies: [],
+      }),
+    });
+
+    expect(snapshot.decisions.latestEntryDecision).toBe("관측 없음");
+    expect(snapshot.decisions.latestExitDecision).toContain("KRW-BTC: 청산 실행");
+    expect(snapshot.decisions.buyConditions).toEqual([]);
   });
 
   it("does not put strategy-backed market HOLD items into entry conditions without direction evidence", () => {
@@ -371,7 +405,7 @@ describe("live ops briefing assembler", () => {
       }),
     });
 
-    expect(snapshot.decisions.latestEntryDecision).toContain("최근 frame은 매수 후보를 승인했습니다.");
+    expect(snapshot.decisions.latestEntryDecision).toBe("관측 없음");
     expect(snapshot.decisions.latestExitDecision).toBe("관측 없음");
     expect(snapshot.decisions.buyConditions).toEqual([]);
     expect(snapshot.decisions.sellConditions).toEqual([]);
@@ -740,6 +774,94 @@ describe("live ops briefing assembler", () => {
     expect(snapshot.decisions.latestExitDecision).toBe("관측 없음");
     expect(snapshot.decisions.buyConditions).toEqual(["KRW-BTC: 주문 후보 폐기"]);
     expect(snapshot.decisions.sellConditions).toEqual([]);
+  });
+
+  it("does not classify sell-side discards as buy conditions", () => {
+    const snapshot = createLiveOpsBriefingSnapshot({
+      observedAt,
+      status: createLiveOpsStatusSummary(liveOpsInput()),
+      why: whySummaryFixture({
+        markets: [
+          {
+            market: "KRW-BTC",
+            statusLabel: "청산 차단",
+            message: "최소 청산 주문 금액을 충족하지 못했습니다.",
+            latestDecisionAt: observedAt,
+            category: "DISCARD",
+            reasonCode: "autonomous_24x7_sell_notional_below_minimum",
+            trace: {
+              strategyId: "live_ops_autonomous_24x7_core",
+            },
+          },
+        ],
+        strategies: [],
+      }),
+    });
+
+    expect(snapshot.decisions.latestEntryDecision).toBe("관측 없음");
+    expect(snapshot.decisions.latestExitDecision).toContain("KRW-BTC: 청산 차단");
+    expect(snapshot.decisions.buyConditions).toEqual([]);
+    expect(snapshot.decisions.sellConditions).toEqual(["KRW-BTC: 청산 차단"]);
+  });
+
+  it("keeps market source undefined as unavailable instead of reusing healthy heartbeat text", () => {
+    const snapshot = createLiveOpsBriefingSnapshot({
+      observedAt,
+      status: createLiveOpsStatusSummary(liveOpsInput()),
+      why: whySummaryFixture(),
+    });
+    const briefing = formatLiveOpsBriefing(snapshot);
+
+    expect(snapshot.market.freshnessLabel).toBe("관측 없음");
+    expect(snapshot.market.summary).toContain("시장 데이터 시황 projection이 아직 briefing assembler에 연결되지 않았습니다.");
+    expect(snapshot.trace.reasonCodes).toContain("market_data_source_unavailable");
+    expect(briefing).not.toContain("현재 시황: market data heartbeat를 확인했습니다.");
+  });
+
+  it("keeps missing status PnL fallback unavailable instead of a normal status-summary label", () => {
+    const snapshot = createLiveOpsBriefingSnapshot({
+      observedAt,
+      status: createLiveOpsStatusSummary(liveOpsInput({
+        pnl: {
+          statusLabel: "조회 불가",
+          latestCapturedAt: null,
+          latestEquityKrw: null,
+          latestRealizedPnlKrw: null,
+          latestUnrealizedPnlKrw: null,
+        },
+      })),
+      why: whySummaryFixture(),
+    });
+    const briefing = formatLiveOpsBriefing(snapshot);
+
+    expect(snapshot.portfolio.pnl.statusLabel).toBe("관측 없음");
+    expect(briefing).toContain("PnL: 관측 없음");
+    expect(briefing).not.toContain("PnL: status summary 기준");
+  });
+
+  it("collects reason code arrays from why item trace", () => {
+    const snapshot = createLiveOpsBriefingSnapshot({
+      observedAt,
+      status: createLiveOpsStatusSummary(liveOpsInput()),
+      why: whySummaryFixture({
+        markets: [
+          {
+            market: "KRW-BTC",
+            statusLabel: "진입 차단",
+            message: "open position 예산 한도 때문에 신규 진입을 보류했습니다.",
+            latestDecisionAt: observedAt,
+            category: "RISK_REJECTED",
+            reasonCode: "",
+            trace: {
+              reasonCodes: ["open_position_budget_exceeded"],
+            },
+          },
+        ],
+        strategies: [],
+      }),
+    });
+
+    expect(snapshot.trace.reasonCodes).toContain("open_position_budget_exceeded");
   });
 
   it("uses market exit decisions even when the strategy why section has no records", () => {

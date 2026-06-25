@@ -1401,6 +1401,44 @@ describe("WhySummary build function", () => {
     expect(summary.cash.item!.holdReasons[1]!.count).toBe(1);
   });
 
+  it("market/strategy projection의 reasonCounts를 trace reasonCodes로 보존한다", async () => {
+    const { buildWhySummary } = await import("../../src/application/decision-ledger/why-summary.js");
+
+    const summary = buildWhySummary(
+      {
+        markets: [
+          {
+            market: "KRW-BTC",
+            category: "RISK_REJECTED",
+            summaryStatus: "RECORDED",
+            reasonCounts: { open_position_budget_exceeded: 2, zero_reason: 0 },
+            latestDecisionAt: new Date("2026-06-06T00:00:00Z"),
+            trace: { reasonCodes: ["preexisting_reason"] },
+          },
+        ],
+        strategies: [
+          {
+            strategyId: "strategy.trend-following",
+            category: "HOLD",
+            summaryStatus: "RECORDED",
+            reasonCounts: { wide_spread: 1 },
+            latestDecisionAt: new Date("2026-06-06T00:00:00Z"),
+            trace: {},
+          },
+        ],
+        cashFrames: [],
+      },
+      "2026-06-06T04:00:00.000Z",
+    );
+
+    expect(summary.markets.items[0]!.trace.reasonCodes).toEqual([
+      "preexisting_reason",
+      "open_position_budget_exceeded",
+    ]);
+    expect(summary.markets.items[0]!.trace.reasonCodes).not.toContain("zero_reason");
+    expect(summary.strategies.items[0]!.trace.reasonCodes).toEqual(["wide_spread"]);
+  });
+
   it("빈 projection은 NOT_FOUND summary를 반환한다", async () => {
     const { buildWhySummary } = await import("../../src/application/decision-ledger/why-summary.js");
 
