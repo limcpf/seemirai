@@ -1,4 +1,6 @@
 import type { JsonRecord } from "../../domain/index.js";
+import type { WhySummary } from "../decision-ledger/types.js";
+import type { LiveOpsStatusSummary } from "../live-ops-status/types.js";
 
 export const LIVE_OPS_BRIEFING_SCHEMA_VERSION = "live_ops_briefing.v1" as const;
 
@@ -176,6 +178,49 @@ export interface LiveOpsBriefingSnapshot {
   portfolio: LiveOpsBriefingPortfolioSnapshot;
   operations: LiveOpsBriefingOperationsSnapshot;
   trace: LiveOpsBriefingTraceSnapshot;
+}
+
+/**
+ * briefing assembler에 전달되는 시장 데이터 source projection이다.
+ *
+ * caller는 ticker/orderbook raw payload를 넘기지 않고 freshness label, 한국어 요약, 관측 시각만 전달한다. 이 입력은
+ * snapshot 조립 경계에서만 읽히며 market provider 조회, websocket 연결, DB write side effect를 만들지 않는다.
+ */
+export interface LiveOpsBriefingMarketSourceInput {
+  freshnessLabel: string;
+  summary: string;
+  observedAt: string | null;
+}
+
+/**
+ * briefing assembler에 전달되는 portfolio source projection이다.
+ *
+ * wallet, coin balance, strategy position, PnL 값을 이미 secret-safe 문자열로 낮춘 뒤 전달한다. 결측은 null 또는 빈 배열로
+ * 유지해야 하며 assembler는 이를 0 KRW나 무포지션으로 보정하지 않는다.
+ */
+export interface LiveOpsBriefingPortfolioSourceInput {
+  cash?: LiveOpsBriefingCashSnapshot | null | undefined;
+  balances?: readonly LiveOpsBriefingBalanceSnapshot[] | null | undefined;
+  positions?: readonly LiveOpsBriefingPositionSnapshot[] | null | undefined;
+  pnl?: LiveOpsBriefingPnlSnapshot | null | undefined;
+  openExposureKrw?: string | null | undefined;
+  budgetUsedKrw?: string | null | undefined;
+}
+
+/**
+ * Live Ops briefing snapshot assembler 입력이다.
+ *
+ * `/status` safe summary, decision ledger why summary, optional market/portfolio projection을 하나의 read-only briefing snapshot으로
+ * 묶기 위한 호출 경계다. provider 조회와 Telegram 전송은 이 함수 밖에서 수행해야 하며, 이 입력은 raw provider payload,
+ * raw order detail, credential을 포함하지 않는 것이 invariant다.
+ */
+export interface CreateLiveOpsBriefingSnapshotInput {
+  observedAt: string;
+  status: LiveOpsStatusSummary | null;
+  why: WhySummary | null;
+  market?: LiveOpsBriefingMarketSourceInput | null | undefined;
+  portfolio?: LiveOpsBriefingPortfolioSourceInput | null | undefined;
+  trace?: Partial<LiveOpsBriefingTraceSnapshot> | undefined;
 }
 
 /**

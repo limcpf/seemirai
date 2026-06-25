@@ -61,9 +61,9 @@ LLM은 deterministic evidence를 사람이 읽기 쉬운 초안으로 낮추는 
 - 2026-06-25: issue #245 본문 기준 5개 sub PR 순차 진행으로 확정했다.
 - 2026-06-25: scheduled briefing은 기본 비활성으로 두고 `/brief`는 read-only command로만 추가한다.
 - 2026-06-25: LLM은 deterministic snapshot 설명 초안으로만 사용하고 unsafe output은 deterministic fallback으로 닫는다.
+- 2026-06-25: Sub PR 02 assembler는 provider I/O 없이 `LiveOpsStatusSummary`, decision ledger `WhySummary`, market/portfolio safe projection을 입력으로 받는 순수 조립 경계로 확정했다.
 
 ## 남은 이슈
 
-- Sub PR 02에서 실제 source별 snapshot assembler 경계를 확정해야 한다.
 - Sub PR 03에서 LLM schema 확장이 기존 `FR-LLM-001` 비범위와 충돌하지 않도록 문서와 test를 함께 갱신해야 한다.
 - Sub PR 04에서 Telegram scheduled dispatch의 config 이름과 cooldown/fingerprint 저장 위치를 확정해야 한다.
