@@ -220,6 +220,13 @@ export type {
   LoadLiveOpsSecretsOptions,
 } from "./live-ops-config.js";
 export {
+  loadLiveOpsRuntimeAdapterInputs,
+} from "./live-ops-runtime-adapter.js";
+export type {
+  LiveOpsRuntimeAdapterPort,
+  LoadLiveOpsRuntimeAdapterInputsInput,
+} from "./live-ops-runtime-adapter.js";
+export {
   createLiveOpsAppCoreBootPlan,
   runLiveOpsForegroundAppCore,
   runLiveOpsTuiAppCore,

@@ -1,4 +1,6 @@
 import { createLiveOpsAppCoreBootPlan } from "./boot-plan.js";
+import { loadLiveOpsRuntimeAdapterInputs } from "../live-ops-runtime-adapter.js";
+import type { LiveOpsSupportModule } from "../live-ops-cli/types.js";
 import type {
   LiveOpsAppCoreRenderMode,
   LiveOpsAppCoreRunResult,
@@ -28,7 +30,7 @@ export async function runLiveOpsForegroundAppCore(input: LiveOpsForegroundAppCor
     });
   }
 
-  const inputs = await input.support.loadLiveOpsCliInputs(options);
+  const inputs = await loadLiveOpsAppCoreInputs(input.support, options);
   const summary = input.support.renderLiveOpsSummary({ ...options, ...inputs });
   const renderMode: LiveOpsAppCoreRenderMode = options.tui === true ? "text" : "json";
   if (renderMode === "text") {
@@ -78,7 +80,7 @@ export async function runLiveOpsTuiAppCore(input: LiveOpsTuiAppCoreInput): Promi
     throw new Error("--attach <run-id|socket|status-source> 값이 필요합니다.");
   }
 
-  const inputs = await input.support.loadLiveOpsCliInputs({ ...options, attachReadonly: true });
+  const inputs = await loadLiveOpsAppCoreInputs(input.support, { ...options, attachReadonly: true });
   const summary = input.support.renderLiveOpsSummary({
     ...options,
     ...inputs,
@@ -93,6 +95,27 @@ export async function runLiveOpsTuiAppCore(input: LiveOpsTuiAppCoreInput): Promi
     options: { ...options, attachReadonly: true },
     summary,
   });
+}
+
+/**
+ * support shim이 structured runtime adapter port를 제공하면 TypeScript lifecycle service로 입력을 조립한다.
+ *
+ * 호출 경계는 app core와 support compatibility surface 사이이며, 입력은 parser가 만든 CLI options다.
+ * 반환값은 summary renderer 입력이다. adapter port가 없으면 legacy loader로 fallback해 기존 script
+ * 실행과 테스트 호환성을 보존하고, adapter가 있으면 production lifecycle 순서가 TypeScript 검증 경계에 들어온다.
+ */
+async function loadLiveOpsAppCoreInputs(
+  support: LiveOpsSupportModule,
+  options: LiveOpsAppCoreRunResult["options"],
+): Promise<Record<string, unknown>> {
+  if (support.createLiveOpsRuntimeAdapter !== undefined) {
+    // support shim 구현은 side effect port만 제공하고, 호출 순서는 TypeScript service가 소유하게 한다.
+    return loadLiveOpsRuntimeAdapterInputs({
+      options,
+      adapter: support.createLiveOpsRuntimeAdapter(),
+    });
+  }
+  return support.loadLiveOpsCliInputs(options);
 }
 
 /**

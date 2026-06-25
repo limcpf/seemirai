@@ -30,6 +30,26 @@ describe("production live ops script skeleton", () => {
     });
   });
 
+  it("run-live-ops support는 dist app core가 사용할 structured runtime adapter port를 노출한다", async () => {
+    const support = await import(path.join(process.cwd(), "scripts/run-live-ops-support.mjs")) as {
+      createLiveOpsRuntimeAdapter?: () => Record<string, unknown>;
+    };
+
+    expect(support.createLiveOpsRuntimeAdapter).toBeTypeOf("function");
+    const adapter = support.createLiveOpsRuntimeAdapter?.();
+    expect(adapter).toMatchObject({
+      resolvePath: expect.any(Function),
+      loadConfigFile: expect.any(Function),
+      loadEnvFile: expect.any(Function),
+      evaluateDbReadiness: expect.any(Function),
+      evaluateMarketData: expect.any(Function),
+      evaluateLiveExecution: expect.any(Function),
+      evaluateReconcilePnlStatus: expect.any(Function),
+      evaluateTelegramAlert: expect.any(Function),
+      closeProductionRuntime: expect.any(Function),
+    });
+  });
+
   it("corepack pnpm build 이후 dist 기반 production live ops 명령이 통과한다", async () => {
     const buildResult = spawnSync("corepack", ["pnpm", "build"], {
       cwd: process.cwd(),
@@ -9255,6 +9275,9 @@ await loadLiveOpsCliInputs({
       "src/runtime/live-ops-app-core/boot-plan.ts",
       "src/runtime/live-ops-app-core/service.ts",
       "src/runtime/live-ops-app-core/types.ts",
+      "src/runtime/live-ops-runtime-adapter.ts",
+      "src/runtime/live-ops-runtime-adapter/service.ts",
+      "src/runtime/live-ops-runtime-adapter/types.ts",
       "src/runtime/live-ops-market-data.ts",
       "src/runtime/live-ops-market-data/collector.ts",
       "src/runtime/live-ops-analysis-decision.ts",

@@ -291,6 +291,76 @@ export async function loadLiveOpsCliInputs(options) {
   }
 }
 
+export function createLiveOpsRuntimeAdapter() {
+  return {
+    resolvePath(value) {
+      return path.resolve(value);
+    },
+    async loadConfigFile(configPath) {
+      return JSON.parse(await readFile(configPath, "utf8"));
+    },
+    async loadEnvFile(envFilePath) {
+      return parseEnvFile(await readFile(envFilePath, "utf8"));
+    },
+    validateConfig(config) {
+      validateLiveOpsConfig(config);
+    },
+    validateEnv(env) {
+      validateLiveOpsEnv(env, process.env);
+    },
+    suppressStartupTelegramAlert(config) {
+      return suppressLiveOpsCliStartupTelegramAlert(config);
+    },
+    async loadAttachReadonlyInputs(input) {
+      return loadLiveOpsCliAttachReadonlyInputs(input);
+    },
+    async evaluateDbReadiness(input) {
+      return evaluateLiveOpsCliDbReadiness(input);
+    },
+    assertDbReadinessReady(summary) {
+      if (!summary.ready) {
+        throw new Error(formatCliDbReadinessFailureMessage(summary));
+      }
+    },
+    async evaluateMarketData(input) {
+      return evaluateLiveOpsCliMarketData(input);
+    },
+    assertMarketDataReady(summary, options) {
+      assertLiveOpsCliMarketDataReady(summary, options);
+    },
+    evaluateBrokerGuard(input) {
+      return evaluateLiveOpsCliBrokerGuard(input);
+    },
+    async createProductionRuntime(input) {
+      return createLiveOpsCliProductionRuntime(input);
+    },
+    async collectAutonomousAnalysisPreflight(input) {
+      return collectLiveOpsCliAutonomousAnalysisPreflight(input);
+    },
+    async evaluateAnalysisDecision(input) {
+      return evaluateLiveOpsCliAnalysisDecision(input);
+    },
+    getAnalysisOrderIntents(summary) {
+      return getLiveOpsCliAnalysisOrderIntents(summary);
+    },
+    async createProductionExecutionInputs(input) {
+      return createLiveOpsCliProductionExecutionInputs(input);
+    },
+    async evaluateLiveExecution(input) {
+      return evaluateLiveOpsCliLiveExecution(input);
+    },
+    async evaluateReconcilePnlStatus(input) {
+      return evaluateLiveOpsCliReconcilePnlStatus(input);
+    },
+    async evaluateTelegramAlert(input) {
+      return evaluateLiveOpsCliTelegramAlert(input);
+    },
+    async closeProductionRuntime(runtime) {
+      await runtime?.close?.();
+    },
+  };
+}
+
 function suppressLiveOpsCliStartupTelegramAlert(config) {
   return {
     ...config,
