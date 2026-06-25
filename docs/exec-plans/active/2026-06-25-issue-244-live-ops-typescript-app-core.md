@@ -111,7 +111,8 @@ rg -n "run-live-ops-support|submitOrder\\(|cancelOrder\\(|Authorization|JWT|tele
 
 ## 진행 상태
 
-- 2026-06-25: Sub PR 01 진행 중. build/dist 계약과 dist CLI entry를 추가하고 관련 fixture smoke를 고정한다.
+- 2026-06-25: Sub PR 01 완료. PR #246에서 build/dist 계약과 dist CLI entry를 추가했고 mother branch에 merge됐다.
+- 2026-06-25: Sub PR 02 진행 중. TypeScript app core contract와 boot lifecycle 순서 테스트를 추가하고 dist CLI가 app core를 호출하도록 연결한다.
 
 ## 남은 이슈
 

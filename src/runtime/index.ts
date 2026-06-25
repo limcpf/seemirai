@@ -220,6 +220,22 @@ export type {
   LoadLiveOpsSecretsOptions,
 } from "./live-ops-config.js";
 export {
+  createLiveOpsAppCoreBootPlan,
+  runLiveOpsForegroundAppCore,
+  runLiveOpsTuiAppCore,
+} from "./live-ops-app-core.js";
+export type {
+  LiveOpsAppCoreBootPlan,
+  LiveOpsAppCoreBootPlanInput,
+  LiveOpsAppCoreBootStep,
+  LiveOpsAppCoreBootStepId,
+  LiveOpsAppCoreRenderMode,
+  LiveOpsAppCoreRunResult,
+  LiveOpsAppCoreStepOwner,
+  LiveOpsForegroundAppCoreInput,
+  LiveOpsTuiAppCoreInput,
+} from "./live-ops-app-core.js";
+export {
   LIVE_OPS_AUTONOMOUS_24X7_STRATEGY_ID,
   LIVE_OPS_CLEANUP_PROBE_STRATEGY_ID,
   createLiveOpsAutonomous24x7Strategy,
