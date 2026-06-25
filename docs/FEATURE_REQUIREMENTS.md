@@ -787,10 +787,18 @@ Acceptance Criteria:
 - [x] foreground TUI 첫 화면은 운영 dashboard이며 secret 원문과 raw provider payload를 노출하지 않는다.
 - [x] market data, analysis/decision, live execution, reconcile/PnL/status, Telegram, TUI가 같은 lifecycle 안에서 시작된다.
 - [x] 조건 통과 시 manual JSONL 없이 strategy/cost/risk/decision 결과가 live autonomous execution adapter로 연결된다.
+- [x] production package script는 `corepack pnpm build` 후 `dist/runtime/*-cli.js`를 실행한다.
+- [x] Live Ops foreground/TUI app core와 runtime adapter orchestration은 TypeScript typecheck 대상이다.
+- [x] `scripts/run-live-ops-support.mjs`는 production dist app core가 호출하는 side-effect port와 compatibility shim으로 남는다.
 
 테스트 요구사항:
 
+- build contract: `corepack pnpm build`가 `dist/runtime/live-ops-cli.js`, `dist/runtime/live-ops-tui-cli.js`,
+  `dist/runtime/live-ops-pnl-closeout-cli.js`를 생성해야 한다.
 - 단위 테스트: production live ops config schema, secret env loader, legacy env detector, user-facing mode formatter를 검증한다.
+- 단위 테스트: TypeScript app core가 boot lifecycle 순서와 CLI/TUI mode별 output contract를 보존하는지 검증한다.
+- 단위 테스트: TypeScript runtime adapter가 config/env/provider/readiness/market data/decision/execution/reconcile/PnL/status/Telegram/TUI 입력을
+  support shim의 side-effect port와 같은 의미로 조립하는지 검증한다.
 - 단위 테스트: production live ops DB readiness가 `schema_migrations` 최신 version, pending migration, missing table, checksum drift,
   DB connection failure를 secret 없이 분류하는지 검증한다.
 - 단위 테스트: production live ops market data collector가 KRW-BTC event만 DB-backed store 경계로 저장하고, stale/reconnect/disconnect를
