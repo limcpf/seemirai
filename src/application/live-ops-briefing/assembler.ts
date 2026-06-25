@@ -142,9 +142,9 @@ function createDecisions(
     };
   }
 
-  const entryItems = why?.markets.items.filter((item) => !isSellDecision(item.trace)) ?? [];
+  const entryItems = why?.markets.items.filter(isEntryMarketItem) ?? [];
   const sellItems = [
-    ...(why?.markets.items.filter((item) => isSellDecision(item.trace)).map(toMarketDecisionItem) ?? []),
+    ...(why?.markets.items.filter((item) => isExitDecisionTrace(item.trace)).map(toMarketDecisionItem) ?? []),
     ...(why?.strategies.items.filter(isExitDecisionItem).map(toStrategyDecisionItem) ?? []),
   ];
   const latestEntry = selectLatestMarketItem(entryItems);
@@ -196,8 +196,8 @@ function createPortfolio(
     balances: source.balances ?? [],
     positions: source.positions ?? [],
     pnl,
-    openExposureKrw: source.openExposureKrw ?? status?.budget.openExposureKrw ?? null,
-    budgetUsedKrw: source.budgetUsedKrw ?? status?.budget.dailyNotionalUsedKrw ?? null,
+    openExposureKrw: source.openExposureKrw === undefined ? status?.budget.openExposureKrw ?? null : source.openExposureKrw,
+    budgetUsedKrw: source.budgetUsedKrw === undefined ? status?.budget.dailyNotionalUsedKrw ?? null : source.budgetUsedKrw,
   };
 }
 
@@ -451,18 +451,77 @@ function selectLatestByObservedAt<T extends { latestDecisionAt: string | null }>
   return latest;
 }
 
-function isSellDecision(trace: JsonRecord): boolean {
-  return readTraceString(trace, "category") === "SELL";
+function isEntryMarketItem(item: WhyMarketSummary): boolean {
+  if (isExitDecisionTrace(item.trace)) {
+    return false;
+  }
+
+  const category = readTraceString(item.trace, "category");
+  if (category === "EXECUTED" || category === "EXECUTION_REJECTED") {
+    return hasEntrySideTrace(item.trace);
+  }
+
+  return true;
 }
 
 function isExitDecisionItem(item: WhyStrategySummary): boolean {
-  if (isSellDecision(item.trace)) {
+  if (isExitDecisionTrace(item.trace)) {
     return true;
   }
 
   const strategyId = item.strategyId.toLowerCase();
-  const source = readTraceString(item.trace, "source")?.toLowerCase() ?? "";
-  return strategyId.includes("exit") || source.includes("exit");
+  return strategyId.includes("exit");
+}
+
+function isExitDecisionTrace(trace: JsonRecord): boolean {
+  const category = readTraceString(trace, "category");
+  if (category === "SELL") {
+    return true;
+  }
+
+  const side = readFirstTraceString(trace, ["side", "orderSide", "order_side", "intentSide", "intent_side", "decisionSide", "decision_side"])
+    ?.toUpperCase();
+  if (side === "SELL" || side === "ASK") {
+    return true;
+  }
+
+  const positionEffect = readFirstTraceString(trace, ["positionEffect", "position_effect"])
+    ?.toUpperCase();
+  if (positionEffect === "EXIT" || positionEffect === "REDUCE") {
+    return true;
+  }
+
+  const phase = readTraceString(trace, "phase")?.toLowerCase() ?? "";
+  const source = readTraceString(trace, "source")?.toLowerCase() ?? "";
+  const reasonCode = readTraceString(trace, "reasonCode")?.toLowerCase() ?? "";
+  return (
+    phase.includes("exit") ||
+    source.includes("exit") ||
+    reasonCode.includes("exit") ||
+    reasonCode.includes("position")
+  );
+}
+
+function hasEntrySideTrace(trace: JsonRecord): boolean {
+  const side = readFirstTraceString(trace, ["side", "orderSide", "order_side", "intentSide", "intent_side", "decisionSide", "decision_side"])
+    ?.toUpperCase();
+  if (side === "BUY" || side === "BID") {
+    return true;
+  }
+
+  const positionEffect = readFirstTraceString(trace, ["positionEffect", "position_effect"])
+    ?.toUpperCase();
+  return positionEffect === "ENTRY" || positionEffect === "INCREASE";
+}
+
+function readFirstTraceString(trace: JsonRecord, keys: readonly string[]): string | null {
+  for (const key of keys) {
+    const value = readTraceString(trace, key);
+    if (value !== null) {
+      return value;
+    }
+  }
+  return null;
 }
 
 function formatWhySectionUnavailable(section: {

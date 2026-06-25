@@ -163,6 +163,24 @@ describe("live ops briefing assembler", () => {
     expect(snapshot.portfolio.budgetUsedKrw).toBe("5000");
   });
 
+  it("keeps explicit exposure and budget null unavailable instead of falling back to status budget", () => {
+    const snapshot = createLiveOpsBriefingSnapshot({
+      observedAt,
+      status: createLiveOpsStatusSummary(liveOpsInput()),
+      why: whySummaryFixture(),
+      portfolio: {
+        openExposureKrw: null,
+        budgetUsedKrw: null,
+      },
+    });
+    const briefing = formatLiveOpsBriefing(snapshot);
+
+    expect(snapshot.portfolio.openExposureKrw).toBeNull();
+    expect(snapshot.portfolio.budgetUsedKrw).toBeNull();
+    expect(briefing).toContain("예산/노출: 관측 없음");
+    expect(briefing).not.toContain("open exposure 12000 KRW");
+  });
+
   it("keeps explicit portfolio null unavailable instead of falling back to status PnL", () => {
     const snapshot = createLiveOpsBriefingSnapshot({
       observedAt,
@@ -263,6 +281,69 @@ describe("live ops briefing assembler", () => {
       "latest_buy_candidate",
       "strategy_buy_candidate",
     ]));
+  });
+
+  it("classifies production exit HOLD reasons as sell conditions without relying on strategy id", () => {
+    const snapshot = createLiveOpsBriefingSnapshot({
+      observedAt,
+      status: createLiveOpsStatusSummary(liveOpsInput()),
+      why: whySummaryFixture({
+        strategies: [
+          {
+            strategyId: "live_ops_autonomous_24x7_core",
+            statusLabel: "포지션 보유",
+            message: "보유 포지션은 손절과 익절 조건을 아직 충족하지 않았습니다.",
+            latestDecisionAt: observedAt,
+            category: "HOLD",
+            reasonCode: "autonomous_24x7_position_hold",
+          },
+          {
+            strategyId: "trend-following",
+            statusLabel: "매수 후보",
+            message: "전략은 매수 후보를 유지합니다.",
+            latestDecisionAt: "2026-06-25T03:20:00.000Z",
+            category: "BUY",
+            reasonCode: "strategy_buy_candidate",
+          },
+        ],
+      }),
+    });
+
+    expect(snapshot.decisions.latestExitDecision).toContain("live_ops_autonomous_24x7_core: 포지션 보유");
+    expect(snapshot.decisions.sellConditions).toEqual([
+      "live_ops_autonomous_24x7_core: 포지션 보유",
+    ]);
+    expect(snapshot.decisions.sellConditions).not.toContain("trend-following: 매수 후보");
+  });
+
+  it("classifies executed SELL market decisions as sell conditions instead of entry conditions", () => {
+    const summary = whySummaryFixture({
+      markets: [
+        {
+          market: "KRW-BTC",
+          statusLabel: "실행 완료",
+          message: "보유 포지션 청산 주문이 체결됐습니다.",
+          latestDecisionAt: observedAt,
+          category: "EXECUTED",
+          reasonCode: "exit_sell_executed",
+          trace: {
+            orderSide: "SELL",
+          },
+        },
+      ],
+      strategies: [],
+    });
+
+    const snapshot = createLiveOpsBriefingSnapshot({
+      observedAt,
+      status: createLiveOpsStatusSummary(liveOpsInput()),
+      why: summary,
+    });
+
+    expect(snapshot.decisions.latestEntryDecision).toContain("최근 frame은 매수 후보를 승인했습니다.");
+    expect(snapshot.decisions.latestExitDecision).toContain("KRW-BTC: 실행 완료");
+    expect(snapshot.decisions.buyConditions).toEqual([]);
+    expect(snapshot.decisions.sellConditions).toEqual(["KRW-BTC: 실행 완료"]);
   });
 
   it("does not mark the daemon stopped when only market heartbeat is missing", () => {
@@ -579,6 +660,7 @@ function whySummaryFixture(overrides: {
         trace: {
           category: item.category,
           reasonCode: item.reasonCode,
+          ...(item.trace ?? {}),
         },
       })),
       trace: {
@@ -742,6 +824,7 @@ interface WhyItemFixture {
   latestDecisionAt: string;
   category: DecisionCategory;
   reasonCode: string;
+  trace?: Record<string, unknown> | undefined;
 }
 
 interface WhyStrategyItemFixture {
