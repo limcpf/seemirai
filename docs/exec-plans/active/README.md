@@ -12,6 +12,7 @@ YYYY-MM-DD-topic.md
 
 ## 활성 계획
 
+- [`2026-06-25-issue-245-live-ops-llm-telegram-briefing.md`](./2026-06-25-issue-245-live-ops-llm-telegram-briefing.md): Issue #245 Live Ops 상태 분석 LLM Telegram 브리핑, deterministic briefing snapshot/formatter, LLM safe draft, `/brief` read-only command 실행 계획.
 - [`2026-06-15-issue-206-live-ops-real-arm.md`](./2026-06-15-issue-206-live-ops-real-arm.md): Issue #206 production `live:ops` 실거래 arm, 실제 provider 조립, 소액 주문 submit/cancel cleanup evidence와 24/7 자동 매수/매도 loop 실행 계획.
 - [`2026-06-14-issue-196-live-ops-one-click-app.md`](./2026-06-14-issue-196-live-ops-one-click-app.md): Issue #196 Live Ops 원클릭 앱과 TUI 필수 운영 콘솔을 production 경로로 만들기 위한 8개 sub PR 실행 계획.
 - [`2026-06-12-m23-m24-live-ops-and-scaled-canary.md`](./2026-06-12-m23-m24-live-ops-and-scaled-canary.md): M23 24/7 운영 안정화와 M24 전략 확장/예산 확대를 live canary, 7일 운영 evidence, paper/live shadow 비교로 닫기 위한 실행 계획.

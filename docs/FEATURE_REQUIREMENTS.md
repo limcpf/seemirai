@@ -988,6 +988,59 @@ Acceptance Criteria:
 - hard stop open position 자동 시장가 청산.
 - LLM 직접 매수/매도 판단.
 
+### FR-OPS-008: Live Ops Telegram briefing은 read-only deterministic evidence를 우선해야 한다
+
+설명:
+
+- 운영자는 Telegram에서 `/brief`로 현재 서버/daemon 상태, 매수/매도 조건, wallet/cash/coin 상태, 시황, 보유/현금 판단 이유,
+  최근 주문/차단 이유를 한 번에 확인할 수 있어야 한다.
+- briefing은 `LiveOpsBriefingSnapshot`처럼 서로 다른 source의 상태를 secret-safe projection으로 묶은 deterministic evidence를
+  source of truth로 사용한다.
+- LLM은 redacted snapshot을 사람이 읽기 쉬운 한국어 초안으로 낮추는 보조 역할만 하며, LLM disabled/timeout/schema fail/unsafe
+  output이면 deterministic briefing을 그대로 보낸다.
+- scheduled briefing은 명시 config 없이는 시작하지 않고, cooldown/fingerprint로 중복 전송을 막는다.
+
+Acceptance Criteria:
+
+- [ ] `/brief`는 read-only Telegram command로 분류된다.
+- [ ] `/brief`는 owner allowlist 없이는 응답하지 않는다.
+- [ ] Telegram에서 서버/daemon 상태, live enabled, live armed, live order capable, readiness guard 상태를 한국어로 확인할 수 있다.
+- [ ] Telegram에서 매수 조건, 매도 조건, HOLD/BLOCK 이유를 확인할 수 있다.
+- [ ] Telegram에서 wallet cash, coin/balance/position, PnL, open exposure, budget used를 확인할 수 있다.
+- [ ] Telegram에서 market freshness와 현재 시황 요약을 확인할 수 있다.
+- [ ] Telegram에서 최근 candidate/decision/order/reconcile/risk block/alert retry 상태를 확인할 수 있다.
+- [ ] LLM disabled/timeout/schema fail/unsafe output에서도 deterministic briefing이 전송된다.
+- [ ] LLM prompt에는 redacted `LiveOpsBriefingSnapshot`만 전달된다.
+- [ ] LLM 결과가 `BUY`, `SELL`, `INCREASE_POSITION`, 목표가, 주문 수량, 직접 매매 권고를 포함하면 fail-closed 한다.
+- [ ] LLM 결과는 order candidate, broker submit/cancel, order permission으로 연결되지 않는다.
+- [ ] Telegram 메시지는 한국어 상태, 원인, 영향, 필요 조치를 먼저 보여준다.
+- [ ] 내부 id/reason/evidence는 `추적 정보`로 분리한다.
+- [ ] raw provider payload, raw order detail, Telegram token, API key, JWT, Authorization header가 prompt/audit/status/Telegram/log에 남지 않는다.
+- [ ] scheduled briefing은 기본 비활성이며 명시 config 없이는 시작되지 않는다.
+- [ ] scheduled briefing은 fingerprint/cooldown으로 중복 스팸을 방지한다.
+
+테스트 요구사항:
+
+- 단위 테스트: `LiveOpsBriefingSnapshot` formatter가 상태, 원인, 영향, 필요 조치와 `추적 정보`를 분리하는지 확인한다.
+- 단위 테스트: missing/stale/unavailable 값이 0으로 보정되지 않고 관측 부재로 표시되는지 확인한다.
+- 단위 테스트: LLM briefing schema가 forbidden output을 fail-closed로 거부하는지 확인한다.
+- 단위 테스트: LLM failure가 deterministic briefing fallback을 바꾸지 않는지 확인한다.
+- 통합 테스트: Telegram `/brief` owner allowlist, read-only scope, durable dedupe를 확인한다.
+- 통합 테스트: scheduled briefing cooldown/fingerprint가 중복 dispatch를 막는지 확인한다.
+- source scan: raw provider/order/secret 후보와 LLM order-like output 금지어를 검사한다.
+
+문서 요구사항:
+
+- briefing config, scheduled dispatch, prompt/audit redaction 기준이 바뀌면 `docs/RUNTIME_CONFIG.md`, `docs/SECURITY.md`,
+  `docs/RELIABILITY.md`, 이 문서, 관련 실행 계획을 함께 갱신한다.
+
+제외 범위:
+
+- LLM 직접 매수/매도 판단, 목표가 산정, 포지션 크기 결정.
+- LLM 기반 order candidate 생성, broker submit/cancel, order permission 생성.
+- Telegram public webhook endpoint.
+- 신규 dependency 추가.
+
 ### FR-LLM-001: LLM은 직접 매매 판단에 사용하지 않는다
 
 설명:
