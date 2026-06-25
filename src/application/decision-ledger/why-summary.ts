@@ -145,11 +145,7 @@ function buildMarketSection(
     const market = projection.market ?? "전체";
     const category = projection.category;
     const messages = toWhyStatusMessages(category, market);
-    const trace: WhySummaryTrace = {
-      ...projection.trace,
-      category,
-      summaryStatus: projection.summaryStatus,
-    };
+    const trace = createFrameTrace(projection.trace, projection.reasonCounts, category, projection.summaryStatus);
 
     items.push({
       market,
@@ -193,11 +189,7 @@ function buildStrategySection(
     const strategyId = projection.strategyId ?? "unknown";
     const category = projection.category;
     const messages = toWhyStatusMessages(category);
-    const trace: WhySummaryTrace = {
-      ...projection.trace,
-      category,
-      summaryStatus: projection.summaryStatus,
-    };
+    const trace = createFrameTrace(projection.trace, projection.reasonCounts, category, projection.summaryStatus);
 
     items.push({
       strategyId,
@@ -253,11 +245,7 @@ function buildCashSection(
       trace: { reasonCode },
     }));
 
-  const trace: WhySummaryTrace = {
-    ...latest.trace,
-    category,
-    summaryStatus: latest.summaryStatus,
-  };
+  const trace = createFrameTrace(latest.trace, latest.reasonCounts, category, latest.summaryStatus);
 
   const item: WhyCashSummary = {
     statusLabel: messages.statusLabel,
@@ -278,4 +266,51 @@ function buildCashSection(
     item,
     trace: { querySource: "decision_ledger_frames" },
   };
+}
+
+/**
+ * DB frame projection trace에 frame-level category/status와 양수 reasonCounts key를 결합한다.
+ *
+ * `reason_counts_json`은 evidence detail을 열지 않고도 차단/보류 이유를 추적할 수 있는 핵심 근거이므로, market/strategy/cash
+ * summary item trace에 `reasonCodes` 배열로 보존한다. 이 함수는 순수 변환만 수행하며 DB write나 외부 side effect가 없다.
+ */
+function createFrameTrace(
+  trace: Record<string, unknown>,
+  reasonCounts: Readonly<Record<string, number>>,
+  category: DecisionFrameCategory | null,
+  summaryStatus: SummaryStatus,
+): WhySummaryTrace {
+  const reasonCodes = uniqueText([
+    ...readStringArray(trace, "reasonCodes"),
+    ...collectPositiveReasonCodes(reasonCounts),
+  ]);
+  return {
+    ...trace,
+    category,
+    summaryStatus,
+    ...(reasonCodes.length === 0 ? {} : { reasonCodes }),
+  };
+}
+
+/**
+ * reasonCounts에서 실제로 발생한 reason code만 추출한다.
+ *
+ * count 0은 DB 집계 placeholder일 수 있으므로 operator trace와 briefing reason 목록에 올리지 않는다.
+ */
+function collectPositiveReasonCodes(reasonCounts: Readonly<Record<string, number>>): readonly string[] {
+  return Object.entries(reasonCounts)
+    .filter(([reasonCode, count]) => reasonCode.trim().length > 0 && count > 0)
+    .map(([reasonCode]) => reasonCode);
+}
+
+function readStringArray(record: Record<string, unknown>, key: string): readonly string[] {
+  const value = record[key];
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value.filter((item): item is string => typeof item === "string" && item.trim().length > 0);
+}
+
+function uniqueText(values: readonly string[]): readonly string[] {
+  return [...new Set(values)];
 }
