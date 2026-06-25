@@ -430,8 +430,7 @@ export function buildDecisionLedgerFromRunnerResult(
     const market = resolveMarket(group.trace);
     const strategyId = group.strategyId;
     const correlationId = resolveCorrelationId(group.trace);
-    const intentSide = resolveGroupIntentSide(group.trace);
-    const positionEffect = resolveGroupPositionEffect(group.trace);
+    const intentClassification = resolveGroupIntentClassification(group.trace);
     const dedupeKey = buildFrameDedupeKey(dedupeKeyPrefix, sourceFrameId, strategyId);
 
     const traceJson: DecisionLedgerJsonRecord = {
@@ -443,8 +442,8 @@ export function buildDecisionLedgerFromRunnerResult(
       ...(market !== null ? { resolvedMarket: market } : {}),
       ...(strategyId !== null ? { resolvedStrategyId: strategyId } : {}),
       ...(correlationId !== null ? { resolvedCorrelationId: correlationId } : {}),
-      ...(intentSide !== null ? { intentSide } : {}),
-      ...(positionEffect !== null ? { positionEffect } : {}),
+      ...(intentClassification.intentSide !== null ? { intentSide: intentClassification.intentSide } : {}),
+      ...(intentClassification.positionEffect !== null ? { positionEffect: intentClassification.positionEffect } : {}),
     };
 
     const baseFrame = {
@@ -843,53 +842,50 @@ function resolveCorrelationId(
 }
 
 /**
- * flow trace에서 주문 의도 side를 추출해 frame trace에 보존한다.
+ * flow trace에서 주문 의도 side와 position effect를 같은 record 기준으로 추출한다.
  *
- * EXECUTED frame category는 side를 잃기 쉬우므로 최신 stage metadata를 우선하고, 없으면 conversion 단계의
- * `intent_directions`를 사용한다. 값을 찾지 못하면 BUY/SELL을 추정하지 않고 `null`로 남긴다.
+ * EXECUTED frame category는 side를 잃기 쉬우므로 최신 stage metadata를 우선하고, 같은 record의 position effect만 함께
+ * 보존한다. 서로 다른 주문 record의 side/effect를 합치면 BUY entry가 SELL exit처럼 보일 수 있어 첫 근거 record 단위로 닫는다.
  */
-function resolveGroupIntentSide(
+function resolveGroupIntentClassification(
   trace: readonly PaperDecisionRunnerTraceRecord[],
-): "BUY" | "SELL" | null {
+): { readonly intentSide: "BUY" | "SELL" | null; readonly positionEffect: string | null } {
   for (let index = trace.length - 1; index >= 0; index -= 1) {
     const record = trace[index]!;
+    const positionEffect = resolveRecordPositionEffect(record);
     const side = normalizeIntentSide(
       readStringMetadata(record.metadata, "intent_side") ??
       readStringMetadata(record.metadata, "intentSide") ??
       readStringMetadata(record.metadata, "side"),
     );
     if (side !== null) {
-      return side;
+      return { intentSide: side, positionEffect };
     }
 
     const directions = readStringArray(record.metadata?.intent_directions)
       .map(normalizeIntentSide)
       .filter((direction): direction is "BUY" | "SELL" => direction !== null);
     if (directions.length > 0) {
-      return directions[0]!;
+      return { intentSide: directions[0]!, positionEffect };
+    }
+
+    if (positionEffect !== null) {
+      return { intentSide: null, positionEffect };
     }
   }
-  return null;
+  return { intentSide: null, positionEffect: null };
 }
 
 /**
- * flow trace에서 position effect를 추출해 exit/entry briefing 분류 근거로 보존한다.
+ * 단일 trace record의 position effect만 정규화한다.
  *
- * `position_effect=EXIT|REDUCE`는 SELL exit 근거로 쓰이고, `ENTRY|INCREASE`는 신규 진입 근거로 쓰인다. metadata에
- * 명시된 값이 없으면 reason code 문자열로 추정하지 않는다.
+ * `position_effect=EXIT|REDUCE`는 SELL exit 근거로 쓰이고, `ENTRY|INCREASE`는 신규 진입 근거로 쓰인다. 다른 record의 side와
+ * 섞지 않기 위해 record 단위로만 값을 읽는다.
  */
-function resolveGroupPositionEffect(
-  trace: readonly PaperDecisionRunnerTraceRecord[],
-): string | null {
-  for (let index = trace.length - 1; index >= 0; index -= 1) {
-    const record = trace[index]!;
-    const positionEffect = readStringMetadata(record.metadata, "position_effect") ??
-      readStringMetadata(record.metadata, "positionEffect");
-    if (positionEffect !== null && positionEffect.trim().length > 0) {
-      return positionEffect.trim().toUpperCase();
-    }
-  }
-  return null;
+function resolveRecordPositionEffect(record: PaperDecisionRunnerTraceRecord): string | null {
+  const positionEffect = readStringMetadata(record.metadata, "position_effect") ??
+    readStringMetadata(record.metadata, "positionEffect");
+  return positionEffect === null ? null : positionEffect.trim().toUpperCase();
 }
 
 /**

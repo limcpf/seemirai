@@ -1198,6 +1198,48 @@ describe("Frame builder (producer)", () => {
     expect(riskEvidence!.category).toBe("SELL");
   });
 
+  it("frame trace는 서로 다른 주문 record의 side와 position effect를 합치지 않는다", async () => {
+    const {
+      buildDecisionLedgerFromRunnerResult,
+    } = await import("../../src/application/decision-ledger/frame-builder.js");
+
+    const result = {
+      framesProcessed: 1,
+      metrics: {
+        strategyEvaluationCount: 1,
+        orderCandidateCount: 2,
+        orderIntentCount: 2,
+        holdReasonCounts: {},
+        discardReasonCounts: {},
+        costRejectedCount: 0,
+        riskRejectedCount: 0,
+        paperOrderSubmittedCount: 2,
+        paperFillCount: 0,
+        fillRate: 0,
+        costSummary: { evaluatedCount: 2, allowedCount: 2, rejectedCount: 0, averageCostBps: "10", averageRequiredReturnBps: "20", averageMarginBps: "10" },
+        slippageSummary: { observedFillCount: 0, averageSlippageBps: null, minSlippageBps: null, maxSlippageBps: null },
+        pnlSummary: { startingCashKrw: "1000000", endingCashKrw: "1000000", positionMarketValueKrw: "0", realizedPnlKrw: "0", unrealizedPnlKrw: "0", totalPnlKrw: "0", totalReturnBps: "0", totalFeesKrw: "0", submittedOrderCount: 2, filledOrderCount: 0 },
+        blockingReasonCounts: {},
+        liveOrderApiCalls: 0 as const,
+      },
+      ledgerWriteStatus: "NOT_CONFIGURED" as const,
+      trace: [
+        { frameId: "mixed-intent-frame", strategyId: "strategy.mixed", stage: "FRAME_RECEIVED", status: "received", observedAt: "2026-06-06T11:00:00Z" },
+        { frameId: "mixed-intent-frame", strategyId: "strategy.mixed", stage: "COST_DECISION", status: "ALLOW", reasonCode: "exit_cost_ok", message: "청산 비용 통과", observedAt: "2026-06-06T11:00:01Z", metadata: { trade_allowed: true, intent_side: "SELL", position_effect: "REDUCE" } },
+        { frameId: "mixed-intent-frame", strategyId: "strategy.mixed", stage: "RISK_DECISION", status: "PASS", reasonCode: "entry_risk_ok", message: "진입 리스크 통과", observedAt: "2026-06-06T11:00:02Z", metadata: { approved: true, intent_side: "BUY" } },
+      ] as const,
+    };
+
+    const { frames } = buildDecisionLedgerFromRunnerResult(
+      result,
+      "run-mixed-intent",
+      "UPBIT",
+    );
+
+    expect(frames[0]!.frame.trace.intentSide).toBe("BUY");
+    expect(frames[0]!.frame.trace.positionEffect).toBeUndefined();
+  });
+
   it("evidence fingerprint는 모두 고유하고 중복이 없다", async () => {
     const {
       buildDecisionLedgerFromRunnerResult,

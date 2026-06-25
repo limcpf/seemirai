@@ -23,6 +23,7 @@ import type {
 } from "./types.js";
 
 const unavailableText = "관측 없음";
+const marketHeartbeatFreshnessWindowMs = 5 * 60 * 1000;
 
 interface BriefingWhyDecisionItem {
   label: string;
@@ -50,7 +51,7 @@ export function createLiveOpsBriefingSnapshot(
     observedAt: input.observedAt,
     headline: createHeadline(input.status),
     runtime: createRuntime(input.status, input.liveTradingEnabled),
-    market: createMarket(input.market, input.status),
+    market: createMarket(input.market, input.status, input.observedAt),
     decisions: createDecisions(input.status, input.why),
     portfolio: createPortfolio(input.portfolio, input.status),
     operations: createOperations(input.status),
@@ -107,6 +108,7 @@ function createRuntime(
 function createMarket(
   market: CreateLiveOpsBriefingSnapshotInput["market"],
   status: LiveOpsStatusSummary | null,
+  observedAt: string,
 ): LiveOpsBriefingMarketSnapshot {
   if (market !== undefined && market !== null) {
     return market;
@@ -118,6 +120,15 @@ function createMarket(
       freshnessLabel: unavailableText,
       summary: "시장 데이터 freshness source가 아직 briefing assembler에 연결되지 않았습니다.",
       observedAt: null,
+    };
+  }
+
+  if (isStaleMarketHeartbeat(status.latestHeartbeat.observedAt, observedAt)) {
+    // status reason이 다른 guard에서 먼저 정해졌더라도 market freshness는 heartbeat 시각으로 다시 닫는다.
+    return {
+      freshnessLabel: "시장 데이터 freshness 확인 필요",
+      summary: `시장 데이터 heartbeat가 5분보다 오래되었습니다. 마지막 수신 ${status.latestHeartbeat.observedAt}.`,
+      observedAt: status.latestHeartbeat.observedAt,
     };
   }
 
@@ -206,9 +217,9 @@ function createPortfolio(
       observedAt: null,
     },
     balances: source.balances ?? [],
-    ...(source.balances === null ? { balanceStatusLabel: "coin balance source 관측 없음" } : {}),
+    ...createBalanceStatusLabel(source.balances),
     positions: source.positions ?? [],
-    ...(source.positions === null ? { positionStatusLabel: "position source 관측 없음" } : {}),
+    ...createPositionStatusLabel(source.positions),
     pnl,
     openExposureKrw: source.openExposureKrw === undefined ? status?.budget.openExposureKrw ?? null : source.openExposureKrw,
     budgetUsedKrw: source.budgetUsedKrw === undefined ? status?.budget.dailyNotionalUsedKrw ?? null : source.budgetUsedKrw,
@@ -254,6 +265,63 @@ function createUnavailablePnl(): LiveOpsBriefingPnlSnapshot {
     equityKrw: null,
     observedAt: null,
   };
+}
+
+/**
+ * market heartbeat가 briefing 관측 시각 기준 freshness window를 벗어났는지 판정한다.
+ *
+ * status의 대표 reason은 live trading disabled 같은 다른 guard가 선점할 수 있으므로, market section은 heartbeat 시각을 직접
+ * 비교한다. 이 함수는 날짜 계산만 수행하고 provider 재조회나 snapshot 변경 side effect를 만들지 않는다.
+ */
+function isStaleMarketHeartbeat(heartbeatObservedAt: string | null, briefingObservedAt: string): boolean {
+  if (heartbeatObservedAt === null) {
+    return false;
+  }
+
+  const heartbeatTime = Date.parse(heartbeatObservedAt);
+  const briefingTime = Date.parse(briefingObservedAt);
+  if (!Number.isFinite(heartbeatTime) || !Number.isFinite(briefingTime)) {
+    return true;
+  }
+
+  const ageMs = briefingTime - heartbeatTime;
+  return ageMs > marketHeartbeatFreshnessWindowMs;
+}
+
+/**
+ * balance projection의 명시적 null/empty 상태를 formatter가 구분할 수 있는 label로 낮춘다.
+ *
+ * `null`은 source 결측, 빈 배열은 정상 조회 후 보유 없음이다. undefined는 projection 미제공이므로 기존 `관측 없음` fallback을
+ * 유지한다.
+ */
+function createBalanceStatusLabel(
+  balances: NonNullable<CreateLiveOpsBriefingSnapshotInput["portfolio"]>["balances"],
+): Partial<Pick<LiveOpsBriefingPortfolioSnapshot, "balanceStatusLabel">> {
+  if (balances === null) {
+    return { balanceStatusLabel: "coin balance source 관측 없음" };
+  }
+  if (balances !== undefined && balances.length === 0) {
+    return { balanceStatusLabel: "coin balance 조회 완료: 보유 없음" };
+  }
+  return {};
+}
+
+/**
+ * position projection의 명시적 null/empty 상태를 formatter가 구분할 수 있는 label로 낮춘다.
+ *
+ * `null`은 source 결측, 빈 배열은 정상 조회 후 무포지션이다. undefined는 projection 미제공이므로 기존 `관측 없음` fallback을
+ * 유지한다.
+ */
+function createPositionStatusLabel(
+  positions: NonNullable<CreateLiveOpsBriefingSnapshotInput["portfolio"]>["positions"],
+): Partial<Pick<LiveOpsBriefingPortfolioSnapshot, "positionStatusLabel">> {
+  if (positions === null) {
+    return { positionStatusLabel: "position source 관측 없음" };
+  }
+  if (positions !== undefined && positions.length === 0) {
+    return { positionStatusLabel: "position 조회 완료: 보유 없음" };
+  }
+  return {};
 }
 
 function createOperations(status: LiveOpsStatusSummary | null): LiveOpsBriefingOperationsSnapshot {
@@ -486,6 +554,10 @@ function isEntryMarketItem(item: WhyMarketSummary): boolean {
   const category = readTraceString(item.trace, "category");
   if (category === "EXECUTED" || category === "EXECUTION_REJECTED") {
     return false;
+  }
+
+  if (category === "DISCARD") {
+    return true;
   }
 
   const strategyId = readFirstTraceString(item.trace, ["strategyId", "strategy_id", "resolvedStrategyId"]);
