@@ -13,11 +13,17 @@ const omittedMarker = "\n[이후 생략]";
 const unsafeTextPatterns: readonly { pattern: RegExp; reason: string }[] = [
   { pattern: /raw[\s_-]?provider[\s_-]?payload/giu, reason: "raw_provider_payload" },
   { pattern: /raw[\s_-]?order[\s_-]?detail/giu, reason: "raw_order_detail" },
+  { pattern: /https:\/\/api\.telegram\.org\/bot[^/\s]+\/[A-Za-z][A-Za-z0-9_]*/giu, reason: "telegram_token_url" },
   { pattern: /\bAuthorization\s*:\s*[^\r\n,;]+/giu, reason: "authorization_header" },
   { pattern: /\bBearer\s+[A-Za-z0-9._~+/=-]+/giu, reason: "bearer_token" },
   { pattern: /\b[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{8,}\b/gu, reason: "jwt_token" },
-  { pattern: /\btelegram_bot_token\s*=\s*[^/?&#\s]+/giu, reason: "telegram_token" },
+  { pattern: /\b(?:SEEMIRAI_)?TELEGRAM_BOT_TOKEN\s*[:=]\s*(?:"[^"]*"|'[^']*'|[^/?&#\s,;}]+)/giu, reason: "telegram_token" },
+  { pattern: /(?<![A-Za-z0-9_-])["']?(?:telegram)?botToken["']?\s*[:=]\s*(?:"[^"]*"|'[^']*'|[^\s,;&}]+)/giu, reason: "telegram_token" },
+  { pattern: /\b(?:SEEMIRAI_)?(?:UPBIT_)?(?:ACCESS|SECRET)_KEY\s*[:=]\s*(?:"[^"]*"|'[^']*'|[^/?&#\s,;}]+)/giu, reason: "api_key" },
   { pattern: /\b(?:access|secret)[_-]?key\s*=\s*[^/?&#\s]+/giu, reason: "api_key" },
+  { pattern: /\b(?:SEEMIRAI_)?DATABASE_URL\s*[:=]\s*postgres(?:ql)?:\/\/[^\s,;}]+/giu, reason: "database_url" },
+  { pattern: /postgres(?:ql)?:\/\/[^:\s"']+:[^@\s"']+@[^\s"']+/giu, reason: "database_url" },
+  { pattern: /(?<![A-Za-z0-9_-])["']?(?:apiSecret|accessKey|secretKey|upbitAccessKey|upbitSecretKey)["']?\s*[:=]\s*(?:"[^"]*"|'[^']*'|[^\s,;&}]+)/giu, reason: "secret_like_value" },
   { pattern: /(?<![A-Za-z0-9_-])["']?(?:api[_-]?key|access[_-]?key|secret[_-]?key|telegram_bot_token|token|secret|password|authorization|jwt)["']?\s*[:=]\s*(?:"[^"]*"|'[^']*'|[^\s,;&}]+)/giu, reason: "secret_like_value" },
   { pattern: /\b(?:api[_-]?key|token|secret)[=/][^/?&#\s]+/giu, reason: "secret_like_value" },
 ];
@@ -27,6 +33,7 @@ const unsafeKeyPatterns: readonly { pattern: RegExp; reason: string }[] = [
   { pattern: /raw[_-]?order[_-]?detail/iu, reason: "raw_order_detail_key" },
   { pattern: /authorization/iu, reason: "authorization_key" },
   { pattern: /jwt/iu, reason: "jwt_key" },
+  { pattern: /database[_-]?url/iu, reason: "database_url_key" },
   { pattern: /(?:api[_-]?key|access[_-]?key|secret[_-]?key|token|secret|password|credential)/iu, reason: "secret_key" },
 ];
 
@@ -201,7 +208,8 @@ function formatDaemonState(daemonAlive: boolean): string {
 }
 
 function sanitizeText(value: string): string {
-  let sanitized = value;
+  // snapshot 값 내부 줄바꿈은 고정 라벨/섹션 구조를 주입할 수 있으므로 먼저 inline text로 낮춘다.
+  let sanitized = value.replace(/[\r\n]+/gu, " ").replace(/[ \t]{2,}/gu, " ");
   for (const { pattern } of unsafeTextPatterns) {
     // 브리핑 표면은 실패 대신 redaction으로 낮춰 운영자가 fallback 문구라도 받을 수 있게 한다.
     sanitized = sanitized.replace(pattern, redactedMarker);

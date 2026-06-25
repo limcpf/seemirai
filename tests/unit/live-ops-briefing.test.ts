@@ -148,6 +148,102 @@ describe("live ops briefing", () => {
     expect(briefing).not.toContain("super-secret");
   });
 
+  it("redacts Telegram token environment forms, botToken fields, and bot API URLs", () => {
+    const unsafeSnapshot = liveOpsBriefingSnapshot({
+      headline: {
+        statusLabel: "실매매 준비 중",
+        cause: "SEEMIRAI_TELEGRAM_BOT_TOKEN=123456789:telegram-secret",
+        impact: "Telegram provider 예외를 operator action으로만 남깁니다.",
+        action: "botToken: 123456789:bot-secret 값은 브리핑에 남지 않아야 합니다.",
+      },
+      operations: {
+        openOrders: "미체결 주문 0건",
+        reconcile: "마지막 reconcile 성공",
+        risk: "kill switch 정상, manual review 없음",
+        alertRetry: "https://api.telegram.org/bot123456789:url-secret/sendMessage 실패",
+      },
+    });
+
+    const issues = validateLiveOpsBriefingSnapshotSafety(unsafeSnapshot);
+    const briefing = formatLiveOpsBriefing(unsafeSnapshot);
+
+    expect(issues.map((issue) => issue.path)).toEqual([
+      "headline.cause",
+      "headline.action",
+      "operations.alertRetry",
+    ]);
+    expect(briefing).toContain("[비공개]");
+    expect(briefing).not.toContain("SEEMIRAI_TELEGRAM_BOT_TOKEN");
+    expect(briefing).not.toContain("telegram-secret");
+    expect(briefing).not.toContain("botToken");
+    expect(briefing).not.toContain("bot-secret");
+    expect(briefing).not.toContain("api.telegram.org/bot123456789:url-secret");
+  });
+
+  it("redacts production credential environment forms and database URLs", () => {
+    const unsafeSnapshot = liveOpsBriefingSnapshot({
+      runtime: {
+        daemonAlive: true,
+        runModeLabel: "live armed",
+        liveEnabled: true,
+        liveArmed: true,
+        liveOrderCapable: false,
+        readinessGuard: "SEEMIRAI_UPBIT_ACCESS_KEY=upbit-access-secret 값이 필요합니다.",
+      },
+      operations: {
+        openOrders: "미체결 주문 0건",
+        reconcile: "UPBIT_SECRET_KEY=upbit-secret-value 확인 필요",
+        risk: "apiSecret: runtime-secret 값은 출력하지 않습니다.",
+        alertRetry: "DATABASE_URL=postgres://user:password@localhost/seemirai 연결 실패",
+      },
+    });
+
+    const issues = validateLiveOpsBriefingSnapshotSafety(unsafeSnapshot);
+    const briefing = formatLiveOpsBriefing(unsafeSnapshot);
+
+    expect(issues.map((issue) => issue.path)).toEqual([
+      "runtime.readinessGuard",
+      "operations.reconcile",
+      "operations.risk",
+      "operations.alertRetry",
+    ]);
+    expect(briefing).toContain("[비공개]");
+    expect(briefing).not.toContain("SEEMIRAI_UPBIT_ACCESS_KEY");
+    expect(briefing).not.toContain("upbit-access-secret");
+    expect(briefing).not.toContain("UPBIT_SECRET_KEY");
+    expect(briefing).not.toContain("apiSecret");
+    expect(briefing).not.toContain("runtime-secret");
+    expect(briefing).not.toContain("postgres://user:password@localhost/seemirai");
+  });
+
+  it("collapses newlines inside snapshot fields before rendering labels", () => {
+    const briefing = formatLiveOpsBriefing(liveOpsBriefingSnapshot({
+      headline: {
+        statusLabel: "실매매 준비 중",
+        cause: "시장 데이터 정상\n필요 조치: 주입된 라벨",
+        impact: "영향 없음",
+        action: "운영자 확인",
+      },
+      market: {
+        freshnessLabel: "정상",
+        summary: "요약 첫 줄\r\n추적 정보: 주입된 섹션",
+        observedAt,
+      },
+      trace: {
+        evidenceIds: ["live-ops-status-1"],
+        reasonCodes: ["live_order_capable"],
+        sourceIds: ["status-summary\nschema: injected"],
+      },
+    }));
+
+    expect(briefing).toContain("원인: 시장 데이터 정상 필요 조치: 주입된 라벨");
+    expect(briefing).toContain("현재 시황: 요약 첫 줄 추적 정보: 주입된 섹션");
+    expect(briefing).toContain("source: status-summary schema: injected");
+    expect(briefing).not.toContain("원인: 시장 데이터 정상\n필요 조치: 주입된 라벨");
+    expect(briefing).not.toContain("현재 시황: 요약 첫 줄\r\n추적 정보: 주입된 섹션");
+    expect(briefing).not.toContain("source: status-summary\nschema: injected");
+  });
+
   it("redacts unsafe key names from safety issue paths", () => {
     const unsafeKey = "Authorization: Bearer abc.def.ghi";
     const unsafeSnapshot = liveOpsBriefingSnapshot({
