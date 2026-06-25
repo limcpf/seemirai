@@ -718,15 +718,18 @@ Issue #196은 M22/M23 pilot runner를 실운영 주경로로 쓰지 않고, `liv
 
 구현 기준:
 
+- build/run contract: package script는 `corepack pnpm build` 후 `dist/runtime/*-cli.js`를 실행한다.
+- app core: `src/runtime/live-ops-app-core.ts`, `src/runtime/live-ops-app-core/`
+- runtime adapter orchestration: `src/runtime/live-ops-runtime-adapter.ts`, `src/runtime/live-ops-runtime-adapter/`
 - config schema: `src/runtime/live-ops-config.ts`
 - DB readiness guard: `src/runtime/live-ops-db-readiness.ts`
 - market data collector: `src/runtime/live-ops-market-data.ts`
 - analysis/decision pipeline: `src/runtime/live-ops-analysis-decision.ts`
 - live execution adapter: `src/runtime/live-ops-live-execution.ts`
 - Telegram alert mapper: `src/runtime/live-ops-telegram-alerts.ts`
-- CLI/TUI reconcile/PnL/status summary: `scripts/run-live-ops-support.mjs`
+- CLI/TUI reconcile/PnL/status side-effect port: `scripts/run-live-ops-support.mjs`
 - PnL closeout runner: `scripts/run-live-ops-pnl-closeout.mjs`, `scripts/run-live-ops-pnl-closeout-support.mjs`
-- script skeleton: `scripts/run-live-ops.mjs`, `scripts/run-live-ops-tui.mjs`
+- compatibility/dev convenience runner: `scripts/run-live-ops.mjs`, `scripts/run-live-ops-tui.mjs`
 - 예시 JSON: `config/live-ops.example.json`
 - 예시 env: `config/live-ops.env.example`
 - 실행 command:
@@ -735,6 +738,11 @@ Issue #196은 M22/M23 pilot runner를 실운영 주경로로 쓰지 않고, `liv
   `corepack pnpm live:ops:tui -- --config <운영-json-path> --env-file <운영-env-path> --attach <run-id|socket|status-source>`
 - PnL closeout command:
   `corepack pnpm live:ops:pnl-closeout -- --env-file <운영-env-path> --market KRW-BTC --strategy-id live_ops_cleanup_probe --json`
+
+`live:ops`, `live:ops:daemon`, `live:ops:tui`, `live:ops:pnl-closeout` package script는 production 실행 전에 build를 수행하고
+`dist/runtime/*-cli.js` 산출물을 실행한다. 런타임 TypeScript transpiler 의존성은 production contract에 포함하지 않는다. `.mjs` runner는
+로컬 compatibility/dev convenience entry로만 유지하고, `scripts/run-live-ops-support.mjs`는 TypeScript app core와 runtime adapter가
+호출하는 side-effect port를 제공한다.
 
 JSON config에는 다음처럼 secret이 아닌 운영 정책만 둔다.
 
@@ -776,7 +784,7 @@ Telegram dispatch를 새로 시작하지 않는다. non-fixture attach 대상은
 foreground `live:ops` 명령에서는 성공 처리하지 않는다. attach 화면은 새 주문 side effect가 없다는 실행 형태를 따로 표시하되, 원본
 foreground summary의 실주문 가능 여부는 그대로 보여준다. 단, attach source의 `liveOrderCapable`은 boolean이어야 하며 문자열/숫자 값은
 정상 dashboard로 표시하지 않는다. 첫 화면은 모드, 시장, 실주문 가능 여부, DB readiness/schema version, worker 상태,
-예산, 최근 관측 상태, 필요 조치를 한국어로 표시하고, env file 경로, credential, raw provider payload, raw config enum은 노출하지 않는다.
+예산, 최근 관측 상태, 필요 조치를 한국어로 표시하고, env file 경로, credential, provider 원본 payload, raw config enum은 노출하지 않는다.
 fixture smoke dashboard는 외부 DB/provider를 호출하지 않았음을 표시하고, 후속 provider 연결 전에는 신규 실주문이 제출되지 않는 상태로
 고정한다.
 

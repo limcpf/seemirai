@@ -275,6 +275,13 @@
       "owner_scope": "docs/exec-plans/active"
     },
     {
+      "path": "docs/exec-plans/completed/2026-06-25-issue-244-live-ops-typescript-app-core-closeout.md",
+      "kind": "exec-plan",
+      "role": "Issue #244 Live Ops production 앱 코어 TypeScript화와 dist 기반 thin CLI 전환 closeout",
+      "read_when": ["issue #244 closeout 확인", "Live Ops TypeScript 앱 코어", "dist 기반 production 실행", "thin CLI 전환", "source scan 확인"],
+      "owner_scope": "docs/exec-plans/completed"
+    },
+    {
       "path": "docs/exec-plans/active/2026-06-14-issue-196-live-ops-one-click-app.md",
       "kind": "exec-plan",
       "role": "Issue #196 Live Ops 원클릭 앱과 TUI 필수 운영 콘솔 sub PR 실행 계획",
