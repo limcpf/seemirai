@@ -17,6 +17,8 @@ describe("live ops briefing", () => {
     expect(briefing).toContain("필요 조치: 차단 사유가 해소될 때까지 신규 진입을 열지 마세요.");
     expect(briefing).toContain("매수 조건: 스프레드 정상, 호가 깊이 충분");
     expect(briefing).toContain("매도 조건: 익절 조건 미충족, 손절 조건 미충족");
+    expect(briefing).toContain("실거래 활성화/무장/주문 가능: 예 / 예 / 아니오");
+    expect(briefing).not.toContain("live enabled/armed/order capable");
     expect(briefing).toContain("현금: 총 125000 KRW, 사용 가능 120000 KRW");
     expect(briefing).toContain("coin/position: KRW-BTC total 0.002 BTC, available 0.002 BTC 보유");
     expect(briefing).toContain("position scope: KRW-BTC 0.002 전략 보유 (평균단가 60000000 KRW)");
@@ -214,6 +216,55 @@ describe("live ops briefing", () => {
     expect(briefing).not.toContain("apiSecret");
     expect(briefing).not.toContain("runtime-secret");
     expect(briefing).not.toContain("postgres://user:password@localhost/seemirai");
+  });
+
+  it("redacts full unquoted credential values with URL-safe separators", () => {
+    const unsafeSnapshot = liveOpsBriefingSnapshot({
+      headline: {
+        statusLabel: "실매매 준비 중",
+        cause: "UPBIT_SECRET_KEY=abc/def?ghi#jkl 값은 출력하지 않습니다.",
+        impact: "access_key=aaa/bbb?ccc#ddd 후보도 출력하지 않습니다.",
+        action: "운영자가 credential source를 다시 확인하세요.",
+      },
+    });
+
+    const issues = validateLiveOpsBriefingSnapshotSafety(unsafeSnapshot);
+    const briefing = formatLiveOpsBriefing(unsafeSnapshot);
+
+    expect(issues.map((issue) => issue.path)).toEqual([
+      "headline.cause",
+      "headline.impact",
+    ]);
+    expect(briefing).toContain("[비공개]");
+    expect(briefing).not.toContain("abc/def?ghi#jkl");
+    expect(briefing).not.toContain("/def");
+    expect(briefing).not.toContain("aaa/bbb?ccc#ddd");
+    expect(briefing).not.toContain("/bbb");
+  });
+
+  it("redacts raw provider and order payload contents with their labels", () => {
+    const unsafeSnapshot = liveOpsBriefingSnapshot({
+      headline: {
+        statusLabel: "실매매 준비 중",
+        cause: "rawProviderPayload={\"uuid\":\"raw-provider-id\",\"price\":\"100\"}",
+        impact: "raw order detail: {\"uuid\":\"raw-order-id\",\"state\":\"wait\"}",
+        action: "운영자에게 safe summary만 보여줍니다.",
+      },
+    });
+
+    const issues = validateLiveOpsBriefingSnapshotSafety(unsafeSnapshot);
+    const briefing = formatLiveOpsBriefing(unsafeSnapshot);
+
+    expect(issues.map((issue) => issue.path)).toEqual([
+      "headline.cause",
+      "headline.impact",
+    ]);
+    expect(briefing).toContain("[비공개]");
+    expect(briefing).not.toContain("rawProviderPayload");
+    expect(briefing).not.toContain("raw-provider-id");
+    expect(briefing).not.toContain("raw order detail");
+    expect(briefing).not.toContain("raw-order-id");
+    expect(briefing).not.toContain("\"state\":\"wait\"");
   });
 
   it("collapses newlines inside snapshot fields before rendering labels", () => {

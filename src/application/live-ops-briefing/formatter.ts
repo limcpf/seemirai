@@ -11,21 +11,23 @@ const redactedMarker = "[비공개]";
 const omittedMarker = "\n[이후 생략]";
 
 const unsafeTextPatterns: readonly { pattern: RegExp; reason: string }[] = [
+  { pattern: /raw(?:[\s_-]?provider[\s_-]?payload|ProviderPayload)\s*[:=]\s*(?:"[^"]*"|'[^']*'|\{[^\r\n]*?\}|\[[^\r\n]*?\]|[^\s,;]+)/giu, reason: "raw_provider_payload" },
+  { pattern: /raw(?:[\s_-]?order[\s_-]?detail|OrderDetail)\s*[:=]\s*(?:"[^"]*"|'[^']*'|\{[^\r\n]*?\}|\[[^\r\n]*?\]|[^\s,;]+)/giu, reason: "raw_order_detail" },
   { pattern: /raw[\s_-]?provider[\s_-]?payload/giu, reason: "raw_provider_payload" },
   { pattern: /raw[\s_-]?order[\s_-]?detail/giu, reason: "raw_order_detail" },
   { pattern: /https:\/\/api\.telegram\.org\/bot[^/\s]+\/[A-Za-z][A-Za-z0-9_]*/giu, reason: "telegram_token_url" },
   { pattern: /\bAuthorization\s*:\s*[^\r\n,;]+/giu, reason: "authorization_header" },
   { pattern: /\bBearer\s+[A-Za-z0-9._~+/=-]+/giu, reason: "bearer_token" },
   { pattern: /\b[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{8,}\b/gu, reason: "jwt_token" },
-  { pattern: /\b(?:SEEMIRAI_)?TELEGRAM_BOT_TOKEN\s*[:=]\s*(?:"[^"]*"|'[^']*'|[^/?&#\s,;}]+)/giu, reason: "telegram_token" },
+  { pattern: /\b(?:SEEMIRAI_)?TELEGRAM_BOT_TOKEN\s*[:=]\s*(?:"[^"]*"|'[^']*'|[^\s,;}]+)/giu, reason: "telegram_token" },
   { pattern: /(?<![A-Za-z0-9_-])["']?(?:telegram)?botToken["']?\s*[:=]\s*(?:"[^"]*"|'[^']*'|[^\s,;&}]+)/giu, reason: "telegram_token" },
-  { pattern: /\b(?:SEEMIRAI_)?(?:UPBIT_)?(?:ACCESS|SECRET)_KEY\s*[:=]\s*(?:"[^"]*"|'[^']*'|[^/?&#\s,;}]+)/giu, reason: "api_key" },
-  { pattern: /\b(?:access|secret)[_-]?key\s*=\s*[^/?&#\s]+/giu, reason: "api_key" },
+  { pattern: /\b(?:SEEMIRAI_)?(?:UPBIT_)?(?:ACCESS|SECRET)_KEY\s*[:=]\s*(?:"[^"]*"|'[^']*'|[^\s,;}]+)/giu, reason: "api_key" },
+  { pattern: /\b(?:access|secret)[_-]?key\s*=\s*[^\s,;}]+/giu, reason: "api_key" },
   { pattern: /\b(?:SEEMIRAI_)?DATABASE_URL\s*[:=]\s*postgres(?:ql)?:\/\/[^\s,;}]+/giu, reason: "database_url" },
   { pattern: /postgres(?:ql)?:\/\/[^:\s"']+:[^@\s"']+@[^\s"']+/giu, reason: "database_url" },
   { pattern: /(?<![A-Za-z0-9_-])["']?(?:apiSecret|accessKey|secretKey|upbitAccessKey|upbitSecretKey)["']?\s*[:=]\s*(?:"[^"]*"|'[^']*'|[^\s,;&}]+)/giu, reason: "secret_like_value" },
-  { pattern: /(?<![A-Za-z0-9_-])["']?(?:api[_-]?key|access[_-]?key|secret[_-]?key|telegram_bot_token|token|secret|password|authorization|jwt)["']?\s*[:=]\s*(?:"[^"]*"|'[^']*'|[^\s,;&}]+)/giu, reason: "secret_like_value" },
-  { pattern: /\b(?:api[_-]?key|token|secret)[=/][^/?&#\s]+/giu, reason: "secret_like_value" },
+  { pattern: /(?<![A-Za-z0-9_-])["']?(?:api[_-]?key|access[_-]?key|secret[_-]?key|telegram_bot_token|token|secret|password|authorization|jwt)["']?\s*[:=]\s*(?:"[^"]*"|'[^']*'|[^\s,;}]+)/giu, reason: "secret_like_value" },
+  { pattern: /\b(?:api[_-]?key|token|secret)[=/][^\s,;}]+/giu, reason: "secret_like_value" },
 ];
 
 const unsafeKeyPatterns: readonly { pattern: RegExp; reason: string }[] = [
@@ -63,7 +65,7 @@ export function formatLiveOpsBriefing(
     "운영 상태",
     `- daemon: ${formatDaemonState(snapshot.runtime.daemonAlive)}`,
     `- 실행 모드: ${sanitizeText(snapshot.runtime.runModeLabel)}`,
-    `- live enabled/armed/order capable: ${formatBoolean(snapshot.runtime.liveEnabled)} / ${formatBoolean(snapshot.runtime.liveArmed)} / ${formatBoolean(snapshot.runtime.liveOrderCapable)}`,
+    `- 실거래 활성화/무장/주문 가능: ${formatBoolean(snapshot.runtime.liveEnabled)} / ${formatBoolean(snapshot.runtime.liveArmed)} / ${formatBoolean(snapshot.runtime.liveOrderCapable)}`,
     `- readiness guard: ${sanitizeText(snapshot.runtime.readinessGuard)}`,
     "",
     "시장 상태",
