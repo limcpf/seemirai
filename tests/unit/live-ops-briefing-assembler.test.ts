@@ -6,6 +6,7 @@ import {
 } from "../../src/application/index.js";
 import type {
   CreateLiveOpsStatusSummaryInput,
+  DecisionCategory,
   WhySummary,
 } from "../../src/application/index.js";
 
@@ -110,9 +111,9 @@ describe("live ops briefing assembler", () => {
     });
     expect(snapshot.decisions.latestCandidate).toContain("최근 주문 후보가 예산 한도 안에서 생성됐습니다.");
     expect(snapshot.decisions.latestEntryDecision).toContain("KRW-BTC: 진입 보류");
-    expect(snapshot.decisions.latestExitDecision).toContain("exit-small-budget: 청산 대기");
+    expect(snapshot.decisions.latestExitDecision).toBe("관측 없음");
     expect(snapshot.decisions.buyConditions).toEqual(["KRW-BTC: 진입 보류"]);
-    expect(snapshot.decisions.sellConditions).toEqual(["exit-small-budget: 청산 대기"]);
+    expect(snapshot.decisions.sellConditions).toEqual([]);
     expect(snapshot.decisions.holdReason).toContain("비용 차감 후 기대값 부족 2건");
     expect(snapshot.decisions.blockReason).toBeNull();
     expect(snapshot.operations.openOrders).toBe("미체결 주문 1건");
@@ -134,6 +135,116 @@ describe("live ops briefing assembler", () => {
     expect(briefing).toContain("시장 상태");
     expect(briefing).toContain("coin/position: KRW-BTC total 0.002 BTC, available 0.001 BTC 일부 잠김");
     expect(briefing).toContain("HOLD 이유: 비용 차감 후 기대값 부족 2건");
+  });
+
+  it("keeps explicit portfolio PnL null unavailable instead of falling back to status PnL", () => {
+    const snapshot = createLiveOpsBriefingSnapshot({
+      observedAt,
+      status: createLiveOpsStatusSummary(liveOpsInput()),
+      why: whySummaryFixture(),
+      portfolio: {
+        pnl: null,
+      },
+    });
+    const briefing = formatLiveOpsBriefing(snapshot);
+
+    expect(snapshot.portfolio.pnl).toEqual({
+      statusLabel: "관측 없음",
+      realizedKrw: null,
+      unrealizedKrw: null,
+      equityKrw: null,
+      observedAt: null,
+    });
+    expect(briefing).toContain("PnL: 관측 없음");
+    expect(briefing).not.toContain("실현 1200 KRW");
+    expect(snapshot.portfolio.openExposureKrw).toBe("12000");
+    expect(snapshot.portfolio.budgetUsedKrw).toBe("5000");
+  });
+
+  it("surfaces unavailable why summaries in the decision area", () => {
+    const snapshot = createLiveOpsBriefingSnapshot({
+      observedAt,
+      status: createLiveOpsStatusSummary(liveOpsInput()),
+      why: unavailableWhySummaryFixture(),
+    });
+    const briefing = formatLiveOpsBriefing(snapshot);
+
+    expect(snapshot.decisions.latestEntryDecision).toContain("시장별 판단 이유 조회 불가");
+    expect(snapshot.decisions.latestExitDecision).toContain("전략별 판단 이유 조회 불가");
+    expect(snapshot.decisions.blockReason).toContain("decision ledger why summary 조회 불가");
+    expect(snapshot.trace.reasonCodes).toContain("decision_ledger_why_unavailable");
+    expect(briefing).toContain("BLOCK 이유: decision ledger why summary 조회 불가");
+  });
+
+  it("uses latest decision timestamps and does not treat generic strategy BUY as sell conditions", () => {
+    const snapshot = createLiveOpsBriefingSnapshot({
+      observedAt,
+      status: createLiveOpsStatusSummary(liveOpsInput()),
+      why: whySummaryFixture({
+        markets: [
+          {
+            market: "KRW-BTC",
+            statusLabel: "오래된 보류",
+            message: "오래된 시장 판단입니다.",
+            latestDecisionAt: "2026-06-25T02:00:00.000Z",
+            category: "HOLD",
+            reasonCode: "old_hold",
+          },
+          {
+            market: "KRW-ETH",
+            statusLabel: "최신 진입 대기",
+            message: "가장 최신 시장 판단입니다.",
+            latestDecisionAt: "2026-06-25T03:10:00.000Z",
+            category: "BUY",
+            reasonCode: "latest_buy_candidate",
+          },
+        ],
+        strategies: [
+          {
+            strategyId: "trend-following",
+            statusLabel: "매수 후보",
+            message: "전략은 매수 후보를 유지합니다.",
+            latestDecisionAt: "2026-06-25T03:20:00.000Z",
+            category: "BUY",
+            reasonCode: "strategy_buy_candidate",
+          },
+        ],
+      }),
+    });
+
+    expect(snapshot.decisions.latestEntryDecision).toContain("KRW-ETH: 최신 진입 대기");
+    expect(snapshot.decisions.latestExitDecision).toBe("관측 없음");
+    expect(snapshot.decisions.buyConditions).toEqual([
+      "KRW-BTC: 오래된 보류",
+      "KRW-ETH: 최신 진입 대기",
+    ]);
+    expect(snapshot.decisions.sellConditions).toEqual([]);
+    expect(snapshot.trace.reasonCodes).toEqual(expect.arrayContaining([
+      "latest_buy_candidate",
+      "strategy_buy_candidate",
+    ]));
+  });
+
+  it("keeps internal risk reason codes in trace instead of user-facing briefing text", () => {
+    const snapshot = createLiveOpsBriefingSnapshot({
+      observedAt,
+      status: createLiveOpsStatusSummary(liveOpsInput({
+        tradingState: {
+          killSwitchState: "NEW_ORDERS_BLOCKED",
+          newOrdersBlocked: true,
+          requiresManualReview: false,
+          blockedReason: "operator_pause",
+        },
+      })),
+      why: whySummaryFixture(),
+    });
+    const briefing = formatLiveOpsBriefing(snapshot);
+
+    expect(snapshot.decisions.blockReason).toBe("신규 주문 차단 상태라 신규 진입 판단을 실행하지 않습니다.");
+    expect(snapshot.operations.risk).toContain("신규 주문 차단");
+    expect(snapshot.operations.risk).not.toContain("operator_pause");
+    expect(briefing).not.toContain("사유 operator_pause");
+    expect(snapshot.trace.reasonCodes).toContain("operator_pause");
   });
 
   it("represents missing provider sources as unavailable observations without zero coercion", () => {
@@ -314,7 +425,31 @@ function liveOpsInput(overrides: Partial<CreateLiveOpsStatusSummaryInput> = {}):
   };
 }
 
-function whySummaryFixture(): WhySummary {
+function whySummaryFixture(overrides: {
+  markets?: readonly WhyItemFixture[] | undefined;
+  strategies?: readonly WhyStrategyItemFixture[] | undefined;
+} = {}): WhySummary {
+  const markets = overrides.markets ?? [
+    {
+      market: "KRW-BTC",
+      statusLabel: "진입 보류",
+      message: "비용 차감 후 기대값이 안전 버퍼를 넘지 못했습니다.",
+      latestDecisionAt: observedAt,
+      category: "HOLD",
+      reasonCode: "entry_hold_cost_margin",
+    },
+  ];
+  const strategies = overrides.strategies ?? [
+    {
+      strategyId: "exit-small-budget",
+      statusLabel: "청산 대기",
+      message: "익절과 손절 조건이 모두 충족되지 않았습니다.",
+      latestDecisionAt: observedAt,
+      category: "HOLD",
+      reasonCode: "exit_hold_no_signal",
+    },
+  ];
+
   return {
     markets: {
       readStatus: "OK",
@@ -322,20 +457,18 @@ function whySummaryFixture(): WhySummary {
       message: "시장별 최근 판단 이유를 조회했습니다.",
       impact: null,
       action: null,
-      items: [
-        {
-          market: "KRW-BTC",
-          statusLabel: "진입 보류",
-          message: "비용 차감 후 기대값이 안전 버퍼를 넘지 못했습니다.",
-          impact: "신규 매수 후보는 HOLD 상태입니다.",
-          action: "스프레드와 호가 깊이를 다시 확인하세요.",
-          latestDecisionAt: observedAt,
-          trace: {
-            category: "HOLD",
-            reasonCode: "entry_hold_cost_margin",
-          },
+      items: markets.map((item) => ({
+        market: item.market,
+        statusLabel: item.statusLabel,
+        message: item.message,
+        impact: "신규 매수 후보는 HOLD 상태입니다.",
+        action: "스프레드와 호가 깊이를 다시 확인하세요.",
+        latestDecisionAt: item.latestDecisionAt,
+        trace: {
+          category: item.category,
+          reasonCode: item.reasonCode,
         },
-      ],
+      })),
       trace: {
         querySource: "decision_ledger_frames",
       },
@@ -346,20 +479,18 @@ function whySummaryFixture(): WhySummary {
       message: "전략별 최근 판단 이유를 조회했습니다.",
       impact: null,
       action: null,
-      items: [
-        {
-          strategyId: "exit-small-budget",
-          statusLabel: "청산 대기",
-          message: "익절과 손절 조건이 모두 충족되지 않았습니다.",
-          impact: "기존 포지션은 관측만 계속합니다.",
-          action: "exit guard를 유지하세요.",
-          latestDecisionAt: observedAt,
-          trace: {
-            category: "HOLD",
-            reasonCode: "exit_hold_no_signal",
-          },
+      items: strategies.map((item) => ({
+        strategyId: item.strategyId,
+        statusLabel: item.statusLabel,
+        message: item.message,
+        impact: "기존 포지션은 관측만 계속합니다.",
+        action: "exit guard를 유지하세요.",
+        latestDecisionAt: item.latestDecisionAt,
+        trace: {
+          category: item.category,
+          reasonCode: item.reasonCode,
         },
-      ],
+      })),
       trace: {
         querySource: "decision_ledger_frames",
       },
@@ -400,4 +531,69 @@ function whySummaryFixture(): WhySummary {
       querySource: "decision_ledger_frames",
     },
   };
+}
+
+function unavailableWhySummaryFixture(): WhySummary {
+  return {
+    markets: {
+      readStatus: "UNAVAILABLE",
+      statusLabel: "시장별 판단 이유 조회 불가",
+      message: "decision ledger market section을 조회하지 못했습니다.",
+      impact: "진입 판단 이유를 확인할 수 없습니다.",
+      action: "DB 연결과 decision ledger status provider를 확인하세요.",
+      items: [],
+      trace: {
+        querySource: "decision_ledger_frames",
+        reasonCode: "market_why_query_failed",
+      },
+    },
+    strategies: {
+      readStatus: "UNAVAILABLE",
+      statusLabel: "전략별 판단 이유 조회 불가",
+      message: "decision ledger strategy section을 조회하지 못했습니다.",
+      impact: "전략 판단 이유를 확인할 수 없습니다.",
+      action: "DB 연결과 decision ledger status provider를 확인하세요.",
+      items: [],
+      trace: {
+        querySource: "decision_ledger_frames",
+        reasonCode: "strategy_why_query_failed",
+      },
+    },
+    cash: {
+      readStatus: "UNAVAILABLE",
+      statusLabel: "현금 보유 이유 조회 불가",
+      message: "decision ledger cash section을 조회하지 못했습니다.",
+      impact: "현금 보유 이유를 확인할 수 없습니다.",
+      action: "DB 연결과 decision ledger status provider를 확인하세요.",
+      item: null,
+      trace: {
+        querySource: "decision_ledger_frames",
+        reasonCode: "cash_why_query_failed",
+      },
+    },
+    generatedAt: observedAt,
+    readStatus: "UNAVAILABLE",
+    trace: {
+      querySource: "decision_ledger_frames",
+      reasonCode: "why_query_failed",
+    },
+  };
+}
+
+interface WhyItemFixture {
+  market: string;
+  statusLabel: string;
+  message: string;
+  latestDecisionAt: string;
+  category: DecisionCategory;
+  reasonCode: string;
+}
+
+interface WhyStrategyItemFixture {
+  strategyId: string;
+  statusLabel: string;
+  message: string;
+  latestDecisionAt: string;
+  category: DecisionCategory;
+  reasonCode: string;
 }

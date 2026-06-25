@@ -1,6 +1,11 @@
 import type { JsonRecord } from "../../domain/index.js";
 import type { LiveOpsObservedFact, LiveOpsStatusSummary } from "../live-ops-status/types.js";
-import type { WhyCashSummary, WhySummary } from "../decision-ledger/types.js";
+import type {
+  WhyCashSummary,
+  WhyMarketSummary,
+  WhyStrategySummary,
+  WhySummary,
+} from "../decision-ledger/types.js";
 import {
   LIVE_OPS_BRIEFING_SCHEMA_VERSION,
 } from "./types.js";
@@ -18,6 +23,14 @@ import type {
 } from "./types.js";
 
 const unavailableText = "관측 없음";
+
+interface BriefingWhyDecisionItem {
+  label: string;
+  statusLabel: string;
+  message: string;
+  latestDecisionAt: string | null;
+  trace: JsonRecord;
+}
 
 /**
  * Live Ops status/why/portfolio projection을 Telegram briefing snapshot으로 조립한다.
@@ -128,29 +141,34 @@ function createDecisions(
     };
   }
 
-  const firstMarketWhy = why?.markets.items[0] ?? null;
-  const firstStrategyWhy = why?.strategies.items[0] ?? null;
+  const entryItems = why?.markets.items.filter((item) => !isSellDecision(item.trace)) ?? [];
+  const sellItems = [
+    ...(why?.markets.items.filter((item) => isSellDecision(item.trace)).map(toMarketDecisionItem) ?? []),
+    ...(why?.strategies.items.filter((item) => isSellDecision(item.trace)).map(toStrategyDecisionItem) ?? []),
+  ];
+  const latestEntry = selectLatestMarketItem(entryItems);
+  const latestSell = selectLatestDecisionItem(sellItems);
+  const whyBlockReason = formatWhyBlockReason(why);
 
   return {
     latestCandidate: status === null
       ? unavailableText
       : formatObservedFact(status.latestCandidate),
-    latestEntryDecision: firstMarketWhy === null
+    latestEntryDecision: formatWhySectionUnavailable(why?.markets)
+      ?? (latestEntry === null
       ? status === null
         ? unavailableText
         : formatObservedFact(status.latestDecision)
-      : `${firstMarketWhy.market}: ${firstMarketWhy.statusLabel} - ${firstMarketWhy.message}`,
-    latestExitDecision: firstStrategyWhy === null
-      ? status === null
-        ? unavailableText
-        : formatObservedFact(status.latestFillOrCancel)
-      : `${firstStrategyWhy.strategyId}: ${firstStrategyWhy.statusLabel} - ${firstStrategyWhy.message}`,
-    buyConditions: why?.markets.items.map((item) => `${item.market}: ${item.statusLabel}`) ?? [],
-    sellConditions: why?.strategies.items.map((item) => `${item.strategyId}: ${item.statusLabel}`) ?? [],
+      : formatMarketDecisionItem(latestEntry)),
+    latestExitDecision: formatWhySectionUnavailable(why?.strategies)
+      ?? (latestSell === null ? unavailableText : formatDecisionItem(latestSell)),
+    buyConditions: entryItems.map((item) => `${item.market}: ${item.statusLabel}`),
+    sellConditions: sellItems.map((item) => `${item.label}: ${item.statusLabel}`),
     holdReason: why?.cash.item === null || why?.cash.item === undefined
       ? null
       : formatCashHoldReason(why.cash.item),
-    blockReason: status?.riskBlock.blockedReason
+    blockReason: formatRiskBlockReason(status)
+      ?? whyBlockReason
       ?? (why === null ? "decision ledger why summary source가 아직 briefing assembler에 연결되지 않았습니다." : null),
   };
 }
@@ -160,7 +178,7 @@ function createPortfolio(
   status: LiveOpsStatusSummary | null,
 ): LiveOpsBriefingPortfolioSnapshot {
   const source = portfolio ?? {};
-  const pnl = source.pnl ?? createPnlFromStatus(status);
+  const pnl = source.pnl === undefined ? createPnlFromStatus(status) : source.pnl ?? createUnavailablePnl();
 
   return {
     cash: source.cash ?? {
@@ -180,19 +198,23 @@ function createPortfolio(
 function createPnlFromStatus(status: LiveOpsStatusSummary | null): LiveOpsBriefingPnlSnapshot {
   if (status === null) {
     // PnL 결측은 0 손익으로 보정하면 closeout evidence를 왜곡하므로 null로 유지한다.
-    return {
-      statusLabel: unavailableText,
-      realizedKrw: null,
-      unrealizedKrw: null,
-      equityKrw: null,
-      observedAt: null,
-    };
+    return createUnavailablePnl();
   }
 
   return {
     statusLabel: "status summary 기준",
     realizedKrw: status.budget.realizedPnlKrw,
     unrealizedKrw: status.budget.unrealizedPnlKrw,
+    equityKrw: null,
+    observedAt: null,
+  };
+}
+
+function createUnavailablePnl(): LiveOpsBriefingPnlSnapshot {
+  return {
+    statusLabel: unavailableText,
+    realizedKrw: null,
+    unrealizedKrw: null,
     equityKrw: null,
     observedAt: null,
   };
@@ -222,7 +244,7 @@ function createOperations(status: LiveOpsStatusSummary | null): LiveOpsBriefingO
       `kill switch ${status.riskBlock.killSwitchState}`,
       status.riskBlock.newOrdersBlocked ? "신규 주문 차단" : "신규 주문 허용",
       status.riskBlock.requiresManualReview ? "manual review 필요" : "manual review 없음",
-      status.riskBlock.blockedReason === null ? null : `사유 ${status.riskBlock.blockedReason}`,
+      status.riskBlock.blockedReason === null ? null : "차단 사유는 추적 정보에 보존",
     ].filter(isNonEmptyString).join(", "),
     alertRetry: [
       status.alertRetry.statusLabel,
@@ -322,7 +344,12 @@ function collectWhySourceIds(why: WhySummary): readonly string[] {
 }
 
 function collectWhyReasonCodes(why: WhySummary): readonly string[] {
-  const reasons: string[] = [];
+  const reasons: string[] = [
+    readTraceString(why.trace, "reasonCode") ?? "",
+    readTraceString(why.markets.trace, "reasonCode") ?? "",
+    readTraceString(why.strategies.trace, "reasonCode") ?? "",
+    readTraceString(why.cash.trace, "reasonCode") ?? "",
+  ];
   for (const item of why.markets.items) {
     reasons.push(readTraceString(item.trace, "reasonCode") ?? "");
   }
@@ -348,6 +375,105 @@ function readTraceString(trace: JsonRecord, key: string): string | null {
 
 function formatObservedFact(fact: LiveOpsObservedFact): string {
   return `${fact.statusLabel}: ${fact.message}`;
+}
+
+function formatMarketDecisionItem(item: WhyMarketSummary): string {
+  return `${item.market}: ${item.statusLabel} - ${item.message}`;
+}
+
+function formatDecisionItem(item: BriefingWhyDecisionItem): string {
+  return `${item.label}: ${item.statusLabel} - ${item.message}`;
+}
+
+function toMarketDecisionItem(item: WhyMarketSummary): BriefingWhyDecisionItem {
+  return {
+    label: item.market,
+    statusLabel: item.statusLabel,
+    message: item.message,
+    latestDecisionAt: item.latestDecisionAt,
+    trace: item.trace,
+  };
+}
+
+function toStrategyDecisionItem(item: WhyStrategySummary): BriefingWhyDecisionItem {
+  return {
+    label: item.strategyId,
+    statusLabel: item.statusLabel,
+    message: item.message,
+    latestDecisionAt: item.latestDecisionAt,
+    trace: item.trace,
+  };
+}
+
+function selectLatestMarketItem(items: readonly WhyMarketSummary[]): WhyMarketSummary | null {
+  return selectLatestByObservedAt(items);
+}
+
+function selectLatestDecisionItem(items: readonly BriefingWhyDecisionItem[]): BriefingWhyDecisionItem | null {
+  return selectLatestByObservedAt(items);
+}
+
+function selectLatestByObservedAt<T extends { latestDecisionAt: string | null }>(items: readonly T[]): T | null {
+  let latest: T | null = null;
+  let latestTime = Number.NEGATIVE_INFINITY;
+
+  for (const item of items) {
+    const itemTime = item.latestDecisionAt === null ? Number.NEGATIVE_INFINITY : Date.parse(item.latestDecisionAt);
+    const normalizedTime = Number.isFinite(itemTime) ? itemTime : Number.NEGATIVE_INFINITY;
+    if (latest === null || normalizedTime > latestTime) {
+      latest = item;
+      latestTime = normalizedTime;
+    }
+  }
+
+  return latest;
+}
+
+function isSellDecision(trace: JsonRecord): boolean {
+  return readTraceString(trace, "category") === "SELL";
+}
+
+function formatWhySectionUnavailable(section: {
+  readStatus: string;
+  statusLabel: string;
+  message: string;
+  action: string | null;
+} | null | undefined): string | null {
+  if (section === null || section === undefined || section.readStatus === "OK") {
+    return null;
+  }
+
+  return [
+    section.statusLabel,
+    section.message,
+    section.action === null ? null : `필요 조치: ${section.action}`,
+  ].filter(isNonEmptyString).join(" - ");
+}
+
+function formatWhyBlockReason(why: WhySummary | null): string | null {
+  if (why === null || why.readStatus === "OK") {
+    return null;
+  }
+
+  return [
+    "decision ledger why summary 조회 불가",
+    why.markets.readStatus === "OK" ? null : why.markets.statusLabel,
+    why.strategies.readStatus === "OK" ? null : why.strategies.statusLabel,
+    why.cash.readStatus === "OK" ? null : why.cash.statusLabel,
+  ].filter(isNonEmptyString).join(": ");
+}
+
+function formatRiskBlockReason(status: LiveOpsStatusSummary | null): string | null {
+  if (status === null) {
+    return null;
+  }
+  if (status.riskBlock.requiresManualReview) {
+    return "수동 검토가 필요한 상태라 신규 진입 판단을 실행하지 않습니다.";
+  }
+  if (status.riskBlock.newOrdersBlocked) {
+    return "신규 주문 차단 상태라 신규 진입 판단을 실행하지 않습니다.";
+  }
+  return null;
 }
 
 function formatCashHoldReason(cash: WhyCashSummary): string {
