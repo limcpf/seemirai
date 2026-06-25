@@ -91,7 +91,8 @@ function createRuntime(status: LiveOpsStatusSummary | null): LiveOpsBriefingRunt
   }
 
   return {
-    daemonAlive: status.latestHeartbeat.observedAt !== null,
+    // status source 응답은 daemon 관측 가능 상태로 보고, market heartbeat 장애를 daemon 중지로 오인하지 않는다.
+    daemonAlive: true,
     runModeLabel: labelOperatingMode(status.mode),
     liveEnabled: status.liveEnabled,
     liveArmed: status.mode === "live_armed" || status.mode === "live_order_capable",
@@ -144,7 +145,7 @@ function createDecisions(
   const entryItems = why?.markets.items.filter((item) => !isSellDecision(item.trace)) ?? [];
   const sellItems = [
     ...(why?.markets.items.filter((item) => isSellDecision(item.trace)).map(toMarketDecisionItem) ?? []),
-    ...(why?.strategies.items.filter((item) => isSellDecision(item.trace)).map(toStrategyDecisionItem) ?? []),
+    ...(why?.strategies.items.filter(isExitDecisionItem).map(toStrategyDecisionItem) ?? []),
   ];
   const latestEntry = selectLatestMarketItem(entryItems);
   const latestSell = selectLatestDecisionItem(sellItems);
@@ -177,6 +178,11 @@ function createPortfolio(
   portfolio: CreateLiveOpsBriefingSnapshotInput["portfolio"],
   status: LiveOpsStatusSummary | null,
 ): LiveOpsBriefingPortfolioSnapshot {
+  if (portfolio === null) {
+    // portfolio source가 명시적으로 실패했으면 status summary PnL로 채우지 않고 관측 부재를 그대로 전달한다.
+    return createUnavailablePortfolio();
+  }
+
   const source = portfolio ?? {};
   const pnl = source.pnl === undefined ? createPnlFromStatus(status) : source.pnl ?? createUnavailablePnl();
 
@@ -192,6 +198,22 @@ function createPortfolio(
     pnl,
     openExposureKrw: source.openExposureKrw ?? status?.budget.openExposureKrw ?? null,
     budgetUsedKrw: source.budgetUsedKrw ?? status?.budget.dailyNotionalUsedKrw ?? null,
+  };
+}
+
+function createUnavailablePortfolio(): LiveOpsBriefingPortfolioSnapshot {
+  return {
+    cash: {
+      statusLabel: unavailableText,
+      availableKrw: null,
+      totalKrw: null,
+      observedAt: null,
+    },
+    balances: [],
+    positions: [],
+    pnl: createUnavailablePnl(),
+    openExposureKrw: null,
+    budgetUsedKrw: null,
   };
 }
 
@@ -431,6 +453,16 @@ function selectLatestByObservedAt<T extends { latestDecisionAt: string | null }>
 
 function isSellDecision(trace: JsonRecord): boolean {
   return readTraceString(trace, "category") === "SELL";
+}
+
+function isExitDecisionItem(item: WhyStrategySummary): boolean {
+  if (isSellDecision(item.trace)) {
+    return true;
+  }
+
+  const strategyId = item.strategyId.toLowerCase();
+  const source = readTraceString(item.trace, "source")?.toLowerCase() ?? "";
+  return strategyId.includes("exit") || source.includes("exit");
 }
 
 function formatWhySectionUnavailable(section: {

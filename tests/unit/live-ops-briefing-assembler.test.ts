@@ -111,9 +111,9 @@ describe("live ops briefing assembler", () => {
     });
     expect(snapshot.decisions.latestCandidate).toContain("최근 주문 후보가 예산 한도 안에서 생성됐습니다.");
     expect(snapshot.decisions.latestEntryDecision).toContain("KRW-BTC: 진입 보류");
-    expect(snapshot.decisions.latestExitDecision).toBe("관측 없음");
+    expect(snapshot.decisions.latestExitDecision).toContain("exit-small-budget: 청산 대기");
     expect(snapshot.decisions.buyConditions).toEqual(["KRW-BTC: 진입 보류"]);
-    expect(snapshot.decisions.sellConditions).toEqual([]);
+    expect(snapshot.decisions.sellConditions).toEqual(["exit-small-budget: 청산 대기"]);
     expect(snapshot.decisions.holdReason).toContain("비용 차감 후 기대값 부족 2건");
     expect(snapshot.decisions.blockReason).toBeNull();
     expect(snapshot.operations.openOrders).toContain("주문 시도: 주문 제출");
@@ -161,6 +161,29 @@ describe("live ops briefing assembler", () => {
     expect(briefing).not.toContain("실현 1200 KRW");
     expect(snapshot.portfolio.openExposureKrw).toBe("12000");
     expect(snapshot.portfolio.budgetUsedKrw).toBe("5000");
+  });
+
+  it("keeps explicit portfolio null unavailable instead of falling back to status PnL", () => {
+    const snapshot = createLiveOpsBriefingSnapshot({
+      observedAt,
+      status: createLiveOpsStatusSummary(liveOpsInput()),
+      why: whySummaryFixture(),
+      portfolio: null,
+    });
+    const briefing = formatLiveOpsBriefing(snapshot);
+
+    expect(snapshot.portfolio.pnl).toEqual({
+      statusLabel: "관측 없음",
+      realizedKrw: null,
+      unrealizedKrw: null,
+      equityKrw: null,
+      observedAt: null,
+    });
+    expect(snapshot.portfolio.openExposureKrw).toBeNull();
+    expect(snapshot.portfolio.budgetUsedKrw).toBeNull();
+    expect(snapshot.trace.reasonCodes).toContain("portfolio_source_unavailable");
+    expect(briefing).toContain("PnL: 관측 없음");
+    expect(briefing).not.toContain("실현 1200 KRW");
   });
 
   it("surfaces unavailable why summaries in the decision area", () => {
@@ -240,6 +263,28 @@ describe("live ops briefing assembler", () => {
       "latest_buy_candidate",
       "strategy_buy_candidate",
     ]));
+  });
+
+  it("does not mark the daemon stopped when only market heartbeat is missing", () => {
+    const snapshot = createLiveOpsBriefingSnapshot({
+      observedAt,
+      status: createLiveOpsStatusSummary(liveOpsInput({
+        marketData: {
+          connectionStatus: "unknown",
+          lagMs: null,
+          updatedAt: null,
+        },
+        latestHeartbeat: null,
+      })),
+      why: whySummaryFixture(),
+    });
+    const briefing = formatLiveOpsBriefing(snapshot);
+
+    expect(snapshot.runtime.daemonAlive).toBe(true);
+    expect(snapshot.runtime.readinessGuard).toContain("market data heartbeat");
+    expect(snapshot.market.freshnessLabel).toBe("관측 없음");
+    expect(briefing).toContain("daemon: 작동 중");
+    expect(briefing).not.toContain("daemon: 중지됨");
   });
 
   it("keeps internal risk reason codes in trace instead of user-facing briefing text", () => {
