@@ -18,7 +18,7 @@ describe("live ops briefing", () => {
     expect(briefing).toContain("매수 조건: 스프레드 정상, 호가 깊이 충분");
     expect(briefing).toContain("매도 조건: 익절 조건 미충족, 손절 조건 미충족");
     expect(briefing).toContain("현금: 사용 가능 120000 KRW");
-    expect(briefing).toContain("coin/position: KRW-BTC 0.002 BTC 보유");
+    expect(briefing).toContain("coin/position: KRW-BTC total 0.002 BTC, available 0.002 BTC 보유");
     expect(briefing).toContain("position scope: KRW-BTC 0.002 전략 보유 (평균단가 60000000 KRW)");
     expect(briefing).toContain("PnL: 실현 1200 KRW, 미실현 -300 KRW, 평가 1000000 KRW");
     expect(briefing).toContain("추적 정보");
@@ -117,10 +117,91 @@ describe("live ops briefing", () => {
     expect(issues.map((issue) => issue.path)).toEqual([
       "headline.cause",
       "trace.metadata.secret_key",
-      "trace.metadata.rawProviderPayload",
+      "trace.metadata.[비공개]",
     ]);
     expect(briefing).not.toContain("eyJhbGciOiJIUzI1NiJ9");
     expect(briefing).toContain("[비공개]");
+  });
+
+  it("redacts colon-formatted secrets and raw payload labels", () => {
+    const unsafeSnapshot = liveOpsBriefingSnapshot({
+      headline: {
+        statusLabel: "실매매 준비 중",
+        cause: "api_key: abc123 token: xyz rawProviderPayload raw_order_detail",
+        impact: "{\"secret\":\"super-secret\"} 값은 브리핑에 남지 않아야 합니다.",
+        action: "운영자가 redacted source를 다시 확인하세요.",
+      },
+    });
+
+    const issues = validateLiveOpsBriefingSnapshotSafety(unsafeSnapshot);
+    const briefing = formatLiveOpsBriefing(unsafeSnapshot);
+
+    expect(issues.map((issue) => issue.path)).toEqual([
+      "headline.cause",
+      "headline.impact",
+    ]);
+    expect(briefing).toContain("[비공개]");
+    expect(briefing).not.toContain("api_key: abc123");
+    expect(briefing).not.toContain("token: xyz");
+    expect(briefing).not.toContain("rawProviderPayload");
+    expect(briefing).not.toContain("raw_order_detail");
+    expect(briefing).not.toContain("super-secret");
+  });
+
+  it("redacts unsafe key names from safety issue paths", () => {
+    const unsafeKey = "Authorization: Bearer abc.def.ghi";
+    const unsafeSnapshot = liveOpsBriefingSnapshot({
+      trace: {
+        evidenceIds: ["live-ops-status-1"],
+        reasonCodes: ["live_order_capable"],
+        sourceIds: ["status-summary"],
+        metadata: {
+          [unsafeKey]: "opaque-value",
+        },
+      },
+    });
+
+    const issues = validateLiveOpsBriefingSnapshotSafety(unsafeSnapshot);
+    const serializedIssues = JSON.stringify(issues);
+
+    expect(issues.map((issue) => issue.path)).toEqual(["trace.metadata.[비공개]"]);
+    expect(serializedIssues).not.toContain("Authorization");
+    expect(serializedIssues).not.toContain("Bearer");
+  });
+
+  it("shows available balance separately when coin balance is locked", () => {
+    const briefing = formatLiveOpsBriefing(liveOpsBriefingSnapshot({
+      portfolio: {
+        cash: {
+          statusLabel: "조회 완료",
+          availableKrw: "120000",
+          totalKrw: "125000",
+          observedAt,
+        },
+        balances: [
+          {
+            market: "KRW-BTC",
+            currency: "BTC",
+            total: "0.002",
+            available: "0",
+            statusLabel: "보유",
+          },
+        ],
+        positions: [],
+        pnl: {
+          statusLabel: "조회 완료",
+          realizedKrw: "1200",
+          unrealizedKrw: "-300",
+          equityKrw: "1000000",
+          observedAt,
+        },
+        openExposureKrw: "120000",
+        budgetUsedKrw: "5000",
+      },
+    }));
+
+    expect(briefing).toContain("coin/position: KRW-BTC total 0.002 BTC, available 0 BTC 보유");
+    expect(briefing).not.toContain("KRW-BTC 0.002 BTC 보유");
   });
 
   it("distinguishes a stopped daemon from missing daemon observations", () => {

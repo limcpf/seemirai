@@ -11,13 +11,14 @@ const redactedMarker = "[비공개]";
 const omittedMarker = "\n[이후 생략]";
 
 const unsafeTextPatterns: readonly { pattern: RegExp; reason: string }[] = [
-  { pattern: /raw\s+provider\s+payload/giu, reason: "raw_provider_payload" },
-  { pattern: /raw\s+order\s+detail/giu, reason: "raw_order_detail" },
+  { pattern: /raw[\s_-]?provider[\s_-]?payload/giu, reason: "raw_provider_payload" },
+  { pattern: /raw[\s_-]?order[\s_-]?detail/giu, reason: "raw_order_detail" },
   { pattern: /\bAuthorization\s*:\s*[^\r\n,;]+/giu, reason: "authorization_header" },
   { pattern: /\bBearer\s+[A-Za-z0-9._~+/=-]+/giu, reason: "bearer_token" },
   { pattern: /\b[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{8,}\b/gu, reason: "jwt_token" },
   { pattern: /\btelegram_bot_token\s*=\s*[^/?&#\s]+/giu, reason: "telegram_token" },
   { pattern: /\b(?:access|secret)[_-]?key\s*=\s*[^/?&#\s]+/giu, reason: "api_key" },
+  { pattern: /(?<![A-Za-z0-9_-])["']?(?:api[_-]?key|access[_-]?key|secret[_-]?key|telegram_bot_token|token|secret|password|authorization|jwt)["']?\s*[:=]\s*(?:"[^"]*"|'[^']*'|[^\s,;&}]+)/giu, reason: "secret_like_value" },
   { pattern: /\b(?:api[_-]?key|token|secret)[=/][^/?&#\s]+/giu, reason: "secret_like_value" },
 ];
 
@@ -132,7 +133,7 @@ function formatCoinPosition(portfolio: LiveOpsBriefingPortfolioSnapshot): string
 }
 
 function formatBalance(balance: LiveOpsBriefingBalanceSnapshot): string {
-  return `${sanitizeText(balance.market)} ${formatNullableText(balance.total)} ${sanitizeText(balance.currency)} ${sanitizeText(balance.statusLabel)}`;
+  return `${sanitizeText(balance.market)} total ${formatNullableText(balance.total)} ${sanitizeText(balance.currency)}, available ${formatNullableText(balance.available)} ${sanitizeText(balance.currency)} ${sanitizeText(balance.statusLabel)}`;
 }
 
 function formatPositionScope(portfolio: LiveOpsBriefingPortfolioSnapshot): string {
@@ -220,7 +221,7 @@ function collectSafetyIssues(value: unknown, path: readonly string[]): readonly 
   }
 
   return Object.entries(value).flatMap(([key, entryValue]) => {
-    const entryPath = [...path, key];
+    const entryPath = [...path, shouldRedactPathKey(key) ? redactedMarker : key];
     return [
       ...collectKeyIssues(key, entryPath),
       ...collectSafetyIssues(entryValue, entryPath),
@@ -254,4 +255,14 @@ function collectKeyIssues(key: string, path: readonly string[]): readonly LiveOp
     }
   }
   return [];
+}
+
+function shouldRedactPathKey(key: string): boolean {
+  for (const { pattern } of unsafeTextPatterns) {
+    pattern.lastIndex = 0;
+    if (pattern.test(key)) {
+      return true;
+    }
+  }
+  return false;
 }
