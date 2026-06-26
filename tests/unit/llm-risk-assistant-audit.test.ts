@@ -141,6 +141,46 @@ describe("M10 LLM risk assistant audit persistence", () => {
     expect(serialized).not.toContain("github_pat_raw");
   });
 
+  it("stores live ops briefing prompt fingerprint and source ids in audit metadata", () => {
+    const event = toLlmRiskAssistantAuditEvent({
+      request: liveOpsBriefingRequest(),
+      response: {
+        status: "ok",
+        provider_id: "codex_oauth",
+        completed_at: completedAt,
+        result: {
+          schema_version: LLM_RISK_ASSISTANT_SCHEMA_VERSION,
+          result_type: "live_ops_briefing_draft",
+          source_ids: ["live-ops-status-snapshot-1"],
+          summary: "LLM 보조 초안입니다.",
+          recommended_action: "ALERT_ONLY",
+          observed_at: observedAt,
+          reason_codes: ["live_ops_briefing:operator_summary"],
+        },
+      },
+    });
+    const row = toAuditEventRow(event);
+
+    expect(row.payload_json).toMatchObject({
+      audit_kind: "LLM_RISK_ASSISTANT_PROVIDER_RESULT",
+      result_type: "live_ops_briefing_draft",
+      source: {
+        source: "live_ops_status_snapshot",
+        source_id: "live-ops-status-snapshot-1",
+        metadata: {
+          source_ids: ["live_ops_status_summary", "decision_ledger_why_summary"],
+        },
+      },
+      request: {
+        prompt_sha256: expect.stringMatching(/^[a-f0-9]{64}$/u),
+        metadata: {
+          prompt_sha256: expect.stringMatching(/^[a-f0-9]{64}$/u),
+          source_ids: ["live_ops_status_summary", "decision_ledger_why_summary"],
+        },
+      },
+    });
+  });
+
   it("redacts sensitive keys and token-like strings recursively", () => {
     const redacted = redactLlmRiskAssistantAuditValue({
       nested: {
@@ -242,6 +282,31 @@ function providerSuccessWithSecrets(): LlmRiskAssistantProviderResponse {
     metadata: {
       provider_mode: "codex_oauth",
       session: "codex-session-raw",
+    },
+  };
+}
+
+function liveOpsBriefingRequest(): LlmRiskAssistantProviderRequest {
+  return {
+    input: {
+      source: "live_ops_status_snapshot",
+      source_id: "live-ops-status-snapshot-1",
+      observed_at: observedAt,
+      title: "Live Ops 브리핑 snapshot",
+      content: "Live Ops deterministic briefing",
+      metadata: {
+        source_ids: ["live_ops_status_summary", "decision_ledger_why_summary"],
+      },
+    },
+    result_type: "live_ops_briefing_draft",
+    prompt: "Live Ops snapshot을 주문 지시 없는 브리핑 초안으로 요약한다.",
+    requested_at: requestedAt,
+    timeout_ms: 5_000,
+    max_output_bytes: 16_000,
+    correlation_id: "live-ops-briefing-1",
+    metadata: {
+      prompt_sha256: "0".repeat(64),
+      source_ids: ["live_ops_status_summary", "decision_ledger_why_summary"],
     },
   };
 }

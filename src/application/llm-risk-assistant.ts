@@ -1,4 +1,5 @@
 export * from "./llm-risk-assistant/audit.js";
+export * from "./llm-risk-assistant/briefing-draft.js";
 export * from "./llm-risk-assistant/contracts.js";
 export * from "./llm-risk-assistant/daily-report-draft.js";
 export * from "./llm-risk-assistant/noop-provider.js";

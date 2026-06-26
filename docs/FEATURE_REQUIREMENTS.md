@@ -1045,16 +1045,18 @@ Acceptance Criteria:
 
 설명:
 
-- LLM은 공식 Upbit 공지 요약, 개발자 changelog 요약, 시장경보 분류, 상장/상폐/점검 분류, 이상 이벤트 설명, 일간 리포트 초안에만 사용한다.
+- LLM은 공식 Upbit 공지 요약, 개발자 changelog 요약, 시장경보 분류, 상장/상폐/점검 분류, 이상 이벤트 설명, 일간 리포트 초안,
+  redacted Live Ops briefing 초안에만 사용한다.
 - LLM 출력은 주문 후보 생성이나 주문 제출로 직접 연결될 수 없다.
 - provider는 `noop`과 `codex_oauth`를 같은 port 뒤에 두며, 기본 구현은 로컬 owner-operated Codex OAuth 세션을 사용하는 `codex_oauth`다.
 - provider timeout, invalid JSON, free-form output, output size 초과는 모두 fail-closed로 수렴하고 거래 신호를 만들지 않는다.
-- 일간 리포트 초안은 deterministic daily report 옆의 보조 결과일 뿐이며, LLM 실패가 report 생성 성공을 실패로 바꾸지 않는다.
+- 일간 리포트와 Live Ops briefing 초안은 deterministic evidence 옆의 보조 결과일 뿐이며, LLM 실패가 deterministic 결과 생성을
+  실패로 바꾸지 않는다.
 
 Acceptance Criteria:
 
-- [ ] LLM 입력 소스는 `exchange_notice`, `developer_changelog`, `market_event`로 제한된다.
-- [ ] LLM 결과 타입은 `notice_summary`, `notice_risk_classification`, `event_explanation`, `daily_report_draft` 같은 보조 목적에 한정된다.
+- [ ] LLM 입력 소스는 `exchange_notice`, `developer_changelog`, `market_event`, `live_ops_status_snapshot`로 제한된다.
+- [ ] LLM 결과 타입은 `notice_summary`, `notice_risk_classification`, `event_explanation`, `daily_report_draft`, `live_ops_briefing_draft` 같은 보조 목적에 한정된다.
 - [ ] LLM `recommended_action`은 `NO_ACTION`, `BLOCK_NEW_ENTRY`, `CANCEL_PENDING`, `PAUSE_STRATEGY`, `ALERT_ONLY`만 허용한다.
 - [ ] `BUY`, `SELL`, `INCREASE_POSITION` 같은 주문 허용 또는 포지션 확대 액션은 스키마 검증에서 거부된다.
 - [ ] LLM 결과만으로 전략 주문 후보를 만들 수 없다.
@@ -1063,6 +1065,7 @@ Acceptance Criteria:
 - [ ] provider를 `codex_oauth`에서 `noop`으로 바꿔도 application contract가 바뀌지 않는다.
 - [ ] Codex timeout, invalid output, free-form output은 실패 evidence만 남기고 주문 신호 없이 끝난다.
 - [ ] deterministic daily report는 LLM draft 실패와 독립적으로 성공/실패가 결정된다.
+- [ ] deterministic Live Ops briefing은 LLM draft 실패, schema fail, unsafe output과 독립적으로 전송 가능한 fallback을 유지한다.
 
 테스트 요구사항:
 
@@ -1071,6 +1074,7 @@ Acceptance Criteria:
 - 단위 테스트: 금지 액션이 포함된 LLM 출력이 거부되는지 확인한다.
 - 단위 테스트: provider timeout, invalid JSON, free-form output, output size 초과가 fail-closed로 정규화되는지 확인한다.
 - 단위 테스트: LLM daily report draft 실패가 deterministic report payload를 바꾸지 않는지 확인한다.
+- 단위 테스트: LLM Live Ops briefing draft 실패와 unsafe output이 deterministic briefing fallback을 바꾸지 않는지 확인한다.
 - gated smoke: `SEEMIRAI_RUN_CODEX_LLM_SMOKE=1`일 때만 실제 Codex OAuth provider smoke를 실행한다.
 - 수동 테스트: 공지 요약이 리포트에 포함되더라도 주문 실행 로그와 직접 연결되지 않는지 확인한다.
 
