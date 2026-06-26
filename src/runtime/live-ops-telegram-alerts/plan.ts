@@ -368,6 +368,7 @@ export function planScheduledLiveOpsTelegramBriefing(
   input: ScheduledLiveOpsTelegramBriefingPlanInput,
 ): ScheduledLiveOpsTelegramBriefingPlan {
   const scheduleKey = normalizeBriefingScheduleKey(input.config.scheduleKey);
+  const dedupeKey = createScheduledBriefingDedupeKey(scheduleKey, input.briefingSourceFingerprint);
 
   if (!input.config.scheduledEnabled) {
     return {
@@ -394,7 +395,8 @@ export function planScheduledLiveOpsTelegramBriefing(
     severity: "P3",
     alertType: "live_ops_briefing",
     reasonCode: "scheduled_live_ops_briefing",
-    dedupeKey: scheduleKey,
+    // P3 cooldown은 길기 때문에 source fingerprint를 넣어 새 evidence briefing이 scheduleKey 단위 cooldown에 묻히지 않게 한다.
+    dedupeKey,
     title: "Live Ops 정기 브리핑",
     body: input.briefingText,
     occurredAt: input.observedAt,
@@ -541,6 +543,10 @@ function createLifecycleEvents(
 function normalizeBriefingScheduleKey(value: string | undefined): string {
   const trimmed = value?.trim();
   return trimmed === undefined || trimmed.length === 0 ? "default" : trimmed;
+}
+
+function createScheduledBriefingDedupeKey(scheduleKey: string, briefingSourceFingerprint: string): string {
+  return `${scheduleKey}:${briefingSourceFingerprint.trim()}`;
 }
 
 function createTradeEvents(

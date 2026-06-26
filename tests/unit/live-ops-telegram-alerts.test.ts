@@ -363,7 +363,7 @@ describe("scheduled Live Ops Telegram briefing dispatch", () => {
       severity: "P3",
       alertType: "live_ops_briefing",
       reasonCode: "scheduled_live_ops_briefing",
-      dedupeKey: "ops-hourly",
+      dedupeKey: "ops-hourly:sha256:briefing-fixture",
       title: "Live Ops 정기 브리핑",
       metadata: {
         source: "live_ops_briefing",
@@ -405,6 +405,56 @@ describe("scheduled Live Ops Telegram briefing dispatch", () => {
     expect(notifier.alerts).toHaveLength(1);
     expect(notifier.alerts[0]?.body).toContain("Live Ops 브리핑");
     expect(notifier.alerts[0]?.body).toContain("상태: 실매매 가능");
+  });
+
+  it("새 briefing source fingerprint는 같은 schedule cooldown 안에서도 별도 전송한다", async () => {
+    const notifier = new RecordingNotifier();
+    const cooldownStore = createInMemoryAlertCooldownStore();
+    const firstPlan = planScheduledLiveOpsTelegramBriefing(createScheduledBriefingPlanInput());
+    const refreshedPlan = planScheduledLiveOpsTelegramBriefing(createScheduledBriefingPlanInput({
+      observedAt: "2026-06-14T01:00:00.000Z",
+      briefingText: [
+        "Live Ops 브리핑",
+        "상태: 실매매 가능",
+        "원인: 시장 freshness가 새로 관측됐습니다.",
+        "영향: 새 evidence 기준으로 운영자가 판단할 수 있습니다.",
+        "필요 조치: 새 추적 정보를 확인하세요.",
+      ].join("\n"),
+      briefingSourceFingerprint: "sha256:briefing-refresh",
+    }));
+
+    const first = await dispatchScheduledLiveOpsTelegramBriefing({
+      plan: firstPlan,
+      alertDispatch: {
+        notifier,
+        durableCooldownStore: cooldownStore,
+        memoryCooldownStore: cooldownStore,
+        clock: () => new Date(observedAt),
+      },
+    });
+    const refreshed = await dispatchScheduledLiveOpsTelegramBriefing({
+      plan: refreshedPlan,
+      alertDispatch: {
+        notifier,
+        durableCooldownStore: cooldownStore,
+        memoryCooldownStore: cooldownStore,
+        clock: () => new Date("2026-06-14T01:00:00.000Z"),
+      },
+    });
+
+    expect(first).toMatchObject({
+      status: "sent",
+      deliveredCount: 1,
+      cooldownHitCount: 0,
+    });
+    expect(refreshed).toMatchObject({
+      status: "sent",
+      deliveredCount: 1,
+      cooldownHitCount: 0,
+    });
+    expect(first.results[0]?.fingerprint).not.toBe(refreshed.results[0]?.fingerprint);
+    expect(notifier.alerts).toHaveLength(2);
+    expect(notifier.alerts[1]?.body).toContain("시장 freshness가 새로 관측됐습니다.");
   });
 
   it("provider 실패 응답은 cooldown skip이 아니라 partial failure로 요약한다", async () => {
