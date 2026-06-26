@@ -455,7 +455,7 @@ export async function dispatchScheduledLiveOpsTelegramBriefing(
   }
 
   const results: AlertDispatchResult[] = [];
-  let failureCount = 0;
+  let dispatchExceptionCount = 0;
 
   for (const request of input.plan.requests) {
     try {
@@ -465,13 +465,16 @@ export async function dispatchScheduledLiveOpsTelegramBriefing(
       results.push(result);
     } catch {
       // Telegram dispatch 실패가 이미 생성된 deterministic briefing 결과를 rollback하지 못하게 실패 count로만 격리한다.
-      failureCount += 1;
+      dispatchExceptionCount += 1;
     }
   }
 
   const deliveredCount = results.filter((result) => result.notification.delivered).length;
   const cooldownHitCount = results.filter((result) => result.cooldownHit).length;
   const retryPlannedCount = results.filter((result) => result.retryJobPlan !== undefined).length;
+  // provider가 실패를 값으로 반환한 경우도 cooldown 생략과 구분해야 운영자가 Telegram 장애를 놓치지 않는다.
+  const providerFailureCount = results.filter((result) => !result.cooldownHit && !result.notification.delivered).length;
+  const failureCount = dispatchExceptionCount + providerFailureCount;
   const status = failureCount > 0
     ? "partial_failure"
     : deliveredCount > 0

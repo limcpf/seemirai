@@ -406,6 +406,48 @@ describe("scheduled Live Ops Telegram briefing dispatch", () => {
     expect(notifier.alerts[0]?.body).toContain("Live Ops 브리핑");
     expect(notifier.alerts[0]?.body).toContain("상태: 실매매 가능");
   });
+
+  it("provider 실패 응답은 cooldown skip이 아니라 partial failure로 요약한다", async () => {
+    const notifier = new RecordingNotifier();
+    notifier.nextResult = {
+      delivered: false,
+      skippedReason: "telegram_timeout",
+    };
+    const plan = planScheduledLiveOpsTelegramBriefing(createScheduledBriefingPlanInput());
+
+    const result = await dispatchScheduledLiveOpsTelegramBriefing({
+      plan,
+      alertDispatch: {
+        notifier,
+        durableCooldownStore: createInMemoryAlertCooldownStore(),
+        memoryCooldownStore: createInMemoryAlertCooldownStore(),
+        clock: () => new Date(observedAt),
+      },
+    });
+
+    expect(result).toMatchObject({
+      status: "partial_failure",
+      attemptedCount: 1,
+      deliveredCount: 0,
+      cooldownHitCount: 0,
+      retryPlannedCount: 0,
+      failureCount: 1,
+    });
+    expect(result.results).toHaveLength(1);
+    expect(result.results[0]).toMatchObject({
+      cooldownHit: false,
+      notification: {
+        delivered: false,
+        skippedReason: "telegram_timeout",
+      },
+      failureEvaluation: {
+        state: {
+          consecutiveFailures: 1,
+        },
+      },
+    });
+    expect(notifier.alerts).toHaveLength(1);
+  });
 });
 
 function createPlanInput(
@@ -497,9 +539,15 @@ function createOrderIntent(): Extract<OrderIntent, { orderType: "LIMIT" }> {
 
 class RecordingNotifier implements NotifierPort {
   public readonly alerts: AlertNotification[] = [];
+  public nextResult: NotificationResult | undefined;
 
   public async sendAlert(notification: AlertNotification): Promise<NotificationResult> {
     this.alerts.push(notification);
+    if (this.nextResult !== undefined) {
+      const result = this.nextResult;
+      this.nextResult = undefined;
+      return result;
+    }
     return { delivered: true, providerMessageId: `message-${this.alerts.length}` };
   }
 
