@@ -318,7 +318,7 @@ export async function dispatchLiveOpsTelegramAlerts(
   }
 
   const results: AlertDispatchResult[] = [];
-  let failureCount = 0;
+  let dispatchExceptionCount = 0;
 
   for (const event of input.plan.events) {
     try {
@@ -328,25 +328,35 @@ export async function dispatchLiveOpsTelegramAlerts(
       }));
     } catch {
       // 알림 dispatch 실패가 주문/리스크 commit을 되돌리면 운영 상태가 더 불명확해지므로 실패 count로만 격리한다.
-      failureCount += 1;
+      dispatchExceptionCount += 1;
     }
   }
 
   const deliveredCount = results.filter((result) => result.notification.delivered).length;
   const cooldownHitCount = results.filter((result) => result.cooldownHit).length;
   const retryPlannedCount = results.filter((result) => result.retryJobPlan !== undefined).length;
+  // provider 실패와 cooldown skip은 운영자가 다르게 대응해야 하므로 delivered=false 전체를 sent로 덮지 않는다.
+  const providerFailureCount = results.filter((result) => !result.cooldownHit && !result.notification.delivered).length;
+  const failureCount = dispatchExceptionCount + providerFailureCount;
+  const status = failureCount > 0
+    ? "partial_failure"
+    : deliveredCount > 0
+      ? "sent"
+      : "skipped";
 
   return {
-    status: failureCount > 0 ? "partial_failure" : "sent",
+    status,
     attemptedCount: input.plan.events.length,
     deliveredCount,
     cooldownHitCount,
     retryPlannedCount,
     failureCount,
-    message: failureCount > 0
-      ? "일부 Telegram alert dispatch 결과를 확정하지 못했습니다."
-      : "Telegram alert dispatch를 완료했습니다.",
-    action: failureCount > 0
+    message: status === "sent"
+      ? "Telegram alert dispatch를 완료했습니다."
+      : status === "skipped"
+        ? "Telegram alert dispatch가 cooldown/fingerprint 정책으로 생략됐습니다."
+        : "일부 Telegram alert dispatch 결과를 확정하지 못했습니다.",
+    action: status === "partial_failure"
       ? "notification retry job과 provider 상태를 확인합니다."
       : "전송 결과와 cooldown 상태를 status surface에서 확인합니다.",
     results,

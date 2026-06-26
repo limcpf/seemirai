@@ -329,6 +329,80 @@ describe("production live ops Telegram alert mapper", () => {
       "live_ops_event",
     ]);
   });
+
+  it("provider 실패 응답은 lifecycle alert summary를 partial failure로 요약한다", async () => {
+    const notifier = new RecordingNotifier();
+    notifier.nextResult = {
+      delivered: false,
+      skippedReason: "telegram_timeout",
+    };
+    const plan = planLiveOpsTelegramAlerts(createPlanInput());
+
+    const result = await dispatchLiveOpsTelegramAlerts({
+      plan,
+      alertDispatch: {
+        notifier,
+        durableCooldownStore: createInMemoryAlertCooldownStore(),
+        memoryCooldownStore: createInMemoryAlertCooldownStore(),
+        clock: () => new Date(observedAt),
+      },
+    });
+
+    expect(result).toMatchObject({
+      status: "partial_failure",
+      attemptedCount: 1,
+      deliveredCount: 0,
+      cooldownHitCount: 0,
+      retryPlannedCount: 0,
+      failureCount: 1,
+    });
+    expect(result.results[0]).toMatchObject({
+      cooldownHit: false,
+      notification: {
+        delivered: false,
+        skippedReason: "telegram_timeout",
+      },
+    });
+  });
+
+  it("모든 lifecycle alert가 cooldown으로 생략되면 sent가 아니라 skipped로 요약한다", async () => {
+    const notifier = new RecordingNotifier();
+    const cooldownStore = createInMemoryAlertCooldownStore();
+    const plan = planLiveOpsTelegramAlerts(createPlanInput());
+
+    const first = await dispatchLiveOpsTelegramAlerts({
+      plan,
+      alertDispatch: {
+        notifier,
+        durableCooldownStore: cooldownStore,
+        memoryCooldownStore: cooldownStore,
+        clock: () => new Date(observedAt),
+      },
+    });
+    const duplicate = await dispatchLiveOpsTelegramAlerts({
+      plan,
+      alertDispatch: {
+        notifier,
+        durableCooldownStore: cooldownStore,
+        memoryCooldownStore: cooldownStore,
+        clock: () => new Date(observedAt),
+      },
+    });
+
+    expect(first).toMatchObject({
+      status: "sent",
+      deliveredCount: 1,
+      cooldownHitCount: 0,
+    });
+    expect(duplicate).toMatchObject({
+      status: "skipped",
+      attemptedCount: 1,
+      deliveredCount: 0,
+      cooldownHitCount: 1,
+      failureCount: 0,
+    });
+    expect(notifier.alerts).toHaveLength(1);
+  });
 });
 
 describe("scheduled Live Ops Telegram briefing dispatch", () => {
