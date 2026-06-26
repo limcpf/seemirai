@@ -442,6 +442,33 @@ export async function dispatchAlertWithCooldown(
 }
 
 /**
+ * alert dispatch 결과를 같은 runtime 옵션 객체의 failureState에 직렬화해 반영한다.
+ *
+ * 책임:
+ * - `dispatchAlertWithCooldown`의 provider/cooldown/retry/audit 동작은 그대로 사용한다.
+ * - 같은 `AlertDispatchServiceOptions` 객체를 공유하는 runtime 호출이 동시에 실패해도 notification failure 누적값을 잃지 않도록
+ *   상태 반영을 `runWithFailureStateLock` 임계 구역 안에서 수행한다.
+ *
+ * 호출 경계:
+ * - runtime 또는 adapter 조립 코드가 이미 `AlertDispatchRequest`를 만든 뒤 사용한다.
+ * - 외부 provider 호출, cooldown store write, audit write는 `dispatchAlertWithCooldown` 경계에서 발생한다.
+ *
+ * @param input alert dispatch 의존성과 이미 정규화된 alert request
+ * @returns cooldown/retry dispatch 결과와 failure evaluation
+ */
+export async function dispatchAlertWithFailureStateTracking(input: {
+  alertDispatch: AlertDispatchServiceOptions;
+  request: AlertDispatchRequest;
+}): Promise<AlertDispatchResult> {
+  return runWithFailureStateLock(input.alertDispatch, async () => {
+    const result = await dispatchAlertWithCooldown(input.alertDispatch, input.request);
+    // 같은 runtime 옵션 객체를 공유하는 alert 경로끼리 Telegram 장애 누적값을 직렬화해 manual review 후보 유실을 막는다.
+    input.alertDispatch.failureState = result.failureEvaluation.state;
+    return result;
+  });
+}
+
+/**
  * accepted kill switch control 전이를 Telegram alert dispatch 요청으로 변환해 전송한다.
  *
  * `NORMAL` 복구는 중복 operational noise를 피하기 위해 여기서 alert를 만들지 않는다. 주문 차단, HARD_STOP, 수동 검토처럼
@@ -457,11 +484,9 @@ export async function dispatchKillSwitchControlAlert(input: {
     return undefined;
   }
 
-  return runWithFailureStateLock(input.alertDispatch, async () => {
-    const result = await dispatchAlertWithCooldown(input.alertDispatch, alertRequest);
-    // runtime 조립에서 같은 alertDispatch 객체를 재사용하면 provider failure threshold가 호출 간 누적된다.
-    input.alertDispatch.failureState = result.failureEvaluation.state;
-    return result;
+  return dispatchAlertWithFailureStateTracking({
+    alertDispatch: input.alertDispatch,
+    request: alertRequest,
   });
 }
 
@@ -481,11 +506,9 @@ export async function dispatchLiveOpsAlert(input: {
   event: LiveOpsAlertInput;
 }): Promise<AlertDispatchResult> {
   const alertRequest = createLiveOpsAlertRequest(input.event);
-  return runWithFailureStateLock(input.alertDispatch, async () => {
-    const result = await dispatchAlertWithCooldown(input.alertDispatch, alertRequest);
-    // live ops 알림 실패도 kill switch와 같은 failure threshold를 타야 Telegram 장애 지속이 manual review 후보로 남는다.
-    input.alertDispatch.failureState = result.failureEvaluation.state;
-    return result;
+  return dispatchAlertWithFailureStateTracking({
+    alertDispatch: input.alertDispatch,
+    request: alertRequest,
   });
 }
 

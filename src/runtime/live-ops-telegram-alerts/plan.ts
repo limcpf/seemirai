@@ -1,6 +1,6 @@
 import {
   createLiveOpsAlertRequest,
-  dispatchAlertWithCooldown,
+  dispatchAlertWithFailureStateTracking,
   dispatchLiveOpsAlert,
 } from "../../application/index.js";
 import type {
@@ -461,9 +461,11 @@ export async function dispatchScheduledLiveOpsTelegramBriefing(
 
   for (const request of input.plan.requests) {
     try {
-      const result = await dispatchAlertWithCooldown(input.alertDispatch, request);
-      // briefing provider 실패도 alert dispatch failure threshold에 누적해 Telegram 장애 지속을 status surface에서 추적하게 한다.
-      input.alertDispatch.failureState = result.failureEvaluation.state;
+      // scheduled briefing도 lifecycle/trade alert와 같은 lock을 타야 동시 Telegram 장애 집계가 유실되지 않는다.
+      const result = await dispatchAlertWithFailureStateTracking({
+        alertDispatch: input.alertDispatch,
+        request,
+      });
       results.push(result);
     } catch {
       // Telegram dispatch 실패가 이미 생성된 deterministic briefing 결과를 rollback하지 못하게 실패 count로만 격리한다.
