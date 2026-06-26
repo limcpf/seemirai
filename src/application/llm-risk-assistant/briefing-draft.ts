@@ -68,7 +68,7 @@ export type AttachLlmLiveOpsBriefingDraftResult =
   | {
       status: "deterministic_only";
       reasonCode: string;
-      skippedReason: "provider_failed" | "unsupported_result_type" | "source_mismatch";
+      skippedReason: "provider_failed" | "provider_disabled" | "unsupported_result_type" | "source_mismatch";
       deterministicText: string;
       text: string;
       draft?: undefined;
@@ -88,7 +88,7 @@ export function createLiveOpsBriefingLlmRequest(
     maxCharacters: liveOpsBriefingPromptMaxCharacters,
   });
   const safetyIssues = validateLiveOpsBriefingSnapshotSafety(input.snapshot);
-  const sourceId = createLiveOpsBriefingSourceId(input.snapshot);
+  const sourceId = createLiveOpsBriefingSourceId(input.snapshot, deterministicText, safetyIssues);
   const prompt = createLiveOpsBriefingPrompt({
     sourceId,
     deterministicText,
@@ -106,12 +106,16 @@ export function createLiveOpsBriefingLlmRequest(
     snapshot_schema_version: input.snapshot.schemaVersion,
     snapshot_observed_at: input.snapshot.observedAt,
     prompt_sha256: promptSha256,
+    briefing_sha256: hashText(deterministicText),
     source_ids: sourceIds,
     evidence_ids: evidenceIds,
     reason_codes: reasonCodes,
     safety_issue_count: safetyIssues.length,
-    ...(input.metadata ?? {}),
   };
+  if (input.metadata !== undefined) {
+    // 호출자 metadata가 prompt/source/evidence 추적 필드를 덮으면 audit 재현성이 깨지므로 별도 namespace에만 보존한다.
+    metadata.caller_metadata = input.metadata;
+  }
 
   return {
     input: {
@@ -144,6 +148,14 @@ export function attachLlmLiveOpsBriefingDraft(
   if (input.response.status === "failed") {
     // LLM 실패는 briefing 생성을 실패시키지 않고 deterministic 문구를 그대로 전송하게 한다.
     return createDeterministicOnlyResult(input.deterministicText, input.response.reason_code, "provider_failed");
+  }
+  if (input.response.provider_id === "noop") {
+    // disabled provider의 성공 응답은 LLM 초안이 아니므로 operator에게 deterministic briefing만 보여준다.
+    return createDeterministicOnlyResult(
+      input.deterministicText,
+      "llm_live_ops_briefing_provider_disabled",
+      "provider_disabled",
+    );
   }
 
   const result = input.response.result;
@@ -223,12 +235,18 @@ function formatSafetyIssuesForPrompt(
     .join("\n");
 }
 
-function createLiveOpsBriefingSourceId(snapshot: LiveOpsBriefingSnapshot): string {
+function createLiveOpsBriefingSourceId(
+  snapshot: LiveOpsBriefingSnapshot,
+  deterministicText: string,
+  safetyIssues: readonly { path: string; reason: string; redactedPreview: string }[],
+): string {
   return `live-ops-status-snapshot-${hashText(JSON.stringify({
     schemaVersion: snapshot.schemaVersion,
     observedAt: snapshot.observedAt,
     sourceIds: snapshot.trace.sourceIds,
     evidenceIds: snapshot.trace.evidenceIds,
+    deterministicText,
+    safetyIssues,
   })).slice(0, 24)}`;
 }
 
@@ -239,7 +257,7 @@ function hasExactSourceMatch(result: LlmRiskAssistantResult, sourceId: string): 
 function createDeterministicOnlyResult(
   deterministicText: string,
   reasonCode: string,
-  skippedReason: "provider_failed" | "unsupported_result_type" | "source_mismatch",
+  skippedReason: "provider_failed" | "provider_disabled" | "unsupported_result_type" | "source_mismatch",
 ): AttachLlmLiveOpsBriefingDraftResult {
   return {
     status: "deterministic_only",

@@ -147,4 +147,34 @@ describe("M10 LLM risk assistant contract", () => {
       }),
     ).toThrow(LlmRiskAssistantContractError);
   });
+
+  it.each([
+    {
+      summary: "KRW-BTC 매수를 추천합니다.",
+      reason: "조사가 붙은 매수 추천",
+    },
+    {
+      summary: "현재 조건에서는 진입을 권고합니다.",
+      reason: "조사가 붙은 진입 권고",
+    },
+    {
+      summary: "목표가는 100000000원입니다.",
+      reason: "조사가 붙은 목표가",
+    },
+    {
+      summary: "주문 수량은 0.1 BTC입니다.",
+      reason: "조사가 붙은 주문 수량",
+    },
+  ])("rejects particle-marked Korean unsafe briefing text: $reason", ({ summary }) => {
+    expect(() =>
+      parseLlmRiskAssistantResult({
+        schema_version: LLM_RISK_ASSISTANT_SCHEMA_VERSION,
+        result_type: "live_ops_briefing_draft",
+        source_ids: ["live-ops-status-snapshot-1"],
+        summary,
+        recommended_action: "ALERT_ONLY",
+        observed_at: observedAt,
+      }),
+    ).toThrow(LlmRiskAssistantContractError);
+  });
 });

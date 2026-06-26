@@ -26,22 +26,22 @@ const unsafeResultTextPatterns: readonly { pattern: RegExp; code: string; messag
     message: "LLM result text contains a forbidden trade action token.",
   },
   {
-    pattern: /(?:매수|진입)\s*(?:하세요|하십시오|권고|추천)/iu,
+    pattern: /(?:매수|진입)\s*(?:을|를)?\s*(?:하세요|하십시오|권고|추천)/iu,
     code: "direct_buy_advice",
     message: "LLM result text contains direct buy advice.",
   },
   {
-    pattern: /(?:매도|청산)\s*(?:하세요|하십시오|권고|추천)/iu,
+    pattern: /(?:매도|청산)\s*(?:을|를)?\s*(?:하세요|하십시오|권고|추천)/iu,
     code: "direct_sell_advice",
     message: "LLM result text contains direct sell advice.",
   },
   {
-    pattern: /(?:목표가|target\s*price)\s*[:：]?\s*[0-9]/iu,
+    pattern: /(?:목표\s*(?:가|가격)|target\s*price)\s*(?:은|는|을|를|가)?\s*(?:[:：]|is|=)?\s*[0-9]/iu,
     code: "target_price_text",
     message: "LLM result text contains a target price.",
   },
   {
-    pattern: /(?:주문\s*수량|position\s*size)\s*[:：]?\s*[0-9]/iu,
+    pattern: /(?:주문\s*수량|position\s*size)\s*(?:은|는|을|를|가)?\s*(?:[:：]|is|=)?\s*[0-9]/iu,
     code: "order_quantity_text",
     message: "LLM result text contains an order quantity.",
   },

@@ -5,6 +5,7 @@ import {
   createLiveOpsBriefingLlmRequest,
   createLlmProviderFailure,
   createLlmProviderSuccess,
+  createNoopLlmRiskAssistantProvider,
   formatLiveOpsBriefing,
   type LiveOpsBriefingSnapshot,
   type LlmRiskAssistantResult,
@@ -49,6 +50,60 @@ describe("Live Ops LLM briefing draft boundary", () => {
     expect(serialized).toContain("[비공개]");
     expect(serialized).not.toContain("codex-session-raw");
     expect(serialized).not.toContain("Authorization: Bearer");
+  });
+
+  it("preserves generated audit metadata when caller metadata uses the same keys", () => {
+    const request = createLiveOpsBriefingLlmRequest({
+      snapshot: createBriefingSnapshot(),
+      requestedAt: observedAt,
+      timeoutMs: 5_000,
+      maxOutputBytes: 16_000,
+      metadata: {
+        prompt_sha256: "caller-prompt",
+        source_ids: ["caller-source"],
+        evidence_ids: ["caller-evidence"],
+        reason_codes: ["caller-reason"],
+        safety_issue_count: 999,
+      },
+    });
+
+    expect(request.metadata).toMatchObject({
+      prompt_sha256: expect.stringMatching(/^[a-f0-9]{64}$/u),
+      source_ids: ["live_ops_status_summary", "decision_ledger_why_summary"],
+      evidence_ids: ["heartbeat-1"],
+      reason_codes: ["live_order_capable"],
+      safety_issue_count: 0,
+      caller_metadata: {
+        prompt_sha256: "caller-prompt",
+        source_ids: ["caller-source"],
+        evidence_ids: ["caller-evidence"],
+        reason_codes: ["caller-reason"],
+        safety_issue_count: 999,
+      },
+    });
+    expect(request.metadata?.prompt_sha256).not.toBe("caller-prompt");
+    expect(request.input.metadata).toEqual(request.metadata);
+  });
+
+  it("changes source id when briefing content changes with the same trace ids", () => {
+    const first = createLiveOpsBriefingLlmRequest({
+      snapshot: createBriefingSnapshot({
+        headlineCause: "daemon heartbeat를 확인했습니다.",
+      }),
+      requestedAt: observedAt,
+      timeoutMs: 5_000,
+      maxOutputBytes: 16_000,
+    });
+    const second = createLiveOpsBriefingLlmRequest({
+      snapshot: createBriefingSnapshot({
+        headlineCause: "wallet cash 조회가 지연되었습니다.",
+      }),
+      requestedAt: observedAt,
+      timeoutMs: 5_000,
+      maxOutputBytes: 16_000,
+    });
+
+    expect(first.input.source_id).not.toBe(second.input.source_id);
   });
 
   it("attaches a successful LLM briefing draft without exposing action as an order signal", () => {
@@ -142,6 +197,33 @@ describe("Live Ops LLM briefing draft boundary", () => {
     });
     expect(failed.draft).toBeUndefined();
     expect(unsupported.draft).toBeUndefined();
+  });
+
+  it("keeps deterministic briefing when the noop provider represents disabled LLM", async () => {
+    const snapshot = createBriefingSnapshot();
+    const deterministicText = formatLiveOpsBriefing(snapshot);
+    const request = createLiveOpsBriefingLlmRequest({
+      snapshot,
+      requestedAt: observedAt,
+      timeoutMs: 5_000,
+      maxOutputBytes: 16_000,
+    });
+    const response = await createNoopLlmRiskAssistantProvider().generate(request);
+
+    const result = attachLlmLiveOpsBriefingDraft({
+      deterministicText,
+      request,
+      response,
+    });
+
+    expect(result).toMatchObject({
+      status: "deterministic_only",
+      reasonCode: "llm_live_ops_briefing_provider_disabled",
+      skippedReason: "provider_disabled",
+      text: deterministicText,
+    });
+    expect(result.text).not.toContain("LLM 보조 초안");
+    expect(result.draft).toBeUndefined();
   });
 });
 
