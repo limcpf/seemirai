@@ -1,5 +1,6 @@
 import {
   createLiveOpsAlertRequest,
+  dispatchAlertWithCooldown,
   dispatchLiveOpsAlert,
 } from "../../application/index.js";
 import type {
@@ -150,6 +151,89 @@ export interface DispatchLiveOpsTelegramAlertsSummary {
 }
 
 /**
+ * 정기 Live Ops Telegram briefing 설정이다.
+ *
+ * 책임:
+ * - scheduled briefing이 명시적으로 켜졌는지만 표현한다.
+ * - `scheduleKey`는 alert cooldown fingerprint의 안정 dedupe segment로 쓰이며, secret이나 Telegram raw 입력을 담으면 안 된다.
+ */
+export interface ScheduledLiveOpsTelegramBriefingConfig {
+  readonly scheduledEnabled: boolean;
+  readonly scheduleKey?: string;
+}
+
+/**
+ * 정기 Live Ops Telegram briefing plan 입력이다.
+ *
+ * 책임:
+ * - 이미 deterministic formatter와 LLM guard를 통과한 briefing text를 alert dispatch 경계로 낮춘다.
+ * - 이 mapper는 Telegram provider, cooldown store, retry queue, audit log를 직접 호출하지 않는다.
+ */
+export interface ScheduledLiveOpsTelegramBriefingPlanInput {
+  readonly config: ScheduledLiveOpsTelegramBriefingConfig;
+  readonly environment: string;
+  readonly runMode: string;
+  readonly observedAt: string;
+  readonly briefingText: string;
+  readonly briefingSourceFingerprint: string;
+  readonly correlationId?: string;
+}
+
+/**
+ * 정기 Live Ops Telegram briefing plan 상태다.
+ *
+ * `disabled`는 설정에서 명시 활성화되지 않아 provider 호출 후보가 없다는 뜻이고, `ready`만 dispatch 경계로 전진할 수 있다.
+ */
+export type ScheduledLiveOpsTelegramBriefingPlanStatus = "disabled" | "ready";
+
+/**
+ * 정기 Live Ops Telegram briefing provider 호출 전 plan이다.
+ *
+ * 책임:
+ * - scheduled briefing 기본 비활성 invariant와 alert cooldown fingerprint를 한곳에 고정한다.
+ * - `requests`는 기존 alert dispatch service가 처리할 수 있는 shape로 보존해 retry/cooldown/audit 경계를 재사용한다.
+ */
+export interface ScheduledLiveOpsTelegramBriefingPlan {
+  readonly status: ScheduledLiveOpsTelegramBriefingPlanStatus;
+  readonly ready: boolean;
+  readonly observedAt: string;
+  readonly alertCount: number;
+  readonly providerDispatchAttempted: false;
+  readonly message: string;
+  readonly action: string;
+  readonly requests: readonly AlertDispatchRequest[];
+  readonly trace: JsonRecord;
+}
+
+/**
+ * 정기 Live Ops Telegram briefing 전송 입력이다.
+ *
+ * ready plan만 provider/cooldown 경계로 전진하며, disabled plan은 provider 호출 없이 summary로 닫아야 한다.
+ */
+export interface DispatchScheduledLiveOpsTelegramBriefingInput {
+  readonly plan: ScheduledLiveOpsTelegramBriefingPlan;
+  readonly alertDispatch: AlertDispatchServiceOptions;
+}
+
+/**
+ * 정기 Live Ops Telegram briefing 전송 결과 요약이다.
+ *
+ * provider 실패는 briefing 생성 성공을 되돌리지 않고 failure count와 retry/cooldown 결과로만 격리한다.
+ */
+export interface DispatchScheduledLiveOpsTelegramBriefingSummary {
+  readonly status: "sent" | "skipped" | "partial_failure";
+  readonly attemptedCount: number;
+  readonly deliveredCount: number;
+  readonly cooldownHitCount: number;
+  readonly retryPlannedCount: number;
+  readonly failureCount: number;
+  readonly message: string;
+  readonly action: string;
+  readonly results: readonly AlertDispatchResult[];
+  readonly trace: JsonRecord;
+}
+
+/**
  * production live ops lifecycle/trade 상태를 Telegram alert 후보로 변환한다.
  *
  * @param input live ops config, Telegram readiness evidence, live execution summary, 선택 주문 intent
@@ -274,6 +358,150 @@ export async function dispatchLiveOpsTelegramAlerts(
   };
 }
 
+/**
+ * 정기 Live Ops Telegram briefing dispatch plan을 만든다.
+ *
+ * @param input scheduled config와 deterministic briefing text
+ * @returns provider 호출 없는 scheduled briefing plan
+ */
+export function planScheduledLiveOpsTelegramBriefing(
+  input: ScheduledLiveOpsTelegramBriefingPlanInput,
+): ScheduledLiveOpsTelegramBriefingPlan {
+  const scheduleKey = normalizeBriefingScheduleKey(input.config.scheduleKey);
+
+  if (!input.config.scheduledEnabled) {
+    return {
+      status: "disabled",
+      ready: false,
+      observedAt: input.observedAt,
+      alertCount: 0,
+      providerDispatchAttempted: false,
+      message: "정기 Live Ops Telegram 브리핑은 설정에서 비활성입니다.",
+      action: "정기 브리핑이 필요하면 telegram.briefing.scheduled_enabled를 명시적으로 켜세요.",
+      requests: [],
+      trace: {
+        source: "live_ops_briefing",
+        dispatchKind: "scheduled",
+        reason: "scheduled_live_ops_briefing_disabled",
+        scheduleKey,
+      },
+    };
+  }
+
+  const request: AlertDispatchRequest = {
+    environment: input.environment,
+    runMode: input.runMode,
+    severity: "P3",
+    alertType: "live_ops_briefing",
+    reasonCode: "scheduled_live_ops_briefing",
+    dedupeKey: scheduleKey,
+    title: "Live Ops 정기 브리핑",
+    body: input.briefingText,
+    occurredAt: input.observedAt,
+    ...(input.correlationId === undefined ? {} : { correlationId: input.correlationId }),
+    metadata: {
+      source: "live_ops_briefing",
+      dispatch_kind: "scheduled",
+      schedule_key: scheduleKey,
+      briefing_source_fingerprint: input.briefingSourceFingerprint,
+      observed_at: input.observedAt,
+    },
+  };
+
+  return {
+    status: "ready",
+    ready: true,
+    observedAt: input.observedAt,
+    alertCount: 1,
+    providerDispatchAttempted: false,
+    message: "정기 Live Ops Telegram 브리핑 전송 계획을 만들었습니다.",
+    action: "provider dispatch 전 cooldown/fingerprint 상태를 확인합니다.",
+    requests: [request],
+    trace: {
+      source: "live_ops_briefing",
+      dispatchKind: "scheduled",
+      scheduleKey,
+      briefingSourceFingerprint: input.briefingSourceFingerprint,
+    },
+  };
+}
+
+/**
+ * 정기 Live Ops Telegram briefing을 기존 alert dispatch 경계로 전송한다.
+ *
+ * @param input scheduled briefing plan과 alert dispatch 의존성
+ * @returns provider/cooldown/retry 결과 요약
+ */
+export async function dispatchScheduledLiveOpsTelegramBriefing(
+  input: DispatchScheduledLiveOpsTelegramBriefingInput,
+): Promise<DispatchScheduledLiveOpsTelegramBriefingSummary> {
+  if (input.plan.status !== "ready") {
+    // scheduled briefing은 기본 비활성이므로 config가 열리지 않았을 때 provider/cooldown side effect를 만들지 않는다.
+    return {
+      status: "skipped",
+      attemptedCount: 0,
+      deliveredCount: 0,
+      cooldownHitCount: 0,
+      retryPlannedCount: 0,
+      failureCount: 0,
+      message: input.plan.message,
+      action: input.plan.action,
+      results: [],
+      trace: {
+        source: "live_ops_briefing",
+        planStatus: input.plan.status,
+      },
+    };
+  }
+
+  const results: AlertDispatchResult[] = [];
+  let failureCount = 0;
+
+  for (const request of input.plan.requests) {
+    try {
+      const result = await dispatchAlertWithCooldown(input.alertDispatch, request);
+      // briefing provider 실패도 alert dispatch failure threshold에 누적해 Telegram 장애 지속을 status surface에서 추적하게 한다.
+      input.alertDispatch.failureState = result.failureEvaluation.state;
+      results.push(result);
+    } catch {
+      // Telegram dispatch 실패가 이미 생성된 deterministic briefing 결과를 rollback하지 못하게 실패 count로만 격리한다.
+      failureCount += 1;
+    }
+  }
+
+  const deliveredCount = results.filter((result) => result.notification.delivered).length;
+  const cooldownHitCount = results.filter((result) => result.cooldownHit).length;
+  const retryPlannedCount = results.filter((result) => result.retryJobPlan !== undefined).length;
+  const status = failureCount > 0
+    ? "partial_failure"
+    : deliveredCount > 0
+      ? "sent"
+      : "skipped";
+
+  return {
+    status,
+    attemptedCount: input.plan.requests.length,
+    deliveredCount,
+    cooldownHitCount,
+    retryPlannedCount,
+    failureCount,
+    message: status === "sent"
+      ? "정기 Live Ops Telegram 브리핑 전송을 완료했습니다."
+      : status === "skipped"
+        ? "정기 Live Ops Telegram 브리핑이 cooldown/fingerprint 정책으로 생략됐습니다."
+        : "일부 정기 Live Ops Telegram 브리핑 전송 결과를 확정하지 못했습니다.",
+    action: status === "partial_failure"
+      ? "notification retry job과 provider 상태를 확인합니다."
+      : "전송 결과와 cooldown 상태를 status surface에서 확인합니다.",
+    results,
+    trace: {
+      source: "live_ops_briefing",
+      planStatus: input.plan.status,
+      alertCount: input.plan.alertCount,
+    },
+  };
+}
+
 function createLifecycleEvents(
   config: LiveOpsConfig,
   input: LiveOpsTelegramAlertPlanInput,
@@ -305,6 +533,11 @@ function createLifecycleEvents(
     count: events.length,
   }));
   return events;
+}
+
+function normalizeBriefingScheduleKey(value: string | undefined): string {
+  const trimmed = value?.trim();
+  return trimmed === undefined || trimmed.length === 0 ? "default" : trimmed;
 }
 
 function createTradeEvents(

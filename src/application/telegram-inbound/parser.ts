@@ -64,7 +64,7 @@ export function parseTelegramInboundCommand(
       status: "UNKNOWN",
       reasonCode: "telegram_command_unknown",
       userMessage:
-        "지원하지 않는 명령입니다. 상태 조회는 /status, 판단 이유 조회는 /why KRW-BTC 또는 /why cash를 사용해 주세요.",
+        "지원하지 않는 명령입니다. 상태 조회는 /status, 브리핑은 /brief, 판단 이유 조회는 /why KRW-BTC 또는 /why cash를 사용해 주세요.",
       normalizedText,
     };
   }

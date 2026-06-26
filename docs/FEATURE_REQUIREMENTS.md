@@ -1002,8 +1002,8 @@ Acceptance Criteria:
 
 Acceptance Criteria:
 
-- [ ] `/brief`는 read-only Telegram command로 분류된다.
-- [ ] `/brief`는 owner allowlist 없이는 응답하지 않는다.
+- [x] `/brief`는 read-only Telegram command로 분류된다.
+- [x] `/brief`는 owner allowlist 없이는 응답하지 않는다.
 - [ ] Telegram에서 서버/daemon 상태, live enabled, live armed, live order capable, readiness guard 상태를 한국어로 확인할 수 있다.
 - [ ] Telegram에서 매수 조건, 매도 조건, HOLD/BLOCK 이유를 확인할 수 있다.
 - [ ] Telegram에서 wallet cash, coin/balance/position, PnL, open exposure, budget used를 확인할 수 있다.
@@ -1016,8 +1016,8 @@ Acceptance Criteria:
 - [ ] Telegram 메시지는 한국어 상태, 원인, 영향, 필요 조치를 먼저 보여준다.
 - [ ] 내부 id/reason/evidence는 `추적 정보`로 분리한다.
 - [ ] raw provider payload, raw order detail, Telegram token, API key, JWT, Authorization header가 prompt/audit/status/Telegram/log에 남지 않는다.
-- [ ] scheduled briefing은 기본 비활성이며 명시 config 없이는 시작되지 않는다.
-- [ ] scheduled briefing은 fingerprint/cooldown으로 중복 스팸을 방지한다.
+- [x] scheduled briefing은 기본 비활성이며 명시 config 없이는 시작되지 않는다.
+- [x] scheduled briefing은 fingerprint/cooldown으로 중복 스팸을 방지한다.
 
 테스트 요구사항:
 

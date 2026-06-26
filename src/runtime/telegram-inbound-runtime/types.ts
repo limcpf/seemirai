@@ -67,6 +67,39 @@ export interface TelegramInboundControlConfirmationStore {
 }
 
 /**
+ * Telegram `/brief` read-only command가 호출하는 briefing provider 입력이다.
+ *
+ * correlation id와 처리 시각만 전달해 provider가 deterministic briefing snapshot/formatter 경계를 재사용하게 한다. Telegram raw
+ * text, chat id, user id는 이 입력에 포함하지 않아 briefing 생성과 감사 표면에 외부 입력 원문이 새지 않게 한다.
+ */
+export interface TelegramInboundBriefingRequest {
+  correlationId: string;
+  occurredAt: string;
+}
+
+/**
+ * Telegram `/brief` read-only command용 briefing provider port다.
+ *
+ * 구현체는 이미 secret-safe projection으로 낮아진 Live Ops briefing text만 반환해야 한다. 이 port는 조회 전용이며 broker 호출,
+ * kill switch 전이, Telegram outbound dispatch 같은 durable side effect를 수행하면 안 된다.
+ */
+export interface TelegramInboundBriefingProvider {
+  getBriefing(input: TelegramInboundBriefingRequest): Promise<string>;
+}
+
+/**
+ * 기본 Telegram `/brief` provider 조립 옵션이다.
+ *
+ * status provider는 이미 `/status` safe snapshot 경계이므로 raw config, secret, provider payload를 포함하지 않아야 한다. 이
+ * 옵션은 formatter 길이 제한과 실거래 활성화 override만 허용하고, Telegram dispatch나 DB write 의존성은 받지 않는다.
+ */
+export interface CreateTelegramInboundBriefingProviderOptions {
+  statusProvider: ControlStatusProvider;
+  maxCharacters?: number;
+  liveTradingEnabled?: boolean | null;
+}
+
+/**
  * Telegram inbound command runtime 의존성이다.
  *
  * parser/auth/dedupe/audit은 application contract를 재사용하고, status/kill switch provider는 기존 control plane provider를
@@ -79,6 +112,7 @@ export interface TelegramInboundCommandRuntimeOptions {
   replyPort: TelegramInboundReplyPort;
   statusProvider: ControlStatusProvider;
   killSwitchControlProvider: KillSwitchControlProvider;
+  briefingProvider?: TelegramInboundBriefingProvider;
   liveOrderApprovalRuntime?: LiveOrderApprovalCommandRuntime;
   confirmationStore?: TelegramInboundControlConfirmationStore;
   botUsername?: string;

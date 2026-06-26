@@ -29,6 +29,22 @@ export type RuntimeTelegramInboundConfig =
     };
 
 /**
+ * Telegram Live Ops briefing runtime 설정이다.
+ *
+ * scheduled briefing은 기본 비활성이며, config 또는 env에서 명시적으로 켠 경우에만 alert dispatch 후보가 된다. schedule key는
+ * cooldown fingerprint의 안정 segment로만 사용하고 provider token이나 chat id 같은 secret을 담지 않는다.
+ */
+export type RuntimeTelegramBriefingConfig =
+  | {
+      scheduledEnabled: false;
+      reasonCode: "telegram_briefing_scheduled_disabled";
+    }
+  | {
+      scheduledEnabled: true;
+      scheduleKey: string;
+    };
+
+/**
  * Telegram inbound가 켜질 수 없는 설정을 설명하는 startup guard error다.
  *
  * 이 error message는 secret 원문을 담지 않고 누락된 guard 이름만 포함한다.
@@ -39,6 +55,21 @@ export class UnsafeTelegramInboundConfigError extends Error {
   public constructor(violations: readonly string[]) {
     super(`Unsafe Telegram inbound config: ${violations.join(", ")}`);
     this.name = "UnsafeTelegramInboundConfigError";
+    this.violations = violations;
+  }
+}
+
+/**
+ * Telegram briefing config guard 오류다.
+ *
+ * env boolean이나 schedule key가 잘못된 경우 startup에서 정규화된 guard 이름만 남기고 secret/raw env 값은 포함하지 않는다.
+ */
+export class UnsafeTelegramBriefingConfigError extends Error {
+  public readonly violations: readonly string[];
+
+  public constructor(violations: readonly string[]) {
+    super(`Unsafe Telegram briefing config: ${violations.join(", ")}`);
+    this.name = "UnsafeTelegramBriefingConfigError";
     this.violations = violations;
   }
 }
@@ -143,6 +174,42 @@ export function loadRuntimeTelegramInboundConfig(
   };
 }
 
+/**
+ * runtime config와 process env에서 Telegram scheduled briefing 설정을 만든다.
+ *
+ * scheduled briefing은 알림 폭주를 피하기 위해 기본 비활성이며, enable flag가 명시된 경우에만 기존 alert cooldown/fingerprint
+ * 경계로 전진한다.
+ */
+export function loadRuntimeTelegramBriefingConfig(
+  config: RuntimeConfig,
+  env: NodeJS.ProcessEnv = process.env,
+): RuntimeTelegramBriefingConfig {
+  const briefing = config.telegram.briefing;
+  const scheduledEnabled =
+    readBooleanEnvValue(
+      env.SEEMIRAI_TELEGRAM_BRIEFING_SCHEDULED_ENABLED,
+      "SEEMIRAI_TELEGRAM_BRIEFING_SCHEDULED_ENABLED",
+      UnsafeTelegramBriefingConfigError,
+    ) ?? briefing.scheduled_enabled;
+
+  if (!scheduledEnabled) {
+    return {
+      scheduledEnabled: false,
+      reasonCode: "telegram_briefing_scheduled_disabled",
+    };
+  }
+
+  const scheduleKey =
+    nonEmptyEnvValue(env.SEEMIRAI_TELEGRAM_BRIEFING_SCHEDULE_KEY) ??
+    nonEmptyEnvValue(briefing.schedule_key) ??
+    "default";
+
+  return {
+    scheduledEnabled: true,
+    scheduleKey,
+  };
+}
+
 function nonEmptyEnvValue(value: string | undefined): string | undefined {
   if (value === undefined) {
     return undefined;
@@ -162,6 +229,14 @@ function readCsvEnv(value: string | undefined): readonly string[] | undefined {
 }
 
 function readBooleanEnv(value: string | undefined): boolean | undefined {
+  return readBooleanEnvValue(value, "SEEMIRAI_TELEGRAM_INBOUND_ENABLED", UnsafeTelegramInboundConfigError);
+}
+
+function readBooleanEnvValue<T extends new (violations: readonly string[]) => Error>(
+  value: string | undefined,
+  envName: string,
+  ErrorCtor: T,
+): boolean | undefined {
   const raw = nonEmptyEnvValue(value);
   if (raw === undefined) {
     return undefined;
@@ -175,8 +250,8 @@ function readBooleanEnv(value: string | undefined): boolean | undefined {
     return false;
   }
 
-  throw new UnsafeTelegramInboundConfigError([
-    "SEEMIRAI_TELEGRAM_INBOUND_ENABLED must be a boolean-like value",
+  throw new ErrorCtor([
+    `${envName} must be a boolean-like value`,
   ]);
 }
 

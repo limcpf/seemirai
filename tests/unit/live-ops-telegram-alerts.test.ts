@@ -14,6 +14,8 @@ import type {
 import {
   defaultLiveOpsConfig,
   dispatchLiveOpsTelegramAlerts,
+  dispatchScheduledLiveOpsTelegramBriefing,
+  planScheduledLiveOpsTelegramBriefing,
   planLiveOpsTelegramAlerts,
 } from "../../src/runtime/index.js";
 import type {
@@ -329,6 +331,83 @@ describe("production live ops Telegram alert mapper", () => {
   });
 });
 
+describe("scheduled Live Ops Telegram briefing dispatch", () => {
+  it("keeps scheduled briefing disabled unless config explicitly enables it", () => {
+    const plan = planScheduledLiveOpsTelegramBriefing(createScheduledBriefingPlanInput({
+      config: {
+        scheduledEnabled: false,
+        scheduleKey: "ops-hourly",
+      },
+    }));
+
+    expect(plan).toMatchObject({
+      status: "disabled",
+      ready: false,
+      alertCount: 0,
+      message: "정기 Live Ops Telegram 브리핑은 설정에서 비활성입니다.",
+    });
+    expect(plan.requests).toHaveLength(0);
+  });
+
+  it("uses alert cooldown fingerprinting so repeated scheduled briefings do not spam Telegram", async () => {
+    const notifier = new RecordingNotifier();
+    const cooldownStore = createInMemoryAlertCooldownStore();
+    const plan = planScheduledLiveOpsTelegramBriefing(createScheduledBriefingPlanInput());
+
+    expect(plan).toMatchObject({
+      status: "ready",
+      ready: true,
+      alertCount: 1,
+    });
+    expect(plan.requests[0]).toMatchObject({
+      severity: "P3",
+      alertType: "live_ops_briefing",
+      reasonCode: "scheduled_live_ops_briefing",
+      dedupeKey: "ops-hourly",
+      title: "Live Ops 정기 브리핑",
+      metadata: {
+        source: "live_ops_briefing",
+        briefing_source_fingerprint: "sha256:briefing-fixture",
+      },
+    });
+
+    const first = await dispatchScheduledLiveOpsTelegramBriefing({
+      plan,
+      alertDispatch: {
+        notifier,
+        durableCooldownStore: cooldownStore,
+        memoryCooldownStore: cooldownStore,
+        clock: () => new Date(observedAt),
+      },
+    });
+    const duplicate = await dispatchScheduledLiveOpsTelegramBriefing({
+      plan,
+      alertDispatch: {
+        notifier,
+        durableCooldownStore: cooldownStore,
+        memoryCooldownStore: cooldownStore,
+        clock: () => new Date(observedAt),
+      },
+    });
+
+    expect(first).toMatchObject({
+      status: "sent",
+      attemptedCount: 1,
+      deliveredCount: 1,
+      cooldownHitCount: 0,
+    });
+    expect(duplicate).toMatchObject({
+      status: "skipped",
+      attemptedCount: 1,
+      deliveredCount: 0,
+      cooldownHitCount: 1,
+    });
+    expect(notifier.alerts).toHaveLength(1);
+    expect(notifier.alerts[0]?.body).toContain("Live Ops 브리핑");
+    expect(notifier.alerts[0]?.body).toContain("상태: 실매매 가능");
+  });
+});
+
 function createPlanInput(
   overrides: Partial<LiveOpsTelegramAlertPlanInput> = {},
 ): LiveOpsTelegramAlertPlanInput {
@@ -341,6 +420,30 @@ function createPlanInput(
     liveExecution: liveExecutionSummary(),
     correlationId: "corr-live-ops",
     telegramConnectionEvidenceId: "telegram-ready-1",
+    ...overrides,
+  };
+}
+
+function createScheduledBriefingPlanInput(
+  overrides: Partial<Parameters<typeof planScheduledLiveOpsTelegramBriefing>[0]> = {},
+): Parameters<typeof planScheduledLiveOpsTelegramBriefing>[0] {
+  return {
+    config: {
+      scheduledEnabled: true,
+      scheduleKey: "ops-hourly",
+    },
+    environment: "prod",
+    runMode: "live_autonomous_small_budget",
+    observedAt,
+    briefingText: [
+      "Live Ops 브리핑",
+      "상태: 실매매 가능",
+      "원인: deterministic snapshot 기준입니다.",
+      "영향: 주문 side effect 없이 조회만 완료했습니다.",
+      "필요 조치: 추적 정보를 확인하세요.",
+    ].join("\n"),
+    briefingSourceFingerprint: "sha256:briefing-fixture",
+    correlationId: "corr-live-ops-briefing",
     ...overrides,
   };
 }

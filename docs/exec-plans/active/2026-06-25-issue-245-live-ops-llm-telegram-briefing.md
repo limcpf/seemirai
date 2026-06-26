@@ -63,8 +63,9 @@ LLM은 deterministic evidence를 사람이 읽기 쉬운 초안으로 낮추는 
 - 2026-06-25: LLM은 deterministic snapshot 설명 초안으로만 사용하고 unsafe output은 deterministic fallback으로 닫는다.
 - 2026-06-25: Sub PR 02 assembler는 provider I/O 없이 `LiveOpsStatusSummary`, decision ledger `WhySummary`, market/portfolio safe projection을 입력으로 받는 순수 조립 경계로 확정했다.
 - 2026-06-25: Sub PR 03 LLM briefing draft는 `live_ops_status_snapshot`/`live_ops_briefing_draft` contract와 redacted deterministic briefing prompt만 사용하며, provider 실패·unsafe output·source mismatch는 deterministic fallback으로 수렴한다.
+- 2026-06-26: Sub PR 04 `/brief`는 owner allowlist/dedupe/audit 경계를 재사용하는 read-only command로 확정했다. 기본 provider는 `/status` safe snapshot을 `LiveOpsBriefingSnapshot` formatter로 낮추며 broker/control/Telegram outbound side effect를 만들지 않는다.
+- 2026-06-26: scheduled briefing config 이름은 `telegram.briefing.scheduled_enabled`, env override는 `SEEMIRAI_TELEGRAM_BRIEFING_SCHEDULED_ENABLED`, cooldown fingerprint segment는 `telegram.briefing.schedule_key`/`SEEMIRAI_TELEGRAM_BRIEFING_SCHEDULE_KEY`로 확정했다. 저장은 기존 `AlertDispatchRequest`와 `alert_cooldowns` 경계를 재사용한다.
 
 ## 남은 이슈
 
-- Sub PR 03에서 LLM schema 확장이 기존 `FR-LLM-001` 비범위와 충돌하지 않도록 문서와 test를 함께 갱신해야 한다.
-- Sub PR 04에서 Telegram scheduled dispatch의 config 이름과 cooldown/fingerprint 저장 위치를 확정해야 한다.
+- Sub PR 05에서 source scan, 전체 검증, 문서 closeout을 완료해야 한다.
