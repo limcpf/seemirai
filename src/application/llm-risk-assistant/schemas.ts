@@ -46,6 +46,13 @@ const unsafeResultTextPatterns: readonly { pattern: RegExp; code: string; messag
     message: "LLM result text contains an order quantity.",
   },
 ];
+const unsafeResultMetadataKeyPatterns: readonly { pattern: RegExp; code: string; message: string }[] = [
+  {
+    pattern: /^(?:target[_-]?price|order[_-]?(?:quantity|qty|size|side)|position[_-]?size|requested[_-]?(?:price|quantity|notional)|side)$/iu,
+    code: "order_like_metadata",
+    message: "LLM result metadata contains order-like fields.",
+  },
+];
 
 export const LlmRiskAssistantInputSourceSchema = z.enum(llmRiskAssistantInputSources);
 export const LlmRiskAssistantResultTypeSchema = z.enum(llmRiskAssistantResultTypes);
@@ -187,13 +194,14 @@ function normalizeContractIssues(issues: readonly ZodIssue[]): readonly LlmRiskA
 /**
  * schema를 통과한 provider 결과 본문에서 주문 지시형 문구를 찾는다.
  *
- * LLM이 JSON field 대신 summary/evidence 문장에 목표가나 주문 수량을 숨길 수 있으므로, 사람이 볼 텍스트 필드도 fail-closed
- * guard 대상이다. 이 함수는 검사만 수행하며 result를 수정하지 않고 외부 side effect도 만들지 않는다.
+ * LLM이 JSON field 대신 summary/evidence/metadata에 목표가나 주문 수량을 숨길 수 있으므로, 사람이 볼 텍스트와 audit에 남을
+ * metadata도 fail-closed guard 대상이다. 이 함수는 검사만 수행하며 result를 수정하지 않고 외부 side effect도 만들지 않는다.
  */
 function collectUnsafeResultTextIssues(result: LlmRiskAssistantResult): readonly LlmRiskAssistantContractIssue[] {
   return [
     ...collectUnsafeTextIssues(result.summary, "summary"),
     ...(result.evidence ?? []).flatMap((entry, index) => collectUnsafeTextIssues(entry, `evidence.${index}`)),
+    ...(result.metadata === undefined ? [] : collectUnsafeMetadataIssues(result.metadata, "metadata")),
   ];
 }
 
@@ -203,6 +211,36 @@ function collectUnsafeTextIssues(text: string, path: string): readonly LlmRiskAs
   for (const { pattern, code, message } of unsafeResultTextPatterns) {
     pattern.lastIndex = 0;
     if (pattern.test(text)) {
+      issues.push({ path, code, message });
+    }
+  }
+
+  return issues;
+}
+
+function collectUnsafeMetadataIssues(value: unknown, path: string): readonly LlmRiskAssistantContractIssue[] {
+  if (typeof value === "string") {
+    return collectUnsafeTextIssues(value, path);
+  }
+  if (value === null || value === undefined || typeof value !== "object") {
+    return [];
+  }
+  if (Array.isArray(value)) {
+    return value.flatMap((entry, index) => collectUnsafeMetadataIssues(entry, `${path}.${index}`));
+  }
+
+  return Object.entries(value).flatMap(([key, entryValue]) => [
+    ...collectUnsafeMetadataKeyIssues(key, `${path}.${key}`),
+    ...collectUnsafeMetadataIssues(entryValue, `${path}.${key}`),
+  ]);
+}
+
+function collectUnsafeMetadataKeyIssues(key: string, path: string): readonly LlmRiskAssistantContractIssue[] {
+  const issues: LlmRiskAssistantContractIssue[] = [];
+
+  for (const { pattern, code, message } of unsafeResultMetadataKeyPatterns) {
+    pattern.lastIndex = 0;
+    if (pattern.test(key)) {
       issues.push({ path, code, message });
     }
   }

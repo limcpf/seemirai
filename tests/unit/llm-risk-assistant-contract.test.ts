@@ -135,6 +135,24 @@ describe("M10 LLM risk assistant contract", () => {
     expect(isForbiddenLlmTradeAction("BLOCK_NEW_ENTRY")).toBe(false);
   });
 
+  it("rejects order-like metadata hidden in a schema-valid result", () => {
+    expect(() =>
+      parseLlmRiskAssistantResult({
+        schema_version: LLM_RISK_ASSISTANT_SCHEMA_VERSION,
+        result_type: "live_ops_briefing_draft",
+        source_ids: ["live-ops-status-snapshot-1"],
+        summary: "운영 브리핑 초안입니다.",
+        recommended_action: "ALERT_ONLY",
+        observed_at: observedAt,
+        metadata: {
+          target_price: 100000000,
+          order_quantity: "0.1 BTC",
+          side: "BUY",
+        },
+      }),
+    ).toThrow(LlmRiskAssistantContractError);
+  });
+
   it("rejects briefing draft text that contains direct trade advice or price/quantity targets", () => {
     expect(() =>
       parseLlmRiskAssistantResult({

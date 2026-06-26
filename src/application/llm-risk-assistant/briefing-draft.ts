@@ -22,8 +22,13 @@ const unsafeDraftTextPatterns: readonly RegExp[] = [
   /\bAuthorization\s*:\s*[^\r\n,;]+/iu,
   /\bBearer\s+[A-Za-z0-9._~+/=-]+/iu,
   /\b[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{8,}\b/u,
+  /\b(?:SEEMIRAI_)?TELEGRAM_BOT_TOKEN\s*[:=]\s*(?:"[^"]*"|'[^']*'|[^\s,;}]+)/iu,
+  /\b(?:SEEMIRAI_)?(?:UPBIT_)?(?:ACCESS|SECRET)_KEY\s*[:=]\s*(?:"[^"]*"|'[^']*'|[^\s,;}]+)/iu,
+  /(?<![A-Za-z0-9_-])["']?(?:apiSecret|accessKey|secretKey|upbitAccessKey|upbitSecretKey)["']?\s*[:=]\s*(?:"[^"]*"|'[^']*'|[^\s,;&}]+)/iu,
+  /(?<![A-Za-z0-9_-])["']?(?:telegram)?botToken["']?\s*[:=]\s*(?:"[^"]*"|'[^']*'|[^\s,;&}]+)/iu,
   /(?<![A-Za-z0-9_-])["']?(?:access[_-]?token|token|secret|password|api[_-]?key|access[_-]?key|secret[_-]?key|authorization|cookie|session|jwt)["']?\s*[:=]\s*(?:"[^"]*"|'[^']*'|[^\s,;&]+)/iu,
   /\b(?:access[_-]?token|api[_-]?key|token|session|secret)[=/][^/?&#\s]+/iu,
+  /\bsk-[A-Za-z0-9_-]{8,}\b/iu,
 ];
 
 /**
@@ -295,15 +300,10 @@ function containsUnsafeDraftText(value: string): boolean {
 }
 
 function composeAttachedBriefingText(deterministicText: string, draftText: string): string {
-  const draftSection = ["", liveOpsBriefingDraftHeading, draftText].join("\n");
-  const deterministicBudget = telegramMessageMaxCharacters - draftSection.length;
+  const draftSeparator = `\n\n${liveOpsBriefingDraftHeading}\n`;
+  const deterministicBudget = telegramMessageMaxCharacters - draftSeparator.length - draftText.length;
   // LLM 초안을 붙였다고 판정한 경우에는 Telegram 한도 안에서 초안 heading과 본문이 잘리지 않도록 deterministic 영역을 먼저 줄인다.
-  return [
-    truncateText(deterministicText, deterministicBudget),
-    "",
-    liveOpsBriefingDraftHeading,
-    draftText,
-  ].join("\n");
+  return `${truncateText(deterministicText, deterministicBudget)}${draftSeparator}${draftText}`;
 }
 
 function truncateText(value: string, maxCharacters: number): string {

@@ -184,6 +184,44 @@ describe("Live Ops LLM briefing draft boundary", () => {
     expect(result.draft).toBeUndefined();
   });
 
+  it.each([
+    "apiSecret: runtime-secret 값을 확인하세요.",
+    "UPBIT_SECRET_KEY=runtime-secret 값이 echo되었습니다.",
+    "telegram_bot_token: 123456789:telegram-secret 값이 포함되었습니다.",
+    "sk-rawsecretsecret 값을 확인하세요.",
+  ])("keeps deterministic briefing when the LLM draft contains env-style secret: %s", (summary) => {
+    const snapshot = createBriefingSnapshot();
+    const deterministicText = formatLiveOpsBriefing(snapshot);
+    const request = createLiveOpsBriefingLlmRequest({
+      snapshot,
+      requestedAt: observedAt,
+      timeoutMs: 5_000,
+      maxOutputBytes: 16_000,
+    });
+
+    const result = attachLlmLiveOpsBriefingDraft({
+      deterministicText,
+      request,
+      response: createLlmProviderSuccess({
+        providerId: "codex_oauth",
+        completedAt: observedAt,
+        result: createBriefingDraftResult({
+          source_ids: [request.input.source_id],
+          summary,
+          recommended_action: "ALERT_ONLY",
+        }),
+      }),
+    });
+
+    expect(result).toMatchObject({
+      status: "deterministic_only",
+      reasonCode: "llm_live_ops_briefing_draft_unsafe",
+      skippedReason: "unsafe_draft",
+      text: deterministicText,
+    });
+    expect(result.draft).toBeUndefined();
+  });
+
   it("keeps the attached draft visible inside the Telegram message limit", () => {
     const snapshot = createBriefingSnapshot();
     const deterministicText = `Live Ops 브리핑\n${"상태 확인 ".repeat(600)}`;
@@ -203,6 +241,38 @@ describe("Live Ops LLM briefing draft boundary", () => {
         result: createBriefingDraftResult({
           source_ids: [request.input.source_id],
           summary: `LLM 초안 ${"관측 요약 ".repeat(400)}`,
+          recommended_action: "ALERT_ONLY",
+        }),
+      }),
+    });
+
+    expect(result).toMatchObject({
+      status: "attached",
+    });
+    expect(result.text.length).toBeLessThanOrEqual(4096);
+    expect(result.text).toContain("LLM 보조 초안");
+    expect(result.text).toContain("LLM 초안");
+  });
+
+  it("reserves the full separator when deterministic text is truncated for an attached draft", () => {
+    const snapshot = createBriefingSnapshot();
+    const deterministicText = "상태 확인 ".repeat(1_000);
+    const request = createLiveOpsBriefingLlmRequest({
+      snapshot,
+      requestedAt: observedAt,
+      timeoutMs: 5_000,
+      maxOutputBytes: 16_000,
+    });
+
+    const result = attachLlmLiveOpsBriefingDraft({
+      deterministicText,
+      request,
+      response: createLlmProviderSuccess({
+        providerId: "codex_oauth",
+        completedAt: observedAt,
+        result: createBriefingDraftResult({
+          source_ids: [request.input.source_id],
+          summary: `LLM 초안 ${"가".repeat(100)}`,
           recommended_action: "ALERT_ONLY",
         }),
       }),
