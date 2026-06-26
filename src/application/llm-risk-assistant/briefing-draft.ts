@@ -14,6 +14,17 @@ import type {
 import { LLM_RISK_ASSISTANT_SCHEMA_VERSION } from "./contracts.js";
 
 const liveOpsBriefingPromptMaxCharacters = 3_500;
+const telegramMessageMaxCharacters = 4_096;
+const liveOpsBriefingDraftMaxCharacters = 900;
+const liveOpsBriefingDraftHeading = "LLM 보조 초안";
+const omittedMarker = "\n[이후 생략]";
+const unsafeDraftTextPatterns: readonly RegExp[] = [
+  /\bAuthorization\s*:\s*[^\r\n,;]+/iu,
+  /\bBearer\s+[A-Za-z0-9._~+/=-]+/iu,
+  /\b[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{8,}\b/u,
+  /(?<![A-Za-z0-9_-])["']?(?:access[_-]?token|token|secret|password|api[_-]?key|access[_-]?key|secret[_-]?key|authorization|cookie|session|jwt)["']?\s*[:=]\s*(?:"[^"]*"|'[^']*'|[^\s,;&]+)/iu,
+  /\b(?:access[_-]?token|api[_-]?key|token|session|secret)[=/][^/?&#\s]+/iu,
+];
 
 /**
  * Live Ops briefing LLM request를 만들기 위한 입력이다.
@@ -68,7 +79,7 @@ export type AttachLlmLiveOpsBriefingDraftResult =
   | {
       status: "deterministic_only";
       reasonCode: string;
-      skippedReason: "provider_failed" | "provider_disabled" | "unsupported_result_type" | "source_mismatch";
+      skippedReason: "provider_failed" | "provider_disabled" | "unsupported_result_type" | "source_mismatch" | "unsafe_draft";
       deterministicText: string;
       text: string;
       draft?: undefined;
@@ -177,8 +188,17 @@ export function attachLlmLiveOpsBriefingDraft(
     );
   }
 
+  const draftText = normalizeInlineText(result.summary);
+  if (containsUnsafeDraftText(draftText)) {
+    // provider output은 prompt redaction 이후에도 untrusted 경계라 secret 후보가 보이면 Telegram 첨부를 닫는다.
+    return createDeterministicOnlyResult(
+      input.deterministicText,
+      "llm_live_ops_briefing_draft_unsafe",
+      "unsafe_draft",
+    );
+  }
   const draft: LiveOpsBriefingDraftAttachment = {
-    text: normalizeInlineText(result.summary),
+    text: truncateText(draftText, liveOpsBriefingDraftMaxCharacters),
     providerId: input.response.provider_id,
     sourceIds: [...result.source_ids],
     observedAt: result.observed_at,
@@ -190,12 +210,7 @@ export function attachLlmLiveOpsBriefingDraft(
     status: "attached",
     reasonCode: "llm_live_ops_briefing_draft_attached",
     deterministicText: input.deterministicText,
-    text: [
-      input.deterministicText,
-      "",
-      "LLM 보조 초안",
-      draft.text,
-    ].join("\n"),
+    text: composeAttachedBriefingText(input.deterministicText, draft.text),
     draft,
   };
 }
@@ -257,7 +272,7 @@ function hasExactSourceMatch(result: LlmRiskAssistantResult, sourceId: string): 
 function createDeterministicOnlyResult(
   deterministicText: string,
   reasonCode: string,
-  skippedReason: "provider_failed" | "provider_disabled" | "unsupported_result_type" | "source_mismatch",
+  skippedReason: "provider_failed" | "provider_disabled" | "unsupported_result_type" | "source_mismatch" | "unsafe_draft",
 ): AttachLlmLiveOpsBriefingDraftResult {
   return {
     status: "deterministic_only",
@@ -270,6 +285,37 @@ function createDeterministicOnlyResult(
 
 function normalizeInlineText(value: string): string {
   return value.replace(/[\r\n]+/gu, " ").replace(/[ \t]{2,}/gu, " ").trim();
+}
+
+function containsUnsafeDraftText(value: string): boolean {
+  return unsafeDraftTextPatterns.some((pattern) => {
+    pattern.lastIndex = 0;
+    return pattern.test(value);
+  });
+}
+
+function composeAttachedBriefingText(deterministicText: string, draftText: string): string {
+  const draftSection = ["", liveOpsBriefingDraftHeading, draftText].join("\n");
+  const deterministicBudget = telegramMessageMaxCharacters - draftSection.length;
+  // LLM 초안을 붙였다고 판정한 경우에는 Telegram 한도 안에서 초안 heading과 본문이 잘리지 않도록 deterministic 영역을 먼저 줄인다.
+  return [
+    truncateText(deterministicText, deterministicBudget),
+    "",
+    liveOpsBriefingDraftHeading,
+    draftText,
+  ].join("\n");
+}
+
+function truncateText(value: string, maxCharacters: number): string {
+  if (value.length <= maxCharacters) {
+    return value;
+  }
+
+  if (maxCharacters <= omittedMarker.length) {
+    return omittedMarker.slice(0, Math.max(0, maxCharacters));
+  }
+
+  return `${value.slice(0, maxCharacters - omittedMarker.length).trimEnd()}${omittedMarker}`;
 }
 
 function hashText(value: string): string {

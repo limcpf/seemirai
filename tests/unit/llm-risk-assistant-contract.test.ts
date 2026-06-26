@@ -165,6 +165,22 @@ describe("M10 LLM risk assistant contract", () => {
       summary: "주문 수량은 0.1 BTC입니다.",
       reason: "조사가 붙은 주문 수량",
     },
+    {
+      summary: "KRW-BTC는 지금 매수해야 합니다.",
+      reason: "의무형 매수 조언",
+    },
+    {
+      summary: "매수하는 것이 좋습니다.",
+      reason: "권장형 매수 조언",
+    },
+    {
+      summary: "지금 KRW-BTC를 매도해야 합니다.",
+      reason: "의무형 매도 조언",
+    },
+    {
+      summary: "청산하는 것이 좋습니다.",
+      reason: "권장형 청산 조언",
+    },
   ])("rejects particle-marked Korean unsafe briefing text: $reason", ({ summary }) => {
     expect(() =>
       parseLlmRiskAssistantResult({

@@ -26,12 +26,12 @@ const unsafeResultTextPatterns: readonly { pattern: RegExp; code: string; messag
     message: "LLM result text contains a forbidden trade action token.",
   },
   {
-    pattern: /(?:매수|진입)\s*(?:을|를)?\s*(?:하세요|하십시오|권고|추천)/iu,
+    pattern: /(?:매수|진입)\s*(?:을|를)?\s*(?:하세요|하십시오|권고|추천|해야\s*(?:합니다|한다|함)|하는\s*(?:것이|게)\s*좋)/iu,
     code: "direct_buy_advice",
     message: "LLM result text contains direct buy advice.",
   },
   {
-    pattern: /(?:매도|청산)\s*(?:을|를)?\s*(?:하세요|하십시오|권고|추천)/iu,
+    pattern: /(?:매도|청산)\s*(?:을|를)?\s*(?:하세요|하십시오|권고|추천|해야\s*(?:합니다|한다|함)|하는\s*(?:것이|게)\s*좋)/iu,
     code: "direct_sell_advice",
     message: "LLM result text contains direct sell advice.",
   },
