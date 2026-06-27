@@ -144,6 +144,29 @@ describe("Telegram inbound command runtime", () => {
     expect(text).not.toContain("- freshness: 시장 데이터 수신 확인");
   });
 
+  it("uses the status snapshot time when default /brief judges market freshness", async () => {
+    const statusProvider = new CapturingStatusProvider(createStatusSnapshot({
+      generatedAt: "2026-06-10T00:00:02.000Z",
+      marketData: {
+        connectionStatus: "connected",
+        lagMs: 1_000,
+        updatedAt: "2026-06-10T00:00:01.000Z",
+      },
+    }));
+    const briefingProvider = createTelegramInboundBriefingProvider({
+      statusProvider,
+    });
+
+    const text = await briefingProvider.getBriefing({
+      correlationId: "telegram-inbound-briefing-status-time",
+      occurredAt: now,
+    });
+
+    expect(text).toContain("- freshness: 시장 데이터 수신 확인");
+    expect(text).toContain("관측 시각: 2026-06-10T00:00:02.000Z");
+    expect(text).not.toContain("시장 데이터 heartbeat 시각이 브리핑 시각보다 미래입니다.");
+  });
+
   it("uses the default /brief provider when runtime is assembled with only statusProvider", async () => {
     const fixture = createRuntimeFixture();
 

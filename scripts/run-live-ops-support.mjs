@@ -10391,8 +10391,7 @@ function createLiveOpsCliScheduledBriefingSourceFingerprint({
     },
     marketData: {
       ready: marketData?.ready === true,
-      // heartbeat freshness는 브리핑 source지만 tick 가격만으로 P3 cooldown을 우회하지 않도록 volatile quote는 제외한다.
-      latestHeartbeatAt: marketData?.latestHeartbeatAt ?? null,
+      // heartbeat/quote 절대값은 정상 tick마다 바뀌므로 P3 cooldown key에는 안정적인 readiness 상태만 남긴다.
     },
     analysisDecision: {
       ready: analysisDecision?.ready === true,

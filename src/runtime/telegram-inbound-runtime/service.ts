@@ -137,12 +137,13 @@ export function createTelegramInboundBriefingProvider(
   return {
     async getBriefing(input) {
       const status = await options.statusProvider.getStatus();
+      const observedAt = resolveTelegramInboundBriefingStatusObservedAt(status, input.occurredAt);
       const snapshot = createLiveOpsBriefingSnapshot({
-        observedAt: input.occurredAt,
+        observedAt,
         status: status.liveOps ?? null,
         why: status.why,
         liveTradingEnabled: options.liveTradingEnabled ?? status.runtime.liveTradingEnabled,
-        market: createBriefingMarketProjectionFromControlStatus(status, input.occurredAt),
+        market: createBriefingMarketProjectionFromControlStatus(status, observedAt),
         portfolio: createBriefingPortfolioProjectionFromControlStatus(status),
         trace: {
           evidenceIds: [input.correlationId],
@@ -150,7 +151,9 @@ export function createTelegramInboundBriefingProvider(
           sourceIds: ["telegram_inbound_brief_command", "http_control_status_snapshot"],
           metadata: {
             correlationId: input.correlationId,
+            commandOccurredAt: input.occurredAt,
             statusGeneratedAt: status.generatedAt,
+            briefingObservedAt: observedAt,
           },
         },
       });
@@ -160,6 +163,27 @@ export function createTelegramInboundBriefingProvider(
       });
     },
   };
+}
+
+/**
+ * 기본 `/brief`의 freshness 기준 시각을 status snapshot 생성 시각으로 맞춘다.
+ *
+ * status provider 호출 뒤에 만들어진 safe snapshot을 재사용하므로 명령 수신 시각을 기준으로 비교하면 정상 heartbeat가 미래로
+ * 오탐될 수 있다. snapshot 생성 시각이 해석 가능할 때만 승격하고, 비정상 값은 명령 수신 시각으로 닫아 deterministic reply를
+ * 유지한다.
+ *
+ * @param status HTTP control status safe snapshot
+ * @param commandOccurredAt Telegram 명령 수신 시각
+ * @returns briefing assembler와 market freshness가 공유할 기준 시각
+ */
+function resolveTelegramInboundBriefingStatusObservedAt(
+  status: TelegramInboundControlStatusSnapshot,
+  commandOccurredAt: string,
+): string {
+  if (Number.isFinite(Date.parse(status.generatedAt))) {
+    return status.generatedAt;
+  }
+  return commandOccurredAt;
 }
 
 /**
