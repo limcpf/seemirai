@@ -4319,6 +4319,67 @@ console.log(JSON.stringify({
     expect(referencePriceOnlySummary).toMatchObject({
       ready: true,
       scheduledBriefing: {
+        status: "skipped",
+        ready: true,
+        providerDispatchAttempted: false,
+        cooldownHitCount: 1,
+      },
+    });
+    expect(scheduledFetchBodies).toHaveLength(2);
+
+    const guidanceOnlySummary = await evaluateLiveOpsCliTelegramAlert({
+      config,
+      fixtureSmoke: false,
+      liveExecution: {
+        status: "idle",
+        statusLabel: "수동 점검 대기",
+        ready: true,
+        liveOrderCapable: false,
+        attemptedOrderCount: 0,
+        submittedOrderCount: 0,
+        attemptStatus: null,
+        message: "provider는 준비됐지만 operator 확인이 필요한 HOLD 상태입니다.",
+        action: "owner chat에서 budget과 heartbeat 원인을 확인하세요.",
+      },
+      marketData: {
+        ready: true,
+        latestHeartbeatAt: "2026-06-18T14:00:01.000Z",
+        referencePrice: "101300600",
+        persisted: { tradeCount: 1, orderbookCount: 1, statusCount: 1 },
+      },
+      analysisDecision: {
+        ready: true,
+        decisionCategory: "HOLD",
+        holdCount: 1,
+        blockCount: 0,
+        orderIntentCount: 0,
+        latestDecisionAt: "2026-06-18T13:59:58.000Z",
+        message: "주문 후보가 없어 HOLD로 닫았습니다.",
+      },
+      reconcilePnlStatus: {
+        ready: true,
+        statusLabel: "private read 확인",
+        reconcileStatusLabel: "정상",
+        pnlStatusLabel: "정상",
+        openOrderCount: 0,
+        openExposureKrw: "0",
+        budgetUsedKrw: "10000",
+        realizedPnlKrw: "0",
+        unrealizedPnlKrw: "0",
+        latestReconcileAt: "2026-06-18T13:59:57.000Z",
+        latestPnlAt: "2026-06-18T13:59:56.000Z",
+        privateRead: {
+          krwAvailable: "21000",
+          balanceCurrencyCount: 2,
+        },
+      },
+      observedAt: "2026-06-18T14:00:02.000Z",
+      scheduledBriefingDispatcher,
+    });
+
+    expect(guidanceOnlySummary).toMatchObject({
+      ready: true,
+      scheduledBriefing: {
         status: "sent",
         ready: true,
         providerDispatchAttempted: true,
@@ -4326,7 +4387,7 @@ console.log(JSON.stringify({
       },
     });
     expect(scheduledFetchBodies).toHaveLength(3);
-    expect(scheduledFetchBodies[2]?.text).toContain("- 기준가: 101300600");
+    expect(scheduledFetchBodies[2]?.text).toContain("owner chat에서 budget과 heartbeat 원인을 확인하세요.");
 
     const materialSourceSummary = await evaluateLiveOpsCliTelegramAlert({
       config,

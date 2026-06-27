@@ -21,9 +21,14 @@ const NoticeUrlSchema = z.string().url().max(2_048);
 const ReasonCodeSchema = z.string().trim().min(1).max(128).regex(/^[a-z0-9_:-]+$/u);
 const unsafeResultTextPatterns: readonly { pattern: RegExp; code: string; message: string }[] = [
   {
-    pattern: /\b(?:BUY|SELL|INCREASE_POSITION)\b/iu,
+    pattern: /(?:^|[\s"'([{,])(?:recommended[_\s-]*action|action|order[_\s-]*side|side|trade[_\s-]*action)\s*(?:[:=：-]|\bis\b)?\s*(?:BUY|SELL|INCREASE_POSITION)\b/iu,
     code: "forbidden_trade_action_text",
-    message: "LLM result text contains a forbidden trade action token.",
+    message: "LLM result text contains a forbidden trade action label.",
+  },
+  {
+    pattern: /\b(?:BUY|SELL|INCREASE_POSITION)\s+(?:now|immediately|please|order|position)\b/iu,
+    code: "forbidden_trade_action_text",
+    message: "LLM result text contains direct English trade action wording.",
   },
   {
     pattern: /(?:매수|진입)\s*(?:을|를)?\s*(?:하세요|하십시오|권고|추천|해야\s*(?:합니다|한다|함)|하는\s*(?:것이|게)\s*좋)/iu,

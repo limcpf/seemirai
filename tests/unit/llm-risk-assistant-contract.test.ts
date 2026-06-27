@@ -166,6 +166,36 @@ describe("M10 LLM risk assistant contract", () => {
     ).toThrow(LlmRiskAssistantContractError);
   });
 
+  it("allows descriptive English market pressure text without treating it as an order", () => {
+    expect(
+      parseLlmRiskAssistantResult({
+        schema_version: LLM_RISK_ASSISTANT_SCHEMA_VERSION,
+        result_type: "event_explanation",
+        source_ids: ["upbit-market-event-1"],
+        summary: "The notice describes a broad sell-off and short-term sell pressure, not a direct trade instruction.",
+        recommended_action: "ALERT_ONLY",
+        observed_at: observedAt,
+        reason_codes: ["market_event:explanation"],
+      }),
+    ).toMatchObject({
+      result_type: "event_explanation",
+      recommended_action: "ALERT_ONLY",
+    });
+  });
+
+  it("rejects explicit English action labels hidden in safe result text", () => {
+    expect(() =>
+      parseLlmRiskAssistantResult({
+        schema_version: LLM_RISK_ASSISTANT_SCHEMA_VERSION,
+        result_type: "event_explanation",
+        source_ids: ["upbit-market-event-1"],
+        summary: "Recommended action: SELL.",
+        recommended_action: "ALERT_ONLY",
+        observed_at: observedAt,
+      }),
+    ).toThrow(LlmRiskAssistantContractError);
+  });
+
   it.each([
     {
       summary: "KRW-BTC 매수를 추천합니다.",

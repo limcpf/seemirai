@@ -10380,6 +10380,9 @@ function createLiveOpsCliScheduledBriefingSourceFingerprint({
     liveTradingEnabled: config.live_trading_enabled === true,
     liveExecution: {
       status: liveExecution?.status ?? null,
+      statusLabel: liveExecution?.statusLabel ?? null,
+      message: liveExecution?.message ?? null,
+      action: liveExecution?.action ?? null,
       ready: liveExecution?.ready === true,
       liveOrderCapable: liveExecution?.liveOrderCapable === true,
       attemptStatus: liveExecution?.attemptStatus ?? null,
@@ -10388,9 +10391,8 @@ function createLiveOpsCliScheduledBriefingSourceFingerprint({
     },
     marketData: {
       ready: marketData?.ready === true,
-      // cooldown fingerprint는 브리핑 본문에 노출되는 시장 관측값까지 포함해야 stale message 재사용을 막을 수 있다.
+      // heartbeat freshness는 브리핑 source지만 tick 가격만으로 P3 cooldown을 우회하지 않도록 volatile quote는 제외한다.
       latestHeartbeatAt: marketData?.latestHeartbeatAt ?? null,
-      referencePrice: marketData?.referencePrice ?? null,
     },
     analysisDecision: {
       ready: analysisDecision?.ready === true,
