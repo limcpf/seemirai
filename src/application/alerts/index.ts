@@ -459,10 +459,26 @@ export async function dispatchAlertWithCooldown(
 export async function dispatchAlertWithFailureStateTracking(input: {
   alertDispatch: AlertDispatchServiceOptions;
   request: AlertDispatchRequest;
+  /**
+   * failure 상태를 소유할 runtime 객체다.
+   *
+   * 특정 호출이 cooldown store만 좁게 override해야 할 때도 연속 provider 실패 집계와 lock은 원 runtime 객체에 남아야 한다.
+   * 지정하지 않으면 `alertDispatch` 자체가 상태 소유자다.
+   */
+  failureStateOwner?: AlertDispatchServiceOptions;
 }): Promise<AlertDispatchResult> {
-  return runWithFailureStateLock(input.alertDispatch, async () => {
+  const failureStateOwner = input.failureStateOwner ?? input.alertDispatch;
+  return runWithFailureStateLock(failureStateOwner, async () => {
+    if (failureStateOwner !== input.alertDispatch) {
+      if (failureStateOwner.failureState === undefined) {
+        delete input.alertDispatch.failureState;
+      } else {
+        input.alertDispatch.failureState = failureStateOwner.failureState;
+      }
+    }
     const result = await dispatchAlertWithCooldown(input.alertDispatch, input.request);
     // 같은 runtime 옵션 객체를 공유하는 alert 경로끼리 Telegram 장애 누적값을 직렬화해 manual review 후보 유실을 막는다.
+    failureStateOwner.failureState = result.failureEvaluation.state;
     input.alertDispatch.failureState = result.failureEvaluation.state;
     return result;
   });

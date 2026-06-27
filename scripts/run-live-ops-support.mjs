@@ -23,6 +23,8 @@ const liveOpsCliExitSubmissionLockLeaseMs = 60 * 1000;
 const liveOpsCliPreflightReconcileFreshnessMs = 30_000;
 const liveOpsCliPreflightPnlFreshnessMs = 30_000;
 const liveOpsCliPreflightPnlFutureSkewMs = 1_000;
+const liveOpsCliScheduledBriefingCooldownMs = 6 * 60 * 60_000;
+const liveOpsCliScheduledBriefingCooldowns = new Map();
 const liveOpsCliProcessOwner = createLiveOpsCliProcessOwnerSnapshot(process.pid);
 const liveOpsCliAutonomous24x7StrategyId = "live_ops_autonomous_24x7_core";
 const liveOpsWorkerLabels = {
@@ -272,7 +274,11 @@ export async function loadLiveOpsCliInputs(options) {
       fixtureSmoke: options.fixtureSmoke,
       liveExecution,
       orderIntent: productionExecutionInputs.orderIntents[0],
+      marketData,
+      analysisDecision,
+      reconcilePnlStatus,
       telegramDispatcher: productionRuntime?.telegramDispatcher,
+      scheduledBriefingDispatcher: productionRuntime?.scheduledBriefingDispatcher,
     });
 
     return {
@@ -2284,6 +2290,7 @@ export function createLiveOpsCliProductionProviders({ config, env, market, fetch
     pnlCloseoutRunner: createLiveOpsPnlCloseoutRunner({ pool, market }),
     killSwitchProvider: createLiveOpsCliDatabaseKillSwitchProvider(pool),
     telegramDispatcher: createLiveOpsCliTelegramDispatcher({ config, env, fetchImpl }),
+    scheduledBriefingDispatcher: createLiveOpsCliScheduledBriefingDispatcher({ config, env, fetchImpl }),
     async close() {
       await pool.end().catch(() => undefined);
     },
@@ -5020,7 +5027,75 @@ export function createLiveOpsCliTelegramDispatcher({ config, env, fetchImpl = fe
   };
 }
 
+export function createLiveOpsCliScheduledBriefingDispatcher({ config, env, fetchImpl = fetch }) {
+  const botToken = env.SEEMIRAI_TELEGRAM_BOT_TOKEN ?? env.TELEGRAM_BOT_TOKEN;
+  const chatId = env.SEEMIRAI_TELEGRAM_CHAT_ID ?? env.TELEGRAM_CHAT_ID;
+  if (!hasMeaningfulValue(botToken) || !hasMeaningfulValue(chatId)) {
+    return undefined;
+  }
+  const providerTimeoutMs = Number(config.telegram?.provider_timeout_ms ?? 5000);
+  return {
+    async dispatch(payload) {
+      const observedAt = payload.observedAt ?? new Date().toISOString();
+      const scheduleKey = normalizeLiveOpsCliBriefingScheduleKey(payload.scheduleKey);
+      const cooldown = reserveLiveOpsCliScheduledBriefingCooldown({
+        scheduleKey,
+        observedAt,
+      });
+      if (cooldown.cooldownHit) {
+        // daemon tick 반복이 owner chat spam으로 번지지 않도록 schedule key 단위 P3 cooldown을 provider 호출보다 먼저 적용한다.
+        return createLiveOpsCliScheduledBriefingDispatchSummary({
+          status: "skipped",
+          providerDispatchAttempted: false,
+          cooldownHitCount: 1,
+          message: "정기 Live Ops Telegram 브리핑이 cooldown/fingerprint 정책으로 생략됐습니다.",
+          action: `다음 전송 가능 시각(${cooldown.nextAllowedAt}) 이후 같은 schedule key를 다시 평가하세요.`,
+          scheduleKey,
+          briefingSourceFingerprint: payload.briefingSourceFingerprint,
+        });
+      }
+
+      const delivered = await sendLiveOpsCliTelegramText({
+        botToken,
+        chatId,
+        text: payload.briefingText,
+        providerTimeoutMs,
+        fetchImpl,
+      });
+      if (delivered) {
+        // 실패 전송은 cooldown 성공으로 기록하지 않아 provider 복구 뒤 같은 briefing을 다시 시도할 수 있게 한다.
+        recordLiveOpsCliScheduledBriefingSent({ scheduleKey, observedAt });
+      }
+
+      return createLiveOpsCliScheduledBriefingDispatchSummary({
+        status: delivered ? "sent" : "partial_failure",
+        providerDispatchAttempted: true,
+        deliveredCount: delivered ? 1 : 0,
+        failureCount: delivered ? 0 : 1,
+        message: delivered
+          ? "정기 Live Ops Telegram 브리핑 전송을 완료했습니다."
+          : "정기 Live Ops Telegram 브리핑 전송 결과를 확정하지 못했습니다.",
+        action: delivered
+          ? "owner chat 수신 시각과 briefing 추적 정보를 status/audit evidence와 대조하세요."
+          : "Telegram provider 상태를 확인하되 live ops readiness와 주문 evidence는 되돌리지 않습니다.",
+        scheduleKey,
+        briefingSourceFingerprint: payload.briefingSourceFingerprint,
+      });
+    },
+  };
+}
+
 async function sendLiveOpsCliTelegramEvent({ botToken, chatId, event, market, observedAt, providerTimeoutMs, fetchImpl }) {
+  return sendLiveOpsCliTelegramText({
+    botToken,
+    chatId,
+    text: formatLiveOpsCliTelegramEventMessage({ event, market, observedAt }),
+    providerTimeoutMs,
+    fetchImpl,
+  });
+}
+
+async function sendLiveOpsCliTelegramText({ botToken, chatId, text, providerTimeoutMs, fetchImpl }) {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), providerTimeoutMs);
   try {
@@ -5029,7 +5104,7 @@ async function sendLiveOpsCliTelegramEvent({ botToken, chatId, event, market, ob
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
         chat_id: chatId,
-        text: truncateTelegramText(formatLiveOpsCliTelegramEventMessage({ event, market, observedAt })),
+        text: truncateTelegramText(text),
         disable_web_page_preview: true,
       }),
       signal: controller.signal,
@@ -5068,8 +5143,6 @@ function formatLiveOpsCliTelegramEventKind(eventKind) {
       return "Telegram 알림 채널 준비";
     case "LIVE_ORDER_CAPABLE_STARTED":
       return "실주문 가능 경계 진입";
-    case "SCHEDULED_BRIEFING":
-      return "정기 브리핑";
     case "ORDER_SUBMITTED":
       return "주문 제출";
     case "ORDER_FILLED":
@@ -5098,6 +5171,76 @@ function truncateTelegramText(value) {
     return value;
   }
   return `${characters.slice(0, 4080).join("")}\n... [truncated]`;
+}
+
+function createLiveOpsCliScheduledBriefingDispatchSummary({
+  status,
+  providerDispatchAttempted,
+  deliveredCount = 0,
+  cooldownHitCount = 0,
+  failureCount = 0,
+  message,
+  action,
+  scheduleKey,
+  briefingSourceFingerprint,
+}) {
+  return {
+    status,
+    ready: failureCount === 0,
+    providerDispatchAttempted,
+    alertCount: 1,
+    attemptedCount: providerDispatchAttempted ? 1 : 0,
+    deliveredCount,
+    cooldownHitCount,
+    retryPlannedCount: 0,
+    failureCount,
+    statusLabel: status === "sent" ? "정기 브리핑 전송" : status === "skipped" ? "정기 브리핑 생략" : "정기 브리핑 전송 확인 필요",
+    message,
+    action,
+    trace: {
+      source: "live_ops_briefing",
+      dispatch_kind: "scheduled",
+      schedule_key: scheduleKey,
+      briefing_source_fingerprint: briefingSourceFingerprint ?? null,
+    },
+  };
+}
+
+function reserveLiveOpsCliScheduledBriefingCooldown({ scheduleKey, observedAt }) {
+  const cooldownKey = createLiveOpsCliScheduledBriefingCooldownKey(scheduleKey);
+  const observedAtMs = Date.parse(observedAt);
+  const safeObservedAtMs = Number.isFinite(observedAtMs) ? observedAtMs : Date.now();
+  const state = liveOpsCliScheduledBriefingCooldowns.get(cooldownKey);
+  if (state !== undefined && safeObservedAtMs < state.lastSentAtMs + liveOpsCliScheduledBriefingCooldownMs) {
+    return {
+      cooldownHit: true,
+      nextAllowedAt: new Date(state.lastSentAtMs + liveOpsCliScheduledBriefingCooldownMs).toISOString(),
+    };
+  }
+
+  return { cooldownHit: false, nextAllowedAt: null };
+}
+
+function recordLiveOpsCliScheduledBriefingSent({ scheduleKey, observedAt }) {
+  const cooldownKey = createLiveOpsCliScheduledBriefingCooldownKey(scheduleKey);
+  const observedAtMs = Date.parse(observedAt);
+  liveOpsCliScheduledBriefingCooldowns.set(cooldownKey, {
+    lastSentAtMs: Number.isFinite(observedAtMs) ? observedAtMs : Date.now(),
+  });
+}
+
+function createLiveOpsCliScheduledBriefingCooldownKey(scheduleKey) {
+  return `scheduled:${encodeLiveOpsCliBriefingDedupeSegment(scheduleKey)}`;
+}
+
+function normalizeLiveOpsCliBriefingScheduleKey(value) {
+  const normalized = String(value ?? "default").trim();
+  return normalized.length === 0 ? "default" : normalized;
+}
+
+function encodeLiveOpsCliBriefingDedupeSegment(value) {
+  const normalized = normalizeLiveOpsCliBriefingScheduleKey(value);
+  return `${normalized.length.toString(36)}_${Buffer.from(normalized, "utf8").toString("hex")}`;
 }
 
 function mapLiveOpsCliReconcileResult(status, mismatchCount) {
@@ -9217,30 +9360,50 @@ export async function evaluateLiveOpsCliTelegramAlert({
   fixtureSmoke,
   liveExecution,
   orderIntent,
+  marketData,
+  analysisDecision,
+  reconcilePnlStatus,
   telegramDispatcher,
+  scheduledBriefingDispatcher,
   observedAt,
   correlationId,
 }) {
   const market = config.universe?.default_market ?? "KRW-BTC";
+  const effectiveObservedAt = observedAt ?? new Date().toISOString();
+  const scheduledBriefing = await evaluateLiveOpsCliScheduledBriefing({
+    config,
+    fixtureSmoke,
+    market,
+    liveExecution,
+    marketData,
+    analysisDecision,
+    reconcilePnlStatus,
+    scheduledBriefingDispatcher,
+    observedAt: effectiveObservedAt,
+    correlationId,
+  });
 
   if (!fixtureSmoke && shouldDispatchLiveOpsCliTelegramAlert(config, liveExecution) && telegramDispatcher !== undefined) {
-    return dispatchLiveOpsCliTelegramAlertSummary({
+    return attachLiveOpsCliScheduledBriefingSummary(await dispatchLiveOpsCliTelegramAlertSummary({
       config,
       market,
       liveExecution,
       orderIntent,
       telegramDispatcher,
-      observedAt: observedAt ?? new Date().toISOString(),
+      observedAt: effectiveObservedAt,
       correlationId,
-    });
+    }), scheduledBriefing);
   }
 
   if (!fixtureSmoke && shouldRequireLiveOpsCliTelegramBoundary(liveExecution)) {
-    return createLiveOpsCliTelegramBoundaryMissingSummary({ market, liveExecution });
+    return attachLiveOpsCliScheduledBriefingSummary(
+      createLiveOpsCliTelegramBoundaryMissingSummary({ market, liveExecution }),
+      scheduledBriefing,
+    );
   }
 
   if (!fixtureSmoke && liveExecution.ready === true && liveExecution.liveOrderCapable !== true) {
-    return {
+    return attachLiveOpsCliScheduledBriefingSummary({
       status: "idle",
       ready: true,
       market,
@@ -9259,11 +9422,11 @@ export async function evaluateLiveOpsCliTelegramAlert({
           message: "실주문 제출 전에는 trade alert provider를 열지 않습니다.",
         },
       ],
-    };
+    }, scheduledBriefing);
   }
 
   if (!fixtureSmoke || liveExecution.ready !== true) {
-    return {
+    return attachLiveOpsCliScheduledBriefingSummary({
       status: "pending",
       ready: false,
       market,
@@ -9282,11 +9445,11 @@ export async function evaluateLiveOpsCliTelegramAlert({
           message: "Telegram alert mapper가 후속 lifecycle에서 시작됩니다.",
         },
       ],
-    };
+    }, scheduledBriefing);
   }
 
   const lifecycleAlertCount = config.telegram?.startup_alert_enabled === true ? 1 : 0;
-  return {
+  return attachLiveOpsCliScheduledBriefingSummary({
     status: "planned",
     ready: true,
     market,
@@ -9311,13 +9474,88 @@ export async function evaluateLiveOpsCliTelegramAlert({
         message: "startup lifecycle alert 후보를 만들 수 있습니다.",
       },
     ],
+  }, scheduledBriefing);
+}
+
+async function evaluateLiveOpsCliScheduledBriefing({
+  config,
+  fixtureSmoke,
+  market,
+  liveExecution,
+  marketData,
+  analysisDecision,
+  reconcilePnlStatus,
+  scheduledBriefingDispatcher,
+  observedAt,
+  correlationId,
+}) {
+  if (fixtureSmoke || !shouldDispatchLiveOpsCliScheduledBriefing(config)) {
+    return undefined;
+  }
+
+  const scheduleKey = normalizeLiveOpsCliBriefingScheduleKey(config.telegram?.briefing?.schedule_key);
+  const briefingSourceFingerprint = createLiveOpsCliScheduledBriefingSourceFingerprint({
+    config,
+    liveExecution,
+    marketData,
+    analysisDecision,
+    reconcilePnlStatus,
+  });
+  const briefingText = createLiveOpsCliScheduledBriefingText({
+    config,
+    market,
+    liveExecution,
+    marketData,
+    analysisDecision,
+    reconcilePnlStatus,
+    observedAt,
+    scheduleKey,
+    briefingSourceFingerprint,
+    correlationId,
+  });
+
+  if (scheduledBriefingDispatcher === undefined) {
+    // scheduled briefing은 선택 알림이므로 dispatcher 누락을 live ops readiness 차단으로 승격하지 않고 별도 summary에만 남긴다.
+    return createLiveOpsCliScheduledBriefingDispatchSummary({
+      status: "skipped",
+      providerDispatchAttempted: false,
+      message: "정기 Live Ops Telegram 브리핑 dispatch port가 없어 provider 호출을 생략했습니다.",
+      action: "bot token, chat id, Telegram dispatcher 조립 상태를 확인하세요.",
+      scheduleKey,
+      briefingSourceFingerprint,
+    });
+  }
+
+  return normalizeLiveOpsCliScheduledBriefingDispatchResult(await callLiveOpsCliScheduledBriefingDispatcher(
+    scheduledBriefingDispatcher,
+    {
+      market,
+      observedAt,
+      scheduleKey,
+      briefingText,
+      briefingSourceFingerprint,
+      correlationId,
+      liveExecution,
+    },
+  ), {
+    scheduleKey,
+    briefingSourceFingerprint,
+  });
+}
+
+function attachLiveOpsCliScheduledBriefingSummary(summary, scheduledBriefing) {
+  if (scheduledBriefing === undefined) {
+    return summary;
+  }
+  return {
+    ...summary,
+    scheduledBriefing,
   };
 }
 
 function shouldDispatchLiveOpsCliTelegramAlert(config, liveExecution) {
   return (
     shouldDispatchLiveOpsCliTelegramStartupAlert(config, liveExecution) ||
-    shouldDispatchLiveOpsCliScheduledBriefing(config) ||
     shouldRequireLiveOpsCliTelegramBoundary(liveExecution)
   );
 }
@@ -9524,6 +9762,205 @@ function createLiveOpsCliTelegramFailureSummary({ market, liveExecution, events,
   };
 }
 
+async function callLiveOpsCliScheduledBriefingDispatcher(dispatcher, payload) {
+  if (typeof dispatcher === "function") {
+    return dispatcher(payload);
+  }
+  if (dispatcher !== undefined && dispatcher !== null && typeof dispatcher.dispatchScheduledBriefing === "function") {
+    return dispatcher.dispatchScheduledBriefing(payload);
+  }
+  if (dispatcher !== undefined && dispatcher !== null && typeof dispatcher.dispatch === "function") {
+    return dispatcher.dispatch(payload);
+  }
+  throw new Error("LiveOpsCliScheduledBriefingDispatcherMissing");
+}
+
+function normalizeLiveOpsCliScheduledBriefingDispatchResult(result, { scheduleKey, briefingSourceFingerprint }) {
+  if (result === undefined || result === null) {
+    return createLiveOpsCliScheduledBriefingDispatchSummary({
+      status: "partial_failure",
+      providerDispatchAttempted: true,
+      failureCount: 1,
+      message: "정기 Live Ops Telegram 브리핑 dispatch 결과가 비어 있어 전송 성공으로 확정하지 않았습니다.",
+      action: "scheduled briefing dispatcher 반환값과 Telegram provider 상태를 확인하세요.",
+      scheduleKey,
+      briefingSourceFingerprint,
+    });
+  }
+
+  const attemptedCount = Number.isFinite(Number(result.attemptedCount)) ? Number(result.attemptedCount) : 1;
+  const deliveredCount = Number.isFinite(Number(result.deliveredCount)) ? Number(result.deliveredCount) : 0;
+  const cooldownHitCount = Number.isFinite(Number(result.cooldownHitCount)) ? Number(result.cooldownHitCount) : 0;
+  const retryPlannedCount = Number.isFinite(Number(result.retryPlannedCount)) ? Number(result.retryPlannedCount) : 0;
+  const failureCount = Number.isFinite(Number(result.failureCount))
+    ? Number(result.failureCount)
+    : Math.max(0, attemptedCount - deliveredCount - cooldownHitCount);
+  const status = typeof result.status === "string"
+    ? result.status
+    : (failureCount > 0 ? "partial_failure" : (cooldownHitCount > 0 ? "skipped" : "sent"));
+
+  return {
+    status,
+    ready: result.ready === undefined ? failureCount === 0 : result.ready === true,
+    providerDispatchAttempted: result.providerDispatchAttempted === undefined ? attemptedCount > 0 : result.providerDispatchAttempted === true,
+    alertCount: Number.isFinite(Number(result.alertCount)) ? Number(result.alertCount) : 1,
+    attemptedCount,
+    deliveredCount,
+    cooldownHitCount,
+    retryPlannedCount,
+    failureCount,
+    statusLabel: result.statusLabel ?? (status === "sent" ? "정기 브리핑 전송" : status === "skipped" ? "정기 브리핑 생략" : "정기 브리핑 전송 확인 필요"),
+    message: result.message ?? (status === "sent"
+      ? "정기 Live Ops Telegram 브리핑 전송을 완료했습니다."
+      : status === "skipped"
+        ? "정기 Live Ops Telegram 브리핑이 cooldown/fingerprint 정책으로 생략됐습니다."
+        : "정기 Live Ops Telegram 브리핑 전송 결과를 확정하지 못했습니다."),
+    action: result.action ?? (status === "partial_failure"
+      ? "Telegram provider 상태를 확인하되 live ops readiness와 주문 evidence는 되돌리지 않습니다."
+      : "전송 결과와 cooldown 상태를 status surface에서 확인하세요."),
+    trace: {
+      source: "live_ops_briefing",
+      dispatch_kind: "scheduled",
+      schedule_key: scheduleKey,
+      briefing_source_fingerprint: briefingSourceFingerprint,
+      ...(result.trace ?? {}),
+    },
+  };
+}
+
+function createLiveOpsCliScheduledBriefingText({
+  config,
+  market,
+  liveExecution,
+  marketData,
+  analysisDecision,
+  reconcilePnlStatus,
+  observedAt,
+  scheduleKey,
+  briefingSourceFingerprint,
+  correlationId,
+}) {
+  const statusLabel = liveExecution.statusLabel ?? (liveExecution.ready === true ? "후보 없음" : "확인 필요");
+  const cause = liveExecution.message ?? "Live Ops 실행 summary를 확인하세요.";
+  const impact = liveExecution.liveOrderCapable === true
+    ? "실주문 가능 경계가 열려 있어 주문 후보와 예산을 계속 감시해야 합니다."
+    : "현재 tick에서는 신규 broker 제출이 확정되지 않았습니다.";
+  const action = liveExecution.action ?? (liveExecution.ready === true
+    ? "다음 tick에서 market data와 decision evidence를 계속 대조하세요."
+    : "차단된 readiness 항목을 먼저 복구하세요.");
+  const buyCondition = formatLiveOpsCliBriefingDecisionCondition(analysisDecision, "BUY");
+  const sellCondition = formatLiveOpsCliBriefingDecisionCondition(analysisDecision, "SELL");
+
+  return [
+    "Live Ops 브리핑",
+    `상태: ${statusLabel}`,
+    `원인: ${cause}`,
+    `영향: ${impact}`,
+    `필요 조치: ${action}`,
+    "",
+    "실행 상태:",
+    `- 실거래 활성화: ${config.live_trading_enabled === true ? "예" : "아니오"}`,
+    `- live armed: ${config.live_trading_enabled === true && config.paper_no_key !== true ? "예" : "아니오"}`,
+    `- 실주문 가능: ${liveExecution.liveOrderCapable === true ? "예" : "아니오"}`,
+    `- 실행 결과: ${liveExecution.status ?? "관측 없음"}`,
+    "",
+    "매수 조건:",
+    `- ${buyCondition}`,
+    "",
+    "매도 조건:",
+    `- ${sellCondition}`,
+    "",
+    "Wallet/Cash/Coin:",
+    `- KRW 사용 가능: ${reconcilePnlStatus?.privateRead?.krwAvailable ?? "관측 없음"}`,
+    `- 잔고 currency 수: ${reconcilePnlStatus?.privateRead?.balanceCurrencyCount ?? "관측 없음"}`,
+    `- 미체결 주문: ${reconcilePnlStatus?.openOrderCount ?? "관측 없음"}`,
+    "",
+    "PnL/노출:",
+    `- 실현 PnL: ${reconcilePnlStatus?.realizedPnlKrw ?? "관측 없음"} KRW`,
+    `- 미실현 PnL: ${reconcilePnlStatus?.unrealizedPnlKrw ?? "관측 없음"} KRW`,
+    `- open exposure: ${reconcilePnlStatus?.openExposureKrw ?? "관측 없음"} KRW`,
+    `- budget used: ${reconcilePnlStatus?.budgetUsedKrw ?? "관측 없음"} KRW`,
+    "",
+    "시황:",
+    `- 마켓: ${market}`,
+    `- 기준가: ${marketData?.referencePrice ?? "관측 없음"}`,
+    `- 최신 heartbeat: ${marketData?.latestHeartbeatAt ?? "관측 없음"}`,
+    "",
+    "최근 주문/차단:",
+    `- decision: ${analysisDecision?.decisionCategory ?? "관측 없음"}`,
+    `- order intents: ${analysisDecision?.orderIntentCount ?? "관측 없음"}`,
+    `- attempted orders: ${liveExecution.attemptedOrderCount ?? "관측 없음"}`,
+    `- submitted orders: ${liveExecution.submittedOrderCount ?? "관측 없음"}`,
+    "",
+    "추적 정보:",
+    `- schedule_key: ${scheduleKey}`,
+    `- briefing_source_fingerprint: ${briefingSourceFingerprint}`,
+    `- observed_at: ${observedAt}`,
+    ...(correlationId === undefined ? [] : [`- correlation_id: ${correlationId}`]),
+  ].join("\n");
+}
+
+function formatLiveOpsCliBriefingDecisionCondition(analysisDecision, side) {
+  if (analysisDecision === undefined || analysisDecision === null) {
+    return "decision source 관측이 없어 조건 충족 여부를 확정하지 않습니다.";
+  }
+  const orderIntentCount = Number(analysisDecision.orderIntentCount ?? 0);
+  if (orderIntentCount > 0) {
+    return `${side} 후보 ${orderIntentCount}건이 decision summary에 남아 있습니다. broker 제출 여부는 live execution evidence를 기준으로 확인하세요.`;
+  }
+  if (Number(analysisDecision.blockCount ?? 0) > 0) {
+    return "차단 조건이 있어 신규 주문 후보를 만들지 않았습니다.";
+  }
+  if (Number(analysisDecision.holdCount ?? 0) > 0 || analysisDecision.decisionCategory === "HOLD") {
+    return "HOLD 판단으로 신규 주문 후보를 만들지 않았습니다.";
+  }
+  return analysisDecision.message ?? "주문 후보 조건이 충족되지 않았습니다.";
+}
+
+function createLiveOpsCliScheduledBriefingSourceFingerprint({
+  config,
+  liveExecution,
+  marketData,
+  analysisDecision,
+  reconcilePnlStatus,
+}) {
+  const source = {
+    mode: config.mode ?? null,
+    market: config.universe?.default_market ?? config.market ?? null,
+    liveTradingEnabled: config.live_trading_enabled === true,
+    liveExecution: {
+      status: liveExecution?.status ?? null,
+      ready: liveExecution?.ready === true,
+      liveOrderCapable: liveExecution?.liveOrderCapable === true,
+      attemptStatus: liveExecution?.attemptStatus ?? null,
+      attemptedOrderCount: liveExecution?.attemptedOrderCount ?? null,
+      submittedOrderCount: liveExecution?.submittedOrderCount ?? null,
+    },
+    marketData: {
+      ready: marketData?.ready === true,
+      referencePrice: marketData?.referencePrice ?? null,
+    },
+    analysisDecision: {
+      ready: analysisDecision?.ready === true,
+      decisionCategory: analysisDecision?.decisionCategory ?? null,
+      orderIntentCount: analysisDecision?.orderIntentCount ?? null,
+      holdCount: analysisDecision?.holdCount ?? null,
+      blockCount: analysisDecision?.blockCount ?? null,
+    },
+    reconcilePnlStatus: {
+      ready: reconcilePnlStatus?.ready === true,
+      reconcileStatus: reconcilePnlStatus?.reconcileStatus ?? null,
+      pnlStatus: reconcilePnlStatus?.pnlStatus ?? null,
+      openOrderCount: reconcilePnlStatus?.openOrderCount ?? null,
+      openExposureKrw: reconcilePnlStatus?.openExposureKrw ?? null,
+      budgetUsedKrw: reconcilePnlStatus?.budgetUsedKrw ?? null,
+      realizedPnlKrw: reconcilePnlStatus?.realizedPnlKrw ?? null,
+      unrealizedPnlKrw: reconcilePnlStatus?.unrealizedPnlKrw ?? null,
+    },
+  };
+  return `sha256:${createHash("sha256").update(JSON.stringify(source)).digest("hex")}`;
+}
+
 function createLiveOpsCliTelegramEvents({ config, market, liveExecution, orderIntent, observedAt, correlationId }) {
   const events = [];
   if (config.telegram?.startup_alert_enabled === true) {
@@ -9558,40 +9995,7 @@ function createLiveOpsCliTelegramEvents({ config, market, liveExecution, orderIn
     });
     events.push(...tradeEvents);
   }
-  if (shouldDispatchLiveOpsCliScheduledBriefing(config)) {
-    // scheduled briefing은 명시 opt-in 설정이 있을 때만 기존 owner chat dispatch 경계로 내려간다.
-    events.push(createLiveOpsCliScheduledBriefingEvent({
-      config,
-      market,
-      liveExecution,
-      observedAt,
-      correlationId,
-    }));
-  }
   return events;
-}
-
-function createLiveOpsCliScheduledBriefingEvent({ config, market, liveExecution, observedAt, correlationId }) {
-  const scheduleKey = hasMeaningfulValue(config.telegram?.briefing?.schedule_key)
-    ? String(config.telegram.briefing.schedule_key).trim()
-    : "default";
-  return createLiveOpsCliTelegramBaseEvent({
-    eventKind: "SCHEDULED_BRIEFING",
-    market,
-    liveExecution,
-    observedAt,
-    correlationId,
-    evidenceId: createLiveOpsCliEvidenceId("scheduled-briefing", `${scheduleKey}:${observedAt}:${liveExecution.status}`),
-    safeSummary: [
-      "Live Ops 정기 브리핑",
-      `상태: ${liveExecution.status ?? "관측 없음"}`,
-      `원인: ${liveExecution.message ?? "live ops summary를 확인하세요."}`,
-    ].join("\n"),
-    safeDetails: {
-      dispatch_kind: "scheduled",
-      schedule_key: scheduleKey,
-    },
-  });
 }
 
 function createLiveOpsCliTradeTelegramEvents({ market, liveExecution, orderIntent, observedAt, correlationId }) {
@@ -9774,7 +10178,6 @@ function isLiveOpsCliLifecycleAlert(eventKind) {
     "RESTART_DETECTED",
     "RECOVERY_COMPLETED",
     "TELEGRAM_PROVIDER_FAILURE_SUSTAINED",
-    "SCHEDULED_BRIEFING",
   ].includes(eventKind);
 }
 

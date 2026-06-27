@@ -9,6 +9,7 @@ import type {
   AlertDispatchRequest,
   AlertDispatchResult,
   AlertDispatchServiceOptions,
+  AlertCooldownStore,
   LiveOpsAlertEventKind,
   LiveOpsAlertInput,
 } from "../../application/index.js";
@@ -215,6 +216,13 @@ export interface ScheduledLiveOpsTelegramBriefingPlan {
 export interface DispatchScheduledLiveOpsTelegramBriefingInput {
   readonly plan: ScheduledLiveOpsTelegramBriefingPlan;
   readonly alertDispatch: AlertDispatchServiceOptions;
+  /**
+   * scheduled briefing 전용 low-priority cooldown 저장소다.
+   *
+   * 일반 P2/P3 lifecycle 알림은 process-local cooldown 정책을 유지해야 하므로, 정기 브리핑처럼 재시작/다중 daemon 중복을
+   * 따로 막아야 하는 호출만 이 override로 DB-backed store를 사용한다.
+   */
+  readonly cooldownStore?: AlertCooldownStore;
 }
 
 /**
@@ -473,10 +481,17 @@ export async function dispatchScheduledLiveOpsTelegramBriefing(
 
   for (const request of input.plan.requests) {
     try {
+      const alertDispatch = input.cooldownStore === undefined
+        ? input.alertDispatch
+        : {
+            ...input.alertDispatch,
+            memoryCooldownStore: input.cooldownStore,
+          };
       // scheduled briefing도 lifecycle/trade alert와 같은 lock을 타야 동시 Telegram 장애 집계가 유실되지 않는다.
       const result = await dispatchAlertWithFailureStateTracking({
-        alertDispatch: input.alertDispatch,
+        alertDispatch,
         request,
+        failureStateOwner: input.alertDispatch,
       });
       results.push(result);
     } catch {

@@ -1,4 +1,5 @@
 import type {
+  AlertCooldownStore,
   KillSwitchAlertDispatchOptions,
   KillSwitchControlProvider,
 } from "../application/index.js";
@@ -118,8 +119,6 @@ export function createRuntimeAlertDispatchOptions(
     runMode,
     notifier: createTelegramNotifier(notificationConfig.telegram),
     durableCooldownStore: cooldownStore,
-    // scheduled briefing은 P3이지만 재시작/다중 daemon에서도 같은 fingerprint를 막아야 하므로 runtime 조립에서는 DB-backed store를 공유한다.
-    memoryCooldownStore: cooldownStore,
     retryJobQueue: createPostgresNotificationRetryJobQueue(options.database),
     auditLog: new PostgresAuditLogRepository(options.database),
     ...(options.clock === undefined ? {} : { clock: options.clock }),
@@ -132,6 +131,7 @@ export function createRuntimeAlertDispatchOptions(
     environment,
     runMode,
     alertDispatch: runtimeAlertDispatch,
+    cooldownStore,
   });
   return runtimeAlertDispatch as RuntimeAlertDispatchOptions;
 }
@@ -141,6 +141,7 @@ function createRuntimeScheduledTelegramBriefingRuntime(input: {
   environment: string;
   runMode: string;
   alertDispatch: KillSwitchAlertDispatchOptions;
+  cooldownStore: AlertCooldownStore;
 }): RuntimeScheduledTelegramBriefingRuntime {
   const plan = (planInput: RuntimeScheduledTelegramBriefingPlanInput): ScheduledLiveOpsTelegramBriefingPlan =>
     planScheduledLiveOpsTelegramBriefing({
@@ -160,6 +161,7 @@ function createRuntimeScheduledTelegramBriefingRuntime(input: {
       return dispatchScheduledLiveOpsTelegramBriefing({
         plan: plan(dispatchInput),
         alertDispatch: input.alertDispatch,
+        cooldownStore: input.cooldownStore,
       });
     },
   };

@@ -41,7 +41,7 @@ describe("notification runtime assembly", () => {
       scheduledEnabled: true,
       scheduleKey: "ops:hourly",
     });
-    expect(runtime?.memoryCooldownStore).toBe(runtime?.durableCooldownStore);
+    expect(runtime?.memoryCooldownStore).toBeUndefined();
     expect(plan).toMatchObject({
       status: "ready",
       ready: true,
