@@ -189,6 +189,7 @@ function createDecisions(
   const latestEntry = selectLatestMarketItem(entryItems);
   const latestSell = selectLatestDecisionItem(sellItems);
   const whyBlockReason = formatWhyBlockReason(why);
+  const statusLatestDecisionFallback = createStatusLatestDecisionFallback(status, why);
 
   return {
     latestCandidate: status === null
@@ -196,12 +197,10 @@ function createDecisions(
       : formatObservedFact(status.latestCandidate),
     latestEntryDecision: formatWhySectionUnavailable(why?.markets)
       ?? (latestEntry === null
-      ? why === null && status !== null
-        ? formatObservedFact(status.latestDecision)
-        : unavailableText
+      ? statusLatestDecisionFallback?.latestEntryDecision ?? unavailableText
       : formatMarketDecisionItem(latestEntry)),
     latestExitDecision: latestSell === null
-      ? formatWhySectionUnavailable(why?.strategies) ?? unavailableText
+      ? formatWhySectionUnavailable(why?.strategies) ?? statusLatestDecisionFallback?.latestExitDecision ?? unavailableText
       : formatDecisionItem(latestSell),
     buyConditions: entryItems.map((item) => `${item.market}: ${item.statusLabel}`),
     sellConditions: sellItems.map((item) => `${item.label}: ${item.statusLabel}`),
@@ -211,6 +210,39 @@ function createDecisions(
     blockReason: formatRiskBlockReason(status)
       ?? whyBlockReason
       ?? (why === null ? "decision ledger why summary source가 아직 briefing assembler에 연결되지 않았습니다." : null),
+  };
+}
+
+/**
+ * decision ledger why summary가 없을 때 status latest decision을 임시 fallback으로 분류한다.
+ *
+ * status summary의 latest decision은 entry/exit 전용 필드가 아니라 마지막 decision 관측값이다. trace가 SELL/EXIT 방향을 담고
+ * 있으면 entry 칸에 올리지 않고 exit fallback으로만 노출해 `/brief`가 최근 청산 판단을 신규 진입 판단처럼 보이지 않게 한다.
+ *
+ * @param status live ops status summary 관측값
+ * @param why decision ledger why summary 관측값
+ * @returns why 결측 시에만 사용할 entry/exit fallback 문구
+ */
+function createStatusLatestDecisionFallback(
+  status: LiveOpsStatusSummary | null,
+  why: WhySummary | null,
+): { latestEntryDecision: string | null; latestExitDecision: string | null } | null {
+  if (status === null || why !== null) {
+    return null;
+  }
+
+  const formattedDecision = formatObservedFact(status.latestDecision);
+  if (isExitDecisionTrace(status.latestDecision.trace)) {
+    // SELL/EXIT trace는 신규 진입 fallback과 섞이면 운영자가 반대 방향 판단으로 오인할 수 있어 exit 영역에만 둔다.
+    return {
+      latestEntryDecision: null,
+      latestExitDecision: formattedDecision,
+    };
+  }
+
+  return {
+    latestEntryDecision: formattedDecision,
+    latestExitDecision: null,
   };
 }
 

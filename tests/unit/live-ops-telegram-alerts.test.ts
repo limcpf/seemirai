@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   createAlertFingerprint,
   createInMemoryAlertCooldownStore,
+  dispatchLiveOpsAlert,
 } from "../../src/application/index.js";
 import type {
   AlertNotification,
@@ -572,6 +573,82 @@ describe("scheduled Live Ops Telegram briefing dispatch", () => {
     expect(createAlertFingerprint(colonSegment.requests[0]!)).not.toBe(
       createAlertFingerprint(underscoreSegment.requests[0]!),
     );
+  });
+
+  it("does not hold priority alert failure-state lock while scheduled briefing provider is pending", async () => {
+    const plan = planScheduledLiveOpsTelegramBriefing(createScheduledBriefingPlanInput());
+    const cooldownStore = createInMemoryAlertCooldownStore();
+    let resolveScheduledProviderEntered!: () => void;
+    let resolvePriorityProviderEntered!: () => void;
+    let releaseScheduledProvider!: (result: NotificationResult) => void;
+    const scheduledProviderEntered = new Promise<void>((resolve) => {
+      resolveScheduledProviderEntered = resolve;
+    });
+    const priorityProviderEntered = new Promise<void>((resolve) => {
+      resolvePriorityProviderEntered = resolve;
+    });
+    const scheduledProviderGate = new Promise<NotificationResult>((resolve) => {
+      releaseScheduledProvider = resolve;
+    });
+    const notifier: NotifierPort = {
+      async sendAlert(notification) {
+        if (notification.title === "Live Ops 정기 브리핑") {
+          resolveScheduledProviderEntered();
+          return scheduledProviderGate;
+        }
+        resolvePriorityProviderEntered();
+        return { delivered: true, providerMessageId: "priority-alert-message" };
+      },
+      async sendDailyReport() {
+        return { delivered: true };
+      },
+    };
+    const alertDispatch = {
+      notifier,
+      durableCooldownStore: cooldownStore,
+      memoryCooldownStore: cooldownStore,
+      clock: () => new Date(observedAt),
+    };
+
+    const scheduledPromise = dispatchScheduledLiveOpsTelegramBriefing({
+      plan,
+      alertDispatch,
+      cooldownStore,
+    });
+    await scheduledProviderEntered;
+
+    const priorityPromise = dispatchLiveOpsAlert({
+      alertDispatch,
+      event: {
+        environment: "prod",
+        runMode: "live_autonomous_small_budget",
+        eventKind: "KILL_SWITCH_STOP",
+        occurredAt: observedAt,
+        correlationId: "corr-priority-alert",
+        safeSummary: "Kill switch 때문에 신규 주문을 즉시 차단했습니다.",
+      },
+    });
+    const priorityStartedBeforeScheduledFinished = await Promise.race([
+      priorityProviderEntered.then(() => true),
+      new Promise<false>((resolve) => {
+        setTimeout(() => resolve(false), 0);
+      }),
+    ]);
+
+    releaseScheduledProvider({ delivered: true, providerMessageId: "scheduled-briefing-message" });
+    const [scheduledResult, priorityResult] = await Promise.all([scheduledPromise, priorityPromise]);
+
+    expect(priorityStartedBeforeScheduledFinished).toBe(true);
+    expect(scheduledResult).toMatchObject({
+      status: "sent",
+      deliveredCount: 1,
+    });
+    expect(priorityResult).toMatchObject({
+      notification: {
+        delivered: true,
+        providerMessageId: "priority-alert-message",
+      },
+    });
   });
 
   it("provider 실패 응답은 cooldown skip이 아니라 partial failure로 요약한다", async () => {

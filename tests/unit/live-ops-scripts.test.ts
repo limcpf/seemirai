@@ -4584,6 +4584,53 @@ console.log(JSON.stringify({
     expect(envDisabledSummary).not.toHaveProperty("scheduledBriefing");
     expect(scheduledPayloads.map((payload) => payload.scheduleKey)).toEqual(["env-scheduled-briefing"]);
 
+    const invalidEnvSummary = await evaluateLiveOpsCliTelegramAlert({
+      config: {
+        ...config,
+        telegram: {
+          ...config.telegram,
+          briefing: {
+            scheduled_enabled: true,
+            schedule_key: "json-enabled-after-invalid-env",
+          },
+        },
+      },
+      env: {
+        SEEMIRAI_TELEGRAM_BRIEFING_SCHEDULED_ENABLED: "fales",
+        SEEMIRAI_TELEGRAM_BRIEFING_SCHEDULE_KEY: "invalid-env-briefing",
+      },
+      fixtureSmoke: false,
+      liveExecution,
+      scheduledBriefingDispatcher: {
+        async dispatch(payload: { scheduleKey: string }) {
+          scheduledPayloads.push(payload);
+          return {
+            status: "sent",
+            ready: true,
+            providerDispatchAttempted: true,
+            alertCount: 1,
+            attemptedCount: 1,
+            deliveredCount: 1,
+            cooldownHitCount: 0,
+            retryPlannedCount: 0,
+            failureCount: 0,
+          };
+        },
+      },
+    });
+
+    expect(invalidEnvSummary).toMatchObject({
+      scheduledBriefing: {
+        status: "manual_review_required",
+        ready: false,
+        providerDispatchAttempted: false,
+        attemptedCount: 0,
+        failureCount: 1,
+        message: expect.stringContaining("SEEMIRAI_TELEGRAM_BRIEFING_SCHEDULED_ENABLED"),
+      },
+    });
+    expect(scheduledPayloads.map((payload) => payload.scheduleKey)).toEqual(["env-scheduled-briefing"]);
+
     let releaseScheduled!: (error: Error) => void;
     const scheduledGate = new Promise<never>((_resolve, reject) => {
       releaseScheduled = reject;

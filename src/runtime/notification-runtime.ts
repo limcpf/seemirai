@@ -1,4 +1,5 @@
 import type {
+  AlertDispatchServiceOptions,
   AlertCooldownStore,
   KillSwitchAlertDispatchOptions,
   KillSwitchControlProvider,
@@ -125,7 +126,7 @@ export function createRuntimeAlertDispatchOptions(
   };
   const briefingConfig = loadRuntimeTelegramBriefingConfig(options.runtimeConfig, options.env);
 
-  // scheduled briefing도 같은 객체를 캡처해야 failureState 누적과 failure-state lock이 kill-switch/lifecycle alert와 갈라지지 않는다.
+  // P3 scheduled briefing 지연이 P0/P1 control alert를 막지 않도록 failure state owner를 runtime 조립 시점에 분리한다.
   runtimeAlertDispatch.scheduledTelegramBriefing = createRuntimeScheduledTelegramBriefingRuntime({
     config: briefingConfig,
     environment,
@@ -143,6 +144,10 @@ function createRuntimeScheduledTelegramBriefingRuntime(input: {
   alertDispatch: KillSwitchAlertDispatchOptions;
   cooldownStore: AlertCooldownStore;
 }): RuntimeScheduledTelegramBriefingRuntime {
+  const scheduledFailureStateOwner: AlertDispatchServiceOptions = {
+    ...input.alertDispatch,
+    memoryCooldownStore: input.cooldownStore,
+  };
   const plan = (planInput: RuntimeScheduledTelegramBriefingPlanInput): ScheduledLiveOpsTelegramBriefingPlan =>
     planScheduledLiveOpsTelegramBriefing({
       config: input.config,
@@ -162,6 +167,7 @@ function createRuntimeScheduledTelegramBriefingRuntime(input: {
         plan: plan(dispatchInput),
         alertDispatch: input.alertDispatch,
         cooldownStore: input.cooldownStore,
+        failureStateOwner: scheduledFailureStateOwner,
       });
     },
   };

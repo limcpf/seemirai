@@ -383,6 +383,32 @@ describe("live ops briefing assembler", () => {
     expect(snapshot.decisions.buyConditions).toEqual([]);
   });
 
+  it("routes status latest SELL decision to exit fallback when why summary is unavailable", () => {
+    const snapshot = createLiveOpsBriefingSnapshot({
+      observedAt,
+      status: createLiveOpsStatusSummary(liveOpsInput({
+        latestDecision: {
+          statusLabel: "매도 판단",
+          message: "최근 frame은 보유 포지션 청산을 승인했습니다.",
+          observedAt,
+          action: null,
+          trace: {
+            source: "decision_ledger",
+            positionEffect: "EXIT",
+            decisionSide: "SELL",
+          },
+        },
+      })),
+      why: null,
+    });
+
+    expect(snapshot.decisions.latestEntryDecision).toBe("관측 없음");
+    expect(snapshot.decisions.latestExitDecision).toContain("매도 판단");
+    expect(snapshot.decisions.latestExitDecision).toContain("보유 포지션 청산");
+    expect(snapshot.decisions.buyConditions).toEqual([]);
+    expect(snapshot.decisions.sellConditions).toEqual([]);
+  });
+
   it("does not put strategy-backed market HOLD items into entry conditions without direction evidence", () => {
     const snapshot = createLiveOpsBriefingSnapshot({
       observedAt,

@@ -217,6 +217,14 @@ export interface DispatchScheduledLiveOpsTelegramBriefingInput {
   readonly plan: ScheduledLiveOpsTelegramBriefingPlan;
   readonly alertDispatch: AlertDispatchServiceOptions;
   /**
+   * 정기 브리핑 전용 notification failure 누적 소유자다.
+   *
+   * scheduled briefing은 P3 low-priority provider 호출이므로 kill-switch/lifecycle/trade 알림과 같은 lock을 잡지 않아야 한다.
+   * runtime 조립 경계가 이 값을 넘기면 브리핑 실패만 별도 누적하고, 생략하면 호출 단위 owner를 만들어 원본 alert dispatch를
+   * 막지 않는다.
+   */
+  readonly failureStateOwner?: AlertDispatchServiceOptions;
+  /**
    * scheduled briefing 전용 low-priority cooldown 저장소다.
    *
    * 일반 P2/P3 lifecycle 알림은 process-local cooldown 정책을 유지해야 하므로, 정기 브리핑처럼 재시작/다중 daemon 중복을
@@ -478,20 +486,16 @@ export async function dispatchScheduledLiveOpsTelegramBriefing(
 
   const results: AlertDispatchResult[] = [];
   let dispatchExceptionCount = 0;
+  const alertDispatch = createScheduledBriefingAlertDispatch(input);
+  const failureStateOwner = input.failureStateOwner ?? createScheduledBriefingFailureStateOwner(input);
 
   for (const request of input.plan.requests) {
     try {
-      const alertDispatch = input.cooldownStore === undefined
-        ? input.alertDispatch
-        : {
-            ...input.alertDispatch,
-            memoryCooldownStore: input.cooldownStore,
-          };
-      // scheduled briefing도 lifecycle/trade alert와 같은 lock을 타야 동시 Telegram 장애 집계가 유실되지 않는다.
+      // P3 정기 브리핑 provider 지연이 P0/P1 운영 알림의 failure-state lock을 점유하지 않도록 별도 owner에만 직렬화한다.
       const result = await dispatchAlertWithFailureStateTracking({
         alertDispatch,
         request,
-        failureStateOwner: input.alertDispatch,
+        failureStateOwner,
       });
       results.push(result);
     } catch {
@@ -534,6 +538,40 @@ export async function dispatchScheduledLiveOpsTelegramBriefing(
       alertCount: input.plan.alertCount,
     },
   };
+}
+
+/**
+ * scheduled briefing provider 호출에 사용할 alert dispatch 옵션을 원본 runtime 객체와 분리한다.
+ *
+ * 원본 객체를 그대로 넘기면 failure-state helper가 같은 객체 lock을 사용해 kill-switch/lifecycle/trade 알림까지 기다리게 된다.
+ * 이 clone은 notifier, audit, retry queue, cooldown store 포트를 재사용하지만 in-memory failureState와 lock 소유권은
+ * scheduled briefing 전용 owner로 분리한다.
+ *
+ * @param input scheduled briefing dispatch 입력
+ * @returns provider 호출용 alert dispatch clone
+ */
+function createScheduledBriefingAlertDispatch(
+  input: DispatchScheduledLiveOpsTelegramBriefingInput,
+): AlertDispatchServiceOptions {
+  return {
+    ...input.alertDispatch,
+    ...(input.cooldownStore === undefined ? {} : { memoryCooldownStore: input.cooldownStore }),
+  };
+}
+
+/**
+ * runtime이 전용 owner를 제공하지 않은 direct 호출에서도 원본 alert dispatch lock을 잡지 않게 호출 단위 owner를 만든다.
+ *
+ * 이 owner는 scheduled briefing 실패 집계만 직렬화한다. P0/P1 운영 알림의 manual review 수렴은 원본 runtime alert dispatch가
+ * 계속 담당하며, 정기 브리핑 실패는 dispatch summary와 retry/cooldown evidence로 노출한다.
+ *
+ * @param input scheduled briefing dispatch 입력
+ * @returns scheduled briefing 전용 failure-state owner
+ */
+function createScheduledBriefingFailureStateOwner(
+  input: DispatchScheduledLiveOpsTelegramBriefingInput,
+): AlertDispatchServiceOptions {
+  return createScheduledBriefingAlertDispatch(input);
 }
 
 function createLifecycleEvents(

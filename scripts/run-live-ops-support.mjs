@@ -5433,7 +5433,13 @@ function createLiveOpsCliScheduledBriefingDispatchSummary({
     cooldownHitCount,
     retryPlannedCount: 0,
     failureCount,
-    statusLabel: status === "sent" ? "정기 브리핑 전송" : status === "skipped" ? "정기 브리핑 생략" : "정기 브리핑 전송 확인 필요",
+    statusLabel: status === "sent"
+      ? "정기 브리핑 전송"
+      : status === "skipped"
+        ? "정기 브리핑 생략"
+        : status === "manual_review_required"
+          ? "정기 브리핑 수동 점검 필요"
+          : "정기 브리핑 전송 확인 필요",
     message,
     action,
     trace: {
@@ -9815,11 +9821,27 @@ async function evaluateLiveOpsCliScheduledBriefing({
   observedAt,
   correlationId,
 }) {
-  if (fixtureSmoke || !shouldDispatchLiveOpsCliScheduledBriefing(config, env)) {
+  if (fixtureSmoke) {
     return undefined;
   }
 
   const scheduleKey = readLiveOpsCliScheduledBriefingScheduleKey(config, env);
+  const scheduledEnabled = resolveLiveOpsCliScheduledBriefingEnabled(config, env);
+  if (scheduledEnabled.status === "invalid") {
+    // 잘못된 env override는 JSON true로 되살리지 않고 provider 호출 전 수동 점검으로 닫아 운영자 오타를 fail-closed 처리한다.
+    return createLiveOpsCliScheduledBriefingDispatchSummary({
+      status: "manual_review_required",
+      providerDispatchAttempted: false,
+      failureCount: 1,
+      message: "SEEMIRAI_TELEGRAM_BRIEFING_SCHEDULED_ENABLED 값이 boolean으로 해석되지 않아 정기 브리핑을 보내지 않았습니다.",
+      action: "env 값을 true/false/1/0/yes/no/on/off 중 하나로 고친 뒤 다시 실행하세요.",
+      scheduleKey,
+    });
+  }
+  if (!scheduledEnabled.enabled) {
+    return undefined;
+  }
+
   const briefingSourceFingerprint = createLiveOpsCliScheduledBriefingSourceFingerprint({
     config,
     liveExecution,
@@ -9903,8 +9925,22 @@ function shouldDispatchLiveOpsCliTelegramStartupAlert(config, liveExecution) {
 }
 
 function shouldDispatchLiveOpsCliScheduledBriefing(config, env = {}) {
+  const scheduledEnabled = resolveLiveOpsCliScheduledBriefingEnabled(config, env);
+  return scheduledEnabled.status === "valid" && scheduledEnabled.enabled;
+}
+
+function resolveLiveOpsCliScheduledBriefingEnabled(config, env = {}) {
   const envFlag = readLiveOpsCliBooleanEnv(env.SEEMIRAI_TELEGRAM_BRIEFING_SCHEDULED_ENABLED);
-  return envFlag ?? (config.telegram?.briefing?.scheduled_enabled === true);
+  if (envFlag.status === "invalid") {
+    return {
+      status: "invalid",
+      enabled: false,
+    };
+  }
+  return {
+    status: "valid",
+    enabled: envFlag.value ?? (config.telegram?.briefing?.scheduled_enabled === true),
+  };
 }
 
 function readLiveOpsCliScheduledBriefingScheduleKey(config, env = {}) {
@@ -9917,19 +9953,34 @@ function readLiveOpsCliScheduledBriefingScheduleKey(config, env = {}) {
 
 function readLiveOpsCliBooleanEnv(value) {
   if (value === undefined || value === null) {
-    return undefined;
+    return {
+      status: "unset",
+      value: undefined,
+    };
   }
   const normalized = String(value).trim().toLowerCase();
   if (normalized === "") {
-    return undefined;
+    return {
+      status: "unset",
+      value: undefined,
+    };
   }
   if (["1", "true", "yes", "on"].includes(normalized)) {
-    return true;
+    return {
+      status: "valid",
+      value: true,
+    };
   }
   if (["0", "false", "no", "off"].includes(normalized)) {
-    return false;
+    return {
+      status: "valid",
+      value: false,
+    };
   }
-  return undefined;
+  return {
+    status: "invalid",
+    value: undefined,
+  };
 }
 
 function shouldRequireLiveOpsCliTelegramBoundary(liveExecution) {
