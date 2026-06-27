@@ -477,6 +477,8 @@ M20 inbound는 public webhook endpoint를 만들지 않고 Telegram `getUpdates`
 - batch limit: `SEEMIRAI_TELEGRAM_INBOUND_MAX_UPDATES_PER_POLL`, fallback `telegram.inbound.max_updates_per_poll`
 - scheduled briefing enable flag: `telegram.briefing.scheduled_enabled` 또는 `SEEMIRAI_TELEGRAM_BRIEFING_SCHEDULED_ENABLED=1`
 - scheduled briefing fingerprint key: `SEEMIRAI_TELEGRAM_BRIEFING_SCHEDULE_KEY`, fallback `telegram.briefing.schedule_key`
+- `SEEMIRAI_TELEGRAM_BRIEFING_SCHEDULED_ENABLED=0`은 JSON의 `telegram.briefing.scheduled_enabled=true`보다 우선하는 명시
+  비활성 override다.
 
 활성화된 inbound는 bot token과 owner chat allowlist가 모두 있어야 startup guard를 통과한다. owner chat allowlist가 비어 있으면
 외부 입력 실행면이 열린 상태로 보므로 polling 시작 전에 fail-closed 한다.
@@ -513,7 +515,9 @@ runtime 처리 기준:
   실패 reason만 남기고 raw provider body는 보존하지 않는다.
 - scheduled briefing은 `telegram.briefing.scheduled_enabled=false`가 기본값이라 config/env에서 명시적으로 켜지 않으면 provider
   dispatch plan을 만들지 않는다. 활성화된 scheduled dispatch는 기존 `AlertDispatchRequest`/`alert_cooldowns` fingerprint
-  경계를 재사용하며 `schedule_key`를 dedupe segment로 사용한다.
+  경계를 재사용하며 `schedule_key`를 dedupe segment로 사용한다. cooldown source fingerprint는 readiness, decision, execution,
+  PnL/reconcile, wallet/cash/coin처럼 briefing 본문을 바꾸는 evidence를 포함하고, tick마다 변하는 기준가만으로는 새 전송을 만들지
+  않는다.
 - M20은 `/approve`, `/reject`, order proposal approval, 승인된 주문의 live broker 제출, Telegram public webhook endpoint를 만들지
   않는다. 이 경계는 M21 이후 별도 issue에서 다룬다.
 

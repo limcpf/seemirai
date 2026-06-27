@@ -1004,18 +1004,18 @@ Acceptance Criteria:
 
 - [x] `/brief`는 read-only Telegram command로 분류된다.
 - [x] `/brief`는 owner allowlist 없이는 응답하지 않는다.
-- [ ] Telegram에서 서버/daemon 상태, live enabled, live armed, live order capable, readiness guard 상태를 한국어로 확인할 수 있다.
-- [ ] Telegram에서 매수 조건, 매도 조건, HOLD/BLOCK 이유를 확인할 수 있다.
-- [ ] Telegram에서 wallet cash, coin/balance/position, PnL, open exposure, budget used를 확인할 수 있다.
-- [ ] Telegram에서 market freshness와 현재 시황 요약을 확인할 수 있다.
-- [ ] Telegram에서 최근 candidate/decision/order/reconcile/risk block/alert retry 상태를 확인할 수 있다.
-- [ ] LLM disabled/timeout/schema fail/unsafe output에서도 deterministic briefing이 전송된다.
-- [ ] LLM prompt에는 redacted `LiveOpsBriefingSnapshot`만 전달된다.
-- [ ] LLM 결과가 `BUY`, `SELL`, `INCREASE_POSITION`, 목표가, 주문 수량, 직접 매매 권고를 포함하면 fail-closed 한다.
-- [ ] LLM 결과는 order candidate, broker submit/cancel, order permission으로 연결되지 않는다.
-- [ ] Telegram 메시지는 한국어 상태, 원인, 영향, 필요 조치를 먼저 보여준다.
-- [ ] 내부 id/reason/evidence는 `추적 정보`로 분리한다.
-- [ ] raw provider payload, raw order detail, Telegram token, API key, JWT, Authorization header가 prompt/audit/status/Telegram/log에 남지 않는다.
+- [x] Telegram에서 서버/daemon 상태, live enabled, live armed, live order capable, readiness guard 상태를 한국어로 확인할 수 있다.
+- [x] Telegram에서 매수 조건, 매도 조건, HOLD/BLOCK 이유를 확인할 수 있다.
+- [x] Telegram에서 wallet cash, coin/balance/position, PnL, open exposure, budget used를 확인할 수 있다.
+- [x] Telegram에서 market freshness와 현재 시황 요약을 확인할 수 있다.
+- [x] Telegram에서 최근 candidate/decision/order/reconcile/risk block/alert retry 상태를 확인할 수 있다.
+- [x] LLM disabled/timeout/schema fail/unsafe output에서도 deterministic briefing이 전송된다.
+- [x] LLM prompt에는 redacted `LiveOpsBriefingSnapshot`만 전달된다.
+- [x] LLM 결과가 `BUY`, `SELL`, `INCREASE_POSITION`, 목표가, 주문 수량, 직접 매매 권고를 포함하면 fail-closed 한다.
+- [x] LLM 결과는 order candidate, broker submit/cancel, order permission으로 연결되지 않는다.
+- [x] Telegram 메시지는 한국어 상태, 원인, 영향, 필요 조치를 먼저 보여준다.
+- [x] 내부 id/reason/evidence는 `추적 정보`로 분리한다.
+- [x] raw provider payload, raw order detail, Telegram token, API key, JWT, Authorization header가 prompt/audit/status/Telegram/log에 남지 않는다.
 - [x] scheduled briefing은 기본 비활성이며 명시 config 없이는 시작되지 않는다.
 - [x] scheduled briefing은 fingerprint/cooldown으로 중복 스팸을 방지한다.
 
@@ -1055,17 +1055,17 @@ Acceptance Criteria:
 
 Acceptance Criteria:
 
-- [ ] LLM 입력 소스는 `exchange_notice`, `developer_changelog`, `market_event`, `live_ops_status_snapshot`로 제한된다.
-- [ ] LLM 결과 타입은 `notice_summary`, `notice_risk_classification`, `event_explanation`, `daily_report_draft`, `live_ops_briefing_draft` 같은 보조 목적에 한정된다.
-- [ ] LLM `recommended_action`은 `NO_ACTION`, `BLOCK_NEW_ENTRY`, `CANCEL_PENDING`, `PAUSE_STRATEGY`, `ALERT_ONLY`만 허용한다.
-- [ ] `BUY`, `SELL`, `INCREASE_POSITION` 같은 주문 허용 또는 포지션 확대 액션은 스키마 검증에서 거부된다.
-- [ ] LLM 결과만으로 전략 주문 후보를 만들 수 없다.
-- [ ] LLM 결과가 리스크 게이트에 전달될 경우 주문 허용이 아니라 차단 또는 사람 확인 신호로만 사용된다.
-- [ ] LLM 입력과 출력은 감사 가능하도록 저장되며 민감정보를 포함하지 않는다.
-- [ ] provider를 `codex_oauth`에서 `noop`으로 바꿔도 application contract가 바뀌지 않는다.
-- [ ] Codex timeout, invalid output, free-form output은 실패 evidence만 남기고 주문 신호 없이 끝난다.
-- [ ] deterministic daily report는 LLM draft 실패와 독립적으로 성공/실패가 결정된다.
-- [ ] deterministic Live Ops briefing은 LLM draft 실패, schema fail, unsafe output과 독립적으로 전송 가능한 fallback을 유지한다.
+- [x] LLM 입력 소스는 `exchange_notice`, `developer_changelog`, `market_event`, `live_ops_status_snapshot`로 제한된다.
+- [x] LLM 결과 타입은 `notice_summary`, `notice_risk_classification`, `event_explanation`, `daily_report_draft`, `live_ops_briefing_draft` 같은 보조 목적에 한정된다.
+- [x] LLM `recommended_action`은 `NO_ACTION`, `BLOCK_NEW_ENTRY`, `CANCEL_PENDING`, `PAUSE_STRATEGY`, `ALERT_ONLY`만 허용한다.
+- [x] `BUY`, `SELL`, `INCREASE_POSITION` 같은 주문 허용 또는 포지션 확대 액션은 스키마 검증에서 거부된다.
+- [x] LLM 결과만으로 전략 주문 후보를 만들 수 없다.
+- [x] LLM 결과가 리스크 게이트에 전달될 경우 주문 허용이 아니라 차단 또는 사람 확인 신호로만 사용된다.
+- [x] LLM 입력과 출력은 감사 가능하도록 저장되며 민감정보를 포함하지 않는다.
+- [x] provider를 `codex_oauth`에서 `noop`으로 바꿔도 application contract가 바뀌지 않는다.
+- [x] Codex timeout, invalid output, free-form output은 실패 evidence만 남기고 주문 신호 없이 끝난다.
+- [x] deterministic daily report는 LLM draft 실패와 독립적으로 성공/실패가 결정된다.
+- [x] deterministic Live Ops briefing은 LLM draft 실패, schema fail, unsafe output과 독립적으로 전송 가능한 fallback을 유지한다.
 
 테스트 요구사항:
 
