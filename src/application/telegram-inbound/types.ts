@@ -7,6 +7,7 @@ import type { JsonRecord } from "../../domain/index.js";
  */
 export const telegramInboundReadOnlyCommands = [
   "status",
+  "brief",
   "positions",
   "pnl",
   "why",

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  createTelegramInboundBriefingProvider,
   createTelegramInboundCommandRuntime,
   createTelegramInboundPollingRuntime,
   formatTelegramStatusCommandResponse,
@@ -65,6 +66,93 @@ describe("Telegram inbound command runtime", () => {
     expect(fixture.killSwitchProvider.requests).toHaveLength(0);
     expect(fixture.replyPort.replies).toHaveLength(0);
     expect(fixture.auditLog.events).toHaveLength(1);
+  });
+
+  it("executes read-only /brief through the briefing provider without control side effects", async () => {
+    const briefingProvider = new CapturingBriefingProvider();
+    const fixture = createRuntimeFixture({ briefingProvider });
+
+    const result = await fixture.runtime.handleMessage(createMessage({ text: "/brief" }));
+
+    expect(result).toMatchObject({
+      status: "EXECUTED",
+      executed: true,
+      commandName: "brief",
+      parseStatus: "PARSED",
+      correlationId: "telegram-inbound-10-20",
+    });
+    expect(briefingProvider.calls).toEqual([
+      {
+        correlationId: "telegram-inbound-10-20",
+        occurredAt: now,
+      },
+    ]);
+    expect(fixture.statusProvider.calls).toBe(0);
+    expect(fixture.killSwitchProvider.requests).toHaveLength(0);
+    expect(fixture.replyPort.replies[0]?.text).toContain("Live Ops 브리핑");
+    expect(fixture.replyPort.replies[0]?.text).toContain("상태: 실매매 가능");
+    expect(JSON.stringify(result)).not.toContain("/brief");
+    expect(JSON.stringify(fixture.auditLog.events)).not.toContain("/brief");
+  });
+
+  it("builds the default /brief provider from the safe status snapshot", async () => {
+    const statusProvider = new CapturingStatusProvider();
+    const briefingProvider = createTelegramInboundBriefingProvider({
+      statusProvider,
+    });
+
+    const text = await briefingProvider.getBriefing({
+      correlationId: "telegram-inbound-briefing-fixture",
+      occurredAt: now,
+    });
+
+    expect(statusProvider.calls).toBe(1);
+    expect(text).toContain("Live Ops 브리핑");
+    expect(text).toContain("상태:");
+    expect(text).toContain("운영 상태");
+    expect(text).toContain("추적 정보");
+    expect(text).toContain("telegram-inbound-briefing-fixture");
+    expect(text.split("추적 정보")[0]).not.toContain("live_order_capable");
+  });
+
+  it("uses the default /brief provider when runtime is assembled with only statusProvider", async () => {
+    const fixture = createRuntimeFixture();
+
+    const result = await fixture.runtime.handleMessage(createMessage({ text: "/brief" }));
+
+    expect(result).toMatchObject({
+      status: "EXECUTED",
+      executed: true,
+      commandName: "brief",
+      parseStatus: "PARSED",
+      correlationId: "telegram-inbound-10-20",
+    });
+    expect(fixture.statusProvider.calls).toBe(1);
+    expect(fixture.killSwitchProvider.requests).toHaveLength(0);
+    expect(fixture.replyPort.replies[0]?.text).toContain("Live Ops 브리핑");
+    expect(fixture.replyPort.replies[0]?.text).toContain("상태:");
+    expect(fixture.replyPort.replies[0]?.text).toContain("추적 정보");
+    expect(fixture.replyPort.replies[0]?.text.split("추적 정보")[0]).not.toContain("live_order_capable");
+    expect(JSON.stringify(result)).not.toContain("/brief");
+    expect(JSON.stringify(fixture.auditLog.events)).not.toContain("/brief");
+  });
+
+  it("deduplicates repeated /brief updates before briefing dispatch", async () => {
+    const briefingProvider = new CapturingBriefingProvider();
+    const fixture = createRuntimeFixture({ briefingProvider });
+    const message = createMessage({ updateId: 16, messageId: 26, text: "/brief" });
+
+    const first = await fixture.runtime.handleMessage(message);
+    const second = await fixture.runtime.handleMessage(message);
+
+    expect(first.status).toBe("EXECUTED");
+    expect(second).toMatchObject({
+      status: "DUPLICATE",
+      executed: false,
+      reasonCode: "telegram_inbound_duplicate_command",
+    });
+    expect(briefingProvider.calls).toHaveLength(1);
+    expect(fixture.replyPort.replies).toHaveLength(1);
   });
 
   it("requires a second matching control command before calling kill switch provider", async () => {
@@ -505,7 +593,10 @@ describe("Telegram inbound reply sender", () => {
   });
 });
 
-function createRuntimeFixture(options: { dedupeStore?: TelegramInboundCommandDedupeStore } = {}) {
+function createRuntimeFixture(options: {
+  dedupeStore?: TelegramInboundCommandDedupeStore;
+  briefingProvider?: CapturingBriefingProvider;
+} = {}) {
   const statusProvider = new CapturingStatusProvider();
   const killSwitchProvider = new CapturingKillSwitchProvider();
   const auditLog = new CapturingAuditLog();
@@ -521,7 +612,8 @@ function createRuntimeFixture(options: { dedupeStore?: TelegramInboundCommandDed
     statusProvider,
     killSwitchControlProvider: killSwitchProvider,
     clock: () => new Date(now),
-  });
+    ...(options.briefingProvider === undefined ? {} : { briefingProvider: options.briefingProvider }),
+  } as Parameters<typeof createTelegramInboundCommandRuntime>[0]);
 
   return {
     runtime,
@@ -551,6 +643,24 @@ class CapturingStatusProvider implements ControlStatusProvider {
   public async getStatus(): Promise<ControlStatusSnapshot> {
     this.calls += 1;
     return createStatusSnapshot();
+  }
+}
+
+class CapturingBriefingProvider {
+  public calls: Array<{ correlationId: string; occurredAt: string }> = [];
+
+  public async getBriefing(input: { correlationId: string; occurredAt: string }): Promise<string> {
+    this.calls.push(input);
+    return [
+      "Live Ops 브리핑",
+      "상태: 실매매 가능",
+      "원인: deterministic snapshot 기준입니다.",
+      "영향: 주문 side effect 없이 조회만 완료했습니다.",
+      "필요 조치: 추적 정보를 확인하세요.",
+      "",
+      "추적 정보",
+      `요청 ID: ${input.correlationId}`,
+    ].join("\n");
   }
 }
 

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  createAlertFingerprint,
   createInMemoryAlertCooldownStore,
 } from "../../src/application/index.js";
 import type {
@@ -14,6 +15,8 @@ import type {
 import {
   defaultLiveOpsConfig,
   dispatchLiveOpsTelegramAlerts,
+  dispatchScheduledLiveOpsTelegramBriefing,
+  planScheduledLiveOpsTelegramBriefing,
   planLiveOpsTelegramAlerts,
 } from "../../src/runtime/index.js";
 import type {
@@ -327,6 +330,291 @@ describe("production live ops Telegram alert mapper", () => {
       "live_ops_event",
     ]);
   });
+
+  it("provider 실패 응답은 lifecycle alert summary를 partial failure로 요약한다", async () => {
+    const notifier = new RecordingNotifier();
+    notifier.nextResult = {
+      delivered: false,
+      skippedReason: "telegram_timeout",
+    };
+    const plan = planLiveOpsTelegramAlerts(createPlanInput());
+
+    const result = await dispatchLiveOpsTelegramAlerts({
+      plan,
+      alertDispatch: {
+        notifier,
+        durableCooldownStore: createInMemoryAlertCooldownStore(),
+        memoryCooldownStore: createInMemoryAlertCooldownStore(),
+        clock: () => new Date(observedAt),
+      },
+    });
+
+    expect(result).toMatchObject({
+      status: "partial_failure",
+      attemptedCount: 1,
+      deliveredCount: 0,
+      cooldownHitCount: 0,
+      retryPlannedCount: 0,
+      failureCount: 1,
+    });
+    expect(result.results[0]).toMatchObject({
+      cooldownHit: false,
+      notification: {
+        delivered: false,
+        skippedReason: "telegram_timeout",
+      },
+    });
+  });
+
+  it("모든 lifecycle alert가 cooldown으로 생략되면 sent가 아니라 skipped로 요약한다", async () => {
+    const notifier = new RecordingNotifier();
+    const cooldownStore = createInMemoryAlertCooldownStore();
+    const plan = planLiveOpsTelegramAlerts(createPlanInput());
+
+    const first = await dispatchLiveOpsTelegramAlerts({
+      plan,
+      alertDispatch: {
+        notifier,
+        durableCooldownStore: cooldownStore,
+        memoryCooldownStore: cooldownStore,
+        clock: () => new Date(observedAt),
+      },
+    });
+    const duplicate = await dispatchLiveOpsTelegramAlerts({
+      plan,
+      alertDispatch: {
+        notifier,
+        durableCooldownStore: cooldownStore,
+        memoryCooldownStore: cooldownStore,
+        clock: () => new Date(observedAt),
+      },
+    });
+
+    expect(first).toMatchObject({
+      status: "sent",
+      deliveredCount: 1,
+      cooldownHitCount: 0,
+    });
+    expect(duplicate).toMatchObject({
+      status: "skipped",
+      attemptedCount: 1,
+      deliveredCount: 0,
+      cooldownHitCount: 1,
+      failureCount: 0,
+    });
+    expect(notifier.alerts).toHaveLength(1);
+  });
+});
+
+describe("scheduled Live Ops Telegram briefing dispatch", () => {
+  it("keeps scheduled briefing disabled unless config explicitly enables it", () => {
+    const plan = planScheduledLiveOpsTelegramBriefing(createScheduledBriefingPlanInput({
+      config: {
+        scheduledEnabled: false,
+        scheduleKey: "ops-hourly",
+      },
+    }));
+
+    expect(plan).toMatchObject({
+      status: "disabled",
+      ready: false,
+      alertCount: 0,
+      message: "정기 Live Ops Telegram 브리핑은 설정에서 비활성입니다.",
+    });
+    expect(plan.requests).toHaveLength(0);
+  });
+
+  it("uses alert cooldown fingerprinting so repeated scheduled briefings do not spam Telegram", async () => {
+    const notifier = new RecordingNotifier();
+    const cooldownStore = createInMemoryAlertCooldownStore();
+    const plan = planScheduledLiveOpsTelegramBriefing(createScheduledBriefingPlanInput());
+
+    expect(plan).toMatchObject({
+      status: "ready",
+      ready: true,
+      alertCount: 1,
+    });
+    expect(plan.requests[0]).toMatchObject({
+      severity: "P3",
+      alertType: "live_ops_briefing",
+      reasonCode: "scheduled_live_ops_briefing",
+      dedupeKey: "a_6f70732d686f75726c79:n_7368613235363a6272696566696e672d66697874757265",
+      title: "Live Ops 정기 브리핑",
+      metadata: {
+        source: "live_ops_briefing",
+        briefing_source_fingerprint: "sha256:briefing-fixture",
+      },
+    });
+
+    const first = await dispatchScheduledLiveOpsTelegramBriefing({
+      plan,
+      alertDispatch: {
+        notifier,
+        durableCooldownStore: cooldownStore,
+        memoryCooldownStore: cooldownStore,
+        clock: () => new Date(observedAt),
+      },
+    });
+    const duplicate = await dispatchScheduledLiveOpsTelegramBriefing({
+      plan,
+      alertDispatch: {
+        notifier,
+        durableCooldownStore: cooldownStore,
+        memoryCooldownStore: cooldownStore,
+        clock: () => new Date(observedAt),
+      },
+    });
+
+    expect(first).toMatchObject({
+      status: "sent",
+      attemptedCount: 1,
+      deliveredCount: 1,
+      cooldownHitCount: 0,
+    });
+    expect(duplicate).toMatchObject({
+      status: "skipped",
+      attemptedCount: 1,
+      deliveredCount: 0,
+      cooldownHitCount: 1,
+    });
+    expect(notifier.alerts).toHaveLength(1);
+    expect(notifier.alerts[0]?.body).toContain("Live Ops 브리핑");
+    expect(notifier.alerts[0]?.body).toContain("상태: 실매매 가능");
+  });
+
+  it("새 briefing source fingerprint는 같은 schedule cooldown 안에서도 별도 전송한다", async () => {
+    const notifier = new RecordingNotifier();
+    const cooldownStore = createInMemoryAlertCooldownStore();
+    const firstPlan = planScheduledLiveOpsTelegramBriefing(createScheduledBriefingPlanInput());
+    const refreshedPlan = planScheduledLiveOpsTelegramBriefing(createScheduledBriefingPlanInput({
+      observedAt: "2026-06-14T01:00:00.000Z",
+      briefingText: [
+        "Live Ops 브리핑",
+        "상태: 실매매 가능",
+        "원인: 시장 freshness가 새로 관측됐습니다.",
+        "영향: 새 evidence 기준으로 운영자가 판단할 수 있습니다.",
+        "필요 조치: 새 추적 정보를 확인하세요.",
+      ].join("\n"),
+      briefingSourceFingerprint: "sha256:briefing-refresh",
+    }));
+
+    const first = await dispatchScheduledLiveOpsTelegramBriefing({
+      plan: firstPlan,
+      alertDispatch: {
+        notifier,
+        durableCooldownStore: cooldownStore,
+        memoryCooldownStore: cooldownStore,
+        clock: () => new Date(observedAt),
+      },
+    });
+    const refreshed = await dispatchScheduledLiveOpsTelegramBriefing({
+      plan: refreshedPlan,
+      alertDispatch: {
+        notifier,
+        durableCooldownStore: cooldownStore,
+        memoryCooldownStore: cooldownStore,
+        clock: () => new Date("2026-06-14T01:00:00.000Z"),
+      },
+    });
+
+    expect(first).toMatchObject({
+      status: "sent",
+      deliveredCount: 1,
+      cooldownHitCount: 0,
+    });
+    expect(refreshed).toMatchObject({
+      status: "sent",
+      deliveredCount: 1,
+      cooldownHitCount: 0,
+    });
+    expect(first.results[0]?.fingerprint).not.toBe(refreshed.results[0]?.fingerprint);
+    expect(notifier.alerts).toHaveLength(2);
+    expect(notifier.alerts[1]?.body).toContain("시장 freshness가 새로 관측됐습니다.");
+  });
+
+  it("escapes scheduled briefing dedupe segments before joining", () => {
+    const first = planScheduledLiveOpsTelegramBriefing(createScheduledBriefingPlanInput({
+      config: {
+        scheduledEnabled: true,
+        scheduleKey: "ops:sha256",
+      },
+      briefingSourceFingerprint: "a",
+    }));
+    const second = planScheduledLiveOpsTelegramBriefing(createScheduledBriefingPlanInput({
+      config: {
+        scheduledEnabled: true,
+        scheduleKey: "ops",
+      },
+      briefingSourceFingerprint: "sha256:a",
+    }));
+
+    expect(first.requests[0]?.dedupeKey).toBe("a_6f70733a736861323536:1_61");
+    expect(second.requests[0]?.dedupeKey).toBe("3_6f7073:8_7368613235363a61");
+    expect(first.requests[0]?.dedupeKey).not.toBe(second.requests[0]?.dedupeKey);
+  });
+
+  it("keeps scheduled briefing dedupe segments distinct after alert fingerprint normalization", () => {
+    const colonSegment = planScheduledLiveOpsTelegramBriefing(createScheduledBriefingPlanInput({
+      config: {
+        scheduledEnabled: true,
+        scheduleKey: "ops:hourly",
+      },
+      briefingSourceFingerprint: "source",
+    }));
+    const underscoreSegment = planScheduledLiveOpsTelegramBriefing(createScheduledBriefingPlanInput({
+      config: {
+        scheduledEnabled: true,
+        scheduleKey: "ops_3ahourly",
+      },
+      briefingSourceFingerprint: "source",
+    }));
+
+    expect(createAlertFingerprint(colonSegment.requests[0]!)).not.toBe(
+      createAlertFingerprint(underscoreSegment.requests[0]!),
+    );
+  });
+
+  it("provider 실패 응답은 cooldown skip이 아니라 partial failure로 요약한다", async () => {
+    const notifier = new RecordingNotifier();
+    notifier.nextResult = {
+      delivered: false,
+      skippedReason: "telegram_timeout",
+    };
+    const plan = planScheduledLiveOpsTelegramBriefing(createScheduledBriefingPlanInput());
+
+    const result = await dispatchScheduledLiveOpsTelegramBriefing({
+      plan,
+      alertDispatch: {
+        notifier,
+        durableCooldownStore: createInMemoryAlertCooldownStore(),
+        memoryCooldownStore: createInMemoryAlertCooldownStore(),
+        clock: () => new Date(observedAt),
+      },
+    });
+
+    expect(result).toMatchObject({
+      status: "partial_failure",
+      attemptedCount: 1,
+      deliveredCount: 0,
+      cooldownHitCount: 0,
+      retryPlannedCount: 0,
+      failureCount: 1,
+    });
+    expect(result.results).toHaveLength(1);
+    expect(result.results[0]).toMatchObject({
+      cooldownHit: false,
+      notification: {
+        delivered: false,
+        skippedReason: "telegram_timeout",
+      },
+      failureEvaluation: {
+        state: {
+          consecutiveFailures: 1,
+        },
+      },
+    });
+    expect(notifier.alerts).toHaveLength(1);
+  });
 });
 
 function createPlanInput(
@@ -341,6 +629,30 @@ function createPlanInput(
     liveExecution: liveExecutionSummary(),
     correlationId: "corr-live-ops",
     telegramConnectionEvidenceId: "telegram-ready-1",
+    ...overrides,
+  };
+}
+
+function createScheduledBriefingPlanInput(
+  overrides: Partial<Parameters<typeof planScheduledLiveOpsTelegramBriefing>[0]> = {},
+): Parameters<typeof planScheduledLiveOpsTelegramBriefing>[0] {
+  return {
+    config: {
+      scheduledEnabled: true,
+      scheduleKey: "ops-hourly",
+    },
+    environment: "prod",
+    runMode: "live_autonomous_small_budget",
+    observedAt,
+    briefingText: [
+      "Live Ops 브리핑",
+      "상태: 실매매 가능",
+      "원인: deterministic snapshot 기준입니다.",
+      "영향: 주문 side effect 없이 조회만 완료했습니다.",
+      "필요 조치: 추적 정보를 확인하세요.",
+    ].join("\n"),
+    briefingSourceFingerprint: "sha256:briefing-fixture",
+    correlationId: "corr-live-ops-briefing",
     ...overrides,
   };
 }
@@ -394,9 +706,15 @@ function createOrderIntent(): Extract<OrderIntent, { orderType: "LIMIT" }> {
 
 class RecordingNotifier implements NotifierPort {
   public readonly alerts: AlertNotification[] = [];
+  public nextResult: NotificationResult | undefined;
 
   public async sendAlert(notification: AlertNotification): Promise<NotificationResult> {
     this.alerts.push(notification);
+    if (this.nextResult !== undefined) {
+      const result = this.nextResult;
+      this.nextResult = undefined;
+      return result;
+    }
     return { delivered: true, providerMessageId: `message-${this.alerts.length}` };
   }
 

@@ -1,7 +1,9 @@
 import {
+  createLiveOpsBriefingSnapshot,
   createTelegramInboundCommandAuditEvent,
   createTelegramInboundCommandIdempotencyKey,
   evaluateTelegramInboundAuthorization,
+  formatLiveOpsBriefing,
   hashTelegramInboundIdentifier,
   parseTelegramInboundCommand,
   telegramInboundCommandJobType,
@@ -34,6 +36,8 @@ import type {
   TelegramInboundCommandHandleResult,
   TelegramInboundCommandRuntime,
   TelegramInboundCommandRuntimeOptions,
+  CreateTelegramInboundBriefingProviderOptions,
+  TelegramInboundBriefingProvider,
   TelegramInboundControlConfirmationInput,
   TelegramInboundControlConfirmationResult,
   TelegramInboundControlConfirmationStore,
@@ -112,6 +116,41 @@ export function createInMemoryTelegramInboundControlConfirmationStore(
     },
     clear(input: TelegramInboundControlConfirmationInput): void {
       pending.delete(createConfirmationKey(input));
+    },
+  };
+}
+
+/**
+ * `/status` safe snapshot을 기본 `/brief` provider로 감싼다.
+ *
+ * 이 helper는 별도 provider 조회를 새로 만들지 않고 기존 status provider가 이미 낮춘 safe snapshot만 사용한다. formatter 결과는
+ * Telegram reply로 보낼 수 있는 deterministic briefing text이며, broker/control/Telegram outbound side effect를 수행하지 않는다.
+ */
+export function createTelegramInboundBriefingProvider(
+  options: CreateTelegramInboundBriefingProviderOptions,
+): TelegramInboundBriefingProvider {
+  return {
+    async getBriefing(input) {
+      const status = await options.statusProvider.getStatus();
+      const snapshot = createLiveOpsBriefingSnapshot({
+        observedAt: input.occurredAt,
+        status: status.liveOps ?? null,
+        why: status.why,
+        liveTradingEnabled: options.liveTradingEnabled ?? status.runtime.liveTradingEnabled,
+        trace: {
+          evidenceIds: [input.correlationId],
+          reasonCodes: ["telegram_brief_command"],
+          sourceIds: ["telegram_inbound_brief_command"],
+          metadata: {
+            correlationId: input.correlationId,
+            statusGeneratedAt: status.generatedAt,
+          },
+        },
+      });
+
+      return formatLiveOpsBriefing(snapshot, {
+        ...(options.maxCharacters === undefined ? {} : { maxCharacters: options.maxCharacters }),
+      });
     },
   };
 }
@@ -601,6 +640,21 @@ async function executeReadOnlyCommandSafely(
   correlationId: string,
 ): Promise<{ ok: true; text: string } | { ok: false; text: string }> {
   try {
+    if (command.name === "brief") {
+      // 기존 runtime 조립 경계가 statusProvider만 넘겨도 `/brief` parser 활성화와 실행 가능 상태가 어긋나지 않게 기본 provider로 닫는다.
+      const briefingProvider = options.briefingProvider ?? createTelegramInboundBriefingProvider({
+        statusProvider: options.statusProvider,
+      });
+      // `/brief`는 status 조회와 같은 read-only 경로지만 별도 briefing provider만 호출해 broker/control side effect로 이어지지 않는다.
+      return {
+        ok: true,
+        text: await briefingProvider.getBriefing({
+          correlationId,
+          occurredAt: (options.clock ?? (() => new Date()))().toISOString(),
+        }),
+      };
+    }
+
     const snapshot = await options.statusProvider.getStatus();
     switch (command.name) {
       case "status":

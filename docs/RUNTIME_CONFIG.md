@@ -40,7 +40,7 @@
 | `risk` | M5 리스크 한도 threshold | RiskGate 평가와 상태 전이 audit에 쓰는 보수적 계정/노출/손실 한도 |
 | `live_manual_approval` | `enabled=false`, `LIVE_ARMED_MANUAL_APPROVAL` | M21 수동 승인 live pilot proposal/config guard |
 | `live_autonomous` | `enabled=false`, `LIVE_AUTONOMOUS_SMALL_BUDGET` | M22 제한적 완전 자동매매 config/startup guard |
-| `telegram` | `provider_timeout_ms=5000`, optional `chat_id`, `inbound.enabled=false` | Telegram outbound notifier와 M20 inbound polling guard 설정 |
+| `telegram` | `provider_timeout_ms=5000`, optional `chat_id`, `inbound.enabled=false`, `briefing.scheduled_enabled=false` | Telegram outbound notifier, M20 inbound polling guard, Live Ops briefing dispatch 설정 |
 | `secrets` | 기본 `{}` | schema shape만 표현하며 실제 secret은 저장하지 않음 |
 
 ## 안전 invariant
@@ -475,6 +475,8 @@ M20 inbound는 public webhook endpoint를 만들지 않고 Telegram `getUpdates`
 - polling interval: `SEEMIRAI_TELEGRAM_INBOUND_POLLING_INTERVAL_MS`, fallback `telegram.inbound.polling_interval_ms`
 - provider long polling timeout: `SEEMIRAI_TELEGRAM_INBOUND_POLLING_TIMEOUT_SECONDS`, fallback `telegram.inbound.polling_timeout_seconds`
 - batch limit: `SEEMIRAI_TELEGRAM_INBOUND_MAX_UPDATES_PER_POLL`, fallback `telegram.inbound.max_updates_per_poll`
+- scheduled briefing enable flag: `telegram.briefing.scheduled_enabled` 또는 `SEEMIRAI_TELEGRAM_BRIEFING_SCHEDULED_ENABLED=1`
+- scheduled briefing fingerprint key: `SEEMIRAI_TELEGRAM_BRIEFING_SCHEDULE_KEY`, fallback `telegram.briefing.schedule_key`
 
 활성화된 inbound는 bot token과 owner chat allowlist가 모두 있어야 startup guard를 통과한다. owner chat allowlist가 비어 있으면
 외부 입력 실행면이 열린 상태로 보므로 polling 시작 전에 fail-closed 한다.
@@ -487,8 +489,12 @@ projection을 제공했다. M20 runtime은 여기에 `createTelegramInboundComma
 
 runtime 처리 기준:
 
-- `/status`, `/positions`, `/pnl`, `/why <market|cash>`, `/orders`, `/risk`는 기존 safe status snapshot을 읽는
+- `/status`, `/brief`, `/positions`, `/pnl`, `/why <market|cash>`, `/orders`, `/risk`는 기존 safe status snapshot 또는
+  `LiveOpsBriefingSnapshot` formatter 결과를 읽는
   read-only command다. 이 명령들은 `BrokerPort.submitOrder`, live broker submit/cancel, approval workflow로 연결하지 않는다.
+- `/brief` 기본 provider는 `/status` safe snapshot을 `LiveOpsBriefingSnapshot`으로 낮춘 뒤 deterministic Korean briefing
+  formatter만 호출한다. provider 입력에는 correlation id와 처리 시각만 넘기며 raw Telegram text, chat id, user id는 포함하지
+  않는다.
 - `/pause`, `/resume`, `/kill`은 allowlist, parser, durable dedupe, audit append를 통과한 뒤에도 60초 TTL의 동일 명령
   2단계 확인을 요구한다. TTL은 Telegram message 시각과 현재 처리 시각을 함께 기준으로 삼는다. 첫 번째 명령은 confirmation
   안내만 보내고, 두 번째 동일 명령도 메시지 시각 기준 TTL 안에 있으며 처리 시점에도 fresh할 때만 kill switch control provider를
@@ -505,6 +511,9 @@ runtime 처리 기준:
   결과 객체와 audit metadata에 싣지 않는다.
 - Telegram reply는 `sendMessage`만 사용하며 4096자 제한 안으로 잘라 보낸다. reply 결과에는 provider message id와 정규화된
   실패 reason만 남기고 raw provider body는 보존하지 않는다.
+- scheduled briefing은 `telegram.briefing.scheduled_enabled=false`가 기본값이라 config/env에서 명시적으로 켜지 않으면 provider
+  dispatch plan을 만들지 않는다. 활성화된 scheduled dispatch는 기존 `AlertDispatchRequest`/`alert_cooldowns` fingerprint
+  경계를 재사용하며 `schedule_key`를 dedupe segment로 사용한다.
 - M20은 `/approve`, `/reject`, order proposal approval, 승인된 주문의 live broker 제출, Telegram public webhook endpoint를 만들지
   않는다. 이 경계는 M21 이후 별도 issue에서 다룬다.
 

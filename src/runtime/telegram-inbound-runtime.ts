@@ -1,5 +1,6 @@
 export {
   createInMemoryTelegramInboundControlConfirmationStore,
+  createTelegramInboundBriefingProvider,
   createTelegramInboundCommandRuntime,
   createTelegramInboundPollingRuntime,
 } from "./telegram-inbound-runtime/service.js";
@@ -18,6 +19,9 @@ export {
   formatTelegramWhyCommandResponse,
 } from "./telegram-inbound-runtime/formatter.js";
 export type {
+  CreateTelegramInboundBriefingProviderOptions,
+  TelegramInboundBriefingProvider,
+  TelegramInboundBriefingRequest,
   TelegramInboundCommandHandleResult,
   TelegramInboundCommandHandleStatus,
   TelegramInboundCommandRuntime,
