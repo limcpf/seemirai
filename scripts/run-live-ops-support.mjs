@@ -2410,6 +2410,7 @@ export function createLiveOpsCliDatabaseScheduledBriefingCooldownStore(pool) {
       return upsertLiveOpsCliAlertCooldownTimestamp(pool, input, {
         lastSentAt: input.occurredAt,
         lastSkippedAt: null,
+        clearReservation: true,
       });
     },
     async recordSkipped(input) {
@@ -2417,12 +2418,14 @@ export function createLiveOpsCliDatabaseScheduledBriefingCooldownStore(pool) {
       return upsertLiveOpsCliAlertCooldownTimestamp(pool, input, {
         lastSentAt: null,
         lastSkippedAt: input.occurredAt,
+        clearReservation: false,
       });
     },
   };
 }
 
-async function upsertLiveOpsCliAlertCooldownTimestamp(pool, input, { lastSentAt, lastSkippedAt }) {
+async function upsertLiveOpsCliAlertCooldownTimestamp(pool, input, { lastSentAt, lastSkippedAt, clearReservation }) {
+  const deliveryReservedUntilAssignment = clearReservation ? "NULL" : "alert_cooldowns.delivery_reserved_until";
   const result = await pool.query(
     `
     INSERT INTO alert_cooldowns (
@@ -2453,7 +2456,7 @@ async function upsertLiveOpsCliAlertCooldownTimestamp(pool, input, { lastSentAt,
         WHEN EXCLUDED.last_skipped_at IS NULL THEN alert_cooldowns.last_skipped_at
         ELSE GREATEST(COALESCE(alert_cooldowns.last_skipped_at, EXCLUDED.last_skipped_at), EXCLUDED.last_skipped_at)
       END,
-      delivery_reserved_until = NULL,
+      delivery_reserved_until = ${deliveryReservedUntilAssignment},
       payload_json = EXCLUDED.payload_json,
       updated_at = GREATEST(alert_cooldowns.updated_at, EXCLUDED.updated_at)
     RETURNING *
@@ -10250,8 +10253,12 @@ function formatLiveOpsCliBriefingDecisionCondition(analysisDecision, side) {
     return "decision source 관측이 없어 조건 충족 여부를 확정하지 않습니다.";
   }
   const orderIntentCount = Number(analysisDecision.orderIntentCount ?? 0);
+  const sideOrderIntentCount = countLiveOpsCliBriefingOrderIntentSide(analysisDecision, side);
+  if (sideOrderIntentCount > 0) {
+    return `${side} 후보 ${sideOrderIntentCount}건이 decision summary에 남아 있습니다. broker 제출 여부는 live execution evidence를 기준으로 확인하세요.`;
+  }
   if (orderIntentCount > 0) {
-    return `${side} 후보 ${orderIntentCount}건이 decision summary에 남아 있습니다. broker 제출 여부는 live execution evidence를 기준으로 확인하세요.`;
+    return `${side} 후보 근거가 decision summary에 없어 전체 주문 후보 ${orderIntentCount}건을 ${side} 조건으로 단정하지 않습니다. side는 live execution evidence에서 확인하세요.`;
   }
   if (Number(analysisDecision.blockCount ?? 0) > 0) {
     return "차단 조건이 있어 신규 주문 후보를 만들지 않았습니다.";
@@ -10260,6 +10267,37 @@ function formatLiveOpsCliBriefingDecisionCondition(analysisDecision, side) {
     return "HOLD 판단으로 신규 주문 후보를 만들지 않았습니다.";
   }
   return analysisDecision.message ?? "주문 후보 조건이 충족되지 않았습니다.";
+}
+
+function countLiveOpsCliBriefingOrderIntentSide(analysisDecision, side) {
+  const normalizedSide = normalizeLiveOpsCliBriefingOrderIntentSide(side);
+  const sideValues = [
+    analysisDecision.side,
+    analysisDecision.orderSide,
+    analysisDecision.order_side,
+    analysisDecision.intentSide,
+    analysisDecision.intent_side,
+    analysisDecision.decisionSide,
+    analysisDecision.decision_side,
+    analysisDecision.orderIntentSide,
+    analysisDecision.order_intent_side,
+    analysisDecision.latestOrderIntentSide,
+    analysisDecision.latest_order_intent_side,
+    ...(Array.isArray(analysisDecision.orderIntentSides) ? analysisDecision.orderIntentSides : []),
+    ...(Array.isArray(analysisDecision.order_intent_sides) ? analysisDecision.order_intent_sides : []),
+  ];
+  return sideValues.filter((value) => normalizeLiveOpsCliBriefingOrderIntentSide(value) === normalizedSide).length;
+}
+
+function normalizeLiveOpsCliBriefingOrderIntentSide(value) {
+  const normalized = String(value ?? "").trim().toUpperCase();
+  if (normalized === "BID") {
+    return "BUY";
+  }
+  if (normalized === "ASK") {
+    return "SELL";
+  }
+  return normalized === "BUY" || normalized === "SELL" ? normalized : "";
 }
 
 function createLiveOpsCliScheduledBriefingSourceFingerprint({
@@ -10283,7 +10321,6 @@ function createLiveOpsCliScheduledBriefingSourceFingerprint({
     },
     marketData: {
       ready: marketData?.ready === true,
-      referencePrice: marketData?.referencePrice ?? null,
     },
     analysisDecision: {
       ready: analysisDecision?.ready === true,
