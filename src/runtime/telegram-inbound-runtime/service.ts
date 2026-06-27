@@ -10,6 +10,9 @@ import {
 } from "../../application/index.js";
 import type {
   AuditEventReceipt,
+  LiveOpsBriefingMarketSourceInput,
+  LiveOpsBriefingPortfolioSourceInput,
+  LiveOpsBriefingPositionSnapshot,
   ParsedTelegramInboundCommand,
   TelegramInboundCommandDedupeResult,
   TelegramInboundCommandMessage,
@@ -37,6 +40,7 @@ import type {
   TelegramInboundCommandRuntime,
   TelegramInboundCommandRuntimeOptions,
   CreateTelegramInboundBriefingProviderOptions,
+  TelegramInboundControlStatusSnapshot,
   TelegramInboundBriefingProvider,
   TelegramInboundControlConfirmationInput,
   TelegramInboundControlConfirmationResult,
@@ -137,10 +141,12 @@ export function createTelegramInboundBriefingProvider(
         status: status.liveOps ?? null,
         why: status.why,
         liveTradingEnabled: options.liveTradingEnabled ?? status.runtime.liveTradingEnabled,
+        market: createBriefingMarketProjectionFromControlStatus(status),
+        portfolio: createBriefingPortfolioProjectionFromControlStatus(status),
         trace: {
           evidenceIds: [input.correlationId],
           reasonCodes: ["telegram_brief_command"],
-          sourceIds: ["telegram_inbound_brief_command"],
+          sourceIds: ["telegram_inbound_brief_command", "http_control_status_snapshot"],
           metadata: {
             correlationId: input.correlationId,
             statusGeneratedAt: status.generatedAt,
@@ -153,6 +159,118 @@ export function createTelegramInboundBriefingProvider(
       });
     },
   };
+}
+
+/**
+ * `/status.marketData` safe field를 briefing market projection으로 낮춘다.
+ *
+ * 기본 `/brief` provider는 별도 market provider를 호출하지 않으므로 이미 조회된 status snapshot만 사용한다. raw ticker/orderbook은
+ * 없고 connection/lag/updatedAt만 전달해 formatter가 market freshness를 관측 부재로 오인하지 않게 한다.
+ *
+ * @param status HTTP control status safe snapshot
+ * @returns briefing assembler에 전달할 market projection
+ */
+function createBriefingMarketProjectionFromControlStatus(
+  status: TelegramInboundControlStatusSnapshot,
+): LiveOpsBriefingMarketSourceInput {
+  const lagText = status.marketData.lagMs === null
+    ? "지연 관측 없음"
+    : `지연 ${status.marketData.lagMs}ms`;
+  return {
+    freshnessLabel: labelBriefingMarketFreshness(status),
+    summary: `시장 데이터 상태 ${status.marketData.connectionStatus}, ${lagText}.`,
+    observedAt: status.marketData.updatedAt,
+  };
+}
+
+/**
+ * `/status`의 paper/PnL safe field를 briefing portfolio projection으로 낮춘다.
+ *
+ * `/status`에는 raw wallet balance나 coin별 수량이 없으므로 cash/balance는 관측 없음으로 유지한다. 대신 이미 안전하게 집계된
+ * PnL과 paper position count를 넘겨 기본 `/brief`가 평가자산/PnL과 position scope를 누락하지 않게 한다.
+ *
+ * @param status HTTP control status safe snapshot
+ * @returns briefing assembler에 전달할 portfolio projection
+ */
+function createBriefingPortfolioProjectionFromControlStatus(
+  status: TelegramInboundControlStatusSnapshot,
+): LiveOpsBriefingPortfolioSourceInput {
+  return {
+    cash: {
+      statusLabel: "cash source 관측 없음",
+      availableKrw: null,
+      totalKrw: null,
+      observedAt: null,
+    },
+    balances: null,
+    positions: createBriefingPositionsFromControlStatus(status),
+    pnl: {
+      statusLabel: status.pnl.statusLabel,
+      realizedKrw: status.pnl.latestRealizedPnlKrw,
+      unrealizedKrw: status.pnl.latestUnrealizedPnlKrw,
+      equityKrw: status.pnl.latestEquityKrw,
+      observedAt: status.pnl.latestCapturedAt,
+    },
+    openExposureKrw: status.liveOps?.budget.openExposureKrw ?? null,
+    budgetUsedKrw: status.liveOps?.budget.dailyNotionalUsedKrw ?? null,
+  };
+}
+
+/**
+ * `/status.marketData` connection/updatedAt 조합을 briefing용 freshness label로 변환한다.
+ *
+ * connection 문자열만으로 fresh를 만들면 오래된 상태가 정상으로 보일 수 있으므로 updatedAt이 없으면 관측 없음으로 닫는다. 이
+ * 함수는 문자열 분류만 수행하며 market data provider 재조회 side effect를 만들지 않는다.
+ *
+ * @param status HTTP control status safe snapshot
+ * @returns 운영자에게 보일 market freshness label
+ */
+function labelBriefingMarketFreshness(status: TelegramInboundControlStatusSnapshot): string {
+  if (status.marketData.updatedAt === null) {
+    // 업데이트 시각이 없으면 연결 문자열만으로 fresh 상태를 만들지 않는다.
+    return "시장 데이터 관측 없음";
+  }
+
+  const normalized = status.marketData.connectionStatus.trim().toLowerCase();
+  if (normalized === "connected") {
+    return "시장 데이터 수신 확인";
+  }
+  if (normalized === "disconnected") {
+    return "시장 데이터 연결 끊김";
+  }
+  if (normalized === "unknown") {
+    return "시장 데이터 상태 확인 필요";
+  }
+  return `시장 데이터 ${status.marketData.connectionStatus}`;
+}
+
+/**
+ * `/status.paper.openPositionCount`를 briefing position projection으로 변환한다.
+ *
+ * `/status`에는 개별 포지션 수량과 평균단가가 없으므로 count가 양수일 때만 대표 market에 aggregate position label을 붙인다.
+ * count 결측은 무포지션이 아니라 source 결측으로 반환해 formatter가 관측 부재를 유지하게 한다.
+ *
+ * @param status HTTP control status safe snapshot
+ * @returns briefing position projection 또는 source 결측 표시
+ */
+function createBriefingPositionsFromControlStatus(
+  status: TelegramInboundControlStatusSnapshot,
+): readonly LiveOpsBriefingPositionSnapshot[] | null {
+  if (status.paper.status === "unavailable" || status.paper.openPositionCount === null) {
+    // paper 집계가 실패했거나 count가 없으면 무포지션으로 보정하지 않고 position source 결측으로 둔다.
+    return null;
+  }
+  if (status.paper.openPositionCount <= 0) {
+    return [];
+  }
+  return [
+    {
+      market: status.runtime.universe.phase1[0] ?? status.runtime.market,
+      quantity: null,
+      averageEntryPriceKrw: null,
+      statusLabel: `paper 보유 포지션 ${status.paper.openPositionCount}개`,
+    },
+  ];
 }
 
 /**

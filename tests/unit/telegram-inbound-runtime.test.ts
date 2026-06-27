@@ -110,8 +110,13 @@ describe("Telegram inbound command runtime", () => {
     expect(text).toContain("Live Ops 브리핑");
     expect(text).toContain("상태:");
     expect(text).toContain("운영 상태");
+    expect(text).toContain("- freshness: 시장 데이터 수신 확인");
+    expect(text).toContain("- coin/position: coin balance source 관측 없음, KRW-BTC 관측 없음 paper 보유 포지션 2개");
+    expect(text).toContain("- PnL: 실현 1200 KRW, 미실현 -300 KRW, 평가 1000000 KRW");
     expect(text).toContain("추적 정보");
     expect(text).toContain("telegram-inbound-briefing-fixture");
+    expect(text).not.toContain("- freshness: 관측 없음");
+    expect(text).not.toContain("- PnL: 관측 없음");
     expect(text.split("추적 정보")[0]).not.toContain("live_order_capable");
   });
 
