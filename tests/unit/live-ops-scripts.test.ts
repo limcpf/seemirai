@@ -4319,13 +4319,14 @@ console.log(JSON.stringify({
     expect(referencePriceOnlySummary).toMatchObject({
       ready: true,
       scheduledBriefing: {
-        status: "skipped",
+        status: "sent",
         ready: true,
-        providerDispatchAttempted: false,
-        cooldownHitCount: 1,
+        providerDispatchAttempted: true,
+        cooldownHitCount: 0,
       },
     });
-    expect(scheduledFetchBodies).toHaveLength(2);
+    expect(scheduledFetchBodies).toHaveLength(3);
+    expect(scheduledFetchBodies[2]?.text).toContain("- 기준가: 101300600");
 
     const materialSourceSummary = await evaluateLiveOpsCliTelegramAlert({
       config,
@@ -4384,8 +4385,8 @@ console.log(JSON.stringify({
         cooldownHitCount: 0,
       },
     });
-    expect(scheduledFetchBodies).toHaveLength(3);
-    expect(scheduledFetchBodies[2]?.text).not.toContain("SELL 후보 1건");
+    expect(scheduledFetchBodies).toHaveLength(4);
+    expect(scheduledFetchBodies[3]?.text).not.toContain("SELL 후보 1건");
 
     const failedScheduledSummary = await evaluateLiveOpsCliTelegramAlert({
       config: {

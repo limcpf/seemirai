@@ -10388,6 +10388,9 @@ function createLiveOpsCliScheduledBriefingSourceFingerprint({
     },
     marketData: {
       ready: marketData?.ready === true,
+      // cooldown fingerprint는 브리핑 본문에 노출되는 시장 관측값까지 포함해야 stale message 재사용을 막을 수 있다.
+      latestHeartbeatAt: marketData?.latestHeartbeatAt ?? null,
+      referencePrice: marketData?.referencePrice ?? null,
     },
     analysisDecision: {
       ready: analysisDecision?.ready === true,

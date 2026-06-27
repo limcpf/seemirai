@@ -111,13 +111,37 @@ describe("Telegram inbound command runtime", () => {
     expect(text).toContain("상태:");
     expect(text).toContain("운영 상태");
     expect(text).toContain("- freshness: 시장 데이터 수신 확인");
-    expect(text).toContain("- coin/position: coin balance source 관측 없음, KRW-BTC 관측 없음 paper 보유 포지션 2개");
+    expect(text).toContain("- coin/position: coin balance source 관측 없음, 종목 미상 관측 없음 paper 보유 포지션 2개");
     expect(text).toContain("- PnL: 실현 1200 KRW, 미실현 -300 KRW, 평가 1000000 KRW");
     expect(text).toContain("추적 정보");
     expect(text).toContain("telegram-inbound-briefing-fixture");
     expect(text).not.toContain("- freshness: 관측 없음");
+    expect(text).not.toContain("KRW-BTC 관측 없음 paper 보유 포지션");
     expect(text).not.toContain("- PnL: 관측 없음");
     expect(text.split("추적 정보")[0]).not.toContain("live_order_capable");
+  });
+
+  it("keeps stale /status market heartbeat from becoming a fresh default /brief label", async () => {
+    const statusProvider = new CapturingStatusProvider(createStatusSnapshot({
+      marketData: {
+        connectionStatus: "connected",
+        lagMs: 600_001,
+        updatedAt: "2026-06-09T23:50:00.000Z",
+      },
+    }));
+    const briefingProvider = createTelegramInboundBriefingProvider({
+      statusProvider,
+    });
+
+    const text = await briefingProvider.getBriefing({
+      correlationId: "telegram-inbound-briefing-stale-market",
+      occurredAt: now,
+    });
+
+    expect(text).toContain("- freshness: 시장 데이터 freshness 확인 필요");
+    expect(text).toContain("시장 데이터 heartbeat가 5분보다 오래되었습니다.");
+    expect(text).toContain("마지막 수신 2026-06-09T23:50:00.000Z");
+    expect(text).not.toContain("- freshness: 시장 데이터 수신 확인");
   });
 
   it("uses the default /brief provider when runtime is assembled with only statusProvider", async () => {
@@ -645,9 +669,11 @@ function createMessage(overrides: Partial<TelegramInboundCommandMessage> = {}): 
 class CapturingStatusProvider implements ControlStatusProvider {
   public calls = 0;
 
+  public constructor(private readonly snapshot: ControlStatusSnapshot = createStatusSnapshot()) {}
+
   public async getStatus(): Promise<ControlStatusSnapshot> {
     this.calls += 1;
-    return createStatusSnapshot();
+    return this.snapshot;
   }
 }
 
