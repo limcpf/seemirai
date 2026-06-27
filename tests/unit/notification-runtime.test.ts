@@ -41,6 +41,7 @@ describe("notification runtime assembly", () => {
       scheduledEnabled: true,
       scheduleKey: "ops:hourly",
     });
+    expect(runtime?.memoryCooldownStore).toBe(runtime?.durableCooldownStore);
     expect(plan).toMatchObject({
       status: "ready",
       ready: true,
@@ -56,7 +57,7 @@ describe("notification runtime assembly", () => {
       environment: "production",
       runMode: "paper_trading",
       reasonCode: "scheduled_live_ops_briefing",
-      dedupeKey: "ops%3Ahourly:sha256%3Abriefing-source",
+      dedupeKey: "a_6f70733a686f75726c79:m_7368613235363a6272696566696e672d736f75726365",
       correlationId: "corr-scheduled-briefing",
     });
   });

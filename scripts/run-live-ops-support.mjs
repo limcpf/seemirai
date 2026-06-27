@@ -99,7 +99,8 @@ const liveOpsConfigAllowedKeys = {
     "risk_reduction_sell_fraction",
     "expected_loss_bps_of_equity",
   ],
-  telegram: ["startup_alert_enabled", "live_order_capable_alert_enabled", "trade_event_alerts_enabled", "provider_timeout_ms"],
+  telegram: ["startup_alert_enabled", "live_order_capable_alert_enabled", "trade_event_alerts_enabled", "provider_timeout_ms", "briefing"],
+  telegram_briefing: ["scheduled_enabled", "schedule_key"],
   tui: ["foreground_enabled", "attach_enabled", "refresh_interval_ms", "control_requires_two_step_confirmation", "controls_enabled"],
 };
 
@@ -626,6 +627,7 @@ function validateLiveOpsConfig(config) {
     liveOpsConfigAllowedKeys.analysis_decision_policy_autonomous_24x7,
   );
   validateAllowedKeys(errors, config.telegram, "telegram", liveOpsConfigAllowedKeys.telegram);
+  validateAllowedKeys(errors, config.telegram?.briefing, "telegram.briefing", liveOpsConfigAllowedKeys.telegram_briefing);
   validateAllowedKeys(errors, config.tui, "tui", liveOpsConfigAllowedKeys.tui);
   const secretPaths = findSecretLikeKeys(config);
   if (secretPaths.length > 0) {
@@ -687,6 +689,7 @@ function validateLiveOpsConfig(config) {
     trade_event_alerts_enabled: true,
     provider_timeout_ms: 5000,
   });
+  validateLiveOpsTelegramBriefingConfig(errors, config.telegram?.briefing);
   if (config.tui?.foreground_enabled !== true || config.tui?.attach_enabled !== true) {
     errors.push("foreground/attach TUI skeleton은 모두 활성이어야 합니다.");
   }
@@ -752,6 +755,22 @@ function validateLiveOpsDecisionPolicyConfig(errors, decisionPolicy) {
   }
 
   errors.push("analysis.decision_policy.id는 cleanup_probe 또는 autonomous_24x7이어야 합니다.");
+}
+
+function validateLiveOpsTelegramBriefingConfig(errors, briefing) {
+  if (briefing === undefined) {
+    return;
+  }
+  if (briefing === null || typeof briefing !== "object" || Array.isArray(briefing)) {
+    errors.push("telegram.briefing 설정은 객체여야 합니다.");
+    return;
+  }
+  if (briefing.scheduled_enabled !== undefined && typeof briefing.scheduled_enabled !== "boolean") {
+    errors.push("telegram.briefing.scheduled_enabled는 boolean이어야 합니다.");
+  }
+  if (briefing.schedule_key !== undefined && !hasMeaningfulValue(briefing.schedule_key)) {
+    errors.push("telegram.briefing.schedule_key는 비어 있지 않은 문자열이어야 합니다.");
+  }
 }
 
 function validateLiveOpsEnv(env, processEnv) {
@@ -5049,6 +5068,8 @@ function formatLiveOpsCliTelegramEventKind(eventKind) {
       return "Telegram 알림 채널 준비";
     case "LIVE_ORDER_CAPABLE_STARTED":
       return "실주문 가능 경계 진입";
+    case "SCHEDULED_BRIEFING":
+      return "정기 브리핑";
     case "ORDER_SUBMITTED":
       return "주문 제출";
     case "ORDER_FILLED":
@@ -9296,12 +9317,17 @@ export async function evaluateLiveOpsCliTelegramAlert({
 function shouldDispatchLiveOpsCliTelegramAlert(config, liveExecution) {
   return (
     shouldDispatchLiveOpsCliTelegramStartupAlert(config, liveExecution) ||
+    shouldDispatchLiveOpsCliScheduledBriefing(config) ||
     shouldRequireLiveOpsCliTelegramBoundary(liveExecution)
   );
 }
 
 function shouldDispatchLiveOpsCliTelegramStartupAlert(config, liveExecution) {
   return config.telegram?.startup_alert_enabled === true && liveExecution.status === "idle" && liveExecution.ready === true;
+}
+
+function shouldDispatchLiveOpsCliScheduledBriefing(config) {
+  return config.telegram?.briefing?.scheduled_enabled === true;
 }
 
 function shouldRequireLiveOpsCliTelegramBoundary(liveExecution) {
@@ -9532,7 +9558,40 @@ function createLiveOpsCliTelegramEvents({ config, market, liveExecution, orderIn
     });
     events.push(...tradeEvents);
   }
+  if (shouldDispatchLiveOpsCliScheduledBriefing(config)) {
+    // scheduled briefing은 명시 opt-in 설정이 있을 때만 기존 owner chat dispatch 경계로 내려간다.
+    events.push(createLiveOpsCliScheduledBriefingEvent({
+      config,
+      market,
+      liveExecution,
+      observedAt,
+      correlationId,
+    }));
+  }
   return events;
+}
+
+function createLiveOpsCliScheduledBriefingEvent({ config, market, liveExecution, observedAt, correlationId }) {
+  const scheduleKey = hasMeaningfulValue(config.telegram?.briefing?.schedule_key)
+    ? String(config.telegram.briefing.schedule_key).trim()
+    : "default";
+  return createLiveOpsCliTelegramBaseEvent({
+    eventKind: "SCHEDULED_BRIEFING",
+    market,
+    liveExecution,
+    observedAt,
+    correlationId,
+    evidenceId: createLiveOpsCliEvidenceId("scheduled-briefing", `${scheduleKey}:${observedAt}:${liveExecution.status}`),
+    safeSummary: [
+      "Live Ops 정기 브리핑",
+      `상태: ${liveExecution.status ?? "관측 없음"}`,
+      `원인: ${liveExecution.message ?? "live ops summary를 확인하세요."}`,
+    ].join("\n"),
+    safeDetails: {
+      dispatch_kind: "scheduled",
+      schedule_key: scheduleKey,
+    },
+  });
 }
 
 function createLiveOpsCliTradeTelegramEvents({ market, liveExecution, orderIntent, observedAt, correlationId }) {
@@ -9628,6 +9687,7 @@ function createLiveOpsCliTelegramBaseEvent({
   correlationId,
   evidenceId,
   safeSummary,
+  safeDetails = {},
 }) {
   const event = {
     environment: "production",
@@ -9648,6 +9708,7 @@ function createLiveOpsCliTelegramBaseEvent({
     safeDetails: {
       execution_status: liveExecution.status,
       attempt_status: liveExecution.attemptStatus ?? null,
+      ...safeDetails,
     },
   };
   assignLiveOpsCliTelegramIdentifier(event, "orderId", liveExecution.attemptId);
@@ -9713,6 +9774,7 @@ function isLiveOpsCliLifecycleAlert(eventKind) {
     "RESTART_DETECTED",
     "RECOVERY_COMPLETED",
     "TELEGRAM_PROVIDER_FAILURE_SUSTAINED",
+    "SCHEDULED_BRIEFING",
   ].includes(eventKind);
 }
 

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  createAlertFingerprint,
   createInMemoryAlertCooldownStore,
 } from "../../src/application/index.js";
 import type {
@@ -437,7 +438,7 @@ describe("scheduled Live Ops Telegram briefing dispatch", () => {
       severity: "P3",
       alertType: "live_ops_briefing",
       reasonCode: "scheduled_live_ops_briefing",
-      dedupeKey: "ops-hourly:sha256%3Abriefing-fixture",
+      dedupeKey: "a_6f70732d686f75726c79:n_7368613235363a6272696566696e672d66697874757265",
       title: "Live Ops 정기 브리핑",
       metadata: {
         source: "live_ops_briefing",
@@ -547,9 +548,30 @@ describe("scheduled Live Ops Telegram briefing dispatch", () => {
       briefingSourceFingerprint: "sha256:a",
     }));
 
-    expect(first.requests[0]?.dedupeKey).toBe("ops%3Asha256:a");
-    expect(second.requests[0]?.dedupeKey).toBe("ops:sha256%3Aa");
+    expect(first.requests[0]?.dedupeKey).toBe("a_6f70733a736861323536:1_61");
+    expect(second.requests[0]?.dedupeKey).toBe("3_6f7073:8_7368613235363a61");
     expect(first.requests[0]?.dedupeKey).not.toBe(second.requests[0]?.dedupeKey);
+  });
+
+  it("keeps scheduled briefing dedupe segments distinct after alert fingerprint normalization", () => {
+    const colonSegment = planScheduledLiveOpsTelegramBriefing(createScheduledBriefingPlanInput({
+      config: {
+        scheduledEnabled: true,
+        scheduleKey: "ops:hourly",
+      },
+      briefingSourceFingerprint: "source",
+    }));
+    const underscoreSegment = planScheduledLiveOpsTelegramBriefing(createScheduledBriefingPlanInput({
+      config: {
+        scheduledEnabled: true,
+        scheduleKey: "ops_3ahourly",
+      },
+      briefingSourceFingerprint: "source",
+    }));
+
+    expect(createAlertFingerprint(colonSegment.requests[0]!)).not.toBe(
+      createAlertFingerprint(underscoreSegment.requests[0]!),
+    );
   });
 
   it("provider 실패 응답은 cooldown skip이 아니라 partial failure로 요약한다", async () => {

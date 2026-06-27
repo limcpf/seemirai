@@ -110,27 +110,30 @@ export function createRuntimeAlertDispatchOptions(
 
   const environment = resolveAlertEnvironment(options.env);
   const runMode = options.runtimeConfig.mode.toLowerCase();
-  const alertDispatch: KillSwitchAlertDispatchOptions = {
+  const cooldownStore = new PostgresAlertCooldownRepository(options.database);
+  const runtimeAlertDispatch: KillSwitchAlertDispatchOptions & {
+    scheduledTelegramBriefing?: RuntimeScheduledTelegramBriefingRuntime;
+  } = {
     environment,
     runMode,
     notifier: createTelegramNotifier(notificationConfig.telegram),
-    durableCooldownStore: new PostgresAlertCooldownRepository(options.database),
+    durableCooldownStore: cooldownStore,
+    // scheduled briefing은 P3이지만 재시작/다중 daemon에서도 같은 fingerprint를 막아야 하므로 runtime 조립에서는 DB-backed store를 공유한다.
+    memoryCooldownStore: cooldownStore,
     retryJobQueue: createPostgresNotificationRetryJobQueue(options.database),
     auditLog: new PostgresAuditLogRepository(options.database),
     ...(options.clock === undefined ? {} : { clock: options.clock }),
   };
   const briefingConfig = loadRuntimeTelegramBriefingConfig(options.runtimeConfig, options.env);
 
-  return {
-    ...alertDispatch,
-    // scheduled briefing도 같은 provider/cooldown/audit 객체를 공유해야 config 활성화가 별도 테스트 helper에 머물지 않는다.
-    scheduledTelegramBriefing: createRuntimeScheduledTelegramBriefingRuntime({
-      config: briefingConfig,
-      environment,
-      runMode,
-      alertDispatch,
-    }),
-  };
+  // scheduled briefing도 같은 객체를 캡처해야 failureState 누적과 failure-state lock이 kill-switch/lifecycle alert와 갈라지지 않는다.
+  runtimeAlertDispatch.scheduledTelegramBriefing = createRuntimeScheduledTelegramBriefingRuntime({
+    config: briefingConfig,
+    environment,
+    runMode,
+    alertDispatch: runtimeAlertDispatch,
+  });
+  return runtimeAlertDispatch as RuntimeAlertDispatchOptions;
 }
 
 function createRuntimeScheduledTelegramBriefingRuntime(input: {

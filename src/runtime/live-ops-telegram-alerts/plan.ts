@@ -1,3 +1,5 @@
+import { Buffer } from "node:buffer";
+
 import {
   createLiveOpsAlertRequest,
   dispatchAlertWithFailureStateTracking,
@@ -558,12 +560,13 @@ function normalizeBriefingScheduleKey(value: string | undefined): string {
 }
 
 function createScheduledBriefingDedupeKey(scheduleKey: string, briefingSourceFingerprint: string): string {
-  // schedule key와 source fingerprint 양쪽에 ':'가 들어갈 수 있어 segment별 escape 없이는 서로 다른 evidence가 같은 cooldown으로 접힌다.
+  // downstream fingerprint 정규화가 ':'와 '%'를 다시 바꾸므로 segment 자체를 길이+hex로 낮춰 충돌 없는 business key를 유지한다.
   return `${encodeScheduledBriefingDedupeSegment(scheduleKey)}:${encodeScheduledBriefingDedupeSegment(briefingSourceFingerprint)}`;
 }
 
 function encodeScheduledBriefingDedupeSegment(value: string): string {
-  return encodeURIComponent(value.trim());
+  const normalized = value.trim();
+  return `${normalized.length.toString(36)}_${Buffer.from(normalized, "utf8").toString("hex")}`;
 }
 
 function createTradeEvents(

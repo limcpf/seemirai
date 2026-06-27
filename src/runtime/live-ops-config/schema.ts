@@ -67,6 +67,13 @@ const Autonomous24x7DecisionPolicySchema = z
   })
   .strict();
 
+const LiveOpsTelegramBriefingConfigSchema = z
+  .object({
+    scheduled_enabled: z.boolean().default(false),
+    schedule_key: z.string().trim().min(1).default("default"),
+  })
+  .strict();
+
 /**
  * production live ops JSON 설정의 기본 계약이다.
  *
@@ -132,6 +139,10 @@ export const defaultLiveOpsConfig = {
     live_order_capable_alert_enabled: true,
     trade_event_alerts_enabled: true,
     provider_timeout_ms: 5_000,
+    briefing: {
+      scheduled_enabled: false,
+      schedule_key: "default",
+    },
   },
   tui: {
     foreground_enabled: true,
@@ -236,6 +247,7 @@ export const LiveOpsConfigSchema = z
           .default(defaultLiveOpsConfig.telegram.live_order_capable_alert_enabled),
         trade_event_alerts_enabled: z.literal(true).default(defaultLiveOpsConfig.telegram.trade_event_alerts_enabled),
         provider_timeout_ms: PositiveIntegerSchema.default(defaultLiveOpsConfig.telegram.provider_timeout_ms),
+        briefing: LiveOpsTelegramBriefingConfigSchema.default(defaultLiveOpsConfig.telegram.briefing),
       })
       .strict()
       .default(defaultLiveOpsConfig.telegram),

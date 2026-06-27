@@ -4021,6 +4021,138 @@ console.log(JSON.stringify({
     expect(output.failedTui).not.toContain("Telegram alert: 후속 연결 대기");
   });
 
+  it("Live Ops Telegram helper는 명시 scheduled briefing config를 dispatch payload로 내린다", async () => {
+    const supportModulePath = path.join(process.cwd(), "scripts/run-live-ops-support.mjs");
+    const {
+      createLiveOpsRuntimeAdapter,
+      evaluateLiveOpsCliTelegramAlert,
+    } = await import(supportModulePath);
+    const config = {
+      schema_version: 1,
+      mode: "LIVE_AUTONOMOUS_SMALL_BUDGET",
+      exchange: "UPBIT",
+      market: "KRW_SPOT",
+      live_trading_enabled: true,
+      paper_no_key: false,
+      withdrawal_enabled: false,
+      cross_exchange_arbitrage_enabled: false,
+      futures_enabled: false,
+      leverage_enabled: false,
+      market_order_enabled: false,
+      entry_market_order_enabled: false,
+      universe: {
+        markets: ["KRW-BTC"],
+        default_market: "KRW-BTC",
+      },
+      budget: {
+        max_order_krw: "10000",
+        daily_autonomous_notional_limit_krw: "30000",
+        max_open_position_notional_krw: "30000",
+        operations_stop_ceiling_krw: "49999",
+      },
+      workers: {
+        db_readiness: true,
+        market_data: true,
+        analysis_decision: true,
+        live_execution: true,
+        reconcile_pnl_status: true,
+        telegram: true,
+        tui: true,
+      },
+      market_data: {
+        provider: "UPBIT_PUBLIC",
+        websocket_enabled: true,
+        rest_policy_snapshot_enabled: true,
+        stale_after_ms: 30000,
+      },
+      analysis: {
+        candle_interval_seconds: 60,
+        feature_interval_seconds: 5,
+        decision_interval_seconds: 5,
+        record_hold_decision: true,
+        decision_policy: {
+          id: "cleanup_probe",
+          cleanup_probe: {
+            max_notional_krw: "10000",
+            tick_size_krw: "1000",
+            price_offset_ticks: 1,
+            quantity_scale: 8,
+            expected_loss_bps_of_equity: "5",
+          },
+        },
+      },
+      telegram: {
+        startup_alert_enabled: true,
+        live_order_capable_alert_enabled: true,
+        trade_event_alerts_enabled: true,
+        provider_timeout_ms: 5000,
+        briefing: {
+          scheduled_enabled: true,
+          schedule_key: "ops:hourly",
+        },
+      },
+      tui: {
+        foreground_enabled: true,
+        attach_enabled: true,
+        refresh_interval_ms: 1000,
+        control_requires_two_step_confirmation: true,
+        controls_enabled: true,
+      },
+    };
+    const dispatches: Array<{ events: Array<{ eventKind: string; safeSummary: string; safeDetails: Record<string, unknown> }> }> = [];
+
+    expect(() => createLiveOpsRuntimeAdapter().validateConfig(config)).not.toThrow();
+    const summary = await evaluateLiveOpsCliTelegramAlert({
+      config,
+      fixtureSmoke: false,
+      liveExecution: {
+        status: "idle",
+        ready: true,
+        liveOrderCapable: false,
+        attemptedOrderCount: 0,
+        submittedOrderCount: 0,
+        attemptStatus: null,
+        message: "production decision tick에 주문 후보가 없어 broker 제출은 발생하지 않았습니다.",
+      },
+      observedAt: "2026-06-18T14:00:00.000Z",
+      correlationId: "corr-scheduled-live-ops-briefing",
+      telegramDispatcher: {
+        async dispatch(payload: { events: Array<{ eventKind: string; safeSummary: string; safeDetails: Record<string, unknown> }> }) {
+          dispatches.push(payload);
+          return {
+            status: "sent",
+            attemptedCount: payload.events.length,
+            deliveredCount: payload.events.length,
+            cooldownHitCount: 0,
+            retryPlannedCount: 0,
+            failureCount: 0,
+          };
+        },
+      },
+    });
+
+    expect(summary).toMatchObject({
+      status: "sent",
+      ready: true,
+      providerDispatchAttempted: true,
+      alertCount: 2,
+      deliveredCount: 2,
+    });
+    expect(dispatches).toHaveLength(1);
+    expect(dispatches[0]?.events.map((event) => event.eventKind)).toEqual([
+      "TELEGRAM_CONNECTION_READY",
+      "SCHEDULED_BRIEFING",
+    ]);
+    expect(dispatches[0]?.events[1]).toMatchObject({
+      eventKind: "SCHEDULED_BRIEFING",
+      safeDetails: {
+        schedule_key: "ops:hourly",
+        dispatch_kind: "scheduled",
+      },
+    });
+    expect(dispatches[0]?.events[1]?.safeSummary).toContain("Live Ops 정기 브리핑");
+  });
+
   it("production provider wiring은 DB reconcile/private read와 Telegram dispatcher를 실제 경계에 연결한다", () => {
     const result = spawnSync(
       process.execPath,
