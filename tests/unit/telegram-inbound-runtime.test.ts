@@ -115,6 +115,28 @@ describe("Telegram inbound command runtime", () => {
     expect(text.split("추적 정보")[0]).not.toContain("live_order_capable");
   });
 
+  it("uses the default /brief provider when runtime is assembled with only statusProvider", async () => {
+    const fixture = createRuntimeFixture();
+
+    const result = await fixture.runtime.handleMessage(createMessage({ text: "/brief" }));
+
+    expect(result).toMatchObject({
+      status: "EXECUTED",
+      executed: true,
+      commandName: "brief",
+      parseStatus: "PARSED",
+      correlationId: "telegram-inbound-10-20",
+    });
+    expect(fixture.statusProvider.calls).toBe(1);
+    expect(fixture.killSwitchProvider.requests).toHaveLength(0);
+    expect(fixture.replyPort.replies[0]?.text).toContain("Live Ops 브리핑");
+    expect(fixture.replyPort.replies[0]?.text).toContain("상태:");
+    expect(fixture.replyPort.replies[0]?.text).toContain("추적 정보");
+    expect(fixture.replyPort.replies[0]?.text.split("추적 정보")[0]).not.toContain("live_order_capable");
+    expect(JSON.stringify(result)).not.toContain("/brief");
+    expect(JSON.stringify(fixture.auditLog.events)).not.toContain("/brief");
+  });
+
   it("deduplicates repeated /brief updates before briefing dispatch", async () => {
     const briefingProvider = new CapturingBriefingProvider();
     const fixture = createRuntimeFixture({ briefingProvider });

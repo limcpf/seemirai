@@ -641,20 +641,14 @@ async function executeReadOnlyCommandSafely(
 ): Promise<{ ok: true; text: string } | { ok: false; text: string }> {
   try {
     if (command.name === "brief") {
-      if (options.briefingProvider === undefined) {
-        return {
-          ok: false,
-          text: formatTelegramCommandExecutionFailureResponse({
-            commandName: command.name,
-            correlationId,
-          }),
-        };
-      }
-
+      // 기존 runtime 조립 경계가 statusProvider만 넘겨도 `/brief` parser 활성화와 실행 가능 상태가 어긋나지 않게 기본 provider로 닫는다.
+      const briefingProvider = options.briefingProvider ?? createTelegramInboundBriefingProvider({
+        statusProvider: options.statusProvider,
+      });
       // `/brief`는 status 조회와 같은 read-only 경로지만 별도 briefing provider만 호출해 broker/control side effect로 이어지지 않는다.
       return {
         ok: true,
-        text: await options.briefingProvider.getBriefing({
+        text: await briefingProvider.getBriefing({
           correlationId,
           occurredAt: (options.clock ?? (() => new Date()))().toISOString(),
         }),

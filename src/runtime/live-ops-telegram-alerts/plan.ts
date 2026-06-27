@@ -558,7 +558,12 @@ function normalizeBriefingScheduleKey(value: string | undefined): string {
 }
 
 function createScheduledBriefingDedupeKey(scheduleKey: string, briefingSourceFingerprint: string): string {
-  return `${scheduleKey}:${briefingSourceFingerprint.trim()}`;
+  // schedule key와 source fingerprint 양쪽에 ':'가 들어갈 수 있어 segment별 escape 없이는 서로 다른 evidence가 같은 cooldown으로 접힌다.
+  return `${encodeScheduledBriefingDedupeSegment(scheduleKey)}:${encodeScheduledBriefingDedupeSegment(briefingSourceFingerprint)}`;
+}
+
+function encodeScheduledBriefingDedupeSegment(value: string): string {
+  return encodeURIComponent(value.trim());
 }
 
 function createTradeEvents(

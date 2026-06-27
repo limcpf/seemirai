@@ -437,7 +437,7 @@ describe("scheduled Live Ops Telegram briefing dispatch", () => {
       severity: "P3",
       alertType: "live_ops_briefing",
       reasonCode: "scheduled_live_ops_briefing",
-      dedupeKey: "ops-hourly:sha256:briefing-fixture",
+      dedupeKey: "ops-hourly:sha256%3Abriefing-fixture",
       title: "Live Ops 정기 브리핑",
       metadata: {
         source: "live_ops_briefing",
@@ -529,6 +529,27 @@ describe("scheduled Live Ops Telegram briefing dispatch", () => {
     expect(first.results[0]?.fingerprint).not.toBe(refreshed.results[0]?.fingerprint);
     expect(notifier.alerts).toHaveLength(2);
     expect(notifier.alerts[1]?.body).toContain("시장 freshness가 새로 관측됐습니다.");
+  });
+
+  it("escapes scheduled briefing dedupe segments before joining", () => {
+    const first = planScheduledLiveOpsTelegramBriefing(createScheduledBriefingPlanInput({
+      config: {
+        scheduledEnabled: true,
+        scheduleKey: "ops:sha256",
+      },
+      briefingSourceFingerprint: "a",
+    }));
+    const second = planScheduledLiveOpsTelegramBriefing(createScheduledBriefingPlanInput({
+      config: {
+        scheduledEnabled: true,
+        scheduleKey: "ops",
+      },
+      briefingSourceFingerprint: "sha256:a",
+    }));
+
+    expect(first.requests[0]?.dedupeKey).toBe("ops%3Asha256:a");
+    expect(second.requests[0]?.dedupeKey).toBe("ops:sha256%3Aa");
+    expect(first.requests[0]?.dedupeKey).not.toBe(second.requests[0]?.dedupeKey);
   });
 
   it("provider 실패 응답은 cooldown skip이 아니라 partial failure로 요약한다", async () => {

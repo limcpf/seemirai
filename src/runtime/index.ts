@@ -415,7 +415,12 @@ export type {
   RuntimeNotificationConfig,
   RuntimeTelegramInboundConfig,
 } from "./notification-config.js";
-export type { PaperNoKeyKillSwitchControlProviderOptions } from "./notification-runtime.js";
+export type {
+  PaperNoKeyKillSwitchControlProviderOptions,
+  RuntimeAlertDispatchOptions,
+  RuntimeScheduledTelegramBriefingPlanInput,
+  RuntimeScheduledTelegramBriefingRuntime,
+} from "./notification-runtime.js";
 export type {
   CreateTelegramInboundBriefingProviderOptions,
   TelegramInboundBriefingProvider,

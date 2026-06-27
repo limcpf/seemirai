@@ -10,7 +10,19 @@ import {
 } from "../infrastructure/index.js";
 import type { Database } from "../infrastructure/index.js";
 import type { RuntimeConfig } from "./config.js";
-import { loadRuntimeNotificationConfig } from "./notification-config.js";
+import {
+  loadRuntimeNotificationConfig,
+  loadRuntimeTelegramBriefingConfig,
+} from "./notification-config.js";
+import type { RuntimeTelegramBriefingConfig } from "./notification-config.js";
+import {
+  dispatchScheduledLiveOpsTelegramBriefing,
+  planScheduledLiveOpsTelegramBriefing,
+} from "./live-ops-telegram-alerts.js";
+import type {
+  DispatchScheduledLiveOpsTelegramBriefingSummary,
+  ScheduledLiveOpsTelegramBriefingPlan,
+} from "./live-ops-telegram-alerts.js";
 import { createPostgresNotificationRetryJobQueue } from "./notification-retry-runtime.js";
 
 /**
@@ -25,6 +37,42 @@ export interface PaperNoKeyKillSwitchControlProviderOptions {
   env?: NodeJS.ProcessEnv;
   clock?: () => Date;
   actor?: string;
+}
+
+/**
+ * runtime alert dispatch 객체에 붙는 정기 Telegram briefing 실행 경계다.
+ *
+ * config는 `RuntimeConfig`/env에서 정규화된 scheduled briefing 설정이고, plan/dispatch는 이미 생성된 deterministic briefing text와
+ * source fingerprint를 기존 alert cooldown/retry/audit 경계로 낮춘다. provider나 DB write side effect는 dispatch 호출 때만
+ * 발생하며, plan 호출은 순수하게 request shape만 만든다는 invariant를 유지한다.
+ */
+export interface RuntimeScheduledTelegramBriefingRuntime {
+  readonly config: RuntimeTelegramBriefingConfig;
+  plan(input: RuntimeScheduledTelegramBriefingPlanInput): ScheduledLiveOpsTelegramBriefingPlan;
+  dispatch(input: RuntimeScheduledTelegramBriefingPlanInput): Promise<DispatchScheduledLiveOpsTelegramBriefingSummary>;
+}
+
+/**
+ * runtime scheduled briefing plan/dispatch 요청이다.
+ *
+ * 호출자는 deterministic formatter/LLM guard를 이미 통과한 briefing text와 그 source fingerprint를 넘긴다. runtime은
+ * environment/runMode와 scheduled config를 보강할 뿐, raw provider payload나 Telegram secret을 입력/출력에 포함하지 않는다.
+ */
+export interface RuntimeScheduledTelegramBriefingPlanInput {
+  readonly observedAt: string;
+  readonly briefingText: string;
+  readonly briefingSourceFingerprint: string;
+  readonly correlationId?: string;
+}
+
+/**
+ * runtime 알림 dispatch 의존성에 scheduled briefing 실행 경계를 함께 붙인 결과다.
+ *
+ * kill switch/lifecycle alert와 같은 notifier, cooldown, retry, audit 객체를 공유해야 Telegram provider 실패와 cooldown evidence가
+ * 서로 다른 runtime 표면에서 갈라지지 않는다.
+ */
+export interface RuntimeAlertDispatchOptions extends KillSwitchAlertDispatchOptions {
+  readonly scheduledTelegramBriefing: RuntimeScheduledTelegramBriefingRuntime;
 }
 
 /**
@@ -54,20 +102,63 @@ export function createPaperNoKeyKillSwitchControlProvider(
  */
 export function createRuntimeAlertDispatchOptions(
   options: PaperNoKeyKillSwitchControlProviderOptions,
-): KillSwitchAlertDispatchOptions | undefined {
+): RuntimeAlertDispatchOptions | undefined {
   const notificationConfig = loadRuntimeNotificationConfig(options.runtimeConfig, options.env);
   if (notificationConfig.telegram === undefined) {
     return undefined;
   }
 
-  return {
-    environment: resolveAlertEnvironment(options.env),
-    runMode: options.runtimeConfig.mode.toLowerCase(),
+  const environment = resolveAlertEnvironment(options.env);
+  const runMode = options.runtimeConfig.mode.toLowerCase();
+  const alertDispatch: KillSwitchAlertDispatchOptions = {
+    environment,
+    runMode,
     notifier: createTelegramNotifier(notificationConfig.telegram),
     durableCooldownStore: new PostgresAlertCooldownRepository(options.database),
     retryJobQueue: createPostgresNotificationRetryJobQueue(options.database),
     auditLog: new PostgresAuditLogRepository(options.database),
     ...(options.clock === undefined ? {} : { clock: options.clock }),
+  };
+  const briefingConfig = loadRuntimeTelegramBriefingConfig(options.runtimeConfig, options.env);
+
+  return {
+    ...alertDispatch,
+    // scheduled briefing도 같은 provider/cooldown/audit 객체를 공유해야 config 활성화가 별도 테스트 helper에 머물지 않는다.
+    scheduledTelegramBriefing: createRuntimeScheduledTelegramBriefingRuntime({
+      config: briefingConfig,
+      environment,
+      runMode,
+      alertDispatch,
+    }),
+  };
+}
+
+function createRuntimeScheduledTelegramBriefingRuntime(input: {
+  config: RuntimeTelegramBriefingConfig;
+  environment: string;
+  runMode: string;
+  alertDispatch: KillSwitchAlertDispatchOptions;
+}): RuntimeScheduledTelegramBriefingRuntime {
+  const plan = (planInput: RuntimeScheduledTelegramBriefingPlanInput): ScheduledLiveOpsTelegramBriefingPlan =>
+    planScheduledLiveOpsTelegramBriefing({
+      config: input.config,
+      environment: input.environment,
+      runMode: input.runMode,
+      observedAt: planInput.observedAt,
+      briefingText: planInput.briefingText,
+      briefingSourceFingerprint: planInput.briefingSourceFingerprint,
+      ...(planInput.correlationId === undefined ? {} : { correlationId: planInput.correlationId }),
+    });
+
+  return {
+    config: input.config,
+    plan,
+    async dispatch(dispatchInput) {
+      return dispatchScheduledLiveOpsTelegramBriefing({
+        plan: plan(dispatchInput),
+        alertDispatch: input.alertDispatch,
+      });
+    },
   };
 }
 
