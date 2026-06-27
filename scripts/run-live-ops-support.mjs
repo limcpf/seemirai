@@ -5720,21 +5720,34 @@ function formatTelegramAlertObservation(telegramAlert) {
     return "후속 연결 대기";
   }
 
-  return [
+  const parts = [
     telegramAlert.statusLabel ?? "계획 확인",
     `lifecycle ${telegramAlert.lifecycleAlertCount}`,
     `trade ${telegramAlert.tradeAlertCount}`,
     `provider 호출 ${telegramAlert.providerDispatchAttempted ? "있음" : "0"}`,
     `retry ${telegramAlert.retryPlannedCount ?? 0}`,
     `failure ${telegramAlert.failureCount ?? 0}`,
-  ].join(" / ");
+  ];
+  if (telegramAlert.scheduledBriefing !== undefined) {
+    const scheduledBriefing = telegramAlert.scheduledBriefing;
+    // 정기 브리핑은 일반 lifecycle/trade 알림과 독립 실패하므로 status surface에 별도 근거를 남긴다.
+    parts.push(`scheduled ${scheduledBriefing.statusLabel ?? scheduledBriefing.status ?? "상태 확인"}`);
+    parts.push(`scheduled retry ${scheduledBriefing.retryPlannedCount ?? 0}`);
+    parts.push(`scheduled failure ${scheduledBriefing.failureCount ?? 0}`);
+  }
+  return parts.join(" / ");
 }
 
 function hasMeaningfulTelegramFailureSummary(telegramAlert) {
+  const scheduledBriefing = telegramAlert?.scheduledBriefing;
   return (
     Number(telegramAlert?.failureCount ?? 0) > 0 ||
     Number(telegramAlert?.retryPlannedCount ?? 0) > 0 ||
-    telegramAlert?.status === "manual_review_required"
+    telegramAlert?.status === "manual_review_required" ||
+    Number(scheduledBriefing?.failureCount ?? 0) > 0 ||
+    Number(scheduledBriefing?.retryPlannedCount ?? 0) > 0 ||
+    scheduledBriefing?.status === "partial_failure" ||
+    scheduledBriefing?.status === "manual_review_required"
   );
 }
 
@@ -9903,10 +9916,13 @@ function readLiveOpsCliScheduledBriefingScheduleKey(config, env = {}) {
 }
 
 function readLiveOpsCliBooleanEnv(value) {
-  if (!hasMeaningfulValue(value)) {
+  if (value === undefined || value === null) {
     return undefined;
   }
   const normalized = String(value).trim().toLowerCase();
+  if (normalized === "") {
+    return undefined;
+  }
   if (["1", "true", "yes", "on"].includes(normalized)) {
     return true;
   }
@@ -10338,6 +10354,10 @@ function createLiveOpsCliScheduledBriefingSourceFingerprint({
       budgetUsedKrw: reconcilePnlStatus?.budgetUsedKrw ?? null,
       realizedPnlKrw: reconcilePnlStatus?.realizedPnlKrw ?? null,
       unrealizedPnlKrw: reconcilePnlStatus?.unrealizedPnlKrw ?? null,
+      privateRead: {
+        krwAvailable: reconcilePnlStatus?.privateRead?.krwAvailable ?? null,
+        balanceCurrencyCount: reconcilePnlStatus?.privateRead?.balanceCurrencyCount ?? null,
+      },
     },
   };
   return `sha256:${createHash("sha256").update(JSON.stringify(source)).digest("hex")}`;

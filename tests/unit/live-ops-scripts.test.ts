@@ -4027,6 +4027,8 @@ console.log(JSON.stringify({
       createLiveOpsCliScheduledBriefingDispatcher,
       createLiveOpsRuntimeAdapter,
       evaluateLiveOpsCliTelegramAlert,
+      renderLiveOpsSummary,
+      renderLiveOpsTuiDashboard,
     } = await import(supportModulePath);
     const config = {
       schema_version: 1,
@@ -4207,6 +4209,65 @@ console.log(JSON.stringify({
     expect(scheduledFetchBodies[0]?.text).toContain("시황");
     expect(scheduledFetchBodies[0]?.text).toContain("추적 정보");
 
+    const walletOnlySummary = await evaluateLiveOpsCliTelegramAlert({
+      config,
+      fixtureSmoke: false,
+      liveExecution: {
+        status: "idle",
+        ready: true,
+        liveOrderCapable: false,
+        attemptedOrderCount: 0,
+        submittedOrderCount: 0,
+        attemptStatus: null,
+        message: "production decision tick에 주문 후보가 없어 broker 제출은 발생하지 않았습니다.",
+      },
+      marketData: {
+        ready: true,
+        latestHeartbeatAt: "2026-06-18T14:00:01.000Z",
+        referencePrice: "101300500",
+        persisted: { tradeCount: 1, orderbookCount: 1, statusCount: 1 },
+      },
+      analysisDecision: {
+        ready: true,
+        decisionCategory: "HOLD",
+        holdCount: 1,
+        blockCount: 0,
+        orderIntentCount: 0,
+        latestDecisionAt: "2026-06-18T13:59:58.000Z",
+        message: "주문 후보가 없어 HOLD로 닫았습니다.",
+      },
+      reconcilePnlStatus: {
+        ready: true,
+        statusLabel: "private read 확인",
+        reconcileStatusLabel: "정상",
+        pnlStatusLabel: "정상",
+        openOrderCount: 0,
+        openExposureKrw: "0",
+        budgetUsedKrw: "10000",
+        realizedPnlKrw: "0",
+        unrealizedPnlKrw: "0",
+        latestReconcileAt: "2026-06-18T13:59:57.000Z",
+        latestPnlAt: "2026-06-18T13:59:56.000Z",
+        privateRead: {
+          krwAvailable: "21000",
+          balanceCurrencyCount: 2,
+        },
+      },
+      observedAt: "2026-06-18T14:00:01.000Z",
+      scheduledBriefingDispatcher,
+    });
+
+    expect(walletOnlySummary).toMatchObject({
+      ready: true,
+      scheduledBriefing: {
+        status: "sent",
+        ready: true,
+        providerDispatchAttempted: true,
+        cooldownHitCount: 0,
+      },
+    });
+    expect(scheduledFetchBodies).toHaveLength(2);
+
     const referencePriceOnlySummary = await evaluateLiveOpsCliTelegramAlert({
       config,
       fixtureSmoke: false,
@@ -4247,7 +4308,7 @@ console.log(JSON.stringify({
         latestReconcileAt: "2026-06-18T13:59:57.000Z",
         latestPnlAt: "2026-06-18T13:59:56.000Z",
         privateRead: {
-          krwAvailable: "20000",
+          krwAvailable: "21000",
           balanceCurrencyCount: 2,
         },
       },
@@ -4264,7 +4325,7 @@ console.log(JSON.stringify({
         cooldownHitCount: 1,
       },
     });
-    expect(scheduledFetchBodies).toHaveLength(1);
+    expect(scheduledFetchBodies).toHaveLength(2);
 
     const materialSourceSummary = await evaluateLiveOpsCliTelegramAlert({
       config,
@@ -4306,7 +4367,7 @@ console.log(JSON.stringify({
         latestReconcileAt: "2026-06-18T13:59:57.000Z",
         latestPnlAt: "2026-06-18T13:59:56.000Z",
         privateRead: {
-          krwAvailable: "20000",
+          krwAvailable: "21000",
           balanceCurrencyCount: 2,
         },
       },
@@ -4323,8 +4384,8 @@ console.log(JSON.stringify({
         cooldownHitCount: 0,
       },
     });
-    expect(scheduledFetchBodies).toHaveLength(2);
-    expect(scheduledFetchBodies[1]?.text).not.toContain("SELL 후보 1건");
+    expect(scheduledFetchBodies).toHaveLength(3);
+    expect(scheduledFetchBodies[2]?.text).not.toContain("SELL 후보 1건");
 
     const failedScheduledSummary = await evaluateLiveOpsCliTelegramAlert({
       config: {
@@ -4379,6 +4440,48 @@ console.log(JSON.stringify({
         failureCount: 1,
       },
     });
+    const failedScheduledDashboard = renderLiveOpsTuiDashboard(renderLiveOpsSummary({
+      configPath: "config/live-ops.example.json",
+      envFilePath: "tests/fixtures/live-ops/fake.env",
+      config,
+      env: {},
+      fixtureSmoke: false,
+      dbReadiness: { ready: true },
+      marketData: {
+        ready: true,
+        latestHeartbeatAt: "2026-06-18T15:00:00.000Z",
+        persisted: { tradeCount: 1, orderbookCount: 1, statusCount: 1 },
+      },
+      analysisDecision: {
+        ready: true,
+        decisionCategory: "HOLD",
+        orderIntentCount: 0,
+        evaluatedStrategyCount: 1,
+      },
+      liveExecution: {
+        status: "idle",
+        ready: true,
+        liveOrderCapable: false,
+        attemptedOrderCount: 0,
+        submittedOrderCount: 0,
+        attemptStatus: null,
+      },
+      reconcilePnlStatus: {
+        ready: true,
+        statusLabel: "private read 확인",
+        reconcileStatusLabel: "정상",
+        pnlStatusLabel: "정상",
+        openOrderCount: 0,
+        openExposureKrw: "0",
+        budgetUsedKrw: "10000",
+        realizedPnlKrw: "0",
+        unrealizedPnlKrw: "0",
+      },
+      telegramAlert: failedScheduledSummary,
+    }));
+    expect(failedScheduledDashboard).toContain("Telegram alert: 주문 없음");
+    expect(failedScheduledDashboard).toContain("scheduled 정기 브리핑 전송 확인 필요");
+    expect(failedScheduledDashboard).toContain("scheduled failure 1");
   });
 
   it("Live Ops Telegram helper는 scheduled briefing env opt-in과 우선순위 알림 격리를 지킨다", async () => {
@@ -4441,6 +4544,44 @@ console.log(JSON.stringify({
         ready: true,
       },
     });
+    expect(scheduledPayloads.map((payload) => payload.scheduleKey)).toEqual(["env-scheduled-briefing"]);
+
+    const envDisabledSummary = await evaluateLiveOpsCliTelegramAlert({
+      config: {
+        ...config,
+        telegram: {
+          ...config.telegram,
+          briefing: {
+            scheduled_enabled: true,
+            schedule_key: "json-enabled",
+          },
+        },
+      },
+      env: {
+        SEEMIRAI_TELEGRAM_BRIEFING_SCHEDULED_ENABLED: "0",
+        SEEMIRAI_TELEGRAM_BRIEFING_SCHEDULE_KEY: "env-disabled-briefing",
+      },
+      fixtureSmoke: false,
+      liveExecution,
+      scheduledBriefingDispatcher: {
+        async dispatch(payload: { scheduleKey: string }) {
+          scheduledPayloads.push(payload);
+          return {
+            status: "sent",
+            ready: true,
+            providerDispatchAttempted: true,
+            alertCount: 1,
+            attemptedCount: 1,
+            deliveredCount: 1,
+            cooldownHitCount: 0,
+            retryPlannedCount: 0,
+            failureCount: 0,
+          };
+        },
+      },
+    });
+
+    expect(envDisabledSummary).not.toHaveProperty("scheduledBriefing");
     expect(scheduledPayloads.map((payload) => payload.scheduleKey)).toEqual(["env-scheduled-briefing"]);
 
     let releaseScheduled!: (error: Error) => void;
