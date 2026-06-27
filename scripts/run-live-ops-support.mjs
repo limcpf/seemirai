@@ -24,6 +24,7 @@ const liveOpsCliPreflightReconcileFreshnessMs = 30_000;
 const liveOpsCliPreflightPnlFreshnessMs = 30_000;
 const liveOpsCliPreflightPnlFutureSkewMs = 1_000;
 const liveOpsCliScheduledBriefingCooldownMs = 6 * 60 * 60_000;
+const liveOpsCliScheduledBriefingReservationMs = 60_000;
 const liveOpsCliScheduledBriefingCooldowns = new Map();
 const liveOpsCliProcessOwner = createLiveOpsCliProcessOwnerSnapshot(process.pid);
 const liveOpsCliAutonomous24x7StrategyId = "live_ops_autonomous_24x7_core";
@@ -271,6 +272,7 @@ export async function loadLiveOpsCliInputs(options) {
     });
     const telegramAlert = await evaluateLiveOpsCliTelegramAlert({
       config,
+      env,
       fixtureSmoke: options.fixtureSmoke,
       liveExecution,
       orderIntent: productionExecutionInputs.orderIntents[0],
@@ -2290,7 +2292,12 @@ export function createLiveOpsCliProductionProviders({ config, env, market, fetch
     pnlCloseoutRunner: createLiveOpsPnlCloseoutRunner({ pool, market }),
     killSwitchProvider: createLiveOpsCliDatabaseKillSwitchProvider(pool),
     telegramDispatcher: createLiveOpsCliTelegramDispatcher({ config, env, fetchImpl }),
-    scheduledBriefingDispatcher: createLiveOpsCliScheduledBriefingDispatcher({ config, env, fetchImpl }),
+    scheduledBriefingDispatcher: createLiveOpsCliScheduledBriefingDispatcher({
+      config,
+      env,
+      fetchImpl,
+      cooldownStore: createLiveOpsCliDatabaseScheduledBriefingCooldownStore(pool),
+    }),
     async close() {
       await pool.end().catch(() => undefined);
     },
@@ -2305,6 +2312,212 @@ function createLiveOpsCliPostgresPool(databaseUrl) {
     idleTimeoutMillis: 1000,
     allowExitOnIdle: true,
   });
+}
+
+export function createLiveOpsCliDatabaseScheduledBriefingCooldownStore(pool) {
+  return {
+    async findByFingerprint(fingerprint) {
+      const result = await pool.query(
+        `
+        SELECT *
+        FROM alert_cooldowns
+        WHERE fingerprint = $1
+        LIMIT 1
+        `,
+        [fingerprint],
+      );
+      return result.rows[0] === undefined ? undefined : toLiveOpsCliAlertCooldownState(result.rows[0]);
+    },
+    async reserveDelivery(input) {
+      // 새 fingerprint는 먼저 lease를 가진 row로 삽입해 다중 daemon이 동시에 같은 브리핑을 보내지 못하게 한다.
+      const inserted = await pool.query(
+        `
+        INSERT INTO alert_cooldowns (
+          fingerprint,
+          severity,
+          alert_type,
+          market,
+          strategy_id,
+          reason_code,
+          last_sent_at,
+          last_skipped_at,
+          delivery_reserved_until,
+          payload_json,
+          updated_at
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, NULL, NULL, $8::timestamptz, $9::jsonb, $7::timestamptz)
+        ON CONFLICT (fingerprint) DO NOTHING
+        RETURNING *
+        `,
+        toLiveOpsCliAlertCooldownSqlValues(input),
+      );
+      if (inserted.rows[0] !== undefined) {
+        return { reserved: true, state: toLiveOpsCliAlertCooldownState(inserted.rows[0]) };
+      }
+
+      const cooldownCutoff = new Date(Date.parse(input.occurredAt) - input.cooldownMs).toISOString();
+      // 기존 row는 cooldown 만료와 in-flight lease 만료를 같은 UPDATE 조건으로 묶어 중복 전송 경합을 DB에서 차단한다.
+      const reserved = await pool.query(
+        `
+        UPDATE alert_cooldowns
+        SET
+          severity = $2,
+          alert_type = $3,
+          market = $4,
+          strategy_id = $5,
+          reason_code = $6,
+          delivery_reserved_until = $8,
+          payload_json = $9::jsonb,
+          updated_at = GREATEST(updated_at, $7::timestamptz)
+        WHERE fingerprint = $1
+          AND (last_sent_at IS NULL OR last_sent_at <= $10::timestamptz)
+          AND (delivery_reserved_until IS NULL OR delivery_reserved_until <= $7::timestamptz)
+        RETURNING *
+        `,
+        [...toLiveOpsCliAlertCooldownSqlValues(input), cooldownCutoff],
+      );
+      if (reserved.rows[0] !== undefined) {
+        return { reserved: true, state: toLiveOpsCliAlertCooldownState(reserved.rows[0]) };
+      }
+
+      const state = await this.findByFingerprint(input.fingerprint);
+      return {
+        reserved: false,
+        state: state ?? toLiveOpsCliAlertCooldownState(toLiveOpsCliAlertCooldownFallbackRow(input)),
+      };
+    },
+    async releaseDeliveryReservation(input) {
+      // provider 실패는 성공 전송 기준점이 아니므로 이 dispatch가 잡은 lease만 해제해 다음 재시도를 허용한다.
+      const result = await pool.query(
+        `
+        UPDATE alert_cooldowns
+        SET
+          delivery_reserved_until = NULL,
+          payload_json = $9::jsonb,
+          updated_at = GREATEST(updated_at, $7::timestamptz)
+        WHERE fingerprint = $1
+          AND delivery_reserved_until = $10::timestamptz
+        RETURNING *
+        `,
+        [...toLiveOpsCliAlertCooldownSqlValues(input), input.reservedUntil],
+      );
+      return result.rows[0] === undefined
+        ? toLiveOpsCliAlertCooldownState(toLiveOpsCliAlertCooldownFallbackRow(input))
+        : toLiveOpsCliAlertCooldownState(result.rows[0]);
+    },
+    async recordSent(input) {
+      // Telegram 전송이 확정된 뒤에만 last_sent_at을 갱신해 restart 이후 중복 억제 기준점으로 삼는다.
+      return upsertLiveOpsCliAlertCooldownTimestamp(pool, input, {
+        lastSentAt: input.occurredAt,
+        lastSkippedAt: null,
+      });
+    },
+    async recordSkipped(input) {
+      // cooldown skip도 운영 evidence로 남겨 반복 tick이 provider를 건너뛴 이유를 DB에서 추적할 수 있게 한다.
+      return upsertLiveOpsCliAlertCooldownTimestamp(pool, input, {
+        lastSentAt: null,
+        lastSkippedAt: input.occurredAt,
+      });
+    },
+  };
+}
+
+async function upsertLiveOpsCliAlertCooldownTimestamp(pool, input, { lastSentAt, lastSkippedAt }) {
+  const result = await pool.query(
+    `
+    INSERT INTO alert_cooldowns (
+      fingerprint,
+      severity,
+      alert_type,
+      market,
+      strategy_id,
+      reason_code,
+      last_sent_at,
+      last_skipped_at,
+      delivery_reserved_until,
+      payload_json,
+      updated_at
+    )
+    VALUES ($1, $2, $3, $4, $5, $6, $10::timestamptz, $11::timestamptz, NULL, $9::jsonb, $7::timestamptz)
+    ON CONFLICT (fingerprint) DO UPDATE SET
+      severity = EXCLUDED.severity,
+      alert_type = EXCLUDED.alert_type,
+      market = EXCLUDED.market,
+      strategy_id = EXCLUDED.strategy_id,
+      reason_code = EXCLUDED.reason_code,
+      last_sent_at = CASE
+        WHEN EXCLUDED.last_sent_at IS NULL THEN alert_cooldowns.last_sent_at
+        ELSE GREATEST(COALESCE(alert_cooldowns.last_sent_at, EXCLUDED.last_sent_at), EXCLUDED.last_sent_at)
+      END,
+      last_skipped_at = CASE
+        WHEN EXCLUDED.last_skipped_at IS NULL THEN alert_cooldowns.last_skipped_at
+        ELSE GREATEST(COALESCE(alert_cooldowns.last_skipped_at, EXCLUDED.last_skipped_at), EXCLUDED.last_skipped_at)
+      END,
+      delivery_reserved_until = NULL,
+      payload_json = EXCLUDED.payload_json,
+      updated_at = GREATEST(alert_cooldowns.updated_at, EXCLUDED.updated_at)
+    RETURNING *
+    `,
+    [...toLiveOpsCliAlertCooldownSqlValues(input), lastSentAt, lastSkippedAt],
+  );
+  return toLiveOpsCliAlertCooldownState(result.rows[0] ?? toLiveOpsCliAlertCooldownFallbackRow(input));
+}
+
+function toLiveOpsCliAlertCooldownSqlValues(input) {
+  return [
+    input.fingerprint,
+    input.severity,
+    input.alertType,
+    input.market,
+    input.strategyId,
+    input.reasonCode,
+    input.occurredAt,
+    input.reserveUntil ?? null,
+    JSON.stringify(input.payloadJson ?? {}),
+  ];
+}
+
+function toLiveOpsCliAlertCooldownFallbackRow(input) {
+  return {
+    fingerprint: input.fingerprint,
+    severity: input.severity,
+    alert_type: input.alertType,
+    market: input.market,
+    strategy_id: input.strategyId,
+    reason_code: input.reasonCode,
+    last_sent_at: null,
+    last_skipped_at: null,
+    delivery_reserved_until: input.reserveUntil ?? null,
+    payload_json: input.payloadJson ?? {},
+    updated_at: input.occurredAt,
+  };
+}
+
+function toLiveOpsCliAlertCooldownState(row) {
+  return {
+    fingerprint: row.fingerprint,
+    severity: row.severity,
+    alertType: row.alert_type,
+    market: row.market,
+    strategyId: row.strategy_id,
+    reasonCode: row.reason_code,
+    lastSentAt: toLiveOpsCliIsoTimestampOrNull(row.last_sent_at),
+    lastSkippedAt: toLiveOpsCliIsoTimestampOrNull(row.last_skipped_at),
+    deliveryReservedUntil: toLiveOpsCliIsoTimestampOrNull(row.delivery_reserved_until),
+    payloadJson: row.payload_json ?? {},
+    updatedAt: toLiveOpsCliIsoTimestampOrNull(row.updated_at) ?? new Date().toISOString(),
+  };
+}
+
+function toLiveOpsCliIsoTimestampOrNull(value) {
+  if (value === null || value === undefined) {
+    return null;
+  }
+  if (value instanceof Date) {
+    return value.toISOString();
+  }
+  const timestamp = Date.parse(String(value));
+  return Number.isFinite(timestamp) ? new Date(timestamp).toISOString() : null;
 }
 
 export async function createLiveOpsCliCleanupArtifactStore({ configPath, env = {}, artifactDir } = {}) {
@@ -5027,7 +5240,7 @@ export function createLiveOpsCliTelegramDispatcher({ config, env, fetchImpl = fe
   };
 }
 
-export function createLiveOpsCliScheduledBriefingDispatcher({ config, env, fetchImpl = fetch }) {
+export function createLiveOpsCliScheduledBriefingDispatcher({ config, env, fetchImpl = fetch, cooldownStore }) {
   const botToken = env.SEEMIRAI_TELEGRAM_BOT_TOKEN ?? env.TELEGRAM_BOT_TOKEN;
   const chatId = env.SEEMIRAI_TELEGRAM_CHAT_ID ?? env.TELEGRAM_CHAT_ID;
   if (!hasMeaningfulValue(botToken) || !hasMeaningfulValue(chatId)) {
@@ -5038,18 +5251,27 @@ export function createLiveOpsCliScheduledBriefingDispatcher({ config, env, fetch
     async dispatch(payload) {
       const observedAt = payload.observedAt ?? new Date().toISOString();
       const scheduleKey = normalizeLiveOpsCliBriefingScheduleKey(payload.scheduleKey);
-      const cooldown = reserveLiveOpsCliScheduledBriefingCooldown({
+      const cooldownInput = createLiveOpsCliScheduledBriefingCooldownInput({
+        payload,
         scheduleKey,
         observedAt,
+        providerTimeoutMs,
       });
+      const cooldown = cooldownStore === undefined
+        ? reserveLiveOpsCliScheduledBriefingCooldown({
+            scheduleKey,
+            briefingSourceFingerprint: payload.briefingSourceFingerprint,
+            observedAt,
+          })
+        : await reserveLiveOpsCliScheduledBriefingDelivery(cooldownStore, cooldownInput);
       if (cooldown.cooldownHit) {
-        // daemon tick 반복이 owner chat spam으로 번지지 않도록 schedule key 단위 P3 cooldown을 provider 호출보다 먼저 적용한다.
+        // daemon tick 반복이 owner chat spam으로 번지지 않도록 source fingerprint 단위 P3 cooldown을 provider 호출보다 먼저 적용한다.
         return createLiveOpsCliScheduledBriefingDispatchSummary({
           status: "skipped",
           providerDispatchAttempted: false,
           cooldownHitCount: 1,
           message: "정기 Live Ops Telegram 브리핑이 cooldown/fingerprint 정책으로 생략됐습니다.",
-          action: `다음 전송 가능 시각(${cooldown.nextAllowedAt}) 이후 같은 schedule key를 다시 평가하세요.`,
+          action: `다음 전송 가능 시각(${cooldown.nextAllowedAt}) 이후 같은 schedule/source fingerprint를 다시 평가하세요.`,
           scheduleKey,
           briefingSourceFingerprint: payload.briefingSourceFingerprint,
         });
@@ -5064,7 +5286,21 @@ export function createLiveOpsCliScheduledBriefingDispatcher({ config, env, fetch
       });
       if (delivered) {
         // 실패 전송은 cooldown 성공으로 기록하지 않아 provider 복구 뒤 같은 briefing을 다시 시도할 수 있게 한다.
-        recordLiveOpsCliScheduledBriefingSent({ scheduleKey, observedAt });
+        if (cooldownStore === undefined) {
+          recordLiveOpsCliScheduledBriefingSent({
+            scheduleKey,
+            briefingSourceFingerprint: payload.briefingSourceFingerprint,
+            observedAt,
+          });
+        } else {
+          await cooldownStore.recordSent(cooldownInput);
+        }
+      } else if (cooldownStore !== undefined) {
+        // provider 실패는 성공 기준점이 아니므로 durable in-flight lease만 해제해 복구 뒤 재시도를 막지 않는다.
+        await cooldownStore.releaseDeliveryReservation({
+          ...cooldownInput,
+          reservedUntil: cooldownInput.reserveUntil,
+        });
       }
 
       return createLiveOpsCliScheduledBriefingDispatchSummary({
@@ -5206,8 +5442,20 @@ function createLiveOpsCliScheduledBriefingDispatchSummary({
   };
 }
 
-function reserveLiveOpsCliScheduledBriefingCooldown({ scheduleKey, observedAt }) {
-  const cooldownKey = createLiveOpsCliScheduledBriefingCooldownKey(scheduleKey);
+async function reserveLiveOpsCliScheduledBriefingDelivery(cooldownStore, cooldownInput) {
+  const reservation = await cooldownStore.reserveDelivery(cooldownInput);
+  if (reservation.reserved) {
+    return { cooldownHit: false, nextAllowedAt: null };
+  }
+  await cooldownStore.recordSkipped(cooldownInput);
+  return {
+    cooldownHit: true,
+    nextAllowedAt: readLiveOpsCliScheduledBriefingNextAllowedAt(reservation.state, cooldownInput.occurredAt),
+  };
+}
+
+function reserveLiveOpsCliScheduledBriefingCooldown({ scheduleKey, briefingSourceFingerprint, observedAt }) {
+  const cooldownKey = createLiveOpsCliScheduledBriefingCooldownKey(scheduleKey, briefingSourceFingerprint);
   const observedAtMs = Date.parse(observedAt);
   const safeObservedAtMs = Number.isFinite(observedAtMs) ? observedAtMs : Date.now();
   const state = liveOpsCliScheduledBriefingCooldowns.get(cooldownKey);
@@ -5221,16 +5469,65 @@ function reserveLiveOpsCliScheduledBriefingCooldown({ scheduleKey, observedAt })
   return { cooldownHit: false, nextAllowedAt: null };
 }
 
-function recordLiveOpsCliScheduledBriefingSent({ scheduleKey, observedAt }) {
-  const cooldownKey = createLiveOpsCliScheduledBriefingCooldownKey(scheduleKey);
+function recordLiveOpsCliScheduledBriefingSent({ scheduleKey, briefingSourceFingerprint, observedAt }) {
+  const cooldownKey = createLiveOpsCliScheduledBriefingCooldownKey(scheduleKey, briefingSourceFingerprint);
   const observedAtMs = Date.parse(observedAt);
   liveOpsCliScheduledBriefingCooldowns.set(cooldownKey, {
     lastSentAtMs: Number.isFinite(observedAtMs) ? observedAtMs : Date.now(),
   });
 }
 
-function createLiveOpsCliScheduledBriefingCooldownKey(scheduleKey) {
-  return `scheduled:${encodeLiveOpsCliBriefingDedupeSegment(scheduleKey)}`;
+function createLiveOpsCliScheduledBriefingCooldownInput({ payload, scheduleKey, observedAt, providerTimeoutMs }) {
+  const briefingSourceFingerprint = normalizeLiveOpsCliBriefingSourceFingerprint(payload.briefingSourceFingerprint);
+  return {
+    fingerprint: createLiveOpsCliScheduledBriefingCooldownKey(scheduleKey, briefingSourceFingerprint),
+    severity: "P3",
+    alertType: "live_ops_scheduled_briefing",
+    market: hasMeaningfulValue(payload.market) ? String(payload.market) : null,
+    strategyId: "live_ops_cli",
+    reasonCode: "live_ops_scheduled_briefing",
+    occurredAt: observedAt,
+    cooldownMs: liveOpsCliScheduledBriefingCooldownMs,
+    reserveUntil: createLiveOpsCliScheduledBriefingReserveUntil(observedAt, providerTimeoutMs),
+    payloadJson: {
+      source: "live_ops_cli",
+      schedule_key: scheduleKey,
+      briefing_source_fingerprint: briefingSourceFingerprint,
+      observed_at: observedAt,
+      ...(hasMeaningfulValue(payload.correlationId) ? { correlation_id: String(payload.correlationId) } : {}),
+    },
+  };
+}
+
+function createLiveOpsCliScheduledBriefingCooldownKey(scheduleKey, briefingSourceFingerprint) {
+  return [
+    "scheduled",
+    encodeLiveOpsCliBriefingDedupeSegment(scheduleKey),
+    encodeLiveOpsCliBriefingDedupeSegment(normalizeLiveOpsCliBriefingSourceFingerprint(briefingSourceFingerprint)),
+  ].join(":");
+}
+
+function createLiveOpsCliScheduledBriefingReserveUntil(observedAt, providerTimeoutMs) {
+  const observedAtMs = Date.parse(observedAt);
+  const safeObservedAtMs = Number.isFinite(observedAtMs) ? observedAtMs : Date.now();
+  const providerLeaseMs = Number.isFinite(Number(providerTimeoutMs)) ? Number(providerTimeoutMs) + 5_000 : 0;
+  const leaseMs = Math.max(liveOpsCliScheduledBriefingReservationMs, providerLeaseMs);
+  return new Date(safeObservedAtMs + leaseMs).toISOString();
+}
+
+function readLiveOpsCliScheduledBriefingNextAllowedAt(state, observedAt) {
+  const observedAtMs = Date.parse(observedAt);
+  const safeObservedAtMs = Number.isFinite(observedAtMs) ? observedAtMs : Date.now();
+  const lastSentAtMs = Date.parse(String(state?.lastSentAt ?? ""));
+  const deliveryReservedUntilMs = Date.parse(String(state?.deliveryReservedUntil ?? ""));
+  const candidates = [
+    Number.isFinite(lastSentAtMs) ? lastSentAtMs + liveOpsCliScheduledBriefingCooldownMs : undefined,
+    Number.isFinite(deliveryReservedUntilMs) ? deliveryReservedUntilMs : undefined,
+  ].filter((value) => value !== undefined && value > safeObservedAtMs);
+  if (candidates.length === 0) {
+    return new Date(safeObservedAtMs + liveOpsCliScheduledBriefingCooldownMs).toISOString();
+  }
+  return new Date(Math.max(...candidates)).toISOString();
 }
 
 function normalizeLiveOpsCliBriefingScheduleKey(value) {
@@ -5238,9 +5535,19 @@ function normalizeLiveOpsCliBriefingScheduleKey(value) {
   return normalized.length === 0 ? "default" : normalized;
 }
 
+function normalizeLiveOpsCliBriefingSourceFingerprint(value) {
+  const normalized = String(value ?? "missing").trim();
+  return normalized.length === 0 ? "missing" : normalized;
+}
+
 function encodeLiveOpsCliBriefingDedupeSegment(value) {
-  const normalized = normalizeLiveOpsCliBriefingScheduleKey(value);
+  const normalized = normalizeLiveOpsCliBriefingDedupeSegment(value);
   return `${normalized.length.toString(36)}_${Buffer.from(normalized, "utf8").toString("hex")}`;
+}
+
+function normalizeLiveOpsCliBriefingDedupeSegment(value) {
+  const normalized = String(value ?? "missing").trim();
+  return normalized.length === 0 ? "missing" : normalized;
 }
 
 function mapLiveOpsCliReconcileResult(status, mismatchCount) {
@@ -9357,6 +9664,7 @@ function findLiveOpsCliBalance(balanceSnapshot, currency) {
 
 export async function evaluateLiveOpsCliTelegramAlert({
   config,
+  env = {},
   fixtureSmoke,
   liveExecution,
   orderIntent,
@@ -9370,21 +9678,25 @@ export async function evaluateLiveOpsCliTelegramAlert({
 }) {
   const market = config.universe?.default_market ?? "KRW-BTC";
   const effectiveObservedAt = observedAt ?? new Date().toISOString();
-  const scheduledBriefing = await evaluateLiveOpsCliScheduledBriefing({
-    config,
-    fixtureSmoke,
-    market,
-    liveExecution,
-    marketData,
-    analysisDecision,
-    reconcilePnlStatus,
-    scheduledBriefingDispatcher,
-    observedAt: effectiveObservedAt,
-    correlationId,
-  });
+  const attachScheduledBriefing = async (summary) => attachLiveOpsCliScheduledBriefingSummary(
+    summary,
+    await evaluateLiveOpsCliScheduledBriefing({
+      config,
+      env,
+      fixtureSmoke,
+      market,
+      liveExecution,
+      marketData,
+      analysisDecision,
+      reconcilePnlStatus,
+      scheduledBriefingDispatcher,
+      observedAt: effectiveObservedAt,
+      correlationId,
+    }),
+  );
 
   if (!fixtureSmoke && shouldDispatchLiveOpsCliTelegramAlert(config, liveExecution) && telegramDispatcher !== undefined) {
-    return attachLiveOpsCliScheduledBriefingSummary(await dispatchLiveOpsCliTelegramAlertSummary({
+    return attachScheduledBriefing(await dispatchLiveOpsCliTelegramAlertSummary({
       config,
       market,
       liveExecution,
@@ -9392,18 +9704,15 @@ export async function evaluateLiveOpsCliTelegramAlert({
       telegramDispatcher,
       observedAt: effectiveObservedAt,
       correlationId,
-    }), scheduledBriefing);
+    }));
   }
 
   if (!fixtureSmoke && shouldRequireLiveOpsCliTelegramBoundary(liveExecution)) {
-    return attachLiveOpsCliScheduledBriefingSummary(
-      createLiveOpsCliTelegramBoundaryMissingSummary({ market, liveExecution }),
-      scheduledBriefing,
-    );
+    return attachScheduledBriefing(createLiveOpsCliTelegramBoundaryMissingSummary({ market, liveExecution }));
   }
 
   if (!fixtureSmoke && liveExecution.ready === true && liveExecution.liveOrderCapable !== true) {
-    return attachLiveOpsCliScheduledBriefingSummary({
+    return attachScheduledBriefing({
       status: "idle",
       ready: true,
       market,
@@ -9422,11 +9731,11 @@ export async function evaluateLiveOpsCliTelegramAlert({
           message: "실주문 제출 전에는 trade alert provider를 열지 않습니다.",
         },
       ],
-    }, scheduledBriefing);
+    });
   }
 
   if (!fixtureSmoke || liveExecution.ready !== true) {
-    return attachLiveOpsCliScheduledBriefingSummary({
+    return attachScheduledBriefing({
       status: "pending",
       ready: false,
       market,
@@ -9445,11 +9754,11 @@ export async function evaluateLiveOpsCliTelegramAlert({
           message: "Telegram alert mapper가 후속 lifecycle에서 시작됩니다.",
         },
       ],
-    }, scheduledBriefing);
+    });
   }
 
   const lifecycleAlertCount = config.telegram?.startup_alert_enabled === true ? 1 : 0;
-  return attachLiveOpsCliScheduledBriefingSummary({
+  return attachScheduledBriefing({
     status: "planned",
     ready: true,
     market,
@@ -9474,11 +9783,12 @@ export async function evaluateLiveOpsCliTelegramAlert({
         message: "startup lifecycle alert 후보를 만들 수 있습니다.",
       },
     ],
-  }, scheduledBriefing);
+  });
 }
 
 async function evaluateLiveOpsCliScheduledBriefing({
   config,
+  env = {},
   fixtureSmoke,
   market,
   liveExecution,
@@ -9489,11 +9799,11 @@ async function evaluateLiveOpsCliScheduledBriefing({
   observedAt,
   correlationId,
 }) {
-  if (fixtureSmoke || !shouldDispatchLiveOpsCliScheduledBriefing(config)) {
+  if (fixtureSmoke || !shouldDispatchLiveOpsCliScheduledBriefing(config, env)) {
     return undefined;
   }
 
-  const scheduleKey = normalizeLiveOpsCliBriefingScheduleKey(config.telegram?.briefing?.schedule_key);
+  const scheduleKey = readLiveOpsCliScheduledBriefingScheduleKey(config, env);
   const briefingSourceFingerprint = createLiveOpsCliScheduledBriefingSourceFingerprint({
     config,
     liveExecution,
@@ -9526,21 +9836,33 @@ async function evaluateLiveOpsCliScheduledBriefing({
     });
   }
 
-  return normalizeLiveOpsCliScheduledBriefingDispatchResult(await callLiveOpsCliScheduledBriefingDispatcher(
-    scheduledBriefingDispatcher,
-    {
-      market,
-      observedAt,
+  try {
+    return normalizeLiveOpsCliScheduledBriefingDispatchResult(await callLiveOpsCliScheduledBriefingDispatcher(
+      scheduledBriefingDispatcher,
+      {
+        market,
+        observedAt,
+        scheduleKey,
+        briefingText,
+        briefingSourceFingerprint,
+        correlationId,
+        liveExecution,
+      },
+    ), {
       scheduleKey,
-      briefingText,
       briefingSourceFingerprint,
-      correlationId,
-      liveExecution,
-    },
-  ), {
-    scheduleKey,
-    briefingSourceFingerprint,
-  });
+    });
+  } catch (error) {
+    return createLiveOpsCliScheduledBriefingDispatchSummary({
+      status: "partial_failure",
+      providerDispatchAttempted: true,
+      failureCount: 1,
+      message: "정기 Live Ops Telegram 브리핑 dispatch가 실패했지만 lifecycle/trade 알림 결과는 되돌리지 않았습니다.",
+      action: `scheduled briefing dispatcher 상태를 확인하세요. 추적 사유: ${safeErrorName(error)}`,
+      scheduleKey,
+      briefingSourceFingerprint,
+    });
+  }
 }
 
 function attachLiveOpsCliScheduledBriefingSummary(summary, scheduledBriefing) {
@@ -9564,8 +9886,31 @@ function shouldDispatchLiveOpsCliTelegramStartupAlert(config, liveExecution) {
   return config.telegram?.startup_alert_enabled === true && liveExecution.status === "idle" && liveExecution.ready === true;
 }
 
-function shouldDispatchLiveOpsCliScheduledBriefing(config) {
-  return config.telegram?.briefing?.scheduled_enabled === true;
+function shouldDispatchLiveOpsCliScheduledBriefing(config, env = {}) {
+  const envFlag = readLiveOpsCliBooleanEnv(env.SEEMIRAI_TELEGRAM_BRIEFING_SCHEDULED_ENABLED);
+  return envFlag ?? (config.telegram?.briefing?.scheduled_enabled === true);
+}
+
+function readLiveOpsCliScheduledBriefingScheduleKey(config, env = {}) {
+  return normalizeLiveOpsCliBriefingScheduleKey(
+    hasMeaningfulValue(env.SEEMIRAI_TELEGRAM_BRIEFING_SCHEDULE_KEY)
+      ? env.SEEMIRAI_TELEGRAM_BRIEFING_SCHEDULE_KEY
+      : config.telegram?.briefing?.schedule_key,
+  );
+}
+
+function readLiveOpsCliBooleanEnv(value) {
+  if (!hasMeaningfulValue(value)) {
+    return undefined;
+  }
+  const normalized = String(value).trim().toLowerCase();
+  if (["1", "true", "yes", "on"].includes(normalized)) {
+    return true;
+  }
+  if (["0", "false", "no", "off"].includes(normalized)) {
+    return false;
+  }
+  return undefined;
 }
 
 function shouldRequireLiveOpsCliTelegramBoundary(liveExecution) {

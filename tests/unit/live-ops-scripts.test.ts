@@ -4219,11 +4219,50 @@ console.log(JSON.stringify({
         attemptStatus: null,
         message: "production decision tick에 주문 후보가 없어 broker 제출은 발생하지 않았습니다.",
       },
+      marketData: {
+        ready: true,
+        latestHeartbeatAt: "2026-06-18T14:00:01.000Z",
+        referencePrice: "101300600",
+        persisted: { tradeCount: 1, orderbookCount: 1, statusCount: 1 },
+      },
       observedAt: "2026-06-18T14:00:01.000Z",
       scheduledBriefingDispatcher,
     });
 
     expect(cooldownSummary).toMatchObject({
+      ready: true,
+      scheduledBriefing: {
+        status: "sent",
+        ready: true,
+        providerDispatchAttempted: true,
+        cooldownHitCount: 0,
+      },
+    });
+    expect(scheduledFetchBodies).toHaveLength(2);
+
+    const repeatedSourceSummary = await evaluateLiveOpsCliTelegramAlert({
+      config,
+      fixtureSmoke: false,
+      liveExecution: {
+        status: "idle",
+        ready: true,
+        liveOrderCapable: false,
+        attemptedOrderCount: 0,
+        submittedOrderCount: 0,
+        attemptStatus: null,
+        message: "production decision tick에 주문 후보가 없어 broker 제출은 발생하지 않았습니다.",
+      },
+      marketData: {
+        ready: true,
+        latestHeartbeatAt: "2026-06-18T14:00:01.000Z",
+        referencePrice: "101300600",
+        persisted: { tradeCount: 1, orderbookCount: 1, statusCount: 1 },
+      },
+      observedAt: "2026-06-18T14:00:02.000Z",
+      scheduledBriefingDispatcher,
+    });
+
+    expect(repeatedSourceSummary).toMatchObject({
       ready: true,
       scheduledBriefing: {
         status: "skipped",
@@ -4232,7 +4271,7 @@ console.log(JSON.stringify({
         cooldownHitCount: 1,
       },
     });
-    expect(scheduledFetchBodies).toHaveLength(1);
+    expect(scheduledFetchBodies).toHaveLength(2);
 
     const failedScheduledSummary = await evaluateLiveOpsCliTelegramAlert({
       config: {
@@ -4287,6 +4326,253 @@ console.log(JSON.stringify({
         failureCount: 1,
       },
     });
+  });
+
+  it("Live Ops Telegram helper는 scheduled briefing env opt-in과 우선순위 알림 격리를 지킨다", async () => {
+    const {
+      evaluateLiveOpsCliTelegramAlert,
+    } = await import(path.join(process.cwd(), "scripts/run-live-ops-support.mjs"));
+    const config = {
+      telegram: {
+        startup_alert_enabled: false,
+        live_order_capable_alert_enabled: true,
+        trade_event_alerts_enabled: true,
+        briefing: {
+          scheduled_enabled: false,
+          schedule_key: "json-disabled",
+        },
+      },
+      universe: {
+        default_market: "KRW-BTC",
+      },
+    };
+    const liveExecution = {
+      status: "idle",
+      ready: true,
+      liveOrderCapable: false,
+      attemptedOrderCount: 0,
+      submittedOrderCount: 0,
+      attemptStatus: null,
+      message: "주문 후보 없음",
+    };
+    const scheduledPayloads: Array<{ scheduleKey: string }> = [];
+    const envEnabledSummary = await evaluateLiveOpsCliTelegramAlert({
+      config,
+      env: {
+        SEEMIRAI_TELEGRAM_BRIEFING_SCHEDULED_ENABLED: "1",
+        SEEMIRAI_TELEGRAM_BRIEFING_SCHEDULE_KEY: "env-scheduled-briefing",
+      },
+      fixtureSmoke: false,
+      liveExecution,
+      scheduledBriefingDispatcher: {
+        async dispatch(payload: { scheduleKey: string }) {
+          scheduledPayloads.push(payload);
+          return {
+            status: "sent",
+            ready: true,
+            providerDispatchAttempted: true,
+            alertCount: 1,
+            attemptedCount: 1,
+            deliveredCount: 1,
+            cooldownHitCount: 0,
+            retryPlannedCount: 0,
+            failureCount: 0,
+          };
+        },
+      },
+    });
+
+    expect(envEnabledSummary).toMatchObject({
+      scheduledBriefing: {
+        status: "sent",
+        ready: true,
+      },
+    });
+    expect(scheduledPayloads.map((payload) => payload.scheduleKey)).toEqual(["env-scheduled-briefing"]);
+
+    let releaseScheduled!: (error: Error) => void;
+    const scheduledGate = new Promise<never>((_resolve, reject) => {
+      releaseScheduled = reject;
+    });
+    let priorityDispatchStarted = false;
+    const prioritySummaryPromise = evaluateLiveOpsCliTelegramAlert({
+      config: {
+        ...config,
+        telegram: {
+          ...config.telegram,
+          startup_alert_enabled: true,
+          briefing: {
+            scheduled_enabled: true,
+            schedule_key: "delayed-scheduled-briefing",
+          },
+        },
+      },
+      fixtureSmoke: false,
+      liveExecution,
+      telegramDispatcher: {
+        async dispatch(payload: { events: Array<unknown> }) {
+          priorityDispatchStarted = true;
+          return {
+            status: "sent",
+            attemptedCount: payload.events.length,
+            deliveredCount: payload.events.length,
+            cooldownHitCount: 0,
+            retryPlannedCount: 0,
+            failureCount: 0,
+          };
+        },
+      },
+      scheduledBriefingDispatcher: {
+        async dispatch() {
+          return scheduledGate;
+        },
+      },
+    }).catch((error: unknown) => error);
+
+    await Promise.resolve();
+    const priorityStartedBeforeScheduledFinished = priorityDispatchStarted;
+    releaseScheduled(new Error("ScheduledBriefingTimeout"));
+    const prioritySummary = await prioritySummaryPromise;
+
+    expect(priorityStartedBeforeScheduledFinished).toBe(true);
+    expect(prioritySummary).toMatchObject({
+      status: "sent",
+      ready: true,
+      providerDispatchAttempted: true,
+      scheduledBriefing: {
+        status: "partial_failure",
+        ready: false,
+        failureCount: 1,
+      },
+    });
+  });
+
+  it("Live Ops CLI scheduled briefing dispatcher는 durable cooldown store와 source fingerprint를 사용한다", async () => {
+    const supportModulePath = path.join(process.cwd(), "scripts/run-live-ops-support.mjs");
+    const {
+      createLiveOpsCliScheduledBriefingDispatcher,
+    } = await import(supportModulePath);
+    const reservations: Array<{
+      fingerprint: string;
+      reserveUntil: string;
+      payloadJson?: Record<string, unknown>;
+    }> = [];
+    const sentRecords: Array<{
+      fingerprint: string;
+      payloadJson?: Record<string, unknown>;
+    }> = [];
+    const cooldownStore = {
+      async findByFingerprint() {
+        return undefined;
+      },
+      async reserveDelivery(input: {
+        fingerprint: string;
+        reserveUntil: string;
+        payloadJson?: Record<string, unknown>;
+      }) {
+        reservations.push(input);
+        return {
+          reserved: true,
+          state: {
+            fingerprint: input.fingerprint,
+            severity: "P3",
+            alertType: "live_ops_scheduled_briefing",
+            market: "KRW-BTC",
+            strategyId: null,
+            reasonCode: "live_ops_scheduled_briefing",
+            lastSentAt: null,
+            lastSkippedAt: null,
+            deliveryReservedUntil: input.reserveUntil,
+            payloadJson: input.payloadJson ?? {},
+            updatedAt: "2026-06-18T14:00:00.000Z",
+          },
+        };
+      },
+      async recordSent(input: {
+        fingerprint: string;
+        payloadJson?: Record<string, unknown>;
+      }) {
+        sentRecords.push(input);
+        return {
+          fingerprint: input.fingerprint,
+          severity: "P3",
+          alertType: "live_ops_scheduled_briefing",
+          market: "KRW-BTC",
+          strategyId: null,
+          reasonCode: "live_ops_scheduled_briefing",
+          lastSentAt: "2026-06-18T14:00:00.000Z",
+          lastSkippedAt: null,
+          deliveryReservedUntil: null,
+          payloadJson: input.payloadJson ?? {},
+          updatedAt: "2026-06-18T14:00:00.000Z",
+        };
+      },
+      async recordSkipped(input: { fingerprint: string }) {
+        return {
+          fingerprint: input.fingerprint,
+          severity: "P3",
+          alertType: "live_ops_scheduled_briefing",
+          market: "KRW-BTC",
+          strategyId: null,
+          reasonCode: "live_ops_scheduled_briefing",
+          lastSentAt: "2026-06-18T14:00:00.000Z",
+          lastSkippedAt: "2026-06-18T14:00:01.000Z",
+          deliveryReservedUntil: null,
+          payloadJson: {},
+          updatedAt: "2026-06-18T14:00:01.000Z",
+        };
+      },
+      async releaseDeliveryReservation(input: { fingerprint: string }) {
+        return {
+          fingerprint: input.fingerprint,
+          severity: "P3",
+          alertType: "live_ops_scheduled_briefing",
+          market: "KRW-BTC",
+          strategyId: null,
+          reasonCode: "live_ops_scheduled_briefing",
+          lastSentAt: null,
+          lastSkippedAt: null,
+          deliveryReservedUntil: null,
+          payloadJson: {},
+          updatedAt: "2026-06-18T14:00:00.000Z",
+        };
+      },
+    };
+    const dispatcher = createLiveOpsCliScheduledBriefingDispatcher({
+      config: {
+        telegram: {
+          provider_timeout_ms: 5000,
+        },
+      },
+      env: {
+        SEEMIRAI_TELEGRAM_BOT_TOKEN: "telegram-token-fixture",
+        SEEMIRAI_TELEGRAM_CHAT_ID: "owner-chat-1",
+      },
+      cooldownStore,
+      fetchImpl: async () => new Response(JSON.stringify({ ok: true, result: { message_id: 1 } }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      }),
+    });
+
+    await dispatcher.dispatch({
+      market: "KRW-BTC",
+      observedAt: "2026-06-18T14:00:00.000Z",
+      scheduleKey: "ops:hourly",
+      briefingText: "Live Ops 브리핑",
+      briefingSourceFingerprint: "sha256:source-a",
+    });
+
+    expect(reservations).toHaveLength(1);
+    expect(sentRecords).toHaveLength(1);
+    expect(reservations[0]?.fingerprint).toBe(sentRecords[0]?.fingerprint);
+    expect(reservations[0]?.payloadJson).toMatchObject({
+      schedule_key: "ops:hourly",
+      briefing_source_fingerprint: "sha256:source-a",
+    });
+
+    const supportSource = await readFile(supportModulePath, "utf8");
+    expect(supportSource).toContain("createLiveOpsCliDatabaseScheduledBriefingCooldownStore(pool)");
   });
 
   it("production provider wiring은 DB reconcile/private read와 Telegram dispatcher를 실제 경계에 연결한다", () => {

@@ -123,6 +123,7 @@ export async function loadLiveOpsRuntimeAdapterInputs(
     });
     const telegramAlert = await adapter.evaluateTelegramAlert({
       config,
+      env,
       fixtureSmoke: options.fixtureSmoke,
       liveExecution,
       orderIntent: readArray(productionExecutionInputs.orderIntents)[0],
