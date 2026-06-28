@@ -17,6 +17,7 @@ import {
 import { LiveManualApprovalConfigSchema } from "./live-manual-approval-config.js";
 import { LiveAutonomousConfigSchema } from "./live-autonomous-config.js";
 
+// 이 loader는 legacy PAPER_NO_KEY runtime 전용이므로 production live-ops 기본값으로 해석하면 안 된다.
 const defaultConfigUrl = new URL("../../config/paper.json", import.meta.url);
 
 const MarketCodeSchema = z.string().regex(/^KRW-[A-Z0-9]+$/u, "KRW market code is required");
@@ -44,10 +45,6 @@ const TelegramBriefingConfigSchema = z
   .object({
     scheduled_enabled: z.boolean().default(false),
     schedule_key: TrimmedNonEmptyStringSchema.default("default"),
-  })
-  .default({
-    scheduled_enabled: false,
-    schedule_key: "default",
   });
 
 export const RuntimeConfigSchema = z
@@ -97,7 +94,8 @@ export const RuntimeConfigSchema = z
         chat_id: TrimmedNonEmptyStringSchema.optional(),
         provider_timeout_ms: z.number().int().positive().default(5_000),
         inbound: TelegramInboundConfigSchema,
-        briefing: TelegramBriefingConfigSchema,
+        // scheduled briefing은 production live-ops JSON에서 명시 opt-in하며 legacy paper profile에는 기본 객체를 만들지 않는다.
+        briefing: TelegramBriefingConfigSchema.optional(),
       })
       .default({
         provider_timeout_ms: 5_000,
@@ -108,10 +106,6 @@ export const RuntimeConfigSchema = z
           polling_interval_ms: 1_000,
           polling_timeout_seconds: 20,
           max_updates_per_poll: 50,
-        },
-        briefing: {
-          scheduled_enabled: false,
-          schedule_key: "default",
         },
       }),
     secrets: z

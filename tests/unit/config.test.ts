@@ -3,6 +3,7 @@ import {
   UnsafeRuntimeConfigError,
   loadDefaultRuntimeConfig,
   loadRuntimeNotificationConfig,
+  loadRuntimeTelegramBriefingConfig,
   loadRuntimeConfig,
 } from "../../src/runtime/index.js";
 
@@ -140,6 +141,11 @@ describe("runtime config", () => {
       identifier_max_length: 32,
     });
     expect(config.telegram.provider_timeout_ms).toBe(5000);
+    expect(Object.hasOwn(config.telegram, "briefing")).toBe(false);
+    expect(loadRuntimeTelegramBriefingConfig(config, {})).toEqual({
+      scheduledEnabled: false,
+      reasonCode: "telegram_briefing_scheduled_disabled",
+    });
   });
 
   it("fails fast when a config value has the wrong shape", () => {

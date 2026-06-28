@@ -4,12 +4,12 @@
 
 ## 한 문장 모델
 
-Seemirai는 Upbit KRW 현물 시장에서 실거래 주문 없이 paper trading으로 전략, 비용, 리스크, 실행 품질, 감사 로그를 검증하는 단일 프로세스 모듈러 모놀리스다. 시스템의 중심은 예측 모델이 아니라 비용 차감 후에도 기대값이 남고 리스크 게이트를 통과한 주문 후보만 실행 경계로 넘기는 흐름이다.
+Seemirai는 Upbit KRW 현물 시장에서 비용, 리스크, 실행 품질, 운영 readiness를 먼저 차감하고 차단한 뒤에도 기대값이 남는 후보만 실행 경계로 넘기는 단일 프로세스 모듈러 모놀리스다. 현재 production 주경로는 `live:ops`/`LIVE_AUTONOMOUS_SMALL_BUDGET`이며, paper trading은 API key 없는 legacy simulation/regression 검증 경로로 남아 있다.
 
 ## 먼저 읽을 순서
 
 1. [`../ARCHITECTURE.md`](../ARCHITECTURE.md): 제품 범위, 핵심 경계, 데이터 흐름, 의존성 방향
-2. [`RUNTIME_CONFIG.md`](./RUNTIME_CONFIG.md): `config/paper.json`의 안전 invariant와 runtime 활성화 방식
+2. [`RUNTIME_CONFIG.md`](./RUNTIME_CONFIG.md): production `live:ops` 설정 계약과 legacy `config/paper.json` 안전 invariant
 3. [`design-docs/2026-05-13-mvp-runtime-architecture.md`](./design-docs/2026-05-13-mvp-runtime-architecture.md): worker, DB, queue, broker, 상태 전이 결정
 4. [`design-docs/2026-05-20-typescript-module-structure.md`](./design-docs/2026-05-20-typescript-module-structure.md): TypeScript 파일과 폴더 배치 규칙
 5. [`DEVELOPMENT.md`](./DEVELOPMENT.md): 로컬 설치, 테스트, 검증 명령
@@ -31,22 +31,21 @@ src/
 ## 프로그램 흐름
 
 ```text
-config/paper.json
-  -> runtime config 검증
-  -> registry에서 exchange, strategy, rule 활성화
-  -> market data 수집 또는 fixture event source 준비
+config/live-ops.example.json 또는 저장소 밖 운영 JSON
+  -> production live ops config/env 검증
+  -> DB readiness, market data, analysis/decision, live execution worker 조립
+  -> Upbit public/private provider readiness 확인
   -> 원천/정규화 market event 저장
   -> feature 계산
   -> strategy decision 생성
   -> cost model과 rule 평가
   -> risk gate와 runtime fail-closed 평가
-  -> execution engine이 BrokerPort 호출
-  -> PaperBroker가 가상 주문/체결 생성
+  -> live execution adapter가 guarded Upbit live broker 경계 호출
   -> execution persistence가 주문, 상태 전이, evidence 저장
-  -> audit, risk event, Telegram alert, daily report 후보 생성
+  -> audit, risk event, Telegram alert, `/brief`, TUI status 후보 생성
 ```
 
-MVP 기본 profile은 `PAPER_TRADING`이고 `paper_no_key=true`여야 한다. 실거래 주문, 출금, 거래소 간 차익거래, 선물, 레버리지, 신규 진입 시장가 주문은 기본적으로 차단된다. 이 값들은 `src/runtime/config.ts`와 `src/runtime/risk-config.ts` 계층에서 fail-fast로 검증한다.
+legacy paper profile은 `PAPER_TRADING`이고 `paper_no_key=true`여야 한다. 이 profile은 M9/M11 smoke와 soak 같은 simulation/regression 검증에 쓰며 production live-ops 설정을 대신하지 않는다. 실거래 주문, 출금, 거래소 간 차익거래, 선물, 레버리지, 신규 진입 시장가 주문은 명시된 production guard 밖에서 차단된다.
 
 ## 주문 후보 lifecycle
 
@@ -58,7 +57,7 @@ Strategy
   -> RiskGate
   -> ExecutionEngine
   -> BrokerPort
-  -> PaperBroker
+  -> guarded Upbit live broker 또는 legacy PaperBroker
   -> ExecutionPersistence
 ```
 
@@ -68,7 +67,7 @@ Strategy
 
 | 작업 | 먼저 볼 경로 |
 | --- | --- |
-| 전략 후보 생성 또는 threshold | `src/application/strategies/`, `src/application/features/`, `config/paper.json` |
+| 전략 후보 생성 또는 threshold | `src/application/strategies/`, `src/application/features/`, production `config/live-ops.example.json`, legacy `config/paper.json` |
 | 비용 계산 | `src/domain/cost.ts`, `src/application/rules/` |
 | 리스크 차단 | `src/application/risk/`, `src/runtime/risk-config.ts` |
 | 주문 제출 흐름 | `src/application/execution/`, `src/application/ports/broker-port.ts` |
@@ -125,7 +124,7 @@ SEEMIRAI_RUN_DB_INTEGRATION=1 corepack pnpm exec vitest run tests/integration
 1. 후보가 만들어졌는지 `strategy`와 `feature` 계층을 본다.
 2. 후보가 폐기됐으면 cost/rule/risk evidence를 확인한다.
 3. 후보가 승인됐는데 주문이 없으면 `ExecutionEngine` validation과 idempotency evidence를 본다.
-4. paper 주문 상태가 이상하면 `PaperBroker` 결과와 `execution-persistence` state event를 같이 본다.
+4. live 주문 상태가 이상하면 live execution adapter, broker runtime safe summary, `execution-persistence` state event를 같이 본다.
 5. 운영자 알림이 누락됐으면 alert fingerprint, cooldown, notification retry job을 확인한다.
 6. daily report가 맞지 않으면 report aggregation과 DB snapshot 기준 시각을 확인한다.
 

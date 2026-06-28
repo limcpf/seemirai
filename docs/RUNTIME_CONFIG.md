@@ -1,23 +1,44 @@
 # 런타임 설정
 
-이 문서는 Seemirai runtime을 어떤 안전 경계로 조립하는지 설명한다. `config/paper.json`은 MVP 기본 paper trading profile이며, API key 없이 로딩되어야 한다.
+이 문서는 Seemirai runtime을 어떤 안전 경계로 조립하는지 설명한다. 현재 production 운영 경계는 `live:ops`와
+`LIVE_AUTONOMOUS_SMALL_BUDGET` 설정이며, `config/paper.json`은 API key 없이 로딩되는 legacy simulation/regression profile이다.
 
 구현 기준:
 
-- schema: `src/runtime/config.ts`
+- production live ops schema: `src/runtime/live-ops-config.ts`
+- legacy paper schema: `src/runtime/config.ts`
 - M21 수동 승인 schema: `src/runtime/live-manual-approval-config.ts`
 - M22 제한적 완전 자동매매 schema/guard: `src/runtime/live-autonomous-config.ts`
 - registry 활성화 schema: `src/runtime/registry-config.ts`
 - risk threshold schema: `src/runtime/risk-config.ts`
-- 기본 profile: `config/paper.json`
+- production 예시 JSON: `config/live-ops.example.json`
+- legacy paper profile: `config/paper.json`
 
 ## 책임
 
-`config/paper.json`은 실행 시 켤 exchange, universe, strategy, rule 조합과 안전 toggle을 정의한다. 가능한 exchange, strategy, rule 목록은 코드 registry가 갖고, config는 그중 활성화할 항목만 고른다.
+Production JSON은 `live:ops`가 실행할 운영 정책만 정의한다. Secret은 env file이나 process env로만 주입하며, production JSON에는
+`mode=LIVE_AUTONOMOUS_SMALL_BUDGET`, `live_trading_enabled=true`, `paper_no_key=false`, KRW-BTC 단일 universe, 소액 예산,
+Telegram/TUI worker 정책을 둔다.
+
+`config/paper.json`은 legacy paper runtime에서 켤 exchange, universe, strategy, rule 조합과 안전 toggle을 정의한다. 이 profile은
+simulation/regression 검증용이며 production live-ops 설정을 대신하지 않는다.
 
 이 파일은 secret 저장소가 아니다. API key, Telegram token, local control token 같은 값은 git에 커밋하지 않는다.
 
-## 최상위 구조
+## Production Live Ops 최상위 구조
+
+| 필드 | 허용값 또는 기본값 | 역할 |
+| --- | --- | --- |
+| `schema_version` | `1` | production JSON contract version |
+| `mode` | `LIVE_AUTONOMOUS_SMALL_BUDGET` | 소액 실거래 운영 모드 |
+| `live_trading_enabled` | `true` 필수 | production live broker 경계 명시 opt-in |
+| `paper_no_key` | `false` 필수 | API key 없는 paper profile이 아님을 명시 |
+| `universe.markets` | `KRW-BTC` 단일 | 첫 production 단계 market guard |
+| `budget` | 1회 `10000`, 일일 `30000`, open position `30000`, stop ceiling `49999` KRW | 소액 예산과 중지 기준 |
+| `workers` | DB, market data, decision, live execution, reconcile/PnL/status, Telegram, TUI 모두 `true` | 한 lifecycle에서 조립할 worker surface |
+| `telegram.briefing` | `scheduled_enabled=false`, `schedule_key=default` | Live Ops scheduled briefing opt-in 설정 |
+
+## Legacy PAPER_NO_KEY 최상위 구조
 
 | 필드 | 허용값 또는 기본값 | 역할 |
 | --- | --- | --- |
@@ -40,12 +61,12 @@
 | `risk` | M5 리스크 한도 threshold | RiskGate 평가와 상태 전이 audit에 쓰는 보수적 계정/노출/손실 한도 |
 | `live_manual_approval` | `enabled=false`, `LIVE_ARMED_MANUAL_APPROVAL` | M21 수동 승인 live pilot proposal/config guard |
 | `live_autonomous` | `enabled=false`, `LIVE_AUTONOMOUS_SMALL_BUDGET` | M22 제한적 완전 자동매매 config/startup guard |
-| `telegram` | `provider_timeout_ms=5000`, optional `chat_id`, `inbound.enabled=false`, `briefing.scheduled_enabled=false` | Telegram outbound notifier, M20 inbound polling guard, Live Ops briefing dispatch 설정 |
+| `telegram` | `provider_timeout_ms=5000`, optional `chat_id`, `inbound.enabled=false` | Telegram outbound notifier와 M20 inbound polling guard. Scheduled Live Ops briefing 설정은 production live-ops JSON에 둔다. |
 | `secrets` | 기본 `{}` | schema shape만 표현하며 실제 secret은 저장하지 않음 |
 
 ## 안전 invariant
 
-MVP 기본 profile에서는 다음 값이 켜져 있으면 안 된다.
+Legacy PAPER_NO_KEY profile에서는 다음 값이 켜져 있으면 안 된다.
 
 ```json
 {
@@ -67,7 +88,7 @@ MVP 기본 profile에서는 다음 값이 켜져 있으면 안 된다.
 구현 기준 후보:
 
 - product spec: [`product-specs/upbit-v0-2-pilot-private-api.md`](./product-specs/upbit-v0-2-pilot-private-api.md)
-- 기본 profile: `config/paper.json`
+- legacy profile: `config/paper.json`
 - 기본 runtime guard: `assertSafeRuntimeConfig`
 
 v0.2 pilot은 `config/paper.json`을 실거래 profile로 바꾸지 않는다. `PAPER_NO_KEY`는 계속 `paper_no_key=true`,
@@ -122,16 +143,16 @@ KRW 계정 존재 여부 수준으로 요약하고, 정책/주문 결과는 raw 
 
 - 완료 기록: [`exec-plans/completed/2026-06-02-issue-135-m15-upbit-live-broker.md`](./exec-plans/completed/2026-06-02-issue-135-m15-upbit-live-broker.md)
 - live broker contract: `src/infrastructure/upbit/live-broker.ts`
-- 기본 paper 조립: `src/runtime/execution-runtime.ts`
+- legacy paper 조립: `src/runtime/execution-runtime.ts`
 
-M15는 `UpbitLiveBroker` 구현을 추가하지만 기본 `config/paper.json`을 live profile로 승격하지 않는다. `PAPER_NO_KEY` runtime은 계속
+M15는 `UpbitLiveBroker` 구현을 추가하지만 legacy `config/paper.json`을 live profile로 승격하지 않는다. `PAPER_NO_KEY` runtime은 계속
 `PaperBroker`만 active `BrokerPort`로 조립하고, `DisabledUpbitLiveBroker`는 회귀 guard로 남긴다.
 
 M15 live broker factory는 다음 조건을 모두 만족하는 명시 입력에서만 실제 broker를 생성해야 한다.
 
 | 조건 | 의미 |
 | --- | --- |
-| pilot/live profile guard | 기본 paper runtime이 아니라 운영자가 선택한 private API 검증 경계 |
+| pilot/live profile guard | legacy paper runtime이 아니라 운영자가 선택한 private API 검증 경계 |
 | `SEEMIRAI_RUN_UPBIT_PRIVATE_SMOKE=1` | private read API 호출 승인 |
 | `SEEMIRAI_RUN_UPBIT_LIVE_BROKER_SMOKE=1` | M15 live broker smoke 실행 승인 |
 | `SEEMIRAI_UPBIT_KEY_SCOPE_EVIDENCE_ID` | 저장소 밖 redacted 권한 확인 증거 |
@@ -206,10 +227,10 @@ tooling에서 redaction 후 조회한다.
 
 - schema: `src/runtime/phase-1-5-config.ts`
 - evidence contract: `src/domain/phase-1-5.ts`
-- 기본 profile: `config/paper.json`
+- legacy profile: `config/paper.json`
 
 `universe.phase_1_5`는 BTC/ETH phase 1 universe를 유지한 상태에서, 운영자가 근거 snapshot을 확인한 알트만 paper
-runtime 후보에 추가하기 위한 config contract다. 기본 profile은 비활성이고 수동 승인 목록이 비어 있으므로 기존
+runtime 후보에 추가하기 위한 config contract다. legacy profile은 비활성이고 수동 승인 목록이 비어 있으므로 기존
 `KRW-BTC`/`KRW-ETH` 동작을 바꾸지 않는다.
 
 ```json
@@ -272,7 +293,7 @@ config invariant:
 
 - contract/schema: `src/application/llm-risk-assistant/**`
 - Codex OAuth provider: `src/infrastructure/codex-oauth/provider.ts`
-- 기본 profile: `config/paper.json`
+- legacy profile: `config/paper.json`
 - gated smoke: `tests/unit/llm-risk-assistant-provider.test.ts`
 
 `llm.enabled`는 LLM 보조 계층 사용 가능 여부를 나타내고, `llm.can_generate_trade_signal`은 반드시 `false`여야 한다.
@@ -282,7 +303,7 @@ config invariant:
 provider 구현은 application port 뒤에 있으며 현재 지원 provider id는 `noop`, `codex_oauth`다. `codex_oauth`는 운영자 로컬
 Codex OAuth 세션을 사용하는 owner-operated provider이고, `noop`은 같은 normalized response union을 유지하면서 외부 호출을
 만들지 않는 비활성 provider다. provider 선택, timeout, max output bytes는 `LlmRiskAssistantProviderRequest`의 호출 경계에서
-명시하며, 기본 `config/paper.json`은 M9 paper runtime 동작을 흔들지 않도록 거래 안전 toggle만 보유한다.
+명시하며, legacy `config/paper.json`은 M9 paper runtime 동작을 흔들지 않도록 거래 안전 toggle만 보유한다.
 
 실제 Codex OAuth smoke는 기본 test/CI에서 실행하지 않는다. 운영자가 다음 env를 명시했을 때만 긴 외부 호출을 허용한다.
 
@@ -475,9 +496,11 @@ M20 inbound는 public webhook endpoint를 만들지 않고 Telegram `getUpdates`
 - polling interval: `SEEMIRAI_TELEGRAM_INBOUND_POLLING_INTERVAL_MS`, fallback `telegram.inbound.polling_interval_ms`
 - provider long polling timeout: `SEEMIRAI_TELEGRAM_INBOUND_POLLING_TIMEOUT_SECONDS`, fallback `telegram.inbound.polling_timeout_seconds`
 - batch limit: `SEEMIRAI_TELEGRAM_INBOUND_MAX_UPDATES_PER_POLL`, fallback `telegram.inbound.max_updates_per_poll`
-- scheduled briefing enable flag: `telegram.briefing.scheduled_enabled` 또는 `SEEMIRAI_TELEGRAM_BRIEFING_SCHEDULED_ENABLED=1`
-- scheduled briefing fingerprint key: `SEEMIRAI_TELEGRAM_BRIEFING_SCHEDULE_KEY`, fallback `telegram.briefing.schedule_key`
-- `SEEMIRAI_TELEGRAM_BRIEFING_SCHEDULED_ENABLED=0`은 JSON의 `telegram.briefing.scheduled_enabled=true`보다 우선하는 명시
+- scheduled briefing enable flag: production live-ops JSON의 `telegram.briefing.scheduled_enabled` 또는
+  `SEEMIRAI_TELEGRAM_BRIEFING_SCHEDULED_ENABLED=1`
+- scheduled briefing fingerprint key: `SEEMIRAI_TELEGRAM_BRIEFING_SCHEDULE_KEY`, fallback production live-ops JSON의
+  `telegram.briefing.schedule_key`
+- `SEEMIRAI_TELEGRAM_BRIEFING_SCHEDULED_ENABLED=0`은 production JSON의 `telegram.briefing.scheduled_enabled=true`보다 우선하는 명시
   비활성 override다.
 
 활성화된 inbound는 bot token과 owner chat allowlist가 모두 있어야 startup guard를 통과한다. owner chat allowlist가 비어 있으면
@@ -513,7 +536,7 @@ runtime 처리 기준:
   결과 객체와 audit metadata에 싣지 않는다.
 - Telegram reply는 `sendMessage`만 사용하며 4096자 제한 안으로 잘라 보낸다. reply 결과에는 provider message id와 정규화된
   실패 reason만 남기고 raw provider body는 보존하지 않는다.
-- scheduled briefing은 `telegram.briefing.scheduled_enabled=false`가 기본값이라 config/env에서 명시적으로 켜지 않으면 provider
+- scheduled briefing은 production live-ops JSON의 `telegram.briefing.scheduled_enabled=false`가 기본값이라 config/env에서 명시적으로 켜지 않으면 provider
   dispatch plan을 만들지 않는다. 활성화된 scheduled dispatch는 기존 `AlertDispatchRequest`/`alert_cooldowns` fingerprint
   경계를 재사용하며 `schedule_key`를 dedupe segment로 사용한다. cooldown source fingerprint는 readiness, decision, execution,
   PnL/reconcile, wallet/cash/coin처럼 briefing 본문을 바꾸는 evidence를 포함하고, tick마다 변하는 기준가만으로는 새 전송을 만들지
@@ -602,7 +625,7 @@ Telegram approval runtime 기준:
 
 ## M22 제한적 완전 자동매매 guard
 
-M22는 운영자가 명시적으로 arm 한 소액 예산에서만 자동 entry와 exit를 허용한다. 기본 `config/paper.json`은 계속
+M22는 운영자가 명시적으로 arm 한 소액 예산에서만 자동 entry와 exit를 허용한다. legacy `config/paper.json`은 계속
 `PAPER_NO_KEY` 안전 profile이며, `live_autonomous.enabled=false`라서 private client, live broker, autonomous loop가 시작되지 않는다.
 
 기본 설정:
@@ -767,6 +790,8 @@ JSON config에는 다음처럼 secret이 아닌 운영 정책만 둔다.
 - universe는 첫 production 단계에서 `KRW-BTC` 단일
 - 1회 주문 `10000` KRW, 일일 자동 주문 `30000` KRW, open position `30000` KRW, 운영 중지 ceiling `50000` KRW 미만
 - DB readiness, market data, analysis/decision, live execution, reconcile/PnL/status, Telegram, TUI worker는 모두 켜진 정책으로 둔다.
+- scheduled Telegram briefing은 `telegram.briefing.scheduled_enabled=false` 기본값에서 시작하고, production JSON 또는
+  `SEEMIRAI_TELEGRAM_BRIEFING_SCHEDULED_ENABLED=1`로 명시 opt-in 한다.
 
 env file에는 credential만 둔다.
 
@@ -1225,7 +1250,7 @@ node scripts/compare-m9-paper-reports.mjs \
 구현 기준:
 
 - execution guard: `src/application/execution/execution-engine.ts`
-- 기본 profile: `config/paper.json`
+- legacy profile: `config/paper.json`
 
 M6 `ExecutionEngine`은 runtime config의 실행 관련 안전 toggle을 application layer의 `ExecutionSafetyConfig`로 전달받아
 broker 호출 직전에 다시 검증한다. 이 guard는 PaperBroker 구현체가 붙기 전에도 다음 조건을 fail-closed로 유지한다.
@@ -1240,7 +1265,7 @@ side, order type, idempotency key, 수량, 명목 금액, 지정가, limit execu
 expected loss와 일치할 때만 `BrokerPort.submitOrder`를 호출한다. 비용 snapshot은 `source=cost_model`,
 `trade_allowed=true`, `reason_code=cost_margin_ok`이고 `missing_fields`/`invalid_fields`가 없는 증거만 인정한다.
 RiskGate approval evidence는 `source=risk_gate`, `approved=true`, `action=ALLOW`, `status=PASS|WARN` 조건을
-모두 만족해야 한다. 기본 paper profile에서는 market order와 신규 진입 market order를 broker로 넘기지 않는다. 같은
+모두 만족해야 한다. legacy paper profile에서는 market order와 신규 진입 market order를 broker로 넘기지 않는다. 같은
 process 안에서 같은 `idempotencyKey`가 in-flight 상태로 반복 제출되면 fingerprint가 같은 경우에만 broker submit
 side effect를 한 번으로 억제하고, fingerprint가 다르면 idempotency key collision으로 fail-closed한다. 성공한 key는
 application memory에 계속 보관하지 않는다. DB-backed idempotency와 주문 persistence transaction 경계는
@@ -1411,7 +1436,7 @@ Phase 1.5 알트 수동 편입 evidence는 다음 기준으로 저장한다.
 구현 기준:
 
 - schema: `src/runtime/strategy-parameters.ts`
-- 기본 profile: `config/paper.json`
+- legacy profile: `config/paper.json`
 
 `strategyParameters`는 strategy id별 threshold를 명시한다. 모든 금융 값은 Decimal로 파싱 가능한 string이어야 하며, JS number는 정밀도와 단위 혼동을 피하기 위해 거부한다. 알 수 없는 strategy id나 threshold key는 오타로 간주해 fail-fast한다.
 
@@ -1515,7 +1540,7 @@ Phase 1.5 알트 수동 편입 evidence는 다음 기준으로 저장한다.
 - [`docs/design-docs/2026-05-25-feature-quality-calibration.md`](./design-docs/2026-05-25-feature-quality-calibration.md)
 
 M11은 feature 정의, 계산기, parity, strategy integration, calibration report를 sub PR로 나눠 진행한다. Sub PR 1은
-runtime 동작을 바꾸지 않고 contract만 고정한다. 실제 schema와 기본 profile 변경은 후속 구현 PR에서 이 계약을 따라
+runtime 동작을 바꾸지 않고 contract만 고정한다. 실제 schema와 legacy profile 변경은 후속 구현 PR에서 이 계약을 따라
 추가한다.
 
 새 threshold는 기존 `strategyParameters.<strategy_id>` 아래에 추가한다. bps, KRW, ratio 값은 Decimal로 파싱 가능한
@@ -1524,9 +1549,9 @@ string이어야 하며, bucket 수와 lookback 개수만 양의 정수 number를
 
 M9 #68 운영 관측이 끝나기 전에는 기본 운영 threshold를 더 공격적으로 바꾸지 않는다. Sub PR 2-4는 새 key와 검증을 추가할 수
 있지만, #68 데이터가 필요한 기본값 확정은 별도 calibration approval PR에서만 수행한다. #102 Sub PR 5는 #68 원천 artifact를
-재검증하고 비활성 profile proposal을 생성하되, 기본 `config/paper.json`을 자동 변경하거나 활성화하지 않는다.
+재검증하고 비활성 profile proposal을 생성하되, legacy `config/paper.json`을 자동 변경하거나 활성화하지 않는다.
 
-Sub PR 4의 기본 profile은 M11 feature 누락을 fail-closed로 검증하되, 새 threshold 자체는 대부분 `0`, 전체
+Sub PR 4의 legacy profile은 M11 feature 누락을 fail-closed로 검증하되, 새 threshold 자체는 대부분 `0`, 전체
 `allowed_market_regimes`, 또는 매우 넓은 `max_realized_volatility_bps=100000`으로 둔다. `min_depth_change_rate_ratio=-1`은
 관측 데이터 없이 depth 감소 후보를 새로 차단하지 않기 위한 보수적 pass-through 기본값이다.
 
@@ -1557,7 +1582,7 @@ Sub PR 4의 기본 profile은 M11 feature 누락을 fail-closed로 검증하되,
 - 비용 판단: `averageMarginBps=-1.333333333333`이라 기본 threshold 완화는 차단한다.
 - proposal invariant: `active=false`, `activationRequired=true`, `defaultConfigMutation=false`
 
-따라서 현재 기본 profile은 M11 feature key를 포함하지만 대부분 pass-through 값을 유지한다. 운영 기본 threshold를 바꾸려면
+따라서 현재 legacy profile은 M11 feature key를 포함하지만 대부분 pass-through 값을 유지한다. 운영 기본 threshold를 바꾸려면
 proposal을 그대로 적용하지 말고, 동일 run shape report 전후 비교와 별도 승인 기록을 먼저 남긴다.
 
 M5 runtime integration 이후 `risk_ok` rule은 현재 `riskGateContext`로 RiskGate를 직접 평가한 결과만 실행 승인
@@ -1574,7 +1599,7 @@ context와 runtime persistence 입력으로 받지 않는다. M4 `risk_ok_placeh
 
 - schema: `src/runtime/risk-config.ts`
 - domain contract: `src/domain/risk.ts`
-- 기본 profile: `config/paper.json`
+- legacy profile: `config/paper.json`
 
 `risk.thresholds`는 M5 RiskGate evaluator가 사용할 계정 손실, 주문 크기, 포지션 노출, 연속 손실 기준이다. 모든 금융
 비율 값은 bps 단위의 Decimal string이고, 연속 손실 횟수만 양의 정수다.

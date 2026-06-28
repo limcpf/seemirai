@@ -2,9 +2,15 @@
 
 Seemirai는 24/7 암호화폐 시장에서 비용 차감 후 기대값이 남는 거래만 실행 후보로 통과시키는 자동매매 시스템이다. 시스템의 중심은 예측 모델이 아니라 비용, 유동성, 리스크, 실행 품질을 일관되게 차감하고 차단하는 거래 게이트다.
 
-상세 런타임 결정은 [`docs/design-docs/2026-05-13-mvp-runtime-architecture.md`](./docs/design-docs/2026-05-13-mvp-runtime-architecture.md)를 따른다. M1 DB table 역할과 관계는 [`docs/design-docs/2026-05-15-m1-database-schema.md`](./docs/design-docs/2026-05-15-m1-database-schema.md)를 따른다.
+상세 MVP 런타임 결정은 [`docs/design-docs/2026-05-13-mvp-runtime-architecture.md`](./docs/design-docs/2026-05-13-mvp-runtime-architecture.md)를 따른다. 현재 production 운영 경계는 [`docs/RUNTIME_CONFIG.md`](./docs/RUNTIME_CONFIG.md)의 `live:ops` 기준을 따른다. M1 DB table 역할과 관계는 [`docs/design-docs/2026-05-15-m1-database-schema.md`](./docs/design-docs/2026-05-15-m1-database-schema.md)를 따른다.
 
-## MVP 확정 기준
+## 현재 Production 기준
+
+현재 운영 주경로는 `live:ops`/`live:ops:daemon`과 `LIVE_AUTONOMOUS_SMALL_BUDGET` 설정이다. Production JSON은 `paper_no_key=false`,
+`live_trading_enabled=true`, `KRW-BTC` 단일 universe, 1회 `10000` KRW와 일일 `30000` KRW 소액 예산을 명시해야 한다.
+`config/paper.json`은 더 이상 production 설정의 출발점이 아니며, API key 없이 실행되는 legacy simulation/regression profile로만 유지한다.
+
+## 역사적 MVP 확정 기준
 
 MVP는 Upbit KRW 현물 기반 paper trading 시스템이다.
 
@@ -92,8 +98,8 @@ Seemirai
  ├─ Execution Engine
  │  ├─ idempotency key 기반 주문 제출
  │  ├─ BrokerPort
- │  ├─ PaperBroker: MVP active
- │  ├─ UpbitLiveBroker: disabled/stub only
+ │  ├─ PaperBroker: legacy simulation/regression active
+ │  ├─ UpbitLiveBroker: live-ops readiness guard 통과 시 active
  │  └─ 가상 체결 후 비용과 슬리피지 기록
  ├─ Backtest & Paper Trading
  │  ├─ 이벤트 기반 체결 시뮬레이션
@@ -364,18 +370,23 @@ LLM은 직접 주문 판단에 사용하지 않는다.
    - KRW-BTC, KRW-ETH
    - 추세 추종과 평균회귀
    - PaperBroker 기반 지정가, 비용 차감 후 가상 거래
-2. 글로벌 데이터 추가
+2. Live Ops 소액 production 운영
+   - `LIVE_AUTONOMOUS_SMALL_BUDGET`
+   - KRW-BTC 단일, 1회 10000 KRW, 일일 30000 KRW
+   - `live:ops`/TUI/Telegram/reconcile/PnL/status를 같은 lifecycle에서 조립
+   - 저장소 밖 secret/env와 production JSON으로만 arm
+3. 글로벌 데이터 추가
    - Binance, Coinbase, Bybit 등 가격 비교
    - USDT/KRW, 김치프리미엄, 글로벌 거래대금과 변동성 반영
-3. 선물 모듈 추가
+4. 선물 모듈 추가
    - 펀딩비, 베이시스, 현물-선물 시장중립
    - 레버리지 제한과 청산 위험 모델
-4. AI 고도화
+5. AI 고도화
    - 시장 국면 분류
    - 체결확률 예측
    - 거래하지 않을 구간 탐지
    - 뉴스와 공지 리스크 자동 분류
-5. 운영 자동화
+6. 운영 자동화
    - 일간 손익 리포트
    - 수수료 비중 리포트
    - 전략별 성과 분해
@@ -396,7 +407,7 @@ LLM은 직접 주문 판단에 사용하지 않는다.
 - Redis/BullMQ: MVP 제외
 - 모델: LightGBM 또는 XGBoost 우선, 충분한 데이터 확보 후 Transformer 검토
 - 백테스트: runtime core를 재사용하는 이벤트 기반 orchestrator
-- 주문: BrokerPort, PaperBroker active, UpbitLiveBroker disabled/stub
+- 주문: BrokerPort, PaperBroker는 legacy simulation/regression active, UpbitLiveBroker는 live-ops readiness guard 통과 시 active
 - 모니터링: Pino JSON log, PostgreSQL audit log, optional Prometheus `/metrics`
 - 알림: Telegram outbound only, Slack adapter는 비활성
 - 배포: Ubuntu 24.04 LTS + Docker Compose + same-host PostgreSQL/TimescaleDB

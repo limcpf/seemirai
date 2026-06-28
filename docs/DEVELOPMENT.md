@@ -52,14 +52,14 @@ Lockfile 변경은 `pnpm-lock.yaml`에 기록한다. M1 DB foundation 범위에�
 - secret 원문은 로그, 문서, prompt, PR body에 남기지 않는다.
 - 이 설정을 변경하면 `./scripts/verify hooks` 또는 `./scripts/verify`를 실행한다.
 
-## Seemirai MVP 런타임
+## Seemirai 런타임
 
 - 제품 runtime은 Node.js 24 LTS와 TypeScript strict를 기준으로 한다.
 - 패키지 매니저는 pnpm을 사용하고 lockfile을 커밋한다.
 - TypeScript는 `strict`, `allowJs=false`, `noImplicitAny`, `exactOptionalPropertyTypes`를 켠다.
 - 테스트 runner는 Vitest를 사용한다.
-- 기본 설정은 `config/paper.json`에서 시작하고 Zod schema로 검증한다.
-- 기본 paper profile은 API key 없이 로딩되어야 하며 실거래, 출금, 거래소 간 차익거래, 선물, 시장가 주문은 모두 비활성이다.
+- production 설정은 `config/live-ops.example.json` 계약에서 시작하고 `src/runtime/live-ops-config.ts` Zod schema로 검증한다.
+- legacy paper profile인 `config/paper.json`은 API key 없이 로딩되어야 하며 실거래, 출금, 거래소 간 차익거래, 선물, 시장가 주문은 모두 비활성이다.
 - 금액, 수량, 가격, 수수료 계산 경계는 Decimal 기반 유틸을 통해 문자열 또는 Decimal 입력만 허용한다.
 - logger는 Pino JSON log를 사용하고 Upbit key, Telegram token, local control token 후보를 redaction한다.
 - DB는 PostgreSQL + TimescaleDB를 기준으로 한다.
@@ -101,7 +101,7 @@ corepack pnpm test
 docker compose up -d postgres
 ```
 
-로컬 DB 접속 설정은 paper trading runtime profile과 분리해 `config/local-db.json`에 둔다. 기본 host port는 `127.0.0.1:55432`이며, 필요한 경우 프로세스 환경 변수의 `SEEMIRAI_DATABASE_URL` 전체 URL 또는 `SEEMIRAI_POSTGRES_HOST`, `SEEMIRAI_POSTGRES_PORT`, `SEEMIRAI_POSTGRES_USER`, `SEEMIRAI_POSTGRES_PASSWORD`, `SEEMIRAI_POSTGRES_DB` 값으로 덮어쓴다. 전체 URL이 설정되어 있으면 컴포넌트 env보다 우선한다. Docker Compose는 `.env` 파일을 읽지만 Node 앱은 `.env` 파일을 자동 로드하지 않으므로 앱 실행 시에는 필요한 값을 shell, process manager, CI env로 주입한다.
+로컬 DB 접속 설정은 trading runtime profile과 분리해 `config/local-db.json`에 둔다. 기본 host port는 `127.0.0.1:55432`이며, 필요한 경우 프로세스 환경 변수의 `SEEMIRAI_DATABASE_URL` 전체 URL 또는 `SEEMIRAI_POSTGRES_HOST`, `SEEMIRAI_POSTGRES_PORT`, `SEEMIRAI_POSTGRES_USER`, `SEEMIRAI_POSTGRES_PASSWORD`, `SEEMIRAI_POSTGRES_DB` 값으로 덮어쓴다. 전체 URL이 설정되어 있으면 컴포넌트 env보다 우선한다. Docker Compose는 `.env` 파일을 읽지만 Node 앱은 `.env` 파일을 자동 로드하지 않으므로 앱 실행 시에는 필요한 값을 shell, process manager, CI env로 주입한다.
 
 DB migration integration test는 기본 test run에서 skip된다. 로컬 PostgreSQL + TimescaleDB가 준비된 환경에서 실제 migration 적용을 확인할 때만 다음 명령을 사용한다.
 
