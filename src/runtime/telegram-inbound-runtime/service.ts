@@ -1,13 +1,18 @@
 import {
+  createLiveOpsBriefingSnapshot,
   createTelegramInboundCommandAuditEvent,
   createTelegramInboundCommandIdempotencyKey,
   evaluateTelegramInboundAuthorization,
+  formatLiveOpsBriefing,
   hashTelegramInboundIdentifier,
   parseTelegramInboundCommand,
   telegramInboundCommandJobType,
 } from "../../application/index.js";
 import type {
   AuditEventReceipt,
+  LiveOpsBriefingMarketSourceInput,
+  LiveOpsBriefingPortfolioSourceInput,
+  LiveOpsBriefingPositionSnapshot,
   ParsedTelegramInboundCommand,
   TelegramInboundCommandDedupeResult,
   TelegramInboundCommandMessage,
@@ -34,6 +39,9 @@ import type {
   TelegramInboundCommandHandleResult,
   TelegramInboundCommandRuntime,
   TelegramInboundCommandRuntimeOptions,
+  CreateTelegramInboundBriefingProviderOptions,
+  TelegramInboundControlStatusSnapshot,
+  TelegramInboundBriefingProvider,
   TelegramInboundControlConfirmationInput,
   TelegramInboundControlConfirmationResult,
   TelegramInboundControlConfirmationStore,
@@ -43,6 +51,7 @@ import type {
 } from "./types.js";
 
 const defaultControlConfirmationTtlMs = 60_000;
+const briefingMarketHeartbeatFreshnessWindowMs = 5 * 60 * 1000;
 
 /**
  * process-local control confirmation store를 만든다.
@@ -114,6 +123,273 @@ export function createInMemoryTelegramInboundControlConfirmationStore(
       pending.delete(createConfirmationKey(input));
     },
   };
+}
+
+/**
+ * `/status` safe snapshot을 기본 `/brief` provider로 감싼다.
+ *
+ * 이 helper는 별도 provider 조회를 새로 만들지 않고 기존 status provider가 이미 낮춘 safe snapshot만 사용한다. formatter 결과는
+ * Telegram reply로 보낼 수 있는 deterministic briefing text이며, broker/control/Telegram outbound side effect를 수행하지 않는다.
+ */
+export function createTelegramInboundBriefingProvider(
+  options: CreateTelegramInboundBriefingProviderOptions,
+): TelegramInboundBriefingProvider {
+  return {
+    async getBriefing(input) {
+      const status = await options.statusProvider.getStatus();
+      const observedAt = resolveTelegramInboundBriefingStatusObservedAt(status, input.occurredAt);
+      const snapshot = createLiveOpsBriefingSnapshot({
+        observedAt,
+        status: status.liveOps ?? null,
+        why: status.why,
+        liveTradingEnabled: options.liveTradingEnabled ?? status.runtime.liveTradingEnabled,
+        market: createBriefingMarketProjectionFromControlStatus(status, observedAt),
+        portfolio: createBriefingPortfolioProjectionFromControlStatus(status),
+        trace: {
+          evidenceIds: [input.correlationId],
+          reasonCodes: ["telegram_brief_command"],
+          sourceIds: ["telegram_inbound_brief_command", "http_control_status_snapshot"],
+          metadata: {
+            correlationId: input.correlationId,
+            commandOccurredAt: input.occurredAt,
+            statusGeneratedAt: status.generatedAt,
+            briefingObservedAt: observedAt,
+          },
+        },
+      });
+
+      return formatLiveOpsBriefing(snapshot, {
+        ...(options.maxCharacters === undefined ? {} : { maxCharacters: options.maxCharacters }),
+      });
+    },
+  };
+}
+
+/**
+ * 기본 `/brief`의 freshness 기준 시각을 status snapshot 생성 시각으로 맞춘다.
+ *
+ * status provider 호출 뒤에 만들어진 safe snapshot을 재사용하므로 명령 수신 시각을 기준으로 비교하면 정상 heartbeat가 미래로
+ * 오탐될 수 있다. snapshot 생성 시각이 해석 가능할 때만 승격하고, 비정상 값은 명령 수신 시각으로 닫아 deterministic reply를
+ * 유지한다.
+ *
+ * @param status HTTP control status safe snapshot
+ * @param commandOccurredAt Telegram 명령 수신 시각
+ * @returns briefing assembler와 market freshness가 공유할 기준 시각
+ */
+function resolveTelegramInboundBriefingStatusObservedAt(
+  status: TelegramInboundControlStatusSnapshot,
+  commandOccurredAt: string,
+): string {
+  if (Number.isFinite(Date.parse(status.generatedAt))) {
+    return status.generatedAt;
+  }
+  return commandOccurredAt;
+}
+
+/**
+ * `/status.marketData` safe field를 briefing market projection으로 낮춘다.
+ *
+ * 기본 `/brief` provider는 별도 market provider를 호출하지 않으므로 이미 조회된 status snapshot만 사용한다. raw ticker/orderbook은
+ * 없고 connection/lag/updatedAt만 전달해 formatter가 market freshness를 관측 부재로 오인하지 않게 한다.
+ *
+ * @param status HTTP control status safe snapshot
+ * @returns briefing assembler에 전달할 market projection
+ */
+function createBriefingMarketProjectionFromControlStatus(
+  status: TelegramInboundControlStatusSnapshot,
+  observedAt: string,
+): LiveOpsBriefingMarketSourceInput {
+  const lagText = status.marketData.lagMs === null
+    ? "지연 관측 없음"
+    : `지연 ${status.marketData.lagMs}ms`;
+  const freshnessIssue = resolveBriefingMarketHeartbeatFreshnessIssue(status, observedAt);
+  if (freshnessIssue !== null) {
+    // connected 문자열이 남아 있어도 heartbeat freshness가 깨졌으면 fresh label을 만들지 않는다.
+    return {
+      freshnessLabel: "시장 데이터 freshness 확인 필요",
+      summary: formatBriefingMarketHeartbeatFreshnessIssue(freshnessIssue, status.marketData.updatedAt),
+      observedAt: status.marketData.updatedAt,
+    };
+  }
+
+  return {
+    freshnessLabel: labelBriefingMarketFreshness(status),
+    summary: `시장 데이터 상태 ${status.marketData.connectionStatus}, ${lagText}.`,
+    observedAt: status.marketData.updatedAt,
+  };
+}
+
+/**
+ * `/status`의 paper/PnL safe field를 briefing portfolio projection으로 낮춘다.
+ *
+ * `/status`에는 raw wallet balance나 coin별 수량이 없으므로 cash/balance는 관측 없음으로 유지한다. 대신 이미 안전하게 집계된
+ * PnL과 paper position count를 넘겨 기본 `/brief`가 평가자산/PnL과 position scope를 누락하지 않게 한다.
+ *
+ * @param status HTTP control status safe snapshot
+ * @returns briefing assembler에 전달할 portfolio projection
+ */
+function createBriefingPortfolioProjectionFromControlStatus(
+  status: TelegramInboundControlStatusSnapshot,
+): LiveOpsBriefingPortfolioSourceInput {
+  return {
+    cash: {
+      statusLabel: "cash source 관측 없음",
+      availableKrw: null,
+      totalKrw: null,
+      observedAt: null,
+    },
+    balances: null,
+    positions: createBriefingPositionsFromControlStatus(status),
+    pnl: {
+      statusLabel: status.pnl.statusLabel,
+      realizedKrw: status.pnl.latestRealizedPnlKrw,
+      unrealizedKrw: status.pnl.latestUnrealizedPnlKrw,
+      equityKrw: status.pnl.latestEquityKrw,
+      observedAt: status.pnl.latestCapturedAt,
+    },
+    openExposureKrw: status.liveOps?.budget.openExposureKrw ?? null,
+    budgetUsedKrw: status.liveOps?.budget.dailyNotionalUsedKrw ?? null,
+  };
+}
+
+/**
+ * `/status.marketData` connection/updatedAt 조합을 briefing용 freshness label로 변환한다.
+ *
+ * connection 문자열만으로 fresh를 만들면 오래된 상태가 정상으로 보일 수 있으므로 updatedAt이 없으면 관측 없음으로 닫는다. 이
+ * 함수는 문자열 분류만 수행하며 market data provider 재조회 side effect를 만들지 않는다.
+ *
+ * @param status HTTP control status safe snapshot
+ * @returns 운영자에게 보일 market freshness label
+ */
+function labelBriefingMarketFreshness(status: TelegramInboundControlStatusSnapshot): string {
+  if (status.marketData.updatedAt === null) {
+    // 업데이트 시각이 없으면 연결 문자열만으로 fresh 상태를 만들지 않는다.
+    return "시장 데이터 관측 없음";
+  }
+
+  const normalized = status.marketData.connectionStatus.trim().toLowerCase();
+  if (normalized === "connected") {
+    return "시장 데이터 수신 확인";
+  }
+  if (normalized === "disconnected") {
+    return "시장 데이터 연결 끊김";
+  }
+  if (normalized === "unknown") {
+    return "시장 데이터 상태 확인 필요";
+  }
+  return `시장 데이터 ${status.marketData.connectionStatus}`;
+}
+
+/**
+ * `/status.marketData` heartbeat가 브리핑 기준 시각에서 fresh로 볼 수 있는지 판정한다.
+ *
+ * 기본 `/brief` provider가 market projection을 넘기면 assembler의 status heartbeat fallback guard가 실행되지 않는다. 그래서 이
+ * 경계에서 updatedAt과 lagMs를 다시 확인해 stale heartbeat가 "수신 확인"으로 보이는 일을 막는다.
+ *
+ * @param status HTTP control status safe snapshot
+ * @param observedAt briefing 생성 기준 시각
+ * @returns freshness 문제 유형 또는 fresh 상태의 null
+ */
+function resolveBriefingMarketHeartbeatFreshnessIssue(
+  status: TelegramInboundControlStatusSnapshot,
+  observedAt: string,
+): "future" | "invalid" | "stale" | null {
+  const updatedAt = status.marketData.updatedAt;
+  if (updatedAt === null) {
+    return null;
+  }
+
+  const heartbeatTime = Date.parse(updatedAt);
+  const briefingTime = Date.parse(observedAt);
+  if (!Number.isFinite(heartbeatTime) || !Number.isFinite(briefingTime)) {
+    return "invalid";
+  }
+  if (heartbeatTime > briefingTime) {
+    return "future";
+  }
+  if (briefingTime - heartbeatTime > briefingMarketHeartbeatFreshnessWindowMs) {
+    return "stale";
+  }
+  if (
+    status.marketData.lagMs !== null &&
+    status.marketData.lagMs > briefingMarketHeartbeatFreshnessWindowMs
+  ) {
+    // lagMs는 provider가 이미 계산한 freshness evidence이므로 timestamp 차이가 애매해도 stale로 닫는다.
+    return "stale";
+  }
+  if (readTelegramInboundTraceString(status.liveOps?.trace, "reason") === "heartbeat_unavailable") {
+    // liveOps guard가 heartbeat unavailable로 닫힌 tick은 market projection에서도 fresh로 되살리지 않는다.
+    return "stale";
+  }
+  return null;
+}
+
+/**
+ * market heartbeat freshness 문제를 Telegram briefing용 한국어 문구로 낮춘다.
+ *
+ * 내부 reason code 대신 운영자가 확인할 마지막 수신 시각을 본문에 남긴다. 이 함수는 문자열 변환만 수행하며 provider 조회
+ * side effect를 만들지 않는다.
+ *
+ * @param issue freshness 문제 유형
+ * @param updatedAt status snapshot의 마지막 market heartbeat 시각
+ * @returns operator-facing market summary
+ */
+function formatBriefingMarketHeartbeatFreshnessIssue(
+  issue: "future" | "invalid" | "stale",
+  updatedAt: string | null,
+): string {
+  switch (issue) {
+    case "future":
+      return `시장 데이터 heartbeat 시각이 브리핑 시각보다 미래입니다. 마지막 수신 ${updatedAt}.`;
+    case "invalid":
+      return `시장 데이터 heartbeat 시각을 해석할 수 없습니다. 마지막 수신 ${updatedAt}.`;
+    case "stale":
+      return `시장 데이터 heartbeat가 5분보다 오래되었습니다. 마지막 수신 ${updatedAt}.`;
+  }
+}
+
+/**
+ * status trace에서 단일 문자열 evidence를 읽는다.
+ *
+ * trace는 provider별 임의 JSON이라 타입 단언으로 reason을 승격하지 않는다. 문자열이 아닌 값은 결측으로 보고 caller가
+ * fail-open/fail-closed 의미를 직접 결정하게 한다.
+ *
+ * @param trace status 또는 liveOps summary trace
+ * @param key 조회할 trace key
+ * @returns 비어 있지 않은 문자열 값 또는 null
+ */
+function readTelegramInboundTraceString(trace: JsonRecord | undefined, key: string): string | null {
+  const value = trace?.[key];
+  return typeof value === "string" && value.trim().length > 0 ? value : null;
+}
+
+/**
+ * `/status.paper.openPositionCount`를 briefing position projection으로 변환한다.
+ *
+ * `/status`에는 개별 포지션 수량, 평균단가, market별 내역이 없으므로 count가 양수여도 특정 market 보유처럼 보정하지 않는다.
+ * count 결측은 무포지션이 아니라 source 결측으로 반환해 formatter가 관측 부재를 유지하게 한다.
+ *
+ * @param status HTTP control status safe snapshot
+ * @returns briefing position projection 또는 source 결측 표시
+ */
+function createBriefingPositionsFromControlStatus(
+  status: TelegramInboundControlStatusSnapshot,
+): readonly LiveOpsBriefingPositionSnapshot[] | null {
+  if (status.paper.status === "unavailable" || status.paper.openPositionCount === null) {
+    // paper 집계가 실패했거나 count가 없으면 무포지션으로 보정하지 않고 position source 결측으로 둔다.
+    return null;
+  }
+  if (status.paper.openPositionCount <= 0) {
+    return [];
+  }
+  return [
+    {
+      market: "종목 미상",
+      quantity: null,
+      averageEntryPriceKrw: null,
+      statusLabel: `paper 보유 포지션 ${status.paper.openPositionCount}개 (market별 내역 없음)`,
+    },
+  ];
 }
 
 /**
@@ -601,6 +877,21 @@ async function executeReadOnlyCommandSafely(
   correlationId: string,
 ): Promise<{ ok: true; text: string } | { ok: false; text: string }> {
   try {
+    if (command.name === "brief") {
+      // 기존 runtime 조립 경계가 statusProvider만 넘겨도 `/brief` parser 활성화와 실행 가능 상태가 어긋나지 않게 기본 provider로 닫는다.
+      const briefingProvider = options.briefingProvider ?? createTelegramInboundBriefingProvider({
+        statusProvider: options.statusProvider,
+      });
+      // `/brief`는 status 조회와 같은 read-only 경로지만 별도 briefing provider만 호출해 broker/control side effect로 이어지지 않는다.
+      return {
+        ok: true,
+        text: await briefingProvider.getBriefing({
+          correlationId,
+          occurredAt: (options.clock ?? (() => new Date()))().toISOString(),
+        }),
+      };
+    }
+
     const snapshot = await options.statusProvider.getStatus();
     switch (command.name) {
       case "status":

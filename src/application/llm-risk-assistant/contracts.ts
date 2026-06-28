@@ -6,6 +6,7 @@ export const llmRiskAssistantInputSources = [
   "exchange_notice",
   "developer_changelog",
   "market_event",
+  "live_ops_status_snapshot",
 ] as const;
 
 export const llmRiskAssistantResultTypes = [
@@ -13,6 +14,7 @@ export const llmRiskAssistantResultTypes = [
   "notice_risk_classification",
   "event_explanation",
   "daily_report_draft",
+  "live_ops_briefing_draft",
 ] as const;
 
 export const llmRiskAssistantActions = [
@@ -47,15 +49,17 @@ export type LlmRiskAssistantSchemaVersion = typeof LLM_RISK_ASSISTANT_SCHEMA_VER
 /**
  * LLM 요청으로 보낼 수 있는 공식 입력 원천이다.
  *
- * 일반 뉴스, SNS, 커뮤니티, 루머성 Telegram 같은 비공식 원천은 이 union에 포함하지 않는다. prompt builder는 provider
- * 호출 전에 이 값을 검증해 LLM이 주문 후보 생성 경계로 우회 진입하지 못하게 해야 한다.
+ * 일반 뉴스, SNS, 커뮤니티, 루머성 Telegram 같은 비공식 원천은 이 union에 포함하지 않는다. Live Ops snapshot은 이미
+ * secret-safe deterministic briefing으로 낮아진 read-only source만 허용한다. prompt builder는 provider 호출 전에 이 값을
+ * 검증해 LLM이 주문 후보 생성 경계로 우회 진입하지 못하게 해야 한다.
  */
 export type LlmRiskAssistantInputSource = (typeof llmRiskAssistantInputSources)[number];
 
 /**
  * LLM 결과가 수행할 수 있는 보조 업무 유형이다.
  *
- * 결과 타입은 공지 요약, 리스크 분류, 이벤트 설명, daily report draft처럼 거래 판단을 대체하지 않는 표면으로 제한한다.
+ * 결과 타입은 공지 요약, 리스크 분류, 이벤트 설명, daily report/Live Ops briefing draft처럼 거래 판단을 대체하지 않는
+ * 표면으로 제한한다.
  */
 export type LlmRiskAssistantResultType = (typeof llmRiskAssistantResultTypes)[number];
 

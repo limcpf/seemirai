@@ -1,11 +1,15 @@
+import { Buffer } from "node:buffer";
+
 import {
   createLiveOpsAlertRequest,
+  dispatchAlertWithFailureStateTracking,
   dispatchLiveOpsAlert,
 } from "../../application/index.js";
 import type {
   AlertDispatchRequest,
   AlertDispatchResult,
   AlertDispatchServiceOptions,
+  AlertCooldownStore,
   LiveOpsAlertEventKind,
   LiveOpsAlertInput,
 } from "../../application/index.js";
@@ -150,6 +154,104 @@ export interface DispatchLiveOpsTelegramAlertsSummary {
 }
 
 /**
+ * 정기 Live Ops Telegram briefing 설정이다.
+ *
+ * 책임:
+ * - scheduled briefing이 명시적으로 켜졌는지만 표현한다.
+ * - `scheduleKey`는 alert cooldown fingerprint의 안정 dedupe segment로 쓰이며, secret이나 Telegram raw 입력을 담으면 안 된다.
+ */
+export interface ScheduledLiveOpsTelegramBriefingConfig {
+  readonly scheduledEnabled: boolean;
+  readonly scheduleKey?: string;
+}
+
+/**
+ * 정기 Live Ops Telegram briefing plan 입력이다.
+ *
+ * 책임:
+ * - 이미 deterministic formatter와 LLM guard를 통과한 briefing text를 alert dispatch 경계로 낮춘다.
+ * - 이 mapper는 Telegram provider, cooldown store, retry queue, audit log를 직접 호출하지 않는다.
+ */
+export interface ScheduledLiveOpsTelegramBriefingPlanInput {
+  readonly config: ScheduledLiveOpsTelegramBriefingConfig;
+  readonly environment: string;
+  readonly runMode: string;
+  readonly observedAt: string;
+  readonly briefingText: string;
+  readonly briefingSourceFingerprint: string;
+  readonly correlationId?: string;
+}
+
+/**
+ * 정기 Live Ops Telegram briefing plan 상태다.
+ *
+ * `disabled`는 설정에서 명시 활성화되지 않아 provider 호출 후보가 없다는 뜻이고, `ready`만 dispatch 경계로 전진할 수 있다.
+ */
+export type ScheduledLiveOpsTelegramBriefingPlanStatus = "disabled" | "ready";
+
+/**
+ * 정기 Live Ops Telegram briefing provider 호출 전 plan이다.
+ *
+ * 책임:
+ * - scheduled briefing 기본 비활성 invariant와 alert cooldown fingerprint를 한곳에 고정한다.
+ * - `requests`는 기존 alert dispatch service가 처리할 수 있는 shape로 보존해 retry/cooldown/audit 경계를 재사용한다.
+ */
+export interface ScheduledLiveOpsTelegramBriefingPlan {
+  readonly status: ScheduledLiveOpsTelegramBriefingPlanStatus;
+  readonly ready: boolean;
+  readonly observedAt: string;
+  readonly alertCount: number;
+  readonly providerDispatchAttempted: false;
+  readonly message: string;
+  readonly action: string;
+  readonly requests: readonly AlertDispatchRequest[];
+  readonly trace: JsonRecord;
+}
+
+/**
+ * 정기 Live Ops Telegram briefing 전송 입력이다.
+ *
+ * ready plan만 provider/cooldown 경계로 전진하며, disabled plan은 provider 호출 없이 summary로 닫아야 한다.
+ */
+export interface DispatchScheduledLiveOpsTelegramBriefingInput {
+  readonly plan: ScheduledLiveOpsTelegramBriefingPlan;
+  readonly alertDispatch: AlertDispatchServiceOptions;
+  /**
+   * 정기 브리핑 전용 notification failure 누적 소유자다.
+   *
+   * scheduled briefing은 P3 low-priority provider 호출이므로 kill-switch/lifecycle/trade 알림과 같은 lock을 잡지 않아야 한다.
+   * runtime 조립 경계가 이 값을 넘기면 브리핑 실패만 별도 누적하고, 생략하면 호출 단위 owner를 만들어 원본 alert dispatch를
+   * 막지 않는다.
+   */
+  readonly failureStateOwner?: AlertDispatchServiceOptions;
+  /**
+   * scheduled briefing 전용 low-priority cooldown 저장소다.
+   *
+   * 일반 P2/P3 lifecycle 알림은 process-local cooldown 정책을 유지해야 하므로, 정기 브리핑처럼 재시작/다중 daemon 중복을
+   * 따로 막아야 하는 호출만 이 override로 DB-backed store를 사용한다.
+   */
+  readonly cooldownStore?: AlertCooldownStore;
+}
+
+/**
+ * 정기 Live Ops Telegram briefing 전송 결과 요약이다.
+ *
+ * provider 실패는 briefing 생성 성공을 되돌리지 않고 failure count와 retry/cooldown 결과로만 격리한다.
+ */
+export interface DispatchScheduledLiveOpsTelegramBriefingSummary {
+  readonly status: "sent" | "skipped" | "partial_failure";
+  readonly attemptedCount: number;
+  readonly deliveredCount: number;
+  readonly cooldownHitCount: number;
+  readonly retryPlannedCount: number;
+  readonly failureCount: number;
+  readonly message: string;
+  readonly action: string;
+  readonly results: readonly AlertDispatchResult[];
+  readonly trace: JsonRecord;
+}
+
+/**
  * production live ops lifecycle/trade 상태를 Telegram alert 후보로 변환한다.
  *
  * @param input live ops config, Telegram readiness evidence, live execution summary, 선택 주문 intent
@@ -234,7 +336,7 @@ export async function dispatchLiveOpsTelegramAlerts(
   }
 
   const results: AlertDispatchResult[] = [];
-  let failureCount = 0;
+  let dispatchExceptionCount = 0;
 
   for (const event of input.plan.events) {
     try {
@@ -244,25 +346,35 @@ export async function dispatchLiveOpsTelegramAlerts(
       }));
     } catch {
       // 알림 dispatch 실패가 주문/리스크 commit을 되돌리면 운영 상태가 더 불명확해지므로 실패 count로만 격리한다.
-      failureCount += 1;
+      dispatchExceptionCount += 1;
     }
   }
 
   const deliveredCount = results.filter((result) => result.notification.delivered).length;
   const cooldownHitCount = results.filter((result) => result.cooldownHit).length;
   const retryPlannedCount = results.filter((result) => result.retryJobPlan !== undefined).length;
+  // provider 실패와 cooldown skip은 운영자가 다르게 대응해야 하므로 delivered=false 전체를 sent로 덮지 않는다.
+  const providerFailureCount = results.filter((result) => !result.cooldownHit && !result.notification.delivered).length;
+  const failureCount = dispatchExceptionCount + providerFailureCount;
+  const status = failureCount > 0
+    ? "partial_failure"
+    : deliveredCount > 0
+      ? "sent"
+      : "skipped";
 
   return {
-    status: failureCount > 0 ? "partial_failure" : "sent",
+    status,
     attemptedCount: input.plan.events.length,
     deliveredCount,
     cooldownHitCount,
     retryPlannedCount,
     failureCount,
-    message: failureCount > 0
-      ? "일부 Telegram alert dispatch 결과를 확정하지 못했습니다."
-      : "Telegram alert dispatch를 완료했습니다.",
-    action: failureCount > 0
+    message: status === "sent"
+      ? "Telegram alert dispatch를 완료했습니다."
+      : status === "skipped"
+        ? "Telegram alert dispatch가 cooldown/fingerprint 정책으로 생략됐습니다."
+        : "일부 Telegram alert dispatch 결과를 확정하지 못했습니다.",
+    action: status === "partial_failure"
       ? "notification retry job과 provider 상태를 확인합니다."
       : "전송 결과와 cooldown 상태를 status surface에서 확인합니다.",
     results,
@@ -272,6 +384,194 @@ export async function dispatchLiveOpsTelegramAlerts(
       alertCount: input.plan.alertCount,
     },
   };
+}
+
+/**
+ * 정기 Live Ops Telegram briefing dispatch plan을 만든다.
+ *
+ * @param input scheduled config와 deterministic briefing text
+ * @returns provider 호출 없는 scheduled briefing plan
+ */
+export function planScheduledLiveOpsTelegramBriefing(
+  input: ScheduledLiveOpsTelegramBriefingPlanInput,
+): ScheduledLiveOpsTelegramBriefingPlan {
+  const scheduleKey = normalizeBriefingScheduleKey(input.config.scheduleKey);
+  const dedupeKey = createScheduledBriefingDedupeKey(scheduleKey, input.briefingSourceFingerprint);
+
+  if (!input.config.scheduledEnabled) {
+    return {
+      status: "disabled",
+      ready: false,
+      observedAt: input.observedAt,
+      alertCount: 0,
+      providerDispatchAttempted: false,
+      message: "정기 Live Ops Telegram 브리핑은 설정에서 비활성입니다.",
+      action: "정기 브리핑이 필요하면 telegram.briefing.scheduled_enabled를 명시적으로 켜세요.",
+      requests: [],
+      trace: {
+        source: "live_ops_briefing",
+        dispatchKind: "scheduled",
+        reason: "scheduled_live_ops_briefing_disabled",
+        scheduleKey,
+      },
+    };
+  }
+
+  const request: AlertDispatchRequest = {
+    environment: input.environment,
+    runMode: input.runMode,
+    severity: "P3",
+    alertType: "live_ops_briefing",
+    reasonCode: "scheduled_live_ops_briefing",
+    // P3 cooldown은 길기 때문에 source fingerprint를 넣어 새 evidence briefing이 scheduleKey 단위 cooldown에 묻히지 않게 한다.
+    dedupeKey,
+    title: "Live Ops 정기 브리핑",
+    body: input.briefingText,
+    occurredAt: input.observedAt,
+    ...(input.correlationId === undefined ? {} : { correlationId: input.correlationId }),
+    metadata: {
+      source: "live_ops_briefing",
+      dispatch_kind: "scheduled",
+      schedule_key: scheduleKey,
+      briefing_source_fingerprint: input.briefingSourceFingerprint,
+      observed_at: input.observedAt,
+    },
+  };
+
+  return {
+    status: "ready",
+    ready: true,
+    observedAt: input.observedAt,
+    alertCount: 1,
+    providerDispatchAttempted: false,
+    message: "정기 Live Ops Telegram 브리핑 전송 계획을 만들었습니다.",
+    action: "provider dispatch 전 cooldown/fingerprint 상태를 확인합니다.",
+    requests: [request],
+    trace: {
+      source: "live_ops_briefing",
+      dispatchKind: "scheduled",
+      scheduleKey,
+      briefingSourceFingerprint: input.briefingSourceFingerprint,
+    },
+  };
+}
+
+/**
+ * 정기 Live Ops Telegram briefing을 기존 alert dispatch 경계로 전송한다.
+ *
+ * @param input scheduled briefing plan과 alert dispatch 의존성
+ * @returns provider/cooldown/retry 결과 요약
+ */
+export async function dispatchScheduledLiveOpsTelegramBriefing(
+  input: DispatchScheduledLiveOpsTelegramBriefingInput,
+): Promise<DispatchScheduledLiveOpsTelegramBriefingSummary> {
+  if (input.plan.status !== "ready") {
+    // scheduled briefing은 기본 비활성이므로 config가 열리지 않았을 때 provider/cooldown side effect를 만들지 않는다.
+    return {
+      status: "skipped",
+      attemptedCount: 0,
+      deliveredCount: 0,
+      cooldownHitCount: 0,
+      retryPlannedCount: 0,
+      failureCount: 0,
+      message: input.plan.message,
+      action: input.plan.action,
+      results: [],
+      trace: {
+        source: "live_ops_briefing",
+        planStatus: input.plan.status,
+      },
+    };
+  }
+
+  const results: AlertDispatchResult[] = [];
+  let dispatchExceptionCount = 0;
+  const alertDispatch = createScheduledBriefingAlertDispatch(input);
+  const failureStateOwner = input.failureStateOwner ?? createScheduledBriefingFailureStateOwner(input);
+
+  for (const request of input.plan.requests) {
+    try {
+      // P3 정기 브리핑 provider 지연이 P0/P1 운영 알림의 failure-state lock을 점유하지 않도록 별도 owner에만 직렬화한다.
+      const result = await dispatchAlertWithFailureStateTracking({
+        alertDispatch,
+        request,
+        failureStateOwner,
+      });
+      results.push(result);
+    } catch {
+      // Telegram dispatch 실패가 이미 생성된 deterministic briefing 결과를 rollback하지 못하게 실패 count로만 격리한다.
+      dispatchExceptionCount += 1;
+    }
+  }
+
+  const deliveredCount = results.filter((result) => result.notification.delivered).length;
+  const cooldownHitCount = results.filter((result) => result.cooldownHit).length;
+  const retryPlannedCount = results.filter((result) => result.retryJobPlan !== undefined).length;
+  // provider가 실패를 값으로 반환한 경우도 cooldown 생략과 구분해야 운영자가 Telegram 장애를 놓치지 않는다.
+  const providerFailureCount = results.filter((result) => !result.cooldownHit && !result.notification.delivered).length;
+  const failureCount = dispatchExceptionCount + providerFailureCount;
+  const status = failureCount > 0
+    ? "partial_failure"
+    : deliveredCount > 0
+      ? "sent"
+      : "skipped";
+
+  return {
+    status,
+    attemptedCount: input.plan.requests.length,
+    deliveredCount,
+    cooldownHitCount,
+    retryPlannedCount,
+    failureCount,
+    message: status === "sent"
+      ? "정기 Live Ops Telegram 브리핑 전송을 완료했습니다."
+      : status === "skipped"
+        ? "정기 Live Ops Telegram 브리핑이 cooldown/fingerprint 정책으로 생략됐습니다."
+        : "일부 정기 Live Ops Telegram 브리핑 전송 결과를 확정하지 못했습니다.",
+    action: status === "partial_failure"
+      ? "notification retry job과 provider 상태를 확인합니다."
+      : "전송 결과와 cooldown 상태를 status surface에서 확인합니다.",
+    results,
+    trace: {
+      source: "live_ops_briefing",
+      planStatus: input.plan.status,
+      alertCount: input.plan.alertCount,
+    },
+  };
+}
+
+/**
+ * scheduled briefing provider 호출에 사용할 alert dispatch 옵션을 원본 runtime 객체와 분리한다.
+ *
+ * 원본 객체를 그대로 넘기면 failure-state helper가 같은 객체 lock을 사용해 kill-switch/lifecycle/trade 알림까지 기다리게 된다.
+ * 이 clone은 notifier, audit, retry queue, cooldown store 포트를 재사용하지만 in-memory failureState와 lock 소유권은
+ * scheduled briefing 전용 owner로 분리한다.
+ *
+ * @param input scheduled briefing dispatch 입력
+ * @returns provider 호출용 alert dispatch clone
+ */
+function createScheduledBriefingAlertDispatch(
+  input: DispatchScheduledLiveOpsTelegramBriefingInput,
+): AlertDispatchServiceOptions {
+  return {
+    ...input.alertDispatch,
+    ...(input.cooldownStore === undefined ? {} : { memoryCooldownStore: input.cooldownStore }),
+  };
+}
+
+/**
+ * runtime이 전용 owner를 제공하지 않은 direct 호출에서도 원본 alert dispatch lock을 잡지 않게 호출 단위 owner를 만든다.
+ *
+ * 이 owner는 scheduled briefing 실패 집계만 직렬화한다. P0/P1 운영 알림의 manual review 수렴은 원본 runtime alert dispatch가
+ * 계속 담당하며, 정기 브리핑 실패는 dispatch summary와 retry/cooldown evidence로 노출한다.
+ *
+ * @param input scheduled briefing dispatch 입력
+ * @returns scheduled briefing 전용 failure-state owner
+ */
+function createScheduledBriefingFailureStateOwner(
+  input: DispatchScheduledLiveOpsTelegramBriefingInput,
+): AlertDispatchServiceOptions {
+  return createScheduledBriefingAlertDispatch(input);
 }
 
 function createLifecycleEvents(
@@ -305,6 +605,21 @@ function createLifecycleEvents(
     count: events.length,
   }));
   return events;
+}
+
+function normalizeBriefingScheduleKey(value: string | undefined): string {
+  const trimmed = value?.trim();
+  return trimmed === undefined || trimmed.length === 0 ? "default" : trimmed;
+}
+
+function createScheduledBriefingDedupeKey(scheduleKey: string, briefingSourceFingerprint: string): string {
+  // downstream fingerprint 정규화가 ':'와 '%'를 다시 바꾸므로 segment 자체를 길이+hex로 낮춰 충돌 없는 business key를 유지한다.
+  return `${encodeScheduledBriefingDedupeSegment(scheduleKey)}:${encodeScheduledBriefingDedupeSegment(briefingSourceFingerprint)}`;
+}
+
+function encodeScheduledBriefingDedupeSegment(value: string): string {
+  const normalized = value.trim();
+  return `${normalized.length.toString(36)}_${Buffer.from(normalized, "utf8").toString("hex")}`;
 }
 
 function createTradeEvents(

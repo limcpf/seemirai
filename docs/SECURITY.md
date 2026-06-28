@@ -77,8 +77,14 @@
   bot username 미설정 상태의 mention command는 control provider로 전달하지 않는다.
 - 같은 Telegram update/message/command 재전달은 기존 `jobs.idempotency_key` 기반 dedupe row로 차단한다. dedupe row payload에도
   raw update나 raw message text를 넣지 않는다.
-- `/status`, `/positions`, `/pnl`, `/why <market|cash>`, `/orders`, `/risk`는 read-only 조회만 수행하며 주문 후보 승인, live broker
+- `/status`, `/brief`, `/positions`, `/pnl`, `/why <market|cash>`, `/orders`, `/risk`는 read-only 조회만 수행하며 주문 후보 승인, live broker
   submit/cancel, Upbit order endpoint 호출로 연결하지 않는다.
+- `/brief` provider 입력에는 correlation id와 처리 시각만 전달한다. raw Telegram text, raw chat/user id, raw provider body,
+  Telegram token, API key, JWT, Authorization header는 briefing snapshot, reply, audit metadata에 저장하지 않는다.
+- scheduled briefing은 `telegram.briefing.scheduled_enabled=false`가 기본값이며, 명시 활성화된 경우에도 기존 alert
+  cooldown/fingerprint 경계를 사용한다. `schedule_key`에는 secret, raw Telegram 입력, provider payload를 넣지 않는다.
+  `SEEMIRAI_TELEGRAM_BRIEFING_SCHEDULED_ENABLED=0`은 운영자가 배포 JSON 변경 없이 scheduled briefing outbound side effect를
+  닫는 명시 비활성 override다.
 - `/pause`, `/resume`, `/kill`은 allowlist, durable dedupe, audit append 이후에도 같은 chat/user의 동일 명령 2단계 확인을
   통과해야 kill switch control provider로 전달된다. 첫 번째 명령이나 확인 reply 전송 실패는 durable control side effect를 만들지
   않는다.

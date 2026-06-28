@@ -769,6 +769,7 @@ describe("Frame builder (producer)", () => {
     expect(frame.exchange).toBe("UPBIT");
     expect(frame.dedupeKey).toContain("run-smoke-001");
     expect(frame.dedupeKey).toContain("frame-001");
+    expect(frame.trace.intentSide).toBe("BUY");
 
     // FRAME_RECEIVED는 evidence로 변환되지 않는다
     const evidenceKinds = evidenceItems.map((item) => item.evidenceKind);
@@ -1178,8 +1179,8 @@ describe("Frame builder (producer)", () => {
         { frameId: "sell-side-frame", strategyId: "strategy.sell", stage: "FRAME_RECEIVED", status: "received", observedAt: "2026-06-06T10:00:00Z" },
         { frameId: "sell-side-frame", strategyId: "strategy.sell", stage: "STRATEGY_DECISION", status: "SELL", reasonCode: "trend_down", message: "매도", observedAt: "2026-06-06T10:00:01Z" },
         { frameId: "sell-side-frame", strategyId: "strategy.sell", stage: "ORDER_INTENT_CONVERSION", status: "CONVERTED", reasonCode: "order_intent_promoted", message: "변환", observedAt: "2026-06-06T10:00:02Z", metadata: { intent_directions: ["SELL"] } },
-        { frameId: "sell-side-frame", strategyId: "strategy.sell", stage: "COST_DECISION", status: "ALLOW", reasonCode: "cost_margin_ok", message: "비용 통과", observedAt: "2026-06-06T10:00:03Z", metadata: { trade_allowed: true, intent_side: "SELL" } },
-        { frameId: "sell-side-frame", strategyId: "strategy.sell", stage: "RISK_DECISION", status: "PASS", reasonCode: "ALLOW", message: "리스크 통과", observedAt: "2026-06-06T10:00:04Z", metadata: { approved: true, intent_side: "SELL" } },
+        { frameId: "sell-side-frame", strategyId: "strategy.sell", stage: "COST_DECISION", status: "ALLOW", reasonCode: "cost_margin_ok", message: "비용 통과", observedAt: "2026-06-06T10:00:03Z", metadata: { trade_allowed: true, intent_side: "SELL", position_effect: "REDUCE" } },
+        { frameId: "sell-side-frame", strategyId: "strategy.sell", stage: "RISK_DECISION", status: "PASS", reasonCode: "ALLOW", message: "리스크 통과", observedAt: "2026-06-06T10:00:04Z", metadata: { approved: true, intent_side: "SELL", position_effect: "REDUCE" } },
       ] as const,
     };
 
@@ -1191,8 +1192,52 @@ describe("Frame builder (producer)", () => {
 
     const costEvidence = frames[0]!.evidenceItems.find((item) => item.evidenceKind === "COST_BREAKDOWN");
     const riskEvidence = frames[0]!.evidenceItems.find((item) => item.evidenceKind === "RISK_DECISION");
+    expect(frames[0]!.frame.trace.intentSide).toBe("SELL");
+    expect(frames[0]!.frame.trace.positionEffect).toBe("REDUCE");
     expect(costEvidence!.category).toBe("SELL");
     expect(riskEvidence!.category).toBe("SELL");
+  });
+
+  it("frame trace는 서로 다른 주문 record의 side와 position effect를 합치지 않는다", async () => {
+    const {
+      buildDecisionLedgerFromRunnerResult,
+    } = await import("../../src/application/decision-ledger/frame-builder.js");
+
+    const result = {
+      framesProcessed: 1,
+      metrics: {
+        strategyEvaluationCount: 1,
+        orderCandidateCount: 2,
+        orderIntentCount: 2,
+        holdReasonCounts: {},
+        discardReasonCounts: {},
+        costRejectedCount: 0,
+        riskRejectedCount: 0,
+        paperOrderSubmittedCount: 2,
+        paperFillCount: 0,
+        fillRate: 0,
+        costSummary: { evaluatedCount: 2, allowedCount: 2, rejectedCount: 0, averageCostBps: "10", averageRequiredReturnBps: "20", averageMarginBps: "10" },
+        slippageSummary: { observedFillCount: 0, averageSlippageBps: null, minSlippageBps: null, maxSlippageBps: null },
+        pnlSummary: { startingCashKrw: "1000000", endingCashKrw: "1000000", positionMarketValueKrw: "0", realizedPnlKrw: "0", unrealizedPnlKrw: "0", totalPnlKrw: "0", totalReturnBps: "0", totalFeesKrw: "0", submittedOrderCount: 2, filledOrderCount: 0 },
+        blockingReasonCounts: {},
+        liveOrderApiCalls: 0 as const,
+      },
+      ledgerWriteStatus: "NOT_CONFIGURED" as const,
+      trace: [
+        { frameId: "mixed-intent-frame", strategyId: "strategy.mixed", stage: "FRAME_RECEIVED", status: "received", observedAt: "2026-06-06T11:00:00Z" },
+        { frameId: "mixed-intent-frame", strategyId: "strategy.mixed", stage: "COST_DECISION", status: "ALLOW", reasonCode: "exit_cost_ok", message: "청산 비용 통과", observedAt: "2026-06-06T11:00:01Z", metadata: { trade_allowed: true, intent_side: "SELL", position_effect: "REDUCE" } },
+        { frameId: "mixed-intent-frame", strategyId: "strategy.mixed", stage: "RISK_DECISION", status: "PASS", reasonCode: "entry_risk_ok", message: "진입 리스크 통과", observedAt: "2026-06-06T11:00:02Z", metadata: { approved: true, intent_side: "BUY" } },
+      ] as const,
+    };
+
+    const { frames } = buildDecisionLedgerFromRunnerResult(
+      result,
+      "run-mixed-intent",
+      "UPBIT",
+    );
+
+    expect(frames[0]!.frame.trace.intentSide).toBe("BUY");
+    expect(frames[0]!.frame.trace.positionEffect).toBeUndefined();
   });
 
   it("evidence fingerprint는 모두 고유하고 중복이 없다", async () => {
@@ -1354,6 +1399,44 @@ describe("WhySummary build function", () => {
     expect(summary.cash.item!.holdReasons[0]!.count).toBe(2);
     expect(summary.cash.item!.holdReasons[1]!.label).toBe("스프레드 확대");
     expect(summary.cash.item!.holdReasons[1]!.count).toBe(1);
+  });
+
+  it("market/strategy projection의 reasonCounts를 trace reasonCodes로 보존한다", async () => {
+    const { buildWhySummary } = await import("../../src/application/decision-ledger/why-summary.js");
+
+    const summary = buildWhySummary(
+      {
+        markets: [
+          {
+            market: "KRW-BTC",
+            category: "RISK_REJECTED",
+            summaryStatus: "RECORDED",
+            reasonCounts: { open_position_budget_exceeded: 2, zero_reason: 0 },
+            latestDecisionAt: new Date("2026-06-06T00:00:00Z"),
+            trace: { reasonCodes: ["preexisting_reason"] },
+          },
+        ],
+        strategies: [
+          {
+            strategyId: "strategy.trend-following",
+            category: "HOLD",
+            summaryStatus: "RECORDED",
+            reasonCounts: { wide_spread: 1 },
+            latestDecisionAt: new Date("2026-06-06T00:00:00Z"),
+            trace: {},
+          },
+        ],
+        cashFrames: [],
+      },
+      "2026-06-06T04:00:00.000Z",
+    );
+
+    expect(summary.markets.items[0]!.trace.reasonCodes).toEqual([
+      "preexisting_reason",
+      "open_position_budget_exceeded",
+    ]);
+    expect(summary.markets.items[0]!.trace.reasonCodes).not.toContain("zero_reason");
+    expect(summary.strategies.items[0]!.trace.reasonCodes).toEqual(["wide_spread"]);
   });
 
   it("빈 projection은 NOT_FOUND summary를 반환한다", async () => {

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  createTelegramInboundBriefingProvider,
   createTelegramInboundCommandRuntime,
   createTelegramInboundPollingRuntime,
   formatTelegramStatusCommandResponse,
@@ -65,6 +66,145 @@ describe("Telegram inbound command runtime", () => {
     expect(fixture.killSwitchProvider.requests).toHaveLength(0);
     expect(fixture.replyPort.replies).toHaveLength(0);
     expect(fixture.auditLog.events).toHaveLength(1);
+  });
+
+  it("executes read-only /brief through the briefing provider without control side effects", async () => {
+    const briefingProvider = new CapturingBriefingProvider();
+    const fixture = createRuntimeFixture({ briefingProvider });
+
+    const result = await fixture.runtime.handleMessage(createMessage({ text: "/brief" }));
+
+    expect(result).toMatchObject({
+      status: "EXECUTED",
+      executed: true,
+      commandName: "brief",
+      parseStatus: "PARSED",
+      correlationId: "telegram-inbound-10-20",
+    });
+    expect(briefingProvider.calls).toEqual([
+      {
+        correlationId: "telegram-inbound-10-20",
+        occurredAt: now,
+      },
+    ]);
+    expect(fixture.statusProvider.calls).toBe(0);
+    expect(fixture.killSwitchProvider.requests).toHaveLength(0);
+    expect(fixture.replyPort.replies[0]?.text).toContain("Live Ops 브리핑");
+    expect(fixture.replyPort.replies[0]?.text).toContain("상태: 실매매 가능");
+    expect(JSON.stringify(result)).not.toContain("/brief");
+    expect(JSON.stringify(fixture.auditLog.events)).not.toContain("/brief");
+  });
+
+  it("builds the default /brief provider from the safe status snapshot", async () => {
+    const statusProvider = new CapturingStatusProvider();
+    const briefingProvider = createTelegramInboundBriefingProvider({
+      statusProvider,
+    });
+
+    const text = await briefingProvider.getBriefing({
+      correlationId: "telegram-inbound-briefing-fixture",
+      occurredAt: now,
+    });
+
+    expect(statusProvider.calls).toBe(1);
+    expect(text).toContain("Live Ops 브리핑");
+    expect(text).toContain("상태:");
+    expect(text).toContain("운영 상태");
+    expect(text).toContain("- freshness: 시장 데이터 수신 확인");
+    expect(text).toContain("- coin/position: coin balance source 관측 없음, 종목 미상 관측 없음 paper 보유 포지션 2개");
+    expect(text).toContain("- PnL: 실현 1200 KRW, 미실현 -300 KRW, 평가 1000000 KRW");
+    expect(text).toContain("추적 정보");
+    expect(text).toContain("telegram-inbound-briefing-fixture");
+    expect(text).not.toContain("- freshness: 관측 없음");
+    expect(text).not.toContain("KRW-BTC 관측 없음 paper 보유 포지션");
+    expect(text).not.toContain("- PnL: 관측 없음");
+    expect(text.split("추적 정보")[0]).not.toContain("live_order_capable");
+  });
+
+  it("keeps stale /status market heartbeat from becoming a fresh default /brief label", async () => {
+    const statusProvider = new CapturingStatusProvider(createStatusSnapshot({
+      marketData: {
+        connectionStatus: "connected",
+        lagMs: 600_001,
+        updatedAt: "2026-06-09T23:50:00.000Z",
+      },
+    }));
+    const briefingProvider = createTelegramInboundBriefingProvider({
+      statusProvider,
+    });
+
+    const text = await briefingProvider.getBriefing({
+      correlationId: "telegram-inbound-briefing-stale-market",
+      occurredAt: now,
+    });
+
+    expect(text).toContain("- freshness: 시장 데이터 freshness 확인 필요");
+    expect(text).toContain("시장 데이터 heartbeat가 5분보다 오래되었습니다.");
+    expect(text).toContain("마지막 수신 2026-06-09T23:50:00.000Z");
+    expect(text).not.toContain("- freshness: 시장 데이터 수신 확인");
+  });
+
+  it("uses the status snapshot time when default /brief judges market freshness", async () => {
+    const statusProvider = new CapturingStatusProvider(createStatusSnapshot({
+      generatedAt: "2026-06-10T00:00:02.000Z",
+      marketData: {
+        connectionStatus: "connected",
+        lagMs: 1_000,
+        updatedAt: "2026-06-10T00:00:01.000Z",
+      },
+    }));
+    const briefingProvider = createTelegramInboundBriefingProvider({
+      statusProvider,
+    });
+
+    const text = await briefingProvider.getBriefing({
+      correlationId: "telegram-inbound-briefing-status-time",
+      occurredAt: now,
+    });
+
+    expect(text).toContain("- freshness: 시장 데이터 수신 확인");
+    expect(text).toContain("관측 시각: 2026-06-10T00:00:02.000Z");
+    expect(text).not.toContain("시장 데이터 heartbeat 시각이 브리핑 시각보다 미래입니다.");
+  });
+
+  it("uses the default /brief provider when runtime is assembled with only statusProvider", async () => {
+    const fixture = createRuntimeFixture();
+
+    const result = await fixture.runtime.handleMessage(createMessage({ text: "/brief" }));
+
+    expect(result).toMatchObject({
+      status: "EXECUTED",
+      executed: true,
+      commandName: "brief",
+      parseStatus: "PARSED",
+      correlationId: "telegram-inbound-10-20",
+    });
+    expect(fixture.statusProvider.calls).toBe(1);
+    expect(fixture.killSwitchProvider.requests).toHaveLength(0);
+    expect(fixture.replyPort.replies[0]?.text).toContain("Live Ops 브리핑");
+    expect(fixture.replyPort.replies[0]?.text).toContain("상태:");
+    expect(fixture.replyPort.replies[0]?.text).toContain("추적 정보");
+    expect(fixture.replyPort.replies[0]?.text.split("추적 정보")[0]).not.toContain("live_order_capable");
+    expect(JSON.stringify(result)).not.toContain("/brief");
+    expect(JSON.stringify(fixture.auditLog.events)).not.toContain("/brief");
+  });
+
+  it("deduplicates repeated /brief updates before briefing dispatch", async () => {
+    const briefingProvider = new CapturingBriefingProvider();
+    const fixture = createRuntimeFixture({ briefingProvider });
+    const message = createMessage({ updateId: 16, messageId: 26, text: "/brief" });
+
+    const first = await fixture.runtime.handleMessage(message);
+    const second = await fixture.runtime.handleMessage(message);
+
+    expect(first.status).toBe("EXECUTED");
+    expect(second).toMatchObject({
+      status: "DUPLICATE",
+      executed: false,
+      reasonCode: "telegram_inbound_duplicate_command",
+    });
+    expect(briefingProvider.calls).toHaveLength(1);
+    expect(fixture.replyPort.replies).toHaveLength(1);
   });
 
   it("requires a second matching control command before calling kill switch provider", async () => {
@@ -505,7 +645,10 @@ describe("Telegram inbound reply sender", () => {
   });
 });
 
-function createRuntimeFixture(options: { dedupeStore?: TelegramInboundCommandDedupeStore } = {}) {
+function createRuntimeFixture(options: {
+  dedupeStore?: TelegramInboundCommandDedupeStore;
+  briefingProvider?: CapturingBriefingProvider;
+} = {}) {
   const statusProvider = new CapturingStatusProvider();
   const killSwitchProvider = new CapturingKillSwitchProvider();
   const auditLog = new CapturingAuditLog();
@@ -521,7 +664,8 @@ function createRuntimeFixture(options: { dedupeStore?: TelegramInboundCommandDed
     statusProvider,
     killSwitchControlProvider: killSwitchProvider,
     clock: () => new Date(now),
-  });
+    ...(options.briefingProvider === undefined ? {} : { briefingProvider: options.briefingProvider }),
+  } as Parameters<typeof createTelegramInboundCommandRuntime>[0]);
 
   return {
     runtime,
@@ -548,9 +692,29 @@ function createMessage(overrides: Partial<TelegramInboundCommandMessage> = {}): 
 class CapturingStatusProvider implements ControlStatusProvider {
   public calls = 0;
 
+  public constructor(private readonly snapshot: ControlStatusSnapshot = createStatusSnapshot()) {}
+
   public async getStatus(): Promise<ControlStatusSnapshot> {
     this.calls += 1;
-    return createStatusSnapshot();
+    return this.snapshot;
+  }
+}
+
+class CapturingBriefingProvider {
+  public calls: Array<{ correlationId: string; occurredAt: string }> = [];
+
+  public async getBriefing(input: { correlationId: string; occurredAt: string }): Promise<string> {
+    this.calls.push(input);
+    return [
+      "Live Ops 브리핑",
+      "상태: 실매매 가능",
+      "원인: deterministic snapshot 기준입니다.",
+      "영향: 주문 side effect 없이 조회만 완료했습니다.",
+      "필요 조치: 추적 정보를 확인하세요.",
+      "",
+      "추적 정보",
+      `요청 ID: ${input.correlationId}`,
+    ].join("\n");
   }
 }
 

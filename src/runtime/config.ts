@@ -40,6 +40,15 @@ const TelegramInboundConfigSchema = z
     polling_timeout_seconds: 20,
     max_updates_per_poll: 50,
   });
+const TelegramBriefingConfigSchema = z
+  .object({
+    scheduled_enabled: z.boolean().default(false),
+    schedule_key: TrimmedNonEmptyStringSchema.default("default"),
+  })
+  .default({
+    scheduled_enabled: false,
+    schedule_key: "default",
+  });
 
 export const RuntimeConfigSchema = z
   .object({
@@ -88,6 +97,7 @@ export const RuntimeConfigSchema = z
         chat_id: TrimmedNonEmptyStringSchema.optional(),
         provider_timeout_ms: z.number().int().positive().default(5_000),
         inbound: TelegramInboundConfigSchema,
+        briefing: TelegramBriefingConfigSchema,
       })
       .default({
         provider_timeout_ms: 5_000,
@@ -98,6 +108,10 @@ export const RuntimeConfigSchema = z
           polling_interval_ms: 1_000,
           polling_timeout_seconds: 20,
           max_updates_per_poll: 50,
+        },
+        briefing: {
+          scheduled_enabled: false,
+          schedule_key: "default",
         },
       }),
     secrets: z

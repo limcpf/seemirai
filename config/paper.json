@@ -225,6 +225,10 @@
       "polling_interval_ms": 1000,
       "polling_timeout_seconds": 20,
       "max_updates_per_poll": 50
+    },
+    "briefing": {
+      "scheduled_enabled": false,
+      "schedule_key": "default"
     }
   },
   "secrets": {}

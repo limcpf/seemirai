@@ -63,6 +63,28 @@ describe("production live ops config/env contract", () => {
     });
   });
 
+  it("Live Ops Telegram 정기 브리핑은 명시 opt-in 설정으로만 활성화된다", () => {
+    const config = loadLiveOpsConfig({
+      ...defaultLiveOpsConfig,
+      telegram: {
+        ...defaultLiveOpsConfig.telegram,
+        briefing: {
+          scheduled_enabled: true,
+          schedule_key: "ops:hourly",
+        },
+      },
+    });
+
+    expect(loadLiveOpsConfig(defaultLiveOpsConfig).telegram.briefing).toEqual({
+      scheduled_enabled: false,
+      schedule_key: "default",
+    });
+    expect(config.telegram.briefing).toEqual({
+      scheduled_enabled: true,
+      schedule_key: "ops:hourly",
+    });
+  });
+
   it("live trading opt-in이 누락된 config는 secret env가 있어도 ready가 되지 않는다", () => {
     const result = validateLiveOpsStartupContract({
       configInput: {},

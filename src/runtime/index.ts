@@ -302,16 +302,24 @@ export type {
   LiveOpsLiveExecutionSummary,
 } from "./live-ops-live-execution.js";
 export {
+  dispatchScheduledLiveOpsTelegramBriefing,
+  planScheduledLiveOpsTelegramBriefing,
   dispatchLiveOpsTelegramAlerts,
   planLiveOpsTelegramAlerts,
 } from "./live-ops-telegram-alerts.js";
 export type {
   DispatchLiveOpsTelegramAlertsInput,
   DispatchLiveOpsTelegramAlertsSummary,
+  DispatchScheduledLiveOpsTelegramBriefingInput,
+  DispatchScheduledLiveOpsTelegramBriefingSummary,
   LiveOpsTelegramAlertCheck,
   LiveOpsTelegramAlertPlan,
   LiveOpsTelegramAlertPlanInput,
   LiveOpsTelegramAlertPlanStatus,
+  ScheduledLiveOpsTelegramBriefingConfig,
+  ScheduledLiveOpsTelegramBriefingPlan,
+  ScheduledLiveOpsTelegramBriefingPlanInput,
+  ScheduledLiveOpsTelegramBriefingPlanStatus,
 } from "./live-ops-telegram-alerts.js";
 export {
   M19_EXIT_PILOT_POSITION_SOURCES,
@@ -341,7 +349,9 @@ export {
   resolveRuntimeUniverse,
 } from "./universe.js";
 export {
+  UnsafeTelegramBriefingConfigError,
   UnsafeTelegramInboundConfigError,
+  loadRuntimeTelegramBriefingConfig,
   loadRuntimeNotificationConfig,
   loadRuntimeTelegramInboundConfig,
 } from "./notification-config.js";
@@ -351,6 +361,7 @@ export {
 } from "./notification-runtime.js";
 export {
   createInMemoryTelegramInboundControlConfirmationStore,
+  createTelegramInboundBriefingProvider,
   createTelegramInboundCommandRuntime,
   createTelegramInboundPollingRuntime,
   formatTelegramAuditFailureResponse,
@@ -400,11 +411,20 @@ export type {
 } from "./phase-1-5-config.js";
 export type { RuntimeUniverseResolution } from "./universe.js";
 export type {
+  RuntimeTelegramBriefingConfig,
   RuntimeNotificationConfig,
   RuntimeTelegramInboundConfig,
 } from "./notification-config.js";
-export type { PaperNoKeyKillSwitchControlProviderOptions } from "./notification-runtime.js";
 export type {
+  PaperNoKeyKillSwitchControlProviderOptions,
+  RuntimeAlertDispatchOptions,
+  RuntimeScheduledTelegramBriefingPlanInput,
+  RuntimeScheduledTelegramBriefingRuntime,
+} from "./notification-runtime.js";
+export type {
+  CreateTelegramInboundBriefingProviderOptions,
+  TelegramInboundBriefingProvider,
+  TelegramInboundBriefingRequest,
   TelegramInboundCommandHandleResult,
   TelegramInboundCommandHandleStatus,
   TelegramInboundCommandRuntime,

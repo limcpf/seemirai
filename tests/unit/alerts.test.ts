@@ -29,6 +29,7 @@ import {
   createPaperTradeAlertRequest,
   dispatchKillSwitchControlAlert,
   dispatchAlertWithCooldown,
+  dispatchAlertWithFailureStateTracking,
   dispatchLiveOpsAlert,
   dispatchNotificationRetryJob,
   evaluateNotificationFailure,
@@ -541,6 +542,51 @@ describe("alert cooldown and notification policy", () => {
     });
     expect(alertDispatch.failureState).toMatchObject({
       consecutiveFailures: 3,
+    });
+  });
+
+  it("accumulates generic alert provider failures through the shared failure-state lock", async () => {
+    const notifier = new ThrowingNotifier();
+    const alertDispatch: AlertDispatchServiceOptions = {
+      notifier,
+      durableCooldownStore: createInMemoryAlertCooldownStore(),
+      memoryCooldownStore: createInMemoryAlertCooldownStore(),
+    };
+
+    await dispatchAlertWithFailureStateTracking({
+      alertDispatch,
+      request: {
+        environment: "prod",
+        runMode: "live_autonomous_small_budget",
+        severity: "P3",
+        alertType: "live_ops_briefing",
+        reasonCode: "scheduled_live_ops_briefing",
+        dedupeKey: "ops-hourly:sha256:briefing-1",
+        title: "Live Ops 정기 브리핑",
+        body: "첫 번째 briefing",
+        occurredAt: "2026-06-13T00:07:00.000Z",
+      },
+    });
+    const second = await dispatchAlertWithFailureStateTracking({
+      alertDispatch,
+      request: {
+        environment: "prod",
+        runMode: "live_autonomous_small_budget",
+        severity: "P3",
+        alertType: "live_ops_briefing",
+        reasonCode: "scheduled_live_ops_briefing",
+        dedupeKey: "ops-hourly:sha256:briefing-2",
+        title: "Live Ops 정기 브리핑",
+        body: "두 번째 briefing",
+        occurredAt: "2026-06-13T00:08:00.000Z",
+      },
+    });
+
+    expect(second.failureEvaluation.state).toMatchObject({
+      consecutiveFailures: 2,
+    });
+    expect(alertDispatch.failureState).toMatchObject({
+      consecutiveFailures: 2,
     });
   });
 

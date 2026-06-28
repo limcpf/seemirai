@@ -282,6 +282,13 @@
       "owner_scope": "docs/exec-plans/completed"
     },
     {
+      "path": "docs/exec-plans/completed/2026-06-27-issue-245-live-ops-llm-telegram-briefing-closeout.md",
+      "kind": "exec-plan",
+      "role": "Issue #245 Live Ops 상태 분석 LLM Telegram 브리핑 closeout",
+      "read_when": ["issue #245 closeout 확인", "Live Ops Telegram briefing", "LLM briefing guard", "Telegram /brief", "source scan 확인"],
+      "owner_scope": "docs/exec-plans/completed"
+    },
+    {
       "path": "docs/exec-plans/active/2026-06-14-issue-196-live-ops-one-click-app.md",
       "kind": "exec-plan",
       "role": "Issue #196 Live Ops 원클릭 앱과 TUI 필수 운영 콘솔 sub PR 실행 계획",

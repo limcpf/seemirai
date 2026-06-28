@@ -165,6 +165,31 @@ describe("M10 LLM risk assistant provider runtime", () => {
     });
   });
 
+  it("fails closed when live ops briefing draft contains direct trade advice", () => {
+    const request = createLiveOpsBriefingProviderRequest();
+    const result = normalizeLlmProviderTextOutput({
+      providerId: "codex_oauth",
+      input: request.input,
+      resultType: request.result_type,
+      rawOutput: JSON.stringify({
+        schema_version: LLM_RISK_ASSISTANT_SCHEMA_VERSION,
+        result_type: "live_ops_briefing_draft",
+        source_ids: [request.input.source_id],
+        summary: "지금 KRW-BTC를 매수하세요. 목표가 100000000원, 주문 수량 0.1 BTC입니다.",
+        recommended_action: "ALERT_ONLY",
+        observed_at: observedAt,
+      }),
+      maxOutputBytes: 16_000,
+      observedAt,
+    });
+
+    expect(result).toMatchObject({
+      status: "failed",
+      failure_class: "invalid_schema",
+      reason_code: "llm_risk_assistant_result_unsafe",
+    });
+  });
+
   it("maps non-zero Codex exit and oversized output into provider failures", async () => {
     const nonZeroProvider = new CodexOAuthLlmProvider({
       now: () => new Date(observedAt),
@@ -311,6 +336,27 @@ function createProviderRequest(): LlmRiskAssistantProviderRequest {
     timeout_ms: 5_000,
     max_output_bytes: 16_000,
     correlation_id: "corr-1",
+  };
+}
+
+function createLiveOpsBriefingProviderRequest(): LlmRiskAssistantProviderRequest {
+  return {
+    input: {
+      source: "live_ops_status_snapshot",
+      source_id: "live-ops-status-snapshot-1",
+      observed_at: observedAt,
+      title: "Live Ops 브리핑 snapshot",
+      content: "daemon 작동 중, 신규 진입 차단 상태입니다.",
+      metadata: {
+        source_ids: ["live_ops_status_summary"],
+      },
+    },
+    result_type: "live_ops_briefing_draft",
+    prompt: "Live Ops snapshot을 주문 지시 없는 브리핑 초안으로 요약한다.",
+    requested_at: observedAt,
+    timeout_ms: 5_000,
+    max_output_bytes: 16_000,
+    correlation_id: "live-ops-briefing-1",
   };
 }
 

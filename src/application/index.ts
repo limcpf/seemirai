@@ -9,6 +9,7 @@ export * from "./execution/index.js";
 export * from "./features.js";
 export * from "./live-autonomous-exit-status.js";
 export * from "./live-autonomous-entry-runtime.js";
+export * from "./live-ops-briefing.js";
 export * from "./live-ops-status.js";
 export * from "./live-reconcile.js";
 export * from "./llm-risk-assistant.js";

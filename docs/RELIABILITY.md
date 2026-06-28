@@ -204,11 +204,17 @@ Codex-native 운영은 Codex, Git, GitHub, shell command, 문서 상태를 연�
 - inbound polling loop는 기본 비활성이며, enabled config/env와 owner allowlist guard를 모두 통과한 뒤에만 시작한다.
 - Telegram `getUpdates` response는 raw provider payload를 저장하지 않고 update id, message id, chat id, user id, text 같은 최소
   command projection으로 줄인다. audit에는 text와 raw chat/user id를 남기지 않는다.
-- command parser는 `/status`, `/positions`, `/pnl`, `/why <market|cash>`, `/orders`, `/risk`, `/pause`, `/resume`, `/kill`만
+- command parser는 `/status`, `/brief`, `/positions`, `/pnl`, `/why <market|cash>`, `/orders`, `/risk`, `/pause`, `/resume`, `/kill`만
   인식한다. unknown/malformed command는 exception이 아니라 한국어 안내와 `TELEGRAM_INBOUND_COMMAND` audit evidence로 수렴한다.
 - owner chat allowlist가 비어 있거나 sender가 allowlist 밖이면 read-only 명령도 handler로 넘기지 않는다.
 - parser/auth를 통과한 command는 handler 실행 전에 `telegram.inbound.v1:*` idempotency key를 만들고 기존 `jobs` table unique
   constraint로 한 번만 선점한다. duplicate이면 조회/control side effect 없이 duplicate audit evidence만 남긴다.
+- `/brief`는 `/status` safe snapshot에서 deterministic briefing text를 만드는 read-only provider만 호출한다. briefing provider가
+  없거나 실패하면 command execution failure로 닫고 broker/control provider를 호출하지 않는다.
+- scheduled briefing은 기본 비활성이며, 명시 활성화된 경우에도 기존 alert dispatch의 cooldown fingerprint와 delivery reservation을
+  거쳐 Telegram provider 중복 호출을 막는다. provider 실패는 briefing 생성 성공을 rollback하지 않고 failure count/retry evidence로
+  격리한다. CLI/TUI status surface는 `scheduled ... / scheduled retry ... / scheduled failure ...` 조각으로 nested scheduled
+  briefing 실패를 노출해 top-level lifecycle/trade alert가 정상이어도 운영자가 브리핑 전송 실패를 놓치지 않게 한다.
 - dedupe row는 실행할 worker job이 아니라 command receipt이므로 `job_type=telegram.inbound.command`, `status=COMPLETED`,
   `max_attempts=1`로 남긴다. 일반 worker는 job type scope 없이 jobs table을 claim하면 안 된다.
 - dedupe 저장이 실패하면 같은 control 명령 재전달을 안전하게 막을 수 없으므로 provider 실행 전에 중단한다. 이 경우 audit
@@ -408,8 +414,8 @@ Codex-native 운영은 Codex, Git, GitHub, shell command, 문서 상태를 연�
   아니라 사람 확인 후보로 남겨 주문 lifecycle과 idempotency 경계를 우회하지 않는다.
 - LLM audit 저장은 append-only evidence다. audit 저장 실패는 별도 장애로 다루며, LLM 결과를 주문 허용 신호로 보정하거나
   deterministic 업무 성공을 되돌리는 근거가 될 수 없다.
-- LLM daily report draft는 deterministic daily report 옆의 보조 텍스트다. provider 실패, 비일간 리포트 result, order-like metadata는
-  draft attachment에서 제외하고 원본 report notification payload를 유지한다.
+- LLM daily report draft와 Live Ops briefing draft는 deterministic evidence 옆의 보조 텍스트다. provider 실패, 다른 result type,
+  unsafe output, order-like metadata는 draft attachment에서 제외하고 deterministic report/briefing payload를 유지한다.
 - 실제 Codex OAuth smoke는 `SEEMIRAI_RUN_CODEX_LLM_SMOKE=1`이 있을 때만 실행한다. 기본 검증은 fake runner와 deterministic fixture로
   fail-closed contract를 확인해 CI가 외부 provider 지연에 묶이지 않게 한다.
 

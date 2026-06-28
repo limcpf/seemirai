@@ -6,6 +6,7 @@ import {
 import {
   UnsafeTelegramInboundConfigError,
   loadRuntimeConfig,
+  loadRuntimeTelegramBriefingConfig,
   loadRuntimeTelegramInboundConfig,
 } from "../../src/runtime/index.js";
 import {
@@ -60,6 +61,42 @@ describe("Telegram inbound foundation", () => {
     });
   });
 
+  it("keeps scheduled Telegram briefing disabled by default and requires explicit enable", () => {
+    const config = loadRuntimeConfig({});
+
+    expect(loadRuntimeTelegramBriefingConfig(config, {})).toEqual({
+      scheduledEnabled: false,
+      reasonCode: "telegram_briefing_scheduled_disabled",
+    });
+
+    expect(
+      loadRuntimeTelegramBriefingConfig(
+        loadRuntimeConfig({
+          telegram: {
+            briefing: {
+              scheduled_enabled: true,
+              schedule_key: "ops-hourly",
+            },
+          },
+        }),
+        {},
+      ),
+    ).toEqual({
+      scheduledEnabled: true,
+      scheduleKey: "ops-hourly",
+    });
+
+    expect(
+      loadRuntimeTelegramBriefingConfig(config, {
+        SEEMIRAI_TELEGRAM_BRIEFING_SCHEDULED_ENABLED: "1",
+        SEEMIRAI_TELEGRAM_BRIEFING_SCHEDULE_KEY: "env-hourly",
+      }),
+    ).toEqual({
+      scheduledEnabled: true,
+      scheduleKey: "env-hourly",
+    });
+  });
+
   it("parses read-only and control commands with Korean malformed guidance", () => {
     expect(parseTelegramInboundCommand("/status")).toEqual({
       status: "PARSED",
@@ -67,6 +104,14 @@ describe("Telegram inbound foundation", () => {
         name: "status",
         scope: "READ_ONLY",
         normalizedText: "/status",
+      },
+    });
+    expect(parseTelegramInboundCommand("/brief")).toEqual({
+      status: "PARSED",
+      command: {
+        name: "brief",
+        scope: "READ_ONLY",
+        normalizedText: "/brief",
       },
     });
     expect(parseTelegramInboundCommand("/why krw-btc")).toEqual({

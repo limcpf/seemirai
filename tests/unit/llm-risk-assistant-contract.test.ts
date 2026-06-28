@@ -36,6 +36,39 @@ describe("M10 LLM risk assistant contract", () => {
     ).toThrow(LlmRiskAssistantContractError);
   });
 
+  it("accepts live ops briefing snapshot input and draft result only as auxiliary output", () => {
+    expect(
+      parseLlmRiskAssistantInput({
+        source: "live_ops_status_snapshot",
+        source_id: "live-ops-status-snapshot-2026-05-23T00:00:00.000Z",
+        observed_at: observedAt,
+        title: "Live Ops 브리핑 snapshot",
+        content: "Live Ops 브리핑 deterministic snapshot",
+        metadata: {
+          source_ids: ["live_ops_status_summary", "decision_ledger_why_summary"],
+        },
+      }),
+    ).toMatchObject({
+      source: "live_ops_status_snapshot",
+    });
+
+    expect(
+      parseLlmRiskAssistantResult({
+        schema_version: LLM_RISK_ASSISTANT_SCHEMA_VERSION,
+        result_type: "live_ops_briefing_draft",
+        source_ids: ["live-ops-status-snapshot-2026-05-23T00:00:00.000Z"],
+        summary: "현재 daemon은 작동 중이며 신규 진입은 차단 상태입니다.",
+        recommended_action: "ALERT_ONLY",
+        observed_at: observedAt,
+        reason_codes: ["live_ops_briefing:operator_summary"],
+        requires_human_review: true,
+      }),
+    ).toMatchObject({
+      result_type: "live_ops_briefing_draft",
+      recommended_action: "ALERT_ONLY",
+    });
+  });
+
   it("accepts only auxiliary result types and safe actions", () => {
     expect(
       parseLlmRiskAssistantResult({
@@ -100,5 +133,112 @@ describe("M10 LLM risk assistant contract", () => {
     ).toThrow(LlmRiskAssistantContractError);
 
     expect(isForbiddenLlmTradeAction("BLOCK_NEW_ENTRY")).toBe(false);
+  });
+
+  it("rejects order-like metadata hidden in a schema-valid result", () => {
+    expect(() =>
+      parseLlmRiskAssistantResult({
+        schema_version: LLM_RISK_ASSISTANT_SCHEMA_VERSION,
+        result_type: "live_ops_briefing_draft",
+        source_ids: ["live-ops-status-snapshot-1"],
+        summary: "운영 브리핑 초안입니다.",
+        recommended_action: "ALERT_ONLY",
+        observed_at: observedAt,
+        metadata: {
+          target_price: 100000000,
+          order_quantity: "0.1 BTC",
+          side: "BUY",
+        },
+      }),
+    ).toThrow(LlmRiskAssistantContractError);
+  });
+
+  it("rejects briefing draft text that contains direct trade advice or price/quantity targets", () => {
+    expect(() =>
+      parseLlmRiskAssistantResult({
+        schema_version: LLM_RISK_ASSISTANT_SCHEMA_VERSION,
+        result_type: "live_ops_briefing_draft",
+        source_ids: ["live-ops-status-snapshot-1"],
+        summary: "지금 KRW-BTC를 매수하세요. 목표가 100000000원, 주문 수량 0.1 BTC입니다.",
+        recommended_action: "ALERT_ONLY",
+        observed_at: observedAt,
+      }),
+    ).toThrow(LlmRiskAssistantContractError);
+  });
+
+  it("allows descriptive English market pressure text without treating it as an order", () => {
+    expect(
+      parseLlmRiskAssistantResult({
+        schema_version: LLM_RISK_ASSISTANT_SCHEMA_VERSION,
+        result_type: "event_explanation",
+        source_ids: ["upbit-market-event-1"],
+        summary: "The notice describes a broad sell-off and short-term sell pressure, not a direct trade instruction.",
+        recommended_action: "ALERT_ONLY",
+        observed_at: observedAt,
+        reason_codes: ["market_event:explanation"],
+      }),
+    ).toMatchObject({
+      result_type: "event_explanation",
+      recommended_action: "ALERT_ONLY",
+    });
+  });
+
+  it("rejects explicit English action labels hidden in safe result text", () => {
+    expect(() =>
+      parseLlmRiskAssistantResult({
+        schema_version: LLM_RISK_ASSISTANT_SCHEMA_VERSION,
+        result_type: "event_explanation",
+        source_ids: ["upbit-market-event-1"],
+        summary: "Recommended action: SELL.",
+        recommended_action: "ALERT_ONLY",
+        observed_at: observedAt,
+      }),
+    ).toThrow(LlmRiskAssistantContractError);
+  });
+
+  it.each([
+    {
+      summary: "KRW-BTC 매수를 추천합니다.",
+      reason: "조사가 붙은 매수 추천",
+    },
+    {
+      summary: "현재 조건에서는 진입을 권고합니다.",
+      reason: "조사가 붙은 진입 권고",
+    },
+    {
+      summary: "목표가는 100000000원입니다.",
+      reason: "조사가 붙은 목표가",
+    },
+    {
+      summary: "주문 수량은 0.1 BTC입니다.",
+      reason: "조사가 붙은 주문 수량",
+    },
+    {
+      summary: "KRW-BTC는 지금 매수해야 합니다.",
+      reason: "의무형 매수 조언",
+    },
+    {
+      summary: "매수하는 것이 좋습니다.",
+      reason: "권장형 매수 조언",
+    },
+    {
+      summary: "지금 KRW-BTC를 매도해야 합니다.",
+      reason: "의무형 매도 조언",
+    },
+    {
+      summary: "청산하는 것이 좋습니다.",
+      reason: "권장형 청산 조언",
+    },
+  ])("rejects particle-marked Korean unsafe briefing text: $reason", ({ summary }) => {
+    expect(() =>
+      parseLlmRiskAssistantResult({
+        schema_version: LLM_RISK_ASSISTANT_SCHEMA_VERSION,
+        result_type: "live_ops_briefing_draft",
+        source_ids: ["live-ops-status-snapshot-1"],
+        summary,
+        recommended_action: "ALERT_ONLY",
+        observed_at: observedAt,
+      }),
+    ).toThrow(LlmRiskAssistantContractError);
   });
 });

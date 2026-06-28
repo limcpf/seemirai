@@ -988,28 +988,84 @@ Acceptance Criteria:
 - hard stop open position 자동 시장가 청산.
 - LLM 직접 매수/매도 판단.
 
+### FR-OPS-008: Live Ops Telegram briefing은 read-only deterministic evidence를 우선해야 한다
+
+설명:
+
+- 운영자는 Telegram에서 `/brief`로 현재 서버/daemon 상태, 매수/매도 조건, wallet/cash/coin 상태, 시황, 보유/현금 판단 이유,
+  최근 주문/차단 이유를 한 번에 확인할 수 있어야 한다.
+- briefing은 `LiveOpsBriefingSnapshot`처럼 서로 다른 source의 상태를 secret-safe projection으로 묶은 deterministic evidence를
+  source of truth로 사용한다.
+- LLM은 redacted snapshot을 사람이 읽기 쉬운 한국어 초안으로 낮추는 보조 역할만 하며, LLM disabled/timeout/schema fail/unsafe
+  output이면 deterministic briefing을 그대로 보낸다.
+- scheduled briefing은 명시 config 없이는 시작하지 않고, cooldown/fingerprint로 중복 전송을 막는다.
+
+Acceptance Criteria:
+
+- [x] `/brief`는 read-only Telegram command로 분류된다.
+- [x] `/brief`는 owner allowlist 없이는 응답하지 않는다.
+- [x] Telegram에서 서버/daemon 상태, live enabled, live armed, live order capable, readiness guard 상태를 한국어로 확인할 수 있다.
+- [x] Telegram에서 매수 조건, 매도 조건, HOLD/BLOCK 이유를 확인할 수 있다.
+- [x] Telegram에서 wallet cash, coin/balance/position, PnL, open exposure, budget used를 확인할 수 있다.
+- [x] Telegram에서 market freshness와 현재 시황 요약을 확인할 수 있다.
+- [x] Telegram에서 최근 candidate/decision/order/reconcile/risk block/alert retry 상태를 확인할 수 있다.
+- [x] LLM disabled/timeout/schema fail/unsafe output에서도 deterministic briefing이 전송된다.
+- [x] LLM prompt에는 redacted `LiveOpsBriefingSnapshot`만 전달된다.
+- [x] LLM 결과가 `BUY`, `SELL`, `INCREASE_POSITION`, 목표가, 주문 수량, 직접 매매 권고를 포함하면 fail-closed 한다.
+- [x] LLM 결과는 order candidate, broker submit/cancel, order permission으로 연결되지 않는다.
+- [x] Telegram 메시지는 한국어 상태, 원인, 영향, 필요 조치를 먼저 보여준다.
+- [x] 내부 id/reason/evidence는 `추적 정보`로 분리한다.
+- [x] raw provider payload, raw order detail, Telegram token, API key, JWT, Authorization header가 prompt/audit/status/Telegram/log에 남지 않는다.
+- [x] scheduled briefing은 기본 비활성이며 명시 config 없이는 시작되지 않는다.
+- [x] scheduled briefing은 fingerprint/cooldown으로 중복 스팸을 방지한다.
+
+테스트 요구사항:
+
+- 단위 테스트: `LiveOpsBriefingSnapshot` formatter가 상태, 원인, 영향, 필요 조치와 `추적 정보`를 분리하는지 확인한다.
+- 단위 테스트: missing/stale/unavailable 값이 0으로 보정되지 않고 관측 부재로 표시되는지 확인한다.
+- 단위 테스트: LLM briefing schema가 forbidden output을 fail-closed로 거부하는지 확인한다.
+- 단위 테스트: LLM failure가 deterministic briefing fallback을 바꾸지 않는지 확인한다.
+- 통합 테스트: Telegram `/brief` owner allowlist, read-only scope, durable dedupe를 확인한다.
+- 통합 테스트: scheduled briefing cooldown/fingerprint가 중복 dispatch를 막는지 확인한다.
+- source scan: raw provider/order/secret 후보와 LLM order-like output 금지어를 검사한다.
+
+문서 요구사항:
+
+- briefing config, scheduled dispatch, prompt/audit redaction 기준이 바뀌면 `docs/RUNTIME_CONFIG.md`, `docs/SECURITY.md`,
+  `docs/RELIABILITY.md`, 이 문서, 관련 실행 계획을 함께 갱신한다.
+
+제외 범위:
+
+- LLM 직접 매수/매도 판단, 목표가 산정, 포지션 크기 결정.
+- LLM 기반 order candidate 생성, broker submit/cancel, order permission 생성.
+- Telegram public webhook endpoint.
+- 신규 dependency 추가.
+
 ### FR-LLM-001: LLM은 직접 매매 판단에 사용하지 않는다
 
 설명:
 
-- LLM은 공식 Upbit 공지 요약, 개발자 changelog 요약, 시장경보 분류, 상장/상폐/점검 분류, 이상 이벤트 설명, 일간 리포트 초안에만 사용한다.
+- LLM은 공식 Upbit 공지 요약, 개발자 changelog 요약, 시장경보 분류, 상장/상폐/점검 분류, 이상 이벤트 설명, 일간 리포트 초안,
+  redacted Live Ops briefing 초안에만 사용한다.
 - LLM 출력은 주문 후보 생성이나 주문 제출로 직접 연결될 수 없다.
 - provider는 `noop`과 `codex_oauth`를 같은 port 뒤에 두며, 기본 구현은 로컬 owner-operated Codex OAuth 세션을 사용하는 `codex_oauth`다.
 - provider timeout, invalid JSON, free-form output, output size 초과는 모두 fail-closed로 수렴하고 거래 신호를 만들지 않는다.
-- 일간 리포트 초안은 deterministic daily report 옆의 보조 결과일 뿐이며, LLM 실패가 report 생성 성공을 실패로 바꾸지 않는다.
+- 일간 리포트와 Live Ops briefing 초안은 deterministic evidence 옆의 보조 결과일 뿐이며, LLM 실패가 deterministic 결과 생성을
+  실패로 바꾸지 않는다.
 
 Acceptance Criteria:
 
-- [ ] LLM 입력 소스는 `exchange_notice`, `developer_changelog`, `market_event`로 제한된다.
-- [ ] LLM 결과 타입은 `notice_summary`, `notice_risk_classification`, `event_explanation`, `daily_report_draft` 같은 보조 목적에 한정된다.
-- [ ] LLM `recommended_action`은 `NO_ACTION`, `BLOCK_NEW_ENTRY`, `CANCEL_PENDING`, `PAUSE_STRATEGY`, `ALERT_ONLY`만 허용한다.
-- [ ] `BUY`, `SELL`, `INCREASE_POSITION` 같은 주문 허용 또는 포지션 확대 액션은 스키마 검증에서 거부된다.
-- [ ] LLM 결과만으로 전략 주문 후보를 만들 수 없다.
-- [ ] LLM 결과가 리스크 게이트에 전달될 경우 주문 허용이 아니라 차단 또는 사람 확인 신호로만 사용된다.
-- [ ] LLM 입력과 출력은 감사 가능하도록 저장되며 민감정보를 포함하지 않는다.
-- [ ] provider를 `codex_oauth`에서 `noop`으로 바꿔도 application contract가 바뀌지 않는다.
-- [ ] Codex timeout, invalid output, free-form output은 실패 evidence만 남기고 주문 신호 없이 끝난다.
-- [ ] deterministic daily report는 LLM draft 실패와 독립적으로 성공/실패가 결정된다.
+- [x] LLM 입력 소스는 `exchange_notice`, `developer_changelog`, `market_event`, `live_ops_status_snapshot`로 제한된다.
+- [x] LLM 결과 타입은 `notice_summary`, `notice_risk_classification`, `event_explanation`, `daily_report_draft`, `live_ops_briefing_draft` 같은 보조 목적에 한정된다.
+- [x] LLM `recommended_action`은 `NO_ACTION`, `BLOCK_NEW_ENTRY`, `CANCEL_PENDING`, `PAUSE_STRATEGY`, `ALERT_ONLY`만 허용한다.
+- [x] `BUY`, `SELL`, `INCREASE_POSITION` 같은 주문 허용 또는 포지션 확대 액션은 스키마 검증에서 거부된다.
+- [x] LLM 결과만으로 전략 주문 후보를 만들 수 없다.
+- [x] LLM 결과가 리스크 게이트에 전달될 경우 주문 허용이 아니라 차단 또는 사람 확인 신호로만 사용된다.
+- [x] LLM 입력과 출력은 감사 가능하도록 저장되며 민감정보를 포함하지 않는다.
+- [x] provider를 `codex_oauth`에서 `noop`으로 바꿔도 application contract가 바뀌지 않는다.
+- [x] Codex timeout, invalid output, free-form output은 실패 evidence만 남기고 주문 신호 없이 끝난다.
+- [x] deterministic daily report는 LLM draft 실패와 독립적으로 성공/실패가 결정된다.
+- [x] deterministic Live Ops briefing은 LLM draft 실패, schema fail, unsafe output과 독립적으로 전송 가능한 fallback을 유지한다.
 
 테스트 요구사항:
 
@@ -1018,6 +1074,7 @@ Acceptance Criteria:
 - 단위 테스트: 금지 액션이 포함된 LLM 출력이 거부되는지 확인한다.
 - 단위 테스트: provider timeout, invalid JSON, free-form output, output size 초과가 fail-closed로 정규화되는지 확인한다.
 - 단위 테스트: LLM daily report draft 실패가 deterministic report payload를 바꾸지 않는지 확인한다.
+- 단위 테스트: LLM Live Ops briefing draft 실패와 unsafe output이 deterministic briefing fallback을 바꾸지 않는지 확인한다.
 - gated smoke: `SEEMIRAI_RUN_CODEX_LLM_SMOKE=1`일 때만 실제 Codex OAuth provider smoke를 실행한다.
 - 수동 테스트: 공지 요약이 리포트에 포함되더라도 주문 실행 로그와 직접 연결되지 않는지 확인한다.
 
