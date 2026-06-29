@@ -5,7 +5,11 @@
 - 제품 이름: Seemirai
 - 한 줄 설명: Upbit KRW 현물에서 비용 차감 후 기대값이 남는 거래만 paper trading으로 검증하는 자동 주문 엔진
 - 핵심 가치: 좋은 매수 시점을 찾는 것보다 거래소 수수료, 스프레드, 슬리피지, 펀딩비, 유동성 리스크를 이긴 거래만 남기는 것
-- 현재 단계: `#68` 기반 M9 paper 운영 베타 closeout는 pass로 확정되었고, M9 운영 항목 중 일부(운영 drill/기록 보강)는 계속 진행 중인 상태다. `phase 1.5`/v0.2 준비는 이 상태를 전제로 한 선행 단계다.
+- 문서 범위: 이 PRD는 역사적 MVP/paper trading 결정 기록이다. 현재 production 운영 경로는 `live:ops`와
+  `LIVE_AUTONOMOUS_SMALL_BUDGET`이며, 세부 기준은 [`RUNTIME_CONFIG.md`](./RUNTIME_CONFIG.md)와
+  [`product-specs/upbit-live-autonomous-trading.md`](./product-specs/upbit-live-autonomous-trading.md)를 따른다.
+- 현재 단계: `#68` 기반 M9 paper 운영 베타 closeout는 pass로 확정되었고, 이후 production live-ops 경로가 별도 issue에서
+  도입되었다. Paper trading은 현재 운영 설정이 아니라 simulation/regression 기준으로 유지한다.
 
 ## 2. 문제 정의
 

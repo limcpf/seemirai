@@ -56,7 +56,11 @@
     "startup_alert_enabled": true,
     "live_order_capable_alert_enabled": true,
     "trade_event_alerts_enabled": true,
-    "provider_timeout_ms": 5000
+    "provider_timeout_ms": 5000,
+    "briefing": {
+      "scheduled_enabled": false,
+      "schedule_key": "default"
+    }
   },
   "tui": {
     "foreground_enabled": true,

@@ -1273,7 +1273,7 @@ function printHelp() {
 M22 제한적 완전 자동매매 24시간 pilot을 guard 뒤에서 실행하고 closeout artifact를 남긴다.
 
 Options:
-  --config <path>                 M22 live autonomous runtime config JSON. Defaults to config/paper.json.
+  --config <path>                 Legacy M22 pilot runtime config JSON. Defaults to config/paper.json safety profile; production uses live:ops config.
   --duration-ms <ms>              Pilot duration. Defaults to 86400000.
   --pilot-command <cmd>           Long-running live autonomous command to wrap.
   --pilot-arg <value>             Argument for --pilot-command. Repeat for multiple args.

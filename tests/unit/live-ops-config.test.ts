@@ -182,6 +182,11 @@ describe("production live ops config/env contract", () => {
     const config = JSON.parse(await readFile(path.join(process.cwd(), "config", "live-ops.example.json"), "utf8"));
     const envFileContent = await readFile(path.join(process.cwd(), "tests", "fixtures", "live-ops", "fake.env"), "utf8");
 
+    expect(config.telegram.briefing).toEqual({
+      scheduled_enabled: false,
+      schedule_key: "default",
+    });
+
     const result = validateLiveOpsStartupContract({
       configInput: config,
       env: {},

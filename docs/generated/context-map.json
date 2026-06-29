@@ -95,8 +95,8 @@
     {
       "path": "docs/RUNTIME_CONFIG.md",
       "kind": "reference",
-      "role": "runtime config 구조, 허용값, 안전 invariant 기준",
-      "read_when": ["runtime config 변경", "config/paper.json 변경", "registry 활성화 설정 변경", "안전 toggle 확인"],
+      "role": "production live ops config, legacy paper profile, 허용값, 안전 invariant 기준",
+      "read_when": ["runtime config 변경", "config/live-ops.example.json 변경", "config/paper.json legacy profile 변경", "registry 활성화 설정 변경", "안전 toggle 확인"],
       "owner_scope": "docs"
     },
     {
@@ -249,8 +249,8 @@
     {
       "path": "docs/product-specs/upbit-krw-paper-trading-mvp.md",
       "kind": "product-spec",
-      "role": "Upbit KRW paper trading MVP 업무 명세",
-      "read_when": ["MVP 구현", "Upbit KRW paper trading 기준 확인", "비즈니스 결정 확인", "acceptance criteria 확인"],
+      "role": "Upbit KRW historical paper trading MVP 업무 명세",
+      "read_when": ["MVP 결정 기록 확인", "Upbit KRW paper trading legacy 기준 확인", "비즈니스 결정 확인", "acceptance criteria 확인"],
       "owner_scope": "docs/product-specs"
     },
     {
@@ -508,7 +508,7 @@
     {
       "path": "docs/references/m9-paper-trading-soak-2026-05-25-e398a8ee.md",
       "kind": "reference",
-      "role": "#68 M9 72시간 paper trading soak closeout와 M11 threshold calibration 입력 evidence",
+      "role": "#68 M9 72시간 legacy paper trading soak closeout와 M11 threshold calibration 입력 evidence",
       "read_when": ["#68 closeout 확인", "M9 paper trading soak evidence 확인", "M11 threshold calibration", "strategy threshold calibration 비교"],
       "owner_scope": "docs/references"
     },

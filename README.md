@@ -2,12 +2,13 @@
 
 Seemirai는 Upbit KRW 현물 시장에서 전략 신호를 바로 주문으로 연결하지 않고, 수수료, 스프레드, 슬리피지, 유동성, 포지션 한도, 손실 한도, 운영 readiness를 먼저 차감하고 차단한 뒤에도 기대값이 남는 후보만 실행 경계로 넘기는 비용 우선 자동매매 시스템이다.
 
-이 저장소의 기본값은 API key가 없어도 동작해야 하는 `PAPER_TRADING` profile이다. 현재 운영 단계는 M23 `LIVE_AUTONOMOUS_SMALL_BUDGET` 7일 안정화이며, 실거래 API 호출은 저장소 밖 secret, evidence, readiness guard, 소액 예산 설정을 운영자가 명시적으로 arm 한 경우에만 열린다. M24 전략, universe, 예산 확대는 M23 closeout PASS 이후 별도 issue 범위다.
+현재 production 운영 경로는 `live:ops`/`live:ops:daemon`과 `LIVE_AUTONOMOUS_SMALL_BUDGET` 설정이다. `config/paper.json`은 API key 없이 실행 가능한 legacy simulation/regression profile로만 유지하며, 실거래 API 호출은 저장소 밖 secret, evidence, readiness guard, 소액 예산 설정을 운영자가 명시적으로 arm 한 경우에만 열린다. M24 전략, universe, 예산 확대는 M23 closeout PASS 이후 별도 issue 범위다.
 
 ## 핵심 원칙
 
-- 기본 `config/paper.json`은 `paper_no_key=true`, `live_trading_enabled=false`를 유지한다.
-- 실거래, 출금, 입출금 자동화, 거래소 간 차익거래, 선물, 레버리지, 신규 진입 시장가 주문은 기본 profile에서 모두 닫혀 있다.
+- production JSON은 `config/live-ops.example.json` 계약을 따르며 `paper_no_key=false`, `live_trading_enabled=true`, `KRW-BTC` 단일 소액 예산으로 시작한다.
+- legacy `config/paper.json`은 `paper_no_key=true`, `live_trading_enabled=false`를 유지하고 live-ops 전용 설정을 담지 않는다.
+- 실거래, 출금, 입출금 자동화, 거래소 간 차익거래, 선물, 레버리지, 신규 진입 시장가 주문은 명시된 production guard 밖에서 모두 닫혀 있다.
 - 전략은 주문을 직접 제출하지 않고 `StrategyDecision` 또는 `OrderIntent` 후보만 만든다.
 - 모든 후보는 비용 모델, rule, risk gate, budget/exposure guard, idempotency guard를 통과해야 한다.
 - LLM은 공지, 리스크 분류, 리포트 초안 같은 보조 경계에만 쓰며 직접 매수/매도 판단을 만들 수 없다.
@@ -19,10 +20,11 @@ Seemirai는 Upbit KRW 현물 시장에서 전략 신호를 바로 주문으로 �
 | --- | --- |
 | 거래소 | Upbit |
 | 시장 | KRW 현물 |
-| 기본 모드 | `PAPER_TRADING` |
-| 기본 universe | `KRW-BTC`, `KRW-ETH` |
-| 기본 broker | `PaperBroker` |
-| 실거래 canary | M23 `LIVE_AUTONOMOUS_SMALL_BUDGET`, 기본 `KRW-BTC` |
+| production 모드 | `LIVE_AUTONOMOUS_SMALL_BUDGET` via `live:ops` |
+| production universe | `KRW-BTC` 단일 |
+| production broker | readiness guard로 열린 Upbit live broker |
+| legacy simulation | `PAPER_TRADING`, `KRW-BTC`/`KRW-ETH`, `PaperBroker` |
+| 실거래 canary | M23 소액 `LIVE_AUTONOMOUS_SMALL_BUDGET` |
 | 실거래 예산 | 1회 `10000` KRW, 일일 자동 notional `30000` KRW, open position `30000` KRW |
 | 실거래 중지 ceiling | 누적 realized loss + 미체결 노출 합계가 `50000` KRW에 도달하기 전 operator stop 또는 kill switch/manual review |
 
@@ -31,20 +33,21 @@ Seemirai는 Upbit KRW 현물 시장에서 전략 신호를 바로 주문으로 �
 런타임은 단일 Node.js 프로세스 안에서 config와 registry로 필요한 worker, adapter, repository를 조립한다.
 
 ```text
-config/paper.json
-  -> runtime config 검증
-  -> exchange, strategy, rule registry 활성화
-  -> Upbit public market data와 policy snapshot 수집
+config/live-ops.example.json 또는 저장소 밖 운영 JSON
+  -> production live ops config/env 검증
+  -> DB readiness, market data, analysis/decision, live execution worker 조립
+  -> Upbit public/private provider readiness 확인
   -> 원천/정규화 market event 저장
   -> feature 계산
   -> strategy decision 또는 order intent 생성
   -> 비용 차감과 rule 평가
   -> risk gate, kill switch, readiness, budget/exposure guard 평가
-  -> ExecutionEngine이 BrokerPort 호출
-  -> PaperBroker 또는 guard로 열린 Upbit live broker 실행
+  -> live execution adapter가 guarded Upbit live broker 경계 호출
   -> 주문/체결/취소 상태, audit/risk evidence, decision ledger 저장
-  -> Telegram alert, `/status`, daily report, closeout artifact 생성
+  -> Telegram alert, `/status`, `/brief`, TUI, closeout artifact 생성
 ```
+
+`config/paper.json`을 사용하는 M9/M11 smoke와 soak runner는 legacy simulation/regression 검증용이다. 이 경로는 production live-ops 설정을 대신하지 않는다.
 
 중요한 불변식은 “전략보다 리스크와 운영 guard가 우선한다”는 점이다. market data stale, Upbit 장애, 금지 권한, DB write 실패, audit persistence 실패, reconcile mismatch, duplicate idempotency key 같은 조건은 신규 주문 차단, manual review, hard stop 중 하나로 수렴해야 한다.
 
@@ -95,6 +98,9 @@ SEEMIRAI_RUN_DB_INTEGRATION=1 corepack pnpm exec vitest run tests/integration
 | --- | --- |
 | 문서, hook, GitHub, 프로젝트 전체 검증 | `./scripts/verify` |
 | 문서 구조 검증 | `./scripts/verify docs` |
+| production Live Ops foreground/TUI | `corepack pnpm live:ops -- --config config/live-ops.example.json --env-file tests/fixtures/live-ops/fake.env --fixture-smoke --tui` |
+| production Live Ops attach TUI | `corepack pnpm live:ops:tui -- --config config/live-ops.example.json --env-file tests/fixtures/live-ops/fake.env --fixture-smoke --attach fixture` |
+| production Live Ops daemon smoke | `corepack pnpm live:ops:daemon -- --config config/live-ops.example.json --env-file tests/fixtures/live-ops/fake.env --fixture-smoke --duration-ms 1000 --tui` |
 | deterministic M9 paper decision smoke | `node scripts/run-m9-paper-decision-runner.mjs --fixture-smoke --json` |
 | deterministic M9 paper trading soak smoke | `node scripts/run-m9-paper-trading-soak.mjs --fixture-smoke --json` |
 | deterministic 24h soak guard smoke | `node scripts/soak-paper-24h.mjs --fixture-smoke --json` |
@@ -128,7 +134,7 @@ SEEMIRAI_RUN_DB_INTEGRATION=1 corepack pnpm exec vitest run tests/integration
 
 ### Telegram inbound polling
 
-기본 `config/paper.json`에서는 Telegram inbound가 꺼져 있다. `SEEMIRAI_TELEGRAM_INBOUND_ENABLED=1` 또는 config enable이 있어야 polling을 시작하며, bot token과 owner chat allowlist가 없으면 startup에서 닫힌다.
+legacy `config/paper.json`에서는 Telegram inbound가 꺼져 있다. `SEEMIRAI_TELEGRAM_INBOUND_ENABLED=1` 또는 config enable이 있어야 polling을 시작하며, bot token과 owner chat allowlist가 없으면 startup에서 닫힌다.
 
 | 환경변수 | 용도 |
 | --- | --- |
@@ -139,6 +145,15 @@ SEEMIRAI_RUN_DB_INTEGRATION=1 corepack pnpm exec vitest run tests/integration
 | `SEEMIRAI_TELEGRAM_INBOUND_POLLING_INTERVAL_MS` | polling 간격. |
 | `SEEMIRAI_TELEGRAM_INBOUND_POLLING_TIMEOUT_SECONDS` | Telegram long polling timeout. 최대 50초로 제한된다. |
 | `SEEMIRAI_TELEGRAM_INBOUND_MAX_UPDATES_PER_POLL` | poll batch 상한. 최대 100으로 제한된다. |
+
+### Live Ops Telegram briefing
+
+정기 브리핑 설정은 production live-ops JSON의 `telegram.briefing` 또는 아래 env에서만 관리한다. legacy `config/paper.json`은 scheduled briefing 설정을 담지 않는다.
+
+| 환경변수 | 용도 |
+| --- | --- |
+| `SEEMIRAI_TELEGRAM_BRIEFING_SCHEDULED_ENABLED` | `1`, `true`, `yes`, `on`이면 scheduled briefing 활성화. `0`, `false`, `no`, `off`는 JSON보다 우선하는 명시 비활성이다. |
+| `SEEMIRAI_TELEGRAM_BRIEFING_SCHEDULE_KEY` | scheduled briefing cooldown/fingerprint segment. 없으면 production config의 `telegram.briefing.schedule_key`를 쓴다. |
 
 ### 검증과 smoke guard
 
@@ -232,7 +247,7 @@ M22/M23 운영 env와 key 파일은 저장소 밖 디렉터리에 둔다. 기본
 
 ## 안전한 기본 설정
 
-[config/paper.json](./config/paper.json)은 다음 안전 invariant를 유지해야 한다.
+legacy simulation/regression profile인 [config/paper.json](./config/paper.json)은 다음 안전 invariant를 유지해야 한다.
 
 ```json
 {
@@ -248,7 +263,7 @@ M22/M23 운영 env와 key 파일은 저장소 밖 디렉터리에 둔다. 기본
 }
 ```
 
-이 값이 깨지면 기본 runtime config 로딩은 실패해야 한다. live 운영용 config는 저장소 밖에서 별도로 만들며, 기본 paper profile을 실거래 profile로 바꾸지 않는다.
+이 값이 깨지면 legacy runtime config 로딩은 실패해야 한다. live 운영용 config는 `config/live-ops.example.json` 계약에서 출발해 저장소 밖 운영 JSON으로 관리하며, `config/paper.json`을 실거래 profile로 바꾸지 않는다.
 
 ## 문서
 

@@ -185,12 +185,13 @@ export function loadRuntimeTelegramBriefingConfig(
   env: NodeJS.ProcessEnv = process.env,
 ): RuntimeTelegramBriefingConfig {
   const briefing = config.telegram.briefing;
+  // legacy paper profile에는 live-ops scheduled briefing 블록을 만들지 않으므로, absence는 명시 disabled로 해석한다.
   const scheduledEnabled =
     readBooleanEnvValue(
       env.SEEMIRAI_TELEGRAM_BRIEFING_SCHEDULED_ENABLED,
       "SEEMIRAI_TELEGRAM_BRIEFING_SCHEDULED_ENABLED",
       UnsafeTelegramBriefingConfigError,
-    ) ?? briefing.scheduled_enabled;
+    ) ?? briefing?.scheduled_enabled ?? false;
 
   if (!scheduledEnabled) {
     return {
@@ -201,7 +202,7 @@ export function loadRuntimeTelegramBriefingConfig(
 
   const scheduleKey =
     nonEmptyEnvValue(env.SEEMIRAI_TELEGRAM_BRIEFING_SCHEDULE_KEY) ??
-    nonEmptyEnvValue(briefing.schedule_key) ??
+    nonEmptyEnvValue(briefing?.schedule_key) ??
     "default";
 
   return {

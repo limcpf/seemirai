@@ -1,6 +1,6 @@
 # 기능 요구사항
 
-이 문서는 PRD를 구현 가능한 요구사항, acceptance criteria, 테스트 요구사항으로 분해한다. MVP 범위는 Upbit KRW 현물, paper trading, `KRW-BTC`/`KRW-ETH`, deterministic strategy variants, 비용 기반 동적 안전마진, 리스크 게이트, 가상 지정가 중심 실행, 이벤트 기반 백테스트다.
+이 문서는 PRD를 구현 가능한 요구사항, acceptance criteria, 테스트 요구사항으로 분해한다. 앞쪽 MVP 범위는 Upbit KRW 현물, paper trading, `KRW-BTC`/`KRW-ETH`, deterministic strategy variants, 비용 기반 동적 안전마진, 리스크 게이트, 가상 지정가 중심 실행, 이벤트 기반 백테스트에 대한 역사적 기준이다. 현재 production 운영 기준은 FR-OPS-005 이후의 `live:ops`/`LIVE_AUTONOMOUS_SMALL_BUDGET` 요구사항을 따른다.
 
 ## 용어
 
@@ -31,6 +31,15 @@
 | 보안 경계 | 출금, 송금, 거래소 간 차익거래, 선물, 레버리지, 타인계정 제외 |
 
 상세 업무 명세는 `docs/product-specs/upbit-krw-paper-trading-mvp.md`를 기준으로 한다.
+
+## 현재 Production 결정
+
+| 항목 | 결정 |
+| --- | --- |
+| 운영 주경로 | `live:ops`, `live:ops:daemon`, `live:ops:tui` |
+| 운영 모드 | `LIVE_AUTONOMOUS_SMALL_BUDGET` |
+| 운영 설정 | `config/live-ops.example.json` contract와 저장소 밖 운영 JSON/env |
+| legacy profile | `config/paper.json`은 simulation/regression 용도이며 production 설정을 담지 않음 |
 
 ## 공통 요구사항
 
@@ -497,7 +506,7 @@ Acceptance Criteria:
 - [ ] 모의 체결가는 당시 bid/ask와 호가 깊이에 근거한다.
 - [ ] 실거래 전환 가능 여부를 판단할 수 있도록 수수료, 슬리피지, 체결률, 전략별 손익을 리포트한다.
 - [ ] paper trading 모드에서는 거래소 주문 API가 호출되지 않는다.
-- [ ] 기본 모드에서는 실거래 API Key가 없거나 주문 권한이 비활성인 상태로 실행된다.
+- [ ] MVP paper 기본 모드에서는 실거래 API Key가 없거나 주문 권한이 비활성인 상태로 실행된다.
 - [x] 24시간 paper soak 결과는 crash 0회, unhandled rejection 0회, 실거래 주문 API 0회, audit 누락 0건, stale data 신규 주문
   차단, DB write failure 0건, notification failure 0건, daily report 생성 여부를 summary로 남긴다.
 
@@ -1092,7 +1101,7 @@ Acceptance Criteria:
 설명:
 
 - 자동매매 시스템은 API 키 유출과 과도한 권한이 직접 손실로 이어질 수 있다.
-- MVP 기본 모드는 실거래 API Key 없이 실행한다.
+- MVP paper 기본 모드는 실거래 API Key 없이 실행한다.
 - 정책 동기화나 pilot 검증에 API Key가 필요해도 출금 권한은 절대 포함하지 않는다.
 
 Acceptance Criteria:
