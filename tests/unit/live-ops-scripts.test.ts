@@ -111,6 +111,133 @@ describe("production live ops script skeleton", () => {
     expect(JSON.stringify(summary)).not.toContain("Authorization");
   });
 
+  it("run-live-ops support는 준비되지 않은 summary의 stale 후보를 decision history BUY로 기록하지 않는다", async () => {
+    const support = await import(path.join(process.cwd(), "scripts/run-live-ops-support.mjs")) as {
+      evaluateLiveOpsCliLiveExecution?: (input: Record<string, unknown>) => Promise<Record<string, unknown>>;
+    };
+    const appendDecisionTick = vi.fn(async (_input: { tick: Record<string, unknown> }) => ({ inserted: true }));
+
+    const summary = await support.evaluateLiveOpsCliLiveExecution?.({
+      config: JSON.parse(await readFile(path.join(process.cwd(), "config", "live-ops.example.json"), "utf8")),
+      fixtureSmoke: true,
+      analysisDecision: {
+        status: "blocked",
+        ready: false,
+        market: "KRW-BTC",
+        observedAt: "2026-06-30T00:00:05.000Z",
+        latestDecisionAt: "2026-06-30T00:00:05.100Z",
+        decisionCategory: "ORDER_INTENT",
+        featureStatus: "blocked",
+        orderIntentCount: 1,
+        trace: {},
+      },
+      env: {},
+      orderIntents: [{
+        market: "KRW-BTC",
+        strategyId: "stale_strategy",
+        side: "BUY",
+        reason: "stale_buy",
+        idempotencyKey: "stale-buy-key",
+      }],
+      decisionHistoryWriter: { appendDecisionTick },
+      entryRuntime: {
+        submitEntryCandidate: vi.fn(),
+      },
+    });
+
+    expect(summary?.status).toBe("blocked");
+    const tick = appendDecisionTick.mock.calls[0]?.[0]?.tick;
+    expect(tick).toMatchObject({
+      decisionKind: "BLOCK",
+      reasonCode: "live_ops_analysis_not_ready",
+      orderIntentCount: 0,
+    });
+    expect(tick?.strategyId).not.toBe("stale_strategy");
+  });
+
+  it("run-live-ops support는 autonomous no-intent HOLD를 실제 policy strategy와 analysis 시각으로 기록한다", async () => {
+    const support = await import(path.join(process.cwd(), "scripts/run-live-ops-support.mjs")) as {
+      evaluateLiveOpsCliLiveExecution?: (input: Record<string, unknown>) => Promise<Record<string, unknown>>;
+    };
+    const config = JSON.parse(await readFile(path.join(process.cwd(), "config", "live-ops.example.json"), "utf8"));
+    config.analysis.decision_policy.id = "autonomous_24x7";
+    const appendDecisionTick = vi.fn(async (_input: { tick: Record<string, unknown> }) => ({ inserted: true }));
+
+    await support.evaluateLiveOpsCliLiveExecution?.({
+      config,
+      fixtureSmoke: true,
+      analysisDecision: {
+        status: "ready",
+        ready: true,
+        market: "KRW-BTC",
+        observedAt: "2026-06-30T00:01:05.000Z",
+        latestDecisionAt: "2026-06-30T00:01:05.100Z",
+        decisionCategory: "HOLD",
+        featureStatus: "ok",
+        orderIntentCount: 0,
+        trace: {
+          policyId: "autonomous_24x7",
+          reasonCode: "autonomous_24x7_entry_signal_weak",
+        },
+      },
+      env: {},
+      orderIntents: [],
+      decisionHistoryWriter: { appendDecisionTick },
+      entryRuntime: {
+        submitEntryCandidate: vi.fn(),
+      },
+    });
+
+    const tick = appendDecisionTick.mock.calls[0]?.[0]?.tick;
+    expect(tick).toMatchObject({
+      strategyId: "live_ops_autonomous_24x7_core",
+      decisionKind: "HOLD",
+      reasonCode: "autonomous_24x7_entry_signal_weak",
+      orderIntentCount: 0,
+    });
+    expect((tick?.observedAt as Date).toISOString()).toBe("2026-06-30T00:01:05.000Z");
+    expect((tick?.dedupeBucketStartedAt as Date).toISOString()).toBe("2026-06-30T00:01:00.000Z");
+  });
+
+  it("run-live-ops support database decision history writer는 api key 계열 JSON을 저장하지 않는다", async () => {
+    const support = await import(path.join(process.cwd(), "scripts/run-live-ops-support.mjs")) as {
+      createLiveOpsCliDatabaseDecisionHistoryWriter?: (pool: { query: ReturnType<typeof vi.fn> }) => {
+        appendDecisionTick(input: { tick: Record<string, unknown> }): Promise<unknown>;
+      };
+    };
+    const query = vi.fn();
+    const writer = support.createLiveOpsCliDatabaseDecisionHistoryWriter?.({ query });
+
+    await expect(writer?.appendDecisionTick({
+      tick: {
+        exchange: "UPBIT",
+        market: "KRW-BTC",
+        strategyId: "live_ops_cleanup_probe",
+        decisionKind: "HOLD",
+        reasonCode: "live_ops_hold",
+        featureSnapshot: { api_key: "redacted" },
+        thresholds: {},
+        orderIntentCount: 0,
+        dedupePolicy: "HOLD_REASON_1M_BUCKET",
+        dedupeBucketStartedAt: new Date("2026-06-30T00:00:00.000Z"),
+        dedupeKey: "live-decision:abc",
+        observedAt: new Date("2026-06-30T00:00:05.000Z"),
+        decisionAt: new Date("2026-06-30T00:00:05.000Z"),
+        correlationId: null,
+        trace: { rawOrderDetail: "redacted" },
+      },
+    })).rejects.toThrow(/secret-like|안전하지/);
+    expect(query).not.toHaveBeenCalled();
+  });
+
+  it("run-live-ops loader는 daemon tick live execution에도 decision history writer를 전달한다", async () => {
+    const supportContent = await readFile(path.join(process.cwd(), "scripts/run-live-ops-support.mjs"), "utf8");
+
+    expect(supportContent).toMatch(
+      /const liveExecution = await evaluateLiveOpsCliLiveExecution\(\{[\s\S]*decisionHistoryWriter: productionExecutionInputs\.decisionHistoryWriter[\s\S]*cleanupLifecycle: productionExecutionInputs\.cleanupLifecycle/u,
+    );
+  });
+
   it("corepack pnpm build 이후 dist 기반 production live ops 명령이 통과한다", async () => {
     const buildResult = spawnSync("corepack", ["pnpm", "build"], {
       cwd: process.cwd(),

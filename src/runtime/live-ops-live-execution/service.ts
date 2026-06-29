@@ -338,18 +338,23 @@ async function recordLiveDecisionHistory(
   }
 
   try {
+    const guardReasonCode = readDecisionHistoryGuardReasonCode(input);
+    // execution guard에서 폐기될 stale 후보는 decision history에서도 BUY/SELL로 확정하지 않는다.
+    const historyIntents = guardReasonCode === undefined && input.analysisDecision.ready
+      ? input.orderIntents
+      : [];
     const tick = createLiveDecisionHistoryTick({
       exchange: config.exchange,
       market: input.analysisDecision.market || config.universe.default_market,
-      strategyId: readDecisionHistoryStrategyId(input),
-      decisionKind: resolveDecisionHistoryKind(input),
-      reasonCode: readDecisionHistoryReasonCode(input),
+      strategyId: readDecisionHistoryStrategyId(config, input, historyIntents),
+      decisionKind: resolveDecisionHistoryKind(input, historyIntents, guardReasonCode),
+      reasonCode: readDecisionHistoryReasonCode(input, historyIntents, guardReasonCode),
       featureSnapshot: readDecisionHistoryFeatureSnapshot(input.analysisDecision),
       thresholds: buildDecisionHistoryThresholds(config),
-      orderIntentCount: input.analysisDecision.orderIntentCount,
+      orderIntentCount: historyIntents.length,
       observedAt: new Date(input.observedAt),
       decisionAt: new Date(input.analysisDecision.latestDecisionAt ?? input.observedAt),
-      sourceTickId: readDecisionHistorySourceTickId(input),
+      sourceTickId: readDecisionHistorySourceTickId(input, historyIntents, guardReasonCode),
       correlationId: readStringOrNull(input.trace?.correlationId),
       trace: {
         source: "live_ops_live_execution",
@@ -357,6 +362,7 @@ async function recordLiveDecisionHistory(
         analysisDecisionCategory: input.analysisDecision.decisionCategory,
         featureStatus: input.analysisDecision.featureStatus,
         recordHoldDecision: input.analysisDecision.recordHoldDecision,
+        ...(guardReasonCode === undefined ? {} : { guardReasonCode }),
       },
     });
 
@@ -387,10 +393,23 @@ async function recordLiveDecisionHistory(
   }
 }
 
+function readDecisionHistoryGuardReasonCode(input: LiveOpsLiveExecutionInput): string | undefined {
+  if (input.analysisDecision.ready && input.analysisDecision.orderIntentCount !== input.orderIntents.length) {
+    return "live_ops_order_intent_count_mismatch";
+  }
+  return undefined;
+}
+
 function resolveDecisionHistoryKind(
   input: LiveOpsLiveExecutionInput,
+  historyIntents: readonly OrderIntent[],
+  guardReasonCode: string | undefined,
 ): "HOLD" | "BUY" | "SELL" | "BLOCK" {
-  const firstIntent = input.orderIntents[0];
+  if (guardReasonCode !== undefined || !input.analysisDecision.ready) {
+    return "BLOCK";
+  }
+
+  const firstIntent = historyIntents[0];
   if (firstIntent?.side === "BUY" || firstIntent?.side === "SELL") {
     return firstIntent.side;
   }
@@ -402,8 +421,16 @@ function resolveDecisionHistoryKind(
   return "HOLD";
 }
 
-function readDecisionHistoryReasonCode(input: LiveOpsLiveExecutionInput): string {
-  const firstIntentReason = input.orderIntents[0]?.reason;
+function readDecisionHistoryReasonCode(
+  input: LiveOpsLiveExecutionInput,
+  historyIntents: readonly OrderIntent[],
+  guardReasonCode: string | undefined,
+): string {
+  if (guardReasonCode !== undefined) {
+    return guardReasonCode;
+  }
+
+  const firstIntentReason = historyIntents[0]?.reason;
   if (typeof firstIntentReason === "string" && firstIntentReason.trim().length > 0) {
     return firstIntentReason;
   }
@@ -413,6 +440,10 @@ function readDecisionHistoryReasonCode(input: LiveOpsLiveExecutionInput): string
     return traceReason;
   }
 
+  if (!input.analysisDecision.ready) {
+    return "live_ops_analysis_not_ready";
+  }
+
   if (input.analysisDecision.decisionCategory === "BLOCKED") {
     return "live_ops_decision_blocked";
   }
@@ -420,12 +451,21 @@ function readDecisionHistoryReasonCode(input: LiveOpsLiveExecutionInput): string
   return "live_ops_hold";
 }
 
-function readDecisionHistoryStrategyId(input: LiveOpsLiveExecutionInput): string {
-  const firstIntentStrategyId = input.orderIntents[0]?.strategyId;
+function readDecisionHistoryStrategyId(
+  config: LiveOpsConfig,
+  input: LiveOpsLiveExecutionInput,
+  historyIntents: readonly OrderIntent[],
+): string {
+  const firstIntentStrategyId = historyIntents[0]?.strategyId;
   if (typeof firstIntentStrategyId === "string" && firstIntentStrategyId.trim().length > 0) {
     return firstIntentStrategyId;
   }
-  return input.risk.strategy.strategyId;
+  if (typeof input.risk.strategy.strategyId === "string" && input.risk.strategy.strategyId.trim().length > 0) {
+    return input.risk.strategy.strategyId;
+  }
+  return config.analysis.decision_policy.id === "autonomous_24x7"
+    ? liveOpsAutonomous24x7StrategyId
+    : liveOpsCleanupProbeStrategyId;
 }
 
 function readDecisionHistoryFeatureSnapshot(
@@ -450,8 +490,12 @@ function buildDecisionHistoryThresholds(config: LiveOpsConfig): JsonRecord {
   };
 }
 
-function readDecisionHistorySourceTickId(input: LiveOpsLiveExecutionInput): string {
-  const firstIntentKey = input.orderIntents[0]?.idempotencyKey;
+function readDecisionHistorySourceTickId(
+  input: LiveOpsLiveExecutionInput,
+  historyIntents: readonly OrderIntent[],
+  guardReasonCode: string | undefined,
+): string {
+  const firstIntentKey = historyIntents[0]?.idempotencyKey;
   if (typeof firstIntentKey === "string" && firstIntentKey.trim().length > 0) {
     return firstIntentKey;
   }
@@ -459,8 +503,8 @@ function readDecisionHistorySourceTickId(input: LiveOpsLiveExecutionInput): stri
   return [
     input.observedAt,
     input.analysisDecision.decisionCategory,
-    input.analysisDecision.orderIntentCount,
-    readDecisionHistoryReasonCode(input),
+    historyIntents.length,
+    readDecisionHistoryReasonCode(input, historyIntents, guardReasonCode),
   ].join(":");
 }
 

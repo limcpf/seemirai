@@ -259,6 +259,7 @@ export async function loadLiveOpsCliInputs(options) {
       postSubmitReadiness: productionExecutionInputs.postSubmitReadiness,
       budgetSnapshot: productionExecutionInputs.budgetSnapshot,
       lossSnapshot: productionExecutionInputs.lossSnapshot,
+      decisionHistoryWriter: productionExecutionInputs.decisionHistoryWriter,
       cleanupLifecycle: productionExecutionInputs.cleanupLifecycle,
     });
     const reconcilePnlStatus = await evaluateLiveOpsCliReconcilePnlStatus({
@@ -2443,7 +2444,7 @@ function containsLiveOpsCliSecretLikeString(value) {
     /\bauthorization\s*:/u.test(normalizedValue) ||
     /\bbearer\s+[a-z0-9._~+/=-]+/u.test(normalizedValue) ||
     /\b[a-z0-9_-]{20,}\.[a-z0-9_-]{20,}\.[a-z0-9_-]{20,}\b/u.test(normalizedValue) ||
-    /(?:secret|token|password|access[_-]?key|secret[_-]?key|database[_-]?url|authorization|jwt|raw[_-]?provider|raw[_-]?payload)/u.test(normalizedValue)
+    /(?:secret|token|password|api[_-]?key|access[_-]?key|secret[_-]?key|private[_-]?key|query[_-]?hash|database[_-]?url|authorization|jwt|cookie|session|provider[_-]?payload|raw[_-]?provider|raw[_-]?payload|raw[_-]?order[_-]?detail|order[_-]?detail)/u.test(normalizedValue)
   );
 }
 
@@ -5906,10 +5907,13 @@ async function recordLiveOpsCliDecisionHistory(input) {
     return undefined;
   }
 
-  const intents = Array.isArray(input.orderIntents)
+  const rawIntents = Array.isArray(input.orderIntents)
     ? input.orderIntents
     : getLiveOpsCliAnalysisOrderIntents(input.analysisDecision);
-  const observedAt = readLiveOpsCliCleanupRuntimeObservedAt(intents) ?? new Date().toISOString();
+  const guardReasonCode = readLiveOpsCliDecisionHistoryGuardReasonCode(input.analysisDecision, rawIntents);
+  // core execution guard에서 폐기될 stale 후보를 BUY/SELL 이력으로 저장하지 않도록 history 입력을 별도로 낮춘다.
+  const intents = guardReasonCode === undefined && input.analysisDecision?.ready === true ? rawIntents : [];
+  const observedAt = readLiveOpsCliDecisionHistoryObservedAt(input.analysisDecision, intents);
 
   try {
     const tick = createLiveOpsCliDecisionHistoryTick({
@@ -5917,6 +5921,7 @@ async function recordLiveOpsCliDecisionHistory(input) {
       analysisDecision: input.analysisDecision,
       intents,
       observedAt,
+      guardReasonCode,
     });
     const result = await writer.appendDecisionTick({ tick });
     return okLiveExecutionCheck(
@@ -5945,13 +5950,31 @@ async function recordLiveOpsCliDecisionHistory(input) {
   }
 }
 
-function createLiveOpsCliDecisionHistoryTick({ config, analysisDecision, intents, observedAt }) {
+function readLiveOpsCliDecisionHistoryGuardReasonCode(analysisDecision, intents) {
+  if (analysisDecision?.ready !== true) {
+    return undefined;
+  }
+  const expectedCount = Number(analysisDecision?.orderIntentCount ?? 0);
+  if (Number.isSafeInteger(expectedCount) && expectedCount !== intents.length) {
+    return "live_ops_order_intent_count_mismatch";
+  }
+  return undefined;
+}
+
+function readLiveOpsCliDecisionHistoryObservedAt(analysisDecision, intents) {
+  return readLiveOpsCliCleanupRuntimeObservedAt(intents)
+    ?? (hasMeaningfulValue(analysisDecision?.observedAt) ? String(analysisDecision.observedAt) : undefined)
+    ?? (hasMeaningfulValue(analysisDecision?.latestDecisionAt) ? String(analysisDecision.latestDecisionAt) : undefined)
+    ?? new Date().toISOString();
+}
+
+function createLiveOpsCliDecisionHistoryTick({ config, analysisDecision, intents, observedAt, guardReasonCode }) {
   const firstIntent = intents[0];
-  const decisionKind = resolveLiveOpsCliDecisionHistoryKind(analysisDecision, firstIntent);
-  const reasonCode = readLiveOpsCliDecisionHistoryReasonCode(analysisDecision, firstIntent);
+  const decisionKind = resolveLiveOpsCliDecisionHistoryKind(analysisDecision, firstIntent, guardReasonCode);
+  const reasonCode = readLiveOpsCliDecisionHistoryReasonCode(analysisDecision, firstIntent, guardReasonCode);
   const strategyId = hasMeaningfulValue(firstIntent?.strategyId)
     ? String(firstIntent.strategyId)
-    : resolveLiveOpsCliPreflightPnlStrategyId(intents);
+    : resolveLiveOpsCliDecisionHistoryStrategyId(config, analysisDecision);
   const observedDate = new Date(observedAt);
   const decisionDate = hasMeaningfulValue(analysisDecision?.latestDecisionAt)
     ? new Date(analysisDecision.latestDecisionAt)
@@ -5987,7 +6010,7 @@ function createLiveOpsCliDecisionHistoryTick({ config, analysisDecision, intents
       dailyAutonomousNotionalLimitKrw: config.budget?.daily_autonomous_notional_limit_krw ?? null,
       maxOpenPositionNotionalKrw: config.budget?.max_open_position_notional_krw ?? null,
     },
-    orderIntentCount: Number(analysisDecision?.orderIntentCount ?? intents.length),
+    orderIntentCount: intents.length,
     observedAt: observedDate,
     decisionAt: decisionDate,
     sourceTickId,
@@ -5998,6 +6021,7 @@ function createLiveOpsCliDecisionHistoryTick({ config, analysisDecision, intents
       analysisDecisionCategory: analysisDecision?.decisionCategory ?? null,
       featureStatus: analysisDecision?.featureStatus ?? null,
       recordHoldDecision: analysisDecision?.recordHoldDecision === true,
+      ...(guardReasonCode === undefined ? {} : { guardReasonCode }),
     },
     dedupePolicy,
     dedupeBucketStartedAt,
@@ -6005,7 +6029,10 @@ function createLiveOpsCliDecisionHistoryTick({ config, analysisDecision, intents
   };
 }
 
-function resolveLiveOpsCliDecisionHistoryKind(analysisDecision, firstIntent) {
+function resolveLiveOpsCliDecisionHistoryKind(analysisDecision, firstIntent, guardReasonCode) {
+  if (guardReasonCode !== undefined || analysisDecision?.ready !== true) {
+    return "BLOCK";
+  }
   if (firstIntent?.side === "BUY" || firstIntent?.side === "SELL") {
     return firstIntent.side;
   }
@@ -6015,14 +6042,33 @@ function resolveLiveOpsCliDecisionHistoryKind(analysisDecision, firstIntent) {
   return "HOLD";
 }
 
-function readLiveOpsCliDecisionHistoryReasonCode(analysisDecision, firstIntent) {
+function readLiveOpsCliDecisionHistoryReasonCode(analysisDecision, firstIntent, guardReasonCode) {
+  if (guardReasonCode !== undefined) {
+    return guardReasonCode;
+  }
   if (hasMeaningfulValue(firstIntent?.reason)) {
     return String(firstIntent.reason);
   }
   if (hasMeaningfulValue(analysisDecision?.trace?.reasonCode)) {
     return String(analysisDecision.trace.reasonCode);
   }
+  if (analysisDecision?.ready !== true) {
+    return "live_ops_analysis_not_ready";
+  }
   return analysisDecision?.decisionCategory === "BLOCKED" ? "live_ops_decision_blocked" : "live_ops_hold";
+}
+
+function resolveLiveOpsCliDecisionHistoryStrategyId(config, analysisDecision) {
+  if (hasMeaningfulValue(analysisDecision?.trace?.strategyId)) {
+    return String(analysisDecision.trace.strategyId);
+  }
+  const policyId = hasMeaningfulValue(analysisDecision?.trace?.policyId)
+    ? String(analysisDecision.trace.policyId)
+    : String(config.analysis?.decision_policy?.id ?? "");
+  if (policyId === "autonomous_24x7") {
+    return liveOpsCliAutonomous24x7StrategyId;
+  }
+  return "live_ops_cleanup_probe";
 }
 
 function readLiveOpsCliDecisionHistoryFeatureSnapshot(analysisDecision) {

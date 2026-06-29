@@ -143,6 +143,32 @@ describe("production live ops live execution adapter", () => {
     expect(entryRuntime.submitEntryCandidate).not.toHaveBeenCalled();
   });
 
+  it("decision history는 준비되지 않은 summary의 stale 후보를 BUY로 기록하지 않는다", async () => {
+    const entryRuntime = createEntryRuntimeRecorder();
+    const appendDecisionTick = vi.fn(async (_input: AppendLiveDecisionHistoryTickInput) => ({ inserted: true }));
+
+    const summary = await runLiveOpsLiveExecution(createInput({
+      analysisDecision: analysisSummary({
+        ready: false,
+        status: "blocked",
+        orderIntentCount: 1,
+        decisionCategory: "ORDER_INTENT",
+      }),
+      orderIntents: [createOrderIntent()],
+      entryRuntime,
+      decisionHistoryWriter: { appendDecisionTick },
+    }));
+
+    expect(summary.status).toBe("blocked");
+    expect(appendDecisionTick).toHaveBeenCalledTimes(1);
+    expect(appendDecisionTick.mock.calls[0]![0].tick).toMatchObject({
+      decisionKind: "BLOCK",
+      reasonCode: "live_ops_analysis_not_ready",
+      orderIntentCount: 0,
+    });
+    expect(entryRuntime.submitEntryCandidate).not.toHaveBeenCalled();
+  });
+
   it("단일 LIMIT + post-only 후보를 live autonomous entry runtime 요청으로 변환한다", async () => {
     const entryRuntime = createEntryRuntimeRecorder();
     const intent = createOrderIntent();
