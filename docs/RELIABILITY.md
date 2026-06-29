@@ -547,6 +547,8 @@ Codex-native 운영은 Codex, Git, GitHub, shell command, 문서 상태를 연�
   feature provider degraded 또는 decision history degraded 상태로 닫는다.
 - retention은 migration trigger가 아니라 명시 repository/service 호출로 수행한다. retention delete는 decision tick의 관측 기간을 줄이는
   운영 행위이므로 검증 가능한 deleted count를 반환해야 한다.
+- daemon closeout evidence는 retention 삭제 결과, latestSummary freshness, Telegram retry/manual review 상태를 분리한다. 실패 tick 뒤
+  남은 latestSummary는 `stale_after_failure`로 표시해 실주문 가능 근거로 재사용하지 않고, DB URL 같은 credential 입력은 evidence에 남기지 않는다.
 
 ## M18 Decision Ledger 신뢰성 기준
 

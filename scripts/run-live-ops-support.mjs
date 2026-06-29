@@ -2720,7 +2720,25 @@ export function createLiveOpsCliDatabaseDecisionHistoryWriter(pool) {
       );
       return { inserted: false, record: existing.rows[0] };
     },
+    async applyRetention({ olderThan }) {
+      // retention은 장기 daemon 저장소 폭주를 막는 명시 운영 행위이므로 cutoff 이전 row만 삭제하고 삭제 수를 evidence로 돌려준다.
+      const deleted = await pool.query(
+        "DELETE FROM live_decision_ticks WHERE observed_at < $1 RETURNING id",
+        [olderThan],
+      );
+      return { deleted: deleted.rowCount ?? deleted.rows.length };
+    },
   };
+}
+
+export async function applyLiveOpsCliDecisionHistoryRetention({ databaseUrl, olderThan }) {
+  const pool = createLiveOpsCliPostgresPool(databaseUrl);
+  try {
+    const writer = createLiveOpsCliDatabaseDecisionHistoryWriter(pool);
+    return await writer.applyRetention({ olderThan });
+  } finally {
+    await pool.end().catch(() => undefined);
+  }
 }
 
 function assertLiveOpsCliDecisionHistoryTickSafe(tick) {

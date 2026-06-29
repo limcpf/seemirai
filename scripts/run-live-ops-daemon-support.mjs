@@ -1,6 +1,7 @@
 import { mkdir, realpath, writeFile } from "node:fs/promises";
 import path from "node:path";
 import {
+  applyLiveOpsCliDecisionHistoryRetention,
   loadLiveOpsCliInputs,
   parseArgs as parseLiveOpsArgs,
   printHelp as printLiveOpsHelp,
@@ -23,6 +24,7 @@ export function parseLiveOpsDaemonArgs(argv) {
     statusFilePath: undefined,
     tickIntervalMs: undefined,
     maxTicks: undefined,
+    decisionHistoryRetentionHours: undefined,
     json: false,
   };
 
@@ -39,6 +41,10 @@ export function parseLiveOpsDaemonArgs(argv) {
         break;
       case "--max-ticks":
         options.maxTicks = Number(readDaemonArgValue(argv, index, arg));
+        index += 1;
+        break;
+      case "--decision-history-retention-hours":
+        options.decisionHistoryRetentionHours = Number(readDaemonArgValue(argv, index, arg));
         index += 1;
         break;
       case "--json":
@@ -63,6 +69,7 @@ export async function runLiveOpsDaemon(options, io = {}) {
   const sleep = io.sleep ?? sleepLiveOpsDaemon;
   const loadInputs = io.loadInputs ?? loadLiveOpsCliInputs;
   const renderSummary = io.renderSummary ?? renderLiveOpsSummary;
+  const applyDecisionHistoryRetention = io.applyDecisionHistoryRetention ?? applyLiveOpsCliDecisionHistoryRetention;
   const startedAt = clock();
   const startedMs = Date.parse(startedAt);
   const durationMs = Number.isFinite(options.durationMs) && options.durationMs > 0 ? Number(options.durationMs) : undefined;
@@ -79,6 +86,7 @@ export async function runLiveOpsDaemon(options, io = {}) {
 
   let latestSummary = null;
   let latestError = null;
+  let latestDecisionHistoryRetention = null;
   let statusFilePath = resolveInitialDaemonStatusFile(options);
   let startupAlertConsumed = false;
 
@@ -88,11 +96,24 @@ export async function runLiveOpsDaemon(options, io = {}) {
       try {
         const tickOptions = startupAlertConsumed ? withStartupAlertSuppressed(options) : options;
         const inputs = await loadInputs(tickOptions);
-        const summary = renderSummary({
+        let summary = renderSummary({
           ...tickOptions,
           ...inputs,
           tui: tickOptions.tui,
         });
+        const decisionHistoryRetention = await applyLiveOpsDaemonDecisionHistoryRetention({
+          options,
+          inputs,
+          clock,
+          applyDecisionHistoryRetention,
+        });
+        if (decisionHistoryRetention !== undefined) {
+          summary = {
+            ...summary,
+            decisionHistoryRetention,
+          };
+          latestDecisionHistoryRetention = decisionHistoryRetention;
+        }
         latestSummary = summary;
         latestError = null;
         counters.tickCount += 1;
@@ -115,6 +136,7 @@ export async function runLiveOpsDaemon(options, io = {}) {
           counters,
           latestSummary,
           latestError,
+          latestDecisionHistoryRetention,
           unhandledRejections,
           statusFilePath,
         }));
@@ -136,6 +158,7 @@ export async function runLiveOpsDaemon(options, io = {}) {
           counters,
           latestSummary,
           latestError,
+          latestDecisionHistoryRetention,
           unhandledRejections,
           statusFilePath,
         }));
@@ -165,6 +188,7 @@ export async function runLiveOpsDaemon(options, io = {}) {
     counters,
     latestSummary,
     latestError,
+    latestDecisionHistoryRetention,
     unhandledRejections,
     statusFilePath,
   });
@@ -205,6 +229,8 @@ export function printLiveOpsDaemonHelp() {
   --status-file <path>      daemon latest summary JSON을 자동 기록할 경로
   --tick-interval-ms <ms>   HOLD/success 기본 tick sleep. 기본값 1000
   --max-ticks <n>           테스트와 smoke용 최대 tick 수
+  --decision-history-retention-hours <hours>
+                            decision history retention cutoff. 명시한 경우 cutoff 이전 live_decision_ticks 삭제 결과를 status evidence로 남김
   --json                    TUI 없이 최종 daemon summary JSON 출력
 
 live:ops:daemon은 config/env만 받아 반복 실행합니다. 수동 fixture manifest, hand-written evidence, JSONL 후보 파일은 요구하지 않습니다.
@@ -287,6 +313,7 @@ function createDaemonStatusPayload({
   counters,
   latestSummary,
   latestError,
+  latestDecisionHistoryRetention,
   unhandledRejections,
   statusFilePath,
 }) {
@@ -307,6 +334,12 @@ function createDaemonStatusPayload({
       manualReviewMs: defaultDaemonBackoffMs.manualReview,
       transientFailureMs: defaultDaemonBackoffMs.transientFailure,
     },
+    closeoutEvidence: createDaemonCloseoutEvidence({
+      counters,
+      latestSummary,
+      latestError,
+      latestDecisionHistoryRetention,
+    }),
     latestSummary,
     latestError,
     unhandledRejections,
@@ -315,6 +348,203 @@ function createDaemonStatusPayload({
       ? "TUI/status에서 보유 대기, 차단, 수동 확인, 주문 제출, 매도 재호가 횟수를 확인하세요."
       : "latestError를 확인하고 다음 tick 재시도 전에 provider/DB 상태를 점검하세요.",
   };
+}
+
+async function applyLiveOpsDaemonDecisionHistoryRetention({
+  options,
+  inputs,
+  clock,
+  applyDecisionHistoryRetention,
+}) {
+  const retentionHours = Number(options.decisionHistoryRetentionHours);
+  if (!Number.isFinite(retentionHours) || retentionHours <= 0) {
+    return undefined;
+  }
+  if (options.fixtureSmoke === true) {
+    return {
+      status: "skipped",
+      retentionHours,
+      deleted: 0,
+      olderThan: null,
+      message: "fixture smoke에서는 decision history retention DB delete를 실행하지 않습니다.",
+      action: "production daemon에서만 retention 옵션을 사용하세요.",
+    };
+  }
+  const databaseUrl = inputs?.env?.SEEMIRAI_DATABASE_URL;
+  if (typeof databaseUrl !== "string" || databaseUrl.length === 0) {
+    return {
+      status: "manual_review_required",
+      retentionHours,
+      deleted: null,
+      olderThan: null,
+      message: "decision history retention을 실행할 DB URL을 확인하지 못했습니다.",
+      action: "env file의 SEEMIRAI_DATABASE_URL과 DB readiness 상태를 확인하세요.",
+      trace: {
+        reason: "live_decision_history_retention_database_url_missing",
+      },
+    };
+  }
+
+  const observedAt = new Date(clock());
+  if (!Number.isFinite(observedAt.getTime())) {
+    return {
+      status: "manual_review_required",
+      retentionHours,
+      deleted: null,
+      olderThan: null,
+      message: "decision history retention 기준 시각을 계산하지 못했습니다.",
+      action: "daemon clock과 시스템 시간을 확인한 뒤 retention을 다시 실행하세요.",
+      trace: {
+        reason: "live_decision_history_retention_clock_invalid",
+      },
+    };
+  }
+  const olderThan = new Date(observedAt.getTime() - retentionHours * 60 * 60 * 1000);
+
+  try {
+    // retention delete는 주문 lifecycle과 독립된 운영 정리 작업이므로 실패해도 tick 결과를 되돌리지 않고 evidence로 격리한다.
+    const result = await applyDecisionHistoryRetention({ databaseUrl, olderThan });
+    const deleted = Number.isFinite(Number(result?.deleted)) ? Number(result.deleted) : 0;
+    return {
+      status: "applied",
+      retentionHours,
+      deleted,
+      olderThan: olderThan.toISOString(),
+      message: "decision history retention cutoff 이전 row를 정리했습니다.",
+      action: "삭제 수와 calibration 조회 window가 운영 기대와 맞는지 확인하세요.",
+    };
+  } catch (error) {
+    return {
+      status: "manual_review_required",
+      retentionHours,
+      deleted: null,
+      olderThan: olderThan.toISOString(),
+      message: "decision history retention 실행에 실패해 수동 점검 evidence로 남겼습니다.",
+      action: "DB 권한, lock, retention cutoff를 확인하되 주문 후보나 broker 결과는 되돌리지 마세요.",
+      trace: {
+        reason: "live_decision_history_retention_failed",
+        errorName: safeDaemonErrorName(error),
+      },
+    };
+  }
+}
+
+function createDaemonCloseoutEvidence({
+  counters,
+  latestSummary,
+  latestError,
+  latestDecisionHistoryRetention,
+}) {
+  const statusFreshness = createDaemonStatusFreshnessEvidence({ latestSummary, latestError });
+  const alertRetry = createDaemonAlertRetryEvidence(latestSummary?.telegramAlert);
+  const manualReview = createDaemonManualReviewEvidence({
+    counters,
+    latestSummary,
+    alertRetry,
+    latestDecisionHistoryRetention,
+  });
+  return {
+    statusFreshness,
+    alertRetry,
+    manualReview,
+    decisionHistoryRetention: latestDecisionHistoryRetention ?? {
+      status: "not_configured",
+      message: "decision history retention option이 없어 이번 daemon run에서는 DB delete를 실행하지 않았습니다.",
+      action: "운영 보존 기간을 정한 뒤 --decision-history-retention-hours를 명시하세요.",
+    },
+  };
+}
+
+function createDaemonStatusFreshnessEvidence({ latestSummary, latestError }) {
+  if (latestError !== null && latestSummary !== null) {
+    return {
+      status: "stale_after_failure",
+      latestSummaryStatus: latestSummary.status ?? "unknown",
+      latestErrorName: readDaemonErrorName(latestError),
+      message: "최신 tick 실패로 직전 summary는 stale 상태이며 실주문 가능 근거로 쓰지 않습니다.",
+      action: "status file의 latestError와 최근 daemon 로그를 먼저 확인하세요.",
+    };
+  }
+  if (latestError !== null) {
+    return {
+      status: "missing_after_failure",
+      latestSummaryStatus: null,
+      latestErrorName: readDaemonErrorName(latestError),
+      message: "성공 summary 없이 daemon tick이 실패했습니다.",
+      action: "provider/DB boot 실패를 복구한 뒤 다음 tick summary를 확인하세요.",
+    };
+  }
+  return {
+    status: latestSummary === null ? "missing_summary" : "fresh",
+    latestSummaryStatus: latestSummary?.status ?? null,
+    latestErrorName: null,
+    message: latestSummary === null
+      ? "아직 성공 summary가 없습니다."
+      : "latestSummary가 최신 daemon 결과입니다.",
+    action: latestSummary === null
+      ? "첫 tick 완료 여부를 확인하세요."
+      : "summary의 차단/수동 확인 항목을 계속 추적하세요.",
+  };
+}
+
+function createDaemonAlertRetryEvidence(telegramAlert) {
+  const scheduledBriefing = telegramAlert?.scheduledBriefing;
+  const retryPlannedCount = readDaemonCount(telegramAlert?.retryPlannedCount) + readDaemonCount(scheduledBriefing?.retryPlannedCount);
+  const failureCount = readDaemonCount(telegramAlert?.failureCount) + readDaemonCount(scheduledBriefing?.failureCount);
+  const manualReviewRequired = telegramAlert?.status === "manual_review_required" || scheduledBriefing?.status === "manual_review_required";
+  return {
+    status: telegramAlert === undefined
+      ? "not_observed"
+      : manualReviewRequired
+        ? "manual_review_required"
+        : failureCount > 0 || retryPlannedCount > 0
+          ? "retry_pending"
+          : "ok",
+    retryPlannedCount,
+    failureCount,
+    manualReviewRequired,
+    message: telegramAlert === undefined
+      ? "Telegram alert summary가 아직 없습니다."
+      : "Telegram retry/manual review 상태를 closeout evidence로 집계했습니다.",
+    action: failureCount > 0 || retryPlannedCount > 0 || manualReviewRequired
+      ? "notification retry와 owner chat 수신 상태를 확인하세요."
+      : "추가 조치 없음",
+  };
+}
+
+function createDaemonManualReviewEvidence({
+  counters,
+  latestSummary,
+  alertRetry,
+  latestDecisionHistoryRetention,
+}) {
+  const sources = [];
+  if (latestSummary?.liveExecution?.status === "manual_review_required") sources.push("live_execution");
+  if (latestSummary?.reconcilePnlStatus?.manualReviewRequired === true) sources.push("reconcile_pnl_status");
+  if (alertRetry.manualReviewRequired) sources.push("telegram_alert");
+  if (latestDecisionHistoryRetention?.status === "manual_review_required") sources.push("decision_history_retention");
+  return {
+    required: sources.length > 0 || counters.manualReviewCount > 0,
+    count: counters.manualReviewCount,
+    sources,
+    message: sources.length > 0
+      ? "daemon closeout에서 수동 점검 source를 확인했습니다."
+      : "수동 점검 source가 없습니다.",
+    action: sources.length > 0
+      ? "source별 status/action을 확인하고 신규 entry를 재개하지 마세요."
+      : "추가 조치 없음",
+  };
+}
+
+function readDaemonCount(value) {
+  return Number.isFinite(Number(value)) ? Number(value) : 0;
+}
+
+function readDaemonErrorName(errorLike) {
+  if (typeof errorLike?.name === "string" && errorLike.name.length > 0) {
+    return errorLike.name;
+  }
+  return safeDaemonErrorName(errorLike);
 }
 
 /**

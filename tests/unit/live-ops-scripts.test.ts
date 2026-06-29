@@ -916,6 +916,111 @@ describe("production live ops script skeleton", () => {
     expect(stdoutChunks.join("")).not.toContain("fake-telegram-token");
   });
 
+  it("live:ops:daemon closeout evidence는 retention, stale status, alert retry/manual review를 분리한다", async () => {
+    const daemonModulePath = path.join(process.cwd(), "scripts/run-live-ops-daemon-support.mjs");
+    const { runLiveOpsDaemon } = await import(daemonModulePath);
+    const retentionCalls: Array<{ olderThan: string; databaseUrl: string }> = [];
+    const stdoutChunks: string[] = [];
+
+    const result = await runLiveOpsDaemon(
+      {
+        configPath: "/tmp/live-ops.production.json",
+        maxTicks: 2,
+        tickIntervalMs: 0,
+        json: true,
+        decisionHistoryRetentionHours: 24,
+      },
+      {
+        stdout: {
+          write(chunk: string) {
+            stdoutChunks.push(chunk);
+            return true;
+          },
+        },
+        clock: () => "2026-06-30T00:00:00.000Z",
+        sleep: async () => undefined,
+        async loadInputs() {
+          if (retentionCalls.length > 0) {
+            throw new Error("provider stale after previous summary");
+          }
+          return { env: { SEEMIRAI_DATABASE_URL: "postgres://fixture" } };
+        },
+        renderSummary() {
+          return {
+            status: "blocked",
+            configPath: "/tmp/live-ops.production.json",
+            liveOrderCapable: false,
+            liveExecution: {
+              ready: false,
+              status: "manual_review_required",
+              liveOrderCapable: false,
+              submittedOrderCount: 0,
+              cleanupStatus: "manual_review_required",
+            },
+            reconcilePnlStatus: {
+              ready: true,
+              status: "manual_review_required",
+              manualReviewRequired: true,
+              mismatchCount: 1,
+            },
+            telegramAlert: {
+              ready: false,
+              status: "manual_review_required",
+              retryPlannedCount: 1,
+              failureCount: 1,
+              scheduledBriefing: {
+                status: "partial_failure",
+                retryPlannedCount: 2,
+                failureCount: 1,
+              },
+            },
+          };
+        },
+        async applyDecisionHistoryRetention(input: { olderThan: Date; databaseUrl: string }) {
+          retentionCalls.push({
+            olderThan: input.olderThan.toISOString(),
+            databaseUrl: input.databaseUrl,
+          });
+          return { deleted: 7 };
+        },
+      },
+    );
+
+    expect(retentionCalls).toEqual([{
+      olderThan: "2026-06-29T00:00:00.000Z",
+      databaseUrl: "postgres://fixture",
+    }]);
+    expect(result).toMatchObject({
+      status: "transient_failure",
+      latestError: {
+        message: "provider stale after previous summary",
+      },
+      closeoutEvidence: {
+        statusFreshness: {
+          status: "stale_after_failure",
+          latestSummaryStatus: "blocked",
+          latestErrorName: "Error",
+        },
+        alertRetry: {
+          retryPlannedCount: 3,
+          failureCount: 2,
+          manualReviewRequired: true,
+        },
+        manualReview: {
+          required: true,
+          count: 1,
+        },
+        decisionHistoryRetention: {
+          status: "applied",
+          deleted: 7,
+          olderThan: "2026-06-29T00:00:00.000Z",
+        },
+      },
+    });
+    expect(JSON.stringify(result)).not.toContain("postgres://fixture");
+    expect(stdoutChunks.join("")).not.toContain("postgres://fixture");
+  });
+
   it("live:ops --tui는 fixture smoke에서 provider 호출 없이 운영 dashboard 첫 화면을 출력한다", () => {
     const result = spawnSync(
       process.execPath,

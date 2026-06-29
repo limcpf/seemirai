@@ -22,7 +22,7 @@ Post-M23 Live Ops 운영에서 주문이 없던 tick도 정상 decision evidence
 - [x] Sub PR 02 DB-backed feature provider 구현과 회귀 검증을 완료한다.
 - [x] Sub PR 03 calibration report runner 구현과 artifact 검증을 완료한다.
 - [x] Sub PR 04 status/TUI wording separation을 구현하고 사용자-facing fixture를 검증한다.
-- [ ] Sub PR 05 daemon 운영 안정성 hardening과 alert/retry 검증을 완료한다.
+- [x] Sub PR 05 daemon 운영 안정성 hardening과 alert/retry 검증을 완료한다.
 - [ ] Sub PR 06 audit/tax closeout contract와 전체 검증을 완료한다.
 
 ## 검증 방법
@@ -42,6 +42,8 @@ Post-M23 Live Ops 운영에서 주문이 없던 tick도 정상 decision evidence
 - 2026-06-30: live decision calibration runner는 `live_decision_ticks`와 선택적 orders/fills window를 읽어 threshold 품질, feature source/failure 품질, 후보/실현 결과를 Markdown/JSON artifact로 남긴다.
 - 2026-06-30: decision history 저장 실패는 live execution `decisionHistory` summary에서 한국어 상태, 영향, 필요 조치를 먼저 표시하고,
   `live_decision_history_degraded`와 error name은 `trace` 및 TUI 하단 `추적 정보`에만 둔다.
+- 2026-06-30: daemon은 `--decision-history-retention-hours`가 명시되면 retention 삭제 결과를 closeout evidence로 남기고,
+  latestSummary stale 상태, Telegram retry/manual review source를 `closeoutEvidence`에 분리한다.
 
 ## 남은 이슈
 
@@ -49,5 +51,6 @@ Post-M23 Live Ops 운영에서 주문이 없던 tick도 정상 decision evidence
 - Sub PR 02는 stacked PR 생성과 review drain을 완료했지만 mother branch merge 전이다.
 - Sub PR 03은 stacked PR 생성과 review drain을 완료했지만 mother branch merge 전이다.
 - Sub PR 04는 stacked PR 생성과 review drain을 완료했지만 mother branch merge 전이다.
+- Sub PR 05는 로컬 구현과 daemon closeout evidence 검증을 완료했지만 PR 생성과 review drain 전이다.
 - 실제 DB integration은 `SEEMIRAI_RUN_DB_INTEGRATION=1`이 있을 때만 실행된다.
 - calibration report와 audit/tax evidence는 후속 sub PR에서 별도 contract로 닫아야 한다.

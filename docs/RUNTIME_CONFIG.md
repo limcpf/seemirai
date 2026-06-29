@@ -1771,6 +1771,8 @@ POST_ONLY` 후보를 만들 수 있다. 이 strategy는 order intent 생성까�
   `artifacts/live-ops-daemon-status.json`에 자동 기록하며, fixture smoke는 기본 status file을 만들지 않는다.
 - `--tick-interval-ms <ms>`는 정상 보유/대기 tick 간격을 조정한다. 기본값은 1초이며, 차단은 5초, 수동 확인은 30초, transient failure는
   5초 backoff를 적용한다.
+- `--decision-history-retention-hours <hours>`를 명시하면 daemon tick이 같은 DB writer 경계로 `live_decision_ticks` retention을 실행하고,
+  삭제 수, cutoff, 실패 사유를 status `closeoutEvidence.decisionHistoryRetention`에 기록한다. fixture smoke에서는 DB delete를 실행하지 않는다.
 - 24시간 summary counter는 tick, 보유/대기, 차단, 수동 확인, 주문 제출, 매도 재호가, crash, unhandled rejection, duplicate order,
   reconcile mismatch, untracked fill, live order cleanup failure를 자동 집계한다.
 - exit SELL은 보유 수량 전체가 1회 주문 예산을 넘으면 10,000 KRW 이하 chunk로 나눠 `position_effect=REDUCE`를 남기고, 남은 보유분은
