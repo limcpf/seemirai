@@ -48,6 +48,6 @@ Post-M23 Live Ops 운영에서 주문이 없던 tick도 정상 decision evidence
 - Sub PR 01은 PR 생성과 review drain을 완료했지만 mother branch merge 전이다.
 - Sub PR 02는 stacked PR 생성과 review drain을 완료했지만 mother branch merge 전이다.
 - Sub PR 03은 stacked PR 생성과 review drain을 완료했지만 mother branch merge 전이다.
-- Sub PR 04는 로컬 구현과 사용자-facing fixture 검증을 완료했지만 PR 생성과 review drain 전이다.
+- Sub PR 04는 stacked PR 생성과 review drain을 완료했지만 mother branch merge 전이다.
 - 실제 DB integration은 `SEEMIRAI_RUN_DB_INTEGRATION=1`이 있을 때만 실행된다.
 - calibration report와 audit/tax evidence는 후속 sub PR에서 별도 contract로 닫아야 한다.
