@@ -576,6 +576,7 @@ export function renderLiveOpsTuiDashboard(summary) {
   const attachReadonly = summary.attach !== null && summary.fixtureSmoke !== true;
   const dbReadiness = summary.dbReadiness;
   const migration = dbReadiness?.migration ?? {};
+  const decisionHistory = summary.liveExecution?.decisionHistory;
   const workerLines = (summary.trace.workers ?? []).map((worker) => {
     const label = liveOpsWorkerLabels[worker] ?? worker;
     const state = worker === "db_readiness"
@@ -631,11 +632,12 @@ export function renderLiveOpsTuiDashboard(summary) {
     `  - Market data: ${formatMarketDataObservation(summary.marketData)}`,
     `  - Analysis/decision: ${formatAnalysisDecisionObservation(summary.analysisDecision)}`,
     `  - Live execution: ${formatLiveExecutionObservation(summary.liveExecution)}`,
+    ...(decisionHistory === undefined ? [] : [`  - 판단 이력: ${formatDecisionHistoryObservation(decisionHistory)}`]),
     `  - Reconcile/PnL/status: ${formatReconcilePnlStatusObservation(summary.reconcilePnlStatus)}`,
     `  - Telegram alert: ${formatTelegramAlertObservation(summary.telegramAlert)}`,
     "",
-    `필요 조치: ${attachReadonly ? "status source의 차단 항목을 확인하세요. attach 화면은 신규 실주문을 제출하지 않습니다." : summary.liveOrderCapable ? "후보 처리 전 예산과 reconcile freshness를 재확인하세요." : "후속 provider 연결 전까지 신규 실주문은 제출되지 않습니다."}`,
-    `추적 정보: config=${path.basename(summary.configPath)} attach=${summary.attach ?? "foreground"}`,
+    `필요 조치: ${formatLiveOpsTuiAction(summary, attachReadonly)}`,
+    `추적 정보: config=${path.basename(summary.configPath)} attach=${summary.attach ?? "foreground"}${formatDecisionHistoryTrace(decisionHistory)}`,
   ].join("\n");
 }
 
@@ -6173,6 +6175,42 @@ function formatLiveExecutionObservation(liveExecution) {
   ].join(" / ");
 }
 
+function formatDecisionHistoryObservation(decisionHistory) {
+  const statusLabel = decisionHistory?.statusLabel ?? (decisionHistory?.status === "degraded" ? "판단 이력 저장 실패" : "판단 이력 기록 확인");
+  const message = hasMeaningfulValue(decisionHistory?.message)
+    ? decisionHistory.message
+    : "판단 이력 상태를 확인했습니다.";
+  return `${statusLabel} - ${message}`;
+}
+
+function formatLiveOpsTuiAction(summary, attachReadonly) {
+  const decisionHistory = summary.liveExecution?.decisionHistory;
+  if (decisionHistory?.status === "degraded" && hasMeaningfulValue(decisionHistory.action)) {
+    return decisionHistory.action;
+  }
+  if (attachReadonly) {
+    return "status source의 차단 항목을 확인하세요. attach 화면은 신규 실주문을 제출하지 않습니다.";
+  }
+  if (summary.liveOrderCapable) {
+    return "후보 처리 전 예산과 reconcile freshness를 재확인하세요.";
+  }
+  return "후속 provider 연결 전까지 신규 실주문은 제출되지 않습니다.";
+}
+
+function formatDecisionHistoryTrace(decisionHistory) {
+  if (!isNonEmptyRecord(decisionHistory?.trace)) {
+    return "";
+  }
+  const parts = [];
+  if (hasMeaningfulValue(decisionHistory.trace.code)) {
+    parts.push(`decision_history=${decisionHistory.trace.code}`);
+  }
+  if (hasMeaningfulValue(decisionHistory.trace.errorName)) {
+    parts.push(`error=${decisionHistory.trace.errorName}`);
+  }
+  return parts.length === 0 ? "" : ` ${parts.join(" ")}`;
+}
+
 function formatReconcilePnlStatusObservation(reconcilePnlStatus) {
   if (
     reconcilePnlStatus?.ready !== true &&
@@ -6274,8 +6312,8 @@ async function recordLiveOpsCliDecisionHistory(input, brokerGuard) {
     return okLiveExecutionCheck(
       "decision_history",
       result?.inserted === false
-        ? "live decision tick은 dedupe key 기준으로 이미 기록되어 중복 저장을 생략했습니다."
-        : "live decision tick을 DB decision history 저장 경계에 기록했습니다.",
+        ? "이미 같은 판단 이력이 있어 중복 저장을 생략했습니다."
+        : "판단 이력을 DB에 기록했습니다.",
       "live_decision_history_recorded",
       {
         inserted: result?.inserted !== false,
@@ -6287,7 +6325,7 @@ async function recordLiveOpsCliDecisionHistory(input, brokerGuard) {
     // decision history write 실패는 주문 후보를 재시도하거나 보정하지 않고 status/TUI degraded evidence로만 남긴다.
     return okLiveExecutionCheck(
       "decision_history",
-      "live decision history 저장에 실패해 운영 관측성이 degraded 상태입니다.",
+      "판단 이력 저장에 실패했습니다. 주문 후보와 주문 실행 결과는 되돌리지 않지만, 현재 판단의 사후 분석 증거가 불완전합니다.",
       "live_decision_history_degraded",
       {
         writeStatus: "failed",
@@ -6490,11 +6528,37 @@ export async function evaluateLiveOpsCliLiveExecution(input) {
   return {
     ...summary,
     checks: [decisionHistoryCheck, ...(Array.isArray(summary.checks) ? summary.checks : [])],
-    decisionHistory: {
-      status: decisionHistoryCheck.code === "live_decision_history_degraded" ? "degraded" : "recorded",
-      message: decisionHistoryCheck.message,
-      details: decisionHistoryCheck.details,
-    },
+    decisionHistory: createLiveOpsCliDecisionHistoryStatus(decisionHistoryCheck),
+  };
+}
+
+function createLiveOpsCliDecisionHistoryStatus(check) {
+  const trace = {
+    code: check.code,
+    ...(check.details?.errorName === undefined ? {} : { errorName: check.details.errorName }),
+    ...(check.details?.decisionKind === undefined ? {} : { decisionKind: check.details.decisionKind }),
+    ...(check.details?.dedupePolicy === undefined ? {} : { dedupePolicy: check.details.dedupePolicy }),
+    ...(check.details?.inserted === undefined ? {} : { inserted: check.details.inserted }),
+  };
+  if (check.code === "live_decision_history_degraded") {
+    return {
+      status: "degraded",
+      statusLabel: "판단 이력 저장 실패",
+      message: check.message,
+      impact: "현재 판단의 사후 분석 증거가 불완전하므로 운영자는 DB 판단 이력만으로 이번 판단을 재구성할 수 없습니다.",
+      action: "판단 이력 DB 연결과 권한을 확인하세요. 주문 후보나 주문 실행 결과를 재시도해 보정하지 마세요.",
+      trace,
+      details: check.details,
+    };
+  }
+  return {
+    status: "recorded",
+    statusLabel: check.details?.inserted === false ? "판단 이력 중복 생략" : "판단 이력 기록 완료",
+    message: check.message,
+    impact: null,
+    action: null,
+    trace,
+    details: check.details,
   };
 }
 
