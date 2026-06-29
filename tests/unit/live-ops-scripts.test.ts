@@ -50,6 +50,67 @@ describe("production live ops script skeleton", () => {
     });
   });
 
+  it("run-live-ops support는 live decision tick을 decision history writer로 전달한다", async () => {
+    const support = await import(path.join(process.cwd(), "scripts/run-live-ops-support.mjs")) as {
+      evaluateLiveOpsCliLiveExecution?: (input: Record<string, unknown>) => Promise<Record<string, unknown>>;
+    };
+    const appendDecisionTick = vi.fn(async (_input: { tick: Record<string, unknown> }) => ({ inserted: true }));
+
+    const summary = await support.evaluateLiveOpsCliLiveExecution?.({
+      config: JSON.parse(await readFile(path.join(process.cwd(), "config", "live-ops.example.json"), "utf8")),
+      fixtureSmoke: true,
+      analysisDecision: {
+        status: "ready",
+        ready: true,
+        market: "KRW-BTC",
+        observedAt: "2026-06-30T00:00:05.000Z",
+        latestDecisionAt: "2026-06-30T00:00:05.100Z",
+        decisionCategory: "HOLD",
+        featureStatus: "ok",
+        evaluatedStrategyCount: 1,
+        holdCount: 1,
+        blockCount: 0,
+        orderIntentCount: 0,
+        recordHoldDecision: true,
+        trace: {
+          reasonCode: "autonomous_24x7_entry_signal_weak",
+          featureSnapshot: {
+            featureStatus: "ok",
+            trend_strength_bps: "0",
+          },
+        },
+      },
+      env: {},
+      orderIntents: [],
+      decisionHistoryWriter: { appendDecisionTick },
+      entryRuntime: {
+        submitEntryCandidate: vi.fn(),
+      },
+    });
+
+    expect(summary?.checks).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ code: "live_decision_history_recorded" }),
+      ]),
+    );
+    expect(appendDecisionTick).toHaveBeenCalledTimes(1);
+    const tick = appendDecisionTick.mock.calls[0]?.[0]?.tick;
+    expect(tick).toMatchObject({
+      exchange: "UPBIT",
+      market: "KRW-BTC",
+      strategyId: "live_ops_cleanup_probe",
+      decisionKind: "HOLD",
+      reasonCode: "autonomous_24x7_entry_signal_weak",
+      orderIntentCount: 0,
+      dedupePolicy: "HOLD_REASON_1M_BUCKET",
+      thresholds: {
+        decisionPolicyId: "cleanup_probe",
+        maxOrderKrw: "10000",
+      },
+    });
+    expect(JSON.stringify(summary)).not.toContain("Authorization");
+  });
+
   it("corepack pnpm build 이후 dist 기반 production live ops 명령이 통과한다", async () => {
     const buildResult = spawnSync("corepack", ["pnpm", "build"], {
       cwd: process.cwd(),

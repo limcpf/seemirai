@@ -998,6 +998,7 @@ export async function createLiveOpsCliProductionExecutionInputs({
     orderIntents,
     entryRuntime: productionRuntime?.entryRuntime,
     exitRuntime: productionRuntime?.exitRuntime,
+    decisionHistoryWriter: productionRuntime?.decisionHistoryWriter,
     cleanupLifecycle: productionRuntime?.cleanupLifecycle,
     executionStatus: undefined,
     postSubmitReadiness: undefined,
@@ -2288,6 +2289,7 @@ export function createLiveOpsCliProductionProviders({ config, env, market, fetch
     privateReadProvider: createLiveOpsCliDatabasePrivateReadProvider(pool),
     reconcileStatusProvider: createLiveOpsCliDatabaseReconcileStatusProvider(pool),
     preflightReconcileRecorder: createLiveOpsCliDatabasePreflightReconcileRecorder(pool),
+    decisionHistoryWriter: createLiveOpsCliDatabaseDecisionHistoryWriter(pool),
     pnlStatusProvider: createLiveOpsCliDatabasePnlStatusProvider(pool, market),
     pnlCloseoutRunner: createLiveOpsPnlCloseoutRunner({ pool, market }),
     killSwitchProvider: createLiveOpsCliDatabaseKillSwitchProvider(pool),
@@ -2312,6 +2314,137 @@ function createLiveOpsCliPostgresPool(databaseUrl) {
     idleTimeoutMillis: 1000,
     allowExitOnIdle: true,
   });
+}
+
+export function createLiveOpsCliDatabaseDecisionHistoryWriter(pool) {
+  return {
+    async appendDecisionTick({ tick }) {
+      assertLiveOpsCliDecisionHistoryTickSafe(tick);
+      const inserted = await pool.query(
+        `
+          INSERT INTO live_decision_ticks (
+            exchange,
+            market,
+            strategy_id,
+            decision_kind,
+            reason_code,
+            feature_snapshot_json,
+            threshold_json,
+            order_intent_count,
+            dedupe_policy,
+            dedupe_bucket_started_at,
+            dedupe_key,
+            observed_at,
+            decision_at,
+            correlation_id,
+            trace_json
+          )
+          VALUES (
+            $1, $2, $3, $4, $5,
+            $6::jsonb, $7::jsonb, $8, $9, $10,
+            $11, $12, $13, $14, $15::jsonb
+          )
+          ON CONFLICT (dedupe_key) DO NOTHING
+          RETURNING id
+        `,
+        [
+          tick.exchange,
+          tick.market,
+          tick.strategyId,
+          tick.decisionKind,
+          tick.reasonCode,
+          JSON.stringify(tick.featureSnapshot),
+          JSON.stringify(tick.thresholds),
+          tick.orderIntentCount,
+          tick.dedupePolicy,
+          tick.dedupeBucketStartedAt,
+          tick.dedupeKey,
+          tick.observedAt,
+          tick.decisionAt,
+          tick.correlationId ?? null,
+          JSON.stringify(tick.trace ?? {}),
+        ],
+      );
+
+      if (inserted.rowCount > 0) {
+        return { inserted: true, record: inserted.rows[0] };
+      }
+
+      const existing = await pool.query(
+        "SELECT id FROM live_decision_ticks WHERE dedupe_key = $1",
+        [tick.dedupeKey],
+      );
+      return { inserted: false, record: existing.rows[0] };
+    },
+  };
+}
+
+function assertLiveOpsCliDecisionHistoryTickSafe(tick) {
+  for (const [pathKey, value] of Object.entries({
+    exchange: tick.exchange,
+    market: tick.market,
+    strategyId: tick.strategyId,
+    reasonCode: tick.reasonCode,
+    dedupeKey: tick.dedupeKey,
+  })) {
+    if (!hasMeaningfulValue(value) || containsLiveOpsCliSecretLikeString(String(value))) {
+      throw new Error(`live decision history ${pathKey} 값이 안전하지 않아 저장하지 않습니다.`);
+    }
+  }
+
+  const secretLikePaths = [
+    ...findSecretLikeKeys(tick.featureSnapshot, "$.featureSnapshot"),
+    ...findSecretLikeKeys(tick.thresholds, "$.thresholds"),
+    ...findSecretLikeKeys(tick.trace ?? {}, "$.trace"),
+  ];
+  if (secretLikePaths.length > 0) {
+    throw new Error("live decision history JSON에 secret-like key가 있어 저장하지 않습니다.");
+  }
+  assertLiveOpsCliDecisionHistoryJsonSafe("featureSnapshot", tick.featureSnapshot);
+  assertLiveOpsCliDecisionHistoryJsonSafe("thresholds", tick.thresholds);
+  assertLiveOpsCliDecisionHistoryJsonSafe("trace", tick.trace ?? {});
+}
+
+function assertLiveOpsCliDecisionHistoryJsonSafe(pathName, value) {
+  if (value === null) {
+    return;
+  }
+  if (typeof value === "string") {
+    if (containsLiveOpsCliSecretLikeString(value)) {
+      throw new Error(`live decision history ${pathName}에 secret-like 문자열이 있어 저장하지 않습니다.`);
+    }
+    return;
+  }
+  if (typeof value === "number" || typeof value === "boolean") {
+    return;
+  }
+  if (Array.isArray(value)) {
+    value.forEach((item, index) => assertLiveOpsCliDecisionHistoryJsonSafe(`${pathName}[${index}]`, item));
+    return;
+  }
+  if (typeof value === "object") {
+    if (value instanceof Date) {
+      throw new Error(`live decision history ${pathName} Date 객체는 저장하지 않습니다.`);
+    }
+    Object.entries(value).forEach(([key, child]) => {
+      if (containsLiveOpsCliSecretLikeString(key)) {
+        throw new Error("live decision history JSON key가 안전하지 않아 저장하지 않습니다.");
+      }
+      assertLiveOpsCliDecisionHistoryJsonSafe(`${pathName}.${key}`, child);
+    });
+    return;
+  }
+  throw new Error(`live decision history ${pathName} JSON 값이 안전하지 않습니다.`);
+}
+
+function containsLiveOpsCliSecretLikeString(value) {
+  const normalizedValue = value.toLowerCase();
+  return (
+    /\bauthorization\s*:/u.test(normalizedValue) ||
+    /\bbearer\s+[a-z0-9._~+/=-]+/u.test(normalizedValue) ||
+    /\b[a-z0-9_-]{20,}\.[a-z0-9_-]{20,}\.[a-z0-9_-]{20,}\b/u.test(normalizedValue) ||
+    /(?:secret|token|password|access[_-]?key|secret[_-]?key|database[_-]?url|authorization|jwt|raw[_-]?provider|raw[_-]?payload)/u.test(normalizedValue)
+  );
 }
 
 export function createLiveOpsCliDatabaseScheduledBriefingCooldownStore(pool) {
@@ -5767,7 +5900,174 @@ function formatDecisionCategory(decisionCategory) {
   return "보류";
 }
 
-export async function evaluateLiveOpsCliLiveExecution({
+async function recordLiveOpsCliDecisionHistory(input) {
+  const writer = input?.decisionHistoryWriter;
+  if (writer === undefined || typeof writer.appendDecisionTick !== "function") {
+    return undefined;
+  }
+
+  const intents = Array.isArray(input.orderIntents)
+    ? input.orderIntents
+    : getLiveOpsCliAnalysisOrderIntents(input.analysisDecision);
+  const observedAt = readLiveOpsCliCleanupRuntimeObservedAt(intents) ?? new Date().toISOString();
+
+  try {
+    const tick = createLiveOpsCliDecisionHistoryTick({
+      config: input.config,
+      analysisDecision: input.analysisDecision,
+      intents,
+      observedAt,
+    });
+    const result = await writer.appendDecisionTick({ tick });
+    return okLiveExecutionCheck(
+      "decision_history",
+      result?.inserted === false
+        ? "live decision tick은 dedupe key 기준으로 이미 기록되어 중복 저장을 생략했습니다."
+        : "live decision tick을 DB decision history 저장 경계에 기록했습니다.",
+      "live_decision_history_recorded",
+      {
+        inserted: result?.inserted !== false,
+        decisionKind: tick.decisionKind,
+        dedupePolicy: tick.dedupePolicy,
+      },
+    );
+  } catch (error) {
+    // decision history write 실패는 주문 후보를 재시도하거나 보정하지 않고 status/TUI degraded evidence로만 남긴다.
+    return okLiveExecutionCheck(
+      "decision_history",
+      "live decision history 저장에 실패해 운영 관측성이 degraded 상태입니다.",
+      "live_decision_history_degraded",
+      {
+        writeStatus: "failed",
+        errorName: safeErrorName(error),
+      },
+    );
+  }
+}
+
+function createLiveOpsCliDecisionHistoryTick({ config, analysisDecision, intents, observedAt }) {
+  const firstIntent = intents[0];
+  const decisionKind = resolveLiveOpsCliDecisionHistoryKind(analysisDecision, firstIntent);
+  const reasonCode = readLiveOpsCliDecisionHistoryReasonCode(analysisDecision, firstIntent);
+  const strategyId = hasMeaningfulValue(firstIntent?.strategyId)
+    ? String(firstIntent.strategyId)
+    : resolveLiveOpsCliPreflightPnlStrategyId(intents);
+  const observedDate = new Date(observedAt);
+  const decisionDate = hasMeaningfulValue(analysisDecision?.latestDecisionAt)
+    ? new Date(analysisDecision.latestDecisionAt)
+    : observedDate;
+  const dedupePolicy = decisionKind === "HOLD" ? "HOLD_REASON_1M_BUCKET" : "SOURCE_TICK";
+  const dedupeBucketStartedAt = dedupePolicy === "HOLD_REASON_1M_BUCKET"
+    ? new Date(Math.floor(observedDate.getTime() / 60_000) * 60_000)
+    : observedDate;
+  const sourceTickId = hasMeaningfulValue(firstIntent?.idempotencyKey)
+    ? String(firstIntent.idempotencyKey)
+    : [observedAt, analysisDecision?.decisionCategory ?? "UNKNOWN", analysisDecision?.orderIntentCount ?? 0, reasonCode].join(":");
+  const dedupeKey = createLiveOpsCliDecisionHistoryDedupeKey({
+    exchange: config.exchange ?? "UPBIT",
+    market: analysisDecision?.market ?? config.universe?.default_market ?? "KRW-BTC",
+    strategyId,
+    decisionKind,
+    reasonCode,
+    sourceTickId,
+    dedupePolicy,
+    dedupeBucketStartedAt,
+  });
+
+  return {
+    exchange: config.exchange ?? "UPBIT",
+    market: analysisDecision?.market ?? config.universe?.default_market ?? "KRW-BTC",
+    strategyId,
+    decisionKind,
+    reasonCode,
+    featureSnapshot: readLiveOpsCliDecisionHistoryFeatureSnapshot(analysisDecision),
+    thresholds: {
+      decisionPolicyId: config.analysis?.decision_policy?.id ?? "unknown",
+      maxOrderKrw: config.budget?.max_order_krw ?? null,
+      dailyAutonomousNotionalLimitKrw: config.budget?.daily_autonomous_notional_limit_krw ?? null,
+      maxOpenPositionNotionalKrw: config.budget?.max_open_position_notional_krw ?? null,
+    },
+    orderIntentCount: Number(analysisDecision?.orderIntentCount ?? intents.length),
+    observedAt: observedDate,
+    decisionAt: decisionDate,
+    sourceTickId,
+    correlationId: null,
+    trace: {
+      source: "live_ops_cli_live_execution",
+      analysisDecisionStatus: analysisDecision?.status ?? null,
+      analysisDecisionCategory: analysisDecision?.decisionCategory ?? null,
+      featureStatus: analysisDecision?.featureStatus ?? null,
+      recordHoldDecision: analysisDecision?.recordHoldDecision === true,
+    },
+    dedupePolicy,
+    dedupeBucketStartedAt,
+    dedupeKey,
+  };
+}
+
+function resolveLiveOpsCliDecisionHistoryKind(analysisDecision, firstIntent) {
+  if (firstIntent?.side === "BUY" || firstIntent?.side === "SELL") {
+    return firstIntent.side;
+  }
+  if (analysisDecision?.decisionCategory === "BLOCKED") {
+    return "BLOCK";
+  }
+  return "HOLD";
+}
+
+function readLiveOpsCliDecisionHistoryReasonCode(analysisDecision, firstIntent) {
+  if (hasMeaningfulValue(firstIntent?.reason)) {
+    return String(firstIntent.reason);
+  }
+  if (hasMeaningfulValue(analysisDecision?.trace?.reasonCode)) {
+    return String(analysisDecision.trace.reasonCode);
+  }
+  return analysisDecision?.decisionCategory === "BLOCKED" ? "live_ops_decision_blocked" : "live_ops_hold";
+}
+
+function readLiveOpsCliDecisionHistoryFeatureSnapshot(analysisDecision) {
+  if (isNonEmptyRecord(analysisDecision?.trace?.featureSnapshot)) {
+    return { ...analysisDecision.trace.featureSnapshot };
+  }
+  return {
+    featureStatus: analysisDecision?.featureStatus ?? "not_run",
+  };
+}
+
+function createLiveOpsCliDecisionHistoryDedupeKey({
+  exchange,
+  market,
+  strategyId,
+  decisionKind,
+  reasonCode,
+  sourceTickId,
+  dedupePolicy,
+  dedupeBucketStartedAt,
+}) {
+  const parts = dedupePolicy === "HOLD_REASON_1M_BUCKET"
+    ? ["live-decision-history", "v1", dedupePolicy, exchange, market, strategyId, reasonCode, dedupeBucketStartedAt.toISOString()]
+    : ["live-decision-history", "v1", dedupePolicy, exchange, market, strategyId, decisionKind, reasonCode, sourceTickId];
+  return `live-decision:${createHash("sha256").update(JSON.stringify(parts)).digest("hex")}`;
+}
+
+export async function evaluateLiveOpsCliLiveExecution(input) {
+  const decisionHistoryCheck = await recordLiveOpsCliDecisionHistory(input);
+  const summary = await evaluateLiveOpsCliLiveExecutionCore(input);
+  if (decisionHistoryCheck === undefined) {
+    return summary;
+  }
+  return {
+    ...summary,
+    checks: [decisionHistoryCheck, ...(Array.isArray(summary.checks) ? summary.checks : [])],
+    decisionHistory: {
+      status: decisionHistoryCheck.code === "live_decision_history_degraded" ? "degraded" : "recorded",
+      message: decisionHistoryCheck.message,
+      details: decisionHistoryCheck.details,
+    },
+  };
+}
+
+async function evaluateLiveOpsCliLiveExecutionCore({
   config,
   fixtureSmoke,
   analysisDecision,

@@ -303,6 +303,13 @@
       "owner_scope": "docs/exec-plans/active"
     },
     {
+      "path": "docs/exec-plans/active/2026-06-30-issue-258-live-ops-observability-quality.md",
+      "kind": "exec-plan",
+      "role": "Issue #258 Post-M23 Live Ops 운영 관측성, 전략 feature 품질, calibration, daemon hardening 실행 계획",
+      "read_when": ["issue #258 구현", "Live Ops 운영 관측성", "decision history", "DB-backed feature provider", "calibration report", "sub PR 계획 확인"],
+      "owner_scope": "docs/exec-plans/active"
+    },
+    {
       "path": "docs/exec-plans/active/2026-06-12-m23-m24-live-ops-and-scaled-canary.md",
       "kind": "exec-plan",
       "role": "M23 24/7 운영 안정화와 M24 전략 확장/예산 확대 live canary 실행 계획",

@@ -106,6 +106,7 @@ export async function loadLiveOpsRuntimeAdapterInputs(
       orderIntents: readArray(productionExecutionInputs.orderIntents),
       entryRuntime: productionExecutionInputs.entryRuntime,
       exitRuntime: productionExecutionInputs.exitRuntime,
+      decisionHistoryWriter: productionExecutionInputs.decisionHistoryWriter,
       executionStatus: productionExecutionInputs.executionStatus,
       postSubmitReadiness: productionExecutionInputs.postSubmitReadiness,
       budgetSnapshot: productionExecutionInputs.budgetSnapshot,

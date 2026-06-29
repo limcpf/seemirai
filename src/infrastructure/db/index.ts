@@ -96,6 +96,11 @@ export {
   upsertOrderbookSnapshot,
 } from "./market-data.js";
 export {
+  LiveDecisionHistoryPersistenceValidationError,
+  PostgresLiveDecisionHistoryRepository,
+  toLiveDecisionHistoryTickRowInput,
+} from "./live-decision-history.js";
+export {
   PostgresTelegramInboundDedupeStore,
   createPostgresTelegramInboundDedupeStore,
 } from "./telegram-inbound-dedupe.js";
@@ -205,6 +210,12 @@ export type {
   TradeRecord,
   UpbitPolicySnapshotPersistenceOptions,
 } from "./market-data.js";
+export type {
+  ApplyLiveDecisionHistoryRetentionInput,
+  ApplyLiveDecisionHistoryRetentionResult,
+  LiveDecisionHistoryTickRecord,
+  LiveDecisionHistoryTickRowInput,
+} from "./live-decision-history.js";
 export type {
   AppliedMigrationRecord,
   MigrationFile,

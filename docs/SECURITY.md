@@ -308,6 +308,16 @@
   raw order detail, local control token을 저장하거나 표시하지 않는다.
 - strategy 교체는 code review와 test를 거친 allowlist 변경으로만 수행한다. 운영 config 하나로 새로운 임의 strategy 코드를 로딩할 수 없다.
 
+## Issue #258 Live Ops 운영 관측성 보안 기준
+
+- `live_decision_ticks`의 `feature_snapshot_json`, `threshold_json`, `trace_json`에는 raw provider payload, raw order detail, credential,
+  DB URL, Telegram token, local control token, Authorization header, JWT, query hash 원문을 저장하지 않는다.
+- decision history persistence boundary는 secret-like key와 문자열을 거부해야 한다. 안전하지 않은 payload를 redaction 없이 저장하는 대신
+  degraded evidence로 닫는다.
+- dedupe key, correlation id, trace id는 운영 추적 식별자일 뿐 credential 대체 저장소가 아니다. 외부 provider request/response 원문을
+  이 식별자에 인코딩해 저장하지 않는다.
+- Issue #258 calibration report와 audit/tax evidence도 decision history와 같은 secret-free persistence 기준을 사용한다.
+
 ## M18 Decision Ledger 보안 기준
 
 - decision ledger의 `payload_json`과 `trace_json`에는 raw provider payload, raw order detail, secret 후보, Authorization header, JWT, API key, secret key, query hash 원문을 저장하지 않는다. 두 필드는 JSONB-safe value만 허용하며 Date, BigInt, function, class instance 같은 비 JSON 값은 저장 계약에서 제외한다.
