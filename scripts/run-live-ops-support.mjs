@@ -353,6 +353,15 @@ export function createLiveOpsRuntimeAdapter() {
     async createProductionRuntime(input) {
       return createLiveOpsCliProductionRuntime(input);
     },
+    async createDecisionHistoryWriter(input) {
+      const pool = createLiveOpsCliPostgresPool(input.databaseUrl);
+      return {
+        ...createLiveOpsCliDatabaseDecisionHistoryWriter(pool),
+        async close() {
+          await pool.end().catch(() => undefined);
+        },
+      };
+    },
     async collectAutonomousAnalysisPreflight(input) {
       return collectLiveOpsCliAutonomousAnalysisPreflight(input);
     },
@@ -376,6 +385,9 @@ export function createLiveOpsRuntimeAdapter() {
     },
     async closeProductionRuntime(runtime) {
       await runtime?.close?.();
+    },
+    async closeDecisionHistoryWriter(writer) {
+      await writer?.close?.();
     },
   };
 }
@@ -2425,7 +2437,13 @@ function assertLiveOpsCliDecisionHistoryJsonSafe(pathName, value) {
     }
     return;
   }
-  if (typeof value === "number" || typeof value === "boolean") {
+  if (typeof value === "number") {
+    if (!Number.isFinite(value)) {
+      throw new Error(`live decision history ${pathName}에 유한하지 않은 number가 있어 저장하지 않습니다.`);
+    }
+    return;
+  }
+  if (typeof value === "boolean") {
     return;
   }
   if (Array.isArray(value)) {
@@ -5910,7 +5928,7 @@ function formatDecisionCategory(decisionCategory) {
   return "보류";
 }
 
-async function recordLiveOpsCliDecisionHistory(input) {
+async function recordLiveOpsCliDecisionHistory(input, brokerGuard) {
   const writer = input?.decisionHistoryWriter;
   if (writer === undefined || typeof writer.appendDecisionTick !== "function") {
     return undefined;
@@ -5919,7 +5937,7 @@ async function recordLiveOpsCliDecisionHistory(input) {
   const rawIntents = Array.isArray(input.orderIntents)
     ? input.orderIntents
     : getLiveOpsCliAnalysisOrderIntents(input.analysisDecision);
-  const guardReasonCode = readLiveOpsCliDecisionHistoryGuardReasonCode(input.analysisDecision, rawIntents);
+  const guardReasonCode = readLiveOpsCliDecisionHistoryGuardReasonCode(input.analysisDecision, rawIntents, brokerGuard);
   // core execution guard에서 폐기될 stale 후보를 BUY/SELL 이력으로 저장하지 않도록 history 입력을 별도로 낮춘다.
   const intents = guardReasonCode === undefined && input.analysisDecision?.ready === true ? rawIntents : [];
   const observedAt = readLiveOpsCliDecisionHistoryObservedAt(input.analysisDecision, intents);
@@ -5959,13 +5977,19 @@ async function recordLiveOpsCliDecisionHistory(input) {
   }
 }
 
-function readLiveOpsCliDecisionHistoryGuardReasonCode(analysisDecision, intents) {
+function readLiveOpsCliDecisionHistoryGuardReasonCode(analysisDecision, intents, brokerGuard) {
+  if (brokerGuard?.ready === false) {
+    return "live_ops_broker_guard_blocked";
+  }
   if (analysisDecision?.ready !== true) {
     return undefined;
   }
   const expectedCount = Number(analysisDecision?.orderIntentCount ?? 0);
   if (Number.isSafeInteger(expectedCount) && expectedCount !== intents.length) {
     return "live_ops_order_intent_count_mismatch";
+  }
+  if (intents.length > 1) {
+    return "live_ops_order_intent_batch_unsupported";
   }
   return undefined;
 }
@@ -6013,12 +6037,7 @@ function createLiveOpsCliDecisionHistoryTick({ config, analysisDecision, intents
     decisionKind,
     reasonCode,
     featureSnapshot: readLiveOpsCliDecisionHistoryFeatureSnapshot(analysisDecision),
-    thresholds: {
-      decisionPolicyId: config.analysis?.decision_policy?.id ?? "unknown",
-      maxOrderKrw: config.budget?.max_order_krw ?? null,
-      dailyAutonomousNotionalLimitKrw: config.budget?.daily_autonomous_notional_limit_krw ?? null,
-      maxOpenPositionNotionalKrw: config.budget?.max_open_position_notional_krw ?? null,
-    },
+    thresholds: createLiveOpsCliDecisionHistoryThresholds(config),
     orderIntentCount: intents.length,
     observedAt: observedDate,
     decisionAt: decisionDate,
@@ -6080,6 +6099,21 @@ function resolveLiveOpsCliDecisionHistoryStrategyId(config, analysisDecision) {
   return "live_ops_cleanup_probe";
 }
 
+function createLiveOpsCliDecisionHistoryThresholds(config) {
+  const decisionPolicy = config.analysis?.decision_policy ?? {};
+  const decisionPolicyId = decisionPolicy.id ?? "unknown";
+  const strategyThresholds = isNonEmptyRecord(decisionPolicy[decisionPolicyId])
+    ? { ...decisionPolicy[decisionPolicyId] }
+    : {};
+  return {
+    decisionPolicyId,
+    maxOrderKrw: config.budget?.max_order_krw ?? null,
+    dailyAutonomousNotionalLimitKrw: config.budget?.daily_autonomous_notional_limit_krw ?? null,
+    maxOpenPositionNotionalKrw: config.budget?.max_open_position_notional_krw ?? null,
+    strategyThresholds,
+  };
+}
+
 function readLiveOpsCliDecisionHistoryFeatureSnapshot(analysisDecision) {
   if (isNonEmptyRecord(analysisDecision?.trace?.featureSnapshot)) {
     return { ...analysisDecision.trace.featureSnapshot };
@@ -6120,7 +6154,15 @@ function createLiveOpsCliDecisionHistoryDedupeKey({
 }
 
 export async function evaluateLiveOpsCliLiveExecution(input) {
-  const decisionHistoryCheck = await recordLiveOpsCliDecisionHistory(input);
+  // fixture smoke는 broker credential 없이 분석/기록 경계를 검증하므로 운영 guard 차단 사유를 history decision으로 덮지 않는다.
+  const brokerGuard = input.fixtureSmoke === true
+    ? undefined
+    : evaluateLiveOpsCliBrokerGuard({
+        config: input.config,
+        env: input.env,
+        fixtureSmoke: input.fixtureSmoke,
+      });
+  const decisionHistoryCheck = await recordLiveOpsCliDecisionHistory(input, brokerGuard);
   const summary = await evaluateLiveOpsCliLiveExecutionCore(input);
   if (decisionHistoryCheck === undefined) {
     return summary;

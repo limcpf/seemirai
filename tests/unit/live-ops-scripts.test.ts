@@ -204,12 +204,67 @@ describe("production live ops script skeleton", () => {
     });
   });
 
+  it("run-live-ops support는 broker guard 차단 tick을 BLOCK decision history로 기록한다", async () => {
+    const support = await import(path.join(process.cwd(), "scripts/run-live-ops-support.mjs")) as {
+      evaluateLiveOpsCliLiveExecution?: (input: Record<string, unknown>) => Promise<Record<string, unknown>>;
+    };
+    const appendDecisionTick = vi.fn(async (_input: { tick: Record<string, unknown> }) => ({ inserted: true }));
+
+    const summary = await support.evaluateLiveOpsCliLiveExecution?.({
+      config: JSON.parse(await readFile(path.join(process.cwd(), "config", "live-ops.example.json"), "utf8")),
+      fixtureSmoke: false,
+      analysisDecision: {
+        status: "ready",
+        ready: true,
+        market: "KRW-BTC",
+        observedAt: "2026-06-30T00:00:05.000Z",
+        latestDecisionAt: "2026-06-30T00:00:05.100Z",
+        decisionCategory: "ORDER_INTENT",
+        featureStatus: "ok",
+        orderIntentCount: 1,
+        trace: {},
+      },
+      env: {},
+      orderIntents: [{
+        exchangeId: "upbit_krw_spot",
+        market: "KRW-BTC",
+        strategyId: "live_ops_cleanup_probe",
+        side: "BUY",
+        orderType: "LIMIT",
+        requestedPrice: "100000000",
+        requestedQuantity: "0.0001",
+        requestedNotional: "10000",
+        reason: "issue_206_cleanup_probe",
+        idempotencyKey: "same-candidate-key",
+        postOnly: true,
+        timeInForce: "POST_ONLY",
+        metadata: { expected_loss_bps_of_equity: "5" },
+      }],
+      decisionHistoryWriter: { appendDecisionTick },
+      entryRuntime: {
+        submitEntryCandidate: vi.fn(),
+      },
+    });
+
+    expect(summary?.status).toBe("blocked");
+    expect(appendDecisionTick.mock.calls[0]?.[0]?.tick).toMatchObject({
+      decisionKind: "BLOCK",
+      reasonCode: "live_ops_broker_guard_blocked",
+      orderIntentCount: 0,
+    });
+  });
+
   it("run-live-ops support는 autonomous no-intent HOLD를 실제 policy strategy와 analysis 시각으로 기록한다", async () => {
     const support = await import(path.join(process.cwd(), "scripts/run-live-ops-support.mjs")) as {
       evaluateLiveOpsCliLiveExecution?: (input: Record<string, unknown>) => Promise<Record<string, unknown>>;
     };
     const config = JSON.parse(await readFile(path.join(process.cwd(), "config", "live-ops.example.json"), "utf8"));
     config.analysis.decision_policy.id = "autonomous_24x7";
+    config.analysis.decision_policy.autonomous_24x7 = {
+      min_entry_margin_bps: "10",
+      trend_confirmation_bps: "5",
+      mean_reversion_discount_bps: "3",
+    };
     const appendDecisionTick = vi.fn(async (_input: { tick: Record<string, unknown> }) => ({ inserted: true }));
 
     await support.evaluateLiveOpsCliLiveExecution?.({
@@ -259,6 +314,13 @@ describe("production live ops script skeleton", () => {
         trend_strength_bps: "2",
         mean_reversion_discount_bps: "3",
       },
+      thresholds: {
+        strategyThresholds: {
+          min_entry_margin_bps: "10",
+          trend_confirmation_bps: "5",
+          mean_reversion_discount_bps: "3",
+        },
+      },
     });
     expect((tick?.observedAt as Date).toISOString()).toBe("2026-06-30T00:01:05.000Z");
     expect((tick?.dedupeBucketStartedAt as Date).toISOString()).toBe("2026-06-30T00:01:00.000Z");
@@ -293,6 +355,27 @@ describe("production live ops script skeleton", () => {
       },
     })).rejects.toThrow(/secret-like|안전하지/);
     expect(query).not.toHaveBeenCalled();
+
+    await expect(writer?.appendDecisionTick({
+      tick: {
+        exchange: "UPBIT",
+        market: "KRW-BTC",
+        strategyId: "live_ops_cleanup_probe",
+        decisionKind: "HOLD",
+        reasonCode: "live_ops_hold",
+        featureSnapshot: { invalid_metric: Number.POSITIVE_INFINITY },
+        thresholds: {},
+        orderIntentCount: 0,
+        dedupePolicy: "HOLD_REASON_1M_BUCKET",
+        dedupeBucketStartedAt: new Date("2026-06-30T00:00:00.000Z"),
+        dedupeKey: "live-decision:def",
+        observedAt: new Date("2026-06-30T00:00:05.000Z"),
+        decisionAt: new Date("2026-06-30T00:00:05.000Z"),
+        correlationId: null,
+        trace: {},
+      },
+    })).rejects.toThrow(/유한하지 않은 number/);
+    expect(query).not.toHaveBeenCalled();
   });
 
   it("run-live-ops loader는 daemon tick live execution에도 decision history writer를 전달한다", async () => {
@@ -303,6 +386,7 @@ describe("production live ops script skeleton", () => {
     );
     expect(supportContent).toMatch(/decisionHistoryFallbackPool = createLiveOpsCliPostgresPool/u);
     expect(supportContent).toMatch(/createLiveOpsCliDatabaseDecisionHistoryWriter\(decisionHistoryFallbackPool\)/u);
+    expect(supportContent).toMatch(/createDecisionHistoryWriter\(input\)/u);
   });
 
   it("corepack pnpm build 이후 dist 기반 production live ops 명령이 통과한다", async () => {

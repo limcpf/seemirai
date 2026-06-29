@@ -203,6 +203,32 @@ describe("production live ops live execution adapter", () => {
     expect(entryRuntime.submitEntryCandidate).not.toHaveBeenCalled();
   });
 
+  it("decision history는 다중 후보 tick을 batch unsupported BLOCK으로 기록한다", async () => {
+    const entryRuntime = createEntryRuntimeRecorder();
+    const appendDecisionTick = vi.fn(async (_input: AppendLiveDecisionHistoryTickInput) => ({ inserted: true }));
+
+    const summary = await runLiveOpsLiveExecution(createInput({
+      analysisDecision: analysisSummary({
+        orderIntentCount: 2,
+        decisionCategory: "ORDER_INTENT",
+      }),
+      orderIntents: [
+        createOrderIntent({ idempotencyKey: "first" }),
+        createOrderIntent({ idempotencyKey: "second" }),
+      ],
+      entryRuntime,
+      decisionHistoryWriter: { appendDecisionTick },
+    }));
+
+    expect(summary.status).toBe("blocked");
+    expect(appendDecisionTick.mock.calls[0]![0].tick).toMatchObject({
+      decisionKind: "BLOCK",
+      reasonCode: "live_ops_order_intent_batch_unsupported",
+      orderIntentCount: 0,
+    });
+    expect(entryRuntime.submitEntryCandidate).not.toHaveBeenCalled();
+  });
+
   it("단일 LIMIT + post-only 후보를 live autonomous entry runtime 요청으로 변환한다", async () => {
     const entryRuntime = createEntryRuntimeRecorder();
     const intent = createOrderIntent();

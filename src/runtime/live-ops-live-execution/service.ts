@@ -397,6 +397,9 @@ function readDecisionHistoryGuardReasonCode(input: LiveOpsLiveExecutionInput): s
   if (input.analysisDecision.ready && input.analysisDecision.orderIntentCount !== input.orderIntents.length) {
     return "live_ops_order_intent_count_mismatch";
   }
+  if (input.analysisDecision.ready && input.orderIntents.length > 1) {
+    return "live_ops_order_intent_batch_unsupported";
+  }
   return undefined;
 }
 
@@ -498,12 +501,30 @@ function readDecisionHistoryCheckDetails(
 }
 
 function buildDecisionHistoryThresholds(config: LiveOpsConfig): JsonRecord {
+  const decisionPolicy = config.analysis.decision_policy;
+  const policyId = decisionPolicy.id;
   return {
-    decisionPolicyId: config.analysis.decision_policy.id,
+    decisionPolicyId: policyId,
     maxOrderKrw: config.budget.max_order_krw,
     dailyAutonomousNotionalLimitKrw: config.budget.daily_autonomous_notional_limit_krw,
     maxOpenPositionNotionalKrw: config.budget.max_open_position_notional_krw,
+    strategyThresholds: readDecisionHistoryStrategyThresholds(config),
   };
+}
+
+/**
+ * decision history threshold snapshot에 저장할 현재 policy별 전략 threshold를 선택한다.
+ *
+ * 호출 경계는 live execution tick 생성 직전이며, 입력은 이미 `LiveOpsConfig` 검증을 통과한 config다.
+ * 출력은 DB JSON에 저장 가능한 얕은 복사본이고, policy id와 threshold branch가 항상 같은 전략을 가리켜야 한다.
+ * 외부 side effect는 없다.
+ */
+function readDecisionHistoryStrategyThresholds(config: LiveOpsConfig): JsonRecord {
+  const decisionPolicy = config.analysis.decision_policy;
+  if (decisionPolicy.id === "autonomous_24x7") {
+    return { ...decisionPolicy.autonomous_24x7 };
+  }
+  return { ...decisionPolicy.cleanup_probe };
 }
 
 function readDecisionHistorySourceTickId(

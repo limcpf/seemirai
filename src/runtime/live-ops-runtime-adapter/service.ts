@@ -58,6 +58,7 @@ export async function loadLiveOpsRuntimeAdapterInputs(
     fixtureSmoke: options.fixtureSmoke,
   });
   let productionRuntime: Record<string, unknown> | undefined;
+  let decisionHistoryFallbackWriter: Record<string, unknown> | undefined;
   try {
     productionRuntime = options.fixtureSmoke === true || productionBrokerGuard.ready !== true
       ? undefined
@@ -72,6 +73,16 @@ export async function loadLiveOpsRuntimeAdapterInputs(
           cancelPollCount: options.cancelPollCount,
           cancelPollIntervalMs: options.cancelPollIntervalMs,
         });
+    if (
+      options.fixtureSmoke !== true &&
+      productionRuntime?.decisionHistoryWriter === undefined &&
+      typeof adapter.createDecisionHistoryWriter === "function"
+    ) {
+      // broker guard 차단도 DB/analysis가 확인한 decision tick이므로 private/broker runtime 없이 history writer만 분리해 연다.
+      decisionHistoryFallbackWriter = await adapter.createDecisionHistoryWriter({
+        databaseUrl: env.SEEMIRAI_DATABASE_URL,
+      });
+    }
     const autonomousAnalysisPreflight = await adapter.collectAutonomousAnalysisPreflight({
       config,
       fixtureSmoke: options.fixtureSmoke,
@@ -106,7 +117,9 @@ export async function loadLiveOpsRuntimeAdapterInputs(
       orderIntents: readArray(productionExecutionInputs.orderIntents),
       entryRuntime: productionExecutionInputs.entryRuntime,
       exitRuntime: productionExecutionInputs.exitRuntime,
-      decisionHistoryWriter: productionExecutionInputs.decisionHistoryWriter,
+      decisionHistoryWriter: productionExecutionInputs.decisionHistoryWriter
+        ?? productionRuntime?.decisionHistoryWriter
+        ?? decisionHistoryFallbackWriter,
       executionStatus: productionExecutionInputs.executionStatus,
       postSubmitReadiness: productionExecutionInputs.postSubmitReadiness,
       budgetSnapshot: productionExecutionInputs.budgetSnapshot,
@@ -148,6 +161,10 @@ export async function loadLiveOpsRuntimeAdapterInputs(
       telegramAlert,
     };
   } finally {
+    if (decisionHistoryFallbackWriter !== undefined && typeof adapter.closeDecisionHistoryWriter === "function") {
+      // fallback DB writer는 production runtime과 별도 pool이므로 runtime close와 분리해 닫는다.
+      await adapter.closeDecisionHistoryWriter(decisionHistoryFallbackWriter);
+    }
     if (productionRuntime !== undefined) {
       // downstream 실패 시에도 DB pool과 provider handle을 닫아 다음 tick/명령의 중복 side effect를 막는다.
       await adapter.closeProductionRuntime(productionRuntime);
