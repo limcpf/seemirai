@@ -476,9 +476,25 @@ function readDecisionHistoryFeatureSnapshot(
     return { ...snapshot };
   }
 
+  const strategyDetails = readDecisionHistoryCheckDetails(summary, "strategy_decision");
+  if (isNonEmptyRecord(strategyDetails)) {
+    return {
+      featureStatus: summary.featureStatus,
+      ...strategyDetails,
+    };
+  }
+
   return {
     featureStatus: summary.featureStatus,
   };
+}
+
+function readDecisionHistoryCheckDetails(
+  summary: LiveOpsAnalysisDecisionSummary,
+  name: string,
+): Readonly<Record<string, unknown>> | undefined {
+  const check = summary.checks.find((item) => item.name === name);
+  return isNonEmptyRecord(check?.details) ? check.details : undefined;
 }
 
 function buildDecisionHistoryThresholds(config: LiveOpsConfig): JsonRecord {
@@ -497,7 +513,7 @@ function readDecisionHistorySourceTickId(
 ): string {
   const firstIntentKey = historyIntents[0]?.idempotencyKey;
   if (typeof firstIntentKey === "string" && firstIntentKey.trim().length > 0) {
-    return firstIntentKey;
+    return [input.observedAt, firstIntentKey].join(":");
   }
 
   return [

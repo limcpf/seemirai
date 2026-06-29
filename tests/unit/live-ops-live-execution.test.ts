@@ -96,6 +96,39 @@ describe("production live ops live execution adapter", () => {
     expect(entryRuntime.submitEntryCandidate).not.toHaveBeenCalled();
   });
 
+  it("decision history feature snapshot은 strategy decision details를 fallback으로 사용한다", async () => {
+    const entryRuntime = createEntryRuntimeRecorder();
+    const appendDecisionTick = vi.fn(async (_input: AppendLiveDecisionHistoryTickInput) => ({ inserted: true }));
+
+    await runLiveOpsLiveExecution(createInput({
+      analysisDecision: analysisSummary({
+        orderIntentCount: 0,
+        decisionCategory: "HOLD",
+        checks: [{
+          name: "strategy_decision",
+          status: "ok",
+          code: "live_ops_strategy_decision_ok",
+          message: "fixture strategy details",
+          details: {
+            strategyId: "live_ops_autonomous_24x7_core",
+            cost_adjusted_margin_bps: "4",
+            trend_strength_bps: "2",
+          },
+        }],
+      }),
+      orderIntents: [],
+      entryRuntime,
+      decisionHistoryWriter: { appendDecisionTick },
+    }));
+
+    expect(appendDecisionTick.mock.calls[0]![0].tick.featureSnapshot).toMatchObject({
+      featureStatus: "ok",
+      strategyId: "live_ops_autonomous_24x7_core",
+      cost_adjusted_margin_bps: "4",
+      trend_strength_bps: "2",
+    });
+  });
+
   it("decision history 저장 실패는 status check에 degraded로 남기고 BUY 제출 재시도를 만들지 않는다", async () => {
     const entryRuntime = createEntryRuntimeRecorder();
     const appendDecisionTick = vi.fn(async (_input: AppendLiveDecisionHistoryTickInput) => {
@@ -115,6 +148,7 @@ describe("production live ops live execution adapter", () => {
 
     expect(summary.status).toBe("submitted");
     expect(summary.checks.map((check) => check.code)).toContain("live_decision_history_degraded");
+    expect(appendDecisionTick.mock.calls[0]![0].tick.sourceTickId).toBe(`${observedAt}:decision-fixture-order-intent`);
     expect(entryRuntime.submitEntryCandidate).toHaveBeenCalledTimes(1);
     expect(JSON.stringify(summary)).not.toContain("fake-upbit-secret-key");
   });

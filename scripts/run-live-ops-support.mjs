@@ -208,6 +208,8 @@ export async function loadLiveOpsCliInputs(options) {
     fixtureSmoke: options.fixtureSmoke,
   });
   let productionRuntime;
+  let decisionHistoryFallbackPool;
+  let decisionHistoryWriter;
   try {
     // broker guard가 막힌 key는 private read와 broker runtime 생성 전 단계에서 닫아 side effect 없는 계좌 조회도 열지 않는다.
     productionRuntime = options.fixtureSmoke || !productionBrokerGuard.ready
@@ -223,6 +225,12 @@ export async function loadLiveOpsCliInputs(options) {
           cancelPollCount: options.cancelPollCount,
           cancelPollIntervalMs: options.cancelPollIntervalMs,
         });
+    decisionHistoryWriter = productionRuntime?.decisionHistoryWriter;
+    if (!options.fixtureSmoke && decisionHistoryWriter === undefined) {
+      // broker guard 차단도 분석이 끝난 운영 decision이므로 private/broker runtime 없이 DB history writer만 분리해 연다.
+      decisionHistoryFallbackPool = createLiveOpsCliPostgresPool(env.SEEMIRAI_DATABASE_URL);
+      decisionHistoryWriter = createLiveOpsCliDatabaseDecisionHistoryWriter(decisionHistoryFallbackPool);
+    }
     const autonomousAnalysisPreflight = await collectLiveOpsCliAutonomousAnalysisPreflight({
       config,
       fixtureSmoke: options.fixtureSmoke,
@@ -259,7 +267,7 @@ export async function loadLiveOpsCliInputs(options) {
       postSubmitReadiness: productionExecutionInputs.postSubmitReadiness,
       budgetSnapshot: productionExecutionInputs.budgetSnapshot,
       lossSnapshot: productionExecutionInputs.lossSnapshot,
-      decisionHistoryWriter: productionExecutionInputs.decisionHistoryWriter,
+      decisionHistoryWriter: productionExecutionInputs.decisionHistoryWriter ?? decisionHistoryWriter,
       cleanupLifecycle: productionExecutionInputs.cleanupLifecycle,
     });
     const reconcilePnlStatus = await evaluateLiveOpsCliReconcilePnlStatus({
@@ -297,6 +305,7 @@ export async function loadLiveOpsCliInputs(options) {
       telegramAlert,
     };
   } finally {
+    await decisionHistoryFallbackPool?.end().catch(() => undefined);
     await productionRuntime?.close?.();
   }
 }
@@ -5984,7 +5993,7 @@ function createLiveOpsCliDecisionHistoryTick({ config, analysisDecision, intents
     ? new Date(Math.floor(observedDate.getTime() / 60_000) * 60_000)
     : observedDate;
   const sourceTickId = hasMeaningfulValue(firstIntent?.idempotencyKey)
-    ? String(firstIntent.idempotencyKey)
+    ? [observedAt, String(firstIntent.idempotencyKey)].join(":")
     : [observedAt, analysisDecision?.decisionCategory ?? "UNKNOWN", analysisDecision?.orderIntentCount ?? 0, reasonCode].join(":");
   const dedupeKey = createLiveOpsCliDecisionHistoryDedupeKey({
     exchange: config.exchange ?? "UPBIT",
@@ -6075,9 +6084,23 @@ function readLiveOpsCliDecisionHistoryFeatureSnapshot(analysisDecision) {
   if (isNonEmptyRecord(analysisDecision?.trace?.featureSnapshot)) {
     return { ...analysisDecision.trace.featureSnapshot };
   }
+  const strategyDetails = readLiveOpsCliDecisionHistoryCheckDetails(analysisDecision, "strategy_decision");
+  if (isNonEmptyRecord(strategyDetails)) {
+    return {
+      featureStatus: analysisDecision?.featureStatus ?? "not_run",
+      ...strategyDetails,
+    };
+  }
   return {
     featureStatus: analysisDecision?.featureStatus ?? "not_run",
   };
+}
+
+function readLiveOpsCliDecisionHistoryCheckDetails(analysisDecision, name) {
+  const check = Array.isArray(analysisDecision?.checks)
+    ? analysisDecision.checks.find((item) => item?.name === name)
+    : undefined;
+  return isNonEmptyRecord(check?.details) ? check.details : undefined;
 }
 
 function createLiveOpsCliDecisionHistoryDedupeKey({

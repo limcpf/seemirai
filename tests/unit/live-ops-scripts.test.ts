@@ -155,6 +155,55 @@ describe("production live ops script skeleton", () => {
     expect(tick?.strategyId).not.toBe("stale_strategy");
   });
 
+  it("run-live-ops support는 SOURCE_TICK dedupe source에 observedAt을 포함한다", async () => {
+    const support = await import(path.join(process.cwd(), "scripts/run-live-ops-support.mjs")) as {
+      evaluateLiveOpsCliLiveExecution?: (input: Record<string, unknown>) => Promise<Record<string, unknown>>;
+    };
+    const appendDecisionTick = vi.fn(async (_input: { tick: Record<string, unknown> }) => ({ inserted: true }));
+
+    await support.evaluateLiveOpsCliLiveExecution?.({
+      config: JSON.parse(await readFile(path.join(process.cwd(), "config", "live-ops.example.json"), "utf8")),
+      fixtureSmoke: true,
+      analysisDecision: {
+        status: "ready",
+        ready: true,
+        market: "KRW-BTC",
+        observedAt: "2026-06-30T00:00:05.000Z",
+        latestDecisionAt: "2026-06-30T00:00:05.100Z",
+        decisionCategory: "ORDER_INTENT",
+        featureStatus: "ok",
+        orderIntentCount: 1,
+        trace: {},
+      },
+      env: {},
+      orderIntents: [{
+        exchangeId: "upbit_krw_spot",
+        market: "KRW-BTC",
+        strategyId: "live_ops_cleanup_probe",
+        side: "BUY",
+        orderType: "LIMIT",
+        requestedPrice: "100000000",
+        requestedQuantity: "0.0001",
+        requestedNotional: "10000",
+        reason: "issue_206_cleanup_probe",
+        idempotencyKey: "same-candidate-key",
+        postOnly: true,
+        timeInForce: "POST_ONLY",
+        metadata: { expected_loss_bps_of_equity: "5" },
+      }],
+      decisionHistoryWriter: { appendDecisionTick },
+      entryRuntime: {
+        submitEntryCandidate: vi.fn(async () => ({ status: "SUBMITTED" })),
+      },
+    });
+
+    expect(appendDecisionTick.mock.calls[0]?.[0]?.tick).toMatchObject({
+      decisionKind: "BUY",
+      sourceTickId: "2026-06-30T00:00:05.000Z:same-candidate-key",
+      dedupePolicy: "SOURCE_TICK",
+    });
+  });
+
   it("run-live-ops support는 autonomous no-intent HOLD를 실제 policy strategy와 analysis 시각으로 기록한다", async () => {
     const support = await import(path.join(process.cwd(), "scripts/run-live-ops-support.mjs")) as {
       evaluateLiveOpsCliLiveExecution?: (input: Record<string, unknown>) => Promise<Record<string, unknown>>;
@@ -175,6 +224,17 @@ describe("production live ops script skeleton", () => {
         decisionCategory: "HOLD",
         featureStatus: "ok",
         orderIntentCount: 0,
+        checks: [{
+          name: "strategy_decision",
+          status: "ok",
+          code: "live_ops_strategy_decision_ok",
+          message: "strategy details",
+          details: {
+            cost_adjusted_margin_bps: "4",
+            trend_strength_bps: "2",
+            mean_reversion_discount_bps: "3",
+          },
+        }],
         trace: {
           policyId: "autonomous_24x7",
           reasonCode: "autonomous_24x7_entry_signal_weak",
@@ -194,6 +254,11 @@ describe("production live ops script skeleton", () => {
       decisionKind: "HOLD",
       reasonCode: "autonomous_24x7_entry_signal_weak",
       orderIntentCount: 0,
+      featureSnapshot: {
+        cost_adjusted_margin_bps: "4",
+        trend_strength_bps: "2",
+        mean_reversion_discount_bps: "3",
+      },
     });
     expect((tick?.observedAt as Date).toISOString()).toBe("2026-06-30T00:01:05.000Z");
     expect((tick?.dedupeBucketStartedAt as Date).toISOString()).toBe("2026-06-30T00:01:00.000Z");
@@ -234,8 +299,10 @@ describe("production live ops script skeleton", () => {
     const supportContent = await readFile(path.join(process.cwd(), "scripts/run-live-ops-support.mjs"), "utf8");
 
     expect(supportContent).toMatch(
-      /const liveExecution = await evaluateLiveOpsCliLiveExecution\(\{[\s\S]*decisionHistoryWriter: productionExecutionInputs\.decisionHistoryWriter[\s\S]*cleanupLifecycle: productionExecutionInputs\.cleanupLifecycle/u,
+      /const liveExecution = await evaluateLiveOpsCliLiveExecution\(\{[\s\S]*decisionHistoryWriter: productionExecutionInputs\.decisionHistoryWriter \?\? decisionHistoryWriter[\s\S]*cleanupLifecycle: productionExecutionInputs\.cleanupLifecycle/u,
     );
+    expect(supportContent).toMatch(/decisionHistoryFallbackPool = createLiveOpsCliPostgresPool/u);
+    expect(supportContent).toMatch(/createLiveOpsCliDatabaseDecisionHistoryWriter\(decisionHistoryFallbackPool\)/u);
   });
 
   it("corepack pnpm build 이후 dist 기반 production live ops 명령이 통과한다", async () => {
