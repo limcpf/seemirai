@@ -1021,6 +1021,250 @@ describe("production live ops script skeleton", () => {
     expect(stdoutChunks.join("")).not.toContain("postgres://fixture");
   });
 
+  it("audit/tax closeout validator는 주문, 취소, 체결, PnL, decision tick을 stable/correlation id로 연결한다", async () => {
+    const {
+      createLiveOpsAuditTaxCloseoutManifest,
+      validateLiveOpsAuditTaxCloseoutManifest,
+    } = await import(path.join(process.cwd(), "scripts/verify-live-ops-audit-tax-closeout.mjs")) as {
+      createLiveOpsAuditTaxCloseoutManifest: (input?: Record<string, unknown>) => Record<string, unknown>;
+      validateLiveOpsAuditTaxCloseoutManifest: (manifest: Record<string, unknown>) => Record<string, unknown>;
+    };
+
+    const manifest = createLiveOpsAuditTaxCloseoutManifest();
+    const result = validateLiveOpsAuditTaxCloseoutManifest(manifest);
+
+    expect(result).toMatchObject({
+      status: "ready",
+      ready: true,
+      summary: {
+        statusLabel: "검증 완료",
+        message: "세무/감사 closeout evidence가 주문, 취소, 체결, PnL, decision tick을 같은 업무 흐름으로 연결합니다.",
+      },
+      contract: {
+        version: "live_ops_audit_tax_closeout.v1",
+        requiredEvidence: ["decision_tick", "order", "cancel", "fill", "pnl_snapshot", "audit_event"],
+      },
+    });
+    expect(result).toMatchObject({
+      evidenceCounts: {
+        decisionTicks: 1,
+        orders: 1,
+        cancellations: 1,
+        fills: 1,
+        pnlSnapshots: 1,
+        auditEvents: 1,
+      },
+    });
+    expect(result).toMatchObject({
+      chains: [
+        expect.objectContaining({
+          status: "linked",
+          links: expect.arrayContaining([
+            expect.objectContaining({ from: "decision_tick", to: "order", via: "correlation_id" }),
+            expect.objectContaining({ from: "order", to: "cancel", via: "order_id" }),
+            expect.objectContaining({ from: "order", to: "fill", via: "order_id" }),
+            expect.objectContaining({ from: "fill", to: "pnl_snapshot", via: "correlation_id" }),
+            expect.objectContaining({ from: "order", to: "audit_event", via: "order_id" }),
+          ]),
+        }),
+      ],
+    });
+    expect(JSON.stringify(result)).not.toMatch(/Authorization|Bearer|raw_provider_payload|rawProviderPayload/u);
+  });
+
+  it("audit/tax closeout validator는 체결 stable id와 correlation id가 없으면 fail-closed 한다", async () => {
+    const {
+      createLiveOpsAuditTaxCloseoutManifest,
+      validateLiveOpsAuditTaxCloseoutManifest,
+    } = await import(path.join(process.cwd(), "scripts/verify-live-ops-audit-tax-closeout.mjs")) as {
+      createLiveOpsAuditTaxCloseoutManifest: (input?: Record<string, unknown>) => Record<string, unknown>;
+      validateLiveOpsAuditTaxCloseoutManifest: (manifest: Record<string, unknown>) => Record<string, unknown>;
+    };
+
+    const manifest = createLiveOpsAuditTaxCloseoutManifest({
+      chains: [
+        {
+          chainId: "audit-tax-chain-missing-fill-link",
+          correlationId: "audit-tax-corr-1",
+          decisionTick: {
+            id: "decision-tick-1",
+            dedupeKey: "UPBIT:KRW-BTC:cleanup:BUY:2026-06-30T00:00:00.000Z",
+            decisionKind: "BUY",
+            correlationId: "audit-tax-corr-1",
+          },
+          order: {
+            id: "order-1",
+            idempotencyKey: "audit-tax-order-1",
+            brokerOrderId: "upbit-order-1",
+            correlationId: "audit-tax-corr-1",
+          },
+          cancellations: [
+            {
+              id: "cancel-event-1",
+              orderId: "order-1",
+              correlationId: "audit-tax-corr-1",
+            },
+          ],
+          fills: [
+            {
+              market: "KRW-BTC",
+              filledAt: "2026-06-30T00:00:03.000Z",
+            },
+          ],
+          pnlSnapshots: [
+            {
+              strategyId: "live_ops_cleanup_probe",
+              market: "KRW-BTC",
+              capturedAt: "2026-06-30T00:00:05.000Z",
+              correlationId: "audit-tax-corr-1",
+            },
+          ],
+          auditEvents: [
+            {
+              id: "audit-event-1",
+              auditKind: "live_order_flow_closed",
+              orderId: "order-1",
+              correlationId: "audit-tax-corr-1",
+            },
+          ],
+        },
+      ],
+    });
+
+    const result = validateLiveOpsAuditTaxCloseoutManifest(manifest);
+
+    expect(result).toMatchObject({
+      status: "blocked",
+      ready: false,
+      summary: {
+        statusLabel: "수동 확인 필요",
+      },
+    });
+    expect(result).toMatchObject({
+      missingLinks: expect.arrayContaining([
+        expect.objectContaining({
+          chainId: "audit-tax-chain-missing-fill-link",
+          evidenceType: "fill",
+          reasonCode: "stable_or_correlation_id_missing",
+        }),
+      ]),
+    });
+  });
+
+  it("audit/tax closeout validator는 raw provider/order/secret 후보를 closeout evidence에서 차단한다", async () => {
+    const {
+      createLiveOpsAuditTaxCloseoutManifest,
+      validateLiveOpsAuditTaxCloseoutManifest,
+    } = await import(path.join(process.cwd(), "scripts/verify-live-ops-audit-tax-closeout.mjs")) as {
+      createLiveOpsAuditTaxCloseoutManifest: (input?: Record<string, unknown>) => Record<string, unknown>;
+      validateLiveOpsAuditTaxCloseoutManifest: (manifest: Record<string, unknown>) => Record<string, unknown>;
+    };
+
+    const manifest = createLiveOpsAuditTaxCloseoutManifest({
+      chains: [
+        {
+          chainId: "audit-tax-chain-secret",
+          correlationId: "audit-tax-corr-1",
+          decisionTick: {
+            id: "decision-tick-1",
+            dedupeKey: "UPBIT:KRW-BTC:cleanup:BUY:2026-06-30T00:00:00.000Z",
+            decisionKind: "BUY",
+            correlationId: "audit-tax-corr-1",
+          },
+          order: {
+            id: "order-1",
+            idempotencyKey: "audit-tax-order-1",
+            brokerOrderId: "upbit-order-1",
+            correlationId: "audit-tax-corr-1",
+          },
+          cancellations: [],
+          fills: [
+            {
+              id: "fill-1",
+              orderId: "order-1",
+              fillId: "upbit-fill-1",
+              correlationId: "audit-tax-corr-1",
+            },
+          ],
+          pnlSnapshots: [
+            {
+              id: "pnl-1",
+              strategyId: "live_ops_cleanup_probe",
+              market: "KRW-BTC",
+              capturedAt: "2026-06-30T00:00:05.000Z",
+              correlationId: "audit-tax-corr-1",
+            },
+          ],
+          auditEvents: [
+            {
+              id: "audit-event-1",
+              auditKind: "live_order_flow_closed",
+              orderId: "order-1",
+              correlationId: "audit-tax-corr-1",
+              payload: {
+                rawProviderPayload: {
+                  Authorization: "Bearer should-not-persist",
+                },
+              },
+            },
+          ],
+        },
+      ],
+    });
+
+    const result = validateLiveOpsAuditTaxCloseoutManifest(manifest);
+
+    expect(result).toMatchObject({
+      status: "blocked",
+      ready: false,
+      sourceScan: {
+        status: "failed",
+      },
+    });
+    expect(result).toMatchObject({
+      sourceScan: {
+        violations: expect.arrayContaining([
+          expect.objectContaining({
+            path: "$.chains[0].auditEvents[0].payload.rawProviderPayload",
+          }),
+          expect.objectContaining({
+            path: "$.chains[0].auditEvents[0].payload.rawProviderPayload.Authorization",
+          }),
+        ]),
+      },
+    });
+  });
+
+  it("audit/tax closeout validator fixture smoke는 provider 호출 없이 JSON manifest를 출력한다", () => {
+    const result = spawnSync(
+      process.execPath,
+      [
+        "scripts/verify-live-ops-audit-tax-closeout.mjs",
+        "--fixture-smoke",
+        "--json",
+      ],
+      {
+        cwd: process.cwd(),
+        encoding: "utf8",
+        env: minimalEnv(),
+      },
+    );
+
+    expect(result.status).toBe(0);
+    expect(result.stderr).toBe("");
+    const output = JSON.parse(result.stdout) as {
+      ready: boolean;
+      status: string;
+      summary: { message: string };
+      manifest: { contractVersion: string };
+    };
+    expect(output.ready).toBe(true);
+    expect(output.status).toBe("ready");
+    expect(output.manifest.contractVersion).toBe("live_ops_audit_tax_closeout.v1");
+    expect(output.summary.message).toContain("세무/감사 closeout evidence");
+    expect(result.stdout).not.toMatch(/Authorization|Bearer|raw_provider_payload|rawProviderPayload/u);
+  });
+
   it("live:ops --tui는 fixture smoke에서 provider 호출 없이 운영 dashboard 첫 화면을 출력한다", () => {
     const result = spawnSync(
       process.execPath,

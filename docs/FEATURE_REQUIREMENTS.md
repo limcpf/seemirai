@@ -1107,7 +1107,7 @@ Acceptance Criteria:
 - [x] calibration report runner는 threshold 품질과 후보/실현 결과를 재현 가능한 artifact로 남긴다.
 - [x] status/TUI/CLI는 사용자 행동 언어와 내부 추적 정보를 분리해 decision history degraded 상태를 표시한다.
 - [x] daemon retention, stale status, alert retry/manual-review hardening은 closeout evidence로 검증된다.
-- [ ] audit/tax evidence contract는 주문, 취소, 체결, PnL, decision tick을 stable id 또는 correlation id로 연결한다.
+- [x] audit/tax evidence contract는 주문, 취소, 체결, PnL, decision tick을 stable id 또는 correlation id로 연결한다.
 
 테스트 요구사항:
 
@@ -1117,6 +1117,8 @@ Acceptance Criteria:
 - 단위 테스트: live decision calibration runner가 threshold 품질, feature source/failure 품질, 후보/주문/체결 결과를 Markdown/JSON artifact로 재현하는지 확인한다.
 - 단위 테스트: decision history 저장 실패가 CLI/TUI에서 한국어 상태, 영향, 필요 조치를 먼저 보여주고 내부 code/error는 `추적 정보`로 분리되는지 확인한다.
 - 단위 테스트: daemon closeout evidence가 decision history retention 삭제 결과, stale latestSummary 상태, alert retry/manual review source를 secret 없이 분리하는지 확인한다.
+- 단위 테스트: audit/tax closeout validator가 주문, 취소, 체결, PnL, audit event, decision tick의 stable/correlation link와 raw evidence 차단을 검증하는지 확인한다.
+- script smoke: `node scripts/verify-live-ops-audit-tax-closeout.mjs --fixture-smoke --json`은 provider 호출 없이 `live_ops_audit_tax_closeout.v1` contract를 검증한다.
 - gated integration: `SEEMIRAI_RUN_DB_INTEGRATION=1`일 때 dedupe conflict와 retention delete를 실제 DB에서 검증한다.
 - migration 테스트: 새 migration이 순서대로 적용되는지 확인한다.
 
