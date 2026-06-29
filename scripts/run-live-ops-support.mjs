@@ -28,6 +28,33 @@ const liveOpsCliScheduledBriefingReservationMs = 60_000;
 const liveOpsCliScheduledBriefingCooldowns = new Map();
 const liveOpsCliProcessOwner = createLiveOpsCliProcessOwnerSnapshot(process.pid);
 const liveOpsCliAutonomous24x7StrategyId = "live_ops_autonomous_24x7_core";
+const liveOpsCliDbFeatureSource = "live_ops_db_window";
+const liveOpsCliDbFeatureWindowReaderSource = "live_ops_db_feature_window_reader";
+const liveOpsCliDbFeatureWindowMs = 21 * 60_000;
+const liveOpsCliDbFeatureMinTradeCount = 20;
+const liveOpsCliDbFeatureMinOrderbookCount = 2;
+const liveOpsCliAutonomousRequiredFeatureKeys = [
+  "cost_adjusted_margin_bps",
+  "trend_strength_bps",
+  "mean_reversion_discount_bps",
+];
+const liveOpsCliM11FeatureKeys = [
+  "candle_momentum_bps",
+  "realized_volatility_bps",
+  "volume_spike_ratio",
+  "bid_depth_slope_krw_per_bps",
+  "ask_depth_slope_krw_per_bps",
+  "depth_change_rate_ratio",
+  "vwap_deviation_bps",
+  "trade_direction_imbalance_ratio",
+  "trend_strength_bps",
+  "mean_reversion_discount_bps",
+  "market_regime",
+  "session_liquidity_score",
+  "session_liquidity_state",
+  "cost_adjusted_expected_return_bps",
+  "cost_adjusted_margin_bps",
+];
 const liveOpsWorkerLabels = {
   db_readiness: "DB readiness",
   market_data: "시세 수집",
@@ -1120,6 +1147,7 @@ async function collectLiveOpsCliProductionPreflight({
     pnlStatus,
     killSwitchStatus,
     initialReservationUsage,
+    autonomousFeatureSnapshot,
   ] = await Promise.all([
     // clean-start evidence는 계정 전체 미체결 주문을 기준으로 해야 다른 KRW 마켓 잔여 주문이 신규 제출을 열지 못한다.
     productionRuntime.privateReadProvider.listOpenOrders(),
@@ -1128,6 +1156,9 @@ async function collectLiveOpsCliProductionPreflight({
     readLiveOpsCliPnlStatus(productionRuntime.pnlStatusProvider, pnlScope),
     readLiveOpsCliKillSwitchStatus(productionRuntime.killSwitchProvider),
     productionRuntime.budgetReservation.readDailyReservedNotional(observedAt),
+    pnlScopeStrategyId === liveOpsCliAutonomous24x7StrategyId && productionRuntime.autonomousFeatureProvider !== undefined
+      ? productionRuntime.autonomousFeatureProvider.loadFeatureSnapshot({ config, marketData, observedAt })
+      : Promise.resolve(undefined),
   ]);
   let resolvedReconcileStatus = reconcileStatus;
   let preflightReconcileEvidence;
@@ -1240,6 +1271,7 @@ async function collectLiveOpsCliProductionPreflight({
     reconcileStatus: resolvedReconcileStatus,
     pnlStatus: resolvedPnlStatus,
     killSwitchStatus,
+    autonomousFeatureSnapshot,
     preflightReconcileEvidence,
     budgetSnapshot,
     lossSnapshot,
@@ -2312,6 +2344,7 @@ export function createLiveOpsCliProductionProviders({ config, env, market, fetch
     reconcileStatusProvider: createLiveOpsCliDatabaseReconcileStatusProvider(pool),
     preflightReconcileRecorder: createLiveOpsCliDatabasePreflightReconcileRecorder(pool),
     decisionHistoryWriter: createLiveOpsCliDatabaseDecisionHistoryWriter(pool),
+    autonomousFeatureProvider: createLiveOpsCliDatabaseAutonomousFeatureProvider(pool, market),
     pnlStatusProvider: createLiveOpsCliDatabasePnlStatusProvider(pool, market),
     pnlCloseoutRunner: createLiveOpsPnlCloseoutRunner({ pool, market }),
     killSwitchProvider: createLiveOpsCliDatabaseKillSwitchProvider(pool),
@@ -2336,6 +2369,293 @@ function createLiveOpsCliPostgresPool(databaseUrl) {
     idleTimeoutMillis: 1000,
     allowExitOnIdle: true,
   });
+}
+
+export function createLiveOpsCliDatabaseAutonomousFeatureProvider(pool, market) {
+  return {
+    async loadFeatureSnapshot({ config, marketData, observedAt }) {
+      return loadLiveOpsCliDbBackedAutonomousFeatureSnapshot({
+        config,
+        market,
+        marketData,
+        observedAt,
+        pool,
+      });
+    },
+  };
+}
+
+async function loadLiveOpsCliDbBackedAutonomousFeatureSnapshot({
+  config,
+  market,
+  marketData,
+  observedAt,
+  pool,
+}) {
+  const observedAtMs = Date.parse(observedAt);
+  if (!Number.isFinite(observedAtMs)) {
+    return createLiveOpsCliFeatureFailureSnapshot({
+      observedAt,
+      reasonCode: "FEATURE_INVALID_MARKET_VALUE",
+      message: "feature observedAt timestamp is invalid",
+      metadata: {
+        source: liveOpsCliDbFeatureSource,
+      },
+    });
+  }
+
+  const policy = config.analysis?.decision_policy?.autonomous_24x7 ?? {};
+  const windowMs = toLiveOpsCliNonNegativeInteger(policy.feature_window_ms, liveOpsCliDbFeatureWindowMs);
+  const minTradeCount = toLiveOpsCliNonNegativeInteger(policy.feature_min_trade_count, liveOpsCliDbFeatureMinTradeCount);
+  const minOrderbookCount = toLiveOpsCliNonNegativeInteger(
+    policy.feature_min_orderbook_count,
+    liveOpsCliDbFeatureMinOrderbookCount,
+  );
+  const maxLatestEventLagMs = toLiveOpsCliNonNegativeInteger(
+    policy.feature_max_latest_event_lag_ms,
+    config.market_data?.stale_after_ms ?? 30_000,
+  );
+  const windowStartAt = new Date(observedAtMs - windowMs).toISOString();
+  const windowEndAt = new Date(observedAtMs).toISOString();
+  const metadata = {
+    exchangeId: "upbit_krw_spot",
+    market,
+    source: liveOpsCliDbFeatureSource,
+    windowEndAt,
+    windowStartAt,
+  };
+
+  let tradeRows;
+  let orderbookRows;
+  try {
+    [tradeRows, orderbookRows] = await Promise.all([
+      pool.query(
+        `SELECT exchange, market, trade_id, side, price, volume, exchange_timestamp, received_at, raw_payload_json
+           FROM trades
+          WHERE exchange = $1
+            AND market = $2
+            AND exchange_timestamp >= $3
+            AND exchange_timestamp <= $4
+          ORDER BY exchange_timestamp ASC, trade_id ASC`,
+        ["upbit_krw_spot", market, windowStartAt, windowEndAt],
+      ),
+      pool.query(
+        `SELECT exchange, market, captured_at, bids_json, asks_json, raw_payload_json
+           FROM orderbook_snapshots
+          WHERE exchange = $1
+            AND market = $2
+            AND captured_at >= $3
+            AND captured_at <= $4
+          ORDER BY captured_at ASC`,
+        ["upbit_krw_spot", market, windowStartAt, windowEndAt],
+      ),
+    ]);
+  } catch (error) {
+    // DB feature window read 실패는 public tick으로 조용히 대체하지 않고 feature 부족으로 후보 생성을 닫는다.
+    return createLiveOpsCliFeatureFailureSnapshot({
+      observedAt: windowEndAt,
+      windowEndAt,
+      windowStartAt,
+      reasonCode: "FEATURE_INSUFFICIENT_INPUT",
+      message: error instanceof Error ? error.message : "DB feature window could not be loaded",
+      metadata: {
+        ...metadata,
+        sampleCounts: { orderbooks: 0, total: 0, trades: 0 },
+      },
+    });
+  }
+
+  const trades = Array.isArray(tradeRows?.rows) ? tradeRows.rows : [];
+  const orderbooks = Array.isArray(orderbookRows?.rows) ? orderbookRows.rows : [];
+  const sampleCounts = {
+    orderbooks: orderbooks.length,
+    total: trades.length + orderbooks.length,
+    trades: trades.length,
+  };
+  const sourceMetadata = {
+    ...metadata,
+    sampleCounts,
+    windowMetadata: {
+      rowCounts: {
+        orderbooks: orderbooks.length,
+        trades: trades.length,
+      },
+      source: liveOpsCliDbFeatureWindowReaderSource,
+    },
+  };
+
+  if (trades.length < minTradeCount || orderbooks.length < minOrderbookCount) {
+    // sample 부족을 0 feature로 보정하면 신규 BUY가 열릴 수 있어 계산 전 전체 snapshot을 실패시킨다.
+    return createLiveOpsCliFeatureFailureSnapshot({
+      observedAt: windowEndAt,
+      windowEndAt,
+      windowStartAt,
+      reasonCode: "FEATURE_INSUFFICIENT_INPUT",
+      message: `DB feature window samples are insufficient: trades=${trades.length}/${minTradeCount}, orderbooks=${orderbooks.length}/${minOrderbookCount}`,
+      metadata: sourceMetadata,
+    });
+  }
+
+  const latestEventAt = latestLiveOpsCliFeatureEventAt(trades, orderbooks);
+  const latestEventLagMs = observedAtMs - Date.parse(latestEventAt);
+  const freshnessMetadata = {
+    ...sourceMetadata,
+    latestEventAt,
+    latestEventLagMs,
+  };
+  if (!Number.isFinite(latestEventLagMs) || latestEventLagMs < 0 || latestEventLagMs > maxLatestEventLagMs) {
+    // stale feature window는 오래된 edge로 주문 후보를 만들 수 있어 public tick fallback 전에 차단한다.
+    return createLiveOpsCliFeatureFailureSnapshot({
+      observedAt: windowEndAt,
+      windowEndAt,
+      windowStartAt,
+      reasonCode: "FEATURE_MARKET_DATA_STALE",
+      message: `DB feature window latest event is stale: latestEventLagMs=${latestEventLagMs}, maxLatestEventLagMs=${maxLatestEventLagMs}`,
+      metadata: freshnessMetadata,
+    });
+  }
+
+  try {
+    return createLiveOpsCliDbAutonomousFeatureSuccessSnapshot({
+      marketData,
+      observedAt: windowEndAt,
+      orderbooks,
+      policy,
+      trades,
+      metadata: freshnessMetadata,
+    });
+  } catch (error) {
+    return createLiveOpsCliFeatureFailureSnapshot({
+      observedAt: windowEndAt,
+      windowEndAt,
+      windowStartAt,
+      reasonCode: "FEATURE_INVALID_MARKET_VALUE",
+      message: error instanceof Error ? error.message : "DB feature window could not be converted to features",
+      metadata: freshnessMetadata,
+    });
+  }
+}
+
+function createLiveOpsCliDbAutonomousFeatureSuccessSnapshot({
+  marketData,
+  observedAt,
+  orderbooks,
+  policy,
+  trades,
+  metadata,
+}) {
+  const firstTradePrice = new Decimal(requireLiveOpsCliDbNumeric(trades[0]?.price, "first trade price"));
+  const latestTradePrice = new Decimal(requireLiveOpsCliDbNumeric(trades.at(-1)?.price, "latest trade price"));
+  const latestOrderbook = orderbooks.at(-1);
+  const bid = new Decimal(readLiveOpsCliDbOrderbookLevelPrice(latestOrderbook?.bids_json, "bids_json"));
+  const ask = new Decimal(readLiveOpsCliDbOrderbookLevelPrice(latestOrderbook?.asks_json, "asks_json"));
+  const referencePrice = isPositiveDecimalString(marketData?.referencePrice)
+    ? new Decimal(marketData.referencePrice)
+    : latestTradePrice;
+  const requestedPrice = bid.minus(new Decimal(policy.tick_size_krw ?? "1000").mul(policy.entry_price_offset_ticks ?? 0));
+  const meanReversionDiscount = referencePrice.gt(0)
+    ? Decimal.max(0, referencePrice.minus(requestedPrice).div(referencePrice).mul(10_000))
+    : new Decimal(0);
+  const trendStrength = firstTradePrice.gt(0)
+    ? latestTradePrice.minus(firstTradePrice).div(firstTradePrice).mul(10_000)
+    : new Decimal(0);
+  const mid = bid.plus(ask).div(2);
+  const spreadBps = mid.gt(0) ? ask.minus(bid).div(mid).mul(10_000) : new Decimal(0);
+  const costAdjustedMargin = meanReversionDiscount.minus(spreadBps);
+  const features = {
+    cost_adjusted_margin_bps: costAdjustedMargin.toFixed(),
+    feature_source: liveOpsCliDbFeatureSource,
+    mean_reversion_discount_bps: meanReversionDiscount.toFixed(),
+    spread_bps: spreadBps.toFixed(),
+    trend_strength_bps: trendStrength.toFixed(),
+  };
+
+  return {
+    status: "ok",
+    observedAt,
+    features,
+    failureReasons: [],
+    metadata: {
+      ...metadata,
+      feature_source: liveOpsCliDbFeatureSource,
+    },
+  };
+}
+
+function createLiveOpsCliFeatureFailureSnapshot({
+  observedAt,
+  windowStartAt,
+  windowEndAt,
+  reasonCode,
+  message,
+  metadata,
+}) {
+  const resolvedWindowEndAt = windowEndAt ?? observedAt;
+  return {
+    status: "failed",
+    observedAt,
+    features: {},
+    failureReasons: liveOpsCliM11FeatureKeys.map((key) => ({
+      status: "failed",
+      key,
+      reasonCode,
+      message,
+      observedAt,
+      ...(windowStartAt === undefined ? {} : { windowStartAt }),
+      windowEndAt: resolvedWindowEndAt,
+    })),
+    metadata,
+  };
+}
+
+function latestLiveOpsCliFeatureEventAt(trades, orderbooks) {
+  const timestamps = [
+    ...trades.map((row) => toLiveOpsCliIsoTimestamp(row.exchange_timestamp)),
+    ...orderbooks.map((row) => toLiveOpsCliIsoTimestamp(row.captured_at)),
+  ];
+  const latest = timestamps.reduce((max, timestamp) => {
+    if (max === undefined) {
+      return timestamp;
+    }
+    return Date.parse(timestamp) > Date.parse(max) ? timestamp : max;
+  }, undefined);
+  if (latest === undefined) {
+    throw new Error("DB feature window has no latest event");
+  }
+  return latest;
+}
+
+function toLiveOpsCliNonNegativeInteger(value, fallback) {
+  const candidate = value === undefined ? fallback : Number(value);
+  return Number.isInteger(candidate) && candidate >= 0 ? candidate : fallback;
+}
+
+function requireLiveOpsCliDbNumeric(value, label) {
+  if (!isDecimalString(value)) {
+    throw new Error(`${label} must be a decimal string`);
+  }
+  return value;
+}
+
+function readLiveOpsCliDbOrderbookLevelPrice(payload, columnName) {
+  const levels = readLiveOpsCliDbOrderbookLevels(payload, columnName);
+  const price = levels[0]?.price;
+  return requireLiveOpsCliDbNumeric(price, `${columnName}.levels[0].price`);
+}
+
+function readLiveOpsCliDbOrderbookLevels(payload, columnName) {
+  if (!isNonEmptyRecord(payload) || !Array.isArray(payload.levels)) {
+    throw new Error(`${columnName} must contain levels array`);
+  }
+  return payload.levels;
+}
+
+function toLiveOpsCliIsoTimestamp(value) {
+  const date = value instanceof Date ? value : new Date(value);
+  if (!Number.isFinite(date.getTime())) {
+    throw new Error(`Invalid DB feature timestamp: ${String(value)}`);
+  }
+  return date.toISOString();
 }
 
 export function createLiveOpsCliDatabaseDecisionHistoryWriter(pool) {
@@ -11220,6 +11540,7 @@ function evaluateLiveOpsCliCleanupProbeAnalysisDecision({ config, marketData, ob
       source: "live_ops_cli_analysis_decision",
       marketDataSourceProfile: marketData.sourceProfile,
       decisionSourceConnected: true,
+      ...(isNonEmptyRecord(decision.featureSnapshot) ? { featureSnapshot: decision.featureSnapshot } : {}),
       policyId: policy?.id ?? null,
       dynamicCodeLoading: false,
     },
@@ -11320,6 +11641,7 @@ function evaluateLiveOpsCliAutonomous24x7AnalysisDecision({
       source: "live_ops_cli_analysis_decision",
       marketDataSourceProfile: marketData.sourceProfile,
       decisionSourceConnected: true,
+      ...(isNonEmptyRecord(decision.featureSnapshot) ? { featureSnapshot: decision.featureSnapshot } : {}),
       policyId: policy?.id ?? null,
       dynamicCodeLoading: false,
     },
@@ -11374,6 +11696,7 @@ function evaluateLiveOpsCliAutonomous24x7Strategy({
   }
 
   return evaluateLiveOpsCliAutonomousEntryPolicy({
+    featureSnapshot: productionPreflight?.autonomousFeatureSnapshot,
     config,
     marketData,
     orderbook,
@@ -11508,7 +11831,7 @@ function resolveLiveOpsCliAutonomousOwnedQuantity({ walletQuantity, ownership })
   return undefined;
 }
 
-function evaluateLiveOpsCliAutonomousEntryPolicy({ config, marketData, orderbook, observedAt, policy }) {
+function evaluateLiveOpsCliAutonomousEntryPolicy({ config, featureSnapshot, marketData, orderbook, observedAt, policy }) {
   const bestBid = readLiveOpsCliBestBid(orderbook);
   if (bestBid === undefined) {
     return liveOpsCliStrategyHold("autonomous_24x7_entry_best_bid_missing", {
@@ -11516,10 +11839,30 @@ function evaluateLiveOpsCliAutonomousEntryPolicy({ config, marketData, orderbook
     });
   }
 
-  const features = createLiveOpsCliAutonomousFeatureSnapshot({ marketData, orderbook, policy });
+  const featureRead = createLiveOpsCliAutonomousFeatureSnapshot({ featureSnapshot, marketData, orderbook, policy });
+  if (featureRead.kind === "failed") {
+    return {
+      ...liveOpsCliStrategyBlock("autonomous_24x7_feature_snapshot_failed", featureRead.metadata),
+      featureSnapshot: featureRead.snapshot,
+      featureStatus: "failed",
+    };
+  }
+  const features = featureRead.features;
   const signal = evaluateLiveOpsCliAutonomousEntrySignal({ features, policy });
   if (!signal.ready) {
-    return liveOpsCliStrategyHold("autonomous_24x7_entry_signal_weak", signal.metadata);
+    if (signal.featureStatus === "failed") {
+      return {
+        ...liveOpsCliStrategyBlock("autonomous_24x7_required_feature_missing", signal.metadata),
+        featureSnapshot: featureRead.snapshot,
+        featureStatus: "failed",
+      };
+    }
+
+    return {
+      ...liveOpsCliStrategyHold("autonomous_24x7_entry_signal_weak", signal.metadata),
+      featureSnapshot: featureRead.snapshot,
+      featureStatus: "ok",
+    };
   }
 
   const sizing = createLiveOpsCliAutonomousLimitSizing({
@@ -11554,6 +11897,8 @@ function evaluateLiveOpsCliAutonomousEntryPolicy({ config, marketData, orderbook
     strategyId: liveOpsCliAutonomous24x7StrategyId,
     reason: "autonomous_24x7_entry_signal",
     orderIntents: [intent],
+    featureSnapshot: featureRead.snapshot,
+    featureStatus: "ok",
     metadata: {
       source: "live_ops_autonomous_24x7",
       phase: "entry",
@@ -11722,10 +12067,48 @@ function selectLiveOpsCliAutonomousExitRule({ bestBid, observedAt, policy, posit
   return undefined;
 }
 
-function createLiveOpsCliAutonomousFeatureSnapshot({ marketData, orderbook, policy }) {
+function createLiveOpsCliAutonomousFeatureSnapshot({ featureSnapshot, marketData, orderbook, policy }) {
+  if (isNonEmptyRecord(featureSnapshot)) {
+    if (featureSnapshot.status !== "ok") {
+      return {
+        kind: "failed",
+        metadata: {
+          feature_status: featureSnapshot.status ?? "failed",
+          reason_codes: Array.isArray(featureSnapshot.failureReasons)
+            ? featureSnapshot.failureReasons.map((reason) => reason?.reasonCode).filter(hasMeaningfulValue)
+            : [],
+          ...(isNonEmptyRecord(featureSnapshot.metadata) ? featureSnapshot.metadata : {}),
+        },
+        snapshot: featureSnapshot,
+      };
+    }
+
+    return {
+      kind: "ok",
+      features: {
+        ...(featureSnapshot.features ?? {}),
+        ...(isNonEmptyRecord(featureSnapshot.metadata)
+          && (hasMeaningfulValue(featureSnapshot.metadata.feature_source) || hasMeaningfulValue(featureSnapshot.metadata.source))
+          ? { feature_source: featureSnapshot.metadata.feature_source ?? featureSnapshot.metadata.source }
+          : {}),
+      },
+      snapshot: featureSnapshot,
+    };
+  }
+
   const provided = marketData?.autonomousFeatures ?? marketData?.features;
   if (isNonEmptyRecord(provided)) {
-    return provided;
+    return {
+      kind: "ok",
+      features: provided,
+      snapshot: {
+        status: "ok",
+        features: provided,
+        metadata: {
+          source: provided.feature_source ?? "live_ops_cli_injected_features",
+        },
+      },
+    };
   }
 
   const bestBid = readLiveOpsCliBestBid(orderbook);
@@ -11755,28 +12138,77 @@ function createLiveOpsCliAutonomousFeatureSnapshot({ marketData, orderbook, poli
     meanReversionDiscount.gte(new Decimal(policy.mean_reversion_discount_bps))
   ) {
     // 좁은 spread 자체가 아니라 public reference 대비 실제 bid edge가 있을 때만 provider 결측을 entry 후보로 보정한다.
-    return {
+    const features = {
       cost_adjusted_margin_bps: costAdjustedMargin.toFixed(),
-      trend_strength_bps: "0",
-      mean_reversion_discount_bps: meanReversionDiscount.toFixed(),
       feature_source: "live_ops_cli_public_tick_edge",
+      mean_reversion_discount_bps: meanReversionDiscount.toFixed(),
       spread_bps: spreadBps.toFixed(),
+      trend_strength_bps: "0",
+    };
+    return {
+      kind: "ok",
+      features,
+      snapshot: createLiveOpsCliSyntheticFeatureSnapshot({
+        features,
+        observedAt: marketData?.latestHeartbeatAt,
+        source: "live_ops_cli_public_tick_edge",
+      }),
     };
   }
 
-  return {
+  const features = {
     cost_adjusted_margin_bps: costAdjustedMargin.toFixed(),
-    trend_strength_bps: "0",
-    mean_reversion_discount_bps: meanReversionDiscount.toFixed(),
     feature_source: "live_ops_cli_public_tick_weak",
+    mean_reversion_discount_bps: meanReversionDiscount.toFixed(),
     spread_bps: spreadBps.toFixed(),
+    trend_strength_bps: "0",
+  };
+  return {
+    kind: "ok",
+    features,
+    snapshot: createLiveOpsCliSyntheticFeatureSnapshot({
+      features,
+      observedAt: marketData?.latestHeartbeatAt,
+      source: "live_ops_cli_public_tick_weak",
+    }),
+  };
+}
+
+function createLiveOpsCliSyntheticFeatureSnapshot({ features, observedAt, source }) {
+  const resolvedObservedAt = hasMeaningfulValue(observedAt) ? String(observedAt) : new Date().toISOString();
+  return {
+    status: "ok",
+    observedAt: resolvedObservedAt,
+    features,
+    failureReasons: [],
+    metadata: {
+      feature_source: source,
+      source,
+      state: source === liveOpsCliDbFeatureSource ? "ready" : "degraded_public_tick_fallback",
+    },
   };
 }
 
 function evaluateLiveOpsCliAutonomousEntrySignal({ features, policy }) {
-  const margin = readLiveOpsCliOptionalDecimal(features.cost_adjusted_margin_bps) ?? new Decimal(0);
-  const trend = readLiveOpsCliOptionalDecimal(features.trend_strength_bps) ?? new Decimal(0);
-  const meanReversion = readLiveOpsCliOptionalDecimal(features.mean_reversion_discount_bps) ?? new Decimal(0);
+  const missingFeatureKeys = liveOpsCliAutonomousRequiredFeatureKeys.filter((key) =>
+    readLiveOpsCliOptionalDecimal(features[key]) === undefined
+  );
+  if (missingFeatureKeys.length > 0) {
+    // required feature 결측은 약한 신호가 아니라 오염된 입력이므로 0 보정 없이 주문 후보 전 차단한다.
+    return {
+      ready: false,
+      featureStatus: "failed",
+      metadata: {
+        feature_missing_keys: missingFeatureKeys,
+        feature_source: features.feature_source ?? "unknown",
+        feature_status: "failed",
+      },
+    };
+  }
+
+  const margin = readLiveOpsCliOptionalDecimal(features.cost_adjusted_margin_bps);
+  const trend = readLiveOpsCliOptionalDecimal(features.trend_strength_bps);
+  const meanReversion = readLiveOpsCliOptionalDecimal(features.mean_reversion_discount_bps);
   const marginReady = margin.gte(new Decimal(policy.min_entry_margin_bps));
   const trendReady = trend.gte(new Decimal(policy.trend_confirmation_bps));
   const meanReversionReady = meanReversion.gte(new Decimal(policy.mean_reversion_discount_bps));

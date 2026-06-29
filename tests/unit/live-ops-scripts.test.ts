@@ -1552,6 +1552,157 @@ try {
     });
   });
 
+  it("autonomous_24x7은 DB feature snapshot을 public tick fallback보다 먼저 사용한다", async () => {
+    const {
+      evaluateLiveOpsCliAnalysisDecision,
+      getLiveOpsCliAnalysisOrderIntents,
+    } = await import(path.join(process.cwd(), "scripts/run-live-ops-support.mjs"));
+    const observedAt = "2026-06-20T00:00:00.000Z";
+    const config = createAutonomousLiveOpsConfig(JSON.parse(await readFile(path.join(process.cwd(), "config", "live-ops.example.json"), "utf8")));
+    const analysisDecision = await evaluateLiveOpsCliAnalysisDecision({
+      config,
+      fixtureSmoke: false,
+      marketData: createAutonomousMarketData({
+        observedAt,
+        bestBid: "100000000",
+        bestAsk: "100001000",
+        referencePrice: "100500000",
+      }),
+      productionPreflight: {
+        ...createAutonomousPreflight({ observedAt }),
+        autonomousFeatureSnapshot: {
+          status: "ok",
+          observedAt,
+          features: {
+            cost_adjusted_margin_bps: "0",
+            mean_reversion_discount_bps: "0",
+            trend_strength_bps: "0",
+          },
+          failureReasons: [],
+          metadata: {
+            source: "live_ops_db_window",
+          },
+        },
+      },
+    });
+
+    expect(analysisDecision).toMatchObject({
+      status: "ready",
+      decisionCategory: "HOLD",
+      featureStatus: "ok",
+      orderIntentCount: 0,
+    });
+    expect(getLiveOpsCliAnalysisOrderIntents(analysisDecision)).toHaveLength(0);
+    expect(analysisDecision.checks.find((check: { name: string }) => check.name === "strategy_decision")).toMatchObject({
+      status: "ok",
+      details: {
+        feature_source: "live_ops_db_window",
+        reason: "autonomous_24x7_entry_signal_weak",
+      },
+    });
+    expect(analysisDecision.trace.featureSnapshot).toMatchObject({
+      metadata: {
+        source: "live_ops_db_window",
+      },
+    });
+  });
+
+  it("autonomous_24x7은 실패한 DB feature snapshot을 public tick으로 대체하지 않는다", async () => {
+    const {
+      evaluateLiveOpsCliAnalysisDecision,
+      getLiveOpsCliAnalysisOrderIntents,
+    } = await import(path.join(process.cwd(), "scripts/run-live-ops-support.mjs"));
+    const observedAt = "2026-06-20T00:00:00.000Z";
+    const config = createAutonomousLiveOpsConfig(JSON.parse(await readFile(path.join(process.cwd(), "config", "live-ops.example.json"), "utf8")));
+    const analysisDecision = await evaluateLiveOpsCliAnalysisDecision({
+      config,
+      fixtureSmoke: false,
+      marketData: createAutonomousMarketData({
+        observedAt,
+        bestBid: "100000000",
+        bestAsk: "100001000",
+        referencePrice: "100500000",
+      }),
+      productionPreflight: {
+        ...createAutonomousPreflight({ observedAt }),
+        autonomousFeatureSnapshot: {
+          status: "failed",
+          observedAt,
+          features: {},
+          failureReasons: [
+            {
+              status: "failed",
+              key: "cost_adjusted_margin_bps",
+              reasonCode: "FEATURE_MARKET_DATA_STALE",
+              message: "DB feature window latest event is stale",
+              observedAt,
+              windowEndAt: observedAt,
+            },
+          ],
+          metadata: {
+            source: "live_ops_db_window",
+          },
+        },
+      },
+    });
+
+    expect(analysisDecision).toMatchObject({
+      status: "blocked",
+      decisionCategory: "BLOCKED",
+      featureStatus: "failed",
+      orderIntentCount: 0,
+    });
+    expect(getLiveOpsCliAnalysisOrderIntents(analysisDecision)).toHaveLength(0);
+    expect(analysisDecision.checks.find((check: { name: string }) => check.name === "strategy_decision")).toMatchObject({
+      status: "blocked",
+      details: {
+        reason: "autonomous_24x7_feature_snapshot_failed",
+        source: "live_ops_db_window",
+      },
+    });
+  });
+
+  it("autonomous_24x7은 required feature 결측을 0으로 채우지 않고 차단한다", async () => {
+    const {
+      evaluateLiveOpsCliAnalysisDecision,
+      getLiveOpsCliAnalysisOrderIntents,
+    } = await import(path.join(process.cwd(), "scripts/run-live-ops-support.mjs"));
+    const observedAt = "2026-06-20T00:00:00.000Z";
+    const config = createAutonomousLiveOpsConfig(JSON.parse(await readFile(path.join(process.cwd(), "config", "live-ops.example.json"), "utf8")));
+    const marketData = {
+      ...createAutonomousMarketData({
+        observedAt,
+        bestBid: "100000000",
+        bestAsk: "100001000",
+        referencePrice: "100500000",
+      }),
+      autonomousFeatures: {
+        cost_adjusted_margin_bps: "40",
+      },
+    };
+    const analysisDecision = await evaluateLiveOpsCliAnalysisDecision({
+      config,
+      fixtureSmoke: false,
+      marketData,
+      productionPreflight: createAutonomousPreflight({ observedAt }),
+    });
+
+    expect(analysisDecision).toMatchObject({
+      status: "blocked",
+      decisionCategory: "BLOCKED",
+      featureStatus: "failed",
+      orderIntentCount: 0,
+    });
+    expect(getLiveOpsCliAnalysisOrderIntents(analysisDecision)).toHaveLength(0);
+    expect(analysisDecision.checks.find((check: { name: string }) => check.name === "strategy_decision")).toMatchObject({
+      status: "blocked",
+      details: {
+        feature_missing_keys: ["trend_strength_bps", "mean_reversion_discount_bps"],
+        reason: "autonomous_24x7_required_feature_missing",
+      },
+    });
+  });
+
   it("autonomous_24x7은 전략 소유 증거 없는 지갑 BTC를 자동 매도하지 않고 BLOCK으로 닫는다", async () => {
     const {
       evaluateLiveOpsCliAnalysisDecision,
