@@ -143,6 +143,37 @@ describe("live ops DB-backed feature provider", () => {
     });
   });
 
+  it("fails closed when orderbooks are stale even if trades are fresh", async () => {
+    const events = createFeatureFixtureEvents().filter((event) =>
+      event.type !== "ORDERBOOK" || event.exchangeTimestamp !== "2026-05-25T00:21:00.000Z"
+    );
+    const reader = new FakeFeatureWindowReader(events);
+
+    const snapshot = await loadLiveOpsDbBackedFeatureSnapshot({
+      reader,
+      exchangeId: "upbit_krw_spot",
+      market: "KRW-BTC",
+      observedAt: "2026-05-25T00:21:00.000Z",
+      windowMs: 21 * 60_000,
+      minTradeCount: 20,
+      minOrderbookCount: 20,
+      maxLatestEventLagMs: 30_000,
+      cost: createCostInput(),
+    });
+
+    expect(snapshot.status).toBe("failed");
+    expect(snapshot.features).toEqual({});
+    expect(snapshot.failureReasons).toHaveLength(15);
+    expect(snapshot.failureReasons.every((failure) => failure.reasonCode === "FEATURE_MARKET_DATA_STALE")).toBe(true);
+    expect(snapshot.metadata).toMatchObject({
+      latestEventAt: "2026-05-25T00:21:00.000Z",
+      latestEventLagMs: 0,
+      latestOrderbookEventAt: "2026-05-25T00:20:00.000Z",
+      latestOrderbookEventLagMs: 60_000,
+      source: "live_ops_db_window",
+    });
+  });
+
   it("keeps mixed-market DB contamination as an invalid feature snapshot instead of falling back", async () => {
     const events = createFeatureFixtureEvents();
     const firstTradeIndex = events.findIndex((event) => event.type === "TRADE");

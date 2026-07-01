@@ -1494,11 +1494,14 @@ try {
       entry_price_offset_ticks: 0,
       feature_max_latest_event_lag_ms: 30_000,
       feature_min_orderbook_count: 1,
-      feature_min_trade_count: 1,
+      feature_min_trade_count: 2,
       tick_size_krw: "0",
     });
     const pool = createDbFeaturePool({
-      trades: [createDbFeatureTrade({ at: observedAt, price: "100000000", tradeId: "trade-cost-1" })],
+      trades: [
+        createDbFeatureTrade({ at: "2026-06-19T23:59:00.000Z", price: "100000000", tradeId: "trade-cost-1" }),
+        createDbFeatureTrade({ at: observedAt, price: "100500000", tradeId: "trade-cost-2" }),
+      ],
       orderbooks: [createDbFeatureOrderbook({ at: observedAt, bid: "100000000", ask: "100020000" })],
     });
     const provider = createLiveOpsCliDatabaseAutonomousFeatureProvider(pool, "KRW-BTC");
@@ -1513,12 +1516,49 @@ try {
 
     expect(snapshot.status).toBe("ok");
     expect(snapshot.features).toMatchObject({
+      cost_adjusted_margin_bps: "25",
       entry_cost_burden_bps: "25",
       feature_source: "live_ops_db_window",
+      gross_expected_return_bps: "50",
     });
-    expect(Number(snapshot.features.gross_expected_return_bps)).toBeGreaterThan(0);
-    expect(snapshot.features.gross_expected_return_bps).toBe(snapshot.features.mean_reversion_discount_bps);
-    expect(Number(snapshot.features.cost_adjusted_margin_bps)).toBeLessThan(0);
+    expect(Number(snapshot.features.mean_reversion_discount_bps)).toBeGreaterThan(0);
+    expect(snapshot.features.trend_strength_bps).toBe("50");
+  });
+
+  it("autonomous_24x7 DB feature provider는 public 기준가만으로 DB edge를 만들지 않는다", async () => {
+    const {
+      createLiveOpsCliDatabaseAutonomousFeatureProvider,
+    } = await import(path.join(process.cwd(), "scripts/run-live-ops-support.mjs"));
+    const observedAt = "2026-06-20T00:00:00.000Z";
+    const config = createAutonomousLiveOpsConfig(JSON.parse(await readFile(path.join(process.cwd(), "config", "live-ops.example.json"), "utf8")));
+    Object.assign(config.analysis.decision_policy.autonomous_24x7, {
+      entry_price_offset_ticks: 0,
+      feature_max_latest_event_lag_ms: 30_000,
+      feature_min_orderbook_count: 1,
+      feature_min_trade_count: 1,
+      tick_size_krw: "0",
+    });
+    const pool = createDbFeaturePool({
+      trades: [createDbFeatureTrade({ at: observedAt, price: "100000000", tradeId: "trade-public-reference-1" })],
+      orderbooks: [createDbFeatureOrderbook({ at: observedAt, bid: "100000000", ask: "100020000" })],
+    });
+    const provider = createLiveOpsCliDatabaseAutonomousFeatureProvider(pool, "KRW-BTC");
+
+    const snapshot = await provider.loadFeatureSnapshot({
+      config,
+      marketData: {
+        referencePrice: "100200000",
+      },
+      observedAt,
+    });
+
+    expect(snapshot.status).toBe("ok");
+    expect(snapshot.features).toMatchObject({
+      cost_adjusted_margin_bps: "-25",
+      gross_expected_return_bps: "0",
+      mean_reversion_discount_bps: "0",
+      trend_strength_bps: "0",
+    });
   });
 
   it("autonomous_24x7 DB feature provider는 최신 호가가 있어도 trade stale이면 fail-closed 한다", async () => {
@@ -1554,6 +1594,42 @@ try {
       latestEventLagMs: 0,
       latestTradeEventAt: "2026-06-19T23:59:00.000Z",
       latestTradeEventLagMs: 60_000,
+    });
+  });
+
+  it("autonomous_24x7 DB feature provider는 최신 체결이 있어도 orderbook stale이면 fail-closed 한다", async () => {
+    const {
+      createLiveOpsCliDatabaseAutonomousFeatureProvider,
+    } = await import(path.join(process.cwd(), "scripts/run-live-ops-support.mjs"));
+    const observedAt = "2026-06-20T00:00:00.000Z";
+    const config = createAutonomousLiveOpsConfig(JSON.parse(await readFile(path.join(process.cwd(), "config", "live-ops.example.json"), "utf8")));
+    Object.assign(config.analysis.decision_policy.autonomous_24x7, {
+      feature_max_latest_event_lag_ms: 30_000,
+      feature_min_orderbook_count: 1,
+      feature_min_trade_count: 1,
+    });
+    const pool = createDbFeaturePool({
+      trades: [createDbFeatureTrade({ at: observedAt, price: "100000000", tradeId: "trade-fresh-1" })],
+      orderbooks: [createDbFeatureOrderbook({ at: "2026-06-19T23:59:00.000Z", bid: "100000000", ask: "100020000" })],
+    });
+    const provider = createLiveOpsCliDatabaseAutonomousFeatureProvider(pool, "KRW-BTC");
+
+    const snapshot = await provider.loadFeatureSnapshot({
+      config,
+      marketData: {
+        referencePrice: "100200000",
+      },
+      observedAt,
+    });
+
+    expect(snapshot.status).toBe("failed");
+    expect(snapshot.features).toEqual({});
+    expect(snapshot.failureReasons.every((failure: Record<string, any>) => failure.reasonCode === "FEATURE_MARKET_DATA_STALE")).toBe(true);
+    expect(snapshot.metadata).toMatchObject({
+      latestEventAt: observedAt,
+      latestEventLagMs: 0,
+      latestOrderbookEventAt: "2026-06-19T23:59:00.000Z",
+      latestOrderbookEventLagMs: 60_000,
     });
   });
 
@@ -15652,6 +15728,12 @@ try {
   it("autonomous_24x7 운영 JSON은 CLI contract에서 허용한다", async () => {
     const tempDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-live-ops-script-"));
     const config = createAutonomousLiveOpsConfig(JSON.parse(await readFile(path.join(process.cwd(), "config", "live-ops.example.json"), "utf8")));
+    Object.assign(config.analysis.decision_policy.autonomous_24x7, {
+      feature_max_latest_event_lag_ms: 30_000,
+      feature_min_orderbook_count: 2,
+      feature_min_trade_count: 20,
+      feature_window_ms: 21 * 60_000,
+    });
     const configPath = path.join(tempDir, "autonomous-live-ops.json");
     await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`, "utf8");
 

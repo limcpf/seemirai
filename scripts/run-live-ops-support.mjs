@@ -125,6 +125,10 @@ const liveOpsConfigAllowedKeys = {
     "stop_loss_bps",
     "trailing_stop_bps",
     "max_holding_ms",
+    "feature_window_ms",
+    "feature_min_trade_count",
+    "feature_min_orderbook_count",
+    "feature_max_latest_event_lag_ms",
     "risk_reduction_open_notional_krw",
     "risk_reduction_sell_fraction",
     "expected_loss_bps_of_equity",
@@ -2584,12 +2588,16 @@ async function loadLiveOpsCliDbBackedAutonomousFeatureSnapshot({
 
   const latestEventAt = latestLiveOpsCliFeatureEventAt(trades, orderbooks);
   const latestTradeEventAt = latestLiveOpsCliFeatureTradeEventAt(trades);
+  const latestOrderbookEventAt = latestLiveOpsCliFeatureOrderbookEventAt(orderbooks);
   const latestEventLagMs = observedAtMs - Date.parse(latestEventAt);
   const latestTradeEventLagMs = observedAtMs - Date.parse(latestTradeEventAt);
+  const latestOrderbookEventLagMs = observedAtMs - Date.parse(latestOrderbookEventAt);
   const freshnessMetadata = {
     ...sourceMetadata,
     latestEventAt,
     latestEventLagMs,
+    latestOrderbookEventAt,
+    latestOrderbookEventLagMs,
     latestTradeEventAt,
     latestTradeEventLagMs,
   };
@@ -2601,6 +2609,17 @@ async function loadLiveOpsCliDbBackedAutonomousFeatureSnapshot({
       windowStartAt,
       reasonCode: "FEATURE_MARKET_DATA_STALE",
       message: `DB feature window latest event is stale: latestEventLagMs=${latestEventLagMs}, maxLatestEventLagMs=${maxLatestEventLagMs}`,
+      metadata: freshnessMetadata,
+    });
+  }
+  if (!Number.isFinite(latestOrderbookEventLagMs) || latestOrderbookEventLagMs < 0 || latestOrderbookEventLagMs > maxLatestEventLagMs) {
+    // bid/ask feature는 최신 체결로 보정할 수 없으므로 orderbook stream stale도 별도 차단한다.
+    return createLiveOpsCliFeatureFailureSnapshot({
+      observedAt: windowEndAt,
+      windowEndAt,
+      windowStartAt,
+      reasonCode: "FEATURE_MARKET_DATA_STALE",
+      message: `DB feature window latest orderbook is stale: latestOrderbookEventLagMs=${latestOrderbookEventLagMs}, maxLatestEventLagMs=${maxLatestEventLagMs}`,
       metadata: freshnessMetadata,
     });
   }
@@ -2618,7 +2637,6 @@ async function loadLiveOpsCliDbBackedAutonomousFeatureSnapshot({
 
   try {
     return createLiveOpsCliDbAutonomousFeatureSuccessSnapshot({
-      marketData,
       observedAt: windowEndAt,
       orderbooks,
       policy,
@@ -2638,7 +2656,6 @@ async function loadLiveOpsCliDbBackedAutonomousFeatureSnapshot({
 }
 
 function createLiveOpsCliDbAutonomousFeatureSuccessSnapshot({
-  marketData,
   observedAt,
   orderbooks,
   policy,
@@ -2650,9 +2667,7 @@ function createLiveOpsCliDbAutonomousFeatureSuccessSnapshot({
   const latestOrderbook = orderbooks.at(-1);
   const bid = new Decimal(readLiveOpsCliDbOrderbookLevelPrice(latestOrderbook?.bids_json, "bids_json"));
   const ask = new Decimal(readLiveOpsCliDbOrderbookLevelPrice(latestOrderbook?.asks_json, "asks_json"));
-  const referencePrice = isPositiveDecimalString(marketData?.referencePrice)
-    ? new Decimal(marketData.referencePrice)
-    : latestTradePrice;
+  const referencePrice = latestTradePrice;
   const requestedPrice = bid.minus(new Decimal(policy.tick_size_krw ?? "1000").mul(policy.entry_price_offset_ticks ?? 0));
   const meanReversionDiscount = referencePrice.gt(0)
     ? Decimal.max(0, referencePrice.minus(requestedPrice).div(referencePrice).mul(10_000))
@@ -2662,7 +2677,7 @@ function createLiveOpsCliDbAutonomousFeatureSuccessSnapshot({
     : new Decimal(0);
   const mid = bid.plus(ask).div(2);
   const spreadBps = mid.gt(0) ? ask.minus(bid).div(mid).mul(10_000) : new Decimal(0);
-  const grossExpectedReturn = meanReversionDiscount;
+  const grossExpectedReturn = Decimal.max(0, meanReversionDiscount, trendStrength);
   const costBurdenBps = sumLiveOpsCliEntryCostBurdenBps(createLiveOpsCliCleanupCostInput());
   const costAdjustedMargin = grossExpectedReturn.minus(costBurdenBps);
   const features = {
@@ -2740,6 +2755,20 @@ function latestLiveOpsCliFeatureTradeEventAt(trades) {
   }, undefined);
   if (latest === undefined) {
     throw new Error("DB feature window has no latest trade event");
+  }
+  return latest;
+}
+
+function latestLiveOpsCliFeatureOrderbookEventAt(orderbooks) {
+  const timestamps = orderbooks.map((row) => toLiveOpsCliIsoTimestamp(row.captured_at));
+  const latest = timestamps.reduce((max, timestamp) => {
+    if (max === undefined) {
+      return timestamp;
+    }
+    return Date.parse(timestamp) > Date.parse(max) ? timestamp : max;
+  }, undefined);
+  if (latest === undefined) {
+    throw new Error("DB feature window has no latest orderbook event");
   }
   return latest;
 }
