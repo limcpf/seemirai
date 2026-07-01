@@ -73,7 +73,7 @@ async function main() {
 
 function parseArgs(argv) {
   const options = {
-    databaseUrl: undefined,
+    envFilePath: undefined,
     help: false,
     inputPath: undefined,
     json: false,
@@ -88,7 +88,9 @@ function parseArgs(argv) {
     const arg = argv[index];
     switch (arg) {
       case "--database-url":
-        options.databaseUrl = readArgValue(argv, index, arg);
+        throw new Error("--database-url은 보안상 지원하지 않습니다. SEEMIRAI_DATABASE_URL env 또는 --env-file을 사용하세요.");
+      case "--env-file":
+        options.envFilePath = path.resolve(readArgValue(argv, index, arg));
         index += 1;
         break;
       case "--input":
@@ -154,19 +156,56 @@ async function readRunnerInput(options) {
     });
   }
 
-  if (options.databaseUrl !== undefined) {
+  const databaseUrl = await readDatabaseUrl(options);
+  if (databaseUrl !== undefined) {
     if (!hasText(options.windowStartAt) || !hasText(options.windowEndAt)) {
-      throw new Error("--database-url requires --window-start and --window-end");
+      throw new Error("DB 조회에는 --window-start와 --window-end가 필요합니다.");
     }
-    return readDatabaseInput(options);
+    return readDatabaseInput(options, databaseUrl);
   }
 
-  throw new Error("--input 또는 --database-url 중 하나가 필요합니다.");
+  throw new Error("--input 또는 SEEMIRAI_DATABASE_URL env/--env-file 중 하나가 필요합니다.");
 }
 
-async function readDatabaseInput(options) {
+async function readDatabaseUrl(options) {
+  const env = {
+    ...process.env,
+    ...(options.envFilePath === undefined ? {} : parseEnvFile(await readFile(options.envFilePath, "utf8"))),
+  };
+  return hasText(env.SEEMIRAI_DATABASE_URL) ? env.SEEMIRAI_DATABASE_URL : undefined;
+}
+
+function parseEnvFile(content) {
+  const values = {};
+  const lines = content.split(/\r?\n/u);
+  lines.forEach((line, index) => {
+    const trimmed = line.trim();
+    if (trimmed.length === 0 || trimmed.startsWith("#")) {
+      return;
+    }
+    const normalized = trimmed.startsWith("export ") ? trimmed.slice("export ".length).trim() : trimmed;
+    const separatorIndex = normalized.indexOf("=");
+    if (separatorIndex <= 0) {
+      throw new Error(`${index + 1}번 줄은 KEY=value 형식이어야 합니다.`);
+    }
+    const key = normalized.slice(0, separatorIndex).trim();
+    const rawValue = normalized.slice(separatorIndex + 1).trim();
+    values[key] = parseEnvValue(rawValue);
+  });
+  return values;
+}
+
+function parseEnvValue(rawValue) {
+  if ((rawValue.startsWith("\"") && rawValue.endsWith("\"")) || (rawValue.startsWith("'") && rawValue.endsWith("'"))) {
+    return rawValue.slice(1, -1);
+  }
+  const commentIndex = rawValue.indexOf(" #");
+  return commentIndex >= 0 ? rawValue.slice(0, commentIndex).trim() : rawValue;
+}
+
+async function readDatabaseInput(options, databaseUrl) {
   const pool = new Pool({
-    connectionString: options.databaseUrl,
+    connectionString: databaseUrl,
     connectionTimeoutMillis: 3_000,
     max: 1,
     idleTimeoutMillis: 1_000,
@@ -196,7 +235,7 @@ async function readDatabaseInput(options) {
         [options.market, options.strategyId, options.windowStartAt, options.windowEndAt],
       ),
       pool.query(
-        `SELECT fills.id, fills.side, fills.price, fills.quantity, fills.filled_at
+        `SELECT fills.id, fills.order_id, fills.side, fills.price, fills.quantity, fills.filled_at
            FROM fills
            JOIN orders ON orders.id = fills.order_id
           WHERE orders.market = $1
@@ -335,9 +374,10 @@ function createFeatureQuality(ticks) {
 
   for (const tick of ticks) {
     const snapshot = tick.featureSnapshot;
+    const features = readFeatureValues(snapshot);
     const status = typeof snapshot.status === "string"
       ? snapshot.status
-      : isRecord(snapshot.features)
+      : Object.keys(features).length > 0
         ? "ok"
         : "not_run";
     increment(statusCounts, status);
@@ -364,7 +404,7 @@ function createThresholdQuality(ticks) {
     let totalCount = 0;
 
     for (const tick of ticks) {
-      const features = readRecord(tick.featureSnapshot.features);
+      const features = readFeatureValues(tick.featureSnapshot);
       const thresholds = readStrategyThresholds(tick.thresholdSnapshot);
       const featureValue = readDecimal(features[spec.featureKey]);
       const thresholdValue = readDecimal(thresholds[spec.thresholdKey]);
@@ -398,17 +438,53 @@ function createThresholdQuality(ticks) {
 function createCandidateOutcome(ticks, outcomes = {}) {
   const orders = Array.isArray(outcomes.orders) ? outcomes.orders : [];
   const fills = Array.isArray(outcomes.fills) ? outcomes.fills : [];
+  const orderIds = new Set(orders.map(readOutcomeId).filter(hasText));
+  const filledOrderIds = new Set(
+    fills
+      .map(readFillOrderId)
+      .filter((orderId) => hasText(orderId) && (orderIds.size === 0 || orderIds.has(orderId))),
+  );
   const totalOrderIntentCount = ticks.reduce((sum, tick) => sum + tick.orderIntentCount, 0);
   const candidateTickCount = ticks.filter((tick) => tick.orderIntentCount > 0).length;
 
   return {
     candidateTickCount,
     fillCount: fills.length,
+    filledOrderCount: filledOrderIds.size,
     orderCount: orders.length,
     orderStatusCounts: countBy(orders, (order) => isRecord(order) && hasText(order.status) ? String(order.status) : "unknown"),
-    realizedFillRate: orders.length === 0 ? null : Number((fills.length / orders.length).toFixed(6)),
+    realizedFillRate: orders.length === 0 ? null : Number((filledOrderIds.size / orders.length).toFixed(6)),
     totalOrderIntentCount,
   };
+}
+
+function readFeatureValues(snapshot) {
+  const flatSnapshot = readRecord(snapshot);
+  return {
+    ...flatSnapshot,
+    ...readRecord(flatSnapshot.features),
+  };
+}
+
+function readOutcomeId(outcome) {
+  if (!isRecord(outcome)) {
+    return undefined;
+  }
+  return hasText(outcome.id) ? String(outcome.id) : undefined;
+}
+
+function readFillOrderId(fill) {
+  if (!isRecord(fill)) {
+    return undefined;
+  }
+  if (hasText(fill.order_id)) {
+    return String(fill.order_id);
+  }
+  if (hasText(fill.orderId)) {
+    return String(fill.orderId);
+  }
+  const order = readRecord(fill.order);
+  return hasText(order.id) ? String(order.id) : undefined;
 }
 
 function readStrategyThresholds(snapshot) {
@@ -423,7 +499,7 @@ function readStrategyThresholds(snapshot) {
 
 function readFeatureSource(snapshot) {
   const metadata = readRecord(snapshot.metadata);
-  const features = readRecord(snapshot.features);
+  const features = readFeatureValues(snapshot);
   if (hasText(metadata.feature_source)) {
     return metadata.feature_source;
   }
@@ -480,6 +556,7 @@ export function renderLiveDecisionCalibrationMarkdown(report) {
     `- 주문 후보 수 합계: ${report.candidateOutcome.totalOrderIntentCount}`,
     `- 주문 row 수: ${report.candidateOutcome.orderCount}`,
     `- 체결 row 수: ${report.candidateOutcome.fillCount}`,
+    `- 체결된 주문 수: ${report.candidateOutcome.filledOrderCount}`,
     `- 실현 fill rate: ${formatNullableNumber(report.candidateOutcome.realizedFillRate)}`,
     "",
     "### 주문 상태",
@@ -578,7 +655,7 @@ function printHelp() {
   process.stdout.write(`Usage: node scripts/analyze-live-decision-calibration.mjs [options]\n\n`
     + "Options:\n"
     + "  --input <path>          live decision tick JSON input\n"
-    + "  --database-url <url>    PostgreSQL URL to query live_decision_ticks/orders/fills\n"
+    + "  --env-file <path>       env file containing SEEMIRAI_DATABASE_URL for DB query\n"
     + "  --window-start <iso>    DB query window start\n"
     + "  --window-end <iso>      DB query window end\n"
     + "  --market <market>       target market (default KRW-BTC)\n"
