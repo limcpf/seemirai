@@ -2871,10 +2871,10 @@ export function createLiveOpsCliDatabaseDecisionHistoryWriter(pool) {
     async applyRetention({ olderThan }) {
       // retention은 장기 daemon 저장소 폭주를 막는 명시 운영 행위이므로 cutoff 이전 row만 삭제하고 삭제 수를 evidence로 돌려준다.
       const deleted = await pool.query(
-        "DELETE FROM live_decision_ticks WHERE observed_at < $1 RETURNING id",
+        "DELETE FROM live_decision_ticks WHERE observed_at < $1",
         [olderThan],
       );
-      return { deleted: deleted.rowCount ?? deleted.rows.length };
+      return { deleted: deleted.rowCount ?? 0 };
     },
   };
 }
