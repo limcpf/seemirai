@@ -25,7 +25,7 @@ Post-M23 Live Ops 운영에서 주문이 없던 tick도 정상 decision evidence
 - [x] Sub PR 05 daemon 운영 안정성 hardening과 alert/retry 검증을 완료한다.
 - [x] Sub PR 06 audit/tax closeout contract를 구현하고 fixture smoke 검증을 추가한다.
 - [x] Sub PR 06 전체 검증, stacked PR 생성, review drain, mother branch merge를 완료한다.
-- [ ] Mother branch 전체 검증과 final main PR review drain을 완료한다.
+- [x] Mother branch 전체 검증과 final main PR review drain을 완료한다.
 
 ## 검증 방법
 
@@ -54,4 +54,4 @@ Post-M23 Live Ops 운영에서 주문이 없던 tick도 정상 decision evidence
 
 - Sub PR 01-06은 review drain과 `issue-258-mother` merge를 완료했다.
 - 실제 DB integration은 `SEEMIRAI_RUN_DB_INTEGRATION=1`이 있을 때만 실행된다.
-- final main PR은 review drain까지만 진행하고, `main` merge는 사용자가 직접 수행한다.
+- final main PR #265는 review drain까지 완료했다. `main` merge는 사용자가 직접 수행한다.
