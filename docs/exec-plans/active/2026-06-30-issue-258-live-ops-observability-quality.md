@@ -20,7 +20,7 @@ Post-M23 Live Ops 운영에서 주문이 없던 tick도 정상 decision evidence
 - [x] Sub PR 01 단위 테스트, migration 테스트, gated integration 테스트를 추가한다.
 - [ ] Sub PR 01 PR 생성, review drain, mother branch merge를 완료한다.
 - [x] Sub PR 02 DB-backed feature provider 구현과 회귀 검증을 완료한다.
-- [ ] Sub PR 03 calibration report runner 구현과 artifact 검증을 완료한다.
+- [x] Sub PR 03 calibration report runner 구현과 artifact 검증을 완료한다.
 - [ ] Sub PR 04 status/TUI wording separation을 구현하고 사용자-facing fixture를 검증한다.
 - [ ] Sub PR 05 daemon 운영 안정성 hardening과 alert/retry 검증을 완료한다.
 - [ ] Sub PR 06 audit/tax closeout contract와 전체 검증을 완료한다.
@@ -39,10 +39,12 @@ Post-M23 Live Ops 운영에서 주문이 없던 tick도 정상 decision evidence
 - 2026-06-30: decision history write 실패는 주문 후보를 재시도하거나 보정하지 않고 status/TUI degraded evidence로만 남긴다.
 - 2026-06-30: feature snapshot, threshold, trace JSONB에는 raw provider payload, raw order detail, secret-like key/string을 저장하지 않는다.
 - 2026-06-30: autonomous feature provider는 `trades`와 `orderbook_snapshots` DB window를 우선 읽고, sample 부족·stale·오염 feature는 주문 후보 전 fail-closed로 닫는다. public tick fallback은 DB snapshot이 없을 때만 degraded source로 기록한다.
+- 2026-06-30: live decision calibration runner는 `live_decision_ticks`와 선택적 orders/fills window를 읽어 threshold 품질, feature source/failure 품질, 후보/실현 결과를 Markdown/JSON artifact로 남긴다.
 
 ## 남은 이슈
 
-- Sub PR 01은 PR 생성과 review drain 전이다.
-- Sub PR 02는 PR 생성과 review drain 전이다.
+- Sub PR 01은 PR 생성과 review drain을 완료했지만 mother branch merge 전이다.
+- Sub PR 02는 stacked PR 생성과 review drain을 완료했지만 mother branch merge 전이다.
+- Sub PR 03은 PR 생성과 review drain 전이다.
 - 실제 DB integration은 `SEEMIRAI_RUN_DB_INTEGRATION=1`이 있을 때만 실행된다.
 - calibration report와 audit/tax evidence는 후속 sub PR에서 별도 contract로 닫아야 한다.
