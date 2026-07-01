@@ -168,6 +168,7 @@ export async function runLiveOpsDaemon(options, io = {}) {
         options,
         latestSummary,
         latestError,
+        latestDecisionHistoryRetention,
         tickIntervalMs,
       });
       if (!shouldContinueDaemon({ startedMs, durationMs, tickCount: counters.tickCount, maxTicks })) {
@@ -253,16 +254,24 @@ function createDaemonCounters() {
     liveOrderCleanupFailureCount: 0,
     crashCount: 0,
     unhandledRejectionCount: 0,
+    manualReviewSources: [],
   };
 }
 
 function accumulateDaemonCounters(counters, summary) {
   const liveExecution = summary.liveExecution ?? {};
   const reconcile = summary.reconcilePnlStatus ?? {};
+  const alertRetry = createDaemonAlertRetryEvidence(summary.telegramAlert);
+  const manualReviewSources = collectDaemonManualReviewSources({
+    latestSummary: summary,
+    alertRetry,
+    latestDecisionHistoryRetention: summary.decisionHistoryRetention,
+  });
   if (summary.status === "ready") counters.successCount += 1;
   if (liveExecution.status === "idle") counters.holdCount += 1;
   if (summary.status === "blocked" || liveExecution.status === "blocked") counters.blockCount += 1;
-  if (liveExecution.status === "manual_review_required" || reconcile.manualReviewRequired === true) counters.manualReviewCount += 1;
+  if (manualReviewSources.length > 0 || liveExecution.status === "manual_review_required" || reconcile.manualReviewRequired === true) counters.manualReviewCount += 1;
+  addUniqueDaemonManualReviewSources(counters, manualReviewSources);
   counters.submittedOrderCount += Number(liveExecution.submittedOrderCount ?? 0);
   if (liveExecution.status === "exit_requote_ready") counters.exitRequoteCount += 1;
   counters.reconcileMismatchCount += Number.isFinite(Number(reconcile.mismatchCount)) ? Number(reconcile.mismatchCount) : 0;
@@ -271,12 +280,16 @@ function accumulateDaemonCounters(counters, summary) {
   if (liveExecution.cleanupStatus === "manual_review_required") counters.liveOrderCleanupFailureCount += 1;
 }
 
-function resolveNextDaemonDelayMs({ options, latestSummary, latestError, tickIntervalMs }) {
+function resolveNextDaemonDelayMs({ options, latestSummary, latestError, latestDecisionHistoryRetention, tickIntervalMs }) {
   if (options.fixtureSmoke) {
     return Math.min(tickIntervalMs, 100);
   }
   if (latestError !== null) {
     return defaultDaemonBackoffMs.transientFailure;
+  }
+  if (latestDecisionHistoryRetention?.status === "manual_review_required") {
+    // retention 실패는 다음 tick에서 DB 권한/lock을 재확인해야 하므로 일반 idle 주기로 즉시 재시도하지 않는다.
+    return defaultDaemonBackoffMs.manualReview;
   }
   const liveExecution = latestSummary?.liveExecution ?? {};
   if (liveExecution.status === "manual_review_required") {
@@ -491,7 +504,9 @@ function createDaemonAlertRetryEvidence(telegramAlert) {
   const scheduledBriefing = telegramAlert?.scheduledBriefing;
   const retryPlannedCount = readDaemonCount(telegramAlert?.retryPlannedCount) + readDaemonCount(scheduledBriefing?.retryPlannedCount);
   const failureCount = readDaemonCount(telegramAlert?.failureCount) + readDaemonCount(scheduledBriefing?.failureCount);
-  const manualReviewRequired = telegramAlert?.status === "manual_review_required" || scheduledBriefing?.status === "manual_review_required";
+  const blocked = telegramAlert?.status === "blocked" || scheduledBriefing?.status === "blocked";
+  const notReady = telegramAlert !== undefined && telegramAlert.ready !== true;
+  const manualReviewRequired = telegramAlert?.status === "manual_review_required" || scheduledBriefing?.status === "manual_review_required" || blocked;
   return {
     status: telegramAlert === undefined
       ? "not_observed"
@@ -499,6 +514,8 @@ function createDaemonAlertRetryEvidence(telegramAlert) {
         ? "manual_review_required"
         : failureCount > 0 || retryPlannedCount > 0
           ? "retry_pending"
+          : notReady
+            ? "not_ready"
           : "ok",
     retryPlannedCount,
     failureCount,
@@ -518,11 +535,14 @@ function createDaemonManualReviewEvidence({
   alertRetry,
   latestDecisionHistoryRetention,
 }) {
-  const sources = [];
-  if (latestSummary?.liveExecution?.status === "manual_review_required") sources.push("live_execution");
-  if (latestSummary?.reconcilePnlStatus?.manualReviewRequired === true) sources.push("reconcile_pnl_status");
-  if (alertRetry.manualReviewRequired) sources.push("telegram_alert");
-  if (latestDecisionHistoryRetention?.status === "manual_review_required") sources.push("decision_history_retention");
+  const sources = uniqueDaemonManualReviewSources([
+    ...(Array.isArray(counters.manualReviewSources) ? counters.manualReviewSources : []),
+    ...collectDaemonManualReviewSources({
+      latestSummary,
+      alertRetry,
+      latestDecisionHistoryRetention,
+    }),
+  ]);
   return {
     required: sources.length > 0 || counters.manualReviewCount > 0,
     count: counters.manualReviewCount,
@@ -534,6 +554,30 @@ function createDaemonManualReviewEvidence({
       ? "source별 status/action을 확인하고 신규 entry를 재개하지 마세요."
       : "추가 조치 없음",
   };
+}
+
+function collectDaemonManualReviewSources({
+  latestSummary,
+  alertRetry,
+  latestDecisionHistoryRetention,
+}) {
+  const sources = [];
+  if (latestSummary?.liveExecution?.status === "manual_review_required") sources.push("live_execution");
+  if (latestSummary?.reconcilePnlStatus?.manualReviewRequired === true) sources.push("reconcile_pnl_status");
+  if (alertRetry.manualReviewRequired) sources.push("telegram_alert");
+  if (latestDecisionHistoryRetention?.status === "manual_review_required") sources.push("decision_history_retention");
+  return uniqueDaemonManualReviewSources(sources);
+}
+
+function addUniqueDaemonManualReviewSources(counters, sources) {
+  counters.manualReviewSources = uniqueDaemonManualReviewSources([
+    ...(Array.isArray(counters.manualReviewSources) ? counters.manualReviewSources : []),
+    ...sources,
+  ]);
+}
+
+function uniqueDaemonManualReviewSources(sources) {
+  return [...new Set(sources.filter((source) => typeof source === "string" && source.length > 0))].sort();
 }
 
 function readDaemonCount(value) {

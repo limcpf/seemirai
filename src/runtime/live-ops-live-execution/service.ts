@@ -328,6 +328,15 @@ export async function runLiveOpsLiveExecution(
   return buildSummaryFromAttempt(config, input, checks, attempt);
 }
 
+/**
+ * live execution tick을 decision history 저장 경계에 기록한다.
+ *
+ * 이 함수는 live execution service 내부에서 broker 제출 전후 summary check를 보강하기 위해 호출된다. 입력은 이미 analysis
+ * decision과 order intent 검증 경계를 지난 runtime snapshot이며, 출력은 별도 반환값 없이 `checks` 배열에 저장 성공/중복/실패
+ * evidence를 append하는 것이다. unsupported batch, stale intent, 준비되지 않은 decision은 BUY/SELL로 보존하지 않고 BLOCK/HOLD
+ * 쪽으로 낮춰야 하며, DB write 실패는 broker side effect를 재시도하지 않고 degraded evidence로만 남긴다. 외부 side effect는
+ * `decisionHistoryWriter.appendDecisionTick` DB write 호출 하나로 제한된다.
+ */
 async function recordLiveDecisionHistory(
   config: LiveOpsConfig,
   input: LiveOpsLiveExecutionInput,

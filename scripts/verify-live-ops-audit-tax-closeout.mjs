@@ -6,7 +6,6 @@ import { fileURLToPath } from "node:url";
 const contractVersion = "live_ops_audit_tax_closeout.v1";
 const requiredEvidence = ["decision_tick", "order", "cancel", "fill", "pnl_snapshot", "audit_event"];
 const secretKeyPattern = /(?:authorization|access[_-]?key|secret[_-]?key|secret|token|password|jwt|database[_-]?url|db[_-]?password|pg[_-]?password)/iu;
-const rawEvidenceKeyPattern = /^(?:raw_provider_payload|rawProviderPayload|raw_order_detail|rawOrderDetail|raw_payload|rawPayload|raw_update|rawUpdate)$/u;
 const secretValuePatterns = [
   { label: "authorization bearer literal", pattern: /\bBearer\s+[A-Za-z0-9._/-]+/u },
   { label: "postgres credential url", pattern: /postgres(?:ql)?:\/\/[^:<\s"]+:[^@<\s"]+@/u },
@@ -332,7 +331,7 @@ function scanNode(node, currentPath, violations) {
   if (isRecord(node)) {
     for (const [key, value] of Object.entries(node)) {
       const nextPath = `${currentPath}.${key}`;
-      if (rawEvidenceKeyPattern.test(key)) {
+      if (isRawEvidenceKey(key)) {
         // provider 원본과 주문 원문은 closeout artifact가 아니라 보안 격리 대상이므로 path만 남기고 값은 버린다.
         violations.push({
           path: nextPath,
@@ -385,6 +384,9 @@ function parseArgs(argv) {
       throw new Error(`지원하지 않는 audit/tax closeout 옵션입니다: ${value}`);
     }
   }
+  if (options.fixtureSmoke && options.inputPath !== undefined) {
+    throw new Error("--input과 --fixture-smoke는 함께 사용할 수 없습니다.");
+  }
   return options;
 }
 
@@ -415,7 +417,7 @@ async function main() {
     const options = parseArgs(process.argv.slice(2));
     const manifest = await loadManifest(options);
     const result = validateLiveOpsAuditTaxCloseoutManifest(manifest);
-    const output = { ...result, manifest };
+    const output = { ...result };
     if (options.json) {
       process.stdout.write(`${JSON.stringify(output, null, 2)}\n`);
     } else {
@@ -430,6 +432,16 @@ async function main() {
 
 function isRecord(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isRawEvidenceKey(key) {
+  const normalized = String(key).replace(/[_-]/gu, "").toLowerCase();
+  if (["rawproviderpayload", "rawproviderresponse", "raworderdetail", "raworderpayload", "rawpayload", "rawupdate"].includes(normalized)) {
+    return true;
+  }
+  return normalized.includes("raw") &&
+    (normalized.includes("provider") || normalized.includes("order")) &&
+    (normalized.includes("payload") || normalized.includes("detail") || normalized.includes("response"));
 }
 
 function isNonBlankString(value) {
