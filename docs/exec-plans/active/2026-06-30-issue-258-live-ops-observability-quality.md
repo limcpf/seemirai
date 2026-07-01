@@ -18,12 +18,13 @@ Post-M23 Live Ops 운영에서 주문이 없던 tick도 정상 decision evidence
 - [x] Sub PR 01 DB schema와 repository contract를 추가한다.
 - [x] Sub PR 01 live execution/CLI 경계에서 decision tick write를 연결하고 실패를 degraded evidence로 격리한다.
 - [x] Sub PR 01 단위 테스트, migration 테스트, gated integration 테스트를 추가한다.
-- [ ] Sub PR 01 PR 생성, review drain, mother branch merge를 완료한다.
+- [ ] Sub PR 01-05 stacked PR 생성과 review drain은 완료했지만, local merge hook 차단으로 mother branch merge는 보류한다.
 - [x] Sub PR 02 DB-backed feature provider 구현과 회귀 검증을 완료한다.
 - [x] Sub PR 03 calibration report runner 구현과 artifact 검증을 완료한다.
 - [x] Sub PR 04 status/TUI wording separation을 구현하고 사용자-facing fixture를 검증한다.
 - [x] Sub PR 05 daemon 운영 안정성 hardening과 alert/retry 검증을 완료한다.
-- [ ] Sub PR 06 audit/tax closeout contract와 전체 검증을 완료한다.
+- [x] Sub PR 06 audit/tax closeout contract를 구현하고 fixture smoke 검증을 추가한다.
+- [ ] Sub PR 06 전체 검증, stacked PR 생성, review drain을 완료한다.
 
 ## 검증 방법
 
@@ -44,13 +45,13 @@ Post-M23 Live Ops 운영에서 주문이 없던 tick도 정상 decision evidence
   `live_decision_history_degraded`와 error name은 `trace` 및 TUI 하단 `추적 정보`에만 둔다.
 - 2026-06-30: daemon은 `--decision-history-retention-hours`가 명시되면 retention 삭제 결과를 closeout evidence로 남기고,
   latestSummary stale 상태, Telegram retry/manual review source를 `closeoutEvidence`에 분리한다.
+- 2026-06-30: audit/tax closeout은 `live_ops_audit_tax_closeout.v1` manifest contract로 검증한다. 주문, 취소, 체결,
+  PnL snapshot, audit event, decision tick은 stable id 또는 correlation id로 연결해야 하며, raw provider/order/secret 후보는
+  path와 rule만 남기고 fail-closed 한다.
 
 ## 남은 이슈
 
-- Sub PR 01은 PR 생성과 review drain을 완료했지만 mother branch merge 전이다.
-- Sub PR 02는 stacked PR 생성과 review drain을 완료했지만 mother branch merge 전이다.
-- Sub PR 03은 stacked PR 생성과 review drain을 완료했지만 mother branch merge 전이다.
-- Sub PR 04는 stacked PR 생성과 review drain을 완료했지만 mother branch merge 전이다.
-- Sub PR 05는 로컬 구현과 daemon closeout evidence 검증을 완료했지만 PR 생성과 review drain 전이다.
+- Sub PR 01-05는 stacked PR 생성과 review drain을 완료했지만 local merge hook 차단으로 mother branch merge 전이다.
+- Sub PR 06은 audit/tax contract 구현과 fixture smoke를 완료했고, 전체 검증과 stacked PR 생성/review drain이 남아 있다.
 - 실제 DB integration은 `SEEMIRAI_RUN_DB_INTEGRATION=1`이 있을 때만 실행된다.
-- calibration report와 audit/tax evidence는 후속 sub PR에서 별도 contract로 닫아야 한다.
+- mother branch merge와 final main PR closeout은 local hook 차단 해소 또는 별도 승인 이후 진행해야 한다.

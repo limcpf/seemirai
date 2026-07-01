@@ -317,6 +317,8 @@
 - dedupe key, correlation id, trace id는 운영 추적 식별자일 뿐 credential 대체 저장소가 아니다. 외부 provider request/response 원문을
   이 식별자에 인코딩해 저장하지 않는다.
 - Issue #258 calibration report와 audit/tax evidence도 decision history와 같은 secret-free persistence 기준을 사용한다.
+- audit/tax closeout manifest는 `scripts/verify-live-ops-audit-tax-closeout.mjs`로 검증한다. validator는 raw provider/order field,
+  Authorization/Bearer/JWT, DB credential URL, Telegram token 후보를 값 없이 path와 rule만 남겨 차단해야 한다.
 
 ## M18 Decision Ledger 보안 기준
 

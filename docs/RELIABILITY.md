@@ -549,6 +549,10 @@ Codex-native 운영은 Codex, Git, GitHub, shell command, 문서 상태를 연�
   운영 행위이므로 검증 가능한 deleted count를 반환해야 한다.
 - daemon closeout evidence는 retention 삭제 결과, latestSummary freshness, Telegram retry/manual review 상태를 분리한다. 실패 tick 뒤
   남은 latestSummary는 `stale_after_failure`로 표시해 실주문 가능 근거로 재사용하지 않고, DB URL 같은 credential 입력은 evidence에 남기지 않는다.
+- audit/tax closeout evidence는 `live_ops_audit_tax_closeout.v1` contract로 검증한다. 주문, 취소, 체결, PnL snapshot, audit event,
+  decision tick은 stable id 또는 correlation id로 연결되어야 하며, link가 끊긴 artifact는 수동 확인 필요 상태로 닫는다.
+- `scripts/verify-live-ops-audit-tax-closeout.mjs --fixture-smoke --json`은 provider 호출 없이 contract shape와 secret-free source scan을
+  검증한다. 운영 closeout에서는 저장소 밖 manifest를 `--input`으로 넘겨 같은 validator를 실행하되, daemon 시작 조건으로 사용하지 않는다.
 
 ## M18 Decision Ledger 신뢰성 기준
 
