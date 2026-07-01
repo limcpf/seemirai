@@ -3,9 +3,12 @@ import { Decimal } from "decimal.js";
 import {
   createExecutionExitCostEvidence,
   createExecutionRiskApprovalEvidence,
+  createLiveDecisionHistoryTick,
   evaluateRiskGate,
 } from "../../application/index.js";
 import type {
+  AppendLiveDecisionHistoryTickInput,
+  AppendLiveDecisionHistoryTickResult,
   ExecutionExitCostEvidence,
   ExecutionSubmitOrderResult,
   LiveAutonomousEntryAttemptResult,
@@ -63,7 +66,7 @@ export type LiveOpsLiveExecutionStatus =
  * - 이 구조체 자체는 읽기 전용 결과이며 DB write, broker 호출, notification 전송을 수행하지 않는다.
  */
 export interface LiveOpsLiveExecutionCheck {
-  readonly name: "config" | "analysis_decision" | "order_intent" | "execution_request" | "execution_result";
+  readonly name: "config" | "analysis_decision" | "decision_history" | "order_intent" | "execution_request" | "execution_result";
   readonly status: "ok" | "blocked";
   readonly code: string;
   readonly message: string;
@@ -99,6 +102,20 @@ export interface LiveOpsLiveExecutionExitRuntime {
 }
 
 /**
+ * live execution adapter가 호출하는 decision history writer port다.
+ *
+ * 책임:
+ * - live ops analysis/decision tick을 DB persistence 경계로 넘긴다.
+ * - 테스트 fake와 PostgreSQL repository가 같은 append 계약을 공유하게 한다.
+ *
+ * side effect:
+ * - 구현체는 DB write를 수행할 수 있다. broker submit 재시도나 Telegram 전송은 이 port의 책임이 아니다.
+ */
+export interface LiveOpsDecisionHistoryWriter {
+  appendDecisionTick(input: AppendLiveDecisionHistoryTickInput): Promise<AppendLiveDecisionHistoryTickResult>;
+}
+
+/**
  * production live ops live execution adapter 입력 계약이다.
  *
  * 책임:
@@ -128,6 +145,7 @@ export interface LiveOpsLiveExecutionInput {
   readonly reconcileFresh: boolean;
   readonly entryRuntime: LiveOpsLiveExecutionEntryRuntime;
   readonly exitRuntime?: LiveOpsLiveExecutionExitRuntime;
+  readonly decisionHistoryWriter?: LiveOpsDecisionHistoryWriter;
   readonly referencePrice?: string;
   readonly idempotencyKey?: string;
   readonly trace?: JsonRecord;
@@ -184,6 +202,8 @@ export async function runLiveOpsLiveExecution(
       market: config.universe.default_market,
     }),
   ];
+
+  await recordLiveDecisionHistory(config, input, checks);
 
   if (!input.analysisDecision.ready) {
     // analysis가 차단 상태이면 주문 후보 배열이 들어와도 stale 후보일 수 있으므로 broker 경계를 열지 않는다.
@@ -306,6 +326,236 @@ export async function runLiveOpsLiveExecution(
   }));
 
   return buildSummaryFromAttempt(config, input, checks, attempt);
+}
+
+/**
+ * live execution tick을 decision history 저장 경계에 기록한다.
+ *
+ * 이 함수는 live execution service 내부에서 broker 제출 전후 summary check를 보강하기 위해 호출된다. 입력은 이미 analysis
+ * decision과 order intent 검증 경계를 지난 runtime snapshot이며, 출력은 별도 반환값 없이 `checks` 배열에 저장 성공/중복/실패
+ * evidence를 append하는 것이다. unsupported batch, stale intent, 준비되지 않은 decision은 BUY/SELL로 보존하지 않고 BLOCK/HOLD
+ * 쪽으로 낮춰야 하며, DB write 실패는 broker side effect를 재시도하지 않고 degraded evidence로만 남긴다. 외부 side effect는
+ * `decisionHistoryWriter.appendDecisionTick` DB write 호출 하나로 제한된다.
+ */
+async function recordLiveDecisionHistory(
+  config: LiveOpsConfig,
+  input: LiveOpsLiveExecutionInput,
+  checks: LiveOpsLiveExecutionCheck[],
+): Promise<void> {
+  if (input.decisionHistoryWriter === undefined) {
+    return;
+  }
+
+  try {
+    const guardReasonCode = readDecisionHistoryGuardReasonCode(input);
+    // execution guard에서 폐기될 stale 후보는 decision history에서도 BUY/SELL로 확정하지 않는다.
+    const historyIntents = guardReasonCode === undefined && input.analysisDecision.ready
+      ? input.orderIntents
+      : [];
+    const tick = createLiveDecisionHistoryTick({
+      exchange: config.exchange,
+      market: input.analysisDecision.market || config.universe.default_market,
+      strategyId: readDecisionHistoryStrategyId(config, input, historyIntents),
+      decisionKind: resolveDecisionHistoryKind(input, historyIntents, guardReasonCode),
+      reasonCode: readDecisionHistoryReasonCode(input, historyIntents, guardReasonCode),
+      featureSnapshot: readDecisionHistoryFeatureSnapshot(input.analysisDecision),
+      thresholds: buildDecisionHistoryThresholds(config),
+      orderIntentCount: historyIntents.length,
+      observedAt: new Date(input.observedAt),
+      decisionAt: new Date(input.analysisDecision.latestDecisionAt ?? input.observedAt),
+      sourceTickId: readDecisionHistorySourceTickId(input, historyIntents, guardReasonCode),
+      correlationId: readStringOrNull(input.trace?.correlationId),
+      trace: {
+        source: "live_ops_live_execution",
+        analysisDecisionStatus: input.analysisDecision.status,
+        analysisDecisionCategory: input.analysisDecision.decisionCategory,
+        featureStatus: input.analysisDecision.featureStatus,
+        recordHoldDecision: input.analysisDecision.recordHoldDecision,
+        ...(guardReasonCode === undefined ? {} : { guardReasonCode }),
+      },
+    });
+
+    const result = await input.decisionHistoryWriter.appendDecisionTick({ tick });
+    checks.push(okCheck(
+      "decision_history",
+      result.inserted
+        ? "live decision tick을 DB decision history 저장 경계에 기록했습니다."
+        : "live decision tick은 dedupe key 기준으로 이미 기록되어 중복 저장을 생략했습니다.",
+      "live_decision_history_recorded",
+      {
+        inserted: result.inserted,
+        decisionKind: tick.decisionKind,
+        dedupePolicy: tick.dedupePolicy,
+      },
+    ));
+  } catch (error) {
+    // 관측성 DB write 실패는 이미 만들어진 주문 후보를 재시도하거나 보정하지 않고 status degraded evidence로만 남긴다.
+    checks.push(okCheck(
+      "decision_history",
+      "live decision history 저장에 실패해 운영 관측성이 degraded 상태입니다.",
+      "live_decision_history_degraded",
+      {
+        writeStatus: "failed",
+        errorName: safeErrorName(error),
+      },
+    ));
+  }
+}
+
+function readDecisionHistoryGuardReasonCode(input: LiveOpsLiveExecutionInput): string | undefined {
+  if (input.analysisDecision.ready && input.analysisDecision.orderIntentCount !== input.orderIntents.length) {
+    return "live_ops_order_intent_count_mismatch";
+  }
+  if (input.analysisDecision.ready && input.orderIntents.length > 1) {
+    return "live_ops_order_intent_batch_unsupported";
+  }
+  return undefined;
+}
+
+function resolveDecisionHistoryKind(
+  input: LiveOpsLiveExecutionInput,
+  historyIntents: readonly OrderIntent[],
+  guardReasonCode: string | undefined,
+): "HOLD" | "BUY" | "SELL" | "BLOCK" {
+  if (guardReasonCode !== undefined || !input.analysisDecision.ready) {
+    return "BLOCK";
+  }
+
+  const firstIntent = historyIntents[0];
+  if (firstIntent?.side === "BUY" || firstIntent?.side === "SELL") {
+    return firstIntent.side;
+  }
+
+  if (input.analysisDecision.decisionCategory === "BLOCKED") {
+    return "BLOCK";
+  }
+
+  return "HOLD";
+}
+
+function readDecisionHistoryReasonCode(
+  input: LiveOpsLiveExecutionInput,
+  historyIntents: readonly OrderIntent[],
+  guardReasonCode: string | undefined,
+): string {
+  if (guardReasonCode !== undefined) {
+    return guardReasonCode;
+  }
+
+  const firstIntentReason = historyIntents[0]?.reason;
+  if (typeof firstIntentReason === "string" && firstIntentReason.trim().length > 0) {
+    return firstIntentReason;
+  }
+
+  const traceReason = input.analysisDecision.trace.reasonCode;
+  if (typeof traceReason === "string" && traceReason.trim().length > 0) {
+    return traceReason;
+  }
+
+  if (!input.analysisDecision.ready) {
+    return "live_ops_analysis_not_ready";
+  }
+
+  if (input.analysisDecision.decisionCategory === "BLOCKED") {
+    return "live_ops_decision_blocked";
+  }
+
+  return "live_ops_hold";
+}
+
+function readDecisionHistoryStrategyId(
+  config: LiveOpsConfig,
+  input: LiveOpsLiveExecutionInput,
+  historyIntents: readonly OrderIntent[],
+): string {
+  const firstIntentStrategyId = historyIntents[0]?.strategyId;
+  if (typeof firstIntentStrategyId === "string" && firstIntentStrategyId.trim().length > 0) {
+    return firstIntentStrategyId;
+  }
+  if (typeof input.risk.strategy.strategyId === "string" && input.risk.strategy.strategyId.trim().length > 0) {
+    return input.risk.strategy.strategyId;
+  }
+  return config.analysis.decision_policy.id === "autonomous_24x7"
+    ? liveOpsAutonomous24x7StrategyId
+    : liveOpsCleanupProbeStrategyId;
+}
+
+function readDecisionHistoryFeatureSnapshot(
+  summary: LiveOpsAnalysisDecisionSummary,
+): JsonRecord {
+  const snapshot = summary.trace.featureSnapshot;
+  if (isNonEmptyRecord(snapshot)) {
+    return { ...snapshot };
+  }
+
+  const strategyDetails = readDecisionHistoryCheckDetails(summary, "strategy_decision");
+  if (isNonEmptyRecord(strategyDetails)) {
+    return {
+      featureStatus: summary.featureStatus,
+      ...strategyDetails,
+    };
+  }
+
+  return {
+    featureStatus: summary.featureStatus,
+  };
+}
+
+function readDecisionHistoryCheckDetails(
+  summary: LiveOpsAnalysisDecisionSummary,
+  name: string,
+): Readonly<Record<string, unknown>> | undefined {
+  const check = summary.checks.find((item) => item.name === name);
+  return isNonEmptyRecord(check?.details) ? check.details : undefined;
+}
+
+function buildDecisionHistoryThresholds(config: LiveOpsConfig): JsonRecord {
+  const decisionPolicy = config.analysis.decision_policy;
+  const policyId = decisionPolicy.id;
+  return {
+    decisionPolicyId: policyId,
+    maxOrderKrw: config.budget.max_order_krw,
+    dailyAutonomousNotionalLimitKrw: config.budget.daily_autonomous_notional_limit_krw,
+    maxOpenPositionNotionalKrw: config.budget.max_open_position_notional_krw,
+    strategyThresholds: readDecisionHistoryStrategyThresholds(config),
+  };
+}
+
+/**
+ * decision history threshold snapshot에 저장할 현재 policy별 전략 threshold를 선택한다.
+ *
+ * 호출 경계는 live execution tick 생성 직전이며, 입력은 이미 `LiveOpsConfig` 검증을 통과한 config다.
+ * 출력은 DB JSON에 저장 가능한 얕은 복사본이고, policy id와 threshold branch가 항상 같은 전략을 가리켜야 한다.
+ * 외부 side effect는 없다.
+ */
+function readDecisionHistoryStrategyThresholds(config: LiveOpsConfig): JsonRecord {
+  const decisionPolicy = config.analysis.decision_policy;
+  if (decisionPolicy.id === "autonomous_24x7") {
+    return { ...decisionPolicy.autonomous_24x7 };
+  }
+  return { ...decisionPolicy.cleanup_probe };
+}
+
+function readDecisionHistorySourceTickId(
+  input: LiveOpsLiveExecutionInput,
+  historyIntents: readonly OrderIntent[],
+  guardReasonCode: string | undefined,
+): string {
+  const firstIntentKey = historyIntents[0]?.idempotencyKey;
+  if (typeof firstIntentKey === "string" && firstIntentKey.trim().length > 0) {
+    return [input.observedAt, firstIntentKey].join(":");
+  }
+
+  return [
+    input.observedAt,
+    input.analysisDecision.decisionCategory,
+    historyIntents.length,
+    readDecisionHistoryReasonCode(input, historyIntents, guardReasonCode),
+  ].join(":");
+}
+
+function readStringOrNull(value: unknown): string | null {
+  return typeof value === "string" && value.trim().length > 0 ? value : null;
 }
 
 async function runLiveOpsExitExecution(

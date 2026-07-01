@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import type {
+  AppendLiveDecisionHistoryTickInput,
   LiveAutonomousEntryAttemptResult,
   LiveAutonomousEntryRuntimeRequest,
   ExecutionSubmitOrderResult,
@@ -47,6 +48,111 @@ describe("production live ops live execution adapter", () => {
     expect(entryRuntime.submitEntryCandidate).not.toHaveBeenCalled();
   });
 
+  it("HOLD decision tick을 decision history writer에 저장한다", async () => {
+    const entryRuntime = createEntryRuntimeRecorder();
+    const appendDecisionTick = vi.fn(async (_input: AppendLiveDecisionHistoryTickInput) => ({ inserted: true }));
+    const decisionHistoryWriter = {
+      appendDecisionTick,
+    };
+
+    const summary = await runLiveOpsLiveExecution(createInput({
+      analysisDecision: analysisSummary({
+        orderIntentCount: 0,
+        decisionCategory: "HOLD",
+        trace: {
+          source: "live_ops_analysis_decision",
+          reasonCode: "autonomous_24x7_entry_signal_weak",
+          featureSnapshot: {
+            featureStatus: "ok",
+            trend_strength_bps: "0",
+          },
+        },
+      }),
+      orderIntents: [],
+      entryRuntime,
+      decisionHistoryWriter,
+    }));
+
+    expect(summary.checks.map((check) => check.code)).toContain("live_decision_history_recorded");
+    expect(appendDecisionTick).toHaveBeenCalledTimes(1);
+    const tick = appendDecisionTick.mock.calls[0]![0].tick;
+    expect(tick).toMatchObject({
+      exchange: "UPBIT",
+      market: "KRW-BTC",
+      strategyId: "fixture_order_strategy",
+      decisionKind: "HOLD",
+      reasonCode: "autonomous_24x7_entry_signal_weak",
+      orderIntentCount: 0,
+      featureSnapshot: {
+        featureStatus: "ok",
+        trend_strength_bps: "0",
+      },
+      thresholds: {
+        decisionPolicyId: "cleanup_probe",
+        maxOrderKrw: "10000",
+        dailyAutonomousNotionalLimitKrw: "30000",
+      },
+    });
+    expect(entryRuntime.submitEntryCandidate).not.toHaveBeenCalled();
+  });
+
+  it("decision history feature snapshot은 strategy decision details를 fallback으로 사용한다", async () => {
+    const entryRuntime = createEntryRuntimeRecorder();
+    const appendDecisionTick = vi.fn(async (_input: AppendLiveDecisionHistoryTickInput) => ({ inserted: true }));
+
+    await runLiveOpsLiveExecution(createInput({
+      analysisDecision: analysisSummary({
+        orderIntentCount: 0,
+        decisionCategory: "HOLD",
+        checks: [{
+          name: "strategy_decision",
+          status: "ok",
+          code: "live_ops_strategy_decision_ok",
+          message: "fixture strategy details",
+          details: {
+            strategyId: "live_ops_autonomous_24x7_core",
+            cost_adjusted_margin_bps: "4",
+            trend_strength_bps: "2",
+          },
+        }],
+      }),
+      orderIntents: [],
+      entryRuntime,
+      decisionHistoryWriter: { appendDecisionTick },
+    }));
+
+    expect(appendDecisionTick.mock.calls[0]![0].tick.featureSnapshot).toMatchObject({
+      featureStatus: "ok",
+      strategyId: "live_ops_autonomous_24x7_core",
+      cost_adjusted_margin_bps: "4",
+      trend_strength_bps: "2",
+    });
+  });
+
+  it("decision history 저장 실패는 status check에 degraded로 남기고 BUY 제출 재시도를 만들지 않는다", async () => {
+    const entryRuntime = createEntryRuntimeRecorder();
+    const appendDecisionTick = vi.fn(async (_input: AppendLiveDecisionHistoryTickInput) => {
+      throw new Error("db unavailable with fake-upbit-secret-key");
+    });
+    const decisionHistoryWriter = {
+      appendDecisionTick,
+    };
+
+    const summary = await runLiveOpsLiveExecution(createInput({
+      analysisDecision: analysisSummary({ orderIntentCount: 1, decisionCategory: "ORDER_INTENT" }),
+      orderIntents: [createOrderIntent()],
+      entryRuntime,
+      decisionHistoryWriter,
+      idempotencyKey: explicitIdempotencyKey,
+    }));
+
+    expect(summary.status).toBe("submitted");
+    expect(summary.checks.map((check) => check.code)).toContain("live_decision_history_degraded");
+    expect(appendDecisionTick.mock.calls[0]![0].tick.sourceTickId).toBe(`${observedAt}:decision-fixture-order-intent`);
+    expect(entryRuntime.submitEntryCandidate).toHaveBeenCalledTimes(1);
+    expect(JSON.stringify(summary)).not.toContain("fake-upbit-secret-key");
+  });
+
   it("analysis/decision이 blocked이면 전달된 후보가 있어도 live execution으로 전진하지 않는다", async () => {
     const entryRuntime = createEntryRuntimeRecorder();
 
@@ -68,6 +174,58 @@ describe("production live ops live execution adapter", () => {
       attemptedOrderCount: 0,
     });
     expect(summary.checks.map((check) => check.code)).toContain("live_ops_analysis_not_ready");
+    expect(entryRuntime.submitEntryCandidate).not.toHaveBeenCalled();
+  });
+
+  it("decision history는 준비되지 않은 summary의 stale 후보를 BUY로 기록하지 않는다", async () => {
+    const entryRuntime = createEntryRuntimeRecorder();
+    const appendDecisionTick = vi.fn(async (_input: AppendLiveDecisionHistoryTickInput) => ({ inserted: true }));
+
+    const summary = await runLiveOpsLiveExecution(createInput({
+      analysisDecision: analysisSummary({
+        ready: false,
+        status: "blocked",
+        orderIntentCount: 1,
+        decisionCategory: "ORDER_INTENT",
+      }),
+      orderIntents: [createOrderIntent()],
+      entryRuntime,
+      decisionHistoryWriter: { appendDecisionTick },
+    }));
+
+    expect(summary.status).toBe("blocked");
+    expect(appendDecisionTick).toHaveBeenCalledTimes(1);
+    expect(appendDecisionTick.mock.calls[0]![0].tick).toMatchObject({
+      decisionKind: "BLOCK",
+      reasonCode: "live_ops_analysis_not_ready",
+      orderIntentCount: 0,
+    });
+    expect(entryRuntime.submitEntryCandidate).not.toHaveBeenCalled();
+  });
+
+  it("decision history는 다중 후보 tick을 batch unsupported BLOCK으로 기록한다", async () => {
+    const entryRuntime = createEntryRuntimeRecorder();
+    const appendDecisionTick = vi.fn(async (_input: AppendLiveDecisionHistoryTickInput) => ({ inserted: true }));
+
+    const summary = await runLiveOpsLiveExecution(createInput({
+      analysisDecision: analysisSummary({
+        orderIntentCount: 2,
+        decisionCategory: "ORDER_INTENT",
+      }),
+      orderIntents: [
+        createOrderIntent({ idempotencyKey: "first" }),
+        createOrderIntent({ idempotencyKey: "second" }),
+      ],
+      entryRuntime,
+      decisionHistoryWriter: { appendDecisionTick },
+    }));
+
+    expect(summary.status).toBe("blocked");
+    expect(appendDecisionTick.mock.calls[0]![0].tick).toMatchObject({
+      decisionKind: "BLOCK",
+      reasonCode: "live_ops_order_intent_batch_unsupported",
+      orderIntentCount: 0,
+    });
     expect(entryRuntime.submitEntryCandidate).not.toHaveBeenCalled();
   });
 

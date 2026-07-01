@@ -295,8 +295,10 @@ export {
   runLiveOpsLiveExecution,
 } from "./live-ops-live-execution.js";
 export type {
+  LiveOpsDecisionHistoryWriter,
   LiveOpsLiveExecutionCheck,
   LiveOpsLiveExecutionEntryRuntime,
+  LiveOpsLiveExecutionExitRuntime,
   LiveOpsLiveExecutionInput,
   LiveOpsLiveExecutionStatus,
   LiveOpsLiveExecutionSummary,
