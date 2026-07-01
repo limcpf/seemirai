@@ -86,12 +86,11 @@ export class PostgresLiveDecisionHistoryRepository {
   public async applyRetention(
     input: ApplyLiveDecisionHistoryRetentionInput,
   ): Promise<ApplyLiveDecisionHistoryRetentionResult> {
-    const deletedRows = await this.database
+    const deleteResult = await this.database
       .deleteFrom("live_decision_ticks")
       .where("observed_at", "<", input.olderThan)
-      .returning("id")
-      .execute();
+      .executeTakeFirst();
 
-    return { deleted: deletedRows.length };
+    return { deleted: Number(deleteResult.numDeletedRows) };
   }
 }
