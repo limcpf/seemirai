@@ -541,6 +541,8 @@ Codex-native 운영은 Codex, Git, GitHub, shell command, 문서 상태를 연�
 - `live_decision_ticks` row는 append 위주 evidence다. 같은 dedupe key 충돌은 기존 row를 덮어쓰지 않고 `inserted=false`로 수렴해야 한다.
 - decision history write 실패는 broker submit, cancel, reservation, order intent 생성을 재시도하지 않는다. 실패는
   `live_decision_history_degraded` check와 status/TUI degraded evidence로 남기고 다음 tick에서 새 decision을 평가한다.
+- status/TUI/CLI는 decision history degraded 상태를 "판단 이력 저장 실패" 같은 한국어 상태, 영향, 필요 조치로 먼저 표시한다.
+  `live_decision_history_degraded`, error name, dedupe metadata 같은 내부 식별자는 `trace` 또는 하단 `추적 정보`에만 보존한다.
 - feature snapshot이나 threshold가 없거나 안전하지 않으면 secret/raw payload를 저장하기 위해 보정하지 않는다. 필요한 경우
   feature provider degraded 또는 decision history degraded 상태로 닫는다.
 - retention은 migration trigger가 아니라 명시 repository/service 호출로 수행한다. retention delete는 decision tick의 관측 기간을 줄이는

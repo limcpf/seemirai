@@ -111,6 +111,98 @@ describe("production live ops script skeleton", () => {
     expect(JSON.stringify(summary)).not.toContain("Authorization");
   });
 
+  it("run-live-ops support는 decision history 저장 실패를 CLI/TUI에서 사용자 문구와 추적 정보로 분리한다", async () => {
+    const support = await import(path.join(process.cwd(), "scripts/run-live-ops-support.mjs")) as {
+      evaluateLiveOpsCliLiveExecution?: (input: Record<string, unknown>) => Promise<Record<string, unknown>>;
+      renderLiveOpsSummary?: (input: Record<string, unknown>) => Record<string, unknown>;
+      renderLiveOpsTuiDashboard?: (summary: Record<string, unknown>) => string;
+    };
+    const appendDecisionTick = vi.fn(async () => {
+      const error = new Error("db write failed");
+      error.name = "DecisionHistoryWriteFailed";
+      throw error;
+    });
+
+    const config = JSON.parse(await readFile(path.join(process.cwd(), "config", "live-ops.example.json"), "utf8"));
+    const liveExecution = await support.evaluateLiveOpsCliLiveExecution?.({
+      config,
+      fixtureSmoke: true,
+      analysisDecision: {
+        status: "ready",
+        ready: true,
+        market: "KRW-BTC",
+        observedAt: "2026-06-30T00:00:05.000Z",
+        latestDecisionAt: "2026-06-30T00:00:05.100Z",
+        decisionCategory: "HOLD",
+        featureStatus: "ok",
+        evaluatedStrategyCount: 1,
+        holdCount: 1,
+        blockCount: 0,
+        orderIntentCount: 0,
+        recordHoldDecision: true,
+        trace: {
+          reasonCode: "autonomous_24x7_entry_signal_weak",
+        },
+      },
+      env: {},
+      orderIntents: [],
+      decisionHistoryWriter: { appendDecisionTick },
+      entryRuntime: {
+        submitEntryCandidate: vi.fn(),
+      },
+    });
+
+    expect(liveExecution?.decisionHistory).toMatchObject({
+      status: "degraded",
+      statusLabel: "판단 이력 저장 실패",
+      message: expect.stringContaining("판단 이력 저장에 실패했습니다"),
+      impact: expect.stringContaining("사후 분석 증거가 불완전"),
+      action: expect.stringContaining("판단 이력 DB 연결과 권한을 확인하세요"),
+      trace: {
+        code: "live_decision_history_degraded",
+        errorName: "DecisionHistoryWriteFailed",
+      },
+    });
+
+    const summary = support.renderLiveOpsSummary?.({
+      configPath: "config/live-ops.example.json",
+      envFilePath: "tests/fixtures/live-ops/fake.env",
+      config,
+      env: {},
+      fixtureSmoke: true,
+      dbReadiness: {
+        ready: true,
+        migration: {
+          appliedLatestVersion: 13,
+          expectedLatestVersion: 13,
+          pendingVersions: [],
+        },
+      },
+      marketData: {
+        ready: true,
+        persisted: { tradeCount: 1, orderbookCount: 1, statusCount: 1 },
+        latestHeartbeatAt: "2026-06-30T00:00:05.000Z",
+      },
+      analysisDecision: {
+        ready: true,
+        decisionCategory: "HOLD",
+        orderIntentCount: 0,
+        evaluatedStrategyCount: 1,
+        latestDecisionAt: "2026-06-30T00:00:05.100Z",
+      },
+      liveExecution,
+      reconcilePnlStatus: { ready: true, status: "fixture_clean", providerProbeAttempted: false },
+      telegramAlert: { ready: true, status: "planned", providerDispatchAttempted: false },
+    });
+    const dashboard = support.renderLiveOpsTuiDashboard?.(summary ?? {});
+    const beforeTrace = dashboard?.split("추적 정보:")[0] ?? "";
+
+    expect(dashboard).toContain("판단 이력: 판단 이력 저장 실패");
+    expect(dashboard).toContain("판단 이력 DB 연결과 권한을 확인하세요");
+    expect(beforeTrace).not.toContain("live_decision_history_degraded");
+    expect(dashboard).toContain("추적 정보: config=live-ops.example.json attach=foreground decision_history=live_decision_history_degraded error=DecisionHistoryWriteFailed");
+  });
+
   it("run-live-ops support는 준비되지 않은 summary의 stale 후보를 decision history BUY로 기록하지 않는다", async () => {
     const support = await import(path.join(process.cwd(), "scripts/run-live-ops-support.mjs")) as {
       evaluateLiveOpsCliLiveExecution?: (input: Record<string, unknown>) => Promise<Record<string, unknown>>;

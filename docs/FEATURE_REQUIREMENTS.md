@@ -1105,7 +1105,7 @@ Acceptance Criteria:
 - [x] feature snapshot, threshold, trace JSONB는 raw provider payload, raw order detail, secret-like key/string을 거부한다.
 - [x] autonomous feature provider는 DB-backed source를 우선하고 missing/stale feature를 0값으로 보정하지 않는다.
 - [x] calibration report runner는 threshold 품질과 후보/실현 결과를 재현 가능한 artifact로 남긴다.
-- [ ] status/TUI/CLI는 사용자 행동 언어와 내부 추적 정보를 분리해 decision history degraded 상태를 표시한다.
+- [x] status/TUI/CLI는 사용자 행동 언어와 내부 추적 정보를 분리해 decision history degraded 상태를 표시한다.
 - [ ] daemon retention, stale status, alert retry/manual-review hardening은 closeout evidence로 검증된다.
 - [ ] audit/tax evidence contract는 주문, 취소, 체결, PnL, decision tick을 stable id 또는 correlation id로 연결한다.
 
@@ -1115,6 +1115,7 @@ Acceptance Criteria:
 - 단위 테스트: live execution과 production CLI decision history writer 성공/실패 분기가 주문 후보 제출 흐름을 바꾸지 않는지 확인한다.
 - 단위 테스트: DB-backed autonomous feature provider가 DB window를 우선하고 sample 부족, stale, required feature 결측을 0값 보정 없이 차단하는지 확인한다.
 - 단위 테스트: live decision calibration runner가 threshold 품질, feature source/failure 품질, 후보/주문/체결 결과를 Markdown/JSON artifact로 재현하는지 확인한다.
+- 단위 테스트: decision history 저장 실패가 CLI/TUI에서 한국어 상태, 영향, 필요 조치를 먼저 보여주고 내부 code/error는 `추적 정보`로 분리되는지 확인한다.
 - gated integration: `SEEMIRAI_RUN_DB_INTEGRATION=1`일 때 dedupe conflict와 retention delete를 실제 DB에서 검증한다.
 - migration 테스트: 새 migration이 순서대로 적용되는지 확인한다.
 

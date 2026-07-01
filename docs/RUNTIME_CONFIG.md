@@ -816,6 +816,10 @@ intent 수, HOLD/BLOCK count, `record_hold_decision` 여부를 secret-safe summa
 summary에 직렬화하지 않고, pipeline 결과 객체의 non-enumerable `orderIntents` 채널 또는 CLI 내부 symbol 채널로 같은 decision tick의
 live execution 입력에만 전달한다. 이 pipeline은 DB write, broker 호출, Upbit 호출, Telegram 전송을 하지 않는다.
 
+decision history writer 결과는 live execution summary의 `decisionHistory` 하위 객체로 표시한다. 저장 실패는 주문 후보나 주문 실행
+결과를 재시도하지 않고 `statusLabel`, `message`, `impact`, `action`에 한국어 사용자 조치를 먼저 담으며, `live_decision_history_degraded`,
+error name, dedupe metadata는 `trace`와 TUI 하단 `추적 정보`에만 보존한다.
+
 production cleanup reservation은 저장소 밖 artifact 디렉터리에 attempt 파일을 남기기 전, 같은 날짜의 `reservation-daily-YYYY-MM-DD.lock`
 파일을 원자적으로 선점한다. lock 안에서 현재 reservation 파일 집계, open position snapshot, 요청 금액을 다시 합산해 일일 자동 주문 예산을
 넘으면 attempt reservation을 만들지 않고 broker 제출 전 fail-closed 한다. lock이 이미 잡혀 있으면 다른 live ops 실행이 예산을 선점 중인
