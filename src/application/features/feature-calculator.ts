@@ -22,6 +22,7 @@ import type {
   MarketRegime,
   SessionLiquidityState,
 } from "./types.js";
+import { M11_FEATURE_KEYS } from "./types.js";
 
 const DEFAULT_OPTIONS = {
   candleBucketMs: 60_000,
@@ -39,23 +40,7 @@ const DEFAULT_OPTIONS = {
   trendImbalanceRatio: "0.2",
 } as const;
 
-const FEATURE_KEYS: readonly M11FeatureKey[] = [
-  "candle_momentum_bps",
-  "realized_volatility_bps",
-  "volume_spike_ratio",
-  "bid_depth_slope_krw_per_bps",
-  "ask_depth_slope_krw_per_bps",
-  "depth_change_rate_ratio",
-  "vwap_deviation_bps",
-  "trade_direction_imbalance_ratio",
-  "trend_strength_bps",
-  "mean_reversion_discount_bps",
-  "market_regime",
-  "session_liquidity_score",
-  "session_liquidity_state",
-  "cost_adjusted_expected_return_bps",
-  "cost_adjusted_margin_bps",
-];
+const FEATURE_KEYS: readonly M11FeatureKey[] = M11_FEATURE_KEYS;
 
 interface ResolvedFeatureCalculationOptions {
   candleBucketMs: number;

@@ -1103,7 +1103,7 @@ Acceptance Criteria:
 - [x] DB repository는 같은 dedupe key를 중복 insert하지 않고 `inserted=false` 결과로 반환할 수 있다.
 - [x] live execution과 production CLI 경계는 decision history writer가 있을 때 tick을 기록하고, writer 실패 시 broker 제출 여부를 바꾸지 않는다.
 - [x] feature snapshot, threshold, trace JSONB는 raw provider payload, raw order detail, secret-like key/string을 거부한다.
-- [ ] autonomous feature provider는 DB-backed source를 우선하고 missing/stale feature를 0값으로 보정하지 않는다.
+- [x] autonomous feature provider는 DB-backed source를 우선하고 missing/stale feature를 0값으로 보정하지 않는다.
 - [ ] calibration report runner는 threshold 품질과 후보/실현 결과를 재현 가능한 artifact로 남긴다.
 - [ ] status/TUI/CLI는 사용자 행동 언어와 내부 추적 정보를 분리해 decision history degraded 상태를 표시한다.
 - [ ] daemon retention, stale status, alert retry/manual-review hardening은 closeout evidence로 검증된다.
@@ -1113,6 +1113,7 @@ Acceptance Criteria:
 
 - 단위 테스트: HOLD 1분 bucket dedupe, BUY/SELL source tick dedupe, JSONB secret-safe validation, row mapper를 검증한다.
 - 단위 테스트: live execution과 production CLI decision history writer 성공/실패 분기가 주문 후보 제출 흐름을 바꾸지 않는지 확인한다.
+- 단위 테스트: DB-backed autonomous feature provider가 DB window를 우선하고 sample 부족, stale, required feature 결측을 0값 보정 없이 차단하는지 확인한다.
 - gated integration: `SEEMIRAI_RUN_DB_INTEGRATION=1`일 때 dedupe conflict와 retention delete를 실제 DB에서 검증한다.
 - migration 테스트: 새 migration이 순서대로 적용되는지 확인한다.
 
