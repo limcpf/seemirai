@@ -62,7 +62,7 @@ describe("live decision calibration report", () => {
         }),
       ],
       outcomes: {
-        fills: [{ id: "fill-1" }],
+        fills: [{ id: "fill-1", order_id: "order-1" }],
         orders: [{ id: "order-1", status: "FILLED" }],
       },
       window: {
@@ -111,12 +111,265 @@ describe("live decision calibration report", () => {
     );
     expect(report.candidateOutcome).toMatchObject({
       fillCount: 1,
+      filledOrderCount: 1,
       orderCount: 1,
+      realizedFillRate: 1,
       totalOrderIntentCount: 1,
     });
     expect(markdown).toContain("## Threshold 품질");
     expect(markdown).toContain("## 후보/실현 결과");
     expect(markdown).toContain("추적 정보");
+  });
+
+  it("includes flat feature snapshots in threshold quality", async () => {
+    const {
+      createLiveDecisionCalibrationReport,
+    } = await import(modulePath);
+
+    const report = createLiveDecisionCalibrationReport({
+      generatedAt: "2026-06-30T00:00:00.000Z",
+      source: {
+        kind: "fixture",
+        label: "flat-feature-snapshot",
+      },
+      ticks: [
+        createTick({
+          decisionKind: "HOLD",
+          featureSnapshot: {
+            status: "ok",
+            cost_adjusted_margin_bps: "21",
+            feature_source: "live_ops_decision_details",
+            mean_reversion_discount_bps: "31",
+            trend_strength_bps: "11",
+          },
+          orderIntentCount: 0,
+          reasonCode: "autonomous_24x7_entry_signal_weak",
+        }),
+      ],
+      window: {
+        market: "KRW-BTC",
+        strategyId: "live_ops_autonomous_24x7_core",
+        windowEndAt: "2026-06-30T00:10:00.000Z",
+        windowStartAt: "2026-06-30T00:00:00.000Z",
+      },
+    });
+
+    expect(report.featureQuality).toMatchObject({
+      sourceCounts: {
+        live_ops_decision_details: 1,
+      },
+      statusCounts: {
+        ok: 1,
+      },
+    });
+    expect(report.thresholdQuality.checks).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          featureKey: "cost_adjusted_margin_bps",
+          missingCount: 0,
+          passCount: 1,
+          totalCount: 1,
+        }),
+        expect.objectContaining({
+          featureKey: "trend_strength_bps",
+          missingCount: 0,
+          passCount: 1,
+          totalCount: 1,
+        }),
+      ]),
+    );
+  });
+
+  it("does not count failed featureStatus snapshots as ok", async () => {
+    const {
+      createLiveDecisionCalibrationReport,
+    } = await import(modulePath);
+
+    const report = createLiveDecisionCalibrationReport({
+      generatedAt: "2026-06-30T00:00:00.000Z",
+      source: {
+        kind: "fixture",
+        label: "failed-feature-status",
+      },
+      ticks: [
+        createTick({
+          decisionKind: "BLOCK",
+          featureSnapshot: {
+            featureStatus: "failed",
+            cost_adjusted_margin_bps: "25",
+            feature_source: "live_ops_decision_details",
+            mean_reversion_discount_bps: "35",
+            trend_strength_bps: "12",
+          },
+          orderIntentCount: 0,
+          reasonCode: "autonomous_24x7_feature_snapshot_failed",
+        }),
+      ],
+      window: {
+        market: "KRW-BTC",
+        strategyId: "live_ops_autonomous_24x7_core",
+        windowEndAt: "2026-06-30T00:10:00.000Z",
+        windowStartAt: "2026-06-30T00:00:00.000Z",
+      },
+    });
+
+    expect(report.featureQuality.statusCounts).toMatchObject({
+      failed: 1,
+    });
+    expect(report.featureQuality.statusCounts.ok).toBeUndefined();
+  });
+
+  it("accepts thresholds input as the threshold snapshot", async () => {
+    const {
+      createLiveDecisionCalibrationReport,
+    } = await import(modulePath);
+
+    const report = createLiveDecisionCalibrationReport({
+      generatedAt: "2026-06-30T00:00:00.000Z",
+      source: {
+        kind: "fixture",
+        label: "thresholds-input",
+      },
+      ticks: [
+        {
+          decision_kind: "BUY",
+          feature_snapshot_json: {
+            featureStatus: "ok",
+            cost_adjusted_margin_bps: "25",
+            mean_reversion_discount_bps: "35",
+            trend_strength_bps: "12",
+          },
+          market: "KRW-BTC",
+          observed_at: "2026-06-30T00:01:00.000Z",
+          order_intent_count: 1,
+          reason_code: "autonomous_24x7_entry_signal",
+          strategy_id: "live_ops_autonomous_24x7_core",
+          thresholds: {
+            mean_reversion_discount_bps: "30",
+            min_entry_margin_bps: "20",
+            trend_confirmation_bps: "10",
+          },
+        },
+      ],
+      window: {
+        market: "KRW-BTC",
+        strategyId: "live_ops_autonomous_24x7_core",
+        windowEndAt: "2026-06-30T00:10:00.000Z",
+        windowStartAt: "2026-06-30T00:00:00.000Z",
+      },
+    });
+
+    expect(report.thresholdQuality.checks).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          featureKey: "cost_adjusted_margin_bps",
+          missingCount: 0,
+          passCount: 1,
+          totalCount: 1,
+        }),
+        expect.objectContaining({
+          featureKey: "trend_strength_bps",
+          missingCount: 0,
+          passCount: 1,
+          totalCount: 1,
+        }),
+      ]),
+    );
+  });
+
+  it("does not count exit ticks as missing entry thresholds", async () => {
+    const {
+      createLiveDecisionCalibrationReport,
+    } = await import(modulePath);
+
+    const report = createLiveDecisionCalibrationReport({
+      generatedAt: "2026-06-30T00:00:00.000Z",
+      source: {
+        kind: "fixture",
+        label: "exit-tick",
+      },
+      ticks: [
+        createTick({
+          decisionKind: "SELL",
+          featureSnapshot: {
+            featureStatus: "ok",
+          },
+          orderIntentCount: 1,
+          reasonCode: "live_ops_exit_signal",
+        }),
+      ],
+      window: {
+        market: "KRW-BTC",
+        strategyId: "live_ops_autonomous_24x7_core",
+        windowEndAt: "2026-06-30T00:10:00.000Z",
+        windowStartAt: "2026-06-30T00:00:00.000Z",
+      },
+    });
+
+    expect(report.thresholdQuality.checks).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          featureKey: "cost_adjusted_margin_bps",
+          missingCount: 0,
+          totalCount: 0,
+        }),
+        expect.objectContaining({
+          featureKey: "trend_strength_bps",
+          missingCount: 0,
+          totalCount: 0,
+        }),
+      ]),
+    );
+  });
+
+  it("calculates realized fill rate by unique filled order ids", async () => {
+    const {
+      createLiveDecisionCalibrationReport,
+    } = await import(modulePath);
+
+    const report = createLiveDecisionCalibrationReport({
+      generatedAt: "2026-06-30T00:00:00.000Z",
+      source: {
+        kind: "fixture",
+        label: "partial-fills",
+      },
+      ticks: [
+        createTick({
+          decisionKind: "BUY",
+          featureSource: "live_ops_db_window",
+          features: {
+            cost_adjusted_margin_bps: "25",
+            mean_reversion_discount_bps: "35",
+            trend_strength_bps: "12",
+          },
+          orderIntentCount: 1,
+          reasonCode: "autonomous_24x7_entry_signal",
+        }),
+      ],
+      outcomes: {
+        fills: [
+          { id: "fill-1", order_id: "order-1" },
+          { id: "fill-2", order_id: "order-1" },
+        ],
+        orders: [
+          { id: "order-1", status: "PARTIAL_FILL" },
+          { id: "order-2", status: "CANCELED" },
+        ],
+      },
+      window: {
+        market: "KRW-BTC",
+        strategyId: "live_ops_autonomous_24x7_core",
+        windowEndAt: "2026-06-30T00:10:00.000Z",
+        windowStartAt: "2026-06-30T00:00:00.000Z",
+      },
+    });
+
+    expect(report.candidateOutcome).toMatchObject({
+      fillCount: 2,
+      filledOrderCount: 1,
+      orderCount: 2,
+      realizedFillRate: 0.5,
+    });
   });
 
   it("fails closed when no decision ticks are available", async () => {
@@ -153,6 +406,8 @@ describe("live decision calibration report", () => {
     const tempDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-live-decision-calibration-"));
     const inputPath = path.join(tempDir, "ticks.json");
     const outputPath = path.join(tempDir, "report.md");
+    const envPath = path.join(tempDir, "live-ops.env");
+    await writeFile(envPath, "SEEMIRAI_DATABASE_URL=postgres://localhost/seemirai\n", "utf8");
     await writeFile(
       inputPath,
       JSON.stringify({
@@ -181,7 +436,7 @@ describe("live decision calibration report", () => {
 
     const result = spawnSync(
       process.execPath,
-      ["scripts/analyze-live-decision-calibration.mjs", "--input", inputPath, "--output", outputPath, "--json"],
+      ["scripts/analyze-live-decision-calibration.mjs", "--input", inputPath, "--env-file", envPath, "--output", outputPath, "--json"],
       {
         cwd: process.cwd(),
         encoding: "utf8",
@@ -197,6 +452,20 @@ describe("live decision calibration report", () => {
     });
     expect(markdown).toContain("## Threshold 품질");
     expect(markdown).toContain("## 후보/실현 결과");
+  });
+
+  it("rejects database URL as a CLI argument", () => {
+    const result = spawnSync(
+      process.execPath,
+      ["scripts/analyze-live-decision-calibration.mjs", "--database-url", "postgres://localhost/seemirai", "--window-start", "2026-06-30T00:00:00.000Z", "--window-end", "2026-06-30T00:10:00.000Z"],
+      {
+        cwd: process.cwd(),
+        encoding: "utf8",
+      },
+    );
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("--database-url은 보안상 지원하지 않습니다");
   });
 });
 

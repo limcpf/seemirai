@@ -186,11 +186,19 @@ export async function loadLiveOpsDbBackedFeatureSnapshot(
   }
 
   const latestEventAt = findLatestEventTimestamp(window.events);
+  const latestTradeEventAt = findLatestTradeEventTimestamp(window.events, input.exchangeId, input.market);
+  const latestOrderbookEventAt = findLatestOrderbookEventTimestamp(window.events, input.exchangeId, input.market);
   const latestEventLagMs = observedAt.getTime() - latestEventAt.getTime();
+  const latestTradeEventLagMs = observedAt.getTime() - latestTradeEventAt.getTime();
+  const latestOrderbookEventLagMs = observedAt.getTime() - latestOrderbookEventAt.getTime();
   const freshnessMetadata = {
     ...metadata,
     latestEventAt: latestEventAt.toISOString(),
     latestEventLagMs,
+    latestOrderbookEventAt: latestOrderbookEventAt.toISOString(),
+    latestOrderbookEventLagMs,
+    latestTradeEventAt: latestTradeEventAt.toISOString(),
+    latestTradeEventLagMs,
   };
 
   if (latestEventLagMs < 0 || latestEventLagMs > maxLatestEventLagMs) {
@@ -201,6 +209,28 @@ export async function loadLiveOpsDbBackedFeatureSnapshot(
       windowStartAt,
       reasonCode: "FEATURE_MARKET_DATA_STALE",
       message: `DB feature window latest event is stale: latestEventLagMs=${latestEventLagMs}, maxLatestEventLagMs=${maxLatestEventLagMs}`,
+      metadata: freshnessMetadata,
+    });
+  }
+  if (latestOrderbookEventLagMs < 0 || latestOrderbookEventLagMs > maxLatestEventLagMs) {
+    // 호가 기반 feature는 최신 체결로 보정할 수 없으므로 orderbook stream stale도 독립적으로 fail-closed 한다.
+    return createProviderFailureSnapshot({
+      observedAt: windowEndAt,
+      windowEndAt,
+      windowStartAt,
+      reasonCode: "FEATURE_MARKET_DATA_STALE",
+      message: `DB feature window latest orderbook is stale: latestOrderbookEventLagMs=${latestOrderbookEventLagMs}, maxLatestEventLagMs=${maxLatestEventLagMs}`,
+      metadata: freshnessMetadata,
+    });
+  }
+  if (latestTradeEventLagMs < 0 || latestTradeEventLagMs > maxLatestEventLagMs) {
+    // 체결 기반 feature는 최신 호가로 보정할 수 없으므로 trade stream stale도 독립적으로 fail-closed 한다.
+    return createProviderFailureSnapshot({
+      observedAt: windowEndAt,
+      windowEndAt,
+      windowStartAt,
+      reasonCode: "FEATURE_MARKET_DATA_STALE",
+      message: `DB feature window latest trade is stale: latestTradeEventLagMs=${latestTradeEventLagMs}, maxLatestEventLagMs=${maxLatestEventLagMs}`,
       metadata: freshnessMetadata,
     });
   }
@@ -326,6 +356,66 @@ function findLatestEventTimestamp(events: readonly MarketDataEvent[]): Date {
   }
 
   return latestEventAt;
+}
+
+/**
+ * target market의 최신 trade event 시각을 찾는다.
+ *
+ * provider 내부의 순수 검증 경계에서만 호출되며, 입력 window의 event 배열을 변경하지 않는다. 반환값은
+ * trade-derived feature가 주문 후보를 열어도 되는 freshness invariant를 별도로 검사하는 데 사용된다.
+ */
+function findLatestTradeEventTimestamp(
+  events: readonly MarketDataEvent[],
+  exchangeId: ExchangeId,
+  market: MarketCode,
+): Date {
+  let latestTradeEventAt: Date | undefined;
+
+  for (const event of events) {
+    if (event.type !== "TRADE" || event.exchangeId !== exchangeId || event.market !== market) {
+      continue;
+    }
+    const eventAt = parseProviderTimestamp(event.exchangeTimestamp);
+    if (latestTradeEventAt === undefined || eventAt.getTime() > latestTradeEventAt.getTime()) {
+      latestTradeEventAt = eventAt;
+    }
+  }
+
+  if (latestTradeEventAt === undefined) {
+    throw new Error("DB feature window has no latest trade event");
+  }
+
+  return latestTradeEventAt;
+}
+
+/**
+ * target market의 최신 orderbook event 시각을 찾는다.
+ *
+ * provider 내부의 순수 검증 경계에서만 호출되며, 입력 window의 event 배열을 변경하지 않는다. 반환값은
+ * bid/ask 기반 feature가 주문 후보를 열어도 되는 freshness invariant를 별도로 검사하는 데 사용된다.
+ */
+function findLatestOrderbookEventTimestamp(
+  events: readonly MarketDataEvent[],
+  exchangeId: ExchangeId,
+  market: MarketCode,
+): Date {
+  let latestOrderbookEventAt: Date | undefined;
+
+  for (const event of events) {
+    if (event.type !== "ORDERBOOK" || event.exchangeId !== exchangeId || event.market !== market) {
+      continue;
+    }
+    const eventAt = parseProviderTimestamp(event.exchangeTimestamp);
+    if (latestOrderbookEventAt === undefined || eventAt.getTime() > latestOrderbookEventAt.getTime()) {
+      latestOrderbookEventAt = eventAt;
+    }
+  }
+
+  if (latestOrderbookEventAt === undefined) {
+    throw new Error("DB feature window has no latest orderbook event");
+  }
+
+  return latestOrderbookEventAt;
 }
 
 function readEventTimestamp(event: MarketDataEvent): TimestampInput {
