@@ -916,6 +916,277 @@ describe("production live ops script skeleton", () => {
     expect(stdoutChunks.join("")).not.toContain("fake-telegram-token");
   });
 
+  it("live:ops:daemon closeout evidence는 retention, stale status, alert retry/manual review를 분리한다", async () => {
+    const daemonModulePath = path.join(process.cwd(), "scripts/run-live-ops-daemon-support.mjs");
+    const { runLiveOpsDaemon } = await import(daemonModulePath);
+    const retentionCalls: Array<{ olderThan: string; databaseUrl: string }> = [];
+    const stdoutChunks: string[] = [];
+
+    const result = await runLiveOpsDaemon(
+      {
+        configPath: "/tmp/live-ops.production.json",
+        maxTicks: 2,
+        tickIntervalMs: 0,
+        json: true,
+        decisionHistoryRetentionHours: 24,
+      },
+      {
+        stdout: {
+          write(chunk: string) {
+            stdoutChunks.push(chunk);
+            return true;
+          },
+        },
+        clock: () => "2026-06-30T00:00:00.000Z",
+        sleep: async () => undefined,
+        async loadInputs() {
+          if (retentionCalls.length > 0) {
+            throw new Error("provider stale after previous summary");
+          }
+          return { env: { SEEMIRAI_DATABASE_URL: "postgres://fixture" } };
+        },
+        renderSummary() {
+          return {
+            status: "blocked",
+            configPath: "/tmp/live-ops.production.json",
+            liveOrderCapable: false,
+            liveExecution: {
+              ready: false,
+              status: "manual_review_required",
+              liveOrderCapable: false,
+              submittedOrderCount: 0,
+              cleanupStatus: "manual_review_required",
+            },
+            reconcilePnlStatus: {
+              ready: true,
+              status: "manual_review_required",
+              manualReviewRequired: true,
+              mismatchCount: 1,
+            },
+            telegramAlert: {
+              ready: false,
+              status: "manual_review_required",
+              retryPlannedCount: 1,
+              failureCount: 1,
+              scheduledBriefing: {
+                status: "partial_failure",
+                retryPlannedCount: 2,
+                failureCount: 1,
+              },
+            },
+          };
+        },
+        async applyDecisionHistoryRetention(input: { olderThan: Date; databaseUrl: string }) {
+          retentionCalls.push({
+            olderThan: input.olderThan.toISOString(),
+            databaseUrl: input.databaseUrl,
+          });
+          return { deleted: 7 };
+        },
+      },
+    );
+
+    expect(retentionCalls).toEqual([{
+      olderThan: "2026-06-29T00:00:00.000Z",
+      databaseUrl: "postgres://fixture",
+    }]);
+    expect(result).toMatchObject({
+      status: "transient_failure",
+      latestError: {
+        message: "provider stale after previous summary",
+      },
+      closeoutEvidence: {
+        statusFreshness: {
+          status: "stale_after_failure",
+          latestSummaryStatus: "blocked",
+          latestErrorName: "Error",
+        },
+        alertRetry: {
+          retryPlannedCount: 3,
+          failureCount: 2,
+          manualReviewRequired: true,
+        },
+        manualReview: {
+          required: true,
+          count: 1,
+        },
+        decisionHistoryRetention: {
+          status: "applied",
+          deleted: 7,
+          olderThan: "2026-06-29T00:00:00.000Z",
+        },
+      },
+    });
+    expect(JSON.stringify(result)).not.toContain("postgres://fixture");
+    expect(stdoutChunks.join("")).not.toContain("postgres://fixture");
+  });
+
+  it("live:ops:daemon은 retention 실패를 manual-review backoff와 source로 보존한다", async () => {
+    const daemonModulePath = path.join(process.cwd(), "scripts/run-live-ops-daemon-support.mjs");
+    const { runLiveOpsDaemon } = await import(daemonModulePath);
+    const sleepCalls: number[] = [];
+
+    const result = await runLiveOpsDaemon(
+      {
+        configPath: "/tmp/live-ops.production.json",
+        maxTicks: 2,
+        tickIntervalMs: 1,
+        json: true,
+        decisionHistoryRetentionHours: 24,
+      },
+      {
+        stdout: {
+          write() {
+            return true;
+          },
+        },
+        clock: () => "2026-06-30T00:00:00.000Z",
+        sleep: async (delayMs: number) => {
+          sleepCalls.push(delayMs);
+        },
+        async loadInputs() {
+          return { env: { SEEMIRAI_DATABASE_URL: "postgres://fixture" } };
+        },
+        renderSummary() {
+          return {
+            status: "ready",
+            configPath: "/tmp/live-ops.production.json",
+            liveOrderCapable: false,
+            liveExecution: {
+              ready: true,
+              status: "idle",
+              liveOrderCapable: false,
+              submittedOrderCount: 0,
+            },
+            reconcilePnlStatus: {
+              ready: true,
+              status: "ready",
+              manualReviewRequired: false,
+              mismatchCount: 0,
+            },
+            telegramAlert: {
+              ready: true,
+              status: "idle",
+              retryPlannedCount: 0,
+              failureCount: 0,
+            },
+          };
+        },
+        async applyDecisionHistoryRetention() {
+          throw new Error("retention locked");
+        },
+      },
+    );
+
+    expect(sleepCalls[0]).toBe(30_000);
+    expect(result.closeoutEvidence).toMatchObject({
+      decisionHistoryRetention: {
+        status: "manual_review_required",
+      },
+      manualReview: {
+        required: true,
+        sources: expect.arrayContaining(["decision_history_retention"]),
+      },
+    });
+    expect(JSON.stringify(result)).not.toContain("postgres://fixture");
+  });
+
+  it("live:ops:daemon closeout은 이전 manual-review source를 최신 tick에서 지우지 않는다", async () => {
+    const daemonModulePath = path.join(process.cwd(), "scripts/run-live-ops-daemon-support.mjs");
+    const { runLiveOpsDaemon } = await import(daemonModulePath);
+    const summaries = [
+      {
+        status: "blocked",
+        configPath: "/tmp/live-ops.production.json",
+        liveOrderCapable: false,
+        liveExecution: {
+          ready: false,
+          status: "manual_review_required",
+          liveOrderCapable: false,
+          submittedOrderCount: 0,
+        },
+        reconcilePnlStatus: {
+          ready: true,
+          status: "ready",
+          manualReviewRequired: false,
+          mismatchCount: 0,
+        },
+        telegramAlert: {
+          ready: false,
+          status: "blocked",
+          retryPlannedCount: 0,
+          failureCount: 0,
+        },
+      },
+      {
+        status: "ready",
+        configPath: "/tmp/live-ops.production.json",
+        liveOrderCapable: false,
+        liveExecution: {
+          ready: true,
+          status: "idle",
+          liveOrderCapable: false,
+          submittedOrderCount: 0,
+        },
+        reconcilePnlStatus: {
+          ready: true,
+          status: "ready",
+          manualReviewRequired: false,
+          mismatchCount: 0,
+        },
+        telegramAlert: {
+          ready: true,
+          status: "idle",
+          retryPlannedCount: 0,
+          failureCount: 0,
+        },
+      },
+    ];
+    let tickIndex = 0;
+
+    const result = await runLiveOpsDaemon(
+      {
+        configPath: "/tmp/live-ops.production.json",
+        maxTicks: 2,
+        tickIntervalMs: 1,
+        json: true,
+      },
+      {
+        stdout: {
+          write() {
+            return true;
+          },
+        },
+        clock: () => "2026-06-30T00:00:00.000Z",
+        sleep: async () => undefined,
+        async loadInputs() {
+          return {};
+        },
+        renderSummary() {
+          const summary = summaries[Math.min(tickIndex, summaries.length - 1)];
+          tickIndex += 1;
+          return summary;
+        },
+      },
+    );
+
+    expect(result.closeoutEvidence.alertRetry.status).toBe("ok");
+    expect(result.closeoutEvidence.manualReview).toMatchObject({
+      required: true,
+      sources: expect.arrayContaining(["live_execution", "telegram_alert"]),
+    });
+  });
+
+  it("decision history retention delete는 삭제 row id를 반환하지 않는다", async () => {
+    const source = await readFile(path.join(process.cwd(), "scripts/run-live-ops-support.mjs"), "utf8");
+    const retentionDeleteLine = source
+      .split("\n")
+      .find((line) => line.includes("DELETE FROM live_decision_ticks WHERE observed_at < $1"));
+
+    expect(retentionDeleteLine).toBeDefined();
+    expect(retentionDeleteLine).not.toContain("RETURNING");
+  });
+
   it("live:ops --tui는 fixture smoke에서 provider 호출 없이 운영 dashboard 첫 화면을 출력한다", () => {
     const result = spawnSync(
       process.execPath,
