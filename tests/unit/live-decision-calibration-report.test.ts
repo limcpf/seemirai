@@ -180,6 +180,148 @@ describe("live decision calibration report", () => {
     );
   });
 
+  it("does not count failed featureStatus snapshots as ok", async () => {
+    const {
+      createLiveDecisionCalibrationReport,
+    } = await import(modulePath);
+
+    const report = createLiveDecisionCalibrationReport({
+      generatedAt: "2026-06-30T00:00:00.000Z",
+      source: {
+        kind: "fixture",
+        label: "failed-feature-status",
+      },
+      ticks: [
+        createTick({
+          decisionKind: "BLOCK",
+          featureSnapshot: {
+            featureStatus: "failed",
+            cost_adjusted_margin_bps: "25",
+            feature_source: "live_ops_decision_details",
+            mean_reversion_discount_bps: "35",
+            trend_strength_bps: "12",
+          },
+          orderIntentCount: 0,
+          reasonCode: "autonomous_24x7_feature_snapshot_failed",
+        }),
+      ],
+      window: {
+        market: "KRW-BTC",
+        strategyId: "live_ops_autonomous_24x7_core",
+        windowEndAt: "2026-06-30T00:10:00.000Z",
+        windowStartAt: "2026-06-30T00:00:00.000Z",
+      },
+    });
+
+    expect(report.featureQuality.statusCounts).toMatchObject({
+      failed: 1,
+    });
+    expect(report.featureQuality.statusCounts.ok).toBeUndefined();
+  });
+
+  it("accepts thresholds input as the threshold snapshot", async () => {
+    const {
+      createLiveDecisionCalibrationReport,
+    } = await import(modulePath);
+
+    const report = createLiveDecisionCalibrationReport({
+      generatedAt: "2026-06-30T00:00:00.000Z",
+      source: {
+        kind: "fixture",
+        label: "thresholds-input",
+      },
+      ticks: [
+        {
+          decision_kind: "BUY",
+          feature_snapshot_json: {
+            featureStatus: "ok",
+            cost_adjusted_margin_bps: "25",
+            mean_reversion_discount_bps: "35",
+            trend_strength_bps: "12",
+          },
+          market: "KRW-BTC",
+          observed_at: "2026-06-30T00:01:00.000Z",
+          order_intent_count: 1,
+          reason_code: "autonomous_24x7_entry_signal",
+          strategy_id: "live_ops_autonomous_24x7_core",
+          thresholds: {
+            mean_reversion_discount_bps: "30",
+            min_entry_margin_bps: "20",
+            trend_confirmation_bps: "10",
+          },
+        },
+      ],
+      window: {
+        market: "KRW-BTC",
+        strategyId: "live_ops_autonomous_24x7_core",
+        windowEndAt: "2026-06-30T00:10:00.000Z",
+        windowStartAt: "2026-06-30T00:00:00.000Z",
+      },
+    });
+
+    expect(report.thresholdQuality.checks).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          featureKey: "cost_adjusted_margin_bps",
+          missingCount: 0,
+          passCount: 1,
+          totalCount: 1,
+        }),
+        expect.objectContaining({
+          featureKey: "trend_strength_bps",
+          missingCount: 0,
+          passCount: 1,
+          totalCount: 1,
+        }),
+      ]),
+    );
+  });
+
+  it("does not count exit ticks as missing entry thresholds", async () => {
+    const {
+      createLiveDecisionCalibrationReport,
+    } = await import(modulePath);
+
+    const report = createLiveDecisionCalibrationReport({
+      generatedAt: "2026-06-30T00:00:00.000Z",
+      source: {
+        kind: "fixture",
+        label: "exit-tick",
+      },
+      ticks: [
+        createTick({
+          decisionKind: "SELL",
+          featureSnapshot: {
+            featureStatus: "ok",
+          },
+          orderIntentCount: 1,
+          reasonCode: "live_ops_exit_signal",
+        }),
+      ],
+      window: {
+        market: "KRW-BTC",
+        strategyId: "live_ops_autonomous_24x7_core",
+        windowEndAt: "2026-06-30T00:10:00.000Z",
+        windowStartAt: "2026-06-30T00:00:00.000Z",
+      },
+    });
+
+    expect(report.thresholdQuality.checks).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          featureKey: "cost_adjusted_margin_bps",
+          missingCount: 0,
+          totalCount: 0,
+        }),
+        expect.objectContaining({
+          featureKey: "trend_strength_bps",
+          missingCount: 0,
+          totalCount: 0,
+        }),
+      ]),
+    );
+  });
+
   it("calculates realized fill rate by unique filled order ids", async () => {
     const {
       createLiveDecisionCalibrationReport,

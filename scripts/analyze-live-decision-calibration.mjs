@@ -334,7 +334,7 @@ export function createLiveDecisionCalibrationReport(input) {
 
 function normalizeTick(raw) {
   const featureSnapshot = readRecord(raw.feature_snapshot_json ?? raw.featureSnapshot);
-  const thresholdSnapshot = readRecord(raw.threshold_json ?? raw.thresholdSnapshot ?? raw.threshold);
+  const thresholdSnapshot = readRecord(raw.threshold_json ?? raw.thresholdSnapshot ?? raw.thresholds ?? raw.threshold);
   const trace = readRecord(raw.trace_json ?? raw.trace);
   const decisionKind = String(raw.decision_kind ?? raw.decisionKind ?? "UNKNOWN").toUpperCase();
   const observedAt = normalizeTimestamp(raw.observed_at ?? raw.observedAt);
@@ -375,11 +375,11 @@ function createFeatureQuality(ticks) {
   for (const tick of ticks) {
     const snapshot = tick.featureSnapshot;
     const features = readFeatureValues(snapshot);
-    const status = typeof snapshot.status === "string"
-      ? snapshot.status
-      : Object.keys(features).length > 0
+    const status = readFeatureStatus(snapshot) ??
+      // feature status가 없을 때만 legacy flat feature 존재 여부로 ok/not_run을 보정한다.
+      (Object.keys(features).length > 0
         ? "ok"
-        : "not_run";
+        : "not_run");
     increment(statusCounts, status);
     increment(sourceCounts, readFeatureSource(snapshot));
 
@@ -404,6 +404,10 @@ function createThresholdQuality(ticks) {
     let totalCount = 0;
 
     for (const tick of ticks) {
+      if (!shouldEvaluateEntryThresholds(tick)) {
+        // exit tick은 entry threshold 품질 대상이 아니므로 missing 지표를 오염시키지 않는다.
+        continue;
+      }
       const features = readFeatureValues(tick.featureSnapshot);
       const thresholds = readStrategyThresholds(tick.thresholdSnapshot);
       const featureValue = readDecimal(features[spec.featureKey]);
@@ -466,6 +470,24 @@ function readFeatureValues(snapshot) {
   };
 }
 
+function readFeatureStatus(snapshot) {
+  const flatSnapshot = readRecord(snapshot);
+  if (hasText(flatSnapshot.status)) {
+    return String(flatSnapshot.status);
+  }
+  if (hasText(flatSnapshot.featureStatus)) {
+    return String(flatSnapshot.featureStatus);
+  }
+  if (hasText(flatSnapshot.feature_status)) {
+    return String(flatSnapshot.feature_status);
+  }
+  return undefined;
+}
+
+function shouldEvaluateEntryThresholds(tick) {
+  return tick.decisionKind !== "SELL";
+}
+
 function readOutcomeId(outcome) {
   if (!isRecord(outcome)) {
     return undefined;
@@ -493,6 +515,9 @@ function readStrategyThresholds(snapshot) {
   }
   if (isRecord(snapshot.strategy_thresholds)) {
     return snapshot.strategy_thresholds;
+  }
+  if (isRecord(snapshot.thresholds)) {
+    return snapshot.thresholds;
   }
   return snapshot;
 }
