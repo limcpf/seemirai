@@ -1386,11 +1386,97 @@ function attachLiveOpsCliAutonomousEntryRuntimeEvidence({ config, intent, prefli
     intent: runtimeIntent,
     preflight,
   });
+  const featureBlock = createLiveOpsCliAutonomousRuntimeFeatureBlock(preflight.autonomousFeatureSnapshot);
+  if (featureBlock !== undefined) {
+    const blockedIntent = {
+      ...runtimeIntent,
+      metadata: {
+        ...(runtimeIntent.metadata ?? {}),
+        ...featureBlock.metadata,
+      },
+    };
+    // 분석 이후 DB feature가 stale/결측으로 바뀌면 기존 BUY intent를 broker 제출 검증에서 확실히 거부한다.
+    return attachLiveOpsCliEntryRuntimeApprovalEvidence({
+      ...blockedIntent,
+      costInput: blockedIntent.costInput ?? createLiveOpsCliAutonomousEntryCostInput(blockedIntent),
+      risk,
+      costSnapshot: createLiveOpsCliAutonomousRuntimeFeatureBlockedCostSnapshot(blockedIntent, featureBlock),
+      riskApproval: createLiveOpsCliAutonomousRuntimeFeatureBlockedRiskApproval(blockedIntent, featureBlock),
+    });
+  }
   return attachLiveOpsCliEntryRuntimeApprovalEvidence({
     ...runtimeIntent,
     costInput: runtimeIntent.costInput ?? createLiveOpsCliAutonomousEntryCostInput(runtimeIntent),
     risk,
   });
+}
+
+function createLiveOpsCliAutonomousRuntimeFeatureBlock(featureSnapshot) {
+  if (!isNonEmptyRecord(featureSnapshot)) {
+    return undefined;
+  }
+  if (featureSnapshot.status !== "ok") {
+    const reasonCodes = Array.isArray(featureSnapshot.failureReasons)
+      ? featureSnapshot.failureReasons.map((reason) => reason?.reasonCode).filter(hasMeaningfulValue)
+      : [];
+    return {
+      reasonCode: "autonomous_24x7_runtime_feature_snapshot_failed",
+      metadata: {
+        runtime_feature_status: featureSnapshot.status ?? "failed",
+        runtime_feature_reason_codes: reasonCodes,
+        runtime_feature_source: readLiveOpsCliFeatureSnapshotSource(featureSnapshot),
+      },
+    };
+  }
+
+  const features = isNonEmptyRecord(featureSnapshot.features) ? featureSnapshot.features : {};
+  const missingFeatureKeys = liveOpsCliAutonomousRequiredFeatureKeys.filter((key) =>
+    readLiveOpsCliOptionalDecimal(features[key]) === undefined
+  );
+  if (missingFeatureKeys.length === 0) {
+    return undefined;
+  }
+
+  return {
+    reasonCode: "autonomous_24x7_runtime_required_feature_missing",
+    metadata: {
+      runtime_feature_missing_keys: missingFeatureKeys,
+      runtime_feature_status: "failed",
+      runtime_feature_source: readLiveOpsCliFeatureSnapshotSource(featureSnapshot),
+    },
+  };
+}
+
+function readLiveOpsCliFeatureSnapshotSource(featureSnapshot) {
+  return featureSnapshot?.metadata?.feature_source ?? featureSnapshot?.metadata?.source ?? "unknown";
+}
+
+function createLiveOpsCliAutonomousRuntimeFeatureBlockedCostSnapshot(intent, featureBlock) {
+  return {
+    source: "cost_model",
+    exchange_id: intent.exchangeId,
+    market: intent.market,
+    trade_allowed: false,
+    reason_code: featureBlock.reasonCode,
+    order_intent: createLiveOpsCliOrderIntentEvidence(intent),
+    feature_gate: featureBlock.metadata,
+  };
+}
+
+function createLiveOpsCliAutonomousRuntimeFeatureBlockedRiskApproval(intent, featureBlock) {
+  return {
+    source: "risk_gate",
+    approved: false,
+    action: "BLOCK",
+    status: "FAIL",
+    failed_evaluation_reason_codes: [featureBlock.reasonCode],
+    warning_evaluation_reason_codes: [],
+    order_intent: createLiveOpsCliOrderIntentEvidence(intent),
+    threshold_snapshot: {
+      source: "live_ops_cli_runtime_feature_preflight",
+      feature_gate: featureBlock.metadata,
+    },
+  };
 }
 
 function attachLiveOpsCliAutonomousExitRuntimeEvidence({ config, intent, preflight }) {
@@ -2497,11 +2583,15 @@ async function loadLiveOpsCliDbBackedAutonomousFeatureSnapshot({
   }
 
   const latestEventAt = latestLiveOpsCliFeatureEventAt(trades, orderbooks);
+  const latestTradeEventAt = latestLiveOpsCliFeatureTradeEventAt(trades);
   const latestEventLagMs = observedAtMs - Date.parse(latestEventAt);
+  const latestTradeEventLagMs = observedAtMs - Date.parse(latestTradeEventAt);
   const freshnessMetadata = {
     ...sourceMetadata,
     latestEventAt,
     latestEventLagMs,
+    latestTradeEventAt,
+    latestTradeEventLagMs,
   };
   if (!Number.isFinite(latestEventLagMs) || latestEventLagMs < 0 || latestEventLagMs > maxLatestEventLagMs) {
     // stale feature window는 오래된 edge로 주문 후보를 만들 수 있어 public tick fallback 전에 차단한다.
@@ -2511,6 +2601,17 @@ async function loadLiveOpsCliDbBackedAutonomousFeatureSnapshot({
       windowStartAt,
       reasonCode: "FEATURE_MARKET_DATA_STALE",
       message: `DB feature window latest event is stale: latestEventLagMs=${latestEventLagMs}, maxLatestEventLagMs=${maxLatestEventLagMs}`,
+      metadata: freshnessMetadata,
+    });
+  }
+  if (!Number.isFinite(latestTradeEventLagMs) || latestTradeEventLagMs < 0 || latestTradeEventLagMs > maxLatestEventLagMs) {
+    // trend/mean-reversion 입력인 체결 stream이 stale이면 최신 호가만으로 신규 BUY edge를 열 수 없다.
+    return createLiveOpsCliFeatureFailureSnapshot({
+      observedAt: windowEndAt,
+      windowEndAt,
+      windowStartAt,
+      reasonCode: "FEATURE_MARKET_DATA_STALE",
+      message: `DB feature window latest trade is stale: latestTradeEventLagMs=${latestTradeEventLagMs}, maxLatestEventLagMs=${maxLatestEventLagMs}`,
       metadata: freshnessMetadata,
     });
   }
@@ -2561,10 +2662,14 @@ function createLiveOpsCliDbAutonomousFeatureSuccessSnapshot({
     : new Decimal(0);
   const mid = bid.plus(ask).div(2);
   const spreadBps = mid.gt(0) ? ask.minus(bid).div(mid).mul(10_000) : new Decimal(0);
-  const costAdjustedMargin = meanReversionDiscount.minus(spreadBps);
+  const grossExpectedReturn = meanReversionDiscount;
+  const costBurdenBps = sumLiveOpsCliEntryCostBurdenBps(createLiveOpsCliCleanupCostInput());
+  const costAdjustedMargin = grossExpectedReturn.minus(costBurdenBps);
   const features = {
     cost_adjusted_margin_bps: costAdjustedMargin.toFixed(),
+    entry_cost_burden_bps: costBurdenBps.toFixed(),
     feature_source: liveOpsCliDbFeatureSource,
+    gross_expected_return_bps: grossExpectedReturn.toFixed(),
     mean_reversion_discount_bps: meanReversionDiscount.toFixed(),
     spread_bps: spreadBps.toFixed(),
     trend_strength_bps: trendStrength.toFixed(),
@@ -2621,6 +2726,20 @@ function latestLiveOpsCliFeatureEventAt(trades, orderbooks) {
   }, undefined);
   if (latest === undefined) {
     throw new Error("DB feature window has no latest event");
+  }
+  return latest;
+}
+
+function latestLiveOpsCliFeatureTradeEventAt(trades) {
+  const timestamps = trades.map((row) => toLiveOpsCliIsoTimestamp(row.exchange_timestamp));
+  const latest = timestamps.reduce((max, timestamp) => {
+    if (max === undefined) {
+      return timestamp;
+    }
+    return Date.parse(timestamp) > Date.parse(max) ? timestamp : max;
+  }, undefined);
+  if (latest === undefined) {
+    throw new Error("DB feature window has no latest trade event");
   }
   return latest;
 }
@@ -8727,7 +8846,12 @@ function collectLiveOpsCliOrderIntentViolations({ config, marketData, intent }) 
     appendLiveOpsCliRiskGateInfrastructureViolations(violations, intent.risk.infrastructureSignals);
   }
   if (!isLiveOpsCliCostSnapshotEvidence(intent?.costSnapshot, intent)) {
-    violations.push("주문 후보에는 현재 intent와 일치하는 CostModel evidence가 필요합니다");
+    if (intent?.costSnapshot?.trade_allowed === false && hasMeaningfulValue(intent.costSnapshot.reason_code)) {
+      // CostModel이 명시적으로 닫은 후보는 generic mismatch로 숨기지 않고 차단 원인을 운영 추적 정보로 남긴다.
+      violations.push(`주문 후보는 실행 직전 비용/feature gate를 통과하지 못했습니다: ${intent.costSnapshot.reason_code}`);
+    } else {
+      violations.push("주문 후보에는 현재 intent와 일치하는 CostModel evidence가 필요합니다");
+    }
   }
   if (!isLiveOpsCliRiskApprovalEvidence(intent?.riskApproval, intent)) {
     violations.push("주문 후보에는 현재 intent와 일치하는 RiskGate approval evidence가 필요합니다");
@@ -12222,6 +12346,9 @@ function evaluateLiveOpsCliAutonomousEntrySignal({ features, policy }) {
       trend_confirmation_bps: String(policy.trend_confirmation_bps),
       mean_reversion_discount_bps_threshold: String(policy.mean_reversion_discount_bps),
       ...(hasMeaningfulValue(features.feature_source) ? { feature_source: features.feature_source } : {}),
+      ...(isNonNegativeDecimalString(features.gross_expected_return_bps)
+        ? { gross_expected_return_bps: features.gross_expected_return_bps }
+        : {}),
       ...(isNonNegativeDecimalString(features.spread_bps) ? { spread_bps: features.spread_bps } : {}),
     },
   };
