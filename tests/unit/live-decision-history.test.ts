@@ -133,4 +133,28 @@ describe("live decision history contract", () => {
       LiveDecisionHistoryPersistenceValidationError,
     );
   });
+
+  it("DB URL key와 credential URL 문자열은 DB row 변환 전에 거부한다", () => {
+    const tick = createLiveDecisionHistoryTick({
+      exchange: "UPBIT",
+      market: "KRW-BTC",
+      strategyId: "live_ops_autonomous_24x7_core",
+      decisionKind: "HOLD",
+      reasonCode: "autonomous_24x7_entry_signal_weak",
+      featureSnapshot: {
+        featureStatus: "ok",
+        database_url: "postgres://user:secret@db/prod",
+      },
+      thresholds: { min_entry_margin_bps: "10" },
+      orderIntentCount: 0,
+      observedAt: new Date("2026-06-30T00:00:05.000Z"),
+      decisionAt: new Date("2026-06-30T00:00:05.100Z"),
+      sourceTickId: "tick-db-url",
+      trace: { source: "unit-test" },
+    });
+
+    expect(() => toLiveDecisionHistoryTickRowInput(tick)).toThrow(
+      LiveDecisionHistoryPersistenceValidationError,
+    );
+  });
 });

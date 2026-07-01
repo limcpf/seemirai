@@ -4,6 +4,9 @@ import {
   assertDecisionLedgerJsonRecord,
 } from "../decision-ledger/validation.js";
 
+const liveDecisionHistorySensitiveKeyPattern = /(?:database[_-]?url|databaseUrl|db[_-]?url|dbUrl|pg[_-]?url|pgUrl)/u;
+const liveDecisionHistorySensitiveValuePattern = /postgres(?:ql)?:\/\/[^:<\s"']+:[^@<\s"']+@/u;
+
 /**
  * live decision history persistence 검증 오류다.
  *
@@ -61,6 +64,29 @@ function assertLiveDecisionHistoryJsonRecord(path: string, value: unknown): void
       throw validationError(path, error.message.replace(/^decision ledger [^:]+: /u, ""));
     }
     throw error;
+  }
+  assertNoLiveDecisionHistoryCredentialCandidate(path, value);
+}
+
+function assertNoLiveDecisionHistoryCredentialCandidate(path: string, value: unknown): void {
+  if (typeof value === "string") {
+    if (liveDecisionHistorySensitiveValuePattern.test(value)) {
+      throw validationError(path, "DB credential URL 후보는 저장할 수 없습니다.");
+    }
+    return;
+  }
+  if (Array.isArray(value)) {
+    value.forEach((item, index) => assertNoLiveDecisionHistoryCredentialCandidate(`${path}[${index}]`, item));
+    return;
+  }
+  if (typeof value === "object" && value !== null) {
+    for (const [key, child] of Object.entries(value)) {
+      const childPath = `${path}.${key}`;
+      if (liveDecisionHistorySensitiveKeyPattern.test(key)) {
+        throw validationError(childPath, "DB credential key 후보는 저장할 수 없습니다.");
+      }
+      assertNoLiveDecisionHistoryCredentialCandidate(childPath, child);
+    }
   }
 }
 
