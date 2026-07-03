@@ -657,6 +657,52 @@ describe("production live ops live execution adapter", () => {
     expect(entryRuntime.submitEntryCandidate).not.toHaveBeenCalled();
   });
 
+  it("SELL 후보는 position scope market이 주문 market과 다르면 exit runtime 호출 전에 차단한다", async () => {
+    const entryRuntime = createEntryRuntimeRecorder();
+    const exitRuntime = createExitRuntimeRecorder();
+
+    const summary = await runLiveOpsLiveExecution(createInput({
+      analysisDecision: analysisSummary({ orderIntentCount: 1, decisionCategory: "ORDER_INTENT" }),
+      orderIntents: [
+        createSellOrderIntent({
+          metadata: {
+            expected_loss_bps_of_equity: "5",
+            position_effect: "EXIT",
+            exit_reason_code: "autonomous_24x7_take_profit",
+            exit_rule_id: "take_profit",
+            position_scope: {
+              market: "KRW-ETH",
+              strategy_id: "fixture_order_strategy",
+              total_quantity: "0.0001",
+            },
+          },
+        }),
+      ],
+      entryRuntime,
+      exitRuntime,
+      risk: createRiskInput({
+        positions: [
+          createPositionRiskSnapshot({
+            market: "KRW-ETH",
+            metadata: {
+              strategy_owned_quantity: "0.0001",
+            },
+          }),
+        ],
+      }),
+    }));
+
+    expect(summary).toMatchObject({
+      status: "blocked",
+      ready: false,
+      liveOrderCapable: false,
+    });
+    expect(summary.checks.map((check) => check.code)).toContain("live_ops_order_intent_blocked");
+    expect(JSON.stringify(summary.checks)).toContain("position scope market");
+    expect(exitRuntime.submitExitOrder).not.toHaveBeenCalled();
+    expect(entryRuntime.submitEntryCandidate).not.toHaveBeenCalled();
+  });
+
   it("SELL 후보는 strategyId 없는 aggregate position snapshot을 전략 소유 수량으로 쓰지 않는다", async () => {
     const entryRuntime = createEntryRuntimeRecorder();
     const exitRuntime = createExitRuntimeRecorder();

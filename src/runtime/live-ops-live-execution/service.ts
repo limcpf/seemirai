@@ -1549,11 +1549,26 @@ function requireExitPositionScope(intent: OrderIntent): ExecutionExitCostEvidenc
   return scope;
 }
 
+/**
+ * SELL 후보 metadata의 position scope가 주문 후보와 같은 포지션을 가리키는지 검증한다.
+ *
+ * 호출 경계는 exit runtime 제출 전 order intent guard이며, 입력은 analysis가 만든 SELL intent와 metadata에서 읽은
+ * position scope다. 반환값은 차단 사유 문장 또는 `undefined`이고, market/strategy/수량이 모두 주문 후보와 일관되어야 한다.
+ * 외부 side effect는 없으며, 여기서 실패하면 broker/runtime 제출 전에 BLOCK summary와 decision history로 닫힌다.
+ */
 function validateExitQuantityAgainstScope(
   intent: OrderIntent,
   positionScope: ExecutionExitCostEvidence["position_scope"],
   positionEffect: string | undefined,
 ): string | undefined {
+  if (positionScope.market !== intent.market) {
+    return "매도 후보 position scope market은 주문 market과 일치해야 합니다";
+  }
+
+  if (positionScope.strategy_id !== intent.strategyId) {
+    return "매도 후보 position scope strategy는 주문 strategy와 일치해야 합니다";
+  }
+
   try {
     const requestedQuantity = new Decimal(intent.requestedQuantity);
     const openQuantity = new Decimal(positionScope.total_quantity);
