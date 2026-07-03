@@ -33,6 +33,7 @@ export function assertValidLiveDecisionHistoryTick(tick: LiveDecisionHistoryTick
   assertSecretSafeNonEmptyString("market", tick.market);
   assertSecretSafeNonEmptyString("strategy_id", tick.strategyId);
   assertSecretSafeNonEmptyString("reason_code", tick.reasonCode);
+  assertSecretSafeNonEmptyString("source_tick_id", tick.sourceTickId);
   assertSecretSafeNonEmptyString("dedupe_key", tick.dedupeKey);
   assertNullableSecretSafeNonEmptyString("correlation_id", tick.correlationId ?? null);
 

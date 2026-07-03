@@ -9,6 +9,7 @@ CREATE TABLE IF NOT EXISTS live_decision_ticks (
   strategy_id text NOT NULL CHECK (btrim(strategy_id) <> ''),
   decision_kind text NOT NULL CHECK (decision_kind IN ('HOLD', 'BUY', 'SELL', 'BLOCK')),
   reason_code text NOT NULL CHECK (btrim(reason_code) <> ''),
+  source_tick_id text NOT NULL CHECK (btrim(source_tick_id) <> ''),
   feature_snapshot_json jsonb NOT NULL DEFAULT '{}'::jsonb CHECK (jsonb_typeof(feature_snapshot_json) = 'object'),
   threshold_json jsonb NOT NULL DEFAULT '{}'::jsonb CHECK (jsonb_typeof(threshold_json) = 'object'),
   order_intent_count integer NOT NULL CHECK (order_intent_count >= 0),

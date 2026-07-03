@@ -640,6 +640,8 @@ export interface LiveDecisionTicksTable {
   decision_kind: "HOLD" | "BUY" | "SELL" | "BLOCK";
   /** 판단 reason code. 사용자-facing 문구는 status formatter가 별도로 낮춘다. */
   reason_code: string;
+  /** 같은 source tick 재실행과 audit/tax closeout을 연결하는 durable source id */
+  source_tick_id: string;
   /** strategy에 전달된 feature snapshot의 secret-free projection */
   feature_snapshot_json: GeneratedJsonRecord;
   /** 해당 tick 판단에 적용된 threshold/config projection */

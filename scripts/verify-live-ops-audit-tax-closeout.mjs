@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 
 const contractVersion = "live_ops_audit_tax_closeout.v1";
 const requiredEvidence = ["decision_tick", "order", "cancel", "fill", "pnl_snapshot", "audit_event"];
-const secretKeyPattern = /(?:authorization|access[_-]?key|secret[_-]?key|secret|token|password|jwt|database[_-]?url|db[_-]?password|pg[_-]?password)/iu;
+const secretKeyPattern = /(?:authorization|access[_-]?key|api[_-]?key|query[_-]?hash|secret[_-]?key|secret|token|password|jwt|database[_-]?url|db[_-]?password|pg[_-]?password)/iu;
 const secretValuePatterns = [
   { label: "authorization bearer literal", pattern: /\bBearer\s+[A-Za-z0-9._/-]+/u },
   { label: "postgres credential url", pattern: /postgres(?:ql)?:\/\/[^:<\s"]+:[^@<\s"]+@/u },
@@ -436,7 +436,7 @@ function isRecord(value) {
 
 function isRawEvidenceKey(key) {
   const normalized = String(key).replace(/[_-]/gu, "").toLowerCase();
-  if (["rawproviderpayload", "rawproviderresponse", "raworderdetail", "raworderpayload", "rawpayload", "rawupdate"].includes(normalized)) {
+  if (["rawproviderpayload", "rawproviderresponse", "raworderdetail", "raworderpayload", "rawpayload", "rawpayloadjson", "rawupdate"].includes(normalized)) {
     return true;
   }
   return normalized.includes("raw") &&

@@ -434,6 +434,7 @@ describe("production live ops script skeleton", () => {
         strategyId: "live_ops_cleanup_probe",
         decisionKind: "HOLD",
         reasonCode: "live_ops_hold",
+        sourceTickId: "writer-secret-test",
         featureSnapshot: { api_key: "redacted" },
         thresholds: {},
         orderIntentCount: 0,
@@ -455,6 +456,7 @@ describe("production live ops script skeleton", () => {
         strategyId: "live_ops_cleanup_probe",
         decisionKind: "HOLD",
         reasonCode: "live_ops_hold",
+        sourceTickId: "writer-invalid-number-test",
         featureSnapshot: { invalid_metric: Number.POSITIVE_INFINITY },
         thresholds: {},
         orderIntentCount: 0,
@@ -1211,6 +1213,11 @@ describe("production live ops script skeleton", () => {
                 orderRawDetail: {
                   uuid: "raw-order-uuid",
                 },
+                raw_payload_json: {
+                  uuid: "raw-json-uuid",
+                },
+                api_key: "should-not-persist",
+                query_hash: "should-not-persist",
               },
             },
           ],
@@ -1241,6 +1248,15 @@ describe("production live ops script skeleton", () => {
           }),
           expect.objectContaining({
             path: "$.chains[0].auditEvents[0].payload.orderRawDetail",
+          }),
+          expect.objectContaining({
+            path: "$.chains[0].auditEvents[0].payload.raw_payload_json",
+          }),
+          expect.objectContaining({
+            path: "$.chains[0].auditEvents[0].payload.api_key",
+          }),
+          expect.objectContaining({
+            path: "$.chains[0].auditEvents[0].payload.query_hash",
           }),
         ]),
       },
@@ -8939,6 +8955,7 @@ console.log(JSON.stringify({
       reason_code: "cost_margin_ok",
     };
     const submittedRequests: Array<Record<string, any>> = [];
+    const appendDecisionTick = vi.fn(async (_input: { tick: Record<string, unknown> }) => ({ inserted: true }));
 
     vi.useFakeTimers();
     vi.setSystemTime(new Date(executionAt));
@@ -8971,6 +8988,7 @@ console.log(JSON.stringify({
           SEEMIRAI_UPBIT_KEY_SCOPE_EVIDENCE_ID: "scope-evidence",
         },
         orderIntents: [blockedIntent],
+        decisionHistoryWriter: { appendDecisionTick },
         entryRuntime: {
           async submitEntryCandidate(request: Record<string, any>) {
             submittedRequests.push(request);
@@ -9022,6 +9040,11 @@ console.log(JSON.stringify({
     }
 
     expect(submittedRequests).toHaveLength(0);
+    expect(appendDecisionTick.mock.calls[0]?.[0]?.tick).toMatchObject({
+      decisionKind: "BLOCK",
+      reasonCode: "live_ops_order_intent_blocked",
+      orderIntentCount: 0,
+    });
   });
 
   it("cleanup_probe runtime evidence 보강은 malformed 기존 CostModel evidence를 승인으로 합성하지 않는다", async () => {

@@ -2820,6 +2820,7 @@ export function createLiveOpsCliDatabaseDecisionHistoryWriter(pool) {
             strategy_id,
             decision_kind,
             reason_code,
+            source_tick_id,
             feature_snapshot_json,
             threshold_json,
             order_intent_count,
@@ -2833,8 +2834,8 @@ export function createLiveOpsCliDatabaseDecisionHistoryWriter(pool) {
           )
           VALUES (
             $1, $2, $3, $4, $5,
-            $6::jsonb, $7::jsonb, $8, $9, $10,
-            $11, $12, $13, $14, $15::jsonb
+            $6, $7::jsonb, $8::jsonb, $9, $10,
+            $11, $12, $13, $14, $15, $16::jsonb
           )
           ON CONFLICT (dedupe_key) DO NOTHING
           RETURNING id
@@ -2845,6 +2846,7 @@ export function createLiveOpsCliDatabaseDecisionHistoryWriter(pool) {
           tick.strategyId,
           tick.decisionKind,
           tick.reasonCode,
+          tick.sourceTickId,
           JSON.stringify(tick.featureSnapshot),
           JSON.stringify(tick.thresholds),
           tick.orderIntentCount,
@@ -2895,6 +2897,7 @@ function assertLiveOpsCliDecisionHistoryTickSafe(tick) {
     market: tick.market,
     strategyId: tick.strategyId,
     reasonCode: tick.reasonCode,
+    sourceTickId: tick.sourceTickId,
     dedupeKey: tick.dedupeKey,
   })) {
     if (!hasMeaningfulValue(value) || containsLiveOpsCliSecretLikeString(String(value))) {
@@ -6258,7 +6261,7 @@ function findSecretLikeKeys(value, currentPath = "$") {
   }
   return Object.entries(value).flatMap(([key, child]) => {
     const nextPath = `${currentPath}.${key}`;
-    if (/(?:secret|token|password|access[_-]?key|secret[_-]?key|database[_-]?url|authorization|jwt)/iu.test(key)) {
+    if (/(?:secret|token|password|access[_-]?key|api[_-]?key|query[_-]?hash|secret[_-]?key|database[_-]?url|authorization|jwt|raw(?:[_-]?(?:provider|order))?[_-]?(?:payload|detail|response|json))/iu.test(key)) {
       return [nextPath];
     }
     return findSecretLikeKeys(child, nextPath);
@@ -6452,7 +6455,7 @@ function formatDecisionCategory(decisionCategory) {
   return "보류";
 }
 
-async function recordLiveOpsCliDecisionHistory(input, brokerGuard) {
+async function recordLiveOpsCliDecisionHistory(input, brokerGuard, liveExecutionSummary) {
   const writer = input?.decisionHistoryWriter;
   if (writer === undefined || typeof writer.appendDecisionTick !== "function") {
     return undefined;
@@ -6461,7 +6464,12 @@ async function recordLiveOpsCliDecisionHistory(input, brokerGuard) {
   const rawIntents = Array.isArray(input.orderIntents)
     ? input.orderIntents
     : getLiveOpsCliAnalysisOrderIntents(input.analysisDecision);
-  const guardReasonCode = readLiveOpsCliDecisionHistoryGuardReasonCode(input.analysisDecision, rawIntents, brokerGuard);
+  const guardReasonCode = readLiveOpsCliDecisionHistoryGuardReasonCode(
+    input.analysisDecision,
+    rawIntents,
+    brokerGuard,
+    liveExecutionSummary,
+  );
   // core execution guard에서 폐기될 stale 후보를 BUY/SELL 이력으로 저장하지 않도록 history 입력을 별도로 낮춘다.
   const intents = guardReasonCode === undefined && input.analysisDecision?.ready === true ? rawIntents : [];
   const observedAt = readLiveOpsCliDecisionHistoryObservedAt(input.analysisDecision, intents);
@@ -6501,12 +6509,16 @@ async function recordLiveOpsCliDecisionHistory(input, brokerGuard) {
   }
 }
 
-function readLiveOpsCliDecisionHistoryGuardReasonCode(analysisDecision, intents, brokerGuard) {
+function readLiveOpsCliDecisionHistoryGuardReasonCode(analysisDecision, intents, brokerGuard, liveExecutionSummary) {
   if (brokerGuard?.ready === false) {
     return "live_ops_broker_guard_blocked";
   }
   if (analysisDecision?.ready !== true) {
     return undefined;
+  }
+  const executionGuardReasonCode = readLiveOpsCliDecisionHistoryExecutionGuardReasonCode(liveExecutionSummary);
+  if (executionGuardReasonCode !== undefined) {
+    return executionGuardReasonCode;
   }
   const expectedCount = Number(analysisDecision?.orderIntentCount ?? 0);
   if (Number.isSafeInteger(expectedCount) && expectedCount !== intents.length) {
@@ -6516,6 +6528,24 @@ function readLiveOpsCliDecisionHistoryGuardReasonCode(analysisDecision, intents,
     return "live_ops_order_intent_batch_unsupported";
   }
   return undefined;
+}
+
+function readLiveOpsCliDecisionHistoryExecutionGuardReasonCode(liveExecutionSummary) {
+  if (!isNonEmptyRecord(liveExecutionSummary) || liveExecutionSummary.ready === true) {
+    return undefined;
+  }
+  // core guard가 제출을 차단한 후보를 BUY/SELL 이력으로 남기면 calibration과 감사 집계가 실제 제출 후보로 오인한다.
+  const blockedCheck = Array.isArray(liveExecutionSummary.checks)
+    ? liveExecutionSummary.checks.find((check) =>
+        check?.status === "blocked" &&
+        [
+          "live_ops_order_intent_blocked",
+          "live_ops_execution_status_blocked",
+          "live_ops_execution_blocked",
+        ].includes(check?.code),
+      )
+    : undefined;
+  return hasMeaningfulValue(blockedCheck?.code) ? String(blockedCheck.code) : undefined;
 }
 
 function readLiveOpsCliDecisionHistoryObservedAt(analysisDecision, intents) {
@@ -6686,8 +6716,8 @@ export async function evaluateLiveOpsCliLiveExecution(input) {
         env: input.env,
         fixtureSmoke: input.fixtureSmoke,
       });
-  const decisionHistoryCheck = await recordLiveOpsCliDecisionHistory(input, brokerGuard);
   const summary = await evaluateLiveOpsCliLiveExecutionCore(input);
+  const decisionHistoryCheck = await recordLiveOpsCliDecisionHistory(input, brokerGuard, summary);
   if (decisionHistoryCheck === undefined) {
     return summary;
   }

@@ -24,6 +24,7 @@ export function toLiveDecisionHistoryTickRowInput(
     strategy_id: tick.strategyId,
     decision_kind: tick.decisionKind,
     reason_code: tick.reasonCode,
+    source_tick_id: tick.sourceTickId,
     feature_snapshot_json: tick.featureSnapshot,
     threshold_json: tick.thresholds,
     order_intent_count: tick.orderIntentCount,

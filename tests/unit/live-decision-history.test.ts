@@ -107,6 +107,7 @@ describe("live decision history contract", () => {
       order_intent_count: 0,
       dedupe_policy: "SOURCE_TICK",
       dedupe_key: tick.dedupeKey,
+      source_tick_id: "tick-block-1",
     });
     expect(row.feature_snapshot_json).toEqual({ featureStatus: "stale", sample_count: 3 });
     expect(row.threshold_json).toEqual({ min_sample_count: 10 });
