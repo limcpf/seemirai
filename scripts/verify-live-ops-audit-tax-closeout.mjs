@@ -11,6 +11,9 @@ const secretValuePatterns = [
   { label: "postgres credential url", pattern: /postgres(?:ql)?:\/\/[^:<\s"]+:[^@<\s"]+@/u },
   { label: "compact JWT literal", pattern: /\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b/u },
   { label: "telegram bot token literal", pattern: /\b[0-9]{6,}:[A-Za-z0-9_-]{16,}\b/u },
+  { label: "OpenAI style secret key literal", pattern: /\bsk-[A-Za-z0-9_-]{20,}\b/u },
+  { label: "GitHub token literal", pattern: /\b(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9_]{20,}\b/u },
+  { label: "Slack bot token literal", pattern: /\bxoxb-[A-Za-z0-9-]{20,}\b/u },
 ];
 
 export function createLiveOpsAuditTaxCloseoutManifest(input = {}) {
@@ -281,6 +284,9 @@ function findLink(left, right, from, to) {
     if (matchingString(left.orderIntentIdempotencyKey, right.idempotencyKey)) {
       return "idempotency_key";
     }
+    if (matchingSourceTickId(left.sourceTickId, right.idempotencyKey)) {
+      return "source_tick_id";
+    }
   }
   if (from === "fill" && to === "pnl_snapshot") {
     if (matchingString(left.orderId, right.orderId)) {
@@ -315,6 +321,16 @@ function countEvidence(chains) {
       auditEvents: 0,
     },
   );
+}
+
+function matchingSourceTickId(sourceTickId, idempotencyKey) {
+  if (!isNonBlankString(sourceTickId) || !isNonBlankString(idempotencyKey)) {
+    return false;
+  }
+  const normalizedSourceTickId = sourceTickId.trim();
+  const normalizedIdempotencyKey = idempotencyKey.trim();
+  return normalizedSourceTickId === normalizedIdempotencyKey ||
+    normalizedSourceTickId.endsWith(`:${normalizedIdempotencyKey}`);
 }
 
 function scanManifestSource(manifest) {

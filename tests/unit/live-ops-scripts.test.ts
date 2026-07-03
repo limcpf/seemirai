@@ -1074,6 +1074,79 @@ describe("production live ops script skeleton", () => {
     expect(JSON.stringify(result)).not.toMatch(/Authorization|Bearer|raw_provider_payload|rawProviderPayload/u);
   });
 
+  it("audit/tax closeout validator는 decision sourceTickId와 주문 idempotency key를 연결한다", async () => {
+    const {
+      createLiveOpsAuditTaxCloseoutManifest,
+      validateLiveOpsAuditTaxCloseoutManifest,
+    } = await import(path.join(process.cwd(), "scripts/verify-live-ops-audit-tax-closeout.mjs")) as {
+      createLiveOpsAuditTaxCloseoutManifest: (input?: Record<string, unknown>) => Record<string, unknown>;
+      validateLiveOpsAuditTaxCloseoutManifest: (manifest: Record<string, unknown>) => Record<string, unknown>;
+    };
+
+    const manifest = createLiveOpsAuditTaxCloseoutManifest({
+      chains: [
+        {
+          chainId: "audit-tax-chain-source-tick",
+          decisionTick: {
+            id: "decision-tick-1",
+            dedupeKey: "UPBIT:KRW-BTC:cleanup:BUY:2026-06-30T00:00:00.000Z",
+            decisionKind: "BUY",
+            sourceTickId: "2026-06-30T00:00:00.000Z:audit-tax-order-1",
+          },
+          order: {
+            id: "order-1",
+            idempotencyKey: "audit-tax-order-1",
+            brokerOrderId: "upbit-order-1",
+          },
+          cancellations: [
+            {
+              id: "cancel-1",
+              orderId: "order-1",
+            },
+          ],
+          fills: [
+            {
+              id: "fill-1",
+              orderId: "order-1",
+              fillId: "upbit-fill-1",
+            },
+          ],
+          pnlSnapshots: [
+            {
+              id: "pnl-1",
+              strategyId: "live_ops_cleanup_probe",
+              market: "KRW-BTC",
+              capturedAt: "2026-06-30T00:00:05.000Z",
+              fillId: "upbit-fill-1",
+            },
+          ],
+          auditEvents: [
+            {
+              id: "audit-event-1",
+              auditKind: "live_order_flow_closed",
+              orderId: "order-1",
+            },
+          ],
+        },
+      ],
+    });
+
+    const result = validateLiveOpsAuditTaxCloseoutManifest(manifest);
+
+    expect(result).toMatchObject({
+      status: "ready",
+      ready: true,
+      chains: [
+        expect.objectContaining({
+          status: "linked",
+          links: expect.arrayContaining([
+            expect.objectContaining({ from: "decision_tick", to: "order", via: "source_tick_id" }),
+          ]),
+        }),
+      ],
+    });
+  });
+
   it("audit/tax closeout validator는 체결 stable id와 correlation id가 없으면 fail-closed 한다", async () => {
     const {
       createLiveOpsAuditTaxCloseoutManifest,
@@ -1218,6 +1291,9 @@ describe("production live ops script skeleton", () => {
                 },
                 api_key: "should-not-persist",
                 query_hash: "should-not-persist",
+                debugNote: `sk-${"a".repeat(32)}`,
+                comment: `ghp_${"b".repeat(36)}`,
+                sampleText: `xoxb-${"1".repeat(12)}-${"2".repeat(12)}-${"c".repeat(24)}`,
               },
             },
           ],
@@ -1257,6 +1333,18 @@ describe("production live ops script skeleton", () => {
           }),
           expect.objectContaining({
             path: "$.chains[0].auditEvents[0].payload.query_hash",
+          }),
+          expect.objectContaining({
+            path: "$.chains[0].auditEvents[0].payload.debugNote",
+            reasonCode: "secret_like_value_present",
+          }),
+          expect.objectContaining({
+            path: "$.chains[0].auditEvents[0].payload.comment",
+            reasonCode: "secret_like_value_present",
+          }),
+          expect.objectContaining({
+            path: "$.chains[0].auditEvents[0].payload.sampleText",
+            reasonCode: "secret_like_value_present",
           }),
         ]),
       },

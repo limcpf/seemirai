@@ -203,8 +203,6 @@ export async function runLiveOpsLiveExecution(
     }),
   ];
 
-  await recordLiveDecisionHistory(config, input, checks);
-
   if (!input.analysisDecision.ready) {
     // analysis가 차단 상태이면 주문 후보 배열이 들어와도 stale 후보일 수 있으므로 broker 경계를 열지 않는다.
     checks.push(blockedCheck(
@@ -212,6 +210,7 @@ export async function runLiveOpsLiveExecution(
       "analysis/decision이 준비되지 않아 live execution으로 전진하지 않습니다.",
       "live_ops_analysis_not_ready",
     ));
+    await recordLiveDecisionHistory(config, input, checks, "live_ops_analysis_not_ready");
     return buildSummary(config, input, checks, {
       status: "blocked",
       ready: false,
@@ -233,6 +232,7 @@ export async function runLiveOpsLiveExecution(
       "주문 후보가 없어 live execution broker 제출을 생략했습니다.",
       "live_ops_no_order_intent",
     ));
+    await recordLiveDecisionHistory(config, input, checks);
     return buildSummary(config, input, checks, {
       status: "idle",
       ready: true,
@@ -251,6 +251,7 @@ export async function runLiveOpsLiveExecution(
       orderIntentCountViolation.code,
       orderIntentCountViolation.details,
     ));
+    await recordLiveDecisionHistory(config, input, checks, orderIntentCountViolation.code);
     return buildSummary(config, input, checks, {
       status: "blocked",
       ready: false,
@@ -275,6 +276,7 @@ export async function runLiveOpsLiveExecution(
       "live_ops_order_intent_blocked",
       { violations: intentViolations },
     ));
+    await recordLiveDecisionHistory(config, input, checks, "live_ops_order_intent_blocked");
     return buildSummary(config, input, checks, {
       status: "blocked",
       ready: false,
@@ -288,6 +290,25 @@ export async function runLiveOpsLiveExecution(
     market: intent.market,
     strategyId: intent.strategyId,
   }));
+
+  const executionStatusViolations = collectLiveOpsExecutionStatusViolations(input);
+  if (executionStatusViolations.length > 0) {
+    // 운영 상태 guard가 막은 후보는 하위 runtime에 넘기지 않고 decision history에서도 제출 후보로 세지 않는다.
+    checks.push(blockedCheck(
+      "execution_request",
+      "live execution 운영 상태 snapshot이 production 제출 조건을 통과하지 못했습니다.",
+      "live_ops_execution_status_blocked",
+      { violations: executionStatusViolations },
+    ));
+    await recordLiveDecisionHistory(config, input, checks, "live_ops_execution_status_blocked");
+    return buildSummary(config, input, checks, {
+      status: "blocked",
+      ready: false,
+      liveOrderCapable: false,
+      message: "실운영 실행 상태 증거가 부족해 BUY 후보를 제출하지 않았습니다.",
+      action: "kill switch와 reconcile freshness evidence를 먼저 복구하세요.",
+    });
+  }
 
   const request = createLiveAutonomousEntryRequest(config, input, intent as Extract<OrderIntent, { orderType: "LIMIT" }>);
   checks.push(okCheck("execution_request", "live autonomous entry runtime 요청을 만들었습니다.", "live_ops_execution_request_ready", {
@@ -307,6 +328,7 @@ export async function runLiveOpsLiveExecution(
       "live_ops_execution_runtime_uncertain",
       { reason: safeErrorName(error) },
     ));
+    await recordLiveDecisionHistory(config, input, checks, "live_ops_execution_runtime_uncertain");
     return buildSummary(config, input, checks, {
       status: "manual_review_required",
       ready: false,
@@ -325,29 +347,31 @@ export async function runLiveOpsLiveExecution(
     attemptStatus: attempt.status,
   }));
 
+  await recordLiveDecisionHistory(config, input, checks, readDecisionHistoryAttemptGuardReasonCode(attempt));
   return buildSummaryFromAttempt(config, input, checks, attempt);
 }
 
 /**
  * live execution tick을 decision history 저장 경계에 기록한다.
  *
- * 이 함수는 live execution service 내부에서 broker 제출 전후 summary check를 보강하기 위해 호출된다. 입력은 이미 analysis
- * decision과 order intent 검증 경계를 지난 runtime snapshot이며, 출력은 별도 반환값 없이 `checks` 배열에 저장 성공/중복/실패
- * evidence를 append하는 것이다. unsupported batch, stale intent, 준비되지 않은 decision은 BUY/SELL로 보존하지 않고 BLOCK/HOLD
- * 쪽으로 낮춰야 하며, DB write 실패는 broker side effect를 재시도하지 않고 degraded evidence로만 남긴다. 외부 side effect는
- * `decisionHistoryWriter.appendDecisionTick` DB write 호출 하나로 제한된다.
+ * 이 함수는 live execution service 내부에서 각 return 경계 직전 summary check를 보강하기 위해 호출된다. 입력은 analysis
+ * decision과 order intent, 또는 runtime 결과까지 반영한 snapshot이며, 출력은 별도 반환값 없이 `checks` 배열에 저장
+ * 성공/중복/실패 evidence를 append하는 것이다. unsupported batch, stale intent, 준비되지 않은 decision, execution guard 차단은
+ * BUY/SELL로 보존하지 않고 BLOCK/HOLD 쪽으로 낮춰야 하며, DB write 실패는 broker side effect를 재시도하지 않고 degraded
+ * evidence로만 남긴다. 외부 side effect는 `decisionHistoryWriter.appendDecisionTick` DB write 호출 하나로 제한된다.
  */
 async function recordLiveDecisionHistory(
   config: LiveOpsConfig,
   input: LiveOpsLiveExecutionInput,
   checks: LiveOpsLiveExecutionCheck[],
+  guardReasonCodeOverride?: string,
 ): Promise<void> {
   if (input.decisionHistoryWriter === undefined) {
     return;
   }
 
   try {
-    const guardReasonCode = readDecisionHistoryGuardReasonCode(input);
+    const guardReasonCode = guardReasonCodeOverride ?? readDecisionHistoryGuardReasonCode(input);
     // execution guard에서 폐기될 stale 후보는 decision history에서도 BUY/SELL로 확정하지 않는다.
     const historyIntents = guardReasonCode === undefined && input.analysisDecision.ready
       ? input.orderIntents
@@ -400,6 +424,26 @@ async function recordLiveDecisionHistory(
       },
     ));
   }
+}
+
+function readDecisionHistoryAttemptGuardReasonCode(
+  attempt: LiveAutonomousEntryAttemptResult,
+): string | undefined {
+  if (attempt.status === "SUBMITTED") {
+    return undefined;
+  }
+
+  return readStringMetadata(attempt.trace, "reason") ?? "live_ops_execution_blocked";
+}
+
+function readDecisionHistoryExitGuardReasonCode(
+  result: ExecutionSubmitOrderResult,
+): string | undefined {
+  if (result.status === "SUBMITTED" || result.status === "DUPLICATE_SUPPRESSED") {
+    return undefined;
+  }
+
+  return result.rejection.reasonCode || "live_ops_exit_order_rejected";
 }
 
 function readDecisionHistoryGuardReasonCode(input: LiveOpsLiveExecutionInput): string | undefined {
@@ -573,6 +617,7 @@ async function runLiveOpsExitExecution(
       "live_ops_exit_execution_status_blocked",
       { violations: executionStatusViolations },
     ));
+    await recordLiveDecisionHistory(config, input, checks, "live_ops_exit_execution_status_blocked");
     return buildSummary(config, input, checks, {
       status: "blocked",
       ready: false,
@@ -591,6 +636,7 @@ async function runLiveOpsExitExecution(
       "live_ops_order_intent_blocked",
       { violations: intentViolations },
     ));
+    await recordLiveDecisionHistory(config, input, checks, "live_ops_order_intent_blocked");
     return buildSummary(config, input, checks, {
       status: "blocked",
       ready: false,
@@ -612,6 +658,7 @@ async function runLiveOpsExitExecution(
       "exit runtime이 조립되지 않아 매도 후보를 제출하지 않습니다.",
       "live_ops_exit_runtime_missing",
     ));
+    await recordLiveDecisionHistory(config, input, checks, "live_ops_exit_runtime_missing");
     return buildSummary(config, input, checks, {
       status: "blocked",
       ready: false,
@@ -633,6 +680,7 @@ async function runLiveOpsExitExecution(
         failed_reason_codes: exitRequest.riskGateResult.failedEvaluations.map((evaluation) => evaluation.reasonCode),
       },
     ));
+    await recordLiveDecisionHistory(config, input, checks, "live_ops_exit_risk_blocked");
     return buildSummary(config, input, checks, {
       status: "blocked",
       ready: false,
@@ -659,6 +707,7 @@ async function runLiveOpsExitExecution(
       "live_ops_exit_runtime_uncertain",
       { reason: safeErrorName(error) },
     ));
+    await recordLiveDecisionHistory(config, input, checks, "live_ops_exit_runtime_uncertain");
     return buildSummary(config, input, checks, {
       status: "manual_review_required",
       ready: false,
@@ -677,6 +726,7 @@ async function runLiveOpsExitExecution(
     attemptStatus: result.status,
   }));
 
+  await recordLiveDecisionHistory(config, input, checks, readDecisionHistoryExitGuardReasonCode(result));
   return buildSummaryFromExitResult(config, input, checks, result);
 }
 
