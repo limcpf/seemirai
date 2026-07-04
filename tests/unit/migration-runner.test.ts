@@ -56,6 +56,14 @@ describe("migration runner", () => {
     expect(migrationSql).toContain("CHECK (market IS NULL OR btrim(market) <> '')");
   });
 
+  it("keeps live decision history source tick id as durable evidence", async () => {
+    const migrations = await loadMigrationFiles(defaultMigrationsDirectory);
+    const migrationSql = migrations.map((migration) => migration.sql).join("\n");
+
+    expect(migrationSql).toContain("source_tick_id text NOT NULL");
+    expect(migrationSql).toContain("CHECK (btrim(source_tick_id) <> '')");
+  });
+
   it("keeps database sanity checks for canonical trading metrics", async () => {
     const migrations = await loadMigrationFiles(defaultMigrationsDirectory);
     const migrationSql = migrations.map((migration) => migration.sql).join("\n");

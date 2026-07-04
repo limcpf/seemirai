@@ -816,6 +816,10 @@ intent 수, HOLD/BLOCK count, `record_hold_decision` 여부를 secret-safe summa
 summary에 직렬화하지 않고, pipeline 결과 객체의 non-enumerable `orderIntents` 채널 또는 CLI 내부 symbol 채널로 같은 decision tick의
 live execution 입력에만 전달한다. 이 pipeline은 DB write, broker 호출, Upbit 호출, Telegram 전송을 하지 않는다.
 
+decision history writer 결과는 live execution summary의 `decisionHistory` 하위 객체로 표시한다. 저장 실패는 주문 후보나 주문 실행
+결과를 재시도하지 않고 `statusLabel`, `message`, `impact`, `action`에 한국어 사용자 조치를 먼저 담으며, `live_decision_history_degraded`,
+error name, dedupe metadata는 `trace`와 TUI 하단 `추적 정보`에만 보존한다.
+
 production cleanup reservation은 저장소 밖 artifact 디렉터리에 attempt 파일을 남기기 전, 같은 날짜의 `reservation-daily-YYYY-MM-DD.lock`
 파일을 원자적으로 선점한다. lock 안에서 현재 reservation 파일 집계, open position snapshot, 요청 금액을 다시 합산해 일일 자동 주문 예산을
 넘으면 attempt reservation을 만들지 않고 broker 제출 전 fail-closed 한다. lock이 이미 잡혀 있으면 다른 live ops 실행이 예산을 선점 중인
@@ -1767,6 +1771,12 @@ POST_ONLY` 후보를 만들 수 있다. 이 strategy는 order intent 생성까�
   `artifacts/live-ops-daemon-status.json`에 자동 기록하며, fixture smoke는 기본 status file을 만들지 않는다.
 - `--tick-interval-ms <ms>`는 정상 보유/대기 tick 간격을 조정한다. 기본값은 1초이며, 차단은 5초, 수동 확인은 30초, transient failure는
   5초 backoff를 적용한다.
+- `--decision-history-retention-hours <hours>`를 명시하면 daemon tick이 같은 DB writer 경계로 `live_decision_ticks` retention을 실행하고,
+  삭제 수, cutoff, 실패 사유를 status `closeoutEvidence.decisionHistoryRetention`에 기록한다. fixture smoke에서는 DB delete를 실행하지 않는다.
+- audit/tax closeout 검증은 daemon 실행 전제 조건이 아니다. 운영 artifact를 닫을 때
+  `node scripts/verify-live-ops-audit-tax-closeout.mjs --input <저장소-밖-manifest.json> --json`으로 주문, 취소, 체결, PnL snapshot,
+  audit event, decision tick이 stable id 또는 correlation id로 연결되는지 확인한다. 개발/PR에서는
+  `node scripts/verify-live-ops-audit-tax-closeout.mjs --fixture-smoke --json`으로 provider 호출 없이 contract shape를 검증한다.
 - 24시간 summary counter는 tick, 보유/대기, 차단, 수동 확인, 주문 제출, 매도 재호가, crash, unhandled rejection, duplicate order,
   reconcile mismatch, untracked fill, live order cleanup failure를 자동 집계한다.
 - exit SELL은 보유 수량 전체가 1회 주문 예산을 넘으면 10,000 KRW 이하 chunk로 나눠 `position_effect=REDUCE`를 남기고, 남은 보유분은

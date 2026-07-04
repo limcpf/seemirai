@@ -534,6 +534,26 @@ Codex-native 운영은 Codex, Git, GitHub, shell command, 문서 상태를 연�
 - 누적 realized loss와 미체결 노출 합계가 50,000 KRW에 닿기 전에 operator stop 또는 kill switch/manual review로 수렴한다. 이
   ceiling은 M24 예산 확대 승인이 아니다.
 
+## Issue #258 Live Ops 운영 관측성 신뢰성 기준
+
+- decision history는 주문이 없는 HOLD tick도 운영 decision으로 기록한다. HOLD가 반복될 때는 같은 exchange/market/strategy/reason의
+  1분 bucket dedupe를 사용해 저장소 flood를 막고, BUY/SELL/BLOCK은 source tick scope dedupe로 broker lifecycle과 추적 범위를 맞춘다.
+- `live_decision_ticks` row는 append 위주 evidence다. 같은 dedupe key 충돌은 기존 row를 덮어쓰지 않고 `inserted=false`로 수렴해야 한다.
+- decision history write 실패는 broker submit, cancel, reservation, order intent 생성을 재시도하지 않는다. 실패는
+  `live_decision_history_degraded` check와 status/TUI degraded evidence로 남기고 다음 tick에서 새 decision을 평가한다.
+- status/TUI/CLI는 decision history degraded 상태를 "판단 이력 저장 실패" 같은 한국어 상태, 영향, 필요 조치로 먼저 표시한다.
+  `live_decision_history_degraded`, error name, dedupe metadata 같은 내부 식별자는 `trace` 또는 하단 `추적 정보`에만 보존한다.
+- feature snapshot이나 threshold가 없거나 안전하지 않으면 secret/raw payload를 저장하기 위해 보정하지 않는다. 필요한 경우
+  feature provider degraded 또는 decision history degraded 상태로 닫는다.
+- retention은 migration trigger가 아니라 명시 repository/service 호출로 수행한다. retention delete는 decision tick의 관측 기간을 줄이는
+  운영 행위이므로 검증 가능한 deleted count를 반환해야 한다.
+- daemon closeout evidence는 retention 삭제 결과, latestSummary freshness, Telegram retry/manual review 상태를 분리한다. 실패 tick 뒤
+  남은 latestSummary는 `stale_after_failure`로 표시해 실주문 가능 근거로 재사용하지 않고, DB URL 같은 credential 입력은 evidence에 남기지 않는다.
+- audit/tax closeout evidence는 `live_ops_audit_tax_closeout.v1` contract로 검증한다. 주문, 취소, 체결, PnL snapshot, audit event,
+  decision tick은 stable id 또는 correlation id로 연결되어야 하며, link가 끊긴 artifact는 수동 확인 필요 상태로 닫는다.
+- `scripts/verify-live-ops-audit-tax-closeout.mjs --fixture-smoke --json`은 provider 호출 없이 contract shape와 secret-free source scan을
+  검증한다. 운영 closeout에서는 저장소 밖 manifest를 `--input`으로 넘겨 같은 validator를 실행하되, daemon 시작 조건으로 사용하지 않는다.
+
 ## M18 Decision Ledger 신뢰성 기준
 
 - decision ledger는 append-only 저장소다. frame과 evidence는 insert만 수행하며 update, delete는 구현하지 않는다.

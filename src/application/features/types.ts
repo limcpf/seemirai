@@ -25,6 +25,30 @@ export type M11FeatureKey =
   | "cost_adjusted_margin_bps";
 
 /**
+ * M11 feature snapshot이 항상 동일한 순서로 평가하고 실패를 보고해야 하는 key 목록이다.
+ *
+ * runtime provider, strategy guard, report가 같은 key 순서를 공유하도록 공개하되, 이 배열은 추가/삭제 시 feature
+ * contract 전체가 바뀌므로 관련 수용 기준과 calibration 문서를 함께 갱신해야 한다.
+ */
+export const M11_FEATURE_KEYS = [
+  "candle_momentum_bps",
+  "realized_volatility_bps",
+  "volume_spike_ratio",
+  "bid_depth_slope_krw_per_bps",
+  "ask_depth_slope_krw_per_bps",
+  "depth_change_rate_ratio",
+  "vwap_deviation_bps",
+  "trade_direction_imbalance_ratio",
+  "trend_strength_bps",
+  "mean_reversion_discount_bps",
+  "market_regime",
+  "session_liquidity_score",
+  "session_liquidity_state",
+  "cost_adjusted_expected_return_bps",
+  "cost_adjusted_margin_bps",
+] as const satisfies readonly M11FeatureKey[];
+
+/**
  * 시장 국면 분류 feature의 내부 enum이다.
  *
  * 사용자 문구에 직접 노출하지 않고, strategy 설명과 calibration 비교에서만 안정적인 분류 코드로 사용한다.

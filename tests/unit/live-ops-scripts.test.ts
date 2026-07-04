@@ -50,6 +50,439 @@ describe("production live ops script skeleton", () => {
     });
   });
 
+  it("run-live-ops support는 live decision tick을 decision history writer로 전달한다", async () => {
+    const support = await import(path.join(process.cwd(), "scripts/run-live-ops-support.mjs")) as {
+      evaluateLiveOpsCliLiveExecution?: (input: Record<string, unknown>) => Promise<Record<string, unknown>>;
+    };
+    const appendDecisionTick = vi.fn(async (_input: { tick: Record<string, unknown> }) => ({ inserted: true }));
+
+    const summary = await support.evaluateLiveOpsCliLiveExecution?.({
+      config: JSON.parse(await readFile(path.join(process.cwd(), "config", "live-ops.example.json"), "utf8")),
+      fixtureSmoke: true,
+      analysisDecision: {
+        status: "ready",
+        ready: true,
+        market: "KRW-BTC",
+        observedAt: "2026-06-30T00:00:05.000Z",
+        latestDecisionAt: "2026-06-30T00:00:05.100Z",
+        decisionCategory: "HOLD",
+        featureStatus: "ok",
+        evaluatedStrategyCount: 1,
+        holdCount: 1,
+        blockCount: 0,
+        orderIntentCount: 0,
+        recordHoldDecision: true,
+        trace: {
+          reasonCode: "autonomous_24x7_entry_signal_weak",
+          featureSnapshot: {
+            featureStatus: "ok",
+            trend_strength_bps: "0",
+          },
+        },
+      },
+      env: {},
+      orderIntents: [],
+      decisionHistoryWriter: { appendDecisionTick },
+      entryRuntime: {
+        submitEntryCandidate: vi.fn(),
+      },
+    });
+
+    expect(summary?.checks).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ code: "live_decision_history_recorded" }),
+      ]),
+    );
+    expect(appendDecisionTick).toHaveBeenCalledTimes(1);
+    const tick = appendDecisionTick.mock.calls[0]?.[0]?.tick;
+    expect(tick).toMatchObject({
+      exchange: "UPBIT",
+      market: "KRW-BTC",
+      strategyId: "live_ops_cleanup_probe",
+      decisionKind: "HOLD",
+      reasonCode: "autonomous_24x7_entry_signal_weak",
+      orderIntentCount: 0,
+      dedupePolicy: "HOLD_REASON_1M_BUCKET",
+      thresholds: {
+        decisionPolicyId: "cleanup_probe",
+        maxOrderKrw: "10000",
+      },
+    });
+    expect(JSON.stringify(summary)).not.toContain("Authorization");
+  });
+
+  it("run-live-ops support는 decision history 저장 실패를 CLI/TUI에서 사용자 문구와 추적 정보로 분리한다", async () => {
+    const support = await import(path.join(process.cwd(), "scripts/run-live-ops-support.mjs")) as {
+      evaluateLiveOpsCliLiveExecution?: (input: Record<string, unknown>) => Promise<Record<string, unknown>>;
+      renderLiveOpsSummary?: (input: Record<string, unknown>) => Record<string, unknown>;
+      renderLiveOpsTuiDashboard?: (summary: Record<string, unknown>) => string;
+    };
+    const appendDecisionTick = vi.fn(async () => {
+      const error = new Error("db write failed");
+      error.name = "DecisionHistoryWriteFailed";
+      throw error;
+    });
+
+    const config = JSON.parse(await readFile(path.join(process.cwd(), "config", "live-ops.example.json"), "utf8"));
+    const liveExecution = await support.evaluateLiveOpsCliLiveExecution?.({
+      config,
+      fixtureSmoke: true,
+      analysisDecision: {
+        status: "ready",
+        ready: true,
+        market: "KRW-BTC",
+        observedAt: "2026-06-30T00:00:05.000Z",
+        latestDecisionAt: "2026-06-30T00:00:05.100Z",
+        decisionCategory: "HOLD",
+        featureStatus: "ok",
+        evaluatedStrategyCount: 1,
+        holdCount: 1,
+        blockCount: 0,
+        orderIntentCount: 0,
+        recordHoldDecision: true,
+        trace: {
+          reasonCode: "autonomous_24x7_entry_signal_weak",
+        },
+      },
+      env: {},
+      orderIntents: [],
+      decisionHistoryWriter: { appendDecisionTick },
+      entryRuntime: {
+        submitEntryCandidate: vi.fn(),
+      },
+    });
+
+    expect(liveExecution?.decisionHistory).toMatchObject({
+      status: "degraded",
+      statusLabel: "판단 이력 저장 실패",
+      message: expect.stringContaining("판단 이력 저장에 실패했습니다"),
+      impact: expect.stringContaining("사후 분석 증거가 불완전"),
+      action: expect.stringContaining("판단 이력 DB 연결과 권한을 확인하세요"),
+      trace: {
+        code: "live_decision_history_degraded",
+        errorName: "DecisionHistoryWriteFailed",
+      },
+    });
+
+    const summary = support.renderLiveOpsSummary?.({
+      configPath: "config/live-ops.example.json",
+      envFilePath: "tests/fixtures/live-ops/fake.env",
+      config,
+      env: {},
+      fixtureSmoke: true,
+      dbReadiness: {
+        ready: true,
+        migration: {
+          appliedLatestVersion: 13,
+          expectedLatestVersion: 13,
+          pendingVersions: [],
+        },
+      },
+      marketData: {
+        ready: true,
+        persisted: { tradeCount: 1, orderbookCount: 1, statusCount: 1 },
+        latestHeartbeatAt: "2026-06-30T00:00:05.000Z",
+      },
+      analysisDecision: {
+        ready: true,
+        decisionCategory: "HOLD",
+        orderIntentCount: 0,
+        evaluatedStrategyCount: 1,
+        latestDecisionAt: "2026-06-30T00:00:05.100Z",
+      },
+      liveExecution,
+      reconcilePnlStatus: { ready: true, status: "fixture_clean", providerProbeAttempted: false },
+      telegramAlert: { ready: true, status: "planned", providerDispatchAttempted: false },
+    });
+    const dashboard = support.renderLiveOpsTuiDashboard?.(summary ?? {});
+    const beforeTrace = dashboard?.split("추적 정보:")[0] ?? "";
+
+    expect(dashboard).toContain("판단 이력: 판단 이력 저장 실패");
+    expect(dashboard).toContain("판단 이력 DB 연결과 권한을 확인하세요");
+    expect(beforeTrace).not.toContain("live_decision_history_degraded");
+    expect(dashboard).toContain("추적 정보: config=live-ops.example.json attach=foreground decision_history=live_decision_history_degraded error=DecisionHistoryWriteFailed");
+  });
+
+  it("run-live-ops support는 준비되지 않은 summary의 stale 후보를 decision history BUY로 기록하지 않는다", async () => {
+    const support = await import(path.join(process.cwd(), "scripts/run-live-ops-support.mjs")) as {
+      evaluateLiveOpsCliLiveExecution?: (input: Record<string, unknown>) => Promise<Record<string, unknown>>;
+    };
+    const appendDecisionTick = vi.fn(async (_input: { tick: Record<string, unknown> }) => ({ inserted: true }));
+
+    const summary = await support.evaluateLiveOpsCliLiveExecution?.({
+      config: JSON.parse(await readFile(path.join(process.cwd(), "config", "live-ops.example.json"), "utf8")),
+      fixtureSmoke: true,
+      analysisDecision: {
+        status: "blocked",
+        ready: false,
+        market: "KRW-BTC",
+        observedAt: "2026-06-30T00:00:05.000Z",
+        latestDecisionAt: "2026-06-30T00:00:05.100Z",
+        decisionCategory: "ORDER_INTENT",
+        featureStatus: "blocked",
+        orderIntentCount: 1,
+        trace: {},
+      },
+      env: {},
+      orderIntents: [{
+        market: "KRW-BTC",
+        strategyId: "stale_strategy",
+        side: "BUY",
+        reason: "stale_buy",
+        idempotencyKey: "stale-buy-key",
+      }],
+      decisionHistoryWriter: { appendDecisionTick },
+      entryRuntime: {
+        submitEntryCandidate: vi.fn(),
+      },
+    });
+
+    expect(summary?.status).toBe("blocked");
+    const tick = appendDecisionTick.mock.calls[0]?.[0]?.tick;
+    expect(tick).toMatchObject({
+      decisionKind: "BLOCK",
+      reasonCode: "live_ops_analysis_not_ready",
+      orderIntentCount: 0,
+    });
+    expect(tick?.strategyId).not.toBe("stale_strategy");
+  });
+
+  it("run-live-ops support는 SOURCE_TICK dedupe source에 observedAt을 포함한다", async () => {
+    const support = await import(path.join(process.cwd(), "scripts/run-live-ops-support.mjs")) as {
+      evaluateLiveOpsCliLiveExecution?: (input: Record<string, unknown>) => Promise<Record<string, unknown>>;
+    };
+    const appendDecisionTick = vi.fn(async (_input: { tick: Record<string, unknown> }) => ({ inserted: true }));
+
+    await support.evaluateLiveOpsCliLiveExecution?.({
+      config: JSON.parse(await readFile(path.join(process.cwd(), "config", "live-ops.example.json"), "utf8")),
+      fixtureSmoke: true,
+      analysisDecision: {
+        status: "ready",
+        ready: true,
+        market: "KRW-BTC",
+        observedAt: "2026-06-30T00:00:05.000Z",
+        latestDecisionAt: "2026-06-30T00:00:05.100Z",
+        decisionCategory: "ORDER_INTENT",
+        featureStatus: "ok",
+        orderIntentCount: 1,
+        trace: {},
+      },
+      env: {},
+      orderIntents: [{
+        exchangeId: "upbit_krw_spot",
+        market: "KRW-BTC",
+        strategyId: "live_ops_cleanup_probe",
+        side: "BUY",
+        orderType: "LIMIT",
+        requestedPrice: "100000000",
+        requestedQuantity: "0.0001",
+        requestedNotional: "10000",
+        reason: "issue_206_cleanup_probe",
+        idempotencyKey: "same-candidate-key",
+        postOnly: true,
+        timeInForce: "POST_ONLY",
+        metadata: { expected_loss_bps_of_equity: "5" },
+      }],
+      decisionHistoryWriter: { appendDecisionTick },
+      entryRuntime: {
+        submitEntryCandidate: vi.fn(async () => ({ status: "SUBMITTED" })),
+      },
+    });
+
+    expect(appendDecisionTick.mock.calls[0]?.[0]?.tick).toMatchObject({
+      decisionKind: "BUY",
+      sourceTickId: "2026-06-30T00:00:05.000Z:same-candidate-key",
+      dedupePolicy: "SOURCE_TICK",
+    });
+  });
+
+  it("run-live-ops support는 broker guard 차단 tick을 BLOCK decision history로 기록한다", async () => {
+    const support = await import(path.join(process.cwd(), "scripts/run-live-ops-support.mjs")) as {
+      evaluateLiveOpsCliLiveExecution?: (input: Record<string, unknown>) => Promise<Record<string, unknown>>;
+    };
+    const appendDecisionTick = vi.fn(async (_input: { tick: Record<string, unknown> }) => ({ inserted: true }));
+
+    const summary = await support.evaluateLiveOpsCliLiveExecution?.({
+      config: JSON.parse(await readFile(path.join(process.cwd(), "config", "live-ops.example.json"), "utf8")),
+      fixtureSmoke: false,
+      analysisDecision: {
+        status: "ready",
+        ready: true,
+        market: "KRW-BTC",
+        observedAt: "2026-06-30T00:00:05.000Z",
+        latestDecisionAt: "2026-06-30T00:00:05.100Z",
+        decisionCategory: "ORDER_INTENT",
+        featureStatus: "ok",
+        orderIntentCount: 1,
+        trace: {},
+      },
+      env: {},
+      orderIntents: [{
+        exchangeId: "upbit_krw_spot",
+        market: "KRW-BTC",
+        strategyId: "live_ops_cleanup_probe",
+        side: "BUY",
+        orderType: "LIMIT",
+        requestedPrice: "100000000",
+        requestedQuantity: "0.0001",
+        requestedNotional: "10000",
+        reason: "issue_206_cleanup_probe",
+        idempotencyKey: "same-candidate-key",
+        postOnly: true,
+        timeInForce: "POST_ONLY",
+        metadata: { expected_loss_bps_of_equity: "5" },
+      }],
+      decisionHistoryWriter: { appendDecisionTick },
+      entryRuntime: {
+        submitEntryCandidate: vi.fn(),
+      },
+    });
+
+    expect(summary?.status).toBe("blocked");
+    expect(appendDecisionTick.mock.calls[0]?.[0]?.tick).toMatchObject({
+      decisionKind: "BLOCK",
+      reasonCode: "live_ops_broker_guard_blocked",
+      orderIntentCount: 0,
+    });
+  });
+
+  it("run-live-ops support는 autonomous no-intent HOLD를 실제 policy strategy와 analysis 시각으로 기록한다", async () => {
+    const support = await import(path.join(process.cwd(), "scripts/run-live-ops-support.mjs")) as {
+      evaluateLiveOpsCliLiveExecution?: (input: Record<string, unknown>) => Promise<Record<string, unknown>>;
+    };
+    const config = JSON.parse(await readFile(path.join(process.cwd(), "config", "live-ops.example.json"), "utf8"));
+    config.analysis.decision_policy.id = "autonomous_24x7";
+    config.analysis.decision_policy.autonomous_24x7 = {
+      min_entry_margin_bps: "10",
+      trend_confirmation_bps: "5",
+      mean_reversion_discount_bps: "3",
+    };
+    const appendDecisionTick = vi.fn(async (_input: { tick: Record<string, unknown> }) => ({ inserted: true }));
+
+    await support.evaluateLiveOpsCliLiveExecution?.({
+      config,
+      fixtureSmoke: true,
+      analysisDecision: {
+        status: "ready",
+        ready: true,
+        market: "KRW-BTC",
+        observedAt: "2026-06-30T00:01:05.000Z",
+        latestDecisionAt: "2026-06-30T00:01:05.100Z",
+        decisionCategory: "HOLD",
+        featureStatus: "ok",
+        orderIntentCount: 0,
+        checks: [{
+          name: "strategy_decision",
+          status: "ok",
+          code: "live_ops_strategy_decision_ok",
+          message: "strategy details",
+          details: {
+            cost_adjusted_margin_bps: "4",
+            trend_strength_bps: "2",
+            mean_reversion_discount_bps: "3",
+          },
+        }],
+        trace: {
+          policyId: "autonomous_24x7",
+          reasonCode: "autonomous_24x7_entry_signal_weak",
+        },
+      },
+      env: {},
+      orderIntents: [],
+      decisionHistoryWriter: { appendDecisionTick },
+      entryRuntime: {
+        submitEntryCandidate: vi.fn(),
+      },
+    });
+
+    const tick = appendDecisionTick.mock.calls[0]?.[0]?.tick;
+    expect(tick).toMatchObject({
+      strategyId: "live_ops_autonomous_24x7_core",
+      decisionKind: "HOLD",
+      reasonCode: "autonomous_24x7_entry_signal_weak",
+      orderIntentCount: 0,
+      featureSnapshot: {
+        cost_adjusted_margin_bps: "4",
+        trend_strength_bps: "2",
+        mean_reversion_discount_bps: "3",
+      },
+      thresholds: {
+        strategyThresholds: {
+          min_entry_margin_bps: "10",
+          trend_confirmation_bps: "5",
+          mean_reversion_discount_bps: "3",
+        },
+      },
+    });
+    expect((tick?.observedAt as Date).toISOString()).toBe("2026-06-30T00:01:05.000Z");
+    expect((tick?.dedupeBucketStartedAt as Date).toISOString()).toBe("2026-06-30T00:01:00.000Z");
+  });
+
+  it("run-live-ops support database decision history writer는 api key 계열 JSON을 저장하지 않는다", async () => {
+    const support = await import(path.join(process.cwd(), "scripts/run-live-ops-support.mjs")) as {
+      createLiveOpsCliDatabaseDecisionHistoryWriter?: (pool: { query: ReturnType<typeof vi.fn> }) => {
+        appendDecisionTick(input: { tick: Record<string, unknown> }): Promise<unknown>;
+      };
+    };
+    const query = vi.fn();
+    const writer = support.createLiveOpsCliDatabaseDecisionHistoryWriter?.({ query });
+
+    await expect(writer?.appendDecisionTick({
+      tick: {
+        exchange: "UPBIT",
+        market: "KRW-BTC",
+        strategyId: "live_ops_cleanup_probe",
+        decisionKind: "HOLD",
+        reasonCode: "live_ops_hold",
+        sourceTickId: "writer-secret-test",
+        featureSnapshot: { api_key: "redacted" },
+        thresholds: {},
+        orderIntentCount: 0,
+        dedupePolicy: "HOLD_REASON_1M_BUCKET",
+        dedupeBucketStartedAt: new Date("2026-06-30T00:00:00.000Z"),
+        dedupeKey: "live-decision:abc",
+        observedAt: new Date("2026-06-30T00:00:05.000Z"),
+        decisionAt: new Date("2026-06-30T00:00:05.000Z"),
+        correlationId: null,
+        trace: { rawOrderDetail: "redacted" },
+      },
+    })).rejects.toThrow(/secret-like|안전하지/);
+    expect(query).not.toHaveBeenCalled();
+
+    await expect(writer?.appendDecisionTick({
+      tick: {
+        exchange: "UPBIT",
+        market: "KRW-BTC",
+        strategyId: "live_ops_cleanup_probe",
+        decisionKind: "HOLD",
+        reasonCode: "live_ops_hold",
+        sourceTickId: "writer-invalid-number-test",
+        featureSnapshot: { invalid_metric: Number.POSITIVE_INFINITY },
+        thresholds: {},
+        orderIntentCount: 0,
+        dedupePolicy: "HOLD_REASON_1M_BUCKET",
+        dedupeBucketStartedAt: new Date("2026-06-30T00:00:00.000Z"),
+        dedupeKey: "live-decision:def",
+        observedAt: new Date("2026-06-30T00:00:05.000Z"),
+        decisionAt: new Date("2026-06-30T00:00:05.000Z"),
+        correlationId: null,
+        trace: {},
+      },
+    })).rejects.toThrow(/유한하지 않은 number/);
+    expect(query).not.toHaveBeenCalled();
+  });
+
+  it("run-live-ops loader는 daemon tick live execution에도 decision history writer를 전달한다", async () => {
+    const supportContent = await readFile(path.join(process.cwd(), "scripts/run-live-ops-support.mjs"), "utf8");
+
+    expect(supportContent).toMatch(
+      /const liveExecution = await evaluateLiveOpsCliLiveExecution\(\{[\s\S]*decisionHistoryWriter: productionExecutionInputs\.decisionHistoryWriter \?\? decisionHistoryWriter[\s\S]*cleanupLifecycle: productionExecutionInputs\.cleanupLifecycle/u,
+    );
+    expect(supportContent).toMatch(/decisionHistoryFallbackPool = createLiveOpsCliPostgresPool/u);
+    expect(supportContent).toMatch(/createLiveOpsCliDatabaseDecisionHistoryWriter\(decisionHistoryFallbackPool\)/u);
+    expect(supportContent).toMatch(/createDecisionHistoryWriter\(input\)/u);
+  });
+
   it("corepack pnpm build 이후 dist 기반 production live ops 명령이 통과한다", async () => {
     const buildResult = spawnSync("corepack", ["pnpm", "build"], {
       cwd: process.cwd(),
@@ -483,6 +916,702 @@ describe("production live ops script skeleton", () => {
       true,
     ]);
     expect(stdoutChunks.join("")).not.toContain("fake-telegram-token");
+  });
+
+  it("live:ops:daemon closeout evidence는 retention, stale status, alert retry/manual review를 분리한다", async () => {
+    const daemonModulePath = path.join(process.cwd(), "scripts/run-live-ops-daemon-support.mjs");
+    const { runLiveOpsDaemon } = await import(daemonModulePath);
+    const retentionCalls: Array<{ olderThan: string; databaseUrl: string }> = [];
+    const stdoutChunks: string[] = [];
+
+    const result = await runLiveOpsDaemon(
+      {
+        configPath: "/tmp/live-ops.production.json",
+        maxTicks: 2,
+        tickIntervalMs: 0,
+        json: true,
+        decisionHistoryRetentionHours: 24,
+      },
+      {
+        stdout: {
+          write(chunk: string) {
+            stdoutChunks.push(chunk);
+            return true;
+          },
+        },
+        clock: () => "2026-06-30T00:00:00.000Z",
+        sleep: async () => undefined,
+        async loadInputs() {
+          if (retentionCalls.length > 0) {
+            throw new Error("provider stale after previous summary");
+          }
+          return { env: { SEEMIRAI_DATABASE_URL: "postgres://fixture" } };
+        },
+        renderSummary() {
+          return {
+            status: "blocked",
+            configPath: "/tmp/live-ops.production.json",
+            liveOrderCapable: false,
+            liveExecution: {
+              ready: false,
+              status: "manual_review_required",
+              liveOrderCapable: false,
+              submittedOrderCount: 0,
+              cleanupStatus: "manual_review_required",
+            },
+            reconcilePnlStatus: {
+              ready: true,
+              status: "manual_review_required",
+              manualReviewRequired: true,
+              mismatchCount: 1,
+            },
+            telegramAlert: {
+              ready: false,
+              status: "manual_review_required",
+              retryPlannedCount: 1,
+              failureCount: 1,
+              scheduledBriefing: {
+                status: "partial_failure",
+                retryPlannedCount: 2,
+                failureCount: 1,
+              },
+            },
+          };
+        },
+        async applyDecisionHistoryRetention(input: { olderThan: Date; databaseUrl: string }) {
+          retentionCalls.push({
+            olderThan: input.olderThan.toISOString(),
+            databaseUrl: input.databaseUrl,
+          });
+          return { deleted: 7 };
+        },
+      },
+    );
+
+    expect(retentionCalls).toEqual([{
+      olderThan: "2026-06-29T00:00:00.000Z",
+      databaseUrl: "postgres://fixture",
+    }]);
+    expect(result).toMatchObject({
+      status: "transient_failure",
+      latestError: {
+        message: "provider stale after previous summary",
+      },
+      closeoutEvidence: {
+        statusFreshness: {
+          status: "stale_after_failure",
+          latestSummaryStatus: "blocked",
+          latestErrorName: "Error",
+        },
+        alertRetry: {
+          retryPlannedCount: 3,
+          failureCount: 2,
+          manualReviewRequired: true,
+        },
+        manualReview: {
+          required: true,
+          count: 1,
+        },
+        decisionHistoryRetention: {
+          status: "applied",
+          deleted: 7,
+          olderThan: "2026-06-29T00:00:00.000Z",
+        },
+      },
+    });
+    expect(JSON.stringify(result)).not.toContain("postgres://fixture");
+    expect(stdoutChunks.join("")).not.toContain("postgres://fixture");
+  });
+
+  it("audit/tax closeout validator는 주문, 취소, 체결, PnL, decision tick을 stable/correlation id로 연결한다", async () => {
+    const {
+      createLiveOpsAuditTaxCloseoutManifest,
+      validateLiveOpsAuditTaxCloseoutManifest,
+    } = await import(path.join(process.cwd(), "scripts/verify-live-ops-audit-tax-closeout.mjs")) as {
+      createLiveOpsAuditTaxCloseoutManifest: (input?: Record<string, unknown>) => Record<string, unknown>;
+      validateLiveOpsAuditTaxCloseoutManifest: (manifest: Record<string, unknown>) => Record<string, unknown>;
+    };
+
+    const manifest = createLiveOpsAuditTaxCloseoutManifest();
+    const result = validateLiveOpsAuditTaxCloseoutManifest(manifest);
+
+    expect(result).toMatchObject({
+      status: "ready",
+      ready: true,
+      summary: {
+        statusLabel: "검증 완료",
+        message: "세무/감사 closeout evidence가 주문, 취소, 체결, PnL, decision tick을 같은 업무 흐름으로 연결합니다.",
+      },
+      contract: {
+        version: "live_ops_audit_tax_closeout.v1",
+        requiredEvidence: ["decision_tick", "order", "cancel", "fill", "pnl_snapshot", "audit_event"],
+      },
+    });
+    expect(result).toMatchObject({
+      evidenceCounts: {
+        decisionTicks: 1,
+        orders: 1,
+        cancellations: 1,
+        fills: 1,
+        pnlSnapshots: 1,
+        auditEvents: 1,
+      },
+    });
+    expect(result).toMatchObject({
+      chains: [
+        expect.objectContaining({
+          status: "linked",
+          links: expect.arrayContaining([
+            expect.objectContaining({ from: "decision_tick", to: "order", via: "correlation_id" }),
+            expect.objectContaining({ from: "order", to: "cancel", via: "order_id" }),
+            expect.objectContaining({ from: "order", to: "fill", via: "order_id" }),
+            expect.objectContaining({ from: "fill", to: "pnl_snapshot", via: "correlation_id" }),
+            expect.objectContaining({ from: "order", to: "audit_event", via: "order_id" }),
+          ]),
+        }),
+      ],
+    });
+    expect(JSON.stringify(result)).not.toMatch(/Authorization|Bearer|raw_provider_payload|rawProviderPayload/u);
+  });
+
+  it("audit/tax closeout validator는 decision sourceTickId와 주문 idempotency key를 연결한다", async () => {
+    const {
+      createLiveOpsAuditTaxCloseoutManifest,
+      validateLiveOpsAuditTaxCloseoutManifest,
+    } = await import(path.join(process.cwd(), "scripts/verify-live-ops-audit-tax-closeout.mjs")) as {
+      createLiveOpsAuditTaxCloseoutManifest: (input?: Record<string, unknown>) => Record<string, unknown>;
+      validateLiveOpsAuditTaxCloseoutManifest: (manifest: Record<string, unknown>) => Record<string, unknown>;
+    };
+
+    const manifest = createLiveOpsAuditTaxCloseoutManifest({
+      chains: [
+        {
+          chainId: "audit-tax-chain-source-tick",
+          decisionTick: {
+            id: "decision-tick-1",
+            dedupeKey: "UPBIT:KRW-BTC:cleanup:BUY:2026-06-30T00:00:00.000Z",
+            decisionKind: "BUY",
+            sourceTickId: "2026-06-30T00:00:00.000Z:audit-tax-order-1",
+          },
+          order: {
+            id: "order-1",
+            idempotencyKey: "audit-tax-order-1",
+            brokerOrderId: "upbit-order-1",
+          },
+          cancellations: [
+            {
+              id: "cancel-1",
+              orderId: "order-1",
+            },
+          ],
+          fills: [
+            {
+              id: "fill-1",
+              orderId: "order-1",
+              fillId: "upbit-fill-1",
+            },
+          ],
+          pnlSnapshots: [
+            {
+              id: "pnl-1",
+              strategyId: "live_ops_cleanup_probe",
+              market: "KRW-BTC",
+              capturedAt: "2026-06-30T00:00:05.000Z",
+              fillId: "upbit-fill-1",
+            },
+          ],
+          auditEvents: [
+            {
+              id: "audit-event-1",
+              auditKind: "live_order_flow_closed",
+              orderId: "order-1",
+            },
+          ],
+        },
+      ],
+    });
+
+    const result = validateLiveOpsAuditTaxCloseoutManifest(manifest);
+
+    expect(result).toMatchObject({
+      status: "ready",
+      ready: true,
+      chains: [
+        expect.objectContaining({
+          status: "linked",
+          links: expect.arrayContaining([
+            expect.objectContaining({ from: "decision_tick", to: "order", via: "source_tick_id" }),
+          ]),
+        }),
+      ],
+    });
+  });
+
+  it("audit/tax closeout validator는 체결 stable id와 correlation id가 없으면 fail-closed 한다", async () => {
+    const {
+      createLiveOpsAuditTaxCloseoutManifest,
+      validateLiveOpsAuditTaxCloseoutManifest,
+    } = await import(path.join(process.cwd(), "scripts/verify-live-ops-audit-tax-closeout.mjs")) as {
+      createLiveOpsAuditTaxCloseoutManifest: (input?: Record<string, unknown>) => Record<string, unknown>;
+      validateLiveOpsAuditTaxCloseoutManifest: (manifest: Record<string, unknown>) => Record<string, unknown>;
+    };
+
+    const manifest = createLiveOpsAuditTaxCloseoutManifest({
+      chains: [
+        {
+          chainId: "audit-tax-chain-missing-fill-link",
+          correlationId: "audit-tax-corr-1",
+          decisionTick: {
+            id: "decision-tick-1",
+            dedupeKey: "UPBIT:KRW-BTC:cleanup:BUY:2026-06-30T00:00:00.000Z",
+            decisionKind: "BUY",
+            correlationId: "audit-tax-corr-1",
+          },
+          order: {
+            id: "order-1",
+            idempotencyKey: "audit-tax-order-1",
+            brokerOrderId: "upbit-order-1",
+            correlationId: "audit-tax-corr-1",
+          },
+          cancellations: [
+            {
+              id: "cancel-event-1",
+              orderId: "order-1",
+              correlationId: "audit-tax-corr-1",
+            },
+          ],
+          fills: [
+            {
+              market: "KRW-BTC",
+              filledAt: "2026-06-30T00:00:03.000Z",
+            },
+          ],
+          pnlSnapshots: [
+            {
+              strategyId: "live_ops_cleanup_probe",
+              market: "KRW-BTC",
+              capturedAt: "2026-06-30T00:00:05.000Z",
+              correlationId: "audit-tax-corr-1",
+            },
+          ],
+          auditEvents: [
+            {
+              id: "audit-event-1",
+              auditKind: "live_order_flow_closed",
+              orderId: "order-1",
+              correlationId: "audit-tax-corr-1",
+            },
+          ],
+        },
+      ],
+    });
+
+    const result = validateLiveOpsAuditTaxCloseoutManifest(manifest);
+
+    expect(result).toMatchObject({
+      status: "blocked",
+      ready: false,
+      summary: {
+        statusLabel: "수동 확인 필요",
+      },
+    });
+    expect(result).toMatchObject({
+      missingLinks: expect.arrayContaining([
+        expect.objectContaining({
+          chainId: "audit-tax-chain-missing-fill-link",
+          evidenceType: "fill",
+          reasonCode: "stable_or_correlation_id_missing",
+        }),
+      ]),
+    });
+  });
+
+  it("audit/tax closeout validator는 raw provider/order/secret 후보를 closeout evidence에서 차단한다", async () => {
+    const {
+      createLiveOpsAuditTaxCloseoutManifest,
+      validateLiveOpsAuditTaxCloseoutManifest,
+    } = await import(path.join(process.cwd(), "scripts/verify-live-ops-audit-tax-closeout.mjs")) as {
+      createLiveOpsAuditTaxCloseoutManifest: (input?: Record<string, unknown>) => Record<string, unknown>;
+      validateLiveOpsAuditTaxCloseoutManifest: (manifest: Record<string, unknown>) => Record<string, unknown>;
+    };
+
+    const manifest = createLiveOpsAuditTaxCloseoutManifest({
+      chains: [
+        {
+          chainId: "audit-tax-chain-secret",
+          correlationId: "audit-tax-corr-1",
+          decisionTick: {
+            id: "decision-tick-1",
+            dedupeKey: "UPBIT:KRW-BTC:cleanup:BUY:2026-06-30T00:00:00.000Z",
+            decisionKind: "BUY",
+            correlationId: "audit-tax-corr-1",
+          },
+          order: {
+            id: "order-1",
+            idempotencyKey: "audit-tax-order-1",
+            brokerOrderId: "upbit-order-1",
+            correlationId: "audit-tax-corr-1",
+          },
+          cancellations: [],
+          fills: [
+            {
+              id: "fill-1",
+              orderId: "order-1",
+              fillId: "upbit-fill-1",
+              correlationId: "audit-tax-corr-1",
+            },
+          ],
+          pnlSnapshots: [
+            {
+              id: "pnl-1",
+              strategyId: "live_ops_cleanup_probe",
+              market: "KRW-BTC",
+              capturedAt: "2026-06-30T00:00:05.000Z",
+              correlationId: "audit-tax-corr-1",
+            },
+          ],
+          auditEvents: [
+            {
+              id: "audit-event-1",
+              auditKind: "live_order_flow_closed",
+              orderId: "order-1",
+              correlationId: "audit-tax-corr-1",
+              payload: {
+                rawProviderPayload: {
+                  Authorization: "Bearer should-not-persist",
+                },
+                providerRawPayload: {
+                  status: "filled",
+                },
+                orderRawDetail: {
+                  uuid: "raw-order-uuid",
+                },
+                raw_payload_json: {
+                  uuid: "raw-json-uuid",
+                },
+                api_key: "should-not-persist",
+                query_hash: "should-not-persist",
+                debugNote: `sk-${"a".repeat(32)}`,
+                comment: `ghp_${"b".repeat(36)}`,
+                sampleText: `xoxb-${"1".repeat(12)}-${"2".repeat(12)}-${"c".repeat(24)}`,
+              },
+            },
+          ],
+        },
+      ],
+    });
+
+    const result = validateLiveOpsAuditTaxCloseoutManifest(manifest);
+
+    expect(result).toMatchObject({
+      status: "blocked",
+      ready: false,
+      sourceScan: {
+        status: "failed",
+      },
+    });
+    expect(result).toMatchObject({
+      sourceScan: {
+        violations: expect.arrayContaining([
+          expect.objectContaining({
+            path: "$.chains[0].auditEvents[0].payload.rawProviderPayload",
+          }),
+          expect.objectContaining({
+            path: "$.chains[0].auditEvents[0].payload.rawProviderPayload.Authorization",
+          }),
+          expect.objectContaining({
+            path: "$.chains[0].auditEvents[0].payload.providerRawPayload",
+          }),
+          expect.objectContaining({
+            path: "$.chains[0].auditEvents[0].payload.orderRawDetail",
+          }),
+          expect.objectContaining({
+            path: "$.chains[0].auditEvents[0].payload.raw_payload_json",
+          }),
+          expect.objectContaining({
+            path: "$.chains[0].auditEvents[0].payload.api_key",
+          }),
+          expect.objectContaining({
+            path: "$.chains[0].auditEvents[0].payload.query_hash",
+          }),
+          expect.objectContaining({
+            path: "$.chains[0].auditEvents[0].payload.debugNote",
+            reasonCode: "secret_like_value_present",
+          }),
+          expect.objectContaining({
+            path: "$.chains[0].auditEvents[0].payload.comment",
+            reasonCode: "secret_like_value_present",
+          }),
+          expect.objectContaining({
+            path: "$.chains[0].auditEvents[0].payload.sampleText",
+            reasonCode: "secret_like_value_present",
+          }),
+        ]),
+      },
+    });
+  });
+
+  it("audit/tax closeout validator fixture smoke는 provider 호출 없이 JSON manifest를 출력한다", () => {
+    const result = spawnSync(
+      process.execPath,
+      [
+        "scripts/verify-live-ops-audit-tax-closeout.mjs",
+        "--fixture-smoke",
+        "--json",
+      ],
+      {
+        cwd: process.cwd(),
+        encoding: "utf8",
+        env: minimalEnv(),
+      },
+    );
+
+    expect(result.status).toBe(0);
+    expect(result.stderr).toBe("");
+    const output = JSON.parse(result.stdout) as {
+      contract: { version: string };
+      ready: boolean;
+      status: string;
+      summary: { message: string };
+      manifest?: unknown;
+    };
+    expect(output.ready).toBe(true);
+    expect(output.status).toBe("ready");
+    expect(output.contract.version).toBe("live_ops_audit_tax_closeout.v1");
+    expect(output.manifest).toBeUndefined();
+    expect(output.summary.message).toContain("세무/감사 closeout evidence");
+    expect(result.stdout).not.toMatch(/Authorization|Bearer|raw_provider_payload|rawProviderPayload/u);
+  });
+
+  it("audit/tax closeout validator는 input manifest 원문을 JSON 출력에 포함하지 않는다", async () => {
+    const {
+      createLiveOpsAuditTaxCloseoutManifest,
+    } = await import(path.join(process.cwd(), "scripts/verify-live-ops-audit-tax-closeout.mjs")) as {
+      createLiveOpsAuditTaxCloseoutManifest: (input?: Record<string, unknown>) => Record<string, unknown>;
+    };
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-audit-tax-closeout-"));
+    const inputPath = path.join(tempDir, "manifest.json");
+    await writeFile(inputPath, JSON.stringify(createLiveOpsAuditTaxCloseoutManifest({
+      operatorMemo: "sensitive-input-marker-should-not-leak",
+    })), "utf8");
+
+    const result = spawnSync(
+      process.execPath,
+      [
+        "scripts/verify-live-ops-audit-tax-closeout.mjs",
+        "--input",
+        inputPath,
+        "--json",
+      ],
+      {
+        cwd: process.cwd(),
+        encoding: "utf8",
+        env: minimalEnv(),
+      },
+    );
+
+    expect(result.status).toBe(0);
+    expect(result.stderr).toBe("");
+    const output = JSON.parse(result.stdout) as {
+      contract: { version: string };
+      manifest?: unknown;
+      trace: { manifestContractVersion: string };
+    };
+    expect(output.contract.version).toBe("live_ops_audit_tax_closeout.v1");
+    expect(output.trace.manifestContractVersion).toBe("live_ops_audit_tax_closeout.v1");
+    expect(output.manifest).toBeUndefined();
+    expect(result.stdout).not.toContain("sensitive-input-marker-should-not-leak");
+  });
+
+  it("audit/tax closeout validator는 --input과 --fixture-smoke 동시 사용을 거부한다", async () => {
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-audit-tax-closeout-conflict-"));
+    const inputPath = path.join(tempDir, "manifest.json");
+    await writeFile(inputPath, JSON.stringify({ contractVersion: "live_ops_audit_tax_closeout.v1" }), "utf8");
+
+    const result = spawnSync(
+      process.execPath,
+      [
+        "scripts/verify-live-ops-audit-tax-closeout.mjs",
+        "--input",
+        inputPath,
+        "--fixture-smoke",
+        "--json",
+      ],
+      {
+        cwd: process.cwd(),
+        encoding: "utf8",
+        env: minimalEnv(),
+      },
+    );
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("--input과 --fixture-smoke는 함께 사용할 수 없습니다.");
+  });
+
+  it("live:ops:daemon은 retention 실패를 manual-review backoff와 source로 보존한다", async () => {
+    const daemonModulePath = path.join(process.cwd(), "scripts/run-live-ops-daemon-support.mjs");
+    const { runLiveOpsDaemon } = await import(daemonModulePath);
+    const sleepCalls: number[] = [];
+
+    const result = await runLiveOpsDaemon(
+      {
+        configPath: "/tmp/live-ops.production.json",
+        maxTicks: 2,
+        tickIntervalMs: 1,
+        json: true,
+        decisionHistoryRetentionHours: 24,
+      },
+      {
+        stdout: {
+          write() {
+            return true;
+          },
+        },
+        clock: () => "2026-06-30T00:00:00.000Z",
+        sleep: async (delayMs: number) => {
+          sleepCalls.push(delayMs);
+        },
+        async loadInputs() {
+          return { env: { SEEMIRAI_DATABASE_URL: "postgres://fixture" } };
+        },
+        renderSummary() {
+          return {
+            status: "ready",
+            configPath: "/tmp/live-ops.production.json",
+            liveOrderCapable: false,
+            liveExecution: {
+              ready: true,
+              status: "idle",
+              liveOrderCapable: false,
+              submittedOrderCount: 0,
+            },
+            reconcilePnlStatus: {
+              ready: true,
+              status: "ready",
+              manualReviewRequired: false,
+              mismatchCount: 0,
+            },
+            telegramAlert: {
+              ready: true,
+              status: "idle",
+              retryPlannedCount: 0,
+              failureCount: 0,
+            },
+          };
+        },
+        async applyDecisionHistoryRetention() {
+          throw new Error("retention locked");
+        },
+      },
+    );
+
+    expect(sleepCalls[0]).toBe(30_000);
+    expect(result.closeoutEvidence).toMatchObject({
+      decisionHistoryRetention: {
+        status: "manual_review_required",
+      },
+      manualReview: {
+        required: true,
+        sources: expect.arrayContaining(["decision_history_retention"]),
+      },
+    });
+    expect(JSON.stringify(result)).not.toContain("postgres://fixture");
+  });
+
+  it("live:ops:daemon closeout은 이전 manual-review source를 최신 tick에서 지우지 않는다", async () => {
+    const daemonModulePath = path.join(process.cwd(), "scripts/run-live-ops-daemon-support.mjs");
+    const { runLiveOpsDaemon } = await import(daemonModulePath);
+    const summaries = [
+      {
+        status: "blocked",
+        configPath: "/tmp/live-ops.production.json",
+        liveOrderCapable: false,
+        liveExecution: {
+          ready: false,
+          status: "manual_review_required",
+          liveOrderCapable: false,
+          submittedOrderCount: 0,
+        },
+        reconcilePnlStatus: {
+          ready: true,
+          status: "ready",
+          manualReviewRequired: false,
+          mismatchCount: 0,
+        },
+        telegramAlert: {
+          ready: false,
+          status: "blocked",
+          retryPlannedCount: 0,
+          failureCount: 0,
+        },
+      },
+      {
+        status: "ready",
+        configPath: "/tmp/live-ops.production.json",
+        liveOrderCapable: false,
+        liveExecution: {
+          ready: true,
+          status: "idle",
+          liveOrderCapable: false,
+          submittedOrderCount: 0,
+        },
+        reconcilePnlStatus: {
+          ready: true,
+          status: "ready",
+          manualReviewRequired: false,
+          mismatchCount: 0,
+        },
+        telegramAlert: {
+          ready: true,
+          status: "idle",
+          retryPlannedCount: 0,
+          failureCount: 0,
+        },
+      },
+    ];
+    let tickIndex = 0;
+
+    const result = await runLiveOpsDaemon(
+      {
+        configPath: "/tmp/live-ops.production.json",
+        maxTicks: 2,
+        tickIntervalMs: 1,
+        json: true,
+      },
+      {
+        stdout: {
+          write() {
+            return true;
+          },
+        },
+        clock: () => "2026-06-30T00:00:00.000Z",
+        sleep: async () => undefined,
+        async loadInputs() {
+          return {};
+        },
+        renderSummary() {
+          const summary = summaries[Math.min(tickIndex, summaries.length - 1)];
+          tickIndex += 1;
+          return summary;
+        },
+      },
+    );
+
+    expect(result.closeoutEvidence.alertRetry.status).toBe("ok");
+    expect(result.closeoutEvidence.manualReview).toMatchObject({
+      required: true,
+      sources: expect.arrayContaining(["live_execution", "telegram_alert"]),
+    });
+  });
+
+  it("decision history retention delete는 삭제 row id를 반환하지 않는다", async () => {
+    const source = await readFile(path.join(process.cwd(), "scripts/run-live-ops-support.mjs"), "utf8");
+    const retentionDeleteLine = source
+      .split("\n")
+      .find((line) => line.includes("DELETE FROM live_decision_ticks WHERE observed_at < $1"));
+
+    expect(retentionDeleteLine).toBeDefined();
+    expect(retentionDeleteLine).not.toContain("RETURNING");
   });
 
   it("live:ops --tui는 fixture smoke에서 provider 호출 없이 운영 dashboard 첫 화면을 출력한다", () => {
@@ -1145,6 +2274,269 @@ try {
     });
   });
 
+  it("autonomous_24x7 DB feature provider는 순마진에서 전체 비용 부담을 차감하고 gross edge를 분리한다", async () => {
+    const {
+      createLiveOpsCliDatabaseAutonomousFeatureProvider,
+    } = await import(path.join(process.cwd(), "scripts/run-live-ops-support.mjs"));
+    const observedAt = "2026-06-20T00:00:00.000Z";
+    const config = createAutonomousLiveOpsConfig(JSON.parse(await readFile(path.join(process.cwd(), "config", "live-ops.example.json"), "utf8")));
+    Object.assign(config.analysis.decision_policy.autonomous_24x7, {
+      entry_price_offset_ticks: 0,
+      feature_max_latest_event_lag_ms: 30_000,
+      feature_min_orderbook_count: 1,
+      feature_min_trade_count: 2,
+      tick_size_krw: "0",
+    });
+    const pool = createDbFeaturePool({
+      trades: [
+        createDbFeatureTrade({ at: "2026-06-19T23:59:00.000Z", price: "100000000", tradeId: "trade-cost-1" }),
+        createDbFeatureTrade({ at: observedAt, price: "100500000", tradeId: "trade-cost-2" }),
+      ],
+      orderbooks: [createDbFeatureOrderbook({ at: observedAt, bid: "100000000", ask: "100020000" })],
+    });
+    const provider = createLiveOpsCliDatabaseAutonomousFeatureProvider(pool, "KRW-BTC");
+
+    const snapshot = await provider.loadFeatureSnapshot({
+      config,
+      marketData: {
+        referencePrice: "100200000",
+      },
+      observedAt,
+    });
+
+    expect(snapshot.status).toBe("ok");
+    expect(snapshot.features).toMatchObject({
+      cost_adjusted_margin_bps: "25",
+      entry_cost_burden_bps: "25",
+      feature_source: "live_ops_db_window",
+      gross_expected_return_bps: "50",
+    });
+    expect(Number(snapshot.features.mean_reversion_discount_bps)).toBeGreaterThan(0);
+    expect(snapshot.features.trend_strength_bps).toBe("50");
+  });
+
+  it("autonomous_24x7 DB feature provider는 public 기준가만으로 DB edge를 만들지 않는다", async () => {
+    const {
+      createLiveOpsCliDatabaseAutonomousFeatureProvider,
+    } = await import(path.join(process.cwd(), "scripts/run-live-ops-support.mjs"));
+    const observedAt = "2026-06-20T00:00:00.000Z";
+    const config = createAutonomousLiveOpsConfig(JSON.parse(await readFile(path.join(process.cwd(), "config", "live-ops.example.json"), "utf8")));
+    Object.assign(config.analysis.decision_policy.autonomous_24x7, {
+      entry_price_offset_ticks: 0,
+      feature_max_latest_event_lag_ms: 30_000,
+      feature_min_orderbook_count: 1,
+      feature_min_trade_count: 1,
+      tick_size_krw: "0",
+    });
+    const pool = createDbFeaturePool({
+      trades: [createDbFeatureTrade({ at: observedAt, price: "100000000", tradeId: "trade-public-reference-1" })],
+      orderbooks: [createDbFeatureOrderbook({ at: observedAt, bid: "100000000", ask: "100020000" })],
+    });
+    const provider = createLiveOpsCliDatabaseAutonomousFeatureProvider(pool, "KRW-BTC");
+
+    const snapshot = await provider.loadFeatureSnapshot({
+      config,
+      marketData: {
+        referencePrice: "100200000",
+      },
+      observedAt,
+    });
+
+    expect(snapshot.status).toBe("ok");
+    expect(snapshot.features).toMatchObject({
+      cost_adjusted_margin_bps: "-25",
+      gross_expected_return_bps: "0",
+      mean_reversion_discount_bps: "0",
+      trend_strength_bps: "0",
+    });
+  });
+
+  it("autonomous_24x7 DB feature provider는 최신 호가가 있어도 trade stale이면 fail-closed 한다", async () => {
+    const {
+      createLiveOpsCliDatabaseAutonomousFeatureProvider,
+    } = await import(path.join(process.cwd(), "scripts/run-live-ops-support.mjs"));
+    const observedAt = "2026-06-20T00:00:00.000Z";
+    const config = createAutonomousLiveOpsConfig(JSON.parse(await readFile(path.join(process.cwd(), "config", "live-ops.example.json"), "utf8")));
+    Object.assign(config.analysis.decision_policy.autonomous_24x7, {
+      feature_max_latest_event_lag_ms: 30_000,
+      feature_min_orderbook_count: 1,
+      feature_min_trade_count: 1,
+    });
+    const pool = createDbFeaturePool({
+      trades: [createDbFeatureTrade({ at: "2026-06-19T23:59:00.000Z", price: "100000000", tradeId: "trade-stale-1" })],
+      orderbooks: [createDbFeatureOrderbook({ at: observedAt, bid: "100000000", ask: "100020000" })],
+    });
+    const provider = createLiveOpsCliDatabaseAutonomousFeatureProvider(pool, "KRW-BTC");
+
+    const snapshot = await provider.loadFeatureSnapshot({
+      config,
+      marketData: {
+        referencePrice: "100200000",
+      },
+      observedAt,
+    });
+
+    expect(snapshot.status).toBe("failed");
+    expect(snapshot.features).toEqual({});
+    expect(snapshot.failureReasons.every((failure: Record<string, any>) => failure.reasonCode === "FEATURE_MARKET_DATA_STALE")).toBe(true);
+    expect(snapshot.metadata).toMatchObject({
+      latestEventAt: observedAt,
+      latestEventLagMs: 0,
+      latestTradeEventAt: "2026-06-19T23:59:00.000Z",
+      latestTradeEventLagMs: 60_000,
+    });
+  });
+
+  it("autonomous_24x7 DB feature provider는 최신 체결이 있어도 orderbook stale이면 fail-closed 한다", async () => {
+    const {
+      createLiveOpsCliDatabaseAutonomousFeatureProvider,
+    } = await import(path.join(process.cwd(), "scripts/run-live-ops-support.mjs"));
+    const observedAt = "2026-06-20T00:00:00.000Z";
+    const config = createAutonomousLiveOpsConfig(JSON.parse(await readFile(path.join(process.cwd(), "config", "live-ops.example.json"), "utf8")));
+    Object.assign(config.analysis.decision_policy.autonomous_24x7, {
+      feature_max_latest_event_lag_ms: 30_000,
+      feature_min_orderbook_count: 1,
+      feature_min_trade_count: 1,
+    });
+    const pool = createDbFeaturePool({
+      trades: [createDbFeatureTrade({ at: observedAt, price: "100000000", tradeId: "trade-fresh-1" })],
+      orderbooks: [createDbFeatureOrderbook({ at: "2026-06-19T23:59:00.000Z", bid: "100000000", ask: "100020000" })],
+    });
+    const provider = createLiveOpsCliDatabaseAutonomousFeatureProvider(pool, "KRW-BTC");
+
+    const snapshot = await provider.loadFeatureSnapshot({
+      config,
+      marketData: {
+        referencePrice: "100200000",
+      },
+      observedAt,
+    });
+
+    expect(snapshot.status).toBe("failed");
+    expect(snapshot.features).toEqual({});
+    expect(snapshot.failureReasons.every((failure: Record<string, any>) => failure.reasonCode === "FEATURE_MARKET_DATA_STALE")).toBe(true);
+    expect(snapshot.metadata).toMatchObject({
+      latestEventAt: observedAt,
+      latestEventLagMs: 0,
+      latestOrderbookEventAt: "2026-06-19T23:59:00.000Z",
+      latestOrderbookEventLagMs: 60_000,
+    });
+  });
+
+  it.each([
+    {
+      label: "실패 snapshot",
+      featureSnapshot: {
+        status: "failed",
+        observedAt: "2026-06-20T00:00:00.000Z",
+        features: {},
+        failureReasons: [{
+          status: "failed",
+          key: "cost_adjusted_margin_bps",
+          reasonCode: "FEATURE_MARKET_DATA_STALE",
+          message: "DB feature window latest trade is stale",
+          observedAt: "2026-06-20T00:00:00.000Z",
+          windowEndAt: "2026-06-20T00:00:00.000Z",
+        }],
+        metadata: { source: "live_ops_db_window" },
+      },
+      expectedReasonCode: "autonomous_24x7_runtime_feature_snapshot_failed",
+    },
+    {
+      label: "required feature 결측",
+      featureSnapshot: {
+        status: "ok",
+        observedAt: "2026-06-20T00:00:00.000Z",
+        features: {
+          cost_adjusted_margin_bps: "40",
+        },
+        failureReasons: [],
+        metadata: { source: "live_ops_db_window" },
+      },
+      expectedReasonCode: "autonomous_24x7_runtime_required_feature_missing",
+    },
+  ])("autonomous_24x7 실행 preflight는 $label이면 broker 제출 전 차단한다", async ({ featureSnapshot, expectedReasonCode }) => {
+    const {
+      evaluateLiveOpsCliAnalysisDecision,
+      evaluateLiveOpsCliLiveExecution,
+      createLiveOpsCliProductionExecutionInputs,
+      getLiveOpsCliAnalysisOrderIntents,
+    } = await import(path.join(process.cwd(), "scripts/run-live-ops-support.mjs"));
+    const observedAt = "2026-06-20T00:00:00.000Z";
+    const config = createAutonomousLiveOpsConfig(JSON.parse(await readFile(path.join(process.cwd(), "config", "live-ops.example.json"), "utf8")));
+    const marketData = {
+      ...createAutonomousMarketData({
+        observedAt,
+        bestBid: "100000000",
+        bestAsk: "100001000",
+        referencePrice: "100500000",
+      }),
+      autonomousFeatures: {
+        cost_adjusted_margin_bps: "40",
+        mean_reversion_discount_bps: "35",
+        trend_strength_bps: "25",
+      },
+    };
+    const analysisDecision = await evaluateLiveOpsCliAnalysisDecision({
+      config,
+      fixtureSmoke: false,
+      marketData,
+      productionPreflight: createAutonomousPreflight({ observedAt }),
+    });
+    const productionPreflight = {
+      ...createAutonomousPreflight({ observedAt }),
+      autonomousFeatureSnapshot: featureSnapshot,
+    };
+    const executionInputs = await createLiveOpsCliProductionExecutionInputs({
+      config,
+      env: liveOrderEnv(),
+      fixtureSmoke: false,
+      analysisDecision,
+      marketData,
+      orderIntents: getLiveOpsCliAnalysisOrderIntents(analysisDecision),
+      preflight: productionPreflight,
+      productionRuntime: {
+        entryRuntime: {},
+        cleanupLifecycle: {},
+      },
+    });
+    const enrichedIntent = executionInputs.orderIntents[0] as Record<string, any>;
+    const submitEntryCandidate = vi.fn();
+
+    const summary = await evaluateLiveOpsCliLiveExecution({
+      config,
+      fixtureSmoke: false,
+      analysisDecision,
+      marketData,
+      env: liveOrderEnv(),
+      orderIntents: executionInputs.orderIntents,
+      entryRuntime: {
+        submitEntryCandidate,
+      },
+      executionStatus: executionInputs.executionStatus,
+      postSubmitReadiness: executionInputs.postSubmitReadiness,
+      budgetSnapshot: executionInputs.budgetSnapshot,
+      lossSnapshot: executionInputs.lossSnapshot,
+      cleanupLifecycle: executionInputs.cleanupLifecycle,
+    });
+
+    expect(enrichedIntent.costSnapshot).toMatchObject({
+      trade_allowed: false,
+      reason_code: expectedReasonCode,
+    });
+    expect(enrichedIntent.riskApproval).toMatchObject({
+      approved: false,
+      action: "BLOCK",
+      failed_evaluation_reason_codes: [expectedReasonCode],
+    });
+    expect(summary).toMatchObject({
+      status: "blocked",
+      submittedOrderCount: 0,
+    });
+    expect(JSON.stringify(summary.checks)).toContain(expectedReasonCode);
+    expect(submitEntryCandidate).not.toHaveBeenCalled();
+  });
+
   it("autonomous_24x7 실제 public tick fallback은 reference edge가 있을 때만 entry 후보를 만든다", async () => {
     const {
       evaluateLiveOpsCliAnalysisDecision,
@@ -1209,6 +2601,157 @@ try {
       details: {
         reason: "autonomous_24x7_entry_signal_weak",
         feature_source: "live_ops_cli_public_tick_weak",
+      },
+    });
+  });
+
+  it("autonomous_24x7은 DB feature snapshot을 public tick fallback보다 먼저 사용한다", async () => {
+    const {
+      evaluateLiveOpsCliAnalysisDecision,
+      getLiveOpsCliAnalysisOrderIntents,
+    } = await import(path.join(process.cwd(), "scripts/run-live-ops-support.mjs"));
+    const observedAt = "2026-06-20T00:00:00.000Z";
+    const config = createAutonomousLiveOpsConfig(JSON.parse(await readFile(path.join(process.cwd(), "config", "live-ops.example.json"), "utf8")));
+    const analysisDecision = await evaluateLiveOpsCliAnalysisDecision({
+      config,
+      fixtureSmoke: false,
+      marketData: createAutonomousMarketData({
+        observedAt,
+        bestBid: "100000000",
+        bestAsk: "100001000",
+        referencePrice: "100500000",
+      }),
+      productionPreflight: {
+        ...createAutonomousPreflight({ observedAt }),
+        autonomousFeatureSnapshot: {
+          status: "ok",
+          observedAt,
+          features: {
+            cost_adjusted_margin_bps: "0",
+            mean_reversion_discount_bps: "0",
+            trend_strength_bps: "0",
+          },
+          failureReasons: [],
+          metadata: {
+            source: "live_ops_db_window",
+          },
+        },
+      },
+    });
+
+    expect(analysisDecision).toMatchObject({
+      status: "ready",
+      decisionCategory: "HOLD",
+      featureStatus: "ok",
+      orderIntentCount: 0,
+    });
+    expect(getLiveOpsCliAnalysisOrderIntents(analysisDecision)).toHaveLength(0);
+    expect(analysisDecision.checks.find((check: { name: string }) => check.name === "strategy_decision")).toMatchObject({
+      status: "ok",
+      details: {
+        feature_source: "live_ops_db_window",
+        reason: "autonomous_24x7_entry_signal_weak",
+      },
+    });
+    expect(analysisDecision.trace.featureSnapshot).toMatchObject({
+      metadata: {
+        source: "live_ops_db_window",
+      },
+    });
+  });
+
+  it("autonomous_24x7은 실패한 DB feature snapshot을 public tick으로 대체하지 않는다", async () => {
+    const {
+      evaluateLiveOpsCliAnalysisDecision,
+      getLiveOpsCliAnalysisOrderIntents,
+    } = await import(path.join(process.cwd(), "scripts/run-live-ops-support.mjs"));
+    const observedAt = "2026-06-20T00:00:00.000Z";
+    const config = createAutonomousLiveOpsConfig(JSON.parse(await readFile(path.join(process.cwd(), "config", "live-ops.example.json"), "utf8")));
+    const analysisDecision = await evaluateLiveOpsCliAnalysisDecision({
+      config,
+      fixtureSmoke: false,
+      marketData: createAutonomousMarketData({
+        observedAt,
+        bestBid: "100000000",
+        bestAsk: "100001000",
+        referencePrice: "100500000",
+      }),
+      productionPreflight: {
+        ...createAutonomousPreflight({ observedAt }),
+        autonomousFeatureSnapshot: {
+          status: "failed",
+          observedAt,
+          features: {},
+          failureReasons: [
+            {
+              status: "failed",
+              key: "cost_adjusted_margin_bps",
+              reasonCode: "FEATURE_MARKET_DATA_STALE",
+              message: "DB feature window latest event is stale",
+              observedAt,
+              windowEndAt: observedAt,
+            },
+          ],
+          metadata: {
+            source: "live_ops_db_window",
+          },
+        },
+      },
+    });
+
+    expect(analysisDecision).toMatchObject({
+      status: "blocked",
+      decisionCategory: "BLOCKED",
+      featureStatus: "failed",
+      orderIntentCount: 0,
+    });
+    expect(getLiveOpsCliAnalysisOrderIntents(analysisDecision)).toHaveLength(0);
+    expect(analysisDecision.checks.find((check: { name: string }) => check.name === "strategy_decision")).toMatchObject({
+      status: "blocked",
+      details: {
+        reason: "autonomous_24x7_feature_snapshot_failed",
+        source: "live_ops_db_window",
+      },
+    });
+  });
+
+  it("autonomous_24x7은 required feature 결측을 0으로 채우지 않고 차단한다", async () => {
+    const {
+      evaluateLiveOpsCliAnalysisDecision,
+      getLiveOpsCliAnalysisOrderIntents,
+    } = await import(path.join(process.cwd(), "scripts/run-live-ops-support.mjs"));
+    const observedAt = "2026-06-20T00:00:00.000Z";
+    const config = createAutonomousLiveOpsConfig(JSON.parse(await readFile(path.join(process.cwd(), "config", "live-ops.example.json"), "utf8")));
+    const marketData = {
+      ...createAutonomousMarketData({
+        observedAt,
+        bestBid: "100000000",
+        bestAsk: "100001000",
+        referencePrice: "100500000",
+      }),
+      autonomousFeatures: {
+        cost_adjusted_margin_bps: "40",
+      },
+    };
+    const analysisDecision = await evaluateLiveOpsCliAnalysisDecision({
+      config,
+      fixtureSmoke: false,
+      marketData,
+      productionPreflight: createAutonomousPreflight({ observedAt }),
+    });
+
+    expect(analysisDecision).toMatchObject({
+      status: "blocked",
+      decisionCategory: "BLOCKED",
+      featureStatus: "failed",
+      orderIntentCount: 0,
+    });
+    expect(getLiveOpsCliAnalysisOrderIntents(analysisDecision)).toHaveLength(0);
+    expect(analysisDecision.checks.find((check: { name: string }) => check.name === "strategy_decision")).toMatchObject({
+      status: "blocked",
+      details: {
+        feature_missing_keys: ["trend_strength_bps", "mean_reversion_discount_bps"],
+        reason: "autonomous_24x7_required_feature_missing",
       },
     });
   });
@@ -7500,6 +9043,7 @@ console.log(JSON.stringify({
       reason_code: "cost_margin_ok",
     };
     const submittedRequests: Array<Record<string, any>> = [];
+    const appendDecisionTick = vi.fn(async (_input: { tick: Record<string, unknown> }) => ({ inserted: true }));
 
     vi.useFakeTimers();
     vi.setSystemTime(new Date(executionAt));
@@ -7532,6 +9076,7 @@ console.log(JSON.stringify({
           SEEMIRAI_UPBIT_KEY_SCOPE_EVIDENCE_ID: "scope-evidence",
         },
         orderIntents: [blockedIntent],
+        decisionHistoryWriter: { appendDecisionTick },
         entryRuntime: {
           async submitEntryCandidate(request: Record<string, any>) {
             submittedRequests.push(request);
@@ -7583,6 +9128,11 @@ console.log(JSON.stringify({
     }
 
     expect(submittedRequests).toHaveLength(0);
+    expect(appendDecisionTick.mock.calls[0]?.[0]?.tick).toMatchObject({
+      decisionKind: "BLOCK",
+      reasonCode: "live_ops_order_intent_blocked",
+      orderIntentCount: 0,
+    });
   });
 
   it("cleanup_probe runtime evidence 보강은 malformed 기존 CostModel evidence를 승인으로 합성하지 않는다", async () => {
@@ -14975,6 +16525,12 @@ try {
   it("autonomous_24x7 운영 JSON은 CLI contract에서 허용한다", async () => {
     const tempDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-live-ops-script-"));
     const config = createAutonomousLiveOpsConfig(JSON.parse(await readFile(path.join(process.cwd(), "config", "live-ops.example.json"), "utf8")));
+    Object.assign(config.analysis.decision_policy.autonomous_24x7, {
+      feature_max_latest_event_lag_ms: 30_000,
+      feature_min_orderbook_count: 2,
+      feature_min_trade_count: 20,
+      feature_window_ms: 21 * 60_000,
+    });
     const configPath = path.join(tempDir, "autonomous-live-ops.json");
     await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`, "utf8");
 
@@ -15326,6 +16882,56 @@ function createCliBuyIntent({ idempotencyKey }: { idempotencyKey: string }) {
       warning_evaluation_reason_codes: [],
       order_intent: orderIntentEvidence,
     },
+  };
+}
+
+function createDbFeaturePool(input: {
+  trades: Record<string, any>[];
+  orderbooks: Record<string, any>[];
+}): Record<string, any> {
+  return {
+    async query(sql: string) {
+      if (sql.includes("FROM trades")) {
+        return { rows: input.trades };
+      }
+      if (sql.includes("FROM orderbook_snapshots")) {
+        return { rows: input.orderbooks };
+      }
+      throw new Error(`unexpected DB feature SQL: ${sql}`);
+    },
+  };
+}
+
+function createDbFeatureTrade(input: {
+  at: string;
+  price: string;
+  tradeId: string;
+}): Record<string, any> {
+  return {
+    exchange: "upbit_krw_spot",
+    market: "KRW-BTC",
+    trade_id: input.tradeId,
+    side: "BUY",
+    price: input.price,
+    volume: "1",
+    exchange_timestamp: new Date(input.at),
+    received_at: new Date(input.at),
+    raw_payload_json: {},
+  };
+}
+
+function createDbFeatureOrderbook(input: {
+  ask: string;
+  at: string;
+  bid: string;
+}): Record<string, any> {
+  return {
+    exchange: "upbit_krw_spot",
+    market: "KRW-BTC",
+    captured_at: new Date(input.at),
+    bids_json: { levels: [{ price: input.bid, size: "1" }] },
+    asks_json: { levels: [{ price: input.ask, size: "1" }] },
+    raw_payload_json: {},
   };
 }
 

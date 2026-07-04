@@ -17,6 +17,7 @@ type RuntimeAdapterForTest = {
   assertMarketDataReady(summary: Record<string, unknown>, options: { fixtureSmoke?: boolean }): void;
   evaluateBrokerGuard(input: Record<string, unknown>): Record<string, unknown>;
   createProductionRuntime(input: Record<string, unknown>): Promise<Record<string, unknown>>;
+  createDecisionHistoryWriter?(input: Record<string, unknown>): Promise<Record<string, unknown>>;
   collectAutonomousAnalysisPreflight(input: Record<string, unknown>): Promise<Record<string, unknown> | undefined>;
   evaluateAnalysisDecision(input: Record<string, unknown>): Promise<Record<string, unknown>>;
   getAnalysisOrderIntents(summary: Record<string, unknown>): unknown[];
@@ -25,6 +26,7 @@ type RuntimeAdapterForTest = {
   evaluateReconcilePnlStatus(input: Record<string, unknown>): Promise<Record<string, unknown>>;
   evaluateTelegramAlert(input: Record<string, unknown>): Promise<Record<string, unknown>>;
   closeProductionRuntime(runtime: Record<string, unknown>): Promise<void>;
+  closeDecisionHistoryWriter?(writer: Record<string, unknown>): Promise<void>;
 };
 
 function createRuntimeAdapterForTest(calls: string[], overrides: Partial<RuntimeAdapterForTest> = {}): RuntimeAdapterForTest {
@@ -156,6 +158,50 @@ describe("Live Ops runtime adapter service", () => {
       "reconcilePnlStatus",
       "telegramAlert",
     ]);
+  });
+
+  it("broker guard 차단 시 production runtime 없이 decision history writer만 fallback으로 전달한다", async () => {
+    const calls: string[] = [];
+    let liveExecutionInput: Record<string, unknown> | undefined;
+    const adapter = createRuntimeAdapterForTest(calls, {
+      evaluateBrokerGuard() {
+        calls.push("brokerGuardBlocked");
+        return { ready: false };
+      },
+      async createProductionRuntime() {
+        throw new Error("production runtime should not be created");
+      },
+      async createDecisionHistoryWriter(input) {
+        calls.push(`decisionHistoryWriter:${String(input.databaseUrl)}`);
+        return { writerId: "fallback-writer" };
+      },
+      async createProductionExecutionInputs() {
+        calls.push("executionInputs");
+        return { orderIntents: [] };
+      },
+      async evaluateLiveExecution(input) {
+        calls.push("liveExecution");
+        liveExecutionInput = input;
+        return { ready: false, liveOrderCapable: false };
+      },
+      async closeDecisionHistoryWriter(writer) {
+        calls.push(`closeDecisionHistoryWriter:${String(writer.writerId)}`);
+      },
+    });
+
+    await loadLiveOpsRuntimeAdapterInputs({
+      options: {
+        configPath: "config.json",
+        envFilePath: "fixture.env",
+        fixtureSmoke: false,
+      },
+      adapter,
+    });
+
+    expect(liveExecutionInput?.decisionHistoryWriter).toMatchObject({ writerId: "fallback-writer" });
+    expect(calls).toContain("decisionHistoryWriter:postgres://fixture");
+    expect(calls).toContain("closeDecisionHistoryWriter:fallback-writer");
+    expect(calls).not.toContain("createRuntime");
   });
 
   it("production runtime을 만든 뒤 downstream이 실패해도 close를 보장한다", async () => {

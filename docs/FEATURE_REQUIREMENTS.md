@@ -1087,6 +1087,51 @@ Acceptance Criteria:
 
 - MVP에서 LLM 기반 매수/매도 추천, 목표가 산정, 포지션 크기 결정을 제공하지 않는다.
 
+### FR-OPS-009: Post-M23 Live Ops는 decision history와 전략 품질 evidence를 DB에서 추적해야 한다
+
+설명:
+
+- Issue #258은 M23 이후 24/7 Live Ops에서 주문이 없던 tick도 왜 HOLD/BLOCK/BUY/SELL로 닫혔는지 DB에서 재구성할 수 있게 하는 운영 관측성 강화 범위다.
+- decision tick은 `live_decision_ticks`에 exchange, market, strategy, decision kind, reason code, feature snapshot, threshold, order intent count, dedupe 정보, correlation/trace를 secret-free JSONB로 저장한다.
+- HOLD decision은 같은 exchange/market/strategy/reason의 1분 bucket dedupe를 사용해 HOLD flood를 줄이고, BUY/SELL/BLOCK은 source tick scope로 dedupe한다.
+- decision history 저장 실패는 주문 후보나 broker side effect를 재시도하지 않고 status/TUI degraded evidence로 격리한다.
+
+Acceptance Criteria:
+
+- [x] `live_decision_ticks` migration은 decision kind, dedupe policy, dedupe key unique constraint와 조회 index를 가진다.
+- [x] application contract는 HOLD 1분 bucket dedupe와 source tick dedupe를 결정적으로 계산한다.
+- [x] DB repository는 같은 dedupe key를 중복 insert하지 않고 `inserted=false` 결과로 반환할 수 있다.
+- [x] live execution과 production CLI 경계는 decision history writer가 있을 때 tick을 기록하고, writer 실패 시 broker 제출 여부를 바꾸지 않는다.
+- [x] feature snapshot, threshold, trace JSONB는 raw provider payload, raw order detail, secret-like key/string을 거부한다.
+- [x] autonomous feature provider는 DB-backed source를 우선하고 missing/stale feature를 0값으로 보정하지 않는다.
+- [x] calibration report runner는 threshold 품질과 후보/실현 결과를 재현 가능한 artifact로 남긴다.
+- [x] status/TUI/CLI는 사용자 행동 언어와 내부 추적 정보를 분리해 decision history degraded 상태를 표시한다.
+- [x] daemon retention, stale status, alert retry/manual-review hardening은 closeout evidence로 검증된다.
+- [x] audit/tax evidence contract는 주문, 취소, 체결, PnL, decision tick을 stable id 또는 correlation id로 연결한다.
+
+테스트 요구사항:
+
+- 단위 테스트: HOLD 1분 bucket dedupe, BUY/SELL source tick dedupe, JSONB secret-safe validation, row mapper를 검증한다.
+- 단위 테스트: live execution과 production CLI decision history writer 성공/실패 분기가 주문 후보 제출 흐름을 바꾸지 않는지 확인한다.
+- 단위 테스트: DB-backed autonomous feature provider가 DB window를 우선하고 sample 부족, stale, required feature 결측을 0값 보정 없이 차단하는지 확인한다.
+- 단위 테스트: live decision calibration runner가 threshold 품질, feature source/failure 품질, 후보/주문/체결 결과를 Markdown/JSON artifact로 재현하는지 확인한다.
+- 단위 테스트: decision history 저장 실패가 CLI/TUI에서 한국어 상태, 영향, 필요 조치를 먼저 보여주고 내부 code/error는 `추적 정보`로 분리되는지 확인한다.
+- 단위 테스트: daemon closeout evidence가 decision history retention 삭제 결과, stale latestSummary 상태, alert retry/manual review source를 secret 없이 분리하는지 확인한다.
+- 단위 테스트: audit/tax closeout validator가 주문, 취소, 체결, PnL, audit event, decision tick의 stable/correlation link와 raw evidence 차단을 검증하는지 확인한다.
+- script smoke: `node scripts/verify-live-ops-audit-tax-closeout.mjs --fixture-smoke --json`은 provider 호출 없이 `live_ops_audit_tax_closeout.v1` contract를 검증한다.
+- gated integration: `SEEMIRAI_RUN_DB_INTEGRATION=1`일 때 dedupe conflict와 retention delete를 실제 DB에서 검증한다.
+- migration 테스트: 새 migration이 순서대로 적용되는지 확인한다.
+
+문서 요구사항:
+
+- Issue #258 sub PR 상태는 `docs/exec-plans/active/2026-06-30-issue-258-live-ops-observability-quality.md`에 갱신한다.
+- decision history, degraded status, secret-free persistence 기준이 바뀌면 `docs/RELIABILITY.md`, `docs/SECURITY.md`, `docs/RUNTIME_CONFIG.md` 중 해당 기준 문서를 함께 갱신한다.
+
+제외 범위:
+
+- decision history write 실패를 이유로 이미 제출된 broker side effect를 rollback하거나 같은 주문 후보를 재주문하지 않는다.
+- raw provider payload, raw order detail, credential, DB URL, Telegram token은 decision history에 저장하지 않는다.
+
 ### FR-SECURITY-001: API 키와 주문 권한은 최소 권한으로 운영해야 한다
 
 설명:

@@ -101,6 +101,8 @@ export interface DatabaseSchema {
   pnl_snapshots: PnlSnapshotsTable;
   /** 전략이 생성한 BUY/SELL/HOLD/BLOCK 판단 이력 */
   strategy_signals: StrategySignalsTable;
+  /** live ops daemon/CLI decision tick 이력과 HOLD bucket dedupe evidence */
+  live_decision_ticks: LiveDecisionTicksTable;
 
   // ── M16 실계좌 상태 Reconcile append-only tables ──
 
@@ -616,6 +618,52 @@ export interface StrategySignalsTable {
   payload_json: GeneratedJsonRecord;
   /** signal 생성 시각. hypertable time column이자 primary key 일부 */
   generated_at: Timestamp;
+}
+
+/**
+ * live ops decision tick 이력 table interface다.
+ *
+ * `strategy_signals`가 전략 signal 시계열의 일반 contract라면, 이 table은 production live ops/daemon tick의 운영 판단
+ * 이력을 feature snapshot, threshold, 주문 후보 수와 함께 저장한다. HOLD는 1분 reason bucket dedupe로 폭주를 줄이고,
+ * retention은 repository의 명시 cutoff delete로만 수행한다.
+ */
+export interface LiveDecisionTicksTable {
+  /** decision tick record ID */
+  id: Generated<string>;
+  /** 거래소 식별자. 예: `"UPBIT"` */
+  exchange: string;
+  /** 정규화 market code */
+  market: string;
+  /** 판단을 만든 strategy 식별자 */
+  strategy_id: string;
+  /** live tick 판단 종류 */
+  decision_kind: "HOLD" | "BUY" | "SELL" | "BLOCK";
+  /** 판단 reason code. 사용자-facing 문구는 status formatter가 별도로 낮춘다. */
+  reason_code: string;
+  /** 같은 source tick 재실행과 audit/tax closeout을 연결하는 durable source id */
+  source_tick_id: string;
+  /** strategy에 전달된 feature snapshot의 secret-free projection */
+  feature_snapshot_json: GeneratedJsonRecord;
+  /** 해당 tick 판단에 적용된 threshold/config projection */
+  threshold_json: GeneratedJsonRecord;
+  /** 같은 tick에서 live execution으로 넘어간 주문 후보 수 */
+  order_intent_count: number;
+  /** 저장 폭주와 재실행 중복을 접는 dedupe 정책 */
+  dedupe_policy: "HOLD_REASON_1M_BUCKET" | "SOURCE_TICK";
+  /** dedupe policy가 적용된 bucket 시작 시각 */
+  dedupe_bucket_started_at: Timestamp;
+  /** 같은 tick 또는 HOLD bucket 재실행을 차단하는 stable key */
+  dedupe_key: string;
+  /** market/feature frame 관측 시각 */
+  observed_at: Timestamp;
+  /** strategy decision이 확정된 시각 */
+  decision_at: Timestamp;
+  /** 주문/risk/execution과 연결할 correlation id. 없으면 null */
+  correlation_id: string | null;
+  /** 내부 추적 정보. raw provider payload, Authorization/JWT, secret은 포함하지 않는다. */
+  trace_json: GeneratedJsonRecord;
+  /** DB row 생성 시각 */
+  created_at: GeneratedTimestamp;
 }
 
 // ── M16 실계좌 상태 Reconcile append-only tables ──

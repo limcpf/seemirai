@@ -22,6 +22,7 @@ export interface LiveOpsRuntimeAdapterPort {
   assertMarketDataReady(summary: Record<string, unknown>, options: { fixtureSmoke?: boolean }): void;
   evaluateBrokerGuard(input: Record<string, unknown>): Record<string, unknown>;
   createProductionRuntime(input: Record<string, unknown>): Promise<Record<string, unknown>>;
+  createDecisionHistoryWriter?(input: Record<string, unknown>): Promise<Record<string, unknown>>;
   collectAutonomousAnalysisPreflight(input: Record<string, unknown>): Promise<Record<string, unknown> | undefined>;
   evaluateAnalysisDecision(input: Record<string, unknown>): Promise<Record<string, unknown>>;
   getAnalysisOrderIntents(summary: Record<string, unknown>): unknown[];
@@ -30,6 +31,7 @@ export interface LiveOpsRuntimeAdapterPort {
   evaluateReconcilePnlStatus(input: Record<string, unknown>): Promise<Record<string, unknown>>;
   evaluateTelegramAlert(input: Record<string, unknown>): Promise<Record<string, unknown>>;
   closeProductionRuntime(runtime: Record<string, unknown>): Promise<void>;
+  closeDecisionHistoryWriter?(writer: Record<string, unknown>): Promise<void>;
 }
 
 /**

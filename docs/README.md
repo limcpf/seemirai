@@ -16,6 +16,7 @@
 - Issue #245 Live Ops LLM Telegram 브리핑 closeout: [`exec-plans/completed/2026-06-27-issue-245-live-ops-llm-telegram-briefing-closeout.md`](./exec-plans/completed/2026-06-27-issue-245-live-ops-llm-telegram-briefing-closeout.md)
 - Issue #196 Live Ops 원클릭 앱/TUI 실행 계획: [`exec-plans/active/2026-06-14-issue-196-live-ops-one-click-app.md`](./exec-plans/active/2026-06-14-issue-196-live-ops-one-click-app.md)
 - Issue #206 Live Ops 실거래 arm 실행 계획: [`exec-plans/active/2026-06-15-issue-206-live-ops-real-arm.md`](./exec-plans/active/2026-06-15-issue-206-live-ops-real-arm.md)
+- Issue #258 Live Ops 운영 관측성·전략 품질 실행 계획: [`exec-plans/active/2026-06-30-issue-258-live-ops-observability-quality.md`](./exec-plans/active/2026-06-30-issue-258-live-ops-observability-quality.md)
 - 로컬 개발 환경과 검증 절차: [`DEVELOPMENT.md`](./DEVELOPMENT.md)
 - 런타임 설정 구조, 허용값, 안전 invariant: [`RUNTIME_CONFIG.md`](./RUNTIME_CONFIG.md)
 - 운영자가 직접 실행하는 절차와 runbook: [`runbooks/README.md`](./runbooks/README.md), [`runbooks/m9-paper-ops-beta.md`](./runbooks/m9-paper-ops-beta.md), [`runbooks/m22-live-autonomous-pilot.md`](./runbooks/m22-live-autonomous-pilot.md) (M22 local env/key/config preparer 포함), [`runbooks/m23-live-small-budget-operations.md`](./runbooks/m23-live-small-budget-operations.md), [`runbooks/live-ops-real-arm-cleanup.md`](./runbooks/live-ops-real-arm-cleanup.md), [`runbooks/live-ops-24x7-autonomous.md`](./runbooks/live-ops-24x7-autonomous.md)
