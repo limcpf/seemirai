@@ -2,7 +2,11 @@
 
 Seemirai는 Upbit KRW 현물 시장에서 전략 신호를 바로 주문으로 연결하지 않고, 수수료, 스프레드, 슬리피지, 유동성, 포지션 한도, 손실 한도, 운영 readiness를 먼저 차감하고 차단한 뒤에도 기대값이 남는 후보만 실행 경계로 넘기는 비용 우선 자동매매 시스템이다.
 
-이 저장소의 기본값은 API key가 없어도 동작해야 하는 `PAPER_TRADING` profile이다. 현재 운영 단계는 M23 `LIVE_AUTONOMOUS_SMALL_BUDGET` 7일 안정화이며, 실거래 API 호출은 저장소 밖 secret, evidence, readiness guard, 소액 예산 설정을 운영자가 명시적으로 arm 한 경우에만 열린다. M24 전략, universe, 예산 확대는 M23 closeout PASS 이후 별도 issue 범위다.
+이 저장소의 기본값은 API key가 없어도 동작해야 하는 `PAPER_TRADING` profile이다. production
+`LIVE_AUTONOMOUS_SMALL_BUDGET` daemon은 2026-06-24부터 16일 이상 연속 실행됐고 Issue #188 구현 기준선을 포함한다. 다만 M23
+actual manifest에 필요한 daily report, 일별 decision, restart, backup/restore artifact가 남아 있지 않아 M24 전략, universe,
+예산 확대는 계속 별도 승인 범위로 둔다. 실거래 API 호출은 저장소 밖 secret, readiness guard, 소액 예산 설정을 운영자가 명시적으로
+arm 한 경우에만 열린다.
 
 ## 핵심 원칙
 
@@ -261,6 +265,7 @@ M22/M23 운영 env와 key 파일은 저장소 밖 디렉터리에 둔다. 기본
 - [신뢰성과 복구 기준](./docs/RELIABILITY.md)
 - [보안 기준](./docs/SECURITY.md)
 - [M23 live small-budget 7일 운영 runbook](./docs/runbooks/m23-live-small-budget-operations.md)
+- [Issue #188 M23 구현 closeout과 24/7 운영 회고 감사](./docs/exec-plans/completed/2026-07-10-issue-188-m23-live-ops-retrospective-closeout.md)
 - [문서 시스템](./docs/README.md)
 
 ## 참고 출처

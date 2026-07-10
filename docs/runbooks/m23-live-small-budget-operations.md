@@ -7,6 +7,12 @@
 Issue #206 production `live:ops` 실제 arm과 단일 submit/cancel cleanup 절차는 [`live-ops-real-arm-cleanup.md`](./live-ops-real-arm-cleanup.md)를
 따른다. 이 runbook의 7일 안정화는 cleanup evidence 이후 장기 운영 안정화를 닫는 기준으로 유지한다.
 
+Issue #188 merge 뒤 도입된 production successor도 역사적 기준선 commit을 포함하고, 같은 mode/budget/key scope/fail-closed
+invariant를 증명하면 장기 process 안정성의 보조 증거로 사용할 수 있다. 이 경우에도 덮어쓰는 latest status나 DB aggregate를 7개
+daily report와 일별 decision segment로 소급 변환하지 않는다. successor evidence 해석과 2026-07-10 회고 결과는
+[`2026-07-10-issue-188-m23-live-ops-retrospective-closeout.md`](../exec-plans/completed/2026-07-10-issue-188-m23-live-ops-retrospective-closeout.md)를
+따른다.
+
 ## 범위
 
 - 대상 모드: `LIVE_AUTONOMOUS_SMALL_BUDGET`
@@ -322,3 +328,7 @@ live-armed guard/readiness, decision evidence, closeout failure counter 명시�
 blocker, source scan, raw secret 후보를 함께 확인한다. 7일 artifact가 없거나 manifest가 6일 이하이면 closeout은 실패다.
 
 live canary 1회 성공, dry-run, heartbeat-only만으로 M23 완료를 선언하지 않는다.
+
+production successor가 7일 이상 연속 실행됐더라도 actual manifest 입력을 충족하지 않으면 결과는 보조 안정성 evidence와 formal
+artifact closeout으로 분리한다. process uptime과 failure counter 0은 전자를 뒷받침하지만 daily report, 일별 decision evidence,
+restart/recovery, backup/restore 입력을 생략하게 하지는 않는다.

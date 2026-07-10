@@ -20,19 +20,25 @@ Issue #188은 이 계획 중 M23 24/7 live small-budget 운영 안정화와 실�
   terminal cancel 확인을 수행한다.
 - M23 live canary cleanup 통과: `cc93288f`, 10,000 KRW `LIMIT + post_only` 주문 제출 1회, 취소 요청 1회, terminal `cancel` 확인,
   `openPositionNotionalKrw=0`, `liveOrderCleanupFailureCount=0`.
-- Issue #188 Sub PR 01에서 `FR-OPS-004`와 M23 전용 runbook contract를 고정한다.
-- Issue #188 Sub PR 02에서 `/status.liveOps`, Telegram `/status`, daily report가 공유하는 M23 live ops safe summary 표면을 추가한다.
+- Issue #188 Sub PR 01에서 `FR-OPS-004`와 M23 전용 runbook contract를 고정했다.
+- Issue #188 Sub PR 02에서 `/status.liveOps`, Telegram `/status`, daily report가 공유하는 M23 live ops safe summary 표면을 추가했다.
 - Issue #188 Sub PR 03에서 M23 Telegram lifecycle/trade alert mapper와 formatter를 추가하고 `LiveAutonomousEntryRuntime`
   entry 제출/차단, exit runtime의 제출/부분체결/취소 요청, live reconcile state advancement의 체결/취소 확인 경로를
   `dispatchLiveOpsAlert`에 연결해 연결 성공, live order capable 시작, 중지/수동 점검/crash/restart/recovery,
-  주문/취소/체결/차단 event를 기존 cooldown/retry/manual review 경로에 연결한다.
+  주문/취소/체결/차단 event를 기존 cooldown/retry/manual review 경로에 연결했다.
 - Issue #188 Sub PR 04에서 systemd service 템플릿과 `scripts/run-m23-recovery-drill.mjs` artifact validator를 추가해 restart 전후
   duplicate live order 방지, reconcile/status/daily report 복구, Upbit 장애/market warning/stale data fail-closed evidence,
-  DB backup/restore smoke 결과 또는 blocker 기록을 closeout 전 검증할 수 있게 한다.
+  DB backup/restore smoke 결과 또는 blocker 기록을 closeout 전 검증할 수 있게 했다.
 - Issue #188 Sub PR 05에서 `scripts/run-m23-stability-closeout.mjs` manifest validator를 추가해 7개 이상 24시간 segment summary,
   live-armed/key/budget/operator evidence, decision/daily report evidence, restart/recovery drill summary, source scan,
-  DB backup/restore 결과 또는 blocker를 한 번에 집계한다. 현재 저장소 밖에는 M23 7일 live-armed 연속 artifact가 없으므로 M23
-  PASS closeout은 아직 선언하지 않는다.
+  DB backup/restore 결과 또는 blocker를 한 번에 집계하게 했다.
+- PR #194 merge commit `962a5ad`에서 Issue #188 구현을 완료했고 2026-06-14에 issue가 닫혔다.
+- 후속 production `live:ops:daemon`은 해당 기준선을 포함한 계보에서 2026-06-24부터 약 16일 23시간 연속 실행됐다. 필수
+  failure counter는 모두 0이고 최근 완료 7개 KST 날짜에 market data와 completed reconcile evidence가 연속 저장됐다.
+- production successor는 기존 M23 24시간 segment runner 형식으로 실행되지 않았다. 7개 daily report, 일별 durable decision
+  evidence, 실제 restart drill, backup/restore artifact가 없으므로 M23 actual manifest `PASS`는 아직 선언하지 않는다. 상세 판정은
+  [`2026-07-10-issue-188-m23-live-ops-retrospective-closeout.md`](../completed/2026-07-10-issue-188-m23-live-ops-retrospective-closeout.md)를
+  따른다.
 
 ## 범위
 
@@ -74,6 +80,9 @@ Issue #188은 이 계획 중 M23 24/7 live small-budget 운영 안정화와 실�
    - 누적 realized loss와 미체결 노출 합계가 50,000 KRW에 도달하기 전에 운영을 중지한다.
    - closeout manifest가 준비되면 `SEEMIRAI_RUN_M23_STABILITY_CLOSEOUT=1 node scripts/run-m23-stability-closeout.mjs --manifest <path> --json`으로
      7일 segment와 recovery/source scan/backup evidence를 검증한다.
+   - 2026-07-10 회고 감사에서 16일 이상 production 연속 실행과 필수 failure counter 0은 확인했다.
+   - 같은 감사에서 daily report와 일별 durable decision evidence 0건, actual restart/backup artifact 부재를 확인했으므로 이 단계는
+     안정성 관측 `PASS`, formal artifact closeout `PARTIAL`로 유지한다.
 
 5. M24 shadow 비교와 확대 승인
    - 알트 최대 3개 수동 편입 전 paper/live shadow 비교를 먼저 통과시킨다.
@@ -121,6 +130,13 @@ node scripts/run-m22-live-autonomous-pilot.mjs \
 - 주문이 없었던 날도 candidate 없음, gate 차단, 시장 조건 미충족, operator stop, kill switch 같은 이유가 evidence로 남아야 한다.
 - M24는 paper/live shadow 비교, 전략별 PnL/손실 기여도 report, operator approval과 rollback plan이 있어야 완료다.
 - live canary 1회 성공만으로 M23/M24 완료를 선언하지 않는다.
+
+## 결정 로그
+
+- 2026-07-10: Issue #188 구현 종료는 당시 merge 기준선 `962a5ad`로 판정하며 최신 `main` 배포를 소급 조건으로 두지 않는다.
+- 2026-07-10: production successor의 16일 이상 연속 실행은 장기 안정성 보조 증거로 인정한다.
+- 2026-07-10: latest status와 DB aggregate를 누락된 daily report/decision segment로 소급 변환하지 않고 M23 actual validator
+  `PASS`와 M24 확대 gate를 유지한다.
 
 ## 최신 live canary artifact
 

@@ -1,6 +1,9 @@
 # Upbit Live Autonomous Trading 로드맵
 
-- 상태: M22 구현 closeout, source scan, 24시간 heartbeat-only pilot, dry-run candidate canary, runner/runbook/local file preparer/기본 daemon 완료. Issue #196에서 production `live:ops`/TUI-first 운영 skeleton이 완료됐고, Issue #206에서 실제 DB/provider arm, 소액 submit/cancel cleanup evidence, `live:ops:daemon` 24/7 entry/exit loop를 붙이는 작업 진행 중. M23/M24 운영 검증은 live canary cleanup과 7일 안정화 evidence부터 진행 (2026-06-20)
+- 상태: M22 구현과 pilot, Issue #188 M23 운영 기능 구현, Issue #196 production `live:ops`/TUI-first skeleton, Issue #206 실제
+  DB/provider arm과 소액 submit/cancel cleanup을 완료했다. 후속 `live:ops:daemon`은 2026-06-24부터 16일 이상 연속 실행됐지만,
+  M23 actual manifest에 필요한 7개 daily report, 일별 durable decision evidence, restart/backup artifact가 없어 M23 operational
+  `PASS`와 M24 확대는 아직 선언하지 않는다. (2026-07-10)
 - 작성일: 2026-06-01
 - 관련 범위: M15 이후 post-MVP 실거래 자율 운용
 - 기준 문서: [`../PRD.md`](../PRD.md), [`../FEATURE_REQUIREMENTS.md`](../FEATURE_REQUIREMENTS.md), [`../../ARCHITECTURE.md`](../../ARCHITECTURE.md), [`./upbit-v0-2-pilot-private-api.md`](./upbit-v0-2-pilot-private-api.md), [`../RUNTIME_CONFIG.md`](../RUNTIME_CONFIG.md), [`../RELIABILITY.md`](../RELIABILITY.md), [`../SECURITY.md`](../SECURITY.md)
@@ -400,6 +403,18 @@ M19 Sub PR 03 범위:
 - DB backup/restore smoke drill
 - Upbit 장애, 점검, market warning, stale data, API 오류 fail-closed drill
 - 운영자가 직접 arm/stop/kill/manual review/Upbit 웹 확인을 수행할 수 있는 runbook
+
+2026-07-10 회고 판정:
+
+- Issue #188 구현 종료 기준선은 PR #194 merge commit `962a5ad`다.
+- production successor는 이 기준선을 포함하며 약 16일 23시간 연속 실행, 363,534 tick, crash/unhandled rejection/duplicate
+  order/reconcile mismatch/untracked fill/cleanup failure 0을 관측했다.
+- 최근 완료 7개 KST 날짜에 market data와 17,215개 completed reconcile run이 연속 저장됐고, 1,331개 market data disconnect는
+  모두 `BLOCK_NEW_ORDERS`로 수렴했다.
+- 7개 daily report와 일별 durable decision frame은 0건이고 실제 restart/backup artifact도 없어 M23 validator 결과는
+  `PARTIAL`이다. 상세 근거는
+  [`2026-07-10-issue-188-m23-live-ops-retrospective-closeout.md`](../exec-plans/completed/2026-07-10-issue-188-m23-live-ops-retrospective-closeout.md)를
+  따른다.
 
 완료 조건:
 
