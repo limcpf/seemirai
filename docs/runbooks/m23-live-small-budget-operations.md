@@ -60,22 +60,23 @@ startup 이후 완료된 KST 날짜부터 actual 7일 window를 계산한다.
 
 ## Issue #267 successor 전환 gate
 
-다음 항목이 모두 확인되기 전에는 기존 production daemon을 중지하지 않는다.
+다음 중지 전 gate가 모두 확인되기 전에는 기존 production daemon에 종료 신호를 보내지 않는다.
 
 | 항목 | 확인 기준 |
 | --- | --- |
 | historical baseline | #206 cleanup artifact와 #188 구현 closeout을 변경하지 않고 참조한다. |
-| pre-deploy snapshot | daemon 시작/관측 시각, source worktree HEAD, migration 13, failure counters, open order/exposure를 redacted artifact로 고정한다. |
+| pre-deploy snapshot | daemon 시작/관측 시각, source worktree HEAD, migration 13, failure counters, open order/exposure 0을 redacted artifact로 고정한다. |
 | rollout source | Sub PR 02까지 병합된 `issue-267-mother`의 40자리 source SHA를 기록한다. |
 | config provenance | 운영 config 원문 대신 `sha256:<hex>` fingerprint만 startup/status에 남긴다. |
-| migration preflight | migration 14 파일/checksum과 DB pending 상태를 확인하고 daemon 정상 종료 뒤 적용 전 backup을 만든다. |
+| migration preflight | migration 14 파일/checksum과 DB pending 상태를 확인하고 backup/restore 명령과 저장 위치를 준비한다. |
 | rollback | migration 14를 인식하는 rollback source SHA 또는 검증된 pre-migration restore 절차를 기록한다. |
 
-신규 entry를 차단하고 daemon을 정상 종료한 뒤 terminal status와 open order/exposure 0을 확인한다. 그 상태에서 migration 직전
-backup과 disposable restore preflight를 만들고 migration 14를 적용한 다음 새 daemon을 시작한다. startup/status의 source SHA, config fingerprint,
-expected/applied migration version이 rollout 입력과 다르면 신규 entry를 열지 않는다. 새 daemon에서 `live_decision_ticks` write와
-`live_ops_db_window` source를 확인하고 실제 restart/recovery 및 disposable restore DB smoke를 통과한 뒤에만 7일 evidence window를
-시작한다.
+open order 또는 exposure가 하나라도 있으면 daemon을 멈추지 않고 operator stop/manual review로 전환한다. 0이 확인되면 신규 entry를
+차단하고 같은 조회를 다시 통과한 뒤에만 `SIGTERM`을 보낸다. 정상 종료 후 terminal status와 daemon write 정지를 확인한 시점부터
+중지 후 migration gate를 진행한다. 이 gate에서는 migration 직전 backup과 disposable restore preflight를 만들고 migration 14를
+적용한 다음 새 daemon을 시작한다. startup/status의 source SHA, config fingerprint, expected/applied migration version이 rollout
+입력과 다르면 신규 entry를 열지 않는다. 새 daemon에서 `live_decision_ticks` write와 `live_ops_db_window` source를 확인하고 실제
+restart/recovery 및 disposable restore DB smoke를 통과한 뒤에만 7일 evidence window를 시작한다.
 
 successor 7일 window에는 pre-deploy daemon 날짜를 포함하지 않는다. manifest `day`는 daily report `reportDate` 및 durable decision
 evidence의 KST day와 같아야 하며, 해당 KST window가 종료된 뒤 생성된 artifact여야 한다. latest status나 aggregate query로 누락

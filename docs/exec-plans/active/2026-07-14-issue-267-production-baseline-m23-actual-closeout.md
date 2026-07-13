@@ -91,13 +91,15 @@ pre-deploy 상태를 최신 기능의 실행 증거로 소급 변환하지 않�
 ## Rollout gate
 
 1. pre-deploy daemon 상태와 #206 cleanup artifact를 redacted baseline으로 저장한다.
-2. source SHA, config fingerprint, 현재 migration 13, open order/exposure, rollback commit을 교차 확인한다.
-3. 신규 entry를 차단하고 기존 daemon에 `SIGTERM`을 보낸 뒤 terminal status와 open order/exposure 0을 확인한다.
-4. daemon write가 멈춘 상태에서 migration 직전 DB backup을 만들고 disposable restore preflight로 복구 가능성을 확인한다.
-5. migration 14를 적용하고 pending/checksum drift가 없는지 확인한다.
-6. Sub PR 02가 병합된 mother SHA로 build한 daemon을 같은 config/env와 보수적 budget으로 시작한다.
-7. startup/status provenance, decision history, DB-backed feature source를 확인한다.
-8. 실제 restart drill과 backup/restore smoke를 닫은 뒤 7일 evidence window를 시작한다.
+2. source SHA, config fingerprint, 현재 migration 13, open order/exposure 0, rollback commit을 교차 확인한다. open order 또는 exposure가
+   있으면 daemon을 중지하지 않고 operator stop/manual review로 전환한다.
+3. 신규 entry를 차단하고 open order/exposure 0을 다시 확인한 뒤에만 기존 daemon에 `SIGTERM`을 보낸다.
+4. terminal status와 daemon write 정지를 확인해 중지 후 migration gate를 연다.
+5. daemon write가 멈춘 상태에서 migration 직전 DB backup을 만들고 disposable restore preflight로 복구 가능성을 확인한다.
+6. migration 14를 적용하고 pending/checksum drift가 없는지 확인한다.
+7. Sub PR 02가 병합된 mother SHA로 build한 daemon을 같은 config/env와 보수적 budget으로 시작한다.
+8. startup/status provenance, decision history, DB-backed feature source를 확인한다.
+9. 실제 restart drill과 backup/restore smoke를 닫은 뒤 7일 evidence window를 시작한다.
 
 어느 단계든 source/migration 불일치, open order, mismatch, untracked fill, Telegram owner alert 장기 실패가 확인되면 신규 entry를
 재개하지 않는다. migration 14 적용 뒤 rollback source는 migration 14 파일/checksum을 포함하고 readiness를 통과하는 명시 SHA여야 한다.
