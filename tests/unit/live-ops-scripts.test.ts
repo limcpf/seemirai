@@ -1,5 +1,6 @@
 import { spawnSync } from "node:child_process";
-import { link, mkdtemp, readFile, rm, utimes, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { link, mkdtemp, readFile, rm, stat, utimes, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
@@ -660,9 +661,10 @@ describe("production live ops script skeleton", () => {
     expect(summary.counters.tickCount).toBe(3);
   });
 
-  it("live:ops:daemon 실패 tick도 status file에 최신 실패 상태를 기록한다", async () => {
+  it("live:ops:daemon startup provenance 실패를 status file에 기록한다", async () => {
     const tempDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-live-ops-daemon-status-"));
     const statusFilePath = path.join(tempDir, "daemon-status.json");
+    const startupArtifactFilePath = path.join(tempDir, "daemon-startup.json");
     const result = spawnSync(
       process.execPath,
       [
@@ -673,6 +675,10 @@ describe("production live ops script skeleton", () => {
         "tests/fixtures/live-ops/fake.env",
         "--status-file",
         statusFilePath,
+        "--source-commit-sha",
+        readCurrentGitCommitSha(),
+        "--startup-artifact-file",
+        startupArtifactFilePath,
         "--max-ticks",
         "1",
         "--json",
@@ -684,21 +690,161 @@ describe("production live ops script skeleton", () => {
       },
     );
 
-    expect(result.status).toBe(0);
+    expect(result.status).toBe(1);
     const statusFile = JSON.parse(await readFile(statusFilePath, "utf8"));
     expect(statusFile).toMatchObject({
       kind: "live_ops_daemon_summary",
-      status: "transient_failure",
+      status: "provenance_failed",
       statusFilePath,
+      startupArtifactFilePath,
       latestError: {
         name: expect.any(String),
       },
       counters: {
-        tickCount: 1,
-        transientFailureCount: 1,
+        tickCount: 0,
+        transientFailureCount: 0,
       },
     });
     expect(statusFile.latestSummary).toBeNull();
+  });
+
+  it("live:ops:daemon production parser는 source SHA와 startup artifact 경로를 필수로 받는다", async () => {
+    const daemonModulePath = path.join(process.cwd(), "scripts/run-live-ops-daemon-support.mjs");
+    const { parseLiveOpsDaemonArgs } = await import(daemonModulePath);
+
+    expect(() => parseLiveOpsDaemonArgs([
+      "--config",
+      "config/live-ops.example.json",
+      "--env-file",
+      "tests/fixtures/live-ops/fake.env",
+    ])).toThrow("--source-commit-sha 40자리 Git SHA가 필요합니다.");
+
+    expect(parseLiveOpsDaemonArgs([
+      "--config",
+      "config/live-ops.example.json",
+      "--env-file",
+      "tests/fixtures/live-ops/fake.env",
+      "--source-commit-sha",
+      testDaemonSourceCommitSha.toUpperCase(),
+      "--startup-artifact-file",
+      "/tmp/seemirai-live-ops-startup.json",
+    ])).toMatchObject({
+      sourceCommitSha: testDaemonSourceCommitSha,
+      startupArtifactFilePath: "/tmp/seemirai-live-ops-startup.json",
+    });
+  });
+
+  it("live:ops:daemon startup provenance는 실제 HEAD와 DB migration readiness를 함께 고정한다", async () => {
+    const daemonModulePath = path.join(process.cwd(), "scripts/run-live-ops-daemon-support.mjs");
+    const { prepareLiveOpsDaemonRuntimeProvenance } = await import(daemonModulePath);
+    const loadStartupReadiness = vi.fn(async () => ({
+      configFingerprint: testDaemonRuntimeProvenance.configFingerprint,
+      dbReadiness: {
+        ready: true,
+        migration: {
+          expectedLatestVersion: 14,
+          appliedLatestVersion: 14,
+          pendingVersions: [],
+        },
+      },
+    }));
+
+    await expect(prepareLiveOpsDaemonRuntimeProvenance(
+      createDaemonProvenanceOptions("source-mismatch"),
+      {
+        inspectSourceTree: async () => ({
+          repositoryRoot: process.cwd(),
+          headCommitSha: "b".repeat(40),
+          clean: true,
+        }),
+        loadStartupReadiness,
+      },
+    )).rejects.toThrow("현재 daemon worktree HEAD와 다릅니다");
+    expect(loadStartupReadiness).not.toHaveBeenCalled();
+
+    await expect(prepareLiveOpsDaemonRuntimeProvenance(
+      createDaemonProvenanceOptions("dirty-source"),
+      {
+        inspectSourceTree: async () => ({
+          repositoryRoot: process.cwd(),
+          headCommitSha: testDaemonSourceCommitSha,
+          clean: false,
+        }),
+        loadStartupReadiness,
+      },
+    )).rejects.toThrow("commit되지 않은 변경이 있습니다");
+    expect(loadStartupReadiness).not.toHaveBeenCalled();
+
+    await expect(prepareLiveOpsDaemonRuntimeProvenance(
+      createDaemonProvenanceOptions("ready"),
+      {
+        inspectSourceTree: async () => ({
+          repositoryRoot: process.cwd(),
+          headCommitSha: testDaemonSourceCommitSha,
+          clean: true,
+        }),
+        loadStartupReadiness,
+      },
+    )).resolves.toEqual({
+      ...testDaemonRuntimeProvenance,
+      repositoryRoot: process.cwd(),
+    });
+  });
+
+  it("live:ops:daemon startup artifact는 repository 밖에서 create-only로 같은 provenance를 보존한다", async () => {
+    const daemonModulePath = path.join(process.cwd(), "scripts/run-live-ops-daemon-support.mjs");
+    const { writeLiveOpsDaemonStartupArtifact } = await import(daemonModulePath);
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-live-ops-startup-artifact-"));
+    const startupArtifactFilePath = path.join(tempDir, "startup.json");
+    const input = {
+      filePath: startupArtifactFilePath,
+      startedAt: "2026-07-14T00:00:00.000Z",
+      runtimeProvenance: {
+        ...testDaemonRuntimeProvenance,
+        repositoryRoot: process.cwd(),
+      },
+      repositoryRoot: process.cwd(),
+    };
+
+    await writeLiveOpsDaemonStartupArtifact(input);
+    expect(JSON.parse(await readFile(startupArtifactFilePath, "utf8"))).toEqual({
+      kind: "live_ops_daemon_startup",
+      status: "ready",
+      startedAt: "2026-07-14T00:00:00.000Z",
+      runtimeProvenance: testDaemonRuntimeProvenance,
+    });
+    expect((await stat(startupArtifactFilePath)).mode & 0o777).toBe(0o600);
+    await expect(writeLiveOpsDaemonStartupArtifact(input)).rejects.toThrow("이미 존재합니다");
+  });
+
+  it("live:ops tick은 startup 이후 config 또는 migration drift를 live provider 경계 전에 차단한다", async () => {
+    const supportModulePath = path.join(process.cwd(), "scripts/run-live-ops-support.mjs");
+    const { loadLiveOpsCliInputs } = await import(supportModulePath);
+    const configPath = path.join(process.cwd(), "config/live-ops.example.json");
+    const configText = await readFile(configPath, "utf8");
+    const baseOptions = {
+      configPath,
+      envFilePath: path.join(process.cwd(), "tests/fixtures/live-ops/fake.env"),
+      fixtureSmoke: true,
+    };
+
+    await expect(loadLiveOpsCliInputs({
+      ...baseOptions,
+      runtimeProvenance: {
+        ...testDaemonRuntimeProvenance,
+        configFingerprint: `sha256:${"0".repeat(64)}`,
+      },
+    })).rejects.toMatchObject({ name: "LiveOpsRuntimeProvenanceMismatchError" });
+
+    await expect(loadLiveOpsCliInputs({
+      ...baseOptions,
+      runtimeProvenance: {
+        ...testDaemonRuntimeProvenance,
+        configFingerprint: `sha256:${createHash("sha256").update(configText, "utf8").digest("hex")}`,
+        expectedMigrationVersion: 999,
+        appliedMigrationVersion: 999,
+      },
+    })).rejects.toMatchObject({ name: "LiveOpsRuntimeProvenanceMismatchError" });
   });
 
   it("live:ops:daemon 첫 실패 tick도 기본 status file에 기록한다", async () => {
@@ -710,8 +856,15 @@ describe("production live ops script skeleton", () => {
     const stdoutChunks: string[] = [];
 
     const result = await runLiveOpsDaemon(
-      { configPath, maxTicks: 1, tickIntervalMs: 0, json: true },
       {
+        configPath,
+        maxTicks: 1,
+        tickIntervalMs: 0,
+        json: true,
+        ...createDaemonProvenanceOptions("default-failure"),
+      },
+      {
+        ...createDaemonProvenanceIo(),
         stdout: {
           write(chunk: string) {
             stdoutChunks.push(chunk);
@@ -758,8 +911,15 @@ describe("production live ops script skeleton", () => {
     const stdoutChunks: string[] = [];
 
     const result = await runLiveOpsDaemon(
-      { configPath, maxTicks: 1, tickIntervalMs: 0, json: true },
       {
+        configPath,
+        maxTicks: 1,
+        tickIntervalMs: 0,
+        json: true,
+        ...createDaemonProvenanceOptions("completed-status"),
+      },
+      {
+        ...createDaemonProvenanceIo(),
         stdout: {
           write(chunk: string) {
             stdoutChunks.push(chunk);
@@ -789,6 +949,7 @@ describe("production live ops script skeleton", () => {
     expect(result).toMatchObject({
       status: "completed",
       statusFilePath,
+      runtimeProvenance: testDaemonRuntimeProvenance,
       counters: {
         tickCount: 1,
         transientFailureCount: 0,
@@ -804,6 +965,7 @@ describe("production live ops script skeleton", () => {
       },
       latestSummary: {
         status: "ready",
+        runtimeProvenance: testDaemonRuntimeProvenance,
       },
     });
     expect(stdoutChunks.join("")).not.toContain("fake-telegram-token");
@@ -887,8 +1049,14 @@ describe("production live ops script skeleton", () => {
     ];
 
     const result = await runLiveOpsDaemon(
-      { maxTicks: 3, tickIntervalMs: 0, json: true },
       {
+        maxTicks: 3,
+        tickIntervalMs: 0,
+        json: true,
+        ...createDaemonProvenanceOptions("telegram-retry"),
+      },
+      {
+        ...createDaemonProvenanceIo(),
         stdout: {
           write(chunk: string) {
             stdoutChunks.push(chunk);
@@ -931,8 +1099,10 @@ describe("production live ops script skeleton", () => {
         tickIntervalMs: 0,
         json: true,
         decisionHistoryRetentionHours: 24,
+        ...createDaemonProvenanceOptions("closeout-evidence"),
       },
       {
+        ...createDaemonProvenanceIo(),
         stdout: {
           write(chunk: string) {
             stdoutChunks.push(chunk);
@@ -1460,8 +1630,10 @@ describe("production live ops script skeleton", () => {
         tickIntervalMs: 1,
         json: true,
         decisionHistoryRetentionHours: 24,
+        ...createDaemonProvenanceOptions("retention-failure"),
       },
       {
+        ...createDaemonProvenanceIo(),
         stdout: {
           write() {
             return true;
@@ -1577,8 +1749,10 @@ describe("production live ops script skeleton", () => {
         maxTicks: 2,
         tickIntervalMs: 1,
         json: true,
+        ...createDaemonProvenanceOptions("manual-review-history"),
       },
       {
+        ...createDaemonProvenanceIo(),
         stdout: {
           write() {
             return true;
@@ -17085,6 +17259,69 @@ function createAutonomousLiveOpsConfig(config: Record<string, any>): Record<stri
       },
     },
   };
+}
+
+const testDaemonSourceCommitSha = "a".repeat(40);
+const testDaemonRuntimeProvenance = {
+  sourceCommitSha: testDaemonSourceCommitSha,
+  configFingerprint: `sha256:${"1".repeat(64)}`,
+  expectedMigrationVersion: 14,
+  appliedMigrationVersion: 14,
+};
+
+/**
+ * production daemon 단위 테스트가 parser와 같은 필수 provenance 입력을 명시하도록 만든다.
+ *
+ * 책임:
+ * - 각 테스트 실행을 구분하는 repository 밖 startup artifact 경로와 고정 source SHA를 반환한다.
+ * - 실제 파일/DB/provider side effect는 만들지 않고 runner option 경계만 충족한다.
+ *
+ * side effect:
+ * - 없음.
+ */
+function createDaemonProvenanceOptions(label: string): {
+  sourceCommitSha: string;
+  startupArtifactFilePath: string;
+} {
+  return {
+    sourceCommitSha: testDaemonSourceCommitSha,
+    startupArtifactFilePath: path.join(os.tmpdir(), `seemirai-live-ops-${label}-startup.json`),
+  };
+}
+
+/**
+ * 기존 daemon loop 테스트가 startup provenance 준비/기록과 분리된 tick 정책만 검증하게 하는 테스트 포트다.
+ *
+ * 반환 provenance는 source/config/migration을 모두 포함하며 runner가 status와 latest summary에 같은 값을
+ * 전달하는 invariant를 유지한다. 실제 Git, DB, 파일 시스템을 열지 않으므로 외부 side effect는 없다.
+ */
+function createDaemonProvenanceIo(): {
+  prepareRuntimeProvenance: () => Promise<Record<string, unknown>>;
+  persistStartupArtifact: () => Promise<void>;
+} {
+  return {
+    async prepareRuntimeProvenance() {
+      return {
+        ...testDaemonRuntimeProvenance,
+        repositoryRoot: process.cwd(),
+      };
+    },
+    async persistStartupArtifact() {
+      return undefined;
+    },
+  };
+}
+
+/** 현재 테스트 checkout의 실제 commit SHA를 production parser 입력 형식으로 읽는다. */
+function readCurrentGitCommitSha(): string {
+  const result = spawnSync("git", ["rev-parse", "HEAD"], {
+    cwd: process.cwd(),
+    encoding: "utf8",
+  });
+  if (result.status !== 0 || !/^[a-f0-9]{40}$/u.test(result.stdout.trim())) {
+    throw new Error("테스트 checkout의 Git commit SHA를 읽지 못했습니다.");
+  }
+  return result.stdout.trim();
 }
 
 /**

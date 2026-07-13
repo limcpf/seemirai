@@ -1,14 +1,21 @@
+import { execFile } from "node:child_process";
 import { mkdir, realpath, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { promisify } from "node:util";
 import {
   applyLiveOpsCliDecisionHistoryRetention,
+  LiveOpsRuntimeProvenanceMismatchError,
   loadLiveOpsCliInputs,
+  loadLiveOpsCliStartupReadiness,
   parseArgs as parseLiveOpsArgs,
   printHelp as printLiveOpsHelp,
   renderLiveOpsSummary,
   renderLiveOpsTuiDashboard,
 } from "./run-live-ops-support.mjs";
 
+const execFileAsync = promisify(execFile);
+const gitCommitShaPattern = /^[a-f0-9]{40}$/u;
+const configFingerprintPattern = /^sha256:[a-f0-9]{64}$/u;
 const defaultDaemonTickIntervalMs = 1_000;
 const defaultDaemonBackoffMs = {
   success: 1_000,
@@ -22,6 +29,8 @@ export function parseLiveOpsDaemonArgs(argv) {
   const forwarded = [];
   const options = {
     statusFilePath: undefined,
+    sourceCommitSha: undefined,
+    startupArtifactFilePath: undefined,
     tickIntervalMs: undefined,
     maxTicks: undefined,
     decisionHistoryRetentionHours: undefined,
@@ -33,6 +42,14 @@ export function parseLiveOpsDaemonArgs(argv) {
     switch (arg) {
       case "--status-file":
         options.statusFilePath = readDaemonArgValue(argv, index, arg);
+        index += 1;
+        break;
+      case "--source-commit-sha":
+        options.sourceCommitSha = readDaemonArgValue(argv, index, arg).toLowerCase();
+        index += 1;
+        break;
+      case "--startup-artifact-file":
+        options.startupArtifactFilePath = readDaemonArgValue(argv, index, arg);
         index += 1;
         break;
       case "--tick-interval-ms":
@@ -57,17 +74,23 @@ export function parseLiveOpsDaemonArgs(argv) {
   }
 
   const liveOpsOptions = parseLiveOpsArgs(forwarded);
-  return {
+  const parsed = {
     ...liveOpsOptions,
     ...options,
   };
+  assertLiveOpsDaemonProvenanceOptions(parsed);
+  return parsed;
 }
 
 export async function runLiveOpsDaemon(options, io = {}) {
+  assertLiveOpsDaemonProvenanceOptions(options);
   const stdout = io.stdout ?? process.stdout;
   const clock = io.clock ?? (() => new Date().toISOString());
   const sleep = io.sleep ?? sleepLiveOpsDaemon;
   const loadInputs = io.loadInputs ?? loadLiveOpsCliInputs;
+  const loadStartupReadiness = io.loadStartupReadiness ?? loadLiveOpsCliStartupReadiness;
+  const prepareRuntimeProvenance = io.prepareRuntimeProvenance ?? prepareLiveOpsDaemonRuntimeProvenance;
+  const persistStartupArtifact = io.persistStartupArtifact ?? writeLiveOpsDaemonStartupArtifact;
   const renderSummary = io.renderSummary ?? renderLiveOpsSummary;
   const applyDecisionHistoryRetention = io.applyDecisionHistoryRetention ?? applyLiveOpsCliDecisionHistoryRetention;
   const startedAt = clock();
@@ -82,25 +105,72 @@ export async function runLiveOpsDaemon(options, io = {}) {
   const onUnhandledRejection = (reason) => {
     unhandledRejections.push(safeDaemonErrorName(reason));
   };
-  process.on("unhandledRejection", onUnhandledRejection);
-
   let latestSummary = null;
   let latestError = null;
   let latestDecisionHistoryRetention = null;
   let statusFilePath = resolveInitialDaemonStatusFile(options);
   let startupAlertConsumed = false;
+  let runtimeProvenance = null;
+  let provenanceFailure = null;
+
+  if (options.fixtureSmoke !== true) {
+    try {
+      runtimeProvenance = await prepareRuntimeProvenance(options, {
+        loadStartupReadiness,
+        inspectSourceTree: io.inspectSourceTree,
+      });
+      await persistStartupArtifact({
+        filePath: options.startupArtifactFilePath,
+        startedAt,
+        runtimeProvenance,
+        repositoryRoot: runtimeProvenance.repositoryRoot,
+      });
+      runtimeProvenance = withoutRepositoryRoot(runtimeProvenance);
+    } catch (error) {
+      latestError = {
+        name: safeDaemonErrorName(error),
+        message: error instanceof Error ? error.message : String(error),
+      };
+      provenanceFailure = error;
+      const failureResult = createDaemonStatusPayload({
+        options,
+        startedAt,
+        finishedAt: clock(),
+        counters,
+        latestSummary,
+        latestError,
+        latestDecisionHistoryRetention,
+        unhandledRejections,
+        statusFilePath,
+        runtimeProvenance,
+        provenanceFailure: true,
+      });
+      // source/config/migration provenance가 닫히지 않으면 broker loop를 시작하지 않고 실패 상태만 남긴다.
+      await writeDaemonStatusIfConfigured(statusFilePath, failureResult);
+      throw error;
+    }
+  }
+
+  process.on("unhandledRejection", onUnhandledRejection);
 
   try {
     while (shouldContinueDaemon({ startedMs, durationMs, tickCount: counters.tickCount, maxTicks })) {
       const tickStartedAt = clock();
       try {
-        const tickOptions = startupAlertConsumed ? withStartupAlertSuppressed(options) : options;
+        const provenanceOptions = runtimeProvenance === null ? options : { ...options, runtimeProvenance };
+        const tickOptions = startupAlertConsumed ? withStartupAlertSuppressed(provenanceOptions) : provenanceOptions;
         const inputs = await loadInputs(tickOptions);
         let summary = renderSummary({
           ...tickOptions,
           ...inputs,
           tui: tickOptions.tui,
         });
+        if (runtimeProvenance !== null) {
+          summary = {
+            ...summary,
+            runtimeProvenance,
+          };
+        }
         const decisionHistoryRetention = await applyLiveOpsDaemonDecisionHistoryRetention({
           options,
           inputs,
@@ -139,6 +209,7 @@ export async function runLiveOpsDaemon(options, io = {}) {
           latestDecisionHistoryRetention,
           unhandledRejections,
           statusFilePath,
+          runtimeProvenance,
         }));
       } catch (error) {
         counters.tickCount += 1;
@@ -161,7 +232,13 @@ export async function runLiveOpsDaemon(options, io = {}) {
           latestDecisionHistoryRetention,
           unhandledRejections,
           statusFilePath,
+          runtimeProvenance,
+          provenanceFailure: error instanceof LiveOpsRuntimeProvenanceMismatchError,
         }));
+        if (error instanceof LiveOpsRuntimeProvenanceMismatchError) {
+          provenanceFailure = error;
+          break;
+        }
       }
 
       const delayMs = resolveNextDaemonDelayMs({
@@ -192,15 +269,146 @@ export async function runLiveOpsDaemon(options, io = {}) {
     latestDecisionHistoryRetention,
     unhandledRejections,
     statusFilePath,
+    runtimeProvenance,
+    provenanceFailure: provenanceFailure !== null,
   });
   // 제한 실행이 끝난 뒤에도 monitor/attach가 stale running tick을 읽지 않도록 terminal payload를 같은 파일에 커밋한다.
   await writeDaemonStatusIfConfigured(statusFilePath, result);
+  if (provenanceFailure !== null) {
+    throw provenanceFailure;
+  }
   if (options.tui) {
     writeDaemonText(stdout, renderLiveOpsDaemonSummary(result));
   } else {
     writeDaemonJson(stdout, result);
   }
   return result;
+}
+
+export async function prepareLiveOpsDaemonRuntimeProvenance(options, dependencies = {}) {
+  assertLiveOpsDaemonProvenanceOptions(options);
+  const inspectSourceTree = dependencies.inspectSourceTree ?? inspectLiveOpsDaemonSourceTree;
+  const source = await inspectSourceTree(options.sourceCommitSha);
+  if (source.headCommitSha !== options.sourceCommitSha) {
+    // 명시 rollout SHA와 실제 worktree HEAD가 다르면 어떤 source가 주문을 만들었는지 증명할 수 없어 시작하지 않는다.
+    throw new Error("명시한 source commit SHA가 현재 daemon worktree HEAD와 다릅니다. 배포 source를 다시 확인하세요.");
+  }
+  if (source.clean !== true) {
+    // dirty checkout은 같은 HEAD SHA로 서로 다른 코드를 실행할 수 있어 commit provenance를 주장할 수 없다.
+    throw new Error("production daemon worktree에 commit되지 않은 변경이 있습니다. clean checkout에서 다시 시작하세요.");
+  }
+
+  const startup = await dependencies.loadStartupReadiness(options);
+  const migration = startup?.dbReadiness?.migration ?? {};
+  const expectedMigrationVersion = Number(migration.expectedLatestVersion);
+  const appliedMigrationVersion = Number(migration.appliedLatestVersion);
+  const pendingVersions = Array.isArray(migration.pendingVersions) ? migration.pendingVersions : [];
+  if (
+    startup?.dbReadiness?.ready !== true
+    || !Number.isSafeInteger(expectedMigrationVersion)
+    || expectedMigrationVersion <= 0
+    || appliedMigrationVersion !== expectedMigrationVersion
+    || pendingVersions.length > 0
+  ) {
+    // expected/applied version이 같고 pending이 0이어야 startup artifact가 실제 DB schema를 재현할 수 있다.
+    throw new Error("DB migration provenance가 준비되지 않았습니다. expected/applied version과 pending migration을 확인하세요.");
+  }
+  if (!configFingerprintPattern.test(String(startup.configFingerprint ?? ""))) {
+    throw new Error("운영 config fingerprint를 생성하지 못했습니다. config 파일을 확인하세요.");
+  }
+
+  return {
+    sourceCommitSha: options.sourceCommitSha,
+    configFingerprint: startup.configFingerprint,
+    expectedMigrationVersion,
+    appliedMigrationVersion,
+    repositoryRoot: source.repositoryRoot,
+  };
+}
+
+export async function writeLiveOpsDaemonStartupArtifact({
+  filePath,
+  startedAt,
+  runtimeProvenance,
+  repositoryRoot,
+}) {
+  const resolvedPath = path.resolve(filePath);
+  const directory = path.dirname(resolvedPath);
+  await mkdir(directory, { recursive: true, mode: 0o700 });
+  const [realDirectory, realRepositoryRoot] = await Promise.all([
+    realpath(directory),
+    realpath(repositoryRoot),
+  ]);
+  if (isPathInside(realRepositoryRoot, realDirectory)) {
+    // startup evidence는 git checkout과 함께 수정되거나 커밋되지 않도록 repository 밖에만 쓴다.
+    throw new Error("daemon startup artifact는 repository 밖의 운영 경로에 저장해야 합니다.");
+  }
+
+  const payload = {
+    kind: "live_ops_daemon_startup",
+    status: "ready",
+    startedAt,
+    runtimeProvenance: withoutRepositoryRoot(runtimeProvenance),
+  };
+  try {
+    // 같은 경로를 덮어쓰면 과거 startup provenance를 새 실행으로 위장할 수 있으므로 create-only로 기록한다.
+    await writeFile(resolvedPath, `${JSON.stringify(payload, null, 2)}\n`, {
+      encoding: "utf8",
+      flag: "wx",
+      mode: 0o600,
+    });
+  } catch (error) {
+    if (error?.code === "EEXIST") {
+      throw new Error("daemon startup artifact가 이미 존재합니다. 새 실행에는 새 경로를 사용하세요.");
+    }
+    throw error;
+  }
+}
+
+function assertLiveOpsDaemonProvenanceOptions(options) {
+  if (options.help === true || options.fixtureSmoke === true) {
+    return;
+  }
+  if (!gitCommitShaPattern.test(String(options.sourceCommitSha ?? ""))) {
+    throw new Error("production live:ops:daemon은 --source-commit-sha 40자리 Git SHA가 필요합니다.");
+  }
+  if (typeof options.startupArtifactFilePath !== "string" || options.startupArtifactFilePath.trim() === "") {
+    throw new Error("production live:ops:daemon은 --startup-artifact-file 경로가 필요합니다.");
+  }
+}
+
+async function inspectLiveOpsDaemonSourceTree() {
+  const repositoryRootResult = await execFileAsync("git", ["rev-parse", "--show-toplevel"], {
+    cwd: process.cwd(),
+    encoding: "utf8",
+  });
+  const repositoryRoot = repositoryRootResult.stdout.trim();
+  const headResult = await execFileAsync("git", ["rev-parse", "HEAD"], {
+    cwd: repositoryRoot,
+    encoding: "utf8",
+  });
+  const statusResult = await execFileAsync("git", ["status", "--porcelain", "--untracked-files=normal"], {
+    cwd: repositoryRoot,
+    encoding: "utf8",
+  });
+  return {
+    repositoryRoot,
+    headCommitSha: headResult.stdout.trim().toLowerCase(),
+    clean: statusResult.stdout.trim() === "",
+  };
+}
+
+function withoutRepositoryRoot(runtimeProvenance) {
+  if (runtimeProvenance === null || runtimeProvenance === undefined) {
+    return runtimeProvenance;
+  }
+  const { repositoryRoot: _repositoryRoot, ...safeProvenance } = runtimeProvenance;
+  return safeProvenance;
+}
+
+function isPathInside(parentPath, candidatePath) {
+  const relative = path.relative(parentPath, candidatePath);
+  return relative === "" || (!relative.startsWith(`..${path.sep}`) && relative !== "..");
 }
 
 function withStartupAlertSuppressed(options) {
@@ -228,6 +436,9 @@ export function printLiveOpsDaemonHelp() {
   printLiveOpsHelp("live:ops:daemon");
   process.stdout.write(`
   --status-file <path>      daemon latest summary JSON을 자동 기록할 경로
+  --source-commit-sha <sha> production worktree HEAD와 비교할 40자리 Git commit SHA
+  --startup-artifact-file <path>
+                            source/config/migration startup provenance를 create-only로 기록할 repository 밖 경로
   --tick-interval-ms <ms>   HOLD/success 기본 tick sleep. 기본값 1000
   --max-ticks <n>           테스트와 smoke용 최대 tick 수
   --decision-history-retention-hours <hours>
@@ -329,16 +540,26 @@ function createDaemonStatusPayload({
   latestDecisionHistoryRetention,
   unhandledRejections,
   statusFilePath,
+  runtimeProvenance,
+  provenanceFailure = false,
 }) {
   return {
     kind: "live_ops_daemon_summary",
-    status: latestError === null ? (finishedAt === undefined ? "running" : "completed") : "transient_failure",
+    status: provenanceFailure
+      ? "provenance_failed"
+      : latestError === null
+        ? (finishedAt === undefined ? "running" : "completed")
+        : "transient_failure",
     startedAt,
     ...(finishedAt === undefined ? {} : { finishedAt }),
     ...(tickStartedAt === undefined ? {} : { latestTickStartedAt: tickStartedAt }),
     fixtureSmoke: options.fixtureSmoke === true,
     durationMs: Number.isFinite(options.durationMs) ? Number(options.durationMs) : null,
     statusFilePath: statusFilePath ?? null,
+    startupArtifactFilePath: options.startupArtifactFilePath === undefined
+      ? null
+      : path.resolve(options.startupArtifactFilePath),
+    runtimeProvenance: runtimeProvenance ?? null,
     counters,
     sleepPolicy: {
       successMs: defaultDaemonBackoffMs.success,
@@ -356,10 +577,14 @@ function createDaemonStatusPayload({
     latestSummary,
     latestError,
     unhandledRejections,
-    message: "live:ops daemon이 config/env만으로 자동 매수, 보유, 매도 tick을 반복 평가했습니다.",
-    action: latestError === null
-      ? "TUI/status에서 보유 대기, 차단, 수동 확인, 주문 제출, 매도 재호가 횟수를 확인하세요."
-      : "latestError를 확인하고 다음 tick 재시도 전에 provider/DB 상태를 점검하세요.",
+    message: provenanceFailure
+      ? "source/config/migration provenance가 일치하지 않아 live:ops daemon 시작을 차단했습니다."
+      : "live:ops daemon이 config/env만으로 자동 매수, 보유, 매도 tick을 반복 평가했습니다.",
+    action: provenanceFailure
+      ? "명시 source SHA, config fingerprint, DB migration version, startup artifact 경로를 확인한 뒤 새 실행으로 재시작하세요."
+      : latestError === null
+        ? "TUI/status에서 보유 대기, 차단, 수동 확인, 주문 제출, 매도 재호가 횟수를 확인하세요."
+        : "latestError를 확인하고 다음 tick 재시도 전에 provider/DB 상태를 점검하세요.",
   };
 }
 
@@ -676,6 +901,7 @@ function formatDaemonStatus(status) {
   if (status === "completed") return "완료";
   if (status === "running") return "실행 중";
   if (status === "transient_failure") return "일시 실패";
+  if (status === "provenance_failed") return "실행 근거 불일치로 차단";
   return status;
 }
 

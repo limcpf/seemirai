@@ -253,6 +253,9 @@
 - M23 7일 stability closeout manifest에는 redacted evidence id와 artifact 경로만 남긴다. `scripts/run-m23-stability-closeout.mjs`는
   manifest와 summary artifact의 raw secret 후보를 검사하며, fixture smoke와 manifest 검증 모두 live API, Telegram provider,
   DB restore를 직접 호출하지 않는다.
+- Issue #267 startup artifact와 일별 summary에는 source commit SHA, config `sha256` fingerprint, expected/applied migration version만
+  provenance로 남긴다. config 원문, env 원문, DB URL, credential은 provenance에 포함하지 않으며 startup artifact는 repository 밖
+  경로에 create-only로 기록한다.
 - M23은 BTC 외 market 기본 활성화, 자동 budget 확대, market/best order 기본 허용, hard stop open position 자동 시장가 청산,
   Telegram public webhook endpoint, 출금/입출금 자동화로 확장하지 않는다. 해당 변경은 M24 또는 별도 보안 설계와 source scan이
   필요하다.
@@ -292,7 +295,8 @@
 
 ## Issue #206 24/7 live ops daemon 보안 기준
 
-- `live:ops:daemon`은 production config/env만으로 시작할 수 있지만, 기본 `PAPER_NO_KEY` runtime을 live profile로 승격하지 않는다.
+- `live:ops:daemon`은 production config/env와 자동 검증되는 source/startup provenance로 시작하며, 기본 `PAPER_NO_KEY` runtime을 live
+  profile로 승격하지 않는다.
 - daemon strategy는 정적 allowlist id와 parameter만 받는다. PR comment, Telegram text, 외부 파일 경로, LLM output, 저장소 밖 strategy
   코드를 주문 후보로 실행하지 않는다.
 - `autonomous_24x7` strategy parameter는 non-secret threshold만 허용한다. credential, token, DB URL, local control token은 config

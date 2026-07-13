@@ -1719,7 +1719,8 @@ provider arm을 검증하기 위한 submit/cancel canary이고, 24/7 운영 stra
 
 24/7 daemon config는 다음 원칙을 지켜야 한다.
 
-- `live:ops:daemon`은 저장소 밖 config/env만 입력으로 받고, fixture manifest나 hand-written evidence 파일을 실행 전 필수값으로 요구하지 않는다.
+- `live:ops:daemon` production 실행은 저장소 밖 config/env와 함께 실제 clean checkout HEAD인 40자리 source SHA, 저장소 밖의 새
+  startup artifact 경로를 받는다. fixture manifest나 hand-written evidence 파일은 실행 전 필수값이 아니다.
 - config는 strategy id와 parameter만 선택한다. 임의 파일 경로, 동적 import, 원격 plugin, 저장소 밖 strategy 코드는 금지한다.
 - entry order는 `BUY + LIMIT + POST_ONLY`, exit order는 보유 수량 이하 `SELL + LIMIT + POST_ONLY`만 허용한다.
 - strategy parameter는 secret이 아니어야 하며, API key, Telegram token, DB URL, local control token을 포함하면 validation이 실패해야 한다.
@@ -1766,11 +1767,18 @@ POST_ONLY` 후보를 만들 수 있다. 이 strategy는 order intent 생성까�
 
 `live:ops:daemon` 실행 기준:
 
-- production 실행 명령은 `corepack pnpm live:ops:daemon -- --config <운영-json-path> --env-file <운영-env-path> --tui`다.
-- 실행 전 입력은 저장소 밖 config/env뿐이다. fixture manifest, hand-written evidence, 수동 JSONL 후보 파일은 production 시작 조건이 아니다.
+- production 실행 명령은 `corepack pnpm live:ops:daemon -- --config <운영-json-path> --env-file <운영-env-path>
+  --source-commit-sha <40자리-clean-HEAD> --startup-artifact-file <저장소-밖-새-json-path> --tui`다.
+- source SHA가 실제 HEAD와 다르거나 worktree가 dirty이면 config/provider/broker 경계를 열지 않는다. startup artifact 경로는 저장소 밖이어야
+  하고 기존 파일을 덮어쓰지 않으며, config/env validation과 DB readiness가 통과한 뒤 source SHA, config `sha256` fingerprint,
+  expected/applied migration version만 기록한다.
+- fixture manifest, hand-written evidence, 수동 JSONL 후보 파일은 production 시작 조건이 아니다. source SHA와 startup artifact는 실행
+  code provenance를 자동 증명하기 위한 필수 입력/출력 경계다.
 - `--fixture-smoke --duration-ms <ms>`는 개발/PR 검증용 loop contract smoke이며, 실제 운영에 필요한 준비물이 아니다.
 - `--status-file <path>`를 주면 최신 daemon summary를 해당 JSON 파일에 자동 기록한다. production에서 생략하면 config 파일 옆
   `artifacts/live-ops-daemon-status.json`에 자동 기록하며, fixture smoke는 기본 status file을 만들지 않는다.
+- startup artifact, status top-level, `latestSummary`는 같은 runtime provenance를 보존한다. 각 tick은 provider/broker 호출 전에 config
+  fingerprint와 DB migration을 다시 확인하며 startup 값에서 달라지면 `provenance_failed`를 기록하고 loop를 종료한다.
 - `--tick-interval-ms <ms>`는 정상 보유/대기 tick 간격을 조정한다. 기본값은 1초이며, 차단은 5초, 수동 확인은 30초, transient failure는
   5초 backoff를 적용한다.
 - `--decision-history-retention-hours <hours>`를 명시하면 daemon tick이 같은 DB writer 경계로 `live_decision_ticks` retention을 실행하고,

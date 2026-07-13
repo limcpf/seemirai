@@ -158,8 +158,12 @@ Codex-native 운영은 Codex, Git, GitHub, shell command, 문서 상태를 연�
 ## Issue #206 24/7 entry/exit daemon 신뢰성 기준
 
 - `live:ops:daemon`은 cleanup canary가 아니라 entry, hold, exit, manual review를 반복 평가하는 장시간 loop다.
-- daemon 실행은 저장소 밖 config/env만 요구한다. fixture manifest, hand-written evidence, 수동 candidate JSONL은 실행 전제 조건이
-  아니며, decision evidence와 artifact는 runtime이 자동 생성해야 한다.
+- production daemon은 명시 source SHA가 실제 clean worktree HEAD와 같은지 확인한 뒤 config/env와 DB migration readiness를 평가한다.
+  어느 단계든 실패하면 broker/provider loop를 시작하지 않고 `provenance_failed` status로 닫는다.
+- readiness를 통과한 startup provenance는 저장소 밖 새 artifact에 create-only로 기록한다. 각 tick에서 config fingerprint 또는
+  expected/applied migration version이 startup 값과 달라지면 transient retry로 낮추지 않고 live side effect 전에 loop를 종료한다.
+- daemon 실행은 저장소 밖 config/env와 자동 검증되는 source/startup provenance를 요구한다. fixture manifest, hand-written evidence,
+  수동 candidate JSONL은 실행 전제 조건이 아니며, decision evidence와 artifact 내용은 runtime이 자동 생성해야 한다.
 - 각 tick은 이전 tick의 broker/order side effect를 먼저 reconcile 한 뒤 새 entry/exit decision을 평가한다. 이전 open order,
   untracked fill, mismatch, terminal cancel 미확인 상태가 남아 있으면 새 주문으로 전진하지 않는다.
 - 보유 포지션이 있으면 exit policy를 entry policy보다 먼저 평가한다. 이 순서가 깨지면 open exposure가 의도보다 커질 수 있으므로

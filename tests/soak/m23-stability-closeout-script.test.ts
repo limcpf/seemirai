@@ -8,6 +8,12 @@ import { describe, expect, it } from "vitest";
 const execFileAsync = promisify(execFile);
 const scriptPath = path.join(process.cwd(), "scripts", "run-m23-stability-closeout.mjs");
 const oneDayMs = 86_400_000;
+const issue267RuntimeProvenance = {
+  sourceCommitSha: "a".repeat(40),
+  configFingerprint: `sha256:${"1".repeat(64)}`,
+  expectedMigrationVersion: 14,
+  appliedMigrationVersion: 14,
+};
 
 describe("M23 stability closeout script", () => {
   it("skips actual closeout validation unless the explicit M23 guard is enabled", async () => {
@@ -69,6 +75,157 @@ describe("M23 stability closeout script", () => {
       status: "ok",
       evidence: { cumulativeRealizedLossKrw: 0, maxOpenPositionNotionalKrw: 0, cumulativeExposureKrw: 0 },
     });
+  });
+
+  it("passes issue 267 production closeout with one immutable provenance across seven completed KST days", async () => {
+    const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-m23-issue-267-pass-"));
+    const manifestPath = await writeIssue267CloseoutFixture(artifactDir);
+    const { stdout } = await runScript(
+      ["--json", "--artifact-dir", artifactDir, "--manifest", manifestPath],
+      createReadyEnv(),
+    );
+    const summary = JSON.parse(stdout) as M23StabilityCloseoutSummary;
+
+    expect(summary.status).toBe("passed");
+    expect(summary.issue).toBe(267);
+    expect(getCheck(summary, "runtimeProvenance")).toMatchObject({
+      status: "ok",
+      evidence: {
+        runtimeProvenance: issue267RuntimeProvenance,
+        segmentCount: 7,
+      },
+    });
+    expect(getCheck(summary, "segmentDuration").status).toBe("ok");
+    expect(getCheck(summary, "segmentCompleteness").status).toBe("ok");
+    expect(getCheck(summary, "backupRestore").status).toBe("ok");
+  });
+
+  it("fails issue 267 when backup/restore remains blocked", async () => {
+    const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-m23-issue-267-blocked-restore-"));
+    const manifestPath = await writeIssue267CloseoutFixture(artifactDir, {
+      manifestPatch: {
+        backupRestore: {
+          status: "blocked",
+          evidenceId: "restore-blocked",
+          blockerReason: "restore target unavailable",
+          requiredOperatorAction: "prepare restore target",
+          retryPlanEvidenceId: "restore-retry",
+        },
+      },
+    });
+    const summary = await runScriptExpectingFailure(
+      ["--json", "--artifact-dir", artifactDir, "--manifest", manifestPath],
+      createReadyEnv(),
+    );
+
+    expect(getCheck(summary, "backupRestore")).toMatchObject({ status: "fail" });
+  });
+
+  it("fails issue 267 when startup provenance differs from the manifest", async () => {
+    const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-m23-issue-267-startup-provenance-"));
+    const manifestPath = await writeIssue267CloseoutFixture(artifactDir, {
+      startupMutator: (startup) => ({
+        ...startup,
+        runtimeProvenance: {
+          ...issue267RuntimeProvenance,
+          sourceCommitSha: "b".repeat(40),
+        },
+      }),
+    });
+    const summary = await runScriptExpectingFailure(
+      ["--json", "--artifact-dir", artifactDir, "--manifest", manifestPath],
+      createReadyEnv(),
+    );
+
+    expect(getCheck(summary, "runtimeProvenance")).toMatchObject({ status: "fail" });
+  });
+
+  it("fails issue 267 when the startup artifact omits its startup timestamp", async () => {
+    const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-m23-issue-267-startup-time-"));
+    const manifestPath = await writeIssue267CloseoutFixture(artifactDir, {
+      startupMutator: (startup) => {
+        const mutated = { ...startup };
+        delete mutated.startedAt;
+        return mutated;
+      },
+    });
+    const summary = await runScriptExpectingFailure(
+      ["--json", "--artifact-dir", artifactDir, "--manifest", manifestPath],
+      createReadyEnv(),
+    );
+
+    expect(getCheck(summary, "runtimeProvenance")).toMatchObject({ status: "fail" });
+  });
+
+  it("fails issue 267 when any daily summary provenance differs", async () => {
+    const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-m23-issue-267-segment-provenance-"));
+    const manifestPath = await writeIssue267CloseoutFixture(artifactDir, {
+      segmentMutator: (summary, index) => index === 3
+        ? {
+            ...summary,
+            runtimeProvenance: {
+              ...issue267RuntimeProvenance,
+              configFingerprint: `sha256:${"2".repeat(64)}`,
+            },
+          }
+        : summary,
+    });
+    const summary = await runScriptExpectingFailure(
+      ["--json", "--artifact-dir", artifactDir, "--manifest", manifestPath],
+      createReadyEnv(),
+    );
+
+    expect(getCheck(summary, "runtimeProvenance")).toMatchObject({ status: "fail" });
+  });
+
+  it("fails issue 267 when migration provenance is not version 14", async () => {
+    const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-m23-issue-267-migration-"));
+    const manifestPath = await writeIssue267CloseoutFixture(artifactDir, {
+      manifestPatch: {
+        runtimeProvenance: {
+          ...issue267RuntimeProvenance,
+          expectedMigrationVersion: 13,
+          appliedMigrationVersion: 13,
+        },
+      },
+    });
+    const summary = await runScriptExpectingFailure(
+      ["--json", "--artifact-dir", artifactDir, "--manifest", manifestPath],
+      createReadyEnv(),
+    );
+
+    expect(getCheck(summary, "runtimeProvenance")).toMatchObject({ status: "fail" });
+  });
+
+  it("fails issue 267 when durable decision day differs from the manifest day", async () => {
+    const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-m23-issue-267-decision-day-"));
+    const manifestPath = await writeIssue267CloseoutFixture(artifactDir, {
+      segmentManifestMutator: (segment, index) => index === 4
+        ? { ...segment, decisionEvidenceDay: "2026-07-01" }
+        : segment,
+    });
+    const summary = await runScriptExpectingFailure(
+      ["--json", "--artifact-dir", artifactDir, "--manifest", manifestPath],
+      createReadyEnv(),
+    );
+
+    expect(getCheck(summary, "decisionEvidence")).toMatchObject({ status: "fail" });
+    expect(getCheck(summary, "segmentCompleteness")).toMatchObject({ status: "fail" });
+  });
+
+  it("fails issue 267 when a report is recorded before its KST day is complete", async () => {
+    const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-m23-issue-267-early-report-"));
+    const manifestPath = await writeIssue267CloseoutFixture(artifactDir, {
+      segmentMutator: (summary, index) => index === 2
+        ? { ...summary, dailyReportGeneratedAt: summary.startedAt }
+        : summary,
+    });
+    const summary = await runScriptExpectingFailure(
+      ["--json", "--artifact-dir", artifactDir, "--manifest", manifestPath],
+      createReadyEnv(),
+    );
+
+    expect(getCheck(summary, "segmentCompleteness")).toMatchObject({ status: "fail" });
   });
 
   it("fails when the manifest has fewer than seven unique day segments", async () => {
@@ -963,6 +1120,80 @@ function createReadyEnv(): Record<string, string> {
   };
 }
 
+async function writeIssue267CloseoutFixture(
+  artifactDir: string,
+  options: {
+    manifestPatch?: Partial<Record<string, unknown>>;
+    startupMutator?: (startup: Record<string, unknown>) => Record<string, unknown>;
+    segmentMutator?: (summary: Record<string, unknown>, index: number) => Record<string, unknown>;
+    segmentManifestMutator?: (segment: Record<string, unknown>, index: number) => Record<string, unknown>;
+  } = {},
+): Promise<string> {
+  const startupPath = path.join(artifactDir, "daemon-startup.json");
+  const recoveryPath = path.join(artifactDir, "recovery-summary.json");
+  const segments: Record<string, unknown>[] = [];
+
+  const startup = options.startupMutator?.({
+    kind: "live_ops_daemon_startup",
+    status: "ready",
+    startedAt: "2026-06-30T15:00:00.000Z",
+    runtimeProvenance: issue267RuntimeProvenance,
+  }) ?? {
+    kind: "live_ops_daemon_startup",
+    status: "ready",
+    startedAt: "2026-06-30T15:00:00.000Z",
+    runtimeProvenance: issue267RuntimeProvenance,
+  };
+  await writeFile(startupPath, `${JSON.stringify(startup, null, 2)}\n`, "utf8");
+
+  for (let index = 0; index < 7; index += 1) {
+    const day = `2026-07-${String(index + 1).padStart(2, "0")}`;
+    const summaryPath = path.join(artifactDir, `production-day-${index + 1}.json`);
+    const summary = options.segmentMutator?.(createIssue267SegmentSummary(day, index), index)
+      ?? createIssue267SegmentSummary(day, index);
+    await writeFile(summaryPath, `${JSON.stringify(summary, null, 2)}\n`, "utf8");
+    const segment = {
+      day,
+      summaryPath: path.basename(summaryPath),
+      decisionEvidenceId: `production-decision-${index + 1}`,
+      decisionEvidenceDay: day,
+      dailyReportEvidenceId: `production-daily-report-${index + 1}`,
+      alertEvidenceIds: [`production-alert-${index + 1}`],
+      runtimeProvenance: issue267RuntimeProvenance,
+    };
+    segments.push(options.segmentManifestMutator?.(segment, index) ?? segment);
+  }
+
+  await writeFile(recoveryPath, `${JSON.stringify(createRecoverySummary(), null, 2)}\n`, "utf8");
+  const manifest = {
+    issue: 267,
+    mode: "LIVE_AUTONOMOUS_SMALL_BUDGET",
+    startupArtifactPath: path.basename(startupPath),
+    runtimeProvenance: issue267RuntimeProvenance,
+    liveArmedEvidenceId: "production-live-armed-evidence",
+    keyScopeEvidenceId: "production-key-scope-evidence",
+    operatorArmEvidenceId: "production-operator-arm-evidence",
+    budgetEvidenceId: "production-budget-evidence",
+    segments,
+    recoveryDrillSummaryPath: path.basename(recoveryPath),
+    backupRestore: {
+      status: "passed",
+      evidenceId: "production-db-backup-restore-evidence",
+    },
+    sourceScan: {
+      evidenceId: "production-source-scan-evidence",
+      liveOrderApiGuarded: true,
+      marketBestOrderDefaultOpened: false,
+      withdrawalOrDepositPathOpened: false,
+      rawSecretExposure: false,
+    },
+    ...options.manifestPatch,
+  };
+  const manifestPath = path.join(artifactDir, "manifest.json");
+  await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
+  return manifestPath;
+}
+
 async function writeCloseoutFixture(
   artifactDir: string,
   options: {
@@ -1105,6 +1336,62 @@ function createSegmentSummary(index: number): Record<string, unknown> {
   };
 }
 
+function createIssue267SegmentSummary(day: string, index: number): Record<string, unknown> {
+  const dayUtcMs = Date.parse(`${day}T00:00:00.000Z`);
+  const startedAtMs = dayUtcMs - (9 * 60 * 60 * 1000);
+  const finishedAtMs = startedAtMs + oneDayMs + 10;
+  return {
+    status: "passed",
+    input: "live_ops_daemon_day",
+    mode: "LIVE_AUTONOMOUS_SMALL_BUDGET",
+    dryRun: false,
+    liveOrderCapable: true,
+    startedAt: new Date(startedAtMs).toISOString(),
+    finishedAt: new Date(finishedAtMs).toISOString(),
+    reportDate: day,
+    dailyReportGeneratedAt: new Date(finishedAtMs + 1_000).toISOString(),
+    decisionEvidenceDay: day,
+    decisionEvidenceGeneratedAt: new Date(finishedAtMs + 2_000).toISOString(),
+    runtimeProvenance: issue267RuntimeProvenance,
+    metrics: {
+      heartbeatCount: 1_440 + index,
+      orderSubmittedCount: index === 0 ? 1 : 0,
+      brokerSubmissionCount: index === 0 ? 1 : 0,
+      dailyReportGeneratedCount: 1,
+      dryRun: false,
+      liveOrderCapable: true,
+      dailyRealizedLossKrw: 0,
+      dailyRealizedLossEvidenceCount: 1,
+      weeklyRealizedLossKrw: 0,
+      weeklyRealizedLossEvidenceCount: 1,
+      openPositionNotionalKrw: 0,
+      openPositionNotionalEvidenceCount: 1,
+      crashCount: 0,
+      unhandledRejectionCount: 0,
+      riskGateBypassCount: 0,
+      reconcileMismatchCount: 0,
+      duplicateOrderCount: 0,
+      untrackedFillCount: 0,
+      liveOrderCleanupFailureCount: 0,
+    },
+    checks: {
+      productionDaemonWindow: { status: "ok" },
+      heartbeat: { status: "ok" },
+      dbReadiness: { status: "ok" },
+      configSafety: {
+        status: "ok",
+        evidence: {
+          enabled: true,
+          allowedMarkets: ["KRW-BTC"],
+          maxOrderKrw: "10000",
+          dailyAutonomousNotionalLimitKrw: "30000",
+          maxOpenPositionNotionalKrw: "30000",
+        },
+      },
+    },
+  };
+}
+
 function createRecoverySummary(): Record<string, unknown> {
   const required = [
     "eventLogsParsed",
@@ -1135,6 +1422,7 @@ function getCheck(summary: M23StabilityCloseoutSummary, name: string): { status:
 }
 
 interface M23StabilityCloseoutSummary {
+  issue: number;
   status: string;
   input: string;
   artifacts: {

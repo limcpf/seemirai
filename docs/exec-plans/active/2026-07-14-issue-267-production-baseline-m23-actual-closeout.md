@@ -2,7 +2,7 @@
 
 - Issue: [#267](https://github.com/limcpf/seemirai/issues/267)
 - mother branch: `issue-267-mother`
-- 상태: Sub PR 01 baseline contract 진행 중
+- 상태: Sub PR 01 mother merge 완료, Sub PR 02 runtime provenance 검증 중
 - 시작일: 2026-07-14
 
 ## 목표
@@ -35,10 +35,10 @@ pre-deploy 상태를 최신 기능의 실행 증거로 소급 변환하지 않�
 - 목표: 역사적 기준선, successor 배포 gate, rollback/closeout DnD를 문서로 고정한다.
 - 제외 범위: runtime 코드, production process 중지, migration/DB write, 실제 backup/restore.
 - DnD:
-  - [ ] #206/#188/pre-deploy/successor 기준이 분리돼 있다.
-  - [ ] 4개 sub PR의 파일 책임, 순서, 검증, merge gate가 기록돼 있다.
-  - [ ] migration 전 backup, restart fail-closed, 7일 신규 window, M24 확대 금지가 명시돼 있다.
-  - [ ] `./scripts/verify docs`, `git diff --check`가 통과한다.
+  - [x] #206/#188/pre-deploy/successor 기준이 분리돼 있다.
+  - [x] 4개 sub PR의 파일 책임, 순서, 검증, merge gate가 기록돼 있다.
+  - [x] migration 전 backup, restart fail-closed, 7일 신규 window, M24 확대 금지가 명시돼 있다.
+  - [x] `./scripts/verify docs`, `git diff --check`가 통과한다.
 
 ### Sub PR 02. Runtime provenance
 
@@ -49,15 +49,15 @@ pre-deploy 상태를 최신 기능의 실행 증거로 소급 변환하지 않�
   단위/soak 테스트, runtime/reliability/security 문서.
 - 제외 범위: production migration 실행, daemon 재시작, 7일 closeout 판정.
 - DnD:
-  - [ ] production source SHA는 40자리 Git commit으로 검증되고 현재 배포 tree와 일치한다.
-  - [ ] config fingerprint는 config 원문 없이 `sha256:<hex>`만 저장한다.
-  - [ ] migration version은 DB readiness가 관측한 expected/applied version을 보존한다.
-  - [ ] startup artifact와 최신 status가 같은 provenance를 가진다.
-  - [ ] provenance 생성 실패 또는 source/migration 불일치는 live startup을 fail-closed 한다.
-  - [ ] Issue #267 actual manifest는 startup provenance와 각 segment provenance의 일치를 검증한다.
-  - [ ] Issue #267 actual manifest는 backup/restore `blocked`를 `PASS` 입력으로 인정하지 않는다.
-  - [ ] manifest `day`, daily report `reportDate`, decision evidence KST day가 일치하고 완료된 KST window인지 검증한다.
-  - [ ] 관련 unit/script 테스트, typecheck, 전체 verify가 통과한다.
+  - [x] production source SHA는 40자리 Git commit으로 검증되고 현재 clean 배포 tree와 일치한다.
+  - [x] config fingerprint는 config 원문 없이 `sha256:<hex>`만 저장한다.
+  - [x] migration version은 DB readiness가 관측한 expected/applied version을 보존한다.
+  - [x] startup artifact와 최신 status가 같은 provenance를 가진다.
+  - [x] provenance 생성 실패 또는 source/config/migration 불일치는 live startup/tick을 fail-closed 한다.
+  - [x] Issue #267 actual manifest는 startup provenance와 각 segment provenance의 일치를 검증한다.
+  - [x] Issue #267 actual manifest는 backup/restore `blocked`를 `PASS` 입력으로 인정하지 않는다.
+  - [x] manifest `day`, daily report `reportDate`, decision evidence KST day가 일치하고 완료된 KST window인지 검증한다.
+  - [x] 관련 unit/script 테스트, typecheck, 전체 verify가 통과한다.
 
 ### Sub PR 03. Production rollout
 

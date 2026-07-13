@@ -9,8 +9,13 @@ const defaultArtifactDir = path.join(os.homedir(), "vaults", "99_운영", "seemi
 const runGuardEnv = "SEEMIRAI_RUN_M23_STABILITY_CLOSEOUT";
 const requiredSegmentCount = 7;
 const oneDayMs = 86_400_000;
-const expectedIssue = 188;
+const legacyExpectedIssue = 188;
+const productionCloseoutIssue = 267;
+const supportedIssues = [legacyExpectedIssue, productionCloseoutIssue];
 const expectedMode = "LIVE_AUTONOMOUS_SMALL_BUDGET";
+const productionExpectedMigrationVersion = 14;
+const gitCommitShaPattern = /^[a-f0-9]{40}$/u;
+const configFingerprintPattern = /^sha256:[a-f0-9]{64}$/u;
 const maxSegmentBoundaryDriftMs = 5 * 60 * 1000;
 const fixtureSegmentBaseStartedAtMs = Date.UTC(2026, 5, 13, 0, 0, 0);
 const requiredRecoveryChecks = [
@@ -159,10 +164,14 @@ async function buildAndWriteSummary(input) {
     : failCheck("M23 closeout manifest를 파싱하지 못했다.", {
         manifestPath: manifestFile.filePath,
         error: manifestFile.error,
-      });
+  });
 
   let metrics = createEmptyMetrics();
+  let closeoutIssue = legacyExpectedIssue;
   if (manifestFile.error === undefined && isRecord(manifestFile.value)) {
+    if (supportedIssues.includes(manifestFile.value.issue)) {
+      closeoutIssue = manifestFile.value.issue;
+    }
     const validation = await validateManifest(manifestFile.value, manifestFile.filePath, manifestFile.rawText, {
       guarded: input.guarded,
     });
@@ -175,6 +184,7 @@ async function buildAndWriteSummary(input) {
   }
 
   const summary = createSummary({
+    issue: closeoutIssue,
     runId: input.runId,
     startedAt: input.startedAt,
     inputMode: input.inputMode,
@@ -193,6 +203,9 @@ async function validateManifest(manifest, manifestPath, manifestRawText, options
   const baseDir = path.dirname(manifestPath);
   const segmentRecords = Array.isArray(manifest.segments) ? manifest.segments.filter(isRecord) : [];
   const segmentFiles = await readSegmentSummaries(segmentRecords, baseDir);
+  const startupFile = hasText(manifest.startupArtifactPath)
+    ? await readJsonFile(manifest.startupArtifactPath, baseDir)
+    : undefined;
   const recoveryFile = hasText(manifest.recoveryDrillSummaryPath)
     ? await readJsonFile(manifest.recoveryDrillSummaryPath, baseDir)
     : undefined;
@@ -202,22 +215,31 @@ async function validateManifest(manifest, manifestPath, manifestRawText, options
   const metrics = createMetrics(segmentSummaries, recoveryFile);
   const checks = {
     manifestShape: createManifestShapeCheck(manifest),
-    guardedArtifactInput: createGuardedArtifactInputCheck(manifest, manifestPath, segmentFiles, recoveryFile, options.guarded),
+    guardedArtifactInput: createGuardedArtifactInputCheck(
+      manifest,
+      manifestPath,
+      segmentFiles,
+      startupFile,
+      recoveryFile,
+      options.guarded,
+    ),
+    runtimeProvenance: createRuntimeProvenanceCheck(manifest, segmentRecords, segmentFiles, startupFile),
     liveArmedEvidence: createLiveArmedEvidenceCheck(manifest),
-    segmentCompleteness: createSegmentCompletenessCheck(segmentRecords, segmentFiles),
+    segmentCompleteness: createSegmentCompletenessCheck(manifest, segmentRecords, segmentFiles),
     segmentSummariesParsed: createSegmentSummariesParsedCheck(segmentFiles, segmentRecords.length),
-    segmentDuration: createSegmentDurationCheck(segmentFiles),
+    segmentDuration: createSegmentDurationCheck(manifest, segmentFiles),
     segmentHeartbeat: createSegmentHeartbeatCheck(segmentFiles),
     segmentDailyReports: createSegmentDailyReportsCheck(segmentFiles),
     segmentZeroCounters: createSegmentZeroCountersCheck(segmentFiles),
-    segmentLiveArmedGuards: createSegmentLiveArmedGuardCheck(segmentFiles),
+    segmentLiveArmedGuards: createSegmentLiveArmedGuardCheck(manifest, segmentFiles),
     segmentBudgetCeiling: createSegmentBudgetCeilingCheck(segmentFiles),
-    decisionEvidence: createDecisionEvidenceCheck(segmentRecords),
+    decisionEvidence: createDecisionEvidenceCheck(manifest, segmentRecords, segmentFiles),
     recoveryDrill: createRecoveryDrillCheck(manifest, recoveryFile),
-    backupRestore: createBackupRestoreCheck(manifest.backupRestore),
+    backupRestore: createBackupRestoreCheck(manifest, manifest.backupRestore),
     sourceScan: createSourceScanCheck(manifest.sourceScan),
     secretScan: createSecretScanCheck([
       { label: "manifest", rawText: manifestRawText },
+      ...(startupFile === undefined ? [] : [{ label: "startup", rawText: startupFile.rawText }]),
       ...segmentFiles.map((file, index) => ({ label: `segment-${index + 1}`, rawText: file.rawText })),
       ...(recoveryFile === undefined ? [] : [{ label: "recovery", rawText: recoveryFile.rawText }]),
     ]),
@@ -232,22 +254,139 @@ function createManifestShapeCheck(manifest) {
     mode: manifest.mode,
     segmentArray: Array.isArray(manifest.segments),
   };
-  if (manifest.issue === expectedIssue && manifest.mode === expectedMode && Array.isArray(manifest.segments)) {
+  if (supportedIssues.includes(manifest.issue) && manifest.mode === expectedMode && Array.isArray(manifest.segments)) {
     return okCheck("M23 closeout manifest가 issue/mode/segment 기본 contract를 만족한다.", actual);
   }
 
   return failCheck("M23 closeout manifest issue/mode/segment contract가 맞지 않는다.", {
-    expected: { issue: expectedIssue, mode: expectedMode, segments: "array" },
+    expected: { issue: supportedIssues, mode: expectedMode, segments: "array" },
     actual,
   });
 }
 
-function createGuardedArtifactInputCheck(manifest, manifestPath, segmentFiles, recoveryFile, guarded) {
+function createRuntimeProvenanceCheck(manifest, segments, segmentFiles, startupFile) {
+  if (manifest.issue !== productionCloseoutIssue) {
+    return okCheck("issue 188 historical closeout은 production daemon provenance 계약 적용 전 evidence를 유지한다.", {
+      issue: manifest.issue,
+      productionCloseoutIssue,
+    });
+  }
+
+  const expected = readRuntimeProvenance(manifest.runtimeProvenance);
+  const invalid = [];
+  appendRuntimeProvenanceInvalid(invalid, "manifest.runtimeProvenance", manifest.runtimeProvenance, expected);
+
+  if (!hasText(manifest.startupArtifactPath)) {
+    invalid.push({ fieldPath: "startupArtifactPath", reason: "missing" });
+  } else if (startupFile === undefined || startupFile.error !== undefined || !isRecord(startupFile.value)) {
+    invalid.push({
+      fieldPath: "startupArtifactPath",
+      reason: "unreadable",
+      filePath: startupFile?.filePath ?? manifest.startupArtifactPath,
+      error: startupFile?.error ?? "JSON object가 아닙니다",
+    });
+  } else {
+    if (startupFile.value.kind !== "live_ops_daemon_startup" || startupFile.value.status !== "ready") {
+      invalid.push({
+        fieldPath: "startupArtifactPath",
+        reason: "invalid_startup_artifact",
+        kind: startupFile.value.kind ?? null,
+        status: startupFile.value.status ?? null,
+      });
+    }
+    if (readTimestampMs(startupFile.value.startedAt) === undefined) {
+      invalid.push({ fieldPath: "startup.startedAt", reason: "invalid_timestamp" });
+    }
+    appendRuntimeProvenanceInvalid(
+      invalid,
+      "startup.runtimeProvenance",
+      startupFile.value.runtimeProvenance,
+      expected,
+    );
+  }
+
+  for (let index = 0; index < segments.length; index += 1) {
+    appendRuntimeProvenanceInvalid(
+      invalid,
+      `segments[${index}].runtimeProvenance`,
+      segments[index].runtimeProvenance,
+      expected,
+    );
+    const file = segmentFiles[index];
+    if (file?.error === undefined && isRecord(file.value)) {
+      appendRuntimeProvenanceInvalid(
+        invalid,
+        `segmentSummaries[${index}].runtimeProvenance`,
+        file.value.runtimeProvenance,
+        expected,
+      );
+    }
+  }
+
+  if (invalid.length === 0 && segments.length >= requiredSegmentCount) {
+    return okCheck("startup, manifest, 모든 일별 summary가 같은 source/config/migration provenance를 보존한다.", {
+      runtimeProvenance: expected,
+      startupArtifactPath: startupFile.filePath,
+      segmentCount: segments.length,
+    });
+  }
+
+  return failCheck("issue 267 closeout provenance가 누락됐거나 startup/segment 사이에서 달라졌다.", {
+    expected: expected ?? null,
+    invalid,
+  });
+}
+
+function appendRuntimeProvenanceInvalid(invalid, fieldPath, value, expected) {
+  const actual = readRuntimeProvenance(value);
+  if (actual === undefined) {
+    invalid.push({ fieldPath, reason: "invalid_shape_or_format" });
+    return;
+  }
+  if (expected !== undefined && !hasSameRuntimeProvenance(actual, expected)) {
+    invalid.push({ fieldPath, reason: "mismatch", actual });
+  }
+}
+
+function readRuntimeProvenance(value) {
+  if (!isRecord(value)) {
+    return undefined;
+  }
+  const sourceCommitSha = readString(value.sourceCommitSha);
+  const configFingerprint = readString(value.configFingerprint);
+  const expectedMigrationVersion = readFiniteNumber(value.expectedMigrationVersion);
+  const appliedMigrationVersion = readFiniteNumber(value.appliedMigrationVersion);
+  if (
+    sourceCommitSha === undefined
+    || !gitCommitShaPattern.test(sourceCommitSha)
+    || configFingerprint === undefined
+    || !configFingerprintPattern.test(configFingerprint)
+    || expectedMigrationVersion !== productionExpectedMigrationVersion
+    || appliedMigrationVersion !== productionExpectedMigrationVersion
+  ) {
+    return undefined;
+  }
+  return {
+    sourceCommitSha,
+    configFingerprint,
+    expectedMigrationVersion,
+    appliedMigrationVersion,
+  };
+}
+
+function hasSameRuntimeProvenance(actual, expected) {
+  return actual.sourceCommitSha === expected.sourceCommitSha
+    && actual.configFingerprint === expected.configFingerprint
+    && actual.expectedMigrationVersion === expected.expectedMigrationVersion
+    && actual.appliedMigrationVersion === expected.appliedMigrationVersion;
+}
+
+function createGuardedArtifactInputCheck(manifest, manifestPath, segmentFiles, startupFile, recoveryFile, guarded) {
   if (!guarded) {
     return okCheck("fixture smoke는 guarded 운영 artifact 입력 검사를 열지 않는다.", { fixtureSmoke: true });
   }
 
-  const fixtureMarkers = collectFixtureMarkers(manifest, manifestPath, segmentFiles, recoveryFile);
+  const fixtureMarkers = collectFixtureMarkers(manifest, manifestPath, segmentFiles, startupFile, recoveryFile);
   if (fixtureMarkers.length === 0) {
     return okCheck("guarded closeout 입력이 fixture manifest/summary/evidence를 사용하지 않는다.", {
       guarded: true,
@@ -259,12 +398,20 @@ function createGuardedArtifactInputCheck(manifest, manifestPath, segmentFiles, r
   });
 }
 
-function collectFixtureMarkers(manifest, manifestPath, segmentFiles, recoveryFile) {
+function collectFixtureMarkers(manifest, manifestPath, segmentFiles, startupFile, recoveryFile) {
   const markers = [];
   appendFixturePathMarker(markers, "manifestPath", manifestPath);
   appendFixtureMarker(markers, "sourceScan.evidenceId", readString(isRecord(manifest.sourceScan) ? manifest.sourceScan.evidenceId : undefined));
   appendFixtureMarker(markers, "backupRestore.evidenceId", readString(isRecord(manifest.backupRestore) ? manifest.backupRestore.evidenceId : undefined));
   appendFixtureMarker(markers, "backupRestore.blockerReason", readString(isRecord(manifest.backupRestore) ? manifest.backupRestore.blockerReason : undefined));
+
+  if (startupFile !== undefined) {
+    appendFixturePathMarker(markers, "startupArtifactPath", startupFile.filePath);
+    if (isRecord(startupFile.value)) {
+      appendFixtureMarker(markers, "startup.input", readString(startupFile.value.input));
+      appendFixtureMarker(markers, "startup.source", readString(startupFile.value.source));
+    }
+  }
 
   for (const { file, index, summary } of parsedSegmentEntries(segmentFiles)) {
     appendFixturePathMarker(markers, `segments[${index}].summaryPath`, file.filePath);
@@ -312,7 +459,7 @@ function createLiveArmedEvidenceCheck(manifest) {
   return failCheck("M23 7일 closeout에는 live-armed/key/budget/operator evidence id가 모두 필요하다.", { missing });
 }
 
-function createSegmentCompletenessCheck(segments, segmentFiles) {
+function createSegmentCompletenessCheck(manifest, segments, segmentFiles) {
   const days = segments
     .map((segment) => readString(segment.day))
     .filter((day) => day !== undefined);
@@ -329,7 +476,7 @@ function createSegmentCompletenessCheck(segments, segmentFiles) {
   const duplicateDailyReportEvidenceIds = collectDuplicateValues(dailyReportEvidenceIds);
   const duplicateAlertEvidenceIds = collectDuplicateValues(alertEvidenceIds);
   const consecutiveDays = areConsecutiveDays(uniqueDays);
-  const dayExecutionMismatches = collectSegmentDayExecutionMismatches(segments, segmentFiles);
+  const dayExecutionMismatches = collectSegmentDayExecutionMismatches(manifest, segments, segmentFiles);
   const segmentWindowMismatches = collectSegmentWindowMismatches(segmentFiles);
   if (
     segments.length >= requiredSegmentCount
@@ -385,7 +532,11 @@ function createSegmentSummariesParsedCheck(segmentFiles, expectedCount) {
   });
 }
 
-function createSegmentDurationCheck(segmentFiles) {
+function createSegmentDurationCheck(manifest, segmentFiles) {
+  if (manifest.issue === productionCloseoutIssue) {
+    return createProductionSegmentDurationCheck(segmentFiles);
+  }
+
   const invalid = parsedSegmentEntries(segmentFiles)
     .filter(({ summary }) => {
       const pilotProcess = isRecord(summary.metrics) && isRecord(summary.metrics.pilotProcess) ? summary.metrics.pilotProcess : {};
@@ -435,6 +586,36 @@ function createSegmentDurationCheck(segmentFiles) {
   }
 
   return failCheck("24시간을 채우지 못했거나 실패한 segment summary가 있다.", { invalid });
+}
+
+function createProductionSegmentDurationCheck(segmentFiles) {
+  const invalid = parsedSegmentEntries(segmentFiles)
+    .filter(({ summary }) => {
+      const startedAtMs = readTimestampMs(summary.startedAt);
+      const finishedAtMs = readTimestampMs(summary.finishedAt);
+      return summary.status !== "passed"
+        || readString(summary.input) !== "live_ops_daemon_day"
+        || !hasOkCheck(summary, "productionDaemonWindow")
+        || startedAtMs === undefined
+        || finishedAtMs === undefined
+        || finishedAtMs - startedAtMs < oneDayMs;
+    })
+    .map(({ index, file, summary }) => ({
+      segment: index + 1,
+      filePath: file.filePath,
+      status: summary.status ?? null,
+      input: readString(summary.input) ?? null,
+      startedAt: readString(summary.startedAt) ?? null,
+      finishedAt: readString(summary.finishedAt) ?? null,
+      productionDaemonWindow: readCheckStatus(summary, "productionDaemonWindow") ?? null,
+    }));
+  if (invalid.length === 0 && segmentFiles.length >= requiredSegmentCount) {
+    return okCheck("각 segment가 완료된 KST 하루를 production daemon evidence로 보존한다.", {
+      segmentCount: segmentFiles.length,
+    });
+  }
+
+  return failCheck("완료된 24시간 production daemon window가 아닌 segment summary가 있다.", { invalid });
 }
 
 function createSegmentHeartbeatCheck(segmentFiles) {
@@ -496,7 +677,11 @@ function createSegmentZeroCountersCheck(segmentFiles) {
   return failCheck("7일 closeout failure counter가 누락됐거나 0이 아닌 segment가 있다.", { invalid });
 }
 
-function createSegmentLiveArmedGuardCheck(segmentFiles) {
+function createSegmentLiveArmedGuardCheck(manifest, segmentFiles) {
+  if (manifest.issue === productionCloseoutIssue) {
+    return createProductionSegmentLiveArmedGuardCheck(segmentFiles);
+  }
+
   const invalid = parsedSegmentEntries(segmentFiles)
     .filter(({ summary }) => !hasOkCheck(summary, "configSafety")
       || !hasOkCheck(summary, "evidenceEnv")
@@ -526,6 +711,36 @@ function createSegmentLiveArmedGuardCheck(segmentFiles) {
   }
 
   return failCheck("live-armed guard/readiness/config evidence가 부족한 segment가 있다.", { invalid });
+}
+
+function createProductionSegmentLiveArmedGuardCheck(segmentFiles) {
+  const invalid = parsedSegmentEntries(segmentFiles)
+    .filter(({ summary }) => !hasOkCheck(summary, "configSafety")
+      || !hasOkCheck(summary, "dbReadiness")
+      || !hasOkCheck(summary, "productionDaemonWindow")
+      || !hasExpectedConfigSafety(summary)
+      || readString(summary.input) !== "live_ops_daemon_day"
+      || !hasM23Mode(summary)
+      || !hasExplicitLiveOrderCapableEvidence(summary)
+      || isExplicitDryRun(summary))
+    .map(({ index, file, summary }) => ({
+      segment: index + 1,
+      filePath: file.filePath,
+      input: readString(summary.input) ?? null,
+      mode: readSegmentMode(summary) ?? null,
+      dryRun: readBoolean(summary.dryRun) ?? readBoolean(readMetrics(summary).dryRun) ?? null,
+      liveOrderCapable: readBoolean(summary.liveOrderCapable) ?? readBoolean(readMetrics(summary).liveOrderCapable) ?? null,
+      configSafety: readCheckStatus(summary, "configSafety") ?? null,
+      dbReadiness: readCheckStatus(summary, "dbReadiness") ?? null,
+      productionDaemonWindow: readCheckStatus(summary, "productionDaemonWindow") ?? null,
+    }));
+  if (invalid.length === 0 && segmentFiles.length >= requiredSegmentCount) {
+    return okCheck("모든 segment가 production daemon의 live small-budget/config/DB guard를 통과했다.", {
+      segmentCount: segmentFiles.length,
+    });
+  }
+
+  return failCheck("production daemon live-armed/config/DB evidence가 부족한 segment가 있다.", { invalid });
 }
 
 function createSegmentBudgetCeilingCheck(segmentFiles) {
@@ -624,16 +839,22 @@ function createSegmentBudgetCeilingCheck(segmentFiles) {
   });
 }
 
-function createDecisionEvidenceCheck(segments) {
+function createDecisionEvidenceCheck(manifest, segments, segmentFiles) {
   const invalid = segments
-    .map((segment, index) => ({ segment, index }))
-    .filter(({ segment }) => !hasText(segment.decisionEvidenceId)
+    .map((segment, index) => ({ segment, index, summary: segmentFiles[index]?.value }))
+    .filter(({ segment, summary }) => !hasText(segment.decisionEvidenceId)
       || !hasText(segment.dailyReportEvidenceId)
-      || !hasEvidenceArray(segment.alertEvidenceIds))
-    .map(({ segment, index }) => ({
+      || !hasEvidenceArray(segment.alertEvidenceIds)
+      || (manifest.issue === productionCloseoutIssue
+        && (readString(segment.decisionEvidenceDay) !== readString(segment.day)
+          || !isRecord(summary)
+          || readString(summary.decisionEvidenceDay) !== readString(segment.day))))
+    .map(({ segment, index, summary }) => ({
       segment: index + 1,
       day: readString(segment.day) ?? null,
       decisionEvidenceId: readString(segment.decisionEvidenceId) ?? null,
+      decisionEvidenceDay: readString(segment.decisionEvidenceDay) ?? null,
+      summaryDecisionEvidenceDay: isRecord(summary) ? readString(summary.decisionEvidenceDay) ?? null : null,
       dailyReportEvidenceId: readString(segment.dailyReportEvidenceId) ?? null,
       alertEvidenceIds: Array.isArray(segment.alertEvidenceIds) ? segment.alertEvidenceIds : null,
     }));
@@ -680,7 +901,7 @@ function createRecoveryDrillCheck(manifest, recoveryFile) {
   });
 }
 
-function createBackupRestoreCheck(backupRestore) {
+function createBackupRestoreCheck(manifest, backupRestore) {
   if (!isRecord(backupRestore)) {
     return failCheck("DB backup/restore smoke 결과 또는 blocker object가 필요하다.", {
       requiredField: "backupRestore",
@@ -693,7 +914,7 @@ function createBackupRestoreCheck(backupRestore) {
     return okCheck("DB backup/restore smoke가 통과 evidence를 남겼다.", { status, evidenceId });
   }
 
-  if (status === "blocked") {
+  if (status === "blocked" && manifest.issue !== productionCloseoutIssue) {
     const requiredBlockedFields = {
       evidenceId,
       blockerReason: readString(backupRestore.blockerReason),
@@ -710,7 +931,9 @@ function createBackupRestoreCheck(backupRestore) {
     return failCheck("DB backup/restore blocker는 이유, 필요한 조치, 재시도 계획 evidence를 포함해야 한다.", { missing });
   }
 
-  return failCheck("DB backup/restore status는 passed 또는 blocked여야 하며 evidence id가 필요하다.", {
+  return failCheck(manifest.issue === productionCloseoutIssue
+    ? "issue 267 production closeout은 실제 passed DB backup/restore evidence가 필요하다."
+    : "DB backup/restore status는 passed 또는 blocked여야 하며 evidence id가 필요하다.", {
     status: status ?? null,
     evidenceId: evidenceId ?? null,
   });
@@ -891,7 +1114,11 @@ function collectDuplicateValues(values) {
   return Array.from(new Set(values.filter((value, index) => values.indexOf(value) !== index)));
 }
 
-function collectSegmentDayExecutionMismatches(segments, segmentFiles) {
+function collectSegmentDayExecutionMismatches(manifest, segments, segmentFiles) {
+  if (manifest.issue === productionCloseoutIssue) {
+    return collectProductionSegmentDayExecutionMismatches(segments, segmentFiles);
+  }
+
   return segments
     .map((segment, index) => ({ segment, index, file: segmentFiles[index] }))
     .filter(({ segment, file }) => {
@@ -916,6 +1143,63 @@ function collectSegmentDayExecutionMismatches(segments, segmentFiles) {
         ? readSegmentDayEvidence(file.value)
         : { executionDays: [], dailyReportDays: [], expectedDailyReportDays: [] },
     }));
+}
+
+function collectProductionSegmentDayExecutionMismatches(segments, segmentFiles) {
+  return segments
+    .map((segment, index) => ({ segment, index, file: segmentFiles[index] }))
+    .filter(({ segment, file }) => {
+      const day = readString(segment.day);
+      const dayStartUtcMs = readKstDayStartUtcMs(day);
+      if (dayStartUtcMs === undefined || file?.error !== undefined || !isRecord(file?.value)) {
+        return false;
+      }
+
+      const summary = file.value;
+      const dayEndUtcMs = dayStartUtcMs + oneDayMs;
+      const startedAtMs = readTimestampMs(summary.startedAt);
+      const finishedAtMs = readTimestampMs(summary.finishedAt);
+      const dailyReportGeneratedAtMs = readTimestampMs(summary.dailyReportGeneratedAt);
+      const decisionEvidenceGeneratedAtMs = readTimestampMs(summary.decisionEvidenceGeneratedAt);
+      // issue 267은 실행 시작일이 아니라 이미 닫힌 KST 일자별 report/decision을 durable evidence로 요구한다.
+      return Date.now() < dayEndUtcMs
+        || startedAtMs === undefined
+        || startedAtMs > dayStartUtcMs
+        || finishedAtMs === undefined
+        || finishedAtMs < dayEndUtcMs
+        || readString(summary.reportDate) !== day
+        || dailyReportGeneratedAtMs === undefined
+        || dailyReportGeneratedAtMs < dayEndUtcMs
+        || readString(segment.decisionEvidenceDay) !== day
+        || readString(summary.decisionEvidenceDay) !== day
+        || decisionEvidenceGeneratedAtMs === undefined
+        || decisionEvidenceGeneratedAtMs < dayEndUtcMs;
+    })
+    .map(({ segment, index, file }) => ({
+      segment: index + 1,
+      day: readString(segment.day) ?? null,
+      filePath: file?.filePath ?? readString(segment.summaryPath) ?? null,
+      dayEvidence: isRecord(file?.value)
+        ? readProductionSegmentDayEvidence(segment, file.value)
+        : null,
+    }));
+}
+
+function readProductionSegmentDayEvidence(segment, summary) {
+  return {
+    startedAt: readString(summary.startedAt) ?? null,
+    finishedAt: readString(summary.finishedAt) ?? null,
+    reportDate: readString(summary.reportDate) ?? null,
+    dailyReportGeneratedAt: readString(summary.dailyReportGeneratedAt) ?? null,
+    manifestDecisionEvidenceDay: readString(segment.decisionEvidenceDay) ?? null,
+    summaryDecisionEvidenceDay: readString(summary.decisionEvidenceDay) ?? null,
+    decisionEvidenceGeneratedAt: readString(summary.decisionEvidenceGeneratedAt) ?? null,
+  };
+}
+
+function readKstDayStartUtcMs(day) {
+  const utcDayMs = parseDayToUtcMs(day);
+  return utcDayMs === undefined ? undefined : utcDayMs - (9 * 60 * 60 * 1000);
 }
 
 function collectSegmentWindowMismatches(segmentFiles) {
@@ -1107,7 +1391,7 @@ async function writeFixtureManifest(artifactDir) {
 
   await writeFile(recoveryPath, `${JSON.stringify(createFixtureRecoverySummary(), null, 2)}\n`, "utf8");
   const manifest = {
-    issue: expectedIssue,
+    issue: legacyExpectedIssue,
     mode: expectedMode,
     liveArmedEvidenceId: "m23-live-armed-evidence",
     keyScopeEvidenceId: "m23-key-scope-evidence",
@@ -1217,7 +1501,7 @@ function createSummary(input) {
       : "passed";
   return {
     schemaVersion: 1,
-    issue: expectedIssue,
+    issue: input.issue ?? legacyExpectedIssue,
     milestone: "M23",
     closeout: "stability_7d",
     runId: input.runId,

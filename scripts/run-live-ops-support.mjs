@@ -20,6 +20,14 @@ const liveOpsCliCleanupCancelPollCount = 5;
 const liveOpsCliCleanupCancelPollIntervalMs = 1000;
 const liveOpsCliDailyReservationLockLeaseMs = 5 * 60 * 1000;
 const liveOpsCliExitSubmissionLockLeaseMs = 60 * 1000;
+
+/** startup 이후 config 또는 DB migration drift로 live side effect를 차단했음을 나타낸다. */
+export class LiveOpsRuntimeProvenanceMismatchError extends Error {
+  constructor(message) {
+    super(message);
+    this.name = "LiveOpsRuntimeProvenanceMismatchError";
+  }
+}
 const liveOpsCliPreflightReconcileFreshnessMs = 30_000;
 const liveOpsCliPreflightPnlFreshnessMs = 30_000;
 const liveOpsCliPreflightPnlFutureSkewMs = 1_000;
@@ -188,20 +196,32 @@ export function parseArgs(argv) {
   return options;
 }
 
-export async function loadLiveOpsCliInputs(options) {
-  if (options.configPath === undefined) {
-    throw new Error("--config 경로가 필요합니다.");
-  }
-  if (options.envFilePath === undefined) {
-    throw new Error("--env-file 경로가 필요합니다.");
+/** provider/broker를 열지 않고 config fingerprint와 DB migration readiness를 확정한다. */
+export async function loadLiveOpsCliStartupReadiness(options) {
+  const loaded = await loadLiveOpsCliValidatedFiles(options);
+  const dbReadiness = await evaluateLiveOpsCliDbReadiness({
+    databaseUrl: loaded.env.SEEMIRAI_DATABASE_URL,
+    fixtureSmoke: options.fixtureSmoke,
+  });
+  if (!dbReadiness.ready) {
+    // startup provenance는 broker/provider보다 먼저 확정돼야 하므로 DB schema가 불확실하면 여기서 live boot를 차단한다.
+    throw new Error(formatCliDbReadinessFailureMessage(dbReadiness));
   }
 
-  const configPath = path.resolve(options.configPath);
-  const envFilePath = path.resolve(options.envFilePath);
-  let config = JSON.parse(await readFile(configPath, "utf8"));
-  const env = parseEnvFile(await readFile(envFilePath, "utf8"));
-  validateLiveOpsConfig(config);
-  validateLiveOpsEnv(env, process.env);
+  return {
+    configPath: loaded.configPath,
+    configFingerprint: loaded.configFingerprint,
+    dbReadiness,
+  };
+}
+
+export async function loadLiveOpsCliInputs(options) {
+  const loaded = await loadLiveOpsCliValidatedFiles(options);
+  const configPath = loaded.configPath;
+  const envFilePath = loaded.envFilePath;
+  let config = loaded.config;
+  const env = loaded.env;
+  assertLiveOpsCliRuntimeProvenanceConfig(options.runtimeProvenance, loaded.configFingerprint);
   if (options.suppressStartupTelegramAlert === true) {
     config = suppressLiveOpsCliStartupTelegramAlert(config);
   }
@@ -225,6 +245,7 @@ export async function loadLiveOpsCliInputs(options) {
   if (!dbReadiness.ready) {
     throw new Error(formatCliDbReadinessFailureMessage(dbReadiness));
   }
+  assertLiveOpsCliRuntimeProvenanceMigration(options.runtimeProvenance, dbReadiness);
 
   const marketData = await evaluateLiveOpsCliMarketData({
     config,
@@ -338,6 +359,59 @@ export async function loadLiveOpsCliInputs(options) {
   } finally {
     await decisionHistoryFallbackPool?.end().catch(() => undefined);
     await productionRuntime?.close?.();
+  }
+}
+
+async function loadLiveOpsCliValidatedFiles(options) {
+  if (options.configPath === undefined) {
+    throw new Error("--config 경로가 필요합니다.");
+  }
+  if (options.envFilePath === undefined) {
+    throw new Error("--env-file 경로가 필요합니다.");
+  }
+
+  const configPath = path.resolve(options.configPath);
+  const envFilePath = path.resolve(options.envFilePath);
+  const configRawText = await readFile(configPath, "utf8");
+  const config = JSON.parse(configRawText);
+  const env = parseEnvFile(await readFile(envFilePath, "utf8"));
+  validateLiveOpsConfig(config);
+  validateLiveOpsEnv(env, process.env);
+  return {
+    configPath,
+    envFilePath,
+    config,
+    env,
+    configFingerprint: `sha256:${createHash("sha256").update(configRawText, "utf8").digest("hex")}`,
+  };
+}
+
+function assertLiveOpsCliRuntimeProvenanceConfig(runtimeProvenance, actualConfigFingerprint) {
+  if (runtimeProvenance === undefined) {
+    return;
+  }
+  if (runtimeProvenance.configFingerprint !== actualConfigFingerprint) {
+    // 시작 뒤 config가 바뀌면 startup artifact와 실제 주문 정책이 갈라지므로 provider 호출 전에 중단한다.
+    throw new LiveOpsRuntimeProvenanceMismatchError(
+      "운영 config fingerprint가 daemon startup provenance와 다릅니다. 변경된 config로 신규 주문을 시작하지 않습니다.",
+    );
+  }
+}
+
+function assertLiveOpsCliRuntimeProvenanceMigration(runtimeProvenance, dbReadiness) {
+  if (runtimeProvenance === undefined) {
+    return;
+  }
+  const migration = dbReadiness?.migration ?? {};
+  const matches = migration.expectedLatestVersion === runtimeProvenance.expectedMigrationVersion
+    && migration.appliedLatestVersion === runtimeProvenance.appliedMigrationVersion
+    && Array.isArray(migration.pendingVersions)
+    && migration.pendingVersions.length === 0;
+  if (!matches) {
+    // startup 이후 schema가 달라지면 같은 source/config의 decision도 재현할 수 없으므로 broker 경계를 다시 열지 않는다.
+    throw new LiveOpsRuntimeProvenanceMismatchError(
+      "DB migration 상태가 daemon startup provenance와 다릅니다. schema/version을 확인할 때까지 신규 주문을 차단합니다.",
+    );
   }
 }
 

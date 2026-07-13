@@ -5,8 +5,7 @@
 
 ## 목표
 
-- 운영자는 저장소 밖 config/env 파일만 준비하면 `corepack pnpm live:ops:daemon -- --config <운영-json-path> --env-file <운영-env-path> --tui`
-  한 줄로 자동 매수/보유/매도 loop를 시작할 수 있어야 한다.
+- 운영자는 저장소 밖 config/env, startup artifact 경로와 배포할 clean checkout의 40자리 HEAD를 고정한 뒤 production daemon을 시작한다.
 - 실행 전에 별도 fixture manifest, hand-written evidence, 수동 JSONL 후보 파일을 요구하지 않는다.
 - runtime은 필요한 artifact, status summary, decision ledger, order lifecycle, Telegram alert를 자동 생성한다.
 - 시스템은 수익을 보장하지 않는다. 완료 기준은 “자동으로 수익이 난다”가 아니라 “24/7로 entry/exit 판단과 risk fail-closed가 반복 가능하다”이다.
@@ -50,20 +49,21 @@
 
 ## 24/7 loop 동작
 
-1. config/env 검증, legacy env 차단, key scope guard를 통과한다.
-2. DB migration/readiness를 확인한다.
-3. Upbit public market data를 읽고 stale이면 주문을 만들지 않는다.
-4. Upbit private read로 계정 전체 open order, balance, position source를 확인한다.
-5. 기존 open order나 mismatch가 있으면 신규 entry/exit를 중지하고 manual review로 닫는다.
-6. PnL/status가 stale 또는 partial이면 새 주문을 만들지 않는다.
-7. `autonomous_24x7` 분석은 key scope guard를 통과한 뒤 private read preflight의 balance/open order/PnL/reconcile snapshot으로 position context를 만든다.
-8. 보유 포지션이 있으면 exit policy를 먼저 평가한다.
-9. 보유 포지션이 없거나 추가 진입이 허용되면 entry policy를 평가한다.
-10. order intent는 cost/risk/budget/reconcile/kill switch guard를 통과해야 한다.
-11. 통과한 단일 intent만 broker submit으로 전진한다.
-12. 미체결 SELL 주문과 autonomous BUY post-only 주문은 bounded timeout 안에서 cancel/requote 또는 manual review로 닫는다. BUY가 체결되면 entry fill closeout artifact를 남기고, no-fill이면 포지션 소유권으로 승격하지 않는다.
-13. 매 tick마다 decision ledger, status summary, Telegram alert 후보, redacted artifact를 자동 생성한다.
-14. daemon 시작 후 startup Telegram 후보는 첫 성공 tick에만 만들고, idle tick마다 반복 전송하지 않는다.
+1. 명시 source SHA가 실제 clean worktree HEAD와 같은지 확인한다.
+2. config/env 검증, legacy env 차단, key scope guard와 DB migration/readiness를 통과한다.
+3. source SHA, config fingerprint, expected/applied migration을 저장소 밖 startup artifact에 create-only로 기록한다.
+4. Upbit public market data를 읽고 stale이면 주문을 만들지 않는다.
+5. Upbit private read로 계정 전체 open order, balance, position source를 확인한다.
+6. 기존 open order나 mismatch가 있으면 신규 entry/exit를 중지하고 manual review로 닫는다.
+7. PnL/status가 stale 또는 partial이면 새 주문을 만들지 않는다.
+8. `autonomous_24x7` 분석은 key scope guard를 통과한 뒤 private read preflight의 balance/open order/PnL/reconcile snapshot으로 position context를 만든다.
+9. 보유 포지션이 있으면 exit policy를 먼저 평가한다.
+10. 보유 포지션이 없거나 추가 진입이 허용되면 entry policy를 평가한다.
+11. order intent는 cost/risk/budget/reconcile/kill switch guard를 통과해야 한다.
+12. 통과한 단일 intent만 broker submit으로 전진한다.
+13. 미체결 SELL 주문과 autonomous BUY post-only 주문은 bounded timeout 안에서 cancel/requote 또는 manual review로 닫는다. BUY가 체결되면 entry fill closeout artifact를 남기고, no-fill이면 포지션 소유권으로 승격하지 않는다.
+14. 매 tick마다 config/migration provenance를 재확인하고 decision ledger, status summary, Telegram alert 후보, redacted artifact를 자동 생성한다.
+15. daemon 시작 후 startup Telegram 후보는 첫 성공 tick에만 만들고, idle tick마다 반복 전송하지 않는다.
 
 daemon loop는 1회성 cleanup probe가 아니다. 명시한 `--duration-ms`나 `--max-ticks`가 없으면 계속 반복하며, HOLD/차단/수동 확인/일시
 실패별로 다른 sleep을 둔다. 기본 tick 간격은 1초이고, 차단은 5초, 수동 확인은 30초, provider/DB 일시 실패는 5초 후 재시도한다.
@@ -75,7 +75,7 @@ production에서 `--status-file`을 지정하지 않으면 config 파일이 있�
 
 ## Entry DnD
 
-- [x] `live:ops:daemon`은 hand-written evidence나 fixture manifest 없이 config/env만으로 시작한다.
+- [x] `live:ops:daemon`은 hand-written evidence나 fixture manifest 없이 config/env와 자동 검증되는 source/startup provenance로 시작한다.
 - [x] `cleanup_probe`와 별개인 production entry strategy allowlist가 있다.
 - [x] entry strategy는 `HOLD`, `BLOCK`, `ORDER_INTENT`를 구분하고 모두 decision ledger에 남긴다.
 - [x] entry intent는 `KRW-BTC`, `BUY`, `LIMIT`, `POST_ONLY`, 10,000 KRW 이하만 허용한다.
@@ -142,24 +142,30 @@ corepack pnpm live:ops:daemon -- \
 실제 24/7 운영:
 
 ```sh
+SOURCE_SHA="$(git rev-parse HEAD)"
 corepack pnpm live:ops:daemon -- \
   --config <운영-json-path> \
   --env-file <운영-env-path> \
+  --source-commit-sha "$SOURCE_SHA" \
+  --startup-artifact-file <저장소-밖-새-startup-json-path> \
   --tui
 ```
 
 감시자가 읽을 상태 파일을 고정하려면 다음처럼 지정한다.
 
 ```sh
+SOURCE_SHA="$(git rev-parse HEAD)"
 corepack pnpm live:ops:daemon -- \
   --config <운영-json-path> \
   --env-file <운영-env-path> \
+  --source-commit-sha "$SOURCE_SHA" \
+  --startup-artifact-file <저장소-밖-새-startup-json-path> \
   --status-file <운영-status-json-path> \
   --tui
 ```
 
-`--fixture-smoke`는 개발 검증용이며 production 실행의 필수 준비물이 아니다. 실제 운영 명령은 저장소 밖 config/env만 요구하고,
-artifact/status/report는 runtime이 자동으로 만든다.
+`--fixture-smoke`는 개발 검증용이며 production 실행의 필수 준비물이 아니다. production은 clean source SHA와 매 실행마다 고유한 저장소 밖
+startup artifact 경로를 요구한다. status/report와 startup artifact 내용은 runtime이 자동으로 만든다.
 
 ## 중지 기준
 
@@ -175,7 +181,7 @@ artifact/status/report는 runtime이 자동으로 만든다.
 
 - `live:ops:daemon` fixture smoke가 외부 provider/order side effect 없이 loop contract를 검증한다.
 - fake provider integration이 entry 성공, exit 성공, HOLD, BLOCK, cancel/requote 실패, manual review를 모두 검증한다.
-- production config/env 실행은 hand-written evidence 없이 시작하고, broker submit 전 모든 guard를 자동 평가한다.
+- production config/env 실행은 hand-written evidence 없이 source/config/migration provenance를 고정하고, broker submit 전 모든 guard를 자동 평가한다.
 - runtime은 저장소 밖 artifact directory에 entry reservation, entry fill/no-fill closeout, exit closeout, autonomous position state를 자동 유지하며 운영자가 별도 evidence 파일을 만들지 않는다.
 - attach TUI는 daemon top-level `transient_failure`가 있으면 stale `latestSummary` 준비 상태보다 실패 상태를 우선 표시한다.
 - 24시간 run summary는 crash 0회, unhandled rejection 0회, duplicate order 0건, reconcile mismatch 0건, untracked fill 0건,
