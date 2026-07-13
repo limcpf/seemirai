@@ -20,6 +20,18 @@ const liveOpsCliCleanupCancelPollCount = 5;
 const liveOpsCliCleanupCancelPollIntervalMs = 1000;
 const liveOpsCliDailyReservationLockLeaseMs = 5 * 60 * 1000;
 const liveOpsCliExitSubmissionLockLeaseMs = 60 * 1000;
+const transientDbReadinessFailureCodes = new Set([
+  "db_connection_failed",
+  "migration_state_query_failed",
+]);
+
+/** startup 이후 config 또는 DB migration drift로 live side effect를 차단했음을 나타낸다. */
+export class LiveOpsRuntimeProvenanceMismatchError extends Error {
+  constructor(message) {
+    super(message);
+    this.name = "LiveOpsRuntimeProvenanceMismatchError";
+  }
+}
 const liveOpsCliPreflightReconcileFreshnessMs = 30_000;
 const liveOpsCliPreflightPnlFreshnessMs = 30_000;
 const liveOpsCliPreflightPnlFutureSkewMs = 1_000;
@@ -188,20 +200,32 @@ export function parseArgs(argv) {
   return options;
 }
 
-export async function loadLiveOpsCliInputs(options) {
-  if (options.configPath === undefined) {
-    throw new Error("--config 경로가 필요합니다.");
-  }
-  if (options.envFilePath === undefined) {
-    throw new Error("--env-file 경로가 필요합니다.");
+/** provider/broker를 열지 않고 config fingerprint와 DB migration readiness를 확정한다. */
+export async function loadLiveOpsCliStartupReadiness(options) {
+  const loaded = await loadLiveOpsCliValidatedFiles(options);
+  const dbReadiness = await evaluateLiveOpsCliDbReadiness({
+    databaseUrl: loaded.env.SEEMIRAI_DATABASE_URL,
+    fixtureSmoke: options.fixtureSmoke,
+  });
+  if (!dbReadiness.ready) {
+    // startup provenance는 broker/provider보다 먼저 확정돼야 하므로 DB schema가 불확실하면 여기서 live boot를 차단한다.
+    throw new Error(formatCliDbReadinessFailureMessage(dbReadiness));
   }
 
-  const configPath = path.resolve(options.configPath);
-  const envFilePath = path.resolve(options.envFilePath);
-  let config = JSON.parse(await readFile(configPath, "utf8"));
-  const env = parseEnvFile(await readFile(envFilePath, "utf8"));
-  validateLiveOpsConfig(config);
-  validateLiveOpsEnv(env, process.env);
+  return {
+    configPath: loaded.configPath,
+    configFingerprint: loaded.configFingerprint,
+    envFingerprint: loaded.envFingerprint,
+    dbReadiness,
+  };
+}
+
+export async function loadLiveOpsCliInputs(options) {
+  const loaded = await loadLiveOpsCliValidatedFiles(options);
+  const configPath = loaded.configPath;
+  const envFilePath = loaded.envFilePath;
+  let config = loaded.config;
+  const env = loaded.env;
   if (options.suppressStartupTelegramAlert === true) {
     config = suppressLiveOpsCliStartupTelegramAlert(config);
   }
@@ -222,6 +246,7 @@ export async function loadLiveOpsCliInputs(options) {
     databaseUrl: env.SEEMIRAI_DATABASE_URL,
     fixtureSmoke: options.fixtureSmoke,
   });
+  assertLiveOpsCliRuntimeProvenanceMigration(options.runtimeProvenance, dbReadiness);
   if (!dbReadiness.ready) {
     throw new Error(formatCliDbReadinessFailureMessage(dbReadiness));
   }
@@ -338,6 +363,110 @@ export async function loadLiveOpsCliInputs(options) {
   } finally {
     await decisionHistoryFallbackPool?.end().catch(() => undefined);
     await productionRuntime?.close?.();
+  }
+}
+
+async function loadLiveOpsCliValidatedFiles(options) {
+  if (options.configPath === undefined) {
+    throw new Error("--config 경로가 필요합니다.");
+  }
+  if (options.envFilePath === undefined) {
+    throw new Error("--env-file 경로가 필요합니다.");
+  }
+
+  const configPath = path.resolve(options.configPath);
+  const envFilePath = path.resolve(options.envFilePath);
+  const configRawText = await readLiveOpsCliProvenanceFile(configPath, "config", options.runtimeProvenance);
+  const envRawText = await readLiveOpsCliProvenanceFile(envFilePath, "env", options.runtimeProvenance);
+  const configFingerprint = `sha256:${createHash("sha256").update(configRawText, "utf8").digest("hex")}`;
+  const envFingerprint = `sha256:${createHash("sha256").update(envRawText, "utf8").digest("hex")}`;
+  assertLiveOpsCliRuntimeProvenanceConfig(options.runtimeProvenance, configFingerprint);
+  assertLiveOpsCliRuntimeProvenanceEnv(options.runtimeProvenance, envFingerprint);
+  const config = JSON.parse(configRawText);
+  const env = parseEnvFile(envRawText);
+  validateLiveOpsConfig(config);
+  validateLiveOpsEnv(env, process.env);
+  return {
+    configPath,
+    envFilePath,
+    config,
+    env,
+    configFingerprint,
+    envFingerprint,
+  };
+}
+
+async function readLiveOpsCliProvenanceFile(filePath, label, runtimeProvenance) {
+  try {
+    return await readFile(filePath, "utf8");
+  } catch (error) {
+    if (runtimeProvenance !== undefined) {
+      // startup에서 고정한 입력 파일이 사라지거나 읽히지 않으면 transient retry로 다른 runtime 입력을 기다리지 않는다.
+      throw new LiveOpsRuntimeProvenanceMismatchError(
+        `운영 ${label} 파일을 읽을 수 없어 daemon startup provenance를 확인할 수 없습니다. 파일 경로와 권한을 복구한 뒤 daemon을 새로 시작하세요.`,
+      );
+    }
+    throw error;
+  }
+}
+
+function assertLiveOpsCliRuntimeProvenanceConfig(runtimeProvenance, actualConfigFingerprint) {
+  if (runtimeProvenance === undefined) {
+    return;
+  }
+  if (runtimeProvenance.configFingerprint !== actualConfigFingerprint) {
+    // 시작 뒤 config가 바뀌면 startup artifact와 실제 주문 정책이 갈라지므로 provider 호출 전에 중단한다.
+    throw new LiveOpsRuntimeProvenanceMismatchError(
+      "운영 config fingerprint가 daemon startup provenance와 다릅니다. 변경된 config로 신규 주문을 시작하지 않습니다.",
+    );
+  }
+}
+
+function assertLiveOpsCliRuntimeProvenanceEnv(runtimeProvenance, actualEnvFingerprint) {
+  if (runtimeProvenance === undefined) {
+    return;
+  }
+  if (runtimeProvenance.envFingerprint !== actualEnvFingerprint) {
+    // DB/account/key 입력이 startup 이후 바뀌면 같은 config라도 다른 외부 경계가 열리므로 provider 호출 전에 중단한다.
+    throw new LiveOpsRuntimeProvenanceMismatchError(
+      "운영 env fingerprint가 daemon startup provenance와 다릅니다. 변경된 DB 또는 계정 입력으로 신규 주문을 시작하지 않습니다.",
+    );
+  }
+}
+
+/**
+ * startup 이후 DB migration drift를 provider/broker 경계 전에 종료한다.
+ *
+ * DB 연결/조회 장애는 daemon의 bounded transient retry가 처리하도록 반환하고, 실제 migration 파일/버전/pending/checksum
+ * 불일치만 startup provenance 위반으로 승격한다. 입력 summary를 읽기만 하며 외부 side effect는 없다.
+ */
+export function assertLiveOpsCliRuntimeProvenanceMigration(runtimeProvenance, dbReadiness) {
+  if (runtimeProvenance === undefined) {
+    return;
+  }
+  const blockedCodes = Array.isArray(dbReadiness?.checks)
+    ? dbReadiness.checks
+      .filter((check) => check?.status === "blocked")
+      .map((check) => check.code)
+    : [];
+  if (
+    blockedCodes.length > 0
+    && blockedCodes.every((code) => transientDbReadinessFailureCodes.has(code))
+  ) {
+    // 짧은 DB 연결/조회 장애까지 provenance 위반으로 종료하면 24/7 daemon의 transient 복구 계약을 우회한다.
+    return;
+  }
+  const migration = dbReadiness?.migration ?? {};
+  const matches = dbReadiness?.ready === true
+    && migration.expectedLatestVersion === runtimeProvenance.expectedMigrationVersion
+    && migration.appliedLatestVersion === runtimeProvenance.appliedMigrationVersion
+    && Array.isArray(migration.pendingVersions)
+    && migration.pendingVersions.length === 0;
+  if (!matches) {
+    // startup 이후 schema가 달라지면 같은 source/config의 decision도 재현할 수 없으므로 broker 경계를 다시 열지 않는다.
+    throw new LiveOpsRuntimeProvenanceMismatchError(
+      "DB migration 상태가 daemon startup provenance와 다릅니다. schema/version을 확인할 때까지 신규 주문을 차단합니다.",
+    );
   }
 }
 
@@ -460,37 +589,67 @@ async function loadLiveOpsCliAttachReadonlyInputs({ configPath, envFilePath, con
 }
 
 function createLiveOpsCliAttachSummary(source) {
-  const summary = source?.summary ?? source?.latestSummary ?? source;
+  const hasLatestSummary = isNonEmptyRecord(source?.latestSummary);
+  const summary = source?.summary ?? (hasLatestSummary ? source.latestSummary : source);
+  const daemonFailureStatus = source?.status;
   if (
     source?.kind !== "live_ops_daemon_summary" ||
-    source?.status !== "transient_failure" ||
-    !isNonEmptyRecord(source?.latestSummary)
+    (daemonFailureStatus !== "transient_failure" && daemonFailureStatus !== "provenance_failed")
   ) {
     return summary;
   }
 
+  const provenanceFailed = daemonFailureStatus === "provenance_failed";
   const latestError = source.latestError ?? {};
   const observedAt = hasMeaningfulValue(latestError?.observedAt)
     ? String(latestError.observedAt)
     : new Date().toISOString();
   const errorName = hasMeaningfulValue(latestError?.name) ? String(latestError.name) : safeErrorName(latestError);
+  const failureSummary = hasLatestSummary
+    ? summary
+    : {
+      dbReadiness: { status: "daemon_startup_failed", ready: false, statusLabel: "daemon 시작 실패" },
+      marketData: { status: "daemon_startup_failed", ready: false, statusLabel: "daemon 시작 실패" },
+      analysisDecision: { status: "daemon_startup_failed", ready: false, statusLabel: "daemon 시작 실패" },
+      reconcilePnlStatus: {
+        status: "daemon_startup_failed",
+        ready: false,
+        providerProbeAttempted: false,
+        manualReviewRequired: true,
+        statusLabel: "daemon 시작 실패",
+        reconcileStatusLabel: "확인 필요",
+        pnlStatusLabel: "확인 필요",
+      },
+      telegramAlert: {
+        status: "daemon_startup_failed",
+        ready: false,
+        providerDispatchAttempted: false,
+        statusLabel: "daemon 시작 실패",
+      },
+    };
   return {
-    ...summary,
+    ...failureSummary,
     liveOrderCapable: false,
     liveExecution: {
-      ...(summary.liveExecution ?? {}),
-      status: "daemon_transient_failure",
+      ...(failureSummary.liveExecution ?? {}),
+      status: provenanceFailed ? "daemon_provenance_failed" : "daemon_transient_failure",
       ready: false,
       liveOrderCapable: false,
       latestExecutionAt: observedAt,
       observedAt,
-      statusLabel: "daemon 일시 실패",
-      message: "daemon tick이 실패해 attach 화면이 stale ready 상태를 실주문 가능 상태로 표시하지 않습니다.",
-      action: "daemon status file의 latestError와 최근 로그를 확인한 뒤 실패 원인을 복구하세요.",
+      statusLabel: provenanceFailed ? "daemon provenance 실패" : "daemon 일시 실패",
+      message: provenanceFailed
+        ? "daemon runtime provenance가 달라져 종료됐습니다. attach 화면은 직전 준비 상태를 실주문 가능 상태로 표시하지 않습니다."
+        : "daemon tick이 실패해 attach 화면이 stale ready 상태를 실주문 가능 상태로 표시하지 않습니다.",
+      action: provenanceFailed
+        ? "config fingerprint, source SHA, DB migration을 startup artifact와 맞춘 뒤 daemon을 새로 시작하세요."
+        : "daemon status file의 latestError와 최근 로그를 확인한 뒤 실패 원인을 복구하세요.",
       checks: [
-        ...(Array.isArray(summary.liveExecution?.checks) ? summary.liveExecution.checks : []),
-        blockedLiveExecutionCheck("daemon_status", "daemon 최신 tick이 실패 상태입니다.", "live_ops_daemon_transient_failure", {
-          status: source.status,
+        ...(Array.isArray(failureSummary.liveExecution?.checks) ? failureSummary.liveExecution.checks : []),
+        blockedLiveExecutionCheck("daemon_status", "daemon 최신 상태가 실패로 닫혔습니다.", provenanceFailed
+          ? "live_ops_daemon_provenance_failed"
+          : "live_ops_daemon_transient_failure", {
+          status: daemonFailureStatus,
           errorName,
         }),
       ],

@@ -15,6 +15,37 @@ export type LiveOpsCliOptions = Record<string, unknown> & {
   fixtureSmoke?: boolean;
   attach?: string;
   attachReadonly?: boolean;
+  runtimeProvenance?: LiveOpsRuntimeProvenance;
+};
+
+/**
+ * production daemon이 startup부터 각 tick까지 동일하게 유지해야 하는 실행 provenance다.
+ *
+ * source commit은 실제 daemon worktree HEAD를, config/env fingerprint는 검증을 통과한 입력 파일 원문을,
+ * migration version은 provider/broker 경계를 열기 전 확인한 DB schema를 식별한다. 호출자는 이 값을
+ * startup artifact와 latest status에 동일하게 보존해야 하며, tick 중 하나라도 달라지면 외부 provider나
+ * broker side effect 전에 실행을 중단해야 한다. 값 자체에는 secret이나 DB 연결 문자열을 포함하지 않는다.
+ */
+export interface LiveOpsRuntimeProvenance {
+  sourceCommitSha: string;
+  configFingerprint: string;
+  envFingerprint: string;
+  expectedMigrationVersion: number;
+  appliedMigrationVersion: number;
+}
+
+/**
+ * production Live Ops daemon entry와 repository-local support module 사이의 실행 option 계약이다.
+ *
+ * parser는 fixture/help 외 실행에 source SHA와 repository 밖 startup artifact 경로가 반드시 존재하도록
+ * 보장한다. runner는 시작 시 immutable artifact를 기록한 뒤 같은 provenance를 각 tick에 전달하고,
+ * status 파일에는 secret 없이 최신 상태를 덮어쓴다. 이 타입은 경로와 실행 정책만 전달하며 파일 기록,
+ * DB readiness 확인, provider/broker 호출 같은 외부 side effect는 daemon support가 소유한다.
+ */
+export type LiveOpsDaemonOptions = LiveOpsCliOptions & {
+  sourceCommitSha?: string;
+  startupArtifactFilePath?: string;
+  statusFilePath?: string;
 };
 
 /**
@@ -44,9 +75,9 @@ export interface LiveOpsSupportModule {
  * 변경하지 않는다.
  */
 export interface LiveOpsDaemonSupportModule {
-  parseLiveOpsDaemonArgs(argv: readonly string[]): LiveOpsCliOptions;
+  parseLiveOpsDaemonArgs(argv: readonly string[]): LiveOpsDaemonOptions;
   printLiveOpsDaemonHelp(): void;
-  runLiveOpsDaemon(options: LiveOpsCliOptions): Promise<unknown>;
+  runLiveOpsDaemon(options: LiveOpsDaemonOptions): Promise<unknown>;
 }
 
 /**

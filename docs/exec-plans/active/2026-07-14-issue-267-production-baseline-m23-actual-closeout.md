@@ -2,13 +2,13 @@
 
 - Issue: [#267](https://github.com/limcpf/seemirai/issues/267)
 - mother branch: `issue-267-mother`
-- 상태: Sub PR 01 baseline contract 진행 중
+- 상태: Sub PR 01 mother merge 완료, Sub PR 02 runtime provenance 검증 중
 - 시작일: 2026-07-14
 
 ## 목표
 
 Issue #206의 실제 provider arm/cleanup 증적과 Issue #188의 구현 종료 기준선을 변경하지 않고, PR #265 계보의 decision history와
-DB-backed feature를 production에 배포한다. 새 배포는 source commit SHA, secret-free config fingerprint, migration version을
+DB-backed feature를 production에 배포한다. 새 배포는 source commit SHA, secret-free config/env fingerprint, migration version을
 startup/status evidence로 남기고, 배포 뒤 7개 연속 완료 KST 날짜의 daily report와 durable decision evidence를 실제 M23
 validator 입력으로 사용한다.
 
@@ -35,29 +35,29 @@ pre-deploy 상태를 최신 기능의 실행 증거로 소급 변환하지 않�
 - 목표: 역사적 기준선, successor 배포 gate, rollback/closeout DnD를 문서로 고정한다.
 - 제외 범위: runtime 코드, production process 중지, migration/DB write, 실제 backup/restore.
 - DnD:
-  - [ ] #206/#188/pre-deploy/successor 기준이 분리돼 있다.
-  - [ ] 4개 sub PR의 파일 책임, 순서, 검증, merge gate가 기록돼 있다.
-  - [ ] migration 전 backup, restart fail-closed, 7일 신규 window, M24 확대 금지가 명시돼 있다.
-  - [ ] `./scripts/verify docs`, `git diff --check`가 통과한다.
+  - [x] #206/#188/pre-deploy/successor 기준이 분리돼 있다.
+  - [x] 4개 sub PR의 파일 책임, 순서, 검증, merge gate가 기록돼 있다.
+  - [x] migration 전 backup, restart fail-closed, 7일 신규 window, M24 확대 금지가 명시돼 있다.
+  - [x] `./scripts/verify docs`, `git diff --check`가 통과한다.
 
 ### Sub PR 02. Runtime provenance
 
 - branch: `issue-267/02-runtime-provenance`
 - 선행 조건: Sub PR 01 mother merge.
-- 목표: daemon startup/status와 Issue #267 actual manifest에 source SHA, config fingerprint, migration version을 secret 없이 남긴다.
+- 목표: daemon startup/status와 Issue #267 actual manifest에 source SHA, config/env fingerprint, migration version을 secret 없이 남긴다.
 - 파일 책임: `scripts/run-live-ops-daemon*.mjs`, `scripts/run-m23-stability-closeout.mjs`, 관련 `src/runtime/` contract,
   단위/soak 테스트, runtime/reliability/security 문서.
 - 제외 범위: production migration 실행, daemon 재시작, 7일 closeout 판정.
 - DnD:
-  - [ ] production source SHA는 40자리 Git commit으로 검증되고 현재 배포 tree와 일치한다.
-  - [ ] config fingerprint는 config 원문 없이 `sha256:<hex>`만 저장한다.
-  - [ ] migration version은 DB readiness가 관측한 expected/applied version을 보존한다.
-  - [ ] startup artifact와 최신 status가 같은 provenance를 가진다.
-  - [ ] provenance 생성 실패 또는 source/migration 불일치는 live startup을 fail-closed 한다.
-  - [ ] Issue #267 actual manifest는 startup provenance와 각 segment provenance의 일치를 검증한다.
-  - [ ] Issue #267 actual manifest는 backup/restore `blocked`를 `PASS` 입력으로 인정하지 않는다.
-  - [ ] manifest `day`, daily report `reportDate`, decision evidence KST day가 일치하고 완료된 KST window인지 검증한다.
-  - [ ] 관련 unit/script 테스트, typecheck, 전체 verify가 통과한다.
+  - [x] production source SHA는 40자리 Git commit으로 검증되고 현재 clean 배포 tree와 일치한다.
+  - [x] config/env fingerprint는 입력 원문 없이 각각 `sha256:<hex>`만 저장한다.
+  - [x] migration version은 DB readiness가 관측한 expected/applied version을 보존한다.
+  - [x] startup artifact와 최신 status가 같은 provenance를 가진다.
+  - [x] provenance 생성 실패 또는 source/config/env/migration 불일치는 live startup/tick을 fail-closed 한다.
+  - [x] Issue #267 actual manifest는 startup provenance와 각 segment provenance의 일치를 검증한다.
+  - [x] Issue #267 actual manifest는 backup/restore `blocked`를 `PASS` 입력으로 인정하지 않는다.
+  - [x] manifest `day`, daily report `reportDate`, decision evidence KST day가 일치하고 완료된 KST window인지 검증한다.
+  - [x] 관련 unit/script 테스트, typecheck, 전체 verify가 통과한다.
 
 ### Sub PR 03. Production rollout
 
@@ -69,7 +69,7 @@ pre-deploy 상태를 최신 기능의 실행 증거로 소급 변환하지 않�
 - DnD:
   - [ ] 기존 daemon 정상 중지 전 open order/exposure, failure counter, migration 13 baseline이 저장됐다.
   - [ ] daemon 신규 write 차단과 정상 종료 뒤 migration 전 backup을 만들었고 migration 14 pending/checksum drift가 없다.
-  - [ ] 새 daemon이 명시 source SHA/config fingerprint/migration 14로 시작됐다.
+  - [ ] 새 daemon이 명시 source SHA/config/env fingerprint/migration 14로 시작됐다.
   - [ ] `live_decision_ticks` write와 `live_ops_db_window` 우선 사용이 실제 DB/status에서 확인됐다.
   - [ ] restart 뒤 reconcile/status/report/Telegram이 복구되고 duplicate live order가 0이다.
   - [ ] disposable restore DB backup/restore smoke가 통과한다.
@@ -91,7 +91,7 @@ pre-deploy 상태를 최신 기능의 실행 증거로 소급 변환하지 않�
 ## Rollout gate
 
 1. pre-deploy daemon 상태와 #206 cleanup artifact를 redacted baseline으로 저장한다.
-2. source SHA, config fingerprint, 현재 migration 13, open order/exposure 0, rollback commit을 교차 확인한다. open order 또는 exposure가
+2. source SHA, config/env fingerprint, 현재 migration 13, open order/exposure 0, rollback commit을 교차 확인한다. open order 또는 exposure가
    있으면 daemon을 중지하지 않고 operator stop/manual review로 전환한다.
 3. 신규 entry를 차단하고 open order/exposure 0을 다시 확인한 뒤에만 기존 daemon에 `SIGTERM`을 보낸다.
 4. terminal status와 daemon write 정지를 확인해 중지 후 migration gate를 연다.

@@ -75,7 +75,7 @@ startup 이후 완료된 KST 날짜부터 actual 7일 window를 계산한다. Is
 open order 또는 exposure가 하나라도 있으면 daemon을 멈추지 않고 operator stop/manual review로 전환한다. 0이 확인되면 신규 entry를
 차단하고 같은 조회를 다시 통과한 뒤에만 `SIGTERM`을 보낸다. 정상 종료 후 terminal status와 daemon write 정지를 확인한 시점부터
 중지 후 migration gate를 진행한다. 이 gate에서는 migration 직전 backup과 disposable restore preflight를 만들고 migration 14를
-적용한 다음 새 daemon을 시작한다. startup/status의 source SHA, config fingerprint, expected/applied migration version이 rollout
+적용한 다음 새 daemon을 시작한다. startup/status의 source SHA, config/env fingerprint, expected/applied migration version이 rollout
 입력과 다르면 신규 entry를 열지 않는다. 새 daemon에서 `live_decision_ticks` write와 `live_ops_db_window` source를 확인하고 실제
 restart/recovery 및 disposable restore DB smoke를 통과한 뒤에만 7일 evidence window를 시작한다.
 
@@ -84,8 +84,9 @@ evidence의 KST day와 같아야 하며, 해당 KST window가 종료된 뒤 생�
 artifact를 소급 생성하지 않는다.
 
 Issue #267 actual manifest는 기존 Issue #188 blocker 호환 규칙을 사용하지 않는다. backup/restore `blocked`는 실패이며, startup과
-각 segment의 source SHA, config fingerprint, expected/applied migration 14가 일치해야 한다. 이 검증이 구현되기 전에는 기존
-`scripts/run-m23-stability-closeout.mjs`의 `PASS`를 Issue #267 closeout 근거로 사용하지 않는다.
+각 segment의 source SHA, config/env fingerprint, expected/applied migration 14가 일치해야 한다. `scripts/run-m23-stability-closeout.mjs`는
+Issue #267 manifest에서 이 계약, 각 segment 실행 구간이 daemon startup보다 앞서지 않는지, 완료 KST report/decision day를 직접
+검증한다.
 
 migration 14 적용 뒤에는 migration 13까지만 아는 pre-deploy source가 DB readiness에서 차단될 수 있다. rollback은 migration 14
 파일/checksum을 포함하는 검증된 source SHA로 실행한다. pre-migration backup 복원은 successor가 broker side effect를 만들기
@@ -96,8 +97,8 @@ post-migration DB를 별도 backup으로 보존한 뒤 schema/version 일치를 
 ## Issue #267 production daemon 실행
 
 Issue #267 successor는 M22 pilot wrapper, 수동 candidate JSONL, `SEEMIRAI_RUN_M22_*`, `SEEMIRAI_RUN_UPBIT_*_SMOKE`,
-`SEEMIRAI_PILOT_PROFILE`을 사용하지 않는다. Sub PR 02의 provenance/startup artifact 계약이 mother branch에 병합되고 production
-명령이 명시 source SHA, config fingerprint, expected/applied migration 14를 검증할 때까지 successor를 시작하지 않는다.
+`SEEMIRAI_PILOT_PROFILE`을 사용하지 않는다. production 명령은 명시 source SHA, config/env fingerprint, expected/applied migration 14를
+startup 전에 검증하며 source worktree가 dirty이면 시작하지 않는다.
 
 배포 SHA와 저장소 밖 config/env/status 경로를 고정한 뒤 production package entry로 실행한다.
 
@@ -105,19 +106,21 @@ Issue #267 successor는 M22 pilot wrapper, 수동 candidate JSONL, `SEEMIRAI_RUN
 cd <issue-267-successor-worktree>
 ISSUE_267_HOME="$HOME/vaults/99_운영/seemirai-live-ops-production/issue-267"
 SOURCE_SHA="$(git rev-parse HEAD)"
+RUN_ID="$(node -e 'process.stdout.write(require("node:crypto").randomUUID())')"
 
 corepack pnpm live:ops:daemon -- \
   --config "$ISSUE_267_HOME/live-ops.config.json" \
   --env-file "$ISSUE_267_HOME/live-ops.env" \
   --source-commit-sha "$SOURCE_SHA" \
-  --startup-artifact-file "$ISSUE_267_HOME/artifacts/live-ops-daemon-startup-$SOURCE_SHA.json" \
+  --startup-artifact-file "$ISSUE_267_HOME/artifacts/live-ops-daemon-startup-$SOURCE_SHA-$RUN_ID.json" \
   --status-file "$ISSUE_267_HOME/artifacts/live-ops-daemon-status.json" \
   --tui
 ```
 
-`--source-commit-sha`와 `--startup-artifact-file`은 Sub PR 02에서 구현하는 successor 전용 필수 계약이다. `SOURCE_SHA`는 Sub PR 02까지
+`--source-commit-sha`와 `--startup-artifact-file`은 successor production 실행의 필수 계약이다. `SOURCE_SHA`는 Sub PR 02까지
 병합된 40자리 rollout SHA와 같아야 한다. startup/status provenance가 이 값과 다르거나 migration 14가 아니면 process를
-live-armed로 재개하지 않는다. 7일 입력은 이 daemon과 DB scheduler가 자동 생성한 completed KST daily report,
+live-armed로 재개하지 않는다. `RUN_ID`는 같은 SHA로 재시작할 때도 기존 create-only artifact와 충돌하지 않게 실행마다 새로 만든다.
+7일 입력은 이 daemon과 DB scheduler가 자동 생성한 completed KST daily report,
 `live_decision_ticks`, immutable day artifact만 사용한다. latest status 복사본, M22 pilot summary, 수동 candidate artifact는 #267
 actual evidence가 아니다.
 
@@ -380,6 +383,51 @@ closeout에는 redacted artifact 기준으로 다음을 기록한다.
 }
 ```
 
+Issue #267 actual manifest는 다음 provenance/day 필드를 추가한다. 아래 provenance object는 startup artifact, manifest, segment record,
+segment summary에서 byte 값 기준으로 같아야 한다.
+
+```json
+{
+  "issue": 267,
+  "mode": "LIVE_AUTONOMOUS_SMALL_BUDGET",
+  "startupArtifactPath": "live-ops-daemon-startup-<source-sha>.json",
+  "runtimeProvenance": {
+    "sourceCommitSha": "<40자리-lowercase-git-sha>",
+    "configFingerprint": "sha256:<64자리-lowercase-hex>",
+    "envFingerprint": "sha256:<64자리-lowercase-hex>",
+    "expectedMigrationVersion": 14,
+    "appliedMigrationVersion": 14
+  },
+  "segments": [
+    {
+      "day": "YYYY-MM-DD",
+      "summaryPath": "production-day-YYYY-MM-DD.json",
+      "decisionEvidenceId": "decision-YYYY-MM-DD",
+      "decisionEvidenceDay": "YYYY-MM-DD",
+      "dailyReportEvidenceId": "daily-report-YYYY-MM-DD",
+      "alertEvidenceIds": ["alert-YYYY-MM-DD"],
+      "runtimeProvenance": {
+        "sourceCommitSha": "<40자리-lowercase-git-sha>",
+        "configFingerprint": "sha256:<64자리-lowercase-hex>",
+        "envFingerprint": "sha256:<64자리-lowercase-hex>",
+        "expectedMigrationVersion": 14,
+        "appliedMigrationVersion": 14
+      }
+    }
+  ],
+  "recoveryDrillSummaryPath": "m23-recovery-summary.json",
+  "backupRestore": {
+    "status": "passed",
+    "evidenceId": "db-backup-restore-YYYY-MM-DD"
+  }
+}
+```
+
+각 Issue #267 segment summary는 `input=live_ops_daemon_day`, `status=passed`, `startedAt`, `finishedAt`, `reportDate`,
+`dailyReportGeneratedAt`, `decisionEvidenceDay`, `decisionEvidenceGeneratedAt`, 같은 `runtimeProvenance`를 포함한다. 실행 window는 해당
+KST day 전체를 덮어야 하고 report/decision 생성 시각은 KST day 종료 이후여야 한다. `productionDaemonWindow`, `configSafety`,
+`dbReadiness`, `heartbeat` check가 모두 `ok`가 아니면 actual closeout은 실패한다.
+
 manifest와 7개 segment summary, recovery drill summary가 준비되면 다음 validator를 실행한다.
 
 ```sh
@@ -400,8 +448,7 @@ node scripts/run-m23-stability-closeout.mjs --fixture-smoke --json
 종료, daily report, live-armed guard/readiness, decision evidence, closeout failure counter 명시적 0건, recovery drill,
 DB backup/restore 결과 또는 blocker, source scan, raw secret 후보를 함께 확인한다. Issue #267 guarded 경로는 production
 `live:ops:daemon` provenance, 완료 KST daily report/day decision evidence 일치와 `backupRestore.status=passed`를 추가로 강제한다.
-이 guarded 검증이 Sub PR 02에서 구현되기 전에는 어떤 기존 validator `PASS`도 #267 근거로 쓰지 않는다. 7일 artifact가 없거나
-manifest가 6일 이하이면 closeout은 실패다.
+7일 artifact가 없거나 manifest가 6일 이하이면 closeout은 실패다.
 
 live canary 1회 성공, dry-run, heartbeat-only만으로 M23 완료를 선언하지 않는다.
 

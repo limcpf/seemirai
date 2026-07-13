@@ -158,8 +158,12 @@ Codex-native 운영은 Codex, Git, GitHub, shell command, 문서 상태를 연�
 ## Issue #206 24/7 entry/exit daemon 신뢰성 기준
 
 - `live:ops:daemon`은 cleanup canary가 아니라 entry, hold, exit, manual review를 반복 평가하는 장시간 loop다.
-- daemon 실행은 저장소 밖 config/env만 요구한다. fixture manifest, hand-written evidence, 수동 candidate JSONL은 실행 전제 조건이
-  아니며, decision evidence와 artifact는 runtime이 자동 생성해야 한다.
+- production daemon은 명시 source SHA가 실제 clean worktree HEAD와 같은지 확인한 뒤 config/env와 DB migration readiness를 평가한다.
+  어느 단계든 실패하면 broker/provider loop를 시작하지 않고 `provenance_failed` status로 닫는다.
+- readiness를 통과한 startup provenance는 저장소 밖 새 artifact에 create-only로 기록한다. 각 tick에서 config/env fingerprint 또는
+  expected/applied migration version이 startup 값과 달라지면 transient retry로 낮추지 않고 live side effect 전에 loop를 종료한다.
+- daemon 실행은 저장소 밖 config/env와 자동 검증되는 source/startup provenance를 요구한다. fixture manifest, hand-written evidence,
+  수동 candidate JSONL은 실행 전제 조건이 아니며, decision evidence와 artifact 내용은 runtime이 자동 생성해야 한다.
 - 각 tick은 이전 tick의 broker/order side effect를 먼저 reconcile 한 뒤 새 entry/exit decision을 평가한다. 이전 open order,
   untracked fill, mismatch, terminal cancel 미확인 상태가 남아 있으면 새 주문으로 전진하지 않는다.
 - 보유 포지션이 있으면 exit policy를 entry policy보다 먼저 평가한다. 이 순서가 깨지면 open exposure가 의도보다 커질 수 있으므로
@@ -174,7 +178,7 @@ Codex-native 운영은 Codex, Git, GitHub, shell command, 문서 상태를 연�
   정상 현금 보유를 구분할 수 없다.
 - `live:ops:daemon`은 success/HOLD tick은 기본 1초, BLOCK은 5초, manual review는 30초, transient failure는 5초 backoff를 적용한다.
   fixture smoke에서는 장시간 대기를 피하기 위해 sleep을 최대 100ms로 제한한다.
-- production daemon은 config 옆 `artifacts/live-ops-daemon-status.json` 또는 `--status-file` 대상에 최신 summary를 자동 기록한다.
+- production daemon은 repository 밖 startup artifact 디렉터리의 `live-ops-daemon-status.json` 또는 `--status-file` 대상에 최신 summary를 자동 기록한다.
   이 파일은 입력 증적이 아니라 재시작/감시자가 읽는 출력 상태이므로, 없다고 실행을 막지 않는다.
 - exit SELL 미체결은 같은 주문을 bounded cancel로 닫고 다음 tick에서 재호가한다. 취소 terminal 확인 실패, 부분 체결, broker 제출
   불확실성은 자동 재주문이 아니라 manual review counter와 신규 주문 차단으로 수렴한다.
@@ -530,7 +534,7 @@ Codex-native 운영은 Codex, Git, GitHub, shell command, 문서 상태를 연�
 - 7일 stability closeout manifest는 `scripts/run-m23-stability-closeout.mjs`로 검증한다. Issue #188 historical 경로는 서로 다른 7개
   day segment, 각 24시간 runner 정상 종료, daily report, live-armed guard/readiness, decision evidence, recovery drill, source scan,
   DB backup/restore 결과 또는 blocker 기록 형식을 유지한다. 이 호환 결과를 Issue #267 actual `PASS`로 승격하지 않는다.
-- Issue #267 guarded 경로는 production `live:ops:daemon` startup/segment의 source SHA, config fingerprint, expected/applied migration
+- Issue #267 guarded 경로는 production `live:ops:daemon` startup/segment의 source SHA, config/env fingerprint, expected/applied migration
   14와 완료 KST daily report/day decision evidence 일치를 확인하고, DB backup/restore smoke가 disposable restore DB에서 실제로
   통과한 `passed` 입력만 허용한다. 외부 DB 조건이 없으면 `blocked`로 남기되 actual closeout은 실패다.
 - 누적 realized loss와 미체결 노출 합계가 50,000 KRW에 닿기 전에 operator stop 또는 kill switch/manual review로 수렴한다. 이
