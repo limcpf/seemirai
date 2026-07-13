@@ -221,7 +221,6 @@ export async function loadLiveOpsCliInputs(options) {
   const envFilePath = loaded.envFilePath;
   let config = loaded.config;
   const env = loaded.env;
-  assertLiveOpsCliRuntimeProvenanceConfig(options.runtimeProvenance, loaded.configFingerprint);
   if (options.suppressStartupTelegramAlert === true) {
     config = suppressLiveOpsCliStartupTelegramAlert(config);
   }
@@ -242,10 +241,10 @@ export async function loadLiveOpsCliInputs(options) {
     databaseUrl: env.SEEMIRAI_DATABASE_URL,
     fixtureSmoke: options.fixtureSmoke,
   });
+  assertLiveOpsCliRuntimeProvenanceMigration(options.runtimeProvenance, dbReadiness);
   if (!dbReadiness.ready) {
     throw new Error(formatCliDbReadinessFailureMessage(dbReadiness));
   }
-  assertLiveOpsCliRuntimeProvenanceMigration(options.runtimeProvenance, dbReadiness);
 
   const marketData = await evaluateLiveOpsCliMarketData({
     config,
@@ -373,6 +372,8 @@ async function loadLiveOpsCliValidatedFiles(options) {
   const configPath = path.resolve(options.configPath);
   const envFilePath = path.resolve(options.envFilePath);
   const configRawText = await readFile(configPath, "utf8");
+  const configFingerprint = `sha256:${createHash("sha256").update(configRawText, "utf8").digest("hex")}`;
+  assertLiveOpsCliRuntimeProvenanceConfig(options.runtimeProvenance, configFingerprint);
   const config = JSON.parse(configRawText);
   const env = parseEnvFile(await readFile(envFilePath, "utf8"));
   validateLiveOpsConfig(config);
@@ -382,7 +383,7 @@ async function loadLiveOpsCliValidatedFiles(options) {
     envFilePath,
     config,
     env,
-    configFingerprint: `sha256:${createHash("sha256").update(configRawText, "utf8").digest("hex")}`,
+    configFingerprint,
   };
 }
 
@@ -398,12 +399,14 @@ function assertLiveOpsCliRuntimeProvenanceConfig(runtimeProvenance, actualConfig
   }
 }
 
-function assertLiveOpsCliRuntimeProvenanceMigration(runtimeProvenance, dbReadiness) {
+/** startup 이후 DB readiness 또는 migration 값이 달라지면 provider/broker 경계 전에 종료한다. */
+export function assertLiveOpsCliRuntimeProvenanceMigration(runtimeProvenance, dbReadiness) {
   if (runtimeProvenance === undefined) {
     return;
   }
   const migration = dbReadiness?.migration ?? {};
-  const matches = migration.expectedLatestVersion === runtimeProvenance.expectedMigrationVersion
+  const matches = dbReadiness?.ready === true
+    && migration.expectedLatestVersion === runtimeProvenance.expectedMigrationVersion
     && migration.appliedLatestVersion === runtimeProvenance.appliedMigrationVersion
     && Array.isArray(migration.pendingVersions)
     && migration.pendingVersions.length === 0;

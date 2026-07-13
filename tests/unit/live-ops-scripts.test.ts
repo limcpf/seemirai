@@ -819,7 +819,7 @@ describe("production live ops script skeleton", () => {
 
   it("live:ops tick은 startup 이후 config 또는 migration drift를 live provider 경계 전에 차단한다", async () => {
     const supportModulePath = path.join(process.cwd(), "scripts/run-live-ops-support.mjs");
-    const { loadLiveOpsCliInputs } = await import(supportModulePath);
+    const { assertLiveOpsCliRuntimeProvenanceMigration, loadLiveOpsCliInputs } = await import(supportModulePath);
     const configPath = path.join(process.cwd(), "config/live-ops.example.json");
     const configText = await readFile(configPath, "utf8");
     const baseOptions = {
@@ -828,6 +828,15 @@ describe("production live ops script skeleton", () => {
       fixtureSmoke: true,
     };
 
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-live-ops-invalid-config-drift-"));
+    const invalidConfigPath = path.join(tempDir, "live-ops.invalid.json");
+    await writeFile(invalidConfigPath, "{invalid-json", "utf8");
+    await expect(loadLiveOpsCliInputs({
+      ...baseOptions,
+      configPath: invalidConfigPath,
+      runtimeProvenance: testDaemonRuntimeProvenance,
+    })).rejects.toMatchObject({ name: "LiveOpsRuntimeProvenanceMismatchError" });
+
     await expect(loadLiveOpsCliInputs({
       ...baseOptions,
       runtimeProvenance: {
@@ -835,6 +844,15 @@ describe("production live ops script skeleton", () => {
         configFingerprint: `sha256:${"0".repeat(64)}`,
       },
     })).rejects.toMatchObject({ name: "LiveOpsRuntimeProvenanceMismatchError" });
+
+    expect(() => assertLiveOpsCliRuntimeProvenanceMigration(testDaemonRuntimeProvenance, {
+      ready: false,
+      migration: {
+        expectedLatestVersion: 14,
+        appliedLatestVersion: 14,
+        pendingVersions: [],
+      },
+    })).toThrow(expect.objectContaining({ name: "LiveOpsRuntimeProvenanceMismatchError" }));
 
     await expect(loadLiveOpsCliInputs({
       ...baseOptions,
@@ -861,7 +879,7 @@ describe("production live ops script skeleton", () => {
         maxTicks: 1,
         tickIntervalMs: 0,
         json: true,
-        ...createDaemonProvenanceOptions("default-failure"),
+        ...createDaemonProvenanceOptions("default-failure", path.join(tempDir, "artifacts")),
       },
       {
         ...createDaemonProvenanceIo(),
@@ -916,7 +934,7 @@ describe("production live ops script skeleton", () => {
         maxTicks: 1,
         tickIntervalMs: 0,
         json: true,
-        ...createDaemonProvenanceOptions("completed-status"),
+        ...createDaemonProvenanceOptions("completed-status", path.join(tempDir, "artifacts")),
       },
       {
         ...createDaemonProvenanceIo(),
@@ -17279,13 +17297,16 @@ const testDaemonRuntimeProvenance = {
  * side effect:
  * - 없음.
  */
-function createDaemonProvenanceOptions(label: string): {
+function createDaemonProvenanceOptions(label: string, artifactDirectory?: string): {
   sourceCommitSha: string;
   startupArtifactFilePath: string;
 } {
   return {
     sourceCommitSha: testDaemonSourceCommitSha,
-    startupArtifactFilePath: path.join(os.tmpdir(), `seemirai-live-ops-${label}-startup.json`),
+    startupArtifactFilePath: path.join(
+      artifactDirectory ?? path.join(os.tmpdir(), "seemirai-live-ops-test-artifacts", label),
+      "startup.json",
+    ),
   };
 }
 

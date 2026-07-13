@@ -68,7 +68,7 @@
 daemon loop는 1회성 cleanup probe가 아니다. 명시한 `--duration-ms`나 `--max-ticks`가 없으면 계속 반복하며, HOLD/차단/수동 확인/일시
 실패별로 다른 sleep을 둔다. 기본 tick 간격은 1초이고, 차단은 5초, 수동 확인은 30초, provider/DB 일시 실패는 5초 후 재시도한다.
 
-production에서 `--status-file`을 지정하지 않으면 config 파일이 있는 디렉터리의 `artifacts/live-ops-daemon-status.json`을 출력 상태로
+production에서 `--status-file`을 지정하지 않으면 repository 밖 startup artifact 디렉터리의 `live-ops-daemon-status.json`을 출력 상태로
 자동 생성한다. 이 파일은 실행 전 준비물이 아니며, 감시자나 operator가 최신 counter를 읽기 위한 결과물이다. 성공 tick 뒤 provider/DB
 일시 실패가 발생해도 같은 status file은 `transient_failure`, 최신 counter, 최신 error로 갱신되어 직전 정상 tick 상태로 남지 않는다.
 `live:ops:tui --attach <status-json>`은 foreground summary뿐 아니라 daemon status의 top-level `latestSummary`도 읽는다.

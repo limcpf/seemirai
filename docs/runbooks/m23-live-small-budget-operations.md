@@ -105,19 +105,21 @@ startup 전에 검증하며 source worktree가 dirty이면 시작하지 않는�
 cd <issue-267-successor-worktree>
 ISSUE_267_HOME="$HOME/vaults/99_운영/seemirai-live-ops-production/issue-267"
 SOURCE_SHA="$(git rev-parse HEAD)"
+RUN_ID="$(node -e 'process.stdout.write(require("node:crypto").randomUUID())')"
 
 corepack pnpm live:ops:daemon -- \
   --config "$ISSUE_267_HOME/live-ops.config.json" \
   --env-file "$ISSUE_267_HOME/live-ops.env" \
   --source-commit-sha "$SOURCE_SHA" \
-  --startup-artifact-file "$ISSUE_267_HOME/artifacts/live-ops-daemon-startup-$SOURCE_SHA.json" \
+  --startup-artifact-file "$ISSUE_267_HOME/artifacts/live-ops-daemon-startup-$SOURCE_SHA-$RUN_ID.json" \
   --status-file "$ISSUE_267_HOME/artifacts/live-ops-daemon-status.json" \
   --tui
 ```
 
 `--source-commit-sha`와 `--startup-artifact-file`은 successor production 실행의 필수 계약이다. `SOURCE_SHA`는 Sub PR 02까지
 병합된 40자리 rollout SHA와 같아야 한다. startup/status provenance가 이 값과 다르거나 migration 14가 아니면 process를
-live-armed로 재개하지 않는다. 7일 입력은 이 daemon과 DB scheduler가 자동 생성한 completed KST daily report,
+live-armed로 재개하지 않는다. `RUN_ID`는 같은 SHA로 재시작할 때도 기존 create-only artifact와 충돌하지 않게 실행마다 새로 만든다.
+7일 입력은 이 daemon과 DB scheduler가 자동 생성한 completed KST daily report,
 `live_decision_ticks`, immutable day artifact만 사용한다. latest status 복사본, M22 pilot summary, 수동 candidate artifact는 #267
 actual evidence가 아니다.
 

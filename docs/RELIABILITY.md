@@ -178,7 +178,7 @@ Codex-native 운영은 Codex, Git, GitHub, shell command, 문서 상태를 연�
   정상 현금 보유를 구분할 수 없다.
 - `live:ops:daemon`은 success/HOLD tick은 기본 1초, BLOCK은 5초, manual review는 30초, transient failure는 5초 backoff를 적용한다.
   fixture smoke에서는 장시간 대기를 피하기 위해 sleep을 최대 100ms로 제한한다.
-- production daemon은 config 옆 `artifacts/live-ops-daemon-status.json` 또는 `--status-file` 대상에 최신 summary를 자동 기록한다.
+- production daemon은 repository 밖 startup artifact 디렉터리의 `live-ops-daemon-status.json` 또는 `--status-file` 대상에 최신 summary를 자동 기록한다.
   이 파일은 입력 증적이 아니라 재시작/감시자가 읽는 출력 상태이므로, 없다고 실행을 막지 않는다.
 - exit SELL 미체결은 같은 주문을 bounded cancel로 닫고 다음 tick에서 재호가한다. 취소 terminal 확인 실패, 부분 체결, broker 제출
   불확실성은 자동 재주문이 아니라 manual review counter와 신규 주문 차단으로 수렴한다.

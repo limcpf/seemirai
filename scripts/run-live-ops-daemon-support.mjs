@@ -822,10 +822,10 @@ function readDaemonErrorName(errorLike) {
  * 책임:
  * - 명시 `--status-file`은 절대 경로로 고정한다.
  * - non-fixture 운영 실행은 첫 tick이 config/env/DB 단계에서 실패해 summary를 만들지 못해도
- *   config 옆 `artifacts/live-ops-daemon-status.json`에 실패 payload를 남길 수 있게 한다.
+ *   repository 밖 startup artifact 디렉터리의 `live-ops-daemon-status.json`에 실패 payload를 남길 수 있게 한다.
  *
  * invariant:
- * - fixture smoke는 사용자가 명시하지 않는 한 repo/config 옆에 운영 status 파일을 만들지 않는다.
+ * - fixture smoke는 사용자가 명시하지 않는 한 운영 status 파일을 만들지 않는다.
  *
  * side effect:
  * - 없음. 경로 문자열만 계산한다.
@@ -848,7 +848,8 @@ function resolveDefaultDaemonStatusFile(options, summary) {
  * summary가 없는 실패 tick에서도 사용할 수 있는 기본 daemon status 경로를 만든다.
  *
  * 책임:
- * - live ops config 파일 위치만으로 운영자가 예상하는 status JSON 경로를 산출한다.
+ * - production은 검증된 startup artifact와 같은 repository 밖 디렉터리에 status JSON 경로를 산출한다.
+ * - startup artifact가 없는 legacy 직접 호출은 config 옆 artifacts 경로를 호환 fallback으로 유지한다.
  * - 아직 provider/DB/readiness가 열리기 전 실패도 관측 가능하게 만드는 경계다.
  *
  * side effect:
@@ -857,6 +858,10 @@ function resolveDefaultDaemonStatusFile(options, summary) {
 function resolveDefaultDaemonStatusFileFromConfigPath(options) {
   if (options.fixtureSmoke === true || options.configPath === undefined) {
     return undefined;
+  }
+  if (options.startupArtifactFilePath !== undefined) {
+    // production startup artifact 디렉터리는 repository 밖으로 검증되므로 기본 status도 같은 운영 경계에 둔다.
+    return path.join(path.dirname(path.resolve(options.startupArtifactFilePath)), "live-ops-daemon-status.json");
   }
   const configPath = path.resolve(options.configPath);
   return path.join(path.dirname(configPath), "artifacts", "live-ops-daemon-status.json");
