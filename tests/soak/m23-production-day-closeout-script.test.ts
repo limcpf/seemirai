@@ -1,5 +1,6 @@
 import { execFile } from "node:child_process";
-import { mkdtemp, readFile, stat, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { mkdtemp, readFile, readdir, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -153,6 +154,65 @@ describe("M23 production day closeout script", () => {
     )).rejects.toMatchObject({ code: 1 });
   });
 
+  it("provider 이전 precondition 실패도 create-only failure artifact로 남긴다", async () => {
+    const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-m23-production-precondition-failure-"));
+    const output = await runModuleExpression(`
+      process.env.SEEMIRAI_RUN_M23_PRODUCTION_DAY_CLOSEOUT = "1";
+      let message;
+      try {
+        await module.runProductionDayCloseoutCli([
+          "--day", "2026-07-15", "--first-day", "2026-07-15",
+          "--config", "/missing/config", "--env-file", "/missing/env",
+          "--status-file", "/missing/status", "--startup-artifact-file", "/missing/startup",
+          "--pid-file", "/missing/pid", "--scheduler-event-log-file", "/missing/events",
+          "--artifact-dir", ${JSON.stringify(artifactDir)},
+          "--expected-source-commit-sha", "${"a".repeat(40)}",
+        ], {
+          clock: () => new Date("2026-07-15T14:59:59.000Z"),
+          stdout: { write() {} },
+        });
+      } catch (error) { message = error.message; }
+      process.stdout.write(JSON.stringify({ message }));
+    `);
+    const files = await readdir(artifactDir);
+    expect(output.message).toContain("아직 종료되지 않았습니다");
+    expect(files).toHaveLength(1);
+    expect(files[0]).toMatch(/^production-day-2026-07-15-failure-.*\.json$/u);
+    expect(JSON.parse(await readFile(path.join(artifactDir, files[0]!), "utf8"))).toMatchObject({
+      status: "failed",
+      reportDate: "2026-07-15",
+      error: "Error",
+    });
+  });
+
+  it("현재 config/env 원문 fingerprint가 daemon provenance와 다르면 차단한다", async () => {
+    const configRawText = "{\n  \"mode\": \"live\"\n}\n";
+    const envRawText = "DATABASE_URL=postgres://example\n";
+    const configFingerprint = `sha256:${createHash("sha256").update(configRawText).digest("hex")}`;
+    const envFingerprint = `sha256:${createHash("sha256").update(envRawText).digest("hex")}`;
+    const output = await runModuleExpression(`
+      const provenance = { configFingerprint: ${JSON.stringify(configFingerprint)}, envFingerprint: ${JSON.stringify(envFingerprint)} };
+      const valid = module.assertRuntimeInputFingerprints({
+        provenance,
+        configRawText: ${JSON.stringify(configRawText)},
+        envRawText: ${JSON.stringify(envRawText)},
+      });
+      const errors = [];
+      for (const input of [
+        { provenance, configRawText: "{}", envRawText: ${JSON.stringify(envRawText)} },
+        { provenance, configRawText: ${JSON.stringify(configRawText)}, envRawText: "CHANGED=1\\n" },
+      ]) {
+        try { module.assertRuntimeInputFingerprints(input); } catch (error) { errors.push(error.message); }
+      }
+      process.stdout.write(JSON.stringify({ valid, errors }));
+    `);
+    expect(output.valid).toEqual({ configFingerprint, envFingerprint });
+    expect(output.errors).toEqual([
+      "현재 config fingerprint가 daemon startup provenance와 다릅니다.",
+      "현재 env fingerprint가 daemon startup provenance와 다릅니다.",
+    ]);
+  });
+
   it("하루 decision coverage는 최소 개수, 양 끝 경계, 최대 gap을 모두 요구한다", async () => {
     const output = await runModuleExpression(`
       const window = module.createKstDayWindow("2026-07-15");
@@ -292,6 +352,131 @@ describe("M23 production day closeout script", () => {
     expect(output.map((row) => row.id)).toEqual(["boundary", "late"]);
   });
 
+  it("제출 cleanup은 matching reservation을 요구하고 PnL 입력 변경은 evidence fingerprint를 바꾼다", async () => {
+    const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-m23-live-artifacts-"));
+    const missingReservationDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-m23-live-artifacts-missing-"));
+    const attemptSuffix = "a".repeat(26);
+    const reservationFile = `reservation-ops-${attemptSuffix}.json`;
+    const cleanupFile = `cleanup-ops-${attemptSuffix}.json`;
+    const reservation = {
+      attemptId: `ops-${attemptSuffix}`,
+      strategyId: "live_ops_autonomous_24x7_core",
+      market: "KRW-BTC",
+      reservedAt: "2026-07-14T16:00:00.000Z",
+    };
+    const cleanup = {
+      attemptId: reservation.attemptId,
+      strategyId: reservation.strategyId,
+      market: reservation.market,
+      kind: "live_ops_autonomous_exit_closeout",
+      side: "SELL",
+      status: "FILLED",
+      filledAt: "2026-07-14T16:00:02.000Z",
+      terminalCheckedAt: "2026-07-14T16:00:02.000Z",
+      filledQuantity: "0.0001",
+      filledPrice: "90000000",
+      filledNotionalKrw: "9000",
+      entryFeeKrw: "4",
+      exitFeeKrw: "4.5",
+      realizedPnlKrw: "-100",
+    };
+    await writeFile(path.join(artifactDir, reservationFile), `${JSON.stringify(reservation)}\n`, "utf8");
+    await writeFile(path.join(artifactDir, cleanupFile), `${JSON.stringify(cleanup)}\n`, "utf8");
+    await writeFile(path.join(missingReservationDir, cleanupFile), `${JSON.stringify(cleanup)}\n`, "utf8");
+
+    const output = await runModuleExpression(`
+      const fs = await import("node:fs/promises");
+      const window = module.createKstDayWindow("2026-07-15");
+      const first = await module.readLiveArtifactEvidence(${JSON.stringify(artifactDir)}, window);
+      const changed = ${JSON.stringify(cleanup)};
+      changed.realizedPnlKrw = "-200";
+      await fs.writeFile(${JSON.stringify(path.join(artifactDir, cleanupFile))}, JSON.stringify(changed));
+      const second = await module.readLiveArtifactEvidence(${JSON.stringify(artifactDir)}, window);
+      let missingReservation;
+      try { await module.readLiveArtifactEvidence(${JSON.stringify(missingReservationDir)}, window); }
+      catch (error) { missingReservation = error.message; }
+      process.stdout.write(JSON.stringify({ first, second, missingReservation }));
+    `);
+    expect(output.first.realizedLossKrw).toBe("100");
+    expect(output.second.realizedLossKrw).toBe("200");
+    expect(output.second.evidenceId).not.toBe(output.first.evidenceId);
+    expect(output.missingReservation).toContain("일치하는 대상 strategy reservation이 없습니다");
+  });
+
+  it("주간 손실은 같은 provenance와 first-day를 가진 연속 선행 일자만 집계한다", async () => {
+    const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-m23-rollout-losses-"));
+    const output = await runModuleExpression(`
+      const fs = await import("node:fs/promises");
+      const firstDay = "2026-07-15";
+      const previous = module.createFixtureProductionDaySummary({
+        day: firstDay,
+        generatedAt: new Date("2026-07-15T15:00:05.000Z"),
+      });
+      previous.metrics.dailyRealizedLossKrw = "120";
+      await fs.writeFile(${JSON.stringify(path.join(artifactDir, "production-day-2026-07-15.json"))}, JSON.stringify(previous));
+      await fs.writeFile(${JSON.stringify(path.join(artifactDir, "production-day-2020-01-01.json"))}, JSON.stringify({
+        status: "passed", metrics: { dailyRealizedLossKrw: "999999" },
+      }));
+      const losses = await module.readPreviousProductionDayLosses({
+        artifactDir: ${JSON.stringify(artifactDir)}, firstDay, day: "2026-07-16",
+        runtimeProvenance: ${JSON.stringify(runtimeProvenance)},
+      });
+      previous.runtimeProvenance = { ...previous.runtimeProvenance, sourceCommitSha: "d".repeat(40) };
+      await fs.writeFile(${JSON.stringify(path.join(artifactDir, "production-day-2026-07-15.json"))}, JSON.stringify(previous));
+      let mismatch;
+      try {
+        await module.readPreviousProductionDayLosses({
+          artifactDir: ${JSON.stringify(artifactDir)}, firstDay, day: "2026-07-16",
+          runtimeProvenance: ${JSON.stringify(runtimeProvenance)},
+        });
+      } catch (error) { mismatch = error.message; }
+      process.stdout.write(JSON.stringify({ losses, mismatch, days: module.createRolloutPreviousDays(firstDay, "2026-07-21") }));
+    `);
+    expect(output.losses).toEqual(["120"]);
+    expect(output.mismatch).toContain("현재 rollout window/provenance와 다릅니다");
+    expect(output.days).toEqual(["2026-07-15", "2026-07-16", "2026-07-17", "2026-07-18", "2026-07-19", "2026-07-20"]);
+  });
+
+  it("daily report live ops snapshot에 후보 없음과 HOLD 판단 이유를 포함한다", async () => {
+    const output = await runModuleExpression(`
+      const captured = module.createDailyReportLiveOpsStatus({
+        applicationModule: { createLiveOpsStatusSummary(input) { return input; } },
+        status: {
+          latestTickStartedAt: "2026-07-15T15:00:30.000Z",
+          latestSummary: {
+            status: "ready", message: "운영 준비 완료", dbReadiness: { ready: true },
+            marketData: { ready: true, latestHeartbeatAt: "2026-07-15T15:00:30.000Z", message: "시세 정상" },
+            analysisDecision: {
+              ready: true, decisionCategory: "HOLD", orderIntentCount: 0,
+              latestDecisionAt: "2026-07-15T15:00:30.000Z", message: "진입 조건 미충족으로 HOLD했습니다.",
+            },
+            liveExecution: { ready: true, attemptedOrderCount: 0, brokerGuard: { ready: true, keyScopeEvidenceId: "scope-1" } },
+            reconcilePnlStatus: { ready: true, pnlStatusLabel: "대기", budgetUsedKrw: "0" },
+            telegramAlert: { ready: true, statusLabel: "알림 정상" },
+          },
+        },
+        config: {
+          mode: "LIVE_AUTONOMOUS_SMALL_BUDGET", live_trading_enabled: true,
+          universe: { markets: ["KRW-BTC"] },
+          budget: {
+            max_order_krw: "10000", daily_autonomous_notional_limit_krw: "30000",
+            max_open_position_notional_krw: "30000",
+          },
+        },
+        databaseEvidence: { killSwitchState: "NORMAL" },
+        privateRead: { openOrderCount: 0, observedAt: "2026-07-15T15:01:00.000Z", openPositionNotionalKrw: "10000" },
+        generatedAt: new Date("2026-07-15T15:01:00.000Z"),
+      });
+      process.stdout.write(JSON.stringify(captured));
+    `);
+    expect(output.latestCandidate).toMatchObject({
+      statusLabel: "주문 후보 없음",
+      message: "진입 조건 미충족으로 HOLD했습니다.",
+    });
+    expect(output.latestDecision.statusLabel).toBe("보유 유지 판단");
+    expect(output.openExposureKrw).toBe("10000");
+  });
+
   it("기존 passed artifact는 현재 rollout provenance와 daemon boundary가 모두 같을 때만 재사용한다", async () => {
     const output = await runModuleExpression(`
       const day = "2026-07-15";
@@ -300,11 +485,12 @@ describe("M23 production day closeout script", () => {
       const daemonBoundaries = { startedAt: window.startedAt, finishedAt: window.finishedAt };
       const summary = {
         status: "passed", reportDate: day, input: "live_ops_daemon_day",
+        rolloutWindowFirstDay: day,
         mode: "LIVE_AUTONOMOUS_SMALL_BUDGET", dryRun: false, liveOrderCapable: true,
         startedAt: window.startedAt, finishedAt: window.finishedAt, runtimeProvenance,
         checks: { heartbeat: { evidence: { daemonCounterBoundaries: daemonBoundaries } } },
       };
-      const input = { summary, day, window, runtimeProvenance, daemonBoundaries };
+      const input = { summary, day, firstDay: day, window, runtimeProvenance, daemonBoundaries };
       process.stdout.write(JSON.stringify({
         valid: module.isReusableProductionDayArtifact(input),
         wrongSource: module.isReusableProductionDayArtifact({

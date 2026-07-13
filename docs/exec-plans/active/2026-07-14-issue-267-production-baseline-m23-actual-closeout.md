@@ -105,11 +105,13 @@ window에서 제외한다. 첫 유효 full KST day는 2026-07-15, 일곱째는 2
   - [x] daemon source/config/env/migration provenance, PID/heartbeat, KST 경계 counter delta, DB migration/kill switch/full-day decision,
     private exposure를 검증한다.
   - [x] actual broker 제출은 daemon day delta, 대상 strategy guarded actionable decision, cleanup artifact 수를 대조하고 DB `orders` row에 의존하지 않는다.
-  - [x] daily report는 KST day 종료 뒤 audit만 인정하고 기존 `report.daily:<reportDate>` key를 재사용하며, delivery 실패는 별도 idempotent recovery job에서 복구한다.
+  - [x] 제출 cleanup마다 같은 scope의 durable reservation을 요구하고 cleanup fingerprint에 수량/가격/fee/realized PnL을 포함한다.
+  - [x] daily report는 KST day 종료 뒤 audit만 인정하고 M23 후보/판단 상태를 포함하며, 기존 `report.daily:<reportDate>` key를 재사용하고 delivery 실패는 별도 idempotent recovery job에서 복구한다.
   - [x] existing day artifact는 현재 rollout provenance와 daemon boundary가 같을 때만 재사용하고 segment 종료는 KST window로 고정한다.
+  - [x] provider 이전 실패도 immutable failure artifact로 남기고 주간 손실은 first-day부터 같은 provenance의 연속 선행 일자만 합산한다.
   - [x] scheduler는 2026-07-15~2026-07-21을 순차 실행하며 같은 day만 bounded retry하고 누락된 day를 건너뛰지 않는다.
   - [x] PID/status/event/day artifact는 운영 계정 전용 mode `600`으로 기록한다.
-  - [ ] 관련 script test, typecheck, 전체 verify와 review drain이 통과한다.
+  - [x] 관련 script test, typecheck, 전체 verify와 review drain이 통과한다.
 
 ### Sub PR 05. Actual closeout
 
@@ -183,6 +185,8 @@ SEEMIRAI_RESTORE_DATABASE_URL=<disposable-restore-db> \
 - 2026-07-14: validator 입력을 7일 뒤 소급 생성하지 않도록 Sub PR 04를 production day evidence automation으로 두고, actual
   manifest/문서 closeout을 Sub PR 05로 분리한다. scheduler는 거래 daemon lifecycle을 변경하지 않고 기존 daily report
   idempotency 경계를 호출한다.
+- 2026-07-14: Sub PR 04 review drain에서 closeout 입력 fingerprint, matching reservation, precondition failure artifact, M23 daily
+  report 상태, cleanup PnL fingerprint, rollout-scoped weekly loss를 fail-closed 계약으로 보강하고 전체 verify를 통과했다.
 
 ## 남은 이슈
 

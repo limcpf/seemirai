@@ -419,6 +419,7 @@ function createCloseoutArgs(options, day) {
     "--startup-artifact-file", options.startupArtifactFilePath,
     "--pid-file", options.daemonPidFilePath,
     "--scheduler-event-log-file", options.schedulerEventLogFilePath,
+    "--first-day", options.firstDay,
     "--artifact-dir", options.artifactDir,
     "--expected-source-commit-sha", options.expectedSourceCommitSha,
     "--json",

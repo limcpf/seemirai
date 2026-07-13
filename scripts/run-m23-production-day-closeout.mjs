@@ -119,6 +119,7 @@ export function parseProductionDayCloseoutArgs(argv) {
     startupArtifactFilePath: undefined,
     pidFilePath: undefined,
     schedulerEventLogFilePath: undefined,
+    firstDay: undefined,
     artifactDir: undefined,
     expectedSourceCommitSha: undefined,
     fixtureSmoke: false,
@@ -155,6 +156,10 @@ export function parseProductionDayCloseoutArgs(argv) {
         break;
       case "--scheduler-event-log-file":
         options.schedulerEventLogFilePath = readArgValue(argv, index, arg);
+        index += 1;
+        break;
+      case "--first-day":
+        options.firstDay = readArgValue(argv, index, arg);
         index += 1;
         break;
       case "--artifact-dir":
@@ -209,6 +214,25 @@ export function createKstDayWindow(day) {
   };
 }
 
+/** rollout 시작일부터 현재 기준일까지 최대 7개의 연속된 KST 날짜만 허용한다. 외부 side effect는 없다. */
+function assertRolloutWindowDay({ firstWindow, window }) {
+  const dayOffset = (window.startMs - firstWindow.startMs) / oneDayMs;
+  if (!Number.isSafeInteger(dayOffset) || dayOffset < 0 || dayOffset >= 7) {
+    throw new Error("--day는 --first-day부터 시작하는 7일 rollout window 안에 있어야 합니다.");
+  }
+}
+
+/** 현재 기준일보다 앞선 rollout 연속 날짜를 순서대로 반환한다. 외부 side effect는 없다. */
+export function createRolloutPreviousDays(firstDay, day) {
+  const firstWindow = createKstDayWindow(firstDay);
+  const window = createKstDayWindow(day);
+  assertRolloutWindowDay({ firstWindow, window });
+  const dayOffset = (window.startMs - firstWindow.startMs) / oneDayMs;
+  return Array.from({ length: dayOffset }, (_, index) => new Date(firstWindow.startMs + kstOffsetMs + index * oneDayMs)
+    .toISOString()
+    .slice(0, 10));
+}
+
 /**
  * validator와 같은 production day segment shape를 fixture로 만든다.
  *
@@ -229,6 +253,7 @@ export function createFixtureProductionDaySummary({ day, generatedAt }) {
   };
   return createProductionDaySummary({
     day,
+    firstDay: day,
     window,
     generatedAt: generated,
     runtimeProvenance: provenance,
@@ -296,77 +321,78 @@ export function createFixtureProductionDaySummary({ day, generatedAt }) {
 }
 
 async function runActualProductionDayCloseout(options) {
-  const generatedAt = options.clock();
-  const window = createKstDayWindow(options.day);
-  if (generatedAt.getTime() < window.endMs) {
-    throw new Error(`${options.day} KST day가 아직 종료되지 않았습니다.`);
-  }
   await assertArtifactDirOutsideRepository(options.artifactDir);
-
-  const [configRaw, envRaw, status, startup, pidText, schedulerEventLogRaw] = await Promise.all([
-    readJson(options.configPath),
-    readFile(options.envFilePath, "utf8"),
-    readJson(options.statusFilePath),
-    readJson(options.startupArtifactFilePath),
-    readFile(options.pidFilePath, "utf8"),
-    readFile(options.schedulerEventLogFilePath, "utf8"),
-  ]);
-  const runtimeModule = await import("../dist/runtime/index.js");
-  const infrastructureModule = await import("../dist/infrastructure/index.js");
-  const applicationModule = await import("../dist/application/index.js");
-  const envParsed = runtimeModule.parseLiveOpsEnvFileContent(envRaw);
-  if (envParsed.errors.length > 0) {
-    throw new Error(`env file 형식 오류가 있습니다: ${envParsed.errors.join("; ")}`);
-  }
-  const config = runtimeModule.loadLiveOpsConfig(configRaw);
-  const secrets = runtimeModule.loadLiveOpsSecretsFromEnv(envParsed.values);
-  const supervisorPid = Number(pidText.trim());
-  assertProcessRunning(supervisorPid);
-  const provenance = assertRuntimeProvenance({
-    expectedSourceCommitSha: options.expectedSourceCommitSha,
-    status,
-    startup,
-    startupArtifactFilePath: options.startupArtifactFilePath,
-  });
-  const configSafety = assertConfigSafety(config);
-  assertDaemonWindow({ status, window, generatedAt });
-  const daemonDay = deriveDaemonDayEvidence({
-    eventLogRaw: schedulerEventLogRaw,
-    window,
-    daemonStartedAt: status.startedAt,
-    sourceCommitSha: provenance.sourceCommitSha,
-  });
-  const existing = await readExistingPassedArtifact({
-    artifactDir: options.artifactDir,
-    day: options.day,
-    window,
-    runtimeProvenance: provenance,
-    daemonBoundaries: daemonDay.boundaries,
-  });
-  if (existing !== undefined) {
-    return existing;
-  }
-
-  const pool = new PgPool({
-    connectionString: secrets.databaseUrl,
-    application_name: "seemirai-m23-production-day-closeout",
-    max: 2,
-    connectionTimeoutMillis: 5_000,
-  });
-  const database = infrastructureModule.createDatabase(pool);
+  let database;
   try {
-    const [databaseRead, privateRead, reportBuilt, liveArtifacts] = await Promise.all([
+    const generatedAt = options.clock();
+    const window = createKstDayWindow(options.day);
+    const firstWindow = createKstDayWindow(options.firstDay);
+    assertRolloutWindowDay({ firstWindow, window });
+    if (generatedAt.getTime() < window.endMs) {
+      throw new Error(`${options.day} KST day가 아직 종료되지 않았습니다.`);
+    }
+
+    const [configRawText, envRaw, status, startup, pidText, schedulerEventLogRaw] = await Promise.all([
+      readFile(options.configPath, "utf8"),
+      readFile(options.envFilePath, "utf8"),
+      readJson(options.statusFilePath),
+      readJson(options.startupArtifactFilePath),
+      readFile(options.pidFilePath, "utf8"),
+      readFile(options.schedulerEventLogFilePath, "utf8"),
+    ]);
+    const runtimeModule = await import("../dist/runtime/index.js");
+    const infrastructureModule = await import("../dist/infrastructure/index.js");
+    const applicationModule = await import("../dist/application/index.js");
+    const configRaw = JSON.parse(configRawText);
+    const envParsed = runtimeModule.parseLiveOpsEnvFileContent(envRaw);
+    if (envParsed.errors.length > 0) {
+      throw new Error(`env file 형식 오류가 있습니다: ${envParsed.errors.join("; ")}`);
+    }
+    const supervisorPid = Number(pidText.trim());
+    assertProcessRunning(supervisorPid);
+    const provenance = assertRuntimeProvenance({
+      expectedSourceCommitSha: options.expectedSourceCommitSha,
+      status,
+      startup,
+      startupArtifactFilePath: options.startupArtifactFilePath,
+    });
+    assertRuntimeInputFingerprints({ provenance, configRawText, envRawText: envRaw });
+    const config = runtimeModule.loadLiveOpsConfig(configRaw);
+    const configSafety = assertConfigSafety(config);
+    assertDaemonWindow({ status, window, generatedAt });
+    const daemonDay = deriveDaemonDayEvidence({
+      eventLogRaw: schedulerEventLogRaw,
+      window,
+      daemonStartedAt: status.startedAt,
+      sourceCommitSha: provenance.sourceCommitSha,
+    });
+    const existing = await readExistingPassedArtifact({
+      artifactDir: options.artifactDir,
+      day: options.day,
+      firstDay: options.firstDay,
+      window,
+      runtimeProvenance: provenance,
+      daemonBoundaries: daemonDay.boundaries,
+    });
+    if (existing !== undefined) {
+      return existing;
+    }
+
+    const secrets = runtimeModule.loadLiveOpsSecretsFromEnv(envParsed.values);
+    const pool = new PgPool({
+      connectionString: secrets.databaseUrl,
+      application_name: "seemirai-m23-production-day-closeout",
+      max: 2,
+      connectionTimeoutMillis: 5_000,
+    });
+    database = infrastructureModule.createDatabase(pool);
+    const [databaseRead, privateRead, liveArtifacts] = await Promise.all([
       readDatabaseEvidence(pool, window),
       readPrivateExchangeEvidence({
         infrastructureModule,
         secrets,
         referencePrice: status.latestSummary?.marketData?.referencePrice,
         observedAt: generatedAt,
-      }),
-      applicationModule.buildDailyReportNotification({
-        reportDate: options.day,
-        dataProvider: new infrastructureModule.PostgresDailyReportRepository(database),
-        generatedAt,
       }),
       readLiveArtifactEvidence(options.artifactDir, window),
     ]);
@@ -389,6 +415,21 @@ async function runActualProductionDayCloseout(options) {
       privateRead,
     });
 
+    const liveOpsStatus = createDailyReportLiveOpsStatus({
+      applicationModule,
+      status,
+      config,
+      databaseEvidence,
+      privateRead,
+      generatedAt,
+    });
+    const reportBuilt = await applicationModule.buildDailyReportNotification({
+      reportDate: options.day,
+      dataProvider: new infrastructureModule.PostgresDailyReportRepository(database),
+      generatedAt,
+      liveOps: liveOpsStatus,
+    });
+
     const notifier = infrastructureModule.createTelegramNotifier({
       botToken: secrets.telegramBotToken,
       chatId: secrets.telegramChatId,
@@ -398,6 +439,11 @@ async function runActualProductionDayCloseout(options) {
       notifier,
       workerId: `issue_267_day_closeout_${options.day}`,
       actor: "codex-issue-267-day-closeout",
+      liveOpsStatusProvider: {
+        async getLiveOpsStatus() {
+          return liveOpsStatus;
+        },
+      },
     });
     const reportRun = await dailyReportRuntime.runManualDailyReport({
       reportDate: options.day,
@@ -424,7 +470,12 @@ async function runActualProductionDayCloseout(options) {
     }
 
     const dailyLoss = resolveDailyRealizedLoss(reportBuilt.report, liveArtifacts);
-    const previousLosses = await readPreviousProductionDayLosses(options.artifactDir, options.day);
+    const previousLosses = await readPreviousProductionDayLosses({
+      artifactDir: options.artifactDir,
+      firstDay: options.firstDay,
+      day: options.day,
+      runtimeProvenance: provenance,
+    });
     const weeklyRealizedLossKrw = previousLosses
       .reduce((total, value) => total.plus(value), new Decimal(dailyLoss.value))
       .toFixed();
@@ -435,6 +486,7 @@ async function runActualProductionDayCloseout(options) {
     });
     const summary = createProductionDaySummary({
       day: options.day,
+      firstDay: options.firstDay,
       window,
       generatedAt,
       runtimeProvenance: provenance,
@@ -466,8 +518,135 @@ async function runActualProductionDayCloseout(options) {
     await writeFailureArtifact({ artifactDir: options.artifactDir, day: options.day, error });
     throw error;
   } finally {
-    await database.destroy().catch(() => undefined);
+    await database?.destroy().catch(() => undefined);
   }
+}
+
+/**
+ * daemon의 secret-free latest summary와 closeout provider 결과를 daily report용 M23 상태로 낮춘다.
+ *
+ * 후보/판단/주문 부재 이유와 현재 private open exposure를 같은 report 본문에 넣는다. 입력을 조합할 뿐 DB, Upbit, Telegram
+ * side effect는 추가로 만들지 않는다.
+ */
+export function createDailyReportLiveOpsStatus({
+  applicationModule,
+  status,
+  config,
+  databaseEvidence,
+  privateRead,
+  generatedAt,
+}) {
+  const latest = status.latestSummary ?? {};
+  const marketData = latest.marketData ?? {};
+  const decision = latest.analysisDecision ?? {};
+  const execution = latest.liveExecution ?? {};
+  const reconcilePnl = latest.reconcilePnlStatus ?? {};
+  const telegram = latest.telegramAlert ?? {};
+  const observedAt = generatedAt.toISOString();
+  const heartbeatAt = toIsoOrNull(marketData.latestHeartbeatAt ?? status.latestTickStartedAt);
+  const decisionAt = toIsoOrNull(decision.latestDecisionAt ?? decision.observedAt);
+  const orderIntentCount = Number.isSafeInteger(Number(decision.orderIntentCount)) ? Number(decision.orderIntentCount) : 0;
+  const attemptedOrderCount = Number.isSafeInteger(Number(execution.attemptedOrderCount)) ? Number(execution.attemptedOrderCount) : 0;
+  const decisionLabel = formatDecisionLabel(decision.decisionCategory);
+  const brokerGuardReady = execution.brokerGuard?.ready === true;
+
+  return applicationModule.createLiveOpsStatusSummary({
+    observedAt,
+    runtimeMode: config.mode,
+    paperNoKey: false,
+    liveTradingEnabled: config.live_trading_enabled === true,
+    liveAutonomous: {
+      enabled: config.live_trading_enabled === true,
+      ready: latest.status === "ready" && latest.dbReadiness?.ready === true && brokerGuardReady,
+      allowedMarkets: config.universe.markets,
+      maxOrderKrw: config.budget.max_order_krw,
+      dailyAutonomousNotionalLimitKrw: config.budget.daily_autonomous_notional_limit_krw,
+      maxOpenPositionNotionalKrw: config.budget.max_open_position_notional_krw,
+      keyScopeEvidenceConfigured: typeof execution.brokerGuard?.keyScopeEvidenceId === "string",
+      telegramInboundReady: telegram.ready === true,
+      reconcileFresh: true,
+      pnlStatusReady: reconcilePnl.ready === true,
+      decisionLedgerReady: decision.ready === true,
+      exitEngineReady: execution.ready === true,
+      statusLabel: latest.status === "ready" ? "운영 준비 완료" : "운영 상태 확인 필요",
+      message: latest.message ?? "daemon 운영 상태를 확인하지 못했습니다.",
+      action: latest.status === "ready" ? null : "daemon latest status와 readiness를 확인하세요.",
+      trace: {
+        reason: latest.status === "ready" ? "daemon_ready" : "daemon_not_ready",
+        source: "m23_production_day_closeout",
+      },
+    },
+    marketData: {
+      connectionStatus: marketData.ready === true ? "connected" : "unavailable",
+      lagMs: heartbeatAt === null ? null : Math.max(generatedAt.getTime() - Date.parse(heartbeatAt), 0),
+      updatedAt: heartbeatAt,
+    },
+    reconcile: {
+      result: "SUCCESS",
+      mismatchCount: 0,
+      openOrderCount: privateRead.openOrderCount,
+      lastReconcileAt: privateRead.observedAt,
+      actionRequired: null,
+    },
+    pnl: {
+      statusLabel: reconcilePnl.pnlStatusLabel ?? "운영일 손익 집계",
+      latestCapturedAt: toIsoOrNull(reconcilePnl.latestPnlAt),
+      latestEquityKrw: null,
+      latestRealizedPnlKrw: isDecimalString(reconcilePnl.realizedPnlKrw) ? reconcilePnl.realizedPnlKrw : null,
+      latestUnrealizedPnlKrw: isDecimalString(reconcilePnl.unrealizedPnlKrw) ? reconcilePnl.unrealizedPnlKrw : null,
+    },
+    tradingState: {
+      killSwitchState: databaseEvidence.killSwitchState,
+      newOrdersBlocked: databaseEvidence.killSwitchState !== "NORMAL",
+      requiresManualReview: false,
+      blockedReason: databaseEvidence.killSwitchState === "NORMAL" ? null : "kill_switch_not_normal",
+    },
+    alerts: {
+      statusLabel: telegram.statusLabel ?? "알림 상태 확인",
+      lastSentAt: null,
+      lastSkippedAt: null,
+      action: telegram.ready === true ? null : "Telegram 알림 상태를 확인하세요.",
+    },
+    latestHeartbeat: {
+      statusLabel: heartbeatAt === null ? "heartbeat 확인 필요" : "heartbeat 정상",
+      message: marketData.message ?? "daemon market data heartbeat 상태입니다.",
+      observedAt: heartbeatAt,
+      action: heartbeatAt === null ? "market data heartbeat를 확인하세요." : null,
+      trace: { source: "live_ops_daemon_market_data" },
+    },
+    latestCandidate: {
+      statusLabel: orderIntentCount > 0 ? `주문 후보 ${orderIntentCount}건` : "주문 후보 없음",
+      message: decision.message ?? "현재 운영 판단에서 주문 후보가 생성되지 않았습니다.",
+      observedAt: decisionAt,
+      action: null,
+      trace: { source: "live_ops_daemon_decision", orderIntentCount },
+    },
+    latestDecision: {
+      statusLabel: decisionLabel,
+      message: decision.message ?? "최근 매매 판단을 확인하지 못했습니다.",
+      observedAt: decisionAt,
+      action: null,
+      trace: { source: "live_ops_daemon_decision", category: decision.decisionCategory ?? null },
+    },
+    latestOrderAttempt: {
+      statusLabel: attemptedOrderCount > 0 ? `주문 시도 ${attemptedOrderCount}건` : "주문 시도 없음",
+      message: execution.message ?? "현재 tick에서 broker 제출은 발생하지 않았습니다.",
+      observedAt: toIsoOrNull(execution.latestExecutionAt),
+      action: execution.action ?? null,
+      trace: { source: "live_ops_daemon_execution", attemptStatus: execution.attemptStatus ?? null },
+    },
+    latestFillOrCancel: {
+      statusLabel: privateRead.openOrderCount === 0 ? "미체결 주문 없음" : "미체결 주문 확인 필요",
+      message: privateRead.openOrderCount === 0
+        ? "closeout private 조회에서 미체결 주문이 없음을 확인했습니다."
+        : "closeout private 조회에서 미체결 주문이 남아 있습니다.",
+      observedAt: privateRead.observedAt,
+      action: privateRead.openOrderCount === 0 ? null : "미체결 주문을 정리한 뒤 closeout을 다시 실행하세요.",
+      trace: { source: "upbit_private_closeout", openOrderCount: privateRead.openOrderCount },
+    },
+    dailyNotionalUsedKrw: isDecimalString(reconcilePnl.budgetUsedKrw) ? reconcilePnl.budgetUsedKrw : null,
+    openExposureKrw: privateRead.openPositionNotionalKrw,
+  });
 }
 
 /**
@@ -497,6 +676,7 @@ export function createProductionDaySummary(input) {
     issue: 267,
     status: "passed",
     input: "live_ops_daemon_day",
+    rolloutWindowFirstDay: input.firstDay,
     mode: expectedMode,
     dryRun: false,
     liveOrderCapable: true,
@@ -739,7 +919,7 @@ export function assertLiveSubmissionEvidence({ counters, databaseEvidence, liveA
   };
 }
 
-async function readLiveArtifactEvidence(artifactDir, window) {
+export async function readLiveArtifactEvidence(artifactDir, window) {
   const files = await readdir(artifactDir);
   const cleanupFiles = files.filter((file) => /^cleanup-ops-[a-f0-9]{26}\.json$/u.test(file)).toSorted();
   const reservationFiles = files.filter((file) => /^reservation-ops-[a-f0-9]{26}\.json$/u.test(file)).toSorted();
@@ -754,9 +934,17 @@ async function readLiveArtifactEvidence(artifactDir, window) {
       throw new Error(`live submission artifact를 읽을 수 없습니다: ${file}`);
     }
   }
-  const reservationByAttemptId = new Map(reservationRecords
-    .filter(({ value }) => value.strategyId === expectedStrategyId && value.market === expectedMarket)
-    .map(({ value }) => [value.attemptId, value]));
+  const scopedReservations = reservationRecords
+    .filter(({ value }) => value.strategyId === expectedStrategyId && value.market === expectedMarket);
+  const reservationAttemptIds = scopedReservations.map(({ value }) => value.attemptId);
+  if (
+    reservationAttemptIds.some((attemptId) => typeof attemptId !== "string")
+    || new Set(reservationAttemptIds).size !== reservationAttemptIds.length
+  ) {
+    throw new Error("대상 strategy reservation artifact의 attempt ID가 없거나 중복됐습니다.");
+  }
+  const reservationByAttemptId = new Map(scopedReservations
+    .map((record) => [record.value.attemptId, record]));
   // generic cancel cleanup은 strategy 필드 도입 전 형식이므로 전용 production 디렉터리의 KRW-BTC 기록도 개수 대조에 포함한다.
   const scopedCleanups = cleanupRecords.filter(({ value }) => (
     value.market === expectedMarket
@@ -768,9 +956,16 @@ async function readLiveArtifactEvidence(artifactDir, window) {
   }
   const dayRecords = scopedCleanups.filter(({ value }) => {
     const reservation = reservationByAttemptId.get(value.attemptId);
-    const submittedAt = Date.parse(value.submittedAt ?? reservation?.reservedAt ?? value.filledAt ?? value.terminalCheckedAt);
+    const submittedAt = Date.parse(value.submittedAt ?? reservation?.value.reservedAt ?? value.filledAt ?? value.terminalCheckedAt);
     return Number.isFinite(submittedAt) && submittedAt >= window.startMs && submittedAt < window.endMs;
   });
+  for (const { file, value } of dayRecords) {
+    const reservation = reservationByAttemptId.get(value.attemptId);
+    if (reservation === undefined || !Number.isFinite(Date.parse(reservation.value.reservedAt))) {
+      // broker 제출 전 durable budget reservation이 없으면 cleanup만으로 승인된 제출이라고 단정하지 않는다.
+      throw new Error(`제출 cleanup과 일치하는 대상 strategy reservation이 없습니다: ${file}`);
+    }
+  }
   const fills = dayRecords.filter(({ value }) => value.status === "FILLED");
   const exits = fills.filter(({ value }) => value.kind === "live_ops_autonomous_exit_closeout");
   let realizedLoss = new Decimal(0);
@@ -780,14 +975,27 @@ async function readLiveArtifactEvidence(artifactDir, window) {
     }
     realizedLoss = realizedLoss.plus(Decimal.max(new Decimal(value.realizedPnlKrw).negated(), 0));
   }
-  const evidenceFingerprint = sha256Json(dayRecords.map(({ file, value }) => ({
-    file,
-    kind: value.kind ?? null,
-    status: value.status ?? null,
-    submittedAt: value.submittedAt ?? reservationByAttemptId.get(value.attemptId)?.reservedAt ?? null,
-    filledAt: value.filledAt ?? null,
-    terminalCheckedAt: value.terminalCheckedAt ?? null,
-  })));
+  const evidenceFingerprint = sha256Json(dayRecords.map(({ file, value }) => {
+    const reservation = reservationByAttemptId.get(value.attemptId);
+    return {
+      file,
+      reservationFile: reservation.file,
+      attemptId: value.attemptId,
+      kind: value.kind ?? null,
+      side: value.side ?? null,
+      status: value.status ?? null,
+      reservedAt: reservation.value.reservedAt,
+      submittedAt: value.submittedAt ?? reservation.value.reservedAt,
+      filledAt: value.filledAt ?? null,
+      terminalCheckedAt: value.terminalCheckedAt ?? null,
+      filledQuantity: value.filledQuantity ?? null,
+      filledPrice: value.filledPrice ?? null,
+      filledNotionalKrw: value.filledNotionalKrw ?? null,
+      entryFeeKrw: value.entryFeeKrw ?? null,
+      exitFeeKrw: value.exitFeeKrw ?? null,
+      realizedPnlKrw: value.realizedPnlKrw ?? null,
+    };
+  }));
   return {
     cleanupSubmissionCount: dayRecords.length,
     fillCount: fills.length,
@@ -1002,6 +1210,21 @@ function assertRuntimeProvenance({ expectedSourceCommitSha, status, startup, sta
   return statusProvenance;
 }
 
+/** 현재 config/env 원문이 daemon startup에 고정된 fingerprint와 같은지 검증한다. 외부 side effect는 없다. */
+export function assertRuntimeInputFingerprints({ provenance, configRawText, envRawText }) {
+  const configFingerprint = sha256Text(configRawText);
+  const envFingerprint = sha256Text(envRawText);
+  if (provenance?.configFingerprint !== configFingerprint) {
+    // 다른 config로 provider를 열면 daemon provenance와 closeout evidence가 갈라지므로 side effect 전에 차단한다.
+    throw new Error("현재 config fingerprint가 daemon startup provenance와 다릅니다.");
+  }
+  if (provenance?.envFingerprint !== envFingerprint) {
+    // credential 파일 교체 뒤 잘못된 계정으로 조회·전송하는 것을 막기 위해 원문 fingerprint를 고정한다.
+    throw new Error("현재 env fingerprint가 daemon startup provenance와 다릅니다.");
+  }
+  return { configFingerprint, envFingerprint };
+}
+
 function assertConfigSafety(config) {
   const evidence = {
     enabled: config.live_trading_enabled === true,
@@ -1088,18 +1311,38 @@ export function assertCloseoutExposureCeiling({
   };
 }
 
-async function readPreviousProductionDayLosses(artifactDir, day) {
+export async function readPreviousProductionDayLosses({ artifactDir, firstDay, day, runtimeProvenance }) {
   await mkdir(artifactDir, { recursive: true, mode: 0o700 });
-  const files = await readdir(artifactDir);
-  const previous = files
-    .filter((file) => /^production-day-\d{4}-\d{2}-\d{2}\.json$/u.test(file))
-    .filter((file) => file.slice("production-day-".length, -".json".length) < day)
-    .toSorted();
+  const expectedDays = createRolloutPreviousDays(firstDay, day);
   const losses = [];
-  for (const file of previous) {
-    const summary = await readJson(path.join(artifactDir, file));
+  for (const expectedDay of expectedDays) {
+    const file = `production-day-${expectedDay}.json`;
+    let summary;
+    try {
+      summary = await readJson(path.join(artifactDir, file));
+    } catch {
+      throw new Error(`현재 rollout의 이전 day artifact를 읽을 수 없습니다: ${file}`);
+    }
+    const expectedWindow = createKstDayWindow(expectedDay);
+    const boundaries = summary.checks?.heartbeat?.evidence?.daemonCounterBoundaries;
+    const reusable = summary.status === "passed"
+      && summary.reportDate === expectedDay
+      && summary.rolloutWindowFirstDay === firstDay
+      && summary.input === "live_ops_daemon_day"
+      && summary.mode === expectedMode
+      && summary.dryRun === false
+      && summary.liveOrderCapable === true
+      && summary.startedAt === expectedWindow.startedAt
+      && summary.finishedAt === expectedWindow.finishedAt
+      && boundaries?.startedAt === expectedWindow.startedAt
+      && boundaries?.finishedAt === expectedWindow.finishedAt
+      && JSON.stringify(summary.runtimeProvenance) === JSON.stringify(runtimeProvenance);
+    if (!reusable) {
+      // 주간 손실에는 같은 rollout의 연속된 선행 일자만 포함해 과거 실행 artifact가 섞이지 않게 한다.
+      throw new Error(`이전 day artifact가 현재 rollout window/provenance와 다릅니다: ${file}`);
+    }
     const value = summary.metrics?.dailyRealizedLossKrw;
-    if (!isDecimalString(value)) {
+    if (!isDecimalString(value) || new Decimal(value).isNegative()) {
       throw new Error(`이전 day artifact의 daily realized loss가 없습니다: ${file}`);
     }
     losses.push(value);
@@ -1121,6 +1364,7 @@ async function writeProductionDayArtifact({ artifactDir, day, summary, allowRepo
 async function readExistingPassedArtifact({
   artifactDir,
   day,
+  firstDay,
   window,
   runtimeProvenance,
   daemonBoundaries,
@@ -1135,6 +1379,7 @@ async function readExistingPassedArtifact({
   const reusable = isReusableProductionDayArtifact({
     summary,
     day,
+    firstDay,
     window,
     runtimeProvenance,
     daemonBoundaries,
@@ -1147,9 +1392,10 @@ async function readExistingPassedArtifact({
 }
 
 /** 현재 rollout과 KST counter boundary가 같은 passed day artifact인지 판정한다. 외부 side effect는 없다. */
-export function isReusableProductionDayArtifact({ summary, day, window, runtimeProvenance, daemonBoundaries }) {
+export function isReusableProductionDayArtifact({ summary, day, firstDay, window, runtimeProvenance, daemonBoundaries }) {
   return summary.status === "passed"
     && summary.reportDate === day
+    && summary.rolloutWindowFirstDay === firstDay
     && summary.input === "live_ops_daemon_day"
     && summary.mode === expectedMode
     && summary.dryRun === false
@@ -1163,7 +1409,8 @@ export function isReusableProductionDayArtifact({ summary, day, window, runtimeP
 async function writeFailureArtifact({ artifactDir, day, error }) {
   await mkdir(artifactDir, { recursive: true, mode: 0o700 });
   const stamp = new Date().toISOString().replace(/[-:.]/gu, "");
-  const filePath = path.join(artifactDir, `production-day-${day}-failure-${stamp}.json`);
+  const safeDay = dayPattern.test(String(day)) ? day : "invalid-day";
+  const filePath = path.join(artifactDir, `production-day-${safeDay}-failure-${stamp}-${randomUUID()}.json`);
   const payload = {
     schemaVersion: 1,
     issue: 267,
@@ -1194,6 +1441,7 @@ function assertActualOptions(options) {
     ["--startup-artifact-file", options.startupArtifactFilePath],
     ["--pid-file", options.pidFilePath],
     ["--scheduler-event-log-file", options.schedulerEventLogFilePath],
+    ["--first-day", options.firstDay],
     ["--artifact-dir", options.artifactDir],
     ["--expected-source-commit-sha", options.expectedSourceCommitSha],
   ];
@@ -1244,12 +1492,31 @@ function expectedConfigSafetyEvidence() {
   };
 }
 
+function formatDecisionLabel(value) {
+  switch (String(value ?? "").toUpperCase()) {
+    case "BUY":
+      return "매수 판단";
+    case "SELL":
+      return "매도 판단";
+    case "HOLD":
+      return "보유 유지 판단";
+    case "BLOCK":
+      return "위험 조건으로 주문 차단";
+    default:
+      return "최근 판단 확인 필요";
+  }
+}
+
 function okCheck(evidence) {
   return { status: "ok", evidence };
 }
 
 function sha256Json(value) {
   return createHash("sha256").update(JSON.stringify(value)).digest("hex");
+}
+
+function sha256Text(value) {
+  return `sha256:${createHash("sha256").update(String(value), "utf8").digest("hex")}`;
 }
 
 function toIsoOrNull(value) {
@@ -1313,6 +1580,7 @@ function formatProductionDayCloseoutHelp() {
   --startup-artifact-file <path>     현재 daemon create-only startup artifact
   --pid-file <path>                  daemon supervisor PID file
   --scheduler-event-log-file <path>  KST 경계 daemon counter append-only event log
+  --first-day <YYYY-MM-DD>           현재 7일 rollout의 첫 completed KST 기준일
   --artifact-dir <path>              저장소 밖 production day artifact 디렉터리
   --expected-source-commit-sha <sha>  rollout daemon source SHA
   --fixture-smoke                     외부 provider 없이 contract fixture 실행
