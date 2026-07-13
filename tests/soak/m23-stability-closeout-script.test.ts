@@ -11,6 +11,7 @@ const oneDayMs = 86_400_000;
 const issue267RuntimeProvenance = {
   sourceCommitSha: "a".repeat(40),
   configFingerprint: `sha256:${"1".repeat(64)}`,
+  envFingerprint: `sha256:${"2".repeat(64)}`,
   expectedMigrationVersion: 14,
   appliedMigrationVersion: 14,
 };
@@ -192,6 +193,27 @@ describe("M23 stability closeout script", () => {
             runtimeProvenance: {
               ...issue267RuntimeProvenance,
               configFingerprint: `sha256:${"2".repeat(64)}`,
+            },
+          }
+        : summary,
+    });
+    const summary = await runScriptExpectingFailure(
+      ["--json", "--artifact-dir", artifactDir, "--manifest", manifestPath],
+      createReadyEnv(),
+    );
+
+    expect(getCheck(summary, "runtimeProvenance")).toMatchObject({ status: "fail" });
+  });
+
+  it("fails issue 267 when any daily summary env fingerprint differs", async () => {
+    const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-m23-issue-267-segment-env-provenance-"));
+    const manifestPath = await writeIssue267CloseoutFixture(artifactDir, {
+      segmentMutator: (summary, index) => index === 2
+        ? {
+            ...summary,
+            runtimeProvenance: {
+              ...issue267RuntimeProvenance,
+              envFingerprint: `sha256:${"3".repeat(64)}`,
             },
           }
         : summary,

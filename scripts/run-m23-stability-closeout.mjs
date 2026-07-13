@@ -367,6 +367,7 @@ function readRuntimeProvenance(value) {
   }
   const sourceCommitSha = readString(value.sourceCommitSha);
   const configFingerprint = readString(value.configFingerprint);
+  const envFingerprint = readString(value.envFingerprint);
   const expectedMigrationVersion = readFiniteNumber(value.expectedMigrationVersion);
   const appliedMigrationVersion = readFiniteNumber(value.appliedMigrationVersion);
   if (
@@ -374,6 +375,8 @@ function readRuntimeProvenance(value) {
     || !gitCommitShaPattern.test(sourceCommitSha)
     || configFingerprint === undefined
     || !configFingerprintPattern.test(configFingerprint)
+    || envFingerprint === undefined
+    || !configFingerprintPattern.test(envFingerprint)
     || expectedMigrationVersion !== productionExpectedMigrationVersion
     || appliedMigrationVersion !== productionExpectedMigrationVersion
   ) {
@@ -382,6 +385,7 @@ function readRuntimeProvenance(value) {
   return {
     sourceCommitSha,
     configFingerprint,
+    envFingerprint,
     expectedMigrationVersion,
     appliedMigrationVersion,
   };
@@ -390,6 +394,7 @@ function readRuntimeProvenance(value) {
 function hasSameRuntimeProvenance(actual, expected) {
   return actual.sourceCommitSha === expected.sourceCommitSha
     && actual.configFingerprint === expected.configFingerprint
+    && actual.envFingerprint === expected.envFingerprint
     && actual.expectedMigrationVersion === expected.expectedMigrationVersion
     && actual.appliedMigrationVersion === expected.appliedMigrationVersion;
 }

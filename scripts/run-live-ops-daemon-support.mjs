@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { mkdir, realpath, writeFile } from "node:fs/promises";
+import { lstat, mkdir, realpath, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
 import {
@@ -115,7 +115,7 @@ export async function runLiveOpsDaemon(options, io = {}) {
   let provenanceFailure = null;
 
   if (options.fixtureSmoke !== true) {
-    assertDistinctLiveOpsDaemonArtifactPaths(options.startupArtifactFilePath, statusFilePath);
+    await assertDistinctLiveOpsDaemonArtifactPaths(options.startupArtifactFilePath, statusFilePath);
     const source = await inspectSourceTree(options.sourceCommitSha);
     await assertLiveOpsDaemonArtifactTargetOutsideRepository(
       options.startupArtifactFilePath,
@@ -328,13 +328,17 @@ export async function prepareLiveOpsDaemonRuntimeProvenance(options, dependencie
     // expected/applied version이 같고 pending이 0이어야 startup artifact가 실제 DB schema를 재현할 수 있다.
     throw new Error("DB migration provenance가 준비되지 않았습니다. expected/applied version과 pending migration을 확인하세요.");
   }
-  if (!configFingerprintPattern.test(String(startup.configFingerprint ?? ""))) {
-    throw new Error("운영 config fingerprint를 생성하지 못했습니다. config 파일을 확인하세요.");
+  if (
+    !configFingerprintPattern.test(String(startup.configFingerprint ?? ""))
+    || !configFingerprintPattern.test(String(startup.envFingerprint ?? ""))
+  ) {
+    throw new Error("운영 config/env fingerprint를 생성하지 못했습니다. 입력 파일을 확인하세요.");
   }
 
   return {
     sourceCommitSha: options.sourceCommitSha,
     configFingerprint: startup.configFingerprint,
+    envFingerprint: startup.envFingerprint,
     expectedMigrationVersion,
     appliedMigrationVersion,
     repositoryRoot: source.repositoryRoot,
@@ -466,7 +470,8 @@ async function assertLiveOpsDaemonArtifactTargetOutsideRepository(filePath, repo
   return realRepositoryRoot;
 }
 
-function assertDistinctLiveOpsDaemonArtifactPaths(startupArtifactFilePath, statusFilePath) {
+async function assertDistinctLiveOpsDaemonArtifactPaths(startupArtifactFilePath, statusFilePath) {
+  await assertLiveOpsDaemonStatusFileNotSymlink(statusFilePath);
   if (
     typeof startupArtifactFilePath === "string"
     && typeof statusFilePath === "string"
@@ -474,6 +479,23 @@ function assertDistinctLiveOpsDaemonArtifactPaths(startupArtifactFilePath, statu
   ) {
     // mutable status가 create-only startup evidence를 덮어쓰면 rollout provenance를 복구할 수 없다.
     throw new Error("daemon startup artifact와 status file은 같은 경로를 사용할 수 없습니다. 서로 다른 운영 경로를 지정하세요.");
+  }
+}
+
+async function assertLiveOpsDaemonStatusFileNotSymlink(statusFilePath) {
+  if (typeof statusFilePath !== "string") {
+    return;
+  }
+  try {
+    const fileStats = await lstat(path.resolve(statusFilePath));
+    if (fileStats.isSymbolicLink()) {
+      // mutable status symlink는 create-only startup artifact 또는 다른 evidence를 덮어쓸 수 있어 허용하지 않는다.
+      throw new Error("daemon status file은 symlink를 사용할 수 없습니다. 일반 파일 경로를 지정하세요.");
+    }
+  } catch (error) {
+    if (error?.code !== "ENOENT") {
+      throw error;
+    }
   }
 }
 
@@ -940,6 +962,7 @@ async function writeDaemonStatusIfConfigured(statusFilePath, payload) {
   const dir = path.dirname(statusFilePath);
   await mkdir(dir, { recursive: true });
   await realpath(dir);
+  await assertLiveOpsDaemonStatusFileNotSymlink(statusFilePath);
   await writeFile(statusFilePath, `${JSON.stringify(payload, null, 2)}\n`, "utf8");
 }
 

@@ -1,6 +1,6 @@
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { link, mkdtemp, readFile, rm, stat, utimes, writeFile } from "node:fs/promises";
+import { link, mkdtemp, readFile, rm, stat, symlink, utimes, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
@@ -739,6 +739,7 @@ describe("production live ops script skeleton", () => {
     const { prepareLiveOpsDaemonRuntimeProvenance } = await import(daemonModulePath);
     const loadStartupReadiness = vi.fn(async () => ({
       configFingerprint: testDaemonRuntimeProvenance.configFingerprint,
+      envFingerprint: testDaemonRuntimeProvenance.envFingerprint,
       dbReadiness: {
         ready: true,
         migration: {
@@ -911,11 +912,44 @@ describe("production live ops script skeleton", () => {
     await expect(stat(collidingPath)).rejects.toMatchObject({ code: "ENOENT" });
   });
 
-  it("live:ops tick은 startup 이후 config 또는 migration drift를 live provider 경계 전에 차단한다", async () => {
+  it("live:ops:daemon은 startup artifact를 가리키는 status symlink를 side effect 전에 차단한다", async () => {
+    const daemonModulePath = path.join(process.cwd(), "scripts/run-live-ops-daemon-support.mjs");
+    const { runLiveOpsDaemon } = await import(daemonModulePath);
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-live-ops-status-symlink-"));
+    const startupArtifactFilePath = path.join(tempDir, "startup.json");
+    const statusFilePath = path.join(tempDir, "status.json");
+    await symlink(startupArtifactFilePath, statusFilePath);
+    let prepareCalled = false;
+
+    await expect(runLiveOpsDaemon({
+      configPath: path.join(tempDir, "live-ops.production.json"),
+      statusFilePath,
+      sourceCommitSha: testDaemonSourceCommitSha,
+      startupArtifactFilePath,
+      maxTicks: 1,
+    }, {
+      ...createDaemonProvenanceIo(),
+      async prepareRuntimeProvenance() {
+        prepareCalled = true;
+        return {
+          ...testDaemonRuntimeProvenance,
+          repositoryRoot: process.cwd(),
+        };
+      },
+    })).rejects.toThrow("symlink");
+
+    expect(prepareCalled).toBe(false);
+    await expect(stat(startupArtifactFilePath)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("live:ops tick은 startup 이후 config, env 또는 migration drift를 live provider 경계 전에 차단한다", async () => {
     const supportModulePath = path.join(process.cwd(), "scripts/run-live-ops-support.mjs");
     const { assertLiveOpsCliRuntimeProvenanceMigration, loadLiveOpsCliInputs } = await import(supportModulePath);
     const configPath = path.join(process.cwd(), "config/live-ops.example.json");
     const configText = await readFile(configPath, "utf8");
+    const envText = await readFile(path.join(process.cwd(), "tests/fixtures/live-ops/fake.env"), "utf8");
+    const actualConfigFingerprint = `sha256:${createHash("sha256").update(configText, "utf8").digest("hex")}`;
+    const actualEnvFingerprint = `sha256:${createHash("sha256").update(envText, "utf8").digest("hex")}`;
     const baseOptions = {
       configPath,
       envFilePath: path.join(process.cwd(), "tests/fixtures/live-ops/fake.env"),
@@ -936,6 +970,15 @@ describe("production live ops script skeleton", () => {
       runtimeProvenance: {
         ...testDaemonRuntimeProvenance,
         configFingerprint: `sha256:${"0".repeat(64)}`,
+      },
+    })).rejects.toMatchObject({ name: "LiveOpsRuntimeProvenanceMismatchError" });
+
+    await expect(loadLiveOpsCliInputs({
+      ...baseOptions,
+      runtimeProvenance: {
+        ...testDaemonRuntimeProvenance,
+        configFingerprint: actualConfigFingerprint,
+        envFingerprint: `sha256:${"0".repeat(64)}`,
       },
     })).rejects.toMatchObject({ name: "LiveOpsRuntimeProvenanceMismatchError" });
 
@@ -964,7 +1007,8 @@ describe("production live ops script skeleton", () => {
       ...baseOptions,
       runtimeProvenance: {
         ...testDaemonRuntimeProvenance,
-        configFingerprint: `sha256:${createHash("sha256").update(configText, "utf8").digest("hex")}`,
+        configFingerprint: actualConfigFingerprint,
+        envFingerprint: actualEnvFingerprint,
         expectedMigrationVersion: 999,
         appliedMigrationVersion: 999,
       },
@@ -17446,6 +17490,7 @@ const testDaemonSourceCommitSha = "a".repeat(40);
 const testDaemonRuntimeProvenance = {
   sourceCommitSha: testDaemonSourceCommitSha,
   configFingerprint: `sha256:${"1".repeat(64)}`,
+  envFingerprint: `sha256:${"2".repeat(64)}`,
   expectedMigrationVersion: 14,
   appliedMigrationVersion: 14,
 };

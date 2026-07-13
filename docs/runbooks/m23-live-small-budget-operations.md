@@ -75,7 +75,7 @@ startup 이후 완료된 KST 날짜부터 actual 7일 window를 계산한다. Is
 open order 또는 exposure가 하나라도 있으면 daemon을 멈추지 않고 operator stop/manual review로 전환한다. 0이 확인되면 신규 entry를
 차단하고 같은 조회를 다시 통과한 뒤에만 `SIGTERM`을 보낸다. 정상 종료 후 terminal status와 daemon write 정지를 확인한 시점부터
 중지 후 migration gate를 진행한다. 이 gate에서는 migration 직전 backup과 disposable restore preflight를 만들고 migration 14를
-적용한 다음 새 daemon을 시작한다. startup/status의 source SHA, config fingerprint, expected/applied migration version이 rollout
+적용한 다음 새 daemon을 시작한다. startup/status의 source SHA, config/env fingerprint, expected/applied migration version이 rollout
 입력과 다르면 신규 entry를 열지 않는다. 새 daemon에서 `live_decision_ticks` write와 `live_ops_db_window` source를 확인하고 실제
 restart/recovery 및 disposable restore DB smoke를 통과한 뒤에만 7일 evidence window를 시작한다.
 
@@ -84,7 +84,7 @@ evidence의 KST day와 같아야 하며, 해당 KST window가 종료된 뒤 생�
 artifact를 소급 생성하지 않는다.
 
 Issue #267 actual manifest는 기존 Issue #188 blocker 호환 규칙을 사용하지 않는다. backup/restore `blocked`는 실패이며, startup과
-각 segment의 source SHA, config fingerprint, expected/applied migration 14가 일치해야 한다. `scripts/run-m23-stability-closeout.mjs`는
+각 segment의 source SHA, config/env fingerprint, expected/applied migration 14가 일치해야 한다. `scripts/run-m23-stability-closeout.mjs`는
 Issue #267 manifest에서 이 계약, 각 segment 실행 구간이 daemon startup보다 앞서지 않는지, 완료 KST report/decision day를 직접
 검증한다.
 
@@ -97,7 +97,7 @@ post-migration DB를 별도 backup으로 보존한 뒤 schema/version 일치를 
 ## Issue #267 production daemon 실행
 
 Issue #267 successor는 M22 pilot wrapper, 수동 candidate JSONL, `SEEMIRAI_RUN_M22_*`, `SEEMIRAI_RUN_UPBIT_*_SMOKE`,
-`SEEMIRAI_PILOT_PROFILE`을 사용하지 않는다. production 명령은 명시 source SHA, config fingerprint, expected/applied migration 14를
+`SEEMIRAI_PILOT_PROFILE`을 사용하지 않는다. production 명령은 명시 source SHA, config/env fingerprint, expected/applied migration 14를
 startup 전에 검증하며 source worktree가 dirty이면 시작하지 않는다.
 
 배포 SHA와 저장소 밖 config/env/status 경로를 고정한 뒤 production package entry로 실행한다.
@@ -394,6 +394,7 @@ segment summary에서 byte 값 기준으로 같아야 한다.
   "runtimeProvenance": {
     "sourceCommitSha": "<40자리-lowercase-git-sha>",
     "configFingerprint": "sha256:<64자리-lowercase-hex>",
+    "envFingerprint": "sha256:<64자리-lowercase-hex>",
     "expectedMigrationVersion": 14,
     "appliedMigrationVersion": 14
   },
@@ -408,6 +409,7 @@ segment summary에서 byte 값 기준으로 같아야 한다.
       "runtimeProvenance": {
         "sourceCommitSha": "<40자리-lowercase-git-sha>",
         "configFingerprint": "sha256:<64자리-lowercase-hex>",
+        "envFingerprint": "sha256:<64자리-lowercase-hex>",
         "expectedMigrationVersion": 14,
         "appliedMigrationVersion": 14
       }

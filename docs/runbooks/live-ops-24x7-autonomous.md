@@ -51,7 +51,7 @@
 
 1. 명시 source SHA가 실제 clean worktree HEAD와 같은지 확인한다.
 2. config/env 검증, legacy env 차단, key scope guard와 DB migration/readiness를 통과한다.
-3. source SHA, config fingerprint, expected/applied migration을 저장소 밖 startup artifact에 create-only로 기록한다.
+3. source SHA, config/env fingerprint, expected/applied migration을 저장소 밖 startup artifact에 create-only로 기록한다.
 4. Upbit public market data를 읽고 stale이면 주문을 만들지 않는다.
 5. Upbit private read로 계정 전체 open order, balance, position source를 확인한다.
 6. 기존 open order나 mismatch가 있으면 신규 entry/exit를 중지하고 manual review로 닫는다.
@@ -69,8 +69,9 @@ daemon loop는 1회성 cleanup probe가 아니다. 명시한 `--duration-ms`나 
 실패별로 다른 sleep을 둔다. 기본 tick 간격은 1초이고, 차단은 5초, 수동 확인은 30초, provider/DB 일시 실패는 5초 후 재시도한다.
 
 production에서 `--status-file`을 지정하지 않으면 repository 밖 startup artifact 디렉터리의 `live-ops-daemon-status.json`을 출력 상태로
-자동 생성한다. startup artifact와 같은 파일 경로 또는 repository 안의 startup/status 경로는 허용하지 않으며, parent 디렉터리와
-startup/status를 쓰기 전에 차단한다. 이 파일은 실행 전 준비물이 아니며, 감시자나 operator가 최신 counter를 읽기 위한 결과물이다. 성공 tick 뒤 provider/DB
+자동 생성한다. startup artifact와 같은 파일 경로, status symlink, repository 안의 startup/status 경로는 허용하지 않으며, parent
+디렉터리와 startup/status를 쓰기 전에 차단한다. 이 파일은 실행 전 준비물이 아니며, 감시자나 operator가 최신 counter를 읽기 위한
+결과물이다. 성공 tick 뒤 provider/DB
 일시 실패가 발생해도 같은 status file은 `transient_failure`, 최신 counter, 최신 error로 갱신되어 직전 정상 tick 상태로 남지 않는다.
 `live:ops:tui --attach <status-json>`은 foreground summary뿐 아니라 daemon status의 top-level `latestSummary`도 읽는다.
 
@@ -182,7 +183,7 @@ startup artifact 경로를 요구한다. status/report와 startup artifact 내�
 
 - `live:ops:daemon` fixture smoke가 외부 provider/order side effect 없이 loop contract를 검증한다.
 - fake provider integration이 entry 성공, exit 성공, HOLD, BLOCK, cancel/requote 실패, manual review를 모두 검증한다.
-- production config/env 실행은 hand-written evidence 없이 source/config/migration provenance를 고정하고, broker submit 전 모든 guard를 자동 평가한다.
+- production config/env 실행은 hand-written evidence 없이 source/config/env/migration provenance를 고정하고, broker submit 전 모든 guard를 자동 평가한다.
 - runtime은 저장소 밖 artifact directory에 entry reservation, entry fill/no-fill closeout, exit closeout, autonomous position state를 자동 유지하며 운영자가 별도 evidence 파일을 만들지 않는다.
 - attach TUI는 daemon top-level `transient_failure` 또는 `provenance_failed`가 있으면 stale `latestSummary` 준비 상태보다 실패 상태를
   우선 표시한다.

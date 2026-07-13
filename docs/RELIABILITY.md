@@ -160,7 +160,7 @@ Codex-native 운영은 Codex, Git, GitHub, shell command, 문서 상태를 연�
 - `live:ops:daemon`은 cleanup canary가 아니라 entry, hold, exit, manual review를 반복 평가하는 장시간 loop다.
 - production daemon은 명시 source SHA가 실제 clean worktree HEAD와 같은지 확인한 뒤 config/env와 DB migration readiness를 평가한다.
   어느 단계든 실패하면 broker/provider loop를 시작하지 않고 `provenance_failed` status로 닫는다.
-- readiness를 통과한 startup provenance는 저장소 밖 새 artifact에 create-only로 기록한다. 각 tick에서 config fingerprint 또는
+- readiness를 통과한 startup provenance는 저장소 밖 새 artifact에 create-only로 기록한다. 각 tick에서 config/env fingerprint 또는
   expected/applied migration version이 startup 값과 달라지면 transient retry로 낮추지 않고 live side effect 전에 loop를 종료한다.
 - daemon 실행은 저장소 밖 config/env와 자동 검증되는 source/startup provenance를 요구한다. fixture manifest, hand-written evidence,
   수동 candidate JSONL은 실행 전제 조건이 아니며, decision evidence와 artifact 내용은 runtime이 자동 생성해야 한다.
@@ -534,7 +534,7 @@ Codex-native 운영은 Codex, Git, GitHub, shell command, 문서 상태를 연�
 - 7일 stability closeout manifest는 `scripts/run-m23-stability-closeout.mjs`로 검증한다. Issue #188 historical 경로는 서로 다른 7개
   day segment, 각 24시간 runner 정상 종료, daily report, live-armed guard/readiness, decision evidence, recovery drill, source scan,
   DB backup/restore 결과 또는 blocker 기록 형식을 유지한다. 이 호환 결과를 Issue #267 actual `PASS`로 승격하지 않는다.
-- Issue #267 guarded 경로는 production `live:ops:daemon` startup/segment의 source SHA, config fingerprint, expected/applied migration
+- Issue #267 guarded 경로는 production `live:ops:daemon` startup/segment의 source SHA, config/env fingerprint, expected/applied migration
   14와 완료 KST daily report/day decision evidence 일치를 확인하고, DB backup/restore smoke가 disposable restore DB에서 실제로
   통과한 `passed` 입력만 허용한다. 외부 DB 조건이 없으면 `blocked`로 남기되 actual closeout은 실패다.
 - 누적 realized loss와 미체결 노출 합계가 50,000 KRW에 닿기 전에 operator stop 또는 kill switch/manual review로 수렴한다. 이

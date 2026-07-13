@@ -215,6 +215,7 @@ export async function loadLiveOpsCliStartupReadiness(options) {
   return {
     configPath: loaded.configPath,
     configFingerprint: loaded.configFingerprint,
+    envFingerprint: loaded.envFingerprint,
     dbReadiness,
   };
 }
@@ -376,10 +377,13 @@ async function loadLiveOpsCliValidatedFiles(options) {
   const configPath = path.resolve(options.configPath);
   const envFilePath = path.resolve(options.envFilePath);
   const configRawText = await readFile(configPath, "utf8");
+  const envRawText = await readFile(envFilePath, "utf8");
   const configFingerprint = `sha256:${createHash("sha256").update(configRawText, "utf8").digest("hex")}`;
+  const envFingerprint = `sha256:${createHash("sha256").update(envRawText, "utf8").digest("hex")}`;
   assertLiveOpsCliRuntimeProvenanceConfig(options.runtimeProvenance, configFingerprint);
+  assertLiveOpsCliRuntimeProvenanceEnv(options.runtimeProvenance, envFingerprint);
   const config = JSON.parse(configRawText);
-  const env = parseEnvFile(await readFile(envFilePath, "utf8"));
+  const env = parseEnvFile(envRawText);
   validateLiveOpsConfig(config);
   validateLiveOpsEnv(env, process.env);
   return {
@@ -388,6 +392,7 @@ async function loadLiveOpsCliValidatedFiles(options) {
     config,
     env,
     configFingerprint,
+    envFingerprint,
   };
 }
 
@@ -399,6 +404,18 @@ function assertLiveOpsCliRuntimeProvenanceConfig(runtimeProvenance, actualConfig
     // 시작 뒤 config가 바뀌면 startup artifact와 실제 주문 정책이 갈라지므로 provider 호출 전에 중단한다.
     throw new LiveOpsRuntimeProvenanceMismatchError(
       "운영 config fingerprint가 daemon startup provenance와 다릅니다. 변경된 config로 신규 주문을 시작하지 않습니다.",
+    );
+  }
+}
+
+function assertLiveOpsCliRuntimeProvenanceEnv(runtimeProvenance, actualEnvFingerprint) {
+  if (runtimeProvenance === undefined) {
+    return;
+  }
+  if (runtimeProvenance.envFingerprint !== actualEnvFingerprint) {
+    // DB/account/key 입력이 startup 이후 바뀌면 같은 config라도 다른 외부 경계가 열리므로 provider 호출 전에 중단한다.
+    throw new LiveOpsRuntimeProvenanceMismatchError(
+      "운영 env fingerprint가 daemon startup provenance와 다릅니다. 변경된 DB 또는 계정 입력으로 신규 주문을 시작하지 않습니다.",
     );
   }
 }

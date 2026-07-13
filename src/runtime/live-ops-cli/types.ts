@@ -21,7 +21,7 @@ export type LiveOpsCliOptions = Record<string, unknown> & {
 /**
  * production daemon이 startup부터 각 tick까지 동일하게 유지해야 하는 실행 provenance다.
  *
- * source commit은 실제 daemon worktree HEAD를, config fingerprint는 검증을 통과한 config 원문을,
+ * source commit은 실제 daemon worktree HEAD를, config/env fingerprint는 검증을 통과한 입력 파일 원문을,
  * migration version은 provider/broker 경계를 열기 전 확인한 DB schema를 식별한다. 호출자는 이 값을
  * startup artifact와 latest status에 동일하게 보존해야 하며, tick 중 하나라도 달라지면 외부 provider나
  * broker side effect 전에 실행을 중단해야 한다. 값 자체에는 secret이나 DB 연결 문자열을 포함하지 않는다.
@@ -29,6 +29,7 @@ export type LiveOpsCliOptions = Record<string, unknown> & {
 export interface LiveOpsRuntimeProvenance {
   sourceCommitSha: string;
   configFingerprint: string;
+  envFingerprint: string;
   expectedMigrationVersion: number;
   appliedMigrationVersion: number;
 }

@@ -721,7 +721,7 @@ M23 live-armed 운영 기준:
   기록을 검증한다. 이 validator는 기본 CI/PR 검증에서 live API, Telegram provider, DB restore를 직접 호출하지 않는다.
 - `scripts/run-m23-stability-closeout.mjs`는 7일 closeout manifest와 저장소 밖 summary artifact만 읽는다. Issue #188 historical 경로는
   7개 이상 24시간 segment, daily report, live-armed guard/readiness, decision evidence, recovery drill, source scan, DB backup/restore
-  결과 또는 blocker 기록을 집계한다. Issue #267 guarded 경로는 production `live:ops:daemon` source/config/migration provenance,
+  결과 또는 blocker 기록을 집계한다. Issue #267 guarded 경로는 production `live:ops:daemon` source/config/env/migration provenance,
   완료 KST report/decision day 일치, `backupRestore.status=passed`를 추가로 요구한다. 기본 CI/PR 검증에서는 fixture smoke만 실행하며
   live API, Telegram provider, DB restore를 직접 호출하지 않는다.
 - M23 이후 universe, strategy, budget 확대는 M24 범위다. M23 config나 runbook은 BTC 외 market 기본 활성화, 자동 budget 확대,
@@ -1770,7 +1770,7 @@ POST_ONLY` 후보를 만들 수 있다. 이 strategy는 order intent 생성까�
 - production 실행 명령은 `corepack pnpm live:ops:daemon -- --config <운영-json-path> --env-file <운영-env-path>
   --source-commit-sha <40자리-clean-HEAD> --startup-artifact-file <저장소-밖-새-json-path> --tui`다.
 - source SHA가 실제 HEAD와 다르거나 worktree가 dirty이면 config/provider/broker 경계를 열지 않는다. startup artifact 경로는 저장소 밖이어야
-  하고 기존 파일을 덮어쓰지 않으며, config/env validation과 DB readiness가 통과한 뒤 source SHA, config `sha256` fingerprint,
+  하고 기존 파일을 덮어쓰지 않으며, config/env validation과 DB readiness가 통과한 뒤 source SHA, config/env `sha256` fingerprint,
   expected/applied migration version만 기록한다.
 - fixture manifest, hand-written evidence, 수동 JSONL 후보 파일은 production 시작 조건이 아니다. source SHA와 startup artifact는 실행
   code provenance를 자동 증명하기 위한 필수 입력/출력 경계다.
@@ -1779,10 +1779,10 @@ POST_ONLY` 후보를 만들 수 있다. 이 strategy는 order intent 생성까�
   경로가 아니라 repository 밖 startup artifact 디렉터리의 `live-ops-daemon-status.json`에 자동 기록하며, fixture smoke는 기본
   status file을 만들지 않는다. startup artifact와 status file은 서로 다른 경로여야 하며, 충돌하면 어떤 파일도 쓰기 전에 시작을
   차단한다.
-- startup artifact, status top-level, `latestSummary`는 같은 runtime provenance를 보존한다. 각 tick은 provider/broker 호출 전에 config
-  fingerprint와 DB migration을 다시 확인하며 startup 값에서 달라지면 `provenance_failed`를 기록하고 loop를 종료한다.
+- startup artifact, status top-level, `latestSummary`는 같은 runtime provenance를 보존한다. 각 tick은 provider/broker 호출 전에
+  config/env fingerprint와 DB migration을 다시 확인하며 startup 값에서 달라지면 `provenance_failed`를 기록하고 loop를 종료한다.
 - startup artifact와 status file 경로는 parent 디렉터리를 만들기 전에 repository 밖인지 검사하며, symlink를 통과한 실제 경로도
-  repository 안이면 시작하지 않는다.
+  repository 안이면 시작하지 않는다. status file 자체가 symlink이면 다른 evidence 덮어쓰기를 막기 위해 시작하지 않는다.
 - `--tick-interval-ms <ms>`는 정상 보유/대기 tick 간격을 조정한다. 기본값은 1초이며, 차단은 5초, 수동 확인은 30초, transient failure는
   5초 backoff를 적용한다.
 - `--decision-history-retention-hours <hours>`를 명시하면 daemon tick이 같은 DB writer 경계로 `live_decision_ticks` retention을 실행하고,
