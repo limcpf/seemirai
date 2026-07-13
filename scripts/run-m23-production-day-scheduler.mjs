@@ -5,6 +5,7 @@ import process from "node:process";
 import { fileURLToPath } from "node:url";
 import {
   createKstDayWindow,
+  resolveProjectedRealPath,
   runProductionDayCloseoutCli,
 } from "./run-m23-production-day-closeout.mjs";
 
@@ -72,21 +73,10 @@ export async function runProductionDaySchedulerCli(argv, io = {}) {
       throw new Error(`${schedulerGuardEnv}=1 및 ${closeoutGuardEnv}=1 guard가 필요합니다.`);
     }
     assertActualOptions(options);
-    for (const filePath of [
-      options.configPath,
-      options.envFilePath,
-      options.daemonStatusFilePath,
-      options.startupArtifactFilePath,
-      options.daemonPidFilePath,
-      options.artifactDir,
-      options.schedulerStatusFilePath,
-      options.schedulerEventLogFilePath,
-      options.schedulerPidFilePath,
-    ]) {
-      assertPathOutsideRepository(filePath);
-    }
-    assertDistinctSchedulerOutputs(options);
+    await assertActualSchedulerPaths(options);
     await assertActualSchedulerPreflight(options);
+    await prepareActualSchedulerOutputDirectories(options);
+    await assertActualSchedulerPaths(options);
   } else {
     assertFixtureOptions(options);
   }
@@ -648,13 +638,15 @@ export async function ensureDaemonCounterBoundary({
   return event;
 }
 
-function assertDistinctSchedulerOutputs(options) {
+/** scheduler output이 서로 다르고 config/env/daemon evidence의 실제 경로와 겹치지 않는지 검증한다. */
+export async function assertDistinctSchedulerOutputs(options) {
   const outputs = [
     options.schedulerStatusFilePath,
     options.schedulerEventLogFilePath,
     options.schedulerPidFilePath,
-  ].map((filePath) => path.resolve(filePath));
-  if (new Set(outputs).size !== outputs.length) {
+  ];
+  const resolvedOutputs = outputs.map((filePath) => path.resolve(filePath));
+  if (new Set(resolvedOutputs).size !== resolvedOutputs.length) {
     throw new Error("scheduler status, event log, PID는 서로 다른 경로여야 합니다.");
   }
   const protectedInputs = [
@@ -663,14 +655,30 @@ function assertDistinctSchedulerOutputs(options) {
     options.daemonStatusFilePath,
     options.startupArtifactFilePath,
     options.daemonPidFilePath,
-  ].map((filePath) => path.resolve(filePath));
-  if (outputs.some((filePath) => protectedInputs.includes(filePath))) {
+  ];
+  const [projectedOutputs, projectedProtectedInputs] = await Promise.all([
+    Promise.all(outputs.map((filePath) => resolveProjectedRealPath(filePath))),
+    Promise.all(protectedInputs.map((filePath) => resolveProjectedRealPath(filePath))),
+  ]);
+  if (new Set(projectedOutputs).size !== projectedOutputs.length) {
+    throw new Error("scheduler status, event log, PID는 서로 다른 실제 경로여야 합니다.");
+  }
+  if (projectedOutputs.some((filePath) => projectedProtectedInputs.includes(filePath))) {
     throw new Error("scheduler 출력은 config/env/daemon evidence 경로를 덮어쓸 수 없습니다.");
   }
-  const artifactDir = path.resolve(options.artifactDir);
-  if (outputs.includes(artifactDir)) {
+  const artifactDir = await resolveProjectedRealPath(options.artifactDir);
+  if (projectedOutputs.includes(artifactDir)) {
     throw new Error("scheduler 운영 파일 경로와 day artifact 디렉터리는 같을 수 없습니다.");
   }
+}
+
+async function prepareActualSchedulerOutputDirectories(options) {
+  const directories = new Set([
+    path.dirname(options.schedulerStatusFilePath),
+    path.dirname(options.schedulerEventLogFilePath),
+    path.dirname(options.schedulerPidFilePath),
+  ]);
+  await Promise.all(Array.from(directories, (directory) => mkdir(directory, { recursive: true, mode: 0o700 })));
 }
 
 async function writeSchedulerStatus(filePath, state) {
@@ -722,12 +730,36 @@ function assertFixtureOptions(options) {
   }
 }
 
-function assertPathOutsideRepository(filePath) {
+/** scheduler 운영 파일의 lexical path와 symlink 실제 목표가 모두 checkout 밖인지 검증한다. */
+export async function assertPathOutsideRepository(filePath) {
   const resolved = path.resolve(filePath);
   const relative = path.relative(repositoryRoot, resolved);
   if (relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative))) {
     throw new Error("actual scheduler 운영 파일은 저장소 밖 경로에만 기록할 수 있습니다.");
   }
+  const projectedPath = await resolveProjectedRealPath(resolved);
+  const realRepositoryRoot = await resolveProjectedRealPath(repositoryRoot);
+  const realRelative = path.relative(realRepositoryRoot, projectedPath);
+  if (realRelative === "" || (!realRelative.startsWith("..") && !path.isAbsolute(realRelative))) {
+    throw new Error("actual scheduler 운영 파일은 저장소 밖 실제 경로에만 기록할 수 있습니다.");
+  }
+}
+
+/** scheduler의 모든 actual 입력/출력 경로를 실제 목표 기준으로 한 번에 검증한다. */
+export async function assertActualSchedulerPaths(options) {
+  const paths = [
+    options.configPath,
+    options.envFilePath,
+    options.daemonStatusFilePath,
+    options.startupArtifactFilePath,
+    options.daemonPidFilePath,
+    options.artifactDir,
+    options.schedulerStatusFilePath,
+    options.schedulerEventLogFilePath,
+    options.schedulerPidFilePath,
+  ];
+  await Promise.all(paths.map((filePath) => assertPathOutsideRepository(filePath)));
+  await assertDistinctSchedulerOutputs(options);
 }
 
 function readArgValue(argv, index, arg) {

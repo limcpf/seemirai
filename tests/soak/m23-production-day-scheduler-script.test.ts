@@ -147,6 +147,50 @@ describe("M23 production day scheduler script", () => {
     )).rejects.toMatchObject({ code: 1 });
   });
 
+  it("scheduler 운영 경로가 외부 symlink를 통해 저장소를 가리키면 차단한다", async () => {
+    const home = await mkdtemp(path.join(os.tmpdir(), "seemirai-m23-scheduler-symlink-"));
+    const output = await runModuleExpression(`
+      const fs = await import("node:fs/promises");
+      const path = await import("node:path");
+      const linkPath = ${JSON.stringify(path.join(home, "repository-link"))};
+      await fs.symlink(${JSON.stringify(repositoryRoot)}, linkPath, "dir");
+      let message;
+      try { await module.assertPathOutsideRepository(path.join(linkPath, "scheduler-events.jsonl")); }
+      catch (error) { message = error.message; }
+      process.stdout.write(JSON.stringify({ message }));
+    `);
+    expect(output.message).toContain("저장소 밖 실제 경로");
+  });
+
+  it("scheduler output symlink가 config 같은 보호 입력을 가리키면 차단한다", async () => {
+    const home = await mkdtemp(path.join(os.tmpdir(), "seemirai-m23-scheduler-protected-"));
+    const output = await runModuleExpression(`
+      const fs = await import("node:fs/promises");
+      const path = await import("node:path");
+      const home = ${JSON.stringify(home)};
+      const configPath = path.join(home, "live-ops.config.json");
+      const statusPath = path.join(home, "scheduler-status.json");
+      await fs.writeFile(configPath, "{}\\n");
+      await fs.symlink(configPath, statusPath, "file");
+      let message;
+      try {
+        await module.assertDistinctSchedulerOutputs({
+          configPath,
+          envFilePath: path.join(home, "live-ops.env"),
+          daemonStatusFilePath: path.join(home, "daemon-status.json"),
+          startupArtifactFilePath: path.join(home, "startup.json"),
+          daemonPidFilePath: path.join(home, "daemon.pid"),
+          artifactDir: path.join(home, "artifacts"),
+          schedulerStatusFilePath: statusPath,
+          schedulerEventLogFilePath: path.join(home, "scheduler-events.jsonl"),
+          schedulerPidFilePath: path.join(home, "scheduler.pid"),
+        });
+      } catch (error) { message = error.message; }
+      process.stdout.write(JSON.stringify({ message }));
+    `);
+    expect(output.message).toContain("덮어쓸 수 없습니다");
+  });
+
   it("daemon counter 경계는 같은 시각에 한 번만 기록하고 다음 day에서 재사용한다", async () => {
     const output = await runModuleExpression(`
       const fs = await import("node:fs/promises");

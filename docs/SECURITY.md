@@ -256,8 +256,10 @@
 - Issue #267 startup artifact와 일별 summary에는 source commit SHA, config `sha256` fingerprint, expected/applied migration version만
   provenance로 남긴다. config 원문, env 원문, DB URL, credential은 provenance에 포함하지 않으며 startup artifact는 repository 밖
   경로에 create-only로 기록한다.
-- Issue #267 production day scheduler와 closeout actual mode는 서로 다른 명시 guard를 모두 요구한다. config/env는 저장소 밖
-  path로만 전달하고 provider 호출 전에 현재 원문의 `sha256`이 daemon startup provenance와 같은지 확인하며, 원문을
+- Issue #267 production day scheduler와 closeout actual mode는 서로 다른 명시 guard를 모두 요구한다. config/env와 daemon
+  evidence, scheduler output은 lexical path와 symlink 실제 목표가 모두 저장소 밖인 경로만 허용한다. scheduler output 실제 목표는
+  config/env/daemon evidence와 달라야 한다. provider 호출 전에 현재 config/env 원문의 `sha256`이 daemon startup provenance와
+  같은지 확인하며, 원문을
   status/event/day artifact에 복사하지 않는다. scheduler PID/status/event log와 day/failure artifact는
   운영 계정 전용 mode `600`으로 기록하며 provider 오류는 error class와 운영자 조치만 남긴다. KST counter boundary에는 numeric
   daemon counter, source SHA, PID, secret-free 시각만 기록하고 provider payload나 credential을 포함하지 않는다. delivery recovery

@@ -108,12 +108,13 @@ window에서 제외한다. 첫 유효 full KST day는 2026-07-15, 일곱째는 2
   - [x] BUY entry cleanup마다 같은 scope의 durable reservation을 요구하고 cleanup fingerprint에 수량/가격/fee/realized PnL을 포함한다.
   - [x] 미체결 SELL terminal cancel은 exit requote counter로 제출을 닫고 그 외 terminal 제출만 cleanup 수와 대조한다.
   - [x] SELL 손실은 filledAt KST day에 귀속하고 scheduler는 경계를 걸친 tick의 최종 status write를 기다린다.
-  - [x] daily report는 KST day 종료 뒤 closeout actor/correlation audit만 인정하고 M23 후보/판단 상태를 포함하며, 기존 report 완료 또는 delivery 실패는 별도 idempotent recovery job에서 복구한다.
+  - [x] daily report는 대상 strategy/market fact와 runtime 실제 전송 결과만 사용하고, closeout actor/correlation audit을 요구하며,
+    provider 성공 뒤 audit 누락은 중복 재전송 없이 수동 확인으로 닫는다.
   - [x] existing day artifact는 현재 rollout provenance와 daemon boundary가 같을 때만 재사용하고 segment 종료는 KST window로 고정한다.
   - [x] provider 이전 실패도 immutable failure artifact로 남기고 주간 손실은 first-day부터 같은 provenance의 연속 선행 일자만 합산한다.
   - [x] scheduler는 2026-07-15~2026-07-21을 순차 실행하며 같은 day만 bounded retry하고 누락된 day를 건너뛰지 않는다.
   - [x] PID/status/event/day artifact는 운영 계정 전용 mode `600`으로 기록한다.
-  - [x] artifact directory는 symlink를 해석한 실제 경로도 repository 밖이어야 한다.
+  - [x] config/env/evidence/output과 artifact directory는 symlink 실제 경로도 repository 밖이어야 하며 scheduler output은 보호 입력과 다르다.
   - [x] 관련 script test, typecheck, 전체 verify와 review drain이 통과한다.
 
 ### Sub PR 05. Actual closeout
@@ -190,6 +191,8 @@ SEEMIRAI_RESTORE_DATABASE_URL=<disposable-restore-db> \
   idempotency 경계를 호출한다.
 - 2026-07-14: Sub PR 04 review drain에서 closeout 입력 fingerprint, matching reservation, precondition failure artifact, M23 daily
   report 상태, cleanup PnL fingerprint, rollout-scoped weekly loss를 fail-closed 계약으로 보강하고 전체 verify를 통과했다.
+- 2026-07-14: 후속 review drain에서 M23 daily report strategy/market scope와 실제 runtime report 우선순위, delivery audit 누락
+  중복 전송 차단, closeout/scheduler symlink 실제 경로 및 보호 입력 충돌 검증을 보강했다.
 
 ## 남은 이슈
 

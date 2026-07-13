@@ -199,6 +199,29 @@ describe("M23 production day closeout script", () => {
     expect(output.message).toContain("저장소 밖 실제 경로");
   });
 
+  it("actual closeout config/env/evidence 입력도 저장소 밖 실제 경로만 허용한다", async () => {
+    const home = await mkdtemp(path.join(os.tmpdir(), "seemirai-m23-input-symlink-"));
+    const output = await runModuleExpression(`
+      const fs = await import("node:fs/promises");
+      const path = await import("node:path");
+      const linkPath = ${JSON.stringify(path.join(home, "repository-link"))};
+      await fs.symlink(${JSON.stringify(repositoryRoot)}, linkPath, "dir");
+      let message;
+      try {
+        await module.assertActualInputPathsOutsideRepository({
+          configPath: path.join(linkPath, "package.json"),
+          envFilePath: path.join(${JSON.stringify(home)}, "live.env"),
+          statusFilePath: path.join(${JSON.stringify(home)}, "status.json"),
+          startupArtifactFilePath: path.join(${JSON.stringify(home)}, "startup.json"),
+          pidFilePath: path.join(${JSON.stringify(home)}, "daemon.pid"),
+          schedulerEventLogFilePath: path.join(${JSON.stringify(home)}, "events.jsonl"),
+        });
+      } catch (error) { message = error.message; }
+      process.stdout.write(JSON.stringify({ message }));
+    `);
+    expect(output.message).toContain("저장소 밖 실제 경로");
+  });
+
   it("현재 config/env 원문 fingerprint가 daemon provenance와 다르면 차단한다", async () => {
     const configRawText = "{\n  \"mode\": \"live\"\n}\n";
     const envRawText = "DATABASE_URL=postgres://example\n";
@@ -542,6 +565,97 @@ describe("M23 production day closeout script", () => {
     });
     expect(output.latestDecision.statusLabel).toBe("보유 유지 판단");
     expect(output.openExposureKrw).toBe("10000");
+  });
+
+  it("M23 daily report source는 대상 strategy와 KRW-BTC fact만 사용한다", async () => {
+    const output = await runModuleExpression(`
+      const target = { strategyId: "live_ops_autonomous_24x7_core", market: "KRW-BTC" };
+      const other = { strategyId: "probe_strategy", market: "KRW-ETH" };
+      const scoped = module.scopeIssue267DailyReportSourceData({
+        orders: [target, other],
+        fills: [target, other, { market: "KRW-BTC" }],
+        positions: [target, other],
+        pnlSnapshots: [target, other],
+        auditEvents: [
+          { payloadJson: { market: "KRW-BTC", strategy_id: "live_ops_autonomous_24x7_core" } },
+          { payloadJson: { market: "KRW-ETH", strategy_id: "probe_strategy" } },
+          { payloadJson: { reason_code: "global_event" } },
+        ],
+        riskEvents: [target, other, { market: null, strategyId: null }],
+        executionQuality: [target, other],
+      });
+      process.stdout.write(JSON.stringify(Object.fromEntries(
+        Object.entries(scoped).map(([key, value]) => [key, value.length]),
+      )));
+    `);
+    expect(output).toEqual({
+      orders: 1,
+      fills: 1,
+      positions: 1,
+      pnlSnapshots: 1,
+      auditEvents: 2,
+      riskEvents: 2,
+      executionQuality: 1,
+    });
+  });
+
+  it("artifact와 recovery는 runtime이 실제 생성한 report payload를 우선한다", async () => {
+    const output = await runModuleExpression(`
+      const fallback = {
+        report: { realizedPnl: { value: "-1" } },
+        notification: { summary: "사전 snapshot" },
+      };
+      const runtime = {
+        claimed: { result: {
+          report: { realizedPnl: { value: "-25" } },
+          notification: { summary: "실제 전송 payload" },
+        } },
+      };
+      process.stdout.write(JSON.stringify({
+        runtime: module.resolveDailyReportRunPayload(runtime, fallback),
+        skipped: module.resolveDailyReportRunPayload({ status: "SKIPPED_EXISTING_JOB" }, fallback),
+      }));
+    `);
+    expect(output.runtime).toEqual({
+      report: { realizedPnl: { value: "-25" } },
+      notification: { summary: "실제 전송 payload" },
+    });
+    expect(output.skipped).toEqual({
+      report: { realizedPnl: { value: "-1" } },
+      notification: { summary: "사전 snapshot" },
+    });
+  });
+
+  it("provider 성공 뒤 delivery audit만 누락되면 재전송 대신 수동 확인으로 고정한다", async () => {
+    const output = await runModuleExpression(`
+      const current = module.resolveDailyReportEvidenceStatus({
+        generated: [{}], delivered: [], failed: [],
+        reportRun: { status: "RUN", claimed: { result: { status: "DELIVERED" } } },
+      });
+      const retried = module.resolveDailyReportEvidenceStatus({
+        generated: [{}], delivered: [], failed: [],
+        reportRun: { status: "SKIPPED_EXISTING_JOB" },
+      });
+      const failed = module.resolveDailyReportEvidenceStatus({
+        generated: [{}], delivered: [], failed: [{}],
+        reportRun: { status: "SKIPPED_EXISTING_JOB" },
+      });
+      const generic = module.resolveDailyReportEvidenceStatus({
+        generated: [], delivered: [], failed: [],
+        reportRun: { status: "SKIPPED_EXISTING_JOB" },
+      });
+      process.stdout.write(JSON.stringify({
+        current, retried, failed, generic,
+        recover: [current, retried, failed, generic].map(module.shouldRunDailyReportDeliveryRecovery),
+      }));
+    `);
+    expect(output).toEqual({
+      current: "DELIVERY_AUDIT_MISSING_MANUAL_CONFIRMATION",
+      retried: "DELIVERY_AUDIT_MISSING_MANUAL_CONFIRMATION",
+      failed: "NOTIFICATION_FAILED",
+      generic: "COMPLETED_WITHOUT_DELIVERY",
+      recover: [false, false, true, true],
+    });
   });
 
   it("기존 passed artifact는 현재 rollout provenance와 daemon boundary가 모두 같을 때만 재사용한다", async () => {

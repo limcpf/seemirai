@@ -561,8 +561,10 @@ Codex-native 운영은 Codex, Git, GitHub, shell command, 문서 상태를 연�
   provenance로 통과한 연속 artifact만 합산하며, 디렉터리의 과거 rollout artifact는 포함하지 않는다.
 - Issue #267 daily report evidence는 closeout actor와 production-day 또는 delivery-recovery correlation이 일치하는 audit만 인정한다.
   actor는 별도 DB 컬럼이 아니라 `audit_events.payload_json.actor`에서 읽고 correlation은 `correlation_id`에서 읽는다.
-  같은 날짜의 일반 daily report job이 먼저 완료됐으면 M23 live ops snapshot notification을 별도 delivery-recovery idempotency job에서
-  한 번 전달하고 생성/전달 audit에 같은 notification fingerprint를 남긴다.
+  report fact는 `KRW-BTC`/`live_ops_autonomous_24x7_core` scope로 제한하고, artifact 손실은 runtime이 실제 생성·전송한 report
+  결과를 사용한다. 같은 날짜의 일반 daily report job이 먼저 완료됐거나 명시 provider 실패 audit이 있으면 M23 live ops snapshot
+  notification을 별도 delivery-recovery idempotency job에서 한 번 전달한다. provider 성공 뒤 delivery audit만 누락된 상태는
+  중복 전송하지 않고 수동 확인으로 닫는다.
 - 일/주간 realized loss 중 큰 값과 private open position 명목금액 합계가 50,000 KRW에 닿기 전에 operator stop 또는 kill
   switch/manual review로 수렴한다. open order는 0이어야 하지만 ceiling 미만의 BTC position 자체는 허용한다. 이 ceiling은 M24
   예산 확대 승인이 아니다.

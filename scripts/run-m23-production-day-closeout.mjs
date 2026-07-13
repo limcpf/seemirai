@@ -324,6 +324,7 @@ async function runActualProductionDayCloseout(options) {
   await assertArtifactDirOutsideRepository(options.artifactDir);
   let database;
   try {
+    await assertActualInputPathsOutsideRepository(options);
     const generatedAt = options.clock();
     const window = createKstDayWindow(options.day);
     const firstWindow = createKstDayWindow(options.firstDay);
@@ -424,9 +425,12 @@ async function runActualProductionDayCloseout(options) {
       privateRead,
       generatedAt,
     });
+    const dailyReportDataProvider = createIssue267DailyReportDataProvider(
+      new infrastructureModule.PostgresDailyReportRepository(database),
+    );
     const reportBuilt = await applicationModule.buildDailyReportNotification({
       reportDate: options.day,
-      dataProvider: new infrastructureModule.PostgresDailyReportRepository(database),
+      dataProvider: dailyReportDataProvider,
       generatedAt,
       liveOps: liveOpsStatus,
     });
@@ -441,6 +445,7 @@ async function runActualProductionDayCloseout(options) {
       notifier,
       workerId: `issue_267_day_closeout_${options.day}`,
       actor: "codex-issue-267-day-closeout",
+      dataProvider: dailyReportDataProvider,
       liveOpsStatusProvider: {
         async getLiveOpsStatus() {
           return liveOpsStatus;
@@ -451,19 +456,32 @@ async function runActualProductionDayCloseout(options) {
       reportDate: options.day,
       correlationId: closeoutCorrelationId,
     });
-    let dailyReportEvidence = await readDailyReportEvidence(pool, options.day, window.finishedAt, reportRun, reportBuilt.report);
-    if (dailyReportEvidence.status !== "DELIVERED") {
+    const deliveredReport = resolveDailyReportRunPayload(reportRun, reportBuilt);
+    let dailyReportEvidence = await readDailyReportEvidence(
+      pool,
+      options.day,
+      window.finishedAt,
+      reportRun,
+      deliveredReport.report,
+    );
+    if (shouldRunDailyReportDeliveryRecovery(dailyReportEvidence.status)) {
       // 같은 날짜 일반 report가 먼저 완료돼도 M23 상태가 포함된 closeout notification은 별도 멱등 경계에서 한 번 보장한다.
       await runDailyReportDeliveryRecovery({
         database,
         infrastructureModule,
         notifier,
-        notification: reportBuilt.notification,
-        report: reportBuilt.report,
+        notification: deliveredReport.notification,
+        report: deliveredReport.report,
         day: options.day,
         generatedAt,
       });
-      dailyReportEvidence = await readDailyReportEvidence(pool, options.day, window.finishedAt, reportRun, reportBuilt.report);
+      dailyReportEvidence = await readDailyReportEvidence(
+        pool,
+        options.day,
+        window.finishedAt,
+        reportRun,
+        deliveredReport.report,
+      );
     }
     if (dailyReportEvidence.status !== "DELIVERED") {
       throw new Error(`daily report가 owner chat 전달로 닫히지 않았습니다: ${dailyReportEvidence.status}`);
@@ -473,7 +491,7 @@ async function runActualProductionDayCloseout(options) {
       throw new Error("daily report 생성/전달 durable audit evidence가 완전하지 않습니다.");
     }
 
-    const dailyLoss = resolveDailyRealizedLoss(reportBuilt.report, liveArtifacts);
+    const dailyLoss = resolveDailyRealizedLoss(deliveredReport.report, liveArtifacts);
     const previousLosses = await readPreviousProductionDayLosses({
       artifactDir: options.artifactDir,
       firstDay: options.firstDay,
@@ -651,6 +669,52 @@ export function createDailyReportLiveOpsStatus({
     dailyNotionalUsedKrw: isDecimalString(reconcilePnl.budgetUsedKrw) ? reconcilePnl.budgetUsedKrw : null,
     openExposureKrw: privateRead.openPositionNotionalKrw,
   });
+}
+
+/** Issue #267 daily report가 대상 전략/마켓 fact만 읽도록 공통 repository를 감싼다. DB write side effect는 없다. */
+export function createIssue267DailyReportDataProvider(dataProvider) {
+  return {
+    async loadDailyReportSourceData(window) {
+      return scopeIssue267DailyReportSourceData(await dataProvider.loadDailyReportSourceData(window));
+    },
+  };
+}
+
+/** 일반 daily report fact에서 M23 대상 전략/마켓 또는 전역 운영 event만 남긴다. 입력 배열은 변경하지 않는다. */
+export function scopeIssue267DailyReportSourceData(sourceData) {
+  const matchesTarget = (fact) => fact.strategyId === expectedStrategyId && fact.market === expectedMarket;
+  return {
+    orders: sourceData.orders.filter(matchesTarget),
+    fills: sourceData.fills.filter(matchesTarget),
+    positions: sourceData.positions.filter(matchesTarget),
+    pnlSnapshots: sourceData.pnlSnapshots.filter(matchesTarget),
+    auditEvents: sourceData.auditEvents.filter((fact) => matchesOptionalPayloadScope(fact.payloadJson)),
+    riskEvents: sourceData.riskEvents.filter((fact) => matchesOptionalFactScope(fact)),
+    executionQuality: sourceData.executionQuality.filter(matchesTarget),
+  };
+}
+
+/** runtime이 실제 생성·전송한 report payload가 있으면 사전 snapshot보다 우선한다. 외부 side effect는 없다. */
+export function resolveDailyReportRunPayload(reportRun, fallback) {
+  return {
+    report: reportRun.claimed?.result?.report ?? fallback.report,
+    notification: reportRun.claimed?.result?.notification ?? fallback.notification,
+  };
+}
+
+function matchesOptionalFactScope(fact) {
+  return (fact.market === null || fact.market === undefined || fact.market === expectedMarket)
+    && (fact.strategyId === null || fact.strategyId === undefined || fact.strategyId === expectedStrategyId);
+}
+
+function matchesOptionalPayloadScope(payload) {
+  if (payload === null || typeof payload !== "object" || Array.isArray(payload)) {
+    return true;
+  }
+  const market = payload.market;
+  const strategyId = payload.strategy_id ?? payload.strategyId;
+  return (typeof market !== "string" || market === expectedMarket)
+    && (typeof strategyId !== "string" || strategyId === expectedStrategyId);
 }
 
 /**
@@ -1069,9 +1133,7 @@ export async function readDailyReportEvidence(pool, day, windowFinishedAt, repor
   const generated = postWindowRows.filter((row) => row.reason_code === "daily_report_generated");
   const delivered = postWindowRows.filter((row) => row.reason_code === "daily_report_notification_delivered");
   const failed = postWindowRows.filter((row) => row.reason_code === "daily_report_notification_failed");
-  const status = delivered.length > 0
-    ? "DELIVERED"
-    : reportRun.claimed?.result?.status ?? (reportRun.status === "SKIPPED_EXISTING_JOB" ? "COMPLETED_WITHOUT_DELIVERY" : reportRun.status);
+  const status = resolveDailyReportEvidenceStatus({ generated, delivered, failed, reportRun });
   return {
     status,
     runtimeStatus: reportRun.status,
@@ -1086,6 +1148,34 @@ export async function readDailyReportEvidence(pool, day, windowFinishedAt, repor
       realizedPnl: report.realizedPnl,
     },
   };
+}
+
+/** provider 전송 결과와 durable audit을 함께 읽어 재전송 가능 상태와 수동 확인 상태를 분리한다. 외부 side effect는 없다. */
+export function resolveDailyReportEvidenceStatus({ generated, delivered, failed, reportRun }) {
+  if (delivered.length > 0) {
+    return "DELIVERED";
+  }
+  const runtimeStatus = reportRun.claimed?.result?.status;
+  if (runtimeStatus === "DELIVERED") {
+    // provider 성공 뒤 audit만 빠졌다면 재전송은 중복 owner notification을 만들 수 있어 수동 확인으로 고정한다.
+    return "DELIVERY_AUDIT_MISSING_MANUAL_CONFIRMATION";
+  }
+  if (runtimeStatus === "NOTIFICATION_FAILED" || failed.length > 0) {
+    return "NOTIFICATION_FAILED";
+  }
+  if (generated.length > 0) {
+    // 이전 실행이 provider 성공 후 audit 저장에서 끊긴 상태를 SKIPPED job만 보고 재전송하지 않는다.
+    return "DELIVERY_AUDIT_MISSING_MANUAL_CONFIRMATION";
+  }
+  if (reportRun.status === "SKIPPED_EXISTING_JOB") {
+    return "COMPLETED_WITHOUT_DELIVERY";
+  }
+  return runtimeStatus ?? reportRun.status;
+}
+
+/** provider 실패 또는 일반 report 선점처럼 outbound 미실행이 확실한 상태에서만 delivery recovery를 연다. */
+export function shouldRunDailyReportDeliveryRecovery(status) {
+  return status === "NOTIFICATION_FAILED" || status === "COMPLETED_WITHOUT_DELIVERY";
 }
 
 /** 완료된 KST window 이후에 생성된 daily report audit만 반환한다. 외부 side effect는 없다. */
@@ -1497,23 +1587,49 @@ async function writeFailureArtifact({ artifactDir, day, error }) {
 }
 
 export async function assertArtifactDirOutsideRepository(artifactDir) {
-  const resolved = path.resolve(artifactDir);
+  await assertProjectedPathOutsideRepository(
+    artifactDir,
+    "actual production day artifact는 저장소 밖 디렉터리에만 기록할 수 있습니다.",
+    "actual production day artifact는 저장소 밖 실제 경로에만 기록할 수 있습니다.",
+  );
+}
+
+/** actual closeout의 secret/evidence 입력이 checkout 또는 checkout을 가리키는 symlink에 놓이지 않았는지 검증한다. */
+export async function assertActualInputPathsOutsideRepository(options) {
+  const inputPaths = [
+    options.configPath,
+    options.envFilePath,
+    options.statusFilePath,
+    options.startupArtifactFilePath,
+    options.pidFilePath,
+    options.schedulerEventLogFilePath,
+  ];
+  await Promise.all(inputPaths.map((filePath) => assertProjectedPathOutsideRepository(
+    filePath,
+    "actual production day closeout 입력은 저장소 밖 경로만 사용할 수 있습니다.",
+    "actual production day closeout 입력은 저장소 밖 실제 경로만 사용할 수 있습니다.",
+  )));
+}
+
+async function assertProjectedPathOutsideRepository(filePath, lexicalMessage, realPathMessage) {
+  const resolved = path.resolve(filePath);
   const relative = path.relative(repositoryRoot, resolved);
   if (relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative))) {
-    throw new Error("actual production day artifact는 저장소 밖 디렉터리에만 기록할 수 있습니다.");
+    throw new Error(lexicalMessage);
   }
-  const [realRepositoryRoot, projectedArtifactDir] = await Promise.all([
+  const [realRepositoryRoot, projectedPath] = await Promise.all([
     realpath(repositoryRoot),
     resolveProjectedRealPath(resolved),
   ]);
-  const realRelative = path.relative(realRepositoryRoot, projectedArtifactDir);
+  const realRelative = path.relative(realRepositoryRoot, projectedPath);
   if (realRelative === "" || (!realRelative.startsWith("..") && !path.isAbsolute(realRelative))) {
-    // 저장소 밖 symlink가 저장소 안을 가리키는 경우에도 private 운영 artifact write를 허용하지 않는다.
-    throw new Error("actual production day artifact는 저장소 밖 실제 경로에만 기록할 수 있습니다.");
+    // 저장소 밖 symlink가 저장소 안을 가리키는 경우에도 private 운영 입력이나 artifact를 허용하지 않는다.
+    throw new Error(realPathMessage);
   }
 }
 
-async function resolveProjectedRealPath(filePath) {
+/** 아직 생성되지 않은 파일도 가장 가까운 기존 부모의 realpath를 기준으로 실제 목표 경로를 계산한다. */
+export async function resolveProjectedRealPath(filePath) {
   const resolvedPath = path.resolve(filePath);
   let existingAncestor = resolvedPath;
   while (true) {
