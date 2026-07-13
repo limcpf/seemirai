@@ -72,8 +72,8 @@ describe("M23 production day closeout script", () => {
           alertEvidenceIds: string[];
         };
       };
-      // fixture CLI clock은 고정돼 있으므로 validator day 종료 조건을 각 segment의 실제 종료 이후 시각으로 맞춘다.
-      summary.finishedAt = generatedAt;
+      expect(summary.finishedAt).toBe(new Date(dayWindow.endMs).toISOString());
+      // fixture CLI clock은 고정돼 있으므로 report 생성 evidence만 각 segment의 실제 종료 이후 시각으로 맞춘다.
       summary.dailyReportGeneratedAt = generatedAt;
       summary.decisionEvidenceGeneratedAt = generatedAt;
       await writeFile(summaryPath, `${JSON.stringify(summary, null, 2)}\n`, "utf8");
@@ -227,19 +227,97 @@ describe("M23 production day closeout script", () => {
       const valid = module.assertLiveSubmissionEvidence({
         counters: evidence.counters,
         databaseEvidence: { actionableDecisionCount: 1, malformedActionableDecisionCount: 0 },
+        liveArtifacts: { cleanupSubmissionCount: 1 },
       });
       let mismatch;
       try {
         module.assertLiveSubmissionEvidence({
           counters: evidence.counters,
           databaseEvidence: { actionableDecisionCount: 0, malformedActionableDecisionCount: 0 },
+          liveArtifacts: { cleanupSubmissionCount: 1 },
         });
       } catch (error) { mismatch = error.message; }
-      process.stdout.write(JSON.stringify({ counters: evidence.counters, valid, mismatch }));
+      let cleanupMissing;
+      try {
+        module.assertLiveSubmissionEvidence({
+          counters: evidence.counters,
+          databaseEvidence: { actionableDecisionCount: 1, malformedActionableDecisionCount: 0 },
+          liveArtifacts: { cleanupSubmissionCount: 0 },
+        });
+      } catch (error) { cleanupMissing = error.message; }
+      process.stdout.write(JSON.stringify({ counters: evidence.counters, valid, mismatch, cleanupMissing }));
     `);
     expect(output.counters).toMatchObject({ tickCount: 1440, submittedOrderCount: 1 });
     expect(output.valid).toEqual({ submittedOrderCount: 1, riskGateBypassCount: 0 });
     expect(output.mismatch).toContain("broker 제출과 guarded actionable decision");
+    expect(output.cleanupMissing).toContain("cleanup artifact 개수");
+  });
+
+  it("decision aggregate는 Issue 267 대상 exchange, market, strategy scope만 조회한다", async () => {
+    const output = await runModuleExpression(`
+      let captured;
+      const pool = {
+        async query(text, params) {
+          captured = { text, params };
+          return { rows: [{
+            migration_version: 14, kill_switch_state: "NORMAL", decision_count: 1440,
+            actionable_decision_count: 0, malformed_actionable_decision_count: 0,
+            distinct_dedupe_count: 1440, first_decision_at: "2026-07-14T15:00:01.000Z",
+            latest_decision_at: "2026-07-15T14:59:59.000Z", max_decision_gap_ms: 60000,
+            database_order_count: 0, fill_count: 0,
+          }] };
+        },
+      };
+      const evidence = await module.readDatabaseEvidence(pool, module.createKstDayWindow("2026-07-15"));
+      process.stdout.write(JSON.stringify({ captured, evidence }));
+    `);
+    expect(output.captured.text).toContain("exchange = $3 and market = $4 and strategy_id = $5");
+    expect(output.captured.params.slice(2)).toEqual(["UPBIT", "KRW-BTC", "live_ops_autonomous_24x7_core"]);
+    expect(output.evidence.decisionScope).toEqual({
+      exchange: "UPBIT",
+      market: "KRW-BTC",
+      strategyId: "live_ops_autonomous_24x7_core",
+    });
+  });
+
+  it("daily report audit은 KST day 종료 이후 생성된 행만 evidence로 사용한다", async () => {
+    const output = await runModuleExpression(`
+      const rows = [
+        { id: "early", occurred_at: "2026-07-15T14:59:59.999Z" },
+        { id: "boundary", occurred_at: "2026-07-15T15:00:00.000Z" },
+        { id: "late", occurred_at: new Date("2026-07-15T15:01:00.000Z") },
+      ];
+      process.stdout.write(JSON.stringify(module.filterPostWindowDailyReportAuditRows(rows, "2026-07-15T15:00:00.000Z")));
+    `) as Array<{ id: string }>;
+    expect(output.map((row) => row.id)).toEqual(["boundary", "late"]);
+  });
+
+  it("기존 passed artifact는 현재 rollout provenance와 daemon boundary가 모두 같을 때만 재사용한다", async () => {
+    const output = await runModuleExpression(`
+      const day = "2026-07-15";
+      const window = module.createKstDayWindow(day);
+      const runtimeProvenance = ${JSON.stringify(runtimeProvenance)};
+      const daemonBoundaries = { startedAt: window.startedAt, finishedAt: window.finishedAt };
+      const summary = {
+        status: "passed", reportDate: day, input: "live_ops_daemon_day",
+        mode: "LIVE_AUTONOMOUS_SMALL_BUDGET", dryRun: false, liveOrderCapable: true,
+        startedAt: window.startedAt, finishedAt: window.finishedAt, runtimeProvenance,
+        checks: { heartbeat: { evidence: { daemonCounterBoundaries: daemonBoundaries } } },
+      };
+      const input = { summary, day, window, runtimeProvenance, daemonBoundaries };
+      process.stdout.write(JSON.stringify({
+        valid: module.isReusableProductionDayArtifact(input),
+        wrongSource: module.isReusableProductionDayArtifact({
+          ...input,
+          runtimeProvenance: { ...runtimeProvenance, sourceCommitSha: "d".repeat(40) },
+        }),
+        wrongFinish: module.isReusableProductionDayArtifact({
+          ...input,
+          summary: { ...summary, finishedAt: new Date(window.endMs + 60000).toISOString() },
+        }),
+      }));
+    `);
+    expect(output).toEqual({ valid: true, wrongSource: false, wrongFinish: false });
   });
 
   it("daily report delivery recovery는 별도 job에서 성공을 audit한 뒤 완료한다", async () => {

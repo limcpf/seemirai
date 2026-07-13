@@ -737,7 +737,11 @@ Issue #267 successor 판정 기준 (2026-07-14):
   기존 DB idempotency key를 재사용하며, 실패한 day를 건너뛰거나 passed artifact를 덮어쓰지 않아야 한다. scheduler는 각 KST
   시작/종료 경계의 daemon counter를 append-only로 기록하고 closeout은 누적값이 아니라 두 경계의 delta만 판정한다.
 - actual broker 제출은 `orders` row 생성을 전제로 하지 않는다. daemon `submittedOrderCount` day delta와 core guard를 통과한
-  BUY/SELL 단일 intent decision 수가 같고 malformed actionable decision이 0이어야 risk gate 우회 0건으로 인정한다.
+  대상 strategy의 BUY/SELL 단일 intent decision 수, 대상 reservation/cleanup artifact 수가 모두 같고 malformed actionable
+  decision이 0이어야 risk gate 우회와 cleanup 누락 0건으로 인정한다. decision 집계는 `UPBIT`/`KRW-BTC`/
+  `live_ops_autonomous_24x7_core` scope로 제한한다.
+- daily report 생성/전달 audit은 해당 KST day 종료 이후 행만 인정한다. 기존 passed day artifact는 현재 source/config/env/migration
+  provenance와 KST counter boundary가 모두 같을 때만 provider side effect 없이 재사용한다.
 
 Acceptance Criteria:
 

@@ -10,6 +10,9 @@ import pg from "pg";
 const { Pool: PgPool } = pg;
 const runGuardEnv = "SEEMIRAI_RUN_M23_PRODUCTION_DAY_CLOSEOUT";
 const expectedMode = "LIVE_AUTONOMOUS_SMALL_BUDGET";
+const expectedExchange = "UPBIT";
+const expectedMarket = "KRW-BTC";
+const expectedStrategyId = "live_ops_autonomous_24x7_core";
 const expectedSourceShaPattern = /^[a-f0-9]{40}$/u;
 const dayPattern = /^\d{4}-\d{2}-\d{2}$/u;
 const oneDayMs = 86_400_000;
@@ -243,6 +246,11 @@ export function createFixtureProductionDaySummary({ day, generatedAt }) {
     database: {
       migrationVersion: 14,
       killSwitchState: "NORMAL",
+      decisionScope: {
+        exchange: expectedExchange,
+        market: expectedMarket,
+        strategyId: expectedStrategyId,
+      },
       decisionCount: 1_440,
       actionableDecisionCount: 0,
       malformedActionableDecisionCount: 0,
@@ -294,10 +302,6 @@ async function runActualProductionDayCloseout(options) {
     throw new Error(`${options.day} KST day가 아직 종료되지 않았습니다.`);
   }
   await assertArtifactDirOutsideRepository(options.artifactDir);
-  const existing = await readExistingPassedArtifact(options.artifactDir, options.day);
-  if (existing !== undefined) {
-    return existing;
-  }
 
   const [configRaw, envRaw, status, startup, pidText, schedulerEventLogRaw] = await Promise.all([
     readJson(options.configPath),
@@ -332,6 +336,16 @@ async function runActualProductionDayCloseout(options) {
     daemonStartedAt: status.startedAt,
     sourceCommitSha: provenance.sourceCommitSha,
   });
+  const existing = await readExistingPassedArtifact({
+    artifactDir: options.artifactDir,
+    day: options.day,
+    window,
+    runtimeProvenance: provenance,
+    daemonBoundaries: daemonDay.boundaries,
+  });
+  if (existing !== undefined) {
+    return existing;
+  }
 
   const pool = new PgPool({
     connectionString: secrets.databaseUrl,
@@ -389,7 +403,7 @@ async function runActualProductionDayCloseout(options) {
       reportDate: options.day,
       correlationId: `issue-267-production-day-${options.day}-${randomUUID()}`,
     });
-    let dailyReportEvidence = await readDailyReportEvidence(pool, options.day, reportRun, reportBuilt.report);
+    let dailyReportEvidence = await readDailyReportEvidence(pool, options.day, window.finishedAt, reportRun, reportBuilt.report);
     if (dailyReportEvidence.status !== "DELIVERED" && dailyReportEvidence.notificationFailureAuditEventIds.length > 0) {
       await runDailyReportDeliveryRecovery({
         database,
@@ -399,7 +413,7 @@ async function runActualProductionDayCloseout(options) {
         day: options.day,
         generatedAt,
       });
-      dailyReportEvidence = await readDailyReportEvidence(pool, options.day, reportRun, reportBuilt.report);
+      dailyReportEvidence = await readDailyReportEvidence(pool, options.day, window.finishedAt, reportRun, reportBuilt.report);
     }
     if (dailyReportEvidence.status !== "DELIVERED") {
       throw new Error(`daily report가 owner chat 전달로 닫히지 않았습니다: ${dailyReportEvidence.status}`);
@@ -487,7 +501,7 @@ export function createProductionDaySummary(input) {
     dryRun: false,
     liveOrderCapable: true,
     startedAt: input.window.startedAt,
-    finishedAt: input.generatedAt.toISOString(),
+    finishedAt: input.window.finishedAt,
     reportDate: input.day,
     dailyReportGeneratedAt: input.generatedAt.toISOString(),
     decisionEvidenceDay: input.day,
@@ -530,6 +544,7 @@ export function createProductionDaySummary(input) {
         processId: input.daemon.processId,
       }),
       heartbeat: okCheck({
+        decisionScope: input.database.decisionScope,
         decisionCount: input.database.decisionCount,
         firstDecisionAt: input.database.firstDecisionAt,
         latestDecisionAt: input.database.latestDecisionAt,
@@ -561,34 +576,43 @@ export function createProductionDaySummary(input) {
   };
 }
 
-async function readDatabaseEvidence(pool, window) {
+export async function readDatabaseEvidence(pool, window) {
   const result = await pool.query(
-    `select
+    `with scoped_decisions as (
+       select decision_kind, order_intent_count, dedupe_key, observed_at
+         from live_decision_ticks
+        where observed_at >= $1 and observed_at < $2
+          and exchange = $3 and market = $4 and strategy_id = $5
+     )
+     select
        (select max(version)::int from schema_migrations) as migration_version,
        (select state from kill_switch_state where scope = 'global') as kill_switch_state,
-       (select count(*)::int from live_decision_ticks where observed_at >= $1 and observed_at < $2) as decision_count,
-       (select count(*)::int from live_decision_ticks
-         where observed_at >= $1 and observed_at < $2
-           and decision_kind in ('BUY', 'SELL') and order_intent_count = 1) as actionable_decision_count,
-       (select count(*)::int from live_decision_ticks
-         where observed_at >= $1 and observed_at < $2
-           and (decision_kind in ('BUY', 'SELL') or order_intent_count > 0)
+       (select count(*)::int from scoped_decisions) as decision_count,
+       (select count(*)::int from scoped_decisions
+         where decision_kind in ('BUY', 'SELL') and order_intent_count = 1) as actionable_decision_count,
+       (select count(*)::int from scoped_decisions
+         where (decision_kind in ('BUY', 'SELL') or order_intent_count > 0)
            and not (decision_kind in ('BUY', 'SELL') and order_intent_count = 1)) as malformed_actionable_decision_count,
-       (select count(distinct dedupe_key)::int from live_decision_ticks where observed_at >= $1 and observed_at < $2) as distinct_dedupe_count,
-       (select min(observed_at) from live_decision_ticks where observed_at >= $1 and observed_at < $2) as first_decision_at,
-       (select max(observed_at) from live_decision_ticks where observed_at >= $1 and observed_at < $2) as latest_decision_at,
+       (select count(distinct dedupe_key)::int from scoped_decisions) as distinct_dedupe_count,
+       (select min(observed_at) from scoped_decisions) as first_decision_at,
+       (select max(observed_at) from scoped_decisions) as latest_decision_at,
        (select coalesce(max(gap_ms), 0) from (
           select extract(epoch from observed_at - lag(observed_at) over (order by observed_at)) * 1000 as gap_ms
-            from live_decision_ticks where observed_at >= $1 and observed_at < $2
+            from scoped_decisions
        ) decision_gaps) as max_decision_gap_ms,
        (select count(*)::int from orders where created_at >= $1 and created_at < $2) as database_order_count,
        (select count(*)::int from fills where filled_at >= $1 and filled_at < $2) as fill_count`,
-    [window.startedAt, window.finishedAt],
+    [window.startedAt, window.finishedAt, expectedExchange, expectedMarket, expectedStrategyId],
   );
   const row = result.rows[0];
   return {
     migrationVersion: Number(row.migration_version),
     killSwitchState: row.kill_switch_state,
+    decisionScope: {
+      exchange: expectedExchange,
+      market: expectedMarket,
+      strategyId: expectedStrategyId,
+    },
     decisionCount: Number(row.decision_count),
     actionableDecisionCount: Number(row.actionable_decision_count),
     malformedActionableDecisionCount: Number(row.malformed_actionable_decision_count),
@@ -693,15 +717,20 @@ export function assertDecisionCoverage(databaseEvidence, window) {
  * daemon 실제 제출 counter와 제출 가능 decision history를 교차 검증한다.
  *
  * live broker 경로는 `orders` row를 만들지 않을 수 있으므로 DB 주문 수를 제출 근거로 쓰지 않는다. core guard를 통과한
- * BUY/SELL 단일 intent와 daemon의 실제 broker 제출 delta가 정확히 같아야 하며, 불완전한 actionable row는 즉시 차단한다.
+ * BUY/SELL 단일 intent, 대상 cleanup artifact, daemon의 실제 broker 제출 delta가 정확히 같아야 하며 불완전한 evidence는 차단한다.
  */
-export function assertLiveSubmissionEvidence({ counters, databaseEvidence }) {
+export function assertLiveSubmissionEvidence({ counters, databaseEvidence, liveArtifacts }) {
   if (databaseEvidence.malformedActionableDecisionCount !== 0) {
     throw new Error(`형식이 불완전한 actionable decision이 있습니다: ${databaseEvidence.malformedActionableDecisionCount}`);
   }
   if (counters.submittedOrderCount !== databaseEvidence.actionableDecisionCount) {
     throw new Error(
       `daemon broker 제출과 guarded actionable decision 개수가 다릅니다: ${counters.submittedOrderCount}/${databaseEvidence.actionableDecisionCount}`,
+    );
+  }
+  if (counters.submittedOrderCount !== liveArtifacts.cleanupSubmissionCount) {
+    throw new Error(
+      `daemon broker 제출과 대상 strategy cleanup artifact 개수가 다릅니다: ${counters.submittedOrderCount}/${liveArtifacts.cleanupSubmissionCount}`,
     );
   }
   return {
@@ -711,21 +740,36 @@ export function assertLiveSubmissionEvidence({ counters, databaseEvidence }) {
 }
 
 async function readLiveArtifactEvidence(artifactDir, window) {
-  const files = (await readdir(artifactDir))
-    .filter((file) => /^cleanup-ops-[a-f0-9]{26}\.json$/u.test(file))
-    .toSorted();
-  const records = [];
-  for (const file of files) {
+  const files = await readdir(artifactDir);
+  const cleanupFiles = files.filter((file) => /^cleanup-ops-[a-f0-9]{26}\.json$/u.test(file)).toSorted();
+  const reservationFiles = files.filter((file) => /^reservation-ops-[a-f0-9]{26}\.json$/u.test(file)).toSorted();
+  const cleanupRecords = [];
+  const reservationRecords = [];
+  for (const file of [...cleanupFiles, ...reservationFiles]) {
     try {
-      records.push({ file, value: await readJson(path.join(artifactDir, file)) });
+      const target = file.startsWith("cleanup-") ? cleanupRecords : reservationRecords;
+      target.push({ file, value: await readJson(path.join(artifactDir, file)) });
     } catch {
-      // 손상된 cleanup을 건너뛰면 체결과 손실을 과소 집계하므로 해당 day closeout을 중단한다.
-      throw new Error(`live cleanup artifact를 읽을 수 없습니다: ${file}`);
+      // 손상된 reservation/cleanup을 건너뛰면 제출과 손실을 과소 집계하므로 해당 day closeout을 중단한다.
+      throw new Error(`live submission artifact를 읽을 수 없습니다: ${file}`);
     }
   }
-  const dayRecords = records.filter(({ value }) => {
-    const observedAt = Date.parse(value.filledAt ?? value.terminalCheckedAt ?? value.submittedAt);
-    return Number.isFinite(observedAt) && observedAt >= window.startMs && observedAt < window.endMs;
+  const reservationByAttemptId = new Map(reservationRecords
+    .filter(({ value }) => value.strategyId === expectedStrategyId && value.market === expectedMarket)
+    .map(({ value }) => [value.attemptId, value]));
+  // generic cancel cleanup은 strategy 필드 도입 전 형식이므로 전용 production 디렉터리의 KRW-BTC 기록도 개수 대조에 포함한다.
+  const scopedCleanups = cleanupRecords.filter(({ value }) => (
+    value.market === expectedMarket
+      && (value.strategyId === expectedStrategyId || value.kind === "live_ops_cleanup_closeout")
+  ));
+  const attemptIds = scopedCleanups.map(({ value }) => value.attemptId);
+  if (attemptIds.some((attemptId) => typeof attemptId !== "string") || new Set(attemptIds).size !== attemptIds.length) {
+    throw new Error("대상 strategy cleanup artifact의 attempt ID가 없거나 중복됐습니다.");
+  }
+  const dayRecords = scopedCleanups.filter(({ value }) => {
+    const reservation = reservationByAttemptId.get(value.attemptId);
+    const submittedAt = Date.parse(value.submittedAt ?? reservation?.reservedAt ?? value.filledAt ?? value.terminalCheckedAt);
+    return Number.isFinite(submittedAt) && submittedAt >= window.startMs && submittedAt < window.endMs;
   });
   const fills = dayRecords.filter(({ value }) => value.status === "FILLED");
   const exits = fills.filter(({ value }) => value.kind === "live_ops_autonomous_exit_closeout");
@@ -740,6 +784,7 @@ async function readLiveArtifactEvidence(artifactDir, window) {
     file,
     kind: value.kind ?? null,
     status: value.status ?? null,
+    submittedAt: value.submittedAt ?? reservationByAttemptId.get(value.attemptId)?.reservedAt ?? null,
     filledAt: value.filledAt ?? null,
     terminalCheckedAt: value.terminalCheckedAt ?? null,
   })));
@@ -781,18 +826,20 @@ async function readPrivateExchangeEvidence({ infrastructureModule, secrets, refe
   };
 }
 
-async function readDailyReportEvidence(pool, day, reportRun, report) {
+async function readDailyReportEvidence(pool, day, windowFinishedAt, reportRun, report) {
   const audit = await pool.query(
     `select id, payload_json->>'reason_code' as reason_code, occurred_at
        from audit_events
       where payload_json->>'report_date' = $1
+        and occurred_at >= $2
         and payload_json->>'reason_code' in ('daily_report_generated', 'daily_report_notification_delivered', 'daily_report_notification_failed')
       order by occurred_at asc`,
-    [day],
+    [day, windowFinishedAt],
   );
-  const generated = audit.rows.filter((row) => row.reason_code === "daily_report_generated");
-  const delivered = audit.rows.filter((row) => row.reason_code === "daily_report_notification_delivered");
-  const failed = audit.rows.filter((row) => row.reason_code === "daily_report_notification_failed");
+  const postWindowRows = filterPostWindowDailyReportAuditRows(audit.rows, windowFinishedAt);
+  const generated = postWindowRows.filter((row) => row.reason_code === "daily_report_generated");
+  const delivered = postWindowRows.filter((row) => row.reason_code === "daily_report_notification_delivered");
+  const failed = postWindowRows.filter((row) => row.reason_code === "daily_report_notification_failed");
   const status = delivered.length > 0
     ? "DELIVERED"
     : reportRun.claimed?.result?.status ?? (reportRun.status === "SKIPPED_EXISTING_JOB" ? "COMPLETED_WITHOUT_DELIVERY" : reportRun.status);
@@ -800,7 +847,9 @@ async function readDailyReportEvidence(pool, day, reportRun, report) {
     status,
     runtimeStatus: reportRun.status,
     generatedAuditEventId: generated.at(-1)?.id ?? null,
+    generatedAuditOccurredAt: toIsoOrNull(generated.at(-1)?.occurred_at),
     deliveryAuditEventIds: delivered.map((row) => row.id),
+    deliveryAuditOccurredAts: delivered.map((row) => toIsoOrNull(row.occurred_at)),
     notificationFailureAuditEventIds: failed.map((row) => row.id),
     report: {
       orderCount: report.orderCount,
@@ -808,6 +857,18 @@ async function readDailyReportEvidence(pool, day, reportRun, report) {
       realizedPnl: report.realizedPnl,
     },
   };
+}
+
+/** 완료된 KST window 이후에 생성된 daily report audit만 반환한다. 외부 side effect는 없다. */
+export function filterPostWindowDailyReportAuditRows(rows, windowFinishedAt) {
+  const boundaryMs = Date.parse(windowFinishedAt);
+  if (!Number.isFinite(boundaryMs)) {
+    throw new Error("daily report audit window 종료 시각이 올바르지 않습니다.");
+  }
+  return rows.filter((row) => {
+    const occurredAtMs = Date.parse(row.occurred_at instanceof Date ? row.occurred_at.toISOString() : row.occurred_at);
+    return Number.isFinite(occurredAtMs) && occurredAtMs >= boundaryMs;
+  });
 }
 
 /**
@@ -1057,7 +1118,13 @@ async function writeProductionDayArtifact({ artifactDir, day, summary, allowRepo
   return filePath;
 }
 
-async function readExistingPassedArtifact(artifactDir, day) {
+async function readExistingPassedArtifact({
+  artifactDir,
+  day,
+  window,
+  runtimeProvenance,
+  daemonBoundaries,
+}) {
   const filePath = path.join(artifactDir, `production-day-${day}.json`);
   try {
     await access(filePath);
@@ -1065,10 +1132,32 @@ async function readExistingPassedArtifact(artifactDir, day) {
     return undefined;
   }
   const summary = await readJson(filePath);
-  if (summary.status !== "passed" || summary.reportDate !== day) {
-    throw new Error(`기존 production day artifact가 passed 상태가 아닙니다: ${filePath}`);
+  const reusable = isReusableProductionDayArtifact({
+    summary,
+    day,
+    window,
+    runtimeProvenance,
+    daemonBoundaries,
+  });
+  if (!reusable) {
+    // 기존 파일을 덮어쓰지 않고 현재 rollout provenance와 다른 artifact를 운영자가 분리하도록 차단한다.
+    throw new Error(`기존 production day artifact가 현재 rollout/KST boundary와 일치하지 않습니다: ${filePath}`);
   }
   return summary;
+}
+
+/** 현재 rollout과 KST counter boundary가 같은 passed day artifact인지 판정한다. 외부 side effect는 없다. */
+export function isReusableProductionDayArtifact({ summary, day, window, runtimeProvenance, daemonBoundaries }) {
+  return summary.status === "passed"
+    && summary.reportDate === day
+    && summary.input === "live_ops_daemon_day"
+    && summary.mode === expectedMode
+    && summary.dryRun === false
+    && summary.liveOrderCapable === true
+    && summary.startedAt === window.startedAt
+    && summary.finishedAt === window.finishedAt
+    && JSON.stringify(summary.runtimeProvenance) === JSON.stringify(runtimeProvenance)
+    && JSON.stringify(summary.checks?.heartbeat?.evidence?.daemonCounterBoundaries) === JSON.stringify(daemonBoundaries);
 }
 
 async function writeFailureArtifact({ artifactDir, day, error }) {

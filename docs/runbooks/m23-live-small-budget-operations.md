@@ -161,9 +161,9 @@ restart하고 새 startup artifact를 사용한다. startup 당일은 full KST d
 ### Issue #267 일별 evidence scheduler
 
 7일 뒤 latest status와 DB aggregate를 소급 변환하지 않는다. `scripts/run-m23-production-day-closeout.mjs`는 완료된 KST 하루마다
-daemon 연속 실행/PID/heartbeat, source/config/env/migration provenance, KST 시작/종료 counter delta, full-day durable decision,
-실제 broker 제출과 guarded decision 일치, Upbit private open order/BTC exposure, 기존 daily report idempotency job과 Telegram
-delivery audit을 검증한다. 검증된 summary는
+daemon 연속 실행/PID/heartbeat, source/config/env/migration provenance, KST 시작/종료 counter delta, 대상 strategy의 full-day
+durable decision, 실제 broker 제출/guarded decision/cleanup artifact 개수 일치, Upbit private open order/BTC exposure, KST day
+종료 뒤 생성된 daily report와 Telegram delivery audit을 검증한다. 검증된 summary는
 `production-day-YYYY-MM-DD.json` create-only artifact로 기록한다. 실패 시 final day 파일을 점유하지 않고 실패 분류만 별도
 artifact로 남긴다.
 
@@ -214,7 +214,8 @@ kill -0 "$(cat "$ISSUE_267_HOME/artifacts/production-day-scheduler.pid")"
 운영자가 scheduler만 중지할 때는 위 PID에 `SIGTERM`을 보낸다. 이 신호는 거래 daemon에 전달되지 않는다. status가 `stopped`인지
 확인한 뒤 기존 PID 파일을 run ID가 포함된 evidence 이름으로 이동하고 같은 고정 PID 경로로 재실행한다. 고정 create-only PID
 파일은 두 scheduler가 동시에 같은 Telegram report 경계를 호출하지 못하게 막는다. `production-day-YYYY-MM-DD.json`이 이미
-`passed`면 closeout은 provider와 Telegram을 다시 호출하지 않고 기존 immutable artifact를 재사용한다.
+`passed`면 closeout은 현재 source/config/env/migration provenance와 daemon counter boundary 일치를 먼저 확인한다. 모두 같을 때만
+provider와 Telegram을 다시 호출하지 않고 기존 immutable artifact를 재사용한다.
 
 ## Issue #188 historical Live-Armed 실행
 

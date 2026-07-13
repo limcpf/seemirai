@@ -543,7 +543,11 @@ Codex-native 운영은 Codex, Git, GitHub, shell command, 문서 상태를 연�
   종료 60초 안에 같은 daemon/source의 counter snapshot을 기록하고 closeout은 해당 delta만 사용한다. durable decision은 1,380건
   이상, 양 끝과 내부 최대 gap 3분 이하, dedupe 유일성을 모두 충족해야 한다.
 - `live:ops:daemon` actual 제출은 DB `orders` row가 아니라 `submittedOrderCount` 경계 delta와 core guard를 통과한 BUY/SELL 단일 intent
-  decision 수를 교차 검증한다. malformed actionable decision 또는 개수 불일치는 risk bypass 가능성으로 보고 day closeout을 실패시킨다.
+  decision, 대상 strategy cleanup artifact 수를 교차 검증한다. decision은 `UPBIT`/`KRW-BTC`/
+  `live_ops_autonomous_24x7_core` scope로 제한한다. malformed actionable decision, cleanup 누락, 개수 불일치는 risk bypass 또는
+  미확인 제출 가능성으로 보고 day closeout을 실패시킨다.
+- day segment `finishedAt`은 closeout 재시도 시각이 아니라 KST window 종료로 고정한다. daily report audit은 해당 종료 시각 이후
+  생성/전달 행만 인정하고, 기존 passed artifact는 현재 rollout provenance와 daemon counter boundary가 모두 같아야 재사용한다.
 - 일/주간 realized loss 중 큰 값과 private open position 명목금액 합계가 50,000 KRW에 닿기 전에 operator stop 또는 kill
   switch/manual review로 수렴한다. open order는 0이어야 하지만 ceiling 미만의 BTC position 자체는 허용한다. 이 ceiling은 M24
   예산 확대 승인이 아니다.
