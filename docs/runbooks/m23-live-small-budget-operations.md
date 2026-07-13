@@ -158,6 +158,60 @@ private exposure를 함께 대조한다.
 2026-07-14를 제외하고 2026-07-15~2026-07-21을 7개 후보 날짜로 사용한다. earliest closeout은
 `2026-07-22T00:00:00+09:00`이다.
 
+### Issue #267 일별 evidence scheduler
+
+7일 뒤 latest status와 DB aggregate를 소급 변환하지 않는다. `scripts/run-m23-production-day-closeout.mjs`는 완료된 KST 하루마다
+daemon 연속 실행/PID/heartbeat, source/config/env/migration provenance, durable decision, risk approval, failure counter,
+Upbit private open order/BTC exposure, 기존 daily report idempotency job과 Telegram delivery audit을 검증한다. 검증된 summary는
+`production-day-YYYY-MM-DD.json` create-only artifact로 기록한다. 실패 시 final day 파일을 점유하지 않고 실패 분류만 별도
+artifact로 남긴다.
+
+Sub PR 04가 mother branch에 merge된 뒤 거래 daemon을 재시작하지 않고 다음 scheduler를 별도 session으로 실행한다.
+
+```sh
+cd /home/lim/code/seemirai-worktrees/issue-267-mother
+ISSUE_267_HOME="$HOME/vaults/99_운영/seemirai-live-ops-production/issue-267"
+SOURCE_SHA="3d48665967b79fbbbf59dd316ec30f61662df12e"
+STARTUP_FILE="$ISSUE_267_HOME/artifacts/live-ops-daemon-startup-$SOURCE_SHA-ee053bc3-1fef-455f-abcd-bfa9fb877840.json"
+SCHEDULER_RUN_ID="$(node -e 'process.stdout.write(require("node:crypto").randomUUID())')"
+umask 077
+corepack pnpm build
+
+setsid -f env \
+  SEEMIRAI_RUN_M23_PRODUCTION_DAY_SCHEDULER=1 \
+  SEEMIRAI_RUN_M23_PRODUCTION_DAY_CLOSEOUT=1 \
+  node scripts/run-m23-production-day-scheduler.mjs \
+  --first-day 2026-07-15 \
+  --day-count 7 \
+  --config "$ISSUE_267_HOME/live-ops.config.json" \
+  --env-file "$ISSUE_267_HOME/live-ops.env" \
+  --daemon-status-file "$ISSUE_267_HOME/artifacts/live-ops-daemon-status.json" \
+  --startup-artifact-file "$STARTUP_FILE" \
+  --daemon-pid-file "$ISSUE_267_HOME/artifacts/live-ops-daemon.pid" \
+  --artifact-dir "$ISSUE_267_HOME/artifacts" \
+  --expected-source-commit-sha "$SOURCE_SHA" \
+  --scheduler-status-file "$ISSUE_267_HOME/artifacts/production-day-scheduler-status.json" \
+  --scheduler-event-log-file "$ISSUE_267_HOME/logs/production-day-scheduler-events.jsonl" \
+  --scheduler-pid-file "$ISSUE_267_HOME/artifacts/production-day-scheduler.pid" \
+  --json \
+  >> "$ISSUE_267_HOME/logs/production-day-scheduler-$SCHEDULER_RUN_ID.log" 2>&1
+```
+
+scheduler는 시작 시 daemon status/startup provenance와 supervisor PID를 먼저 확인한다. 각 KST day 종료 60초 뒤 closeout을
+시도하고 실패하면 5분 간격으로 day별 최대 36회 재시도한다. 같은 `report.daily:<reportDate>` job을 사용하므로 process 재시작이나
+수동 재실행이 Telegram 중복 전송으로 이어지지 않는다. 재시도 한도를 소진하면 다음 날짜로 넘어가지 않고 `failed`로 닫는다.
+
+```sh
+cat "$ISSUE_267_HOME/artifacts/production-day-scheduler-status.json"
+tail -n 20 "$ISSUE_267_HOME/logs/production-day-scheduler-events.jsonl"
+kill -0 "$(cat "$ISSUE_267_HOME/artifacts/production-day-scheduler.pid")"
+```
+
+운영자가 scheduler만 중지할 때는 위 PID에 `SIGTERM`을 보낸다. 이 신호는 거래 daemon에 전달되지 않는다. status가 `stopped`인지
+확인한 뒤 기존 PID 파일을 run ID가 포함된 evidence 이름으로 이동하고 같은 고정 PID 경로로 재실행한다. 고정 create-only PID
+파일은 두 scheduler가 동시에 같은 Telegram report 경계를 호출하지 못하게 막는다. `production-day-YYYY-MM-DD.json`이 이미
+`passed`면 closeout은 provider와 Telegram을 다시 호출하지 않고 기존 immutable artifact를 재사용한다.
+
 ## Issue #188 historical Live-Armed 실행
 
 이 절의 M22 runner/env/candidate 절차는 Issue #188 historical 입력을 재현하기 위한 호환 경로다. Issue #267 successor 배포나

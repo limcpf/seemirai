@@ -256,6 +256,9 @@
 - Issue #267 startup artifact와 일별 summary에는 source commit SHA, config `sha256` fingerprint, expected/applied migration version만
   provenance로 남긴다. config 원문, env 원문, DB URL, credential은 provenance에 포함하지 않으며 startup artifact는 repository 밖
   경로에 create-only로 기록한다.
+- Issue #267 production day scheduler와 closeout actual mode는 서로 다른 명시 guard를 모두 요구한다. config/env는 저장소 밖
+  path로만 전달하고 원문을 status/event/day artifact에 복사하지 않는다. scheduler PID/status/event log와 day/failure artifact는
+  운영 계정 전용 mode `600`으로 기록하며 provider 오류는 error class와 운영자 조치만 남긴다.
 - M23은 BTC 외 market 기본 활성화, 자동 budget 확대, market/best order 기본 허용, hard stop open position 자동 시장가 청산,
   Telegram public webhook endpoint, 출금/입출금 자동화로 확장하지 않는다. 해당 변경은 M24 또는 별도 보안 설계와 source scan이
   필요하다.

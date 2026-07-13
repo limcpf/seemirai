@@ -733,6 +733,8 @@ Issue #267 successor 판정 기준 (2026-07-14):
   `backupRestore.status=blocked`는 실패다.
 - Issue #267 actual validator는 startup/segment provenance, 각 segment 실행 구간이 startup보다 앞서지 않는지, manifest
   `day`-daily report `reportDate`-decision evidence KST day를 교차 검증해야 한다.
+- Issue #267 production day scheduler는 거래 daemon을 재시작하지 않고 완료 KST day를 순차 수집한다. 같은 day의 daily report는
+  기존 DB idempotency key를 재사용하며, 실패한 day를 건너뛰거나 passed artifact를 덮어쓰지 않아야 한다.
 
 Acceptance Criteria:
 
@@ -758,6 +760,8 @@ Acceptance Criteria:
 - [ ] successor actual manifest는 disposable restore DB smoke `passed`만 허용한다.
 - [ ] successor actual manifest는 source SHA/config/env fingerprint/migration 14와 segment provenance 일치를 검증한다.
 - [ ] successor의 7개 연속 완료 KST `reportDate`만 actual manifest segment로 사용하고 decision evidence day와 일치시킨다.
+- [x] successor 일별 closeout/scheduler는 source/migration, daemon heartbeat, decision/risk counter, private exposure, daily report
+  delivery를 검증하고 immutable day artifact를 생성한다.
 - [ ] actual manifest `PASS` 전에는 M24 budget/universe/profile 확대가 승인되지 않는다.
 
 테스트 요구사항:

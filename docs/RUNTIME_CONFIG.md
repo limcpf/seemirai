@@ -724,6 +724,10 @@ M23 live-armed 운영 기준:
   결과 또는 blocker 기록을 집계한다. Issue #267 guarded 경로는 production `live:ops:daemon` source/config/env/migration provenance,
   완료 KST report/decision day 일치, `backupRestore.status=passed`를 추가로 요구한다. 기본 CI/PR 검증에서는 fixture smoke만 실행하며
   live API, Telegram provider, DB restore를 직접 호출하지 않는다.
+- Issue #267은 `scripts/run-m23-production-day-scheduler.mjs`가 완료 KST day마다
+  `scripts/run-m23-production-day-closeout.mjs`를 호출한다. actual mode는 scheduler/closeout guard를 모두 요구하고, daemon
+  source/config/env/migration provenance와 PID/heartbeat, DB decision/risk approval, private exposure를 검증한 뒤 기존
+  `report.daily:<reportDate>` idempotency job으로 daily report를 닫는다. scheduler는 거래 daemon lifecycle을 변경하지 않는다.
 - M23 이후 universe, strategy, budget 확대는 M24 범위다. M23 config나 runbook은 BTC 외 market 기본 활성화, 자동 budget 확대,
   market/best order 기본 허용을 열지 않는다.
 

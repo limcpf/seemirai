@@ -537,6 +537,9 @@ Codex-native 운영은 Codex, Git, GitHub, shell command, 문서 상태를 연�
 - Issue #267 guarded 경로는 production `live:ops:daemon` startup/segment의 source SHA, config/env fingerprint, expected/applied migration
   14와 완료 KST daily report/day decision evidence 일치를 확인하고, DB backup/restore smoke가 disposable restore DB에서 실제로
   통과한 `passed` 입력만 허용한다. 외부 DB 조건이 없으면 `blocked`로 남기되 actual closeout은 실패다.
+- Issue #267 production day scheduler는 완료 KST day를 순서대로만 처리한다. provider/heartbeat 지연은 같은 day와 같은 daily report
+  idempotency key로 bounded retry하고, 한도를 소진하면 다음 day로 건너뛰지 않는다. passed day artifact는 create-only이며 재실행 시
+  provider/Telegram side effect 없이 재사용한다. scheduler stop은 거래 daemon stop으로 전파하지 않는다.
 - 누적 realized loss와 미체결 노출 합계가 50,000 KRW에 닿기 전에 operator stop 또는 kill switch/manual review로 수렴한다. 이
   ceiling은 M24 예산 확대 승인이 아니다.
 
