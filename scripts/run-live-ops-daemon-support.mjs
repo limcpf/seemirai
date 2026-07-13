@@ -442,7 +442,32 @@ async function assertLiveOpsDaemonArtifactTargetOutsideRepository(filePath, repo
   }
 
   const realRepositoryRoot = await realpath(resolvedRepositoryRoot);
-  let existingAncestor = targetDirectory;
+  const projectedRealPath = await resolveLiveOpsDaemonProjectedRealPath(resolvedPath);
+  if (isPathInside(realRepositoryRoot, projectedRealPath)) {
+    // repository를 가리키는 외부 symlink 아래 새 디렉터리도 생성 전에 차단한다.
+    throw new Error(`${artifactLabel}는 repository 밖의 운영 경로에 저장해야 합니다.`);
+  }
+  return realRepositoryRoot;
+}
+
+async function assertDistinctLiveOpsDaemonArtifactPaths(startupArtifactFilePath, statusFilePath) {
+  await assertLiveOpsDaemonStatusFileNotSymlink(statusFilePath);
+  if (typeof startupArtifactFilePath !== "string" || typeof statusFilePath !== "string") {
+    return;
+  }
+  const [startupRealPath, statusRealPath] = await Promise.all([
+    resolveLiveOpsDaemonProjectedRealPath(startupArtifactFilePath),
+    resolveLiveOpsDaemonProjectedRealPath(statusFilePath),
+  ]);
+  if (startupRealPath === statusRealPath) {
+    // mutable status가 create-only startup evidence를 덮어쓰면 rollout provenance를 복구할 수 없다.
+    throw new Error("daemon startup artifact와 status file은 같은 경로를 사용할 수 없습니다. 서로 다른 운영 경로를 지정하세요.");
+  }
+}
+
+async function resolveLiveOpsDaemonProjectedRealPath(filePath) {
+  const resolvedPath = path.resolve(filePath);
+  let existingAncestor = resolvedPath;
   let realExistingAncestor;
   while (realExistingAncestor === undefined) {
     try {
@@ -458,28 +483,7 @@ async function assertLiveOpsDaemonArtifactTargetOutsideRepository(filePath, repo
       existingAncestor = parent;
     }
   }
-
-  const projectedRealDirectory = path.resolve(
-    realExistingAncestor,
-    path.relative(existingAncestor, targetDirectory),
-  );
-  if (isPathInside(realRepositoryRoot, projectedRealDirectory)) {
-    // repository를 가리키는 외부 symlink 아래 새 디렉터리도 생성 전에 차단한다.
-    throw new Error(`${artifactLabel}는 repository 밖의 운영 경로에 저장해야 합니다.`);
-  }
-  return realRepositoryRoot;
-}
-
-async function assertDistinctLiveOpsDaemonArtifactPaths(startupArtifactFilePath, statusFilePath) {
-  await assertLiveOpsDaemonStatusFileNotSymlink(statusFilePath);
-  if (
-    typeof startupArtifactFilePath === "string"
-    && typeof statusFilePath === "string"
-    && path.resolve(startupArtifactFilePath) === path.resolve(statusFilePath)
-  ) {
-    // mutable status가 create-only startup evidence를 덮어쓰면 rollout provenance를 복구할 수 없다.
-    throw new Error("daemon startup artifact와 status file은 같은 경로를 사용할 수 없습니다. 서로 다른 운영 경로를 지정하세요.");
-  }
+  return path.resolve(realExistingAncestor, path.relative(existingAncestor, resolvedPath));
 }
 
 async function assertLiveOpsDaemonStatusFileNotSymlink(statusFilePath) {
@@ -944,12 +948,15 @@ function resolveDefaultDaemonStatusFile(options, summary) {
  * - 없음.
  */
 function resolveDefaultDaemonStatusFileFromConfigPath(options) {
-  if (options.fixtureSmoke === true || options.configPath === undefined) {
+  if (options.fixtureSmoke === true) {
     return undefined;
   }
   if (options.startupArtifactFilePath !== undefined) {
     // production startup artifact 디렉터리는 repository 밖으로 검증되므로 기본 status도 같은 운영 경계에 둔다.
     return path.join(path.dirname(path.resolve(options.startupArtifactFilePath)), "live-ops-daemon-status.json");
+  }
+  if (options.configPath === undefined) {
+    return undefined;
   }
   const configPath = path.resolve(options.configPath);
   return path.join(path.dirname(configPath), "artifacts", "live-ops-daemon-status.json");

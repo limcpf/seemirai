@@ -1,6 +1,6 @@
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { link, mkdtemp, readFile, rm, stat, symlink, utimes, writeFile } from "node:fs/promises";
+import { link, mkdir, mkdtemp, readFile, rm, stat, symlink, utimes, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
@@ -942,6 +942,71 @@ describe("production live ops script skeleton", () => {
     await expect(stat(startupArtifactFilePath)).rejects.toMatchObject({ code: "ENOENT" });
   });
 
+  it("live:ops:daemon은 status parent symlink가 startup 경로를 alias하면 side effect 전에 차단한다", async () => {
+    const daemonModulePath = path.join(process.cwd(), "scripts/run-live-ops-daemon-support.mjs");
+    const { runLiveOpsDaemon } = await import(daemonModulePath);
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-live-ops-status-parent-symlink-"));
+    const artifactDir = path.join(tempDir, "artifacts");
+    const statusAliasDir = path.join(tempDir, "latest");
+    await mkdir(artifactDir, { recursive: true });
+    await symlink(artifactDir, statusAliasDir);
+    const startupArtifactFilePath = path.join(artifactDir, "startup.json");
+    const statusFilePath = path.join(statusAliasDir, "startup.json");
+    let prepareCalled = false;
+
+    await expect(runLiveOpsDaemon({
+      configPath: path.join(tempDir, "live-ops.production.json"),
+      statusFilePath,
+      sourceCommitSha: testDaemonSourceCommitSha,
+      startupArtifactFilePath,
+      maxTicks: 1,
+    }, {
+      ...createDaemonProvenanceIo(),
+      async prepareRuntimeProvenance() {
+        prepareCalled = true;
+        return {
+          ...testDaemonRuntimeProvenance,
+          repositoryRoot: process.cwd(),
+        };
+      },
+    })).rejects.toThrow("같은 경로");
+
+    expect(prepareCalled).toBe(false);
+    await expect(stat(startupArtifactFilePath)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("live:ops:daemon은 config 누락 startup 실패도 startup artifact 옆 기본 status에 기록한다", async () => {
+    const daemonModulePath = path.join(process.cwd(), "scripts/run-live-ops-daemon-support.mjs");
+    const { runLiveOpsDaemon } = await import(daemonModulePath);
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-live-ops-missing-config-status-"));
+    const startupArtifactFilePath = path.join(tempDir, "startup.json");
+    const statusFilePath = path.join(tempDir, "live-ops-daemon-status.json");
+
+    await expect(runLiveOpsDaemon({
+      envFilePath: path.join(process.cwd(), "tests/fixtures/live-ops/fake.env"),
+      sourceCommitSha: testDaemonSourceCommitSha,
+      startupArtifactFilePath,
+      maxTicks: 1,
+    }, {
+      async inspectSourceTree() {
+        return {
+          repositoryRoot: process.cwd(),
+          headCommitSha: testDaemonSourceCommitSha,
+          clean: true,
+        };
+      },
+    })).rejects.toThrow("--config 경로가 필요합니다");
+
+    expect(JSON.parse(await readFile(statusFilePath, "utf8"))).toMatchObject({
+      status: "provenance_failed",
+      statusFilePath,
+      startupArtifactFilePath,
+      latestError: {
+        message: expect.stringContaining("--config 경로가 필요합니다"),
+      },
+    });
+  });
+
   it("live:ops tick은 startup 이후 config, env 또는 migration drift를 live provider 경계 전에 차단한다", async () => {
     const supportModulePath = path.join(process.cwd(), "scripts/run-live-ops-support.mjs");
     const { assertLiveOpsCliRuntimeProvenanceMigration, loadLiveOpsCliInputs } = await import(supportModulePath);
@@ -962,6 +1027,18 @@ describe("production live ops script skeleton", () => {
     await expect(loadLiveOpsCliInputs({
       ...baseOptions,
       configPath: invalidConfigPath,
+      runtimeProvenance: testDaemonRuntimeProvenance,
+    })).rejects.toMatchObject({ name: "LiveOpsRuntimeProvenanceMismatchError" });
+
+    await expect(loadLiveOpsCliInputs({
+      ...baseOptions,
+      configPath: path.join(tempDir, "deleted-config.json"),
+      runtimeProvenance: testDaemonRuntimeProvenance,
+    })).rejects.toMatchObject({ name: "LiveOpsRuntimeProvenanceMismatchError" });
+
+    await expect(loadLiveOpsCliInputs({
+      ...baseOptions,
+      envFilePath: path.join(tempDir, "deleted.env"),
       runtimeProvenance: testDaemonRuntimeProvenance,
     })).rejects.toMatchObject({ name: "LiveOpsRuntimeProvenanceMismatchError" });
 

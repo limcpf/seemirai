@@ -376,8 +376,8 @@ async function loadLiveOpsCliValidatedFiles(options) {
 
   const configPath = path.resolve(options.configPath);
   const envFilePath = path.resolve(options.envFilePath);
-  const configRawText = await readFile(configPath, "utf8");
-  const envRawText = await readFile(envFilePath, "utf8");
+  const configRawText = await readLiveOpsCliProvenanceFile(configPath, "config", options.runtimeProvenance);
+  const envRawText = await readLiveOpsCliProvenanceFile(envFilePath, "env", options.runtimeProvenance);
   const configFingerprint = `sha256:${createHash("sha256").update(configRawText, "utf8").digest("hex")}`;
   const envFingerprint = `sha256:${createHash("sha256").update(envRawText, "utf8").digest("hex")}`;
   assertLiveOpsCliRuntimeProvenanceConfig(options.runtimeProvenance, configFingerprint);
@@ -394,6 +394,20 @@ async function loadLiveOpsCliValidatedFiles(options) {
     configFingerprint,
     envFingerprint,
   };
+}
+
+async function readLiveOpsCliProvenanceFile(filePath, label, runtimeProvenance) {
+  try {
+    return await readFile(filePath, "utf8");
+  } catch (error) {
+    if (runtimeProvenance !== undefined) {
+      // startup에서 고정한 입력 파일이 사라지거나 읽히지 않으면 transient retry로 다른 runtime 입력을 기다리지 않는다.
+      throw new LiveOpsRuntimeProvenanceMismatchError(
+        `운영 ${label} 파일을 읽을 수 없어 daemon startup provenance를 확인할 수 없습니다. 파일 경로와 권한을 복구한 뒤 daemon을 새로 시작하세요.`,
+      );
+    }
+    throw error;
+  }
 }
 
 function assertLiveOpsCliRuntimeProvenanceConfig(runtimeProvenance, actualConfigFingerprint) {

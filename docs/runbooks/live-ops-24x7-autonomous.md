@@ -69,10 +69,12 @@ daemon loop는 1회성 cleanup probe가 아니다. 명시한 `--duration-ms`나 
 실패별로 다른 sleep을 둔다. 기본 tick 간격은 1초이고, 차단은 5초, 수동 확인은 30초, provider/DB 일시 실패는 5초 후 재시도한다.
 
 production에서 `--status-file`을 지정하지 않으면 repository 밖 startup artifact 디렉터리의 `live-ops-daemon-status.json`을 출력 상태로
-자동 생성한다. startup artifact와 같은 파일 경로, status symlink, repository 안의 startup/status 경로는 허용하지 않으며, parent
-디렉터리와 startup/status를 쓰기 전에 차단한다. 이 파일은 실행 전 준비물이 아니며, 감시자나 operator가 최신 counter를 읽기 위한
-결과물이다. 성공 tick 뒤 provider/DB
+자동 생성한다. config 인자가 누락되어 startup 검증이 실패해도 startup artifact 경로가 있으면 이 기본 status에 실패 원인을 남긴다.
+startup artifact와 부모 symlink를 해석한 실제 대상이 같은 파일 경로, status symlink, repository 안의 startup/status 경로는
+허용하지 않으며, parent 디렉터리와 startup/status를 쓰기 전에 차단한다. 이 파일은 실행 전 준비물이 아니며, 감시자나 operator가
+최신 counter를 읽기 위한 결과물이다. 성공 tick 뒤 provider/DB
 일시 실패가 발생해도 같은 status file은 `transient_failure`, 최신 counter, 최신 error로 갱신되어 직전 정상 tick 상태로 남지 않는다.
+startup 이후 config/env 파일이 삭제되거나 읽히지 않으면 `provenance_failed`를 기록하고 재시작 전까지 loop를 종료한다.
 `live:ops:tui --attach <status-json>`은 foreground summary뿐 아니라 daemon status의 top-level `latestSummary`도 읽는다.
 
 ## Entry DnD
