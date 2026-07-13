@@ -405,6 +405,7 @@ async function runActualProductionDayCloseout(options) {
       ...databaseRead,
       orderSubmittedCount: liveSubmission.submittedOrderCount,
       brokerSubmissionCount: liveSubmission.submittedOrderCount,
+      exitRequoteCount: liveSubmission.exitRequoteCount,
       riskGateBypassCount: liveSubmission.riskGateBypassCount,
     };
     assertActualPreconditions({
@@ -670,6 +671,7 @@ export function createProductionDaySummary(input) {
     day: input.day,
     boundaries: input.daemon.boundaries,
     submittedOrderCount: input.database.brokerSubmissionCount,
+    exitRequoteCount: input.database.exitRequoteCount ?? 0,
     actionableDecisionCount: input.database.actionableDecisionCount,
     cleanupEvidenceId: input.liveArtifacts.evidenceId,
   });
@@ -737,6 +739,8 @@ export function createProductionDaySummary(input) {
       }),
       liveSubmission: okCheck({
         submittedOrderCount: input.database.brokerSubmissionCount,
+        exitRequoteCount: input.database.exitRequoteCount ?? 0,
+        terminalCleanupSubmissionCount: input.database.brokerSubmissionCount - (input.database.exitRequoteCount ?? 0),
         guardedActionableDecisionCount: input.database.actionableDecisionCount,
         malformedActionableDecisionCount: input.database.malformedActionableDecisionCount,
         cleanupSubmissionCount: input.liveArtifacts.cleanupSubmissionCount,
@@ -911,13 +915,18 @@ export function assertLiveSubmissionEvidence({ counters, databaseEvidence, liveA
       `daemon broker 제출과 guarded actionable decision 개수가 다릅니다: ${counters.submittedOrderCount}/${databaseEvidence.actionableDecisionCount}`,
     );
   }
-  if (counters.submittedOrderCount !== liveArtifacts.cleanupSubmissionCount) {
+  if (counters.exitRequoteCount > counters.submittedOrderCount) {
+    throw new Error(`SELL 재호가 수가 daemon broker 제출 수보다 많습니다: ${counters.exitRequoteCount}/${counters.submittedOrderCount}`);
+  }
+  const terminalCleanupSubmissionCount = counters.submittedOrderCount - counters.exitRequoteCount;
+  if (terminalCleanupSubmissionCount !== liveArtifacts.cleanupSubmissionCount) {
     throw new Error(
-      `daemon broker 제출과 대상 strategy cleanup artifact 개수가 다릅니다: ${counters.submittedOrderCount}/${liveArtifacts.cleanupSubmissionCount}`,
+      `terminal broker 제출과 대상 strategy cleanup artifact 개수가 다릅니다: ${terminalCleanupSubmissionCount}/${liveArtifacts.cleanupSubmissionCount}`,
     );
   }
   return {
     submittedOrderCount: counters.submittedOrderCount,
+    exitRequoteCount: counters.exitRequoteCount,
     riskGateBypassCount: 0,
   };
 }
@@ -1038,9 +1047,9 @@ async function readPrivateExchangeEvidence({ infrastructureModule, secrets, refe
   };
 }
 
-async function readDailyReportEvidence(pool, day, windowFinishedAt, reportRun, report) {
+export async function readDailyReportEvidence(pool, day, windowFinishedAt, reportRun, report) {
   const audit = await pool.query(
-    `select id, actor, correlation_id, payload_json->>'reason_code' as reason_code, occurred_at
+    `select id, payload_json->>'actor' as actor, correlation_id, payload_json->>'reason_code' as reason_code, occurred_at
        from audit_events
       where payload_json->>'report_date' = $1
         and occurred_at >= $2

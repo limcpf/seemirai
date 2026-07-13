@@ -305,12 +305,18 @@ describe("M23 production day closeout script", () => {
           liveArtifacts: { cleanupSubmissionCount: 0 },
         });
       } catch (error) { cleanupMissing = error.message; }
-      process.stdout.write(JSON.stringify({ counters: evidence.counters, valid, mismatch, cleanupMissing }));
+      const requote = module.assertLiveSubmissionEvidence({
+        counters: { ...evidence.counters, exitRequoteCount: 1 },
+        databaseEvidence: { actionableDecisionCount: 1, malformedActionableDecisionCount: 0 },
+        liveArtifacts: { cleanupSubmissionCount: 0 },
+      });
+      process.stdout.write(JSON.stringify({ counters: evidence.counters, valid, mismatch, cleanupMissing, requote }));
     `);
     expect(output.counters).toMatchObject({ tickCount: 1440, submittedOrderCount: 1 });
-    expect(output.valid).toEqual({ submittedOrderCount: 1, riskGateBypassCount: 0 });
+    expect(output.valid).toEqual({ submittedOrderCount: 1, exitRequoteCount: 0, riskGateBypassCount: 0 });
     expect(output.mismatch).toContain("broker 제출과 guarded actionable decision");
-    expect(output.cleanupMissing).toContain("cleanup artifact 개수");
+    expect(output.cleanupMissing).toContain("terminal broker 제출과 대상 strategy cleanup artifact 개수");
+    expect(output.requote).toEqual({ submittedOrderCount: 1, exitRequoteCount: 1, riskGateBypassCount: 0 });
   });
 
   it("decision aggregate는 Issue 267 대상 exchange, market, strategy scope만 조회한다", async () => {
@@ -354,6 +360,12 @@ describe("M23 production day closeout script", () => {
 
   it("일반 daily report audit은 Issue 267 M23 closeout 전달 evidence로 재사용하지 않는다", async () => {
     const output = await runModuleExpression(`
+      let queryText;
+      await module.readDailyReportEvidence({
+        async query(text) { queryText = text; return { rows: [] }; },
+      }, "2026-07-15", "2026-07-15T15:00:00.000Z", { status: "SKIPPED_EXISTING_JOB" }, {
+        orderCount: 0, fillCount: 0, realizedPnl: { value: null, available: false, sampleCount: 0 },
+      });
       const rows = [
         {
           id: "generic", actor: "daily_report_runner", correlation_id: "generic-run",
@@ -370,11 +382,16 @@ describe("M23 production day closeout script", () => {
           occurred_at: "2026-07-15T15:01:02.000Z",
         },
       ];
-      process.stdout.write(JSON.stringify(module.filterIssue267CloseoutDailyReportAuditRows(
-        rows, "2026-07-15", "2026-07-15T15:00:00.000Z",
-      )));
-    `) as Array<{ id: string }>;
-    expect(output.map((row) => row.id)).toEqual(["closeout", "recovery"]);
+      process.stdout.write(JSON.stringify({
+        queryText,
+        rows: module.filterIssue267CloseoutDailyReportAuditRows(
+          rows, "2026-07-15", "2026-07-15T15:00:00.000Z",
+        ),
+      }));
+    `);
+    expect(output.rows.map((row: { id: string }) => row.id)).toEqual(["closeout", "recovery"]);
+    expect(output.queryText).toContain("payload_json->>'actor' as actor");
+    expect(output.queryText).not.toMatch(/select id,\s*actor,/u);
   });
 
   it("제출 cleanup은 matching reservation을 요구하고 PnL 입력 변경은 evidence fingerprint를 바꾼다", async () => {

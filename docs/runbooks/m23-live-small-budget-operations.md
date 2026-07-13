@@ -162,7 +162,8 @@ restart하고 새 startup artifact를 사용한다. startup 당일은 full KST d
 
 7일 뒤 latest status와 DB aggregate를 소급 변환하지 않는다. `scripts/run-m23-production-day-closeout.mjs`는 완료된 KST 하루마다
 daemon 연속 실행/PID/heartbeat, 현재 config/env 원문 fingerprint와 startup provenance 일치, KST 시작/종료 counter delta, 대상
-strategy의 full-day durable decision, 실제 broker 제출/guarded decision/cleanup artifact 개수와 BUY entry reservation 일치, Upbit private open
+strategy의 full-day durable decision, 실제 broker 제출/guarded decision/terminal cleanup 또는 SELL 재호가 counter와 BUY entry
+reservation 일치, Upbit private open
 order/BTC exposure, KST day 종료 뒤 생성된 daily report와 Telegram delivery audit을 검증한다. daily report에는 같은 closeout 시점의
 M23 후보/판단/주문/노출 상태를 포함한다. 검증된 summary는
 `production-day-YYYY-MM-DD.json` create-only artifact로 기록한다. 실패 시 final day 파일을 점유하지 않고 실패 분류만 별도
