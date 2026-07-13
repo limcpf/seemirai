@@ -589,12 +589,12 @@ async function loadLiveOpsCliAttachReadonlyInputs({ configPath, envFilePath, con
 }
 
 function createLiveOpsCliAttachSummary(source) {
-  const summary = source?.summary ?? source?.latestSummary ?? source;
+  const hasLatestSummary = isNonEmptyRecord(source?.latestSummary);
+  const summary = source?.summary ?? (hasLatestSummary ? source.latestSummary : source);
   const daemonFailureStatus = source?.status;
   if (
     source?.kind !== "live_ops_daemon_summary" ||
-    (daemonFailureStatus !== "transient_failure" && daemonFailureStatus !== "provenance_failed") ||
-    !isNonEmptyRecord(source?.latestSummary)
+    (daemonFailureStatus !== "transient_failure" && daemonFailureStatus !== "provenance_failed")
   ) {
     return summary;
   }
@@ -605,11 +605,33 @@ function createLiveOpsCliAttachSummary(source) {
     ? String(latestError.observedAt)
     : new Date().toISOString();
   const errorName = hasMeaningfulValue(latestError?.name) ? String(latestError.name) : safeErrorName(latestError);
+  const failureSummary = hasLatestSummary
+    ? summary
+    : {
+      dbReadiness: { status: "daemon_startup_failed", ready: false, statusLabel: "daemon 시작 실패" },
+      marketData: { status: "daemon_startup_failed", ready: false, statusLabel: "daemon 시작 실패" },
+      analysisDecision: { status: "daemon_startup_failed", ready: false, statusLabel: "daemon 시작 실패" },
+      reconcilePnlStatus: {
+        status: "daemon_startup_failed",
+        ready: false,
+        providerProbeAttempted: false,
+        manualReviewRequired: true,
+        statusLabel: "daemon 시작 실패",
+        reconcileStatusLabel: "확인 필요",
+        pnlStatusLabel: "확인 필요",
+      },
+      telegramAlert: {
+        status: "daemon_startup_failed",
+        ready: false,
+        providerDispatchAttempted: false,
+        statusLabel: "daemon 시작 실패",
+      },
+    };
   return {
-    ...summary,
+    ...failureSummary,
     liveOrderCapable: false,
     liveExecution: {
-      ...(summary.liveExecution ?? {}),
+      ...(failureSummary.liveExecution ?? {}),
       status: provenanceFailed ? "daemon_provenance_failed" : "daemon_transient_failure",
       ready: false,
       liveOrderCapable: false,
@@ -623,7 +645,7 @@ function createLiveOpsCliAttachSummary(source) {
         ? "config fingerprint, source SHA, DB migration을 startup artifact와 맞춘 뒤 daemon을 새로 시작하세요."
         : "daemon status file의 latestError와 최근 로그를 확인한 뒤 실패 원인을 복구하세요.",
       checks: [
-        ...(Array.isArray(summary.liveExecution?.checks) ? summary.liveExecution.checks : []),
+        ...(Array.isArray(failureSummary.liveExecution?.checks) ? failureSummary.liveExecution.checks : []),
         blockedLiveExecutionCheck("daemon_status", "daemon 최신 상태가 실패로 닫혔습니다.", provenanceFailed
           ? "live_ops_daemon_provenance_failed"
           : "live_ops_daemon_transient_failure", {

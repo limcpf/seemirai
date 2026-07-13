@@ -12101,7 +12101,7 @@ console.log(JSON.stringify({
     });
     expect(summary.liveExecution.checks.map((check: { code: string }) => check.code)).toContain("live_ops_daemon_transient_failure");
     const supportSource = await readFile(path.join(process.cwd(), "scripts/run-live-ops-support.mjs"), "utf8");
-    expect(supportSource).toMatch(/return\s*\{\s*\n\s*\.\.\.summary,\s*\n\s*liveOrderCapable:\s*false,\s*\n\s*liveExecution:/u);
+    expect(supportSource).toMatch(/return\s*\{\s*\n\s*\.\.\.failureSummary,\s*\n\s*liveOrderCapable:\s*false,\s*\n\s*liveExecution:/u);
   });
 
   it("non-fixture live:ops:tui attach는 daemon provenance failure를 stale ready summary보다 우선 표시한다", async () => {
@@ -12155,6 +12155,65 @@ console.log(JSON.stringify({
         ready: false,
         liveOrderCapable: false,
         statusLabel: "daemon provenance 실패",
+      },
+    });
+    expect(summary.liveExecution.checks.map((check: { code: string }) => check.code))
+      .toContain("live_ops_daemon_provenance_failed");
+  });
+
+  it("non-fixture live:ops:tui attach는 첫 tick 전 daemon provenance failure도 차단 상태로 표시한다", async () => {
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-live-ops-daemon-attach-startup-failure-"));
+    const statusSourcePath = path.join(tempDir, "live-ops-daemon-status.json");
+    await writeFile(statusSourcePath, JSON.stringify({
+      kind: "live_ops_daemon_summary",
+      status: "provenance_failed",
+      latestError: {
+        name: "LiveOpsRuntimeProvenanceMismatchError",
+        message: "--config 경로가 필요합니다.",
+        observedAt: "2026-07-14T00:00:05.000Z",
+      },
+      latestSummary: null,
+    }), "utf8");
+
+    const { loadLiveOpsCliInputs, renderLiveOpsSummary } = await import(
+      path.join(process.cwd(), "scripts/run-live-ops-support.mjs")
+    );
+    const inputs = await loadLiveOpsCliInputs({
+      configPath: "config/live-ops.example.json",
+      envFilePath: "tests/fixtures/live-ops/fake.env",
+      fixtureSmoke: false,
+      attach: statusSourcePath,
+      attachReadonly: true,
+      fetchImpl: async () => {
+        throw new Error("AttachShouldNotFetch");
+      },
+    });
+    const summary = renderLiveOpsSummary({
+      ...inputs,
+      fixtureSmoke: false,
+      tui: true,
+      attach: statusSourcePath,
+    });
+
+    expect(summary).toMatchObject({
+      status: "blocked",
+      liveOrderCapable: false,
+      dbReadiness: { ready: false },
+      marketData: { ready: false },
+      analysisDecision: { ready: false },
+      liveExecution: {
+        status: "daemon_provenance_failed",
+        ready: false,
+        liveOrderCapable: false,
+      },
+      reconcilePnlStatus: {
+        ready: false,
+        manualReviewRequired: true,
+        providerProbeAttempted: false,
+      },
+      telegramAlert: {
+        ready: false,
+        providerDispatchAttempted: false,
       },
     });
     expect(summary.liveExecution.checks.map((check: { code: string }) => check.code))
