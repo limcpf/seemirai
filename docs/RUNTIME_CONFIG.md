@@ -726,7 +726,7 @@ M23 live-armed 운영 기준:
   live API, Telegram provider, DB restore를 직접 호출하지 않는다.
 - Issue #267은 `scripts/run-m23-production-day-scheduler.mjs`가 완료 KST day마다
   `scripts/run-m23-production-day-closeout.mjs`를 호출한다. actual mode는 scheduler/closeout guard를 모두 요구하고, daemon
-  source/config/env/migration provenance와 현재 config/env 원문 fingerprint, PID/heartbeat, DB decision/risk approval, matching
+  source/config/env/migration provenance와 현재 config/env 원문 fingerprint, PID/heartbeat, DB decision/risk approval, BUY entry
   reservation/cleanup, private exposure를 검증한 뒤 기존 `report.daily:<reportDate>` idempotency job으로 M23 live ops 상태가 포함된
   daily report를 닫는다. `--first-day`는 같은 provenance의 연속 7일 손실 집계 경계를 고정한다. scheduler는 거래 daemon lifecycle을
   변경하지 않는다.

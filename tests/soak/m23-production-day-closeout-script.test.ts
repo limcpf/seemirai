@@ -352,11 +352,35 @@ describe("M23 production day closeout script", () => {
     expect(output.map((row) => row.id)).toEqual(["boundary", "late"]);
   });
 
+  it("일반 daily report audit은 Issue 267 M23 closeout 전달 evidence로 재사용하지 않는다", async () => {
+    const output = await runModuleExpression(`
+      const rows = [
+        {
+          id: "generic", actor: "daily_report_runner", correlation_id: "generic-run",
+          occurred_at: "2026-07-15T15:01:00.000Z",
+        },
+        {
+          id: "closeout", actor: "codex-issue-267-day-closeout",
+          correlation_id: "issue-267-production-day-2026-07-15-run-1",
+          occurred_at: "2026-07-15T15:01:01.000Z",
+        },
+        {
+          id: "recovery", actor: "codex-issue-267-day-closeout",
+          correlation_id: "issue-267-delivery-recovery-2026-07-15",
+          occurred_at: "2026-07-15T15:01:02.000Z",
+        },
+      ];
+      process.stdout.write(JSON.stringify(module.filterIssue267CloseoutDailyReportAuditRows(
+        rows, "2026-07-15", "2026-07-15T15:00:00.000Z",
+      )));
+    `) as Array<{ id: string }>;
+    expect(output.map((row) => row.id)).toEqual(["closeout", "recovery"]);
+  });
+
   it("제출 cleanup은 matching reservation을 요구하고 PnL 입력 변경은 evidence fingerprint를 바꾼다", async () => {
     const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-m23-live-artifacts-"));
     const missingReservationDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-m23-live-artifacts-missing-"));
     const attemptSuffix = "a".repeat(26);
-    const reservationFile = `reservation-ops-${attemptSuffix}.json`;
     const cleanupFile = `cleanup-ops-${attemptSuffix}.json`;
     const reservation = {
       attemptId: `ops-${attemptSuffix}`,
@@ -380,9 +404,13 @@ describe("M23 production day closeout script", () => {
       exitFeeKrw: "4.5",
       realizedPnlKrw: "-100",
     };
-    await writeFile(path.join(artifactDir, reservationFile), `${JSON.stringify(reservation)}\n`, "utf8");
     await writeFile(path.join(artifactDir, cleanupFile), `${JSON.stringify(cleanup)}\n`, "utf8");
-    await writeFile(path.join(missingReservationDir, cleanupFile), `${JSON.stringify(cleanup)}\n`, "utf8");
+    await writeFile(path.join(missingReservationDir, cleanupFile), `${JSON.stringify({
+      ...cleanup,
+      kind: "live_ops_autonomous_entry_fill_closeout",
+      side: "BUY",
+      realizedPnlKrw: undefined,
+    })}\n`, "utf8");
 
     const output = await runModuleExpression(`
       const fs = await import("node:fs/promises");
@@ -400,7 +428,7 @@ describe("M23 production day closeout script", () => {
     expect(output.first.realizedLossKrw).toBe("100");
     expect(output.second.realizedLossKrw).toBe("200");
     expect(output.second.evidenceId).not.toBe(output.first.evidenceId);
-    expect(output.missingReservation).toContain("일치하는 대상 strategy reservation이 없습니다");
+    expect(output.missingReservation).toContain("BUY 제출 cleanup과 일치하는 대상 strategy reservation이 없습니다");
   });
 
   it("주간 손실은 같은 provenance와 first-day를 가진 연속 선행 일자만 집계한다", async () => {
@@ -528,7 +556,7 @@ describe("M23 production day closeout script", () => {
       process.stdout.write(JSON.stringify({ result, calls }));
     `);
     expect(output.result).toEqual({ status: "DELIVERED", auditEventId: "audit-1" });
-    expect(output.calls.map((call: unknown[]) => call[0])).toEqual(["enqueue", "claim", "send", "audit", "complete"]);
+    expect(output.calls.map((call: unknown[]) => call[0])).toEqual(["enqueue", "claim", "audit", "send", "audit", "complete"]);
     expect(output.calls[0][1]).toMatchObject({
       jobType: "report.daily.delivery_recovery",
       idempotencyKey: "report.daily.delivery_recovery:2026-07-15",
@@ -544,7 +572,7 @@ describe("M23 production day closeout script", () => {
         async claimJobByIdempotencyKey() { return job; },
         async completeJob(_database, input) { calls.push(["complete", input]); },
         async failJob(_database, input) { calls.push(["fail", input]); return { ...job, status: "PENDING" }; },
-        PostgresAuditLogRepository: class {},
+        PostgresAuditLogRepository: class { async appendEvent() { return { auditEventId: "generated" }; } },
       };
       let message;
       try {

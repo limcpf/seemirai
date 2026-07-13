@@ -105,8 +105,8 @@ window에서 제외한다. 첫 유효 full KST day는 2026-07-15, 일곱째는 2
   - [x] daemon source/config/env/migration provenance, PID/heartbeat, KST 경계 counter delta, DB migration/kill switch/full-day decision,
     private exposure를 검증한다.
   - [x] actual broker 제출은 daemon day delta, 대상 strategy guarded actionable decision, cleanup artifact 수를 대조하고 DB `orders` row에 의존하지 않는다.
-  - [x] 제출 cleanup마다 같은 scope의 durable reservation을 요구하고 cleanup fingerprint에 수량/가격/fee/realized PnL을 포함한다.
-  - [x] daily report는 KST day 종료 뒤 audit만 인정하고 M23 후보/판단 상태를 포함하며, 기존 `report.daily:<reportDate>` key를 재사용하고 delivery 실패는 별도 idempotent recovery job에서 복구한다.
+  - [x] BUY entry cleanup마다 같은 scope의 durable reservation을 요구하고 cleanup fingerprint에 수량/가격/fee/realized PnL을 포함한다.
+  - [x] daily report는 KST day 종료 뒤 closeout actor/correlation audit만 인정하고 M23 후보/판단 상태를 포함하며, 기존 report 완료 또는 delivery 실패는 별도 idempotent recovery job에서 복구한다.
   - [x] existing day artifact는 현재 rollout provenance와 daemon boundary가 같을 때만 재사용하고 segment 종료는 KST window로 고정한다.
   - [x] provider 이전 실패도 immutable failure artifact로 남기고 주간 손실은 first-day부터 같은 provenance의 연속 선행 일자만 합산한다.
   - [x] scheduler는 2026-07-15~2026-07-21을 순차 실행하며 같은 day만 bounded retry하고 누락된 day를 건너뛰지 않는다.

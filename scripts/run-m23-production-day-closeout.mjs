@@ -434,6 +434,7 @@ async function runActualProductionDayCloseout(options) {
       botToken: secrets.telegramBotToken,
       chatId: secrets.telegramChatId,
     });
+    const closeoutCorrelationId = `issue-267-production-day-${options.day}-${randomUUID()}`;
     const dailyReportRuntime = runtimeModule.createPaperNoKeyDailyReportRuntime({
       database,
       notifier,
@@ -447,15 +448,17 @@ async function runActualProductionDayCloseout(options) {
     });
     const reportRun = await dailyReportRuntime.runManualDailyReport({
       reportDate: options.day,
-      correlationId: `issue-267-production-day-${options.day}-${randomUUID()}`,
+      correlationId: closeoutCorrelationId,
     });
     let dailyReportEvidence = await readDailyReportEvidence(pool, options.day, window.finishedAt, reportRun, reportBuilt.report);
-    if (dailyReportEvidence.status !== "DELIVERED" && dailyReportEvidence.notificationFailureAuditEventIds.length > 0) {
+    if (dailyReportEvidence.status !== "DELIVERED") {
+      // 같은 날짜 일반 report가 먼저 완료돼도 M23 상태가 포함된 closeout notification은 별도 멱등 경계에서 한 번 보장한다.
       await runDailyReportDeliveryRecovery({
         database,
         infrastructureModule,
         notifier,
         notification: reportBuilt.notification,
+        report: reportBuilt.report,
         day: options.day,
         generatedAt,
       });
@@ -961,9 +964,10 @@ export async function readLiveArtifactEvidence(artifactDir, window) {
   });
   for (const { file, value } of dayRecords) {
     const reservation = reservationByAttemptId.get(value.attemptId);
-    if (reservation === undefined || !Number.isFinite(Date.parse(reservation.value.reservedAt))) {
+    const entrySubmission = value.side === "BUY" || String(value.kind ?? "").includes("_entry_");
+    if (entrySubmission && (reservation === undefined || !Number.isFinite(Date.parse(reservation.value.reservedAt)))) {
       // broker 제출 전 durable budget reservation이 없으면 cleanup만으로 승인된 제출이라고 단정하지 않는다.
-      throw new Error(`제출 cleanup과 일치하는 대상 strategy reservation이 없습니다: ${file}`);
+      throw new Error(`BUY 제출 cleanup과 일치하는 대상 strategy reservation이 없습니다: ${file}`);
     }
   }
   const fills = dayRecords.filter(({ value }) => value.status === "FILLED");
@@ -979,13 +983,13 @@ export async function readLiveArtifactEvidence(artifactDir, window) {
     const reservation = reservationByAttemptId.get(value.attemptId);
     return {
       file,
-      reservationFile: reservation.file,
+      reservationFile: reservation?.file ?? null,
       attemptId: value.attemptId,
       kind: value.kind ?? null,
       side: value.side ?? null,
       status: value.status ?? null,
-      reservedAt: reservation.value.reservedAt,
-      submittedAt: value.submittedAt ?? reservation.value.reservedAt,
+      reservedAt: reservation?.value.reservedAt ?? null,
+      submittedAt: value.submittedAt ?? reservation?.value.reservedAt ?? null,
       filledAt: value.filledAt ?? null,
       terminalCheckedAt: value.terminalCheckedAt ?? null,
       filledQuantity: value.filledQuantity ?? null,
@@ -1036,7 +1040,7 @@ async function readPrivateExchangeEvidence({ infrastructureModule, secrets, refe
 
 async function readDailyReportEvidence(pool, day, windowFinishedAt, reportRun, report) {
   const audit = await pool.query(
-    `select id, payload_json->>'reason_code' as reason_code, occurred_at
+    `select id, actor, correlation_id, payload_json->>'reason_code' as reason_code, occurred_at
        from audit_events
       where payload_json->>'report_date' = $1
         and occurred_at >= $2
@@ -1044,7 +1048,7 @@ async function readDailyReportEvidence(pool, day, windowFinishedAt, reportRun, r
       order by occurred_at asc`,
     [day, windowFinishedAt],
   );
-  const postWindowRows = filterPostWindowDailyReportAuditRows(audit.rows, windowFinishedAt);
+  const postWindowRows = filterIssue267CloseoutDailyReportAuditRows(audit.rows, day, windowFinishedAt);
   const generated = postWindowRows.filter((row) => row.reason_code === "daily_report_generated");
   const delivered = postWindowRows.filter((row) => row.reason_code === "daily_report_notification_delivered");
   const failed = postWindowRows.filter((row) => row.reason_code === "daily_report_notification_failed");
@@ -1079,6 +1083,19 @@ export function filterPostWindowDailyReportAuditRows(rows, windowFinishedAt) {
   });
 }
 
+/** Issue #267 closeout actor와 correlation 경계에서 생성된 일별 report audit만 반환한다. 외부 side effect는 없다. */
+export function filterIssue267CloseoutDailyReportAuditRows(rows, day, windowFinishedAt) {
+  const closeoutPrefix = `issue-267-production-day-${day}-`;
+  const recoveryCorrelationId = `issue-267-delivery-recovery-${day}`;
+  return filterPostWindowDailyReportAuditRows(rows, windowFinishedAt).filter((row) => (
+    row.actor === "codex-issue-267-day-closeout"
+    && (
+      String(row.correlation_id ?? "").startsWith(closeoutPrefix)
+      || row.correlation_id === recoveryCorrelationId
+    )
+  ));
+}
+
 /**
  * 완료된 daily report와 분리된 idempotency job에서 Telegram delivery만 복구한다.
  *
@@ -1090,6 +1107,7 @@ export async function runDailyReportDeliveryRecovery({
   infrastructureModule,
   notifier,
   notification,
+  report,
   day,
   generatedAt,
 }) {
@@ -1115,6 +1133,37 @@ export async function runDailyReportDeliveryRecovery({
     throw new Error(`daily report delivery recovery job을 현재 claim할 수 없습니다: ${enqueueResult.job.status}`);
   }
 
+  const auditLog = new infrastructureModule.PostgresAuditLogRepository(database);
+  const notificationFingerprint = `sha256:${sha256Json(notification)}`;
+  try {
+    await auditLog.appendEvent({
+      eventType: "DAILY_REPORT",
+      severity: "INFO",
+      occurredAt: generatedAt,
+      actor: "codex-issue-267-day-closeout",
+      reasonCode: "daily_report_generated",
+      correlationId: `issue-267-delivery-recovery-${day}`,
+      metadata: {
+        report_date: day,
+        trigger: "delivery_recovery",
+        job_id: claimed.id,
+        order_count: report?.orderCount ?? null,
+        fill_count: report?.fillCount ?? null,
+        m23_live_ops_notification_fingerprint: notificationFingerprint,
+      },
+    });
+  } catch {
+    // provider 호출 전 audit 실패는 job을 재예약해 M23 report delivery evidence 누락 없이 다시 시도한다.
+    await infrastructureModule.failJob(database, {
+      jobId: claimed.id,
+      workerId,
+      errorMessage: "daily_report_delivery_recovery_generation_audit_failed",
+      failedAt: generatedAt,
+      retryAfter: new Date(generatedAt.getTime() + deliveryRecoveryRetryDelayMs),
+    });
+    throw new Error("daily report delivery recovery 생성 audit 저장이 실패해 같은 job 재시도를 예약했습니다.");
+  }
+
   let notificationResult;
   try {
     notificationResult = await notifier.sendDailyReport(notification);
@@ -1134,7 +1183,7 @@ export async function runDailyReportDeliveryRecovery({
 
   let receipt;
   try {
-    receipt = await new infrastructureModule.PostgresAuditLogRepository(database).appendEvent({
+    receipt = await auditLog.appendEvent({
       eventType: "NOTIFICATION_DELIVERY",
       severity: "INFO",
       occurredAt: generatedAt,
@@ -1146,6 +1195,7 @@ export async function runDailyReportDeliveryRecovery({
         delivered: true,
         trigger: "delivery_recovery",
         job_id: claimed.id,
+        m23_live_ops_notification_fingerprint: notificationFingerprint,
         ...(notificationResult.providerMessageId === undefined
           ? {}
           : { provider_message_id: notificationResult.providerMessageId }),
