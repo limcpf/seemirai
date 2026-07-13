@@ -13,6 +13,11 @@ daily report와 일별 decision segment로 소급 변환하지 않는다. succes
 [`2026-07-10-issue-188-m23-live-ops-retrospective-closeout.md`](../exec-plans/completed/2026-07-10-issue-188-m23-live-ops-retrospective-closeout.md)를
 따른다.
 
+Issue #267 successor 전환은
+[`2026-07-14-issue-267-production-baseline-m23-actual-closeout.md`](../exec-plans/active/2026-07-14-issue-267-production-baseline-m23-actual-closeout.md)를
+따른다. 기존 daemon uptime과 DB aggregate는 pre-deploy baseline으로만 보존하고, migration 14와 source provenance가 확인된 새
+startup 이후 완료된 KST 날짜부터 actual 7일 window를 계산한다.
+
 ## 범위
 
 - 대상 모드: `LIVE_AUTONOMOUS_SMALL_BUDGET`
@@ -52,6 +57,27 @@ daily report와 일별 decision segment로 소급 변환하지 않는다. succes
 | Telegram | 연결 성공 알림을 받을 owner chat이 준비됐다 |
 | DB | primary DB 연결, migration 상태, artifact 저장 위치가 확인됐다 |
 | backup/restore | disposable restore DB 또는 실행 불가 blocker 기록 위치가 준비됐다 |
+
+## Issue #267 successor 전환 gate
+
+다음 항목이 모두 확인되기 전에는 기존 production daemon을 중지하지 않는다.
+
+| 항목 | 확인 기준 |
+| --- | --- |
+| historical baseline | #206 cleanup artifact와 #188 구현 closeout을 변경하지 않고 참조한다. |
+| pre-deploy snapshot | daemon 시작/관측 시각, source worktree HEAD, migration 13, failure counters, open order/exposure를 redacted artifact로 고정한다. |
+| rollout source | Sub PR 02까지 병합된 `issue-267-mother`의 40자리 source SHA를 기록한다. |
+| config provenance | 운영 config 원문 대신 `sha256:<hex>` fingerprint만 startup/status에 남긴다. |
+| migration preflight | migration 14 파일/checksum과 DB pending 상태를 확인하고 적용 전 backup을 만든다. |
+| rollback | 이전 source SHA, daemon 중지 절차, DB 호환성 확인, operator 판단 순서를 기록한다. |
+
+정상 중지 뒤 migration 14를 적용하고 새 daemon을 시작한다. startup/status의 source SHA, config fingerprint,
+expected/applied migration version이 rollout 입력과 다르면 신규 entry를 열지 않는다. 새 daemon에서 `live_decision_ticks` write와
+`live_ops_db_window` source를 확인하고 실제 restart/recovery 및 disposable restore DB smoke를 통과한 뒤에만 7일 evidence window를
+시작한다.
+
+successor 7일 window에는 pre-deploy daemon 날짜를 포함하지 않는다. 각 완료 KST 날짜는 daily report와 durable decision evidence를
+모두 가져야 하며, latest status나 aggregate query로 누락 artifact를 소급 생성하지 않는다.
 
 ## Live-Armed 실행
 

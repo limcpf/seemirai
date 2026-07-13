@@ -723,6 +723,13 @@ heartbeat-only pilot이며 crash, unhandled rejection, risk gate 우회 주문, 
   [`2026-07-10-issue-188-m23-live-ops-retrospective-closeout.md`](./exec-plans/completed/2026-07-10-issue-188-m23-live-ops-retrospective-closeout.md)에
   기록한다.
 
+Issue #267 successor 판정 기준 (2026-07-14):
+
+- #206 historical cleanup과 #188 구현 closeout은 당시 source/artifact 기준으로 고정하며 successor 배포 결과로 소급 변경하지 않는다.
+- successor 7일 window는 PR #265 계보와 migration 14를 포함한 명시 source SHA의 daemon startup 이후 완료된 KST 날짜만 사용한다.
+- startup/status evidence는 source commit SHA, secret-free config fingerprint, expected/applied migration version을 함께 보존해야 한다.
+- migration 전 backup, 실제 restart/recovery, disposable restore DB smoke가 닫히지 않으면 actual closeout `PASS`로 보지 않는다.
+
 Acceptance Criteria:
 
 - [x] 운영자가 현재 runtime이 실제 주문 가능 `LIVE_AUTONOMOUS_SMALL_BUDGET` 상태인지 dry-run 또는 heartbeat-only 상태인지 즉시 확인할 수 있다.
@@ -741,6 +748,11 @@ Acceptance Criteria:
 - [x] Upbit 장애, 점검, market warning, stale data, API 오류는 신규 entry fail-closed와 alert/manual review evidence를 남긴다.
 - [x] 7일 동안 crash 0회, unhandled rejection 0회, risk gate 우회 주문 0건, reconcile mismatch 0건, duplicate order 0건, untracked fill 0건, live order cleanup failure 0건을 증명한다.
 - [x] live canary 1회 성공, dry-run, heartbeat-only만으로 M23 완료를 선언하지 않는다.
+- [ ] #206/#188 historical evidence와 Issue #267 successor evidence가 서로 다른 source/time window로 보존된다.
+- [ ] successor startup/status에 source SHA, config fingerprint, migration 14가 기록된다.
+- [ ] migration 14 적용 전 backup과 rollback 조건이 redacted evidence로 남는다.
+- [ ] successor의 7개 연속 완료 KST 날짜만 actual manifest segment로 사용한다.
+- [ ] actual manifest `PASS` 전에는 M24 budget/universe/profile 확대가 승인되지 않는다.
 
 테스트 요구사항:
 
