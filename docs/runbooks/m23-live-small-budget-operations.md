@@ -13,6 +13,12 @@ daily report와 일별 decision segment로 소급 변환하지 않는다. succes
 [`2026-07-10-issue-188-m23-live-ops-retrospective-closeout.md`](../exec-plans/completed/2026-07-10-issue-188-m23-live-ops-retrospective-closeout.md)를
 따른다.
 
+Issue #267 successor 전환은
+[`2026-07-14-issue-267-production-baseline-m23-actual-closeout.md`](../exec-plans/active/2026-07-14-issue-267-production-baseline-m23-actual-closeout.md)를
+따른다. 기존 daemon uptime과 DB aggregate는 pre-deploy baseline으로만 보존하고, migration 14와 source provenance가 확인된 새
+startup 이후 완료된 KST 날짜부터 actual 7일 window를 계산한다. Issue #267은 아래 `Issue #267 production daemon 실행`의
+`live:ops:daemon`만 사용한다. Issue #188 historical M22 runner/env/candidate 절차에서 만든 artifact는 #267 window에 포함하지 않는다.
+
 ## 범위
 
 - 대상 모드: `LIVE_AUTONOMOUS_SMALL_BUDGET`
@@ -34,7 +40,7 @@ daily report와 일별 decision segment로 소급 변환하지 않는다. succes
 - 출금, 입출금 자동화, 선물, 레버리지, 마진, 타인 계정, 신호 판매
 - LLM 직접 매수/매도 판단
 
-## 사전 점검
+## Issue #188 historical 사전 점검
 
 다음 항목이 모두 준비되지 않으면 live-armed 7일 안정화를 시작하지 않는다.
 
@@ -53,7 +59,72 @@ daily report와 일별 decision segment로 소급 변환하지 않는다. succes
 | DB | primary DB 연결, migration 상태, artifact 저장 위치가 확인됐다 |
 | backup/restore | disposable restore DB 또는 실행 불가 blocker 기록 위치가 준비됐다 |
 
-## Live-Armed 실행
+## Issue #267 successor 전환 gate
+
+다음 중지 전 gate가 모두 확인되기 전에는 기존 production daemon에 종료 신호를 보내지 않는다.
+
+| 항목 | 확인 기준 |
+| --- | --- |
+| historical baseline | #206 cleanup artifact와 #188 구현 closeout을 변경하지 않고 참조한다. |
+| pre-deploy snapshot | daemon 시작/관측 시각, source worktree HEAD, migration 13, failure counters, open order/exposure 0을 redacted artifact로 고정한다. |
+| rollout source | Sub PR 02까지 병합된 `issue-267-mother`의 40자리 source SHA를 기록한다. |
+| config provenance | 운영 config 원문 대신 `sha256:<hex>` fingerprint만 startup/status에 남긴다. |
+| migration preflight | migration 14 파일/checksum과 DB pending 상태를 확인하고 backup/restore 명령과 저장 위치를 준비한다. |
+| rollback | migration 14를 인식하는 rollback source SHA 또는 검증된 pre-migration restore 절차를 기록한다. |
+
+open order 또는 exposure가 하나라도 있으면 daemon을 멈추지 않고 operator stop/manual review로 전환한다. 0이 확인되면 신규 entry를
+차단하고 같은 조회를 다시 통과한 뒤에만 `SIGTERM`을 보낸다. 정상 종료 후 terminal status와 daemon write 정지를 확인한 시점부터
+중지 후 migration gate를 진행한다. 이 gate에서는 migration 직전 backup과 disposable restore preflight를 만들고 migration 14를
+적용한 다음 새 daemon을 시작한다. startup/status의 source SHA, config fingerprint, expected/applied migration version이 rollout
+입력과 다르면 신규 entry를 열지 않는다. 새 daemon에서 `live_decision_ticks` write와 `live_ops_db_window` source를 확인하고 실제
+restart/recovery 및 disposable restore DB smoke를 통과한 뒤에만 7일 evidence window를 시작한다.
+
+successor 7일 window에는 pre-deploy daemon 날짜를 포함하지 않는다. manifest `day`는 daily report `reportDate` 및 durable decision
+evidence의 KST day와 같아야 하며, 해당 KST window가 종료된 뒤 생성된 artifact여야 한다. latest status나 aggregate query로 누락
+artifact를 소급 생성하지 않는다.
+
+Issue #267 actual manifest는 기존 Issue #188 blocker 호환 규칙을 사용하지 않는다. backup/restore `blocked`는 실패이며, startup과
+각 segment의 source SHA, config fingerprint, expected/applied migration 14가 일치해야 한다. 이 검증이 구현되기 전에는 기존
+`scripts/run-m23-stability-closeout.mjs`의 `PASS`를 Issue #267 closeout 근거로 사용하지 않는다.
+
+migration 14 적용 뒤에는 migration 13까지만 아는 pre-deploy source가 DB readiness에서 차단될 수 있다. rollback은 migration 14
+파일/checksum을 포함하는 검증된 source SHA로 실행한다. pre-migration backup 복원은 successor가 broker side effect를 만들기
+전까지만 허용한다. 현재 daemon을 정상 종료하고 private read/reconcile로 open order/exposure 0과 terminal 상태를 다시 확인하며,
+post-migration DB를 별도 backup으로 보존한 뒤 schema/version 일치를 확인해야 한다. successor가 한 번이라도 주문/체결 side effect를
+만들었거나 open order/exposure가 남아 있으면 pre-migration restore를 금지하고 migration 14 호환 source로 복구한다.
+
+## Issue #267 production daemon 실행
+
+Issue #267 successor는 M22 pilot wrapper, 수동 candidate JSONL, `SEEMIRAI_RUN_M22_*`, `SEEMIRAI_RUN_UPBIT_*_SMOKE`,
+`SEEMIRAI_PILOT_PROFILE`을 사용하지 않는다. Sub PR 02의 provenance/startup artifact 계약이 mother branch에 병합되고 production
+명령이 명시 source SHA, config fingerprint, expected/applied migration 14를 검증할 때까지 successor를 시작하지 않는다.
+
+배포 SHA와 저장소 밖 config/env/status 경로를 고정한 뒤 production package entry로 실행한다.
+
+```sh
+cd <issue-267-successor-worktree>
+ISSUE_267_HOME="$HOME/vaults/99_운영/seemirai-live-ops-production/issue-267"
+SOURCE_SHA="$(git rev-parse HEAD)"
+
+corepack pnpm live:ops:daemon -- \
+  --config "$ISSUE_267_HOME/live-ops.config.json" \
+  --env-file "$ISSUE_267_HOME/live-ops.env" \
+  --source-commit-sha "$SOURCE_SHA" \
+  --startup-artifact-file "$ISSUE_267_HOME/artifacts/live-ops-daemon-startup-$SOURCE_SHA.json" \
+  --status-file "$ISSUE_267_HOME/artifacts/live-ops-daemon-status.json" \
+  --tui
+```
+
+`--source-commit-sha`와 `--startup-artifact-file`은 Sub PR 02에서 구현하는 successor 전용 필수 계약이다. `SOURCE_SHA`는 Sub PR 02까지
+병합된 40자리 rollout SHA와 같아야 한다. startup/status provenance가 이 값과 다르거나 migration 14가 아니면 process를
+live-armed로 재개하지 않는다. 7일 입력은 이 daemon과 DB scheduler가 자동 생성한 completed KST daily report,
+`live_decision_ticks`, immutable day artifact만 사용한다. latest status 복사본, M22 pilot summary, 수동 candidate artifact는 #267
+actual evidence가 아니다.
+
+## Issue #188 historical Live-Armed 실행
+
+이 절의 M22 runner/env/candidate 절차는 Issue #188 historical 입력을 재현하기 위한 호환 경로다. Issue #267 successor 배포나
+7일 actual window에는 사용하지 않는다.
 
 기본 파일 구조는 M22 runbook의 local file preparer가 만든 저장소 밖 디렉터리를 재사용한다.
 
@@ -244,8 +315,9 @@ SEEMIRAI_RESTORE_DATABASE_URL=<disposable-restore-db> \
 ./scripts/db-backup-restore-smoke.sh
 ```
 
-실행할 수 없으면 closeout에 blocker, 필요한 DB 권한, restore target 준비 상태, 재시도 계획을 남긴다. 실행하지 못한 drill을 pass로
-표시하지 않는다.
+Issue #188 historical closeout에서 실행할 수 없으면 blocker, 필요한 DB 권한, restore target 준비 상태, 재시도 계획을 남긴다.
+실행하지 못한 drill을 실제 restore 성공으로 표시하지 않는다. Issue #267 actual closeout은 blocker 호환을 사용하지 않으므로
+disposable restore DB smoke가 실제로 통과하지 않으면 `PASS`가 아니다.
 
 ## 7일 closeout
 
@@ -260,7 +332,7 @@ closeout에는 redacted artifact 기준으로 다음을 기록한다.
 - 주문 제출/취소/체결/부분체결/차단 event summary
 - restart/reconcile/status 복구 evidence
 - Telegram lifecycle/trade event alert와 retry/manual review evidence
-- DB backup/restore smoke 결과 또는 blocker
+- DB backup/restore smoke 결과. Issue #188 historical manifest만 blocker 기록을 허용하고, Issue #267은 `passed` 결과를 요구한다.
 - source scan 결과
 - crash 0회
 - unhandled rejection 0회
@@ -271,6 +343,7 @@ closeout에는 redacted artifact 기준으로 다음을 기록한다.
 - live order cleanup failure 0건
 
 7일 closeout은 저장소 밖 manifest로 집계한다. manifest는 raw secret이 아니라 redacted evidence id와 artifact 경로만 포함해야 한다.
+다음 예시는 Issue #188 historical 호환 형식이며 Issue #267 actual manifest로 사용하지 않는다.
 
 ```json
 {
@@ -323,9 +396,12 @@ CI와 PR 검증에서는 실제 7일 운영을 시작하지 않고 fixture smoke
 node scripts/run-m23-stability-closeout.mjs --fixture-smoke --json
 ```
 
-`scripts/run-m23-stability-closeout.mjs`는 7개 이상의 서로 다른 day segment, 각 segment의 24시간 정상 종료, daily report,
-live-armed guard/readiness, decision evidence, closeout failure counter 명시적 0건, recovery drill, DB backup/restore 결과 또는
-blocker, source scan, raw secret 후보를 함께 확인한다. 7일 artifact가 없거나 manifest가 6일 이하이면 closeout은 실패다.
+`scripts/run-m23-stability-closeout.mjs`의 Issue #188 historical 경로는 7개 이상의 서로 다른 day segment, 각 segment의 24시간 정상
+종료, daily report, live-armed guard/readiness, decision evidence, closeout failure counter 명시적 0건, recovery drill,
+DB backup/restore 결과 또는 blocker, source scan, raw secret 후보를 함께 확인한다. Issue #267 guarded 경로는 production
+`live:ops:daemon` provenance, 완료 KST daily report/day decision evidence 일치와 `backupRestore.status=passed`를 추가로 강제한다.
+이 guarded 검증이 Sub PR 02에서 구현되기 전에는 어떤 기존 validator `PASS`도 #267 근거로 쓰지 않는다. 7일 artifact가 없거나
+manifest가 6일 이하이면 closeout은 실패다.
 
 live canary 1회 성공, dry-run, heartbeat-only만으로 M23 완료를 선언하지 않는다.
 

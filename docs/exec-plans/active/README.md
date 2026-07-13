@@ -12,6 +12,7 @@ YYYY-MM-DD-topic.md
 
 ## 활성 계획
 
+- [`2026-07-14-issue-267-production-baseline-m23-actual-closeout.md`](./2026-07-14-issue-267-production-baseline-m23-actual-closeout.md): Issue #267 production successor 배포, source/migration provenance, restart/backup 검증, M23 actual 7일 closeout 실행 계획.
 - [`2026-06-15-issue-206-live-ops-real-arm.md`](./2026-06-15-issue-206-live-ops-real-arm.md): Issue #206 production `live:ops` 실거래 arm, 실제 provider 조립, 소액 주문 submit/cancel cleanup evidence와 24/7 자동 매수/매도 loop 실행 계획.
 - [`2026-06-30-issue-258-live-ops-observability-quality.md`](./2026-06-30-issue-258-live-ops-observability-quality.md): Issue #258 Post-M23 Live Ops 운영 관측성, DB-backed 전략 feature 품질, calibration, daemon hardening, audit/tax evidence 실행 계획.
 - [`2026-06-14-issue-196-live-ops-one-click-app.md`](./2026-06-14-issue-196-live-ops-one-click-app.md): Issue #196 Live Ops 원클릭 앱과 TUI 필수 운영 콘솔을 production 경로로 만들기 위한 8개 sub PR 실행 계획.
