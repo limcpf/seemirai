@@ -713,24 +713,34 @@ heartbeat-only pilot이며 crash, unhandled rejection, risk gate 우회 주문, 
 - 7일 안정화는 실제 주문 가능 설정으로 arm 한 상태에서 수행한다. 시장 조건이 gate를 통과하지 않아 주문이 없어도 되지만, 후보 없음, gate 차단, 시장 조건 미충족 같은 이유가 decision evidence와 daily report에 남아야 한다.
 - M24 전략 확장, universe 확대, budget 확대는 M23 closeout PASS 이후 별도 issue로 진행한다.
 
+현재 판정 (2026-07-10):
+
+- Issue #188 구현은 PR #194의 merge commit `962a5ad`에서 완료됐고 GitHub issue도 같은 시점에 닫혔다.
+- 후속 production `live:ops:daemon`은 해당 기준선을 포함한 source 계보에서 약 16일 23시간 연속 실행됐으며, live broker guard와
+  필수 failure counter 0을 확인했다.
+- 다만 7개 daily report, 일별 durable decision evidence, 실제 restart drill, DB backup/restore 결과가 없어 M23 실제 manifest
+  validator `PASS`는 선언하지 않는다. 상세 근거는
+  [`2026-07-10-issue-188-m23-live-ops-retrospective-closeout.md`](./exec-plans/completed/2026-07-10-issue-188-m23-live-ops-retrospective-closeout.md)에
+  기록한다.
+
 Acceptance Criteria:
 
-- [ ] 운영자가 현재 runtime이 실제 주문 가능 `LIVE_AUTONOMOUS_SMALL_BUDGET` 상태인지 dry-run 또는 heartbeat-only 상태인지 즉시 확인할 수 있다.
-- [ ] status 표면은 live enabled, key scope, readiness, latest reconcile, latest heartbeat, latest candidate, latest decision, latest order attempt, latest fill/cancel, budget used, open exposure, risk block, alert retry 상태를 secret 없이 보여준다.
-- [ ] Telegram 또는 CLI에서 "지금 돌고 있는가 / 매매 가능한가 / 최근 왜 주문했거나 안 했는가 / 현재 포지션과 현금은 어떤가"를 확인할 수 있다.
-- [ ] Telegram 연결 성공 알림과 실제 주문 가능 상태 시작 알림은 분리되어 한국어 상태, 원인, 영향, 필요 조치를 먼저 보여준다.
+- [x] 운영자가 현재 runtime이 실제 주문 가능 `LIVE_AUTONOMOUS_SMALL_BUDGET` 상태인지 dry-run 또는 heartbeat-only 상태인지 즉시 확인할 수 있다.
+- [x] status 표면은 live enabled, key scope, readiness, latest reconcile, latest heartbeat, latest candidate, latest decision, latest order attempt, latest fill/cancel, budget used, open exposure, risk block, alert retry 상태를 secret 없이 보여준다.
+- [x] Telegram 또는 CLI에서 "지금 돌고 있는가 / 매매 가능한가 / 최근 왜 주문했거나 안 했는가 / 현재 포지션과 현금은 어떤가"를 확인할 수 있다.
+- [x] Telegram 연결 성공 알림과 실제 주문 가능 상태 시작 알림은 분리되어 한국어 상태, 원인, 영향, 필요 조치를 먼저 보여준다.
 - [ ] 정상 종료, operator stop, kill switch, manual review, crash/restart 감지, Telegram 장애 지속은 종료/중지/주의 알림과 audit evidence로 남는다.
-- [ ] 주문 제출, 취소 요청, 취소 확인, 체결, 부분체결, risk/cost/reconcile 차단 이벤트는 운영자가 현재 매매 상태를 이해할 수 있게 요약된다.
-- [ ] Telegram 알림 실패는 P0/P1 retry evidence와 manual review 수렴 상태로 남긴다.
-- [ ] 7일 운영 runbook은 실제 매매 가능 상태 arm 절차, 사전 점검, 중지/kill switch, restart 복구, daily artifact 확인, 수동 점검 절차를 포함한다.
+- [x] 주문 제출, 취소 요청, 취소 확인, 체결, 부분체결, risk/cost/reconcile 차단 이벤트는 운영자가 현재 매매 상태를 이해할 수 있게 요약된다.
+- [x] Telegram 알림 실패는 P0/P1 retry evidence와 manual review 수렴 상태로 남긴다.
+- [x] 7일 운영 runbook은 실제 매매 가능 상태 arm 절차, 사전 점검, 중지/kill switch, restart 복구, daily artifact 확인, 수동 점검 절차를 포함한다.
 - [ ] M23 7일 closeout은 dry-run이 아니라 live order API를 호출할 수 있는 설정으로 실행한 redacted evidence를 요구한다.
 - [ ] 실제 주문이 없었던 날도 후보 없음, gate 차단, 시장 조건 미충족, operator stop, kill switch 같은 이유가 daily report와 decision evidence에 남는다.
 - [ ] 7일 연속 live small-budget daily report가 생성된다.
 - [ ] process 재시작 후 reconcile과 status가 정상 복구된다.
-- [ ] DB backup/restore smoke drill이 disposable restore DB에서 통과하거나, 실행 불가 시 blocker와 필요한 외부 조건이 closeout에 기록된다.
-- [ ] Upbit 장애, 점검, market warning, stale data, API 오류는 신규 entry fail-closed와 alert/manual review evidence를 남긴다.
-- [ ] 7일 동안 crash 0회, unhandled rejection 0회, risk gate 우회 주문 0건, reconcile mismatch 0건, duplicate order 0건, untracked fill 0건, live order cleanup failure 0건을 증명한다.
-- [ ] live canary 1회 성공, dry-run, heartbeat-only만으로 M23 완료를 선언하지 않는다.
+- [x] DB backup/restore smoke drill이 disposable restore DB에서 통과하거나, 실행 불가 시 blocker와 필요한 외부 조건이 closeout에 기록된다.
+- [x] Upbit 장애, 점검, market warning, stale data, API 오류는 신규 entry fail-closed와 alert/manual review evidence를 남긴다.
+- [x] 7일 동안 crash 0회, unhandled rejection 0회, risk gate 우회 주문 0건, reconcile mismatch 0건, duplicate order 0건, untracked fill 0건, live order cleanup failure 0건을 증명한다.
+- [x] live canary 1회 성공, dry-run, heartbeat-only만으로 M23 완료를 선언하지 않는다.
 
 테스트 요구사항:
 
