@@ -1777,9 +1777,12 @@ POST_ONLY` 후보를 만들 수 있다. 이 strategy는 order intent 생성까�
 - `--fixture-smoke --duration-ms <ms>`는 개발/PR 검증용 loop contract smoke이며, 실제 운영에 필요한 준비물이 아니다.
 - `--status-file <path>`를 주면 최신 daemon summary를 해당 JSON 파일에 자동 기록한다. production에서 생략하면 config 파일 옆
   경로가 아니라 repository 밖 startup artifact 디렉터리의 `live-ops-daemon-status.json`에 자동 기록하며, fixture smoke는 기본
-  status file을 만들지 않는다.
+  status file을 만들지 않는다. startup artifact와 status file은 서로 다른 경로여야 하며, 충돌하면 어떤 파일도 쓰기 전에 시작을
+  차단한다.
 - startup artifact, status top-level, `latestSummary`는 같은 runtime provenance를 보존한다. 각 tick은 provider/broker 호출 전에 config
   fingerprint와 DB migration을 다시 확인하며 startup 값에서 달라지면 `provenance_failed`를 기록하고 loop를 종료한다.
+- startup artifact와 status file 경로는 parent 디렉터리를 만들기 전에 repository 밖인지 검사하며, symlink를 통과한 실제 경로도
+  repository 안이면 시작하지 않는다.
 - `--tick-interval-ms <ms>`는 정상 보유/대기 tick 간격을 조정한다. 기본값은 1초이며, 차단은 5초, 수동 확인은 30초, transient failure는
   5초 backoff를 적용한다.
 - `--decision-history-retention-hours <hours>`를 명시하면 daemon tick이 같은 DB writer 경계로 `live_decision_ticks` retention을 실행하고,

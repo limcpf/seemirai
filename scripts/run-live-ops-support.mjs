@@ -559,14 +559,16 @@ async function loadLiveOpsCliAttachReadonlyInputs({ configPath, envFilePath, con
 
 function createLiveOpsCliAttachSummary(source) {
   const summary = source?.summary ?? source?.latestSummary ?? source;
+  const daemonFailureStatus = source?.status;
   if (
     source?.kind !== "live_ops_daemon_summary" ||
-    source?.status !== "transient_failure" ||
+    (daemonFailureStatus !== "transient_failure" && daemonFailureStatus !== "provenance_failed") ||
     !isNonEmptyRecord(source?.latestSummary)
   ) {
     return summary;
   }
 
+  const provenanceFailed = daemonFailureStatus === "provenance_failed";
   const latestError = source.latestError ?? {};
   const observedAt = hasMeaningfulValue(latestError?.observedAt)
     ? String(latestError.observedAt)
@@ -577,18 +579,24 @@ function createLiveOpsCliAttachSummary(source) {
     liveOrderCapable: false,
     liveExecution: {
       ...(summary.liveExecution ?? {}),
-      status: "daemon_transient_failure",
+      status: provenanceFailed ? "daemon_provenance_failed" : "daemon_transient_failure",
       ready: false,
       liveOrderCapable: false,
       latestExecutionAt: observedAt,
       observedAt,
-      statusLabel: "daemon 일시 실패",
-      message: "daemon tick이 실패해 attach 화면이 stale ready 상태를 실주문 가능 상태로 표시하지 않습니다.",
-      action: "daemon status file의 latestError와 최근 로그를 확인한 뒤 실패 원인을 복구하세요.",
+      statusLabel: provenanceFailed ? "daemon provenance 실패" : "daemon 일시 실패",
+      message: provenanceFailed
+        ? "daemon runtime provenance가 달라져 종료됐습니다. attach 화면은 직전 준비 상태를 실주문 가능 상태로 표시하지 않습니다."
+        : "daemon tick이 실패해 attach 화면이 stale ready 상태를 실주문 가능 상태로 표시하지 않습니다.",
+      action: provenanceFailed
+        ? "config fingerprint, source SHA, DB migration을 startup artifact와 맞춘 뒤 daemon을 새로 시작하세요."
+        : "daemon status file의 latestError와 최근 로그를 확인한 뒤 실패 원인을 복구하세요.",
       checks: [
         ...(Array.isArray(summary.liveExecution?.checks) ? summary.liveExecution.checks : []),
-        blockedLiveExecutionCheck("daemon_status", "daemon 최신 tick이 실패 상태입니다.", "live_ops_daemon_transient_failure", {
-          status: source.status,
+        blockedLiveExecutionCheck("daemon_status", "daemon 최신 상태가 실패로 닫혔습니다.", provenanceFailed
+          ? "live_ops_daemon_provenance_failed"
+          : "live_ops_daemon_transient_failure", {
+          status: daemonFailureStatus,
           errorName,
         }),
       ],

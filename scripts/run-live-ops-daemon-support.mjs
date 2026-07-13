@@ -89,6 +89,7 @@ export async function runLiveOpsDaemon(options, io = {}) {
   const sleep = io.sleep ?? sleepLiveOpsDaemon;
   const loadInputs = io.loadInputs ?? loadLiveOpsCliInputs;
   const loadStartupReadiness = io.loadStartupReadiness ?? loadLiveOpsCliStartupReadiness;
+  const inspectSourceTree = io.inspectSourceTree ?? inspectLiveOpsDaemonSourceTree;
   const prepareRuntimeProvenance = io.prepareRuntimeProvenance ?? prepareLiveOpsDaemonRuntimeProvenance;
   const persistStartupArtifact = io.persistStartupArtifact ?? writeLiveOpsDaemonStartupArtifact;
   const renderSummary = io.renderSummary ?? renderLiveOpsSummary;
@@ -114,10 +115,24 @@ export async function runLiveOpsDaemon(options, io = {}) {
   let provenanceFailure = null;
 
   if (options.fixtureSmoke !== true) {
+    assertDistinctLiveOpsDaemonArtifactPaths(options.startupArtifactFilePath, statusFilePath);
+    const source = await inspectSourceTree(options.sourceCommitSha);
+    await assertLiveOpsDaemonArtifactTargetOutsideRepository(
+      options.startupArtifactFilePath,
+      source.repositoryRoot,
+      "daemon startup artifact",
+    );
+    if (statusFilePath !== undefined) {
+      await assertLiveOpsDaemonArtifactTargetOutsideRepository(
+        statusFilePath,
+        source.repositoryRoot,
+        "daemon status file",
+      );
+    }
     try {
       runtimeProvenance = await prepareRuntimeProvenance(options, {
         loadStartupReadiness,
-        inspectSourceTree: io.inspectSourceTree,
+        inspectSourceTree: async () => source,
       });
       await persistStartupArtifact({
         filePath: options.startupArtifactFilePath,
@@ -334,13 +349,15 @@ export async function writeLiveOpsDaemonStartupArtifact({
 }) {
   const resolvedPath = path.resolve(filePath);
   const directory = path.dirname(resolvedPath);
+  const realRepositoryRoot = await assertLiveOpsDaemonArtifactTargetOutsideRepository(
+    resolvedPath,
+    repositoryRoot,
+    "daemon startup artifact",
+  );
   await mkdir(directory, { recursive: true, mode: 0o700 });
-  const [realDirectory, realRepositoryRoot] = await Promise.all([
-    realpath(directory),
-    realpath(repositoryRoot),
-  ]);
+  const realDirectory = await realpath(directory);
   if (isPathInside(realRepositoryRoot, realDirectory)) {
-    // startup evidence는 git checkout과 함께 수정되거나 커밋되지 않도록 repository 밖에만 쓴다.
+    // mkdir 중 경로가 바뀌거나 symlink가 교체돼도 startup evidence를 repository 안에 남기지 않는다.
     throw new Error("daemon startup artifact는 repository 밖의 운영 경로에 저장해야 합니다.");
   }
 
@@ -409,6 +426,55 @@ function withoutRepositoryRoot(runtimeProvenance) {
 function isPathInside(parentPath, candidatePath) {
   const relative = path.relative(parentPath, candidatePath);
   return relative === "" || (!relative.startsWith(`..${path.sep}`) && relative !== "..");
+}
+
+async function assertLiveOpsDaemonArtifactTargetOutsideRepository(filePath, repositoryRoot, artifactLabel) {
+  const resolvedPath = path.resolve(filePath);
+  const resolvedRepositoryRoot = path.resolve(repositoryRoot);
+  const targetDirectory = path.dirname(resolvedPath);
+  if (isPathInside(resolvedRepositoryRoot, targetDirectory)) {
+    // repo-local parent가 없어도 mkdir 전에 차단해야 clean worktree를 오염시키지 않는다.
+    throw new Error(`${artifactLabel}는 repository 밖의 운영 경로에 저장해야 합니다.`);
+  }
+
+  const realRepositoryRoot = await realpath(resolvedRepositoryRoot);
+  let existingAncestor = targetDirectory;
+  let realExistingAncestor;
+  while (realExistingAncestor === undefined) {
+    try {
+      realExistingAncestor = await realpath(existingAncestor);
+    } catch (error) {
+      if (error?.code !== "ENOENT" && error?.code !== "ENOTDIR") {
+        throw error;
+      }
+      const parent = path.dirname(existingAncestor);
+      if (parent === existingAncestor) {
+        throw error;
+      }
+      existingAncestor = parent;
+    }
+  }
+
+  const projectedRealDirectory = path.resolve(
+    realExistingAncestor,
+    path.relative(existingAncestor, targetDirectory),
+  );
+  if (isPathInside(realRepositoryRoot, projectedRealDirectory)) {
+    // repository를 가리키는 외부 symlink 아래 새 디렉터리도 생성 전에 차단한다.
+    throw new Error(`${artifactLabel}는 repository 밖의 운영 경로에 저장해야 합니다.`);
+  }
+  return realRepositoryRoot;
+}
+
+function assertDistinctLiveOpsDaemonArtifactPaths(startupArtifactFilePath, statusFilePath) {
+  if (
+    typeof startupArtifactFilePath === "string"
+    && typeof statusFilePath === "string"
+    && path.resolve(startupArtifactFilePath) === path.resolve(statusFilePath)
+  ) {
+    // mutable status가 create-only startup evidence를 덮어쓰면 rollout provenance를 복구할 수 없다.
+    throw new Error("daemon startup artifact와 status file은 같은 경로를 사용할 수 없습니다. 서로 다른 운영 경로를 지정하세요.");
+  }
 }
 
 function withStartupAlertSuppressed(options) {

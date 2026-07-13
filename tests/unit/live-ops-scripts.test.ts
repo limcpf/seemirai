@@ -817,6 +817,100 @@ describe("production live ops script skeleton", () => {
     await expect(writeLiveOpsDaemonStartupArtifact(input)).rejects.toThrow("이미 존재합니다");
   });
 
+  it("live:ops:daemon startup artifact는 repository 내부 parent를 만들기 전에 경로를 차단한다", async () => {
+    const daemonModulePath = path.join(process.cwd(), "scripts/run-live-ops-daemon-support.mjs");
+    const { writeLiveOpsDaemonStartupArtifact } = await import(daemonModulePath);
+    const repoLocalDirectory = path.join(
+      process.cwd(),
+      "tests",
+      `.seemirai-startup-artifact-${process.pid}-${Date.now()}`,
+      "nested",
+    );
+
+    try {
+      await expect(writeLiveOpsDaemonStartupArtifact({
+        filePath: path.join(repoLocalDirectory, "startup.json"),
+        startedAt: "2026-07-14T00:00:00.000Z",
+        runtimeProvenance: {
+          ...testDaemonRuntimeProvenance,
+          repositoryRoot: process.cwd(),
+        },
+        repositoryRoot: process.cwd(),
+      })).rejects.toThrow("repository 밖");
+      await expect(stat(repoLocalDirectory)).rejects.toMatchObject({ code: "ENOENT" });
+    } finally {
+      await rm(path.dirname(repoLocalDirectory), { recursive: true, force: true });
+    }
+  });
+
+  it("live:ops:daemon은 repo-local startup 경로 실패를 status directory 생성으로 되돌리지 않는다", async () => {
+    const daemonModulePath = path.join(process.cwd(), "scripts/run-live-ops-daemon-support.mjs");
+    const { runLiveOpsDaemon } = await import(daemonModulePath);
+    const repoLocalRoot = path.join(
+      process.cwd(),
+      "tests",
+      `.seemirai-daemon-path-preflight-${process.pid}-${Date.now()}`,
+    );
+    let prepareCalled = false;
+
+    try {
+      await expect(runLiveOpsDaemon({
+        configPath: path.join(repoLocalRoot, "live-ops.production.json"),
+        sourceCommitSha: testDaemonSourceCommitSha,
+        startupArtifactFilePath: path.join(repoLocalRoot, "artifacts", "startup.json"),
+        maxTicks: 1,
+      }, {
+        ...createDaemonProvenanceIo(),
+        async inspectSourceTree() {
+          return {
+            repositoryRoot: process.cwd(),
+            headCommitSha: testDaemonSourceCommitSha,
+            clean: true,
+          };
+        },
+        async prepareRuntimeProvenance() {
+          prepareCalled = true;
+          return {
+            ...testDaemonRuntimeProvenance,
+            repositoryRoot: process.cwd(),
+          };
+        },
+      })).rejects.toThrow("repository 밖");
+
+      expect(prepareCalled).toBe(false);
+      await expect(stat(repoLocalRoot)).rejects.toMatchObject({ code: "ENOENT" });
+    } finally {
+      await rm(repoLocalRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("live:ops:daemon은 startup artifact와 기본 status file 경로 충돌을 side effect 전에 차단한다", async () => {
+    const daemonModulePath = path.join(process.cwd(), "scripts/run-live-ops-daemon-support.mjs");
+    const { runLiveOpsDaemon } = await import(daemonModulePath);
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-live-ops-artifact-collision-"));
+    const collidingPath = path.join(tempDir, "live-ops-daemon-status.json");
+    let prepareCalled = false;
+
+    await expect(runLiveOpsDaemon({
+      configPath: path.join(tempDir, "live-ops.production.json"),
+      sourceCommitSha: testDaemonSourceCommitSha,
+      startupArtifactFilePath: collidingPath,
+      maxTicks: 1,
+    }, {
+      ...createDaemonProvenanceIo(),
+      async prepareRuntimeProvenance() {
+        prepareCalled = true;
+        return {
+          ...testDaemonRuntimeProvenance,
+          repositoryRoot: process.cwd(),
+        };
+      },
+    })).rejects.toThrow("같은 경로");
+
+    expect(prepareCalled).toBe(false);
+    await expect(stat(collidingPath)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
   it("live:ops tick은 startup 이후 config 또는 migration drift를 live provider 경계 전에 차단한다", async () => {
     const supportModulePath = path.join(process.cwd(), "scripts/run-live-ops-support.mjs");
     const { assertLiveOpsCliRuntimeProvenanceMigration, loadLiveOpsCliInputs } = await import(supportModulePath);
@@ -11887,6 +11981,63 @@ console.log(JSON.stringify({
     expect(summary.liveExecution.checks.map((check: { code: string }) => check.code)).toContain("live_ops_daemon_transient_failure");
     const supportSource = await readFile(path.join(process.cwd(), "scripts/run-live-ops-support.mjs"), "utf8");
     expect(supportSource).toMatch(/return\s*\{\s*\n\s*\.\.\.summary,\s*\n\s*liveOrderCapable:\s*false,\s*\n\s*liveExecution:/u);
+  });
+
+  it("non-fixture live:ops:tui attach는 daemon provenance failure를 stale ready summary보다 우선 표시한다", async () => {
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-live-ops-daemon-attach-provenance-"));
+    const statusSourcePath = path.join(tempDir, "live-ops-daemon-status.json");
+    await writeFile(statusSourcePath, JSON.stringify({
+      kind: "live_ops_daemon_summary",
+      status: "provenance_failed",
+      latestError: {
+        name: "LiveOpsRuntimeProvenanceMismatchError",
+        observedAt: "2026-07-14T00:00:05.000Z",
+      },
+      latestSummary: {
+        liveOrderCapable: true,
+        dbReadiness: { ready: true },
+        marketData: { ready: true },
+        analysisDecision: { ready: true },
+        liveExecution: {
+          status: "idle",
+          ready: true,
+          liveOrderCapable: true,
+          checks: [],
+        },
+        reconcilePnlStatus: { ready: true },
+        telegramAlert: { ready: true },
+      },
+    }), "utf8");
+
+    const { loadLiveOpsCliInputs, renderLiveOpsSummary } = await import(
+      path.join(process.cwd(), "scripts/run-live-ops-support.mjs")
+    );
+    const inputs = await loadLiveOpsCliInputs({
+      configPath: "config/live-ops.example.json",
+      envFilePath: "tests/fixtures/live-ops/fake.env",
+      fixtureSmoke: false,
+      attach: statusSourcePath,
+      attachReadonly: true,
+    });
+    const summary = renderLiveOpsSummary({
+      ...inputs,
+      fixtureSmoke: false,
+      tui: true,
+      attach: statusSourcePath,
+    });
+
+    expect(summary).toMatchObject({
+      status: "blocked",
+      liveOrderCapable: false,
+      liveExecution: {
+        status: "daemon_provenance_failed",
+        ready: false,
+        liveOrderCapable: false,
+        statusLabel: "daemon provenance 실패",
+      },
+    });
+    expect(summary.liveExecution.checks.map((check: { code: string }) => check.code))
+      .toContain("live_ops_daemon_provenance_failed");
   });
 
   it("non-fixture live:ops:tui attach는 status source를 읽지 못하면 실패한다", () => {
