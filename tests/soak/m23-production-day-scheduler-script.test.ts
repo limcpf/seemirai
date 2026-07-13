@@ -182,6 +182,7 @@ describe("M23 production day scheduler script", () => {
       await fs.writeFile(pidPath, String(process.pid));
       await fs.writeFile(eventPath, JSON.stringify({ type: "scheduler_started" }) + "\\n");
       await writeStatus("2026-07-14T14:59:30.000Z", counters);
+      await fs.utimes(statusPath, new Date("2026-07-14T15:00:00.500Z"), new Date("2026-07-14T15:00:00.500Z"));
       const start = await module.ensureDaemonCounterBoundary({
         options, boundaryAt: "2026-07-14T15:00:00.000Z",
         clock: () => new Date("2026-07-14T15:00:01.000Z"),
@@ -191,6 +192,7 @@ describe("M23 production day scheduler script", () => {
         clock: () => new Date("2026-07-15T15:01:00.000Z"),
       });
       await writeStatus("2026-07-15T14:59:30.000Z", { ...counters, tickCount: 1540, successCount: 1540, holdCount: 1540 });
+      await fs.utimes(statusPath, new Date("2026-07-15T15:00:00.500Z"), new Date("2026-07-15T15:00:00.500Z"));
       const finish = await module.ensureDaemonCounterBoundary({
         options, boundaryAt: "2026-07-15T15:00:00.000Z",
         clock: () => new Date("2026-07-15T15:00:01.000Z"),
@@ -206,6 +208,64 @@ describe("M23 production day scheduler script", () => {
       "daemon_counter_boundary",
       "daemon_counter_boundary",
     ]);
+  });
+
+  it("경계를 걸친 tick의 counter status write를 확인한 뒤 boundary를 기록한다", async () => {
+    const output = await runModuleExpression(`
+      const fs = await import("node:fs/promises");
+      const os = await import("node:os");
+      const path = await import("node:path");
+      const home = await fs.mkdtemp(path.join(os.tmpdir(), "m23-boundary-crossing-tick-"));
+      const statusPath = path.join(home, "status.json");
+      const startupPath = path.join(home, "startup.json");
+      const pidPath = path.join(home, "daemon.pid");
+      const eventPath = path.join(home, "events.jsonl");
+      const sourceCommitSha = "a".repeat(40);
+      const runtimeProvenance = { sourceCommitSha };
+      const boundaryAt = "2026-07-14T15:00:00.000Z";
+      const boundaryMs = Date.parse(boundaryAt);
+      let nowMs = boundaryMs - 50;
+      const createCounters = (tickCount) => ({
+        tickCount, successCount: tickCount, holdCount: tickCount, blockCount: 0,
+        manualReviewCount: 0, transientFailureCount: 0, submittedOrderCount: tickCount === 101 ? 1 : 0,
+        exitRequoteCount: 0, duplicateOrderCount: 0, reconcileMismatchCount: 0,
+        untrackedFillCount: 0, liveOrderCleanupFailureCount: 0, crashCount: 0,
+        unhandledRejectionCount: 0,
+      });
+      const writeStatus = async (counters) => fs.writeFile(statusPath, JSON.stringify({
+        status: "running", latestError: null, latestSummary: { status: "ready" },
+        startedAt: "2026-07-13T20:00:00.000Z", latestTickStartedAt: "2026-07-14T14:59:59.900Z",
+        startupArtifactFilePath: startupPath, runtimeProvenance, counters,
+      }));
+      await fs.writeFile(startupPath, JSON.stringify({ runtimeProvenance }));
+      await fs.writeFile(pidPath, String(process.pid));
+      await fs.writeFile(eventPath, JSON.stringify({ type: "scheduler_started" }) + "\\n");
+      await writeStatus(createCounters(100));
+      await fs.utimes(statusPath, new Date(boundaryMs - 100), new Date(boundaryMs - 100));
+      let committed = false;
+      const event = await module.ensureDaemonCounterBoundary({
+        options: {
+          daemonStatusFilePath: statusPath, startupArtifactFilePath: startupPath,
+          daemonPidFilePath: pidPath, schedulerEventLogFilePath: eventPath,
+          expectedSourceCommitSha: sourceCommitSha,
+        },
+        boundaryAt,
+        clock: () => new Date(nowMs),
+        sleeper: async (durationMs) => {
+          nowMs += durationMs;
+          if (!committed && nowMs >= boundaryMs) {
+            committed = true;
+            await writeStatus(createCounters(101));
+            await fs.utimes(statusPath, new Date(boundaryMs + 10), new Date(boundaryMs + 10));
+            nowMs = boundaryMs + 10;
+          }
+        },
+      });
+      process.stdout.write(JSON.stringify({ event, committed }));
+    `);
+    expect(output.committed).toBe(true);
+    expect(output.event.counters).toMatchObject({ tickCount: 101, submittedOrderCount: 1 });
+    expect(output.event.snapshotObservedAt).toBe("2026-07-14T15:00:00.010Z");
   });
 });
 

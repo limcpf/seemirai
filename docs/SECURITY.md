@@ -262,6 +262,8 @@
   운영 계정 전용 mode `600`으로 기록하며 provider 오류는 error class와 운영자 조치만 남긴다. KST counter boundary에는 numeric
   daemon counter, source SHA, PID, secret-free 시각만 기록하고 provider payload나 credential을 포함하지 않는다. delivery recovery
   job의 `last_error`에도 고정 reason code만 저장한다.
+- production day/failure artifact 경로는 lexical path뿐 아니라 symlink를 해석한 실제 parent/target 경로도 repository 밖이어야 한다.
+  디렉터리 생성 전후에 이 조건을 다시 확인해 private exposure와 audit ID가 worktree 안에 기록되지 않게 한다.
 - M23은 BTC 외 market 기본 활성화, 자동 budget 확대, market/best order 기본 허용, hard stop open position 자동 시장가 청산,
   Telegram public webhook endpoint, 출금/입출금 자동화로 확장하지 않는다. 해당 변경은 M24 또는 별도 보안 설계와 source scan이
   필요하다.

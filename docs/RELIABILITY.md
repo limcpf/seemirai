@@ -542,12 +542,16 @@ Codex-native 운영은 Codex, Git, GitHub, shell command, 문서 상태를 연�
   provider/Telegram side effect 없이 재사용한다. scheduler stop은 거래 daemon stop으로 전파하지 않는다. scheduler는 KST 시작과
   종료 60초 안에 같은 daemon/source의 counter snapshot을 기록하고 closeout은 해당 delta만 사용한다. durable decision은 1,380건
   이상, 양 끝과 내부 최대 gap 3분 이하, dedupe 유일성을 모두 충족해야 한다.
+- scheduler boundary는 경계 직후 status 파일 write 시각을 확인한다. pre-boundary에 시작한 tick이 경계 뒤 counter를 커밋하면 그
+  status를 기다리고, 다음 post-boundary tick write가 먼저 확인되면 마지막 pre-boundary snapshot을 사용한다.
 - `live:ops:daemon` actual 제출은 DB `orders` row가 아니라 `submittedOrderCount` 경계 delta와 core guard를 통과한 BUY/SELL 단일 intent
   decision, 대상 strategy cleanup artifact 수를 교차 검증한다. BUY entry cleanup은 같은 attempt와 scope의 durable budget
   reservation을 반드시 가져야 하며, 별도 entry reservation을 만들지 않는 SELL exit cleanup에는 이 조건을 적용하지 않는다. decision은
   `UPBIT`/`KRW-BTC`/`live_ops_autonomous_24x7_core` scope로 제한한다. malformed actionable decision,
   reservation/cleanup 누락, 개수 불일치는 risk bypass 또는 미확인 제출 가능성으로 보고 day closeout을 실패시킨다. cleanup evidence
   fingerprint는 수량, 가격, notional, fee, realized PnL 입력을 포함한다.
+- cleanup 제출 개수는 `submittedAt` 또는 reservation 시각으로 KST day에 귀속하지만, SELL realized loss와 fill 수는 반드시
+  `filledAt`으로 귀속한다. 자정 경계 제출/체결이 서로 다른 day에 속해도 손실 ceiling은 실제 체결일에 반영한다.
 - bounded wait에서 미체결 SELL이 terminal cancel로 확인된 `CANCELED_FOR_REQUOTE` 제출은 cleanup 대신 daemon
   `exitRequoteCount` 경계 delta를 durable terminal evidence로 사용한다. `submittedOrderCount - exitRequoteCount`와 cleanup 수가
   일치해야 하며, 재호가 수가 제출 수보다 많으면 day closeout을 실패시킨다.

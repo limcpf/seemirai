@@ -185,6 +185,20 @@ describe("M23 production day closeout script", () => {
     });
   });
 
+  it("저장소 안을 가리키는 외부 symlink artifact 디렉터리를 차단한다", async () => {
+    const home = await mkdtemp(path.join(os.tmpdir(), "seemirai-m23-artifact-symlink-"));
+    const output = await runModuleExpression(`
+      const fs = await import("node:fs/promises");
+      const linkPath = ${JSON.stringify(path.join(home, "artifacts"))};
+      await fs.symlink(${JSON.stringify(repositoryRoot)}, linkPath, "dir");
+      let message;
+      try { await module.assertArtifactDirOutsideRepository(linkPath); }
+      catch (error) { message = error.message; }
+      process.stdout.write(JSON.stringify({ message }));
+    `);
+    expect(output.message).toContain("저장소 밖 실제 경로");
+  });
+
   it("현재 config/env 원문 fingerprint가 daemon provenance와 다르면 차단한다", async () => {
     const configRawText = "{\n  \"mode\": \"live\"\n}\n";
     const envRawText = "DATABASE_URL=postgres://example\n";
@@ -412,6 +426,7 @@ describe("M23 production day closeout script", () => {
       kind: "live_ops_autonomous_exit_closeout",
       side: "SELL",
       status: "FILLED",
+      submittedAt: "2026-07-14T14:59:59.000Z",
       filledAt: "2026-07-14T16:00:02.000Z",
       terminalCheckedAt: "2026-07-14T16:00:02.000Z",
       filledQuantity: "0.0001",
@@ -426,6 +441,7 @@ describe("M23 production day closeout script", () => {
       ...cleanup,
       kind: "live_ops_autonomous_entry_fill_closeout",
       side: "BUY",
+      submittedAt: "2026-07-14T16:00:00.000Z",
       realizedPnlKrw: undefined,
     })}\n`, "utf8");
 
@@ -433,6 +449,9 @@ describe("M23 production day closeout script", () => {
       const fs = await import("node:fs/promises");
       const window = module.createKstDayWindow("2026-07-15");
       const first = await module.readLiveArtifactEvidence(${JSON.stringify(artifactDir)}, window);
+      const previous = await module.readLiveArtifactEvidence(
+        ${JSON.stringify(artifactDir)}, module.createKstDayWindow("2026-07-14"),
+      );
       const changed = ${JSON.stringify(cleanup)};
       changed.realizedPnlKrw = "-200";
       await fs.writeFile(${JSON.stringify(path.join(artifactDir, cleanupFile))}, JSON.stringify(changed));
@@ -440,9 +459,12 @@ describe("M23 production day closeout script", () => {
       let missingReservation;
       try { await module.readLiveArtifactEvidence(${JSON.stringify(missingReservationDir)}, window); }
       catch (error) { missingReservation = error.message; }
-      process.stdout.write(JSON.stringify({ first, second, missingReservation }));
+      process.stdout.write(JSON.stringify({ first, previous, second, missingReservation }));
     `);
+    expect(output.first.cleanupSubmissionCount).toBe(0);
     expect(output.first.realizedLossKrw).toBe("100");
+    expect(output.previous.cleanupSubmissionCount).toBe(1);
+    expect(output.previous.realizedLossKrw).toBe("0");
     expect(output.second.realizedLossKrw).toBe("200");
     expect(output.second.evidenceId).not.toBe(output.first.evidenceId);
     expect(output.missingReservation).toContain("BUY 제출 cleanup과 일치하는 대상 strategy reservation이 없습니다");

@@ -208,6 +208,8 @@ append-only daemon counter boundary를 남기고, 종료 60초 뒤 closeout을 �
 않고 `failed`로 닫는다. 각 실패 시도는 provider 이전 precondition 실패도 별도 immutable failure artifact로 남긴다. 주간 손실은
 `--first-day`부터 현재 기준일 직전까지 같은 source/config/env/migration provenance로 통과한 연속 day artifact만 합산한다. 같은
 날짜의 일반 daily report가 먼저 완료됐으면 closeout actor/correlation이 있는 별도 recovery job으로 M23 상태 report를 한 번 전달한다.
+boundary capture는 경계 직후의 status file write까지 확인해 경계를 걸친 tick의 counter를 이전 day에 포함한다. SELL cleanup의 제출
+개수는 제출 시각, realized loss는 실제 `filledAt` KST day를 사용한다. artifact 경로는 symlink 실제 대상도 repository 밖이어야 한다.
 
 ```sh
 cat "$ISSUE_267_HOME/artifacts/production-day-scheduler-status.json"

@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { access, appendFile, chmod, mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { access, appendFile, chmod, mkdir, readFile, rename, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
@@ -577,16 +577,28 @@ export async function ensureDaemonCounterBoundary({
   let captured;
   while (!stopControl.requested) {
     const observedAt = clock();
-    const status = await readJsonFile(options.daemonStatusFilePath);
+    const [status, statusFileStat] = await Promise.all([
+      readJsonFile(options.daemonStatusFilePath),
+      stat(options.daemonStatusFilePath),
+    ]);
     const latestTickMs = Date.parse(status.latestTickStartedAt);
     if (Number.isFinite(latestTickMs) && latestTickMs <= boundaryMs) {
       captured = { status, observedAt };
     }
-    const remainingMs = boundaryMs - observedAt.getTime();
-    if (remainingMs <= 0) {
+    const crossedBoundary = observedAt.getTime() >= boundaryMs;
+    const preBoundaryTickCommittedAfterBoundary = crossedBoundary
+      && latestTickMs <= boundaryMs
+      && statusFileStat.mtimeMs >= boundaryMs;
+    const postBoundaryTickCommitted = crossedBoundary && latestTickMs > boundaryMs;
+    if (preBoundaryTickCommittedAfterBoundary || (postBoundaryTickCommitted && captured !== undefined)) {
+      // 경계를 걸친 tick의 counter write 또는 다음 tick write를 확인한 뒤에야 이전 day snapshot을 확정한다.
       break;
     }
-    await sleeper(Math.min(remainingMs, boundaryCapturePollMs), stopControl);
+    if (observedAt.getTime() - boundaryMs > boundaryCaptureToleranceMs) {
+      throw new Error(`${boundaryAt} daemon counter boundary의 최종 status write를 60초 안에 확인하지 못했습니다.`);
+    }
+    const remainingMs = Math.max(boundaryMs - observedAt.getTime(), 0);
+    await sleeper(remainingMs > 0 ? Math.min(remainingMs, boundaryCapturePollMs) : boundaryCapturePollMs, stopControl);
   }
   if (stopControl.requested) {
     throw new Error("daemon counter boundary 기록 전에 scheduler stop이 요청됐습니다.");

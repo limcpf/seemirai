@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { createHash, randomUUID } from "node:crypto";
-import { access, chmod, mkdir, readFile, readdir, writeFile } from "node:fs/promises";
+import { access, chmod, mkdir, readFile, readdir, realpath, writeFile } from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
@@ -966,12 +966,12 @@ export async function readLiveArtifactEvidence(artifactDir, window) {
   if (attemptIds.some((attemptId) => typeof attemptId !== "string") || new Set(attemptIds).size !== attemptIds.length) {
     throw new Error("대상 strategy cleanup artifact의 attempt ID가 없거나 중복됐습니다.");
   }
-  const dayRecords = scopedCleanups.filter(({ value }) => {
+  const submissionRecords = scopedCleanups.filter(({ value }) => {
     const reservation = reservationByAttemptId.get(value.attemptId);
     const submittedAt = Date.parse(value.submittedAt ?? reservation?.value.reservedAt ?? value.filledAt ?? value.terminalCheckedAt);
     return Number.isFinite(submittedAt) && submittedAt >= window.startMs && submittedAt < window.endMs;
   });
-  for (const { file, value } of dayRecords) {
+  for (const { file, value } of submissionRecords) {
     const reservation = reservationByAttemptId.get(value.attemptId);
     const entrySubmission = value.side === "BUY" || String(value.kind ?? "").includes("_entry_");
     if (entrySubmission && (reservation === undefined || !Number.isFinite(Date.parse(reservation.value.reservedAt)))) {
@@ -979,7 +979,10 @@ export async function readLiveArtifactEvidence(artifactDir, window) {
       throw new Error(`BUY 제출 cleanup과 일치하는 대상 strategy reservation이 없습니다: ${file}`);
     }
   }
-  const fills = dayRecords.filter(({ value }) => value.status === "FILLED");
+  const fills = scopedCleanups.filter(({ value }) => {
+    const filledAt = Date.parse(value.filledAt);
+    return value.status === "FILLED" && Number.isFinite(filledAt) && filledAt >= window.startMs && filledAt < window.endMs;
+  });
   const exits = fills.filter(({ value }) => value.kind === "live_ops_autonomous_exit_closeout");
   let realizedLoss = new Decimal(0);
   for (const { file, value } of exits) {
@@ -988,10 +991,15 @@ export async function readLiveArtifactEvidence(artifactDir, window) {
     }
     realizedLoss = realizedLoss.plus(Decimal.max(new Decimal(value.realizedPnlKrw).negated(), 0));
   }
-  const evidenceFingerprint = sha256Json(dayRecords.map(({ file, value }) => {
+  const submissionFiles = new Set(submissionRecords.map(({ file }) => file));
+  const fillFiles = new Set(fills.map(({ file }) => file));
+  const evidenceRecords = scopedCleanups.filter(({ file }) => submissionFiles.has(file) || fillFiles.has(file));
+  const evidenceFingerprint = sha256Json(evidenceRecords.map(({ file, value }) => {
     const reservation = reservationByAttemptId.get(value.attemptId);
     return {
       file,
+      submissionInDay: submissionFiles.has(file),
+      fillInDay: fillFiles.has(file),
       reservationFile: reservation?.file ?? null,
       attemptId: value.attemptId,
       kind: value.kind ?? null,
@@ -1010,7 +1018,7 @@ export async function readLiveArtifactEvidence(artifactDir, window) {
     };
   }));
   return {
-    cleanupSubmissionCount: dayRecords.length,
+    cleanupSubmissionCount: submissionRecords.length,
     fillCount: fills.length,
     realizedLossKrw: realizedLoss.toFixed(),
     evidenceCount: Math.max(exits.length, 1),
@@ -1414,6 +1422,9 @@ async function writeProductionDayArtifact({ artifactDir, day, summary, allowRepo
     await assertArtifactDirOutsideRepository(artifactDir);
   }
   await mkdir(artifactDir, { recursive: true, mode: 0o700 });
+  if (!allowRepositoryPath) {
+    await assertArtifactDirOutsideRepository(artifactDir);
+  }
   const filePath = path.join(artifactDir, `production-day-${day}.json`);
   await writeFile(filePath, `${JSON.stringify(summary, null, 2)}\n`, { flag: "wx", mode: 0o600 });
   await chmod(filePath, 0o600);
@@ -1466,7 +1477,9 @@ export function isReusableProductionDayArtifact({ summary, day, firstDay, window
 }
 
 async function writeFailureArtifact({ artifactDir, day, error }) {
+  await assertArtifactDirOutsideRepository(artifactDir);
   await mkdir(artifactDir, { recursive: true, mode: 0o700 });
+  await assertArtifactDirOutsideRepository(artifactDir);
   const stamp = new Date().toISOString().replace(/[-:.]/gu, "");
   const safeDay = dayPattern.test(String(day)) ? day : "invalid-day";
   const filePath = path.join(artifactDir, `production-day-${safeDay}-failure-${stamp}-${randomUUID()}.json`);
@@ -1483,11 +1496,40 @@ async function writeFailureArtifact({ artifactDir, day, error }) {
   await chmod(filePath, 0o600);
 }
 
-async function assertArtifactDirOutsideRepository(artifactDir) {
+export async function assertArtifactDirOutsideRepository(artifactDir) {
   const resolved = path.resolve(artifactDir);
   const relative = path.relative(repositoryRoot, resolved);
   if (relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative))) {
     throw new Error("actual production day artifact는 저장소 밖 디렉터리에만 기록할 수 있습니다.");
+  }
+  const [realRepositoryRoot, projectedArtifactDir] = await Promise.all([
+    realpath(repositoryRoot),
+    resolveProjectedRealPath(resolved),
+  ]);
+  const realRelative = path.relative(realRepositoryRoot, projectedArtifactDir);
+  if (realRelative === "" || (!realRelative.startsWith("..") && !path.isAbsolute(realRelative))) {
+    // 저장소 밖 symlink가 저장소 안을 가리키는 경우에도 private 운영 artifact write를 허용하지 않는다.
+    throw new Error("actual production day artifact는 저장소 밖 실제 경로에만 기록할 수 있습니다.");
+  }
+}
+
+async function resolveProjectedRealPath(filePath) {
+  const resolvedPath = path.resolve(filePath);
+  let existingAncestor = resolvedPath;
+  while (true) {
+    try {
+      const realExistingAncestor = await realpath(existingAncestor);
+      return path.resolve(realExistingAncestor, path.relative(existingAncestor, resolvedPath));
+    } catch (error) {
+      if (error?.code !== "ENOENT" && error?.code !== "ENOTDIR") {
+        throw error;
+      }
+      const parent = path.dirname(existingAncestor);
+      if (parent === existingAncestor) {
+        throw error;
+      }
+      existingAncestor = parent;
+    }
   }
 }
 
