@@ -1175,6 +1175,12 @@ Telegram provider 실패는 report 생성 성공을 되돌리지 않는다. prov
 claim하지 않도록 최소 다음 tick 이후로 `run_after`를 미룬다. report 생성 중 audit 저장소 장애처럼 runner가 예외를 던지면
 runtime이 `failJob`으로 lock을 해제해 같은 row가 retry 또는 수동 복구 대상으로 남게 한다.
 
+Issue #267 production day closeout에서 기존 `report.daily:<reportDate>` job이 `COMPLETED`지만 delivery audit이 없으면 report 생성
+job을 재실행하지 않는다. 별도 `job_type=report.daily.delivery_recovery`,
+`idempotency_key=report.daily.delivery_recovery:<reportDate>` job이 이미 만든 deterministic notification만 전송한다. provider 실패는
+이 recovery job을 5분 뒤 재예약한다. provider 성공 뒤 audit append가 실패하면 중복 전송을 막기 위해 recovery job을 완료하고
+수동 확인을 요구한다.
+
 ## M8 Paper soak verification
 
 구현 기준:

@@ -539,9 +539,14 @@ Codex-native 운영은 Codex, Git, GitHub, shell command, 문서 상태를 연�
   통과한 `passed` 입력만 허용한다. 외부 DB 조건이 없으면 `blocked`로 남기되 actual closeout은 실패다.
 - Issue #267 production day scheduler는 완료 KST day를 순서대로만 처리한다. provider/heartbeat 지연은 같은 day와 같은 daily report
   idempotency key로 bounded retry하고, 한도를 소진하면 다음 day로 건너뛰지 않는다. passed day artifact는 create-only이며 재실행 시
-  provider/Telegram side effect 없이 재사용한다. scheduler stop은 거래 daemon stop으로 전파하지 않는다.
-- 누적 realized loss와 미체결 노출 합계가 50,000 KRW에 닿기 전에 operator stop 또는 kill switch/manual review로 수렴한다. 이
-  ceiling은 M24 예산 확대 승인이 아니다.
+  provider/Telegram side effect 없이 재사용한다. scheduler stop은 거래 daemon stop으로 전파하지 않는다. scheduler는 KST 시작과
+  종료 60초 안에 같은 daemon/source의 counter snapshot을 기록하고 closeout은 해당 delta만 사용한다. durable decision은 1,380건
+  이상, 양 끝과 내부 최대 gap 3분 이하, dedupe 유일성을 모두 충족해야 한다.
+- `live:ops:daemon` actual 제출은 DB `orders` row가 아니라 `submittedOrderCount` 경계 delta와 core guard를 통과한 BUY/SELL 단일 intent
+  decision 수를 교차 검증한다. malformed actionable decision 또는 개수 불일치는 risk bypass 가능성으로 보고 day closeout을 실패시킨다.
+- 일/주간 realized loss 중 큰 값과 private open position 명목금액 합계가 50,000 KRW에 닿기 전에 operator stop 또는 kill
+  switch/manual review로 수렴한다. open order는 0이어야 하지만 ceiling 미만의 BTC position 자체는 허용한다. 이 ceiling은 M24
+  예산 확대 승인이 아니다.
 
 ## Issue #258 Live Ops 운영 관측성 신뢰성 기준
 

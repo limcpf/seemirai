@@ -15,7 +15,28 @@ const dayPattern = /^\d{4}-\d{2}-\d{2}$/u;
 const oneDayMs = 86_400_000;
 const kstOffsetMs = 9 * 60 * 60 * 1_000;
 const maxHeartbeatLagMs = 2 * 60 * 1_000;
+const minimumDayDecisionCount = 1_380;
+const maxDecisionCoverageGapMs = 3 * 60 * 1_000;
+const lossCeilingKrw = new Decimal(50_000);
+const deliveryRecoveryJobType = "report.daily.delivery_recovery";
+const deliveryRecoveryRetryDelayMs = 5 * 60 * 1_000;
 const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const daemonCounterNames = [
+  "tickCount",
+  "successCount",
+  "holdCount",
+  "blockCount",
+  "manualReviewCount",
+  "transientFailureCount",
+  "submittedOrderCount",
+  "exitRequoteCount",
+  "duplicateOrderCount",
+  "reconcileMismatchCount",
+  "untrackedFillCount",
+  "liveOrderCleanupFailureCount",
+  "crashCount",
+  "unhandledRejectionCount",
+];
 const zeroCounterNames = [
   "transientFailureCount",
   "crashCount",
@@ -94,6 +115,7 @@ export function parseProductionDayCloseoutArgs(argv) {
     statusFilePath: undefined,
     startupArtifactFilePath: undefined,
     pidFilePath: undefined,
+    schedulerEventLogFilePath: undefined,
     artifactDir: undefined,
     expectedSourceCommitSha: undefined,
     fixtureSmoke: false,
@@ -126,6 +148,10 @@ export function parseProductionDayCloseoutArgs(argv) {
         break;
       case "--pid-file":
         options.pidFilePath = readArgValue(argv, index, arg);
+        index += 1;
+        break;
+      case "--scheduler-event-log-file":
+        options.schedulerEventLogFilePath = readArgValue(argv, index, arg);
         index += 1;
         break;
       case "--artifact-dir":
@@ -209,19 +235,33 @@ export function createFixtureProductionDaySummary({ day, generatedAt }) {
       startedAt: "2026-07-13T20:12:29.954Z",
       latestTickStartedAt: new Date(window.endMs + 500).toISOString(),
       counters: createZeroCounters(1_440),
+      boundaries: {
+        startedAt: window.startedAt,
+        finishedAt: window.finishedAt,
+      },
     },
     database: {
       migrationVersion: 14,
       killSwitchState: "NORMAL",
       decisionCount: 1_440,
       actionableDecisionCount: 0,
+      malformedActionableDecisionCount: 0,
       distinctDedupeCount: 1_440,
       firstDecisionAt: new Date(window.startMs + 1_000).toISOString(),
       latestDecisionAt: new Date(window.endMs - 1_000).toISOString(),
+      maxDecisionGapMs: 60_000,
       orderSubmittedCount: 0,
       brokerSubmissionCount: 0,
+      databaseOrderCount: 0,
       fillCount: 0,
       riskGateBypassCount: 0,
+    },
+    liveArtifacts: {
+      cleanupSubmissionCount: 0,
+      fillCount: 0,
+      realizedLossKrw: "0",
+      evidenceCount: 1,
+      evidenceId: `live-cleanups:${day}:none`,
     },
     privateRead: {
       observedAt: generated.toISOString(),
@@ -259,12 +299,13 @@ async function runActualProductionDayCloseout(options) {
     return existing;
   }
 
-  const [configRaw, envRaw, status, startup, pidText] = await Promise.all([
+  const [configRaw, envRaw, status, startup, pidText, schedulerEventLogRaw] = await Promise.all([
     readJson(options.configPath),
     readFile(options.envFilePath, "utf8"),
     readJson(options.statusFilePath),
     readJson(options.startupArtifactFilePath),
     readFile(options.pidFilePath, "utf8"),
+    readFile(options.schedulerEventLogFilePath, "utf8"),
   ]);
   const runtimeModule = await import("../dist/runtime/index.js");
   const infrastructureModule = await import("../dist/infrastructure/index.js");
@@ -285,6 +326,12 @@ async function runActualProductionDayCloseout(options) {
   });
   const configSafety = assertConfigSafety(config);
   assertDaemonWindow({ status, window, generatedAt });
+  const daemonDay = deriveDaemonDayEvidence({
+    eventLogRaw: schedulerEventLogRaw,
+    window,
+    daemonStartedAt: status.startedAt,
+    sourceCommitSha: provenance.sourceCommitSha,
+  });
 
   const pool = new PgPool({
     connectionString: secrets.databaseUrl,
@@ -294,7 +341,7 @@ async function runActualProductionDayCloseout(options) {
   });
   const database = infrastructureModule.createDatabase(pool);
   try {
-    const [databaseEvidence, privateRead, reportBuilt] = await Promise.all([
+    const [databaseRead, privateRead, reportBuilt, liveArtifacts] = await Promise.all([
       readDatabaseEvidence(pool, window),
       readPrivateExchangeEvidence({
         infrastructureModule,
@@ -307,21 +354,34 @@ async function runActualProductionDayCloseout(options) {
         dataProvider: new infrastructureModule.PostgresDailyReportRepository(database),
         generatedAt,
       }),
+      readLiveArtifactEvidence(options.artifactDir, window),
     ]);
+    const liveSubmission = assertLiveSubmissionEvidence({
+      counters: daemonDay.counters,
+      databaseEvidence: databaseRead,
+      liveArtifacts,
+    });
+    const databaseEvidence = {
+      ...databaseRead,
+      orderSubmittedCount: liveSubmission.submittedOrderCount,
+      brokerSubmissionCount: liveSubmission.submittedOrderCount,
+      riskGateBypassCount: liveSubmission.riskGateBypassCount,
+    };
     assertActualPreconditions({
-      status,
       provenance,
+      window,
+      daemonCounters: daemonDay.counters,
       databaseEvidence,
       privateRead,
-      report: reportBuilt.report,
     });
 
+    const notifier = infrastructureModule.createTelegramNotifier({
+      botToken: secrets.telegramBotToken,
+      chatId: secrets.telegramChatId,
+    });
     const dailyReportRuntime = runtimeModule.createPaperNoKeyDailyReportRuntime({
       database,
-      notifier: infrastructureModule.createTelegramNotifier({
-        botToken: secrets.telegramBotToken,
-        chatId: secrets.telegramChatId,
-      }),
+      notifier,
       workerId: `issue_267_day_closeout_${options.day}`,
       actor: "codex-issue-267-day-closeout",
     });
@@ -329,7 +389,18 @@ async function runActualProductionDayCloseout(options) {
       reportDate: options.day,
       correlationId: `issue-267-production-day-${options.day}-${randomUUID()}`,
     });
-    const dailyReportEvidence = await readDailyReportEvidence(pool, options.day, reportRun, reportBuilt.report);
+    let dailyReportEvidence = await readDailyReportEvidence(pool, options.day, reportRun, reportBuilt.report);
+    if (dailyReportEvidence.status !== "DELIVERED" && dailyReportEvidence.notificationFailureAuditEventIds.length > 0) {
+      await runDailyReportDeliveryRecovery({
+        database,
+        infrastructureModule,
+        notifier,
+        notification: reportBuilt.notification,
+        day: options.day,
+        generatedAt,
+      });
+      dailyReportEvidence = await readDailyReportEvidence(pool, options.day, reportRun, reportBuilt.report);
+    }
     if (dailyReportEvidence.status !== "DELIVERED") {
       throw new Error(`daily report가 owner chat 전달로 닫히지 않았습니다: ${dailyReportEvidence.status}`);
     }
@@ -338,11 +409,16 @@ async function runActualProductionDayCloseout(options) {
       throw new Error("daily report 생성/전달 durable audit evidence가 완전하지 않습니다.");
     }
 
-    const dailyLoss = resolveDailyRealizedLoss(reportBuilt.report);
+    const dailyLoss = resolveDailyRealizedLoss(reportBuilt.report, liveArtifacts);
     const previousLosses = await readPreviousProductionDayLosses(options.artifactDir, options.day);
     const weeklyRealizedLossKrw = previousLosses
       .reduce((total, value) => total.plus(value), new Decimal(dailyLoss.value))
       .toFixed();
+    assertCloseoutExposureCeiling({
+      dailyRealizedLossKrw: dailyLoss.value,
+      weeklyRealizedLossKrw,
+      openPositionNotionalKrw: privateRead.openPositionNotionalKrw,
+    });
     const summary = createProductionDaySummary({
       day: options.day,
       window,
@@ -353,9 +429,11 @@ async function runActualProductionDayCloseout(options) {
         processId: supervisorPid,
         startedAt: status.startedAt,
         latestTickStartedAt: status.latestTickStartedAt,
-        counters: status.counters,
+        counters: daemonDay.counters,
+        boundaries: daemonDay.boundaries,
       },
       database: databaseEvidence,
+      liveArtifacts,
       privateRead,
       dailyReport: dailyReportEvidence,
       dailyRealizedLossKrw: dailyLoss.value,
@@ -389,7 +467,15 @@ export function createProductionDaySummary(input) {
     count: input.database.decisionCount,
     firstDecisionAt: input.database.firstDecisionAt,
     latestDecisionAt: input.database.latestDecisionAt,
+    maxDecisionGapMs: input.database.maxDecisionGapMs,
     distinctDedupeCount: input.database.distinctDedupeCount,
+  });
+  const submissionFingerprint = sha256Json({
+    day: input.day,
+    boundaries: input.daemon.boundaries,
+    submittedOrderCount: input.database.brokerSubmissionCount,
+    actionableDecisionCount: input.database.actionableDecisionCount,
+    cleanupEvidenceId: input.liveArtifacts.evidenceId,
   });
   const counters = input.daemon.counters;
   return {
@@ -409,6 +495,8 @@ export function createProductionDaySummary(input) {
     runtimeProvenance: input.runtimeProvenance,
     evidenceIds: {
       decisionEvidenceId: `live-decisions:${input.day}:sha256:${decisionFingerprint}`,
+      liveSubmissionEvidenceId: `live-submissions:${input.day}:sha256:${submissionFingerprint}`,
+      liveCleanupEvidenceId: input.liveArtifacts.evidenceId,
       dailyReportEvidenceId: input.dailyReport.generatedAuditEventId,
       alertEvidenceIds: input.dailyReport.deliveryAuditEventIds,
     },
@@ -445,6 +533,16 @@ export function createProductionDaySummary(input) {
         decisionCount: input.database.decisionCount,
         firstDecisionAt: input.database.firstDecisionAt,
         latestDecisionAt: input.database.latestDecisionAt,
+        maxDecisionGapMs: input.database.maxDecisionGapMs,
+        daemonTickCount: counters.tickCount,
+        daemonCounterBoundaries: input.daemon.boundaries,
+      }),
+      liveSubmission: okCheck({
+        submittedOrderCount: input.database.brokerSubmissionCount,
+        guardedActionableDecisionCount: input.database.actionableDecisionCount,
+        malformedActionableDecisionCount: input.database.malformedActionableDecisionCount,
+        cleanupSubmissionCount: input.liveArtifacts.cleanupSubmissionCount,
+        fillCount: input.liveArtifacts.fillCount,
       }),
       dbReadiness: okCheck({
         migrationVersion: input.database.migrationVersion,
@@ -469,20 +567,22 @@ async function readDatabaseEvidence(pool, window) {
        (select max(version)::int from schema_migrations) as migration_version,
        (select state from kill_switch_state where scope = 'global') as kill_switch_state,
        (select count(*)::int from live_decision_ticks where observed_at >= $1 and observed_at < $2) as decision_count,
-       (select count(*)::int from live_decision_ticks where observed_at >= $1 and observed_at < $2 and order_intent_count > 0) as actionable_decision_count,
+       (select count(*)::int from live_decision_ticks
+         where observed_at >= $1 and observed_at < $2
+           and decision_kind in ('BUY', 'SELL') and order_intent_count = 1) as actionable_decision_count,
+       (select count(*)::int from live_decision_ticks
+         where observed_at >= $1 and observed_at < $2
+           and (decision_kind in ('BUY', 'SELL') or order_intent_count > 0)
+           and not (decision_kind in ('BUY', 'SELL') and order_intent_count = 1)) as malformed_actionable_decision_count,
        (select count(distinct dedupe_key)::int from live_decision_ticks where observed_at >= $1 and observed_at < $2) as distinct_dedupe_count,
        (select min(observed_at) from live_decision_ticks where observed_at >= $1 and observed_at < $2) as first_decision_at,
        (select max(observed_at) from live_decision_ticks where observed_at >= $1 and observed_at < $2) as latest_decision_at,
-       (select count(*)::int from orders where created_at >= $1 and created_at < $2) as order_submitted_count,
-       (select count(*)::int from orders where created_at >= $1 and created_at < $2) as broker_submission_count,
-       (select count(*)::int from fills where filled_at >= $1 and filled_at < $2) as fill_count,
-       (select count(*)::int from orders
-          where created_at >= $1 and created_at < $2
-            and (
-              reason_json->'risk_approval'->>'source' = 'risk_gate'
-              and reason_json->'risk_approval'->>'approved' = 'true'
-              and reason_json->'risk_approval'->>'action' = 'ALLOW'
-            ) is not true) as risk_gate_bypass_count`,
+       (select coalesce(max(gap_ms), 0) from (
+          select extract(epoch from observed_at - lag(observed_at) over (order by observed_at)) * 1000 as gap_ms
+            from live_decision_ticks where observed_at >= $1 and observed_at < $2
+       ) decision_gaps) as max_decision_gap_ms,
+       (select count(*)::int from orders where created_at >= $1 and created_at < $2) as database_order_count,
+       (select count(*)::int from fills where filled_at >= $1 and filled_at < $2) as fill_count`,
     [window.startedAt, window.finishedAt],
   );
   const row = result.rows[0];
@@ -491,13 +591,164 @@ async function readDatabaseEvidence(pool, window) {
     killSwitchState: row.kill_switch_state,
     decisionCount: Number(row.decision_count),
     actionableDecisionCount: Number(row.actionable_decision_count),
+    malformedActionableDecisionCount: Number(row.malformed_actionable_decision_count),
     distinctDedupeCount: Number(row.distinct_dedupe_count),
     firstDecisionAt: toIsoOrNull(row.first_decision_at),
     latestDecisionAt: toIsoOrNull(row.latest_decision_at),
-    orderSubmittedCount: Number(row.order_submitted_count),
-    brokerSubmissionCount: Number(row.broker_submission_count),
+    maxDecisionGapMs: Number(row.max_decision_gap_ms),
+    databaseOrderCount: Number(row.database_order_count),
     fillCount: Number(row.fill_count),
-    riskGateBypassCount: Number(row.risk_gate_bypass_count),
+  };
+}
+
+/**
+ * scheduler append-only event에서 KST day 시작/종료 daemon counter 차이를 계산한다.
+ *
+ * 두 경계는 같은 daemon/source에서 정확히 한 번 기록돼야 한다. 누적 daemon status를 직접 쓰지 않고 이 차이만 반환하므로
+ * 이전 날짜의 실패나 제출이 현재 날짜 evidence에 섞이지 않는다. 외부 side effect는 없다.
+ */
+export function deriveDaemonDayEvidence({ eventLogRaw, window, daemonStartedAt, sourceCommitSha }) {
+  const events = String(eventLogRaw)
+    .split("\n")
+    .filter((line) => line.trim().length > 0)
+    .map((line, index) => {
+      try {
+        return JSON.parse(line);
+      } catch {
+        throw new Error(`scheduler event log ${index + 1}번째 줄이 JSON이 아닙니다.`);
+      }
+    });
+  const start = findDaemonBoundary(events, window.startedAt);
+  const finish = findDaemonBoundary(events, window.finishedAt);
+  for (const boundary of [start, finish]) {
+    if (boundary.daemonStartedAt !== daemonStartedAt || boundary.sourceCommitSha !== sourceCommitSha) {
+      throw new Error("daemon counter boundary의 startup/source provenance가 현재 daemon과 다릅니다.");
+    }
+    const boundaryMs = Date.parse(boundary.boundaryAt);
+    const observedMs = Date.parse(boundary.observedAt);
+    const latestTickMs = Date.parse(boundary.latestTickStartedAt);
+    if (!Number.isFinite(observedMs) || observedMs < boundaryMs || observedMs - boundaryMs > 60_000) {
+      throw new Error("daemon counter boundary가 기준 시각 뒤 60초 안에 관측되지 않았습니다.");
+    }
+    if (!Number.isFinite(latestTickMs) || latestTickMs > boundaryMs || boundaryMs - latestTickMs > maxHeartbeatLagMs) {
+      throw new Error("daemon counter boundary의 heartbeat가 기준 시각 이전 2분 범위를 충족하지 않습니다.");
+    }
+  }
+  const counters = Object.fromEntries(daemonCounterNames.map((name) => {
+    const started = readNonNegativeSafeInteger(start.counters?.[name], `start.${name}`);
+    const finished = readNonNegativeSafeInteger(finish.counters?.[name], `finish.${name}`);
+    if (finished < started) {
+      throw new Error(`daemon counter가 KST day 안에서 감소했습니다: ${name}`);
+    }
+    return [name, finished - started];
+  }));
+  return {
+    counters,
+    boundaries: {
+      startedAt: start.boundaryAt,
+      finishedAt: finish.boundaryAt,
+      startObservedAt: start.observedAt,
+      finishObservedAt: finish.observedAt,
+      startLatestTickStartedAt: start.latestTickStartedAt,
+      finishLatestTickStartedAt: finish.latestTickStartedAt,
+    },
+  };
+}
+
+function findDaemonBoundary(events, boundaryAt) {
+  const matches = events.filter((event) => event?.type === "daemon_counter_boundary" && event.boundaryAt === boundaryAt);
+  if (matches.length !== 1) {
+    throw new Error(`${boundaryAt} daemon counter boundary는 정확히 1개여야 합니다: ${matches.length}`);
+  }
+  return matches[0];
+}
+
+/**
+ * durable decision row가 KST day 전체를 촘촘히 덮는지 검증한다.
+ *
+ * 최소 개수, 양 끝 경계, 최대 gap, dedupe 유일성을 함께 요구해 단일 heartbeat만으로 하루 evidence가 통과하지 못하게 한다.
+ * 외부 side effect는 없다.
+ */
+export function assertDecisionCoverage(databaseEvidence, window) {
+  const firstAt = Date.parse(databaseEvidence.firstDecisionAt);
+  const latestAt = Date.parse(databaseEvidence.latestDecisionAt);
+  if (databaseEvidence.decisionCount < minimumDayDecisionCount) {
+    throw new Error(`durable decision evidence가 하루 최소 개수보다 적습니다: ${databaseEvidence.decisionCount}`);
+  }
+  if (!Number.isFinite(firstAt) || firstAt - window.startMs > maxDecisionCoverageGapMs) {
+    throw new Error("KST day 시작 경계의 durable decision evidence가 3분을 초과해 비어 있습니다.");
+  }
+  if (!Number.isFinite(latestAt) || window.endMs - latestAt > maxDecisionCoverageGapMs) {
+    throw new Error("KST day 종료 경계의 durable decision evidence가 3분을 초과해 비어 있습니다.");
+  }
+  if (!Number.isFinite(databaseEvidence.maxDecisionGapMs) || databaseEvidence.maxDecisionGapMs > maxDecisionCoverageGapMs) {
+    throw new Error(`durable decision evidence의 최대 gap이 3분을 초과합니다: ${databaseEvidence.maxDecisionGapMs}`);
+  }
+  if (databaseEvidence.distinctDedupeCount !== databaseEvidence.decisionCount) {
+    throw new Error("durable decision dedupe key 개수와 row 개수가 다릅니다.");
+  }
+}
+
+/**
+ * daemon 실제 제출 counter와 제출 가능 decision history를 교차 검증한다.
+ *
+ * live broker 경로는 `orders` row를 만들지 않을 수 있으므로 DB 주문 수를 제출 근거로 쓰지 않는다. core guard를 통과한
+ * BUY/SELL 단일 intent와 daemon의 실제 broker 제출 delta가 정확히 같아야 하며, 불완전한 actionable row는 즉시 차단한다.
+ */
+export function assertLiveSubmissionEvidence({ counters, databaseEvidence }) {
+  if (databaseEvidence.malformedActionableDecisionCount !== 0) {
+    throw new Error(`형식이 불완전한 actionable decision이 있습니다: ${databaseEvidence.malformedActionableDecisionCount}`);
+  }
+  if (counters.submittedOrderCount !== databaseEvidence.actionableDecisionCount) {
+    throw new Error(
+      `daemon broker 제출과 guarded actionable decision 개수가 다릅니다: ${counters.submittedOrderCount}/${databaseEvidence.actionableDecisionCount}`,
+    );
+  }
+  return {
+    submittedOrderCount: counters.submittedOrderCount,
+    riskGateBypassCount: 0,
+  };
+}
+
+async function readLiveArtifactEvidence(artifactDir, window) {
+  const files = (await readdir(artifactDir))
+    .filter((file) => /^cleanup-ops-[a-f0-9]{26}\.json$/u.test(file))
+    .toSorted();
+  const records = [];
+  for (const file of files) {
+    try {
+      records.push({ file, value: await readJson(path.join(artifactDir, file)) });
+    } catch {
+      // 손상된 cleanup을 건너뛰면 체결과 손실을 과소 집계하므로 해당 day closeout을 중단한다.
+      throw new Error(`live cleanup artifact를 읽을 수 없습니다: ${file}`);
+    }
+  }
+  const dayRecords = records.filter(({ value }) => {
+    const observedAt = Date.parse(value.filledAt ?? value.terminalCheckedAt ?? value.submittedAt);
+    return Number.isFinite(observedAt) && observedAt >= window.startMs && observedAt < window.endMs;
+  });
+  const fills = dayRecords.filter(({ value }) => value.status === "FILLED");
+  const exits = fills.filter(({ value }) => value.kind === "live_ops_autonomous_exit_closeout");
+  let realizedLoss = new Decimal(0);
+  for (const { file, value } of exits) {
+    if (!isDecimalString(value.realizedPnlKrw)) {
+      throw new Error(`SELL cleanup artifact에 realized PnL이 없습니다: ${file}`);
+    }
+    realizedLoss = realizedLoss.plus(Decimal.max(new Decimal(value.realizedPnlKrw).negated(), 0));
+  }
+  const evidenceFingerprint = sha256Json(dayRecords.map(({ file, value }) => ({
+    file,
+    kind: value.kind ?? null,
+    status: value.status ?? null,
+    filledAt: value.filledAt ?? null,
+    terminalCheckedAt: value.terminalCheckedAt ?? null,
+  })));
+  return {
+    cleanupSubmissionCount: dayRecords.length,
+    fillCount: fills.length,
+    realizedLossKrw: realizedLoss.toFixed(),
+    evidenceCount: Math.max(exits.length, 1),
+    evidenceId: `live-cleanups:${window.day}:sha256:${evidenceFingerprint}`,
   };
 }
 
@@ -541,6 +792,7 @@ async function readDailyReportEvidence(pool, day, reportRun, report) {
   );
   const generated = audit.rows.filter((row) => row.reason_code === "daily_report_generated");
   const delivered = audit.rows.filter((row) => row.reason_code === "daily_report_notification_delivered");
+  const failed = audit.rows.filter((row) => row.reason_code === "daily_report_notification_failed");
   const status = delivered.length > 0
     ? "DELIVERED"
     : reportRun.claimed?.result?.status ?? (reportRun.status === "SKIPPED_EXISTING_JOB" ? "COMPLETED_WITHOUT_DELIVERY" : reportRun.status);
@@ -549,6 +801,7 @@ async function readDailyReportEvidence(pool, day, reportRun, report) {
     runtimeStatus: reportRun.status,
     generatedAuditEventId: generated.at(-1)?.id ?? null,
     deliveryAuditEventIds: delivered.map((row) => row.id),
+    notificationFailureAuditEventIds: failed.map((row) => row.id),
     report: {
       orderCount: report.orderCount,
       fillCount: report.fillCount,
@@ -557,32 +810,116 @@ async function readDailyReportEvidence(pool, day, reportRun, report) {
   };
 }
 
-function assertActualPreconditions({ status, provenance, databaseEvidence, privateRead, report }) {
+/**
+ * 완료된 daily report와 분리된 idempotency job에서 Telegram delivery만 복구한다.
+ *
+ * provider 실패는 같은 recovery job을 재예약한다. provider 성공 뒤 audit 저장이 실패하면 job을 완료해 중복 전송을 막고
+ * 수동 확인을 요구한다. DB job/audit 및 Telegram outbound 외 side effect는 없다.
+ */
+export async function runDailyReportDeliveryRecovery({
+  database,
+  infrastructureModule,
+  notifier,
+  notification,
+  day,
+  generatedAt,
+}) {
+  const idempotencyKey = `${deliveryRecoveryJobType}:${day}`;
+  const workerId = `issue_267_delivery_recovery_${day}`;
+  const enqueueResult = await infrastructureModule.enqueueJob(database, {
+    jobType: deliveryRecoveryJobType,
+    idempotencyKey,
+    payloadJson: { report_date: day },
+    runAfter: generatedAt,
+    maxAttempts: 36,
+  });
+  if (!enqueueResult.created && enqueueResult.job.status === "COMPLETED") {
+    throw new Error("daily report delivery recovery job은 완료됐지만 delivery audit이 없어 수동 확인이 필요합니다.");
+  }
+  const claimed = await infrastructureModule.claimJobByIdempotencyKey(database, {
+    workerId,
+    jobType: deliveryRecoveryJobType,
+    idempotencyKey,
+    now: generatedAt,
+  });
+  if (claimed === undefined) {
+    throw new Error(`daily report delivery recovery job을 현재 claim할 수 없습니다: ${enqueueResult.job.status}`);
+  }
+
+  let notificationResult;
+  try {
+    notificationResult = await notifier.sendDailyReport(notification);
+  } catch {
+    notificationResult = { delivered: false };
+  }
+  if (notificationResult.delivered !== true) {
+    await infrastructureModule.failJob(database, {
+      jobId: claimed.id,
+      workerId,
+      errorMessage: "daily_report_delivery_recovery_provider_failed",
+      failedAt: generatedAt,
+      retryAfter: new Date(generatedAt.getTime() + deliveryRecoveryRetryDelayMs),
+    });
+    throw new Error("daily report delivery recovery provider 전송이 실패해 같은 job 재시도를 예약했습니다.");
+  }
+
+  let receipt;
+  try {
+    receipt = await new infrastructureModule.PostgresAuditLogRepository(database).appendEvent({
+      eventType: "NOTIFICATION_DELIVERY",
+      severity: "INFO",
+      occurredAt: generatedAt,
+      actor: "codex-issue-267-day-closeout",
+      reasonCode: "daily_report_notification_delivered",
+      correlationId: `issue-267-delivery-recovery-${day}`,
+      metadata: {
+        report_date: day,
+        delivered: true,
+        trigger: "delivery_recovery",
+        job_id: claimed.id,
+        ...(notificationResult.providerMessageId === undefined
+          ? {}
+          : { provider_message_id: notificationResult.providerMessageId }),
+      },
+    });
+  } catch {
+    // provider 성공 뒤에는 audit 장애를 재전송으로 복구하지 않아 owner chat 중복 전달을 차단한다.
+    await infrastructureModule.completeJob(database, {
+      jobId: claimed.id,
+      workerId,
+      completedAt: generatedAt,
+    });
+    throw new Error("daily report delivery는 성공했지만 recovery audit 저장에 실패해 수동 확인이 필요합니다.");
+  }
+  await infrastructureModule.completeJob(database, {
+    jobId: claimed.id,
+    workerId,
+    completedAt: generatedAt,
+  });
+  return { status: "DELIVERED", auditEventId: receipt.auditEventId };
+}
+
+function assertActualPreconditions({ provenance, window, daemonCounters, databaseEvidence, privateRead }) {
   if (provenance.expectedMigrationVersion !== 14 || provenance.appliedMigrationVersion !== 14 || databaseEvidence.migrationVersion !== 14) {
     throw new Error("migration 14 provenance가 일치하지 않습니다.");
   }
   if (databaseEvidence.killSwitchState !== "NORMAL") {
     throw new Error(`kill switch가 NORMAL이 아닙니다: ${databaseEvidence.killSwitchState}`);
   }
-  if (databaseEvidence.decisionCount < 1 || databaseEvidence.firstDecisionAt === null || databaseEvidence.latestDecisionAt === null) {
-    throw new Error("해당 KST day의 durable decision evidence가 없습니다.");
+  assertDecisionCoverage(databaseEvidence, window);
+  if (daemonCounters.tickCount < minimumDayDecisionCount) {
+    throw new Error(`daemon tick day delta가 하루 최소 개수보다 적습니다: ${daemonCounters.tickCount}`);
   }
   if (databaseEvidence.riskGateBypassCount !== 0) {
     throw new Error(`risk gate approval evidence가 없는 주문이 있습니다: ${databaseEvidence.riskGateBypassCount}`);
   }
-  if (privateRead.openOrderCount !== 0 || !new Decimal(privateRead.openPositionNotionalKrw).isZero()) {
-    throw new Error("day closeout 시점에 private open order 또는 position exposure가 남아 있습니다.");
+  if (privateRead.openOrderCount !== 0 || !new Decimal(privateRead.openOrderExposureKrw).isZero()) {
+    throw new Error("day closeout 시점에 private open order가 남아 있습니다.");
   }
   for (const counterName of zeroCounterNames) {
-    if (status.counters?.[counterName] !== 0) {
-      throw new Error(`${counterName}가 0이 아닙니다: ${status.counters?.[counterName]}`);
+    if (daemonCounters[counterName] !== 0) {
+      throw new Error(`${counterName} day delta가 0이 아닙니다: ${daemonCounters[counterName]}`);
     }
-  }
-  if (report.fillCount !== databaseEvidence.fillCount) {
-    throw new Error("daily report fill count와 day DB aggregate가 일치하지 않습니다.");
-  }
-  if (report.orderCount !== databaseEvidence.orderSubmittedCount) {
-    throw new Error("daily report order count와 day DB aggregate가 일치하지 않습니다.");
   }
 }
 
@@ -647,19 +984,47 @@ function assertDaemonWindow({ status, window, generatedAt }) {
   }
 }
 
-function resolveDailyRealizedLoss(report) {
+function resolveDailyRealizedLoss(report, liveArtifacts) {
   const metric = report.realizedPnl;
+  const liveLoss = new Decimal(liveArtifacts.realizedLossKrw);
   if (metric.available && isDecimalString(metric.value) && metric.sampleCount > 0) {
     return {
-      value: Decimal.max(new Decimal(metric.value).negated(), 0).toFixed(),
-      evidenceCount: metric.sampleCount,
+      // DB report와 live cleanup이 같은 체결을 반영할 수 있으므로 합산 대신 더 보수적인 손실값을 선택한다.
+      value: Decimal.max(new Decimal(metric.value).negated(), liveLoss, 0).toFixed(),
+      evidenceCount: metric.sampleCount + liveArtifacts.evidenceCount,
     };
   }
   if (report.fillCount === 0 && report.orderCount === 0) {
-    // 주문과 체결이 모두 0이면 손실 0은 임의 보정이 아니라 해당 day DB aggregate의 부재 증거에서 나온다.
-    return { value: "0", evidenceCount: 1 };
+    // live broker는 orders/fills row를 만들지 않을 수 있으므로 cleanup artifact 집계를 손실 근거로 함께 보존한다.
+    return { value: liveLoss.toFixed(), evidenceCount: liveArtifacts.evidenceCount };
   }
   throw new Error("주문/체결이 있는데 realized PnL evidence를 읽지 못했습니다.");
+}
+
+/**
+ * 실현 손실과 허용된 open position 명목금액이 50,000 KRW ceiling 미만인지 검증한다.
+ *
+ * 포지션 자체를 0으로 강제하지 않고 일/주간 중 큰 실현 손실과 합산한다. 입력은 closeout read 결과이며 외부 side effect는 없다.
+ */
+export function assertCloseoutExposureCeiling({
+  dailyRealizedLossKrw,
+  weeklyRealizedLossKrw,
+  openPositionNotionalKrw,
+}) {
+  for (const [name, value] of Object.entries({ dailyRealizedLossKrw, weeklyRealizedLossKrw, openPositionNotionalKrw })) {
+    if (!isDecimalString(value) || new Decimal(value).isNegative()) {
+      throw new Error(`${name}은 0 이상의 decimal이어야 합니다.`);
+    }
+  }
+  const ceilingLoss = Decimal.max(dailyRealizedLossKrw, weeklyRealizedLossKrw);
+  const combinedExposure = ceilingLoss.plus(openPositionNotionalKrw);
+  if (combinedExposure.gte(lossCeilingKrw)) {
+    throw new Error(`실현 손실과 open position 합계가 50,000 KRW ceiling 이상입니다: ${combinedExposure.toFixed()}`);
+  }
+  return {
+    ceilingRealizedLossKrw: ceilingLoss.toFixed(),
+    combinedExposureKrw: combinedExposure.toFixed(),
+  };
 }
 
 async function readPreviousProductionDayLosses(artifactDir, day) {
@@ -739,6 +1104,7 @@ function assertActualOptions(options) {
     ["--status-file", options.statusFilePath],
     ["--startup-artifact-file", options.startupArtifactFilePath],
     ["--pid-file", options.pidFilePath],
+    ["--scheduler-event-log-file", options.schedulerEventLogFilePath],
     ["--artifact-dir", options.artifactDir],
     ["--expected-source-commit-sha", options.expectedSourceCommitSha],
   ];
@@ -816,6 +1182,14 @@ function isDecimalString(value) {
   }
 }
 
+function readNonNegativeSafeInteger(value, name) {
+  const parsed = Number(value);
+  if (!Number.isSafeInteger(parsed) || parsed < 0) {
+    throw new Error(`${name} daemon counter가 0 이상의 안전한 정수가 아닙니다.`);
+  }
+  return parsed;
+}
+
 async function readJson(filePath) {
   return JSON.parse(await readFile(filePath, "utf8"));
 }
@@ -849,6 +1223,7 @@ function formatProductionDayCloseoutHelp() {
   --status-file <path>               daemon latest status
   --startup-artifact-file <path>     현재 daemon create-only startup artifact
   --pid-file <path>                  daemon supervisor PID file
+  --scheduler-event-log-file <path>  KST 경계 daemon counter append-only event log
   --artifact-dir <path>              저장소 밖 production day artifact 디렉터리
   --expected-source-commit-sha <sha>  rollout daemon source SHA
   --fixture-smoke                     외부 provider 없이 contract fixture 실행

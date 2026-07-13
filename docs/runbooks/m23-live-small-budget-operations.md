@@ -152,27 +152,29 @@ open order/exposure 0을 확인한 뒤 daemon leaf에 `SIGTERM`을 보낸다.
 정지를 별도 terminal artifact로 확인한다. stale `running` status만으로 process 생존을 주장하지 않고 PID 생존, 마지막 write 시각,
 private exposure를 함께 대조한다.
 
-첫 successor run의 public market data disconnect 1회는 다음 tick에서 복구됐지만 actual window의 failure counter 0 조건에는
-포함할 수 없다. 해당 run은 `pre-window-daemon-terminal-20260713T201212198Z.json`으로 보존하고, 신규 주문 차단과 exposure 0을
-재확인한 clean restart `2026-07-14T05:12:29+09:00`부터 새 window를 시작했다. startup 당일은 full KST day가 아니므로
-2026-07-14를 제외하고 2026-07-15~2026-07-21을 7개 후보 날짜로 사용한다. earliest closeout은
-`2026-07-22T00:00:00+09:00`이다.
+첫 successor run의 public market data disconnect는 다음 tick에서 복구됐지만 actual window의 failure counter 0 조건에는 포함할 수
+없다. 해당 run은 `pre-window-daemon-terminal-20260713T201212198Z.json`으로 보존했다. 첫 KST counter boundary 전에도 failure
+counter가 하나라도 증가하면 신규 주문 차단, private open order 0, exposure ceiling을 재확인한 뒤 같은 rollout source로 clean
+restart하고 새 startup artifact를 사용한다. startup 당일은 full KST day가 아니므로 2026-07-14를 제외하고
+2026-07-15~2026-07-21을 7개 후보 날짜로 사용한다. earliest closeout은 `2026-07-22T00:00:00+09:00`이다.
 
 ### Issue #267 일별 evidence scheduler
 
 7일 뒤 latest status와 DB aggregate를 소급 변환하지 않는다. `scripts/run-m23-production-day-closeout.mjs`는 완료된 KST 하루마다
-daemon 연속 실행/PID/heartbeat, source/config/env/migration provenance, durable decision, risk approval, failure counter,
-Upbit private open order/BTC exposure, 기존 daily report idempotency job과 Telegram delivery audit을 검증한다. 검증된 summary는
+daemon 연속 실행/PID/heartbeat, source/config/env/migration provenance, KST 시작/종료 counter delta, full-day durable decision,
+실제 broker 제출과 guarded decision 일치, Upbit private open order/BTC exposure, 기존 daily report idempotency job과 Telegram
+delivery audit을 검증한다. 검증된 summary는
 `production-day-YYYY-MM-DD.json` create-only artifact로 기록한다. 실패 시 final day 파일을 점유하지 않고 실패 분류만 별도
 artifact로 남긴다.
 
-Sub PR 04가 mother branch에 merge된 뒤 거래 daemon을 재시작하지 않고 다음 scheduler를 별도 session으로 실행한다.
+Sub PR 04가 mother branch에 merge된 뒤 첫 day boundary 전에 daemon failure counter를 다시 확인한다. 모두 0이면 daemon을 유지하고,
+0이 아니면 위 clean restart 절차를 수행한다. 그 다음 현재 status가 가리키는 startup artifact로 scheduler를 별도 session에서 실행한다.
 
 ```sh
 cd /home/lim/code/seemirai-worktrees/issue-267-mother
 ISSUE_267_HOME="$HOME/vaults/99_운영/seemirai-live-ops-production/issue-267"
 SOURCE_SHA="3d48665967b79fbbbf59dd316ec30f61662df12e"
-STARTUP_FILE="$ISSUE_267_HOME/artifacts/live-ops-daemon-startup-$SOURCE_SHA-ee053bc3-1fef-455f-abcd-bfa9fb877840.json"
+STARTUP_FILE="$(node -e 'const fs=require("node:fs"); const p=process.argv[1]; process.stdout.write(JSON.parse(fs.readFileSync(p,"utf8")).startupArtifactFilePath)' "$ISSUE_267_HOME/artifacts/live-ops-daemon-status.json")"
 SCHEDULER_RUN_ID="$(node -e 'process.stdout.write(require("node:crypto").randomUUID())')"
 umask 077
 corepack pnpm build
@@ -197,9 +199,11 @@ setsid -f env \
   >> "$ISSUE_267_HOME/logs/production-day-scheduler-$SCHEDULER_RUN_ID.log" 2>&1
 ```
 
-scheduler는 시작 시 daemon status/startup provenance와 supervisor PID를 먼저 확인한다. 각 KST day 종료 60초 뒤 closeout을
-시도하고 실패하면 5분 간격으로 day별 최대 36회 재시도한다. 같은 `report.daily:<reportDate>` job을 사용하므로 process 재시작이나
-수동 재실행이 Telegram 중복 전송으로 이어지지 않는다. 재시도 한도를 소진하면 다음 날짜로 넘어가지 않고 `failed`로 닫는다.
+scheduler는 시작 시 daemon status/startup provenance와 supervisor PID를 먼저 확인한다. 각 KST day 시작과 종료 60초 안에
+append-only daemon counter boundary를 남기고, 종료 60초 뒤 closeout을 시도한다. closeout 실패는 5분 간격으로 day별 최대 36회
+재시도한다. 기존 report 생성은 `report.daily:<reportDate>`, 전달 복구는 `report.daily.delivery_recovery:<reportDate>` key를
+사용하므로 process 재시작이나 수동 재실행이 Telegram 중복 전송으로 이어지지 않는다. 재시도 한도를 소진하면 다음 날짜로 넘어가지
+않고 `failed`로 닫는다.
 
 ```sh
 cat "$ISSUE_267_HOME/artifacts/production-day-scheduler-status.json"

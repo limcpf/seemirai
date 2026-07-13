@@ -15,8 +15,28 @@ const defaultCloseoutDelayMs = 60_000;
 const defaultRetryDelayMs = 5 * 60_000;
 const defaultMaxAttemptsPerDay = 36;
 const maxSleepChunkMs = 60 * 60_000;
+const boundaryCaptureToleranceMs = 60_000;
+const boundaryCaptureLeadMs = 5_000;
+const boundaryCapturePollMs = 50;
+const boundaryHeartbeatLagMs = 2 * 60_000;
 const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const sourceShaPattern = /^[a-f0-9]{40}$/u;
+const daemonCounterNames = [
+  "tickCount",
+  "successCount",
+  "holdCount",
+  "blockCount",
+  "manualReviewCount",
+  "transientFailureCount",
+  "submittedOrderCount",
+  "exitRequoteCount",
+  "duplicateOrderCount",
+  "reconcileMismatchCount",
+  "untrackedFillCount",
+  "liveOrderCleanupFailureCount",
+  "crashCount",
+  "unhandledRejectionCount",
+];
 const requiredBuildFiles = [
   path.join(repositoryRoot, "dist", "application", "index.js"),
   path.join(repositoryRoot, "dist", "infrastructure", "index.js"),
@@ -92,6 +112,44 @@ export async function runProductionDaySchedulerCli(argv, io = {}) {
         break;
       }
       const window = createKstDayWindow(day);
+      if (!options.fixtureSmoke) {
+        Object.assign(state, {
+          status: "waiting_boundary",
+          currentDay: day,
+          waitingUntil: window.startedAt,
+          currentAttempt: 0,
+          updatedAt: clock().toISOString(),
+        });
+        await writeSchedulerStatus(options.schedulerStatusFilePath, state);
+        await waitUntil(new Date(window.startMs - boundaryCaptureLeadMs), { clock, sleeper, stopControl });
+        if (stopControl.requested) {
+          break;
+        }
+        await ensureDaemonCounterBoundary({
+          options,
+          boundaryAt: window.startedAt,
+          clock,
+          sleeper,
+          stopControl,
+        });
+        Object.assign(state, {
+          status: "collecting_day",
+          waitingUntil: window.finishedAt,
+          updatedAt: clock().toISOString(),
+        });
+        await writeSchedulerStatus(options.schedulerStatusFilePath, state);
+        await waitUntil(new Date(window.endMs - boundaryCaptureLeadMs), { clock, sleeper, stopControl });
+        if (stopControl.requested) {
+          break;
+        }
+        await ensureDaemonCounterBoundary({
+          options,
+          boundaryAt: window.finishedAt,
+          clock,
+          sleeper,
+          stopControl,
+        });
+      }
       const closeoutAt = new Date(window.endMs + options.closeoutDelayMs);
       Object.assign(state, {
         status: "waiting",
@@ -360,6 +418,7 @@ function createCloseoutArgs(options, day) {
     "--status-file", options.daemonStatusFilePath,
     "--startup-artifact-file", options.startupArtifactFilePath,
     "--pid-file", options.daemonPidFilePath,
+    "--scheduler-event-log-file", options.schedulerEventLogFilePath,
     "--artifact-dir", options.artifactDir,
     "--expected-source-commit-sha", options.expectedSourceCommitSha,
     "--json",
@@ -475,14 +534,105 @@ async function assertActualSchedulerPreflight(options) {
     throw new Error("daemon source commit SHA가 scheduler rollout SHA와 다릅니다.");
   }
   const pid = Number(pidRaw.trim());
-  if (!Number.isSafeInteger(pid) || pid <= 1) {
-    throw new Error("daemon supervisor PID가 올바르지 않습니다.");
+  assertProcessRunning(pid);
+}
+
+/**
+ * KST day 경계에서 daemon 누적 counter snapshot을 append-only event로 한 번만 기록한다.
+ *
+ * 같은 `boundaryAt` event가 있으면 다음 날짜나 scheduler 재개가 이를 재사용한다. 새 event는 경계 직후의 같은 daemon/source,
+ * 경계 이전 최신 heartbeat, 살아 있는 PID를 확인한 뒤에만 기록하며 scheduler event log 외 side effect는 없다.
+ */
+export async function ensureDaemonCounterBoundary({
+  options,
+  boundaryAt,
+  clock = () => new Date(),
+  sleeper = sleep,
+  stopControl = createStopControl(),
+}) {
+  const eventLogRaw = await readFile(options.schedulerEventLogFilePath, "utf8");
+  const events = eventLogRaw
+    .split("\n")
+    .filter((line) => line.trim().length > 0)
+    .map((line, index) => {
+      try {
+        return JSON.parse(line);
+      } catch {
+        throw new Error(`scheduler event log ${index + 1}번째 줄이 JSON이 아닙니다.`);
+      }
+    });
+  const existing = events.filter((event) => event?.type === "daemon_counter_boundary" && event.boundaryAt === boundaryAt);
+  if (existing.length > 1) {
+    throw new Error(`${boundaryAt} daemon counter boundary가 중복 기록됐습니다.`);
   }
-  try {
-    process.kill(pid, 0);
-  } catch {
-    throw new Error("daemon supervisor process가 실행 중이 아닙니다.");
+  if (existing.length === 1) {
+    return existing[0];
   }
+
+  const boundaryMs = Date.parse(boundaryAt);
+  if (!Number.isFinite(boundaryMs)) {
+    throw new Error("daemon counter boundary 시각이 올바른 ISO timestamp가 아닙니다.");
+  }
+  let captured;
+  while (!stopControl.requested) {
+    const observedAt = clock();
+    const status = await readJsonFile(options.daemonStatusFilePath);
+    const latestTickMs = Date.parse(status.latestTickStartedAt);
+    if (Number.isFinite(latestTickMs) && latestTickMs <= boundaryMs) {
+      captured = { status, observedAt };
+    }
+    const remainingMs = boundaryMs - observedAt.getTime();
+    if (remainingMs <= 0) {
+      break;
+    }
+    await sleeper(Math.min(remainingMs, boundaryCapturePollMs), stopControl);
+  }
+  if (stopControl.requested) {
+    throw new Error("daemon counter boundary 기록 전에 scheduler stop이 요청됐습니다.");
+  }
+  const now = clock();
+  if (now.getTime() - boundaryMs > boundaryCaptureToleranceMs) {
+    throw new Error(`${boundaryAt} daemon counter boundary를 60초 안에 기록하지 못했습니다.`);
+  }
+  if (captured === undefined) {
+    throw new Error("daemon counter boundary 이전의 마지막 status snapshot을 확보하지 못했습니다.");
+  }
+  const status = captured.status;
+  const [startup, pidText] = await Promise.all([
+    readJsonFile(options.startupArtifactFilePath),
+    readFile(options.daemonPidFilePath, "utf8"),
+  ]);
+  if (status.status !== "running" || status.latestError !== null || status.latestSummary?.status !== "ready") {
+    throw new Error("daemon counter boundary에서 latest status가 running/ready가 아닙니다.");
+  }
+  if (status.startupArtifactFilePath !== options.startupArtifactFilePath
+    || JSON.stringify(status.runtimeProvenance) !== JSON.stringify(startup.runtimeProvenance)
+    || status.runtimeProvenance?.sourceCommitSha !== options.expectedSourceCommitSha) {
+    throw new Error("daemon counter boundary의 startup/source provenance가 scheduler 입력과 다릅니다.");
+  }
+  const latestTickMs = Date.parse(status.latestTickStartedAt);
+  if (!Number.isFinite(latestTickMs) || latestTickMs > boundaryMs || boundaryMs - latestTickMs > boundaryHeartbeatLagMs) {
+    throw new Error("daemon counter boundary의 최신 heartbeat가 경계 이전 2분 범위를 충족하지 않습니다.");
+  }
+  const pid = Number(pidText.trim());
+  assertProcessRunning(pid);
+  const counters = Object.fromEntries(daemonCounterNames.map((name) => [
+    name,
+    readNonNegativeSafeInteger(status.counters?.[name], name),
+  ]));
+  const event = {
+    type: "daemon_counter_boundary",
+    boundaryAt,
+    observedAt: now.toISOString(),
+    snapshotObservedAt: captured.observedAt.toISOString(),
+    daemonStartedAt: status.startedAt,
+    latestTickStartedAt: status.latestTickStartedAt,
+    sourceCommitSha: status.runtimeProvenance.sourceCommitSha,
+    processId: pid,
+    counters,
+  };
+  await appendSchedulerEvent(options.schedulerEventLogFilePath, event);
+  return event;
 }
 
 function assertDistinctSchedulerOutputs(options) {
@@ -589,6 +739,29 @@ function parseNonNegativeInteger(value, arg) {
     throw new Error(`${arg}는 0 이상의 정수여야 합니다.`);
   }
   return parsed;
+}
+
+function readNonNegativeSafeInteger(value, name) {
+  const parsed = Number(value);
+  if (!Number.isSafeInteger(parsed) || parsed < 0) {
+    throw new Error(`${name} daemon counter가 0 이상의 안전한 정수가 아닙니다.`);
+  }
+  return parsed;
+}
+
+function assertProcessRunning(pid) {
+  if (!Number.isSafeInteger(pid) || pid <= 1) {
+    throw new Error("daemon supervisor PID가 올바르지 않습니다.");
+  }
+  try {
+    process.kill(pid, 0);
+  } catch {
+    throw new Error("daemon supervisor process가 실행 중이 아닙니다.");
+  }
+}
+
+async function readJsonFile(filePath) {
+  return JSON.parse(await readFile(filePath, "utf8"));
 }
 
 function safeErrorName(error) {

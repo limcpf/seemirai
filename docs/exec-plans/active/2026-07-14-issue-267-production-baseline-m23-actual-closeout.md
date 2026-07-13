@@ -102,8 +102,10 @@ window에서 제외한다. 첫 유효 full KST day는 2026-07-15, 일곱째는 2
 - 제외 범위: M24 budget/universe 확대 승인.
 - DnD:
   - [x] day closeout은 저장소 밖 경로와 명시 guard를 요구하고 KST half-open window를 사용한다.
-  - [x] daemon source/config/env/migration provenance, PID/heartbeat, DB migration/kill switch/decision, private exposure를 검증한다.
-  - [x] daily report는 기존 `report.daily:<reportDate>` idempotency key를 재사용하고 Telegram delivery audit을 요구한다.
+  - [x] daemon source/config/env/migration provenance, PID/heartbeat, KST 경계 counter delta, DB migration/kill switch/full-day decision,
+    private exposure를 검증한다.
+  - [x] actual broker 제출은 daemon day delta와 guarded actionable decision을 대조하고 DB `orders` row에 의존하지 않는다.
+  - [x] daily report는 기존 `report.daily:<reportDate>` idempotency key를 재사용하며, delivery 실패는 별도 idempotent recovery job에서 복구한다.
   - [x] scheduler는 2026-07-15~2026-07-21을 순차 실행하며 같은 day만 bounded retry하고 누락된 day를 건너뛰지 않는다.
   - [x] PID/status/event/day artifact는 운영 계정 전용 mode `600`으로 기록한다.
   - [ ] 관련 script test, typecheck, 전체 verify와 review drain이 통과한다.
