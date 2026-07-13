@@ -44,8 +44,9 @@ pre-deploy 상태를 최신 기능의 실행 증거로 소급 변환하지 않�
 
 - branch: `issue-267/02-runtime-provenance`
 - 선행 조건: Sub PR 01 mother merge.
-- 목표: daemon startup/status에 source SHA, config fingerprint, migration version을 secret 없이 남긴다.
-- 파일 책임: `scripts/run-live-ops-daemon*.mjs`, 관련 `src/runtime/` contract, 단위 테스트, runtime/reliability/security 문서.
+- 목표: daemon startup/status와 Issue #267 actual manifest에 source SHA, config fingerprint, migration version을 secret 없이 남긴다.
+- 파일 책임: `scripts/run-live-ops-daemon*.mjs`, `scripts/run-m23-stability-closeout.mjs`, 관련 `src/runtime/` contract,
+  단위/soak 테스트, runtime/reliability/security 문서.
 - 제외 범위: production migration 실행, daemon 재시작, 7일 closeout 판정.
 - DnD:
   - [ ] production source SHA는 40자리 Git commit으로 검증되고 현재 배포 tree와 일치한다.
@@ -53,6 +54,9 @@ pre-deploy 상태를 최신 기능의 실행 증거로 소급 변환하지 않�
   - [ ] migration version은 DB readiness가 관측한 expected/applied version을 보존한다.
   - [ ] startup artifact와 최신 status가 같은 provenance를 가진다.
   - [ ] provenance 생성 실패 또는 source/migration 불일치는 live startup을 fail-closed 한다.
+  - [ ] Issue #267 actual manifest는 startup provenance와 각 segment provenance의 일치를 검증한다.
+  - [ ] Issue #267 actual manifest는 backup/restore `blocked`를 `PASS` 입력으로 인정하지 않는다.
+  - [ ] manifest `day`, daily report `reportDate`, decision evidence KST day가 일치하고 완료된 KST window인지 검증한다.
   - [ ] 관련 unit/script 테스트, typecheck, 전체 verify가 통과한다.
 
 ### Sub PR 03. Production rollout
@@ -64,7 +68,7 @@ pre-deploy 상태를 최신 기능의 실행 증거로 소급 변환하지 않�
 - 제외 범위: threshold/profile 변경, BTC 외 market, 예산 확대, 과거 artifact 재작성.
 - DnD:
   - [ ] 기존 daemon 정상 중지 전 open order/exposure, failure counter, migration 13 baseline이 저장됐다.
-  - [ ] migration 전 backup과 rollback 입력이 준비됐고 migration 14 pending/checksum drift가 없다.
+  - [ ] daemon 신규 write 차단과 정상 종료 뒤 migration 전 backup을 만들었고 migration 14 pending/checksum drift가 없다.
   - [ ] 새 daemon이 명시 source SHA/config fingerprint/migration 14로 시작됐다.
   - [ ] `live_decision_ticks` write와 `live_ops_db_window` 우선 사용이 실제 DB/status에서 확인됐다.
   - [ ] restart 뒤 reconcile/status/report/Telegram이 복구되고 duplicate live order가 0이다.
@@ -88,16 +92,17 @@ pre-deploy 상태를 최신 기능의 실행 증거로 소급 변환하지 않�
 
 1. pre-deploy daemon 상태와 #206 cleanup artifact를 redacted baseline으로 저장한다.
 2. source SHA, config fingerprint, 현재 migration 13, open order/exposure, rollback commit을 교차 확인한다.
-3. DB backup을 만든 뒤 disposable restore preflight로 복구 가능성을 확인한다.
-4. 기존 daemon에 `SIGTERM`을 보내고 terminal status와 신규 주문 차단 상태를 확인한다.
+3. 신규 entry를 차단하고 기존 daemon에 `SIGTERM`을 보낸 뒤 terminal status와 open order/exposure 0을 확인한다.
+4. daemon write가 멈춘 상태에서 migration 직전 DB backup을 만들고 disposable restore preflight로 복구 가능성을 확인한다.
 5. migration 14를 적용하고 pending/checksum drift가 없는지 확인한다.
 6. Sub PR 02가 병합된 mother SHA로 build한 daemon을 같은 config/env와 보수적 budget으로 시작한다.
 7. startup/status provenance, decision history, DB-backed feature source를 확인한다.
 8. 실제 restart drill과 backup/restore smoke를 닫은 뒤 7일 evidence window를 시작한다.
 
 어느 단계든 source/migration 불일치, open order, mismatch, untracked fill, Telegram owner alert 장기 실패가 확인되면 신규 entry를
-재개하지 않는다. rollback은 migration 14 schema를 임의 삭제하는 방식이 아니라 daemon 중지, 이전 source로 복귀, DB 호환성 확인,
-operator 수동 판정 순서로 수행한다.
+재개하지 않는다. migration 14 적용 뒤 rollback source는 migration 14 파일/checksum을 포함하고 readiness를 통과하는 명시 SHA여야 한다.
+migration 13까지만 아는 pre-deploy source를 migration 14 DB에 직접 실행하지 않는다. 그 source가 꼭 필요하면 daemon을 중지한 상태에서
+검증된 pre-migration backup을 복원하고 schema/version 일치를 확인한 뒤 operator가 재개를 판단한다.
 
 ## 검증 방법
 
@@ -129,6 +134,7 @@ SEEMIRAI_RESTORE_DATABASE_URL=<disposable-restore-db> \
 - 2026-07-14: production rollout source는 Sub PR 02까지 병합된 `issue-267-mother`의 명시 SHA로 고정한다.
 - 2026-07-14: migration 14 적용과 production restart는 Sub PR 02 review drain/merge 전에는 실행하지 않는다.
 - 2026-07-14: actual M23 validator `PASS` 전에는 M24 profile, universe, budget을 확대하지 않는다.
+- 2026-07-14: 기존 validator의 backup blocker 허용과 startedAt 기반 day 판정은 Issue #267 actual contract로 사용하지 않는다.
 
 ## 남은 이슈
 

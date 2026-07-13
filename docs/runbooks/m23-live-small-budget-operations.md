@@ -68,16 +68,26 @@ startup 이후 완료된 KST 날짜부터 actual 7일 window를 계산한다.
 | pre-deploy snapshot | daemon 시작/관측 시각, source worktree HEAD, migration 13, failure counters, open order/exposure를 redacted artifact로 고정한다. |
 | rollout source | Sub PR 02까지 병합된 `issue-267-mother`의 40자리 source SHA를 기록한다. |
 | config provenance | 운영 config 원문 대신 `sha256:<hex>` fingerprint만 startup/status에 남긴다. |
-| migration preflight | migration 14 파일/checksum과 DB pending 상태를 확인하고 적용 전 backup을 만든다. |
-| rollback | 이전 source SHA, daemon 중지 절차, DB 호환성 확인, operator 판단 순서를 기록한다. |
+| migration preflight | migration 14 파일/checksum과 DB pending 상태를 확인하고 daemon 정상 종료 뒤 적용 전 backup을 만든다. |
+| rollback | migration 14를 인식하는 rollback source SHA 또는 검증된 pre-migration restore 절차를 기록한다. |
 
-정상 중지 뒤 migration 14를 적용하고 새 daemon을 시작한다. startup/status의 source SHA, config fingerprint,
+신규 entry를 차단하고 daemon을 정상 종료한 뒤 terminal status와 open order/exposure 0을 확인한다. 그 상태에서 migration 직전
+backup과 disposable restore preflight를 만들고 migration 14를 적용한 다음 새 daemon을 시작한다. startup/status의 source SHA, config fingerprint,
 expected/applied migration version이 rollout 입력과 다르면 신규 entry를 열지 않는다. 새 daemon에서 `live_decision_ticks` write와
 `live_ops_db_window` source를 확인하고 실제 restart/recovery 및 disposable restore DB smoke를 통과한 뒤에만 7일 evidence window를
 시작한다.
 
-successor 7일 window에는 pre-deploy daemon 날짜를 포함하지 않는다. 각 완료 KST 날짜는 daily report와 durable decision evidence를
-모두 가져야 하며, latest status나 aggregate query로 누락 artifact를 소급 생성하지 않는다.
+successor 7일 window에는 pre-deploy daemon 날짜를 포함하지 않는다. manifest `day`는 daily report `reportDate` 및 durable decision
+evidence의 KST day와 같아야 하며, 해당 KST window가 종료된 뒤 생성된 artifact여야 한다. latest status나 aggregate query로 누락
+artifact를 소급 생성하지 않는다.
+
+Issue #267 actual manifest는 기존 Issue #188 blocker 호환 규칙을 사용하지 않는다. backup/restore `blocked`는 실패이며, startup과
+각 segment의 source SHA, config fingerprint, expected/applied migration 14가 일치해야 한다. 이 검증이 구현되기 전에는 기존
+`scripts/run-m23-stability-closeout.mjs`의 `PASS`를 Issue #267 closeout 근거로 사용하지 않는다.
+
+migration 14 적용 뒤에는 migration 13까지만 아는 pre-deploy source가 DB readiness에서 차단될 수 있다. rollback은 migration 14
+파일/checksum을 포함하는 검증된 source SHA로 실행한다. pre-deploy source로 돌아가야 한다면 daemon write를 멈춘 상태에서
+pre-migration backup을 복원하고 schema/version 일치를 확인한 뒤에만 재개한다.
 
 ## Live-Armed 실행
 
