@@ -195,7 +195,8 @@ Codex-native 운영은 Codex, Git, GitHub, shell command, 문서 상태를 연�
 - recovery evidence에는 reconcile mismatch 0건, live ops status 복구, heartbeat 재개, daily report marker 재생성이 포함되어야 한다.
 - Upbit 점검/장애, market warning/caution, stale data/WebSocket gap drill은 신규 entry fail-closed와 alert/manual review evidence로
   수렴해야 한다.
-- DB backup/restore smoke는 disposable restore DB에서 통과하거나, 실행 불가 blocker와 필요한 권한/재시도 계획을 남겨야 한다.
+- DB backup/restore smoke는 disposable restore DB에서 실행한다. Issue #188 historical recovery evidence에는 실행 불가 blocker와
+  필요한 권한/재시도 계획을 남길 수 있지만, Issue #267 actual closeout은 실제 `passed` 결과가 없으면 실패다.
 - recovery drill validator는 artifact를 읽는 검증 경계이며, CI/PR 기본 검증에서 live order API, Telegram provider, DB restore를
   직접 호출하지 않는다.
 
@@ -526,11 +527,12 @@ Codex-native 운영은 Codex, Git, GitHub, shell command, 문서 상태를 연�
   알림 후보가 되어야 한다. 알림 provider 실패가 이미 확정된 주문·취소·차단 상태를 rollback하면 안 된다.
 - 7일 stability closeout은 crash 0회, unhandled rejection 0회, risk gate 우회 주문 0건, reconcile mismatch 0건, duplicate order
   0건, untracked fill 0건, live order cleanup failure 0건을 redacted artifact로 확인해야 한다.
-- 7일 stability closeout manifest는 `scripts/run-m23-stability-closeout.mjs`로 검증한다. 서로 다른 7개 day segment, 각 24시간
-  runner 정상 종료, daily report, live-armed guard/readiness, decision evidence, recovery drill, source scan, DB backup/restore 결과
-  또는 blocker가 없으면 closeout을 실패로 남긴다.
-- DB backup/restore smoke drill은 disposable restore DB에서 실행한다. 외부 DB 조건이 없어 실행할 수 없으면 closeout에 blocker와
-  필요한 운영자 조치를 남기고 pass로 둔갑시키지 않는다.
+- 7일 stability closeout manifest는 `scripts/run-m23-stability-closeout.mjs`로 검증한다. Issue #188 historical 경로는 서로 다른 7개
+  day segment, 각 24시간 runner 정상 종료, daily report, live-armed guard/readiness, decision evidence, recovery drill, source scan,
+  DB backup/restore 결과 또는 blocker 기록 형식을 유지한다. 이 호환 결과를 Issue #267 actual `PASS`로 승격하지 않는다.
+- Issue #267 guarded 경로는 production `live:ops:daemon` startup/segment의 source SHA, config fingerprint, expected/applied migration
+  14와 완료 KST daily report/day decision evidence 일치를 확인하고, DB backup/restore smoke가 disposable restore DB에서 실제로
+  통과한 `passed` 입력만 허용한다. 외부 DB 조건이 없으면 `blocked`로 남기되 actual closeout은 실패다.
 - 누적 realized loss와 미체결 노출 합계가 50,000 KRW에 닿기 전에 operator stop 또는 kill switch/manual review로 수렴한다. 이
   ceiling은 M24 예산 확대 승인이 아니다.
 

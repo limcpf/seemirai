@@ -103,8 +103,10 @@ pre-deploy 상태를 최신 기능의 실행 증거로 소급 변환하지 않�
 
 어느 단계든 source/migration 불일치, open order, mismatch, untracked fill, Telegram owner alert 장기 실패가 확인되면 신규 entry를
 재개하지 않는다. migration 14 적용 뒤 rollback source는 migration 14 파일/checksum을 포함하고 readiness를 통과하는 명시 SHA여야 한다.
-migration 13까지만 아는 pre-deploy source를 migration 14 DB에 직접 실행하지 않는다. 그 source가 꼭 필요하면 daemon을 중지한 상태에서
-검증된 pre-migration backup을 복원하고 schema/version 일치를 확인한 뒤 operator가 재개를 판단한다.
+migration 13까지만 아는 pre-deploy source를 migration 14 DB에 직접 실행하지 않는다. pre-migration backup 복원은 successor가 broker
+side effect를 만들기 전까지만 허용한다. current daemon 정상 종료, private read/reconcile 기준 open order/exposure 0과 terminal 상태,
+post-migration DB 별도 backup을 모두 확인한 뒤 복원하고 schema/version 일치를 검증한다. successor 주문/체결 side effect가 한 번이라도
+있었거나 open order/exposure가 남아 있으면 restore를 금지하고 migration 14 호환 source로 복구한다.
 
 ## 검증 방법
 
