@@ -2,7 +2,7 @@
 
 - Issue: [#267](https://github.com/limcpf/seemirai/issues/267)
 - mother branch: `issue-267-mother`
-- 상태: Sub PR 01 mother merge 완료, Sub PR 02 runtime provenance 검증 중
+- 상태: Sub PR 01~02 mother merge 완료, Sub PR 03 production rollout 완료/review 준비
 - 시작일: 2026-07-14
 
 ## 목표
@@ -67,12 +67,31 @@ pre-deploy 상태를 최신 기능의 실행 증거로 소급 변환하지 않�
 - 파일 책임: rollout/recovery runbook, active plan 상태, 저장소 밖 redacted operational artifact.
 - 제외 범위: threshold/profile 변경, BTC 외 market, 예산 확대, 과거 artifact 재작성.
 - DnD:
-  - [ ] 기존 daemon 정상 중지 전 open order/exposure, failure counter, migration 13 baseline이 저장됐다.
-  - [ ] daemon 신규 write 차단과 정상 종료 뒤 migration 전 backup을 만들었고 migration 14 pending/checksum drift가 없다.
-  - [ ] 새 daemon이 명시 source SHA/config/env fingerprint/migration 14로 시작됐다.
-  - [ ] `live_decision_ticks` write와 `live_ops_db_window` 우선 사용이 실제 DB/status에서 확인됐다.
-  - [ ] restart 뒤 reconcile/status/report/Telegram이 복구되고 duplicate live order가 0이다.
-  - [ ] disposable restore DB backup/restore smoke가 통과한다.
+  - [x] 기존 daemon 정상 중지 전 open order/exposure, failure counter, migration 13 baseline이 저장됐다.
+  - [x] daemon 신규 write 차단과 정상 종료 뒤 migration 전 backup을 만들었고 migration 14 pending/checksum drift가 없다.
+  - [x] 새 daemon이 명시 source SHA/config/env fingerprint/migration 14로 시작됐다.
+  - [x] `live_decision_ticks` write와 `live_ops_db_window` 우선 사용이 실제 DB/status에서 확인됐다.
+  - [x] restart 뒤 reconcile/status/report/Telegram이 복구되고 duplicate live order가 0이다.
+  - [x] disposable restore DB backup/restore smoke가 통과한다.
+
+#### 실제 rollout 결과
+
+- rollout source: `3d48665967b79fbbbf59dd316ec30f61662df12e`
+- production home: `~/vaults/99_운영/seemirai-live-ops-production/issue-267`
+- migration 14 적용 시각: `2026-07-14 04:55 KST`
+- post-migration backup/restore: migration 14, `live_decision_ticks` 6건, TimescaleDB `2.17.2` 복원 확인
+- restart/recovery: source/config/env/migration provenance 복구, Telegram startup 1건 전달, open order/exposure와 duplicate order 0
+- clean window daemon startup: `2026-07-14 05:12:29 KST`
+- clean window resume: `2026-07-14 05:13:45 KST`, durable kill switch `NORMAL`
+- final rollout verification: `production-rollout-verification-20260713T201524943Z.json` `passed`
+- rollout summary: `production-rollout-summary-20260713T201628533Z.json`, SHA-256
+  `36fb308f39b65ee76a337ed9276a82675c6528eac6d24338f292d71f0dcab20a`
+
+첫 successor run에서 `2026-07-14 05:08:31 KST` Upbit public market data disconnect가 1회 발생했지만 다음 tick에서
+복구됐다. 이 사건과 누적 counter를 지우지 않고 `pre-window-daemon-terminal-20260713T201212198Z.json`에 보존했으며, 신규 주문을
+차단하고 private exposure 0을 재확인한 뒤 clean daemon으로 다시 시작했다. 따라서 부분일인 2026-07-14와 첫 run은 actual 7일
+window에서 제외한다. 첫 유효 full KST day는 2026-07-15, 일곱째는 2026-07-21이고 earliest closeout은
+`2026-07-22T00:00:00+09:00`이다.
 
 ### Sub PR 04. Actual closeout
 
@@ -139,9 +158,13 @@ SEEMIRAI_RESTORE_DATABASE_URL=<disposable-restore-db> \
 - 2026-07-14: migration 14 적용과 production restart는 Sub PR 02 review drain/merge 전에는 실행하지 않는다.
 - 2026-07-14: actual M23 validator `PASS` 전에는 M24 profile, universe, budget을 확대하지 않는다.
 - 2026-07-14: 기존 validator의 backup blocker 허용과 startedAt 기반 day 판정은 Issue #267 actual contract로 사용하지 않는다.
+- 2026-07-14: source `3d48665967b79fbbbf59dd316ec30f61662df12e`와 migration 14로 production rollout, restart,
+  pre/post-migration disposable restore를 통과했다.
+- 2026-07-14: pre-window market data disconnect 1회는 복구 증거와 함께 별도 보존하고, failure counter 0인 clean restart 이후
+  full KST day만 actual window에 포함한다.
 
 ## 남은 이슈
 
-- production 호스트의 PostgreSQL client와 disposable restore DB 준비 상태를 Sub PR 03에서 다시 확인해야 한다.
-- 7개 연속 완료 KST 날짜는 successor startup 이후 실제 시간 경과가 필요하다.
+- PostgreSQL 16 client와 disposable restore DB를 사용한 pre/post-migration 복구 검증은 통과했고 임시 DB는 제거했다.
+- 7개 연속 완료 full KST 날짜는 clean successor startup 이후 2026-07-15~2026-07-21의 실제 시간 경과가 필요하다.
 - Sub PR별 review drain clean signal과 mother merge 결과를 이 문서에 계속 기록한다.

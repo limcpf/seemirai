@@ -124,6 +124,40 @@ live-armed로 재개하지 않는다. `RUN_ID`는 같은 SHA로 재시작할 때
 `live_decision_ticks`, immutable day artifact만 사용한다. latest status 복사본, M22 pilot summary, 수동 candidate artifact는 #267
 actual evidence가 아니다.
 
+### 2026-07-14 실제 rollout 기준선
+
+Issue #267 production은 다음 기준선으로 실행 중이다.
+
+| 항목 | 실제 값 |
+| --- | --- |
+| production home | `~/vaults/99_운영/seemirai-live-ops-production/issue-267` |
+| source SHA | `3d48665967b79fbbbf59dd316ec30f61662df12e` |
+| startup artifact | `artifacts/live-ops-daemon-startup-3d48665967b79fbbbf59dd316ec30f61662df12e-ee053bc3-1fef-455f-abcd-bfa9fb877840.json` |
+| latest status | `artifacts/live-ops-daemon-status.json` |
+| supervisor PID | `artifacts/live-ops-daemon.pid` |
+| pre-migration rollback backup | `backups/pre-migration-13-20260713t195156015z.dump` |
+| post-migration backup | `backups/post-migration-14-20260713t200208187z.dump` |
+| rollout summary | `artifacts/production-rollout-summary-20260713T201628533Z.json` |
+
+config는 `live-ops.config.json`, env는 `live-ops.env`에 두며 startup/status에는 각각 secret-free SHA-256 fingerprint만 남긴다.
+pre/post-migration backup은 PostgreSQL 16 client와 disposable DB에서 migration 13/14 및 TimescaleDB extension 복원을 각각
+통과했다. disposable DB는 증거 생성 뒤 제거했으며 dump와 redacted verification artifact는 보존한다.
+
+현재 host에서는 shell session 종료와 독립된 supervisor가 필요하므로 `setsid -f`로 package entry를 시작하고 내부 shell이 자기
+PID를 `live-ops-daemon.pid`에 기록한 뒤 `corepack pnpm live:ops:daemon`으로 `exec`한다. PID, log, status, backup, artifact는
+운영 계정만 읽도록 mode `600`을 유지한다. 중지할 때는 먼저 durable kill switch를 `NEW_ORDERS_BLOCKED`로 전이하고 private
+open order/exposure 0을 확인한 뒤 daemon leaf에 `SIGTERM`을 보낸다.
+
+현재 rollout source는 signal 종료 시 status file을 terminal payload로 바꾸는 handler가 없으므로 process tree exit와 status write
+정지를 별도 terminal artifact로 확인한다. stale `running` status만으로 process 생존을 주장하지 않고 PID 생존, 마지막 write 시각,
+private exposure를 함께 대조한다.
+
+첫 successor run의 public market data disconnect 1회는 다음 tick에서 복구됐지만 actual window의 failure counter 0 조건에는
+포함할 수 없다. 해당 run은 `pre-window-daemon-terminal-20260713T201212198Z.json`으로 보존하고, 신규 주문 차단과 exposure 0을
+재확인한 clean restart `2026-07-14T05:12:29+09:00`부터 새 window를 시작했다. startup 당일은 full KST day가 아니므로
+2026-07-14를 제외하고 2026-07-15~2026-07-21을 7개 후보 날짜로 사용한다. earliest closeout은
+`2026-07-22T00:00:00+09:00`이다.
+
 ## Issue #188 historical Live-Armed 실행
 
 이 절의 M22 runner/env/candidate 절차는 Issue #188 historical 입력을 재현하기 위한 호환 경로다. Issue #267 successor 배포나
