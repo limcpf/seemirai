@@ -731,8 +731,8 @@ Issue #267 successor 판정 기준 (2026-07-14):
 - migration 전 backup, 실제 restart/recovery, disposable restore DB smoke가 모두 통과하지 않으면 actual closeout `PASS`로 보지 않는다.
 - 기존 Issue #188 manifest의 backup blocker 허용은 역사적 closeout 입력으로만 유지한다. Issue #267 actual manifest에서
   `backupRestore.status=blocked`는 실패다.
-- Issue #267 actual validator는 startup/segment provenance와 manifest `day`-daily report `reportDate`-decision evidence KST day를
-  교차 검증해야 한다.
+- Issue #267 actual validator는 startup/segment provenance, 각 segment 실행 구간이 startup보다 앞서지 않는지, manifest
+  `day`-daily report `reportDate`-decision evidence KST day를 교차 검증해야 한다.
 
 Acceptance Criteria:
 

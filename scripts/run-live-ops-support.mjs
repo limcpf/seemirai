@@ -20,6 +20,10 @@ const liveOpsCliCleanupCancelPollCount = 5;
 const liveOpsCliCleanupCancelPollIntervalMs = 1000;
 const liveOpsCliDailyReservationLockLeaseMs = 5 * 60 * 1000;
 const liveOpsCliExitSubmissionLockLeaseMs = 60 * 1000;
+const transientDbReadinessFailureCodes = new Set([
+  "db_connection_failed",
+  "migration_state_query_failed",
+]);
 
 /** startup 이후 config 또는 DB migration drift로 live side effect를 차단했음을 나타낸다. */
 export class LiveOpsRuntimeProvenanceMismatchError extends Error {
@@ -399,9 +403,26 @@ function assertLiveOpsCliRuntimeProvenanceConfig(runtimeProvenance, actualConfig
   }
 }
 
-/** startup 이후 DB readiness 또는 migration 값이 달라지면 provider/broker 경계 전에 종료한다. */
+/**
+ * startup 이후 DB migration drift를 provider/broker 경계 전에 종료한다.
+ *
+ * DB 연결/조회 장애는 daemon의 bounded transient retry가 처리하도록 반환하고, 실제 migration 파일/버전/pending/checksum
+ * 불일치만 startup provenance 위반으로 승격한다. 입력 summary를 읽기만 하며 외부 side effect는 없다.
+ */
 export function assertLiveOpsCliRuntimeProvenanceMigration(runtimeProvenance, dbReadiness) {
   if (runtimeProvenance === undefined) {
+    return;
+  }
+  const blockedCodes = Array.isArray(dbReadiness?.checks)
+    ? dbReadiness.checks
+      .filter((check) => check?.status === "blocked")
+      .map((check) => check.code)
+    : [];
+  if (
+    blockedCodes.length > 0
+    && blockedCodes.every((code) => transientDbReadinessFailureCodes.has(code))
+  ) {
+    // 짧은 DB 연결/조회 장애까지 provenance 위반으로 종료하면 24/7 daemon의 transient 복구 계약을 우회한다.
     return;
   }
   const migration = dbReadiness?.migration ?? {};

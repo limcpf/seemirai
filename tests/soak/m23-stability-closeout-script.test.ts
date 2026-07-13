@@ -157,6 +157,32 @@ describe("M23 stability closeout script", () => {
     expect(getCheck(summary, "runtimeProvenance")).toMatchObject({ status: "fail" });
   });
 
+  it("fails issue 267 when a production segment window predates daemon startup", async () => {
+    const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-m23-issue-267-pre-startup-window-"));
+    const manifestPath = await writeIssue267CloseoutFixture(artifactDir, {
+      startupMutator: (startup) => ({
+        ...startup,
+        startedAt: "2026-07-08T00:00:00.000Z",
+      }),
+    });
+    const summary = await runScriptExpectingFailure(
+      ["--json", "--artifact-dir", artifactDir, "--manifest", manifestPath],
+      createReadyEnv(),
+    );
+
+    expect(getCheck(summary, "runtimeProvenance")).toMatchObject({
+      status: "fail",
+      evidence: {
+        invalid: expect.arrayContaining([
+          expect.objectContaining({
+            fieldPath: "segmentSummaries[0].startedAt",
+            reason: "segment_window_predates_startup",
+          }),
+        ]),
+      },
+    });
+  });
+
   it("fails issue 267 when any daily summary provenance differs", async () => {
     const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-m23-issue-267-segment-provenance-"));
     const manifestPath = await writeIssue267CloseoutFixture(artifactDir, {

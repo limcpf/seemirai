@@ -274,6 +274,7 @@ function createRuntimeProvenanceCheck(manifest, segments, segmentFiles, startupF
 
   const expected = readRuntimeProvenance(manifest.runtimeProvenance);
   const invalid = [];
+  let startupStartedAtMs;
   appendRuntimeProvenanceInvalid(invalid, "manifest.runtimeProvenance", manifest.runtimeProvenance, expected);
 
   if (!hasText(manifest.startupArtifactPath)) {
@@ -294,7 +295,8 @@ function createRuntimeProvenanceCheck(manifest, segments, segmentFiles, startupF
         status: startupFile.value.status ?? null,
       });
     }
-    if (readTimestampMs(startupFile.value.startedAt) === undefined) {
+    startupStartedAtMs = readTimestampMs(startupFile.value.startedAt);
+    if (startupStartedAtMs === undefined) {
       invalid.push({ fieldPath: "startup.startedAt", reason: "invalid_timestamp" });
     }
     appendRuntimeProvenanceInvalid(
@@ -320,6 +322,16 @@ function createRuntimeProvenanceCheck(manifest, segments, segmentFiles, startupF
         file.value.runtimeProvenance,
         expected,
       );
+      const segmentStartedAtMs = readTimestampMs(file.value.startedAt);
+      if (startupStartedAtMs !== undefined && segmentStartedAtMs !== undefined && segmentStartedAtMs < startupStartedAtMs) {
+        // rollout 전 실행 구간을 같은 provenance로 복사해도 successor 7일 evidence로 소급 승인하지 않는다.
+        invalid.push({
+          fieldPath: `segmentSummaries[${index}].startedAt`,
+          reason: "segment_window_predates_startup",
+          startupStartedAt: startupFile.value.startedAt,
+          segmentStartedAt: file.value.startedAt,
+        });
+      }
     }
   }
 
@@ -327,6 +339,7 @@ function createRuntimeProvenanceCheck(manifest, segments, segmentFiles, startupF
     return okCheck("startup, manifest, 모든 일별 summary가 같은 source/config/migration provenance를 보존한다.", {
       runtimeProvenance: expected,
       startupArtifactPath: startupFile.filePath,
+      startupStartedAt: startupFile.value.startedAt,
       segmentCount: segments.length,
     });
   }

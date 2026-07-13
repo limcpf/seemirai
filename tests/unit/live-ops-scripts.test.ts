@@ -854,6 +854,18 @@ describe("production live ops script skeleton", () => {
       },
     })).toThrow(expect.objectContaining({ name: "LiveOpsRuntimeProvenanceMismatchError" }));
 
+    for (const code of ["db_connection_failed", "migration_state_query_failed"]) {
+      expect(() => assertLiveOpsCliRuntimeProvenanceMigration(testDaemonRuntimeProvenance, {
+        ready: false,
+        migration: {
+          expectedLatestVersion: 14,
+          appliedLatestVersion: null,
+          pendingVersions: [14],
+        },
+        checks: [{ status: "blocked", code }],
+      })).not.toThrow();
+    }
+
     await expect(loadLiveOpsCliInputs({
       ...baseOptions,
       runtimeProvenance: {

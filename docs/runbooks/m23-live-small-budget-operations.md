@@ -85,7 +85,8 @@ artifact를 소급 생성하지 않는다.
 
 Issue #267 actual manifest는 기존 Issue #188 blocker 호환 규칙을 사용하지 않는다. backup/restore `blocked`는 실패이며, startup과
 각 segment의 source SHA, config fingerprint, expected/applied migration 14가 일치해야 한다. `scripts/run-m23-stability-closeout.mjs`는
-Issue #267 manifest에서 이 계약과 완료 KST report/decision day를 직접 검증한다.
+Issue #267 manifest에서 이 계약, 각 segment 실행 구간이 daemon startup보다 앞서지 않는지, 완료 KST report/decision day를 직접
+검증한다.
 
 migration 14 적용 뒤에는 migration 13까지만 아는 pre-deploy source가 DB readiness에서 차단될 수 있다. rollback은 migration 14
 파일/checksum을 포함하는 검증된 source SHA로 실행한다. pre-migration backup 복원은 successor가 broker side effect를 만들기
