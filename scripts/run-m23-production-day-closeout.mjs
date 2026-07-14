@@ -1037,10 +1037,13 @@ export async function readLiveArtifactEvidence(artifactDir, window, daemonBounda
   }
   const reservationByAttemptId = new Map(scopedReservations
     .map((record) => [record.value.attemptId, record]));
-  // generic cancel cleanup은 strategy 필드 도입 전 형식이므로 전용 production 디렉터리의 KRW-BTC 기록도 개수 대조에 포함한다.
+  // generic cancel cleanup은 strategy 필드 도입 전 형식만 허용해 같은 디렉터리의 probe 제출을 대상 daemon에서 격리한다.
   const scopedCleanups = cleanupRecords.filter(({ value }) => (
     value.market === expectedMarket
-      && (value.strategyId === expectedStrategyId || value.kind === "live_ops_cleanup_closeout")
+      && (
+        value.strategyId === expectedStrategyId
+        || (value.kind === "live_ops_cleanup_closeout" && value.strategyId == null)
+      )
   ));
   const attemptIds = scopedCleanups.map(({ value }) => value.attemptId);
   if (attemptIds.some((attemptId) => typeof attemptId !== "string") || new Set(attemptIds).size !== attemptIds.length) {

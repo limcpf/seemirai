@@ -493,6 +493,29 @@ describe("M23 production day closeout script", () => {
     expect(output.missingReservation).toContain("BUY 제출 cleanup과 일치하는 대상 strategy reservation이 없습니다");
   });
 
+  it("같은 마켓의 cleanup probe artifact를 대상 strategy 제출에서 제외한다", async () => {
+    const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-m23-probe-cleanup-"));
+    const attemptSuffix = "b".repeat(26);
+    await writeFile(path.join(artifactDir, `cleanup-ops-${attemptSuffix}.json`), `${JSON.stringify({
+      attemptId: `ops-${attemptSuffix}`,
+      strategyId: "live_ops_cleanup_probe",
+      market: "KRW-BTC",
+      kind: "live_ops_cleanup_closeout",
+      side: "BUY",
+      status: "CANCELED",
+      submittedAt: "2026-07-14T16:00:00.000Z",
+      terminalCheckedAt: "2026-07-14T16:00:01.000Z",
+    })}\n`, "utf8");
+
+    const output = await runModuleExpression(`
+      const evidence = await module.readLiveArtifactEvidence(
+        ${JSON.stringify(artifactDir)}, module.createKstDayWindow("2026-07-15"),
+      );
+      process.stdout.write(JSON.stringify(evidence));
+    `);
+    expect(output).toMatchObject({ cleanupSubmissionCount: 0, fillCount: 0, realizedLossKrw: "0" });
+  });
+
   it("주간 손실은 같은 provenance와 first-day를 가진 연속 선행 일자만 집계한다", async () => {
     const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-m23-rollout-losses-"));
     const output = await runModuleExpression(`

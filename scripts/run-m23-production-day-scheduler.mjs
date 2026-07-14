@@ -573,10 +573,25 @@ export async function ensureDaemonCounterBoundary({
   let captured;
   while (!stopControl.requested) {
     const observedAt = clock();
-    const [status, statusFileStat] = await Promise.all([
-      readJsonFile(options.daemonStatusFilePath),
-      stat(options.daemonStatusFilePath),
-    ]);
+    let status;
+    let statusFileStat;
+    try {
+      [status, statusFileStat] = await Promise.all([
+        readJsonFile(options.daemonStatusFilePath),
+        stat(options.daemonStatusFilePath),
+      ]);
+    } catch (error) {
+      if (!(error instanceof SyntaxError)) {
+        throw error;
+      }
+      if (observedAt.getTime() - boundaryMs > boundaryCaptureToleranceMs) {
+        throw new Error(`${boundaryAt} daemon counter boundary의 유효한 status JSON을 60초 안에 읽지 못했습니다.`);
+      }
+      // daemon의 truncate/write 사이를 읽은 경우 완성될 status를 같은 경계 tolerance 안에서 다시 확인한다.
+      const remainingMs = Math.max(boundaryMs - observedAt.getTime(), 0);
+      await sleeper(remainingMs > 0 ? Math.min(remainingMs, boundaryCapturePollMs) : boundaryCapturePollMs, stopControl);
+      continue;
+    }
     const latestTickMs = Date.parse(status.latestTickStartedAt);
     if (Number.isFinite(latestTickMs) && latestTickMs <= boundaryMs) {
       captured = { status, observedAt, statusFileModifiedAtMs: statusFileStat.mtimeMs };

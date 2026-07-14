@@ -316,6 +316,57 @@ describe("M23 production day scheduler script", () => {
     expect(counterAttributionCutoffMs).toBeLessThanOrEqual(snapshotObservedMs + 1);
   });
 
+  it("경계 polling이 daemon status의 부분 JSON과 겹치면 tolerance 안에서 재시도한다", async () => {
+    const output = await runModuleExpression(`
+      const fs = await import("node:fs/promises");
+      const os = await import("node:os");
+      const path = await import("node:path");
+      const home = await fs.mkdtemp(path.join(os.tmpdir(), "m23-boundary-partial-status-"));
+      const statusPath = path.join(home, "status.json");
+      const startupPath = path.join(home, "startup.json");
+      const pidPath = path.join(home, "daemon.pid");
+      const eventPath = path.join(home, "events.jsonl");
+      const boundaryAt = "2026-07-14T15:00:00.000Z";
+      const boundaryMs = Date.parse(boundaryAt);
+      const runtimeProvenance = { sourceCommitSha: "a".repeat(40) };
+      let nowMs = boundaryMs - 50;
+      let retryCount = 0;
+      await fs.writeFile(statusPath, "{");
+      await fs.writeFile(startupPath, JSON.stringify({ runtimeProvenance }));
+      await fs.writeFile(pidPath, String(process.pid));
+      await fs.writeFile(eventPath, JSON.stringify({ type: "scheduler_started" }) + "\\n");
+      const result = await module.ensureDaemonCounterBoundary({
+        options: {
+          daemonStatusFilePath: statusPath, startupArtifactFilePath: startupPath,
+          daemonPidFilePath: pidPath, schedulerEventLogFilePath: eventPath,
+          expectedSourceCommitSha: runtimeProvenance.sourceCommitSha,
+        },
+        boundaryAt,
+        clock: () => new Date(nowMs),
+        sleeper: async (durationMs) => {
+          retryCount += 1;
+          nowMs += durationMs + 10;
+          await fs.writeFile(statusPath, JSON.stringify({
+            status: "running", latestError: null, latestSummary: { status: "ready" },
+            startedAt: "2026-07-13T20:00:00.000Z", latestTickStartedAt: "2026-07-14T14:59:59.900Z",
+            startupArtifactFilePath: startupPath, runtimeProvenance,
+            counters: {
+              tickCount: 101, successCount: 101, holdCount: 101, blockCount: 0,
+              manualReviewCount: 0, transientFailureCount: 0, submittedOrderCount: 0,
+              exitRequoteCount: 0, duplicateOrderCount: 0, reconcileMismatchCount: 0,
+              untrackedFillCount: 0, liveOrderCleanupFailureCount: 0, crashCount: 0,
+              unhandledRejectionCount: 0,
+            },
+          }));
+          await fs.utimes(statusPath, new Date(boundaryMs + 10), new Date(boundaryMs + 10));
+        },
+      });
+      process.stdout.write(JSON.stringify({ result, retryCount }));
+    `);
+    expect(output.retryCount).toBe(1);
+    expect(output.result.counters).toMatchObject({ tickCount: 101, transientFailureCount: 0 });
+  });
+
   it("경계 polling 중 scheduler stop은 failure 대신 정상 중지 sentinel을 반환한다", async () => {
     const output = await runModuleExpression(`
       const fs = await import("node:fs/promises");
