@@ -2,7 +2,7 @@
 
 - Issue: [#267](https://github.com/limcpf/seemirai/issues/267)
 - mother branch: `issue-267-mother`
-- 상태: Sub PR 01~02 mother merge 완료, Sub PR 03 production rollout 완료/review 준비
+- 상태: Sub PR 01~03 mother merge 완료, Sub PR 04 일별 evidence 자동 수집 준비
 - 시작일: 2026-07-14
 
 ## 목표
@@ -93,10 +93,34 @@ pre-deploy 상태를 최신 기능의 실행 증거로 소급 변환하지 않�
 window에서 제외한다. 첫 유효 full KST day는 2026-07-15, 일곱째는 2026-07-21이고 earliest closeout은
 `2026-07-22T00:00:00+09:00`이다.
 
-### Sub PR 04. Actual closeout
+### Sub PR 04. Production day evidence automation
 
 - branch: `issue-267/04-actual-closeout`
-- 선행 조건: successor startup 이후 7개 연속 완료 KST 날짜.
+- 선행 조건: successor startup과 첫 full KST day 시작 전.
+- 목표: 7개 full KST day가 끝날 때 daily report, durable decision, daemon/provenance/private exposure를 검증해 immutable day artifact를 자동 생성한다.
+- 파일 책임: production day closeout/scheduler script, soak test, M23 운영 계약과 runbook.
+- 제외 범위: M24 budget/universe 확대 승인.
+- DnD:
+  - [x] day closeout은 저장소 밖 경로와 명시 guard를 요구하고 KST half-open window를 사용한다.
+  - [x] daemon source/config/env/migration provenance, PID/heartbeat, KST 경계 counter delta, DB migration/kill switch/full-day decision,
+    private exposure를 검증한다.
+  - [x] actual broker 제출은 daemon day delta, 대상 strategy guarded actionable decision, cleanup artifact 수를 대조하고 DB `orders` row에 의존하지 않는다.
+  - [x] BUY entry cleanup마다 같은 scope의 durable reservation을 요구하고 cleanup fingerprint에 수량/가격/fee/realized PnL을 포함한다.
+  - [x] 미체결 SELL terminal cancel은 exit requote counter로 제출을 닫고 그 외 terminal 제출만 cleanup 수와 대조한다.
+  - [x] SELL 손실은 filledAt KST day에 귀속하고 scheduler는 경계를 걸친 tick의 최종 status write와 cleanup 제출 cutoff를 함께 기록한다.
+  - [x] daily report는 대상 strategy/market fact와 runtime 실제 전송 결과만 사용하고, closeout actor/correlation audit을 요구하며,
+    provider 성공 뒤 audit 누락은 중복 재전송 없이 수동 확인으로 닫는다.
+  - [x] existing day artifact는 현재 rollout provenance와 daemon boundary가 같을 때만 재사용하고 segment 종료는 KST window로 고정한다.
+  - [x] provider 이전 실패도 immutable failure artifact로 남기고 주간 손실은 first-day부터 같은 provenance의 연속 선행 일자만 합산한다.
+  - [x] scheduler는 2026-07-15~2026-07-21을 순차 실행하며 같은 day만 bounded retry하고 누락된 day를 건너뛰지 않는다.
+  - [x] PID/status/event/day artifact는 운영 계정 전용 mode `600`으로 기록한다.
+  - [x] config/env/evidence/output과 artifact directory는 symlink 실제 경로도 repository 밖이어야 하며 scheduler output은 보호 입력과 다르다.
+  - [x] 관련 script test, typecheck, 전체 verify와 review drain이 통과한다.
+
+### Sub PR 05. Actual closeout
+
+- branch: `issue-267/05-actual-closeout`
+- 선행 조건: successor startup 이후 7개 연속 완료 KST 날짜와 Sub PR 04 scheduler 완료.
 - 목표: actual manifest를 `PASS`로 닫고 closeout 문서와 기술 부채 상태를 갱신한다.
 - 파일 책임: completed closeout, M23/M24 plan, requirements/product/runbook, index/context map, tech debt tracker.
 - 제외 범위: M24 budget/universe 확대 승인.
@@ -162,9 +186,19 @@ SEEMIRAI_RESTORE_DATABASE_URL=<disposable-restore-db> \
   pre/post-migration disposable restore를 통과했다.
 - 2026-07-14: pre-window market data disconnect 1회는 복구 증거와 함께 별도 보존하고, failure counter 0인 clean restart 이후
   full KST day만 actual window에 포함한다.
+- 2026-07-14: validator 입력을 7일 뒤 소급 생성하지 않도록 Sub PR 04를 production day evidence automation으로 두고, actual
+  manifest/문서 closeout을 Sub PR 05로 분리한다. scheduler는 거래 daemon lifecycle을 변경하지 않고 기존 daily report
+  idempotency 경계를 호출한다.
+- 2026-07-14: Sub PR 04 review drain에서 closeout 입력 fingerprint, matching reservation, precondition failure artifact, M23 daily
+  report 상태, cleanup PnL fingerprint, rollout-scoped weekly loss를 fail-closed 계약으로 보강하고 전체 verify를 통과했다.
+- 2026-07-14: 후속 review drain에서 M23 daily report strategy/market scope와 실제 runtime report 우선순위, delivery audit 누락
+  중복 전송 차단, closeout/scheduler symlink 실제 경로 및 보호 입력 충돌 검증을 보강했다.
+- 2026-07-14: 경계 tick cleanup을 counter status write cutoff day에 귀속하고 recovery provider 실패 audit/재시도와 boundary polling
+  중 scheduler-only 정상 중지를 보강했다.
 
 ## 남은 이슈
 
 - PostgreSQL 16 client와 disposable restore DB를 사용한 pre/post-migration 복구 검증은 통과했고 임시 DB는 제거했다.
 - 7개 연속 완료 full KST 날짜는 clean successor startup 이후 2026-07-15~2026-07-21의 실제 시간 경과가 필요하다.
+- Sub PR 04 review drain/merge 뒤 mother worktree에서 day scheduler를 detached 실행하고 PID/status/event log를 관측해야 한다.
 - Sub PR별 review drain clean signal과 mother merge 결과를 이 문서에 계속 기록한다.

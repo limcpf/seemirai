@@ -476,6 +476,49 @@ describeDb("daily report PostgreSQL integration", () => {
     });
   });
 
+  it("uses an injected daily report data provider without changing the shared job boundary", async () => {
+    const db = await getDatabase();
+    await withRollback(db, async (transaction) => {
+      let providerCallCount = 0;
+      const runtime = createPaperNoKeyDailyReportRuntime({
+        database: transaction,
+        workerId: "daily-report-scoped-provider-worker",
+        clock: () => new Date("2026-05-22T15:01:00.000Z"),
+        notifier: deliveredNotifier,
+        dataProvider: {
+          async loadDailyReportSourceData() {
+            providerCallCount += 1;
+            return {
+              orders: [{
+                status: "CREATED",
+                strategyId: "scoped-strategy",
+                market: "KRW-BTC",
+                requestedNotional: "10000",
+                createdAt: "2026-05-22T01:00:00.000Z",
+              }],
+              fills: [],
+              positions: [],
+              pnlSnapshots: [],
+              auditEvents: [],
+              riskEvents: [],
+              executionQuality: [],
+            };
+          },
+        },
+      });
+
+      const result = await runtime.runManualDailyReport({
+        reportDate: "2026-05-22",
+        maxAttempts: 2,
+      });
+
+      expect(result.status).toBe("RUN");
+      expect(result.claimed?.result.report?.orderCount).toBe(1);
+      expect(result.enqueueResult.plan.idempotencyKey).toBe("report.daily:2026-05-22");
+      expect(providerCallCount).toBe(1);
+    });
+  });
+
   it("does not reclaim the same failed scheduler job in one sweep", async () => {
     const db = await getDatabase();
     const keys = [

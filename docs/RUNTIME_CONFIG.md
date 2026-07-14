@@ -724,6 +724,13 @@ M23 live-armed 운영 기준:
   결과 또는 blocker 기록을 집계한다. Issue #267 guarded 경로는 production `live:ops:daemon` source/config/env/migration provenance,
   완료 KST report/decision day 일치, `backupRestore.status=passed`를 추가로 요구한다. 기본 CI/PR 검증에서는 fixture smoke만 실행하며
   live API, Telegram provider, DB restore를 직접 호출하지 않는다.
+- Issue #267은 `scripts/run-m23-production-day-scheduler.mjs`가 완료 KST day마다
+  `scripts/run-m23-production-day-closeout.mjs`를 호출한다. actual mode는 scheduler/closeout guard를 모두 요구하고, daemon
+  source/config/env/migration provenance와 현재 config/env 원문 fingerprint, PID/heartbeat, DB decision/risk approval, BUY entry
+  reservation/cleanup, private exposure를 검증한 뒤 기존 `report.daily:<reportDate>` idempotency job으로 M23 live ops 상태가 포함된
+  daily report를 닫는다. scheduler/closeout의 현재 Git SHA와 clean tracked/untracked tree, clean build가 기록한 source/dist fingerprint도
+  별도 closeout provenance로 검증한다. `--first-day`는 같은 daemon 및 closeout provenance의 연속 7일 손실 집계 경계를 고정한다.
+  scheduler는 거래 daemon lifecycle을 변경하지 않는다.
 - M23 이후 universe, strategy, budget 확대는 M24 범위다. M23 config나 runbook은 BTC 외 market 기본 활성화, 자동 budget 확대,
   market/best order 기본 허용을 열지 않는다.
 
@@ -1170,6 +1177,12 @@ Telegram provider 실패는 report 생성 성공을 되돌리지 않는다. prov
 커도 실행 가능한 daily report job을 한 번에 하나씩 claim하고 즉시 실행한다. scheduler 실패 row는 같은 sweep에서 다시
 claim하지 않도록 최소 다음 tick 이후로 `run_after`를 미룬다. report 생성 중 audit 저장소 장애처럼 runner가 예외를 던지면
 runtime이 `failJob`으로 lock을 해제해 같은 row가 retry 또는 수동 복구 대상으로 남게 한다.
+
+Issue #267 production day closeout에서 기존 `report.daily:<reportDate>` job이 `COMPLETED`지만 delivery audit이 없으면 report 생성
+job을 재실행하지 않는다. 별도 `job_type=report.daily.delivery_recovery`,
+`idempotency_key=report.daily.delivery_recovery:<reportDate>` job이 이미 만든 deterministic notification만 전송한다. provider 실패는
+이 recovery job을 5분 뒤 재예약한다. provider 성공 뒤 audit append가 실패하면 중복 전송을 막기 위해 recovery job을 완료하고
+수동 확인을 요구한다.
 
 ## M8 Paper soak verification
 

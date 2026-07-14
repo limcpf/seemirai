@@ -733,6 +733,15 @@ Issue #267 successor 판정 기준 (2026-07-14):
   `backupRestore.status=blocked`는 실패다.
 - Issue #267 actual validator는 startup/segment provenance, 각 segment 실행 구간이 startup보다 앞서지 않는지, manifest
   `day`-daily report `reportDate`-decision evidence KST day를 교차 검증해야 한다.
+- Issue #267 production day scheduler는 거래 daemon을 재시작하지 않고 완료 KST day를 순차 수집한다. 같은 day의 daily report는
+  기존 DB idempotency key를 재사용하며, 실패한 day를 건너뛰거나 passed artifact를 덮어쓰지 않아야 한다. scheduler는 각 KST
+  시작/종료 경계의 daemon counter를 append-only로 기록하고 closeout은 누적값이 아니라 두 경계의 delta만 판정한다.
+- actual broker 제출은 `orders` row 생성을 전제로 하지 않는다. daemon `submittedOrderCount` day delta와 core guard를 통과한
+  대상 strategy의 BUY/SELL 단일 intent decision 수, 대상 reservation/cleanup artifact 수가 모두 같고 malformed actionable
+  decision이 0이어야 risk gate 우회와 cleanup 누락 0건으로 인정한다. decision 집계는 `UPBIT`/`KRW-BTC`/
+  `live_ops_autonomous_24x7_core` scope로 제한한다.
+- daily report 생성/전달 audit은 해당 KST day 종료 이후 행만 인정한다. 기존 passed day artifact는 현재 source/config/env/migration
+  provenance와 KST counter boundary가 모두 같을 때만 provider side effect 없이 재사용한다.
 
 Acceptance Criteria:
 
@@ -758,6 +767,8 @@ Acceptance Criteria:
 - [ ] successor actual manifest는 disposable restore DB smoke `passed`만 허용한다.
 - [ ] successor actual manifest는 source SHA/config/env fingerprint/migration 14와 segment provenance 일치를 검증한다.
 - [ ] successor의 7개 연속 완료 KST `reportDate`만 actual manifest segment로 사용하고 decision evidence day와 일치시킨다.
+- [x] successor 일별 closeout/scheduler는 source/migration, daemon heartbeat, KST 경계 counter delta, full-day decision coverage,
+  private exposure와 daily report delivery를 검증하고 immutable day artifact를 생성한다.
 - [ ] actual manifest `PASS` 전에는 M24 budget/universe/profile 확대가 승인되지 않는다.
 
 테스트 요구사항:

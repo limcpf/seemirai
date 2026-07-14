@@ -423,6 +423,10 @@ M19 Sub PR 03 범위:
   완료된 KST daily report와 durable decision evidence만 사용한다. M22 pilot runner artifact는 포함하지 않는다.
 - Issue #188 historical blocker 호환은 유지하지만 Issue #267 actual closeout의 DB backup/restore는 disposable restore DB에서
   실제로 통과해야 한다. `blocked`는 `PASS` 입력이 아니다.
+- 완료 KST day 증적은 production day scheduler가 daemon provenance/heartbeat, KST 경계 counter delta, full-day durable decision,
+  actual broker 제출/guarded decision/BUY entry reservation-cleanup 일치, private exposure와 M23 상태가 포함된 Telegram daily report
+  delivery를 검증해 create-only artifact로 남긴다. 주간 손실에는 같은 first-day와 provenance의 연속 day만 포함한다. scheduler는
+  거래 daemon을 시작하거나 중지하지 않는다.
 
 완료 조건:
 

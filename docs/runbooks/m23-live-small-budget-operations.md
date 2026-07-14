@@ -152,11 +152,92 @@ open order/exposure 0을 확인한 뒤 daemon leaf에 `SIGTERM`을 보낸다.
 정지를 별도 terminal artifact로 확인한다. stale `running` status만으로 process 생존을 주장하지 않고 PID 생존, 마지막 write 시각,
 private exposure를 함께 대조한다.
 
-첫 successor run의 public market data disconnect 1회는 다음 tick에서 복구됐지만 actual window의 failure counter 0 조건에는
-포함할 수 없다. 해당 run은 `pre-window-daemon-terminal-20260713T201212198Z.json`으로 보존하고, 신규 주문 차단과 exposure 0을
-재확인한 clean restart `2026-07-14T05:12:29+09:00`부터 새 window를 시작했다. startup 당일은 full KST day가 아니므로
-2026-07-14를 제외하고 2026-07-15~2026-07-21을 7개 후보 날짜로 사용한다. earliest closeout은
-`2026-07-22T00:00:00+09:00`이다.
+첫 successor run의 public market data disconnect는 다음 tick에서 복구됐지만 actual window의 failure counter 0 조건에는 포함할 수
+없다. 해당 run은 `pre-window-daemon-terminal-20260713T201212198Z.json`으로 보존했다. 첫 KST counter boundary 전에도 failure
+counter가 하나라도 증가하면 신규 주문 차단, private open order 0, exposure ceiling을 재확인한 뒤 같은 rollout source로 clean
+restart하고 새 startup artifact를 사용한다. startup 당일은 full KST day가 아니므로 2026-07-14를 제외하고
+2026-07-15~2026-07-21을 7개 후보 날짜로 사용한다. earliest closeout은 `2026-07-22T00:00:00+09:00`이다.
+
+### Issue #267 일별 evidence scheduler
+
+7일 뒤 latest status와 DB aggregate를 소급 변환하지 않는다. `scripts/run-m23-production-day-closeout.mjs`는 완료된 KST 하루마다
+daemon 연속 실행/PID/heartbeat, 현재 config/env 원문 fingerprint와 startup provenance 일치, KST 시작/종료 counter delta, 대상
+strategy의 full-day durable decision, 실제 broker 제출/guarded decision/terminal cleanup 또는 SELL 재호가 counter와 BUY entry
+reservation 일치, Upbit private open
+order/BTC exposure, KST day 종료 뒤 생성된 daily report와 Telegram delivery audit을 검증한다. daily report에는 같은 closeout 시점의
+M23 후보/판단/주문/노출 상태를 포함하며 DB fact는 `KRW-BTC`/`live_ops_autonomous_24x7_core`로 제한한다. 검증된 summary는
+`production-day-YYYY-MM-DD.json` create-only artifact로 기록한다. 실패 시 final day 파일을 점유하지 않고 실패 분류만 별도
+artifact로 남긴다.
+
+Sub PR 04가 mother branch에 merge된 뒤 첫 day boundary 전에 daemon failure counter를 다시 확인한다. 모두 0이면 daemon을 유지하고,
+0이 아니면 위 clean restart 절차를 수행한다. 그 다음 현재 status가 가리키는 startup artifact로 scheduler를 별도 session에서 실행한다.
+
+```sh
+cd /home/lim/code/seemirai-worktrees/issue-267-mother
+ISSUE_267_HOME="$HOME/vaults/99_운영/seemirai-live-ops-production/issue-267"
+SOURCE_SHA="3d48665967b79fbbbf59dd316ec30f61662df12e"
+CLOSEOUT_SHA="$(git rev-parse HEAD)"
+STARTUP_FILE="$(node -e 'const fs=require("node:fs"); const p=process.argv[1]; process.stdout.write(JSON.parse(fs.readFileSync(p,"utf8")).startupArtifactFilePath)' "$ISSUE_267_HOME/artifacts/live-ops-daemon-status.json")"
+SCHEDULER_RUN_ID="$(node -e 'process.stdout.write(require("node:crypto").randomUUID())')"
+umask 077
+corepack pnpm build
+
+setsid -f env \
+  SEEMIRAI_RUN_M23_PRODUCTION_DAY_SCHEDULER=1 \
+  SEEMIRAI_RUN_M23_PRODUCTION_DAY_CLOSEOUT=1 \
+  node scripts/run-m23-production-day-scheduler.mjs \
+  --first-day 2026-07-15 \
+  --day-count 7 \
+  --config "$ISSUE_267_HOME/live-ops.config.json" \
+  --env-file "$ISSUE_267_HOME/live-ops.env" \
+  --daemon-status-file "$ISSUE_267_HOME/artifacts/live-ops-daemon-status.json" \
+  --startup-artifact-file "$STARTUP_FILE" \
+  --daemon-pid-file "$ISSUE_267_HOME/artifacts/live-ops-daemon.pid" \
+  --artifact-dir "$ISSUE_267_HOME/artifacts" \
+  --expected-source-commit-sha "$SOURCE_SHA" \
+  --closeout-source-commit-sha "$CLOSEOUT_SHA" \
+  --scheduler-status-file "$ISSUE_267_HOME/artifacts/production-day-scheduler-status.json" \
+  --scheduler-event-log-file "$ISSUE_267_HOME/logs/production-day-scheduler-events.jsonl" \
+  --scheduler-pid-file "$ISSUE_267_HOME/artifacts/production-day-scheduler.pid" \
+  --json \
+  >> "$ISSUE_267_HOME/logs/production-day-scheduler-$SCHEDULER_RUN_ID.log" 2>&1
+```
+
+scheduler는 시작 시 daemon status/startup provenance와 supervisor PID를 먼저 확인한다. 현재 tracked/untracked checkout이
+`--closeout-source-commit-sha`와 일치하고 clean인지, `corepack pnpm build`가 기록한 source/dist fingerprint가 현재 파일과
+일치하는지도 provider/DB 경계를 열기 전에 검증한다. 각 KST day 시작과 종료 60초 안에
+append-only daemon counter boundary를 남기고, 종료 60초 뒤 closeout을 시도한다. closeout 실패는 5분 간격으로 day별 최대 36회
+재시도한다. 기존 report 생성은 `report.daily:<reportDate>`, 전달 복구는 `report.daily.delivery_recovery:<reportDate>` key를
+사용하므로 process 재시작이나 수동 재실행이 Telegram 중복 전송으로 이어지지 않는다. 재시도 한도를 소진하면 다음 날짜로 넘어가지
+않고 `failed`로 닫는다. 각 실패 시도는 provider 이전 precondition 실패도 별도 immutable failure artifact로 남긴다. 주간 손실은
+`--first-day`부터 현재 기준일 직전까지 같은 daemon source/config/env/migration 및 closeout build provenance로 통과한 연속 day
+artifact만 합산한다. 같은
+날짜의 일반 daily report가 먼저 완료됐으면 closeout actor/correlation이 있는 별도 recovery job으로 M23 상태 report를 한 번 전달한다.
+provider 성공 뒤 delivery audit 저장만 실패한 상태는 recovery로 재전송하지 않고 수동 확인 대상으로 남긴다. artifact 손실은
+누적 DB PnL이 아니라 `filledAt` KST window의 SELL cleanup realized loss를 사용한다. scoped report에는 같은 strategy의
+`market=null` aggregate PnL snapshot도 사용자 관측 정보로 보존한다. M23 section은 daemon counter와 cleanup artifact의 실제
+제출·재호가·체결·실현 손실을 별도로 표시한다. 이전 direct/recovery delivery audit은 `generatedAt`을 제외한 현재 notification
+fingerprint와 같을 때만 재사용하고, direct provider 호출 전에도 실제 payload가 audit binding과 같은지 확인한다.
+boundary capture는 경계 직후의 status file write까지 확인해 경계를 걸친 tick의 counter를 이전 day에 포함한다. SELL cleanup의 제출
+개수는 거래소 accept 시각의 `submittedAt`과 counter status write cutoff로 같은 day에 귀속한다. 고정 rollout source가 만든 기존
+SELL cleanup에 `submittedAt`이 없으면 같은 attempt의 durable actionable decision `observedAt`을 사용하고 체결 시각으로 추정하지
+않는다. realized loss는 실제 `filledAt` KST day를 사용한다. boundary status는 stat-read-stat에서 같은 inode/size/mtime/ctime인
+JSON만 사용하며 write 경합은 60초 안에서 재시도한다. 경계 polling 중 scheduler-only stop은 실패가 아니라 `stopped` status/event로
+닫힌다. artifact 경로는 symlink 실제 대상도 repository 밖이어야 한다.
+config/env/daemon evidence와 scheduler status/event/PID도 symlink 실제 대상이 repository 밖이어야 하며 scheduler output은 보호 입력의
+실제 경로를 가리킬 수 없다.
+
+```sh
+cat "$ISSUE_267_HOME/artifacts/production-day-scheduler-status.json"
+tail -n 20 "$ISSUE_267_HOME/logs/production-day-scheduler-events.jsonl"
+kill -0 "$(cat "$ISSUE_267_HOME/artifacts/production-day-scheduler.pid")"
+```
+
+운영자가 scheduler만 중지할 때는 위 PID에 `SIGTERM`을 보낸다. 이 신호는 거래 daemon에 전달되지 않는다. status가 `stopped`인지
+확인한 뒤 기존 PID 파일을 run ID가 포함된 evidence 이름으로 이동하고 같은 고정 PID 경로로 재실행한다. 고정 create-only PID
+파일은 두 scheduler가 동시에 같은 Telegram report 경계를 호출하지 못하게 막는다. `production-day-YYYY-MM-DD.json`이 이미
+`passed`면 closeout은 현재 source/config/env/migration provenance와 daemon counter boundary 일치를 먼저 확인한다. 모두 같을 때만
+provider와 Telegram을 다시 호출하지 않고 기존 immutable artifact를 재사용한다.
 
 ## Issue #188 historical Live-Armed 실행
 

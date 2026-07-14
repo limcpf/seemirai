@@ -5,6 +5,7 @@ import {
 import type {
   AuditEventReceipt,
   AuditLogPort,
+  DailyReportDataProvider,
   LiveOpsStatusSummary,
   NotifierPort,
   RunDailyReportResult,
@@ -52,6 +53,14 @@ export interface DailyReportRuntimeDependencies {
   database: Database;
   notifier: NotifierPort;
   auditLog?: AuditLogPort;
+  /**
+   * daily report fact 조회 범위를 대체하는 선택 provider다.
+   *
+   * 기본값은 전체 운영 DB를 읽는 PostgreSQL repository다. 특정 rollout이 전략/마켓 범위를 좁혀야 할 때만 주입하며,
+   * job 예약과 완료 전이는 계속 `database` 기반 공통 repository가 담당해 `report.daily:<date>` 멱등 경계를 유지한다.
+   * provider는 DB read 외 side effect를 만들면 안 된다.
+   */
+  dataProvider?: DailyReportDataProvider;
   workerId?: string;
   clock?: () => Date;
   actor?: string;
@@ -144,13 +153,14 @@ export interface PaperNoKeyDailyReportRuntime {
 export function createPaperNoKeyDailyReportRuntime(
   dependencies: DailyReportRuntimeDependencies,
 ): PaperNoKeyDailyReportRuntime {
-  const dataProvider = new PostgresDailyReportRepository(dependencies.database);
+  const jobRepository = new PostgresDailyReportRepository(dependencies.database);
+  const dataProvider = dependencies.dataProvider ?? jobRepository;
   const auditLog = dependencies.auditLog ?? new PostgresAuditLogRepository(dependencies.database);
   const workerId = dependencies.workerId ?? PAPER_NO_KEY_DAILY_REPORT_WORKER_ID;
   const scheduleDailyReportJob = async (
     options: ScheduleDailyReportOptions,
   ): Promise<EnqueueDailyReportJobResult> =>
-    dataProvider.enqueueDailyReportJob({
+    jobRepository.enqueueDailyReportJob({
       reportDate: options.reportDate,
       ...(options.runAfter === undefined ? {} : { runAfter: options.runAfter }),
       ...(options.maxAttempts === undefined ? {} : { maxAttempts: options.maxAttempts }),
@@ -275,7 +285,7 @@ export function createPaperNoKeyDailyReportRuntime(
 
 async function runClaimedDailyReportJob(input: {
   database: Database;
-  dataProvider: PostgresDailyReportRepository;
+  dataProvider: DailyReportDataProvider;
   auditLog: AuditLogPort;
   notifier: NotifierPort;
   workerId: string;
