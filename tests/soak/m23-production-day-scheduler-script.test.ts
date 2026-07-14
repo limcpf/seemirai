@@ -316,6 +316,64 @@ describe("M23 production day scheduler script", () => {
     expect(counterAttributionCutoffMs).toBeLessThanOrEqual(snapshotObservedMs + 1);
   });
 
+  it("경계 시각에 시작한 tick은 half-open 다음 day로 귀속한다", async () => {
+    const output = await runModuleExpression(`
+      const fs = await import("node:fs/promises");
+      const os = await import("node:os");
+      const path = await import("node:path");
+      const home = await fs.mkdtemp(path.join(os.tmpdir(), "m23-boundary-exact-tick-"));
+      const statusPath = path.join(home, "status.json");
+      const startupPath = path.join(home, "startup.json");
+      const pidPath = path.join(home, "daemon.pid");
+      const eventPath = path.join(home, "events.jsonl");
+      const sourceCommitSha = "a".repeat(40);
+      const runtimeProvenance = { sourceCommitSha };
+      const boundaryAt = "2026-07-14T15:00:00.000Z";
+      const boundaryMs = Date.parse(boundaryAt);
+      let nowMs = boundaryMs - 50;
+      const createCounters = (tickCount) => ({
+        tickCount, successCount: tickCount, holdCount: tickCount, blockCount: 0,
+        manualReviewCount: 0, transientFailureCount: 0, submittedOrderCount: tickCount === 101 ? 1 : 0,
+        exitRequoteCount: 0, duplicateOrderCount: 0, reconcileMismatchCount: 0,
+        untrackedFillCount: 0, liveOrderCleanupFailureCount: 0, crashCount: 0,
+        unhandledRejectionCount: 0,
+      });
+      const writeStatus = async (latestTickStartedAt, counters) => fs.writeFile(statusPath, JSON.stringify({
+        status: "running", latestError: null, latestSummary: { status: "ready" },
+        startedAt: "2026-07-13T20:00:00.000Z", latestTickStartedAt,
+        startupArtifactFilePath: startupPath, runtimeProvenance, counters,
+      }));
+      await fs.writeFile(startupPath, JSON.stringify({ runtimeProvenance }));
+      await fs.writeFile(pidPath, String(process.pid));
+      await fs.writeFile(eventPath, JSON.stringify({ type: "scheduler_started" }) + "\\n");
+      await writeStatus("2026-07-14T14:59:59.900Z", createCounters(100));
+      await fs.utimes(statusPath, new Date(boundaryMs - 100), new Date(boundaryMs - 100));
+      let nextDayTickCommitted = false;
+      const event = await module.ensureDaemonCounterBoundary({
+        options: {
+          daemonStatusFilePath: statusPath, startupArtifactFilePath: startupPath,
+          daemonPidFilePath: pidPath, schedulerEventLogFilePath: eventPath,
+          expectedSourceCommitSha: sourceCommitSha,
+        },
+        boundaryAt,
+        clock: () => new Date(nowMs),
+        sleeper: async (durationMs) => {
+          nowMs += durationMs;
+          if (!nextDayTickCommitted && nowMs >= boundaryMs) {
+            nextDayTickCommitted = true;
+            await writeStatus(boundaryAt, createCounters(101));
+            await fs.utimes(statusPath, new Date(boundaryMs + 10), new Date(boundaryMs + 10));
+            nowMs = boundaryMs + 10;
+          }
+        },
+      });
+      process.stdout.write(JSON.stringify({ event, nextDayTickCommitted }));
+    `);
+    expect(output.nextDayTickCommitted).toBe(true);
+    expect(output.event.counters).toMatchObject({ tickCount: 100, submittedOrderCount: 0 });
+    expect(output.event.latestTickStartedAt).toBe("2026-07-14T14:59:59.900Z");
+  });
+
   it("경계 polling이 daemon status의 부분 JSON과 겹치면 tolerance 안에서 재시도한다", async () => {
     const output = await runModuleExpression(`
       const fs = await import("node:fs/promises");

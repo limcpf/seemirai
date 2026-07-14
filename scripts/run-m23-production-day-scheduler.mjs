@@ -606,14 +606,14 @@ export async function ensureDaemonCounterBoundary({
     const status = statusSnapshot.value;
     const statusFileModifiedAtMs = statusSnapshot.modifiedAtMs;
     const latestTickMs = Date.parse(status.latestTickStartedAt);
-    if (Number.isFinite(latestTickMs) && latestTickMs <= boundaryMs) {
+    if (Number.isFinite(latestTickMs) && latestTickMs < boundaryMs) {
       captured = { status, observedAt, statusFileModifiedAtMs };
     }
     const crossedBoundary = observedAt.getTime() >= boundaryMs;
     const preBoundaryTickCommittedAfterBoundary = crossedBoundary
-      && latestTickMs <= boundaryMs
+      && latestTickMs < boundaryMs
       && statusFileModifiedAtMs >= boundaryMs;
-    const postBoundaryTickCommitted = crossedBoundary && latestTickMs > boundaryMs;
+    const postBoundaryTickCommitted = crossedBoundary && latestTickMs >= boundaryMs;
     if (preBoundaryTickCommittedAfterBoundary || (postBoundaryTickCommitted && captured !== undefined)) {
       // 경계를 걸친 tick의 counter write 또는 다음 tick write를 확인한 뒤에야 이전 day snapshot을 확정한다.
       break;
