@@ -4629,6 +4629,7 @@ console.log(JSON.stringify(summary));
       cleanupArtifactPath: "/tmp/autonomous-exit-closeout.json",
     });
     expect(cleanupRecords).toEqual([expect.objectContaining({
+      submittedAt: "2026-06-20T00:00:00.000Z",
       filledQuantity: "0.0001",
       filledNotionalKrw: "9900",
       entryAveragePrice: "100000000",

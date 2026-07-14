@@ -387,7 +387,7 @@ async function runActualProductionDayCloseout(options) {
       connectionTimeoutMillis: 5_000,
     });
     database = infrastructureModule.createDatabase(pool);
-    const [databaseRead, privateRead, liveArtifacts] = await Promise.all([
+    const [databaseRead, privateRead] = await Promise.all([
       readDatabaseEvidence(pool, window),
       readPrivateExchangeEvidence({
         infrastructureModule,
@@ -395,8 +395,13 @@ async function runActualProductionDayCloseout(options) {
         referencePrice: status.latestSummary?.marketData?.referencePrice,
         observedAt: generatedAt,
       }),
-      readLiveArtifactEvidence(options.artifactDir, window, daemonDay.boundaries),
     ]);
+    const liveArtifacts = await readLiveArtifactEvidence(
+      options.artifactDir,
+      window,
+      daemonDay.boundaries,
+      databaseRead.actionableSubmissions,
+    );
     const liveSubmission = assertLiveSubmissionEvidence({
       counters: daemonDay.counters,
       databaseEvidence: databaseRead,
@@ -463,6 +468,7 @@ async function runActualProductionDayCloseout(options) {
       window.finishedAt,
       reportRun,
       deliveredReport.report,
+      deliveredReport.notification,
     );
     if (shouldRunDailyReportDeliveryRecovery(dailyReportEvidence.status)) {
       // 같은 날짜 일반 report가 먼저 완료돼도 M23 상태가 포함된 closeout notification은 별도 멱등 경계에서 한 번 보장한다.
@@ -481,6 +487,7 @@ async function runActualProductionDayCloseout(options) {
         window.finishedAt,
         reportRun,
         deliveredReport.report,
+        deliveredReport.notification,
       );
     }
     if (dailyReportEvidence.status !== "DELIVERED") {
@@ -491,7 +498,7 @@ async function runActualProductionDayCloseout(options) {
       throw new Error("daily report 생성/전달 durable audit evidence가 완전하지 않습니다.");
     }
 
-    const dailyLoss = resolveDailyRealizedLoss(deliveredReport.report, liveArtifacts);
+    const dailyLoss = resolveDailyRealizedLoss(liveArtifacts);
     const previousLosses = await readPreviousProductionDayLosses({
       artifactDir: options.artifactDir,
       firstDay: options.firstDay,
@@ -683,11 +690,13 @@ export function createIssue267DailyReportDataProvider(dataProvider) {
 /** 일반 daily report fact에서 M23 대상 전략/마켓 또는 전역 운영 event만 남긴다. 입력 배열은 변경하지 않는다. */
 export function scopeIssue267DailyReportSourceData(sourceData) {
   const matchesTarget = (fact) => fact.strategyId === expectedStrategyId && fact.market === expectedMarket;
+  const matchesTargetPnl = (fact) => fact.strategyId === expectedStrategyId
+    && (fact.market === expectedMarket || fact.market === null || fact.market === undefined);
   return {
     orders: sourceData.orders.filter(matchesTarget),
     fills: sourceData.fills.filter(matchesTarget),
     positions: sourceData.positions.filter(matchesTarget),
-    pnlSnapshots: sourceData.pnlSnapshots.filter(matchesTarget),
+    pnlSnapshots: sourceData.pnlSnapshots.filter(matchesTargetPnl),
     auditEvents: sourceData.auditEvents.filter((fact) => matchesOptionalPayloadScope(fact.payloadJson)),
     riskEvents: sourceData.riskEvents.filter((fact) => matchesOptionalFactScope(fact)),
     executionQuality: sourceData.executionQuality.filter(matchesTarget),
@@ -830,7 +839,7 @@ export function createProductionDaySummary(input) {
 export async function readDatabaseEvidence(pool, window) {
   const result = await pool.query(
     `with scoped_decisions as (
-       select decision_kind, order_intent_count, dedupe_key, observed_at
+       select decision_kind, order_intent_count, dedupe_key, observed_at, source_tick_id
          from live_decision_ticks
         where observed_at >= $1 and observed_at < $2
           and exchange = $3 and market = $4 and strategy_id = $5
@@ -844,6 +853,12 @@ export async function readDatabaseEvidence(pool, window) {
        (select count(*)::int from scoped_decisions
          where (decision_kind in ('BUY', 'SELL') or order_intent_count > 0)
            and not (decision_kind in ('BUY', 'SELL') and order_intent_count = 1)) as malformed_actionable_decision_count,
+       (select coalesce(json_agg(json_build_object(
+          'sourceTickId', source_tick_id,
+          'observedAt', observed_at
+        ) order by observed_at), '[]'::json)
+          from scoped_decisions
+         where decision_kind in ('BUY', 'SELL') and order_intent_count = 1) as actionable_submissions,
        (select count(distinct dedupe_key)::int from scoped_decisions) as distinct_dedupe_count,
        (select min(observed_at) from scoped_decisions) as first_decision_at,
        (select max(observed_at) from scoped_decisions) as latest_decision_at,
@@ -856,6 +871,10 @@ export async function readDatabaseEvidence(pool, window) {
     [window.startedAt, window.finishedAt, expectedExchange, expectedMarket, expectedStrategyId],
   );
   const row = result.rows[0];
+  const actionableSubmissions = Array.isArray(row.actionable_submissions) ? row.actionable_submissions : [];
+  if (actionableSubmissions.length !== Number(row.actionable_decision_count)) {
+    throw new Error("actionable decision 개수와 제출 시각 evidence 개수가 다릅니다.");
+  }
   return {
     migrationVersion: Number(row.migration_version),
     killSwitchState: row.kill_switch_state,
@@ -866,6 +885,7 @@ export async function readDatabaseEvidence(pool, window) {
     },
     decisionCount: Number(row.decision_count),
     actionableDecisionCount: Number(row.actionable_decision_count),
+    actionableSubmissions,
     malformedActionableDecisionCount: Number(row.malformed_actionable_decision_count),
     distinctDedupeCount: Number(row.distinct_dedupe_count),
     firstDecisionAt: toIsoOrNull(row.first_decision_at),
@@ -1011,7 +1031,7 @@ export function assertLiveSubmissionEvidence({ counters, databaseEvidence, liveA
   };
 }
 
-export async function readLiveArtifactEvidence(artifactDir, window, daemonBoundaries = {}) {
+export async function readLiveArtifactEvidence(artifactDir, window, daemonBoundaries = {}, actionableSubmissions = []) {
   const files = await readdir(artifactDir);
   const cleanupFiles = files.filter((file) => /^cleanup-ops-[a-f0-9]{26}\.json$/u.test(file)).toSorted();
   const reservationFiles = files.filter((file) => /^reservation-ops-[a-f0-9]{26}\.json$/u.test(file)).toSorted();
@@ -1037,6 +1057,7 @@ export async function readLiveArtifactEvidence(artifactDir, window, daemonBounda
   }
   const reservationByAttemptId = new Map(scopedReservations
     .map((record) => [record.value.attemptId, record]));
+  const actionableSubmissionByAttemptId = createActionableSubmissionByAttemptId(actionableSubmissions);
   // generic cancel cleanup은 strategy 필드 도입 전 형식만 허용해 같은 디렉터리의 probe 제출을 대상 daemon에서 격리한다.
   const scopedCleanups = cleanupRecords.filter(({ value }) => (
     value.market === expectedMarket
@@ -1056,7 +1077,11 @@ export async function readLiveArtifactEvidence(artifactDir, window, daemonBounda
   }
   const submissionRecords = scopedCleanups.filter(({ value }) => {
     const reservation = reservationByAttemptId.get(value.attemptId);
-    const submittedAt = Date.parse(value.submittedAt ?? reservation?.value.reservedAt ?? value.filledAt ?? value.terminalCheckedAt);
+    const actionableSubmission = actionableSubmissionByAttemptId.get(value.attemptId);
+    // 체결 시각은 제출일을 증명하지 못하므로 durable reservation/decision이 없으면 해당 day 제출로 추정하지 않는다.
+    const submittedAt = Date.parse(
+      value.submittedAt ?? reservation?.value.reservedAt ?? actionableSubmission?.observedAt,
+    );
     return Number.isFinite(submittedAt) && submittedAt >= submissionStartMs && submittedAt < submissionFinishMs;
   });
   for (const { file, value } of submissionRecords) {
@@ -1084,6 +1109,7 @@ export async function readLiveArtifactEvidence(artifactDir, window, daemonBounda
   const evidenceRecords = scopedCleanups.filter(({ file }) => submissionFiles.has(file) || fillFiles.has(file));
   const evidenceFingerprint = sha256Json(evidenceRecords.map(({ file, value }) => {
     const reservation = reservationByAttemptId.get(value.attemptId);
+    const actionableSubmission = actionableSubmissionByAttemptId.get(value.attemptId);
     return {
       file,
       submissionInDay: submissionFiles.has(file),
@@ -1094,7 +1120,8 @@ export async function readLiveArtifactEvidence(artifactDir, window, daemonBounda
       side: value.side ?? null,
       status: value.status ?? null,
       reservedAt: reservation?.value.reservedAt ?? null,
-      submittedAt: value.submittedAt ?? reservation?.value.reservedAt ?? null,
+      submittedAt: value.submittedAt ?? reservation?.value.reservedAt ?? actionableSubmission?.observedAt ?? null,
+      decisionSourceTickId: actionableSubmission?.sourceTickId ?? null,
       filledAt: value.filledAt ?? null,
       terminalCheckedAt: value.terminalCheckedAt ?? null,
       filledQuantity: value.filledQuantity ?? null,
@@ -1112,6 +1139,24 @@ export async function readLiveArtifactEvidence(artifactDir, window, daemonBounda
     evidenceCount: Math.max(exits.length, 1),
     evidenceId: `live-cleanups:${window.day}:sha256:${evidenceFingerprint}`,
   };
+}
+
+function createActionableSubmissionByAttemptId(actionableSubmissions) {
+  if (!Array.isArray(actionableSubmissions)) {
+    throw new Error("actionable submission evidence가 배열이 아닙니다.");
+  }
+  const records = new Map();
+  for (const submission of actionableSubmissions) {
+    const sourceTickId = typeof submission?.sourceTickId === "string" ? submission.sourceTickId : "";
+    const attemptId = sourceTickId.match(/:(ops-[a-f0-9]{26})$/u)?.[1];
+    const observedAt = toIsoOrNull(submission?.observedAt);
+    if (attemptId === undefined || observedAt === null || records.has(attemptId)) {
+      // 동일 attempt를 유일한 durable decision에 연결하지 못하면 제출 경계 귀속을 신뢰할 수 없다.
+      throw new Error("actionable decision의 attempt ID 또는 제출 시각 evidence가 올바르지 않습니다.");
+    }
+    records.set(attemptId, { sourceTickId, observedAt });
+  }
+  return records;
 }
 
 function resolveSubmissionBoundaryMs(value, fallbackMs) {
@@ -1148,9 +1193,10 @@ async function readPrivateExchangeEvidence({ infrastructureModule, secrets, refe
   };
 }
 
-export async function readDailyReportEvidence(pool, day, windowFinishedAt, reportRun, report) {
+export async function readDailyReportEvidence(pool, day, windowFinishedAt, reportRun, report, notification) {
   const audit = await pool.query(
-    `select id, payload_json->>'actor' as actor, correlation_id, payload_json->>'reason_code' as reason_code, occurred_at
+    `select id, payload_json->>'actor' as actor, correlation_id, payload_json->>'reason_code' as reason_code,
+            payload_json->>'m23_live_ops_notification_fingerprint' as notification_fingerprint, occurred_at
        from audit_events
       where payload_json->>'report_date' = $1
         and occurred_at >= $2
@@ -1158,7 +1204,15 @@ export async function readDailyReportEvidence(pool, day, windowFinishedAt, repor
       order by occurred_at asc`,
     [day, windowFinishedAt],
   );
-  const postWindowRows = filterIssue267CloseoutDailyReportAuditRows(audit.rows, day, windowFinishedAt);
+  const expectedNotificationFingerprint = notification === undefined
+    ? undefined
+    : createIssue267NotificationFingerprint(notification);
+  const postWindowRows = filterIssue267CloseoutDailyReportAuditRows(
+    audit.rows,
+    day,
+    windowFinishedAt,
+    expectedNotificationFingerprint,
+  );
   const generated = postWindowRows.filter((row) => row.reason_code === "daily_report_generated");
   const delivered = postWindowRows.filter((row) => row.reason_code === "daily_report_notification_delivered");
   const failed = postWindowRows.filter((row) => row.reason_code === "daily_report_notification_failed");
@@ -1224,16 +1278,30 @@ export function filterPostWindowDailyReportAuditRows(rows, windowFinishedAt) {
 }
 
 /** Issue #267 closeout actor와 correlation 경계에서 생성된 일별 report audit만 반환한다. 외부 side effect는 없다. */
-export function filterIssue267CloseoutDailyReportAuditRows(rows, day, windowFinishedAt) {
+export function filterIssue267CloseoutDailyReportAuditRows(
+  rows,
+  day,
+  windowFinishedAt,
+  expectedNotificationFingerprint,
+) {
   const closeoutPrefix = `issue-267-production-day-${day}-`;
-  const recoveryCorrelationId = `issue-267-delivery-recovery-${day}`;
+  const recoveryPrefix = `issue-267-delivery-recovery-${day}`;
   return filterPostWindowDailyReportAuditRows(rows, windowFinishedAt).filter((row) => (
     row.actor === "codex-issue-267-day-closeout"
     && (
       String(row.correlation_id ?? "").startsWith(closeoutPrefix)
-      || row.correlation_id === recoveryCorrelationId
+      || (
+        String(row.correlation_id ?? "").startsWith(recoveryPrefix)
+        && typeof expectedNotificationFingerprint === "string"
+        && row.notification_fingerprint === expectedNotificationFingerprint
+      )
     )
   ));
+}
+
+/** recovery audit과 현재 owner notification payload를 연결하는 secret-free fingerprint를 만든다. */
+export function createIssue267NotificationFingerprint(notification) {
+  return `sha256:${sha256Json(notification)}`;
 }
 
 /**
@@ -1274,7 +1342,7 @@ export async function runDailyReportDeliveryRecovery({
   }
 
   const auditLog = new infrastructureModule.PostgresAuditLogRepository(database);
-  const notificationFingerprint = `sha256:${sha256Json(notification)}`;
+  const notificationFingerprint = createIssue267NotificationFingerprint(notification);
   try {
     await auditLog.appendEvent({
       eventType: "DAILY_REPORT",
@@ -1480,21 +1548,13 @@ function assertDaemonWindow({ status, window, generatedAt }) {
   }
 }
 
-function resolveDailyRealizedLoss(report, liveArtifacts) {
-  const metric = report.realizedPnl;
+/** filledAt KST window에 속한 SELL cleanup만 사용해 누적 DB PnL을 일일 손실로 중복 반영하지 않는다. */
+export function resolveDailyRealizedLoss(liveArtifacts) {
+  if (!isDecimalString(liveArtifacts.realizedLossKrw) || liveArtifacts.evidenceCount < 1) {
+    throw new Error("일별 SELL cleanup realized PnL evidence가 올바르지 않습니다.");
+  }
   const liveLoss = new Decimal(liveArtifacts.realizedLossKrw);
-  if (metric.available && isDecimalString(metric.value) && metric.sampleCount > 0) {
-    return {
-      // DB report와 live cleanup이 같은 체결을 반영할 수 있으므로 합산 대신 더 보수적인 손실값을 선택한다.
-      value: Decimal.max(new Decimal(metric.value).negated(), liveLoss, 0).toFixed(),
-      evidenceCount: metric.sampleCount + liveArtifacts.evidenceCount,
-    };
-  }
-  if (report.fillCount === 0 && report.orderCount === 0) {
-    // live broker는 orders/fills row를 만들지 않을 수 있으므로 cleanup artifact 집계를 손실 근거로 함께 보존한다.
-    return { value: liveLoss.toFixed(), evidenceCount: liveArtifacts.evidenceCount };
-  }
-  throw new Error("주문/체결이 있는데 realized PnL evidence를 읽지 못했습니다.");
+  return { value: liveLoss.toFixed(), evidenceCount: liveArtifacts.evidenceCount };
 }
 
 /**

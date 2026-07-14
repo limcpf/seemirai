@@ -573,33 +573,33 @@ export async function ensureDaemonCounterBoundary({
   let captured;
   while (!stopControl.requested) {
     const observedAt = clock();
-    let status;
-    let statusFileStat;
+    let statusSnapshot;
     try {
-      [status, statusFileStat] = await Promise.all([
-        readJsonFile(options.daemonStatusFilePath),
-        stat(options.daemonStatusFilePath),
-      ]);
+      statusSnapshot = await readStableJsonFileSnapshot(options.daemonStatusFilePath);
     } catch (error) {
       if (!(error instanceof SyntaxError)) {
         throw error;
       }
+    }
+    if (statusSnapshot === undefined) {
       if (observedAt.getTime() - boundaryMs > boundaryCaptureToleranceMs) {
-        throw new Error(`${boundaryAt} daemon counter boundary의 유효한 status JSON을 60초 안에 읽지 못했습니다.`);
+        throw new Error(`${boundaryAt} daemon counter boundary의 안정적인 status JSON을 60초 안에 읽지 못했습니다.`);
       }
-      // daemon의 truncate/write 사이를 읽은 경우 완성될 status를 같은 경계 tolerance 안에서 다시 확인한다.
+      // daemon write와 겹친 JSON 또는 서로 다른 file version의 stat/read는 같은 경계 tolerance 안에서 다시 확인한다.
       const remainingMs = Math.max(boundaryMs - observedAt.getTime(), 0);
       await sleeper(remainingMs > 0 ? Math.min(remainingMs, boundaryCapturePollMs) : boundaryCapturePollMs, stopControl);
       continue;
     }
+    const status = statusSnapshot.value;
+    const statusFileModifiedAtMs = statusSnapshot.modifiedAtMs;
     const latestTickMs = Date.parse(status.latestTickStartedAt);
     if (Number.isFinite(latestTickMs) && latestTickMs <= boundaryMs) {
-      captured = { status, observedAt, statusFileModifiedAtMs: statusFileStat.mtimeMs };
+      captured = { status, observedAt, statusFileModifiedAtMs };
     }
     const crossedBoundary = observedAt.getTime() >= boundaryMs;
     const preBoundaryTickCommittedAfterBoundary = crossedBoundary
       && latestTickMs <= boundaryMs
-      && statusFileStat.mtimeMs >= boundaryMs;
+      && statusFileModifiedAtMs >= boundaryMs;
     const postBoundaryTickCommitted = crossedBoundary && latestTickMs > boundaryMs;
     if (preBoundaryTickCommittedAfterBoundary || (postBoundaryTickCommitted && captured !== undefined)) {
       // 경계를 걸친 tick의 counter write 또는 다음 tick write를 확인한 뒤에야 이전 day snapshot을 확정한다.
@@ -837,6 +837,28 @@ function assertProcessRunning(pid) {
 
 async function readJsonFile(filePath) {
   return JSON.parse(await readFile(filePath, "utf8"));
+}
+
+/** daemon status 내용과 수정 시각이 같은 file version인지 확인하고 안정적인 JSON snapshot만 반환한다. */
+export async function readStableJsonFileSnapshot(filePath, io = {}) {
+  const readText = io.readText ?? ((target) => readFile(target, "utf8"));
+  const statFile = io.statFile ?? ((target) => stat(target, { bigint: true }));
+  const before = await statFile(filePath);
+  const raw = await readText(filePath);
+  const after = await statFile(filePath);
+  if (
+    before.dev !== after.dev
+    || before.ino !== after.ino
+    || before.size !== after.size
+    || before.mtimeNs !== after.mtimeNs
+    || before.ctimeNs !== after.ctimeNs
+  ) {
+    return undefined;
+  }
+  return {
+    value: JSON.parse(raw),
+    modifiedAtMs: Number(after.mtimeNs / 1_000_000n) + Number(after.mtimeNs % 1_000_000n) / 1_000_000,
+  };
 }
 
 function safeErrorName(error) {

@@ -367,6 +367,25 @@ describe("M23 production day scheduler script", () => {
     expect(output.result.counters).toMatchObject({ tickCount: 101, transientFailureCount: 0 });
   });
 
+  it("status read 전후 file version이 바뀌면 경계 snapshot으로 사용하지 않는다", async () => {
+    const output = await runModuleExpression(`
+      const first = { dev: 1n, ino: 2n, size: 100n, mtimeNs: 10_000_000n, ctimeNs: 10_000_000n };
+      const second = { ...first, mtimeNs: 11_000_000n, ctimeNs: 11_000_000n };
+      let statCall = 0;
+      const raced = await module.readStableJsonFileSnapshot("ignored", {
+        readText: async () => JSON.stringify({ counters: { tickCount: 100 } }),
+        statFile: async () => [first, second][statCall++],
+      });
+      const stable = await module.readStableJsonFileSnapshot("ignored", {
+        readText: async () => JSON.stringify({ counters: { tickCount: 101 } }),
+        statFile: async () => second,
+      });
+      process.stdout.write(JSON.stringify({ raced: raced ?? null, stable }));
+    `);
+    expect(output.raced).toBeNull();
+    expect(output.stable).toEqual({ value: { counters: { tickCount: 101 } }, modifiedAtMs: 11 });
+  });
+
   it("경계 polling 중 scheduler stop은 failure 대신 정상 중지 sentinel을 반환한다", async () => {
     const output = await runModuleExpression(`
       const fs = await import("node:fs/promises");

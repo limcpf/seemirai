@@ -8102,6 +8102,8 @@ export function createLiveOpsCliExitRuntime({
           reason: brokerOrderViolation.reason,
         };
       }
+      // SELL 제출 귀속은 fill 확인 시각이 아니라 거래소 accept 시각을 보존해야 KST day counter와 cleanup이 갈라지지 않는다.
+      const submittedAt = toLiveOpsCliIsoTimestampOrNull(brokerOrder.acceptedAt) ?? clock();
 
       let fillProbe;
       try {
@@ -8133,6 +8135,7 @@ export function createLiveOpsCliExitRuntime({
           submission,
           brokerOrder,
           terminalOrder: fillProbe.order,
+          submittedAt,
           filledAt,
         });
         if (closeout?.status === "MANUAL_REVIEW_REQUIRED") {
@@ -8234,6 +8237,7 @@ export function createLiveOpsCliExitRuntime({
           submission,
           brokerOrder,
           terminalOrder: terminal.order,
+          submittedAt,
           filledAt,
         });
         if (closeout?.status === "MANUAL_REVIEW_REQUIRED") {
@@ -8292,6 +8296,7 @@ async function writeLiveOpsCliAutonomousExitCloseoutOrManualReview({
   submission,
   brokerOrder,
   terminalOrder,
+  submittedAt,
   filledAt,
 }) {
   if (artifactStore === undefined || typeof artifactStore.writeCleanup !== "function") {
@@ -8342,6 +8347,7 @@ async function writeLiveOpsCliAutonomousExitCloseoutOrManualReview({
     totalFeeKrw: pnlEvidence.totalFeeKrw,
     realizedPnlKrw: pnlEvidence.realizedPnlKrw,
     pnlSource: pnlEvidence.source,
+    submittedAt,
     filledAt,
     terminalCheckedAt: filledAt,
     idempotencyKeySuffix: suffixLiveOpsCliIdentifier(intent.idempotencyKey),

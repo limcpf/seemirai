@@ -545,15 +545,19 @@ Codex-native 운영은 Codex, Git, GitHub, shell command, 문서 상태를 연�
 - scheduler boundary는 경계 직후 status 파일 write 시각을 확인한다. pre-boundary에 시작한 tick이 경계 뒤 counter를 커밋하면 그
   status를 기다리고, 다음 post-boundary tick write가 먼저 확인되면 마지막 pre-boundary snapshot을 사용한다. pre-boundary tick의
   status write가 경계 뒤 완료되면 그 write 시각까지의 제출 cleanup도 같은 이전 day counter에 귀속하되 fill/PnL은 실제 `filledAt`
-  KST day를 유지한다. 이 polling 중 scheduler-only stop은 day 실패가 아니라 `stopped`로 닫는다.
+  KST day를 유지한다. status 내용과 수정 시각은 stat-read-stat의 inode/size/mtime/ctime이 같은 file version일 때만 사용하고,
+  daemon write와 겹친 부분 JSON이나 version 경합은 60초 tolerance 안에서 재시도한다. 이 polling 중 scheduler-only stop은 day 실패가
+  아니라 `stopped`로 닫는다.
 - `live:ops:daemon` actual 제출은 DB `orders` row가 아니라 `submittedOrderCount` 경계 delta와 core guard를 통과한 BUY/SELL 단일 intent
   decision, 대상 strategy cleanup artifact 수를 교차 검증한다. BUY entry cleanup은 같은 attempt와 scope의 durable budget
   reservation을 반드시 가져야 하며, 별도 entry reservation을 만들지 않는 SELL exit cleanup에는 이 조건을 적용하지 않는다. decision은
   `UPBIT`/`KRW-BTC`/`live_ops_autonomous_24x7_core` scope로 제한한다. malformed actionable decision,
   reservation/cleanup 누락, 개수 불일치는 risk bypass 또는 미확인 제출 가능성으로 보고 day closeout을 실패시킨다. cleanup evidence
   fingerprint는 수량, 가격, notional, fee, realized PnL 입력을 포함한다.
-- cleanup 제출 개수는 `submittedAt` 또는 reservation 시각으로 KST day에 귀속하지만, SELL realized loss와 fill 수는 반드시
-  `filledAt`으로 귀속한다. 자정 경계 제출/체결이 서로 다른 day에 속해도 손실 ceiling은 실제 체결일에 반영한다.
+- cleanup 제출 개수는 `submittedAt` 또는 reservation 시각으로 KST day에 귀속한다. SELL cleanup은 거래소 accept 시각을
+  `submittedAt`으로 보존하고, 고정 rollout source의 기존 SELL 형식은 같은 attempt의 durable actionable decision `observedAt`으로
+  제출 시각을 복원한다. 체결 시각을 제출 시각으로 추정하지 않으며, realized loss와 fill 수는 반드시 `filledAt`으로 귀속한다.
+  자정 경계 제출/체결이 서로 다른 day에 속해도 제출 counter와 cleanup은 제출일에, 손실 ceiling은 실제 체결일에 반영한다.
 - bounded wait에서 미체결 SELL이 terminal cancel로 확인된 `CANCELED_FOR_REQUOTE` 제출은 cleanup 대신 daemon
   `exitRequoteCount` 경계 delta를 durable terminal evidence로 사용한다. `submittedOrderCount - exitRequoteCount`와 cleanup 수가
   일치해야 하며, 재호가 수가 제출 수보다 많으면 day closeout을 실패시킨다.
@@ -563,11 +567,13 @@ Codex-native 운영은 Codex, Git, GitHub, shell command, 문서 상태를 연�
   provenance로 통과한 연속 artifact만 합산하며, 디렉터리의 과거 rollout artifact는 포함하지 않는다.
 - Issue #267 daily report evidence는 closeout actor와 production-day 또는 delivery-recovery correlation이 일치하는 audit만 인정한다.
   actor는 별도 DB 컬럼이 아니라 `audit_events.payload_json.actor`에서 읽고 correlation은 `correlation_id`에서 읽는다.
-  report fact는 `KRW-BTC`/`live_ops_autonomous_24x7_core` scope로 제한하고, artifact 손실은 runtime이 실제 생성·전송한 report
-  결과를 사용한다. 같은 날짜의 일반 daily report job이 먼저 완료됐거나 명시 provider 실패 audit이 있으면 M23 live ops snapshot
+  report fact는 `KRW-BTC`/`live_ops_autonomous_24x7_core` scope로 제한하되 같은 strategy의 `market=null` aggregate PnL snapshot은
+  사용자 report에 보존한다. day artifact 손실은 누적 DB PnL이 아니라 `filledAt` KST window의 SELL cleanup realized loss만 사용한다.
+  같은 날짜의 일반 daily report job이 먼저 완료됐거나 명시 provider 실패 audit이 있으면 M23 live ops snapshot
   notification을 별도 delivery-recovery idempotency job에서 한 번 전달한다. provider 성공 뒤 delivery audit만 누락된 상태는
   중복 전송하지 않고 수동 확인으로 닫는다. recovery provider 실패는 failed audit과 재예약 job을 함께 남기며, recovery
-  generated audit만 남은 중단 상태도 completed job guard 아래 재시도 가능 상태로 해석한다.
+  generated audit만 남은 중단 상태도 completed job guard 아래 재시도 가능 상태로 해석한다. 이전 recovery audit은 현재 notification
+  fingerprint와 같을 때만 현재 payload의 전달 증거로 재사용한다.
 - 일/주간 realized loss 중 큰 값과 private open position 명목금액 합계가 50,000 KRW에 닿기 전에 operator stop 또는 kill
   switch/manual review로 수렴한다. open order는 0이어야 하지만 ceiling 미만의 BTC position 자체는 허용한다. 이 ceiling은 M24
   예산 확대 승인이 아니다.

@@ -209,10 +209,15 @@ append-only daemon counter boundary를 남기고, 종료 60초 뒤 closeout을 �
 `--first-day`부터 현재 기준일 직전까지 같은 source/config/env/migration provenance로 통과한 연속 day artifact만 합산한다. 같은
 날짜의 일반 daily report가 먼저 완료됐으면 closeout actor/correlation이 있는 별도 recovery job으로 M23 상태 report를 한 번 전달한다.
 provider 성공 뒤 delivery audit 저장만 실패한 상태는 recovery로 재전송하지 않고 수동 확인 대상으로 남긴다. artifact 손실은
-사전 조회 snapshot이 아니라 runtime이 실제 생성·전송한 scoped report 결과를 사용한다.
+누적 DB PnL이 아니라 `filledAt` KST window의 SELL cleanup realized loss를 사용한다. scoped report에는 같은 strategy의
+`market=null` aggregate PnL snapshot도 사용자 관측 정보로 보존한다. 이전 recovery delivery audit은 현재 notification fingerprint와
+같을 때만 재사용한다.
 boundary capture는 경계 직후의 status file write까지 확인해 경계를 걸친 tick의 counter를 이전 day에 포함한다. SELL cleanup의 제출
-개수는 counter에 포함된 status write cutoff까지 같은 day에 귀속하고, realized loss는 실제 `filledAt` KST day를 사용한다. 경계
-polling 중 scheduler-only stop은 실패가 아니라 `stopped` status/event로 닫힌다. artifact 경로는 symlink 실제 대상도 repository 밖이어야 한다.
+개수는 거래소 accept 시각의 `submittedAt`과 counter status write cutoff로 같은 day에 귀속한다. 고정 rollout source가 만든 기존
+SELL cleanup에 `submittedAt`이 없으면 같은 attempt의 durable actionable decision `observedAt`을 사용하고 체결 시각으로 추정하지
+않는다. realized loss는 실제 `filledAt` KST day를 사용한다. boundary status는 stat-read-stat에서 같은 inode/size/mtime/ctime인
+JSON만 사용하며 write 경합은 60초 안에서 재시도한다. 경계 polling 중 scheduler-only stop은 실패가 아니라 `stopped` status/event로
+닫힌다. artifact 경로는 symlink 실제 대상도 repository 밖이어야 한다.
 config/env/daemon evidence와 scheduler status/event/PID도 symlink 실제 대상이 repository 밖이어야 하며 scheduler output은 보호 입력의
 실제 경로를 가리킬 수 없다.
 

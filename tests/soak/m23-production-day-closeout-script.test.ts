@@ -364,7 +364,11 @@ describe("M23 production day closeout script", () => {
           captured = { text, params };
           return { rows: [{
             migration_version: 14, kill_switch_state: "NORMAL", decision_count: 1440,
-            actionable_decision_count: 0, malformed_actionable_decision_count: 0,
+            actionable_decision_count: 1, malformed_actionable_decision_count: 0,
+            actionable_submissions: [{
+              sourceTickId: "2026-07-15T01:00:00.000Z:ops-${"a".repeat(26)}",
+              observedAt: "2026-07-15T01:00:00.000Z",
+            }],
             distinct_dedupe_count: 1440, first_decision_at: "2026-07-14T15:00:01.000Z",
             latest_decision_at: "2026-07-15T14:59:59.000Z", max_decision_gap_ms: 60000,
             database_order_count: 0, fill_count: 0,
@@ -381,6 +385,11 @@ describe("M23 production day closeout script", () => {
       market: "KRW-BTC",
       strategyId: "live_ops_autonomous_24x7_core",
     });
+    expect(output.evidence.actionableSubmissions).toEqual([{
+      sourceTickId: `2026-07-15T01:00:00.000Z:ops-${"a".repeat(26)}`,
+      observedAt: "2026-07-15T01:00:00.000Z",
+    }]);
+    expect(output.captured.text).toContain("source_tick_id");
   });
 
   it("daily report audit은 KST day 종료 이후 생성된 행만 evidence로 사용한다", async () => {
@@ -403,6 +412,7 @@ describe("M23 production day closeout script", () => {
       }, "2026-07-15", "2026-07-15T15:00:00.000Z", { status: "SKIPPED_EXISTING_JOB" }, {
         orderCount: 0, fillCount: 0, realizedPnl: { value: null, available: false, sampleCount: 0 },
       });
+      const currentFingerprint = module.createIssue267NotificationFingerprint({ summary: "현재 M23 report" });
       const rows = [
         {
           id: "generic", actor: "daily_report_runner", correlation_id: "generic-run",
@@ -414,20 +424,28 @@ describe("M23 production day closeout script", () => {
           occurred_at: "2026-07-15T15:01:01.000Z",
         },
         {
-          id: "recovery", actor: "codex-issue-267-day-closeout",
+          id: "stale-recovery", actor: "codex-issue-267-day-closeout",
           correlation_id: "issue-267-delivery-recovery-2026-07-15",
+          notification_fingerprint: "sha256:stale",
           occurred_at: "2026-07-15T15:01:02.000Z",
+        },
+        {
+          id: "current-recovery", actor: "codex-issue-267-day-closeout",
+          correlation_id: "issue-267-delivery-recovery-2026-07-15",
+          notification_fingerprint: currentFingerprint,
+          occurred_at: "2026-07-15T15:01:03.000Z",
         },
       ];
       process.stdout.write(JSON.stringify({
         queryText,
         rows: module.filterIssue267CloseoutDailyReportAuditRows(
-          rows, "2026-07-15", "2026-07-15T15:00:00.000Z",
+          rows, "2026-07-15", "2026-07-15T15:00:00.000Z", currentFingerprint,
         ),
       }));
     `);
-    expect(output.rows.map((row: { id: string }) => row.id)).toEqual(["closeout", "recovery"]);
+    expect(output.rows.map((row: { id: string }) => row.id)).toEqual(["closeout", "current-recovery"]);
     expect(output.queryText).toContain("payload_json->>'actor' as actor");
+    expect(output.queryText).toContain("m23_live_ops_notification_fingerprint");
     expect(output.queryText).not.toMatch(/select id,\s*actor,/u);
   });
 
@@ -449,7 +467,6 @@ describe("M23 production day closeout script", () => {
       kind: "live_ops_autonomous_exit_closeout",
       side: "SELL",
       status: "FILLED",
-      submittedAt: "2026-07-14T14:59:59.000Z",
       filledAt: "2026-07-14T16:00:02.000Z",
       terminalCheckedAt: "2026-07-14T16:00:02.000Z",
       filledQuantity: "0.0001",
@@ -473,7 +490,10 @@ describe("M23 production day closeout script", () => {
       const window = module.createKstDayWindow("2026-07-15");
       const first = await module.readLiveArtifactEvidence(${JSON.stringify(artifactDir)}, window);
       const previous = await module.readLiveArtifactEvidence(
-        ${JSON.stringify(artifactDir)}, module.createKstDayWindow("2026-07-14"),
+        ${JSON.stringify(artifactDir)}, module.createKstDayWindow("2026-07-14"), {}, [{
+          sourceTickId: ${JSON.stringify(`2026-07-14T14:59:59.000Z:${reservation.attemptId}`)},
+          observedAt: "2026-07-14T14:59:59.000Z",
+        }],
       );
       const changed = ${JSON.stringify(cleanup)};
       changed.realizedPnlKrw = "-200";
@@ -593,12 +613,13 @@ describe("M23 production day closeout script", () => {
   it("M23 daily report source는 대상 strategy와 KRW-BTC fact만 사용한다", async () => {
     const output = await runModuleExpression(`
       const target = { strategyId: "live_ops_autonomous_24x7_core", market: "KRW-BTC" };
+      const targetAggregatePnl = { strategyId: "live_ops_autonomous_24x7_core", market: null };
       const other = { strategyId: "probe_strategy", market: "KRW-ETH" };
       const scoped = module.scopeIssue267DailyReportSourceData({
         orders: [target, other],
         fills: [target, other, { market: "KRW-BTC" }],
         positions: [target, other],
-        pnlSnapshots: [target, other],
+        pnlSnapshots: [target, targetAggregatePnl, other],
         auditEvents: [
           { payloadJson: { market: "KRW-BTC", strategy_id: "live_ops_autonomous_24x7_core" } },
           { payloadJson: { market: "KRW-ETH", strategy_id: "probe_strategy" } },
@@ -615,7 +636,7 @@ describe("M23 production day closeout script", () => {
       orders: 1,
       fills: 1,
       positions: 1,
-      pnlSnapshots: 1,
+      pnlSnapshots: 2,
       auditEvents: 2,
       riskEvents: 2,
       executionQuality: 1,
@@ -647,6 +668,14 @@ describe("M23 production day closeout script", () => {
       report: { realizedPnl: { value: "-1" } },
       notification: { summary: "사전 snapshot" },
     });
+  });
+
+  it("day artifact 손실은 누적 DB PnL이 아니라 filledAt window의 SELL cleanup만 사용한다", async () => {
+    const output = await runModuleExpression(`
+      const loss = module.resolveDailyRealizedLoss({ realizedLossKrw: "1000", evidenceCount: 1 });
+      process.stdout.write(JSON.stringify(loss));
+    `);
+    expect(output).toEqual({ value: "1000", evidenceCount: 1 });
   });
 
   it("provider 성공 뒤 delivery audit만 누락되면 재전송 대신 수동 확인으로 고정한다", async () => {
