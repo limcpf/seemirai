@@ -728,8 +728,9 @@ M23 live-armed 운영 기준:
   `scripts/run-m23-production-day-closeout.mjs`를 호출한다. actual mode는 scheduler/closeout guard를 모두 요구하고, daemon
   source/config/env/migration provenance와 현재 config/env 원문 fingerprint, PID/heartbeat, DB decision/risk approval, BUY entry
   reservation/cleanup, private exposure를 검증한 뒤 기존 `report.daily:<reportDate>` idempotency job으로 M23 live ops 상태가 포함된
-  daily report를 닫는다. `--first-day`는 같은 provenance의 연속 7일 손실 집계 경계를 고정한다. scheduler는 거래 daemon lifecycle을
-  변경하지 않는다.
+  daily report를 닫는다. scheduler/closeout의 현재 Git SHA와 clean tracked tree, clean build가 기록한 source/dist fingerprint도
+  별도 closeout provenance로 검증한다. `--first-day`는 같은 daemon 및 closeout provenance의 연속 7일 손실 집계 경계를 고정한다.
+  scheduler는 거래 daemon lifecycle을 변경하지 않는다.
 - M23 이후 universe, strategy, budget 확대는 M24 범위다. M23 config나 runbook은 BTC 외 market 기본 활성화, 자동 budget 확대,
   market/best order 기본 허용을 열지 않는다.
 

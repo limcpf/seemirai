@@ -6,6 +6,7 @@ import process from "node:process";
 import { fileURLToPath } from "node:url";
 import Decimal from "decimal.js";
 import pg from "pg";
+import { verifyCurrentBuildProvenance } from "./build-provenance.mjs";
 
 const { Pool: PgPool } = pg;
 const runGuardEnv = "SEEMIRAI_RUN_M23_PRODUCTION_DAY_CLOSEOUT";
@@ -122,6 +123,7 @@ export function parseProductionDayCloseoutArgs(argv) {
     firstDay: undefined,
     artifactDir: undefined,
     expectedSourceCommitSha: undefined,
+    closeoutSourceCommitSha: undefined,
     fixtureSmoke: false,
     json: false,
     help: false,
@@ -168,6 +170,10 @@ export function parseProductionDayCloseoutArgs(argv) {
         break;
       case "--expected-source-commit-sha":
         options.expectedSourceCommitSha = readArgValue(argv, index, arg).toLowerCase();
+        index += 1;
+        break;
+      case "--closeout-source-commit-sha":
+        options.closeoutSourceCommitSha = readArgValue(argv, index, arg).toLowerCase();
         index += 1;
         break;
       case "--fixture-smoke":
@@ -251,12 +257,21 @@ export function createFixtureProductionDaySummary({ day, generatedAt }) {
     expectedMigrationVersion: 14,
     appliedMigrationVersion: 14,
   };
+  const closeoutProvenance = {
+    schemaVersion: 1,
+    kind: "seemirai_typescript_build",
+    sourceCommitSha: "d".repeat(40),
+    sourceTreeFingerprint: `sha256:${"e".repeat(64)}`,
+    distTreeFingerprint: `sha256:${"f".repeat(64)}`,
+    generatedAt: "2026-07-14T00:00:00.000Z",
+  };
   return createProductionDaySummary({
     day,
     firstDay: day,
     window,
     generatedAt: generated,
     runtimeProvenance: provenance,
+    closeoutProvenance,
     configSafety: expectedConfigSafetyEvidence(),
     daemon: {
       processId: 12345,
@@ -333,6 +348,11 @@ async function runActualProductionDayCloseout(options) {
       throw new Error(`${options.day} KST day가 아직 종료되지 않았습니다.`);
     }
 
+    const closeoutProvenance = await verifyCurrentBuildProvenance({
+      repositoryRoot,
+      expectedSourceCommitSha: options.closeoutSourceCommitSha,
+    });
+
     const [configRawText, envRaw, status, startup, pidText, schedulerEventLogRaw] = await Promise.all([
       readFile(options.configPath, "utf8"),
       readFile(options.envFilePath, "utf8"),
@@ -373,6 +393,7 @@ async function runActualProductionDayCloseout(options) {
       firstDay: options.firstDay,
       window,
       runtimeProvenance: provenance,
+      closeoutProvenance,
       daemonBoundaries: daemonDay.boundaries,
     });
     if (existing !== undefined) {
@@ -512,6 +533,7 @@ async function runActualProductionDayCloseout(options) {
       firstDay: options.firstDay,
       day: options.day,
       runtimeProvenance: provenance,
+      closeoutProvenance,
     });
     const weeklyRealizedLossKrw = previousLosses
       .reduce((total, value) => total.plus(value), new Decimal(dailyLoss.value))
@@ -527,6 +549,7 @@ async function runActualProductionDayCloseout(options) {
       window,
       generatedAt,
       runtimeProvenance: provenance,
+      closeoutProvenance,
       configSafety,
       daemon: {
         processId: supervisorPid,
@@ -789,6 +812,7 @@ export function createProductionDaySummary(input) {
     decisionEvidenceDay: input.day,
     decisionEvidenceGeneratedAt: input.generatedAt.toISOString(),
     runtimeProvenance: input.runtimeProvenance,
+    closeoutProvenance: input.closeoutProvenance,
     evidenceIds: {
       decisionEvidenceId: `live-decisions:${input.day}:sha256:${decisionFingerprint}`,
       liveSubmissionEvidenceId: `live-submissions:${input.day}:sha256:${submissionFingerprint}`,
@@ -1375,7 +1399,7 @@ export async function runDailyReportDeliveryRecovery({
 }) {
   const idempotencyKey = `${deliveryRecoveryJobType}:${day}`;
   const workerId = `issue_267_delivery_recovery_${day}`;
-  const enqueueResult = await infrastructureModule.enqueueJob(database, {
+  let enqueueResult = await infrastructureModule.enqueueJob(database, {
     jobType: deliveryRecoveryJobType,
     idempotencyKey,
     payloadJson: { report_date: day },
@@ -1384,6 +1408,20 @@ export async function runDailyReportDeliveryRecovery({
   });
   if (!enqueueResult.created && enqueueResult.job.status === "COMPLETED") {
     throw new Error("daily report delivery recovery job은 완료됐지만 delivery audit이 없어 수동 확인이 필요합니다.");
+  }
+  if (!enqueueResult.created && enqueueResult.job.status === "FAILED") {
+    // 실패 한도를 소진한 recovery도 다음 closeout에서 같은 key로 재개해 일시 provider 장애가 영구 누락으로 고정되지 않게 한다.
+    const requeuedJob = await infrastructureModule.requeueFailedJobByIdempotencyKey(database, {
+      idempotencyKey,
+      jobType: deliveryRecoveryJobType,
+      runAfter: generatedAt,
+      requeuedAt: generatedAt,
+      maxAttempts: 36,
+    });
+    if (requeuedJob === undefined) {
+      throw new Error("FAILED daily report delivery recovery job을 재큐잉할 수 없습니다.");
+    }
+    enqueueResult = { ...enqueueResult, job: requeuedJob };
   }
   const claimed = await infrastructureModule.claimJobByIdempotencyKey(database, {
     workerId,
@@ -1637,7 +1675,13 @@ export function assertCloseoutExposureCeiling({
   };
 }
 
-export async function readPreviousProductionDayLosses({ artifactDir, firstDay, day, runtimeProvenance }) {
+export async function readPreviousProductionDayLosses({
+  artifactDir,
+  firstDay,
+  day,
+  runtimeProvenance,
+  closeoutProvenance,
+}) {
   await mkdir(artifactDir, { recursive: true, mode: 0o700 });
   const expectedDays = createRolloutPreviousDays(firstDay, day);
   const losses = [];
@@ -1662,7 +1706,8 @@ export async function readPreviousProductionDayLosses({ artifactDir, firstDay, d
       && summary.finishedAt === expectedWindow.finishedAt
       && boundaries?.startedAt === expectedWindow.startedAt
       && boundaries?.finishedAt === expectedWindow.finishedAt
-      && JSON.stringify(summary.runtimeProvenance) === JSON.stringify(runtimeProvenance);
+      && JSON.stringify(summary.runtimeProvenance) === JSON.stringify(runtimeProvenance)
+      && isSameCloseoutBuildProvenance(summary.closeoutProvenance, closeoutProvenance);
     if (!reusable) {
       // 주간 손실에는 같은 rollout의 연속된 선행 일자만 포함해 과거 실행 artifact가 섞이지 않게 한다.
       throw new Error(`이전 day artifact가 현재 rollout window/provenance와 다릅니다: ${file}`);
@@ -1696,6 +1741,7 @@ async function readExistingPassedArtifact({
   firstDay,
   window,
   runtimeProvenance,
+  closeoutProvenance,
   daemonBoundaries,
 }) {
   const filePath = path.join(artifactDir, `production-day-${day}.json`);
@@ -1711,6 +1757,7 @@ async function readExistingPassedArtifact({
     firstDay,
     window,
     runtimeProvenance,
+    closeoutProvenance,
     daemonBoundaries,
   });
   if (!reusable) {
@@ -1721,7 +1768,15 @@ async function readExistingPassedArtifact({
 }
 
 /** 현재 rollout과 KST counter boundary가 같은 passed day artifact인지 판정한다. 외부 side effect는 없다. */
-export function isReusableProductionDayArtifact({ summary, day, firstDay, window, runtimeProvenance, daemonBoundaries }) {
+export function isReusableProductionDayArtifact({
+  summary,
+  day,
+  firstDay,
+  window,
+  runtimeProvenance,
+  closeoutProvenance,
+  daemonBoundaries,
+}) {
   return summary.status === "passed"
     && summary.reportDate === day
     && summary.rolloutWindowFirstDay === firstDay
@@ -1732,7 +1787,19 @@ export function isReusableProductionDayArtifact({ summary, day, firstDay, window
     && summary.startedAt === window.startedAt
     && summary.finishedAt === window.finishedAt
     && JSON.stringify(summary.runtimeProvenance) === JSON.stringify(runtimeProvenance)
+    && isSameCloseoutBuildProvenance(summary.closeoutProvenance, closeoutProvenance)
     && JSON.stringify(summary.checks?.heartbeat?.evidence?.daemonCounterBoundaries) === JSON.stringify(daemonBoundaries);
+}
+
+/** 동일 source와 동일 dist를 다시 build한 경우 생성 시각만으로 rollout 연속성을 끊지 않는다. */
+function isSameCloseoutBuildProvenance(actual, expected) {
+  return actual?.schemaVersion === 1
+    && expected?.schemaVersion === 1
+    && actual.kind === "seemirai_typescript_build"
+    && expected.kind === "seemirai_typescript_build"
+    && actual.sourceCommitSha === expected.sourceCommitSha
+    && actual.sourceTreeFingerprint === expected.sourceTreeFingerprint
+    && actual.distTreeFingerprint === expected.distTreeFingerprint;
 }
 
 async function writeFailureArtifact({ artifactDir, day, error }) {
@@ -1830,6 +1897,7 @@ function assertActualOptions(options) {
     ["--first-day", options.firstDay],
     ["--artifact-dir", options.artifactDir],
     ["--expected-source-commit-sha", options.expectedSourceCommitSha],
+    ["--closeout-source-commit-sha", options.closeoutSourceCommitSha],
   ];
   const missing = required.filter(([, value]) => value === undefined).map(([name]) => name);
   if (missing.length > 0) {
@@ -1969,6 +2037,7 @@ function formatProductionDayCloseoutHelp() {
   --first-day <YYYY-MM-DD>           현재 7일 rollout의 첫 completed KST 기준일
   --artifact-dir <path>              저장소 밖 production day artifact 디렉터리
   --expected-source-commit-sha <sha>  rollout daemon source SHA
+  --closeout-source-commit-sha <sha>  현재 closeout checkout/build source SHA
   --fixture-smoke                     외부 provider 없이 contract fixture 실행
   --json                              pretty JSON 출력
 `;

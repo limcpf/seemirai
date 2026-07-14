@@ -176,6 +176,7 @@ Sub PR 04가 mother branch에 merge된 뒤 첫 day boundary 전에 daemon failur
 cd /home/lim/code/seemirai-worktrees/issue-267-mother
 ISSUE_267_HOME="$HOME/vaults/99_운영/seemirai-live-ops-production/issue-267"
 SOURCE_SHA="3d48665967b79fbbbf59dd316ec30f61662df12e"
+CLOSEOUT_SHA="$(git rev-parse HEAD)"
 STARTUP_FILE="$(node -e 'const fs=require("node:fs"); const p=process.argv[1]; process.stdout.write(JSON.parse(fs.readFileSync(p,"utf8")).startupArtifactFilePath)' "$ISSUE_267_HOME/artifacts/live-ops-daemon-status.json")"
 SCHEDULER_RUN_ID="$(node -e 'process.stdout.write(require("node:crypto").randomUUID())')"
 umask 077
@@ -194,6 +195,7 @@ setsid -f env \
   --daemon-pid-file "$ISSUE_267_HOME/artifacts/live-ops-daemon.pid" \
   --artifact-dir "$ISSUE_267_HOME/artifacts" \
   --expected-source-commit-sha "$SOURCE_SHA" \
+  --closeout-source-commit-sha "$CLOSEOUT_SHA" \
   --scheduler-status-file "$ISSUE_267_HOME/artifacts/production-day-scheduler-status.json" \
   --scheduler-event-log-file "$ISSUE_267_HOME/logs/production-day-scheduler-events.jsonl" \
   --scheduler-pid-file "$ISSUE_267_HOME/artifacts/production-day-scheduler.pid" \
@@ -201,12 +203,15 @@ setsid -f env \
   >> "$ISSUE_267_HOME/logs/production-day-scheduler-$SCHEDULER_RUN_ID.log" 2>&1
 ```
 
-scheduler는 시작 시 daemon status/startup provenance와 supervisor PID를 먼저 확인한다. 각 KST day 시작과 종료 60초 안에
+scheduler는 시작 시 daemon status/startup provenance와 supervisor PID를 먼저 확인한다. 현재 tracked checkout이
+`--closeout-source-commit-sha`와 일치하고 clean인지, `corepack pnpm build`가 기록한 source/dist fingerprint가 현재 파일과
+일치하는지도 provider/DB 경계를 열기 전에 검증한다. 각 KST day 시작과 종료 60초 안에
 append-only daemon counter boundary를 남기고, 종료 60초 뒤 closeout을 시도한다. closeout 실패는 5분 간격으로 day별 최대 36회
 재시도한다. 기존 report 생성은 `report.daily:<reportDate>`, 전달 복구는 `report.daily.delivery_recovery:<reportDate>` key를
 사용하므로 process 재시작이나 수동 재실행이 Telegram 중복 전송으로 이어지지 않는다. 재시도 한도를 소진하면 다음 날짜로 넘어가지
 않고 `failed`로 닫는다. 각 실패 시도는 provider 이전 precondition 실패도 별도 immutable failure artifact로 남긴다. 주간 손실은
-`--first-day`부터 현재 기준일 직전까지 같은 source/config/env/migration provenance로 통과한 연속 day artifact만 합산한다. 같은
+`--first-day`부터 현재 기준일 직전까지 같은 daemon source/config/env/migration 및 closeout build provenance로 통과한 연속 day
+artifact만 합산한다. 같은
 날짜의 일반 daily report가 먼저 완료됐으면 closeout actor/correlation이 있는 별도 recovery job으로 M23 상태 report를 한 번 전달한다.
 provider 성공 뒤 delivery audit 저장만 실패한 상태는 recovery로 재전송하지 않고 수동 확인 대상으로 남긴다. artifact 손실은
 누적 DB PnL이 아니라 `filledAt` KST window의 SELL cleanup realized loss를 사용한다. scoped report에는 같은 strategy의

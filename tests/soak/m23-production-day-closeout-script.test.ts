@@ -167,6 +167,7 @@ describe("M23 production day closeout script", () => {
           "--pid-file", "/missing/pid", "--scheduler-event-log-file", "/missing/events",
           "--artifact-dir", ${JSON.stringify(artifactDir)},
           "--expected-source-commit-sha", "${"a".repeat(40)}",
+          "--closeout-source-commit-sha", "${"b".repeat(40)}",
         ], {
           clock: () => new Date("2026-07-15T14:59:59.000Z"),
           stdout: { write() {} },
@@ -596,6 +597,7 @@ describe("M23 production day closeout script", () => {
       const losses = await module.readPreviousProductionDayLosses({
         artifactDir: ${JSON.stringify(artifactDir)}, firstDay, day: "2026-07-16",
         runtimeProvenance: ${JSON.stringify(runtimeProvenance)},
+        closeoutProvenance: previous.closeoutProvenance,
       });
       previous.runtimeProvenance = { ...previous.runtimeProvenance, sourceCommitSha: "d".repeat(40) };
       await fs.writeFile(${JSON.stringify(path.join(artifactDir, "production-day-2026-07-15.json"))}, JSON.stringify(previous));
@@ -604,6 +606,7 @@ describe("M23 production day closeout script", () => {
         await module.readPreviousProductionDayLosses({
           artifactDir: ${JSON.stringify(artifactDir)}, firstDay, day: "2026-07-16",
           runtimeProvenance: ${JSON.stringify(runtimeProvenance)},
+          closeoutProvenance: previous.closeoutProvenance,
         });
       } catch (error) { mismatch = error.message; }
       process.stdout.write(JSON.stringify({ losses, mismatch, days: module.createRolloutPreviousDays(firstDay, "2026-07-21") }));
@@ -822,20 +825,34 @@ describe("M23 production day closeout script", () => {
       const day = "2026-07-15";
       const window = module.createKstDayWindow(day);
       const runtimeProvenance = ${JSON.stringify(runtimeProvenance)};
+      const closeoutProvenance = {
+        schemaVersion: 1, kind: "seemirai_typescript_build",
+        sourceCommitSha: "b".repeat(40), sourceTreeFingerprint: "sha256:" + "c".repeat(64),
+        distTreeFingerprint: "sha256:" + "d".repeat(64),
+        generatedAt: "2026-07-14T00:00:00.000Z",
+      };
       const daemonBoundaries = { startedAt: window.startedAt, finishedAt: window.finishedAt };
       const summary = {
         status: "passed", reportDate: day, input: "live_ops_daemon_day",
         rolloutWindowFirstDay: day,
         mode: "LIVE_AUTONOMOUS_SMALL_BUDGET", dryRun: false, liveOrderCapable: true,
-        startedAt: window.startedAt, finishedAt: window.finishedAt, runtimeProvenance,
+        startedAt: window.startedAt, finishedAt: window.finishedAt, runtimeProvenance, closeoutProvenance,
         checks: { heartbeat: { evidence: { daemonCounterBoundaries: daemonBoundaries } } },
       };
-      const input = { summary, day, firstDay: day, window, runtimeProvenance, daemonBoundaries };
+      const input = { summary, day, firstDay: day, window, runtimeProvenance, closeoutProvenance, daemonBoundaries };
       process.stdout.write(JSON.stringify({
         valid: module.isReusableProductionDayArtifact(input),
         wrongSource: module.isReusableProductionDayArtifact({
           ...input,
           runtimeProvenance: { ...runtimeProvenance, sourceCommitSha: "d".repeat(40) },
+        }),
+        wrongCloseoutSource: module.isReusableProductionDayArtifact({
+          ...input,
+          closeoutProvenance: { ...closeoutProvenance, sourceCommitSha: "e".repeat(40) },
+        }),
+        sameOutputRebuild: module.isReusableProductionDayArtifact({
+          ...input,
+          closeoutProvenance: { ...closeoutProvenance, generatedAt: "2026-07-14T01:00:00.000Z" },
         }),
         wrongFinish: module.isReusableProductionDayArtifact({
           ...input,
@@ -843,7 +860,13 @@ describe("M23 production day closeout script", () => {
         }),
       }));
     `);
-    expect(output).toEqual({ valid: true, wrongSource: false, wrongFinish: false });
+    expect(output).toEqual({
+      valid: true,
+      wrongSource: false,
+      wrongCloseoutSource: false,
+      sameOutputRebuild: true,
+      wrongFinish: false,
+    });
   });
 
   it("daily report delivery recovery는 별도 job에서 성공을 audit한 뒤 완료한다", async () => {
@@ -872,6 +895,41 @@ describe("M23 production day closeout script", () => {
     expect(output.calls[0][1]).toMatchObject({
       jobType: "report.daily.delivery_recovery",
       idempotencyKey: "report.daily.delivery_recovery:2026-07-15",
+    });
+  });
+
+  it("FAILED daily report delivery recovery job은 같은 key로 재큐잉한 뒤 claim한다", async () => {
+    const output = await runModuleExpression(`
+      const calls = [];
+      const failedJob = { id: "recovery-job", status: "FAILED" };
+      const pendingJob = { ...failedJob, status: "PENDING", attemptCount: 0 };
+      const infrastructureModule = {
+        async enqueueJob(_database, input) { calls.push(["enqueue", input]); return { created: false, job: failedJob }; },
+        async requeueFailedJobByIdempotencyKey(_database, input) {
+          calls.push(["requeue", input]); return pendingJob;
+        },
+        async claimJobByIdempotencyKey(_database, input) { calls.push(["claim", input]); return pendingJob; },
+        async completeJob(_database, input) { calls.push(["complete", input]); return { ...pendingJob, status: "COMPLETED" }; },
+        async failJob(_database, input) { calls.push(["fail", input]); return pendingJob; },
+        PostgresAuditLogRepository: class {
+          async appendEvent(event) { calls.push(["audit", event]); return { auditEventId: "audit-1" }; }
+        },
+      };
+      const result = await module.runDailyReportDeliveryRecovery({
+        database: {}, infrastructureModule,
+        notifier: { async sendDailyReport() { calls.push(["send"]); return { delivered: true }; } },
+        notification: {}, day: "2026-07-15", generatedAt: new Date("2026-07-15T15:01:00.000Z"),
+      });
+      process.stdout.write(JSON.stringify({ result, calls }));
+    `);
+    expect(output.result.status).toBe("DELIVERED");
+    expect(output.calls.map((call: unknown[]) => call[0])).toEqual([
+      "enqueue", "requeue", "claim", "audit", "send", "audit", "complete",
+    ]);
+    expect(output.calls[1][1]).toMatchObject({
+      idempotencyKey: "report.daily.delivery_recovery:2026-07-15",
+      jobType: "report.daily.delivery_recovery",
+      maxAttempts: 36,
     });
   });
 

@@ -11,7 +11,7 @@ describe("production live ops script skeleton", () => {
     const buildConfig = JSON.parse(await readFile(path.join(process.cwd(), "tsconfig.build.json"), "utf8"));
 
     expect(packageJson.scripts).toMatchObject({
-      build: "tsc -p tsconfig.build.json",
+      build: "node scripts/build-provenance.mjs --clean && tsc -p tsconfig.build.json && node scripts/build-provenance.mjs --write",
       "prelive:ops": "pnpm build",
       "live:ops": "node dist/runtime/live-ops-cli.js",
       "prelive:ops:daemon": "pnpm build",

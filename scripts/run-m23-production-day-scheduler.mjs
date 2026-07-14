@@ -8,6 +8,7 @@ import {
   resolveProjectedRealPath,
   runProductionDayCloseoutCli,
 } from "./run-m23-production-day-closeout.mjs";
+import { verifyCurrentBuildProvenance } from "./build-provenance.mjs";
 
 const schedulerGuardEnv = "SEEMIRAI_RUN_M23_PRODUCTION_DAY_SCHEDULER";
 const closeoutGuardEnv = "SEEMIRAI_RUN_M23_PRODUCTION_DAY_CLOSEOUT";
@@ -74,7 +75,7 @@ export async function runProductionDaySchedulerCli(argv, io = {}) {
     }
     assertActualOptions(options);
     await assertActualSchedulerPaths(options);
-    await assertActualSchedulerPreflight(options);
+    options.closeoutProvenance = await assertActualSchedulerPreflight(options);
     await prepareActualSchedulerOutputDirectories(options);
     await assertActualSchedulerPaths(options);
   } else {
@@ -305,6 +306,7 @@ export function parseProductionDaySchedulerArgs(argv) {
     daemonPidFilePath: undefined,
     artifactDir: undefined,
     expectedSourceCommitSha: undefined,
+    closeoutSourceCommitSha: undefined,
     schedulerStatusFilePath: undefined,
     schedulerEventLogFilePath: undefined,
     schedulerPidFilePath: undefined,
@@ -364,6 +366,10 @@ export function parseProductionDaySchedulerArgs(argv) {
         options.expectedSourceCommitSha = readArgValue(argv, index, arg).toLowerCase();
         index += 1;
         break;
+      case "--closeout-source-commit-sha":
+        options.closeoutSourceCommitSha = readArgValue(argv, index, arg).toLowerCase();
+        index += 1;
+        break;
       case "--scheduler-status-file":
         options.schedulerStatusFilePath = readArgValue(argv, index, arg);
         index += 1;
@@ -418,6 +424,7 @@ function createCloseoutArgs(options, day) {
     "--first-day", options.firstDay,
     "--artifact-dir", options.artifactDir,
     "--expected-source-commit-sha", options.expectedSourceCommitSha,
+    "--closeout-source-commit-sha", options.closeoutSourceCommitSha,
     "--json",
   ];
 }
@@ -433,6 +440,7 @@ function createInitialState(options, now) {
     updatedAt: now.toISOString(),
     firstDay: options.firstDay,
     dayCount: options.dayCount,
+    closeoutProvenance: options.closeoutProvenance ?? null,
     currentDay: null,
     currentAttempt: 0,
     waitingUntil: null,
@@ -499,10 +507,14 @@ async function createSchedulerPidFile(filePath) {
   await chmod(filePath, 0o600);
 }
 
-async function assertActualSchedulerPreflight(options) {
+export async function assertActualSchedulerPreflight(options) {
   if (!sourceShaPattern.test(options.expectedSourceCommitSha)) {
     throw new Error("expected source commit SHA가 40자리 lowercase hex가 아닙니다.");
   }
+  const closeoutProvenance = await verifyCurrentBuildProvenance({
+    repositoryRoot,
+    expectedSourceCommitSha: options.closeoutSourceCommitSha,
+  });
   await Promise.all([
     access(options.configPath),
     access(options.envFilePath),
@@ -532,6 +544,7 @@ async function assertActualSchedulerPreflight(options) {
   }
   const pid = Number(pidRaw.trim());
   assertProcessRunning(pid);
+  return closeoutProvenance;
 }
 
 /**
@@ -736,6 +749,7 @@ function assertActualOptions(options) {
     ["--daemon-pid-file", options.daemonPidFilePath],
     ["--artifact-dir", options.artifactDir],
     ["--expected-source-commit-sha", options.expectedSourceCommitSha],
+    ["--closeout-source-commit-sha", options.closeoutSourceCommitSha],
     ["--scheduler-status-file", options.schedulerStatusFilePath],
     ["--scheduler-event-log-file", options.schedulerEventLogFilePath],
     ["--scheduler-pid-file", options.schedulerPidFilePath],
@@ -888,6 +902,7 @@ function formatProductionDaySchedulerHelp() {
   --daemon-pid-file <path>             daemon supervisor PID file
   --artifact-dir <path>                production day artifact 디렉터리
   --expected-source-commit-sha <sha>    rollout daemon source SHA
+  --closeout-source-commit-sha <sha>    현재 scheduler/closeout build source SHA
   --scheduler-status-file <path>        scheduler latest status
   --scheduler-event-log-file <path>     scheduler append-only event log
   --scheduler-pid-file <path>           scheduler create-only PID file
