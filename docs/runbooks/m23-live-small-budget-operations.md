@@ -203,7 +203,7 @@ setsid -f env \
   >> "$ISSUE_267_HOME/logs/production-day-scheduler-$SCHEDULER_RUN_ID.log" 2>&1
 ```
 
-scheduler는 시작 시 daemon status/startup provenance와 supervisor PID를 먼저 확인한다. 현재 tracked checkout이
+scheduler는 시작 시 daemon status/startup provenance와 supervisor PID를 먼저 확인한다. 현재 tracked/untracked checkout이
 `--closeout-source-commit-sha`와 일치하고 clean인지, `corepack pnpm build`가 기록한 source/dist fingerprint가 현재 파일과
 일치하는지도 provider/DB 경계를 열기 전에 검증한다. 각 KST day 시작과 종료 60초 안에
 append-only daemon counter boundary를 남기고, 종료 60초 뒤 closeout을 시도한다. closeout 실패는 5분 간격으로 day별 최대 36회

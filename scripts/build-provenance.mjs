@@ -82,7 +82,7 @@ export async function writeBuildProvenance({
 /**
  * 운영 closeout checkout과 dist build marker가 명시 SHA 및 현재 파일 내용과 같은지 검증한다.
  *
- * Git과 파일을 read-only로 조회한다. tracked source가 dirty이거나 marker 이후 source/dist가 바뀌면 provider/DB 경계를 열기 전에
+ * Git과 파일을 read-only로 조회한다. tracked/untracked source가 dirty이거나 marker 이후 source/dist가 바뀌면 provider/DB 경계를 열기 전에
  * 실패하며, 검증된 secret-free provenance만 반환한다.
  */
 export async function verifyCurrentBuildProvenance({
@@ -138,8 +138,8 @@ export function assertBuildProvenanceRecord({
     throw new Error("현재 closeout checkout 또는 dist build source SHA가 기대값과 다릅니다.");
   }
   if (repositoryStatus.trim().length > 0) {
-    // tracked source 변경을 허용하면 marker와 현재 실행 script의 commit 귀속을 증명할 수 없으므로 actual closeout을 차단한다.
-    throw new Error("현재 closeout checkout에 commit되지 않은 tracked 변경이 있습니다.");
+    // untracked build 입력도 commit으로 재현할 수 없으므로 어떤 checkout 변경도 actual closeout에서 허용하지 않는다.
+    throw new Error("현재 closeout checkout에 commit되지 않은 tracked/untracked 변경이 있습니다.");
   }
   if (record.sourceTreeFingerprint !== sourceTreeFingerprint) {
     throw new Error("현재 closeout source가 dist build 시점과 다릅니다.");
@@ -203,7 +203,7 @@ async function readGitHead(root) {
 }
 
 async function readGitStatus(root) {
-  const result = await execFileAsync("git", ["status", "--porcelain", "--untracked-files=no"], {
+  const result = await execFileAsync("git", ["status", "--porcelain", "--untracked-files=all"], {
     cwd: root,
     encoding: "utf8",
   });

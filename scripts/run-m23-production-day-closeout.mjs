@@ -1198,9 +1198,16 @@ function createActionableSubmissionByAttemptId(actionableSubmissions) {
     const sourceTickId = typeof submission?.sourceTickId === "string" ? submission.sourceTickId : "";
     const attemptId = sourceTickId.match(/:(ops-[a-f0-9]{26})$/u)?.[1];
     const observedAt = toIsoOrNull(submission?.observedAt);
-    if (attemptId === undefined || observedAt === null || records.has(attemptId)) {
-      // 동일 attempt를 유일한 durable decision에 연결하지 못하면 제출 경계 귀속을 신뢰할 수 없다.
-      throw new Error("actionable decision의 attempt ID 또는 제출 시각 evidence가 올바르지 않습니다.");
+    if (observedAt === null) {
+      throw new Error("actionable decision의 제출 시각 evidence가 올바르지 않습니다.");
+    }
+    if (attemptId === undefined) {
+      // 새 decision key는 runtime attempt와 다를 수 있으므로 명시 submittedAt이 있는 cleanup까지 eager 차단하지 않는다.
+      continue;
+    }
+    if (records.has(attemptId)) {
+      // legacy fallback은 attempt당 유일한 durable decision일 때만 제출 시각 근거로 사용한다.
+      throw new Error("actionable decision의 attempt ID evidence가 중복됐습니다.");
     }
     records.set(attemptId, { sourceTickId, observedAt });
   }

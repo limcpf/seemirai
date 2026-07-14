@@ -557,6 +557,36 @@ describe("M23 production day closeout script", () => {
     expect(output.missingReservation).toContain("BUY 제출 cleanup과 일치하는 대상 strategy reservation이 없습니다");
   });
 
+  it("명시 submittedAt이 있는 cleanup은 decision source key가 runtime attempt 형식이 아니어도 집계한다", async () => {
+    const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-m23-decision-source-key-"));
+    const attemptId = `ops-${"9".repeat(26)}`;
+    await writeFile(path.join(artifactDir, `cleanup-${attemptId}.json`), `${JSON.stringify({
+      kind: "live_ops_autonomous_exit_closeout",
+      attemptId,
+      idempotencyKey: attemptId,
+      strategyId: "live_ops_autonomous_24x7_core",
+      market: "KRW-BTC",
+      side: "SELL",
+      status: "CANCELED",
+      submittedAt: "2026-07-14T16:00:00.000Z",
+      terminalCheckedAt: "2026-07-14T16:00:01.000Z",
+    })}\n`, "utf8");
+
+    const output = await runModuleExpression(`
+      const evidence = await module.readLiveArtifactEvidence(
+        ${JSON.stringify(artifactDir)},
+        module.createKstDayWindow("2026-07-15"),
+        {},
+        [{
+          sourceTickId: "2026-07-14T16:00:00.000Z:live_ops_autonomous_24x7_core:2026-07-15:SELL",
+          observedAt: "2026-07-14T16:00:00.000Z",
+        }],
+      );
+      process.stdout.write(JSON.stringify(evidence));
+    `);
+    expect(output.cleanupSubmissionCount).toBe(1);
+  });
+
   it("같은 마켓의 cleanup probe artifact를 대상 strategy 제출에서 제외한다", async () => {
     const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-m23-probe-cleanup-"));
     const attemptSuffix = "b".repeat(26);
