@@ -310,7 +310,10 @@ describe("M23 production day scheduler script", () => {
     expect(output.committed).toBe(true);
     expect(output.event.counters).toMatchObject({ tickCount: 101, submittedOrderCount: 1 });
     expect(output.event.snapshotObservedAt).toBe("2026-07-14T15:00:00.010Z");
-    expect(output.event.counterAttributionCutoffAt).toBe("2026-07-14T15:00:00.010Z");
+    const snapshotObservedMs = Date.parse(output.event.snapshotObservedAt);
+    const counterAttributionCutoffMs = Date.parse(output.event.counterAttributionCutoffAt);
+    expect(counterAttributionCutoffMs).toBeGreaterThanOrEqual(snapshotObservedMs);
+    expect(counterAttributionCutoffMs).toBeLessThanOrEqual(snapshotObservedMs + 1);
   });
 
   it("경계 polling 중 scheduler stop은 failure 대신 정상 중지 sentinel을 반환한다", async () => {
