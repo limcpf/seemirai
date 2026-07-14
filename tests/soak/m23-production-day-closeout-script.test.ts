@@ -640,22 +640,79 @@ describe("M23 production day closeout script", () => {
         generated: [{}], delivered: [], failed: [{}],
         reportRun: { status: "SKIPPED_EXISTING_JOB" },
       });
+      const recoveryGeneratedOnly = module.resolveDailyReportEvidenceStatus({
+        generated: [{ correlation_id: "issue-267-delivery-recovery-2026-07-15" }],
+        delivered: [], failed: [], reportRun: { status: "SKIPPED_EXISTING_JOB" },
+      });
+      const recoveryAfterCloseoutGenerated = module.resolveDailyReportEvidenceStatus({
+        generated: [
+          { correlation_id: "issue-267-production-day-2026-07-15-run-1" },
+          { correlation_id: "issue-267-delivery-recovery-2026-07-15" },
+        ],
+        delivered: [], failed: [], reportRun: { status: "SKIPPED_EXISTING_JOB" },
+      });
       const generic = module.resolveDailyReportEvidenceStatus({
         generated: [], delivered: [], failed: [],
         reportRun: { status: "SKIPPED_EXISTING_JOB" },
       });
       process.stdout.write(JSON.stringify({
-        current, retried, failed, generic,
-        recover: [current, retried, failed, generic].map(module.shouldRunDailyReportDeliveryRecovery),
+        current, retried, failed, recoveryGeneratedOnly, recoveryAfterCloseoutGenerated, generic,
+        recover: [current, retried, failed, recoveryGeneratedOnly, recoveryAfterCloseoutGenerated, generic]
+          .map(module.shouldRunDailyReportDeliveryRecovery),
       }));
     `);
     expect(output).toEqual({
       current: "DELIVERY_AUDIT_MISSING_MANUAL_CONFIRMATION",
       retried: "DELIVERY_AUDIT_MISSING_MANUAL_CONFIRMATION",
       failed: "NOTIFICATION_FAILED",
+      recoveryGeneratedOnly: "NOTIFICATION_FAILED",
+      recoveryAfterCloseoutGenerated: "NOTIFICATION_FAILED",
       generic: "COMPLETED_WITHOUT_DELIVERY",
-      recover: [false, false, true, true],
+      recover: [false, false, true, true, true, true],
     });
+  });
+
+  it("경계 직전 시작한 tick의 post-boundary cleanup은 counter cutoff day에만 귀속한다", async () => {
+    const artifactDir = await mkdtemp(path.join(os.tmpdir(), "seemirai-m23-boundary-cleanup-"));
+    const attemptSuffix = "b".repeat(26);
+    const attemptId = `ops-${attemptSuffix}`;
+    const previousWindow = createTestKstDayWindowRange("2026-07-15");
+    const nextWindow = createTestKstDayWindowRange("2026-07-16");
+    const submittedAt = new Date(previousWindow.endMs + 10).toISOString();
+    await writeFile(path.join(artifactDir, `reservation-${attemptId}.json`), `${JSON.stringify({
+      attemptId,
+      strategyId: "live_ops_autonomous_24x7_core",
+      market: "KRW-BTC",
+      reservedAt: submittedAt,
+    })}\n`, "utf8");
+    await writeFile(path.join(artifactDir, `cleanup-${attemptId}.json`), `${JSON.stringify({
+      kind: "live_ops_autonomous_entry_no_fill_closeout",
+      attemptId,
+      strategyId: "live_ops_autonomous_24x7_core",
+      market: "KRW-BTC",
+      side: "BUY",
+      status: "CANCELED",
+      submittedAt,
+      terminalCheckedAt: new Date(previousWindow.endMs + 20).toISOString(),
+    })}\n`, "utf8");
+
+    const output = await runModuleExpression(`
+      const previous = await module.readLiveArtifactEvidence(
+        ${JSON.stringify(artifactDir)}, module.createKstDayWindow("2026-07-15"), {
+          submissionStartedAt: new Date(${previousWindow.startMs}).toISOString(),
+          submissionFinishedAt: new Date(${previousWindow.endMs + 50}).toISOString(),
+        },
+      );
+      const next = await module.readLiveArtifactEvidence(
+        ${JSON.stringify(artifactDir)}, module.createKstDayWindow("2026-07-16"), {
+          submissionStartedAt: new Date(${previousWindow.endMs + 50}).toISOString(),
+          submissionFinishedAt: new Date(${nextWindow.endMs}).toISOString(),
+        },
+      );
+      process.stdout.write(JSON.stringify({ previous, next }));
+    `);
+    expect(output.previous.cleanupSubmissionCount).toBe(1);
+    expect(output.next.cleanupSubmissionCount).toBe(0);
   });
 
   it("기존 passed artifact는 현재 rollout provenance와 daemon boundary가 모두 같을 때만 재사용한다", async () => {
@@ -725,7 +782,9 @@ describe("M23 production day closeout script", () => {
         async claimJobByIdempotencyKey() { return job; },
         async completeJob(_database, input) { calls.push(["complete", input]); },
         async failJob(_database, input) { calls.push(["fail", input]); return { ...job, status: "PENDING" }; },
-        PostgresAuditLogRepository: class { async appendEvent() { return { auditEventId: "generated" }; } },
+        PostgresAuditLogRepository: class {
+          async appendEvent(event) { calls.push(["audit", event]); return { auditEventId: "generated" }; }
+        },
       };
       let message;
       try {
@@ -739,8 +798,9 @@ describe("M23 production day closeout script", () => {
     `);
     expect(output.message).toContain("재시도를 예약");
     expect(output.message).not.toContain("secret provider detail");
-    expect(output.calls).toHaveLength(1);
-    expect(output.calls[0][1]).toMatchObject({ errorMessage: "daily_report_delivery_recovery_provider_failed" });
+    expect(output.calls.map((call: unknown[]) => call[0])).toEqual(["audit", "audit", "fail"]);
+    expect(output.calls[1][1]).toMatchObject({ reasonCode: "daily_report_notification_failed" });
+    expect(output.calls[2][1]).toMatchObject({ errorMessage: "daily_report_delivery_recovery_provider_failed" });
   });
 });
 
@@ -760,6 +820,11 @@ async function runModuleExpression(expression: string): Promise<any> {
 function createTestKstDayWindow(day: string) {
   const endMs = Date.parse(`${day}T00:00:00.000Z`) - (9 * 60 * 60 * 1_000) + 86_400_000;
   return { endMs };
+}
+
+function createTestKstDayWindowRange(day: string) {
+  const endMs = createTestKstDayWindow(day).endMs;
+  return { startMs: endMs - 86_400_000, endMs };
 }
 
 function createRecoverySummary() {

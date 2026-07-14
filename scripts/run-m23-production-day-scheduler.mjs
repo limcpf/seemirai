@@ -115,13 +115,16 @@ export async function runProductionDaySchedulerCli(argv, io = {}) {
         if (stopControl.requested) {
           break;
         }
-        await ensureDaemonCounterBoundary({
+        const startBoundary = await ensureDaemonCounterBoundary({
           options,
           boundaryAt: window.startedAt,
           clock,
           sleeper,
           stopControl,
         });
+        if (startBoundary === undefined || stopControl.requested) {
+          break;
+        }
         Object.assign(state, {
           status: "collecting_day",
           waitingUntil: window.finishedAt,
@@ -132,13 +135,16 @@ export async function runProductionDaySchedulerCli(argv, io = {}) {
         if (stopControl.requested) {
           break;
         }
-        await ensureDaemonCounterBoundary({
+        const finishBoundary = await ensureDaemonCounterBoundary({
           options,
           boundaryAt: window.finishedAt,
           clock,
           sleeper,
           stopControl,
         });
+        if (finishBoundary === undefined || stopControl.requested) {
+          break;
+        }
       }
       const closeoutAt = new Date(window.endMs + options.closeoutDelayMs);
       Object.assign(state, {
@@ -573,7 +579,7 @@ export async function ensureDaemonCounterBoundary({
     ]);
     const latestTickMs = Date.parse(status.latestTickStartedAt);
     if (Number.isFinite(latestTickMs) && latestTickMs <= boundaryMs) {
-      captured = { status, observedAt };
+      captured = { status, observedAt, statusFileModifiedAtMs: statusFileStat.mtimeMs };
     }
     const crossedBoundary = observedAt.getTime() >= boundaryMs;
     const preBoundaryTickCommittedAfterBoundary = crossedBoundary
@@ -591,7 +597,8 @@ export async function ensureDaemonCounterBoundary({
     await sleeper(remainingMs > 0 ? Math.min(remainingMs, boundaryCapturePollMs) : boundaryCapturePollMs, stopControl);
   }
   if (stopControl.requested) {
-    throw new Error("daemon counter boundary 기록 전에 scheduler stop이 요청됐습니다.");
+    // scheduler-only stop은 day failure가 아니므로 상위 루프가 stopped status/event로 정상 종료하도록 sentinel을 반환한다.
+    return undefined;
   }
   const now = clock();
   if (now.getTime() - boundaryMs > boundaryCaptureToleranceMs) {
@@ -599,6 +606,9 @@ export async function ensureDaemonCounterBoundary({
   }
   if (captured === undefined) {
     throw new Error("daemon counter boundary 이전의 마지막 status snapshot을 확보하지 못했습니다.");
+  }
+  if (!Number.isFinite(captured.statusFileModifiedAtMs) || captured.statusFileModifiedAtMs > now.getTime()) {
+    throw new Error("daemon counter boundary status write 시각이 관측 시각보다 미래입니다.");
   }
   const status = captured.status;
   const [startup, pidText] = await Promise.all([
@@ -623,6 +633,10 @@ export async function ensureDaemonCounterBoundary({
     name,
     readNonNegativeSafeInteger(status.counters?.[name], name),
   ]));
+  // cleanup timestamp가 status write와 같은 millisecond여도 같은 counter day에 들어가도록 exclusive cutoff를 다음 1ms로 둔다.
+  const counterAttributionCutoffMs = captured.statusFileModifiedAtMs >= boundaryMs
+    ? Math.min(Math.floor(captured.statusFileModifiedAtMs) + 1, boundaryMs + boundaryCaptureToleranceMs)
+    : boundaryMs;
   const event = {
     type: "daemon_counter_boundary",
     boundaryAt,
@@ -630,6 +644,7 @@ export async function ensureDaemonCounterBoundary({
     snapshotObservedAt: captured.observedAt.toISOString(),
     daemonStartedAt: status.startedAt,
     latestTickStartedAt: status.latestTickStartedAt,
+    counterAttributionCutoffAt: new Date(counterAttributionCutoffMs).toISOString(),
     sourceCommitSha: status.runtimeProvenance.sourceCommitSha,
     processId: pid,
     counters,

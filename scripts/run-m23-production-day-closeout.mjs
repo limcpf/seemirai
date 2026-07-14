@@ -395,7 +395,7 @@ async function runActualProductionDayCloseout(options) {
         referencePrice: status.latestSummary?.marketData?.referencePrice,
         observedAt: generatedAt,
       }),
-      readLiveArtifactEvidence(options.artifactDir, window),
+      readLiveArtifactEvidence(options.artifactDir, window, daemonDay.boundaries),
     ]);
     const liveSubmission = assertLiveSubmissionEvidence({
       counters: daemonDay.counters,
@@ -908,6 +908,12 @@ export function deriveDaemonDayEvidence({ eventLogRaw, window, daemonStartedAt, 
     if (!Number.isFinite(latestTickMs) || latestTickMs > boundaryMs || boundaryMs - latestTickMs > maxHeartbeatLagMs) {
       throw new Error("daemon counter boundary의 heartbeat가 기준 시각 이전 2분 범위를 충족하지 않습니다.");
     }
+    if (boundary.counterAttributionCutoffAt !== undefined) {
+      const cutoffMs = Date.parse(boundary.counterAttributionCutoffAt);
+      if (!Number.isFinite(cutoffMs) || cutoffMs < boundaryMs || cutoffMs - boundaryMs > 60_000) {
+        throw new Error("daemon counter boundary의 cleanup 제출 귀속 cutoff가 기준 시각 뒤 60초 범위를 벗어났습니다.");
+      }
+    }
   }
   const counters = Object.fromEntries(daemonCounterNames.map((name) => {
     const started = readNonNegativeSafeInteger(start.counters?.[name], `start.${name}`);
@@ -926,8 +932,18 @@ export function deriveDaemonDayEvidence({ eventLogRaw, window, daemonStartedAt, 
       finishObservedAt: finish.observedAt,
       startLatestTickStartedAt: start.latestTickStartedAt,
       finishLatestTickStartedAt: finish.latestTickStartedAt,
+      submissionStartedAt: resolveBoundarySubmissionCutoff(start),
+      submissionFinishedAt: resolveBoundarySubmissionCutoff(finish),
     },
   };
+}
+
+function resolveBoundarySubmissionCutoff(boundary) {
+  const boundaryMs = Date.parse(boundary.boundaryAt);
+  const cutoffMs = Date.parse(boundary.counterAttributionCutoffAt);
+  return Number.isFinite(cutoffMs) && cutoffMs >= boundaryMs
+    ? new Date(cutoffMs).toISOString()
+    : boundary.boundaryAt;
 }
 
 function findDaemonBoundary(events, boundaryAt) {
@@ -995,7 +1011,7 @@ export function assertLiveSubmissionEvidence({ counters, databaseEvidence, liveA
   };
 }
 
-export async function readLiveArtifactEvidence(artifactDir, window) {
+export async function readLiveArtifactEvidence(artifactDir, window, daemonBoundaries = {}) {
   const files = await readdir(artifactDir);
   const cleanupFiles = files.filter((file) => /^cleanup-ops-[a-f0-9]{26}\.json$/u.test(file)).toSorted();
   const reservationFiles = files.filter((file) => /^reservation-ops-[a-f0-9]{26}\.json$/u.test(file)).toSorted();
@@ -1030,10 +1046,15 @@ export async function readLiveArtifactEvidence(artifactDir, window) {
   if (attemptIds.some((attemptId) => typeof attemptId !== "string") || new Set(attemptIds).size !== attemptIds.length) {
     throw new Error("대상 strategy cleanup artifact의 attempt ID가 없거나 중복됐습니다.");
   }
+  const submissionStartMs = resolveSubmissionBoundaryMs(daemonBoundaries.submissionStartedAt, window.startMs);
+  const submissionFinishMs = resolveSubmissionBoundaryMs(daemonBoundaries.submissionFinishedAt, window.endMs);
+  if (submissionStartMs >= submissionFinishMs) {
+    throw new Error("daemon counter와 cleanup 제출 귀속 window가 올바르지 않습니다.");
+  }
   const submissionRecords = scopedCleanups.filter(({ value }) => {
     const reservation = reservationByAttemptId.get(value.attemptId);
     const submittedAt = Date.parse(value.submittedAt ?? reservation?.value.reservedAt ?? value.filledAt ?? value.terminalCheckedAt);
-    return Number.isFinite(submittedAt) && submittedAt >= window.startMs && submittedAt < window.endMs;
+    return Number.isFinite(submittedAt) && submittedAt >= submissionStartMs && submittedAt < submissionFinishMs;
   });
   for (const { file, value } of submissionRecords) {
     const reservation = reservationByAttemptId.get(value.attemptId);
@@ -1088,6 +1109,11 @@ export async function readLiveArtifactEvidence(artifactDir, window) {
     evidenceCount: Math.max(exits.length, 1),
     evidenceId: `live-cleanups:${window.day}:sha256:${evidenceFingerprint}`,
   };
+}
+
+function resolveSubmissionBoundaryMs(value, fallbackMs) {
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) ? parsed : fallbackMs;
 }
 
 async function readPrivateExchangeEvidence({ infrastructureModule, secrets, referencePrice, observedAt }) {
@@ -1164,6 +1190,10 @@ export function resolveDailyReportEvidenceStatus({ generated, delivered, failed,
     return "NOTIFICATION_FAILED";
   }
   if (generated.length > 0) {
+    if (generated.some((row) => String(row.correlation_id ?? "").startsWith("issue-267-delivery-recovery-"))) {
+      // recovery generated audit가 있으면 provider 실패 audit 누락 가능성이 있어 completed job guard 아래 재시도한다.
+      return "NOTIFICATION_FAILED";
+    }
     // 이전 실행이 provider 성공 후 audit 저장에서 끊긴 상태를 SKIPPED job만 보고 재전송하지 않는다.
     return "DELIVERY_AUDIT_MISSING_MANUAL_CONFIRMATION";
   }
@@ -1278,6 +1308,28 @@ export async function runDailyReportDeliveryRecovery({
     notificationResult = { delivered: false };
   }
   if (notificationResult.delivered !== true) {
+    try {
+      await auditLog.appendEvent({
+        eventType: "NOTIFICATION_DELIVERY",
+        severity: "WARN",
+        occurredAt: generatedAt,
+        actor: "codex-issue-267-day-closeout",
+        reasonCode: "daily_report_notification_failed",
+        correlationId: `issue-267-delivery-recovery-${day}`,
+        metadata: {
+          report_date: day,
+          delivered: false,
+          trigger: "delivery_recovery",
+          job_id: claimed.id,
+          m23_live_ops_notification_fingerprint: notificationFingerprint,
+          ...(notificationResult.skippedReason === undefined
+            ? {}
+            : { skipped_reason: notificationResult.skippedReason }),
+        },
+      });
+    } catch {
+      // recovery correlation의 generated-only audit도 다음 closeout에서 재시도 가능 상태로 해석해 provider 실패를 영구 고정하지 않는다.
+    }
     await infrastructureModule.failJob(database, {
       jobId: claimed.id,
       workerId,

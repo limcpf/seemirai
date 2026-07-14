@@ -107,7 +107,7 @@ window에서 제외한다. 첫 유효 full KST day는 2026-07-15, 일곱째는 2
   - [x] actual broker 제출은 daemon day delta, 대상 strategy guarded actionable decision, cleanup artifact 수를 대조하고 DB `orders` row에 의존하지 않는다.
   - [x] BUY entry cleanup마다 같은 scope의 durable reservation을 요구하고 cleanup fingerprint에 수량/가격/fee/realized PnL을 포함한다.
   - [x] 미체결 SELL terminal cancel은 exit requote counter로 제출을 닫고 그 외 terminal 제출만 cleanup 수와 대조한다.
-  - [x] SELL 손실은 filledAt KST day에 귀속하고 scheduler는 경계를 걸친 tick의 최종 status write를 기다린다.
+  - [x] SELL 손실은 filledAt KST day에 귀속하고 scheduler는 경계를 걸친 tick의 최종 status write와 cleanup 제출 cutoff를 함께 기록한다.
   - [x] daily report는 대상 strategy/market fact와 runtime 실제 전송 결과만 사용하고, closeout actor/correlation audit을 요구하며,
     provider 성공 뒤 audit 누락은 중복 재전송 없이 수동 확인으로 닫는다.
   - [x] existing day artifact는 현재 rollout provenance와 daemon boundary가 같을 때만 재사용하고 segment 종료는 KST window로 고정한다.
@@ -193,6 +193,8 @@ SEEMIRAI_RESTORE_DATABASE_URL=<disposable-restore-db> \
   report 상태, cleanup PnL fingerprint, rollout-scoped weekly loss를 fail-closed 계약으로 보강하고 전체 verify를 통과했다.
 - 2026-07-14: 후속 review drain에서 M23 daily report strategy/market scope와 실제 runtime report 우선순위, delivery audit 누락
   중복 전송 차단, closeout/scheduler symlink 실제 경로 및 보호 입력 충돌 검증을 보강했다.
+- 2026-07-14: 경계 tick cleanup을 counter status write cutoff day에 귀속하고 recovery provider 실패 audit/재시도와 boundary polling
+  중 scheduler-only 정상 중지를 보강했다.
 
 ## 남은 이슈
 

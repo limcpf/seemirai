@@ -211,7 +211,8 @@ append-only daemon counter boundary를 남기고, 종료 60초 뒤 closeout을 �
 provider 성공 뒤 delivery audit 저장만 실패한 상태는 recovery로 재전송하지 않고 수동 확인 대상으로 남긴다. artifact 손실은
 사전 조회 snapshot이 아니라 runtime이 실제 생성·전송한 scoped report 결과를 사용한다.
 boundary capture는 경계 직후의 status file write까지 확인해 경계를 걸친 tick의 counter를 이전 day에 포함한다. SELL cleanup의 제출
-개수는 제출 시각, realized loss는 실제 `filledAt` KST day를 사용한다. artifact 경로는 symlink 실제 대상도 repository 밖이어야 한다.
+개수는 counter에 포함된 status write cutoff까지 같은 day에 귀속하고, realized loss는 실제 `filledAt` KST day를 사용한다. 경계
+polling 중 scheduler-only stop은 실패가 아니라 `stopped` status/event로 닫힌다. artifact 경로는 symlink 실제 대상도 repository 밖이어야 한다.
 config/env/daemon evidence와 scheduler status/event/PID도 symlink 실제 대상이 repository 밖이어야 하며 scheduler output은 보호 입력의
 실제 경로를 가리킬 수 없다.
 

@@ -543,7 +543,9 @@ Codex-native 운영은 Codex, Git, GitHub, shell command, 문서 상태를 연�
   종료 60초 안에 같은 daemon/source의 counter snapshot을 기록하고 closeout은 해당 delta만 사용한다. durable decision은 1,380건
   이상, 양 끝과 내부 최대 gap 3분 이하, dedupe 유일성을 모두 충족해야 한다.
 - scheduler boundary는 경계 직후 status 파일 write 시각을 확인한다. pre-boundary에 시작한 tick이 경계 뒤 counter를 커밋하면 그
-  status를 기다리고, 다음 post-boundary tick write가 먼저 확인되면 마지막 pre-boundary snapshot을 사용한다.
+  status를 기다리고, 다음 post-boundary tick write가 먼저 확인되면 마지막 pre-boundary snapshot을 사용한다. pre-boundary tick의
+  status write가 경계 뒤 완료되면 그 write 시각까지의 제출 cleanup도 같은 이전 day counter에 귀속하되 fill/PnL은 실제 `filledAt`
+  KST day를 유지한다. 이 polling 중 scheduler-only stop은 day 실패가 아니라 `stopped`로 닫는다.
 - `live:ops:daemon` actual 제출은 DB `orders` row가 아니라 `submittedOrderCount` 경계 delta와 core guard를 통과한 BUY/SELL 단일 intent
   decision, 대상 strategy cleanup artifact 수를 교차 검증한다. BUY entry cleanup은 같은 attempt와 scope의 durable budget
   reservation을 반드시 가져야 하며, 별도 entry reservation을 만들지 않는 SELL exit cleanup에는 이 조건을 적용하지 않는다. decision은
@@ -564,7 +566,8 @@ Codex-native 운영은 Codex, Git, GitHub, shell command, 문서 상태를 연�
   report fact는 `KRW-BTC`/`live_ops_autonomous_24x7_core` scope로 제한하고, artifact 손실은 runtime이 실제 생성·전송한 report
   결과를 사용한다. 같은 날짜의 일반 daily report job이 먼저 완료됐거나 명시 provider 실패 audit이 있으면 M23 live ops snapshot
   notification을 별도 delivery-recovery idempotency job에서 한 번 전달한다. provider 성공 뒤 delivery audit만 누락된 상태는
-  중복 전송하지 않고 수동 확인으로 닫는다.
+  중복 전송하지 않고 수동 확인으로 닫는다. recovery provider 실패는 failed audit과 재예약 job을 함께 남기며, recovery
+  generated audit만 남은 중단 상태도 completed job guard 아래 재시도 가능 상태로 해석한다.
 - 일/주간 realized loss 중 큰 값과 private open position 명목금액 합계가 50,000 KRW에 닿기 전에 operator stop 또는 kill
   switch/manual review로 수렴한다. open order는 0이어야 하지만 ceiling 미만의 BTC position 자체는 허용한다. 이 ceiling은 M24
   예산 확대 승인이 아니다.
