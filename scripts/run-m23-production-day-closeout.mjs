@@ -427,6 +427,7 @@ async function runActualProductionDayCloseout(options) {
       status,
       config,
       databaseEvidence,
+      liveArtifacts,
       privateRead,
       generatedAt,
     });
@@ -444,10 +445,17 @@ async function runActualProductionDayCloseout(options) {
       botToken: secrets.telegramBotToken,
       chatId: secrets.telegramChatId,
     });
+    const notificationFingerprint = createIssue267NotificationFingerprint(reportBuilt.notification);
+    const directAuditLog = createIssue267DailyReportAuditLog(
+      new infrastructureModule.PostgresAuditLogRepository(database),
+      notificationFingerprint,
+    );
+    const directNotifier = createIssue267FingerprintBoundNotifier(notifier, notificationFingerprint);
     const closeoutCorrelationId = `issue-267-production-day-${options.day}-${randomUUID()}`;
     const dailyReportRuntime = runtimeModule.createPaperNoKeyDailyReportRuntime({
       database,
-      notifier,
+      notifier: directNotifier,
+      auditLog: directAuditLog,
       workerId: `issue_267_day_closeout_${options.day}`,
       actor: "codex-issue-267-day-closeout",
       dataProvider: dailyReportDataProvider,
@@ -562,6 +570,7 @@ export function createDailyReportLiveOpsStatus({
   status,
   config,
   databaseEvidence,
+  liveArtifacts,
   privateRead,
   generatedAt,
 }) {
@@ -578,6 +587,12 @@ export function createDailyReportLiveOpsStatus({
   const attemptedOrderCount = Number.isSafeInteger(Number(execution.attemptedOrderCount)) ? Number(execution.attemptedOrderCount) : 0;
   const decisionLabel = formatDecisionLabel(decision.decisionCategory);
   const brokerGuardReady = execution.brokerGuard?.ready === true;
+  const brokerSubmissionCount = Number(databaseEvidence.brokerSubmissionCount ?? 0);
+  const exitRequoteCount = Number(databaseEvidence.exitRequoteCount ?? 0);
+  const cleanupFillCount = Number(liveArtifacts.fillCount ?? 0);
+  const cleanupRealizedLossKrw = isDecimalString(liveArtifacts.realizedLossKrw)
+    ? liveArtifacts.realizedLossKrw
+    : "확인 필요";
 
   return applicationModule.createLiveOpsStatusSummary({
     observedAt,
@@ -658,20 +673,29 @@ export function createDailyReportLiveOpsStatus({
       trace: { source: "live_ops_daemon_decision", category: decision.decisionCategory ?? null },
     },
     latestOrderAttempt: {
-      statusLabel: attemptedOrderCount > 0 ? `주문 시도 ${attemptedOrderCount}건` : "주문 시도 없음",
+      statusLabel: `운영일 실제 제출 ${brokerSubmissionCount}건 / 재호가 ${exitRequoteCount}건`,
       message: execution.message ?? "현재 tick에서 broker 제출은 발생하지 않았습니다.",
       observedAt: toIsoOrNull(execution.latestExecutionAt),
       action: execution.action ?? null,
-      trace: { source: "live_ops_daemon_execution", attemptStatus: execution.attemptStatus ?? null },
+      trace: {
+        source: "m23_production_day_closeout",
+        attemptStatus: execution.attemptStatus ?? null,
+        latestTickAttemptedOrderCount: attemptedOrderCount,
+        evidenceId: liveArtifacts.evidenceId,
+      },
     },
     latestFillOrCancel: {
-      statusLabel: privateRead.openOrderCount === 0 ? "미체결 주문 없음" : "미체결 주문 확인 필요",
+      statusLabel: `운영일 실제 체결 ${cleanupFillCount}건 / 실현 손실 ${cleanupRealizedLossKrw} KRW`,
       message: privateRead.openOrderCount === 0
         ? "closeout private 조회에서 미체결 주문이 없음을 확인했습니다."
         : "closeout private 조회에서 미체결 주문이 남아 있습니다.",
       observedAt: privateRead.observedAt,
       action: privateRead.openOrderCount === 0 ? null : "미체결 주문을 정리한 뒤 closeout을 다시 실행하세요.",
-      trace: { source: "upbit_private_closeout", openOrderCount: privateRead.openOrderCount },
+      trace: {
+        source: "m23_production_day_closeout",
+        openOrderCount: privateRead.openOrderCount,
+        evidenceId: liveArtifacts.evidenceId,
+      },
     },
     dailyNotionalUsedKrw: isDecimalString(reconcilePnl.budgetUsedKrw) ? reconcilePnl.budgetUsedKrw : null,
     openExposureKrw: privateRead.openPositionNotionalKrw,
@@ -1288,20 +1312,50 @@ export function filterIssue267CloseoutDailyReportAuditRows(
   const recoveryPrefix = `issue-267-delivery-recovery-${day}`;
   return filterPostWindowDailyReportAuditRows(rows, windowFinishedAt).filter((row) => (
     row.actor === "codex-issue-267-day-closeout"
+    && typeof expectedNotificationFingerprint === "string"
+    && row.notification_fingerprint === expectedNotificationFingerprint
     && (
       String(row.correlation_id ?? "").startsWith(closeoutPrefix)
-      || (
-        String(row.correlation_id ?? "").startsWith(recoveryPrefix)
-        && typeof expectedNotificationFingerprint === "string"
-        && row.notification_fingerprint === expectedNotificationFingerprint
-      )
+      || String(row.correlation_id ?? "").startsWith(recoveryPrefix)
     )
   ));
 }
 
 /** recovery audit과 현재 owner notification payload를 연결하는 secret-free fingerprint를 만든다. */
 export function createIssue267NotificationFingerprint(notification) {
-  return `sha256:${sha256Json(notification)}`;
+  if (notification === null || typeof notification !== "object" || Array.isArray(notification)) {
+    throw new Error("daily report notification fingerprint 입력이 올바르지 않습니다.");
+  }
+  const { generatedAt: _generatedAt, ...stableNotification } = notification;
+  return `sha256:${sha256Json(stableNotification)}`;
+}
+
+/** direct closeout report audit을 실제 전송할 안정 payload fingerprint와 결합한다. */
+export function createIssue267DailyReportAuditLog(auditLog, notificationFingerprint) {
+  return {
+    async appendEvent(event) {
+      return auditLog.appendEvent({
+        ...event,
+        metadata: {
+          ...(event.metadata ?? {}),
+          m23_live_ops_notification_fingerprint: notificationFingerprint,
+        },
+      });
+    },
+  };
+}
+
+/** prebuilt payload와 runtime payload가 다르면 잘못된 fingerprint로 Telegram을 보내기 전에 차단한다. */
+export function createIssue267FingerprintBoundNotifier(notifier, expectedNotificationFingerprint) {
+  return {
+    async sendDailyReport(notification) {
+      const actualNotificationFingerprint = createIssue267NotificationFingerprint(notification);
+      if (actualNotificationFingerprint !== expectedNotificationFingerprint) {
+        throw new Error("daily report notification이 audit fingerprint binding 이후 변경됐습니다.");
+      }
+      return notifier.sendDailyReport(notification);
+    },
+  };
 }
 
 /**

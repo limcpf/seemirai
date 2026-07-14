@@ -419,9 +419,16 @@ describe("M23 production day closeout script", () => {
           occurred_at: "2026-07-15T15:01:00.000Z",
         },
         {
-          id: "closeout", actor: "codex-issue-267-day-closeout",
+          id: "stale-closeout", actor: "codex-issue-267-day-closeout",
           correlation_id: "issue-267-production-day-2026-07-15-run-1",
+          notification_fingerprint: "sha256:stale",
           occurred_at: "2026-07-15T15:01:01.000Z",
+        },
+        {
+          id: "current-closeout", actor: "codex-issue-267-day-closeout",
+          correlation_id: "issue-267-production-day-2026-07-15-run-2",
+          notification_fingerprint: currentFingerprint,
+          occurred_at: "2026-07-15T15:01:01.500Z",
         },
         {
           id: "stale-recovery", actor: "codex-issue-267-day-closeout",
@@ -443,10 +450,46 @@ describe("M23 production day closeout script", () => {
         ),
       }));
     `);
-    expect(output.rows.map((row: { id: string }) => row.id)).toEqual(["closeout", "current-recovery"]);
+    expect(output.rows.map((row: { id: string }) => row.id)).toEqual(["current-closeout", "current-recovery"]);
     expect(output.queryText).toContain("payload_json->>'actor' as actor");
     expect(output.queryText).toContain("m23_live_ops_notification_fingerprint");
     expect(output.queryText).not.toMatch(/select id,\s*actor,/u);
+  });
+
+  it("direct/recovery fingerprint는 generatedAt을 제외하고 실제 전송 payload 변경은 차단한다", async () => {
+    const output = await runModuleExpression(`
+      const first = { reportDate: "2026-07-15", summary: "동일 M23 report", generatedAt: "2026-07-15T15:01:00Z" };
+      const second = { ...first, generatedAt: "2026-07-15T15:06:00Z" };
+      const fingerprint = module.createIssue267NotificationFingerprint(first);
+      const auditEvents = [];
+      const auditLog = module.createIssue267DailyReportAuditLog({
+        async appendEvent(event) { auditEvents.push(event); return { auditEventId: "audit-1" }; },
+      }, fingerprint);
+      await auditLog.appendEvent({
+        reasonCode: "daily_report_notification_delivered", metadata: { report_date: "2026-07-15" },
+      });
+      const sent = [];
+      const notifier = module.createIssue267FingerprintBoundNotifier({
+        async sendDailyReport(notification) { sent.push(notification); return { delivered: true }; },
+      }, fingerprint);
+      const same = await notifier.sendDailyReport(second);
+      let changed;
+      try { await notifier.sendDailyReport({ ...second, summary: "변경된 M23 report" }); }
+      catch (error) { changed = error.message; }
+      process.stdout.write(JSON.stringify({
+        fingerprint,
+        secondFingerprint: module.createIssue267NotificationFingerprint(second),
+        auditEvents, sent, same, changed,
+      }));
+    `);
+    expect(output.secondFingerprint).toBe(output.fingerprint);
+    expect(output.auditEvents[0].metadata).toMatchObject({
+      report_date: "2026-07-15",
+      m23_live_ops_notification_fingerprint: output.fingerprint,
+    });
+    expect(output.sent).toHaveLength(1);
+    expect(output.same).toEqual({ delivered: true });
+    expect(output.changed).toContain("fingerprint binding 이후 변경");
   });
 
   it("제출 cleanup은 matching reservation을 요구하고 PnL 입력 변경은 evidence fingerprint를 바꾼다", async () => {
@@ -596,7 +639,12 @@ describe("M23 production day closeout script", () => {
             max_open_position_notional_krw: "30000",
           },
         },
-        databaseEvidence: { killSwitchState: "NORMAL" },
+        databaseEvidence: {
+          killSwitchState: "NORMAL", brokerSubmissionCount: 2, exitRequoteCount: 1,
+        },
+        liveArtifacts: {
+          fillCount: 1, realizedLossKrw: "125", evidenceId: "live-cleanups:2026-07-15:sha256:test",
+        },
         privateRead: { openOrderCount: 0, observedAt: "2026-07-15T15:01:00.000Z", openPositionNotionalKrw: "10000" },
         generatedAt: new Date("2026-07-15T15:01:00.000Z"),
       });
@@ -607,6 +655,8 @@ describe("M23 production day closeout script", () => {
       message: "진입 조건 미충족으로 HOLD했습니다.",
     });
     expect(output.latestDecision.statusLabel).toBe("보유 유지 판단");
+    expect(output.latestOrderAttempt.statusLabel).toBe("운영일 실제 제출 2건 / 재호가 1건");
+    expect(output.latestFillOrCancel.statusLabel).toBe("운영일 실제 체결 1건 / 실현 손실 125 KRW");
     expect(output.openExposureKrw).toBe("10000");
   });
 

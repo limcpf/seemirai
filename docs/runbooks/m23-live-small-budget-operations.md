@@ -210,8 +210,9 @@ append-only daemon counter boundary를 남기고, 종료 60초 뒤 closeout을 �
 날짜의 일반 daily report가 먼저 완료됐으면 closeout actor/correlation이 있는 별도 recovery job으로 M23 상태 report를 한 번 전달한다.
 provider 성공 뒤 delivery audit 저장만 실패한 상태는 recovery로 재전송하지 않고 수동 확인 대상으로 남긴다. artifact 손실은
 누적 DB PnL이 아니라 `filledAt` KST window의 SELL cleanup realized loss를 사용한다. scoped report에는 같은 strategy의
-`market=null` aggregate PnL snapshot도 사용자 관측 정보로 보존한다. 이전 recovery delivery audit은 현재 notification fingerprint와
-같을 때만 재사용한다.
+`market=null` aggregate PnL snapshot도 사용자 관측 정보로 보존한다. M23 section은 daemon counter와 cleanup artifact의 실제
+제출·재호가·체결·실현 손실을 별도로 표시한다. 이전 direct/recovery delivery audit은 `generatedAt`을 제외한 현재 notification
+fingerprint와 같을 때만 재사용하고, direct provider 호출 전에도 실제 payload가 audit binding과 같은지 확인한다.
 boundary capture는 경계 직후의 status file write까지 확인해 경계를 걸친 tick의 counter를 이전 day에 포함한다. SELL cleanup의 제출
 개수는 거래소 accept 시각의 `submittedAt`과 counter status write cutoff로 같은 day에 귀속한다. 고정 rollout source가 만든 기존
 SELL cleanup에 `submittedAt`이 없으면 같은 attempt의 durable actionable decision `observedAt`을 사용하고 체결 시각으로 추정하지

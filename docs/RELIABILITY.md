@@ -572,8 +572,11 @@ Codex-native 운영은 Codex, Git, GitHub, shell command, 문서 상태를 연�
   같은 날짜의 일반 daily report job이 먼저 완료됐거나 명시 provider 실패 audit이 있으면 M23 live ops snapshot
   notification을 별도 delivery-recovery idempotency job에서 한 번 전달한다. provider 성공 뒤 delivery audit만 누락된 상태는
   중복 전송하지 않고 수동 확인으로 닫는다. recovery provider 실패는 failed audit과 재예약 job을 함께 남기며, recovery
-  generated audit만 남은 중단 상태도 completed job guard 아래 재시도 가능 상태로 해석한다. 이전 recovery audit은 현재 notification
-  fingerprint와 같을 때만 현재 payload의 전달 증거로 재사용한다.
+  generated audit만 남은 중단 상태도 completed job guard 아래 재시도 가능 상태로 해석한다. direct/recovery delivery audit은
+  현재 notification의 `generatedAt`을 제외한 안정 payload fingerprint와 같을 때만 현재 전달 증거로 재사용한다. direct runtime은
+  provider 호출 전에 실제 payload가 audit binding과 같은지도 확인한다.
+- M23 Telegram section의 운영일 실제 제출·재호가 수는 daemon counter, 체결 수와 실현 손실은 cleanup artifact에서 읽는다. 일반
+  daily report DB fact가 live broker side effect를 저장하지 않아 0건이어도 owner가 artifact와 같은 실거래 수치를 확인할 수 있어야 한다.
 - 일/주간 realized loss 중 큰 값과 private open position 명목금액 합계가 50,000 KRW에 닿기 전에 operator stop 또는 kill
   switch/manual review로 수렴한다. open order는 0이어야 하지만 ceiling 미만의 BTC position 자체는 허용한다. 이 ceiling은 M24
   예산 확대 승인이 아니다.
