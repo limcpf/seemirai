@@ -170,6 +170,20 @@ function evaluateExitPolicy(input: {
     maxNotionalKrw: input.options.maxEntryNotionalKrw,
   });
   if (sizing.kind === "blocked") {
+    if (sizing.reasonCode === "autonomous_24x7_sell_notional_below_minimum") {
+      // 거래소 최소 주문금액 미달은 계정 불일치가 아니라 가격/잔량 조건 변화로 해소될 수 있어 다음 tick에서 재평가한다.
+      return hold("autonomous_24x7_exit_notional_below_minimum_retry", {
+        ...sizing.metadata,
+        source: "live_ops_autonomous_24x7",
+        exit_reason_code: exitRule.reason,
+        exit_rule_id: exitRule.kind,
+        held_quantity: input.position.quantity.toFixed(),
+        average_entry_price: input.position.averageEntryPrice.toFixed(),
+        best_bid_price: bestBid.toFixed(),
+        best_ask_price: bestAsk.toFixed(),
+        retry_after_ms: "5000",
+      });
+    }
     return block(sizing.reasonCode, sizing.metadata);
   }
 

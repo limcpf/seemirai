@@ -3298,6 +3298,51 @@ try {
     });
   });
 
+  it("autonomous_24x7은 최소 주문금액보다 작은 청산 후보를 BLOCK이 아니라 HOLD 재시도로 기록한다", async () => {
+    const {
+      evaluateLiveOpsCliAnalysisDecision,
+      getLiveOpsCliAnalysisOrderIntents,
+    } = await import(path.join(process.cwd(), "scripts/run-live-ops-support.mjs"));
+    const observedAt = "2026-06-20T00:00:00.000Z";
+    const config = createAutonomousLiveOpsConfig(JSON.parse(await readFile(path.join(process.cwd(), "config", "live-ops.example.json"), "utf8")));
+    const analysisDecision = await evaluateLiveOpsCliAnalysisDecision({
+      config,
+      fixtureSmoke: false,
+      marketData: createAutonomousMarketData({
+        observedAt,
+        bestBid: "101300000",
+        bestAsk: "101301000",
+        referencePrice: "101300500",
+      }),
+      productionPreflight: createAutonomousPreflight({
+        observedAt,
+        btcQuantity: "0.00000023",
+        btcNotionalKrw: "23.299115",
+        ownedPositionNotionalKrw: "21.57469",
+        openedAt: "2026-06-19T23:00:00.000Z",
+        averageEntryPrice: "93803000",
+      }),
+    });
+
+    expect(analysisDecision).toMatchObject({
+      status: "ready",
+      ready: true,
+      decisionCategory: "HOLD",
+      holdCount: 1,
+      blockCount: 0,
+      orderIntentCount: 0,
+    });
+    expect(getLiveOpsCliAnalysisOrderIntents(analysisDecision)).toHaveLength(0);
+    expect(analysisDecision.checks.find((check: { name: string }) => check.name === "strategy_decision")).toMatchObject({
+      status: "ok",
+      details: {
+        reason: "autonomous_24x7_exit_notional_below_minimum_retry",
+        requestedNotionalKrw: "23.29946",
+        retry_after_ms: "5000",
+      },
+    });
+  });
+
   it("cleanup_probe BLOCK decision은 live execution idle로 낮추지 않도록 blocked summary로 닫는다", async () => {
     const config = JSON.parse(await readFile(path.join(process.cwd(), "config", "live-ops.example.json"), "utf8"));
     config.analysis.decision_policy.cleanup_probe.tick_size_krw = "7";

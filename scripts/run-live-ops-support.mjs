@@ -12385,6 +12385,21 @@ function evaluateLiveOpsCliAutonomousExitPolicy({ config, orderbook, observedAt,
     quantityScale: policy.quantity_scale,
   });
   if (sizing.kind === "blocked") {
+    if (sizing.reasonCode === "autonomous_24x7_sell_notional_below_minimum") {
+      // 최소 청산 주문금액 미달은 transient market/position sizing 조건으로 보고 daemon 다음 tick에서 다시 평가한다.
+      return liveOpsCliStrategyHold("autonomous_24x7_exit_notional_below_minimum_retry", {
+        ...sizing.metadata,
+        source: "live_ops_autonomous_24x7",
+        exit_reason_code: exitRule.reasonCode,
+        exit_rule_id: exitRule.ruleId,
+        held_quantity: position.quantity,
+        open_position_notional_krw: openNotional.toFixed(),
+        average_entry_price: position.averageEntryPrice,
+        current_bid_price: bestBid.toFixed(),
+        current_ask_price: bestAsk.toFixed(),
+        retry_after_ms: "5000",
+      });
+    }
     return liveOpsCliStrategyBlock(sizing.reasonCode, sizing.metadata);
   }
 
