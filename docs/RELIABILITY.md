@@ -184,6 +184,9 @@ Codex-native 운영은 Codex, Git, GitHub, shell command, 문서 상태를 연�
   불확실성은 자동 재주문이 아니라 manual review counter와 신규 주문 차단으로 수렴한다.
 - exit SELL 수량이 1회 주문 예산을 넘으면 strategy가 예산 이하 chunk를 만든다. 잔여 보유 수량은 다음 tick에서 다시 평가해야 하며,
   daemon은 이를 실패나 cleanup 누락으로 보지 않는다.
+- exit SELL 조건이 충족됐지만 전략 소유 잔량의 현재 지정가 명목금액이 거래소 최소 주문금액보다 작으면 broker 제출 전 HOLD로 닫고
+  다음 tick에서 같은 포지션을 재평가한다. 이 상태는 계정 불일치나 리스크 우회가 아니므로 daemon/scheduler를 실패 상태로 전환하지
+  않아야 한다.
 - autonomous position 소유권은 FILLED entry closeout이 있는 BUY lot에서 FILLED SELL cleanup을 FIFO로 차감해 계산한다. 완전 청산된 과거
   BUY lot의 평균단가는 이후 새 BUY 포지션의 take-profit, stop-loss, trailing 기준에 섞지 않는다. 미체결 BUY reservation과 no-fill
   closeout은 포지션 소유권으로 승격하지 않는다.

@@ -191,6 +191,35 @@ describe("production live ops decision policy resolver", () => {
     });
   });
 
+  it("autonomous_24x7 strategy는 최소 주문금액보다 작은 SELL 청산을 HOLD로 낮춰 다음 tick에서 재시도한다", async () => {
+    const strategy = resolveAutonomousStrategy();
+    const decision = await strategy.evaluate({
+      strategyId: strategy.id,
+      exchangeId: "upbit_krw_spot",
+      market: "KRW-BTC",
+      observedAt,
+      marketEvents: [orderbookEvent({ bid: "101200000", ask: "101201000" })],
+      features: strongEntryFeatures(),
+      positions: heldPosition({
+        quantity: "0.00000023",
+        openPositionNotionalKrw: "21.57469",
+      }),
+    });
+
+    expect(decision).toMatchObject({
+      kind: "HOLD",
+      strategyId: LIVE_OPS_AUTONOMOUS_24X7_STRATEGY_ID,
+      reason: "autonomous_24x7_exit_notional_below_minimum_retry",
+      metadata: {
+        requested_notional_krw: "23.27646",
+        minimum_order_notional_krw: "5000",
+        exit_reason_code: "autonomous_24x7_take_profit",
+        exit_rule_id: "take_profit",
+        retry_after_ms: "5000",
+      },
+    });
+  });
+
   it("autonomous_24x7 strategy는 stop loss 조건에서 보유 수량 이하 SELL 후보를 만든다", async () => {
     const strategy = resolveAutonomousStrategy();
     const decision = await strategy.evaluate({
