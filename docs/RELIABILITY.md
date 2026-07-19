@@ -187,6 +187,9 @@ Codex-native 운영은 Codex, Git, GitHub, shell command, 문서 상태를 연�
 - exit SELL 조건이 충족됐지만 전략 소유 잔량의 현재 지정가 명목금액이 거래소 최소 주문금액보다 작으면 broker 제출 전 HOLD로 닫고
   다음 tick에서 같은 포지션을 재평가한다. 이 상태는 계정 불일치나 리스크 우회가 아니므로 daemon/scheduler를 실패 상태로 전환하지
   않아야 한다.
+- 실계좌 BTC 잔량의 평가금액이 Upbit KRW 최소 주문금액보다 작으면 거래소에서 자동 청산할 수 없는 dust로 분류한다. 이 dust는
+  status/position state에는 추적 정보로 남기되, 전략 소유 `OPEN` 포지션이나 수동 보유 차단 source로 승격하지 않고 신규 entry 평가를
+  막지 않는다.
 - autonomous position 소유권은 FILLED entry closeout이 있는 BUY lot에서 FILLED SELL cleanup을 FIFO로 차감해 계산한다. 완전 청산된 과거
   BUY lot의 평균단가는 이후 새 BUY 포지션의 take-profit, stop-loss, trailing 기준에 섞지 않는다. 미체결 BUY reservation과 no-fill
   closeout은 포지션 소유권으로 승격하지 않는다.

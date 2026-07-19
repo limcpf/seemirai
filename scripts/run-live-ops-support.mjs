@@ -40,6 +40,7 @@ const liveOpsCliScheduledBriefingReservationMs = 60_000;
 const liveOpsCliScheduledBriefingCooldowns = new Map();
 const liveOpsCliProcessOwner = createLiveOpsCliProcessOwnerSnapshot(process.pid);
 const liveOpsCliAutonomous24x7StrategyId = "live_ops_autonomous_24x7_core";
+const liveOpsCliUpbitMinimumOrderNotionalKrw = new Decimal(5_000);
 const liveOpsCliDbFeatureSource = "live_ops_db_window";
 const liveOpsCliDbFeatureWindowReaderSource = "live_ops_db_feature_window_reader";
 const liveOpsCliDbFeatureWindowMs = 21 * 60_000;
@@ -2251,7 +2252,7 @@ function createLiveOpsCliOrderIntentEvidence(intent) {
   return evidence;
 }
 
-function createLiveOpsCliHeldPositionExposure({ balanceSnapshot, market, referencePrice, observedAt }) {
+export function createLiveOpsCliHeldPositionExposure({ balanceSnapshot, market, referencePrice, observedAt }) {
   const baseCurrency = readLiveOpsCliMarketBaseCurrency(market);
   const baseBalance = findLiveOpsCliBalance(balanceSnapshot, baseCurrency);
   const quantity = isNonNegativeDecimalString(baseBalance?.total) ? baseBalance.total : "0";
@@ -2275,11 +2276,28 @@ function createLiveOpsCliHeldPositionExposure({ balanceSnapshot, market, referen
       valuationMissing: true,
     };
   }
+  const notionalKrw = new Decimal(quantity).mul(referencePrice);
+  if (notionalKrw.gt(0) && notionalKrw.lt(liveOpsCliUpbitMinimumOrderNotionalKrw)) {
+    // 거래소 최소 주문금액 미만 dust는 자동 SELL도 불가능하므로 신규 entry를 막는 포지션으로 보지 않는다.
+    return {
+      market,
+      currency: baseCurrency,
+      quantity: "0",
+      notionalKrw: "0",
+      capturedAt: baseBalance?.updatedAt ?? balanceSnapshot?.capturedAt ?? observedAt,
+      valuationMissing: false,
+      dustIgnored: true,
+      dustQuantity: quantity,
+      dustNotionalKrw: notionalKrw.toFixed(),
+      dustMinimumOrderNotionalKrw: liveOpsCliUpbitMinimumOrderNotionalKrw.toFixed(),
+      dustReason: "held_position_below_minimum_order_notional",
+    };
+  }
   return {
     market,
     currency: baseCurrency,
     quantity,
-    notionalKrw: new Decimal(quantity).mul(referencePrice).toFixed(),
+    notionalKrw: notionalKrw.toFixed(),
     capturedAt: baseBalance?.updatedAt ?? balanceSnapshot?.capturedAt ?? observedAt,
     valuationMissing: false,
   };
@@ -2319,6 +2337,11 @@ async function refreshLiveOpsCliAutonomousPositionObservation({
     walletQuantity: heldPositionExposure.quantity,
     currentUnitPrice,
     averageEntryPrice: reservationUsage?.autonomous24x7Position?.averageEntryPrice,
+    dustIgnored: heldPositionExposure.dustIgnored === true,
+    dustQuantity: heldPositionExposure.dustQuantity,
+    dustNotionalKrw: heldPositionExposure.dustNotionalKrw,
+    dustMinimumOrderNotionalKrw: heldPositionExposure.dustMinimumOrderNotionalKrw,
+    dustReason: heldPositionExposure.dustReason,
   });
   // state write 이후 다시 읽어 같은 tick의 exit rule이 이전 tick high-water를 잃지 않게 한다.
   return productionRuntime.budgetReservation.readDailyReservedNotional(observedAt);
@@ -3620,6 +3643,38 @@ export function createLiveOpsCliFileBudgetReservation({ artifactStore, clock = (
         await artifactStore.writeAutonomousPositionState(state);
         return state;
       }
+      if (observation?.dustIgnored === true && walletQuantity.isZero()) {
+        const state = {
+          kind: "live_ops_autonomous_position_state",
+          strategyId: liveOpsCliAutonomous24x7StrategyId,
+          market,
+          status: "CLOSED",
+          reservedNotionalKrw: "0",
+          requestedQuantity: "0",
+          averageEntryPrice: isPositiveDecimalString(currentAggregate.averageEntryPrice)
+            ? currentAggregate.averageEntryPrice
+            : undefined,
+          entryFeeKrw: "0",
+          openedAt: hasMeaningfulValue(currentAggregate.openedAt) ? currentAggregate.openedAt : undefined,
+          latestReservationAt: hasMeaningfulValue(currentAggregate.latestReservationAt)
+            ? currentAggregate.latestReservationAt
+            : undefined,
+          latestObservationAt: observedAt,
+          closedAt: observedAt,
+          dustIgnored: true,
+          dustQuantity: isNonNegativeDecimalString(observation.dustQuantity) ? String(observation.dustQuantity) : undefined,
+          dustNotionalKrw: isNonNegativeDecimalString(observation.dustNotionalKrw) ? String(observation.dustNotionalKrw) : undefined,
+          dustMinimumOrderNotionalKrw: isPositiveDecimalString(observation.dustMinimumOrderNotionalKrw)
+            ? String(observation.dustMinimumOrderNotionalKrw)
+            : liveOpsCliUpbitMinimumOrderNotionalKrw.toFixed(),
+          dustReason: hasMeaningfulValue(observation.dustReason)
+            ? String(observation.dustReason)
+            : "held_position_below_minimum_order_notional",
+        };
+        // dust 관측은 거래소에서 자동 청산할 수 없는 잔량이므로 manual-review가 아니라 닫힌 lot evidence로 남기고 신규 entry를 연다.
+        await artifactStore.writeAutonomousPositionState(state);
+        return state;
+      }
       if (
         walletQuantity.gt(0) &&
         !isPositiveDecimalString(currentAggregate.requestedQuantity) &&
@@ -3891,6 +3946,13 @@ function summarizeLiveOpsCliAutonomousReservationOwnership({
       weeklyRealizedPnlKrw,
       status: "CLOSED",
       closedAt: autonomousPositionState.closedAt ?? autonomousPositionState.latestObservationAt,
+      ...(autonomousPositionState.dustIgnored === true ? {
+        dustIgnored: true,
+        dustQuantity: autonomousPositionState.dustQuantity,
+        dustNotionalKrw: autonomousPositionState.dustNotionalKrw,
+        dustMinimumOrderNotionalKrw: autonomousPositionState.dustMinimumOrderNotionalKrw,
+        dustReason: autonomousPositionState.dustReason,
+      } : {}),
     };
   }
   if (
