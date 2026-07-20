@@ -3622,6 +3622,56 @@ export function createLiveOpsCliFileBudgetReservation({ artifactStore, clock = (
       });
       const currentUnitPrice = new Decimal(observation.currentUnitPrice);
       const walletQuantity = new Decimal(observation.walletQuantity);
+      if (currentAggregate.status === "MANUAL_REVIEW_REQUIRED" && currentAggregate.manualReviewReason === "autonomous_position_wallet_quantity_below_owned_scope") {
+        const ledgerAggregate = summarizeLiveOpsCliAutonomousReservationOwnership({
+          reservationRecords,
+          cleanupRecords,
+          observedAt,
+        });
+        if (isPositiveDecimalString(ledgerAggregate.requestedQuantity) && isPositiveDecimalString(ledgerAggregate.averageEntryPrice)) {
+          const ledgerRequestedQuantity = new Decimal(ledgerAggregate.requestedQuantity);
+          const missingQuantity = ledgerRequestedQuantity.minus(walletQuantity);
+          const missingNotionalKrw = missingQuantity.mul(currentUnitPrice);
+          if (walletQuantity.gt(0) && missingNotionalKrw.gt(0) && missingNotionalKrw.lt(liveOpsCliUpbitMinimumOrderNotionalKrw)) {
+            const averageEntryPrice = new Decimal(ledgerAggregate.averageEntryPrice);
+            const state = {
+              kind: "live_ops_autonomous_position_state",
+              strategyId: liveOpsCliAutonomous24x7StrategyId,
+              market,
+              status: "OPEN",
+              reservedNotionalKrw: averageEntryPrice.mul(walletQuantity).toFixed(),
+              requestedQuantity: walletQuantity.toFixed(),
+              averageEntryPrice: averageEntryPrice.toFixed(),
+              entryFeeKrw: isNonNegativeDecimalString(ledgerAggregate.entryFeeKrw)
+                ? scaleLiveOpsCliAutonomousEntryFeeForQuantity({
+                  entryFeeKrw: ledgerAggregate.entryFeeKrw,
+                  sourceQuantity: ledgerAggregate.requestedQuantity,
+                  targetQuantity: walletQuantity.toFixed(),
+                })
+                : "0",
+              highWatermarkPrice: isPositiveDecimalString(ledgerAggregate.highWatermarkPrice)
+                ? Decimal.max(new Decimal(ledgerAggregate.highWatermarkPrice), currentUnitPrice).toFixed()
+                : currentUnitPrice.toFixed(),
+              highWatermarkAt: isPositiveDecimalString(ledgerAggregate.highWatermarkPrice) && new Decimal(ledgerAggregate.highWatermarkPrice).gte(currentUnitPrice) && hasMeaningfulValue(ledgerAggregate.highWatermarkAt)
+                ? ledgerAggregate.highWatermarkAt
+                : observedAt,
+              openedAt: hasMeaningfulValue(ledgerAggregate.openedAt) ? ledgerAggregate.openedAt : undefined,
+              latestReservationAt: hasMeaningfulValue(ledgerAggregate.latestReservationAt)
+                ? ledgerAggregate.latestReservationAt
+                : undefined,
+              latestObservationAt: observedAt,
+              dustIgnored: true,
+              dustQuantity: missingQuantity.toFixed(),
+              dustNotionalKrw: missingNotionalKrw.toFixed(),
+              dustMinimumOrderNotionalKrw: liveOpsCliUpbitMinimumOrderNotionalKrw.toFixed(),
+              dustReason: "owned_position_wallet_shortfall_below_minimum_order_notional",
+            };
+            // 이전 tick의 manual-review state도 최소 주문금액 미만 shortfall이면 같은 지갑 evidence로 자동 복구한다.
+            await artifactStore.writeAutonomousPositionState(state);
+            return state;
+          }
+        }
+      }
       if (currentAggregate.status === "MANUAL_REVIEW_REQUIRED") {
         const state = {
           kind: "live_ops_autonomous_position_state",
