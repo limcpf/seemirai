@@ -3728,6 +3728,47 @@ export function createLiveOpsCliFileBudgetReservation({ artifactStore, clock = (
         isPositiveDecimalString(aggregateWithLegacyFallback.requestedQuantity) &&
         walletQuantity.lt(new Decimal(aggregateWithLegacyFallback.requestedQuantity))
       ) {
+        const aggregateRequestedQuantity = new Decimal(aggregateWithLegacyFallback.requestedQuantity);
+        const missingQuantity = aggregateRequestedQuantity.minus(walletQuantity);
+        const missingNotionalKrw = missingQuantity.mul(currentUnitPrice);
+        if (walletQuantity.gt(0) && missingNotionalKrw.gt(0) && missingNotionalKrw.lt(liveOpsCliUpbitMinimumOrderNotionalKrw)) {
+          const adjustedEntryFeeKrw = isNonNegativeDecimalString(aggregateWithLegacyFallback.entryFeeKrw)
+            ? scaleLiveOpsCliAutonomousEntryFeeForQuantity({
+              entryFeeKrw: aggregateWithLegacyFallback.entryFeeKrw,
+              sourceQuantity: aggregateWithLegacyFallback.requestedQuantity,
+              targetQuantity: walletQuantity.toFixed(),
+            })
+            : "0";
+          const state = {
+            kind: "live_ops_autonomous_position_state",
+            strategyId: liveOpsCliAutonomous24x7StrategyId,
+            market,
+            status: "OPEN",
+            reservedNotionalKrw: averageEntryPrice.mul(walletQuantity).toFixed(),
+            requestedQuantity: walletQuantity.toFixed(),
+            averageEntryPrice: averageEntryPrice.toFixed(),
+            entryFeeKrw: adjustedEntryFeeKrw,
+            highWatermarkPrice: isPositiveDecimalString(currentAggregate.highWatermarkPrice)
+              ? Decimal.max(new Decimal(currentAggregate.highWatermarkPrice), currentUnitPrice).toFixed()
+              : currentUnitPrice.toFixed(),
+            highWatermarkAt: isPositiveDecimalString(currentAggregate.highWatermarkPrice) && new Decimal(currentAggregate.highWatermarkPrice).gte(currentUnitPrice) && hasMeaningfulValue(currentAggregate.highWatermarkAt)
+              ? currentAggregate.highWatermarkAt
+              : observedAt,
+            openedAt: hasMeaningfulValue(aggregateWithLegacyFallback.openedAt) ? aggregateWithLegacyFallback.openedAt : undefined,
+            latestReservationAt: hasMeaningfulValue(aggregateWithLegacyFallback.latestReservationAt)
+              ? aggregateWithLegacyFallback.latestReservationAt
+              : undefined,
+            latestObservationAt: observedAt,
+            dustIgnored: true,
+            dustQuantity: missingQuantity.toFixed(),
+            dustNotionalKrw: missingNotionalKrw.toFixed(),
+            dustMinimumOrderNotionalKrw: liveOpsCliUpbitMinimumOrderNotionalKrw.toFixed(),
+            dustReason: "owned_position_wallet_shortfall_below_minimum_order_notional",
+          };
+          // 지갑 차이가 거래소 최소 주문금액 미만이면 수동 개입보다 잔여 실수량으로 lot을 축소하는 편이 자동 운용 중단을 줄인다.
+          await artifactStore.writeAutonomousPositionState(state);
+          return state;
+        }
         const state = {
           kind: "live_ops_autonomous_position_state",
           strategyId: liveOpsCliAutonomous24x7StrategyId,
@@ -3995,6 +4036,37 @@ function summarizeLiveOpsCliAutonomousReservationOwnership({
       dailyRealizedPnlKrw,
       weeklyRealizedPnlKrw,
       status: "OPEN",
+    };
+  }
+  if (
+    stateOpen &&
+    autonomousPositionState?.dustReason === "owned_position_wallet_shortfall_below_minimum_order_notional" &&
+    isLiveOpsCliAutonomousPositionStateNewerThanLatestLot({ state: autonomousPositionState, openLots }) &&
+    isPositiveDecimalString(autonomousPositionState?.reservedNotionalKrw) &&
+    isPositiveDecimalString(autonomousPositionState?.requestedQuantity) &&
+    isPositiveDecimalString(autonomousPositionState?.averageEntryPrice)
+  ) {
+    // 최소 주문금액 미만 shortfall 조정 state는 reservation 원장보다 최신 지갑 evidence이므로 다음 tick에서도 축소 lot을 유지한다.
+    return {
+      strategyId: liveOpsCliAutonomous24x7StrategyId,
+      reservedNotionalKrw: String(autonomousPositionState.reservedNotionalKrw),
+      reservationCount: strategyRecords.length,
+      requestedQuantity: String(autonomousPositionState.requestedQuantity),
+      averageEntryPrice: String(autonomousPositionState.averageEntryPrice),
+      ...(isNonNegativeDecimalString(autonomousPositionState.entryFeeKrw) ? { entryFeeKrw: String(autonomousPositionState.entryFeeKrw) } : {}),
+      highWatermarkPrice: autonomousPositionState.highWatermarkPrice,
+      highWatermarkAt: autonomousPositionState.highWatermarkAt,
+      openedAt: hasMeaningfulValue(autonomousPositionState.openedAt) ? autonomousPositionState.openedAt : sortedReservations[0]?.reservedAt,
+      latestReservationAt: sortedReservations.at(-1)?.reservedAt ?? autonomousPositionState.latestObservationAt,
+      realizedPnlKrw,
+      dailyRealizedPnlKrw,
+      weeklyRealizedPnlKrw,
+      status: "OPEN",
+      dustIgnored: true,
+      dustQuantity: autonomousPositionState.dustQuantity,
+      dustNotionalKrw: autonomousPositionState.dustNotionalKrw,
+      dustMinimumOrderNotionalKrw: autonomousPositionState.dustMinimumOrderNotionalKrw,
+      dustReason: autonomousPositionState.dustReason,
     };
   }
   const preserveStateHighWatermark = stateOpen &&

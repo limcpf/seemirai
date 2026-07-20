@@ -190,6 +190,9 @@ Codex-native 운영은 Codex, Git, GitHub, shell command, 문서 상태를 연�
 - 실계좌 BTC 잔량의 평가금액이 Upbit KRW 최소 주문금액보다 작으면 거래소에서 자동 청산할 수 없는 dust로 분류한다. 이 dust는
   status/position state에는 추적 정보로 남기되, 전략 소유 `OPEN` 포지션이나 수동 보유 차단 source로 승격하지 않고 신규 entry 평가를
   막지 않는다.
+- 전략 소유 lot 대비 지갑 BTC가 작아졌더라도 차이 금액이 Upbit KRW 최소 주문금액보다 작고 실제 지갑 BTC가 남아 있으면 잔여
+  실수량 기준으로 `OPEN` lot을 축소한다. 최소 주문금액 미만 shortfall은 별도 주문으로 복구할 수 없는 운영 dust이므로 수동 점검으로
+  daemon을 멈추지 않고 `dustIgnored` evidence로 남긴다.
 - autonomous position 소유권은 FILLED entry closeout이 있는 BUY lot에서 FILLED SELL cleanup을 FIFO로 차감해 계산한다. 완전 청산된 과거
   BUY lot의 평균단가는 이후 새 BUY 포지션의 take-profit, stop-loss, trailing 기준에 섞지 않는다. 미체결 BUY reservation과 no-fill
   closeout은 포지션 소유권으로 승격하지 않는다.
