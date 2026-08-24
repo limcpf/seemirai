@@ -1,5 +1,18 @@
 # Issue #206 Live Ops 실거래 arm 실행 계획
 
+## 2026-08-25 GitHub issue closeout 기준
+
+사용자 지시에 따라 GitHub Issue #206은 실제 실거래 arm과 cleanup evidence 기준으로 닫는다. 완료 근거는 저장소 밖 운영 backup의
+`issue-206/artifacts/cleanup-ops-42d83bdfaea634fae30d0f2bd3.json`이 `submit -> cancel requested -> terminal cancel 확인`으로 닫힌 점,
+`live-ops-daemon-status.json`이 production `live:ops` daemon의 실제 provider lifecycle과 장기 tick 평가를 기록한 점, 그리고 이후
+#267 successor 운영에서 `cleanup-ops-*` 38개, `reservation-ops-*` 33개, `FILLED=10`, `CANCELED=28`, `submittedOrderCount=40`이 남은
+점이다.
+
+#206 closeout은 "실제 주문 가능한 production runtime과 실거래 cleanup/24x7 arm 경로가 검증됐다"는 범위로 제한한다. #267의
+7일 `production-day` manifest PASS 실패, `autonomous_position_wallet_quantity_below_owned_scope` 수동점검, retrospective validator
+정책 결정은 #206 완료 조건으로 되돌려 열지 않고 #277, #278, #279에서 후속 처리한다. 이 closeout은 budget/universe 확대나 신규
+live entry 재개 승인이 아니다.
+
 ## 목표
 
 `corepack pnpm live:ops -- --config <운영-json-path> --env-file <운영-env-path> --tui` production 경로가 실제 DB, Upbit public/private API,
@@ -784,15 +797,15 @@ SEEMIRAI_RUN_LIVE_OPS_REAL_ARM_CLOSEOUT=1 \
   `mean_reversion_discount_bps` 계약을 공유한다.
 - 2026-06-21: Sub PR 28 runner closeout 문서 보강으로 active exec plan은 Sub PR 24-27까지의 DnD와 final PR review-drain 종료 절차를
   기록한다. 이 subPR은 runtime 동작, 운영 config/env, credential, final main PR merge를 변경하지 않는다.
+- 2026-08-25: Issue #206은 실거래 arm/cleanup evidence와 #267 successor의 실제 주문·체결 raw evidence를 근거로 GitHub에서 닫는다.
+  장기 운영 closeout gap과 M23 actual manifest gap은 #277, #278, #279 후속 이슈로 분리하며, #206 closeout을 budget/universe 확대
+  승인으로 해석하지 않는다.
 
 ## 남은 이슈
 
-- 실제 운영 credential, key scope evidence, operator arm evidence, redacted artifact 경로는 저장소 밖 운영 vault에 있어야 한다.
-- 실제 주문 제출/취소 closeout은 저장소 밖 운영 config/env로 foreground `live:ops`를 실행한 뒤 자동 생성 artifact와 closeout manifest로
-  검증한다.
-- final main PR #218은 runner 규칙상 merge하지 않는다. 마지막 subPR이 mother에 merge된 뒤 최신 head 기준 GitHub checks, unresolved
-  thread, Codex `+1` 또는 no-major-issues review를 다시 확인하고 결과를 `/home/lim/vaults/99_운영/seemirai-reviews/PR-218.md`에
-  갱신한다.
+- GitHub Issue #206은 실거래 arm 범위로 닫는다. 이후 운영 확장과 closeout 자동화 gap은 별도 이슈에서 추적한다.
+- 실제 운영 credential, key scope evidence, operator arm evidence, redacted artifact 경로는 계속 저장소 밖 운영 vault에만 둔다.
+- #277, #278, #279가 끝나기 전까지 #267 actual manifest PASS나 신규 entry 재개를 선언하지 않는다.
 
 ## Main merge 이후 후속 개선 backlog
 

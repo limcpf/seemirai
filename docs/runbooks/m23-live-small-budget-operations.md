@@ -13,6 +13,12 @@ daily report와 일별 decision segment로 소급 변환하지 않는다. succes
 [`2026-07-10-issue-188-m23-live-ops-retrospective-closeout.md`](../exec-plans/completed/2026-07-10-issue-188-m23-live-ops-retrospective-closeout.md)를
 따른다.
 
+Issue #267 successor 전환은
+[`2026-07-14-issue-267-production-baseline-m23-actual-closeout.md`](../exec-plans/active/2026-07-14-issue-267-production-baseline-m23-actual-closeout.md)를
+따른다. 기존 daemon uptime과 DB aggregate는 pre-deploy baseline으로만 보존하고, migration 14와 source provenance가 확인된 새
+startup 이후 완료된 KST 날짜부터 actual 7일 window를 계산한다. Issue #267은 아래 `Issue #267 production daemon 실행`의
+`live:ops:daemon`만 사용한다. Issue #188 historical M22 runner/env/candidate 절차에서 만든 artifact는 #267 window에 포함하지 않는다.
+
 ## 범위
 
 - 대상 모드: `LIVE_AUTONOMOUS_SMALL_BUDGET`
@@ -34,7 +40,7 @@ daily report와 일별 decision segment로 소급 변환하지 않는다. succes
 - 출금, 입출금 자동화, 선물, 레버리지, 마진, 타인 계정, 신호 판매
 - LLM 직접 매수/매도 판단
 
-## 사전 점검
+## Issue #188 historical 사전 점검
 
 다음 항목이 모두 준비되지 않으면 live-armed 7일 안정화를 시작하지 않는다.
 
@@ -53,7 +59,190 @@ daily report와 일별 decision segment로 소급 변환하지 않는다. succes
 | DB | primary DB 연결, migration 상태, artifact 저장 위치가 확인됐다 |
 | backup/restore | disposable restore DB 또는 실행 불가 blocker 기록 위치가 준비됐다 |
 
-## Live-Armed 실행
+## Issue #267 successor 전환 gate
+
+다음 중지 전 gate가 모두 확인되기 전에는 기존 production daemon에 종료 신호를 보내지 않는다.
+
+| 항목 | 확인 기준 |
+| --- | --- |
+| historical baseline | #206 cleanup artifact와 #188 구현 closeout을 변경하지 않고 참조한다. |
+| pre-deploy snapshot | daemon 시작/관측 시각, source worktree HEAD, migration 13, failure counters, open order/exposure 0을 redacted artifact로 고정한다. |
+| rollout source | Sub PR 02까지 병합된 `issue-267-mother`의 40자리 source SHA를 기록한다. |
+| config provenance | 운영 config 원문 대신 `sha256:<hex>` fingerprint만 startup/status에 남긴다. |
+| migration preflight | migration 14 파일/checksum과 DB pending 상태를 확인하고 backup/restore 명령과 저장 위치를 준비한다. |
+| rollback | migration 14를 인식하는 rollback source SHA 또는 검증된 pre-migration restore 절차를 기록한다. |
+
+open order 또는 exposure가 하나라도 있으면 daemon을 멈추지 않고 operator stop/manual review로 전환한다. 0이 확인되면 신규 entry를
+차단하고 같은 조회를 다시 통과한 뒤에만 `SIGTERM`을 보낸다. 정상 종료 후 terminal status와 daemon write 정지를 확인한 시점부터
+중지 후 migration gate를 진행한다. 이 gate에서는 migration 직전 backup과 disposable restore preflight를 만들고 migration 14를
+적용한 다음 새 daemon을 시작한다. startup/status의 source SHA, config/env fingerprint, expected/applied migration version이 rollout
+입력과 다르면 신규 entry를 열지 않는다. 새 daemon에서 `live_decision_ticks` write와 `live_ops_db_window` source를 확인하고 실제
+restart/recovery 및 disposable restore DB smoke를 통과한 뒤에만 7일 evidence window를 시작한다.
+
+successor 7일 window에는 pre-deploy daemon 날짜를 포함하지 않는다. manifest `day`는 daily report `reportDate` 및 durable decision
+evidence의 KST day와 같아야 하며, 해당 KST window가 종료된 뒤 생성된 artifact여야 한다. latest status나 aggregate query로 누락
+artifact를 소급 생성하지 않는다.
+
+Issue #267 actual manifest는 기존 Issue #188 blocker 호환 규칙을 사용하지 않는다. backup/restore `blocked`는 실패이며, startup과
+각 segment의 source SHA, config/env fingerprint, expected/applied migration 14가 일치해야 한다. `scripts/run-m23-stability-closeout.mjs`는
+Issue #267 manifest에서 이 계약, 각 segment 실행 구간이 daemon startup보다 앞서지 않는지, 완료 KST report/decision day를 직접
+검증한다.
+
+migration 14 적용 뒤에는 migration 13까지만 아는 pre-deploy source가 DB readiness에서 차단될 수 있다. rollback은 migration 14
+파일/checksum을 포함하는 검증된 source SHA로 실행한다. pre-migration backup 복원은 successor가 broker side effect를 만들기
+전까지만 허용한다. 현재 daemon을 정상 종료하고 private read/reconcile로 open order/exposure 0과 terminal 상태를 다시 확인하며,
+post-migration DB를 별도 backup으로 보존한 뒤 schema/version 일치를 확인해야 한다. successor가 한 번이라도 주문/체결 side effect를
+만들었거나 open order/exposure가 남아 있으면 pre-migration restore를 금지하고 migration 14 호환 source로 복구한다.
+
+## Issue #267 production daemon 실행
+
+Issue #267 successor는 M22 pilot wrapper, 수동 candidate JSONL, `SEEMIRAI_RUN_M22_*`, `SEEMIRAI_RUN_UPBIT_*_SMOKE`,
+`SEEMIRAI_PILOT_PROFILE`을 사용하지 않는다. production 명령은 명시 source SHA, config/env fingerprint, expected/applied migration 14를
+startup 전에 검증하며 source worktree가 dirty이면 시작하지 않는다.
+
+배포 SHA와 저장소 밖 config/env/status 경로를 고정한 뒤 production package entry로 실행한다.
+
+```sh
+cd <issue-267-successor-worktree>
+ISSUE_267_HOME="$HOME/vaults/99_운영/seemirai-live-ops-production/issue-267"
+SOURCE_SHA="$(git rev-parse HEAD)"
+RUN_ID="$(node -e 'process.stdout.write(require("node:crypto").randomUUID())')"
+
+corepack pnpm live:ops:daemon -- \
+  --config "$ISSUE_267_HOME/live-ops.config.json" \
+  --env-file "$ISSUE_267_HOME/live-ops.env" \
+  --source-commit-sha "$SOURCE_SHA" \
+  --startup-artifact-file "$ISSUE_267_HOME/artifacts/live-ops-daemon-startup-$SOURCE_SHA-$RUN_ID.json" \
+  --status-file "$ISSUE_267_HOME/artifacts/live-ops-daemon-status.json" \
+  --tui
+```
+
+`--source-commit-sha`와 `--startup-artifact-file`은 successor production 실행의 필수 계약이다. `SOURCE_SHA`는 Sub PR 02까지
+병합된 40자리 rollout SHA와 같아야 한다. startup/status provenance가 이 값과 다르거나 migration 14가 아니면 process를
+live-armed로 재개하지 않는다. `RUN_ID`는 같은 SHA로 재시작할 때도 기존 create-only artifact와 충돌하지 않게 실행마다 새로 만든다.
+7일 입력은 이 daemon과 DB scheduler가 자동 생성한 completed KST daily report,
+`live_decision_ticks`, immutable day artifact만 사용한다. latest status 복사본, M22 pilot summary, 수동 candidate artifact는 #267
+actual evidence가 아니다.
+
+### 2026-07-14 실제 rollout 기준선
+
+Issue #267 production은 다음 기준선으로 실행 중이다.
+
+| 항목 | 실제 값 |
+| --- | --- |
+| production home | `~/vaults/99_운영/seemirai-live-ops-production/issue-267` |
+| source SHA | `3d48665967b79fbbbf59dd316ec30f61662df12e` |
+| startup artifact | `artifacts/live-ops-daemon-startup-3d48665967b79fbbbf59dd316ec30f61662df12e-ee053bc3-1fef-455f-abcd-bfa9fb877840.json` |
+| latest status | `artifacts/live-ops-daemon-status.json` |
+| supervisor PID | `artifacts/live-ops-daemon.pid` |
+| pre-migration rollback backup | `backups/pre-migration-13-20260713t195156015z.dump` |
+| post-migration backup | `backups/post-migration-14-20260713t200208187z.dump` |
+| rollout summary | `artifacts/production-rollout-summary-20260713T201628533Z.json` |
+
+config는 `live-ops.config.json`, env는 `live-ops.env`에 두며 startup/status에는 각각 secret-free SHA-256 fingerprint만 남긴다.
+pre/post-migration backup은 PostgreSQL 16 client와 disposable DB에서 migration 13/14 및 TimescaleDB extension 복원을 각각
+통과했다. disposable DB는 증거 생성 뒤 제거했으며 dump와 redacted verification artifact는 보존한다.
+
+현재 host에서는 shell session 종료와 독립된 supervisor가 필요하므로 `setsid -f`로 package entry를 시작하고 내부 shell이 자기
+PID를 `live-ops-daemon.pid`에 기록한 뒤 `corepack pnpm live:ops:daemon`으로 `exec`한다. PID, log, status, backup, artifact는
+운영 계정만 읽도록 mode `600`을 유지한다. 중지할 때는 먼저 durable kill switch를 `NEW_ORDERS_BLOCKED`로 전이하고 private
+open order/exposure 0을 확인한 뒤 daemon leaf에 `SIGTERM`을 보낸다.
+
+현재 rollout source는 signal 종료 시 status file을 terminal payload로 바꾸는 handler가 없으므로 process tree exit와 status write
+정지를 별도 terminal artifact로 확인한다. stale `running` status만으로 process 생존을 주장하지 않고 PID 생존, 마지막 write 시각,
+private exposure를 함께 대조한다.
+
+첫 successor run의 public market data disconnect는 다음 tick에서 복구됐지만 actual window의 failure counter 0 조건에는 포함할 수
+없다. 해당 run은 `pre-window-daemon-terminal-20260713T201212198Z.json`으로 보존했다. 첫 KST counter boundary 전에도 failure
+counter가 하나라도 증가하면 신규 주문 차단, private open order 0, exposure ceiling을 재확인한 뒤 같은 rollout source로 clean
+restart하고 새 startup artifact를 사용한다. startup 당일은 full KST day가 아니므로 2026-07-14를 제외하고
+2026-07-15~2026-07-21을 7개 후보 날짜로 사용한다. earliest closeout은 `2026-07-22T00:00:00+09:00`이다.
+
+### Issue #267 일별 evidence scheduler
+
+7일 뒤 latest status와 DB aggregate를 소급 변환하지 않는다. `scripts/run-m23-production-day-closeout.mjs`는 완료된 KST 하루마다
+daemon 연속 실행/PID/heartbeat, 현재 config/env 원문 fingerprint와 startup provenance 일치, KST 시작/종료 counter delta, 대상
+strategy의 full-day durable decision, 실제 broker 제출/guarded decision/terminal cleanup 또는 SELL 재호가 counter와 BUY entry
+reservation 일치, Upbit private open
+order/BTC exposure, KST day 종료 뒤 생성된 daily report와 Telegram delivery audit을 검증한다. daily report에는 같은 closeout 시점의
+M23 후보/판단/주문/노출 상태를 포함하며 DB fact는 `KRW-BTC`/`live_ops_autonomous_24x7_core`로 제한한다. 검증된 summary는
+`production-day-YYYY-MM-DD.json` create-only artifact로 기록한다. 실패 시 final day 파일을 점유하지 않고 실패 분류만 별도
+artifact로 남긴다.
+
+Sub PR 04가 mother branch에 merge된 뒤 첫 day boundary 전에 daemon failure counter를 다시 확인한다. 모두 0이면 daemon을 유지하고,
+0이 아니면 위 clean restart 절차를 수행한다. 그 다음 현재 status가 가리키는 startup artifact로 scheduler를 별도 session에서 실행한다.
+
+```sh
+cd /home/lim/code/seemirai-worktrees/issue-267-mother
+ISSUE_267_HOME="$HOME/vaults/99_운영/seemirai-live-ops-production/issue-267"
+SOURCE_SHA="3d48665967b79fbbbf59dd316ec30f61662df12e"
+CLOSEOUT_SHA="$(git rev-parse HEAD)"
+STARTUP_FILE="$(node -e 'const fs=require("node:fs"); const p=process.argv[1]; process.stdout.write(JSON.parse(fs.readFileSync(p,"utf8")).startupArtifactFilePath)' "$ISSUE_267_HOME/artifacts/live-ops-daemon-status.json")"
+SCHEDULER_RUN_ID="$(node -e 'process.stdout.write(require("node:crypto").randomUUID())')"
+umask 077
+corepack pnpm build
+
+setsid -f env \
+  SEEMIRAI_RUN_M23_PRODUCTION_DAY_SCHEDULER=1 \
+  SEEMIRAI_RUN_M23_PRODUCTION_DAY_CLOSEOUT=1 \
+  node scripts/run-m23-production-day-scheduler.mjs \
+  --first-day 2026-07-15 \
+  --day-count 7 \
+  --config "$ISSUE_267_HOME/live-ops.config.json" \
+  --env-file "$ISSUE_267_HOME/live-ops.env" \
+  --daemon-status-file "$ISSUE_267_HOME/artifacts/live-ops-daemon-status.json" \
+  --startup-artifact-file "$STARTUP_FILE" \
+  --daemon-pid-file "$ISSUE_267_HOME/artifacts/live-ops-daemon.pid" \
+  --artifact-dir "$ISSUE_267_HOME/artifacts" \
+  --expected-source-commit-sha "$SOURCE_SHA" \
+  --closeout-source-commit-sha "$CLOSEOUT_SHA" \
+  --scheduler-status-file "$ISSUE_267_HOME/artifacts/production-day-scheduler-status.json" \
+  --scheduler-event-log-file "$ISSUE_267_HOME/logs/production-day-scheduler-events.jsonl" \
+  --scheduler-pid-file "$ISSUE_267_HOME/artifacts/production-day-scheduler.pid" \
+  --json \
+  >> "$ISSUE_267_HOME/logs/production-day-scheduler-$SCHEDULER_RUN_ID.log" 2>&1
+```
+
+scheduler는 시작 시 daemon status/startup provenance와 supervisor PID를 먼저 확인한다. 현재 tracked/untracked checkout이
+`--closeout-source-commit-sha`와 일치하고 clean인지, `corepack pnpm build`가 기록한 source/dist fingerprint가 현재 파일과
+일치하는지도 provider/DB 경계를 열기 전에 검증한다. 각 KST day 시작과 종료 60초 안에
+append-only daemon counter boundary를 남기고, 종료 60초 뒤 closeout을 시도한다. closeout 실패는 5분 간격으로 day별 최대 36회
+재시도한다. 기존 report 생성은 `report.daily:<reportDate>`, 전달 복구는 `report.daily.delivery_recovery:<reportDate>` key를
+사용하므로 process 재시작이나 수동 재실행이 Telegram 중복 전송으로 이어지지 않는다. 재시도 한도를 소진하면 다음 날짜로 넘어가지
+않고 `failed`로 닫는다. 각 실패 시도는 provider 이전 precondition 실패도 별도 immutable failure artifact로 남긴다. 주간 손실은
+`--first-day`부터 현재 기준일 직전까지 같은 daemon source/config/env/migration 및 closeout build provenance로 통과한 연속 day
+artifact만 합산한다. 같은
+날짜의 일반 daily report가 먼저 완료됐으면 closeout actor/correlation이 있는 별도 recovery job으로 M23 상태 report를 한 번 전달한다.
+provider 성공 뒤 delivery audit 저장만 실패한 상태는 recovery로 재전송하지 않고 수동 확인 대상으로 남긴다. artifact 손실은
+누적 DB PnL이 아니라 `filledAt` KST window의 SELL cleanup realized loss를 사용한다. scoped report에는 같은 strategy의
+`market=null` aggregate PnL snapshot도 사용자 관측 정보로 보존한다. M23 section은 daemon counter와 cleanup artifact의 실제
+제출·재호가·체결·실현 손실을 별도로 표시한다. 이전 direct/recovery delivery audit은 `generatedAt`을 제외한 현재 notification
+fingerprint와 같을 때만 재사용하고, direct provider 호출 전에도 실제 payload가 audit binding과 같은지 확인한다.
+boundary capture는 경계 직후의 status file write까지 확인해 경계를 걸친 tick의 counter를 이전 day에 포함한다. SELL cleanup의 제출
+개수는 거래소 accept 시각의 `submittedAt`과 counter status write cutoff로 같은 day에 귀속한다. 고정 rollout source가 만든 기존
+SELL cleanup에 `submittedAt`이 없으면 같은 attempt의 durable actionable decision `observedAt`을 사용하고 체결 시각으로 추정하지
+않는다. realized loss는 실제 `filledAt` KST day를 사용한다. boundary status는 stat-read-stat에서 같은 inode/size/mtime/ctime인
+JSON만 사용하며 write 경합은 60초 안에서 재시도한다. 경계 polling 중 scheduler-only stop은 실패가 아니라 `stopped` status/event로
+닫힌다. artifact 경로는 symlink 실제 대상도 repository 밖이어야 한다.
+config/env/daemon evidence와 scheduler status/event/PID도 symlink 실제 대상이 repository 밖이어야 하며 scheduler output은 보호 입력의
+실제 경로를 가리킬 수 없다.
+
+```sh
+cat "$ISSUE_267_HOME/artifacts/production-day-scheduler-status.json"
+tail -n 20 "$ISSUE_267_HOME/logs/production-day-scheduler-events.jsonl"
+kill -0 "$(cat "$ISSUE_267_HOME/artifacts/production-day-scheduler.pid")"
+```
+
+운영자가 scheduler만 중지할 때는 위 PID에 `SIGTERM`을 보낸다. 이 신호는 거래 daemon에 전달되지 않는다. status가 `stopped`인지
+확인한 뒤 기존 PID 파일을 run ID가 포함된 evidence 이름으로 이동하고 같은 고정 PID 경로로 재실행한다. 고정 create-only PID
+파일은 두 scheduler가 동시에 같은 Telegram report 경계를 호출하지 못하게 막는다. `production-day-YYYY-MM-DD.json`이 이미
+`passed`면 closeout은 현재 source/config/env/migration provenance와 daemon counter boundary 일치를 먼저 확인한다. 모두 같을 때만
+provider와 Telegram을 다시 호출하지 않고 기존 immutable artifact를 재사용한다.
+
+## Issue #188 historical Live-Armed 실행
+
+이 절의 M22 runner/env/candidate 절차는 Issue #188 historical 입력을 재현하기 위한 호환 경로다. Issue #267 successor 배포나
+7일 actual window에는 사용하지 않는다.
 
 기본 파일 구조는 M22 runbook의 local file preparer가 만든 저장소 밖 디렉터리를 재사용한다.
 
@@ -244,8 +433,9 @@ SEEMIRAI_RESTORE_DATABASE_URL=<disposable-restore-db> \
 ./scripts/db-backup-restore-smoke.sh
 ```
 
-실행할 수 없으면 closeout에 blocker, 필요한 DB 권한, restore target 준비 상태, 재시도 계획을 남긴다. 실행하지 못한 drill을 pass로
-표시하지 않는다.
+Issue #188 historical closeout에서 실행할 수 없으면 blocker, 필요한 DB 권한, restore target 준비 상태, 재시도 계획을 남긴다.
+실행하지 못한 drill을 실제 restore 성공으로 표시하지 않는다. Issue #267 actual closeout은 blocker 호환을 사용하지 않으므로
+disposable restore DB smoke가 실제로 통과하지 않으면 `PASS`가 아니다.
 
 ## 7일 closeout
 
@@ -260,7 +450,7 @@ closeout에는 redacted artifact 기준으로 다음을 기록한다.
 - 주문 제출/취소/체결/부분체결/차단 event summary
 - restart/reconcile/status 복구 evidence
 - Telegram lifecycle/trade event alert와 retry/manual review evidence
-- DB backup/restore smoke 결과 또는 blocker
+- DB backup/restore smoke 결과. Issue #188 historical manifest만 blocker 기록을 허용하고, Issue #267은 `passed` 결과를 요구한다.
 - source scan 결과
 - crash 0회
 - unhandled rejection 0회
@@ -271,6 +461,7 @@ closeout에는 redacted artifact 기준으로 다음을 기록한다.
 - live order cleanup failure 0건
 
 7일 closeout은 저장소 밖 manifest로 집계한다. manifest는 raw secret이 아니라 redacted evidence id와 artifact 경로만 포함해야 한다.
+다음 예시는 Issue #188 historical 호환 형식이며 Issue #267 actual manifest로 사용하지 않는다.
 
 ```json
 {
@@ -307,6 +498,51 @@ closeout에는 redacted artifact 기준으로 다음을 기록한다.
 }
 ```
 
+Issue #267 actual manifest는 다음 provenance/day 필드를 추가한다. 아래 provenance object는 startup artifact, manifest, segment record,
+segment summary에서 byte 값 기준으로 같아야 한다.
+
+```json
+{
+  "issue": 267,
+  "mode": "LIVE_AUTONOMOUS_SMALL_BUDGET",
+  "startupArtifactPath": "live-ops-daemon-startup-<source-sha>.json",
+  "runtimeProvenance": {
+    "sourceCommitSha": "<40자리-lowercase-git-sha>",
+    "configFingerprint": "sha256:<64자리-lowercase-hex>",
+    "envFingerprint": "sha256:<64자리-lowercase-hex>",
+    "expectedMigrationVersion": 14,
+    "appliedMigrationVersion": 14
+  },
+  "segments": [
+    {
+      "day": "YYYY-MM-DD",
+      "summaryPath": "production-day-YYYY-MM-DD.json",
+      "decisionEvidenceId": "decision-YYYY-MM-DD",
+      "decisionEvidenceDay": "YYYY-MM-DD",
+      "dailyReportEvidenceId": "daily-report-YYYY-MM-DD",
+      "alertEvidenceIds": ["alert-YYYY-MM-DD"],
+      "runtimeProvenance": {
+        "sourceCommitSha": "<40자리-lowercase-git-sha>",
+        "configFingerprint": "sha256:<64자리-lowercase-hex>",
+        "envFingerprint": "sha256:<64자리-lowercase-hex>",
+        "expectedMigrationVersion": 14,
+        "appliedMigrationVersion": 14
+      }
+    }
+  ],
+  "recoveryDrillSummaryPath": "m23-recovery-summary.json",
+  "backupRestore": {
+    "status": "passed",
+    "evidenceId": "db-backup-restore-YYYY-MM-DD"
+  }
+}
+```
+
+각 Issue #267 segment summary는 `input=live_ops_daemon_day`, `status=passed`, `startedAt`, `finishedAt`, `reportDate`,
+`dailyReportGeneratedAt`, `decisionEvidenceDay`, `decisionEvidenceGeneratedAt`, 같은 `runtimeProvenance`를 포함한다. 실행 window는 해당
+KST day 전체를 덮어야 하고 report/decision 생성 시각은 KST day 종료 이후여야 한다. `productionDaemonWindow`, `configSafety`,
+`dbReadiness`, `heartbeat` check가 모두 `ok`가 아니면 actual closeout은 실패한다.
+
 manifest와 7개 segment summary, recovery drill summary가 준비되면 다음 validator를 실행한다.
 
 ```sh
@@ -323,9 +559,11 @@ CI와 PR 검증에서는 실제 7일 운영을 시작하지 않고 fixture smoke
 node scripts/run-m23-stability-closeout.mjs --fixture-smoke --json
 ```
 
-`scripts/run-m23-stability-closeout.mjs`는 7개 이상의 서로 다른 day segment, 각 segment의 24시간 정상 종료, daily report,
-live-armed guard/readiness, decision evidence, closeout failure counter 명시적 0건, recovery drill, DB backup/restore 결과 또는
-blocker, source scan, raw secret 후보를 함께 확인한다. 7일 artifact가 없거나 manifest가 6일 이하이면 closeout은 실패다.
+`scripts/run-m23-stability-closeout.mjs`의 Issue #188 historical 경로는 7개 이상의 서로 다른 day segment, 각 segment의 24시간 정상
+종료, daily report, live-armed guard/readiness, decision evidence, closeout failure counter 명시적 0건, recovery drill,
+DB backup/restore 결과 또는 blocker, source scan, raw secret 후보를 함께 확인한다. Issue #267 guarded 경로는 production
+`live:ops:daemon` provenance, 완료 KST daily report/day decision evidence 일치와 `backupRestore.status=passed`를 추가로 강제한다.
+7일 artifact가 없거나 manifest가 6일 이하이면 closeout은 실패다.
 
 live canary 1회 성공, dry-run, heartbeat-only만으로 M23 완료를 선언하지 않는다.
 

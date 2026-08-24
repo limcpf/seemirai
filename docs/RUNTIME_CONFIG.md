@@ -717,11 +717,20 @@ M23 live-armed 운영 기준:
 - process supervisor/systemd 운영은 root가 아닌 운영 사용자로 실행하고 저장소 밖 env/key 파일을 참조해야 하며, service unit에는 secret
   값을 직접 쓰지 않는다.
   `scripts/run-m23-recovery-drill.mjs`는 restart 전후 event log artifact만 읽어 duplicate live order 방지, reconcile/status/daily
-  report 복구, Upbit 장애/market warning/stale data fail-closed evidence, DB backup/restore 결과 또는 blocker 기록을 검증한다.
-  이 validator는 기본 CI/PR 검증에서 live API, Telegram provider, DB restore를 직접 호출하지 않는다.
-- `scripts/run-m23-stability-closeout.mjs`는 7일 closeout manifest와 저장소 밖 summary artifact만 읽어 7개 이상 24시간 segment,
-  daily report, live-armed guard/readiness, decision evidence, recovery drill, source scan, DB backup/restore 결과 또는 blocker를
-  집계한다. 이 validator도 기본 CI/PR 검증에서는 fixture smoke만 실행하며 live API, Telegram provider, DB restore를 직접 호출하지 않는다.
+  report 복구, Upbit 장애/market warning/stale data fail-closed evidence, DB backup/restore 결과 또는 Issue #188 historical blocker
+  기록을 검증한다. 이 validator는 기본 CI/PR 검증에서 live API, Telegram provider, DB restore를 직접 호출하지 않는다.
+- `scripts/run-m23-stability-closeout.mjs`는 7일 closeout manifest와 저장소 밖 summary artifact만 읽는다. Issue #188 historical 경로는
+  7개 이상 24시간 segment, daily report, live-armed guard/readiness, decision evidence, recovery drill, source scan, DB backup/restore
+  결과 또는 blocker 기록을 집계한다. Issue #267 guarded 경로는 production `live:ops:daemon` source/config/env/migration provenance,
+  완료 KST report/decision day 일치, `backupRestore.status=passed`를 추가로 요구한다. 기본 CI/PR 검증에서는 fixture smoke만 실행하며
+  live API, Telegram provider, DB restore를 직접 호출하지 않는다.
+- Issue #267은 `scripts/run-m23-production-day-scheduler.mjs`가 완료 KST day마다
+  `scripts/run-m23-production-day-closeout.mjs`를 호출한다. actual mode는 scheduler/closeout guard를 모두 요구하고, daemon
+  source/config/env/migration provenance와 현재 config/env 원문 fingerprint, PID/heartbeat, DB decision/risk approval, BUY entry
+  reservation/cleanup, private exposure를 검증한 뒤 기존 `report.daily:<reportDate>` idempotency job으로 M23 live ops 상태가 포함된
+  daily report를 닫는다. scheduler/closeout의 현재 Git SHA와 clean tracked/untracked tree, clean build가 기록한 source/dist fingerprint도
+  별도 closeout provenance로 검증한다. `--first-day`는 같은 daemon 및 closeout provenance의 연속 7일 손실 집계 경계를 고정한다.
+  scheduler는 거래 daemon lifecycle을 변경하지 않는다.
 - M23 이후 universe, strategy, budget 확대는 M24 범위다. M23 config나 runbook은 BTC 외 market 기본 활성화, 자동 budget 확대,
   market/best order 기본 허용을 열지 않는다.
 
@@ -1168,6 +1177,12 @@ Telegram provider 실패는 report 생성 성공을 되돌리지 않는다. prov
 커도 실행 가능한 daily report job을 한 번에 하나씩 claim하고 즉시 실행한다. scheduler 실패 row는 같은 sweep에서 다시
 claim하지 않도록 최소 다음 tick 이후로 `run_after`를 미룬다. report 생성 중 audit 저장소 장애처럼 runner가 예외를 던지면
 runtime이 `failJob`으로 lock을 해제해 같은 row가 retry 또는 수동 복구 대상으로 남게 한다.
+
+Issue #267 production day closeout에서 기존 `report.daily:<reportDate>` job이 `COMPLETED`지만 delivery audit이 없으면 report 생성
+job을 재실행하지 않는다. 별도 `job_type=report.daily.delivery_recovery`,
+`idempotency_key=report.daily.delivery_recovery:<reportDate>` job이 이미 만든 deterministic notification만 전송한다. provider 실패는
+이 recovery job을 5분 뒤 재예약한다. provider 성공 뒤 audit append가 실패하면 중복 전송을 막기 위해 recovery job을 완료하고
+수동 확인을 요구한다.
 
 ## M8 Paper soak verification
 
@@ -1717,7 +1732,8 @@ provider arm을 검증하기 위한 submit/cancel canary이고, 24/7 운영 stra
 
 24/7 daemon config는 다음 원칙을 지켜야 한다.
 
-- `live:ops:daemon`은 저장소 밖 config/env만 입력으로 받고, fixture manifest나 hand-written evidence 파일을 실행 전 필수값으로 요구하지 않는다.
+- `live:ops:daemon` production 실행은 저장소 밖 config/env와 함께 실제 clean checkout HEAD인 40자리 source SHA, 저장소 밖의 새
+  startup artifact 경로를 받는다. fixture manifest나 hand-written evidence 파일은 실행 전 필수값이 아니다.
 - config는 strategy id와 parameter만 선택한다. 임의 파일 경로, 동적 import, 원격 plugin, 저장소 밖 strategy 코드는 금지한다.
 - entry order는 `BUY + LIMIT + POST_ONLY`, exit order는 보유 수량 이하 `SELL + LIMIT + POST_ONLY`만 허용한다.
 - strategy parameter는 secret이 아니어야 하며, API key, Telegram token, DB URL, local control token을 포함하면 validation이 실패해야 한다.
@@ -1764,11 +1780,25 @@ POST_ONLY` 후보를 만들 수 있다. 이 strategy는 order intent 생성까�
 
 `live:ops:daemon` 실행 기준:
 
-- production 실행 명령은 `corepack pnpm live:ops:daemon -- --config <운영-json-path> --env-file <운영-env-path> --tui`다.
-- 실행 전 입력은 저장소 밖 config/env뿐이다. fixture manifest, hand-written evidence, 수동 JSONL 후보 파일은 production 시작 조건이 아니다.
+- production 실행 명령은 `corepack pnpm live:ops:daemon -- --config <운영-json-path> --env-file <운영-env-path>
+  --source-commit-sha <40자리-clean-HEAD> --startup-artifact-file <저장소-밖-새-json-path> --tui`다.
+- source SHA가 실제 HEAD와 다르거나 worktree가 dirty이면 config/provider/broker 경계를 열지 않는다. startup artifact 경로는 저장소 밖이어야
+  하고 기존 파일을 덮어쓰지 않으며, config/env validation과 DB readiness가 통과한 뒤 source SHA, config/env `sha256` fingerprint,
+  expected/applied migration version만 기록한다.
+- fixture manifest, hand-written evidence, 수동 JSONL 후보 파일은 production 시작 조건이 아니다. source SHA와 startup artifact는 실행
+  code provenance를 자동 증명하기 위한 필수 입력/출력 경계다.
 - `--fixture-smoke --duration-ms <ms>`는 개발/PR 검증용 loop contract smoke이며, 실제 운영에 필요한 준비물이 아니다.
 - `--status-file <path>`를 주면 최신 daemon summary를 해당 JSON 파일에 자동 기록한다. production에서 생략하면 config 파일 옆
-  `artifacts/live-ops-daemon-status.json`에 자동 기록하며, fixture smoke는 기본 status file을 만들지 않는다.
+  경로가 아니라 repository 밖 startup artifact 디렉터리의 `live-ops-daemon-status.json`에 자동 기록하며, fixture smoke는 기본
+  status file을 만들지 않는다. config 인자가 누락되어 startup 검증이 실패해도 startup artifact 경로가 있으면 같은 기본 status에
+  실패 원인을 기록한다. startup artifact와 status file은 부모 symlink를 해석한 실제 대상까지 서로 다른 경로여야 하며, 충돌하면
+  어떤 파일도 쓰기 전에 시작을 차단한다.
+- startup artifact, status top-level, `latestSummary`는 같은 runtime provenance를 보존한다. 각 tick은 provider/broker 호출 전에
+  config/env fingerprint와 DB migration을 다시 확인하며 startup 값에서 달라지면 `provenance_failed`를 기록하고 loop를 종료한다.
+  startup 이후 config/env 파일이 삭제되거나 권한 문제로 읽히지 않는 경우도 새로운 입력을 기다리는 transient failure가 아니라 같은
+  provenance 실패로 처리한다.
+- startup artifact와 status file 경로는 parent 디렉터리를 만들기 전에 repository 밖인지 검사하며, symlink를 통과한 실제 경로도
+  repository 안이면 시작하지 않는다. status file 자체가 symlink이면 다른 evidence 덮어쓰기를 막기 위해 시작하지 않는다.
 - `--tick-interval-ms <ms>`는 정상 보유/대기 tick 간격을 조정한다. 기본값은 1초이며, 차단은 5초, 수동 확인은 30초, transient failure는
   5초 backoff를 적용한다.
 - `--decision-history-retention-hours <hours>`를 명시하면 daemon tick이 같은 DB writer 경계로 `live_decision_ticks` retention을 실행하고,

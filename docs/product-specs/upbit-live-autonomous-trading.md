@@ -396,7 +396,8 @@ M19 Sub PR 03 범위:
 - Telegram 연결 성공 알림, live order capable 시작 알림, 정상 종료/operator stop/kill switch/manual review/crash/restart 알림
 - 주문 제출, 취소 요청, 취소 확인, 체결, 부분체결, risk/cost/reconcile 차단 이벤트 요약 알림
 - 7일 live-armed daily report와 "왜 주문이 없었는지" decision evidence
-- 7일 closeout manifest validator로 segment summary, recovery drill, source scan, DB backup/restore 결과 또는 blocker 집계
+- 7일 closeout manifest validator로 segment summary, recovery drill, source scan, DB backup/restore 결과를 집계한다. Issue #188
+  historical 입력은 blocker 기록 형식을 유지하지만 Issue #267 actual `PASS`에는 사용할 수 없다.
 - Docker Compose live profile 또는 systemd/process supervisor 재시작 정책
 - restart 후 reconcile/status/daily report/Telegram 상태 복구
 - `scripts/run-m23-recovery-drill.mjs`로 restart 전후 event log 기반 duplicate order 방지와 복구 evidence 검증
@@ -416,6 +417,17 @@ M19 Sub PR 03 범위:
   [`2026-07-10-issue-188-m23-live-ops-retrospective-closeout.md`](../exec-plans/completed/2026-07-10-issue-188-m23-live-ops-retrospective-closeout.md)를
   따른다.
 
+2026-07-14 Issue #267 successor 판정:
+
+- 새 7일 window는 production `live:ops:daemon`의 명시 source SHA, config fingerprint, expected/applied migration 14 startup 이후
+  완료된 KST daily report와 durable decision evidence만 사용한다. M22 pilot runner artifact는 포함하지 않는다.
+- Issue #188 historical blocker 호환은 유지하지만 Issue #267 actual closeout의 DB backup/restore는 disposable restore DB에서
+  실제로 통과해야 한다. `blocked`는 `PASS` 입력이 아니다.
+- 완료 KST day 증적은 production day scheduler가 daemon provenance/heartbeat, KST 경계 counter delta, full-day durable decision,
+  actual broker 제출/guarded decision/BUY entry reservation-cleanup 일치, private exposure와 M23 상태가 포함된 Telegram daily report
+  delivery를 검증해 create-only artifact로 남긴다. 주간 손실에는 같은 first-day와 provenance의 연속 day만 포함한다. scheduler는
+  거래 daemon을 시작하거나 중지하지 않는다.
+
 완료 조건:
 
 - 7일 연속 live small-budget 운영 리포트가 생성된다. 이 run은 dry-run이 아니라 live order API를 호출할 수 있는 설정으로 arm 되어야 한다.
@@ -425,7 +437,8 @@ M19 Sub PR 03 범위:
 - Telegram lifecycle와 trade event 알림은 한국어 상태, 원인, 영향, 필요 조치를 먼저 보여주고 내부 evidence id는 `추적 정보`에 분리한다.
 - process 재시작 후 reconcile과 status가 정상 복구된다.
 - Telegram P0/P1 알림 실패 retry와 manual review 수렴이 검증된다.
-- DB backup/restore smoke drill이 disposable restore DB에서 통과하거나, 실행 불가 시 blocker와 필요한 외부 조건이 closeout에 기록된다.
+- DB backup/restore smoke drill이 disposable restore DB에서 통과한다. Issue #188 historical 입력에는 실행 불가 blocker를 기록할 수
+  있지만 Issue #267 actual `PASS`는 `blocked`를 허용하지 않는다.
 - Upbit 장애, 점검, market warning, stale data, API 오류가 신규 entry fail-closed와 alert/manual review evidence로 수렴한다.
 - 7일 동안 crash 0회, unhandled rejection 0회, risk gate 우회 주문 0건, reconcile mismatch 0건, duplicate order 0건, untracked fill 0건, live order cleanup failure 0건을 증명한다.
 - live canary 1회 성공, dry-run, heartbeat-only만으로 M23 완료를 선언하지 않는다.

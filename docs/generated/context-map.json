@@ -317,6 +317,13 @@
       "owner_scope": "docs/exec-plans/active"
     },
     {
+      "path": "docs/exec-plans/active/2026-07-14-issue-267-production-baseline-m23-actual-closeout.md",
+      "kind": "exec-plan",
+      "role": "Issue #267 production successor 배포와 M23 actual 7일 closeout 실행 계획",
+      "read_when": ["issue #267 구현", "production baseline 전환", "source provenance", "migration 14 rollout", "M23 actual closeout"],
+      "owner_scope": "docs/exec-plans/active"
+    },
+    {
       "path": "docs/exec-plans/active/2026-06-12-m23-m24-live-ops-and-scaled-canary.md",
       "kind": "exec-plan",
       "role": "M23 24/7 운영 안정화와 M24 전략 확장/예산 확대 live canary 실행 계획",
