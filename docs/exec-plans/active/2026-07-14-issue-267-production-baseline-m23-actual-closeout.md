@@ -2,7 +2,7 @@
 
 - Issue: [#267](https://github.com/limcpf/seemirai/issues/267)
 - mother branch: `issue-267-mother`
-- 상태: Sub PR 01~03 mother merge 완료, Sub PR 04 일별 evidence 자동 수집 준비
+- 상태: production rollout과 실거래 raw evidence 확인 완료, 7일 production-day manifest PASS는 후속 이슈로 분리
 - 시작일: 2026-07-14
 
 ## 목표
@@ -131,6 +131,27 @@ window에서 제외한다. 첫 유효 full KST day는 2026-07-15, 일곱째는 2
   - [ ] guarded actual validator가 `PASS`다.
   - [ ] 전체 typecheck/test/verify와 finish-readiness-audit가 통과한다.
 
+#### 2026-08-25 retrospective 운영 판정
+
+운영 vault backup의 raw evidence 기준으로 successor daemon은 실제 실거래와 장시간 운영을 수행했다. `issue-267/artifacts`에는
+`cleanup-ops-*` 38개, `reservation-ops-*` 33개, `live-ops-daemon-status.json`, `autonomous-position-live_ops_autonomous_24x7_core.json`,
+rollout/backup/restore artifact가 남아 있다. cleanup artifact 집계는 `FILLED=10`, `CANCELED=28`, 실현손익 합계 약
+`-110.605398800785 KRW`다. 최신 daemon status는 `tickCount=182691`, `submittedOrderCount=40`, `exitRequoteCount=39`,
+`duplicateOrderCount=0`, `reconcileMismatchCount=0`, `untrackedFillCount=0`, `liveOrderCleanupFailureCount=0`, `crashCount=0`,
+`unhandledRejectionCount=0`을 기록한다. 운영 예산에는 `operationsStopCeilingKrw=49999`가 남아 있어 5만원 이하 소액 운영 중지
+조건을 확인할 수 있다.
+
+따라서 "소액 실운영이 실제로 수행됐다"는 판정은 성공으로 본다. 다만 #267의 원래 완료 기준은 7개 연속 KST 날짜의 daily report,
+durable decision evidence, guarded actual manifest `PASS`였고, 현재 `production-day-*.json` 74개는 모두 `failed`이며 scheduler status는
+`completedDays=[]`다. 이 문서는 #267을 자연어 PASS로 소급하지 않고, 운영 성공 증적과 7일 closeout 자동화 실패를 분리해 PARTIAL로
+남긴다.
+
+후속 처리:
+
+- #277: `production-day` scheduler 실패 원인 분류와 7일 manifest 재구성 가능성 확인.
+- #278: `autonomous_position_wallet_quantity_below_owned_scope` 수동점검 해소와 신규 entry 재개 가능 여부 판정.
+- #279: raw cleanup/reservation/status evidence를 retrospective validator 입력으로 인정할지 정책 결정.
+
 ## Rollout gate
 
 1. pre-deploy daemon 상태와 #206 cleanup artifact를 redacted baseline으로 저장한다.
@@ -195,10 +216,14 @@ SEEMIRAI_RESTORE_DATABASE_URL=<disposable-restore-db> \
   중복 전송 차단, closeout/scheduler symlink 실제 경로 및 보호 입력 충돌 검증을 보강했다.
 - 2026-07-14: 경계 tick cleanup을 counter status write cutoff day에 귀속하고 recovery provider 실패 audit/재시도와 boundary polling
   중 scheduler-only 정상 중지를 보강했다.
+- 2026-08-25: 운영 vault backup의 raw evidence로 실거래 운영 성공은 확인했지만, `production-day` 자동 closeout은 전부 실패했으므로
+  #267 actual manifest PASS를 선언하지 않는다. 7일 manifest 재구성, wallet quantity 수동점검, retrospective validator 정책을
+  #277, #278, #279로 분리했다.
 
 ## 남은 이슈
 
 - PostgreSQL 16 client와 disposable restore DB를 사용한 pre/post-migration 복구 검증은 통과했고 임시 DB는 제거했다.
-- 7개 연속 완료 full KST 날짜는 clean successor startup 이후 2026-07-15~2026-07-21의 실제 시간 경과가 필요하다.
-- Sub PR 04 review drain/merge 뒤 mother worktree에서 day scheduler를 detached 실행하고 PID/status/event log를 관측해야 한다.
-- Sub PR별 review drain clean signal과 mother merge 결과를 이 문서에 계속 기록한다.
+- 실거래 raw evidence는 남아 있지만 2026-07-15~2026-07-21의 day closeout PASS manifest는 없다. #277에서 재구성 가능성을 확인한다.
+- 최신 autonomous position은 `MANUAL_REVIEW_REQUIRED`이며 `autonomous_position_wallet_quantity_below_owned_scope` 해소 전 신규 entry를
+  재개하지 않는다. #278에서 수동점검을 닫는다.
+- raw cleanup/reservation/status evidence를 actual validator PASS 입력으로 인정할지 여부는 #279에서 정책으로 결정한다.
